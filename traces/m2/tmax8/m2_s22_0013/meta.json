@@ -1,0 +1,31 @@
+{
+  "format": "tesseract-trace",
+  "version": 1,
+  "config": {"num_ch": 4, "beat_bits": 512, "lanes": 128, "t_max": 8, "k_max": 32768, "spm_bytes": 4194304, "vl": 16, "nireg": 16, "nsreg": 16, "loop_depth": 4, "rd_outstanding": 16, "ch_bytes": 17179869184, "addr_beat_w": 28, "caps": 0},
+  "cmd_addr_beat": 279955,
+  "cmd_count": 30,
+  "args": [1062617, 76834954, 1334768292, 86757415, 1069572, 1070548, 1066192, 3253355142],
+  "status": 2,
+  "err_code": 0,
+  "err_pc": 0,
+  "err_info": 0,
+  "init": [
+    {"ch": 0, "offset": 17917120, "size": 960, "file": "init/ch0_00011164c0.bin"},
+    {"ch": 0, "offset": 67253184, "size": 256, "file": "init/ch0_00040233c0.bin"},
+    {"ch": 1, "offset": 67349248, "size": 262144, "file": "init/ch1_000403ab00.bin"},
+    {"ch": 3, "offset": 67386624, "size": 6272, "file": "init/ch3_0004043d00.bin"}
+  ],
+  "expect": [
+    {"ch": 1, "offset": 67611776, "size": 320, "file": "expect/ch1_000407ac80.bin"},
+    {"ch": 1, "offset": 67615936, "size": 320, "file": "expect/ch1_000407bcc0.bin"},
+    {"ch": 1, "offset": 67617408, "size": 320, "file": "expect/ch1_000407c280.bin"},
+    {"ch": 1, "offset": 67620096, "size": 320, "file": "expect/ch1_000407cd00.bin"},
+    {"ch": 1, "offset": 67622272, "size": 320, "file": "expect/ch1_000407d580.bin"},
+    {"ch": 1, "offset": 67625280, "size": 320, "file": "expect/ch1_000407e140.bin"},
+    {"ch": 1, "offset": 67626752, "size": 320, "file": "expect/ch1_000407e700.bin"},
+    {"ch": 3, "offset": 67309376, "size": 73728, "file": "expect/ch3_0004030f40.bin"},
+    {"ch": 3, "offset": 67395840, "size": 128, "file": "expect/ch3_0004046100.bin"},
+    {"ch": 3, "offset": 67399680, "size": 128, "file": "expect/ch3_0004047000.bin"}
+  ],
+  "perf": {"cycles": 11704, "retired": 30, "mvm_cycles": 0, "ch_rd_beats": [19, 4096, 0, 98]}
+}

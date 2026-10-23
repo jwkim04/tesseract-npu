@@ -1,0 +1,124 @@
+From 5245f1fd0b583dec9f891d721704d21bf8fe2a3c Mon Sep 17 00:00:00 2001
+From: Tesseract XRT port <jwkim@limagin.com>
+Date: Fri, 23 Oct 2026 11:14:25 +0900
+Subject: [PATCH 11/19] xocl, common, libqdma: use timer_delete[_sync]() on
+ Linux 6.15+
+
+Mainline commit 8fa7292fee5c ("treewide: Switch/rename to
+timer_delete[_sync]()", v6.15) removed the del_timer() and
+del_timer_sync() wrappers. They are used in common/xrt_cu.c,
+subdev/mailbox.c, subdev/ert_user.c and libqdma's qdma_mbox.c.
+
+Guard: LINUX_VERSION_CODE < KERNEL_VERSION(6, 15, 0) keeps the original
+calls at each site (mainline v6.14 <linux/timer.h> still has the
+wrappers, v6.15 does not; gone in the 6.17.0-35 / 7.0.0-x headers).
+
+Equivalence: exact. In every kernel that still has them (e.g. v6.8
+<linux/timer.h>) the wrappers are
+	static inline int del_timer_sync(t) { return timer_delete_sync(t); }
+	static inline int del_timer(t)      { return timer_delete(t); }
+and timer_delete[_sync]() exist since v6.2.
+
+Upstream: same per-site guards as XRT commit f41db917c and the
+dma_ip_drivers (libqdma) commit 0a578f1 that XRT master pins through
+its libqdma submodule.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SpY5QiU1d7kAe8YJM35EvA
+---
+ driver/common/xrt_cu.c                                   | 9 +++++++++
+ .../libqdma/QDMA/linux-kernel/driver/libqdma/qdma_mbox.c | 4 ++++
+ driver/xocl/subdev/ert_user.c                            | 4 ++++
+ driver/xocl/subdev/mailbox.c                             | 8 ++++++++
+ 4 files changed, 25 insertions(+)
+
+diff --git a/driver/common/xrt_cu.c b/driver/common/xrt_cu.c
+index 4ed6c1d..a1b6693 100644
+--- a/driver/common/xrt_cu.c
++++ b/driver/common/xrt_cu.c
+@@ -634,7 +634,11 @@ int xrt_cu_intr_thread(void *data)
+ 		process_pq(xcu);
+ 	}
+ 	xrt_cu_disable_intr(xcu, CU_INTR_DONE | CU_INTR_READY);
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 15, 0)
+ 	del_timer_sync(&xcu->timer);
++#else
++	timer_delete_sync(&xcu->timer);
++#endif
+ 
+ 	if (xcu->bad_state)
+ 		ret = -EBUSY;
+@@ -969,8 +973,13 @@ void xrt_cu_fini(struct xrt_cu *xcu)
+ 	if (xcu->thread && !IS_ERR(xcu->thread))
+ 		(void) kthread_stop(xcu->thread);
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 15, 0)
+ 	del_timer_sync(&xcu->timer);
+ 	del_timer_sync(&xcu->stats.stats_timer);
++#else
++	timer_delete_sync(&xcu->timer);
++	timer_delete_sync(&xcu->stats.stats_timer);
++#endif
+ 	return;
+ }
+ 
+diff --git a/driver/xocl/lib/libqdma/QDMA/linux-kernel/driver/libqdma/qdma_mbox.c b/driver/xocl/lib/libqdma/QDMA/linux-kernel/driver/libqdma/qdma_mbox.c
+index 0161d04..99a7c2a 100644
+--- a/driver/xocl/lib/libqdma/QDMA/linux-kernel/driver/libqdma/qdma_mbox.c
++++ b/driver/xocl/lib/libqdma/QDMA/linux-kernel/driver/libqdma/qdma_mbox.c
+@@ -307,7 +307,11 @@ static int mbox_rcv_one_msg(struct qdma_mbox *mbox)
+ 
+ static inline void mbox_timer_stop(struct qdma_mbox *mbox)
+ {
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 15, 0)
+ 	del_timer(&mbox->timer);
++#else
++	timer_delete(&mbox->timer);
++#endif
+ }
+ 
+ static inline void mbox_timer_start(struct qdma_mbox *mbox)
+diff --git a/driver/xocl/subdev/ert_user.c b/driver/xocl/subdev/ert_user.c
+index b8201da..4228c70 100644
+--- a/driver/xocl/subdev/ert_user.c
++++ b/driver/xocl/subdev/ert_user.c
+@@ -1319,7 +1319,11 @@ int ert_user_thread(void *data)
+ 		process_ert_pq(ert_user, &ert_user->pq, &ert_user->rq);
+ 		process_ert_pq(ert_user, &ert_user->pq_ctrl, &ert_user->rq_ctrl);
+ 	}
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 15, 0)
+ 	del_timer_sync(&ert_user->timer);
++#else
++	timer_delete_sync(&ert_user->timer);
++#endif
+ 
+ 	if (!ert_user->bad_state)
+ 		ret = -EBUSY;
+diff --git a/driver/xocl/subdev/mailbox.c b/driver/xocl/subdev/mailbox.c
+index 656c448..6e70a01 100644
+--- a/driver/xocl/subdev/mailbox.c
++++ b/driver/xocl/subdev/mailbox.c
+@@ -697,7 +697,11 @@ static void chan_config_timer(struct mailbox_channel *ch)
+ 		if (on)
+ 			mod_timer(&ch->mbc_timer, jiffies + MAILBOX_TIMER);
+ 		else
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 15, 0)
+ 			del_timer_sync(&ch->mbc_timer);
++#else
++			timer_delete_sync(&ch->mbc_timer);
++#endif
+ 	}
+ 
+ 	MBX_VERBOSE(mbx, "%s timer is %s", ch_name(ch), on ? "on" : "off");
+@@ -1106,7 +1110,11 @@ static void chan_fini(struct mailbox_channel *ch)
+ 	while ((msg = chan_msg_dequeue(ch, INVALID_MSG_ID)) != NULL)
+ 		msg_done(msg, -ESHUTDOWN);
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 15, 0)
+ 	del_timer_sync(&ch->mbc_timer);
++#else
++	timer_delete_sync(&ch->mbc_timer);
++#endif
+ 
+ 	mutex_destroy(&ch->mbc_mutex);
+ 	mutex_destroy(&ch->sw_chan_mutex);

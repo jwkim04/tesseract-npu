@@ -1,0 +1,20 @@
+{
+  "format": "tesseract-trace",
+  "version": 1,
+  "config": {"num_ch": 4, "beat_bits": 512, "lanes": 128, "t_max": 1, "k_max": 32768, "spm_bytes": 4194304, "vl": 16, "nireg": 16, "nsreg": 16, "loop_depth": 4, "rd_outstanding": 16, "ch_bytes": 17179869184, "addr_beat_w": 28, "caps": 0},
+  "cmd_addr_beat": 396699,
+  "cmd_count": 9,
+  "args": [1245590246, 1093393, 2000226638, 3148553981, 1058058, 3664544629, 1084903, 1079453],
+  "status": 6,
+  "err_code": 1,
+  "err_pc": 8,
+  "err_info": 0,
+  "init": [
+    {"ch": 0, "offset": 25388736, "size": 320, "file": "init/ch0_00018366c0.bin"},
+    {"ch": 0, "offset": 67202752, "size": 2048, "file": "init/ch0_0004016ec0.bin"}
+  ],
+  "expect": [
+    {"ch": 1, "offset": 67332864, "size": 640, "file": "expect/ch1_0004036b00.bin"}
+  ],
+  "perf": {"cycles": 220, "retired": 8, "mvm_cycles": 0, "ch_rd_beats": [37, 0, 0, 0]}
+}

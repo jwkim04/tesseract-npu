@@ -1,0 +1,39 @@
+From 49da4724710d3f231c2dc7a7729670ecc451dd82 Mon Sep 17 00:00:00 2001
+From: Tesseract XRT port <jwkim@limagin.com>
+Date: Fri, 23 Oct 2026 11:09:59 +0900
+Subject: [PATCH 01/19] xocl: include <linux/vmalloc.h> explicitly (Linux 6.10)
+
+xocl_drv.h calls vzalloc() and the xocl sources use vmalloc(), vfree(),
+vmap(), vunmap() and VM_MAP, but nothing includes <linux/vmalloc.h>.
+Up to Linux 6.9 the header arrived through <linux/io.h> ->
+<asm/io.h> -> <asm-generic/io.h>. Mainline commit 690da22dbfa8
+("asm-generic/io.h: kill vmalloc.h dependency", v6.10) dropped that
+include, so on 6.10+ every xocl object fails with implicit declarations.
+
+Guard: none on purpose. <linux/vmalloc.h> exists on every kernel this
+tree supports and is include-guarded; on <= 6.9 it is already part of
+every translation unit, so the extra include changes nothing there.
+
+Equivalence: header-only, no code change.
+
+Upstream: same hunk as XRT commit 04350f685 ("Rebase #8555 - Build xrt
+drivers on Linux 6.12-rc3"), path rewritten for the DKMS layout.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SpY5QiU1d7kAe8YJM35EvA
+---
+ driver/xocl/xocl_drv.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/driver/xocl/xocl_drv.h b/driver/xocl/xocl_drv.h
+index fc60699..e98f710 100644
+--- a/driver/xocl/xocl_drv.h
++++ b/driver/xocl/xocl_drv.h
+@@ -43,6 +43,7 @@
+ #include <linux/types.h>
+ #include <linux/moduleparam.h>
+ #include <linux/cdev.h>
++#include <linux/vmalloc.h>
+ 
+ #include "xocl_types.h"
+ #include "xclbin.h"

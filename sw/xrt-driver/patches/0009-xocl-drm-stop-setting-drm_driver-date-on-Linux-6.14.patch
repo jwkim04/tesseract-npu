@@ -1,0 +1,41 @@
+From 37df7f81f549d73a1e0572b5f278f7b22da8da54 Mon Sep 17 00:00:00 2001
+From: Tesseract XRT port <jwkim@limagin.com>
+Date: Fri, 23 Oct 2026 11:13:27 +0900
+Subject: [PATCH 09/19] xocl/drm: stop setting drm_driver::date on Linux 6.14+
+
+Mainline commit cb2e1c2136f7 ("drm: remove driver date from struct
+drm_driver and all drivers", v6.14) deleted the field that
+mm_drm_driver initializes from driver_date.
+
+Guard: LINUX_VERSION_CODE < KERNEL_VERSION(6, 14, 0) keeps the
+initializer (mainline v6.13 <drm/drm_drv.h> still has the member, v6.14
+does not; absent in the 6.17.0-35 / 7.0.0-x headers).
+
+Equivalence: the field had no reader left. Already in v6.13,
+drm_version() (DRM_IOCTL_VERSION) returns the constant "0" as the date
+and ignores drm_driver::date; it still does in v7.0. driver_date is
+still filled in by xocl_drm_init(), which is harmless.
+
+Upstream: same change as the xocl_drm.c hunk of XRT commit f41db917c.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SpY5QiU1d7kAe8YJM35EvA
+---
+ driver/xocl/userpf/xocl_drm.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/driver/xocl/userpf/xocl_drm.c b/driver/xocl/userpf/xocl_drm.c
+index ecfdb93..bd3579f 100644
+--- a/driver/xocl/userpf/xocl_drm.c
++++ b/driver/xocl/userpf/xocl_drm.c
+@@ -562,7 +562,10 @@ static struct drm_driver mm_drm_driver = {
+ #endif
+ 	.name				= XOCL_MODULE_NAME,
+ 	.desc				= XOCL_DRIVER_DESC,
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 14, 0)
++	/* removed in 6.14 (commit cb2e1c2136f7) */
+ 	.date				= driver_date,
++#endif
+ };
+ 
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0) || defined(RHEL_8_5_GE)

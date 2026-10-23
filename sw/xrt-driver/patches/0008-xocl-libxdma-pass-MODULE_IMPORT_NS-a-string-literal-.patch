@@ -1,0 +1,60 @@
+From 634dc72a06e216bbdf9d40b92bdc2e3a9bf09324 Mon Sep 17 00:00:00 2001
+From: Tesseract XRT port <jwkim@limagin.com>
+Date: Fri, 23 Oct 2026 11:13:00 +0900
+Subject: [PATCH 08/19] xocl, libxdma: pass MODULE_IMPORT_NS() a string literal
+ (Linux 6.13)
+
+Mainline commit cdd30ebb1b9f ("module: Convert symbol namespace to
+string literal", v6.13) changed MODULE_IMPORT_NS(ns) from
+MODULE_INFO(import_ns, __stringify(ns)) to MODULE_INFO(import_ns, ns),
+so the bare identifier DMA_BUF no longer compiles (xocl_drv.c and
+lib/libxdma.c, both linked into xocl.ko).
+
+Guard: LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0) selects the
+string form; the original 5.16/RHEL branch is kept as #elif. Checked
+against mainline v6.12 / v6.13 <linux/module.h> and the 6.17.0-35 /
+7.0.0-x headers.
+
+Equivalence: exact. Both forms put the same "import_ns=DMA_BUF" record
+into .modinfo, which is all modpost and the module loader look at.
+
+Upstream: XRT commits f41db917c (xocl_drv.c) and 30c9f58ca (libxdma.c).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SpY5QiU1d7kAe8YJM35EvA
+---
+ driver/xocl/lib/libxdma.c     | 5 ++++-
+ driver/xocl/userpf/xocl_drv.c | 5 ++++-
+ 2 files changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/driver/xocl/lib/libxdma.c b/driver/xocl/lib/libxdma.c
+index 3c741f6..fd3155b 100644
+--- a/driver/xocl/lib/libxdma.c
++++ b/driver/xocl/lib/libxdma.c
+@@ -4344,7 +4344,10 @@ MODULE_AUTHOR("Xilinx, Inc.");
+ MODULE_DESCRIPTION(DRV_MODULE_DESC);
+ MODULE_VERSION(DRV_MODULE_VERSION);
+ MODULE_LICENSE("GPL v2");
+-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,16,0) || defined(RHEL_9_0_GE)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
++/* namespaces are string literals since 6.13 (commit cdd30ebb1b9f) */
++MODULE_IMPORT_NS("DMA_BUF");
++#elif LINUX_VERSION_CODE >= KERNEL_VERSION(5,16,0) || defined(RHEL_9_0_GE)
+ MODULE_IMPORT_NS(DMA_BUF);
+ #endif
+ 
+diff --git a/driver/xocl/userpf/xocl_drv.c b/driver/xocl/userpf/xocl_drv.c
+index dc82f8e..1988260 100644
+--- a/driver/xocl/userpf/xocl_drv.c
++++ b/driver/xocl/userpf/xocl_drv.c
+@@ -2053,6 +2053,9 @@ MODULE_VERSION(XRT_DRIVER_VERSION);
+ MODULE_DESCRIPTION(XOCL_DRIVER_DESC);
+ MODULE_AUTHOR("Lizhi Hou <lizhi.hou@xilinx.com>");
+ MODULE_LICENSE("GPL v2");
+-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,16,0)  || defined(RHEL_9_0_GE)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
++/* namespaces are string literals since 6.13 (commit cdd30ebb1b9f) */
++MODULE_IMPORT_NS("DMA_BUF");
++#elif LINUX_VERSION_CODE >= KERNEL_VERSION(5,16,0)  || defined(RHEL_9_0_GE)
+ MODULE_IMPORT_NS(DMA_BUF);
+ #endif

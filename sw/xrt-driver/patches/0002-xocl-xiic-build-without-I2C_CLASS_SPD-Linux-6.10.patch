@@ -1,0 +1,45 @@
+From 82fb94a7ff4f03f7e3763c62c59ae812571bc9cf Mon Sep 17 00:00:00 2001
+From: Tesseract XRT port <jwkim@limagin.com>
+Date: Fri, 23 Oct 2026 11:10:21 +0900
+Subject: [PATCH 02/19] xocl/xiic: build without I2C_CLASS_SPD (Linux 6.10)
+
+Mainline commit e61bcf42d290 ("i2c: Remove I2C_CLASS_SPD", v6.10)
+deleted the I2C_CLASS_SPD adapter class bit after commit 9fd12f385720
+(v6.8) had removed the last client driver that matched on it. xiic.c
+still sets it on its adapter, which no longer compiles.
+
+Guard: feature test "#ifdef I2C_CLASS_SPD" (it is a plain macro in
+<linux/i2c.h>), so the original initializer is kept on every kernel
+that still defines the bit, including 6.8 and 6.9.
+
+Equivalence: where the macro exists nothing changes. Where it does not,
+no i2c driver can match on class bit 7 any more, so the adapter offers
+exactly the same probing behaviour with I2C_CLASS_HWMON alone.
+
+Upstream: XRT commit 04350f685 makes the same change but switches at
+KERNEL_VERSION(6, 8, 0), which drops the bit on 6.8/6.9 where it still
+exists; this patch keeps it there.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SpY5QiU1d7kAe8YJM35EvA
+---
+ driver/xocl/subdev/xiic.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/driver/xocl/subdev/xiic.c b/driver/xocl/subdev/xiic.c
+index 39499c6..f0d0658 100644
+--- a/driver/xocl/subdev/xiic.c
++++ b/driver/xocl/subdev/xiic.c
+@@ -861,7 +861,12 @@ static const struct i2c_algorithm xiic_algorithm = {
+ 
+ static struct i2c_adapter xiic_adapter = {
+ 	.owner = THIS_MODULE,
++#ifdef I2C_CLASS_SPD
+ 	.class = I2C_CLASS_HWMON | I2C_CLASS_SPD,
++#else
++	/* I2C_CLASS_SPD was removed in Linux 6.10 (commit e61bcf42d290) */
++	.class = I2C_CLASS_HWMON,
++#endif
+ 	.algo = &xiic_algorithm,
+ };
+ 

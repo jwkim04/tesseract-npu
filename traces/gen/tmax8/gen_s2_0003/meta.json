@@ -1,0 +1,34 @@
+{
+  "format": "tesseract-trace",
+  "version": 1,
+  "config": {"num_ch": 4, "beat_bits": 512, "lanes": 128, "t_max": 8, "k_max": 32768, "spm_bytes": 4194304, "vl": 16, "nireg": 16, "nsreg": 16, "loop_depth": 4, "rd_outstanding": 16, "ch_bytes": 17179869184, "addr_beat_w": 28, "caps": 0},
+  "cmd_addr_beat": 277427,
+  "cmd_count": 25,
+  "args": [1066896, 839730321, 4199342200, 1111506, 1108442420, 1308971806, 1083583, 3132892452],
+  "status": 2,
+  "err_code": 0,
+  "err_pc": 0,
+  "err_info": 0,
+  "init": [
+    {"ch": 0, "offset": 17755328, "size": 832, "file": "init/ch0_00010eecc0.bin"},
+    {"ch": 0, "offset": 536959232, "size": 1792, "file": "init/ch0_0020015900.bin"},
+    {"ch": 0, "offset": 536961792, "size": 1792, "file": "init/ch0_0020016300.bin"},
+    {"ch": 0, "offset": 536965504, "size": 6912, "file": "init/ch0_0020017180.bin"},
+    {"ch": 1, "offset": 67207104, "size": 12288, "file": "init/ch1_0004017fc0.bin"},
+    {"ch": 1, "offset": 536959232, "size": 1792, "file": "init/ch1_0020015900.bin"},
+    {"ch": 1, "offset": 536961792, "size": 1792, "file": "init/ch1_0020016300.bin"},
+    {"ch": 1, "offset": 536965504, "size": 6912, "file": "init/ch1_0020017180.bin"},
+    {"ch": 2, "offset": 67244160, "size": 12288, "file": "init/ch2_0004021080.bin"},
+    {"ch": 2, "offset": 536959232, "size": 1792, "file": "init/ch2_0020015900.bin"},
+    {"ch": 2, "offset": 536961792, "size": 1792, "file": "init/ch2_0020016300.bin"},
+    {"ch": 2, "offset": 536965504, "size": 6912, "file": "init/ch2_0020017180.bin"},
+    {"ch": 3, "offset": 536959232, "size": 896, "file": "init/ch3_0020015900.bin"},
+    {"ch": 3, "offset": 536961792, "size": 896, "file": "init/ch3_0020016300.bin"},
+    {"ch": 3, "offset": 536965504, "size": 6336, "file": "init/ch3_0020017180.bin"}
+  ],
+  "expect": [
+    {"ch": 1, "offset": 67219584, "size": 576, "file": "expect/ch1_000401b080.bin"},
+    {"ch": 2, "offset": 67243904, "size": 256, "file": "expect/ch2_0004020f80.bin"}
+  ],
+  "perf": {"cycles": 2032, "retired": 25, "mvm_cycles": 533, "ch_rd_beats": [177, 356, 356, 127]}
+}

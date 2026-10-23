@@ -1,0 +1,74 @@
+From 981dce4cfd4e3d558a0665b41164878335188330 Mon Sep 17 00:00:00 2001
+From: Tesseract XRT port <jwkim@limagin.com>
+Date: Fri, 23 Oct 2026 11:16:56 +0900
+Subject: [PATCH 14/19] xocl/drm: insert CMA/userptr pages without pfn_t (Linux
+ 6.17)
+
+Mainline commits 984921edea68 ("mm: remove PFN_DEV, PFN_MAP,
+PFN_SPECIAL, PFN_SG_CHAIN and PFN_SG_LAST") and 21aa65bf82a7 ("mm:
+remove callers of pfn_t functionality"), both v6.17, deleted
+<linux/pfn_t.h> and changed vmf_insert_mixed() to take a plain
+unsigned long pfn. xocl_gem_fault() builds a pfn_t with PFN_MAP for
+CMA and userptr BOs.
+
+Guard: the pfn_t include and the pfn_t branch now also require
+LINUX_VERSION_CODE < KERNEL_VERSION(6, 17, 0); 6.17+ calls
+vmf_insert_mixed(vma, addr, page_to_pfn(page)). Checked against
+mainline v6.16 (pfn_t) and v6.17 (unsigned long) <linux/mm.h> and the
+6.17.0-35 / 7.0.0-x headers. The RHEL-only paths are untouched.
+
+Equivalence: same pfn (PHYS_PFN(page_to_phys(page)) == page_to_pfn
+(page)) and the same resulting PTE. In v6.8 mm/memory.c, PFN_MAP
+without PFN_DEV is not "devmap", so on x86 (ARCH_HAS_PTE_SPECIAL)
+__vm_insert_mixed() always went to insert_pfn() and created
+pte_mkspecial(pfn_t_pte(pfn, prot)) after the same PAT cache-mode
+lookup; v6.17/v7.0 create pte_mkspecial(pfn_pte(pfn, prot)) on the same
+path. The VMA is VM_MIXEDMAP (xocl_mmap()), so vm_mixed_ok() passes in
+both versions; the return value is a vm_fault_t as in the 4.20+ branch.
+The p2p/import branch (vm_insert_page()) is not changed by this patch;
+on 6.15+ it needs the page refcounts that patch 0019 ("xocl/p2p:
+initialise P2P page refcounts to 1") sets up.
+
+Upstream: same shape as the xocl_drm.c hunks of XRT commit f41db917c
+(its extra change to the RHEL-only branch is not needed here).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SpY5QiU1d7kAe8YJM35EvA
+---
+ driver/xocl/userpf/xocl_drm.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/driver/xocl/userpf/xocl_drm.c b/driver/xocl/userpf/xocl_drm.c
+index bd3579f..d4826f8 100644
+--- a/driver/xocl/userpf/xocl_drm.c
++++ b/driver/xocl/userpf/xocl_drm.c
+@@ -20,7 +20,8 @@
+ #if LINUX_VERSION_CODE <= KERNEL_VERSION(3, 0, 0)
+ #include <drm/drm_backport.h>
+ #endif
+-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 5, 0)) || \
++#if ((LINUX_VERSION_CODE >= KERNEL_VERSION(4, 5, 0)) && \
++     (LINUX_VERSION_CODE < KERNEL_VERSION(6, 17, 0))) || \
+ 	defined(RHEL_RELEASE_VERSION)
+ #include <linux/pfn_t.h>
+ #endif
+@@ -307,7 +308,8 @@ int xocl_gem_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
+ /*  vm_insert_page does not allow driver to insert anonymous pages.
+  *  Instead, we call vm_insert_mixed.
+  */
+-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 5, 0) || defined(RHEL_RELEASE_VERSION)
++#if ((LINUX_VERSION_CODE >= KERNEL_VERSION(4, 5, 0)) && \
++     (LINUX_VERSION_CODE < KERNEL_VERSION(6, 17, 0))) || defined(RHEL_RELEASE_VERSION)
+ 		pfn_t pfn;
+ 		pfn = phys_to_pfn_t(page_to_phys(xobj->pages[page_offset]), PFN_MAP);
+ #if defined(RHEL_RELEASE_VERSION)
+@@ -323,6 +325,9 @@ int xocl_gem_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
+                 ret = vm_insert_mixed(vma, vmf_address, pfn);
+ #endif
+ #endif
++#elif LINUX_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
++		/* pfn_t is gone since 6.17 (commits 21aa65bf82a7, 984921edea68) */
++		ret = vmf_insert_mixed(vma, vmf_address, page_to_pfn(xobj->pages[page_offset]));
+ #else
+ 		ret = vm_insert_mixed(vma, vmf_address, page_to_pfn(xobj->pages[page_offset]));
+ #endif

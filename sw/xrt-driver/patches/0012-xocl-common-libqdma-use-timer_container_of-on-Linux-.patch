@@ -1,0 +1,124 @@
+From 3bc60c4dc369fbb277e69cb5f8548c5de42d8a77 Mon Sep 17 00:00:00 2001
+From: Tesseract XRT port <jwkim@limagin.com>
+Date: Fri, 23 Oct 2026 11:14:52 +0900
+Subject: [PATCH 12/19] xocl, common, libqdma: use timer_container_of() on
+ Linux 6.16+
+
+Mainline commit 41cb08555c41 ("treewide, timers: Rename from_timer() to
+timer_container_of()", v6.16) renamed the macro used by the timer
+callbacks in common/xrt_cu.c (cu_timer, cu_stats_timer),
+subdev/mailbox.c (chan_timer), subdev/ert_user.c (ert_timer) and
+libqdma's qdma_mbox.c (mbox_timer_handler).
+
+Guard: LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0) selects the new
+name (mainline v6.15 <linux/timer.h> defines from_timer, v6.16 defines
+only timer_container_of; same in the 6.17.0-35 / 7.0.0-x headers).
+
+Equivalence: exact. Both macros expand to
+container_of(callback_timer, typeof(*var), timer_fieldname).
+
+Upstream: xocl/common hunks have the same shape as XRT commit
+f41db917c. The libqdma hunk follows dma_ip_drivers commit 0a578f1 but
+tests ">= 6.16.0" where 0a578f1 tests "> 6.16.0", which would pick the
+removed from_timer() on a 6.16.0 kernel.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SpY5QiU1d7kAe8YJM35EvA
+---
+ driver/common/xrt_cu.c                               | 12 ++++++++++--
+ .../QDMA/linux-kernel/driver/libqdma/qdma_mbox.c     |  4 +++-
+ driver/xocl/subdev/ert_user.c                        |  6 +++++-
+ driver/xocl/subdev/mailbox.c                         |  6 +++++-
+ 4 files changed, 23 insertions(+), 5 deletions(-)
+
+diff --git a/driver/common/xrt_cu.c b/driver/common/xrt_cu.c
+index a1b6693..54a957f 100644
+--- a/driver/common/xrt_cu.c
++++ b/driver/common/xrt_cu.c
+@@ -76,10 +76,14 @@ ssize_t xrt_cu_circ_consume_all(struct xrt_cu *xcu, char *buf, size_t size)
+ static void cu_timer(unsigned long data)
+ {
+ 	struct xrt_cu *xcu = (struct xrt_cu *)data;
+-#else
++#elif LINUX_VERSION_CODE < KERNEL_VERSION(6, 16, 0)
+ static void cu_timer(struct timer_list *t)
+ {
+ 	struct xrt_cu *xcu = from_timer(xcu, t, timer);
++#else
++static void cu_timer(struct timer_list *t)
++{
++	struct xrt_cu *xcu = timer_container_of(xcu, t, timer);
+ #endif
+ 
+ 	xcu_dbg(xcu, "%s tick\n", xcu->info.iname);
+@@ -93,10 +97,14 @@ static void cu_timer(struct timer_list *t)
+ static void cu_stats_timer(unsigned long data)
+ {
+ 	struct xrt_cu *xcu = (struct xrt_cu *)data;
+-#else
++#elif LINUX_VERSION_CODE < KERNEL_VERSION(6, 16, 0)
+ static void cu_stats_timer(struct timer_list *t)
+ {
+ 	struct xrt_cu *xcu = from_timer(xcu, t, stats.stats_timer);
++#else
++static void cu_stats_timer(struct timer_list *t)
++{
++	struct xrt_cu *xcu = timer_container_of(xcu, t, stats.stats_timer);
+ #endif
+ 	unsigned long   flags;
+ 
+diff --git a/driver/xocl/lib/libqdma/QDMA/linux-kernel/driver/libqdma/qdma_mbox.c b/driver/xocl/lib/libqdma/QDMA/linux-kernel/driver/libqdma/qdma_mbox.c
+index 99a7c2a..1cb7ee3 100644
+--- a/driver/xocl/lib/libqdma/QDMA/linux-kernel/driver/libqdma/qdma_mbox.c
++++ b/driver/xocl/lib/libqdma/QDMA/linux-kernel/driver/libqdma/qdma_mbox.c
+@@ -435,7 +435,9 @@ static void mbox_timer_handler(struct timer_list *t)
+ static void mbox_timer_handler(unsigned long arg)
+ #endif
+ {
+-#if KERNEL_VERSION(4, 15, 0) <= LINUX_VERSION_CODE
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
++	struct qdma_mbox *mbox = timer_container_of(mbox, t, timer);
++#elif KERNEL_VERSION(4, 15, 0) <= LINUX_VERSION_CODE
+ 	struct qdma_mbox *mbox = from_timer(mbox, t, timer);
+ #else
+ 	struct qdma_mbox *mbox = (struct qdma_mbox *)arg;
+diff --git a/driver/xocl/subdev/ert_user.c b/driver/xocl/subdev/ert_user.c
+index 4228c70..81e8b0f 100644
+--- a/driver/xocl/subdev/ert_user.c
++++ b/driver/xocl/subdev/ert_user.c
+@@ -645,10 +645,14 @@ static void ert_free_cmd(struct xrt_ert_command *ecmd)
+ static void ert_timer(unsigned long data)
+ {
+ 	struct xocl_ert_user *ert_user = (struct xocl_ert_user *)data;
+-#else
++#elif LINUX_VERSION_CODE < KERNEL_VERSION(6, 16, 0)
+ static void ert_timer(struct timer_list *t)
+ {
+ 	struct xocl_ert_user *ert_user = from_timer(ert_user, t, timer);
++#else
++static void ert_timer(struct timer_list *t)
++{
++	struct xocl_ert_user *ert_user = timer_container_of(ert_user, t, timer);
+ #endif
+ 
+ 	atomic_inc(&ert_user->tick);
+diff --git a/driver/xocl/subdev/mailbox.c b/driver/xocl/subdev/mailbox.c
+index 6e70a01..baeda53 100644
+--- a/driver/xocl/subdev/mailbox.c
++++ b/driver/xocl/subdev/mailbox.c
+@@ -655,10 +655,14 @@ irqreturn_t mailbox_isr(int irq, void *arg)
+ static void chan_timer(unsigned long data)
+ {
+ 	struct mailbox_channel *ch = (struct mailbox_channel *)data;
+-#else
++#elif LINUX_VERSION_CODE < KERNEL_VERSION(6, 16, 0)
+ static void chan_timer(struct timer_list *t)
+ {
+ 	struct mailbox_channel *ch = from_timer(ch, t, mbc_timer);
++#else
++static void chan_timer(struct timer_list *t)
++{
++	struct mailbox_channel *ch = timer_container_of(ch, t, mbc_timer);
+ #endif
+ 
+ 	MBX_VERBOSE(ch->mbc_parent, "%s tick", ch_name(ch));

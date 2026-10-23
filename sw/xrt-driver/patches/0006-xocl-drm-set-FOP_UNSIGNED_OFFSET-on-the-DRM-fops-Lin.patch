@@ -1,0 +1,58 @@
+From 4b00eb3cc88460c4068466bb0eddc7921c69035d Mon Sep 17 00:00:00 2001
+From: Tesseract XRT port <jwkim@limagin.com>
+Date: Fri, 23 Oct 2026 11:32:49 +0900
+Subject: [PATCH 06/19] xocl/drm: set FOP_UNSIGNED_OFFSET on the DRM fops
+ (Linux 6.12)
+
+This is a run-time break, not a build break. Up to Linux 6.11,
+drm_open_helper() set FMODE_UNSIGNED_OFFSET on every opened DRM file.
+Mainline commit 641bb4394f40 ("fs: move FMODE_UNSIGNED_OFFSET to
+fop_flags", v6.12) turned that into a requirement on the driver:
+
+	if (WARN_ON_ONCE(!(filp->f_op->fop_flags & FOP_UNSIGNED_OFFSET)))
+		return -EINVAL;
+
+(drivers/gpu/drm/drm_file.c, unchanged up to v7.0). xocl uses its own
+file_operations (xocl_driver_fops with .open = drm_open) instead of
+DEFINE_DRM_GEM_FOPS(), so on 6.12+ every open() of the xocl render node
+fails with EINVAL plus a WARN splat, and xbutil/XRT cannot reach the
+user PF although the module loads and probes cleanly.
+
+Guard: feature test "#ifdef FOP_UNSIGNED_OFFSET". The macro and the
+drm_open_helper() check arrived in the same series, so the flag is set
+exactly on the kernels that demand it, including a distribution kernel
+that backports the change without a version bump (a version check would
+compile there and then fail at run time). It is absent from mainline
+v6.11 and from the Ubuntu 6.8.0-147 / 6.11.0-29 headers, present in
+v6.12, 6.14.0-37, 6.17.0-35 and 7.0.0-x.
+
+Equivalence: on kernels without the macro the DRM core marked the file
+with FMODE_UNSIGNED_OFFSET itself; with it, the same property comes
+from fop_flags, which is exactly what DEFINE_DRM_GEM_FOPS() does for
+in-tree drivers. Same mmap offset handling, open() succeeds as before.
+
+Upstream: same change as the xocl_drm.c hunk of XRT commit 6517a2a87
+("Added XRT support for RHEL/Rocky/AlmaLinux - 10.0"), which guards it
+with KERNEL_VERSION(6, 12, 0) instead.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SpY5QiU1d7kAe8YJM35EvA
+---
+ driver/xocl/userpf/xocl_drm.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/driver/xocl/userpf/xocl_drm.c b/driver/xocl/userpf/xocl_drm.c
+index 2102cf7..ecfdb93 100644
+--- a/driver/xocl/userpf/xocl_drm.c
++++ b/driver/xocl/userpf/xocl_drm.c
+@@ -497,6 +497,10 @@ static const struct file_operations xocl_driver_fops = {
+ 	.read		= drm_read,
+ 	.unlocked_ioctl = xocl_drm_ioctl,
+ 	.release	= drm_release,
++#ifdef FOP_UNSIGNED_OFFSET
++	/* drm_open() requires it since 6.12 (commit 641bb4394f40) */
++	.fop_flags	= FOP_UNSIGNED_OFFSET,
++#endif
+ };
+ 
+ static const struct vm_operations_struct xocl_vm_ops = {

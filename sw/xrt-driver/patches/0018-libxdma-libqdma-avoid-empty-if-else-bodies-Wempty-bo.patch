@@ -1,0 +1,59 @@
+From c2314a30025e2dbe24577293ed0cc93370f70a42 Mon Sep 17 00:00:00 2001
+From: Tesseract XRT port <jwkim@limagin.com>
+Date: Fri, 23 Oct 2026 11:23:24 +0900
+Subject: [PATCH 18/19] libxdma, libqdma: avoid empty if/else bodies
+ (-Wempty-body)
+
+With -Wextra on by default since v6.10 (mainline commit f5982cceb347),
+gcc reports "suggest braces around empty body" for:
+ - four "if (...) dbg_init(...);" / "else dbg_init(...);" statements in
+   lib/libxdma.c, because the disabled dbg_init() expands to nothing;
+ - a literal "if (detail) ;" in libqdma's qdma_kthread_dump().
+
+Make the disabled dbg_init() expand to "do { } while (0)" (the usual
+kernel form for a no-op statement macro; the enabled form is pr_err and
+is unchanged), and drop the empty if statement, whose condition is a
+plain int parameter without side effects.
+
+Guard: none needed; both forms are valid on every compiler and kernel.
+
+Equivalence: exact; both edits replace an empty statement with an
+empty statement.
+
+Upstream: not addressed in XRT master or in the libqdma version it
+pins.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SpY5QiU1d7kAe8YJM35EvA
+---
+ .../xocl/lib/libqdma/QDMA/linux-kernel/driver/libqdma/thread.c | 3 ---
+ driver/xocl/lib/libxdma.h                                      | 2 +-
+ 2 files changed, 1 insertion(+), 4 deletions(-)
+
+diff --git a/driver/xocl/lib/libqdma/QDMA/linux-kernel/driver/libqdma/thread.c b/driver/xocl/lib/libqdma/QDMA/linux-kernel/driver/libqdma/thread.c
+index d0c0909..b45aa42 100644
+--- a/driver/xocl/lib/libqdma/QDMA/linux-kernel/driver/libqdma/thread.c
++++ b/driver/xocl/lib/libqdma/QDMA/linux-kernel/driver/libqdma/thread.c
+@@ -38,9 +38,6 @@ int qdma_kthread_dump(struct qdma_kthread *thp, char *buf, int buflen,
+ 	len += snprintf(buf, buflen, "%s, cpu %u, work %u.\n",
+ 			thp->name, thp->cpu, thp->work_cnt);
+ 
+-	if (detail)
+-		;
+-
+ 	unlock_thread(thp);
+ 
+ 	buf[len] = '\0';
+diff --git a/driver/xocl/lib/libxdma.h b/driver/xocl/lib/libxdma.h
+index 87d1a21..8e148cd 100644
+--- a/driver/xocl/lib/libxdma.h
++++ b/driver/xocl/lib/libxdma.h
+@@ -246,7 +246,7 @@
+ #define dbg_sg(...)
+ #define dbg_tfr(...)
+ #define dbg_irq(...)
+-#define dbg_init(...)
++#define dbg_init(...)	do { } while (0)
+ #define dbg_desc(...)
+ #endif
+ 

@@ -1,0 +1,15 @@
+/build/*
+!/build/u200/
+/models/
+__pycache__/
+*.pyc
+/traces/tmp/
+sim_build/
+results.xml
+# Large regenerable trace sets: keep only their generator scripts in git
+# (traces/m3/regen.sh and traces/model/regen.sh reproduce them byte for byte).
+/traces/m3/*
+!/traces/m3/regen.sh
+!/traces/m3/trace_stats.py
+/traces/model/*
+!/traces/model/regen.sh

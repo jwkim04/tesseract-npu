@@ -1,0 +1,117 @@
+From b3b92a58e3f8320b5cf353d52cde35dee57021dc Mon Sep 17 00:00:00 2001
+From: Tesseract XRT port <jwkim@limagin.com>
+Date: Fri, 23 Oct 2026 12:32:16 +0900
+Subject: [PATCH 19/19] xocl/p2p: initialise P2P page refcounts to 1 (Linux
+ 6.15)
+
+Mainline commit b7e282378773 ("mm/mm_init: move p2pdma page refcount
+initialisation to p2pdma", v6.15) changed __init_zone_device_page() so
+that MEMORY_DEVICE_PCI_P2PDMA pages start with a refcount of 0 instead
+of 1: "it is now up to drivers to initialise the page refcount as
+required". vm_insert_page() refuses a page with a zero refcount
+(-EINVAL: validate_page_before_insert() in v6.15+, an explicit
+page_count() check in v6.8).
+
+xocl remaps each P2P BAR chunk with devm_memremap_pages() and
+pgmap.type = MEMORY_DEVICE_PCI_P2PDMA (p2p_mem_chunk_reserve(),
+P2P_API_V3), never touches the refcount, and maps P2P BOs, and BOs
+imported from an xocl P2P exporter, with vm_insert_page() in
+xocl_gem_fault(), which turns -EINVAL into VM_FAULT_SIGBUS. So on 6.15+
+the first CPU access to a mapped P2P BO (xrt::bo::map(), the p2p test of
+"xbutil validate") kills the process with SIGBUS, and get_user_pages()
+on such a mapping (O_DIRECT from NVMe into a P2P BO) fails. It compiles
+cleanly and only shows once P2P is enabled on the card.
+
+Fix: as soon as devm_memremap_pages() has returned a mapping, set the
+refcount of every page of the chunk to 1, the value the kernel used
+before 6.15. No page of the chunk can be in use before
+p2p_mem_chunk_reserve() returns. The kernel's own P2PDMA allocator does
+the same since 6.15 (drivers/pci/p2pdma.c: set_page_count(page, 1)
+before vm_insert_page()).
+
+Guard: LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0). The change sits
+in mm/mm_init.c, which is not in the header packages, so the boundary
+was checked in the sources: mainline v6.14 zeroes only DEVICE_PRIVATE
+and DEVICE_COHERENT pages, v6.15, v6.17 and v7.0 also zero
+PCI_P2PDMA pages. The Ubuntu source diffs leave this alone:
+linux-hwe-6.14 6.14.0-37.37~24.04.1 does not touch mm/mm_init.c,
+linux-hwe-7.0 7.0.0-38.38~24.04.4 and linux-hwe-6.17 6.17.0-42.42 touch
+it, but not this code. Header side: vmf_insert_page_mkwrite() (commit
+ec2e0cc67f9c, same patch series) is absent from the 6.8.0-147,
+6.11.0-29 and 6.14.0-37 headers and present in 6.17.0-35 and
+7.0.0-28/31/38.
+
+Equivalence with 6.8:
+ - Every page of a chunk starts at 1 and xocl itself never changes the
+   count. Each user mapping (vm_insert_page()) and each get_user_pages()
+   reference raises it and releases it again, so an idle page is 1 and a
+   mapped one is 2 or more, exactly as on 6.8. The busy test in
+   p2p_mem_chunk_release() (page_ref_count(page) > 1) keeps its
+   meaning; it reads the field this patch writes (offset 0x34 of
+   struct page in the 7.0 p2p.o).
+ - The count never drops to 0, so free_zone_device_folio() is not
+   reached, as on 6.8, where it would have hit the same WARN_ON_ONCE
+   for a pgmap without ops. No dev_pagemap_ops is added:
+   memremap_pages() does not require one for MEMORY_DEVICE_PCI_P2PDMA
+   (v6.8 through v7.0), and memunmap_pages() does not look at page
+   refcounts (MEMORY_DEVICE_GENERIC pages are torn down at 1 on 6.15+
+   too).
+ - set_page_count() is a static inline in <linux/page_ref.h>; with
+   CONFIG_DEBUG_PAGE_REF off (all Ubuntu kernels here) it is a plain
+   atomic_set(), so no new symbol is imported. A 256 MiB chunk
+   (XOCL_P2P_CHUNK_SIZE) is 65536 stores, after memremap_pages() has
+   just initialised the same 65536 struct pages.
+ - On 6.8 to 6.14 the code is compiled out.
+
+Upstream: XRT master (p2p.c last changed by 30c9f58ca, 2026-01-30) has
+no refcount initialisation; this is not fixed there.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SpY5QiU1d7kAe8YJM35EvA
+---
+ driver/xocl/subdev/p2p.c | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/driver/xocl/subdev/p2p.c b/driver/xocl/subdev/p2p.c
+index b77f680..4b63c01 100644
+--- a/driver/xocl/subdev/p2p.c
++++ b/driver/xocl/subdev/p2p.c
+@@ -312,6 +312,28 @@ static void p2p_mem_chunk_release(struct p2p *p2p, struct p2p_mem_chunk *chk)
+ 		chk->xpmc_pa, chk->xpmc_pa + chk->xpmc_size, chk->xpmc_ref);
+ }
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0)
++/*
++ * Since Linux 6.15 (commit b7e282378773) memremap_pages() leaves
++ * MEMORY_DEVICE_PCI_P2PDMA pages at refcount 0, which vm_insert_page()
++ * rejects, and the driver is to set it. Give every page the count of 1
++ * that older kernels gave it: idle pages stay at 1, each mapping holds one
++ * more (the "busy" test in p2p_mem_chunk_release()), and the count never
++ * drops to 0, so, as before, the pgmap needs no free callback.
++ */
++static void p2p_mem_chunk_init_page_refs(struct p2p_mem_chunk *chk)
++{
++	void *addr;
++
++	if (IS_ERR_OR_NULL(chk->xpmc_va))
++		return;
++
++	for (addr = chk->xpmc_va; addr < chk->xpmc_va + chk->xpmc_size;
++	    addr += PAGE_SIZE)
++		set_page_count(virt_to_page(addr), 1);
++}
++#endif
++
+ static int p2p_mem_chunk_reserve(struct p2p *p2p, struct p2p_mem_chunk *chk)
+ {
+ //	struct pci_dev *pdev = XOCL_PL_TO_PCI_DEV(p2p->pdev);
+@@ -432,6 +454,9 @@ static int p2p_mem_chunk_reserve(struct p2p *p2p, struct p2p_mem_chunk *chk)
+ 
+ 
+                         chk->xpmc_va = devm_memremap_pages(dev, &chk->xpmc_pgmap);
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0)
++                        p2p_mem_chunk_init_page_refs(chk);
++#endif
+                         ret = devm_add_action_or_reset(dev, p2p_percpu_ref_kill, pref);
+                         if (ret) {
+                                 p2p_err(p2p, "add kill action failed");

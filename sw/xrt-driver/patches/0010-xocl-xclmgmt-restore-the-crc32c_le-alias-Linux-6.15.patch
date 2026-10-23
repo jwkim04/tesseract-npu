@@ -1,0 +1,66 @@
+From 5526d4889e7193f1f1933ea4d4830fe0165e660d Mon Sep 17 00:00:00 2001
+From: Tesseract XRT port <jwkim@limagin.com>
+Date: Fri, 23 Oct 2026 11:13:52 +0900
+Subject: [PATCH 10/19] xocl, xclmgmt: restore the crc32c_le alias (Linux 6.15)
+
+The user PF stamps the shared mailbox page with crc32c_le(~0, ...) in
+xocl_mb_connect() and the management PF recomputes it in
+xclmgmt_is_same_domain(). Up to 6.14, <linux/crc32c.h> provided
+"#define crc32c_le crc32c". Mainline commit 8df36829045a ("lib/crc32:
+standardize on crc32c() name for Castagnoli CRC32", v6.15) dropped the
+alias and reduced <linux/crc32c.h> to an include of <linux/crc32.h>,
+which declares crc32c().
+
+Guard: feature test "#ifndef crc32c_le" right after the include, so the
+kernel's own alias is used wherever it still exists (6.8 .. 6.14) and
+the identical alias is supplied where it was removed. Call sites are
+unchanged.
+
+Equivalence: exact. crc32c_le has been a plain alias of crc32c() since
+long before 6.8; crc32c() is CRC-32C (Castagnoli, poly 0x82f63b78,
+LSB first, no pre/post inversion) both in the 6.8 libcrc32c module
+(raw shash state seeded with the caller's value) and in the 6.15+ CRC
+library, so both ends compute the same value as before, also when one
+side runs an older kernel (VM passthrough setups).
+
+Upstream: XRT commit f41db917c replaces the call with crc32_le() on
+6.13+, which is the IEEE CRC-32, a different checksum; mixing it with
+an older peer breaks the same-domain check. Not taken.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SpY5QiU1d7kAe8YJM35EvA
+---
+ driver/xocl/mgmtpf/mgmt-core.c | 4 ++++
+ driver/xocl/userpf/xocl_drv.c  | 4 ++++
+ 2 files changed, 8 insertions(+)
+
+diff --git a/driver/xocl/mgmtpf/mgmt-core.c b/driver/xocl/mgmtpf/mgmt-core.c
+index 704fa9b..f7548fa 100644
+--- a/driver/xocl/mgmtpf/mgmt-core.c
++++ b/driver/xocl/mgmtpf/mgmt-core.c
+@@ -13,6 +13,10 @@
+ #include "mgmt-core.h"
+ 
+ #include <linux/crc32c.h>
++#ifndef crc32c_le
++/* the crc32c_le alias of crc32c() was removed in 6.15 (commit 8df36829045a) */
++#define crc32c_le crc32c
++#endif
+ #include <linux/fs.h>
+ #include <linux/ioctl.h>
+ #include <linux/i2c.h>
+diff --git a/driver/xocl/userpf/xocl_drv.c b/driver/xocl/userpf/xocl_drv.c
+index 1988260..96d6d63 100644
+--- a/driver/xocl/userpf/xocl_drv.c
++++ b/driver/xocl/userpf/xocl_drv.c
+@@ -8,6 +8,10 @@
+ 
+ #include <linux/aer.h>
+ #include <linux/crc32c.h>
++#ifndef crc32c_le
++/* the crc32c_le alias of crc32c() was removed in 6.15 (commit 8df36829045a) */
++#define crc32c_le crc32c
++#endif
+ #include <linux/iommu.h>
+ #include <linux/kernel.h>
+ #include <linux/module.h>

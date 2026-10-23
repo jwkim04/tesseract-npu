@@ -1,0 +1,60 @@
+From ffec57bd3f50d97c97b47f9eeb3a2e681fb3a078 Mon Sep 17 00:00:00 2001
+From: Tesseract XRT port <jwkim@limagin.com>
+Date: Fri, 23 Oct 2026 11:17:50 +0900
+Subject: [PATCH 15/19] xocl: provide ida_simple_get()/ida_simple_remove() on
+ Linux 6.18+
+
+Mainline commit c8a09fc9664f ("ida: remove the ida_simple_xxx() API",
+v6.18) removed the two macros used by xocl_subdev.c for the subdev
+instance numbers and the per-device minor.
+
+Guard: feature test "#ifndef ida_simple_get" after an explicit
+#include <linux/idr.h>; both were plain macros in <linux/idr.h> (v6.8
+and v6.17 checked), so on every kernel that still has them the kernel's
+definitions are used and nothing changes.
+
+Equivalence: exact. The fallback is the kernel's own v6.17 definition,
+	ida_simple_get(ida, start, end, gfp) =
+		ida_alloc_range(ida, start, (end) - 1, gfp)
+	ida_simple_remove(ida, id) = ida_free(ida, id)
+and ida_alloc_range() still treats a max that is negative as an int
+(end == 0 -> max == ~0U) as INT_MAX (lib/idr.c, v6.8 and v7.0), so the
+call sites keep their meaning: subdev instances in
+[id << MINORBITS, ((id + 1) << MINORBITS) - 2] and device minors from 0
+without an upper bound.
+
+Upstream: XRT commit a2657e374 instead maps the calls 1:1 to
+ida_alloc_range(ida, start, end, gfp) / ida_free(), which turns the
+exclusive end into an inclusive max: the minor allocation
+"ida_simple_get(&xocl_dev_minor_ida, 0, 0, GFP_KERNEL)" becomes "only
+minor 0", so a second card would fail to probe. Not taken.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SpY5QiU1d7kAe8YJM35EvA
+---
+ driver/xocl/xocl_drv.h | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/driver/xocl/xocl_drv.h b/driver/xocl/xocl_drv.h
+index 88f0f47..a142b9a 100644
+--- a/driver/xocl/xocl_drv.h
++++ b/driver/xocl/xocl_drv.h
+@@ -110,6 +110,18 @@ static void fn##_void(struct platform_device *pdev)			\
+ #define BIN_ATTRIBUTE_CONST
+ #endif
+ 
++/*
++ * ida_simple_get()/ida_simple_remove() were removed in Linux 6.18 (commit
++ * c8a09fc9664f). Provide them exactly as v6.17 <linux/idr.h> defined them:
++ * "end" is exclusive and 0 means no upper limit.
++ */
++#include <linux/idr.h>
++#ifndef ida_simple_get
++#define ida_simple_get(ida, start, end, gfp)	\
++			ida_alloc_range(ida, start, (end) - 1, gfp)
++#define ida_simple_remove(ida, id)	ida_free(ida, id)
++#endif
++
+ #ifndef mmiowb
+ #define mmiowb()		do { } while (0)
+ #endif

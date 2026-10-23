@@ -1,0 +1,51 @@
+From d30d402d985c296477ecd816973410dd3b2fad7e Mon Sep 17 00:00:00 2001
+From: Tesseract XRT port <jwkim@limagin.com>
+Date: Fri, 23 Oct 2026 11:12:31 +0900
+Subject: [PATCH 07/19] xocl/p2p: use device_iommu_mapped() on Linux 6.13+
+
+Mainline commit 6632863226d8 ("iommu: Remove iommu_present()", v6.13)
+removed the bus-wide query used by p2p_read_addr_mgmtpf() to decide
+whether the P2P BAR address may be handed to the management PF.
+
+Guard: LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0) keeps
+iommu_present(&pci_bus_type); checked against mainline v6.12 (has it)
+and v6.13 (gone) <linux/iommu.h> and the 6.17.0-35 / 7.0.0-x headers.
+
+Equivalence: iommu_present(&pci_bus_type) answered "is any IOMMU
+instance registered" (drivers/iommu/iommu.c, v6.12); the per-device
+query that remains, device_iommu_mapped(&pcidev->dev)
+(available since 5.0, also on 6.8), answers "is this device's DMA
+translated" (dev->iommu_group != NULL). On x86 with VT-d/AMD-Vi enabled
+every PCI function is put in an IOMMU group, including in passthrough
+mode (iommu=pt), and with the IOMMU disabled neither query is true, so
+both give the same answer for the Alveo card. They can only differ when
+an IOMMU is registered that does not cover this device; then 6.13+
+reports the BAR, which is what the check is meant to decide. There is
+no exported 6.13+ API that reproduces the bus-wide answer.
+
+Upstream: same change as the p2p.c hunk of XRT commit f41db917c
+("xocl: Fixes for compilation on kernel 6.16+").
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SpY5QiU1d7kAe8YJM35EvA
+---
+ driver/xocl/subdev/p2p.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/driver/xocl/subdev/p2p.c b/driver/xocl/subdev/p2p.c
+index 171f7d8..b77f680 100644
+--- a/driver/xocl/subdev/p2p.c
++++ b/driver/xocl/subdev/p2p.c
+@@ -513,7 +513,12 @@ static void p2p_read_addr_mgmtpf(struct p2p *p2p)
+ 	mb_req->req = XCL_MAILBOX_REQ_READ_P2P_BAR_ADDR;
+ 	mb_p2p = (struct xcl_mailbox_p2p_bar_addr *)mb_req->data;
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
+ 	if (!iommu_present(&pci_bus_type)){
++#else
++	/* iommu_present() was removed in 6.13 (commit 6632863226d8) */
++	if (!device_iommu_mapped(&pcidev->dev)) {
++#endif
+ 		mb_p2p->p2p_bar_len = pci_resource_len(pcidev, p2p->p2p_bar_idx);
+ 		mb_p2p->p2p_bar_addr = pci_resource_start(pcidev,
+ 				p2p->p2p_bar_idx);

@@ -1,0 +1,45 @@
+From 8142ac4046503543efab6cf065be73df63f2189d Mon Sep 17 00:00:00 2001
+From: Tesseract XRT port <jwkim@limagin.com>
+Date: Fri, 23 Oct 2026 11:18:22 +0900
+Subject: [PATCH 16/19] xocl: include <drm/drm_print.h> for the DRM_*() log
+ macros (Linux 6.19)
+
+xocl_bo.c, xocl_drv.c and xocl_ioctl.c use DRM_ERROR(), DRM_WARN(),
+DRM_INFO() and DRM_DEBUG(), which come from <drm/drm_print.h>. That
+header used to be pulled in by <drm/drm_mm.h>; mainline commit
+ea722522d505 ("drm/mm: replace drm_print.h include with a forward
+declaration", v6.19) removed it, so the macros are undeclared on 6.19+
+(7.0.0-x here). The macros themselves still exist.
+
+Guard: none on purpose. <drm/drm_print.h> exists on every kernel the
+tree supports (since 4.9) and is include-guarded; up to 6.18 it is
+already included through <drm/drm_mm.h>, so nothing changes there.
+
+Equivalence: exact. The DRM_INFO/WARN/ERROR/DEBUG definitions in the
+6.8.0-147 and 7.0.0-31 headers are byte-identical
+("[drm] " / "[drm:%ps] *ERROR* " prefixes, DRM_DEBUG gated by
+drm.debug), so every message keeps its format and log level.
+
+Upstream: XRT commit dd3d69add instead defines missing DRM_*() macros
+as pr_err()/pr_warn()/pr_info()/pr_debug(), which drops the DRM
+prefixes and moves DRM_DEBUG from drm.debug to dynamic debug. Not
+taken.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SpY5QiU1d7kAe8YJM35EvA
+---
+ driver/xocl/xocl_drv.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/driver/xocl/xocl_drv.h b/driver/xocl/xocl_drv.h
+index a142b9a..3ed9ecd 100644
+--- a/driver/xocl/xocl_drv.h
++++ b/driver/xocl/xocl_drv.h
+@@ -35,6 +35,7 @@
+ #endif
+ #include <drm/drm_gem.h>
+ #include <drm/drm_mm.h>
++#include <drm/drm_print.h>
+ #include <linux/interrupt.h>
+ #include <linux/poll.h>
+ #include <linux/platform_device.h>

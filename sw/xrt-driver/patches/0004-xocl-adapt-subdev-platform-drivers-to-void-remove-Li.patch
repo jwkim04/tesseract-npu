@@ -1,0 +1,1100 @@
+From d6f7758819a47b617bcd58c9cbc362e953ddf142 Mon Sep 17 00:00:00 2001
+From: Tesseract XRT port <jwkim@limagin.com>
+Date: Fri, 23 Oct 2026 11:11:35 +0900
+Subject: [PATCH 04/19] xocl: adapt subdev platform drivers to void remove()
+ (Linux 6.11)
+
+Mainline commit 0edb555a65d1 ("platform: Make platform_driver::remove()
+return void", v6.11) changed the type of platform_driver::remove. All
+57 subdev drivers still pass an int-returning function, which is an
+incompatible-pointer-types error on 6.11+.
+
+Most of these functions return -EINVAL when the subdev has no driver
+data, and several are also called directly from their probe error
+paths, so they are left untouched. xocl_drv.h gains two macros:
+
+  XOCL_DEFINE_PLATFORM_REMOVE(fn)  emitted after fn in each subdev
+  XOCL_PLATFORM_REMOVE(fn)         used as ".remove = ..."
+
+Guard: LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0). Before 6.11 the
+first macro expands to nothing and the second to fn, so the compiled
+code is identical to the original. Checked against mainline v6.10 and
+v6.11 <linux/platform_device.h> and the 6.17.0-35 / 7.0.0-x headers.
+
+Equivalence: on <= 6.10 the platform core called remove() and, on a
+non-zero return, printed "remove callback returned a non-zero value.
+This will be ignored." On 6.11+ the core only calls a void remove(), so
+the generated fn_void() wrapper calls fn() and prints the same warning
+with the same device, keeping dmesg output identical. Direct calls of
+fn() from probe error paths still reach the int function and, as
+before, print nothing extra.
+
+Upstream: XRT commit 04350f685 renames each function to __fn and adds a
+void wrapper that drops the return value (and the warning); this patch
+keeps the warning and leaves every remove function and its callers
+unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SpY5QiU1d7kAe8YJM35EvA
+---
+ driver/xocl/subdev/accel_deadlock_detector.c |  4 +++-
+ driver/xocl/subdev/address_translator.c      |  4 +++-
+ driver/xocl/subdev/aim.c                     |  4 +++-
+ driver/xocl/subdev/am.c                      |  4 +++-
+ driver/xocl/subdev/asm.c                     |  4 +++-
+ driver/xocl/subdev/axigate.c                 |  4 +++-
+ driver/xocl/subdev/calib_storage.c           |  4 +++-
+ driver/xocl/subdev/cfg_gpio.c                |  4 +++-
+ driver/xocl/subdev/clock_counter.c           |  4 +++-
+ driver/xocl/subdev/clock_wiz.c               |  4 +++-
+ driver/xocl/subdev/command_queue.c           |  4 +++-
+ driver/xocl/subdev/cu.c                      |  4 +++-
+ driver/xocl/subdev/ddr_srsr.c                |  4 +++-
+ driver/xocl/subdev/dna.c                     |  4 +++-
+ driver/xocl/subdev/ert.c                     |  4 +++-
+ driver/xocl/subdev/ert_ctrl.c                |  4 +++-
+ driver/xocl/subdev/ert_user.c                |  4 +++-
+ driver/xocl/subdev/feature_rom.c             |  4 +++-
+ driver/xocl/subdev/firewall.c                |  4 +++-
+ driver/xocl/subdev/flash.c                   |  4 +++-
+ driver/xocl/subdev/fmgr.c                    |  4 +++-
+ driver/xocl/subdev/hwmon_sdm.c               |  4 +++-
+ driver/xocl/subdev/icap.c                    |  4 +++-
+ driver/xocl/subdev/icap_cntrl.c              |  4 +++-
+ driver/xocl/subdev/intc.c                    |  4 +++-
+ driver/xocl/subdev/iores.c                   |  4 +++-
+ driver/xocl/subdev/lapc.c                    |  4 +++-
+ driver/xocl/subdev/m2m.c                     |  4 +++-
+ driver/xocl/subdev/mailbox.c                 |  4 +++-
+ driver/xocl/subdev/mailbox_versal.c          |  4 +++-
+ driver/xocl/subdev/memory_hbm.c              |  4 +++-
+ driver/xocl/subdev/mgmt_msix.c               |  4 +++-
+ driver/xocl/subdev/microblaze.c              |  4 +++-
+ driver/xocl/subdev/mig.c                     |  4 +++-
+ driver/xocl/subdev/msix_xdma.c               |  4 +++-
+ driver/xocl/subdev/nifd.c                    |  4 +++-
+ driver/xocl/subdev/ospi_versal.c             |  4 +++-
+ driver/xocl/subdev/p2p.c                     |  4 +++-
+ driver/xocl/subdev/pcie_firewall.c           |  4 +++-
+ driver/xocl/subdev/pmc.c                     |  4 +++-
+ driver/xocl/subdev/ps.c                      |  4 +++-
+ driver/xocl/subdev/qdma.c                    |  4 +++-
+ driver/xocl/subdev/scu.c                     |  4 +++-
+ driver/xocl/subdev/spc.c                     |  4 +++-
+ driver/xocl/subdev/sysmon.c                  |  4 +++-
+ driver/xocl/subdev/trace_fifo_full.c         |  4 +++-
+ driver/xocl/subdev/trace_fifo_lite.c         |  4 +++-
+ driver/xocl/subdev/trace_funnel.c            |  4 +++-
+ driver/xocl/subdev/trace_s2mm.c              |  4 +++-
+ driver/xocl/subdev/ulite.c                   |  4 +++-
+ driver/xocl/subdev/version_ctrl.c            |  4 +++-
+ driver/xocl/subdev/xdma.c                    |  4 +++-
+ driver/xocl/subdev/xgq_vmr.c                 |  4 +++-
+ driver/xocl/subdev/xiic.c                    |  4 +++-
+ driver/xocl/subdev/xmc.c                     |  4 +++-
+ driver/xocl/subdev/xmc_u2.c                  |  4 +++-
+ driver/xocl/subdev/xvc.c                     |  4 +++-
+ driver/xocl/xocl_drv.h                       | 21 ++++++++++++++++++++
+ 58 files changed, 192 insertions(+), 57 deletions(-)
+
+diff --git a/driver/xocl/subdev/accel_deadlock_detector.c b/driver/xocl/subdev/accel_deadlock_detector.c
+index 679cc79..8ff17fe 100644
+--- a/driver/xocl/subdev/accel_deadlock_detector.c
++++ b/driver/xocl/subdev/accel_deadlock_detector.c
+@@ -266,9 +266,11 @@ struct platform_device_id accel_deadlock_detector_id_table[] = {
+     { },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(accel_deadlock_detector_remove)
++
+ static struct platform_driver  accel_deadlock_detector_driver = {
+     .probe    = accel_deadlock_detector_probe,
+-    .remove    = accel_deadlock_detector_remove,
++    .remove    = XOCL_PLATFORM_REMOVE(accel_deadlock_detector_remove),
+     .driver    = {
+             .name = XOCL_DEVNAME(XOCL_ACCEL_DEADLOCK_DETECTOR),
+         },
+diff --git a/driver/xocl/subdev/address_translator.c b/driver/xocl/subdev/address_translator.c
+index af955b1..b224e69 100644
+--- a/driver/xocl/subdev/address_translator.c
++++ b/driver/xocl/subdev/address_translator.c
+@@ -420,9 +420,11 @@ struct platform_device_id addr_translator_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(addr_translator_remove)
++
+ static struct platform_driver	addr_translator_driver = {
+ 	.probe		= addr_translator_probe,
+-	.remove		= addr_translator_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(addr_translator_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_ADDR_TRANSLATOR),
+ 	},
+diff --git a/driver/xocl/subdev/aim.c b/driver/xocl/subdev/aim.c
+index 3ea1915..80dc09a 100644
+--- a/driver/xocl/subdev/aim.c
++++ b/driver/xocl/subdev/aim.c
+@@ -452,9 +452,11 @@ struct platform_device_id aim_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(aim_remove)
++
+ static struct platform_driver	aim_driver = {
+ 	.probe		= aim_probe,
+-	.remove		= aim_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(aim_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_AIM),
+ 	},
+diff --git a/driver/xocl/subdev/am.c b/driver/xocl/subdev/am.c
+index 1e5fda4..2573a26 100644
+--- a/driver/xocl/subdev/am.c
++++ b/driver/xocl/subdev/am.c
+@@ -444,9 +444,11 @@ struct platform_device_id am_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(am_remove)
++
+ static struct platform_driver	am_driver = {
+ 	.probe		= am_probe,
+-	.remove		= am_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(am_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_AM),
+ 	},
+diff --git a/driver/xocl/subdev/asm.c b/driver/xocl/subdev/asm.c
+index 8bad7ac..742be02 100644
+--- a/driver/xocl/subdev/asm.c
++++ b/driver/xocl/subdev/asm.c
+@@ -378,9 +378,11 @@ struct platform_device_id asm_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(asm_remove)
++
+ static struct platform_driver	asm_driver = {
+ 	.probe		= asm_probe,
+-	.remove		= asm_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(asm_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_ASM),
+ 	},
+diff --git a/driver/xocl/subdev/axigate.c b/driver/xocl/subdev/axigate.c
+index b01fc31..dd875b6 100644
+--- a/driver/xocl/subdev/axigate.c
++++ b/driver/xocl/subdev/axigate.c
+@@ -249,9 +249,11 @@ struct platform_device_id axigate_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(axigate_remove)
++
+ static struct platform_driver	axi_gate_driver = {
+ 	.probe		= axigate_probe,
+-	.remove		= axigate_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(axigate_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_AXIGATE),
+ 	},
+diff --git a/driver/xocl/subdev/calib_storage.c b/driver/xocl/subdev/calib_storage.c
+index 2fd31b2..2900726 100644
+--- a/driver/xocl/subdev/calib_storage.c
++++ b/driver/xocl/subdev/calib_storage.c
+@@ -199,9 +199,11 @@ struct platform_device_id calib_storage_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(calib_storage_remove)
++
+ static struct platform_driver	calib_storage_driver = {
+ 	.probe		= calib_storage_probe,
+-	.remove		= calib_storage_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(calib_storage_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_CALIB_STORAGE),
+ 	},
+diff --git a/driver/xocl/subdev/cfg_gpio.c b/driver/xocl/subdev/cfg_gpio.c
+index 21d037a..25d31f2 100644
+--- a/driver/xocl/subdev/cfg_gpio.c
++++ b/driver/xocl/subdev/cfg_gpio.c
+@@ -173,9 +173,11 @@ struct platform_device_id config_gpio_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(config_gpio_remove)
++
+ static struct platform_driver	config_gpio_driver = {
+ 	.probe		= config_gpio_probe,
+-	.remove		= config_gpio_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(config_gpio_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_CFG_GPIO),
+ 	},
+diff --git a/driver/xocl/subdev/clock_counter.c b/driver/xocl/subdev/clock_counter.c
+index 4790642..85ce0c6 100644
+--- a/driver/xocl/subdev/clock_counter.c
++++ b/driver/xocl/subdev/clock_counter.c
+@@ -355,9 +355,11 @@ struct platform_device_id clock_counter_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(clock_counter_remove)
++
+ static struct platform_driver clock_counter_driver = {
+ 	.probe		= clock_counter_probe,
+-	.remove		= clock_counter_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(clock_counter_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_CLOCK_COUNTER),
+ 	},
+diff --git a/driver/xocl/subdev/clock_wiz.c b/driver/xocl/subdev/clock_wiz.c
+index 72cd02e..3a3b505 100644
+--- a/driver/xocl/subdev/clock_wiz.c
++++ b/driver/xocl/subdev/clock_wiz.c
+@@ -1327,9 +1327,11 @@ struct platform_device_id clock_wiz_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(clock_wiz_remove)
++
+ static struct platform_driver clock_wiz_driver = {
+ 	.probe		= clock_wiz_probe,
+-	.remove		= clock_wiz_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(clock_wiz_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_CLOCK_WIZ),
+ 	},
+diff --git a/driver/xocl/subdev/command_queue.c b/driver/xocl/subdev/command_queue.c
+index 0c2cedf..81159f8 100644
+--- a/driver/xocl/subdev/command_queue.c
++++ b/driver/xocl/subdev/command_queue.c
+@@ -716,9 +716,11 @@ struct platform_device_id command_queue_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(command_queue_remove)
++
+ static struct platform_driver	command_queue_driver = {
+ 	.probe		= command_queue_probe,
+-	.remove		= command_queue_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(command_queue_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_COMMAND_QUEUE),
+ 	},
+diff --git a/driver/xocl/subdev/cu.c b/driver/xocl/subdev/cu.c
+index 5047813..9dceeef 100644
+--- a/driver/xocl/subdev/cu.c
++++ b/driver/xocl/subdev/cu.c
+@@ -568,9 +568,11 @@ static struct platform_device_id cu_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(cu_remove)
++
+ static struct platform_driver cu_driver = {
+ 	.probe		= cu_probe,
+-	.remove		= cu_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(cu_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_CU),
+ 	},
+diff --git a/driver/xocl/subdev/ddr_srsr.c b/driver/xocl/subdev/ddr_srsr.c
+index f9bb7b0..471e55c 100644
+--- a/driver/xocl/subdev/ddr_srsr.c
++++ b/driver/xocl/subdev/ddr_srsr.c
+@@ -342,9 +342,11 @@ struct platform_device_id xocl_ddr_srsr_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(xocl_ddr_srsr_remove)
++
+ static struct platform_driver	xocl_ddr_srsr_driver = {
+ 	.probe		= xocl_ddr_srsr_probe,
+-	.remove		= xocl_ddr_srsr_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(xocl_ddr_srsr_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_SRSR),
+ 	},
+diff --git a/driver/xocl/subdev/dna.c b/driver/xocl/subdev/dna.c
+index 67ace20..c962ed9 100644
+--- a/driver/xocl/subdev/dna.c
++++ b/driver/xocl/subdev/dna.c
+@@ -493,9 +493,11 @@ struct platform_device_id xlnx_dna_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(xlnx_dna_remove)
++
+ static struct platform_driver	xlnx_dna_driver = {
+ 	.probe		= xlnx_dna_probe,
+-	.remove		= xlnx_dna_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(xlnx_dna_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_DNA),
+ 	},
+diff --git a/driver/xocl/subdev/ert.c b/driver/xocl/subdev/ert.c
+index 46b710d..91354b3 100644
+--- a/driver/xocl/subdev/ert.c
++++ b/driver/xocl/subdev/ert.c
+@@ -483,9 +483,11 @@ struct platform_device_id ert_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(ert_remove)
++
+ static struct platform_driver	ert_driver = {
+ 	.probe		= ert_probe,
+-	.remove		= ert_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(ert_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_ERT),
+ 	},
+diff --git a/driver/xocl/subdev/ert_ctrl.c b/driver/xocl/subdev/ert_ctrl.c
+index b73616d..369e3de 100644
+--- a/driver/xocl/subdev/ert_ctrl.c
++++ b/driver/xocl/subdev/ert_ctrl.c
+@@ -988,9 +988,11 @@ struct platform_device_id ert_ctrl_id_table[] = {
+ 	{},
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(ert_ctrl_remove)
++
+ static struct platform_driver ert_ctrl_driver = {
+ 	.probe		= ert_ctrl_probe,
+-	.remove		= ert_ctrl_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(ert_ctrl_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_ERT_CTRL),
+ 	},
+diff --git a/driver/xocl/subdev/ert_user.c b/driver/xocl/subdev/ert_user.c
+index 355e00a..b8201da 100644
+--- a/driver/xocl/subdev/ert_user.c
++++ b/driver/xocl/subdev/ert_user.c
+@@ -1583,9 +1583,11 @@ struct platform_device_id ert_user_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(ert_user_remove)
++
+ static struct platform_driver	ert_user_driver = {
+ 	.probe		= ert_user_probe,
+-	.remove		= ert_user_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(ert_user_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_ERT_USER),
+ 	},
+diff --git a/driver/xocl/subdev/feature_rom.c b/driver/xocl/subdev/feature_rom.c
+index 4f20654..38a44c0 100644
+--- a/driver/xocl/subdev/feature_rom.c
++++ b/driver/xocl/subdev/feature_rom.c
+@@ -898,9 +898,11 @@ struct platform_device_id rom_id_table[] =  {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(feature_rom_remove)
++
+ static struct platform_driver	feature_rom_driver = {
+ 	.probe		= feature_rom_probe,
+-	.remove		= feature_rom_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(feature_rom_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_FEATURE_ROM),
+ 	},
+diff --git a/driver/xocl/subdev/firewall.c b/driver/xocl/subdev/firewall.c
+index 4e079c7..05866ed 100644
+--- a/driver/xocl/subdev/firewall.c
++++ b/driver/xocl/subdev/firewall.c
+@@ -693,9 +693,11 @@ struct platform_device_id firewall_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(firewall_remove)
++
+ static struct platform_driver	firewall_driver = {
+ 	.probe		= firewall_probe,
+-	.remove		= firewall_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(firewall_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_FIREWALL),
+ 	},
+diff --git a/driver/xocl/subdev/flash.c b/driver/xocl/subdev/flash.c
+index 992a106..5ca03c6 100644
+--- a/driver/xocl/subdev/flash.c
++++ b/driver/xocl/subdev/flash.c
+@@ -1516,9 +1516,11 @@ struct platform_device_id flash_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(flash_remove)
++
+ static struct platform_driver	flash_driver = {
+ 	.probe		= flash_probe,
+-	.remove		= flash_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(flash_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_FLASH),
+ 	},
+diff --git a/driver/xocl/subdev/fmgr.c b/driver/xocl/subdev/fmgr.c
+index 8d0e53c..2b9f1b2 100644
+--- a/driver/xocl/subdev/fmgr.c
++++ b/driver/xocl/subdev/fmgr.c
+@@ -220,9 +220,11 @@ static int fmgr_remove(struct platform_device *pdev)
+ 	return 0;
+ }
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(fmgr_remove)
++
+ static struct platform_driver	fmgr_driver = {
+ 	.probe		= fmgr_probe,
+-	.remove		= fmgr_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(fmgr_remove),
+ 	.driver		= {
+ 		.name = "xocl_fmgr",
+ 	},
+diff --git a/driver/xocl/subdev/hwmon_sdm.c b/driver/xocl/subdev/hwmon_sdm.c
+index 3f65cfe..09ddb09 100644
+--- a/driver/xocl/subdev/hwmon_sdm.c
++++ b/driver/xocl/subdev/hwmon_sdm.c
+@@ -1678,9 +1678,11 @@ struct platform_device_id hwmon_sdm_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(hwmon_sdm_remove)
++
+ static struct platform_driver	hwmon_sdm_driver = {
+ 	.probe		= hwmon_sdm_probe,
+-	.remove		= hwmon_sdm_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(hwmon_sdm_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_HWMON_SDM),
+ 	},
+diff --git a/driver/xocl/subdev/icap.c b/driver/xocl/subdev/icap.c
+index 6a0d4bb..088503e 100644
+--- a/driver/xocl/subdev/icap.c
++++ b/driver/xocl/subdev/icap.c
+@@ -4724,9 +4724,11 @@ struct platform_device_id icap_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(icap_remove)
++
+ static struct platform_driver icap_driver = {
+ 	.probe		= icap_probe,
+-	.remove		= icap_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(icap_remove),
+ 	.driver		= {
+ 		.name	= XOCL_DEVNAME(XOCL_ICAP),
+ 	},
+diff --git a/driver/xocl/subdev/icap_cntrl.c b/driver/xocl/subdev/icap_cntrl.c
+index bf77c1b..8d4e60a 100644
+--- a/driver/xocl/subdev/icap_cntrl.c
++++ b/driver/xocl/subdev/icap_cntrl.c
+@@ -244,9 +244,11 @@ struct platform_device_id icap_cntrl_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(icap_cntrl_remove)
++
+ static struct platform_driver	icap_cntrl_driver = {
+ 	.probe		= icap_cntrl_probe,
+-	.remove		= icap_cntrl_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(icap_cntrl_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_ICAP_CNTRL),
+ 	},
+diff --git a/driver/xocl/subdev/intc.c b/driver/xocl/subdev/intc.c
+index 65bf6f1..a4b7387 100644
+--- a/driver/xocl/subdev/intc.c
++++ b/driver/xocl/subdev/intc.c
+@@ -691,9 +691,11 @@ struct platform_device_id intc_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(intc_remove)
++
+ static struct platform_driver intc_driver = {
+ 	.probe		= intc_probe,
+-	.remove		= intc_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(intc_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_INTC),
+ 	},
+diff --git a/driver/xocl/subdev/iores.c b/driver/xocl/subdev/iores.c
+index 79670c8..3573f62 100644
+--- a/driver/xocl/subdev/iores.c
++++ b/driver/xocl/subdev/iores.c
+@@ -161,9 +161,11 @@ struct platform_device_id iores_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(iores_remove)
++
+ static struct platform_driver	iores_driver = {
+ 	.probe		= iores_probe,
+-	.remove		= iores_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(iores_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME("iores"),
+ 	},
+diff --git a/driver/xocl/subdev/lapc.c b/driver/xocl/subdev/lapc.c
+index 598b15d..88bad60 100644
+--- a/driver/xocl/subdev/lapc.c
++++ b/driver/xocl/subdev/lapc.c
+@@ -283,9 +283,11 @@ struct platform_device_id lapc_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(lapc_remove)
++
+ static struct platform_driver	lapc_driver = {
+ 	.probe		= lapc_probe,
+-	.remove		= lapc_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(lapc_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_LAPC),
+ 	},
+diff --git a/driver/xocl/subdev/m2m.c b/driver/xocl/subdev/m2m.c
+index 8ed83f6..fd7f135 100644
+--- a/driver/xocl/subdev/m2m.c
++++ b/driver/xocl/subdev/m2m.c
+@@ -319,9 +319,11 @@ failed:
+ 	return ret;
+ }
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(m2m_remove)
++
+ static struct platform_driver	m2m_driver = {
+ 	.probe		= m2m_probe,
+-	.remove		= m2m_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(m2m_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_M2M),
+ 	},
+diff --git a/driver/xocl/subdev/mailbox.c b/driver/xocl/subdev/mailbox.c
+index fd08ca1..656c448 100644
+--- a/driver/xocl/subdev/mailbox.c
++++ b/driver/xocl/subdev/mailbox.c
+@@ -3180,9 +3180,11 @@ struct platform_device_id mailbox_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(mailbox_remove)
++
+ static struct platform_driver mailbox_driver = {
+ 	.probe		= mailbox_probe,
+-	.remove		= mailbox_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(mailbox_remove),
+ 	.driver		= {
+ 		.name	= XOCL_DEVNAME(XOCL_MAILBOX),
+ 	},
+diff --git a/driver/xocl/subdev/mailbox_versal.c b/driver/xocl/subdev/mailbox_versal.c
+index 1a3484d..798020f 100644
+--- a/driver/xocl/subdev/mailbox_versal.c
++++ b/driver/xocl/subdev/mailbox_versal.c
+@@ -293,9 +293,11 @@ struct platform_device_id mailbox_versal_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(mailbox_versal_remove)
++
+ static struct platform_driver	mailbox_versal_driver = {
+ 	.probe		= mailbox_versal_probe,
+-	.remove		= mailbox_versal_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(mailbox_versal_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_MAILBOX_VERSAL),
+ 	},
+diff --git a/driver/xocl/subdev/memory_hbm.c b/driver/xocl/subdev/memory_hbm.c
+index 4f040c3..29cfe9d 100644
+--- a/driver/xocl/subdev/memory_hbm.c
++++ b/driver/xocl/subdev/memory_hbm.c
+@@ -609,9 +609,11 @@ struct platform_device_id mem_hbm_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(mem_hbm_remove)
++
+ static struct platform_driver	mem_hbm_driver = {
+ 	.probe		= mem_hbm_probe,
+-	.remove		= mem_hbm_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(mem_hbm_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_MIG_HBM),
+ 	},
+diff --git a/driver/xocl/subdev/mgmt_msix.c b/driver/xocl/subdev/mgmt_msix.c
+index 7a49ed0..3dd189b 100644
+--- a/driver/xocl/subdev/mgmt_msix.c
++++ b/driver/xocl/subdev/mgmt_msix.c
+@@ -364,9 +364,11 @@ static struct platform_device_id mgmt_msix_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(mgmt_msix_remove)
++
+ static struct platform_driver	mgmt_msix_driver = {
+ 	.probe		= mgmt_msix_probe,
+-	.remove		= mgmt_msix_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(mgmt_msix_remove),
+ 	.driver		= {
+ 		.name = "mgmt_msix",
+ 	},
+diff --git a/driver/xocl/subdev/microblaze.c b/driver/xocl/subdev/microblaze.c
+index a451a5e..5d5259d 100644
+--- a/driver/xocl/subdev/microblaze.c
++++ b/driver/xocl/subdev/microblaze.c
+@@ -712,9 +712,11 @@ struct platform_device_id mb_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(mb_remove)
++
+ static struct platform_driver	mb_driver = {
+ 	.probe		= mb_probe,
+-	.remove		= mb_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(mb_remove),
+ 	.driver		= {
+ 		.name = "xocl_mb",
+ 	},
+diff --git a/driver/xocl/subdev/mig.c b/driver/xocl/subdev/mig.c
+index 0795ca8..49470e4 100644
+--- a/driver/xocl/subdev/mig.c
++++ b/driver/xocl/subdev/mig.c
+@@ -526,9 +526,11 @@ struct platform_device_id mig_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(mig_remove)
++
+ static struct platform_driver	mig_driver = {
+ 	.probe		= mig_probe,
+-	.remove		= mig_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(mig_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_MIG),
+ 	},
+diff --git a/driver/xocl/subdev/msix_xdma.c b/driver/xocl/subdev/msix_xdma.c
+index ffe75a7..590caa9 100644
+--- a/driver/xocl/subdev/msix_xdma.c
++++ b/driver/xocl/subdev/msix_xdma.c
+@@ -303,9 +303,11 @@ static struct platform_device_id msix_xdma_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(msix_xdma_remove)
++
+ static struct platform_driver	msix_xdma_driver = {
+ 	.probe		= msix_xdma_probe,
+-	.remove		= msix_xdma_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(msix_xdma_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_MSIX_XDMA),
+ 	},
+diff --git a/driver/xocl/subdev/nifd.c b/driver/xocl/subdev/nifd.c
+index 24a7bd9..974a8b5 100644
+--- a/driver/xocl/subdev/nifd.c
++++ b/driver/xocl/subdev/nifd.c
+@@ -665,9 +665,11 @@ struct platform_device_id nifd_id_table[] = {
+     {},
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(nifd_remove)
++
+ static struct platform_driver nifd_driver = {
+     .probe = nifd_probe,
+-    .remove = nifd_remove,
++    .remove = XOCL_PLATFORM_REMOVE(nifd_remove),
+     .driver = {
+         .name = XOCL_DEVNAME(NIFD_DEV_NAME),
+     },
+diff --git a/driver/xocl/subdev/ospi_versal.c b/driver/xocl/subdev/ospi_versal.c
+index 5232564..d1a4ca5 100644
+--- a/driver/xocl/subdev/ospi_versal.c
++++ b/driver/xocl/subdev/ospi_versal.c
+@@ -492,9 +492,11 @@ struct platform_device_id xfer_versal_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(xfer_versal_remove)
++
+ static struct platform_driver	xfer_versal_driver = {
+ 	.probe		= xfer_versal_probe,
+-	.remove		= xfer_versal_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(xfer_versal_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_XFER_VERSAL),
+ 	},
+diff --git a/driver/xocl/subdev/p2p.c b/driver/xocl/subdev/p2p.c
+index e7826eb..171f7d8 100644
+--- a/driver/xocl/subdev/p2p.c
++++ b/driver/xocl/subdev/p2p.c
+@@ -1604,9 +1604,11 @@ struct platform_device_id p2p_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(p2p_remove)
++
+ static struct platform_driver	p2p_driver = {
+ 	.probe		= p2p_probe,
+-	.remove		= p2p_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(p2p_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_P2P),
+ 	},
+diff --git a/driver/xocl/subdev/pcie_firewall.c b/driver/xocl/subdev/pcie_firewall.c
+index db1d7ba..2ce0021 100644
+--- a/driver/xocl/subdev/pcie_firewall.c
++++ b/driver/xocl/subdev/pcie_firewall.c
+@@ -146,9 +146,11 @@ static struct platform_device_id firewall_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(firewall_remove)
++
+ static struct platform_driver   firewall_driver = {
+ 	.probe		= firewall_probe,
+-	.remove		= firewall_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(firewall_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_PCIE_FIREWALL),
+ 	},
+diff --git a/driver/xocl/subdev/pmc.c b/driver/xocl/subdev/pmc.c
+index ea75100..d6156ea 100644
+--- a/driver/xocl/subdev/pmc.c
++++ b/driver/xocl/subdev/pmc.c
+@@ -217,9 +217,11 @@ struct platform_device_id pmc_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(pmc_remove)
++
+ static struct platform_driver pmc_driver = {
+ 	.probe		= pmc_probe,
+-	.remove		= pmc_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(pmc_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_PMC),
+ 	},
+diff --git a/driver/xocl/subdev/ps.c b/driver/xocl/subdev/ps.c
+index 54f9099..cbc7233 100644
+--- a/driver/xocl/subdev/ps.c
++++ b/driver/xocl/subdev/ps.c
+@@ -420,9 +420,11 @@ struct platform_device_id ps_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(ps_remove)
++
+ static struct platform_driver ps_driver = {
+ 	.probe		= ps_probe,
+-	.remove		= ps_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(ps_remove),
+ 	.driver		= {
+ 		.name = "xocl_ps",
+ 	},
+diff --git a/driver/xocl/subdev/qdma.c b/driver/xocl/subdev/qdma.c
+index 0405ceb..1fa5e1a 100644
+--- a/driver/xocl/subdev/qdma.c
++++ b/driver/xocl/subdev/qdma.c
+@@ -945,9 +945,11 @@ static struct platform_device_id qdma_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(qdma_remove)
++
+ static struct platform_driver	qdma_driver = {
+ 	.probe		= qdma_probe,
+-	.remove		= qdma_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(qdma_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_QDMA),
+ 	},
+diff --git a/driver/xocl/subdev/scu.c b/driver/xocl/subdev/scu.c
+index 1292542..f49a191 100644
+--- a/driver/xocl/subdev/scu.c
++++ b/driver/xocl/subdev/scu.c
+@@ -356,9 +356,11 @@ static struct platform_device_id scu_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(scu_remove)
++
+ static struct platform_driver scu_driver = {
+ 	.probe		= scu_probe,
+-	.remove		= scu_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(scu_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_SCU),
+ 	},
+diff --git a/driver/xocl/subdev/spc.c b/driver/xocl/subdev/spc.c
+index 3ee6fe1..b008a07 100644
+--- a/driver/xocl/subdev/spc.c
++++ b/driver/xocl/subdev/spc.c
+@@ -264,9 +264,11 @@ struct platform_device_id spc_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(spc_remove)
++
+ static struct platform_driver	spc_driver = {
+ 	.probe		= spc_probe,
+-	.remove		= spc_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(spc_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_SPC),
+ 	},
+diff --git a/driver/xocl/subdev/sysmon.c b/driver/xocl/subdev/sysmon.c
+index 53bd21e..93f2cdc 100644
+--- a/driver/xocl/subdev/sysmon.c
++++ b/driver/xocl/subdev/sysmon.c
+@@ -393,9 +393,11 @@ struct platform_device_id sysmon_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(sysmon_remove)
++
+ static struct platform_driver	sysmon_driver = {
+ 	.probe		= sysmon_probe,
+-	.remove		= sysmon_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(sysmon_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_SYSMON),
+ 	},
+diff --git a/driver/xocl/subdev/trace_fifo_full.c b/driver/xocl/subdev/trace_fifo_full.c
+index 96020cb..a3bf736 100644
+--- a/driver/xocl/subdev/trace_fifo_full.c
++++ b/driver/xocl/subdev/trace_fifo_full.c
+@@ -114,9 +114,11 @@ struct platform_device_id trace_fifo_full_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(trace_fifo_full_remove)
++
+ static struct platform_driver	trace_fifo_full_driver = {
+ 	.probe		= trace_fifo_full_probe,
+-	.remove		= trace_fifo_full_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(trace_fifo_full_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_TRACE_FIFO_FULL),
+ 	},
+diff --git a/driver/xocl/subdev/trace_fifo_lite.c b/driver/xocl/subdev/trace_fifo_lite.c
+index a349ea9..aa1bdb4 100644
+--- a/driver/xocl/subdev/trace_fifo_lite.c
++++ b/driver/xocl/subdev/trace_fifo_lite.c
+@@ -248,9 +248,11 @@ struct platform_device_id trace_fifo_lite_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(trace_fifo_lite_remove)
++
+ static struct platform_driver	trace_fifo_lite_driver = {
+ 	.probe		= trace_fifo_lite_probe,
+-	.remove		= trace_fifo_lite_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(trace_fifo_lite_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_TRACE_FIFO_LITE),
+ 	},
+diff --git a/driver/xocl/subdev/trace_funnel.c b/driver/xocl/subdev/trace_funnel.c
+index d60d96f..b58d54e 100644
+--- a/driver/xocl/subdev/trace_funnel.c
++++ b/driver/xocl/subdev/trace_funnel.c
+@@ -251,9 +251,11 @@ struct platform_device_id trace_funnel_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(trace_funnel_remove)
++
+ static struct platform_driver	trace_funnel_driver = {
+ 	.probe		= trace_funnel_probe,
+-	.remove		= trace_funnel_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(trace_funnel_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_TRACE_FUNNEL),
+ 	},
+diff --git a/driver/xocl/subdev/trace_s2mm.c b/driver/xocl/subdev/trace_s2mm.c
+index c4ef142..b7cc5da 100644
+--- a/driver/xocl/subdev/trace_s2mm.c
++++ b/driver/xocl/subdev/trace_s2mm.c
+@@ -313,9 +313,11 @@ struct platform_device_id trace_s2mm_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(trace_s2mm_remove)
++
+ static struct platform_driver	trace_s2mm_driver = {
+ 	.probe		= trace_s2mm_probe,
+-	.remove		= trace_s2mm_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(trace_s2mm_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_TRACE_S2MM),
+ 	},
+diff --git a/driver/xocl/subdev/ulite.c b/driver/xocl/subdev/ulite.c
+index c2904a1..f1da760 100644
+--- a/driver/xocl/subdev/ulite.c
++++ b/driver/xocl/subdev/ulite.c
+@@ -619,9 +619,11 @@ struct platform_device_id ulite_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(ulite_remove)
++
+ static struct platform_driver ulite_platform_driver = {
+ 	.probe = ulite_probe,
+-	.remove = ulite_remove,
++	.remove = XOCL_PLATFORM_REMOVE(ulite_remove),
+ 	.driver = {
+ 		.name  = XOCL_DEVNAME(XOCL_UARTLITE),
+ 	},
+diff --git a/driver/xocl/subdev/version_ctrl.c b/driver/xocl/subdev/version_ctrl.c
+index 9c42fa9..58e41fd 100644
+--- a/driver/xocl/subdev/version_ctrl.c
++++ b/driver/xocl/subdev/version_ctrl.c
+@@ -201,9 +201,11 @@ struct platform_device_id version_ctrl_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(version_ctrl_remove)
++
+ static struct platform_driver	version_ctrl_driver = {
+ 	.probe		= version_ctrl_probe,
+-	.remove		= version_ctrl_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(version_ctrl_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_VERSION_CTRL),
+ 	},
+diff --git a/driver/xocl/subdev/xdma.c b/driver/xocl/subdev/xdma.c
+index 21b9378..e38f930 100644
+--- a/driver/xocl/subdev/xdma.c
++++ b/driver/xocl/subdev/xdma.c
+@@ -594,9 +594,11 @@ static struct platform_device_id xdma_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(xdma_remove)
++
+ static struct platform_driver	xdma_driver = {
+ 	.probe		= xdma_probe,
+-	.remove		= xdma_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(xdma_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_XDMA),
+ 	},
+diff --git a/driver/xocl/subdev/xgq_vmr.c b/driver/xocl/subdev/xgq_vmr.c
+index fd254ad..f700716 100644
+--- a/driver/xocl/subdev/xgq_vmr.c
++++ b/driver/xocl/subdev/xgq_vmr.c
+@@ -3637,9 +3637,11 @@ struct platform_device_id xgq_vmr_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(xgq_vmr_remove)
++
+ static struct platform_driver	xgq_vmr_driver = {
+ 	.probe		= xgq_vmr_probe,
+-	.remove		= xgq_vmr_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(xgq_vmr_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_XGQ_VMR),
+ 	},
+diff --git a/driver/xocl/subdev/xiic.c b/driver/xocl/subdev/xiic.c
+index f0d0658..979b9a7 100644
+--- a/driver/xocl/subdev/xiic.c
++++ b/driver/xocl/subdev/xiic.c
+@@ -1064,9 +1064,11 @@ struct platform_device_id xiic_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(xiic_remove)
++
+ static struct platform_driver xiic_driver = {
+ 	.probe		= xiic_probe,
+-	.remove		= xiic_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(xiic_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_XIIC),
+ 	},
+diff --git a/driver/xocl/subdev/xmc.c b/driver/xocl/subdev/xmc.c
+index 0f513cf..431e5e7 100644
+--- a/driver/xocl/subdev/xmc.c
++++ b/driver/xocl/subdev/xmc.c
+@@ -4194,9 +4194,11 @@ static struct platform_device_id xmc_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(xmc_remove)
++
+ static struct platform_driver	xmc_driver = {
+ 	.probe		= xmc_probe,
+-	.remove		= xmc_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(xmc_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_XMC),
+ 	},
+diff --git a/driver/xocl/subdev/xmc_u2.c b/driver/xocl/subdev/xmc_u2.c
+index 2b53eb7..ab28b8d 100644
+--- a/driver/xocl/subdev/xmc_u2.c
++++ b/driver/xocl/subdev/xmc_u2.c
+@@ -3924,9 +3924,11 @@ static struct platform_device_id xmc_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(xmc_remove)
++
+ static struct platform_driver	xmc_driver = {
+ 	.probe		= xmc_probe,
+-	.remove		= xmc_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(xmc_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XOCL_XMC_U2),
+ 	},
+diff --git a/driver/xocl/subdev/xvc.c b/driver/xocl/subdev/xvc.c
+index d2c53d2..4ef16eb 100644
+--- a/driver/xocl/subdev/xvc.c
++++ b/driver/xocl/subdev/xvc.c
+@@ -424,9 +424,11 @@ struct platform_device_id xvc_id_table[] = {
+ 	{ },
+ };
+ 
++XOCL_DEFINE_PLATFORM_REMOVE(xvc_remove)
++
+ static struct platform_driver	xvc_driver = {
+ 	.probe		= xvc_probe,
+-	.remove		= xvc_remove,
++	.remove		= XOCL_PLATFORM_REMOVE(xvc_remove),
+ 	.driver		= {
+ 		.name = XOCL_DEVNAME(XVC_DEV_NAME),
+ 	},
+diff --git a/driver/xocl/xocl_drv.h b/driver/xocl/xocl_drv.h
+index e98f710..6f8cde1 100644
+--- a/driver/xocl/xocl_drv.h
++++ b/driver/xocl/xocl_drv.h
+@@ -77,6 +77,27 @@
+ #define ioremap_nocache		ioremap
+ #endif
+ 
++/*
++ * Linux 6.11 changed platform_driver::remove() to return void (commit
++ * 0edb555a65d1). The subdev remove routines keep returning int; use
++ * ".remove = XOCL_PLATFORM_REMOVE(fn)" with XOCL_DEFINE_PLATFORM_REMOVE(fn)
++ * placed after fn. Before 6.11 this is fn itself. From 6.11 it is a void
++ * wrapper that prints the warning the platform core printed for a
++ * non-zero return value on the older kernels (drivers/base/platform.c).
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
++#define XOCL_DEFINE_PLATFORM_REMOVE(fn)					\
++static void fn##_void(struct platform_device *pdev)			\
++{									\
++	if (fn(pdev))							\
++		dev_warn(&pdev->dev, "remove callback returned a non-zero value. This will be ignored.\n"); \
++}
++#define XOCL_PLATFORM_REMOVE(fn)	fn##_void
++#else
++#define XOCL_DEFINE_PLATFORM_REMOVE(fn)
++#define XOCL_PLATFORM_REMOVE(fn)	fn
++#endif
++
+ #ifndef mmiowb
+ #define mmiowb()		do { } while (0)
+ #endif

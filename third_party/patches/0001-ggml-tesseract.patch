@@ -1,0 +1,137 @@
+diff --git a/ggml/CMakeLists.txt b/ggml/CMakeLists.txt
+index 35252a83a..2568cd33d 100644
+--- a/ggml/CMakeLists.txt
++++ b/ggml/CMakeLists.txt
+@@ -271,6 +271,7 @@ set   (GGML_OPENCL_TARGET_VERSION "300" CACHE STRING
+                                             "ggml: OpenCL API version to target")
+ 
+ option(GGML_HEXAGON                         "ggml: enable Hexagon backend"                    OFF)
++option(GGML_TESSERACT                       "ggml: use the Tesseract FPGA overlay backend (needs TESSERACT_ROOT)" OFF)
+ 
+ # toolchain for vulkan-shaders-gen
+ set   (GGML_VULKAN_SHADERS_GEN_TOOLCHAIN "" CACHE FILEPATH "ggml: toolchain file for vulkan-shaders-gen")
+@@ -342,6 +343,7 @@ set(GGML_PUBLIC_HEADERS
+     include/ggml-webgpu.h
+     include/ggml-zendnn.h
+     include/ggml-openvino.h
++    include/ggml-tesseract.h
+     include/gguf.h)
+ 
+ set_target_properties(ggml PROPERTIES PUBLIC_HEADER "${GGML_PUBLIC_HEADERS}")
+diff --git a/ggml/include/ggml-tesseract.h b/ggml/include/ggml-tesseract.h
+new file mode 100644
+index 000000000..01a36c40c
+--- /dev/null
++++ b/ggml/include/ggml-tesseract.h
+@@ -0,0 +1,30 @@
++#pragma once
++
++// Tesseract FPGA overlay core backend.
++// The implementation lives outside ggml, in the Tesseract repository (sw/ggml-tesseract);
++// ggml/src/ggml-tesseract only forwards to it. See docs/spec.md there ("ggml 백엔드 통합").
++
++#include "ggml.h"
++#include "ggml-backend.h"
++
++#ifdef  __cplusplus
++extern "C" {
++#endif
++
++#define GGML_TESSERACT_NAME "Tesseract"
++
++// backend registration: one device "Tesseract0" (GGML_BACKEND_DEVICE_TYPE_GPU),
++// none if TSR_DEVICE=none
++GGML_BACKEND_API ggml_backend_reg_t ggml_backend_tesseract_reg(void);
++
++// convenience: backend of device 0, or NULL if there is no device / the transport fails to open
++GGML_BACKEND_API ggml_backend_t ggml_backend_tesseract_init(void);
++
++GGML_BACKEND_API bool ggml_backend_is_tesseract(ggml_backend_t backend);
++
++// the device's (only) buffer type
++GGML_BACKEND_API ggml_backend_buffer_type_t ggml_backend_tesseract_buffer_type(void);
++
++#ifdef  __cplusplus
++}
++#endif
+diff --git a/ggml/src/CMakeLists.txt b/ggml/src/CMakeLists.txt
+index fe001a042..7386caa8f 100644
+--- a/ggml/src/CMakeLists.txt
++++ b/ggml/src/CMakeLists.txt
+@@ -613,6 +613,7 @@ ggml_add_backend(OpenCL)
+ ggml_add_backend(Hexagon)
+ ggml_add_backend(ZenDNN)
+ ggml_add_backend(OPENVINO)
++ggml_add_backend(Tesseract)
+ 
+ foreach (target ggml-base ggml)
+     target_include_directories(${target} PUBLIC    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include> $<INSTALL_INTERFACE:include>)
+diff --git a/ggml/src/ggml-backend-reg.cpp b/ggml/src/ggml-backend-reg.cpp
+index 4e9681c9f..db056d704 100644
+--- a/ggml/src/ggml-backend-reg.cpp
++++ b/ggml/src/ggml-backend-reg.cpp
+@@ -90,6 +90,10 @@
+ #include "ggml-et.h"
+ #endif
+ 
++#ifdef GGML_USE_TESSERACT
++#include "ggml-tesseract.h"
++#endif
++
+ namespace fs = std::filesystem;
+ 
+ static std::string path_str(const fs::path & path) {
+@@ -168,6 +172,9 @@ struct ggml_backend_registry {
+ #ifdef GGML_USE_ET
+         register_backend(ggml_backend_et_reg());
+ #endif
++#ifdef GGML_USE_TESSERACT
++        register_backend(ggml_backend_tesseract_reg());
++#endif
+ #ifdef GGML_USE_CPU
+         register_backend(ggml_backend_cpu_reg());
+ #endif
+@@ -589,6 +596,7 @@ void ggml_backend_load_all_from_path(const char * dir_path) {
+     ggml_backend_load_best("hexagon", silent, dir_path);
+     ggml_backend_load_best("musa", silent, dir_path);
+     ggml_backend_load_best("openvino", silent, dir_path);
++    ggml_backend_load_best("tesseract", silent, dir_path);
+     ggml_backend_load_best("cpu", silent, dir_path);
+     // check the environment variable GGML_BACKEND_PATH to load an out-of-tree backend
+     const char * backend_path = std::getenv("GGML_BACKEND_PATH");
+diff --git a/ggml/src/ggml-tesseract/CMakeLists.txt b/ggml/src/ggml-tesseract/CMakeLists.txt
+new file mode 100644
+index 000000000..96ac4aa9f
+--- /dev/null
++++ b/ggml/src/ggml-tesseract/CMakeLists.txt
+@@ -0,0 +1,30 @@
++# ggml-tesseract: forwarding stub for the Tesseract FPGA overlay backend.
++#
++# The backend sources live in the Tesseract repository (${TESSERACT_ROOT}/sw/ggml-tesseract);
++# this directory only exists so that ggml_add_backend(Tesseract) can build them as a regular
++# ggml backend library. The Tesseract top-level CMakeLists sets TESSERACT_ROOT and defines the
++# tsr_ref and tsr_transport targets before adding llama.cpp.
++
++if (NOT TESSERACT_ROOT)
++    message(FATAL_ERROR "GGML_TESSERACT requires TESSERACT_ROOT (the Tesseract repository); "
++                        "configure llama.cpp through the Tesseract top-level CMakeLists.txt")
++endif()
++
++foreach (tsr_target tsr_ref tsr_transport)
++    if (NOT TARGET ${tsr_target})
++        message(FATAL_ERROR "GGML_TESSERACT: target ${tsr_target} is not defined; it must be added "
++                            "before llama.cpp (Tesseract top-level CMakeLists.txt)")
++    endif()
++endforeach()
++
++# defines GGML_TESSERACT_SOURCES and GGML_TESSERACT_INCLUDE_DIRS
++include(${TESSERACT_ROOT}/sw/ggml-tesseract/sources.cmake)
++
++ggml_add_backend_library(ggml-tesseract ${GGML_TESSERACT_SOURCES})
++
++target_include_directories(ggml-tesseract PRIVATE ${GGML_TESSERACT_INCLUDE_DIRS})
++target_link_libraries(ggml-tesseract PRIVATE tsr_ref tsr_transport)
++target_compile_features(ggml-tesseract PRIVATE cxx_std_17)
++if (TSR_FP_FLAGS)
++    target_compile_options(ggml-tesseract PRIVATE ${TSR_FP_FLAGS})
++endif()

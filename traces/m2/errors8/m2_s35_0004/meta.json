@@ -1,0 +1,35 @@
+{
+  "format": "tesseract-trace",
+  "version": 1,
+  "config": {"num_ch": 4, "beat_bits": 512, "lanes": 128, "t_max": 8, "k_max": 32768, "spm_bytes": 4194304, "vl": 16, "nireg": 16, "nsreg": 16, "loop_depth": 4, "rd_outstanding": 16, "ch_bytes": 17179869184, "addr_beat_w": 28, "caps": 0},
+  "cmd_addr_beat": 430250,
+  "cmd_count": 31,
+  "args": [1094295, 3958170809, 3089780307, 3378329760, 2783304699, 1113996, 2750916851, 212035377],
+  "status": 6,
+  "err_code": 1,
+  "err_pc": 30,
+  "err_info": 0,
+  "init": [
+    {"ch": 0, "offset": 27536000, "size": 1024, "file": "init/ch0_0001a42a80.bin"},
+    {"ch": 1, "offset": 67111232, "size": 9536, "file": "init/ch1_0004000940.bin"}
+  ],
+  "expect": [
+    {"ch": 0, "offset": 67223680, "size": 384, "file": "expect/ch0_000401c080.bin"},
+    {"ch": 0, "offset": 67227200, "size": 384, "file": "expect/ch0_000401ce40.bin"},
+    {"ch": 0, "offset": 67230784, "size": 384, "file": "expect/ch0_000401dc40.bin"},
+    {"ch": 0, "offset": 67232896, "size": 384, "file": "expect/ch0_000401e480.bin"},
+    {"ch": 0, "offset": 67236480, "size": 384, "file": "expect/ch0_000401f280.bin"},
+    {"ch": 0, "offset": 67240768, "size": 384, "file": "expect/ch0_0004020340.bin"},
+    {"ch": 0, "offset": 67241792, "size": 384, "file": "expect/ch0_0004020740.bin"},
+    {"ch": 0, "offset": 67245120, "size": 384, "file": "expect/ch0_0004021440.bin"},
+    {"ch": 0, "offset": 67249536, "size": 320, "file": "expect/ch0_0004022580.bin"},
+    {"ch": 0, "offset": 67250752, "size": 320, "file": "expect/ch0_0004022a40.bin"},
+    {"ch": 0, "offset": 67252672, "size": 320, "file": "expect/ch0_00040231c0.bin"},
+    {"ch": 0, "offset": 67256128, "size": 320, "file": "expect/ch0_0004023f40.bin"},
+    {"ch": 0, "offset": 67259712, "size": 320, "file": "expect/ch0_0004024d40.bin"},
+    {"ch": 0, "offset": 67263040, "size": 320, "file": "expect/ch0_0004025a40.bin"},
+    {"ch": 0, "offset": 67264384, "size": 320, "file": "expect/ch0_0004025f80.bin"},
+    {"ch": 0, "offset": 67267328, "size": 320, "file": "expect/ch0_0004026b00.bin"}
+  ],
+  "perf": {"cycles": 1699, "retired": 30, "mvm_cycles": 0, "ch_rd_beats": [16, 149, 0, 0]}
+}
