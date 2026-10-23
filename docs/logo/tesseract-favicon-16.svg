@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" role="img" aria-labelledby="t d">
+  <title id="t">Tesseract</title>
+  <desc id="d">Tesseract favicon, pixel-drawn for 16 px.</desc>
+  <path fill="#8B7CF6" d="M6 1h2v1h-2ZM9 1h2v1h-2ZM4 2h4v1h-4ZM9 2h4v1h-4ZM2 3h6v1h-6ZM9 3h6v1h-6ZM3 4h3v1h-3ZM11 4h3v1h-3Z"/>
+  <path fill="#6D5AE6" d="M2 4h1v1h-1ZM2 5h3v1h-3ZM2 6h3v1h-3ZM2 7h3v1h-3ZM2 8h3v1h-3ZM2 9h3v1h-3ZM2 10h3v1h-3ZM2 11h4v1h-4ZM2 12h6v1h-6ZM4 13h4v1h-4ZM6 14h2v1h-2Z"/>
+  <path fill="#5848DC" d="M14 4h1v1h-1ZM12 5h3v1h-3ZM12 6h3v1h-3ZM12 7h3v1h-3ZM12 8h3v1h-3ZM12 9h3v1h-3ZM12 10h3v1h-3ZM11 11h4v1h-4ZM9 12h6v1h-6ZM9 13h4v1h-4ZM9 14h2v1h-2Z"/>
+  <path fill="#FFC845" d="M8 8h1v1h-1ZM6 9h5v1h-5ZM5 10h7v1h-7ZM6 11h5v1h-5ZM8 12h1v1h-1Z"/>
+  <path fill="#F59E0B" d="M9 4h2v1h-2ZM9 5h3v1h-3ZM9 6h3v1h-3ZM9 7h3v1h-3ZM9 8h3v1h-3ZM11 9h1v1h-1Z"/>
+  <path fill="#D9730B" d="M6 4h2v1h-2ZM5 5h3v1h-3ZM5 6h3v1h-3ZM5 7h3v1h-3ZM5 8h3v1h-3ZM5 9h1v1h-1Z"/>
+</svg>

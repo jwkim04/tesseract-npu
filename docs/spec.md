@@ -60,7 +60,7 @@ Tesseract는 llama.cpp가 넘기는 ggml 그래프를 명령어 스트림으로 
 - 코어 (벤더 독립 SystemVerilog): 커맨드 프로세서(명령어 fetch·decode, 순차 실행, R0\~R15), SPM(활성값·중간값·QA, line 64B 단위, 4 MiB), 벡터·스칼라 유닛(원소 연산, 리덕션, RoPE, VL 16, s0\~s15), 클러스터 0\~3(스트림·언팩, MAC 128, fp 누산). SPM과 클러스터 사이는 x 브로드캐스트·y 수집 버스다.
 - DDR4 ch0\~ch3: 클러스터 c는 채널 c에서만 가중치 스트림을 받는다(채널당 최대 19.2 GB/s = 300 MHz × 64B, AXI4 메모리 브리지 경유). ch0은 가중치 행 1/4과 CMD·IO, ch1\~ch3은 가중치 행 1/4씩이다.
 
-무거운 가중치 트래픽은 각 채널과 그 채널의 클러스터 사이에서만 오가고, SLR을 넘는 것은 수 KB짜리 활성값 브로드캐스트와 결과 수집뿐이다.
+무거운 가중치 트래픽은 각 채널과 그 채널의 클러스터 사이에서만 오가고 SLR을 넘지 않는다. SLR을 넘는 것은 수 KB짜리 활성값 브로드캐스트와 결과 수집, 그리고 중앙 DMA와 채널별 중재기 사이의 LD/ST 데이터다(rtl-m2 §12의 300 MHz 항목 2: 레지스터 슬라이스로 대응).
 
 **코어 경계 인터페이스**
 
@@ -339,7 +339,7 @@ VOP.MUL    y, y, w_norm, 5120
 | 0x010 | `CFG2` | R | VL\[7:0\], NSREG\[15:8\], K\_MAX/256\[31:16\] |
 | 0x014 | `CAPS` | R | 구현된 기능 비트: bit0 VU, bit1 예약, bit2 RLD·MULI·LOOP, bit3 TOPK, bit4 WAITM·JUMP |
 | 0x020 | `CTRL` | W | bit0 START, bit1 SOFT\_RESET, bit2 ABORT |
-| 0x024 | `STATUS` | R/W1C | bit0 BUSY, bit1 DONE, bit2 ERR, bit3 WAITING (WAITM 대기 중) |
+| 0x024 | `STATUS` | R/W1C | bit0 BUSY, bit1 DONE, bit2 ERR, bit3 WAITING (WAITM 대기 중), bit4 HALTED (계획, M4: 디버그 정지 중) |
 | 0x028 | `CMD_ADDR_LO` | RW | 명령 버퍼 시작 (ch0, beat 주소) 하위 32비트 |
 | 0x02C | `CMD_ADDR_HI` | RW | 상위 비트 |
 | 0x030 | `CMD_COUNT` | RW | 명령어 개수 (JUMP가 있는 프로그램에서는 첫 구간 길이) |
@@ -348,7 +348,10 @@ VOP.MUL    y, y, w_norm, 5120
 | 0x048 | `ERR_INFO` | R | 오류 부가 정보 (주소 등) |
 | 0x050 | `PC` | R | 현재 명령어 주소 (디버그) |
 | 0x060\~0x07C | `ARG0`\~`ARG7` | RW | 실행 시작 시 R8\~R15로 복사 |
+| 0x080 | `PERF_INFO` | R | (계획, 조건부, M4\~M8: 첫 확장 카운터와 함께 넣는다) \[7:0\] 구현된 `PERF_*` 카운터 수. 0이면 5 + 2 × `NUM_CH`개다. 인덱스 5 + 2 × `NUM_CH`\~63(오프셋 0x2FC까지)은 확장 카운터용으로 예약한다 ("프로파일러와 디버거") |
 | 0x100\~ | `PERF_*` | R | 64비트 카운터: 전체 사이클, 은퇴 명령어 수, 채널별 읽은 beat 수, 채널별 DRAM 대기 사이클, MVM·VU 사이클, WAITM 대기 사이클 |
+| 0x800\~0x9FC | `DBG_*` | R/W | (계획, M4) 디버그 블록. 없으면 모두 0을 읽는다 ("프로파일러와 디버거") |
+| 0xA00\~0xA3C | `TRC_*` | R/W | (계획, 조건부, M8\~M9) 트레이스 링. 없으면 0을 읽는다 |
 
 `CAPS`를 두는 이유는 같은 소프트웨어가 기능이 다른 비트스트림을 다루기 위해서다. 백엔드는 `CAPS`를 보고 lowering 경로(호스트 보조 MoE 대 디바이스 MoE 등)를 고른다.
 
@@ -446,6 +449,7 @@ for t in 0 .. T-1:
 - `DQROW`는 행 번호로 채널과 채널 내 위치를 계산해 행 하나를 읽고, 수치 규칙의 비트 해석대로 f32로 푼다 (d × q, Q4\_K는 d × sc × q − dmin × m). 곱과 뺄셈은 각각 반올림한다.
 - `LOOP` 본문이 바깥 본문과 같은 명령어에서 끝나면 `LOOP_NEST` 오류다.
 - `WAITM`은 매번 DRAM을 새로 읽는다. 호스트는 데이터를 먼저 쓰고 플래그 워드를 마지막에 쓰며, WAITM 이후의 명령어는 그 데이터를 본다.
+- (M9 계획 개정, "프로파일러와 디버거") 대기 중에 ABORT나 디버그 HALT가 오면 `WAITM`은 R\[rd\]를 쓰지 않고 실행하지 않은 것으로 되돌린다 ("구현 명확화"의 ABORT 항목). 조건을 만족할 때까지 아무 상태도 바꾸지 않으므로 순차 의미론과 같다.
 
 ## ggml 백엔드 통합
 
@@ -616,6 +620,70 @@ loop:
 
 **성능 검증**: 시뮬레이터도 채널별 beat 수를 세므로 이론 사이클을 낸다. 하드웨어 `PERF_*` 카운터와 비교해 DRAM 대기 사이클 비율로 실효 대역폭을 확인한다.
 
+## 프로파일러와 디버거
+
+프로파일러는 디바이스·호스트 시간이 어디에 쓰이는지, 디버거는 하드웨어가 어디서부터 틀리거나 멈추는지 보여 준다. 둘 다 데이터패스, 수치 규칙, ISA 인코딩, 순차 의미론을 바꾸지 않으며, 디버거로 레지스터·SPM·DRAM을 고치지 않는 한 켜도 디바이스가 쓴 바이트는 끈 실행과 같다. 이 절은 계약만 정하고, 도구(`tsr-dbg`, `tsr-prof`)·파일 형식·지표·환경변수·레지스터별 맵·검증 계획은 `docs/prof-dbg.md`(계획, 미구현)에 둔다.
+
+**소프트웨어 먼저**: 기존 CSR, 접두 실행(`CMD_COUNT` 줄이기), 시뮬레이터 대조로 답할 수 있는 것은 RTL 없이 한다. RTL은 명령어 경계 정지, 실행 중 내부 상태, SPM 읽기·쓰기에만 더한다. ISA 시뮬레이터가 디버그 블록 의미의 기준 모델이다.
+
+**디버그 블록 (계획, M4)**
+
+- 코어 CSR 0x800\~0x9FC의 `DBG_*` 묶음이다. 의미는 모든 타깃에서 같고 접근 경로만 다르다. 파라미터 `HAS_DBG` 등으로 넣고 뺀다.
+- 유무는 `DBG_ID`(0x800)로 알린다. 블록이 없으면 정의되지 않은 오프셋 규칙대로 0을 읽는다. `CAPS` 비트는 더하지 않는다: `CAPS`는 lowering이 고르는 ISA 기능만 담고, 트레이스 재생 도구가 구성 일치 판정에 그대로 비교한다.
+- 정지는 명령어 경계, 곧 ABORT를 확인하는 자리에서만 한다. 확인 순서는 ABORT → 정지 조건 → 명령 버퍼 끝 → fetch 범위다. 정지 조건은 HALT 요청, STEP(명령어 하나 실행 뒤), 명령어 주소 브레이크포인트, 은퇴 수 브레이크포인트, 쓰기 감시(PD3부터)다. RESUME·STEP으로 재개한 경계에서는 브레이크포인트를 다시 보지 않는다.
+- **불변식**: 정지한 코어의 아키텍처 상태(R0\~R15, s0\~s15, 그 실행이 쓴 SPM line, DRAM)는 같은 수의 명령어를 은퇴한 ISA 시뮬레이터와 비트 단위로 같다.
+- **겹친 실행의 정지**: 실행을 겹치는 구현(M5 연속 MVM 겹치기, 비순차 실행)은 정지 조건이 참이 되면 다음 명령어를 내지 않고, 낸 명령어가 모두 은퇴한 뒤 정지한다 (`FENCE`와 같다). STEP도 같다.
+- 내부 상태(마지막 명령어 워드, 해석된 주소, 유닛 단계, 채널별 미처리 요청) 읽기는 실행 중에도 부수 효과가 없고, 유닛이 멈춰도 응답한다. 레지스터 쓰기는 정지 중에만 반영된다 (SPM 창은 아래).
+- **SPM 창**: `tsr_spm`의 네 번째, 가장 낮은 우선순위 클라이언트로 line 단위 읽기·쓰기를 한다. 호스트가 SPM을 직접 보지 못한다는 규칙(메모리 모델)의 유일한 예외이고, 백엔드와 트레이스는 쓰지 않는다. 읽기·쓰기 모두 BUSY가 아니거나 정지 중일 때만 동작하며, 그 밖의 상태, 범위 밖 line, 정해진 사이클 안에 포트를 얻지 못한 경우는 아무것도 하지 않고 오류 비트를 켠다. 그래서 CSR 접근은 언제나 끝난다.
+
+**정지 상태 규칙**
+
+| 항목 | 규칙 |
+| --- | --- |
+| `STATUS` | BUSY \| HALTED(bit4). DONE과 `done`은 켜지지 않는다. W1C는 HALTED에 효과가 없다 |
+| 제어 | `DBG_CTRL`에 여러 비트를 함께 쓰면 STEP > RESUME > HALT 순으로 하나만 따른다. 정지 중이 아닐 때의 RESUME·STEP, BUSY가 아니거나 이미 정지했을 때의 HALT는 무시한다. 실행이 끝나면 걸려 있던 HALT·STEP 요청도 지운다 |
+| ABORT | 그 경계에서 끝난다: `ERR_CODE` = `ABORTED`, `ERR_PC` = 다음 명령어, `PC`는 그대로 |
+| SOFT\_RESET | BUSY 중 규칙대로 그 경계에서 끝낸 뒤 적용한다. 브레이크포인트 등 디버거 설정은 START·SOFT\_RESET 뒤에도 남고 하드웨어 리셋만 지운다 |
+| START | BUSY이므로 무시한다 |
+| DRAM | 호스트가 읽고 쓸 수 있고 다음 명령어가 그 값을 본다 ("실행 흐름"의 예외). 실행 중인 명령 버퍼는 제외 (프리페치되었을 수 있다) |
+| `PERF_*` | 시간 카운터(`PERF_CYCLES`, `PERF_*_CYCLES`, `PERF_CH_WAIT[c]`)는 세지 않는다. 사건 카운터(`PERF_RETIRED`, `PERF_CH_RD_BEATS[c]`)는 실제 사건을 세며, 정지 중 사건은 ch0 프리페치뿐이다 |
+| 지연 | 실행 중인 명령어가 끝나야 정지한다 (32B 출력 헤드 MVM 약 10.8 ms). 멈춘 유닛은 내부 상태 읽기로 진단한다 |
+| `WAITM` | 대기 중 HALT·ABORT는 그 `WAITM`을 실행하지 않은 것으로 되돌린다 (M9 계획 개정, "구현 명확화" ABORT) |
+
+**접근 경로와 JTAG**
+
+| 타깃 | `DBG_*`·`PERF_*` 접근 | JTAG | 신호 수준 |
+| --- | --- | --- | --- |
+| sim, mock | 함수 호출 (기준 모델) | — | — |
+| U200 (XRT) | PCIe CSR 창 ("XRT 어댑터") | 쓰지 않는다 | 디버그 빌드의 ILA (XVC over PCIe) |
+| Zynq·Kria | PS AXI-Lite | 선택: BSCANE2 → CSR 브리지 | ILA |
+| ASIC, 호스트 버스가 없는 보드 | JTAG TAP + DTM → 코어 CSR 공간 | 주 경로 | — |
+
+- **U200은 JTAG를 쓰지 않는다.** XRT 셸은 DFX라 사용자 커널이 재구성 영역에 들어가고, BSCANE2 같은 구성 프리미티브는 static 셸에만 둘 수 있다 (UG909, 확인은 미결정 사항). 사용자 디버그 네트워크는 XVC over PCIe로만 닿고 USB JTAG 대체 경로가 없다 (`supports_jtag_fallback` = false, 관리 네트워크는 사용자 커널에 닿지 않는다). JTAG를 거쳐도 같은 PCIe라 새로 보이는 것이 없다.
+- **U200 ILA**: 디버그 블록으로 안 보이는 문제(AXI 교착, firewall, CDC, 명령어 안 사이클)에만 쓴다. 디버그 빌드에만 v++ 디버그 설정과 Vivado Tcl 훅으로 넣고, `rtl/tech` 밖의 RTL에는 ILA 인스턴스를 두지 않는다 (규칙 6).
+- **이식 타깃**: Zynq·Kria의 BSCANE2 브리지는 `rtl/tech/xilinx` 래퍼로만 둔다. 코어에는 JTAG 포트가 없고, 플랫폼 계층의 중재기가 호스트 버스와 JTAG(DTM의 `dmi`)를 코어 CSR 포트 하나로 잇는다.
+
+**프로파일러 원칙**
+
+- **실행 기록**: 전송 계층의 실행 한 번마다 호스트 시각, 명령어 수, 최종 `STATUS`·`ERR_*`, `PERF_*` 차분을 남긴다. 기록과 자체 검사는 `TSR_PROF`나 shadow 대조를 켰을 때만 하고, 통과 조건의 tok/s는 끈 실행으로 잰다.
+- **PERF 차분**: `PERF_*`는 실행 사이에 변하지 않으므로 ("구현 명확화") 실행 직전·직후 값의 차가 그 실행의 값이다. 직후 값을 다음 실행의 직전 값으로 쓴다.
+- **PERF 소유권**: 실행을 소유하는 CSR 마스터(U200·Zynq: 호스트 버스와 어댑터의 시작 순서기, 호스트 버스가 없는 보드: JTAG)만 `CTRL`, `CMD_*`, `ARG*`, `STATUS`를 쓰고 `PERF_*`를 읽는다 (LO 표본 슬롯이 하나뿐이다). 다른 마스터는 `DBG_*`에 접근하고 나머지는 읽기만 하며 `PERF_*`는 읽지 않는다.
+- **프로그램 지도**: 백엔드가 lowering 때 만드는 명령어 구간 ↔ ggml 노드·가중치·레이어 지도를 디버거와 프로파일러가 함께 쓴다.
+- **조각 실행**: 프로그램 일부만 실행할 때는 그 명령어들을 다른 CMD 절반이나 스크래치 영역에 복사하고 `END`를 붙인다. 실행 중이거나 캐시된 프로그램은 고치지 않는다. 조각 사이에 SPM은 남는다 ("구현 명확화").
+- **RTL 계측**: 확장 카운터(`PERF_*` 인덱스 5 + 2 × `NUM_CH` 이후, 개수는 `PERF_INFO` 0x080)와 트레이스 링(`TRC_*` 0xA00\~0xA3C)은 `docs/prof-dbg.md`의 측정 기준을 만족할 때만 넣는다.
+
+**단계** (마일스톤 통과 조건은 바꾸지 않는다)
+
+| 단계 | 시점 | 내용 | RTL |
+| --- | --- | --- | --- |
+| PD1 · 소프트웨어 | M3 C단계 머지 뒤 (그 전에는 C단계 파일을 바꾸지 않는다). M3 통과 조건은 PD1에 기대지 않는다 | 프로그램 지도, 사후·행 덤프, shadow 대조, 접두 실행 탐색, 실행 기록, 시뮬레이터 디버그 모델 | 없음 |
+| PD2 · 디버그 블록 | M4: U200 기술 매핑·타이밍 작업(k4 비트스트림)과 함께 | 정지·STEP·브레이크포인트, 내부 상태, SPM 창, 전송 계층 정지 처리, 명령어 단위 귀속 | 디버그 블록 |
+| PD3 · 벡터 유닛 | M6\~M7 (M5: 연속 MVM 겹치기의 정지 검사) | s 레지스터, 쓰기 감시, VU 프로파일 | 소량 |
+| PD4 · 상주 프로그램 | M8\~M9 | LOOP 상태, `JUMP`를 넘는 명령어 주소, 명령어 이력, `WAITM` 규칙, 확장 카운터·트레이스 링 판정 | 소량, 조건부 |
+| PD5 · JTAG 포트 | 이식 착수 때 | DTM과 CSR 중재기. U200에는 넣지 않는다 | 이식 타깃만 |
+
+**하지 않는 것**: 오류에서 멈추기(사후 읽기로 충분하다), 명령어 주입과 명령어 바꿔 치기 브레이크포인트, 명령어 안 정지, GDB 스텁, U200 자체 JTAG 브리지와 정규 빌드 ILA, llama.cpp 패치와 `cb_eval` 노드 정지, 기존 `PERF_*` 인덱스·`CAPS`·오류 코드 변경, 기본 경로의 상시 RTL 계측. 이유는 `docs/prof-dbg.md` §8.
+
 ## 저장소 구조와 마일스톤
 
 저장소는 계층 분리를 그대로 디렉터리로 옮긴다. llama.cpp는 특정 커밋에 고정한 포크를 서브모듈로 두고, `ggml/src/ggml-tesseract`에 백엔드를 연결해 CMake 옵션 `GGML_TESSERACT`로 켠다.
@@ -627,10 +695,11 @@ tesseract/
 │   ├── ggml-tesseract/            # 백엔드: reg/device/buffer, lowering, 리패커, 프로그램 캐시
 │   ├── sim/                 # ISA 시뮬레이터, tsr_ref_math.c, 트레이스 입출력
 │   ├── transport/           # tsr_transport 구현: sim, xrt
+│   ├── prof/                # 프로파일 기록기: 실행 기록, JSON·Perfetto 출력 (계획, PD1)
 │   ├── runner/              # 단계 C 전용 디코드 러너 (M9)
-│   └── tools/               # 트레이스 러너, 테스트 벡터 생성기, klcheck (ggml 링크)
+│   └── tools/               # 트레이스 러너, 테스트 벡터 생성기, klcheck (ggml 링크), tsr-prof·tsr-dbg (계획, PD1)
 ├── rtl/
-│   ├── core/                # 벤더 독립 SV: cmdproc(레지스터·LOOP), cluster, vu, spm, dma
+│   ├── core/                # 벤더 독립 SV: cmdproc(레지스터·LOOP), cluster, vu, spm, dma, dbg(디버그 블록, 계획 M4)
 │   ├── tech/generic/        # tsr_sram_*, tsr_mac_lane 일반 구현
 │   ├── tech/xilinx/         # URAM/BRAM, DSP48E2 패킹
 │   └── platform/alveo_xrt/  # 제어 브리지, AXI4 메모리 어댑터, kernel.xml
@@ -665,8 +734,9 @@ M1에서 소프트웨어 경로가 먼저 완성되고, M2 이후 하드웨어 �
 
 - [x] 프로젝트 이름: Tesseract로 확정
 - [ ] U200 셸과 Vitis/XRT 버전 확정, `platforminfo`로 채널별 SLR 위치 확인 (M0)
+- [ ] 카드 DDR4 용량 확인 (M0, 2026-10-23 기록). 판매자 설명으로는 32 GB 특주 모델이고 DIMM 4장이 모두 꽂혀 있다. 표준 U200은 16 GB × 4 = 64 GB이고, 플랫폼 메모리 토폴로지와 `TSR_DEF_CH_BYTES`(16 GiB)도 이 값을 전제로 한다. 카드 장착 후 확인할 것: DIMM 용량과 부품 번호(`xbutil examine`, 가능하면 DIMM 라벨), 표준 셸(`xilinx_u200_gen3x16_xdma_base_2`)의 DDR4 컨트롤러가 이 DIMM으로 보정되는지(`xbutil validate`, dmesg), M0 대역폭 커널로 채널 전 범위 읽기·쓰기와 주소 앨리어싱 검사(예: 0과 8 GiB 오프셋에 서로 다른 패턴을 쓰고 다시 읽기). 표준 플랫폼의 DDR4 컨트롤러 4개는 `MTA18ASF2G72PZ-2G3`(16 GB DDR4-2400 ECC RDIMM, 2Rx8)로 고정 설정되어 있고 SPD를 읽지 않는다(`hw.xsa`의 preset과 DDR4 IP 설정, AXI 주소 34비트로 확인). 예상: 8 GB DIMM이 2Rx8(4 Gb 칩, 예 `MTA18ASF1G72PZ-2G3`)이면 보정은 통과하고 위쪽 8 GB가 아래쪽과 겹친다. 1Rx8(`MTA9ASF1G72PZ-2G3`)이나 x4 구성이면 보정이 실패할 수 있고, 그때는 같은 구성의 16 GB 2Rx8 RDIMM으로 교체하는 것이 가장 간단하다(맞춤 플랫폼은 비용이 크다). 먼저 DIMM 라벨의 부품 번호와 판매자가 쓰던 셸·`xbutil validate` 결과를 확인한다. 사용자가 카드를 받은 뒤 표준 셸을 굽고 `xbutil validate` 등 시험을 모두 통과했다(2026-10-23 전언). 따라서 보정 실패 경우는 배제되고, 남는 확인은 채널당 실제 용량과 위쪽 주소 겹침이다. validate의 메모리 시험은 작은 버퍼만 쓰므로 이것을 잡지 못한다. 장착 후 `xbutil examine`의 셸이 `xilinx_u200_gen3x16_xdma_base_2`이면 다시 굽지 않는다. 채널당 8 GB면 비트스트림 `CH_BYTES`와 전송 계층 채널 크기를 8 GiB로 맞춘다. 이때 수용 모델은 32B Q4\_K\_M(가중치 약 20.7 GB, 채널당 약 5.2 GB)과 30B-A3B까지이고 70B는 들어가지 않는다
 - [ ] exp·역수·sin·cos 근사 알고리즘과 계수 확정 (`tsr_ref_math.c`, M6 전)
-- [ ] 비순차 실행(유닛 간 겹치기) 도입 여부: M4 성능 카운터의 명령어 간 공백 비율로 판단
+- [ ] 비순차 실행(유닛 간 겹치기) 도입 여부: M4 성능 카운터의 명령어 간 공백 비율로 판단. 지표는 MVM 공백 비율 G = 1 − Σ`PERF_MVM_CYCLES` / Σ`PERF_CYCLES`와 그 벽시계 몫이고, 제안 기준은 `docs/prof-dbg.md`에 있다 (참고: Qwen2.5-0.5B Q8\_0, `traces/model`의 1토큰, 사이클 모델 G = 3.98%)
 - [ ] T\_MAX 합성값과 토큰 패킹 방식 (M7에서 앞당김, 2026-10-23). 합성값 8을 목표로 한다. 시뮬레이터에서 T > 1 경로를 확인했다: numcheck PASS(0.5B 두 개, 32B), T\_MAX 1과 출력 바이트 동일, 사이클 모델 프리필 0.5B 5.9배·32B 7.2배. RTL 자원·타이밍과 DSP 패킹은 M3 C단계에서 정한다. 남은 것: 출력 헤드(N ≈ 15만)는 토큰당 x + QA + y가 약 9,600 line이라 4 MiB SPM에 토큰 6개만 들어가고, T = 7~8이면 헤드 가중치를 두 번 읽는다(32B에서 패스당 +0.83 GB, +4%). 백엔드가 헤드를 N 방향으로 나누면 12~13개가 들어간다. 일반 프리필은 마지막 토큰의 logits만 계산하므로 영향이 없고, 모든 위치의 logits가 필요한 추측 디코딩(M7)에서만 문제가 된다
 - [ ] (M7로 연기, 2026-10-23: 기본 경로 우선) 추측 디코딩의 출력 동일성: 디바이스 MUL\_MAT은 토큰별로 T와 무관하게 비트 동일하지만, llama.cpp CPU attention이 T = 1(vec\_dot)과 T ≥ 2(tinyBLAS)에서 다른 커널을 써서 greedy 출력이 근소한 동률에서 갈릴 수 있다(0.5B, 37번째 토큰에서 관찰). 디바이스가 있으면 auto FA가 꺼진다. `-fa on`이면 n\_kv < 512, T ≤ 63에서 동일하다. FA on은 M1 검증 설정(FA off)과 다르므로 채택하면 klcheck·numcheck를 다시 돌린다
 - [ ] KV 캐시 레이아웃: n\_kv가 늘어나면 행 범위 분할이 맞지 않으므로 행 interleave(행 r → 채널 r mod C) 같은 별도 배치와 DRAM 위치, 8비트 KV 우선: llama.cpp를 -ctk q8\_0 -ctv q8\_0로 실행하는 것을 전제로 할지 (M7)
@@ -674,10 +744,17 @@ M1에서 소프트웨어 경로가 먼저 완성되고, M2 이후 하드웨어 �
 - [ ] 라이선스: RTL은 Solderpad Hardware 또는 CERN-OHL-S, 소프트웨어는 MIT
 - [ ] llama.cpp 업스트림 기여 시점
 - [ ] 모델 단위 KL 합격선 조정 (M1). numcheck에서 양자화 모델의 1 ulp 바닥값이 앞쪽 위치에서 0이 됨을 확인했다. 제안: 바닥값이 움직인 위치만으로 비율 계산
-- [ ] `PERF_CH_RD_BEATS[0]`에 명령어 fetch beat가 섞여 채널 0의 LD beat를 하드웨어와 대조할 수 없다. fetch를 빼거나 `PERF_FETCH_BEATS`(인덱스 5 + 2 × `NUM_CH`)를 추가할지 (M4 성능 검증 전)
+- [ ] `PERF_CH_RD_BEATS[0]`에 명령어 fetch beat가 섞여 채널 0의 LD beat를 하드웨어와 대조할 수 없다. fetch를 빼거나 `PERF_FETCH_BEATS`(인덱스 5 + 2 × `NUM_CH`)를 추가할지 (M4 성능 검증 전). 제안(2026-10-23): `LOOP`·`JUMP`가 없고 마지막 명령어(pc = `CMD_COUNT` − 1)인 `END`로 끝난 실행은 fetch beat가 ⌈`CMD_COUNT` / 2⌉이므로 소프트웨어가 빼서 대조한다. `tb/core`의 `core_perf`가 같은 식을 검사하고, `traces/model/qwen05b-q8_0`의 145개 실행 전부에서 ch0 − ch1 = LD line 수 + ⌈`CMD_COUNT` / 2⌉가 성립한다. `PERF_FETCH_BEATS`는 실기에서 이 식이 어긋나거나, M8(`LOOP`)부터 fetch 수가 프로그램만으로 정해지지 않을 때 넣는다
 - [ ] 단계 B의 샘플링 위치: llama.cpp 샘플링을 디바이스로 옮기는 경로가 고정 커밋에 있는지 확인, 없으면 `sw/runner`가 담당 (M8)
 - [ ] greedy 외 샘플링(temperature, top-p)과 디바이스 난수 생성기 (M9)
 - [ ] `sw/runner`와 llama-server 연동 방식 (M9)
+- [ ] XRT에서 실행 중 CSR 창 접근 (M3 실기에서 확인). `TSR_XRT_CTRL=run`에서 `xrt::run`이 걸려 있는 동안 exclusive CU의 `read_register`·`write_register`가 되는지, 정지 중 BO 읽기·쓰기가 되는지 시험한 적이 없다 (`docs/xrt-host.md` §4.1, §8). run 모드의 시간 초과 ABORT(창으로 `CTRL.ABORT` 쓰기)와 PC 표본이 여기에 기댄다. 안 되면 이 둘은 `TSR_XRT_CTRL=regs`로 해야 한다. 디버거는 처음부터 regs 모드를 쓴다 (`docs/prof-dbg.md` §4.2)
+- [ ] PCIe CSR 창 읽기 지연 실측 (M3, `tsr_xrt_selftest`). 실행당 `PERF_*` 읽기 세트, PC 표본 간격, SPM 창 덤프 시간, 전체 카운터 동시 표본의 도입 여부가 이 값으로 정해진다
+- [ ] U200 디버그 빌드 확인 (M4): 이 DFX 셸의 사용자 커널에 BSCANE2를 둘 수 없는지(UG909), ILA를 넣은 디버그 빌드(`hw/u200/k4_dbg.cfg`)가 300 MHz와 SLR 횡단 타이밍을 지키는지
+- [ ] 멈춘 유닛의 강제 해제 (M4). ABORT와 SOFT\_RESET은 명령어 경계를 기다리므로 멈춘 유닛은 하드웨어 리셋으로만 풀리고, 그러면 사후 상태가 사라진다. 경계를 기다리지 않는 강제 중단을 둘지 플랫폼 어댑터의 리셋 규칙과 함께 정한다. 그 전에는 행 덤프를 먼저 남긴다
+- [ ] 유닛 점유·발행 공백 카운터(M4\~M8)와 트레이스 링(M8\~M9)의 도입 여부. 측정 기준은 `docs/prof-dbg.md` §6.2이고, `PERF_FETCH_BEATS`는 위 `PERF_CH_RD_BEATS[0]` 항목대로 정한다
+- [ ] `JUMP` 체인에서 `PC`, `ERR_PC`, `CMD_COUNT`와 디버거 명령어 주소의 의미 (M9)
+- [ ] 이식 타깃의 디버그 (이식 착수 때): Zynq·Kria의 BSCANE2 브리지 여부, 소형 타깃의 디버그 블록 구성(SPM 창 포함 여부), 호스트 버스가 없는 ASIC의 디버그용 메모리 접근, JTAG와 호스트 버스가 함께 있을 때의 `PERF_*` 읽기, START의 SPM 보존을 영구 보장으로 둘지
 
 ## 구현 명확화 (v0.2.1)
 
@@ -715,7 +792,7 @@ M1 착수 시 시뮬레이터와 RTL이 비트 단위로 같아야 하는데 본
 - **길이 0**: `MVM`의 N = 0과 `LD`·`ST`의 n\_lines = 0은 합법이며 아무것도 쓰지 않는다 (범위 검사는 위 식대로 한다). N = 0인 `MVM`은 가중치도 SPM의 x도 읽지 않는다 (관찰할 수 있는 차이는 없다).
 - **명령어 fetch**: 명령어 pc는 ch0 beat `CMD_ADDR` + ⌊pc/2⌋의 바이트 32 × (pc mod 2)부터다. 그 beat가 DRAM 한계 밖이면 `DRAM_RANGE`, `ERR_PC` = pc, `ERR_INFO` = beat 주소의 하위 32비트. 프리페치는 `CMD_COUNT` 안에서만 읽고, 범위 오류는 그 명령어를 실행할 차례에만 보고한다. 실행 중에 자기 명령 버퍼를 `ST`로 고치는 프로그램은 결과가 정의되지 않는다.
 - **오류 시 STATUS**: 오류로 멈추면 `STATUS` = DONE | ERR이고 BUSY는 내려가며 `done` 출력도 켜진다 (어댑터가 `ap_done`으로 오류 종료도 알 수 있도록). 호스트는 DONE 후 ERR 비트로 성공 여부를 판단한다.
-- **ABORT**: 명령어 사이에서만 확인한다. `ABORTED`의 `ERR_PC`는 실행하지 않은 첫 명령어, `ERR_INFO` = 0. BUSY가 아닐 때 쓴 ABORT는 다음 START가 지우므로 효과가 없다.
+- **ABORT**: 명령어 사이에서만 확인한다. `ABORTED`의 `ERR_PC`는 실행하지 않은 첫 명령어, `ERR_INFO` = 0. BUSY가 아닐 때 쓴 ABORT는 다음 START가 지우므로 효과가 없다. (M9 계획 개정, "프로파일러와 디버거") 예외: `WAITM` 대기 중의 ABORT와 디버그 HALT는 그 `WAITM`을 실행하지 않은 것으로 되돌린다. 이때 `ERR_PC`는 그 `WAITM`, `PC`는 그 앞에 실행한 명령어 그대로이고, 정지에서 재개하면 `WAITM`을 처음부터(시간 제한도 처음부터) 다시 실행한다.
 - **CSR 부가 규칙**: BUSY 동안의 START는 무시한다. START는 `ERR_PC`·`ERR_CODE`·`ERR_INFO`·`PC`를 0으로, R1\~R7을 0, R8\~R15를 `ARG0`\~`ARG7`로 만든다 (시뮬레이터는 s0\~s15도 +0.0으로 만든다; s 레지스터 초기값은 M6에서 확정). `STATUS`의 W1C 대상은 DONE과 ERR뿐이고 BUSY·WAITING 쓰기는 무시한다. SOFT\_RESET은 `STATUS`, `ERR_*`, `PC`, 레지스터, `PERF_*`를 0으로 하고 `CMD_ADDR`, `CMD_COUNT`, `ARG*`, SPM, DRAM은 그대로 둔다. `PC`는 실행 중(또는 마지막으로 실행한) 명령어의 인덱스다. 정의되지 않은 CSR 오프셋은 읽으면 0, 쓰기는 무시한다.
 - **겹치는 피연산자**: `MVM`의 토큰별 dst 구간끼리 겹치는 경우(T > 1이고 dst\_stride < ⌈4N/64⌉)와 `QACT`의 dst와 src가 겹치는 경우는 dst와 x가 겹치는 `MVM`처럼 결과가 정의되지 않는다. lowering은 이런 프로그램을 내지 않는다. (시뮬레이터는 `MVM`에서 모든 y를 먼저 계산한 뒤 토큰 순서대로 쓰고, `QACT`는 토큰마다 읽고 쓴다.)
 - **ACC 덧셈**: y\_out = y\_old + y는 fp 공통 규칙(DAZ, FTZ, canonical NaN)을 따르는 f32 덧셈 한 번이다.
@@ -730,6 +807,11 @@ M1 착수 시 시뮬레이터와 RTL이 비트 단위로 같아야 하는데 본
 - **ABORT와 명령 버퍼 끝**: ABORT는 명령 버퍼 끝 검사보다 먼저 확인한다. 마지막 명령어 뒤에 본 ABORT는 `ILLEGAL_OP`가 아니라 `ABORTED`이고 `ERR_PC` = `CMD_COUNT`다. ABORT는 `PC`를 바꾸지 않는다 (마지막으로 실행한 명령어).
 - **DONE ⇒ 메모리 정지**: `STATUS.DONE`과 `done`은 그 실행의 모든 메모리 트랜잭션이 끝난 뒤에만 켜진다. 버린 명령어 프리페치도 포함한다.
 - **하드웨어 리셋**: `ap_rst_n`은 동기식 active-low다. 리셋 후 모든 CSR은 전원 투입 직후 값이다. SOFT\_RESET과 달리 `CMD_ADDR`, `CMD_COUNT`, `ARG*`도 0이고 SPM 내용은 정의되지 않는다. 메모리 쪽은 코어와 함께 리셋되어야 한다. 끝나지 않은 트랜잭션은 완료되지 않고 버려지며, 리셋 전 요청의 응답이 리셋 후에 오면 안 된다. 이 조건은 M4 플랫폼 어댑터가 보장한다. `tsr_fetch`는 남은 응답을 견디지만 `tsr_mem_arb`의 미완료 카운터는 이를 전제로 한다.
+
+아래 두 항목은 "프로파일러와 디버거" 절이 기대는 성질이다. 지금의 시뮬레이터와 RTL에서 이미 성립하며, 새로 정하는 것이 아니라 적어 두는 것이다.
+
+- **실행 사이 PERF 불변**: BUSY가 아닌 동안 `PERF_*`는 SOFT\_RESET(0으로 만듦)과 하드웨어 리셋 말고는 바뀌지 않는다. 모든 카운터가 BUSY인 사이클, 은퇴, MVM 점유, 채널의 읽기 beat와 끝나지 않은 읽기에서만 세고(`tsr_csr.sv`의 증가 조건, 시뮬레이터는 `tsr_sim_run` 안에서만 센다), 실행이 끝날 때(DONE, 또는 BUSY 중 SOFT\_RESET)는 모든 유닛과 메모리 포트가 멈춰 있기 때문이다. 그래서 실행 직전과 직후에 읽은 값의 차가 그 실행의 값이다.
+- **START와 SPM**: START는 SPM과 DRAM을 바꾸지 않으므로, 앞 실행이 쓴 SPM 내용이 다음 실행에도 남는다. RTL에서 SPM에 쓰는 것은 실행 중인 DMA·QACT·MVM뿐이고, 시뮬레이터의 START도 SPM을 건드리지 않는다. `tb/core`의 SPM 채우기·비교(`spm_fill`, `spm_compare`)가 이미 이 성질로 실행 사이의 SPM을 시뮬레이터와 대조한다. lowering과 트레이스는 이 성질에 기대지 않는다 (트레이스는 시작 시 SPM을 정의되지 않은 것으로 본다). 하드웨어 리셋 뒤의 SPM은 여전히 정의되지 않는다.
 
 ## 작업 규칙과 시작 순서 (Claude Code용)
 

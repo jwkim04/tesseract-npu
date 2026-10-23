@@ -1,5 +1,4 @@
 /build/*
-!/build/u200/
 /models/
 __pycache__/
 *.pyc
@@ -13,3 +12,7 @@ results.xml
 !/traces/m3/trace_stats.py
 /traces/model/*
 !/traces/model/regen.sh
+
+# Logo previews written by docs/logo/src/render_final.py (not assets)
+/docs/logo/sheet.png
+/docs/logo/src/check/
