@@ -8,6 +8,11 @@ amendment. This document holds what the spec leaves out: tools, file formats, me
 environment variables, the register-by-register map, area estimates and the verification plan.
 Source-of-truth order: `docs/spec.md` > ISA simulator (`sw/sim`) > this document. Names of new
 functions, files and options below are proposals; PD1 and PD2 fix them.
+(2026-10-24) The spec's M8 plan revision drops LOOP, JUMP and WAITM (and with them the M9 `WAITM`
+amendment) in favour of a RISC-V control core: see the spec section "제어 코어", the paragraph
+"제어 코어 디버그" in the section "프로파일러와 디버거", and `docs/ctrl-riscv.md` §10. §2 (PD4),
+§3.2, §3.3, §3.5 and §9 follow that revision; the remaining "without LOOP / JUMP" conditions
+(§5.7, §6.2) now always hold and are tidied at PD4.
 
 The plan answers a user request with three parts: a **profiler**; **debugging** (dump the chip
 state, set breakpoints, halt and step); and whether the FPGA's **JTAG** can reach user logic.
@@ -103,7 +108,7 @@ change, and no milestone depends on a PD phase.
 | **PD1** software debugger and run records | After M3 part C merges. Until then no part C file is changed (`sw/transport`, `sw/tools`, …). The M3 gate does not depend on PD1. | Program map and `nodes.json` (§4.3); post-mortem and hang dumps (§4.4); shadow transport, first (§4.5); prefix-run search and halt emulation (§4.6); divergence finder and repro (§4.7, complete on sim); exec record with host times and LO-tracked PERF deltas (§5.1); `tsr-prof report / perfetto / check`; simulator debug model (resumable `tsr_sim_run`, atomic HALT, instruction hook, `TSR_SIM_FAULT`); transport additions (§4.1); `tsr-dbg` v0 (sim: everything; hardware: dump, prefix runs, diverge, repro); `tsr_xrt_selftest` measures CSR read latency and the overhead of an END-only exec; the U200 ILA debug-build recipe (§7.2), written down, built only when needed. | None. Software estimate: debugger ≈ 3 K lines (shadow ≈ 400, simulator model and hooks ≈ 500, backend map and dumps ≈ 400, `tsr-dbg` ≈ 2 K), profiler ≈ 1.8 K lines. | If the M3 hardware result is wrong, from which exec, instruction and node? If it hangs, where? What does one exec cost on the host and in XRT, and what does a CSR read cost? |
 | **PD2** RTL debug block and exact attribution | M4, with the U200 technology mapping and timing work for the k4 bitstream | `rtl/core/tsr_dbg.sv` and hooks (§3); STATUS bit4; time counters stopped while halted; SPM client 3; `dbg_trig`. Transport halt handler, timeout rule, SIGINT, exit ABORT (§4.2). `TSR_DEBUGGER`, `TSR_DEBUGGER_BREAK`. tb-only retire probe, `split` attribution, a `ddr4` memory regime, `tsr-prof calibrate / predict / regress`, `perf/` baselines, the M4 out-of-order report (§5.11). `tsr_xrt_selftest` debug section. | FF ≈ 1.0 K, LUT ≈ 1.6 K on the U200 (§3.7). | First wrong instruction, element and channel of a 32B mismatch on the card? Which unit and which channel's outstanding request does a hang sit on? Expected 32B tok/s before M4 runs? |
 | **PD3** vector unit | M6–M7 (and at M5: the drain-rule test, §3.8) | `DBG_S0..15`, VU and scalar codes in `DBG_UNIT`, two write watches, divergence checkpoints at layer boundaries. Profiler: VU/SOP spans, host round trips per layer, prefill efficiency per T. | +0.15 K FF, +0.4 K LUT | Once in-layer host round trips are gone (M6), which op goes wrong first? Who overwrote this SPM line? |
-| **PD4** resident programs | M8–M9 | Instruction address across `JUMP` chains, `DBG_LOOP*`, `DBG_HIST*`, the `WAITM` rule, `tsr-dbg attach` for `sw/runner`; decision on extension counters and the trace ring (§6). | +0.3 K FF, +0.2 K LUT; trace ring 4 BRAM36 if built | What went wrong in iteration m of a LOOP, or in token n of the resident loop? |
+| **PD4** control core | M8–M9 | Control-core debug (spec "제어 코어 디버그", `docs/ctrl-riscv.md` §10): debug module, `tsr-dbg rv-bridge`, GDB through OpenOCD; Perfetto tracks from the completion records; `DBG_HIST*`; `tsr-dbg attach` for `sw/runner`; decision on extension counters and the trace ring for the command-buffer path (§6). | `DBG_HIST*` at most +0.3 K FF, +0.2 K LUT; the debug module and the completion records are part of the control-core RTL (`docs/ctrl-riscv.md` §12.1); trace ring 4 BRAM36 if built | In token n of a C++ kernel or the resident loop, which ticket, op or RISC-V instruction went wrong first? |
 | **PD5** JTAG port | When a port starts (after M9) | `tsr_csr_arb`, `tsr_jtag_dtm`, BSCANE2 pre-check on Kria, Verilator + OpenOCD CI, `openocd` transport in `tsr-dbg`. Not on the U200. | DTM + CDC ≈ 0.25 K FF / 0.2 K LUT, arbiter ≈ 0.1 K LUT | Can the same debug map be used when the host bus is missing or dead? |
 
 ---
@@ -158,22 +163,21 @@ control slave that does not answer, and recovering needs a card reset.
 
 | Offset | Name | Access | Content | Phase |
 |---|---|---|---|---|
-| 0x800 | `DBG_ID` | R | [7:0] block version (1), [11:8] NBP, bit12 SPM window, bit13 WATCH, bit14 s registers, bit15 LOOP state and IA history. 0 when the block is absent | PD2 |
+| 0x800 | `DBG_ID` | R | [7:0] block version (1), [11:8] NBP, bit12 SPM window, bit13 WATCH, bit14 s registers, bit15 IA history. 0 when the block is absent | PD2 |
 | 0x804 | `DBG_CTRL` | W | bit0 HALT, bit1 RESUME, bit2 STEP; reads 0. Several bits in one write: only one is taken, STEP > RESUME > HALT | PD2 |
 | 0x808 | `DBG_CFG` | RW | [7:0] BP_EN, bit8 RBP_EN, bit9 TRIG_ONLY, [11:10] WATCH_EN (PD3) | PD2 |
 | 0x80C | `DBG_STATUS` | R/W1C | bit0 HALTED, bit1 HALT_PEND, bit2 STEP_PEND, bit3 SPM_ERR (W1C), [12:8] CAUSE (bit8 HALT, bit9 STEP, bit10 BP, bit11 RBP, bit12 WATCH), [23:16] BP_HIT | PD2 |
 | 0x810 | `DBG_NEXT_PC` | R | Index of the next instruction; `ERR_PC` if the run is aborted here | PD2 |
-| 0x814 | `DBG_IA` | R | Instruction address of `DBG_NEXT_PC`: absolute ch0 position in 32 B units, low 32 bits, = 2 × `CMD_ADDR` + `DBG_NEXT_PC`. After `JUMP` (M9): 2 × segment start beat + index in the segment | PD2 |
+| 0x814 | `DBG_IA` | R | Instruction address of `DBG_NEXT_PC`: absolute ch0 position in 32 B units, low 32 bits, = 2 × base + `DBG_NEXT_PC`, base = the run's start beat latched at its start: `CMD_ADDR` for a host START, the CALL's w1 for a CALL (M8) | PD2 |
 | 0x818 | `DBG_RETIRED` | R | Instructions retired in this run; START clears it; wraps at 2³² | PD2 |
 | 0x81C | `DBG_RBP` | RW | Retire-count breakpoint | PD2 |
 | 0x820–0x83C | `DBG_BP0`–`DBG_BP7` | RW | IA breakpoints; NBP of them exist (U200: 4), the rest read 0 and ignore writes | PD2 |
 | 0x840–0x85C | `DBG_IR0`–`DBG_IR7` | R | Words w0–w7 of the last popped instruction (below) | PD2 |
 | 0x860–0x868 | `DBG_OPA1`–`DBG_OPA3` | R | Its resolved addresses A1–A3 (`R[x] + imm`, 32-bit wrap) | PD2 |
-| 0x86C | `DBG_UNIT` | R | [2:0] phase (0 idle, 1 boundary, 2 checks, 3 issue, 4 unit running, 5 drain, 6 halted), [6:4] unit holding the instruction (0 none, 1 DMA, 2 QACT, 3 MVM, 4 VU, 5 scalar, 6 WAITM), bit8 next instruction fetched, bit9 fetch idle, [15:12] unit idle (DMA, QACT, MVM, VU), [23:16] beats in the fetch buffer | PD2 |
+| 0x86C | `DBG_UNIT` | R | [2:0] phase (0 idle, 1 boundary, 2 checks, 3 issue, 4 unit running, 5 drain, 6 halted), [6:4] unit holding the instruction (0 none, 1 DMA, 2 QACT, 3 MVM, 4 VU, 5 scalar; 6 reserved, was WAITM), bit8 next instruction fetched, bit9 fetch idle, [15:12] unit idle (DMA, QACT, MVM, VU), [23:16] beats in the fetch buffer | PD2 |
 | 0x870–0x87C | `DBG_RDOUT0`–`DBG_RDOUT3` | R | Outstanding reads per channel, 8 bits each: channel c is byte c mod 4 of `DBG_RDOUT[c/4]` | PD2 |
 | 0x880 | `DBG_WROUT` | R | [7:0] DMA write bursts waiting for their B response | PD2 |
 | 0x884–0x89C | `DBG_WATCH*` | RW | Two watch ranges: 0x884 kinds (SPM, or DRAM channel c), 0x890/0x894 range 0 start/end, 0x898/0x89C range 1 | PD3 |
-| 0x8A0–0x8BC | `DBG_LOOP*` | R | LOOP stack: remaining iterations and body-end IA per depth | PD4 |
 | 0x8C0–0x8FC | `DBG_R0`–`DBG_R15` | RW | Integer registers. Writes take effect only while halted, R1–R15 only | PD2 |
 | 0x900–0x93C | `DBG_S0`–`DBG_S15` | RW | f32 scalar registers (bit patterns); writes only while halted | PD3 |
 | 0x940–0x95C | `DBG_HIST0`–`DBG_HIST7` | R | IAs of the last 8 retired instructions (0 = most recent) | PD4 |
@@ -195,18 +199,17 @@ block loaded only without a range error, 256 FF.)
 
 | Item | Rule |
 |---|---|
-| STATUS | BUSY \| HALTED (bit4, mirrors `DBG_STATUS.HALTED` so the host's wait loop needs one read). DONE and `done` (U200 `ap_done`) stay off: the run has not ended. The STATUS W1C ignores HALTED, as it ignores BUSY and WAITING. |
+| STATUS | BUSY \| HALTED (bit4, mirrors `DBG_STATUS.HALTED` so the host's wait loop needs one read). DONE and `done` (U200 `ap_done`) stay off: the run has not ended. The STATUS W1C ignores HALTED, as it ignores BUSY and the reserved bit3. (M8) A halted CALL leaves STATUS unchanged: HALTED mirrors host runs only, and the CALL's halt shows in `DBG_STATUS.HALTED` and `CTL_STATUS.CALL_BUSY` (spec "명령 버퍼 경로와의 공존"). |
 | Fetch | The fetch unit may keep prefetching ch0 until its buffer (16 beats) is full. |
 | DBG_CTRL | One bit per write is taken: STEP > RESUME > HALT. RESUME releases the halt. STEP runs one instruction and halts at the next boundary; if that instruction is END or faults, the run ends normally. RESUME and STEP while not halted are ignored; HALT while not BUSY or already halted is ignored. When a run ends (END, error, ABORT), pending HALT and STEP requests are cleared, so `HALT_PEND` never outlives its run. |
 | ABORT | Ends the run at that boundary: `ERR_CODE` = `ABORTED`, `ERR_PC` = `DBG_NEXT_PC`, `ERR_INFO` = 0, `PC` unchanged. |
 | SOFT_RESET | As SOFT_RESET while BUSY: the run ends at that boundary like an ABORT, then the reset applies and STATUS becomes 0. |
-| START | Ignored (BUSY). |
+| START | Ignored (BUSY). (M8) During a halted CALL a host START is not ignored: it waits (`CTL_STATUS.START_WAIT`) and starts after the CALL ends. |
 | Registers, SPM | Writes through `DBG_R*` and `DBG_S*` take effect only while halted; SPM window writes while halted or not BUSY (§3.5). The next instruction sees them. `DBG_R0` writes are ignored. |
 | DRAM | The host may read and write DRAM while halted; the next instruction sees the writes as if made at the boundary. The running command buffer is the exception: it may already be prefetched. |
-| PERF | Time counters (CYCLES, MVM_CYCLES, VU_CYCLES, WAITM_CYCLES, CH_WAIT[c]) do not count while halted, so `PERF_CYCLES` becomes "BUSY and not HALTED". Event counters (RETIRED, CH_RD_BEATS[c]) count real events; the only event possible while halted is ch0 prefetch. A run with halts therefore ends with the same results, `PERF_RETIRED` and `PERF_CH_RD_BEATS[c ≥ 1]` as without. |
+| PERF | Time counters (CYCLES, MVM_CYCLES, VU_CYCLES, CH_WAIT[c]) do not count while halted, so `PERF_CYCLES` becomes "BUSY and not HALTED". Event counters (RETIRED, CH_RD_BEATS[c]) count real events; the only event possible while halted is ch0 prefetch. A run with halts therefore ends with the same results, `PERF_RETIRED` and `PERF_CH_RD_BEATS[c ≥ 1]` as without. |
 | Kept across runs | START clears HALT/STEP requests, CAUSE, BP_HIT, `DBG_RETIRED` and the IA history. `DBG_CFG`, `DBG_BP*`, `DBG_RBP` and the watch ranges survive START and SOFT_RESET (the debugger's setup); only a hardware reset clears them. |
 | Latency | A HALT takes effect when the instruction in flight ends: up to the longest MVM, e.g. the output head, 569,845 cycles (1.90 ms) on Qwen2.5-0.5B and about 3.23 M beats per channel (≈ 10.8 ms at 300 MHz) on Qwen2.5-32B. No upper bound on the halted time. A unit that is stuck never reaches the boundary, so the core does not halt; §3.4 and §4.4 diagnose that case. |
-| WAITM (M9) | A HALT or ABORT while a `WAITM` waits rolls the `WAITM` back to "not executed": R[rd] is not written, `ERR_PC` (on ABORT) is the `WAITM`, `PC` stays at the instruction before it, and on resume the `WAITM` runs again from the start, its timeout included. This equals sequential semantics because a waiting `WAITM` changes no state (spec ISA and 구현 명확화 ABORT, M9 amendment). |
 
 ### 3.4 Always-readable state and post-mortem
 
@@ -225,8 +228,13 @@ block loaded only without a range error, 256 FF.)
 - It works only when not BUSY or while halted. In any other state, for a line outside the SPM,
   or when the port is not granted within 1024 cycles, it does nothing and sets `SPM_ERR`; a CSR
   access therefore always completes.
-- RTL: a fourth, lowest-priority `tsr_spm` client (`TSR_SPM_NCL` 3 → 4). The read data bus is
-  shared and qualified per client, so the response lands in the 512-bit line buffer.
+- (M8) With the control core the condition is: (no command-buffer run, host or CALL, is executing,
+  or that run is halted) and `CTL_STATUS.QQUIESCENT` and (RV_RUN = 0, or the RISC-V is halted and
+  no abstract command is executing). With RV_RUN = 0 and nothing queued this is the rule above.
+- RTL: a fourth `tsr_spm` client (`TSR_SPM_NCL` 3 → 4), the lowest-priority one with
+  `HAS_CTRL = 0`. With `HAS_CTRL = 1` client 3 is shared 2:1 with the RISC-V SPM bridge, the debug
+  window first, and `tsr_spm` arbitrates round robin (`docs/ctrl-riscv.md` §5.3). The read data bus
+  is shared and qualified per client, so the response lands in the 512-bit line buffer.
 - Normal paths (backend, traces) never use it.
 - Tools compare only lines this run wrote: the simulator starts SPM at 0xA5, the hardware's
   initial SPM is undefined.
@@ -902,10 +910,8 @@ the core's CSR port. The core has no JTAG port, and vendor primitives stay in `r
 
 The spec's 미결정 사항 holds the decisions (XRT register access during a run, PCIe CSR read
 latency, the U200 debug build, forced release of a stuck unit, extension counters and the trace
-ring, `JUMP`-chain addressing, the porting targets). Follow-ups for the lead:
+ring, the porting targets; `JUMP`-chain addressing was dropped with JUMP). Follow-ups for the lead:
 
-- When M9 lands, `docs/rtl-m2.md` §3.0 ("no flush/cancel: ABORT and SOFT_RESET act only between
-  instructions") gets the `WAITM` exception of the spec's M9 amendment.
 - After M3 part C merges: the spec's XRT 어댑터 paragraph should give the window base
   (`s_axi_control` 0x1000 + offset, `docs/platform-u200.md`; it says "인자 뒤 오프셋" today, and
   the spec's access table refers to that paragraph instead of repeating the number) and may say
