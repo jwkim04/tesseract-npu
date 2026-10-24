@@ -15,11 +15,14 @@ set(TSR_FP_FLAGS -ffp-contract=off -fno-fast-math)
 
 option(TSR_WITH_LLAMA "Build pinned llama.cpp with the ggml-tesseract backend" ON)
 option(TSR_WITH_XRT   "Build the XRT transport (needs XRT)" OFF)
+option(TSR_WITH_TORCH "Build the PyTorch extension sw/torch (_tesseract_rt; needs TSR_WITH_LLAMA and torch in TSR_TORCH_PYTHON)" OFF)
 
 enable_testing()
 
 add_subdirectory(sw/sim)         # tsr_ref, tsr_sim, tsr_trace (+ unit tests)
 add_subdirectory(sw/transport)   # tsr_transport (sim, optional xrt)
+include(sw/ggml-tesseract/lower.cmake)   # tsr_lower: lowering, allocator, weight layout (no ggml);
+                                         # linked by ggml-tesseract and by the runtime sw/rt
 add_subdirectory(sw/tools)       # trace runner, test vector generator, klcheck
 
 if (TSR_WITH_LLAMA)
@@ -34,4 +37,11 @@ if (TSR_WITH_LLAMA)
     set(LLAMA_CURL OFF CACHE BOOL "" FORCE)
     add_subdirectory(third_party/llama.cpp)
     add_subdirectory(sw/ggml-tesseract)   # backend tests; the library is built inside ggml (patch 0001)
+    add_subdirectory(sw/rt)               # tsr_rt: ggml-free runtime (weights + linear); uses ggml-base
+                                          # for the load-time Q8_0 conversion (quantize_row_q8_0_ref)
+    if (TSR_WITH_TORCH)
+        add_subdirectory(sw/torch)        # _tesseract_rt (torch extension binding tsr_rt) + pytest ctests
+    endif()
+elseif (TSR_WITH_TORCH)
+    message(FATAL_ERROR "TSR_WITH_TORCH needs TSR_WITH_LLAMA=ON (tsr_rt links ggml-base of the pinned llama.cpp)")
 endif()

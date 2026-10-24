@@ -9,13 +9,9 @@ if (NOT DEFINED TSR_FP_FLAGS)
     set(TSR_FP_FLAGS -ffp-contract=off -fno-fast-math)
 endif()
 
-# Allocator + lowering, no ggml needed.
-add_executable(test-tsr-backend-units
-    tests/test-tsr-backend-units.cpp
-    tsr-alloc.cpp
-    tsr-lower.cpp)
-target_include_directories(test-tsr-backend-units PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(test-tsr-backend-units PRIVATE tsr_ref)
+# Allocator + lowering (the tsr_lower library, lower.cmake), no ggml needed.
+add_executable(test-tsr-backend-units tests/test-tsr-backend-units.cpp)
+target_link_libraries(test-tsr-backend-units PRIVATE tsr_lower tsr_ref)
 target_compile_features(test-tsr-backend-units PRIVATE cxx_std_17)
 target_compile_options(test-tsr-backend-units PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra)
 set_target_properties(test-tsr-backend-units PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)

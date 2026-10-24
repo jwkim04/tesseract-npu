@@ -24,7 +24,7 @@ Patches (apply with `third_party/apply-patches.sh`, idempotent; `--status`, `--r
   `ggml_backend_load_best("tesseract")` for `GGML_BACKEND_DL` builds
   (`ggml/src/ggml-backend-reg.cpp`), the public header `ggml/include/ggml-tesseract.h`, and
   `ggml/src/ggml-tesseract/CMakeLists.txt`, a stub that requires `TESSERACT_ROOT` and the
-  `tsr_ref` / `tsr_transport` targets and builds `${TESSERACT_ROOT}/sw/ggml-tesseract`
+  `tsr_ref` / `tsr_transport` / `tsr_lower` targets and builds `${TESSERACT_ROOT}/sw/ggml-tesseract`
   (source list in `sw/ggml-tesseract/sources.cmake`) with `ggml_add_backend_library`.
 
 Build notes: `ggml_add_backend(Tesseract)` maps to `GGML_TESSERACT` / dir `ggml-tesseract` /

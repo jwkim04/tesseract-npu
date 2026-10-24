@@ -52,6 +52,7 @@
 #include "tsr-alloc.h"
 #include "tsr-lower.h"
 #include "tsr-weights.h"
+#include "tsr-wlayout.h"
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
 #error "ggml-tesseract writes instructions and tensors in host byte order; only little-endian hosts are supported"
@@ -358,40 +359,19 @@ static void tsr_fill(tsr_device * d, uint32_t ch, uint64_t off, uint8_t value, s
 // device format `fmt`. `src` points at row r0 (ggml layout, rows contiguous).
 static void tsr_store_weight_rows(tsr_device * d, enum ggml_type type, uint32_t fmt, uint32_t N, uint32_t K,
                                   uint64_t w_off, const uint8_t * src, uint32_t r0, uint32_t r1) {
-    const size_t   src_rb = ggml_row_size(type, K);
-    const uint64_t dev_rb = (uint64_t) tsr_row_beats(fmt, K) * TSR_BEAT_BYTES;
-    const uint32_t C = d->cfg.num_ch;
-    const uint32_t R = tsr_rows_per_ch(N, C);
-    const uint32_t batch = (uint32_t) std::max<uint64_t>(1, TSR_XFER_CHUNK / dev_rb);
-
-    std::vector<uint8_t> blocks(tsr_dev_blocks_row_bytes(fmt, K));
-    std::vector<float>   f32(K);
-    std::vector<uint8_t> out;
-
-    uint32_t r = r0;
-    while (r < r1) {
-        const uint32_t c      = r / R;
-        const uint32_t local  = r - c * R;
-        const uint32_t ch_end = std::min<uint32_t>((c + 1) * R, N);
-        const uint32_t end    = std::min<uint32_t>({ r1, ch_end, r + batch });
-        out.resize((size_t) (end - r) * dev_rb);
-        for (uint32_t rr = r; rr < end; ++rr) {
-            const void * blk = tsr_row_to_dev_blocks(type, fmt, src + (size_t) (rr - r0) * src_rb, K,
-                                                     blocks.data(), f32.data());
-            tsr_repack_row(fmt, blk, K, out.data() + (size_t) (rr - r) * dev_rb);
-        }
-        tsr_write(d, c, w_off + (uint64_t) local * dev_rb, out.data(), out.size());
-        r = end;
-    }
+    const size_t src_rb = ggml_row_size(type, K);
+    std::vector<float> f32(K);
+    // repack + symmetric scatter: tsr-wlayout (shared with the ggml-free runtime sw/rt)
+    tsr_weight_store_rows(d->cfg.num_ch, fmt, N, K, w_off, r0, r1, TSR_XFER_CHUNK,
+        [&](uint32_t rr, void * scratch) {
+            return tsr_row_to_dev_blocks(type, fmt, src + (size_t) (rr - r0) * src_rb, K, scratch, f32.data());
+        },
+        [d](uint32_t ch, uint64_t off, const void * p, size_t n) { tsr_write(d, ch, off, p, n); });
 }
 
 // Read rows [r0, r1) of a DEVWEIGHT back in the tensor's own ggml type (debug get_tensor).
 static void tsr_load_weight_rows(tsr_device * d, tsr_tensor_rec & rec, uint32_t r0, uint32_t r1, uint8_t * dst) {
-    const size_t   src_rb = ggml_row_size(rec.type, rec.K);
-    const uint64_t dev_rb = (uint64_t) tsr_row_beats(rec.fmt, rec.K) * TSR_BEAT_BYTES;
-    const uint32_t C = d->cfg.num_ch;
-    const uint32_t R = tsr_rows_per_ch(rec.N, C);
-    const uint32_t batch = (uint32_t) std::max<uint64_t>(1, TSR_XFER_CHUNK / dev_rb);
+    const size_t src_rb = ggml_row_size(rec.type, rec.K);
 
     if (!tsr_type_is_native(rec.type) && !rec.warned_lossy) {
         rec.warned_lossy = true;
@@ -400,31 +380,19 @@ static void tsr_load_weight_rows(tsr_device * d, tsr_tensor_rec & rec, uint32_t 
                       rec.name.c_str(), ggml_type_name(rec.type), rec.fmt == TSR_FMT_Q8_0 ? "Q8_0" : "Q4_K");
     }
 
-    std::vector<uint8_t> blocks(tsr_dev_blocks_row_bytes(rec.fmt, rec.K));
-    std::vector<float>   f32(rec.K);
-    std::vector<uint8_t> in;
-
-    uint32_t r = r0;
-    while (r < r1) {
-        const uint32_t c      = r / R;
-        const uint32_t local  = r - c * R;
-        const uint32_t ch_end = std::min<uint32_t>((c + 1) * R, rec.N);
-        const uint32_t end    = std::min<uint32_t>({ r1, ch_end, r + batch });
-        in.resize((size_t) (end - r) * dev_rb);
-        tsr_read(d, c, rec.w_off + (uint64_t) local * dev_rb, in.data(), in.size());
-        for (uint32_t rr = r; rr < end; ++rr) {
-            tsr_unrepack_row(rec.fmt, in.data() + (size_t) (rr - r) * dev_rb, rec.K, blocks.data());
-            if (!tsr_dev_blocks_to_row(rec.type, rec.fmt, blocks.data(), rec.K,
-                                       dst + (size_t) (rr - r0) * src_rb, f32.data())) {
+    std::vector<float> f32(rec.K);
+    // symmetric gather + un-repack: tsr-wlayout (shared with the ggml-free runtime sw/rt)
+    tsr_weight_load_rows(d->cfg.num_ch, rec.fmt, rec.N, rec.K, rec.w_off, r0, r1, TSR_XFER_CHUNK,
+        [d](uint32_t ch, uint64_t off, void * p, size_t n) { tsr_read(d, ch, off, p, n); },
+        [&](uint32_t rr, const void * blocks) {
+            if (!tsr_dev_blocks_to_row(rec.type, rec.fmt, blocks, rec.K, dst + (size_t) (rr - r0) * src_rb, f32.data())) {
                 GGML_ABORT("tesseract: cannot read back weight '%s': it is stored on the device as %s and type %s "
                            "cannot be re-encoded from f32. Something outside the device is reading this weight: "
                            "either get_tensor was called on it, or the scheduler copies it to another backend "
                            "because an op using it was not accepted by Tesseract (supports_op)",
                            rec.name.c_str(), rec.fmt == TSR_FMT_Q8_0 ? "Q8_0" : "Q4_K", ggml_type_name(rec.type));
             }
-        }
-        r = end;
-    }
+        });
 }
 
 // Free every lazily converted weight (their heap space). Callers must have flushed any

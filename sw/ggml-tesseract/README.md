@@ -13,7 +13,9 @@ ggml backend for the Tesseract NPU core (spec "ggml 백엔드 통합"). One regi
 | `tsr-lower.{h,cpp}` | MUL_MAT lowering v1: SPM tiling and `LD / QACT / MVM / ST` emission (no ggml dependency) |
 | `tsr-weights.{h,cpp}` | ggml type → device format (Q8_0, Q4_K native; others `to_float` + `quantize_row_q8_0_ref`) and back |
 | `tsr-alloc.{h,cpp}` | first-fit range allocator for IO / AUX / WEIGHT heap |
-| `sources.cmake` | source list, included by llama.cpp's `ggml/src/ggml-tesseract/CMakeLists.txt` (patch 0001) |
+| `tsr-wlayout.{h,cpp}` | device-format row bytes, row repack + symmetric scatter / gather over the channels (no ggml) |
+| `lower.cmake` | static library `tsr_lower` = tsr-lower + tsr-alloc + tsr-wlayout (no ggml), linked by this backend and by the runtime `sw/rt` (`tsr_rt`) |
+| `sources.cmake` | source list (the ggml-dependent files), included by llama.cpp's `ggml/src/ggml-tesseract/CMakeLists.txt` (patch 0001); links `tsr_lower` with a deferred call, so the patch is unchanged |
 | `CMakeLists.txt`, `tests/` | unit tests and the end-to-end test (added by the top-level CMakeLists after llama.cpp) |
 
 Public C API (`third_party/llama.cpp/ggml/include/ggml-tesseract.h`, from the patch):
@@ -115,6 +117,12 @@ TSR_SIM_TMAX=8 build/dev/bin/test-ggml-tesseract             # T tiling with T >
 build/dev/bin/test-backend-ops test -o MUL_MAT -b Tesseract0 # vs CPU, NMSE 5e-4
 build/dev/bin/llama-completion -m models/qwen2.5-0.5b-instruct-q8_0.gguf -ngl 99 -nkvo -p "..." -n 16
 ```
+
+Configure only through the top-level CMakeLists. It defines `tsr_ref`, `tsr_transport` and
+`tsr_lower` (`lower.cmake`) before llama.cpp. `sources.cmake` stops with a message if `tsr_lower`
+is missing, and `test-tsr-backend-units` links it. The same tree adds the runtime `sw/rt` after
+llama.cpp, so its ctest also lists `rt_sim`, `rt_sim_tmax8`, `rt_mock` and `rt_mock_tmax8`
+(`sw/rt/README.md`; the PyTorch backend on top of it: `docs/torch-backend.md`).
 
 ctest names: `ggml_tesseract_units`, `ggml_tesseract_e2e`, `ggml_tesseract_e2e_tmax8`,
 `ggml_tesseract_e2e_hosted` and `ggml_tesseract_e2e_hosted_tmax8` (`TSR_FORCE_HOST=1

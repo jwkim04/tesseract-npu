@@ -30,10 +30,6 @@ bool tsr_type_loadable(enum ggml_type type) {
     return tr != nullptr && tr->to_float != nullptr && tr->type_size > 0 && tr->blck_size > 0;
 }
 
-size_t tsr_dev_blocks_row_bytes(uint32_t fmt, uint32_t K) {
-    return tsr_fmt_ggml_block_bytes(fmt) * (size_t) (K / tsr_fmt_block_size(fmt));
-}
-
 const void * tsr_row_to_dev_blocks(enum ggml_type type, uint32_t fmt, const void * src_row, uint32_t K,
                                    void * dst_blocks, float * f32_tmp) {
     if ((type == GGML_TYPE_Q8_0 && fmt == TSR_FMT_Q8_0) || (type == GGML_TYPE_Q4_K && fmt == TSR_FMT_Q4_K)) {

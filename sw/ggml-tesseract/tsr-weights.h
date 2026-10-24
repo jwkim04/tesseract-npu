@@ -10,6 +10,7 @@
 #include <cstdint>
 
 #include "ggml.h"
+#include "tsr-wlayout.h"   // tsr_dev_blocks_row_bytes (ggml-free, tsr_lower)
 
 // Device format for a ggml weight type: Q4_K -> TSR_FMT_Q4_K, everything else -> TSR_FMT_Q8_0.
 uint32_t tsr_dev_fmt_for_type(enum ggml_type type);
@@ -20,10 +21,6 @@ bool tsr_type_loadable(enum ggml_type type);
 
 // True if the device format is the tensor's own type (no conversion, exact round trip).
 bool tsr_type_is_native(enum ggml_type type);
-
-// Bytes of one row of K weights in ggml block layout of the device format
-// (Q8_0: K/32 * 34, Q4_K: K/256 * 144).
-size_t tsr_dev_blocks_row_bytes(uint32_t fmt, uint32_t K);
 
 // One row (K elements of `type`, ggml layout) -> ggml blocks of the device format.
 // Native types return src_row itself; otherwise the row is converted into dst_blocks

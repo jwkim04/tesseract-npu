@@ -55,6 +55,7 @@ unscheduled idea, an ASIC) needs new target-specific layers, not a new core.
   - [Weight placement and conversion](#weight-placement-and-conversion)
   - [Lowering and program cache](#lowering-and-program-cache)
   - [Transport layer](#transport-layer)
+  - [PyTorch backend](#pytorch-backend)
   - [Environment variables](#environment-variables)
 - [Verification](#verification)
   - [Oracle chain](#oracle-chain)
@@ -735,6 +736,23 @@ software. Its API:
 `xrt`, `mock` and `vkernel` share one protocol layer (`tsr_kdev.cpp`) over a small device-access
 interface; see [`docs/xrt-host.md`](docs/xrt-host.md).
 
+### PyTorch backend
+
+`torch.compile(model, backend="tesseract")` (`sw/torch`; `import tesseract_torch` registers it)
+runs a PyTorch model for inference with its weight matmuls on Tesseract and everything else
+eagerly on the CPU. It uses the same transport (`TSR_DEVICE`) and the same numerics as the
+llama.cpp path: float32, float16 and bfloat16 weights become Q8_0 at upload with ggml's
+`quantize_row_q8_0_ref` (the same blocks as llama.cpp's load-time conversion), activations are
+quantized by QACT A32 on the device, and the products are f32. Underneath is `tsr_rt` (`sw/rt`),
+a runtime without ggml graphs that shares the lowering, allocator and weight layout
+(`tsr_lower`) with `ggml-tesseract`.
+
+On Qwen2.5-0.5B-Instruct (Hugging Face safetensors, float32, simulator), all 169 linears run on
+the device, including the tied `lm_head`. The logits are bit-identical to eager PyTorch with the
+reference model in place of each linear, and 16 greedy tokens equal the CPU's. An 8-token forward
+on the Verilated k4t1 kernel gives the simulator's logits bit for bit. See
+[`docs/torch-backend.md`](docs/torch-backend.md).
+
 ### Environment variables
 
 | Variable | Effect |
@@ -750,6 +768,9 @@ interface; see [`docs/xrt-host.md`](docs/xrt-host.md).
 | `TSR_SIM_CH_GIB` | Simulated GiB per channel, 1–16 (default 16) |
 | `TSR_SIM_THREADS` | Simulator threads, 1–64 (default min(CPUs, 8)) |
 | `TSR_SIM_LOG` | Per-instruction log to `stderr` or a file |
+| `TSR_TORCH_DEBUG` | PyTorch backend: `1` partition of every compiled graph, uploads and counters; `2` also every device call; `3` also the rewritten aten graphs |
+| `TSR_TORCH_VERIFY=1` | PyTorch backend: check every device matmul bit for bit against libtsr_ref |
+| `TSR_RT_DEBUG` | tsr_rt: `1` uploads and programs, `2` also disassembly |
 
 A malformed `TSR_SIM_*`, `TSR_TRACE` or `TSR_STAGE_KIB` value makes the device open fail; it is
 never silently ignored. `TSR_DEBUG` and `TSR_FORCE_HOST` are read as integers, so a non-numeric
@@ -994,6 +1015,16 @@ The simulator is slow: on the 16-core dev host, 0.5B decode takes about 84 ms pe
 model needs file-backed simulator DRAM (`TSR_SIM_DRAM_DIR=<dir>` with about 20 GiB free); see
 [`docs/klcheck.md`](docs/klcheck.md) and [`docs/numcheck.md`](docs/numcheck.md).
 
+### Run a PyTorch model
+
+```sh
+cmake -S . -B build/torch -DCMAKE_BUILD_TYPE=Release -DTSR_WITH_TORCH=ON
+cmake --build build/torch -j4 --target tesseract_torch_ext
+export PYTHONPATH=$PWD/sw/torch:$PWD/build/torch/python
+build/tools/torchvenv/bin/python -m pytest -q sw/torch/tests          # venv: docs/torch-backend.md §2.1
+build/tools/torchvenv/bin/python sw/torch/tools/hf_check.py models/hf/Qwen2.5-0.5B-Instruct
+```
+
 ### RTL lint, tests and trace replay
 
 ```sh
@@ -1077,6 +1108,8 @@ tesseract/
 ├── sw/
 │   ├── sim/                 libtsr_ref (bit-exact numerics), ISA simulator, trace I/O, tests
 │   ├── ggml-tesseract/      ggml backend: placement, repacking, lowering, program cache, tests
+│   ├── rt/                  tsr_rt: ggml-free runtime (weight upload, linear, program cache)
+│   ├── torch/               PyTorch backend: torch.compile backend "tesseract", extension, tests
 │   ├── transport/           tsr_transport: sim (in-process), xrt (card), mock (adapter model),
 │   │                        vkernel (Verilated kernel); the shared kdev protocol layer
 │   ├── tools/               tsr-trace-gen, tsr-trace-replay, klcheck, tsr-numcheck + numcheck.py,
@@ -1161,6 +1194,8 @@ tesseract/
 | [`docs/prof-dbg.md`](docs/prof-dbg.md) | Profiler and debugger design (plan, not implemented): debug block registers and halt rules, tools, record formats, metrics, JTAG and ILA per target, verification |
 | [`sw/ggml-tesseract/README.md`](sw/ggml-tesseract/README.md) | Backend internals |
 | [`sw/xrt-driver/README.md`](sw/xrt-driver/README.md) | XRT 2.18.179 driver patches for kernels 6.8–7.0 |
+| [`sw/torch/README.md`](sw/torch/README.md), [`sw/rt/README.md`](sw/rt/README.md) | PyTorch package API and counters; tsr_rt API, lowering and tests |
+| [`docs/torch-backend.md`](docs/torch-backend.md) | PyTorch backend: build, architecture (tsr_rt, extension, partitioner, weight cache, numerics), supported ops, tests, the Qwen2.5-0.5B check, next steps |
 | [`docs/platform-u200.md`](docs/platform-u200.md) | U200 platform adapter and kernels: kernel contract, `s_axi_control` register map, reset, packaging, xclbin build and floorplan C', verification, `TSR_DEVICE=vkernel`, hardware bring-up runbook |
 | [`docs/xrt-host.md`](docs/xrt-host.md) | XRT host transport: device-access and protocol layers, device memory, the `mock` model, `tsr_xrt_selftest`, card bring-up, hw_emu of k1 |
 | [`docs/m0-bw.md`](docs/m0-bw.md) | M0 bandwidth kernel `tsr_bw_k4` and host tool `tsr_bw`: register map, behaviour, build, verification, M0 on the card |

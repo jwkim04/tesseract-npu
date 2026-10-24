@@ -525,6 +525,8 @@ END
   - N·4가 64의 배수가 아니고 T > 1이면 dst의 토큰 행 시작이 beat 경계가 아니다. 이때도 위 스테이징 경로를 탄다: ST는 line 단위로 패딩된 스테이징 영역에 쓰고, 호스트가 타일마다 dst로 압축 복사한다. 스테이징 경로와 디바이스가 만든 src0(지연 Q8\_0 변환)를 읽는 경우에는 split 하나가 명령 버퍼 여러 개로 나뉘어 실행된다. LLM 가중치 행렬은 N이 16의 배수라 이 경우(행 정렬 때문의 스테이징)는 없다.
   - T = 1이고 N·4가 64의 배수가 아니면 ST가 마지막 line의 꼬리(0)를 dst 다음 바이트에 쓴다. 백엔드의 `get_alloc_size`가 텐서 크기를 64바이트 배수로 올려 이 꼬리가 텐서 자신의 패딩에 떨어진다.
 
+**PyTorch 백엔드 (2026-10-24)**: `sw/torch`의 `torch.compile(model, backend="tesseract")`는 PyTorch 모델의 가중치 행렬곱(`mm`·`addmm`·`linear`·`matmul`·`mv` 중 한 피연산자가 파라미터·버퍼·그래프 상수인 것)만 Tesseract에서 실행하고, 나머지는 CPU에서 eager로 실행한다. 추론 전용이다. 디바이스는 같은 `tsr_transport`(`TSR_DEVICE`)를 쓰고, 수치 규칙도 llama.cpp 경로와 같다. float32·float16·bfloat16 가중치는 업로드할 때 `quantize_row_q8_0_ref`로 Q8\_0이 되므로 블록이 llama.cpp의 로드 시 변환과 바이트 단위로 같다. 활성값은 디바이스의 QACT A32로 양자화되고 곱은 f32다. bias와 `alpha`·`beta`는 CPU에서 f32로 적용한다. 그 아래의 런타임 `tsr_rt`(`sw/rt`)는 ggml 그래프 없이 가중치 업로드와 `y = x·Wᵀ`를 제공하고, lowering·할당기·가중치 레이아웃(`tsr_lower`)과 로드 시 변환(`tsr-weights.cpp`)을 `ggml-tesseract`와 공유한다. 검증은 이 문서의 오라클 사슬을 그대로 따른다: 디바이스 출력은 `libtsr_ref`·numpy 스펙 모델과 비트 일치하고, 모델 단위로는 KL을 본다. Hugging Face float32 체크포인트에는 같은 양자화 모델의 CPU 실행이 없으므로, 바닥값 비율은 같은 8비트 피연산자를 torch f32 GEMM으로 계산한 기준(cpu-q8)에 대해 잰다. Qwen2.5-0.5B-Instruct 32토큰에서 이 비율은 2.92이고 바닥값이 움직인 16개 위치에서는 1.72다. 이 값은 보고만 하고 합격선으로 쓰지 않는다. 자세한 내용은 `docs/torch-backend.md`.
+
 ## MoE 지원
 
 MoE는 U200에 가장 잘 맞는 워크로드다. 전체 파라미터는 64GB에 들어가고 토큰당 읽는 양은 작아서, 같은 카드에서 Dense 32B(토큰당 약 20GB)보다 Qwen3-30B-A3B(토큰당 약 2GB, 파일 약 18.6GB)가 10배 가까이 빠를 수 있다.
@@ -902,6 +904,8 @@ tesseract/
 │   ├── sim/                 # ISA 시뮬레이터, tsr_ref_math.c, 트레이스 입출력, RV32 인터프리터·발행 큐 모델·경합 검출기 (M8)
 │   ├── ctrl/                # 제어 코어 SDK: tsr/kernel.hpp, crt0, 링커 스크립트, 런타임, 커널 (M8)
 │   ├── transport/           # tsr_transport 구현: sim, xrt, mock, vkernel (kdev 계층)
+│   ├── rt/                  # tsr_rt: ggml 없는 런타임 (가중치 업로드, linear, 프로그램 캐시), tsr_lower 공유
+│   ├── torch/               # PyTorch 백엔드: torch.compile 백엔드 "tesseract", 확장 모듈, 테스트, hf_check
 │   ├── prof/                # 프로파일 기록기: 실행 기록, JSON·Perfetto 출력 (계획, PD1)
 │   ├── runner/              # 단계 C 호스트 쪽 러너: 메일박스, 링버퍼 폴링 (M9)
 │   └── tools/               # 트레이스 러너, 테스트 벡터 생성기, klcheck (ggml 링크), tsr-prof·tsr-dbg (계획, PD1)
