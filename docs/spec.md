@@ -1,10 +1,10 @@
-# Tesseract 오버레이 코어 — 아키텍처 & ISA 스펙 v0.2
+# Tesseract — 오픈소스 LLM 추론 NPU 코어: 아키텍처 & ISA 스펙 v0.2
 
 Oct 22, 2026 · @Jiwoo KIm
 
 ## 개요
 
-Tesseract는 llama.cpp가 넘기는 ggml 그래프를 명령어 스트림으로 바꿔 실행하는 FPGA 오버레이 코어로, 바닥부터 직접 설계한다. v1 목표는 Alveo U200에서 32B Q4\_K\_M GGUF 모델을 변환 없이 llama.cpp로 끝까지 돌리는 것이고, 장기 목표는 MoE 지원과 호스트가 거의 끼어들지 않는 디바이스 상주 디코드다.
+Tesseract는 llama.cpp가 넘기는 ggml 그래프를 자체 명령어 스트림으로 바꿔 실행하는 오픈소스 LLM 추론 NPU 코어로, 바닥부터 직접 설계한다. 지금은 FPGA(Alveo U200)에 오버레이로 구현한다. v1 목표는 Alveo U200에서 32B Q4\_K\_M GGUF 모델을 변환 없이 llama.cpp로 끝까지 돌리는 것이고, 장기 목표는 MoE 지원과 호스트가 거의 끼어들지 않는 디바이스 상주 디코드다.
 
 **v1 목표**
 
@@ -56,11 +56,11 @@ Tesseract는 llama.cpp가 넘기는 ggml 그래프를 명령어 스트림으로 
 **U200 구성: 가중치 스트림은 채널마다 독립된 클러스터로만 흐른다** (그림 `docs/fig/u200-system.jpg`)
 
 - 호스트 (llama.cpp + ggml-tesseract): 그래프 → 명령 버퍼 lowering, 가중치 리패킹, 전송 계층(XRT 또는 시뮬레이터). PCIe로 명령 버퍼, 가중치, 활성값을 보낸다.
-- 플랫폼 어댑터 (Alveo XRT): 제어 브리지(`s_axi_control` ↔ CSR, `ap_done` ↔ `done`), 채널별 AXI4 메모리 브리지. 코어와는 CSR 포트와 `done`으로 이어진다.
+- 플랫폼 어댑터 (Alveo XRT): 제어 브리지(`s_axi_control` ↔ CSR, `done` → `ap_done`), 채널별 AXI4 메모리 브리지. 코어와는 CSR 포트와 `done`으로 이어진다.
 - 코어 (벤더 독립 SystemVerilog): 커맨드 프로세서(명령어 fetch·decode, 순차 실행, R0\~R15), SPM(활성값·중간값·QA, line 64B 단위, 4 MiB), 벡터·스칼라 유닛(원소 연산, 리덕션, RoPE, VL 16, s0\~s15), 클러스터 0\~3(스트림·언팩, MAC 128, fp 누산). SPM과 클러스터 사이는 x 브로드캐스트·y 수집 버스다.
 - DDR4 ch0\~ch3: 클러스터 c는 채널 c에서만 가중치 스트림을 받는다(채널당 최대 19.2 GB/s = 300 MHz × 64B, AXI4 메모리 브리지 경유). ch0은 가중치 행 1/4과 CMD·IO, ch1\~ch3은 가중치 행 1/4씩이다.
 
-무거운 가중치 트래픽은 각 채널과 그 채널의 클러스터 사이에서만 오가고 SLR을 넘지 않는다. SLR을 넘는 것은 수 KB짜리 활성값 브로드캐스트와 결과 수집, 그리고 중앙 DMA와 채널별 중재기 사이의 LD/ST 데이터다(rtl-m2 §12의 300 MHz 항목 2: 레지스터 슬라이스로 대응).
+무거운 가중치 트래픽은 각 채널과 그 채널의 클러스터 사이에서만 오간다. U200 플랫폼은 DDR 채널을 SLR0(ch0), SLR1(ch1·ch2), SLR2(ch3)에 둔다(`platforminfo`, 2026-10-23). 처음 계획은 클러스터를 자기 채널의 SLR에 두어 가중치가 SLR을 넘지 않게 하는 것이었지만, T\_MAX 8 클러스터 둘은 SLR1의 동적 영역에 들어가지 않는다(클러스터 둘만으로 DSP 1,348개, QACT까지 1,380개가 필요한데 1,320개뿐이고, RAMB36도 420개 중 408개를 쓴다). 그래서 U200 배치는 floorplan C'이다(M3 C단계, `docs/rtl-m3.md` §14): 클러스터 0·2는 SLR0, 1·3은 SLR2, 나머지 코어(커맨드 프로세서, CSR, SPM, DMA, QACT, 채널별 중재기, 수집 중앙부)는 SLR1에 둔다. SLR을 넘는 신호는 모두 레지스터 파이프다: 클러스터마다 활성값 브로드캐스트, 가중치 요청·응답, 결과 수집 작업·시작 파이프와 리셋 사본, 그리고 채널 0·3의 AXI 슬라이스. 가중치 응답 파이프는 backpressure 없이 beat를 사이클마다 하나씩 그대로 옮기므로 SLR을 넘어도 채널 대역폭은 줄지 않는다. 중앙 DMA와 중재기는 같은 SLR에 있어 LD/ST 데이터는 코어 안에서 SLR을 넘지 않는다.
 
 **코어 경계 인터페이스**
 
@@ -86,7 +86,7 @@ Tesseract는 llama.cpp가 넘기는 ggml 그래프를 명령어 스트림으로 
 | `BEAT_BITS` | 메모리 포트 데이터 폭 | 512 |
 | `F_CORE` | 코어 클럭 목표 | 300 MHz |
 | `LANES` | 클러스터당 MAC 레인 수 (beat당 가중치 처리량). `BEAT_BITS` / 4(Q4\_K beat 하나의 가중치 수)로 정해지며 독립 파라미터가 아니다 | 128 |
-| `T_MAX` | MVM 한 번의 최대 토큰 수 | 합성 1, 아키텍처 상한 8 |
+| `T_MAX` | MVM 한 번의 최대 토큰 수 | 합성 8 (4채널 커널 k4; 1채널 브링업 커널 k1은 1), 아키텍처 상한 8 |
 | `K_MAX` | 지원 최대 K | 32768 |
 | `SPM_BYTES` | 스크래치패드 크기 | 4 MiB |
 | `VL` | 벡터 유닛 fp32 레인 수 | 16 |
@@ -269,7 +269,7 @@ DSP 패킹은 두 곱이 한 피연산자를 공유해야 한다. beat 하나는
 
 **활성값 브로드캐스트**: MVM 시작 시 SPM의 QA 벡터를 모든 클러스터의 로컬 버퍼에 동시에 복사한다. K = 27648 기준 약 500 line으로, `ffn_down` MVM 한 번(클러스터당 약 31만 사이클) 대비 무시할 수준이다.
 
-**배치**: 각 클러스터는 자기 채널의 DDR 컨트롤러가 있는 SLR에 둔다. SLR을 넘는 것은 브로드캐스트 버스, 결과 수집 버스, 제어 신호뿐이며, 깊이를 파라미터로 둔 파이프라인 단을 넣는다.
+**배치**: SLR을 넘는 것은 브로드캐스트, 가중치 요청·응답, 결과 수집, 리셋뿐이며, 모두 깊이를 파라미터로 둔 파이프라인 단(`MVM_BC_PIPE`, `MVM_RES_PIPE`, `RST_PIPE`)을 거친다. 클러스터를 어느 SLR에 둘지는 플로어플랜 파일(`hw/u200/k4_floorplan.tcl`)에만 있고 RTL은 배치를 모른다. 처음 계획은 각 클러스터를 자기 채널의 DDR 컨트롤러가 있는 SLR에 두는 것이었으나, U200에서는 SLR1에 T\_MAX 8 클러스터 둘이 들어가지 않아 floorplan C'를 쓴다("시스템 구조"). U200 측정(M3 C단계): MAC 레인의 DSP는 클러스터당 T\_MAX 1에서 128개(곱 하나에 DSP 하나), T\_MAX 8에서 512개(토큰 둘이 DSP 하나를 공유)다.
 
 **연속 MVM 겹치기**: 다음 MVM이 앞 MVM의 dst를 읽지 않으면, 클러스터는 앞 MVM의 꼬리와 다음 MVM의 가중치 요청을 겹쳐도 된다. 결과가 순차 실행과 같으므로 허용되는 as-if 최적화다. MoE의 짧은 전문가 행렬(Qwen3-30B-A3B 기준 채널당 약 3,456 beat, 토큰당 1,152개)에서 MVM마다 붙는 1\~2 µs의 채우기 비용을 숨기는 것이 목적이며, M5에서 구현한다.
 
@@ -370,7 +370,7 @@ VOP.MUL    y, y, w_norm, 5120
 | 9 | `LOOP_NEST` | LOOP 중첩이 `LOOP_DEPTH` 초과, 또는 본문 경계가 바깥 본문과 같은 명령어에서 끝남 |
 | 10 | `WAIT_TIMEOUT` | WAITM이 시간 제한 안에 조건을 만족하지 못함 |
 
-**XRT 어댑터**: ap\_ctrl\_hs 제어 레지스터(0x00)와 커널 인자(`cmd_addr` 64비트, `cmd_count`)를 코어 CSR 쓰기로 변환하고, `ap_start`를 `CTRL.START`에, `done`을 `ap_done`에 연결한다. 코어 CSR 나머지는 인자 뒤 오프셋에 그대로 노출해 성능 카운터와 오류 정보를 호스트가 읽게 한다.
+**XRT 어댑터**: ap\_ctrl\_hs 제어 레지스터(0x000)와 커널 인자(`cmd_addr` 64비트 0x010, `cmd_count` 0x018, `arg0`\~`arg7` 0x020\~0x03C, 채널 c의 DRAM 기준 주소 `ch<c>_base` 0x040 + 8c)를 코어 CSR 쓰기로 변환하고, `ap_start`를 `CTRL.START`에, `done`을 `ap_done`에 연결한다. 어댑터 자신의 상태는 `ADAPTER_STATUS`(0x0F0)와 `ADAPTER_VERSION`(0x0F4)이다. 코어 CSR 전체는 `s_axi_control`의 0x1000 + 오프셋 창에 실행 중에도 그대로 노출되어 성능 카운터와 오류 정보를 호스트가 읽는다 (디버그 블록 0x800\~0x9FC는 0x1800\~0x19FC). 레지스터 맵 전체와 리셋·오류 규칙은 `docs/platform-u200.md`.
 
 ## ISA
 
@@ -495,7 +495,7 @@ END
 - **분할 업로드**: llama.cpp는 큰 텐서를 여러 번의 `set_tensor`(offset, size)로 나눠 올릴 수 있다. 리패킹은 텐서 전체(또는 행 단위로 완결된 구간)가 모인 뒤에 한다.
 - **split 개수**: v1은 `MUL_MAT`만 디바이스로 가서 토큰당 split이 수백 개 생긴다. 스케줄러의 split·입력 상한 상수에 걸리지 않는지 고정한 커밋에서 확인한다. `GGML_SCHED_DEBUG`로 split 구성을 볼 수 있다.
 - **output.weight**: Qwen2.5-32B는 N = 152064인 Q6\_K 행렬이라 로드 시 Q8\_0(약 0.83GB)으로 변환되고, MVM 한 번이 크다. llama.cpp는 `-ngl` ≥ 1이면 출력 레이어를 가장 먼저 디바이스에 배정하고, 위 T 무관 `supports_op` 덕분에 512토큰 probe를 통과해 실제로 Tesseract에 놓인다. 출력이 묶인(tied) 모델은 `token_embd`의 사본(`TENSOR_DUPLICATED`)이 출력 레이어로 놓인다. 디코드·프리필은 출력할 행(n\_outputs)만 계산하지만, compute 버퍼 예약은 n\_ubatch개 출력의 logits(-ub 512에서 152064 × 512 × 4 B ≈ 297 MiB)를 잡으므로 그 청크는 호스트 메모리에 놓이고 스테이징을 거친다.
-- **검증 연결**: `test-backend-ops`가 Tesseract 백엔드를 CPU와 비교하도록 등록하고, `TSR_DEVICE=sim|xrt`, `TSR_TRACE=<디렉터리>` 환경변수로 장치 선택과 트레이스 덤프를 제어한다.
+- **검증 연결**: `test-backend-ops`가 Tesseract 백엔드를 CPU와 비교하도록 등록하고, `TSR_DEVICE=sim|xrt|mock|vkernel`, `TSR_TRACE=<디렉터리>` 환경변수로 장치 선택과 트레이스 덤프를 제어한다. `mock`은 어댑터 레지스터 모델 + ISA 시뮬레이터, `vkernel`은 Verilator로 만든 U200 커널을 서버 프로세스로 돌려 실제 XRT 경로와 같은 레지스터 순서로 구동한다(`docs/xrt-host.md`, `docs/platform-u200.md` §13).
 - **v1 lowering 제약** (M1 구현, 상세는 `sw/ggml-tesseract/README.md`, `docs/llama-pin.md`):
   - 프로그램이 직접 읽고 쓰는 활성값(src1, dst)은 ch0 IO 영역(256 MiB)에 있다. v1 소프트웨어는 IO 영역을 compute 버퍼 창(아래쪽)과 스테이징 영역(맨 위, max(16 MiB, 2 × `SPM_BYTES`), U200에서 16 MiB)으로 나눈다. 백엔드의 `get_max_size`는 창 용량(240 MiB)이라 ggml-alloc은 compute 버퍼를 그 이하의 청크로 자르고, 한 텐서가 그보다 크면 그 텐서만 든 청크를 만든다. 청크는 첫 데이터 접근 때 빈 창에 들어가면 IO 창, 아니면 호스트 메모리다 (v0.2.1 명확화: 이전 판은 IO를 넘는 compute 버퍼를 `-ub`로 줄여 맞추고 src1 + dst가 IO보다 크면 `supports_op`가 거부한다고 적었다. 그 규칙은 위 `supports_op` 절의 이유로 없앤다).
   - 호스트 메모리 청크에 src1이나 dst가 있는 `MUL_MAT`은 앞에 쌓인 명령을 먼저 실행한 뒤 혼자 실행된다. 스테이징 영역에 들어가는 토큰 수 단위(T 타일)로 src1 행을 호스트 → 스테이징으로 쓰고(src1이 IO 창이면 그 자리에서 LD), LD/QACT/MVM/ST 후 dst 행을 스테이징 → 호스트로 읽는다. 그래서 IO에 한꺼번에 있어야 하는 활성값은 타일 하나뿐이고 `-ub`에는 IO 상한이 없다 (호스트 메모리만 쓴다). 토큰 하나의 x + QA + y가 SPM에 들어가는 모양이면 스테이징 영역(SPM의 2배 이상)에도 토큰 하나가 들어간다. 전송량은 IO 창일 때와 같다 (src1 쓰기와 dst 읽기를 스케줄러 대신 graph\_compute가 한다).
@@ -576,8 +576,9 @@ loop:
 | 모델 전체 (sim) | ggml CPU 백엔드, 그리고 입력을 1 ulp 흔든 CPU 자신(바닥값) | 평균 KL ≤ 바닥값 KL × 3, top-1 일치 ≥ 80% (초기값, M1에서 조정) | `tools/klcheck` (자체), `llama-perplexity` |
 | 모델 전체 수치 (sim) | 레퍼런스 모델(`libtsr_ref`), 그와 코드를 공유하지 않는 numpy 스펙 모델, fp64 정확값 | 모든 가중치 MUL_MAT의 모든 출력 원소가 두 모델과 비트 일치, fp32 오차 상한 위반 0 | `tools/numcheck` (자체) |
 | RTL 블록 | 공용 C 레퍼런스 함수 | 비트 일치 | cocotb + Verilator |
-| RTL 코어 전체 | ISA 시뮬레이터 | 트레이스 재생 비트 일치 | cocotb + Verilator |
-| 하드웨어 | ISA 시뮬레이터 | 트레이스 재생 비트 일치, 같은 토큰 열 | XRT 호스트 러너 |
+| RTL 코어 전체 | ISA 시뮬레이터 | 트레이스 재생 비트 일치 | cocotb + Verilator, `tb/fastreplay` (C++ 재생기) |
+| 커널 + 호스트 소프트웨어 (RTL) | ISA 시뮬레이터 | 같은 모델 실행의 logits·토큰 비트 일치, 어댑터·AXI 검사 위반 0 | `TSR_DEVICE=vkernel` (Verilator 커널 서버, `docs/platform-u200.md` §13) |
+| 하드웨어 | ISA 시뮬레이터 | 트레이스 재생 비트 일치, 같은 모델 실행의 logits·토큰 비트 일치 | `tsr_xrt_selftest`, `klcheck compare --expect-identical` (`TSR_DEVICE=xrt` 대 `sim`) |
 
 **모델 단위 KL 기준**: 디바이스는 누적 순서가 CPU와 달라 비트 일치가 불가능하고, 한 번 다르게 반올림된 int8 값은 뒤 레이어로 퍼진다. 그래서 "CPU를 1 ulp 흔들었을 때 CPU 자신이 얼마나 벗어나는가"를 바닥값으로 두고, 디바이스가 그 바닥값 근처에 있는지 본다. 같은 프롬프트에서 디바이스가 낸 토큰을 CPU에 다시 먹여 매 위치를 같은 문맥으로 비교한다. 방법과 초기 합격선은 [openTPU의 검증 방식](https://github.com/FeSens/openTPU)을 따랐다.
 
@@ -694,7 +695,7 @@ tesseract/
 ├── sw/
 │   ├── ggml-tesseract/            # 백엔드: reg/device/buffer, lowering, 리패커, 프로그램 캐시
 │   ├── sim/                 # ISA 시뮬레이터, tsr_ref_math.c, 트레이스 입출력
-│   ├── transport/           # tsr_transport 구현: sim, xrt
+│   ├── transport/           # tsr_transport 구현: sim, xrt, mock, vkernel (kdev 계층)
 │   ├── prof/                # 프로파일 기록기: 실행 기록, JSON·Perfetto 출력 (계획, PD1)
 │   ├── runner/              # 단계 C 전용 디코드 러너 (M9)
 │   └── tools/               # 트레이스 러너, 테스트 벡터 생성기, klcheck (ggml 링크), tsr-prof·tsr-dbg (계획, PD1)
@@ -702,11 +703,13 @@ tesseract/
 │   ├── core/                # 벤더 독립 SV: cmdproc(레지스터·LOOP), cluster, vu, spm, dma, dbg(디버그 블록, 계획 M4)
 │   ├── tech/generic/        # tsr_sram_*, tsr_mac_lane 일반 구현
 │   ├── tech/xilinx/         # URAM/BRAM, DSP48E2 패킹
-│   └── platform/alveo_xrt/  # 제어 브리지, AXI4 메모리 어댑터, kernel.xml
-├── tb/                      # cocotb 테스트, 무작위 지연 메모리 모델
+│   └── platform/alveo_xrt/  # 제어 브리지, AXI4 메모리 브리지, 커널 톱, kernel.xml, bw/ (M0 대역폭 커널)
+├── tb/                      # cocotb 테스트, 무작위 지연 메모리 모델, fastreplay (C++ 재생기),
+│                            # tech/ (기술 래퍼 동등성), platform/ (커널 벤치, vkernel 서버, bw 벤치)
 ├── traces/                  # 회귀용 트레이스 (작은 모델)
 ├── third_party/llama.cpp/   # 고정 커밋 포크 (서브모듈)
-└── build/u200/              # v++ 설정, connectivity, pblock 제약
+├── hw/u200/                 # v++ 설정(k1, k4, bw), connectivity, 플로어플랜, build_xclbin.sh
+└── build/                   # 빌드 산출물 (git 제외)
 ```
 
 마일스톤은 M0\~M9의 10단계이고, 각 단계는 아래 그림의 통과 조건을 만족해야 다음으로 넘어간다. M1까지는 하드웨어 없이 소프트웨어만으로 32B 모델이 끝까지 돌고, M4가 v1 목표, M5가 MoE, M7\~M9가 호스트 독립 단계 A\~C다.
@@ -726,18 +729,18 @@ tesseract/
 | M8 · 레지스터 확장, 디바이스 MoE | 단계 B: RLD·MULI·LOOP, TOPK, 버킷별 프로그램 | 호스트는 토큰당 인자 2개만 쓰기 |
 | M9 · 디바이스 자체 디코드 루프 | 단계 C: WAITM, JUMP, 토큰 링버퍼, `sw/runner` | 호스트는 링버퍼 폴링만 |
 
-진행 기록: M1 통과(2026-10-22, 32B klcheck 비율 1.36, top-1 98.83%), M2 통과(2026-10-23, `traces/m2` 172개 Verilator 재생 비트 일치). M0는 카드 장착과 XRT·플랫폼 설치 뒤에 한다. M3의 RTL은 Q4\_K 경로까지 함께 설계·검증한다(클러스터 데이터패스를 공유하므로). M3 통과 조건은 실기 동작이라 플랫폼 어댑터와 XRT 전송 계층이 M3에 들어간다.
+진행 기록: M1 통과(2026-10-22, 32B klcheck 비율 1.36, top-1 98.83%), M2 통과(2026-10-23, `traces/m2` 172개 Verilator 재생 비트 일치). M0는 카드 장착과 XRT·플랫폼 설치 뒤에 한다. M3의 RTL은 Q4\_K 경로까지 함께 설계·검증한다(클러스터 데이터패스를 공유하므로). M3 통과 조건은 실기 동작이라 플랫폼 어댑터와 XRT 전송 계층이 M3에 들어간다. "실기 동작"은 카드에서 낸 logits가 같은 프롬프트의 `TSR_DEVICE=sim`과 비트 일치하고(`klcheck compare --expect-identical`) KL 기준도 통과하는 것으로 잰다. M3 RTL·플랫폼(A\~C단계) 완료(2026-10-24, 카드 전 단계까지): 실제 호스트 스택이 Verilator 커널(`TSR_DEVICE=vkernel`; k1 = 1채널 T\_MAX 1, k4t1 = 4채널 T\_MAX 1, k4 = 4채널 T\_MAX 8)에서 Qwen2.5-0.5B Q8\_0을 돌려 logits·토큰이 `TSR_DEVICE=sim`과 비트 일치했다. 디코드 토큰당 `PERF_CYCLES`는 4채널 2.28 M(300 MHz에서 7.6 ms), 1채널 8.48 M이다. 코어 전체 Vivado OOC는 세 구성 모두 300 MHz를 맞췄다(k4 WNS +0.015 ns). `tb/run_all.sh` 211개 통과.
 
 M1에서 소프트웨어 경로가 먼저 완성되고, M2 이후 하드웨어 단계는 모두 같은 트레이스로 검증한다. ISA 기능은 각 단계에 필요한 만큼만 구현하되, 인코딩은 처음부터 이 문서의 ISA 절을 따른다.
 
 ## 미결정 사항
 
 - [x] 프로젝트 이름: Tesseract로 확정
-- [ ] U200 셸과 Vitis/XRT 버전 확정, `platforminfo`로 채널별 SLR 위치 확인 (M0)
-- [ ] 카드 DDR4 용량 확인 (M0, 2026-10-23 기록). 판매자 설명으로는 32 GB 특주 모델이고 DIMM 4장이 모두 꽂혀 있다. 표준 U200은 16 GB × 4 = 64 GB이고, 플랫폼 메모리 토폴로지와 `TSR_DEF_CH_BYTES`(16 GiB)도 이 값을 전제로 한다. 카드 장착 후 확인할 것: DIMM 용량과 부품 번호(`xbutil examine`, 가능하면 DIMM 라벨), 표준 셸(`xilinx_u200_gen3x16_xdma_base_2`)의 DDR4 컨트롤러가 이 DIMM으로 보정되는지(`xbutil validate`, dmesg), M0 대역폭 커널로 채널 전 범위 읽기·쓰기와 주소 앨리어싱 검사(예: 0과 8 GiB 오프셋에 서로 다른 패턴을 쓰고 다시 읽기). 표준 플랫폼의 DDR4 컨트롤러 4개는 `MTA18ASF2G72PZ-2G3`(16 GB DDR4-2400 ECC RDIMM, 2Rx8)로 고정 설정되어 있고 SPD를 읽지 않는다(`hw.xsa`의 preset과 DDR4 IP 설정, AXI 주소 34비트로 확인). 예상: 8 GB DIMM이 2Rx8(4 Gb 칩, 예 `MTA18ASF1G72PZ-2G3`)이면 보정은 통과하고 위쪽 8 GB가 아래쪽과 겹친다. 1Rx8(`MTA9ASF1G72PZ-2G3`)이나 x4 구성이면 보정이 실패할 수 있고, 그때는 같은 구성의 16 GB 2Rx8 RDIMM으로 교체하는 것이 가장 간단하다(맞춤 플랫폼은 비용이 크다). 먼저 DIMM 라벨의 부품 번호와 판매자가 쓰던 셸·`xbutil validate` 결과를 확인한다. 사용자가 카드를 받은 뒤 표준 셸을 굽고 `xbutil validate` 등 시험을 모두 통과했다(2026-10-23 전언). 따라서 보정 실패 경우는 배제되고, 남는 확인은 채널당 실제 용량과 위쪽 주소 겹침이다. validate의 메모리 시험은 작은 버퍼만 쓰므로 이것을 잡지 못한다. 장착 후 `xbutil examine`의 셸이 `xilinx_u200_gen3x16_xdma_base_2`이면 다시 굽지 않는다. 채널당 8 GB면 비트스트림 `CH_BYTES`와 전송 계층 채널 크기를 8 GiB로 맞춘다. 이때 수용 모델은 32B Q4\_K\_M(가중치 약 20.7 GB, 채널당 약 5.2 GB)과 30B-A3B까지이고 70B는 들어가지 않는다
+- [x] U200 셸과 Vitis/XRT 버전 확정, `platforminfo`로 채널별 SLR 위치 확인 (2026-10-23). `xilinx_u200_gen3x16_xdma_2_202110_1`, Vitis 2024.2, XRT 2.18.179. `platforminfo`: DDR bank0 SLR0, bank1·bank2 SLR1, bank3 SLR2. 동적 영역 SLR0/1/2 = LUT 388,160 / 205,440 / 385,440, DSP 2,280 / 1,320 / 2,280, BRAM 720 / 420 / 720, URAM 320 / 160 / 320, 커널 클록 300 MHz(기본)·500 MHz. 카드에 올라간 셸만 장착 후 `xbutil examine`으로 확인한다
+- [ ] 카드 DDR4 용량 확인 (M0, 2026-10-23 기록). 판매자 설명으로는 32 GB 특주 모델이고 DIMM 4장이 모두 꽂혀 있다. 표준 U200은 16 GB × 4 = 64 GB이고, 플랫폼 메모리 토폴로지와 `TSR_DEF_CH_BYTES`(16 GiB)도 이 값을 전제로 한다. 카드 장착 후 확인할 것: DIMM 용량과 부품 번호(`xbutil examine`, 가능하면 DIMM 라벨), 표준 셸(`xilinx_u200_gen3x16_xdma_base_2`)의 DDR4 컨트롤러가 이 DIMM으로 보정되는지(`xbutil validate`, dmesg), M0 대역폭 커널로 채널 전 범위 읽기·쓰기와 주소 앨리어싱 검사(예: 0과 8 GiB 오프셋에 서로 다른 패턴을 쓰고 다시 읽기). 표준 플랫폼의 DDR4 컨트롤러 4개는 `MTA18ASF2G72PZ-2G3`(16 GB DDR4-2400 ECC RDIMM, 2Rx8)로 고정 설정되어 있고 SPD를 읽지 않는다(`hw.xsa`의 preset과 DDR4 IP 설정, AXI 주소 34비트로 확인). 예상: 8 GB DIMM이 2Rx8(4 Gb 칩, 예 `MTA18ASF1G72PZ-2G3`)이면 보정은 통과하고 위쪽 8 GB가 아래쪽과 겹친다. 1Rx8(`MTA9ASF1G72PZ-2G3`)이나 x4 구성이면 보정이 실패할 수 있고, 그때는 같은 구성의 16 GB 2Rx8 RDIMM으로 교체하는 것이 가장 간단하다(맞춤 플랫폼은 비용이 크다). 먼저 DIMM 라벨의 부품 번호와 판매자가 쓰던 셸·`xbutil validate` 결과를 확인한다. 사용자가 카드를 받은 뒤 표준 셸을 굽고 `xbutil validate` 등 시험을 모두 통과했다(2026-10-23 전언). 따라서 보정 실패 경우는 배제되고, 남는 확인은 채널당 실제 용량과 위쪽 주소 겹침이다. validate의 메모리 시험은 작은 버퍼만 쓰므로 이것을 잡지 못한다. 장착 후 `xbutil examine`의 셸이 `xilinx_u200_gen3x16_xdma_base_2`이면 다시 굽지 않는다. 겹침 검사 명령(`docs/platform-u200.md` §14): `tsr_bw --sizes 8G --ch-mib 16384 --bursts 64 --modes w,r --reps 1 --verify full`. 채움이 [0, 8 GiB)를, 쓰기 실행이 [8 GiB, 16 GiB)를 덮으므로 위쪽 절반이 아래쪽과 겹치면 읽기 체크섬이 틀린다. 채널당 8 GB면 비트스트림 `CH_BYTES`와 전송 계층 채널 크기를 8 GiB로 맞춘다. 이때 수용 모델은 32B Q4\_K\_M(가중치 약 20.7 GB, 채널당 약 5.2 GB)과 30B-A3B까지이고 70B는 들어가지 않는다
 - [ ] exp·역수·sin·cos 근사 알고리즘과 계수 확정 (`tsr_ref_math.c`, M6 전)
 - [ ] 비순차 실행(유닛 간 겹치기) 도입 여부: M4 성능 카운터의 명령어 간 공백 비율로 판단. 지표는 MVM 공백 비율 G = 1 − Σ`PERF_MVM_CYCLES` / Σ`PERF_CYCLES`와 그 벽시계 몫이고, 제안 기준은 `docs/prof-dbg.md`에 있다 (참고: Qwen2.5-0.5B Q8\_0, `traces/model`의 1토큰, 사이클 모델 G = 3.98%)
-- [ ] T\_MAX 합성값과 토큰 패킹 방식 (M7에서 앞당김, 2026-10-23). 합성값 8을 목표로 한다. 시뮬레이터에서 T > 1 경로를 확인했다: numcheck PASS(0.5B 두 개, 32B), T\_MAX 1과 출력 바이트 동일, 사이클 모델 프리필 0.5B 5.9배·32B 7.2배. RTL 자원·타이밍과 DSP 패킹은 M3 C단계에서 정한다. 남은 것: 출력 헤드(N ≈ 15만)는 토큰당 x + QA + y가 약 9,600 line이라 4 MiB SPM에 토큰 6개만 들어가고, T = 7~8이면 헤드 가중치를 두 번 읽는다(32B에서 패스당 +0.83 GB, +4%). 백엔드가 헤드를 N 방향으로 나누면 12~13개가 들어간다. 일반 프리필은 마지막 토큰의 logits만 계산하므로 영향이 없고, 모든 위치의 logits가 필요한 추측 디코딩(M7)에서만 문제가 된다
+- [ ] T\_MAX 합성값과 토큰 패킹 방식 (M7에서 앞당김, 2026-10-23). 합성값 8을 목표로 한다. 시뮬레이터에서 T > 1 경로를 확인했다: numcheck PASS(0.5B 두 개, 32B), T\_MAX 1과 출력 바이트 동일, 사이클 모델 프리필 0.5B 5.9배·32B 7.2배. M3 C단계 결과(2026-10-24): 합성값 8로 정했다. 4채널 T\_MAX 8 코어가 Vivado OOC에서 300 MHz를 맞췄고(WNS +0.015 ns, LUT 270,910, DSP 2,728, RAMB36 808, URAM 128; T\_MAX 1 대비 LUT 4.0배, DSP 4.3배), DSP 패킹은 같은 가중치에 토큰 둘을 곱하는 방식이다. vkernel에서 0.5B 6토큰 프리필이 T = 6 한 번으로 돌아 3.14 M 사이클(T\_MAX 1은 13.67 M)이었다. 남은 것: 출력 헤드(N ≈ 15만)는 토큰당 x + QA + y가 약 9,600 line이라 4 MiB SPM에 토큰 6개만 들어가고, T = 7~8이면 헤드 가중치를 두 번 읽는다(32B에서 패스당 +0.83 GB, +4%). 백엔드가 헤드를 N 방향으로 나누면 12~13개가 들어간다. 일반 프리필은 마지막 토큰의 logits만 계산하므로 영향이 없고, 모든 위치의 logits가 필요한 추측 디코딩(M7)에서만 문제가 된다
 - [ ] (M7로 연기, 2026-10-23: 기본 경로 우선) 추측 디코딩의 출력 동일성: 디바이스 MUL\_MAT은 토큰별로 T와 무관하게 비트 동일하지만, llama.cpp CPU attention이 T = 1(vec\_dot)과 T ≥ 2(tinyBLAS)에서 다른 커널을 써서 greedy 출력이 근소한 동률에서 갈릴 수 있다(0.5B, 37번째 토큰에서 관찰). 디바이스가 있으면 auto FA가 꺼진다. `-fa on`이면 n\_kv < 512, T ≤ 63에서 동일하다. FA on은 M1 검증 설정(FA off)과 다르므로 채택하면 klcheck·numcheck를 다시 돌린다
 - [ ] KV 캐시 레이아웃: n\_kv가 늘어나면 행 범위 분할이 맞지 않으므로 행 interleave(행 r → 채널 r mod C) 같은 별도 배치와 DRAM 위치, 8비트 KV 우선: llama.cpp를 -ctk q8\_0 -ctv q8\_0로 실행하는 것을 전제로 할지 (M7)
 - [ ] 보류 포맷: 4비트 계열 Q4\_0, MXFP4(gpt-oss-20b)만 후보. 5·6비트와 I-quant의 하드웨어 경로는 두지 않는다
@@ -749,7 +752,7 @@ M1에서 소프트웨어 경로가 먼저 완성되고, M2 이후 하드웨어 �
 - [ ] greedy 외 샘플링(temperature, top-p)과 디바이스 난수 생성기 (M9)
 - [ ] `sw/runner`와 llama-server 연동 방식 (M9)
 - [ ] XRT에서 실행 중 CSR 창 접근 (M3 실기에서 확인). `TSR_XRT_CTRL=run`에서 `xrt::run`이 걸려 있는 동안 exclusive CU의 `read_register`·`write_register`가 되는지, 정지 중 BO 읽기·쓰기가 되는지 시험한 적이 없다 (`docs/xrt-host.md` §4.1, §8). run 모드의 시간 초과 ABORT(창으로 `CTRL.ABORT` 쓰기)와 PC 표본이 여기에 기댄다. 안 되면 이 둘은 `TSR_XRT_CTRL=regs`로 해야 한다. 디버거는 처음부터 regs 모드를 쓴다 (`docs/prof-dbg.md` §4.2)
-- [ ] PCIe CSR 창 읽기 지연 실측 (M3, `tsr_xrt_selftest`). 실행당 `PERF_*` 읽기 세트, PC 표본 간격, SPM 창 덤프 시간, 전체 카운터 동시 표본의 도입 여부가 이 값으로 정해진다
+- [ ] PCIe CSR 창 읽기 지연 실측 (M3, `tsr_xrt_selftest`). 실행당 `PERF_*` 읽기 세트, PC 표본 간격, SPM 창 덤프 시간, 전체 카운터 동시 표본의 도입 여부가 이 값으로 정해진다. vkernel에서 센 횟수(2026-10-24): XRT 스케줄러 순서로 실행당 레지스터 쓰기 21회 + 읽기 6회, 0.5B 디코드 토큰당 실행 145회, 곧 토큰당 posted write 약 3,000회와 read 약 870회다. 카드에서 시간으로 잰다
 - [ ] U200 디버그 빌드 확인 (M4): 이 DFX 셸의 사용자 커널에 BSCANE2를 둘 수 없는지(UG909), ILA를 넣은 디버그 빌드(`hw/u200/k4_dbg.cfg`)가 300 MHz와 SLR 횡단 타이밍을 지키는지
 - [ ] 멈춘 유닛의 강제 해제 (M4). ABORT와 SOFT\_RESET은 명령어 경계를 기다리므로 멈춘 유닛은 하드웨어 리셋으로만 풀리고, 그러면 사후 상태가 사라진다. 경계를 기다리지 않는 강제 중단을 둘지 플랫폼 어댑터의 리셋 규칙과 함께 정한다. 그 전에는 행 덤프를 먼저 남긴다
 - [ ] 유닛 점유·발행 공백 카운터(M4\~M8)와 트레이스 링(M8\~M9)의 도입 여부. 측정 기준은 `docs/prof-dbg.md` §6.2이고, `PERF_FETCH_BEATS`는 위 `PERF_CH_RD_BEATS[0]` 항목대로 정한다
@@ -806,7 +809,7 @@ M1 착수 시 시뮬레이터와 RTL이 비트 단위로 같아야 하는데 본
 - **BUSY 중 SOFT\_RESET**: 다음 명령어 경계에서 ABORT처럼 멈춘 뒤 실행이 끝나면 soft reset을 적용한다. `STATUS`는 BUSY에서 0이 되고 DONE은 켜지지 않는다. 같은 CTRL 쓰기의 START는 무시한다.
 - **ABORT와 명령 버퍼 끝**: ABORT는 명령 버퍼 끝 검사보다 먼저 확인한다. 마지막 명령어 뒤에 본 ABORT는 `ILLEGAL_OP`가 아니라 `ABORTED`이고 `ERR_PC` = `CMD_COUNT`다. ABORT는 `PC`를 바꾸지 않는다 (마지막으로 실행한 명령어).
 - **DONE ⇒ 메모리 정지**: `STATUS.DONE`과 `done`은 그 실행의 모든 메모리 트랜잭션이 끝난 뒤에만 켜진다. 버린 명령어 프리페치도 포함한다.
-- **하드웨어 리셋**: `ap_rst_n`은 동기식 active-low다. 리셋 후 모든 CSR은 전원 투입 직후 값이다. SOFT\_RESET과 달리 `CMD_ADDR`, `CMD_COUNT`, `ARG*`도 0이고 SPM 내용은 정의되지 않는다. 메모리 쪽은 코어와 함께 리셋되어야 한다. 끝나지 않은 트랜잭션은 완료되지 않고 버려지며, 리셋 전 요청의 응답이 리셋 후에 오면 안 된다. 이 조건은 M4 플랫폼 어댑터가 보장한다. `tsr_fetch`는 남은 응답을 견디지만 `tsr_mem_arb`의 미완료 카운터는 이를 전제로 한다.
+- **하드웨어 리셋**: `ap_rst_n`은 동기식 active-low다. 리셋 후 모든 CSR은 전원 투입 직후 값이다. SOFT\_RESET과 달리 `CMD_ADDR`, `CMD_COUNT`, `ARG*`도 0이고 SPM 내용은 정의되지 않는다. 메모리 쪽은 코어와 함께 리셋되어야 한다. 끝나지 않은 트랜잭션은 완료되지 않고 버려지며, 리셋 전 요청의 응답이 리셋 후에 오면 안 된다. 이 조건은 플랫폼 어댑터(U200: `tsr_xrt_reset`, M3 C단계)가 보장한다. `tsr_fetch`는 남은 응답을 견디지만 `tsr_mem_arb`의 미완료 카운터는 이를 전제로 한다. 리셋 분배(M3 C단계): 구현 파라미터 `RST_PIPE` = P이면 리셋이 P단 파이프를 거쳐 모든 플립플롭에 정확히 P 사이클 늦게 닿는다. 그래서 코어 출력은 `rst_n`이 내려간 뒤 P 사이클 뒤에 조용해지고, `rst_n`은 P + 1 사이클 이상 낮게 유지해야 한다. U200 값 P = 3에서 커널의 최소 `ap_rst_n` 폭은 4 사이클이다(Vitis는 훨씬 길게 잡는다). 기본값 P = 0은 이전 동작과 같다.
 
 아래 두 항목은 "프로파일러와 디버거" 절이 기대는 성질이다. 지금의 시뮬레이터와 RTL에서 이미 성립하며, 새로 정하는 것이 아니라 적어 두는 것이다.
 

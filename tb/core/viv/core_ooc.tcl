@@ -1,104 +1,123 @@
-# tb/core/viv/core_ooc.tcl — out-of-context implementation of the whole tsr_core at 300 MHz on the
-# U200 part (opt-in synthesis sanity check; needs Vivado, not part of tb/run_all.sh).
+# tb/core/viv/core_ooc.tcl — out-of-context synthesis / implementation of the whole tsr_core at
+# 300 MHz on the U200 part (opt-in: needs Vivado, not part of tb/run_all.sh). Results of the
+# M3 part C runs: docs/rtl-m3.md §14; runner for the three U200 configurations: core_ooc.sh.
 #
 # usage: vivado -mode batch -nojournal -nolog -source tb/core/viv/core_ooc.tcl \
-#          -tclargs <repo> <outdir> [synth_only] [sram=<file>] [NAME=VALUE ...]
-#   NAME=VALUE  tsr_core parameters passed as synth_design -generic (e.g. SPM_BYTES=262144
-#               SPM_RD_LAT=4); omitted ones keep the U200 v1 defaults of tsr_pkg.
-#   synth_only  stop after synthesis (utilisation, latches, logic depth estimate).
-#   sram=<file> use this tsr_sram_1r1w instead of rtl/tech/generic's (e.g. a draft of the
-#               rtl/tech/xilinx URAM variant).
-# Sources: rtl/filelist.f (generic target: behavioural tsr_sram_1r1w; Vivado 2024.2 maps the
-# 4 MiB U200 SPM to 1032 RAMB36, not URAM — the M4 xilinx variant has to force URAM).
+#          -tclargs <repo> <outdir> [synth_only] [dcp] [from=<dcp>] [filelist=<f>] [floorplan=<tcl>]
+#                   [place=<directive>] [phys=<directive>] [route=<directive>] [prphys] [unc=<ns>]
+#                   [NAME=VALUE ...]
+#   NAME=VALUE    tsr_core parameters passed as synth_design -generic (e.g. NUM_CH=4 T_MAX=8
+#                 SPM_RD_LAT=4 MVM_MAC_LAT=9); omitted ones keep the tsr_pkg defaults; a later
+#                 NAME=VALUE overrides an earlier one (core_ooc.sh puts its defaults first).
+#   synth_only    stop after synthesis (utilisation per hierarchy, latches, logic depth estimate).
+#   dcp           write <outdir>/post_synth.dcp (with the constraints) and post_route.dcp.
+#   from=<dcp>    skip synthesis: implement a post_synth.dcp of an earlier run (same constraints).
+#   filelist=<f>  sources (default rtl/filelist_xilinx.f: the U200 target with the rtl/tech/xilinx
+#                 URAM / BRAM / DSP-packed wrappers; rtl/filelist.f = generic target, where Vivado
+#                 maps the 4 MiB SPM to 1032 RAMB36 and the MAC lanes to one DSP per product).
+#   floorplan=<f> Tcl sourced after opt_design, before place_design (pblocks; e.g. core_slr.tcl,
+#                 configured by TSR_SLR_* environment variables, see its header).
+#   place= / phys= / route=  -directive of place_design / phys_opt_design / route_design.
+#   prphys        phys_opt_design once more after routing.
+#   unc=<ns>      extra setup uncertainty on clk (the platform's MMCM jitter is not modelled by
+#                 default, as in the block runs of tb/tech/viv and tb/qact/viv).
 # Constraints as tb/qact/viv/qact_ooc.tcl: 3.333 ns clock, every I/O budgeted 1.6 ns outside (the
-# memory ports and the CSR port are registered on the far side). No pblocks: SLR crossings of the
-# real U200 floorplan (DMA <-> channel arbiters) are NOT modelled here.
-# Prints (grep "COOC"):
-#   COOC wns <ns> whs <ns> | COOC r2r_wns ... | COOC path <slack> <levels> <start> -> <end>
-#   COOC util LUT <n> FF <n> DSP <n> RAMB36 <n> RAMB18 <n> URAM <n> LUTRAM <n> LATCH <n>
+# memory ports, the CSR port and rst_n are registered on the far side: tsr_xrt_kernel's AXI
+# slices and reset copies). Without floorplan= no pblocks: the placer spreads the core over the
+# SLRs it needs, the SLR crossings of the real U200 floorplan (clusters next to their DDR4
+# controller) are not imposed.
+# Prints (grep "COOC"; procs in core_rpt.tcl): util / dev (totals), hier (per hierarchy key),
+# wns / whs / tns, r2r, the worst path per (start group, end group), io_in / io_out, and after
+# placement slr / sll (cells per SLR, SLR-crossing nets by driver).
 set repo [lindex $argv 0]
 set out  [lindex $argv 1]
 set synth_only 0
-set sram ""
-set gens [list]
+set dcp 0
+set from ""
+set flist $repo/rtl/filelist_xilinx.f
+set fplan ""
+set pdir ""; set odir ""; set rdir ""
+set prphys 0
+set unc ""
+set gens [dict create]
 foreach a [lrange $argv 2 end] {
   if {$a eq "synth_only"} {
     set synth_only 1
-  } elseif {[string match "sram=*" $a]} {
-    set sram [string range $a 5 end]
+  } elseif {$a eq "dcp"} {
+    set dcp 1
+  } elseif {$a eq "prphys"} {
+    set prphys 1
+  } elseif {[regexp {^from=(.*)$} $a -> v]} {
+    set from $v
+  } elseif {[regexp {^filelist=(.*)$} $a -> v]} {
+    set flist $v
+  } elseif {[regexp {^floorplan=(.*)$} $a -> v]} {
+    set fplan $v
+  } elseif {[regexp {^place=(.*)$} $a -> v]} {
+    set pdir $v
+  } elseif {[regexp {^phys=(.*)$} $a -> v]} {
+    set odir $v
+  } elseif {[regexp {^route=(.*)$} $a -> v]} {
+    set rdir $v
+  } elseif {[regexp {^unc=(.*)$} $a -> v]} {
+    set unc $v
+  } elseif {[regexp {^([A-Za-z_][A-Za-z0-9_]*)=(.*)$} $a -> k v]} {
+    dict set gens $k $v      ;# a later NAME=VALUE overrides an earlier one
   } else {
-    lappend gens -generic $a
+    error "core_ooc.tcl: unknown argument '$a'"
   }
 }
+set genargs [list]
+dict for {k v} $gens { lappend genargs -generic $k=$v }
+puts "COOC generics $gens"
 set_param general.maxThreads 4
 file mkdir $out
+set cooc_flow 1
+source [file join [file dirname [file normalize [info script]]] core_rpt.tcl]
 
-set fl [open $repo/rtl/filelist.f r]
-set srcs [list]
-foreach line [split [read $fl] "\n"] {
-  regsub {//.*$} $line "" line
-  set line [string trim $line]
-  if {$line eq ""} { continue }
-  if {$sram ne "" && [string match "*/tsr_sram_1r1w.sv" $line]} {
-    lappend srcs $sram
-  } else {
-    lappend srcs $repo/rtl/$line
+if {$from eq ""} {
+  set fl [open $flist r]
+  set srcs [list]
+  set fdir [file dirname [file normalize $flist]]
+  foreach line [split [read $fl] "\n"] {
+    regsub {//.*$} $line "" line
+    set line [string trim $line]
+    if {$line eq ""} { continue }
+    lappend srcs $fdir/$line
   }
+  close $fl
+  read_verilog -sv $srcs
+  synth_design -mode out_of_context -part xcu200-fsgd2104-2-e -top tsr_core {*}$genargs
+  create_clock -name clk -period 3.333 [get_ports clk]
+  set_input_delay  -clock clk 1.6 [get_ports -filter {DIRECTION == IN && NAME != clk}]
+  set_output_delay -clock clk 1.6 [get_ports -filter {DIRECTION == OUT}]
+  if {$unc ne ""} { set_clock_uncertainty -setup $unc [get_clocks clk] }
+  if {$dcp} { write_checkpoint -force $out/post_synth.dcp }
+  report_utilization -file $out/util_synth.rpt
+  report_utilization -hierarchical -hierarchical_depth 6 -file $out/util_hier.rpt
+  cooc_util synth
+  cooc_hier synth
+  cooc_paths synth 30
+  if {$synth_only} { exit }
+} else {
+  open_checkpoint $from
+  if {$unc ne ""} { set_clock_uncertainty -setup $unc [get_clocks clk] }
 }
-close $fl
-read_verilog -sv $srcs
-synth_design -mode out_of_context -part xcu200-fsgd2104-2-e -top tsr_core {*}$gens
-create_clock -name clk -period 3.333 [get_ports clk]
-set_input_delay  -clock clk 1.6 [get_ports -filter {DIRECTION == IN && NAME != clk}]
-set_output_delay -clock clk 1.6 [get_ports -filter {DIRECTION == OUT}]
-report_utilization -file $out/util_synth.rpt
-report_utilization -hierarchical -file $out/util_hier.rpt
-
-proc util {tag} {
-  set luts [llength [get_cells -quiet -hierarchical -filter {REF_NAME =~ LUT*}]]
-  set ffs  [llength [get_cells -quiet -hierarchical -filter {REF_NAME =~ FD*}]]
-  set dsp  [llength [get_cells -quiet -hierarchical -filter {REF_NAME == DSP48E2}]]
-  set b36  [llength [get_cells -quiet -hierarchical -filter {REF_NAME =~ RAMB36*}]]
-  set b18  [llength [get_cells -quiet -hierarchical -filter {REF_NAME =~ RAMB18*}]]
-  set uram [llength [get_cells -quiet -hierarchical -filter {REF_NAME =~ URAM288*}]]
-  set lram [llength [get_cells -quiet -hierarchical -filter {REF_NAME =~ RAM*M* || REF_NAME =~ RAM*S* || REF_NAME =~ RAM*D*}]]
-  set ltch [llength [get_cells -quiet -hierarchical -filter {REF_NAME =~ LD*}]]
-  puts "COOC util($tag) LUT $luts FF $ffs DSP $dsp RAMB36 $b36 RAMB18 $b18 URAM $uram LUTRAM $lram LATCH $ltch"
-}
-
-proc paths {tag n} {
-  set wns [get_property SLACK [get_timing_paths -setup -max_paths 1]]
-  set whs [get_property SLACK [get_timing_paths -hold -max_paths 1]]
-  puts "COOC $tag wns $wns whs $whs"
-  set r2r [get_timing_paths -setup -max_paths 1 -from [all_registers] -to [all_registers]]
-  puts "COOC $tag r2r_wns [get_property SLACK $r2r] levels [get_property LOGIC_LEVELS $r2r] [get_property STARTPOINT_PIN $r2r] -> [get_property ENDPOINT_PIN $r2r]"
-  # Worst path per (start module, end module) pair, register to register.
-  set seen [dict create]
-  foreach p [get_timing_paths -setup -max_paths 3000 -nworst 1 -from [all_registers] -to [all_registers]] {
-    set sp [get_property STARTPOINT_PIN $p]
-    set ep [get_property ENDPOINT_PIN $p]
-    set sm [lindex [split $sp /] 0]
-    set em [lindex [split $ep /] 0]
-    set key "$sm>$em"
-    if {![dict exists $seen $key]} {
-      dict set seen $key 1
-      if {[dict size $seen] <= $n} {
-        puts "COOC $tag path [get_property SLACK $p] levels [get_property LOGIC_LEVELS $p] $sp -> $ep"
-      }
-    }
-  }
-}
-
-util synth
-paths synth 25
-if {$synth_only} { exit }
 
 opt_design
-place_design
-phys_opt_design
-route_design
-report_timing_summary -max_paths 30 -file $out/timing.rpt
+if {$fplan ne ""} { source $fplan }
+if {$pdir ne ""} { place_design -directive $pdir } else { place_design }
+cooc_paths placed 10
+if {$odir ne ""} { phys_opt_design -directive $odir } else { phys_opt_design }
+if {$rdir ne ""} { route_design -directive $rdir } else { route_design }
+if {$prphys} { phys_opt_design }
+if {$dcp} { write_checkpoint -force $out/post_route.dcp }
+report_timing_summary -max_paths 50 -file $out/timing.rpt
 report_utilization -file $out/util.rpt
+report_utilization -hierarchical -hierarchical_depth 6 -file $out/util_hier_routed.rpt
+report_design_analysis -logic_level_distribution -file $out/levels.rpt
 report_drc -file $out/drc.rpt
-util routed
-paths routed 25
+cooc_util routed
+cooc_hier routed
+cooc_paths routed 30
+cooc_slr routed $out

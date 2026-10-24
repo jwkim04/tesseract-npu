@@ -16,7 +16,9 @@
                                   --derive-only fails on the corrupted perf record only
   test_fastreplay_detects_mutants M2 RTL mutants in scratch copies (QACT tail not zeroed, arbiter
                                   RD_OUTSTANDING + 1, ST done before its write responses, write
-                                  request waiting for data ready) must fail (marked slow)
+                                  request waiting for data ready) must fail (slow, opt-in: -m slow,
+                                  TSR_FASTREPLAY_SLOW=1, -k test_fastreplay_detects_mutants or its
+                                  node id)
 Builds go to $TSR_FASTREPLAY_BUILD / $TSR_SIM_BUILD_ROOT/fastreplay / build/fastreplay (cached).
 """
 from __future__ import annotations
@@ -204,9 +206,21 @@ def test_fastreplay_detects_corrupt(tmp_path):
     assert res["b_small"]["ok"], res["b_small"]["errors"]
 
 
+def _require_slow(request):
+    """Slow tests are opt-in by tb/fp's rule (tb/fp/test_fp.py slow_requested: an -m expression
+    naming `slow`, -k with the test's name, its node id) or TSR_FASTREPLAY_SLOW=1; a plain
+    `pytest tb` / tb/run_all.sh reports them skipped (tb/pytest.ini does not deselect `slow`)."""
+    fp = sys.modules.get("tsr_fp_slow_gate") or _load("tsr_fp_slow_gate", REPO / "tb" / "fp" / "test_fp.py")
+    if not fp.slow_requested(request.config, request.node.originalname,
+                             env={fp.SLOW_ENV: os.environ.get("TSR_FASTREPLAY_SLOW", "0")}):
+        pytest.skip("slow test, opt-in: -m slow, TSR_FASTREPLAY_SLOW=1, -k %s or its node id"
+                    % request.node.originalname)
+
+
 @pytest.mark.slow
 @pytest.mark.traces
-def test_fastreplay_detects_mutants(tmp_path):
+def test_fastreplay_detects_mutants(request, tmp_path):
+    _require_slow(request)
     names = {"qact_qs_tail", "arb_outstanding_plus1", "dma_st_done_early", "dma_wr_req_waits_dat_ready"}
     res = mut.rtl_campaign(tmp_path, names, log=_log)
     assert {r[0] for r in res} == names

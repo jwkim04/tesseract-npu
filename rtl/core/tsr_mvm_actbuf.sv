@@ -88,12 +88,12 @@ module tsr_mvm_actbuf
     end
   end
 
+  // Address / data load every cycle (no clock enable: M3 part C timing, docs/rtl-m3.md §14);
+  // the RAMs write only with the registered enables above, so the content is unchanged.
   always_ff @(posedge clk) begin
-    if (wr_valid) begin
-      qs_wa_q  <= QS_AW'(wr_line.addr[9:1]);
-      dbs_wa_q <= DBS_AW'(wr_line.addr);
-      wd_q     <= wr_line.data;
-    end
+    qs_wa_q  <= QS_AW'(wr_line.addr[9:1]);
+    dbs_wa_q <= DBS_AW'(wr_line.addr);
+    wd_q     <= wr_line.data;
   end
 
   // ---- RAMs ----

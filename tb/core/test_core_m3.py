@@ -23,7 +23,9 @@ pytest functions (one Verilator build each; all cocotb tests of a build run back
   test_core_m3_impl[<variant>]  implementation parameters that must not change results (MVM
                                 pipes 0 / 3, WS FIFO 64 / 1024, SPM_RD_LAT 1 / 4, RD_OUTSTANDING
                                 1 / 2, MVM latencies 1 / 8 ...): a trace subset + m3_random
-  test_core_m3_directed[<cfg>]  directed tests (below) on reduced / U200 configurations
+  test_core_m3_directed[<cfg>]  directed tests (below) on reduced / U200 configurations;
+                                u200_rst3: the U200 v1 core at the bitstream parameters
+                                (docs/rtl-m3.md §14.2, RST_PIPE 3) on rtl/filelist_xilinx.f
 cocotb tests (new here):
   m3_random      ProgGen(m3=True) program() and mvm_program() on the RTL and the simulator in
                  lockstep: final CSRs, PC, R1..R15, retired, read beats per channel and per
@@ -49,8 +51,9 @@ cocotb tests (new here):
   m3_soft_reset  SOFT_RESET while BUSY inside MVM programs (P3: acts as ABORT, then the reset), the
                  next MVM program matches a fresh simulator
   m3_hw_reset    rst_n at random points of MVM programs (also mid weight stream with reads in
-                 flight; the memory side is reset with the core): outputs quiet during reset,
-                 CSRs == a fresh simulator, the next MVM program matches
+                 flight; the memory side is reset with the core), pulses of >= RST_PIPE + 1
+                 cycles: outputs quiet from RST_PIPE cycles after rst_n falls (docs/rtl-m2.md
+                 P10), CSRs == a fresh simulator, the next MVM program matches
 Environment: TSR_CORE_PASSES, TSR_CORE_RANDOM, TSR_CORE_SPM_EVERY, TSR_CORE_TESTS,
 TSR_CORE_TRACE_FILTER (as in test_core.py), TSR_CORE_M3_TRACES (colon-separated trace roots),
 TSR_CORE_M3_RATE, TSR_CORE_M3_HEAD, TSR_CORE_M3_INTERRUPTS (runs per abort / reset test),
@@ -68,7 +71,7 @@ from pathlib import Path
 
 import cocotb
 import pytest
-from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge
+from cocotb.triggers import ClockCycles, FallingEdge
 
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
@@ -113,6 +116,10 @@ def _cfg(**kw):
     c = dict(isa.U200_V1)
     c.update(kw)
     return c
+
+
+# Implementation parameters of the U200 bitstream (docs/rtl-m3.md §14.2; with rtl/filelist_xilinx.f).
+U200_BITSTREAM = dict(SPM_RD_LAT=4, MVM_BC_PIPE=2, MVM_RES_PIPE=2, MVM_MAC_LAT=9, RST_PIPE=3)
 
 
 def m3_params(cfg: dict, **impl) -> dict:
@@ -731,18 +738,8 @@ async def _interrupt_runs(h, dut, rnd, kind: str, n_runs: int):
             assert h.regs() == [0] * 16
             sim = h.new_sim()
             sim.csr_write(isa.CSR_CTRL, isa.CTRL_SOFT_RESET)
-        else:   # hardware reset (memory side together with the core)
-            await RisingEdge(dut.clk)
-            dut.rst_n.value = 0
-            for c in range(rnd.randint(1, 6)):
-                await RisingEdge(dut.clk)
-                await FallingEdge(dut.clk)
-                quiet = (int(dut.m_rd_req_valid.value) | int(dut.m_wr_req_valid.value)
-                         | int(dut.m_wr_dat_valid.value) | int(dut.csr_ready.value) | int(dut.done.value))
-                assert quiet == 0, "output active during reset (#%d, cycle %d)" % (i, c)
-            await RisingEdge(dut.clk)
-            dut.rst_n.value = 1
-            await ClockCycles(dut.clk, 5)
+        else:   # hardware reset (memory side together with the core; RST_PIPE contract, P10)
+            await h.hw_reset(rnd, "#%d" % i, minimal=(i % 3 == 2))
             h.mem.check(idle=True)
             sim = h.new_sim()
             bad = []
@@ -801,7 +798,8 @@ async def m3_soft_reset(dut):
 @cocotb.test()
 async def m3_hw_reset(dut):
     """Hardware reset (memory side together) at random points of MVM chain programs (half inside
-    a dispatched MVM, weight reads in flight): outputs quiet during reset, CSRs == a fresh
+    a dispatched MVM, weight reads in flight), pulses of >= RST_PIPE + 1 cycles (CoreH.hw_reset,
+    docs/rtl-m2.md P10): outputs quiet from RST_PIPE cycles after rst_n falls, CSRs == a fresh
     simulator, the next MVM program matches a fresh simulator."""
     h = await M3H.create(dut)
     rnd = random.Random(h.seed * 59 + 2)
@@ -878,6 +876,13 @@ M3_DIRECTED = {
     "u200": dict(cfg=_cfg(), tests=["core_csr_consts", "m3_throughput", "m3_perf", "m3_mvm_st"], n_random=0),
     # U200 v1 with T_MAX 8: throughput at T = 1 and T = 8, PERF.
     "u200t8": dict(cfg=_cfg(t_max=8), tests=["m3_throughput", "m3_perf"], n_random=0),
+    # U200 v1 (4 channels, T_MAX 1: the k4 T_MAX 1 kernel's core) at the U200 bitstream parameters
+    # on the Xilinx technology wrappers: the RST_PIPE 3 reset contract (docs/rtl-m2.md P10) in the
+    # hardware-reset tests, SOFT_RESET / ABORT, throughput and PERF at these latencies.
+    "u200_rst3": dict(cfg=_cfg(), params=U200_BITSTREAM, filelist=REPO / "rtl" / "filelist_xilinx.f",
+                      tests=["core_csr_consts", "core_status_w1c", "core_soft_reset", "core_hw_reset",
+                             "m3_throughput", "m3_perf", "m3_mvm_st", "m3_abort", "m3_soft_reset",
+                             "m3_hw_reset"], n_random=0),
 }
 
 
@@ -887,9 +892,11 @@ def test_core_m3_directed(name):
     tests = _selected(c["tests"])
     if not tests:
         pytest.skip("no selected test")
-    run("tsr_core", __name__, parameters=m3_params(c["cfg"]), name="core_m3d_" + name, testcase=tests,
+    params = c.get("params", {})
+    kw = dict(sources=rtl_sources(c["filelist"])) if c.get("filelist") else {}
+    run("tsr_core", __name__, parameters=m3_params(c["cfg"], **params), name="core_m3d_" + name, testcase=tests,
         extra_env={"TSR_CORE": json.dumps(dict(cfg=c["cfg"], name=name, traces=[], n_random=c["n_random"],
-                                               has_mvm=1))})
+                                               has_mvm=1, rst_pipe=params.get("RST_PIPE", 0)))}, **kw)
 
 
 # =============================================================================================

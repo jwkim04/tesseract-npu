@@ -1,4 +1,5 @@
-// tsr_transport.c — transport selection and dispatch (TSR_DEVICE=sim|xrt, default sim).
+// tsr_transport.c — transport selection and dispatch (TSR_DEVICE=sim|xrt|mock|vkernel|<registered>,
+// default sim).
 
 #include "tsr_transport.h"
 #include "tsr_transport_impl.h"
@@ -12,6 +13,21 @@ struct tsr_transport {
     void *                    impl;
 };
 
+tsr_transport * tsr_transport_wrap(const tsr_transport_ops * ops, void * impl) {
+    if (ops == NULL || impl == NULL) return NULL;
+    tsr_transport * t = (tsr_transport *)calloc(1, sizeof(tsr_transport));
+    if (t == NULL) {
+        fprintf(stderr, "tsr_transport: out of memory\n");
+        return NULL;
+    }
+    t->ops = ops;
+    t->impl = impl;
+    return t;
+}
+
+const tsr_transport_ops * tsr_transport_get_ops(const tsr_transport * t) { return t ? t->ops : NULL; }
+void * tsr_transport_get_impl(const tsr_transport * t) { return t ? t->impl : NULL; }
+
 tsr_transport * tsr_transport_open(const char * kind) {
     if (kind == NULL || kind[0] == '\0') {
         kind = getenv("TSR_DEVICE");
@@ -21,26 +37,12 @@ tsr_transport * tsr_transport_open(const char * kind) {
     void * impl = NULL;
     if (strcmp(kind, "sim") == 0) {
         impl = tsr_transport_sim_open(&ops);
-    } else if (strcmp(kind, "xrt") == 0) {
-#ifdef TSR_HAVE_XRT
-        impl = tsr_transport_xrt_open(&ops);
-#else
-        fprintf(stderr, "tsr_transport: the \"xrt\" transport is not built in (configure with -DTSR_WITH_XRT=ON)\n");
-        return NULL;
-#endif
     } else {
-        fprintf(stderr, "tsr_transport: unknown transport \"%s\" (TSR_DEVICE must be sim or xrt)\n", kind);
-        return NULL;
+        impl = tsr_transport_kdev_open(kind, &ops);   // xrt, mock, vkernel, registered kdev kinds
     }
     if (impl == NULL) return NULL;
-    tsr_transport * t = (tsr_transport *)calloc(1, sizeof(tsr_transport));
-    if (t == NULL) {
-        ops->close(impl);
-        fprintf(stderr, "tsr_transport: out of memory\n");
-        return NULL;
-    }
-    t->ops = ops;
-    t->impl = impl;
+    tsr_transport * t = tsr_transport_wrap(ops, impl);
+    if (t == NULL) ops->close(impl);
     return t;
 }
 

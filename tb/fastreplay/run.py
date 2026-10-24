@@ -11,7 +11,13 @@ configuration (Trace.core_parameters()) plus HAS_MVM and implementation paramete
 the build root by a key of the parameters and source paths, and rebuilt only when the content of
 a source (RTL, testbench, sw/sim) changed.
 
-Options (see --help): --regimes rand,fast,slow,ordered|all  --rotate P  --seed N  --param K=V
+--top core (default: tsr_core with its memory ports) | kernel (the Alveo XRT kernel body
+tsr_xrt_kernel with the trace's configuration: AXI4-Lite host, AXI4 memories at random 4 KiB
+aligned bases, tb/platform/kernel_bench.cpp) | tsr_u200_k1 | tsr_u200_k4 (the packaged kernel tops;
+their configuration is fixed, so the traces must have it). --param also takes the kernel's
+AXI_SLICES / RST_STAGES; --dut K=V and --mem p_rresp_err=P / p_bresp_err=P go to the kernel bench.
+
+Options (see --help): --top T  --regimes rand,fast,slow,ordered|all  --rotate P  --seed N  --param K=V
 (SPM_RD_LAT=4, FETCH_BEATS=64, RD_OUTSTANDING=2, MVM_WS_FIFO=64, ...)  --has-mvm auto|0|1
 --mem key=value (memory model overrides, e.g. rd_lat=400:400)  --procs N (parallel replay
 processes per build)  --filelist F (e.g. a scratch copy of rtl/filelist.f with a mutant)
@@ -25,6 +31,8 @@ Examples:
     tb/fastreplay/run.py traces/m3 traces/gen --regimes all           # M3 (HAS_MVM auto = 1)
     tb/fastreplay/run.py traces/model --regimes fast,rand --procs 4    # real-model traces
     tb/fastreplay/run.py 'traces/tmp/tbo/0001*' --param MVM_WS_FIFO=64 --mem rd_lat=300:400
+    tb/fastreplay/run.py traces/m3 --top kernel --regimes all        # through the XRT adapter
+    tb/fastreplay/run.py traces/m3/tmax8 --top tsr_u200_k4           # the packaged 4-channel kernel
     tb/fastreplay/run.py traces/m2/tmax1/m2_s21_0003 --waves --extra=--vcd=/tmp/x.vcd
     <build>/obj/fastreplay --regimes slow --run-seed S TRACE_DIR     # rerun one failing run
 Speed (dev server, quiet): U200 M2 core ~0.9 M simulated cycles/s per process (one thread);
@@ -60,7 +68,25 @@ REPO = HERE.parents[1]
 HARNESS_VERSION = 4          # bump when the build recipe changes (part of the build key)
 SW_SIM = REPO / "sw" / "sim"
 C_SOURCES = ["tsr_ref.c", "tsr_sim.c", "tsr_trace.c"]
-TB_SOURCES = [HERE / "fastreplay.cpp", HERE / "memmodel.h"]
+TB_SOURCES = [HERE / "fastreplay.cpp", HERE / "fr_common.h", HERE / "memmodel.h"]
+# --top kernel / packaged tops (tb/platform, rtl/platform/alveo_xrt)
+PLATFORM = REPO / "tb" / "platform"
+PLATFORM_FL = REPO / "rtl" / "platform" / "alveo_xrt" / "filelist.f"
+KB_SOURCES = [PLATFORM / "kernel_bench.cpp", PLATFORM / "kernel_dut.h", HERE / "fr_common.h", HERE / "memmodel.h"]
+KERNEL_PARAMS = ("AXI_SLICES", "RST_STAGES")
+# Packaged kernels (rtl/platform/alveo_xrt/gen_tops.py): fixed configuration and parameters (gen_tops.py
+# COMMON: the U200 bitstream parameters of docs/rtl-m3.md §14.2).
+U200_CFG = dict(beat_bits=512, lanes=128, k_max=32768, spm_bytes=4 * 1024 * 1024, vl=16, nireg=16, nsreg=16,
+                loop_depth=4, rd_outstanding=16, ch_bytes=16 * 1024 ** 3, addr_beat_w=28)
+PACKAGED = {
+    "tsr_u200_k1": dict(cfg=dict(U200_CFG, num_ch=1, t_max=1),
+                        params=dict(HAS_MVM=1, SPM_RD_LAT=4, MVM_BC_PIPE=2, MVM_RES_PIPE=2, MVM_MAC_LAT=9, RST_PIPE=3,
+                                    AXI_SLICES=2, RST_STAGES=3)),
+    "tsr_u200_k4": dict(cfg=dict(U200_CFG, num_ch=4, t_max=8),
+                        params=dict(HAS_MVM=1, SPM_RD_LAT=4, MVM_BC_PIPE=2, MVM_RES_PIPE=2, MVM_MAC_LAT=9, RST_PIPE=3,
+                                    AXI_SLICES=2, RST_STAGES=3)),
+}
+TOPS = ("core", "kernel") + tuple(PACKAGED)
 REGIMES = ["rand", "fast", "slow", "ordered"]
 OP_END, OP_MVM = 0x01, 0x20
 ERR_ILLEGAL_OP = 1
@@ -230,7 +256,10 @@ def _sh(cmd, cwd, log: Path, env=None) -> None:
 
 
 def build(cfg: dict, has_mvm: int, overrides: dict, *, filelist: Path, jobs: int = 4, waves: bool = False,
-          vthreads: int = 0, wno_fatal: bool = False, log=print) -> Build:
+          vthreads: int = 0, wno_fatal: bool = False, top: str = "core", platform_filelist=None,
+          log=print) -> Build:
+    if top not in TOPS:
+        raise SystemExit("run.py: --top must be one of %s" % ", ".join(TOPS))
     params = core_params(cfg)
     params["HAS_MVM"] = int(has_mvm)
     for k, v in overrides.items():
@@ -238,13 +267,34 @@ def build(cfg: dict, has_mvm: int, overrides: dict, *, filelist: Path, jobs: int
             raise SystemExit("run.py: %s comes from the trace configuration; it cannot be overridden" % k)
         if k == "HAS_MVM":
             raise SystemExit("run.py: use --has-mvm")
+        if k in KERNEL_PARAMS and top == "core":
+            raise SystemExit("run.py: %s is a kernel parameter (--top kernel)" % k)
         params[k] = v
+    if top in PACKAGED:
+        pk = PACKAGED[top]
+        diff = {k: (cfg.get(k), v) for k, v in pk["cfg"].items() if cfg.get(k) != v}
+        if diff:
+            raise SystemExit("run.py: %s has a fixed configuration; the traces differ in %s (trace, kernel)" % (top, diff))
+        for k, v in overrides.items():
+            if k != "RD_OUTSTANDING" and pk["params"].get(k) != v:
+                raise SystemExit("run.py: %s fixes its parameters; %s=%s cannot be overridden" % (top, k, v))
+        if int(has_mvm) != 1:
+            raise SystemExit("run.py: %s has HAS_MVM = 1 (traces needing HAS_MVM = 0 cannot run on it)" % top)
+        params = core_params(cfg)
+        params.update(pk["params"])
     impl = {k: v for k, v in sorted(params.items()) if k not in CONFIG_PARAMS or k == "RD_OUTSTANDING"}
     desc = "NUM_CH=%d T_MAX=%d K_MAX=%d SPM_BYTES=%d CH_BYTES=%d ADDR_BEAT_W=%d %s" % (
         cfg["num_ch"], cfg["t_max"], cfg["k_max"], cfg["spm_bytes"], cfg["ch_bytes"], cfg["addr_beat_w"],
         " ".join("%s=%s" % kv for kv in impl.items()))
+    if top != "core":
+        desc = "%s %s" % (top, desc)
     filelist = Path(filelist).resolve()
     srcs = rtl_sources(filelist)
+    if top != "core":
+        srcs += rtl_sources(Path(platform_filelist or PLATFORM_FL).resolve())
+        if top in PACKAGED:
+            srcs.append(PLATFORM / "sv" / ("kwrap_%s.sv" % top))
+    tb_sources = TB_SOURCES if top == "core" else KB_SOURCES
     # Verilator default warnings are fatal (the RTL is lint clean, like the cocotb runner);
     # wno_fatal (mutation campaigns: a mutant may add e.g. a WIDTH warning) keeps them warnings.
     # Elaboration $fatal / $error (parameter checks) always stop the build.
@@ -258,8 +308,12 @@ def build(cfg: dict, has_mvm: int, overrides: dict, *, filelist: Path, jobs: int
         vflags += ["--threads", str(vthreads)]
     ident = dict(v=HARNESS_VERSION, params=sorted((k, str(v)) for k, v in params.items()), filelist=str(filelist),
                  srcs=[str(s) for s in srcs], vflags=vflags)
+    if top != "core":
+        ident["top"] = top          # core builds keep their key (no "top" entry)
     key = hashlib.sha1(json.dumps(ident, sort_keys=True).encode()).hexdigest()[:12]
     name = "c%d_t%d_m%d" % (cfg["num_ch"], cfg["t_max"], has_mvm)
+    if top != "core":
+        name = {"kernel": "kern"}.get(top, top.replace("tsr_u200_", "")) + "_" + name
     bdir = build_root() / ("%s_%s" % (name, key))
     binary = bdir / "obj" / "fastreplay"
     cfg_h = fr_config_h(cfg, params, desc)
@@ -272,7 +326,7 @@ def build(cfg: dict, has_mvm: int, overrides: dict, *, filelist: Path, jobs: int
     h.update(cfg_h.encode())
     h.update(json.dumps(ident, sort_keys=True).encode())
     hdrs = sorted((SW_SIM / "include").glob("*.h"))
-    for f in list(srcs) + TB_SOURCES + [SW_SIM / c for c in C_SOURCES] + hdrs:
+    for f in list(srcs) + tb_sources + [SW_SIM / c for c in C_SOURCES] + hdrs:
         h.update(str(f).encode())
         h.update(Path(f).read_bytes())
     stamp = h.hexdigest()
@@ -302,13 +356,18 @@ def build(cfg: dict, has_mvm: int, overrides: dict, *, filelist: Path, jobs: int
     if lib.exists():
         lib.unlink()
     _sh(["ar", "rcs", lib] + objs, bdir, blog)
-    cmd = ["verilator", "--cc", "--exe", "--build", "-j", str(jobs), "--top-module", "tsr_core",
+    vtop = {"core": "tsr_core", "kernel": "tsr_xrt_kernel"}.get(top, "kwrap_%s" % top)
+    cmd = ["verilator", "--cc", "--exe", "--build", "-j", str(jobs), "--top-module", vtop,
            "--Mdir", bdir / "obj", "-o", "fastreplay"] + vflags
-    cmd += ["-G%s=%s" % (k, _pval(k, v)) for k, v in sorted(params.items())]
-    cmd += ["-CFLAGS", "-std=gnu++17 -I%s -I%s -I%s -DVL_USER_STOP" % (bdir, HERE, SW_SIM / "include"),
+    if top != "core":
+        cmd += ["--prefix", "Vkernel"]
+    if top in ("core", "kernel"):
+        cmd += ["-G%s=%s" % (k, _pval(k, v)) for k, v in sorted(params.items())]
+    incs = [bdir, HERE] + ([PLATFORM] if top != "core" else []) + [SW_SIM / "include"]
+    cmd += ["-CFLAGS", "-std=gnu++17 %s -DVL_USER_STOP" % " ".join("-I%s" % i for i in incs),
             "-LDFLAGS", "%s -lpthread -lm" % lib,
             "-MAKEFLAGS", "OPT_FAST=-O2", "-MAKEFLAGS", "OPT_SLOW=-O1", "-MAKEFLAGS", "OPT_GLOBAL=-O2"]
-    cmd += srcs + [HERE / "fastreplay.cpp"]
+    cmd += srcs + [HERE / "fastreplay.cpp" if top == "core" else PLATFORM / "kernel_bench.cpp"]
     _sh(cmd, bdir, blog)
     if not binary.is_file():
         raise RuntimeError("verilator did not produce %s (see %s)" % (binary, blog))
@@ -495,7 +554,8 @@ def run_group(b: Build, infos, *, regimes, rotate, seed, mem, procs, timeout_mul
 def replay(specs, *, regimes=("rand",), rotate=0, seed=1, has_mvm="auto", params=None, mem=(), procs=1,
            filelist=None, jobs=None, timeout_mult=1.0, reset_each=False, check_sim=False, waves=False,
            vthreads=0, stop_on_fail=False, verbose=False, filters=(), excludes=(), max_traces=0,
-           build_only=False, extra=(), wno_fatal=False, log=print, echo=print) -> Report:
+           build_only=False, extra=(), wno_fatal=False, top="core", platform_filelist=None, log=print,
+           echo=print) -> Report:
     regimes = list(REGIMES) if "all" in regimes else list(regimes)
     for r in regimes:
         if r not in REGIMES:
@@ -516,7 +576,12 @@ def replay(specs, *, regimes=("rand",), rotate=0, seed=1, has_mvm="auto", params
     stamp = time.strftime("%Y%m%d-%H%M%S") + "-%d" % os.getpid()
     for gi, (key, infos) in enumerate(groups.items()):
         cfg = json.loads(key)
-        if has_mvm == "auto":
+        if has_mvm == "auto" and top in PACKAGED:
+            need0 = [t.path for t in infos if t.needs_mvm == 0]
+            if need0:
+                raise SystemExit("run.py: %s has HAS_MVM = 1; these traces need HAS_MVM = 0: %s" % (top, need0[:3]))
+            hm = 1
+        elif has_mvm == "auto":
             needs = {t.needs_mvm for t in infos} - {None}
             if len(needs) > 1:
                 need1 = [t.path for t in infos if t.needs_mvm == 1][:2]
@@ -528,7 +593,7 @@ def replay(specs, *, regimes=("rand",), rotate=0, seed=1, has_mvm="auto", params
         else:
             hm = int(has_mvm)
         b = build(cfg, hm, dict(params or {}), filelist=filelist, jobs=jobs, waves=waves, vthreads=vthreads,
-                  wno_fatal=wno_fatal, log=log)
+                  wno_fatal=wno_fatal, top=top, platform_filelist=platform_filelist, log=log)
         if build_only:
             rep.groups.append(GroupReport(group_name([t.path for t in infos]), b.desc, traces=len(infos),
                                           build_s=b.seconds))
@@ -600,6 +665,11 @@ def main(argv=None) -> int:
     ap.add_argument("--rotate", type=int, default=0, help="P passes per trace, regimes rotating (tb/core style)")
     ap.add_argument("--seed", type=lambda s: int(s, 0), default=int(os.environ.get("TSR_SEED", "1"), 0))
     ap.add_argument("--has-mvm", default="auto", choices=["auto", "0", "1"])
+    ap.add_argument("--top", default="core", choices=list(TOPS),
+                    help="DUT: core (default), kernel (XRT adapter + core), tsr_u200_k1 / tsr_u200_k4 (packaged)")
+    ap.add_argument("--dut", action="append", default=[], metavar="K=V", help="kernel bench option (tb/platform/kernel_dut.h)")
+    ap.add_argument("--platform-filelist", default=None,
+                    help="platform filelist for --top != core (default rtl/platform/alveo_xrt/filelist.f; mutants)")
     ap.add_argument("--param", action="append", default=[], metavar="K=V", help="tsr_core parameter override")
     ap.add_argument("--mem", action="append", default=[], metavar="K=V", help="memory model override")
     ap.add_argument("--procs", type=int, default=1, help="parallel replay processes per build (default 1)")
@@ -637,6 +707,10 @@ def main(argv=None) -> int:
     extra = []
     for e in a.extra:
         extra += e.split("=", 1) if e.startswith("--") and "=" in e else [e]
+    if a.dut and a.top == "core":
+        raise SystemExit("run.py: --dut needs --top kernel / a packaged top")
+    for kv in a.dut:
+        extra += ["--dut", kv]
     t0 = time.time()
     try:
         rep = replay(specs, regimes=a.regimes.split(","), rotate=a.rotate, seed=a.seed, has_mvm=a.has_mvm,
@@ -644,7 +718,8 @@ def main(argv=None) -> int:
                      timeout_mult=a.timeout_mult, reset_each=a.reset_each, check_sim=a.check_sim, waves=a.waves,
                      vthreads=a.vthreads, stop_on_fail=a.stop_on_fail, verbose=a.verbose, filters=a.filter,
                      excludes=a.exclude, max_traces=a.max_traces, build_only=a.build_only, extra=extra,
-                     wno_fatal=a.wno_fatal, echo=None if a.quiet else print)
+                     wno_fatal=a.wno_fatal, top=a.top, platform_filelist=a.platform_filelist,
+                     echo=None if a.quiet else print)
     except RuntimeError as e:          # build failure (Verilator / compiler output in the message)
         print("run.py: %s" % e)
         return 2

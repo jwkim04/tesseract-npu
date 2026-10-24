@@ -26,47 +26,240 @@
 // Throughput: up to one SPM line write per cycle (ACC: one read + one write per cycle, 16
 //   tsr_fp_add lanes); see docs/rtl-m3.md §6.3.
 //
-// Microarchitecture:
+// Microarchitecture (M3 part C: per-cluster assemblers + central part, docs/rtl-m3.md §14):
 //
-//   res[c] ──► assembler c: two buffers (ping-pong) of T_MAX x 16 lanes x 32 bits
-//                │  fill buffer wsel: row n -> lane n%16 of every token; the group is complete at
-//                │  lane 15 or res_last; per buffer: lane mask own, tail mask, SPM line of the next
-//                │  job (dst + n/16 at the group's first row, + stride per emitted token)
-//                ▼  emit buffer esel: one job per token tk < t (req[c] = full[c][esel])
-//   round robin (registered pick sel_q over req, last taken cluster lowest) ── take ──►
-//      non-ACC: job {line, be, y masked to own lanes (tail lanes 0)} -> write queue
-//      ACC    : job -> issue slice (tsr_rslice) -> SPM read -> pipe SPM_RD_LAT + 1 (old line
-//               registered) -> 16 tsr_fp_add (old + y) -> {line, be, own ? sum : 0} -> write queue
+//   start + fields ─► per cluster: tsr_vpipe(JOB_PIPE, keep) ─► assembler c (tsr_mvm_gasm)
+//   res[c] ──────────────────────────────────────────────────► assembler c: two buffers
+//                │  (ping-pong) of T_MAX x 16 lanes x 32 bits; fill buffer wsel: row n -> lane
+//                │  n%16 of every token; the group is complete at lane 15 or res_last; per
+//                │  buffer: lane mask own, tail mask, SPM line of the next job (dst + n/16 at the
+//                │  group's first row, + stride per emitted token)
+//                ▼  emit buffer esel: one job per token tk < t, {last, line, own, tail, y & own}
+//              tsr_rpipe(JOB_PIPE) per cluster (valid / ready)
+//                ▼
+//   central: round robin (registered pick sel_q over the job heads, last taken cluster lowest)
+//      ── take ──► non-ACC: {line, be(own | tail), y} -> write queue
+//                  ACC    : job -> issue slice (tsr_rslice) -> SPM read -> pipe SPM_RD_LAT + 1
+//                           (old line registered) -> 16 tsr_fp_add (old + y) -> {line, be,
+//                           own ? sum : 0} -> write queue
 //   write queue (WQ_D entries + output register) ──► spm_wr_* (valid, line, be, data from flops)
 //
+//   - The assemblers hold everything that grows with T_MAX (NUM_CH x 2 x T_MAX x 512 flops); a
+//     job is a 2 x T_MAX : 1 select from flops with registered selects (esel / etk), local to its
+//     cluster. JOB_PIPE (tsr_mvm: = RES_PIPE) puts register slices between each assembler and
+//     the central part, so on the U200 an assembler sits next to its cluster (another SLR) and
+//     only jobs cross. The central part selects among NUM_CH pipe heads (one NUM_CH : 1 select).
+//     Before M3 part C the job data was one NUM_CH x 2 x T_MAX : 1 select at the centre: 4 ch /
+//     T_MAX 8 routing congestion and -0.8 ns there on the U200 (docs/rtl-m3.md §14).
+//   - An assembler takes rows only after its start arrived (res_ready = 0 until then; rows of a
+//     new MVM wait in the result pipes), and it is busy from that start to its last job (the job
+//     carrying the cluster's last row, `last`); clusters without rows (expect_ch[c] = 0) stay idle.
 //   - Credits (R4): cnt_q counts jobs from the take to the accepted SPM write; a take needs
 //     cnt < WQ_D (registered space_q), so the write queue never overflows and the ACC read
 //     response (no backpressure) always has room. WQ_D >= the credit loop (take -> issue -> read
 //     -> SPM_RD_LAT + 1 -> ADD_LAT -> queue -> output register -> pop -> space_q), so the gather
 //     sustains one job per cycle when the SPM write port accepts one line per cycle.
+//   - done: registered pulse when every expected cluster's last job has been taken and every
+//     taken job's SPM write was accepted (cnt_q = 0).
 //   - Hazards (docs/rtl-m3.md §6.3): two jobs on one SPM line belong to different clusters with
 //     disjoint lane sets; each writes only its lanes (byte enables), so any order of the ACC
 //     reads and writes gives the ex_mvm result. Different tokens never share a line (stride >=
 //     y_lines when t > 1; otherwise undefined).
-//   - res_ready[c] (registered) = active and the buffer the next row goes to is not full. A
-//     buffer is full from its group's completion to the take of its last token's job.
-//   - Logic depth: take = flops through 2-3 LUTs; job mux = cluster (sel_q, NUM_CH:1) x buffer
-//     (esel) x token (etk) of flops, then one AND for the lane mask; write-queue output from
-//     an output register. The ACC adders take a registered old line.
-//   Latency (ideal SPM, one requester): non-ACC row -> SPM write accept: completion edge, pick 1,
-//     take 1, queue 1, output register 1; ACC adds the issue slice, SPM_RD_LAT + 1 and ADD_LAT.
-//   Measured (tb/mvm/test_mvm_gather.py, results offered every cycle, SPM always ready):
-//     1.000 line writes per cycle, plain and ACC, whenever the write port is the bottleneck
-//     (16 clusters x T 8, SPM_RD_LAT 4, ADD_LAT 8); otherwise the source rate (NUM_CH * T / 16
-//     lines per cycle) is met exactly. First write 19 cycles after a line's first row (16 rows at
-//     one per cycle + 3); ACC 23 / 27 / 28 / 33 cycles at (SPM_RD_LAT, ADD_LAT) = (1,1) / (3,3) /
-//     (2,5) / (4,8). Fixed-priority arbitration instead of the round robin halves the rate (0.50).
-//   Cost (from the RTL structure; no synthesis run in this step), U200 (4 ch, T_MAX 1, 4 MiB SPM,
-//     SPM_RD_LAT 4, ADD_LAT 5): assembly buffers 4 x 2 x 512 FF, lane masks / lines 384 FF, ACC
-//     issue slice 1.1 K FF, ACC read pipe 2.8 K FF (no reset, SRL-capable), old line 512 FF,
-//     write queue 16 x 592 bits (distributed RAM) + 593 FF output register, 16 tsr_fp_add:
-//     ~9.9 K FF total. Assembly buffers scale with NUM_CH x 2 x T_MAX x 512 bits.
+//   - res_ready[c] (registered, in the assembler) = active and the buffer the next row goes to
+//     is not full. A buffer is full from its group's completion to the emit of its last token.
+//   - Logic depth: take = flops through 2-3 LUTs; job data = NUM_CH:1 select of the pipe heads
+//     (with JOB_PIPE = 0 of the assemblers' job outputs: 2 x T_MAX : 1 of flops + mask), then the
+//     write queue (distributed RAM); write-queue output from an output register reloaded whenever
+//     it is free. The ACC adders take a registered old line.
+//   Latency (ideal SPM, one requester, JOB_PIPE = 0): non-ACC row -> SPM write accept: completion
+//     edge, pick 1, take 1, queue 1, output register 1; ACC adds the issue slice, SPM_RD_LAT + 1
+//     and ADD_LAT; JOB_PIPE adds its stages.
+//   Measured (tb/mvm/test_mvm_gather.py, JOB_PIPE = 0, results offered every cycle, SPM always
+//     ready): 1.000 line writes per cycle, plain and ACC, whenever the write port is the
+//     bottleneck (16 clusters x T 8, SPM_RD_LAT 4, ADD_LAT 8); otherwise the source rate (NUM_CH *
+//     T / 16 lines per cycle) is met exactly. First write 19 cycles after a line's first row (16
+//     rows at one per cycle + 3); ACC 23 / 27 / 28 / 33 cycles at (SPM_RD_LAT, ADD_LAT) = (1,1) /
+//     (3,3) / (2,5) / (4,8). Fixed-priority arbitration instead of the round robin halves the
+//     rate (0.50).
+//   Cost: assembly buffers NUM_CH x 2 x T_MAX x 512 FF (+ masks / lines 2 x 48 FF per cluster),
+//     job pipes JOB_PIPE x 2 x (49 + SPM_AW + 512) FF per cluster, start pipes JOB_PIPE x (68 +
+//     2 SPM_AW) FF per cluster, ACC issue slice 1.1 K FF, ACC read pipe 2.8 K FF (no reset,
+//     SRL-capable), old line 512 FF, write queue WQ_D x 592 bits (distributed RAM) + 593 FF output
+//     register, 16 tsr_fp_add. Measured before the split (Vivado 2024.2 synthesis, docs/rtl-m3.md
+//     §14): 4 ch T_MAX 1 11.0 K LUT / 12.4 K FF, 4 ch T_MAX 8 24.1 K / 41.1 K.
 
+// The assembler below lives in this file (one filelist entry, like tsr_rslice in tsr_mem_arb.sv);
+// targeted waiver for the file-name rule only.
+/* verilator lint_off DECLFILENAME */
+// ================================================================================================
+// tsr_mvm_gasm — assembler of one cluster (instantiated by tsr_mvm_gather only).
+//   start (pulse) with active (= the cluster has rows) and the MVM fields of that cycle: tm1 =
+//   t - 1, nm1 = N - 1, dst, stride (registered here). Rows res_* in order (R1/R2); jobs out
+//   (valid / ready, R1/R2): for each complete group, one job per token tk = 0 .. t-1 in order,
+//   job = {last (the cluster's final job), line (dst + tk*stride + n/16), own (lanes of the
+//   group's rows), tail (zero-tail lanes, row N-1 in the group), y (token tk, lanes outside own
+//   forced to 0)}.
+// ================================================================================================
+module tsr_mvm_gasm
+  import tsr_pkg::*;
+#(
+  parameter  int unsigned T_MAX  = TSR_DEF_T_MAX,
+  parameter  int unsigned SPM_AW = 16,
+  localparam int unsigned TKW    = (T_MAX > 1) ? $clog2(T_MAX) : 1,
+  localparam int unsigned JW     = 1 + SPM_AW + 16 + 16 + TSR_LINE_BITS   // {last, line, own, tail, y}
+) (
+  input  logic                    clk,
+  input  logic                    rst_n,
+
+  input  logic                    start,
+  input  logic                    active,
+  input  logic [TKW-1:0]          tm1,
+  input  logic [31:0]             nm1,
+  input  logic [SPM_AW-1:0]       dst,
+  input  logic [SPM_AW-1:0]       stride,
+
+  input  logic                    res_valid,
+  output logic                    res_ready,
+  input  logic [31:0]             res_row,
+  input  logic                    res_last,
+  input  logic [T_MAX-1:0][31:0]  res_y,
+
+  output logic                    job_valid,
+  input  logic                    job_ready,
+  output logic [JW-1:0]           job
+);
+
+  if (T_MAX < 1 || T_MAX > TSR_T_MAX_ARCH || SPM_AW < 1) begin : g_chk
+    $fatal(1, "tsr_mvm_gasm: T_MAX in [1, 8], SPM_AW >= 1");
+  end
+
+  typedef logic [15:0][31:0] line_t;
+
+  logic              act_q;        // start (active) .. the last job emitted
+  logic [TKW-1:0]    tm1_q;
+  logic [31:0]       nm1_q;
+  logic [SPM_AW-1:0] dst_q, stride_q;
+  logic [1:0][T_MAX-1:0][15:0][31:0] buf_q;    // datapath, no reset
+  logic [1:0][15:0]       own_q, tail_q;
+  logic [1:0][SPM_AW-1:0] line_q;
+  logic [1:0]        full_q;       // group complete, jobs pending
+  logic [1:0]        fin_q;        // the group holds the cluster's last row
+  logic              wsel_q, fillv_q, esel_q, rdy_q;
+  logic [TKW-1:0]    etk_q;
+
+  wire       acc_row = res_valid & rdy_q;
+  wire [3:0] lane    = res_row[3:0];
+  wire       cmpl    = acc_row & ((lane == 4'hF) | res_last);
+  wire       is_nm1  = (res_row == nm1_q);
+  wire       emit    = job_valid & job_ready;
+  wire       tk_last = (etk_q == tm1_q);
+  wire       jlast   = fin_q[esel_q] & tk_last;
+
+  logic [1:0] full_n;
+  logic       wsel_n;
+  always_comb begin
+    full_n = full_q;
+    if (emit && tk_last) full_n[esel_q] = 1'b0;
+    if (cmpl)            full_n[wsel_q] = 1'b1;
+    wsel_n = wsel_q ^ cmpl;
+  end
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      act_q   <= 1'b0;
+      tm1_q   <= '0;
+      nm1_q   <= '0;
+      dst_q   <= '0;
+      stride_q <= '0;
+      full_q  <= '0;
+      fin_q   <= '0;
+      wsel_q  <= 1'b0;
+      fillv_q <= 1'b0;
+      esel_q  <= 1'b0;
+      etk_q   <= '0;
+      rdy_q   <= 1'b0;
+    end else if (start) begin
+      act_q   <= active;
+      tm1_q   <= tm1;
+      nm1_q   <= nm1;
+      dst_q   <= dst;
+      stride_q <= stride;
+      full_q  <= '0;
+      fin_q   <= '0;
+      wsel_q  <= 1'b0;
+      fillv_q <= 1'b0;
+      esel_q  <= 1'b0;
+      etk_q   <= '0;
+      rdy_q   <= active;
+    end else begin
+      if (emit && jlast) act_q <= 1'b0;
+      full_q <= full_n;
+      wsel_q <= wsel_n;
+      rdy_q  <= act_q & ~(emit & jlast) & ~full_n[wsel_n];
+      if (acc_row) fillv_q <= ~cmpl;
+      if (cmpl)    fin_q[wsel_q] <= res_last;
+      if (emit) begin
+        etk_q <= tk_last ? '0 : etk_q + 1'b1;
+        if (tk_last) esel_q <= ~esel_q;
+      end
+    end
+  end
+
+  // Datapath (no reset; qualified by full / fillv). A row is written into the fill buffer while
+  // it is not full; a job reads the emit buffer while it is full, so the two never meet.
+  always_ff @(posedge clk) begin
+    if (acc_row) begin
+      for (int unsigned tk = 0; tk < T_MAX; tk++) buf_q[wsel_q][tk][lane] <= res_y[tk];
+      own_q[wsel_q]  <= (fillv_q ? own_q[wsel_q] : 16'h0) | (16'h1 << lane);
+      tail_q[wsel_q] <= is_nm1 ? (16'hFFFE << lane) : 16'h0;
+      if (!fillv_q) line_q[wsel_q] <= dst_q + SPM_AW'(res_row >> 4);
+    end
+    if (emit) line_q[esel_q] <= line_q[esel_q] + stride_q;
+  end
+
+  line_t jy;
+  always_comb begin
+    for (int unsigned l = 0; l < 16; l++) jy[l] = own_q[esel_q][l] ? buf_q[esel_q][etk_q][l] : 32'd0;
+  end
+  assign job_valid = full_q[esel_q];
+  assign job       = {jlast, line_q[esel_q], own_q[esel_q], tail_q[esel_q], jy};
+  assign res_ready = rdy_q;
+
+  // -------------------------------------------------------------------------------------------
+  // Simulation-only checks (rows in order, inside an MVM, last on row N-1)
+  // -------------------------------------------------------------------------------------------
+`ifndef SYNTHESIS
+  logic a_on_q, a_seen_q, a_got_last_q;
+  logic [31:0] a_next_q;
+  initial a_on_q = 1'b0;
+  always @(posedge clk) if (!rst_n) a_on_q <= 1'b1;
+  always_ff @(posedge clk) begin
+    if (!rst_n || start) begin
+      a_seen_q     <= 1'b0;
+      a_got_last_q <= 1'b0;
+    end else if (acc_row) begin
+      a_seen_q <= 1'b1;
+      a_next_q <= res_row + 32'd1;
+      if (res_last) a_got_last_q <= 1'b1;
+    end
+  end
+  always_ff @(posedge clk) begin
+    if (rst_n && a_on_q && !start) begin
+      if (acc_row) begin
+        assert (act_q && !a_got_last_q) else $error("%m: row %0d outside this cluster's MVM", res_row);
+        assert (res_row <= nm1_q) else $error("%m: row %0d >= N", res_row);
+        assert (!a_seen_q || res_row == a_next_q) else $error("%m: row %0d, expected %0d", res_row, a_next_q);
+        assert (!is_nm1 || res_last) else $error("%m: row N-1 without res_last");
+      end
+      assert (!(full_q[0] && full_q[1] && rdy_q)) else $error("%m: ready with both buffers full");
+    end
+  end
+`endif
+
+endmodule
+/* verilator lint_on DECLFILENAME */
+
+// ================================================================================================
 module tsr_mvm_gather
   import tsr_pkg::*;
 #(
@@ -75,6 +268,7 @@ module tsr_mvm_gather
   parameter  int unsigned SPM_BYTES  = TSR_DEF_SPM_BYTES,
   parameter  int unsigned SPM_RD_LAT = TSR_DEF_SPM_RD_LAT,
   parameter  int unsigned ADD_LAT    = TSR_DEF_FADD_LAT,
+  parameter  int unsigned JOB_PIPE   = 0,     // register slices assembler c -> central (implementation)
   localparam int unsigned SPM_LINES  = SPM_BYTES / TSR_LINE_BYTES,
   localparam int unsigned SPM_AW     = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1
 ) (
@@ -129,6 +323,8 @@ module tsr_mvm_gather
   localparam int unsigned WQ_W  = SPM_AW + TSR_SPM_BE_W + TSR_LINE_BITS;   // {line, be, data}
   localparam int unsigned IS_W  = SPM_AW + 16 + 16 + TSR_LINE_BITS;        // {line, own, tail, y}
   localparam int unsigned MT_W  = SPM_AW + 16 + 16;                        // {line, own, tail}
+  localparam int unsigned JW    = 1 + IS_W;                                // {last, line, own, tail, y}
+  localparam int unsigned SW    = 1 + TKW + 32 + 2 * SPM_AW;               // {active, tm1, nm1, dst, stride}
 
   typedef logic [15:0][31:0] line_t;    // 16 f32 lanes (lane l = bits [32l +: 32])
 
@@ -145,31 +341,48 @@ module tsr_mvm_gather
   endfunction
 
   // -------------------------------------------------------------------------------------------
-  // MVM configuration (registered at start)
+  // MVM configuration (registered at start; the assemblers get their own copies)
   // -------------------------------------------------------------------------------------------
   logic              act_q;          // holding an MVM (start .. done)
   logic              acc_q;
-  logic [TKW-1:0]    tm1_q;          // t - 1
-  logic [31:0]       nm1_q;          // N - 1
-  logic [SPM_AW-1:0] dst_q;
-  logic [SPM_AW-1:0] stride_q;       // low bits suffice: dst + tk * stride < SPM lines for tk < t
   logic [NUM_CH-1:0] exp_q;          // channels with rows
+  logic [NUM_CH-1:0] got_last_q;     // the cluster's last job was taken
   logic              done_q;
 
   // -------------------------------------------------------------------------------------------
-  // Assemblers (per cluster: two buffers)
+  // Per cluster: start pipe -> assembler -> job pipe
   // -------------------------------------------------------------------------------------------
-  logic [NUM_CH-1:0][1:0][T_MAX-1:0] [15:0][31:0] buf_q;     // datapath, no reset
-  logic [NUM_CH-1:0][1:0][15:0]                   own_q;     // lanes of the group's rows
-  logic [NUM_CH-1:0][1:0][15:0]                   tail_q;    // zero-tail lanes (row N-1 in group)
-  logic [NUM_CH-1:0][1:0][SPM_AW-1:0]             line_q;    // SPM line of the next job
-  logic [NUM_CH-1:0][1:0]                         full_q;    // group complete, jobs pending
-  logic [NUM_CH-1:0]                              wsel_q;    // buffer being filled
-  logic [NUM_CH-1:0]                              fillv_q;   // ... holds >= 1 row
-  logic [NUM_CH-1:0]                              esel_q;    // buffer being emitted
-  logic [NUM_CH-1:0][TKW-1:0]                     etk_q;     // token of its next job
-  logic [NUM_CH-1:0]                              rdy_q;     // res_ready
-  logic [NUM_CH-1:0]                              got_last_q;
+  logic [NUM_CH-1:0]          jv, jr;       // job pipe heads: valid, ready (= take of that cluster)
+  logic [NUM_CH-1:0][JW-1:0]  jd;
+
+  wire [TKW-1:0]    s_tm1    = TKW'(t - 4'd1);
+  wire [31:0]       s_nm1    = n - 32'd1;
+  wire [SPM_AW-1:0] s_stride = dst_stride[SPM_AW-1:0];   // dst + tk * stride < SPM lines for tk < t
+
+  for (genvar c = 0; c < NUM_CH; c++) begin : g_asm
+    logic              a_start;
+    logic [SW-1:0]     a_f;
+    logic              a_jv, a_jr;
+    logic [JW-1:0]     a_jd;
+    // Identical across the clusters but for the active bit: kept separate (each next to its
+    // assembler, which may sit in another SLR than the central part).
+    tsr_vpipe #(.VW(1), .W(SW), .DEPTH(JOB_PIPE), .KEEP(1'b1)) u_sp (
+      .clk, .rst_n, .in_valid(start), .in_data({expect_ch[c], s_tm1, s_nm1, dst_line, s_stride}),
+      .out_valid(a_start), .out_data(a_f)
+    );
+    tsr_mvm_gasm #(.T_MAX(T_MAX), .SPM_AW(SPM_AW)) u_asm (
+      .clk, .rst_n,
+      .start(a_start), .active(a_f[SW-1]), .tm1(a_f[SW-2 -: TKW]), .nm1(a_f[2*SPM_AW +: 32]),
+      .dst(a_f[SPM_AW +: SPM_AW]), .stride(a_f[0 +: SPM_AW]),
+      .res_valid(res_valid[c]), .res_ready(res_ready[c]), .res_row(res_row[c]),
+      .res_last(res_last[c]), .res_y(res_y[c]),
+      .job_valid(a_jv), .job_ready(a_jr), .job(a_jd)
+    );
+    tsr_rpipe #(.W(JW), .DEPTH(JOB_PIPE)) u_jp (
+      .clk, .rst_n, .s_valid(a_jv), .s_ready(a_jr), .s_data(a_jd),
+      .m_valid(jv[c]), .m_ready(jr[c]), .m_data(jd[c])
+    );
+  end
 
   // -------------------------------------------------------------------------------------------
   // Arbiter, job, credits
@@ -180,29 +393,20 @@ module tsr_mvm_gather
   logic              space_q;        // cnt_q < WQ_D
   logic              iss_s_ready;    // ACC issue slice can take a job
 
-  logic [NUM_CH-1:0] req;
-  always_comb begin
-    for (int unsigned c = 0; c < NUM_CH; c++) req[c] = full_q[c][esel_q[c]];
-  end
+  wire take = sel_v_q & jv[sel_q] & space_q & (~acc_q | iss_s_ready);
 
-  wire take = sel_v_q & req[sel_q] & space_q & (~acc_q | iss_s_ready);
-
-  // job of the picked cluster: buffer esel, token etk
-  logic              jb;
-  logic [TKW-1:0]    jt;
+  // job of the picked cluster: the head of its job pipe
+  logic              j_last;
   logic [SPM_AW-1:0] j_line;
   logic [15:0]       j_own, j_tail;
-  line_t             j_y;
+  line_t             j_y;            // lanes outside own already 0 (assembler)
+  assign {j_last, j_line, j_own, j_tail, j_y} = jd[sel_q];
+
   always_comb begin
-    jb     = esel_q[sel_q];
-    jt     = etk_q[sel_q];
-    j_line = line_q[sel_q][jb];
-    j_own  = own_q[sel_q][jb];
-    j_tail = tail_q[sel_q][jb];
-    j_y    = buf_q[sel_q][jb][jt];
+    for (int unsigned c = 0; c < NUM_CH; c++) jr[c] = take & (sel_q == CW'(c));
   end
 
-  // round robin over req; the cluster taken in this cycle gets the lowest priority
+  // round robin over the job heads; the cluster taken in this cycle gets the lowest priority
   logic [CW-1:0] ptr_n, pick;
   logic          pick_v;
   logic [CW:0]   rr_sum;             // ptr_n + i < 2 * NUM_CH
@@ -216,57 +420,24 @@ module tsr_mvm_gather
     for (int unsigned i = NUM_CH; i >= 1; i--) begin    // i = 1 (after ptr_n) has priority
       rr_sum = {1'b0, ptr_n} + (CW+1)'(i);
       rr_idx = CW'((rr_sum >= (CW+1)'(NUM_CH)) ? rr_sum - (CW+1)'(NUM_CH) : rr_sum);
-      if (req[rr_idx]) begin
+      if (jv[rr_idx]) begin
         pick   = rr_idx;
         pick_v = 1'b1;
       end
     end
   end
 
-  // -------------------------------------------------------------------------------------------
-  // Per-cluster next state
-  // -------------------------------------------------------------------------------------------
-  logic [NUM_CH-1:0]       acc_row, cmpl, tk_take, tk_last, wsel_n;
-  logic [NUM_CH-1:0][1:0]  full_n;
-  logic [NUM_CH-1:0][3:0]  lane;
-  logic [NUM_CH-1:0]       is_nm1;
-  always_comb begin
-    for (int unsigned c = 0; c < NUM_CH; c++) begin
-      lane[c]    = res_row[c][3:0];
-      acc_row[c] = res_valid[c] & rdy_q[c];
-      cmpl[c]    = acc_row[c] & ((lane[c] == 4'hF) | res_last[c]);
-      is_nm1[c]  = (res_row[c] == nm1_q);
-      tk_take[c] = take & (sel_q == CW'(c));
-      tk_last[c] = (etk_q[c] == tm1_q);
-      full_n[c]  = full_q[c];
-      if (tk_take[c] && tk_last[c]) full_n[c][esel_q[c]] = 1'b0;
-      if (cmpl[c])                  full_n[c][wsel_q[c]] = 1'b1;
-      wsel_n[c]  = wsel_q[c] ^ cmpl[c];
-    end
-  end
-
-  // all groups written: nothing assembled, nothing pending, every expected last row seen
-  wire all_last  = &(got_last_q | ~exp_q);
-  wire all_empty = ~|full_q & ~|fillv_q & (cnt_q == '0);
-  wire fin       = act_q & all_last & all_empty;
+  // all written: every expected cluster's last job taken, every taken job written
+  wire all_last = &(got_last_q | ~exp_q);
+  wire fin      = act_q & all_last & (cnt_q == '0);
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       act_q      <= 1'b0;
       acc_q      <= 1'b0;
-      tm1_q      <= '0;
-      nm1_q      <= '0;
-      dst_q      <= '0;
-      stride_q   <= '0;
       exp_q      <= '0;
-      done_q     <= 1'b0;
-      full_q     <= '0;
-      wsel_q     <= '0;
-      fillv_q    <= '0;
-      esel_q     <= '0;
-      etk_q      <= '0;
-      rdy_q      <= '0;
       got_last_q <= '0;
+      done_q     <= 1'b0;
       sel_q      <= '0;
       ptr_q      <= '0;
       sel_v_q    <= 1'b0;
@@ -278,45 +449,12 @@ module tsr_mvm_gather
       if (start) begin
         act_q      <= 1'b1;
         acc_q      <= acc;
-        tm1_q      <= TKW'(t - 4'd1);
-        nm1_q      <= n - 32'd1;
-        dst_q      <= dst_line;
-        stride_q   <= dst_stride[SPM_AW-1:0];
         exp_q      <= expect_ch;
-        full_q     <= '0;
-        wsel_q     <= '0;
-        fillv_q    <= '0;
-        esel_q     <= '0;
-        etk_q      <= '0;
-        rdy_q      <= '1;
         got_last_q <= '0;
       end else begin
         if (fin) act_q <= 1'b0;
-        full_q <= full_n;
-        wsel_q <= wsel_n;
-        for (int unsigned c = 0; c < NUM_CH; c++) begin
-          rdy_q[c] <= act_q & ~fin & ~full_n[c][wsel_n[c]];
-          if (acc_row[c]) fillv_q[c] <= ~cmpl[c];
-          if (acc_row[c] && res_last[c]) got_last_q[c] <= 1'b1;
-          if (tk_take[c]) begin
-            etk_q[c] <= tk_last[c] ? '0 : etk_q[c] + 1'b1;
-            if (tk_last[c]) esel_q[c] <= ~esel_q[c];
-          end
-        end
+        if (take && j_last) got_last_q[sel_q] <= 1'b1;
       end
-    end
-  end
-
-  // Datapath of the assemblers (no reset; qualified by full / fillv).
-  always_ff @(posedge clk) begin
-    for (int unsigned c = 0; c < NUM_CH; c++) begin
-      if (acc_row[c]) begin
-        for (int unsigned tk = 0; tk < T_MAX; tk++) buf_q[c][wsel_q[c]][tk][lane[c]] <= res_y[c][tk];
-        own_q[c][wsel_q[c]]  <= (fillv_q[c] ? own_q[c][wsel_q[c]] : 16'h0) | (16'h1 << lane[c]);
-        tail_q[c][wsel_q[c]] <= is_nm1[c] ? (16'hFFFE << lane[c]) : 16'h0;
-        if (!fillv_q[c]) line_q[c][wsel_q[c]] <= dst_q + SPM_AW'(res_row[c] >> 4);
-      end
-      if (tk_take[c]) line_q[c][esel_q[c]] <= line_q[c][esel_q[c]] + stride_q;
     end
   end
 
@@ -375,7 +513,7 @@ module tsr_mvm_gather
       push_d = {ap_line, lane_be(ap_own | ap_tail), lane_mask(sum_y, ap_own)};
     end else begin
       push   = take;
-      push_d = {j_line, lane_be(j_own | j_tail), lane_mask(j_y, j_own)};
+      push_d = {j_line, lane_be(j_own | j_tail), j_y};
     end
   end
 
@@ -384,9 +522,10 @@ module tsr_mvm_gather
   logic              out_v_q;
   logic [WQ_W-1:0]   out_q;
 
-  wire pop     = out_v_q & spm_wr_ready;
-  wire wq_ne   = (wq_wp_q != wq_rp_q);
-  wire out_ld  = wq_ne & (~out_v_q | pop);
+  wire pop      = out_v_q & spm_wr_ready;
+  wire wq_ne    = (wq_wp_q != wq_rp_q);
+  wire out_free = ~out_v_q | pop;         // output register free after this edge
+  wire out_ld   = wq_ne & out_free;
   wire [CNT_W-1:0] cnt_n = cnt_q + CNT_W'(take) - CNT_W'(pop);
 
   always_ff @(posedge clk) begin
@@ -406,43 +545,31 @@ module tsr_mvm_gather
     end
   end
 
+  // out_q reloads whenever the output register is free, not only on out_ld (M3 part C timing,
+  // docs/rtl-m3.md §14: its 592-flop clock enable no longer waits for the queue pointer compare):
+  // while out_v_q = 0 it holds don't-care data; whenever out_v_q = 1 it holds exactly the entry
+  // out_ld loaded, held until pop as before.
   always_ff @(posedge clk) begin
-    if (push)   wq_mem[wq_wp_q[WQ_AW-1:0]] <= push_d;
-    if (out_ld) out_q <= wq_mem[wq_rp_q[WQ_AW-1:0]];
+    if (push)     wq_mem[wq_wp_q[WQ_AW-1:0]] <= push_d;
+    if (out_free) out_q <= wq_mem[wq_rp_q[WQ_AW-1:0]];
   end
 
   assign spm_wr_valid = out_v_q;
   assign {spm_wr_line, spm_wr_be, spm_wr_data} = out_q;
 
-  assign done      = done_q;
-  assign res_ready = rdy_q;
+  assign done = done_q;
 
   wire unused_ok = &{1'b0, dst_stride[31:SPM_AW], sum_v};
 
   // -------------------------------------------------------------------------------------------
-  // Simulation-only checks
+  // Simulation-only checks (row order / range per cluster: tsr_mvm_gasm)
   // -------------------------------------------------------------------------------------------
 `ifndef SYNTHESIS
   logic a_on_q;
+  logic a_rsv_q;    // SPM read response valid, one cycle late
   initial a_on_q = 1'b0;
   always @(posedge clk) if (!rst_n) a_on_q <= 1'b1;
-
-  logic [NUM_CH-1:0][31:0] a_next_q;   // next expected row per cluster
-  logic [NUM_CH-1:0]       a_seen_q;   // a row of this MVM was seen
-  logic                    a_rsv_q;    // SPM read response valid, one cycle late
-  always_ff @(posedge clk) begin
-    a_rsv_q <= rst_n & spm_rd_rsp_valid;
-    if (!rst_n || start) begin
-      a_seen_q <= '0;
-    end else begin
-      for (int unsigned c = 0; c < NUM_CH; c++) begin
-        if (acc_row[c]) begin
-          a_seen_q[c] <= 1'b1;
-          a_next_q[c] <= res_row[c] + 32'd1;
-        end
-      end
-    end
-  end
+  always_ff @(posedge clk) a_rsv_q <= rst_n & spm_rd_rsp_valid;
 
   always_ff @(posedge clk) begin
     if (rst_n && a_on_q) begin
@@ -453,15 +580,10 @@ module tsr_mvm_gather
         assert (expect_ch[0]) else $error("%m: channel 0 must have rows");
       end
       for (int unsigned c = 0; c < NUM_CH; c++) begin
-        if (acc_row[c]) begin
-          assert (act_q) else $error("%m: result of cluster %0d outside an MVM", c);
-          assert (exp_q[c] && !got_last_q[c])
-            else $error("%m: unexpected result from cluster %0d (expected %0b, last seen %0b)", c,
-                        exp_q[c], got_last_q[c]);
-          assert (res_row[c] <= nm1_q) else $error("%m: cluster %0d row %0d >= N", c, res_row[c]);
-          assert (!a_seen_q[c] || res_row[c] == a_next_q[c])
-            else $error("%m: cluster %0d row %0d, expected %0d", c, res_row[c], a_next_q[c]);
-          assert (!is_nm1[c] || res_last[c]) else $error("%m: row N-1 without res_last");
+        if (jv[c]) begin
+          assert (act_q && exp_q[c] && !got_last_q[c])
+            else $error("%m: job of cluster %0d outside its MVM (act %0b expected %0b last taken %0b)", c,
+                        act_q, exp_q[c], got_last_q[c]);
         end
       end
       if (act_q && !acc_q) begin
@@ -476,6 +598,9 @@ module tsr_mvm_gather
       end
       if (pop) begin
         assert (act_q) else $error("%m: SPM write outside an MVM");
+      end
+      if (done_q) begin
+        assert (jv == '0) else $error("%m: job pending at done");
       end
     end
   end

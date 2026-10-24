@@ -27,7 +27,16 @@
 //   (docs/rtl-m3.md §1): MVM_WS_FIFO (weight FIFO beats per cluster, power of two >= 64),
 //   MVM_BC_PIPE / MVM_RES_PIPE (broadcast / result pipe stages per cluster; U200: >= 2 for
 //   clusters in another SLR), MVM_ACT_RD_LAT, MVM_MAC_LAT, MVM_MUL_LAT, MVM_ADD_LAT (1..8),
-//   MVM_WS_RD_LAT (1..4).
+//   MVM_WS_RD_LAT (1..4), RST_PIPE (0..8, below).
+// Reset distribution (RST_PIPE, M3 part C timing, docs/rtl-m3.md §14): with RST_PIPE = P >= 1
+//   every flop of the core sees rst_n exactly P cycles late (assertion and deassertion), through
+//   P - min(P, 2) shared stages and min(P, 2) stages per block (CSR, cmdproc, fetch, DMA, QACT,
+//   SPM, the arbiter of every channel, and inside tsr_mvm (RST_LOCAL) its top, gather and every
+//   cluster), each copy kept separate (Xilinx `keep`) so it can sit next to its block: on the
+//   U200 the arbiters and clusters of the four channels sit in three SLRs, and one rst_n net to
+//   all of them misses 300 MHz. The whole core is a P-cycle-delayed copy of the RST_PIPE = 0 core
+//   (results and cycle behaviour after the reset identical); the registers start in reset
+//   (configuration INIT / simulation initial value 0). P = 0: no extra flops.
 // Verification: tb/core/test_core.py (trace replay of traces/m2 with HAS_MVM = 0 and of
 // traces/m3 + traces/gen with HAS_MVM = 1 per configuration, directed and random programs against
 // the ISA simulator), tb/fastreplay (C++ replay of the big trace sets); simulation-only
@@ -60,7 +69,10 @@ module tsr_core
   parameter int unsigned     MVM_MAC_LAT    = TSR_DEF_MAC_LAT,
   parameter int unsigned     MVM_MUL_LAT    = TSR_DEF_FMUL_LAT,
   parameter int unsigned     MVM_ADD_LAT    = TSR_DEF_FADD_LAT,
-  parameter int unsigned     MVM_WS_RD_LAT  = TSR_DEF_WS_RD_LAT
+  parameter int unsigned     MVM_WS_RD_LAT  = TSR_DEF_WS_RD_LAT,
+  // Reset register stages inside the core (implementation; docs/rtl-m3.md §14): 0 = rst_n
+  // straight to every block (M2 / M3 test builds); U200: 3 (the measured OOC closure, §14.2)
+  parameter int unsigned     RST_PIPE       = 0
 ) (
   input  logic                                   clk,
   input  logic                                   rst_n,
@@ -137,6 +149,9 @@ module tsr_core
   if (HAS_MVM && (MVM_WS_FIFO < 64 || (MVM_WS_FIFO & (MVM_WS_FIFO - 1)) != 0)) begin : g_chk_wsfifo
     $fatal(1, "tsr_core: MVM_WS_FIFO must be a power of two >= 64 (docs/rtl-m3.md §4)");
   end
+  if (RST_PIPE > 8) begin : g_chk_rst
+    $fatal(1, "tsr_core: RST_PIPE must be in [0, 8]");
+  end
   if (HAS_MVM && (MVM_ADD_LAT < 1 || MVM_ADD_LAT > 8 || MVM_WS_RD_LAT < 1 || MVM_WS_RD_LAT > 4 ||
                   MVM_ACT_RD_LAT < 1 || MVM_MAC_LAT < 1 || MVM_MUL_LAT < 1)) begin : g_chk_mvmlat
     $fatal(1, "tsr_core: MVM latencies: ADD 1..8, WS_RD 1..4, ACT_RD / MAC / MUL >= 1 (docs/rtl-m3.md §1)");
@@ -146,6 +161,45 @@ module tsr_core
   localparam int unsigned SPM_LINES = SPM_BYTES / TSR_LINE_BYTES;
   localparam int unsigned SPM_AW    = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1;
   localparam int unsigned unused_params = LOOP_DEPTH;   // M8 (LOOP)
+
+  // -------------------------------------------------------------------------------------------
+  // Reset distribution (RST_PIPE, header): rst_pre_n after the RST_SH shared stages, then
+  // RST_BLK (<= 2) stages per block: rst_b_n[i]; tsr_mvm makes its own RST_BLK stages per part
+  // (RST_LOCAL). Two per-block stages let the first copy sit at the SLR boundary and the second
+  // (replicated by phys_opt) next to the loads. The stage registers start at 0 (initial block:
+  // INIT 0) and load in a plain always: IEEE 1800 9.2.2.4 forbids a second writer of an always_ff
+  // variable (XSim rejects the initial block then; Verilator and Vivado synthesis accept it).
+  // -------------------------------------------------------------------------------------------
+  localparam int unsigned RB_CSR = 0, RB_CMD = 1, RB_FETCH = 2, RB_DMA = 3, RB_QACT = 4,
+                          RB_SPM = 5, RB_CHK = 6, RB_ARB = 7;            // RB_ARB + c: arbiter c
+  localparam int unsigned NRB     = RB_ARB + NUM_CH;
+  localparam int unsigned RST_BLK = (RST_PIPE > 2) ? 2 : RST_PIPE;
+  localparam int unsigned RST_SH  = RST_PIPE - RST_BLK;
+  logic [NRB-1:0] rst_b_n;
+  logic           rst_pre_n;
+
+  if (RST_SH == 0) begin : g_sh0
+    assign rst_pre_n = rst_n;
+  end else begin : g_sh
+    (* shreg_extract = "no" *) logic [RST_SH-1:0] sh_q;      // shared stages 1 .. RST_SH
+    initial sh_q = '0;
+    always @(posedge clk) begin
+      sh_q[0] <= rst_n;
+      for (int unsigned k = 1; k < RST_SH; k++) sh_q[k] <= sh_q[k-1];
+    end
+    assign rst_pre_n = sh_q[RST_SH-1];
+  end
+  if (RST_BLK == 0) begin : g_rst0
+    assign rst_b_n = {NRB{rst_pre_n}};
+  end else begin : g_rst
+    (* keep = "true" *) logic [RST_BLK-1:0][NRB-1:0] rb_q;   // per block: stages RST_SH+1 ..
+    initial rb_q = '0;
+    always @(posedge clk) begin
+      rb_q[0] <= {NRB{rst_pre_n}};
+      for (int unsigned k = 1; k < RST_BLK; k++) rb_q[k] <= rb_q[k-1];
+    end
+    assign rst_b_n = rb_q[RST_BLK-1];
+  end
 
   // -------------------------------------------------------------------------------------------
   // CSR block <-> command processor
@@ -163,7 +217,7 @@ module tsr_core
     .NUM_CH(NUM_CH), .LANES(LANES), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES),
     .VL(VL), .NSREG(NSREG), .CAPS(CAPS)
   ) u_csr (
-    .clk, .rst_n,
+    .clk, .rst_n(rst_b_n[RB_CSR]),
     .csr_valid, .csr_ready, .csr_we, .csr_addr, .csr_wdata, .csr_rdata, .done,
     .run_start, .run_cmd_addr, .run_cmd_count, .run_args, .run_abort, .run_soft_reset,
     .run_finish, .run_err_code, .run_err_pc, .run_err_info, .cur_pc,
@@ -189,7 +243,7 @@ module tsr_core
     .NUM_CH(NUM_CH), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES), .CH_BYTES(CH_BYTES),
     .ADDR_BEAT_W(ADDR_BEAT_W), .HAS_MVM(HAS_MVM)
   ) u_cmdproc (
-    .clk, .rst_n,
+    .clk, .rst_n(rst_b_n[RB_CMD]),
     .run_start, .run_cmd_addr, .run_cmd_count, .run_args, .run_abort, .run_soft_reset,
     .run_finish, .run_err_code, .run_err_pc, .run_err_info, .cur_pc, .perf_retire,
     .fetch_start, .fetch_cmd_addr, .fetch_cmd_count, .fetch_stop, .fetch_idle,
@@ -219,7 +273,7 @@ module tsr_core
   tsr_fetch #(
     .ADDR_BEAT_W(ADDR_BEAT_W), .CH_BYTES(CH_BYTES), .BEAT_BITS(BEAT_BITS), .BUF_BEATS(FETCH_BEATS)
   ) u_fetch (
-    .clk, .rst_n,
+    .clk, .rst_n(rst_b_n[RB_FETCH]),
     .start(fetch_start), .cmd_addr(fetch_cmd_addr), .cmd_count(fetch_cmd_count), .stop(fetch_stop),
     .idle(fetch_idle),
     .insn_valid, .insn_ready, .insn,
@@ -257,7 +311,7 @@ module tsr_core
     .NUM_CH(NUM_CH), .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BEAT_BITS), .SPM_BYTES(SPM_BYTES),
     .SPM_RD_LAT(SPM_RD_LAT)
   ) u_dma (
-    .clk, .rst_n,
+    .clk, .rst_n(rst_b_n[RB_DMA]),
     .cmd_valid(dma_cmd_valid), .cmd_ready(dma_cmd_ready), .cmd(dma_cmd), .done(dma_done),
     .rd_req_valid(d_rd_req_valid), .rd_req_ready(d_rd_req_ready), .rd_req_addr(d_rd_req_addr),
     .rd_req_len(d_rd_req_len), .rd_req_id(d_rd_req_id),
@@ -279,7 +333,7 @@ module tsr_core
   tsr_qact #(
     .K_MAX(K_MAX), .T_MAX(T_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT)
   ) u_qact (
-    .clk, .rst_n,
+    .clk, .rst_n(rst_b_n[RB_QACT]),
     .cmd_valid(qact_cmd_valid), .cmd_ready(qact_cmd_ready), .cmd(qact_cmd), .done(qact_done),
     .spm_rd_req_valid(spm_rd_req_valid[TSR_SPM_CL_QACT]), .spm_rd_req_ready(spm_rd_req_ready[TSR_SPM_CL_QACT]),
     .spm_rd_req_line(spm_rd_req_line[TSR_SPM_CL_QACT]), .spm_rd_rsp_valid(spm_rd_rsp_valid[TSR_SPM_CL_QACT]),
@@ -303,9 +357,10 @@ module tsr_core
       .NUM_CH(NUM_CH), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT),
       .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BEAT_BITS), .WS_FIFO_BEATS(MVM_WS_FIFO),
       .BC_PIPE(MVM_BC_PIPE), .RES_PIPE(MVM_RES_PIPE), .ACT_RD_LAT(MVM_ACT_RD_LAT),
-      .MAC_LAT(MVM_MAC_LAT), .MUL_LAT(MVM_MUL_LAT), .ADD_LAT(MVM_ADD_LAT), .WS_RD_LAT(MVM_WS_RD_LAT)
+      .MAC_LAT(MVM_MAC_LAT), .MUL_LAT(MVM_MUL_LAT), .ADD_LAT(MVM_ADD_LAT), .WS_RD_LAT(MVM_WS_RD_LAT),
+      .RST_LOCAL(RST_BLK)
     ) u_mvm (
-      .clk, .rst_n,
+      .clk, .rst_n(rst_pre_n),
       .cmd_valid(mvm_cmd_valid), .cmd_ready(mvm_cmd_ready), .cmd(mvm_cmd), .done(mvm_done),
       .spm_rd_req_valid(spm_rd_req_valid[TSR_SPM_CL_MVM]), .spm_rd_req_ready(spm_rd_req_ready[TSR_SPM_CL_MVM]),
       .spm_rd_req_line(spm_rd_req_line[TSR_SPM_CL_MVM]), .spm_rd_rsp_valid(spm_rd_rsp_valid[TSR_SPM_CL_MVM]),
@@ -335,7 +390,7 @@ module tsr_core
     assign spm_wr_line[TSR_SPM_CL_MVM]      = '0;
     assign spm_wr_data[TSR_SPM_CL_MVM]      = '0;
     assign spm_wr_be[TSR_SPM_CL_MVM]        = '0;
-    wire unused_mvm = &{1'b0, w_rd_req_ready, w_rd_rsp_valid, spm_rd_req_ready[TSR_SPM_CL_MVM],
+    wire unused_mvm = &{1'b0, rst_pre_n, w_rd_req_ready, w_rd_rsp_valid, spm_rd_req_ready[TSR_SPM_CL_MVM],
                         spm_rd_rsp_valid[TSR_SPM_CL_MVM], spm_wr_ready[TSR_SPM_CL_MVM], mvm_cmd_valid,
                         mvm_cmd};
   end
@@ -343,7 +398,7 @@ module tsr_core
   tsr_spm #(
     .SPM_BYTES(SPM_BYTES), .NCL(TSR_SPM_NCL), .RD_LAT(SPM_RD_LAT)
   ) u_spm (
-    .clk, .rst_n,
+    .clk, .rst_n(rst_b_n[RB_SPM]),
     .rd_req_valid(spm_rd_req_valid), .rd_req_ready(spm_rd_req_ready), .rd_req_line(spm_rd_req_line),
     .rd_rsp_valid(spm_rd_rsp_valid), .rd_rsp_data(spm_rd_rsp_data),
     .wr_valid(spm_wr_valid), .wr_ready(spm_wr_ready), .wr_line(spm_wr_line), .wr_data(spm_wr_data),
@@ -388,7 +443,7 @@ module tsr_core
     tsr_mem_arb #(
       .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BEAT_BITS), .RD_OUTSTANDING(RD_OUTSTANDING)
     ) u_arb (
-      .clk, .rst_n,
+      .clk, .rst_n(rst_b_n[RB_ARB + c]),
       .s_rd_req_valid(s_rd_req_valid[c]), .s_rd_req_ready(s_rd_req_ready[c]),
       .s_rd_req_addr(s_rd_req_addr[c]), .s_rd_req_len(s_rd_req_len[c]), .s_rd_req_id(s_rd_req_id[c]),
       .s_rd_rsp_valid(s_rd_rsp_valid[c]), .s_rd_rsp_ready(s_rd_rsp_ready[c]),
@@ -423,7 +478,7 @@ module tsr_core
   // -------------------------------------------------------------------------------------------
   // Integration checks (simulation only; docs/rtl-m2.md §3.0, §4 M7, §5; docs/rtl-m3.md §3.0,
   // §6.4, §10.4). Armed by the first clock edge with rst_n low (before it, Verilator's X
-  // randomisation makes state arbitrary).
+  // randomisation makes state arbitrary); with RST_PIPE they see the blocks' delayed reset.
   //   I1 one instruction in flight: at most one unit is offered a command, never while a unit
   //      holds one; a unit pulses done only while it holds an instruction (never in its accepting
   //      cycle); no MVM command with HAS_MVM = 0. MVM: cmd_ready is low while it holds the
@@ -460,7 +515,7 @@ module tsr_core
   // evaluation, which may already see a clock edge with X-randomised rst_n and state.
   logic chk_on_q;
   initial chk_on_q = 1'b0;
-  always @(posedge clk) if (!rst_n) chk_on_q <= 1'b1;
+  always @(posedge clk) if (!rst_b_n[RB_CHK]) chk_on_q <= 1'b1;
 
   // I4 bookkeeping: per channel WS beats expected / requested / received in the current MVM,
   // next expected request address; MVM SPM reads outstanding.
@@ -477,7 +532,7 @@ module tsr_core
   endfunction
 
   always_ff @(posedge clk) begin
-    if (!rst_n) begin
+    if (!rst_b_n[RB_CHK]) begin
       run_q        <= 1'b0;
       done_q1      <= 1'b0;
       dma_busy_q   <= 1'b0;

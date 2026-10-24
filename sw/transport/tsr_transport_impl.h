@@ -20,9 +20,14 @@ typedef struct tsr_transport_ops {
 
 // Each returns an implementation handle and its ops, or NULL (message on stderr).
 void * tsr_transport_sim_open(const tsr_transport_ops ** ops);
-#ifdef TSR_HAVE_XRT
-void * tsr_transport_xrt_open(const tsr_transport_ops ** ops);
-#endif
+// Every other kind ("xrt", "mock", kinds registered with tsr::register_kdev): the kernel-protocol
+// transport over a kdev (tsr_kdev.cpp).
+void * tsr_transport_kdev_open(const char * kind, const tsr_transport_ops ** ops);
+
+// Wrap an already opened implementation (tsr::transport_open_kdev); NULL on failure (impl untouched).
+tsr_transport *           tsr_transport_wrap(const tsr_transport_ops * ops, void * impl);
+const tsr_transport_ops * tsr_transport_get_ops(const tsr_transport * t);
+void *                    tsr_transport_get_impl(const tsr_transport * t);
 
 #ifdef __cplusplus
 }

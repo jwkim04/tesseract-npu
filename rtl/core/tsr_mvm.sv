@@ -31,6 +31,12 @@
 //
 // Interface addition (additive, top agent): parameter WS_RD_LAT (weight FIFO RAM read latency,
 //   docs/rtl-m3.md §1, default TSR_DEF_WS_RD_LAT), passed to every cluster's front end.
+// Interface addition (additive, M3 part C timing, docs/rtl-m3.md §14): parameter RST_LOCAL (0..2).
+//   Every part (top logic, gather, cluster c with its pipes) takes rst_n through its own chain of
+//   RST_LOCAL registers (Xilinx `keep`: the copies are not merged), so the reset reaches every
+//   flop RST_LOCAL cycles after rst_n, from registers next to that part (the clusters sit in
+//   different SLRs on the U200). tsr_core sets it from RST_PIPE and feeds rst_n that many stages
+//   earlier, so the whole core sees the same reset delay. RST_LOCAL = 0: rst_n everywhere.
 //
 // Microarchitecture:
 //
@@ -44,6 +50,11 @@
 //                     gather's start pulse (results cannot come earlier; if they did they would
 //                     wait in the result pipes, res_ready = 0 while the gather is idle)
 //   clusters ─► tsr_rpipe(RES_PIPE) ─► tsr_mvm_gather ─► SPM write port; ACC reads on the read port
+//     (the gather's per-cluster assemblers take the rows; their jobs reach its central part
+//     through JOB_PIPE = RES_PIPE slices)
+//   cluster c weight stream ◄─► arbiter c: requests through tsr_rpipe(RES_PIPE) (u_wqp),
+//     responses through a kept tsr_vpipe(BC_PIPE) (u_wrp; no backpressure: the streamer's
+//     rd_rsp_ready is constant 1, asserted), so a cluster may sit in another SLR than its arbiter
 //
 //   - SPM read port: the broadcast owns it from the accept until its last response returned
 //     (bc_ph_q); the gather's ACC reads are only presented after that (assertion), so the
@@ -64,7 +75,9 @@
 //   tb/mvm mvm_perf asserts the rate and the fixed overhead in every test configuration.
 //   Cost (RTL structure, no synthesis run here): command 294 FF + broadcast register 527 FF +
 //   ~140 FF control; per cluster BC_PIPE x 529 FF (tsr_vpipe; the ccmd is overlaid on the
-//   line payload, saving 137 FF per stage and cluster) and RES_PIPE x 2 x (33 + 32 T_MAX) FF.
+//   line payload, saving 137 FF per stage and cluster) and RES_PIPE x 2 x (33 + 32 T_MAX) FF;
+//   weight-stream pipes per cluster BC_PIPE x 516 FF + RES_PIPE x 2 x 38 FF; with RST_LOCAL
+//   RST_LOCAL x (NUM_CH + 2) reset flops. Measured sizes: docs/rtl-m3.md §14.
 
 module tsr_mvm
   import tsr_pkg::*;
@@ -84,6 +97,7 @@ module tsr_mvm
   parameter  int unsigned MUL_LAT       = TSR_DEF_FMUL_LAT,
   parameter  int unsigned ADD_LAT       = TSR_DEF_FADD_LAT,
   parameter  int unsigned WS_RD_LAT     = TSR_DEF_WS_RD_LAT,
+  parameter  int unsigned RST_LOCAL     = 0,      // reset register stages per cluster / top / gather (0..2)
   localparam int unsigned SPM_LINES     = SPM_BYTES / TSR_LINE_BYTES,
   localparam int unsigned SPM_AW        = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1
 ) (
@@ -132,6 +146,37 @@ module tsr_mvm
   end
   if (BEAT_BITS != 512) begin : g_chk_beat
     $fatal(1, "tsr_mvm: BEAT_BITS must be 512");
+  end
+
+  // Reset distribution (RST_LOCAL, header): rst_t_n top logic, rst_g_n gather, rst_c_n[c]
+  // cluster c with its pipes.
+  logic              rst_t_n, rst_g_n;
+  logic [NUM_CH-1:0] rst_c_n;
+  if (RST_LOCAL > 0) begin : g_rst
+    (* keep = "true" *) logic [RST_LOCAL-1:0]             rt_q, rg_q;
+    (* keep = "true" *) logic [RST_LOCAL-1:0][NUM_CH-1:0] rc_q;
+    initial begin            // FPGA INIT / simulation start: in reset until rst_n is seen high
+      rt_q = '0;
+      rg_q = '0;
+      rc_q = '0;
+    end
+    always @(posedge clk) begin   // not always_ff: the initial block writes them too (tsr_core)
+      rt_q[0] <= rst_n;
+      rg_q[0] <= rst_n;
+      rc_q[0] <= {NUM_CH{rst_n}};
+      for (int unsigned k = 1; k < RST_LOCAL; k++) begin
+        rt_q[k] <= rt_q[k-1];
+        rg_q[k] <= rg_q[k-1];
+        rc_q[k] <= rc_q[k-1];
+      end
+    end
+    assign rst_t_n = rt_q[RST_LOCAL-1];
+    assign rst_g_n = rg_q[RST_LOCAL-1];
+    assign rst_c_n = rc_q[RST_LOCAL-1];
+  end else begin : g_rst0
+    assign rst_t_n = rst_n;
+    assign rst_g_n = rst_n;
+    assign rst_c_n = {NUM_CH{rst_n}};
   end
 
   localparam int unsigned BCW = $bits(tsr_mvm_bcline_t);   // 527: broadcast payload
@@ -204,7 +249,7 @@ module tsr_mvm
   wire run_end = (st_q == S_RUN) & bc_done_q & (gd_q | g_done);
 
   always_ff @(posedge clk) begin
-    if (!rst_n) begin
+    if (!rst_t_n) begin
       st_q        <= S_IDLE;
       cmd_ready_q <= 1'b1;
       done_q      <= 1'b0;
@@ -356,9 +401,14 @@ module tsr_mvm
     logic                cr_v, cr_r, cr_last;
     logic [31:0]         cr_row;
     logic [T_MAX-1:0][31:0] cr_y;
+    logic                wq_v, wq_r, wr_v, wr_last, wr_rdy;
+    logic [ADDR_BEAT_W-1:0]  wq_addr;
+    logic [TSR_LEN_W-1:0]    wq_len;
+    logic [TSR_SRC_ID_W-1:0] wq_id, wr_id;
+    logic [BEAT_BITS-1:0]    wr_data;
 
-    tsr_vpipe #(.VW(2), .W(BCW), .DEPTH(BC_PIPE)) u_bcp (
-      .clk, .rst_n, .in_valid(bc_v_q), .in_data(bc_d_q), .out_valid(pv), .out_data(pd)
+    tsr_vpipe #(.VW(2), .W(BCW), .DEPTH(BC_PIPE), .KEEP(1'b1)) u_bcp (
+      .clk, .rst_n(rst_c_n[c]), .in_valid(bc_v_q), .in_data(bc_d_q), .out_valid(pv), .out_data(pd)
     );
     assign p_cmd  = pd[CCW-1:0];
     assign p_line = pd;
@@ -368,27 +418,51 @@ module tsr_mvm
       .WS_FIFO_BEATS(WS_FIFO_BEATS), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT), .MUL_LAT(MUL_LAT),
       .ADD_LAT(ADD_LAT), .WS_RD_LAT(WS_RD_LAT)
     ) u_cl (
-      .clk, .rst_n,
+      .clk, .rst_n(rst_c_n[c]),
       .bc_cmd_valid(pv[1]), .bc_cmd(p_cmd), .bc_line_valid(pv[0]), .bc_line(p_line),
-      .rd_req_valid(ws_rd_req_valid[c]), .rd_req_ready(ws_rd_req_ready[c]),
-      .rd_req_addr(ws_rd_req_addr[c]), .rd_req_len(ws_rd_req_len[c]), .rd_req_id(ws_rd_req_id[c]),
-      .rd_rsp_valid(ws_rd_rsp_valid[c]), .rd_rsp_ready(ws_rd_rsp_ready[c]),
-      .rd_rsp_data(ws_rd_rsp_data[c]), .rd_rsp_last(ws_rd_rsp_last[c]), .rd_rsp_id(ws_rd_rsp_id[c]),
+      .rd_req_valid(wq_v), .rd_req_ready(wq_r), .rd_req_addr(wq_addr), .rd_req_len(wq_len),
+      .rd_req_id(wq_id),
+      .rd_rsp_valid(wr_v), .rd_rsp_ready(wr_rdy), .rd_rsp_data(wr_data), .rd_rsp_last(wr_last),
+      .rd_rsp_id(wr_id),
       .res_valid(cr_v), .res_ready(cr_r), .res_row(cr_row), .res_last(cr_last), .res_y(cr_y),
       .idle(cl_idle[c])
     );
 
+    // Weight stream of cluster c <-> arbiter c (M3 part C, docs/rtl-m3.md §14): requests through
+    // RES_PIPE register slices (towards the centre, like the results), responses through BC_PIPE
+    // registers (towards the cluster, like the broadcast; no backpressure: the streamer's
+    // rd_rsp_ready is constant 1, §4), so the arbiters can sit with the DMA while a cluster sits
+    // in another SLR.
+    tsr_rpipe #(.W(ADDR_BEAT_W + TSR_LEN_W + TSR_SRC_ID_W), .DEPTH(RES_PIPE)) u_wqp (
+      .clk, .rst_n(rst_c_n[c]),
+      .s_valid(wq_v), .s_ready(wq_r), .s_data({wq_addr, wq_len, wq_id}),
+      .m_valid(ws_rd_req_valid[c]), .m_ready(ws_rd_req_ready[c]),
+      .m_data({ws_rd_req_addr[c], ws_rd_req_len[c], ws_rd_req_id[c]})
+    );
+    tsr_vpipe #(.VW(1), .W(BEAT_BITS + 1 + TSR_SRC_ID_W), .DEPTH(BC_PIPE), .KEEP(1'b1)) u_wrp (
+      .clk, .rst_n(rst_c_n[c]), .in_valid(ws_rd_rsp_valid[c]),
+      .in_data({ws_rd_rsp_data[c], ws_rd_rsp_last[c], ws_rd_rsp_id[c]}),
+      .out_valid(wr_v), .out_data({wr_data, wr_last, wr_id})
+    );
+    assign ws_rd_rsp_ready[c] = wr_rdy;
+`ifndef SYNTHESIS
+    always_ff @(posedge clk) begin
+      if (rst_c_n[c]) assert (wr_rdy) else $error("%m: weight-stream rd_rsp_ready low (the response pipe has no backpressure)");
+    end
+`endif
+
     tsr_rpipe #(.W(RW), .DEPTH(RES_PIPE)) u_rp (
-      .clk, .rst_n,
+      .clk, .rst_n(rst_c_n[c]),
       .s_valid(cr_v), .s_ready(cr_r), .s_data({cr_row, cr_last, cr_y}),
       .m_valid(g_res_v[c]), .m_ready(g_res_r[c]), .m_data({g_res_row[c], g_res_last[c], g_res_y[c]})
     );
   end
 
   tsr_mvm_gather #(
-    .NUM_CH(NUM_CH), .T_MAX(T_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT), .ADD_LAT(ADD_LAT)
+    .NUM_CH(NUM_CH), .T_MAX(T_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT), .ADD_LAT(ADD_LAT),
+    .JOB_PIPE(RES_PIPE)
   ) u_gather (
-    .clk, .rst_n,
+    .clk, .rst_n(rst_g_n),
     .start(g_start_q), .acc(c_q.acc), .t(c_q.t), .n(c_q.n), .dst_line(c_q.dst_line[SPM_AW-1:0]),
     .dst_stride(c_q.dst_stride), .expect_ch(ex_q), .done(g_done),
     .res_valid(g_res_v), .res_ready(g_res_r), .res_row(g_res_row), .res_last(g_res_last),
@@ -407,10 +481,10 @@ module tsr_mvm
 `ifndef SYNTHESIS
   logic a_on_q;
   initial a_on_q = 1'b0;
-  always @(posedge clk) if (!rst_n) a_on_q <= 1'b1;
+  always @(posedge clk) if (!rst_t_n) a_on_q <= 1'b1;
 
   always_ff @(posedge clk) begin
-    if (rst_n && a_on_q) begin
+    if (rst_t_n && a_on_q) begin
       if (fire) begin
         assert (cmd.fmt ? (cmd.k != 16'd0 && cmd.k[7:0] == 8'd0) : (cmd.k != 16'd0 && cmd.k[4:0] == 5'd0))
           else $error("%m: K = %0d not a multiple of the block size", cmd.k);

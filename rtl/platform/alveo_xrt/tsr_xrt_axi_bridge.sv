@@ -1,0 +1,327 @@
+// tsr_xrt_axi_bridge.sv — one channel: the tsr_core memory port (docs/rtl-m2.md §4) as an AXI4
+// master (Vitis m_axi kernel port, 512-bit data, 64-bit address, 4-bit ID).
+//
+// Owner: adapter agent (docs/platform-u200.md §4).
+//
+// Mapping (kernel contract):
+//   read / write request {addr, len, id}  ->  AR / AW: AxADDR = base + addr * 64, AxLEN = len - 1,
+//                                             AxSIZE 6 (64 B), AxBURST INCR, AxID = id,
+//                                             AxCACHE 4'b0011, AxPROT 0, AxLOCK 0, AxQOS 0
+//   write data {data, last}               ->  W: WDATA, WLAST, WSTRB all ones
+//   R {RDATA, RID, RLAST, RRESP}          ->  read response {data, id, last}
+//   B {BID, BRESP}                        ->  write response {id}
+// The core already keeps every burst inside one 64-beat block of its channel (rtl-m2 §4 M1), so
+// with a 4 KiB aligned base no AXI burst crosses a 4 KiB boundary and ARLEN / AWLEN <= 63. The
+// control bridge refuses to start a run with a misaligned base (ADAPTER_STATUS bit3), so `base`
+// is aligned whenever the core is running; it is registered here (base_r) next to the adders.
+// Read data of different IDs may interleave at beat granularity and arrive in order per ID (the
+// core allows exactly that), one B per AW: the bridge passes R and B through unchanged.
+//
+// Structure (every output is a flop; SLICES register slices tsr_rslice per AXI channel, the
+// first / last of which give flop-driven AXI and core-side outputs):
+//   core rd_req -> +base -> SLICES x rslice -> AR          core wr_req -> +base -> SLICES -> AW
+//   core wr_dat -> SLICES x rslice -> W
+//   R -> SLICES x rslice -> id filter -> rslice -> core rd_rsp
+//   B -> SLICES x rslice -> id filter -> rslice -> core wr_rsp
+// Response filter: per ID, the number of bursts whose AR (AW) handshake happened at the AXI
+// boundary and whose last R beat (B) has not yet passed the filter. A response for an ID with
+// none outstanding cannot belong to any request of this reset epoch (e.g. a response to a request
+// issued before a kernel reset by an interconnect that was not reset with the kernel); it is
+// consumed and dropped, never forwarded (tsr_mem_arb's outstanding counter would underflow), and
+// reported as ev_unexpected (ADAPTER_STATUS bit2). A response can be presented at the earliest in
+// the cycle after its request's handshake (edge t) and reaches the filter SLICES edges later; the
+// counter of its ID (and the registered "count != 0" flag the filter reads) is updated at edge
+// t + 1 from the registered handshake when SLICES >= 2 (the AXI READY inputs then only reach the
+// slices and one flop), at edge t from the handshake itself when SLICES = 1: one cycle of margin
+// either way, so a legal response always finds its count >= 1. Limit: a stale response that arrives after the core reissued a
+// request with the same ID cannot be told apart; docs/platform-u200.md §5 explains why Vitis
+// never produces one (the interconnect is reset together with the kernel).
+// Error responses (RRESP / BRESP != OKAY) are forwarded like OKAY ones (the core has no error
+// path for memory) and reported per beat / response as ev_rresp_err / ev_bresp_err
+// (ADAPTER_STATUS bits 0 / 1 and its error count); the host checks ADAPTER_STATUS after a run.
+// Events are registered one-cycle pulses.
+
+module tsr_xrt_axi_bridge
+  import tsr_pkg::*;
+#(
+  parameter int unsigned ADDR_BEAT_W = TSR_DEF_ADDR_BEAT_W,
+  parameter int unsigned BEAT_BITS   = TSR_DEF_BEAT_BITS,
+  parameter int unsigned SLICES      = 2,    // register slices per AXI channel, >= 1
+  parameter int unsigned RD_CNT_W    = 8,    // outstanding read bursts per ID (core: <= RD_OUTSTANDING)
+  parameter int unsigned WR_CNT_W    = 16    // outstanding write bursts per ID (one ST: <= SPM lines)
+) (
+  input  logic                         clk,
+  input  logic                         rst_n,
+  input  logic [63:0]                  base,           // device byte address of beat 0 (latched)
+
+  // ---- core memory port (tsr_core m_*[c]) ----
+  input  logic                         c_rd_req_valid,
+  output logic                         c_rd_req_ready,
+  input  logic [ADDR_BEAT_W-1:0]       c_rd_req_addr,
+  input  logic [TSR_LEN_W-1:0]         c_rd_req_len,
+  input  logic [TSR_MEM_ID_W-1:0]      c_rd_req_id,
+  output logic                         c_rd_rsp_valid,
+  input  logic                         c_rd_rsp_ready,
+  output logic [BEAT_BITS-1:0]         c_rd_rsp_data,
+  output logic [TSR_MEM_ID_W-1:0]      c_rd_rsp_id,
+  output logic                         c_rd_rsp_last,
+  input  logic                         c_wr_req_valid,
+  output logic                         c_wr_req_ready,
+  input  logic [ADDR_BEAT_W-1:0]       c_wr_req_addr,
+  input  logic [TSR_LEN_W-1:0]         c_wr_req_len,
+  input  logic [TSR_MEM_ID_W-1:0]      c_wr_req_id,
+  input  logic                         c_wr_dat_valid,
+  output logic                         c_wr_dat_ready,
+  input  logic [BEAT_BITS-1:0]         c_wr_dat_data,
+  input  logic                         c_wr_dat_last,
+  output logic                         c_wr_rsp_valid,
+  input  logic                         c_wr_rsp_ready,
+  output logic [TSR_MEM_ID_W-1:0]      c_wr_rsp_id,
+
+  // ---- AXI4 master ----
+  output logic                         m_axi_awvalid,
+  input  logic                         m_axi_awready,
+  output logic [63:0]                  m_axi_awaddr,
+  output logic [7:0]                   m_axi_awlen,
+  output logic [2:0]                   m_axi_awsize,
+  output logic [1:0]                   m_axi_awburst,
+  output logic                         m_axi_awlock,
+  output logic [3:0]                   m_axi_awcache,
+  output logic [2:0]                   m_axi_awprot,
+  output logic [3:0]                   m_axi_awqos,
+  output logic [TSR_MEM_ID_W-1:0]      m_axi_awid,
+  output logic                         m_axi_wvalid,
+  input  logic                         m_axi_wready,
+  output logic [BEAT_BITS-1:0]         m_axi_wdata,
+  output logic [BEAT_BITS/8-1:0]       m_axi_wstrb,
+  output logic                         m_axi_wlast,
+  input  logic                         m_axi_bvalid,
+  output logic                         m_axi_bready,
+  input  logic [1:0]                   m_axi_bresp,
+  input  logic [TSR_MEM_ID_W-1:0]      m_axi_bid,
+  output logic                         m_axi_arvalid,
+  input  logic                         m_axi_arready,
+  output logic [63:0]                  m_axi_araddr,
+  output logic [7:0]                   m_axi_arlen,
+  output logic [2:0]                   m_axi_arsize,
+  output logic [1:0]                   m_axi_arburst,
+  output logic                         m_axi_arlock,
+  output logic [3:0]                   m_axi_arcache,
+  output logic [2:0]                   m_axi_arprot,
+  output logic [3:0]                   m_axi_arqos,
+  output logic [TSR_MEM_ID_W-1:0]      m_axi_arid,
+  input  logic                         m_axi_rvalid,
+  output logic                         m_axi_rready,
+  input  logic [BEAT_BITS-1:0]         m_axi_rdata,
+  input  logic [1:0]                   m_axi_rresp,
+  input  logic                         m_axi_rlast,
+  input  logic [TSR_MEM_ID_W-1:0]      m_axi_rid,
+
+  // ---- events (registered pulses) ----
+  output logic                         ev_rresp_err,    // a forwarded R beat with RRESP != OKAY
+  output logic                         ev_bresp_err,    // a forwarded B with BRESP != OKAY
+  output logic                         ev_unexpected    // an R beat or B dropped (no outstanding burst for its ID)
+);
+
+  if (SLICES < 1) begin : g_chk_slices
+    $fatal(1, "tsr_xrt_axi_bridge: SLICES must be >= 1 (AXI outputs come from flops)");
+  end
+  if (ADDR_BEAT_W > 58) begin : g_chk_aw
+    $fatal(1, "tsr_xrt_axi_bridge: ADDR_BEAT_W must be <= 58 (64-bit byte address)");
+  end
+
+  localparam int unsigned IDW  = TSR_MEM_ID_W;
+  localparam int unsigned NID  = 1 << IDW;
+  localparam int unsigned AQ_W = 64 + 8 + IDW;                 // {addr, len - 1, id}
+  localparam int unsigned R_W  = BEAT_BITS + IDW + 1 + 2;      // {data, id, last, resp}
+  localparam int unsigned W_W  = BEAT_BITS + 1;                // {data, last}
+  localparam int unsigned B_W  = IDW + 2;                      // {id, resp}
+
+  logic [63:0] base_r;
+  always_ff @(posedge clk) base_r <= base;
+
+  function automatic logic [AQ_W-1:0] areq(logic [63:0] b, logic [ADDR_BEAT_W-1:0] a,
+                                           logic [TSR_LEN_W-1:0] l, logic [IDW-1:0] id);
+    logic [63:0] off;
+    off = {{(64 - ADDR_BEAT_W){1'b0}}, a} << 6;
+    return {b + off, 8'(l - TSR_LEN_W'(1)), id};
+  endfunction
+
+  // -------------------------------------------------------------------------------------------
+  // Request and write-data paths: SLICES slices each
+  // -------------------------------------------------------------------------------------------
+  tsr_xrt_slices #(.W(AQ_W), .N(SLICES)) u_ar (
+    .clk, .rst_n,
+    .s_valid(c_rd_req_valid), .s_ready(c_rd_req_ready),
+    .s_data(areq(base_r, c_rd_req_addr, c_rd_req_len, c_rd_req_id)),
+    .m_valid(m_axi_arvalid), .m_ready(m_axi_arready), .m_data({m_axi_araddr, m_axi_arlen, m_axi_arid})
+  );
+  tsr_xrt_slices #(.W(AQ_W), .N(SLICES)) u_aw (
+    .clk, .rst_n,
+    .s_valid(c_wr_req_valid), .s_ready(c_wr_req_ready),
+    .s_data(areq(base_r, c_wr_req_addr, c_wr_req_len, c_wr_req_id)),
+    .m_valid(m_axi_awvalid), .m_ready(m_axi_awready), .m_data({m_axi_awaddr, m_axi_awlen, m_axi_awid})
+  );
+  tsr_xrt_slices #(.W(W_W), .N(SLICES)) u_w (
+    .clk, .rst_n,
+    .s_valid(c_wr_dat_valid), .s_ready(c_wr_dat_ready), .s_data({c_wr_dat_data, c_wr_dat_last}),
+    .m_valid(m_axi_wvalid), .m_ready(m_axi_wready), .m_data({m_axi_wdata, m_axi_wlast})
+  );
+
+  assign m_axi_arsize  = 3'd6;          // 64 bytes per beat
+  assign m_axi_arburst = 2'b01;         // INCR
+  assign m_axi_arlock  = 1'b0;
+  assign m_axi_arcache = 4'b0011;       // normal non-cacheable bufferable
+  assign m_axi_arprot  = 3'b000;
+  assign m_axi_arqos   = 4'd0;
+  assign m_axi_awsize  = 3'd6;
+  assign m_axi_awburst = 2'b01;
+  assign m_axi_awlock  = 1'b0;
+  assign m_axi_awcache = 4'b0011;
+  assign m_axi_awprot  = 3'b000;
+  assign m_axi_awqos   = 4'd0;
+  assign m_axi_wstrb   = '1;            // full-beat writes only (rtl-m2 §4 M4)
+
+  // -------------------------------------------------------------------------------------------
+  // Read responses: input slices, ID filter, output slice
+  // -------------------------------------------------------------------------------------------
+  logic                rh_valid, rh_ready, rh_last;
+  logic [BEAT_BITS-1:0] rh_data;
+  logic [IDW-1:0]      rh_id;
+  logic [1:0]          rh_resp;
+  logic                ro_ready;
+  logic [NID-1:0]      rd_nz_q;          // per ID: >= 1 read burst outstanding
+
+  tsr_xrt_slices #(.W(R_W), .N(SLICES)) u_r (
+    .clk, .rst_n,
+    .s_valid(m_axi_rvalid), .s_ready(m_axi_rready), .s_data({m_axi_rdata, m_axi_rid, m_axi_rlast, m_axi_rresp}),
+    .m_valid(rh_valid), .m_ready(rh_ready), .m_data({rh_data, rh_id, rh_last, rh_resp})
+  );
+
+  wire r_exp  = rd_nz_q[rh_id];
+  wire r_fwd  = rh_valid & r_exp;
+  wire r_drop = rh_valid & ~r_exp;
+  assign rh_ready = r_drop | ro_ready;
+
+  tsr_rslice #(.W(BEAT_BITS + IDW + 1)) u_ro (
+    .clk, .rst_n,
+    .s_valid(r_fwd), .s_ready(ro_ready), .s_data({rh_data, rh_id, rh_last}),
+    .m_valid(c_rd_rsp_valid), .m_ready(c_rd_rsp_ready), .m_data({c_rd_rsp_data, c_rd_rsp_id, c_rd_rsp_last})
+  );
+
+  wire r_take = r_fwd & ro_ready;                       // beat forwarded to the core side
+  wire r_done = r_take & rh_last;                       // ... and it ends its burst
+
+  // -------------------------------------------------------------------------------------------
+  // Write responses: input slices, ID filter, output slice
+  // -------------------------------------------------------------------------------------------
+  logic           bh_valid, bh_ready;
+  logic [IDW-1:0] bh_id;
+  logic [1:0]     bh_resp;
+  logic           bo_ready;
+  logic [NID-1:0] wr_nz_q;               // per ID: >= 1 write burst outstanding
+
+  tsr_xrt_slices #(.W(B_W), .N(SLICES)) u_b (
+    .clk, .rst_n,
+    .s_valid(m_axi_bvalid), .s_ready(m_axi_bready), .s_data({m_axi_bid, m_axi_bresp}),
+    .m_valid(bh_valid), .m_ready(bh_ready), .m_data({bh_id, bh_resp})
+  );
+
+  wire b_exp  = wr_nz_q[bh_id];
+  wire b_fwd  = bh_valid & b_exp;
+  wire b_drop = bh_valid & ~b_exp;
+  assign bh_ready = b_drop | bo_ready;
+
+  tsr_rslice #(.W(IDW)) u_bo (
+    .clk, .rst_n,
+    .s_valid(b_fwd), .s_ready(bo_ready), .s_data(bh_id),
+    .m_valid(c_wr_rsp_valid), .m_ready(c_wr_rsp_ready), .m_data(c_wr_rsp_id)
+  );
+
+  wire b_take = b_fwd & bo_ready;
+
+  // AR / AW handshakes for the counters: registered when SLICES >= 2 (header: timing margin)
+  logic           ar_hs, aw_hs;
+  logic [IDW-1:0] ar_id, aw_id;
+  if (SLICES >= 2) begin : g_hs_q
+    logic           ar_hs_q, aw_hs_q;
+    logic [IDW-1:0] ar_id_q, aw_id_q;
+    always_ff @(posedge clk) begin
+      if (!rst_n) begin
+        ar_hs_q <= 1'b0;
+        aw_hs_q <= 1'b0;
+      end else begin
+        ar_hs_q <= m_axi_arvalid & m_axi_arready;
+        aw_hs_q <= m_axi_awvalid & m_axi_awready;
+      end
+      ar_id_q <= m_axi_arid;
+      aw_id_q <= m_axi_awid;
+    end
+    assign ar_hs = ar_hs_q;
+    assign aw_hs = aw_hs_q;
+    assign ar_id = ar_id_q;
+    assign aw_id = aw_id_q;
+  end else begin : g_hs_d
+    assign ar_hs = m_axi_arvalid & m_axi_arready;
+    assign aw_hs = m_axi_awvalid & m_axi_awready;
+    assign ar_id = m_axi_arid;
+    assign aw_id = m_axi_awid;
+  end
+
+  // -------------------------------------------------------------------------------------------
+  // Per-ID outstanding counters, events
+  // -------------------------------------------------------------------------------------------
+  logic [NID-1:0][RD_CNT_W-1:0] rd_cnt_q;
+  logic [NID-1:0][WR_CNT_W-1:0] wr_cnt_q;
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      rd_cnt_q      <= '0;
+      wr_cnt_q      <= '0;
+      rd_nz_q       <= '0;
+      wr_nz_q       <= '0;
+      ev_rresp_err  <= 1'b0;
+      ev_bresp_err  <= 1'b0;
+      ev_unexpected <= 1'b0;
+    end else begin
+      for (int unsigned i = 0; i < NID; i++) begin
+        logic [RD_CNT_W-1:0] rn;
+        logic [WR_CNT_W-1:0] wn;
+        rn = rd_cnt_q[i] + RD_CNT_W'(ar_hs && ar_id == IDW'(i)) - RD_CNT_W'(r_done && rh_id == IDW'(i));
+        wn = wr_cnt_q[i] + WR_CNT_W'(aw_hs && aw_id == IDW'(i)) - WR_CNT_W'(b_take && bh_id == IDW'(i));
+        rd_cnt_q[i] <= rn;
+        wr_cnt_q[i] <= wn;
+        rd_nz_q[i]  <= rn != '0;
+        wr_nz_q[i]  <= wn != '0;
+      end
+      ev_rresp_err  <= r_take & (rh_resp != 2'b00);
+      ev_bresp_err  <= b_take & (bh_resp != 2'b00);
+      ev_unexpected <= r_drop | b_drop;      // a dropped item is consumed in the same cycle
+    end
+  end
+
+  // -------------------------------------------------------------------------------------------
+  // Simulation checks
+  // -------------------------------------------------------------------------------------------
+`ifndef SYNTHESIS
+  logic a_on_q;
+  initial a_on_q = 1'b0;
+  always @(posedge clk) if (!rst_n) a_on_q <= 1'b1;
+
+  always_ff @(posedge clk) begin
+    if (rst_n && a_on_q) begin
+      for (int unsigned i = 0; i < NID; i++) begin
+        if (ar_hs && ar_id == IDW'(i))
+          assert (rd_cnt_q[i] != '1) else $error("%m: read burst counter of id %0d overflows", i);
+        if (aw_hs && aw_id == IDW'(i))
+          assert (wr_cnt_q[i] != '1) else $error("%m: write burst counter of id %0d overflows", i);
+      end
+      if (c_rd_req_valid && c_rd_req_ready)
+        assert (base_r[11:0] == 12'd0) else $error("%m: read request with a base that is not 4 KiB aligned");
+      if (c_wr_req_valid && c_wr_req_ready)
+        assert (base_r[11:0] == 12'd0) else $error("%m: write request with a base that is not 4 KiB aligned");
+    end
+  end
+`endif
+
+endmodule

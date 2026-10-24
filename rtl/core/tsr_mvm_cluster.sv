@@ -128,8 +128,10 @@ module tsr_mvm_cluster
       else if (aw_v_q && aw_q.last) act_ready_q <= 1'b1;
     end
   end
+  // aw_q loads every cycle (no clock enable on 527 flops, M3 part C timing): every use is
+  // qualified by aw_v_q (actbuf write enables, `last`), so only lines with valid matter.
   always_ff @(posedge clk) begin
-    if (bc_line_valid) aw_q <= bc_line;
+    aw_q <= bc_line;
   end
 
   // -------------------------------------------------------------------------------------------

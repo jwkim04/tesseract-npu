@@ -7,13 +7,18 @@
 #                          SPM, T_MAX 8, small K_MAX, narrow DRAM address) and edge
 #                          implementation parameters (SPM_RD_LAT 1 / 4, FETCH_BEATS 2 / 64,
 #                          RD_OUTSTANDING 1 / 2, MVM pipes 0 / 3, WS FIFO 64 / 1024, MVM
-#                          latencies 1 / 8), then the M3 blocks with edge parameters, then the
+#                          latencies 1 / 8, reset register stages RST_PIPE 1 / 3 / 8), then the
+#                          M3 blocks with edge parameters (tsr_mvm also RST_LOCAL 1 / 2), then the
 #                          testbench-only HDL under tb/*/hdl (each file as top, with the other
-#                          files of its directory)
-#   rtl/lint.sh MODULE...  lint only these modules (default parameters)
+#                          files of its directory), then the target and platform lint scripts (M3
+#                          part C): rtl/tech/xilinx/lint.sh (Xilinx technology wrappers, the core
+#                          on rtl/filelist_xilinx.f), rtl/platform/alveo_xrt/lint.sh (XRT adapter,
+#                          kernel tops, gen_tops.py --check) and rtl/platform/alveo_xrt/bw/lint.sh
+#                          (M0 bandwidth kernel, gen_bw.py --check)
+#   rtl/lint.sh MODULE...  lint only these modules (default parameters, rtl/filelist.f)
 #
 # No blanket waivers: a module needing a lint_off must carry it inline, targeted, with a reason.
-# Exit status: number of failing lint runs (0 = clean).
+# Exit status: number of failing lint runs, those of the sub-scripts included (0 = clean).
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 FL="$ROOT/rtl/filelist.f"
@@ -66,6 +71,11 @@ lint tsr_core -GHAS_MVM=1 -GMVM_BC_PIPE=0 -GMVM_RES_PIPE=0 -GMVM_WS_FIFO=64 -GSP
 lint tsr_core -GHAS_MVM=1 -GMVM_BC_PIPE=3 -GMVM_RES_PIPE=3 -GMVM_WS_FIFO=1024 -GSPM_RD_LAT=4 -GFETCH_BEATS=64
 lint tsr_core -GHAS_MVM=1 -GT_MAX=3 -GMVM_ACT_RD_LAT=1 -GMVM_MAC_LAT=1 -GMVM_MUL_LAT=1 -GMVM_ADD_LAT=1 -GMVM_WS_RD_LAT=1
 lint tsr_core -GHAS_MVM=1 -GNUM_CH=3 -GMVM_ACT_RD_LAT=4 -GMVM_MAC_LAT=8 -GMVM_MUL_LAT=8 -GMVM_ADD_LAT=8 -GMVM_WS_RD_LAT=4 -GRD_OUTSTANDING=2
+# Reset register stages (RST_PIPE >= 1, docs/rtl-m3.md §14.4): M2 core, the U200 bitstream
+# parameters of §14.2 (RST_PIPE 3), and the maximum depth on a reduced configuration.
+lint tsr_core -GHAS_MVM=0 -GRST_PIPE=1
+lint tsr_core -GHAS_MVM=1 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9
+lint tsr_core -GHAS_MVM=1 -GNUM_CH=3 -GT_MAX=3 -GSPM_BYTES=262144 -GADDR_BEAT_W=22 -GCH_BYTES="64'd4294967296" -GRST_PIPE=8
 
 # M3 MVM unit (docs/rtl-m3.md §1): every new module as its own top with edge parameters
 # (NUM_CH 1 / 3 / 16, T_MAX 1 / 8, small and maximal K_MAX, latency / pipe depth extremes).
@@ -95,6 +105,8 @@ lint tsr_mvm_gather -GNUM_CH=16 -GT_MAX=8 -GSPM_BYTES=4194304
 lint tsr_mvm -GNUM_CH=1 -GT_MAX=8 -GK_MAX=256 -GSPM_BYTES=4096 -GADDR_BEAT_W=5 -GBC_PIPE=0 -GRES_PIPE=0
 lint tsr_mvm -GNUM_CH=3 -GT_MAX=3 -GK_MAX=4096 -GSPM_BYTES=262144 -GADDR_BEAT_W=22 -GBC_PIPE=3 -GRES_PIPE=3 -GSPM_RD_LAT=4
 lint tsr_mvm -GNUM_CH=16 -GT_MAX=8 -GK_MAX=65280 -GADDR_BEAT_W=36 -GWS_FIFO_BEATS=1024
+lint tsr_mvm -GNUM_CH=3 -GT_MAX=3 -GRST_LOCAL=1
+lint tsr_mvm -GNUM_CH=1 -GT_MAX=8 -GK_MAX=256 -GSPM_BYTES=4096 -GADDR_BEAT_W=5 -GBC_PIPE=0 -GRES_PIPE=0 -GRST_LOCAL=2
 
 # Testbench-only HDL (block testbench toplevels); linted with the same rules. Each file is a top,
 # together with the other files of its directory (wrappers may instantiate each other).
@@ -111,6 +123,18 @@ for d in "$ROOT"/tb/*/hdl; do
             fails=$((fails + 1))
         fi
     done
+done
+
+# Target and platform lint (M3 part C). Each script prints its own runs and exits with its
+# number of failing runs; a missing script counts as a failure.
+for sub in rtl/tech/xilinx/lint.sh rtl/platform/alveo_xrt/lint.sh rtl/platform/alveo_xrt/bw/lint.sh; do
+    if [ -x "$ROOT/$sub" ]; then
+        "$ROOT/$sub"
+        fails=$((fails + $?))
+    else
+        echo "lint FAIL $sub (missing or not executable)"
+        fails=$((fails + 1))
+    fi
 done
 
 [ $fails -eq 0 ] && echo "rtl/lint.sh: all clean" || echo "rtl/lint.sh: $fails failing run(s)"

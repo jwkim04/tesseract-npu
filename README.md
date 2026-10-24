@@ -833,10 +833,9 @@ fastreplay also runs the 778 traces of m3, gen, m2 and model at the U200 bitstre
 the Xilinx filelist (3,112 runs, 0 failed), and gen and m3 with a hardware reset before every
 trace (1,264 runs, 0 failed).
 
-`tb/run_all.sh` (lint plus every suite) reported 211 passed, 22 opt-in tests skipped (fp slow
-sweeps and Vivado runs) and 0 failed on 2026-10-24 (M3 part C), in 109 min with every build cold.
-That run still included the two platform mutant tests and the fastreplay mutant test. Slow tests
-are now opt-in: `-m slow`, `TSR_FP_SLOW=1` (fp sweeps), `TSR_PLATFORM_SLOW=1` (the adapter and M0
+`tb/run_all.sh` (lint plus every suite) reports 209 passed, 27 opt-in tests skipped (fp slow
+sweeps, Vivado runs and the three mutant tests) and 0 failed (2026-10-24, final M3 part C tree,
+1 h 41 min with every build cold). Slow tests are opt-in: `-m slow`, `TSR_FP_SLOW=1` (fp sweeps), `TSR_PLATFORM_SLOW=1` (the adapter and M0
 bandwidth-kernel mutant tests) or `TSR_FASTREPLAY_SLOW=1` (the fastreplay mutant test).
 
 ### Kernel level without a card

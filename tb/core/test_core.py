@@ -41,8 +41,10 @@ cocotb tests:
                       START clears ERR_*, START while BUSY ignored
   core_soft_reset     SOFT_RESET idle / with START / while BUSY (P3: no DONE, all cleared,
                       port quiet), CMD_* / ARG* kept, R1..R15 cleared
-  core_hw_reset       rst_n at random points of a run: outputs quiet during reset, every CSR
-                      equal to a fresh simulator's afterwards, the next program matches
+  core_hw_reset       rst_n at random points of a run, pulses of >= RST_PIPE + 1 cycles (P10):
+                      outputs quiet from RST_PIPE cycles after rst_n falls until the next CSR
+                      access, every CSR equal to a fresh simulator's afterwards, the next
+                      program matches (RST_PIPE from TSR_CORE "rst_pipe", default 0)
   core_abort          START|ABORT, ABORT while idle, ABORT at random cycle offsets inside long
                       programs: ERR_PC = first instruction not executed, PC unchanged, effects
                       == simulator run of the executed prefix (DRAM, registers, SPM via dump)
@@ -326,6 +328,7 @@ class CoreH:
         self.mem_kw = dict(mem_kw or {})
         self.rd_out = int(core_env().get("rd_outstanding", cfg["rd_outstanding"]))   # RTL limit
         self.has_mvm = int(core_env().get("has_mvm", 0))
+        self.rst_pipe = int(core_env().get("rst_pipe", 0))   # tsr_core RST_PIPE of the build (P10)
         self.mem = None
         self.new_mem()
         self.csr = CsrDriver(dut, timeout_cycles=200)
@@ -388,6 +391,32 @@ class CoreH:
 
     def busy(self) -> int:
         return int(self.dut.u_csr.busy_q.value)
+
+    def outputs_active(self) -> int:
+        d = self.dut
+        return (int(d.m_rd_req_valid.value) | int(d.m_wr_req_valid.value) | int(d.m_wr_dat_valid.value)
+                | int(d.csr_ready.value) | int(d.done.value))
+
+    async def hw_reset(self, rnd, what: str, minimal: bool = False):
+        """Hardware reset through rst_n (synchronous; the MemModel resets with it, as the platform
+        resets the memory side together with the core). Reset contract of docs/rtl-m2.md P10 with
+        P = RST_PIPE: rst_n low for >= P + 1 rising edges (here exactly P + 1 when `minimal`, else
+        P + 2 .. P + 7); the outputs (memory requests, write data, csr_ready, done) are quiet from
+        the falling edge after the (P + 1)-th low edge on, through the rest of the pulse and the
+        P + 5 cycles after the release (the core leaves reset P cycles after it; no CSR access
+        here). Returns at the end of those P + 5 cycles."""
+        dut, p = self.dut, self.rst_pipe
+        n_low = p + 1 if minimal else rnd.randint(p + 2, p + 7)
+        await RisingEdge(dut.clk)
+        dut.rst_n.value = 0
+        for k in range(n_low + p + 5):            # rising edge k + 1 after rst_n fell
+            await RisingEdge(dut.clk)
+            if k == n_low - 1:
+                dut.rst_n.value = 1               # rst_n was low at edges 1 .. n_low
+            await FallingEdge(dut.clk)
+            if k >= p:
+                assert self.outputs_active() == 0, "output active %s reset (%s, cycle %d, rst_n low %d " \
+                    "cycles, RST_PIPE %d)" % ("during" if k < n_low else "after", what, k, n_low, p)
 
     # ---- runs ----
     def load(self, prog: bytes, cmd_addr: int, init=()):
@@ -878,7 +907,9 @@ async def core_soft_reset(dut):
 @cocotb.test()
 async def core_hw_reset(dut):
     """Hardware reset (rst_n, synchronous, together with the memory side as the platform does) at
-    random points of a run: during reset no memory request, write data, csr_ready or done; after
+    random points of a run, with the RST_PIPE contract of docs/rtl-m2.md P10 (CoreH.hw_reset:
+    pulses of >= RST_PIPE + 1 cycles, a third of them exactly that): from RST_PIPE cycles after
+    rst_n falls no memory request, write data, csr_ready or done until the next CSR access; after
     it every CSR equals a fresh simulator's (CMD_* / ARG* / PERF / STATUS 0) and a following
     program matches a fresh simulator (SPM content is undefined after reset, P7: the program writes
     the SPM before reading it)."""
@@ -898,17 +929,7 @@ async def core_hw_reset(dut):
         await h.launch(prog, 128, args=[7, 8], init=init)
         await ClockCycles(dut.clk, rnd.choice([rnd.randint(0, 30), rnd.randint(0, 400), rnd.randint(0, 3000)]))
         mid += h.busy()
-        await RisingEdge(dut.clk)
-        dut.rst_n.value = 0
-        for k in range(rnd.randint(1, 6)):
-            await RisingEdge(dut.clk)
-            await FallingEdge(dut.clk)
-            quiet = (int(dut.m_rd_req_valid.value) | int(dut.m_wr_req_valid.value)
-                     | int(dut.m_wr_dat_valid.value) | int(dut.csr_ready.value) | int(dut.done.value))
-            assert quiet == 0, "output active during reset (#%d, cycle %d)" % (i, k)
-        await RisingEdge(dut.clk)
-        dut.rst_n.value = 1
-        await ClockCycles(dut.clk, 5)
+        await h.hw_reset(rnd, "reset #%d" % i, minimal=(i % 3 == 2))
         h.mem.check(idle=True)
         sim = h.new_sim()
         bad = []

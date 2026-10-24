@@ -465,6 +465,29 @@ Every line of the image is written whole; bytes after the last valid element of 
 - P10 **Hardware reset**: in addition to P7, state that after `ap_rst_n` every CSR reads as after
   power-up (CMD_ADDR/CMD_COUNT/ARG* = 0, unlike SOFT_RESET) and that the memory side must be reset
   together with the core (outstanding transactions are dropped, not completed).
+  **Reset timing (`RST_PIPE`, M3 part C).** `tsr_core` parameter `RST_PIPE` = P (0..8; an
+  implementation parameter, docs/rtl-m3.md §14.4 item 3) puts P register stages on the reset:
+  every flop of the core sees `rst_n` exactly P cycles late, at assertion and at release. At the
+  core boundary:
+  - the outputs (memory requests and write data, `csr_ready`, `done`) go quiet P cycles after
+    `rst_n` falls: from the (P + 1)-th rising edge with `rst_n` low on. In the first P cycles of a
+    reset the core may still offer requests and write data; the memory side, in reset with the
+    core, must drop them;
+  - `rst_n` must stay low for **≥ P + 1 cycles** (rising edges). Any pulse reaches every flop (P
+    cycles late), but the memory side is reset by the same `rst_n` without the delay: with a
+    shorter pulse it leaves reset while the core still offers pre-reset requests, accepts them,
+    and their responses arrive after the core's reset (P10 forbids that);
+  - the core leaves reset P cycles after `rst_n` rises (the CSR port's handshake absorbs the
+    delay: the master holds `csr_valid` until `csr_ready`, P1);
+  - the registers of the reset pipe start in reset (configuration INIT / simulation initial 0),
+    so after configuration the core is held in reset until `rst_n` has been high for P cycles.
+  P = 0 (the default, used by the generic test builds) keeps the behaviour above: the outputs are
+  quiet from the first rising edge with `rst_n` low and one cycle of reset suffices.
+  U200 bitstreams use P = 3 (rtl-m3 §14.2); the kernel-level rule for `ap_rst_n` (the adapter's
+  reset chain in front of the core resets the AXI bridges with the core, `tsr_xrt_reset.sv`) is in
+  docs/platform-u200.md §5, and XRT holds `ap_rst_n` far longer. Tests: tb/core `core_hw_reset` and
+  `m3_hw_reset` start the quiet check at reset cycle P and use pulses of ≥ P + 1 cycles (a third
+  of them exactly P + 1); `test_core_m3_directed[u200_rst3]` runs them at P = 3.
 
 ---
 
@@ -554,6 +577,14 @@ Consequences for M4 (structures expected to be critical, in order):
    passes with SPM_RD_LAT 1, 2, 3 and 4 (`test_core_impl`); with URAM and 4 the core meets 300 MHz
    out of context. The QACT line buffer (64 lines) should stay in BRAM (the attribute here also
    moved it to URAM).
+   **Done (M3 part C):** the Xilinx technology wrapper `rtl/tech/xilinx/tsr_sram_1r1w.sv`
+   (selected by `rtl/filelist_xilinx.f`; tb/tech checks it cycle by cycle against the generic
+   one) picks the RAM style by size: the SPM banks are URAM (`ram_style ultra`, 4 banks x 32 =
+   128 URAM at 4 MiB, the read stages absorbed into the URAM output / cascade registers), the
+   QACT line buffer, activation buffers and weight FIFOs block RAM, tiny test sizes LUTRAM. The
+   U200 bitstream uses `SPM_RD_LAT 4` (docs/rtl-m3.md §14.2); whole-core Vivado runs with it:
+   docs/rtl-m3.md §14.3 (128 URAM, QACT 8 RAMB36; k1 / k4 T_MAX 1 / k4 T_MAX 8 meet 300 MHz out of
+   context).
 2. DMA <-> channel arbiters across SLRs: one DMA engine serves all channels while each
    `tsr_mem_arb` sits next to its DDR4 controller (three SLRs on U200). LD data goes arbiter
    response flop -> SLL crossing -> 4 x 512-bit channel select -> DMA queue write in one cycle; ST
@@ -566,5 +597,7 @@ Consequences for M4 (structures expected to be critical, in order):
 4. QACT: the merged multiplier scale register drives all 32 DSPs (+0.12 ns, as in the QACT
    agent's run); `-keep_equivalent_registers` or a per-lane copy helps.
 5. Synchronous reset fan-out into three SLRs: the platform layer should deliver a pipelined,
-   per-SLR replicated `rst_n`.
+   per-SLR replicated `rst_n`. **Done (M3 part C):** the adapter's `tsr_xrt_reset` (one copy per
+   bridge, a chain for the core) and the core's `RST_PIPE` stages with per-block kept copies
+   (docs/rtl-m3.md §14.4 item 3; boundary contract in P10).
 6. cmdproc / fetch / CSR / PERF counters: comfortable (>= +0.5 ns in the passing whole-core runs).
