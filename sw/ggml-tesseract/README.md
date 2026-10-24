@@ -1,6 +1,6 @@
 # ggml-tesseract
 
-ggml backend for the Tesseract overlay core (spec "ggml 백엔드 통합"). One registry
+ggml backend for the Tesseract NPU core (spec "ggml 백엔드 통합"). One registry
 `"Tesseract"` with one device `"Tesseract0"` of type `GGML_BACKEND_DEVICE_TYPE_GPU`; v1 runs
 `MUL_MAT` only, everything else stays on the CPU. Pin and verified llama.cpp API:
 `docs/llama-pin.md`.

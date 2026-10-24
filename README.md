@@ -8,18 +8,27 @@
 
 # Tesseract
 
-Tesseract is an open-source FPGA overlay core that runs the ggml graphs of
-[llama.cpp](https://github.com/ggml-org/llama.cpp) through its own 256-bit instruction set. It
-plugs into llama.cpp as an ordinary ggml backend (`ggml-tesseract`, offloaded with `-ngl`). It
-loads shipped GGUF files without converting the model file. The simulator, the RTL and the
-hardware are meant to agree bit for bit. The first target is the AMD/Xilinx **Alveo U200**. The
-core RTL is vendor-independent SystemVerilog, so other boards need new board-specific layers, not
-a new design.
+Tesseract is an open-source LLM inference NPU core. It runs the ggml graphs of
+[llama.cpp](https://github.com/ggml-org/llama.cpp) through its own 256-bit instruction set and is
+currently implemented on an FPGA, the AMD **Alveo U200**. It plugs into llama.cpp as an ordinary
+ggml backend (`ggml-tesseract`, offloaded with `-ngl`). It loads shipped GGUF files without
+converting the model file. The simulator, the RTL and the hardware are meant to agree bit for
+bit. The core RTL is vendor-independent SystemVerilog, so another FPGA board (or, as an
+unscheduled idea, an ASIC) needs new target-specific layers, not a new core.
 
-> **Status (2026-10-23):** no hardware run yet, because the card is not installed. M1 (ISA
-> simulator + ggml backend) and M2 (RTL core without the matrix unit) have passed. In M3, the
-> MVM (matrix-vector) unit is integrated and every regression trace replays bit-exactly on the
-> RTL. The U200 platform, timing and XRT host transport (M3 part C) are being written now.
+> **Status (2026-10-24):** no hardware run yet, because the card is not installed. M1 (ISA
+> simulator + ggml backend) and M2 (RTL core without the matrix unit) have passed. M3 (the MVM
+> matrix-vector unit and the U200 platform) is done up to the card:
+>
+> - The real host stack (llama.cpp, ggml-tesseract, the XRT protocol layer) drives the Verilated
+>   U200 kernel (`TSR_DEVICE=vkernel`). Qwen2.5-0.5B Q8_0 gives logits bit-identical to the
+>   simulator on all three kernel configurations: k1 (1 channel, T_MAX 1), k4t1 (4 channels,
+>   T_MAX 1) and k4 (4 channels, T_MAX 8).
+> - The whole core meets 300 MHz in Vivado out-of-context runs.
+> - The M0 bandwidth xclbin and the 1-channel k1 xclbin are built. Both full `v++` links keep the
+>   300 MHz kernel clock with timing met.
+> - Hardware emulation (hw_emu) of k1 runs the real XRT host path.
+>
 > Everything below is verified in simulation unless it says otherwise.
 
 ## Contents
@@ -50,6 +59,7 @@ a new design.
 - [Verification](#verification)
   - [Oracle chain](#oracle-chain)
   - [Trace sets and RTL replay](#trace-sets-and-rtl-replay)
+  - [Kernel level without a card](#kernel-level-without-a-card)
   - [Op-level and model-level results](#op-level-and-model-level-results)
   - [Simulated performance](#simulated-performance)
 - [Getting started](#getting-started)
@@ -108,11 +118,14 @@ Long term (M5–M9):
 
 - **Bandwidth-bound by design.** A cluster consumes 1 beat per cycle: 300 MHz × 64 B = 19.2 GB/s.
   That is the peak of a DDR4-2400 channel. The goal is an unbroken beat supply, not more MACs.
-- **Weight traffic stays local.** Cluster *c* reads weights only from channel *c*, so the weight
-  streams never leave their SLR (the super logic regions, or dies, of the FPGA). What crosses SLRs
-  is small by comparison: the activation broadcast (a few KB per MVM), the result gather, control,
-  and the activation-sized LD/ST traffic between the one central DMA engine and the per-channel
-  memory arbiters.
+- **Weight traffic stays per channel.** Cluster *c* reads weights only from channel *c*, so the
+  four weight streams never share a memory port with each other. On the U200 4-channel kernel the
+  streams do cross SLRs (the super logic regions, or dies, of the FPGA), but only through register
+  stages that pass one beat per cycle; the weight-response pipe into a cluster has no
+  backpressure at all. A crossing adds latency, not a bandwidth loss (see
+  [System on the Alveo U200](#system-on-the-alveo-u200)). The other traffic between the clusters
+  and the rest of the core is small: the activation broadcast (a few KB per MVM), the result
+  gather, control and reset.
 - **Bit-exact determinism.** The order and rounding of every floating-point operation are fixed
   by the spec, so the ISA simulator, the RTL and the hardware must agree bit for bit. There is
   one C reference implementation of the numerics (`sw/sim`), shared by the backend, the simulator
@@ -139,7 +152,7 @@ Long term (M5–M9):
 | On-chip scratchpad (`SPM_BYTES`) | 4 MiB, 64-byte lines |
 | Instruction | fixed 256 bits (32 B), 16 int32 registers |
 | Largest reduction dimension (`K_MAX`) | 32768 |
-| Tokens per MVM (`T_MAX`) | 1 in the v1 parameter table, architectural maximum 8 (a synthesized 8 is being evaluated) |
+| Tokens per MVM (`T_MAX`) | 8 in the 4-channel kernel (k4), 1 in the 1-channel bring-up kernel (k1); architectural maximum 8 |
 | DRAM per channel (`CH_BYTES`) | 16 GiB (standard U200: 4 × 16 GB) |
 
 ## Status and milestones
@@ -151,10 +164,10 @@ A–C.
 
 | Milestone | Work | Pass criterion | Status |
 | --- | --- | --- | --- |
-| **M0** Shell bring-up | DMA test kernel: per-channel and 4-channel concurrent bandwidth | Measured bandwidth recorded as the baseline for performance prediction | Waiting for the card; the bandwidth kernel and host tool are being written in M3 part C |
+| **M0** Shell bring-up | DMA test kernel: per-channel and 4-channel concurrent bandwidth | Measured bandwidth recorded as the baseline for performance prediction | Waiting for the card. The bandwidth kernel, the host tool and the xclbin (300 MHz, timing met, 2026-10-24) are ready |
 | **M1** ISA simulator + backend | `TSR_DEVICE=sim`, MUL_MAT offload only, no hardware | `test-backend-ops`; 32B KL check in the simulator | **Passed** 2026-10-22 (32B klcheck ratio 1.36, top-1 98.83 %) |
 | **M2** RTL core skeleton | Command processor (R0–R15, LI, ADDI), DMA, LD/ST, QACT | Verilator trace replay bit-exact | **Passed** 2026-10-23 (`traces/m2`, 172 traces) |
-| **M3** MVM clusters, Q8_0 | One cluster per channel, starting with 1 channel, then 4 | Qwen2.5-0.5B Q8_0 running on hardware | **In progress.** RTL parts A and B done (the Q4_K path is designed and verified too); part C (Xilinx wrappers, timing, U200 adapter, XRT transport) being written |
+| **M3** MVM clusters, Q8_0 | One cluster per channel, starting with 1 channel, then 4 | Qwen2.5-0.5B Q8_0 running on hardware: logits bit-identical to `TSR_DEVICE=sim`, and the KL criterion | **In progress, done up to the card.** RTL parts A and B done (the Q4_K path is designed and verified too). Part C (Xilinx wrappers, timing, U200 adapter, XRT transport) done 2026-10-24: logits bit-identical to the simulator on the Verilated kernel; the 1-channel xclbin `tsr_u200_k1` is built (300 MHz, timing met). Waiting for the card |
 | **M4** Q4_K unpack, 4 channels | v1 goal; other types converted to Q8_0 at load | 32B Q4_K_M on hardware at ≥ 1 tok/s | Planned |
 | **M5** MoE, host-assisted | Router converted to Q8_0, back-to-back MVM overlap, symmetric expert placement | Qwen3-30B-A3B on hardware | Planned |
 | **M6** Vector unit, more ops | RMSNorm, position-based RoPE, SwiGLU, residual, softmax | No host round trips inside a layer | Planned |
@@ -163,6 +176,13 @@ A–C.
 | **M9** On-device decode loop | Stage C: WAITM, JUMP, output-token ring buffer, `sw/runner` | The host only polls the ring buffer | Planned |
 
 ## Architecture
+
+<p align="center"><img src="docs/fig/hero.svg" alt="Stylised die of the Tesseract NPU core: four MVM clusters of 128 MACs at the corners, each fed by its own DDR4 channel through a memory arbiter; the 4 MiB SPM in the centre inside the x broadcast and y gather; the command processor, CSR, DMA, QACT and a planned vector and scalar unit (M6). One cluster is opened up: weight streamer, unpack, activation buffer, 128 MAC lanes, fp accumulate and tree16." width="100%"></p>
+
+The NPU core at a glance, stylised rather than a floorplan: four MVM clusters, each fed by its
+own DDR4 channel, around the shared scratchpad. One cluster is opened up. The SLR placement on
+the U200 is in [System on the Alveo U200](#system-on-the-alveo-u200). The sections below take the
+parts in turn, from the layers that keep the core portable down to the numerics.
 
 ### Four layers
 
@@ -176,30 +196,16 @@ platform adapter) plus a transport. The software and the core only change their 
 | Tech wrappers | `tsr_sram_*`, `tsr_mac_lane`, clock and reset, CDC synchronizers | Written per target |
 | Platform adapter | Control-register bridge; memory port → AXI4 or similar | Written per target |
 
-```mermaid
-flowchart TB
-  SW["Software · sw/<br/>ggml-tesseract backend<br/>lowering, weight repacker<br/>libtsr_ref, ISA simulator"]
-  TR["Transport · sw/transport<br/>sim: ISA simulator<br/>U200: xrt<br/>Zynq, SoC: later"]
-  PA["Platform adapter<br/>rtl/platform/TARGET<br/>U200: alveo_xrt"]
-  CO["Core · rtl/core<br/>tsr_core, same RTL<br/>parameters only"]
-  TE["Tech wrappers<br/>rtl/tech/TARGET<br/>generic: simulation<br/>xilinx: URAM, BRAM, DSP"]
-  SW -->|"tsr_transport API"| TR
-  TR -->|"CSR access,<br/>DRAM buffers"| PA
-  PA <-->|"CSR port, done,<br/>memory ports"| CO
-  CO -->|"tsr_sram_1r1w,<br/>tsr_mac_lane"| TE
-  classDef shared fill:#e8f5e9,stroke:#2e7d32,color:#000000
-  classDef pertarget fill:#fff3e0,stroke:#ef6c00,color:#000000
-  class SW,CO shared
-  class TR,PA,TE pertarget
-```
+<p align="center"><img src="docs/fig/layers.svg" alt="The four layers across three targets. Software (sw/) and the core (rtl/core) span all targets; the transport, platform adapter and tech wrappers are written per target: Alveo U200 (xrt, alveo_xrt, xilinx; NUM_CH 4, BEAT_BITS 512), Zynq or Kria and SoC or ASIC (ideas, not scheduled). rtl/tech/generic serves simulation and lint on any target." width="100%"></p>
 
-Green boxes are the same on every target. Orange boxes are written per target:
+A block that spans all three columns is the same on every target. A tile inside a column is
+written per target; dashed tiles are ideas, not scheduled:
 
 | Target-specific piece | Alveo U200 (v1) | Zynq / Kria (idea) | SoC (idea) |
 | --- | --- | --- | --- |
-| Transport | `xrt` (M3 part C) | Zynq AXI | SoC driver |
-| Platform adapter | `rtl/platform/alveo_xrt`: AXI4-Lite → CSR port, one AXI4 bridge per DDR4 channel (M3 part C) | to be written | to be written |
-| Tech wrappers | `rtl/tech/xilinx`: URAM, BRAM, DSP48E2 (M3 part C) | to be written | SRAM macros (for example on an open PDK) |
+| Transport | `xrt` (run in hardware emulation, not on a card yet) | Zynq AXI | SoC driver |
+| Platform adapter | `rtl/platform/alveo_xrt`: AXI4-Lite → CSR port, one AXI4 bridge per DDR4 channel, kernel tops `tsr_u200_k1` / `tsr_u200_k4`, M0 bandwidth kernel | to be written | to be written |
+| Tech wrappers | `rtl/tech/xilinx`: URAM, BRAM, DSP48E2 (two int8 tokens per DSP), inferred through attributes, so Verilator runs the same files | to be written | SRAM macros (for example on an open PDK) |
 | Core parameters | `NUM_CH` 4, `BEAT_BITS` 512 | `NUM_CH` 1–2, `BEAT_BITS` about 128 | to be decided |
 
 `rtl/tech/generic` holds behavioural versions of the wrappers for simulation and lint on any
@@ -217,94 +223,54 @@ Porting notes from the spec:
 
 ### System on the Alveo U200
 
-<!-- The front matter pins dagre: Mermaid 12 lays flowcharts out with ELK by default, which
-     reorders the clusters and DDR4 channels of this diagram. -->
-```mermaid
----
-config:
-  layout: dagre
----
-flowchart TB
-  subgraph HOST["Host PC"]
-    APP["llama.cpp<br/>graph, CPU ops"]
-    BE["ggml-tesseract<br/>repack, lower, cache"]
-    TRN["tsr_transport<br/>sim or xrt"]
-  end
-  subgraph CARD["Alveo U200"]
-    SHELL["XRT shell<br/>registers, PCIe DMA<br/>to all four DDR4 channels"]
-    CTRLB["Control bridge<br/>s_axi_control ↔ CSR<br/>ap_done ↔ done"]
-    subgraph CORE["tsr_core"]
-      CP["Command processor<br/>fetch, decode, R0–R15<br/>DMA, QACT"]
-      SPM["SPM, 4 MiB<br/>64 B lines"]
-      VU["Vector + scalar unit<br/>planned, M6"]
-      BUS["x broadcast<br/>y gather"]
-      C0["Cluster 0<br/>128 MACs"]
-      C1["Cluster 1<br/>128 MACs"]
-      C2["Cluster 2<br/>128 MACs"]
-      C3["Cluster 3<br/>128 MACs"]
-    end
-    MB0["AXI4 bridge ch0"]
-    MB1["AXI4 bridge ch1"]
-    MB2["AXI4 bridge ch2"]
-    MB3["AXI4 bridge ch3"]
-    D0[("DDR4 ch0<br/>CMD, IO, AUX<br/>1/4 of weights")]
-    D1[("DDR4 ch1<br/>1/4 of weights")]
-    D2[("DDR4 ch2<br/>1/4 of weights")]
-    D3[("DDR4 ch3<br/>1/4 of weights")]
-  end
-  APP --> BE --> TRN
-  TRN <-->|"PCIe"| SHELL
-  SHELL <-->|"AXI4-Lite"| CTRLB
-  CTRLB <-->|"CSR port, done"| CP
-  CP <--> SPM
-  VU -.- SPM
-  SPM <--> BUS
-  BUS <--> C0
-  BUS <--> C1
-  BUS <--> C2
-  BUS <--> C3
-  C0 <==>|"weights"| MB0
-  C1 <==>|"weights"| MB1
-  C2 <==>|"weights"| MB2
-  C3 <==>|"weights"| MB3
-  MB0 <==> D0
-  MB1 <==> D1
-  MB2 <==> D2
-  MB3 <==> D3
-  CP <-.->|"fetch, LD, ST"| MB0
-  classDef planned stroke-dasharray: 5 5
-  classDef adapter fill:#fff3e0,stroke:#ef6c00,color:#000000
-  class VU planned
-  class CTRLB,MB0,MB1,MB2,MB3 adapter
-```
+<p align="center"><img src="docs/fig/system.svg" alt="Host PC (llama.cpp, ggml-tesseract, tsr_transport) connected over PCIe to the XRT shell of the Alveo U200; a control bridge to the core's CSR port; tsr_core with the command processor, 4 MiB SPM, a planned vector and scalar unit, the x broadcast and y gather bus and four clusters; each cluster fed by its own DDR4 channel through an AXI4 bridge; blocks tagged with their SLR under floorplan C' (clusters 0 and 2 in SLR0, clusters 1 and 3 in SLR2, the rest of the core and the adapter in SLR1)." width="100%"></p>
 
-Thick lines are the per-channel memory paths that carry the weight streams. The dotted line is
+Fat arrows are the per-channel memory paths that carry the weight streams. The dashed line is
 instruction fetch (always from ch0) and LD/ST (v1 lowering uses ch0). Inside the core, cluster 0's
 weight stream and the command processor's fetch, LD and ST share ch0's one memory port through
-`tsr_mem_arb` (see [Inside tsr_core](#inside-tsr_core)). Orange boxes are the platform adapter
+`tsr_mem_arb` (see [Inside tsr_core](#inside-tsr_core)). Peach blocks are the platform adapter
 (`rtl/platform/alveo_xrt`). Host DMA from the XRT shell reaches all four channels and is not
-drawn as an edge.
+drawn as an arrow. Blocks with a single home are tagged with their SLR under floorplan C', the placement of the
+4-channel kernel described below.
 
 - **Host.** llama.cpp with the `ggml-tesseract` backend lowers graphs to command buffers and
   repacks weights. Over PCIe, the transport moves command buffers, weights and activations into
   card DRAM and starts the core.
-- **Platform adapter (Alveo XRT).**
-  - The control bridge turns the XRT `ap_ctrl_hs` register and the kernel arguments (`cmd_addr`,
-    `cmd_count`) into core CSR writes: `ap_start` drives `CTRL.START`, and `done` drives
-    `ap_done`.
-  - The other core CSRs are exposed after the arguments, so the host can read the perf counters
-    and the error registers.
-  - There is one AXI4 memory bridge per channel.
+- **Platform adapter (Alveo XRT).** The control bridge turns the XRT `ap_ctrl_hs` register and
+  the kernel arguments into core CSR writes: `ap_start` drives `CTRL.START`, and `done` drives
+  `ap_done`. There is one AXI4 memory bridge per channel, with register slices (`AXI_SLICES` 2)
+  and a response ID filter. The `s_axi_control` map (full map and reset rules in
+  [`docs/platform-u200.md`](docs/platform-u200.md) §2 and §5):
+  - 0x000–0x00C: `AP_CTRL`, `GIE`, `IER`, `ISR`.
+  - 0x010–0x03C: the arguments. `cmd_addr` (64 bits) at 0x010, `cmd_count` at 0x018,
+    `arg0`–`arg7` at 0x020–0x03C.
+  - 0x040 + 8c: `ch<c>_base`, the device byte address of channel *c*'s beat 0 (4 KiB aligned).
+  - 0x0F0: `ADAPTER_STATUS` (AXI error responses, responses without a request, misaligned base).
+    0x0F4: `ADAPTER_VERSION`.
+  - 0x1000 + offset: the whole core CSR map, also while a run is in progress, so the host can
+    poll STATUS and the perf counters and write ABORT. The planned debug block (core CSR
+    0x800–0x9FC, M4) will appear at 0x1800–0x19FC.
 - **Weight traffic.** Cluster *c* receives weights only from channel *c*, at up to 19.2 GB/s per
-  channel. The floorplan puts each cluster in the SLR of its own DDR4 controller.
-- **What crosses SLRs.** The weight streams never do. The activation broadcast (a few KB per
-  MVM) and the result gather pass through pipeline stages whose depth is a parameter
-  (`MVM_BC_PIPE`, `MVM_RES_PIPE`, ≥ 2 across SLRs on the U200). Control crosses too, and so does
-  LD/ST data: one central DMA engine serves every channel's `tsr_mem_arb`, and each arbiter sits
-  next to its own DDR4 controller. That path is latency-insensitive valid/ready, and register
-  slices on it are an M4 timing item.
-- **Not yet confirmed.** The exact channel-to-SLR mapping will be checked with `platforminfo` at
-  bring-up.
+  channel. On the U200 two T_MAX 8 clusters do not fit SLR1's dynamic region (they need 1,348 DSP,
+  1,380 with QACT; it has 1,320), so the clusters cannot all sit in the SLR of their own DDR4 controller. The
+  4-channel kernel therefore uses floorplan C' (`hw/u200/k4_floorplan.tcl`,
+  [`docs/rtl-m3.md`](docs/rtl-m3.md) §14.5): clusters 0 and 2 in SLR0, clusters 1 and 3 in SLR2,
+  and the rest of the core (command processor, CSR, SPM, DMA, QACT, the four channel arbiters, the
+  central gather) with the XRT adapter in SLR1. The 1-channel kernel k1 sits entirely in SLR1,
+  next to its DDR4 bank, so nothing of it crosses an SLR.
+- **What crosses SLRs.** Inside the 4-channel kernel, only register pipes:
+  - per cluster: the activation broadcast, the weight-stream request and response pipes and the
+    result-gather job and start pipes (`MVM_BC_PIPE`, `MVM_RES_PIPE` 2 on the U200, the first and
+    last stage pinned on either side of the crossing);
+  - the reset copies (`RST_PIPE`);
+  - the AXI register slices of channels 0 and 3, whose DDR4 controllers sit in SLR0 and SLR2.
+
+  The weight-response pipe moves one beat per cycle without backpressure, so crossing costs no
+  channel bandwidth. The DMA engine and the arbiters are both in SLR1, so LD/ST data does not
+  cross an SLR inside the core.
+- **Platform.** `platforminfo` of `xilinx_u200_gen3x16_xdma_2_202110_1` (2026-10-23): DDR bank0 in
+  SLR0, bank1 and bank2 in SLR1, bank3 in SLR2; one dynamic-region pblock per SLR. The shell
+  flashed on the card is still to be checked with `xbutil examine`.
 
 The spec's version of this figure, with Korean labels: [`docs/fig/u200-system.jpg`](docs/fig/u200-system.jpg).
 
@@ -336,36 +302,10 @@ Memory port rules (asserted by the testbench memory model `tb/common/mem_model.p
 
 ### Inside tsr_core
 
-```mermaid
-flowchart TB
-  CSRP(["CSR port"])
-  subgraph CORE["tsr_core"]
-    FET["tsr_fetch<br/>prefetch from ch0<br/>32 instructions"]
-    CSR["tsr_csr<br/>CTRL, STATUS, ERR, ARGs<br/>64-bit PERF counters"]
-    CMDP["tsr_cmdproc<br/>decode, all checks<br/>R0–R15, LI, ADDI<br/>one instruction in flight"]
-    QACT["tsr_qact<br/>f32 → QA"]
-    DMA["tsr_dma<br/>LD, ST"]
-    MVM["tsr_mvm<br/>NUM_CH clusters<br/>reads QA lines, writes y lines"]
-    SPM["tsr_spm<br/>4 MiB, 1R + 1W port<br/>clients: DMA, QACT, MVM"]
-    ARB["tsr_mem_arb, one per channel<br/>ch0 sources: FETCH, DMA, WS0<br/>ch c sources: DMA, WS c"]
-  end
-  DONEO(["done"])
-  PORTS(["NUM_CH memory ports"])
-  CSRP <--> CSR
-  CSR --> DONEO
-  CSR <--> CMDP
-  FET -->|"instructions"| CMDP
-  CMDP -->|"dispatch"| QACT
-  CMDP -->|"dispatch"| DMA
-  CMDP -->|"dispatch"| MVM
-  QACT <--> SPM
-  DMA <--> SPM
-  MVM <--> SPM
-  DMA --> ARB
-  MVM ==>|"weight streams"| ARB
-  FET -.->|"fetch reads"| ARB
-  ARB <--> PORTS
-```
+<p align="center"><img src="docs/fig/core.svg" alt="Blocks of tsr_core: tsr_fetch and tsr_csr feed tsr_cmdproc, which dispatches to tsr_dma, tsr_qact and tsr_mvm; all three use tsr_spm; one tsr_mem_arb per channel merges instruction fetch (ch0), DMA and weight-stream traffic onto that channel's memory port." width="100%"></p>
+
+Arrows point the way data flows: weight beats from the arbiters into the clusters, instructions
+from ch0 into `tsr_fetch`. The `× NUM_CH` tags mark the per-channel copies.
 
 | Block | What it does | Measured (RTL simulation, U200 v1, ideal memory) |
 | --- | --- | --- |
@@ -403,52 +343,15 @@ The MVM unit runs in four steps:
 4. Row results return through the gather, which assembles 16 results per SPM line and writes
    them with byte enables. With `ACC` it first reads the old line and adds.
 
-```mermaid
-flowchart TB
-  DDR[("DDR4 channel c")]
-  SPMR[("tsr_spm<br/>read port")]
-  BCR["Broadcast reader<br/>T × QA_LINES lines"]
-  subgraph FE["Front end, stages 1–4"]
-    WS["tsr_mvm_ws<br/>64-beat bursts<br/>512-beat FIFO"]
-    PAR["Chunk parser<br/>META or quant,<br/>row, block tags"]
-    UNP["Meta + unpack<br/>fp16 → f32 d, dmin<br/>Q4_K scales<br/>int8 lanes"]
-  end
-  subgraph AP["Activations"]
-    BCP["tsr_vpipe<br/>BC_PIPE stages"]
-    ACT["tsr_mvm_actbuf<br/>QS, D, BS per token"]
-  end
-  subgraph BEND["Back end, stages 5–9"]
-    MAC["4 × tsr_mac_lane<br/>128 int8 products<br/>exact sums of 32"]
-    ISC["Integer scale, Q4_K<br/>isum = Σ sc·S<br/>msum = Σ m·(BS pair)"]
-    I2F["2 × i2f<br/>int32 → f32"]
-    DDX["fmul d·Dx<br/>Q4_K: dmin·Dx<br/>d, dmin from the meta"]
-    FT["Block term<br/>× f32 of isum<br/>Q4_K: − msum term"]
-    ACU["Accumulate<br/>16 partials per row"]
-    TRE["tree16<br/>8 + 4 + 2 + 1 fadds"]
-  end
-  RPP["tsr_rpipe<br/>RES_PIPE stages"]
-  GAT["tsr_mvm_gather<br/>16 rows per SPM line"]
-  ACCR["ACC: read old line,<br/>16 × fadd"]
-  SPMW[("tsr_spm<br/>write port")]
-  SPMR --> BCR --> BCP --> ACT
-  DDR ==>|"weight beats"| WS
-  WS --> PAR --> UNP
-  ACT -->|"BS"| ISC
-  ACT -->|"x"| MAC
-  UNP ==>|"tagged beat"| MAC
-  ACT -->|"Dx"| DDX
-  MAC --> ISC --> I2F --> FT
-  DDX --> FT
-  FT --> ACU --> TRE --> RPP --> GAT
-  GAT -->|"plain"| SPMW
-  GAT -->|"ACC"| ACCR --> SPMW
-  classDef shared fill:#e3f2fd,stroke:#1565c0,color:#000000
-  class BCR,GAT,ACCR shared
-```
+<p align="center"><img src="docs/fig/cluster.svg" alt="MVM datapath of one cluster: the broadcast reader, gather and ACC of tsr_mvm; the cluster's broadcast tsr_vpipe and result tsr_rpipe; the front end (stream requester, chunk parser, meta and unpack) fed by DDR4 channel c; the back end (activation buffer, 4 MAC lanes, integer scale, i2f, fmul, block term, accumulate, tree16)." width="100%"></p>
 
-The diagram shows one cluster. Blue nodes belong to `tsr_mvm` and are shared by all clusters;
-everything else exists once per channel. The two `tsr_spm` nodes are the read and write ports of
-the same scratchpad.
+The figure shows one cluster. The broadcast reader and the central part of the gather (round
+robin, credits, ACC, write queue) are shared by all clusters. Each cluster has its own result
+assembler (`tsr_mvm_gasm`, part of the GATHER block in the figure) and its own pipes: broadcast,
+weight request, weight response, result, and the gather's job and start pipes. The figure draws
+only the broadcast and result pipes. Everything else exists once per channel. `TSR_SPM` is one
+scratchpad: the broadcast and the ACC read use its read port, and the gather and the ACC write go
+through its write port.
 
 | Spec stage | RTL | Details |
 | --- | --- | --- |
@@ -466,26 +369,35 @@ the same scratchpad.
 **Throughput.** In RTL simulation with an ideal memory, the steady state is 1.0000 cycles per
 weight beat for every tested shape at T = 1 and T = 8 (one T = 8 shape, Q4_K K 1024, measured
 0.9994). Rows of at least 9 beats never stall the back end, for any T and any latency setting.
-The fixed overhead per MVM is
-69 + T·`QA_LINES` cycles (Q8_0) or 72 + T·`QA_LINES` (Q4_K) at T = 1. An MVM is therefore weight
-bound: for example, Qwen2.5-32B `ffn_down` (Q4_K, N 5120, K 27648) is 1280 rows × 243 beats =
-311,040 cycles per channel, or 1.04 ms at 300 MHz. The broadcast is 0.16 % of that.
+The fixed overhead per MVM at T = 1 was 69 + T·`QA_LINES` cycles (Q8_0) or 72 + T·`QA_LINES`
+(Q4_K) in M3 part B. The part C job and weight-stream pipes add 1–3.5 cycles: Q8_0 K 896 / 4096 /
+4864 take 88 / 140 / 154 cycles, Q4_K K 1024 / 2304 / 4096 take 94.5 / 115 / 146. An MVM is
+therefore weight bound: for example, Qwen2.5-32B `ffn_down` (Q4_K, N 5120, K 27648) is 1280
+rows × 243 beats = 311,040 cycles per channel, or 1.04 ms at 300 MHz. The broadcast is 0.16 % of
+that.
 
 **Implementation parameters** (they change timing, never results; the tests vary them):
 
 | Parameter | Default | Range or note |
 | --- | --- | --- |
-| `SPM_RD_LAT` | 2 | 1–4; U200 timing wants 4 |
+| `SPM_RD_LAT` | 2 | 1–4; U200 4 (URAM output registers) |
 | `MVM_WS_FIFO` | 512 | power of 2, ≥ 64 |
-| `MVM_BC_PIPE`, `MVM_RES_PIPE` | 1 | ≥ 2 for clusters in another SLR |
+| `MVM_BC_PIPE`, `MVM_RES_PIPE` | 1 | ≥ 2 for clusters in another SLR; U200 2 |
 | `MVM_ACT_RD_LAT` | 2 | ≥ 1 |
-| `MVM_MAC_LAT` | 3 | ≥ 1 |
+| `MVM_MAC_LAT` | 3 | ≥ 1; U200 9 (a register after every adder level of the DSP-packed lane) |
 | `MVM_MUL_LAT` | 4 | ≥ 1 |
 | `MVM_ADD_LAT` | 5 | 1–8 (a partial is reused at most every 8 cycles) |
 | `MVM_WS_RD_LAT` | 2 | 1–4 |
+| `RST_PIPE` | 0 | 0–8; U200 3 (`rst_n`, and the kernel's `ap_rst_n`, low for ≥ `RST_PIPE` + 1 cycles) |
 
-The planned U200 bitstream configuration (`SPM_RD_LAT` 4, `MVM_BC_PIPE` 2, `MVM_RES_PIPE` 2) is
-already replayed bit-exactly in simulation.
+The U200 bitstream configuration (`SPM_RD_LAT` 4, `MVM_BC_PIPE` 2, `MVM_RES_PIPE` 2,
+`MVM_MAC_LAT` 9, `RST_PIPE` 3; [`docs/rtl-m3.md`](docs/rtl-m3.md) §14.2) is set in the kernel tops
+(`rtl/platform/alveo_xrt/gen_tops.py`) and replayed bit-exactly in simulation, also end to end
+(Qwen2.5-0.5B through the packaged k1 top, [`docs/platform-u200.md`](docs/platform-u200.md)
+§13.1). With `RST_PIPE` = P every flop sees `rst_n` P cycles late: the outputs go quiet P cycles
+after `rst_n` falls, and `rst_n` must stay low for at least P + 1 cycles. At these parameters the
+steady state stays 1.0000 cycles per weight beat, and the fixed cost per MVM grows by 9.5–12
+cycles over the defaults (0.3 % on the K 896 × N 896 MVM).
 
 ### Memory model
 
@@ -510,24 +422,7 @@ For MoE, expert *e* sits at `W_OFF + e × EXP_STRIDE` with `EXP_STRIDE = R × RO
 expert MVM still uses all four channels, and a device-computed expert id needs only one multiply
 to become an address.
 
-```mermaid
-flowchart LR
-  WT["Weight tensor<br/>N rows × K<br/>R = N/4 rounded up"]
-  subgraph SAME["offset W_OFF"]
-    R0["ch0: rows 0 … R−1"]
-    R1["ch1: rows R … 2R−1"]
-    R2["ch2: rows 2R … 3R−1"]
-    R3["ch3: rows 3R … N−1"]
-  end
-  WT --> R0
-  WT --> R1
-  WT --> R2
-  WT --> R3
-  R0 ==> K0["cluster 0"]
-  R1 ==> K1["cluster 1"]
-  R2 ==> K2["cluster 2"]
-  R3 ==> K3["cluster 3"]
-```
+<p align="center"><img src="docs/fig/alloc.svg" alt="A weight tensor of N rows split into four row ranges of R = ceil(N/4) rows, repacked by the host and written at the same offset W_OFF in DDR4 channels 0 to 3; cluster c streams only channel c; an inset shows the rows of channel 3 back to back from W_OFF." width="100%"></p>
 
 **Capacity.** 32B Q4_K_M (about 20 GB) needs about 5 GB per channel. A 32B Q8_0 (about 35 GB)
 needs about 9 GB per channel.
@@ -608,55 +503,7 @@ product and sum is rounded separately (no FMA).
 
 **Row accumulation.**
 
-```mermaid
-flowchart TB
-  BT["Block term i of one row<br/>Q8_0: one per 32 weights<br/>Q4_K: one per 256 weights"]
-  PS["16 partial sums, all +0.0 at row start<br/>term i is added to partial i mod 16"]
-  A0["p0+p1"]
-  A1["p2+p3"]
-  A2["p4+p5"]
-  A3["p6+p7"]
-  A4["p8+p9"]
-  A5["p10+p11"]
-  A6["p12+p13"]
-  A7["p14+p15"]
-  B0(("fadd"))
-  B1(("fadd"))
-  B2(("fadd"))
-  B3(("fadd"))
-  E0(("fadd"))
-  E1(("fadd"))
-  DY["fadd: row result y"]
-  ACC{"ACC flag<br/>of the MVM?"}
-  Y1["y_out = y_old + y"]
-  Y0["y_out = y"]
-  BT --> PS
-  PS --> A0
-  PS --> A1
-  PS --> A2
-  PS --> A3
-  PS --> A4
-  PS --> A5
-  PS --> A6
-  PS --> A7
-  A0 --> B0
-  A1 --> B0
-  A2 --> B1
-  A3 --> B1
-  A4 --> B2
-  A5 --> B2
-  A6 --> B3
-  A7 --> B3
-  B0 --> E0
-  B1 --> E0
-  B2 --> E1
-  B3 --> E1
-  E0 --> DY
-  E1 --> DY
-  DY --> ACC
-  ACC -->|"set"| Y1
-  ACC -->|"clear"| Y0
-```
+<p align="center"><img src="docs/fig/tree.svg" alt="Block terms of one row go in turn into 16 partial sums, which a fixed tree of 8, 4, 2 and 1 fadds reduces to the row result y; the gather writes y, or y_old + y when the MVM's ACC flag is set, to the SPM." width="100%"></p>
 
 The tree is `y = (((p0+p1)+(p2+p3))+((p4+p5)+(p6+p7)))+(((p8+p9)+(p10+p11))+((p12+p13)+(p14+p15)))`.
 
@@ -780,44 +627,10 @@ The software reads its configuration from these CSRs at start-up. Error codes:
 
 ### From a llama.cpp graph to device work
 
-```mermaid
-sequenceDiagram
-  autonumber
-  participant L as llama.cpp
-  participant B as ggml-tesseract
-  participant T as tsr_transport
-  participant C as tsr_core
-  participant M as Card DRAM ch0–ch3
-  Note over L,B: Model load
-  L->>B: supports_op(MUL_MAT probe with 512 tokens)
-  B-->>L: true for loadable 2D weights
-  L->>B: set_tensor(weight) into a WEIGHTS buffer
-  Note right of B: convert to Q8_0 if needed,<br/>repack rows into chunks
-  B->>T: write rows of channel c at W_OFF
-  T->>M: same W_OFF on every channel
-  Note over L,M: Each graph, each Tesseract split
-  L->>B: set_tensor(activations) into an IO window
-  B->>T: write(ch0, IO)
-  L->>B: graph_compute(split)
-  Note right of B: lower MUL_MATs to LD, QACT, MVM, ST<br/>and look up the program cache
-  B->>T: write program + END into the idle CMD half
-  B->>T: exec(cmd_addr, cmd_count, args)
-  T->>C: CMD_ADDR, CMD_COUNT, then CTRL.START
-  C->>M: prefetch instructions from ch0
-  loop each MUL_MAT, each token tile
-    C->>M: LD x tile from IO into the SPM
-    Note over C: QACT f32 rows to QA
-    C->>M: MVM, cluster c streams its rows from channel c
-    Note over C: gather y rows into the SPM
-    C->>M: ST y tile from the SPM to IO
-  end
-  C-->>T: END sets STATUS.DONE and done
-  T-->>B: return, or abort with ERR_CODE, ERR_PC, ERR_INFO
-  L->>B: get_tensor(result)
-  B->>T: read(ch0, IO)
-  T-->>B: result bytes
-  B-->>L: f32 rows, the CPU continues with norms, RoPE, attention
-```
+<p align="center"><img src="docs/fig/exec.svg" alt="Swimlane timeline from llama.cpp through ggml-tesseract and tsr_transport to card DRAM and tsr_core: model load, then for each split the activation write, lowering, program write, exec and START, the LD, QACT, MVM, ST loop for each MUL_MAT and token tile, END or an error, and the readback." width="100%"></p>
+
+Time runs down. The loop shows the four instructions of one token tile; the MVM step includes the
+gather of the y rows into the SPM.
 
 ### Offload policy (v1)
 
@@ -902,13 +715,23 @@ software. Its API:
 - **`sim`** (default) runs the ISA simulator in-process. The simulator implements the current
   instruction set bit-exactly, runs MVMs on several threads with identical results, and has an
   informational cycle model.
-- **`xrt`** drives the card through XRT. It is part of M3 part C, in progress.
+- **`xrt`** drives the card through XRT (`TSR_XCLBIN` names the xclbin). It has run in hardware
+  emulation of the k1 kernel, not on a card yet.
+- **`mock`** is a model of the adapter registers around the ISA simulator. It tests the XRT
+  protocol layer without hardware, with enforced DMA rules and fault injection.
+- **`vkernel`** runs the Verilated U200 kernel (adapter and core RTL) in a server process and
+  drives it with the same register sequence as the card. It is slow (20–153 s of wall time per
+  decoded Qwen2.5-0.5B token, by configuration) but checks every AXI transaction.
+
+`xrt`, `mock` and `vkernel` share one protocol layer (`tsr_kdev.cpp`) over a small device-access
+interface; see [`docs/xrt-host.md`](docs/xrt-host.md).
 
 ### Environment variables
 
 | Variable | Effect |
 | --- | --- |
-| `TSR_DEVICE` | Transport: `sim` (default), `xrt` (M3 part C); `none` registers no device |
+| `TSR_DEVICE` | Transport: `sim` (default), `xrt` (the card; tested in hw_emu only), `mock` (adapter model), `vkernel` (Verilated kernel); `none` registers no device |
+| `TSR_XCLBIN`, `TSR_XRT_*`, `TSR_MOCK_*`, `TSR_VKERNEL_*` | Options of the `xrt`, `mock` and `vkernel` transports ([`docs/xrt-host.md`](docs/xrt-host.md) §4.3, [`docs/platform-u200.md`](docs/platform-u200.md) §13) |
 | `TSR_DEBUG` | `1`: placement, lowering and exec log; `2`: also buffer events and a disassembly of every executed program |
 | `TSR_FORCE_HOST=1` | Test knob: every non-WEIGHTS buffer in host memory, so every MUL_MAT takes the staged path |
 | `TSR_STAGE_KIB` | Test knob: IO stage size in KiB |
@@ -931,51 +754,12 @@ The ggml CPU backend validates the ISA simulator, and the simulator validates th
 the hardware) bit for bit. The simulator was built before the RTL, and the backend has used it as
 a stand-in device from the start.
 
-```mermaid
-flowchart TB
-  REF["libtsr_ref<br/>the one C reference<br/>of the numerics"]
-  SIM["ISA simulator"]
-  CPU["ggml CPU backend"]
-  BE["ggml-tesseract<br/>TSR_DEVICE=sim"]
-  TBO["test-backend-ops<br/>NMSE vs CPU per op"]
-  KL["klcheck<br/>model KL vs CPU floor"]
-  DUMP["TSR_TRACE dumps<br/>of real runs"]
-  GEN["tsr-trace-gen<br/>directed, random"]
-  NC["numcheck<br/>bit-exact vs libtsr_ref<br/>and numpy, error bound"]
-  NPY["numpy spec model<br/>from the spec text only"]
-  SETS["Trace sets<br/>results from the simulator"]
-  subgraph RTLT["RTL replay, bit-exact vs the trace results"]
-    COCO["cocotb + Verilator<br/>block and core tests"]
-    FR["fastreplay<br/>C++ Verilator replay"]
-  end
-  MUT["Mutation campaigns"]
-  HW["U200 hardware<br/>pending the card"]
-  REF --> SIM --> BE
-  CPU --> TBO
-  CPU --> KL
-  BE --> TBO
-  BE --> KL
-  BE --> NC
-  REF --> NC
-  NPY --> NC
-  SIM --> GEN --> SETS
-  BE --> DUMP --> SETS
-  SETS --> RTLT
-  SETS -.-> HW
-  MUT -.-> RTLT
-  classDef ref fill:#e3f2fd,stroke:#1565c0,color:#000000
-  classDef sw fill:#e8f5e9,stroke:#2e7d32,color:#000000
-  classDef rtl fill:#f3e5f5,stroke:#6a1b9a,color:#000000
-  classDef hw fill:#eceff1,stroke:#90a4ae,color:#000000,stroke-dasharray: 5 5
-  class CPU,REF,NPY ref
-  class SIM,BE,TBO,KL,NC sw
-  class GEN,DUMP,SETS,COCO,FR,MUT rtl
-  class HW hw
-  style RTLT fill:#ffffff,stroke:#6a1b9a,color:#000000
-```
+<p align="center"><img src="docs/fig/verify.svg" alt="Verification chain: libtsr_ref, the numpy spec model and the ggml CPU backend check the ISA simulator and the ggml-tesseract backend through numcheck, klcheck and test-backend-ops; trace sets from tsr-trace-gen and TSR_TRACE dumps replay bit-exactly on the RTL in cocotb and fastreplay; mutation campaigns check the RTL tests; the replay on the U200 hardware is pending." width="100%"></p>
 
-Blue: references. Green: the software path and its checks, run on the simulator. Purple: traces
-and RTL verification. Grey: pending hardware.
+White blocks are the references, butter blocks the software that runs on the simulator, mint
+blocks the checks, salmon blocks the traces and sky blocks the RTL tests. The dashed block, the
+replay on the hardware, waits for the card. The two kernel levels between the RTL core and the
+card (vkernel and hw_emu, in the table below) are not drawn.
 
 | Stage | Oracle | Pass condition | Tool |
 | --- | --- | --- | --- |
@@ -984,12 +768,16 @@ and RTL verification. Grey: pending hardware.
 | Whole-model numerics (sim) | `libtsr_ref`, an independent numpy spec model, fp64 exact values | every output element of every weight MUL_MAT bit-exact with both models, zero violations of a proven fp32 error bound | `numcheck` |
 | RTL block | shared C reference functions | bit-exact | cocotb + Verilator |
 | RTL core | ISA simulator | trace replay bit-exact | cocotb + Verilator, fastreplay |
-| Hardware | ISA simulator | trace replay bit-exact, same token sequence | XRT host runner (pending) |
+| Kernel + host software (RTL) | ISA simulator | logits and tokens of the same model run bit-identical, 0 adapter / AXI check findings | `TSR_DEVICE=vkernel` (Verilated kernel server) |
+| Hardware emulation (k1) | ISA simulator | selftest programs and traces bit-exact | `TSR_DEVICE=xrt` on hw_emu, `tsr_xrt_selftest` |
+| Hardware | ISA simulator | trace replay bit-exact, logits and tokens of the same model run bit-identical | `tsr_xrt_selftest`, `klcheck compare --expect-identical` (`xrt` against `sim`); pending |
 
 - **Mutation testing.** Every test must be shown to fail on at least one deliberate mutant.
   - The M3 core campaign: 31 mutants, 28 killed. The 3 survivors were marked equivalent in
     advance.
   - The M2 core mutants were all killed except 2 equivalent ones.
+  - The U200 platform adapter: 33 mutants, 29 killed, 4 survivors found equivalent. The M0
+    bandwidth kernel: 57 mutants, 54 killed, 3 equivalent survivors.
   - In numcheck, a sequential-sum mutant fails B1 and B1b. It passes B2, which is why the
     summation order is checked bit-exactly.
 - **Software unit tests.** `ctest` covers the reference library against ggml: exhaustive fp16 ↔
@@ -1036,9 +824,50 @@ The cocotb core suite runs further configurations in lockstep with the simulator
 - **Implementation variants:** pipes 0 and 3, weight FIFO 64 and 1024, all MVM latencies 1, a
   slow corner (ACT_RD 4, MAC 8, MUL 8, ADD 8, WS_RD 4, WS FIFO 128, `SPM_RD_LAT` 3), and
   `SPM_RD_LAT` 1 and 4.
-- **Directed tests:** ABORT, SOFT_RESET and hardware reset in the middle of MVMs.
+- **Directed tests:** ABORT, SOFT_RESET and hardware reset in the middle of MVMs, also on the
+  U200 bitstream build (`RST_PIPE` 3, Xilinx technology wrappers), where hardware reset follows
+  the `RST_PIPE` contract (outputs quiet 3 cycles after `rst_n` falls, `rst_n` low for at least
+  4 cycles).
 
-`tb/run_all.sh` (lint plus every suite) reports 170 passed, 5 opt-in tests skipped and 0 failed.
+fastreplay also runs the 778 traces of m3, gen, m2 and model at the U200 bitstream parameters on
+the Xilinx filelist (3,112 runs, 0 failed), and gen and m3 with a hardware reset before every
+trace (1,264 runs, 0 failed).
+
+`tb/run_all.sh` (lint plus every suite) reported 211 passed, 22 opt-in tests skipped (fp slow
+sweeps and Vivado runs) and 0 failed on 2026-10-24 (M3 part C), in 109 min with every build cold.
+That run still included the two platform mutant tests and the fastreplay mutant test. Slow tests
+are now opt-in: `-m slow`, `TSR_FP_SLOW=1` (fp sweeps), `TSR_PLATFORM_SLOW=1` (the adapter and M0
+bandwidth-kernel mutant tests) or `TSR_FASTREPLAY_SLOW=1` (the fastreplay mutant test).
+
+### Kernel level without a card
+
+**vkernel.** The real host stack (llama.cpp → ggml-tesseract → `tsr_transport` → the XRT
+protocol layer) runs against the Verilated U200 kernel, adapter included. Every register access
+is an AXI4-Lite transaction through the RTL, and the server checks the AXI4 protocol, the
+memory-port rules and the RTL assertions on every cycle. Results on 2026-10-24 (Verilator 5.046;
+every session had 0 findings):
+
+- **Qwen2.5-0.5B Q8_0** (6-token prompt, 3 greedy tokens, logits at 8 positions): logits and
+  tokens bit-identical to `TSR_DEVICE=sim` on k1, k4t1 and k4 (`klcheck compare
+  --expect-identical`, 8 / 8 rows). The generated k1 kernel top (`--top packaged`) also matches
+  (7 / 7 rows in a run with 2 generated tokens).
+- **test-backend-ops MUL_MAT:** a 68-case Q8_0 / Q4_K subset passes on all three configurations;
+  the full ctest list without one 2,105,344-token case (1401 cases) passes on k4t1 and k4.
+- **test-ggml-tesseract** (bit-exact against `libtsr_ref`): 28 / 28 on all three configurations.
+- **tsr_xrt_selftest:** passes on k4t1 (216 traces), k4 (100 traces), k1 (30 generated 1-channel
+  traces) and a 3-channel test configuration in all three control modes. Injected AXI error
+  responses and an exceeded cycle budget fail the host run, as intended.
+
+**hw_emu.** `hw/u200/build_xclbin.sh k1 hw_emu` links the k1 kernel for Vitis hardware emulation
+(2 min 17 s). The `xrt` transport then runs through the real XRT library with no card and no
+driver: `tsr_xrt_selftest` passes (44 checks, including 9 programs bit-exact against the ISA
+simulator and 19 one-channel traces) in both control modes, and 3 MUL_MAT cases pass through
+ggml-tesseract. Two defects of the 2024.2 emulation models need workarounds: a 16 GiB channel
+crashes the simulator (`TSR_XRT_CH_GIB=3`), and host DMA that starts off a 4 KiB boundary loses
+its last page (`TSR_XRT_DMA=staged`, `TSR_XRT_DMA_ALIGN=4096`). The `xrt` transport applies these
+by default under `XCL_EMULATION_MODE=hw_emu` and names them in one line on stderr; a value set in
+the environment wins. It runs about 3 K cycles/s. See
+[`docs/xrt-host.md`](docs/xrt-host.md) §9.
 
 ### Op-level and model-level results
 
@@ -1071,21 +900,33 @@ The cocotb core suite runs further configurations in lockstep with the simulator
 
 ### Simulated performance
 
-These numbers come from RTL simulation, not from hardware. Conditions: U200 v1 parameters, ideal
-memory (always ready, latency 0–1, on every channel at once), cycles converted at the 300 MHz
-target. The M3 gate shapes (Qwen2.5-0.5B Q8_0, one token, 4 channels):
+These numbers come from RTL simulation, not from hardware. Conditions: the U200 v1 configuration
+at the default implementation parameters (M3 part C RTL), ideal memory (always ready, latency 0–1,
+on every channel at once), cycles converted at the 300 MHz target. The M3 gate shapes
+(Qwen2.5-0.5B Q8_0, one token, 4 channels):
 
 | MVM | Weight beats per channel | Cycles | Cycles per beat | At 300 MHz |
 | --- | --- | --- | --- | --- |
-| K 896 × N 896 (q, o) | 3,360 | 3,445 | 1.025 | 11.5 µs |
-| K 896 × N 4864 (gate, up) | 18,240 | 18,325 | 1.005 | 61.1 µs |
-| K 4864 × N 896 (down) | 18,144 | 18,297 | 1.008 | 61.0 µs |
-| K 896 × N 151936 (output head) | 569,760 | 569,845 | 1.0001 | 1.90 ms |
+| K 896 × N 896 (q, o) | 3,360 | 3,448 | 1.026 | 11.5 µs |
+| K 896 × N 4864 (gate, up) | 18,240 | 18,328 | 1.005 | 61.1 µs |
+| K 4864 × N 896 (down) | 18,144 | 18,298 | 1.008 | 61.0 µs |
+| K 896 × N 151936 (output head) | 569,760 | 569,848 | 1.0002 | 1.90 ms |
 
-The whole 1-token trace set of Qwen2.5-0.5B Q8_0 (145 traces) takes 2.27 M cycles, including LD
+Part B RTL took 3,445, 18,325, 18,297 and 569,845 cycles; the part C pipes add 1–3 cycles per
+MVM here.
+
+With part B RTL, the whole 1-token trace set of Qwen2.5-0.5B Q8_0 (145 traces) took 2.27 M cycles, including LD
 and QACT, under the `fast` memory regime (latency 0–2). That is 7.6 ms at 300 MHz for the
 offloaded MUL_MATs alone; the CPU-side ops and the host round trips are not included. Real DRAM
 bandwidth will be measured in M0.
+
+At the U200 bitstream parameters the four shapes take 3,459, 18,339, 18,309 and 569,860 cycles,
+11–12 more than the table.
+
+Through the whole host stack on the Verilated kernel (vkernel, `fast` memory, 145 execs per
+token), one decoded Qwen2.5-0.5B Q8_0 token takes 2,281,377 PERF cycles on k4t1 (7.60 ms at
+300 MHz) and 8,476,150 on k1 (28.25 ms). The kernel adds 99 cycles per exec. On k4 (T_MAX 8) the
+6-token prompt runs as one T = 6 pass: 3.14 M cycles, against 13.67 M at T_MAX 1.
 
 ## Getting started
 
@@ -1100,7 +941,9 @@ Everything below runs without an FPGA: the backend uses the ISA simulator as its
 - Python 3 with numpy (used by `ctest`'s numcheck self test, numcheck and the QACT cocotb tests).
 - For the RTL tests: Verilator 5, cocotb and pytest. The dev host runs Verilator 5.046, cocotb
   2.0.1 and pytest 9.0.2.
-- Optional: Vivado 2024.2 for out-of-context timing runs, and XRT 2.18.179 for the card.
+- Optional: Vivado / Vitis 2024.2 for out-of-context timing runs and `v++` links (with the U200
+  development platform `xilinx_u200_gen3x16_xdma_2_202110_1`), and XRT 2.18.179 for hardware
+  emulation and the card.
 
 ### Build and test the software
 
@@ -1149,9 +992,10 @@ model needs file-backed simulator DRAM (`TSR_SIM_DRAM_DIR=<dir>` with about 20 G
 rtl/lint.sh                                           # Verilator -Wall, must stay clean
 build/dev/bin/tsr-trace-replay -q traces/m2 traces/gen  # replay on the ISA simulator
 traces/m3/regen.sh                                    # regenerate traces/m3 (not stored in git)
-tb/run_all.sh                                         # lint + every cocotb suite (long: about 1.5 h cold)
+tb/run_all.sh                                         # lint + every suite (long: 109 min cold on 2026-10-24)
 tb/run_all.sh -k dma                                  # a subset
 tb/fastreplay/run.py traces/m3 traces/gen --regimes all   # fast C++ Verilator replay
+tb/platform/vkernel/vkernel.py run --config k4t1 -- build/dev/bin/tsr_xrt_selftest --mem-mib 8   # host stack on the Verilated kernel
 ```
 
 ## Hardware notes (Alveo U200)
@@ -1165,7 +1009,11 @@ tb/fastreplay/run.py traces/m3 traces/gen --regimes all   # fast C++ Verilator r
   upper-address aliasing, which validate's small-buffer memory test cannot catch. With 8 GB per
   channel, `CH_BYTES` drops to 8 GiB and the largest models are about 32B Q4_K_M and 30B-A3B.
 - **Status.** The card is not installed in the dev host, so no Tesseract bitstream has run on
-  hardware yet.
+  hardware yet. The first full `v++` links ran on the dev host on 2026-10-24 against the extracted
+  development platform `xilinx_u200_gen3x16_xdma_2_202110_1`. The M0 bandwidth kernel `tsr_bw_k4`
+  routed with WNS +0.017 ns and the 1-channel bring-up kernel `tsr_u200_k1` with WNS +0.011 ns;
+  both keep the kernel clock at 300 MHz. The 4-channel `tsr_u200_k4` link has not run: its
+  implementation is estimated at about 25 to 27 GB of memory, against the dev host's 14 GB.
 - **XRT on new kernels.** XRT 2024.2 (2.18.179) builds its PCIe drivers (`xocl`, `xclmgmt`) with
   DKMS for the Ubuntu 24.04 GA kernel 6.8. They fail to build on the HWE kernels: 413 errors on
   7.0.
@@ -1175,22 +1023,43 @@ tb/fastreplay/run.py traces/m3 traces/gen --regimes all   # fast C++ Verilator r
     6.17 and 7.0.
   - The drivers have not been loaded on a card yet. Installing them needs sudo; the steps are in
     that README.
-- **Bitstream path (M3 part C, in progress).** This covers the Xilinx tech wrappers
-  (`rtl/tech/xilinx`), the XRT platform adapter (`rtl/platform/alveo_xrt`), the build scripts in
-  `hw/u200`, the `xrt` transport and the M0 bandwidth kernel. Their documents are listed under
+- **Bitstream path.** The Xilinx tech wrappers (`rtl/tech/xilinx`), the XRT platform adapter and
+  kernel tops (`rtl/platform/alveo_xrt`), the `v++` configurations, floorplan C' and build scripts
+  (`hw/u200`), the `xrt` transport and the M0 bandwidth kernel are written and verified in
+  simulation. `hw/u200/build_xclbin.sh k1|k4 [hw|hw_emu]` repackages the `.xo` when a source
+  changed and links the xclbin; `hw/u200/bw/build_bw_xclbin.sh` does the same for the M0 kernel.
+  Hardware emulation of k1 runs the `xrt` transport (see
+  [Kernel level without a card](#kernel-level-without-a-card)). The documents are listed under
   [Documentation](#documentation).
-- **Timing so far.** These are out-of-context Vivado 2024.2 runs on `xcu200-fsgd2104-2-e` at
-  3.333 ns, without a floorplan.
-  - The M2 core (no MVM unit) with the SPM in URAM and `SPM_RD_LAT` 4 meets 300 MHz with
-    WNS +0.120 ns.
-  - At block level, `tsr_fp_add` (latency 5) has WNS +1.10 ns and `tsr_fp_mul` (latency 4)
-    +1.16 ns.
-  - Timing of the whole core with four clusters is part C.
-- **Resource estimates** (the whole core has not been synthesized yet):
-  - 128 DSP48E2 per cluster for the MAC lanes at T = 1, so 512 of the VU9P's 6840 for four
-    clusters.
-  - 24 BRAM36 for the activation buffer and 8 BRAM36 for the weight FIFO per cluster.
+- **Timing, out of context.** Whole-core Vivado 2024.2 runs of `tsr_core` on `xcu200-fsgd2104-2-e`
+  at 3.333 ns with the Xilinx tech wrappers and the U200 bitstream parameters, routed (no shell, AXI
+  bridges or DDR4 controllers). All three configurations meet 300 MHz:
+
+  | Configuration | Floorplan | WNS / WHS (ns) | CLB LUT | FF | DSP | RAMB36 | URAM |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | k1 (1 channel, T_MAX 1) | none | +0.121 / +0.024 | 30,890 | 43,154 | 182 | 40 | 128 |
+  | k4t1 (4 channels, T_MAX 1) | C' | +0.108 / +0.005 | 67,071 | 112,192 | 632 | 136 | 128 |
+  | k4 (4 channels, T_MAX 8) | C' | +0.015 / +0.020 | 270,910 | 345,578 | 2,728 | 808 | 128 |
+
+  The first k4 run (part B RTL, no floorplan) missed with WNS −0.877 ns. The fixes (kept
+  per-cluster pipes, a gather split per cluster, MAC_LAT 9, `RST_PIPE`) change only latencies,
+  and every trace still replays bit-exactly ([`docs/rtl-m3.md`](docs/rtl-m3.md) §14).
+- **Timing, linked.** Routed and after post-route `phys_opt`, all timing constraints met, kernel
+  clock 300 MHz:
+  - `tsr_u200_k1`: WNS +0.011 ns, WHS +0.009 ns; 33,276 LUT, 49,929 FF, 40 RAMB36, 128 URAM,
+    182 DSP, all in SLR1. The worst path is the SPM address into the URAM cascade, as out of
+    context; the link cost 0.110 ns of margin.
+  - `tsr_bw_k4` (M0): WNS +0.017 ns (in the shell's XDMA logic; the kernel clock's worst is
+    +0.025 ns); 11,456 LUT, 20,699 FF, no BRAM, URAM or DSP.
+- **Resources.**
+  - MAC-lane DSP48E2 per cluster: 128 at T_MAX 1 (one product per DSP) and 512 at T_MAX 8 (two
+    tokens share one DSP). That is 2,048 MAC DSPs for k4 and 2,728 DSPs in all.
+  - RAMB36 per cluster: 24 × T_MAX for the activation buffer plus 8 for the weight FIFO (32 at
+    T_MAX 1, 200 at T_MAX 8).
   - 128 URAM288 for the 4 MiB SPM.
+  - Two T_MAX 8 clusters would need 1,348 of the 1,320 DSPs in SLR1's dynamic region, hence
+    floorplan C' (see [System on the Alveo U200](#system-on-the-alveo-u200)). The k4 link has not
+    run (memory estimate above).
 
 ## Repository layout
 
@@ -1200,19 +1069,24 @@ tesseract/
 ├── sw/
 │   ├── sim/                 libtsr_ref (bit-exact numerics), ISA simulator, trace I/O, tests
 │   ├── ggml-tesseract/      ggml backend: placement, repacking, lowering, program cache, tests
-│   ├── transport/           tsr_transport: sim (in-process); xrt (M3 part C)
-│   ├── tools/               tsr-trace-gen, tsr-trace-replay, klcheck, tsr-numcheck + numcheck.py
+│   ├── transport/           tsr_transport: sim (in-process), xrt (card), mock (adapter model),
+│   │                        vkernel (Verilated kernel); the shared kdev protocol layer
+│   ├── tools/               tsr-trace-gen, tsr-trace-replay, klcheck, tsr-numcheck + numcheck.py,
+│   │                        tsr_xrt_selftest (bring-up checklist), tsr_bw (M0 bandwidth tool)
 │   ├── xrt-driver/          patches to build the XRT 2.18.179 PCIe drivers on kernels 6.8–7.0
 │   └── runner/              M9 on-device decode runner (planned; not in the repository yet)
 ├── rtl/
 │   ├── core/                22 vendor-independent SystemVerilog files (tsr_core and its units)
 │   ├── tech/generic/        behavioural tsr_sram_1r1w and tsr_mac_lane (simulation, lint)
-│   ├── tech/xilinx/         URAM / BRAM / DSP48E2 wrappers (M3 part C, in progress)
-│   ├── platform/alveo_xrt/  XRT control bridge and AXI4 memory adapter (M3 part C, in progress)
-│   └── filelist.f, lint.sh
-├── tb/                      cocotb + Verilator tests per block and for the core, fastreplay, run_all.sh
+│   ├── tech/xilinx/         URAM / BRAM / DSP48E2 wrappers (inferred; two int8 tokens per DSP)
+│   ├── platform/alveo_xrt/  XRT control bridge, AXI4 memory bridges, kernel tops, kernel.xml,
+│   │                        .xo packaging; bw/ (M0 bandwidth kernel tsr_bw_k4)
+│   └── filelist.f, filelist_xilinx.f, lint.sh
+├── tb/                      cocotb + Verilator tests per block and for the core, fastreplay, run_all.sh;
+│                            tech/ (Xilinx wrappers against the generic ones), platform/ (kernel
+│                            bench, vkernel/ server, bw/ M0 bench)
 ├── traces/                  regression traces (m2 and gen in git; m3 and model regenerated)
-├── hw/u200/                 U200 kernel build scripts (M3 part C, in progress)
+├── hw/u200/                 v++ configs (k1, k4, bw/), floorplan C', build_xclbin.sh
 └── third_party/             llama.cpp submodule (pinned), patches/, apply-patches.sh
 ```
 
@@ -1221,7 +1095,8 @@ tesseract/
 **Planned (from the spec):**
 
 - **M4: dense v1 on hardware.** Q4_K on four channels and 32B Q4_K_M at ≥ 1 tok/s. The Q4_K
-  datapath is already in the RTL and verified in simulation.
+  datapath is already in the RTL and verified in simulation. The 4-channel k4 xclbin comes
+  first; its link needs a host with more memory than the dev host's 14 GB.
 - **M5 and M8: MoE.** MoE suits a card with modest bandwidth and large capacity.
   - Qwen3-30B-A3B reads about 2 GB per token (file about 18.6 GB), against about 20 GB for a
     dense 32B. On the same card it could be close to 10× faster.
@@ -1236,17 +1111,21 @@ tesseract/
   - Stage A: the whole graph on the device, with one split per token.
   - Stage B: position-independent programs. The host writes only the token id and the position.
   - Stage C: a resident decode loop with `WAITM`, `JUMP` and an output-token ring buffer.
-- **Prefill.** The spec now aims at a synthesized `T_MAX` of 8, a decision pulled forward from
-  M7; its resources, timing and DSP packing are settled in M3 part C. In the simulator, T > 1
-  gives the same output bytes as T = 1.
+- **Prefill.** A synthesized `T_MAX` of 8 is decided for the 4-channel kernel, a decision pulled
+  forward from M7. It closed timing in M3 part C: the T_MAX 8 core meets 300 MHz out of context
+  (WNS +0.015 ns), with two tokens sharing one DSP48E2 per weight, at 4.0× the LUTs and 4.3× the
+  DSPs of T_MAX 1. In the simulator, T > 1 gives the same output bytes as T = 1. On the
+  Verilated k4 kernel the 6-token Qwen2.5-0.5B prompt ran as one T = 6 pass (3.14 M cycles,
+  against 13.67 M at T_MAX 1).
 - **Formats.** Q4_0 and MXFP4 (needed for gpt-oss-20b) are the only format candidates.
 - **Debugging and profiling (planned).** Design in [`docs/prof-dbg.md`](docs/prof-dbg.md).
-  - Software first, after M3 part C: a record per device run (PERF deltas and host times)
+  - Software first, next: a record per device run (PERF deltas and host times)
     mapped to ggml nodes and layers, post-mortem and hang dumps, and a shadow mode that runs the
     ISA simulator next to the card and keeps the first diverging run as a replayable trace.
-  - M4: a debug block at core CSR 0x800–0x9FC with halt, resume, single step, breakpoints and
-    register / SPM access. The core halts only between instructions, so a halted core equals
-    the simulator after the same number of retired instructions.
+  - M4: a debug block at core CSR 0x800–0x9FC (0x1800–0x19FC in the U200 `s_axi_control`
+    window) with halt, resume, single step, breakpoints and register / SPM access. The core
+    halts only between instructions, so a halted core equals the simulator after the same number
+    of retired instructions.
   - JTAG: not on the U200. The user kernel sits in the DFX shell's reconfigurable region, and the
     shell's user debug network has no JTAG fallback (XVC over PCIe only), so debugging goes
     through the PCIe CSR window; ILAs exist only in debug builds and are reached by XVC over
@@ -1267,15 +1146,17 @@ tesseract/
 | --- | --- |
 | [`docs/spec.md`](docs/spec.md) | **The contract**: architecture and ISA spec v0.2 with the v0.2.1 clarifications, in **Korean**. ISA, memory layout, numerics, backend integration, MoE, roadmap, verification strategy, milestones, open items. |
 | [`docs/rtl-m2.md`](docs/rtl-m2.md) | RTL contract and results of the M2 core: conventions, dispatch protocol, memory-port rules, SPM, units, verification, timing |
-| [`docs/rtl-m3.md`](docs/rtl-m3.md) | MVM unit architecture, interfaces, back-end numerics, throughput, verification and integration results |
+| [`docs/rtl-m3.md`](docs/rtl-m3.md) | MVM unit architecture, interfaces, back-end numerics, throughput, verification and integration results; the Vivado results of part C (§14: U200 bitstream parameters, timing runs, floorplan C') |
 | [`docs/llama-pin.md`](docs/llama-pin.md) | llama.cpp pin, the verified backend API, how llama.cpp places weights and splits graphs, `test-backend-ops` results |
 | [`docs/numcheck.md`](docs/numcheck.md) | One-prompt numeric verification (B1, B1b, B2, B3) and results |
 | [`docs/klcheck.md`](docs/klcheck.md) | Model-level KL check: method and results |
 | [`docs/prof-dbg.md`](docs/prof-dbg.md) | Profiler and debugger design (plan, not implemented): debug block registers and halt rules, tools, record formats, metrics, JTAG and ILA per target, verification |
 | [`sw/ggml-tesseract/README.md`](sw/ggml-tesseract/README.md) | Backend internals |
 | [`sw/xrt-driver/README.md`](sw/xrt-driver/README.md) | XRT 2.18.179 driver patches for kernels 6.8–7.0 |
-| `docs/platform-u200.md`, `docs/xrt-host.md`, `docs/m0-bw.md` | U200 platform adapter, XRT host transport, M0 bandwidth kernel (M3 part C, in progress; added with part C) |
-| [`docs/fig/`](docs/fig) | System and milestone figures from the spec (Korean labels) |
+| [`docs/platform-u200.md`](docs/platform-u200.md) | U200 platform adapter and kernels: kernel contract, `s_axi_control` register map, reset, packaging, xclbin build and floorplan C', verification, `TSR_DEVICE=vkernel`, hardware bring-up runbook |
+| [`docs/xrt-host.md`](docs/xrt-host.md) | XRT host transport: device-access and protocol layers, device memory, the `mock` model, `tsr_xrt_selftest`, card bring-up, hw_emu of k1 |
+| [`docs/m0-bw.md`](docs/m0-bw.md) | M0 bandwidth kernel `tsr_bw_k4` and host tool `tsr_bw`: register map, behaviour, build, verification, M0 on the card |
+| [`docs/fig/`](docs/fig) | The architecture figures of this README (SVG, generated by the scripts in `docs/fig/src`; style guide `docs/fig/src/STYLE.md`), and the spec's system and milestone figures (Korean labels) |
 
 The source-of-truth order is `docs/spec.md`, then the ISA simulator (`sw/sim`), then the RTL
 documents.
