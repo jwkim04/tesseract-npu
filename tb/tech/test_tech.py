@@ -8,13 +8,18 @@ ones (rtl/tech/generic), which every other testbench verifies against the contra
                            models also against the reference sum and the valid pipeline model
   test_tech_sram_equiv     tsr_sram_1r1w: xilinx vs generic cycle by cycle (tb/tech/cpp/sram_equiv.cpp
                            on tb/tech/hdl/tsr_tb_tech_sram.sv: the URAM / BRAM / LUTRAM sizes of the
-                           core, RD_LAT 1..4; collisions, read-after-write, byte enables), both models
-                           also against the contract model; every cycle for BRAM / LUTRAM sizes, every
-                           cycle with a read result for URAM sizes (their output stages hold between
-                           reads, rtl/tech/xilinx/tsr_sram_1r1w.sv)
+                           core incl. the SPM's 64-bit column slices, RD_LAT 1..4; collisions,
+                           read-after-write, byte enables), both models also against the contract
+                           model; every cycle for BRAM / LUTRAM sizes, every cycle with a read result
+                           for URAM sizes (their output stages hold between reads,
+                           rtl/tech/xilinx/tsr_sram_1r1w.sv)
   test_tech_sram_contract  the cocotb contract testbench of tb/spm/test_sram.py ("the contract every
                            target variant must meet") on the xilinx tsr_sram_1r1w: its four
-                           configurations plus URAM (4096 x 512, 16 K x 512 RD_LAT 4) and LUTRAM sizes
+                           configurations plus URAM (4096 x 512, 16 K x 512 RD_LAT 4, the SPM slices
+                           16 K x 64 RD_LAT 2 and 4 K x 64 RD_LAT 1) and LUTRAM sizes
+  test_tech_spm[...]       tb/spm's cocotb tests (tb/spm/test_spm.py, exact SPM contract model) on
+                           tsr_spm built from the xilinx tsr_sram_1r1w: 4 MiB at SPM_RD_LAT 4 (U200)
+                           and 2 (default), 256 KiB at 4 (one bank of URAM slices), 1000 lines at 4
   test_tech_lint           rtl/tech/xilinx/lint.sh (Verilator -Wall of the xilinx target)
   test_tech_netlist[...]   opt-in, needs Vivado: the Vivado-synthesised netlist of a xilinx wrapper
                            (DSP48E2 / URAM288 / RAMB36E2 / LUTRAM unisim models) against the generic RTL
@@ -117,6 +122,8 @@ SRAM_CONTRACT = {
     "d37_w8_lat4": dict(DEPTH=37, WIDTH=8, RD_LAT=4),
     "d4096_w512_lat2": dict(DEPTH=4096, WIDTH=512, RD_LAT=2),      # URAM
     "d16384_w512_lat4": dict(DEPTH=16384, WIDTH=512, RD_LAT=4),    # URAM cascade, 3 output stages
+    "d16384_w64_lat2": dict(DEPTH=16384, WIDTH=64, RD_LAT=2),      # SPM column slice at U200 (RAM_LAT 2)
+    "d4096_w64_lat1": dict(DEPTH=4096, WIDTH=64, RD_LAT=1),        # 256 KiB SPM slice, one URAM
     "d32_w512_lat2": dict(DEPTH=32, WIDTH=512, RD_LAT=2),          # LUTRAM
 }
 
@@ -130,6 +137,33 @@ def test_tech_sram_contract(cfg):
     p = SRAM_CONTRACT[cfg]
     run("tsr_sram_1r1w", "test_sram", parameters=p, sources=[REPO / "rtl" / "tech" / "xilinx" / "tsr_sram_1r1w.sv"],
         name="xsram_" + cfg, testcase=["sram_sweep", "sram_random"], extra_env={"TSR_SRAM_CFG": json.dumps(p)})
+
+
+SPM_XIL = {
+    # name -> (tsr_spm parameter overrides, cocotb tests of tb/spm/test_spm.py, random cycles)
+    "full_lat4": (dict(RD_LAT=4), ["spm_reset_state", "spm_directed", "spm_random"], 4000),
+    "full": (dict(), ["spm_reset_state", "spm_directed", "spm_random"], 4000),
+    "k256_lat4": (dict(SPM_BYTES=262144, RD_LAT=4),
+                  ["spm_reset_state", "spm_directed", "spm_sweep", "spm_random"], 8000),
+    "odd_lat4": (dict(SPM_BYTES=64 * 1000, BANK_LINES=256, RD_LAT=4),
+                 ["spm_reset_state", "spm_directed", "spm_sweep", "spm_random", "spm_reset_midflight"],
+                 12000),
+}
+
+
+@pytest.mark.parametrize("cfg", list(SPM_XIL))
+def test_tech_spm(cfg):
+    """tb/spm's tsr_spm tests on the xilinx SRAM wrapper (URAM column slices whose output stages
+    hold between reads, BRAM for the small configuration)."""
+    spm = str(REPO / "tb" / "spm")
+    if spm not in sys.path:      # the simulator's Python imports test_spm from sys.path
+        sys.path.insert(0, spm)
+    import test_spm                # noqa: E402 (tb/spm on sys.path)
+    over, tests, cycles = SPM_XIL[cfg]
+    srcs = [REPO / "rtl" / "core" / "tsr_pkg.sv", REPO / "rtl" / "tech" / "xilinx" / "tsr_sram_1r1w.sv",
+            REPO / "rtl" / "core" / "tsr_spm.sv"]
+    run("tsr_spm", "test_spm", parameters=over, sources=srcs, name="xspm_" + cfg, testcase=tests,
+        extra_env={"TSR_SPM_CFG": json.dumps(test_spm.full_config(over)), "TSR_SPM_CYCLES": str(cycles)})
 
 
 def test_tech_lint():
@@ -154,8 +188,11 @@ NETSIM = {
     "mac_t7_l6": ("mac", dict(N=32, T=7, LAT=6)),
     "mac_t4_l1": ("mac", dict(N=32, T=4, LAT=1)),
     "mac_n5_t3_l4": ("mac", dict(N=5, T=3, LAT=4)),
-    # SRAMs: URAM cascades (SPM bank 16 K x 512, 256 KiB SPM), BRAM (weight FIFO, QACT line
-    # buffer, DBS, deep FIFO with fabric stages), LUTRAM (32 deep), narrow odd depth
+    # SRAMs: URAM cascades (the SPM's 64-bit column slices 16 K x 64 / 4 K x 64, 512-bit cascades),
+    # BRAM (weight FIFO, QACT line buffer, DBS, deep FIFO with fabric stages), LUTRAM (32 deep),
+    # narrow odd depth
+    "sram_16k_w64_l2": ("sram", dict(DEPTH=16384, WIDTH=64, RD_LAT=2)),
+    "sram_4k_w64_l1": ("sram", dict(DEPTH=4096, WIDTH=64, RD_LAT=1)),
     "sram_16k_l2": ("sram", dict(DEPTH=16384, WIDTH=512, RD_LAT=2)),
     "sram_16k_l1": ("sram", dict(DEPTH=16384, WIDTH=512, RD_LAT=1)),
     "sram_4k_l3": ("sram", dict(DEPTH=4096, WIDTH=512, RD_LAT=3)),

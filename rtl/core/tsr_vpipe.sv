@@ -8,18 +8,19 @@
 //   every item (rule R4 of docs/rtl-m2.md applies to whoever feeds the pipe).
 // Timing: every stage is a plain register, so a placer may move stages along a long route
 //   (SLR crossing: one stage on each side, docs/rtl-m3.md §9).
-// KEEP = 1 (implementation, no functional effect): the stage registers carry the Xilinx `keep`
+// KEEP_REGS = 1 (implementation, no functional effect): the stage registers carry the Xilinx `keep`
 //   and `shreg_extract = "no"` attributes, so synthesis neither merges the pipe with an
 //   equivalent pipe nor packs it into SRLs. Needed where several pipes start at the same source
 //   and must stay separate registers next to their own consumers: the per-cluster broadcast
 //   pipes of tsr_mvm, which Vivado 2024.2 otherwise merges into one pipe feeding all clusters
-//   across the SLRs (docs/rtl-m3.md §14). Verilator ignores the attributes.
+//   across the SLRs (docs/rtl-m3.md §14). Verilator ignores the attributes. (Not named KEEP:
+//   Vivado reads an instance parameter named KEEP as the instance's KEEP property, [Netlist 29-72].)
 
 module tsr_vpipe #(
-  parameter int unsigned VW    = 1,   // valid / control bits (reset)
-  parameter int unsigned W     = 1,   // data bits (no reset)
-  parameter int unsigned DEPTH = 1,   // register stages, >= 0
-  parameter bit          KEEP  = 1'b0 // keep every stage register (no merging / SRL), see above
+  parameter int unsigned VW        = 1,   // valid / control bits (reset)
+  parameter int unsigned W         = 1,   // data bits (no reset)
+  parameter int unsigned DEPTH     = 1,   // register stages, >= 0
+  parameter bit          KEEP_REGS = 1'b0 // keep every stage register (no merging / SRL), see above
 ) (
   input  logic          clk,
   input  logic          rst_n,
@@ -37,7 +38,7 @@ module tsr_vpipe #(
     assign out_valid = in_valid;
     assign out_data  = in_data;
     wire unused_ok = &{1'b0, clk, rst_n};
-  end else if (KEEP) begin : g_keep
+  end else if (KEEP_REGS) begin : g_keep
     (* keep = "true", shreg_extract = "no" *) logic [DEPTH-1:0][VW-1:0] v_q;
     (* keep = "true", shreg_extract = "no" *) logic [DEPTH-1:0][W-1:0]  d_q;
 

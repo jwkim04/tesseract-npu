@@ -1,6 +1,9 @@
 // tsr_xrt_slices.sv — N >= 1 tsr_rslice stages in series: the register slices of the platform
 // adapter's AXI channels (tsr_xrt_axi_bridge; full throughput, s_ready, m_valid and m_data are
 // flops, so both sides are flop-to-flop and the chain can span an SLR crossing).
+// rst_n[k] resets stage k (stage 0 at s_*, stage N - 1 at m_*): the bridge resets the AXI-side
+// stage from its own reset copy, so that a chain crossing an SLR has a reset net on each side.
+// The copies must be equal (the bridge checks it); a stage in reset reports s_ready = 1.
 //
 // Owner: adapter agent (docs/platform-u200.md §4). tsr_rslice is defined in rtl/core/tsr_mem_arb.sv.
 
@@ -9,7 +12,7 @@ module tsr_xrt_slices #(
   parameter int unsigned N = 2
 ) (
   input  logic         clk,
-  input  logic         rst_n,
+  input  logic [N-1:0] rst_n,
   input  logic         s_valid,
   output logic         s_ready,
   input  logic [W-1:0] s_data,
@@ -31,7 +34,7 @@ module tsr_xrt_slices #(
 
   for (genvar k = 0; k < N; k++) begin : g_st
     tsr_rslice #(.W(W)) u_s (
-      .clk, .rst_n,
+      .clk, .rst_n(rst_n[k]),
       .s_valid(v[k]), .s_ready(r[k]), .s_data(d[k]),
       .m_valid(v[k+1]), .m_ready(r[k+1]), .m_data(d[k+1])
     );

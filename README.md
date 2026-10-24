@@ -863,9 +863,11 @@ fastreplay also runs the 778 traces of m3, gen, m2 and model at the U200 bitstre
 the Xilinx filelist (3,112 runs, 0 failed), and gen and m3 with a hardware reset before every
 trace (1,264 runs, 0 failed).
 
-`tb/run_all.sh` (lint plus every suite) reports 209 passed, 27 opt-in tests skipped (fp slow
-sweeps, Vivado runs and the three mutant tests) and 0 failed (2026-10-24, final M3 part C tree,
-1 h 41 min with every build cold). Slow tests are opt-in: `-m slow`, `TSR_FP_SLOW=1` (fp sweeps), `TSR_PLATFORM_SLOW=1` (the adapter and M0
+`tb/run_all.sh` (lint plus every suite) reports 215 passed, 29 skipped (the opt-in fp slow sweeps,
+Vivado runs and three mutant tests, and the two `tsr_bw` tests that need an XRT build) and 0 failed
+(2026-10-24, after the timing-margin changes, pytest 1 h 50 min with every build cold; two tb/qact
+tests that still used the old SPM hierarchy names failed in that run and pass after the testbench
+fix). Slow tests are opt-in: `-m slow`, `TSR_FP_SLOW=1` (fp sweeps), `TSR_PLATFORM_SLOW=1` (the adapter and M0
 bandwidth-kernel mutant tests) or `TSR_FASTREPLAY_SLOW=1` (the fastreplay mutant test).
 
 ### Kernel level without a card
@@ -1050,8 +1052,9 @@ tb/platform/vkernel/vkernel.py run --config k4t1 -- build/dev/bin/tsr_xrt_selfte
 - **Status.** The card is not installed in the dev host, so no Tesseract bitstream has run on
   hardware yet. The first full `v++` links ran on the dev host on 2026-10-24 against the extracted
   development platform `xilinx_u200_gen3x16_xdma_2_202110_1`. The M0 bandwidth kernel `tsr_bw_k4`
-  routed with WNS +0.017 ns and the 1-channel bring-up kernel `tsr_u200_k1` with WNS +0.011 ns;
-  both keep the kernel clock at 300 MHz. The 4-channel `tsr_u200_k4` link has not run: its
+  and the 1-channel bring-up kernel `tsr_u200_k1` (both relinked the same day after timing-margin
+  changes) routed with WNS +0.017 ns (in the shell; kernel clock +0.055 ns and +0.060 ns); both
+  keep the kernel clock at 300 MHz. The 4-channel `tsr_u200_k4` link has not run: its
   implementation is estimated at about 25 to 27 GB of memory, against the dev host's 14 GB.
 - **XRT on new kernels.** XRT 2024.2 (2.18.179) builds its PCIe drivers (`xocl`, `xclmgmt`) with
   DKMS for the Ubuntu 24.04 GA kernel 6.8. They fail to build on the HWE kernels: 413 errors on
@@ -1076,20 +1079,21 @@ tb/platform/vkernel/vkernel.py run --config k4t1 -- build/dev/bin/tsr_xrt_selfte
 
   | Configuration | Floorplan | WNS / WHS (ns) | CLB LUT | FF | DSP | RAMB36 | URAM |
   | --- | --- | --- | --- | --- | --- | --- | --- |
-  | k1 (1 channel, T_MAX 1) | none | +0.121 / +0.024 | 30,890 | 43,154 | 182 | 40 | 128 |
-  | k4t1 (4 channels, T_MAX 1) | C' | +0.108 / +0.005 | 67,071 | 112,192 | 632 | 136 | 128 |
-  | k4 (4 channels, T_MAX 8) | C' | +0.015 / +0.020 | 270,910 | 345,578 | 2,728 | 808 | 128 |
+  | k1 (1 channel, T_MAX 1) | none | +0.100 / +0.009 | 30,902 | 44,516 | 182 | 40 | 128 |
+  | k4t1 (4 channels, T_MAX 1) | C' | +0.109 / +0.012 | 67,345 | 113,748 | 632 | 136 | 128 |
+  | k4 (4 channels, T_MAX 8) | C' | +0.022 / +0.019 | 272,025 | 349,199 | 2,728 | 808 | 128 |
 
   The first k4 run (part B RTL, no floorplan) missed with WNS −0.877 ns. The fixes (kept
   per-cluster pipes, a gather split per cluster, MAC_LAT 9, `RST_PIPE`) change only latencies,
   and every trace still replays bit-exactly ([`docs/rtl-m3.md`](docs/rtl-m3.md) §14).
 - **Timing, linked.** Routed and after post-route `phys_opt`, all timing constraints met, kernel
   clock 300 MHz:
-  - `tsr_u200_k1`: WNS +0.011 ns, WHS +0.009 ns; 33,276 LUT, 49,929 FF, 40 RAMB36, 128 URAM,
-    182 DSP, all in SLR1. The worst path is the SPM address into the URAM cascade, as out of
-    context; the link cost 0.110 ns of margin.
+  - `tsr_u200_k1`: WNS +0.017 ns (in the shell's XDMA logic; the kernel clock's worst is
+    +0.060 ns, also shell logic), WHS +0.009 ns; 33,502 LUT, 51,212 FF, 40 RAMB36, 128 URAM,
+    182 DSP, all in SLR1. The worst path inside the kernel is +0.075 ns (a register slice's clock
+    enable), against +0.100 ns for the k1 core out of context.
   - `tsr_bw_k4` (M0): WNS +0.017 ns (in the shell's XDMA logic; the kernel clock's worst is
-    +0.025 ns); 11,456 LUT, 20,699 FF, no BRAM, URAM or DSP.
+    +0.055 ns, also shell logic); 11,907 LUT, 20,740 FF, no BRAM, URAM or DSP.
 - **Resources.**
   - MAC-lane DSP48E2 per cluster: 128 at T_MAX 1 (one product per DSP) and 512 at T_MAX 8 (two
     tokens share one DSP). That is 2,048 MAC DSPs for k4 and 2,728 DSPs in all.
@@ -1154,7 +1158,7 @@ tesseract/
   - Stage C: a resident decode loop with `WAITM`, `JUMP` and an output-token ring buffer.
 - **Prefill.** A synthesized `T_MAX` of 8 is decided for the 4-channel kernel, a decision pulled
   forward from M7. It closed timing in M3 part C: the T_MAX 8 core meets 300 MHz out of context
-  (WNS +0.015 ns), with two tokens sharing one DSP48E2 per weight, at 4.0× the LUTs and 4.3× the
+  (WNS +0.022 ns), with two tokens sharing one DSP48E2 per weight, at 4.0× the LUTs and 4.3× the
   DSPs of T_MAX 1. In the simulator, T > 1 gives the same output bytes as T = 1. On the
   Verilated k4 kernel the 6-token Qwen2.5-0.5B prompt ran as one T = 6 pass (3.14 M cycles,
   against 13.67 M at T_MAX 1).

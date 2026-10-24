@@ -15,8 +15,9 @@
 //                              |       | go / done toggles (CTRL_PIPE stages), config snapshot,
 //                              |       | result reads
 //                              +-> per channel c: tsr_bw_engine[c] -> tsr_xrt_axi_bridge[c] <-> m_axi_*[c]
-// Engine and bridge of a channel share one reset copy (rst_ch_n[c]), so both can sit next to the
-// channel's DDR4 controller; everything between the control block and an engine is registered on
+// Engine and bridge of a channel take their reset copies from rst_ch_n[c] (equal copies, one per
+// part: the bridge's four and the engine's), so all of them can sit next to the channel's DDR4
+// controller; everything between the control block and an engine is registered on
 // both sides (toggles through CTRL_PIPE stages, the config snapshot is static during a run, the
 // result path is registered in the engine and in the control block).
 
@@ -99,12 +100,17 @@ module tsr_bw_kernel
   end
 
   // -------------------------------------------------------------------------------------------
-  // Reset distribution (the adapter's: per-channel copies; the "core" copy is not used)
+  // Reset distribution (the adapter's: per-channel copies, one for each of the bridge's reset
+  // parts as in tsr_xrt_kernel and one for the engine with its toggles; the "core" copy is not
+  // used)
   // -------------------------------------------------------------------------------------------
-  logic              rst_ctrl_n, rst_core_n;
-  logic [NUM_CH-1:0] rst_ch_n;
+  localparam int unsigned CNT_RST = 4;                 // bridge counter reset copies
+  localparam int unsigned BR_RST  = 4 + 2 * CNT_RST;   // [0 +: BR_RST] tsr_xrt_axi_bridge parts
+  localparam int unsigned CH_RST  = BR_RST + 1;        // [BR_RST] engine and toggles
+  logic                          rst_ctrl_n, rst_core_n;
+  logic [NUM_CH-1:0][CH_RST-1:0] rst_ch_n;
 
-  tsr_xrt_reset #(.N_CH(NUM_CH), .CORE_STAGES(2)) u_rst (
+  tsr_xrt_reset #(.N_CH(NUM_CH), .CH_COPIES(CH_RST), .CORE_STAGES(2)) u_rst (
     .clk(ap_clk), .rst_in_n(ap_rst_n), .rst_ctrl_n, .rst_ch_n, .rst_core_n
   );
 
@@ -141,7 +147,7 @@ module tsr_bw_kernel
     logic [CTRL_PIPE-1:0] go_p, done_p;
     logic                 e_done;
     always_ff @(posedge ap_clk) begin
-      if (!rst_ch_n[c]) begin
+      if (!rst_ch_n[c][BR_RST]) begin
         go_p   <= '0;
         done_p <= '0;
       end else begin
@@ -162,7 +168,7 @@ module tsr_bw_kernel
     logic [63:0]                  base;
 
     tsr_bw_engine #(.CH(c), .ADDR_BEAT_W(ADDR_BEAT_W)) u_eng (
-      .clk(ap_clk), .rst_n(rst_ch_n[c]),
+      .clk(ap_clk), .rst_n(rst_ch_n[c][BR_RST]),
       .go_tgl(go_p[CTRL_PIPE-1]), .done_tgl(e_done),
       .cfg_ctrl(ch_ctrl[c]), .cfg_seed(seed), .cfg_bytes(ch_bytes[c]), .cfg_rd_off(ch_rd_off[c]),
       .cfg_wr_off(ch_wr_off[c]), .cfg_base(ch_base[c]), .base,
@@ -175,8 +181,10 @@ module tsr_bw_kernel
       .ev_rresp_err, .ev_bresp_err, .ev_unexpected
     );
 
-    tsr_xrt_axi_bridge #(.ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(512), .SLICES(AXI_SLICES)) u_br (
-      .clk(ap_clk), .rst_n(rst_ch_n[c]), .base,
+    tsr_xrt_axi_bridge #(.ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(512), .SLICES(AXI_SLICES), .CNT_RST(CNT_RST)) u_br (
+      .clk(ap_clk), .rst_n(rst_ch_n[c][0]), .rst_axi_n(rst_ch_n[c][1]), .rst_rd_n(rst_ch_n[c][2]),
+      .rst_wr_n(rst_ch_n[c][3]), .rst_rdc_n(rst_ch_n[c][4 +: CNT_RST]),
+      .rst_wrc_n(rst_ch_n[c][4 + CNT_RST +: CNT_RST]), .base,
       .c_rd_req_valid(rd_req_valid), .c_rd_req_ready(rd_req_ready), .c_rd_req_addr(rd_req_addr),
       .c_rd_req_len(rd_req_len), .c_rd_req_id(rd_req_id),
       .c_rd_rsp_valid(rd_rsp_valid), .c_rd_rsp_ready(rd_rsp_ready), .c_rd_rsp_data(rd_rsp_data),

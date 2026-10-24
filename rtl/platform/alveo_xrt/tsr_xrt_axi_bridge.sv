@@ -40,6 +40,19 @@
 // path for memory) and reported per beat / response as ev_rresp_err / ev_bresp_err
 // (ADAPTER_STATUS bits 0 / 1 and its error count); the host checks ADAPTER_STATUS after a run.
 // Events are registered one-cycle pulses.
+// Reset: 4 + 2 x CNT_RST equal copies of the channel's reset (tsr_xrt_reset rst_ch_n[c][*], same
+// stage, asserted and released in the same cycle; checked in simulation), one per part, so that
+// each reset net stays local to its logic (M3 part C timing, docs/platform-u200.md §5, §8.2: one
+// copy for the whole bridge gave the k1 link's second-worst path, 0 levels and 3.07 ns of routing
+// to the write counters; one copy for all write counters still routed 2.96 ns out of context):
+//   rst_n         the core-side stages of the AR / AW / W slice chains
+//   rst_axi_n     the AXI-side stage of every slice chain (the last of AR / AW / W, the first of
+//                 R / B) and the registered AR / AW handshake (g_hs_q): the cells floorplan C' puts
+//                 into the DDR's SLR for a crossing bridge (hw/u200/k4_floorplan.tcl)
+//   rst_rd_n      the other R slice stages, the R output slice, ev_rresp_err / ev_unexpected
+//   rst_wr_n      the other B slice stages, the B output slice, ev_bresp_err
+//   rst_rdc_n[g]  the read counters and flags of IDs g * NID / CNT_RST .. (g + 1) * NID / CNT_RST - 1
+//   rst_wrc_n[g]  the write counters and flags of the same IDs
 
 module tsr_xrt_axi_bridge
   import tsr_pkg::*;
@@ -48,10 +61,16 @@ module tsr_xrt_axi_bridge
   parameter int unsigned BEAT_BITS   = TSR_DEF_BEAT_BITS,
   parameter int unsigned SLICES      = 2,    // register slices per AXI channel, >= 1
   parameter int unsigned RD_CNT_W    = 8,    // outstanding read bursts per ID (core: <= RD_OUTSTANDING)
-  parameter int unsigned WR_CNT_W    = 16    // outstanding write bursts per ID (one ST: <= SPM lines)
+  parameter int unsigned WR_CNT_W    = 16,   // outstanding write bursts per ID (one ST: <= SPM lines)
+  parameter int unsigned CNT_RST     = 4     // reset copies per counter set (ID groups), divides 2^TSR_MEM_ID_W
 ) (
   input  logic                         clk,
-  input  logic                         rst_n,
+  input  logic                         rst_n,          // request slices (header: equal reset copies)
+  input  logic                         rst_axi_n,      // AXI-side slice stages, AR / AW handshake
+  input  logic                         rst_rd_n,       // read response path
+  input  logic                         rst_wr_n,       // write response path
+  input  logic [CNT_RST-1:0]           rst_rdc_n,      // read counters, one copy per ID group
+  input  logic [CNT_RST-1:0]           rst_wrc_n,      // write counters, one copy per ID group
   input  logic [63:0]                  base,           // device byte address of beat 0 (latched)
 
   // ---- core memory port (tsr_core m_*[c]) ----
@@ -132,6 +151,11 @@ module tsr_xrt_axi_bridge
 
   localparam int unsigned IDW  = TSR_MEM_ID_W;
   localparam int unsigned NID  = 1 << IDW;
+  localparam int unsigned GSZ  = NID / CNT_RST;                // IDs per counter reset copy
+
+  if (CNT_RST < 1 || CNT_RST > NID || NID % CNT_RST != 0) begin : g_chk_cnt_rst
+    $fatal(1, "tsr_xrt_axi_bridge: CNT_RST must divide the number of IDs (%0d)", NID);
+  end
   localparam int unsigned AQ_W = 64 + 8 + IDW;                 // {addr, len - 1, id}
   localparam int unsigned R_W  = BEAT_BITS + IDW + 1 + 2;      // {data, id, last, resp}
   localparam int unsigned W_W  = BEAT_BITS + 1;                // {data, last}
@@ -147,23 +171,32 @@ module tsr_xrt_axi_bridge
     return {b + off, 8'(l - TSR_LEN_W'(1)), id};
   endfunction
 
+  // Per-stage resets of the slice chains (header): the AXI-side stage from rst_axi_n, the others
+  // from the copy of their path.
+  logic [SLICES-1:0] rst_rq_st, rst_r_st, rst_b_st;
+  for (genvar k = 0; k < SLICES; k++) begin : g_rst_st
+    assign rst_rq_st[k] = (k == SLICES - 1) ? rst_axi_n : rst_n;     // AR / AW / W: last stage at AXI
+    assign rst_r_st[k]  = (k == 0) ? rst_axi_n : rst_rd_n;           // R / B: first stage at AXI
+    assign rst_b_st[k]  = (k == 0) ? rst_axi_n : rst_wr_n;
+  end
+
   // -------------------------------------------------------------------------------------------
   // Request and write-data paths: SLICES slices each
   // -------------------------------------------------------------------------------------------
   tsr_xrt_slices #(.W(AQ_W), .N(SLICES)) u_ar (
-    .clk, .rst_n,
+    .clk, .rst_n(rst_rq_st),
     .s_valid(c_rd_req_valid), .s_ready(c_rd_req_ready),
     .s_data(areq(base_r, c_rd_req_addr, c_rd_req_len, c_rd_req_id)),
     .m_valid(m_axi_arvalid), .m_ready(m_axi_arready), .m_data({m_axi_araddr, m_axi_arlen, m_axi_arid})
   );
   tsr_xrt_slices #(.W(AQ_W), .N(SLICES)) u_aw (
-    .clk, .rst_n,
+    .clk, .rst_n(rst_rq_st),
     .s_valid(c_wr_req_valid), .s_ready(c_wr_req_ready),
     .s_data(areq(base_r, c_wr_req_addr, c_wr_req_len, c_wr_req_id)),
     .m_valid(m_axi_awvalid), .m_ready(m_axi_awready), .m_data({m_axi_awaddr, m_axi_awlen, m_axi_awid})
   );
   tsr_xrt_slices #(.W(W_W), .N(SLICES)) u_w (
-    .clk, .rst_n,
+    .clk, .rst_n(rst_rq_st),
     .s_valid(c_wr_dat_valid), .s_ready(c_wr_dat_ready), .s_data({c_wr_dat_data, c_wr_dat_last}),
     .m_valid(m_axi_wvalid), .m_ready(m_axi_wready), .m_data({m_axi_wdata, m_axi_wlast})
   );
@@ -193,7 +226,7 @@ module tsr_xrt_axi_bridge
   logic [NID-1:0]      rd_nz_q;          // per ID: >= 1 read burst outstanding
 
   tsr_xrt_slices #(.W(R_W), .N(SLICES)) u_r (
-    .clk, .rst_n,
+    .clk, .rst_n(rst_r_st),
     .s_valid(m_axi_rvalid), .s_ready(m_axi_rready), .s_data({m_axi_rdata, m_axi_rid, m_axi_rlast, m_axi_rresp}),
     .m_valid(rh_valid), .m_ready(rh_ready), .m_data({rh_data, rh_id, rh_last, rh_resp})
   );
@@ -204,7 +237,7 @@ module tsr_xrt_axi_bridge
   assign rh_ready = r_drop | ro_ready;
 
   tsr_rslice #(.W(BEAT_BITS + IDW + 1)) u_ro (
-    .clk, .rst_n,
+    .clk, .rst_n(rst_rd_n),
     .s_valid(r_fwd), .s_ready(ro_ready), .s_data({rh_data, rh_id, rh_last}),
     .m_valid(c_rd_rsp_valid), .m_ready(c_rd_rsp_ready), .m_data({c_rd_rsp_data, c_rd_rsp_id, c_rd_rsp_last})
   );
@@ -222,7 +255,7 @@ module tsr_xrt_axi_bridge
   logic [NID-1:0] wr_nz_q;               // per ID: >= 1 write burst outstanding
 
   tsr_xrt_slices #(.W(B_W), .N(SLICES)) u_b (
-    .clk, .rst_n,
+    .clk, .rst_n(rst_b_st),
     .s_valid(m_axi_bvalid), .s_ready(m_axi_bready), .s_data({m_axi_bid, m_axi_bresp}),
     .m_valid(bh_valid), .m_ready(bh_ready), .m_data({bh_id, bh_resp})
   );
@@ -233,7 +266,7 @@ module tsr_xrt_axi_bridge
   assign bh_ready = b_drop | bo_ready;
 
   tsr_rslice #(.W(IDW)) u_bo (
-    .clk, .rst_n,
+    .clk, .rst_n(rst_wr_n),
     .s_valid(b_fwd), .s_ready(bo_ready), .s_data(bh_id),
     .m_valid(c_wr_rsp_valid), .m_ready(c_wr_rsp_ready), .m_data(c_wr_rsp_id)
   );
@@ -247,7 +280,7 @@ module tsr_xrt_axi_bridge
     logic           ar_hs_q, aw_hs_q;
     logic [IDW-1:0] ar_id_q, aw_id_q;
     always_ff @(posedge clk) begin
-      if (!rst_n) begin
+      if (!rst_axi_n) begin
         ar_hs_q <= 1'b0;
         aw_hs_q <= 1'b0;
       end else begin
@@ -274,30 +307,41 @@ module tsr_xrt_axi_bridge
   logic [NID-1:0][RD_CNT_W-1:0] rd_cnt_q;
   logic [NID-1:0][WR_CNT_W-1:0] wr_cnt_q;
 
+  // counters and flags of ID i: reset copy rst_rdc_n / rst_wrc_n[i / GSZ] (header)
   always_ff @(posedge clk) begin
-    if (!rst_n) begin
-      rd_cnt_q      <= '0;
-      wr_cnt_q      <= '0;
-      rd_nz_q       <= '0;
-      wr_nz_q       <= '0;
-      ev_rresp_err  <= 1'b0;
-      ev_bresp_err  <= 1'b0;
-      ev_unexpected <= 1'b0;
-    end else begin
-      for (int unsigned i = 0; i < NID; i++) begin
-        logic [RD_CNT_W-1:0] rn;
-        logic [WR_CNT_W-1:0] wn;
-        rn = rd_cnt_q[i] + RD_CNT_W'(ar_hs && ar_id == IDW'(i)) - RD_CNT_W'(r_done && rh_id == IDW'(i));
-        wn = wr_cnt_q[i] + WR_CNT_W'(aw_hs && aw_id == IDW'(i)) - WR_CNT_W'(b_take && bh_id == IDW'(i));
+    for (int unsigned i = 0; i < NID; i++) begin
+      logic [RD_CNT_W-1:0] rn;
+      logic [WR_CNT_W-1:0] wn;
+      rn = rd_cnt_q[i] + RD_CNT_W'(ar_hs && ar_id == IDW'(i)) - RD_CNT_W'(r_done && rh_id == IDW'(i));
+      wn = wr_cnt_q[i] + WR_CNT_W'(aw_hs && aw_id == IDW'(i)) - WR_CNT_W'(b_take && bh_id == IDW'(i));
+      if (!rst_rdc_n[i / GSZ]) begin
+        rd_cnt_q[i] <= '0;
+        rd_nz_q[i]  <= 1'b0;
+      end else begin
         rd_cnt_q[i] <= rn;
-        wr_cnt_q[i] <= wn;
         rd_nz_q[i]  <= rn != '0;
+      end
+      if (!rst_wrc_n[i / GSZ]) begin
+        wr_cnt_q[i] <= '0;
+        wr_nz_q[i]  <= 1'b0;
+      end else begin
+        wr_cnt_q[i] <= wn;
         wr_nz_q[i]  <= wn != '0;
       end
+    end
+  end
+
+  // events (reset copies rst_rd_n / rst_wr_n)
+  always_ff @(posedge clk) begin
+    if (!rst_rd_n) begin
+      ev_rresp_err  <= 1'b0;
+      ev_unexpected <= 1'b0;
+    end else begin
       ev_rresp_err  <= r_take & (rh_resp != 2'b00);
-      ev_bresp_err  <= b_take & (bh_resp != 2'b00);
       ev_unexpected <= r_drop | b_drop;      // a dropped item is consumed in the same cycle
     end
+    if (!rst_wr_n) ev_bresp_err <= 1'b0;
+    else           ev_bresp_err <= b_take & (bh_resp != 2'b00);
   end
 
   // -------------------------------------------------------------------------------------------
@@ -309,6 +353,13 @@ module tsr_xrt_axi_bridge
   always @(posedge clk) if (!rst_n) a_on_q <= 1'b1;
 
   always_ff @(posedge clk) begin
+    // the four reset copies are one reset (header): a part released in another cycle than the
+    // others could drop or duplicate an item between the parts
+    if (a_on_q)
+      assert (rst_axi_n == rst_n && rst_rd_n == rst_n && rst_wr_n == rst_n
+              && rst_rdc_n == {CNT_RST{rst_n}} && rst_wrc_n == {CNT_RST{rst_n}})
+        else $error("%m: reset copies differ (rst_n %0b, rst_axi_n %0b, rst_rd_n %0b, rst_wr_n %0b, rst_rdc_n %b, rst_wrc_n %b)",
+                    rst_n, rst_axi_n, rst_rd_n, rst_wr_n, rst_rdc_n, rst_wrc_n);
     if (rst_n && a_on_q) begin
       for (int unsigned i = 0; i < NID; i++) begin
         if (ar_hs && ar_id == IDW'(i))

@@ -407,7 +407,7 @@ module tsr_mvm
     logic [TSR_SRC_ID_W-1:0] wq_id, wr_id;
     logic [BEAT_BITS-1:0]    wr_data;
 
-    tsr_vpipe #(.VW(2), .W(BCW), .DEPTH(BC_PIPE), .KEEP(1'b1)) u_bcp (
+    tsr_vpipe #(.VW(2), .W(BCW), .DEPTH(BC_PIPE), .KEEP_REGS(1'b1)) u_bcp (
       .clk, .rst_n(rst_c_n[c]), .in_valid(bc_v_q), .in_data(bc_d_q), .out_valid(pv), .out_data(pd)
     );
     assign p_cmd  = pd[CCW-1:0];
@@ -439,7 +439,7 @@ module tsr_mvm
       .m_valid(ws_rd_req_valid[c]), .m_ready(ws_rd_req_ready[c]),
       .m_data({ws_rd_req_addr[c], ws_rd_req_len[c], ws_rd_req_id[c]})
     );
-    tsr_vpipe #(.VW(1), .W(BEAT_BITS + 1 + TSR_SRC_ID_W), .DEPTH(BC_PIPE), .KEEP(1'b1)) u_wrp (
+    tsr_vpipe #(.VW(1), .W(BEAT_BITS + 1 + TSR_SRC_ID_W), .DEPTH(BC_PIPE), .KEEP_REGS(1'b1)) u_wrp (
       .clk, .rst_n(rst_c_n[c]), .in_valid(ws_rd_rsp_valid[c]),
       .in_data({ws_rd_rsp_data[c], ws_rd_rsp_last[c], ws_rd_rsp_id[c]}),
       .out_valid(wr_v), .out_data({wr_data, wr_last, wr_id})

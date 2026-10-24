@@ -78,6 +78,9 @@
 //                  streaming: one tsr_fp_add per level and token; a level issues on every second
 //                  result of the level below (hold register + toggle), which is exactly the
 //                  tsr_tree16 pair order. Level-4 results go to the result FIFO.
+//   control        the slot write enables / clears, accumulate operand selects, level-1 operand
+//                  selects and hold enables reach each token from that token's own registered
+//                  copies of the shared control (cycle-identical, "Per-token control copies").
 //   result FIFO    RES_DEPTH = ceil(HOLD/8) + 1 entries of T_MAX x 32 bits (HOLD = row_last accept ->
 //                  result pop with res_ready = 1, Q4_K: A4 + 5*ADD_LAT + 10 [56] cycles -> 8
 //                  entries); res_valid is a flop, res_y the head entry (registered read pointer).
@@ -126,10 +129,10 @@
 // 6u * 17s), the MAC products / trees of 128 lanes (tsr_mac_lane; at MAC_LAT 3 2708 flops: 2048
 // product register, 576 level-2 sums, 84 group sums), 2 x 2 x 8 x 32 = 1024 partial flops (+ 3 x
 // 32 tree hold, 32 dxh, 25 part0), ~1.4 K integer-stage / msum / i2f flops, the d*Dx or f32
-// alignment delay (64 x |FI - FD| bits: 320 at the defaults), RES_DEPTH x 32 result FIFO bits;
-// about 8.5 K FF per token at the defaults. Shared per cluster: the weight delay line
-// 768 x ACT_RD_LAT bits (1536 at the defaults, SRL-mappable), the placed-weight register wm_q
-// (1024), d / sc / m delay lines (~470 bits), ~400 control / tag flops.
+// alignment delay (64 x |FI - FD| bits: 320 at the defaults), RES_DEPTH x 32 result FIFO bits,
+// 83 control-copy flops; about 8.5 K FF per token at the defaults. Shared per cluster: the weight
+// delay line 768 x ACT_RD_LAT bits (1536 at the defaults, SRL-mappable), the placed-weight
+// register wm_q (1024), d / sc / m delay lines (~470 bits), ~400 control / tag flops.
 // Possible saving (not done): merge tree levels 2..4 into one adder with a fixed 8-cycle frame
 // schedule (level-1 starts aligned to a frame; 7 ops at distinct residues) - 2 adders per token
 // less, at the cost of a schedule that depends on ADD_LAT and up to 7 cycles more latency.
@@ -501,12 +504,21 @@ module tsr_mvm_back
   end
 
   // Tags of the accumulate adders' outputs (ADD_LAT later): lane valids, the row's last add,
-  // set and slot (both lanes issue to the same slot in a cycle).
+  // set and slot (both lanes issue to the same slot in a cycle). The last of the ADD_LAT stages is
+  // explicit: ovp / osp (stage ADD_LAT - 1) are the next-cycle values that the per-token control
+  // copies below are computed from.
   logic [1:0] ov;
   logic       ocmp, oset;
   logic [2:0] oslot;
-  tsr_mvm_dly #(.W(3), .N(ADD_LAT), .RST(1'b1)) u_dly_ov (.clk, .rst_n, .d({iv, irl}), .q({ov, ocmp}));
-  tsr_mvm_dly #(.W(4), .N(ADD_LAT)) u_dly_os (.clk, .rst_n, .d({iset, islot}), .q({oset, oslot}));
+  logic [2:0] ovp;         // {ov, ocmp} of the next cycle
+  logic [3:0] osp;         // {oset, oslot} of the next cycle
+  tsr_mvm_dly #(.W(3), .N(ADD_LAT - 1), .RST(1'b1)) u_dly_ov (.clk, .rst_n, .d({iv, irl}), .q(ovp));
+  tsr_mvm_dly #(.W(4), .N(ADD_LAT - 1)) u_dly_os (.clk, .rst_n, .d({iset, islot}), .q(osp));
+  always_ff @(posedge clk) begin
+    if (!rst_n) {ov, ocmp} <= '0;
+    else        {ov, ocmp} <= ovp;
+  end
+  always_ff @(posedge clk) {oset, oslot} <= osp;
 
   // ---------------------------------------------------------------------------------------------
   // Tree control (shared): level-1 reader, streaming levels 2..4
@@ -517,6 +529,10 @@ module tsr_mvm_back
   logic [2:0] l1_k_q;
   wire        l1_free = ~l1_act_q | (l1_k_q == 3'd7);
   wire        l1_go   = l1_free & pend_q[l1_nxt_q];
+  // next values of l1_act_q / l1_set_q / l1_k_q (also loaded by the per-token copies)
+  wire        l1_act_n = l1_go | (l1_act_q & (l1_k_q != 3'd7));
+  wire        l1_set_n = l1_go ? l1_nxt_q : l1_set_q;
+  wire  [2:0] l1_k_n   = l1_go ? 3'd0 : (l1_act_q ? l1_k_q + 3'd1 : l1_k_q);
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
@@ -526,43 +542,91 @@ module tsr_mvm_back
       l1_nxt_q <= 1'b0;
       l1_k_q   <= '0;
     end else begin
-      if (l1_go) begin
-        l1_act_q <= 1'b1;
-        l1_k_q   <= '0;
-        l1_set_q <= l1_nxt_q;
-        l1_nxt_q <= ~l1_nxt_q;
-      end else if (l1_act_q) begin
-        l1_k_q <= l1_k_q + 3'd1;
-        if (l1_k_q == 3'd7) l1_act_q <= 1'b0;
-      end
+      l1_act_q <= l1_act_n;
+      l1_set_q <= l1_set_n;
+      l1_k_q   <= l1_k_n;
+      if (l1_go) l1_nxt_q <= ~l1_nxt_q;
       for (int pend_s = 0; pend_s < 2; pend_s++) begin
         pend_q[pend_s] <= (pend_q[pend_s] & ~(l1_go & (l1_nxt_q == 1'(pend_s)))) | (ocmp & (oset == 1'(pend_s)));
       end
     end
   end
 
-  // level n results valid (n = 1..4) and the issue of level n+1 on every second result
+  // level n results valid (n = 1..4) and the issue of level n+1 on every second result; t1p..t3p
+  // (stage ADD_LAT - 1 of the level-1..3 valid lines) are the next-cycle values of t1v..t3v
   logic t1v, t2v, t3v, t4v;
+  logic t1p, t2p, t3p;
   logic tg1_q, tg2_q, tg3_q;
   wire  i2v = t1v & tg1_q;
   wire  i3v = t2v & tg2_q;
   wire  i4v = t3v & tg3_q;
-  tsr_mvm_dly #(.W(1), .N(ADD_LAT), .RST(1'b1)) u_dly_t1 (.clk, .rst_n, .d(l1_act_q), .q(t1v));
-  tsr_mvm_dly #(.W(1), .N(ADD_LAT), .RST(1'b1)) u_dly_t2 (.clk, .rst_n, .d(i2v), .q(t2v));
-  tsr_mvm_dly #(.W(1), .N(ADD_LAT), .RST(1'b1)) u_dly_t3 (.clk, .rst_n, .d(i3v), .q(t3v));
+  tsr_mvm_dly #(.W(1), .N(ADD_LAT - 1), .RST(1'b1)) u_dly_t1 (.clk, .rst_n, .d(l1_act_q), .q(t1p));
+  tsr_mvm_dly #(.W(1), .N(ADD_LAT - 1), .RST(1'b1)) u_dly_t2 (.clk, .rst_n, .d(i2v), .q(t2p));
+  tsr_mvm_dly #(.W(1), .N(ADD_LAT - 1), .RST(1'b1)) u_dly_t3 (.clk, .rst_n, .d(i3v), .q(t3p));
   tsr_mvm_dly #(.W(1), .N(ADD_LAT), .RST(1'b1)) u_dly_t4 (.clk, .rst_n, .d(i4v), .q(t4v));
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
+      t1v   <= 1'b0;
+      t2v   <= 1'b0;
+      t3v   <= 1'b0;
       tg1_q <= 1'b0;
       tg2_q <= 1'b0;
       tg3_q <= 1'b0;
     end else begin
+      t1v   <= t1p;
+      t2v   <= t2p;
+      t3v   <= t3p;
       tg1_q <= tg1_q ^ t1v;
       tg2_q <= tg2_q ^ t2v;
       tg3_q <= tg3_q ^ t3v;
     end
   end
+
+  // ---------------------------------------------------------------------------------------------
+  // Per-token control copies (implementation only, no functional change): the accumulate / tree
+  // control above fans out to all T_MAX token datapaths (k4: +0.05..0.10 ns paths from l1_k_q,
+  // l1_act_q, the ov / t1v / t3v delay lines and cd[C_A4] into the slot registers, the adder
+  // operand registers and the hold registers, docs/rtl-m3.md §14.3). Every token therefore
+  // registers its own copies, loaded from the next-cycle values computed here once, so each copy
+  // equals the shared signal it replaces in every cycle (reset copies reset with it, the others
+  // load every cycle like the tag stages they copy; checked by the simulation assertions at the
+  // end): no latency change. Format-dependent selections stay after the copies (cfg_fmt is not
+  // registered here), so the A4 and A8 tags are copied separately.
+  //   wen_n[l][s][k] = ov[l] & oset == s & oslot == k        slot write enable (next cycle)
+  //   clr_n[s][k]    = l1_act_q & l1_set_q == s & l1_k_q == k level-1 clear-on-read (next cycle)
+  //   byp4_n / byp8_n[l] = ov[l] & {oset, oslot} == {iset, islot} for the Q4_K (A4) / Q8_0 (A8)
+  //                        issue tags (next cycle)
+  //   hen_n[n-1]     = tnv & ~tgn_q                           hold register h<n> enable (next cycle)
+  // ---------------------------------------------------------------------------------------------
+  logic [1:0][1:0][7:0] wen_n;
+  logic      [1:0][7:0] clr_n;
+  logic [1:0]           byp4_n, byp8_n;
+  logic [2:0]           hen_n;
+  wire  [3:0]           a4_n = {cd[C_A4 - 1].set, cd[C_A4 - 1].b4[3:1]};   // {iset, islot} next cycle
+  wire  [3:0]           a8_n = {cd[C_A8 - 1].set, cd[C_A8 - 1].b4[3:1]};
+  always_comb begin
+    for (int wn_l = 0; wn_l < 2; wn_l++) begin
+      for (int wn_s = 0; wn_s < 2; wn_s++) begin
+        for (int wn_k = 0; wn_k < 8; wn_k++) begin
+          wen_n[wn_l][wn_s][wn_k] = ovp[1 + wn_l] & (osp == {1'(wn_s), 3'(wn_k)});
+        end
+      end
+      byp4_n[wn_l] = ovp[1 + wn_l] & (osp == a4_n);
+      byp8_n[wn_l] = ovp[1 + wn_l] & (osp == a8_n);
+    end
+    for (int cn_s = 0; cn_s < 2; cn_s++) begin
+      for (int cn_k = 0; cn_k < 8; cn_k++) begin
+        clr_n[cn_s][cn_k] = l1_act_n & ({l1_set_n, l1_k_n} == {1'(cn_s), 3'(cn_k)});
+      end
+    end
+    hen_n[0] = t1p & ~(tg1_q ^ t1v);
+    hen_n[1] = t2p & ~(tg2_q ^ t2v);
+    hen_n[2] = t3p & ~(tg3_q ^ t3v);
+  end
+  // issue tags copied per token and lane: {set, slot, first} of stages A4 / A8
+  wire  [4:0]           ta4_n = {a4_n, cd[C_A4 - 1].first};
+  wire  [4:0]           ta8_n = {a8_n, cd[C_A8 - 1].first};
 
   // ---------------------------------------------------------------------------------------------
   // Per-token datapath
@@ -675,14 +739,52 @@ module tsr_mvm_back
       .out_valid(qd_v), .y(qd)
     );
 
+    // ---------------- this token's control copies (see "Per-token control copies") ----------------
+    // tc_wen_q == {ov[l] & oset == s & oslot == k}, tc_clr_q == {l1_act_q & l1_set_q == s &
+    // l1_k_q == k}, tc_byp4_q / tc_byp8_q == byp4 / byp8, tc_a4_q / tc_a8_q[l] == {set, slot, first}
+    // of cd[C_A4] / cd[C_A8], tc_l1_q[l] == {l1_set_q, l1_k_q}, tc_hen_q == hold enables; `keep`:
+    // synthesis must not merge the copies of different tokens back into one register.
+    (* keep = "true" *) logic [1:0][1:0][7:0] tc_wen_q;
+    (* keep = "true" *) logic      [1:0][7:0] tc_clr_q;
+    (* keep = "true" *) logic [1:0]           tc_byp4_q, tc_byp8_q;
+    (* keep = "true" *) logic [2:0]           tc_hen_q;
+    (* keep = "true" *) logic [1:0][3:0]      tc_l1_q;
+    (* keep = "true" *) logic [1:0][4:0]      tc_a4_q, tc_a8_q;
+    always_ff @(posedge clk) begin
+      if (!rst_n) begin
+        tc_wen_q  <= '0;
+        tc_clr_q  <= '0;
+        tc_byp4_q <= '0;
+        tc_byp8_q <= '0;
+        tc_hen_q  <= '0;
+        tc_l1_q   <= '0;
+      end else begin
+        tc_wen_q  <= wen_n;
+        tc_clr_q  <= clr_n;
+        tc_byp4_q <= byp4_n;
+        tc_byp8_q <= byp8_n;
+        tc_hen_q  <= hen_n;
+        tc_l1_q   <= {2{l1_set_n, l1_k_n}};
+      end
+    end
+    always_ff @(posedge clk) begin
+      tc_a4_q <= {2{ta4_n}};
+      tc_a8_q <= {2{ta8_n}};
+    end
+
     // ---------------- accumulators: 2 lanes x 2 sets x 8 slots ----------------
     logic [31:0] pr_q [2][2][8];     // [lane][set][slot]
     logic [31:0] acc_y [2];
     logic [1:0]  acc_v;
     for (genvar l = 0; l < 2; l++) begin : g_lane
       wire [31:0] term = cfg_fmt ? qd : ((l == 0) ? pb0 : pb1);
-      wire        byp  = ov[l] & (oset == iset) & (oslot == islot);
-      wire [31:0] opnd = ifirst ? 32'd0 : (byp ? acc_y[l] : pr_q[l][iset][islot]);
+      // == {iset, islot, ifirst} and ov[l] & {oset, oslot} == {iset, islot}
+      wire [4:0]  ltag = cfg_fmt ? tc_a4_q[l] : tc_a8_q[l];
+      wire        lbyp = cfg_fmt ? tc_byp4_q[l] : tc_byp8_q[l];
+      wire        lset = ltag[4];
+      wire [2:0]  lslot = ltag[3:1];
+      wire        lfirst = ltag[0];
+      wire [31:0] opnd = lfirst ? 32'd0 : (lbyp ? acc_y[l] : pr_q[l][lset][lslot]);
       tsr_fp_add #(.LAT(ADD_LAT)) u_acc (
         .clk, .rst_n, .ce(1'b1), .in_valid(iv[l]), .a(opnd), .b(term), .sub(1'b0),
         .out_valid(acc_v[l]), .y(acc_y[l])
@@ -690,9 +792,9 @@ module tsr_mvm_back
       always_ff @(posedge clk) begin
         for (int pr_s = 0; pr_s < 2; pr_s++) begin
           for (int pr_k = 0; pr_k < 8; pr_k++) begin
-            if (!rst_n || (l1_act_q && l1_set_q == 1'(pr_s) && l1_k_q == 3'(pr_k))) begin
+            if (!rst_n || tc_clr_q[pr_s][pr_k]) begin
               pr_q[l][pr_s][pr_k] <= 32'd0;                 // reset / clear-on-read: +0.0
-            end else if (ov[l] && oset == 1'(pr_s) && oslot == 3'(pr_k)) begin
+            end else if (tc_wen_q[l][pr_s][pr_k]) begin
               pr_q[l][pr_s][pr_k] <= acc_y[l];
             end
           end
@@ -705,7 +807,8 @@ module tsr_mvm_back
     logic [3:0]  tv;
     tsr_fp_add #(.LAT(ADD_LAT)) u_l1 (
       .clk, .rst_n, .ce(1'b1), .in_valid(l1_act_q),
-      .a(pr_q[0][l1_set_q][l1_k_q]), .b(pr_q[1][l1_set_q][l1_k_q]), .sub(1'b0),
+      .a(pr_q[0][tc_l1_q[0][3]][tc_l1_q[0][2:0]]), .b(pr_q[1][tc_l1_q[1][3]][tc_l1_q[1][2:0]]),
+      .sub(1'b0),
       .out_valid(tv[0]), .y(y1)
     );
     tsr_fp_add #(.LAT(ADD_LAT)) u_l2 (
@@ -718,9 +821,9 @@ module tsr_mvm_back
       .clk, .rst_n, .ce(1'b1), .in_valid(i4v), .a(h3_q), .b(y3), .sub(1'b0), .out_valid(tv[3]), .y(y4[t])
     );
     always_ff @(posedge clk) begin
-      if (t1v && !tg1_q) h1_q <= y1;     // left operand of the next pair
-      if (t2v && !tg2_q) h2_q <= y2;
-      if (t3v && !tg3_q) h3_q <= y3;
+      if (tc_hen_q[0]) h1_q <= y1;       // left operand of the next pair (t1v & ~tg1_q)
+      if (tc_hen_q[1]) h2_q <= y2;
+      if (tc_hen_q[2]) h3_q <= y3;
     end
 
     // fp units' own valid outputs: the shared tag pipelines above carry the control
@@ -808,6 +911,40 @@ module tsr_mvm_back
       // the level-1 reader only reads complete sets, and nothing of the read set is in flight
       if (l1_act_q && (iv != 2'b00) && !ifirst) begin
         assert (iset != l1_set_q) else $error("%m: accumulate read of the set level 1 is reading");
+      end
+    end
+  end
+
+  // Per-token control copies == the shared control they replace, in every cycle after the first
+  // reset edge (also during reset and for inputs outside the contract): no latency change.
+  logic [1:0][1:0][7:0] wen_ref;
+  logic      [1:0][7:0] clr_ref;
+  logic [1:0]           byp_ref;
+  for (genvar s = 0; s < 2; s++) begin : g_ref_s
+    for (genvar k = 0; k < 8; k++) begin : g_ref_k
+      assign wen_ref[0][s][k] = ov[0] && oset == 1'(s) && oslot == 3'(k);
+      assign wen_ref[1][s][k] = ov[1] && oset == 1'(s) && oslot == 3'(k);
+      assign clr_ref[s][k]    = l1_act_q && l1_set_q == 1'(s) && l1_k_q == 3'(k);
+    end
+  end
+  assign byp_ref[0] = ov[0] & (oset == iset) & (oslot == islot);
+  assign byp_ref[1] = ov[1] & (oset == iset) & (oslot == islot);
+  for (genvar t = 0; t < T_MAX; t++) begin : g_chk_tok
+    always_ff @(posedge clk) begin
+      if (a_on_q) begin
+        assert (g_tok[t].tc_wen_q == wen_ref && g_tok[t].tc_clr_q == clr_ref
+                && g_tok[t].tc_hen_q == {t3v & ~tg3_q, t2v & ~tg2_q, t1v & ~tg1_q}
+                && g_tok[t].tc_l1_q == {2{l1_set_q, l1_k_q}})
+          else $error("%m: token %0d slot / tree control copy differs from the shared control", t);
+      end
+    end
+    for (genvar l = 0; l < 2; l++) begin : g_chk_lane
+      always_ff @(posedge clk) begin
+        if (a_on_q) begin
+          assert ({g_tok[t].g_lane[l].lset, g_tok[t].g_lane[l].lslot, g_tok[t].g_lane[l].lfirst}
+                  == {iset, islot, ifirst} && g_tok[t].g_lane[l].lbyp == byp_ref[l])
+            else $error("%m: token %0d lane %0d issue control copy differs from the shared control", t, l);
+        end
       end
     end
   end

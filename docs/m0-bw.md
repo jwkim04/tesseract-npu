@@ -3,10 +3,11 @@
 Status: M3 part C (2026-10-24). The kernel, its packaging and the host tool are done and verified
 without hardware: the RTL in Verilator against the adapter's AXI memory model, the tool against a
 C++ model of the kernel and against XRT's no-op shim. The xclbin is built with the extracted
-development platform (`build/u200/bw/tsr_bw_k4.xclbin`, 2026-10-24: 300 MHz kept, timing met,
-§4.1). **Nothing ran on a card** (no U200 or XRT install on the dev server; no hw_emu of this
-kernel, no bandwidth number of the card). The numbers in this document are simulation
-measurements unless marked otherwise. Source-of-truth order: `docs/spec.md` (마일스톤 M0: "DMA
+development platform (`build/u200/bw/tsr_bw_k4.xclbin`, 2026-10-24, relinked the same day after the
+slice-enable and reset-copy changes of docs/platform-u200.md §8.3: 300 MHz kept, timing met, §4.1).
+**Nothing ran on a card** (no U200 or XRT install on the dev server; no hw_emu of this kernel, no
+bandwidth number of the card). The numbers in this document are simulation measurements unless
+marked otherwise. Source-of-truth order: `docs/spec.md` (마일스톤 M0: "DMA
 테스트 커널로 채널별·4채널 동시 대역폭 측정 — 실측 대역폭 기록 · 성능 예측의 기준값") > this
 document.
 
@@ -141,8 +142,9 @@ Kernel arguments (`kernel_bw_k4.xml`, ids in this order; XRT writes every one be
 
 ## 4. Implementation, packaging, build
 
-**RTL**: `tsr_bw_kernel` = `tsr_xrt_reset` (the adapter's; per-channel reset copies, engine and
-bridge of a channel share one) + `tsr_bw_ctrl` + per channel `tsr_bw_engine` → `tsr_xrt_axi_bridge`
+**RTL**: `tsr_bw_kernel` = `tsr_xrt_reset` (the adapter's; per channel 13 equal reset copies: 12
+for the parts of the bridge, one for the engine and its toggles; docs/platform-u200.md §8.3) +
+`tsr_bw_ctrl` + per channel `tsr_bw_engine` → `tsr_xrt_axi_bridge`
 (the adapter's: base add, `AXI_SLICES` register slices per AXI channel, ID filter, error events).
 Everything between the control block and an engine is registered on both sides (toggles through
 `CTRL_PIPE` stages, a static configuration snapshot, a registered result path), so each channel can
@@ -182,18 +184,19 @@ Vivado / v++ runs.
 
 ### 4.1 Packaging, timing and resources (Vivado 2024.2, dev server)
 
-Packaging (`package_bw_xo.tcl` under the shared Vivado lock; first 2026-10-23, repackaged
-2026-10-24 02:11 after the review fixes with the `core` hints, and 07:15 for the XSim-legal reset
-block of the shared `tsr_xrt_reset.sv`, docs/platform-u200.md §7): 15–16 s; `ipx::check_integrity
--kernel` and `-xrt` **passed**; `component.xml` has MAX_BURST_LENGTH 64, NUM_READ_OUTSTANDING 16,
-NUM_WRITE_OUTSTANDING 32 on all four `m_axi_ch<c>`; the manifest (12 files) matched the working tree
-and the 9 HDL sources inside the `.xo` are byte-identical to it. The `wide` variant was not packaged
-(the shared Vivado lock was busy with the timing runs). The `.xo` (47,915 bytes; 47,811 at 02:11,
-47,624 at the first packaging) holds
-`kernel.xml` (arguments, ports and kernel attributes equal to `kernel_bw_k4.xml`; package_xo
-rewrites the attribute order), `xo.xml` and the IP: the 9 sources of `filelist.f`, byte-identical to
-the repository, and `component.xml` with FREQ_HZ and the m_axi hints (MAX_BURST_LENGTH,
-NUM_READ_OUTSTANDING, NUM_WRITE_OUTSTANDING) on all four `m_axi_ch<c>`.
+Packaging (`package_bw_xo.tcl` under the shared Vivado lock; first 2026-10-23, repackaged 2026-10-24
+02:11 after the review fixes with the `core` hints, and 07:15 for the XSim-legal reset block of the
+shared `tsr_xrt_reset.sv`, docs/platform-u200.md §7; again at 20:07 for the relink below, 50,083
+bytes, integrity passed, 12 / 12 manifest files matching after the link): 15–16 s;
+`ipx::check_integrity -kernel` and `-xrt` **passed**; `component.xml` has MAX_BURST_LENGTH 64,
+NUM_READ_OUTSTANDING 16, NUM_WRITE_OUTSTANDING 32 on all four `m_axi_ch<c>`; the manifest (12 files)
+matched the working tree and the 9 HDL sources inside the `.xo` are byte-identical to it. The `wide`
+variant was not packaged (the shared Vivado lock was busy with the timing runs). The `.xo` (47,915
+bytes; 47,811 at 02:11, 47,624 at the first packaging) holds `kernel.xml` (arguments, ports and
+kernel attributes equal to `kernel_bw_k4.xml`; package_xo rewrites the attribute order), `xo.xml`
+and the IP: the 9 sources of `filelist.f`, byte-identical to the repository, and `component.xml`
+with FREQ_HZ and the m_axi hints (MAX_BURST_LENGTH, NUM_READ_OUTSTANDING, NUM_WRITE_OUTSTANDING) on
+all four `m_axi_ch<c>`.
 
 Out-of-context synthesis and implementation (`tb/platform/bw/viv/bw_ooc.tcl ... impl`: `tsr_bw_k4`
 alone on xcu200-fsgd2104-2-e, `ap_clk` 3.333 ns, every I/O budgeted 1.6 ns outside, opt / place /
@@ -212,16 +215,19 @@ length → block carry → block-counter enable, 10 logic levels); after routing
 WHS +0.039 ns**. The worst routed paths are reset nets with 0 logic levels and 2.9 ns of routing:
 phys_opt moved loads between the equivalent per-channel reset copies of `tsr_xrt_reset` (one copy
 reaches channel 2's bridge and channel 0's engine). The generator loop is not among the 20 worst
-routed paths.
+routed paths. With the slice-enable and reset-copy changes (docs/platform-u200.md §8.3) the same
+flow gives WNS +0.278 ns, against +0.286 ns for the RTL before them in the same session (whose
+worst path was the R slice payload clock enable); the new worst is a control-block result select →
+engine result register (2 levels).
 
-Linked design (2026-10-24, `TSR_VIVADO_LOCK=<lock> hw/u200/bw/build_bw_xclbin.sh hw`: `core` hints,
-no floorplan, the extracted development platform; the `.xo` manifest matched, no repackaging):
-`v++` rc 0 after 1 h 28 min 6 s wall: system synthesis 24:14 (176 out-of-context jobs, 4 in
-parallel), implementation 61:48 (link_design 5:01, opt 7:28, place 20:53, phys_opt 0:46, route
-15:24, post-route phys_opt 0:05, write_bitstream 5:31). Output `build/u200/bw/tsr_bw_k4.xclbin`,
-53,581,606 bytes, xclbin UUID `5b3bab4c-1842-07d9-ec16-ac8fda2718f9` (`xclbinutil --info`);
-`ch0..3` on bank0..bank3, 16 GiB each at 0x4000000000 + 0x1000000000 · c (bank3 has memory type
-`MEM_DRAM`, banks 0–2 `MEM_DDR4`; docs/platform-u200.md §8.2).
+First link (2026-10-24, `TSR_VIVADO_LOCK=<lock> hw/u200/bw/build_bw_xclbin.sh hw`: `core` hints, no
+floorplan, the extracted development platform; the `.xo` manifest matched, no repackaging): `v++` rc
+0 after 1 h 28 min 6 s wall: system synthesis 24:14 (176 out-of-context jobs, 4 in parallel),
+implementation 61:48 (link_design 5:01, opt 7:28, place 20:53, phys_opt 0:46, route 15:24,
+post-route phys_opt 0:05, write_bitstream 5:31). Output `build/u200/bw/tsr_bw_k4.xclbin` (since
+replaced by the relink below), 53,581,606 bytes, xclbin UUID `5b3bab4c-1842-07d9-ec16-ac8fda2718f9`
+(`xclbinutil --info`); `ch0..3` on bank0..bank3, 16 GiB each at 0x4000000000 + 0x1000000000 · c
+(bank3 has memory type `MEM_DRAM`, banks 0–2 `MEM_DDR4`; docs/platform-u200.md §8.2).
 - Timing, routed and after post-route phys_opt (identical): **WNS +0.017 ns, TNS 0, WHS +0.009 ns,
   THS 0**, all constraints met. The design's worst path is in the shell's XDMA logic
   (`dma_ip_axi_aclk_1`); on the kernel clock the worst is +0.025 ns setup / +0.010 ns hold, the R
@@ -241,6 +247,32 @@ parallel), implementation 61:48 (link_design 5:01, opt 7:28, place 20:53, phys_o
   counted more than once); lowest free memory 651 MB, swap use up to 10.7 GB on the 14 GB host.
 - Warnings: 1 CRITICAL WARNING `[Vivado 12-4430]` (the HDPR-5 DRC lowered to a warning), from v++'s
   own `_vpl_pre_place.tcl`.
+
+Relink (2026-10-24 from 20:07, after the docs/platform-u200.md §8.3 changes; the same command, the
+stale `.xo` repackaged first): `v++` rc 0 after 1 h 28 min 3 s wall with the repackaging: system
+synthesis 24:11, implementation 1:01:33 (link_design 5:02, opt 7:25, place 20:58, phys_opt 4:06,
+route 11:52, post-route phys_opt 0:05, write_bitstream 5:23). Output
+`build/u200/bw/tsr_bw_k4.xclbin`, 53,937,646 bytes, UUID `709e512f-3e91-b748-9ec9-073cd64b03b6`;
+`xclbinutil --info` differs from the first link's only in the UUID.
+- Timing, routed and after post-route phys_opt: **WNS +0.017 ns, TNS 0, WHS +0.009 ns, THS 0**,
+  all constraints met; the design's worst is again in the XDMA logic. Kernel clock **+0.055 ns**
+  setup / +0.010 ns hold, on shell logic; after placement −0.133 ns (first link −0.081). Worst
+  paths touching the kernel: the last W-slice stage of channel 3 (`g_ch[3].u_br/u_w`, SLR1) → the
+  memory subsystem's entry pipeline in SLR2, +0.069 ns (1 level); inside the kernel a W slice's
+  `rdy_q` → `main_q` S pin, +0.110 ns (fan-out 283), then the engine's `rg_lo_q` → `rg_blk_q` CE,
+  +0.149 ns (10 levels). The first link's worst path (R slice `main_v_q` → `main_q` CE) is gone:
+  the bridge slices' payload registers have 6,256 constant enables and 48 enable nets of at most
+  83 loads (first link: 68 nets, at most 519), the worst payload-enable path is +0.168 ns. Reset
+  copies → bridge counters: +0.046 ns (fan-out 916) → +0.788 ns; `rst1_q` → the 51 copies
+  +0.130 ns.
+- Kernel clock: auto-scaling computed 305.0 MHz (first link 302.2) and kept 300 MHz; DATA 300 MHz,
+  KERNEL 500 MHz.
+- Resources: 11,907 LUT (+451), 20,740 FF (+41), no BRAM / URAM / DSP; FF per SLR: SLR0 953, SLR1
+  18,757 (with all the LUTs), SLR2 1,030; 1,427 kernel nets cross an SLR; 6,009 SLLs in the whole
+  design.
+- Memory: Vivado-reported peaks 16.5 GB (place), 16.7 GB (route), 18.3 GB (write_bitstream).
+  Measured: at most 12.27 GB resident for the implementation process, 20.1 GB resident plus swap
+  for the tree (synthesis: 22.6 GB summed); lowest available memory 687 MB, swap use up to 12.7 GB.
 
 Not built: the `wide` variant, `TSR_BW_FLOORPLAN=1`, hw_emu of this kernel.
 
@@ -436,10 +468,14 @@ run: anything on a card (register reads, DMA, real runs and their numbers).
 - Nothing ran on hardware, and this kernel has no hw_emu run. The xclbin is built (§4.1): without a
   floorplan the placer put all four engines and bridges in SLR1 and met 300 MHz, so
   `bw_floorplan.tcl` is not used and not needed for timing.
-- Timing (§4.1): the linked design has +0.025 ns on the kernel clock; its worst path is the R
-  slice's clock-enable fan-out in `tsr_rslice`, which every Tesseract bridge shares (proposal in
-  docs/platform-u200.md §8.2). If a rebuild misses 300 MHz in a generator, the loop can be
-  shortened without changing behaviour: the 4 KiB carry of a burst is `~z & (lo ≥ 64 − B)`
+- Timing (§4.1): the first link had +0.025 ns on the kernel clock, on the R slice's clock-enable
+  fan-out in `tsr_rslice`, which every Tesseract bridge shares. Changed since (docs/platform-u200.md
+  §8.3: the payload registers of the always-ready R / B chains have no clock enable now; out of
+  context the worst bridge payload-enable path went from +0.286 ns, this path, to +0.569 ns, from an
+  AXI READY input; WNS +0.278 ns on a control-to-engine path), and the relinked xclbin has +0.055 ns
+  on the kernel clock (shell logic) and +0.110 ns on the kernel's own worst path (a W slice's
+  `rdy_q` → `main_q` S pin, fan-out 283). If a rebuild misses 300 MHz in a generator, the loop can
+  be shortened without changing behaviour: the 4 KiB carry of a burst is `~z & (lo ≥ 64 − B)`
   (registered threshold) and the next offset is then 0, else `lo + B` or the region end. If it
   misses on reset nets, the per-channel reset copies need protection from phys_opt's
   equivalent-driver rewiring (a vendor attribute, adapter / tech layer).

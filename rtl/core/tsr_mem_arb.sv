@@ -53,7 +53,18 @@
 
 // tsr_rslice — valid/ready register slice, 2 entries (main + skid), 100 % throughput.
 // s_ready, m_valid and m_data are flops; m_valid/m_data hold while m_valid && !m_ready (R2).
-// Reset clears both entries (s_ready = 1 after reset).
+// Reset clears both entries (s_ready = 1 after reset). m_data is don't-care while m_valid = 0.
+// Clock enables (M3 part C timing, docs/platform-u200.md §8.2): the payload registers load on
+// signals of this slice only, never on s_valid, which is the previous stage's main_v_q in a chain
+// and would fan out to every payload bit's enable (the M0 link's worst kernel path, ~530 loads):
+//   main_q loads whenever the main entry is free or handed over (m_free): with an item (skid
+//   entry first, else the incoming one) exactly as before, else it takes don't-care data while
+//   main_v_q becomes 0; with m_ready constant 1 the enable is constant;
+//   skid_q loads whenever the skid entry is empty (rdy_q); it is read only while full (!rdy_q)
+//   and holds exactly the item parked by the edge that cleared rdy_q.
+// Transfers, their order and every valid / ready flop are unchanged (cycle for cycle); m_data
+// differs only while m_valid = 0 (it then follows s_data one cycle late instead of holding the
+// last item).
 // Waiver: this generic helper lives in tsr_mem_arb.sv only because rtl/filelist.f is owned by the
 // lead (docs/rtl-m2.md §1 "Files"); proposal: move it to rtl/core/tsr_rslice.sv (filelist entry
 // before tsr_mem_arb.sv) and drop the DECLFILENAME waiver.
@@ -90,10 +101,10 @@ module tsr_rslice #(
     end
   end
 
-  // Datapath: no reset (qualified by the valid flags).
+  // Datapath: no reset (qualified by the valid flags); enables from this slice's flops (header).
   always_ff @(posedge clk) begin
-    if (m_free && (!rdy_q || s_valid)) main_q <= rdy_q ? s_data : skid_q;
-    if (!m_free && rdy_q && s_valid)   skid_q <= s_data;
+    if (m_free) main_q <= rdy_q ? s_data : skid_q;
+    if (rdy_q)  skid_q <= s_data;
   end
 
   assign s_ready = rdy_q;

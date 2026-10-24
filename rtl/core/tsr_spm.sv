@@ -39,12 +39,22 @@
 // Microarchitecture:
 //   - Depth banking: NBANK = ceil(LINES / BANK_LINES) banks of BANK_LINES lines (the last bank
 //     holds the remainder, so any multiple of 64 bytes works), selected by the high line-address
-//     bits; only the addressed bank sees re/we. U200 default: 4 MiB = 4 banks x 16 K lines; with
-//     URAM288 (4 K x 72) a bank is 8 columns x 4-deep cascade = 32 URAMs, 128 in total.
+//     bits; only the addressed bank sees re/we. U200 default: 4 MiB = 4 banks x 16 K lines.
+//   - Column slices: a bank is NCOL = 8 tsr_sram_1r1w instances of 64 bits (bytes 8k..8k+7 of the
+//     line in slice k). With URAM288 (4 K x 72) a slice is one 4-deep cascade, so a bank is 8
+//     cascades = 32 URAMs, 128 in total at 4 MiB (as one 512-bit RAM per bank maps).
 //   - Latency split (RD_LAT = IN_REG + RAM_LAT + OUT_REG, all requests take the same path):
 //       IN_REG  = 1 if RD_LAT >= 2: arbitration result (enables, bank, offset, write data/be) is
 //                 registered before the RAMs, so the RAM address/data fan-out starts at a flop.
 //                 Reads and writes share this stage, which keeps the write->read order above.
+//                 Every (bank, slice) RAM has its own kept copy of the stage's enable, offset and
+//                 byte-enable registers, the enables decoded from the bank bits before the
+//                 register: each URAM cascade head is driven by a flop of its own, with no logic
+//                 (one shared offset register driving all 32 cascade heads, 3 cascade hops each,
+//                 was the worst path of the U200 core and of the k1 link, docs/rtl-m3.md §14.3 /
+//                 §14.8). The copies hold the value of the single register they replace, so every
+//                 RAM sees the same inputs in every cycle as before; only the write data register
+//                 stays shared (one load per bank).
 //       OUT_REG = 1 if RD_LAT >= 4 and NBANK > 1: register after the bank read mux.
 //       RAM_LAT = the rest (>= 1): tsr_sram_1r1w RD_LAT (RAM read register + output registers).
 //     RD_LAT 2 (default): flop -> RAM read register -> bank mux (one LUT level for <= 4 banks)
@@ -90,12 +100,14 @@ module tsr_spm
   // -------------------------------------------------------------------------------------------
   localparam int unsigned NBANK      = (LINES + BANK_LINES - 1) / BANK_LINES;
   localparam int unsigned BL_LOG     = $clog2(BANK_LINES);
-  localparam int unsigned OFF_W      = (NBANK > 1) ? BL_LOG : AW;           // RAM address width
   localparam int unsigned BSEL_W     = (NBANK > 1) ? $clog2(NBANK) : 1;
   localparam int unsigned LAST_DEPTH = LINES - (NBANK - 1) * BANK_LINES;
   localparam int unsigned IN_REG     = (RD_LAT >= 2) ? 1 : 0;
   localparam int unsigned OUT_REG    = (RD_LAT >= 4 && NBANK > 1) ? 1 : 0;
   localparam int unsigned RAM_LAT    = RD_LAT - IN_REG - OUT_REG;
+  localparam int unsigned NCOL       = 8;                         // RAM column slices per bank
+  localparam int unsigned COL_W      = TSR_LINE_BITS / NCOL;      // bits per slice (64)
+  localparam int unsigned COL_BE     = COL_W / 8;                 // byte enables per slice
 
   if (SPM_BYTES < TSR_LINE_BYTES || (SPM_BYTES % TSR_LINE_BYTES) != 0) begin : g_chk_size
     $fatal(1, "tsr_spm: SPM_BYTES must be a positive multiple of 64");
@@ -161,87 +173,128 @@ module tsr_spm
   end
 
   // -------------------------------------------------------------------------------------------
-  // RAM input stage (IN_REG): what the banks see this cycle
+  // RAM input stage (IN_REG)
   // -------------------------------------------------------------------------------------------
-  logic                      rd_en_s, wr_en_s;
-  logic [BSEL_W-1:0]         rd_bank_s, wr_bank_s;
-  logic [OFF_W-1:0]          rd_off_s, wr_off_s;
-  logic [TSR_LINE_BITS-1:0]  wr_data_s;
-  logic [TSR_SPM_BE_W-1:0]   wr_be_s;
+  // Bank b is addressed by the granted request (decoded before the input register, so the RAM
+  // enables leave a flop without logic).
+  logic [NBANK-1:0] rd_hit, wr_hit;
+
+  always_comb begin
+    for (int unsigned b = 0; b < NBANK; b++) begin
+      rd_hit[b] = rd_fire && (bank_of(rd_line_sel) == BSEL_W'(b));
+      wr_hit[b] = wr_fire && (bank_of(wr_line_sel) == BSEL_W'(b));
+    end
+  end
+
+  // Shared part of the stage: write data (one load per bank) and the read bank (data mux select).
+  logic [TSR_LINE_BITS-1:0] wr_data_s;
+  logic [BSEL_W-1:0]        rd_bank_s;
 
   if (IN_REG != 0) begin : g_in_reg
-    always_ff @(posedge clk) begin
-      if (!rst_n) begin
-        rd_en_s <= 1'b0;
-        wr_en_s <= 1'b0;
-      end else begin
-        rd_en_s <= rd_fire;
-        wr_en_s <= wr_fire;
-      end
-    end
-    // Datapath registers load every cycle (no clock enable: rd_en_s / wr_en_s gate their use, and
-    // a CE would be a ~600-flop net driven from the clients' valid flops).
+    // Datapath registers load every cycle (no clock enable: the RAM enables gate their use, and a
+    // CE would be a ~600-flop net driven from the clients' valid flops).
     always_ff @(posedge clk) begin
       rd_bank_s <= bank_of(rd_line_sel);
-      rd_off_s  <= rd_line_sel[OFF_W-1:0];
-      wr_bank_s <= bank_of(wr_line_sel);
-      wr_off_s  <= wr_line_sel[OFF_W-1:0];
       wr_data_s <= wr_data_sel;
-      wr_be_s   <= wr_be_sel;
     end
   end else begin : g_no_in_reg
-    assign rd_en_s   = rd_fire;
     assign rd_bank_s = bank_of(rd_line_sel);
-    assign rd_off_s  = rd_line_sel[OFF_W-1:0];
-    assign wr_en_s   = wr_fire;
-    assign wr_bank_s = bank_of(wr_line_sel);
-    assign wr_off_s  = wr_line_sel[OFF_W-1:0];
     assign wr_data_s = wr_data_sel;
-    assign wr_be_s   = wr_be_sel;
   end
 
   // -------------------------------------------------------------------------------------------
-  // Banks
+  // Banks: NCOL column slices each, with the slice's copy of the input stage
   // -------------------------------------------------------------------------------------------
   logic [NBANK-1:0][TSR_LINE_BITS-1:0] bank_rdata;
 
   for (genvar b = 0; b < NBANK; b++) begin : g_bank
     localparam int unsigned DEPTH_B = (b == NBANK - 1) ? LAST_DEPTH : BANK_LINES;
     localparam int unsigned AW_B    = (DEPTH_B > 1) ? $clog2(DEPTH_B) : 1;
-    logic re_b, we_b;
-    assign re_b = rd_en_s && (rd_bank_s == BSEL_W'(b));
-    assign we_b = wr_en_s && (wr_bank_s == BSEL_W'(b));
 
-    tsr_sram_1r1w #(
-      .DEPTH(DEPTH_B), .WIDTH(TSR_LINE_BITS), .RD_LAT(RAM_LAT)
-    ) u_ram (
-      .clk   (clk),
-      .we    (we_b),
-      .waddr (wr_off_s[AW_B-1:0]),
-      .wdata (wr_data_s),
-      .wbe   (wr_be_s),
-      .re    (re_b),
-      .raddr (rd_off_s[AW_B-1:0]),
-      .rdata (bank_rdata[b])
-    );
+    for (genvar k = 0; k < NCOL; k++) begin : g_col
+      logic              re_k, we_k;
+      logic [AW_B-1:0]   ra_k, wa_k;
+      logic [COL_BE-1:0] be_k;
+
+      if (IN_REG != 0) begin : g_in
+        // keep: synthesis must not merge the copies (identical inputs) back into one register.
+        (* keep = "true" *) logic              re_q, we_q;
+        (* keep = "true" *) logic [AW_B-1:0]   ra_q, wa_q;
+        (* keep = "true" *) logic [COL_BE-1:0] be_q;
+
+        always_ff @(posedge clk) begin
+          if (!rst_n) begin
+            re_q <= 1'b0;
+            we_q <= 1'b0;
+          end else begin
+            re_q <= rd_hit[b];
+            we_q <= wr_hit[b];
+          end
+        end
+        always_ff @(posedge clk) begin
+          ra_q <= rd_line_sel[AW_B-1:0];
+          wa_q <= wr_line_sel[AW_B-1:0];
+          be_q <= wr_be_sel[k*COL_BE +: COL_BE];
+        end
+        assign re_k = re_q;
+        assign we_k = we_q;
+        assign ra_k = ra_q;
+        assign wa_k = wa_q;
+        assign be_k = be_q;
+      end else begin : g_comb
+        assign re_k = rd_hit[b];
+        assign we_k = wr_hit[b];
+        assign ra_k = rd_line_sel[AW_B-1:0];
+        assign wa_k = wr_line_sel[AW_B-1:0];
+        assign be_k = wr_be_sel[k*COL_BE +: COL_BE];
+      end
+
+      tsr_sram_1r1w #(
+        .DEPTH(DEPTH_B), .WIDTH(COL_W), .RD_LAT(RAM_LAT)
+      ) u_ram (
+        .clk   (clk),
+        .we    (we_k),
+        .waddr (wa_k),
+        .wdata (wr_data_s[k*COL_W +: COL_W]),
+        .wbe   (be_k),
+        .re    (re_k),
+        .raddr (ra_k),
+        .rdata (bank_rdata[b][k*COL_W +: COL_W])
+      );
+    end
   end
 
   // -------------------------------------------------------------------------------------------
   // Read data: bank mux (bank select delayed by RAM_LAT), optional output register
   // -------------------------------------------------------------------------------------------
   if (NBANK > 1) begin : g_bank_mux
-    logic [BSEL_W-1:0]        bsel_pipe [RAM_LAT];
+    // The select's last stage has one kept copy per column slice (fan-out 64 mux LUTs per bit
+    // instead of 512); the stages before it are shared.
+    logic [BSEL_W-1:0]        bsel_d;      // rd_bank_s delayed by RAM_LAT - 1
     logic [TSR_LINE_BITS-1:0] rd_mux;
 
-    always_ff @(posedge clk) bsel_pipe[0] <= rd_bank_s;
-    for (genvar i = 1; i < RAM_LAT; i++) begin : g_bsel
-      always_ff @(posedge clk) bsel_pipe[i] <= bsel_pipe[i-1];
+    if (RAM_LAT == 1) begin : g_bsel1
+      assign bsel_d = rd_bank_s;
+    end else begin : g_bseln
+      logic [BSEL_W-1:0] bsel_pipe [RAM_LAT - 1];
+      always_ff @(posedge clk) bsel_pipe[0] <= rd_bank_s;
+      for (genvar i = 1; i < RAM_LAT - 1; i++) begin : g_bsel
+        always_ff @(posedge clk) bsel_pipe[i] <= bsel_pipe[i-1];
+      end
+      assign bsel_d = bsel_pipe[RAM_LAT-2];
     end
+
+    (* keep = "true" *) logic [NCOL-1:0][BSEL_W-1:0] bsel_q;
+    always_ff @(posedge clk) bsel_q <= {NCOL{bsel_d}};
 
     always_comb begin
       rd_mux = '0;
-      for (int unsigned b = 0; b < NBANK; b++) begin
-        if (bsel_pipe[RAM_LAT-1] == BSEL_W'(b)) rd_mux = rd_mux | bank_rdata[b];
+      for (int unsigned k = 0; k < NCOL; k++) begin
+        for (int unsigned b = 0; b < NBANK; b++) begin
+          if (bsel_q[k] == BSEL_W'(b)) begin
+            rd_mux[k*COL_W +: COL_W] = rd_mux[k*COL_W +: COL_W] | bank_rdata[b][k*COL_W +: COL_W];
+          end
+        end
       end
     end
 
@@ -254,6 +307,7 @@ module tsr_spm
     end
   end else begin : g_one_bank
     assign rd_rsp_data = bank_rdata[0];
+    wire unused_bank = &{1'b0, rd_bank_s};
   end
 
   // -------------------------------------------------------------------------------------------

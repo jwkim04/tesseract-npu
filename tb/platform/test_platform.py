@@ -181,7 +181,7 @@ def _require_slow(request):
 @pytest.mark.traces
 def test_adapter_mutants(request, tmp_path):
     _require_slow(request)
-    names ="NONE,B_no_base,B_filter_r_off,C_no_cor,C_srst_poll_off,C_base_live"
+    names ="NONE,B_no_base,B_filter_r_off,C_no_cor,C_srst_poll_off,C_base_live,R_ch_copy_late"
     r = subprocess.run([sys.executable, str(HERE / "mutate_adapter.py"), str(tmp_path), "--only", names],
                        capture_output=True, text=True, timeout=7200)
     print(r.stdout)

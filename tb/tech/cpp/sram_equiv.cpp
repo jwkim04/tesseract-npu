@@ -27,13 +27,16 @@
 #include "Vgen.h"
 #include "Vxil.h"
 
-static const int NC = 16;
-static const int CD[NC] = {16384, 16384, 16384, 4096, 4096, 1024, 512, 256, 72, 64, 64, 100, 37, 32, 2, 1};
-static const int CW[NC] = {512, 512, 512, 512, 8, 512, 512, 512, 512, 512, 512, 512, 8, 512, 512, 72};
-static const int CL[NC] = {1, 2, 3, 2, 3, 3, 2, 2, 2, 1, 4, 1, 4, 2, 1, 2};
+static const int NC = 21;
+static const int CD[NC] = {16384, 16384, 16384, 4096, 4096, 1024, 512, 256, 72, 64, 64, 100, 37, 32, 2, 1,
+                           16384, 16384, 16384, 4096, 4096};
+static const int CW[NC] = {512, 512, 512, 512, 8, 512, 512, 512, 512, 512, 512, 512, 8, 512, 512, 72,
+                           64, 64, 64, 64, 64};
+static const int CL[NC] = {1, 2, 3, 2, 3, 3, 2, 2, 2, 1, 4, 1, 4, 2, 1, 2,
+                           1, 2, 3, 1, 3};
 
 static bool is_ultra(int c) {   // rtl/tech/xilinx/tsr_sram_1r1w.sv IS_ULTRA
-    return CD[c] >= 4096 && (long)CD[c] * CW[c] >= 4096L * 72;
+    return CD[c] >= 4096 && (long)CD[c] * CW[c] >= 4096L * 64;
 }
 
 typedef std::array<uint32_t, 16> Line;   // 512 bits

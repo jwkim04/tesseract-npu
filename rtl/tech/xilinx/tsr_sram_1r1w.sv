@@ -20,9 +20,12 @@
 //
 // Mapping (inference + attributes only, no unisim primitive, so Verilator simulates this file):
 //   RAM_STYLE by size (one rule for every instance of the core, docs/rtl-m3.md §9.3):
-//     "ultra"       DEPTH >= 4096 and DEPTH x WIDTH >= 4096 x 72 (at least one full URAM288):
-//                   the SPM banks (U200: 4 banks x 16 K lines x 512 bits = 4 x 8 columns x
-//                   4-deep cascades = 128 URAM; 72-bit columns with 9 byte enables each).
+//     "ultra"       DEPTH >= 4096 and DEPTH x WIDTH >= 4096 x 64 (at least 8 of the 9 bytes of
+//                   one URAM288): the SPM, whose banks tsr_spm builds from 64-bit column slices
+//                   (U200: 4 banks x 8 slices of 16 K x 64 = 32 4-deep cascades = 128 URAM, one
+//                   72-bit URAM column per slice with 8 of its 9 byte enables; a 256 KiB SPM:
+//                   8 slices of 4 K x 64, one URAM each). Wider memories map the same way
+//                   (512 bits: 8 columns).
 //     "distributed" DEPTH <= 32 (LUTRAM; only the reduced test configurations, e.g. the K_MAX 256
 //                   activation buffers of 2 words).
 //     "block"       everything else: activation buffer QS / DBS (256 / 72 x 512 at K_MAX 32768),
@@ -41,7 +44,7 @@
 //                 enabled by the read enable delayed alongside (UG901 template; a free-running
 //                 stage stays in fabric with "no pipeline registers"), so here stage k loads iff
 //                 a read result reaches it (en_q). 16 K x 512: RD_LAT 2 / 3 / 4 absorb 1 / 2 / 3
-//                 stages, no fabric flop left.
+//                 stages, no fabric flop left (16 K x 64, the SPM slice: RD_LAT 2 absorbs 1).
 //     distributed the read register is a fabric flop after the asynchronous LUTRAM read.
 //   Fabric stages: SRL extraction off (timing registers; a 512-bit SRL output is slow).
 
@@ -67,7 +70,7 @@ module tsr_sram_1r1w #(
   end
 
   // 64-bit products: DEPTH x WIDTH may exceed 2^32 in principle (not in any configuration here).
-  localparam bit IS_ULTRA = (DEPTH >= 4096) && (64'(DEPTH) * 64'(WIDTH) >= 64'(4096 * 72));
+  localparam bit IS_ULTRA = (DEPTH >= 4096) && (64'(DEPTH) * 64'(WIDTH) >= 64'(4096 * 64));
   localparam bit IS_DIST  = !IS_ULTRA && (DEPTH <= 32);
   // STYLE is read only by the ram_style attribute below, which Verilator ignores.
   /* verilator lint_off UNUSEDPARAM */

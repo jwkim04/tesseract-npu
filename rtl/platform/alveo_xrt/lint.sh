@@ -40,12 +40,15 @@ F=$CORE_FL
 lint "$F" tsr_xrt_reset
 lint "$F" tsr_xrt_reset -GN_CH=1 -GCORE_STAGES=2
 lint "$F" tsr_xrt_reset -GN_CH=16 -GCORE_STAGES=6
+lint "$F" tsr_xrt_reset -GN_CH=1 -GCH_COPIES=4 -GCORE_STAGES=3
+lint "$F" tsr_xrt_reset -GN_CH=16 -GCH_COPIES=5 -GCORE_STAGES=2
 lint "$F" tsr_xrt_slices
 lint "$F" tsr_xrt_slices -GW=1 -GN=1
 lint "$F" tsr_xrt_slices -GW=600 -GN=4
 lint "$F" tsr_xrt_axi_bridge
 lint "$F" tsr_xrt_axi_bridge -GSLICES=1 -GADDR_BEAT_W=5
-lint "$F" tsr_xrt_axi_bridge -GSLICES=4 -GADDR_BEAT_W=40 -GRD_CNT_W=5 -GWR_CNT_W=12
+lint "$F" tsr_xrt_axi_bridge -GSLICES=4 -GADDR_BEAT_W=40 -GRD_CNT_W=5 -GWR_CNT_W=12 -GCNT_RST=16
+lint "$F" tsr_xrt_axi_bridge -GCNT_RST=1
 lint "$F" tsr_xrt_ctrl
 lint "$F" tsr_xrt_ctrl -GNUM_CH=1
 lint "$F" tsr_xrt_ctrl -GNUM_CH=16

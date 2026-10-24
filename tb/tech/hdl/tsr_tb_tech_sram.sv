@@ -5,10 +5,10 @@
 // read result).
 //
 // Configurations (DEPTH x WIDTH, RD_LAT; xilinx RAM style), index c as in sram_equiv.cpp:
-//    0  16384 x 512, 1   ultra        SPM bank, SPM_RD_LAT 2 (IN_REG + RAM_LAT 1)
-//    1  16384 x 512, 2   ultra        SPM bank, SPM_RD_LAT 3 / 4 (U200 4: IN_REG + 2 + OUT_REG)
+//    0  16384 x 512, 1   ultra        whole-line URAM cascade (the SPM bank before its 64-bit
+//    1  16384 x 512, 2   ultra          column slices, configs 16..20)
 //    2  16384 x 512, 3   ultra
-//    3   4096 x 512, 2   ultra        256 KiB SPM (one bank)
+//    3   4096 x 512, 2   ultra
 //    4   4096 x   8, 3   block        narrow (tb/spm edge configuration; < one URAM of bits)
 //    5   1024 x 512, 3   block        weight FIFO, largest
 //    6    512 x 512, 2   block        weight FIFO, U200 default (WS_RD_LAT 2)
@@ -21,10 +21,15 @@
 //   13     32 x 512, 2   distributed  (largest LUTRAM)
 //   14      2 x 512, 1   distributed  activation buffer at K_MAX 256
 //   15      1 x  72, 2   distributed
+//   16  16384 x  64, 1   ultra        SPM column slice, SPM_RD_LAT 2 (IN_REG + RAM_LAT 1)
+//   17  16384 x  64, 2   ultra        SPM slice, SPM_RD_LAT 3 / 4 (U200 4: IN_REG + 2 + OUT_REG)
+//   18  16384 x  64, 3   ultra        SPM slice, SPM_RD_LAT 5
+//   19   4096 x  64, 1   ultra        256 KiB SPM slice (one bank), SPM_RD_LAT 2
+//   20   4096 x  64, 3   ultra        256 KiB SPM slice, SPM_RD_LAT 4 (one bank: no OUT_REG)
 // Addresses are taken modulo DEPTH (identical in both builds), data / byte enables truncated.
 
 module tsr_tb_tech_sram #(
-  localparam int unsigned NC = 16
+  localparam int unsigned NC = 21
 ) (
   input  logic                    clk,
   input  logic                    we,
@@ -36,9 +41,12 @@ module tsr_tb_tech_sram #(
   output logic [NC-1:0][511:0]    rd
 );
 
-  localparam int unsigned CD [NC] = '{16384, 16384, 16384, 4096, 4096, 1024, 512, 256, 72, 64, 64, 100, 37, 32, 2, 1};
-  localparam int unsigned CW [NC] = '{512, 512, 512, 512, 8, 512, 512, 512, 512, 512, 512, 512, 8, 512, 512, 72};
-  localparam int unsigned CL [NC] = '{1, 2, 3, 2, 3, 3, 2, 2, 2, 1, 4, 1, 4, 2, 1, 2};
+  localparam int unsigned CD [NC] = '{16384, 16384, 16384, 4096, 4096, 1024, 512, 256, 72, 64, 64, 100, 37, 32, 2, 1,
+                                       16384, 16384, 16384, 4096, 4096};
+  localparam int unsigned CW [NC] = '{512, 512, 512, 512, 8, 512, 512, 512, 512, 512, 512, 512, 8, 512, 512, 72,
+                                       64, 64, 64, 64, 64};
+  localparam int unsigned CL [NC] = '{1, 2, 3, 2, 3, 3, 2, 2, 2, 1, 4, 1, 4, 2, 1, 2,
+                                       1, 2, 3, 1, 3};
 
   for (genvar c = 0; c < NC; c++) begin : g_c
     localparam int unsigned D  = CD[c];

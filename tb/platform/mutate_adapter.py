@@ -131,6 +131,10 @@ MUTANTS = [
     ("R_core_first", [("tsr_xrt_reset.sv", "  assign rst_core_n = core_q[CORE_STAGES-2];", "  assign rst_core_n = rst1_q;")],
      "core leaves reset one cycle before the bridges", {}, "equivalent? (the core issues no request "
      "until a START, many cycles after reset)"),
+    ("R_ch_copy_late", [("tsr_xrt_reset.sv", "    ch_q   <= {(N_CH * CH_COPIES){rst1_q}};",
+                         "    for (int unsigned c = 0; c < N_CH; c++) ch_q[c] <= {ctrl_q, {(CH_COPIES - 1){rst1_q}}};")],
+     "the last reset copy of every channel (bridge write counters of IDs 12..15) one cycle late", {},
+     "killed (the bridge's reset-copy check; functionally the parts then leave reset one cycle apart)"),
 ]
 
 

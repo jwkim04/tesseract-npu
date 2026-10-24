@@ -743,11 +743,13 @@ async def qact_rtl_spm(dut):
 
 @cocotb.test()
 async def rtl_spm_time0_edge(dut):
-    """_time0_worst_case on the real-SPM wrapper: tsr_qact and tsr_spm (and its banks) also get
-    the spurious edge here; tsr_spm's grant registers are forced non-one-hot."""
+    """_time0_worst_case on the real-SPM wrapper: tsr_qact and tsr_spm (and its banks' RAMs) also
+    get the spurious edge here; tsr_spm's grant registers are forced non-one-hot."""
     cfg = _cfg()
     spm = dut.u_spm
-    banks = [spm.g_bank[b].u_ram for b in range(-(-cfg["LINES"] // cfg["BANK_LINES"]))]
+    # tsr_spm builds each bank from 8 column slices of 64 bits (g_bank[b].g_col[k].u_ram)
+    banks = [spm.g_bank[b].g_col[k].u_ram
+             for b in range(-(-cfg["LINES"] // cfg["BANK_LINES"])) for k in range(8)]
     spm.rd_gnt_q.value = Immediate((1 << len(spm.rd_gnt_q)) - 1)
     await _time0_worst_case(dut, dut.u_qact, [dut.u_qact, spm] + banks)
     rnd = tb_rng(20)

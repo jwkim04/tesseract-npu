@@ -126,12 +126,16 @@ module tsr_xrt_kernel
 );
 
   // -------------------------------------------------------------------------------------------
-  // Reset distribution
+  // Reset distribution: per channel one copy for each of the bridge's reset parts
+  // (tsr_xrt_axi_bridge header): [0] request slices, [1] AXI-side stages, [2] read path,
+  // [3] write path, [4 +: CNT_RST] read counters, [4 + CNT_RST +: CNT_RST] write counters
   // -------------------------------------------------------------------------------------------
-  logic              rst_ctrl_n, rst_core_n;
-  logic [NUM_CH-1:0] rst_ch_n;
+  localparam int unsigned CNT_RST = 4;                  // counter reset copies (ID groups of 4)
+  localparam int unsigned BR_RST  = 4 + 2 * CNT_RST;
+  logic                          rst_ctrl_n, rst_core_n;
+  logic [NUM_CH-1:0][BR_RST-1:0] rst_ch_n;
 
-  tsr_xrt_reset #(.N_CH(NUM_CH), .CORE_STAGES(RST_STAGES)) u_rst (
+  tsr_xrt_reset #(.N_CH(NUM_CH), .CH_COPIES(BR_RST), .CORE_STAGES(RST_STAGES)) u_rst (
     .clk(ap_clk), .rst_in_n(ap_rst_n), .rst_ctrl_n, .rst_ch_n, .rst_core_n
   );
 
@@ -215,9 +219,11 @@ module tsr_xrt_kernel
   // -------------------------------------------------------------------------------------------
   for (genvar c = 0; c < NUM_CH; c++) begin : g_ch
     tsr_xrt_axi_bridge #(
-      .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BEAT_BITS), .SLICES(AXI_SLICES)
+      .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BEAT_BITS), .SLICES(AXI_SLICES), .CNT_RST(CNT_RST)
     ) u_br (
-      .clk(ap_clk), .rst_n(rst_ch_n[c]), .base(ch_base[c]),
+      .clk(ap_clk), .rst_n(rst_ch_n[c][0]), .rst_axi_n(rst_ch_n[c][1]), .rst_rd_n(rst_ch_n[c][2]),
+      .rst_wr_n(rst_ch_n[c][3]), .rst_rdc_n(rst_ch_n[c][4 +: CNT_RST]),
+      .rst_wrc_n(rst_ch_n[c][4 + CNT_RST +: CNT_RST]), .base(ch_base[c]),
       .c_rd_req_valid(rd_req_valid[c]), .c_rd_req_ready(rd_req_ready[c]), .c_rd_req_addr(rd_req_addr[c]),
       .c_rd_req_len(rd_req_len[c]), .c_rd_req_id(rd_req_id[c]),
       .c_rd_rsp_valid(rd_rsp_valid[c]), .c_rd_rsp_ready(rd_rsp_ready[c]), .c_rd_rsp_data(rd_rsp_data[c]),

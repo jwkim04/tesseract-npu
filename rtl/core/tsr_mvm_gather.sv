@@ -366,7 +366,7 @@ module tsr_mvm_gather
     logic [JW-1:0]     a_jd;
     // Identical across the clusters but for the active bit: kept separate (each next to its
     // assembler, which may sit in another SLR than the central part).
-    tsr_vpipe #(.VW(1), .W(SW), .DEPTH(JOB_PIPE), .KEEP(1'b1)) u_sp (
+    tsr_vpipe #(.VW(1), .W(SW), .DEPTH(JOB_PIPE), .KEEP_REGS(1'b1)) u_sp (
       .clk, .rst_n, .in_valid(start), .in_data({expect_ch[c], s_tm1, s_nm1, dst_line, s_stride}),
       .out_valid(a_start), .out_data(a_f)
     );
