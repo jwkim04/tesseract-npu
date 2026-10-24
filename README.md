@@ -274,6 +274,15 @@ drawn as an arrow. Blocks with a single home are tagged with their SLR under flo
 
 The spec's version of this figure, with Korean labels: [`docs/fig/u200-system.jpg`](docs/fig/u200-system.jpg).
 
+**Real placement.** The image below is the routed 4-channel `T_MAX` 8 core (out of context,
+floorplan C'), drawn from the checkpoint by [`hw/viz`](hw/viz/README.md): every used site in the
+colour of its module. Clusters 0 and 2 fill SLR0, clusters 1 and 3 fill SLR2, and SLR1 holds the
+central gather, QACT, control, the SPM's URAM column and the pipes that cross the SLR boundaries.
+Full-device views after the `v++` link: [k1 kernel with the XRT shell](docs/fig/floorplan/k1-linked.png)
+and [M0 bandwidth kernel with the four DDR4 controllers](docs/fig/floorplan/bw-linked.png).
+
+<p align="center"><img src="docs/fig/floorplan/k4-core-ooc.png" alt="Placement of the routed 4-channel T_MAX 8 tsr_core on the VU9P: clusters 0 and 2 in SLR0, clusters 1 and 3 in SLR2, gather, QACT, control and SPM in SLR1" width="100%"></p>
+
 ### Core boundary
 
 `tsr_core` does not use AXI. It exposes exactly three things on one clock `clk` with a
