@@ -923,9 +923,8 @@ part of `run_all.sh` (minutes of simulation per token); repeat them with
 
 ## 14. Hardware bring-up runbook
 
-The steps in order, each with its pass criterion. Nothing below has run on a card (no card, no XRT
-install); of step 7 the k1 and M0 xclbins are built on the dev server and hw_emu of k1 ran (§8.2),
-the k4 link (step 12) has not run. What exists on the dev server: Vivado / Vitis 2024.2
+The steps in order, each with its pass criterion. Steps 1–11 ran on the card on 2026-10-25 and passed
+(§14.1); the k4 link (step 12) has not run (the dev server has 14 GB of RAM). What exists on the dev server: Vivado / Vitis 2024.2
 (`/tool/Xilinx`, not on PATH), the U200 **development** platform extracted without installing
 (`build/platforms/root/opt/xilinx/platforms/xilinx_u200_gen3x16_xdma_2_202110_1`, sha256-verified,
 `build/platforms/scripts/finish-dev-platform.sh`), the **deployment** packages (signature-verified,
@@ -959,7 +958,12 @@ parameters of rtl-m3 §14.2 (`MVM_MAC_LAT` 9, `RST_PIPE` 3), the `.xo` files are
    flash). Then `source /opt/xilinx/xrt/setup.sh; sudo xbmgmt examine`: the shell must be
    `xilinx_u200_gen3x16_xdma_base_2` (the user flashed the stock shell after delivery and the
    `xbutil` tests passed then, spec 미결정 사항). Only on a mismatch or the golden image:
-   `sudo xbmgmt program --base --device <mgmt BDF>`, then a cold power cycle.
+   `sudo xbmgmt program --base --device <mgmt BDF>`, then a cold power cycle. `sudo` resets
+   `PATH`, so give the full path `/opt/xilinx/xrt/bin/xbmgmt`. On 2026-10-25 the card came up as
+   the golden image (`10ee:d000`, one function, shell `xilinx_u200_GOLDEN_5`). The first
+   `program --base` wrote the shell only. A second one after the cold boot updated the SC firmware
+   from 4.2 to 4.6.21 (validate warns `SC firmware mismatch` until then), followed by another cold
+   boot.
 4. **Card checks.** `xbutil examine -d <user BDF> -r all` (record the memory topology and DIMM
    sizes: spec 미결정 사항, the 32 GB card caveat) and `xbutil validate -d <user BDF>`. Pass: every
    validate test PASSED.
@@ -1012,3 +1016,20 @@ parameters of rtl-m3 §14.2 (`MVM_MAC_LAT` 9, `RST_PIPE` 3), the `.xo` files are
     `tsr_u200_k4.xclbin` (selftest `--traces traces/m3/tmax8 --traces traces/m3/errors8 --traces
     traces/m2 --traces traces/gen --traces traces/model`; the 0.5B compare against `sim`; expected
     PERF per decoded token near §13.1's 2.28 M cycles at T_MAX 1), then M4 (Q4_K, 32B).
+
+### 14.1 Results on the card (2026-10-25)
+
+Host: Ubuntu 24.04, kernel 7.0.0-38, XRT 2.18.179 with the 19 driver patches (DKMS for every kernel
+with headers). Card: shell `xilinx_u200_gen3x16_xdma_base_2`, SC 4.6.21, PCIe Gen3 ×16. Logs are in
+`build/card/` (not committed).
+
+| Step | Result |
+|---|---|
+| 1–3 | Golden image at first (step 3 note), then the shell: mgmt PF `01:00.0` (`10ee:5000`), user PF `01:00.1` (`10ee:5001`). No driver warnings in dmesg |
+| 4 | `xrt-smi validate`: all 8 tests PASSED (after the SC update). Its kernels: mem-bw 16.8 GB/s per bank, 67.2 GB/s total; DMA host → card 7.3–7.9 GB/s, card → host 13.3–13.5 GB/s. Memory topology bank0–3 16 GB each |
+| 6 | `build/xrt` builds; `ctest -R 'transport_\|tools_xrt'` 10 / 10 |
+| 8 | M0 (`tsr_bw_k4.xclbin`, 300 MHz): 16 GiB per channel without aliasing; per channel 18.01 GB/s read, 15.92 write; 4 channels 72.05 read, 63.68 write, 71.2 read + write; 1,633 runs, 0 failed checks (`docs/m0-bw.md` §7.1) |
+| 9 | `tsr_xrt_selftest` on k1 with 30 generated 1-channel traces: PASS, 58 checks (as on the RTL, §13.1) |
+| 10 | `test-ggml-tesseract` 28 / 28 OK (2.3 s); `test-backend-ops -o MUL_MAT`: 68 / 68 (the subset) and 1402 / 1402 (every case, including the f16 one with 2,105,344 tokens that the RTL could not finish), 29 s |
+| 11 | `klcheck compare --expect-identical` against `sim`: 8 / 8 rows bit-identical, PASS. `klcheck all -n 64`: mean KL 1.0950e-3 ≤ 3 × floor 1.1357e-3, top-1 98.05 %, PASS (device wall 23.6 s). `llama-completion -ngl 99 -nkvo -n 64 --temp 0`: prompt 40.1 tok/s (6 tokens), decode 24.8 tok/s (40.4 ms per token; §13.1's 8.48 M cycles are 28.3 ms at 300 MHz, so the host takes ~12 ms per token) |
+| PyTorch | `TSR_DEVICE=xrt TSR_TORCH_VERIFY=1`: suite 85 passed, 2 skipped (sim-only, model path); `test_hf.py` passed; `hf_check.py --forward-only --tokens 8 --expect <sim logits>`: 8 / 8 rows, sha256 `4a5e7b24…7f66` as on `sim` and `vkernel` |

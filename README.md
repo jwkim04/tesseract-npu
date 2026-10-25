@@ -16,18 +16,20 @@ converting the model file. The simulator, the RTL and the hardware are meant to 
 bit. The core RTL is vendor-independent SystemVerilog, so another FPGA board (or, as an
 unscheduled idea, an ASIC) needs new target-specific layers, not a new core.
 
-> **Status (2026-10-24):** no hardware run yet, because the card is not installed. M1 (ISA
-> simulator + ggml backend) and M2 (RTL core without the matrix unit) have passed. M3 (the MVM
-> matrix-vector unit and the U200 platform) is done up to the card:
+> **Status (2026-10-25):** the core runs on the Alveo U200. M1 (ISA simulator + ggml backend)
+> and M2 (RTL core without the matrix unit) have passed, and M0 and the 1-channel half of M3 passed
+> on the card:
 >
-> - The real host stack (llama.cpp, ggml-tesseract, the XRT protocol layer) drives the Verilated
->   U200 kernel (`TSR_DEVICE=vkernel`). Qwen2.5-0.5B Q8_0 gives logits bit-identical to the
->   simulator on all three kernel configurations: k1 (1 channel, T_MAX 1), k4t1 (4 channels,
->   T_MAX 1) and k4 (4 channels, T_MAX 8).
-> - The whole core meets 300 MHz in Vivado out-of-context runs.
-> - The M0 bandwidth xclbin and the 1-channel k1 xclbin are built. Both full `v++` links keep the
->   300 MHz kernel clock with timing met.
-> - Hardware emulation (hw_emu) of k1 runs the real XRT host path.
+> - Qwen2.5-0.5B Q8_0 on the 1-channel bitstream `tsr_u200_k1` (T_MAX 1, 300 MHz): logits
+>   bit-identical to the simulator (8 / 8 rows) and the KL criterion met (mean KL 1.10e-3 against a
+>   floor of 1.14e-3, top-1 98.05 %). `llama-completion` decodes at 24.8 tok/s.
+> - On the card: every MUL_MAT case of `test-backend-ops` (1402 / 1402), `test-ggml-tesseract`
+>   (28 / 28) and the XRT selftest (58 checks) pass. The PyTorch backend gives the simulator's
+>   logits bit for bit.
+> - M0: 18.0 GB/s read (93.8 % of 19.2 GB/s) and 15.9 GB/s write per channel, 72.0 GB/s read on
+>   all four channels at once. Each channel holds 16 GiB without aliasing, so the card has 64 GB.
+> - On the Verilated kernel the 4-channel configurations k4t1 and k4 (T_MAX 8) also give the
+>   simulator's logits. Their bitstream needs the k4 link, which needs a host with 32 GB of RAM.
 >
 > Everything below is verified in simulation unless it says otherwise.
 
@@ -165,10 +167,10 @@ A–C.
 
 | Milestone | Work | Pass criterion | Status |
 | --- | --- | --- | --- |
-| **M0** Shell bring-up | DMA test kernel: per-channel and 4-channel concurrent bandwidth | Measured bandwidth recorded as the baseline for performance prediction | Waiting for the card. The bandwidth kernel, the host tool and the xclbin (300 MHz, timing met, 2026-10-24) are ready |
+| **M0** Shell bring-up | DMA test kernel: per-channel and 4-channel concurrent bandwidth | Measured bandwidth recorded as the baseline for performance prediction | **Passed 2026-10-25.** Per channel 18.0 GB/s read (93.8 %) and 15.9 GB/s write (82.9 %); 72.0 / 63.7 GB/s on all four at once; 16 GiB per channel without aliasing ([`docs/m0-bw.md`](docs/m0-bw.md) §7.1) |
 | **M1** ISA simulator + backend | `TSR_DEVICE=sim`, MUL_MAT offload only, no hardware | `test-backend-ops`; 32B KL check in the simulator | **Passed** 2026-10-22 (32B klcheck ratio 1.36, top-1 98.83 %) |
 | **M2** RTL core skeleton | Command processor (R0–R15, LI, ADDI), DMA, LD/ST, QACT | Verilator trace replay bit-exact | **Passed** 2026-10-23 (`traces/m2`, 172 traces) |
-| **M3** MVM clusters, Q8_0 | One cluster per channel, starting with 1 channel, then 4 | Qwen2.5-0.5B Q8_0 running on hardware: logits bit-identical to `TSR_DEVICE=sim`, and the KL criterion | **In progress, done up to the card.** RTL parts A and B done (the Q4_K path is designed and verified too). Part C (Xilinx wrappers, timing, U200 adapter, XRT transport) done 2026-10-24: logits bit-identical to the simulator on the Verilated kernel; the 1-channel xclbin `tsr_u200_k1` is built (300 MHz, timing met). Waiting for the card |
+| **M3** MVM clusters, Q8_0 | One cluster per channel, starting with 1 channel, then 4 | Qwen2.5-0.5B Q8_0 running on hardware: logits bit-identical to `TSR_DEVICE=sim`, and the KL criterion | **1 channel passed on the card (2026-10-25).** RTL parts A, B and C done (the Q4_K path is designed and verified too). On the U200 with `tsr_u200_k1` (300 MHz): logits bit-identical to the simulator, KL criterion met, 24.8 tok/s. Next: 4 channels (`tsr_u200_k4`; its link waits for the host RAM upgrade) |
 | **M4** Q4_K unpack, 4 channels | v1 goal; other types converted to Q8_0 at load | 32B Q4_K_M on hardware at ≥ 1 tok/s | Planned |
 | **M5** MoE, host-assisted | Router converted to Q8_0, back-to-back MVM overlap, symmetric expert placement | Qwen3-30B-A3B on hardware | Planned |
 | **M6** Vector unit, more ops | RMSNorm, position-based RoPE, SwiGLU, residual, softmax | No host round trips inside a layer | Planned |
@@ -270,8 +272,8 @@ drawn as an arrow. Blocks with a single home are tagged with their SLR under flo
   channel bandwidth. The DMA engine and the arbiters are both in SLR1, so LD/ST data does not
   cross an SLR inside the core.
 - **Platform.** `platforminfo` of `xilinx_u200_gen3x16_xdma_2_202110_1` (2026-10-23): DDR bank0 in
-  SLR0, bank1 and bank2 in SLR1, bank3 in SLR2; one dynamic-region pblock per SLR. The shell
-  flashed on the card is still to be checked with `xbutil examine`.
+  SLR0, bank1 and bank2 in SLR1, bank3 in SLR2; one dynamic-region pblock per SLR. The card
+  runs the shell `xilinx_u200_gen3x16_xdma_base_2` with SC firmware 4.6.21 (2026-10-25).
 
 The spec's version of this figure, with Korean labels: [`docs/fig/u200-system.jpg`](docs/fig/u200-system.jpg).
 

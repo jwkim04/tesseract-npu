@@ -58,7 +58,10 @@ def _layers(n, seed=0):
 
 
 def _run_script(code: str, timeout: float = 180):
-    """Run code in a fresh interpreter with this process's module paths."""
+    """Run code in a fresh interpreter with this process's module paths. This process closes its
+    device first: on a card (TSR_DEVICE=xrt) the compute unit is opened exclusively, so the child
+    could not open it otherwise. The next test reopens it."""
+    tt.close_device()
     env = dict(os.environ)
     paths = [str(HERE.parent), os.path.dirname(_C.__file__)]
     if env.get("PYTHONPATH"):

@@ -463,9 +463,35 @@ run: anything on a card (register reads, DMA, real runs and their numbers).
    performance model (spec 성능 검증; the core's `PERF_*` cycle counters are directly comparable:
    same clock, same bridge).
 
+### 7.1 Results (2026-10-25)
+
+`build/u200/bw/tsr_bw_k4.xclbin` (UUID `709e512f-…-073cd64b03b6`, DATA clock 300 MHz) on the card
+(shell `xilinx_u200_gen3x16_xdma_base_2`, SC 4.6.21). All 1,633 runs (`--ids 1` with `--pcie
+--sweep-outstanding`, `--ids 16`, and the capacity check) passed their checks. Logs and CSVs:
+`build/card/m0_*` (not committed).
+
+| Measurement | Result |
+|---|---|
+| Capacity (`--sizes 8G --ch-mib 16384 --bursts 64 --modes w,r --reps 1 --verify full`) | 16 GiB per channel, no aliasing: the read of [0, 8 GiB) matched the fill after the write of [8 GiB, 16 GiB). The card has 64 GB; `CH_BYTES` stays 16 GiB |
+| Read, bursts 64, ≥ 4 outstanding | 18.01 GB/s per channel (93.8 %), 72.05 GB/s on 4 channels |
+| Write, bursts 64 | 15.92 GB/s per channel (82.9 %; ch1 16.24), 63.68 GB/s on 4 channels |
+| Read + write, bursts 64 | 35.6 + 35.6 = 71.2 GB/s on 4 channels |
+| Outstanding sweep, read, bursts 64, 16M | 1: 8.93 GB/s (46.5 %); 2: 17.46 (90.9 %); 4 and more: 18.01 |
+| Burst length, read, 32 outstanding | 1 beat: 4.86 GB/s (25.3 %); 4: 17.07 (88.9 %; ch1 16.15); 16 and 64: 18.01 |
+| First-beat latency | read 67 cycles (223 ns; ch1 71), write ~170 cycles |
+| `--ids 16` vs `--ids 1` | same rates |
+| PCIe (`xrt::bo` write / read of 256M, wall clock) | host → card 1.94–2.01 GB/s, card → host 10.4–11.1 GB/s |
+
+For the performance model: the weight stream (64-beat bursts) has 18.0 GB/s per channel, 93.8 % of
+the 19.2 GB/s the spec assumes. Two outstanding bursts already give 91 %.
+
 ## 8. Open items
 
-- Nothing ran on hardware, and this kernel has no hw_emu run. The xclbin is built (§4.1): without a
+- Host → card DMA in `tsr_bw --pcie` is 2.0 GB/s, while `xrt-smi validate` measures 7.3–7.9 GB/s.
+  The tool writes from a pageable buffer; the validate test uses host-pinned buffers. Weight upload
+  is a one-time cost (32B Q4_K_M: ~10 s at 2 GB/s); check the transport's upload path with an
+  aligned or pinned staging buffer when M4 loads 32B.
+- The xclbin is built (§4.1): without a
   floorplan the placer put all four engines and bridges in SLR1 and met 300 MHz, so
   `bw_floorplan.tcl` is not used and not needed for timing.
 - Timing (§4.1): the first link had +0.025 ns on the kernel clock, on the R slice's clock-enable

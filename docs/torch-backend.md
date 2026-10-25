@@ -1,11 +1,12 @@
 # PyTorch backend (`torch.compile(model, backend="tesseract")`)
 
-Status: 2026-10-24. The backend, its C++ runtime `tsr_rt` and their tests are implemented. They pass
+Status: 2026-10-25. The backend, its C++ runtime `tsr_rt` and their tests are implemented. They pass
 on `TSR_DEVICE=sim` and `mock`. The runtime tests and a 33-test subset of the PyTorch suite also pass
 on the Verilated U200 kernels k4t1 and k4 (`TSR_DEVICE=vkernel`).
 Qwen2.5-0.5B-Instruct from Hugging Face safetensors runs end to end on the simulator, and an 8-token
-forward on the k4t1 kernel gives the simulator's logits bit for bit (§6.6). Nothing has run on a
-card (`TSR_DEVICE=xrt` is untested here, as in `docs/xrt-host.md` §8). Source-of-truth order:
+forward on the k4t1 kernel gives the simulator's logits bit for bit (§6.6). On the U200 card
+(`TSR_DEVICE=xrt`, `tsr_u200_k1`, 2026-10-25) the suite passes with `TSR_TORCH_VERIFY=1`, and the
+same forward gives the simulator's logits bit for bit (`docs/platform-u200.md` §14.1). Source-of-truth order:
 `docs/spec.md` (수치 규칙, 디바이스 가중치 레이아웃, 양자화 활성값(QA) 레이아웃) > the ISA simulator
 (`sw/sim`) > this document. The package reference (every API, every counter) is
 `sw/torch/README.md`, the runtime's is `sw/rt/README.md`.
