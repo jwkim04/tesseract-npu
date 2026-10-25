@@ -1,9 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/tesseract-lockup-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="docs/logo/tesseract-lockup.svg">
-    <img alt="Tesseract" src="docs/logo/tesseract-lockup.svg" width="440">
-  </picture>
+  <img alt="Tesseract" src="docs/logo/tesseract-lockup-universal.png" width="440">
 </p>
 
 # Tesseract
