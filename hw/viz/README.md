@@ -25,3 +25,15 @@ Checkpoints: the whole-core OOC runs (`tb/core/viv/core_ooc.sh`) write `post_rou
 link leaves `build/u200/<k>/tmp/link/vivado/vpl/prj/prj.runs/impl_1/level0_wrapper_routed.dcp`.
 The images in `docs/fig/floorplan/` were made from the 2026-10-24 runs (k4 OOC with floorplan C',
 and the k1 and M0 links).
+
+## Terminal demo videos (`term2mp4.py`)
+
+`term2mp4.py` turns a `script` recording (util-linux, classic timing) into an MP4. It runs in
+real time and keeps every delay of the recording, so the rates on screen are the measured ones.
+It uses pyte as the terminal emulator, Pillow and the ffmpeg of imageio-ffmpeg, all in
+`build/tools/svgvenv`.
+
+```sh
+script -q -T demo.tim -c 'stty cols 132 rows 36; ./demo.sh' demo.raw
+build/tools/svgvenv/bin/python hw/viz/term2mp4.py demo.raw demo.tim demo.mp4 --cols 132 --rows 36 --fps 20 --size 16
+```
