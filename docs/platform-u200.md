@@ -1054,3 +1054,22 @@ tokens. Card: k4 at 276.3 MHz.
 
 The largest part of the host share is the CPU work between MUL_MATs. M6 and M7 remove it. The
 exec and backend parts (6–7 %) can be cut in software.
+
+Device counters over the same 64 tokens, per token (`TSR_STATS=1` now also prints MVM cycles and
+read beats and DRAM-wait cycles per channel):
+
+| Per decode token | Gemma 4 12B Q8_0 | Qwen2.5-32B Q4_K_M |
+|---|---|---|
+| `PERF_CYCLES` | 50.98 M | 82.56 M |
+| `PERF_MVM_CYCLES` | 49.64 M (97.4 %) | 81.11 M (98.2 %) |
+| Read beats per channel (ch1–3) | 49.55 M (97.2 % of cycles) | 80.97 M (98.1 % of cycles) |
+| Bytes read (4 channels) | 12.69 GB | 20.74 GB |
+| Effective read rate | 68.8 GB/s, 17.2 GB/s per channel | 69.4 GB/s, 17.4 GB/s per channel |
+| `PERF_CH_WAIT` per channel | 37 K cycles (0.07 %) | 57 K cycles (0.07 %) |
+
+Every channel delivers a beat on 97–98 % of the busy cycles, and DRAM almost never stalls the
+core. At 276 MHz the limit is the kernel's 64 B per cycle (17.7 GB/s per channel), slightly below
+what the DRAM gives at 300 MHz (18.0 GB/s, M0). Closing timing at 300 MHz is therefore worth about
++4–5 %, not the clock ratio. Beyond that, decode gets faster only by reading fewer bytes per
+token: lower-bit formats, native Q6_K instead of the Q8_0 conversion (32B Q4_K_M: about 1.3 GB
+of the 20.74 GB), or several tokens per weight pass (T > 1: speculative decoding, batching).

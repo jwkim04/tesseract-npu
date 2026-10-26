@@ -266,8 +266,7 @@ struct tsr_device {
     uint64_t st_graphs = 0;
     uint64_t st_compute_ns = 0;
     uint64_t st_exec_ns = 0;
-    uint64_t st_perf0 = 0;
-    bool     st_perf0_set = false;
+    std::vector<uint64_t> st_perf0;   // every PERF_* counter at the first exec
 
     ggml_backend_buffer_type buft;
     ggml_backend_device      gdev;
@@ -1050,18 +1049,23 @@ static std::string tsr_prog_key(const std::vector<tsr_mm_desc> & mms) {
 }
 
 
-static uint64_t tsr_perf_cycles(tsr_device * d) {
-    const uint32_t lo = tsr_transport_csr_read(d->tp, TSR_CSR_PERF_BASE + 8 * TSR_PERF_CYCLES);   // LO snapshots
-    const uint32_t hi = tsr_transport_csr_read(d->tp, TSR_CSR_PERF_BASE + 8 * TSR_PERF_CYCLES + 4);
-    return ((uint64_t) hi << 32) | lo;
+// Every PERF_* counter: CYCLES, RETIRED, MVM, VU, WAITM, CH_RD_BEATS[c], CH_WAIT[c].
+static std::vector<uint64_t> tsr_perf_all(tsr_device * d) {
+    const uint32_t n = 5 + 2 * tsr_transport_config(d->tp)->num_ch;
+    std::vector<uint64_t> v(n);
+    for (uint32_t i = 0; i < n; i++) {
+        const uint32_t lo = tsr_transport_csr_read(d->tp, TSR_CSR_PERF_BASE + 8 * i);   // LO snapshots
+        const uint32_t hi = tsr_transport_csr_read(d->tp, TSR_CSR_PERF_BASE + 8 * i + 4);
+        v[i] = ((uint64_t) hi << 32) | lo;
+    }
+    return v;
 }
 
 static void tsr_exec(tsr_device * d, const std::vector<tsr_insn> & insns, size_t first, size_t count, uint64_t cmd_beat) {
     tsr_exec_result res = {};
     const bool stats = tsr_stats_on();
-    if (stats && !d->st_perf0_set) {
-        d->st_perf0 = tsr_perf_cycles(d);
-        d->st_perf0_set = true;
+    if (stats && d->st_perf0.empty()) {
+        d->st_perf0 = tsr_perf_all(d);
     }
     const uint64_t t0 = stats ? tsr_now_ns() : 0;
     const int rc = tsr_transport_exec(d->tp, cmd_beat, (uint32_t) count, nullptr, &res);
@@ -1443,11 +1447,19 @@ static const char * tsr_backend_get_name(ggml_backend_t backend) {
 
 static void tsr_backend_free(ggml_backend_t backend) {
     tsr_device * d = ((tsr_backend_ctx *) backend->context)->dev;
-    if (tsr_stats_on() && d->st_perf0_set) {
+    if (tsr_stats_on() && !d->st_perf0.empty()) {
         std::lock_guard<std::mutex> lock(d->mtx);
-        const uint64_t cyc = tsr_perf_cycles(d) - d->st_perf0;
+        std::vector<uint64_t> p = tsr_perf_all(d);
+        for (size_t i = 0; i < p.size(); i++) {
+            p[i] -= d->st_perf0[i];
+        }
         fprintf(stderr, "[tesseract] stats: graphs %" PRIu64 ", execs %" PRIu64 ", graph_compute %.3f s, exec wall %.3f s, "
-                "PERF_CYCLES %" PRIu64 "\n", d->st_graphs, d->n_exec, d->st_compute_ns * 1e-9, d->st_exec_ns * 1e-9, cyc);
+                "PERF_CYCLES %" PRIu64 ", MVM %" PRIu64 ", RETIRED %" PRIu64 "\n", d->st_graphs, d->n_exec,
+                d->st_compute_ns * 1e-9, d->st_exec_ns * 1e-9, p[TSR_PERF_CYCLES], p[TSR_PERF_MVM_CYCLES], p[TSR_PERF_RETIRED]);
+        const size_t nch = (p.size() - 5) / 2;
+        for (size_t c = 0; c < nch; c++) {
+            fprintf(stderr, "[tesseract] stats: ch%zu rd_beats %" PRIu64 ", wait %" PRIu64 "\n", c, p[5 + c], p[5 + nch + c]);
+        }
     }
     delete (tsr_backend_ctx *) backend->context;
     delete backend;
