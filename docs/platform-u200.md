@@ -1034,3 +1034,23 @@ with headers). Card: shell `xilinx_u200_gen3x16_xdma_base_2`, SC 4.6.21, PCIe Ge
 | 11 | `klcheck compare --expect-identical` against `sim`: 8 / 8 rows bit-identical, PASS. `klcheck all -n 64`: mean KL 1.0950e-3 ≤ 3 × floor 1.1357e-3, top-1 98.05 %, PASS (device wall 23.6 s). `llama-completion -ngl 99 -nkvo -n 64 --temp 0`: prompt 40.1 tok/s (6 tokens), decode 24.8 tok/s (40.4 ms per token; §13.1's 8.48 M cycles are 28.3 ms at 300 MHz, so the host takes ~12 ms per token) |
 | PyTorch | `TSR_DEVICE=xrt TSR_TORCH_VERIFY=1`: suite 85 passed, 2 skipped (sim-only, model path); `test_hf.py` passed; `hf_check.py --forward-only --tokens 8 --expect <sim logits>`: 8 / 8 rows, sha256 `4a5e7b24…7f66` as on `sim` and `vkernel` |
 | 12 | k4 link (`build_xclbin.sh k4`, floorplan C', 14 GB RAM + swap, up to 28 GB of swap used): 3 h 51 min. The routed design has WNS −0.285 ns at 300 MHz (809 failing endpoints, TNS −56.5 ns), so `v++` scaled the kernel clock to **276.3 MHz** (`AUTO-FREQ-SCALING-04`; xclbin UUID `cf69a2cd-…-b8c11f25e63a`). The worst paths are in the gather's job pipes, at the ready logic of the slices `u_gather/g_asm[c].u_jp/g_slices.g_s[1]` (from `sel_q` replicas and the previous slice's `main_v_q`). On the card at 276 MHz: selftest with `traces/m3/tmax8`, `errors8`, `m2`, `gen` and `model` PASS (620 checks); `test-ggml-tesseract` 28 / 28; MUL_MAT 1402 / 1402; 0.5B `klcheck compare` 8 / 8 bit-identical; `klcheck all` PASS; `llama-completion` decode 54.7 tok/s (18.29 ms per token; §13.1's 2.28 M cycles are 8.25 ms at 276 MHz, so ~10 ms is host) |
+
+### 14.2 Host overhead in decode, 12B and 32B (2026-10-27)
+
+`TSR_STATS=1` (ggml-tesseract) prints the time spent in `graph_compute` and in device execs, and
+the device's `PERF_CYCLES` over the same span. The figures below are the difference between a
+`-n 65` and a `-n 1` run of `llama-completion -ngl 99 -nkvo -c 4096`, divided by the 64 decode
+tokens. Card: k4 at 276.3 MHz.
+
+| Per decode token | Gemma 4 12B Q8_0 | Qwen2.5-32B Q4_K_M |
+|---|---|---|
+| Wall (llama eval time) | 221.9 ms | 340.6 ms |
+| Device busy (`PERF_CYCLES` / f) | 184.5 ms (83.2 %) | 298.8 ms (87.7 %) |
+| Exec start / completion wait (exec wall − busy) | 10.1 ms (4.6 %), 36 µs per exec | 13.6 ms (4.0 %), 35 µs per exec |
+| Backend host work (graph_compute − exec wall: lowering, IO) | 6.3 ms (2.8 %), 22 µs per graph | 8.5 ms (2.5 %), 22 µs per graph |
+| Outside the backend (CPU ops: attention, norms, RoPE; scheduling, sampling) | 20.9 ms (9.4 %) | 19.7 ms (5.8 %) |
+| Host total | 37.3 ms (16.8 %) | 41.8 ms (12.3 %) |
+| Device round trips (graphs = execs) | 281 | 385 |
+
+The largest part of the host share is the CPU work between MUL_MATs. M6 and M7 remove it. The
+exec and backend parts (6–7 %) can be cut in software.

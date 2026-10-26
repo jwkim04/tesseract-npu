@@ -25,11 +25,14 @@
 // Environment: TSR_DEVICE (transport kind; "none" registers no device), TSR_DEBUG=1|2 (lowering
 // and placement log on stderr; 2 adds a disassembly of every executed program). Test knobs:
 // TSR_FORCE_HOST=1 keeps every non-WEIGHTS buffer in host memory (exercises the staged path),
-// TSR_STAGE_KIB=<n> sets the IO staging area size. The sim transport handles TSR_TRACE /
+// TSR_STAGE_KIB=<n> sets the IO staging area size. TSR_STATS=1 prints, when the backend is freed,
+// the wall time spent in graph_compute and in device execs and the device's PERF_CYCLES over the
+// same span (host round-trip overhead = exec wall - PERF_CYCLES / f_kernel). The sim transport handles TSR_TRACE /
 // TSR_SIM_* itself.
 #include "ggml-tesseract.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
@@ -82,6 +85,19 @@ static int tsr_debug_level() {
         return e ? atoi(e) : 0;
     }();
     return lvl;
+}
+
+static bool tsr_stats_on() {
+    static const bool on = [] {
+        const char * e = getenv("TSR_STATS");
+        return e && atoi(e) != 0;
+    }();
+    return on;
+}
+
+static uint64_t tsr_now_ns() {
+    return (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 #define TSR_DBG(lvl, ...)                                   \
@@ -245,6 +261,13 @@ struct tsr_device {
     uint64_t half_seq[2] = { 0, 0 };
     int      last_half = 1;
     uint64_t n_exec = 0;
+
+    // TSR_STATS=1
+    uint64_t st_graphs = 0;
+    uint64_t st_compute_ns = 0;
+    uint64_t st_exec_ns = 0;
+    uint64_t st_perf0 = 0;
+    bool     st_perf0_set = false;
 
     ggml_backend_buffer_type buft;
     ggml_backend_device      gdev;
@@ -1027,9 +1050,24 @@ static std::string tsr_prog_key(const std::vector<tsr_mm_desc> & mms) {
 }
 
 
+static uint64_t tsr_perf_cycles(tsr_device * d) {
+    const uint32_t lo = tsr_transport_csr_read(d->tp, TSR_CSR_PERF_BASE + 8 * TSR_PERF_CYCLES);   // LO snapshots
+    const uint32_t hi = tsr_transport_csr_read(d->tp, TSR_CSR_PERF_BASE + 8 * TSR_PERF_CYCLES + 4);
+    return ((uint64_t) hi << 32) | lo;
+}
+
 static void tsr_exec(tsr_device * d, const std::vector<tsr_insn> & insns, size_t first, size_t count, uint64_t cmd_beat) {
     tsr_exec_result res = {};
+    const bool stats = tsr_stats_on();
+    if (stats && !d->st_perf0_set) {
+        d->st_perf0 = tsr_perf_cycles(d);
+        d->st_perf0_set = true;
+    }
+    const uint64_t t0 = stats ? tsr_now_ns() : 0;
     const int rc = tsr_transport_exec(d->tp, cmd_beat, (uint32_t) count, nullptr, &res);
+    if (stats) {
+        d->st_exec_ns += tsr_now_ns() - t0;
+    }
     d->n_exec++;
     if (rc != 0 || (res.status & TSR_STATUS_ERR) || !(res.status & TSR_STATUS_DONE)) {
         std::string at = "-";
@@ -1404,6 +1442,13 @@ static const char * tsr_backend_get_name(ggml_backend_t backend) {
 }
 
 static void tsr_backend_free(ggml_backend_t backend) {
+    tsr_device * d = ((tsr_backend_ctx *) backend->context)->dev;
+    if (tsr_stats_on() && d->st_perf0_set) {
+        std::lock_guard<std::mutex> lock(d->mtx);
+        const uint64_t cyc = tsr_perf_cycles(d) - d->st_perf0;
+        fprintf(stderr, "[tesseract] stats: graphs %" PRIu64 ", execs %" PRIu64 ", graph_compute %.3f s, exec wall %.3f s, "
+                "PERF_CYCLES %" PRIu64 "\n", d->st_graphs, d->n_exec, d->st_compute_ns * 1e-9, d->st_exec_ns * 1e-9, cyc);
+    }
     delete (tsr_backend_ctx *) backend->context;
     delete backend;
 }
@@ -1411,6 +1456,7 @@ static void tsr_backend_free(ggml_backend_t backend) {
 static enum ggml_status tsr_backend_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     tsr_device * d = ((tsr_backend_ctx *) backend->context)->dev;
     std::lock_guard<std::mutex> lock(d->mtx);
+    const uint64_t t_start = tsr_stats_on() ? tsr_now_ns() : 0;
     tsr_segment seg;
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
@@ -1434,6 +1480,10 @@ static enum ggml_status tsr_backend_graph_compute(ggml_backend_t backend, ggml_c
         }
     }
     tsr_flush(d, seg);
+    if (tsr_stats_on()) {
+        d->st_graphs++;
+        d->st_compute_ns += tsr_now_ns() - t_start;
+    }
     return GGML_STATUS_SUCCESS;
 }
 
