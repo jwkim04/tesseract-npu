@@ -12,9 +12,8 @@ converting the model file. The simulator, the RTL and the hardware are meant to 
 bit. The core RTL is vendor-independent SystemVerilog, so another FPGA board (or, as an
 unscheduled idea, an ASIC) needs new target-specific layers, not a new core.
 
-> **Status (2026-10-25):** the core runs on the Alveo U200. M1 (ISA simulator + ggml backend)
-> and M2 (RTL core without the matrix unit) have passed, and M0 and the 1-channel half of M3 passed
-> on the card:
+> **Status (2026-10-26):** the core runs on the Alveo U200. M1 (ISA simulator + ggml backend)
+> and M2 (RTL core without the matrix unit) have passed, and M0 and M3 passed on the card:
 >
 > - Qwen2.5-0.5B Q8_0 on the 1-channel bitstream `tsr_u200_k1` (T_MAX 1, 300 MHz): logits
 >   bit-identical to the simulator (8 / 8 rows) and the KL criterion met (mean KL 1.10e-3 against a
@@ -24,8 +23,8 @@ unscheduled idea, an ASIC) needs new target-specific layers, not a new core.
 >   logits bit for bit.
 > - M0: 18.0 GB/s read (93.8 % of 19.2 GB/s) and 15.9 GB/s write per channel, 72.0 GB/s read on
 >   all four channels at once. Each channel holds 16 GiB without aliasing, so the card has 64 GB.
-> - On the Verilated kernel the 4-channel configurations k4t1 and k4 (T_MAX 8) also give the
->   simulator's logits. Their bitstream needs the k4 link, which needs a host with 32 GB of RAM.
+> - 4 channels (`tsr_u200_k4`, T_MAX 8): the same checks pass, logits bit-identical, 54.7 tok/s. The
+>   link missed 300 MHz by 0.285 ns, so `v++` scaled the kernel clock to 276 MHz.
 >
 > Everything below is verified in simulation unless it says otherwise.
 
@@ -166,7 +165,7 @@ A–C.
 | **M0** Shell bring-up | DMA test kernel: per-channel and 4-channel concurrent bandwidth | Measured bandwidth recorded as the baseline for performance prediction | **Passed 2026-10-25.** Per channel 18.0 GB/s read (93.8 %) and 15.9 GB/s write (82.9 %); 72.0 / 63.7 GB/s on all four at once; 16 GiB per channel without aliasing ([`docs/m0-bw.md`](docs/m0-bw.md) §7.1) |
 | **M1** ISA simulator + backend | `TSR_DEVICE=sim`, MUL_MAT offload only, no hardware | `test-backend-ops`; 32B KL check in the simulator | **Passed** 2026-10-22 (32B klcheck ratio 1.36, top-1 98.83 %) |
 | **M2** RTL core skeleton | Command processor (R0–R15, LI, ADDI), DMA, LD/ST, QACT | Verilator trace replay bit-exact | **Passed** 2026-10-23 (`traces/m2`, 172 traces) |
-| **M3** MVM clusters, Q8_0 | One cluster per channel, starting with 1 channel, then 4 | Qwen2.5-0.5B Q8_0 running on hardware: logits bit-identical to `TSR_DEVICE=sim`, and the KL criterion | **1 channel passed on the card (2026-10-25).** RTL parts A, B and C done (the Q4_K path is designed and verified too). On the U200 with `tsr_u200_k1` (300 MHz): logits bit-identical to the simulator, KL criterion met, 24.8 tok/s. Next: 4 channels (`tsr_u200_k4`; its link waits for the host RAM upgrade) |
+| **M3** MVM clusters, Q8_0 | One cluster per channel, starting with 1 channel, then 4 | Qwen2.5-0.5B Q8_0 running on hardware: logits bit-identical to `TSR_DEVICE=sim`, and the KL criterion | **Passed 2026-10-26.** RTL parts A, B and C done (the Q4_K path is designed and verified too). On the U200, logits bit-identical to the simulator and the KL criterion met with 1 channel (`tsr_u200_k1`, 300 MHz, 24.8 tok/s) and 4 channels (`tsr_u200_k4`, 276 MHz, 54.7 tok/s) |
 | **M4** Q4_K unpack, 4 channels | v1 goal; other types converted to Q8_0 at load | 32B Q4_K_M on hardware at ≥ 1 tok/s | Planned |
 | **M5** MoE, host-assisted | Router converted to Q8_0, back-to-back MVM overlap, symmetric expert placement | Qwen3-30B-A3B on hardware | Planned |
 | **M6** Vector unit, more ops | RMSNorm, position-based RoPE, SwiGLU, residual, softmax | No host round trips inside a layer | Planned |
