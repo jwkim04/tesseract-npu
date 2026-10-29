@@ -26,9 +26,9 @@ violations are also collected in .errors):
   - at most rd_outstanding read requests outstanding per channel (accept -> last beat accepted)
   - valid stays high and the payload stable until the handshake (core-driven channels)
   - write data: exactly len beats per request, wr_dat_last on (and only on) the last beat
-Tracking for trace checks: .written[c] (beats written), .read[c] (beats read),
-.read_unwritten[c] (beats read before any write by this run), .src_beats[c][s] (read beats per
-source id[3:2]: 0 FETCH, 1 DMA, 2 WS; replay checks DMA = LD beats and WS = MVM weight beats).
+Tracking: .written[c] (beats written), .read[c] (beats read), .read_unwritten[c] (beats read
+before any write by this run), .src_beats[c][s] (read beats per source id[3:2]: 0 AUX, 1 DMA,
+2 WS; the unit benches check DMA = LD beats and WS = MVM weight beats).
 
 Timing discipline: the model samples DUT outputs at the falling clock edge and updates/drives its
 own outputs right after the rising edge. Drive DUT inputs the same way in other TB components.
@@ -94,7 +94,7 @@ class _Chan:
         self.mode = "any"
         self.mode_left = 0
         self.stats = dict(rd_bursts=0, rd_beats=0, wr_bursts=0, wr_beats=0)
-        self.src_beats = [0, 0, 0, 0]       # read beats per source id[3:2] (FETCH, DMA, WS, -)
+        self.src_beats = [0, 0, 0, 0]       # read beats per source id[3:2] (AUX, DMA, WS, -)
 
 
 class MemModel:
@@ -177,19 +177,6 @@ class MemModel:
     def beat(self, ch: int, beat: int) -> int:
         return self.ch[ch].mem.get(beat, 0)
 
-    def load_trace(self, tr):
-        """Load a trace's initial DRAM (cmd.bin then init regions)."""
-        for r in tr.initial_dram():
-            self.load(r.ch, r.offset, r.data)
-
-    @classmethod
-    def for_trace(cls, dut, tr, **kw):
-        c = tr.config
-        m = cls(dut, num_ch=c["num_ch"], addr_w=c["addr_beat_w"], beat_bits=c["beat_bits"],
-                rd_outstanding=c["rd_outstanding"], limit_beats=tr.dram_limit, **kw)
-        m.load_trace(tr)
-        return m
-
     @property
     def written(self):
         return [c.written for c in self.ch]
@@ -211,7 +198,7 @@ class MemModel:
 
     @property
     def src_beats(self):
-        """Per channel: read beats delivered per memory-side source (id[3:2]: 0 FETCH, 1 DMA, 2 WS)
+        """Per channel: read beats delivered per memory-side source (id[3:2]: 0 AUX, 1 DMA, 2 WS)
         since the model was created or clear_tracking()."""
         return [list(c.src_beats) for c in self.ch]
 

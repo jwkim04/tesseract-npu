@@ -734,7 +734,7 @@ class DmaDriver:
     async def op(self, is_st: int, ch: int, spm_line: int, dram_beat: int, n: int, gap: int = 0,
                  timeout: int | None = None, on_done=None) -> int:
         """Dispatch one command, wait for done. Returns right after the edge that ends the done
-        cycle (a next op can be offered immediately: back-to-back as cmdproc can do it).
+        cycle (a next op can be offered immediately: back-to-back, as a dispatcher may do it).
         on_done() runs in the done cycle (falling edge)."""
         d = self.dut
         for _ in range(gap):

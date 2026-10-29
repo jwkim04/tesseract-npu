@@ -4,10 +4,15 @@
 // Writes metadata-only xclbins of tsr_u200_k4 (EMBEDDED_METADATA kernel XML, IP_LAYOUT,
 // MEM_TOPOLOGY with four DDR4 banks, CONNECTIVITY) and checks what XRT itself checks: xclbin
 // load, kernel lookup by name, argument discovery by register offset, memory groups and bank
-// sizes, device-only buffer allocation, xrt::run argument types, start / wait. The noop shim
+// sizes, device-only buffer allocation. The kernels have only the channel-buffer arguments of the
+// v2 contract (docs/v2/01-execution-model.md §9.1) and declare ap_ctrl_hs without an interrupt
+// (its fallback form; xrt::kernel refuses ap_ctrl_none, P3.1 moves to xrt::ip). The noop shim
 // implements neither register access nor unmanaged DMA, so those calls must fail cleanly (and
 // tsr_transport_open("xrt") stops at the first register read). Broken xclbins (s_axi_control
-// range 0x1000, a foreign argument, no Tesseract kernel) must be refused with a reason.
+// range 0x1000, a foreign argument, v1's cmd_addr / cmd_count / arg0-7 arguments, no Tesseract
+// kernel) must be refused with a reason. The ap_ctrl_none kernel of the v2 contract (what
+// rtl/platform/alveo_xrt/kernel_k*.xml declare since X0) must be refused with a message naming
+// P3.1 until the kdev moves to xrt::ip.
 //
 //   test-tsr-xrt-noop <XRT root> <scratch dir>
 
@@ -20,6 +25,8 @@
 #include <cstring>
 #include <string>
 #include <vector>
+
+#include <unistd.h>
 
 using namespace tsr;
 
@@ -40,8 +47,31 @@ struct variant {
     uint32_t    range       = 0x2000;
     uint32_t    num_ch      = 4;
     bool        foreign_arg = false;
+    bool        v1_args     = false;   // v1's run arguments (cmd_addr at 0x10, cmd_count, arg0..7)
+    bool        ctrl_none   = false;   // ap_ctrl_none (kernel.xml and IP_LAYOUT), the v2 contract
     uint64_t    bank_kb     = 64 * 1024;   // 64 MiB banks: the noop shim memsets every buffer
 };
+
+// open_xrt_kdev() with stderr captured into *msg (the refusal reason); true if it opened.
+static bool open_capture(const std::string & dir, std::string * msg) {
+    const std::string path = dir + "/open_stderr.txt";
+    FILE * f = fopen(path.c_str(), "w+");
+    if (f == nullptr) return false;
+    fflush(stderr);
+    const int saved = dup(2);
+    dup2(fileno(f), 2);
+    const bool opened = open_xrt_kdev() != nullptr;
+    fflush(stderr);
+    dup2(saved, 2);
+    close(saved);
+    msg->clear();
+    rewind(f);
+    char buf[512];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) msg->append(buf, n);
+    fclose(f);
+    return opened;
+}
 
 static std::string kernel_xml(const variant & v) {
     std::string x = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<project name=\"tsr_noop\">\n"
@@ -52,9 +82,9 @@ static std::string kernel_xml(const variant & v) {
     char buf[512];
     snprintf(buf, sizeof(buf),
              "<kernel name=\"%s\" language=\"ip_c\" vlnv=\"tesseract:kernel:%s:1.0\" preferredWorkGroupSizeMultiple=\"0\" "
-             "workGroupSize=\"1\" interrupt=\"true\" hwControlProtocol=\"ap_ctrl_hs\">\n"
+             "workGroupSize=\"1\" interrupt=\"false\" hwControlProtocol=\"%s\">\n"
              "<port name=\"s_axi_control\" mode=\"slave\" range=\"0x%x\" dataWidth=\"32\" portType=\"addressable\" base=\"0x0\"/>\n",
-             v.kname.c_str(), v.kname.c_str(), v.range);
+             v.kname.c_str(), v.kname.c_str(), v.ctrl_none ? "ap_ctrl_none" : "ap_ctrl_hs", v.range);
     x += buf;
     for (uint32_t c = 0; c < v.num_ch; ++c) {
         snprintf(buf, sizeof(buf),
@@ -69,9 +99,11 @@ static std::string kernel_xml(const variant & v) {
         x += buf;
     };
     int id = 0;
-    arg("cmd_addr", id++, "s_axi_control", 0x10, 8, 0, "ulong");
-    arg("cmd_count", id++, "s_axi_control", 0x18, 4, 0, "uint");
-    for (int i = 0; i < 8; ++i) arg(("arg" + std::to_string(i)).c_str(), id++, "s_axi_control", 0x20 + 4 * i, 4, 0, "uint");
+    if (v.v1_args) {
+        arg("cmd_addr", id++, "s_axi_control", 0x10, 8, 0, "ulong");
+        arg("cmd_count", id++, "s_axi_control", 0x18, 4, 0, "uint");
+        for (int i = 0; i < 8; ++i) arg(("arg" + std::to_string(i)).c_str(), id++, "s_axi_control", 0x20 + 4 * i, 4, 0, "uint");
+    }
     for (uint32_t c = 0; c < v.num_ch; ++c) {
         arg(("ch" + std::to_string(c)).c_str(), id++, ("m_axi_ch" + std::to_string(c)).c_str(), 0x40 + 8 * c, 8, 1, "void*");
     }
@@ -92,7 +124,7 @@ static bool write_xclbin(const std::string & path, const variant & v) {
         memset(l, 0, sizeof(*l));
         l->m_count = 1;
         l->m_ip_data[0].m_type = IP_KERNEL;
-        l->m_ip_data[0].properties = (AP_CTRL_HS << IP_CONTROL_SHIFT) | IP_INT_ENABLE_MASK;
+        l->m_ip_data[0].properties = (v.ctrl_none ? AP_CTRL_NONE : AP_CTRL_HS) << IP_CONTROL_SHIFT;
         l->m_ip_data[0].m_base_address = 0x1800000;
         snprintf((char *) l->m_ip_data[0].m_name, sizeof(l->m_ip_data[0].m_name), "%s:%s_1", v.kname.c_str(), v.kname.c_str());
     }
@@ -114,7 +146,8 @@ static bool write_xclbin(const std::string & path, const variant & v) {
     {
         connectivity * k = (connectivity *) con.data();
         k->m_count = (int32_t) v.num_ch;
-        for (uint32_t c = 0; c < v.num_ch; ++c) k->m_connection[c] = connection{ (int32_t) (10 + c), 0, (int32_t) c };
+        const int32_t first_ch_arg = v.v1_args ? 10 : 0;   // the channel args follow v1's 10 run args, if any
+        for (uint32_t c = 0; c < v.num_ch; ++c) k->m_connection[c] = connection{ first_ch_arg + (int32_t) c, 0, (int32_t) c };
     }
     struct sec { axlf_section_kind kind; const char * name; const void * p; size_t n; };
     const sec secs[] = { { EMBEDDED_METADATA, "metadata", xml.data(), xml.size() }, { MEM_TOPOLOGY, "mem", mem.data(), mem.size() },
@@ -135,7 +168,10 @@ static bool write_xclbin(const std::string & path, const variant & v) {
     a->m_header.m_versionMinor = 1;
     a->m_header.m_mode = XCLBIN_FLAT;
     snprintf((char *) a->m_header.m_platformVBNV, sizeof(a->m_header.m_platformVBNV), "xilinx_u200_noop");
-    for (int i = 0; i < 16; ++i) a->m_header.uuid[i] = (unsigned char) (0x51 + i * 7 + v.range / 0x1000 + v.num_ch + (v.foreign_arg ? 3 : 0) + v.kname.size());
+    for (int i = 0; i < 16; ++i) {
+        a->m_header.uuid[i] = (unsigned char) (0x51 + i * 7 + v.range / 0x1000 + v.num_ch + (v.foreign_arg ? 3 : 0) +
+                                               (v.v1_args ? 5 : 0) + (v.ctrl_none ? 11 : 0) + v.kname.size());
+    }
     a->m_header.m_numSections = (uint32_t) nsec;
     size_t off = hdr;
     for (size_t i = 0; i < nsec; ++i) {
@@ -165,7 +201,6 @@ int main(int argc, char ** argv) {
     if (system(("mkdir -p '" + dir + "'").c_str()) != 0) return 2;
     unsetenv("TSR_XRT_CH_GIB");
     unsetenv("TSR_XRT_KERNEL");
-    unsetenv("TSR_XRT_CTRL");
     unsetenv("TSR_XRT_DMA");
 
     variant good;
@@ -182,14 +217,6 @@ int main(int argc, char ** argv) {
                 CHECK(d->ch_bytes(c) == good.bank_kb * 1024, "ch%u buffer = bank size (%llu)", c, (unsigned long long) d->ch_bytes(c));
             }
             CHECK(d->describe().find("tsr_u200_k4") != std::string::npos, "describe names the kernel");
-            kargs a;
-            a.cmd_addr = 0x123456789ull;
-            a.cmd_count = 7;
-            for (int i = 0; i < 8; ++i) a.arg[i] = 0x1000u * i + 1;
-            for (int rep = 0; rep < 3; ++rep) {
-                CHECK(d->start(a) == 0, "xrt::run start with u64 / u32 arguments (run %d)", rep);
-                CHECK(d->wait(2000) == kwait::done, "xrt::run wait (run %d)", rep);
-            }
             uint32_t v = 0;
             CHECK(d->reg_read(KREG_CSR_WINDOW, &v) != 0, "noop shim: register read fails cleanly");
             uint8_t b[100] = {};
@@ -216,23 +243,34 @@ int main(int argc, char ** argv) {
 
     // Refusals.
     struct bad { variant v; const char * what; };
-    bad bads[3];
+    bad bads[4];
     bads[0].v.range = 0x1000;
     bads[0].what = "s_axi_control range 0x1000 refused";
     bads[1].v.foreign_arg = true;
     bads[1].what = "argument outside the contract refused";
     bads[2].v.kname = "other_kernel";
     bads[2].what = "xclbin without a Tesseract kernel refused";
-    for (int i = 0; i < 3; ++i) {
+    bads[3].v.v1_args = true;
+    bads[3].what = "v1 kernel (cmd_addr / cmd_count / arg0..7 arguments) refused";
+    for (int i = 0; i < 4; ++i) {
         const std::string p = dir + "/bad" + std::to_string(i) + ".xclbin";
         CHECK(write_xclbin(p, bads[i].v), "write bad %d", i);
         setenv("TSR_XCLBIN", p.c_str(), 1);
         CHECK(open_xrt_kdev() == nullptr, "%s", bads[i].what);
     }
+    // The v2 contract's ap_ctrl_none kernel: refused before XRT is asked, naming P3.1 (xrt::ip).
+    {
+        variant none;
+        none.ctrl_none = true;
+        const std::string p = dir + "/tsr_u200_k4_ctrl_none.xclbin";
+        CHECK(write_xclbin(p, none), "write ap_ctrl_none");
+        setenv("TSR_XCLBIN", p.c_str(), 1);
+        std::string msg;
+        CHECK(!open_capture(dir, &msg), "ap_ctrl_none kernel refused until P3.1");
+        CHECK(msg.find("ap_ctrl_none") != std::string::npos && msg.find("P3.1") != std::string::npos,
+              "the refusal names ap_ctrl_none and P3.1: \"%s\"", msg.c_str());
+    }
     setenv("TSR_XCLBIN", xgood.c_str(), 1);
-    setenv("TSR_XRT_CTRL", "bogus", 1);
-    CHECK(open_xrt_kdev() == nullptr, "bad TSR_XRT_CTRL refused");
-    unsetenv("TSR_XRT_CTRL");
     // m2m: the staging buffers are allocated at open, before the channel buffers (the noop shim
     // does not enforce bank capacity, so only the order / success is visible here).
     setenv("TSR_XRT_DMA", "m2m", 1);

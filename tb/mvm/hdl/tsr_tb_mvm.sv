@@ -6,7 +6,7 @@
 // for common.mem_model.MemModel; memory-side ids {source, local}).
 //   - SPM client TSR_SPM_CL_DMA (h_*): the host side of the test (Python fills x / old y lines
 //     and reads the y lines back); client TSR_SPM_CL_QACT is tied off.
-//   - arbiter sources FETCH / DMA and the write source: tied off (the MVM unit runs alone).
+//   - arbiter sources AUX / DMA and the write source: tied off (the MVM unit runs alone).
 //   - o_*: observation copies of the MVM unit's SPM client port and WS source ports.
 // tb/mvm/test_mvm.py builds it with the real rtl/core files or with the test doubles of
 // tsr_mvm_back / tsr_mvm_actbuf (tb/mvm/hdl/dbl, same module names).
@@ -226,8 +226,8 @@ module tsr_tb_mvm
     assign ws_req_ready[c] = a_req_ready[TSR_SRC_WS];
     assign ws_rsp_valid[c] = a_rsp_valid[TSR_SRC_WS];
 
-    wire unused_ok = &{1'b0, a_req_ready[TSR_SRC_DMA], a_req_ready[TSR_SRC_FETCH],
-                       a_rsp_valid[TSR_SRC_DMA], a_rsp_valid[TSR_SRC_FETCH], a_wr_req_ready,
+    wire unused_ok = &{1'b0, a_req_ready[TSR_SRC_DMA], a_req_ready[TSR_SRC_AUX],
+                       a_rsp_valid[TSR_SRC_DMA], a_rsp_valid[TSR_SRC_AUX], a_wr_req_ready,
                        a_wr_dat_ready, a_wr_rsp_valid, a_wr_rsp_id, a_perf_beat, a_perf_wait};
   end
 

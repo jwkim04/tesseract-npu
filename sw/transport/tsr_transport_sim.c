@@ -7,32 +7,26 @@
 //   TSR_SIM_CH_GIB    per-channel DRAM size in GiB, 1..16 (default 16; ADDR_BEAT_W = 28 caps
 //                     the addressable size at 16 GiB)
 //   TSR_SIM_THREADS   simulator worker threads for large MVMs (default min(online CPUs, 8))
-//   TSR_SIM_LOG       per-instruction log: "stderr" or a file path (default off)
-//   TSR_TRACE         dump every exec as a trace directory <TSR_TRACE>/<seq, 6 digits>/;
-//                     the sequence number is the first free one, so runs never overwrite
-//                     earlier dumps. The directory is logged to stderr once.
+//   TSR_SIM_LOG       the simulator's per-op log: "stderr" or a file path (default off)
 // Any malformed value makes tsr_transport_open fail with a message (never silently ignored).
+// The per-exec TSR_TRACE dump of v1 is deleted with the run interface (X0); trace v2 dumps one
+// trace per launch (docs/v2/06-software-verification.md §5.5, P1.10 / P3.1). This file is
+// replaced by the "sim" kdev of the v2 protocol layer (SW V2-SW-18).
 
 #define _GNU_SOURCE
 
 #include "tsr_sim.h"
-#include "tsr_trace.h"
 #include "tsr_transport_impl.h"
 
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <unistd.h>
 
 typedef struct {
     tsr_sim *  sim;
     tsr_config cfg;          // as read back through the CFG*/CAPS CSRs (+ ch_bytes etc.)
-    char *     trace_dir;
-    uint32_t   trace_seq;
-    int        trace_logged;
     FILE *     log;
     int        log_close;
 } sim_transport;
@@ -54,38 +48,11 @@ static int env_uint(const char * name, unsigned long lo, unsigned long hi, unsig
     return -1;
 }
 
-static int mkdir_p(const char * path) {
-    const size_t n = strlen(path);
-    char * p = (char *)malloc(n + 1);
-    if (p == NULL) return -1;
-    memcpy(p, path, n + 1);
-    for (size_t i = 1; i <= n; ++i) {
-        if (p[i] == '/' || p[i] == '\0') {
-            const char c = p[i];
-            p[i] = '\0';
-            if (mkdir(p, 0755) != 0 && errno != EEXIST) {
-                fprintf(stderr, "tsr_transport(sim): mkdir %s: %s\n", p, strerror(errno));
-                free(p);
-                return -1;
-            }
-            p[i] = c;
-        }
-    }
-    free(p);
-    struct stat st;
-    if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) {
-        fprintf(stderr, "tsr_transport(sim): %s is not a directory\n", path);
-        return -1;
-    }
-    return 0;
-}
-
 static void st_close(void * impl) {
     sim_transport * s = (sim_transport *)impl;
     if (s == NULL) return;
     tsr_sim_destroy(s->sim);
     if (s->log_close && s->log) fclose(s->log);
-    free(s->trace_dir);
     free(s);
 }
 
@@ -116,82 +83,8 @@ static int st_read(void * impl, uint32_t ch, uint64_t off, void * dst, size_t si
 
 static uint32_t st_csr_read(void * impl, uint32_t off) { return tsr_sim_csr_read(((sim_transport *)impl)->sim, off); }
 
-// Creates the next free <trace_dir>/<seq> directory; returns its path (malloc) or NULL.
-static char * next_trace_dir(sim_transport * s) {
-    const size_t n = strlen(s->trace_dir) + 32;
-    char * p = (char *)malloc(n);
-    if (p == NULL) return NULL;
-    for (;;) {
-        snprintf(p, n, "%s/%06u", s->trace_dir, s->trace_seq);
-        if (mkdir(p, 0755) == 0) break;
-        if (errno != EEXIST) {
-            fprintf(stderr, "tsr_transport(sim): TSR_TRACE: cannot create %s: %s\n", p, strerror(errno));
-            free(p);
-            return NULL;
-        }
-        s->trace_seq++;
-    }
-    s->trace_seq++;
-    return p;
-}
-
-static int st_exec(void * impl, uint64_t cmd_addr_beat, uint32_t cmd_count, const uint32_t args[8],
-                   tsr_exec_result * res) {
-    sim_transport * s = (sim_transport *)impl;
-    const uint32_t nch = s->cfg.num_ch;
-    uint64_t perf0[3 + TSR_TRACE_MAX_CH] = { 0 };
-    if (s->trace_dir) {
-        perf0[0] = tsr_sim_perf(s->sim, TSR_PERF_CYCLES);
-        perf0[1] = tsr_sim_perf(s->sim, TSR_PERF_RETIRED);
-        perf0[2] = tsr_sim_perf(s->sim, TSR_PERF_MVM_CYCLES);
-        for (uint32_t c = 0; c < nch; ++c) perf0[3 + c] = tsr_sim_perf(s->sim, tsr_perf_ch_rd_beats(c));
-        tsr_sim_capture_begin(s->sim);
-    }
-    const uint32_t status = tsr_sim_exec(s->sim, cmd_addr_beat, cmd_count, args);
-    res->status = status;
-    res->err_code = tsr_sim_csr_read(s->sim, TSR_CSR_ERR_CODE);
-    res->err_pc = tsr_sim_csr_read(s->sim, TSR_CSR_ERR_PC);
-    res->err_info = tsr_sim_csr_read(s->sim, TSR_CSR_ERR_INFO);
-
-    if (s->trace_dir) {
-        tsr_trace tr;
-        memset(&tr, 0, sizeof(tr));
-        tr.cfg = *tsr_sim_config(s->sim);
-        tr.cmd_addr_beat = cmd_addr_beat;
-        tr.cmd_count = cmd_count;
-        for (int i = 0; i < 8; ++i) tr.args[i] = args ? args[i] : 0u;
-        tr.status = status;
-        tr.err_code = res->err_code;
-        tr.err_pc = res->err_pc;
-        tr.err_info = res->err_info;
-        tr.has_err_info = 1;
-        tr.perf.valid = 1;
-        tr.perf.cycles = tsr_sim_perf(s->sim, TSR_PERF_CYCLES) - perf0[0];
-        tr.perf.retired = tsr_sim_perf(s->sim, TSR_PERF_RETIRED) - perf0[1];
-        tr.perf.mvm_cycles = tsr_sim_perf(s->sim, TSR_PERF_MVM_CYCLES) - perf0[2];
-        for (uint32_t c = 0; c < nch; ++c) {
-            tr.perf.ch_rd_beats[c] = tsr_sim_perf(s->sim, tsr_perf_ch_rd_beats(c)) - perf0[3 + c];
-        }
-        tsr_sim_capture_end(s->sim, &tr.cap);
-        char * dir = next_trace_dir(s);
-        if (dir != NULL) {
-            if (!s->trace_logged) {
-                fprintf(stderr, "tsr_transport(sim): TSR_TRACE: dumping every exec as a trace directory under %s/ "
-                                "(first: %s)\n", s->trace_dir, dir);
-                s->trace_logged = 1;
-            }
-            if (tsr_trace_write(dir, &tr) != 0) {
-                fprintf(stderr, "tsr_transport(sim): TSR_TRACE: failed to write trace %s\n", dir);
-            }
-            free(dir);
-        }
-        tsr_capture_free(&tr.cap);
-    }
-    return ((status & TSR_STATUS_DONE) && !(status & TSR_STATUS_ERR)) ? 0 : -1;
-}
-
 static const tsr_transport_ops sim_ops = {
-    "sim", st_close, st_config, st_write, st_read, st_exec, st_csr_read,
+    "sim", st_close, st_config, st_write, st_read, st_csr_read,
 };
 
 void * tsr_transport_sim_open(const tsr_transport_ops ** ops) {
@@ -237,23 +130,9 @@ void * tsr_transport_sim_open(const tsr_transport_ops ** ops) {
         tsr_sim_set_log(s->sim, s->log);
     }
 
-    const char * tdir = getenv("TSR_TRACE");
-    if (tdir != NULL && tdir[0] != '\0') {
-        if (mkdir_p(tdir) != 0) {
-            st_close(s);
-            return NULL;
-        }
-        s->trace_dir = (char *)malloc(strlen(tdir) + 1);
-        if (s->trace_dir == NULL) {
-            st_close(s);
-            return NULL;
-        }
-        strcpy(s->trace_dir, tdir);
-    }
-
     // Configuration as software sees it on hardware: decoded from the ID/VERSION/CFG*/CAPS CSRs.
-    // BEAT_BITS, NIREG, LOOP_DEPTH, RD_OUTSTANDING, ADDR_BEAT_W and CH_BYTES are not carried by
-    // the CSRs; they come from the platform description (here: the simulator's config).
+    // BEAT_BITS, RD_OUTSTANDING, ADDR_BEAT_W and CH_BYTES are not carried by the CSRs; they come
+    // from the platform description (here: the simulator's config).
     const tsr_config * sc = tsr_sim_config(s->sim);
     const uint32_t id = tsr_sim_csr_read(s->sim, TSR_CSR_ID);
     const uint32_t ver = tsr_sim_csr_read(s->sim, TSR_CSR_VERSION);

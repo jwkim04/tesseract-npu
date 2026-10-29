@@ -48,7 +48,7 @@ ARB_OUTPUTS = ["s_rd_req_ready", "s_rd_rsp_valid", "s_rd_rsp_data", "s_rd_rsp_la
                "m_wr_req_addr", "m_wr_req_len", "m_wr_req_id", "m_wr_dat_valid", "m_wr_dat_data",
                "m_wr_dat_last", "m_wr_rsp_ready", "perf_rd_beat", "perf_rd_wait"]
 
-NSRC = 3                       # tsr_pkg TSR_NSRC: FETCH, DMA, WS
+NSRC = 3                       # tsr_pkg TSR_NSRC: AUX, DMA, WS
 RD_REGION = (0, 2048)          # read-only, preloaded
 WR_REGION = (4096, 6144)       # written by the write source only
 

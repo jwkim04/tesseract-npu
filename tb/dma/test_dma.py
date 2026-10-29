@@ -2,7 +2,7 @@
 
 pytest functions:
   test_dma_sys[cfg]   cocotb on tb/dma/hdl/tsr_tb_dma.sv (tsr_dma + one tsr_mem_arb per channel,
-                      Python SPM model, MemModel on the memory ports, background FETCH/WS readers):
+                      Python SPM model, MemModel on the memory ports, background AUX/WS readers):
                         sys_directed     4 KiB edges, 1..max lines (whole SPM), DRAM limit, all
                                          channels, LD/ST round trips
                         sys_random       random LD/ST (sizes, offsets, channels, back-to-back),
@@ -158,7 +158,7 @@ class Env:
         if system:
             mb = self.mem.beat
             self.bgf = ReadSources(dut, prefix="f_", lanes=1, aw=self.aw, rnd=rnd, expect=lambda k, b: mb(0, b),
-                                   region=(0, self.bg_hi), shared_rsp=True, name="fetch")
+                                   region=(0, self.bg_hi), shared_rsp=True, name="aux")
             self.bgw = ReadSources(dut, prefix="w_", lanes=self.n, aw=self.aw, rnd=rnd,
                                    expect=lambda k, b: mb(k, b), region=(0, self.bg_hi), shared_rsp=False,
                                    name="ws")

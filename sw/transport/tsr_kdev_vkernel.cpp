@@ -1,22 +1,18 @@
-// tsr_kdev_vkernel.cpp — the "vkernel" kdev: the kernel protocol (tsr_kdev.cpp) against the
-// Verilated Alveo kernel (tsr_xrt_kernel / the packaged tops) running in a separate server
-// process (tb/platform/vkernel/vkernel_server.cpp, wire protocol tsr_vkernel_proto.h), so a
-// llama.cpp process exercises the real host path — register map, ap_ctrl_hs, the CSR window,
-// ADAPTER_STATUS, the start / wait / settle sequences — against the RTL without linking
-// Verilator. docs/platform-u200.md §13. TSR_DEVICE=vkernel opens it with:
+// tsr_kdev_vkernel.cpp — the "vkernel" kdev: the protocol layer (tsr_kdev.cpp) against the
+// Verilated Alveo kernel running in a separate server process (wire protocol
+// tsr_vkernel_proto.h), so a host process exercises the real host path — register map, the CSR
+// window, ADAPTER_STATUS, transfers — against the RTL without linking Verilator.
+// docs/platform-u200.md §13. X0 deleted the v1 server (tb/platform/vkernel) and the v1 run
+// control of this client (environment switches for the start sequence and polling, VK_WAIT);
+// the two-clock v2 server comes with P5.3 (docs/v2/06-software-verification.md §11).
+// TSR_DEVICE=vkernel opens it with:
 //   TSR_VKERNEL_SERVER   server command line (words separated by blanks, no quoting): the client
 //                        spawns it with one end of a socketpair (appends --fd N); it exits when
 //                        the client closes the connection (also at process exit)
 //   TSR_VKERNEL_SOCKET   instead: path of a Unix socket a server listens on (vkernel_server --socket)
-//   TSR_VKERNEL_CTRL     kds (default): kds_start, then the server polls AP_CTRL like the XRT
-//                        scheduler (first read with ap_done completes); irq: kds_start with GIE /
-//                        IER set, the server waits for `interrupt`, toggles ISR and reads AP_CTRL;
-//                        regs: regs_start / regs_wait, every register access a round trip (the
-//                        sequence of TSR_XRT_CTRL=regs on the card)
-//   TSR_VKERNEL_POLL     cycles between the server's AP_CTRL polls in kds mode (default 16)
 // Every response carries the server's count of verification findings (AXI4 / AXI4-Lite checks,
-// memory-model rules, RTL assertions, quiescence at completion); when it grows the client prints
-// them and fails the operation, so the exec (or the open) fails.
+// memory-model rules, RTL assertions); when it grows the client prints them and fails the
+// operation (or the open).
 
 #include "tsr_kdev.h"
 #include "tsr_vkernel_proto.h"
@@ -45,8 +41,6 @@ extern char ** environ;
 namespace tsr {
 
 namespace {
-
-enum class vk_ctrl { kds, irq, regs };
 
 bool write_all(int fd, const void * p, size_t n) {
     const uint8_t * b = (const uint8_t *) p;
@@ -121,17 +115,6 @@ public:
     bool open() {
         const char * srv = getenv("TSR_VKERNEL_SERVER");
         const char * sock = getenv("TSR_VKERNEL_SOCKET");
-        const char * ctl = getenv("TSR_VKERNEL_CTRL");
-        if (ctl == nullptr || ctl[0] == '\0' || strcmp(ctl, "kds") == 0) ctrl_ = vk_ctrl::kds;
-        else if (strcmp(ctl, "irq") == 0) ctrl_ = vk_ctrl::irq;
-        else if (strcmp(ctl, "regs") == 0) ctrl_ = vk_ctrl::regs;
-        else return fail("TSR_VKERNEL_CTRL must be kds, irq or regs");
-        if (const char * p = getenv("TSR_VKERNEL_POLL")) {
-            char * end = nullptr;
-            const unsigned long v = strtoul(p, &end, 10);
-            if (end == p || *end != '\0' || v < 1 || v > 100000) return fail("TSR_VKERNEL_POLL must be 1..100000 cycles");
-            poll_ = (uint32_t) v;
-        }
         if (sock != nullptr && sock[0] != '\0') {
             fd_ = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
             sockaddr_un a{};
@@ -146,7 +129,7 @@ public:
             if (!spawn(srv)) return false;
         } else {
             return fail("set TSR_VKERNEL_SERVER (server command line) or TSR_VKERNEL_SOCKET "
-                        "(tb/platform/vkernel/vkernel.py prints both)");
+                        "(no in-tree server until the two-clock v2 vkernel, P5.3)");
         }
         tsr_vk_rsp r{};
         std::vector<uint8_t> pl;
@@ -203,10 +186,7 @@ public:
     uint32_t num_ch() const override { return nch_; }
     uint64_t ch_bytes(uint32_t) const override { return chb_; }
     uint64_t ch_addr(uint32_t ch) const override { return base_[ch]; }
-    std::string describe() const override {
-        const char * c = ctrl_ == vk_ctrl::kds ? "kds (server polls AP_CTRL)" : ctrl_ == vk_ctrl::irq ? "irq" : "regs";
-        return "Verilated kernel server: " + desc_ + "\ncontrol: " + c + "\n";
-    }
+    std::string describe() const override { return "Verilated kernel server: " + desc_ + "\n"; }
 
     int reg_read(uint32_t off, uint32_t * val) override {
         tsr_vk_rsp r{};
@@ -240,31 +220,9 @@ public:
         return 0;
     }
 
-    int start(const kargs & a) override {
-        if (ctrl_ == vk_ctrl::regs) return regs_start(*this, a);
-        if (ctrl_ == vk_ctrl::irq && !irq_on_) {
-            // interrupt mode, as the XRT scheduler programs an ap_ctrl_hs CU with interrupts
-            if (reg_write(KREG_GIE, 1) != 0 || reg_write(KREG_IER, 1) != 0) return -1;
-            irq_on_ = true;
-        }
-        return kds_start(*this, a);
-    }
-    kwait wait(uint32_t timeout_ms) override {
-        if (ctrl_ == vk_ctrl::regs) return regs_wait(*this, timeout_ms);
-        tsr_vk_rsp r{};
-        const uint32_t mode = ctrl_ == vk_ctrl::irq ? VK_WAIT_IRQ : VK_WAIT_POLL;
-        if (!call(VK_WAIT, mode, poll_, timeout_ms, nullptr, 0, &r, nullptr)) return kwait::error;
-        if (r.rc == VK_DONE) return kwait::done;
-        if (r.rc == VK_TIMEOUT) return kwait::timeout;
-        return kwait::error;
-    }
-
 private:
     int      fd_ = -1;
     pid_t    pid_ = -1;
-    vk_ctrl  ctrl_ = vk_ctrl::kds;
-    uint32_t poll_ = 16;
-    bool     irq_on_ = false;
     uint32_t nch_ = 0;
     uint64_t chb_ = 0;
     std::vector<uint64_t> base_;

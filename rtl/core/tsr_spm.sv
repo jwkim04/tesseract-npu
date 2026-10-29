@@ -28,7 +28,7 @@
 //           dispatched unit drives requests, so there is never contention; ready is still low in
 //           the first request cycle after another client used the port (and during reset), and
 //           clients must honour it (hold valid and payload, rule R2).
-//   lines >= SPM lines are never presented (tsr_cmdproc range-checks every operand).
+//   lines >= SPM lines are never presented (the dispatch range-checks every operand).
 //   Simulation only (`ifndef SYNTHESIS): asserts that presented lines are < SPM lines and that
 //   clients obey R2 (a request not yet accepted stays valid with an unchanged payload). The
 //   checks are armed by the first clock edge with rst_n low; before it the inputs and the state

@@ -19,11 +19,12 @@ option(TSR_WITH_TORCH "Build the PyTorch extension sw/torch (_tesseract_rt; need
 
 enable_testing()
 
-add_subdirectory(sw/sim)         # tsr_ref, tsr_sim, tsr_trace (+ unit tests)
-add_subdirectory(sw/transport)   # tsr_transport (sim, optional xrt)
-include(sw/ggml-tesseract/lower.cmake)   # tsr_lower: lowering, allocator, weight layout (no ggml);
+add_subdirectory(sw/tables)      # v2 table source: --check / self-test ctests, generated-header compile check
+add_subdirectory(sw/sim)         # tsr_ref, tsr_sim (+ unit tests)
+add_subdirectory(sw/transport)   # tsr_transport (sim, mock, vkernel, optional xrt)
+include(sw/ggml-tesseract/lower.cmake)   # tsr_lower: SPM tiling, allocator, weight layout (no ggml);
                                          # linked by ggml-tesseract and by the runtime sw/rt
-add_subdirectory(sw/tools)       # trace runner, test vector generator, klcheck
+add_subdirectory(sw/tools)       # selftest, klcheck, numcheck, tsr_bw
 
 if (TSR_WITH_LLAMA)
     set(GGML_TESSERACT ON CACHE BOOL "" FORCE)

@@ -3,7 +3,7 @@
 // Owner: DMA agent (docs/rtl-m2.md §2, block (b); dispatch §3.2; memory port rules §4).
 //
 // Dispatch: cmd_valid/cmd_ready accept one tsr_dma_cmd_t (cmd_ready = idle). Operands are legal
-//   (tsr_cmdproc checked them; n_lines >= 1). `done` pulses one cycle when the instruction's effects
+//   (the dispatch checks them; n_lines >= 1). `done` pulses one cycle when the instruction's effects
 //   are complete: LD — the last SPM line write has been accepted by tsr_spm; ST — every DRAM write
 //   response of the instruction has been received (sequential semantics: a later instruction
 //   sees the data). done is never in the same cycle as the accepting handshake.
@@ -78,7 +78,7 @@ module tsr_dma
   input  logic                                  clk,
   input  logic                                  rst_n,
 
-  // ---- dispatch from tsr_cmdproc ----
+  // ---- dispatch (the v2 dispatcher, Y4) ----
   input  logic                                  cmd_valid,
   output logic                                  cmd_ready,
   input  tsr_dma_cmd_t                          cmd,
@@ -369,7 +369,7 @@ module tsr_dma
   assign spm_wr_be        = '1;
 
   // Read ids/last and write ids are checked in simulation only; upper operand bits are zero by
-  // the cmdproc range checks.
+  // the dispatch range checks.
   wire unused_ok = &{1'b0, cmd, rd_rsp_last, rd_rsp_id, wr_rsp_id};
 
   // -------------------------------------------------------------------------------------------

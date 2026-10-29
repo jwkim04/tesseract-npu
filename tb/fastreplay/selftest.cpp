@@ -214,7 +214,7 @@ int main() {
                 o.rd_req_valid = reqs < 2;
                 o.rd_req_addr = reqs == 0 ? 64 : 128;
                 o.rd_req_len = 32;
-                o.rd_req_id = reqs == 0 ? 0x0 : 0x4;   // FETCH, DMA
+                o.rd_req_id = reqs == 0 ? 0x0 : 0x4;   // AUX, DMA
                 o.rd_rsp_ready = true;
                 const ChIn in = x.m.in_[0];
                 if (in.rd_rsp_valid) {
@@ -319,12 +319,12 @@ int main() {
         write_burst(y, 0, 8, 4, 0x4, 0, 3);
         expect(y.m.n_errors() >= 1, "missing last reported");
     });
-    run_case("P5 ids: FETCH on channel 1, WS without MVM, source 3, write not from DMA", [] {
+    run_case("P5 ids: AUX on channel 1, WS without MVM, source 3, write not from DMA", [] {
         Fix x(ideal());
         read_burst(x, 1, 0, 1, 0x0);
-        expect(x.m.n_errors() == 1, "fetch on ch1");
+        expect(x.m.n_errors() == 1, "aux on ch1");
         read_burst(x, 0, 0, 1, 0x0);
-        expect(x.m.n_errors() == 1, "fetch on ch0 is legal");
+        expect(x.m.n_errors() == 1, "aux on ch0 is legal");
         read_burst(x, 0, 0, 1, 0x8);
         expect(x.m.n_errors() == 2, "WS without has_mvm");
         read_burst(x, 0, 0, 1, 0xC);

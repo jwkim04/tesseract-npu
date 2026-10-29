@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""trace_stats.py — MVM shape coverage and weight traffic of trace directories (tsr_trace.h).
+"""trace_stats.py — MVM shape coverage and weight traffic of v1 trace directories (the cmd.bin
+format of tag v1-m4's sw/sim/include/tsr_trace.h).
 
     python3 traces/m3/trace_stats.py [--per-trace] [--classes] [--json FILE] [--big BEATS] PATH...
 

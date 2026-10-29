@@ -3,7 +3,7 @@
 // Owner: QACT agent (docs/rtl-m2.md §2, block (e); dispatch §3.3, numerics §8.1).
 //
 // Dispatch: cmd_valid/cmd_ready accept one tsr_qact_cmd_t (cmd_ready = idle, from the state
-//   register). Operands are legal (tsr_cmdproc checked K, T and both SPM ranges; src_stride already
+//   register). Operands are legal (the dispatch checks K, T and both SPM ranges; src_stride already
 //   resolved; qa_lines = QA_LINES(kind, K)). `done` is a registered 1-cycle pulse in the cycle after
 //   the edge at which tsr_spm accepted the last QA line write of the instruction (never in the
 //   accepting cycle). At that point the unit is quiescent: every SPM read has returned, every
@@ -105,7 +105,7 @@ module tsr_qact
   input  logic                         clk,
   input  logic                         rst_n,
 
-  // ---- dispatch from tsr_cmdproc ----
+  // ---- dispatch (the v2 dispatcher, Y4) ----
   input  logic                         cmd_valid,
   output logic                         cmd_ready,
   input  tsr_qact_cmd_t                cmd,
@@ -716,7 +716,7 @@ module tsr_qact
   end
 
   // Unused: m_v[15:1] (all multipliers share one valid), the bits of cmd not needed after the
-  // checks (upper address bits, k[3:0], qa_lines above SPM_AW; cmdproc guarantees their values).
+  // checks (upper address bits, k[3:0], qa_lines above SPM_AW; the dispatch guarantees their values).
   wire unused_ok = &{1'b0, m_v[15:1], cmd};
 
 `ifndef SYNTHESIS

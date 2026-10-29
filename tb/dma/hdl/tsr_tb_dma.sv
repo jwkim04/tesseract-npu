@@ -2,7 +2,8 @@
 //
 // tsr_dma + one tsr_mem_arb per channel, wired like tsr_core (DMA = source TSR_SRC_DMA of every
 // channel), with the other read sources exposed so Python can generate background traffic:
-//   f_*  : source TSR_SRC_FETCH of channel 0 (channels > 0 tie FETCH off, as in tsr_core)
+//   f_*  : source TSR_SRC_AUX (0, the former fetch source) of channel 0 as a background reader
+//          (channels > 0 tie it off; tsr_core ties it off on every channel, V2-CC-26)
 //   w_*  : source TSR_SRC_WS of every channel (packed [NUM_CH]; the M3 weight-stream port)
 //   m_*  : the channel memory ports (tsr_core naming, for common.mem_model.MemModel)
 //   spm_*: the DMA's SPM client port. RTL_SPM = 0: driven by a Python SPM model. RTL_SPM = 1:
@@ -53,7 +54,7 @@ module tsr_tb_dma
   input  logic [SPM_AW-1:0]                      x_wr_line,
   input  logic [TSR_LINE_BITS-1:0]               x_wr_data,
 
-  // ---- background source FETCH (channel 0) ----
+  // ---- background source AUX (channel 0) ----
   input  logic                                   f_rd_req_valid,
   output logic                                   f_rd_req_ready,
   input  logic [ADDR_BEAT_W-1:0]                 f_rd_req_addr,
@@ -200,18 +201,18 @@ module tsr_tb_dma
   end
 
   for (genvar c = 0; c < NUM_CH; c++) begin : g_ch
-    if (c == 0) begin : g_fetch
-      assign s_rd_req_valid[c][TSR_SRC_FETCH] = f_rd_req_valid;
-      assign s_rd_req_addr[c][TSR_SRC_FETCH]  = f_rd_req_addr;
-      assign s_rd_req_len[c][TSR_SRC_FETCH]   = f_rd_req_len;
-      assign s_rd_req_id[c][TSR_SRC_FETCH]    = f_rd_req_id;
-      assign s_rd_rsp_ready[c][TSR_SRC_FETCH] = f_rd_rsp_ready;
-    end else begin : g_nofetch
-      assign s_rd_req_valid[c][TSR_SRC_FETCH] = 1'b0;
-      assign s_rd_req_addr[c][TSR_SRC_FETCH]  = '0;
-      assign s_rd_req_len[c][TSR_SRC_FETCH]   = '0;
-      assign s_rd_req_id[c][TSR_SRC_FETCH]    = '0;
-      assign s_rd_rsp_ready[c][TSR_SRC_FETCH] = 1'b1;
+    if (c == 0) begin : g_aux
+      assign s_rd_req_valid[c][TSR_SRC_AUX] = f_rd_req_valid;
+      assign s_rd_req_addr[c][TSR_SRC_AUX]  = f_rd_req_addr;
+      assign s_rd_req_len[c][TSR_SRC_AUX]   = f_rd_req_len;
+      assign s_rd_req_id[c][TSR_SRC_AUX]    = f_rd_req_id;
+      assign s_rd_rsp_ready[c][TSR_SRC_AUX] = f_rd_rsp_ready;
+    end else begin : g_noaux
+      assign s_rd_req_valid[c][TSR_SRC_AUX] = 1'b0;
+      assign s_rd_req_addr[c][TSR_SRC_AUX]  = '0;
+      assign s_rd_req_len[c][TSR_SRC_AUX]   = '0;
+      assign s_rd_req_id[c][TSR_SRC_AUX]    = '0;
+      assign s_rd_rsp_ready[c][TSR_SRC_AUX] = 1'b1;
     end
     assign s_rd_req_valid[c][TSR_SRC_DMA] = d_rd_req_valid[c];
     assign s_rd_req_addr[c][TSR_SRC_DMA]  = d_rd_req_addr[c];
@@ -257,8 +258,8 @@ module tsr_tb_dma
     );
   end
 
-  assign f_rd_req_ready = s_rd_req_ready[0][TSR_SRC_FETCH];
-  assign f_rd_rsp_valid = s_rd_rsp_valid[0][TSR_SRC_FETCH];
+  assign f_rd_req_ready = s_rd_req_ready[0][TSR_SRC_AUX];
+  assign f_rd_rsp_valid = s_rd_rsp_valid[0][TSR_SRC_AUX];
   assign f_rd_rsp_data  = s_rd_rsp_data[0];
   assign f_rd_rsp_last  = s_rd_rsp_last[0];
   assign f_rd_rsp_id    = s_rd_rsp_id[0];
@@ -267,7 +268,7 @@ module tsr_tb_dma
   always_comb begin
     unused_tb = 1'b0;
     for (int c = 1; c < NUM_CH; c++) begin
-      unused_tb |= s_rd_req_ready[c][TSR_SRC_FETCH] | s_rd_rsp_valid[c][TSR_SRC_FETCH];
+      unused_tb |= s_rd_req_ready[c][TSR_SRC_AUX] | s_rd_rsp_valid[c][TSR_SRC_AUX];
     end
   end
 

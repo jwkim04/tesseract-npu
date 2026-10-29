@@ -331,7 +331,7 @@ async def qact_random(dut):
             src, dst, stride = drv.place(kind, K, T, gap=gap, at_end=at_end)
         except ValueError:
             src, dst, stride = drv.place(kind, K, T, gap=0)
-        # T == 1: the resolved stride is whatever w5 was (cmdproc passes it); the unit ignores it.
+        # T == 1: the resolved stride is whatever w5 was (the dispatch passes it); the unit ignores it.
         sfield = rnd.choice((stride, 0xFFFFFFFF, rnd.getrandbits(32))) if T == 1 else None
         mode = rnd.choice(("mix", "mix", "mix", "normal", "bits"))
         xs = [gen_vector(rnd, kind, K, mode) for _ in range(T)]

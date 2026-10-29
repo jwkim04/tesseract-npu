@@ -94,15 +94,12 @@ set fp [ipx::add_bus_parameter -quiet FREQ_HZ $clkbif]
 set_property value 300000000 $fp
 set_property value_resolve_type user $fp
 
-# s_axi_control register map: ap_ctrl_hs block and the args of kernel_<k>.xml
+# s_axi_control register map: the args of kernel_<k>.xml (ap_ctrl_none, docs/v2 EX §9.1: no
+# AP_CTRL / GIE / IER / ISR block since X0; hw/u200/build_xclbin.sh does not package the k*
+# kernels until Y5, whose first smoke link confirms this map, fallback in EX §9.1)
 set mm [ipx::add_memory_map -quiet s_axi_control $core]
 set ab [ipx::add_address_block -quiet reg0 $mm]
 set_property range 0x2000 $ab
-foreach {name off} {CTRL 0x000 GIER 0x004 IP_IER 0x008 IP_ISR 0x00C} {
-  set reg [ipx::add_register $name $ab]
-  set_property address_offset $off $reg
-  set_property size 32 $reg
-}
 set xf [open $kxml r]
 set xml [read $xf]
 close $xf

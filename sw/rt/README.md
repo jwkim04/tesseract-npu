@@ -6,6 +6,14 @@ backend="tesseract")`: the weight matmuls go to the device, everything else stay
 `sw/torch`, whose extension `_tesseract_rt` binds this API). It runs on `tsr_transport`, so
 `TSR_DEVICE=sim | mock | vkernel | xrt` select the device as for the ggml backend.
 
+> **State after X0 (v2, `docs/v2/01-execution-model.md` §12).** v1's per-call programs (emitted
+> on the host, cached in the CMD region, run through the transport's run interface) are deleted.
+> `upload`, `read_blocks`, `linear_ref`, `info` and `memory` work unchanged; `linear` throws
+> `tsr::rt::error` until a linear becomes a one-op OPL launch of the `graph` kernel
+> (`docs/v2/06-software-verification.md` §9.4, P3.2). The public API is unchanged; the program
+> counters stay 0. The `rt_*` ctests are not registered until then. Sections below that describe
+> programs and their cache describe v1 (tag `v1-m4`).
+
 ## Files
 
 | File | Content |
@@ -94,8 +102,9 @@ the PERF_CYCLES / PERF_MVM_CYCLES deltas of every run; PERF does not change betw
 ## Environment
 
 `TSR_DEVICE` (transport, default sim) and the transport's own variables (`TSR_SIM_*`, `TSR_MOCK_*`,
-`TSR_VKERNEL_*`, `TSR_XRT_*`, `TSR_TRACE` for sim). `TSR_RT_DEBUG=1` logs uploads and emitted
-programs, `2` adds a disassembly of every new program.
+`TSR_VKERNEL_*`, `TSR_XRT_*`; v1's per-exec `TSR_TRACE` dump for sim is deleted in X0).
+`TSR_RT_DEBUG=1` logs uploads and emitted programs, `2` adds a disassembly of every new program
+(v1).
 
 ## Build and test
 
@@ -103,6 +112,7 @@ programs, `2` adds a disassembly of every new program.
 cmake -S . -B build/rt -DCMAKE_BUILD_TYPE=Release
 cmake --build build/rt -j4 --target tsr_rt tsr_rt_shared test-tsr-rt
 cd build/rt && ctest -R '^rt_'
+# v1 (tag v1-m4; X0 deleted the v1 vkernel server, the v2 one is P5.3):
 tb/platform/vkernel/vkernel.py run --config k4t1 -- build/rt/bin/test-tsr-rt --quick    # RTL smoke
 ```
 

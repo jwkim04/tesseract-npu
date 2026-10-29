@@ -4,8 +4,8 @@
 //
 // Owner: DMA agent (docs/rtl-m2.md §2, block (b); memory port rules §4).
 //
-// Read sources (index = tsr_pkg TSR_SRC_*): 0 FETCH (channel 0 only; tied off elsewhere),
-// 1 DMA, 2 WS (M3 weight stream; tied off in M2). Write source: DMA only.
+// Read sources (index = tsr_pkg TSR_SRC_*): 0 AUX (freed by the fetch removal, tied off by
+// tsr_core: V2-CC-26), 1 DMA, 2 WS (M3 weight stream; tied off in M2). Write source: DMA only.
 // Contract:
 //   - Read requests: round-robin between requesting sources, one burst per grant. A grant is
 //     given only while fewer than RD_OUTSTANDING read requests are outstanding on this channel
@@ -48,7 +48,7 @@
 //     waiting for m_rd_req_ready (the channel is waiting for the memory in both cases).
 //   - Latency: request 2 cycles (input slice + output slice), read data 1 cycle, write data /
 //     request 1 cycle, write response 1 cycle.
-//   - M3: the WS source is a full peer of FETCH/DMA (own slice, same round robin, same shared
+//   - M3: the WS source is a full peer of AUX/DMA (own slice, same round robin, same shared
 //     outstanding budget); in M2 it is tied off (valid 0, ready 1) and its slice is constant.
 
 // tsr_rslice — valid/ready register slice, 2 entries (main + skid), 100 % throughput.

@@ -1,8 +1,14 @@
 # sw/torch — PyTorch backend (`torch.compile(model, backend="tesseract")`)
 
 Inference with the weight matmuls on Tesseract and everything else on the CPU. The device is
-`TSR_DEVICE` (`sim` today; `mock`, `vkernel`, `xrt` through the same transport). Numerics are the
-llama.cpp path's (docs/spec.md 수치 규칙, 로드 시 변환):
+`TSR_DEVICE` (`sim` today; `mock`, `vkernel`, `xrt` through the same transport).
+
+> **State after X0 (v2, `docs/v2/01-execution-model.md` §12).** The runtime under this package
+> (`sw/rt`) has no device execution until the op-list path (P3.2): uploads and the reference path
+> work, a device matmul raises `TesseractError`. The `torch_pytest` ctests are not registered
+> until then; nothing in this package changes (`docs/v2/06-software-verification.md` §9.4).
+
+Numerics are the llama.cpp path's (docs/spec.md 수치 규칙, 로드 시 변환):
 
 - float32 / float16 / bfloat16 weights become Q8_0 when they are uploaded, with ggml's
   `quantize_row_q8_0_ref` (f16 / bf16 widened exactly first). This is the function the ggml backend uses
@@ -133,7 +139,7 @@ with `close_device()` can raise it too). `tt.device()` afterwards opens a new de
 
 | Variable | Effect |
 | --- | --- |
-| `TSR_DEVICE` | transport: `sim` (default), `mock`, `vkernel`, `xrt`; with its own variables (`TSR_SIM_*`, `TSR_MOCK_*`, `TSR_VKERNEL_*`, `TSR_XRT_*`, `TSR_TRACE`) |
+| `TSR_DEVICE` | transport: `sim` (default), `mock`, `vkernel`, `xrt`; with its own variables (`TSR_SIM_*`, `TSR_MOCK_*`, `TSR_VKERNEL_*`, `TSR_XRT_*`; v1's per-exec `TSR_TRACE` dump is deleted in X0, trace v2 is P1.10) |
 | `TSR_TORCH_DEBUG` | `1`: the partition of every compiled graph (which matmuls go to the device, why the others stay on the CPU), every upload, the counters at exit; `2`: also every device call; `3`: also the rewritten aten graphs |
 | `TSR_TORCH_VERIFY` | `1`: every device matmul is also computed by the reference model (libtsr_ref on the weight rows read back from the device) and compared bit for bit; a mismatch raises `TesseractError` naming the weight, the element and both values (for vkernel / xrt bring-up) |
 | `TSR_TORCH_EXT_DIR` | where to find `_tesseract_rt` if it is not on `sys.path` |
@@ -265,8 +271,10 @@ The vkernel subset (the Verilated U200 kernel: RTL) covers the bit-exact cases o
 256 × 1024 × 17 tokens in the three dtypes, the rounding rows, strides, T tiling with exact traffic,
 native blocks, errors, and the compiled MLP / transformer block, program cache, B·S > T_MAX, operand
 forms, in-place re-upload and dynamic lengths. It leaves out the large shapes because the kernel
-simulates about 15k cycles/s. Command, with the servers already built (from the M3 RTL at 04:37 that
-day; `vkernel.py run` would rebuild them when the RTL has changed):
+simulates about 15k cycles/s. Command (v1, tag `v1-m4`: X0 deleted the v1 vkernel server, its
+`TSR_VKERNEL_CTRL` and `TSR_XRT_TIMEOUT_MS`; the two-clock v2 server is P5.3), with the servers
+already built (from the M3 RTL at 04:37 that day; `vkernel.py run` would rebuild them when the RTL
+has changed):
 
 ```
 TSR_DEVICE=vkernel TSR_VKERNEL_CTRL=kds TSR_XRT_TIMEOUT_MS=0 \

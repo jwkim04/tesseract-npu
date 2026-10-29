@@ -22,7 +22,5 @@ core/tsr_mvm_back.sv
 core/tsr_mvm_cluster.sv
 core/tsr_mvm_gather.sv
 core/tsr_mvm.sv
-core/tsr_fetch.sv
 core/tsr_csr.sv
-core/tsr_cmdproc.sv
 core/tsr_core.sv

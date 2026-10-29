@@ -1,6 +1,6 @@
 // tsr_vkernel_proto.h — wire protocol between the "vkernel" kdev (tsr_kdev_vkernel.cpp, in the
-// host process) and the Verilated kernel server (tb/platform/vkernel/vkernel_server.cpp).
-// docs/platform-u200.md §13.
+// host process) and the Verilated kernel server (tb/platform/vkernel; the v1 server is deleted in
+// X0, the two-clock v2 server is P5.3). docs/platform-u200.md §13.
 //
 // One stream connection (a socketpair to a server the client spawned, or a Unix socket), one
 // request at a time, native byte order (both ends run on the same host). Every request is a
@@ -9,11 +9,15 @@
 // findings (AXI4 / AXI4-Lite protocol checks, memory-model rules, RTL assertions, quiescence at
 // completion, cycle budget): the client fetches the messages with VK_MSGS and fails the
 // operation as soon as the count grows, so a protocol bug cannot pass silently.
+//
+// Version 2 (X0, docs/v2/01-execution-model.md §12): VK_WAIT (6), the scheduler's side of an
+// ap_ctrl_hs run, is deleted with the run protocol; a version-1 server refuses the HELLO. The
+// two-clock v2 server and its device-time hint (EX §10.2 advance) come with P5.3.
 #pragma once
 
 #include <stdint.h>
 
-#define TSR_VK_PROTO_VERSION 1u
+#define TSR_VK_PROTO_VERSION 2u
 
 enum tsr_vk_op {
     VK_HELLO  = 1,   // a = protocol version -> val = NUM_CH, x = channel bytes; payload =
@@ -23,21 +27,11 @@ enum tsr_vk_op {
     VK_REG_WR = 3,   // a = offset, b = value (one AXI4-Lite write, WSTRB 0xF)
     VK_MEM_WR = 4,   // a = channel, b = byte offset, c = bytes (payload follows; host DMA, no cycles)
     VK_MEM_RD = 5,   // a = channel, b = byte offset, c = bytes -> payload
-    VK_WAIT   = 6,   // a = VK_WAIT_*, b = poll interval in cycles (VK_WAIT_POLL), c = timeout in ms
-                     //   (0 = none) -> rc VK_DONE / VK_TIMEOUT / VK_ERROR
+                     // 6: deleted (v1 VK_WAIT), never reused
     VK_STATS  = 7,   // -> payload: JSON summary of the session so far (NUL-terminated)
     VK_MSGS   = 8,   // -> payload: findings not fetched yet, one per line (NUL-terminated)
     VK_BYE    = 9,   // the server prints its summary and exits
 };
-
-enum tsr_vk_wait {
-    VK_WAIT_POLL = 1,   // the XRT scheduler's polling: an AP_CTRL read every b cycles through the
-                        // AXI4-Lite master, complete on the first read that shows ap_done
-    VK_WAIT_IRQ  = 2,   // interrupt mode: run until `interrupt` is high, then (as the scheduler's
-                        // interrupt handler) ISR := toggle and an AP_CTRL read that must show ap_done
-};
-
-enum { VK_DONE = 0, VK_TIMEOUT = 1, VK_ERROR = -1 };
 
 typedef struct tsr_vk_req {
     uint32_t op;
@@ -47,7 +41,7 @@ typedef struct tsr_vk_req {
 } tsr_vk_req;
 
 typedef struct tsr_vk_rsp {
-    int32_t  rc;      // 0 ok (VK_WAIT: VK_DONE / VK_TIMEOUT), < 0 failed
+    int32_t  rc;      // 0 ok, < 0 failed
     uint32_t val;
     uint64_t x;
     uint32_t viol;    // findings so far (cumulative)

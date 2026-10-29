@@ -1,8 +1,8 @@
 # lower.cmake — tsr_lower: the ggml-free part of the ggml-tesseract backend as a static library,
 # linked by the backend (ggml-tesseract, see sources.cmake) and by the runtime sw/rt (tsr_rt).
 #
-#   tsr-lower.{h,cpp}    MUL_MAT lowering (SPM tiling, LD / QACT / MVM / ST), disassembly,
-#                        program cache
+#   tsr-lower.{h,cpp}    MUL_MAT SPM tiling and shape checks (the emission and the program
+#                        cache are deleted in X0; the tiling moves to plan.hpp in P2.4)
 #   tsr-alloc.{h,cpp}    first-fit range allocator (IO windows, AUX, symmetric WEIGHT heap)
 #   tsr-wlayout.{h,cpp}  device-format row bytes, row repack + symmetric scatter / gather
 #

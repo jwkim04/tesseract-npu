@@ -43,8 +43,12 @@ if (Python3_Interpreter_FOUND)
 endif()
 
 # ---------------------------------------------------------------------------
-# Simulator / trace / transport tests (owner: M1 step 3/4). Prefix sim_.
+# Simulator / capture / transport tests (owner: M1 step 3/4). Prefix sim_.
 # Run: ctest --test-dir <build> -R '^sim_' --output-on-failure
+# X0 (docs/v2/06-software-verification.md §10.2): these test the op-level core through
+# tsr_sim_op; the v1 trace round trip (sim_trace, sim_trace_ubsan) is deleted and returns with
+# trace v2 (P1.10); sim_basic / sim_mvm / sim_transport are rewritten for the queues and the
+# launch path in W1 / P3.1.
 # ---------------------------------------------------------------------------
 find_package(Threads REQUIRED)
 
@@ -56,22 +60,22 @@ endfunction()
 
 set(TSR_SIM_TEST_SCRATCH ${CMAKE_CURRENT_BINARY_DIR}/scratch)
 
-tsr_sim_test(sim_basic test_sim_basic.c tsr_sim tsr_ref)        # CSRs, flow, LD/ST, errors, reserved fields, abort
+tsr_sim_test(sim_basic test_sim_basic.c tsr_sim tsr_ref)        # CSRs, LD/ST, errors, reserved fields incl. x16
 add_test(NAME sim_basic COMMAND sim_basic)
 
-tsr_sim_test(sim_mvm test_sim_mvm.c tsr_sim tsr_ref)            # LD/QACT/MVM/ST programs vs direct tsr_ref
+tsr_sim_test(sim_mvm test_sim_mvm.c tsr_sim tsr_ref)            # LD/QACT/MVM/ST op sequences vs direct tsr_ref
 add_test(NAME sim_mvm COMMAND sim_mvm 150)
 
-tsr_sim_test(sim_trace test_sim_trace.c tsr_trace tsr_sim tsr_ref)   # capture, trace write/read/replay, corruption
-add_test(NAME sim_trace COMMAND sim_trace ${TSR_SIM_TEST_SCRATCH})
+tsr_sim_test(sim_capture test_sim_capture.c tsr_sim tsr_ref)    # access capture (init / expect regions)
+add_test(NAME sim_capture COMMAND sim_capture)
 
 # The transport target is defined in sw/transport (added after sw/sim); names resolve at generate time.
-tsr_sim_test(sim_transport test_sim_transport.c tsr_transport tsr_trace tsr_sim tsr_ref)   # sim transport + TSR_* env
+tsr_sim_test(sim_transport test_sim_transport.c tsr_transport tsr_sim tsr_ref)   # sim transport + TSR_* env
 add_test(NAME sim_transport COMMAND sim_transport ${TSR_SIM_TEST_SCRATCH})
 
-# UBSan build of the capture / trace test (sources compiled in, -fno-sanitize-recover): keeps
-# the simulator free of undefined behaviour such as qsort(NULL, 0) on a channel without
-# captured reads. Skipped when the toolchain cannot link -fsanitize=undefined.
+# UBSan build of the capture test (sources compiled in, -fno-sanitize-recover): keeps the
+# simulator free of undefined behaviour such as qsort(NULL, 0) on a channel without captured
+# reads. Skipped when the toolchain cannot link -fsanitize=undefined.
 include(CheckCSourceCompiles)
 set(CMAKE_REQUIRED_FLAGS "-fsanitize=undefined -fno-sanitize-recover=all")
 set(CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=undefined")
@@ -79,12 +83,11 @@ check_c_source_compiles("int main(void) { return 0; }" TSR_HAVE_UBSAN)
 unset(CMAKE_REQUIRED_FLAGS)
 unset(CMAKE_REQUIRED_LINK_OPTIONS)
 if (TSR_HAVE_UBSAN)
-    add_executable(sim_trace_ubsan test_sim_trace.c ${TSR_REF_SOURCES}
-                   ${CMAKE_CURRENT_SOURCE_DIR}/../tsr_sim.c ${CMAKE_CURRENT_SOURCE_DIR}/../tsr_trace.c)
-    tsr_c_target(sim_trace_ubsan)
-    target_include_directories(sim_trace_ubsan PRIVATE ${TSR_SIM_INCLUDE_DIR})
-    target_compile_options(sim_trace_ubsan PRIVATE -fsanitize=undefined -fno-sanitize-recover=all)
-    target_link_options(sim_trace_ubsan PRIVATE -fsanitize=undefined)
-    target_link_libraries(sim_trace_ubsan PRIVATE Threads::Threads m)
-    add_test(NAME sim_trace_ubsan COMMAND sim_trace_ubsan ${TSR_SIM_TEST_SCRATCH})   # unique mkdtemp dir
+    add_executable(sim_capture_ubsan test_sim_capture.c ${TSR_REF_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/../tsr_sim.c)
+    tsr_c_target(sim_capture_ubsan)
+    target_include_directories(sim_capture_ubsan PRIVATE ${TSR_SIM_INCLUDE_DIR})
+    target_compile_options(sim_capture_ubsan PRIVATE -fsanitize=undefined -fno-sanitize-recover=all)
+    target_link_options(sim_capture_ubsan PRIVATE -fsanitize=undefined)
+    target_link_libraries(sim_capture_ubsan PRIVATE Threads::Threads m)
+    add_test(NAME sim_capture_ubsan COMMAND sim_capture_ubsan)
 endif()

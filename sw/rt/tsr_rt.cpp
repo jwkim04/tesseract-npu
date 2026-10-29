@@ -7,7 +7,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <list>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -24,9 +23,8 @@
 #include "tsr-weights.h"   // tsr_row_to_dev_blocks: the ggml backend's load-time conversion (ggml-base)
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
-#error "tsr_rt writes instructions and weights in host byte order; only little-endian hosts are supported"
+#error "tsr_rt writes weights in host byte order; only little-endian hosts are supported"
 #endif
-static_assert(sizeof(tsr_insn) == TSR_INSN_BYTES, "tsr_insn must be 32 bytes");
 
 namespace tsr::rt {
 
@@ -34,9 +32,6 @@ namespace {
 
 constexpr uint64_t HEAP_ALIGN      = 4096;              // as the ggml backend
 constexpr size_t   XFER_CHUNK      = 8u << 20;          // weight scatter batch (tsr_weight_store_rows)
-constexpr uint32_t PROG_MAX_INSNS  = (4u << 20) / TSR_INSN_BYTES - 1;   // 4 MiB per program incl. END
-constexpr size_t   PROG_MAX_COUNT  = 65536;
-constexpr uint64_t CMD_ALIGN       = TSR_BEAT_BYTES;
 
 int debug_level() {
     static const int lvl = [] {
@@ -115,13 +110,6 @@ struct weight {
     const part & at(uint32_t i, uint32_t j) const { return parts[(size_t) i * pl.k_parts + j]; }
 };
 
-struct prog_slot {
-    uint64_t cmd_off = 0;      // ch0 byte offset of the program (CMD region)
-    uint64_t bytes = 0;
-    uint32_t count = 0;        // instructions including END
-    std::list<std::string>::iterator lru;
-};
-
 // The N / K split of a weight (see tsr_rt.h). nullptr on success, else the reason.
 const char * make_plan(const tsr_config & cfg, dtype t, uint32_t N, uint32_t K, const weight_options & o, plan * p) {
     if (!dtype_valid(t)) return "unknown dtype";
@@ -190,22 +178,15 @@ struct device::impl {
     tsr_config  cfg = {};
     std::string kind;
     std::string desc;
-    bool        read_perf = true;
 
     uint64_t io_off = 0;              // ch0 byte offset of the activation area (IO region)
     uint64_t io_size = 0;
     tsr_range_alloc heap;             // WEIGHT heap, symmetric (one offset on every channel)
-    tsr_range_alloc cmd;              // CMD region: one slot per cached program
 
     std::unordered_map<weight_handle, weight> weights;
     weight_handle next_handle = 1;
 
-    std::unordered_map<std::string, prog_slot> progs;
-    std::list<std::string> lru;       // front = most recently used
-
-    std::vector<uint64_t> perf_last;  // PERF_CYCLES, PERF_MVM_CYCLES, PERF_CH_RD_BEATS[c]
     counters cnt;
-    std::vector<uint8_t> hbuf;        // host staging (x packing, y gathering)
 
     ~impl() {
         if (tp != nullptr) tsr_transport_close(tp);
@@ -227,100 +208,6 @@ struct device::impl {
         }
         cnt.d2h_bytes += size;
     }
-    uint64_t perf(uint32_t idx) {
-        const uint32_t lo = tsr_transport_csr_read(tp, TSR_CSR_PERF_BASE + 8 * idx);       // LO first: snapshot
-        const uint32_t hi = tsr_transport_csr_read(tp, TSR_CSR_PERF_BASE + 8 * idx + 4);
-        return ((uint64_t) hi << 32) | lo;
-    }
-    void perf_snapshot(std::vector<uint64_t> & v) {
-        v.resize(2 + cfg.num_ch);
-        v[0] = perf(TSR_PERF_CYCLES);
-        v[1] = perf(TSR_PERF_MVM_CYCLES);
-        for (uint32_t c = 0; c < cfg.num_ch; ++c) v[2 + c] = perf(tsr_perf_ch_rd_beats(c));
-    }
-
-    // -- programs ------------------------------------------------------------
-    void evict_lru() {
-        auto it = progs.find(lru.back());
-        cmd.release(it->second.cmd_off);
-        progs.erase(it);
-        lru.pop_back();
-    }
-
-    // The resident program for `key`, emitting and writing it on a miss.
-    template <class Emit>
-    const prog_slot & program(const std::string & key, Emit && emit) {
-        auto it = progs.find(key);
-        if (it != progs.end()) {
-            lru.splice(lru.begin(), lru, it->second.lru);
-            cnt.prog_hits++;
-            return it->second;
-        }
-        std::vector<tsr_insn> insns;
-        emit(insns);
-        if (insns.size() > PROG_MAX_INSNS) {
-            throw error(strf("tsr_rt: internal error: program of %zu instructions exceeds the bound", insns.size()));
-        }
-        insns.push_back(tsr_enc_end());
-        const uint64_t bytes = insns.size() * sizeof(tsr_insn);
-        while (progs.size() >= PROG_MAX_COUNT) evict_lru();
-        uint64_t off = 0;
-        while (!cmd.alloc(bytes, &off)) {
-            if (lru.empty()) throw error(strf("tsr_rt: program of %" PRIu64 " bytes does not fit the CMD region", bytes));
-            evict_lru();
-        }
-        try {
-            write(0, off, insns.data(), bytes);
-        } catch (...) {
-            cmd.release(off);
-            throw;
-        }
-        lru.push_front(key);
-        prog_slot & s = progs[key];
-        s.cmd_off = off;
-        s.bytes = bytes;
-        s.count = (uint32_t) insns.size();
-        s.lru = lru.begin();
-        cnt.prog_misses++;
-        if (debug_level() >= 2) {
-            for (size_t i = 0; i < insns.size(); ++i) {
-                fprintf(stderr, "[tsr_rt]   %5zu  %s\n", i, i + 1 == insns.size() ? "END" : tsr_insn_str(insns[i]).c_str());
-            }
-        }
-        return s;
-    }
-
-    void exec(const prog_slot & s) {
-        tsr_exec_result res = {};
-        const int rc = tsr_transport_exec(tp, s.cmd_off / TSR_BEAT_BYTES, s.count, nullptr, &res);
-        cnt.execs++;
-        if (read_perf) {
-            std::vector<uint64_t> now;
-            perf_snapshot(now);
-            // PERF_* do not change between runs (spec 구현 명확화), so now - last is this run's;
-            // a counter that went down was reset (SOFT_RESET): count from zero.
-            auto delta = [&](size_t i) { return now[i] >= perf_last[i] ? now[i] - perf_last[i] : now[i]; };
-            cnt.perf_cycles += delta(0);
-            cnt.perf_mvm_cycles += delta(1);
-            for (uint32_t c = 0; c < cfg.num_ch; ++c) cnt.dev_read_bytes += delta(2 + c) * TSR_BEAT_BYTES;
-            perf_last.swap(now);
-        }
-        if (rc != 0 || (res.status & TSR_STATUS_ERR) || !(res.status & TSR_STATUS_DONE)) {
-            std::string at = "-";
-            if (res.err_pc + 1 == s.count) {
-                at = "END";
-            } else if (res.err_pc < s.count) {
-                tsr_insn in = {};
-                if (tsr_transport_read(tp, 0, s.cmd_off + (uint64_t) res.err_pc * sizeof(tsr_insn), &in, sizeof(in)) == 0) {
-                    at = tsr_insn_str(in);
-                }
-            }
-            throw error(strf("tsr_rt: device execution failed on %s: rc=%d STATUS=0x%x ERR_CODE=%u ERR_PC=%u ERR_INFO=0x%x "
-                             "(program of %u instructions at CMD beat 0x%" PRIx64 "; failing instruction: %s)",
-                             kind.c_str(), rc, res.status, res.err_code, res.err_pc, res.err_info, s.count,
-                             s.cmd_off / TSR_BEAT_BYTES, at.c_str()));
-        }
-    }
 
     const weight & get(weight_handle h) const {
         auto it = weights.find(h);
@@ -334,91 +221,6 @@ struct device::impl {
             p.ch_bytes = 0;
         }
     }
-
-    // -- lowering of one linear call of tc tokens ---------------------------
-    // IO layout: x rows (K * 4 bytes each) at io_off, then per N part i its y rows
-    // (y_lines(n_i) * 64 bytes each).
-    static uint32_t y_lines(uint32_t n) { return (uint32_t) tsr_ceil_div_u64((uint64_t) n * 4, TSR_LINE_BYTES); }
-
-    uint64_t y_off(const weight & w, uint32_t tc, uint32_t i) const {
-        uint64_t off = io_off + (uint64_t) tc * w.K * 4;
-        for (uint32_t ii = 0; ii < i; ++ii) off += (uint64_t) tc * y_lines(w.at(ii, 0).n) * TSR_LINE_BYTES;
-        return off;
-    }
-
-    // K parts of N part i: LD the x tile once, then per K part QACT on its columns and MVM (ACC
-    // after the first), then ST (spec MVM ACC: y_out = y_old + y, one f32 add).
-    void emit_ksplit(const weight & w, uint32_t i, uint32_t tc, uint64_t x_beat, uint64_t y_beat,
-                     std::vector<tsr_insn> & insns) const {
-        const uint32_t xl  = w.K / 16;
-        const uint32_t qal = tsr_qa_lines(w.pl.kind, w.pl.k_part);
-        const uint32_t n   = w.at(i, 0).n;
-        const uint32_t yl  = y_lines(n);
-        const uint64_t spm_lines = cfg.spm_bytes / TSR_LINE_BYTES;
-        const uint64_t lpt = (uint64_t) xl + qal + yl;
-        const uint32_t tt_max = (uint32_t) std::min<uint64_t>({ (uint64_t) tc, (uint64_t) tsr_mm_t_max(cfg), spm_lines / lpt });
-        if (tt_max < 1) throw error("tsr_rt: internal error: K-split tile does not fit the SPM");
-        const uint32_t spm_x  = 0;
-        const uint32_t spm_qa = spm_x + tt_max * xl;
-        const uint32_t spm_y  = spm_qa + tt_max * qal;
-        for (uint32_t t0 = 0; t0 < tc; t0 += tt_max) {
-            const uint32_t tt = std::min(tt_max, tc - t0);
-            insns.push_back(tsr_enc_ld(0, spm_x, (uint32_t) (x_beat + (uint64_t) t0 * xl), tt * xl));
-            for (uint32_t j = 0; j < w.pl.k_parts; ++j) {
-                const part & p = w.at(i, j);
-                insns.push_back(tsr_enc_qact(w.pl.kind, spm_qa, spm_x + p.k0 / 16, p.k, tt, xl));
-                insns.push_back(tsr_enc_mvm(w.pl.fmt, j == 0 ? 0 : TSR_MVM_FLAG_ACC, spm_y, spm_qa,
-                                            (uint32_t) (p.w_off / TSR_BEAT_BYTES), n, p.k, tt, yl));
-            }
-            insns.push_back(tsr_enc_st(0, spm_y, (uint32_t) (y_beat + (uint64_t) t0 * yl), tt * yl));
-        }
-    }
-
-    const prog_slot & linear_program(const weight & w, uint32_t tc) {
-        const uint64_t x_beat = io_off / TSR_BEAT_BYTES;
-        std::vector<uint64_t> k;
-        k.reserve(8 + w.parts.size() * 5);
-        k.push_back(1);                          // key layout version
-        k.push_back(w.pl.fmt);
-        k.push_back(w.K);
-        k.push_back(tc);
-        k.push_back(x_beat);
-        k.push_back(w.pl.n_parts);
-        k.push_back(w.pl.k_parts);
-        for (uint32_t i = 0; i < w.pl.n_parts; ++i) {
-            k.push_back(y_off(w, tc, i) / TSR_BEAT_BYTES);
-            for (uint32_t j = 0; j < w.pl.k_parts; ++j) {
-                const part & p = w.at(i, j);
-                k.push_back(p.n);
-                k.push_back(p.k0);
-                k.push_back(p.k);
-                k.push_back(p.w_off / TSR_BEAT_BYTES);
-            }
-        }
-        const std::string key((const char *) k.data(), k.size() * sizeof(uint64_t));
-        return program(key, [&](std::vector<tsr_insn> & insns) {
-            for (uint32_t i = 0; i < w.pl.n_parts; ++i) {
-                const uint64_t y_beat = y_off(w, tc, i) / TSR_BEAT_BYTES;
-                if (w.pl.k_parts == 1) {
-                    const part & p = w.at(i, 0);
-                    tsr_mm_desc d = {};
-                    d.fmt = w.pl.fmt;
-                    d.N = p.n;
-                    d.K = w.K;
-                    d.T = tc;
-                    d.w_off_beat = p.w_off / TSR_BEAT_BYTES;
-                    d.x_beat = x_beat;
-                    d.y_beat = y_beat;
-                    std::vector<size_t> cuts;
-                    tsr_mm_emit(cfg, d, insns, cuts);
-                } else {
-                    emit_ksplit(w, i, tc, x_beat, y_beat, insns);
-                }
-            }
-            TSR_RT_DBG(1, "program: %s [%u x %u] T=%u, %u x %u parts, %zu insns\n", w.pl.fmt == TSR_FMT_Q8_0 ? "Q8_0" : "Q4_K",
-                       w.N, w.K, tc, w.pl.n_parts, w.pl.k_parts, insns.size());
-        });
-    }
 };
 
 // ---------------------------------------------------------------------------
@@ -427,7 +229,6 @@ struct device::impl {
 
 device::device(const open_options & o) : p_(new impl) {
     impl & d = *p_;
-    d.read_perf = o.read_perf;
     d.tp = tsr_transport_open(o.kind);
     if (d.tp == nullptr) {
         const char * env = getenv("TSR_DEVICE");
@@ -453,8 +254,6 @@ device::device(const open_options & o) : p_(new impl) {
         if (d.io_size == 0) throw std::invalid_argument("tsr_rt: open_options.io_bytes must be >= 64");
     }
     d.heap.init(TSR_REGION_WEIGHT_OFF, d.cfg.ch_bytes - TSR_REGION_WEIGHT_OFF, HEAP_ALIGN);
-    d.cmd.init(TSR_REGION_CMD_OFF, TSR_REGION_CMD_SIZE, CMD_ALIGN);
-    d.perf_snapshot(d.perf_last);
     d.desc = strf("Tesseract (%s, C=%u, LANES=%u, T_MAX=%u, K_MAX=%u, SPM=%u KiB, %.0f GiB/ch)", d.kind.c_str(), c->num_ch,
                   c->lanes, c->t_max, c->k_max, c->spm_bytes / 1024, (double) c->ch_bytes / (1024.0 * 1024.0 * 1024.0));
     TSR_RT_DBG(1, "opened %s; IO %.2f MiB\n", d.desc.c_str(), mib(d.io_size));
@@ -602,49 +401,12 @@ void device::linear(weight_handle h, const float * x, uint32_t T, float * y, siz
     const size_t ys = y_stride != 0 ? y_stride : w.N;
     if (xs < w.K || ys < w.N) throw std::invalid_argument("tsr_rt: linear: x_stride < K or y_stride < N");
     if (x == nullptr || y == nullptr) throw std::invalid_argument("tsr_rt: linear: null x or y");
-
-    const uint64_t x_row = (uint64_t) w.K * 4;
-    uint64_t y_tok = 0;
-    for (uint32_t i = 0; i < w.pl.n_parts; ++i) y_tok += (uint64_t) impl::y_lines(w.at(i, 0).n) * TSR_LINE_BYTES;
-    const uint64_t t_io = d.io_size / (x_row + y_tok);
-    if (t_io == 0) {
-        throw error(strf("tsr_rt: one token of x and y needs %" PRIu64 " bytes of IO, %" PRIu64 " available",
-                         x_row + y_tok, d.io_size));
-    }
-    const uint64_t t_prog = std::max<uint64_t>(1, PROG_MAX_INSNS / ((uint64_t) w.pl.n_parts * (2 + 2 * w.pl.k_parts)));
-    const uint32_t tc_max = (uint32_t) std::min<uint64_t>({ (uint64_t) T, t_io, t_prog });
-    const bool direct_y = w.pl.n_parts == 1 && w.N % 16 == 0 && ys == w.N;
-
-    for (uint32_t t0 = 0; t0 < T; t0 += tc_max) {
-        const uint32_t tc = std::min(tc_max, T - t0);
-        // x tile -> IO (rows of K floats; K % 32 == 0 so every row starts on a line)
-        if (xs == w.K) {
-            d.write(0, d.io_off, x + (size_t) t0 * w.K, (size_t) tc * x_row);
-        } else {
-            d.hbuf.resize((size_t) tc * x_row);
-            for (uint32_t t = 0; t < tc; ++t) {
-                memcpy(d.hbuf.data() + (size_t) t * x_row, x + (size_t) (t0 + t) * xs, (size_t) x_row);
-            }
-            d.write(0, d.io_off, d.hbuf.data(), d.hbuf.size());
-        }
-        const prog_slot & s = d.linear_program(w, tc);
-        d.exec(s);
-        if (direct_y) {
-            d.read(0, d.y_off(w, tc, 0), y + (size_t) t0 * w.N, (size_t) tc * w.N * 4);
-        } else {
-            for (uint32_t i = 0; i < w.pl.n_parts; ++i) {
-                const part & p = w.at(i, 0);
-                const uint64_t ystr = (uint64_t) impl::y_lines(p.n) * TSR_LINE_BYTES;
-                d.hbuf.resize((size_t) (tc * ystr));
-                d.read(0, d.y_off(w, tc, i), d.hbuf.data(), d.hbuf.size());
-                for (uint32_t t = 0; t < tc; ++t) {
-                    memcpy(y + (size_t) (t0 + t) * ys + p.r0, d.hbuf.data() + (size_t) t * ystr, (size_t) p.n * 4);
-                }
-            }
-        }
-    }
-    d.cnt.linears++;
-    d.cnt.tokens += T;
+    // v1 ran a cached LD / QACT / MVM / ST program per call through the transport's run
+    // interface; that path is deleted with the host command buffer (X0). The one-op OPL launch of the `graph` kernel
+    // replaces it (docs/v2/06-software-verification.md §9.4, P3.2).
+    throw error(strf("tsr_rt: linear on %s: device execution is not available in this build (the v1 command-buffer "
+                     "path is deleted; linear returns with the op-list launch path). linear_ref computes the same "
+                     "result on the host.", d.kind.c_str()));
 }
 
 void device::linear_ref(weight_handle h, const float * x, uint32_t T, float * y, size_t x_stride, size_t y_stride) const {
@@ -734,8 +496,6 @@ memory_info device::memory() const {
     m.weight_free = d.heap.free_bytes();
     m.weight_largest_free = d.heap.largest_free();
     m.n_weights = (uint32_t) d.weights.size();
-    m.prog_cached = d.progs.size();
-    m.prog_cmd_bytes = d.cmd.used();
     return m;
 }
 

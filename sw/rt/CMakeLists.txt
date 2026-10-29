@@ -44,7 +44,11 @@ set_target_properties(tsr_rt_shared PROPERTIES OUTPUT_NAME tsr_rt
 
 # ---------------------------------------------------------------------------
 # Tests (prefix rt_): device vs an independent model (ggml conversion + libtsr_ref) bit for bit,
-# linear_ref, read_blocks, N / K / T / IO splits, program cache, counters, threads.
+# linear_ref, read_blocks, N / K / T / IO splits, counters, threads. Every case runs linear(),
+# whose device execution is deleted in X0, so rt_sim, rt_sim_tmax8, rt_mock, rt_mock_tmax8 and
+# the opt-in rt_vkernel_k4t1 are removed until the op-list path (P3.2, P5.3 for vkernel;
+# docs/v2/06-software-verification.md §10.2). The executable is still built so that it keeps
+# compiling against the unchanged API.
 # ---------------------------------------------------------------------------
 add_executable(test-tsr-rt tests/test_tsr_rt.cpp)
 set_target_properties(test-tsr-rt PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
@@ -52,26 +56,3 @@ set_target_properties(test-tsr-rt PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIR
 target_compile_options(test-tsr-rt PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra)
 target_include_directories(test-tsr-rt PRIVATE ${TESSERACT_ROOT}/third_party/llama.cpp/ggml/src)
 target_link_libraries(test-tsr-rt PRIVATE tsr_rt tsr_ref ggml-base Threads::Threads)
-
-add_test(NAME rt_sim COMMAND test-tsr-rt)
-set_tests_properties(rt_sim PROPERTIES ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_THREADS=4")
-# T_MAX 8: T tiles inside one program, and a natural N split (an N = 130000 output head does not
-# fit 8 tokens in the SPM unsplit)
-add_test(NAME rt_sim_tmax8 COMMAND test-tsr-rt --big)
-set_tests_properties(rt_sim_tmax8 PROPERTIES ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_TMAX=8;TSR_SIM_THREADS=4")
-# the kernel protocol layer on the mock kdev, DMA rules that force bounce / read-modify-write
-add_test(NAME rt_mock COMMAND test-tsr-rt)
-set_tests_properties(rt_mock PROPERTIES ENVIRONMENT "TSR_DEVICE=mock;TSR_MOCK_DMA_ALIGN=64;TSR_MOCK_DMA_CHUNK_KIB=64;TSR_SIM_THREADS=4")
-add_test(NAME rt_mock_tmax8 COMMAND test-tsr-rt)
-set_tests_properties(rt_mock_tmax8 PROPERTIES ENVIRONMENT
-    "TSR_DEVICE=mock;TSR_MOCK_TMAX=8;TSR_MOCK_NUM_CH=3;TSR_MOCK_DMA_ALIGN=4096;TSR_MOCK_DMA_CHUNK_KIB=12;TSR_SIM_THREADS=4")
-
-# Verilated U200 kernel (RTL) through the vkernel kdev: a few shapes on k4t1. The server is built
-# on first use by tb/platform/vkernel/vkernel.py (minutes, Verilator), so this test is opt-in.
-option(TSR_RT_VKERNEL_TEST "Add the rt_vkernel_k4t1 ctest (builds the k4t1 vkernel server on first use)" OFF)
-if (TSR_RT_VKERNEL_TEST)
-    find_package(Python3 COMPONENTS Interpreter REQUIRED)
-    add_test(NAME rt_vkernel_k4t1
-             COMMAND ${Python3_EXECUTABLE} ${TESSERACT_ROOT}/tb/platform/vkernel/vkernel.py run --config k4t1
-                     -- $<TARGET_FILE:test-tsr-rt> --quick)
-endif()

@@ -1,5 +1,6 @@
 // memmodel.h — cycle-level C++ model of the tsr_core memory ports (docs/rtl-m2.md §4), the fast
-// counterpart of tb/common/mem_model.py (MemModel) for tb/fastreplay.
+// counterpart of tb/common/mem_model.py (MemModel) for the C++ benches (tb/platform/bw; the v2
+// tile-only replay of tb/fastreplay, docs/v2 SW §10.3).
 //
 // One MemModel serves NUM_CH channels. It knows nothing about Verilator: the testbench samples
 // the DUT outputs of every channel into a ChOut before the rising edge, calls edge(), lets the DUT
@@ -24,8 +25,8 @@
 //   P3  valid stays high and the payload stable until the handshake (rd_req, wr_req, wr_dat)
 //   P4  write data: exactly len beats per request, wr_dat_last on (and only on) each burst's last
 //       beat (data beats follow request order; full-beat writes: the port has no strobes)
-//   P5  ids: read source (id[3:2]) FETCH only on channel 0, WS only with has_mvm, never 3; write
-//       source DMA only
+//   P5  ids: read source (id[3:2]) AUX (0, the former fetch source) only on channel 0, WS only
+//       with has_mvm, never 3; write source DMA only
 //   P6  no request / write data offered while no run is active (set_active; DONE => quiescent)
 // Tracking for the trace checks: per channel read beats per source (id[3:2]), reads of beats
 // that were neither initialised (allowed bitmap: init regions + command beats) nor written
@@ -94,7 +95,7 @@ static inline uint64_t prob_thr(double p) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Regimes (tb/core/test_core.py REGIMES on top of the MemModel defaults)
+// Regimes (the REGIMES of v1's tb/core/test_core.py, tag v1-m4, on top of the MemModel defaults)
 // ---------------------------------------------------------------------------------------------
 enum WrOrder { WR_ANY = 0, WR_REQ_FIRST = 1, WR_DATA_FIRST = 2, WR_RANDOM = 3 };
 
@@ -202,7 +203,7 @@ struct ChIn {                  // memory -> DUT, for the coming cycle
     unsigned wr_rsp_id = 0;
 };
 
-enum { SRC_FETCH = 0, SRC_DMA = 1, SRC_WS = 2, SRC_RSVD = 3 };
+enum { SRC_AUX = 0, SRC_DMA = 1, SRC_WS = 2, SRC_RSVD = 3 };
 
 // ---------------------------------------------------------------------------------------------
 // Bitmaps over beats (lazily backed)
@@ -488,7 +489,7 @@ class MemModel {
                 if (ch.outstanding >= cfg_.rd_outstanding)
                     fail("ch%u read request beyond RD_OUTSTANDING=%u", c, cfg_.rd_outstanding);
                 const unsigned src = (o.rd_req_id >> 2) & 3;
-                if (src == SRC_RSVD || (src == SRC_FETCH && c != 0) || (src == SRC_WS && !cfg_.has_mvm))
+                if (src == SRC_RSVD || (src == SRC_AUX && c != 0) || (src == SRC_WS && !cfg_.has_mvm))
                     fail("ch%u read request with id 0x%x (source %u not allowed here)", c, o.rd_req_id, src);
                 RdBurst b;
                 b.id = o.rd_req_id;

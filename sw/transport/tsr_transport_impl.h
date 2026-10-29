@@ -13,15 +13,13 @@ typedef struct tsr_transport_ops {
     const tsr_config * (*config)(void * impl);
     int                (*write)(void * impl, uint32_t ch, uint64_t off, const void * src, size_t size);
     int                (*read)(void * impl, uint32_t ch, uint64_t off, void * dst, size_t size);
-    int                (*exec)(void * impl, uint64_t cmd_addr_beat, uint32_t cmd_count, const uint32_t args[8],
-                               tsr_exec_result * res);
     uint32_t           (*csr_read)(void * impl, uint32_t off);
 } tsr_transport_ops;
 
 // Each returns an implementation handle and its ops, or NULL (message on stderr).
 void * tsr_transport_sim_open(const tsr_transport_ops ** ops);
-// Every other kind ("xrt", "mock", kinds registered with tsr::register_kdev): the kernel-protocol
-// transport over a kdev (tsr_kdev.cpp).
+// Every other kind ("xrt", "mock", "vkernel", kinds registered with tsr::register_kdev): the
+// protocol layer over a kdev (tsr_kdev.cpp).
 void * tsr_transport_kdev_open(const char * kind, const tsr_transport_ops ** ops);
 
 // Wrap an already opened implementation (tsr::transport_open_kdev); NULL on failure (impl untouched).

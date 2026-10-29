@@ -1,14 +1,18 @@
 // tsr_sim.h — Tesseract ISA simulator (the oracle, spec 검증 전략).
 //
-// Functional, instruction-at-a-time model of the core: decoder, R0..R15, s0..s15, SPM,
-// per-channel DRAM, CSRs, error codes, per-channel beat counters. Every numeric result
-// comes from tsr_ref.h. Execution is strictly sequential (spec 실행 모델).
+// The op-level core of the simulator: SPM, per-channel DRAM, s0..s15, the identity /
+// configuration / PERF CSRs, the tile units with their dispatch checks, per-channel beat
+// counters and access capture. Every numeric result comes from tsr_ref.h. Ops execute one at a
+// time, in call order, through tsr_sim_op(). v1's host command path (run registers, command
+// fetch, R0..R15, LI / ADDI / END) is deleted (X0, docs/v2/01-execution-model.md §12); the v2
+// model around this core (CSR map v2, launch queue and completion ring, issue queues, the RISC-V
+// model) is docs/v2/06-software-verification.md §4 (W1).
 //
-// M1 instruction set: NOP, END, LI, ADDI, LD, ST, QACT, MVM, FENCE. Every other opcode is
-// ILLEGAL_OP (this simulator implements no CAPS feature; see TSR_SIM_CAPS_IMPLEMENTED).
-// Error semantics follow spec "구현 명확화": check order ILLEGAL_OP -> BAD_FMT -> K_RANGE ->
-// T_RANGE -> SPM_RANGE -> DRAM_RANGE, a failing instruction changes no state, and the run
-// stops with STATUS = DONE | ERR and ERR_PC / ERR_CODE / ERR_INFO set.
+// Ops: NOP, LD, ST, QACT, MVM, FENCE (EX §7.2). Every other opcode is ILLEGAL_OP (END, LI and ADDI
+// are reserved, and this simulator implements no CAPS feature; see TSR_SIM_CAPS_IMPLEMENTED).
+// Checks follow spec "구현 명확화" and EX §7.1 / §8.1: x16 (w0[31:16]) and every other field an op
+// does not use must be zero (ILLEGAL_OP); check order ILLEGAL_OP -> BAD_FMT -> K_RANGE ->
+// T_RANGE -> SPM_RANGE -> DRAM_RANGE; a failing op changes no state.
 //
 // Perf model (PERF_* CSRs; deterministic, not normative — hardware counters are compared
 // against it, not bit-matched): see the "Cycle model" comment in tsr_sim.c.
@@ -38,9 +42,8 @@ typedef struct tsr_sim tsr_sim;
 // Returns NULL (message on stderr) if the config is not supported: beat_bits != 512,
 // num_ch not in [1,16] (TSR_NUM_CH_MAX: the LD/ST channel field is 4 bits), lanes not in
 // [1,4095], t_max not in [1,8], k_max not a multiple of 256 in [256,65280], spm_bytes not a
-// positive multiple of 64, vl not in [1,255], nireg != 16, nsreg not in [1,16], ch_bytes not
-// a positive multiple of 64, addr_beat_w not in [1,40], or caps beyond
-// TSR_SIM_CAPS_IMPLEMENTED.
+// positive multiple of 64, vl not in [1,255], nsreg not in [1,16], ch_bytes not a positive
+// multiple of 64, addr_beat_w not in [1,40], or caps beyond TSR_SIM_CAPS_IMPLEMENTED.
 tsr_sim * tsr_sim_create(const tsr_config * cfg, const char * dram_dir);
 void      tsr_sim_destroy(tsr_sim * sim);
 const tsr_config * tsr_sim_config(const tsr_sim * sim);
@@ -52,27 +55,23 @@ uint8_t * tsr_sim_spm(tsr_sim * sim);            // debug view, spm_bytes long
 // [a, a + n) is in range iff a + n <= this value (spec 구현 명확화, 범위 검사).
 uint64_t  tsr_sim_dram_limit_beats(const tsr_sim * sim);
 
-// CSR port. Writing CTRL.START latches CMD_ADDR/CMD_COUNT/ARGs, sets BUSY and clears
-// DONE/ERR; execution happens in tsr_sim_run().
-// CTRL.ABORT may be written from another thread while tsr_sim_run() is executing (it only
-// sets an atomic flag, checked between instructions); every other CSR access must not race
-// with tsr_sim_run().
+// CSR port (host view). Reads: ID, VERSION (ISA 2.0), CFG0..2, CAPS and the PERF_* counters;
+// every other offset reads 0 (EX §5.1: undefined offsets read 0). No register is writable yet
+// (the v2 map, CTRL / STATUS and the rings, is P1.2): writes are ignored.
 uint32_t tsr_sim_csr_read(tsr_sim * sim, uint32_t off);
 void     tsr_sim_csr_write(tsr_sim * sim, uint32_t off, uint32_t val);
 
-// Run until END or an error. Returns the final STATUS value. No-op if not BUSY.
-uint32_t tsr_sim_run(tsr_sim * sim);
-
-// Convenience: write CMD_ADDR/COUNT/ARGs, START, run. args may be NULL (all zero).
-uint32_t tsr_sim_exec(tsr_sim * sim, uint64_t cmd_addr_beat, uint32_t cmd_count,
-                      const uint32_t args[8]);
+// Check and execute one op now: w is its 8 instruction words (w[0] = w0). Returns 0 or the op's
+// error code (tsr_err); *err_info (if not NULL) receives ERR_INFO (the failing operand's start
+// address for SPM_RANGE / DRAM_RANGE, else 0). An op that fails changes no state except PERF.
+// There are no queues: NOP and FENCE complete at once, and ops never overlap.
+uint32_t tsr_sim_op(tsr_sim * sim, const uint32_t w[8], uint32_t * err_info);
 
 // Debug state.
-int32_t  tsr_sim_ireg(const tsr_sim * sim, uint32_t i);
-float    tsr_sim_sreg(const tsr_sim * sim, uint32_t i);
+float    tsr_sim_sreg(const tsr_sim * sim, uint32_t i);   // s0..s15 (+0.0 after create)
 uint64_t tsr_sim_perf(const tsr_sim * sim, uint32_t idx);   // tsr_perf_idx (+ch)
 
-// Optional per-instruction log to a FILE* (NULL disables).
+// Optional per-op log to a FILE* (NULL disables): one line per tsr_sim_op call.
 void tsr_sim_set_log(tsr_sim * sim, void * file /* FILE* */);
 
 // Worker threads used for large MVMs (rows are split across threads; results are identical
@@ -80,16 +79,15 @@ void tsr_sim_set_log(tsr_sim * sim, void * file /* FILE* */);
 void tsr_sim_set_threads(tsr_sim * sim, unsigned n);
 
 // ---------------------------------------------------------------------------
-// Access capture for trace dumps (spec 트레이스 형식)
+// Access capture for trace dumps (spec 트레이스 형식; trace v2 builds on it, SW §5.5)
 // While capture is on, the simulator records, in beat granularity per channel:
-//   - init: every DRAM range the program READS (command fetch, LD sources, MVM weight rows,
-//           ...) whose bytes were not written earlier in the same run; the bytes are
-//           copied at first read, i.e. the content before execution.
-//   - expect: every DRAM range the program WRITES (ST); content taken at the end of run.
+//   - init: every DRAM range the ops READ (LD sources, MVM weight rows) whose bytes were not
+//           written earlier during the capture; the bytes are copied at first read, i.e. the
+//           content before execution.
+//   - expect: every DRAM range the ops WRITE (ST); content taken at capture end.
 // Adjacent/overlapping beats are merged into maximal ranges, sorted by (ch, offset).
-// Command fetch reads one beat (two instructions) at a time, only for instructions that are
-// actually fetched. Host-side writes (tsr_sim_dram) are not tracked, so a capture should
-// bracket exactly one run.
+// Host-side writes (tsr_sim_dram) are not tracked, so a capture should bracket exactly the ops
+// of one run.
 // ---------------------------------------------------------------------------
 typedef struct tsr_region {
     uint32_t ch;

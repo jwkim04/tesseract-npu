@@ -2,8 +2,8 @@
 # (tb/core/viv/core_ooc.tcl floorplan=tb/core/viv/core_slr.tcl, sourced after opt_design).
 #
 # Places MVM cluster c (with its result assembler u_gather/g_asm[c].u_asm) and the memory
-# arbiter of channel c in given SLRs and the rest of the core (SPM, central gather, cmdproc, DMA,
-# QACT, fetch, CSR, MVM dispatch) in one SLR. Of the broadcast / result / weight-stream / job
+# arbiter of channel c in given SLRs and the rest of the core (SPM, central gather, DMA, QACT, CSR,
+# MVM dispatch) in one SLR. Of the broadcast / result / weight-stream / job
 # pipes (g_cl[c].u_bcp / u_rp / u_wqp / u_wrp, u_gather/g_asm[c].u_sp / u_jp) the first stage
 # goes to the source side and the last stage to the destination side, so every crossing is one
 # register-to-register hop; the reset copies stay free. Ports are unplaced (out of context): the
@@ -68,7 +68,7 @@ foreach e $amap {
   lassign [split $e :] c s
   tsr_add $s [get_cells -quiet "g_ch\[$c\].u_arb"]
 }
-foreach pat {u_spm u_cmdproc u_dma u_qact u_fetch u_csr} {
+foreach pat {u_spm u_dma u_qact u_csr} {            ;# u_cmdproc / u_fetch: deleted in X0 (docs/v2 EX §12)
   tsr_add $rest [get_cells -quiet $pat]
 }
 # central part of the gather: every leaf cell outside the per-cluster assemblers and pipes

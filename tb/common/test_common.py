@@ -2,46 +2,41 @@
 
 pytest functions (test_*):
   test_ref_*         libtsr_ref.so wrapper against spec vectors and the pure-Python layouts
-  test_isa_structs   struct pack/unpack round trips
-  test_traces_load   every trace under traces/ loads and is self-consistent
-  test_replay_compare_detects_mismatches  replay.compare() flags each kind of mismatch
+  test_isa_structs   struct pack/unpack round trips, unit-instruction encodings
   test_loop_sim      cocotb on tb/common/hdl/tsr_tb_loop.sv: struct layouts vs tsr_pkg.sv,
-                     CsrDriver, MemModel under random legal traffic from a Python master
-                     (data, ordering, outstanding limit, write tracking) and its protocol checks
-                     on deliberately illegal traffic
-  test_core_skeleton_sim  cocotb on tsr_core (whatever its state): elaborates with the default and
-                     a reduced configuration, MemModel/CsrDriver attach to its boundary
-  test_pycore_traces cocotb on tsr_tb_loop: pycore.PyCore executes traces/m2 programs, the MVM
-                     traces of traces/gen and (when present) traces/m3 through the memory-port
-                     protocol against MemModel; replay.compare must pass (proves the trace-replay
-                     harness end to end, incl. the MVM weight streams, and re-checks the traces)
+                     MemModel under random legal traffic from a Python master (data, ordering,
+                     outstanding limit, write tracking) and its protocol checks on deliberately
+                     illegal traffic
 M3 (docs/rtl-m3.md §10.1):
   test_ref_m3_*      tsr_ref wrappers (repack / unrepack, row_location, terms, dequant, scales)
   test_mvm_model_*   golden cluster model: tagged beats vs the reference row walk (all terms
                      recomputed from the beat stream == tsr_term_*), struct packing, integer
                      widths, actbuf / broadcast images, gather jobs (every y byte written once,
-                     any job order and ACC interleaving == the ex_mvm write loop), whole MVMs vs
-                     the ISA simulator
-  test_proggen_*     M2 stream unchanged (digest), m3 programs on the simulator: executed MVMs of
-                     both fmts with ACC and T > 1, no undefined overlaps
-  test_simlib_keyed_build  content-keyed, race-free build of the simulator library
+                     any job order and ACC interleaving == the ex_mvm write loop), the symmetric
+                     weight layout == tsr_row_location, whole MVMs vs the ISA simulator's op-level
+                     API (tsr_sim_op through libtsr_sim.so, CMake target tsr_sim_shared)
   test_pipes_sim     cocotb on tb/common/hdl/tsr_tb_pipes.sv: tsr_vpipe / tsr_rpipe at DEPTH 0/1/3
-cocotb tests (loop_*, core_*, pipes_*) are not collected by pytest directly; the runner selects them.
+cocotb tests (loop_*, pipes_*) are not collected by pytest directly; the runner selects them.
+Removed in X0 (docs/v2 EX §12, SW §10.3; they return with the v2 trace format and the
+dispatcher): test_traces_load, test_replay_compare_detects_mismatches, loop_csr (CsrDriver),
+test_core_skeleton_sim, test_pycore_traces, test_proggen_*, test_simlib_keyed_build.
+test_mvm_model_vs_simulator ran MVM programs through the simulator's v1 program runner; it now
+issues the LD and MVM ops one at a time through tsr_sim_op.
 """
 from __future__ import annotations
 
 import collections
+import ctypes
+import os
 import random
 import struct
 from collections import deque
-from pathlib import Path
 
 import cocotb
 import pytest
 from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge
 
-from common import isa, mvm_model, replay, trace
-from common.csr_driver import CsrDriver, CsrTimeout
+from common import isa, mvm_model
 from common.mem_model import MemModel, ProtocolError
 from common.runner import REPO, run
 from common.tbutil import rng as tb_rng
@@ -128,103 +123,17 @@ def test_isa_structs():
             vals = {n: rnd.getrandbits(w) for n, w in sd.fields}
             assert sd.unpack(sd.pack(**vals)) == vals
     assert isa.DMA_CMD_T.width == 101 and isa.QACT_CMD_T.width == 133
-    assert isa.FETCH_INSN_T.width == 289 and isa.MVM_CMD_T.width == 294
+    assert isa.MVM_CMD_T.width == 294
     assert isa.MVM_CCMD_T.width == 137 and isa.MVM_BCLINE_T.width == 527
     assert isa.MVM_FCMD_T.width == 137 and isa.MVM_BEAT_T.width == 1175
     assert isa.unpack_array(isa.pack_array([-1, 5, -128, 127], 8), 4, 8, signed=True) == [-1, 5, -128, 127]
-    assert isa.insn_bytes(isa.enc_mvm(1, 2, 3, 4, 5, 256, 3, 7, acc=1, ra=1, rb=2, rc=3)) == struct.pack(
-        "<8I", isa.w0(isa.OP_MVM, sub=1, flags=1, ra=1, rb=2, rc=3), 2, 3, 4, 5, 256 | (3 << 16), 7, 0)
+    assert isa.insn_bytes(isa.enc_mvm(1, 2, 3, 4, 5, 256, 3, 7, acc=1)) == struct.pack(
+        "<8I", 0x1120, 2, 3, 4, 5, 256 | (3 << 16), 7, 0)              # x16 = 0 (EX §7.1)
+    assert isa.insn_bytes(isa.enc_ld(3, 2, 7, 1)) == struct.pack("<8I", 0x0310, 2, 7, 1, 0, 0, 0, 0)
+    assert isa.w0_fields(isa.w0(isa.OP_ST, sub=2, flags=1, x16=0xBEEF)) == dict(
+        opcode=isa.OP_ST, sub=2, flags=1, x16=0xBEEF)
     assert isa.insn_bytes(isa.enc_qact(1, 2, 3, 256, 1, 0)) == struct.pack(
         "<8I", isa.w0(isa.OP_QACT, sub=1), 2, 3, 256, 1, 0, 0, 0)
-
-
-def test_traces_load():
-    roots = [REPO / "traces" / "m2", REPO / "traces" / "gen", REPO / "traces" / "m3"]
-    n = 0
-    for root in roots:
-        if not root.exists():
-            continue
-        for tr in trace.load_all(root):
-            n += 1
-            assert len(tr.cmd) == 32 * tr.cmd_count
-            for r in tr.init:   # cmd.bin agrees with init where they overlap (ch0)
-                c = tr.cmd_region()
-                if r.ch == 0 and c is not None:
-                    lo, hi = max(r.offset, c.offset), min(r.offset + r.size, c.offset + c.size)
-                    if lo < hi:
-                        assert r.data[lo - r.offset:hi - r.offset] == c.data[lo - c.offset:hi - c.offset]
-            assert tr.core_parameters()["NUM_CH"] == tr.num_ch
-            assert (tr.status == isa.STATUS_DONE) == (tr.err_code == 0)
-            if root.name == "m2":
-                assert tr.opcodes() <= set(isa.M2_OPS) | _illegal_opcodes(tr), tr.path
-            if root.name == "m3":
-                assert tr.opcodes() <= set(isa.M3_OPS) | _any_illegal(tr), tr.path
-    if n == 0:
-        pytest.skip("no traces found")
-
-
-class _FakeMem:
-    """Just enough of MemModel for replay.compare(): the state after a perfect run of tr."""
-
-    def __init__(self, tr):
-        self.mem = {}
-        self.src_beats = [[0] * 4 for _ in range(tr.num_ch)]
-        self.written = tr.expect_beats()
-        self.read_unwritten = [set() for _ in range(tr.num_ch)]
-        for r in tr.expect:
-            for i, b in enumerate(r.beats()):
-                self.mem[(r.ch, b)] = r.data[64 * i:64 * i + 64]
-
-    def read_bytes(self, ch, off, size):
-        return b"".join(self.mem.get((ch, off // 64 + i), bytes(64)) for i in range(size // 64))
-
-
-def test_replay_compare_detects_mismatches():
-    trs = [t for t in trace.load_all(REPO / "traces" / "m2" / "tmax1") if t.expect and t.err_info is not None]
-    if not trs:
-        pytest.skip("no traces/m2/tmax1")
-    tr = next(t for t in trs if t.is_error) if any(t.is_error for t in trs) else trs[0]
-    final = dict(status=tr.status, err_code=tr.err_code, err_pc=tr.err_pc, err_info=tr.err_info)
-    assert replay.compare(tr, _FakeMem(tr), final) == []
-    for k in final:                                        # every final CSR is compared
-        bad = dict(final, **{k: final[k] ^ 1})
-        assert any(k in e for e in replay.compare(tr, _FakeMem(tr), bad)), k
-    m = _FakeMem(tr)                                       # one flipped data byte
-    key = next(iter(m.mem))
-    m.mem[key] = bytes([m.mem[key][0] ^ 0x40]) + m.mem[key][1:]
-    assert any("expect mismatch" in e for e in replay.compare(tr, m, final))
-    m = _FakeMem(tr)                                       # extra written beat
-    m.written[0].add(1 << 27)
-    assert any("outside the expect" in e for e in replay.compare(tr, m, final))
-    m = _FakeMem(tr)                                       # missing written beat
-    r0 = tr.expect[0]
-    m.written[r0.ch].discard(r0.offset // 64)
-    assert any("not written" in e for e in replay.compare(tr, m, final))
-    m = _FakeMem(tr)                                       # read of uninitialised DRAM
-    m.read_unwritten[0].add((1 << 27) + 5)
-    assert any("does not initialise" in e for e in replay.compare(tr, m, final))
-    m = _FakeMem(tr)                                       # read beats per source (LD / MVM)
-    m.src_beats = [[0, b[isa.SRC_DMA], b[isa.SRC_WS], 0] for b in tr.expected_read_beats()]
-    assert replay.compare(tr, m, final, check_sources=True) == []
-    if any(b[isa.SRC_DMA] for b in tr.expected_read_beats()):
-        c = next(i for i, b in enumerate(tr.expected_read_beats()) if b[isa.SRC_DMA])
-        m.src_beats[c][isa.SRC_WS] += 1
-        assert any("source WS" in e for e in replay.compare(tr, m, final, check_sources=True))
-
-
-def _any_illegal(tr):
-    """The faulting opcode of an ILLEGAL_OP ending (any opcode may be the deliberate error)."""
-    if tr.err_code == isa.ERR_ILLEGAL_OP and tr.err_pc < tr.cmd_count:
-        return {tr.insn(tr.err_pc)[0] & 0xFF}
-    return set()
-
-
-def _illegal_opcodes(tr):
-    """Opcodes allowed in an M2 trace only as its faulting (last executed) instruction."""
-    if tr.err_code == isa.ERR_ILLEGAL_OP and tr.err_pc < tr.cmd_count:
-        op = tr.insn(tr.err_pc)[0] & 0xFF
-        return {op} if op != isa.OP_MVM else set()
-    return set()
 
 
 # =============================================================================================
@@ -235,45 +144,7 @@ LOOP_PARAMS = {"NUM_CH": 2, "ADDR_BEAT_W": 20}
 
 def test_loop_sim():
     run("tsr_tb_loop", __name__, parameters=LOOP_PARAMS, extra_sources=[LOOP_SV],
-        testcase=["loop_structs", "loop_csr", "loop_mem_random", "loop_mem_violations"])
-
-
-@pytest.mark.parametrize("cfg", ["default", "small"])
-def test_core_skeleton_sim(cfg):
-    params = {} if cfg == "default" else {
-        "NUM_CH": 1, "SPM_BYTES": 65536, "CH_BYTES": "64'd1073741824", "K_MAX": 4096, "T_MAX": 8}
-    run("tsr_core", __name__, parameters=params, testcase="core_skeleton_attach",
-        extra_env={"TSR_CORE_NUM_CH": str(params.get("NUM_CH", 4))})
-
-
-PYCORE_SETS = [("m2/errors", 40), ("m2/errors8", 32), ("m2/small1ch", 16), ("m2/ch3", 8), ("m2/tmax8", 6),
-               ("m2/tmax1", 12), ("gen/tmax1", 24), ("gen/tmax8", 8)]
-
-
-def _m3_sets():
-    """Every directory of traces/m3 that directly holds traces (one configuration each)."""
-    root = REPO / "traces" / "m3"
-    if not root.is_dir():
-        return []
-    sets = sorted({p.parent.relative_to(REPO / "traces").as_posix() for p in trace.find(root)})
-    # every short error trace; the long MVM sets are capped (the RTL core replays all of them)
-    cap = {"m3/errors": 100, "m3/errors8": 100, "m3/tmax1": 12, "m3/tmax8": 8}
-    return [(s_, cap.get(s_, 16)) for s_ in sets]
-
-
-PYCORE_SETS += _m3_sets()
-
-
-@pytest.mark.parametrize("tset,limit", PYCORE_SETS, ids=[s.replace("/", "-") for s, _ in PYCORE_SETS])
-def test_pycore_traces(tset, limit):
-    root = REPO / "traces" / tset
-    trs = trace.find(root)
-    if not trs:
-        pytest.skip("no traces in %s" % root)
-    cfg = trace.load(trs[0]).config
-    run("tsr_tb_loop", __name__, parameters={"NUM_CH": cfg["num_ch"], "ADDR_BEAT_W": cfg["addr_beat_w"]},
-        extra_sources=[LOOP_SV], testcase="loop_pycore_traces",
-        extra_env={"TSR_PYCORE_SET": str(root), "TSR_PYCORE_MAX": str(limit)})
+        testcase=["loop_structs", "loop_mem_random", "loop_mem_violations"])
 
 
 # =============================================================================================
@@ -283,7 +154,6 @@ def test_pycore_traces(tset, limit):
 async def loop_structs(dut):
     """isa.py struct layouts == tsr_pkg.sv (widths and field positions)."""
     await start_clock_and_reset(dut)
-    assert int(dut.bits_fetch_insn.value) == isa.FETCH_INSN_T.width
     assert int(dut.bits_dma_cmd.value) == isa.DMA_CMD_T.width
     assert int(dut.bits_qact_cmd.value) == isa.QACT_CMD_T.width
     assert int(dut.bits_mvm_cmd.value) == isa.MVM_CMD_T.width
@@ -293,20 +163,15 @@ async def loop_structs(dut):
     for _ in range(20):
         d = {n: rnd.getrandbits(w) for n, w in isa.DMA_CMD_T.fields}
         q = {n: rnd.getrandbits(w) for n, w in isa.QACT_CMD_T.fields}
-        f = {n: rnd.getrandbits(w) for n, w in isa.FETCH_INSN_T.fields}
         m = {n: rnd.getrandbits(w) for n, w in isa.MVM_CMD_T.fields}
         dut.dma_in.value = isa.DMA_CMD_T.pack(**d)
         dut.qact_in.value = isa.QACT_CMD_T.pack(**q)
-        dut.fetch_in.value = isa.FETCH_INSN_T.pack(**f)
         dut.mvm_in.value = isa.MVM_CMD_T.pack(**m)
         await FallingEdge(dut.clk)
         for n, _ in isa.DMA_CMD_T.fields:
             assert int(getattr(dut, "dma_" + n).value) == d[n], n
         for n, _ in isa.QACT_CMD_T.fields:
             assert int(getattr(dut, "qact_" + n).value) == q[n], n
-        assert int(dut.fetch_range_err.value) == f["range_err"] and int(dut.fetch_pc.value) == f["pc"]
-        assert int(dut.fetch_w0.value) == f["insn"] & 0xFFFFFFFF
-        assert int(dut.fetch_w7.value) == f["insn"] >> 224
         assert int(dut.mvm_n.value) == m["n"] and int(dut.mvm_row_beats.value) == m["row_beats"]
     # M3 structs: widths, field positions, package helpers (docs/rtl-m3.md §3, §5)
     assert int(dut.bits_ccmd.value) == isa.MVM_CCMD_T.width
@@ -342,19 +207,6 @@ async def loop_structs(dut):
             assert int(getattr(dut, "beat_" + n).value) == bt[n], n
         assert int(dut.beat_sc3.value) == (bt["sc"] >> 18) & 63 and int(dut.beat_m5.value) == (bt["m"] >> 30) & 63
         assert int(dut.beat_w0.value) == bt["w"] & 255 and int(dut.beat_w127.value) == bt["w"] >> 1016
-
-
-@cocotb.test()
-async def loop_csr(dut):
-    await start_clock_and_reset(dut)
-    csr = CsrDriver(dut)
-    vals = [tb_rng(2).getrandbits(32) for _ in range(8)]
-    for i, v in enumerate(vals):
-        await csr.write(4 * i, v)
-    for i, v in enumerate(vals):
-        assert await csr.read(4 * i) == v
-    assert await csr.read(0x020) == 0 and await csr.read(0x002) == 0
-    assert await csr.read64(0x008) == (vals[3] << 32) | vals[2]
 
 
 class LoopMaster:
@@ -597,57 +449,9 @@ async def loop_mem_violations(dut):
         mem.check()
 
 
-@cocotb.test()
-async def core_skeleton_attach(dut):
-    """tsr_core elaborates; MemModel and CsrDriver attach to its boundary (works for the skeleton
-    and for the finished core: with a finished core the CSR ID read returns the magic)."""
-    import os
-    num_ch = int(os.environ.get("TSR_CORE_NUM_CH", "4"))
-    await start_clock_and_reset(dut)
-    mem = MemModel(dut, num_ch=num_ch, addr_w=len(dut.m_rd_req_addr) // num_ch, seed=11).start()
-    csr = CsrDriver(dut, timeout_cycles=50)
-    try:
-        ident = await csr.read(isa.CSR_ID)
-        assert ident == isa.ID_MAGIC, hex(ident)
-    except CsrTimeout:
-        dut._log.warning("CSR port does not answer (skeleton tsr_csr)")
-    await ClockCycles(dut.clk, 20)
-    assert int(dut.done.value) == 0
-    mem.check(idle=True)
-    mem.stop()
-
-
-@cocotb.test()
-async def loop_pycore_traces(dut):
-    """PyCore runs each trace over the memory-port protocol; replay.compare() must be clean."""
-    import os
-    from common.pycore import PyCore, SeqMaster
-    trs = trace.load_all(os.environ["TSR_PYCORE_SET"])[:int(os.environ.get("TSR_PYCORE_MAX", "1000"))]
-    await start_clock_and_reset(dut)
-    n_err = 0
-    for k, tr in enumerate(trs):
-        mem = MemModel.for_trace(dut, tr, seed=tb_rng(k).getrandbits(31)).start()
-        core = PyCore(tr.config, SeqMaster(dut, tr.num_ch, tr.config["addr_beat_w"]))
-        final = await core.run(tr.cmd_addr_beat, tr.cmd_count, tr.args)
-        await ClockCycles(dut.clk, 3)
-        mem.check(idle=True)
-        errs = replay.compare(tr, mem, final, check_sources=True)
-        mem.stop()
-        assert not errs, "%s: %s" % (tr.name, errs)
-        assert [b[isa.SRC_WS] for b in tr.expected_read_beats()] == core.mvm_beats, tr.name
-        n_err += final["err_code"] != 0
-    dut._log.info("PyCore: %d traces replayed (%d end in an error)", len(trs), n_err)
-
-
 # =============================================================================================
-# M3: reference wrappers, golden MVM model, program generator, simlib, pipes
+# M3: reference wrappers, golden MVM model, pipes
 # =============================================================================================
-def _cfg(**kw):
-    c = dict(isa.U200_V1)
-    c.update(kw)
-    return c
-
-
 def test_ref_m3_wrappers():
     r = ref()
     rnd = random.Random(31)
@@ -810,16 +614,85 @@ def test_mvm_model_gather_jobs():
         assert sum(bin(j.be()).count("1") for j in jobs) == len(ybytes)
 
 
-def test_mvm_model_vs_simulator():
-    """mvm_model.mvm_reference (golden MVM semantics used by the block tests) == the ISA simulator
-    executing the same MVM (whole SPM compared), for both fmts, ACC, T, strides, N edge cases."""
-    from common.simlib import Sim
-    from common.proggen import prog_bytes
+def test_mvm_model_layout():
+    """layout_channels (the symmetric allocation the block tests load into DRAM) == tsr_row_location
+    of libtsr_ref, for both fmts and N edge cases (whole MVMs: test_mvm_model_vs_simulator)."""
     rnd = random.Random(34)
-    cfg = _cfg(t_max=8, num_ch=3, spm_bytes=256 * 1024)
-    sim = Sim(cfg)
-    lim = isa.dram_limit(cfg["ch_bytes"], cfg["addr_beat_w"])
-    woff, io, cmd = isa.REGION_WEIGHT_OFF // 64, isa.REGION_IO_OFF // 64, 0x100
+    for it in range(24):
+        fmt = it % 2
+        bs = 256 if fmt else 32
+        K = rnd.choice([bs, 3 * bs, 1024, 1024 + bs] if fmt else [32, 96, 1024, 1056, 2080])
+        N = rnd.choice([0, 1, 2, 3, 4, 17, 40, rnd.randint(1, 80)])
+        nch = rnd.choice([1, 3, 4])
+        rows = [mvm_model.rand_row(fmt, K, rnd, special=0.05, raw=rnd.random() < 0.3) for _ in range(N)]
+        per_ch = mvm_model.layout_channels(fmt, K, rows, nch)
+        rbytes = 64 * mvm_model.row_beats(fmt, K)
+        for n in range(N):                     # symmetric allocation == tsr_row_location
+            ch, off = ref().row_location(fmt, N, K, nch, n)
+            assert per_ch[ch][64 * off:64 * off + rbytes] == rows[n], (n, ch, off)
+        assert sum(len(d) for d in per_ch) == N * rbytes
+        for c in range(nch):
+            assert len(per_ch[c]) == mvm_model.rows_c(N, nch, c) * rbytes, (it, c)
+
+
+SIM_LIB = REPO / "build" / "dev" / "sw" / "sim" / "libtsr_sim.so"
+
+
+class _TsrConfig(ctypes.Structure):       # tsr_config (sw/sim/include/tsr_isa.h)
+    _fields_ = [(n, ctypes.c_uint32) for n in ("num_ch", "beat_bits", "lanes", "t_max", "k_max", "spm_bytes",
+                                               "vl", "nsreg", "rd_outstanding")] + [
+               ("ch_bytes", ctypes.c_uint64), ("addr_beat_w", ctypes.c_uint32), ("caps", ctypes.c_uint32)]
+
+
+class _OpSim:
+    """The simulator's op-level API (sw/sim/include/tsr_sim.h) through ctypes: libtsr_sim.so of the
+    CMake target tsr_sim_shared, $TSR_SIM_LIB or else build/dev/sw/sim/libtsr_sim.so."""
+
+    def __init__(self, cfg: dict):
+        path = os.environ.get("TSR_SIM_LIB", str(SIM_LIB))
+        if not os.path.exists(path):
+            raise FileNotFoundError("%s not found: build it with `cmake --build build/dev --target tsr_sim_shared "
+                                    "-j4` or set TSR_SIM_LIB" % path)
+        L = self.lib = ctypes.CDLL(path)
+        vp, u32, u64 = ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint64
+        for name, res, args in (("tsr_sim_create", vp, [ctypes.POINTER(_TsrConfig), ctypes.c_char_p]),
+                                ("tsr_sim_destroy", None, [vp]),
+                                ("tsr_sim_dram", vp, [vp, u32]),
+                                ("tsr_sim_spm", vp, [vp]),
+                                ("tsr_sim_op", u32, [vp, ctypes.POINTER(u32), ctypes.POINTER(u32)]),
+                                ("tsr_sim_perf", u64, [vp, u32])):
+            getattr(L, name).restype = res
+            getattr(L, name).argtypes = args
+        self.cfg = cfg
+        self.sim = L.tsr_sim_create(ctypes.byref(_TsrConfig(**cfg)), None)
+        assert self.sim, cfg
+
+    def write(self, ch: int, off: int, data: bytes):
+        ctypes.memmove(self.lib.tsr_sim_dram(self.sim, ch) + off, data, len(data))
+
+    def spm(self) -> bytes:
+        return ctypes.string_at(self.lib.tsr_sim_spm(self.sim), self.cfg["spm_bytes"])
+
+    def op(self, words) -> int:
+        info = ctypes.c_uint32(0)
+        return self.lib.tsr_sim_op(self.sim, (ctypes.c_uint32 * 8)(*words), ctypes.byref(info))
+
+    def perf(self, idx: int) -> int:
+        return self.lib.tsr_sim_perf(self.sim, idx)
+
+    def close(self):
+        self.lib.tsr_sim_destroy(self.sim)
+        self.sim = None
+
+
+def test_mvm_model_vs_simulator():
+    """mvm_model.mvm_reference (the golden MVM of the tb/mvm benches) == the ISA simulator executing
+    the same MVM through tsr_sim_op (whole SPM compared), for both fmts, ACC, T, strides and N edge
+    cases; per-channel weight beats (PERF CH_RD_BEATS) == rows_c x ROW_BEATS."""
+    rnd = random.Random(34)
+    cfg = dict(isa.U200_V1, t_max=8, num_ch=3, spm_bytes=256 * 1024)
+    sim = _OpSim(cfg)
+    woff, io = isa.REGION_WEIGHT_OFF // 64, isa.REGION_IO_OFF // 64
     n_runs = 0
     for it in range(24):
         fmt = it % 2
@@ -831,116 +704,34 @@ def test_mvm_model_vs_simulator():
         rows = [mvm_model.rand_row(fmt, K, rnd, special=0.05, raw=rnd.random() < 0.3) for _ in range(N)]
         qas = [mvm_model.rand_qa(fmt, K, rnd, rnd.choice(["qact", "raw"]), special=0.05) for _ in range(T)]
         per_ch = mvm_model.layout_channels(fmt, K, rows, 3)
-        rbytes = 64 * mvm_model.row_beats(fmt, K)
-        for n in range(N):                     # symmetric allocation == tsr_row_location
-            ch, off = ref().row_location(fmt, N, K, 3, n)
-            assert per_ch[ch][64 * off:64 * off + rbytes] == rows[n], (n, ch, off)
-        assert sum(len(d) for d in per_ch) == N * rbytes
         ql = isa.qa_lines(fmt, K)
         yl = (N + 15) // 16
         stride = rnd.choice([0, yl + 1]) if T > 1 else 0
         ds = stride or yl
         x, dst = 64, 64 + T * ql + rnd.randint(0, 5)
         y_old = rnd.randbytes(64 * ((T - 1) * ds + yl))
-        init = [(c, woff * 64, d) for c, d in enumerate(per_ch) if d]
-        init += [(0, io * 64, b"".join(qas)), (0, (io + 4096) * 64, y_old)]
-        insns = [isa.enc_ld(0, x, io, T * ql)]
+        for c, d in enumerate(per_ch):
+            sim.write(c, woff * 64, d)
+        sim.write(0, io * 64, b"".join(qas))
+        sim.write(0, (io + 4096) * 64, y_old)
+        assert sim.op(isa.enc_ld(0, x, io, T * ql)) == 0
         if y_old:
-            insns.append(isa.enc_ld(0, dst, io + 4096, len(y_old) // 64))
-        insns += [isa.enc_end()]
-        sim.run(prog_bytes(insns), cmd, init=init)
+            assert sim.op(isa.enc_ld(0, dst, io + 4096, len(y_old) // 64)) == 0
         spm = bytearray(sim.spm())
-        res = sim.run(prog_bytes([isa.enc_mvm(fmt, dst, x, woff, N, K, T, stride, acc=acc), isa.enc_end()]), cmd)
-        assert res.final["err_code"] == 0, res.final
-        dram = {c: per_ch[c] for c in range(3)}
-        read = lambda c, b, n: dram[c][64 * (b - woff):64 * (b - woff + n)]  # noqa: E731
+        beats0 = [sim.perf(isa.perf_ch_rd_beats(c)) for c in range(3)]
+        err = sim.op(isa.enc_mvm(fmt, dst, x, woff, N, K, T, stride, acc=acc))
+        assert err == 0, (it, isa.ERR_NAMES.get(err, err))
+        read = lambda c, b, n: per_ch[c][64 * (b - woff):64 * (b - woff + n)]  # noqa: E731
         mvm_model.mvm_reference(spm, read, fmt=fmt, acc=acc, dst=dst, x=x, w_off=woff, N=N, K=K, T=T,
                                 dst_stride=stride, num_ch=3)
-        assert bytes(spm) == res.spm, (it, fmt, K, N, T, acc)
-        R = -(-N // 3) if N else 0
+        assert bytes(spm) == sim.spm(), (it, fmt, K, N, T, acc)
         rb = mvm_model.row_beats(fmt, K)
-        for c in range(3):   # PERF: MVM weight beats per channel = rows_c * ROW_BEATS (+ 1 fetch beat on ch0)
-            want = (mvm_model.rows_c(N, 3, c) * rb if N else 0) + (1 if c == 0 else 0)
-            assert res.perf[isa.perf_ch_rd_beats(c)] == want, (c, R, res.perf)
+        for c in range(3):
+            got = sim.perf(isa.perf_ch_rd_beats(c)) - beats0[c]
+            assert got == mvm_model.rows_c(N, 3, c) * rb, (it, c, got)
         n_runs += 1
-    assert n_runs == 24 and lim > woff
+    assert n_runs == 24
     sim.close()
-
-
-# Digest of the M2 program stream (ProgGen m3=False) for fixed seeds: generated by the original
-# tb/cmdproc generator before the move (verified identical over 6000 programs in 6 configurations).
-PROGGEN_M2_DIGEST_VALUE = "2f46bb92027ec5433481c604db52ae0e7db2bf5bd1d0d365e7d1b51280505707"
-
-
-def _proggen_digest():
-    import hashlib
-    from common.proggen import ProgGen
-    h = hashlib.sha256()
-    for c in (_cfg(), _cfg(t_max=8), _cfg(num_ch=2, t_max=4, k_max=256, spm_bytes=4096, ch_bytes=4096, addr_beat_w=5)):
-        for has_mvm in (False, True):
-            for seed in range(4):
-                g = ProgGen(random.Random(seed), c, has_mvm)
-                h.update(g.init_data()[0][2][:64])
-                for _ in range(10):
-                    prog, cmd, count, args = g.program()
-                    h.update(prog + repr((cmd, count, args)).encode())
-    return h.hexdigest()
-
-
-def test_proggen_m2_stream_digest():
-    """ProgGen(m3=False) keeps generating the M2 programs (tb/cmdproc and tb/core rely on it)."""
-    assert _proggen_digest() == PROGGEN_M2_DIGEST_VALUE
-
-
-def test_proggen_m3_simulator():
-    """ProgGen(m3=True) programs on the simulator: MVMs execute (both fmts, ACC, T > 1, N edge
-    cases), error endings still occur, and no executed instruction has an undefined overlap."""
-    from common.proggen import ProgGen, executed_count, executed_overlaps, prog_bytes
-    from common.simlib import Sim
-    for name, cfg in (("t8", _cfg(t_max=8)), ("ch3", _cfg(num_ch=3, t_max=3, spm_bytes=256 * 1024)),
-                      ("tiny", _cfg(num_ch=2, t_max=4, k_max=256, spm_bytes=4096, ch_bytes=4096, addr_beat_w=5))):
-        sim = Sim(cfg)
-        g = ProgGen(random.Random(35), cfg, True, m3=True)
-        sim.run(prog_bytes([isa.enc_end()]), g.cmd_base, init=g.init_data())
-        codes, fmts, Ts, acc, Ns = collections.Counter(), set(), set(), 0, set()
-        for i in range(120):
-            prog, cmd, count, args = g.mvm_program() if i % 2 else g.program()
-            res = sim.run(prog, cmd, args, count=count)
-            codes[res.final["err_code"]] += 1
-            n = executed_count(prog, res.final, count)
-            assert not executed_overlaps(prog, n, args, cfg), (name, i)
-            for pc in range(n):
-                w = isa.insn_words(prog[32 * pc:32 * pc + 32])
-                if w[0] & 0xFF == isa.OP_MVM:
-                    fmts.add((w[0] >> 8) & 0xF)
-                    Ts.add((w[5] >> 16) & 0xF)
-                    acc += (w[0] >> 12) & 1
-                    Ns.add(min(w[4], 17))
-        assert fmts == {0, 1} and acc > 10 and codes[0] > 40, (name, fmts, acc, codes)
-        assert len(Ts) == cfg["t_max"] and {0, 1} <= Ns, (name, Ts, Ns)
-        assert sum(v for k, v in codes.items() if k) > 5, (name, codes)
-        sim.close()
-
-
-def _build_simlib(root):
-    from common import simlib
-    return str(simlib._lib_path(Path(root)))
-
-
-def test_simlib_keyed_build(tmp_path):
-    """Two processes building the simulator library into one root at the same time end with one
-    content-keyed library that loads, and no temporary build directories are left behind."""
-    import multiprocessing as mp
-    from common import simlib
-    with mp.get_context("spawn").Pool(2) as pool:
-        paths = pool.map(_build_simlib, [str(tmp_path)] * 2)
-    assert paths[0] == paths[1], paths
-    p = Path(paths[0])
-    assert p.exists() and p.parent.parent == tmp_path and p.name == simlib.LIB_NAME
-    assert not simlib._missing_symbols(p)
-    assert [d.name for d in tmp_path.iterdir()] == [p.parent.name]
-    assert [f.name for f in p.parent.iterdir()] == [simlib.LIB_NAME]
-    assert simlib._lib_path(tmp_path) == p                 # cached: same content -> same path
 
 
 def test_pipes_sim():

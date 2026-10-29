@@ -1,11 +1,17 @@
 // tsr_rt.h — Tesseract runtime without ggml: weight upload and y = x · Wᵀ on the device.
 //
 // The host stack for frameworks other than llama.cpp (the PyTorch backend binds this API). It
-// runs on tsr_transport (TSR_DEVICE = sim | mock | vkernel | xrt, as the ggml backend) and lowers
-// with the same code as the ggml backend (tsr_lower: tsr_mm_* tiling and emission, the range
-// allocator, the symmetric weight scatter), so the device sees the same kind of program:
+// runs on tsr_transport (TSR_DEVICE = sim | mock | vkernel | xrt, as the ggml backend) and shares
+// the ggml backend's code (tsr_lower: tsr_mm_* tiling, the range allocator, the symmetric weight
+// scatter). On the device a linear is, per T tile:
 //
-//     LD x tile -> QACT (A32 / A256) -> MVM (Q8_0 / Q4_K) -> ST y tile      per T tile
+//     LD x tile -> QACT (A32 / A256) -> MVM (Q8_0 / Q4_K) -> ST y tile
+//
+// X0 (docs/v2/01-execution-model.md §12): v1 ran these as host-emitted programs cached in the CMD
+// region; that path is deleted with the command buffer, and until the op-list path (a one-op OPL
+// launch of the `graph` kernel, docs/v2/06-software-verification.md §9.4, P3.2) linear() throws
+// tsr::rt::error. Upload, read_blocks, linear_ref, info and memory work as before; the public API
+// is unchanged so that sw/torch only needs a rebuild.
 //
 // Numerics are the llama.cpp path's (docs/spec.md "수치 규칙", "로드 시 변환"):
 //   - weights given as f32 / f16 / bf16 become Q8_0 at upload with ggml's quantize_row_q8_0_ref
@@ -14,9 +20,9 @@
 //   - Q8_0 and Q4_K blocks (GGUF / ggml layout) are stored as they are;
 //   - activations are quantized on the device by QACT; results are f32.
 //
-// Device memory (spec 채널별 DRAM 맵): CMD (ch0) holds the cached programs, IO (ch0) the x / y
-// tiles of one linear call, WEIGHT (every channel) the weights with symmetric allocation (one
-// W_OFF for all channels). AUX is not used.
+// Device memory (spec 채널별 DRAM 맵, EX §11): IO (ch0) holds the x / y tiles of one linear call,
+// WEIGHT (every channel) the weights with symmetric allocation (one W_OFF for all channels). AUX
+// is not used; OPL (was CMD) will hold the op lists.
 //
 // Shapes. K must be a multiple of the weight block (32 for Q8_0, 256 for Q4_K); N >= 1. A weight
 // is stored as a grid of parts so that any N, K and T can be lowered:
@@ -28,17 +34,13 @@
 //     device with MVM.ACC: y = ((y_0 + y_1) + y_2) ..., each y_j the spec's row result over
 //     part j (16 partials + tree), each + one f32 add with the fp rules. This differs from an
 //     unsplit dot product, so linear_ref() and weight_info.k_part describe it exactly.
-//   - T: tiles of min(T_MAX, SPM capacity) tokens inside one program (tsr_mm_emit); calls whose
-//     activations exceed the IO region (or the program size bound) run as several programs.
+//   - T: tiles of min(T_MAX, SPM capacity) tokens.
 // weight_options can force smaller parts (tests).
 //
-// Programs are cached by their content key (format, shapes, T, W_OFF and IO addresses), each
-// resident in its own slot of the CMD region, so a repeated call (decode) writes only x, runs and
-// reads y. Thread safety: every member function takes one device mutex; calls are serialized.
+// Thread safety: every member function takes one device mutex; calls are serialized.
 //
 // Errors are thrown as tsr::rt::error (a std::runtime_error) with a message; invalid arguments as
-// std::invalid_argument. A device execution error (STATUS.ERR) reports ERR_CODE / ERR_PC /
-// ERR_INFO and the failing instruction.
+// std::invalid_argument.
 #pragma once
 
 #include <cstddef>
@@ -74,9 +76,9 @@ size_t       dtype_row_bytes(dtype t, uint32_t K);
 struct open_options {
     const char * kind = nullptr;   // transport kind; nullptr or "" -> getenv("TSR_DEVICE"), default "sim"
     uint64_t io_bytes = 0;         // use at most this many bytes of the 256 MiB IO region for x / y (0: all;
-                                   // test knob that forces several programs per call)
-    bool read_perf = true;         // read PERF_CYCLES / PERF_MVM_CYCLES / PERF_CH_RD_BEATS after every
-                                   // run for counters (2 x (2 + NUM_CH) CSR reads per run)
+                                   // test knob that forces several launches per call)
+    bool read_perf = true;         // read the PERF counters after every device call for counters
+                                   // (no effect until the op-list path, P3.2)
 };
 
 struct weight_options {
@@ -99,14 +101,15 @@ struct weight_info {
 struct counters {
     uint64_t linears = 0;          // linear() calls with T >= 1
     uint64_t tokens = 0;           // sum of their T
-    uint64_t execs = 0;            // programs run (tsr_transport_exec)
-    uint64_t prog_hits = 0;        // programs found in the cache
-    uint64_t prog_misses = 0;      // programs emitted and written to CMD
-    uint64_t perf_cycles = 0;      // sum of PERF_CYCLES deltas over the runs (sim: its cycle model)
+    // The device-call fields below stay 0 until the op-list path (P3.2), which redefines them as
+    // launches and op-list cache hits / misses (v1: programs run, programs found / emitted).
+    uint64_t execs = 0;            // device calls
+    uint64_t prog_hits = 0;        // device-call cache hits
+    uint64_t prog_misses = 0;      // device-call cache misses
+    uint64_t perf_cycles = 0;      // sum of PERF_CYCLES deltas over the calls (sim: its cycle model)
     uint64_t perf_mvm_cycles = 0;  // sum of PERF_MVM_CYCLES deltas
-    uint64_t dev_read_bytes = 0;   // sum over channels of PERF_CH_RD_BEATS deltas x 64 (weights, LD,
-                                   // instruction fetch)
-    uint64_t h2d_bytes = 0;        // host -> device bytes, every write (weights, x, programs)
+    uint64_t dev_read_bytes = 0;   // sum over channels of PERF_CH_RD_BEATS deltas x 64 (weights, LD)
+    uint64_t h2d_bytes = 0;        // host -> device bytes, every write (weights, x, op lists)
     uint64_t h2d_weight_bytes = 0; //   of which weight uploads
     uint64_t d2h_bytes = 0;        // device -> host bytes (y, read-backs)
 };
@@ -116,8 +119,8 @@ struct memory_info {
     uint64_t weight_free;          // free per channel
     uint64_t weight_largest_free;  // largest free range per channel
     uint32_t n_weights;
-    size_t   prog_cached;          // programs in the cache
-    uint64_t prog_cmd_bytes;       // CMD bytes they occupy
+    size_t   prog_cached;          // cached device calls (0 until the op-list path, P3.2)
+    uint64_t prog_cmd_bytes;       // device memory they occupy (0 until P3.2)
 };
 
 using weight_handle = uint64_t;    // 0 is never a valid handle
@@ -151,6 +154,8 @@ public:
 
     // y[t, n] = sum_k W[n, k] x[t, k] on the device, for t < T: x row t at x + t * x_stride floats
     // (0 = K), y row t at y + t * y_stride floats (0 = N). Only y[t, 0..N) is written. T = 0: no-op.
+    // Until the op-list path (P3.2) a call with T >= 1 validates its arguments and throws
+    // tsr::rt::error (no device execution exists in this build).
     void linear(weight_handle w, const float * x, uint32_t T, float * y, size_t x_stride = 0, size_t y_stride = 0);
 
     // The same y computed on the host with libtsr_ref (the spec's oracle) from the weight rows read

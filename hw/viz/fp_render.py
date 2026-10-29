@@ -31,6 +31,7 @@ RULES_CORE = [
     (r"^u_dma", "DMA", "#A569BD"),
     (r"^u_qact", "QACT", "#5DADE2"),
     (r"^g_ch\[\d\]\.u_arb", "memory arbiters", "#6C3483"),
+    # u_cmdproc / u_fetch exist only in v1 netlists (tag v1-m4; deleted in X0, docs/v2 EX §12)
     (r"^u_cmdproc|^u_fetch|^u_csr", "control (cmdproc, fetch, CSR)", "#48C9B0"),
     (r"^g_sh|^g_rst", "reset copies", "#1C2833"),
 ]

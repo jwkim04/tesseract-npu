@@ -1,17 +1,18 @@
-// tsr_kdev.h — the device-access layer (kdev) and the kernel-protocol transport on top of it
-// (docs/xrt-host.md; kernel contract: docs/xrt-host.md §2, M3 part C).
+// tsr_kdev.h — the device-access layer (kdev) and the protocol layer on top of it
+// (docs/xrt-host.md; v2: docs/v2/01-execution-model.md §9-§10).
 //
 // Every hardware-like transport has two layers:
-//   kdev      raw access to one Tesseract kernel: 32-bit s_axi_control registers, per-channel
-//             device memory, start / wait. Implementations: "xrt" (Alveo through XRT,
+//   kdev      raw access to one Tesseract kernel: 32-bit s_axi_control registers and
+//             per-channel device memory. Implementations: "xrt" (Alveo through XRT,
 //             tsr_transport_xrt.cpp), "mock" (adapter register model around the ISA simulator,
 //             tsr_kdev_mock.cpp), "vkernel" (the Verilated kernel of tb/platform in a server
 //             process, tsr_kdev_vkernel.cpp), and kinds registered at run time (register_kdev).
-//   protocol  the kernel contract on top of any kdev (tsr_kdev.cpp): configuration from the CSR
-//             window, exec = args + start + wait with a timeout (then CTRL.ABORT through the
-//             window), a stale completion detected and waited out (settle), STATUS / ERR_* from
-//             the window, ADAPTER_STATUS after every run (adapter_log), range checks.
+//   protocol  the contract on top of any kdev (tsr_kdev.cpp): identity and configuration from
+//             the CSR window, ADAPTER_STATUS left at open (adapter_log), range checks, transfers.
 //             It is an ordinary tsr_transport, so the backend and the tools use it unchanged.
+// v1's run protocol (ap_ctrl_hs start / wait / settle, the argument registers, exec with a
+// timeout and CTRL.ABORT) is deleted (X0, EX §10.2); the v2 protocol layer (bind, load and
+// VERIFY, boot, launch, wait, cancel, stop, reset, log over every kdev) arrives with P3.1.
 // Not thread-safe: one caller at a time (the backend serialises on its device mutex).
 #pragma once
 
@@ -27,17 +28,10 @@
 namespace tsr {
 
 // ---------------------------------------------------------------------------
-// Kernel contract: s_axi_control map (byte offsets, 32-bit registers, 13-bit address space)
+// Kernel contract: s_axi_control map (byte offsets, 32-bit registers, 13-bit address space).
+// 0x000-0x03C (v1's AP_CTRL, GIE, IER, ISR, cmd_addr, cmd_count, arg0-7) are deleted (EX §9.2).
 // ---------------------------------------------------------------------------
 enum : uint32_t {
-    KREG_AP_CTRL         = 0x000,  // bit0 ap_start, bit1 ap_done (COR), bit2 ap_idle, bit3 ap_ready (COR)
-    KREG_GIE             = 0x004,
-    KREG_IER             = 0x008,
-    KREG_ISR             = 0x00C,  // toggle on write
-    KREG_CMD_ADDR_LO     = 0x010,  // cmd_addr (u64, ch0 beat address)
-    KREG_CMD_ADDR_HI     = 0x014,
-    KREG_CMD_COUNT       = 0x018,
-    KREG_ARG0            = 0x020,  // arg i at 0x020 + 4 i, i < 8
     KREG_CH_BASE0        = 0x040,  // ch c base (u64, 4 KiB aligned): lo at 0x040 + 8 c, hi at +4
     KREG_ADAPTER_STATUS  = 0x0F0,  // R / W1C sticky
     KREG_ADAPTER_VERSION = 0x0F4,
@@ -45,20 +39,12 @@ enum : uint32_t {
     KREG_SPACE           = 0x2000, // s_axi_control range the kernel must declare (kernel.xml)
 };
 
-enum : uint32_t {
-    AP_START        = 1u << 0,
-    AP_DONE         = 1u << 1,
-    AP_IDLE         = 1u << 2,
-    AP_READY        = 1u << 3,
-    AP_AUTO_RESTART = 1u << 7,  // not supported: reads 0, writes ignored
-};
-
 // ADAPTER_STATUS: sticky error bits + bits[31:16] saturating count of error responses.
 enum : uint32_t {
     AST_RRESP      = 1u << 0,  // a read response with RRESP != OKAY
     AST_BRESP      = 1u << 1,  // a write response with BRESP != OKAY
     AST_ORPHAN     = 1u << 2,  // a response with no outstanding request for its id
-    AST_BASE_ALIGN = 1u << 3,  // a ch<c>_base not 4 KiB aligned at ap_start
+    AST_BASE_ALIGN = 1u << 3,  // a ch<c>_base not 4 KiB aligned when the bases were latched
 };
 inline uint32_t adapter_status_count(uint32_t v) { return v >> 16; }
 std::string adapter_status_str(uint32_t v);   // "RRESP error, 3 error responses" etc.; "ok" for 0
@@ -67,15 +53,6 @@ std::string adapter_status_str(uint32_t v);   // "RRESP error, 3 error responses
 // this, independent of the size of the buffer bound to the channel.
 constexpr uint64_t KERNEL_CH_BYTES = 16ull << 30;
 constexpr uint32_t KERNEL_MAX_CH   = (KREG_ADAPTER_STATUS - KREG_CH_BASE0) / 8;   // 22 >= TSR_NUM_CH_MAX
-
-// Arguments of one run (the adapter latches them at ap_start).
-struct kargs {
-    uint64_t cmd_addr  = 0;   // ch0 beat address of the command buffer
-    uint32_t cmd_count = 0;
-    uint32_t arg[8]    = {};
-};
-
-enum class kwait { done, timeout, error };
 
 // ---------------------------------------------------------------------------
 // kdev: one kernel instance
@@ -90,9 +67,8 @@ public:
     virtual std::string describe() const { return std::string(); }   // one line per item, for tools
 
     // s_axi_control access: off a multiple of 4 below KREG_SPACE. 0 on success (message on
-    // stderr otherwise). The protocol layer uses only ADAPTER_STATUS / ADAPTER_VERSION and the
-    // CSR window: AP_CTRL, GIE / IER / ISR and the argument registers belong to start(), wait()
-    // and settle() (under XRT the scheduler owns them, and ap_done is clear-on-read).
+    // stderr otherwise). The protocol layer uses ADAPTER_STATUS / ADAPTER_VERSION and the CSR
+    // window.
     virtual int reg_read(uint32_t off, uint32_t * val) = 0;
     virtual int reg_write(uint32_t off, uint32_t val) = 0;
 
@@ -100,36 +76,7 @@ public:
     // caller has checked off + n <= ch_bytes(ch). 0 on success.
     virtual int mem_write(uint32_t ch, uint64_t off, const void * src, size_t n) = 0;
     virtual int mem_read(uint32_t ch, uint64_t off, void * dst, size_t n) = 0;
-
-    // Start one run with these arguments (every ch<c>_base = ch_addr(c)), then wait for ap_done.
-    // timeout_ms 0 waits forever. After kwait::timeout the run is still outstanding: the caller
-    // stops the core (CTRL.ABORT through the window) and calls wait() again.
-    virtual int   start(const kargs & a) = 0;
-    virtual kwait wait(uint32_t timeout_ms) = 0;
-
-    // Read AP_CTRL while no run of start() / wait() is outstanding (the protocol layer calls it at
-    // open and after every completed wait()). ap_done / ap_ready are clear-on-read and accepting a
-    // start does not clear them (tsr_xrt_ctrl), so a completion nobody consumed — a run started
-    // by an earlier process, e.g. with TSR_XRT_CTRL=regs, that ended after it died, or a run
-    // stopped by the open-time CTRL.ABORT — would otherwise make the next xrt::run complete at
-    // once: the XRT scheduler starts a compute unit without reading AP_CTRL first and completes
-    // the command on the first read that shows ap_done (xocl cu_hls.c, ERT). *ap gets the value
-    // (ap_idle = 0 after a completed wait() means that completion was such a stale one).
-    virtual int settle(uint32_t * ap) { return reg_read(KREG_AP_CTRL, ap); }
 };
-
-// Register-level ap_ctrl_hs control (UG1393) for kdevs that own AP_CTRL (mock, vkernel, and
-// xrt with TSR_XRT_CTRL=regs). regs_start reads AP_CTRL (clearing a stale ap_done), requires
-// ap_idle, writes cmd_addr / cmd_count / arg0..7 / every ch<c>_base, then sets ap_start.
-// regs_wait polls AP_CTRL until ap_done (consuming it), sleeping between polls (backoff to 100 us).
-// kds_start / kds_wait do what the XRT scheduler does for an ap_ctrl_hs compute unit (xocl
-// cu_hls.c / ERT): write cmd_addr .. every ch<c>_base and AP_CTRL = ap_start without reading
-// AP_CTRL first, then complete on the first AP_CTRL read with ap_done; the protocol tests run
-// the xrt::run path through them on the mock (they are not used with hardware).
-int   regs_start(kdev & d, const kargs & a);
-kwait regs_wait(kdev & d, uint32_t timeout_ms);
-int   kds_start(kdev & d, const kargs & a);
-kwait kds_wait(kdev & d, uint32_t timeout_ms);
 
 // ---------------------------------------------------------------------------
 // Chunked / aligned transfers: turns byte-granular requests into raw transfers that obey
@@ -180,26 +127,20 @@ std::string dma_rules_check(const dma_rules & r);
 // The protocol layer as a transport
 // ---------------------------------------------------------------------------
 // Wrap a kdev into a tsr_transport (takes ownership). Reads the configuration through the CSR
-// window and fails (NULL, message on stderr) if ID is not "TSR1", the ISA major differs,
-// CFG0.NUM_CH differs from dev->num_ch(), a channel buffer is not 4 KiB aligned, or the core
-// is BUSY and does not stop after CTRL.ABORT. Environment (read here, for every kdev kind):
-//   TSR_XRT_TIMEOUT_MS  exec timeout, default 60000, 0 = none; on timeout the core is stopped
-//                       with CTRL.ABORT and PC / STATUS are reported
-//   TSR_XRT_ABORT_MS    how long to wait for the core to stop after ABORT, default 10000
+// window and fails (NULL, message on stderr) if ID is not "TSR1", the ISA major differs (a v1
+// bitstream reports major 1), CFG0.NUM_CH differs from dev->num_ch(), or a channel buffer is not
+// 4 KiB aligned.
 tsr_transport * transport_open_kdev(std::unique_ptr<kdev> dev);
 
 // The kdev behind a transport opened from one (xrt, mock, registered kinds); nullptr for "sim".
 kdev * transport_kdev(tsr_transport * t);
 
-// ADAPTER_STATUS as the protocol layer saw it. It reads the register at open and after every
-// run and clears it (W1C) when it is not 0, so reading the register afterwards shows only what
-// happened since; tools check this record instead (all zero for "sim").
+// ADAPTER_STATUS as the protocol layer saw it. It reads the register at open and clears it (W1C)
+// when it is not 0, so reading the register afterwards shows only what happened since; tools
+// check this record instead (all zero for "sim"). The per-launch record returns with the v2
+// launch path (P3.1).
 struct adapter_log {
     uint32_t at_open  = 0;   // found at open: left by an earlier process (cleared then)
-    uint32_t last_run = 0;   // after the most recent exec (0 = clean, also when that exec failed early)
-    uint32_t sticky   = 0;   // OR of the error bits [15:0] of every run since open (not at_open)
-    uint64_t runs     = 0;   // execs that ended with ADAPTER_STATUS != 0
-    uint64_t count    = 0;   // sum of their error-response counts (bits [31:16])
 };
 adapter_log transport_adapter_log(tsr_transport * t);
 

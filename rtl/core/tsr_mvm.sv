@@ -1,12 +1,12 @@
 // tsr_mvm.sv — the MVM unit (spec MVM 클러스터 마이크로아키텍처, ISA MVM; M3): dispatch from
-// tsr_cmdproc, activation broadcast to the NUM_CH clusters, cluster command, result gather and
+// the dispatcher, activation broadcast to the NUM_CH clusters, cluster command, result gather and
 // ACC into the SPM, done, perf_mvm_busy.
 //
 // Owner: top agent (docs/rtl-m3.md §2 block (top); contract §3.0, §3.1, §6).
 // tsr_core instantiates it when HAS_MVM = 1 (integration agent).
 //
 // Contract (docs/rtl-m2.md §3.0 dispatch; semantics = tsr_sim.c ex_mvm):
-//   - cmd_valid/cmd_ready/cmd (tsr_mvm_cmd_t): every check done by tsr_cmdproc (K, T, SPM and
+//   - cmd_valid/cmd_ready/cmd (tsr_mvm_cmd_t): every check done at dispatch (K, T, SPM and
 //     DRAM ranges, dst_stride resolved, rows_per_ch / row_beats / y_lines / qa_lines precomputed).
 //     cmd_ready is a register, 1 only while idle. done: registered 1-cycle pulse when every
 //     architectural effect is complete and visible (all y lines accepted by tsr_spm) and the
@@ -104,7 +104,7 @@ module tsr_mvm
   input  logic                                   clk,
   input  logic                                   rst_n,
 
-  // ---- dispatch (tsr_cmdproc) ----
+  // ---- dispatch (the v2 dispatcher, Y4) ----
   input  logic                                   cmd_valid,
   output logic                                   cmd_ready,
   input  tsr_mvm_cmd_t                           cmd,

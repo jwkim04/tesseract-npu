@@ -2,10 +2,16 @@
 # docs/xrt-host.md).
 #
 #   tsr_transport   static, PIC (linked into libggml-tesseract.so): dispatcher, the "sim" transport
-#                   (the ISA simulator in-process), the kernel-protocol layer over a kdev
-#                   (tsr_kdev.cpp) with the "mock" kdev (adapter register model around the
-#                   simulator), the "vkernel" kdev (client of the Verilated kernel server,
-#                   tb/platform/vkernel) and, with -DTSR_WITH_XRT=ON, the "xrt" kdev (Alveo through XRT).
+#                   (the ISA simulator in-process), the protocol layer over a kdev (tsr_kdev.cpp)
+#                   with the "mock" kdev (adapter register model around the simulator), the
+#                   "vkernel" kdev (client of the Verilated kernel server; v1's server in
+#                   tb/platform/vkernel is deleted, the two-clock v2 server is P5.3) and, with
+#                   -DTSR_WITH_XRT=ON, the "xrt" kdev (Alveo through XRT).
+#                   X0: open, configuration, CSR reads and transfers; the v2 launch API arrives with P3.1.
+#                   Until P3.1 / Y5, TSR_DEVICE=xrt has no usable xclbin: v1 xclbins are refused (v1
+#                   arguments), and the ap_ctrl_none kernels this tree packages are refused because
+#                   the kdev still opens them through xrt::kernel (xrt::ip is P3.1). The card path
+#                   meanwhile is build/v1 (README "Run a model on the card (v1)").
 #
 # XRT: -DTSR_WITH_XRT=ON -DTSR_XRT_ROOT=<dir with include/ and lib/> (default /opt/xilinx/xrt).
 # Without an installed XRT, the 2.18.179 deb can be unpacked into build/xrt-local (docs/xrt-host.md
@@ -30,7 +36,7 @@ target_compile_options(tsr_transport PRIVATE ${TSR_FP_FLAGS}
     $<$<COMPILE_LANGUAGE:C>:-Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes>
     $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wshadow>)
 target_include_directories(tsr_transport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(tsr_transport PUBLIC tsr_trace tsr_sim tsr_ref)
+target_link_libraries(tsr_transport PUBLIC tsr_sim tsr_ref)
 
 if (TSR_WITH_XRT)
     set(TSR_XRT_ROOT "/opt/xilinx/xrt" CACHE PATH "XRT installation root (include/, lib/)")
@@ -74,13 +80,13 @@ set_target_properties(test-tsr-kdev PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQU
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 target_compile_options(test-tsr-kdev PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra -Wshadow)
 target_link_libraries(test-tsr-kdev PRIVATE tsr_transport)
-# Arg packing, window offsets, start / done, timeout -> ABORT, ADAPTER_STATUS errors, chunked
+# Window offsets, identity checks at open, ADAPTER_STATUS at open, the mock's registers, chunked
 # transfers at odd offsets / sizes under several DMA rules, offsets beyond 4 GiB.
 add_test(NAME transport_kdev COMMAND test-tsr-kdev)
 
 # The xrt kdev against XRT's userspace with its no-op shim (no card, no driver): xclbin load,
-# kernel / argument / memory-group discovery, device-only buffers, xrt::run start / wait, and
-# refusal of xclbins that break the kernel contract.
+# kernel / argument / memory-group discovery, device-only buffers, and refusal of xclbins that
+# break the kernel contract (v1 run arguments included).
 if (TSR_WITH_XRT AND EXISTS ${_tsr_xrt_root}/lib/libxrt_noop.so)
     add_executable(test-tsr-xrt-noop tests/test_xrt_noop.cpp)
     set_target_properties(test-tsr-xrt-noop PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
@@ -91,17 +97,6 @@ if (TSR_WITH_XRT AND EXISTS ${_tsr_xrt_root}/lib/libxrt_noop.so)
              COMMAND test-tsr-xrt-noop ${_tsr_xrt_root} ${CMAKE_CURRENT_BINARY_DIR}/xrt_noop)
 endif()
 
-# The ggml backend end to end on the kernel protocol (mock kdev; DMA rules that force the
-# bounce / read-modify-write path). test-ggml-tesseract is created after this directory
-# (llama.cpp), so the test is added by a deferred call.
-function(tsr_add_transport_mock_e2e)
-    if (TARGET test-ggml-tesseract)
-        add_test(NAME transport_ggml_e2e_mock COMMAND test-ggml-tesseract)
-        set_tests_properties(transport_ggml_e2e_mock PROPERTIES
-            ENVIRONMENT "TSR_DEVICE=mock;TSR_MOCK_DMA_ALIGN=64;TSR_MOCK_DMA_CHUNK_KIB=64")
-        add_test(NAME transport_ggml_e2e_mock_tmax8 COMMAND test-ggml-tesseract)
-        set_tests_properties(transport_ggml_e2e_mock_tmax8 PROPERTIES
-            ENVIRONMENT "TSR_DEVICE=mock;TSR_MOCK_TMAX=8;TSR_MOCK_NUM_CH=3;TSR_MOCK_DMA_ALIGN=4096;TSR_MOCK_DMA_CHUNK_KIB=12")
-    endif()
-endfunction()
-cmake_language(DEFER DIRECTORY ${TESSERACT_ROOT} CALL tsr_add_transport_mock_e2e)
+# transport_ggml_e2e_mock and transport_ggml_e2e_mock_tmax8 (the ggml backend end to end on the
+# mock kdev) are removed in X0 with the backend's MUL_MAT execution; they return with the OPL
+# path (P3.2, docs/v2/06-software-verification.md §10.2).

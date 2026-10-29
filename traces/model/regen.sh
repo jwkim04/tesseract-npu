@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# traces/model/regen.sh [BUILD_DIR] — real-model RTL regression traces: ONE minimal llama.cpp run per
+# traces/model/regen.sh [BUILD_DIR] — v1 real-model RTL regression traces: ONE minimal llama.cpp run per
 # model on the simulated device (sim transport, U200 v1 config: 4 ch, T_MAX 1, 4 MiB SPM) with
 # TSR_TRACE, which dumps every executed Tesseract program (one per split) as a trace directory; then
 # every trace is replayed on the ISA simulator and summarised.
@@ -24,18 +24,31 @@
 #   2 x N 4864) 36480 | ffn_down Q8_0 18144, Q4_K 9632 | output head N 151936 569760 (140 MiB trace).
 # Nothing was dropped (both models together ~1 GB). Shapes per trace:
 #   python3 traces/m3/trace_stats.py --classes traces/model
+# X0 (docs/v2 EX §12, SW §5.6): these v1 traces stay on disk only as the input of tsr-trace-conv
+# (traces/model-v1conv, Y2), and only the v1 tools can reproduce them: BUILD_DIR (default build/v1,
+# a binary copy of tag v1-m4) is checked by traces/v1_tools.sh first (v1 tools present, v1 traces,
+# loader pointed at BUILD_DIR/bin, TSR_DEVICE=sim). Each model's set is written to <set>.new and
+# replayed there; only then does it replace the old set, so a failed run leaves traces/model as it
+# was.
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-BUILD=${1:-$ROOT/build/dev}
+. "$ROOT/traces/v1_tools.sh"
+v1_tools "${1:-$ROOT/build/v1}" llama-completion libggml-tesseract.so.0
+for m in q8_0 q4_k_m-requant; do
+    [ -e "$ROOT/models/qwen2.5-0.5b-instruct-$m.gguf" ] || { echo "$0: models/qwen2.5-0.5b-instruct-$m.gguf not found"; exit 2; }
+done
 for m in q8_0 q4_k_m-requant; do
     d=$HERE/qwen05b-$m
+    n=$d.new
+    rm -rf "$n"
+    TSR_TRACE=$n TSR_SIM_THREADS=4 "$V1_BUILD/bin/llama-completion" -m "$ROOT/models/qwen2.5-0.5b-instruct-$m.gguf" \
+        -ngl 99 -nkvo -c 256 -t 4 -p "Hi" -n 1 --no-warmup -no-cnv --temp 0 -s 1 < /dev/null > /dev/null 2> "$n.log" \
+        || { echo "llama-completion failed for $m, see $n.log ($d is unchanged)"; exit 1; }
+    "$V1_REPLAY" -q "$n" || { echo "replay of $n failed ($d is unchanged)"; exit 1; }
+    rm -f "$n.log"
     rm -rf "$d"
-    TSR_TRACE=$d TSR_SIM_THREADS=4 "$BUILD/bin/llama-completion" -m "$ROOT/models/qwen2.5-0.5b-instruct-$m.gguf" \
-        -ngl 99 -nkvo -c 256 -t 4 -p "Hi" -n 1 --no-warmup -no-cnv --temp 0 -s 1 < /dev/null > /dev/null 2> "$d.log" \
-        || { echo "llama-completion failed for $m, see $d.log"; exit 1; }
-    rm -f "$d.log"
+    mv "$n" "$d"
     echo "$m: $(find "$d" -name meta.json | wc -l) traces, $(du -sh "$d" | cut -f1)"
 done
-"$BUILD/bin/tsr-trace-replay" -q "$HERE"
 python3 "$ROOT/traces/m3/trace_stats.py" --classes "$HERE"

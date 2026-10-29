@@ -13,9 +13,12 @@ libtsr_ref through DPI-C (tsr_mvm_dbl.cpp), with random beat_ready stalls, rando
 and a configurable result capacity (knobs written per MVM). test_mvm_real runs the same cocotb
 tests with the real rtl/core modules (pytest skips it while they are still skeletons).
 
-Oracle: the ISA simulator through common.simlib (LD of the QA images / old y, the MVM, whole
-SPM), cross-checked with common.mvm_model.mvm_reference (libtsr_ref). Checks on every MVM:
-  - the y lines (all tokens, incl. tails and token gaps) == the simulator's SPM, bit-exact
+Oracle: common.mvm_model.mvm_reference (libtsr_ref dot rows + the tsr_sim.c ex_mvm write loop) on
+a model of the SPM holding the same x images and old y. Until X0 (docs/v2 EX §12) the oracle was
+the ISA simulator running LD / MVM / END programs, and mvm_reference was checked against it on every
+MVM; the program runner is deleted with the command path, the simulator's op-level API returns in
+Y1. GOLDEN_DIGEST (pinned from the simulator) did not move. Checks on every MVM:
+  - the y lines (all tokens, incl. tails and token gaps) == the oracle's SPM, bit-exact
     (mvm_golden: through the digest of the DUT's y bytes against the pinned value);
   - SPM client 2 writes: every byte of the T y ranges written exactly once (byte enables), no
     other byte; reads: the broadcast reads x_line .. x_line + T*QA_LINES - 1 first and in order,
@@ -41,14 +44,14 @@ cocotb tests (each configuration runs all of them):
   mvm_random      random MVMs back to back: fmt, K, N, T, ACC, strides, placements, raw / QACT
                   activations, special weights; random memory regimes and back-end knobs
   mvm_golden      a fixed MVM list (T = 1, K <= 2048, 64 KiB of SPM): the digest of the y bytes
-                  read back from the DUT must equal the pinned GOLDEN_DIGEST (= the simulator's)
+                  read back from the DUT must equal the pinned GOLDEN_DIGEST (= the oracle's)
                   in every configuration (BC_PIPE / RES_PIPE / SPM_RD_LAT / NUM_CH / T_MAX)
   mvm_perf        ideal memory, ready back end, asserted: steady-state cycles per weight beat
                   (1 per cycle per cluster where the FIFO sizing rule holds; real back end: rows
                   >= RB_MIN), fixed accept -> done overhead (§9.1 budget; tight with the double),
                   N = 0 / N = 1 latency, gather line writes per cycle on 2-beat rows (double)
   mvm_b2b         MVM sequences issued back to back (accepted the cycle after the previous done),
-                  incl. ACC MVMs onto the previous MVM's y; whole program vs the simulator
+                  incl. ACC MVMs onto the previous MVM's y; the whole sequence vs the oracle
   mvm_overlap     undefined overlaps (dst inside x, overlapping token ranges): must finish
                   normally, quiescent, writes only inside the y ranges (values only logged)
   mvm_reset       synchronous reset in the middle of MVMs, then fully checked MVMs
@@ -107,9 +110,7 @@ REAL_CFGS = tuple(CFGS)          # the same tests with the real tsr_mvm_back / t
 
 TESTS = ["mvm_directed", "mvm_random", "mvm_golden", "mvm_b2b", "mvm_overlap", "mvm_perf", "mvm_reset"]
 
-IO_BEAT = 1 << 20          # simulator: QA images / old y staged in ch0 at 64 MiB (LD source)
-CMD_BEAT = 16              # simulator program
-W_LO = 1 << 21             # weights live above the staging area (every channel, same W_OFF)
+W_LO = 1 << 21             # lowest weight beat (every channel, same W_OFF; was above the simulator's staging area)
 
 
 # =============================================================================================
@@ -184,14 +185,6 @@ def cfg_from_env() -> dict:
 
 def scale() -> float:
     return float(os.environ.get("TSR_MVM_SCALE", "1.0"))
-
-
-def sim_cfg(p: dict) -> dict:
-    c = dict(isa.U200_V1)
-    c.update(num_ch=p["NUM_CH"], t_max=p["T_MAX"], k_max=p["K_MAX"], spm_bytes=p["SPM_BYTES"],
-             ch_bytes=64 << p["ADDR_BEAT_W"], addr_beat_w=p["ADDR_BEAT_W"],
-             rd_outstanding=p["RD_OUTSTANDING"])
-    return c
 
 
 MEM_REGIMES = {
@@ -306,73 +299,47 @@ def describe(m: dict) -> str:
 
 
 # =============================================================================================
-# Simulator oracle
+# Oracle
 # =============================================================================================
 class Oracle:
-    """The ISA simulator executing the same MVM: LD x / old y from a staging area, MVM, END."""
+    """The same MVMs on a model of the SPM: mvm_model.mvm_reference (whole-MVM semantics of
+    tsr_sim.c ex_mvm on libtsr_ref; every y computed before the first write) with the weights of
+    each MVM as laid out in DRAM. The SPM model persists across calls, like the DUT's SPM."""
 
     def __init__(self, p: dict):
-        from common.simlib import Sim
         self.p = p
-        self.sim = Sim(sim_cfg(p))
+        self.spm = bytearray(p["SPM_BYTES"])
+
+    def _mvm(self, m: dict):
+        nch = self.p["NUM_CH"]
+        N, K, fmt = m["N"], m["K"], m["fmt"]
+        if not N:
+            return                                   # N = 0: no traffic, nothing written
+        rows = dict(enumerate(mm.layout_channels(fmt, K, m["rows"], nch)))
+        rd = lambda c, b, n: rows[c][64 * (b - m["w_off"]):64 * (b - m["w_off"] + n)]  # noqa: E731
+        mm.mvm_reference(self.spm, rd, fmt=fmt, acc=m["acc"], dst=m["dst"], x=m["x"], w_off=m["w_off"],
+                         N=N, K=K, T=m["T"], dst_stride=m["stride"], num_ch=nch)
+
+    def _put(self, line: int, data: bytes):
+        self.spm[64 * line:64 * line + len(data)] = data
 
     def run(self, m: dict) -> bytes:
-        from common.proggen import prog_bytes
-        nch = self.p["NUM_CH"]
-        N, K, fmt, T = m["N"], m["K"], m["fmt"], m["T"]
-        per_ch = mm.layout_channels(fmt, K, m["rows"], nch) if N else [b""] * nch
-        for c, d in enumerate(per_ch):
-            if d:
-                self.sim.load(c, 64 * m["w_off"], d)
-        xs = b"".join(m["qas"])
-        self.sim.load(0, 64 * IO_BEAT, xs)
-        yo = IO_BEAT + len(xs) // 64 + 1
+        """One MVM after the x images and the old y are written: the y span afterwards."""
+        self._put(m["x"], b"".join(m["qas"]))
         if m["y_old"]:
-            self.sim.load(0, 64 * yo, m["y_old"])
-        insns = [isa.enc_ld(0, m["x"], IO_BEAT, len(xs) // 64)]
-        if m["y_old"]:
-            insns.append(isa.enc_ld(0, m["dst"], yo, len(m["y_old"]) // 64))
-        insns.append(isa.enc_mvm(fmt, m["dst"], m["x"], m["w_off"], N, K, T, m["stride"], acc=int(m["acc"])))
-        insns.append(isa.enc_end())
-        res = self.sim.run(prog_bytes(insns), CMD_BEAT)
-        assert res.final["err_code"] == 0, "simulator rejected the MVM: %s (%s)" % (res.final, describe(m))
-        spm = res.spm
-        # cross-check: mvm_model (libtsr_ref + the ex_mvm write loop in Python)
-        model = bytearray(spm)
+            self._put(m["dst"], m["y_old"])
+        self._mvm(m)
         span = len(m["y_old"])
-        model[64 * m["dst"]:64 * m["dst"] + span] = m["y_old"]
-        if N:
-            rows = {c: d for c, d in enumerate(per_ch)}
-            rd = lambda c, b, n: rows[c][64 * (b - m["w_off"]):64 * (b - m["w_off"] + n)]  # noqa: E731
-            mm.mvm_reference(model, rd, fmt=fmt, acc=m["acc"], dst=m["dst"], x=m["x"], w_off=m["w_off"],
-                             N=N, K=K, T=T, dst_stride=m["stride"], num_ch=nch)
-        assert bytes(model[64 * m["dst"]:64 * m["dst"] + span]) == spm[64 * m["dst"]:64 * m["dst"] + span], \
-            "mvm_model disagrees with the simulator (%s)" % describe(m)
-        return spm[64 * m["dst"]:64 * m["dst"] + span]
-
+        return bytes(self.spm[64 * m["dst"]:64 * m["dst"] + span])
 
     def run_seq(self, ms: list, preload: list) -> bytes:
-        """Several MVMs in one program (back to back), after LDs of the preload regions
-        [(spm_line, bytes)]. Returns the whole final SPM."""
-        from common.proggen import prog_bytes
-        nch = self.p["NUM_CH"]
-        for m in ms:
-            if m["N"]:
-                for c, d in enumerate(mm.layout_channels(m["fmt"], m["K"], m["rows"], nch)):
-                    if d:
-                        self.sim.load(c, 64 * m["w_off"], d)
-        insns, beat = [], IO_BEAT
+        """Several MVMs back to back after the preload regions [(spm_line, bytes)] are written (in
+        order, later ones win). Returns the whole final SPM."""
         for line, data in preload:
-            self.sim.load(0, 64 * beat, data)
-            insns.append(isa.enc_ld(0, line, beat, len(data) // 64))
-            beat += len(data) // 64 + 1
+            self._put(line, data)
         for m in ms:
-            insns.append(isa.enc_mvm(m["fmt"], m["dst"], m["x"], m["w_off"], m["N"], m["K"], m["T"],
-                                     m["stride"], acc=int(m["acc"])))
-        insns.append(isa.enc_end())
-        res = self.sim.run(prog_bytes(insns), CMD_BEAT)
-        assert res.final["err_code"] == 0, res.final
-        return res.spm
+            self._mvm(m)
+        return bytes(self.spm)
 
 
 # =============================================================================================
@@ -640,7 +607,7 @@ class Tb:
     async def mvm(self, m: dict, *, check: bool = True, compare: bool = True,
                   timeout: int | None = None) -> dict:
         """Run one MVM. check: oracle, traffic / broadcast checks and y readback (st["y"] = the
-        DUT's y span, st["want"] = the simulator's); compare: also raise when they differ
+        DUT's y span, st["want"] = the oracle's); compare: also raise when they differ
         (mvm_golden judges the y bytes by its digest instead)."""
         d, nch = self.dut, self.nch
         N, K, fmt, T = m["N"], m["K"], m["fmt"], m["T"]
@@ -730,7 +697,7 @@ class Tb:
             want = mm.rows_c(N, nch, c) * rb if N else 0
             assert src[c][isa.SRC_WS] == want, "ch%d: %d WS beats, expected rows_c * ROW_BEATS = %d (%s)" % (
                 c, src[c][isa.SRC_WS], want, describe(m))
-            assert src[c][isa.SRC_DMA] == 0 and src[c][isa.SRC_FETCH] == 0, src[c]
+            assert src[c][isa.SRC_DMA] == 0 and src[c][isa.SRC_AUX] == 0, src[c]
             if want == 0:
                 assert self.mon.ws_req[c] == 0, "ch%d without rows requested weights" % c
         if N == 0:
@@ -895,8 +862,8 @@ async def mvm_golden(dut):
     """A fixed MVM list with fixed data in every configuration. The y bytes the DUT wrote (read
     back from its SPM) are hashed and the DUT digest must equal the pinned GOLDEN_DIGEST, so the
     results are identical across BC_PIPE / RES_PIPE / SPM_RD_LAT / NUM_CH / T_MAX by this check
-    alone (the per-MVM compare with the simulator is off here; every other check of Tb.mvm runs).
-    The simulator's digest of the same list is checked separately: if it moves, the data
+    alone (the per-MVM compare with the oracle is off here; every other check of Tb.mvm runs).
+    The oracle's digest of the same list is checked separately: if it moves, the data
     generator or the oracle changed, not the RTL."""
     tb = await new_tb(dut)
     p = dict(tb.p)
@@ -914,10 +881,10 @@ async def mvm_golden(dut):
         h_sim.update(st["want"])
         recs.append((m, st["y"], st["want"]))
     dut_d, sim_d = h_dut.hexdigest()[:16], h_sim.hexdigest()[:16]
-    dut._log.info("mvm_golden: DUT digest %s, simulator digest %s, pinned %s", dut_d, sim_d,
+    dut._log.info("mvm_golden: DUT digest %s, oracle digest %s, pinned %s", dut_d, sim_d,
                   GOLDEN_DIGEST or "-")
     assert not GOLDEN_DIGEST or sim_d == GOLDEN_DIGEST, (
-        "simulator digest %s != pinned %s: golden_list / make_mvm data or the oracle changed (not an "
+        "oracle digest %s != pinned %s: golden_list / make_mvm data or the oracle changed (not an "
         "RTL result); re-pin GOLDEN_DIGEST once the change is understood" % (sim_d, GOLDEN_DIGEST))
     ref = GOLDEN_DIGEST or sim_d
     if dut_d != ref:
@@ -928,7 +895,8 @@ async def mvm_golden(dut):
             dut_d, ref, len(bad), len(recs), i, describe(m), tb.diff(m, g, w)))
 
 
-GOLDEN_DIGEST = "5e28386055f9e494"   # y bytes of golden_list (simulator = every DUT configuration)
+GOLDEN_DIGEST = "5e28386055f9e494"   # y bytes of golden_list (pinned from the ISA simulator before X0 = the
+                                     # mvm_reference oracle = every DUT configuration)
 
 
 # ---- mvm_perf bounds (docs/rtl-m3.md M3 scope, §4 FIFO sizing, §7.5 RB_MIN, §9.1 overhead) ----
@@ -1086,7 +1054,7 @@ def _carve(rnd: random.Random, L: int, sizes: list) -> list:
 async def mvm_b2b(dut):
     """MVMs issued back to back (the next command presented while the previous one runs, so it is
     accepted in the first cycle cmd_ready allows), including ACC MVMs onto the previous MVM's y
-    (DONE => visible: the ACC reads must see the new y). Whole program vs the simulator."""
+    (DONE => visible: the ACC reads must see the new y). The whole sequence vs the oracle."""
     tb = await new_tb(dut)
     p, nch, L = tb.p, tb.nch, tb.L
     rnd = random.Random(tb_seed() * 7 + 5)
@@ -1160,7 +1128,7 @@ async def mvm_overlap(dut):
     """Undefined operand overlaps (spec 구현 명확화 "겹치는 피연산자"): dst inside x, token ranges
     overlapping (T > 1, dst_stride < y_lines). The unit must finish normally (done, quiescent) and
     write only inside the union of the token ranges; values are logged, not required (our order
-    reads all of x before the first write, so dst-vs-x overlaps still match the simulator)."""
+    reads all of x before the first write, so dst-vs-x overlaps still match the oracle)."""
     tb = await new_tb(dut)
     p, nch, L, TM = tb.p, tb.nch, tb.L, tb.p["T_MAX"]
     rnd = random.Random(tb_seed() * 7 + 6)
@@ -1191,7 +1159,7 @@ async def mvm_overlap(dut):
         span = (T - 1) * resolved_stride(m) + yl
         old = m["y_old"][:64 * span].ljust(64 * span, b"\0")
         await tb.spm_write(m["dst"], old)
-        # the simulator sees the same SPM: x first, then the y span on top (overlapping lines)
+        # the oracle sees the same SPM: x first, then the y span on top (overlapping lines)
         before = await tb.spm_read(min(m["x"], m["dst"]), max(m["x"] + T * ql, m["dst"] + span) - min(m["x"], m["dst"]))
         base = min(m["x"], m["dst"])
         tb.mon.clear()
@@ -1213,7 +1181,7 @@ async def mvm_overlap(dut):
             same += 1
         else:
             diff += 1
-    dut._log.info("mvm_overlap: 8 overlapping MVMs finished normally (%d equal to the simulator, %d differ: undefined)",
+    dut._log.info("mvm_overlap: 8 overlapping MVMs finished normally (%d equal to the oracle, %d differ: undefined)",
                   same, diff)
 
 

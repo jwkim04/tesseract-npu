@@ -3,7 +3,8 @@
 // One channel as in the M3 core (docs/rtl-m3.md §2, §4): tsr_mvm_front on read source
 // TSR_SRC_WS of a real tsr_mem_arb; the arbiter's memory port is exposed with the tsr_core
 // naming (m_*, for common.mem_model.MemModel, memory-side ids {source, local}).
-//   - source TSR_SRC_FETCH (f_*): exposed; Python leaves it idle or drives background bursts
+//   - source TSR_SRC_AUX (f_*; 0, the former fetch source): exposed; Python leaves it idle or
+//     drives background bursts
 //     (shared RD_OUTSTANDING budget, head-of-line response routing).
 //   - source TSR_SRC_DMA and the write source: tied off (idle), as the MVM unit runs alone.
 //   - ws_*: observation copies of the WS source port between the front end and the arbiter
@@ -42,7 +43,7 @@ module tsr_tb_mvm_front
   output logic                          ws_rsp_ready,
   output logic                          ws_idle,
 
-  // ---- background source FETCH ----
+  // ---- background source AUX ----
   input  logic                          f_rd_req_valid,
   output logic                          f_rd_req_ready,
   input  logic [ADDR_BEAT_W-1:0]        f_rd_req_addr,
@@ -118,12 +119,12 @@ module tsr_tb_mvm_front
     s_rd_req_len   = '0;
     s_rd_req_id    = '0;
     s_rd_rsp_ready = '1;
-    // FETCH: background traffic from Python
-    s_rd_req_valid[TSR_SRC_FETCH] = f_rd_req_valid;
-    s_rd_req_addr[TSR_SRC_FETCH]  = f_rd_req_addr;
-    s_rd_req_len[TSR_SRC_FETCH]   = f_rd_req_len;
-    s_rd_req_id[TSR_SRC_FETCH]    = f_rd_req_id;
-    s_rd_rsp_ready[TSR_SRC_FETCH] = f_rd_rsp_ready;
+    // AUX: background traffic from Python
+    s_rd_req_valid[TSR_SRC_AUX] = f_rd_req_valid;
+    s_rd_req_addr[TSR_SRC_AUX]  = f_rd_req_addr;
+    s_rd_req_len[TSR_SRC_AUX]   = f_rd_req_len;
+    s_rd_req_id[TSR_SRC_AUX]    = f_rd_req_id;
+    s_rd_rsp_ready[TSR_SRC_AUX] = f_rd_rsp_ready;
     // DMA: idle (valid 0, ready 1). WS: the front end.
     s_rd_req_valid[TSR_SRC_WS]    = w_req_valid;
     s_rd_req_addr[TSR_SRC_WS]     = w_req_addr;
@@ -149,8 +150,8 @@ module tsr_tb_mvm_front
     .perf_rd_beat, .perf_rd_wait
   );
 
-  assign f_rd_req_ready = s_rd_req_ready[TSR_SRC_FETCH];
-  assign f_rd_rsp_valid = s_rd_rsp_valid[TSR_SRC_FETCH];
+  assign f_rd_req_ready = s_rd_req_ready[TSR_SRC_AUX];
+  assign f_rd_rsp_valid = s_rd_rsp_valid[TSR_SRC_AUX];
   assign f_rd_rsp_data  = s_rd_rsp_data;
   assign f_rd_rsp_last  = s_rd_rsp_last;
   assign f_rd_rsp_id    = s_rd_rsp_id;

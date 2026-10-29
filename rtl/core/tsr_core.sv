@@ -1,46 +1,51 @@
-// tsr_core.sv — Tesseract M2 core top: CSR port, NUM_CH channel memory ports, done.
+// tsr_core.sv — Tesseract core datapath without a command source (X0): CSR port, NUM_CH channel
+// memory ports.
 //
-// Owner: core agent (docs/rtl-m2.md §2, block (f)). The structure below is the M2 netlist
-// contract: it wires the block skeletons exactly as docs/rtl-m2.md §2/§3 describes. The core agent
-// keeps this wiring (changes go through docs/rtl-m2.md) and adds integration logic/assertions.
+// Owner: core agent (docs/rtl-m2.md §2, block (f); docs/v2 CC §13). X0 (docs/v2 EX §12, D14 / D16):
+// the host command path is deleted — the instruction fetch, the command processor, the run
+// registers of the CSR block and the `done` output. What stays is the datapath the v2 dispatcher
+// will drive: the CSR block (identification and PERF), the DMA, QACT and MVM units, the SPM and the
+// per-channel memory arbiters, with the reset distribution and the unit-local integration checks.
+// The units' command ports are idle until Y4, where tsr_core_dp (CC §13.2: tsr_issue with
+// tsr_chk, the v2 tsr_csr, these units) takes over this netlist and tsr_core gets the v2 boundary
+// (clk_rv, rst_rv_n, plat_err_i, host_irq_o; EX §9.3). Until then the core elaborates and lints in
+// every configuration but does no work: no unit is ever offered a command, so no memory request
+// leaves it.
 //
-// Core boundary (spec 코어 경계 인터페이스):
+// Core boundary (spec 코어 경계 인터페이스, without `done`; EX §9.3):
 //   - CSR port: csr_valid/csr_ready/csr_we/csr_addr/csr_wdata/csr_rdata (tsr_csr contract).
-//   - done: level = STATUS.DONE.
 //   - memory port per channel c (packed [NUM_CH], index c): read request {addr_beat, len_beats, id},
 //     read response {data, id, last}, write request {addr_beat, len_beats, id}, write data
 //     {data, last}, write response {id}; all valid/ready (docs/rtl-m2.md §4). Every output is
 //     driven from a register inside tsr_mem_arb.
 // Clock/reset: one clock `clk`; `rst_n` synchronous, active low, already synchronised to clk.
-// Scope: NOP END LI ADDI LD ST QACT FENCE (M2) and MVM (M3, HAS_MVM = 1).
-//   HAS_MVM = 1 (default: the U200 v1 bitstream executes llama.cpp graphs, which need MVM):
-//     tsr_mvm (docs/rtl-m3.md) on the cmdproc MVM dispatch port (mvm_cmd_* / mvm_done), SPM
-//     client TSR_SPM_CL_MVM (broadcast reads, gather writes, ACC reads), the weight-stream
-//     source TSR_SRC_WS of every channel's tsr_mem_arb (cluster c <-> arbiter c) and
-//     perf_mvm_busy -> PERF_MVM_CYCLES (cycles the MVM unit holds an instruction). LANES must be
-//     128 (one Q4_K beat; CFG0 reports it).
-//   HAS_MVM = 0 (M2 test builds): no MVM unit, MVM is ILLEGAL_OP, the weight-stream sources of
-//     the arbiters and SPM client TSR_SPM_CL_MVM are tied off; bit-identical to the M2 core.
+// Units: DMA (LD / ST), QACT and, with HAS_MVM = 1 (default: the U200 configuration), MVM.
+//   HAS_MVM = 1: tsr_mvm (docs/rtl-m3.md) on its command port (mvm_cmd_* / mvm_done), SPM client
+//     TSR_SPM_CL_MVM (broadcast reads, gather writes, ACC reads), the weight-stream source
+//     TSR_SRC_WS of every channel's tsr_mem_arb (cluster c <-> arbiter c) and
+//     perf_mvm_busy -> PERF_MVM_CYCLES (cycles the MVM unit holds an op). LANES must be 128 (one
+//     Q4_K beat; CFG0 reports it).
+//   HAS_MVM = 0: no MVM unit; the weight-stream sources of the arbiters and SPM client
+//     TSR_SPM_CL_MVM are tied off.
+//   Memory source TSR_SRC_AUX (0) of every arbiter is tied off (V2-CC-26).
 // Implementation parameters (results identical for every legal value; tests vary them):
 //   SPM_RD_LAT (SPM read latency seen by every SPM client; 1..4, U200 timing wants 4 at 4 MiB,
-//   docs/rtl-m2.md §12), FETCH_BEATS (fetch buffer, power of two in 2..64), and for HAS_MVM = 1
-//   (docs/rtl-m3.md §1): MVM_WS_FIFO (weight FIFO beats per cluster, power of two >= 64),
-//   MVM_BC_PIPE / MVM_RES_PIPE (broadcast / result pipe stages per cluster; U200: >= 2 for
-//   clusters in another SLR), MVM_ACT_RD_LAT, MVM_MAC_LAT, MVM_MUL_LAT, MVM_ADD_LAT (1..8),
-//   MVM_WS_RD_LAT (1..4), RST_PIPE (0..8, below).
+//   docs/rtl-m2.md §12), and for HAS_MVM = 1 (docs/rtl-m3.md §1): MVM_WS_FIFO (weight FIFO beats
+//   per cluster, power of two >= 64), MVM_BC_PIPE / MVM_RES_PIPE (broadcast / result pipe stages
+//   per cluster; U200: >= 2 for clusters in another SLR), MVM_ACT_RD_LAT, MVM_MAC_LAT,
+//   MVM_MUL_LAT, MVM_ADD_LAT (1..8), MVM_WS_RD_LAT (1..4), RST_PIPE (0..8, below).
 // Reset distribution (RST_PIPE, M3 part C timing, docs/rtl-m3.md §14): with RST_PIPE = P >= 1
 //   every flop of the core sees rst_n exactly P cycles late (assertion and deassertion), through
-//   P - min(P, 2) shared stages and min(P, 2) stages per block (CSR, cmdproc, fetch, DMA, QACT,
-//   SPM, the arbiter of every channel, and inside tsr_mvm (RST_LOCAL) its top, gather and every
-//   cluster), each copy kept separate (Xilinx `keep`) so it can sit next to its block: on the
-//   U200 the arbiters and clusters of the four channels sit in three SLRs, and one rst_n net to
-//   all of them misses 300 MHz. The whole core is a P-cycle-delayed copy of the RST_PIPE = 0 core
-//   (results and cycle behaviour after the reset identical); the registers start in reset
-//   (configuration INIT / simulation initial value 0). P = 0: no extra flops.
-// Verification: tb/core/test_core.py (trace replay of traces/m2 with HAS_MVM = 0 and of
-// traces/m3 + traces/gen with HAS_MVM = 1 per configuration, directed and random programs against
-// the ISA simulator), tb/fastreplay (C++ replay of the big trace sets); simulation-only
-// integration checks I1..I4 at the end of this file.
+//   P - min(P, 2) shared stages and min(P, 2) stages per block (CSR, DMA, QACT, SPM, the arbiter
+//   of every channel, and inside tsr_mvm (RST_LOCAL) its top, gather and every cluster), each copy
+//   kept separate (Xilinx `keep`) so it can sit next to its block: on the U200 the arbiters and
+//   clusters of the four channels sit in three SLRs, and one rst_n net to all of them misses
+//   300 MHz. The whole core is a P-cycle-delayed copy of the RST_PIPE = 0 core (results and cycle
+//   behaviour after the reset identical); the registers start in reset (configuration INIT /
+//   simulation initial value 0). P = 0: no extra flops.
+// Verification: rtl/lint.sh (every configuration); the unit benches (tb/dma, tb/qact, tb/mvm, ...)
+// test the blocks; the core-level replay benches return with the v2 dispatcher (docs/v2 SW §10.3:
+// tb/core v2, tb/fastreplay). Simulation-only integration checks I1, I2, I4 at the end of this file.
 
 module tsr_core
   import tsr_pkg::*;
@@ -52,15 +57,12 @@ module tsr_core
   parameter int unsigned     K_MAX          = TSR_DEF_K_MAX,
   parameter int unsigned     SPM_BYTES      = TSR_DEF_SPM_BYTES,
   parameter int unsigned     VL             = TSR_DEF_VL,
-  parameter int unsigned     NIREG          = TSR_DEF_NIREG,
   parameter int unsigned     NSREG          = TSR_DEF_NSREG,
-  parameter int unsigned     LOOP_DEPTH     = TSR_DEF_LOOP_DEPTH,
   parameter int unsigned     RD_OUTSTANDING = TSR_DEF_RD_OUTSTANDING,
   parameter longint unsigned CH_BYTES       = TSR_DEF_CH_BYTES,
   parameter int unsigned     ADDR_BEAT_W    = TSR_DEF_ADDR_BEAT_W,
   parameter bit              HAS_MVM        = 1'b1,
   parameter int unsigned     SPM_RD_LAT     = TSR_DEF_SPM_RD_LAT,
-  parameter int unsigned     FETCH_BEATS    = 16,
   // MVM unit implementation parameters (HAS_MVM = 1; docs/rtl-m3.md §1)
   parameter int unsigned     MVM_WS_FIFO    = TSR_DEF_WS_FIFO_BEATS,
   parameter int unsigned     MVM_BC_PIPE    = TSR_DEF_MVM_BC_PIPE,
@@ -84,9 +86,6 @@ module tsr_core
   input  logic [TSR_CSR_AW-1:0]                  csr_addr,
   input  logic [31:0]                            csr_wdata,
   output logic [31:0]                            csr_rdata,
-
-  // ---- completion ----
-  output logic                                   done,
 
   // ---- memory ports, one per channel ----
   output logic [NUM_CH-1:0]                      m_rd_req_valid,
@@ -131,9 +130,6 @@ module tsr_core
   if (SPM_BYTES < TSR_LINE_BYTES || (SPM_BYTES % TSR_LINE_BYTES) != 0) begin : g_chk_spm
     $fatal(1, "tsr_core: SPM_BYTES must be a positive multiple of 64");
   end
-  if (NIREG != 16) begin : g_chk_nireg
-    $fatal(1, "tsr_core: NIREG must be 16 (4-bit register fields, R8..R15 = ARG0..7)");
-  end
   if (NSREG < 1 || NSREG > 16 || VL < 1 || VL > 255 || LANES < 1 || LANES > 4095) begin : g_chk_cfg
     $fatal(1, "tsr_core: NSREG in [1, 16], VL in [1, 255], LANES in [1, 4095] (CFG field widths)");
   end
@@ -157,10 +153,9 @@ module tsr_core
     $fatal(1, "tsr_core: MVM latencies: ADD 1..8, WS_RD 1..4, ACT_RD / MAC / MUL >= 1 (docs/rtl-m3.md §1)");
   end
 
-  localparam logic [31:0] CAPS = 32'd0;   // M2: no optional feature (VU, RLD/LOOP, TOPK, WAITM/JUMP)
+  localparam logic [31:0] CAPS = 32'd0;   // no optional feature (VU, TOPK, ATT, DQROW; EX §7.5)
   localparam int unsigned SPM_LINES = SPM_BYTES / TSR_LINE_BYTES;
   localparam int unsigned SPM_AW    = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1;
-  localparam int unsigned unused_params = LOOP_DEPTH;   // M8 (LOOP)
 
   // -------------------------------------------------------------------------------------------
   // Reset distribution (RST_PIPE, header): rst_pre_n after the RST_SH shared stages, then
@@ -170,8 +165,8 @@ module tsr_core
   // INIT 0) and load in a plain always: IEEE 1800 9.2.2.4 forbids a second writer of an always_ff
   // variable (XSim rejects the initial block then; Verilator and Vivado synthesis accept it).
   // -------------------------------------------------------------------------------------------
-  localparam int unsigned RB_CSR = 0, RB_CMD = 1, RB_FETCH = 2, RB_DMA = 3, RB_QACT = 4,
-                          RB_SPM = 5, RB_CHK = 6, RB_ARB = 7;            // RB_ARB + c: arbiter c
+  localparam int unsigned RB_CSR = 0, RB_DMA = 1, RB_QACT = 2, RB_SPM = 3, RB_CHK = 4,
+                          RB_ARB = 5;                                    // RB_ARB + c: arbiter c
   localparam int unsigned NRB     = RB_ARB + NUM_CH;
   localparam int unsigned RST_BLK = (RST_PIPE > 2) ? 2 : RST_PIPE;
   localparam int unsigned RST_SH  = RST_PIPE - RST_BLK;
@@ -202,15 +197,9 @@ module tsr_core
   end
 
   // -------------------------------------------------------------------------------------------
-  // CSR block <-> command processor
+  // CSR block
   // -------------------------------------------------------------------------------------------
-  logic                 run_start, run_abort, run_soft_reset, run_finish;
-  logic [63:0]          run_cmd_addr;
-  logic [31:0]          run_cmd_count;
-  logic [7:0][31:0]     run_args;
-  logic [TSR_ERR_W-1:0] run_err_code;
-  logic [31:0]          run_err_pc, run_err_info, cur_pc;
-  logic                 perf_retire, perf_mvm_busy;
+  logic                 perf_mvm_busy;
   logic [NUM_CH-1:0]    perf_ch_rd_beat, perf_ch_wait;
 
   tsr_csr #(
@@ -218,20 +207,14 @@ module tsr_core
     .VL(VL), .NSREG(NSREG), .CAPS(CAPS)
   ) u_csr (
     .clk, .rst_n(rst_b_n[RB_CSR]),
-    .csr_valid, .csr_ready, .csr_we, .csr_addr, .csr_wdata, .csr_rdata, .done,
-    .run_start, .run_cmd_addr, .run_cmd_count, .run_args, .run_abort, .run_soft_reset,
-    .run_finish, .run_err_code, .run_err_pc, .run_err_info, .cur_pc,
-    .perf_retire, .perf_mvm_busy, .perf_ch_rd_beat, .perf_ch_wait
+    .csr_valid, .csr_ready, .csr_we, .csr_addr, .csr_wdata, .csr_rdata,
+    .perf_mvm_busy, .perf_ch_rd_beat, .perf_ch_wait
   );
 
   // -------------------------------------------------------------------------------------------
-  // Command processor, fetch, units
+  // Unit command ports: idle until the v2 dispatcher (tsr_chk + tsr_issue, CC §13, Y4) drives
+  // them (header).
   // -------------------------------------------------------------------------------------------
-  logic            fetch_start, fetch_stop, fetch_idle;
-  logic [63:0]     fetch_cmd_addr;
-  logic [31:0]     fetch_cmd_count;
-  logic            insn_valid, insn_ready;
-  tsr_fetch_insn_t insn;
   logic            dma_cmd_valid, dma_cmd_ready, dma_done;
   tsr_dma_cmd_t    dma_cmd;
   logic            qact_cmd_valid, qact_cmd_ready, qact_done;
@@ -239,19 +222,12 @@ module tsr_core
   logic            mvm_cmd_valid, mvm_cmd_ready, mvm_done;
   tsr_mvm_cmd_t    mvm_cmd;
 
-  tsr_cmdproc #(
-    .NUM_CH(NUM_CH), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES), .CH_BYTES(CH_BYTES),
-    .ADDR_BEAT_W(ADDR_BEAT_W), .HAS_MVM(HAS_MVM)
-  ) u_cmdproc (
-    .clk, .rst_n(rst_b_n[RB_CMD]),
-    .run_start, .run_cmd_addr, .run_cmd_count, .run_args, .run_abort, .run_soft_reset,
-    .run_finish, .run_err_code, .run_err_pc, .run_err_info, .cur_pc, .perf_retire,
-    .fetch_start, .fetch_cmd_addr, .fetch_cmd_count, .fetch_stop, .fetch_idle,
-    .insn_valid, .insn_ready, .insn,
-    .dma_cmd_valid, .dma_cmd_ready, .dma_cmd, .dma_done,
-    .qact_cmd_valid, .qact_cmd_ready, .qact_cmd, .qact_done,
-    .mvm_cmd_valid, .mvm_cmd_ready, .mvm_cmd, .mvm_done
-  );
+  assign dma_cmd_valid  = 1'b0;
+  assign dma_cmd        = '0;
+  assign qact_cmd_valid = 1'b0;
+  assign qact_cmd       = '0;
+  assign mvm_cmd_valid  = 1'b0;
+  assign mvm_cmd        = '0;
 
   // Read-source ports of the per-channel arbiters: [channel][source].
   logic [NUM_CH-1:0][TSR_NSRC-1:0]                   s_rd_req_valid, s_rd_req_ready;
@@ -262,26 +238,6 @@ module tsr_core
   logic [NUM_CH-1:0][BEAT_BITS-1:0]                  s_rd_rsp_data;
   logic [NUM_CH-1:0]                                 s_rd_rsp_last;
   logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0]               s_rd_rsp_id;
-
-  // Fetch (channel 0, source TSR_SRC_FETCH).
-  logic                    f_rd_req_valid;
-  logic [ADDR_BEAT_W-1:0]  f_rd_req_addr;
-  logic [TSR_LEN_W-1:0]    f_rd_req_len;
-  logic [TSR_SRC_ID_W-1:0] f_rd_req_id;
-  logic                    f_rd_rsp_ready;
-
-  tsr_fetch #(
-    .ADDR_BEAT_W(ADDR_BEAT_W), .CH_BYTES(CH_BYTES), .BEAT_BITS(BEAT_BITS), .BUF_BEATS(FETCH_BEATS)
-  ) u_fetch (
-    .clk, .rst_n(rst_b_n[RB_FETCH]),
-    .start(fetch_start), .cmd_addr(fetch_cmd_addr), .cmd_count(fetch_cmd_count), .stop(fetch_stop),
-    .idle(fetch_idle),
-    .insn_valid, .insn_ready, .insn,
-    .rd_req_valid(f_rd_req_valid), .rd_req_ready(s_rd_req_ready[0][TSR_SRC_FETCH]),
-    .rd_req_addr(f_rd_req_addr), .rd_req_len(f_rd_req_len), .rd_req_id(f_rd_req_id),
-    .rd_rsp_valid(s_rd_rsp_valid[0][TSR_SRC_FETCH]), .rd_rsp_ready(f_rd_rsp_ready),
-    .rd_rsp_data(s_rd_rsp_data[0]), .rd_rsp_last(s_rd_rsp_last[0]), .rd_rsp_id(s_rd_rsp_id[0])
-  );
 
   // DMA source ports, one per channel.
   logic [NUM_CH-1:0]                   d_rd_req_valid, d_rd_rsp_ready;
@@ -375,7 +331,7 @@ module tsr_core
       .perf_mvm_busy
     );
   end else begin : g_nomvm
-    // M2 build: no MVM unit; cmdproc decodes MVM as ILLEGAL_OP and never offers mvm_cmd.
+    // HAS_MVM = 0: no MVM unit (the dispatch refuses MVM; no mvm_cmd is ever offered).
     assign mvm_cmd_ready  = 1'b0;
     assign mvm_done       = 1'b0;
     assign perf_mvm_busy  = 1'b0;
@@ -409,20 +365,12 @@ module tsr_core
   // Per-channel memory arbiters
   // -------------------------------------------------------------------------------------------
   for (genvar c = 0; c < NUM_CH; c++) begin : g_ch
-    // Source FETCH: channel 0 only.
-    if (c == 0) begin : g_fetch
-      assign s_rd_req_valid[c][TSR_SRC_FETCH] = f_rd_req_valid;
-      assign s_rd_req_addr[c][TSR_SRC_FETCH]  = f_rd_req_addr;
-      assign s_rd_req_len[c][TSR_SRC_FETCH]   = f_rd_req_len;
-      assign s_rd_req_id[c][TSR_SRC_FETCH]    = f_rd_req_id;
-      assign s_rd_rsp_ready[c][TSR_SRC_FETCH] = f_rd_rsp_ready;
-    end else begin : g_nofetch
-      assign s_rd_req_valid[c][TSR_SRC_FETCH] = 1'b0;
-      assign s_rd_req_addr[c][TSR_SRC_FETCH]  = '0;
-      assign s_rd_req_len[c][TSR_SRC_FETCH]   = '0;
-      assign s_rd_req_id[c][TSR_SRC_FETCH]    = '0;
-      assign s_rd_rsp_ready[c][TSR_SRC_FETCH] = 1'b1;
-    end
+    // Source AUX: tied off on every channel (V2-CC-26).
+    assign s_rd_req_valid[c][TSR_SRC_AUX] = 1'b0;
+    assign s_rd_req_addr[c][TSR_SRC_AUX]  = '0;
+    assign s_rd_req_len[c][TSR_SRC_AUX]   = '0;
+    assign s_rd_req_id[c][TSR_SRC_AUX]    = '0;
+    assign s_rd_rsp_ready[c][TSR_SRC_AUX] = 1'b1;
     // Source DMA.
     assign s_rd_req_valid[c][TSR_SRC_DMA] = d_rd_req_valid[c];
     assign s_rd_req_addr[c][TSR_SRC_DMA]  = d_rd_req_addr[c];
@@ -466,50 +414,47 @@ module tsr_core
     );
   end
 
-  // Arbiter outputs without a consumer: FETCH ready/valid on channels > 0 (fetch uses channel 0).
-  logic unused_fetch;
+  // Arbiter outputs without a consumer: AUX ready/valid on every channel.
+  logic unused_aux;
   always_comb begin
-    unused_fetch = 1'b0;
-    for (int c = 1; c < NUM_CH; c++) begin
-      unused_fetch |= s_rd_req_ready[c][TSR_SRC_FETCH] | s_rd_rsp_valid[c][TSR_SRC_FETCH];
+    unused_aux = 1'b0;
+    for (int c = 0; c < NUM_CH; c++) begin
+      unused_aux |= s_rd_req_ready[c][TSR_SRC_AUX] | s_rd_rsp_valid[c][TSR_SRC_AUX];
     end
   end
 
   // -------------------------------------------------------------------------------------------
-  // Integration checks (simulation only; docs/rtl-m2.md §3.0, §4 M7, §5; docs/rtl-m3.md §3.0,
-  // §6.4, §10.4). Armed by the first clock edge with rst_n low (before it, Verilator's X
-  // randomisation makes state arbitrary); with RST_PIPE they see the blocks' delayed reset.
-  //   I1 one instruction in flight: at most one unit is offered a command, never while a unit
-  //      holds one; a unit pulses done only while it holds an instruction (never in its accepting
-  //      cycle); no MVM command with HAS_MVM = 0. MVM: cmd_ready is low while it holds the
-  //      instruction, and perf_mvm_busy equals "holds an instruction" in every cycle (from the
-  //      cycle after the accepting edge up to and including the cycle of done = PERF_MVM_CYCLES).
-  //   I2 a unit touches the SPM only while it holds an instruction (its done means its SPM
-  //      effects are complete), so the clients never contend for the 1R1W port: DMA / QACT
-  //      (request in the accepting cycle allowed, as in M2), MVM strictly after its accept; an
-  //      MVM SPM read response only while it holds the instruction; no two units in one cycle.
-  //      Weight-stream requests and responses (source WS of every arbiter) only while the MVM
-  //      unit holds an instruction.
-  //   I3 memory traffic only during a run; in the first cycle of done (STATUS.DONE) no request
-  //      or write data is offered and no read is outstanding on any channel (P4 / M7).
+  // Integration checks (simulation only; docs/rtl-m2.md §3.0, §5; docs/rtl-m3.md §3.0, §6.4,
+  // §10.4). Armed by the first clock edge with rst_n low (before it, Verilator's X randomisation
+  // makes state arbitrary); with RST_PIPE they see the blocks' delayed reset. X0 keeps the
+  // unit-local rules; v1's one-instruction-in-flight rules (one unit offered a command at a time,
+  // never while another holds one, never two units on the SPM in one cycle) and I3 (memory
+  // traffic only during a host run, quiet at DONE) are deleted with the command path: v2 runs the
+  // units concurrently (CC §9.4 defines its integration checks).
+  //   I1 a unit pulses done only while it holds an op (never in its accepting cycle); no MVM
+  //      command with HAS_MVM = 0. MVM: cmd_ready is low while it holds the op, and perf_mvm_busy
+  //      equals "holds an op" in every cycle (from the cycle after the accepting edge up to and
+  //      including the cycle of done = PERF_MVM_CYCLES).
+  //   I2 a unit touches the SPM only while it holds an op (its done means its SPM effects are
+  //      complete): DMA / QACT (request in the accepting cycle allowed, as in M2), MVM strictly
+  //      after its accept; an MVM SPM read response only while it holds the op. Weight-stream
+  //      requests and responses (source WS of every arbiter) only while the MVM unit holds an op.
   //   I4 MVM done => quiescent and exact (docs/rtl-m3.md §3.0, §4, §6.4): in the cycle of
   //      mvm_done no WS request is offered on any channel, every WS beat requested has been
-  //      received (counted at the arbiter's source port, so fetch reads on channel 0 do not
-  //      mask it), no MVM SPM request or write is offered and no MVM SPM read is outstanding;
+  //      received (counted at the arbiter's source port), no MVM SPM request or write is offered
+  //      and no MVM SPM read is outstanding;
   //      channel c requested exactly rows_c x ROW_BEATS beats (rows_c = max(0, min(R, N - c*R)))
   //      and never more at any point; WS requests follow the §4 burst rule (len =
   //      min(64 - addr % 64, beats left), contiguous from w_off).
   // -------------------------------------------------------------------------------------------
 `ifndef SYNTHESIS
-  logic run_q, done_q1, dma_busy_q, qact_busy_q, mvm_busy_q;
+  logic dma_busy_q, qact_busy_q, mvm_busy_q;
   wire  dma_take  = dma_cmd_valid && dma_cmd_ready;
   wire  qact_take = qact_cmd_valid && qact_cmd_ready;
   wire  mvm_take  = mvm_cmd_valid && mvm_cmd_ready;
   wire  dma_spm   = spm_rd_req_valid[TSR_SPM_CL_DMA] || spm_wr_valid[TSR_SPM_CL_DMA];
   wire  qact_spm  = spm_rd_req_valid[TSR_SPM_CL_QACT] || spm_wr_valid[TSR_SPM_CL_QACT];
   wire  mvm_spm   = spm_rd_req_valid[TSR_SPM_CL_MVM] || spm_wr_valid[TSR_SPM_CL_MVM];
-  wire  mem_offer = (|m_rd_req_valid) || (|m_wr_req_valid) || (|m_wr_dat_valid);
-  wire  any_busy  = dma_busy_q || qact_busy_q || mvm_busy_q;
 
   // Same arming scheme as tsr_spm / tsr_mem_arb: the initial block runs before Verilator's first
   // evaluation, which may already see a clock edge with X-randomised rst_n and state.
@@ -533,8 +478,6 @@ module tsr_core
 
   always_ff @(posedge clk) begin
     if (!rst_b_n[RB_CHK]) begin
-      run_q        <= 1'b0;
-      done_q1      <= 1'b0;
       dma_busy_q   <= 1'b0;
       qact_busy_q  <= 1'b0;
       mvm_busy_q   <= 1'b0;
@@ -544,9 +487,6 @@ module tsr_core
       ws_rsp_q     <= '0;
       ws_addr_q    <= '0;
     end else if (chk_on_q) begin
-      done_q1 <= done;
-      if (run_start)  run_q <= 1'b1;
-      if (run_finish) run_q <= 1'b0;
       if (dma_take)   dma_busy_q  <= 1'b1;
       if (dma_done)   dma_busy_q  <= 1'b0;
       if (qact_take)  qact_busy_q <= 1'b1;
@@ -554,34 +494,22 @@ module tsr_core
       if (mvm_take)   mvm_busy_q  <= 1'b1;
       if (mvm_done)   mvm_busy_q  <= 1'b0;
       // I1
-      assert ($countones({dma_cmd_valid, qact_cmd_valid, mvm_cmd_valid}) <= 1 && !(mvm_cmd_valid && !HAS_MVM))
-        else $error("tsr_core: more than one unit offered a command (dma %0b qact %0b mvm %0b, HAS_MVM %0d)",
-                    dma_cmd_valid, qact_cmd_valid, mvm_cmd_valid, HAS_MVM);
-      assert (!((dma_cmd_valid || qact_cmd_valid || mvm_cmd_valid) && any_busy))
-        else $error("tsr_core: command offered while a unit holds an instruction");
+      assert (!(mvm_cmd_valid && !HAS_MVM))
+        else $error("tsr_core: MVM command offered with HAS_MVM = 0");
       assert (!(dma_done && !dma_busy_q) && !(qact_done && !qact_busy_q) && !(mvm_done && !mvm_busy_q))
-        else $error("tsr_core: unit done without an instruction in flight (dma %0b qact %0b mvm %0b)",
+        else $error("tsr_core: unit done without an op in flight (dma %0b qact %0b mvm %0b)",
                     dma_done, qact_done, mvm_done);
       assert (!(mvm_cmd_ready && mvm_busy_q))
-        else $error("tsr_core: MVM unit ready while it holds an instruction");
+        else $error("tsr_core: MVM unit ready while it holds an op");
       assert (perf_mvm_busy == mvm_busy_q)
-        else $error("tsr_core: perf_mvm_busy %0b while the MVM unit %s an instruction", perf_mvm_busy,
+        else $error("tsr_core: perf_mvm_busy %0b while the MVM unit %s an op", perf_mvm_busy,
                     mvm_busy_q ? "holds" : "does not hold");
       // I2
       assert (!(dma_spm && !dma_busy_q && !dma_take) && !(qact_spm && !qact_busy_q && !qact_take) &&
               !(mvm_spm && !mvm_busy_q))
         else $error("tsr_core: SPM access by an idle unit (dma %0b qact %0b mvm %0b)", dma_spm, qact_spm, mvm_spm);
-      assert ($countones({dma_spm, qact_spm, mvm_spm}) <= 1)
-        else $error("tsr_core: two units use the SPM at the same time (dma %0b qact %0b mvm %0b)",
-                    dma_spm, qact_spm, mvm_spm);
       assert (!(spm_rd_rsp_valid[TSR_SPM_CL_MVM] && !mvm_busy_q))
         else $error("tsr_core: MVM SPM read response after the MVM unit's done");
-      // I3
-      assert (!(mem_offer && !run_q))
-        else $error("tsr_core: memory request outside a run");
-      assert (!(done && !done_q1 && (mem_offer || (|perf_ch_wait))))
-        else $error("tsr_core: DONE with memory traffic in flight (offer %0b, waiting %b)",
-                    mem_offer, perf_ch_wait);
       // I4: MVM SPM read accounting
       mvm_rd_out_q <= mvm_rd_out_q + 8'(mvm_rd_take) - 8'(spm_rd_rsp_valid[TSR_SPM_CL_MVM]);
       assert (!(spm_rd_rsp_valid[TSR_SPM_CL_MVM] && mvm_rd_out_q == '0 && !mvm_rd_take))

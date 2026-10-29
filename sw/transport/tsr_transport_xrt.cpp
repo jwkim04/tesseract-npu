@@ -1,6 +1,14 @@
 // tsr_transport_xrt.cpp — the "xrt" kdev: one Tesseract kernel (tsr_u200_k1 / tsr_u200_k4) on an
 // Alveo card through XRT 2.18 (docs/xrt-host.md). Built only with -DTSR_WITH_XRT=ON; the
-// protocol on top (config, exec, timeout -> ABORT, ADAPTER_STATUS) is tsr_kdev.cpp.
+// protocol on top (config, ADAPTER_STATUS, transfers) is tsr_kdev.cpp.
+//
+// v1's run control (xrt::run or register-level ap_ctrl_hs starts and their environment switch,
+// the cmd_addr / cmd_count / arg0-7 arguments) is deleted (X0, EX §9-§10): the only kernel
+// arguments are the channel buffers ch<c> at 0x040 + 8c (EX §9.1), so a v1 xclbin is refused at
+// open. Register access still goes through xrt::kernel, which XRT refuses for ap_ctrl_none
+// compute units; the move to xrt::ip with the bank lookup from xrt::xclbin is P3.1 (EX §9.1).
+// Until then an ap_ctrl_none kernel (the kernel.xml this tree packages) is refused at open with a
+// message naming P3.1, so between X0 and P3.1 / Y5 no xclbin opens here: build/v1 is the card path.
 //
 // Environment (read at open; a malformed value makes the open fail):
 //   TSR_XCLBIN             the xclbin to load (required; loading the one already on the card is cheap)
@@ -9,10 +17,6 @@
 //   TSR_XRT_CH_GIB         channel buffer size in GiB, 1..16 (default: the bank size, at most 16 GiB;
 //                          shrunk in 256 MiB steps while the allocation fails, down to 1 GiB; with
 //                          m2m the channel's staging buffer is allocated first, in the same bank)
-//   TSR_XRT_CTRL           run   (default) xrt::run: the XRT scheduler writes the arguments, starts the CU
-//                                and catches ap_done
-//                          regs  the transport writes the argument registers and AP_CTRL itself and
-//                                polls ap_done (the sequence the mock and vkernel kdevs use)
 //   TSR_XRT_DMA            direct (default) device-only buffers, xrt::bo::write / read = the xocl
 //                                 unmanaged-DMA ioctls from the caller's memory
 //                          staged the same ioctls through an aligned bounce buffer (TSR_XRT_DMA_CHUNK_MIB)
@@ -29,7 +33,6 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <chrono>
 #include <cinttypes>
 #include <cstdarg>
 #include <cstdio>
@@ -52,7 +55,6 @@ namespace {
 constexpr uint64_t MiB = 1ull << 20;
 constexpr uint64_t GiB = 1ull << 30;
 
-enum class ctrl_mode { run, regs };
 enum class dma_mode { direct, staged, m2m };
 
 const char * dma_mode_name(dma_mode m) {
@@ -109,8 +111,6 @@ public:
     int reg_write(uint32_t off, uint32_t val) override;
     int mem_write(uint32_t ch, uint64_t off, const void * src, size_t n) override;
     int mem_read(uint32_t ch, uint64_t off, void * dst, size_t n) override;
-    int start(const kargs & a) override;
-    kwait wait(uint32_t timeout_ms) override;
 
 private:
     int raw_write(uint32_t ch, uint64_t off, const void * src, size_t n) override;
@@ -122,14 +122,11 @@ private:
     xrt::xclbin  xb_;
     xrt::uuid    uuid_;
     xrt::kernel  krn_;
-    xrt::run     run_;
     std::string  kname_, info_;
-    int          a_cmd_addr_ = -1, a_cmd_count_ = -1, a_arg_[8];
     std::vector<int>      a_ch_;
     std::vector<int>      grp_;
     std::vector<xrt::bo>  bo_, stage_;
     std::vector<uint64_t> size_, addr_;
-    ctrl_mode ctrl_ = ctrl_mode::run;
     dma_mode  dma_  = dma_mode::direct;
     dma_rules staged_rules_;
     std::unique_ptr<dma_engine> eng_;
@@ -137,13 +134,8 @@ private:
 };
 
 xrt_kdev::xrt_kdev() {
-    for (int & a : a_arg_) a = -1;
     const char * xclbin = env_str("TSR_XCLBIN");
     if (xclbin == nullptr) throw std::runtime_error("TSR_XCLBIN is not set (path of the Tesseract xclbin)");
-    const char * ctl = env_str("TSR_XRT_CTRL");
-    if (ctl == nullptr || strcmp(ctl, "run") == 0) ctrl_ = ctrl_mode::run;
-    else if (strcmp(ctl, "regs") == 0) ctrl_ = ctrl_mode::regs;
-    else throw std::runtime_error(fmt("TSR_XRT_CTRL=\"%s\": must be run or regs", ctl));
     // Emulation-mode defaults (hw_emu: docs/xrt-host.md §9), only for variables left unset.
     const std::vector<env_default> emu = xrt_env_defaults();
     if (!emu.empty()) {
@@ -198,43 +190,44 @@ xrt_kdev::xrt_kdev() {
     if (cus.size() != 1) {
         throw std::runtime_error(fmt("kernel %s has %zu compute units; the transport drives exactly one", kname_.c_str(), cus.size()));
     }
-    if (cus[0].get_control_type() != xrt::xclbin::ip::control_type::hs) {
-        throw std::runtime_error(fmt("kernel %s is not ap_ctrl_hs", kname_.c_str()));
-    }
     if (cus[0].get_size() < KREG_SPACE) {
         throw std::runtime_error(fmt("kernel %s declares an s_axi_control range of 0x%zx; the contract needs 0x%x "
                                      "(the core CSR window is at 0x%x; kernel.xml port range)",
                                      kname_.c_str(), (size_t) cus[0].get_size(), KREG_SPACE, KREG_CSR_WINDOW));
     }
 
-    // Arguments, identified by their register offset (kernel contract); names are free.
+    // xrt::kernel refuses ap_ctrl_none compute units (the v2 kernel contract, EX §9.1); say so here
+    // instead of failing later inside XRT. The xrt::ip path is P3.1.
+    if (cus[0].get_control_type() == xrt::xclbin::ip::control_type::none) {
+        throw std::runtime_error(fmt("kernel %s is ap_ctrl_none (the v2 kernel contract); this transport still opens "
+                                     "kernels through xrt::kernel, which XRT refuses for ap_ctrl_none: the xrt::ip "
+                                     "access arrives with transport v2 (P3.1). Until then the card runs v1 from build/v1",
+                                     kname_.c_str()));
+    }
+
+    // Arguments, identified by their register offset (kernel contract, EX §9.1); names are free.
+    // The channel buffers are the only arguments: v1's cmd_addr / cmd_count / arg0-7 are refused.
     std::vector<int> ch_by_slot(KERNEL_MAX_CH, -1);
     for (const auto & a : xk.get_args()) {
         const uint64_t off = a.get_offset(), sz = a.get_size();
         const int idx = (int) a.get_index();
-        if (off == KREG_CMD_ADDR_LO && sz == 8) {
-            a_cmd_addr_ = idx;
-        } else if (off == KREG_CMD_COUNT && sz == 4) {
-            a_cmd_count_ = idx;
-        } else if (off >= KREG_ARG0 && off < KREG_ARG0 + 32 && off % 4 == 0 && sz == 4) {
-            a_arg_[(off - KREG_ARG0) / 4] = idx;
-        } else if (off >= KREG_CH_BASE0 && off < KREG_ADAPTER_STATUS && (off - KREG_CH_BASE0) % 8 == 0 && sz == 8 &&
-                   !a.get_mems().empty()) {
+        if (off >= KREG_CH_BASE0 && off < KREG_ADAPTER_STATUS && (off - KREG_CH_BASE0) % 8 == 0 && sz == 8 &&
+            !a.get_mems().empty()) {
             ch_by_slot[(off - KREG_CH_BASE0) / 8] = idx;
         } else {
             throw std::runtime_error(fmt("kernel %s: argument %s (offset 0x%" PRIx64 ", %" PRIu64 " bytes) is not in the "
-                                         "kernel contract", kname_.c_str(), a.get_name().c_str(), off, sz));
+                                         "kernel contract (a v1 xclbin? its tools are in build/v1)", kname_.c_str(),
+                                         a.get_name().c_str(), off, sz));
         }
     }
-    bool args_ok = a_cmd_addr_ >= 0 && a_cmd_count_ >= 0;
-    for (int a : a_arg_) args_ok = args_ok && a >= 0;
+    bool args_ok = true;
     for (uint32_t c = 0; c < KERNEL_MAX_CH; ++c) {
         if (ch_by_slot[c] >= 0 && c != a_ch_.size()) args_ok = false;   // channel slots must be contiguous from 0
         if (ch_by_slot[c] >= 0) a_ch_.push_back(ch_by_slot[c]);
     }
     if (!args_ok || a_ch_.empty() || a_ch_.size() > TSR_NUM_CH_MAX) {
-        throw std::runtime_error(fmt("kernel %s: arguments do not match the kernel contract (cmd_addr u64 at 0x10, cmd_count "
-                                     "at 0x18, arg0..7 at 0x20..0x3C, ch0..ch(C-1) buffers at 0x40 + 8c)", kname_.c_str()));
+        throw std::runtime_error(fmt("kernel %s: arguments do not match the kernel contract (ch0..ch(C-1) buffers at "
+                                     "0x40 + 8c)", kname_.c_str()));
     }
 
     // The Alveo shim (xocl) of XRT 2.18 runs the legacy flow: load_xclbin programs the card and
@@ -292,9 +285,6 @@ xrt_kdev::xrt_kdev() {
         stage_.push_back(std::move(stg));
     }
 
-    run_ = xrt::run(krn_);
-    for (size_t c = 0; c < bo_.size(); ++c) run_.set_arg(a_ch_[c], bo_[c]);
-
     dma_rules r;
     r.align = (size_t) align;
     r.max_xfer = (size_t) chunk;
@@ -313,8 +303,8 @@ xrt_kdev::xrt_kdev() {
         bdf = dev_.get_info<xrt::info::device::bdf>();
     } catch (const std::exception &) {
     }
-    info_ = fmt("device %s (%s), xclbin %s (uuid %s), kernel %s, control %s\n", devname.c_str(), bdf.c_str(), xclbin,
-                uuid_.to_string().c_str(), kname_.c_str(), ctrl_ == ctrl_mode::run ? "xrt::run" : "registers");
+    info_ = fmt("device %s (%s), xclbin %s (uuid %s), kernel %s\n", devname.c_str(), bdf.c_str(), xclbin,
+                uuid_.to_string().c_str(), kname_.c_str());
     info_ += fmt("DMA %s, chunk %" PRIu64 " MiB, align %" PRIu64 "%s\n", dma_mode_name(dma_), chunk / MiB, align,
                  dma_ == dma_mode::m2m ? ", a staging buffer of one chunk per channel (host + its bank)" : "");
     for (size_t c = 0; c < bo_.size(); ++c) {
@@ -323,9 +313,8 @@ xrt_kdev::xrt_kdev() {
     }
 }
 
-// read_register / write_register are deprecated in XRT 2.18 in favour of xrt::ip, which cannot be
-// combined with xrt::run on the same compute unit; they remain the supported way for an
-// exclusive-access kernel (xrt_kernel.cpp get_cuidx_or_error).
+// read_register / write_register are deprecated in XRT 2.18 in favour of xrt::ip (P3.1); they
+// remain the supported way for an exclusive-access xrt::kernel (xrt_kernel.cpp get_cuidx_or_error).
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 int xrt_kdev::reg_read(uint32_t off, uint32_t * val) {
@@ -348,34 +337,6 @@ int xrt_kdev::reg_write(uint32_t off, uint32_t val) {
     }
 }
 #pragma GCC diagnostic pop
-
-int xrt_kdev::start(const kargs & a) {
-    if (ctrl_ == ctrl_mode::regs) return regs_start(*this, a);
-    try {
-        run_.set_arg(a_cmd_addr_, (uint64_t) a.cmd_addr);
-        run_.set_arg(a_cmd_count_, (uint32_t) a.cmd_count);
-        for (int i = 0; i < 8; ++i) run_.set_arg(a_arg_[i], (uint32_t) a.arg[i]);
-        run_.start();
-        return 0;
-    } catch (const std::exception & e) {
-        fprintf(stderr, "tsr_transport(xrt): xrt::run start failed: %s\n", e.what());
-        return -1;
-    }
-}
-
-kwait xrt_kdev::wait(uint32_t timeout_ms) {
-    if (ctrl_ == ctrl_mode::regs) return regs_wait(*this, timeout_ms);
-    try {
-        const ert_cmd_state st = run_.wait(std::chrono::milliseconds(timeout_ms));
-        if (st == ERT_CMD_STATE_COMPLETED) return kwait::done;
-        if (st == ERT_CMD_STATE_TIMEOUT) return kwait::timeout;
-        fprintf(stderr, "tsr_transport(xrt): xrt::run ended in state %d (ert_cmd_state)\n", (int) st);
-        return kwait::error;
-    } catch (const std::exception & e) {
-        fprintf(stderr, "tsr_transport(xrt): xrt::run wait failed: %s\n", e.what());
-        return kwait::error;
-    }
-}
 
 xrt::bo & xrt_kdev::stage(uint32_t ch) { return stage_[ch]; }   // allocated at open (m2m only)
 

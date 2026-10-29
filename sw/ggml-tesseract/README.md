@@ -5,6 +5,23 @@ ggml backend for the Tesseract NPU core (spec "ggml 백엔드 통합"). One regi
 `MUL_MAT` only, everything else stays on the CPU. Pin and verified llama.cpp API:
 `docs/llama-pin.md`.
 
+> **State after X0 (v2, `docs/v2/01-execution-model.md` §12).** The v1 MUL_MAT execution is
+> deleted: lowering into LD/QACT/MVM/ST programs, the CMD-region double buffer, the program
+> cache, the staged and lazily converted MUL_MATs. The device and its buffer type stay
+> registered and weights upload, convert and read back as described below, but `supports_op`
+> accepts only the no-op ops and `graph_compute` runs nothing, so every compute op runs on
+> another backend (with llama.cpp the weights then stay on the CPU). The sections on lowering,
+> segments, the program cache and execution describe v1 (tag `v1-m4`). MUL_MAT returns as OPL
+> records for the `graph` kernel (`docs/v2/06-software-verification.md` §9.3, P3.2), together
+> with the ctests listed at the end, which are not registered until then.
+>
+> X0 deleted more than EX §12 lists (the emission and the program cache): the lazy conversion
+> of raw-buffer MUL_MAT src0 into the WEIGHT heap (`tsr_lazy_*`, `tsr_heap_alloc` with its
+> evict-and-retry), the host-memory staging (`tsr_lower_staged`, `tsr_act_loc`) and
+> `tsr_resolve_weight` went too, because nothing calls them without an execution path. SW §9.3
+> keeps them unchanged for M6 (`test-backend-ops` puts src0 in non-WEIGHTS buffers), so P3.2
+> restores them from `v1-m4:sw/ggml-tesseract/ggml-tesseract.cpp`.
+
 ## Files
 
 | File | Content |
@@ -103,7 +120,7 @@ Public C API (`third_party/llama.cpp/ggml/include/ggml-tesseract.h`, from the pa
 | `TSR_DEBUG=1` | placement, lowering and exec log on stderr; `2` adds buffer events and a disassembly of every executed program |
 | `TSR_FORCE_HOST=1` | test knob: every non-WEIGHTS buffer in host memory, so every MUL_MAT takes the staged path |
 | `TSR_STAGE_KIB=<n>` | test knob: IO stage size in KiB (default max(16 MiB, 2 × SPM)); a small stage forces several T tiles |
-| `TSR_TRACE`, `TSR_SIM_*` | handled by the sim transport (`sw/transport/tsr_transport.h`) |
+| `TSR_SIM_*` | handled by the sim transport (`sw/transport/tsr_transport.h`); v1's per-exec `TSR_TRACE` dump is deleted (X0), trace v2 capture is P1.10 |
 
 ## Build and test
 

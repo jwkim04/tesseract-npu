@@ -1,15 +1,13 @@
 // test-tsr-backend-units.cpp — unit tests of the ggml-independent parts of ggml-tesseract:
-// the range allocator (tsr-alloc), the MUL_MAT lowering / SPM tiling and the program cache
-// (tsr-lower).
+// the range allocator (tsr-alloc) and the MUL_MAT SPM tiling (tsr-lower). The emission and
+// program-cache tests are deleted with that code (X0); the OPL builder's tests (hazards,
+// fusion, encoding) take this ctest's place in P3.2 (docs/v2/06-software-verification.md §10.2).
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <iterator>
 #include <map>
 #include <random>
-#include <string>
-#include <vector>
 
 #include "tsr-alloc.h"
 #include "tsr-lower.h"
@@ -110,63 +108,41 @@ static void test_shape_ok() {
     CHECK(!tsr_mm_shape_ok(c, TSR_FMT_Q8_0, 2000000, 5120));   // one token's y does not fit 4 MiB SPM
 }
 
-// Decode the program and check the tiling invariants and the fields of every instruction.
-static void check_program(const tsr_config & c, const tsr_mm_desc & d) {
+// The tiling invariants of one MUL_MAT shape.
+static void check_tiling(const tsr_config & c, uint32_t fmt, uint32_t N, uint32_t K, uint32_t T) {
     tsr_mm_tiling t;
-    CHECK(tsr_mm_plan_tiling(c, d.fmt, d.N, d.K, d.T, &t));
+    CHECK(tsr_mm_plan_tiling(c, fmt, N, K, T, &t));
     const uint64_t spm_lines = c.spm_bytes / 64;
-    CHECK(t.t_tile >= 1 && t.t_tile <= std::min<uint32_t>(c.t_max, d.T));
+    CHECK(t.t_tile >= 1 && t.t_tile <= std::min<uint32_t>(c.t_max, T));
     CHECK(t.spm_end <= spm_lines);
-    CHECK(t.x_lines == d.K * 4 / 64);
-    CHECK(t.qa_lines == tsr_qa_lines(tsr_qa_kind_for_fmt(d.fmt), d.K));
-    CHECK(t.y_lines == (d.N * 4 + 63) / 64);
-    CHECK(t.spm_qa == t.spm_x + t.t_tile * t.x_lines && t.spm_y == t.spm_qa + t.t_tile * t.qa_lines);
-
-    std::vector<tsr_insn> in;
-    std::vector<size_t> cuts;
-    tsr_mm_emit(c, d, in, cuts);
-    const uint32_t tiles = (d.T + t.t_tile - 1) / t.t_tile;
-    CHECK(in.size() == 4u * tiles && cuts.size() == tiles);
-    for (uint32_t i = 0; i < tiles; ++i) {
-        const uint32_t t0 = i * t.t_tile;
-        const uint32_t tt = std::min(t.t_tile, d.T - t0);
-        const tsr_insn & ld = in[4 * i + 0];
-        const tsr_insn & qa = in[4 * i + 1];
-        const tsr_insn & mv = in[4 * i + 2];
-        const tsr_insn & st = in[4 * i + 3];
-        CHECK(cuts[i] == 4u * (i + 1));
-        CHECK(tsr_w0_opcode(ld.w[0]) == TSR_OP_LD && tsr_w0_sub(ld.w[0]) == 0);
-        CHECK(ld.w[1] == t.spm_x && ld.w[2] == d.x_beat + (uint64_t) t0 * t.x_lines && ld.w[3] == tt * t.x_lines);
-        CHECK(tsr_w0_opcode(qa.w[0]) == TSR_OP_QACT && tsr_w0_sub(qa.w[0]) == t.kind);
-        CHECK(qa.w[1] == t.spm_qa && qa.w[2] == t.spm_x && qa.w[3] == d.K && qa.w[4] == tt && qa.w[5] == t.x_lines);
-        CHECK(qa.w[6] == 0 && qa.w[7] == 0);
-        CHECK(tsr_w0_opcode(mv.w[0]) == TSR_OP_MVM && tsr_w0_sub(mv.w[0]) == d.fmt && tsr_w0_flags(mv.w[0]) == 0);
-        CHECK(mv.w[1] == t.spm_y && mv.w[2] == t.spm_qa && mv.w[3] == d.w_off_beat && mv.w[4] == d.N);
-        CHECK((mv.w[5] & 0xFFFF) == d.K && ((mv.w[5] >> 16) & 0xF) == tt && (mv.w[5] >> 20) == 0);
-        CHECK(mv.w[6] == t.y_lines && mv.w[7] == 0);
-        CHECK(tsr_w0_opcode(st.w[0]) == TSR_OP_ST && tsr_w0_sub(st.w[0]) == 0);
-        CHECK(st.w[1] == t.spm_y && st.w[2] == d.y_beat + (uint64_t) t0 * t.y_lines && st.w[3] == tt * t.y_lines);
-        // registers are R0 everywhere (absolute addresses)
-        for (const tsr_insn * p : { &ld, &qa, &mv, &st }) {
-            CHECK(tsr_w0_ra(p->w[0]) == 0 && tsr_w0_rb(p->w[0]) == 0 && tsr_w0_rc(p->w[0]) == 0 && tsr_w0_rd(p->w[0]) == 0);
-        }
+    CHECK(t.kind == tsr_qa_kind_for_fmt(fmt));
+    CHECK(t.x_lines == K * 4 / 64);
+    CHECK(t.qa_lines == tsr_qa_lines(tsr_qa_kind_for_fmt(fmt), K));
+    CHECK(t.y_lines == (N * 4 + 63) / 64);
+    CHECK(t.spm_x == 0 && t.spm_qa == t.spm_x + t.t_tile * t.x_lines && t.spm_y == t.spm_qa + t.t_tile * t.qa_lines);
+    CHECK(t.spm_end == t.spm_y + t.t_tile * t.y_lines);
+    CHECK(tsr_mm_lines_per_token(fmt, N, K) == (uint64_t) t.x_lines + t.qa_lines + t.y_lines);
+    // the largest tile that fits: one more token would not
+    if (t.t_tile < std::min<uint32_t>(tsr_mm_t_max(c), T)) {
+        CHECK((uint64_t) (t.t_tile + 1) * tsr_mm_lines_per_token(fmt, N, K) > spm_lines);
     }
 }
 
-static void test_lowering() {
+static void test_tiling() {
     for (uint32_t tmax : { 1u, 2u, 8u }) {
         const tsr_config c = cfg_with_tmax(tmax);
-        const tsr_mm_desc cases[] = {
-            { TSR_FMT_Q8_0,     64,    32,   1, 0x800000, 0x100000, 0x200000 },
-            { TSR_FMT_Q8_0,     33,    96,   7, 0x800040, 0x100010, 0x200020 },
-            { TSR_FMT_Q4_K,   5120, 27648,   3, 0x900000, 0x100000, 0x300000 },
-            { TSR_FMT_Q4_K,     40,   512,  17, 0x900000, 0x100000, 0x300000 },
-            { TSR_FMT_Q8_0, 152064,  5120,   2, 0xA00000, 0x100000, 0x300000 },
-            { TSR_FMT_Q8_0,      1,    32, 512, 0xA00000, 0x100000, 0x300000 },
+        const struct { uint32_t fmt, N, K, T; } cases[] = {
+            { TSR_FMT_Q8_0,     64,    32,   1 },
+            { TSR_FMT_Q8_0,     33,    96,   7 },
+            { TSR_FMT_Q4_K,   5120, 27648,   3 },
+            { TSR_FMT_Q4_K,     40,   512,  17 },
+            { TSR_FMT_Q8_0, 152064,  5120,   2 },
+            { TSR_FMT_Q8_0,      1,    32, 512 },
         };
-        for (const tsr_mm_desc & d : cases) {
-            check_program(c, d);
+        for (const auto & d : cases) {
+            check_tiling(c, d.fmt, d.N, d.K, d.T);
         }
+        CHECK(tsr_mm_t_max(c) == tmax);
     }
     // T tile limited by SPM rather than T_MAX: y of 152064 rows = 9504 lines per token
     {
@@ -176,79 +152,18 @@ static void test_lowering() {
         CHECK(t.t_tile == 6);   // 65536 / (320 + 90 + 9504) = 6.6
         CHECK(t.spm_end <= 65536);
     }
-    // disassembly smoke test
-    std::vector<tsr_insn> in;
-    std::vector<size_t> cuts;
-    tsr_mm_emit(cfg_with_tmax(1), { TSR_FMT_Q4_K, 16, 256, 1, 0x10, 0x20, 0x30 }, in, cuts);
-    for (const tsr_insn & i : in) {
-        CHECK(!tsr_insn_str(i).empty());
-    }
-    CHECK(tsr_insn_str(in[2]).find("MVM") == 0);
-}
-
-// Program cache (backend review #5): bounded by bytes and entries, LRU eviction, programs above
-// the per-entry limit are not cached.
-static tsr_prog make_prog(const tsr_config & c, uint32_t T, uint64_t x_beat) {
-    tsr_prog p;
-    tsr_mm_emit(c, { TSR_FMT_Q8_0, 64, 256, T, 0x800000, x_beat, 0x200000 }, p.insns, p.cuts);
-    return p;
-}
-
-static std::string key_of(uint32_t T, uint64_t x_beat) {
-    std::string k(16, '\0');
-    memcpy(&k[0], &T, sizeof(T));
-    memcpy(&k[8], &x_beat, sizeof(x_beat));
-    return k;
-}
-
-static void test_prog_cache() {
-    const tsr_config c = cfg_with_tmax(1);
-    // one T=16 program: 64 insns * 32 B + 16 cuts * 8 B + key = ~2.4 KiB
-    const size_t one = tsr_prog_cache::cost(key_of(16, 0), make_prog(c, 16, 0));
-    CHECK(one > 2048 && one < 4096);
-    tsr_prog_cache pc(10 * one, 4 * one, 1000);
-    for (uint64_t i = 0; i < 10; ++i) {
-        tsr_prog p = make_prog(c, 16, 0x100000 + i * 64);
-        CHECK(pc.cacheable(key_of(16, i), p));
-        pc.insert(key_of(16, i), std::move(p));
-    }
-    CHECK(pc.size() == 10 && pc.bytes() <= 10 * one && pc.evictions() == 0);
-    CHECK(pc.find(key_of(16, 0)) != nullptr);              // 0 becomes most recently used
-    pc.insert(key_of(16, 10), make_prog(c, 16, 0x200000)); // evicts the LRU entry: 1
-    CHECK(pc.evictions() == 1 && pc.size() == 10 && pc.bytes() <= 10 * one);
-    CHECK(pc.find(key_of(16, 1)) == nullptr);
-    CHECK(pc.find(key_of(16, 0)) != nullptr && pc.find(key_of(16, 10)) != nullptr);
-    // a bigger program evicts as many LRU entries as needed to stay within the byte bound
-    tsr_prog big = make_prog(c, 48, 0x300000);
-    CHECK(pc.cacheable(key_of(48, 0), big));
-    pc.insert(key_of(48, 0), std::move(big));
-    CHECK(pc.bytes() <= 10 * one && pc.evictions() >= 3);
-    CHECK(pc.find(key_of(48, 0)) != nullptr && pc.find(key_of(16, 10)) != nullptr);
-    // above the per-entry limit: not cacheable (prefill programs grow with T)
-    CHECK(!pc.cacheable(key_of(512, 0), make_prog(c, 512, 0x300000)));
-    // re-inserting a key replaces it without double accounting
-    const size_t b0 = pc.bytes();
-    pc.insert(key_of(48, 0), make_prog(c, 48, 0x300000));
-    CHECK(pc.bytes() == b0);
-    // entry bound
-    tsr_prog_cache small(1u << 30, 1u << 20, 3);
-    for (uint64_t i = 0; i < 5; ++i) {
-        small.insert(key_of(1, i), make_prog(c, 1, i * 64));
-    }
-    CHECK(small.size() == 3 && small.evictions() == 2 && small.find(key_of(1, 0)) == nullptr && small.find(key_of(1, 4)) != nullptr);
-    small.clear();
-    CHECK(small.size() == 0 && small.bytes() == 0);
-    // the backend's bounds: 64 MiB, 4 MiB per program (a T=1 decode segment of 2 MUL_MATs is
-    // ~300 B; a 32B-head prefill of 512 tokens with T_MAX = 1 is 2048 instructions = 64 KiB)
-    CHECK(tsr_prog_cache::cost(key_of(512, 0), make_prog(c, 512, 0)) < (4u << 20));
+    // not lowerable: T = 0, a bad shape
+    tsr_mm_tiling t;
+    CHECK(!tsr_mm_plan_tiling(cfg_with_tmax(1), TSR_FMT_Q8_0, 64, 32, 0, &t));
+    CHECK(!tsr_mm_plan_tiling(cfg_with_tmax(1), TSR_FMT_Q8_0, 64, 48, 1, &t));
+    CHECK(tsr_mm_lines_per_token(2, 64, 256) == 0 && tsr_mm_lines_per_token(TSR_FMT_Q8_0, 64, 48) == 0);
 }
 
 int main() {
     test_alloc_basic();
     test_alloc_random();
     test_shape_ok();
-    test_lowering();
-    test_prog_cache();
+    test_tiling();
     if (g_fail) {
         fprintf(stderr, "test-tsr-backend-units: %d check(s) FAILED\n", g_fail);
         return 1;

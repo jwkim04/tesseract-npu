@@ -3,6 +3,13 @@
 #
 #   hw/u200/build_xclbin.sh k1|k4 [hw|hw_emu]        (default target: hw)
 #
+# DISABLED until Y5 (docs/v2 EX §12): X0 deleted the v1 command path, so the kernels have no
+# working core until the control core lands (Y4) and the adapter v2 (ap_ctrl_none, MEM_EN,
+# ap_clk_2; EX §9) is in place (Y5). The script stops with exit status 4 after the argument check;
+# only TSR_U200_PLATFORMINFO=1 (platform lookup and platforminfo, below) still runs. The M0
+# bandwidth kernel builds as before (hw/u200/bw/build_bw_xclbin.sh). Y5 removes the stop and keeps
+# the steps below.
+#
 # 1. the kernel object build/u200/xo/tsr_u200_<k>.xo: packaged now by
 #    rtl/platform/alveo_xrt/package_xo.tcl (Vivado batch) unless it exists and its source manifest
 #    build/u200/xo/tsr_u200_<k>.sources.sha256 (written by package_xo.tcl: filelists, every RTL
@@ -26,7 +33,8 @@
 #                       implementation runs and their hooks are set up, nothing is synthesized)
 #   TSR_U200_PLATFORMINFO  1 = resolve the platform, print its platforminfo and stop (exit 0)
 #   TSR_BUILD_JOBS      parallel jobs hint (the configs pin synth / impl jobs to 4)
-# Stops with exit status 3 and a message when the platform (or the Xilinx tools) are missing.
+# Stops with exit status 3 and a message when the platform (or the Xilinx tools) are missing, and
+# with exit status 4 (disabled until Y5, above) when anything but TSR_U200_PLATFORMINFO=1 is asked.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 K=${1:-}
@@ -39,6 +47,16 @@ case "$TARGET" in
   hw|hw_emu) ;;
   *) echo "build_xclbin.sh: target must be hw or hw_emu" >&2; exit 2 ;;
 esac
+if [ "${TSR_U200_PLATFORMINFO:-0}" != 1 ]; then
+  cat >&2 <<EOM
+build_xclbin.sh: the U200 core kernel build (tsr_u200_$K) is disabled until Y5 (docs/v2 EX §12).
+  X0 deleted the v1 host command path; the kernels get a working core with the control core (Y4)
+  and the adapter v2 (ap_ctrl_none, MEM_EN, ap_clk_2; docs/v2 EX §9) in Y5. The v1 bitstreams and
+  tools are in build/v1 (tag v1-m4). The M0 bandwidth kernel still builds:
+  hw/u200/bw/build_bw_xclbin.sh. TSR_U200_PLATFORMINFO=1 still resolves the platform.
+EOM
+  exit 4
+fi
 KERNEL=tsr_u200_$K
 PLATFORM=${TSR_U200_PLATFORM:-xilinx_u200_gen3x16_xdma_2_202110_1}
 XILINX=${TSR_XILINX:-/tool/Xilinx}

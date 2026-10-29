@@ -3,8 +3,8 @@
 DUT: tb/mvmfront/hdl/tsr_tb_mvm_front.sv = tsr_mvm_front on read source WS (id {2, 0}) of a real
 tsr_mem_arb, whose channel memory port is served by common.mem_model.MemModel (random latency,
 backpressure, stall phases, protocol assertions: burst length / 4 KiB blocks / channel limit,
-RD_OUTSTANDING, payload stability). The arbiter's DMA and write sources are tied off; FETCH is
-exposed and either idle or driven by a background reader (BgFetch: random bursts, random
+RD_OUTSTANDING, payload stability). The arbiter's DMA and write sources are tied off; AUX (source 0) is
+exposed and either idle or driven by a background reader (BgAux: random bursts, random
 response ready -> head-of-line blocking of the shared response channel).
 
 Golden model: tb/common/mvm_model.py front_beats() (itself verified against libtsr_ref in
@@ -18,7 +18,7 @@ Checks on every command:
     against libtsr_ref's tsr_get_scale_min_k4 —, blk, two, half, row_last, last);
   - the WS source requests: exactly the bursts of rows * ROW_BEATS beats from w_off (BurstQueue:
     len = min(64 - addr % 64, left), address order, id 0); MemModel.src_beats: WS beats = sum of
-    rows * ROW_BEATS, DMA 0, FETCH = background beats; rd_rsp_ready of the WS source is 1 whenever
+    rows * ROW_BEATS, DMA 0, AUX = background beats; rd_rsp_ready of the WS source is 1 whenever
     a WS beat is offered;
   - R2 on the beat output (valid held, payload stable while not ready);
   - cmd_ready == idle; cmd_ready = 1 only when every beat of the accepted commands was delivered
@@ -31,7 +31,7 @@ cocotb tests (each configuration runs all of them):
                      the DRAM limit; data: raw random bytes (also in unused meta / tails), repacked
                      rows with special fp16 d, all-0x80 / 0x7F / 0xFF quant beats, 0xFF scales
   front_random       random fmt / K / N / NUM_CH / channel / W_OFF (block edges, limit, 2^32
-                     crossing), random memory regimes, random beat_ready, background FETCH traffic
+                     crossing), random memory regimes, random beat_ready, background AUX traffic
   front_fp16_all     (u200 only) every fp16 pattern as a Q8_0 d: d_a / d_b == tsr_fp16_to_f32
   front_throughput   ideal memory, beat_ready = 1: cycles per weight beat (META beats included)
                      for both formats across chunk / row / command boundaries; 1.000 required in
@@ -328,10 +328,10 @@ class Cmd:
 
 
 # =============================================================================================
-# Background FETCH reader
+# Background AUX reader (source 0, the former fetch source)
 # =============================================================================================
-class BgFetch:
-    """Random read bursts on the arbiter's FETCH source (ids 0..3) with random response ready."""
+class BgAux:
+    """Random read bursts on the arbiter's AUX source (ids 0..3) with random response ready."""
 
     def __init__(self, dut, rnd: random.Random, limit: int, p_req: float = 0.08, p_ready: float = 0.75):
         self.dut, self.rnd, self.limit = dut, rnd, limit
@@ -361,7 +361,7 @@ class BgFetch:
             if not self.busy():
                 return
             await RisingEdge(self.dut.clk)
-        raise TimeoutError("background FETCH reads did not drain")
+        raise TimeoutError("background AUX reads did not drain")
 
     async def _run(self):
         dut, rnd = self.dut, self.rnd
@@ -377,10 +377,10 @@ class BgFetch:
             rsp = int(dut.f_rd_rsp_valid.value) and int(dut.f_rd_rsp_ready.value)
             if rsp:
                 i = int(dut.f_rd_rsp_id.value)
-                assert self.pend[i], "FETCH response for id %d with nothing outstanding" % i
+                assert self.pend[i], "AUX response for id %d with nothing outstanding" % i
                 self.pend[i][0] -= 1
                 last = self.pend[i][0] == 0
-                assert int(dut.f_rd_rsp_last.value) == int(last), "FETCH rsp_last wrong"
+                assert int(dut.f_rd_rsp_last.value) == int(last), "AUX rsp_last wrong"
                 if last:
                     self.pend[i].popleft()
                 self.beats += 1
@@ -413,7 +413,7 @@ class Env:
         self.kmax = cfg["K_MAX"]
         self.mem = MemModel(dut, num_ch=1, prefix="m_", addr_w=self.aw, rd_outstanding=cfg["RD_OUTSTANDING"],
                             limit_beats=self.limit, seed=rnd.getrandbits(31), **(mem_kw or {}))
-        self.bg = BgFetch(dut, rnd, self.limit)
+        self.bg = BgAux(dut, rnd, self.limit)
         self.cyc = 0
         self.ready_mode = ("always",)
         # expectations
@@ -640,8 +640,8 @@ class Env:
         sb = self.mem.src_beats[0]
         assert sb[isa.SRC_WS] == ws_beats, "MemModel WS beats %d, expected %d" % (sb[isa.SRC_WS], ws_beats)
         assert sb[isa.SRC_DMA] == 0, "DMA beats %d on a tied-off source" % sb[isa.SRC_DMA]
-        assert sb[isa.SRC_FETCH] == self.bg.beats, "FETCH beats %d, background reader saw %d" % (
-            sb[isa.SRC_FETCH], self.bg.beats)
+        assert sb[isa.SRC_AUX] == self.bg.beats, "AUX beats %d, background reader saw %d" % (
+            sb[isa.SRC_AUX], self.bg.beats)
         assert self.ws_beats == ws_beats, "WS beats at the source port %d, expected %d" % (self.ws_beats, ws_beats)
 
 
@@ -789,7 +789,7 @@ async def front_random(dut):
     await env.finish()
     env.check_src_beats(total)
     dut._log.info("random: %d commands (%d empty channels skipped), %d weight beats, %d tagged beats, "
-                  "%d background FETCH beats in %d bursts, %d cycles; coverage %s", len(cmds), skipped, total,
+                  "%d background AUX beats in %d bursts, %d cycles; coverage %s", len(cmds), skipped, total,
                   env.got, env.bg.beats, env.bg.bursts, env.cyc, env.cov)
     for k in ("q8_m128", "q4_n0", "q4_n15", "row_last", "last", "q4_half1"):
         assert env.cov[k] > 0, "random coverage: no %s" % k

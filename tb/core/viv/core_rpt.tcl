@@ -18,7 +18,7 @@
 #   cooc_slr <tag> <outdir> placed designs: report_utilization -slr, cells per SLR per top-level
 #                           hierarchy key (COOC slr(<tag>) <key> SLR0 .. SLR1 .. SLR2 ..), and the
 #                           nets that cross SLRs grouped by driver (COOC sll(<tag>) <n> <group>)
-# Hierarchy keys (cooc_hkey): csr cmdproc fetch dma qact spm arb<c> core_top, mvm/top
+# Hierarchy keys (cooc_hkey): csr dma qact spm arb<c> core_top, mvm/top
 # (dispatch, broadcast source, SPM client mux, reset copies), mvm/pipes (per cluster: broadcast
 # vpipe, result rpipe, weight-stream request rpipe / response vpipe), mvm/gather/{asm (the
 # per-cluster assemblers), pipes (their start / job pipes), central},

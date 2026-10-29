@@ -1,4 +1,4 @@
-// test_sim_util.h — helpers shared by the simulator / trace / transport tests (prefix sim_).
+// test_sim_util.h — helpers shared by the simulator / capture / transport tests (prefix sim_).
 #pragma once
 
 #define _GNU_SOURCE
@@ -25,13 +25,13 @@ static inline tsr_config cfg_u200(uint32_t t_max) {
 }
 
 // ---------------------------------------------------------------------------
-// Programs
+// Op sequences (executed one at a time, in order, through tsr_sim_op)
 // ---------------------------------------------------------------------------
-typedef struct { tsr_insn * v; uint32_t n, cap; } prog_t;
+typedef struct { tsr_insn * v; uint32_t n, cap; } ops_t;
 
-static inline void prog_reset(prog_t * p) { p->n = 0; }
-static inline void prog_free(prog_t * p) { free(p->v); p->v = NULL; p->n = p->cap = 0; }
-static inline uint32_t prog_add(prog_t * p, tsr_insn i) {
+static inline void ops_reset(ops_t * p) { p->n = 0; }
+static inline void ops_free(ops_t * p) { free(p->v); p->v = NULL; p->n = p->cap = 0; }
+static inline uint32_t ops_add(ops_t * p, tsr_insn i) {
     if (p->n == p->cap) {
         p->cap = p->cap ? 2 * p->cap : 64;
         p->v = (tsr_insn *)realloc(p->v, p->cap * sizeof(tsr_insn));
@@ -45,25 +45,22 @@ static inline tsr_insn insn_raw(uint32_t w0, uint32_t w1, uint32_t w2, uint32_t 
     tsr_insn i = {{ w0, w1, w2, w3, w4, w5, w6, w7 }};
     return i;
 }
-// Writes the program little-endian into ch0 at beat cmd_beat.
-static inline void prog_load(tsr_sim * sim, const prog_t * p, uint64_t cmd_beat) {
-    uint8_t * d = tsr_sim_dram(sim, 0) + cmd_beat * TSR_BEAT_BYTES;
+// Runs the ops in order and stops at the first one that fails. Returns 0, or that op's error code
+// with *err_idx = its index and *err_info = its ERR_INFO (either pointer may be NULL).
+static inline uint32_t ops_run(tsr_sim * sim, const ops_t * p, uint32_t * err_idx, uint32_t * err_info) {
     for (uint32_t k = 0; k < p->n; ++k) {
-        for (uint32_t j = 0; j < TSR_INSN_WORDS; ++j) {
-            const uint32_t w = p->v[k].w[j];
-            uint8_t * b = d + (size_t)k * TSR_INSN_BYTES + 4u * j;
-            b[0] = (uint8_t)w; b[1] = (uint8_t)(w >> 8); b[2] = (uint8_t)(w >> 16); b[3] = (uint8_t)(w >> 24);
+        uint32_t info = 0;
+        const uint32_t err = tsr_sim_op(sim, p->v[k].w, &info);
+        if (err != TSR_ERR_NONE) {
+            if (err_idx) *err_idx = k;
+            if (err_info) *err_info = info;
+            return err;
         }
     }
+    if (err_idx) *err_idx = p->n;
+    if (err_info) *err_info = 0;
+    return TSR_ERR_NONE;
 }
-static inline uint32_t prog_run(tsr_sim * sim, const prog_t * p, uint64_t cmd_beat, const uint32_t * args) {
-    prog_load(sim, p, cmd_beat);
-    return tsr_sim_exec(sim, cmd_beat, p->n, args);
-}
-
-static inline uint32_t sim_err_code(tsr_sim * s) { return tsr_sim_csr_read(s, TSR_CSR_ERR_CODE); }
-static inline uint32_t sim_err_pc(tsr_sim * s)   { return tsr_sim_csr_read(s, TSR_CSR_ERR_PC); }
-static inline uint32_t sim_err_info(tsr_sim * s) { return tsr_sim_csr_read(s, TSR_CSR_ERR_INFO); }
 
 // ---------------------------------------------------------------------------
 // Data

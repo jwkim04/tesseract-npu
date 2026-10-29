@@ -83,12 +83,7 @@ target_compile_options(tesseract_torch_ext PRIVATE -Wall -Wextra -Wno-unused-par
 target_link_libraries(tesseract_torch_ext PRIVATE tsr_rt ${_tsr_torch_libs})
 set_property(TARGET tesseract_torch_ext APPEND PROPERTY BUILD_RPATH ${_TSR_TORCH_LIBDIR})
 
-# pytest suite (sw/torch/tests) as one ctest, in the interpreter the module was built for
-add_test(NAME torch_pytest
-         COMMAND ${_tsr_py} -m pytest -q -p no:cacheprovider ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-set_tests_properties(torch_pytest PROPERTIES ENVIRONMENT
-    "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}:${TSR_TORCH_PY_DIR};TSR_DEVICE=sim;TSR_SIM_THREADS=4")
-add_test(NAME torch_pytest_tmax8
-         COMMAND ${_tsr_py} -m pytest -q -p no:cacheprovider ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-set_tests_properties(torch_pytest_tmax8 PROPERTIES ENVIRONMENT
-    "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}:${TSR_TORCH_PY_DIR};TSR_DEVICE=sim;TSR_SIM_TMAX=8;TSR_SIM_THREADS=4")
+# pytest suite (sw/torch/tests): torch_pytest and torch_pytest_tmax8 ran it as ctests in the
+# interpreter the module was built for. The suite runs linear() on the device, whose execution
+# is deleted in X0 (tsr_rt.h), so both ctests are removed until the op-list path (P3.2,
+# docs/v2/06-software-verification.md §10.2); the module is still built.

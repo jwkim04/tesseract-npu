@@ -1,14 +1,18 @@
 // tsr_pkg.sv — Tesseract core: architectural constants, ISA encoding, CSR map, error codes,
-// configuration defaults, helper functions and the internal-interface structs of the M2 core.
+// configuration defaults, helper functions and the internal-interface structs of the core.
 //
 // C mirror: sw/sim/include/tsr_isa.h (encoding, CSR map, error codes) and tsr_ref.h (QA layout
-// helpers). Contract: docs/spec.md; RTL architecture and interface rules: docs/rtl-m2.md.
+// helpers). Contract: docs/spec.md and docs/v2 (EX §5, §7, §11); RTL architecture and interface
+// rules: docs/rtl-m2.md, docs/rtl-m3.md. X0 (docs/v2 EX §12, D14 / D16): the host command path
+// is deleted — no instruction fetch, no run registers, no integer registers; LI / ADDI / END are
+// reserved opcodes. The v2 offsets, opcodes and units come from the generated tsr_tables_pkg
+// (V2-EX-30, Y4); this package keeps what the remaining blocks use.
 // Every constant below must match tsr_isa.h exactly; tb/common/isa.py mirrors this file for the
 // testbenches and tb/common/test_common.py cross-checks the struct widths.
 //
-// Width policy: values that the ISA defines as 32-bit (R[x] + imm addresses, lengths, strides,
-// PC) are carried as 32-bit fields in the dispatch structs, independent of the elaboration
-// parameters. Range checks in tsr_cmdproc guarantee that the upper bits a unit does not need
+// Width policy: values that the ISA defines as 32-bit (immediate addresses A = imm, lengths,
+// strides) are carried as 32-bit fields in the dispatch structs, independent of the elaboration
+// parameters. The dispatch checks (tsr_chk, Y4) guarantee that the upper bits a unit does not need
 // (e.g. above the SPM line-address width) are zero; units take the low bits they need.
 
 package tsr_pkg;
@@ -33,14 +37,14 @@ package tsr_pkg;
   localparam int unsigned TSR_T_MAX_ARCH      = 8;
   localparam int unsigned TSR_NUM_CH_MAX      = 16;   // LD/ST channel field is 4 bits
   localparam logic [31:0] TSR_ID_MAGIC        = 32'h5453_5231;  // "TSR1"
-  localparam logic [7:0]  TSR_ISA_MAJOR       = 8'd1;
+  localparam logic [7:0]  TSR_ISA_MAJOR       = 8'd2;   // VERSION 0x0200 (EX §7.5), as tsr_tables_pkg
   localparam logic [7:0]  TSR_ISA_MINOR       = 8'd0;
   localparam logic [31:0] TSR_CANON_NAN       = 32'h7FC0_0000;
 
-  // Channel DRAM map (byte offsets inside a channel; CMD/IO/AUX on ch0 only in v1).
+  // Channel DRAM map (byte offsets inside a channel; OPL/IO/AUX on ch0 only; docs/v2 EX §11).
   localparam longint unsigned TSR_MIB               = 64'd1048576;
-  localparam longint unsigned TSR_REGION_CMD_OFF    = 64'd0;
-  localparam longint unsigned TSR_REGION_CMD_SIZE   = 64 * TSR_MIB;
+  localparam longint unsigned TSR_REGION_OPL_OFF    = 64'd0;          // op lists (was CMD)
+  localparam longint unsigned TSR_REGION_OPL_SIZE   = 64 * TSR_MIB;
   localparam longint unsigned TSR_REGION_IO_OFF     = 64 * TSR_MIB;
   localparam longint unsigned TSR_REGION_IO_SIZE    = 256 * TSR_MIB;
   localparam longint unsigned TSR_REGION_AUX_OFF    = 320 * TSR_MIB;
@@ -58,9 +62,7 @@ package tsr_pkg;
   localparam int unsigned     TSR_DEF_K_MAX          = 32768;
   localparam int unsigned     TSR_DEF_SPM_BYTES      = 4 * 1024 * 1024;
   localparam int unsigned     TSR_DEF_VL             = 16;
-  localparam int unsigned     TSR_DEF_NIREG          = 16;
   localparam int unsigned     TSR_DEF_NSREG          = 16;
-  localparam int unsigned     TSR_DEF_LOOP_DEPTH     = 4;
   localparam int unsigned     TSR_DEF_RD_OUTSTANDING = 16;
   localparam longint unsigned TSR_DEF_CH_BYTES       = 64'd17179869184;  // 16 GiB
   localparam int unsigned     TSR_DEF_ADDR_BEAT_W    = 28;
@@ -73,7 +75,7 @@ package tsr_pkg;
   localparam int unsigned TSR_SRC_ID_W = 2;   // id inside one source (source-local)
   localparam int unsigned TSR_MEM_ID_W = 4;   // memory-side id = {source[1:0], local[1:0]}
   localparam int unsigned TSR_NSRC     = 3;   // read sources per channel arbiter
-  localparam int unsigned TSR_SRC_FETCH = 0;  // instruction fetch (channel 0 only)
+  localparam int unsigned TSR_SRC_AUX   = 0;  // freed by the fetch removal; tied off (V2-CC-26)
   localparam int unsigned TSR_SRC_DMA   = 1;  // LD/ST (reads and writes)
   localparam int unsigned TSR_SRC_WS    = 2;  // M3 MVM weight stream (tied off in M2)
 
@@ -87,7 +89,10 @@ package tsr_pkg;
   localparam int unsigned TSR_SPM_BE_W    = TSR_LINE_BYTES;
 
   // -------------------------------------------------------------------------------------------
-  // CSR map (32-bit registers, byte offsets; tsr_isa.h enum tsr_csr)
+  // CSR map (32-bit registers, byte offsets; tsr_isa.h enum tsr_csr). The offsets v1 and v2 share
+  // (docs/v2 EX §5.1); the v1 run registers (command-buffer address and count, ARG0..7, ERR_PC,
+  // ERR_CODE, ERR_INFO, PC) and the v1 CTRL / STATUS bits are deleted (X0). CTRL / STATUS bits
+  // and the rest of the v2 map: EX §5.2-§5.4, generated tsr_tables_pkg (Y4).
   // -------------------------------------------------------------------------------------------
   localparam int unsigned TSR_CSR_AW = 12;
   localparam logic [TSR_CSR_AW-1:0] TSR_CSR_ID          = 12'h000;
@@ -96,38 +101,19 @@ package tsr_pkg;
   localparam logic [TSR_CSR_AW-1:0] TSR_CSR_CFG1        = 12'h00C;  // SPM size in lines
   localparam logic [TSR_CSR_AW-1:0] TSR_CSR_CFG2        = 12'h010;  // VL[7:0] NSREG[15:8] K_MAX/256[31:16]
   localparam logic [TSR_CSR_AW-1:0] TSR_CSR_CAPS        = 12'h014;
-  localparam logic [TSR_CSR_AW-1:0] TSR_CSR_CTRL        = 12'h020;  // W: START, SOFT_RESET, ABORT
-  localparam logic [TSR_CSR_AW-1:0] TSR_CSR_STATUS      = 12'h024;  // R/W1C
-  localparam logic [TSR_CSR_AW-1:0] TSR_CSR_CMD_ADDR_LO = 12'h028;
-  localparam logic [TSR_CSR_AW-1:0] TSR_CSR_CMD_ADDR_HI = 12'h02C;
-  localparam logic [TSR_CSR_AW-1:0] TSR_CSR_CMD_COUNT   = 12'h030;
-  localparam logic [TSR_CSR_AW-1:0] TSR_CSR_ERR_PC      = 12'h040;
-  localparam logic [TSR_CSR_AW-1:0] TSR_CSR_ERR_CODE    = 12'h044;
-  localparam logic [TSR_CSR_AW-1:0] TSR_CSR_ERR_INFO    = 12'h048;
-  localparam logic [TSR_CSR_AW-1:0] TSR_CSR_PC          = 12'h050;
-  localparam logic [TSR_CSR_AW-1:0] TSR_CSR_ARG0        = 12'h060;  // ARG0..7 at 0x060..0x07C
+  localparam logic [TSR_CSR_AW-1:0] TSR_CSR_CTRL        = 12'h020;  // v2 bits: EX §5.2
+  localparam logic [TSR_CSR_AW-1:0] TSR_CSR_STATUS      = 12'h024;  // v2 bits: EX §5.3
   localparam logic [TSR_CSR_AW-1:0] TSR_CSR_PERF_BASE   = 12'h100;  // counter i: LO +8i, HI +8i+4
 
-  localparam int unsigned TSR_CTRL_START_BIT      = 0;
-  localparam int unsigned TSR_CTRL_SOFT_RESET_BIT = 1;
-  localparam int unsigned TSR_CTRL_ABORT_BIT      = 2;
-
-  localparam int unsigned TSR_STATUS_BUSY_BIT    = 0;
-  localparam int unsigned TSR_STATUS_DONE_BIT    = 1;
-  localparam int unsigned TSR_STATUS_ERR_BIT     = 2;
-  localparam int unsigned TSR_STATUS_WAITING_BIT = 3;
-
   localparam logic [31:0] TSR_CAPS_VU         = 32'h1;   // bit0
-  localparam logic [31:0] TSR_CAPS_RLD_LOOP   = 32'h4;   // bit2: RLD, MULI, LOOP
-  localparam logic [31:0] TSR_CAPS_TOPK       = 32'h8;   // bit3
-  localparam logic [31:0] TSR_CAPS_WAITM_JUMP = 32'h10;  // bit4
+  localparam logic [31:0] TSR_CAPS_TOPK       = 32'h8;   // bit3 (bits 2 and 4: retired, EX §7.5)
 
   // PERF_* counter slots (tsr_isa.h enum tsr_perf_idx). Per-channel counters take NUM_CH slots.
   localparam int unsigned TSR_PERF_CYCLES       = 0;
   localparam int unsigned TSR_PERF_RETIRED      = 1;
   localparam int unsigned TSR_PERF_MVM_CYCLES   = 2;
   localparam int unsigned TSR_PERF_VU_CYCLES    = 3;
-  localparam int unsigned TSR_PERF_WAITM_CYCLES = 4;
+  localparam int unsigned TSR_PERF_RSVD4        = 4;   // reserved (was WAITM), reads 0 (EX §6)
   localparam int unsigned TSR_PERF_CH_RD_BEATS  = 5;   // + ch; CH_WAIT = 5 + NUM_CH + ch
 
   function automatic int unsigned tsr_perf_count(int unsigned num_ch);
@@ -151,17 +137,10 @@ package tsr_pkg;
   localparam logic [TSR_ERR_W-1:0] TSR_ERR_WAIT_TIMEOUT = 4'd10;
 
   // -------------------------------------------------------------------------------------------
-  // Opcodes and sub-codes (tsr_isa.h)
+  // Opcodes and sub-codes (tsr_isa.h; docs/v2 EX §7.2). 0x01 END, 0x02 LI, 0x03 ADDI: reserved
+  // (ILLEGAL_OP); 0x04..0x08 MULI, RLD, LOOP, WAITM, JUMP and 0x09 CALL: retired, never reused.
   // -------------------------------------------------------------------------------------------
   localparam logic [7:0] TSR_OP_NOP   = 8'h00;
-  localparam logic [7:0] TSR_OP_END   = 8'h01;
-  localparam logic [7:0] TSR_OP_LI    = 8'h02;
-  localparam logic [7:0] TSR_OP_ADDI  = 8'h03;
-  localparam logic [7:0] TSR_OP_MULI  = 8'h04;
-  localparam logic [7:0] TSR_OP_RLD   = 8'h05;
-  localparam logic [7:0] TSR_OP_LOOP  = 8'h06;
-  localparam logic [7:0] TSR_OP_WAITM = 8'h07;
-  localparam logic [7:0] TSR_OP_JUMP  = 8'h08;
   localparam logic [7:0] TSR_OP_LD    = 8'h10;
   localparam logic [7:0] TSR_OP_ST    = 8'h11;
   localparam logic [7:0] TSR_OP_DQROW = 8'h12;
@@ -180,38 +159,19 @@ package tsr_pkg;
   localparam logic [3:0] TSR_QA_A256  = 4'd1;
   localparam logic [3:0] TSR_MVM_FLAG_ACC = 4'h1;
 
-  // Reserved-field masks of w0 per instruction (bits that must be zero; tsr_sim.c).
-  //   NOP/END/FENCE: everything but opcode      LI:   sub, flags, ra, rb, rc
-  //   ADDI: sub, flags, rb, rc                    LD/ST, QACT: flags, rc, rd
-  //   MVM: flags[3:1], rd
-  localparam logic [31:0] TSR_W0_RSV_NOP  = 32'hFFFF_FF00;
-  localparam logic [31:0] TSR_W0_RSV_LI   = 32'h0FFF_FF00;
-  localparam logic [31:0] TSR_W0_RSV_ADDI = 32'h0FF0_FF00;
-  localparam logic [31:0] TSR_W0_RSV_LDST = 32'hFF00_F000;
-  localparam logic [31:0] TSR_W0_RSV_QACT = 32'hFF00_F000;
-  localparam logic [31:0] TSR_W0_RSV_MVM  = 32'hF000_E000;
-  localparam logic [31:0] TSR_W5_RSV_MVM  = 32'hFFF0_0000;
-  // First unused word (words from here to w7 must be zero).
-  localparam int unsigned TSR_WFREE_NOP  = 1;  // NOP, END, FENCE
-  localparam int unsigned TSR_WFREE_LI   = 2;  // LI, ADDI
-  localparam int unsigned TSR_WFREE_LDST = 4;
-  localparam int unsigned TSR_WFREE_QACT = 6;
-  localparam int unsigned TSR_WFREE_MVM  = 7;
+  // The per-opcode reserved-field rules (x16 = w0[31:16] zero for every opcode that does not
+  // assign it, unused words zero; EX §7.1) are checked at dispatch (tsr_chk, Y4).
 
   // -------------------------------------------------------------------------------------------
-  // Instructions. insn[i] is word wi; insn[0][7:0] is byte 0 of the 32-byte instruction.
-  // In a 512-bit fetch beat (byte j at bits [8j+7:8j]) instruction pc sits at bits
-  // [256*(pc%2) +: 256] of beat CMD_ADDR + pc/2.
+  // Instructions (256 bits, w0..w7 little-endian; EX §7.1). insn[i] is word wi; insn[0][7:0] is
+  // byte 0 of the 32-byte instruction. w0 = {x16[31:16], flags[15:12], sub[11:8], opcode[7:0]}.
   // -------------------------------------------------------------------------------------------
   typedef logic [TSR_INSN_WORDS-1:0][31:0] tsr_insn_t;
 
-  function automatic logic [7:0] tsr_w0_opcode(logic [31:0] w0); return 8'(w0 >> 0);   endfunction
-  function automatic logic [3:0] tsr_w0_sub(logic [31:0] w0);    return 4'(w0 >> 8);   endfunction
-  function automatic logic [3:0] tsr_w0_flags(logic [31:0] w0);  return 4'(w0 >> 12);  endfunction
-  function automatic logic [3:0] tsr_w0_ra(logic [31:0] w0);     return 4'(w0 >> 16);  endfunction
-  function automatic logic [3:0] tsr_w0_rb(logic [31:0] w0);     return 4'(w0 >> 20);  endfunction
-  function automatic logic [3:0] tsr_w0_rc(logic [31:0] w0);     return 4'(w0 >> 24);  endfunction
-  function automatic logic [3:0] tsr_w0_rd(logic [31:0] w0);     return 4'(w0 >> 28);  endfunction
+  function automatic logic [7:0]  tsr_w0_opcode(logic [31:0] w0); return 8'(w0 >> 0);   endfunction
+  function automatic logic [3:0]  tsr_w0_sub(logic [31:0] w0);    return 4'(w0 >> 8);   endfunction
+  function automatic logic [3:0]  tsr_w0_flags(logic [31:0] w0);  return 4'(w0 >> 12);  endfunction
+  function automatic logic [15:0] tsr_w0_x16(logic [31:0] w0);    return 16'(w0 >> 16); endfunction
 
   // 1 iff words w[from..7] are all zero.
   function automatic logic tsr_words_zero_from(tsr_insn_t insn, int unsigned from);
@@ -245,7 +205,7 @@ package tsr_pkg;
 
   // -------------------------------------------------------------------------------------------
   // QA layout (spec 양자화 활성값 레이아웃; tsr_ref.c tsr_qa_*). kind: 0 = A32, 1 = A256.
-  // K must be a multiple of the block size (cmdproc checks K_RANGE first); K <= 65280.
+  // K must be a multiple of the block size (the dispatch checks K_RANGE first); K <= 65280.
   // -------------------------------------------------------------------------------------------
   function automatic logic [31:0] tsr_qa_block_size(logic kind);
     return kind ? 32'd256 : 32'd32;
@@ -288,25 +248,20 @@ package tsr_pkg;
   // -------------------------------------------------------------------------------------------
   // Internal interfaces (docs/rtl-m2.md §3). Packed: the first member is the MSB.
   // tb/common/isa.py keeps the same field order and widths (checked by tb/common/test_common.py).
+  // The dispatcher (tsr_chk + tsr_issue, CC §13, Y4) offers them to the units; address operands
+  // are the immediates (A1 = w1, A2 = w2, A3 = w3; EX §7.1).
   // -------------------------------------------------------------------------------------------
 
-  // tsr_fetch -> tsr_cmdproc: one instruction (valid/ready stream, pc = 0, 1, 2, ... in order).
-  typedef struct packed {
-    logic        range_err;  // beat CMD_ADDR + pc/2 is beyond the DRAM limit: DRAM_RANGE when executed
-    logic [31:0] pc;         // instruction index (for assertions / debug)
-    tsr_insn_t   insn;       // zero when range_err
-  } tsr_fetch_insn_t;        // 289 bits
-
-  // tsr_cmdproc -> tsr_dma: LD / ST with every operand checked and resolved.
+  // dispatch -> tsr_dma: LD / ST with every operand checked and resolved.
   typedef struct packed {
     logic        is_st;      // 0: LD DRAM -> SPM, 1: ST SPM -> DRAM
     logic [3:0]  ch;         // channel (< NUM_CH)
-    logic [31:0] spm_line;   // A1 = R[ra] + w1; spm_line + n_lines <= SPM lines
-    logic [31:0] dram_beat;  // A2 = R[rb] + w2; dram_beat + n_lines <= DRAM limit
-    logic [31:0] n_lines;    // w3, >= 1 (cmdproc retires n_lines == 0 without dispatching)
+    logic [31:0] spm_line;   // A1 = w1; spm_line + n_lines <= SPM lines
+    logic [31:0] dram_beat;  // A2 = w2; dram_beat + n_lines <= DRAM limit
+    logic [31:0] n_lines;    // w3, >= 1 (n_lines == 0 completes without a dispatch)
   } tsr_dma_cmd_t;           // 101 bits
 
-  // tsr_cmdproc -> tsr_qact: QACT with every operand checked and resolved.
+  // dispatch -> tsr_qact: QACT with every operand checked and resolved.
   typedef struct packed {
     logic        kind;        // 0: A32, 1: A256
     logic [31:0] dst_line;    // A1; dst_line + t * qa_lines <= SPM lines
@@ -317,7 +272,7 @@ package tsr_pkg;
     logic [15:0] qa_lines;    // QA_LINES(kind, K): dst stride between tokens
   } tsr_qact_cmd_t;           // 133 bits
 
-  // tsr_cmdproc -> MVM unit (M3; the M2 core has no MVM unit, HAS_MVM = 0).
+  // dispatch -> MVM unit (M3; HAS_MVM = 0 builds have no MVM unit).
   typedef struct packed {
     logic        fmt;         // 0: Q8_0 (A32 QA), 1: Q4_K (A256 QA)
     logic        acc;         // flags.ACC

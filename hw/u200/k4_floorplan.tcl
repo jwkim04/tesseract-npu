@@ -19,7 +19,7 @@
 #   SLR0  MVM clusters 0 and 2 with their result assemblers (u_gather/g_asm[c].u_asm)
 #   SLR2  MVM clusters 1 and 3 with their assemblers
 #   SLR1  the rest of the core (the four memory arbiters, SPM, central gather, MVM dispatch,
-#         cmdproc, DMA, QACT, fetch, CSR), the control bridge (u_ctrl), the reset block (u_rst),
+#         DMA, QACT, CSR), the control bridge (u_ctrl), the reset block (u_rst),
 #         the bridges of channels 1 and 2 and the core side of the bridges of channels 0 and 3
 #   Pipes between a cluster (with its assembler) and the centre (g_cl[c].u_bcp / u_wrp / u_wqp,
 #   u_gather/g_asm[c].u_sp / u_jp): the first stage on the source side, the last on the
@@ -117,7 +117,8 @@ if {$nch == 0} { error "k4_floorplan: no MVM cluster under $mvm" }
 for {set c 0} {$c < $nch} {incr c} {
   k4fp_add $k4fp_rest [k4fp_cell [k4fp_path $k4fp_core "g_ch\[$c\].u_arb"]] "g_ch\[$c\].u_arb"
 }
-foreach b {u_spm u_cmdproc u_dma u_qact u_fetch u_csr} {
+# X0 (docs/v2 EX §12): u_cmdproc and u_fetch are deleted; Y5 adds the v2 blocks (CC §13) here.
+foreach b {u_spm u_dma u_qact u_csr} {
   k4fp_add $k4fp_rest [k4fp_cell [k4fp_path $k4fp_core $b]] $b
 }
 # central part of the gather: every leaf cell outside the per-cluster assemblers and their pipes

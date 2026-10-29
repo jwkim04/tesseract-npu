@@ -64,10 +64,4 @@ int tsr_transport_read(tsr_transport * t, uint32_t ch, uint64_t off, void * dst,
     return t->ops->read(t->impl, ch, off, dst, size);
 }
 
-int tsr_transport_exec(tsr_transport * t, uint64_t cmd_addr_beat, uint32_t cmd_count, const uint32_t args[8],
-                       tsr_exec_result * res) {
-    tsr_exec_result local;
-    return t->ops->exec(t->impl, cmd_addr_beat, cmd_count, args, res ? res : &local);
-}
-
 uint32_t tsr_transport_csr_read(tsr_transport * t, uint32_t off) { return t->ops->csr_read(t->impl, off); }
