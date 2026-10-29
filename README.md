@@ -169,11 +169,11 @@ A–C.
 | **M2** RTL core skeleton | Command processor (R0–R15, LI, ADDI), DMA, LD/ST, QACT | Verilator trace replay bit-exact | **Passed** 2026-10-23 (`traces/m2`, 172 traces) |
 | **M3** MVM clusters, Q8_0 | One cluster per channel, starting with 1 channel, then 4 | Qwen2.5-0.5B Q8_0 running on hardware: logits bit-identical to `TSR_DEVICE=sim`, and the KL criterion | **Passed 2026-10-26.** RTL parts A, B and C done (the Q4_K path is designed and verified too). On the U200, logits bit-identical to the simulator and the KL criterion met with 1 channel (`tsr_u200_k1`, 300 MHz, 24.8 tok/s) and 4 channels (`tsr_u200_k4`, 276 MHz, 54.7 tok/s) |
 | **M4** Q4_K unpack, 4 channels | v1 goal; other types converted to Q8_0 at load | 32B Q4_K_M on hardware at ≥ 1 tok/s | **Passed 2026-10-30.** Qwen2.5-32B Q4_K_M on `tsr_u200_k4` (276 MHz): 2.93 tok/s decode, `klcheck all` PASS (KL ratio 1.30, top-1 99.02 %), load 18 s |
-| **M5** MoE, host-assisted | Router converted to Q8_0, back-to-back MVM overlap, symmetric expert placement | Qwen3-30B-A3B on hardware | Planned |
-| **M6** Vector unit, more ops | RMSNorm, position-based RoPE, SwiGLU, residual, softmax | No host round trips inside a layer | Planned |
-| **M7** Attention and KV on device, T > 1 | Stage A: DQROW, prefill tiling | One split per token; measured prefill gain | Planned |
-| **M8** Register extensions, device MoE | Stage B: RLD, MULI, LOOP, TOPK, programs per KV-length bucket | The host writes only 2 arguments per token | Planned |
-| **M9** On-device decode loop | Stage C: WAITM, JUMP, output-token ring buffer, `sw/runner` | The host only polls the ring buffer | Planned |
+| **M5** *(merged into M8)* | Host-assisted MoE assumed the v1 command-buffer path, which v2 removes | — | Dropped 2026-10-30 |
+| **M6** Core v2 hardware | Host command-buffer path removed; RISC-V control core (Ibex) with asynchronous tile issue; vector unit; attention and KV on device (q8_0 KV, Flash Attention); second SPM read path; debug with GDB over PCIe | On v2: 0.5B Q8_0 logits bit-identical to the simulator and the 32B KL criterion met, with RISC-V kernels issuing the MVMs | **Started 2026-10-30** |
+| **M7** RISC-V kernel library, graph execution | Kernels for RMSNorm, RoPE, SwiGLU, GELU, residual, Flash Attention, activation quantization; the ggml backend writes each split as an op list and launches it once | Qwen2.5 and Gemma 4 (dense) with one launch per token; DDR utilization measured | Planned |
+| **M8** Device MoE, PyTorch on kernels | MUL_MAT_ID, TOPK, expert placement; the PyTorch backend calls the same kernels | Qwen3-30B-A3B on hardware | Planned |
+| **M9** Resident decode loop *(optional)* | On-device sampling, output-token ring buffer | The host only polls the ring buffer | Planned |
 
 ## Architecture
 

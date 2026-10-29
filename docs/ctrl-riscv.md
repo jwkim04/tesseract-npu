@@ -35,6 +35,26 @@ items are in §15.
 | D12 | U200 RISC-V clock: planning value 166.7 MHz; 250 MHz only if the Ibex out-of-context run closes there; 125 MHz fallback (§7.4). |
 | D13 | CR2 timing gate: the control-core RTL is frozen only after the k1, k4t1 and k4 out-of-context runs and the k4 v++ link meet 300 MHz with `HAS_CTRL = 1`. The k4 link waits for the host RAM upgrade the user will do when the card goes in (§7.4). |
 
+**User decisions (2026-10-30, the v2 restructure; they supersede D7–D11 and D13)**
+
+| # | Decision |
+|---|---|
+| D14 | The host command-buffer execution path is removed: no host START, no CMD_* / ARG*, no `tsr_cmdproc` sequencer, no `tsr_fetch`, no R0–R15 / LI / ADDI / END. The host loads the firmware image and LAUNCHes kernels; every tile op is issued by the RISC-V. This reverses D7 and makes D9 (alternation), D10 (CALL is dropped) and D11 (the checker serves only the dispatcher) obsolete; D8 shrinks to one s0–s15 bank. |
+| D15 | No host debug access to the issue port. Bring-up, the card selftest and trace replay run as RISC-V kernels. |
+| D16 | v1 is deleted now, not after v2 passes on the card. Tag `v1-m4` (M4 passed) keeps it; a copy of the v1 binaries (`build/v1`, not in git) runs models on the card meanwhile. |
+| D17 | Device KV cache in q8_0; attention arrives as llama.cpp `FLASH_ATTN_EXT` (a quantized V cache requires Flash Attention). The klcheck / numcheck baselines move to FA on. |
+| D18 | The first v2 has full debug: RISC-V Debug Spec module, halt / resume / step, breakpoints and GDB source-level debugging over PCIe (a GDB RSP server on the DMI window), plus tile-level debug. |
+
+Milestones after the restructure: M6 = core v2 hardware (control core, issue queues, vector unit,
+attention and KV, second SPM read path, debug), M7 = RISC-V kernel library and graph execution
+(one launch per token), M8 = device MoE and PyTorch on the kernels (M5 merged here), M9 = resident
+decode loop (optional). Technical defaults chosen with D14–D18 (proposals until the M6 design
+fixes them): even/odd SPM banks for the second read path; `ap_ctrl_none` with polling instead of
+`ap_ctrl_hs`; a host-readable log FIFO in the core domain; D13 restated as "with the control core
+the k4 link stays at or above the current 276 MHz"; first models Qwen2.5 and Gemma 4 dense (GELU
+in the VU). The sections of this document that describe the command-buffer path are rewritten in
+the M6 design.
+
 This replaces the M8/M9 scalar ISA growth (MULI, RLD, LOOP, WAITM, JUMP); the M8 and M9 pass
 criteria (M8: the host writes only 2 arguments per token; M9: the host only polls a ring buffer)
 stay. Everything below that is not D1–D13 was a proposal; what the spec section "제어 코어"

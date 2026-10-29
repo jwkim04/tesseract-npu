@@ -958,11 +958,13 @@ tesseract/
 | M2 · RTL 코어 골격 | 커맨드 프로세서(R0\~R15, LI·ADDI), DMA, LD/ST, QACT | Verilator 트레이스 재생 비트 일치 |
 | M3 · MVM 클러스터, Q8\_0 | 1채널로 시작해 4채널로 확장 | Qwen2.5-0.5B Q8\_0 실기 동작 |
 | M4 · Q4\_K 언팩, 4채널 | v1 목표 · 그 밖의 타입은 로드 시 Q8\_0 변환 | 32B Q4\_K\_M 실기 동작 · 1 tok/s 이상 |
-| M5 · MoE, 호스트 보조 | 라우터 Q8\_0 변환, 연속 MVM 겹치기, 전문가 대칭 할당 | Qwen3-30B-A3B 실기 동작 |
-| M6 · 벡터 유닛, op 확장 | RMSNorm, 위치 기반 RoPE, SwiGLU, 잔차, softmax | 레이어 안 호스트 왕복 제거 |
-| M7 · attention·KV 디바이스화, T > 1 | 단계 A: DQROW, 프리필 타일링 | 토큰당 split 1개 · 프리필 향상 실측 |
-| M8 · 제어 코어, C++ SDK, 디바이스 MoE | 단계 B: RISC-V 제어 코어(Ibex), 비동기 발행 큐·티켓·의존성, SPM 창, CALL, C++ SDK, TOPK, 디바이스 MoE, C++ 디코드 스텝 | 호스트는 토큰당 인자 2개만 쓰기 |
-| M9 · 디바이스 자체 디코드 루프 | 단계 C: 제어 코어 상주 C++ 디코드 루프, 메일박스, 토큰 링버퍼, 디바이스 샘플링, `sw/runner` | 호스트는 링버퍼 폴링만 |
+| M5 · (M8로 통합) | 호스트 보조 MoE는 v1 명령 버퍼 경로를 전제했으므로 v2 개편으로 없앴다 | — |
+| M6 · 코어 v2 하드웨어 | 호스트 명령 버퍼 경로 삭제, RISC-V 제어 코어(Ibex)와 비동기 발행 큐, 벡터 유닛, attention·KV 디바이스화(q8\_0 KV, Flash Attention), SPM 두 번째 읽기 경로, 디버그(PCIe를 통한 GDB 포함) | v2에서 0.5B Q8\_0 logits가 sim과 비트 일치, 32B KL 기준 통과 (MVM은 RISC-V 커널이 발행) |
+| M7 · RISC-V 커널 라이브러리, 그래프 실행 | RMSNorm·RoPE·SwiGLU·GELU·잔차·Flash Attention·활성값 양자화 커널, ggml split을 op 목록으로 써서 한 번에 LAUNCH | Qwen2.5·Gemma 4(dense)가 토큰당 LAUNCH 1회 · DDR 이용률 실측 |
+| M8 · 디바이스 MoE, PyTorch (v2 개편 전 내용: 제어 코어, C++ SDK, 디바이스 MoE) | 단계 B: RISC-V 제어 코어(Ibex), 비동기 발행 큐·티켓·의존성, SPM 창, CALL, C++ SDK, TOPK, 디바이스 MoE, C++ 디코드 스텝 | 호스트는 토큰당 인자 2개만 쓰기 |
+| M9 · 디바이스 자체 디코드 루프 (선택) | 단계 C: 제어 코어 상주 C++ 디코드 루프, 메일박스, 토큰 링버퍼, 디바이스 샘플링, `sw/runner` | 호스트는 링버퍼 폴링만 |
+
+**v2 개편 (결정, 2026-10-30)**: 호스트가 명령 버퍼를 실행시키는 경로(v1)를 지우고, 호스트는 RISC-V 제어 코어에 올린 커널을 LAUNCH만 한다. 모든 타일 명령은 RISC-V가 발행한다. 제어 코어, 벡터 유닛, attention·KV 하드웨어를 M6에서 한 번에 넣고(코어 v2), M7에서 커널 라이브러리와 그래프 단위 실행을 만든다. 디버그용 호스트 발행 창은 두지 않으며, 브링업·selftest·트레이스 재생도 RISC-V 커널로 한다. v1은 지금 지운다(마지막 v1은 태그 `v1-m4`, M4 통과 상태). KV 캐시는 q8\_0이고 attention은 llama.cpp의 FLASH\_ATTN\_EXT로 받는다(8비트 V 캐시는 FA를 요구한다). 첫 v2부터 PCIe를 통한 GDB 디버깅을 넣는다. 위 표의 M8·M9 행에 남은 v1 시절 문구(CALL, 명령 버퍼 공존 등)와 이 문서의 명령 버퍼 관련 절은 M6 설계에서 다시 쓴다. 결정 목록은 `docs/ctrl-riscv.md` D14\~D18. 그림 `docs/fig/milestones.jpg`는 개편 전 내용이다.
 
 M8 계획 개정(2026-10-24): 레지스터 확장(RLD·MULI·LOOP)과 WAITM·JUMP 대신 RISC-V 제어 코어를 넣는다. M8·M9의 통과 조건은 그대로다. 제어 코어의 소프트웨어 부분(시뮬레이터의 RV32 인터프리터, 큐 모델, 경합 검출기, SDK)은 M4 뒤 M5\~M7과 나란히 시작할 수 있고, RTL은 M8에서 한다 (`docs/ctrl-riscv.md` §11). 그림 `docs/fig/milestones.jpg`는 다음 그림 갱신 때 맞춘다.
 
