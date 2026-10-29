@@ -1095,3 +1095,18 @@ non-native rows to Q8_0. The runs are `llama-completion -n 1` on k4.
   of Q6_K. It is the largest single part of the load.
 - Disk: 2.65 GB/s cold sequential read (`cat` of 7.9 GB of shards), so a 32B file not in the page
   cache needs at least 7.5 s.
+
+With parallel conversion (`tsr_weight_store_rows` with `TSR_LOAD_THREADS` workers, default online
+CPUs up to 16; the calling thread writes finished batches while the workers convert the next;
+`direct` DMA unchanged):
+
+| `llama-completion -n 1` load time | Before | After |
+|---|---|---|
+| 12B Q4_K_M (file cached) | 12.2 s | **4.0 s** (`set_tensor` 3.5 s, of which DMA 2.3 s) |
+| 12B Q8_0 (partly cold) | 18.7 s | 11.7 s |
+| 32B Q4_K_M (partly cold) | 34.9 s (70 s in the first run) | **18.2 s** (`set_tensor` 9.2 s, conversion 30 s of CPU time over 16 threads) |
+
+The device bytes are unchanged: on the card the 12B Q4_K_M logits before and after are 14 / 14 rows
+bit-identical (`klcheck compare --expect-identical`), and MUL_MAT 1402 / 1402 and
+`test-ggml-tesseract` 28 / 28 pass. What remains is the `direct` DMA (2.3–4.2 s), cold disk reads,
+and ~9 s outside `set_tensor` for 32B (llama loader and warmup, not analysed).

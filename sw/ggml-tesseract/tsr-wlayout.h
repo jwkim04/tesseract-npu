@@ -30,9 +30,14 @@ using tsr_row_sink_fn   = std::function<void (uint32_t r, const void * blocks)>;
 // on every channel; symmetric allocation over num_ch channels: R = ceil(N / C), row r on channel
 // r / R at w_off + (r mod R) * ROW_BEATS * 64). Each row is repacked with tsr_repack_row; the rows
 // of one channel are written in batches of max(1, max_batch_bytes / row bytes) rows.
+// threads > 1: that many workers convert and repack batches while the calling thread writes the
+// finished ones, in completion order (the batches are disjoint). row_blocks is then called
+// concurrently, each worker with its own scratch, and must be thread-safe; write is only ever
+// called from the calling thread. Host memory: (workers + 1) batches.
 void tsr_weight_store_rows(uint32_t num_ch, uint32_t fmt, uint32_t N, uint32_t K, uint64_t w_off,
                            uint32_t r0, uint32_t r1, size_t max_batch_bytes,
-                           const tsr_row_blocks_fn & row_blocks, const tsr_dram_write_fn & write);
+                           const tsr_row_blocks_fn & row_blocks, const tsr_dram_write_fn & write,
+                           unsigned threads = 1);
 
 // Inverse: read rows [r0, r1) in batches as above, un-repack each (tsr_unrepack_row) and pass its
 // ggml blocks to sink.

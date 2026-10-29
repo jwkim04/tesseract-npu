@@ -25,13 +25,15 @@
 // Environment: TSR_DEVICE (transport kind; "none" registers no device), TSR_DEBUG=1|2 (lowering
 // and placement log on stderr; 2 adds a disassembly of every executed program). Test knobs:
 // TSR_FORCE_HOST=1 keeps every non-WEIGHTS buffer in host memory (exercises the staged path),
-// TSR_STAGE_KIB=<n> sets the IO staging area size. TSR_STATS=1 prints, when the backend is freed,
+// TSR_STAGE_KIB=<n> sets the IO staging area size. TSR_LOAD_THREADS=<n> sets the workers that
+// convert and repack weights while they are uploaded (default: online CPUs, at most 16). TSR_STATS=1 prints, when the backend is freed,
 // the wall time spent in graph_compute and in device execs and the device's PERF_CYCLES over the
 // same span (host round-trip overhead = exec wall - PERF_CYCLES / f_kernel). The sim transport handles TSR_TRACE /
 // TSR_SIM_* itself.
 #include "ggml-tesseract.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cinttypes>
 #include <cstdio>
@@ -42,6 +44,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -93,6 +96,16 @@ static bool tsr_stats_on() {
         return e && atoi(e) != 0;
     }();
     return on;
+}
+
+// Workers for weight conversion and repack (TSR_LOAD_THREADS, default: online CPUs, at most 16).
+static unsigned tsr_load_threads() {
+    static const unsigned n = [] {
+        const char * e = getenv("TSR_LOAD_THREADS");
+        const int v = e ? atoi(e) : (int) std::min(16u, std::max(1u, std::thread::hardware_concurrency()));
+        return (unsigned) std::max(1, std::min(v, 64));
+    }();
+    return n;
 }
 
 static uint64_t tsr_now_ns() {
@@ -271,7 +284,7 @@ struct tsr_device {
     uint64_t st_set_ns = 0;        // set_tensor (conversion + repack + writes)
     uint64_t st_set_bytes = 0;
     uint64_t st_store_ns = 0;      // weight stores (convert + repack + writes)
-    uint64_t st_conv_ns = 0;       // non-native rows converted to the device format
+    std::atomic<uint64_t> st_conv_ns { 0 };   // non-native rows converted to the device format (CPU time, all threads)
     std::vector<uint64_t> st_perf0;   // every PERF_* counter at the first exec
 
     ggml_backend_buffer_type buft;
@@ -393,12 +406,17 @@ static void tsr_fill(tsr_device * d, uint32_t ch, uint64_t off, uint8_t value, s
 static void tsr_store_weight_rows(tsr_device * d, enum ggml_type type, uint32_t fmt, uint32_t N, uint32_t K,
                                   uint64_t w_off, const uint8_t * src, uint32_t r0, uint32_t r1) {
     const size_t src_rb = ggml_row_size(type, K);
-    std::vector<float> f32(K);
     const bool stats = tsr_stats_on();
     const uint64_t t0 = stats ? tsr_now_ns() : 0;
-    // repack + symmetric scatter: tsr-wlayout (shared with the ggml-free runtime sw/rt)
+    // repack + symmetric scatter: tsr-wlayout (shared with the ggml-free runtime sw/rt). The
+    // conversion runs on tsr_load_threads() workers (each with its own f32 row); the writes stay
+    // on this thread.
     tsr_weight_store_rows(d->cfg.num_ch, fmt, N, K, w_off, r0, r1, TSR_XFER_CHUNK,
         [&](uint32_t rr, void * scratch) {
+            thread_local std::vector<float> f32;
+            if (f32.size() < K) {
+                f32.resize(K);
+            }
             const uint64_t c0 = stats && !tsr_type_is_native(type) ? tsr_now_ns() : 0;
             const void * blk = tsr_row_to_dev_blocks(type, fmt, src + (size_t) (rr - r0) * src_rb, K, scratch, f32.data());
             if (c0) {
@@ -406,7 +424,8 @@ static void tsr_store_weight_rows(tsr_device * d, enum ggml_type type, uint32_t 
             }
             return blk;
         },
-        [d](uint32_t ch, uint64_t off, const void * p, size_t n) { tsr_write(d, ch, off, p, n); });
+        [d](uint32_t ch, uint64_t off, const void * p, size_t n) { tsr_write(d, ch, off, p, n); },
+        tsr_load_threads());
     if (stats) {
         d->st_store_ns += tsr_now_ns() - t0;
     }
@@ -1485,8 +1504,8 @@ static void tsr_backend_free(ggml_backend_t backend) {
         fprintf(stderr, "[tesseract] stats: set_tensor %.3f s for %.3f GB, of which transport writes %.3f s for %.3f GB (%.2f GB/s)\n",
                 d->st_set_ns * 1e-9, d->st_set_bytes * 1e-9, d->st_write_ns * 1e-9, d->st_write_bytes * 1e-9,
                 d->st_write_ns ? d->st_write_bytes / (double) d->st_write_ns : 0.0);
-        fprintf(stderr, "[tesseract] stats: weight stores %.3f s, of which conversion to Q8_0 %.3f s\n",
-                d->st_store_ns * 1e-9, d->st_conv_ns * 1e-9);
+        fprintf(stderr, "[tesseract] stats: weight stores %.3f s (%u load threads), conversion to Q8_0 %.3f s of CPU time\n",
+                d->st_store_ns * 1e-9, tsr_load_threads(), d->st_conv_ns.load() * 1e-9);
         const size_t nch = (p.size() - 5) / 2;
         for (size_t c = 0; c < nch; c++) {
             fprintf(stderr, "[tesseract] stats: ch%zu rd_beats %" PRIu64 ", wait %" PRIu64 "\n", c, p[5 + c], p[5 + nch + c]);
