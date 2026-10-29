@@ -15,6 +15,20 @@ card, the k4 link (runbook: `docs/platform-u200.md` §14). Source-of-truth order
 `rtl/core/tsr_pkg.sv`. When this document needs a change, the lead edits it; spec changes go
 through §11 (proposals).
 
+**v2 note (2026-10-30, W0 of `docs/v2/README.md`).** Everything here about the command path is v1
+(tag `v1-m4`): dispatch from `tsr_cmdproc` (§3.0), register-relative operands, `tb/cmdproc`, the
+command-path parts of `tb/core` and `tb/fastreplay`, and the `cmd.bin` trace sets. X0 deletes that
+path (`docs/v2/01-execution-model.md` §12). In v2 the MVM unit is dispatched from CC's queue heads
+(`docs/v2/04-control-core.md` §8–§9, the checks of `tsr_cmdproc` live on in `tsr_chk`), reads the
+SPM through the even / odd banks (CC §10), and is checked by tile-only replays of `push.bin`. The
+weight MVM itself (§4–§7, the numerics and `RB_MIN`) is unchanged. The cluster gains two attention
+modes, ATTQK (0x21: scores and row maxima over KV groups, the Q8_0 path with segment counters,
+per-slot activation read addresses and a gather line buffer per pass row) and ATTPV (0x22: P·V
+with block-floating-point weights accumulated in the MAC DSPs, a PV mode of `tsr_mac_lane`, a
+64-beat delay FIFO, a capture bank and convert / add pipes); their contract is
+`docs/v2/03-attention-kv.md` §5.2–§5.3 and §6, and their structure and cost are AT §8.1, §8.2 and
+§8.4 (≈ 19–27 K LUT per cluster, *estimate*). `RB_MIN` stays as it is for weight MVMs.
+
 **M3 scope** (spec ISA table: `MVM` 단계 = M3; the milestone figure of the spec export has no
 text, so the scope is inferred from the spec): the MVM unit — one cluster per channel (spec "MVM
 클러스터 마이크로아키텍처", stages 1–10), the activation broadcast, the result gather with ACC —
@@ -119,6 +133,9 @@ cluster with a stub back end) put wrappers in `tb/<block>/hdl/` (linted by `rtl/
 ## 3. Internal interfaces
 
 ### 3.0 Dispatch (tsr_cmdproc → tsr_mvm)
+
+(v1. In v2 the same `tsr_mvm_cmd_t` fields come from `tsr_chk` through CC's queue heads, and the
+guarantees below are `tsr_chk`'s; `docs/v2/04-control-core.md` §8.1.)
 
 `tsr_mvm_cmd_t` (294 bits) and the dispatch protocol are those of `docs/rtl-m2.md` §3.0/§3.4.
 `tsr_cmdproc` (HAS_MVM = 1, already verified against the simulator in `tb/cmdproc`) guarantees:

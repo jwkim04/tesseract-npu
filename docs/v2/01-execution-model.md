@@ -1055,6 +1055,23 @@ then `build/v1` and tag `v1-m4` are the comparison path.
 | benches | `tb/cmdproc`; the command-path parts of `tb/core`, `tb/fastreplay` and `tb/common` (`proggen.py`, `isa.py`, `csr_driver.py`, `replay.py`, the v1 `trace` reader). Unit benches (dma, fp, mvm, mvmback, mvmfront, qact, spm, tech) are kept unchanged |
 | platform | `tsr_xrt_ctrl` ap_ctrl_hs FSM, run sequencer, interrupt and arg registers; `kernel_k*.xml` cmd args; the `gen_tops.py` v1 table; the vkernel v1 protocol; `tb/platform` start / done tests. The v2 platform build is disabled until Y5 |
 
+**X0 as done (W0, 2026-10-30).** X0 also deleted code that only the v1 execution path called, and
+whole files of which the table names parts. Their v2 users take them back from tag `v1-m4`:
+
+- **Backend** (P3.2, SW §9.3): the lazy conversion of raw-buffer MUL_MAT src0 into the WEIGHT heap
+  (`tsr_lazy_*`, `tsr_heap_alloc`'s evict-and-retry), the host-memory staging (`tsr_lower_staged`,
+  `tsr_act_loc`) and `tsr_resolve_weight`, from `v1-m4:sw/ggml-tesseract/ggml-tesseract.cpp`.
+- **Trace tools** (P1.10, SW §5.6): all of `sw/tools/tsr_trace_gen.c` and the v1 trace library
+  `sw/sim/tsr_trace.{c,h}`. `tsr-trace-gen` v2 starts from the tag's generator (random programs,
+  the MVM boundary and error generators, the seeds); `tsr-trace-conv` takes its v1 reader from the
+  tag's `tsr_trace.c`. The v1 sets are reproduced only with the v1 tools of `build/v1`
+  (`traces/*/regen.sh` check them first; m2 and m3 go to `build/v1-traces/`).
+- **Platform bench** (Y5): all of `tb/platform/kernel_bench.cpp`, including the directed tests
+  that do not depend on the run protocol (regmap: reset values, RW read-back with strobes,
+  `ADAPTER_VERSION`, the CSR window; errors: SLVERR / DECERR, `ADAPTER_STATUS` W1C and count
+  saturation; misaligned accesses; reset). The Y5 adapter bench carries them over; until then the
+  adapter is covered by lint only, and `hw/u200/build_xclbin.sh` refuses k1 / k4.
+
 **Y1–Y5: v2 replacements, in this order.**
 
 | Phase | Layer | Added (with its tests) |

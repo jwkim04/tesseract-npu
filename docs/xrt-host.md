@@ -9,6 +9,30 @@ is only extracted on the dev server (§8 lists exactly what is untested). The ha
 the hardware side is `rtl/platform/alveo_xrt/` and its document `docs/platform-u200.md`, both
 by the adapter agent) > this document.
 
+**v2 (2026-10-30).** This document describes the v1 transport (tag `v1-m4`). In v2 the transport
+and the adapter change (`docs/v2/01-execution-model.md` §9–§10):
+- The kernel is `ap_ctrl_none`; the xrt kdev opens it through `xrt::ip` (no `xrt::kernel`, no
+  `xrt::run`), polls, and binds the channels by writing `ch<c>_base` and then
+  `ADAPTER_CTRL.MEM_EN` (0x0E0). `cmd_addr`, `cmd_count`, `arg0`–`7` and the `ap_ctrl_hs` control
+  registers are gone.
+- The `ap_ctrl_hs` run path is removed in X0, the first M6 commit (EX §12): `tsr_transport_exec`,
+  `tsr_exec_result`, the kdev `start` / `wait` / `settle` / `kargs`, `regs_start` / `regs_wait`,
+  `kds_start` / `kds_wait`, `TSR_XRT_CTRL`, and `tsr_xrt_selftest`'s program checks. The run
+  sequencer, queued-start behaviour and interrupt output of `tsr_xrt_ctrl` go with it.
+- The v2 API (EX §10.1) loads and boots a firmware image and then launches kernels through the
+  launch queue and completion ring (EX §4), with a debug-aware wait and DB's recovery ladder; one
+  protocol layer serves sim, mock, vkernel and xrt (EX §10.2, SW §9.1). `tsr-selftest` launches
+  the `selftest` kernel (SW §7.6). `TSR_XRT_TIMEOUT_MS` / `TSR_XRT_ABORT_MS` become
+  `TSR_LAUNCH_TIMEOUT_MS` / `TSR_ABORT_MS`; `TSR_IMAGE`, `TSR_BOOT_MS`, `TSR_RESET_MS` and
+  `TSR_ATTACH` are new.
+- The device memory (§4.2: one device-only BO per channel, `TSR_XRT_DMA*`, `TSR_XRT_CH_GIB`) is
+  unchanged, except that the BO's memory bank comes from `xrt::xclbin` instead of an
+  `xrt::kernel` (*confirm* in P3.1).
+
+The card results in `docs/platform-u200.md` §14 (M0, M3 and M4) were measured with this v1
+transport. A working binary copy of the v1 tools, xclbins and an `env.sh` is kept in `build/v1`
+(not in git) for card runs until v2 runs on the card.
+
 ## 1. Layers
 
 ```
@@ -44,6 +68,9 @@ before `tsr_transport_open`, which makes `TSR_DEVICE=<kind>` work for the backen
 
 ## 2. Kernel contract (software view)
 
+**v1 (2026-10-30, W0 of `docs/v2/README.md`).** The v2 contract is EX §9.2: `ap_ctrl_none`, only
+`ch<c>_base` args, `ADAPTER_CTRL.MEM_EN` at 0x0E0, `ADAPTER_VERSION` 2.
+
 Vitis RTL kernels `tsr_u200_k1` (NUM_CH 1, T_MAX 1) and `tsr_u200_k4` (NUM_CH 4, T_MAX 8),
 `ap_ctrl_hs`, one clock `ap_clk`, `ap_rst_n`, `interrupt`; `s_axi_control` AXI4-Lite with a
 13-bit address space, `m_axi_ch<c>` AXI4 512-bit for c < NUM_CH. `s_axi_control` (byte offsets):
@@ -68,6 +95,10 @@ below 0x2000 (XRT's register access checks `offset + 4 <= range`, `xrt_kernel.cp
 `get_address_range`), or has an argument outside the map above.
 
 ## 3. Protocol layer (tsr_kdev.cpp)
+
+**v1 (2026-10-30, W0 of `docs/v2/README.md`).** The exec path below is deleted in X0. The v2
+protocol layer (open with `SOFT_RESET` and bind, load and VERIFY, boot, launch, wait, cancel, stop,
+soft reset, log) is EX §10.2 and SW §9.1.
 
 **Open.** Reads ADAPTER_VERSION, then ID / VERSION / CFG0..2 / CAPS through the window. Fails
 with a clear message if ID is not 0x54535231 ("TSR1"), the ISA major differs, CFG0.NUM_CH differs
@@ -110,6 +141,9 @@ selftest) read `tsr::transport_adapter_log`: the register itself is clean after 
 ## 4. The xrt kdev and device memory
 
 ### 4.1 Control
+
+**v1 (2026-10-30, W0 of `docs/v2/README.md`).** Both `TSR_XRT_CTRL` modes are deleted in X0. v2 uses
+`xrt::ip` register access with polling and never starts an `xrt::run` (EX §9.1).
 
 `TSR_XRT_CTRL=run` (default): `xrt::kernel(device, uuid, name, cu_access_mode::exclusive)` and
 one `xrt::run` with the channel buffers bound once; `start` sets cmd_addr (u64), cmd_count and
@@ -190,6 +224,10 @@ faulty program could address memory past the buffer (other BOs, or a DECERR that
 ADAPTER_STATUS). The backend never does (its heap ends at `ch_bytes`).
 
 ## 5. tsr_xrt_selftest
+
+**v1 (2026-10-30, W0 of `docs/v2/README.md`).** Replaced in v2 by `tsr-selftest`, whose device
+programs are the `selftest` kernel, compared with the same image on the in-process simulator (SW
+§7.6, V2-SW-28); the trace replays go through the `replay` kernel. A v1 binary is in `build/v1/bin`.
 
 `bin/tsr_xrt_selftest [--device KIND] [--mem-mib N] [--no-mem] [--no-programs] [--traces DIR]... [--max-traces N] [--seed N] [-v]`,
 default device `$TSR_DEVICE` or `xrt`. Exit code 0 = every check passed, 1 = a check failed,
@@ -282,6 +320,10 @@ not set". With `XILINX_XRT` pointing at the unpacked tree and `XCL_EMULATION_MOD
 loads its hw_emu shim from it instead (§9).
 
 ## 8. Card bring-up procedure, and what is untested
+
+**v1 (2026-10-30, W0 of `docs/v2/README.md`).** This procedure is the v1 one, and the card has since
+run it (M3 and M4, `docs/platform-u200.md` §14). The v2 bring-up is W6 of `docs/v2/README.md` §10
+(identity, bind, load and VERIFY, HELLO, PING, launch round trip, `tsr-selftest`, GDB smoke).
 
 1. Install XRT 2.18.179 and the patched DKMS driver (`sw/xrt-driver/README.md`), the U200
    platform, flash the shell (`xbmgmt`), `xbutil validate`. Build with `-DTSR_WITH_XRT=ON`.

@@ -28,7 +28,14 @@ unscheduled idea, an ASIC) needs new target-specific layers, not a new core.
 > - M4: Qwen2.5-32B Q4_K_M decodes at 2.93 tok/s and meets the KL criterion (ratio 1.30, top-1
 >   99.02 %).
 >
-> Everything below is verified in simulation unless it says otherwise.
+> **v2 (2026-10-30):** the design of core v2 is done ([`docs/v2/`](docs/v2/README.md)): the host
+> only loads firmware and launches kernels on an embedded RISC-V control core, which issues every
+> tile op. W0 is in progress: X0 deletes the in-tree v1 path (the host command-buffer core). Tag
+> `v1-m4` keeps v1; the results above were measured with it. To run models on the card meanwhile,
+> see [Run a model on the card (v1)](#run-a-model-on-the-card-v1).
+>
+> Everything below is verified in simulation unless it says otherwise. It describes v1 (tag
+> `v1-m4`) where it differs from `docs/v2/`.
 
 ## Contents
 
@@ -170,7 +177,7 @@ A–C.
 | **M3** MVM clusters, Q8_0 | One cluster per channel, starting with 1 channel, then 4 | Qwen2.5-0.5B Q8_0 running on hardware: logits bit-identical to `TSR_DEVICE=sim`, and the KL criterion | **Passed 2026-10-26.** RTL parts A, B and C done (the Q4_K path is designed and verified too). On the U200, logits bit-identical to the simulator and the KL criterion met with 1 channel (`tsr_u200_k1`, 300 MHz, 24.8 tok/s) and 4 channels (`tsr_u200_k4`, 276 MHz, 54.7 tok/s) |
 | **M4** Q4_K unpack, 4 channels | v1 goal; other types converted to Q8_0 at load | 32B Q4_K_M on hardware at ≥ 1 tok/s | **Passed 2026-10-30.** Qwen2.5-32B Q4_K_M on `tsr_u200_k4` (276 MHz): 2.93 tok/s decode, `klcheck all` PASS (KL ratio 1.30, top-1 99.02 %), load 18 s |
 | **M5** *(merged into M8)* | Host-assisted MoE assumed the v1 command-buffer path, which v2 removes | — | Dropped 2026-10-30 |
-| **M6** Core v2 hardware | Host command-buffer path removed; RISC-V control core (Ibex) with asynchronous tile issue; vector unit; attention and KV on device (q8_0 KV, Flash Attention); second SPM read path; debug with GDB over PCIe | On v2: 0.5B Q8_0 logits bit-identical to the simulator and the 32B KL criterion met, with RISC-V kernels issuing the MVMs | **Started 2026-10-30** |
+| **M6** Core v2 hardware | Host command-buffer path removed; RISC-V control core (Ibex) with asynchronous tile issue; vector unit; attention and KV on device (q8_0 KV, Flash Attention); second SPM read path; debug with GDB over PCIe | On v2: 0.5B Q8_0 logits bit-identical to the simulator and the 32B KL criterion met, with RISC-V kernels issuing the MVMs | **Design done 2026-10-30** ([`docs/v2/`](docs/v2/README.md)); W0 in progress (X0 deletes v1) |
 | **M7** RISC-V kernel library, graph execution | Kernels for RMSNorm, RoPE, SwiGLU, GELU, residual, Flash Attention, activation quantization; the ggml backend writes each split as an op list and launches it once | Qwen2.5 and Gemma 4 (dense) with one launch per token; DDR utilization measured | Planned |
 | **M8** Device MoE, PyTorch on kernels | MUL_MAT_ID, TOPK, expert placement; the PyTorch backend calls the same kernels | Qwen3-30B-A3B on hardware | Planned |
 | **M9** Resident decode loop *(optional)* | On-device sampling, output-token ring buffer | The host only polls the ring buffer | Planned |
@@ -830,6 +837,11 @@ dump the traces of a real llama.cpp run, real model shapes become RTL regression
 | `traces/model` | 290 | `traces/model/regen.sh` (needs the models) | every split of a 1-token run of Qwen2.5-0.5B Q8_0 and of a Q4_K_M requantization |
 | `traces/tmp/tbo`, `tbo_tmax8` | 1402 each | no | `test-backend-ops` dumps |
 
+These are the v1 sets. X0 removed `traces/m2`, `traces/gen` and `traces/tmp`; the regen scripts
+reproduce the v1 sets with the v1 tools of `build/v1` (into `build/v1-traces/`, except
+`traces/model`, which stays on disk as the input of `tsr-trace-conv`), and Y2 regenerates m2, gen
+and m3 as v2 traces (`docs/v2/06-software-verification.md` §5.6).
+
 RTL replay results (`tb/fastreplay`, every trace in all four memory regimes):
 
 | Traces | Runs | Failed | Simulated cycles |
@@ -960,7 +972,18 @@ token), one decoded Qwen2.5-0.5B Q8_0 token takes 2,281,377 PERF cycles on k4t1 
 
 ## Getting started
 
-Everything below runs without an FPGA: the backend uses the ISA simulator as its device.
+Everything below except [Run a model on the card (v1)](#run-a-model-on-the-card-v1) runs without
+an FPGA: the backend uses the ISA simulator as its device.
+
+These instructions are for v1 (tag `v1-m4`). X0, the first v2 commit, deletes the in-tree v1 path
+(the command-buffer execution, its traces and benches), so until the v2 software path runs end to
+end on the simulator (W3 in [`docs/v2/README.md`](docs/v2/README.md) §10) these need a checkout
+of tag `v1-m4` or the v1 binaries in `build/v1`: running a model on the Tesseract device (in the
+X0 tree `-ngl` keeps the weights on the CPU), trace replay (`tsr-trace-replay`,
+`tb/fastreplay/run.py`), regenerating the v1 trace sets, the Verilated kernel
+(`tb/platform/vkernel/vkernel.py`) and `tsr_xrt_selftest`'s program checks. The card itself is
+run with the v1 binary copy described below. The build, `ctest`, `rtl/lint.sh` and
+`tb/run_all.sh` work on the X0 tree.
 
 ### Requirements
 
@@ -968,7 +991,10 @@ Everything below runs without an FPGA: the backend uses the ISA simulator as its
   ships 3.28), a C11/C++17 compiler. With CMake 3.20–3.27, llama.cpp's own model tests
   (`test-llama-context`, `test-llama-context-model`, `test-thread-safety`) do not get
   `TSR_DEVICE=none`, so they offload the KV cache to Tesseract and can abort on `SET_ROWS`.
-- Python 3 with numpy (used by `ctest`'s numcheck self test, numcheck and the QACT cocotb tests).
+- Python 3 with numpy (used by `ctest`'s numcheck self test, numcheck, the QACT cocotb tests and
+  the `ref_math_np_*` comparisons; their interpreter is `-DTSR_REF_MATH_PYTHON=...`, by default
+  `build/tools/torchvenv/bin/python` if it exists, else the `python3` CMake finds, and configure
+  warns if it has no numpy).
 - For the RTL tests: Verilator 5, cocotb and pytest. The dev host runs Verilator 5.046, cocotb
   2.0.1 and pytest 9.0.2.
 - Optional: Vivado / Vitis 2024.2 for out-of-context timing runs and `v++` links (with the U200
@@ -1016,6 +1042,27 @@ The simulator is slow: on the 16-core dev host, 0.5B decode takes about 84 ms pe
 model needs file-backed simulator DRAM (`TSR_SIM_DRAM_DIR=<dir>` with about 20 GiB free); see
 [`docs/klcheck.md`](docs/klcheck.md) and [`docs/numcheck.md`](docs/numcheck.md).
 
+### Run a model on the card (v1)
+
+The in-tree v1 path is deleted (X0), so card runs use a binary copy of v1: `build/v1` holds the
+v1 host binaries (`llama-*`, `klcheck`, `test-backend-ops`, `test-ggml-tesseract`,
+`tsr_xrt_selftest`, `tsr_bw`, …), the xclbins `tsr_u200_k1`, `tsr_u200_k4` and `tsr_bw_k4`, and an
+`env.sh`. `build/` is not in git; on another host, build tag `v1-m4` with `-DTSR_WITH_XRT=ON` and
+link the xclbins with `hw/u200/build_xclbin.sh` ([`docs/platform-u200.md`](docs/platform-u200.md)
+§14 is the bring-up runbook).
+
+The `build/v1` binaries are not self-contained: their RUNPATH is the absolute path of the tree
+they were built in (`build/xrt/bin`), which holds X0 / v2 code once it is rebuilt. Always
+`source build/v1/env.sh` (it puts `build/v1/bin` first on `LD_LIBRARY_PATH`) or set
+`LD_LIBRARY_PATH` yourself; never run them bare.
+
+```sh
+source build/v1/env.sh    # XRT setup, PATH and LD_LIBRARY_PATH to build/v1/bin,
+                          # TSR_DEVICE=xrt, TSR_XCLBIN=build/v1/xclbin/tsr_u200_k4.xclbin
+llama-completion -m models/qwen2.5-32b-instruct-q4_k_m-00001-of-00005.gguf -ngl 99 -nkvo -no-cnv -p "..." -n 64
+klcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf --device xrt -o build/klcheck-05b-card -n 64
+```
+
 ### Run a PyTorch model
 
 ```sh
@@ -1028,12 +1075,26 @@ build/tools/torchvenv/bin/python sw/torch/tools/hf_check.py models/hf/Qwen2.5-0.
 
 ### RTL lint, tests and trace replay
 
+On the X0 tree:
+
 ```sh
 rtl/lint.sh                                           # Verilator -Wall, must stay clean
-build/dev/bin/tsr-trace-replay -q traces/m2 traces/gen  # replay on the ISA simulator
-traces/m3/regen.sh                                    # regenerate traces/m3 (not stored in git)
-tb/run_all.sh                                         # lint + every suite (long: 109 min cold on 2026-10-24)
+tb/run_all.sh                                         # lint + every suite (25 min cold on 2026-10-30, X0 tree)
 tb/run_all.sh -k dma                                  # a subset
+ctest --test-dir build/dev -LE slow                   # software tests; the slow ones are opt-in:
+TSR_REF_MATH_FULL=1 ctest --test-dir build/dev -L slow -R '^ref_math_'   # all 2^32 inputs of the VU math
+```
+
+v1 (tag `v1-m4`; X0 deleted the trace tools, `traces/m2`, `traces/gen`, the trace replay benches
+and the vkernel server). The regen scripts reproduce the v1 sets with the v1 tools in `build/v1`
+(checked before anything is deleted) into `build/v1-traces/`; `traces/model` stays in place as
+the input of `tsr-trace-conv` (`docs/v2/06-software-verification.md` §5.6):
+
+```sh
+traces/m2/regen.sh                                    # v1 tools of build/v1 -> build/v1-traces/m2, replayed
+traces/m3/regen.sh                                    # -> build/v1-traces/m3, replayed + trace_stats.py
+# in a checkout of tag v1-m4 (build/dev built there):
+build/dev/bin/tsr-trace-replay -q traces/m2 traces/gen  # replay on the ISA simulator
 tb/fastreplay/run.py traces/m3 traces/gen --regimes all   # fast C++ Verilator replay
 tb/platform/vkernel/vkernel.py run --config k4t1 -- build/dev/bin/tsr_xrt_selftest --mem-mib 8   # host stack on the Verilated kernel
 ```
@@ -1048,13 +1109,17 @@ tb/platform/vkernel/vkernel.py run --config k4t1 -- build/dev/bin/tsr_xrt_selfte
   calibration failure. What remains to check at M0 is the real per-channel capacity and
   upper-address aliasing, which validate's small-buffer memory test cannot catch. With 8 GB per
   channel, `CH_BYTES` drops to 8 GiB and the largest models are about 32B Q4_K_M and 30B-A3B.
-- **Status.** The card is not installed in the dev host, so no Tesseract bitstream has run on
-  hardware yet. The first full `v++` links ran on the dev host on 2026-10-24 against the extracted
-  development platform `xilinx_u200_gen3x16_xdma_2_202110_1`. The M0 bandwidth kernel `tsr_bw_k4`
-  and the 1-channel bring-up kernel `tsr_u200_k1` (both relinked the same day after timing-margin
-  changes) routed with WNS +0.017 ns (in the shell; kernel clock +0.055 ns and +0.060 ns); both
-  keep the kernel clock at 300 MHz. The 4-channel `tsr_u200_k4` link has not run: its
-  implementation is estimated at about 25 to 27 GB of memory, against the dev host's 14 GB.
+- **Status.** The v1 bitstreams ran on the card from 2026-10-25: M0 (`tsr_bw_k4`), M3
+  (`tsr_u200_k1`, `tsr_u200_k4`) and M4 (`tsr_u200_k4`) passed
+  ([`docs/platform-u200.md`](docs/platform-u200.md) §14). Those xclbins and the binaries that drive
+  them are kept in `build/v1` (tag `v1-m4`). No v2 bitstream exists yet. Before the card, the first
+  full `v++` links ran on the dev host on 2026-10-24 against the extracted development platform
+  `xilinx_u200_gen3x16_xdma_2_202110_1`. The M0 bandwidth kernel `tsr_bw_k4` and the 1-channel
+  bring-up kernel `tsr_u200_k1` (both relinked the same day after timing-margin changes) routed
+  with WNS +0.017 ns (in the shell; kernel clock +0.055 ns and +0.060 ns); both keep the kernel
+  clock at 300 MHz. The 4-channel `tsr_u200_k4` link (estimated at 25 to 27 GB of memory) ran
+  later on the 14 GB dev host with swap; it missed 300 MHz by 0.285 ns, so `v++` scaled the kernel
+  clock to 276 MHz.
 - **XRT on new kernels.** XRT 2024.2 (2.18.179) builds its PCIe drivers (`xocl`, `xclmgmt`) with
   DKMS for the Ubuntu 24.04 GA kernel 6.8. They fail to build on the HWE kernels: 413 errors on
   7.0.
@@ -1188,7 +1253,8 @@ tesseract/
 
 | Document | Content |
 | --- | --- |
-| [`docs/spec.md`](docs/spec.md) | **The contract**: architecture and ISA spec v0.2 with the v0.2.1 clarifications, in **Korean**. ISA, memory layout, numerics, backend integration, MoE, roadmap, verification strategy, milestones, open items. |
+| [`docs/spec.md`](docs/spec.md) | **The contract**: architecture and ISA spec v0.2 with the v0.2.1 clarifications and the v2 edits of 2026-10-30, in **Korean**. ISA, memory layout, numerics, backend integration, MoE, roadmap, verification strategy, milestones, open items. |
+| [`docs/v2/README.md`](docs/v2/README.md) | **Core v2 design set (M6–M9)**: execution model and host interface, vector unit, attention and KV cache, RISC-V control core, debug, software and verification; decision log and work packages. Incorporated by reference into the spec. |
 | [`docs/rtl-m2.md`](docs/rtl-m2.md) | RTL contract and results of the M2 core: conventions, dispatch protocol, memory-port rules, SPM, units, verification, timing |
 | [`docs/rtl-m3.md`](docs/rtl-m3.md) | MVM unit architecture, interfaces, back-end numerics, throughput, verification and integration results; the Vivado results of part C (§14: U200 bitstream parameters, timing runs, floorplan C') |
 | [`docs/llama-pin.md`](docs/llama-pin.md) | llama.cpp pin, the verified backend API, how llama.cpp places weights and splits graphs, `test-backend-ops` results |

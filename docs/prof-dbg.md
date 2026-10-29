@@ -13,6 +13,19 @@ amendment) in favour of a RISC-V control core: see the spec section "제어 코�
 "제어 코어 디버그" in the section "프로파일러와 디버거", and `docs/ctrl-riscv.md` §10. §2 (PD4),
 §3.2, §3.3, §3.5 and §9 follow that revision; the remaining "without LOOP / JUMP" conditions
 (§5.7, §6.2) now always hold and are tidied at PD4.
+(2026-10-30) **v2: the command-path debugger and profiler of this plan are superseded by DB**
+(`docs/v2/05-debug.md`, D14–D18). v2 removes the host command-buffer path, and with it every part
+of this plan that stops, steps, splits or records host command-buffer runs: the PD2 debug block
+(§3, deleted with `tsr_cmdproc`; its CSR range is reused by DB's DBG block at 0x800–0xAFC), the
+debug SPM window (§3.5), prefix runs and halt emulation (§4.6), the per-exec shadow transport
+(§4.5), the instruction-index divergence finder (§4.7), per-exec records and `split` attribution
+(§5.1, §5.4), the out-of-order decision (§5.11), the trace ring (§6.3), and GDB through OpenOCD
+(PD4). DB replaces them with RISC-V debug over DMI and an RSP server, tile-level stop points,
+serial mode, tile breakpoints, a dispatch history, unit probes, a hardware trace writer and
+TSR_STATS v2; the PERF space and its ACTIVE / QHALT gating are EX §6. Still valid: the ILA
+debug-build recipe and no JTAG on the U200 (§7.2), dumps under `TSR_DUMP_DIR` (§4.4), Perfetto
+output and `tsr-prof` (§5.8), and the rule that every CSR access completes in bounded time.
+Source-of-truth order: `docs/spec.md` > `docs/v2/*` > `docs/ctrl-riscv.md` > this document.
 
 The plan answers a user request with three parts: a **profiler**; **debugging** (dump the chip
 state, set breakpoints, halt and step); and whether the FPGA's **JTAG** can reach user logic.
@@ -100,6 +113,10 @@ Checked 2026-10-23.
 
 ## 2. Phases
 
+**Superseded (2026-10-30, W0 of `docs/v2/README.md`).** PD1–PD5 below plan for the command-buffer
+path. v2 debug and profiling are DB (`docs/v2/05-debug.md`), delivered with M6 (D18); the work
+packages are P1.12, P1.13, P3.7 and P3.8 of `docs/v2/06-software-verification.md` §11.
+
 The spec's phase table is the contract; this is the detail. Milestone pass criteria do not
 change, and no milestone depends on a PD phase.
 
@@ -114,6 +131,13 @@ change, and no milestone depends on a PD phase.
 ---
 
 ## 3. Debug block (PD2)
+
+**Superseded (2026-10-30, W0 of `docs/v2/README.md`).** The whole PD2 debug block
+(instruction-boundary halt, STEP, IA and retire breakpoints, `DBG_IR*`, `DBG_OPA*`, `DBG_R*`,
+`DBG_HIST*`, `STATUS.HALTED`, the debug SPM window as SPM client 3) is deleted with `tsr_cmdproc`
+(D14). DB §3–§5 and §10 define the v2 RISC-V debug, tile-level debug and the DBG block at
+0x800–0xAFC; the debugger reaches SPM through the debug module's SBA (V2-CC-16). This section is
+kept as a record.
 
 ### 3.1 Boundary, check order and drain
 
@@ -316,6 +340,10 @@ pipeline and the halt decision is a register output, so the cmdproc paths do not
 
 ### 4.1 Transport additions (PD1)
 
+**Superseded (2026-10-30, W0 of `docs/v2/README.md`).** The v2 transport API is EX §10;
+`tsr_transport_csr_write` is part of it. The exec-based additions below (halt handler, prefix runs,
+exec records) have no v2 counterpart; DB §9.2 lists what DB needs from the transport.
+
 Proposed C API on top of `tsr_transport.h` (part C's file; changed only after part C merges):
 
 ```c
@@ -348,6 +376,10 @@ The existing `tsr_transport_exec` becomes `exec_timed(…, NULL, NULL)`. All PER
 process happen in one thread under the backend's device mutex (one LO snapshot slot).
 
 ### 4.2 Waiting, halts, timeouts, signals, exit
+
+**Superseded (2026-10-30, W0 of `docs/v2/README.md`).** v2 waits are EX §4.8 and SW §9.1: the
+timeout counts only while the RISC-V is not halted and no tile stop is active, the transport mutex
+is released between polls, and a timeout follows DB's recovery ladder (DB §7.3).
 
 - **Wait loop.** Only when the debugger or PC sampling is on, the kdev wait becomes a loop of
   short waits (≤ 50 ms) that reads STATUS (one read sees HALTED). Otherwise the wait is
@@ -440,6 +472,10 @@ card: that opening the compute unit in a new process does not disturb it.
 
 ### 4.5 Shadow transport
 
+**Superseded (2026-10-30, W0 of `docs/v2/README.md`).** The per-exec shadow is deleted. v2 compares
+whole launches with the simulator (`tsr-selftest` with its in-process simulator shadow, SW §7.6) and
+replays traces through the `replay` kernel.
+
 `TSR_DEVICE=shadow:<kind>` (kind = `xrt`, `mock`, `vkernel` or another registered kind; the full
 `TSR_DEVICE` set is `sim | xrt | mock | <registered kind> | shadow:<kind>`):
 
@@ -456,6 +492,9 @@ card: that opening the compute unit in a new process does not disturb it.
   32B a few tokens are the practical limit.
 
 ### 4.6 Devices without the debug block
+
+**Superseded (2026-10-30, W0 of `docs/v2/README.md`).** Prefix runs and halt emulation need command
+buffers and are deleted. v2 bisects with tile stop points at push indices (DB §5).
 
 `DBG_ID` = 0: bitstreams before PD2, or `HAS_DBG` = 0. Existing CSRs and runs answer most of the
 same questions; the tools always say that they run in this mode.
@@ -476,6 +515,9 @@ same questions; the tools always say that they run in this mode.
   timing (prefetch, DRAM page state).
 
 ### 4.7 Divergence finder (`tsr-dbg diverge <trace>`)
+
+**Superseded (2026-10-30, W0 of `docs/v2/README.md`).** Replaced by DB §9.4 (`tsr-dbg diverge`),
+which bisects by push index with tile stop points and compares against the simulator.
 
 1. Run the simulator to the end: instruction count n and the write set W_i of every retired
    instruction (from the instruction hook).
@@ -541,6 +583,10 @@ With all of them unset the backend touches no debug CSR.
 
 ### 5.1 Exec record and PERF deltas
 
+**Superseded (2026-10-30, W0 of `docs/v2/README.md`).** v2 records launches, not execs: one answer
+record per launch with its DURATION (EX §4.4), PERF gated by ACTIVE so that the difference of two
+reads is one launch (EX §6), and TSR_STATS v2 (DB §8.6).
+
 Code: the recorder library `sw/prof/` (`libtsr_prof`, C++ without dependencies: exec-record
 ring, host events, streaming JSON and Chrome-trace writers), linked by the transport and the
 backend. The program map is built in `sw/ggml-tesseract` (§4.3) and written by the recorder.
@@ -592,6 +638,10 @@ measured with the profiler off; breakdowns come from a separate run.
   the instruction hook instead.
 
 ### 5.4 Per-instruction attribution
+
+**Superseded (2026-10-30, W0 of `docs/v2/README.md`).** `split` attribution and instruction-index
+modes are deleted. v2 attributes time to ops through the trace writer's records and NODE markers (DB
+§8.3–§8.4).
 
 | Mode | Devices | Value | Perturbation |
 |---|---|---|---|
@@ -731,6 +781,10 @@ With `TSR_PROF` unset every hook is a NULL check.
 
 ### 5.11 The out-of-order decision (spec 미결정 사항)
 
+**Superseded (2026-10-30, W0 of `docs/v2/README.md`).** Moot in v2: there is no command-buffer path.
+The RISC-V issues asynchronously to per-unit queues (D3), and `MVM_WAIT` / `MVM_EMPTY` (EX §6) split
+the MVM idle time into dependency-bound and issue-bound shares.
+
 Measured on M4 32B Q4_K_M decode `tsr-prof` records, with the conditions stated:
 
 | G × D | Decision |
@@ -747,6 +801,10 @@ weight beats per channel per layer against ≈ 14 K non-MVM cycles per layer).
 ---
 
 ## 6. Conditional RTL instrumentation
+
+**Superseded (2026-10-30, W0 of `docs/v2/README.md`).** The extension counters are now EX §6's PERF
+slot table (`PERF_INFO` at 0x080, slots X + 0 onwards, DB's slots 61–63). The trace ring `TRC_*`
+(§6.3) is deleted; DB's hardware trace writer (DB §8.3) is the timeline source.
 
 Added only when its criterion is met by a measurement; the RTL contract document of that
 milestone records the measurement. Everything here only observes, outside the bit-exact

@@ -55,6 +55,13 @@ the k4 link stays at or above the current 276 MHz"; first models Qwen2.5 and Gem
 in the VU). The sections of this document that describe the command-buffer path are rewritten in
 the M6 design.
 
+**v2 (2026-10-30).** The M6 design is `docs/v2/` (integrated, not implemented). Its CC area
+(`docs/v2/04-control-core.md`) rewrites the RTL parts of this document (§2–§7, §9.3, §11–§12) and
+wins where the two disagree; EX (`docs/v2/01-execution-model.md`) and DB (`docs/v2/05-debug.md`)
+replace the host-facing parts. §3.3–3.4, §6, §8.3–8.4 and §10 are marked historical below: their
+text is kept for the record and is not a contract. Source-of-truth order from now on:
+`docs/spec.md` > ISA simulator > `docs/v2/*` > this document.
+
 This replaces the M8/M9 scalar ISA growth (MULI, RLD, LOOP, WAITM, JUMP); the M8 and M9 pass
 criteria (M8: the host writes only 2 arguments per token; M9: the host only polls a ring buffer)
 stay. Everything below that is not D1–D13 was a proposal; what the spec section "제어 코어"
@@ -325,6 +332,14 @@ load or store); every region's size beyond its parameter is unmapped.
 
 ### 3.3 Host view: core CSRs
 
+**Historical (2026-10-30, W0 of `docs/v2/README.md`).** Superseded by EX §5
+(`docs/v2/01-execution-model.md`), the only host CSR map of v2: the `CTL_*` block at 0xB00 is
+dissolved (its registers moved to `CTL_ID` 0x01C, `RV_BOOT` 0x028, `RV_FREQ` 0x02C, `RV_CFG` 0x030,
+`CTRL` / `STATUS` 0x020 / 0x024, the loader at 0x0C0–0x0D4), `CTL_PERF` is merged into the PERF
+space gated by ACTIVE (EX §6), the H2R / R2H mailbox is replaced by the launch queue and completion
+ring (EX §4), `CTL_DONE_SEQ` / `CTL_ISSUED_SEQ` by `Q_*` (EX §5.4), and there is no `HAS_CTRL`. CC
+§6 maps the control core's hardware onto EX's offsets.
+
 All through the existing CSR port (U200: `s_axi_control` 0x1000 + offset). With `HAS_CTRL = 0`
 every offset below reads 0 and ignores writes.
 
@@ -366,6 +381,11 @@ every offset below reads 0 and ignores writes.
   working.
 
 ### 3.4 Loading the image
+
+**Historical (2026-10-30, W0 of `docs/v2/README.md`).** Superseded by EX §3: a CSR loader
+(`LOAD_ADDR`, `LOAD_DATA`, `LOAD_CRC`) with a receive CRC plus an on-device VERIFY read-back
+(`LOAD_COUNT`, `LOAD_CTRL`), a 64-bit image id in `.tsr_id` echoed in HELLO, boot at `RV_BOOT` +
+0x80, and a warm restart (`SOFT_RESET`, reload DTCM, VERIFY ITCM). The host sequence is CC §6.4.
 
 1. After a hardware reset RV_RUN = 0 (the RISC-V is held in reset; TCM contents are undefined).
 2. For each ELF `PT_LOAD` segment: write `CTL_LOAD_ADDR` = its physical address, then its words to
@@ -849,6 +869,12 @@ duty is the share of that duration the op needs on an SPM port.
 
 ## 6. Coexistence with the command-buffer path
 
+**Historical (2026-10-30, W0 of `docs/v2/README.md`).** Superseded: v2 has no command-buffer path
+(D14), so nothing coexists. There is no `CALL`, no CMD unit (unit 4 is reserved for a future
+attention engine and absent in M6), no exclusivity or drain rule, no `START_WAIT` / `LAST_RUN_CALL`
+/ `CALL_BUSY`, and no alternation between execs and launches. The host only launches kernels (EX
+§2–§4); X0 deletes the v1 path (EX §12); CC §1 lists what replaces each item.
+
 | | A: mode bit (host chooses the issuer) | B: `CALL` op, cmdproc as a queued unit (**proposed**) |
 |---|---|---|
 | Hardware | a mux at each unit's dispatch port: cmdproc or the queues own the units; `CTL_CTRL.MODE` | cmdproc becomes unit 4 (CMD); an exclusivity interlock with the queue heads |
@@ -1159,6 +1185,12 @@ between the check and the push.
 
 ### 8.3 Runtime, image format, launch protocol, kernel ABI
 
+**Historical (2026-10-30, W0 of `docs/v2/README.md`).** Superseded by EX §3 (image format and image
+id) and EX §4 (launch queue LQ, completion ring LCQ, 8-word descriptor with 7 arguments, answer
+records with a launch STATUS, the runtime contract R1–R10, cancel and stop watermarks, the log
+ring), with the SDK side in SW §6 (`docs/v2/06-software-verification.md`) and the trap, panic and
+log-record contract in DB §6. The mailbox protocol below is withdrawn (V2-SW-10).
+
 - **Linker script**: `.vectors` at ITCM 0 (`CTL_BOOT` = 0); `.text` in ITCM; `.rodata`, `.data`,
   `.bss` and the stack (8 KiB default, top of DTCM) in DTCM. `.rodata` and `.data` are loaded by the
   host directly into DTCM, so crt0 copies nothing.
@@ -1195,6 +1227,10 @@ between the check and the push.
   counts.
 
 ### 8.4 Host API (`tsr_transport`)
+
+**Historical (2026-10-30, W0 of `docs/v2/README.md`).** Superseded by EX §10 (the transport API v2:
+boot, launch, wait, call, cancel, stop, soft reset, log drain over one protocol layer for sim, mock,
+vkernel and xrt); SW §9.1 adds conveniences only. `tsr_transport_exec` is deleted in X0.
 
 Proposed C additions (to `tsr_transport.h` after its owner agrees; they use PD1's
 `tsr_transport_csr_write`):
@@ -1439,6 +1475,13 @@ logging that the comparison excludes.
 ---
 
 ## 10. Debug and profiling
+
+**Historical (2026-10-30, W0 of `docs/v2/README.md`).** Superseded by DB (`docs/v2/05-debug.md`):
+GDB talks RSP to a server built into the device-owning process (or `tsr-dbg`) that drives the debug
+module's DMI directly through the CSR window (no OpenOCD, no software TAP), the debugger reaches
+memory through the connected SBA, tile-level debug adds stop points, serial mode, tile breakpoints,
+a 512-entry dispatch history and unit probes, and the profiler adds a hardware trace writer to a
+DRAM ring (TRW) and TSR_STATS v2. The DBG register block is at core CSR 0x800–0xAFC (DB §10.1).
 
 ### 10.1 RISC-V debug
 

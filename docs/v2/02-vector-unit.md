@@ -626,7 +626,8 @@ EXPK never returns −0 or a subnormal.
 
 **Accuracy (*model*, 259 K samples):**
 - ≤ 0.526 ulp against exact exp(K·v) for every κ (P1 on [−88, 88] and on tiny |v|, N2 on
-  [−44, 44], NG on [−1240, 1240]).
+  [−44, 44], NG on [−1240, 1240]). Exhaustive (all 2³² inputs, §6.9): 0.5261 ulp for P1, N1
+  and N2, 0.5316 ulp for NG.
 - Monotonic on a 285 K-step sweep.
 - In hardware: 11 DSP per core (*estimate*).
 
@@ -658,10 +659,18 @@ contract is bit equality with `tsr_frecip` / `tsr_fsqrt` / `tsr_fdiv`.
   - x′ ≤ −10 → +0;
   - x′ ≥ 10 → x′;
   - otherwise H(GELU(H(x′))), with GELU of §6.5 above evaluated in f32 on the fp16-exact input.
-  The CPU reads `ggml_table_gelu_f16`, whose entries are F16 of libm `tanhf`-based GELU; the two
-  agree except where the f32 values fall on different sides of an fp16 rounding boundary. SW's
-  `ref_math_gelu16` enumerates all 65,536 fp16 inputs and reports the mismatches (target < 1 % of
-  the entries, each ≤ 1 fp16 ulp).
+  The CPU reads `ggml_table_gelu_f16`, whose entries are F16 of `ggml_gelu_f32`:
+  0.5·x·(1 + `tanhf`(u)) in f32 with libm `tanhf` (and, in the pinned `-march=native` build, the
+  FMA contraction of 1 + a·x·x). SW's `ref_math_gelu16` enumerates all 65,536 fp16 inputs and
+  compares with the table. **Target:** mismatches < 1 % of the entries, no sign-of-zero mismatch,
+  and a mismatch above 1 fp16 ulp only where GELU16 is the correctly rounded fp16 value of the
+  exact GELU and the table entry is not. **Measured** (pinned table on the dev host, 2026-10-30):
+  272 of 65,536 entries differ (0.415 %; 0.728 % of the 37,376 inputs in (−10, 10)), 265 by
+  1 fp16 ulp and 7 by 2 ulp (x ≈ −4.73 and −5.137 … −5.156, |y| < 2·10⁻⁶). In all 272 GELU16 is
+  the correctly rounded value and the table entry is not: the residual is the table's own f32
+  error (`tanhf` and the f32 steps; for x ≪ 0, 1 + `tanhf`(u) cancels, which gives the 2-ulp
+  entries), not a rounding-boundary tie between two correct f32 values. A target of "each ≤ 1
+  fp16 ulp" is therefore not reachable without reproducing the CPU's cancellation.
 - **GEGLU16(a, b)** = (DAZ(a) ≤ −10) ? +0 : FM(GELU16(a), b), as `ggml_vec_geglu_f32` (`vec.h:1529-1543`).
 - **EXPSUB(a, x)** = (DAZ(a) = −∞) ? +0 : EXPK(FS(a, x), P1). Masked scores (−∞) become 0 even
   when the row maximum is −∞. That makes an online softmax that starts on a fully masked block
@@ -716,6 +725,7 @@ the biased exponent and M = 2²³ | fraction.
 **Accuracy (*model*, 200 K samples on [−4, 4] and [0, 2¹⁸]):**
 - Absolute error ≤ 7.5·10⁻⁸ = 2⁻²³·⁶⁶.
 - ≤ 1.47 ulp where |y| > 10⁻³.
+- Exhaustive on |θ| ≤ 2¹⁸ (§6.9): absolute 7.82·10⁻⁸ = 2⁻²³·⁶¹, 1.562 ulp where |y| > 10⁻³.
 - For |θ| < 2²⁴ the reduction error is ≤ 2⁻⁴¹ of a quadrant. Larger θ stay deterministic but are
   meaningless for RoPE: ulp(θ) ≥ 2 there.
 
@@ -781,17 +791,23 @@ The rotation is ggml's `rotate_pairs` (`ops.cpp:6375-6391`) without FMA contract
   (`sw/sim/tsr_ref.c:369`; ggml-exact for finite scales, `docs/spec.md:472`, `:1028`). Tails
   follow §4.2.
 
-### 6.9 Accuracy (*model*) and differences from the ggml CPU backend
+### 6.9 Accuracy and differences from the ggml CPU backend
 
-| Function | Max error (*model*; exhaustive figures replace these, §10) |
-|---|---|
-| EXPK (all κ) | ≤ 0.53 ulp |
-| RC, SQ, FD, RECIP, RSQRT steps | ≤ 0.5 ulp each (correctly rounded) |
-| SIG | ≤ 2.0 ulp |
-| SILU | ≤ 2.3 ulp |
-| GELU | ≤ 11 ulp for x ≥ −3; ≤ 29 ulp for x ≥ −5; absolute ≤ 5.2·10⁻⁷ on [−8, 8] |
-| TANH | ≤ 9.8 ulp; absolute ≤ 1.2·10⁻⁷ (the n = 2 − d variant would give 26 ulp, hence 1 − e) |
-| SIN, COS | absolute ≤ 2⁻²³·⁶⁶; ≤ 1.5 ulp where \|y\| > 10⁻³ |
+The *model* figures came from samples; the measured column is the exhaustive maximum over all 2³²
+inputs (`ref_math_acc --full`, against double libm, 2026-10-30; §10 item 2). ulp(r) is taken at
+max(⌊log₂|r|⌋, −126), and results whose exact value is below 2⁻¹²⁶ (the FTZ region) are not
+measured. Every measured maximum is within the 2× gate of §10 item 2, so the coefficients stand.
+
+| Function | *Model* figure (the §10 gate is 2×) | Measured, all 2³² inputs |
+|---|---|---|
+| EXPK P1, N1, N2 | ≤ 0.53 ulp | 0.5261 ulp |
+| EXPK NG | ≤ 0.53 ulp | 0.5316 ulp (worst at v = 1010.27, a result near 5·10⁻³²) |
+| RC, SQ, FD, RECIP, RSQRT steps | ≤ 0.5 ulp each (correctly rounded) | — (exact by definition, §6.4) |
+| SIG | ≤ 2.0 ulp | 2.463 ulp (x ≈ −16.64) |
+| SILU | ≤ 2.3 ulp | 2.868 ulp where σ(x) ≥ 2⁻¹²⁶ (x ≈ −16.68); below that SIG flushes to 0 and SILU returns −0 |
+| GELU | ≤ 11 ulp for x ≥ −3; ≤ 29 ulp for x ≥ −5; absolute ≤ 5.2·10⁻⁷ on [−8, 8] | 13.12 ulp for x ≥ −3; 31.33 ulp for x ≥ −5; absolute 5.16·10⁻⁷ on [−8, 8] |
+| TANH | ≤ 9.8 ulp; absolute ≤ 1.2·10⁻⁷ (the n = 2 − d variant would give 26 ulp, hence 1 − e) | 16.77 ulp (x = 0x3C80003F, just above the 2⁻⁶ switch to 1 − e, where 1 − e cancels); absolute 1.191·10⁻⁷ |
+| SIN, COS | absolute ≤ 2⁻²³·⁶⁶; ≤ 1.5 ulp where \|y\| > 10⁻³ | on \|θ\| ≤ 2¹⁸: absolute 7.80·10⁻⁸ (SIN) and 7.82·10⁻⁸ (COS) = 2⁻²³·⁶¹; 1.562 ulp where \|y\| > 10⁻³ |
 
 GELU's relative error grows in the far negative tail by about 1.5·|2u| ulp. There the result is
 below 10⁻¹⁰ in magnitude.
@@ -1365,8 +1381,10 @@ The simulator is the oracle; every VU op has a C reference, and the RTL must mat
 
 1. Exhaustive measurements replace the *model* accuracy figures of §6.9 (EXP ≤ 0.53 ulp, SIGMOID
    2.0, SILU 2.3, GELU 11 ulp for x ≥ −3, TANH 9.8 ulp, SIN / COS ≤ 2⁻²³·⁶⁶ absolute) before the M6
-   RTL freeze; gate: measured ≤ 2 × model.
-2. The `ref_math_gelu16` mismatch rate and the Gemma 4 12B KL gap (V2-VU-26).
+   RTL freeze; gate: measured ≤ 2 × model. *Done in W0 (2026-10-30):* every figure measured over
+   all 2³² inputs and within the gate (§6.9).
+2. The `ref_math_gelu16` mismatch rate (*measured in W0:* 0.415 %, GELU16 correctly rounded in
+   every mismatch, §6.5) and the Gemma 4 12B KL gap (V2-VU-26, open).
 3. Gemma 4 31B dimensions from a GGUF, when one is available (12B is confirmed, §3).
 4. The out-of-context `tsr_vu` utilisation, which fixes the knob setting against CC's gate.
 

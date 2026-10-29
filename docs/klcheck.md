@@ -13,7 +13,8 @@ validation and the script itself were read for this):
 
 1. **Device run.** Greedy-generate G tokens per prompt with all layers and the output head on the
    Tesseract device (`-ngl 99`, `TSR_DEVICE=sim`), KV cache and attention on the host
-   (`offload_kqv = false`, i.e. `-nkvo`). The prompt is decoded in one batch (prefill), then one
+   (`offload_kqv = false`, i.e. `-nkvo`; v1 and M6. From M7 the KV cache and attention are on the
+   device, see the settings below). The prompt is decoded in one batch (prefill), then one
    token per decode. The full logits are recorded at the last `--prompt-tail` prompt positions and
    at every generated position except the last. Row r is the output at token index `row0 + r` and
    predicts token `row0 + r + 1`. With the default `--prompt-tail 1` that gives G rows per prompt,
@@ -65,10 +66,19 @@ through later layers, which is why the floor is not tiny.
 
 ### Settings fixed in every phase
 
+**v2 (2026-10-30).** From M6 on, every device run and every CPU reference and floor run uses flash
+attention on, a q8_0 K and V cache and llama.cpp's Hadamard KV rotation off (D17, V2-SW-22,
+`docs/v2/06-software-verification.md` §10.4, `docs/v2/03-attention-kv.md` §14). The KV cache and
+attention stay on the host in M6 (`offload_kqv` = false) and move to the device in M7
+(`offload_kqv` = true). The tool takes these settings in W3 (P3.3); until then it has the v1 values
+(the "v1" parts of the rows below), and every result in this document was measured with them. The
+v1 baselines are not comparable with v2 ones; new baselines are taken with the v2 settings.
+
 | Setting | Value | Why |
 | --- | --- | --- |
-| Flash attention | off (`--fa off`; recorded in the file) | `auto` resolves to *off* on the device run (layer on Tesseract0, FA on CPU) and *on* on a CPU-only run, which would compare two attention kernels |
-| KV cache | f16, on the host (`offload_kqv=false`) | v1 constraint (`docs/llama-pin.md`) |
+| Flash attention | **v2: on** (`-fa on`), recorded in the file. v1: off (`--fa off`) | v2: the pinned llama.cpp refuses a quantized V cache without FA (`src/llama-context.cpp:566-569`), and the device's attention is `FLASH_ATTN_EXT` only (D17); the device, CPU and floor runs use the same FA setting. v1: `auto` resolves to *off* on the device run (layer on Tesseract0, FA on CPU) and *on* on a CPU-only run, which would compare two attention kernels |
+| KV cache | **v2: q8_0 for K and V** (`-ctk q8_0 -ctv q8_0`) in every run; on the host in M6 (`offload_kqv=false`), on the device in M7 (`offload_kqv=true`). v1: f16, on the host (`offload_kqv=false`) | v2: D17; fixing the KV type already in M6 keeps the baselines constant from M6 to M7, so the M7 delta measures the device attention only. v1: v1 constraint (`docs/llama-pin.md`) |
+| Hadamard KV rotation | **v2: off** (`LLAMA_ATTN_ROT_DISABLE=1`, set by the tool for every phase). v1: not applicable (f16 cache) | With a quantized cache llama.cpp rotates Q, K and V by an F32 graph-input matrix that the MVM cannot use, which would split attention into CPU islands (V2-SW-16, V2-AT-17); the CPU reference uses the same setting, so the comparison stays fair |
 | CPU weight repack (`use_extra_bufts`) | off (`--repack` turns it on) | repacking copies the weights into anonymous memory; 32B Q4_K_M (19 GB) does not fit in 14 GB RAM, while mmap'd weights can be evicted |
 | Device selection | `--device sim\|xrt`: `TSR_DEVICE` = that value, `devices = {Tesseract0}`, `n_gpu_layers = 999`. `--device cpu`: `TSR_DEVICE=none`, `devices = {}` | the device phase checks that a Tesseract device is registered; a CPU phase never opens a transport |
 | Threads | `-t` (default: online CPUs / 2) | the simulator uses `TSR_SIM_THREADS` (default min(CPUs, 8)) |

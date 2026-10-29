@@ -2,6 +2,8 @@
 
 Oct 22, 2026 · @Jiwoo KIm
 
+**v2 편집 (2026-10-30, W0)**: v2 설계(`docs/v2/`, 결정 D14\~D18)에 따라 실행 모델과 제어 인터페이스, ISA 표, 벡터 유닛, 코어 경계, DRAM 맵, 메모리 모델 규칙 5, 트레이스 형식, 백엔드의 전송 계층과 attention, 미결정 사항을 고쳤고 "명령 버퍼 경로와의 공존" 절을 지웠다 (`docs/v2/README.md` §11). 고친 절은 규범적 요약이며, 표와 세부 규칙의 규범적 정의는 각 절이 가리키는 `docs/v2` 절이고 이 문서에 참조로 포함된다 (표마다 정의는 한 곳, `docs/v2/README.md` §4). 호스트 명령 버퍼 실행 경로(호스트 START, `CMD_*`·`ARG*`, `tsr_cmdproc`, `tsr_fetch`, R0\~R15, LI·ADDI·END, CALL)는 v2에 없다 (D14). 아직 다시 쓰지 않은 절에 남은 이 경로의 문구는 v1(태그 `v1-m4`)의 기록이며, 그 문구가 `docs/v2`와 어긋나면 `docs/v2`를 따른다.
+
 ## 개요
 
 Tesseract는 llama.cpp가 넘기는 ggml 그래프를 자체 명령어 스트림으로 바꿔 실행하는 오픈소스 LLM 추론 NPU 코어로, 바닥부터 직접 설계한다. 지금은 FPGA(Alveo U200)에 오버레이로 구현한다. v1 목표는 Alveo U200에서 32B Q4\_K\_M GGUF 모델을 변환 없이 llama.cpp로 끝까지 돌리는 것이고, 장기 목표는 MoE 지원과 호스트가 거의 끼어들지 않는 디바이스 상주 디코드다.
@@ -38,9 +40,10 @@ Tesseract는 llama.cpp가 넘기는 ggml 그래프를 자체 명령어 스트림
 | QA | 양자화 활성값. int8 데이터 + 스케일 + bsums |
 | N, K | 가중치 행렬 W의 행 수(출력 차원), 열 수(입력 차원) |
 | T | MVM 한 번이 처리하는 토큰(활성값 벡터) 수 |
-| R0\~R15 | 명령 버퍼 경로의 정수 레지스터 (int32, R0은 항상 0). 주소와 인자 |
-| s0\~s15 | f32 스칼라 레지스터. 리덕션 결과와 상수. 제어 코어 발행 경로는 따로 한 벌을 쓴다 (M8, "제어 코어" 절) |
-| 제어 코어 | 코어 안의 RISC-V 프로세서 (M8). 타일 명령어를 비동기로 발행한다 ("제어 코어" 절) |
+| R0\~R15 | (v1, v2에서 삭제, D14) 명령 버퍼 경로의 정수 레지스터. v2의 주소 필드는 즉시값이다 |
+| s0\~s15 | f32 스칼라 레지스터 한 벌. 리덕션 결과와 상수. VU 연산만 쓰고, 제어 코어와 호스트는 `SREG0`\~`15`(코어 CSR 0x9C0)로 읽기만 한다 ("벡터 유닛과 스칼라 레지스터") |
+| 제어 코어 | 코어 안의 RISC-V 프로세서 (v2, M6). 모든 타일 명령어를 비동기로 발행한다 ("제어 코어" 절, `docs/v2/04-control-core.md`) |
+| LAUNCH | 호스트가 제어 코어의 커널 하나를 실행시키는 단위. 디스크립터 8워드를 launch 큐(LQ)에 넣고 완료 링(LCQ)에서 답 기록을 받는다 ("실행 모델과 제어 인터페이스") |
 | 티켓 | 발행한 타일 명령어 하나의 번호 {유닛, 순번}. 완료 확인과 의존성에 쓴다 |
 | 발행 큐 | 유닛마다 하나인, 제어 코어가 발행한 명령어의 순서 큐 |
 | 단계 A·B·C | 호스트 독립의 세 단계 ("호스트 독립 로드맵" 절) |
@@ -51,35 +54,38 @@ Tesseract는 llama.cpp가 넘기는 ggml 그래프를 자체 명령어 스트림
 
 | 계층 | 구성 요소 | 타깃 의존성 |
 | --- | --- | --- |
-| 소프트웨어 | `ggml-tesseract` 백엔드, 가중치 리패커, 그래프 lowering, ISA 시뮬레이터, 전송 계층 | 전송 계층만 (XRT, Zynq AXI, SoC 드라이버) |
-| 코어 | 커맨드 프로세서(정수 레지스터 R0\~R15 포함), MVM 클러스터 × C, 벡터 유닛, f32 스칼라 유닛, SPM, DMA, 제어 코어(RISC-V, ITCM·DTCM, 발행 큐; M8) | 파라미터만 |
+| 소프트웨어 | `ggml-tesseract` 백엔드, 가중치 리패커, op 목록(OPL) 빌더, ISA 시뮬레이터, 제어 코어 펌웨어 SDK와 커널, 전송 계층 | 전송 계층만 (XRT, Zynq AXI, SoC 드라이버) |
+| 코어 | 제어 코어(RISC-V, ITCM·DTCM, 디버그 모듈)와 발행 경로(검사기, 분배기, 유닛별 큐), MVM 클러스터 × C, 벡터 유닛(s0\~s15 포함), SPM, DMA, 디버그 블록 (v2. v1의 커맨드 프로세서와 R0\~R15는 없다) | 파라미터만 |
 | 기술 래퍼 | `tsr_sram_*`, `tsr_mac_lane`, 클럭·리셋, CDC 동기화기, 제어 코어용 클럭 게이트·리셋 동기화기(분주기는 필요한 타깃만) | 타깃별 구현 |
 | 플랫폼 어댑터 | 제어 레지스터 브리지, 메모리 포트 → AXI4 등 변환 | 타깃별 구현 |
 
 **U200 구성: 가중치 스트림은 채널마다 독립된 클러스터로만 흐른다** (그림 `docs/fig/u200-system.jpg`)
 
-- 호스트 (llama.cpp + ggml-tesseract): 그래프 → 명령 버퍼 lowering, 가중치 리패킹, 전송 계층(XRT 또는 시뮬레이터). PCIe로 명령 버퍼, 가중치, 활성값을 보낸다.
-- 플랫폼 어댑터 (Alveo XRT): 제어 브리지(`s_axi_control` ↔ CSR, `done` → `ap_done`), 채널별 AXI4 메모리 브리지. 코어와는 CSR 포트와 `done`으로 이어진다.
-- 코어 (벤더 독립 SystemVerilog): 커맨드 프로세서(명령어 fetch·decode, 순차 실행, R0\~R15), SPM(활성값·중간값·QA, line 64B 단위, 4 MiB), 벡터·스칼라 유닛(원소 연산, 리덕션, RoPE, VL 16, s0\~s15), 클러스터 0\~3(스트림·언팩, MAC 128, fp 누산). SPM과 클러스터 사이는 x 브로드캐스트·y 수집 버스다.
-- 제어 코어 (M8): RISC-V(Ibex), ITCM·DTCM, 발행 큐, SPM 창. 별도 클럭(`ap_clk_2`에서 얻음)이며 SLR1에 둔다 ("제어 코어" 절).
-- DDR4 ch0\~ch3: 클러스터 c는 채널 c에서만 가중치 스트림을 받는다(채널당 최대 19.2 GB/s = 300 MHz × 64B, AXI4 메모리 브리지 경유). ch0은 가중치 행 1/4과 CMD·IO, ch1\~ch3은 가중치 행 1/4씩이다.
+- 호스트 (llama.cpp + ggml-tesseract): 그래프 → op 목록(OPL), 가중치 리패킹, 펌웨어 이미지 적재와 LAUNCH, 전송 계층(XRT 또는 시뮬레이터). PCIe로 op 목록, 가중치, 활성값을 보낸다. (v1은 그래프를 명령 버퍼로 lowering해 보냈다.)
+- 플랫폼 어댑터 (Alveo XRT): 제어 브리지(`s_axi_control` ↔ CSR, v2는 `ap_ctrl_none`과 `ADAPTER_CTRL.MEM_EN`), 채널별 AXI4 메모리 브리지. 코어와는 CSR 포트와 플랫폼 오류 입력 `plat_err_i`로 이어진다 ("코어 경계 인터페이스").
+- 코어 (벤더 독립 SystemVerilog): 발행 경로(검사기, 분배기, 유닛별 큐), SPM(활성값·중간값·QA, line 64B 단위, 4 MiB, v2는 짝·홀 line 뱅크로 읽기 경로 둘), 벡터 유닛(원소 연산, 리덕션, RoPE, AT의 softmax 단계, VL 16, s0\~s15), 클러스터 0\~3(스트림·언팩, MAC 128, fp 누산, v2는 attention 모드 ATTQK·ATTPV). SPM과 클러스터 사이는 x 브로드캐스트·y 수집 버스다.
+- 제어 코어 (v2, M6): RISC-V(Ibex RV32IMC), ITCM 128 KiB·DTCM 64 KiB, 발행 포트, SPM 창, 디버그 모듈. 별도 클럭 `clk_rv`(`ap_clk_2`에서 얻음)이며 SLR1에 둔다 ("제어 코어" 절, `docs/v2/04-control-core.md`).
+- DDR4 ch0\~ch3: 클러스터 c는 채널 c에서만 가중치 스트림을 받는다(채널당 최대 19.2 GB/s = 300 MHz × 64B, AXI4 메모리 브리지 경유). ch0은 가중치 행 1/4과 OPL·IO, ch1\~ch3은 가중치 행 1/4씩이다.
 
 무거운 가중치 트래픽은 각 채널과 그 채널의 클러스터 사이에서만 오간다. U200 플랫폼은 DDR 채널을 SLR0(ch0), SLR1(ch1·ch2), SLR2(ch3)에 둔다(`platforminfo`, 2026-10-23). 처음 계획은 클러스터를 자기 채널의 SLR에 두어 가중치가 SLR을 넘지 않게 하는 것이었지만, T\_MAX 8 클러스터 둘은 SLR1의 동적 영역에 들어가지 않는다(클러스터 둘만으로 DSP 1,348개, QACT까지 1,380개가 필요한데 1,320개뿐이고, RAMB36도 420개 중 408개를 쓴다). 그래서 U200 배치는 floorplan C'이다(M3 C단계, `docs/rtl-m3.md` §14): 클러스터 0·2는 SLR0, 1·3은 SLR2, 나머지 코어(커맨드 프로세서, CSR, SPM, DMA, QACT, 채널별 중재기, 수집 중앙부)는 SLR1에 둔다. SLR을 넘는 신호는 모두 레지스터 파이프다: 클러스터마다 활성값 브로드캐스트, 가중치 요청·응답, 결과 수집 작업·시작 파이프와 리셋 사본, 그리고 채널 0·3의 AXI 슬라이스. 가중치 응답 파이프는 backpressure 없이 beat를 사이클마다 하나씩 그대로 옮기므로 SLR을 넘어도 채널 대역폭은 줄지 않는다. 중앙 DMA와 중재기는 같은 SLR에 있어 LD/ST 데이터는 코어 안에서 SLR을 넘지 않는다.
 
-**코어 경계 인터페이스**
+**코어 경계 인터페이스** (v2, 규범적 정의는 `docs/v2/01-execution-model.md` §9.3)
 
-코어는 AXI를 직접 쓰지 않는다. 아래 세 가지만 밖으로 낸다 (제어 코어가 있으면 그 클럭 입력이 더해진다).
+코어는 AXI를 직접 쓰지 않는다. 밖으로 내는 것은 아래뿐이다.
 
-- **CSR 포트**: 32비트 레지스터 읽기·쓰기 (`addr`, `wdata`, `we`, `rdata`, `valid/ready`). 어댑터가 `s_axi_control` 등으로 변환한다.
+- **CSR 포트**: 32비트 레지스터 읽기·쓰기 (`addr`, `wdata`, `we`, `rdata`, `valid/ready`). 어댑터가 `s_axi_control` 등으로 변환한다. 이미지 적재, LAUNCH, 디버그 접근은 모두 이 포트를 거친다.
 - **메모리 포트 × C**: 채널마다 1개. 읽기 요청 `{addr_beat, len_beats, id}`, 읽기 응답 `{data[511:0], id, last}`, 쓰기 요청·데이터·응답 채널. 모두 valid/ready.
-- **완료 신호**: `done` 레벨 출력. 어댑터가 `ap_done`이나 인터럽트로 변환한다.
-- **제어 코어 클럭** (M8, 제어 코어가 있을 때): `clk_rv`, `rst_rv_n` 입력. 코어 클럭과 비동기로 본다. `rst_rv_n`은 Ibex·디버그 모듈 리셋에만 더하고 CDC 끝점에는 쓰지 않는다 ("제어 코어" 절의 "클럭 도메인"). 제어 코어의 이미지 적재, 메일박스, 디버그 접근은 모두 CSR 포트를 거치므로 다른 경계 신호는 늘지 않는다.
+- **제어 코어 클럭**: `clk_rv`, `rst_rv_n` 입력. 코어 클럭과 비동기로 본다. `rst_rv_n`은 Ibex·디버그 모듈 리셋에만 더하고 CDC 끝점에는 쓰지 않는다 ("제어 코어" 절의 "클럭 도메인", `docs/v2/04-control-core.md` §11\~§12).
+- **플랫폼 오류 입력** `plat_err_i`: 플랫폼이 낸 오류 레벨 (U200: `ADAPTER_STATUS` bit0\~2 또는 오류 수 ≠ 0). `STATUS.PLAT_ERR`와 제어 코어의 `LQ_FLAGS`에 보이고, 그때 답한 LAUNCH의 결과는 PLAT\_ERR다. 어댑터가 없는 타깃은 0에 묶는다.
+- **호스트 인터럽트** `host_irq_o` = `CTRL.IRQ_EN` ∧ (LCQ\_WR ≠ LCQ\_RD): 호스트 인터럽트가 있는 포트(Zynq 등)용이다. U200은 연결하지 않고 폴링한다.
+
+v1의 완료 신호 `done`(레벨 출력, 어댑터가 `ap_done`으로 변환)은 없앴다 (D14).
 
 메모리 포트 규칙:
 
 - 주소 단위는 beat(64B). 코어는 4KB 경계를 넘는 버스트를 내지 않는다 (최대 64 beat, 4KB 정렬 내).
 - 읽기 응답은 같은 `id` 안에서만 순서 보장. 코어는 채널당 최대 `RD_OUTSTANDING`개 요청을 미처리 상태로 둘 수 있다.
-- 채널 포트 하나를 클러스터 가중치 스트림과 DMA가 공유하며, 코어 내부 중재기가 나눈다. 명령어 fetch는 채널 0 포트를 쓴다.
+- 채널 포트 하나를 클러스터 가중치 스트림과 DMA가 공유하며, 코어 내부 중재기가 나눈다 (v2: 채널 0에는 디버그 블록의 트레이스 기록기가 쓰기 소스로 더해진다). v2에는 명령어 fetch가 없다: 메모리 소스 0(FETCH)은 묶어 두고 소스 번호는 바꾸지 않는다 (EX §11).
 
 ## 구성 파라미터
 
@@ -95,19 +101,19 @@ Tesseract는 llama.cpp가 넘기는 ggml 그래프를 자체 명령어 스트림
 | `K_MAX` | 지원 최대 K | 32768 |
 | `SPM_BYTES` | 스크래치패드 크기 | 4 MiB |
 | `VL` | 벡터 유닛 fp32 레인 수 | 16 |
-| `NIREG` | 정수 레지스터 수 (R0 = 0 고정) | 16 |
+| `NIREG` | (폐기, v2) 정수 레지스터 수. R0\~R15가 없다 (D14) | – |
 | `NSREG` | f32 스칼라 레지스터 수 | 16 |
 | `LOOP_DEPTH` | (폐기, M8 계획 개정 2026-10-24) LOOP 중첩 깊이. LOOP가 없어져 쓰지 않는다 | – |
 | `RD_OUTSTANDING` | 채널당 미처리 읽기 요청 수 | 16 |
 | `CH_BYTES` | 채널당 DRAM 용량 | 16 GiB |
 | `ADDR_BEAT_W` | beat 단위 채널 주소 폭 | 28 |
-| `HAS_CTRL` | 제어 코어 유무 | 0 (M8부터 1) |
-| `ITCM_BYTES`, `DTCM_BYTES` | 제어 코어의 명령어·데이터 SRAM 크기 | 64 KiB, 64 KiB (제안) |
-| `Q_DEPTH_*` | 유닛별 발행 큐 깊이 (DMA, QACT, MVM, VU, CMD, SYNC) | 8, 4, 4, 8, 2, 4 (제안) |
-| `ISSUE_FIFO_DEPTH` | 발행 FIFO 깊이 (`ISSUE_CREDIT`이 빈 자리를 함께 보이므로 큐 깊이 합과 무관하다) | 32 (U200 제안), ASIC 8 |
-| `F_RV` | 제어 코어 클럭. 구현이 정하고 `CTL_RV_FREQ`로 잰다 (RTL 파라미터가 아니다) | 계획값 166.7 MHz (Ibex가 맞으면 250 MHz, 대안 125 MHz) |
+| `HAS_CTRL` | (폐기, v2) 제어 코어 유무. v2 코어에는 제어 코어가 언제나 있다 (EX §12) | – |
+| `ITCM_BYTES`, `DTCM_BYTES` | 제어 코어의 명령어·데이터 SRAM 크기 | 128 KiB, 64 KiB (V2-CC-3) |
+| `Q_DEPTH_*` | 유닛별 발행 큐 깊이 (DMA, QACT, MVM, VU, 유닛 4, SYNC) | 8, 4, 4, 16, 0(유닛 4 없음), 4 (`docs/v2/04-control-core.md` §7.4) |
+| `ISSUE_FIFO_DEPTH` | 발행 FIFO 깊이 (`ISSUE_CREDIT`이 빈 자리를 함께 보이므로 큐 깊이 합과 무관하다) | 32 (U200), ASIC 8 |
+| `F_RV` | 제어 코어 클럭. 구현이 정하고 `RV_FREQ`로 잰다 (RTL 파라미터가 아니다) | 계획값 166.7 MHz (Ibex가 맞으면 250 MHz, 대안 125 MHz) |
 
-제어 코어 파라미터는 `CFG_*`에 넣지 않는다. 유무는 `CTL_ID`, TCM 크기는 `CTL_CFG`, 클럭은 `CTL_RV_FREQ`로 읽고, 큐 깊이는 제어 코어 소프트웨어가 `ISSUE_CREDIT`(빈 자리)으로만 본다.
+제어 코어 파라미터는 `CFG_*`에 넣지 않는다 (v2, EX §5.1). 제어 코어 버전과 기능은 `CTL_ID`(0x01C), TCM 크기는 `RV_CFG`(0x030), 클럭은 `RV_FREQ`(0x02C), 유닛별 큐 깊이는 `Q_DEPTH`(0x088)로 읽는다. 제어 코어 소프트웨어는 큐의 빈 자리를 `ISSUE_CREDIT`으로 본다.
 
 `K_MAX`는 Qwen2.5-32B FFN 중간 차원 27648, Llama 70B급 28672를 덮는 값으로 잡았다. 클러스터의 활성값 버퍼는 토큰마다 QA 벡터 하나 전체(QS + D + BS, "양자화 활성값(QA) 레이아웃")를 담으므로 `QA_LINES(A256, K_MAX) × 64 × T_MAX` 바이트가 필요하다. K\_MAX = 32768에서 토큰당 584 line = 37,376 B다 (A32는 576 line = 36,864 B, A256이 더 크다). v0.2.1 정정: 이전 판은 `K_MAX × T_MAX` 바이트(QS만, 32 KiB)라 적어 Dx·BS 자리가 빠졌고, 그 크기로는 K > 28672(A256)·K > 29120(A32)인 MVM의 QA가 들어가지 않는다 (예: Qwen2.5-72B FFN K = 29568, Q8\_0 → A32 520 line = 33,280 B).
 
@@ -115,7 +121,7 @@ Tesseract는 llama.cpp가 넘기는 ggml 그래프를 자체 명령어 스트림
 
 ## 메모리 모델
 
-코어가 보는 주소 공간은 DRAM(채널별)과 SPM 두 개뿐이다. 호스트는 DRAM에만 접근하고 SPM은 직접 보지 못한다. 제어 코어(M8)는 자기 32비트 주소 공간(ITCM, DTCM, 제어 창, SPM 창)을 가지며, SPM은 바이트 단위로 직접 읽고 쓰지만 DRAM은 보지 못한다 ("제어 코어" 절).
+코어가 보는 주소 공간은 DRAM(채널별)과 SPM 두 개뿐이다. 호스트는 DRAM에만 접근하고 SPM은 직접 보지 못한다. 제어 코어(v2)는 자기 32비트 주소 공간(ITCM, DTCM, 제어 창, SPM 창)을 가지며, SPM은 바이트 단위로 직접 읽고 쓰지만 DRAM은 보지 못한다 ("제어 코어" 절).
 
 **DRAM 주소**: `(ch, addr_beat)`. 채널 번호와 그 채널 안의 beat(64B) 단위 오프셋이다.
 
@@ -127,15 +133,13 @@ Tesseract는 llama.cpp가 넘기는 ggml 그래프를 자체 명령어 스트림
 
 **전문가 텐서 (MoE)**: ggml의 3D 전문가 텐서 `[K, N, n_expert]`는 전문가마다 N×K 행렬 하나로 보고, 각 전문가를 위와 같이 4채널에 행 분할한다. 전문가 e는 `W_OFF + e × EXP_STRIDE`에 놓이며, `EXP_STRIDE = R × ROW_BEATS`(채널당 beat)다. 덕분에 전문가 MVM 하나도 4채널 대역폭을 모두 쓰고, 디바이스가 계산한 전문가 번호로 주소를 만들 때 곱셈 한 번이면 된다.
 
-**채널별 DRAM 맵** (모든 채널이 같은 맵을 쓰고, v1에서는 채널 1\~3의 하위 영역은 비워 둔다)
+**채널별 DRAM 맵** (v2. 규범적 정의는 `docs/v2/01-execution-model.md` §11이며 이 문서에 참조로 포함된다. 모든 채널이 같은 맵을 쓴다)
 
-| 영역 | 범위 (채널 내) | 용도 |
-| --- | --- | --- |
-| CMD | 0 \~ 64 MiB (ch0) | 명령 버퍼, 더블 버퍼링. M8부터 `CALL`로 부르는 위치 독립 프로그램도 둔다 (상주 디코드 루프는 제어 코어의 TCM에 있다) |
-| IO | 64 \~ 320 MiB (ch0) | 호스트 ↔ 코어 입출력: 활성값, 입력 텐서(토큰 id, 위치, 마스크, KV 인덱스), 출력 토큰 링버퍼. v1 소프트웨어는 아래쪽을 compute 버퍼 창, 맨 위를 스테이징 영역으로 쓴다 ("v1 lowering 제약") |
-| AUX | 320 \~ 512 MiB (ch0) | 작은 F32 텐서: norm 가중치, RoPE 각속도 테이블 |
-| WEIGHT | 512 MiB \~ 끝 (전 채널) | 리패킹된 가중치와 전문가 텐서, 대칭 할당 |
-| KV | 미정 (M7) | 디바이스 KV 캐시. 위치는 미결정 사항 |
+- **OPL** (v1의 CMD), ch0 0\~64 MiB: op 목록(OPL), `replay` 커널의 push 스트림, 커널 인자 블록, 제어 코어 코드 오버레이. 코어는 DRAM에서 명령어를 fetch하지 않는다. (v1: 명령 버퍼, 더블 버퍼링.)
+- **IO**, ch0 64\~320 MiB: 호스트 ↔ 디바이스 텐서(입력 텐서, logits, M9 출력 토큰 링)와 compute 청크. 프로파일 중에는 디버그 블록의 트레이스 기록기 링(TRW, 기본 64 MiB, `TRW_CH` = 0)을 전송 계층이 이 안에 잡는다.
+- **AUX**, ch0 320\~512 MiB: 작은 f32 텐서 (norm 가중치, RoPE freq factor 표).
+- **WEIGHT / 힙**, 512 MiB\~끝, 전 채널: 리패킹된 가중치와 전문가 텐서는 512 MiB부터 위로 대칭 할당한다. KV 평면은 채널 끝에서 아래로 대칭 할당하며(평면 하나 = (레이어, 스트림, K/V) 하나, 레이아웃은 `docs/v2/03-attention-kv.md` §4), 둘 사이는 채널별 compute 힙이다 (크기는 예약 그래프에서 정한다, `docs/v2/06-software-verification.md` §8 R6).
+- **ch1\~3의 하위 512 MiB**: compute 청크와 그 밖의 활성값.
 
 32B Q4\_K\_M(약 20GB)은 채널당 약 5GB, Q8\_0(약 35GB)도 채널당 약 9GB라 여유가 있다.
 
@@ -287,113 +291,69 @@ DSP 패킹은 두 곱이 한 피연산자를 공유해야 한다. beat 하나는
 
 ## 벡터 유닛과 스칼라 레지스터
 
-벡터 유닛(VU)은 SPM의 f32 벡터를 사이클당 `VL`(16) 원소씩 스트리밍 처리하고, 스칼라 유닛은 리덕션 결과와 상수를 다룬다. RMSNorm, SwiGLU, 잔차 덧셈, RoPE를 FPGA로 옮겨 split을 줄이는 것이 목적이며, 마일스톤 M6부터 쓴다. 그 전에는 MVM, QACT, LD/ST만으로 동작한다.
+(v2, 2026-10-30) 이 절은 요약이다. VU의 프로그래밍 모델, 인코딩, 디스패치 검사, 수치(비트 단위 알고리즘과 상수)의 규범적 정의는 `docs/v2/02-vector-unit.md`(VU) §4\~§6과 부록 A이며 이 문서에 참조로 포함된다. AT의 벡터 연산(ASMAX, AMASK, AMERGE, ANORM)은 의미를 `docs/v2/03-attention-kv.md` §5.4\~§5.7이 정하고 VU가 실행한다 (VU §5.11).
 
-**VU 구조**
+벡터 유닛(VU, 유닛 3)은 SPM의 32비트 원소를 사이클당 line 하나(16원소)씩 스트리밍 처리한다 (SILU, GELU, SIGMOID, TANH, RECIP 등은 반 속도, VU §7.4). 하드웨어는 M6에 들어가고, M7부터 RMSNorm, SwiGLU·GEGLU, 잔차, RoPE, attention의 softmax 단계가 디바이스에서 돈다.
 
-- 소스 벡터 최대 2개, 목적지 1개, 길이 n. 소스와 목적지가 같은 주소여도 된다 (원소 단위 in-place).
-- 원소 연산: ADD, SUB, MUL, MAX, 스칼라 곱·덧셈(MULS, ADDS), SILU, SWIGLU, EXP, COPY. 함수 코드는 ISA 절.
-- 리덕션: SUM, SUMSQ, MAX → f32 스칼라 레지스터. 원소 i를 부분합 (i mod 128)에 순서대로 넣고, 128개 부분합을 완전 이진 트리로 합친다. 부분합 수 128은 아키텍처 상수다 (VL = 16일 때 같은 부분합 갱신 간격 8사이클). SUMSQ는 x·x를 따로 반올림한 뒤 더한다.
-- TOPK (M8): 길이 n 벡터에서 가장 큰 k개(k ≤ 16)의 (인덱스, 값)을 SPM에 쓴다. 값 내림차순, 같으면 인덱스 오름차순인 전순서로 정의하므로 구현 방식과 무관하게 결과가 같다. MoE 라우터의 top-k와 greedy 샘플링(k = 1, 어휘 15만 개 이상)에 쓴다.
-- 비교(MAX, TOPK)는 부호-크기 비트 전순서를 쓴다: −inf < … < −0 < +0 < … < +inf < NaN.
-- softmax는 전용 연산 없이 RED.MAX → SOP.MULI(−1) → VOP.ADDS → VOP.EXP → RED.SUM → SOP.RECIP → VOP.MULS로 조합한다.
-- RoPE: 위치 텐서 기반 (아래).
+**프로그래밍 모델** (VU §4)
 
-**스칼라 유닛**
+- **2차원 피연산자**: 연산 하나가 `rows` × `m` 원소를 처리한다. 행은 line 경계에서 시작하고, 피연산자마다 행 간격(line 단위)이 따로 있으며 소스의 간격 0은 같은 벡터를 모든 행에 되풀이한다 (norm 가중치, bias). 행별 스칼라 c는 s 레지스터(`cmode` 1)나 SPM 행 벡터(`cmode` 2)에서 온다. 그래서 연산 하나가 모든 헤드와 토큰을 덮는다. 목적지 행의 마지막 line 꼬리는 0으로 쓴다 ("구현 명확화"의 꼬리 바이트 규칙을 행마다).
+- **연산**: VOP(0x30, 함수 25개: 산술과 MAX·MIN, c와의 곱·덧셈, SILU, SWIGLU, SIGMOID, GELU·GEGLU(tanh 형태), GELU16·GEGLU16(ggml CPU의 fp16 형태), TANH, EXP, EXPSUB, RECIP, COPY, SETC 등), RED(0x31, 행별 SUM·SUMSQ·MAX, 결과는 SPM 행 벡터나 s 레지스터, 후처리 RCP·RMS를 합친다), ROPE(0x32, 토큰 T개와 위치 벡터), TOPK(0x33, 행별 상위 k ≤ 16개, 시뮬레이터 M6·RTL M8), DQROW(0x12, SPM에 LD한 리패킹 행 → f32, 시뮬레이터 M6·RTL M8), SOP(0x40, 스칼라 함수 15개), VMASK(0x38, M9 전에는 `ILLEGAL_OP`).
+- **리덕션**: 행마다 원소 i를 부분합 (i mod 128)에 순서대로 더하고, 128개 부분합을 완전 이진 트리로 합친다 (부분합 수 128은 아키텍처 상수). SUMSQ는 x·x를 따로 반올림한 뒤 더한다. 쓰지 않은(+0) 부분합만으로 된 하위 트리를 건너뛰는 구현은 그 자리에 z(q)(−0 → +0)를 올려 보내야 하며, 그러면 결과가 완전 트리와 비트 단위로 같다. 빈 행은 SUM·SUMSQ가 +0.0, MAX가 −∞다.
+- **비교**(MAX, MIN, TOPK)는 부호-크기 비트 전순서다: −inf < … < −0 < +0 < … < +inf < NaN. MAX는 NaN을 전파하고 MIN은 NaN이 아닌 쪽을 낸다. TOPK는 값 내림차순, 같으면 인덱스 오름차순이다.
+- **스칼라 레지스터** s0\~s15: VU 안의 한 벌(16 × 32비트, D14). RED(TO\_S)와 SOP만 쓰고, 제어 코어와 호스트는 `SREG0`\~`15`(코어 CSR 0x9C0 + 4i, 제어 코어는 코어 창으로)로 읽기만 한다. 하드웨어 리셋 때 +0.0이고 `SOFT_RESET`, 제어 코어 리셋, QABORT, QCLEAR로는 바뀌지 않는다. 커널은 읽는 s 레지스터를 먼저 쓴다 (SOP.MOVI).
+- **순서와 별칭**: VU 연산은 VU 큐 순서대로 앞 연산의 SPM·s 효과를 모두 본다. 소스는 목적지와 정확히 같을 때(같은 시작과 간격)만 겹칠 수 있다 (in-place). 그 밖의 소스·목적지 겹침은 정의되지 않는다.
+- **실행 시간 오류 없음**: 모든 검사는 디스패치 때 한다. 모양 제한 위반은 오류 코드 13 `OPERAND`(`ERR_INFO` = 그 값)다. NaN, Inf, 임의 비트는 오류가 아니라 값이다.
 
-- 레지스터 `s0`..`s15`, 모두 f32, 모두 쓰기 가능. VU 명령어(VOP의 MULS·ADDS, ROPE, SOP)가 스칼라 피연산자로 읽고, RED와 SOP가 쓴다. 제어 코어가 있으면 이 뱅크는 명령 버퍼 경로의 것이고, 제어 코어 발행 경로는 따로 한 벌을 쓴다 (M8, "제어 코어" 절).
-- 연산: 즉시값 적재, 덧셈, 곱셈, SQRT, RECIP. SQRT와 RECIP는 IEEE 정확 반올림으로 정의한다 (스칼라라 비용이 작고, 시뮬레이터에서 `sqrtf`, `1.0f/x`로 바로 일치시킬 수 있음). rsqrt는 SQRT 후 RECIP, 반올림 두 번.
+**수치 (비트 단위 정의, VU §6)**: fp 함수는 이 문서의 fp 규칙(RNE, DAZ + FTZ, canonical NaN)을 따르는 기본 연산 `tsr_fadd`·`tsr_fsub`·`tsr_fmul`·`tsr_fdiv`·`tsr_fsqrt`·`tsr_frecip`과 정수 연산만으로 정의한다. 시뮬레이터, RTL, 카드가 비트 단위로 같아야 하고, 오차 상한은 참고값이다. VU fp 결과는 subnormal이 아니고, NaN은 언제나 0x7FC00000이다. 공용 C 레퍼런스는 `sw/sim/tsr_ref_math.c`(근사 함수)와 `sw/sim/tsr_ref.c`(리덕션, ROPE, TOPK, AT 벡터 연산)이며, 이 문서·VU 본문만 보고 따로 만든 numpy 모델과 단항 함수의 2^32 입력 전수 비교로 검증한다 (`docs/v2/06-software-verification.md` §10.1).
 
-**근사 함수**: EXP, RECIP\_APPROX, SIN, COS는 원소마다 정확 반올림하기엔 비싸므로 근사로 정의한다. 알고리즘(범위 축소, 다항식 계수, 연산 순서)은 공용 C 파일 `sw/sim/tsr_ref_math.c` 하나가 정의하고, RTL은 이와 비트 단위로 일치해야 한다. SiLU(x) = x × RECIP\_APPROX(1 + EXP(−x)), SwiGLU(a, b) = SiLU(a) × b. SIN·COS는 위치 × 각속도로 수만 라디안까지 들어오므로, π/2를 여러 조각의 f32 상수로 나눈 범위 축소를 쓴다.
+- **RECIP\_APPROX는 없앴다.** 모든 역수(VOP.RECIP, RED 후처리, SIGMOID·SILU·GELU·TANH 안의 역수)는 정확 반올림 `tsr_frecip`이다. SQRT, DIV, RSQRT(SQRT 뒤 RECIP, 반올림 두 번)도 정확 반올림 연산으로 만든다.
+- **EXP**: 정수 알고리즘 EXPK(f32 입출력, 2^38 배율의 log2e 고정소수점 상수, 2^(j/64) 표 64항, 3차 Taylor 항, 중간값은 모두 64비트 안). 오차 ≤ 0.53 ulp(모델값). −0과 subnormal을 내지 않는다. EXPSUB(a, x)는 a = −∞이면 x와 무관하게 +0이다.
+- **합성 함수**: SIGMOID(x) = RC(1 + EXPK(−x)), SILU(x) = x × SIGMOID(x), SwiGLU(a, b) = SILU(a) × b. GELU(tanh 형태)는 0.5·(1 + tanh u) = σ(2u)로 계산한다. TANH는 |x| < 2^−6에서 3차식, 그 밖에서 EXPK(−2|x|)로 계산한다.
+- **GELU16·GEGLU16**: llama.cpp 그래프의 GELU·GEGLU는 이것으로 돈다 (V2-SW-31). ggml CPU(`GGML_GELU_FP16`)처럼 ±10에서 자르고 입력과 결과를 binary16으로 반올림한다. tanh 형태 GELU는 M8과 PyTorch용이다.
+- **SIN·COS**: 정확한 64비트 2/π 정수 범위 축소와 Cephes f32 다항식, |θ| < 2^−12에서는 항등 경로. 절대 오차 ≤ 2^−23.66(모델값).
+- **RoPE 각도**: ggml-cpu의 점화식을 그대로 쓴다. θ\_0 = f32(p), θ\_(i+1) = θ\_i × TS (TS = 호스트 libm의 `powf(freq_base, −2/n_dims)`, s 레지스터로 준다), freq factor는 나눗셈, freq\_scale은 곱셈으로 적용한다. 그래서 ext\_factor = 0이면 각도가 CPU와 비트 단위로 같다. YaRN(ext\_factor ≠ 0)만 호스트가 접은 A\_i 표(θ\_i = f32(p) × A\_i)를 쓴다. 회전은 c = M × COS, s = M × SIN으로 ggml `rotate_pairs`를 FMA 없이 따른다. 모드는 NORM(인접 쌍)과 NEOX(앞뒤 절반 쌍)이고, head\_dim은 16의 배수(≤ 1024), n\_dims는 NEOX에서 32의 배수, NORM에서 16의 배수다 (아니면 `OPERAND`).
 
-**RoPE (위치 기반, M6)**: 모델 로드 시 소프트웨어가 회전 쌍 i마다 각속도 A\_i와 모델 상수 M을 계산해 AUX에 둔다. ggml `rope_yarn`의 외삽·보간 혼합과 freq factor는 모두 위치에 선형이라 A\_i 하나로 접히고, attn\_factor와 YaRN mscale은 M으로 접힌다. 토큰마다 디바이스는 SPM의 I32 위치 p를 읽어 θ = f32(p) × A\_i, c = M × COS(θ), s = M × SIN(θ)로 회전한다. 호스트가 토큰마다 테이블을 만들지 않으므로 단계 B·C와 맞는다. 모드는 NORM(인접 쌍)과 NEOX(앞뒤 절반 쌍).
-
-**RMSNorm lowering 예** (길이 5120, eps는 즉시값)
-
-```
-RED.SUMSQ  s1, x, 5120
-SOP.MULI   s1, s1, 1/5120
-SOP.ADDI   s1, s1, eps
-SOP.SQRT   s1, s1
-SOP.RECIP  s1, s1
-VOP.MULS   y, x, s1, 5120
-VOP.MUL    y, y, w_norm, 5120
-```
+**RMSNorm 예** (길이 n, eps): `SOP.MOVI`로 s2 = 1/n, s3 = eps를 한 번 둔 뒤 `RED.SUMSQ`(TO\_S, 후처리 RMS, sk = s2, se = s3) → s1 = RC(SQ(sum·(1/n) + eps)), 그리고 `VOP.MULCB` y = (x × s1) × w. 두 연산이며, 이전 판의 7연산 순서(RED.SUMSQ → SOP.MULI → ADDI → SQRT → RECIP → VOP.MULS → VOP.MUL)와 비트 단위로 같다. T개 토큰은 rows = T로 한 번에 하고 c는 토큰별 벡터다 (VU §8.1).
 
 ## 실행 모델과 제어 인터페이스
 
-실행은 엄격한 순차 의미론을 따른다. 다음 명령어는 앞 명령어의 모든 효과(SPM 쓰기, DRAM 쓰기 응답까지)가 끝난 상태를 보며, 결과가 같다고 보장될 때만 하드웨어가 실행을 겹칠 수 있다 (예: 연속 MVM 겹치기). MVM이 실행 시간 대부분을 차지하므로 해저드 처리 없이도 손실이 작다.
+(v2, 2026-10-30) 이 절은 `docs/v2/01-execution-model.md`(EX) §2\~§5, §8\~§9의 요약이다. 호스트 모델, 펌웨어 이미지와 적재, LAUNCH 프로토콜과 런타임 계약 R1\~R10, 코어 CSR 맵(EX §5.1, 호스트가 보는 유일한 맵), PERF(EX §6), 오류 코드와 검사 순서(EX §8.1), 제어 동작(EX §8.5), XRT 어댑터(EX §9)의 규범적 정의는 EX이며 이 문서에 참조로 포함된다. v1의 명령 버퍼 실행(호스트가 ch0 CMD 영역에 쓴 명령어 배열을 `CTRL.START`로 순차 실행, R0\~R15와 `ARG0`\~`7`, `END`와 `done`)은 없앴다 (D14). v1의 이 절은 태그 `v1-m4`에 남는다.
 
-(M8 계획 개정, 2026-10-24) 명령어를 내는 곳은 둘이다. 명령 버퍼(호스트가 DRAM에 쓰고 커맨드 프로세서가 실행)는 이 절의 순차 의미론을 따른다. 제어 코어가 발행 큐로 낸 명령어는 유닛마다 발행 순서대로 실행되고, 유닛 사이에는 티켓과 의존성으로만 순서가 생기며 동시에 실행된다 ("제어 코어" 절의 메모리 모델). 명령 버퍼 실행은 큐의 명령어와 겹치지 않으므로(배타 규칙) 이 절의 규칙은 바뀌지 않는다.
+**호스트가 하는 일** (EX §2): 호스트는 프로그램을 실행시키지 않는다. 장치를 열고(`xrt::ip`, 채널마다 버퍼 하나), 연결(attach)이 아니면 `SOFT_RESET`으로 알려진 상태로 만들고, 채널 기준 주소를 쓴 뒤 `ADAPTER_CTRL.MEM_EN`을 켜고, 펌웨어 이미지를 TCM에 적재·검증하고, 제어 코어를 부팅해 HELLO를 받은 뒤 커널을 **LAUNCH**한다. 가중치, 입력, op 목록은 v1처럼 PCIe DMA로 DRAM에 쓰고 읽는다. 타일 명령어는 모두 제어 코어가 발행 포트로 내며, 호스트는 발행 포트에 닿지 않는다 (D15). 브링업, 카드 selftest, 트레이스 재생도 제어 코어 커널로 한다. 장치 상태(RESET, LOADED, BOOTING, READY, BUSY, TRAPPED, HUNG, FAILED)와 상태 사이의 전이는 EX §2.2다. 한 프로세스가 장치를 독점하며(`xrt::ip`의 배타 문맥), GDB와 프로파일러는 그 프로세스 안에서 돈다 (EX §2.4). 호스트와 디바이스 사이의 순서는 "제어 코어" 절 메모리 모델의 규칙 5(H1\~H5)다.
 
-**정수 레지스터와 인자**
+**펌웨어 이미지** (EX §3): 정적 RV32 ELF다. `PT_LOAD` 구간은 ITCM(0x0000\_0000부터) 또는 DTCM(0x0010\_0000부터) 안에 있고, 커널 표 `.tsr_kernels`(LAUNCH의 커널 번호 = 표 안의 위치), 요구 사항 `.note.tsr`, 이미지 id `.tsr_id`(`PT_LOAD` 구간들의 SHA-256 앞 8바이트를 little-endian `uint64`로, 정의는 EX §3.2)를 담는다. 적재는 `RV_RUN` = 0일 때 구간마다 `LOAD_ADDR`, `LOAD_DATA` 워드로 쓰고 받은 쪽 CRC-32(`LOAD_CRC`, zlib `crc32`)를 확인한 뒤, `LOAD_CTRL.VERIFY`로 TCM에서 다시 읽은 CRC를 확인한다. 부팅은 `CTRL.RV_RUN` = 1이고, 제어 코어는 `RV_BOOT` + 0x80부터 실행해 HELLO 기록(이미지 id, SDK ABI, 커널 수)을 올린다. TRAP 뒤나 같은 이미지가 남아 있을 때는 `SOFT_RESET`, DTCM 구간 재적재, ITCM VERIFY(어긋난 구간만 다시 적재) 뒤 부팅하는 warm restart를 쓴다.
 
-- R0\~R15는 int32이고 R0은 항상 0이다. 모든 주소 필드는 `R[x] + imm`으로 계산한다 (ISA 절).
-- 실행 시작 시 R1\~R7은 0, R8\~R15는 CSR `ARG0`\~`ARG7` 값으로 초기화된다. 호스트는 ARG0\~ARG7로 32비트 값을 넘길 수 있다. lowering은 쓰지 않는다 (토큰마다 바뀌는 값은 IO 입력 텐서로, M8부터는 제어 코어 메일박스로 넘긴다).
-- LI, ADDI, 레지스터 기준 주소를 구현하고(M2) lowering은 R0만 쓴다 (절대 주소). RLD, 정수 MULI(opcode 0x04, SOP의 MULI sub 코드와는 별개), LOOP, WAITM, JUMP는 계획에서 뺐다 (M8 계획 개정, 2026-10-24): 주소 계산, 루프, 대기, 프로그램 연결은 제어 코어의 C++ 코드가 한다. 제어 코어가 명령 버퍼를 `CALL`로 실행하면 R8\~R12에 인자 5개가 들어간다.
-- 디바이스가 계산한 값(전문가 번호, 샘플링한 토큰, KV 쓰기 위치)은 제어 코어가 SPM 창에서 직접 읽어 주소를 계산하고 즉시값으로 넣는다. 명령 버퍼 안에는 SPM 값을 정수 레지스터로 옮기는 명령어가 없다.
+**LAUNCH 프로토콜** (EX §4)
 
-**실행 흐름**
+- 호스트는 디스크립터 8워드 {TYPE(LAUNCH 또는 PING), PROF, KERNEL, ARG0\~ARG6}를 posted CSR 쓰기로 `LQ_W0`\~`7`에 쓰고 `LQ_PUSH`를 쓴다. 디스크립터는 코어 도메인의 launch 큐(LQ, 깊이 8)에 들어가고, 제어 코어의 런타임이 꺼낸다. LAUNCH 하나에 PCIe DMA가 들지 않는다.
+- 디스크립터마다 정확히 하나의 답 기록(8워드)이 순서대로 코어 도메인의 완료 링(LCQ, 깊이 8)에 온다. r0 = {TYPE, STATUS, 첫 오류 코드, SEQ\[7:0\]}이라 호스트는 r0 하나로 기록을 분류하고 LAUNCH와 짝짓는다. 호스트는 답을 받지 않은 LAUNCH를 `LQ_DEPTH`개까지만 두므로 읽기 없이도 큐가 넘치지 않는다.
+- 실행 중인 LAUNCH는 언제나 하나 이하다 (ACTIVE = TAKEN ≠ ANSWERED). 런타임은 계약 R1\~R10(EX §4.7)대로 디스크립터를 꺼내 검사하고, 커널을 부르고, 그 LAUNCH가 낸 모든 명령어에 합류한 뒤(R6) 첫 오류를 골라 답을 올린다.
+- LAUNCH 결과 STATUS는 OK, TILE\_ERR, BAD\_DESC, KERNEL\_ERR, TRAP, ABORTED, PLAT\_ERR, STOPPED이고 여럿이 걸릴 때의 우선순위는 EX §4.4다. 첫 오류는 `ERR_PIDX`(발행 순서 번호)가 가장 작은 오류 기록이므로 일정과 무관하다.
+- 취소는 순번 워터마크다. `LQ_CANCEL`은 하드 취소로, 실행 중인 LAUNCH가 덮이면 그 자리에서 호스트 QABORT를 걸고 큐에 있는 덮인 LAUNCH는 실행하지 않고 ABORTED로 답한다. `LQ_STOP`은 소프트 정지로, 덮인 커널이 안전한 지점에서 STOPPED로 돌아온다. v1의 `CTRL.ABORT`를 대신한다.
+- 제어 코어의 로그는 코어 도메인의 256워드 로그 링으로 호스트에 간다 (레코드 머리는 `docs/v2/05-debug.md` §6.1). 큐가 막혀도 읽을 수 있다.
+- 기본 이미지의 커널: `graph`(op 목록 OPL 실행기, M6부터 유일한 오프로드 경로), `replay`(타일 명령어만의 push 스트림 재생, SERIAL 플래그는 순차 의미론), `selftest`(카드 selftest).
 
-1. 호스트가 명령 버퍼(32B 명령어 배열)를 ch0의 CMD 영역에 쓴다.
-2. 호스트가 `CMD_ADDR`, `CMD_COUNT`를 쓰고 `CTRL.START`를 켠다.
-3. 커맨드 프로세서가 명령어를 순서대로 프리페치·실행한다. lowering은 루프 없이 펼쳐서 낸다 (루프가 필요한 부분은 제어 코어의 C++ 커널이 한다).
-4. `END`를 만나면 `STATUS.DONE`과 `done` 출력을 켠다. 오류가 나면 그 자리에서 멈추고 `STATUS.ERR`, `ERR_PC`, `ERR_CODE`를 남긴다.
+**코어 CSR 맵** (EX §5.1): 12비트 오프셋, 32비트 레지스터이고 U200은 `s_axi_control` 0x1000 + 오프셋 창이다. 모든 읽기는 부수 효과가 없고(PERF LO 표본만 예외), 정의되지 않은 오프셋은 0을 읽고 쓰기를 무시하며, 모든 접근은 `clk_rv` 없이도 정해진 시간 안에 끝난다. 구획은 다음과 같다.
 
-호스트는 BUSY 동안 실행 중인 명령 버퍼와 IO 영역을 건드리지 않는다. 다음 토큰의 명령 버퍼는 CMD 영역의 다른 절반에 미리 써 둘 수 있다.
+- 0x000\~0x03C: `ID`(0x5453\_5231 "TSR1", 그대로), `VERSION`(ISA 2.0 = 0x0000\_0200; major가 다른 v1 도구는 열 때 거부한다), `CFG0`\~`CFG2`(그대로), `CAPS`, `CFG3`(VU 레인 수, AT의 PCAP/16), `CTL_ID`, `CTRL`(0x020), `STATUS`(0x024), `RV_BOOT`, `RV_FREQ`, `RV_CFG`, `WDOG_CFG`, `RT_STATE`, `RT_INFO`.
+- 0x040\~0x09C: LQ 스테이징 `LQ_W0`\~`7`과 `LQ_PUSH`, 순번(`LQ_SEQ`, `LQ_TAKEN`, `LCQ_ANSWERED`), 워터마크(`LQ_CANCEL`, `LQ_STOP`), LCQ·로그 링 포인터, `LQ_CFG`, `PERF_INFO`, `Q_DEPTH`, `LOG_CFG`.
+- 0x0C0\~0x0D4: 이미지 적재기 (`LOAD_ADDR`, `LOAD_DATA`, `LOAD_CRC`, `LOAD_COUNT`, `LOAD_CTRL`, `LOAD_STATUS`).
+- 0x100\~0x2FC: `PERF_0`\~`PERF_63` (아래). 0x300\~0x3FC: LCQ 기록. 0x400\~0x7FC: 로그 링.
+- 0x800\~0xAFC: 디버그 블록 `DBG_*` (`docs/v2/05-debug.md` §10.1). 그 안의 0x9C0\~0x9FC는 s0\~s15를 읽는 `SREG0`\~`15`이며 VU가 있으면 디버그 블록과 무관하게 있다.
+- 0xB00\~0xBFC: 예약 (계획했던 `CTL_*` 묶음은 없앴다). 0xC00\~0xDFC: 제어 코어 디버그 모듈의 DMI 창 (`DBG_CFG.DMI_EN`일 때만 동작). 0xE00\~0xF1C: 큐 상태 `Q_*` (유닛별 완료·발행 수, 상태, 첫 오류 기록; 제어 코어가 죽어도 읽힌다).
 
-**CSR 맵** (32비트, 바이트 오프셋)
+`CTRL`은 레벨 비트 `RV_RUN`, `HOST_HOLD`, `HOLD_ON_HALT`, `IRQ_EN`과 펄스 비트 `QABORT`, `QCLEAR`, `SOFT_RESET`이고, `STATUS`는 제어 코어·큐·링 상태 레벨과 sticky 오류 비트다 (EX §5.2\~§5.3). v1의 `CTRL.START`·`ABORT`, `STATUS.BUSY`·`DONE`·`ERR`·`HALTED`, `CMD_ADDR_LO`·`HI`, `CMD_COUNT`, `ERR_PC`·`ERR_CODE`·`ERR_INFO`·`PC`, `ARG0`\~`7`, `TRC_*`, `CTL_PERF_*`, `CTL_*` 묶음과 메일박스는 없다. `CAPS`는 bit0 VU, bit3 TOPK(RTL M8), bit5 ATT(AT 연산 7개), bit6 DQROW(RTL M8), bit7 VMASK(M9)이고, 폐기된 bit2·bit4는 켜지 않고 다시 쓰지 않는다 (EX §7.5). 같은 소프트웨어가 기능이 다른 비트스트림을 다루도록 백엔드는 `CAPS`를 보고 경로를 고른다.
 
-| 오프셋 | 이름 | 접근 | 내용 |
-| --- | --- | --- | --- |
-| 0x000 | `ID` | R | 매직 값 `0x54535231` ("TSR1") |
-| 0x004 | `VERSION` | R | ISA major\[15:8\], minor\[7:0\] |
-| 0x008 | `CFG0` | R | NUM\_CH\[7:0\], LANES\[19:8\], T\_MAX\[23:20\] |
-| 0x00C | `CFG1` | R | SPM 크기 (line 단위) |
-| 0x010 | `CFG2` | R | VL\[7:0\], NSREG\[15:8\], K\_MAX/256\[31:16\] |
-| 0x014 | `CAPS` | R | 구현된 기능 비트: bit0 VU, bit1 예약, bit2 예약(폐기된 RLD·MULI·LOOP), bit3 TOPK, bit4 예약(폐기된 WAITM·JUMP). 폐기된 비트는 켜지 않고 다시 쓰지 않는다 |
-| 0x020 | `CTRL` | W | bit0 START, bit1 SOFT\_RESET, bit2 ABORT |
-| 0x024 | `STATUS` | R/W1C | bit0 BUSY, bit1 DONE, bit2 ERR, bit3 예약(폐기된 WAITM, 0을 읽는다), bit4 HALTED (계획, M4: 디버그 정지 중) |
-| 0x028 | `CMD_ADDR_LO` | RW | 명령 버퍼 시작 (ch0, beat 주소) 하위 32비트 |
-| 0x02C | `CMD_ADDR_HI` | RW | 상위 비트 |
-| 0x030 | `CMD_COUNT` | RW | 명령어 개수 |
-| 0x040 | `ERR_PC` | R | 오류 난 명령어 인덱스 |
-| 0x044 | `ERR_CODE` | R | 오류 코드 |
-| 0x048 | `ERR_INFO` | R | 오류 부가 정보 (주소 등) |
-| 0x050 | `PC` | R | 현재 명령어 주소 (디버그) |
-| 0x060\~0x07C | `ARG0`\~`ARG7` | RW | 실행 시작 시 R8\~R15로 복사 |
-| 0x080 | `PERF_INFO` | R | (계획, 조건부, M4\~M8: 첫 확장 카운터와 함께 넣는다) \[7:0\] 구현된 `PERF_*` 카운터 수. 0이면 5 + 2 × `NUM_CH`개다. 인덱스 5 + 2 × `NUM_CH`\~63(오프셋 0x2FC까지)은 확장 카운터용으로 예약한다 ("프로파일러와 디버거") |
-| 0x100\~ | `PERF_*` | R | 64비트 카운터: 전체 사이클, 은퇴 명령어 수, 채널별 읽은 beat 수, 채널별 DRAM 대기 사이클, MVM·VU 사이클, (폐기된 WAITM 대기 사이클 자리, 0을 읽는다) |
-| 0x300\~0x4FC | `CTL_PERF_*` | R | (계획, M8) 제어 코어 경로의 64비트 카운터 ("제어 코어" 절). 없으면 0을 읽는다 |
-| 0x800\~0x9FC | `DBG_*` | R/W | (계획, M4) 디버그 블록. 없으면 모두 0을 읽는다 ("프로파일러와 디버거") |
-| 0xA00\~0xA3C | `TRC_*` | R/W | (계획, 조건부) 명령 버퍼 경로의 트레이스 링. 없으면 0을 읽는다. 제어 코어 경로는 완료 기록을 쓴다 |
-| 0xB00\~0xBFC | `CTL_*` | R/W | (계획, M8) 제어 코어: 유무·구성, 실행·큐 제어, 이미지 적재, 메일박스, 유닛별 완료 수 ("제어 코어" 절). 없으면 0을 읽는다 |
-| 0xC00\~0xDFC | `DMI` | R/W | (계획, M8) 제어 코어 디버그 모듈의 DMI 창. 없으면 0을 읽는다 |
+**PERF 카운터** (EX §6): 카운터 공간은 하나다. 시간 카운터는 ACTIVE이고 장치 전체가 디버거로 멈춘 상태(QHALT)가 아닐 때, 사건 카운터는 ACTIVE일 때만 센다. 런타임이 답을 올리기 전에 모든 명령어에 합류하므로 LAUNCH 사이에는 PERF가 바뀌지 않는다 (v1 "실행 사이 PERF 불변"의 LAUNCH 단위 판). 그래서 LAUNCH를 겹쳐 내지 않으면 앞뒤 두 읽기의 차가 그 LAUNCH 하나의 값이다. `SOFT_RESET`이 모두 0으로 만들고, 64비트 LO 읽기 표본 규칙은 그대로다. 인덱스 0 `CYCLES`, 2 `MVM_CYCLES`, 3 `VU_CYCLES`와 채널별 5 + c `CH_RD_BEATS`, 5 + C + c `CH_WAIT`는 뜻을 유지하고 게이트만 위와 같이 바뀐다. 1 `RETIRED`는 모든 유닛에서 끝난 큐 항목 수(결과와 무관)이고, 4는 예약이다. 명령어 fetch가 없어 `CH_RD_BEATS[0]`은 이제 하드웨어와 정확히 대조된다. X = 5 + 2C부터는 확장 카운터(`MVM_WAIT`, `MVM_EMPTY` 등 VU·AT·CC 몫), 61\~63은 디버그 몫이다.
 
-`CAPS`를 두는 이유는 같은 소프트웨어가 기능이 다른 비트스트림을 다루기 위해서다. 백엔드는 `CAPS`를 보고 lowering 경로(호스트 보조 MoE 대 디바이스 MoE 등)를 고른다. 제어 코어는 명령 버퍼가 쓰는 ISA를 바꾸지 않으므로 `CAPS` 비트를 더하지 않고 `CTL_ID`로 알린다.
+**오류** (EX §8): 오류 코드 1\~12는 뜻을 유지하고(3 `QA_MISMATCH`, 9, 10은 예약이며 내지 않는다), 13 `OPERAND`(VU·AT 연산의 값 범위 위반, `ERR_INFO` = 그 값)를 더한다. 디스패치 검사 순서는 `ILLEGAL_OP` → `BAD_DEP` → `BAD_FMT` → `K_RANGE` → `T_RANGE` → `OPERAND` → `SPM_RANGE` → `DRAM_RANGE`이며 표와 각 조건은 EX §8.1이다. 시작한 명령어는 실패하지 않는다: 모든 오류는 디스패치 검사에서 찾고, 데이터에 따른 조건(NaN, SPM에서 읽은 길이 등)은 정의된 동작이다. 오류가 난 유닛은 QCLEAR까지 뒤 명령어를 `ABORTED`로 끝낸다 ("제어 코어" 절, EX §8.2). 장치 수준 오류는 `STATUS` sticky 비트, `ADAPTER_STATUS`, TRAP 기록, 유닛 진행 감시(`UNIT_HUNG`), 이미지 오류(CRC, `.note.tsr`, HELLO의 이미지 id), `clk_rv` 없음이며, 전송 계층이 열기·부팅·LAUNCH·대기 호출의 오류로 바꾼다. `SOFT_RESET`(`CTRL` bit10)은 장치 수준 절차다: 제어 코어를 리셋에 두고(`RV_RUN` = 0), 큐와 발행 FIFO가 빌 때까지 기다리고, 오류 상태와 LQ·LCQ·로그 링, 워터마크, PERF, sticky 비트를 지운다. DRAM, SPM, TCM, s 레지스터, 채널 기준 주소, 디버그 설정, 모든 순번은 그대로 둔다. `clk_rv`가 없어도 끝나며 진행 중에는 `STATUS.SR_BUSY`가 켜진다 (EX §8.5). 멈춘 유닛을 강제로 푸는 수단은 없고 복구는 카드 리셋이다 (EX §8.6).
 
-**오류 코드**
-
-| 코드 | 이름 | 조건 |
-| --- | --- | --- |
-| 1 | `ILLEGAL_OP` | 정의되지 않았거나 이 비트스트림에 없는 opcode·함수 코드, 0이 아닌 예약 필드, 명령 버퍼 안의 `CALL`. (제어 코어 발행 경로) 0이 아닌 ra·rb·rc·rd, 발행 경로가 받지 않는 opcode |
-| 2 | `BAD_FMT` | 지원하지 않는 가중치 포맷 |
-| 3 | `QA_MISMATCH` | fmt와 QA 종류 불일치 |
-| 4 | `SPM_RANGE` | SPM 범위 초과 |
-| 5 | `DRAM_RANGE` | 채널 범위 초과 |
-| 6 | `K_RANGE` | K > K\_MAX 또는 블록 크기의 배수가 아님 |
-| 7 | `T_RANGE` | T = 0 또는 T > T\_MAX |
-| 8 | `ABORTED` | `CTRL.ABORT`로 중단. (제어 코어 발행 경로) QABORT(RV\_RUN 1 → 0, 디버그 모듈 ndmreset 포함)나 그 유닛의 오류 상태로 실행하지 않고 끝남. 실행 중인 CALL은 QABORT·SOFT\_RESET으로 다음 명령어 경계에서 끝남 |
-| 9 | `LOOP_NEST` | 예약 (폐기된 LOOP. 내지 않는다) |
-| 10 | `WAIT_TIMEOUT` | 예약 (폐기된 WAITM. 내지 않는다) |
-| 11 | `DEP_FAILED` | (제어 코어 발행 경로만) 의존한 티켓이 오류로 끝남 |
-| 12 | `BAD_DEP` | (제어 코어 발행 경로만) 아직 발행하지 않은 티켓, 예약된 유닛(6\~14), 또는 마지막 QCLEAR 전에 발행한 티켓에 의존 |
-
-**XRT 어댑터**: ap\_ctrl\_hs 제어 레지스터(0x000)와 커널 인자(`cmd_addr` 64비트 0x010, `cmd_count` 0x018, `arg0`\~`arg7` 0x020\~0x03C, 채널 c의 DRAM 기준 주소 `ch<c>_base` 0x040 + 8c)를 코어 CSR 쓰기로 변환하고, `ap_start`를 `CTRL.START`에, `done`을 `ap_done`에 연결한다. 어댑터 자신의 상태는 `ADAPTER_STATUS`(0x0F0)와 `ADAPTER_VERSION`(0x0F4)이다. 코어 CSR 전체는 `s_axi_control`의 0x1000 + 오프셋 창에 실행 중에도 그대로 노출되어 성능 카운터와 오류 정보를 호스트가 읽는다 (디버그 블록 0x800\~0x9FC는 0x1800\~0x19FC). 레지스터 맵 전체와 리셋·오류 규칙은 `docs/platform-u200.md`. (계획, M8) 제어 코어가 있는 커널은 두 번째 클럭 `ap_clk_2`·`ap_rst_n_2`를 받는다. 제어 코어의 이미지 적재, 메일박스, 디버그는 같은 창으로 한다 (`CTL_*` 0x1B00\~0x1BFC, `DMI` 0x1C00\~0x1DFC, `CTL_PERF_*` 0x1300\~0x14FC). 제어 코어 실행은 `ap_ctrl_hs` 실행이 아니며 창으로 폴링한다 (`ap_ctrl_hs`로 감쌀지는 미결정 사항). 소유 규칙상 제어 코어의 창 접근은 `xrt::run`이 걸려 있지 않을 때만 일어나므로 run 모드에서도 쓴다. 실행 중 창 접근에 기대는 것은 제어 코어 실행을 `ap_ctrl_hs`로 감싸는 경우(미결정 사항)뿐이다.
+**XRT 어댑터** (EX §9): 커널은 `ap_ctrl_none`이고 인터럽트가 없다. 호스트는 `xrt::ip`로 레지스터에 접근해 폴링하며 `xrt::run`을 쓰지 않는다. 그래서 디버거가 멈춘 제어 코어가 XRT의 스케줄러를 깨뜨리지 않는다. 커널 인자는 채널 버퍼 `ch<c>`(기준 주소 0x040 + 8c)뿐이다 (`cmd_addr`, `cmd_count`, `arg0`\~`7`과 ap\_ctrl\_hs 제어 레지스터는 없앴다). `ADAPTER_CTRL`(0x0E0) bit0 `MEM_EN`이 켜질 때 모든 기준 주소의 4 KiB 정렬을 확인해 브리지에 잡고, 켜져 있는 동안 기준 주소 쓰기는 무시한다(`BASE_LOCKED`). `MEM_EN` = 0인 동안 코어의 메모리 요청은 버리지 않고 붙잡아 둔다(`REQ_HELD`). `ADAPTER_STATUS`(0x0F0)와 `ADAPTER_VERSION`(0x0F4, 버전 2)은 어댑터 자신의 상태이고, 코어 CSR 전체는 0x1000 + 오프셋 창에 언제나 보인다 (디버그 블록은 0x1800\~0x1AFC). 메모리 브리지와 리셋 방식은 `docs/platform-u200.md` §4\~§5 그대로다. 제어 코어는 두 번째 클럭 `ap_clk_2`(계획값 166.7 MHz)를 받는다. v++ 2024.2가 `m_axi` 인자가 있는 `ap_ctrl_none` RTL 커널을 받는지는 첫 스모크 링크에서 확인하고, 안 되면 `ap_ctrl_hs`로 선언하되 실행(`xrt::run`)은 하지 않는다 (EX §9.1).
 
 ## ISA
 
-명령어는 고정 256비트(32B)이고 32비트 워드 w0\~w7로 나뉜다 (little-endian). 모든 주소는 처음부터 "레지스터 + 즉시값"으로 정의한다. v1 lowering은 기준 레지스터로 R0을 써서 절대 주소처럼 쓴다. 호스트 독립과 디바이스 MoE는 이전 계획처럼 레지스터 기준 주소로 하지 않고, 제어 코어가 주소를 계산해 즉시값으로 발행한다 (M8 계획 개정). 그래서 기존 인코딩은 바뀌지 않는다 (`CALL`은 비어 있던 opcode 0x09).
+(v2, 2026-10-30, ISA 2.0, `docs/v2/01-execution-model.md` §7) 명령어는 고정 256비트(32B)이고 32비트 워드 w0\~w7로 나뉜다 (little-endian). 모든 명령어는 제어 코어가 발행 포트로 낸다. 주소 필드는 즉시값 워드 그 자체이고(A = imm) 기준 레지스터는 없다. LD, ST, QACT, MVM, NOP, FENCE의 v2 인코딩은 ra\~rd = 0인 v1 인코딩과 비트 단위로 같다. (v1은 모든 주소를 "레지스터 + 즉시값"으로 정의했고 lowering은 기준 레지스터로 R0만 썼다. v1의 이 절은 태그 `v1-m4`에 남는다.)
 
 **w0 형식**
 
@@ -402,52 +362,48 @@ VOP.MUL    y, y, w_norm, 5120
 | \[7:0\] | opcode | 명령어 |
 | \[11:8\] | sub | 포맷 코드, 모드, 채널 등 명령어별 부코드 |
 | \[15:12\] | flags | 명령어별 플래그 |
-| \[19:16\] | ra | 첫째 주소 필드의 기준 레지스터 |
-| \[23:20\] | rb | 둘째 주소 필드의 기준 레지스터 |
-| \[27:24\] | rc | 셋째 주소 필드의 기준 레지스터 |
-| \[31:28\] | rd | 결과 레지스터 (정수 레지스터를 쓰는 명령어) |
+| \[31:16\] | x16 | 명령어별 필드 (v2). x16 bit i = w0 bit 16 + i. 그 명령어의 정의가 쓰지 않는 비트는 0이어야 한다 (아니면 `ILLEGAL_OP`). LD, ST, QACT, MVM, NOP, FENCE는 x16 = 0이고, VU·AT 연산은 자기 필드를 둔다. v1의 ra\[19:16\]·rb\[23:20\]·rc\[27:24\]·rd\[31:28\] 자리다 |
 
 **공통 규칙**
 
-- 아래 표의 A1, A2, A3는 첫째·둘째·셋째 주소 필드이고, 값은 각각 R\[ra\] + w, R\[rb\] + w, R\[rc\] + w다 (32비트 wrap-around). 그 밖의 필드는 즉시값이다.
+- 아래 표의 A1, A2, A3는 첫째·둘째·셋째 주소 필드이고 값은 그 즉시값 워드 그대로다 (v1: R\[ra\] + w 등, 32비트 wrap-around). 그 밖의 필드도 즉시값이다.
 - SPM 주소는 line 단위(SOP의 SPM 워드 접근만 4B 워드 단위), DRAM 주소는 beat 단위, 길이는 원소 단위.
-- 예약 필드·비트와 쓰지 않는 레지스터 필드는 0이어야 하며, 아니면 `ILLEGAL_OP`.
-- f32 스칼라 레지스터 번호는 즉시값 워드 안의 4비트 필드다.
-- (M8) 제어 코어 발행 경로의 명령어는 ra·rb·rc·rd가 모두 0이어야 한다 (아니면 `ILLEGAL_OP`). 주소는 즉시값 그대로다.
+- 예약 필드·비트와 그 명령어가 쓰지 않는 x16 비트는 0이어야 하며, 아니면 `ILLEGAL_OP`.
+- f32 스칼라 레지스터 번호는 즉시값 워드 또는 x16 안의 4비트 필드다.
+- 시작한 명령어는 실패하지 않는다. 모든 오류는 디스패치 검사에서 찾는다 ("실행 모델과 제어 인터페이스"의 오류).
 
-**명령어 목록** (단계 = 처음 구현하는 마일스톤)
+**명령어 목록** (단계 = 처음 하드웨어로 구현하는 마일스톤). opcode마다 유닛과 v2 상태를 정한 전역 표는 `docs/v2/01-execution-model.md` §7.2이며 이 문서에 참조로 포함된다. VU·AT 연산의 인코딩, 검사, 의미는 VU §5\~§6과 `docs/v2/03-attention-kv.md`(AT) §5\~§6이 정하고, 아래 표는 그 행을 가리키기만 한다.
 
 | opcode | 이름 | sub | 피연산자 | 동작 | 단계 |
 | --- | --- | --- | --- | --- | --- |
-| 0x00 | `NOP` | – | – | 없음 | M2 |
-| 0x01 | `END` | – | – | 완료 통지, 정지 | M2 |
-| 0x02 | `LI` | – | w1 imm | R\[rd\] = w1 | M2 |
-| 0x03 | `ADDI` | – | w1 imm | R\[rd\] = R\[ra\] + w1 | M2 |
-| 0x04 | `MULI` | – | – | (폐기) 이전 계획: R\[rd\] = R\[ra\] × w1. 제어 코어가 대신한다 | 폐기 · opcode 예약 |
-| 0x05 | `RLD` | – | – | (폐기) 이전 계획: SPM 워드 → R\[rd\]. 제어 코어가 SPM을 직접 읽는다 | 폐기 · opcode 예약 |
-| 0x06 | `LOOP` | – | – | (폐기) 이전 계획: 명령어 구간 반복. 루프는 제어 코어의 C++ 코드가 한다 | 폐기 · opcode 예약 |
-| 0x07 | `WAITM` | – | – | (폐기) 이전 계획: DRAM 워드 대기. 메일박스와 제어 코어 폴링이 대신한다 | 폐기 · opcode 예약 |
-| 0x08 | `JUMP` | – | – | (폐기) 이전 계획: 프로그램 체인. 제어 코어의 제어 흐름과 `CALL`이 대신한다 | 폐기 · opcode 예약 |
-| 0x09 | `CALL` | – | w1 명령 버퍼 시작(ch0 beat), w2 명령어 수, w3\~w7 인자 | 명령 버퍼를 CMD 유닛의 명령어 하나로 실행, R8\~R12 = w3\~w7 ("제어 코어" 절). 제어 코어 발행 전용, 명령 버퍼 안에서는 `ILLEGAL_OP` | M8 |
+| 0x00 | `NOP` | – | – (w1\~w7 = 0) | SYNC 유닛의 합류점: 의존성이 끝나면 끝난다 | M2 |
+| 0x01\~0x03 | (`END`, `LI`, `ADDI`) | – | – | v2에서 예약, `ILLEGAL_OP` (v1 M2: 완료 통지, R\[rd\] = w1, R\[rd\] = R\[ra\] + w1) | 예약 |
+| 0x04\~0x08 | (`MULI`, `RLD`, `LOOP`, `WAITM`, `JUMP`) | – | – | 폐기 (M8 계획 개정 2026-10-24, 구현된 적 없음). 다시 쓰지 않는다 | 폐기 |
+| 0x09 | (`CALL`) | – | – | 폐기 (구현된 적 없음, D14). 다시 쓰지 않는다 | 폐기 |
 | 0x10 | `LD` | ch | A1 = SPM dst(w1), A2 = DRAM src(w2), w3 n\_lines | DRAM → SPM | M2 |
 | 0x11 | `ST` | ch | A1 = SPM src(w1), A2 = DRAM dst(w2), w3 n\_lines | SPM → DRAM | M2 |
-| 0x12 | `DQROW` | fmt | A1 = SPM dst(w1), A2 = 행 번호(w2), A3 = W\_OFF(w3), w4 N, w5 K | 대칭 할당 텐서의 행 하나를 f32로 역양자화 (`GET_ROWS`, 토큰 임베딩) | M7 |
+| 0x12 | `DQROW` | fmt | VU §5.6 | SPM에 LD한 리패킹 행 → f32 (VU 유닛, v1 계획의 DRAM 행 형태를 대신한다). 시뮬레이터 M6 | M8 |
+| 0x14 | `KVST` | | AT §5.1 | K 또는 V 행을 KV 평면에 저장 (DMA 유닛) | M6 |
 | 0x18 | `QACT` | 0 A32, 1 A256 | A1 = QA dst(w1), A2 = f32 src(w2), w3 K, w4 T, w5 src\_stride | f32 벡터 T개 → QA 벡터 T개 | M2 |
 | 0x20 | `MVM` | fmt | A1 = dst(w1), A2 = x(w2), A3 = W\_OFF(w3), w4 N, w5 K\[15:0\]·T\[19:16\], w6 dst\_stride | 행렬 × 활성값. flags bit0 ACC | M3 |
-| 0x30 | `VOP` | – | A1 = dst(w1), A2 = a(w2), A3 = b(w3), w4 n, w5 func\[7:0\]·s\[11:8\] | 원소 연산 | M6 |
-| 0x31 | `RED` | 0 SUM, 1 SUMSQ, 2 MAX | A1 = src(w1), w2 n, w3 sd\[3:0\] | 리덕션 → f32 스칼라 | M6 |
-| 0x32 | `ROPE` | 0 NORM, 1 NEOX | A1 = dst(w1), A2 = src(w2), A3 = 위치 I32(w3), w4 각속도 테이블(SPM line), w5 head\_dim, w6 n\_dims, w7 n\_heads\[15:0\]·s\[19:16\] | 토큰 1개 회전, s = 상수 M | M6 |
-| 0x33 | `TOPK` | – | A1 = dst(w1), A2 = src(w2), w3 n, w4 k | (인덱스 I32, 값 f32) 쌍 k개를 dst에 연속 기록 | M8 |
-| 0x40 | `SOP` | 아래 표 | w1 sd\[3:0\]·sa\[7:4\]·sb\[11:8\], w2 imm(f32 비트), A1 = SPM 워드(w3) | f32 스칼라 연산 | M6 |
-| 0x7F | `FENCE` | – | – | 실행 겹치기 금지 경계 (겹치기가 없는 구현에서는 NOP) | M2 |
+| 0x21 | `ATTQK` | | AT §5.2 | KV 그룹 범위의 점수와 행 최댓값 (MVM 유닛) | M6 |
+| 0x22 | `ATTPV` | | AT §5.3 | P·V 채널별 부분 출력과 행 합 (MVM 유닛) | M6 |
+| 0x30 | `VOP` | cmode | VU §5.2 | 원소 함수 25종, rows × m | M6 |
+| 0x31 | `RED` | kind | VU §5.3 | 행별 SUM·SUMSQ·MAX, 후처리 RCP·RMS | M6 |
+| 0x32 | `ROPE` | mode | VU §5.4 | 토큰 T개 회전, 각도는 ggml-cpu 점화식 | M6 |
+| 0x33 | `TOPK` | – | VU §5.5 | 행별 상위 k개(k ≤ 16)의 (인덱스, 값) 쌍. 시뮬레이터 M6 | M8 |
+| 0x34\~0x37 | `ASMAX`, `AMASK`, `AMERGE`, `ANORM` | | AT §5.4\~§5.7, VU §5.11 | softmax 분자, 일반 마스크, 채널 트리와 online 병합, 정규화 (VU 유닛) | M6 |
+| 0x38 | `VMASK` | | VU §5.7 | 위치 창 마스크. M9 전에는 `ILLEGAL_OP` | M9 |
+| 0x40 | `SOP` | 함수 | VU §5.8 (w1 sd·sa·sb, w2 imm, w3 SPM 워드) | f32 스칼라 연산 15종 | M6 |
+| 0x7F | `FENCE` | – | – (w1\~w7 = 0) | SYNC 유닛의 장벽: 앞서 발행한 모든 명령어가 끝나면 끝난다 | M2 |
 
-**발행 경로 (M8)**: 제어 코어가 발행하는 명령어는 같은 인코딩과 의미를 쓴다. 받는 opcode는 LD, ST, DQROW, QACT, MVM, VOP, RED, ROPE, TOPK, SOP, CALL, NOP, FENCE다. NOP는 SYNC 유닛의 합류점(의존성이 끝나면 끝남), FENCE는 SYNC 유닛의 장벽(앞서 발행한 모든 명령어가 끝나면 끝남)이며, 둘 다 w1\~w7이 0이어야 한다. QCLEAR는 opcode가 아니라 제어 창 쓰기로 내고 SYNC 유닛의 티켓을 받는다. 그 밖(END, LI, ADDI, 예약 opcode)은 SYNC 유닛의 티켓을 받고 `ILLEGAL_OP`로 끝난다. 폐기된 opcode 0x04\~0x08은 두 경로 모두에서 `ILLEGAL_OP`이며 다른 명령어에 다시 쓰지 않는다.
+예약 번호 블록(VU: 0x13, 0x39\~0x3F, 0x41\~0x47; AT: 0x15\~0x17, 0x19\~0x1B, 0x23; SYNC 계열: 0x0A\~0x0F, 0x70\~0x7E)과 그 밖의 번호는 EX §7.2다. 폐기·예약된 opcode는 다른 명령어에 다시 쓰지 않는다.
+
+**발행과 유닛** (EX §7.2\~§7.3): 발행 포트는 모든 opcode를 받는다. 예약·폐기되었거나 이 비트스트림에 없는 opcode도 SYNC 유닛(5)의 티켓을 받고 `ILLEGAL_OP`로 끝나므로 모든 발행에는 완료가 있다. opcode → 유닛 표는 정적이며 표 원천(`sw/tables/tsr_tables.py`, V2-EX-30)에서 RTL, 시뮬레이터, SDK로 생성한다. 유닛은 0 DMA(LD, ST, KVST), 1 QACT, 2 MVM(MVM, ATTQK, ATTPV), 3 VU(VOP, RED, ROPE, TOPK, SOP, DQROW, ASMAX\~ANORM, M9부터 VMASK), 4 예약(뒷날의 attention 엔진, M6에는 없다; v1 계획의 CMD), 5 SYNC(NOP, FENCE, QCLEAR, 거부된 opcode)다. 없는 유닛이나 유닛 6\~14에 대한 의존은 `BAD_DEP`다. QCLEAR, QABORT, QHOLD, TRACE\_MARK는 opcode가 아니라 제어 창 항목이다 (`docs/v2/04-control-core.md` §5.1).
 
 **MVM fmt 코드**: 0 = Q8\_0, 1 = Q4\_K, 2\~15 예약. 후보는 4비트 계열(Q4\_0, MXFP4)뿐이며 5·6비트 경로는 두지 않는다.
 
-**VOP 함수 코드**: 0 ADD, 1 SUB, 2 MUL, 3 MAX, 4 MULS(b 대신 s), 5 ADDS(b 대신 s), 6 SILU(a만), 7 SWIGLU(SiLU(a) × b), 8 EXP(a만), 9 COPY(a만).
-
-**SOP sub 코드**: 0 MOVI(sd = imm), 1 ADD(sd = sa + sb), 2 MUL, 3 ADDI(sd = sa + imm), 4 MULI(sd = sa × imm), 5 SQRT, 6 RECIP, 7 LDS(sd = SPM 워드 A1), 8 STS(SPM 워드 A1 = sa).
+**VU 함수 코드** (VU §5.2, §5.8): VOP 함수 0\~9는 이전 판 번호를 유지하고(MULS·ADDS는 `cmode` 1의 MULC·ADDC가 된다) 0x0A\~0x18을 더한다. SOP sub 0\~8은 그대로이고 9\~14(SUB, DIV, RSQRT, MAX, MIN, EXP)를 더한다.
 
 **MVM 의미**
 
@@ -468,13 +424,13 @@ for t in 0 .. T-1:
 **기타 의미 요점**
 
 - `QACT`의 dst는 토큰마다 `QA_LINES(kind, K)` 간격, src는 `src_stride` line 간격으로 읽는다.
-- `ROPE`의 각속도 테이블은 f32 A\_i를 n\_dims/2개 담는다. 각 헤드는 head\_dim 원소씩 연속이고, n\_dims < head\_dim이면 나머지는 그대로 복사한다.
-- `DQROW`는 행 번호로 채널과 채널 내 위치를 계산해 행 하나를 읽고, 수치 규칙의 비트 해석대로 f32로 푼다 (d × q, Q4\_K는 d × sc × q − dmin × m). 곱과 뺄셈은 각각 반올림한다.
+- (v2) `ROPE`의 의미는 VU §5.4·§6.7이다. 표는 freq factor(FF) 또는 YaRN용 A\_i(ATAB)를 n\_dims/2개 담는다. 각 헤드는 head\_dim 원소씩 연속이고, n\_dims < head\_dim이면 나머지는 그대로 복사한다.
+- (v2) `DQROW`의 의미는 VU §5.6·§6.8이다. 제어 코어가 행의 채널과 채널 내 위치를 계산해(`tsr_row_location`) LD로 SPM에 올린 리패킹 행을, 수치 규칙의 비트 해석대로(`tsr_dequant_row`) f32로 푼다 (d × q, Q4\_K는 d × sc × q − dmin × m). 곱과 뺄셈은 각각 반올림한다.
 - (M8 계획 개정, 2026-10-24) `LOOP`, `WAITM`, `JUMP`는 폐기됐다. 이전 판의 LOOP 중첩 규칙과 WAITM 대기·정지 규칙(M9 계획 개정)은 적용하지 않는다.
 
 ## ggml 백엔드 통합
 
-`ggml-tesseract`는 카드 하나를 디바이스 하나로 등록하고, 받은 split의 노드를 ISA 명령 버퍼로 낮춰(lowering) 한 번에 실행한다. 특정 llama.cpp 커밋에 고정해 개발하고, 백엔드 인터페이스 이름과 시그니처는 그 커밋의 `ggml-backend-impl.h` 기준으로 확인한다.
+`ggml-tesseract`는 카드 하나를 디바이스 하나로 등록하고, 받은 split을 op 목록(OPL v1, `docs/v2/06-software-verification.md` §7.2)으로 만들어 DRAM의 OPL 영역에 쓰고 `graph` 커널을 한 번 LAUNCH한다 (v2. v1은 split의 노드를 ISA 명령 버퍼로 낮춰(lowering) 한 번에 실행했다). 특정 llama.cpp 커밋에 고정해 개발하고, 백엔드 인터페이스 이름과 시그니처는 그 커밋의 `ggml-backend-impl.h` 기준으로 확인한다.
 
 **구성 요소**
 
@@ -485,21 +441,21 @@ for t in 0 .. T-1:
 | set\_tensor | WEIGHTS 버퍼의 가중치: 호스트 스테이징에 모은 뒤 (필요하면 Q8\_0으로 변환해) 리패킹 + 행 분할 + 채널별 쓰기. 그 밖: 원본 바이트를 IO 창(또는 호스트 메모리)에 그대로 쓰기 |
 | get\_tensor | IO 창·호스트 메모리·AUX: 원본 바이트 그대로 읽기 (`test-backend-ops`는 src0를 이렇게 읽어 CPU에 넘긴다). WEIGHTS 버퍼의 가중치: 역리패킹 (디버그용; 변환된 타입은 디바이스 사본을 다시 인코딩하므로 원본 바이트가 아니다) |
 | supports\_op | 아래 조건 |
-| graph\_compute | split의 노드를 명령 버퍼로 lowering, 실행, 완료 대기 |
-| 전송 계층 | `tsr_transport` 인터페이스: 영역 할당, 채널별 읽기·쓰기, 실행, 대기. 구현은 `xrt`, `sim`(ISA 시뮬레이터 내장), 이후 `zynq` |
+| graph\_compute | (v2) split → OPL(M6은 MUL\_MAT 기록과 JOIN만, M7부터 그 밖의 종류), 내용으로 찾는 OPL 캐시, `graph` LAUNCH, 답 기록 대기. TILE\_ERR면 첫 오류를 ggml 노드로 되짚어 알린다 (`docs/v2/06-software-verification.md` §9.3). v1: split의 노드를 명령 버퍼로 lowering, 실행, 완료 대기 |
+| 전송 계층 | `tsr_transport` (v2 API의 규범적 정의는 `docs/v2/01-execution-model.md` §10이며 이 문서에 참조로 포함된다): 열기(`SOFT_RESET`과 채널 바인딩, `TSR_ATTACH`면 생략), 채널별 DRAM 읽기·쓰기, CSR 읽기·쓰기, 펌웨어 이미지 적재·부팅(warm 또는 cold, HELLO 확인), LAUNCH, 대기(디버그 정지 중에는 세지 않는 시간 초과와 복구 단계), 취소·정지, `SOFT_RESET`, 로그 비우기. v1의 `exec`(명령 버퍼 실행)와 `ARG*`·`CMD_*` 처리는 없다. 구현(kdev)은 `sim`(ISA 시뮬레이터 내장, 호스트가 읽을 때 결정적으로 진행), `mock`(어댑터 레지스터 모델), `vkernel`(Verilator 커널), `xrt`(`xrt::ip`)이며 모두 프로토콜 계층 하나를 함께 쓴다. 이후 `zynq` |
 
-**supports\_op (v1)**: 아래를 모두 만족하는 `MUL_MAT`만 true. 그 외 연산은 스케줄러가 CPU로 보낸다.
+**supports\_op (v1)**: 아래를 모두 만족하는 `MUL_MAT`만 true. 그 외 연산은 스케줄러가 CPU로 보낸다. M6도 이 규칙 그대로라 split이 v1과 같다 (토큰당 0.5B 145개, 32B 385개). M7의 표는 `docs/v2/06-software-verification.md` §9.3이다.
 
 - src0가 Tesseract 버퍼(COMPUTE 버퍼 제외)에 있는 2D 가중치. GGUF 타입과 무관하게 디바이스에는 Q8\_0 또는 Q4\_K로 저장되어 있다. 텐서 메타데이터의 타입은 원래 GGUF 타입 그대로이므로, 백엔드는 텐서별 실제 디바이스 포맷 표를 따로 가진다. 아직 할당되지 않은 src0는 그래프 입력이 아닌 잎(leaf) 텐서일 때만 받는다 (`test-backend-ops`가 할당 전에 묻는 경우). llama.cpp 스케줄링에서는 가중치가 모두 할당되어 있으므로, 할당되지 않은 src0는 그래프 입력이나 다른 연산의 결과(활성값)이고 거부한다 (v0.2.1 명확화. 예: 양자화 KV 캐시(`-ctk q8_0`)에서 Q에 거는 Hadamard 회전 행렬 `attn_inp_k_rot`).
 - src1 타입 F32, src0·src1 연속(contiguous), src0의 3·4번째 차원 = 1
 - K ≤ `K_MAX`
 - 토큰 수 T에는 조건이 없다 (v0.2.1 명확화). llama.cpp는 가중치를 어느 버퍼에 둘지 T = 512로 고정한 probe(`weight_buft_supported`)로 정하므로, T에 따라 커지는 활성값 크기로 거부하면 어휘가 큰 모델(N + K > 131072, Qwen2.5·Llama-3)의 output.weight가 조용히 CPU에 남는다. 상주 가중치를 실행 때 큰 T로 거부해도 스케줄러가 그 가중치를 매번 디바이스에서 읽어 CPU로 복사한다 (변환된 타입은 손실, 일부 I-quant는 중단). 활성값이 IO에 다 들어가지 않는 경우는 lowering이 처리한다 ("v1 lowering 제약").
 
-attention 안의 `MUL_MAT`(src0이 F16/F32 KV 캐시, 또는 양자화 KV의 회전 행렬)은 이 조건에서 자동으로 걸러져 CPU에 남는다. `token_embd`는 `GET_ROWS`로 쓰이므로 역시 CPU에 남는다.
+**attention (v2, D17; 규범적 정의는 `docs/v2/03-attention-kv.md` §2.6이며 이 문서에 참조로 포함된다)**: attention은 llama.cpp의 `FLASH_ATTN_EXT`로만 받는다. `SOFT_MAX`, KV 캐시에 거는 attention `MUL_MAT`, Hadamard 회전 `MUL_MAT`은 어느 마일스톤에서도 받지 않는다 (회전은 끈다, `LLAMA_ATTN_ROT_DISABLE=1`). M6은 `offload_kqv` = false(`-nkvo`)로 KV 캐시와 attention을 CPU에 두며, 위 `MUL_MAT` 조건이 attention 안의 `MUL_MAT`을 걸러 낸다. M7부터 KV 캐시와 attention이 디바이스에 있다: KV 캐시는 K·V 모두 q8\_0이고(디바이스 레이아웃은 AT §4), `FLASH_ATTN_EXT`는 k·v가 Tesseract KV 버퍼에 있는 KV 캐시 텐서의 q8\_0 뷰이고 D = DK = DV ∈ {64, 128, 256, 512}이며 ALiBi·logit softcap·sink·`n_kv_max`를 쓰지 않을 때 받고, `SET_ROWS`는 dst가 그런 KV 캐시 텐서일 때 받는다 (조건 전체는 AT §2.6). 그 밖의 KV 타입은 지원하지 않으며 `-nkvo`로 실행한다. `token_embd`의 `GET_ROWS`는 M7까지 CPU(입력 레이어)에 남는다 (M8에서 LD + DQROW).
 
 v1 이후의 지원 op 확장은 아래 "MoE 지원"과 "호스트 독립 로드맵" 절의 단계를 따른다. 백엔드는 CSR `CAPS`를 읽어 비트스트림이 가진 기능에 맞는 경로를 고른다.
 
-**lowering (v1)**: split 안의 `MUL_MAT` 노드마다 다음 명령어를 내고, split 전체를 명령 버퍼 하나로 묶어 한 번만 실행한다. src1과 dst는 ggml-alloc이 Tesseract compute 버퍼에 배치하므로, 호스트와의 복사는 스케줄러가 처리한다. 그 버퍼가 IO 창이면 프로그램이 그 자리를 읽고 쓰고, 호스트 메모리에 둔 버퍼면 graph\_compute가 IO 스테이징 영역을 거쳐 옮긴다 ("v1 lowering 제약").
+**lowering (v1)**: (v1의 기록, 태그 `v1-m4`. v2에서는 같은 LD → QACT → MVM → ST 순서를 펌웨어의 MUL\_MAT 커널이 OPL의 MUL\_MAT 기록마다 낸다. 타일 나누기는 호스트와 펌웨어가 함께 쓰는 `plan.hpp`가 하고 프로그램 캐시 대신 OPL 캐시를 쓴다, `docs/v2/06-software-verification.md` §7.4, §9.3.) split 안의 `MUL_MAT` 노드마다 다음 명령어를 내고, split 전체를 명령 버퍼 하나로 묶어 한 번만 실행한다. src1과 dst는 ggml-alloc이 Tesseract compute 버퍼에 배치하므로, 호스트와의 복사는 스케줄러가 처리한다. 그 버퍼가 IO 창이면 프로그램이 그 자리를 읽고 쓰고, 호스트 메모리에 둔 버퍼면 graph\_compute가 IO 스테이징 영역을 거쳐 옮긴다 ("v1 lowering 제약").
 
 ```
 LD    spm_x,  io(src1), lines
@@ -520,7 +476,7 @@ END
 - **v1 lowering 제약** (M1 구현, 상세는 `sw/ggml-tesseract/README.md`, `docs/llama-pin.md`):
   - 프로그램이 직접 읽고 쓰는 활성값(src1, dst)은 ch0 IO 영역(256 MiB)에 있다. v1 소프트웨어는 IO 영역을 compute 버퍼 창(아래쪽)과 스테이징 영역(맨 위, max(16 MiB, 2 × `SPM_BYTES`), U200에서 16 MiB)으로 나눈다. 백엔드의 `get_max_size`는 창 용량(240 MiB)이라 ggml-alloc은 compute 버퍼를 그 이하의 청크로 자르고, 한 텐서가 그보다 크면 그 텐서만 든 청크를 만든다. 청크는 첫 데이터 접근 때 빈 창에 들어가면 IO 창, 아니면 호스트 메모리다 (v0.2.1 명확화: 이전 판은 IO를 넘는 compute 버퍼를 `-ub`로 줄여 맞추고 src1 + dst가 IO보다 크면 `supports_op`가 거부한다고 적었다. 그 규칙은 위 `supports_op` 절의 이유로 없앤다).
   - 호스트 메모리 청크에 src1이나 dst가 있는 `MUL_MAT`은 앞에 쌓인 명령을 먼저 실행한 뒤 혼자 실행된다. 스테이징 영역에 들어가는 토큰 수 단위(T 타일)로 src1 행을 호스트 → 스테이징으로 쓰고(src1이 IO 창이면 그 자리에서 LD), LD/QACT/MVM/ST 후 dst 행을 스테이징 → 호스트로 읽는다. 그래서 IO에 한꺼번에 있어야 하는 활성값은 타일 하나뿐이고 `-ub`에는 IO 상한이 없다 (호스트 메모리만 쓴다). 토큰 하나의 x + QA + y가 SPM에 들어가는 모양이면 스테이징 영역(SPM의 2배 이상)에도 토큰 하나가 들어간다. 전송량은 IO 창일 때와 같다 (src1 쓰기와 dst 읽기를 스케줄러 대신 graph\_compute가 한다).
-  - llama.cpp는 KV 캐시를 디바이스 버퍼에 두려 하므로 v1은 `-nkvo`로 실행한다 (KV 연산은 v1에 없다).
+  - llama.cpp는 KV 캐시를 디바이스 버퍼에 두려 하므로 v1은 `-nkvo`로 실행한다 (KV 연산은 v1에 없다). (v2: M6도 `-nkvo`(`offload_kqv` = false)로 실행한다. M7부터는 `-nkvo`가 필요 없고 `-fa on -ctk q8_0 -ctv q8_0`로 KV 캐시와 attention을 디바이스에 둔다. 위 "attention (v2)".)
   - src1의 f32 행이 line 경계에서 시작하도록 K는 32의 배수여야 한다 (Q8\_0 변환 조건과 같음). 토큰 하나의 x + QA + y가 SPM에 들어가지 않는 모양도 거부한다.
   - N·4가 64의 배수가 아니고 T > 1이면 dst의 토큰 행 시작이 beat 경계가 아니다. 이때도 위 스테이징 경로를 탄다: ST는 line 단위로 패딩된 스테이징 영역에 쓰고, 호스트가 타일마다 dst로 압축 복사한다. 스테이징 경로와 디바이스가 만든 src0(지연 Q8\_0 변환)를 읽는 경우에는 split 하나가 명령 버퍼 여러 개로 나뉘어 실행된다. LLM 가중치 행렬은 N이 16의 배수라 이 경우(행 정렬 때문의 스테이징)는 없다.
   - T = 1이고 N·4가 64의 배수가 아니면 ST가 마지막 line의 꼬리(0)를 dst 다음 바이트에 쓴다. 백엔드의 `get_alloc_size`가 텐서 크기를 64바이트 배수로 올려 이 꼬리가 텐서 자신의 패딩에 떨어진다.
@@ -548,7 +504,7 @@ for (uint32_t e = 0; e < 8; ++e) {
   ticket g = issue(MVM(G, xq, {W_gate + ex, Q4_K}, 768, 2048, 1));
   ticket u = issue(MVM(U, xq, {W_up + ex, Q4_K}, 768, 2048, 1));
   issue(VOP_SWIGLU(H, G, U, 768), after(g, u));
-  issue(SOP_LDS(1, spm_word(sel, 2 * e + 1)));             // s1 = 라우터 확률 (발행 경로 뱅크, VU 큐 순서)
+  issue(SOP_LDS(1, spm_word(sel, 2 * e + 1)));             // s1 = 라우터 확률 (VU 큐 순서)
   ticket m = issue(VOP_MULS(H, H, 1, 768));
   ticket q = issue(QACT(qa::a256, HQ, H, 768, 1), after(m));
   issue(MVM(Y, HQ, {W_down + ex, Q4_K}, 2048, 768, 1, 0, /*acc=*/true), after(q));
@@ -556,7 +512,7 @@ for (uint32_t e = 0; e < 8; ++e) {
 join_all();
 ```
 
-제어 코어는 8개 전문가의 명령어를 기다리지 않고 모두 발행한다 (큐에 자리가 없으면 `issue`가 자리를 기다린다). G, U, H, HQ의 재사용 순서는 큐 순서가 지킨다: 다음 전문가의 gate MVM은 MVM 큐에서 이전 down MVM 뒤에 있고, 그 down은 QACT·VU 연산 뒤에 시작한다. s1은 발행 경로 뱅크의 s 레지스터라 그 사이에 CALL이 끼어도 바뀌지 않는다 (호스트의 명령 버퍼 실행은 소유 규칙에 따라 실행 요청 중에 시작하지 않는다).
+제어 코어는 8개 전문가의 명령어를 기다리지 않고 모두 발행한다 (큐에 자리가 없으면 `issue`가 자리를 기다린다). G, U, H, HQ의 재사용 순서는 큐 순서가 지킨다: 다음 전문가의 gate MVM은 MVM 큐에서 이전 down MVM 뒤에 있고, 그 down은 QACT·VU 연산 뒤에 시작한다. s1은 VU 큐 순서로 쓰고 읽으므로 그 사이에 다른 커널의 연산이 끼지 않는다 (v2: s 레지스터는 한 벌이고, CALL과 호스트의 명령 버퍼 실행은 없다). 이 예의 `VOP_MULS`는 v2에서 `cmode` 1의 VOP MULC다.
 
 y는 루프 전에 잔차(또는 0)로 초기화한다. 확률을 down 전에 곱하므로 ggml(down 후 곱)과 누적 순서가 달라지며, 모델 단위 KL 기준으로 검증한다.
 
@@ -568,7 +524,7 @@ y는 루프 전에 잔차(또는 0)로 초기화한다. 확률을 down 전에 �
 
 **지표**: DDR 활용률 U = (토큰당 읽는 바이트 × 토큰/초) / B\_M0. 벽시계 기준이므로 호스트 시간도 들어간다. 원인별로 다음처럼 나눠 본다 (곱은 근사):
 
-- H: 벽시계 중 디바이스가 BUSY가 아닌 몫. 호스트의 CPU 연산, PCIe 왕복, 실행 사이 동기화.
+- H: 벽시계 중 디바이스가 BUSY가 아닌 몫 (v2: LAUNCH가 실행 중(ACTIVE)이 아닌 몫). 호스트의 CPU 연산, PCIe 왕복, 실행 사이 동기화.
 - G: 디바이스 시간 중 MVM 밖인 몫 (LD·QACT·VU·ST, `docs/prof-dbg.md`의 G).
 - F: MVM 안의 채우기·브로드캐스트·꼬리 (`docs/prof-dbg.md`의 F).
 - E: MVM이 가중치를 읽는 동안의 실효 대역폭 / B\_M0. DDR 효율(리프레시, 뱅크 충돌), `PERF_CH_WAIT`, 채널 사이 행 분배 불균형이 여기 들어간다.
@@ -596,7 +552,7 @@ llama.cpp는 토큰마다 그래프를 만들지만, KV 길이 버킷이 같으�
 | B. 제어 코어의 한 토큰 디코드 | 인자 2개(토큰 id, 위치) 쓰기, 결과 읽기 | 제어 코어, C++ 디코드 스텝 커널, DQROW(임베딩 조회), TOPK | 백엔드 내부 최적화, 샘플링 위치는 확인 필요 | M8 |
 | C. 디바이스 자체 루프 | 출력 토큰 링버퍼 폴링, 중단·새 프롬프트 신호 | 제어 코어 상주 C++ 디코드 루프, 메일박스, 디바이스 샘플링 | 디코드 루프만 전용 러너 `sw/runner` | M9 |
 
-**단계 A에 필요한 ggml op**: `RMS_NORM`, `MUL`, `ADD`, `GLU`(SwiGLU), `ROPE`(위치 텐서), `GET_ROWS`(DQROW), `SET_ROWS`(KV 쓰기), `CPY`·`CONT`, `SOFT_MAX` 또는 `FLASH_ATTN_EXT`, 8비트(q8\_0) KV를 쓰는 attention `MUL_MAT`, 메타데이터 op(`VIEW`, `RESHAPE`, `PERMUTE`, `TRANSPOSE`). 이 단계가 끝나면 토큰당 split이 1개가 된다.
+**단계 A에 필요한 ggml op** (v2, M7): `RMS_NORM`, `MUL`, `ADD`, `SCALE`, `GLU`(SwiGLU, GEGLU), `ROPE`(위치 텐서), `GET_ROWS`(f32 행; 토큰 임베딩의 `GET_ROWS`는 M7까지 CPU 입력 레이어에 남고 M8에서 DQROW), `SET_ROWS`(KV 쓰기, KVST), `CPY`·`CONT`, `UNARY`(TANH, GELU), attention은 `FLASH_ATTN_EXT`만(q8\_0 KV; `SOFT_MAX`와 attention `MUL_MAT`은 쓰지 않는다, D17, `docs/v2/03-attention-kv.md` §2.6), 메타데이터 op(`VIEW`, `RESHAPE`, `PERMUTE`, `TRANSPOSE`). 모델별 목록과 조건은 `docs/v2/06-software-verification.md` §8, §9.3이다. 이 단계가 끝나면 토큰당 split이 1개, LAUNCH가 1번이 된다.
 
 **단계 B** (M8 계획 개정, 2026-10-24): 제어 코어의 C++ 커널이 한 토큰을 디코드한다. 호스트는 메일박스에 토큰 id와 위치만 쓴다. 임베딩 행(DQROW), RoPE 위치, KV 쓰기 주소, attention이 도는 KV 블록 수는 제어 코어가 계산한다. 레이어 본체도 C++ 커널이 타일 명령어를 직접 발행하고, 위치에 따라 바뀌는 주소는 C++에서 계산한다. `CALL`은 위치와 무관한 명령 버퍼 프로그램에만 쓰며, lowering된 레이어 프로그램을 위치마다 부르기 위한 인자 레지스터 기준 lowering 모드는 백엔드에 두지 않는다 (결정, 2026-10-24). 단일 시퀀스 디코드에서는 인과 마스크가 "위치까지 전부 유효"라 마스크 텐서가 필요 없다.
 
@@ -619,6 +575,19 @@ for (;;) {
 [openTPU](https://github.com/FeSens/openTPU)는 같은 구조를 모델별로 손으로 짠 프로그램으로 구현했다 (위치를 레지스터로 받는 상주 디코드 프로그램, 버킷 간 프로그램 체인, 호스트 플래그 대기). Tesseract는 루프와 레이어 본체를 모델 구조별 C++ 커널로 쓰고, 가중치 배치와 모델 상수는 llama.cpp 백엔드가 정한 것을 받는다는 점이 다르다. 위치와 무관한 lowering 프로그램은 `CALL`로 부를 수 있다.
 
 ## 제어 코어 (RISC-V, 계획 M8)
+
+(v2, 2026-10-30) 제어 코어는 M6에 들어가고 모든 타일 명령어를 낸다 (D14). 이 절은 2026-10-24 계획(명령 버퍼 경로와 공존하는 M8 제어 코어)으로 썼고, v2의 규범적 정의는 `docs/v2/04-control-core.md`(CC), `docs/v2/01-execution-model.md`(EX), `docs/v2/05-debug.md`(DB)이며 이 문서에 참조로 포함된다. 이 절에서 다음 내용은 v2에서 효력이 없다.
+
+- 주소 공간 표와 TCM 크기 → CC §4\~§5 (ITCM 128 KiB, DTCM 64 KiB; 제어 창의 0x200\~0x2FC는 EX §4.5의 LQ·LCQ·로그 레지스터, SPM line 버퍼 별칭 0x5000\_0000 추가).
+- 호스트 쪽 CSR 표의 `CTL_*`, `CTL_PERF_*`, 메일박스 레지스터와 이미지 적재 절차 → EX §3, §5.1 (그 맵이 유일한 호스트 CSR 맵이다), LAUNCH 프로토콜 EX §4.
+- 두 벌로 나눈 s 레지스터 → VU 안의 한 벌 (VU §4.4).
+- 유닛 4 CMD와 `CALL`, `ISSUE_QMAP` → 폐기. 유닛 4는 뒷날의 attention 엔진 몫으로 비워 두고(M6에 없음), opcode → 유닛 표는 정적이다 (EX §7.2\~§7.3).
+- 검사기를 커맨드 프로세서와 함께 쓰는 규칙, 배타 규칙, 번갈아 처리하는 소유 규칙 → 없다 (`tsr_chk`, CC §8).
+- "중단과 리셋" 표의 `CTRL.ABORT`, `CTRL.SOFT_RESET`, CALL 행 → EX §8.5 (`SOFT_RESET`은 장치 수준 절차, 취소는 `LQ_CANCEL`·`LQ_STOP`).
+- 클럭 도메인의 메일박스·`CTL_*` 교차 → CC §11 (링은 코어 도메인에 있고 제어 코어는 꼬리표 붙은 핸드셰이크로만 닿는다). CR2 타이밍 관문(300 MHz)은 "제어 코어가 들어가도 k4 링크 ≥ 276.3 MHz"로 다시 정했다 (V2-CC-23).
+- 소프트웨어의 메일박스 실행 요청과 커널 인자 5개 → EX §4.3, §4.7 (인자 7개), `docs/v2/06-software-verification.md` §6. 디버그 → DB.
+
+비동기 발행, 티켓, 의존성, 크레딧, 완료 규칙, 오류 상태와 그 가시성(불변식 I1·I2), QABORT·QCLEAR, 큐 머리 정지, 정지 상태(QQUIESCENT), 메모리 모델은 아래 고친 대로 v2에서도 유효하며, 세부는 EX §8.2와 CC §5, §7\~§9다.
 
 (M8 계획 개정, 2026-10-24) 코어 안에 작은 RISC-V 제어 코어를 둔다. 제어 코어는 기존 256비트 타일 명령어(LD, ST, DQROW, QACT, MVM, VOP, RED, ROPE, TOPK, SOP)를 비동기로 발행하고(발행한 뒤 기다리지 않고 진행), 티켓으로 나중에 합류한다(fork/join). 여러 유닛이 동시에 실행된다. 커널은 C++로 쓰고(표준 RISC-V GCC·Clang, 전용 컴파일러 없음), 타일 연산은 C++ 헤더 라이브러리로 제공한다. JIT(torch.compile, tinygrad, 이후 JAX PJRT)는 미리 컴파일한 커널을 부른다. 이것이 M8\~M9에 계획했던 스칼라 ISA 확장(정수 MULI, RLD, LOOP, WAITM, JUMP)을 대신한다. llama.cpp 경로(호스트가 DDR에 쓴 명령 버퍼, 순차 의미론)는 그대로 둔다. 이 절은 계약만 정하고, 근거·레지스터 세부·비용·검증 계획은 `docs/ctrl-riscv.md`(계획, 미구현)에 둔다.
 
@@ -749,23 +718,19 @@ for (;;) {
    - 제어 코어가 t의 완료를 관찰한 뒤(`DONE_SEQ` 읽기, `WAIT_TICKET` 인터럽트) 한 SPM 읽기는 t의 효과를 본다. 제어 코어의 SPM 저장이 끝난 뒤 발행한 명령어는 그 값을 본다.
    - FENCE와 QCLEAR 티켓은 그 앞에 발행한 모든 명령어가 끝나야 끝난다.
    - 실행하지 않고 끝나는 항목도 의존이 끝난 뒤에야 끝난다 (위 "완료 규칙"). 그래서 끝난 티켓이 기대는 것은 이어진 것까지 모두 끝났다.
-   - 명령 버퍼 실행(호스트 START, CALL)은 그 전에 시작한 데이터패스 명령어가 모두 끝난 뒤 시작하고, 끝날 때까지 큐 명령어는 시작하지 않는다 (아래 배타 규칙).
    그 밖의 두 명령어(다른 유닛, 의존 사슬 없음)는 어떤 순서로든, 겹쳐서도 실행된다.
 3. "효과가 보인다"는 유닛의 done과 같다: SPM 쓰기를 `tsr_spm`이 모두 받았고, DRAM 쓰기 응답을 모두 받았다.
-4. 경합: 2와 5로 순서가 정해지지 않은 두 주체(큐 명령어, CALL 실행, 호스트의 명령 버퍼 실행, 제어 코어, 호스트)가 같은 SPM 바이트, DRAM beat, 또는 발행 경로 뱅크의 s 레지스터에 접근하고 그중 하나가 쓰기인 경우다. 경합이 있는 프로그램은 소프트웨어 결함이며 결과는 정의되지 않는다. 하드웨어는 검출하지 않고 ISA 시뮬레이터의 경합 검출기가 찾는다.
-5. 호스트: 호스트가 H2R 메시지를 올리기 전에 쓴(전송이 끝난) DRAM은, 제어 코어가 그 메시지를 읽은 뒤 발행한 명령어가 본다. 명령어가 쓴 DRAM은, 제어 코어가 그 명령어에 합류한 뒤 올린 R2H 메시지를 호스트가 읽은 뒤에 보인다. 호스트의 명령 버퍼 실행과 제어 코어 실행 요청 사이의 순서는 전송 계층의 소유 규칙(아래)이 정한다.
-6. 명령 버퍼 실행(호스트 START, CALL)은 큐의 데이터패스 명령어와 배타적이고(아래) 안에서는 순차 의미론을 따른다.
+4. 경합: 2와 5로 순서가 정해지지 않은 두 주체(큐 명령어, 제어 코어, 호스트)가 같은 SPM 바이트, DRAM beat, 또는 s 레지스터에 접근하고 그중 하나가 쓰기인 경우다. 경합이 있는 프로그램은 소프트웨어 결함이며 결과는 정의되지 않는다. 하드웨어는 검출하지 않고 ISA 시뮬레이터의 경합 검출기가 찾는다.
+5. 호스트 (v2, `docs/v2/01-execution-model.md` §2.3의 H1\~H5):
+   - H1. 호스트가 LAUNCH s의 `LQ_PUSH`를 쓰기 전에 끝난 전송(DMA 호출이 돌아온 것)으로 쓴 DRAM은, s나 그 뒤 LAUNCH가 실행되는 동안 발행된 모든 명령어가 본다.
+   - H2. LAUNCH s의 명령어가 쓴 DRAM은 호스트가 s의 답 기록을 읽은 뒤에 보인다. 런타임은 답을 올리기 전에 s의 모든 명령어에 합류하고(R6), 합류는 DRAM 쓰기 응답까지 포함한 done이다.
+   - H3. 끝나지 않은 LAUNCH가 읽거나 쓰는 DRAM에 호스트가 접근하면 경합이다 (정의되지 않음). 커널의 프로토콜이 정한 영역(예: M9 토큰 링)은 예외다.
+   - H4. 호스트는 SPM을 보지 못한다 (디버거는 디버그 모듈의 시스템 버스로 읽는다). 하드웨어는 LAUNCH 사이에 SPM을 바꾸지 않고 `SOFT_RESET`도 바꾸지 않으며, SPM은 하드웨어 리셋 뒤에만 정의되지 않는다. 커널은 LAUNCH 사이에 SPM 상태를 남길 수 있고 그 할당은 런타임이 맡는다.
+   - H5. 디스크립터 워드는 PCIe posted write 순서와 AXI4-Lite 쓰기 채널 순서를 따르고 어댑터는 쓰기를 도착 순서대로 처리하므로, `LQ_PUSH`는 그 전에 쓴 스테이징 워드를 언제나 본다.
+6. (v2에서 삭제) 명령 버퍼 실행과 큐 명령어의 배타 규칙: 명령 버퍼 실행이 없다 (D14). v1 트레이스를 바꾼 직렬 사슬은 `replay` 커널의 SERIAL 플래그로 순차 의미론을 얻는다 (EX §4.6).
 7. 유닛 안의 as-if 최적화(M5 연속 MVM 겹치기)는 그대로 허용한다.
 
-**명령 버퍼 경로와의 공존**
-
-- `CALL`(opcode 0x09, 발행 경로 전용, 명령 버퍼 안에서는 `ILLEGAL_OP`)은 명령 버퍼 하나를 CMD 유닛의 명령어 하나로 실행한다: w1 명령 버퍼 시작(ch0 beat), w2 명령어 수, w3\~w7 → R8\~R12. R1\~R7과 R13\~R15는 0으로 시작한다. 기존 fetch·검사·실행 경로와 디버그 블록을 그대로 쓴다. END면 그 티켓이 성공으로 끝나고, 오류면 그 티켓이 프로그램의 오류 코드로 끝난다. CALL 실행은 `STATUS`, `ERR_*`, `done`, `PERF_*`, `CMD_*`, `ARG*`(호스트 실행의 상태)를 바꾸지 않고 티켓, `CTL_STATUS.CALL_BUSY`, `CTL_PERF_*`로만 알린다. `CALL`은 위치에 따라 바뀌지 않는 명령 버퍼 프로그램에만 쓴다. M8·M9의 디코드 스텝은 C++ 커널이 타일 명령어를 직접 발행하며, 위치에 따라 바뀌는 주소(KV 쓰기 주소, 임베딩 행, attention 블록 수)는 C++에서 계산해 즉시값으로 넣는다. 백엔드에는 인자 레지스터 기준 lowering 모드를 두지 않는다 (lowering은 지금처럼 R0 기준, 절대 주소).
-- CALL이 바꾸는, 호스트가 볼 수 있는 상태: R1\~R15, 명령 버퍼 경로 뱅크의 s0\~s15, `PC`, 디버그 블록의 `DBG_IR*`·`DBG_OPA*`·`DBG_RETIRED`·`DBG_NEXT_PC`·`DBG_IA`·`DBG_UNIT`·`DBG_HIST*`. 그래서 실패한 호스트 실행의 사후 상태는 다음 CALL 전에 읽는다 (아래 소유 규칙이 그 틈을 준다). 그 상태가 CALL의 것인지는 `CTL_STATUS.LAST_RUN_CALL`이 알린다. `DBG_IA`는 실행을 시작할 때 잡아 둔 기준 주소(START는 `CMD_ADDR`, CALL은 w1)로 계산한다. 정지한 CALL은 `DBG_STATUS`와 `CTL_STATUS.CALL_BUSY`로 보이고, `STATUS`의 HALTED는 호스트 실행만 비춘다.
-- "실행 중"의 뜻: 데이터패스 유닛(DMA, QACT, MVM, VU)이 받은 명령어를 들고 있는 것이다. SYNC 항목과 실행하지 않고 끝나는 항목은 실행 중으로 치지 않는다.
-- 배타 규칙: 명령 버퍼 실행(호스트 START 또는 CALL)은 실행 중인 큐 명령어가 없을 때 시작한다. 호스트 START가 기다리거나 CMD 큐 머리의 CALL이 의존을 다 갖추면, 다른 큐 머리는 새 데이터패스 명령어를 시작하지 않는다 (우선순위는 호스트 START, 그다음 CALL). 실행이 끝날 때까지도 큐 머리는 데이터패스 명령어를 시작하지 않는다 (발행은 계속 받고, 실행하지 않고 끝나는 항목은 끝난다). 그래서 실행은 길어야 실행 중인 명령어 하나(32B 출력 헤드 약 10.8 ms)를 기다리고, 계속 채워지는 파이프라인에 밀려 굶지 않으며, CALL 뒤의 `join_all`도 막히지 않는다. 명령 버퍼 실행은 지금과 똑같다: 순차 의미론, DONE ⇒ 메모리 정지, 디버그 블록의 불변식, `PERF_*`. 제어 코어가 있는 코어도 기존 트레이스를 똑같이 재생한다 (RV\_RUN = 0에서 사이클까지 같다).
-- 큐 명령어가 실행 중이거나 CALL이 기다릴 때의 호스트 START는 지금처럼 받고(BUSY, `CTL_STATUS.START_WAIT`), 실행 중인 명령어가 끝나면 기다리는 CALL보다 먼저 시작한다. CALL이 실행 중이거나 정지 중일 때의 호스트 START도 같이 받고(BUSY, `CTL_STATUS.START_WAIT`) 그 CALL이 끝난 뒤 시작한다 (아래 소유 규칙을 지키는 전송 계층은 이렇게 하지 않는다). `PERF_*`는 실행이 실제로 시작한 뒤의 사건만 센다 ("구현 명확화"): 기다린 사이클과 그동안 큐 명령어가 낸 사건은 `CTL_PERF_*`로 간다. 기다리는 START에 온 `CTRL.ABORT`는 실행을 바로 끝내고(`ABORTED`, `ERR_PC` = 0, DONE | ERR), SOFT\_RESET은 시작하지 않은 채 끝낸다.
-- 소유 규칙 (전송 계층): 한 프로세스가 장치(CU)를 독점한다. 호스트 lowering은 SPM 전체를 쓰고 제어 코어 커널은 명령어 사이에 SPM 버퍼를 남기므로, 전송 계층은 두 경로를 번갈아 처리한다: 명령 버퍼 실행(exec)은 끝나지 않은 제어 코어 실행 요청이 없을 때만(모든 R2H DONE을 받았고 QIDLE) 시작하고, 실행 요청(launch)은 BUSY = 0일 때만 보낸다. 상주 루프(M9)가 도는 동안은 실행 요청이 끝나지 않은 것으로 보아 exec를 거부한다. 소프트웨어 규칙이며 SPM은 나누지 않고 하드웨어는 바꾸지 않는다. 장치를 열 때는(연결(attach)을 요청하지 않으면) 이전 프로세스가 남긴 제어 코어를 RV\_RUN = 0, QABORT, 리셋 절차 완료와 QIDLE 확인, QCLEAR 순으로 멈춘다.
-- 배타 규칙의 비용: CALL 프로그램과 큐의 데이터패스 명령어가 겹치지 않는다. CALL 프로그램은 안에서 어차피 순차다. 완화는 미결정 사항이다.
+"실행 중"은 데이터패스 유닛(DMA, QACT, MVM, VU)이 받은 명령어를 들고 있는 것이다. SYNC 항목과 실행하지 않고 끝나는 항목은 실행 중으로 치지 않는다.
 
 **클럭 도메인**
 
@@ -820,15 +785,17 @@ for (;;) {
 
 **동시 실행 프로그램의 비트 일치 (계획, M8)**: 제어 코어 프로그램(이미지, 입력, 호스트 메시지)은 경합이 없고(경합 검출기), 관찰되는 동작(유닛별 발행 명령어열, R2H 메시지, 제어 코어의 SPM 저장열, 최종 SPM과 DRAM)이 일정에 따라 달라지지 않을 때 유효하다. 검사는 무작위 일정 8개 이상에서 이 넷을 비교하는 것이고, 시뮬레이터가 만들지 못한 타이밍은 모든 클럭 비율의 잠금 단계 co-simulation이 맡는다. 유효한 프로그램은 최종 상태(쓴 DRAM 영역, 쓴 SPM line, R2H 메시지, 티켓 오류 기록)가 오류 경로까지 하나로 정해지고, RTL과 하드웨어는 그와 비트 단위로 같아야 한다. 폴링 횟수, MTIME, `PERF_*`, `CTL_PERF_*`, 완료 기록은 비교하지 않는다 ("제어 코어" 절).
 
-**트레이스 형식**: SPM은 시작 시 정의되지 않으므로 모든 입력은 DRAM에서 온다. 트레이스 하나는 디렉터리 하나다.
+**트레이스 형식** (v2. 규범적 정의는 `docs/v2/06-software-verification.md` §5이며 이 문서에 참조로 포함된다): SPM은 시작 시 정의되지 않으므로 모든 입력은 DRAM에서 온다. 트레이스 하나는 LAUNCH 하나이고 디렉터리 하나다.
 
-- `meta.json`: 구성 파라미터, 사용한 DRAM 영역 목록, 명령어 수
-- `cmd.bin`: 명령어 배열
-- `init/ch<c>_<offset>.bin`: 실행 전 DRAM 영역 내용
-- `expect/ch<c>_<offset>.bin`: 실행 후 기대 DRAM 내용 (`ST`로 쓰인 영역)
-- (M8) 제어 코어 실행의 트레이스는 `meta.json`의 `ctrl` 항목(이미지, 부트 주소, 클럭 비율, 일정), `rv/image.elf`, 호스트 메시지 `mbox_in.bin`, 유닛별 발행 명령어열 `ops/u<k>.bin`, 기대값 `expect/r2h.bin`·`expect/tickets.bin`을 더한다. 재생은 제어 코어까지 포함한 전체 재생과, 발행 명령어열만 큐에 넣는 타일 재생 두 가지다.
+- `meta.json` (version 2): 구성 파라미터(`caps`, `ctl_id`, `cfg3`, TCM 크기, 유닛별 큐 깊이 포함), 종류(`launch`: 이미지 + 디스크립터, `ops`: 타일 명령어만의 push 스트림), 이미지 id, 디스크립터, 기대하는 DONE 기록(r0\~r6), init·expect 영역 목록, 일정과 클럭 비율. `perf`는 참고값이다.
+- `ops/push.bin`: 제어 코어가 발행 FIFO로 보낸 항목 전부를 push 순서대로 담은 48바이트 little-endian 기록의 배열 (명령어 워드 8개, 의존 티켓 2개, `ISSUE_PUSH` 값, 종류: 명령어·큐 제어(QCTRL)·TRACE\_MARK). 의존 티켓은 {유닛, 상대 순번}이며 상대 순번은 커널 진입(또는 `replay` 시작) 때 그 유닛의 발행 수에 대한 차이라, 트레이스가 앞선 이력과 무관하다. 유닛별 명령어열은 이 파일을 유닛 하나로 거른 것이다.
+- `init/ch<c>_<offset>.bin`: 실행 전 DRAM 영역 내용, `expect/ch<c>_<offset>.bin`: 그 LAUNCH가 쓴 DRAM (v1과 같다).
+- `expect/tickets.bin`: 유닛별로 그 LAUNCH 동안 끝난 항목 수와 오류 기록 (상대 순번, `ERR_INFO`, `ERR_W0`, 상대 push 번호).
+- 펌웨어 이미지는 세트마다 `images/<이미지 id>.elf`에 한 번만 둔다.
 
-백엔드가 `TSR_TRACE`로 실제 llama.cpp 실행의 split마다 트레이스를 덤프하므로, 실제 모델의 실제 텐서 모양이 그대로 RTL 회귀 테스트가 된다.
+재생: `launch` 종류는 이미지를 부팅하고 기록한 디스크립터를 LAUNCH해 DONE을 기다린다. `ops` 종류는 `push.bin`을 DRAM에 올리고 `replay` 커널로 재생한다 (v1 모델 트레이스를 바꾼 직렬 사슬은 SERIAL 플래그). 비교 대상은 DONE 필드, expect 영역(비트 단위), 쓴 DRAM beat 집합 = expect 영역의 합집합, 읽은 DRAM ⊆ init 영역 또는 같은 LAUNCH에서 먼저 쓴 곳, 유닛별 완료 수, 오류 기록이다. push 스트림을 볼 수 있는 곳(시뮬레이터, Verilator의 발행 FIFO 감시)에서는 유닛별 push 스트림도 비교한다. RTL 타일 재생 벤치는 RISC-V 없이 `push.bin`을 발행 FIFO에 바로 넣는다. v1 형식(`cmd.bin`, 명령어 배열)은 변환기 `tsr-trace-conv` 안에만 남는다.
+
+백엔드가 `TSR_TRACE`로 실제 llama.cpp 실행의 LAUNCH마다(v1은 split마다) 트레이스를 덤프하므로, 실제 모델의 실제 텐서 모양이 그대로 RTL 회귀 테스트가 된다.
 
 회귀 트레이스 세트 (모두 시뮬레이터 재생 통과, 재생성 스크립트는 각 디렉터리의 `regen.sh`):
 
@@ -839,6 +806,8 @@ for (;;) {
 | `traces/m3` | `--ops m3`: MVM 경계(부분 청크, K\_MAX, N = 0, N < C, 채널 둘이 나눠 쓰는 y line, ACC 특수값, 임의 QA 이미지, 스케일 특수값)와 MVM 오류 23종, 7개 구성(U200 v1, T\_MAX 8, 1채널, 3채널, 16채널, 오류 두 세트) | 284개, 150 MiB |
 | `traces/model` | Qwen2.5-0.5B Q8\_0과 Q4\_K\_M(재양자화) 각각 프롬프트 "Hi", 1토큰 실행의 split 전부 | 290개, 989 MiB |
 | `traces/tmp/tbo`, `tbo_tmax8` | `test-backend-ops` 덤프 (재생성 스크립트 없음) | 1,402개씩 |
+
+(v2) 위 세트는 v1(`cmd.bin`) 트레이스다. X0에서 git의 `traces/m2`·`traces/gen`과 `traces/tmp`를 지우고, `traces/m2`·`traces/gen`·`traces/m3`는 `tsr-trace-gen` v2가 같은 시드와 구성으로 `ops` 트레이스로 다시 만들며(오류 기대값은 v2 규칙으로 다시 정한다), `traces/model` 290개는 `tsr-trace-conv`가 직렬 사슬 `traces/model-v1conv`로 바꾼다. 새 세트는 `traces/vu`, `traces/at`, `traces/ctrl`, `traces/model-v2`다 (`docs/v2/06-software-verification.md` §5.6).
 
 **블록 단위 테스트 범위**
 
@@ -852,6 +821,8 @@ for (;;) {
 **성능 검증**: 시뮬레이터도 채널별 beat 수를 세므로 이론 사이클을 낸다. 하드웨어 `PERF_*` 카운터와 비교해 DRAM 대기 사이클 비율로 실효 대역폭을 확인한다.
 
 ## 프로파일러와 디버거
+
+(v2, 2026-10-30) 이 절은 v1 명령 버퍼 경로의 계획(PD1\~PD5)이다. v2의 디버그와 프로파일러는 `docs/v2/05-debug.md`(DB)가 정의하며 이 문서에 참조로 포함된다 (D18). 제어 코어는 RISC-V 디버그 모듈(riscv-dbg)과 CSR 창의 DMI(`DBG_CFG.DMI_EN`이 켤 때만 동작)로 멈추고 단계 실행하며, GDB는 OpenOCD 없이 장치를 가진 프로세스 안의 RSP 서버(`libtsr_dbg`) 또는 `tsr-dbg`로 붙는다. 디버거의 메모리 접근은 디버그 모듈의 시스템 버스(SBA)이고, SBA는 제어 창과 코어 창에 쓸 수 없다 (D15). 타일 수준 디버그는 push 번호 문턱에서 큐 머리를 멈추는 정지점, 한 번에 하나씩 실행(QSTEP, serial 모드), opcode·티켓·SPM·DRAM 범위의 타일 브레이크포인트, 512항 발행 이력(push한 C++ 줄 포함), 유닛별 탐침을 둔다. 로그 레코드 머리와 크래시·트랩 계약, 멈춤 진단과 5단계 복구 사다리도 DB다. 프로파일러는 EX §6의 PERF(DB 몫 61\~63), 완료 기록(REC), DRAM 링에 32바이트 기록을 쓰는 하드웨어 트레이스 기록기(TRW, 채널 0), TSR\_STATS v2를 쓴다. 디버그 블록은 코어 CSR 0x800\~0xAFC(U200 `s_axi_control` 0x1800\~0x1AFC)다. 아래의 명령 버퍼 디버그 블록(명령어 경계 정지, `DBG_IR*`·`DBG_R*`·`DBG_HIST*`, `STATUS.HALTED`), 디버그 SPM 창, 트레이스 링 `TRC_*`, 접두 실행과 정지 흉내, 실행별 shadow 대조, `split` 귀속, OpenOCD를 거치는 GDB는 `tsr_cmdproc`와 함께 없앴다. 그대로 남는 것: U200은 JTAG를 쓰지 않는다, ILA는 디버그 빌드에만 넣는다, 모든 CSR 접근은 정해진 시간 안에 끝난다, Perfetto 출력과 `tsr-prof`, `TSR_DUMP_DIR` 덤프.
 
 프로파일러는 디바이스·호스트 시간이 어디에 쓰이는지, 디버거는 하드웨어가 어디서부터 틀리거나 멈추는지 보여 준다. 둘 다 데이터패스, 수치 규칙, ISA 인코딩, 순차 의미론을 바꾸지 않으며, 디버거로 레지스터·SPM·DRAM을 고치지 않는 한 켜도 디바이스가 쓴 바이트는 끈 실행과 같다. 이 절은 계약만 정하고, 도구(`tsr-dbg`, `tsr-prof`)·파일 형식·지표·환경변수·레지스터별 맵·검증 계획은 `docs/prof-dbg.md`(계획, 미구현)에 둔다.
 
@@ -924,9 +895,10 @@ for (;;) {
 tesseract/
 ├── docs/spec.md             # 이 문서 (Markdown 내보내기)
 ├── sw/
-│   ├── ggml-tesseract/            # 백엔드: reg/device/buffer, lowering, 리패커, 프로그램 캐시
-│   ├── sim/                 # ISA 시뮬레이터, tsr_ref_math.c, 트레이스 입출력, RV32 인터프리터·발행 큐 모델·경합 검출기 (M8)
-│   ├── ctrl/                # 제어 코어 SDK: tsr/kernel.hpp, crt0, 링커 스크립트, 런타임, 커널 (M8)
+│   ├── tables/              # 표 원천 tsr_tables.py와 생성기 gen_tables.py: SV 패키지, C 헤더, mmio/vu/at.hpp, tb Python (v2, V2-EX-30)
+│   ├── ggml-tesseract/            # 백엔드: reg/device/buffer, 리패커, OPL 빌더와 캐시, KV 버퍼 (v1: lowering, 프로그램 캐시)
+│   ├── sim/                 # ISA 시뮬레이터, tsr_ref_math.c, 트레이스 입출력, RV32 인터프리터·발행 큐 모델·경합 검출기 (M6)
+│   ├── ctrl/                # 제어 코어 펌웨어 SDK: tsr/kernel.hpp, crt0, 링커 스크립트, 런타임, 커널 graph·replay·selftest (M6)
 │   ├── transport/           # tsr_transport 구현: sim, xrt, mock, vkernel (kdev 계층)
 │   ├── rt/                  # tsr_rt: ggml 없는 런타임 (가중치 업로드, linear, 프로그램 캐시), tsr_lower 공유
 │   ├── torch/               # PyTorch 백엔드: torch.compile 백엔드 "tesseract", 확장 모듈, 테스트, hf_check
@@ -934,7 +906,7 @@ tesseract/
 │   ├── runner/              # 단계 C 호스트 쪽 러너: 메일박스, 링버퍼 폴링 (M9)
 │   └── tools/               # 트레이스 러너, 테스트 벡터 생성기, klcheck (ggml 링크), tsr-prof·tsr-dbg (계획, PD1)
 ├── rtl/
-│   ├── core/                # 벤더 독립 SV: cmdproc(레지스터), chk(검사기), issue(발행 큐), ctrl/(제어 코어, M8), cluster, vu, spm, dma, dbg(디버그 블록, 계획 M4)
+│   ├── core/                # 벤더 독립 SV: chk(검사기), issue(발행 큐), ctrl/(제어 코어), cluster, vu, spm, dma, dbg(디버그 블록) (v2, M6. cmdproc·fetch는 X0에서 삭제)
 │   ├── tech/generic/        # tsr_sram_*, tsr_mac_lane 일반 구현
 │   ├── tech/xilinx/         # URAM/BRAM, DSP48E2 패킹
 │   └── platform/alveo_xrt/  # 제어 브리지, AXI4 메모리 브리지, 커널 톱, kernel.xml, bw/ (M0 대역폭 커널)
@@ -942,7 +914,7 @@ tesseract/
 │                            # tech/ (기술 래퍼 동등성), platform/ (커널 벤치, vkernel 서버, bw 벤치), ctrl/ (제어 코어, 두 클럭)
 ├── traces/                  # 회귀용 트레이스 (작은 모델)
 ├── third_party/llama.cpp/   # 고정 커밋 포크 (서브모듈)
-├── third_party/ibex/, riscv-dbg/   # 고정 커밋, 수정하지 않음 (제어 코어, M8)
+├── third_party/ibex/, riscv-dbg/   # 고정 커밋, 수정하지 않음 (제어 코어, M6)
 ├── hw/u200/                 # v++ 설정(k1, k4, bw), connectivity, 플로어플랜, build_xclbin.sh
 └── build/                   # 빌드 산출물 (git 제외)
 ```
@@ -959,16 +931,16 @@ tesseract/
 | M3 · MVM 클러스터, Q8\_0 | 1채널로 시작해 4채널로 확장 | Qwen2.5-0.5B Q8\_0 실기 동작 |
 | M4 · Q4\_K 언팩, 4채널 | v1 목표 · 그 밖의 타입은 로드 시 Q8\_0 변환 | 32B Q4\_K\_M 실기 동작 · 1 tok/s 이상 |
 | M5 · (M8로 통합) | 호스트 보조 MoE는 v1 명령 버퍼 경로를 전제했으므로 v2 개편으로 없앴다 | — |
-| M6 · 코어 v2 하드웨어 | 호스트 명령 버퍼 경로 삭제, RISC-V 제어 코어(Ibex)와 비동기 발행 큐, 벡터 유닛, attention·KV 디바이스화(q8\_0 KV, Flash Attention), SPM 두 번째 읽기 경로, 디버그(PCIe를 통한 GDB 포함) | v2에서 0.5B Q8\_0 logits가 sim과 비트 일치, 32B KL 기준 통과 (MVM은 RISC-V 커널이 발행) |
-| M7 · RISC-V 커널 라이브러리, 그래프 실행 | RMSNorm·RoPE·SwiGLU·GELU·잔차·Flash Attention·활성값 양자화 커널, ggml split을 op 목록으로 써서 한 번에 LAUNCH | Qwen2.5·Gemma 4(dense)가 토큰당 LAUNCH 1회 · DDR 이용률 실측 |
+| M6 · 코어 v2 하드웨어 | 호스트 명령 버퍼 경로 삭제, RISC-V 제어 코어(Ibex)와 비동기 발행 큐, 벡터 유닛, attention·KV 디바이스화(q8\_0 KV, Flash Attention), SPM 두 번째 읽기 경로, 디버그(PCIe를 통한 GDB 포함) | v2에서 0.5B Q8\_0 logits가 sim과 비트 일치, 32B Q4\_K\_M KL 기준 통과 (MVM은 RISC-V 커널이 발행, attention은 CPU: `offload_kqv` = false), 카드에서 GDB smoke |
+| M7 · RISC-V 커널 라이브러리, 그래프 실행 | RMSNorm·RoPE·SwiGLU·GELU·잔차·Flash Attention·활성값 양자화 커널, ggml split을 op 목록으로 써서 한 번에 LAUNCH | Qwen2.5·Gemma 4(dense)가 토큰당 LAUNCH 1회 (KV 캐시와 attention은 디바이스), logits가 sim과 비트 일치, KL 기준 통과 · DDR 이용률 실측 |
 | M8 · 디바이스 MoE, PyTorch (v2 개편 전 내용: 제어 코어, C++ SDK, 디바이스 MoE) | 단계 B: RISC-V 제어 코어(Ibex), 비동기 발행 큐·티켓·의존성, SPM 창, CALL, C++ SDK, TOPK, 디바이스 MoE, C++ 디코드 스텝 | 호스트는 토큰당 인자 2개만 쓰기 |
 | M9 · 디바이스 자체 디코드 루프 (선택) | 단계 C: 제어 코어 상주 C++ 디코드 루프, 메일박스, 토큰 링버퍼, 디바이스 샘플링, `sw/runner` | 호스트는 링버퍼 폴링만 |
 
-**v2 개편 (결정, 2026-10-30)**: 호스트가 명령 버퍼를 실행시키는 경로(v1)를 지우고, 호스트는 RISC-V 제어 코어에 올린 커널을 LAUNCH만 한다. 모든 타일 명령은 RISC-V가 발행한다. 제어 코어, 벡터 유닛, attention·KV 하드웨어를 M6에서 한 번에 넣고(코어 v2), M7에서 커널 라이브러리와 그래프 단위 실행을 만든다. 디버그용 호스트 발행 창은 두지 않으며, 브링업·selftest·트레이스 재생도 RISC-V 커널로 한다. v1은 지금 지운다(마지막 v1은 태그 `v1-m4`, M4 통과 상태). KV 캐시는 q8\_0이고 attention은 llama.cpp의 FLASH\_ATTN\_EXT로 받는다(8비트 V 캐시는 FA를 요구한다). 첫 v2부터 PCIe를 통한 GDB 디버깅을 넣는다. 위 표의 M8·M9 행에 남은 v1 시절 문구(CALL, 명령 버퍼 공존 등)와 이 문서의 명령 버퍼 관련 절은 M6 설계에서 다시 쓴다. 결정 목록은 `docs/ctrl-riscv.md` D14\~D18. 그림 `docs/fig/milestones.jpg`는 개편 전 내용이다.
+**v2 개편 (결정, 2026-10-30)**: 호스트가 명령 버퍼를 실행시키는 경로(v1)를 지우고, 호스트는 RISC-V 제어 코어에 올린 커널을 LAUNCH만 한다. 모든 타일 명령은 RISC-V가 발행한다. 제어 코어, 벡터 유닛, attention·KV 하드웨어를 M6에서 한 번에 넣고(코어 v2), M7에서 커널 라이브러리와 그래프 단위 실행을 만든다. 디버그용 호스트 발행 창은 두지 않으며, 브링업·selftest·트레이스 재생도 RISC-V 커널로 한다. v1은 지금 지운다(마지막 v1은 태그 `v1-m4`, M4 통과 상태). KV 캐시는 q8\_0이고 attention은 llama.cpp의 FLASH\_ATTN\_EXT로 받는다(8비트 V 캐시는 FA를 요구한다). 첫 v2부터 PCIe를 통한 GDB 디버깅을 넣는다. M6 설계는 `docs/v2/`(2026-10-30, 6개 영역 문서의 통합 설계, 구현 전)이고, 그 결정은 W0에서 이 문서에 반영했다 (`docs/v2/README.md` §11). 위 표의 M8·M9 행에 남은 v1 시절 문구(CALL, 메일박스 등)는 M8·M9 착수 때 다시 정한다. 결정 목록은 `docs/ctrl-riscv.md` D14\~D18과 `docs/v2/README.md` §2, §6, 통과 조건의 세부는 `docs/v2/06-software-verification.md` §10.4. 그림 `docs/fig/milestones.jpg`는 개편 전 내용이다.
 
 M8 계획 개정(2026-10-24): 레지스터 확장(RLD·MULI·LOOP)과 WAITM·JUMP 대신 RISC-V 제어 코어를 넣는다. M8·M9의 통과 조건은 그대로다. 제어 코어의 소프트웨어 부분(시뮬레이터의 RV32 인터프리터, 큐 모델, 경합 검출기, SDK)은 M4 뒤 M5\~M7과 나란히 시작할 수 있고, RTL은 M8에서 한다 (`docs/ctrl-riscv.md` §11). 그림 `docs/fig/milestones.jpg`는 다음 그림 갱신 때 맞춘다.
 
-진행 기록: M1 통과(2026-10-22, 32B klcheck 비율 1.36, top-1 98.83%), M2 통과(2026-10-23, `traces/m2` 172개 Verilator 재생 비트 일치). M0는 카드 장착과 XRT·플랫폼 설치 뒤에 한다. M3의 RTL은 Q4\_K 경로까지 함께 설계·검증한다(클러스터 데이터패스를 공유하므로). M3 통과 조건은 실기 동작이라 플랫폼 어댑터와 XRT 전송 계층이 M3에 들어간다. "실기 동작"은 카드에서 낸 logits가 같은 프롬프트의 `TSR_DEVICE=sim`과 비트 일치하고(`klcheck compare --expect-identical`) KL 기준도 통과하는 것으로 잰다. M3 RTL·플랫폼(A\~C단계) 완료(2026-10-24, 카드 전 단계까지): 실제 호스트 스택이 Verilator 커널(`TSR_DEVICE=vkernel`; k1 = 1채널 T\_MAX 1, k4t1 = 4채널 T\_MAX 1, k4 = 4채널 T\_MAX 8)에서 Qwen2.5-0.5B Q8\_0을 돌려 logits·토큰이 `TSR_DEVICE=sim`과 비트 일치했다. 디코드 토큰당 `PERF_CYCLES`는 4채널 2.28 M(300 MHz에서 7.6 ms), 1채널 8.48 M이다. 코어 전체 Vivado OOC는 세 구성 모두 300 MHz를 맞췄다(k4 WNS +0.015 ns). `tb/run_all.sh` 211개 통과. 카드(2026-10-25\~30): M0 통과(채널당 읽기 18.0 GB/s, 채널마다 16 GiB로 카드는 64 GB), M3 통과(k1 300 MHz와 k4 276 MHz 모두 0.5B logits가 sim과 비트 일치, KL 기준 통과, k4 54.7 tok/s; k4 링크는 300 MHz를 0.285 ns 차로 놓쳐 `v++`가 클럭을 276 MHz로 낮췄다), M4 통과(Qwen2.5-32B Q4\_K\_M 2.93 tok/s, klcheck 비율 1.30, top-1 99.02%). 결과는 `docs/platform-u200.md` §14.
+진행 기록: M1 통과(2026-10-22, 32B klcheck 비율 1.36, top-1 98.83%), M2 통과(2026-10-23, `traces/m2` 172개 Verilator 재생 비트 일치). M0는 카드 장착과 XRT·플랫폼 설치 뒤에 한다. M3의 RTL은 Q4\_K 경로까지 함께 설계·검증한다(클러스터 데이터패스를 공유하므로). M3 통과 조건은 실기 동작이라 플랫폼 어댑터와 XRT 전송 계층이 M3에 들어간다. "실기 동작"은 카드에서 낸 logits가 같은 프롬프트의 `TSR_DEVICE=sim`과 비트 일치하고(`klcheck compare --expect-identical`) KL 기준도 통과하는 것으로 잰다. M3 RTL·플랫폼(A\~C단계) 완료(2026-10-24, 카드 전 단계까지): 실제 호스트 스택이 Verilator 커널(`TSR_DEVICE=vkernel`; k1 = 1채널 T\_MAX 1, k4t1 = 4채널 T\_MAX 1, k4 = 4채널 T\_MAX 8)에서 Qwen2.5-0.5B Q8\_0을 돌려 logits·토큰이 `TSR_DEVICE=sim`과 비트 일치했다. 디코드 토큰당 `PERF_CYCLES`는 4채널 2.28 M(300 MHz에서 7.6 ms), 1채널 8.48 M이다. 코어 전체 Vivado OOC는 세 구성 모두 300 MHz를 맞췄다(k4 WNS +0.015 ns). `tb/run_all.sh` 211개 통과. 카드(2026-10-25\~30): M0 통과(채널당 읽기 18.0 GB/s, 채널마다 16 GiB로 카드는 64 GB), M3 통과(k1 300 MHz와 k4 276 MHz 모두 0.5B logits가 sim과 비트 일치, KL 기준 통과, k4 54.7 tok/s; k4 링크는 300 MHz를 0.285 ns 차로 놓쳐 `v++`가 클럭을 276 MHz로 낮췄다), M4 통과(Qwen2.5-32B Q4\_K\_M 2.93 tok/s, klcheck 비율 1.30, top-1 99.02%). 결과는 `docs/platform-u200.md` §14. v2(2026-10-30): 설계 완료(`docs/v2/`). W0 진행 중: X0(v1 삭제, 첫 M6 커밋, `docs/v2/01-execution-model.md` §12), 표 원천 `sw/tables/tsr_tables.py`와 생성기(P1.1), `tsr_ref_math.c`와 독립 numpy 모델(P1.3 시작), 이 문서와 관련 문서의 편집. X0 뒤 트리에는 v2 경로가 시뮬레이터에서 끝까지 돌 때(W3)까지 모델을 실행하는 경로가 없고, 카드 실행과 v1 비교는 태그 `v1-m4`와 `build/v1`(v1 바이너리·xclbin·`env.sh` 사본, git 밖)로 한다.
 
 M1에서 소프트웨어 경로가 먼저 완성되고, M2 이후 하드웨어 단계는 모두 같은 트레이스로 검증한다. ISA 기능은 각 단계에 필요한 만큼만 구현하되, 인코딩은 처음부터 이 문서의 ISA 절을 따른다.
 
@@ -977,50 +949,52 @@ M1에서 소프트웨어 경로가 먼저 완성되고, M2 이후 하드웨어 �
 - [x] 프로젝트 이름: Tesseract로 확정
 - [x] U200 셸과 Vitis/XRT 버전 확정, `platforminfo`로 채널별 SLR 위치 확인 (2026-10-23). `xilinx_u200_gen3x16_xdma_2_202110_1`, Vitis 2024.2, XRT 2.18.179. `platforminfo`: DDR bank0 SLR0, bank1·bank2 SLR1, bank3 SLR2. 동적 영역 SLR0/1/2 = LUT 388,160 / 205,440 / 385,440, DSP 2,280 / 1,320 / 2,280, BRAM 720 / 420 / 720, URAM 320 / 160 / 320, 커널 클록 300 MHz(기본)·500 MHz. 카드에 올라간 셸만 장착 후 `xbutil examine`으로 확인한다
 - [x] 카드 DDR4 용량 확인 (M0, 2026-10-23 기록; 확인 2026-10-25). 결과: 채널마다 16 GiB 전 범위가 겹침 없이 읽고 쓰인다(아래 겹침 검사, 15회 실행 모두 통과). 카드 DDR4는 표준과 같은 16 GB × 4 = 64 GB이고, `CH_BYTES`와 `TSR_DEF_CH_BYTES`는 16 GiB 그대로 둔다. 아래는 확인 전 기록이다. 판매자 설명으로는 32 GB 특주 모델이고 DIMM 4장이 모두 꽂혀 있다. 표준 U200은 16 GB × 4 = 64 GB이고, 플랫폼 메모리 토폴로지와 `TSR_DEF_CH_BYTES`(16 GiB)도 이 값을 전제로 한다. 카드 장착 후 확인할 것: DIMM 용량과 부품 번호(`xbutil examine`, 가능하면 DIMM 라벨), 표준 셸(`xilinx_u200_gen3x16_xdma_base_2`)의 DDR4 컨트롤러가 이 DIMM으로 보정되는지(`xbutil validate`, dmesg), M0 대역폭 커널로 채널 전 범위 읽기·쓰기와 주소 앨리어싱 검사(예: 0과 8 GiB 오프셋에 서로 다른 패턴을 쓰고 다시 읽기). 표준 플랫폼의 DDR4 컨트롤러 4개는 `MTA18ASF2G72PZ-2G3`(16 GB DDR4-2400 ECC RDIMM, 2Rx8)로 고정 설정되어 있고 SPD를 읽지 않는다(`hw.xsa`의 preset과 DDR4 IP 설정, AXI 주소 34비트로 확인). 예상: 8 GB DIMM이 2Rx8(4 Gb 칩, 예 `MTA18ASF1G72PZ-2G3`)이면 보정은 통과하고 위쪽 8 GB가 아래쪽과 겹친다. 1Rx8(`MTA9ASF1G72PZ-2G3`)이나 x4 구성이면 보정이 실패할 수 있고, 그때는 같은 구성의 16 GB 2Rx8 RDIMM으로 교체하는 것이 가장 간단하다(맞춤 플랫폼은 비용이 크다). 먼저 DIMM 라벨의 부품 번호와 판매자가 쓰던 셸·`xbutil validate` 결과를 확인한다. 사용자가 카드를 받은 뒤 표준 셸을 굽고 `xbutil validate` 등 시험을 모두 통과했다(2026-10-23 전언). 따라서 보정 실패 경우는 배제되고, 남는 확인은 채널당 실제 용량과 위쪽 주소 겹침이다. validate의 메모리 시험은 작은 버퍼만 쓰므로 이것을 잡지 못한다. 장착 후 `xbutil examine`의 셸이 `xilinx_u200_gen3x16_xdma_base_2`이면 다시 굽지 않는다. 겹침 검사 명령(`docs/platform-u200.md` §14): `tsr_bw --sizes 8G --ch-mib 16384 --bursts 64 --modes w,r --reps 1 --verify full`. 채움이 [0, 8 GiB)를, 쓰기 실행이 [8 GiB, 16 GiB)를 덮으므로 위쪽 절반이 아래쪽과 겹치면 읽기 체크섬이 틀린다. 채널당 8 GB면 비트스트림 `CH_BYTES`와 전송 계층 채널 크기를 8 GiB로 맞춘다. 이때 수용 모델은 32B Q4\_K\_M(가중치 약 20.7 GB, 채널당 약 5.2 GB)과 30B-A3B까지이고 70B는 들어가지 않는다
-- [ ] exp·역수·sin·cos 근사 알고리즘과 계수 확정 (`tsr_ref_math.c`, M6 전)
-- [ ] 명령 버퍼 경로의 비순차 실행(유닛 간 겹치기) 도입 여부 (M8 계획 개정: 제어 코어 경로는 발행 큐로 유닛을 동시에 쓰므로, 이 항목은 명령 버퍼 안의 겹치기만 다룬다): M4 성능 카운터의 명령어 간 공백 비율로 판단. 지표는 MVM 공백 비율 G = 1 − Σ`PERF_MVM_CYCLES` / Σ`PERF_CYCLES`와 그 벽시계 몫이고, 제안 기준은 `docs/prof-dbg.md`에 있다 (참고: Qwen2.5-0.5B Q8\_0, `traces/model`의 1토큰, 사이클 모델 G = 3.98%)
+- [x] exp·역수·sin·cos 근사 알고리즘과 계수 확정 (`tsr_ref_math.c`, M6 전). v2(2026-10-30)에서 정했다: `docs/v2/02-vector-unit.md` §6과 부록 A가 EXPK, 정확 반올림 역수(RECIP\_APPROX 없음), 2/π 정수 범위 축소의 SIN·COS, GELU16을 비트 단위로 정의한다. 전수(2³² 입력) 정확도 수치는 W0(2026-10-30)에서 측정했고 모두 모델 수치의 2배 게이트 안이다 (`docs/v2/02-vector-unit.md` §6.9, GELU16 불일치율은 §6.5)
+- [x] (v2에서 해당 없음: 명령 버퍼 경로가 없다, D14) 명령 버퍼 경로의 비순차 실행(유닛 간 겹치기) 도입 여부 (M8 계획 개정: 제어 코어 경로는 발행 큐로 유닛을 동시에 쓰므로, 이 항목은 명령 버퍼 안의 겹치기만 다룬다): M4 성능 카운터의 명령어 간 공백 비율로 판단. 지표는 MVM 공백 비율 G = 1 − Σ`PERF_MVM_CYCLES` / Σ`PERF_CYCLES`와 그 벽시계 몫이고, 제안 기준은 `docs/prof-dbg.md`에 있다 (참고: Qwen2.5-0.5B Q8\_0, `traces/model`의 1토큰, 사이클 모델 G = 3.98%)
 - [ ] T\_MAX 합성값과 토큰 패킹 방식 (M7에서 앞당김, 2026-10-23). 합성값 8을 목표로 한다. 시뮬레이터에서 T > 1 경로를 확인했다: numcheck PASS(0.5B 두 개, 32B), T\_MAX 1과 출력 바이트 동일, 사이클 모델 프리필 0.5B 5.9배·32B 7.2배. M3 C단계 결과(2026-10-24): 합성값 8로 정했다. 4채널 T\_MAX 8 코어가 Vivado OOC에서 300 MHz를 맞췄고(WNS +0.015 ns, LUT 270,910, DSP 2,728, RAMB36 808, URAM 128; T\_MAX 1 대비 LUT 4.0배, DSP 4.3배), DSP 패킹은 같은 가중치에 토큰 둘을 곱하는 방식이다. vkernel에서 0.5B 6토큰 프리필이 T = 6 한 번으로 돌아 3.14 M 사이클(T\_MAX 1은 13.67 M)이었다. 남은 것: 출력 헤드(N ≈ 15만)는 토큰당 x + QA + y가 약 9,600 line이라 4 MiB SPM에 토큰 6개만 들어가고, T = 7~8이면 헤드 가중치를 두 번 읽는다(32B에서 패스당 +0.83 GB, +4%). 백엔드가 헤드를 N 방향으로 나누면 12~13개가 들어간다. 일반 프리필은 마지막 토큰의 logits만 계산하므로 영향이 없고, 모든 위치의 logits가 필요한 추측 디코딩(M7)에서만 문제가 된다
 - [x] 추측 디코딩: 계획에서 뺐다 (결정, 2026-10-30). 아래는 그 전에 남긴 관찰이다. 추측 디코딩의 출력 동일성: 디바이스 MUL\_MAT은 토큰별로 T와 무관하게 비트 동일하지만, llama.cpp CPU attention이 T = 1(vec\_dot)과 T ≥ 2(tinyBLAS)에서 다른 커널을 써서 greedy 출력이 근소한 동률에서 갈릴 수 있다(0.5B, 37번째 토큰에서 관찰). 디바이스가 있으면 auto FA가 꺼진다. `-fa on`이면 n\_kv < 512, T ≤ 63에서 동일하다. FA on은 M1 검증 설정(FA off)과 다르므로 채택하면 klcheck·numcheck를 다시 돌린다
-- [ ] KV 캐시 레이아웃: n\_kv가 늘어나면 행 범위 분할이 맞지 않으므로 행 interleave(행 r → 채널 r mod C) 같은 별도 배치와 DRAM 위치, 8비트 KV 우선: llama.cpp를 -ctk q8\_0 -ctv q8\_0로 실행하는 것을 전제로 할지 (M7)
+- [x] (v2에서 정했다, D17과 `docs/v2/03-attention-kv.md` §4: KV는 q8\_0 K·V(`-ctk q8_0 -ctv q8_0`, FA on), 16셀 그룹 u를 채널 u mod C에 두는 interleave, K 평면 token-major, V 평면 slice-major, 채널 끝에서 아래로 대칭 할당) KV 캐시 레이아웃: n\_kv가 늘어나면 행 범위 분할이 맞지 않으므로 행 interleave(행 r → 채널 r mod C) 같은 별도 배치와 DRAM 위치, 8비트 KV 우선: llama.cpp를 -ctk q8\_0 -ctv q8\_0로 실행하는 것을 전제로 할지 (M7)
 - [ ] 보류 포맷: 4비트 계열 Q4\_0, MXFP4(gpt-oss-20b)만 후보. 5·6비트와 I-quant의 하드웨어 경로는 두지 않는다
 - [ ] 라이선스: RTL은 Solderpad Hardware 또는 CERN-OHL-S, 소프트웨어는 MIT. 제어 코어의 제3자 RTL(Ibex Apache-2.0, riscv-dbg SHL-0.51)과의 호환을 함께 확인한다
 - [ ] llama.cpp 업스트림 기여 시점
 - [ ] 모델 단위 KL 합격선 조정 (M1). numcheck에서 양자화 모델의 1 ulp 바닥값이 앞쪽 위치에서 0이 됨을 확인했다. 제안: 바닥값이 움직인 위치만으로 비율 계산
-- [ ] `PERF_CH_RD_BEATS[0]`에 명령어 fetch beat가 섞여 채널 0의 LD beat를 하드웨어와 대조할 수 없다. fetch를 빼거나 `PERF_FETCH_BEATS`(인덱스 5 + 2 × `NUM_CH`)를 추가할지 (M4 성능 검증 전). 제안(2026-10-23): 마지막 명령어(pc = `CMD_COUNT` − 1)인 `END`로 끝난 실행은 fetch beat가 ⌈`CMD_COUNT` / 2⌉이므로 소프트웨어가 빼서 대조한다. `tb/core`의 `core_perf`가 같은 식을 검사하고, `traces/model/qwen05b-q8_0`의 145개 실행 전부에서 ch0 − ch1 = LD line 수 + ⌈`CMD_COUNT` / 2⌉가 성립한다. `PERF_FETCH_BEATS`는 실기에서 이 식이 어긋날 때 넣는다 (LOOP·JUMP가 폐기되어 명령 버퍼의 fetch 수는 계속 프로그램으로 정해진다)
+- [x] (v2에서 해소, `docs/v2/01-execution-model.md` §6: 명령어 fetch가 없어 `CH_RD_BEATS[0]`이 정확하다) `PERF_CH_RD_BEATS[0]`에 명령어 fetch beat가 섞여 채널 0의 LD beat를 하드웨어와 대조할 수 없다. fetch를 빼거나 `PERF_FETCH_BEATS`(인덱스 5 + 2 × `NUM_CH`)를 추가할지 (M4 성능 검증 전). 제안(2026-10-23): 마지막 명령어(pc = `CMD_COUNT` − 1)인 `END`로 끝난 실행은 fetch beat가 ⌈`CMD_COUNT` / 2⌉이므로 소프트웨어가 빼서 대조한다. `tb/core`의 `core_perf`가 같은 식을 검사하고, `traces/model/qwen05b-q8_0`의 145개 실행 전부에서 ch0 − ch1 = LD line 수 + ⌈`CMD_COUNT` / 2⌉가 성립한다. `PERF_FETCH_BEATS`는 실기에서 이 식이 어긋날 때 넣는다 (LOOP·JUMP가 폐기되어 명령 버퍼의 fetch 수는 계속 프로그램으로 정해진다)
 - [ ] 단계 B의 샘플링 위치: llama.cpp 샘플링을 디바이스로 옮기는 경로가 고정 커밋에 있는지 확인, 없으면 제어 코어(TOPK + C++)가 하고 `sw/runner`는 결과만 받는다 (M8)
 - [ ] greedy 외 샘플링(temperature, top-p): 제어 코어 C++로 한다 (TOPK 후보 + VU softmax + 소프트웨어 난수, 시드 고정으로 재현). 남은 것은 llama.cpp 샘플러와의 일치 기준 (M9)
 - [ ] `sw/runner`와 llama-server 연동 방식 (M9)
-- [ ] XRT에서 실행 중 CSR 창 접근 (M3 실기에서 확인). `TSR_XRT_CTRL=run`에서 `xrt::run`이 걸려 있는 동안 exclusive CU의 `read_register`·`write_register`가 되는지, 정지 중 BO 읽기·쓰기가 되는지 시험한 적이 없다 (`docs/xrt-host.md` §4.1, §8). run 모드의 시간 초과 ABORT(창으로 `CTRL.ABORT` 쓰기)와 PC 표본이 여기에 기댄다. 안 되면 이 둘은 `TSR_XRT_CTRL=regs`로 해야 한다. 디버거는 처음부터 regs 모드를 쓴다 (`docs/prof-dbg.md` §4.2). (M8) 제어 코어의 창 접근은 소유 규칙 때문에 `xrt::run`과 겹치지 않아 이 확인에 기대지 않는다. 제어 코어 실행을 `ap_ctrl_hs`로 감싸면 기댄다
-- [ ] PCIe CSR 창 지연 실측 (M3, `tsr_xrt_selftest`): 읽기와 posted write. 실행당 `PERF_*` 읽기 세트, PC 표본 간격, SPM 창 덤프 시간, 전체 카운터 동시 표본의 도입 여부가 이 값으로 정해지고, (M8) 제어 코어의 이미지 적재 시간, 실행 요청당 비용, 호스트 제어 비용 추정(`docs/ctrl-riscv.md` §5.7)도 이 값에 기댄다. vkernel에서 센 횟수(2026-10-24): XRT 스케줄러 순서로 실행당 레지스터 쓰기 21회 + 읽기 6회, 0.5B 디코드 토큰당 실행 145회, 곧 토큰당 posted write 약 3,000회와 read 약 870회다. 카드에서 시간으로 잰다
+- [x] (v2에서 해당 없음: `ap_ctrl_none`이라 `xrt::run`을 쓰지 않고 `xrt::ip`로 언제나 접근한다, `docs/v2/01-execution-model.md` §9) XRT에서 실행 중 CSR 창 접근 (M3 실기에서 확인). `TSR_XRT_CTRL=run`에서 `xrt::run`이 걸려 있는 동안 exclusive CU의 `read_register`·`write_register`가 되는지, 정지 중 BO 읽기·쓰기가 되는지 시험한 적이 없다 (`docs/xrt-host.md` §4.1, §8). run 모드의 시간 초과 ABORT(창으로 `CTRL.ABORT` 쓰기)와 PC 표본이 여기에 기댄다. 안 되면 이 둘은 `TSR_XRT_CTRL=regs`로 해야 한다. 디버거는 처음부터 regs 모드를 쓴다 (`docs/prof-dbg.md` §4.2). (M8) 제어 코어의 창 접근은 소유 규칙 때문에 `xrt::run`과 겹치지 않아 이 확인에 기대지 않는다. 제어 코어 실행을 `ap_ctrl_hs`로 감싸면 기댄다
+- [ ] PCIe CSR 창 지연 실측 (v2: 카드에서 MMIO 읽기와 posted write 지연을 재면 닫는다. LAUNCH 왕복과 연속 비율, 콜드·웜 적재 시간, DMI·SBA 시간이 이 값에 기댄다, `docs/v2/README.md` §9) (M3, `tsr_xrt_selftest`): 읽기와 posted write. 실행당 `PERF_*` 읽기 세트, PC 표본 간격, SPM 창 덤프 시간, 전체 카운터 동시 표본의 도입 여부가 이 값으로 정해지고, (M8) 제어 코어의 이미지 적재 시간, 실행 요청당 비용, 호스트 제어 비용 추정(`docs/ctrl-riscv.md` §5.7)도 이 값에 기댄다. vkernel에서 센 횟수(2026-10-24): XRT 스케줄러 순서로 실행당 레지스터 쓰기 21회 + 읽기 6회, 0.5B 디코드 토큰당 실행 145회, 곧 토큰당 posted write 약 3,000회와 read 약 870회다. 카드에서 시간으로 잰다
 - [ ] U200 디버그 빌드 확인 (M4): 이 DFX 셸의 사용자 커널에 BSCANE2를 둘 수 없는지(UG909), ILA를 넣은 디버그 빌드(`hw/u200/k4_dbg.cfg`)가 300 MHz와 SLR 횡단 타이밍을 지키는지
-- [ ] 멈춘 유닛의 강제 해제 (M4). ABORT와 SOFT\_RESET은 명령어 경계를 기다리므로 멈춘 유닛은 하드웨어 리셋으로만 풀리고, 그러면 사후 상태가 사라진다. 경계를 기다리지 않는 강제 중단을 둘지 플랫폼 어댑터의 리셋 규칙과 함께 정한다. 그 전에는 행 덤프를 먼저 남긴다. (M8) 발행 큐에도 해당한다: 멈춘 유닛이 있으면 QIDLE이 오지 않아 제어 코어의 QCLEAR가 끝나지 않고 호스트의 QCLEAR는 거부된다. 같은 강제 해제로 함께 정한다
-- [ ] 유닛 점유·발행 공백 카운터(M4\~M8)와 트레이스 링(M8\~M9)의 도입 여부. 측정 기준은 `docs/prof-dbg.md` §6.2이고, `PERF_FETCH_BEATS`는 위 `PERF_CH_RD_BEATS[0]` 항목대로 정한다. (M8 계획 개정) 트레이스 링은 명령 버퍼 경로에만 해당한다. 제어 코어 경로는 완료 기록과 `CTL_PERF_*`를 쓴다
+- [x] (v2에서 정했다, `docs/v2/01-execution-model.md` §8.6: 강제 유닛 리셋은 두지 않는다. AXI 트랜잭션은 취소할 수 없기 때문이다. 유닛 진행 감시(`WDOG_CFG`, `UNIT_HUNG`)가 진단하고, 덤프를 남긴 뒤 카드 리셋으로 복구한다) 멈춘 유닛의 강제 해제 (M4). ABORT와 SOFT\_RESET은 명령어 경계를 기다리므로 멈춘 유닛은 하드웨어 리셋으로만 풀리고, 그러면 사후 상태가 사라진다. 경계를 기다리지 않는 강제 중단을 둘지 플랫폼 어댑터의 리셋 규칙과 함께 정한다. 그 전에는 행 덤프를 먼저 남긴다. (M8) 발행 큐에도 해당한다: 멈춘 유닛이 있으면 QIDLE이 오지 않아 제어 코어의 QCLEAR가 끝나지 않고 호스트의 QCLEAR는 거부된다. 같은 강제 해제로 함께 정한다
+- [x] (v2에서 정했다: 확장 카운터는 `docs/v2/01-execution-model.md` §6의 표(`MVM_WAIT`, `MVM_EMPTY` 등), 트레이스 링 `TRC_*`는 없애고 디버그 블록의 하드웨어 트레이스 기록기(V2-DB-16)를 쓴다) 유닛 점유·발행 공백 카운터(M4\~M8)와 트레이스 링(M8\~M9)의 도입 여부. 측정 기준은 `docs/prof-dbg.md` §6.2이고, `PERF_FETCH_BEATS`는 위 `PERF_CH_RD_BEATS[0]` 항목대로 정한다. (M8 계획 개정) 트레이스 링은 명령 버퍼 경로에만 해당한다. 제어 코어 경로는 완료 기록과 `CTL_PERF_*`를 쓴다
 - [x] (폐기, 2026-10-24) `JUMP` 체인에서 `PC`, `ERR_PC`, `CMD_COUNT`와 디버거 명령어 주소의 의미: JUMP가 없어져 정할 것이 없다
 - [ ] 이식 타깃의 디버그 (이식 착수 때): Zynq·Kria의 BSCANE2 브리지 여부, 소형 타깃의 디버그 블록 구성(SPM 창 포함 여부), 호스트 버스가 없는 ASIC의 디버그용 메모리 접근, JTAG와 호스트 버스가 함께 있을 때의 `PERF_*` 읽기, START의 SPM 보존을 영구 보장으로 둘지
-- [x] 발행 경로의 스칼라 레지스터 (결정, 2026-10-24; 구현 M6): 발행 경로는 자기 s0\~s15 뱅크(플립플롭 약 512개)를 쓰고, 명령 버퍼 실행(START, CALL)은 자기 뱅크를 그대로 쓴다. 두 경로 사이의 s 레지스터 경합은 생기지 않는다. 한 뱅크를 두고 s0\~s15를 경합 정의에 넣는 안은 채택하지 않았다
-- [x] 명령 버퍼 실행과 제어 코어 실행의 소유 (결정, 2026-10-24; M8): 전송 계층이 둘을 번갈아 처리한다. exec는 끝나지 않은 실행 요청이 없을 때만, launch는 BUSY = 0일 때만 시작한다. SPM은 나누지 않고 하드웨어는 바꾸지 않는다
-- [x] lowering된 레이어 프로그램의 `CALL` (결정, 2026-10-24; M8\~M9): 디코드 스텝은 C++ 커널이 타일 명령어를 직접 발행하고, 위치에 따라 바뀌는 주소는 C++에서 계산한다. `CALL`은 위치와 무관한 명령 버퍼 프로그램에만 쓴다. 백엔드에 인자 레지스터 기준 lowering 모드는 두지 않는다
-- [x] 발행 경로의 검사기 (결정, 2026-10-24): 검사기 하나를 커맨드 프로세서와 함께 쓴다. 명령 버퍼 실행 중에 발행한 명령어와 그 뒤의 제어 코어 QABORT는 실행이 끝날 때까지 분배기에서 기다린다. 호스트 실행과 실행 요청이 번갈아 돌므로(위 소유 항목) 받아들인다. 두 번째 검사기(추정 1\~2 K LUT)는 두지 않는다
+- [x] (v2에서 D14가 대신한다: s0\~s15는 한 벌) 발행 경로의 스칼라 레지스터 (결정, 2026-10-24; 구현 M6): 발행 경로는 자기 s0\~s15 뱅크(플립플롭 약 512개)를 쓰고, 명령 버퍼 실행(START, CALL)은 자기 뱅크를 그대로 쓴다. 두 경로 사이의 s 레지스터 경합은 생기지 않는다. 한 뱅크를 두고 s0\~s15를 경합 정의에 넣는 안은 채택하지 않았다
+- [x] (v2에서 해당 없음, D14) 명령 버퍼 실행과 제어 코어 실행의 소유 (결정, 2026-10-24; M8): 전송 계층이 둘을 번갈아 처리한다. exec는 끝나지 않은 실행 요청이 없을 때만, launch는 BUSY = 0일 때만 시작한다. SPM은 나누지 않고 하드웨어는 바꾸지 않는다
+- [x] (v2에서 해당 없음: CALL은 폐기, D14) lowering된 레이어 프로그램의 `CALL` (결정, 2026-10-24; M8\~M9): 디코드 스텝은 C++ 커널이 타일 명령어를 직접 발행하고, 위치에 따라 바뀌는 주소는 C++에서 계산한다. `CALL`은 위치와 무관한 명령 버퍼 프로그램에만 쓴다. 백엔드에 인자 레지스터 기준 lowering 모드는 두지 않는다
+- [x] (v2에서 D14가 대신한다: 검사기 `tsr_chk`는 분배기만 쓴다, V2-CC-9) 발행 경로의 검사기 (결정, 2026-10-24): 검사기 하나를 커맨드 프로세서와 함께 쓴다. 명령 버퍼 실행 중에 발행한 명령어와 그 뒤의 제어 코어 QABORT는 실행이 끝날 때까지 분배기에서 기다린다. 호스트 실행과 실행 요청이 번갈아 돌므로(위 소유 항목) 받아들인다. 두 번째 검사기(추정 1\~2 K LUT)는 두지 않는다
 - [x] 제어 코어 클럭 (결정, 2026-10-24; U200, M8): 계획값 166.7 MHz. CR1의 Ibex out-of-context 합성이 250 MHz를 여유 있게 맞출 때만 250 MHz, 대안은 125 MHz. 클럭을 만드는 방법은 아래 "`ap_clk_2` 생성 방법" 항목
-- [x] CR2 타이밍 관문 (결정, 2026-10-24; M8): 제어 코어 RTL은 `HAS_CTRL` = 1로 빌드한 k1·k4t1·k4의 out-of-context 실행과 k4 v++ 링크가 300 MHz를 맞춘 뒤에야 고정한다. SPM 네 번째 클라이언트와 라운드 로빈, 유닛 디스패치의 두 번째 출처가 k4·k4t1의 가장 나쁜 경로 옆에 오기 때문이다 (k4 out-of-context +0.015 ns, k4 링크 예상 −0.1\~−0.2 ns, 추정). k4 링크는 메모리 32 GB 이상의 호스트가 필요해, 카드를 장착할 때 하는 호스트 메모리 증설 뒤에 돌린다
-- [ ] `ap_clk_2` 생성 방법 (CR2 스모크 링크): v++가 `ap_clk_2`의 주파수를 직접 정해 줄 수 있는지(`--kernel_frequency`, `--clock.*`) 확인하고, 안 되면 커널 안에서 500 MHz를 분주한다(BUFGCE\_DIV, `rtl/tech/xilinx`)
+- [x] (v2에서 다시 정했다, V2-CC-23: 제어 코어가 들어가도 k4 링크 ≥ 276.3 MHz, 목표 300 MHz) CR2 타이밍 관문 (결정, 2026-10-24; M8): 제어 코어 RTL은 `HAS_CTRL` = 1로 빌드한 k1·k4t1·k4의 out-of-context 실행과 k4 v++ 링크가 300 MHz를 맞춘 뒤에야 고정한다. SPM 네 번째 클라이언트와 라운드 로빈, 유닛 디스패치의 두 번째 출처가 k4·k4t1의 가장 나쁜 경로 옆에 오기 때문이다 (k4 out-of-context +0.015 ns, k4 링크 예상 −0.1\~−0.2 ns, 추정). k4 링크는 메모리 32 GB 이상의 호스트가 필요해, 카드를 장착할 때 하는 호스트 메모리 증설 뒤에 돌린다
+- [ ] `ap_clk_2` 생성 방법 (v2: V2-CC-18, 첫 스모크 링크에서 확인) (CR2 스모크 링크): v++가 `ap_clk_2`의 주파수를 직접 정해 줄 수 있는지(`--kernel_frequency`, `--clock.*`) 확인하고, 안 되면 커널 안에서 500 MHz를 분주한다(BUFGCE\_DIV, `rtl/tech/xilinx`)
 - [ ] 동시 실행의 DRAM 비용 (M8, 실기): 같은 채널에서 가중치 스트림 사이에 끼는 ST(읽기·쓰기 전환)와 다른 행의 LD(행 충돌)가 beat 수 이상으로 드는지 잰다 (`tsr_bw`). 크면 SDK가 ST를 같은 채널의 MVM 뒤로 미룬다
-- [ ] 실행 요청 경로 (CR5 전): 방향마다 한 칸인 메일박스는 실행 요청마다 PCIe 읽기가 하나 이상 든다. JIT의 잦은 실행에 DRAM 실행 요청 링과 도어벨을 둘지, R2H 대기를 어댑터 인터럽트에 연결할지. 실기에서 실행 요청당 비용을 잰 뒤 정한다
-- [ ] F 확장 재검토: 프로파일에서 소프트 float가 토큰 시간의 1 %를 넘으면 그 계산을 SOP·VU로 옮기고, 그래도 크면 Zfinx·F가 있는 코어를 검토한다
-- [ ] Zba·Zbb·Zbs 채택 여부: SDK 코드 크기와 사이클로 정한다
-- [ ] ITCM·DTCM 크기 (64 KiB + 64 KiB 제안): 첫 SDK 빌드의 코드·데이터 크기와 M9 루프의 표 크기로 확정
-- [ ] 발행 큐 깊이 (DMA 8, QACT 4, MVM 4, VU 8, CMD 2, SYNC 4 제안): 커널 측정으로 확정
-- [ ] SPM 중재: 라운드 로빈으로 바꾸면 DMA LD의 beat 큐가 찰 수 있고, 채널 응답 경로가 head-of-line이라 그 동안 가중치 beat가 기다린다. 경합 테스트벤치(클라이언트 4개, 같은 채널의 LD·MVM 교착 시험 포함)에서 손실을 재고, 크면 DMA의 버스트 단위 공간 예약(큐 128\~256 beat), `tsr_mem_arb`의 소스별 응답 버퍼, 또는 길이를 제한한 DMA 쓰기 우선을 넣는다
-- [ ] 제어 코어 실행을 `ap_ctrl_hs`로 감쌀지 (예약된 어댑터 오프셋 0x01C 사용, XRT의 `run.wait`와 인터럽트를 쓸 수 있음) 아니면 CSR 창 폴링으로 둘지. 감싸는 쪽만 위 "XRT에서 실행 중 CSR 창 접근" 항목의 확인에 기댄다 (M9 상주 루프가 도는 동안의 창 접근)
-- [ ] 디버그 전송 속도: OpenOCD remote\_bitbang과 소프트웨어 DTM이 너무 느리면 전용 DMI 전송을 만든다
-- [ ] SPM 다리의 line 버퍼(합류 때 무효화): SPM 창 대량 읽기가 병목일 때만
-- [ ] 배타 규칙 완화: 명령 버퍼 실행과 큐 명령어를 겹칠지 (실행별 `PERF_*` 귀속과 디버그 불변식이 약해진다)
-- [ ] M7 attention을 제어 코어의 C++ 커널로 할지 (그러면 제어 코어 RTL을 M7로 앞당긴다). M6 끝에서 판단
+- [x] (v2에서 정했다, V2-EX-1: posted CSR 쓰기로 채우는 launch 큐 LQ와 완료 링 LCQ, 깊이 8, 폴링; 메일박스는 없다) 실행 요청 경로 (CR5 전): 방향마다 한 칸인 메일박스는 실행 요청마다 PCIe 읽기가 하나 이상 든다. JIT의 잦은 실행에 DRAM 실행 요청 링과 도어벨을 둘지, R2H 대기를 어댑터 인터럽트에 연결할지. 실기에서 실행 요청당 비용을 잰 뒤 정한다
+- [x] (v2에서 정했다, V2-SW-8: 펌웨어는 f32 연산을 하지 않고 상수는 호스트가 계산한다) F 확장 재검토: 프로파일에서 소프트 float가 토큰 시간의 1 %를 넘으면 그 계산을 SOP·VU로 옮기고, 그래도 크면 Zfinx·F가 있는 코어를 검토한다
+- [ ] Zba·Zbb·Zbs 채택 여부: SDK 코드 크기와 사이클로 정한다 (v2의 M6 구성은 `RV32BNone`, `docs/v2/04-control-core.md` §3.2)
+- [x] (v2에서 정했다, V2-CC-3: ITCM 128 KiB + DTCM 64 KiB) ITCM·DTCM 크기 (64 KiB + 64 KiB 제안): 첫 SDK 빌드의 코드·데이터 크기와 M9 루프의 표 크기로 확정
+- [x] (v2에서 정했다, V2-CC-8: DMA 8, QACT 4, MVM 4, VU 16, SYNC 4, 유닛 4 없음; 발행 FIFO 32) 발행 큐 깊이 (DMA 8, QACT 4, MVM 4, VU 8, CMD 2, SYNC 4 제안): 커널 측정으로 확정
+- [x] (v2에서 정했다, V2-CC-12·V2-CC-13: 짝·홀 line 뱅크 2R2W, 뱅크별 라운드 로빈, DMA LD의 버스트 단위 공간 예약(512 beat 큐)으로 채널 응답 경로는 멈추지 않는다) SPM 중재: 라운드 로빈으로 바꾸면 DMA LD의 beat 큐가 찰 수 있고, 채널 응답 경로가 head-of-line이라 그 동안 가중치 beat가 기다린다. 경합 테스트벤치(클라이언트 4개, 같은 채널의 LD·MVM 교착 시험 포함)에서 손실을 재고, 크면 DMA의 버스트 단위 공간 예약(큐 128\~256 beat), `tsr_mem_arb`의 소스별 응답 버퍼, 또는 길이를 제한한 DMA 쓰기 우선을 넣는다
+- [x] (v2에서 정했다, V2-EX-6·V2-CC-19: `ap_ctrl_none`, `xrt::ip`와 폴링) 제어 코어 실행을 `ap_ctrl_hs`로 감쌀지 (예약된 어댑터 오프셋 0x01C 사용, XRT의 `run.wait`와 인터럽트를 쓸 수 있음) 아니면 CSR 창 폴링으로 둘지. 감싸는 쪽만 위 "XRT에서 실행 중 CSR 창 접근" 항목의 확인에 기댄다 (M9 상주 루프가 도는 동안의 창 접근)
+- [x] (v2에서 정했다, V2-DB-1: OpenOCD 없이 RSP 서버가 CSR 창의 DMI를 직접 쓴다) 디버그 전송 속도: OpenOCD remote\_bitbang과 소프트웨어 DTM이 너무 느리면 전용 DMI 전송을 만든다
+- [x] (v2에서 정했다, V2-CC-4: 0x5000\_0000의 line 버퍼 별칭, SPM 저장·창 접근·인터럽트·`SPM_LB_INV`로 무효화) SPM 다리의 line 버퍼(합류 때 무효화): SPM 창 대량 읽기가 병목일 때만
+- [x] (v2에서 해당 없음, D14) 배타 규칙 완화: 명령 버퍼 실행과 큐 명령어를 겹칠지 (실행별 `PERF_*` 귀속과 디버그 불변식이 약해진다)
+- [x] M7 attention을 제어 코어의 C++ 커널로 할지 (그러면 제어 코어 RTL을 M7로 앞당긴다). M6 끝에서 판단. v2(2026-10-30)에서 정했다: 제어 코어 RTL은 M6이고, M7의 FA 커널(`k_fattn.cpp`)이 제어 코어에서 AT 연산을 낸다 (`docs/v2/03-attention-kv.md` §6.6, §7)
 - [ ] 호스트 버스가 없는 타깃의 제어 코어 이미지: TCM은 리셋 뒤 정의되지 않고 적재 경로는 CSR 쓰기뿐이다. 작은 부트 ROM(DRAM·플래시 → SPM → TCM)을 파라미터로 둘지, JTAG → `CTL_LOAD_*`로 충분한지 (이식 착수 때)
 
 ## 구현 명확화 (v0.2.1)
 
 M1 착수 시 시뮬레이터와 RTL이 비트 단위로 같아야 하는데 본문에서 열려 있던 부분을 아래처럼 고정한다. C 미러는 `sw/sim/include/tsr_isa.h`, `tsr_ref.h`다.
+
+(v2, 2026-10-30) 아래 항목 중 명령 버퍼 실행에 관한 것(명령 버퍼 끝, 명령어 fetch, ABORT, CSR 부가 규칙의 START·`STATUS`·SOFT\_RESET·`PC`, 오류 시 STATUS, BUSY 중 SOFT\_RESET, ABORT와 명령 버퍼 끝, DONE ⇒ 메모리 정지, 실행 사이 PERF 불변, START와 SPM, `LI`·`ADDI`·`END`와 레지스터 필드, `R[x] + imm`)은 v1(태그 `v1-m4`)의 규칙이다. v2에서 이에 해당하는 규칙은 `docs/v2/01-execution-model.md` §5(CSR), §6(PERF와 LAUNCH 사이 불변), §8(오류, 검사 순서, `SOFT_RESET`)과 "제어 코어" 절 메모리 모델의 H4(SPM 보존)다. 수치 규칙(FTZ, QACT 입력과 특수값, ggml과의 일치 범위, fp16 NaN), 꼬리 바이트, stride 0, `QA_MISMATCH`, 명령어별 사용 필드(v2에서 x16 = 0), sub 값, QACT의 K·T, 범위 검사(a = 즉시값), 길이 0, 겹치는 피연산자, ACC 덧셈, 성능 카운터의 결정적 모델, 트레이스 재생의 DRAM 규칙, 실행 중 CSR 읽기의 부수 효과 없음, 하드웨어 리셋의 메모리 쪽 조건과 `RST_PIPE`는 v2에서도 유효하다. 검사 순서는 EX §8.1(`BAD_DEP`, `OPERAND` 포함)이 대신한다.
 
 - **FTZ 판정 시점**: f32 연산은 입력의 subnormal을 부호 있는 0으로 바꾼 뒤(DAZ) binary32 지수 범위 그대로(점진적 언더플로 포함) IEEE RNE로 계산하고, 그렇게 반올림된 결과가 subnormal이면 부호 있는 0으로 바꾼다. 동치로, 정확한 결과의 크기가 2^−126 − 2^−150 미만이면 부호 있는 0, 그 이상이면 보통의 RNE 결과다. 이 규칙은 IEEE 754 §7.5의 "반올림 후 tininess"(지수 범위 제한 없이 24비트로 반올림한 값이 2^−126 미만인지로 판정, x86 MXCSR.FTZ가 이 방식)와도, 반올림 전 tininess와도 다르다 (v0.2.1 정정: 이전 판은 이 규칙을 "반올림 후 tininess 판정"이라 잘못 불렀다). 정확한 결과가 \[2^−126 − 2^−150, 2^−126) 구간이면 이 규칙은 ±2^−126을 내지만, 반올림 전 판정은 이 구간 전체에서, 지수 무제한 반올림 후 판정은 \[2^−126 − 2^−150, 2^−126 − 2^−151)에서 ±0을 낸다. 덧셈·뺄셈은 이 구간의 결과가 나오지 않고(subnormal 범위의 합은 정확하다) 곱셈·나눗셈에서만 생긴다. 경계 벡터(0x3F7FFFFF × 0x00800000 = 0x00800000, 0x3F1FA0BA × 0x00CD4708 = 0x00800000, 0x00FFFFFF / 2 = 0x00800000, 0x3F7FFFFE × 0x00800000 = 0)는 `sw/sim/tests/test_ref_fp.c`에 있으며 RTL fp 블록 테스트에도 넣는다.
 - **QACT 입력**: amax와 max 탐색도 DAZ를 거친 값으로 한다. A32의 d = amax / 127, id = 1 / d, x · id는 위 f32 규칙을 따르는 연산이며, `D`는 d를 fp16 RNE로 바꾼 뒤 f32로 되돌린 값이다. A256의 iscale = −127 / max, iscale · x, d = 1 / iscale도 같은 f32 규칙을 따른다.

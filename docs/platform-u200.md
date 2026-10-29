@@ -14,6 +14,32 @@ not run (estimated 25–27 GB peak against the dev server's 14 GB, §8.2). Sourc
 (`tsr_core`) is unchanged and sees only its CSR port, `done` and one memory port per channel
 (`docs/rtl-m2.md` §4, §6).
 
+**v2 (2026-10-30, W0 of `docs/v2/README.md`).** This document is the v1 adapter (tag `v1-m4`). In v2
+the adapter changes as `docs/v2/01-execution-model.md` §9 and `docs/v2/04-control-core.md` §13.3
+define, and the transport above it as EX §10:
+- `ap_ctrl_none` instead of `ap_ctrl_hs` (no interrupt). The host uses `xrt::ip` register
+  access and polls; no `xrt::run` is ever started. If v++ 2024.2 refuses `ap_ctrl_none` with
+  `m_axi` args, the fallback declares `ap_ctrl_hs` with `interrupt="false"` and never runs it
+  (EX §9.1, checked in the first v2 smoke link).
+- The `ap_ctrl_hs` run path is removed in X0, the first M6 commit (EX §12): the AP_CTRL FSM, the
+  queued-start behaviour, the run sequencer (13 core CSR transfers per start), the `SOFT_RESET`
+  watch, the interrupt output, the `cmd_addr` / `cmd_count` / `arg0`–`7` registers, the
+  `kernel_k*.xml` cmd args and the `gen_tops.py` v1 table. The v2 platform build is disabled until
+  Y5.
+- The only kernel args are `ch<c>` at 0x040 + 8c. `ADAPTER_CTRL` (0x0E0) bit0 `MEM_EN` latches all
+  channel bases (4 KiB alignment checked) on its rising edge and locks them while set; core memory
+  requests are held while it is 0. `ADAPTER_STATUS` adds bit4 `REQ_HELD` and bit5 `BASE_LOCKED`;
+  `ADAPTER_VERSION` becomes 2.
+- The core loses `done` and gains `clk_rv` / `rst_rv_n` (from `ap_clk_2` / `ap_rst_n_2`, planning
+  value 166.7 MHz), `plat_err_i` (driven from `ADAPTER_STATUS` bits 0–2 or the error count) and
+  `host_irq_o` (unconnected on the U200) (EX §9.3).
+- The memory bridges (§4) and the reset scheme (§5) are unchanged.
+
+The card results in §14 (M0, M3 and M4, 2026-10-25 to 2026-10-30) were measured with v1: the
+`tsr_u200_k1`, `tsr_u200_k4` and `tsr_bw_k4` xclbins and the host binaries of tag `v1-m4`. A working
+copy of those binaries, the three xclbins and an `env.sh` is kept in `build/v1` (not in git) for
+card runs until v2 runs on the card.
+
 | Path | Content |
 |---|---|
 | `rtl/platform/alveo_xrt/tsr_xrt_kernel.sv` | the kernel body: reset distribution, control bridge, `tsr_core`, one AXI4 bridge per channel; AXI ports as packed `[NUM_CH]` vectors |
@@ -30,6 +56,9 @@ not run (estimated 25–27 GB peak against the dev server's 14 GB, §8.2). Sourc
 ---
 
 ## 1. Kernel interface (lead's contract)
+
+**v1 (2026-10-30, W0 of `docs/v2/README.md`).** The v2 kernel interface is `ap_ctrl_none` with a
+second clock `ap_clk_2` (EX §9, CC §13.3); see the v2 note at the top.
 
 Vitis RTL kernels, `ap_ctrl_hs`, one clock `ap_clk` (300 MHz), `ap_rst_n` (active low,
 synchronous), `interrupt`. Module name = kernel name.
@@ -63,6 +92,10 @@ the window):
 
 ## 2. `s_axi_control` register map
 
+**v1 (2026-10-30, W0 of `docs/v2/README.md`).** The v2 map is EX §9.2: 0x000–0x03C reserved (read
+0), `ch<c>_base` at 0x040 + 8c, `ADAPTER_CTRL` at 0x0E0, `ADAPTER_STATUS` and `ADAPTER_VERSION` as
+below with the v2 additions, the core CSR window at 0x1000 + off unchanged.
+
 Byte offsets, decoded on bits [12:2]; unmapped offsets read 0 and ignore writes; every response is
 OKAY. RW registers honour WSTRB.
 
@@ -85,6 +118,10 @@ handshake): adapter register read 5, write 5; window read 10, write 10. One tran
 when a read and a write are both pending they alternate.
 
 ## 3. Start / done protocol (ap_ctrl_hs, UG1393)
+
+**v1 (2026-10-30, W0 of `docs/v2/README.md`).** Removed in X0. v2 has no start / done protocol: the
+host binds the channels with `MEM_EN`, loads and boots the firmware and launches kernels through the
+core CSR window (EX §2–§4).
 
 1. The host writes the arguments (XRT: the whole map 0x010 .. last argument), then AP_CTRL = 1.
 2. **Accept** (adapter idle, the next cycle): `ap_start := 0` and `ap_idle := 0` in the same edge —
@@ -922,6 +959,10 @@ part of `run_all.sh` (minutes of simulation per token); repeat them with
 `vkernel.py run --config k4t1 --runlog F -- klcheck run ...` and `klcheck compare --expect-identical`.
 
 ## 14. Hardware bring-up runbook
+
+**v1 (2026-10-30, W0 of `docs/v2/README.md`).** Every result in §14 was measured with v1 (tag
+`v1-m4`; binaries and xclbins in `build/v1`). The v2 bring-up is W6 of `docs/v2/README.md` §10; its
+launch costs are compared with the v1 exec costs of §14.2.
 
 The steps in order, each with its pass criterion. Steps 1–12 ran on the card on 2026-10-25 / 26 and passed
 (§14.1). The k4 link ran on the 14 GB dev server with swap and auto-scaled the clock to 276 MHz. What exists on the dev server: Vivado / Vitis 2024.2

@@ -483,6 +483,11 @@ Mechanical conversion of the register-relative sets would also be possible (LI a
 on immediates and ARG). It is rejected because 93 + 5 + 156 error expectations would have to be
 re-derived anyway, and the generators exist with fixed seeds.
 
+X0 deleted the whole v1 generator and trace library (EX §12 "X0 as done"): `tsr-trace-gen` v2
+starts from `v1-m4:sw/tools/tsr_trace_gen.c` (random programs, MVM boundary and error generators,
+seeds), and `tsr-trace-conv` takes its v1 reader from `v1-m4:sw/sim/tsr_trace.c`. Until then the
+v1 sets are reproduced only by the v1 tools of `build/v1` (`traces/*/regen.sh`).
+
 ---
 
 ## 6. Firmware SDK (`sw/ctrl`)
@@ -1112,7 +1117,8 @@ EX §2.1, §3, §4.8 and §10.2:
   1. Build an OPL with one MUL_MAT record per MUL_MAT node, plus JOINs. Two MUL_MATs are
      dependent only if one reads the other's output; host-side hazard analysis over DRAM byte
      ranges covers WAR and WAW.
-  2. Stage host-memory chunks as v1 does.
+  2. Stage host-memory chunks as v1 does (X0 deleted that code with the emission; P3.2 restores
+     `tsr_lower_staged` and `tsr_act_loc` from tag `v1-m4`, EX §12 "X0 as done").
   3. Write the OPL into the OPL cache (an LRU in the 64 MiB OPL region, keyed by content hash).
   4. Launch `graph` and wait.
   5. On DONE STATUS TILE_ERR, map RET−1 to the ggml node and abort with the node name, the error
@@ -1122,7 +1128,9 @@ EX §2.1, §3, §4.8 and §10.2:
 - New: `tsr-opl.{h,cpp}` (builder, hazards, encoding, cache).
 - Deleted in X0 (EX §12): the emission and program-cache parts of `tsr-lower.*`; tiling moves to
   `plan.hpp`.
-- Weights, buffers and the load-time conversion are unchanged.
+- Weights, buffers and the load-time conversion are unchanged. The lazy conversion of raw-buffer
+  src0 (`tsr_lazy_*`; `test-backend-ops` puts src0 in non-WEIGHTS buffers) and
+  `tsr_resolve_weight` were deleted in X0 and come back from tag `v1-m4`.
 
 **M7 (P3.5):**
 
@@ -1213,7 +1221,7 @@ the tools through `TSR_RISCV_PREFIX`, `TSR_SPIKE` and `PATH`.
 | Object | Oracle | Check |
 |---|---|---|
 | `tsr_ref_math.c` | (a) an independent numpy bit model in `sw/sim/tests/ref_math_np.py`, written from the VU document; (b) double-precision libm for accuracy | (a) bit-exact over all 2^32 inputs per unary function (opt-in `slow`; default: 2^24 strided + specials); (b) max ulp error ≤ VU's bound, reported; (c) RTL: VU blocks against the C function, exhaustively on a Verilator C++ bench (opt-in), 10^6 random + specials by default |
-| `tsr_m_gelu16` | the pinned ggml CPU table `ggml_table_gelu_f16` (built by `ggml_gelu_f32` with libm `tanhf`) | all 65,536 fp16 inputs enumerated; mismatches reported (target < 1 %, each ≤ 1 fp16 ulp) — the residual is the CPU's libm `tanhf`, which the VU does not reproduce (VU §6.5) |
+| `tsr_m_gelu16` | the pinned ggml CPU table `ggml_table_gelu_f16` (built by `ggml_gelu_f32` with libm `tanhf`) | all 65,536 fp16 inputs enumerated; mismatches reported; target (VU §6.5): < 1 % of the entries, no sign-of-zero mismatch, > 1 fp16 ulp only where GELU16 is correctly rounded and the table entry is not. Measured 0.415 % (265 at 1 ulp, 7 at 2 ulp; GELU16 correctly rounded in all) — the residual is the table's own f32 error (`tanhf`, cancellation for x ≪ 0), which the VU does not reproduce |
 | VU/AT references in `tsr_ref.c` | numpy spec models (as numcheck B1b, `docs/spec.md:813`) | bit-exact on generated vectors; directed RED cases where a subtree sums to −0 (e.g. 0x80C00000 + 0x00800000) at m = 8k + r (VU §6.2) |
 | `tsr_rv` | Spike | on the test bus profile (§4.2: RAM at 0x8000_0000, HTIF): riscv-tests rv32ui/um/uc/mi `-p` and riscv-arch-test RV32IMC/Zicsr signatures; random programs (in-house Python generator, placed at 0x8000_0000 on both) compared retire by retire with `spike --log-commits`; `test_ref_fp.c` built for RV32 and run on both (`docs/ctrl-riscv.md:1318-1325`) |
 | Queue model | EX §7–§8 and CC §7–§9 | directed tests through `tsr_sim_push`; invariants I1–I3 asserted inside the model on every run |
@@ -1264,7 +1272,7 @@ The RTL areas own the RTL benches. The plan here fixes their fate:
 | Fate | Benches |
 |---|---|
 | **Deleted** | `tb/cmdproc`; the M2 command-path suite `tb/core/test_core.py`; the v1 parts of `tb/common` (`csr_driver`, `proggen`, `pycore` command path, `replay`, `trace` v1) |
-| **Rewritten** | `tb/core/test_core_m3.py` → `tb/core` v2 (issue-port tile-only replays of `push.bin`, MVM concurrency under queues); `tb/fastreplay` (C++ tile-only replay, then the full-system bench with Ibex and RVFI lockstep); `tb/platform` (`ap_ctrl_none` adapter); `tb/platform/vkernel` (two clocks); `tb/run_all.sh` |
+| **Rewritten** | `tb/core/test_core_m3.py` → `tb/core` v2 (issue-port tile-only replays of `push.bin`, MVM concurrency under queues); `tb/fastreplay` (C++ tile-only replay, then the full-system bench with Ibex and RVFI lockstep); `tb/platform` (`ap_ctrl_none` adapter; carries over the regmap / errors / misaligned / reset directed tests of `v1-m4:tb/platform/kernel_bench.cpp`, deleted whole in X0); `tb/platform/vkernel` (two clocks); `tb/run_all.sh` |
 | **Kept** | `tb/dma`, `tb/fp`, `tb/mvm`, `tb/mvmback`, `tb/mvmfront`, `tb/qact`, `tb/spm`, `tb/tech` (unit ports; `tb/spm` and `tb/dma` extended by EX/AT for round robin and banking) |
 | **New** | `tb/ctrl` (issue path, two clocks), `tb/vu`, `tb/at`, `tb/rv` (riscv-tests from ITCM, signatures against Spike), `tb/dbg` |
 
@@ -1329,7 +1337,7 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
 | P1.7 | `tsr_rv` + `tsr_bus` | P1.1 | 2.0 | 6 |
 | P1.8 | scheduler, random schedules, fast-forward | P1.6, P1.7 | 0.5 | 2 |
 | P1.9 | race detector + `SPM_STALE` | P1.6 | 1.0 | 4 |
-| P1.10 | trace v2 library, capture, sim replay, `tsr-trace-conv`, `tsr-trace-gen` v2, set regeneration | P1.6 | 2.0 | 6 |
+| P1.10 | trace v2 library, capture, sim replay, `tsr-trace-conv` (v1 reader from `v1-m4:sw/sim/tsr_trace.c`), `tsr-trace-gen` v2 (from `v1-m4:sw/tools/tsr_trace_gen.c`), set regeneration | P1.6 | 2.0 | 6 |
 | P1.11 | toolchain install script, Spike/riscv-tests/arch-test harness, random-program lockstep | P1.7 | 0.6 | 3 |
 | P1.12 | debug-module model `tsr_dm.c` (DB's DMI profile, DB §9.1) | P1.7, DB doc | 0.8 | 3 |
 | P1.13 | DB simulator models: stop logic, QSTEP, serial mode, the hard hold, history ring, REC FIFO, TRW records, log records (DB §5, §6.1, §8) | P1.6, P1.12 | 1.2 | 5 |
@@ -1341,7 +1349,7 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
 | P2.6 | M7 kinds: ADD/MUL/SCALE/RMS_NORM/GLU/ROPE/GET_ROWS/CPY/UNARY + references | P2.4, P1.4 | 1.5 | 5 |
 | P2.7 | M7 SET_ROWS_KV and FLASH_ATTN + references | P2.4, P1.5 | 1.2 | 6 |
 | **P3.1** | transport v2 (EX §10): protocol layer, debug-aware wait and recovery ladder, `sim`/`mock` kdevs, `xrt` kdev (`ap_ctrl_none`, compiles; card in P6), `vkernel` kdev port | P2.2, P1.2 | 1.6 | 6 |
-| P3.2 | backend M6 (OPL builder MUL_MAT, cache, deletions), `tsr_rt`/torch port | P2.5, P3.1 | 1.0 | 4 |
+| P3.2 | backend M6 (OPL builder MUL_MAT, cache, deletions; lazy src0 conversion, staging and `tsr_resolve_weight` restored from `v1-m4`, §9.3), `tsr_rt`/torch port | P2.5, P3.1 | 1.0 | 4 |
 | P3.3 | tools: `tsr-selftest`, trace tools, `tsr-log`, klcheck/numcheck settings | P3.1, P2.5 | 1.5 | 5 |
 | P3.4 | **M6 on sim**: ctest green, 0.5B and 32B klcheck on sim (FA on), `traces/model-v2` | P3.2, P3.3 | — | 2 (+ ≈ 1 day of 32B sim time) |
 | P3.5 | backend M7: supports_op set (incl. the DUP / no-COMPUTE rule), KV buffers, MSUM producer and f32 mask copies (AT §7.3), builder (fusion, hazards, preload), compute heap (R6) | P2.6, P2.7, P3.2 | 2.3 | 9 |
@@ -1431,7 +1439,7 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
 | Host hazard analysis misses a dependency | racy op lists; card results differ from sim | race detector `fatal` on every ctest graph; 8 schedules; executor mutation tests; `SERIAL` flag and DB's serial mode for bisecting on the card |
 | The RISC-V cannot stay ahead on small models (SPM-window reads of op records) | G grows for 0.5B | compact pre-resolved records (≤ 1 slot for most kinds); the line-buffered SPM alias; measured in P3/P6 with `TRACE_MARK` records and `MVM_EMPTY`; fall back to LD-ing hot records into DTCM if needed |
 | llama.cpp graph features outside supports_op (rotation, context shift, new ops after a pin bump) | extra splits or scheduler aborts | R1–R10 checked in the graph ctests with `GGML_SCHED_DEBUG`; rotation off by default; clear errors for unsupported KV operations |
-| GELU16 cannot reproduce the CPU's libm `tanhf` table entries exactly | a residual fp16-ulp difference on some GEGLU elements | measured by `ref_math_gelu16` (target < 1 % of entries, ≤ 1 fp16 ulp) and by the Gemma 4 12B KL with and without `GGML_GELU_FP16` before the VU RTL freeze |
+| GELU16 cannot reproduce the CPU's libm `tanhf` table entries exactly | a residual fp16-ulp difference on some GEGLU elements | measured by `ref_math_gelu16` (target of VU §6.5; W0: 0.415 % of the entries, 7 at 2 ulp, all where the table entry is the inexact one) and by the Gemma 4 12B KL with and without `GGML_GELU_FP16` before the VU RTL freeze |
 | Toolchain availability (xPack multilib, Spike build deps) | blocks P2 | the libgcc fallback multilib; Clang + conda as a second route; Spike optional for the build, needed only for `rv_*` tests |
 | Simulator speed for 32B/Gemma runs with RV interpretation | slow gates on sim | fast-forward; race detector off by default; `TSR_SIM_THREADS`; short prompts for the sim identity runs |
 | `xrt::ip` with `ap_ctrl_none` and BO bank discovery | host cannot open the CU | *confirm* in P3.1 against the no-op shim and in hw_emu if needed; EX §9.1 fallback; the adapter keeps the channel-base registers |
@@ -1451,7 +1459,8 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
   `xrt::kernel` (*confirm*, §9.1, P3.1).
 - Card measurements: launch round trip and pipelined rate, PCIe CSR read and posted-write latency
   (still unmeasured, `docs/spec.md:994`), and the RISC-V run-ahead margin of the executor on 0.5B.
-- GELU16 mismatch rate against the pinned table and the Gemma 4 KL gap (§10.1, §10.4).
+- The Gemma 4 KL gap of GELU16 (§10.4). The mismatch rate against the pinned table is measured
+  (W0: 0.415 %, GELU16 correctly rounded in every mismatch, VU §6.5).
 - Device support for llama.cpp's Hadamard KV rotation (V2-SW-16 follow-up), M8 or later.
 - Spec edits that follow this document (at the spec v2 rewrite, README): the trace paragraph
   (`docs/spec.md:823-830`), the CMD region → OPL region in the DRAM map (`docs/spec.md:134`), and

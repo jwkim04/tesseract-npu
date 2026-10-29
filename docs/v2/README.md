@@ -478,7 +478,7 @@ incompatible fix of the same problem; the others below were applied with a delib
 | 4 | v++ 2024.2 refuses `ap_ctrl_none` with `m_axi` args or the `ap_clk_2` frequency request | no v2 xclbin | EX §9.1 fallback (`ap_ctrl_hs`, never run); BUFGCE_DIV clock; checked in the first smoke link |
 | 5 | CDC or flush bugs in the rings, the SR sequencer or the issue FIFO | hangs that need a card reset | handshakes instead of multi-step gray counters, two-clock benches at every ratio with jitter mode, mutation campaigns, `report_cdc` |
 | 6 | Ibex / riscv-dbg details differ from the design (`RV_HALTED` heuristic, triggers, `crash_dump_o`, SBA codes) | wrong halt detection or missing debug features | all marked *confirm*; `tb/ctrl` cross-checks against `dmstatus`; DMI fallback |
-| 7 | GELU16 differs from the CPU's libm-based table at fp16 boundaries; Gemma 4 FA-on baselines are new | residual Gemma 4 KL gap | exhaustive fp16 enumeration and the KL with and without `GGML_GELU_FP16` before the VU RTL freeze |
+| 7 | GELU16 differs from the CPU's libm-based table in 272 of 65,536 entries (0.415 %; 7 by 2 fp16 ulp, where the table's f32 form cancels; GELU16 is the correctly rounded value in all, VU §6.5); Gemma 4 FA-on baselines are new | residual Gemma 4 KL gap | exhaustive fp16 enumeration (`ref_math_gelu16`, done in W0) and the KL with and without `GGML_GELU_FP16` before the VU RTL freeze |
 | 8 | No Gemma 4 31B GGUF on the build host | M7 Gemma coverage limited to 12B | 12B is confirmed; 31B rows stay *confirm* until a GGUF is read |
 | 9 | Issue-bound phases (short ops on small models, the `graph` executor's per-op cost) | DDR idles, mostly for 0.5B | ops cover all heads per op, line-buffered SPM alias, measured with `MVM_EMPTY` and TRACE_MARK; an "issue from SPM line" path later |
 | 10 | Attention of D = 64 models is gather-bound (61 %), and the VU's merge tail is exposed per layer | 0.5B attention slower than DDR allows at long context | accepted for the test model; wider gather later |
@@ -509,8 +509,9 @@ No design decision is open. These remain:
   run-ahead margin, KVST's scattered-write DDR cost.
 - **Measurements in synthesis:** `tsr_ctrl_rv` Fmax (fixes F_RV per D12), the VU and AT cluster
   utilisation.
-- **Numerics:** exhaustive accuracy figures for EXPK, SIGMOID, SILU, GELU, TANH, SIN / COS (gate:
-  ≤ 2 × the *model* figure); the GELU16 mismatch rate; the Gemma 4 FA-on KL baselines.
+- **Numerics:** the Gemma 4 FA-on KL baselines. (Measured in W0: the exhaustive accuracy figures
+  for EXPK, SIGMOID, SILU, GELU, TANH, SIN / COS, all within 2 × the *model* figure, VU §6.9; the
+  GELU16 mismatch rate, 0.415 %, VU §6.5.)
 - **Models:** Gemma 4 31B dimensions; whether M8 brings back the Hadamard KV rotation and an f32
   `tok_embd` table.
 - **Capacity:** re-check `LQ_DEPTH` = 8 against M7 and M8 launch patterns.
@@ -606,3 +607,5 @@ The integration edited `docs/v2/` only. These edits follow from the design and a
 | `docs/klcheck.md` settings | FA on, KV q8_0, rotation off, `offload_kqv` false in M6 / true in M7 | AT §14, SW §10.4 |
 | `docs/rtl-m3.md` | cluster ATTQK / ATTPV modes | AT §14 |
 | `docs/xrt-host.md`, `docs/platform-u200.md` | transport v2 and adapter v2 | EX §9–§10 |
+
+Applied in W0 (2026-10-30), with a v2 status line and v1 card-run notes in the root `README.md`.
