@@ -1110,3 +1110,11 @@ The device bytes are unchanged: on the card the 12B Q4_K_M logits before and aft
 bit-identical (`klcheck compare --expect-identical`), and MUL_MAT 1402 / 1402 and
 `test-ggml-tesseract` 28 / 28 pass. What remains is the `direct` DMA (2.3–4.2 s), cold disk reads,
 and ~9 s outside `set_tensor` for 32B (llama loader and warmup, not analysed).
+
+### 14.4 M4 gate: Qwen2.5-32B Q4_K_M on k4 (2026-10-30)
+
+`klcheck all --device xrt -m models/qwen2.5-32b-instruct-q4_k_m-00001-of-00005.gguf -n 64` (8 prompts,
+512 positions): mean KL 2.4113e-3 ≤ 3 × floor 1.8487e-3 (ratio 1.304; M1 on the simulator 1.36),
+top-1 agreement 99.02 %, PASS. Wall time: device 197 s, CPU reference 50 s, floor 48 s, embedding
+check 49 s. Decode 2.93 tok/s (§14.2), above the M4 criterion of 1 tok/s.
+
