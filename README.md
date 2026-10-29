@@ -169,7 +169,7 @@ A–C.
 | **M4** Q4_K unpack, 4 channels | v1 goal; other types converted to Q8_0 at load | 32B Q4_K_M on hardware at ≥ 1 tok/s | Planned |
 | **M5** MoE, host-assisted | Router converted to Q8_0, back-to-back MVM overlap, symmetric expert placement | Qwen3-30B-A3B on hardware | Planned |
 | **M6** Vector unit, more ops | RMSNorm, position-based RoPE, SwiGLU, residual, softmax | No host round trips inside a layer | Planned |
-| **M7** Attention and KV on device, T > 1 | Stage A: DQROW, prefill tiling, speculative decoding | One split per token; measured prefill gain | Planned |
+| **M7** Attention and KV on device, T > 1 | Stage A: DQROW, prefill tiling | One split per token; measured prefill gain | Planned |
 | **M8** Register extensions, device MoE | Stage B: RLD, MULI, LOOP, TOPK, programs per KV-length bucket | The host writes only 2 arguments per token | Planned |
 | **M9** On-device decode loop | Stage C: WAITM, JUMP, output-token ring buffer, `sw/runner` | The host only polls the ring buffer | Planned |
 

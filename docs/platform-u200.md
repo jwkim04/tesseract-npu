@@ -1072,4 +1072,26 @@ core. At 276 MHz the limit is the kernel's 64 B per cycle (17.7 GB/s per channel
 what the DRAM gives at 300 MHz (18.0 GB/s, M0). Closing timing at 300 MHz is therefore worth about
 +4–5 %, not the clock ratio. Beyond that, decode gets faster only by reading fewer bytes per
 token: lower-bit formats, native Q6_K instead of the Q8_0 conversion (32B Q4_K_M: about 1.3 GB
-of the 20.74 GB), or several tokens per weight pass (T > 1: speculative decoding, batching).
+of the 20.74 GB), or several tokens per weight pass (T > 1: batching).
+
+### 14.3 Model load time (2026-10-30)
+
+`TSR_STATS=1` also splits `set_tensor`: transport writes, weight stores, and the conversion of
+non-native rows to Q8_0. The runs are `llama-completion -n 1` on k4.
+
+| | 12B Q4_K_M, file cached, `direct` | same, `staged` | 32B Q4_K_M, partly cold, `staged` |
+|---|---|---|---|
+| llama load time | 12.2 s | 6.3 s | 34.9 s |
+| Transport writes | 3.42 s for 7.5 GB (**2.20 GB/s**) | 0.88 s (**8.61 GB/s**) | 2.58 s for 20.8 GB (8.04 GB/s) |
+| Q6_K → Q8_0 conversion | 4.6 s for 1.29 GB of Q6_K | 4.6 s | 17.1 s for 4.49 GB of Q6_K |
+| Repack, page faults | ~0.3 s | ~0.3 s | ~6 s |
+| Outside `set_tensor` (llama loader, warmup) | ~0.5 s | ~0.5 s | ~9 s |
+
+- `TSR_XRT_DMA=direct` (the default) writes from pageable memory through XRT's unmanaged path at
+  2.2–3.9 GB/s (also `tsr_bw --pcie`'s 1.9 GB/s). `staged` copies through a pinned bounce buffer
+  and reaches 8–9 GB/s, as `xrt-smi validate` (7.3 GB/s). For decode's small IO transfers,
+  `staged` is 2 % slower (12B Q4_K_M: 147.5 vs 144.7 ms per token).
+- The Q6_K → Q8_0 conversion (`to_float` + `quantize_row_q8_0_ref`, one thread) runs at ~0.27 GB/s
+  of Q6_K. It is the largest single part of the load.
+- Disk: 2.65 GB/s cold sequential read (`cat` of 7.9 GB of shards), so a 32B file not in the page
+  cache needs at least 7.5 s.

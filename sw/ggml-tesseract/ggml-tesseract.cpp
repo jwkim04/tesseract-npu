@@ -266,6 +266,12 @@ struct tsr_device {
     uint64_t st_graphs = 0;
     uint64_t st_compute_ns = 0;
     uint64_t st_exec_ns = 0;
+    uint64_t st_write_ns = 0;      // tsr_transport_write
+    uint64_t st_write_bytes = 0;
+    uint64_t st_set_ns = 0;        // set_tensor (conversion + repack + writes)
+    uint64_t st_set_bytes = 0;
+    uint64_t st_store_ns = 0;      // weight stores (convert + repack + writes)
+    uint64_t st_conv_ns = 0;       // non-native rows converted to the device format
     std::vector<uint64_t> st_perf0;   // every PERF_* counter at the first exec
 
     ggml_backend_buffer_type buft;
@@ -349,8 +355,13 @@ static void tsr_write(tsr_device * d, uint32_t ch, uint64_t off, const void * sr
     if (size == 0) {
         return;
     }
+    const uint64_t t0 = tsr_stats_on() ? tsr_now_ns() : 0;
     if (tsr_transport_write(d->tp, ch, off, src, size) != 0) {
         GGML_ABORT("tesseract: transport write failed (ch %u, offset 0x%" PRIx64 ", %zu bytes)", ch, off, size);
+    }
+    if (tsr_stats_on()) {
+        d->st_write_ns += tsr_now_ns() - t0;
+        d->st_write_bytes += size;
     }
 }
 
@@ -383,12 +394,22 @@ static void tsr_store_weight_rows(tsr_device * d, enum ggml_type type, uint32_t 
                                   uint64_t w_off, const uint8_t * src, uint32_t r0, uint32_t r1) {
     const size_t src_rb = ggml_row_size(type, K);
     std::vector<float> f32(K);
+    const bool stats = tsr_stats_on();
+    const uint64_t t0 = stats ? tsr_now_ns() : 0;
     // repack + symmetric scatter: tsr-wlayout (shared with the ggml-free runtime sw/rt)
     tsr_weight_store_rows(d->cfg.num_ch, fmt, N, K, w_off, r0, r1, TSR_XFER_CHUNK,
         [&](uint32_t rr, void * scratch) {
-            return tsr_row_to_dev_blocks(type, fmt, src + (size_t) (rr - r0) * src_rb, K, scratch, f32.data());
+            const uint64_t c0 = stats && !tsr_type_is_native(type) ? tsr_now_ns() : 0;
+            const void * blk = tsr_row_to_dev_blocks(type, fmt, src + (size_t) (rr - r0) * src_rb, K, scratch, f32.data());
+            if (c0) {
+                d->st_conv_ns += tsr_now_ns() - c0;
+            }
+            return blk;
         },
         [d](uint32_t ch, uint64_t off, const void * p, size_t n) { tsr_write(d, ch, off, p, n); });
+    if (stats) {
+        d->st_store_ns += tsr_now_ns() - t0;
+    }
 }
 
 // Read rows [r0, r1) of a DEVWEIGHT back in the tensor's own ggml type (debug get_tensor).
@@ -865,12 +886,17 @@ static void tsr_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * te
     const uint64_t addr = tsr_vaddr(tensor->data) + offset;
     tsr_check_range(b, addr, size);
     b->gen++;
+    const uint64_t t0 = tsr_stats_on() ? tsr_now_ns() : 0;
     if (b->mode == tsr_bmode::LINEAR) {
         tsr_write(d, 0, b->io_off + (addr - b->base), data, size);
     } else if (b->mode == tsr_bmode::HOSTED) {
         memcpy(b->host + (addr - b->base), data, size);
     } else {
         tsr_placed_write(d, b, addr, (const uint8_t *) data, size);
+    }
+    if (tsr_stats_on()) {
+        d->st_set_ns += tsr_now_ns() - t0;
+        d->st_set_bytes += size;
     }
 }
 
@@ -1456,6 +1482,11 @@ static void tsr_backend_free(ggml_backend_t backend) {
         fprintf(stderr, "[tesseract] stats: graphs %" PRIu64 ", execs %" PRIu64 ", graph_compute %.3f s, exec wall %.3f s, "
                 "PERF_CYCLES %" PRIu64 ", MVM %" PRIu64 ", RETIRED %" PRIu64 "\n", d->st_graphs, d->n_exec,
                 d->st_compute_ns * 1e-9, d->st_exec_ns * 1e-9, p[TSR_PERF_CYCLES], p[TSR_PERF_MVM_CYCLES], p[TSR_PERF_RETIRED]);
+        fprintf(stderr, "[tesseract] stats: set_tensor %.3f s for %.3f GB, of which transport writes %.3f s for %.3f GB (%.2f GB/s)\n",
+                d->st_set_ns * 1e-9, d->st_set_bytes * 1e-9, d->st_write_ns * 1e-9, d->st_write_bytes * 1e-9,
+                d->st_write_ns ? d->st_write_bytes / (double) d->st_write_ns : 0.0);
+        fprintf(stderr, "[tesseract] stats: weight stores %.3f s, of which conversion to Q8_0 %.3f s\n",
+                d->st_store_ns * 1e-9, d->st_conv_ns * 1e-9);
         const size_t nch = (p.size() - 5) / 2;
         for (size_t c = 0; c < nch; c++) {
             fprintf(stderr, "[tesseract] stats: ch%zu rd_beats %" PRIu64 ", wait %" PRIu64 "\n", c, p[5 + c], p[5 + nch + c]);
