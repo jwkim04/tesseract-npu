@@ -42,7 +42,7 @@ Run: build/tools/svgvenv/bin/python docs/fig/src/hero.py        (TSR_FIG_THEME=d
 import sys
 
 sys.dont_write_bytecode = True        # keep docs/fig/src free of __pycache__
-from tsrfig import DASH, INK, INK_SOFT, Fig, chamfer, fmt, wrap  # noqa: E402
+from tsrfig import DASH, INK, INK_SOFT, Fig, chamfer, fmt, logo_box, wrap  # noqa: E402
 
 W = 1600
 
@@ -223,6 +223,9 @@ f.arrow([(ZL1 - 12, acc_cy), (ZR0 + 8, acc_cy)])      # tip 8 inside: clear of "
 # ---- legend and footnote -----------------------------------------------------------------------------
 f.legend(W / 2, LEG_Y, [("control", "CONTROL"), ("compute", "COMPUTE"), ("memory", "MEMORY"),
                         ("io", "DATA MOVEMENT"), ("neutral", "PLANNED", True)])
+_lg = {"key": "tesseract-core", "h": 40, "backing": True, "pad": 6}
+_lw, _lh = logo_box(**_lg)
+f.logo(x=W - 72 - _lw, y=LEG_Y - _lh + 6, **_lg)             # name of the configuration, bottom right
 f.text(W / 2, LEG_Y + 38, wrap(
     "Stylised view of tsr_core, not a floorplan. Solid blocks: the v1 core (run on the card). "
     "Dashed blocks and tags: the v2 additions (milestone M6), verified in the simulator and in "

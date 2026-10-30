@@ -28,9 +28,9 @@ Batch 1 on an Alveo U200 with the v1 core. The v2 core runs on the simulator. De
 
 <p align="center"><img src="docs/fig/hero.png" alt="Stylised die of the Tesseract NPU core: four MVM clusters of 128 MAC lanes at the corners, each fed by its own DDR4 channel through a memory arbiter; the 4 MiB scratchpad in the centre inside the x broadcast and y gather; DMA, QACT and CSR blocks; and, drawn dashed as the v2 additions, a RISC-V control core with an issue path and unit queues, a vector unit and a debug block. One cluster is opened up: weight streamer, unpack, activation buffer, 128 MAC lanes, FP accumulate and tree16." width="100%"></p>
 
-One MVM cluster per DDR4 channel streams weights at one 64-byte beat per cycle into 128 MAC lanes.
-A 4 MiB scratchpad holds activations and results. Dashed blocks are the v2 additions, which run
-on the simulator.
+Tesseract Core is the current configuration: one MVM cluster per DDR4 channel streams weights at one
+64-byte beat per cycle into 128 MAC lanes. A 4 MiB scratchpad holds activations and results. Dashed
+blocks are the v2 additions, which run on the simulator.
 
 ## Software stack
 
@@ -110,6 +110,12 @@ See [Getting started](docs/getting-started.md) for requirements, tests, PyTorch 
 - [Specification](docs/spec.md)
 - [v2 design documents](docs/v2/README.md)
 - [Basis kernel SDK](sw/ctrl/README.md)
+
+## Roadmap
+
+- Tesseract Core v2 on the card: control core, vector unit and attention on the device.
+- Mixture of experts (Qwen3-30B-A3B) and PyTorch on Basis kernels.
+- Multi-chip: Tesseract Cores linked in a mesh over QSFP, with the weights split across the chips.
 
 ## License
 

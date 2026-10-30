@@ -135,13 +135,18 @@ def logo_tile(f, x, y, w, h, t):
     f.text(tx + bw + 12, top + cap + gap + bh / 2, text, "sub_l", valign="middle")
 
 
-def panel(f, x, y, w, h, name, status=None, caption=""):
+def panel(f, x, y, w, h, name, status=None, caption="", logo=None):
     """Layer panel: outlined card, the layer name inside at the top left, an optional caption at
     the top right and the panel's status tag on the top edge."""
     f.panel(x, y, w, h)
     f.text(x + 32, y + 40, name, "panel_l", color=INK_SOFT)
+    cx = x + w - 32
+    if logo:
+        ow, oh = logo_box(**logo)
+        f.logo(x=cx - ow, y=y + 38 - oh / 2, **logo)
+        cx -= ow + 28
     if caption:
-        f.text(x + w - 32, y + 40, caption, "note_l", anchor="end", color=INK_SOFT)
+        f.text(cx, y + 40, caption, "note_l", anchor="end", color=INK_SOFT)
     if status:
         f.tag(x + w - 36, y, status[0], anchor="end", style=status[1], role="tag_l")
 
@@ -151,6 +156,8 @@ def T(role, label, sub="", tag=None, logo=None, badge=None):
 
 
 # ---- content -----------------------------------------------------------------------------------
+TSR_BASIS = {"key": "tesseract-basis", "h": 36, "backing": True, "pad": 4}
+TSR_CORE = {"key": "tesseract-core", "h": 36, "backing": True, "pad": 4}
 HF_BADGE = {"key": "huggingface", "h": 32, "backing": True, "pad": 4}
 apps = [T("host", "LLAMA.CPP", "llama-cli · GGUF models · -ngl\nllama-server (OpenAI-compatible API)",
           logo={"key": "llamacpp", "h": 80}),
@@ -238,14 +245,14 @@ for t, (x, w) in zip(transport, place(transport, IX0, IX1)):
 # firmware
 y, h = panels["firmware"]
 panel(f, MX0, y, MX1 - MX0, h, "FIRMWARE ON THE CONTROL CORE", SIM_TAG,
-      "BASIS KERNEL SDK · custom kernels in C++20")
+      "kernel SDK · custom kernels in C++20", logo=TSR_BASIS)
 for t, (x, w) in zip(firmware, place(firmware, IX0, IX1)):
     tile(f, x, y + HEAD, w, H2, t)
 
 # NPU core: control row, units row with the unit-queue bus, SPM
 y, h = panels["core"]
-panel(f, MX0, y, MX1 - MX0, h, "NPU CORE · tsr_core", CARD_TAG,
-      "vendor-independent SystemVerilog")
+panel(f, MX0, y, MX1 - MX0, h, "TESSERACT CORE · tsr_core", CARD_TAG,
+      "vendor-independent SystemVerilog", logo=TSR_CORE)
 cy0 = y + HEAD
 ctl = place(core_ctl, IX0, IX0 + 768)
 for t, (x, w) in zip(core_ctl, ctl):

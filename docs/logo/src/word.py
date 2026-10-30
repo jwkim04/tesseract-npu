@@ -110,6 +110,39 @@ class Glyphs:
         d = self.rect(x0, -self.asc_t, x0 + S, 0) + self.rect(0, -X, x0 + S + arm_r, -X + hb)
         return d, x0 + S + arm_r
 
+    def B(self):
+        """Capital B: stem and two right bowls (upper smaller), one shared middle bar."""
+        S, hb, cap = self.S, self.hb, self.cap
+        mid = -0.52 * cap
+        hu = (mid + hb / 2) + cap        # upper bowl outer height
+        hl = -(mid - hb / 2)             # lower bowl outer height
+        ru, rl = hu / 2, hl / 2
+        W = 0.72 * cap
+        cxl = W - rl
+        cxu = cxl - 3.0
+        d = self.rect(0, -cap, S, 0)
+        d += self.rect(S - 1, -cap, cxu + 0.5, -cap + hb) + self.rect(S - 1, mid - hb / 2, cxl + 0.5, mid + hb / 2)
+        d += self.rect(S - 1, -hb, cxl + 0.5, 0)
+        d += self.sector(cxu, -cap + ru, ru, ru - hb, -90, 90)
+        d += self.sector(cxl, -rl, rl, rl - hb, -90, 90)
+        return d, W
+
+    def i(self):
+        S = self.S
+        return self.rect(0, -X, S, 0) + self.rect(0, -X - 14 - S, S, -X - 14), S
+
+    def C(self):
+        ro = self.cap / 2 + self.o
+        ri = ro - self.S
+        cx, cy = ro, -self.cap / 2
+        t = 38.0
+        d = self.sector(cx, cy, ro, ri, t, 360 - t)
+        return d, cx + ro * math.cos(math.radians(t))
+
+    def o_(self):
+        ro, ri = self.ro, self.ri
+        return self.annulus(ro, -X / 2, ro, ri), 2 * ro
+
     def s(self):
         """Centre-line: upper elliptical bowl (terminal at upper right, running
         anticlockwise over the top), the internal common tangent of the two
@@ -205,7 +238,8 @@ def _area(poly):
 
 # side kinds for spacing: 'v' straight vertical, 'o' round, 'x' open/terminal, 'b' bar
 SIDES = {"T": ("b", "b"), "e": ("o", "x"), "s": ("x", "x"), "r": ("v", "x"),
-         "a": ("o", "v"), "c": ("o", "x"), "t": ("b", "b")}
+         "a": ("o", "v"), "c": ("o", "x"), "t": ("b", "b"),
+         "B": ("v", "o"), "i": ("v", "v"), "C": ("o", "x"), "o": ("o", "o")}
 SB = {"v": 9.0, "o": 5.5, "x": 4.0, "b": 1.0}
 KERN = {("T", "e"): -17.0, ("r", "a"): -6.0, ("c", "t"): -2.0, ("e", "r"): 1.0}
 
@@ -217,7 +251,11 @@ def wordmark(text="Tesseract", track=6.0, **kw):
     x = 0.0
     prev = None
     for ch in text:
-        d, w = getattr(G, ch)()
+        if ch == " ":                       # word space
+            x += 62.0
+            prev = None
+            continue
+        d, w = getattr(G, "o_" if ch == "o" else ch)()
         l, r = SIDES[ch]
         if prev is not None:
             x += SB[SIDES[prev][1]] + SB[l] + track + KERN.get((prev, ch), 0.0)

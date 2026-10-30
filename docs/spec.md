@@ -53,7 +53,9 @@ Tesseract is an open-source LLM inference NPU core, designed from the ground up.
 graphs that llama.cpp hands to a backend, and today it is implemented as an overlay on an AMD Alveo
 U200 FPGA. The host loads a firmware image onto an on-chip RISC-V control core and launches kernels.
 The control core issues every 256-bit tile op to the units (DMA, QACT, MVM clusters, vector unit),
-which stream weights from DDR4 and compute. Decoding a dense model reads every weight once per
+which stream weights from DDR4 and compute. This configuration (four MVM clusters of 128 MAC lanes, one per DDR4 channel, the
+4 MiB SPM, DMA, QACT, the vector unit and the control core) is named Tesseract Core. The kernel SDK
+that runs on the control core is named Tesseract Basis ("Basis"). Decoding a dense model reads every weight once per
 token, so the design is built around an unbroken weight stream and not around raw compute.
 
 Two generations exist. The v1 core (tag `v1-m4`) is programmed by the host through command buffers;
@@ -95,7 +97,7 @@ The parts of the v1 goal that still define the project:
 - **Formats.** No hardware path for 5- and 6-bit formats (Q5_K, Q6_K) or I-quants; they are
   converted to Q8_0 at load. Q4_0 and MXFP4 are deferred.
 - **Model size.** Models larger than 64 GB (gpt-oss-120b, GLM-4.5-Air class).
-- **Scope.** Training, multiple cards, multi-session serving.
+- **Scope.** Training and multi-session serving. Multiple cards are not part of M0 to M9; the multi-chip QSFP mesh is a later roadmap item (section 19).
 
 ### Design principles
 
@@ -1854,6 +1856,11 @@ binaries and bitstreams for card runs). The KV cache is q8_0 and attention is ac
 [`docs/ctrl-riscv.md`](ctrl-riscv.md) and `docs/v2/README.md` §2 and §6, and the details of the pass
 criteria are in [SW](v2/06-software-verification.md) §10.4. The work packages W0 to W6 are in
 `docs/v2/README.md` §10.
+
+**Multi-chip scale-out** (planned after M9, not designed yet): one Tesseract Core per card, the cards
+linked in a mesh over the two QSFP28 ports of the U200 (100 Gb/s each). The weights are split across
+the chips (for example by layer or by matrix columns) and the activations are exchanged over the
+links.
 
 **Progress record**
 

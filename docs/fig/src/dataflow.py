@@ -21,7 +21,7 @@ Run: build/tools/svgvenv/bin/python docs/fig/src/dataflow.py
 import sys
 
 sys.dont_write_bytecode = True        # keep docs/fig/src free of __pycache__
-from tsrfig import INK_SOFT, Fig, wrap  # noqa: E402
+from tsrfig import INK_SOFT, Fig, logo_box, wrap  # noqa: E402
 
 W = 1600
 PX0, PX1 = 56, 1544
@@ -91,7 +91,11 @@ def hop(a, b, cy, **kw):
 
 f.panel(PX0, HOST_Y, PX1 - PX0, HOST_B - HOST_Y, label="HOST")
 f.panel(PX0, FW_Y, PX1 - PX0, FW_B - FW_Y, label="FIRMWARE · RISC-V CONTROL CORE")
-f.panel(PX0, HW_Y, PX1 - PX0, HW_B - HW_Y, label="HARDWARE · NPU CORE AND CARD")
+f.panel(PX0, HW_Y, PX1 - PX0, HW_B - HW_Y, label="HARDWARE · TESSERACT CORE AND CARD")
+for _key, _y in (("tesseract-basis", FW_Y), ("tesseract-core", HW_Y)):   # sub-brand lockups on the panel edge
+    _lg = {"key": _key, "h": 36, "backing": True, "pad": 4}
+    _lw, _lh = logo_box(**_lg)
+    f.logo(x=PX1 - 48 - _lw, y=_y - _lh / 2, **_lg)
 
 # ---- host ------------------------------------------------------------------------------------------
 cy = HB + BH / 2
