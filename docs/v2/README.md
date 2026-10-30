@@ -340,6 +340,7 @@ the alternatives and the full rationale.
 | V2-AT-19 | Chunk policy | NCG = min(128 groups, PCAP limit, at least 2 chunks for ≥ 8C groups), segment-aligned; the chunk with this launch's new cells last | Overlaps VU and MVM work; deterministic, so part of the numeric contract |
 | V2-AT-20 | DQROW | Per VU §5.6 (SPM to f32 on the VU, RTL in M8); M8 embedding = LD + DQROW; an f32 tok_embd copy for other GGUF types; never used by attention | VU owns the encoding; the lookup stays on the CPU until M8 |
 | V2-AT-21 | KV region | Symmetric planes allocated top-down from each channel's end; one plane per (layer, stream, K/V); LG from kv_size | Equal channel shares; KV growth stays away from the weights |
+| V2-AT-22 | FA head subsets and chunk planner (W1a / W2b) | Head subsets inside each chunk; one chunk planner (`tsr_fa_plan.h`) for `tsr_ref_fa` and the firmware, its rules normative (AT §6.6); FA_NEW flags word; MK[4] | G > T_MAX cannot run as outer passes; one planner gives bit-identical outputs by construction; MK[3] raced |
 
 ### 6.4 CC — control core, issue path, SPM, CDC, floorplan (`04-control-core.md`)
 
@@ -447,6 +448,10 @@ the alternatives and the full rationale.
 | V2-SW-33 | Unselected graph branches | DUP, non-KV SET_ROWS and nodes without GGML_TENSOR_FLAG_COMPUTE unsupported; graph_compute skips flagless nodes | Prevents a second split and launch per token |
 | V2-SW-34 | Firmware optimisation flags (amends V2-SW-8) | -Os for the image; kernels/graph.cpp and kernels/k_*.cpp add -O2 | −1 % per MUL_MAT record, −5 to −7 % per JOIN / NOP record, −23 % RISC-V time per 0.5B layer for +2.2 KiB ITCM |
 | V2-SW-35 | Executor hot path | Records read in place after the op's control-window accesses; T = 1 MUL_MAT fast path (leaf, one credit read per op, ring alloc without deps); planning stays in firmware; spm_ring O(1), 128-block table; streamed lists keep W2a's chunk-LD position; the executor's and MUL_MAT's pushes are W2a's except PROF markers, pinned by trace-digest tests | The MVM no longer idles on issue; 1,518 → 387 RISC-V cycles per 0.5B decode record as spin-free work with deep queues (Ibex maxperf; small 1,966 → 485); 401 with U200 queues, 437 by W2a's method |
+| V2-SW-36 | The one-tile block (W2b integration; size W2b fix) | One fixed SPM block (1,024 lines) for every single-tile record of a DMA-bracketed kind, fast and general path alike; MUL_MAT and FLASH_ATTN keep the ring (budget 60,144 lines); GLU's larger decode rows take a ring block in the fast path | The DMA queue serialises DMA-bracketed tiles anyway: no dep, record or release; −60 to −80 RISC-V cycles per short record; M6 trace digests unchanged; 1,024 (not 4,096) lines keep MUL_MAT's prefill T-tile of the Qwen2.5 0.5B–32B output heads at 3 |
+| V2-SW-37 | M7 dispatch (W2b integration) | A leaf fast entry per short kind in the kind table, called with (args, kflags, d); the handler out of line on "not taken" | −10 to −25 cycles per short record; MUL_MAT's path unchanged |
+| V2-SW-38 | ITCM budget (W2b integration) | 80 KiB for the production image (69.7 KB with the M7 kinds), 48 KiB left for M8 / M9; test images bound by the ITCM | The per-kind leaf fast paths meet the issue-rate requirement; shared bodies cost 22–29 cycles per record |
+| V2-SW-39 | Staged-word reuse and hot entries (W2b fix) | Fast-path pushes skip `ISSUE_W` stores of words the record's previous push staged with the same value (CC §5.1; host builds check each claim) and unused ticket reads; straight-line hot entries for RMS_NORM / ROPE's common decode records; `op_loop` without MARK / SERIAL tests for plain lists | Every short kind ≤ 350 RISC-V cycles at the decode shapes (RMS_NORM 324, ROPE 325, SCALE with a bias 336) without an OPL change |
 
 ---
 
@@ -483,7 +488,7 @@ incompatible fix of the same problem; the others below were applied with a delib
 | 6 | Ibex / riscv-dbg details differ from the design (`RV_HALTED` heuristic, triggers, `crash_dump_o`, SBA codes) | wrong halt detection or missing debug features | all marked *confirm*; `tb/ctrl` cross-checks against `dmstatus`; DMI fallback |
 | 7 | GELU16 differs from the CPU's libm-based table in 272 of 65,536 entries (0.415 %; 7 by 2 fp16 ulp, where the table's f32 form cancels; GELU16 is the correctly rounded value in all, VU §6.5); Gemma 4 FA-on baselines are new | residual Gemma 4 KL gap | exhaustive fp16 enumeration (`ref_math_gelu16`, done in W0) and the KL with and without `GGML_GELU_FP16` before the VU RTL freeze |
 | 8 | No Gemma 4 31B GGUF on the build host | M7 Gemma coverage limited to 12B | 12B is confirmed; 31B rows stay *confirm* until a GGUF is read |
-| 9 | Issue-bound phases (short ops on small models, the `graph` executor's per-op cost) | DDR idles, mostly for 0.5B | ops cover all heads per op, line-buffered SPM alias, measured with `MVM_EMPTY` and TRACE_MARK; an "issue from SPM line" path later. *Measured* (SW §7.8, executor optimisation): M6's 0.5B layer is never issue-bound (the MVM idles 0.0 % on issue; per record 387 RISC-V cycles of spin-free work with deep queues, 401 with U200 queue depths, 437 by W2a's method, Ibex maxperf); the M7 projection loses 6.2 % of a layer to issue with 25 generic short VU records (1.6 % at 250 MHz), so W2b's VU kinds take the MUL_MAT fast path's form; a deeper DMA queue is the hardware fallback |
+| 9 | Issue-bound phases (short ops on small models, the `graph` executor's per-op cost) | DDR idles, mostly for 0.5B | ops cover all heads per op, line-buffered SPM alias, measured with `MVM_EMPTY` and TRACE_MARK; an "issue from SPM line" path later. *Measured* (SW §7.8, executor optimisation): M6's 0.5B layer is never issue-bound (the MVM idles 0.0 % on issue; per record 387 RISC-V cycles of spin-free work with deep queues, 401 with U200 queue depths, 437 by W2a's method, Ibex maxperf); the M7 projection loses 6.2 % of a layer to issue with 25 generic short VU records (1.6 % at 250 MHz), so W2b's VU kinds take the MUL_MAT fast path's form; a deeper DMA queue is the hardware fallback. *Measured at the W2b integration* (SW §7.8, `fw_m7_layer_perf`): a real Qwen2.5-0.5B M7 decode layer (15 records) loses 5.4 % of its launch to issue with the U200 queue depths, 2.2 % with only the DMA queue 31 deep, 2.5 % at 250 MHz; the loss comes from the 8-entry DMA queue (the RISC-V blocks on credits and reaches FLASH_ATTN late) and FLASH_ATTN's 16 µs of planning on the critical path, not from the short records (≈ 340 RISC-V cycles each, RMS_NORM 395, ROPE 420). After the W2b fix (every short kind ≤ 350, RMS_NORM 324, ROPE 325): 5.1 % / 2.1 % / 2.5 % |
 | 10 | Attention of D = 64 models is gather-bound (61 %), and the VU's merge tail is exposed per layer | 0.5B attention slower than DDR allows at long context | accepted for the test model; wider gather later |
 | 11 | D16: no in-tree working path until v2 runs | no regressions on the card in between | `build/v1` and tag `v1-m4`; the software path runs end to end on the simulator before any RTL (W3) |
 | 12 | 4-hour k4 links on a 14 GB host | slow hardware iteration | OOC runs and k1 links first; at most 2–3 k4 links in M6 |
@@ -557,6 +562,22 @@ generated builders, `plan.hpp`, the OPL executor, the M6 kernels (`graph` with M
 `selftest`, `replay`), then the M7 kinds (norms, element ops, GELU16, RoPE, GET_ROWS, SET_ROWS_KV,
 FLASH_ATTN per AT §6.6) with their C++ references. Exit: `fw_runtime`, `fw_kernels_host`,
 `fw_kernels_rv` (8 schedules, race fatal), `fw_selftest_sim`, `fw_replay_sim`.
+*Status (2026-10-31):* W2a (P2.1–P2.5) done (92f0b17, executor optimisation 41eb0da). W2b (P2.6–P2.7)
+integrated: the eleven M7 kinds with their planners (`tsr/plan_elem.hpp`, `plan_norm.hpp`,
+`plan_attn.hpp`) and references; exit tests green: `fw_kernels_elem_host` / `_rv` / `_rv_errors` /
+`_rv_shapes` (slow), `fw_kernels_normrope_host` / `_rv` / `_rv_prefill` / `_rv_refuse` /
+`_rv_mutant_race`, `fw_kvfa_plan`, `fw_kvfa_rv_*` (8 schedules, race fatal; 16K cells slow),
+`fw_kvfa_host`, `fw_kvfa_kl`, `fw_exec_rv` (sc_m7), `fw_opl_m7`, `fw_plan_cxx17`, and whole decoder
+layers: `fw_m7_layer_qwen05b` (Qwen2.5-0.5B layer 0 with its GGUF weights, decode and an 8-token
+prefill tile) and `fw_m7_layer_gemma12b` (a Gemma 4 12B SWA layer shape), every record bit-exact
+against the composed references under 8 schedules with the race detector fatal, and
+`fw_m7_layer_ggml` (the same layers on ggml-cpu: layer-output NMSE 3·10⁻¹⁴ … 5·10⁻⁶, attention
+≤ 8·10⁻¹⁰; with the device's KV cache ≤ 5·10⁻¹³). W2b fix (2026-10-31): every short kind ≤ 350
+RISC-V cycles of work at the 0.5B decode shapes (`fw_exec_perf_m7 --strict`: RMS_NORM 324, ROPE 325,
+SCALE with a bias 336; V2-SW-39); the one-tile block is 1,024 lines (V2-SW-36), so MUL_MAT's
+prefill T-tiles are as before W2b. Open: decode records outside the common shapes still above 350
+(Gemma 4's per-head norms 405–455, ROPE with a freq table or freq_scale ≠ 1 439–475, records that
+change s-register values); the issue loss of SW §7.8 (DMA queue depth, FLASH_ATTN planning).
 
 **W3 — host, backend and tools on the simulator (P3.1–P3.8).** Transport v2 (EX §10, debug-aware
 wait and recovery ladder; sim, mock, vkernel and xrt kdevs), the backend's M6 OPL builder, tools
