@@ -26,7 +26,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 FIG_DIR = Path(__file__).resolve().parent.parent       # docs/fig
-README_FIGS = ("hero", "system", "stack")              # the figures README.md embeds
+README_FIGS = ("hero", "system", "stack", "dataflow")             # the figures README.md embeds
 WIDTH = 1760                                           # px: 2 x 880, GitHub's README column
 BUDGET = 500_000                                       # bytes per PNG
 

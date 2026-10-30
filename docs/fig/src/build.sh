@@ -7,7 +7,7 @@
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
 py=${TSR_FIG_PYTHON:-$here/../../../build/tools/svgvenv/bin/python}
-for n in hero stack system launch core cluster layers verify milestones issue debug alloc tree; do
+for n in hero stack system dataflow launch core cluster layers verify milestones issue debug alloc tree; do
     "$py" "$here/$n.py" > /dev/null
 done
 for n in hero stack system; do

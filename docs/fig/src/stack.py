@@ -238,7 +238,7 @@ for t, (x, w) in zip(transport, place(transport, IX0, IX1)):
 # firmware
 y, h = panels["firmware"]
 panel(f, MX0, y, MX1 - MX0, h, "FIRMWARE ON THE CONTROL CORE", SIM_TAG,
-      "KERNEL SDK · custom kernels in C++20")
+      "BASIS KERNEL SDK · custom kernels in C++20")
 for t, (x, w) in zip(firmware, place(firmware, IX0, IX1)):
     tile(f, x, y + HEAD, w, H2, t)
 

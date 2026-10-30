@@ -1,4 +1,6 @@
-# Firmware SDK (`sw/ctrl`)
+# Basis: the Tesseract kernel SDK (`sw/ctrl`)
+
+Basis is the name of this SDK.
 
 `sw/ctrl` holds the software that runs on the control core: the runtime, a header library for
 issuing tile ops, the graph executor and the kernels the host launches. It is freestanding C++20

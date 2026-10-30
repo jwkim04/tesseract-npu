@@ -15,7 +15,7 @@ mark, so the figures stay consistent and the output stays deterministic.
 | Previews | `$TSR_FIG_PNG_DIR/<name>.png` at 1:1 and `<name>_gh.png` at 880 px (about GitHub's README width). The default is `build/fig/png`, which git ignores. Previews are never committed. |
 | Interpreter | `build/tools/svgvenv/bin/python docs/fig/src/<name>.py` (needs cairosvg, fontTools) |
 | Logos | `docs/fig/logos/<key>.svg` (sanitised third-party logos) and `docs/fig/logos/SOURCES.md` (where each came from); `docs/fig/src/logoclean.py` makes the files. See "Logos". |
-| README PNGs | `docs/fig/<name>.png` for `hero`, `system` and `stack`, made from the light SVGs by `docs/fig/src/pngs.py` |
+| README PNGs | `docs/fig/<name>.png` for `hero`, `system`, `stack` and `dataflow`, made from the light SVGs by `docs/fig/src/pngs.py` |
 | All figures | `docs/fig/src/build.sh` runs every script, light and dark where a dark variant exists, then `pngs.py` |
 
 - Start each script with `sys.dont_write_bytecode = True` before `from tsrfig import ...`, so
