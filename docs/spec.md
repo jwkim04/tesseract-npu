@@ -1928,9 +1928,15 @@ section 11 from the start.
   n_kv grows, and whether to assume 8-bit KV.)
 - [ ] Deferred formats: only the 4-bit formats Q4_0 and MXFP4 (gpt-oss-20b) are candidates. There is
   no hardware path for 5- and 6-bit formats and I-quants.
-- [ ] License: Solderpad Hardware or CERN-OHL-S for the RTL, MIT for the software. Compatibility with
-  the third-party RTL of the control core (Ibex Apache-2.0, riscv-dbg SHL-0.51) is to be checked at
-  the same time. No license has been chosen yet.
+- [x] License: decided 2026-10-31: Apache-2.0 for everything the author can grant, RTL, software and
+  documents alike (see [LICENSE](../LICENSE), [NOTICE](../NOTICE) and [REUSE.toml](../REUSE.toml);
+  the license texts are in [LICENSES](../LICENSES)). Parts the author cannot grant keep their own
+  license: the XRT driver patches (GPL-2.0 and Apache-2.0 hunks), files derived from riscv-tests and
+  riscv-arch-test, code transcribed from ggml (MIT), and third-party logos. Source files carry no
+  per-file header yet; REUSE.toml declares the licensing by path until a header sweep adds them.
+- [ ] Third-party RTL of the control core: when Ibex (Apache-2.0) and riscv-dbg (SHL-0.51) are
+  vendored under `third_party/`, add them to REUSE.toml and NOTICE and check that SHL-0.51 fits
+  with Apache-2.0.
 - [ ] When to contribute to upstream llama.cpp.
 - [ ] Adjustment of the model-level KL pass line (M1). numcheck showed that the 1-ulp floor is 0 at the
   early positions of quantized models. Proposal: compute the ratio only over the positions where the

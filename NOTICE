@@ -1,0 +1,83 @@
+Tesseract
+Copyright 2026 Jiwoo Kim
+
+Tesseract is licensed under the Apache License, Version 2.0 (see LICENSE). The third-party works
+below, and the files that contain parts of them, keep their own licenses and notices. REUSE.toml
+states the license of every path; the license texts are in the directory LICENSES/.
+
+
+llama.cpp and ggml (MIT)
+Copyright (c) 2023-2026 The ggml authors
+
+  - sw/sim/tsr_ref.c (tsr_get_scale_min_k4), sw/sim/tests/ref_math_gelu16.c and
+    sw/sim/tests/test_ref_vu.c contain code transcribed from ggml.
+  - docs/fig/logos/llamacpp.svg is the llama.cpp icon.
+  - third_party/patches/0001-ggml-tesseract.patch (the author's change, Apache-2.0) carries
+    context lines of llama.cpp files.
+  - third_party/llama.cpp is a Git submodule (https://github.com/ggml-org/llama.cpp, pinned
+    commit e3797b184d428c7a019362612b76971f60af6670): a separate project with its own license
+    (MIT) and the notices of the code vendored in it.
+  The permission notice is in LICENSES/MIT.txt; it must be kept together with the copyright
+  line above.
+
+
+riscv-tests (BSD 3-clause license in the Regents' wording)
+Copyright (c) 2012-2015, The Regents of the University of California (Regents).
+All Rights Reserved. https://github.com/riscv-software-src/riscv-tests
+
+  sw/sim/tests/rvtests/env/riscv_test.h and sw/sim/tests/rvtests/random.ld.
+  License text: LICENSES/LicenseRef-BSD-3-Clause-Regents.txt (verbatim from riscv-tests).
+
+
+riscv-arch-test (BSD-3-Clause or Apache-2.0 at the licensee's choice; BSD-3-Clause is kept)
+Copyright (c) 2020-2023 RISC-V International
+https://github.com/riscv-non-isa/riscv-arch-test
+Spike (BSD-3-Clause, in the Regents' wording)
+Copyright (c) 2010-2017, The Regents of the University of California (Regents).
+https://github.com/riscv-software-src/riscv-isa-sim
+
+  sw/sim/tests/rvtests/arch/model_test.h (based on the suite's riscof-plugins/rv32/spike_simple/
+  env/model_test.h; its HTIF block is also in Spike's model_test.h) and
+  sw/sim/tests/rvtests/arch/link.ld (the layout of the same plugin's link.ld).
+  License texts: LICENSES/BSD-3-Clause.txt; for the parts that come from Spike and riscv-tests
+  LICENSES/LicenseRef-BSD-3-Clause-Regents.txt.
+
+
+XRT, the AMD/Xilinx Runtime (Apache-2.0 and GPL-2.0)
+Copyright (C) 2015-2022 Xilinx, Inc.
+Copyright (C) 2022-2023 Advanced Micro Devices, Inc.
+Copyright (c) 2009-2010 Intel Corporation (driver/xocl/subdev/xiic.c)
+Copyright (C) 2006 Peter Korsgaard, Copyright (C) 2007 Secret Lab Technologies Ltd.
+  (driver/xocl/subdev/ulite.c)
+Copyright (C) 2020 Chien-Wei Lan (driver/xocl/subdev/ulite.c)
+Copyright (C) Jan Stephan (xocl_drv.h, xocl_drm.c, firewall.c, fmgr.c, qdma.c)
+
+  The patches in sw/xrt-driver/patches/ modify the xocl and xclmgmt Linux kernel drivers of XRT
+  2.18.179 (https://github.com/Xilinx/XRT, tag 202420.2.18.179) and contain context lines of the
+  patched files. Each hunk is under the license of the file it patches: Apache-2.0 or GPL-2.0-only
+  (REUSE.toml lists the patches of each kind). License texts: LICENSES/Apache-2.0.txt and
+  LICENSES/GPL-2.0-only.txt.
+
+
+Noto Sans Mono 2.006 (SIL Open Font License 1.1)
+Copyright 2015 Google LLC. All Rights Reserved. "Noto" is a trademark of Google LLC.
+https://github.com/notofonts/latin-greek-cyrillic
+
+  The text of the figures in docs/fig is drawn with glyph outlines of this font
+  (docs/fig/src/FONTS.md). No font file is part of this repository.
+  License text: LICENSES/OFL-1.1.txt.
+
+
+GDB archer fish logo (Creative Commons Attribution-ShareAlike 3.0 United States)
+Logo by Jamie Guinan, vector version by Andreas Arnez, from the GDB project
+(https://sourceware.org/gdb/).
+
+  docs/fig/logos/gdb.svg (sanitised, see docs/fig/logos/SOURCES.md), also drawn in
+  docs/fig/stack.svg, stack-dark.svg and stack.png.
+  License text: LICENSES/LicenseRef-CC-BY-SA-3.0-US.txt (https://creativecommons.org/licenses/by-sa/3.0/us/).
+
+
+The PyTorch and Hugging Face logos in docs/fig/logos are trademarks of their owners. No license is
+granted for them (LICENSES/LicenseRef-Trademark-PyTorch.txt, LicenseRef-Trademark-HuggingFace.txt;
+source and checksums in docs/fig/logos/SOURCES.md). The Apache License 2.0 grants no rights to any
+trademark, service mark or product name (section 6).

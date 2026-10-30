@@ -1,0 +1,17 @@
+PyTorch logo: trademark notice, no license granted
+
+The file docs/fig/logos/pytorch.svg is the PyTorch logo (flame and wordmark)
+as published by the PyTorch project in its repository,
+https://github.com/pytorch/pytorch (docs/source/_static/img/pytorch-logo-dark.svg),
+sanitised without changing how it renders (see docs/fig/logos/SOURCES.md).
+
+PyTorch, the PyTorch logo and any related marks are trademarks of The Linux
+Foundation. The repository's license (Apache-2.0) does not cover this file and
+grants no right to the mark (Apache-2.0 section 6). Use of the mark is governed
+by the trademark usage policy of The Linux Foundation,
+https://www.linuxfoundation.org/trademark-usage.
+
+The logo is included only to name the PyTorch project in the software stack
+figure (docs/fig/stack.svg). It does not mean that PyTorch, its authors or The
+Linux Foundation endorse Tesseract, and Tesseract is not affiliated with them.
+If the owner asks for the file to be removed, delete it.

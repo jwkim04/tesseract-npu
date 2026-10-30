@@ -1,0 +1,285 @@
+# Licensing of the Tesseract repository, declared per path (REUSE specification 3.3,
+# https://reuse.software/spec-3.3/). Source files carry no per-file header yet.
+#
+# Rules used below:
+#  - Per the specification the last [[annotations]] table that matches a file is the only one
+#    used for it, so the default comes first and the exceptions after it.
+#  - The default has precedence "closest": a header that a file carries itself wins over it.
+#  - The exceptions have precedence "aggregate": a header added to such a file later is
+#    combined with the entry here, so it can never silently drop the third-party license.
+#    Exception: the three scripts below use "override", see there.
+#  - License texts are in LICENSES/, copyright and license notices of the third parties in NOTICE,
+#    the exact Apache-2.0 text in LICENSE.
+#  - third_party/llama.cpp is a Git submodule. The specification treats a submodule as a separate
+#    Project, so its files are not annotated here (its own LICENSE: MIT, "The ggml authors";
+#    its vendored code keeps its own notices). The patch to it that lives in this repository is
+#    annotated below.
+#  - Header sweep (later): add the Apache-2.0 header to files under the default only. Do not add
+#    it to the exception files below, and remove the "GPL-2.0" tag line of the three scripts.
+#
+# Check: `reuse lint` at the repository root.
+
+version = 1
+
+# ---------------------------------------------------------------------------------------------
+# Default: everything the author can grant.
+# ---------------------------------------------------------------------------------------------
+
+[[annotations]]
+path = "**"
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 Jiwoo Kim"
+SPDX-License-Identifier = "Apache-2.0"
+
+# ---------------------------------------------------------------------------------------------
+# XRT driver patches (sw/xrt-driver/patches). Each patch modifies files of the AMD/Xilinx XRT
+# 2.18.179 kernel drivers and carries context lines of them. The license of each hunk follows the
+# license of the file it patches: most files are GPL-2.0, five are Apache-2.0
+# ("SPDX-License-Identifier: Apache-2.0" in their header). The author's hunks are offered under
+# the same terms as the file they change (the author cannot grant Apache-2.0 for a change to a
+# GPL-2.0 file). Copyright holders named in the headers of the patched files are listed per group.
+# ---------------------------------------------------------------------------------------------
+
+# Patches that touch only Apache-2.0 files (xocl_drv.h, mgmtpf/mgmt-core.c, userpf/xocl_drv.c).
+[[annotations]]
+path = [
+  "sw/xrt-driver/patches/0001-*.patch",
+  "sw/xrt-driver/patches/0010-*.patch",
+  "sw/xrt-driver/patches/0015-*.patch",
+  "sw/xrt-driver/patches/0016-*.patch",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = [
+  "2026 Jiwoo Kim",
+  "2016-2022 Xilinx, Inc.",
+  "2022 Advanced Micro Devices, Inc.",
+]
+SPDX-License-Identifier = "Apache-2.0"
+
+# Patches that touch both GPL-2.0 and Apache-2.0 files (0004: xgq_vmr.c, xocl_drv.h;
+# 0008: userpf/xocl_drv.c; 0013: xgq_vmr.c, userpf/xocl_sysfs.c, xocl_drv.h; 0017: xgq_vmr.c).
+# The GPL hunks and the Apache-2.0 hunks each keep the license of their file.
+[[annotations]]
+path = [
+  "sw/xrt-driver/patches/0004-*.patch",
+  "sw/xrt-driver/patches/0008-*.patch",
+  "sw/xrt-driver/patches/0013-*.patch",
+  "sw/xrt-driver/patches/0017-*.patch",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = [
+  "2026 Jiwoo Kim",
+  "2015-2022 Xilinx, Inc.",
+  "2022-2023 Advanced Micro Devices, Inc.",
+  "2009-2010 Intel Corporation",
+  "2006 Peter Korsgaard",
+  "2007 Secret Lab Technologies Ltd.",
+  "2020 Chien-Wei Lan",
+  "Jan Stephan",
+]
+SPDX-License-Identifier = "GPL-2.0-only AND Apache-2.0"
+
+# Patches that touch only GPL-2.0 files (0011 and 0012 also touch files that are dual-licensed
+# "GPL-2.0 OR Apache-2.0", for which the GPL option applies; 0002 and 0005 touch only files whose
+# header says "or any later version", GPL-2.0-only is a valid choice for them).
+[[annotations]]
+path = [
+  "sw/xrt-driver/patches/0002-*.patch",
+  "sw/xrt-driver/patches/0003-*.patch",
+  "sw/xrt-driver/patches/0005-*.patch",
+  "sw/xrt-driver/patches/0006-*.patch",
+  "sw/xrt-driver/patches/0007-*.patch",
+  "sw/xrt-driver/patches/0009-*.patch",
+  "sw/xrt-driver/patches/0011-*.patch",
+  "sw/xrt-driver/patches/0012-*.patch",
+  "sw/xrt-driver/patches/0014-*.patch",
+  "sw/xrt-driver/patches/0018-*.patch",
+  "sw/xrt-driver/patches/0019-*.patch",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = [
+  "2026 Jiwoo Kim",
+  "2015-2022 Xilinx, Inc.",
+  "2022-2023 Advanced Micro Devices, Inc.",
+  "2009-2010 Intel Corporation",
+  "2006 Peter Korsgaard",
+  "2007 Secret Lab Technologies Ltd.",
+  "2020 Chien-Wei Lan",
+  "Jan Stephan",
+]
+SPDX-License-Identifier = "GPL-2.0-only"
+
+# The author's own build and verify scripts for the XRT kernel modules. They copy nothing from XRT
+# and are separate programs, so they are Apache-2.0 like the rest of the author's work. Each still
+# carries the old in-file tag "SPDX-License-Identifier: GPL-2.0" (a deprecated id); "override"
+# makes this table win over that tag until the header sweep removes it.
+[[annotations]]
+path = [
+  "sw/xrt-driver/build.sh",
+  "sw/xrt-driver/verify/eqcheck.sh",
+  "sw/xrt-driver/verify/hdrcheck.sh",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "2026 Jiwoo Kim"
+SPDX-License-Identifier = "Apache-2.0"
+
+# ---------------------------------------------------------------------------------------------
+# Files derived from riscv-tests / riscv-arch-test (sw/sim/tests/rvtests). Upstream parts keep
+# the upstream license, the author's changes and comments are Apache-2.0.
+# ---------------------------------------------------------------------------------------------
+
+# riscv-tests env/p/riscv_test.h (RVTEST_CODE_BEGIN is upstream's line for line) and env/p/link.ld.
+# The riscv-tests LICENSE is the BSD 3-clause text with the Regents' own disclaimer wording, so it
+# is kept verbatim as LicenseRef-BSD-3-Clause-Regents.
+[[annotations]]
+path = [
+  "sw/sim/tests/rvtests/env/riscv_test.h",
+  "sw/sim/tests/rvtests/random.ld",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = [
+  "2026 Jiwoo Kim",
+  "2012-2015 The Regents of the University of California (Regents)",
+]
+SPDX-License-Identifier = "LicenseRef-BSD-3-Clause-Regents AND Apache-2.0"
+
+# riscv-arch-test riscof-plugins/rv32/spike_simple/env/model_test.h and link.ld. The upstream
+# README offers its code under BSD-3-Clause or Apache-2.0 (COPYING.BSD, COPYING.APACHE); the
+# upstream files themselves have no license or copyright line. BSD-3-Clause is declared here in
+# addition to Apache-2.0 (the stricter reading): the HTIF block of model_test.h is also in Spike's
+# model_test.h (Regents), and link.ld has the layout of riscv-tests' env/p/link.ld (Regents) plus
+# one section.
+[[annotations]]
+path = "sw/sim/tests/rvtests/arch/model_test.h"
+precedence = "aggregate"
+SPDX-FileCopyrightText = [
+  "2026 Jiwoo Kim",
+  "2020-2023 RISC-V International and the riscv-arch-test contributors",
+  "2010-2017 The Regents of the University of California (Regents)",
+]
+SPDX-License-Identifier = "BSD-3-Clause AND Apache-2.0"
+
+[[annotations]]
+path = "sw/sim/tests/rvtests/arch/link.ld"
+precedence = "aggregate"
+SPDX-FileCopyrightText = [
+  "2026 Jiwoo Kim",
+  "2020-2023 RISC-V International and the riscv-arch-test contributors",
+  "2012-2015 The Regents of the University of California (Regents)",
+]
+SPDX-License-Identifier = "BSD-3-Clause AND Apache-2.0"
+
+# ---------------------------------------------------------------------------------------------
+# Code transcribed from ggml (MIT, Copyright (c) 2023-2026 The ggml authors).
+#   sw/sim/tsr_ref.c               tsr_get_scale_min_k4 = ggml get_scale_min_k4 (ggml-quants.c)
+#   sw/sim/tests/ref_math_gelu16.c ggml_gelu_f32 (ggml-cpu/vec.h)
+#   sw/sim/tests/test_ref_vu.c     ggml_rope_cache_init angles (ggml-cpu/ops.cpp)
+# third_party/patches/0001-ggml-tesseract.patch: the author's changes to llama.cpp; its context
+# lines are MIT code of llama.cpp.
+# ---------------------------------------------------------------------------------------------
+
+[[annotations]]
+path = [
+  "sw/sim/tsr_ref.c",
+  "sw/sim/tests/ref_math_gelu16.c",
+  "sw/sim/tests/test_ref_vu.c",
+  "third_party/patches/0001-ggml-tesseract.patch",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = [
+  "2026 Jiwoo Kim",
+  "2023-2026 The ggml authors",
+]
+SPDX-License-Identifier = "Apache-2.0 AND MIT"
+
+# ---------------------------------------------------------------------------------------------
+# Reference algorithms in the public domain (CC0-1.0): xoshiro128** 1.1 and splitmix64 by
+# D. Blackman and S. Vigna. No attribution is required, so NOTICE does not list them.
+# ---------------------------------------------------------------------------------------------
+
+[[annotations]]
+path = [
+  "sw/sim/tsr_sched.c",
+  "sw/sim/tests/test_util.h",
+  "sw/tools/klcheck.cpp",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Jiwoo Kim"
+SPDX-License-Identifier = "Apache-2.0 AND CC0-1.0"
+
+# ---------------------------------------------------------------------------------------------
+# Figures (docs/fig). The text in the SVG figures is drawn as glyph outlines of Noto Sans Mono
+# 2.006 (SIL OFL-1.1, Copyright 2015 Google LLC), written by docs/fig/src/tsrfig.py; the PNG
+# files are renders of those figures or of text drawn with the same font. The OFL does not cover
+# documents made with the font; it is listed so that the notice and the license text travel with
+# the figures. See docs/fig/src/FONTS.md.
+# ---------------------------------------------------------------------------------------------
+
+[[annotations]]
+path = [
+  "docs/fig/*.svg",
+  "docs/fig/*.png",
+  "docs/fig/floorplan/*.png",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = [
+  "2026 Jiwoo Kim",
+  "2015 Google LLC (Noto Sans Mono glyph outlines)",
+]
+SPDX-License-Identifier = "Apache-2.0 AND OFL-1.1"
+
+# ---------------------------------------------------------------------------------------------
+# Third-party logos (docs/fig/logos); the notes per logo are in docs/fig/logos/SOURCES.md.
+# SOURCES.md itself is the author's text and falls under the default.
+# ---------------------------------------------------------------------------------------------
+
+[[annotations]]
+path = "docs/fig/logos/llamacpp.svg"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2023-2026 The ggml authors"
+SPDX-License-Identifier = "MIT"
+
+# Trademark of The Linux Foundation. No license is granted for the file (see the text in LICENSES).
+[[annotations]]
+path = "docs/fig/logos/pytorch.svg"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "The Linux Foundation (PyTorch logo)"
+SPDX-License-Identifier = "LicenseRef-Trademark-PyTorch"
+
+# Trademark of Hugging Face, Inc. No license is granted for the file (see the text in LICENSES).
+[[annotations]]
+path = "docs/fig/logos/huggingface.svg"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Hugging Face, Inc. (Hugging Face logo)"
+SPDX-License-Identifier = "LicenseRef-Trademark-HuggingFace"
+
+# GDB archer fish. CC BY-SA 3.0 US has no SPDX id, hence the LicenseRef.
+[[annotations]]
+path = "docs/fig/logos/gdb.svg"
+precedence = "aggregate"
+SPDX-FileCopyrightText = [
+  "Jamie Guinan (archer fish logo)",
+  "Andreas Arnez (vector version)",
+]
+SPDX-License-Identifier = "LicenseRef-CC-BY-SA-3.0-US"
+
+# The software stack figure draws the four logos above as vector shapes (stack.png is a render of
+# stack.svg). The drawing is the author's, the logos keep their terms. This entry comes after the
+# docs/fig/*.svg and *.png entry on purpose: the last matching table is the one used.
+[[annotations]]
+path = [
+  "docs/fig/stack.svg",
+  "docs/fig/stack-dark.svg",
+  "docs/fig/stack.png",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = [
+  "2026 Jiwoo Kim",
+  "2015 Google LLC (Noto Sans Mono glyph outlines)",
+  "2023-2026 The ggml authors (llama.cpp icon)",
+  "The Linux Foundation (PyTorch logo)",
+  "Hugging Face, Inc. (Hugging Face logo)",
+  "Jamie Guinan (archer fish logo)",
+  "Andreas Arnez (archer fish vector version)",
+]
+SPDX-License-Identifier = "Apache-2.0 AND OFL-1.1 AND MIT AND LicenseRef-Trademark-PyTorch AND LicenseRef-Trademark-HuggingFace AND LicenseRef-CC-BY-SA-3.0-US"

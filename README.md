@@ -90,5 +90,5 @@ See [Getting started](docs/getting-started.md) for requirements, tests, PyTorch 
 
 ## License
 
-No license has been chosen yet; it is an open item in [`docs/spec.md`](docs/spec.md) §20 (Open
-items). Until a `LICENSE` file is added, the repository carries no open-source license.
+Apache-2.0, see [LICENSE](LICENSE). A few files carry other licenses; [NOTICE](NOTICE) and
+[REUSE.toml](REUSE.toml) list them.

@@ -1,0 +1,16 @@
+Hugging Face logo: trademark notice, no license granted
+
+The file docs/fig/logos/huggingface.svg is the Hugging Face logo as offered for
+download on the brand page of Hugging Face, Inc., https://huggingface.co/brand
+(https://huggingface.co/datasets/huggingface/brand-assets/resolve/main/hf-logo.svg),
+re-serialised without changing how it renders (see docs/fig/logos/SOURCES.md).
+The brand page gives no license text.
+
+Hugging Face and its logo are trademarks of Hugging Face, Inc. The repository's
+license (Apache-2.0) does not cover this file and grants no right to the mark
+(Apache-2.0 section 6). Follow the brand rules of Hugging Face, Inc.
+
+The logo is included only to name the Hugging Face model hub in the software
+stack figure (docs/fig/stack.svg). It does not mean that Hugging Face, Inc.
+endorses Tesseract, and Tesseract is not affiliated with it. If the owner asks
+for the file to be removed, delete it.
