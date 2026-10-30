@@ -10,8 +10,10 @@
 #                identical observables and captured traces under every schedule; every captured launch
 #                replays on fresh simulators (test_fw_m6_e2e.cpp)
 #   fw_m6_perf   the M6 numbers of SW §7.8 / EX §4.11 on the production image: image sizes, launch costs,
-#                RISC-V cycles per graph op, RISC-V vs tile time of a 0.5B decode layer (printed; only
-#                regression ceilings asserted)
+#                RISC-V cycles per graph op (busy and spin-free work, U200 and deep queues) with a
+#                per-function profile (tests/fw_prof.h), RISC-V vs tile time of a 0.5B decode layer
+#                (printed; only regression ceilings asserted); with the fw_exec image an M7 projection
+#                (the layer plus 25 short VU records per layer, exec_kinds.cpp kind 0x38)
 
 if (NOT TARGET tsr_fw_ref)
     return()                       # kernels.cmake (P2.5) provides the MUL_MAT reference
@@ -27,5 +29,6 @@ add_dependencies(test_fw_m6_e2e tsr_fw)
 set(_e_scratch ${CMAKE_CURRENT_BINARY_DIR}/scratch)
 add_test(NAME fw_m6_e2e COMMAND test_fw_m6_e2e ${TSR_FW_ELF} ${_e_scratch} ${TESSERACT_ROOT}/traces)
 set_tests_properties(fw_m6_e2e PROPERTIES LABELS fw TIMEOUT 600 SKIP_RETURN_CODE 77)
-add_test(NAME fw_m6_perf COMMAND test_fw_m6_e2e ${TSR_FW_ELF} ${_e_scratch} --perf)
+# The M7 projection of fw_m6_perf runs on the fw_exec test image (exec.cmake; its kind 0x38 VU stub).
+add_test(NAME fw_m6_perf COMMAND test_fw_m6_e2e ${TSR_FW_ELF} ${_e_scratch} --perf ${TSR_FW_TEST_ELF_fw_exec})
 set_tests_properties(fw_m6_perf PROPERTIES LABELS fw TIMEOUT 300 SKIP_RETURN_CODE 77)

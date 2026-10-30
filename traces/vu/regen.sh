@@ -2,7 +2,8 @@
 # traces/vu/regen.sh [BUILD_DIR] — VU regression traces (trace v2 `ops`, docs/v2/06-software-
 # verification.md §5.6 "new"): tsr-trace-gen v2 --ops vu, every VU op of docs/v2/02-vector-unit.md
 # §5 with legal and illegal encodings, then every trace replayed under the fixed and two random
-# schedules (race detector fatal).
+# schedules (race detector fatal),
+# tile-only and through the replay kernel (one launch per trace: SPM_STALE is fatal, SW §4.6).
 #
 #   m8/      96 traces, U200 config with T_MAX 8 and CAPS VU|ATT|TOPK|DQROW (the simulator's M8 set):
 #            each group one op of the 67-entry cycle (25 VOP functions with cmode 0 / 1 / 2, 14 RED
@@ -29,3 +30,4 @@ rm -rf "$HERE"/m8 "$HERE"/m6 "$HERE"/errors "$HERE"/small1ch
 "$GEN" -q --ops vu --prefix vu -o "$HERE/small1ch" -n 24 -s 44 --t-max 1 --caps m8 --errors 20 --num-ch 1 \
        --spm-kib 64 --ch-gib 1 --addr-beat-w 22
 v2_replay "$HERE"
+v2_replay_kernel "$HERE"

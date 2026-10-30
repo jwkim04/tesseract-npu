@@ -6,11 +6,13 @@
 # The digests are those of the dev host: the generator draws some random inputs through libm
 # (normal deviates, the ROPE constants), so another libm may give different bytes.
 # A frozen reference set goes into git once the v2 ISA is frozen for the RTL (after the M6 RTL).
+# 2026-10-30: m2, gen and m3 regenerated without SPM_STALE (every SPM line an op reads is
+# written earlier in its trace; 41 traces changed: m2 13, gen 5, m3 23); vu, at, ctrl byte-identical.
 # set           files  digest
-m2              1258   a89344c8e6c0c7f895623980123f6187f7db3fc5334d2de34b641164c1cc8353
-gen             580    751b35079b28824d3d652c696c0ac41a2bdb72ad65c3b226e5305a6a715df50b
+m2              1211   5d2bc794cb3f836991860c358021f6d319a3afc3fa09e561d7bea53aa4e7a655
+gen             557    8f6333d82779993a087d51735b160566722098a3522e29082f7eeb97d2593c15
 vu              1757   854dd8a08ac6db56a846e42560ca7fa13ce18ae57e881ad8afcaa629a7d21f0d
 at              4066   30912bc92e84c1a4112862538fe5d4bae025c62ce991eb9057c038cde3f2b84c
 ctrl            5811   f044bff08bb8967cbd8e937670c18ec1c9f25eaa357ba64e548d7f867b33c6cb
-m3              5189   e1a4937106b4c85f11bbc71e67233b7abe925b7eefb7293bd38d565eab6df16e
+m3              5105   8599d44a005520e855adb4dba548ba9154c97a96ec3efa7cd0dca55f32fbb1c7
 model-v1conv    3140   b00e0b4f7007b1ad7ac1ae251b0edd3c83b1d747703946f6da54a10c3fe375c8

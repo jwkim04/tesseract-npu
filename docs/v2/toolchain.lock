@@ -88,4 +88,8 @@ arch_test.paths = riscv-test-suite/env riscv-test-suite/rv32i_m/I riscv-test-sui
 
 # --- Firmware compile flags (SW §6.1; checked by the script's "check" step) ------------------------
 firmware.cxxflags = -march=rv32imc_zicsr_zifencei -mabi=ilp32 -Os -ffreestanding -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit -ffp-contract=off -nostdlib -nostartfiles -g -std=c++20
+# Hot-path sources (sw/ctrl/CMakeLists.txt TSR_FW_HOT_GLOBS: kernels/graph.cpp, kernels/k_*.cpp) are
+# compiled with firmware.cxxflags followed by firmware.cxxflags_hot (SW §6.1, V2-SW-34; added by the
+# executor-optimisation workflow, 2026-10-30).
+firmware.cxxflags_hot = -O2
 firmware.libs = libgcc.a from -print-libgcc-file-name with -march=rv32imc_zicsr_zifencei -mabi=ilp32

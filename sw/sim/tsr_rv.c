@@ -8,8 +8,9 @@
 // *confirm*: they are checked against the pinned Ibex when it is vendored (CC §3.1) and by the
 // RVFI lockstep bench (P5.2).
 //
-// Ibex behaviour modelled here (CC §3.2 configuration: RV32MFast, RV32BNone, PMPEnable 0,
-// MHPMCounterNum 0, DbgTriggerEn 1, DbgHwBreakNum 2, SecureIbex 0, ICache 0):
+// Ibex behaviour modelled here (CC §3.2 configuration: WritebackStage 1, BranchTargetALU 1,
+// RV32MSingleCycle (V2-CC-34; only the cycle tables of tsr_rv.h depend on these three), RV32BNone,
+// PMPEnable 0, MHPMCounterNum 0, DbgTriggerEn 1, DbgHwBreakNum 2, SecureIbex 0, ICache 0):
 //   ISA        RV32I, M, C (no Zcb / Zba / Zbb), Zicsr, Zifencei. FENCE and FENCE.I are no-ops
 //              (no cache; SW §4.2). Every other encoding is an illegal instruction (mcause 2,
 //              mtval = the instruction bits, 16-bit ones zero-extended). Illegal compressed
@@ -81,7 +82,10 @@
 //              transaction the hart issues, for DB's RV watchpoints (tsr_dbg.c, P1.13).
 //
 // Model-only conventions: the debug ROM's park loop is not interpreted (see tsr_rv.h);
-// x1..x31 reset to 0. The cycle table (struct tsr_rv_cpi) is the SW §4.2 *estimate*.
+// x1..x31 reset to 0. Timing: the cycle tables of tsr_rv.h (Ibex "small" and "maxperf", SW §4.2,
+// selected by tsr_rv_set_core) with the two neighbour-dependent penalties computed here: a load
+// whose rd the next instruction reads (load_use, WritebackStage) and a control transfer to a 32-bit
+// instruction at pc[1] = 1 (target32); both peek at instruction memory without side effects.
 
 #include "tsr_rv.h"
 
@@ -112,6 +116,7 @@
 struct tsr_rv {
     tsr_rv_bus bus;
     tsr_rv_cpi cpi;
+    tsr_rv_stats st;
 
     uint32_t x[32];
     uint32_t pc;
@@ -157,6 +162,9 @@ typedef struct ix {
     uint32_t csr, csr_val, csr_written;
     int      wrote_mcycle, wrote_minstret;
     int      no_retire;       // completed but not retired: 1 ebreak in debug mode (parks), 2 ebreak into debug mode
+    uint32_t cls;             // TSR_RV_CLS_* (statistics)
+    int      io;              // a data transaction had a latency above 1 (left the single-cycle memories)
+    int      pen_lu, pen_t32, pen_csr;   // penalties added to cost (statistics)
 } ix;
 
 // ---------------------------------------------------------------------------
@@ -238,6 +246,26 @@ void tsr_rv_set_cpi(tsr_rv * rv, const tsr_rv_cpi * cpi) {
     if (cpi) rv->cpi = *cpi;
     else { tsr_rv_cpi d = TSR_RV_CPI_DEFAULT; rv->cpi = d; }
 }
+
+int tsr_rv_core_parse(const char * name, uint32_t * core) {
+    if (name == NULL) return -1;
+    if (strcmp(name, "small") == 0)   { if (core) *core = TSR_RV_CORE_SMALL;   return 0; }
+    if (strcmp(name, "maxperf") == 0) { if (core) *core = TSR_RV_CORE_MAXPERF; return 0; }
+    return -1;
+}
+
+const char * tsr_rv_core_name(uint32_t core) {
+    return core == TSR_RV_CORE_SMALL ? "small" : core == TSR_RV_CORE_MAXPERF ? "maxperf" : NULL;
+}
+
+void tsr_rv_core_cpi(uint32_t core, tsr_rv_cpi * out) {
+    static const tsr_rv_cpi small = TSR_RV_CPI_SMALL, maxperf = TSR_RV_CPI_MAXPERF, dflt = TSR_RV_CPI_DEFAULT;
+    *out = core == TSR_RV_CORE_SMALL ? small : core == TSR_RV_CORE_MAXPERF ? maxperf : dflt;
+}
+
+void tsr_rv_set_core(tsr_rv * rv, uint32_t core) { tsr_rv_core_cpi(core, &rv->cpi); }
+
+void tsr_rv_get_stats(const tsr_rv * rv, tsr_rv_stats * out) { *out = rv->st; }
 
 uint32_t tsr_rv_reg(const tsr_rv * rv, unsigned i) { return i < 32u ? rv->x[i] : 0u; }
 void tsr_rv_set_reg(tsr_rv * rv, unsigned i, uint32_t v) { if (i > 0u && i < 32u) rv->x[i] = v; }
@@ -473,6 +501,7 @@ static int data_access(tsr_rv * rv, ix * c, uint32_t addr, uint32_t size, int wr
             return -1;
         }
         c->cost += (uint32_t)r;
+        if (r > 1) c->io = 1;
         if (!write) *v = val;
         c->mem_val = val;
         return 0;
@@ -489,6 +518,7 @@ static int data_access(tsr_rv * rv, ix * c, uint32_t addr, uint32_t size, int wr
     // WAIT / YIELD are only allowed on an instruction's first transaction (tsr_rv.h); a bus that
     // returns them here is treated as faulting.
     c->cost += 1u + (r1 > 0 ? (uint32_t)r1 : 0u) + (r2 > 0 ? (uint32_t)r2 : 0u);
+    if (r1 > 1 || r2 > 1) c->io = 1;
     if (r1 < 0 || r2 < 0) {
         c->exc = 1; c->cause = write ? TSR_RV_EXC_STORE_FAULT : TSR_RV_EXC_LOAD_FAULT;
         c->tval = (r1 < 0) ? addr : a2;
@@ -625,6 +655,58 @@ static int expand_c(uint32_t c, uint32_t * out) {
 }
 
 // ---------------------------------------------------------------------------
+// Timing penalties that depend on the neighbouring instruction (tsr_rv.h cycle model). They read
+// the instruction memory without side effects (fetch16) and never change architectural state.
+// ---------------------------------------------------------------------------
+// The (expanded) instruction at pc: 0, or -1 if it cannot be fetched or is not a valid parcel.
+static int peek_insn(tsr_rv * rv, uint32_t pc, uint32_t * e) {
+    uint16_t p0, p1;
+    if (fetch16(rv, pc, &p0)) return -1;
+    if ((p0 & 3u) != 3u) return expand_c(p0, e);
+    if (fetch16(rv, pc + 2u, &p1)) return -1;
+    *e = (uint32_t)p0 | ((uint32_t)p1 << 16);
+    return 0;
+}
+
+// 1 if the (expanded) instruction e reads register r (r != 0) through Ibex's register-file read
+// ports (rf_ren_a / rf_ren_b of ibex_decoder: rs1 for JALR, loads, OP-IMM and register CSR ops;
+// rs1 and rs2 for branches, stores and OP; none for LUI, AUIPC, JAL, fences, ecall / ebreak / mret
+// / wfi and immediate CSR ops; *confirm*).
+static int reads_reg(uint32_t e, uint32_t r) {
+    const uint32_t opc = e & 0x7Fu, f3 = bits(e, 14, 12), rs1 = bits(e, 19, 15), rs2 = bits(e, 24, 20);
+    int r1 = 0, r2 = 0;
+    switch (opc) {
+    case 0x67: case 0x03: case 0x13: r1 = 1; break;
+    case 0x63: case 0x23: case 0x33: r1 = r2 = 1; break;
+    case 0x73: r1 = f3 >= 1u && f3 <= 3u; break;
+    default: break;
+    }
+    return (r1 && rs1 == r) || (r2 && rs2 == r);
+}
+
+// A control transfer to c->next_pc: + target32 if the target is a 32-bit instruction that starts
+// in the upper half of a word (the IF stage needs a second word fetch before it is valid).
+static void pen_target32(tsr_rv * rv, ix * c) {
+    uint16_t p;
+    if (rv->cpi.target32 == 0u || !(c->next_pc & 2u)) return;
+    if (fetch16(rv, c->next_pc, &p) == 0 && (p & 3u) == 3u) {
+        c->cost += rv->cpi.target32;
+        c->pen_t32 = 1;
+    }
+}
+
+// A completed load to rd: + load_use if the next instruction in memory reads rd (WritebackStage:
+// Ibex does not forward load data from WB, stall_ld_hz).
+static void pen_load_use(tsr_rv * rv, ix * c, uint32_t rd) {
+    uint32_t e;
+    if (rv->cpi.load_use == 0u || rd == 0u) return;
+    if (peek_insn(rv, c->next_pc, &e) == 0 && reads_reg(e, rd)) {
+        c->cost += rv->cpi.load_use;
+        c->pen_lu = 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Execute one (expanded) instruction e. c->len and c->insn are set; c->next_pc defaults to
 // pc + len. Raises exceptions in c; never changes architectural state except through c
 // (rd is written by the caller) and through CSR / memory side effects.
@@ -665,6 +747,7 @@ static void exec_system(tsr_rv * rv, ix * c, uint32_t e) {
             rv->cpuctrlsts &= ~CPUCTRL_SYNC_EXC;
             c->next_pc = rv->mepc;
             c->cost = rv->cpi.trap;
+            c->cls = TSR_RV_CLS_SYSTEM;
             return;
         }
         case 0x7B2:                                    // DRET
@@ -672,6 +755,7 @@ static void exec_system(tsr_rv * rv, ix * c, uint32_t e) {
             leave_debug(rv);
             c->next_pc = rv->pc;
             c->cost = rv->cpi.trap;
+            c->cls = TSR_RV_CLS_SYSTEM;
             return;
         case 0x105:                                    // WFI
             if (rv->priv == TSR_RV_PRIV_U && (rv->mstatus & TSR_RV_MSTATUS_TW)) { illegal(c); return; }
@@ -688,8 +772,14 @@ static void exec_system(tsr_rv * rv, ix * c, uint32_t e) {
     uint32_t src = (f3 & 4u) ? rs1 : rv->x[rs1];
     int write = (op == 1u) || rs1 != 0u;
     uint32_t old;
+    c->cls = TSR_RV_CLS_CSR;
     if (csr_check(rv, csr, write, rv->dbg_mode) || csr_read_raw(rv, csr, &old)) { illegal(c); return; }
     if (write) {
+        // Ibex csr_pipe_flush: every CSR write / set / clear except mscratch and mepc (*confirm*).
+        if (csr != 0x340u && csr != 0x341u) {
+            c->cost += rv->cpi.csr_flush;
+            c->pen_csr = 1;
+        }
         uint32_t nv = (op == 1u) ? src : (op == 2u) ? (old | src) : (old & ~src);
         csr_write_raw(rv, csr, nv, rv->dbg_mode, c);
         uint32_t after = 0;
@@ -713,14 +803,18 @@ static void execute(tsr_rv * rv, ix * c, uint32_t e) {
         uint32_t imm = (bits(e, 31, 31) << 20) | (bits(e, 19, 12) << 12) | (bits(e, 20, 20) << 11) | (bits(e, 30, 21) << 1);
         c->rd = rd; c->rd_val = pc + c->len;
         c->next_pc = pc + sext(imm, 21);
-        c->cost = rv->cpi.taken;
+        c->cost = rv->cpi.jump;
+        c->cls = TSR_RV_CLS_JUMP;
+        pen_target32(rv, c);
         return;
     }
     case 0x67:                                                                  // JALR
         if (f3 != 0u) { illegal(c); return; }
         c->rd = rd; c->rd_val = pc + c->len;
         c->next_pc = (a + imm_i) & ~1u;
-        c->cost = rv->cpi.taken;
+        c->cost = rv->cpi.jump;
+        c->cls = TSR_RV_CLS_JUMP;
+        pen_target32(rv, c);
         return;
     case 0x63: {                                                                // BRANCH
         int t;
@@ -733,10 +827,13 @@ static void execute(tsr_rv * rv, ix * c, uint32_t e) {
         case 7: t = a >= b; break;
         default: illegal(c); return;
         }
+        c->cls = TSR_RV_CLS_BRANCH_NT;
         if (t) {
             uint32_t imm = (bits(e, 31, 31) << 12) | (bits(e, 7, 7) << 11) | (bits(e, 30, 25) << 5) | (bits(e, 11, 8) << 1);
             c->next_pc = pc + sext(imm, 13);
             c->cost = rv->cpi.taken;
+            c->cls = TSR_RV_CLS_BRANCH_T;
+            pen_target32(rv, c);
         }
         return;
     }
@@ -750,10 +847,14 @@ static void execute(tsr_rv * rv, ix * c, uint32_t e) {
         }
         uint32_t v = 0;
         c->cost = rv->cpi.lsu;
-        if (data_access(rv, c, a + imm_i, size, 0, &v)) return;
+        c->cls = TSR_RV_CLS_LOAD;
+        const int fail = data_access(rv, c, a + imm_i, size, 0, &v);
+        if (c->io) c->cls = TSR_RV_CLS_LOAD_IO;
+        if (fail) return;
         if (f3 == 0u) v = sext(v, 8);
         else if (f3 == 1u) v = sext(v, 16);
         c->rd = rd; c->rd_val = v;
+        pen_load_use(rv, c, rd);
         return;
     }
     case 0x23: {                                                                // STORE
@@ -763,6 +864,7 @@ static void execute(tsr_rv * rv, ix * c, uint32_t e) {
         uint32_t v = (size == 4u) ? b : (b & ((1u << (8u * size)) - 1u));
         c->cost = rv->cpi.lsu;
         (void)data_access(rv, c, a + imm, size, 1, &v);
+        c->cls = c->io ? TSR_RV_CLS_STORE_IO : TSR_RV_CLS_STORE;
         return;
     }
     case 0x13: {                                                                // OP-IMM
@@ -798,7 +900,8 @@ static void execute(tsr_rv * rv, ix * c, uint32_t e) {
             case 6: r = (b == 0u) ? a : (a == 0x80000000u && b == 0xFFFFFFFFu) ? 0u : (uint32_t)(sa % sb); break;
             default: r = (b == 0u) ? a : a % b; break;
             }
-            c->cost = f3 < 4u ? rv->cpi.mul : rv->cpi.div;
+            c->cost = f3 == 0u ? rv->cpi.mul : f3 < 4u ? rv->cpi.mulh : b == 0u ? rv->cpi.div0 : rv->cpi.div;
+            c->cls = f3 < 4u ? TSR_RV_CLS_MUL : TSR_RV_CLS_DIV;
         } else if (f7 == 0u) {
             switch (f3) {
             case 0: r = a + b; break;
@@ -822,7 +925,12 @@ static void execute(tsr_rv * rv, ix * c, uint32_t e) {
         return;
     }
     case 0x0F:                                                                  // MISC-MEM
-        if (f3 > 1u) illegal(c);                                                // FENCE / FENCE.I: no-ops
+        if (f3 > 1u) { illegal(c); return; }                                    // FENCE / FENCE.I: no-ops
+        if (f3 == 1u) {                                     // FENCE.I: Ibex jumps to the next instruction
+            c->cost = rv->cpi.jump;
+            c->cls = TSR_RV_CLS_JUMP;
+            pen_target32(rv, c);
+        }
         return;
     case 0x73:
         exec_system(rv, c, e);
@@ -924,6 +1032,11 @@ static uint32_t rv_boundary(tsr_rv * rv, uint64_t * n) {
     if (c.status == TSR_RV_BUS_YIELD) return TSR_RV_STOP_YIELD;
     rv->waiting = 0; rv->wait_cycles = 0;
     ++*n;
+    rv->st.n[c.cls]++;
+    rv->st.cyc[c.cls] += c.cost;
+    rv->st.load_use += (uint64_t)c.pen_lu;
+    rv->st.target32 += (uint64_t)c.pen_t32;
+    rv->st.csr_flush += (uint64_t)c.pen_csr;
 
     if (c.no_retire == 2) {                                   // ebreak into debug mode
         enter_debug(rv, TSR_RV_DBG_CAUSE_EBREAK, pc);

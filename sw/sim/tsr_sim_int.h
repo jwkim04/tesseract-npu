@@ -225,11 +225,14 @@ uint32_t tsr_sim_corewin_read(tsr_sim * sim, uint32_t csr_off);
 //                        TSR_STATUS_RV_SLEEP (STATUS, DBG; QHALT gating of the PERF time counters)
 //   tsr_sim_rv_ratio     F_RV / F_CORE (tsr_sim_opts.rv_ratio, default 166.7 / 276.3; the sim
 //                        transport maps TSR_SIM_RV_RATIO onto it, SW §4.9)
+//   tsr_sim_rv_core      the Ibex configuration of the hart's cycle model (TSR_RV_CORE_* of
+//                        tsr_rv.h; tsr_sim_opts.rv_core / TSR_SIM_RV_CORE, SW §4.2)
 uint32_t tsr_sim_rv_run(const tsr_sim * sim);
 uint32_t tsr_sim_rv_boot(const tsr_sim * sim);
 uint64_t tsr_sim_rv_boot_gen(const tsr_sim * sim);
 void     tsr_sim_rv_set_state(tsr_sim * sim, uint32_t status_bits);
 double   tsr_sim_rv_ratio(const tsr_sim * sim);
+uint32_t tsr_sim_rv_core(const tsr_sim * sim);
 // The TCMs (CC §4.1-§4.2): byte arrays the loader writes (EX §3.3) and the hart fetches and
 // accesses; *bytes (if not NULL) = their size (TSR_ITCM_BYTES / TSR_DTCM_BYTES by default).
 uint8_t * tsr_sim_itcm(tsr_sim * sim, uint32_t * bytes);
@@ -692,6 +695,7 @@ struct tsr_sim {
     uint8_t *  dtcm;
     uint32_t   itcm_bytes, dtcm_bytes;
     double     rv_ratio;
+    uint32_t   rv_core;         // TSR_RV_CORE_* (tsr_rv.h)
 
     // PERF (EX §6)
     uint64_t   perf[TSR_PERF_SLOTS];

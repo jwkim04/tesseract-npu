@@ -43,6 +43,7 @@ struct tsr_bus {
     tsr_bus_stats stats;
     uint64_t   mmio_gen;            // +1 per hart store (any region) and per hart MMIO load (P1.8 spin rule)
     int        in_sba;              // serving tsr_bus_sba_* (env callbacks act for the SBA)
+    int        lat_core, lat_spm;   // crossing latencies (tsr_bus_set_ratio)
 };
 
 // ---------------------------------------------------------------------------
@@ -232,14 +233,14 @@ static int bus_load(tsr_bus * b, uint32_t addr, uint32_t n, uint32_t * val) {
         if (!core_masked(off) && b->env.core_read &&
             b->env.core_read(b->env.ctx, off, &v) != TSR_BUS_ENV_OK) return TSR_RV_BUS_FAULT;
         *val = core_masked(off) ? 0u : v;
-        return TSR_BUS_LAT_CORE + bus_xlat(b, TSR_BUS_REGION_CORE, off);
+        return b->lat_core + bus_xlat(b, TSR_BUS_REGION_CORE, off);
     case R_SPM:
         if (bus_yield(b)) return TSR_RV_BUS_YIELD;
         *val = rd_le(b->env.spm + off, n);
         ++b->stats.spm_reads;
         ++b->mmio_gen;
         if (b->env.spm_access) b->env.spm_access(b->env.ctx, off, n, 0);
-        return TSR_BUS_LAT_SPM + bus_xlat(b, TSR_BUS_REGION_SPM, off);
+        return b->lat_spm + bus_xlat(b, TSR_BUS_REGION_SPM, off);
     case R_SPMLB: {
         uint32_t line = off / TSR_LINE_BYTES;
         ++b->mmio_gen;
@@ -251,7 +252,7 @@ static int bus_load(tsr_bus * b, uint32_t addr, uint32_t n, uint32_t * val) {
         if (bus_yield(b)) { --b->mmio_gen; return TSR_RV_BUS_YIELD; }
         lb_fill(b, line);
         *val = rd_le(b->lb + off % TSR_LINE_BYTES, n);
-        return TSR_BUS_LAT_SPM + bus_xlat(b, TSR_BUS_REGION_SPM, line * TSR_LINE_BYTES);
+        return b->lat_spm + bus_xlat(b, TSR_BUS_REGION_SPM, line * TSR_LINE_BYTES);
     }
     default:
         return TSR_RV_BUS_FAULT;
@@ -296,7 +297,7 @@ static int bus_store(tsr_bus * b, uint32_t addr, uint32_t n, uint32_t val) {
         ++b->stats.spm_writes;
         ++b->mmio_gen;
         if (b->env.spm_access) b->env.spm_access(b->env.ctx, off, n, 1);
-        return TSR_BUS_LAT_SPM + bus_xlat(b, TSR_BUS_REGION_SPM, off);
+        return b->lat_spm + bus_xlat(b, TSR_BUS_REGION_SPM, off);
     default:   // R_CORE (read only), unmapped
         return TSR_RV_BUS_FAULT;
     }
@@ -363,6 +364,7 @@ tsr_bus * tsr_bus_create_fw(const tsr_bus_fw_cfg * cfg, const tsr_bus_env * env)
     b->own_itcm = c.itcm == NULL;
     b->own_dtcm = c.dtcm == NULL;
     if (env) b->env = *env;
+    tsr_bus_set_ratio(b, 0.0);
     b->spm_bytes = 0;
     if (b->env.spm) {
         b->spm_bytes = b->env.spm_bytes & ~(TSR_LINE_BYTES - 1u);
@@ -397,6 +399,19 @@ void tsr_bus_destroy(tsr_bus * b) {
 const tsr_rv_bus * tsr_bus_iface(tsr_bus * b) { return &b->iface; }
 void tsr_bus_attach(tsr_bus * b, tsr_rv * rv) { b->rv = rv; }
 void tsr_bus_set_irq(tsr_bus * b, uint32_t lines) { b->irq_lines = lines; }
+
+// Crossing latencies at F_RV / F_CORE = ratio (tsr_bus.h "Latencies"): the clk_rv part plus the
+// core-domain part converted to RV cycles (round half up); <= 0 restores the planning values.
+uint32_t tsr_bus_set_ratio(tsr_bus * b, double ratio) {
+    if (!(ratio > 0.0)) {
+        b->lat_core = TSR_BUS_LAT_CORE;
+        b->lat_spm = TSR_BUS_LAT_SPM;
+    } else {
+        b->lat_core = TSR_BUS_XING_RV + (int)((double)TSR_BUS_XING_CORE_CC * ratio + 0.5);
+        b->lat_spm = TSR_BUS_XING_RV + (int)((double)TSR_BUS_XING_SPM_CC * ratio + 0.5);
+    }
+    return (uint32_t)b->lat_spm;
+}
 void tsr_bus_set_watch(tsr_bus * b, tsr_bus_watch_fn fn, void * ctx) { b->watch = fn; b->watch_ctx = ctx; }
 void tsr_bus_lb_invalidate(tsr_bus * b) { b->lb_valid = 0; }
 void tsr_bus_set_rv_run(tsr_bus * b, int run) { b->rv_run = run != 0; }
@@ -707,7 +722,7 @@ static int ag_core_read(void * ctx, uint32_t off, uint32_t * val) {
 static void ag_spm_access(void * ctx, uint32_t off, uint32_t n, int is_write) {
     tsr_rv_agent * a = (tsr_rv_agent *)ctx;
     tsr_sim_perf_add(a->sim, a->perf_x + TSR_PERF_XOFF_BRIDGE_ACC, 1);
-    tsr_sim_perf_add(a->sim, a->perf_x + TSR_PERF_XOFF_BRIDGE_WAIT, TSR_BUS_LAT_SPM - TSR_BUS_LAT_TCM);
+    tsr_sim_perf_add(a->sim, a->perf_x + TSR_PERF_XOFF_BRIDGE_WAIT, (uint64_t)(a->bus->lat_spm - TSR_BUS_LAT_TCM));
     if (!tsr_bus_in_sba(a->bus) && tsr_sim_acc_listened(a->sim)) {
         // The hart's SPM transaction (race detector, the SW §4.7 SPM store stream): the bytes have
         // moved, so the value is the SPM's.
@@ -792,6 +807,7 @@ static uint64_t ag_step(void * ctx, tsr_sim * sim) {
         a->started = 1;
         a->ratio = tsr_sim_rv_ratio(sim);
         if (!(a->ratio > 0.0)) a->ratio = 166.7 / 276.3;
+        tsr_bus_set_ratio(a->bus, a->ratio);     // crossing latencies at this clock ratio (SW §4.2)
         a->t0 = now;
         a->c0 = ag_eff(a);
         a->ff_wait = 0;
@@ -911,6 +927,7 @@ tsr_rv_agent * tsr_rv_agent_create(tsr_sim * sim) {
     a->bus = tsr_bus_create_fw(&cfg, &env);
     if (a->bus == NULL) { free(a); return NULL; }
     a->rv = tsr_rv_create(tsr_bus_iface(a->bus));
+    tsr_rv_set_core(a->rv, tsr_sim_rv_core(sim));    // the Ibex configuration's cycle table (SW §4.2)
     tsr_bus_attach(a->bus, a->rv);
     a->jitter = tsr_sim_sched_random(sim);
     ag_hook(a);

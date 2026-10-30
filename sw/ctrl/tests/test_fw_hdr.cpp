@@ -18,7 +18,12 @@
 //               tickets of every unit: placement (padding, parity, wrap), failure exactly when an
 //               unreleased block is in the way, and every older release ticket of a reused line
 //               covered by must_wait or done (joined in software) when alloc returns; the same
-//               sequence under the fixed and two random schedules gives the same deps;
+//               sequence under the fixed and two random schedules gives the same deps; a twin
+//               ring taking parity-2 blocks through alloc_dma_first (the executor's decode path)
+//               ends every step with the same block and state, and the fast call succeeds only
+//               where alloc's must_wait holds DMA tickets alone; W2a's algorithm (128 blocks) on
+//               the same sequence gives the same blocks and must_wait, and both rings joined the
+//               same tickets in the same order (spm_ring::join_hook, host builds only);
 //   kernels     the test kernels (tests/fw/hdr_kernels.cpp) through tsr::host_run: results against
 //               direct references (tsr_qact, tsr_dot_row, tsr_ref_vop), queue occupancy never above
 //               Q_DEPTH and reaching it on every unit (credit back-pressure), no push without credit.
@@ -816,6 +821,147 @@ struct ring_model {
     }
 };
 
+// W2a's spm_ring (92f0b17 kernel.hpp: a 5-word record per block, the fold over 16 units, one code
+// path) with the table at spm_ring::MAX_BLOCKS: the reference for the optimised ring (fix W2a-opt
+// review). Every step must give the same block and must_wait and the same software joins (the
+// joined tickets, in order: spm_ring::join_hook). It records the tickets it would join instead of
+// joining them (the ring under test has joined them by then).
+class w2a_ring {
+public:
+    static constexpr uint32_t MAX_BLOCKS = spm_ring::MAX_BLOCKS;
+    std::vector<uint32_t> joined;
+
+    void init(uint32_t first_line, uint32_t lines) {
+        first_ = first_line;
+        end_ = first_line + lines;
+        head_ = first_line;
+        tail_ = 0;
+        n_ = 0;
+        joined.clear();
+    }
+    spm alloc(uint32_t lines, uint32_t parity, deps * must_wait) {
+        if (must_wait != nullptr) *must_wait = deps{};
+        if (lines == 0u || parity > 2u || lines > end_ - first_) return spm{SPM_NONE};
+        uint32_t s = head_ + pad(head_, parity);
+        bool wrap = false;
+        if (head_ > end_ || s > end_ || end_ - s < lines) {
+            wrap = true;
+            s = first_ + pad(first_, parity);
+            if (s > end_ || end_ - s < lines) return spm{SPM_NONE};
+        }
+        const uint32_t lo = wrap ? first_ : head_;
+        const uint32_t hi = s + lines;
+        uint32_t i = 0, n_skip = 0;
+        if (wrap) {
+            while (i < n_ && at(i).lo >= head_) {
+                if (!at(i).released) return spm{SPM_NONE};
+                ++i;
+            }
+            n_skip = i;
+        }
+        uint32_t n_cover = 0;
+        bool shrink = false;
+        while (i < n_ && at(i).lo >= lo && at(i).lo < hi) {
+            if (!at(i).released) return spm{SPM_NONE};
+            if (at(i).hi > hi) {
+                shrink = true;
+                break;
+            }
+            ++n_cover;
+            ++i;
+        }
+        const uint32_t n_after = n_ - n_skip - n_cover;
+        const bool drop = n_after >= MAX_BLOCKS;
+        if (drop && !at(n_skip + n_cover).released) return spm{SPM_NONE};
+        for (uint32_t j = 0; j < n_skip; ++j) sw_join(ticket{at(j).rel});
+        fold f;
+        for (uint32_t j = n_skip; j < n_skip + n_cover + (shrink ? 1u : 0u); ++j) f.add(ticket{at(j).rel}, j);
+        tail_ = (tail_ + n_skip + n_cover) % MAX_BLOCKS;
+        n_ -= n_skip + n_cover;
+        if (shrink) at(0).lo = hi;
+        if (drop) {
+            sw_join(ticket{at(0).rel});
+            tail_ = (tail_ + 1u) % MAX_BLOCKS;
+            --n_;
+        }
+        const deps d = f.take(*this, must_wait == nullptr);
+        if (must_wait != nullptr) *must_wait = d;
+        rec & r = at(n_);
+        r.lo = lo;
+        r.hi = hi;
+        r.start = s;
+        r.rel = TICKET_NONE;
+        r.released = 0u;
+        ++n_;
+        head_ = hi;
+        return spm{s};
+    }
+    bool release(spm block, ticket after) {
+        for (uint32_t j = n_; j-- > 0u;) {
+            rec & r = at(j);
+            if (r.start == block.line && !r.released) {
+                r.rel = after.v;
+                r.released = 1u;
+                return true;
+            }
+        }
+        return false;
+    }
+    uint32_t head() const { return head_; }
+    uint32_t blocks() const { return n_; }
+
+private:
+    struct rec {
+        uint32_t lo, hi, start, rel, released;
+    };
+    struct fold {
+        ticket t[16];
+        uint32_t age[16] = {};
+        void add(ticket x, uint32_t order) {
+            if (x.none()) return;
+            const uint32_t u = x.unit();
+            if (t[u].none() || !same_or_after(t[u], x)) t[u] = x;
+            age[u] = order;
+        }
+        deps take(w2a_ring & ring, bool join_all_of_them) {
+            for (;;) {
+                uint32_t n = 0, oldest = 16u;
+                for (uint32_t u = 0; u < 16u; ++u) {
+                    if (t[u].none()) continue;
+                    ++n;
+                    if (oldest == 16u || age[u] < age[oldest]) oldest = u;
+                }
+                if (n == 0u || (n <= 2u && !join_all_of_them)) break;
+                ring.sw_join(t[oldest]);
+                t[oldest] = ticket{};
+            }
+            ticket d[2];
+            uint32_t k = 0;
+            for (uint32_t u = 0; u < 16u; ++u)
+                if (!t[u].none()) d[k++] = t[u];
+            return deps{d[0], d[1]};
+        }
+    };
+    static uint32_t pad(uint32_t line, uint32_t parity) { return (parity < 2u && (line & 1u) != parity) ? 1u : 0u; }
+    rec & at(uint32_t i) { return ring_[(tail_ + i) % MAX_BLOCKS]; }
+    void sw_join(ticket t) {
+        if (!t.none()) joined.push_back(t.v);
+    }
+    uint32_t first_ = 0, end_ = 0, head_ = 0, tail_ = 0, n_ = 0;
+    rec ring_[MAX_BLOCKS] = {};
+};
+
+// spm_ring::join_hook's log: the tickets each ring under test joined, in order.
+struct join_log {
+    const spm_ring * ring = nullptr, * twin = nullptr;
+    std::vector<uint32_t> ring_joins, twin_joins;
+};
+join_log g_join_log;
+void log_join(const spm_ring * r, uint32_t t) {
+    if (r == g_join_log.ring) g_join_log.ring_joins.push_back(t);
+    else if (r == g_join_log.twin) g_join_log.twin_joins.push_back(t);
+}
+
 bool covered(const deps & d, ticket t) {
     for (const ticket & x : {d.a, d.b})
         if (!x.none() && x.unit() == t.unit() && same_or_after(x, t)) return true;
@@ -824,7 +970,8 @@ bool covered(const deps & d, ticket t) {
 
 // One random sequence; returns the must_wait values (relative tickets) for the determinism check.
 std::vector<uint32_t> ring_sequence(const char * sched, uint32_t seed, uint32_t first, uint32_t lines, uint32_t steps,
-                                    uint32_t maxb, uint32_t * n_fail, uint32_t * n_wrap, uint32_t * n_join) {
+                                    uint32_t maxb, uint32_t * n_fail, uint32_t * n_wrap, uint32_t * n_join,
+                                    uint32_t * n_fast) {
     tsr_sim * s = mk_sim(sched, 0, TSR_CAPS_VU);
     host_bind(s);
     uint32_t base[TSR_NUM_UNITS];
@@ -833,6 +980,18 @@ std::vector<uint32_t> ring_sequence(const char * sched, uint32_t seed, uint32_t 
     rng_t r = {seed};
     static spm_ring ring;                      // as the firmware keeps it (static storage)
     ring.init(first, lines);
+    // Its twin takes parity-2 allocations through alloc_dma_first (the executor's decode path),
+    // falling back to alloc() when that declines: same blocks, same state, and whenever the fast
+    // call succeeds, alloc()'s must_wait holds DMA tickets only (which a DMA first write implies).
+    static spm_ring twin;
+    twin.init(first, lines);
+    // W2a's algorithm on the same sequence: the same blocks, must_wait and joined tickets.
+    static w2a_ring ref;
+    ref.init(first, lines);
+    g_join_log = join_log{};
+    g_join_log.ring = &ring;
+    g_join_log.twin = &twin;
+    spm_ring::join_hook = &log_join;
     ring_model m;
     m.init(first, lines);
     std::vector<uint32_t> held;                // block ids allocated and not released
@@ -851,6 +1010,41 @@ std::vector<uint32_t> ring_sequence(const char * sched, uint32_t seed, uint32_t 
             const spm b = ring.alloc(n, parity, &w);
             CHECK(valid(b) == ok, "ring %u+%u step %u: alloc(%u, %u) %s, the model says %s", first, lines, step, n, parity,
                   valid(b) ? "succeeded" : "failed", ok ? "success" : "failure");
+            {
+                spm b2{SPM_NONE};
+                if (parity == 2u) {
+                    uint32_t * rel = nullptr;
+                    b2 = twin.alloc_dma_first(n, &rel);
+                    if (valid(b2)) {
+                        ++*n_fast;
+                        CHECK(valid(b) && b2 == b && rel != nullptr, "ring step %u: alloc_dma_first gave %u, alloc %u", step,
+                              b2.line, b.line);
+                        for (const ticket & x : {w.a, w.b})
+                            CHECK(x.none() || x.unit() == UNIT_DMA, "ring step %u: alloc_dma_first took a block whose "
+                                  "must_wait has a unit-%u ticket", step, x.unit());
+                    }
+                }
+                if (!valid(b2)) {
+                    deps w2;
+                    b2 = twin.alloc(n, parity, &w2);
+                    CHECK(b2 == b && w2.a == w.a && w2.b == w.b, "ring step %u: the twin's alloc differs", step);
+                }
+                CHECK(twin.head() == ring.head() && twin.blocks() == ring.blocks() && twin.joins() == ring.joins(),
+                      "ring step %u: twin state head %u / %u, blocks %u / %u, joins %u / %u", step, twin.head(), ring.head(),
+                      twin.blocks(), ring.blocks(), twin.joins(), ring.joins());
+            }
+            {
+                deps w3;
+                const spm b3 = ref.alloc(n, parity, &w3);
+                CHECK(b3 == b && w3.a == w.a && w3.b == w.b && ref.head() == ring.head() && ref.blocks() == ring.blocks(),
+                      "ring step %u: W2a's algorithm gives block %u deps 0x%08x 0x%08x, the ring %u 0x%08x 0x%08x", step,
+                      b3.line, w3.a.v, w3.b.v, b.line, w.a.v, w.b.v);
+                CHECK(g_join_log.ring_joins == ref.joined && g_join_log.twin_joins == ref.joined &&
+                          g_join_log.ring_joins.size() == ring.joins(),
+                      "ring step %u: software joins differ from W2a's algorithm (ring %zu, twin %zu, W2a %zu tickets; "
+                      "ring count %u)", step, g_join_log.ring_joins.size(), g_join_log.twin_joins.size(), ref.joined.size(),
+                      ring.joins());
+            }
             if (!valid(b) || !ok) {
                 if (!valid(b)) ++*n_fail;
                 if (valid(b) != ok) break;
@@ -898,6 +1092,8 @@ std::vector<uint32_t> ring_sequence(const char * sched, uint32_t seed, uint32_t 
             }
             if (!t.none()) last = t;
             ring.release(spm{m.blocks[id].start}, t);
+            twin.release(spm{m.blocks[id].start}, t);
+            CHECK(ref.release(spm{m.blocks[id].start}, t), "ring: W2a's algorithm does not hold block %u", m.blocks[id].start);
             m.blocks[id].released = true;
             for (uint32_t l = m.blocks[id].lo; l < m.blocks[id].hi; ++l) {
                 if (m.owner[l] == (int)id) {
@@ -909,6 +1105,7 @@ std::vector<uint32_t> ring_sequence(const char * sched, uint32_t seed, uint32_t 
         }
     }
     *n_join += ring.joins();
+    spm_ring::join_hook = nullptr;
     join_all();
     CHECK(host().no_credit_pushes == 0u, "ring: no push without a credit");
     host_bind(nullptr);
@@ -922,25 +1119,27 @@ void test_ring() {
     };
     const rc cases[] = {{0, 64, 600, 24}, {1001, 257, 800, 40}, {33, 4000, 1500, 4}, {7, 3, 200, 2}, {100, 1, 100, 1},
                         {0, 1000, 800, 300}};
-    uint32_t fails = 0, wraps = 0, joins = 0;
+    uint32_t fails = 0, wraps = 0, joins = 0, fast = 0;
     for (uint32_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         const rc & c = cases[i];
         for (uint32_t seed = 1; seed <= 3; ++seed) {
             const std::vector<uint32_t> a =
-                ring_sequence("fixed", 1000u * i + seed, c.first, c.lines, c.steps, c.maxb, &fails, &wraps, &joins);
+                ring_sequence("fixed", 1000u * i + seed, c.first, c.lines, c.steps, c.maxb, &fails, &wraps, &joins, &fast);
             if (seed == 1) {
-                uint32_t f2 = 0, w2 = 0, j2 = 0;
+                uint32_t f2 = 0, w2 = 0, j2 = 0, k2 = 0;
                 const std::vector<uint32_t> b =
-                    ring_sequence("random:11", 1000u * i + seed, c.first, c.lines, c.steps, c.maxb, &f2, &w2, &j2);
+                    ring_sequence("random:11", 1000u * i + seed, c.first, c.lines, c.steps, c.maxb, &f2, &w2, &j2, &k2);
                 const std::vector<uint32_t> d =
-                    ring_sequence("random:12,0.25,8", 1000u * i + seed, c.first, c.lines, c.steps, c.maxb, &f2, &w2, &j2);
+                    ring_sequence("random:12,0.25,8", 1000u * i + seed, c.first, c.lines, c.steps, c.maxb, &f2, &w2, &j2, &k2);
                 CHECK(a == b && a == d, "ring case %u: the same alloc / release sequence gives the same deps under 3 schedules", i);
             }
         }
     }
-    CHECK(fails > 0u && wraps > 0u && joins > 0u, "ring: failures (%u), wraps (%u) and software joins (%u) exercised", fails,
-          wraps, joins);
-    printf("ring model: %u refusals, %u wraps, %u software joins\n", fails, wraps, joins);
+    CHECK(fails > 0u && wraps > 0u && joins > 0u && fast > 0u,
+          "ring: failures (%u), wraps (%u), software joins (%u) and alloc_dma_first blocks (%u) exercised", fails, wraps,
+          joins, fast);
+    printf("ring model: %u refusals, %u wraps, %u software joins, %u blocks through alloc_dma_first\n", fails, wraps, joins,
+           fast);
 
     // Releasing a block the ring does not hold, or twice, is a firmware bug: tsr::panic (the host
     // build aborts). Checked in child processes.

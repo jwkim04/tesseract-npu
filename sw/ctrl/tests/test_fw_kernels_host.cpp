@@ -8,6 +8,9 @@
 //      tsr/exec.hpp): the shapes and forms of fw_kernels_rv's suite A, y bit-exact against
 //      sw/ctrl/ref/mulmat_ref.cpp; the refused records (ACC_DST with an addend, a bad fmt / K, kind
 //      flags, a shape the ring cannot hold) set ctx.ret and push nothing.
+//   1b. the decode fast path (mmk::mulmat_t1_fast) against the general path on twin simulators: T = 1
+//      records with deps on every unit, the same pushes (words, deps, push value), ticket and ring
+//      state (SW §7.4: MUL_MAT's push stream is W2a's whichever path runs it).
 //   2. replay through host_run: a synthetic stream of three chunks (the chunk LDs interleave with the
 //      replayed DMA ops) and, when given, a trace directory (e.g. an error trace of traces/ctrl):
 //      expect regions bit-exact and RET = the trace's DONE ret; the argument checks; the RET rule's
@@ -27,6 +30,8 @@
 
 #include "tsr/exec.hpp"
 #include "tsr/rt.hpp"
+
+#include "../kernels/k_mulmat.hpp"
 
 #include "../ref/fw_sim_host.hpp"
 #include "../ref/mulmat_ref.hpp"
@@ -188,6 +193,7 @@ void test_mulmat(const char * sched) {
     tsr::kind_ctx ctx{};
     ctx.ring = &ring;
     ctx.cfg = &dc;
+    ctx.mml = tsr::plan::mm_limits_of(dc);
     std::vector<tsr::ticket> tk;
     for (size_t i = 0; i < recs.size(); ++i) {
         ctx.ret = 0;
@@ -234,6 +240,195 @@ void test_mulmat(const char * sched) {
     tsr::host_bind(nullptr);
     tsr_sim_destroy(sim2);
     tsr_sim_destroy(sim);
+}
+
+// ---------------------------------------------------------------------------
+// 1b. The decode fast path pushes what the general path pushes (SW §7.4, k_mulmat.hpp; executor
+//     optimisation review, 2026-10-30): T = 1 records (Q8_0 and Q4_K; plain, ACC_DST, an addend; with
+//     and without the REC push flag) whose deps are tickets of non-DMA units (SYNC, QACT, VU, MVM),
+//     of DMA, or none, after the same history (earlier MUL_MATs through kind_mulmat, so that the
+//     ring reuses blocks released by STs). mmk::mulmat_t1_fast runs on one simulator and the general
+//     path (mmk::mulmat_general = kind_mulmat without the fast path) on a twin: every push (the
+//     eight words, both deps, the ISSUE_PUSH value) equal, the same ticket and ring state, the fast
+//     path taken, the same y rows; race detector fatal on both.
+// ---------------------------------------------------------------------------
+struct plog {
+    std::vector<std::array<uint32_t, 12>> v;
+};
+void plog_q(void * ctx, tsr_sim *, const tsr_q_event * ev) {
+    if (ev->kind != TSR_QEV_PUSH && ev->kind != TSR_QEV_QCTRL) return;
+    std::array<uint32_t, 12> e{};
+    for (int k = 0; k < 8; ++k) e[size_t(k)] = ev->w[k];
+    e[8] = ev->dep[0];
+    e[9] = ev->dep[1];
+    e[10] = ev->push;
+    e[11] = ev->kind;
+    static_cast<plog *>(ctx)->v.push_back(e);
+}
+
+struct twin_case {
+    const char * what;
+    uint32_t fmt, N, K;
+    int form;              // 0 plain, 1 ACC_DST, 2 addend
+    int d0, d1;            // predecessor unit: -1 none, else 0 SYNC, 1 DMA, 2 QACT, 3 VU, 4 MVM
+    bool rec;              // REC on the pushes
+};
+
+// One simulator's run of a case: the history, the predecessors, then the record through the fast path
+// (fast) or the general path. Returns the record's ticket; *ring_state = {head, blocks, joins}.
+uint32_t twin_run(tsr_sim * sim, const twin_case & c, bool fast, plog * log, uint32_t ring_state[3], bool * took_fast) {
+    const tsr_config & cfg = *tsr_sim_config(sim);
+    tsr::host_bind(sim);
+    rng_t r = { 0x7317u };
+    uint64_t io = 0x100000u, wb = 0x800000u;
+    auto take = [&](uint64_t n) { const uint64_t b = io; io += (n + 63u) & ~63ull; return b; };
+    auto weights = [&](uint32_t fmt, uint32_t N, uint32_t K) {
+        const size_t rb = size_t(K / tsr_fmt_block_size(fmt)) * tsr_fmt_ggml_block_bytes(fmt);
+        std::vector<uint8_t> blk(rb * N);
+        for (uint32_t n = 0; n < N; ++n) gen_row_blocks(&r, fmt, K, blk.data() + rb * n);
+        put_weights(sim, fmt, N, K, wb, blk.data());
+        const uint32_t w = uint32_t(wb);
+        wb += (tsr_tensor_ch_beats(fmt, N, K, cfg.num_ch) + 63u) & ~63ull;
+        return w;
+    };
+    auto record = [&](uint32_t a[12], uint32_t fmt, uint32_t N, uint32_t K, int form) {
+        const uint32_t xl = K / 16u, yl = (N + 15u) / 16u;
+        a[mm::W_OFF] = weights(fmt, N, K);
+        a[mm::FMT] = fmt; a[mm::N] = N; a[mm::K] = K; a[mm::T] = 1;
+        a[mm::X_STRIDE] = xl;
+        a[mm::X] = H(0, take(xl));
+        put_rows(sim, &r, a[mm::X], 1, xl, K);
+        a[mm::Y_STRIDE] = yl;
+        a[mm::Y] = H(0, take(yl));
+        a[mm::ADD] = tsr::opl::HANDLE_NONE;
+        a[mm::ADD_STRIDE] = 0;
+        a[mm::FLAGS] = form == 1 ? mm::FLAG_ACC_DST : 0u;
+        if (form == 1) put_rows(sim, &r, a[mm::Y], 1, yl, N);
+        if (form == 2) {
+            a[mm::ADD] = H(0, take(yl));
+            put_rows(sim, &r, a[mm::ADD], 1, yl, N);
+        }
+    };
+    const uint32_t spm_lines = cfg.spm_bytes / 64u;
+    tsr::plan::exec_layout lay{};
+    tsr::plan::layout(spm_lines, 0, &lay);
+    const tsr::plan::dev_cfg dc{spm_lines, cfg.t_max, cfg.k_max};
+    tsr::kind_ctx ctx{};
+    ctx.cfg = &dc;
+    ctx.mml = tsr::plan::mm_limits_of(dc);
+    ctx.push_flags = c.rec ? tsr::PUSH_REC : 0u;
+    tsr::plan::mm_tiling tl{};
+    CHECK(tsr::plan::mm_plan(ctx.mml, c.fmt, c.N, c.K, 1u, &tl) == tsr::opl::RET_OK, "fast/general %s: plan", c.what);
+    // A ring of 2.5 blocks of the record's size: history ops 1 and 2 take [0, b) and [b, 2b), op 3
+    // wraps to [0, b) (the general path: a wrap), so the record lands on [b, 2b), reusing op 2's
+    // block, released by its ST.
+    static tsr::spm_ring ring;
+    const uint32_t b = tl.lpt;
+    ring.init(lay.ring_line, 2u * b + b / 2u);
+    ctx.ring = &ring;
+    const int lid = tsr_sim_add_listener(sim, plog_q, log);
+    tsr::ticket prev{};
+    for (uint32_t i = 0; i < 3u; ++i) {
+        uint32_t a[12];
+        record(a, c.fmt, c.N, c.K, int(i % 3u));
+        ctx.ret = 0;
+        prev = tsr::kind_mulmat(a, 12, 0, tsr::deps{prev}, ctx);
+        CHECK(ctx.ret == 0, "fast/general %s: history op %u: ret 0x%08x", c.what, i, ctx.ret);
+    }
+    CHECK(ring.head() == lay.ring_line + b && ring.blocks() == 2u, "fast/general %s: ring head %u, %u blocks after the history",
+          c.what, ring.head(), ring.blocks());
+    // Predecessors on the units the case names (scratch in the OPL area, outside the ring).
+    const uint32_t S0 = lay.opl_line;
+    const tsr::ticket ld = tsr::issue(tsr::LD(tsr::spm{S0}, tsr::dram{1, 0x40000u}, 56));
+    const tsr::ticket qt = tsr::issue(tsr::QACT(tsr::qa::a32, tsr::spm{S0 + 100}, tsr::spm{S0}, 896, 1), tsr::deps{ld});
+    const tsr::ticket vu =
+        tsr::issue(tsr::VOP({.func = tsr::VOP_FUNC_COPY, .d = S0 + 300, .a = S0, .m = 16u * 56u, .rows = 1}), tsr::deps{ld});
+    const uint32_t wm = weights(TSR_FMT_Q8_0, 64, 896);
+    const tsr::ticket mv = tsr::issue(tsr::MVM(tsr::spm{S0 + 200}, tsr::spm{S0 + 100}, tsr::wref{wm, uint8_t(TSR_FMT_Q8_0)}, 64, 896, 1),
+                                      tsr::deps{qt});
+    const tsr::ticket sy = tsr::issue(tsr::NOP(), tsr::deps{mv});
+    auto pred = [&](int u) {
+        switch (u) {
+        case 0: return sy;
+        case 1: return ld;
+        case 2: return qt;
+        case 3: return vu;
+        case 4: return mv;
+        default: return tsr::ticket{};
+        }
+    };
+    uint32_t a[12];
+    record(a, c.fmt, c.N, c.K, c.form);
+    const tsr::ticket t0 = pred(c.d0), t1 = pred(c.d1);
+    ctx.ret = 0;
+    uint32_t t = 0;
+    *took_fast = false;
+    if (fast) {
+        t = tsr::mmk::mulmat_t1_fast(a, 0, t0, t1, ctx);
+        *took_fast = t != tsr::mmk::NOT_FAST;
+    } else {
+        t = tsr::mmk::mulmat_general(a, 12, 0, tsr::after(t0, t1), ctx).v;
+    }
+    CHECK(ctx.ret == 0, "fast/general %s: ret 0x%08x (%s path)", c.what, ctx.ret, fast ? "fast" : "general");
+    tsr::join_all();
+    CHECK(tsr::err_units() == 0, "fast/general %s: a unit in error state (%s path)", c.what, fast ? "fast" : "general");
+    tsr_sim_remove_listener(sim, lid);
+    ring_state[0] = ring.head();
+    ring_state[1] = ring.blocks();
+    ring_state[2] = ring.joins();
+    tsr::host_bind(nullptr);
+    return t;
+}
+
+void test_mulmat_fast_vs_general() {
+    const uint32_t Q8 = TSR_FMT_Q8_0, Q4 = TSR_FMT_Q4_K;
+    const twin_case cases[] = {
+        { "Q8_0 plain, deps SYNC", Q8, 896, 896, 0, 0, -1, false },
+        { "Q8_0 plain, deps SYNC + DMA", Q8, 896, 896, 0, 0, 1, false },
+        { "Q8_0 plain, deps DMA only", Q8, 896, 896, 0, 1, -1, false },
+        { "Q8_0 plain, no deps, REC", Q8, 896, 896, 0, -1, -1, true },
+        { "Q8_0 ACC_DST, deps QACT + VU", Q8, 896, 896, 1, 2, 3, false },
+        { "Q8_0 addend, deps MVM + SYNC, REC", Q8, 128, 896, 2, 4, 0, true },
+        { "Q8_0 addend, deps VU + DMA", Q8, 896, 896, 2, 3, 1, false },
+        { "Q4_K plain, deps SYNC + MVM", Q4, 512, 1024, 0, 0, 4, false },
+        { "Q4_K ACC_DST, deps DMA + QACT, REC", Q4, 256, 512, 1, 1, 2, true },
+    };
+    tsr_config cfg = cfg_u200(1ull << 30);
+    uint32_t n_ok = 0;
+    for (const twin_case & c : cases) {
+        tsr_sim * sa = make_sim(cfg, "fixed", 2);
+        tsr_sim * sb = make_sim(cfg, "fixed", 2);
+        CHECK(sa && sb, "fast/general %s: simulators", c.what);
+        if (!sa || !sb) return;
+        plog la, lb;
+        uint32_t ra[3], rb[3];
+        bool fa = false, fb = false;
+        const uint32_t ta = twin_run(sa, c, true, &la, ra, &fa);
+        const uint32_t tb = twin_run(sb, c, false, &lb, rb, &fb);
+        size_t first = 0;
+        while (first < la.v.size() && first < lb.v.size() && la.v[first] == lb.v[first]) ++first;
+        const bool same = la.v.size() == lb.v.size() && first == la.v.size();
+        CHECK(fa, "fast/general %s: the fast path declined the record", c.what);
+        CHECK(same, "fast/general %s: the pushes differ (%zu / %zu pushes, first difference at %zu: w0 0x%08x / 0x%08x, "
+              "deps 0x%08x 0x%08x / 0x%08x 0x%08x, push 0x%08x / 0x%08x)", c.what, la.v.size(), lb.v.size(), first,
+              first < la.v.size() ? la.v[first][0] : 0u, first < lb.v.size() ? lb.v[first][0] : 0u,
+              first < la.v.size() ? la.v[first][8] : 0u, first < la.v.size() ? la.v[first][9] : 0u,
+              first < lb.v.size() ? lb.v[first][8] : 0u, first < lb.v.size() ? lb.v[first][9] : 0u,
+              first < la.v.size() ? la.v[first][10] : 0u, first < lb.v.size() ? lb.v[first][10] : 0u);
+        CHECK(ta == tb && ra[0] == rb[0] && ra[1] == rb[1] && ra[2] == rb[2],
+              "fast/general %s: ticket 0x%08x / 0x%08x, ring head %u / %u, blocks %u / %u, joins %u / %u", c.what, ta, tb,
+              ra[0], rb[0], ra[1], rb[1], ra[2], rb[2]);
+        bool y_same = true;
+        for (uint32_t ch = 0; ch < cfg.num_ch; ++ch)
+            y_same = y_same && memcmp(tsr_sim_dram(sa, ch) + 0x100000ull * LINE, tsr_sim_dram(sb, ch) + 0x100000ull * LINE,
+                                      0x10000u * LINE) == 0;
+        CHECK(y_same, "fast/general %s: DRAM outputs differ", c.what);
+        n_ok += fa && same && y_same && ta == tb;
+        tsr_sim_destroy(sb);
+        tsr_sim_destroy(sa);
+    }
+    printf("fast/general: %u of %zu T = 1 records pushed the same stream through mulmat_t1_fast and the general path\n",
+           n_ok, sizeof(cases) / sizeof(cases[0]));
 }
 
 // ---------------------------------------------------------------------------
@@ -546,6 +741,7 @@ int main(int argc, char ** argv) {
     }
     test_mulmat("fixed");
     test_mulmat("random:5");
+    test_mulmat_fast_vs_general();
     test_replay(argc > 2 ? argv[2] : nullptr);
     test_selftest();
     return test_finish("fw_kernels_host");

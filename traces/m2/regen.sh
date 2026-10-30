@@ -2,7 +2,8 @@
 # traces/m2/regen.sh [BUILD_DIR] — the M2 regression traces as trace v2 `ops` traces (docs/v2/
 # 06-software-verification.md §5.6): tsr-trace-gen v2 --ops m2 (QACT groups, LD -> ST copies; no MVM),
 # with v1's seeds and configurations (tag v1-m4, traces/m2/regen.sh there), then every trace
-# replayed under the fixed and two random schedules (race detector fatal).
+# replayed under the fixed and two random schedules (race detector fatal),
+# tile-only and through the replay kernel (one launch per trace: SPM_STALE is fatal, SW §4.6).
 #
 #   tmax1/    60 traces, U200 config (4 ch, T_MAX 1, 4 MiB SPM, 16 GiB/ch, CAPS 0), ~15% error injections
 #   tmax8/    16 traces, U200 config with T_MAX 8, ~15% error injections
@@ -17,6 +18,8 @@
 # Every program is a push stream with deps (no LI / ADDI / END, absolute immediates, x16 = 0); v1's
 # fetch / missing-END endings are gone (SW §5.6). Each set uses one configuration (meta.json "config").
 # The v1 sets (cmd.bin) are no longer reproduced here: their recipes are in tag v1-m4.
+# Every SPM line an op reads is written earlier in its trace (2026-10-30: a strided QACT source loaded per
+# token also gets its stride gaps loaded; 13 traces changed, none read the power-on SPM fill).
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
@@ -33,3 +36,4 @@ rm -rf "$HERE"/tmax1 "$HERE"/tmax8 "$HERE"/small1ch "$HERE"/ch3 "$HERE"/errors "
 "$GEN" -q --ops m2 --prefix m2 -o "$HERE/errors"   -n 40 -s 25 --errors 100 --max-groups 1 --max-k 512
 "$GEN" -q --ops m2 --prefix m2 -o "$HERE/errors8"  -n 32 -s 35 --errors 100 --max-groups 1 --max-k 512 --t-max 8
 v2_replay "$HERE"
+v2_replay_kernel "$HERE"

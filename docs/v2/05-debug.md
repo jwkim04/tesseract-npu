@@ -126,7 +126,7 @@ Ibex `debug_req_i` = DM request ∨ `dbg_req_rv`.
 
 - **Halt latency.** Ibex enters debug mode at an instruction boundary after an outstanding data
   access completes. Bounds: a push without credit ≤ `ISSUE_WAIT_MAX` = 65,536 clk_rv cycles (only
-  if software skipped the credit check), SPM bridge or core window ≤ 4,096, DIV ≈ 37
+  if software skipped the credit check), SPM bridge or core window ≤ 4,096, DIV 38 (CC §3.2)
   (CC §7.3, §10.5). Worst case ≈ 394 µs at 166.7 MHz; typical
   < 1 µs (*estimate*). The server waits 5 ms, then reports where the hart is stuck (§6.2).
 - **While halted**: no interrupts; MTIME runs; the queues keep running unless `CTRL.HOLD_ON_HALT`

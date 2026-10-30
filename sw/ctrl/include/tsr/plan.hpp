@@ -31,6 +31,15 @@
 namespace tsr {
 namespace plan {
 
+// The functions a kind handler evaluates per op are forced inline (the firmware is built with -Os,
+// which would otherwise call them): with T = 1 known at the call site, mm_plan folds to a few
+// shifts, adds and compares.
+#if defined(__GNUC__)
+#define TSR_PLAN_HOT [[gnu::always_inline]]
+#else
+#define TSR_PLAN_HOT
+#endif
+
 constexpr uint32_t LINE_BYTES  = 64u;
 constexpr uint32_t T_MAX_ARCH  = 8u;        // spec 구성 파라미터: architecture bound of T_MAX
 constexpr uint32_t K_FIELD_MAX = 0xFFFFu;   // MVM w5 K[15:0]
@@ -84,7 +93,7 @@ constexpr bool layout(uint32_t spm_lines, uint32_t pre_lines, exec_layout * out)
 }
 // The planning budget: the ring of a list with the largest preload area (0 if the SPM is too
 // small for the executor).
-constexpr uint32_t ring_budget(const dev_cfg & c) {
+TSR_PLAN_HOT constexpr uint32_t ring_budget(const dev_cfg & c) {
     return c.spm_lines >= ARG_LINES + OPL_AREA_LINES + PRE_MAX_LINES + 1u
                ? c.spm_lines - ARG_LINES - OPL_AREA_LINES - PRE_MAX_LINES
                : 0u;
@@ -93,21 +102,46 @@ constexpr uint32_t ring_budget(const dev_cfg & c) {
 // ---------------------------------------------------------------------------------------------
 // Format geometry (spec "양자화 활성값(QA) 레이아웃", "가중치 레이아웃"; tsr_ref.c is the reference)
 // ---------------------------------------------------------------------------------------------
+// Divides on the control core cost 38 cycles (Ibex, CC §3.2; SW §4.2), so everything a kind handler
+// evaluates per op uses shifts: every block size here is a power of two (Q8_0 / A32 32 = 2^5,
+// Q4_K / A256 256 = 2^8, a line 64 = 2^6, 16 f32 per line). Only ceil_div with a run-time divisor
+// (the T-tile of a multi-tile MUL_MAT, T > 1) divides. Results equal the plain formulas
+// (static_asserts below; fw_exec / fw_hdr compare them with tsr_ref's geometry).
 constexpr uint32_t ceil_div(uint32_t a, uint32_t b) { return a / b + (a % b != 0u ? 1u : 0u); }
-constexpr bool     fmt_valid(uint32_t fmt) { return fmt == FMT_Q8_0 || fmt == FMT_Q4_K; }
-constexpr uint32_t fmt_block(uint32_t fmt) { return fmt == FMT_Q8_0 ? 32u : fmt == FMT_Q4_K ? 256u : 0u; }
-constexpr uint32_t qa_kind_for_fmt(uint32_t fmt) { return fmt == FMT_Q8_0 ? QA_A32 : QA_A256; }
+TSR_PLAN_HOT constexpr uint32_t ceil_shr(uint32_t a, uint32_t sh) { return (a >> sh) + ((a & ((1u << sh) - 1u)) != 0u ? 1u : 0u); }
+TSR_PLAN_HOT constexpr bool     fmt_valid(uint32_t fmt) { return fmt == FMT_Q8_0 || fmt == FMT_Q4_K; }
+TSR_PLAN_HOT constexpr uint32_t fmt_block(uint32_t fmt) { return fmt == FMT_Q8_0 ? 32u : fmt == FMT_Q4_K ? 256u : 0u; }
+constexpr uint32_t fmt_block_log2(uint32_t fmt) { return fmt == FMT_Q8_0 ? 5u : 8u; }   // valid fmt only
+TSR_PLAN_HOT constexpr uint32_t qa_kind_for_fmt(uint32_t fmt) { return fmt == FMT_Q8_0 ? QA_A32 : QA_A256; }
 constexpr uint32_t qa_block(uint32_t kind) { return kind == QA_A32 ? 32u : kind == QA_A256 ? 256u : 0u; }
 // QA_LINES(kind, K) = QS lines + D lines + BS lines (A256 only); 0 for an invalid kind or a K
-// that is not a multiple of the block.
-constexpr uint32_t qa_lines(uint32_t kind, uint32_t K) {
-    const uint32_t b = qa_block(kind);
-    if (b == 0u || K % b != 0u) return 0u;
-    const uint32_t qs = ceil_div(K, LINE_BYTES);
-    const uint32_t d = ceil_div(4u * (K / b), LINE_BYTES);
-    const uint32_t bs = kind == QA_A256 ? ceil_div(2u * (K / 16u), LINE_BYTES) : 0u;
+// that is not a multiple of the block. QS = ceil(K / 64), D = ceil(4 (K / b) / 64), BS = ceil(2
+// (K / 16) / 64), each by shifts (b = 2^5 or 2^8).
+TSR_PLAN_HOT constexpr uint32_t qa_lines(uint32_t kind, uint32_t K) {
+    if (kind > QA_A256) return 0u;
+    const uint32_t lb = kind == QA_A32 ? 5u : 8u;
+    if ((K & ((1u << lb) - 1u)) != 0u) return 0u;
+    const uint32_t qs = ceil_shr(K, 6u);
+    const uint32_t d = ceil_shr((K >> lb) << 2, 6u);
+    const uint32_t bs = kind == QA_A256 ? ceil_shr((K >> 4) << 1, 6u) : 0u;
     return qs + d + bs;
 }
+// The plain formulas (spec "양자화 활성값(QA) 레이아웃"), for the static_asserts.
+constexpr uint32_t qa_lines_div(uint32_t kind, uint32_t K) {
+    const uint32_t b = qa_block(kind);
+    if (b == 0u || K % b != 0u) return 0u;
+    return ceil_div(K, LINE_BYTES) + ceil_div(4u * (K / b), LINE_BYTES) +
+           (kind == QA_A256 ? ceil_div(2u * (K / 16u), LINE_BYTES) : 0u);
+}
+static_assert(qa_lines(QA_A32, 896u) == qa_lines_div(QA_A32, 896u) && qa_lines(QA_A32, 32u) == qa_lines_div(QA_A32, 32u) &&
+                  qa_lines(QA_A32, 4864u) == qa_lines_div(QA_A32, 4864u) &&
+                  qa_lines(QA_A32, 27648u) == qa_lines_div(QA_A32, 27648u) &&
+                  qa_lines(QA_A256, 256u) == qa_lines_div(QA_A256, 256u) &&
+                  qa_lines(QA_A256, 4864u) == qa_lines_div(QA_A256, 4864u) &&
+                  qa_lines(QA_A256, 27648u) == qa_lines_div(QA_A256, 27648u) &&
+                  qa_lines(QA_A256, 5376u) == qa_lines_div(QA_A256, 5376u) && qa_lines(QA_A32, 100u) == 0u &&
+                  qa_lines(QA_A256, 896u) == 0u && qa_lines(2u, 256u) == 0u,
+              "plan.hpp: qa_lines by shifts = the plain formula");
 // ROW_BEATS(fmt, K): beats of one repacked weight row (chunks of 32 Q8_0 blocks / 4 Q4_K
 // superblocks, each a meta beat plus its quant beats); 0 if invalid.
 constexpr uint32_t row_beats(uint32_t fmt, uint32_t K) {
@@ -125,16 +159,15 @@ constexpr uint32_t f32_lines(uint32_t n) { return ceil_div(4u * n, LINE_BYTES); 
 // ACC_DST), ST y. Scratch per tile: x (t_tile x x_lines), QA (t_tile x qa_lines), y (t_tile x
 // y_lines); the kernel double-buffers tiles in the ring.
 // ---------------------------------------------------------------------------------------------
-constexpr uint32_t mm_t_max(const dev_cfg & c) {
+TSR_PLAN_HOT constexpr uint32_t mm_t_max(const dev_cfg & c) {
     uint32_t t = c.t_max < T_MAX_ARCH ? c.t_max : T_MAX_ARCH;
     return t < T_FIELD_MAX ? t : T_FIELD_MAX;
 }
 // Lines one token needs (x + QA + y); 0 if fmt / K cannot be lowered (v1: K % 32 == 0).
-constexpr uint32_t mm_lines_per_token(uint32_t fmt, uint32_t N, uint32_t K) {
-    if (!fmt_valid(fmt) || K == 0u || K % 32u != 0u || K % fmt_block(fmt) != 0u || N == 0u) return 0u;
-    const uint32_t q = qa_lines(qa_kind_for_fmt(fmt), K);
-    const uint64_t s = uint64_t(K / 16u) + q + ceil_div(N, 16u);
-    return s > 0xFFFFFFFFull ? 0u : uint32_t(s);
+// (No overflow: K / 16 + QA_LINES + ceil(N / 16) < 2^28 + 2^27 + 2^28 for 32-bit K and N.)
+TSR_PLAN_HOT constexpr uint32_t mm_lines_per_token(uint32_t fmt, uint32_t N, uint32_t K) {
+    if (!fmt_valid(fmt) || K == 0u || (K & 31u) != 0u || (K & (fmt_block(fmt) - 1u)) != 0u || N == 0u) return 0u;
+    return (K >> 4) + qa_lines(qa_kind_for_fmt(fmt), K) + ceil_shr(N, 4u);
 }
 
 struct mm_tiling {
@@ -152,28 +185,56 @@ struct mm_tiling {
 // two tiles fit the budget (double buffering), else 1 (a single buffer; still plannable while one
 // token fits). T itself never makes a shape unplannable (spec "supports_op (v1)": no condition on
 // T), so the host checks T = 1.
-constexpr uint32_t mm_plan(const dev_cfg & c, uint32_t fmt, uint32_t N, uint32_t K, uint32_t T, mm_tiling * out) {
-    const uint32_t kmax = c.k_max < K_FIELD_MAX ? c.k_max : K_FIELD_MAX;
-    if (!fmt_valid(fmt) || N == 0u || T == 0u || K < 32u || K % 32u != 0u || K % fmt_block(fmt) != 0u || K > kmax ||
-        mm_t_max(c) == 0u)
+// The device limits mm_plan checks against (K field / K_MAX, T_MAX, the ring budget), derived from
+// dev_cfg once: the executor computes them once per launch (kind_ctx::mml).
+struct mm_limits {
+    uint32_t kmax;     // min(K_MAX, K field max)
+    uint32_t t_max;    // mm_t_max: 0 = no MUL_MAT can run
+    uint32_t budget;   // ring_budget
+};
+TSR_PLAN_HOT constexpr mm_limits mm_limits_of(const dev_cfg & c) {
+    return mm_limits{c.k_max < K_FIELD_MAX ? c.k_max : K_FIELD_MAX, mm_t_max(c), ring_budget(c)};
+}
+
+// No divide when T = 1 (a decode token: t_tile = n_tiles = 1 whatever the budget) or when the
+// T-tile is 1; otherwise two (the T-tile for the budget, n_tiles), once per op.
+TSR_PLAN_HOT constexpr uint32_t mm_plan(const mm_limits & l, uint32_t fmt, uint32_t N, uint32_t K, uint32_t T,
+                                        mm_tiling * out) {
+    if (!fmt_valid(fmt) || N == 0u || T == 0u || K < 32u || (K & (fmt_block(fmt) - 1u)) != 0u || K > l.kmax ||
+        l.t_max == 0u)
         return opl::RET_BAD_RECORD;
-    const uint32_t lpt = mm_lines_per_token(fmt, N, K);
-    const uint32_t budget = ring_budget(c);
-    if (lpt == 0u || lpt > budget) return opl::RET_SCRATCH;
-    mm_tiling t{};
-    t.kind = qa_kind_for_fmt(fmt);
-    t.x_lines = K / 16u;
-    t.qa_lines = qa_lines(t.kind, K);
-    t.y_lines = ceil_div(N, 16u);
+    // = mm_lines_per_token(fmt, N, K), with the QA lines evaluated once (the checks above hold:
+    // K is a multiple of the block, which is a multiple of 32, and K <= 0xFFFF, so K + 4095 does
+    // not overflow): QS = ceil(K / 64), D = ceil(4 (K / b) / 64) = ceil(K / 512) for A32 and
+    // ceil(K / 4096) for A256, BS = ceil(2 (K / 16) / 64) = ceil(K / 512) (A256 only).
+    const uint32_t kind = qa_kind_for_fmt(fmt);
+    const uint32_t xl = K >> 4;
+    const uint32_t q512 = (K + 511u) >> 9;
+    const uint32_t ql = ((K + 63u) >> 6) + (kind == QA_A32 ? q512 : ((K + 4095u) >> 12) + q512);
+    const uint32_t yl = ceil_shr(N, 4u);
+    const uint32_t lpt = xl + ql + yl;
+    if (lpt > l.budget) return opl::RET_SCRATCH;
+    if (out == nullptr) return opl::RET_OK;
+    mm_tiling & t = *out;
+    t.kind = kind;
+    t.x_lines = xl;
+    t.qa_lines = ql;
+    t.y_lines = yl;
     t.lpt = lpt;
-    uint32_t tt = (budget / 2u) / lpt;
-    if (tt == 0u) tt = 1u;
-    if (tt > mm_t_max(c)) tt = mm_t_max(c);
-    if (tt > T) tt = T;
+    uint32_t tt = 1u;
+    if (T > 1u) {
+        tt = (l.budget >> 1) / lpt;
+        if (tt == 0u) tt = 1u;
+        if (tt > l.t_max) tt = l.t_max;
+        if (tt > T) tt = T;
+    }
     t.t_tile = tt;
-    t.n_tiles = ceil_div(T, tt);
-    if (out != nullptr) *out = t;
+    t.n_tiles = tt == 1u ? T : ceil_div(T, tt);
     return opl::RET_OK;
+}
+TSR_PLAN_HOT constexpr uint32_t mm_plan(const dev_cfg & c, uint32_t fmt, uint32_t N, uint32_t K, uint32_t T,
+                                        mm_tiling * out) {
+    return mm_plan(mm_limits_of(c), fmt, N, K, T, out);
 }
 // supports_op's MUL_MAT question (independent of T).
 constexpr bool mm_supported(const dev_cfg & c, uint32_t fmt, uint32_t N, uint32_t K) {
@@ -245,6 +306,24 @@ constexpr uint32_t check_op(const dev_cfg & c, uint32_t kind, const uint32_t * a
 }
 
 static_assert(plan_op(U200_K4, opl::K_NOP, nullptr, 0).status == opl::RET_OK, "NOP plans");
+constexpr uint32_t mm_lpt_of(const dev_cfg & c, uint32_t fmt, uint32_t N, uint32_t K) {
+    mm_tiling t{};
+    return mm_plan(c, fmt, N, K, 1u, &t) == opl::RET_OK ? t.lpt : 0u;
+}
+constexpr bool mm_qa_matches(uint32_t fmt, uint32_t k_step) {
+    for (uint32_t K = k_step; K <= 0xFFFFu; K += k_step) {
+        mm_tiling t{};
+        if (mm_plan(mm_limits{0xFFFFu, 8u, 0xFFFFFFFFu}, fmt, 16u, K, 1u, &t) != opl::RET_OK) return false;
+        if (t.qa_lines != qa_lines_div(qa_kind_for_fmt(fmt), K) || t.lpt != mm_lines_per_token(fmt, 16u, K)) return false;
+    }
+    return true;
+}
+static_assert(mm_qa_matches(FMT_Q8_0, 32u) && mm_qa_matches(FMT_Q4_K, 256u),
+              "mm_plan's QA lines = QA_LINES for every K of the K field (Q8_0: K % 32 = 0, Q4_K: K % 256 = 0)");
+static_assert(mm_lpt_of(U200_K4, FMT_Q8_0, 896u, 896u) == mm_lines_per_token(FMT_Q8_0, 896u, 896u) &&
+                  mm_lpt_of(U200_K4, FMT_Q4_K, 896u, 4864u) == mm_lines_per_token(FMT_Q4_K, 896u, 4864u) &&
+                  mm_lpt_of(U200_K4, FMT_Q8_0, 151936u, 896u) == mm_lines_per_token(FMT_Q8_0, 151936u, 896u),
+              "mm_plan's lines per token = mm_lines_per_token");
 static_assert(mm_supported(U200_K4, FMT_Q8_0, 151936u, 896u) && mm_supported(U200_K4, FMT_Q4_K, 5120u, 27648u) &&
                   mm_supported(U200_K4, FMT_Q8_0, 262144u, 3840u) && !mm_supported(U200_K4, FMT_Q4_K, 64u, 32u) &&
                   !mm_supported(U200_K4, FMT_Q8_0, 2000000u, 32u),

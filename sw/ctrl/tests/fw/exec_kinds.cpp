@@ -27,6 +27,13 @@
 //   0x37 RACE   a0 src handle, a1 with_dep                LD 2 lines into a ring block and a QACT
 //               (A32, K = 32) reading them, with or without the dep: the race detector probe
 //               (without the dep the QACT races the LD on the block, SW §4.6)
+//   0x38 VU     a0 src handle, a1 dst handle, a2 m (f32      LD L = ceil(m/16) lines into a ring block,
+//               elements, 1..8192), a3 n (VU ops, 1..3)   n VOPs on them (ADD x+x -> y, MIN y,x -> y,
+//               MAX y,x -> y; full rate, short latency class), ST dst <- y: 2 + n pushes, each after
+//               the previous; ticket: the ST. A stand-in for M7's short VU kinds (norm, RoPE, GLU,
+//               residual: W2b's kinds do not exist yet) in fw_m6_perf's M7 projection (2026-10-30,
+//               executor-optimisation integration); it goes through the generic handler call, as
+//               W2b's kinds will
 #include "tsr/exec.hpp"
 #include "tsr/kernel.hpp"
 #include "tsr/plan.hpp"
@@ -36,7 +43,7 @@ namespace {
 using namespace tsr;
 
 constexpr uint32_t TK_COPY = 0x30u, TK_STUB5 = 0x31u, TK_FAIL = 0x32u, TK_PRE = 0x33u, TK_PREST = 0x34u,
-                   TK_RET = 0x35u, TK_PLAN = 0x36u, TK_RACE = 0x37u;
+                   TK_RET = 0x35u, TK_PLAN = 0x36u, TK_RACE = 0x37u, TK_VU = 0x38u;
 
 // d and the ring's deps for a write to a fresh block, folded to <= 2 (group: join2 NOPs).
 deps fold(deps a, deps b) {
@@ -53,7 +60,7 @@ void sw_join(deps w) {
     join(w.b);
 }
 
-ticket k_copy(const uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
+ticket k_copy(const volatile uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
     deps w{};
     const spm blk = c.ring->alloc(a[2], 2u, &w);
     if (!valid(blk)) {
@@ -66,7 +73,7 @@ ticket k_copy(const uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
     return st;
 }
 
-ticket k_stub5(const uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
+ticket k_stub5(const volatile uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
     deps w{};
     const spm blk = c.ring->alloc(1u, 2u, &w);
     if (!valid(blk)) {
@@ -80,7 +87,7 @@ ticket k_stub5(const uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
     return t;
 }
 
-ticket k_fail(const uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
+ticket k_fail(const volatile uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
     deps w{};
     const spm blk = c.ring->alloc(a[0], 2u, &w);
     if (!valid(blk)) {
@@ -92,7 +99,7 @@ ticket k_fail(const uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
     return t;
 }
 
-ticket k_pre(const uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
+ticket k_pre(const volatile uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
     const uint32_t n = a[1] < 16u ? a[1] : 16u;
     if (c.preload == nullptr || a[0] % 4u != 0u || a[0] + 4u * n > c.pre_lines * 64u) {
         c.ret = opl::RET_BAD_RECORD;
@@ -113,7 +120,7 @@ ticket k_pre(const uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
     return st;
 }
 
-ticket k_prest(const uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
+ticket k_prest(const volatile uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
     if (c.preload == nullptr || a[0] % 64u != 0u || a[1] == 0u || a[0] / 64u + a[1] > c.pre_lines) {
         c.ret = opl::RET_BAD_RECORD;
         return ticket{};
@@ -121,14 +128,14 @@ ticket k_prest(const uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
     return issue(ST(spm{c.pre.line + a[0] / 64u}, from_handle(a[2]), a[1]), d, c.push_flags);
 }
 
-ticket k_ret(const uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
+ticket k_ret(const volatile uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
     ticket t{};
     for (uint32_t k = 0; k < a[1]; ++k) t = issue(NOP(), k == 0u ? d : deps{t}, c.push_flags);
     c.ret = a[0];
     return t;
 }
 
-ticket k_plan(const uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
+ticket k_plan(const volatile uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
     const uint32_t n = a[1];
     if (n == 0u || n > 64u) {
         c.ret = opl::RET_BAD_RECORD;
@@ -170,7 +177,7 @@ ticket k_plan(const uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
     return st;
 }
 
-ticket k_race(const uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
+ticket k_race(const volatile uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
     deps w{};
     const spm blk = c.ring->alloc(4u, 2u, &w);
     if (!valid(blk)) {
@@ -181,6 +188,40 @@ ticket k_race(const uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
     const ticket q = issue(QACT(qa::a32, blk + 2u, blk, 32u, 1u), a[1] ? deps{ld} : fold(d, w), c.push_flags);
     const ticket t = join2(ld, q);
     c.ring->release(blk, t);
+    return t;
+}
+
+ticket k_vu(const volatile uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & c) {
+    const uint32_t src = a[0], dst = a[1], m = a[2], n = a[3];   // read before the first push
+    if (m == 0u || m > 8192u || n == 0u || n > 3u) {
+        c.ret = opl::RET_BAD_RECORD;
+        return ticket{};
+    }
+    const uint32_t L = (m + 15u) / 16u;
+    deps w{};
+    const spm x = c.ring->alloc(2u * L, 2u, &w);
+    if (!valid(x)) {
+        c.ret = opl::RET_SCRATCH;
+        return ticket{};
+    }
+    const spm y = x + L;
+    static constexpr uint32_t funcs[3] = {VOP_FUNC_ADD, VOP_FUNC_MIN, VOP_FUNC_MAX};
+    ticket t = issue(LD(x, from_handle(src), L), fold(d, w), c.push_flags);
+    for (uint32_t k = 0; k < n; ++k) {
+        vop_f f{};
+        f.func = funcs[k];
+        f.d = y.line;
+        f.a = k == 0u ? x.line : y.line;
+        f.b = x.line;
+        f.m = m;
+        f.rows = 1u;
+        f.d_stride = L;
+        f.a_stride = L;
+        f.b_stride = L;
+        t = issue(VOP(f), deps{t}, c.push_flags);
+    }
+    t = issue(ST(y, from_handle(dst), L), deps{t}, c.push_flags);
+    c.ring->release(x, t);
     return t;
 }
 
@@ -196,6 +237,7 @@ extern "C" bool tsr_exec_test_kind(uint32_t kind, tsr::kind_entry * out) {
         case TK_RET:   *out = tsr::kind_entry{&k_ret, 2u};   return true;
         case TK_PLAN:  *out = tsr::kind_entry{&k_plan, 3u};  return true;
         case TK_RACE:  *out = tsr::kind_entry{&k_race, 2u};  return true;
+        case TK_VU:    *out = tsr::kind_entry{&k_vu, 4u};    return true;
         default:       return false;
     }
 }

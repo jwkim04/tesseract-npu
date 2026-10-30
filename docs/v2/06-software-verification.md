@@ -148,7 +148,8 @@ invisible (`docs/ctrl-riscv.md:1326-1333`).
 
 - **ISA:** RV32IMC + Zicsr + Zifencei, M-mode only (CC's configuration). An unimplemented encoding
   or CSR raises an illegal-instruction trap (`mcause` 2, `mtval` = the instruction bits).
-  `fence.i` flushes nothing (there is no cache) and retires in 1 cycle.
+  `fence.i` flushes nothing (there is no cache); it costs what a jump costs (Ibex implements it
+  as a jump to the next instruction).
 - **Misaligned load/store:** split into two aligned accesses in address order, like Ibex
   (`docs/ctrl-riscv.md:393-395`), and not atomic. If the second half faults, the trap reports the
   original address.
@@ -171,12 +172,25 @@ invisible (`docs/ctrl-riscv.md:1326-1333`).
   riscv-tests `-p` and riscv-arch-test link at 0x8000_0000 and end through HTIF, and Spike puts its
   debug module at 0x0 and its boot ROM at 0x1000, which overlaps CC's ITCM; the firmware profile
   is CC §4.1. Random lockstep programs are placed at 0x8000_0000 in both Spike and `tsr_rv`.
-- **Timing** (schedule only, never architectural; *estimate*: `TSR_RV_CPI_DEFAULT` in `tsr_rv.h`
-  and the window latencies in `tsr_bus.h`; P1.8's `tsr_sched.c` varies them): ALU and
-  CSR 1 cycle; load/store to ITCM/DTCM 2; taken branch or jump 3; `mul` 3; `div`/`rem` 37;
-  control-window access 4 RV cycles plus the modelled crossing (2–3 core cycles); SPM-window
-  access 10–14 RV cycles. The RV-to-core clock ratio comes from `TSR_SIM_RV_RATIO`, default
-  166.7 / 276.3 = 0.603 (the k4 core clock).
+- **Timing** (schedule only, never architectural): two cycle tables, one per Ibex configuration
+  of CC §3.2, from Ibex's documentation (`doc/03_reference/pipeline_details.rst` stall cycles,
+  `rtl/ibex_id_stage.sv` for the writeback stage; *confirm* items checked by the RVFI bench P5.2),
+  in `tsr_rv.h` (`TSR_RV_CPI_MAXPERF`, `TSR_RV_CPI_SMALL`), selected by `TSR_SIM_RV_CORE` =
+  `maxperf` (default: CC's decided configuration, V2-CC-34) | `small` (`tsr_sim_opts.rv_core`;
+  `tsr_rv_set_core`). Per class, maxperf / small: ALU, LUI / AUIPC, fence, not-taken branch and
+  CSR read 1 / 1; a CSR write other than `mscratch` / `mepc` 2 / 2 (pipeline flush); taken branch
+  2 / 3; JAL, JALR, `fence.i` 2 / 2; load / store base 0 / 1 plus the bus latency (TCM 1), and on
+  maxperf + 1 when the next instruction reads the loaded register; MUL 1 / 3, MULH* 2 / 4;
+  DIV / REM 38 / 38 (2 by zero); + 1 for a jump or taken branch to a 32-bit instruction at
+  pc[1] = 1 (second word fetch); traps and `mret` 3. Bus latencies (`tsr_bus.h`): control window
+  3 RV cycles (`clk_rv` registers, so 3 / 4 RV cycles per access in total, maxperf / small); the
+  maxperf TCM cost (base 0, one TCM access per cycle) is derived from Ibex's RTL and stays *confirm*
+  (CC §3.2, §4.3; RVFI bench P5.2); the core window and the SPM
+  bridge cross into the core domain, 2 RV cycles plus 12 / 15 core cycles converted at the run's
+  ratio (9 / 11 RV cycles at 166.7 MHz, 13 / 16 at 250 MHz); line-buffer hit 1. P1.8's
+  `tsr_sched.c` varies the CPI and the handshake crossings under random schedules. The RV-to-core
+  clock ratio comes from `TSR_SIM_RV_RATIO`, default 166.7 / 276.3 = 0.603 (the k4 core clock).
+  `tsr_rv_get_stats` counts instructions and cycles per class for the perf harnesses.
 - **Debug hooks:** halt/resume/step, abstract register access, program buffer and triggers come
   from `tsr_dm.c`, which implements area DB's module contract. GDB over the DMI window therefore
   works against `TSR_DEVICE=sim`.
@@ -381,6 +395,7 @@ queue depths.
 |---|---|---|
 | `TSR_SIM_SCHED` | `fixed`, `random:<seed>[,<min>,<max>]` | `fixed` |
 | `TSR_SIM_RV_RATIO` | F_RV / F_CORE, 0.05–4 | 0.603 (166.7 / 276.3) |
+| `TSR_SIM_RV_CORE` | `maxperf`, `small`: the Ibex cycle table (§4.2, CC §3.2; timing only) | CC's configuration (`maxperf`) |
 | `TSR_SIM_RACE` | `off`, `report`, `fatal` | `off` (ctest: `fatal`) |
 | `TSR_SIM_LOG` | `stderr` or a file: RV retire lines (optional), push / start / done events | off |
 | `TSR_SIM_THREADS`, `TSR_SIM_DRAM_DIR`, `TSR_SIM_TMAX`, `TSR_SIM_CH_GIB` | as today | as today |
@@ -516,6 +531,18 @@ The regenerated v2 sets are not in git (W1b): each `regen.sh` reproduces its set
 from fixed seeds, and `traces/MANIFEST.sha256` holds a digest per set. A frozen reference set goes
 into git once the v2 ISA is frozen for the RTL.
 
+Every generated trace obeys the launch-stateless rule (§4.6, V2-SW-4) as one launch: each SPM line in
+the read extent of an op that runs (its checker extents, so a strided operand includes its gap lines)
+is written by an earlier op of the same trace. `tsr-trace-gen` checks this in its verification. Each
+`regen.sh` (its whole set) and `tools_trace_gen_replay` (its small per-mode sets, plus a
+`--mutant-stale` trace that both checks must flag) also replay through the `replay` kernel (§7.7)
+under the fixed and two random schedules with `TSR_SIM_RACE=fatal`, where any other read is an
+`SPM_STALE` abort. Until 2026-10-30, 41 of the 488 traces in m2, gen and m3 (m2 13, gen 5, m3 23; all
+T_MAX > 1) had a strided QACT source loaded per token whose stride gaps nothing wrote. The generator
+now also loads the gaps, with seeds and configurations unchanged. Those 41 traces changed and every
+other trace stayed byte-identical; the set sizes (172, 32, 284; vu 240, at 160, ctrl 148) did not
+change. traces/model-v1conv is converted, not generated, and is not affected.
+
 Mechanical conversion of the register-relative sets would also be possible (LI and ADDI depend only
 on immediates and ARG). It is rejected because 93 + 5 + 156 error expectations would have to be
 re-derived anyway, and the generators exist with fixed seeds.
@@ -540,6 +567,22 @@ v1 sets are reproduced only by the v1 tools of `build/v1` (`traces/*/regen.sh`).
 - **Flags:** `-march=rv32imc_zicsr_zifencei -mabi=ilp32 -Os -ffreestanding -fno-exceptions
   -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit -ffp-contract=off -nostdlib
   -nostartfiles -g -std=c++20`, then `libgcc.a` only (integer helpers).
+- **Hot path** (V2-SW-34): `kernels/graph.cpp` and every `kernels/k_*.cpp` (the executor and the
+  kind implementations, which run once per op record) are compiled with `-O2` after those flags
+  (`TSR_FW_HOT_FLAGS` / `TSR_FW_HOT_GLOBS` in `sw/ctrl/CMakeLists.txt`, recorded as
+  `firmware.cxxflags_hot` in `docs/v2/toolchain.lock`); the runtime, `selftest`, `replay` and libc
+  stay `-Os`. *Measured* (simulator, Ibex maxperf, 166.7 MHz, fixed schedule, `fw_m6_perf` /
+  `fw_exec_perf` on the final tree of the executor-optimisation workflow): per 0.5B MUL_MAT op
+  record 442 → 437 RISC-V cycles, JOIN record 147 → 140, NOP record 92 → 85, one 0.5B decode
+  layer 51.4 → 39.4 µs of RISC-V time (the launch's fixed part shrinks by ≈ 2,000 cycles), for
+  +2.2 KiB of ITCM (30.6 → 32.8 KiB of the 48 KiB budget, §7.8). The whole image at `-O2` gains
+  nothing more per record (437) for +5.8 KiB (only the launch entry, 1.68 → 1.54 µs); `-O3` or
+  `-O2 -fpeel-loops` on the hot files give 440–442 for 1.5–2 KiB more (on the W2a executor
+  `-fpeel-loops` was worth −12 % and `-O2` −9 %, gains the optimised executor's hand-written code
+  took over); `-fno-tree-loop-distribute-patterns` changes nothing (no loop becomes a `memset` /
+  `memcpy` call), `-falign-jumps=4 -falign-loops=4` ≤ 1 %, `-mtune=sifive-3-series` nothing. At
+  `-Os` GCC divides by a constant with `divu` (38 cycles) where `-O2` multiplies: the W2a executor
+  did 4.7 divisions per record at `-Os` and 2.3 at `-O2`.
 - **libgcc:** taken from `-print-libgcc-file-name` for the same `-march`. If that multilib is
   absent, the `rv32im_zicsr/ilp32` one is used (*confirm* the xPack multilib set). Code without
   C instructions runs on an RV32IMC core.
@@ -795,7 +838,7 @@ region, ch0 0–64 MiB, §9.3). It is little-endian.
 | 8 | `n_ops` u32 | number of op records, 1–4096 (V2-SW-29) |
 | 12 | `n_slots` u32 | 64-byte slots in the op area |
 | 16 | `ops_off` u32 | byte offset of the op area (64) |
-| 20 | `flags` u32 | bit0 REC (completion records on every push), bit1 MARK (TRACE_MARK with the op index before each op), bit2 SERIAL (join after every op: debugging), bit3 STOP_ON_ERROR (stop pushing once an error is seen; the backend always sets it) |
+| 20 | `flags` u32 | bit0 REC (completion records on every push), bit1 MARK (TRACE_MARK with the op index before each op; pushed before the executor reads the op's record, so a record it then rejects has its marker too, §7.3), bit2 SERIAL (join after every op: debugging), bit3 STOP_ON_ERROR (stop pushing once an error is seen; the backend always sets it) |
 | 24 | `n_pre` u32 | entries in the preload table |
 | 28 | `pre_off` u32 | byte offset of the preload table |
 | 32 | `pre_lines` u32 | SPM lines of the preload area |
@@ -864,7 +907,10 @@ rows: `rows` = ne1·ne2·ne3, and every row of a tensor starts on a line (ensure
 | [0, rest) | scratch ring (`spm_ring`), ≈ 3.7 MiB |
 
 **DTCM tables:** `ticket[4096]` (the op's done ticket) and `pidx[4096]` (the op's first push
-index), 32 KiB in total.
+index), 32 KiB in total. The ticket table has one sentinel word in front (`TICKET_NONE`, the
+"no dep" entry: a dep is looked up as entry dep + 1 with 0xFFFF wrapping to 0); the symbol
+`__tsr_exec_ticket` stays the 4,096-entry table. The scratch ring's record table holds 128 blocks
+(2 KiB).
 
 **Algorithm:**
 
@@ -873,13 +919,23 @@ index), 32 KiB in total.
    costs two joins at launch start and none inside the op stream. Validate magic, version,
    `n_ops` ≤ 4096 and (if VERIFY_CRC) the CRC. A failure returns 0x8000_000x (below).
 2. For op i = 0 … n_ops−1:
-   1. Read the record through the SPM window.
+   1. The op's control-window accesses first, because each one invalidates the SPM line buffer
+      (CC §10.5): with MARK, `TRACE_MARK` NODE_BEGIN | i; `pidx[i]` = `pidx_now()`
+      (`ISSUE_PIDX`: exact and timing-independent); `RT_INFO` = i. Then read the record through
+      the line-buffered SPM alias (one line fill per 64-byte slot), in place: records are not
+      copied, except one whose lines wrap the streamed OPL area (copied to DTCM). Check it
+      (BAD_RECORD, BAD_DEP). A streamed list then pushes the next chunk's LD when the next record
+      starts in a new chunk (before this record's pushes, as at W2a; the record is copied to DTCM
+      first when it lies in the half that LD overwrites) and reads `pidx[i]` again.
    2. `d` = after(ticket[dep0], ticket[dep1]).
-   3. `pidx[i]` = `pidx_now()` (`ISSUE_PIDX`: exact and timing-independent).
-   4. Call the kind handler with (args, d, ring). It allocates scratch (its writes also wait for
-      the ring's release deps), pushes its tile ops, and returns one ticket T_i whose completion
-      implies every tile op of op i is done. The last tile op depends on the others, or a `join2`
-      provides that (I1, `docs/ctrl-riscv.md:544-550`).
+   3. `pidx[i]` (read in step 1, or after the chunk LD; before any push of op i) is the push index
+      of the op's first push.
+   4. Call the kind handler with (args, d, ring); args point at the record's argument words in
+      place, and a handler reads the words it needs before its first push (a push invalidates the
+      line buffer). It allocates scratch (its writes also wait for the ring's release deps), pushes
+      its tile ops, and returns one ticket T_i whose completion implies every tile op of op i is
+      done. The last tile op depends on the others, or a `join2` provides that (I1,
+      `docs/ctrl-riscv.md:544-550`). A MUL_MAT record first goes to the decode fast path (below).
    5. `ticket[i]` = T_i. The handler releases its scratch blocks with `after` = T_i.
    6. Every 16 ops, and before every software join, read `QSTATUS` error bits. If an error is
       seen and STOP_ON_ERROR is set, stop pushing. This decision is timing-dependent but changes
@@ -910,6 +966,61 @@ them in RET (§6.4).
 Independent ops overlap on different units: Q/K/V projections, gate and up, and a ST of one op
 beside the MVM of the next. Every unit therefore starts the moment its inputs are done, with no
 RISC-V round trip in between.
+
+**Hot path (V2-SW-35, executor optimisation, 2026-10-30).** The per-record cost of §7.8 comes from:
+
+- *The loop* (`graph.cpp` `op_loop`, instantiated for in-place and streamed lists): the kind table
+  in .rodata holds per kind the handler and word0's expected n_args and reserved bits plus the
+  minimum slot count, so the record checks are two compares; the test hook (exec.hpp) is consulted
+  only for kinds without a built-in handler. A streamed list pushes its next chunk's LD where W2a
+  did: after the current record is checked, before its handler (the record is copied to DTCM first
+  when it starts in the half that LD overwrites, at most once per 2,048 lines; `pidx[i]` is read
+  again after the LD). Only the lines that hold the record's words are made readable (`ensure`),
+  not its padding slots, as at W2a. (fix after the review: the first version pushed the chunk LD
+  after the handler, one record later than W2a, which moved later DMA deps by one relative ticket
+  and let one more record complete before a failing chunk load stopped the launch.) With MARK
+  (a PROF launch) the record's NODE_BEGIN marker comes before the record is read, so it precedes
+  that chunk LD (W2a: after it), and a malformed record has its marker (W2a: none): of the
+  executor's own pushes, only these markers differ from W2a, in PROF launches only (a kind that
+  keeps DMA tickets of the ring's deps may see the 128-block table's deps, `spm_ring` below).
+- *MUL_MAT's decode fast path* (`sw/ctrl/kernels/k_mulmat.hpp`, `mulmat_t1_fast`): for T = 1 a leaf
+  function reads its argument words in place, plans with `plan.hpp`'s `mm_plan` (on `mm_limits`
+  computed once per launch; shifts only, no divide), allocates with `spm_ring::alloc_dma_first`
+  (the ring's release tickets of the blocks it reuses are earlier ops' STs, which the DMA queue
+  order implies for the first LD: no deps and no software join), takes one `ISSUE_CREDIT` read for
+  the op's 4–5 pushes when the per-unit fields and the issue-FIFO bound cover them (kernel.hpp
+  `credits_cover`; else `issue()`'s read per push), and pushes exactly the ops, words and deps of
+  `kind_mulmat`. Every other case (T ≠ 1, a record `kind_mulmat` refuses, a ring wrap, reused
+  blocks released by another unit) returns before changing anything, and `kind_mulmat` runs it.
+  The general path (T > 1) is unchanged in what it pushes and is compiled for size.
+- *`spm_ring`* (§6.7): O(1) amortized (a power-of-two table of 4-word records, the per-unit fold
+  on a unit bit mask, the common case inline); the record table grew from 64 to 128 blocks, so the
+  executor can run further ahead before a full table makes `alloc` join its oldest block. The
+  deps rule is unchanged (per unit the later ticket, at most two units, else the unit whose last
+  overlapped block is oldest is joined). With the larger table a reused block's release ticket is
+  folded into the new block's deps where the 64-entry table had already joined it in software; a
+  MUL_MAT drops these deps (they are STs, DMA), so its pushes are unchanged.
+- *Diagnostics:* `exec_state` (opl.hpp, by symbol `__tsr_exec_state`) counts the MUL_MAT records
+  that left the fast path and the ring's software joins and full-algorithm allocations, off the
+  hot path; a launch rejected before step 2 (header, CRC, preload, layout) reports 0 for the ring's
+  counters, not the previous launch's (nothing carries over, V2-SW-4).
+
+MUL_MAT's tile-op order, operand words, deps and scratch placement are W2a's: all 26 launch
+traces of `fw_m6_e2e` (two T = 3 lists, a T = 1 decode list, selftest, replay) are byte-identical
+(`ops/push.bin`, init and expect regions) between the W2a image (92f0b17) and this one, and so are
+all 563 launch traces of `fw_exec_rv --full` (8 schedules: streamed lists, the failing chunk load
+and the 4,096-op list included). Tests pin it: `fw_m6_e2e` (the graph launches) and `fw_exec_rv`
+(the streamed lists) compare digests of their captured launch traces (push records, DONE, expect
+regions; `tests/fw_trace_digest.h`) with the W2a image's, `fw_kernels_host` runs T = 1 records
+with deps on every unit through `mulmat_t1_fast` and through the general path on twin simulators
+and compares every push, `fw_hdr_host` compares the ring's blocks, deps and joined tickets
+(`spm_ring::join_hook`, host builds only) with W2a's algorithm at 128 blocks, and `fw_exec_rv`,
+`fw_m6_e2e` and `fw_m6_perf` assert PERF PUSH_STALL = 0 (no push waited for a credit, CC §7.3).
+A deliberate change of these pushes is a decision: record it here and update the digests. Planning
+stays in the firmware (V2-SW-20 unchanged, OPL v1 unchanged): the T = 1 plan costs ≈ 35
+instructions of a ≈ 280-instruction record, and plan fields carried in the record would still
+have to be checked against QA_LINES and ⌈N/16⌉ for the block's safety, which is the same
+arithmetic.
 
 **DTCM state** is rebuilt at every launch (V2-SW-4).
 
@@ -998,16 +1109,69 @@ inputs and args. It compares DONE, every output byte and the per-unit completion
   1,986 RISC-V cycles per op record (1,047 instructions; 2,553 per MUL_MAT with its JOINs), the
   executor's own share ≈ 200 cycles per record (`fw_exec_perf`); one decode layer (7 MUL_MAT +
   2 JOIN) costs the RISC-V 107 µs against 197 µs of MVM time, and the MVM unit still idles on issue
-  for ≈ 14 % of its span (the small k / v projections). The target is not met yet (open issue).
+  for ≈ 14 % of its span (the small k / v projections). *Measured after the executor optimisation*
+  (§7.3 "Hot path", V2-SW-35; simulator, fixed schedule, 166.7 / 276.3 MHz, `fw_m6_perf` on the same
+  lists, Ibex maxperf (CC §3.2, the default) / small; "work" = the RISC-V's busy cycles up to the
+  launch's last op push, without the iterations of wait loops after their first test, `fw_prof.h`):
+  387 / 485 RISC-V cycles of work per op record with deep queues (278 instructions; 498 / 624 per
+  MUL_MAT; W2a 1,518 / 1,966), 401 / 497 with the U200 queue depths (the difference: re-reads of
+  `ISSUE_CREDIT` while the MVM queue is full, i.e. while the RISC-V is ahead anyway), 384 / 479 with
+  the backend's flags (no MARK); by the W2a method (U200 depths, every busy cycle) 437 / 520
+  (W2a 1,547 / 1,977). A JOIN record (one push) costs 140 / 163 (W2a 185 / 220), a NOP record 85 /
+  99 (156 / 191), `fw_exec_perf`'s five-push test kind 476 / 595 (1,027 / 1,326). One 0.5B decode
+  layer costs the RISC-V 39.4 / 48.3 µs against 197 µs of MVM time (W2a 110.4 / 141.0 µs), the MVM
+  never idles on issue (0.0 %, W2a 8.1 / 13.5 %), and the layer's launch takes 220.2 / 224.1 µs
+  (W2a 256.2 / 276.8 µs). The ≤ 400 target is met on the CC §3.2 configuration (maxperf) by one
+  metric: the spin-free executor work with deep queues (387). With the U200 queue depths the same
+  metric gives 401 and W2a's method (every busy cycle, U200 depths) 437, both above 400. The M6
+  result is the issue rate, not the cycle count: the MVM never idles on issue (0.0 % of its span on
+  both Ibex tables, at 125, 166.7 and 250 MHz). On small the executor costs 485 / 497 / 520 by the
+  three metrics and still stays ahead of the MVM. The same lists with the
+  whole image at `-Os` (no hot-path `-O2`, §6.1): 391 / 485 cycles of work per record (deep queues),
+  442 / 521 by the W2a method, a layer 51.4 / 62.9 µs of RISC-V time and 232.1 / 238.9 µs push →
+  DONE. At clk_rv 250 MHz (`TSR_SIM_RV_RATIO` 0.905, CC §3.3) the cycles per record barely move
+  (396 / 492 work, deep queues) and the layer costs the RISC-V 26.3 / 31.6 µs (push → DONE 216.6 /
+  219.1 µs); at 125 MHz 50.6 / 61.6 µs (224.0 / 229.4 µs). Per layer of a longer list (3 vs 1
+  layers) the RISC-V works 3,636 / 4,498 cycles = 21.8 / 27.0 µs against 239.6 µs of device time.
+  *Final tree* (after the review fix of the streamed chunk order, §7.3; `op_loop` for in-place lists
+  is unchanged instruction for instruction, the code after it moved): every figure above within
+  ±1 RV cycle and ±0.1 µs (maxperf / small: 387 / 484 deep-queue work, 402 / 497 with U200 depths,
+  438 / 520 by W2a's method, 383 / 478 without MARK, a layer 39.5 / 48.3 µs of RISC-V time and
+  220.3 / 224.2 µs push → DONE; 250 MHz 395 / 491, 125 MHz 384 / 482; JOIN 140 / 163; M7
+  projection 656 / 831 cycles per VU record, 6.2 % / 11.2 % of the layer), ITCM 32,896 B.
+- **M7 projection** (*measured*, executor-optimisation integration, 2026-10-30): `fw_m6_perf` with
+  the `fw_exec` test image runs the decode layer with 25 short VU records per layer (test kind 0x38
+  of `tests/fw/exec_kinds.cpp`: LD, 2 or 3 VOPs, ST, through the generic handler call as W2b's kinds
+  will go; in chains at the attention norm, RoPE / KV / attention, FFN norm, GLU and residual
+  points, split 3 : 12 : 4 : 3 : 3) and compares the launch with a reference run whose RISC-V runs
+  at 4 × F_CORE (a near-ideal issuer). Such a record costs the RISC-V 656 / 832 cycles of work
+  (maxperf / small; 3.9 / 5.0 µs at 166.7 MHz) and adds ≈ 2.0 µs to the layer's device time (with
+  the near-ideal issuer the layer takes 290.7 µs against 239.6 µs without the records). Per layer
+  the RISC-V works 116 / 147 µs against ≈ 291 µs of device time, so it is ahead on average; but each
+  record queues an LD and an ST on the DMA unit (U200 depth 8, CC §7.4), so the in-order issuer
+  banks at most ≈ 4 records ahead of a dependent chain, and the layer takes 310.0 / 327.5 µs instead
+  of 290.7 µs: the RISC-V's speed costs 6.2 % / 11.2 % of the layer at 166.7 MHz, 1.6 % / 4.1 % at
+  250 MHz and 12.7 % / 19.8 % at 125 MHz (the W2a firmware: 31 % / 39 % at 166.7 MHz). With deep
+  queues (31) the cost is 0 after a launch's first layer (at 166.7 and 250 MHz; small at 125 MHz
+  3.8 %). W2b's frequent VU kinds therefore take the MUL_MAT fast path's form (§7.3 "Hot path":
+  leaf handler, arguments read in place, `alloc_dma_first`, one credit read per record; *estimate*
+  ≈ 140 + 25–30 cycles per push, ≈ 260 per such record = 1.6 µs, below the ≈ 2.0 µs it adds on the
+  device); a deeper DMA queue is the hardware alternative.
 - **Launch:** EX §4.11 (empty-launch round trip ≤ 10 µs target; descriptor push → kernel entry
   ≤ 5 µs; answer record → host ≤ one poll interval). The v1 exec cost was 35 µs per exec
   (`docs/platform-u200.md:1049`). *Measured at W2a* (`tsr-fw.elf`, fixed schedule, F_RV / F_CORE =
   166.7 / 276.3 MHz): descriptor push → kernel entry 605 core cycles = 2.19 µs; empty launch push →
   DONE in the LCQ 1,538 core cycles = 5.57 µs (device part); 8 outstanding launches 1,579 core
-  cycles each (175 K launches/s).
+  cycles each (175 K launches/s). *Measured after the executor optimisation* (the runtime is
+  unchanged; Ibex maxperf, the default / small): descriptor push → kernel entry 1.68 / 2.19 µs,
+  empty launch 4.23 / 5.50 µs, 8 outstanding launches 4.34 / 5.64 µs each (230 K / 177 K
+  launches/s); at 250 MHz 1.12 / 1.46 µs and 2.82 / 3.67 µs.
 - **Image size:** ITCM ≤ 48 KiB of 128 KiB; DTCM ≤ 56 KiB of 64 KiB including the 8 KiB stack,
   the 512 B trap stack and the 32 KiB executor tables. *Measured at W2a* (`tsr-elf size`): ITCM
-  25,720 B, DTCM 46,312 B.
+  25,720 B, DTCM 46,312 B. After the executor optimisation (hot path `-O2`, §6.1): ITCM 32,808 B
+  (32,896 B after the review fix's streamed-order code),
+  DTCM 47,968 B (the ring's table +1 KiB, the ticket table's sentinel); the whole image at `-Os`
+  would take ITCM 30,628 B.
 
 ---
 
@@ -1325,7 +1489,8 @@ New ctests:
   BAD_DESC; a cancel landing in R8: cleared by R9), TRAP record, panic as a TRAP with `mcause` 24,
   log drop and BLOCK with a full ring, R1's QCLEAR after an RV reset)
   and `fw_runtime_stale` (a mutant image must give exactly one `SPM_STALE`);
-- `fw_kernels_host` (ASan/UBSan) and `fw_kernels_rv` (per kind, 8 schedules, race `fatal`), with
+- `fw_kernels_host` (ASan/UBSan; also MUL_MAT's decode fast path against the general path on twin
+  simulators, push for push, §7.3) and `fw_kernels_rv` (per kind, 8 schedules, race `fatal`), with
   `fw_kernels_rv_v1conv` (a sample of `traces/model-v1conv` regrouped into MUL_MAT ops: v1's outputs
   and push streams), `fw_kernels_rv_mutant_race` / `_mutant_v1` (mutant images must be caught) and
   the `slow` `fw_kernels_rv_v1conv_all` and `fw_kernels_rv_shapes` (0.5B / 32B / Gemma 4 12B shapes);
@@ -1334,13 +1499,15 @@ New ctests:
 - W2a's package tests: `fw_elf`, `fw_elf_asan`, `fw_elf_link`, `fw_elf_image`, `fw_elf_hello`,
   `fw_elf_test_image`, `_nok`, `_hello` (P2.1: `tsr-elf`, `link.ld`, image id, test images);
   `fw_hdr_host`, `fw_hdr_rv`, `fw_hdr_rv_mutant`, `fw_hdr_constexpr` (P2.3: builders, tickets,
-  `group`, `spm_ring`, host backend); `fw_exec_rv`, `fw_exec_host`, `fw_exec_perf` (P2.4: OPL v1 and
-  the executor);
+  `group`, `spm_ring` incl. its blocks, deps and joined tickets against W2a's algorithm, host
+  backend); `fw_exec_rv`, `fw_exec_host`, `fw_exec_perf` (P2.4: OPL v1 and the executor; the
+  streamed lists' launch-trace digests pinned to W2a's, PERF PUSH_STALL = 0);
 - `fw_m6_e2e` (W2a integration: the production image through the loader with VERIFY, HELLO = the
   `tsr-elf` id, PING, a two-layer 0.5B-shaped MUL_MAT list through `graph`, `selftest` ids 1–10,
   `replay` of trace samples, `graph` again after the other kernels; 8 schedules, race `fatal`,
-  `TSR_TRACE` capture, identical observables, every captured launch replayed on fresh simulators)
-  and `fw_m6_perf` (§7.8 / EX §4.11 numbers);
+  `TSR_TRACE` capture, identical observables, every captured launch replayed on fresh simulators,
+  the graph launches' trace digests pinned to W2a's, PERF PUSH_STALL = 0) and `fw_m6_perf` (§7.8 /
+  EX §4.11 numbers; with the `fw_exec` image also §7.8's M7 projection; PUSH_STALL = 0);
 - `trace_v2_roundtrip`, `trace_conv_model` (sample of 10 converted model traces);
 - `transport_protocol` (EX §15 item 2, one binary for every kind: cold and warm boot, image-id
   mismatch, VERIFY with an injected TCM fault on vkernel, 0–7 args, credit rule, forced
@@ -1489,7 +1656,7 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
 | V2-SW-5 | Trace layout | one directory per launch; single push-ordered `ops/push.bin` with relative tickets; images shared by id | per-unit `ops/u<k>.bin` (spec text); one ELF copy per trace | Replay needs the global push order (a dep must not point to an unpushed ticket); per-unit files lose it, and the per-unit view is a filter. Relative tickets make traces independent of history. Sharing images avoids 290 copies. The spec's trace paragraph (`docs/spec.md:823-830`) needs the matching edit. |
 | V2-SW-6 | v1 trace migration | regenerate m2/m3/gen with the v2 generator; convert the 290 model traces as a serial chain (`replay` SERIAL); drop `traces/tmp` | convert everything (EX's and CC's drafts) | Generators and seeds exist, and 254 error expectations must be re-derived for v2 anyway. Model traces are large and error-free, and they convert exactly, which gives a strong v1 → v2 unit-equivalence check. Adopted by EX §12 and CC §15.3. |
 | V2-SW-7 | Toolchain | xPack `riscv-none-elf-gcc` 14.2.0-3 (with GDB) in user space, the only supported compiler; Spike and dtc from source; Clang optional | distro packages (need sudo; no rv32imc multilib, no libstdc++ headers); building GCC from source; Clang only | No sudo is needed, versions are pinned, and the result is reproducible. The xPack bundle includes GDB for D18. Clang alone lacks an rv32 compiler-rt here. |
-| V2-SW-8 | Firmware language rules | freestanding C++20, no heap/exceptions/RTTI, `-Os`, libgcc only, no libstdc++ headers; no f32 math in firmware (the host precomputes constants) | allow soft-float in kernels; C | Avoids soft-float cost and any risk of a firmware-side fp rounding path (the spec fp rules stay in host-computed constants and in device ops). C++ templates keep the op builders zero-cost (D6). |
+| V2-SW-8 | Firmware language rules | freestanding C++20, no heap/exceptions/RTTI, `-Os` (hot path `-O2`, V2-SW-34), libgcc only, no libstdc++ headers; no f32 math in firmware (the host precomputes constants) | allow soft-float in kernels; C | Avoids soft-float cost and any risk of a firmware-side fp rounding path (the spec fp rules stay in host-computed constants and in device ops). C++ templates keep the op builders zero-cost (D6). |
 | V2-SW-9 | Image identity | EX §3.2: build-time SHA-256 over the `PT_LOAD` segments, first 8 bytes as a little-endian `uint64`, stored in an 8-byte `.tsr_id`, echoed in HELLO r2 / r3 | a 16-byte id (the draft); runtime hashing of TCMs; CRC only | Hashing 128 KiB on Ibex would take ≈ 80 ms (*estimate*). 64 bits tell builds apart; the load CRC and VERIFY prove the transfer. Excluding the not-loaded log strings keeps the id stable across log-text edits. |
 | V2-SW-10 | Host ↔ RISC-V protocol | **withdrawn**: EX's LQ / LCQ protocol (V2-EX-1 … V2-EX-5) with the runtime contract R1–R10; up to `LQ_DEPTH` launches outstanding | the single-slot H2R / R2H mailbox with one outstanding launch (the draft) | EX owns the launch protocol; the queue lets the host pipeline launches with posted writes only, and one channel carries launches, answers, HELLO, TRAP and events. |
 | V2-SW-11 | Logging | binary records (format-string address + args) with DB's header (DB §6.1) through EX's log ring; whole-record drop with a counter; runtime filter `LOG_CFG.LEVEL` | text over the LCQ; DRAM log ring; SW's own 2-bit-level header and a LOGCTL message (the draft) | No TCM is spent on strings, and the ring is readable even when queues are wedged, unlike a DRAM ring that needs a working DMA (`docs/ctrl-riscv.md:1190`). Whole-record drop keeps the stream parseable. One header for the encoder and the decoders. |
@@ -1515,6 +1682,8 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
 | V2-SW-31 | GELU in llama.cpp graphs | GGML GELU and GEGLU map to the VU's GELU16 / GEGLU16 (the CPU's fp16-table form); the exact tanh GELU stays for M8 / PyTorch | exact tanh GELU everywhere (the draft's default) | The pinned ggml CPU defines `GGML_GELU_FP16` (`vec.h:46`) and rounds x and the result to fp16 (relative error up to 3.9·10⁻³); matching that form removes an fp16-level difference on every GEGLU element of every Gemma 4 layer. |
 | V2-SW-32 | Mask summaries | the backend writes the MSUM (and, for GENERAL masks, an f32 copy) on `set_tensor` of tensors named `kq_mask`, reserving the bytes through `get_alloc_size`; the FA record refers to it through the preload table | the device reads F16 masks; per-token op-list patching | The VU has no f16; the summary keeps the cached op list valid per token and lets ATTQK skip masked bandwidth (AT V2-AT-14). |
 | V2-SW-33 | Unselected graph branches | `GGML_OP_DUP`, non-KV SET_ROWS and nodes without `GGML_TENSOR_FLAG_COMPUTE` are unsupported; `graph_compute` skips flagless nodes and makes no launch for an empty split | rely on "everything else false" | `ggml_build_forward_select` leaves unselected embedding branches in every decode graph, and the scheduler ignores the flag when it assigns backends; a supported DUP would add a second split and launch per token. |
+| V2-SW-34 | Firmware optimisation flags (2026-10-30, executor optimisation; amends V2-SW-8) | `-Os` for the image; the executor and kind sources (`kernels/graph.cpp`, `kernels/k_*.cpp`) add `-O2` (§6.1) | `-Os` everywhere; `-O2` everywhere; `-O3` / `-O2 -fpeel-loops` on the hot files | Measured (§6.1): −1 % per MUL_MAT record, −5 to −7 % per JOIN / NOP record (the cheap records that bound M7) and −23 % RISC-V time per 0.5B layer (the launch's fixed part) for +2.2 KiB of ITCM; the whole image at `-O2` adds 5.8 KiB for nothing per record, `-O3` / peeling cost more ITCM for no gain on the optimised executor. Keeps the ITCM headroom for M7's kinds, which join the hot set by file name. |
+| V2-SW-35 | Executor hot path (2026-10-30, executor optimisation; §7.3 "Hot path", §7.8) | records read in place through the line-buffered alias after the op's control-window accesses (MARK before the record is read: in PROF launches a malformed record has its marker and a streamed list's chunk LD follows the marker of the record before which it is pushed; otherwise the executor's own pushes are W2a's, and every launch trace of `fw_m6_e2e`, `fw_exec_rv` and `fw_kernels_rv` is byte-identical to W2a's); a streamed list's chunk LD where W2a pushed it (after the record's check, before its handler); a decode fast path for T = 1 MUL_MAT records (leaf function, one credit read per op when it covers the pushes, `spm_ring::alloc_dma_first`); planning stays in the firmware (`plan.hpp`, shifts, limits per launch); `spm_ring` O(1) with a 128-block table; the MUL_MAT push stream unchanged, pinned by trace digests (§7.3) | move MUL_MAT planning into the OPL record (host-planned words); hand-written assembly; a per-push credit cache; inlining the fast path into the loop; the chunk LD after the handler (the first version: one record later than W2a, which changed later deps and a failing chunk load's outcome) | Measured (§7.8), as spin-free executor work with deep queues: 1,518 → 387 RISC-V cycles per 0.5B decode record on Ibex maxperf (1,966 → 485 on small); with U200 queue depths 401, by W2a's method 437 (both above 400). The M6 outcome: the MVM no longer idles on issue. Host planning would save ≈ 35 of ≈ 280 instructions and the firmware would still check the block geometry; the credit cache and inlining measured slower (more live registers); assembly is not maintainable. |
 
 ---
 

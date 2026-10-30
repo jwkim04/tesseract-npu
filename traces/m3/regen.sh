@@ -2,9 +2,10 @@
 # traces/m3/regen.sh [BUILD_DIR] — the M3 regression traces as trace v2 `ops` traces (docs/v2/
 # 06-software-verification.md §5.6): tsr-trace-gen v2 --ops m3 (MVM-centred groups mixed with the M2
 # QACT / copy groups), with v1's seeds and configurations (tag v1-m4, traces/m3/regen.sh there), then
-# every trace replayed under the fixed and two random schedules (race detector fatal). The generator
-# prints the MVM count and weight traffic per set (v1's trace_stats.py reads v1 traces only; it stays
-# for traces/model).
+# every trace replayed under the fixed and two random schedules (race detector fatal),
+# tile-only and through the replay kernel (one launch per trace: SPM_STALE is fatal, SW §4.6). The
+# generator prints the MVM count and weight traffic per set (v1's trace_stats.py reads v1 traces only;
+# it stays for traces/model).
 #
 #   tmax1/    64 traces, U200 config (4 ch, T_MAX 1, 4 MiB SPM, 16 GiB/ch, CAPS 0), ~10% error
 #             injections, traces 0, 25, 50 "big" (one long weight stream, 4x the per-trace weight budget)
@@ -20,7 +21,9 @@
 #             violations and 32-bit-wrapping extents) and the 12 M2 / v2 kinds
 #   errors8/  68 like errors/, T_MAX 8 (multi-token extents, (T-1) x dst_stride >= 2^32)
 # Not in git (.gitignore): regenerate with this script. Weight traffic: --max-wbeats 16384 MVM weight
-# beats per trace on the busiest channel (channel 0; 4096 in the error sets).
+# beats per trace on the busiest channel (channel 0; 4096 in the error sets). Every SPM line an op
+# reads is written earlier in its trace (2026-10-30: a strided QACT source loaded per token also gets its
+# stride gaps loaded; 23 traces changed, none read the power-on SPM fill).
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
@@ -43,3 +46,4 @@ for s in "tmax1    -n 64 -s 31 --errors 10 --big-pct 4" \
     rm -f "$HERE/$name.log"
 done
 v2_replay "$HERE"
+v2_replay_kernel "$HERE"

@@ -72,6 +72,12 @@ set(TSR_FW_ARCH -march=rv32imc_zicsr_zifencei -mabi=ilp32)
 set(TSR_FW_CXX_FLAGS ${TSR_FW_ARCH} -Os -ffreestanding -fno-exceptions -fno-rtti -fno-threadsafe-statics
                      -fno-use-cxa-atexit -ffp-contract=off -nostdlib -nostartfiles -g -std=c++20)
 set(TSR_FW_ASM_FLAGS ${TSR_FW_ARCH} -g)
+# Hot path (SW §6.1): the graph executor and the kind implementations run once per op record and
+# are compiled for speed; these flags come after TSR_FW_CXX_FLAGS on their command lines (the last
+# -O wins). Everything else (runtime, selftest, replay, libc) stays -Os for the image budget
+# (SW §7.8). docs/v2/toolchain.lock firmware.cxxflags_hot records the same list.
+set(TSR_FW_HOT_FLAGS -O2)
+set(TSR_FW_HOT_GLOBS kernels/graph.cpp kernels/k_*.cpp)
 option(TSR_FW_WERROR "Treat firmware compiler warnings as errors" ON)
 set(TSR_FW_WARN -Wall -Wextra)
 if (TSR_FW_WERROR)
@@ -93,15 +99,21 @@ endforeach()
 set(_lock ${TESSERACT_ROOT}/docs/v2/toolchain.lock)
 if (EXISTS ${_lock})
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_lock})
-    file(STRINGS ${_lock} _l REGEX "^firmware\\.cxxflags *=")
-    if (_l MATCHES "^firmware\\.cxxflags *= *(.*)$")
-        string(STRIP "${CMAKE_MATCH_1}" _lock_flags)
-        string(REPLACE ";" " " _ours "${TSR_FW_CXX_FLAGS}")
-        if (NOT _lock_flags STREQUAL _ours)
-            message(WARNING "sw/ctrl: firmware flags differ from docs/v2/toolchain.lock firmware.cxxflags:\n"
-                            "  built: ${_ours}\n  lock:  ${_lock_flags}")
+    foreach(_k cxxflags cxxflags_hot)
+        set(_v TSR_FW_CXX_FLAGS)
+        if (_k STREQUAL "cxxflags_hot")
+            set(_v TSR_FW_HOT_FLAGS)
         endif()
-    endif()
+        file(STRINGS ${_lock} _l REGEX "^firmware\\.${_k} *=")
+        if (_l MATCHES "^firmware\\.${_k} *= *([^#]*)")
+            string(STRIP "${CMAKE_MATCH_1}" _lock_flags)
+            string(REPLACE ";" " " _ours "${${_v}}")
+            if (NOT _lock_flags STREQUAL _ours)
+                message(WARNING "sw/ctrl: firmware flags differ from docs/v2/toolchain.lock firmware.${_k}:\n"
+                                "  built: ${_ours}\n  lock:  ${_lock_flags}")
+            endif()
+        endif()
+    endforeach()
 endif()
 
 # libgcc (integer helpers only) of the same multilib; rv32im_zicsr / ilp32 if that is absent (SW §6.1).
@@ -138,6 +150,13 @@ file(GLOB TSR_FW_RT_SOURCES CONFIGURE_DEPENDS ${TSR_CTRL_DIR}/rt/*.S ${TSR_CTRL_
 file(GLOB TSR_FW_KERNEL_SOURCES CONFIGURE_DEPENDS ${TSR_CTRL_DIR}/kernels/*.cpp)
 list(SORT TSR_FW_RT_SOURCES)
 list(SORT TSR_FW_KERNEL_SOURCES)
+list(TRANSFORM TSR_FW_HOT_GLOBS PREPEND ${TSR_CTRL_DIR}/ OUTPUT_VARIABLE _hot_globs)
+file(GLOB TSR_FW_HOT_SOURCES CONFIGURE_DEPENDS ${_hot_globs})
+if (TSR_FW_HOT_SOURCES AND TSR_FW_HOT_FLAGS)
+    set_source_files_properties(${TSR_FW_HOT_SOURCES} PROPERTIES COMPILE_OPTIONS "${TSR_FW_HOT_FLAGS}")
+    list(TRANSFORM TSR_FW_HOT_SOURCES REPLACE "^${TSR_CTRL_DIR}/" "" OUTPUT_VARIABLE _hot_names)
+    message(STATUS "sw/ctrl: hot-path sources (${TSR_FW_HOT_FLAGS}): ${_hot_names}")
+endif()
 
 if (TSR_FW_RT_SOURCES)
     add_library(tsr_fw_rt OBJECT ${TSR_FW_RT_SOURCES} ${TSR_FW_NOTE_SRC})

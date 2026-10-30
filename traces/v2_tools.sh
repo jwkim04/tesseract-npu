@@ -28,3 +28,19 @@ v2_tools() {
 v2_replay() {
     TSR_SIM_RACE=${TSR_SIM_RACE:-fatal} "$V2_REPLAY" -q --sched fixed --sched random:1 --sched random:2 "$@"
 }
+
+# --- added 2026-10-30 (tracegen, SPM_STALE): v2_replay_kernel SET... ---
+# The same three schedules through the `replay` kernel of the build's production image (BUILD_DIR/fw/
+# tsr-fw.elf, SW §7.7), race detector fatal: there a trace is one launch, so an op that reads SPM
+# nothing wrote in the trace is an SPM_STALE abort (SW §4.6, V2-SW-4; the tile-only route of
+# v2_replay has no launch window). Skipped with a note when the image is not built.
+v2_replay_kernel() {
+    local img=$V2_BUILD/fw/tsr-fw.elf
+    if [ ! -f "$img" ]; then
+        echo "$0: $img not built: the kernel-route replay (SPM_STALE check) is skipped" >&2
+        return 0
+    fi
+    TSR_SIM_RACE=${TSR_SIM_RACE:-fatal} "$V2_REPLAY" -q --sched fixed --sched random:1 --sched random:2 \
+        --replay-image "$img" "$@"
+}
+# --- end of the 2026-10-30 addition ---

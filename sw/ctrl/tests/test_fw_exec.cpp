@@ -19,7 +19,9 @@
 //   stream     a 6.6k-line list with records crossing chunk boundaries, deps across chunks, with
 //              and without VERIFY_CRC; an injected tile error in chunk 2; a chunk load that fails;
 //              a 700-record NOP list (5.5 chunks) in which only the executor's joins order the
-//              RISC-V's reads of each chunk after its load (the race detector checks that)
+//              RISC-V's reads of each chunk after its load (the race detector checks that); these
+//              launches and the 4096-op list are captured and their trace digests (push records,
+//              DONE, expect regions; fw_trace_digest.h) must equal the W2a image's (W2a's push order)
 //   errors     the failing-op index for injected tile errors at positions 0, 1, 15, 16, 17, 40,
 //              63 (NOP neighbours: empty ops share a push index), DEP_FAILED behind the error,
 //              failed executor loads (list, preload) -> RET 0
@@ -29,10 +31,14 @@
 //              REC on the LD / ST pushes, SERIAL (no op starts before the previous one is done)
 //   plan       plan.hpp on the RISC-V (PLAN kind) = plan.hpp on the host = tsr_ref geometry, for the
 //              Qwen2.5-0.5B / 32B and Gemma 4 12B MUL_MAT shapes and edge shapes
-//   mulmat     MUL_MAT records through the real kind_mulmat (a 0.5B-like layer), RET 0
+//   mulmat     MUL_MAT records through the real kind_mulmat (a 0.5B-like layer), RET 0; a 48-layer
+//              decode list (T = 1: the executor's fast path) that wraps the scratch ring and fills
+//              its table (exec_state diagnostics checked)
 // fw_exec_rv (--full) runs the deterministic part under the fixed and 7 random schedules with
 // TSR_SIM_RACE=fatal and compares SW §4.7's observables (op streams, RISC-V SPM stores, final
-// written DRAM / SPM) and every DONE record r0-r6; the STOP_ON_ERROR part compares the DONE
+// written DRAM / SPM) and every DONE record r0-r6, and asserts PERF PUSH_STALL = 0 (no push waited
+// for a credit, CC §7.3) and that a list rejected before step 2 reports no ring counters of the
+// previous launch; the STOP_ON_ERROR part compares the DONE
 // records; a race-detector probe (a missing dep inside a test kind, an unwritten preload line)
 // shows the detector sees the executor's pushes and the RISC-V's reads. fw_exec_perf
 // measures RISC-V cycles per graph op (SW §7.8 target <= 400) on 0.5B-like lists.
@@ -50,8 +56,11 @@
 #include <string>
 #include <vector>
 
+#include "fw_prof.h"
+#include "fw_trace_digest.h"
 #include "tsr/opl.hpp"
 #include "tsr/plan.hpp"
+#include "tsr_trace.h"
 
 #ifdef TSR_EXEC_TEST_HOST
 #include "tsr/exec.hpp"
@@ -362,6 +371,38 @@ static void expect_fail(env & e, const done_t & d, uint32_t ret, const char * wh
           "%s: %s: TILE_ERR (FAIL LD) with RET %u expected: status %u ret 0x%08x err %u ticket 0x%08x info 0x%08x w0 0x%08x",
           e.tag.c_str(), what, ret, d.status(), d.ret(), d.err(), d.r[3], d.r[4], d.r[5]);
 }
+// The executor's push stream pinned to W2a's (SW §7.3; executor optimisation review, 2026-10-30):
+// the launch between pin_begin and pin_end is captured (tsr_sim_capture_launch, RV only: the host
+// build's launches do not go through the LQ) and its digest (fw_trace_digest.h: push records,
+// DONE, expect regions) compared with the value the W2a image (92f0b17) gives. A deliberate change
+// of the pushes changes it: record the decision (SW §7.3) and update the value from the output.
+static void pin_begin(env & e) {
+    if (e.rv()) tsr_sim_capture_launch(e.sim, 1);
+}
+static void pin_end(env & e, const char * what, uint64_t w2a) {
+    if (!e.rv()) return;
+    tsr_sim_capture_launch(e.sim, 0);
+    tsr_trace2 t;
+    tsr_trace2_init(&t);
+    const int rc = tsr_sim_capture_take(e.sim, &t);
+    CHECK(rc == 0, "%s: %s: no captured launch trace (%d)", e.tag.c_str(), what, rc);
+    if (rc == 0) {
+        const uint64_t d = fw_trace_digest(&t);
+        CHECK(d == w2a, "%s: %s: launch trace digest %016llx (%zu pushes, DONE ret %d, error ticket / pidx +%u / +%u), "
+              "W2a's %016llx: the push stream changed", e.tag.c_str(), what, (unsigned long long)d, t.n_push, t.done.ret,
+              t.done.err_ticket_rel, t.done.err_pidx_rel, (unsigned long long)w2a);
+        tsr_trace2 extra;
+        tsr_trace2_init(&extra);
+        CHECK(tsr_sim_capture_take(e.sim, &extra) == 1, "%s: %s: more than one launch captured", e.tag.c_str(), what);
+        tsr_trace2_clear(&extra);
+    }
+    tsr_trace2_clear(&t);
+}
+// W2a's digests (92f0b17 fw_exec.elf under this harness; see pin_end).
+static const uint64_t PIN_SIZES_4096 = 0x67e12f5afa4f9a49ull, PIN_STREAM = 0x6f121c56b38e44dfull,
+                      PIN_STREAM_NOP = 0x85145e8fd762e827ull, PIN_STREAM_CRC = 0x0185d6f07b611a15ull,
+                      PIN_STREAM_FAIL = 0x80a61be7db450c0full, PIN_STREAM_CHUNK_FAIL = 0x5dcf7a79d9d44147ull;
+
 static uint32_t copy_args(uint32_t * a, uint32_t src, uint32_t dst, uint32_t lines) {
     a[0] = src; a[1] = dst; a[2] = lines;
     return 3;
@@ -390,6 +431,7 @@ struct watch {
     uint32_t ops_before_first_mark = 0;
     std::vector<uint32_t> push_mark;   // for each push: index of the last mark (or ~0)
     std::vector<uint32_t> push_w0;
+    std::vector<uint32_t> push_w1;
     std::vector<uint8_t> push_rec;
     std::vector<std::array<uint32_t, 4>> push_info;   // pidx, ticket, dep0, dep1
     void reset() { *this = watch{}; on = true; }
@@ -407,6 +449,7 @@ static void watch_q(void * ctx, tsr_sim * sim, const tsr_q_event * ev) {
         if (ev->rec) w.rec_pushes++;
         w.push_mark.push_back(w.marks.empty() ? ~0u : (uint32_t)w.marks.size() - 1u);
         w.push_w0.push_back(ev->w[0]);
+        w.push_w1.push_back(ev->w[1]);
         w.push_rec.push_back((uint8_t)(ev->rec ? 1 : 0));
         w.push_info.push_back(std::array<uint32_t, 4>{ev->pidx, ev->ticket, ev->dep[0], ev->dep[1]});
     } else if (ev->kind == TSR_QEV_DONE) {
@@ -699,7 +742,9 @@ static void sc_sizes(env & e) {
         CHECK(w.n_ops() == 4096 && w.ok(), "%s: 4096 ops", T);
         const std::vector<uint8_t> blob = w.finish();
         CHECK(blob.size() == 64u * 4097u, "%s: 4096 one-slot records = 4097 lines (%zu bytes)", T, blob.size());
+        pin_begin(e);
         expect_ok(e, run_list(e, blob), "n_ops 4096");
+        pin_end(e, "n_ops 4096", PIN_SIZES_4096);
         bool all = true;
         for (uint32_t c = 0; c < copies; ++c) {
             std::vector<uint8_t> x(a.begin() + 64 * (c % 64), a.begin() + 64 * (c % 64) + 64);
@@ -754,12 +799,42 @@ static void sc_stream(env & e, bool with_crc_variants) {
         CHECK(all, "%s: %s: %u copies", T, what, upto);
     };
     fill(e, 0, OUT_BEAT, (size_t)64 * 3000, 0xEE);
+    pin_begin(e);
+    g_watch.reset();
     expect_ok(e, run_list(e, blob), "stream");
+    g_watch.on = false;
+    pin_end(e, "stream", PIN_STREAM);
     check_out(copies, "stream");
     opl::exec_state st{};
     if (e.exec_state(&st))
         CHECK(st.chunks == (lines + 2047) / 2048 && st.n_done == 3000 && st.late_chunks == 0,
               "%s: stream: chunks %u n_done %u late %u", T, st.chunks, st.n_done, st.late_chunks);
+    // pidx[i] is the push index of op i's first push (SW §7.3 2.3), also for the op before which a
+    // chunk LD is pushed: here every op's first push is its COPY's LD into the ring, never a chunk
+    // LD into the OPL area.
+    {
+        const uint32_t opl_line = tsr_sim_config(e.sim)->spm_bytes / 64u - plan::ARG_LINES - plan::OPL_AREA_LINES;
+        std::vector<uint32_t> tk(3000), px(3000);
+        if (e.exec_tables(tk.data(), px.data(), 3000)) {
+            uint32_t bad = 0, chunk_lds = 0, first_bad = ~0u;
+            for (size_t k = 0; k < g_watch.push_info.size(); ++k) {
+                const bool ld = (g_watch.push_w0[k] & 0xFFu) == TSR_OP_LD;
+                if (ld && g_watch.push_w1[k] >= opl_line) ++chunk_lds;
+            }
+            size_t k = 0;                               // pushes come in pidx order, px is non-decreasing
+            for (uint32_t i = 0; i < 3000; ++i) {
+                while (k < g_watch.push_info.size() && g_watch.push_info[k][0] - px[i] >= 0x80000000u) ++k;
+                const bool ok = k < g_watch.push_info.size() && g_watch.push_info[k][0] == px[i] &&
+                                (g_watch.push_w0[k] & 0xFFu) == TSR_OP_LD && g_watch.push_w1[k] < opl_line;
+                if (!ok && bad++ == 0) first_bad = i;
+            }
+            CHECK(bad == 0 && chunk_lds == st.chunks,
+                  "%s: stream: %u ops whose pidx is not their first push (first: op %u); %u LDs into the OPL area "
+                  "(expected one per chunk, %u)", T, bad, first_bad, chunk_lds, st.chunks);
+        } else {
+            CHECK(0, "%s: stream: executor tables not readable", T);
+        }
+    }
     // NOP records of 16 slots (4 MiB-class list, no pushes and no joins in the op stream): every
     // chunk is read only after the executor's own join of its load (the race detector sees a
     // missing one: nothing else orders the RISC-V's reads after the DMA's writes; STOP_ON_ERROR
@@ -770,7 +845,9 @@ static void sc_stream(env & e, bool with_crc_variants) {
         add_copy(w, h1(SRC_BEAT), h0(OUT_BEAT + 3000), 1, {699});
         const std::vector<uint8_t> nb = w.finish();
         fill(e, 0, OUT_BEAT + 3000, 64, 0xEE);
+        pin_begin(e);
         expect_ok(e, run_list(e, nb), "stream of NOP records");
+        pin_end(e, "stream of NOP records", PIN_STREAM_NOP);
         std::vector<uint8_t> x(a.begin(), a.begin() + 64);
         CHECK(dram_get(e, 0, OUT_BEAT + 3000, 64) == x, "%s: stream of NOP records: the last op", T);
         if (e.exec_state(&st))
@@ -779,7 +856,9 @@ static void sc_stream(env & e, bool with_crc_variants) {
     }
     if (with_crc_variants) {
         fill(e, 0, OUT_BEAT, (size_t)64 * 3000, 0xEE);
+        pin_begin(e);
         expect_ok(e, run_list(e, blob, opl::LF_VERIFY_CRC), "stream, VERIFY_CRC");
+        pin_end(e, "stream, VERIFY_CRC", PIN_STREAM_CRC);
         check_out(copies, "stream, VERIFY_CRC");
         std::vector<uint8_t> b = blob;
         b[64u * 5000u + 60u] ^= 0x01;                          // a padding word in chunk 2
@@ -789,18 +868,43 @@ static void sc_stream(env & e, bool with_crc_variants) {
     {
         uint32_t c2 = 0;
         const std::vector<uint8_t> bf = stream_list(3000, 2400, 0, &c2);
+        pin_begin(e);
         expect_fail(e, run_list(e, bf), 2401, "stream, FAIL at op 2400");
+        pin_end(e, "stream, FAIL at op 2400", PIN_STREAM_FAIL);
     }
     // A chunk load that fails: the list placed so that chunk 2 lies beyond the channel.
     {
         const uint32_t beat = (uint32_t)(CH_BYTES / 64u) - 4096u - 8u;
         const std::vector<uint8_t> head(blob.begin(), blob.begin() + (long)(4096u + 8u) * 64);
         dram_put(e, 0, beat, head.data(), head.size());
+        pin_begin(e);
         const done_t d = e.run(h0(beat), (uint32_t)blob.size(), 0, false);
+        pin_end(e, "chunk 2 beyond the channel", PIN_STREAM_CHUNK_FAIL);
         CHECK(d.status() == TSR_LCQ_R0_STATUS_TILE_ERR && d.err() == TSR_ERR_DRAM_RANGE && d.ret() == 0u &&
                   d.r[5] == tsr_w0(TSR_OP_LD, 0, 0, 0) && d.r[4] == beat + 2u * 2048u,
               "%s: chunk 2 beyond the channel: TILE_ERR, RET 0 (status %u ret 0x%08x err %u info 0x%08x)", T, d.status(),
               d.ret(), d.err(), d.r[4]);
+    }
+    // A record whose words end before a failing chunk but whose padding slot lies in it still runs:
+    // only the lines that hold a record's words are waited for (W2a); the next record, which starts
+    // in that chunk, stops the launch. NOP records (no pushes): exec_state's n_done shows it.
+    {
+        writer w(0, 0x57AEA6u);
+        for (uint32_t i = 0; i < 4096; ++i) w.add(opl::K_NOP, nullptr, 0, nullptr, 0, 0, i == 4094u ? 2u : 1u);
+        const std::vector<uint8_t> nb = w.finish();
+        CHECK(rd32le(nb, 16) == 64u && nb.size() == 64u * 4098u, "%s: padding stream: ops at line 1, 4098 lines (%zu B)", T,
+              nb.size());
+        const uint32_t beat = (uint32_t)(CH_BYTES / 64u) - 4096u;        // line 4096 (chunk 2) beyond the channel
+        dram_put(e, 0, beat, nb.data(), (size_t)4096u * 64u);
+        const done_t d = e.run(h0(beat), (uint32_t)nb.size(), 0, false);
+        CHECK(d.status() == TSR_LCQ_R0_STATUS_TILE_ERR && d.err() == TSR_ERR_DRAM_RANGE && d.ret() == 0u &&
+                  d.r[4] == beat + 2u * 2048u,
+              "%s: padding slot in a failing chunk: TILE_ERR, RET 0 (status %u ret 0x%08x err %u info 0x%08x)", T,
+              d.status(), d.ret(), d.err(), d.r[4]);
+        if (e.exec_state(&st))
+            CHECK(st.n_done == 4095u && st.stopped == 1u,
+                  "%s: padding slot in a failing chunk: n_done %u (expected 4095: op 4094, whose padding slot is in "
+                  "chunk 2, runs), stopped %u", T, st.n_done, st.stopped);
     }
 }
 
@@ -1162,6 +1266,40 @@ static void sc_mulmat(env & e) {
     expect_ok(e, run_list(e, w.finish()), "MUL_MAT layers (kind_mulmat)");
 }
 
+// A long decode list (T = 1: every MUL_MAT record takes the executor's fast path, k_mulmat.hpp):
+// `layers` layers of 7 MUL_MATs (~1.6 K scratch lines each) wrap the ~61 K-line ring and fill its
+// 128-record table, so spm_ring::alloc_dma_first's table-full drop and the wrap fallback to
+// kind_mulmat / alloc run on the device; the race detector (fatal) checks every reuse is ordered.
+static void sc_mulmat_long(env & e, uint32_t layers) {
+    const mm_layer L = setup_layer(e, TSR_FMT_Q8_0);
+    std::vector<uint8_t> x = rand_bytes(6, 896 * 4);
+    for (size_t i = 0; i + 3 < x.size(); i += 4) x[i + 3] = (uint8_t)((x[i + 3] & 0x83u) | 0x3C);   // finite values
+    dram_put(e, 0, OUT_BEAT + 0x80000u, x.data(), x.size());
+    writer w;
+    uint32_t prev = opl::DEP_NONE;
+    for (uint32_t l = 0; l < layers; ++l) add_layer(w, L, TSR_FMT_Q8_0, 1, l, &prev, false);
+    expect_ok(e, run_list(e, w.finish()), "MUL_MAT decode list, T = 1 (ring wraps, table full)");
+    opl::exec_state st{};
+    if (e.exec_state(&st))
+        CHECK(st.n_done == w.n_ops() && st.ring_joins > 0u && st.ring_slow > 0u && st.mm_fallback > 0u &&
+                  st.mm_fallback < layers,
+              "%s: decode list: %u ops done; ring: %u software joins (table full), %u full-algorithm allocations "
+              "(wraps); %u of %u MUL_MAT records fell back to kind_mulmat",
+              e.tag.c_str(), st.n_done, st.ring_joins, st.ring_slow, st.mm_fallback, layers * 7u);
+    // The next launch, rejected before its ring exists (BAD_MAGIC), reports its own counters (0), not
+    // this launch's (fix W2a-opt review: exec_state carries nothing from launch to launch).
+    writer wb;
+    wb.add(opl::K_NOP, {});
+    std::vector<uint8_t> bad = wb.finish();
+    bad[0] ^= 0x01u;
+    expect_kerr(e, run_list(e, bad), opl::RET_BAD_MAGIC, "BAD_MAGIC after the decode list");
+    if (e.exec_state(&st))
+        CHECK(st.ring_joins == 0u && st.ring_slow == 0u && st.mm_fallback == 0u && st.n_done == 0u,
+              "%s: a list rejected before step 2 reports ring joins %u, full-algorithm allocations %u, fallbacks %u, "
+              "n_done %u (expected 0: nothing from the previous launch)", e.tag.c_str(), st.ring_joins, st.ring_slow,
+              st.mm_fallback, st.n_done);
+}
+
 // =============================================================================================
 // Runs
 // =============================================================================================
@@ -1222,12 +1360,18 @@ static void one_run(const char * image, const char * sched, uint32_t race, uint3
         sc_flags(*e);
         sc_plan(*e);
         sc_mulmat(*e);
+        sc_mulmat_long(*e, 48);
         sc_stream(*e, (suites & SUITE_BIG) != 0);
         if (suites & SUITE_BIG) sc_sizes(*e);
     }
     if (suites & SUITE_STOP) sc_stop(*e, strcmp(tsr_sim_opt_sched(sim), "fixed") == 0);
     obs_finish(&out->o, sim);
     out->dones = e->dones;
+    {   // CC §7.3: the firmware reads the credit before it pushes; no push ever waited in hardware
+        const uint64_t stall = tsr_sim_perf(sim, TSR_PERF_PUSH_STALL(cfg.num_ch));
+        CHECK(stall == 0u, "%s: PERF PUSH_STALL %llu RV cycles: a push waited for a credit in hardware", tag.c_str(),
+              (unsigned long long)stall);
+    }
     printf("%s: %zu launches, MTIME %llu, %llu RV instructions\n", tag.c_str(), e->dones.size(),
            (unsigned long long)tsr_sim_now(sim), (unsigned long long)tsr_sim_rv_instret(sim));
     delete e;
@@ -1304,49 +1448,84 @@ static void compare_runs(const run_result & a, const run_result & b, bool all_ob
 struct busy_ctx {
     tsr_rv * rv;
     uint64_t last, busy, insns;
+    uint64_t work, work_insns;                 // busy minus spin-wait iterations (fw_prof.h)
+    fwprof::spin_filter spin;
+    fwprof::prof * prof;                       // per-PC / per-class profile (nullptr: off)
 };
 static int busy_hook(void * ctx, const tsr_rv_retire * r) {
-    (void)r;
     busy_ctx * b = (busy_ctx *)ctx;
     const uint64_t now = tsr_rv_cycles(b->rv);
     const uint64_t d = now - b->last;
     b->last = now;
-    if (d <= 256u) b->busy += d;               // larger steps are sleeps / fast-forwarded waits
+    const bool spin = b->spin.step(r);
+    if (d <= 256u) {                           // larger steps are sleeps / fast-forwarded waits
+        b->busy += d;
+        if (!spin) {
+            b->work += d;
+            b->work_insns++;
+        }
+        if (b->prof) b->prof->add(r, d, spin);
+    }
     b->insns++;
     return 0;
 }
+static const char * g_perf_image = nullptr;    // for the profile's symbols
 // One measurement: busy RV cycles and instructions of a list built by `build(w, scale)` at scale 1
 // and `big`, the difference divided by the difference in ops (the launch's fixed cost cancels).
+// Also the executor's work (spin-wait iterations excluded) and, with TSR_FW_PROF set, its profile
+// per op (fw_prof.h; TSR_FW_PROF_DUMP adds the per-PC histogram).
 template <class F>
-static double perf_case(rv_env & e, busy_ctx & b, const char * what, uint32_t big, F build, double * ins_per_op) {
-    double cyc[2] = {0, 0}, ins[2] = {0, 0};
+static double perf_case(rv_env & e, busy_ctx & b, const char * what, uint32_t big, F build, double * ins_per_op,
+                        double * work_per_op = nullptr) {
+    double cyc[2] = {0, 0}, ins[2] = {0, 0}, wk[2] = {0, 0}, wki[2] = {0, 0};
     uint32_t nops[2] = {0, 0};
+    fwprof::prof prof[2];
+    const bool profile = getenv("TSR_FW_PROF") != nullptr;
     for (int k = 0; k < 2; ++k) {
         writer w;
         build(w, k ? big : 1u);
-        const uint64_t b0 = b.busy, i0 = b.insns;
+        const uint64_t b0 = b.busy, i0 = b.insns, x0 = b.work, xi0 = b.work_insns;
+        if (profile) {
+            prof[k].load_symbols(g_perf_image);
+            b.prof = &prof[k];
+        }
         expect_ok(e, run_list(e, w.finish()), what);
+        b.prof = nullptr;
         nops[k] = w.n_ops();
         cyc[k] = (double)(b.busy - b0);
         ins[k] = (double)(b.insns - i0);
+        wk[k] = (double)(b.work - x0);
+        wki[k] = (double)(b.work_insns - xi0);
     }
     const double dn = (double)(nops[1] - nops[0]);
     const double c = (cyc[1] - cyc[0]) / dn, i = (ins[1] - ins[0]) / dn;
-    printf("%s: %-34s %4u vs %3u ops: %7.1f RV busy cycles / op, %7.1f instructions / op (launch fixed cost %.0f cycles)\n",
-           e.tag.c_str(), what, nops[1], nops[0], c, i, cyc[0] - c * nops[0]);
+    const double wc = (wk[1] - wk[0]) / dn, wi = (wki[1] - wki[0]) / dn;
+    printf("%s: %-34s %4u vs %3u ops: %7.1f RV busy cycles / op, %7.1f instructions / op (launch fixed cost %.0f cycles); "
+           "work (spin waits excluded) %.1f cycles, %.1f instructions / op\n",
+           e.tag.c_str(), what, nops[1], nops[0], c, i, cyc[0] - c * nops[0], wc, wi);
+    if (profile) {
+        char title[200];
+        snprintf(title, sizeof(title), "%s: profile per op, %s", e.tag.c_str(), what);
+        static int n_case = 0;
+        char tag[16];
+        snprintf(tag, sizeof(tag), ".case%d", n_case++);
+        fwprof::prof::diff(prof[1], prof[0]).report(stdout, title, dn, 12, tag);
+    }
     if (ins_per_op) *ins_per_op = i;
+    if (work_per_op) *work_per_op = wc;
     return c;
 }
-// SW §7.8's target (an *estimate*, checked in P3 / P6) is printed, not asserted: the per-op cost is
-// mostly the header library's issue path (~250 cycles per push at P2.4) and spm_ring and the kind
-// handler, not graph.cpp (the NOP-record line). Asserted: only a regression ceiling (6000 cycles,
-// ~1.3x the MUL_MAT list at P2.4).
+// SW §7.8's target (an *estimate*, checked in P3 / P6) is printed, not asserted (fw_m6_perf prints
+// the executor's work on the 0.5B decode lists). Asserted: a regression ceiling (6000 busy cycles,
+// ~1.3x the MUL_MAT list at P2.4), and, in perf(), the executor optimisation's ceilings on the
+// spin-free work.
 static void report_target(const env & e, const char * what, double c) {
     printf("%s: %s: %.1f RV cycles per graph op; SW §7.8 target <= 400: %s\n", e.tag.c_str(), what, c,
            c <= 400.0 ? "met" : "NOT met");
     CHECK(c <= 6000.0, "%s: %s: regression ceiling 6000 RV cycles per op (%.1f)", e.tag.c_str(), what, c);
 }
 static void perf(const char * image) {
+    g_perf_image = image;
     const tsr_config cfg = test_cfg();
     for (int real = 0; real < 2; ++real) {
         tsr_sim_opts o;
@@ -1367,15 +1546,18 @@ static void perf(const char * image) {
         b.last = tsr_rv_cycles(b.rv);
         tsr_rv_agent_set_retire_hook(tsr_sim_rv_agent(sim), busy_hook, &b);
         if (!real) {
-            const double c0 = perf_case(e, b, "NOP records (no pushes)", 192, [](writer & w, uint32_t n) {
+            double w0 = 0, w1 = 0;
+            perf_case(e, b, "NOP records (no pushes)", 192, [](writer & w, uint32_t n) {
                 for (uint32_t i = 0; i < 8 * n; ++i) w.add(opl::K_NOP, {}, {i ? i - 1 : opl::DEP_NONE});
-            }, nullptr);
+            }, nullptr, &w0);
             // The executor's own work per record (read, check, deps, tables, RT_INFO, ISSUE_PIDX):
-            // the part of SW §7.8's 400 cycles that is graph.cpp's; a regression guard.
-            CHECK(c0 <= 200.0, "%s: executor overhead per record <= 200 RV cycles (%.1f)", e.tag.c_str(), c0);
+            // the part of SW §7.8's 400 cycles that is graph.cpp's; a regression guard (executor
+            // optimisation: 90 / 106 cycles on Ibex maxperf / small; W2a: 156 / 191).
+            CHECK(w0 <= 130.0, "%s: executor overhead per record <= 130 RV cycles (%.1f)", e.tag.c_str(), w0);
             perf_case(e, b, "JOIN records (1 push)", 192, [](writer & w, uint32_t n) {
                 for (uint32_t i = 0; i < 8 * n; ++i) w.add(opl::K_JOIN, {}, {i ? i - 1 : opl::DEP_NONE, i > 1 ? i - 2 : opl::DEP_NONE});
-            }, nullptr);
+            }, nullptr, &w1);
+            CHECK(w1 <= 200.0, "%s: JOIN record (one push) <= 200 RV cycles (%.1f)", e.tag.c_str(), w1);
             const double c = perf_case(e, b, "STUB5 0.5B-like layers (5 pushes)", 24, [](writer & w, uint32_t n) {
                 uint32_t prev = opl::DEP_NONE;
                 for (uint32_t l = 0; l < n; ++l) add_layer(w, mm_layer{}, TSR_FMT_Q8_0, 1, l, &prev, true);
@@ -1383,13 +1565,18 @@ static void perf(const char * image) {
             report_target(e, "STUB5 list", c);
         } else {
             const mm_layer L = setup_layer(e, TSR_FMT_Q8_0);
+            double wm = 0;
             const double c = perf_case(e, b, "MUL_MAT 0.5B layers (kind_mulmat)", 4, [&](writer & w, uint32_t n) {
                 uint32_t prev = opl::DEP_NONE;
                 for (uint32_t l = 0; l < n; ++l) add_layer(w, L, TSR_FMT_Q8_0, 1, l, &prev, false);
-            }, nullptr);
+            }, nullptr, &wm);
             report_target(e, "MUL_MAT list", c);
+            CHECK(wm <= 700.0, "%s: MUL_MAT list: regression ceiling 700 RV cycles of work per op (%.1f)", e.tag.c_str(), wm);
         }
         tsr_rv_agent_set_retire_hook(tsr_sim_rv_agent(sim), NULL, NULL);
+        const uint64_t stall = tsr_sim_perf(sim, TSR_PERF_PUSH_STALL(cfg.num_ch));
+        CHECK(stall == 0u, "%s: PERF PUSH_STALL %llu RV cycles: a push waited for a credit in hardware (CC §7.3)",
+              e.tag.c_str(), (unsigned long long)stall);
         tsr_sim_destroy(sim);
     }
 }

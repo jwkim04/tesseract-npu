@@ -200,3 +200,14 @@ foreach(_t sim_csr sim_queue sim_queue_race sim_queue_ubsan)
         set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT "TSR_SIM_SCHED=")
     endif()
 endforeach()
+
+# ---------------------------------------------------------------------------
+# RISC-V cycle model (docs/v2/06-software-verification.md §4.2; docs/v2/04-control-core.md §3.2,
+# V2-CC-34): rv_timing runs test_rv_isa's cycle-table checks alone, for both Ibex configurations
+# ("maxperf", the default, and "small"): per-class costs, the load-use and 32-bit-target penalties,
+# the CSR pipeline flush, the class statistics, the crossing latencies at three clock ratios.
+# (rv_unit runs the same checks among all the others; test_rv_isa is defined by sw/sim/rv.cmake.)
+# ---------------------------------------------------------------------------
+if (TARGET test_rv_isa)
+    add_test(NAME rv_timing COMMAND test_rv_isa --timing)
+endif()

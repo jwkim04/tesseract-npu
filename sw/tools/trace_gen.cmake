@@ -3,7 +3,11 @@
 #   tsr-trace-gen             random tile programs as trace v2 `ops` traces (--ops gen|m2|m3|vu|at|ctrl)
 #   tools_trace_gen_replay    a small set per --ops mode with a fixed seed, generated twice (byte-identical),
 #                             each trace replayed under the fixed and two random schedules (the
-#                             generator's --check-sched, and tsr-trace-replay when it is built)
+#                             generator's --check-sched, and tsr-trace-replay when it is built), with
+#                             the race detector fatal; when the build has the race detector and the
+#                             firmware (tsr_fw), also through the `replay` kernel of the production image,
+#                             where a read of SPM nothing wrote in the trace is an SPM_STALE abort (SW §4.6,
+#                             V2-SW-4), and the generator's --mutant-stale trace must be refused by both
 # The trace sets themselves come from traces/{m2,gen,m3,vu,at,ctrl}/regen.sh.
 
 add_executable(tsr-trace-gen ${CMAKE_CURRENT_SOURCE_DIR}/tsr_trace_gen.c)
@@ -24,13 +28,19 @@ if (TSR_BASH_TRACE_GEN)
     else()
         set(_tsr_replay "")
     endif()
-    add_test(NAME tools_trace_gen_replay
-             COMMAND ${TSR_BASH_TRACE_GEN} ${CMAKE_CURRENT_SOURCE_DIR}/test_trace_gen.sh
-                     $<TARGET_FILE:tsr-trace-gen> ${CMAKE_CURRENT_BINARY_DIR}/trace_gen_test "${_tsr_replay}")
     # The race detector checks every run (fatal: a race aborts), when the library has it (P1.9).
     set(_tsr_gen_env "TSR_SIM_THREADS=1")
+    set(_tsr_gen_image "")
     if (EXISTS ${TESSERACT_ROOT}/sw/sim/race.cmake AND NOT "race" IN_LIST TSR_SIM_SKIP_SNIPPETS)
         list(APPEND _tsr_gen_env "TSR_SIM_RACE=fatal")
+        # The kernel route (SPM_STALE, 2026-10-30) needs the replay kernel of the production image.
+        if (TARGET tsr_fw AND DEFINED TSR_FW_ELF AND NOT "${_tsr_replay}" STREQUAL "")
+            set(_tsr_gen_image ${TSR_FW_ELF})
+        endif()
     endif()
+    add_test(NAME tools_trace_gen_replay
+             COMMAND ${TSR_BASH_TRACE_GEN} ${CMAKE_CURRENT_SOURCE_DIR}/test_trace_gen.sh
+                     $<TARGET_FILE:tsr-trace-gen> ${CMAKE_CURRENT_BINARY_DIR}/trace_gen_test "${_tsr_replay}"
+                     "${_tsr_gen_image}")
     set_tests_properties(tools_trace_gen_replay PROPERTIES TIMEOUT 120 ENVIRONMENT "${_tsr_gen_env}")
 endif()

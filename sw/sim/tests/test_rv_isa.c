@@ -405,6 +405,9 @@ static void fresh(void) {
     env.spm_access = st_spm; env.irq = st_irq; env.yield = st_yield;
     B = tsr_bus_create_fw(NULL, &env);
     RV = tsr_rv_create(tsr_bus_iface(B));
+    // The cycle expectations of this file are the Ibex "small" table's (tsr_rv.h); test_timing
+    // covers both configurations and the default.
+    tsr_rv_set_core(RV, TSR_RV_CORE_SMALL);
     tsr_bus_attach(B, RV);
     tsr_rv_set_retire_hook(RV, retire_cb, NULL);
     tsr_rv_set_debug_hook(RV, debug_cb, NULL);
@@ -581,7 +584,205 @@ static void test_m(void) {
     CHECK(tsr_rv_cycles(RV) - c0 == 3u, "mul cycles");
     c0 = tsr_rv_cycles(RV);
     one32(MOP(5, 10, 11, 12));
-    CHECK(tsr_rv_cycles(RV) - c0 == 37u, "divu cycles");
+    CHECK(tsr_rv_cycles(RV) - c0 == 38u, "divu cycles");   // Ibex: 37 stall cycles (tsr_rv.h)
+}
+
+// ---------------------------------------------------------------------------
+// Cycle model of both Ibex configurations (tsr_rv.h table; SW §4.2): per-class costs, the
+// load-use and 32-bit-target penalties, the CSR pipeline flush, and the class statistics.
+// ---------------------------------------------------------------------------
+// Cycles of n instructions run from `at`.
+static uint64_t cyc_at(uint32_t at, uint64_t n) {
+    const uint64_t c0 = tsr_rv_cycles(RV);
+    run_at(at, n);
+    return tsr_rv_cycles(RV) - c0;
+}
+#define TCYC(core, n, want, what) do { \
+        const uint64_t got_ = cyc_at(0x400, n); \
+        CHECK(got_ == (uint64_t)(want), "%s %s: %llu cycles, want %llu", tsr_rv_core_name(core), what, \
+              (unsigned long long)got_, (unsigned long long)(want)); \
+    } while (0)
+
+static void test_timing(void) {
+    uint32_t k = 99;
+    CHECK(tsr_rv_core_parse("small", &k) == 0 && k == TSR_RV_CORE_SMALL, "parse small");
+    CHECK(tsr_rv_core_parse("maxperf", &k) == 0 && k == TSR_RV_CORE_MAXPERF, "parse maxperf");
+    CHECK(tsr_rv_core_parse("big", &k) == -1 && tsr_rv_core_parse(NULL, &k) == -1, "parse rejects others");
+    CHECK(tsr_rv_core_name(7) == NULL, "unknown core has no name");
+    tsr_rv_cpi d, s;
+    tsr_rv_core_cpi(TSR_RV_CORE_DEFAULT, &d);
+    tsr_rv_core_cpi(99, &s);
+    CHECK(memcmp(&d, &s, sizeof(d)) == 0, "an unknown core gives the default table");
+
+    for (uint32_t core = 0; core < 2; ++core) {
+        const int mp = core == TSR_RV_CORE_MAXPERF;
+        fresh();
+        tsr_rv_set_core(RV, core);
+        tsr_rv_stats st0, st1;
+        tsr_rv_get_stats(RV, &st0);
+        // ALU, LUI, AUIPC, fence: 1 each.
+        org(0x400); i32(ADDI(5, 0, 1)); i32(LUI(6, 0x1000)); i32(AUIPC(7, 0)); i32(FENCE); i16(C_ADDI(5, 1)); i16(C_NOP);
+        TCYC(core, 6, 6, "ALU / LUI / AUIPC / fence / compressed");
+        // Branches (target aligned): not taken 1; taken small 3, maxperf 2 (BranchTargetALU).
+        setx(5, 1); setx(6, 1);
+        org(0x400); i32(BNE(5, 6, 16));
+        TCYC(core, 1, 1, "not-taken branch");
+        org(0x400); i32(BEQ(5, 6, 16));
+        TCYC(core, 1, mp ? 2 : 3, "taken branch");
+        org(0x400); i16(C_BNEZ(8, 8)); setx(8, 0);
+        TCYC(core, 1, 1, "not-taken c.bnez");
+        setx(8, 3);
+        TCYC(core, 1, mp ? 2 : 3, "taken c.bnez");
+        // Jumps: 2 in both (Ibex "Jump 1 - N").
+        org(0x400); i32(JAL(1, 16));
+        TCYC(core, 1, 2, "jal");
+        setx(6, 0x500);
+        org(0x400); i32(JALR(1, 6, 0));
+        TCYC(core, 1, 2, "jalr");
+        org(0x400); i16(C_J(16));
+        TCYC(core, 1, 2, "c.j");
+        // 32-bit target at pc[1] = 1: + 1 (second word fetch); a 16-bit one there costs nothing.
+        org(0x412); i32(NOP);
+        org(0x400); i32(JAL(0, 0x12));
+        TCYC(core, 1, 3, "jal to an unaligned 32-bit instruction");
+        org(0x400); i32(BEQ(5, 5, 0x12));
+        TCYC(core, 1, mp ? 3 : 4, "taken branch to an unaligned 32-bit instruction");
+        org(0x412); i16(C_NOP);
+        org(0x400); i32(JAL(0, 0x12));
+        TCYC(core, 1, 2, "jal to an unaligned 16-bit instruction");
+        // fence.i is a jump to the next instruction (here 0x404, aligned).
+        org(0x400); i32(FENCE_I); i32(NOP);
+        TCYC(core, 1, 2, "fence.i");
+        // Loads / stores to the TCM: small 2, maxperf 1 (+ 1 when the next instruction reads rd).
+        setx(10, DTCM); setx(11, DTCM + 64);
+        org(0x400); i32(LW(5, 10, 0)); i32(ADDI(6, 0, 1));
+        TCYC(core, 2, mp ? 2 : 3, "lw + independent addi");
+        org(0x400); i32(LW(5, 10, 0)); i32(ADDI(6, 5, 1));
+        TCYC(core, 2, mp ? 3 : 3, "lw + addi reading rd (load-use)");
+        org(0x400); i32(LW(5, 10, 0)); i32(SW(5, 11, 0));
+        TCYC(core, 2, mp ? 3 : 4, "lw + sw of rd (rs2 load-use)");
+        org(0x400); i32(LW(5, 10, 0)); i32(SW(0, 5, 0));
+        w32(DTCM, DTCM + 128u);
+        TCYC(core, 2, mp ? 3 : 4, "lw + sw based on rd (rs1 load-use)");
+        org(0x400); i32(LW(5, 10, 0)); i32(BEQ(5, 0, 8));
+        w32(DTCM, 7);
+        TCYC(core, 2, 3, "lw + not-taken branch on rd");
+        org(0x400); i32(LW(5, 10, 0)); i32(LUI(5, 0x1000));
+        TCYC(core, 2, mp ? 2 : 3, "lw + lui writing rd (no read)");
+        org(0x400); i32(LW(5, 10, 0)); i32(NOP); i32(ADDI(6, 5, 1));
+        TCYC(core, 3, mp ? 3 : 4, "lw, nop, then a reader (no hazard)");
+        org(0x400); i32(LW(0, 10, 0)); i32(ADD(6, 0, 0));
+        TCYC(core, 2, mp ? 2 : 3, "lw x0 + reader of x0 (no hazard)");
+        org(0x400); i16(C_LW(9, 10, 0)); i16(C_MV(6, 9));
+        TCYC(core, 2, mp ? 3 : 3, "c.lw + c.mv of rd (load-use)");
+        org(0x400); i32(SW(5, 10, 0)); i32(LW(6, 10, 0)); i32(SW(6, 10, 4));
+        TCYC(core, 3, mp ? 4 : 6, "sw, lw, sw of the loaded value");
+        // MMIO: the bus latencies (tsr_bus.h) on top of lsu (small 1, maxperf 0).
+        setx(12, CW); setx(13, CORE); setx(14, SPM); setx(15, SPMLB);
+        org(0x400); i32(LW(5, 12, TSR_CW_QSTATUS)); i32(NOP);
+        TCYC(core, 1, (mp ? 0 : 1) + TSR_BUS_LAT_CW, "control-window load");
+        org(0x400); i32(SW(0, 12, TSR_CW_RT_INFO));
+        TCYC(core, 1, (mp ? 0 : 1) + TSR_BUS_LAT_CW, "control-window store");
+        org(0x400); i32(LW(5, 13, 0x24)); i32(NOP);
+        TCYC(core, 1, (mp ? 0 : 1) + TSR_BUS_LAT_CORE, "core-window load");
+        org(0x400); i32(LW(5, 14, 0)); i32(ADDI(6, 5, 1));
+        TCYC(core, 2, (mp ? 0 : 1) + TSR_BUS_LAT_SPM + 1 + (mp ? 1 : 0), "SPM load + reader");
+        org(0x400); i32(SW(5, 14, 0));
+        TCYC(core, 1, (mp ? 0 : 1) + TSR_BUS_LAT_SPM, "SPM store");
+        org(0x400); i32(LW(5, 15, 0)); i32(LW(6, 15, 4)); i32(NOP);
+        TCYC(core, 2, 2 * (mp ? 0 : 1) + TSR_BUS_LAT_SPM + TSR_BUS_LAT_LBHIT, "line-buffer fill + hit");
+        // M: MUL small 3 / maxperf 1; MULH* 4 / 2; DIV / REM 38, by zero 2 (both).
+        setx(11, 12345); setx(12, 7); setx(13, 0);
+        org(0x400); i32(MOP(0, 10, 11, 12));
+        TCYC(core, 1, mp ? 1 : 3, "mul");
+        for (uint32_t f3 = 1; f3 < 4; ++f3) {
+            org(0x400); i32(MOP(f3, 10, 11, 12));
+            TCYC(core, 1, mp ? 2 : 4, "mulh*");
+        }
+        for (uint32_t f3 = 4; f3 < 8; ++f3) {
+            org(0x400); i32(MOP(f3, 10, 11, 12));
+            TCYC(core, 1, 38, "div / rem");
+            org(0x400); i32(MOP(f3, 10, 11, 13));
+            TCYC(core, 1, 2, "div / rem by zero");
+        }
+        // CSRs: reads 1; writes 1 + 1 (pipeline flush) except mscratch / mepc.
+        setx(5, 0);
+        org(0x400); i32(CSRRS(6, 0x340, 0)); i32(CSRRS(6, 0x300, 0)); i32(CSRRSI(6, 0x300, 0)); i32(CSRRC(6, 0xB00, 0));
+        TCYC(core, 4, 4, "CSR reads");
+        setx(5, 0x10);
+        org(0x400); i32(CSRRW(0, 0x340, 5)); i32(CSRRW(6, 0x341, 5));
+        TCYC(core, 2, 2, "mscratch / mepc writes (no flush)");
+        org(0x400); i32(CSRRW(0, 0x304, 0));
+        TCYC(core, 1, 2, "mie write (flush)");
+        org(0x400); i32(CSRRCI(0, 0x300, 8));
+        TCYC(core, 1, 2, "mstatus clear (flush)");
+        org(0x400); i32(CSRRS(6, 0x304, 5));
+        TCYC(core, 1, 2, "mie set (flush)");
+        // Traps: ecall 1 + trap 3; mret 3.
+        org(0x400); i32(ECALL);
+        TCYC(core, 1, 4, "ecall (+ trap entry)");
+        setcsr(TSR_RV_CSR_MEPC, 0x500);
+        setcsr(TSR_RV_CSR_MSTATUS, TSR_RV_MSTATUS_MPP);
+        org(0x400); i32(MRET);
+        TCYC(core, 1, 3, "mret");
+        // Statistics: class counts and the penalty events of one sequence.
+        tsr_rv_get_stats(RV, &st0);
+        setx(10, DTCM); setx(12, CW); setx(5, 1); setx(6, 2);
+        org(0x400);
+        i32(LW(7, 10, 0)); i32(ADDI(8, 7, 1));          // load (+ load-use on maxperf), ALU
+        i32(SW(8, 12, TSR_CW_RT_INFO));                 // store to the control window
+        i32(MOP(0, 9, 5, 6)); i32(MOP(5, 9, 5, 6));     // mul, divu
+        i32(CSRRW(0, 0x304, 0));                        // CSR (flush)
+        i32(BEQ(5, 6, 8)); i32(BNE(5, 6, 6));           // not taken, taken to 0x422 (unaligned 32-bit)
+        i16(C_NOP);
+        i32(NOP);                                       // 0x422
+        run_at(0x400, 9);
+        tsr_rv_get_stats(RV, &st1);
+        uint64_t dn[TSR_RV_CLS_COUNT], dc = 0;
+        for (uint32_t i = 0; i < TSR_RV_CLS_COUNT; ++i) { dn[i] = st1.n[i] - st0.n[i]; dc += st1.cyc[i] - st0.cyc[i]; }
+        CHECK(dn[TSR_RV_CLS_LOAD] == 1 && dn[TSR_RV_CLS_ALU] == 2 && dn[TSR_RV_CLS_STORE_IO] == 1 && dn[TSR_RV_CLS_MUL] == 1 &&
+              dn[TSR_RV_CLS_DIV] == 1 && dn[TSR_RV_CLS_CSR] == 1 && dn[TSR_RV_CLS_BRANCH_NT] == 1 && dn[TSR_RV_CLS_BRANCH_T] == 1,
+              "%s stats: class counts", tsr_rv_core_name(core));
+        CHECK(st1.load_use - st0.load_use == (uint64_t)mp && st1.target32 - st0.target32 == 1u && st1.csr_flush - st0.csr_flush == 1u,
+              "%s stats: penalties lu %llu t32 %llu csr %llu", tsr_rv_core_name(core), (unsigned long long)(st1.load_use - st0.load_use),
+              (unsigned long long)(st1.target32 - st0.target32), (unsigned long long)(st1.csr_flush - st0.csr_flush));
+        const uint64_t want = mp ? (1 + 1) + 1 + 3 + 1 + 38 + 2 + 1 + (2 + 1) + 1 : 2 + 1 + 4 + 3 + 38 + 2 + 1 + (3 + 1) + 1;
+        CHECK(dc == want, "%s stats: cycles %llu, want %llu", tsr_rv_core_name(core), (unsigned long long)dc, (unsigned long long)want);
+        CHECK(tsr_rv_pc(RV) == 0x426u, "stats sequence ends after the unaligned target (pc 0x%x)", tsr_rv_pc(RV));
+    }
+    // Crossing latencies follow F_RV / F_CORE (tsr_bus.h): 2 RV cycles + 12 (core window) / 15 (SPM
+    // bridge) core cycles converted at the ratio; <= 0 restores the planning values 9 / 11.
+    static const struct { double r; uint32_t core, spm; } XR[] = {
+        { 166.7 / 276.3, 9, 11 }, { 250.0 / 276.3, 13, 16 }, { 125.0 / 276.3, 7, 9 }, { 0.0, 9, 11 } };
+    for (unsigned i = 0; i < sizeof(XR) / sizeof(XR[0]); ++i) {
+        fresh();
+        CHECK(tsr_bus_set_ratio(B, XR[i].r) == XR[i].spm, "ratio %.4f: SPM latency", XR[i].r);
+        setx(13, CORE); setx(14, SPM);
+        org(0x400); i32(LW(5, 13, 0x24)); i32(NOP);
+        TCYC(TSR_RV_CORE_SMALL, 1, 1u + XR[i].core, "core-window load at the ratio");
+        org(0x400); i32(LW(5, 14, 0)); i32(NOP);
+        TCYC(TSR_RV_CORE_SMALL, 1, 1u + XR[i].spm, "SPM load at the ratio");
+        org(0x400); i32(LW(5, 12, TSR_CW_QSTATUS)); i32(NOP);
+        setx(12, CW);
+        TCYC(TSR_RV_CORE_SMALL, 1, 1u + TSR_BUS_LAT_CW, "control-window load (clk_rv: no ratio)");
+    }
+    CHECK(TSR_BUS_XING_RV + (uint32_t)(TSR_BUS_XING_CORE_CC * (166.7 / 276.3) + 0.5) == TSR_BUS_LAT_CORE &&
+          TSR_BUS_XING_RV + (uint32_t)(TSR_BUS_XING_SPM_CC * (166.7 / 276.3) + 0.5) == TSR_BUS_LAT_SPM,
+          "the planning latencies are the crossing model at 166.7 / 276.3");
+    // A new hart has the default table; tsr_rv_set_cpi(NULL) restores it.
+    const uint32_t dflt_taken = TSR_RV_CORE_DEFAULT == TSR_RV_CORE_MAXPERF ? 2u : 3u;
+    fresh();
+    tsr_rv_destroy(RV);
+    RV = tsr_rv_create(tsr_bus_iface(B));
+    tsr_bus_attach(B, RV);
+    setcsr(TSR_RV_CSR_MTVEC, VEC);
+    setx(5, 1); setx(6, 1);
+    org(0x400); i32(BEQ(5, 6, 16));
+    TCYC(TSR_RV_CORE_DEFAULT, 1, dflt_taken, "new hart: default table");
+    tsr_rv_set_core(RV, TSR_RV_CORE_DEFAULT == TSR_RV_CORE_SMALL ? TSR_RV_CORE_MAXPERF : TSR_RV_CORE_SMALL);
+    TCYC(TSR_RV_CORE_DEFAULT, 1, 5u - dflt_taken, "the other table");
+    tsr_rv_set_cpi(RV, NULL);
+    TCYC(TSR_RV_CORE_DEFAULT, 1, dflt_taken, "set_cpi(NULL): default table");
 }
 
 static void test_compressed(void) {
@@ -1531,12 +1732,19 @@ static void test_elf(const char * dir) {
 int main(int argc, char ** argv) {
     if (argc > 1 && strcmp(argv[1], "--dump-enc") == 0) return dump_enc();
     if (argc > 2 && strcmp(argv[1], "--check-enc") == 0) return check_enc(argv[2]);
+    if (argc > 1 && strcmp(argv[1], "--timing") == 0) {      // ctest rv_timing: the cycle tables only
+        test_timing();
+        if (RV) tsr_rv_destroy(RV);
+        if (B) tsr_bus_destroy(B);
+        return test_finish("rv_timing");
+    }
     const char * dir = argc > 1 ? argv[1] : ".";
     test_alu();
     test_branches();
     test_jumps();
     test_loads_stores();
     test_m();
+    test_timing();
     test_compressed();
     test_illegal();
     test_csr();

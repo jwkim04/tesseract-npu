@@ -43,6 +43,7 @@
 #include "tsr_sim.h"
 #include "tsr_sim_int.h"
 #include "tsr_ref.h"
+#include "tsr_rv.h"       // TSR_RV_CORE_* (header only: the option is parsed with or without tsr_rv.c)
 #if defined(TSR_SIM_HAVE_RV) && TSR_SIM_HAVE_RV
 #include "tsr_bus.h"      // the built-in RISC-V agent (tsr_bus.c, tsr_rv.c; P1.7)
 #endif
@@ -507,6 +508,17 @@ static const char * opts_problem(const tsr_sim_opts * o) {
     return NULL;
 }
 
+// The Ibex configuration names of the RISC-V cycle model (tsr_rv.h; parsed here too, so that a
+// simulator library without tsr_rv.c validates the option the same way). 0, or -1 if unknown.
+static int rv_core_parse(const char * name, uint32_t * core) {
+    uint32_t c;
+    if (strcmp(name, "small") == 0) c = TSR_RV_CORE_SMALL;
+    else if (strcmp(name, "maxperf") == 0) c = TSR_RV_CORE_MAXPERF;
+    else return -1;
+    if (core) *core = c;
+    return 0;
+}
+
 // SW §4.9: the environment fills the options left unset (tsr_sim.h). *log_open receives a FILE
 // the simulator opened itself (TSR_SIM_LOG=<file>, appended to), else NULL. Returns NULL or a
 // problem (written to buf).
@@ -560,6 +572,11 @@ static const char * env_fill(tsr_sim_opts * o, FILE ** log_open, char * buf, siz
         }
     }
     if (o->trace_dir == NULL && (e = getenv("TSR_TRACE")) != NULL && e[0] != '\0') o->trace_dir = e;
+    if (o->rv_core == NULL && (e = getenv("TSR_SIM_RV_CORE")) != NULL && e[0] != '\0') o->rv_core = e;
+    if (o->rv_core != NULL && rv_core_parse(o->rv_core, NULL) != 0) {
+        snprintf(buf, n, "TSR_SIM_RV_CORE / rv_core=\"%s\": expected small or maxperf", o->rv_core);
+        return buf;
+    }
     return NULL;
 }
 
@@ -666,6 +683,8 @@ tsr_sim * tsr_sim_create_opts(const tsr_config * cfg, const tsr_sim_opts * opts)
     sim->itcm = (uint8_t *)xcalloc(sim->itcm_bytes, 1);
     sim->dtcm = (uint8_t *)xcalloc(sim->dtcm_bytes, 1);
     sim->rv_ratio = o.rv_ratio != 0.0 ? o.rv_ratio : RV_RATIO_DEFAULT;
+    sim->rv_core = TSR_RV_CORE_DEFAULT;
+    if (o.rv_core != NULL) (void)rv_core_parse(o.rv_core, &sim->rv_core);
     sim->xbuf = (float *)xcalloc(cfg->k_max, sizeof(float));
     sim->threads = 1;
     sim->log = (FILE *)o.log;
@@ -875,6 +894,7 @@ uint32_t  tsr_sim_rv_run(const tsr_sim * sim) { return (sim->ctrl & TSR_CTRL_RV_
 uint32_t  tsr_sim_rv_boot(const tsr_sim * sim) { return sim->rv_boot; }
 uint64_t  tsr_sim_rv_boot_gen(const tsr_sim * sim) { return sim->rv_boot_gen; }
 double    tsr_sim_rv_ratio(const tsr_sim * sim) { return sim->rv_ratio; }
+uint32_t  tsr_sim_rv_core(const tsr_sim * sim) { return sim->rv_core; }
 void      tsr_sim_rv_set_state(tsr_sim * sim, uint32_t bits) {
     const uint32_t old = sim->rv_state;
     sim->rv_state = bits & (TSR_STATUS_RV_HALTED | TSR_STATUS_RV_SLEEP);

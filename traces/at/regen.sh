@@ -2,7 +2,8 @@
 # traces/at/regen.sh [BUILD_DIR] — AT regression traces (trace v2 `ops`, docs/v2/06-software-
 # verification.md §5.6 "new"): tsr-trace-gen v2 --ops at, the seven AT ops of docs/v2/03-attention-
 # kv.md §5 and the flash-attention chain of §6.6 across the DMA, QACT, MVM and VU queues, then every
-# trace replayed under the fixed and two random schedules (race detector fatal).
+# trace replayed under the fixed and two random schedules (race detector fatal),
+# tile-only and through the replay kernel (one launch per trace: SPM_STALE is fatal, SW §4.6).
 #
 #   tmax8/   64 traces, U200 config (4 ch, 4 MiB SPM) with T_MAX 8, CAPS VU|ATT: KVST into host-filled
 #            or zero planes (partial meta beats read-modify-written), ATTQK (CAUSAL / SLIDE / MAXOUT,
@@ -26,3 +27,4 @@ rm -rf "$HERE"/tmax8 "$HERE"/tmax1 "$HERE"/errors "$HERE"/ch3
 "$GEN" -q --ops at --prefix at -o "$HERE/errors" -n 56 -s 53 --t-max 8 --errors 100 --max-groups 1
 "$GEN" -q --ops at --prefix at -o "$HERE/ch3"    -n 16 -s 54 --t-max 2 --num-ch 3 --spm-kib 512 --errors 25
 v2_replay "$HERE"
+v2_replay_kernel "$HERE"

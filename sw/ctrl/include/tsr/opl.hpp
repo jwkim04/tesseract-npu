@@ -182,6 +182,13 @@ struct exec_state {
     uint32_t late_chunks;    // chunk loads pushed only when their first record was needed (not
                              // prefetched; 0 unless the prefetch rule is broken)
     uint32_t ret;            // the kernel's return value
+    // Executor-optimisation diagnostics (counted off the hot path; SW §7.8): MUL_MAT records the
+    // decode fast path handed to kind_mulmat (T != 1, a wrap, non-DMA ring deps, a refused record),
+    // the scratch ring's software joins (table full, skipped tail, more than two units) and its
+    // allocations by the full algorithm (spm_ring::alloc_slow).
+    uint32_t mm_fallback;
+    uint32_t ring_joins;
+    uint32_t ring_slow;
 };
 
 // ---------------------------------------------------------------------------------------------

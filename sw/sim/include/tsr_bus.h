@@ -22,7 +22,13 @@
 //
 // Latencies (RV cycles a data transaction adds to the instruction's base cost; SW §4.2
 // *estimate*): TCM / DM / test RAM 1, control window 3, core window 9, SPM window 11, line-buffer
-// hit 1 (miss: 11).
+// hit 1 (miss: 11). The core window and the SPM bridge cross into the core clock domain: their
+// latencies are TSR_BUS_XING_RV clk_rv cycles plus a core-domain part of TSR_BUS_XING_*_CC core
+// cycles, i.e. TSR_BUS_XING_RV + round(cc x F_RV / F_CORE) RV cycles (tsr_bus_set_ratio; the
+// agent sets the simulator's ratio). At the planning ratio 166.7 / 276.3 that is 9 and 11; at
+// 250 / 276.3 it is 13 and 16, at 125 / 276.3 7 and 9. The control window is clk_rv registers
+// (CC §5.1) and keeps 3 at every ratio. The instruction's own base cost (lsu) comes from the
+// interpreter's table (tsr_rv.h: Ibex small 1, maxperf 0).
 #pragma once
 
 #include <stddef.h>
@@ -38,9 +44,12 @@ typedef struct tsr_bus tsr_bus;
 
 #define TSR_BUS_LAT_TCM   1
 #define TSR_BUS_LAT_CW    3
-#define TSR_BUS_LAT_CORE  9
-#define TSR_BUS_LAT_SPM   11
+#define TSR_BUS_LAT_CORE  9      // at the planning ratio (TSR_BUS_XING_RV + round(12 x 166.7 / 276.3))
+#define TSR_BUS_LAT_SPM   11     // at the planning ratio (TSR_BUS_XING_RV + round(15 x 166.7 / 276.3))
 #define TSR_BUS_LAT_LBHIT 1
+#define TSR_BUS_XING_RV      2   // clk_rv cycles of a crossing access (request and response registers)
+#define TSR_BUS_XING_CORE_CC 12  // core cycles of a core-window load (CC §5.3: 50-70 ns in total)
+#define TSR_BUS_XING_SPM_CC  15  // core cycles of an SPM-bridge transaction (CC §10.5: 55-80 ns load)
 
 // Return codes of the environment's control-window callback (the same values as tsr_sim_int.h's
 // TSR_CW_OK / TSR_CW_FAULT / TSR_CW_WAIT).
@@ -121,6 +130,9 @@ typedef void (*tsr_bus_watch_fn)(void * ctx, uint32_t addr, uint32_t n, int is_w
 void      tsr_bus_set_watch(tsr_bus * bus, tsr_bus_watch_fn fn, void * ctx);
 
 void      tsr_bus_set_irq(tsr_bus * bus, uint32_t lines);   // levels when env->irq is NULL
+// Crossing latencies for F_RV / F_CORE = ratio (see Latencies above); <= 0: the planning values
+// TSR_BUS_LAT_CORE / TSR_BUS_LAT_SPM (also the state after create). Returns the SPM latency set.
+uint32_t  tsr_bus_set_ratio(tsr_bus * bus, double ratio);
 void      tsr_bus_lb_invalidate(tsr_bus * bus);
 void      tsr_bus_set_rv_run(tsr_bus * bus, int run);
 

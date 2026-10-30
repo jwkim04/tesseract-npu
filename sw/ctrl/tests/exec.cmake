@@ -10,7 +10,8 @@
 #                and 7 random schedules with TSR_SIM_RACE=fatal, observables and DONE records
 #                compared (SW §4.7), and the race detector probe (≈ 8 s)
 #   fw_exec_perf RISC-V cycles per graph op on 0.5B-like lists (SW §7.8 target <= 400: printed;
-#                asserted: the executor's own overhead per record and a regression ceiling)
+#                asserted: the executor's own overhead per record, a JOIN record, regression ceilings);
+#                TSR_FW_PROF=1 adds a per-function profile per list (tests/fw_prof.h)
 
 tsr_fw_image(fw_exec SOURCES ${TSR_CTRL_DIR}/tests/fw/exec_kinds.cpp)
 

@@ -7,14 +7,18 @@
 //   [L-16-4096, L-16)        OPL area (256 KiB). A list of more than 4096 lines streams through
 //                            it in 128 KiB chunks: blob line b lives in SPM line opl + (b mod 4096),
 //                            chunk c (lines [2048c, 2048c + 2048)) in half c mod 2. Chunks 0 and 1
-//                            are loaded at the start; when the next record starts in chunk c, the
-//                            half of chunk c - 1 is consumed and chunk c + 1 is loaded into it; a
-//                            record is read only after its chunks' loads are joined (records are
-//                            copied to DTCM first, so a chunk boundary inside a record is fine).
+//                            are loaded at the start; once a record is checked and the next record
+//                            starts in chunk c, the half of chunk c - 1 is consumed and chunk c + 1
+//                            is loaded into it, before the record's own pushes (W2a's push order);
+//                            a record is read only after its chunks' loads are joined (a record
+//                            whose lines wrap the 4096-line area, or that starts in chunk c - 1 when
+//                            chunk c + 1 is loaded, is copied to DTCM; every other record is read
+//                            in place).
 //   [opl - pre_lines, opl)   preload area (header pre_lines <= 256, V2-SW-15)
 //   [0, opl - pre_lines)     scratch ring (spm_ring), handed to the kind handlers
-// DTCM: ticket[4096] (the op's done ticket) and pidx[4096] (its first push index), 32 KiB, plus the
-// record copy (1 KiB) and the per-launch state, all rebuilt at every launch (V2-SW-4).
+// DTCM: ticket[4096] (the op's done ticket, with a sentinel word in front) and pidx[4096] (its first
+// push index), 32 KiB, plus the record copy for wrapping records (1 KiB), the scratch ring's table
+// (128 records, 2 KiB) and the per-launch state, all rebuilt at every launch (V2-SW-4).
 //
 // Algorithm (SW §7.3):
 //   1. LD the list (or its first 256 KiB) into the OPL area and join; validate the header
@@ -23,14 +27,19 @@
 //      preload entry and join once (the preload table is part of the list, so the list's own load
 //      has to be joined before the preload loads can be pushed: two joins at the start when the
 //      list has preload entries, one otherwise).
-//   2. For op i = 0 ... n_ops - 1: copy the record to DTCM; check it (slot overflow, word0 [15:12],
-//      n_args -> BAD_RECORD; no handler for the kind -> BAD_RECORD; deps -> BAD_DEP);
-//      d = after(ticket[dep0], ticket[dep1]); MARK: TRACE_MARK NODE_BEGIN | i; pidx[i] =
-//      ISSUE_PIDX; the handler pushes the op's tile ops and returns its ticket T_i (NOP: none;
-//      JOIN: a SYNC NOP over d); ticket[i] = T_i. SERIAL joins T_i. Every 16 ops and before every
-//      software join (SERIAL, a streamed chunk), with STOP_ON_ERROR, QSTATUS error bits stop the
-//      pushing: timing-dependent, but it only decides which later ops are skipped (SW §7.3 2.6).
-//      After SERIAL's join the error records (ERR_CODE) decide instead: exact once T_i is done (I2).
+//   2. For op i = 0 ... n_ops - 1 (op_loop): MARK: TRACE_MARK NODE_BEGIN | i; pidx[i] =
+//      ISSUE_PIDX; RT_INFO = i (the op's control-window accesses come before the record is read:
+//      they invalidate the SPM line buffer); read the record's words through the line-buffered
+//      alias, in place; check it (slot overflow, word0 [15:12], n_args -> BAD_RECORD; no handler
+//      for the kind -> BAD_RECORD; deps -> BAD_DEP); a streamed list's next chunk LD, when due
+//      (then pidx[i] is read again: the op's first push follows it); d = after(ticket[dep0],
+//      ticket[dep1]); the handler pushes the op's tile ops and returns its ticket T_i (NOP: none;
+//      JOIN: a SYNC NOP over d; MUL_MAT: the decode fast path mmk::mulmat_t1_fast first,
+//      k_mulmat.hpp, else kind_mulmat); ticket[i] = T_i. SERIAL joins T_i. Every 16 ops and
+//      before every software join (SERIAL, a streamed chunk), with STOP_ON_ERROR, QSTATUS error
+//      bits stop the pushing: timing-dependent, but it only decides which later ops are skipped
+//      (SW §7.3 2.6). After SERIAL's join the error records (ERR_CODE) decide instead: exact once
+//      T_i is done (I2).
 //   3. join_all().
 //   4. The first error (smallest ERR_PIDX over the units in error state, relative to the kernel's
 //      first push) is located by pidx: the op i with pidx[i] <= ERR_PIDX < pidx[i+1] -> RET i + 1.
@@ -55,6 +64,7 @@
 // NOPs; not the list's first load, pushed before the header is read) and is passed to the handlers
 // in kind_ctx.push_flags for theirs. The header library's internal pushes (group / join2 NOPs, the
 // join_all FENCE) carry no flags; a profiled launch's REC_CFG.ALL covers every entry.
+#include "k_mulmat.hpp"
 #include "tsr/exec.hpp"
 #include "tsr/kernel.hpp"
 #include "tsr/log.hpp"
@@ -63,20 +73,55 @@
 TSR_KERNEL(graph, 3, 0, 0);
 
 extern "C" {
-uint32_t __tsr_exec_ticket[tsr::opl::MAX_OPS];
+// The ticket table with a sentinel word in front: __tsr_exec_tick1[0] = TICKET_NONE ("no dep"),
+// op i's ticket at i + 1, so the loop looks a dep up as tick1[(dep + 1) & 0xFFFF] with no test
+// (DEP_NONE = 0xFFFF wraps to 0). __tsr_exec_ticket, the table the debugger and the tests read
+// (exec.hpp), is the same storage from word 1 on (an assembler alias, no copy).
+uint32_t __tsr_exec_tick1[1 + tsr::opl::MAX_OPS];
 uint32_t __tsr_exec_pidx[tsr::opl::MAX_OPS];
 tsr::exec_state __tsr_exec_state;
 }
+__asm__(".globl __tsr_exec_ticket\n\t.type __tsr_exec_ticket, @object\n\t"
+        ".set __tsr_exec_ticket, __tsr_exec_tick1 + 4\n\t.size __tsr_exec_ticket, 16384\n");
+static_assert(4u * tsr::opl::MAX_OPS == 16384u, "the alias's .size");
 
 namespace tsr {
 
-// The kind table (exec.hpp). TODO(W2b, P2.6 / P2.7): the M7 kinds' handlers.
-kind_fn kind_handler(uint32_t kind) {
-    switch (kind) {
-        case opl::K_MUL_MAT: return &kind_mulmat;
-        default:             return nullptr;
-    }
+namespace {
+// The kind table (exec.hpp): handler and exact argument count per kind 0x00-0x3F, in .rodata (one
+// DTCM load per record instead of a switch and a call). NOP and JOIN have no handler (built into
+// the loop) and 0 arguments; kinds without a handler in this image have NARGS_UNDEF (BAD_RECORD).
+// TODO(W2b, P2.6 / P2.7): the M7 kinds' handlers.
+// w0x / min_ns fold opl::check_record_n's record checks into two compares: (w0 & W0_CHECK_MASK)
+// must equal w0x (n_args = the kind's, word0 [15:12] = 0; W0X_NONE, which has a bit outside the
+// mask, never matches: no such kind here) and the record must have at least min_ns slots (its
+// arguments fit).
+constexpr uint32_t W0_CHECK_MASK = 0xFF00F000u, W0X_NONE = 1u;
+struct kind_slot {
+    kind_fn fn;
+    uint32_t w0x;
+    uint32_t min_ns;
+};
+constexpr kind_slot slot_for(kind_fn fn, uint32_t nargs) {
+    return kind_slot{fn, nargs << 24, opl::slots_for_nargs(nargs)};
 }
+constexpr kind_slot make_slot(uint32_t kind) {
+    if (kind == opl::K_NOP || kind == opl::K_JOIN) return slot_for(nullptr, 0u);
+    if (kind == opl::K_MUL_MAT) return slot_for(&kind_mulmat, opl::kind_nargs(kind));
+    return kind_slot{nullptr, W0X_NONE, 1u};
+}
+struct kind_table {
+    kind_slot s[opl::N_KINDS];
+};
+constexpr kind_table make_kind_table() {
+    kind_table t{};
+    for (uint32_t k = 0; k < opl::N_KINDS; ++k) t.s[k] = make_slot(k);
+    return t;
+}
+constexpr kind_table k_kinds = make_kind_table();
+}  // namespace
+
+kind_fn kind_handler(uint32_t kind) { return kind < opl::N_KINDS ? k_kinds.s[kind].fn : nullptr; }
 
 }  // namespace tsr
 
@@ -110,13 +155,13 @@ struct run_state {
     uint32_t flags;             // header flags (| F_MARK for a PROF launch)
     uint32_t push_flags;        // PUSH_REC with F_REC
     bool     stop;              // stop pushing: STOP_ON_ERROR saw an error, or an executor load failed
+    bool     ring_used;         // the scratch ring was initialised for this launch (its counters are)
 };
 constinit run_state g{};        // constant-initialised: no static constructor (crt0: the SDK has none)
 uint32_t rec[REC_WORDS];        // the record being executed (DTCM copy)
 plan::dev_cfg dev;
 spm_ring ring;
 
-inline ticket tk(uint32_t dep) { return dep == opl::DEP_NONE ? ticket{} : ticket{__tsr_exec_ticket[dep]}; }
 
 // Copies n words of SPM line `line`, from word w, to dst.
 inline void copy_line(uint32_t * dst, uint32_t line, uint32_t w, uint32_t n) {
@@ -178,14 +223,12 @@ bool ensure(uint32_t b) {
     return true;
 }
 
-// The next record starts at blob line b: every chunk before b's chunk c is consumed, so chunk
-// c + 1 can be loaded into the half of chunk c - 1.
-inline void prefetch(uint32_t b) {
-    if (g.n_chunks == 0u) return;
-    const uint32_t c = b / plan::OPL_HALF_LINES;
-    if (c + 1u < g.n_chunks && g.issued < c + 1u) {
-        g.stream_pidx[g.n_stream++] = pidx_now();
-        load_chunk(c + 1u);
+// The first nw words of the record at blob line b to `rec` (a streamed record whose lines wrap the
+// OPL area, or whose half the next chunk's LD is about to overwrite).
+[[gnu::noinline]] void copy_record(uint32_t b, uint32_t nw) {
+    for (uint32_t s = 0, w = 0; w < nw; ++s, w += opl::SLOT_WORDS) {
+        const uint32_t left = nw - w;
+        copy_line(rec + w, blob_spm_line(b + s), 0, left < opl::SLOT_WORDS ? left : opl::SLOT_WORDS);
     }
 }
 
@@ -216,6 +259,152 @@ uint32_t locate_error(uint32_t n_done, uint32_t pidx_end) {
         else hi = mid - 1u;
     }
     return lo + 1u;
+}
+
+// Step 2's loop (SW §7.3 2.1-2.6). Returns the KERNEL_ERR code that ended it, or 0 (also after a
+// stop); *n_done: ops whose pushes started. STREAMED: the list streams through the OPL area
+// (ensure per record, the next chunk's LD before the handler when due); else the records are read
+// where the list was loaded, by a pointer walking the op area. The hot loop (SW §7.8): per record
+// two control-window accesses (three with MARK) before the record is read (ISSUE_PIDX, RT_INFO,
+// TRACE_MARK; they invalidate the SPM line buffer, CC §10.5), then the record's words through the
+// line-buffered alias (one 64-byte line fill), its checks, the deps, the handler (which reads its
+// argument words in place, exec.hpp; MUL_MAT records try the decode fast path first,
+// k_mulmat.hpp), the ticket. Records are not copied (streamed lists: except the two cases above).
+struct loop_in {
+    uint32_t n_ops, n_slots, ops_line, flags, push_flags;
+};
+
+// A kind handler called with the record's fields re-read from its words (args[-2] = word0, args[-1]
+// = word1, in place or the DTCM copy). The loop's MUL_MAT fallback (a record the decode fast path
+// does not take) calls it out of line, so that nothing the fallback needs stays live across the
+// fast path's call; other kinds call it inline.
+TSR_HOT ticket call_handler(kind_fn fn, const volatile uint32_t * args, kind_ctx & ctx) {
+    const uint32_t w0 = args[-2], w1 = args[-1];
+    const uint32_t * const tick1 = __tsr_exec_tick1;
+    const deps d = after(ticket{tick1[(opl::w1_dep0(w1) + 1u) & 0xFFFFu]}, ticket{tick1[(opl::w1_dep1(w1) + 1u) & 0xFFFFu]});
+    return fn(args, opl::w0_nargs(w0), opl::w0_kflags(w0), d, ctx);
+}
+[[gnu::noinline]] ticket call_handler_ool(kind_fn fn, const volatile uint32_t * args, kind_ctx & ctx) {
+    ++__tsr_exec_state.mm_fallback;
+    return call_handler(fn, args, ctx);
+}
+
+template <bool STREAMED>
+[[gnu::noinline]] uint32_t op_loop(const loop_in & in, kind_ctx & ctx, uint32_t * n_done) {
+    const uint32_t n_ops = in.n_ops, n_slots = in.n_slots, ops_line = in.ops_line, flags = in.flags;
+    const uint32_t push_flags = in.push_flags;
+    uint32_t * const tick1 = __tsr_exec_tick1;
+    uint32_t * const pidx = __tsr_exec_pidx;
+    tick1[0] = TICKET_NONE;
+    const volatile uint32_t * p = spm_words(blob_spm_line(ops_line));
+    uint32_t slot = 0;
+    uint32_t i = 0;
+    uint32_t ret = 0;
+    for (; i < n_ops; ++i) {
+        if (slot >= n_slots) { ret = opl::RET_BAD_RECORD; break; }  // the op area ended early
+        const uint32_t b = ops_line + slot;
+        if constexpr (STREAMED) {
+            if (!ensure(b)) break;
+            p = spm_words(blob_spm_line(b));
+        }
+        // The op's control-window accesses come first: they invalidate the SPM line buffer, so
+        // the record's words below are one line fill. MARK's NODE_BEGIN i is pushed here, before
+        // the record is read (a record found malformed below has its marker but no pushes).
+        if (flags & opl::F_MARK) trace_mark((MARK_CLASS_NODE_BEGIN << MARK_CLASS_LSB) | i);
+        pidx[i] = pidx_now();                                       // before the op's first push (exact)
+        set_info(i);                                                // RT_INFO: the op being read / pushed
+        const uint32_t w0 = p[0], w1 = p[1];
+        const uint32_t kind = opl::w0_kind(w0), ns = opl::w0_slots(w0);
+
+        // The kind's handler and record checks (exec.hpp: the table, then the test hook; MUL_MAT,
+        // the decode list's kind, without the table load).
+        kind_slot ks{nullptr, W0X_NONE, 1u};
+        if (kind == opl::K_MUL_MAT) ks = slot_for(&kind_mulmat, opl::mm::NARGS);
+        else if (kind < opl::N_KINDS) ks = k_kinds.s[kind];
+        if (ks.w0x == W0X_NONE && tsr_exec_test_kind != nullptr) {
+            kind_entry ke{};
+            if (tsr_exec_test_kind(kind, &ke)) ks = ke.nargs <= 0xFFu ? slot_for(ke.fn, ke.nargs) : kind_slot{nullptr, W0X_NONE, 1u};
+        }
+        // opl::check_record_n's checks and codes: BAD_RECORD (word0 [15:12], n_args not the kind's,
+        // slot overflow, arguments that do not fit the slots), then BAD_DEP (dep >= own index;
+        // DEP_NONE = 0xFFFF wraps to 0).
+        if ((w0 & W0_CHECK_MASK) != ks.w0x || ns > n_slots - slot || ns < ks.min_ns) {
+            ret = opl::RET_BAD_RECORD;
+            break;
+        }
+        const uint32_t d0 = (opl::w1_dep0(w1) + 1u) & 0xFFFFu, d1 = (opl::w1_dep1(w1) + 1u) & 0xFFFFu;
+        if (d0 > i || d1 > i) {
+            ret = opl::RET_BAD_DEP;
+            break;
+        }
+        // The argument words in place (exec.hpp); a record whose lines wrap the streamed OPL area
+        // is copied to DTCM instead.
+        const volatile uint32_t * args = p + 2;
+        if constexpr (STREAMED) {
+            // W2a's order (fix W2a-opt review): the lines holding the record's words (not its
+            // padding slots) are made readable, then, once the record is checked, the next chunk's
+            // LD is pushed before the record's own pushes.
+            const uint32_t nw = opl::w0_nargs(w0) + 2u;
+            const uint32_t last = b + (nw - 1u) / opl::SLOT_WORDS;
+            if (last != b) {
+                if (!ensure(last)) break;
+                if (blob_spm_line(b) + (last - b) != blob_spm_line(last)) {
+                    copy_record(b, nw);
+                    args = rec + 2;
+                }
+            }
+            slot += ns;
+            // prefetch(ops_line + slot): chunk c + 1 goes into the half of chunk c - 1. When this
+            // record starts in chunk c - 1, its words are copied to DTCM first (at most once per
+            // 2,048 lines). pidx[i] is re-read: the op's first push comes after the chunk LD.
+            const uint32_t c = (ops_line + slot) / plan::OPL_HALF_LINES;
+            if (c + 1u < g.n_chunks && g.issued < c + 1u) {
+                if (args != rec + 2 && b / plan::OPL_HALF_LINES != c) {
+                    copy_record(b, nw);
+                    args = rec + 2;
+                }
+                g.stream_pidx[g.n_stream++] = pidx_now();
+                load_chunk(c + 1u);
+                pidx[i] = pidx_now();
+            }
+        } else {
+            p += ns * opl::SLOT_WORDS;
+            slot += ns;
+        }
+
+        ticket t{};
+        if (ks.fn != nullptr) {
+            ctx.op_index = i;
+            if (kind == opl::K_MUL_MAT) {                           // deps after(t0, t1)
+                t = ticket{mmk::mulmat_t1_fast(args, opl::w0_kflags(w0), ticket{tick1[d0]}, ticket{tick1[d1]}, ctx)};
+                if (t.v == mmk::NOT_FAST) t = call_handler_ool(ks.fn, args, ctx);
+            } else {
+                t = call_handler(ks.fn, args, ctx);
+            }
+            if (ctx.ret != 0u) {
+                ++i;                                                // its pushes started
+                ret = ctx.ret;
+                break;
+            }
+        } else if (kind == opl::K_JOIN) {
+            t = issue(NOP(), after(ticket{tick1[d0]}, ticket{tick1[d1]}), push_flags);
+        }
+        tick1[i + 1u] = t.v;
+
+        if (flags & opl::F_SERIAL) {
+            // Before the join (SW §7.3 2.6) and after it: once T_i is done its error record is
+            // visible (I2), so SERIAL + STOP_ON_ERROR stops exactly after the failing op, whatever
+            // the schedule (the post-join check reads the records, not QSTATUS).
+            if (stop_on_error()) { ++i; break; }
+            join(t);
+            if (stop_on_error(true)) { ++i; break; }
+        } else if ((i & 15u) == 15u && stop_on_error()) {
+            ++i;
+            break;
+        }
+    }
+    *n_done = i;
+    return ret;
 }
 
 // Steps 1-2. Returns the KERNEL_ERR code that ended the run, or 0 (also after a stop). *n_done:
@@ -325,81 +514,23 @@ uint32_t run(const tsr_args * a, uint32_t * n_done) {
     dev.t_max = field_get(core_csr(CSR_CFG0), CFG0_T_MAX, CFG0_T_MAX_LSB);
     dev.k_max = field_get(core_csr(CSR_CFG2), CFG2_K_MAX_256, CFG2_K_MAX_256_LSB) * 256u;
     ring.init(lay.ring_line, lay.ring_lines);
+    g.ring_used = true;
     kind_ctx ctx{};
     ctx.ring = &ring;
     ctx.preload = h.pre_lines ? spm_ptr<uint8_t>(spm{lay.pre_line}) : nullptr;
     ctx.pre_lines = h.pre_lines;
     ctx.pre = spm{lay.pre_line};
     ctx.cfg = &dev;
+    ctx.mml = plan::mm_limits_of(dev);
     ctx.push_flags = g.push_flags;
 
-    const uint32_t ops_line = h.ops_off / opl::SLOT_BYTES;
-    const uint32_t n_ops = h.n_ops, n_slots = h.n_slots, flags = g.flags, push_flags = g.push_flags;
-    const bool streamed = g.n_chunks != 0u;
-    uint32_t slot = 0;
-    for (uint32_t i = 0; i < n_ops; ++i) {
-        const uint32_t b = ops_line + slot;
-        if (slot >= n_slots) return opl::RET_BAD_RECORD;            // the op area ended early
-        if (streamed && !ensure(b)) return 0u;
-        // Word 0 and 1 first, then only the argument words the record has (SW §7.3 2.1).
-        const volatile uint32_t * p = spm_words(blob_spm_line(b));
-        const uint32_t w0 = p[0], w1 = p[1];
-        const uint32_t ns = opl::w0_slots(w0), kind = opl::w0_kind(w0), nargs = opl::w0_nargs(w0);
-
-        // The kind's handler and argument count (test kinds first, exec.hpp).
-        kind_fn fn = nullptr;
-        uint32_t want = opl::NARGS_UNDEF;
-        kind_entry ke{};
-        if (tsr_exec_test_kind != nullptr && tsr_exec_test_kind(kind, &ke)) {
-            fn = ke.fn;
-            want = ke.nargs;
-        } else if (kind == opl::K_NOP || kind == opl::K_JOIN) {
-            want = 0u;
-        } else if ((fn = kind_handler(kind)) != nullptr) {
-            want = opl::kind_nargs(kind);
-        }
-        if (const uint32_t e = opl::check_record_n(w0, w1, i, slot, n_slots, want)) return e;
-        if (nargs != 0u) {
-            // n_args + 2 <= 16 ns (checked): the words spread over the record's lines.
-            const uint32_t n0 = nargs + 2u < opl::SLOT_WORDS ? nargs + 2u : opl::SLOT_WORDS;
-            for (uint32_t k = 2; k < n0; ++k) rec[k] = p[k];
-            for (uint32_t s = 1, w = opl::SLOT_WORDS; w < nargs + 2u; ++s, w += opl::SLOT_WORDS) {
-                if (streamed && !ensure(b + s)) return 0u;
-                const uint32_t left = nargs + 2u - w;
-                copy_line(rec + w, blob_spm_line(b + s), 0, left < opl::SLOT_WORDS ? left : opl::SLOT_WORDS);
-            }
-        }
-        slot += ns;
-        if (streamed) prefetch(ops_line + slot);
-
-        const deps d = after(tk(opl::w1_dep0(w1)), tk(opl::w1_dep1(w1)));
-        if (flags & opl::F_MARK) trace_mark((MARK_CLASS_NODE_BEGIN << MARK_CLASS_LSB) | i);
-        __tsr_exec_pidx[i] = pidx_now();
-        *n_done = i + 1u;
-        set_info(i);                                                // RT_INFO: the op being pushed
-        ticket t{};
-        if (fn != nullptr) {
-            ctx.op_index = i;
-            ctx.ret = 0u;
-            t = fn(rec + 2, nargs, opl::w0_kflags(w0), d, ctx);
-            if (ctx.ret != 0u) return ctx.ret;
-        } else if (kind == opl::K_JOIN) {
-            t = issue(NOP(), d, push_flags);
-        }
-        __tsr_exec_ticket[i] = t.v;
-
-        if (flags & opl::F_SERIAL) {
-            // Before the join (SW §7.3 2.6) and after it: once T_i is done its error record is
-            // visible (I2), so SERIAL + STOP_ON_ERROR stops exactly after the failing op, whatever
-            // the schedule (the post-join check reads the records, not QSTATUS).
-            if (stop_on_error()) return 0u;
-            join(t);
-            if (stop_on_error(true)) return 0u;
-        } else if ((i & 15u) == 15u && stop_on_error()) {
-            return 0u;
-        }
-    }
-    return 0u;
+    loop_in in;
+    in.n_ops = h.n_ops;
+    in.n_slots = h.n_slots;
+    in.ops_line = h.ops_off / opl::SLOT_BYTES;
+    in.flags = g.flags;
+    in.push_flags = g.push_flags;
+    return g.n_chunks != 0u ? op_loop<true>(in, ctx, n_done) : op_loop<false>(in, ctx, n_done);
 }
 
 }  // namespace
@@ -421,6 +552,10 @@ extern "C" int32_t graph(const tsr_args * a) {
     st.pidx_end = pidx_end;
     st.late_chunks = g.late;
     st.ret = ret;
+    if (g.ring_used) {              // else they are the previous launch's (a list rejected before step 2)
+        st.ring_joins = ring.joins();
+        st.ring_slow = ring.slow_allocs();
+    }
     if (ret != 0u)
         TSR_LOG(TSR_LOG_WARN, "graph %08x: ret %08x after %u of %u ops, stopped %u", st.graph_id, ret, n_done,
                 st.n_ops, st.stopped);

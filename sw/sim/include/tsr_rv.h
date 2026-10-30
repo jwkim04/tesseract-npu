@@ -8,9 +8,10 @@
 // SW §4.2). Nothing here depends on host time: cycles are counted by a fixed table (SW §4.2,
 // *estimate*, schedule only, never architectural).
 //
-// Ibex configuration modelled (CC §3.2): RV32M Fast, RV32B None, PMPEnable 0, MHPMCounterNum 0,
-// DbgTriggerEn 1 with DbgHwBreakNum 2, DmHaltAddr 0x1000_0800, DmExceptionAddr 0x1000_0808,
-// hart_id 0. Ibex always implements U-mode (misa.U = 1; mstatus.MPP is M or U); the firmware runs
+// Ibex configuration modelled (CC §3.2): the "maxperf" pipeline (WritebackStage 1, BranchTargetALU
+// 1, RV32M SingleCycle, V2-CC-34; the "small" cycle table stays selectable), RV32B None, PMPEnable
+// 0, MHPMCounterNum 0, DbgTriggerEn 1 with DbgHwBreakNum 2, DmHaltAddr 0x1000_0800,
+// DmExceptionAddr 0x1000_0808, hart_id 0. Ibex always implements U-mode (misa.U = 1; mstatus.MPP is M or U); the firmware runs
 // in M-mode only. Ibex facts recalled from its documentation and RTL are marked *confirm* in
 // tsr_rv.c and are checked when Ibex is vendored (CC §3.1).
 //
@@ -156,19 +157,96 @@ typedef struct tsr_rv_bus {
 } tsr_rv_bus;
 
 // ---------------------------------------------------------------------------
-// Cycle model (SW §4.2 timing table, *estimate*; schedule only). Instruction cost in RV cycles:
-// the class cost below plus the bus latency of each data transaction (one extra cycle per split
-// half). P1.8 may replace the table (random schedules vary the CPI) through tsr_rv_set_cpi.
+// Cycle model (SW §4.2 timing table; schedule only, never architectural). Instruction cost in RV
+// cycles: the class cost below plus the bus latency of each data transaction (one extra cycle per
+// split half), plus the two IF / WB-stage penalties (load_use, target32). Two tables model Ibex's
+// published configurations (Ibex README "small" / "maxperf", ibex_configs.yaml; stall cycles from
+// Ibex doc/03_reference/pipeline_details.rst "Multi- and Single-Cycle Instructions"; the WB-stage
+// rules from rtl/ibex_id_stage.sv; facts the documentation does not state are *confirm*, checked
+// by the RVFI bench P5.2 when Ibex is vendored, CC §3.1):
+//
+//   class                       small   maxperf  Ibex source
+//   ALU, LUI / AUIPC, fence,      1       1      "Integer Computational 0 stalls"
+//     not-taken branch, CSR read                 "Branch (Not-Taken) 0", "CSR Access 0"
+//   CSR write (not mscratch /   1 + 1   1 + 1    "most CSR writes flush the pipeline": one FLUSH
+//     mepc; csr_flush)                           cycle, the successor is not refetched (*confirm*)
+//   taken branch                  3       2      "Branch (Taken) 2 - N; 1 - N with BranchTargetALU"
+//   JAL, JALR, fence.i (jump)     2       2      "Jump 1 - N" (no BranchTargetALU variant: with it
+//                                                JAL / JALR need 1 ID cycle instead of 2, but the
+//                                                refetch still costs 1); fence.i is a jump
+//   load / store (lsu + lat)    1 + lat  0 + lat "Load/Store 1 - N"; with WritebackStage the
+//                                                instruction leaves ID/EX after the request and
+//                                                the next one waits only for an outstanding
+//                                                response (outstanding_memory_access) — TCM 1, MMIO
+//                                                lat; the bus must take a TCM access every cycle
+//                                                (maxperf's base 0 and that bus rule: *confirm*,
+//                                                from the RTL; Ibex's docs leave the WB stage's
+//                                                effect undocumented, CC §3.2, §4.3)
+//   load-use (load_use)           0       +1     stall_ld_hz: the next instruction reads the
+//                                                load's rd (load data is not forwarded from WB)
+//   MUL / MULH* (mul / mulh)    3 / 4    1 / 2   "fast multi-cycle 2/3", "single-cycle 0/1" stalls
+//   DIV*, REM* (div / div0)    38 / 2   38 / 2   "1 or 37 stalls: 1 if divide by 0"
+//   32-bit target at pc[1]=1     +1      +1      IF: a jump / taken branch / fence.i whose target is
+//     (target32)                                 an uncompressed instruction in two words needs
+//                                                the second word's fetch (fetch FIFO, *confirm*)
+//   trap (exception / interrupt  3       3      controller DECODE -> FLUSH -> refetch (*confirm*)
+//     / debug entry, mret, dret)
+//
+// The bus latencies (tsr_bus.h) are the same for both. P1.8's random schedules vary the CPI
+// around the table (tsr_sim_int.h §5b). tsr_rv_set_core selects a table, tsr_rv_set_cpi any table.
 // ---------------------------------------------------------------------------
 typedef struct tsr_rv_cpi {
     uint32_t alu;           // ALU, CSR, LUI / AUIPC, fence, not-taken branch, WFI, ecall/ebreak issue
-    uint32_t taken;         // taken branch, JAL, JALR
-    uint32_t lsu;           // load / store base (+ bus latency: TCM 1 -> 2 in total)
-    uint32_t mul;           // MUL, MULH*
-    uint32_t div;           // DIV*, REM*
-    uint32_t trap;          // exception / interrupt / debug entry, mret, dret, fence.i
+    uint32_t taken;         // taken conditional branch
+    uint32_t lsu;           // load / store base (+ bus latency: TCM 1)
+    uint32_t mul;           // MUL
+    uint32_t div;           // DIV*, REM* with a nonzero divisor
+    uint32_t trap;          // exception / interrupt / debug entry (added to the instruction), mret, dret
+    uint32_t jump;          // JAL, JALR, fence.i
+    uint32_t mulh;          // MULH, MULHSU, MULHU
+    uint32_t div0;          // DIV*, REM* by zero
+    uint32_t csr_flush;     // added to a CSR instruction that writes a CSR other than mscratch / mepc
+    uint32_t load_use;      // added to a load whose rd (!= x0) the next instruction in memory reads
+    uint32_t target32;      // added to a jump / taken branch / fence.i whose target is a 32-bit
+                            // instruction at an address with bit 1 set
 } tsr_rv_cpi;
-#define TSR_RV_CPI_DEFAULT { /*alu*/ 1, /*taken*/ 3, /*lsu*/ 1, /*mul*/ 3, /*div*/ 37, /*trap*/ 3 }
+#define TSR_RV_CPI_SMALL   { /*alu*/ 1, /*taken*/ 3, /*lsu*/ 1, /*mul*/ 3, /*div*/ 38, /*trap*/ 3, \
+                             /*jump*/ 2, /*mulh*/ 4, /*div0*/ 2, /*csr_flush*/ 1, /*load_use*/ 0, /*target32*/ 1 }
+#define TSR_RV_CPI_MAXPERF { /*alu*/ 1, /*taken*/ 2, /*lsu*/ 0, /*mul*/ 1, /*div*/ 38, /*trap*/ 3, \
+                             /*jump*/ 2, /*mulh*/ 2, /*div0*/ 2, /*csr_flush*/ 1, /*load_use*/ 1, /*target32*/ 1 }
+
+// Ibex configurations of the timing model (CC §3.2): TSR_SIM_RV_CORE / tsr_sim_opts.rv_core.
+#define TSR_RV_CORE_SMALL    0u   // RV32MFast, WritebackStage 0, BranchTargetALU 0
+#define TSR_RV_CORE_MAXPERF  1u   // RV32MSingleCycle, WritebackStage 1, BranchTargetALU 1
+#define TSR_RV_CORE_DEFAULT  TSR_RV_CORE_MAXPERF   // the configuration CC §3.2 decides (V2-CC-34)
+#define TSR_RV_CPI_DEFAULT   TSR_RV_CPI_MAXPERF    // its table
+// "small" / "maxperf" -> *core: 0, else -1. Name of a core (NULL if unknown).
+int          tsr_rv_core_parse(const char * name, uint32_t * core);
+const char * tsr_rv_core_name(uint32_t core);
+// The table of a core (an unknown core gives the default table).
+void         tsr_rv_core_cpi(uint32_t core, tsr_rv_cpi * out);
+
+// Per-class counts of the executed instructions (retired or trapped; re-executed WAIT / YIELD
+// attempts not counted) and the cycles their costs added (instruction cost incl. bus latency and
+// penalties, trap entry excluded). For profiling the timing model (fw_* perf harnesses).
+#define TSR_RV_CLS_ALU       0u   // ALU, LUI / AUIPC, fence, WFI, ecall / ebreak (their trap cycles excluded)
+#define TSR_RV_CLS_BRANCH_NT 1u
+#define TSR_RV_CLS_BRANCH_T  2u
+#define TSR_RV_CLS_JUMP      3u   // JAL, JALR, fence.i
+#define TSR_RV_CLS_LOAD      4u   // load, every transaction latency <= 1 (TCM, DM, line-buffer hit)
+#define TSR_RV_CLS_LOAD_IO   5u   // load leaving clk_rv's single-cycle memories (control / core window, SPM)
+#define TSR_RV_CLS_STORE     6u
+#define TSR_RV_CLS_STORE_IO  7u
+#define TSR_RV_CLS_MUL       8u   // MUL, MULH*
+#define TSR_RV_CLS_DIV       9u
+#define TSR_RV_CLS_CSR       10u
+#define TSR_RV_CLS_SYSTEM    11u  // mret, dret
+#define TSR_RV_CLS_COUNT     12u
+typedef struct tsr_rv_stats {
+    uint64_t n[TSR_RV_CLS_COUNT];
+    uint64_t cyc[TSR_RV_CLS_COUNT];
+    uint64_t load_use, target32, csr_flush;   // penalty events (each added its table cycles)
+} tsr_rv_stats;
 
 // ---------------------------------------------------------------------------
 // Retire records (RVFI-style; for lockstep against Spike's --log-commits and Ibex RVFI)
@@ -290,7 +368,11 @@ int      tsr_rv_csr_write(tsr_rv * rv, uint32_t csr, uint32_t val);
 void     tsr_rv_set_retire_hook(tsr_rv * rv, tsr_rv_retire_fn fn, void * ctx);
 void     tsr_rv_set_debug_hook(tsr_rv * rv, tsr_rv_debug_fn fn, void * ctx);
 void     tsr_rv_set_data_watch(tsr_rv * rv, tsr_rv_data_watch_fn fn, void * ctx);
-void     tsr_rv_set_cpi(tsr_rv * rv, const tsr_rv_cpi * cpi);
+void     tsr_rv_set_cpi(tsr_rv * rv, const tsr_rv_cpi * cpi);   // NULL: the default table
+// Selects the table of an Ibex configuration (TSR_RV_CORE_*); create uses TSR_RV_CORE_DEFAULT.
+void     tsr_rv_set_core(tsr_rv * rv, uint32_t core);
+// Class counts since create (tsr_rv_stats); never reset by tsr_rv_reset.
+void     tsr_rv_get_stats(const tsr_rv * rv, tsr_rv_stats * out);
 
 // ---------------------------------------------------------------------------
 // Debug mode (for the DM model, P1.12; DB §3.3-§3.5, §9.1)

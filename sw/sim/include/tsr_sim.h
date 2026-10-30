@@ -45,6 +45,9 @@ uint32_t tsr_sim_caps_implemented(void);
 //                                §5b: random op durations x [min, max] (default 0.25-4), crossings
 //                                2-8 cycles, RV CPI +-1; seed decimal or 0x hex)
 //   rv_ratio   TSR_SIM_RV_RATIO  F_RV / F_CORE in [0.05, 4]
+//   rv_core    TSR_SIM_RV_CORE   Ibex configuration of the RISC-V cycle model: "small" | "maxperf"
+//                                (tsr_rv.h tables; default: the CC §3.2 configuration). Timing only:
+//                                every architectural result is the same under both
 //   race       TSR_SIM_RACE      off | report | fatal = 0 | 1 | 2 (needs the race detector, P1.9)
 //   log        TSR_SIM_LOG       stderr | <file>, optionally prefixed "rv," for RV retire lines
 //   trace_dir  TSR_TRACE         one trace v2 per launch under the directory (P1.10)
@@ -63,6 +66,7 @@ typedef struct tsr_sim_opts {
     uint32_t        dtcm_bytes;   // 0 = TSR_DTCM_BYTES; same rule
     uint32_t        log_flags;    // TSR_SIM_LOG_RV: also one line per retired RV instruction
     const char *    trace_dir;    // (env) TSR_TRACE directory, or NULL
+    const char *    rv_core;      // (env) "small" | "maxperf", or NULL: TSR_SIM_RV_CORE, else the default
 } tsr_sim_opts;
 #define TSR_SIM_LOG_RV 1u
 

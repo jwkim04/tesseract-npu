@@ -55,6 +55,8 @@ uint32_t tsr_sim_rv_run(const tsr_sim * sim) { (void)sim; return 1; }
 uint32_t tsr_sim_rv_boot(const tsr_sim * sim) { (void)sim; return BOOT; }
 uint64_t tsr_sim_rv_boot_gen(const tsr_sim * sim) { (void)sim; return BOOT_GEN; }
 double   tsr_sim_rv_ratio(const tsr_sim * sim) { (void)sim; return 0.5; }
+// The expected timings below are the Ibex "small" table's (tsr_rv.h), whatever the default.
+uint32_t tsr_sim_rv_core(const tsr_sim * sim) { (void)sim; return TSR_RV_CORE_SMALL; }
 void     tsr_sim_rv_set_state(tsr_sim * sim, uint32_t s) {
     (void)sim; STATE = s; ++STATE_SETS;
     if ((s & TSR_STATUS_RV_SLEEP) && T_SLEEP == UINT64_MAX) T_SLEEP = NOW;
@@ -190,12 +192,14 @@ int main(void) {
     run_until(1000);
     CHECK(T_RT == 200u, "control-window store at core time 200, got %llu", (unsigned long long)T_RT);
     // After the store (4 RV cycles: lsu 1 + window 3): LUI at 104, the core-window load at 105 ->
-    // core time 210; then 9 + 1 cycles -> LUI at 115, the SPM load at 116 -> 232.
+    // core time 210; then lsu 1 + the core-window latency at ratio 0.5 (tsr_bus.h: 2 + round(12 x
+    // 0.5) = 8) -> LUI at 114, the SPM load at 115 -> 230. The SPM latency is 2 + round(15 x 0.5) = 10.
+    const uint32_t lat_spm = TSR_BUS_XING_RV + (uint32_t)(TSR_BUS_XING_SPM_CC * 0.5 + 0.5);
     CHECK(T_CORE == 210u, "core-window read at core time 210, got %llu", (unsigned long long)T_CORE);
-    CHECK(T_BRIDGE == 232u, "SPM bridge access at core time 232, got %llu", (unsigned long long)T_BRIDGE);
+    CHECK(T_BRIDGE == 230u, "SPM bridge access at core time 230, got %llu", (unsigned long long)T_BRIDGE);
     CHECK(tsr_rv_reg(tsr_rv_agent_rv(A), 12) == (0xC0000000u | 0x24u), "core-window value");
-    CHECK(PERF[X + TSR_PERF_XOFF_BRIDGE_ACC] == 1u && PERF[X + TSR_PERF_XOFF_BRIDGE_WAIT] == (uint64_t)(TSR_BUS_LAT_SPM - TSR_BUS_LAT_TCM),
-          "BRIDGE_ACC / BRIDGE_WAIT");
+    CHECK(PERF[X + TSR_PERF_XOFF_BRIDGE_ACC] == 1u && PERF[X + TSR_PERF_XOFF_BRIDGE_WAIT] == (uint64_t)(lat_spm - TSR_BUS_LAT_TCM),
+          "BRIDGE_ACC / BRIDGE_WAIT %llu", (unsigned long long)PERF[X + TSR_PERF_XOFF_BRIDGE_WAIT]);
     CHECK(tsr_rv_pc(tsr_rv_agent_rv(A)) == 0x80u + 4u * 105u, "spinning at the end");
     // The hart runs again exactly when core time reaches its RV time (ratio 0.5: 2 core cycles per
     // RV cycle), at most one slice (1024 RV cycles) ahead of MTIME.
@@ -203,14 +207,15 @@ int main(void) {
     CHECK(AGENT_AT == 2u * c && c <= 500u + 1024u + 3u, "RV time %llu vs next run at %llu", (unsigned long long)c, (unsigned long long)AGENT_AT);
 
     // 2. A core event at time 50 raises irq_fast[0]: the interrupt is taken at the first boundary
-    //    at or after core time 50, i.e. RV cycle 25 (the 26th instruction, at 0x80 + 4 x 25).
+    //    at or after core time 50, i.e. RV cycle 25: LUI 1, the mie and mstatus writes 2 each (Ibex
+    //    pipeline flush, tsr_rv.h), NOPs 1 each -> the 24th instruction, at 0x80 + 4 x 23.
     fresh();
     put(LUI(5, 0x10000)); put(CSRRW(0, 0x304, 5)); put(CSRRSI(0, 0x300, 8));
     for (int i = 0; i < 64; ++i) put(NOP);
     put(JSELF);
     add_event(50, EV_IRQ, TSR_RV_LINE_FAST(0));
     run_until(200);
-    CHECK(csr(0x342) == 0x80000010u && csr(0x341) == 0x80u + 4u * 25u, "irq at boundary 25: mcause 0x%x mepc 0x%x", csr(0x342), csr(0x341));
+    CHECK(csr(0x342) == 0x80000010u && csr(0x341) == 0x80u + 4u * 23u, "irq at RV cycle 25: mcause 0x%x mepc 0x%x", csr(0x342), csr(0x341));
 
     // 3. A push without a credit waits (no interrupt meanwhile) and completes at the core event
     //    that gives the credit; the wait counts in PUSH_STALL (RV cycles).
@@ -222,7 +227,8 @@ int main(void) {
     run_until(1100);
     CHECK(PUSHES == 1 && T_PUSH == 1000u, "push at the credit event: %llu", (unsigned long long)T_PUSH);
     CHECK(WAITS >= 1 && WAITS <= 3, "retried only at events (%d attempts)", WAITS);
-    CHECK(PERF[X + TSR_PERF_XOFF_PUSH_STALL] == 500u - 4u, "PUSH_STALL %llu", (unsigned long long)PERF[X + TSR_PERF_XOFF_PUSH_STALL]);
+    // The push starts at RV cycle 6 (LUI 1, two flushing CSR writes 2 each, LUI 1) and waits to 500.
+    CHECK(PERF[X + TSR_PERF_XOFF_PUSH_STALL] == 500u - 6u, "PUSH_STALL %llu", (unsigned long long)PERF[X + TSR_PERF_XOFF_PUSH_STALL]);
     CHECK(csr(0x342) == 0x80000010u && csr(0x341) == 0x80u + 4u * 5u, "interrupt only after the push: mepc 0x%x", csr(0x341));
 
     // 4. No credit ever: after TSR_ISSUE_WAIT_MAX RV cycles the push faults (CC §7.3).

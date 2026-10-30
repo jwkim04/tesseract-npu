@@ -10,10 +10,11 @@
 //     route under the fixed and one random schedule. Every replay must pass every comparison of SW §5.4
 //     (the DONE fields incl. the kernel's RET rule, expect regions, written / read DRAM, per-unit counts,
 //     error records and push-stream projections), i.e. the kernel route gives the tile-only route's
-//     results. The race detector runs in report mode and no report other than SPM_STALE is allowed;
-//     SPM_STALE (a replayed op reads SPM that nothing wrote since the launch's LQ_POP, V2-SW-4) is a
-//     property of some generated traces (traces/m2, gen, m3 read the simulator's initial SPM fill: an
-//     open issue of the generator, not of the kernel) and is counted and allowed only for those sets.
+//     results. The race detector runs in report mode and allows no report, SPM_STALE included (a
+//     replayed op reads SPM that nothing wrote since the launch's LQ_POP, V2-SW-4): every generated
+//     set obeys the launch-stateless rule since the generator loads strided QACT sources' stride gaps
+//     (2026-10-30, SW §5.6; until then 41 traces of m2, gen and m3 read the initial SPM fill and were
+//     allowed here).
 //   Also: a synthetic stream of 3,100 records (three chunks: the kernel's own chunk LDs interleave
 //     with the replayed DMA ops, whose deps reach across chunk boundaries) generated with
 //     tsr_trace2_run_ops and replayed through the kernel under 8 schedules; and the SERIAL flag on a
@@ -344,12 +345,12 @@ int main(int argc, char ** argv) {
     }
     const uint32_t n_sched = all ? 2u : 8u;
     const size_t sample = all ? 0 : 6;
-    set_run(root, "m2", 0, sample, n_sched, 1);
-    set_run(root, "gen", 0, sample, n_sched, 1);
+    set_run(root, "m2", 0, sample, n_sched, 0);
+    set_run(root, "gen", 0, sample, n_sched, 0);
     set_run(root, "vu", 0, sample, n_sched, 0);
     set_run(root, "at", 0, sample, n_sched, 0);
     set_run(root, "ctrl", 0, sample, n_sched, 0);
-    if (all) set_run(root, "m3", 0, 0, n_sched, 1);
+    if (all) set_run(root, "m3", 0, 0, n_sched, 0);
     set_run(root, "model-v1conv/qwen05b-q8_0", TSR_REPLAY_F_SERIAL, all ? 0 : 3, n_sched, 0);
     set_run(root, "model-v1conv/qwen05b-q4_k_m-requant", TSR_REPLAY_F_SERIAL, all ? 0 : 3, n_sched, 0);
     synthetic(all ? 2u : 8u);

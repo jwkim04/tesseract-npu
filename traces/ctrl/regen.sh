@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # traces/ctrl/regen.sh [BUILD_DIR] — issue-path regression traces (trace v2 `ops`, docs/v2/06-software-
 # verification.md §5.6 "new"; docs/v2/04-control-core.md §7-§9): tsr-trace-gen v2 --ops ctrl, then
-# every trace replayed under the fixed and two random schedules (race detector fatal).
+# every trace replayed under the fixed and two random schedules (race detector fatal),
+# tile-only and through the replay kernel (one launch per trace: SPM_STALE is fatal, SW §4.6).
 #
 #   tmax8/    64 traces, U200 config with T_MAX 8, CAPS VU|ATT, U200 depths (8, 4, 4, 16, 0, 4):
 #             bursts beyond the queue depth on every unit (credits, back-pressure, issue-FIFO full),
@@ -27,3 +28,4 @@ rm -rf "$HERE"/tmax8 "$HERE"/errors "$HERE"/deep "$HERE"/shallow "$HERE"/nocaps
 "$GEN" -q --ops ctrl --prefix ctrl -o "$HERE/shallow" -n 16 -s 64 --t-max 8 --errors 30 --q-depth 1,1,1,1,0,1
 "$GEN" -q --ops ctrl --prefix ctrl -o "$HERE/nocaps"  -n 16 -s 65 --t-max 8 --errors 30 --caps none
 v2_replay "$HERE"
+v2_replay_kernel "$HERE"

@@ -126,7 +126,7 @@ extents, six queues with registered heads, SYNC, invariants I1–I4, DB's hard h
 even / odd SPM with per-bank round robin and the DMA LD burst reservation, every clock-domain
 crossing (handshakes for the rings, gray counters for single-step counters), the core-domain SR
 sequencer for `SOFT_RESET`, the `ap_ctrl_none` adapter, the floorplan C'' with the SLR1 budget
-(≈ 62–71 % LUT against a 65 % gate with ordered remedies), the timing gates T1–T4 with the
+(≈ 62–72 % LUT against a 65 % gate with ordered remedies), the timing gates T1–T4 with the
 cycle-identical gather fix, and the RTL verification plan.
 
 **DB — debug (`05-debug.md`).** RISC-V debug through the debug module's DMI in the core CSR
@@ -345,7 +345,7 @@ the alternatives and the full rationale.
 
 | Id | Topic | Choice | Rationale |
 |---|---|---|---|
-| V2-CC-1 | Ibex pin and configuration | OpenTitan-locked Ibex commit, unmodified; RV32IMC+Zicsr+Zifencei, RV32MFast, RegFileFPGA, no PMP/ICache/predictor/WB stage, 2 triggers, MHPMCounterNum 0 | A silicon-signed-off state in the verified small configuration |
+| V2-CC-1 | Ibex pin and configuration | OpenTitan-locked Ibex commit, unmodified; RV32IMC+Zicsr+Zifencei, RV32MFast, RegFileFPGA, no PMP/ICache/predictor/WB stage, 2 triggers, MHPMCounterNum 0 (pipeline amended by V2-CC-34) | A silicon-signed-off state in the verified small configuration |
 | V2-CC-2 | Debug module | Upstream riscv-dbg dm_top without its JTAG DTM; DMI from CSR 0xC00-0xDFC; SBA connected | D18 needs a standard DM; the debugger speaks DMI directly |
 | V2-CC-3 | TCMs | ITCM 128 KiB + DTCM 64 KiB, RAMB36 32K × 1 columns, read latency 1 (48 RAMB36) | Executor, two model families, M8 and debug fit without overlays |
 | V2-CC-4 | SPM line-buffered alias | 0x5000_0000 alias whose loads hit a one-line buffer, invalidated by SPM stores, window accesses, interrupt edges and SPM_LB_INV | Op lists read about 7× faster while keeping the memory model |
@@ -378,6 +378,7 @@ the alternatives and the full rationale.
 | V2-CC-31 | SR sequencer | Core-domain sequencer for EX's SOFT_RESET (RISC-V reset within 2^16 cycles, drain, clear list, SR_BUSY), independent of clk_rv | The host needs an atomic known-state operation even without clk_rv |
 | V2-CC-32 | ISSUE_PIDX | clk_rv counter of ticketed pushes at control window 0x03C, equal to the dispatcher's pidx; +1 per ISSUE_PUSH and per QCLEAR only | Exact and timing-independent like ISSUED_SEQ, for about 40 FF |
 | V2-CC-33 | SBA write refusal | Every SBA write to the control and core windows refused in hardware, and SBA TCM writes while RV_RUN = 0 | LQ_POP, LCQ_POST, LOG_PUSH and TRACE_MARK have protocol effects; a whole-window rule is simple to verify |
+| V2-CC-34 | Ibex pipeline (amends V2-CC-1) | Ibex "maxperf" pipeline: WritebackStage 1, BranchTargetALU 1, RV32MSingleCycle; TCMs take one data access per cycle; the simulator's default timing model. T1 fallback: RV32MFast, then the configuration with the lower time per op record | −16 to −22 % RISC-V cycles per op record on the simulator for ≈ +0.5–1 K LUT and +2 DSP |
 
 ### 6.5 DB — debug and profiling (`05-debug.md`)
 
@@ -418,7 +419,7 @@ the alternatives and the full rationale.
 | V2-SW-5 | Trace v2 layout | One directory per launch; single push-ordered ops/push.bin (48-byte records, relative tickets); images shared by id | Replay needs the global push order |
 | V2-SW-6 | v1 trace migration | Regenerate m2/m3/gen with tsr-trace-gen v2 (same seeds); convert the 290 model traces to serial chains (traces/model-v1conv, replay SERIAL); drop traces/tmp | 254 error expectations must be re-derived anyway; the model traces check v1-to-v2 unit equivalence |
 | V2-SW-7 | Toolchain | xPack riscv-none-elf-gcc 14.2.0-3 (with GDB) in user space, the only supported compiler; Spike and dtc from source; Clang optional | No sudo, pinned; distro GCC lacks the rv32imc multilib and libstdc++ headers |
-| V2-SW-8 | Firmware language rules | Freestanding C++20, no heap/exceptions/RTTI/libstdc++ headers, -Os, libgcc only; no f32 math in firmware | No soft-float path; the host computes every constant |
+| V2-SW-8 | Firmware language rules | Freestanding C++20, no heap/exceptions/RTTI/libstdc++ headers, -Os (hot path -O2, V2-SW-34), libgcc only; no f32 math in firmware | No soft-float path; the host computes every constant |
 | V2-SW-9 | Image identity | EX §3.2: 8-byte .tsr_id = first 8 SHA-256 bytes (little-endian uint64) over PT_LOAD; echoed in HELLO r2/r3 | Identifies the build; CRC and VERIFY prove the transfer |
 | V2-SW-10 | Host/RISC-V protocol | Withdrawn: EX's LQ/LCQ protocol with runtime contract R1-R10, up to LQ_DEPTH launches outstanding | EX owns the launch protocol |
 | V2-SW-11 | Logging | Binary FMT records (format-string address + args) with DB's header through EX's log ring; whole-record drop with a counter; runtime filter LOG_CFG.LEVEL | No TCM spent on strings; readable when queues wedge |
@@ -444,6 +445,8 @@ the alternatives and the full rationale.
 | V2-SW-31 | GELU in llama.cpp graphs | GGML GELU and GEGLU map to the VU's GELU16/GEGLU16; exact tanh GELU for M8/PyTorch | Matches the CPU's fp16-table form |
 | V2-SW-32 | Mask summaries | Backend writes the MSUM (and an f32 copy for GENERAL masks) on set_tensor of 'kq_mask' tensors, reserved via get_alloc_size; FA refers to it via the preload table | The cached op list stays valid per token; the device never reads F16 |
 | V2-SW-33 | Unselected graph branches | DUP, non-KV SET_ROWS and nodes without GGML_TENSOR_FLAG_COMPUTE unsupported; graph_compute skips flagless nodes | Prevents a second split and launch per token |
+| V2-SW-34 | Firmware optimisation flags (amends V2-SW-8) | -Os for the image; kernels/graph.cpp and kernels/k_*.cpp add -O2 | −1 % per MUL_MAT record, −5 to −7 % per JOIN / NOP record, −23 % RISC-V time per 0.5B layer for +2.2 KiB ITCM |
+| V2-SW-35 | Executor hot path | Records read in place after the op's control-window accesses; T = 1 MUL_MAT fast path (leaf, one credit read per op, ring alloc without deps); planning stays in firmware; spm_ring O(1), 128-block table; streamed lists keep W2a's chunk-LD position; the executor's and MUL_MAT's pushes are W2a's except PROF markers, pinned by trace-digest tests | The MVM no longer idles on issue; 1,518 → 387 RISC-V cycles per 0.5B decode record as spin-free work with deep queues (Ibex maxperf; small 1,966 → 485); 401 with U200 queues, 437 by W2a's method |
 
 ---
 
@@ -472,7 +475,7 @@ incompatible fix of the same problem; the others below were applied with a delib
 
 | # | Risk | Effect | Mitigation |
 |---|---|---|---|
-| 1 | SLR1 LUT ≈ 62–71 % (up to 79 % with the VU at + 30 %) against the 65 % gate | k4 link below 276.3 MHz | out-of-context VU run before T2; ordered remedies: VU shrink knobs (−8.7 K), DB `HAS_TRW` / `HIST_DEPTH` off, VU lanes to SLR0 (CC §14.1) |
+| 1 | SLR1 LUT ≈ 62–72 % (up to 79 % with the VU at + 30 %) against the 65 % gate | k4 link below 276.3 MHz | out-of-context VU run before T2; ordered remedies: VU shrink knobs (−8.7 K), DB `HAS_TRW` / `HIST_DEPTH` off, VU lanes to SLR0 (CC §14.1) |
 | 2 | k4 link timing with the control core, VU, AT cluster modes (DSP input mux, capture bank, gather ATT path) and DB | core clock below 276.3 MHz (D13 restated) | OOC runs per block, the cycle-identical gather fix, registered boundaries, half-rate ATTPV fallback (bit-exact) |
 | 3 | AT cluster modes add ≈ 19–27 K LUT per cluster in SLR0 / SLR2 (≈ 50–54 % each) | congestion in the cluster SLRs | per-mode floorplan check in the first OOC run; trim the capture bank (numeric contract change before freeze only) |
 | 4 | v++ 2024.2 refuses `ap_ctrl_none` with `m_axi` args or the `ap_clk_2` frequency request | no v2 xclbin | EX §9.1 fallback (`ap_ctrl_hs`, never run); BUFGCE_DIV clock; checked in the first smoke link |
@@ -480,7 +483,7 @@ incompatible fix of the same problem; the others below were applied with a delib
 | 6 | Ibex / riscv-dbg details differ from the design (`RV_HALTED` heuristic, triggers, `crash_dump_o`, SBA codes) | wrong halt detection or missing debug features | all marked *confirm*; `tb/ctrl` cross-checks against `dmstatus`; DMI fallback |
 | 7 | GELU16 differs from the CPU's libm-based table in 272 of 65,536 entries (0.415 %; 7 by 2 fp16 ulp, where the table's f32 form cancels; GELU16 is the correctly rounded value in all, VU §6.5); Gemma 4 FA-on baselines are new | residual Gemma 4 KL gap | exhaustive fp16 enumeration (`ref_math_gelu16`, done in W0) and the KL with and without `GGML_GELU_FP16` before the VU RTL freeze |
 | 8 | No Gemma 4 31B GGUF on the build host | M7 Gemma coverage limited to 12B | 12B is confirmed; 31B rows stay *confirm* until a GGUF is read |
-| 9 | Issue-bound phases (short ops on small models, the `graph` executor's per-op cost) | DDR idles, mostly for 0.5B | ops cover all heads per op, line-buffered SPM alias, measured with `MVM_EMPTY` and TRACE_MARK; an "issue from SPM line" path later |
+| 9 | Issue-bound phases (short ops on small models, the `graph` executor's per-op cost) | DDR idles, mostly for 0.5B | ops cover all heads per op, line-buffered SPM alias, measured with `MVM_EMPTY` and TRACE_MARK; an "issue from SPM line" path later. *Measured* (SW §7.8, executor optimisation): M6's 0.5B layer is never issue-bound (the MVM idles 0.0 % on issue; per record 387 RISC-V cycles of spin-free work with deep queues, 401 with U200 queue depths, 437 by W2a's method, Ibex maxperf); the M7 projection loses 6.2 % of a layer to issue with 25 generic short VU records (1.6 % at 250 MHz), so W2b's VU kinds take the MUL_MAT fast path's form; a deeper DMA queue is the hardware fallback |
 | 10 | Attention of D = 64 models is gather-bound (61 %), and the VU's merge tail is exposed per layer | 0.5B attention slower than DDR allows at long context | accepted for the test model; wider gather later |
 | 11 | D16: no in-tree working path until v2 runs | no regressions on the card in between | `build/v1` and tag `v1-m4`; the software path runs end to end on the simulator before any RTL (W3) |
 | 12 | 4-hour k4 links on a 14 GB host | slow hardware iteration | OOC runs and k1 links first; at most 2–3 k4 links in M6 |

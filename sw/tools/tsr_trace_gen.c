@@ -7,7 +7,7 @@
 //                 [--t-max T] [--num-ch C] [--spm-kib S] [--ch-gib G] [--addr-beat-w W] [--k-max K]
 //                 [--caps CAPS] [--q-depth D0,D1,D2,D3,D4,D5] [--max-k K] [--max-n N]
 //                 [--max-groups G] [--errors PCT] [--no-special] [--max-wbeats B] [--big-pct PCT]
-//                 [--check-sched N] [--no-verify] [-q]
+//                 [--check-sched N] [--no-verify] [--mutant-stale] [-q]
 //
 // Trace i is written to DIR/<prefix>_s<SEED>_<i, 4 digits>/ and depends only on (SEED, i) and the
 // options (no host time, no unordered iteration: the same seed gives byte-identical files).
@@ -58,8 +58,11 @@
 // with a queue listener (each entry's completion code against the prediction; the per-unit error
 // records and the DONE record against the predicted first error); the serial check (the ops that
 // ran, executed one by one in push order with tsr_sim_op on a second simulator, must leave the same
-// SPM, s bank and DRAM: the program is race-free); the host references of v1 for the gen / m2 / m3
-// outputs (tsr_qact, tsr_dot_row, tsr_fadd) and zero for the stores that must not run; then
+// SPM, s bank and DRAM: the program is race-free); the SPM_STALE check (every SPM line an op that
+// ran reads was written by an earlier op that ran, SW §4.6 / V2-SW-4: through the replay kernel a
+// trace is one launch, and the race detector reports any other read); the host references of v1
+// for the gen / m2 / m3 outputs (tsr_qact, tsr_dot_row, tsr_fadd) and zero for the stores that
+// must not run; then
 // tsr_trace2_run_ops fills the trace and must agree with that run; --check-sched N replays the
 // finished trace under N random schedules (tsr_trace2_replay_sim). A mismatch fails the trace
 // (exit 1: simulator or generator bug).
@@ -157,6 +160,7 @@ typedef struct {
     unsigned   check_sched;       // --check-sched N: replay every trace under N random schedules
     int        verify;
     int        quiet;
+    int        mutant_stale;      // --mutant-stale (test only): no gap loads in emit_loads (SPM_STALE)
 } opts_t;
 
 // ---------------------------------------------------------------------------
@@ -795,6 +799,33 @@ static void put_tensor(gen_t * g, uint32_t fmt, uint32_t N, uint32_t K, uint64_t
     free(row);
 }
 
+// LD (whole span or per token) of T vectors placed xs lines apart (M1, M2 and M3 QACT sources).
+// Per token with gaps (xs > xl), each gap between two vectors is loaded too, from the gap beats
+// between them in DRAM, which the host fills with GAP_FILL bytes (the simulator's power-on SPM
+// fill, so the SPM holds what it did before the gap loads existed): the strided QACT's source
+// extent is contiguous ((T-1) x xs + xl lines, CC §8.2), so without them it would read lines that
+// nothing wrote in the trace (SPM_STALE, SW §4.6 / V2-SW-4; stale_check). The whole-span LD covers
+// the gaps itself. No RNG draw: a stream without per-token gaps is unchanged.
+#define GAP_FILL 0xA5u
+static void emit_loads(gen_t * g, uint32_t ch, uint32_t spm, uint64_t beat, uint32_t T, uint32_t xs, uint32_t xl) {
+    if (rng_below(&g->r, 2)) {
+        pend(g, tsr_enc_ld(ch, spm, (uint32_t)beat, (T - 1) * xs + xl));
+        return;
+    }
+    const uint32_t gap = xs > xl ? xs - xl : 0;
+    uint8_t * fill = gap ? (uint8_t *)xmalloc((size_t)gap * 64) : NULL;
+    if (fill) memset(fill, GAP_FILL, (size_t)gap * 64);
+    for (uint32_t t = 0; t < T; ++t) {
+        const uint64_t b = beat + (uint64_t)t * xs;
+        pend(g, tsr_enc_ld(ch, spm + t * xs, (uint32_t)b, xl));
+        if (fill && t + 1 < T && !g->o->mutant_stale) {
+            dram_put(g, ch, b + xl, fill, (size_t)gap * 64);
+            pend(g, tsr_enc_ld(ch, spm + t * xs + xl, (uint32_t)(b + xl), gap));
+        }
+    }
+    free(fill);
+}
+
 // ---------------------------------------------------------------------------
 // M1 programs (--ops gen): LD -> QACT -> MVM (-> MVM ACC) -> ST groups (v1 gen_group)
 // ---------------------------------------------------------------------------
@@ -871,11 +902,7 @@ static int gen_group(gen_t * g) {
     const uint32_t y_span = (T - 1) * ys + yl;
     g->spm_next = spm_y + y_span + rng_below(r, 2);
 
-    if (rng_below(r, 2)) {
-        pend(g, tsr_enc_ld(cx, spm_x, (uint32_t)x_beat, (T - 1) * xs + xl));
-    } else {
-        for (uint32_t t = 0; t < T; ++t) pend(g, tsr_enc_ld(cx, spm_x + t * xs, (uint32_t)(x_beat + (uint64_t)t * xs), xl));
-    }
+    emit_loads(g, cx, spm_x, x_beat, T, xs, xl);
     const int zx = xs == xl && rng_below(r, 2);
     const int zy = ys == yl && rng_below(r, 2);
     g->cov[COV_ZSTRIDE] += zx + zy;
@@ -989,15 +1016,6 @@ static uint32_t pick_k_m2(gen_t * g, uint32_t kind, uint32_t kcap, int * edge) {
     case 0: return bs * (1 + rng_below(r, nmax < 8 ? nmax : 8));
     case 1: if (kcap >= 1024) return 1024 * (1 + rng_below(r, kcap / 1024)); /* fallthrough */
     default: return bs * (1 + rng_below(r, nmax));
-    }
-}
-
-// LD (whole span or per token) of T vectors placed xs lines apart.
-static void emit_loads(gen_t * g, uint32_t ch, uint32_t spm, uint64_t beat, uint32_t T, uint32_t xs, uint32_t xl) {
-    if (rng_below(&g->r, 2)) {
-        pend(g, tsr_enc_ld(ch, spm, (uint32_t)beat, (T - 1) * xs + xl));
-    } else {
-        for (uint32_t t = 0; t < T; ++t) pend(g, tsr_enc_ld(ch, spm + t * xs, (uint32_t)(beat + (uint64_t)t * xs), xl));
     }
 }
 
@@ -2684,6 +2702,48 @@ static int same_regions(const tsr_region * a, size_t na, const tsr_region * b, s
     return 1;
 }
 
+// SPM_STALE check (SW §4.6, V2-SW-4: launches are stateless; EX §2.3 H4): every SPM line in the
+// read extent of an op that ran (its checker extents, as the race detector sees them: a strided
+// operand's extent includes its gap lines, an ACC destination is read) must have been written by
+// an earlier op that ran. Push order is the order of any two conflicting accesses (the program is
+// race-free, and deps and queue order only reach back). Through the replay kernel (SW §7.7) a trace
+// is one launch and the race detector reports such a read as SPM_STALE (TSR_SIM_RACE=fatal: an
+// abort); the tile-only route has no launch window, so the generator checks it here. ran[pidx] =
+// the entry ran (the verification run's events). Returns the number of offending ops (0 = clean).
+static uint32_t stale_check(gen_t * g, unsigned idx, const uint8_t * ran, uint32_t n_ran) {
+    uint8_t * wr = (uint8_t *)xcalloc(g->spm_lines);
+    uint32_t bad = 0;
+    for (uint32_t i = 0; i < g->n_rec; ++i) {
+        const rec_t * r = &g->rec[i];
+        if (r->kind != TSR_TRACE_PUSH_OP || r->ticket == TSR_TICKET_NONE || r->pidx >= n_ran || !ran[r->pidx]) continue;
+        uint32_t u, info;
+        tsr_extents x;
+        if (classify(g, r->w, &u, &info, &x) != TSR_ERR_NONE) continue;
+        for (uint32_t k = 0; k < x.n; ++k) {
+            const tsr_extent * e = &x.e[k];
+            if (e->kind != TSR_EXT_SPM || e->write) continue;
+            uint64_t lo = e->lo;
+            while (lo < e->hi && lo < g->spm_lines && wr[lo]) ++lo;
+            if (lo >= e->hi) continue;
+            uint64_t hi = lo;
+            while (hi < e->hi && hi < g->spm_lines && !wr[hi]) ++hi;
+            if (bad++ < 4)
+                fprintf(stderr, "tsr-trace-gen: trace %u: SPM_STALE: record %u (pidx %u, w0 0x%08x, ticket 0x%08x) reads "
+                                "SPM lines [%llu, %llu) of its extent [%llu, %llu), not written earlier in the trace\n",
+                        idx, i, r->pidx, r->w[0], r->ticket, (unsigned long long)lo, (unsigned long long)hi,
+                        (unsigned long long)e->lo, (unsigned long long)e->hi);
+            break;
+        }
+        for (uint32_t k = 0; k < x.n; ++k) {
+            const tsr_extent * e = &x.e[k];
+            if (e->kind != TSR_EXT_SPM || !e->write) continue;
+            for (uint64_t l = e->lo; l < e->hi && l < g->spm_lines; ++l) wr[l] = 1;
+        }
+    }
+    free(wr);
+    return bad;
+}
+
 // Verification run (fixed schedule) with the listener, the serial check and the host checks.
 // On success *cap holds the run's capture (the caller frees it). Returns 0 on success.
 static int verify_stream(gen_t * g, unsigned idx, const region_t * reg, uint32_t n_reg, tsr_capture * cap) {
@@ -2746,6 +2806,15 @@ static int verify_stream(gen_t * g, unsigned idx, const region_t * reg, uint32_t
                             "predicted count %u {code %u seq %u info 0x%x w0 0x%08x pidx %u}\n", idx, u, q.count,
                     q.err_code, q.err_rel_seq, q.err_info, q.err_w0, q.err_rel_pidx, pu[u].count, pu[u].err_code,
                     pu[u].err_rel_seq, pu[u].err_info, pu[u].err_w0, pu[u].err_rel_pidx);
+            rc = 1;
+        }
+    }
+    // every SPM read of an op that ran: written earlier in the trace (no SPM_STALE)
+    if (rc == 0) {
+        const uint32_t ns = stale_check(g, idx, ev.ran, ev.n);
+        if (ns != 0) {
+            fprintf(stderr, "tsr-trace-gen: trace %u: %u op(s) read SPM not written earlier in the trace (SPM_STALE)\n",
+                    idx, ns);
             rc = 1;
         }
     }
@@ -5120,7 +5189,7 @@ static void usage(void) {
             "                     [--t-max T] [--num-ch C] [--spm-kib S] [--ch-gib G] [--addr-beat-w W]\n"
             "                     [--k-max K] [--caps CAPS] [--q-depth D0,D1,D2,D3,D4,D5] [--max-k K] [--max-n N]\n"
             "                     [--max-groups G] [--errors PCT] [--no-special] [--max-wbeats B] [--big-pct PCT]\n"
-            "                     [--check-sched N] [--no-verify] [-q]\n"
+            "                     [--check-sched N] [--no-verify] [--mutant-stale] [-q]\n"
             "defaults: -n 20 -s 1 --prefix gen --ops gen, U200 config (T_MAX 1, 4 channels, 4 MiB SPM,\n"
             "          16 GiB/ch, ADDR_BEAT_W 28, U200 M6 queue depths 8,4,4,16,0,4), --max-k 4096 --max-n 256\n"
             "          --max-groups 3 --errors 0; --caps: a number, none (0), m6 (VU|ATT), m8 (m6|TOPK|DQROW),\n"
@@ -5132,7 +5201,9 @@ static void usage(void) {
             "          vu / at: every VU / AT op, legal and illegal; ctrl: the issue path (credits, holds,\n"
             "          FENCE, QABORT / QCLEAR, deps across all units, BAD_DEP / DEP_FAILED)\n"
             "--errors PCT: PCT%% of the traces get an error injection (faulting op, BAD_DEP, DEP_FAILED chain,\n"
-            "          QABORT or QCLEAR recovery); --check-sched N: replay each trace under N random schedules\n");
+            "          QABORT or QCLEAR recovery); --check-sched N: replay each trace under N random schedules\n"
+            "--mutant-stale (test only): per-token loads leave the stride gaps unwritten, so a strided QACT\n"
+            "          reads SPM that nothing wrote (SPM_STALE): the verification must refuse the trace\n");
 }
 
 static int parse_u(const char * s, unsigned long lo, unsigned long hi, unsigned long * out) {
@@ -5215,6 +5286,7 @@ int main(int argc, char ** argv) {
         else if (OPT("--check-sched")) { if (parse_u(val, 0, 64, &v)) goto bad; o.check_sched = (unsigned)v; }
         else if (strcmp(a, "--no-special") == 0) o.special = 0;
         else if (strcmp(a, "--no-verify") == 0) o.verify = 0;
+        else if (strcmp(a, "--mutant-stale") == 0) o.mutant_stale = 1;
         else if (strcmp(a, "-q") == 0) o.quiet = 1;
         else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) { usage(); return 0; }
         else goto bad;
