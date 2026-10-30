@@ -1,7 +1,9 @@
 // test_sim_util.h — helpers shared by the simulator / capture / transport tests (prefix sim_).
 #pragma once
 
+#ifndef _GNU_SOURCE   // W2a: C++ compilers predefine it (g++); redefining it warns
 #define _GNU_SOURCE
+#endif
 #include <ftw.h>
 #include <stdint.h>
 #include <stdio.h>

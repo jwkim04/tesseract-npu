@@ -5,8 +5,10 @@
 // Freestanding C++20: no libstdc++ headers, no heap, everything constexpr in namespace tsr.
 // Names as tsr_tables.h without the TSR_ prefix (see sw/tables/gen_tables.py).
 // Builders take a field struct in encoding order (C++20 designated initializers; omitted
-// fields are 0, as every unused field must be), mask each value to its field width and
-// mark every nonzero word in op::used:
+// fields are 0, as every unused field must be), place each value in its field and set
+// op::used to the words that hold a field (<OP>_WORDS). A value wider than its field is a
+// compile error in a constant expression and sets the op's lowest reserved w0 bit at run
+// time (ILLEGAL_OP; mmio.hpp op_put / op_poison_if):
 //     ASMAX({.dst = 100, .src = 100, .mvec = 300, .n_lines = 4, .r = 14, .scale = 0x3E000000u})
 #ifndef TSR_AT_HPP
 #define TSR_AT_HPP
@@ -82,18 +84,21 @@ struct kvst_f {
     uint32_t c0 = 0;          // w4 first cell
     uint32_t src_stride = 0;  // w5 lines; 0 = QA_LINES(A32, E)
 };
-constexpr op KVST(const kvst_f& f) {
+[[gnu::always_inline]] constexpr op KVST(const kvst_f& f) {
     op o{};
+    bool bad = false;
     o.w[0] = OP_KVST;
-    o.w[0] |= (f.kv & 0xFu) << 8;
-    o.w[0] |= (f.n_rows_m1 & 0x3Fu) << 16;
+    o.w[0] |= op_put(f.kv, 0xFu, 8, bad);
+    o.w[0] |= op_put(f.n_rows_m1, 0x3Fu, 16, bad);
     o.w[1] |= f.src;
     o.w[2] |= f.base;
-    o.w[3] |= (f.e64 & 0x1FFu) << 0;
-    o.w[3] |= (f.lg & 0xFFFFu) << 16;
+    o.w[3] |= op_put(f.e64, 0x1FFu, 0, bad);
+    o.w[3] |= op_put(f.lg, 0xFFFFu, 16, bad);
     o.w[4] |= f.c0;
     o.w[5] |= f.src_stride;
-    return op_finish(o);
+    op_poison_if(o, bad, 0x1000u);   // the lowest reserved w0 bit
+    o.used = uint8_t(KVST_WORDS);
+    return o;
 }
 // ATTQK 0x21 (AT §5.2, owner AT)
 constexpr uint32_t ATTQK_FMT           = 0x00000F00u;  // w0[11:8] KV format
@@ -223,29 +228,32 @@ struct attqk_f {
     uint32_t c_hi = 0;      // w6[31:16] cell bound relative to 16 u0
     uint32_t mdst = 0;      // w7 row-maximum vector line; 0 unless MAXOUT
 };
-constexpr op ATTQK(const attqk_f& f) {
+[[gnu::always_inline]] constexpr op ATTQK(const attqk_f& f) {
     op o{};
+    bool bad = false;
     o.w[0] = OP_ATTQK;
-    o.w[0] |= (f.fmt & 0xFu) << 8;
-    o.w[0] |= (f.causal & 0x1u) << 12;
-    o.w[0] |= (f.slide & 0x1u) << 13;
-    o.w[0] |= (f.maxout & 0x1u) << 14;
-    o.w[0] |= (f.g_m1 & 0x3Fu) << 16;
-    o.w[0] |= (f.hg0 & 0x3Fu) << 22;
+    o.w[0] |= op_put(f.fmt, 0xFu, 8, bad);
+    o.w[0] |= op_put(f.causal, 0x1u, 12, bad);
+    o.w[0] |= op_put(f.slide, 0x1u, 13, bad);
+    o.w[0] |= op_put(f.maxout, 0x1u, 14, bad);
+    o.w[0] |= op_put(f.g_m1, 0x3Fu, 16, bad);
+    o.w[0] |= op_put(f.hg0, 0x3Fu, 22, bad);
     o.w[1] |= f.dst;
     o.w[2] |= f.x;
     o.w[3] |= f.base;
-    o.w[4] |= (f.e64 & 0x1FFu) << 0;
-    o.w[4] |= (f.dcode & 0x3u) << 9;
-    o.w[4] |= (f.tq_m1 & 0x7u) << 11;
-    o.w[4] |= (f.gs_m1 & 0x7u) << 14;
-    o.w[4] |= (f.rstride & 0x7FFFu) << 17;
-    o.w[5] |= (f.u0 & 0xFFFFu) << 0;
-    o.w[5] |= (f.n_groups & 0xFFFFu) << 16;
-    o.w[6] |= (f.c_lo & 0xFFFFu) << 0;
-    o.w[6] |= (f.c_hi & 0xFFFFu) << 16;
+    o.w[4] |= op_put(f.e64, 0x1FFu, 0, bad);
+    o.w[4] |= op_put(f.dcode, 0x3u, 9, bad);
+    o.w[4] |= op_put(f.tq_m1, 0x7u, 11, bad);
+    o.w[4] |= op_put(f.gs_m1, 0x7u, 14, bad);
+    o.w[4] |= op_put(f.rstride, 0x7FFFu, 17, bad);
+    o.w[5] |= op_put(f.u0, 0xFFFFu, 0, bad);
+    o.w[5] |= op_put(f.n_groups, 0xFFFFu, 16, bad);
+    o.w[6] |= op_put(f.c_lo, 0xFFFFu, 0, bad);
+    o.w[6] |= op_put(f.c_hi, 0xFFFFu, 16, bad);
     o.w[7] |= f.mdst;
-    return op_finish(o);
+    op_poison_if(o, bad, 0x8000u);   // the lowest reserved w0 bit
+    o.used = uint8_t(ATTQK_WORDS);
+    return o;
 }
 // ATTPV 0x22 (AT §5.3, owner AT)
 constexpr uint32_t ATTPV_FMT           = 0x00000F00u;  // w0[11:8] KV format
@@ -357,26 +365,29 @@ struct attpv_f {
     uint32_t lg = 0;        // w6[15:0] local groups per channel
     uint32_t cstride = 0;   // w7 lines; 0 = R x D / 16
 };
-constexpr op ATTPV(const attpv_f& f) {
+[[gnu::always_inline]] constexpr op ATTPV(const attpv_f& f) {
     op o{};
+    bool bad = false;
     o.w[0] = OP_ATTPV;
-    o.w[0] |= (f.fmt & 0xFu) << 8;
-    o.w[0] |= (f.lsum & 0x1u) << 12;
-    o.w[0] |= (f.g_m1 & 0x3Fu) << 16;
-    o.w[0] |= (f.hg0 & 0x3Fu) << 22;
+    o.w[0] |= op_put(f.fmt, 0xFu, 8, bad);
+    o.w[0] |= op_put(f.lsum, 0x1u, 12, bad);
+    o.w[0] |= op_put(f.g_m1, 0x3Fu, 16, bad);
+    o.w[0] |= op_put(f.hg0, 0x3Fu, 22, bad);
     o.w[1] |= f.dst;
     o.w[2] |= f.p;
     o.w[3] |= f.base;
-    o.w[4] |= (f.e64 & 0x1FFu) << 0;
-    o.w[4] |= (f.dcode & 0x3u) << 9;
-    o.w[4] |= (f.tq_m1 & 0x7u) << 11;
-    o.w[4] |= (f.gs_m1 & 0x7u) << 14;
-    o.w[4] |= (f.pstride & 0x7FFFu) << 17;
-    o.w[5] |= (f.u0 & 0xFFFFu) << 0;
-    o.w[5] |= (f.n_groups & 0xFFFFu) << 16;
-    o.w[6] |= (f.lg & 0xFFFFu) << 0;
+    o.w[4] |= op_put(f.e64, 0x1FFu, 0, bad);
+    o.w[4] |= op_put(f.dcode, 0x3u, 9, bad);
+    o.w[4] |= op_put(f.tq_m1, 0x7u, 11, bad);
+    o.w[4] |= op_put(f.gs_m1, 0x7u, 14, bad);
+    o.w[4] |= op_put(f.pstride, 0x7FFFu, 17, bad);
+    o.w[5] |= op_put(f.u0, 0xFFFFu, 0, bad);
+    o.w[5] |= op_put(f.n_groups, 0xFFFFu, 16, bad);
+    o.w[6] |= op_put(f.lg, 0xFFFFu, 0, bad);
     o.w[7] |= f.cstride;
-    return op_finish(o);
+    op_poison_if(o, bad, 0x2000u);   // the lowest reserved w0 bit
+    o.used = uint8_t(ATTPV_WORDS);
+    return o;
 }
 // ASMAX 0x34 (AT §5.4, VU §5.11, owner AT)
 constexpr uint32_t ASMAX_DST          = 0xFFFFFFFFu;  // w1
@@ -432,17 +443,20 @@ struct asmax_f {
     uint32_t r = 0;        // w5 1..1024
     uint32_t scale = 0;    // w6 f32, finite, normal, > 0
 };
-constexpr op ASMAX(const asmax_f& f) {
+[[gnu::always_inline]] constexpr op ASMAX(const asmax_f& f) {
     op o{};
+    bool bad = false;
     o.w[0] = OP_ASMAX;
     o.w[1] |= f.dst;
     o.w[2] |= f.src;
     o.w[3] |= f.mvec;
-    o.w[4] |= (f.n_lines & 0xFFFFu) << 0;
-    o.w[4] |= (f.stride & 0xFFFFu) << 16;
+    o.w[4] |= op_put(f.n_lines, 0xFFFFu, 0, bad);
+    o.w[4] |= op_put(f.stride, 0xFFFFu, 16, bad);
     o.w[5] |= f.r;
     o.w[6] |= f.scale;
-    return op_finish(o);
+    op_poison_if(o, bad, 0x100u);   // the lowest reserved w0 bit
+    o.used = uint8_t(ASMAX_WORDS);
+    return o;
 }
 // AMASK 0x35 (AT §5.5, VU §5.11, owner AT)
 constexpr uint32_t AMASK_DST          = 0xFFFFFFFFu;  // w1
@@ -510,19 +524,22 @@ struct amask_f {
     uint32_t mstride = 0;  // w6 lines between mask rows
     uint32_t mdst = 0;     // w7 row maxima out
 };
-constexpr op AMASK(const amask_f& f) {
+[[gnu::always_inline]] constexpr op AMASK(const amask_f& f) {
     op o{};
+    bool bad = false;
     o.w[0] = OP_AMASK;
     o.w[1] |= f.dst;
     o.w[2] |= f.src;
     o.w[3] |= f.mask;
-    o.w[4] |= (f.n_lines & 0xFFFFu) << 0;
-    o.w[4] |= (f.stride & 0xFFFFu) << 16;
-    o.w[5] |= (f.r & 0xFFFFu) << 0;
-    o.w[5] |= (f.rpq & 0xFFFFu) << 16;
+    o.w[4] |= op_put(f.n_lines, 0xFFFFu, 0, bad);
+    o.w[4] |= op_put(f.stride, 0xFFFFu, 16, bad);
+    o.w[5] |= op_put(f.r, 0xFFFFu, 0, bad);
+    o.w[5] |= op_put(f.rpq, 0xFFFFu, 16, bad);
     o.w[6] |= f.mstride;
     o.w[7] |= f.mdst;
-    return op_finish(o);
+    op_poison_if(o, bad, 0x100u);   // the lowest reserved w0 bit
+    o.used = uint8_t(AMASK_WORDS);
+    return o;
 }
 // AMERGE 0x36 (AT §5.6, VU §5.11, owner AT)
 constexpr uint32_t AMERGE_INIT         = 0x00001000u;  // w0[12] copy instead of merge
@@ -591,19 +608,22 @@ struct amerge_f {
     uint32_t scale = 0;    // w6 f32, as ASMAX
     uint32_t cstride = 0;  // w7 as the producing ATTPV
 };
-constexpr op AMERGE(const amerge_f& f) {
+[[gnu::always_inline]] constexpr op AMERGE(const amerge_f& f) {
     op o{};
+    bool bad = false;
     o.w[0] = OP_AMERGE;
-    o.w[0] |= (f.init & 0x1u) << 12;
+    o.w[0] |= op_put(f.init, 0x1u, 12, bad);
     o.w[1] |= f.orun;
     o.w[2] |= f.parts;
     o.w[3] |= f.mk;
     o.w[4] |= f.st;
-    o.w[5] |= (f.r & 0xFFFFu) << 0;
-    o.w[5] |= (f.dcode & 0x3u) << 16;
+    o.w[5] |= op_put(f.r, 0xFFFFu, 0, bad);
+    o.w[5] |= op_put(f.dcode, 0x3u, 16, bad);
     o.w[6] |= f.scale;
     o.w[7] |= f.cstride;
-    return op_finish(o);
+    op_poison_if(o, bad, 0x100u);   // the lowest reserved w0 bit
+    o.used = uint8_t(AMERGE_WORDS);
+    return o;
 }
 // ANORM 0x37 (AT §5.7, VU §5.11, owner AT)
 constexpr uint32_t ANORM_OUT        = 0xFFFFFFFFu;  // w1 row r at OUT + r x D/16
@@ -648,15 +668,18 @@ struct anorm_f {
     uint32_t r = 0;      // w4[15:0]
     uint32_t dcode = 0;  // w4[17:16]
 };
-constexpr op ANORM(const anorm_f& f) {
+[[gnu::always_inline]] constexpr op ANORM(const anorm_f& f) {
     op o{};
+    bool bad = false;
     o.w[0] = OP_ANORM;
     o.w[1] |= f.out;
     o.w[2] |= f.orun;
     o.w[3] |= f.l_run;
-    o.w[4] |= (f.r & 0xFFFFu) << 0;
-    o.w[4] |= (f.dcode & 0x3u) << 16;
-    return op_finish(o);
+    o.w[4] |= op_put(f.r, 0xFFFFu, 0, bad);
+    o.w[4] |= op_put(f.dcode, 0x3u, 16, bad);
+    op_poison_if(o, bad, 0x100u);   // the lowest reserved w0 bit
+    o.used = uint8_t(ANORM_WORDS);
+    return o;
 }
 
 }  // namespace tsr

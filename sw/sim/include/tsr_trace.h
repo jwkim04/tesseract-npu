@@ -247,6 +247,9 @@ typedef struct tsr_trace2_result {
     uint64_t core_cycles;           // simulated core cycles of the replayed launch / run
     uint64_t rv_instret;
     int      perf_differs;          // informational: "perf" present and different
+    // P2.5: the replay simulator's race detector at the end (TSR_SIM_RACE / opts.race report): reports,
+    // and of those SPM_STALE (a read of SPM never written since the launch's LQ_POP, V2-SW-4)
+    uint32_t race_reports, race_stale;
 } tsr_trace2_result;
 
 typedef struct tsr_trace2_replay_opts {
@@ -258,7 +261,34 @@ typedef struct tsr_trace2_replay_opts {
     uint64_t           max_cycles;  // simulated-time budget of the run (0: 2^40 core cycles)
     int                verbose;     // 1: every failed comparison on stderr
     int                init_from_reads;  // tsr_trace2_run_ops: replace init by the regions the run read
+    // P2.5: kind ops through the `replay` kernel of a firmware image (SW §5.4, §7.7; EX §4.6) instead
+    // of the tile-only route (the default, replay_image NULL). The image is booted like a kind-launch
+    // trace's; push.bin is written at "ops.load" and launched as replay(handle, count, flags |
+    // TSR_REPLAY_F_BUF, buffer line, chunk records), with the SPM buffer placed outside every SPM
+    // extent of the trace's ops; the captured launch is translated back to the ops view (the kernel's
+    // own chunk LDs and FENCEs removed, tickets and push indices renumbered, the push.bin reads dropped)
+    // and compared like a tile-only replay. tsr_trace2_run_ops ignores these fields.
+    const char *       replay_image;     // ELF path of an image with the kernel; NULL: tile-only route
+    const char *       replay_kernel;    // its name in .tsr_kernels; NULL: "replay"
+    uint32_t           replay_flags;     // TSR_REPLAY_F_SERIAL (traces/model-v1conv, SW §5.4)
+    uint32_t           race;             // P2.5: race detector of the replay simulator: 0 = TSR_SIM_RACE
+                                         // (tsr_sim_opts default), 1 report, 2 fatal
 } tsr_trace2_replay_opts;
+
+// P2.5: the `replay` kernel's arguments (SW §7.7, EX §4.6; sw/ctrl/kernels/replay.cpp holds the same
+// constants): a0 push.bin handle {ch, beat}, a1 record count, a2 flags, a3 buffer line (F_BUF), a4
+// records per chunk (F_BUF; a multiple of 4, at most TSR_REPLAY_CHUNK_MAX; buffer b is at line a3 +
+// b x chunk x 48 / 64, b = 0, 1, and buffer 1 is used only when the stream has more than one chunk).
+// Without F_BUF: chunks of TSR_REPLAY_CHUNK_MAX records in the two 1023-line buffers just below the
+// runtime argument range. RET (SW §7.7 step 4): 0, or 1 + the push index of the first error relative to
+// the first replayed record, the kernel's own chunk LDs not counted; negative: the codes below.
+#define TSR_REPLAY_F_SERIAL      0x1u          // every op record depends on the previous op record only
+#define TSR_REPLAY_F_BUF         0x2u          // a3 / a4 give the SPM buffer and the chunk size
+#define TSR_REPLAY_CHUNK_MAX     1364u         // records per chunk: 64 KiB rounded down to 4 records (1023 lines)
+#define TSR_REPLAY_CHUNKS_MAX    130u          // chunks per stream (DTCM bookkeeping of the own LDs)
+#define TSR_REPLAY_RET_BAD_ARGS  0x80000101u   // flags, buffer or chunk out of range
+#define TSR_REPLAY_RET_TOO_LONG  0x80000102u   // more than TSR_REPLAY_CHUNKS_MAX chunks
+#define TSR_REPLAY_RET_STREAM    0x80000103u   // a chunk LD failed (DMA error state or QABORT from the trace)
 
 // Replays t on a fresh simulator built from its config (or cfg_or_null) under sched_or_null and
 // compares (SW §5.4). Kind launch: load the image through the host CSR loader (receive CRC and
@@ -266,7 +296,7 @@ typedef struct tsr_trace2_replay_opts {
 // tile-only replay through the issue port (ISSUE_W / DEP / ISSUE_PUSH, QCTRL and TRACE_MARK
 // stores, as tsr_sim_push / tsr_sim_qctrl do) with deps mapped back as (u, base_u + rel), each
 // store waiting for its credit / FIFO space like the replay kernel (no ISSUE_WAIT_MAX timeout),
-// then until QIDLE (until the `replay` kernel of SW §7.7 exists; P2.5 adds that route). Returns 0 when every
+// then until QIDLE; with o->replay_image through the `replay` kernel (P2.5, above). Returns 0 when every
 // comparison passed, 1 on a mismatch, 2 on a setup failure (r filled in every case).
 int tsr_trace2_replay_sim(const tsr_trace2 * t, const tsr_config * cfg_or_null, const char * sched_or_null,
                           tsr_trace2_result * r);
@@ -284,7 +314,8 @@ int tsr_trace2_run_ops(tsr_trace2 * t, const tsr_trace2_replay_opts * o, tsr_tra
 // ---------------------------------------------------------------------------
 // Capture covers one launch from its LQ_POP to its answer record (LCQ_POST with ANSWER): DRAM read
 // before written (init, first-read copies), DRAM written (expect, content at the answer), the
-// pushes (PUSH / QCTRL queue events, TRACE_MARK stores) with relative tickets, per-unit counts and
+// pushes (PUSH / QCTRL queue events, TRACE_MARK stores) with relative tickets (W2a: and the launch's
+// own LAUNCH_BEGIN / LAUNCH_END markers with their SEQ field 0, SW §5.5), per-unit counts and
 // error records at the answer, the DONE record, the image. Only LAUNCH descriptors without
 // reserved bits answered by a DONE record become traces (PING, BAD_DESC types, launches answered
 // by TRAP or killed by a reset are counted as skipped). The image is the ELF given to

@@ -19,19 +19,30 @@
 //     writes (one PT_LOAD per maximal run of loaded words, contents at the RV_RUN rise, entry
 //     RV_BOOT + 0x80, no section headers); its id is EX §3.2's hash of those segments. The HELLO
 //     id is not compared (test firmware posts constants).
-//   - Kind ops is replayed tile-only (until the `replay` kernel, SW §7.7 / P2.5): each record goes
-//     in through the control window from outside the time base, waiting for its credit or FIFO
-//     space by advancing to the next event (what the replay kernel does with WAIT_CREDIT), then the
-//     run continues until QIDLE. Its DONE is the replay kernel's answer (SW §7.7 step 4).
+//   - Kind ops is replayed tile-only by default: each record goes in through the control window
+//     from outside the time base, waiting for its credit or FIFO space by advancing to the next
+//     event (what the replay kernel does with WAIT_CREDIT), then the run continues until QIDLE. Its
+//     DONE is the replay kernel's answer (SW §7.7 step 4). P2.5 adds the route through the `replay`
+//     kernel of a firmware image (tsr_trace2_replay_opts.replay_image; "kernel_replay" below).
 //   - CTL_ID / CFG3 in "config" are informational on replay (CTL_ID.DM depends on the models
 //     linked into the library): a difference is a warning, not a failure.
 //   - meta.json: integers in decimal (ret signed), rv_ratio with 17 significant digits, the
 //     image id as 16 lower-case hex digits; unknown keys are refused on read.
+//   - W2a: the launch's own LAUNCH_BEGIN / LAUNCH_END markers (DB §8.4: class 1 / 2, [27:16] the
+//     descriptor's KERNEL, [15:0] the launch SEQ low bits; the SDK runtime pushes them around every
+//     kernel) are stored launch-relative: SEQ field 0, like the relative tickets and push indices.
+//     Otherwise a launch captured with SEQ s != 0 could never replay on a freshly booted simulator,
+//     where it runs as SEQ 0 (SW §10.1 "launch traces"). Only a marker naming exactly this launch's
+//     kernel and SEQ is rewritten, so the random markers of the generated sets pass unchanged (and
+//     on a fresh simulator, SEQ 0, the rewrite is the identity).
 
 #define _GNU_SOURCE
 
 #include "tsr_trace.h"
 #include "tsr_sim_int.h"
+#if defined(TSR_SIM_HAVE_RACE) && TSR_SIM_HAVE_RACE
+#include "tsr_race.h"     // P2.5: race report counts of a replay
+#endif
 
 #include <dirent.h>
 #include <errno.h>
@@ -1801,6 +1812,17 @@ static void cur_start(tmodel * m, int run) {
     tsr_sim_capture_begin(sim);
 }
 
+// W2a: the launch's own LAUNCH_BEGIN / LAUNCH_END marker with its SEQ field made launch-relative (0);
+// every other marker value unchanged (decisions above).
+static uint32_t launch_mark_rel(const cap_cur * c, uint32_t v) {
+    const uint32_t cls = TSR_GET(v, TSR_MARK_CLASS);
+    if ((cls == TSR_MARK_CLASS_LAUNCH_BEGIN || cls == TSR_MARK_CLASS_LAUNCH_END) &&
+        TSR_GET(v, TSR_MARK_LAUNCH_KERNEL) == (TSR_GET(c->desc[0], TSR_DESC_KERNEL) & (TSR_MARK_LAUNCH_KERNEL >> TSR_MARK_LAUNCH_KERNEL_LSB)) &&
+        TSR_GET(v, TSR_MARK_LAUNCH_SEQ) == (c->seq & TSR_MARK_LAUNCH_SEQ))
+        return v & ~TSR_MARK_LAUNCH_SEQ;
+    return v;
+}
+
 static void cur_push(cap_cur * c, const tsr_trace_push * p) {
     if (c->n_push == c->cap_push) {
         c->cap_push = c->cap_push ? 2 * c->cap_push : 64;
@@ -2155,6 +2177,7 @@ static void m_q(void * ctx, tsr_sim * sim, const tsr_q_event * ev) {
     } else {
         p.w[0] = ev->w[0];
         p.kind = ev->kind == TSR_QEV_QCTRL ? TSR_TRACE_PUSH_QCTRL : TSR_TRACE_PUSH_MARK;
+        if (p.kind == TSR_TRACE_PUSH_MARK && !m->cur.run) p.w[0] = launch_mark_rel(&m->cur, p.w[0]);
     }
     cur_push(&m->cur, &p);
 }
@@ -2473,6 +2496,7 @@ static tsr_sim * replay_sim(const tsr_trace2 * t, const tsr_trace2_replay_opts *
     so.sched = o->sched;
     so.rv_ratio = o->rv_ratio != 0.0 ? o->rv_ratio : t->rv_ratio;
     so.q_depth = t->cfg.q_depth;
+    so.race = o->race;                                // P2.5: 0 keeps TSR_SIM_RACE
     so.itcm_bytes = t->cfg.itcm_bytes;
     so.dtcm_bytes = t->cfg.dtcm_bytes;
     tsr_sim * sim = tsr_sim_create_opts(&cfg, &so);
@@ -2623,6 +2647,396 @@ static void compare(const tsr_trace2 * w, const tsr_trace2 * g, tsr_sim * sim, i
     }
 }
 
+// ---------------------------------------------------------------------------
+// P2.5: kind ops through the firmware's `replay` kernel (SW §5.4, §7.7; EX §4.6). Decisions:
+//   - The kernel is found by name in the image's .tsr_kernels (entry stride 32 or 36 bytes, the name
+//     at byte 12: SW §6.2's field list; whichever stride gives a valid table).
+//   - push.bin goes to "ops.load" (choose_load when the trace has none), written by the host before
+//     the launch (EX §2.3 H1). The SPM buffer is the highest run of free lines below the runtime
+//     argument range that no SPM extent of the trace's ops touches (the checker's extents of every
+//     accepted op record): one buffer of the whole stream when it fits one chunk, else two
+//     TSR_REPLAY_CHUNK_MAX buffers. So the kernel's buffer reads never race with the replayed ops.
+//   - The captured launch (kind launch, base_u at kernel entry) is turned back into the ops view: the
+//     kernel's own records are its chunk LDs (LD from the push.bin range into the buffer) and every
+//     record after the last replayed one (the kernel's and the runtime's FENCEs); the remaining
+//     records' deps, the error records' sequences and push indices, and the DONE record's ticket and
+//     push index are renumbered without the own records (rel - own records of that unit / of any unit
+//     pushed earlier with a smaller sequence / push index), counts lose the own records, and the
+//     DRAM read of push.bin is removed from the reads. The result is compared exactly as a tile-only
+//     replay (compare below).
+// ---------------------------------------------------------------------------
+static int kr_find_kernel(const uint8_t * b, const img_info * e, const char * name, uint32_t * index) {
+    static const uint64_t strides[2] = { 32, 36 };
+    if (!e->has_kernels) return -1;
+    for (int s = 0; s < 2; ++s) {
+        const uint64_t st = strides[s];
+        if (e->k_size == 0 || e->k_size % st != 0) continue;
+        const uint64_t n = e->k_size / st;
+        int valid = 1, found = -1;
+        for (uint64_t i = 0; i < n && valid; ++i) {
+            const uint8_t * nm = b + e->k_off + st * i + 12;
+            const uint64_t cap = st - 12;
+            uint64_t L = 0;
+            while (L < cap && nm[L] >= 0x20 && nm[L] < 0x7F) ++L;
+            if (L == 0 || L == cap) { valid = 0; break; }
+            for (uint64_t k = L; k < cap; ++k)
+                if (nm[k] != 0) valid = 0;
+            if (valid && strlen(name) == L && memcmp(nm, name, L) == 0 && found < 0) found = (int)i;
+        }
+        if (valid && found >= 0) {
+            *index = (uint32_t)found;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+// Lines [*line, *line + need) below spm_lines - 16 that no SPM extent of t's accepted op records
+// touches, the highest such run. 0, or -1 when there is none.
+static int kr_spm_buffer(tsr_sim * sim, const tsr_trace2 * t, uint32_t need, uint32_t * line) {
+    const uint32_t L = tsr_sim_spm_lines(sim);
+    if (L < 16u + need) return -1;
+    uint8_t * used = (uint8_t *)xcalloc(L, 1);
+    for (size_t i = 0; i < t->n_push; ++i) {
+        const tsr_trace_push * p = &t->push[i];
+        if (p->kind != TSR_TRACE_PUSH_OP) continue;
+        const uint32_t u = tsr_trace2_push_unit(&t->cfg, p);
+        const tsr_op_handler * h = tsr_sim_op_handler((uint8_t)(p->w[0] & 0xFFu));
+        if (u == TSR_UNIT_SYNC || h == NULL || h->check == NULL) continue;
+        tsr_extents ext;
+        memset(&ext, 0, sizeof(ext));
+        uint32_t info = 0;
+        if (h->check(sim, p->w, &ext, &info) != 0) continue;     // a failing op touches nothing
+        for (uint32_t k = 0; k < ext.n; ++k) {
+            if (ext.e[k].kind != TSR_EXT_SPM) continue;
+            for (uint64_t l = ext.e[k].lo; l < ext.e[k].hi && l < L; ++l) used[l] = 1;
+        }
+    }
+    int rc = -1;
+    uint32_t run = 0;
+    for (uint32_t l = L - 16u; l-- > 0;) {
+        run = used[l] ? 0u : run + 1u;
+        if (run == need) {
+            *line = l;
+            rc = 0;
+            break;
+        }
+    }
+    free(used);
+    return rc;
+}
+
+// Boots the image, waits for HELLO, pushes descriptor d and waits for its answer (as launch_replay).
+static int kr_launch(tsr_sim * sim, tmodel * m, const uint8_t * image, size_t image_n, const uint32_t d[8],
+                     uint64_t max_cycles, tsr_trace2 ** got, char * why, size_t wn) {
+    *got = NULL;
+    m->on = 1;
+    if (boot_image(sim, image, image_n, why, wn)) return -1;
+    uint32_t lcq_rd = tsr_sim_csr_read(sim, TSR_CSR_LCQ_RD);
+    int hello = 0, pushed = 0, answered = 0, idle_steps = 0;
+    uint32_t seq = 0, ans_type = 0;
+    const uint64_t t_start = tsr_sim_now(sim);
+    uint64_t last_progress = 0;
+    while (!answered) {
+        const uint32_t ev = tsr_sim_advance(sim, STEP_CYCLES);
+        const uint32_t wr = tsr_sim_csr_read(sim, TSR_CSR_LCQ_WR);
+        for (uint32_t k = lcq_rd; k != wr; ++k) {
+            const uint32_t r0 = tsr_sim_csr_read(sim, TSR_CSR_LCQ_REC(k % TSR_LCQ_DEPTH, 0));
+            const uint32_t r1 = tsr_sim_csr_read(sim, TSR_CSR_LCQ_REC(k % TSR_LCQ_DEPTH, 1));
+            const uint32_t type = TSR_GET(r0, TSR_LCQ_R0_TYPE);
+            if (!hello) {
+                if (type != TSR_LCQ_R0_TYPE_HELLO) {
+                    seterr(why, wn, "the first record after boot is type 0x%02x, not HELLO (EX §3.4)", type);
+                    return -1;
+                }
+                hello = 1;
+            } else if (pushed && r1 == seq &&
+                       (type == TSR_LCQ_R0_TYPE_DONE || type == TSR_LCQ_R0_TYPE_PONG || type == TSR_LCQ_R0_TYPE_TRAP)) {
+                answered = 1;
+                ans_type = type;
+            }
+        }
+        lcq_rd = wr;
+        tsr_sim_csr_write(sim, TSR_CSR_LCQ_RD, wr);
+        tsr_sim_csr_write(sim, TSR_CSR_LOG_RD, tsr_sim_csr_read(sim, TSR_CSR_LOG_WR));   // log content is not compared
+        if (hello && !pushed) {
+            seq = tsr_sim_csr_read(sim, TSR_CSR_LQ_SEQ);
+            for (uint32_t i = 0; i < 8; ++i) tsr_sim_csr_write(sim, TSR_CSR_LQ_W(i), d[i]);
+            tsr_sim_csr_write(sim, TSR_CSR_LQ_PUSH, 1u);
+            pushed = 1;
+        }
+        if (answered) break;
+        const uint32_t rt = tsr_sim_csr_read(sim, TSR_CSR_RT_STATE);
+        if (TSR_GET(rt, TSR_RT_STATE_PHASE) == TSR_RT_STATE_PHASE_TRAPPED) {
+            seterr(why, wn, "the firmware trapped (RT_STATE 0x%08x, RT_INFO 0x%08x, pc 0x%08x)", rt,
+                   tsr_sim_csr_read(sim, TSR_CSR_RT_INFO), tsr_sim_rv_pc(sim));
+            return -1;
+        }
+        if (tsr_sim_now(sim) - t_start > max_cycles) {
+            seterr(why, wn, "%s within %llu core cycles", hello ? "no answer" : "no HELLO", (unsigned long long)max_cycles);
+            return -1;
+        }
+        const uint64_t progress = tsr_sim_rv_instret(sim) + wr + tsr_sim_csr_read(sim, TSR_CSR_LQ_TAKEN);
+        const uint32_t st = tsr_sim_csr_read(sim, TSR_CSR_STATUS);
+        if ((ev & TSR_SIM_EV_BUDGET) && progress == last_progress && (st & TSR_STATUS_QIDLE) && (st & TSR_STATUS_RV_SLEEP)) {
+            if (++idle_steps >= 2) {
+                seterr(why, wn, "stuck: %s, the hart asleep and the queues idle (STATUS 0x%08x)", hello ? "no answer" : "no HELLO", st);
+                return -1;
+            }
+        } else {
+            idle_steps = 0;
+        }
+        last_progress = progress;
+    }
+    tsr_trace2 * c = tsr_trace2_new();
+    if (tsr_sim_capture_take(sim, c) != 0) {
+        tsr_trace2_free(c);
+        seterr(why, wn, "the launch was answered by a %s record and not captured",
+               ans_type == TSR_LCQ_R0_TYPE_DONE ? "DONE" : ans_type == TSR_LCQ_R0_TYPE_TRAP ? "TRAP" : "PONG");
+        return -1;
+    }
+    *got = c;
+    return 0;
+}
+
+// a < b for 28-bit sequences (within half the space).
+static int kr_seq_lt(uint32_t a, uint32_t b) { return a != b && ((b - a) & SEQ_MASK) < 0x08000000u; }
+
+typedef struct kr_own {
+    uint32_t n[TSR_NUM_UNITS];        // own records per unit
+    uint32_t cap[TSR_NUM_UNITS];
+    uint32_t * seq[TSR_NUM_UNITS];    // their captured relative sequences, in push order
+    uint32_t * at[TSR_NUM_UNITS];     // their record index in the capture
+    uint32_t n_p, cap_p;
+    uint32_t * pidx;                  // captured relative push indices of every own ticketed record
+} kr_own;
+
+static void kr_own_free(kr_own * o) {
+    for (uint32_t u = 0; u < TSR_NUM_UNITS; ++u) { free(o->seq[u]); free(o->at[u]); }
+    free(o->pidx);
+}
+
+// Captured relative sequence crel of unit u -> trace-relative, counting the own records of u pushed
+// before capture record `before` whose sequence is below crel.
+static uint32_t kr_seq_map(const kr_own * o, uint32_t u, uint32_t crel, size_t before) {
+    uint32_t k = 0;
+    for (uint32_t j = 0; j < o->n[u]; ++j)
+        if (o->at[u][j] < before && kr_seq_lt(o->seq[u][j], crel)) ++k;
+    return (crel - k) & SEQ_MASK;
+}
+static uint32_t kr_ticket_map(const kr_own * o, uint32_t t, size_t before) {
+    const uint32_t u = t >> 28;
+    return u < TSR_NUM_UNITS ? (u << 28) | kr_seq_map(o, u, t & SEQ_MASK, before) : t;
+}
+static uint32_t kr_pidx_map(const kr_own * o, uint32_t p) {
+    uint32_t k = 0;
+    for (uint32_t j = 0; j < o->n_p; ++j)
+        if (o->pidx[j] < p) ++k;
+    return p - k;
+}
+
+// Removes bytes [lo, hi) of channel ch from a region list (regions split as needed).
+static void kr_regions_cut(tsr_region ** rr, size_t * nn, uint32_t ch, uint64_t lo, uint64_t hi) {
+    tsr_region * r = *rr;
+    size_t n = *nn;
+    tsr_region * out = (tsr_region *)xmalloc((2 * n + 1) * sizeof(tsr_region));
+    size_t k = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const uint64_t a = r[i].byte_off, b = r[i].byte_off + r[i].size;
+        if (r[i].ch != ch || b <= lo || a >= hi) { out[k++] = r[i]; continue; }
+        if (a < lo) {
+            tsr_region x = { r[i].ch, a, lo - a, (uint8_t *)xmalloc((size_t)(lo - a)) };
+            memcpy(x.data, r[i].data, (size_t)(lo - a));
+            out[k++] = x;
+        }
+        if (b > hi) {
+            tsr_region x = { r[i].ch, hi, b - hi, (uint8_t *)xmalloc((size_t)(b - hi)) };
+            memcpy(x.data, r[i].data + (hi - a), (size_t)(b - hi));
+            out[k++] = x;
+        }
+        free(r[i].data);
+    }
+    free(r);
+    *rr = out;
+    *nn = k;
+}
+
+// The ops view of a captured replay-kernel launch c of trace t (see the decisions above).
+static tsr_trace2 * kr_ops_view(const tsr_trace2 * t, tsr_trace2 * c, uint32_t load_ch, uint64_t load_beat,
+                                uint64_t load_lines, uint32_t buf_lo, uint32_t buf_hi) {
+    tsr_trace2 * g = tsr_trace2_new();
+    g->kind = TSR_TRACE2_KIND_OPS;
+    g->cfg = c->cfg;
+    kr_own own;
+    memset(&own, 0, sizeof(own));
+    uint8_t * is_own = (uint8_t *)xcalloc(c->n_push ? c->n_push : 1, 1);
+    uint32_t * crel = (uint32_t *)xcalloc(c->n_push ? c->n_push : 1, sizeof(uint32_t));
+    uint32_t * cpidx = (uint32_t *)xcalloc(c->n_push ? c->n_push : 1, sizeof(uint32_t));
+    uint32_t cnt[TSR_NUM_UNITS] = { 0 }, pid = 0;
+    size_t replayed = 0;
+    int started = 0;                                               // the kernel's first chunk LD seen
+    for (size_t i = 0; i < c->n_push; ++i) {
+        const tsr_trace_push * p = &c->push[i];
+        uint32_t u = TSR_UNIT_NONE;
+        if (p->kind == TSR_TRACE_PUSH_OP) u = tsr_trace2_push_unit(&c->cfg, p);
+        else if (p->kind == TSR_TRACE_PUSH_QCTRL && (p->w[0] & TSR_QCTRL_QCLEAR)) u = TSR_UNIT_SYNC;
+        const int ticketed = u < TSR_NUM_UNITS;
+        if (ticketed) { crel[i] = cnt[u]++; cpidx[i] = pid++; }
+        int chunk_ld = 0;
+        if (p->kind == TSR_TRACE_PUSH_OP && (p->w[0] & 0xFFu) == TSR_OP_LD) {
+            const uint32_t ch = tsr_w0_sub(p->w[0]);
+            const uint64_t src = p->w[2], lines = p->w[3], dst = p->w[1];
+            chunk_ld = ch == load_ch && src >= load_beat && src + lines <= load_beat + load_lines && dst >= buf_lo &&
+                       dst + lines <= buf_hi;
+        }
+        // Own: the runtime's records before the kernel's first chunk LD (LAUNCH_BEGIN, DB §8.4), the
+        // chunk LDs, and everything after the last replayed record (the kernel's and the runtime's
+        // FENCEs, LAUNCH_END).
+        const int mine = !started || replayed >= t->n_push || chunk_ld;
+        if (chunk_ld) started = 1;
+        is_own[i] = (uint8_t)mine;
+        if (!mine) { replayed++; continue; }
+        if (!ticketed) continue;
+        if (own.n[u] == own.cap[u]) {
+            own.cap[u] = own.cap[u] ? 2 * own.cap[u] : 16;
+            own.seq[u] = (uint32_t *)xrealloc(own.seq[u], own.cap[u] * sizeof(uint32_t));
+            own.at[u] = (uint32_t *)xrealloc(own.at[u], own.cap[u] * sizeof(uint32_t));
+        }
+        own.seq[u][own.n[u]] = crel[i];
+        own.at[u][own.n[u]] = (uint32_t)i;
+        own.n[u]++;
+        if (own.n_p == own.cap_p) {
+            own.cap_p = own.cap_p ? 2 * own.cap_p : 16;
+            own.pidx = (uint32_t *)xrealloc(own.pidx, own.cap_p * sizeof(uint32_t));
+        }
+        own.pidx[own.n_p++] = cpidx[i];
+    }
+    for (size_t i = 0; i < c->n_push; ++i) {
+        if (is_own[i]) continue;
+        tsr_trace_push p = c->push[i];
+        if (p.kind == TSR_TRACE_PUSH_OP) {
+            p.dep[0] = kr_ticket_map(&own, p.dep[0], i);
+            p.dep[1] = kr_ticket_map(&own, p.dep[1], i);
+        }
+        tsr_trace2_add_push(g, &p);
+    }
+    g->n_units = c->n_units;
+    for (uint32_t u = 0; u < TSR_NUM_UNITS && u < c->n_units; ++u) {
+        tsr_trace_unit x = c->unit[u];
+        x.count -= own.n[u];
+        if (x.err_code != 0) {
+            x.err_rel_seq = kr_seq_map(&own, u, x.err_rel_seq, c->n_push);
+            x.err_rel_pidx = kr_pidx_map(&own, x.err_rel_pidx);
+        }
+        g->unit[u] = x;
+    }
+    g->done = c->done;
+    if ((c->done.err_ticket_rel >> 28) < TSR_NUM_UNITS) {
+        g->done.err_ticket_rel = kr_ticket_map(&own, c->done.err_ticket_rel, c->n_push);
+        g->done.err_pidx_rel = kr_pidx_map(&own, c->done.err_pidx_rel);
+    }
+    // DRAM: the kernel reads push.bin, which is no part of the trace.
+    g->mem = c->mem;
+    memset(&c->mem, 0, sizeof(c->mem));
+    kr_regions_cut(&g->mem.init, &g->mem.n_init, load_ch, load_beat * 64u, (load_beat + load_lines) * 64u);
+    g->perf = c->perf;
+    memcpy(g->sched, c->sched, sizeof(g->sched));
+    g->rv_ratio = c->rv_ratio;
+    free(is_own);
+    free(crel);
+    free(cpidx);
+    kr_own_free(&own);
+    return g;
+}
+
+// Kind ops through the replay kernel of o->replay_image: the run part of run_trace.
+static int kernel_replay(tsr_sim * sim, tmodel * m, const tsr_trace2 * t, const tsr_trace2_replay_opts * o,
+                         uint64_t max_cycles, tsr_trace2 ** got, char * why, size_t wn) {
+    *got = NULL;
+    char ferr[256];
+    size_t n = 0;
+    uint8_t * img = read_file(o->replay_image, &n, IMG_MAX_BYTES, ferr, sizeof(ferr));
+    if (img == NULL) {
+        seterr(why, wn, "replay image: %s", ferr);
+        return -1;
+    }
+    img_info e;
+    uint32_t index = 0;
+    const char * kname = o->replay_kernel ? o->replay_kernel : "replay";
+    if (img_parse(img, n, TCM_LIMIT, TCM_LIMIT, &e, ferr, sizeof(ferr))) {
+        seterr(why, wn, "replay image %s: %s", o->replay_image, ferr);
+        free(img);
+        return -1;
+    }
+    if (kr_find_kernel(img, &e, kname, &index)) {
+        seterr(why, wn, "replay image %s has no kernel \"%s\" in .tsr_kernels", o->replay_image, kname);
+        free(img);
+        return -1;
+    }
+    // push.bin in DRAM.
+    uint32_t load_ch = t->load_ch;
+    uint64_t load_off = t->load_offset;
+    if (load_ch == TSR_TRACE2_LOAD_AUTO && choose_load(t, &load_ch, &load_off)) {
+        seterr(why, wn, "no DRAM place for push.bin outside the trace's regions");
+        free(img);
+        return -1;
+    }
+    const uint64_t bytes = (uint64_t)t->n_push * TSR_TRACE_PUSH_BYTES;
+    const uint64_t load_lines = (bytes + 63u) / 64u;
+    if (load_off % 64u != 0 || load_off + load_lines * 64u > tsr_sim_config(sim)->ch_bytes || load_off / 64u > 0x0FFFFFFFu) {
+        seterr(why, wn, "ops.load (ch %u, offset 0x%llx) does not fit the replay configuration", load_ch,
+               (unsigned long long)load_off);
+        free(img);
+        return -1;
+    }
+    if (bytes > 0) {
+        uint8_t * buf = (uint8_t *)xcalloc((size_t)(load_lines * 64u), 1);
+        for (size_t i = 0; i < t->n_push; ++i) {
+            const tsr_trace_push * p = &t->push[i];
+            uint8_t * q = buf + i * TSR_TRACE_PUSH_BYTES;
+            for (int k = 0; k < 8; ++k) wr32(q + 4 * k, p->w[k]);
+            wr32(q + 32, p->dep[0]);
+            wr32(q + 36, p->dep[1]);
+            wr32(q + 40, p->push);
+            wr32(q + 44, p->kind);
+        }
+        tsr_sim_dram_write(sim, load_ch, load_off, buf, load_lines * 64u);
+        free(buf);
+    }
+    // SPM buffer outside the trace's footprint.
+    const uint32_t chunk = t->n_push <= TSR_REPLAY_CHUNK_MAX ? (uint32_t)((t->n_push + 3u) & ~3ull) : TSR_REPLAY_CHUNK_MAX;
+    const uint32_t chunk_lines = chunk * TSR_TRACE_PUSH_BYTES / 64u;
+    const uint32_t nbuf = t->n_push > chunk ? 2u : 1u;
+    uint32_t buf_line = 0;
+    if (chunk > 0 && kr_spm_buffer(sim, t, nbuf * chunk_lines, &buf_line)) {
+        seterr(why, wn, "no %u free SPM lines for the replay kernel's buffer outside the trace's SPM operands",
+               nbuf * chunk_lines);
+        free(img);
+        return -1;
+    }
+    if (o->verbose)
+        fprintf(stderr, "replay: kernel \"%s\" (index %u), push.bin at ch %u 0x%llx, %zu records, buffer lines [%u, %u), "
+                        "%u records per chunk\n", kname, index, load_ch, (unsigned long long)load_off, t->n_push, buf_line,
+                buf_line + nbuf * chunk_lines, chunk);
+    const uint32_t d[8] = { TSR_PUT(TSR_DESC_TYPE, TSR_DESC_TYPE_LAUNCH) | TSR_PUT(TSR_DESC_KERNEL, index),
+                            (load_ch << 28) | (uint32_t)(load_off / 64u),
+                            (uint32_t)t->n_push,
+                            (o->replay_flags & TSR_REPLAY_F_SERIAL) | TSR_REPLAY_F_BUF,
+                            buf_line, chunk ? chunk : 4u, 0u, 0u };
+    tsr_trace2 * c = NULL;
+    const int rc = kr_launch(sim, m, img, n, d, max_cycles, &c, why, wn);
+    free(img);
+    if (rc) return rc;
+    if (o->verbose && getenv("TSR_TRACE_KR_DUMP") != NULL)   // debugging aid: the captured launch
+        for (size_t i = 0; i < c->n_push; ++i)
+            fprintf(stderr, "replay: captured %zu: kind %u w %08x %08x %08x %08x %08x %08x %08x %08x deps %08x %08x push %08x\n", i,
+                    c->push[i].kind, c->push[i].w[0], c->push[i].w[1], c->push[i].w[2], c->push[i].w[3], c->push[i].w[4],
+                    c->push[i].w[5], c->push[i].w[6], c->push[i].w[7], c->push[i].dep[0], c->push[i].dep[1], c->push[i].push);
+    *got = kr_ops_view(t, c, load_ch, load_off / 64u, load_lines, buf_line, buf_line + nbuf * chunk_lines);
+    tsr_trace2_free(c);
+    return 0;
+}
+
 static int run_trace(const tsr_trace2 * t, const tsr_trace2_replay_opts * o, tsr_trace2_result * r, tsr_sim ** sim_out,
                      tsr_trace2 ** got) {
     char why[512];
@@ -2636,6 +3050,7 @@ static int run_trace(const tsr_trace2 * t, const tsr_trace2_replay_opts * o, tsr
     }
     const uint64_t budget = o->max_cycles ? o->max_cycles : (1ull << 40);
     const int rc = t->kind == TSR_TRACE2_KIND_LAUNCH ? launch_replay(sim, m, t, budget, got, why, sizeof(why))
+                   : o->replay_image != NULL         ? kernel_replay(sim, m, t, o, budget, got, why, sizeof(why))   // P2.5
                                                      : ops_replay(sim, m, t, budget, got, why, sizeof(why));
     if (rc != 0) {
         rfailf(r, o->verbose, TSR_TRACE2_CMP_SETUP, "%s", why);
@@ -2663,6 +3078,14 @@ int tsr_trace2_replay_sim_ex(const tsr_trace2 * t, const tsr_trace2_replay_opts 
     const int rc = run_trace(t, o, r, &sim, &got);
     if (rc != 0) return rc;
     compare(t, got, sim, o->verbose, r);
+#if defined(TSR_SIM_HAVE_RACE) && TSR_SIM_HAVE_RACE
+    {   // P2.5: the race detector's verdict for the caller (with TSR_SIM_RACE=report)
+        const tsr_race_report * rr = NULL;
+        const size_t nr = tsr_sim_race_reports(sim, &rr);
+        r->race_reports = (uint32_t)nr;
+        for (size_t i = 0; i < nr; ++i) r->race_stale += rr[i].kind == TSR_RACE_SPM_STALE;
+    }
+#endif
     if (r->ok)
         snprintf(r->msg, sizeof(r->msg), "ok: %s, %zu pushes, %zu init / %zu expect regions, %llu core cycles%s",
                  t->kind == TSR_TRACE2_KIND_LAUNCH ? "launch" : "ops", t->n_push, t->mem.n_init, t->mem.n_expect,
@@ -2703,7 +3126,9 @@ int tsr_trace2_run_ops(tsr_trace2 * t, const tsr_trace2_replay_opts * o, tsr_tra
     }
     tsr_sim * sim = NULL;
     tsr_trace2 * got = NULL;
-    const int rc = run_trace(t, o, r, &sim, &got);
+    tsr_trace2_replay_opts tile_only = *o;   // P2.5: the generator's runs are always tile-only
+    tile_only.replay_image = NULL;
+    const int rc = run_trace(t, &tile_only, r, &sim, &got);
     if (rc != 0) return rc;
     if (!o->init_from_reads) {
         span * is = regions_spans(t->mem.init, t->mem.n_init);

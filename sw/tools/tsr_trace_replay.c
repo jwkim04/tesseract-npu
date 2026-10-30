@@ -20,6 +20,12 @@
 //   --tmax N      replay on a core with T_MAX = N instead of the trace's (a trace must pass on any
 //                 T_MAX at least its own)
 //   -q            print only failures and the summary; -v also every failed comparison
+//   --replay-image ELF   (P2.5) replay kind-ops traces through the `replay` kernel of this firmware
+//                 image (SW §5.4, §7.7) instead of the tile-only route through the issue port; kind
+//                 launch traces are unaffected
+//   --replay-kernel NAME the kernel's name in .tsr_kernels (default "replay")
+//   --serial      (with --replay-image) the replay kernel's SERIAL flag: every op record depends on
+//                 the previous op record (traces/model-v1conv, SW §5.4)
 // Output: one line per trace and schedule ("ok" / "FAIL" with the first difference), then
 //   tsr-trace-replay: <n> traces x <m> schedules: <p> passed, <f> failed, <e> errors
 // Exit status: 0 all passed, 1 a mismatch, 2 a trace that could not be read or set up (or usage).
@@ -85,7 +91,8 @@ static void collect(const char * dir, strlist * out, int depth) {
 }
 
 static void usage(void) {
-    fprintf(stderr, "usage: tsr-trace-replay [-q | -v] [--sched S]... [--rv-ratio R] [--threads N] [--max-cycles N] [--tmax N] PATH...\n"
+    fprintf(stderr, "usage: tsr-trace-replay [-q | -v] [--sched S]... [--rv-ratio R] [--threads N] [--max-cycles N] [--tmax N]\n"
+                    "                        [--replay-image ELF [--replay-kernel NAME] [--serial]] PATH...\n"
                     "  PATH: a trace v2 directory or a set of them (searched recursively for meta.json)\n");
 }
 
@@ -95,6 +102,8 @@ int main(int argc, char ** argv) {
     uint64_t max_cycles = 0;
     uint32_t tmax = 0;
     double rv_ratio = 0.0;
+    const char * replay_image = NULL, * replay_kernel = NULL;   // P2.5: the replay-kernel route
+    uint32_t replay_flags = 0;
     strlist scheds = { 0 }, paths = { 0 };
     for (int i = 1; i < argc; ++i) {
         const char * a = argv[i];
@@ -105,11 +114,14 @@ int main(int argc, char ** argv) {
         else if (strcmp(a, "--threads") == 0 && i + 1 < argc) threads = (unsigned)strtoul(argv[++i], NULL, 0);
         else if (strcmp(a, "--max-cycles") == 0 && i + 1 < argc) max_cycles = strtoull(argv[++i], NULL, 0);
         else if (strcmp(a, "--tmax") == 0 && i + 1 < argc) tmax = (uint32_t)strtoul(argv[++i], NULL, 0);
+        else if (strcmp(a, "--replay-image") == 0 && i + 1 < argc) replay_image = argv[++i];        // P2.5
+        else if (strcmp(a, "--replay-kernel") == 0 && i + 1 < argc) replay_kernel = argv[++i];
+        else if (strcmp(a, "--serial") == 0) replay_flags |= TSR_REPLAY_F_SERIAL;
         else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) { usage(); return 0; }
         else if (a[0] == '-') { fprintf(stderr, "tsr-trace-replay: unknown option %s\n", a); usage(); return 2; }
         else sl_add(&paths, a);
     }
-    if (paths.n == 0) {
+    if (paths.n == 0 || (replay_image == NULL && (replay_kernel != NULL || replay_flags != 0))) {
         usage();
         return 2;
     }
@@ -151,6 +163,9 @@ int main(int argc, char ** argv) {
             o.rv_ratio = rv_ratio;
             o.max_cycles = max_cycles;
             o.verbose = verbose;
+            o.replay_image = replay_image;
+            o.replay_kernel = replay_kernel;
+            o.replay_flags = replay_flags;
             tsr_trace2_result r;
             const int rc = tsr_trace2_replay_sim_ex(t, &o, &r);
             const char * sname = o.sched ? o.sched : "default";

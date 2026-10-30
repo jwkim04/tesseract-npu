@@ -5,8 +5,10 @@
 // Freestanding C++20: no libstdc++ headers, no heap, everything constexpr in namespace tsr.
 // Names as tsr_tables.h without the TSR_ prefix (see sw/tables/gen_tables.py).
 // Builders take a field struct in encoding order (C++20 designated initializers; omitted
-// fields are 0, as every unused field must be), mask each value to its field width and
-// mark every nonzero word in op::used:
+// fields are 0, as every unused field must be), place each value in its field and set
+// op::used to the words that hold a field (<OP>_WORDS). A value wider than its field is a
+// compile error in a constant expression and sets the op's lowest reserved w0 bit at run
+// time (ILLEGAL_OP; mmio.hpp op_put / op_poison_if):
 //     VOP({.cmode = VOP_CMODE_SREG, .func = VOP_FUNC_MULC, .si = 3, .d = 100, .a = 200, .m = 896, .rows = 1})
 #ifndef TSR_VU_HPP
 #define TSR_VU_HPP
@@ -132,22 +134,25 @@ struct vop_f {
     uint32_t a_stride = 0;  // w7[15:0] lines (0 if a is unused)
     uint32_t b_stride = 0;  // w7[31:16] lines (0 if b is unused)
 };
-constexpr op VOP(const vop_f& f) {
+[[gnu::always_inline]] constexpr op VOP(const vop_f& f) {
     op o{};
+    bool bad = false;
     o.w[0] = OP_VOP;
-    o.w[0] |= (f.cmode & 0xFu) << 8;
-    o.w[0] |= (f.func & 0xFFu) << 16;
-    o.w[0] |= (f.si & 0xFu) << 24;
-    o.w[1] |= (f.d & 0xFFFFFFu) << 0;
-    o.w[2] |= (f.a & 0xFFFFFFu) << 0;
-    o.w[3] |= (f.b & 0xFFFFFFu) << 0;
-    o.w[4] |= (f.c & 0xFFFFFFu) << 0;
-    o.w[5] |= (f.m & 0xFFFFFFu) << 0;
-    o.w[6] |= (f.rows & 0xFFFFu) << 0;
-    o.w[6] |= (f.d_stride & 0xFFFFu) << 16;
-    o.w[7] |= (f.a_stride & 0xFFFFu) << 0;
-    o.w[7] |= (f.b_stride & 0xFFFFu) << 16;
-    return op_finish(o);
+    o.w[0] |= op_put(f.cmode, 0xFu, 8, bad);
+    o.w[0] |= op_put(f.func, 0xFFu, 16, bad);
+    o.w[0] |= op_put(f.si, 0xFu, 24, bad);
+    o.w[1] |= op_put(f.d, 0xFFFFFFu, 0, bad);
+    o.w[2] |= op_put(f.a, 0xFFFFFFu, 0, bad);
+    o.w[3] |= op_put(f.b, 0xFFFFFFu, 0, bad);
+    o.w[4] |= op_put(f.c, 0xFFFFFFu, 0, bad);
+    o.w[5] |= op_put(f.m, 0xFFFFFFu, 0, bad);
+    o.w[6] |= op_put(f.rows, 0xFFFFu, 0, bad);
+    o.w[6] |= op_put(f.d_stride, 0xFFFFu, 16, bad);
+    o.w[7] |= op_put(f.a_stride, 0xFFFFu, 0, bad);
+    o.w[7] |= op_put(f.b_stride, 0xFFFFu, 16, bad);
+    op_poison_if(o, bad, 0x1000u);   // the lowest reserved w0 bit
+    o.used = uint8_t(VOP_WORDS);
+    return o;
 }
 // RED 0x31 (VU §5.3, owner VU)
 constexpr uint32_t RED_KIND          = 0x00000F00u;  // w0[11:8]
@@ -233,21 +238,24 @@ struct red_f {
     uint32_t rows = 0;      // w6[15:0] rows
     uint32_t a_stride = 0;  // w7[15:0] lines
 };
-constexpr op RED(const red_f& f) {
+[[gnu::always_inline]] constexpr op RED(const red_f& f) {
     op o{};
+    bool bad = false;
     o.w[0] = OP_RED;
-    o.w[0] |= (f.kind & 0xFu) << 8;
-    o.w[0] |= (f.to_s & 0x1u) << 12;
-    o.w[0] |= (f.sd & 0xFu) << 16;
-    o.w[0] |= (f.post & 0x3u) << 20;
-    o.w[0] |= (f.sk & 0xFu) << 24;
-    o.w[0] |= (f.se & 0xFu) << 28;
-    o.w[1] |= (f.d & 0xFFFFFFu) << 0;
-    o.w[2] |= (f.a & 0xFFFFFFu) << 0;
-    o.w[5] |= (f.m & 0xFFFFFFu) << 0;
-    o.w[6] |= (f.rows & 0xFFFFu) << 0;
-    o.w[7] |= (f.a_stride & 0xFFFFu) << 0;
-    return op_finish(o);
+    o.w[0] |= op_put(f.kind, 0xFu, 8, bad);
+    o.w[0] |= op_put(f.to_s, 0x1u, 12, bad);
+    o.w[0] |= op_put(f.sd, 0xFu, 16, bad);
+    o.w[0] |= op_put(f.post, 0x3u, 20, bad);
+    o.w[0] |= op_put(f.sk, 0xFu, 24, bad);
+    o.w[0] |= op_put(f.se, 0xFu, 28, bad);
+    o.w[1] |= op_put(f.d, 0xFFFFFFu, 0, bad);
+    o.w[2] |= op_put(f.a, 0xFFFFFFu, 0, bad);
+    o.w[5] |= op_put(f.m, 0xFFFFFFu, 0, bad);
+    o.w[6] |= op_put(f.rows, 0xFFFFu, 0, bad);
+    o.w[7] |= op_put(f.a_stride, 0xFFFFu, 0, bad);
+    op_poison_if(o, bad, 0x2000u);   // the lowest reserved w0 bit
+    o.used = uint8_t(RED_WORDS);
+    return o;
 }
 // ROPE 0x32 (VU §5.4, owner VU)
 constexpr uint32_t ROPE_MODE            = 0x00000F00u;  // w0[11:8]
@@ -365,27 +373,30 @@ struct rope_f {
     uint32_t src_stride = 0;  // w7[15:0] lines between tokens; 0 = H
     uint32_t d_stride = 0;    // w7[31:16] lines between tokens; 0 = H
 };
-constexpr op ROPE(const rope_f& f) {
+[[gnu::always_inline]] constexpr op ROPE(const rope_f& f) {
     op o{};
+    bool bad = false;
     o.w[0] = OP_ROPE;
-    o.w[0] |= (f.mode & 0xFu) << 8;
-    o.w[0] |= (f.ff & 0x1u) << 12;
-    o.w[0] |= (f.fs & 0x1u) << 13;
-    o.w[0] |= (f.atab & 0x1u) << 14;
-    o.w[0] |= (f.sm & 0xFu) << 16;
-    o.w[0] |= (f.sts & 0xFu) << 20;
-    o.w[0] |= (f.sfs & 0xFu) << 24;
-    o.w[1] |= (f.d & 0xFFFFFFu) << 0;
-    o.w[2] |= (f.src & 0xFFFFFFu) << 0;
-    o.w[3] |= (f.pos & 0xFFFFFFu) << 0;
-    o.w[4] |= (f.table & 0xFFFFFFu) << 0;
-    o.w[5] |= (f.head_dim & 0xFFFFu) << 0;
-    o.w[5] |= (f.n_dims & 0xFFFFu) << 16;
-    o.w[6] |= (f.n_heads & 0xFFFFu) << 0;
-    o.w[6] |= (f.t & 0xFFFFu) << 16;
-    o.w[7] |= (f.src_stride & 0xFFFFu) << 0;
-    o.w[7] |= (f.d_stride & 0xFFFFu) << 16;
-    return op_finish(o);
+    o.w[0] |= op_put(f.mode, 0xFu, 8, bad);
+    o.w[0] |= op_put(f.ff, 0x1u, 12, bad);
+    o.w[0] |= op_put(f.fs, 0x1u, 13, bad);
+    o.w[0] |= op_put(f.atab, 0x1u, 14, bad);
+    o.w[0] |= op_put(f.sm, 0xFu, 16, bad);
+    o.w[0] |= op_put(f.sts, 0xFu, 20, bad);
+    o.w[0] |= op_put(f.sfs, 0xFu, 24, bad);
+    o.w[1] |= op_put(f.d, 0xFFFFFFu, 0, bad);
+    o.w[2] |= op_put(f.src, 0xFFFFFFu, 0, bad);
+    o.w[3] |= op_put(f.pos, 0xFFFFFFu, 0, bad);
+    o.w[4] |= op_put(f.table, 0xFFFFFFu, 0, bad);
+    o.w[5] |= op_put(f.head_dim, 0xFFFFu, 0, bad);
+    o.w[5] |= op_put(f.n_dims, 0xFFFFu, 16, bad);
+    o.w[6] |= op_put(f.n_heads, 0xFFFFu, 0, bad);
+    o.w[6] |= op_put(f.t, 0xFFFFu, 16, bad);
+    o.w[7] |= op_put(f.src_stride, 0xFFFFu, 0, bad);
+    o.w[7] |= op_put(f.d_stride, 0xFFFFu, 16, bad);
+    op_poison_if(o, bad, 0x8000u);   // the lowest reserved w0 bit
+    o.used = uint8_t(ROPE_WORDS);
+    return o;
 }
 // TOPK 0x33 (VU §5.5, owner VU)
 constexpr uint32_t TOPK_K             = 0x001F0000u;  // x16[4:0] 1..16
@@ -441,17 +452,20 @@ struct topk_f {
     uint32_t d_stride = 0;  // w6[31:16] lines; 0 = ceil(k/8)
     uint32_t a_stride = 0;  // w7[15:0] lines
 };
-constexpr op TOPK(const topk_f& f) {
+[[gnu::always_inline]] constexpr op TOPK(const topk_f& f) {
     op o{};
+    bool bad = false;
     o.w[0] = OP_TOPK;
-    o.w[0] |= (f.k & 0x1Fu) << 16;
-    o.w[1] |= (f.d & 0xFFFFFFu) << 0;
-    o.w[2] |= (f.a & 0xFFFFFFu) << 0;
-    o.w[5] |= (f.m & 0xFFFFFFu) << 0;
-    o.w[6] |= (f.rows & 0xFFFFu) << 0;
-    o.w[6] |= (f.d_stride & 0xFFFFu) << 16;
-    o.w[7] |= (f.a_stride & 0xFFFFu) << 0;
-    return op_finish(o);
+    o.w[0] |= op_put(f.k, 0x1Fu, 16, bad);
+    o.w[1] |= op_put(f.d, 0xFFFFFFu, 0, bad);
+    o.w[2] |= op_put(f.a, 0xFFFFFFu, 0, bad);
+    o.w[5] |= op_put(f.m, 0xFFFFFFu, 0, bad);
+    o.w[6] |= op_put(f.rows, 0xFFFFu, 0, bad);
+    o.w[6] |= op_put(f.d_stride, 0xFFFFu, 16, bad);
+    o.w[7] |= op_put(f.a_stride, 0xFFFFu, 0, bad);
+    op_poison_if(o, bad, 0x100u);   // the lowest reserved w0 bit
+    o.used = uint8_t(TOPK_WORDS);
+    return o;
 }
 // DQROW 0x12 (VU §5.6, owner VU)
 constexpr uint32_t DQROW_FMT             = 0x00000F00u;  // w0[11:8] 2..15 BAD_FMT
@@ -508,17 +522,20 @@ struct dqrow_f {
     uint32_t src_stride = 0;  // w7[15:0] lines; 0 = ROW_BEATS(fmt, K)
     uint32_t d_stride = 0;    // w7[31:16] lines; 0 = L(K)
 };
-constexpr op DQROW(const dqrow_f& f) {
+[[gnu::always_inline]] constexpr op DQROW(const dqrow_f& f) {
     op o{};
+    bool bad = false;
     o.w[0] = OP_DQROW;
-    o.w[0] |= (f.fmt & 0xFu) << 8;
-    o.w[1] |= (f.d & 0xFFFFFFu) << 0;
-    o.w[2] |= (f.src & 0xFFFFFFu) << 0;
+    o.w[0] |= op_put(f.fmt, 0xFu, 8, bad);
+    o.w[1] |= op_put(f.d, 0xFFFFFFu, 0, bad);
+    o.w[2] |= op_put(f.src, 0xFFFFFFu, 0, bad);
     o.w[5] |= f.k;
-    o.w[6] |= (f.rows & 0xFFFFu) << 0;
-    o.w[7] |= (f.src_stride & 0xFFFFu) << 0;
-    o.w[7] |= (f.d_stride & 0xFFFFu) << 16;
-    return op_finish(o);
+    o.w[6] |= op_put(f.rows, 0xFFFFu, 0, bad);
+    o.w[7] |= op_put(f.src_stride, 0xFFFFu, 0, bad);
+    o.w[7] |= op_put(f.d_stride, 0xFFFFu, 16, bad);
+    op_poison_if(o, bad, 0x1000u);   // the lowest reserved w0 bit
+    o.used = uint8_t(DQROW_WORDS);
+    return o;
 }
 // VMASK 0x38 (VU §5.7, owner VU)
 constexpr uint32_t VMASK_SUB           = 0x00000F00u;  // w0[11:8]
@@ -593,20 +610,23 @@ struct vmask_f {
     uint32_t x_stride = 0;  // w7[15:0] lines
     uint32_t p = 0;         // w7[31:16] row period; 0 = none
 };
-constexpr op VMASK(const vmask_f& f) {
+[[gnu::always_inline]] constexpr op VMASK(const vmask_f& f) {
     op o{};
+    bool bad = false;
     o.w[0] = OP_VMASK;
-    o.w[0] |= (f.sub & 0xFu) << 8;
-    o.w[1] |= (f.x & 0xFFFFFFu) << 0;
+    o.w[0] |= op_put(f.sub, 0xFu, 8, bad);
+    o.w[1] |= op_put(f.x, 0xFFFFFFu, 0, bad);
     o.w[2] |= f.win;
     o.w[3] |= f.k0;
     o.w[4] |= f.q0;
-    o.w[5] |= (f.m & 0xFFFFFFu) << 0;
-    o.w[6] |= (f.rows & 0xFFFFu) << 0;
-    o.w[6] |= (f.g & 0xFFFFu) << 16;
-    o.w[7] |= (f.x_stride & 0xFFFFu) << 0;
-    o.w[7] |= (f.p & 0xFFFFu) << 16;
-    return op_finish(o);
+    o.w[5] |= op_put(f.m, 0xFFFFFFu, 0, bad);
+    o.w[6] |= op_put(f.rows, 0xFFFFu, 0, bad);
+    o.w[6] |= op_put(f.g, 0xFFFFu, 16, bad);
+    o.w[7] |= op_put(f.x_stride, 0xFFFFu, 0, bad);
+    o.w[7] |= op_put(f.p, 0xFFFFu, 16, bad);
+    op_poison_if(o, bad, 0x1000u);   // the lowest reserved w0 bit
+    o.used = uint8_t(VMASK_WORDS);
+    return o;
 }
 // SOP 0x40 (VU §5.8, owner VU)
 constexpr uint32_t SOP_SUB       = 0x00000F00u;  // w0[11:8] function (SOP_FUNCS)
@@ -671,16 +691,19 @@ struct sop_f {
     uint32_t imm = 0;   // w2 f32 bits
     uint32_t addr = 0;  // w3[27:0] SPM word address (LDS / STS)
 };
-constexpr op SOP(const sop_f& f) {
+[[gnu::always_inline]] constexpr op SOP(const sop_f& f) {
     op o{};
+    bool bad = false;
     o.w[0] = OP_SOP;
-    o.w[0] |= (f.sub & 0xFu) << 8;
-    o.w[1] |= (f.sd & 0xFu) << 0;
-    o.w[1] |= (f.sa & 0xFu) << 4;
-    o.w[1] |= (f.sb & 0xFu) << 8;
+    o.w[0] |= op_put(f.sub, 0xFu, 8, bad);
+    o.w[1] |= op_put(f.sd, 0xFu, 0, bad);
+    o.w[1] |= op_put(f.sa, 0xFu, 4, bad);
+    o.w[1] |= op_put(f.sb, 0xFu, 8, bad);
     o.w[2] |= f.imm;
-    o.w[3] |= (f.addr & 0xFFFFFFFu) << 0;
-    return op_finish(o);
+    o.w[3] |= op_put(f.addr, 0xFFFFFFFu, 0, bad);
+    op_poison_if(o, bad, 0x1000u);   // the lowest reserved w0 bit
+    o.used = uint8_t(SOP_WORDS);
+    return o;
 }
 constexpr uint32_t VOP_FUNC_N = 25u;   // function codes 0..24 are defined
 constexpr uint32_t VOP_READS_A = 1u, VOP_READS_B = 2u, VOP_READS_C = 4u;

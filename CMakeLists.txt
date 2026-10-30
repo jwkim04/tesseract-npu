@@ -21,6 +21,8 @@ enable_testing()
 
 add_subdirectory(sw/tables)      # v2 table source: --check / self-test ctests, generated-header compile check
 add_subdirectory(sw/sim)         # tsr_ref, tsr_sim (+ unit tests)
+add_subdirectory(sw/ctrl/host)   # firmware SDK, host side: tsr-elf, the tsr_fw ExternalProject
+                                 # (RISC-V image tsr-fw.elf, SW §6.1), host build of the kernels, fw_* tests
 add_subdirectory(sw/transport)   # tsr_transport (sim, mock, vkernel, optional xrt)
 include(sw/ggml-tesseract/lower.cmake)   # tsr_lower: SPM tiling, allocator, weight layout (no ggml);
                                          # linked by ggml-tesseract and by the runtime sw/rt

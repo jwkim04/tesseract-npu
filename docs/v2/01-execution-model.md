@@ -352,8 +352,9 @@ verification depend on them (contracts in SW §7):
   previous op record instead of its recorded deps; because of I1 this gives v1's strictly
   sequential semantics. Opcodes that the issue path refuses complete `ILLEGAL_OP` on the SYNC unit,
   as on the issue path. RET = 0 when no op failed, else 1 + the push index of the first error
-  relative to the launch's first push. The converted `traces/model-v1conv` set, the regenerated
-  trace sets, DB's SPM bulk dumps (DB §5.7) and the divergence search run on this kernel.
+  relative to the first replayed record (the kernel's own `push.bin` chunk LDs not counted, SW
+  §7.7). The converted `traces/model-v1conv` set, the regenerated trace sets, DB's SPM bulk dumps
+  (DB §5.7) and the divergence search run on this kernel.
 - **`selftest`**: the card selftest (D15, SW §7.6), launched by `tsr-selftest`.
 
 ### 4.7 Runtime dispatcher contract (normative for the SDK runtime)
@@ -366,7 +367,9 @@ verification depend on them (contracts in SW §7):
 - **R3 Cancelled or stopped before start.** If CANCEL_VALID and the sequence is covered by
   `LQ_CANCEL`, or STOP_VALID and it is covered by `LQ_STOP` (§4.9), answer DONE / ABORTED (ERR_CODE
   0) without running.
-- **R4 Validate.** BAD_DESC → answer. PING → answer PONG.
+- **R4 Validate.** BAD_DESC → answer. PING → answer PONG. The validation runs before R3's
+  coverage check: a descriptor that is both invalid and covered answers BAD_DESC (§4.4's
+  precedence, BAD_DESC above ABORTED).
 - **R5 Run.** `RT_STATE` := KERNEL | index. If PROF is set, set `REC_CFG.ALL` and enable NODE
   markers (w0[8] above). Stage the argument block if the table entry asks for one. Read
   `ISSUE_PIDX` (CC §5.1) as the launch's first push index. Call DB's launch hook (DB §3.8), then

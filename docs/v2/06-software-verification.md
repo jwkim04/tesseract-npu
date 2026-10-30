@@ -101,14 +101,21 @@ sw/
 │   ├── tsr_trace.c          # trace v2 read / write / capture / replay
 │   └── tests/
 ├── ctrl/                    # firmware SDK (RISC-V), separate CMake project (ExternalProject)
-│   ├── cmake/riscv32.cmake  # toolchain file
+│   ├── CMakeLists.txt       # the firmware project: tsr-fw.elf (+ .map, size report) and test images
+│   ├── cmake/               # riscv32.cmake (toolchain file), tsr_note.S (.note.tsr)
 │   ├── include/tsr/         # kernel.hpp, mmio.hpp (generated), vu.hpp, at.hpp, plan.hpp, opl.hpp, log.hpp,
+│   │                        # rt.hpp (tsr_args, TSR_KERNEL), exec.hpp (kind handlers), traits.hpp,
 │   │                        # backend_dev.hpp, backend_host.hpp
-│   ├── rt/                  # crt0.S, link.ld, runtime.cpp, trap.cpp, log.cpp
+│   ├── rt/                  # crt0.S, link.ld, runtime.cpp, trap.cpp, log.cpp, libc.cpp (mem*), rt_int.hpp
 │   ├── kernels/             # graph.cpp (executor), k_mulmat.cpp, k_norm.cpp, k_elem.cpp, k_rope.cpp,
 │   │                        # k_glu.cpp, k_rows.cpp, k_kv.cpp, k_fattn.cpp, selftest.cpp, replay.cpp
-│   ├── ref/                 # host C++ references of composite kernels (tests)
-│   └── tools/tsr-elf/       # image id, kernel table, log-format table, size report
+│   ├── host/                # main-project side: tsr-elf, the tsr_fw ExternalProject, tsr_fw_paths.h,
+│   │                        # the host build of the kernels (backend_host.cpp, shim_host.cpp, §6.8)
+│   ├── ref/                 # host C++ references of composite kernels (tests): mulmat_ref.cpp,
+│   │                        # selftest_abi.hpp, fw_sim_host.hpp
+│   ├── tests/               # fw_* ctests (build, hdr, runtime, exec, kernels, e2e .cmake snippets)
+│   └── tools/               # tsr-elf/ (image id, kernel table, log-format table, size report),
+│                            # install-toolchain.sh (§9.6)
 ├── transport/               # tsr_transport (C API), protocol layer, kdevs: sim, mock, vkernel, xrt
 ├── ggml-tesseract/          # backend: weights (unchanged), tsr-opl.* (op-list builder), tsr-kvbuf.* (M7)
 ├── rt/, torch/              # tsr_rt on op lists; PyTorch unchanged above tsr_rt
@@ -296,8 +303,16 @@ content.
 Firmware rule (V2-SW-30): no value read from a timing-dependent register (`DONE_SEQ`, credits,
 `QSTATUS`, `MTIME`, `LQ_AVAIL`, `LCQ_FREE`, `LOG_FREE`) may influence pushed words, deps, SPM
 stores or records. Such values may only end a wait loop. `ISSUE_PIDX` and `ISSUED_SEQ` are not
-timing-dependent (only the RISC-V's own pushes move them). This holds by construction for every
-kernel in §7.
+timing-dependent (only the RISC-V's own pushes move them). The error records (`ERR_CODE`,
+`ERR_SEQ`, `ERR_INFO`, `ERR_W0`, `ERR_PIDX`) are exact for every entry covered by a done ticket
+(CC I2), so after a join they may decide RET and records (`tsr::first_error`, `error`,
+`err_units`, the runtime's R7); `QSTATUS`'s error bits are a separately synchronised level that
+I2 does not order with `DONE_SEQ`, so they may only end waits or make the STOP_ON_ERROR decision
+(§7.3). One credit value is exact: under QHOLD, after `Q_DEPTH[u]` pushes to a unit whose queue was
+empty when the hold took effect, none of which can complete without running (SYNC: NOPs waiting
+for a held op), credit(u) is 0 (CC §7.3: `ISSUED_SEQ` moves only with the RISC-V's pushes, and
+S[u] cannot move while every head is held); `selftest` id 10 relies on it.
+This holds by construction for every kernel in §7.
 
 At the llama.cpp level, the same image and the same inputs give bit-identical logits on `sim`,
 `mock`, `vkernel` and `xrt`. That is the M6 and M7 end-to-end check.
@@ -452,7 +467,10 @@ struct tsr_trace_unit {                                      // n_units x 32 byt
 - **Kind `launch`:** boot the image (HELLO), push the recorded descriptor, wait for its DONE
   record.
 - **Kind `ops`:** write `push.bin` at `ops.load` and launch the standard `replay` kernel (§7.7)
-  with (handle, count, flags 0; flags SERIAL for `traces/model-v1conv`).
+  with (handle, count, flags 0; flags SERIAL for `traces/model-v1conv`), plus BUF with a chunk
+  buffer outside every SPM operand of the trace's ops. On the simulator this is
+  `tsr_trace2_replay_opts.replay_image`; `tsr_trace2_replay_sim`'s default is the tile-only route
+  through the issue port.
 - **Compared, everywhere:**
   - the DONE fields;
   - every expect region, bit-exactly;
@@ -474,7 +492,11 @@ follows v1's rules:
 
 - init = DRAM read before it was written, copied at first read;
 - expect = DRAM written, taken at the answer record;
-- the image is written once per id into `<dir>/images/`.
+- the image is written once per id into `<dir>/images/`;
+- the launch's own LAUNCH_BEGIN / LAUNCH_END markers (DB §8.4: [27:16] its kernel index, [15:0]
+  its SEQ) are stored with the SEQ field 0, launch-relative like the tickets (W2a). A launch
+  captured at SEQ s therefore replays on a freshly booted simulator, where it runs as SEQ 0
+  (§10.1); every other marker value is stored as pushed.
 
 `tsr-trace-gen` writes `ops` traces directly (random tile programs with dependencies, concurrency
 and error injection). It runs each on the simulator to fill `done`, `expect` and `tickets`.
@@ -545,10 +567,10 @@ EX §3.1–§3.2 are normative. Linker script memory map (CC §4.1): ITCM at 0x0
 | `.tsr_dbg` | DTCM | yes | DB's debugger flags (DB §6.3) |
 | `.tsr_crash` | DTCM | no (zeroed by crt0) | DB's crash record (DB §6.3) |
 | `.bss`, `.stack` | DTCM | no | zeroed by crt0; stack 8 KiB at the top of DTCM; 512 B trap stack |
-| `.tsr_logfmt` | VMA 0xF000_0000 | **no** (`NOLOAD`, not in a `PT_LOAD`) | log format strings (§6.6) |
+| `.tsr_logfmt` | VMA 0xF000_0000 | **no** (non-allocated `INFO` section with contents, not in a `PT_LOAD`; GNU ld's `NOLOAD` would drop the strings) | log format strings (§6.6) |
 | `.note.tsr` | — | no | ELF note "TSR", type 1 (below) |
 
-Kernel table entry (32 bytes):
+Kernel table entry (36 bytes; W2a: the fields below, `static_assert`ed in `tsr/rt.hpp`):
 
 ```c
 struct tsr_kernel_desc {
@@ -562,7 +584,12 @@ struct tsr_kernel_desc {
 ```
 
 `.note.tsr` descriptor (32 bytes): `sdk_abi` (1), `ctl_id_min`, `itcm_min`, `dtcm_min`,
-`caps_req`, `n_kernels`, two reserved words.
+`caps_req`, `n_kernels`, two reserved words. `itcm_min` / `dtcm_min` are in bytes (W2a: `tsr-elf` and
+`link.ld` fill them at link time; the host compares them with `RV_CFG` KiB × 1024).
+
+Kernel order (W2a): the table is sorted by (rank, name), rank 0 `graph`, 1 `selftest`, 2 `replay`
+(EX §4.6's base kernels at indices 0–2), 5 for every other kernel; `TSR_KERNEL` places each entry in
+section `.tsr_kernels.<rank>.<name>` and `link.ld` sorts by name. Tools look kernels up by name.
 
 **Image id (V2-SW-9, EX §3.2).** `tsr-elf` computes it after linking: SHA-256 over every `PT_LOAD`
 segment in ascending physical address, each as (u32 paddr LE, u32 padded filesz LE, padded bytes),
@@ -580,7 +607,9 @@ crt0, at `RV_BOOT` + 0x80:
    `init_array`.
 2. Initialise `__tsr_dbg` and `__tsr_crash` (DB §6.3), `RT_STATE` := BOOT.
 
-The runtime then follows EX §4.7 exactly:
+The runtime then follows EX §4.7, with R4's validation before R3's coverage check: a descriptor
+that is both invalid and covered by a watermark answers BAD_DESC, by EX §4.4's precedence
+(BAD_DESC above ABORTED):
 
 - **R1 Boot.** Push `qclear()` and join it; `RT_STATE` := IDLE; post HELLO as an event (r2 / r3 =
   image id, r4 = [15:0] SDK ABI | [31:16] runtime version, r5 = kernel count, r7 = boot core
@@ -594,7 +623,9 @@ The runtime then follows EX §4.7 exactly:
   PONG.
 - **R5 Run.** `RT_STATE` := KERNEL | index; PROF → `REC_CFG.ALL` and NODE markers; stage the
   argument block (LD into the top 16 SPM lines, one join); `launch_pidx` = `ISSUE_PIDX`, `base_u` =
-  `ISSUED_SEQ[u]`; DB's launch hook `tsr_rt_launch_hook(kernel, seq)` (DB §3.8); call the kernel.
+  `ISSUED_SEQ[u]`; DB's launch hook `tsr_rt_launch_hook(kernel, seq, args)` (DB §3.8; a0 = kernel
+  index, a1 = SEQ, a2 = the `tsr_args` pointer at `__tsr_launch_halt`); TRACE_MARK LAUNCH_BEGIN; call
+  the kernel; TRACE_MARK LAUNCH_END (DB §8.4).
 - **R6 Join.** `join_all()`.
 - **R7 Result.** First error = smallest `ERR_PIDX` over the units in error state; PLAT_ERR from
   `LQ_FLAGS`; status by EX §4.4's precedence. RET is the kernel's int32 return value.
@@ -743,8 +774,8 @@ reference is the RV binary on `tsr_rv`, and ctest runs both builds (§10.2).
 | Kernel | Milestone | Args | Purpose |
 |---|---|---|---|
 | `graph` | M6 (MUL_MAT records only), M7 (all kinds) | a0 OPL handle, a1 OPL bytes, a2 flags (bit0 VERIFY_CRC) | the op-list executor (§7.3) |
-| `selftest` | M6 | a0 test id, a1 data handle, a2 size/count, a3 seed, a4 flags | card and sim self-test programs (§7.6) |
-| `replay` | M6 | a0 `push.bin` handle, a1 count, a2 flags (bit0 SERIAL: every op record depends on the previous op record instead of its recorded deps) | tile-only trace replay, SPM dumps (§7.7) |
+| `selftest` | M6 | a0 test id, a1 data handle, a2 data area lines, a3 seed, a4 flags (parameters in line 0 of the data area; layouts in `sw/ctrl/ref/selftest_abi.hpp`) | card and sim self-test programs (§7.6) |
+| `replay` | M6 | a0 `push.bin` handle, a1 count, a2 flags (bit0 SERIAL: every op record depends on the previous op record instead of its recorded deps; bit1 BUF: a3 / a4 valid), a3 SPM line of the chunk buffers, a4 records per chunk (a multiple of 4, ≤ 1,364) | tile-only trace replay, SPM dumps (§7.7) |
 
 These are EX's base kernels (EX §4.6). PING is part of the runtime (descriptor TYPE 0x02), not a
 kernel. MoE kernels, decode steps, the resident loop and JIT
@@ -837,9 +868,10 @@ index), 32 KiB in total.
 
 **Algorithm:**
 
-1. LD the header and the op list (or the first half) into the OPL area, LD the preload entries, and
-   join once. Validate magic, version, `n_ops` ≤ 4096 and (if VERIFY_CRC) the CRC. A failure
-   returns 0x8000_000x (below).
+1. LD the header and the op list (or the first half) into the OPL area and join it; LD the preload
+   entries (their table is inside the list) and join once more, so a list with preload entries
+   costs two joins at launch start and none inside the op stream. Validate magic, version,
+   `n_ops` ≤ 4096 and (if VERIFY_CRC) the CRC. A failure returns 0x8000_000x (below).
 2. For op i = 0 … n_ops−1:
    1. Read the record through the SPM window.
    2. `d` = after(ticket[dep0], ticket[dep1]).
@@ -884,7 +916,10 @@ RISC-V round trip in between.
 ### 7.4 MUL_MAT kernel
 
 The kernel follows v1's lowering (`docs/spec.md:502-512`), so its numerics match v1 bit for bit
-(`traces/model-v1conv` checks this). Per T tile (`plan.hpp`, T_MAX and the ring budget):
+(`traces/model-v1conv` checks this). Every converted v1 trace has T_MAX 1, so the push-stream
+comparison there covers single-tile ops only; for T > T_MAX the kernel pushes the LD of tile t+1
+before the ST of tile t (the double buffering below), where v1 pushed LD, QACT, MVM, ST per tile.
+Per T tile (`plan.hpp`, T_MAX and the ring budget):
 
 1. LD x (tile).
 2. If an addend is present, LD the addend rows into the y block (the bias row repeated when its
@@ -930,15 +965,19 @@ baselines.
 | 7 | errors: DRAM_RANGE, ILLEGAL_OP, BAD_DEP, DEP_FAILED chain, QABORT then QCLEAR recovery |
 | 8 | SPM window byte/half/word, ordering of a store before a push |
 | 9 | log records and PING |
-| 10 | credits: fill every queue |
+| 10 | credits: fill every queue under QHOLD; each credit must read 0 (exact under the hold, §4.7) |
 
 `tsr-selftest` runs each test on the device and, in process, on the simulator with the same image,
 inputs and args. It compares DONE, every output byte and the per-unit completion counts.
 
 ### 7.7 `replay` kernel
 
-1. Read `base_u` = `ISSUED_SEQ[u]` for every unit and `pidx0` = `ISSUE_PIDX`.
-2. Stream `push.bin` through SPM in double-buffered 64 KiB chunks.
+1. LD chunk 0 (and chunk 1) of `push.bin` into the buffers, then read `base_u` = `ISSUED_SEQ[u]`
+   for every unit and `pidx0` = `ISSUE_PIDX`, so that no push of the kernel lies between the
+   replayed records of a stream of up to two chunks.
+2. Stream `push.bin` through SPM in double-buffered chunks (at most 1,364 records = 1,023 lines;
+   without BUF the two buffers sit just below the runtime argument range). The kernel's own later
+   chunk LDs are added back when DMA deps are mapped.
 3. For each record:
    - kind 0: issue the words with the push value and deps mapped back as (u, base_u + rel_seq);
      with flag SERIAL, the deps are replaced by the ticket of the previous kind-0 record (a
@@ -946,18 +985,29 @@ inputs and args. It compares DONE, every output byte and the per-unit completion
    - kind 1: write QCTRL;
    - kind 2: write TRACE_MARK.
 4. Run `join_all()`. RET = 0 if no unit is in error state, else 1 + (`ERR_PIDX` of the first error
-   − `pidx0`); the runtime reports the error record itself in DONE r3–r6 (EX §4.6).
+   − `pidx0` − the kernel's own chunk LDs pushed before it), i.e. relative to the first replayed
+   record; the runtime reports the error record itself in DONE r3–r6 (EX §4.6). Negative RET
+   (KERNEL_ERR): 0x8000_0101 BAD_ARGS, 0x8000_0102 TOO_LONG (more than 130 chunks), 0x8000_0103
+   STREAM (a chunk LD failed).
 
 ### 7.8 Performance targets (*estimates*, checked in P3/P6)
 
 - **Executor:** ≤ 400 RISC-V cycles per graph op on average (2.4 µs at 166.7 MHz). For Qwen2.5-0.5B
   (≈ 25 ops per layer, ≈ 230 µs of MVM time per layer) the RISC-V needs ≈ 60 µs per layer and
-  stays ahead.
+  stays ahead. *Measured at W2a* (simulator CPI model, `fw_m6_perf`, 0.5B decode MUL_MAT lists):
+  1,986 RISC-V cycles per op record (1,047 instructions; 2,553 per MUL_MAT with its JOINs), the
+  executor's own share ≈ 200 cycles per record (`fw_exec_perf`); one decode layer (7 MUL_MAT +
+  2 JOIN) costs the RISC-V 107 µs against 197 µs of MVM time, and the MVM unit still idles on issue
+  for ≈ 14 % of its span (the small k / v projections). The target is not met yet (open issue).
 - **Launch:** EX §4.11 (empty-launch round trip ≤ 10 µs target; descriptor push → kernel entry
   ≤ 5 µs; answer record → host ≤ one poll interval). The v1 exec cost was 35 µs per exec
-  (`docs/platform-u200.md:1049`).
+  (`docs/platform-u200.md:1049`). *Measured at W2a* (`tsr-fw.elf`, fixed schedule, F_RV / F_CORE =
+  166.7 / 276.3 MHz): descriptor push → kernel entry 605 core cycles = 2.19 µs; empty launch push →
+  DONE in the LCQ 1,538 core cycles = 5.57 µs (device part); 8 outstanding launches 1,579 core
+  cycles each (175 K launches/s).
 - **Image size:** ITCM ≤ 48 KiB of 128 KiB; DTCM ≤ 56 KiB of 64 KiB including the 8 KiB stack,
-  the 512 B trap stack and the 32 KiB executor tables.
+  the 512 B trap stack and the 32 KiB executor tables. *Measured at W2a* (`tsr-elf size`): ITCM
+  25,720 B, DTCM 46,312 B.
 
 ---
 
@@ -1271,9 +1321,26 @@ New ctests:
   `sim_w1b_e2e` (the W1b models together on the W1a test firmware: 8 schedules with race `fatal`,
   launch capture with fresh-boot replays, a GDB-style DMI session that leaves the results unchanged);
 - `fw_runtime` (R1–R10: boot, HELLO id, PING, BAD_DESC, argument block, 8 outstanding launches,
-  cancel and stop watermarks, TRAP record, panic as a TRAP with `mcause` 24, log drop and BLOCK);
-- `fw_kernels_host` (ASan/UBSan) and `fw_kernels_rv` (per kind, 8 schedules, race `fatal`);
-- `fw_selftest_sim`, `fw_replay_sim`;
+  R8 back-pressure with a full LCQ, cancel and stop watermarks (an invalid covered descriptor:
+  BAD_DESC; a cancel landing in R8: cleared by R9), TRAP record, panic as a TRAP with `mcause` 24,
+  log drop and BLOCK with a full ring, R1's QCLEAR after an RV reset)
+  and `fw_runtime_stale` (a mutant image must give exactly one `SPM_STALE`);
+- `fw_kernels_host` (ASan/UBSan) and `fw_kernels_rv` (per kind, 8 schedules, race `fatal`), with
+  `fw_kernels_rv_v1conv` (a sample of `traces/model-v1conv` regrouped into MUL_MAT ops: v1's outputs
+  and push streams), `fw_kernels_rv_mutant_race` / `_mutant_v1` (mutant images must be caught) and
+  the `slow` `fw_kernels_rv_v1conv_all` and `fw_kernels_rv_shapes` (0.5B / 32B / Gemma 4 12B shapes);
+- `fw_selftest_sim`, `fw_replay_sim` (incl. SERIAL on a stream whose recorded deps are not the
+  chain; `slow`: `fw_replay_sim_all`);
+- W2a's package tests: `fw_elf`, `fw_elf_asan`, `fw_elf_link`, `fw_elf_image`, `fw_elf_hello`,
+  `fw_elf_test_image`, `_nok`, `_hello` (P2.1: `tsr-elf`, `link.ld`, image id, test images);
+  `fw_hdr_host`, `fw_hdr_rv`, `fw_hdr_rv_mutant`, `fw_hdr_constexpr` (P2.3: builders, tickets,
+  `group`, `spm_ring`, host backend); `fw_exec_rv`, `fw_exec_host`, `fw_exec_perf` (P2.4: OPL v1 and
+  the executor);
+- `fw_m6_e2e` (W2a integration: the production image through the loader with VERIFY, HELLO = the
+  `tsr-elf` id, PING, a two-layer 0.5B-shaped MUL_MAT list through `graph`, `selftest` ids 1–10,
+  `replay` of trace samples, `graph` again after the other kernels; 8 schedules, race `fatal`,
+  `TSR_TRACE` capture, identical observables, every captured launch replayed on fresh simulators)
+  and `fw_m6_perf` (§7.8 / EX §4.11 numbers);
 - `trace_v2_roundtrip`, `trace_conv_model` (sample of 10 converted model traces);
 - `transport_protocol` (EX §15 item 2, one binary for every kind: cold and warm boot, image-id
   mismatch, VERIFY with an injected TCM fault on vkernel, 0–7 args, credit rule, forced

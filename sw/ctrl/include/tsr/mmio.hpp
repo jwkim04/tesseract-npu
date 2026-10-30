@@ -114,7 +114,8 @@ constexpr uint32_t field_put(uint32_t mask, uint32_t lsb, uint32_t x) { return (
 
 // One 256-bit tile instruction with its used-word mask (docs/ctrl-riscv.md §8.2): issue() writes
 // only the staging words whose bit is set and pushes with WMASK = used (ISSUE_PUSH, CC §5.1);
-// words with a clear bit are sent as 0. The generated builders set the bit of every nonzero word.
+// words with a clear bit are sent as 0. The generated builders set the bits of the words that hold
+// a field (<OP>_WORDS); op_finish sets those of the nonzero words (for ops assembled by hand).
 struct op {
     uint32_t w[8];
     uint8_t used;
@@ -124,6 +125,27 @@ constexpr op op_finish(op o) {
     for (uint32_t i = 1; i < 8; ++i)
         if (o.w[i] != 0u) o.used = uint8_t(o.used | (1u << i));
     return o;
+}
+
+// Field placement of the generated builders (vu.hpp, at.hpp; P2.3). A value that does not fit its
+// field is never masked into a different, legal value: in a constant expression it is a compile
+// error (the call of the non-constexpr detail::op_field_does_not_fit), at run time the builder
+// sets the op's lowest reserved w0 bit (the poison argument), so that the checker answers
+// ILLEGAL_OP. The builders set op::used to the encoding's <OP>_WORDS (the words that hold a field:
+// a field word that happens to be 0 is written and sent as 0, the same push content) instead of
+// testing every word, and build the op in place: no copies on the issue path.
+namespace detail {
+inline void op_field_does_not_fit() {}
+}  // namespace detail
+constexpr uint32_t op_put(uint32_t x, uint32_t vmask, uint32_t lsb, bool & bad) {
+    if (x > vmask) bad = true;
+    return (x & vmask) << lsb;
+}
+constexpr void op_poison_if(op & o, bool bad, uint32_t poison) {
+    if (bad) {
+        detail::op_field_does_not_fit();
+        o.w[0] |= poison;
+    }
 }
 
 // -----------------------------------------------------------------------------------------------

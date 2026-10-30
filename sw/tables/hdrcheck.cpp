@@ -17,4 +17,5 @@ static_assert(tsr::VOP_FUNC_EXPSUB == TSR_VOP_FUNC_EXPSUB && tsr::VOP_RSV_W3 == 
 constexpr tsr::op k_vop = tsr::VOP({.func = tsr::VOP_FUNC_MULC, .d = 100, .a = 200, .m = 896, .rows = 1});
 static_assert(k_vop.w[0] == (TSR_OP_VOP | (TSR_VOP_FUNC_MULC << TSR_VOP_FUNC_LSB)), "VOP w0");
 static_assert(k_vop.w[1] == 100 && k_vop.w[2] == 200 && k_vop.w[5] == 896 && k_vop.w[6] == 1, "VOP words");
-static_assert(k_vop.used == 0x67, "VOP used words (w0, w1, w2, w5, w6)");
+// P2.3: the generated builders set op::used to the encoding's field words (VOP_WORDS: w0..w7).
+static_assert(k_vop.used == tsr::VOP_WORDS, "VOP used words (VOP_WORDS)");

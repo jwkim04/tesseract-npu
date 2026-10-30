@@ -69,6 +69,19 @@ static void obs_q(void * ctx, tsr_sim * sim, const tsr_q_event * ev) {
         if (e->write != TSR_EXT_WRITE) continue;
         if (e->kind == TSR_EXT_SPM) {
             for (uint64_t l = e->lo; l < e->hi && l < o->spm_lines; ++l) o->spm_wr[l] = 1;
+        } else if (e->kind == TSR_EXT_DRAM && e->ch == TSR_EXT_CH_ALL) {
+            // P2.5: a write extent on every channel (KVST's plane, AT §5.8) is one range per channel.
+            const uint32_t nch = tsr_sim_config(sim)->num_ch;
+            for (uint32_t c = 0; c < nch; ++c) {
+                if (o->n_dram == o->cap_dram) {
+                    o->cap_dram = o->cap_dram ? 2 * o->cap_dram : 64;
+                    o->dram_wr = (ival_t *)realloc(o->dram_wr, o->cap_dram * sizeof(ival_t));
+                }
+                ival_t * r = &o->dram_wr[o->n_dram++];
+                r->ch = c;
+                r->lo = e->lo;
+                r->hi = e->hi;
+            }
         } else if (e->kind == TSR_EXT_DRAM) {
             if (o->n_dram == o->cap_dram) {
                 o->cap_dram = o->cap_dram ? 2 * o->cap_dram : 64;

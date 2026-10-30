@@ -42,6 +42,9 @@ else()
     endif()
     set(TSR_RISCV_PREFIX_EFFECTIVE "${TSR_RISCV_TOOLS}/${_tsr_xpack_dir}/bin/${_tsr_xpack_pfx}")
 endif()
+# P2.1: published for sw/ctrl/host (the firmware build, SW §6.1), which reads it instead of
+# deriving the prefix a second time.
+set_property(GLOBAL PROPERTY TSR_RISCV_PREFIX_EFFECTIVE "${TSR_RISCV_PREFIX_EFFECTIVE}")
 
 # Common C settings for every Tesseract C target in this directory.
 function(tsr_c_target tgt)
