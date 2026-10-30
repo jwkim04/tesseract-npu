@@ -62,6 +62,27 @@ extern "C" int32_t vadd(const tsr_args * args) {
 }
 ```
 
+The host loads the image and launches the kernel by name:
+
+```cpp
+#include "tsr_transport.h"
+
+tsr_image * img;
+tsr_image_open("vadd.elf", &img);                    // firmware image with the kernel
+tsr_transport * t = tsr_transport_open("sim");       // "xrt" for the card
+tsr_transport_boot(t, img);                          // load, verify, start the control core
+
+tsr_transport_write(t, 0, A * 64, a, bytes);         // inputs into device DRAM (channel 0)
+tsr_transport_write(t, 0, B * 64, b, bytes);
+
+tsr_launch l = {.type = TSR_DESC_TYPE_LAUNCH, .flags = 0,
+                .kernel = (uint16_t) tsr_image_kernel(img, "vadd"),
+                .arg = {A, B, Y, n}};                // handles = 64-byte beat indices
+tsr_record r;
+tsr_transport_call(t, &l, TSR_TIMEOUT_DEFAULT, &r);  // launch and wait for the answer
+tsr_transport_read(t, 0, Y * 64, y, bytes);
+```
+
 See the [firmware SDK guide](sw/ctrl/README.md).
 
 ## Quick start
