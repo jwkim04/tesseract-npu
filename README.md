@@ -12,7 +12,7 @@ bandwidth, not raw compute: one matrix-vector cluster per memory channel streams
 64-byte beat per cycle. The simulator, the RTL and the card agree bit for bit. Tesseract is
 implemented on an AMD Alveo U200 FPGA today; the core is vendor-independent SystemVerilog.
 
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/fig/hero-dark.svg"><img src="docs/fig/hero.svg" alt="Stylised die of the Tesseract NPU core: four MVM clusters of 128 MAC lanes at the corners, each fed by its own DDR4 channel through a memory arbiter; the 4 MiB scratchpad in the centre inside the x broadcast and y gather; DMA, QACT and CSR blocks; and, drawn dashed as the v2 additions, a RISC-V control core with an issue path and unit queues, a vector unit and a debug block. One cluster is opened up: weight streamer, unpack, activation buffer, 128 MAC lanes, FP accumulate and tree16." width="100%"></picture></p>
+<p align="center"><img src="docs/fig/hero.png" alt="Stylised die of the Tesseract NPU core: four MVM clusters of 128 MAC lanes at the corners, each fed by its own DDR4 channel through a memory arbiter; the 4 MiB scratchpad in the centre inside the x broadcast and y gather; DMA, QACT and CSR blocks; and, drawn dashed as the v2 additions, a RISC-V control core with an issue path and unit queues, a vector unit and a debug block. One cluster is opened up: weight streamer, unpack, activation buffer, 128 MAC lanes, FP accumulate and tree16." width="100%"></p>
 
 Dashed blocks are the v2 additions: verified in the simulator and in firmware; RTL planned (W4).
 
@@ -69,7 +69,7 @@ More numbers, conditions and the measurement history: [`docs/performance.md`](do
 
 ## Architecture
 
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/fig/system-dark.svg"><img src="docs/fig/system.svg" alt="Host PC (llama.cpp, ggml-tesseract, tsr_transport and a firmware image) connected over PCIe to the XRT shell of the Alveo U200; a control bridge to the core's CSR port; tsr_core with a control core and issue path, the 4 MiB SPM, a vector unit and four MVM clusters; each cluster fed by its own DDR4 channel through an AXI4 bridge; blocks tagged with their SLR under floorplan C' (clusters 0 and 2 in SLR0, clusters 1 and 3 in SLR2, the rest of the core and the adapter in SLR1). The control core, issue path and vector unit are drawn as planned v2 blocks." width="100%"></picture></p>
+<p align="center"><img src="docs/fig/system.png" alt="Host PC (llama.cpp, ggml-tesseract, tsr_transport and a firmware image) connected over PCIe to the XRT shell of the Alveo U200; a control bridge to the core's CSR port; tsr_core with a control core and issue path, the 4 MiB SPM, a vector unit and four MVM clusters; each cluster fed by its own DDR4 channel through an AXI4 bridge; blocks tagged with their SLR under floorplan C' (clusters 0 and 2 in SLR0, clusters 1 and 3 in SLR2, the rest of the core and the adapter in SLR1). The control core, issue path and vector unit are drawn as planned v2 blocks." width="100%"></p>
 
 One **MVM cluster** per DDR4 channel streams that channel's share of every weight matrix at one
 64-byte beat per cycle (19.2 GB/s at the 300 MHz design clock) into 128 MAC lanes. Decoding a dense
@@ -83,7 +83,7 @@ kernels (in development). Specification: [`docs/spec.md`](docs/spec.md); v2 desi
 
 ## Software stack
 
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/fig/stack-dark.svg"><img src="docs/fig/stack.svg" alt="The Tesseract software stack as layered bands from the applications down: llama.cpp and PyTorch; the ggml-tesseract backend and the tsr_rt runtime; tsr_transport with the kinds sim, mock, vkernel (planned) and xrt (planned: the v1 transport ran on the card, the v2 kind awaits the v2 bitstream); firmware on the control core (runtime, executor, kernels, selftest and replay); the NPU core with control core, issue path, DMA, QACT, MVM clusters, vector unit and SPM; and the FPGA card with the U200, the XRT shell and four DDR4 channels. A column of developer tools lists klcheck and numcheck, the trace tools, tsr-selftest, tsr-log and the simulator, with GDB debugging and tsr-prof planned. Tags mark what runs on the simulator, what ran on the card with v1 and what is planned." width="100%"></picture></p>
+<p align="center"><img src="docs/fig/stack.png" alt="The Tesseract software stack as layered bands from the applications down: llama.cpp (llama-cli and llama-server) and PyTorch with Hugging Face models, each shown with its logo; the ggml-tesseract backend and the tsr_rt runtime; tsr_transport with the kinds sim, mock, vkernel (planned) and xrt (planned: the v1 transport ran on the card, the v2 kind awaits the v2 bitstream); firmware on the control core (runtime, executor, kernels, selftest and replay); the NPU core with control core, issue path, DMA, QACT, MVM clusters, vector unit and SPM; and the FPGA card with the U200, the XRT shell and four DDR4 channels. A column of developer tools lists klcheck and numcheck, the trace tools, tsr-selftest, tsr-log and the simulator, with GDB debugging (shown with the GDB logo) and tsr-prof planned. Tags mark what runs on the simulator, what ran on the card with v1 and what is planned." width="100%"></p>
 
 - **Applications.** `llama-cli`, `llama-server` and `llama-completion` offload with `-ngl`; PyTorch
   uses `torch.compile(backend="tesseract")`.
@@ -97,6 +97,11 @@ kernels (in development). Specification: [`docs/spec.md`](docs/spec.md); v2 desi
 - **Simulator.** Bit-exact, with a RISC-V interpreter, a cycle model and a race detector.
 - **Checks.** `tsr-selftest`, `klcheck`, `numcheck`, trace generation and replay, `tsr-log`.
 - **Debugging and profiling (in development).** GDB over PCIe, tile-level debug, `tsr-prof`.
+
+The logos in the figure are those of llama.cpp, PyTorch, Hugging Face and GDB. They belong to their
+owners, are used only to name those projects and do not mean that the projects endorse Tesseract.
+The GDB archer fish is by Jamie Guinan (vector version by Andreas Arnez), CC BY-SA 3.0 US. Sources
+and licences: [`docs/fig/logos/SOURCES.md`](docs/fig/logos/SOURCES.md).
 
 ## Supported models
 

@@ -3,8 +3,9 @@
 The product-style companion of the hero figure: fewer words, larger type (TYPE roles `*_l`), one
 band per layer and a column of developer tools beside the middle layers. Top to bottom:
 
-1. applications: llama.cpp (`llama-cli`, `llama-server`, `-ngl` offload of ggml graphs) and
-   PyTorch (`torch.compile(model, backend="tesseract")`; sw/torch/README.md);
+1. applications: llama.cpp (`llama-cli` with `-ngl` offload of ggml graphs on GGUF models, and
+   `llama-server`, its OpenAI-compatible API; written as text, no OpenAI mark) and PyTorch
+   (`torch.compile(model, backend="tesseract")` on Hugging Face models; sw/torch/README.md);
 2. backends: `ggml-tesseract` (backend device `Tesseract0`, op-list builder and cache;
    sw/ggml-tesseract/README.md) and `tsr_rt` (weight upload, linear; sw/rt/README.md);
 3. transport: `tsr_transport`, one protocol layer (image load, launch, wait, log) over four kinds:
@@ -24,6 +25,12 @@ simulator (bit-exact oracle, cycle model, race detector; sw/sim), `tsr-selftest`
 `numcheck`, trace tools (`tsr-trace-gen`, `tsr-trace-replay`, `tsr-trace-conv`), `tsr-log`,
 GDB debugging (designed, DB §4, §9) and the profiler (`tsr-prof`, DB §8.6; both planned).
 
+Logos (STYLE.md "Logos"; the only marks that are not drawn in the figure style): the official
+logos of the software the figure names, embedded unmodified from docs/fig/logos (sources and
+trademark notes in docs/fig/logos/SOURCES.md): llama.cpp (icon, on its own dark tile), PyTorch
+(the lockup, on a white tile; it replaces the tile title), Hugging Face (beside "Hugging Face
+models") and GDB (the archer fish, on a white tile). No logo of a company, an ISA or an IP core.
+
 Status tags (STYLE.md "Planned and unconfirmed things"; at most three texts): ON THE CARD · V1
 (dark badge: ran on the Alveo U200 with the v1 core, tag v1-m4), SIMULATOR · V2 (outlined badge:
 implemented in this tree and verified on the simulator; commits 92f0b17, 83ac601), PLANNED
@@ -42,7 +49,7 @@ Run: build/tools/svgvenv/bin/python docs/fig/src/stack.py      (TSR_FIG_THEME=da
 import sys
 
 sys.dont_write_bytecode = True        # keep docs/fig/src free of __pycache__
-from tsrfig import INK, INK_SOFT, Fig, measure, wrap  # noqa: E402
+from tsrfig import INK, INK_SOFT, TYPE, Fig, font, logo_box, measure, wrap  # noqa: E402
 
 W = 1600
 FX0, FX1 = 56, 1544                   # full-width panels: applications, the card
@@ -53,6 +60,7 @@ GAP_V = 56                            # between layer panels (one two-way arrow 
 HEAD = 64                             # panel top to tile top (layer name row)
 FOOT = 24                             # tile bottom to panel bottom
 TILE_GAP = 24
+LOGO_X, LOGO_GAP = 24, 20             # tile edge to logo; logo to the tile's text
 
 CARD_TAG = ("ON THE CARD · V1", "dark")
 SIM_TAG = ("SIMULATOR · V2", "outline")
@@ -61,11 +69,15 @@ PLAN_TAG = ("PLANNED", "planned")
 
 # ---- layout helpers ----------------------------------------------------------------------------
 def natural(t):
-    """Width a tile needs for its text (and its own tag), before the row is stretched."""
+    """Width a tile needs for its text (and its own tag and logo), before the row is stretched."""
     w = measure(t["label"], "label_l")[0]
     if t.get("sub"):
         w = max(w, measure(t["sub"], "sub_l")[0])
+    if t.get("badge"):
+        w = max(w, logo_box(**t["badge"][0])[0] + 12 + measure(t["badge"][1], "sub_l")[0])
     w += 2 * 24
+    if t.get("logo"):
+        w += logo_box(**t["logo"])[0] + LOGO_GAP
     if t.get("tag"):
         w = max(w, measure(t["tag"][0], "tag_l")[0] + 24 + 14 + 8 + 14)
     return w
@@ -92,8 +104,35 @@ def tile(f, x, y, w, h, t):
     """One tile: solid, or dashed and pale when planned; an own tag only where it differs."""
     planned = t.get("tag") == PLAN_TAG
     tag, style = t["tag"] if t.get("tag") else ("", "")
-    f.box(x, y, w, h, t["role"], t["label"], sub=t.get("sub", ""), planned=planned,
-          tag=tag, tag_style=style, tag_role="tag_l", label_role="label_l", sub_role="sub_l")
+    lg = t.get("logo")
+    f.box(x, y, w, h, t["role"], "" if lg else t["label"], sub="" if lg else t.get("sub", ""),
+          planned=planned, tag=tag, tag_style=style, tag_role="tag_l", label_role="label_l",
+          sub_role="sub_l")
+    if lg:
+        logo_tile(f, x, y, w, h, t)
+
+
+def logo_tile(f, x, y, w, h, t):
+    """The inside of a tile with a logo: the logo at the left, centred in the tile's height, and
+    the text left-aligned beside it. A tile without a label (the PyTorch lockup carries the name)
+    may have a badge line: a small logo and a few words under the detail line."""
+    lg = t["logo"]
+    ow, oh = logo_box(**lg)
+    f.logo(x=x + LOGO_X, y=y + (h - oh) / 2, **lg)
+    tx = x + LOGO_X + ow + LOGO_GAP
+    if not t.get("badge"):
+        f.label_block(tx, y, x + w - tx, h, t["label"], t.get("sub", ""), "label_l", "sub_l",
+                      align="start", pad=0)
+        return
+    bg, text = t["badge"]
+    fo = font("regular")
+    cap = fo.cap * TYPE["sub_l"][0] / fo.upm
+    bw, bh = logo_box(**bg)
+    gap = 18
+    top = y + (h - (cap + gap + bh)) / 2
+    f.text(tx, top + cap, t["sub"], "sub_l")
+    f.logo(x=tx, y=top + cap + gap, **bg)
+    f.text(tx + bw + 12, top + cap + gap + bh / 2, text, "sub_l", valign="middle")
 
 
 def panel(f, x, y, w, h, name, status=None, caption=""):
@@ -107,13 +146,17 @@ def panel(f, x, y, w, h, name, status=None, caption=""):
         f.tag(x + w - 36, y, status[0], anchor="end", style=status[1], role="tag_l")
 
 
-def T(role, label, sub="", tag=None):
-    return {"role": role, "label": label, "sub": sub, "tag": tag}
+def T(role, label, sub="", tag=None, logo=None, badge=None):
+    return {"role": role, "label": label, "sub": sub, "tag": tag, "logo": logo, "badge": badge}
 
 
 # ---- content -----------------------------------------------------------------------------------
-apps = [T("host", "LLAMA.CPP", "llama-cli · llama-server · -ngl"),
-        T("host", "PYTORCH", 'torch.compile(backend="tesseract")')]
+HF_BADGE = {"key": "huggingface", "h": 32, "backing": True, "pad": 4}
+apps = [T("host", "LLAMA.CPP", "llama-cli · GGUF models · -ngl\nllama-server (OpenAI-compatible API)",
+          logo={"key": "llamacpp", "h": 80}),
+        T("host", "", 'torch.compile(backend="tesseract")',
+          logo={"key": "pytorch", "h": 44, "backing": True, "pad": 10},
+          badge=(HF_BADGE, "Hugging Face models"))]
 backends = [T("host", "GGML-TESSERACT", "device Tesseract0 · op lists"),
             T("host", "TSR_RT", "weight upload · linear")]
 transport = [T("host", "SIM", "in process"), T("host", "MOCK", "adapter model"),
@@ -135,17 +178,18 @@ tools = [T("neutral", "KLCHECK\nNUMCHECK", "accuracy vs the CPU"),
          T("neutral", "TSR-SELFTEST", "device self-tests"),
          T("neutral", "TSR-LOG", "firmware log decoder"),
          T("neutral", "SIMULATOR", "bit-exact oracle\ncycle model · races"),
-         T("neutral", "GDB DEBUGGING", "over PCIe", tag=PLAN_TAG),
+         T("neutral", "GDB", "debugging\nover PCIe", tag=PLAN_TAG,
+           logo={"key": "gdb", "h": 60, "backing": True, "pad": 6}),
          T("neutral", "TSR-PROF", "timeline · counters", tag=PLAN_TAG)]
 
 # ---- vertical layout -----------------------------------------------------------------------------
 Y = 56
-H1, H2 = 96, 128                      # tile heights: one detail line / firmware
+H1, H2 = 96, 128                      # tile heights: one detail line / firmware (and apps)
 ROW = 96                              # tile height in the core panel
 BUS = 64                              # control row to units row: room for the unit-queue bus
 SPM_GAP, SPM_H = 56, 80               # units row to SPM bar; SPM bar height
 panels = {}                           # name -> (y, h)
-for name, h in (("apps", HEAD + H1 + FOOT), ("backends", HEAD + H1 + FOOT),
+for name, h in (("apps", HEAD + H2 + FOOT), ("backends", HEAD + H1 + FOOT),
                 ("transport", HEAD + H1 + FOOT), ("firmware", HEAD + H2 + FOOT),
                 ("core", HEAD + ROW + BUS + ROW + SPM_GAP + SPM_H + FOOT), ("card", HEAD + H1 + FOOT)):
     panels[name] = (Y, h)
@@ -156,14 +200,17 @@ H = KEY_Y + 3 * 40 + 28 + 2 * 26 + 48
 
 f = Fig("stack", W, H,
         title="The Tesseract software stack",
-        desc="Layered software stack, top to bottom: llama.cpp and PyTorch; the ggml-tesseract "
+        desc="Layered software stack, top to bottom: llama.cpp (llama-cli and llama-server, an "
+             "OpenAI-compatible API) and PyTorch with Hugging Face models, each with its official "
+             "logo; the ggml-tesseract "
              "backend and tsr_rt; tsr_transport with the sim, mock, vkernel and xrt kinds; "
              "firmware on the RISC-V control core (runtime, graph executor, kernels for MUL_MAT, "
              "norms, RoPE and flash attention, selftest and replay); the NPU core (control core, "
              "issue path with unit queues, DMA, QACT, MVM clusters, vector unit, SPM); the Alveo "
              "U200 card with the XRT shell and four DDR4 channels. A column of developer tools "
              "sits beside the middle layers: bit-exact simulator, tsr-selftest, klcheck and "
-             "numcheck, trace tools, tsr-log, and planned GDB debugging and profiler. Tags give "
+             "numcheck, trace tools, tsr-log, and planned GDB debugging (with the GDB logo) and "
+             "profiler. Tags give "
              "each block's status: on the card (v1), on the simulator (v2) or planned; the xrt "
              "kind is planned because only the v1 transport has run on the card.")
 
@@ -172,10 +219,9 @@ mid = (MX0 + MX1) / 2
 
 # applications: full width
 y, h = panels["apps"]
-panel(f, FX0, y, FX1 - FX0, h, "APPLICATIONS",
-      caption="GGUF models through llama.cpp · Hugging Face models through PyTorch")
+panel(f, FX0, y, FX1 - FX0, h, "APPLICATIONS")
 for t, (x, w) in zip(apps, place(apps, FX0 + PAD, FX1 - PAD)):
-    tile(f, x, y + HEAD, w, H1, t)
+    tile(f, x, y + HEAD, w, H2, t)
 
 # backends
 y, h = panels["backends"]

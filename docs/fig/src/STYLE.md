@@ -11,10 +11,12 @@ mark, so the figures stay consistent and the output stays deterministic.
 | What | Where |
 | --- | --- |
 | Figure script | `docs/fig/src/<name>.py` (one figure per script, `Fig("<name>", ...)`) |
-| Output | `docs/fig/<name>.svg` (committed); the README figures also have `docs/fig/<name>-dark.svg` (see "Dark variants") |
+| Output | `docs/fig/<name>.svg` (committed); the README figures also have `docs/fig/<name>.png` (see "README figures") and `docs/fig/<name>-dark.svg` (see "Dark variants") |
 | Previews | `$TSR_FIG_PNG_DIR/<name>.png` at 1:1 and `<name>_gh.png` at 880 px (about GitHub's README width). The default is `build/fig/png`, which git ignores. Previews are never committed. |
 | Interpreter | `build/tools/svgvenv/bin/python docs/fig/src/<name>.py` (needs cairosvg, fontTools) |
-| All figures | `docs/fig/src/build.sh` runs every script, light and dark where a dark variant exists |
+| Logos | `docs/fig/logos/<key>.svg` (sanitised third-party logos) and `docs/fig/logos/SOURCES.md` (where each came from); `docs/fig/src/logoclean.py` makes the files. See "Logos". |
+| README PNGs | `docs/fig/<name>.png` for `hero`, `system` and `stack`, made from the light SVGs by `docs/fig/src/pngs.py` |
+| All figures | `docs/fig/src/build.sh` runs every script, light and dark where a dark variant exists, then `pngs.py` |
 
 - Start each script with `sys.dont_write_bytecode = True` before `from tsrfig import ...`, so
   no `__pycache__` is left in the repo.
@@ -74,7 +76,8 @@ Fills mark a block's role. Use the role, not a raw hex, so all figures agree.
 | `neutral` | `#FFFFFF` | plain blocks, such as data items in a memory map; references in `verify`; developer tools in `stack`; work and gate boxes in `milestones` |
 
 Do not use gradients, shadows, transparency or 3D effects. Text is always `INK` (or `INK_SOFT`
-for secondary notes) on the pastel fills; on dark tags it is `CARD`.
+for secondary notes) on the pastel fills; on dark tags it is `CARD`. The one exception is a
+third-party logo, which keeps its own colours (see "Logos").
 
 ## Strokes and shapes
 
@@ -244,14 +247,81 @@ and `PLANNED`. It never reuses lavender, so a reader carrying the key over from 
 figures is not misled. `stack` has no colour legend, only the status key (three badge samples
 with one line each); `milestones` has `DONE` (mint), `IN DEVELOPMENT` (butter) and `PLANNED`.
 
+## Logos
+
+A third-party logo is the one mark in a figure that is not drawn in the figure style: it is the
+official file, in its own colours, unmodified. Today only `stack` has logos (llama.cpp, PyTorch,
+Hugging Face, GDB); the architecture figures have none.
+
+- **Which.** Only software that the figure names and that a reader would look for: a program,
+  library or tool. Never a mark that implies endorsement or needs permission: no OpenAI logo (the
+  `llama-server` API is written as text, "OpenAI-compatible API"), no AMD, Xilinx or Alveo logo, no
+  RISC-V International logo, no lowRISC or Ibex logo, and no logo of the card, the board or the
+  tools that built it. Hardware, ISAs and IP cores stay as text blocks.
+- **Official and unmodified.** Take the file from the project's own repository or brand page. No
+  recolouring, no stretching (`Fig.logo` keeps the aspect ratio), no cropping beyond the file's own
+  padding, no effects, no partial use of a lockup. Do not mix in an older version of a mark (the
+  `pytorch-logo-flame.svg` in the PyTorch repository is the old flame, so the lockup is used).
+- **Sources are written down.** Every logo has a section in `docs/fig/logos/SOURCES.md`: URL
+  (pinned to a commit where there is one), retrieval date, sha256 of the download, licence or
+  trademark note (and the attribution a licence asks for, as for the GDB fish under CC BY-SA), and
+  what was changed. Read the owner's brand rules first; if they forbid the use, leave the logo out.
+  Say in the note that the logo only refers to the project.
+- **Sanitised vector, no raster.** The download is untrusted data: put it in its own empty directory
+  outside the repository, never run anything from it, and turn it into `docs/fig/logos/<key>.svg`
+  with `logoclean.py` (it refuses scripts, event handlers, external links, `<foreignObject>`,
+  `<image>`, `<text>` and DOCTYPE or ENTITY declarations, and folds CSS into attributes so two
+  logos cannot collide). `logoclean.py --compare` must show 0 differing pixels against the
+  download. A logo that cannot be sanitised (a raster, or an SVG with text) is not used.
+- **Drawing.** `Fig.logo("<key>", x, y, h=...)` embeds the file once in `<defs>` and places it with
+  `<use>`, so the SVG stays self-contained and the bytes are the same on every run. It returns the
+  size of the mark, and `logo_box()` gives that size before drawing, for layout.
+- **Backing tile.** A logo that would be illegible on the block colour, because it is dark (the
+  PyTorch wordmark), white (the GDB fish) or close in hue to the fill (the yellow Hugging Face
+  face on butter), uses `backing=True`: a white rounded tile (radius 10, outline 1.5 in `INK`,
+  padding 4 to 10). The tile is white on both themes, and the logo never changes with the theme. A
+  logo that carries its own tile (the llama.cpp icon is a dark rounded square) has no backing.
+- **Size and place.** At least 40 units tall including the backing (about 22 px at README width);
+  80 for a square mark, 44 for a wide lockup, 60 for the fish. Put it at the left of its tile, 24
+  from the edge and centred in the tile's height, with the tile's text left-aligned beside it, 20
+  from the logo and at least 20 from the right edge (`stack.py`: `logo_tile()`). A lockup that
+  contains the name replaces the tile title (PyTorch). A small logo may head a line of text
+  (Hugging Face, 32 units on a 40-unit tile). Draw each program once in a figure.
+- **Status.** A logo does not change the status of its block: a planned block (GDB) keeps its
+  dashed outline and tag, and its logo is drawn in full colour.
+- **Check.** Look at `<name>.png` and `<name>_gh.png`, light and dark. The logo must be
+  recognisable at 880 px, clear of the tile's outline and tag, and the text beside it at least 20
+  units from the tile edge.
+
+## README figures
+
+`README.md` shows `hero`, `system` and `stack` as one plain `<img>` of a PNG each, inside a
+centred `<p>`. Do not use a `<picture>` element with SVG sources there: the GitHub mobile app
+showed a broken image for it (commit 6f97864 fixed the logo the same way).
+
+- **Source.** The light SVG is the source, rendered by `docs/fig/src/pngs.py` to
+  `docs/fig/<name>.png`. The card carries its own background, so one PNG reads on both GitHub
+  themes; its rounded corners are transparent. `build.sh` calls `pngs.py` after the figure
+  scripts, so the PNGs are regenerated with the SVGs. `pngs.py <name> ...` renders only the named
+  figures, and `README_FIGS` in the script is the list of README figures.
+- **Format.** 1760 px wide (twice the 880 px README column), 8-bit palette (256 colours, octree,
+  no dithering) with a transparency table, which costs at most about 30 of 255 in a few edge pixels
+  and keeps each file at 100 to 150 KB. The script fails over 500 KB. There are no timestamps or
+  text chunks, so the same SVG gives the same bytes. Commit the PNGs together with the SVGs.
+- **Embed.** `<p align="center"><img src="docs/fig/<name>.png" alt="..." width="100%"></p>`, with
+  the alt text that describes the figure.
+- **Technical documents.** The figures under `docs/` (`spec.md`, `ctrl-riscv.md` and the others)
+  keep embedding the SVGs with a plain `<img>`. A new README figure needs its name in
+  `README_FIGS`, a line in `build.sh` for its script, and the embed above.
+
 ## Dark variants
 
-The README figures (`hero`, `stack`, `system`) also exist as `<name>-dark.svg`, for the
-`<picture>` embed with `prefers-color-scheme`. The card carries its own background, so the light
-files read fine on GitHub's dark theme; the dark files are for pages that want the figure to match
-the theme. The same script draws both: `tsrfig.py` reads `TSR_FIG_THEME` (`light` by default,
-`dark`) once at import and swaps the palette; nothing else changes, so the layout, the text and
-the roles are identical.
+The README figures (`hero`, `stack`, `system`) also exist as `<name>-dark.svg`. The README does
+not use them (see "README figures"). The card carries its own background, so the light files read
+fine on GitHub's dark theme; the dark files are for pages that want the figure to match the theme
+and that can use a `<picture>` element. The same script draws both: `tsrfig.py` reads
+`TSR_FIG_THEME` (`light` by default, `dark`) once at import and swaps the palette; nothing else
+changes, so the layout, the text and the roles are identical.
 
 | Token / role | Dark hex | Token / role | Dark hex |
 | --- | --- | --- | --- |
@@ -264,7 +334,9 @@ the roles are identical.
 | `compute` | `#276683` | `memory` | `#8E4539` |
 
 Text is `INK` on every role fill with a contrast of at least 4.8 : 1; the dark tags are `INK` on
-`CARD`. Planned blocks mix the role colour toward `PANEL` as in the light theme. Embed:
+`CARD`. Logos and their white backing tiles are the same in both themes. Planned blocks mix the
+role colour toward `PANEL` as in the light theme. A page that uses the dark files embeds them like
+this (not the README, and not for a GitHub page that has to show in the mobile app):
 
 ```html
 <picture>

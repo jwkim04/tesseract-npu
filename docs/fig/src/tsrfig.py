@@ -9,6 +9,10 @@ the same calls give the same bytes.
 
 Coordinates are SVG user units, y down; the card is 1600 units wide by convention.
 
+Logos of third-party software (`Fig.logo`) are the one thing that is not drawn in the figure style:
+the official file is embedded unmodified, as vector shapes, from docs/fig/logos (sanitised by
+logoclean.py; docs/fig/logos/SOURCES.md has the source of each).
+
     from tsrfig import Fig, split
     f = Fig("demo", 1600, 900, title="Demo", desc="One block.")
     f.panel(80, 80, 1440, 740, label="HOST PC")
@@ -38,6 +42,7 @@ from fontTools.ttLib import TTFont
 SRC_DIR = Path(__file__).resolve().parent
 FIG_DIR = SRC_DIR.parent                      # docs/fig
 REPO = FIG_DIR.parent.parent
+LOGO_DIR = FIG_DIR / "logos"                  # sanitised third-party logos (see logoclean.py)
 PNG_DIR = Path(os.environ.get("TSR_FIG_PNG_DIR", REPO / "build" / "fig" / "png"))  # git-ignored
 FONT_FILES = {                                 # Noto Sans Mono 2.006, SIL OFL 1.1 (FONTS.md)
     "regular": os.environ.get("TSR_FIG_FONT_REGULAR",
@@ -135,6 +140,8 @@ DASH = "9 6"             # planned outlines and optional/dotted paths
 CUT = 14                 # chamfer of a block
 CUT_PANEL = 20           # chamfer of a panel
 CARD_R = 36              # corner radius of the card
+LOGO_BG = "#FFFFFF"      # backing tile of a logo: white in both themes (STYLE.md "Logos")
+LOGO_RX, LOGO_PAD = 10, 8                      # backing tile: corner radius, padding around the logo
 ARROW_W, ARROW_HW, ARROW_HL = 24, 54, 26       # hollow arrow: shaft, head width, head length
 FAT_W, FAT_HW, FAT_HL = 40, 84, 36             # hollow "bulk data" arrow (weight streams)
 HEAD_L, HEAD_W = 12, 11                        # solid arrowhead of thin connectors
@@ -276,6 +283,43 @@ def measure(text: str, role="label", **kw):
 
 
 # --------------------------------------------------------------------------------------------
+# Logos: sanitised third-party SVG files in docs/fig/logos, drawn as vector shapes
+# --------------------------------------------------------------------------------------------
+_LOGOS: dict[str, tuple[tuple[float, float, float, float], str]] = {}
+_LOGO_FORBIDDEN = re.compile(r'<script|foreignObject|<image|<text|<style|<use|DOCTYPE|ENTITY|'
+                             r'href="(?!#)|\son[a-z]+=|data:|https?:(?!//www\.w3\.org/2000/svg")',
+                             re.I)
+
+
+def _logo_src(key: str):
+    """((min_x, min_y, width, height), compact inner markup) of docs/fig/logos/<key>.svg. The file
+    comes out of logoclean.py; it is checked again here so a hand-edited file cannot add active
+    content to a figure."""
+    if key not in _LOGOS:
+        text = (LOGO_DIR / f"{key}.svg").read_text(encoding="utf-8")
+        if _LOGO_FORBIDDEN.search(text):
+            raise SystemExit(f"tsrfig: logo {key!r} has content that logoclean.py would refuse")
+        m = re.search(r'<svg [^>]*viewBox="([^"]+)"[^>]*>', text)
+        if not m:
+            raise SystemExit(f"tsrfig: logo {key!r} has no viewBox")
+        vb = tuple(float(v) for v in m.group(1).split())
+        inner = "".join(line.strip() for line in text[m.end():text.rindex("</svg>")].splitlines())
+        _LOGOS[key] = (vb, inner)
+    return _LOGOS[key]
+
+
+def logo_box(key: str, h: float = None, w: float = None, backing: bool = False,
+             pad: float = LOGO_PAD):
+    """(width, height) a logo takes in a layout: the logo scaled to height h or width w (aspect
+    kept), plus `pad` on every side when it sits on a backing tile."""
+    _, _, vw, vh = _logo_src(key)[0]
+    if h is None:
+        h = w * vh / vw
+    w = h * vw / vh
+    return (w + 2 * pad, h + 2 * pad) if backing else (w, h)
+
+
+# --------------------------------------------------------------------------------------------
 # The figure
 # --------------------------------------------------------------------------------------------
 class Fig:
@@ -288,6 +332,7 @@ class Fig:
         self.slashed_zero = slashed_zero
         self.body: list[str] = []
         self.used: dict[str, set[str]] = {"regular": set(), "bold": set()}
+        self.logos: set[str] = set()              # logo keys used (each defined once in <defs>)
         if card:
             self.card()
 
@@ -513,6 +558,26 @@ class Fig:
         self.body.append(f'<line x1="{fmt(x1)}" y1="{fmt(y)}" x2="{fmt(x2)}" y2="{fmt(y)}" '
                          f'stroke="{color}" stroke-width="{fmt(sw)}"{dash}/>')
 
+    # -- logos ----------------------------------------------------------------------------------
+    def logo(self, key: str, x, y, h: float = None, w: float = None, backing: bool = False,
+             pad: float = LOGO_PAD, rx: float = LOGO_RX):
+        """Third-party logo `key` (docs/fig/logos/<key>.svg), unmodified, at (x, y) = top left,
+        scaled to height h or width w. backing=True puts it on a white rounded tile with a thin
+        ink outline (for a logo that is illegible on the block colour); the tile adds `pad` on
+        every side. Returns (width, height) of the whole mark. STYLE.md "Logos" has the rules."""
+        (vx, vy, vw, _), _ = _logo_src(key)
+        ow, oh = logo_box(key, h, w, backing, pad)
+        lw = ow - 2 * pad if backing else ow
+        if backing:
+            self.body.append(f'<rect x="{fmt(x)}" y="{fmt(y)}" width="{fmt(ow)}" height="{fmt(oh)}" '
+                             f'rx="{fmt(rx)}" fill="{LOGO_BG}" stroke="{INK}" stroke-width="1.5"/>')
+        k = lw / vw
+        ox, oy = (x + pad, y + pad) if backing else (x, y)
+        self.logos.add(key)
+        self.body.append(f'<use xlink:href="#logo-{key}" transform="translate({fmt(ox - vx * k)} '
+                         f'{fmt(oy - vy * k)}) scale({k:.6g})"/>')
+        return ow, oh
+
     # -- text -----------------------------------------------------------------------------------
     def text(self, x, y, text: str, role="label", anchor: str = "start", valign: str = "baseline",
              color: str = INK, weight: str = "", track=None, lh=None):
@@ -556,6 +621,8 @@ class Fig:
             f = _FONTS.get(key)
             for g in sorted(self.used[key]):
                 defs.append(f'<path id="{_gid(key, g)}" d="{f.path(g)}"/>')
+        for key in sorted(self.logos):
+            defs.append(f'<g id="logo-{key}">{_logo_src(key)[1]}</g>')
         head = (f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
                 f'width="{self.w}" height="{self.h}" viewBox="0 0 {self.w} {self.h}" role="img" '
                 f'aria-labelledby="{self.name}-t {self.name}-d">\n'
