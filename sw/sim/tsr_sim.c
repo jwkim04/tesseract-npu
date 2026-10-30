@@ -1,8 +1,8 @@
 // tsr_sim.c — Tesseract simulator, core: memories, the host CSR port (EX §5), the firmware loader
-// (EX §3), the launch queue / completion ring / log ring (EX §4), SOFT_RESET (EX §8.5), PERF v2
+// (EX §3), the launch queue / completion ring / log ring (EX §4), SOFT_RESET (EX §8.5), PERF
 // (EX §6), the op handler table and the tile units NOP LD ST QACT MVM FENCE (EX §7.2).
 //
-// Normative sources: docs/spec.md "ISA", "MVM 의미", "구현 명확화 (v0.2.1)", docs/v2/01-execution-
+// Normative sources: docs/spec.md "ISA", "MVM 의미", "구현 명확화 (v0.2.1)", docs/design/01-execution-
 // model.md (EX), 04-control-core.md (CC) and 06-software-verification.md (SW) §4. All numerics
 // come from tsr_ref.c (spec rule 3); this file only decodes, checks and moves bytes. The queue
 // model (dispatcher, checker order, unit queues, SYNC, errors, the RISC-V side control window and
@@ -11,7 +11,7 @@
 //
 // Decisions pinned in spec 구현 명확화 (v0.2.1, simulator section) and EX §7.1, implemented here:
 //   - Reserved fields: every word, flag bit and sub value an op does not use, and x16
-//     (w0[31:16], v1's register fields), must be zero, else ILLEGAL_OP. LD/ST sub = channel
+//     (w0[31:16], the former register fields), must be zero, else ILLEGAL_OP. LD/ST sub = channel
 //     >= NUM_CH -> ILLEGAL_OP. QACT sub (QA kind) >= 2 -> ILLEGAL_OP. MVM sub (fmt) >= 2 -> BAD_FMT.
 //   - Check order ILLEGAL_OP -> BAD_FMT -> K_RANGE -> T_RANGE -> SPM_RANGE -> DRAM_RANGE (BAD_DEP
 //     and OPERAND are the queue model's / the VU and AT ops'); inside SPM_RANGE / DRAM_RANGE the
@@ -31,7 +31,7 @@
 //   NOP, FENCE              none (SYNC entries complete without running: 1 cycle in the queue model)
 // The queue model (tsr_q.c) runs ops for these times and integrates PERF over time (EX §6:
 // time counters gated by ACTIVE and not QHALT, event counters by ACTIVE). The tsr_sim_op test
-// hook keeps the v1 op-level counting instead: 1 issue cycle + cycles() per passing op in
+// hook keeps the op-level counting instead: 1 issue cycle + cycles() per passing op in
 // PERF_CYCLES, cycles() in MVM_CYCLES / VU_CYCLES (and ATT_QK / ATT_PV_CYCLES for ATTQK / ATTPV),
 // RETIRED for every op, nothing gated.
 //   PERF_CH_RD_BEATS[c]     LD beats and MVM weight beats (no command fetch: ch0 is exact)
@@ -59,7 +59,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#define CYC_ISSUE    1u      // tsr_sim_op only: the v1 issue cycle
+#define CYC_ISSUE    1u      // tsr_sim_op only: the issue cycle
 #define CYC_DMA_LAT  64u
 #define CYC_MVM_FILL 64u
 

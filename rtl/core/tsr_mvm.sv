@@ -104,7 +104,7 @@ module tsr_mvm
   input  logic                                   clk,
   input  logic                                   rst_n,
 
-  // ---- dispatch (the v2 dispatcher, Y4) ----
+  // ---- dispatch (the dispatcher, Y4) ----
   input  logic                                   cmd_valid,
   output logic                                   cmd_ready,
   input  tsr_mvm_cmd_t                           cmd,

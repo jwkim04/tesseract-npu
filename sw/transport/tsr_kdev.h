@@ -1,6 +1,6 @@
 // tsr_kdev.h — the device-access layer (kdev) and the protocol layer on top of it
-// (docs/v2/01-execution-model.md "EX" §10.2; docs/v2/06-software-verification.md "SW" §9.1;
-// docs/v2/05-debug.md "DB" §4.1, §7.3, §9.2).
+// (docs/design/01-execution-model.md "EX" §10.2; docs/design/06-software-verification.md "SW" §9.1;
+// docs/design/05-debug.md "DB" §4.1, §7.3, §9.2).
 //
 // Every kind has two layers:
 //   kdev      raw access to one Tesseract kernel: 32-bit s_axi_control registers (the adapter's
@@ -11,13 +11,11 @@
 //             "vkernel" (the Verilated kernel in a server process; tsr_kdev_vkernel.cpp), "xrt"
 //             (xrt::ip plus per-channel buffers; tsr_transport_xrt.cpp), and kinds registered at
 //             run time (register_kdev).
-//   protocol  one implementation for every kind (tsr_kdev.cpp, V2-SW-18): open (identity,
+//   protocol  one implementation for every kind (tsr_kdev.cpp, SW-18): open (identity,
 //             ADAPTER_STATUS, SOFT_RESET, bind), boot (EX §3.3-§3.5: requirements, VERIFY, cold or
 //             warm load, HELLO), launch (credit, shadowed LQ_W writes, LQ_PUSH), wait (LCQ
 //             consumption, events, the poll policy, the log, the debug-aware timeout and DB's
 //             recovery ladder, TRAP handling), cancel, stop, soft reset, log drain.
-// v1's run interface (start / wait / settle / kargs, regs_* / kds_*, KREG_AP_CTRL .. KREG_ARG0) is
-// deleted (X0, EX §10.2).
 #pragma once
 
 #include <cstddef>
@@ -35,7 +33,7 @@ namespace tsr {
 
 // ---------------------------------------------------------------------------
 // Kernel contract: s_axi_control map (EX §9.2; byte offsets, 32-bit registers, 13-bit space).
-// 0x000-0x03C are reserved and read 0 (v1's AP_CTRL, GIE, IER, ISR, cmd_addr, cmd_count, arg0-7).
+// 0x000-0x03C are reserved and read 0.
 // ---------------------------------------------------------------------------
 enum : uint32_t {
     KREG_CH_BASE0        = TSR_SAXI_CH_BASE_LO_BASE,   // ch c base (u64, 4 KiB aligned): lo at 0x040 + 8c, hi at +4

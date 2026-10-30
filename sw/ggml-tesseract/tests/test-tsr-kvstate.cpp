@@ -1,8 +1,8 @@
-// test-tsr-kvstate.cpp — ctest ggml_tesseract_kvstate (W3b P3.5; docs/v2/06-software-verification.md §9.3
+// test-tsr-kvstate.cpp — ctest ggml_tesseract_kvstate (W3b P3.5; docs/design/06-software-verification.md §9.3
 // M7 "KV buffers": "set_tensor / get_tensor / memset_tensor / clear convert ... so llama.cpp's state save /
-// load keeps working"; docs/v2/03-attention-kv.md §4.6 "state files are bit-identical to the CPU's"):
+// load keeps working"; docs/design/03-attention-kv.md §4.6 "state files are bit-identical to the CPU's"):
 // llama.cpp's own state API with the KV cache in device KV planes (M7 settings: -fa on, -ctk / -ctv q8_0,
-// offload_kqv, LLAMA_ATTN_ROT_DISABLE=1), on a tiny model (tests/gen_tiny_models.py, V2-SW-21).
+// offload_kqv, LLAMA_ATTN_ROT_DISABLE=1), on a tiny model (tests/gen_tiny_models.py, SW-21).
 //
 //   1. Context A (device) decodes a prompt (several ubatches); its whole state is saved.
 //   2. Context B (device) loads it: B's saved state equals A's byte for byte, and the next token's

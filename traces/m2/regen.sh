@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# traces/m2/regen.sh [BUILD_DIR] — the M2 regression traces as trace v2 `ops` traces (docs/v2/
-# 06-software-verification.md §5.6): tsr-trace-gen v2 --ops m2 (QACT groups, LD -> ST copies; no MVM),
-# with v1's seeds and configurations (tag v1-m4, traces/m2/regen.sh there), then every trace
+# traces/m2/regen.sh [BUILD_DIR] — the M2 regression traces as `ops` traces (docs/design/
+# 06-software-verification.md §5.6): tsr-trace-gen --ops m2 (QACT groups, LD -> ST copies; no MVM),
+# with fixed seeds and configurations, then every trace
 # replayed under the fixed and two random schedules (race detector fatal),
 # tile-only and through the replay kernel (one launch per trace: SPM_STALE is fatal, SW §4.6).
 #
@@ -12,12 +12,10 @@
 #   ch3/       8 traces, 3 channels, T_MAX 3, 256 KiB SPM, ~25% error injections
 #   errors/   40 short programs that all have an error injection, U200 config: the M2 fault kinds
 #             (reserved fields, refused opcodes, channel >= NUM_CH, QACT kind, K_RANGE, T_RANGE,
-#             SPM_RANGE on each operand with 64-bit extents, DRAM_RANGE) and the v2 endings (BAD_DEP,
+#             SPM_RANGE on each operand with 64-bit extents, DRAM_RANGE) and the dependency endings (BAD_DEP,
 #             DEP_FAILED chains, ABORTED after an error state, QABORT recipe, QCLEAR recovery)
 #   errors8/  32 like errors/, T_MAX 8 (multi-token range checks, (T-1) x src_stride beyond 32 bits)
-# Every program is a push stream with deps (no LI / ADDI / END, absolute immediates, x16 = 0); v1's
-# fetch / missing-END endings are gone (SW §5.6). Each set uses one configuration (meta.json "config").
-# The v1 sets (cmd.bin) are no longer reproduced here: their recipes are in tag v1-m4.
+# Every program is a push stream with deps (no LI / ADDI / END, absolute immediates, x16 = 0). Each set uses one configuration (meta.json "config").
 # Every SPM line an op reads is written earlier in its trace (2026-10-30: a strided QACT source loaded per
 # token also gets its stride gaps loaded; 13 traces changed, none read the power-on SPM fill).
 set -eu

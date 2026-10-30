@@ -1,6 +1,6 @@
 /* sw/ctrl/rt/crt0.S — start-up, vector table and trap entry of the Tesseract firmware
- * (docs/v2/06-software-verification.md "SW" §6.2, §6.3, §6.6; docs/v2/05-debug.md "DB" §6.3;
- * docs/v2/01-execution-model.md "EX" §3.4, §4.7; docs/v2/04-control-core.md "CC" §3.2, §12.3).
+ * (docs/design/06-software-verification.md "SW" §6.2, §6.3, §6.6; docs/design/05-debug.md "DB" §6.3;
+ * docs/design/01-execution-model.md "EX" §3.4, §4.7; docs/design/04-control-core.md "CC" §3.2, §12.3).
  *
  * Vector table (.vectors at RV_BOOT = 0, sw/ctrl/rt/link.ld): 32 slots of 4 bytes. Ibex's mtvec is
  * vectored only (CC §3.2): exceptions enter slot 0, interrupt i slot i, NMI slot 31. The runtime

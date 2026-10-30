@@ -2,18 +2,17 @@
 
 Inference with the weight matmuls on Tesseract and everything else on the CPU. The device is
 `TSR_DEVICE` (`sim` by default; `mock` through the same transport on the simulator; `vkernel` is not
-available until P5.3; `xrt` ran on the card with the v1 core).
+available until P5.3; `xrt` ran on the card).
 
 The runtime under this package (`sw/rt`) runs each device matmul as a one-op op list through the
-firmware's `graph` kernel; the package, its API and the numerics are unchanged since v1 (a rebuild
-only). "Programs" below are those op lists (`rt_execs` = launches, `rt_prog_*` = op-list cache hits
-and misses). The move onto the M7 kernels is M8 ([SW](../../docs/v2/06-software-verification.md) §9.4).
+firmware's `graph` kernel. "Programs" below are those op lists (`rt_execs` = launches,
+`rt_prog_*` = op-list cache hits and misses). The move onto the M7 kernels is M8 ([SW](../../docs/design/06-software-verification.md) §9.4).
 
 > **Scope.** Package reference. The design record, the measurements and the next steps are in
 > [`docs/torch-backend.md`](../../docs/torch-backend.md); the runtime is
-> [`sw/rt/README.md`](../rt/README.md). Results below were measured with the v1 stack (simulator,
-> Verilated kernel, card) and are labelled; the Python suite has not been re-run on the v2 stack, the
-> C++ runtime tests have.
+> [`sw/rt/README.md`](../rt/README.md). Results below are labelled with where they were measured.
+> They were taken before the control core was added, with the host issuing the ops; the Python suite
+> has not been re-run since, the C++ runtime tests have.
 
 Numerics are the llama.cpp path's (`docs/spec.md` §7 Numeric rules, §5 *Load-time conversion*):
 
@@ -146,7 +145,7 @@ with `close_device()` can raise it too). `tt.device()` afterwards opens a new de
 
 | Variable | Effect |
 | --- | --- |
-| `TSR_DEVICE` | transport: `sim` (default), `mock`, `vkernel`, `xrt`; with its own variables (`TSR_SIM_*`, `TSR_MOCK_*`, `TSR_VKERNEL_*`, `TSR_XRT_*`; `TSR_IMAGE`, `TSR_TRACE` (trace v2 per launch), `TSR_LOG`; [`sw/transport/README.md`](../transport/README.md)) |
+| `TSR_DEVICE` | transport: `sim` (default), `mock`, `vkernel`, `xrt`; with its own variables (`TSR_SIM_*`, `TSR_MOCK_*`, `TSR_VKERNEL_*`, `TSR_XRT_*`; `TSR_IMAGE`, `TSR_TRACE` (one trace per launch), `TSR_LOG`; [`sw/transport/README.md`](../transport/README.md)) |
 | `TSR_TORCH_DEBUG` | `1`: the partition of every compiled graph (which matmuls go to the device, why the others stay on the CPU), every upload, the counters at exit; `2`: also every device call; `3`: also the rewritten aten graphs |
 | `TSR_TORCH_VERIFY` | `1`: every device matmul is also computed by the reference model (libtsr_ref on the weight rows read back from the device) and compared bit for bit; a mismatch raises `TesseractError` naming the weight, the element and both values (for vkernel / xrt bring-up) |
 | `TSR_TORCH_EXT_DIR` | where to find `_tesseract_rt` if it is not on `sys.path` |
@@ -254,9 +253,8 @@ TSR_TORCH_HF_MODEL=models/hf/Qwen2.5-0.5B-Instruct python -m pytest -q -s sw/tor
   (`id = 127 / amax`) differ from the stored blocks (2 resp. 3 of 1048576 values on a random
   256 × 4096 weight), and sequential accumulation differs from the device in 882 of 1024 outputs.
 
-Results, measured on the simulator (v1; build/torch, Release, torch 2.9.1, Python 3.13; the skipped
-tests are the opt-in HF test and, off the sim, the sim-only T_MAX 8 device). After the robustness
-fixes (86 + 1 tests):
+Results, measured on the simulator (build/torch, Release, torch 2.9.1, Python 3.13; the skipped
+tests are the opt-in HF test and, off the sim, the sim-only T_MAX 8 device; 86 + 1 tests):
 
 | Run | Result | Wall | Max RSS |
 | --- | --- | --- | --- |
@@ -267,30 +265,6 @@ fixes (86 + 1 tests):
 | opt-in `test_hf.py` (Qwen2.5-0.5B-Instruct, sim) | 1 passed (4 / 4 steps bit-exact, top-1 93.3 %) | 36 s | 4.8 GB |
 | ctest in build/torch (`-j2`): `torch_pytest`, `torch_pytest_tmax8`, `rt_sim`, `rt_sim_tmax8`, `rt_mock`, `rt_mock_tmax8`, `ggml_tesseract_units`, `_e2e`, `_e2e_tmax8`, `_e2e_hosted`, `_e2e_hosted_tmax8`, `_scalar_nmse` | 12 / 12 passed | 23 s | |
 | ctest in build/rt (`-j2`): `rt_*` (4) and `ggml_tesseract_*` (7, with `_backend_ops`: MUL_MAT on Tesseract0, 1402 / 1402) | 11 / 11 passed | 39 s | |
-
-Before these fixes (72 + 1 tests), in RTL simulation (v1, ideal memory):
-
-| Run | Result | Wall | Max RSS |
-| --- | --- | --- | --- |
-| `TSR_DEVICE=vkernel` k4t1 (4 ch, T_MAX 1), subset (below) | 33 passed; server: 138 runs, 0 findings, 0 reads of unwritten memory | 26 s | 0.7 GB |
-| `TSR_DEVICE=vkernel` k4 (4 ch, T_MAX 8), same subset | 33 passed; server: 140 runs, 0 findings, 0 reads of unwritten memory | 67 s | 0.7 GB |
-
-The vkernel subset (the Verilated U200 kernel: RTL) covers the bit-exact cases of shapes up to
-256 × 1024 × 17 tokens in the three dtypes, the rounding rows, strides, T tiling with exact traffic,
-native blocks, errors, and the compiled MLP / transformer block, program cache, B·S > T_MAX, operand
-forms, in-place re-upload and dynamic lengths. It leaves out the large shapes because the kernel
-simulates about 15k cycles/s. Command (v1, tag `v1-m4`: X0 deleted the v1 vkernel server, its
-`TSR_VKERNEL_CTRL` and `TSR_XRT_TIMEOUT_MS`; the two-clock v2 server is P5.3, and `TSR_DEVICE=vkernel`
-is not available until then), with the servers built from the M3 RTL (`vkernel.py run` rebuilds them
-when the RTL has changed):
-
-```
-TSR_DEVICE=vkernel TSR_VKERNEL_CTRL=kds TSR_XRT_TIMEOUT_MS=0 \
-TSR_VKERNEL_SERVER="<build>/k4t1_body_<hash>/obj/vkernel_server --regime fast --seed 1 --summary s.json" \
-PYTHONPATH=sw/torch:build/torch/python python -m pytest -q sw/torch/tests/test_ext.py ... -k "not (896 or 4864 or 1000-1056 or 48-2048)"
-# or, building the server if needed:
-tb/platform/vkernel/vkernel.py run --config k4t1 -- build/tools/torchvenv/bin/python -m pytest -q sw/torch/tests/...
-```
 
 NMSE against torch float32 (12 shapes × 3 weight dtypes × 5 seeds = 180 cases, every shape with
 N·T ≥ 16): min 7.95e-6, median 2.83e-5, p90 3.92e-5, p99 6.77e-5, max 8.90e-5, i.e. 17.8 % of the
@@ -319,7 +293,7 @@ The script loads a local model directory (safetensors, `trust_remote_code=False`
    (CPU backend vs device on the same quantized weights) does not apply.
 3. `--gguf` compares every weight's device blocks with the GGUF's Q8_0 tensors.
 
-Measured on the simulator (v1), Qwen2.5-0.5B-Instruct (HF revision 7ae55760, `model.safetensors`
+Measured on the simulator, Qwen2.5-0.5B-Instruct (HF revision 7ae55760, `model.safetensors`
 sha256 fdf756fa…), TSR_DEVICE=sim (T_MAX 1), 16 prompt tokens + 8 generated:
 
 | | float32 (bf16 weights widened) | bfloat16 |
@@ -390,7 +364,7 @@ the native libraries of numcheck (`libtsr_ref.so`, `libnumcheck_helper.so`) in `
 Exit 0 if offload, repeatability, both bit-exact checks, the oracle checks and top-1 ≥ 80 % hold.
 The KL ratios are reported, not gated.
 
-Measured on the simulator (v1), Qwen2.5-0.5B-Instruct (revision 7ae55760, sha256 = Hub etag),
+Measured on the simulator, Qwen2.5-0.5B-Instruct (revision 7ae55760, sha256 = Hub etag),
 `TSR_DEVICE=sim` (T_MAX 1), 32 prompt tokens, 16 generated, seed 1, 8 torch threads. Two runs gave
 the same bits:
 
@@ -424,21 +398,14 @@ the same bits:
   + run) 5.75 s. Upload of 169 weights (504.2 MiB Q8_0) 1.21 s. Generation 58.7 s on the device (600 token
   passes), 3.2 s on the CPU. Whole script 106 s wall, peak RSS 5.0 GiB.
 
-**vkernel** (v1, RTL simulation; `--forward-only --tokens 8`; the k4t1 server built from the M3 RTL,
-`--regime fast --seed 1`, kds): the logits are bit-identical to `TSR_DEVICE=sim` (8 / 8 rows, sha256 `4a5e7b24…7f66`
-on both). The server reported 169 runs, 0 findings and 0 reads of unwritten memory. RTL PERF was
-2,278,155 cycles / token (MVM 2,084,161), against 2,166,305 in the sim's cycle model. Wall time 164 s
-(150 s in device calls, 122 K cycles/s), peak RSS 3.6 GiB.
+The `--forward-only --tokens 8` run on `TSR_DEVICE=sim` gives logits with sha256 `4a5e7b24…7f66`
+(8 rows): 169 / 169 matmul nodes and calls on the device, 0 CPU fallbacks, PASS, 10.5 s wall, 3.6 GB.
 
-After the robustness fixes, the same `--forward-only --tokens 8` run on `TSR_DEVICE=sim` gives the same
-logits (sha256 `4a5e7b24…7f66`): 169 / 169 matmul nodes and calls on the device, 0 CPU fallbacks,
-PASS, 10.5 s wall, 3.6 GB.
-
-**Card** (v1, k1, 300 MHz; `docs/platform-u200.md` §14.1). Measured on the card (v1, k1):
+**Card** (k1, 300 MHz; `docs/platform-u200.md` §14.1). Measured on the card (k1):
 `TSR_DEVICE=xrt TSR_TORCH_VERIFY=1` the suite 85 passed, 2 skipped (12.1 s), `test_hf.py` passed, and
 `hf_check.py --forward-only --tokens 8 --expect <sim logits>` 8 / 8 rows bit-identical (sha256
-`4a5e7b24…7f66`, as on `sim` and the Verilated kernel), 169 device calls, 9.06 M PERF cycles per token.
-The v2 stack has not run PyTorch on a card (work package W6).
+`4a5e7b24…7f66`, as on `sim`), 169 device calls, 9.06 M PERF cycles per token.
+PyTorch has not run on a card with the control core (work package W6).
 
 ## Limits
 

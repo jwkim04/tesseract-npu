@@ -5,7 +5,7 @@
 // Owner: DMA agent (docs/rtl-m2.md §2, block (b); memory port rules §4).
 //
 // Read sources (index = tsr_pkg TSR_SRC_*): 0 AUX (freed by the fetch removal, tied off by
-// tsr_core: V2-CC-26), 1 DMA, 2 WS (M3 weight stream; tied off in M2). Write source: DMA only.
+// tsr_core: CC-26), 1 DMA, 2 WS (M3 weight stream; tied off in M2). Write source: DMA only.
 // Contract:
 //   - Read requests: round-robin between requesting sources, one burst per grant. A grant is
 //     given only while fewer than RD_OUTSTANDING read requests are outstanding on this channel

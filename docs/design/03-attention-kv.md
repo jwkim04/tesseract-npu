@@ -1,12 +1,12 @@
-# Tesseract v2 — attention and the KV cache on the device (area AT)
+# Tesseract — attention and the KV cache on the device (area AT)
 
-Status: **design contract for M6, proposal** (2026-10-30). One of the six v2 area documents in
-`docs/v2/` (EX execution model, VU vector unit, AT attention and KV (this file), CC control core,
+Status: **design contract for M6, proposal** (2026-10-30). One of the six area documents in
+`docs/design/` (EX execution model, VU vector unit, AT attention and KV (this file), CC control core,
 DB debug, SW software and verification). It implements user decision D17 (`docs/ctrl-riscv.md:45`):
 the KV cache lives on the device in q8_0, and attention arrives as llama.cpp `FLASH_ATTN_EXT`.
 Source-of-truth order is the project's: `docs/spec.md` > ISA simulator (`sw/sim`) > this document.
-The spec changes this document needs are listed in §14; they are applied at the spec v2 rewrite
-(`docs/v2/README.md`). Every number marked *estimate* is not measured. Gemma 4 12B shapes are read
+The spec changes this document needs are listed in §14; they are applied in W0
+(`docs/design/README.md`). Every number marked *estimate* is not measured. Gemma 4 12B shapes are read
 from its GGUF (`models/gemma4/gemma-4-12b-it-Q8_0.gguf`, 2026-10-30); 31B shapes marked *confirm*
 are recalled from the HF config and must be read from a GGUF before they are relied on.
 
@@ -25,7 +25,7 @@ llama.cpp citations are relative to `third_party/llama.cpp` (pinned at e3797b184
 - **Layout.** Cells form 16-cell *groups*; group u lives in channel u mod C. K planes are
   token-major (a cell's whole row is contiguous); V planes are *slice-major* (64-value slices of
   all cells are contiguous). Both use the existing Q8_0 chunk format (§4).
-- **Seven new ops** in the opcode blocks EX reserved for AT (`docs/v2/01-execution-model.md` §7.2):
+- **Seven new ops** in the opcode blocks EX reserved for AT (`docs/design/01-execution-model.md` §7.2):
   `KVST` 0x14 (DMA unit, store new K/V rows), `ATTQK` 0x21 and `ATTPV` 0x22 (MVM unit, scores and
   P·V over a group range), and `ASMAX` 0x34, `AMASK` 0x35, `AMERGE` 0x36, `ANORM` 0x37 (VU unit,
   softmax steps, executed by the VU's lanes, VU §5.11). Unit 4 stays absent in M6 (§5).
@@ -44,7 +44,7 @@ llama.cpp citations are relative to `third_party/llama.cpp` (pinned at e3797b184
   inside `ATTQK`; anything else takes a general f32 path.
 - **Kept out:** attention logit softcap, ALiBi, sinks, sparse `n_kv_max`, DK ≠ DV (MLA), head
   dimensions other than 64–512, and K-shift. The KV Hadamard rotation is off, following SW's
-  V2-SW-16 (§2.5).
+  SW-16 (§2.5).
 - **DQROW** is VU's (VU §5.6, SPM → f32 on the VU, RTL in M8). Attention never uses it, and
   `tok_embd` stays on the CPU input layer through M7 (§5.9).
 - **Gates.** M6 runs llama.cpp with attention on the CPU (`offload_kqv` = false); the AT ops are
@@ -137,8 +137,8 @@ is a `MUL_MAT` with an F32 graph-input src0 and the hint `GGML_HINT_SRC0_IS_HADA
 (`src/llama-impl.h:57-77`), which the CPU runs as a fast Walsh-Hadamard transform
 (`ggml-cpu.c:1262-1266`, `ops.cpp:12432-12505`).
 
-SW decided to run every device run and every baseline with `LLAMA_ATTN_ROT_DISABLE=1` (V2-SW-16,
-`docs/v2/06-software-verification.md` §8 R4). AT adopts that (V2-AT-17). The device attention is
+SW decided to run every device run and every baseline with `LLAMA_ATTN_ROT_DISABLE=1` (SW-16,
+`docs/design/06-software-verification.md` §8 R4). AT adopts that (AT-17). The device attention is
 agnostic to rotation: it computes on whatever q, k and v the graph supplies. Appendix A records the
 bit-exact FWHT definition, in case a later milestone offloads the rotation as a VU function.
 
@@ -146,9 +146,9 @@ bit-exact FWHT definition, in case a later milestone offloads the rotation as a 
 
 | Op | Device accepts when | Otherwise |
 |---|---|---|
-| `FLASH_ATTN_EXT` | q F32 contiguous per token (`[D, n_head, T]` before the permute); k and v q8_0 views of KV-cache tensors in a Tesseract KV buffer (§4.6); D = DK = DV ∈ {64, 128, 256, 512}; n_head % n_head_kv = 0; mask F16 or none; `max_bias` = 0, `logit_softcap` = 0, no sinks, `n_kv_max` = 0; precision default or F32; ne3 = n_stream (M7: 1). As built (W3b): k / v start at the plane's cell 0 with cells `row_size(E)` and heads `row_size(D)` apart (llama.cpp's `get_k` / `get_v`); T ≤ 680, so that the MSUM and the FA_NEW indices fit one list's 256 preload lines (SW V2-SW-43; a longer ubatch's FA runs on the CPU) | false. With a device KV buffer the scheduler would then copy the cache per op, so the backend reports the unsupported feature at graph build (SW R10) |
+| `FLASH_ATTN_EXT` | q F32 contiguous per token (`[D, n_head, T]` before the permute); k and v q8_0 views of KV-cache tensors in a Tesseract KV buffer (§4.6); D = DK = DV ∈ {64, 128, 256, 512}; n_head % n_head_kv = 0; mask F16 or none; `max_bias` = 0, `logit_softcap` = 0, no sinks, `n_kv_max` = 0; precision default or F32; ne3 = n_stream (M7: 1). As built (W3b): k / v start at the plane's cell 0 with cells `row_size(E)` and heads `row_size(D)` apart (llama.cpp's `get_k` / `get_v`); T ≤ 680, so that the MSUM and the FA_NEW indices fit one list's 256 preload lines (SW SW-43; a longer ubatch's FA runs on the CPU) | false. With a device KV buffer the scheduler would then copy the cache per op, so the backend reports the unsupported feature at graph build (SW R10) |
 | `SET_ROWS` | dst is a KV-cache tensor (q8_0, Tesseract KV buffer) viewed from cell 0 with rows of E values (`cpy_k` / `cpy_v`, one stream); src F32 with rows of E; idx I64 < 2^31 | false; the scheduler then stops on the pre-allocated cache tensor, after the backend names the cause (SW R10) |
-| Hadamard `MUL_MAT` | never (rotation is off, V2-AT-17) | — |
+| Hadamard `MUL_MAT` | never (rotation is off, AT-17) | — |
 | Other attention ops (`SOFT_MAX`, attention `MUL_MAT` on the cache) | never (D17: FA only) | — |
 
 The KV type must be q8_0 for both K and V when the cache is offloaded. Other KV types are
@@ -260,7 +260,7 @@ use about 40 % of a 16 GiB channel; 128K contexts also fit (*estimate*).
 - **Identification.** The backend treats a tensor as a KV-cache tensor when it is q8_0, 3D
   `[E, kv_size, n_stream]` in a Tesseract buffer, named `cache_*k_l<n>` or `cache_*v_l<n>`
   (`src/llama-kv-cache.cpp:236-237`). Its layout is fixed by E and kv_size, both known at
-  `init_tensor`, and does not depend on D. As built (W3b, SW V2-SW-47): the tensor is recognised from
+  `init_tensor`, and does not depend on D. As built (W3b, SW SW-47): the tensor is recognised from
   the `init_tensor` records, and the planes are placed at the buffer's first data access (llama.cpp's
   clear), because ggml sets a buffer's usage after `init_tensor`; a buffer counts only if all its
   tensors qualify.
@@ -278,7 +278,7 @@ use about 40 % of a 16 GiB channel; 128K contexts also fit (*estimate*).
 
 ## 5. Operations
 
-All seven ops follow the v2 rules: w0 = {x16 = w0[31:16], flags[15:12], sub[11:8], opcode[7:0]}
+All seven ops follow the common encoding: w0 = {x16 = w0[31:16], flags[15:12], sub[11:8], opcode[7:0]}
 (`01-execution-model.md` §7.1). Every reserved field or bit must be 0, otherwise `ILLEGAL_OP`.
 Every error is found at dispatch; nothing fails after it has started. Data-dependent conditions
 (NaN, empty rows, zero weights) have defined results.
@@ -413,7 +413,7 @@ mdst[r]   = max_tot(M_FLOOR, max_k dst[r][k])
 ```
 
 The −inf test reproduces the CPU's skip of masked cells (§2.3). A finite mask value is added to
-the raw score, and ASMAX / AMERGE scale the sum (V2-AT-9): the device computes EXP(scale·(s + m)),
+the raw score, and ASMAX / AMERGE scale the sum (AT-9): the device computes EXP(scale·(s + m)),
 where the CPU computes exp(scale·s + m). The two agree when m = ±0 or scale = 1. So the backend's
 f32 copy holds fdiv(m, scale) (§7.3; `tsr_msum_mask_f32`), which gives the CPU's form up to f32
 rounding for every finite m (W1a decision; NMSE ≈ 10^-13 against ggml-cpu in `ref_at_ggml`).
@@ -489,11 +489,11 @@ of the repacked row (VU §5.6), simulator from M6, RTL in M8.
 
 ### 5.10 CAPS, CFG3, units
 
-- `CAPS` bit5 ATT (EX): all seven AT ops are present. Bits 12–15 are reserved for AT and 0 in v2.0.
+- `CAPS` bit5 ATT (EX): all seven AT ops are present. Bits 12–15 are reserved for AT and 0 at format version 2.0.
 - `CFG3[31:16]` = PCAP / 16 (U200 T_MAX 8: 584).
 - **Units.** KVST is in the DMA class (unit 0). ATTQK and ATTPV are in the MVM class (unit 2).
   ASMAX, AMASK, AMERGE and ANORM are in the VU class (unit 3); the VU executes them (VU §5.11,
-  V2-VU-27). **Unit 4 is absent in M6** (`ISSUE_UNITS[4]` = 0, `Q_DEPTH[4]` = 0, CC's SPM client 5
+  VU-27). **Unit 4 is absent in M6** (`ISSUE_UNITS[4]` = 0, `Q_DEPTH[4]` = 0, CC's SPM client 5
   tied off) and stays reserved for a future dedicated attention engine. EX's PERF index X+2
   `ATT_CYCLES` therefore reads 0. AT's counters are X + 16 … X + 19 (§10, EX §6).
 - **Opcodes.** The AT quantize-class block 0x19–0x1B and 0x15–0x17, 0x23 stay reserved for AT.
@@ -542,7 +542,7 @@ Per channel c, slice s (head group g = ⌊s/(D/64)⌋), slot t = t(q, i) and row
 
 1. **Segments.** U_c = the op's groups u ≡ c (mod C), ascending. Segments are consecutive runs of
    4 elements of U_c (64 cells; the last segment may be shorter). The order is fixed by u0 and C,
-   so the result depends on NUM_CH (V2-AT-11).
+   so the result depends on NUM_CH (AT-11).
 2. **Weights.** For each segment S, each cell j ∈ S with p_r[j] not ±0, and e ∈ {0, 1}:
    w_{j,e} = fmul(p_r[j], fp16_to_f32(dV_{j, 2s+e})). Cells with p = ±0 are skipped (they
    contribute nothing, like the CPU's skip of −inf cells).
@@ -576,11 +576,11 @@ The same segments of U_c, once per row (not per slice):
 ### 6.6 The composite FA (normative kernel algorithm)
 
 Per SW's rule, the tile-op sequence of a composite kernel is part of the numerical contract
-(`docs/v2/06-software-verification.md` §7.5, which points here). ATTQK and ATTPV run on the MVM
+(`docs/design/06-software-verification.md` §7.5, which points here). ATTQK and ATTPV run on the MVM
 queue, ASMAX, AMASK, AMERGE and ANORM on the VU queue (VU §5.11). The FA kernel (`k_fattn.cpp`) and
 its reference `tsr_ref_fa` (§13.1) are defined as:
 
-1. **Query tiles and head subsets.** The pass rule (V2-AT-15) gives GS = min(G, T_MAX) and T_q =
+1. **Query tiles and head subsets.** The pass rule (AT-15) gives GS = min(G, T_MAX) and T_q =
    ⌊T_MAX/GS⌋. The kernel iterates query tiles [q0, q0 + T_q′) of T_q tokens (the last one may be
    shorter); a tile has R = T_q′·n_head rows. The head subsets hg0 = 0, GS, … (< G; the last one
    has GS′ = G − hg0 heads) run **inside each chunk** of the tile (step 4), not as outer passes:
@@ -643,7 +643,7 @@ Sources of difference, each at or below the level the existing MUL_MAT already h
 | 7 | Normalization: exact reciprocal then multiply | identical form to the CPU's |
 
 No 8-bit quantization of P and no re-quantization of V occur. Those were rejected because they add
-errors of order 10^-3 to 10^-2 relative (V2-AT-6).
+errors of order 10^-3 to 10^-2 relative (AT-6).
 
 ---
 
@@ -714,14 +714,14 @@ row q: lo0, hi0, lo1, hi1     — at most two runs of cells with mask == +0/−0
 **GENERAL** is set when some row has a value other than ±0 / −inf (finite nonzero, +inf or NaN; the
 reference `tsr_msum_build_f16` treats all three alike) or more than two runs, and by the producer
 when the planner would refuse one of a reader's tiles (§6.6 rules 5 / 6, data-dependent: the
-promotion keeps the rows' runs and makes every tile plan under rule 1; W3b, SW V2-SW-44). The backend then
+promotion keeps the rows' runs and makes every tile plan under rule 1; W3b, SW SW-44). The backend then
 also writes an f32 copy of the mask, with row stride ⌈n_kv/16⌉ lines. It writes the copy too when a
 multi-row query tile of a FLASH_ATTN that reads the mask takes the GENERAL path although the MSUM is
 not GENERAL (§6.6 rule 3: rows with two runs, holes, a wrapped SWA ring in prefill; W2b kvfa); without
 it that record is BAD_RECORD (`tsr_ref_fa`: TSR_FA_E_MASK). The producer can tell by running the
 planner (`tsr_fa_plan`) on the MSUM's tiles. AMASK reads that copy. Its
 values are fdiv(m, scale) with the reading FA op's scale (§5.5), so a mask read by FA ops with
-different scales needs one copy per scale. As built (W3b, SW V2-SW-48): every FLASH_ATTN registers
+different scales needs one copy per scale. As built (W3b, SW SW-48): every FLASH_ATTN registers
 as a reader of its mask, the copy of each distinct scale has a fixed handle, and FLASH_ATTN word 13
 names it whether or not it was written, so a cached op list stays valid while the mask changes.
 
@@ -770,7 +770,7 @@ SPM traffic per chunk of n cells and R rows (*estimate*):
 
 For 32B (R = 40, 2,048 cells per chunk) this averages about 0.6 lines per cycle on each SPM port
 over the chunk's 17.8 K MVM cycles. The ports carry it with the second read path and round robin
-(`docs/v2/04-control-core.md` §10).
+(`docs/design/04-control-core.md` §10).
 
 Scratch per layer for 32B: 3 × 5,120 (S) + 2 × 1,292 (P) + 330 (state) + 90 (QA) ≈ 18.4 K lines
 (1.15 MiB) of the ≈ 3.7 MiB scratch ring (SW §7.3).
@@ -928,28 +928,28 @@ include the planes' beats (the simulator's cycle model reports both).
 
 | Id | Topic | Choice | Alternatives | Rationale |
 |---|---|---|---|---|
-| V2-AT-1 | Where attention computes | Q·Kᵀ and P·V in the MVM clusters; the VU only does softmax passes and merges | VU dot products with K/V tiles LDed to SPM; a separate attention engine with its own DSPs | One SPM port is 64 B/cycle against 256 B/cycle of DDR, so a VU or SPM-tile design is capped at 25 % of the rate the priority demands. A separate engine needs up to 1,024 more DSPs per SLR (two channels at G = 8) against ≈ 930 free, and it duplicates the stream path. The clusters are idle during attention and already stream one beat per cycle per channel. |
-| V2-AT-2 | KV values | Exactly llama.cpp's q8_0 (blocks along each head row, fp16 scale, ref rounding); only bytes move | V transposed with blocks along tokens; int8 P with V^T in a standard MVM | Any other quantization axis makes the device KV differ from the CPU's in every element. The KL criterion is relative to a 1-ulp floor, so that error would likely fail it. Keeping the bytes also makes state save/load lossless. |
-| V2-AT-3 | Channel distribution | 16-cell groups round-robin over channels (u mod C) | contiguous cell ranges per channel (v1 symmetric rows); per-cell interleave | Contiguous ranges leave channels idle at short contexts. Per-cell interleave splits score lines across clusters, needing partial-line gather writes. A 16-cell group is one score line per row, so every gather write is a full line. |
-| V2-AT-4 | Plane layouts | K token-major in Q8_0 chunks; V slice-major (all cells' 64-value slice contiguous) | both token-major; both slice-major | Token-major K gives whole scores per row in one pass at ≤ 1 gather line per cycle for D ≥ 128. Slice-major K would need D/64 passes and double the gather rate. Slice-major V lets each DSP keep one accumulator for a whole slice. Token-major V would need D/64 accumulators per lane in fabric (≈ 26 K LUT per cluster more). Both layouts depend only on E and kv_size, so they are fixed at allocation. |
-| V2-AT-5 | KV store | KVST (DMA) from QACT A32 output, consecutive cells; partial meta beats by read-modify-write in the DMA | a fused quantize-and-store op; write strobes on the memory port | QACT already implements `quantize_row_q8_0_ref` bit-exactly. RMW keeps the core boundary and the platform unchanged; EX added no write strobes. Its cost is one extra beat read per partial meta beat (≈ 1–3 µs per layer in decode, off the critical path except for the last chunk). |
-| V2-AT-6 | P·V numerics | Block floating point per 64-cell channel segment: 24-bit integer weights, exact integer sums, one f32 add per segment; P stays f32-precise | int8 P (A32 quantization); 16-bit P; f32 FMAs at full rate | Int8 P costs about 1 % relative error per output (block max/254 over 32 cells). 16-bit P costs about 10^-5. Both are far above the CPU's f32 path and risk the KL criterion. f32 FMAs at 2,048 per cycle cost about 500 K LUT. The block-float form reuses the 512 MAC DSPs and is at least as precise as the CPU. |
-| V2-AT-7 | Segment length | 4 local groups = 64 cells per channel | 16 cells; whole op | 16-cell segments need 30 f32 conversions and additions per cycle per cluster; 64-cell segments need 7.5. A whole-op exponent would need a pre-pass over the V scales or lose precision on outlier tokens. |
-| V2-AT-8 | Softmax structure | Two-pass within a chunk (max from ATTQK, EXP by ASMAX), online merge across chunks (AMERGE) | fully online per cell like the CPU; one global two-pass over all cells | Per-cell online rescaling of the accumulators cannot be done in the DSP accumulation. One global pass needs all scores in SPM (32K × 40 rows = 5 MiB for 32B) and prevents overlap. Chunks of ≤ 128 groups fit the slot buffers and pipeline across units. |
-| V2-AT-9 | Where the scale goes | Inside ASMAX and AMERGE: EXP((s − m)·scale); ATTQK returns raw scores | scale Q before QACT; scale the QA block scales | Scaling Q before QACT changes the fp16 rounding of every Q block scale (≈ 2^-11 relative in each term). Scaling the QA D area costs one VU op per token per layer and an fp rounding per term. Inside EXP it is one rounding, as on the CPU, and it is free in an op that already reads every score. |
-| V2-AT-10 | Row sums | Computed by ATTPV (LSUM) with the same block-float rule | a VU RED.SUM pass; fused into ASMAX | LSUM saves a full read pass over R·n scores per chunk, which would add 0.29 lines/cycle on the SPM read port. It keeps l consistent with O (same p values and segments). The cost is one accumulator per slot. |
-| V2-AT-11 | Channel partials and NUM_CH dependence | ATTPV outputs C partials; AMERGE adds them in a fixed tree; results depend on NUM_CH | ordered ACC in the gather; making results independent of C | The gather's ACC in channel order would serialize or buffer the clusters. Independence from C would need segments spanning channels, which the clusters cannot see. Bit-exactness is defined per configuration (the simulator reads CFG), as with every other op. |
-| V2-AT-12 | Row max floor | M_FLOOR = −2^100 in ATTQK and AMASK | −inf; special-case logic in merges | With −inf, rows with no visible cell in a chunk produce NaN (EXP(−inf − (−inf))). A finite floor keeps every merge finite with no extra op, and changes nothing for real scores. |
-| V2-AT-13 | Empty rows | ANORM uses RECIP(max(l, 2^-126)) | require non-empty rows; special case in the kernel | It reproduces the CPU's `S == 0 ? 0 : 1/S` exactly at no cost. |
-| V2-AT-14 | Masks | Host-built mask summary (≤ 2 runs per row) with CAUSAL/SLIDE bounds in ATTQK; f32 copy and AMASK only for GENERAL | the device reads f16 masks (VU has no f16); per-token op-list patching | The VU has no f16 (survey). The summary keeps SW's cached op list valid per token. Bounds in ATTQK skip all masked bandwidth for the common cases and make the max exact. |
-| V2-AT-15 | GQA and prefill mapping | Slots = (query token, head-in-group); head subsets (hg0, GS) for G > T_MAX; T_q = ⌊T_MAX/GS⌋ | one KV head per op with heads as T; K re-streamed per head | All KV heads in one op stream K once per pass. Head subsets make every G work, including MQA and T_MAX 1 bitstreams (k1 runs attention as G passes for bring-up). |
-| V2-AT-16 | Units and opcodes | KVST 0x14 (DMA), ATTQK 0x21, ATTPV 0x22 (MVM), ASMAX 0x34, AMASK 0x35, AMERGE 0x36, ANORM 0x37 (VU); unit 4 absent; no new error codes (OPERAND covers shapes) | a separate ATT unit 4 queue sharing the clusters; quantize-class KV ops | The ops use existing datapaths, so a separate queue would only add arbitration for one resource. The numbers fall inside EX's AT blocks. |
-| V2-AT-17 | Hadamard KV rotation | Off (adopt V2-SW-16); FWHT semantics recorded (Appendix A) | offload the rotation as a VU FWHT, bit-identical to the CPU | SW already fixed the baselines with rotation off. Rotation matters most for ≤ 5-bit caches. Keeping it on needs a new VU function in M6. It can return in M8 if KL or quality data asks for it. |
-| V2-AT-18 | Unsupported features | No softcap, ALiBi, sinks, sparse n_kv_max, MLA (DK ≠ DV), D outside 64–512, K-shift | implement softcap via VU TANH | No target model uses them (Qwen2.5, Gemma 4 dense). Softcap needs max handling in the capped domain. Each can be added later without changing the layout. |
-| V2-AT-19 | Chunk policy | NCG = min(128, PCAP limit, ≥ 2 chunks for ≥ 8C groups), segment-aligned; newest cells last | fixed chunk size; per-model tuning | It overlaps VU and MVM work for every context of 8C groups or more. The newest-last order lets KVST overlap earlier chunks. It is deterministic, which makes it part of the numeric contract. |
-| V2-AT-20 | DQROW | DQROW per VU §5.6 (SPM → f32 on the VU, RTL in M8); the M8 embedding lookup is LD (ROW_BEATS) + DQROW; an f32 `tok_embd` copy remains the exact alternative for other GGUF types; attention never uses it | the spec's DRAM-row → f32 on the DMA unit with a dequant stage (the draft); drop | VU owns the encoding (EX §7.2) and already has the fp datapath; the embedding lookup is on the CPU until M8. The f32 table is decided in M8 when `tok_embd` is not Q8_0 or Q4_K. |
-| V2-AT-21 | KV region | Symmetric planes, top-down from each channel's end; one plane per (layer, stream, K/V); LG from kv_size | interleave KV in the weight heap; ch0-only | Symmetric planes keep every channel's share equal. Top-down keeps the KV growth away from weight uploads. |
-| V2-AT-22 | FA head subsets and chunk planner (W1a / W2b; reconciled at the W2b integration) | The head subsets of a query tile run inside each chunk (all ATTQK of the chunk per subset, AMASK, one ASMAX, all ATTPV per subset, one AMERGE over all R rows); the chunk planner is one source, `sw/sim/include/tsr_fa_plan.h`, compiled by `tsr_ref_fa` and the firmware; its rules 1–8 (§6.6) are normative; FA_NEW in the flags word names the newest cells; MK[4] | passes outermost (the original §6.6); separate planners in the reference and the firmware; MK[3] | AMERGE / ANORM have no row selection, so G > T_MAX (Gemma 4 global, G = 16) cannot run as outer passes; one planner gives one chunk list, hence bit-identical outputs, by construction (`fw_kvfa_plan` checks it against W1a's code); MK[3] races ATTQK k against AMERGE k−3 |
+| AT-1 | Where attention computes | Q·Kᵀ and P·V in the MVM clusters; the VU only does softmax passes and merges | VU dot products with K/V tiles LDed to SPM; a separate attention engine with its own DSPs | One SPM port is 64 B/cycle against 256 B/cycle of DDR, so a VU or SPM-tile design is capped at 25 % of the rate the priority demands. A separate engine needs up to 1,024 more DSPs per SLR (two channels at G = 8) against ≈ 930 free, and it duplicates the stream path. The clusters are idle during attention and already stream one beat per cycle per channel. |
+| AT-2 | KV values | Exactly llama.cpp's q8_0 (blocks along each head row, fp16 scale, ref rounding); only bytes move | V transposed with blocks along tokens; int8 P with V^T in a standard MVM | Any other quantization axis makes the device KV differ from the CPU's in every element. The KL criterion is relative to a 1-ulp floor, so that error would likely fail it. Keeping the bytes also makes state save/load lossless. |
+| AT-3 | Channel distribution | 16-cell groups round-robin over channels (u mod C) | contiguous cell ranges per channel; per-cell interleave | Contiguous ranges leave channels idle at short contexts. Per-cell interleave splits score lines across clusters, needing partial-line gather writes. A 16-cell group is one score line per row, so every gather write is a full line. |
+| AT-4 | Plane layouts | K token-major in Q8_0 chunks; V slice-major (all cells' 64-value slice contiguous) | both token-major; both slice-major | Token-major K gives whole scores per row in one pass at ≤ 1 gather line per cycle for D ≥ 128. Slice-major K would need D/64 passes and double the gather rate. Slice-major V lets each DSP keep one accumulator for a whole slice. Token-major V would need D/64 accumulators per lane in fabric (≈ 26 K LUT per cluster more). Both layouts depend only on E and kv_size, so they are fixed at allocation. |
+| AT-5 | KV store | KVST (DMA) from QACT A32 output, consecutive cells; partial meta beats by read-modify-write in the DMA | a fused quantize-and-store op; write strobes on the memory port | QACT already implements `quantize_row_q8_0_ref` bit-exactly. RMW keeps the core boundary and the platform unchanged; EX added no write strobes. Its cost is one extra beat read per partial meta beat (≈ 1–3 µs per layer in decode, off the critical path except for the last chunk). |
+| AT-6 | P·V numerics | Block floating point per 64-cell channel segment: 24-bit integer weights, exact integer sums, one f32 add per segment; P stays f32-precise | int8 P (A32 quantization); 16-bit P; f32 FMAs at full rate | Int8 P costs about 1 % relative error per output (block max/254 over 32 cells). 16-bit P costs about 10^-5. Both are far above the CPU's f32 path and risk the KL criterion. f32 FMAs at 2,048 per cycle cost about 500 K LUT. The block-float form reuses the 512 MAC DSPs and is at least as precise as the CPU. |
+| AT-7 | Segment length | 4 local groups = 64 cells per channel | 16 cells; whole op | 16-cell segments need 30 f32 conversions and additions per cycle per cluster; 64-cell segments need 7.5. A whole-op exponent would need a pre-pass over the V scales or lose precision on outlier tokens. |
+| AT-8 | Softmax structure | Two-pass within a chunk (max from ATTQK, EXP by ASMAX), online merge across chunks (AMERGE) | fully online per cell like the CPU; one global two-pass over all cells | Per-cell online rescaling of the accumulators cannot be done in the DSP accumulation. One global pass needs all scores in SPM (32K × 40 rows = 5 MiB for 32B) and prevents overlap. Chunks of ≤ 128 groups fit the slot buffers and pipeline across units. |
+| AT-9 | Where the scale goes | Inside ASMAX and AMERGE: EXP((s − m)·scale); ATTQK returns raw scores | scale Q before QACT; scale the QA block scales | Scaling Q before QACT changes the fp16 rounding of every Q block scale (≈ 2^-11 relative in each term). Scaling the QA D area costs one VU op per token per layer and an fp rounding per term. Inside EXP it is one rounding, as on the CPU, and it is free in an op that already reads every score. |
+| AT-10 | Row sums | Computed by ATTPV (LSUM) with the same block-float rule | a VU RED.SUM pass; fused into ASMAX | LSUM saves a full read pass over R·n scores per chunk, which would add 0.29 lines/cycle on the SPM read port. It keeps l consistent with O (same p values and segments). The cost is one accumulator per slot. |
+| AT-11 | Channel partials and NUM_CH dependence | ATTPV outputs C partials; AMERGE adds them in a fixed tree; results depend on NUM_CH | ordered ACC in the gather; making results independent of C | The gather's ACC in channel order would serialize or buffer the clusters. Independence from C would need segments spanning channels, which the clusters cannot see. Bit-exactness is defined per configuration (the simulator reads CFG), as with every other op. |
+| AT-12 | Row max floor | M_FLOOR = −2^100 in ATTQK and AMASK | −inf; special-case logic in merges | With −inf, rows with no visible cell in a chunk produce NaN (EXP(−inf − (−inf))). A finite floor keeps every merge finite with no extra op, and changes nothing for real scores. |
+| AT-13 | Empty rows | ANORM uses RECIP(max(l, 2^-126)) | require non-empty rows; special case in the kernel | It reproduces the CPU's `S == 0 ? 0 : 1/S` exactly at no cost. |
+| AT-14 | Masks | Host-built mask summary (≤ 2 runs per row) with CAUSAL/SLIDE bounds in ATTQK; f32 copy and AMASK only for GENERAL | the device reads f16 masks (VU has no f16); per-token op-list patching | The VU has no f16 (survey). The summary keeps SW's cached op list valid per token. Bounds in ATTQK skip all masked bandwidth for the common cases and make the max exact. |
+| AT-15 | GQA and prefill mapping | Slots = (query token, head-in-group); head subsets (hg0, GS) for G > T_MAX; T_q = ⌊T_MAX/GS⌋ | one KV head per op with heads as T; K re-streamed per head | All KV heads in one op stream K once per pass. Head subsets make every G work, including MQA and T_MAX 1 bitstreams (k1 runs attention as G passes for bring-up). |
+| AT-16 | Units and opcodes | KVST 0x14 (DMA), ATTQK 0x21, ATTPV 0x22 (MVM), ASMAX 0x34, AMASK 0x35, AMERGE 0x36, ANORM 0x37 (VU); unit 4 absent; no new error codes (OPERAND covers shapes) | a separate ATT unit 4 queue sharing the clusters; quantize-class KV ops | The ops use existing datapaths, so a separate queue would only add arbitration for one resource. The numbers fall inside EX's AT blocks. |
+| AT-17 | Hadamard KV rotation | Off (adopt SW-16); FWHT semantics recorded (Appendix A) | offload the rotation as a VU FWHT, bit-identical to the CPU | SW already fixed the baselines with rotation off. Rotation matters most for ≤ 5-bit caches. Keeping it on needs a new VU function in M6. It can return in M8 if KL or quality data asks for it. |
+| AT-18 | Unsupported features | No softcap, ALiBi, sinks, sparse n_kv_max, MLA (DK ≠ DV), D outside 64–512, K-shift | implement softcap via VU TANH | No target model uses them (Qwen2.5, Gemma 4 dense). Softcap needs max handling in the capped domain. Each can be added later without changing the layout. |
+| AT-19 | Chunk policy | NCG = min(128, PCAP limit, ≥ 2 chunks for ≥ 8C groups), segment-aligned; newest cells last | fixed chunk size; per-model tuning | It overlaps VU and MVM work for every context of 8C groups or more. The newest-last order lets KVST overlap earlier chunks. It is deterministic, which makes it part of the numeric contract. |
+| AT-20 | DQROW | DQROW per VU §5.6 (SPM → f32 on the VU, RTL in M8); the M8 embedding lookup is LD (ROW_BEATS) + DQROW; an f32 `tok_embd` copy remains the exact alternative for other GGUF types; attention never uses it | the spec's DRAM-row → f32 on the DMA unit with a dequant stage (the draft); drop | VU owns the encoding (EX §7.2) and already has the fp datapath; the embedding lookup is on the CPU until M8. The f32 table is decided in M8 when `tok_embd` is not Q8_0 or Q4_K. |
+| AT-21 | KV region | Symmetric planes, top-down from each channel's end; one plane per (layer, stream, K/V); LG from kv_size | interleave KV in the weight heap; ch0-only | Symmetric planes keep every channel's share equal. Top-down keeps the KV growth away from weight uploads. |
+| AT-22 | FA head subsets and chunk planner (W1a / W2b; reconciled at the W2b integration) | The head subsets of a query tile run inside each chunk (all ATTQK of the chunk per subset, AMASK, one ASMAX, all ATTPV per subset, one AMERGE over all R rows); the chunk planner is one source, `sw/sim/include/tsr_fa_plan.h`, compiled by `tsr_ref_fa` and the firmware; its rules 1–8 (§6.6) are normative; FA_NEW in the flags word names the newest cells; MK[4] | passes outermost (the original §6.6); separate planners in the reference and the firmware; MK[3] | AMERGE / ANORM have no row selection, so G > T_MAX (Gemma 4 global, G = 16) cannot run as outer passes; one planner gives one chunk list, hence bit-identical outputs, by construction (`fw_kvfa_plan` checks it against W1a's code); MK[3] races ATTQK k against AMERGE k−3 |
 
 ---
 
@@ -1033,7 +1033,7 @@ this document only, does not share code with `tsr_ref`, and must agree bit for b
 
 - **`test-backend-ops`** on sim, vkernel and xrt: `FLASH_ATTN_EXT` with q8_0 K/V (the shapes
   above, n_stream 1), `SET_ROWS` into q8_0 KV tensors, and state save/load round trips. NMSE vs
-  CPU, and bit-identical across sim, vkernel and xrt. *As built (W3b, SW V2-SW-52):* test-backend-ops'
+  CPU, and bit-identical across sim, vkernel and xrt. *As built (W3b, SW SW-52):* test-backend-ops'
   K / V / dst tensors are never KV-cache tensors in a KV buffer, so supports_op refuses its
   `FLASH_ATTN_EXT` and `SET_ROWS` cases by design; `ggml_tesseract_attn` (SET_ROWS + FLASH_ATTN_EXT in
   llama.cpp's graph shape through KV buffers: bit-exact against `tsr_ref_fa`, NMSE vs CPU) and
@@ -1058,14 +1058,14 @@ this document only, does not share code with `tsr_ref`, and must agree bit for b
 
 ---
 
-## 14. Changes to existing documents (applied at the spec v2 rewrite)
+## 14. Changes to existing documents (applied in W0)
 
-The integration of `docs/v2` edits no file outside `docs/v2`; these edits are work package W0 of
-`docs/v2/README.md`.
+The integration of `docs/design` edits no file outside `docs/design`; these edits are work package W0 of
+`docs/design/README.md`.
 
 | Document | Change |
 |---|---|
-| `docs/spec.md:138` | DRAM map KV row: "symmetric planes, top-down; layout `docs/v2/03-attention-kv.md` §4" |
+| `docs/spec.md:138` | DRAM map KV row: "symmetric planes, top-down; layout `docs/design/03-attention-kv.md` §4" |
 | `docs/spec.md:984` | Open item "KV cache layout" closed by §4 and D17 |
 | `docs/spec.md:420-442` | ISA table: KVST 0x14, ATTQK 0x21, ATTPV 0x22, ASMAX–ANORM 0x34–0x37 (M6) |
 | `docs/spec.md:493-498`, `:523` | Attention no longer stays on the CPU; `-nkvo` is no longer required; supports_op per §2.6 |
@@ -1079,9 +1079,9 @@ The integration of `docs/v2` edits no file outside `docs/v2`; these edits are wo
 
 | Risk | Effect | Mitigation |
 |---|---|---|
-| Timing: the ATTPV mode adds a mux before every MAC DSP and a capture bank; ATTQK changes the gather, whose job pipes are the k4 link's worst paths (WNS −0.285 ns, 276.3 MHz) | the k4 link drops below 276 MHz (D13 restated) | DSP input registers absorb the mux; the gather ATT path writes full lines only and bypasses the partial-line assembler; OOC runs of the cluster per mode before the link; fallback: an ATTPV with half the slots active per cycle (bit-exact, half rate for G > 4) |
+| Timing: the ATTPV mode adds a mux before every MAC DSP and a capture bank; ATTQK changes the gather, whose job pipes are the k4 link's worst paths (WNS −0.285 ns, 276.3 MHz) | the k4 link drops below 276 MHz (D13) | DSP input registers absorb the mux; the gather ATT path writes full lines only and bypasses the partial-line assembler; OOC runs of the cluster per mode before the link; fallback: an ATTPV with half the slots active per cycle (bit-exact, half rate for G > 4) |
 | LUT growth of 76–108 K over four clusters (*estimate*; SLR0/SLR2 to ≈ 50–54 %) | SLR0/SLR2 congestion | per-mode floorplan check in the first OOC; trim the capture bank to 4 drain pipes and 128-cell segments if needed (numeric contract change before freeze only) |
-| KL with FA on differs from today's FA-off baselines | a gate fails for reasons unrelated to AT | compare the CPU FA-on vs FA-off floor first; device differences are at f32 level (§6.7) |
+| KL with FA on differs from the FA-off settings baselines | a gate fails for reasons unrelated to AT | compare the CPU FA-on vs FA-off floor first; device differences are at f32 level (§6.7) |
 | VU's EXP accuracy or AT vector ops not built in time | softmax wrong or missing | the requirement list in §12; until VU lands, the simulator's ops let the firmware and backend proceed; AMERGE/ANORM can be emulated by standard VOPs (slower, numerics defined by the same formulas) |
 | SPM port contention during attention (≈ 0.6 lines/cycle per port) | ATT ops stall, DDR idles | three score buffers give two MVM ops of slack; `ATT_PATH_STALL` and CC's bank-conflict counter measure it; fuse EXP into the ATTPV broadcast later if needed |
 | D = 64 models are gather- and broadcast-bound (61 %) | 0.5B decode at long context slower than DDR allows | accepted (test model); a wider gather (2 lines per cycle) would fix it |

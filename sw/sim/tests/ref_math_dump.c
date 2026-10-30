@@ -1,6 +1,6 @@
 // ref_math_dump.c — evaluate one tsr_ref_math function on a strided sweep of f32 bit patterns
 // and write the result bit patterns to stdout (uint32, little-endian, raw). The independent
-// numpy model (sw/sim/tests/ref_math_np.py, VU §10 item 1, V2-SW-23) has the same command
+// numpy model (sw/sim/tests/ref_math_np.py, VU §10 item 1, SW-23) has the same command
 // line, so the two byte streams compare with cmp(1); --check compares here instead.
 //
 //   ref_math_dump <func> <start_hex> <count> <stride> [<b_hex>]

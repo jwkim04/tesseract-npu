@@ -1,11 +1,11 @@
-# sw/ctrl/tests/exec.cmake — P2.4 tests of plan.hpp, OPL v1 and the graph executor
-# (docs/v2/06-software-verification.md "SW" §7.2, §7.3, §7.8, §10.2). Included by
+# sw/ctrl/tests/exec.cmake — P2.4 tests of plan.hpp, op list and the graph executor
+# (docs/design/06-software-verification.md "SW" §7.2, §7.3, §7.8, §10.2). Included by
 # sw/ctrl/host/CMakeLists.txt (main project).
 #
 #   fw_exec      test image: the production sources plus tests/fw/exec_kinds.cpp and exec_fast.cpp
 #                (test kinds 0x30-0x3F of the executor tests; tsr_fw_image)
 #   fw_exec_host the executor compiled for the host (SW §6.8; ASan + UBSan variant of tsr_fw_host)
-#                with the test kinds, driven by tsr::host_run; plan.hpp against tsr_ref and v1
+#                with the test kinds, driven by tsr::host_run; plan.hpp against tsr_ref and the spec's tiling
 #   fw_exec_rv   the fw_exec image on tsr_rv through the LQ / LCQ: every scenario under the fixed
 #                and 7 random schedules with TSR_SIM_RACE=fatal, observables and DONE records
 #                compared (SW §4.7), and the race detector probe (≈ 8 s)
@@ -68,13 +68,13 @@ target_link_libraries(test_fw_exec_host PRIVATE tsr_fw_host_exec_san)
 add_test(NAME fw_exec_host COMMAND test_fw_exec_host)
 set_tests_properties(fw_exec_host PROPERTIES TIMEOUT 300)
 
-# --- W2b: OPL v1 M7 kinds and the M7 planning glue -------------------------------------------------
+# --- W2b: op list M7 kinds and the M7 planning glue -------------------------------------------------
 #   fw_opl_m7       writer / reader round trips of every M7 kind (named helpers, preload helpers, JOIN
 #                   folding), BAD_RECORD for a wrong n_args (reader, check_args, plan check_op), slot
 #                   counts, opl::check_args' structural rules per kind, plan_op = plan_kind, plan_rows and
 #                   for_period_segments against brute force (test_fw_opl_m7.cpp; < 1 s)
 #   fw_plan_cxx17   tsr/opl.hpp and tsr/plan.hpp with the three planner headers compile as C++17 (the
-#                   backend's language, sw/ggml-tesseract: supports_op uses the same planners, V2-SW-20):
+#                   backend's language, sw/ggml-tesseract: supports_op uses the same planners, SW-20):
 #                   the same source, -fsyntax-only (a compile-time check run as a test, so that a header
 #                   that slips does not break every build)
 add_executable(test_fw_opl_m7 ${TSR_CTRL_DIR}/tests/test_fw_opl_m7.cpp)

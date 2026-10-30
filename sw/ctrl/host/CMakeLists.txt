@@ -34,7 +34,7 @@
 #
 # The RISC-V toolchain is required (SW §6.1): configure fails with the install hint of SW §9.6
 # when the compiler is absent. The prefix is sw/sim/CMakeLists.txt's (cache TSR_RISCV_PREFIX, else
-# the pinned xPack under TSR_RISCV_TOOLS, docs/v2/toolchain.lock).
+# the pinned xPack under TSR_RISCV_TOOLS, docs/design/toolchain.lock).
 
 include(ExternalProject)
 find_package(Threads REQUIRED)
@@ -61,8 +61,8 @@ if (NOT IS_ABSOLUTE "${_tsr_cxx}")
 endif()
 if (NOT EXISTS "${_tsr_cxx}")
     message(FATAL_ERROR
-        "The RISC-V toolchain is a required dependency of the v2 build (SW §6.1): no ${_tsr_cxx}.\n"
-        "Install the pinned tools in user space, no sudo (SW §9.6, versions in docs/v2/toolchain.lock):\n"
+        "The RISC-V toolchain is a required dependency of the build (SW §6.1): no ${_tsr_cxx}.\n"
+        "Install the pinned tools in user space, no sudo (SW §9.6, versions in docs/design/toolchain.lock):\n"
         "    sw/ctrl/tools/install-toolchain.sh            # installs under build/tools/riscv\n"
         "then reconfigure. Another install root: -DTSR_RISCV_TOOLS=<prefix of install-toolchain.sh>; "
         "another bare-metal RISC-V GCC: -DTSR_RISCV_PREFIX=<dir>/bin/riscv-none-elf-")

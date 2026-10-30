@@ -1,9 +1,9 @@
-// tsr/opl.hpp — op list format OPL v1 (docs/v2/06-software-verification.md "SW" §7.2, V2-SW-12,
-// V2-SW-15, V2-SW-29): constants, the header / preload / record layouts, the graph executor's
+// tsr/opl.hpp — op list format (docs/design/06-software-verification.md "SW" §7.2, SW-12,
+// SW-15, SW-29): constants, the header / preload / record layouts, the graph executor's
 // return codes (SW §7.3), CRC-32/ISO-HDLC, a freestanding record reader and a header-only host
 // writer.
 //
-// Shared by the firmware (freestanding C++20, V2-SW-8: graph.cpp and the kind handlers), the host
+// Shared by the firmware (freestanding C++20, SW-8: graph.cpp and the kind handlers), the host
 // build of the kernels (SW §6.8), the backend's OPL builder (P3.2, C++17) and the tests. Everything
 // above the "host writer" section is freestanding and C++17-compatible (no libstdc++, no heap);
 // the writer is compiled only in hosted builds (__STDC_HOSTED__ = 1) and uses the standard library.
@@ -39,7 +39,7 @@ constexpr uint32_t VERSION        = 1u;
 constexpr uint32_t HDR_BYTES      = 64u;
 constexpr uint32_t SLOT_BYTES     = 64u;
 constexpr uint32_t SLOT_WORDS     = 16u;
-constexpr uint32_t MAX_OPS        = 4096u;        // V2-SW-29: records per list (DTCM tables)
+constexpr uint32_t MAX_OPS        = 4096u;        // SW-29: records per list (DTCM tables)
 constexpr uint32_t MAX_REC_SLOTS  = 16u;          // word0 [11:8] = n_slots - 1
 constexpr uint32_t PRE_ENTRY_BYTES = 16u;
 constexpr uint32_t PRE_ALIGN      = 64u;          // pre_byte alignment
@@ -121,7 +121,7 @@ constexpr uint32_t FLAG_ACC_DST = 1u << 0;   // y += W x (y is read and written)
 
 // M7 kinds 0x11-0x1B (W2b; SW §7.2 table, word for word). Shapes are flattened to rows; handles are
 // {ch[31:28], beat[27:0]} of 64-byte-aligned beats; strides are in lines; f32 parameters are bit
-// patterns the host computed (SW §6.1, V2-SW-8: the firmware has no float). "preload byte offset"
+// patterns the host computed (SW §6.1, SW-8: the firmware has no float). "preload byte offset"
 // words are byte offsets inside the list's preload area (SW §7.2 "Preload entry", §7.3), which the
 // executor loaded and joined before op 0: the kind reads them with the RISC-V (GET_ROWS ids,
 // SET_ROWS_KV indices, FLASH_ATTN's MSUM) or lets a VU op read them (ROPE positions).
@@ -275,7 +275,7 @@ struct exec_state {
 // Validation helpers (pure; used by the executor and by the reader below)
 // ---------------------------------------------------------------------------------------------
 // Header checks of SW §7.3 step 1, in this order: magic (BAD_MAGIC); version, hdr_bytes, unknown
-// flag bits and nonzero reserved words 48-63 (BAD_VERSION: fields a v1 executor does not know); n_ops in [1, 4096] (TOO_MANY_OPS; 0 ops is malformed: BAD_RECORD);
+// flag bits and nonzero reserved words 48-63 (BAD_VERSION: fields an executor of this format does not know); n_ops in [1, 4096] (TOO_MANY_OPS; 0 ops is malformed: BAD_RECORD);
 // layout (BAD_RECORD): total_bytes a multiple of 64, at least 64 and at most `blob_bytes` (the
 // launch's a1), ops_off 64-aligned and >= 64, the op area [ops_off, ops_off + 64 n_slots) equal to
 // the rest of the blob, n_ops <= n_slots <= 4096 x 16, the preload table 64-aligned inside [64, ops_off),
@@ -898,7 +898,7 @@ public:
         std::vector<uint8_t> out;
         if (!ok() || n_ops_ == 0u) return out;
         if (n_ops_ > MAX_OPS) {
-            const_cast<writer *>(this)->fail("more than 4096 ops (the builder must split, V2-SW-29)");
+            const_cast<writer *>(this)->fail("more than 4096 ops (the builder must split, SW-29)");
             return out;
         }
         const uint32_t pre_off = pre_.empty() ? 0u : HDR_BYTES;

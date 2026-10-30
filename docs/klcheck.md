@@ -5,14 +5,15 @@
 the ggml CPU backend on whole-model logits, against a floor given by the CPU compared with itself
 under a 1-ulp input perturbation. Pass (the specification's values): **mean KL(CPU ‖ device) ≤ 3 ×
 floor and top-1 agreement ≥ 80 %**. The check is part of the M1 and M4 gates (done) and of the M6 gate
-(32B on the simulator done; on the card it follows the v2 bitstream).
+(32B on the simulator done; on the card it follows the bitstream with the control core).
 
 > **Scope.** User documentation and measurement record of `klcheck`. Status words: *on the
-> simulator* means a run through the v2 software stack with `TSR_DEVICE=sim` or `mock`; *on the card
-> (v1)* means a run on the Alveo U200 with the v1 core (tag `v1-m4`). Every result names its
+> simulator* means a run through the software stack with `TSR_DEVICE=sim` or `mock`; *on the card*
+> means a run on the Alveo U200. Card measurements, and the rows with the FA-off settings (below),
+> were taken before the control core was added, with the host issuing the ops. Every result names its
 > settings and provenance, and results with different settings are not comparable. Normative:
-> `docs/spec.md` §17, [SW](v2/06-software-verification.md) §10.1 and §10.4 (gates), V2-SW-22 (the
-> settings) and [AT](v2/03-attention-kv.md) §13.
+> `docs/spec.md` §17, [SW](design/06-software-verification.md) §10.1 and §10.4 (gates), SW-22 (the
+> settings) and [AT](design/03-attention-kv.md) §13.
 
 ## Method
 
@@ -21,7 +22,7 @@ validation and the script itself were read for this):
 
 1. **Device run.** Greedy-generate G tokens per prompt with all layers and the output head on the
    Tesseract device (`-ngl 99`, `TSR_DEVICE=sim`), KV cache and attention on the host
-   (`offload_kqv = false`, i.e. `-nkvo`; v1 and M6. From M7 the KV cache and attention are on the
+   (`offload_kqv = false`, i.e. `-nkvo`; M6. From M7 the KV cache and attention are on the
    device, see the settings below). The prompt is decoded in one batch (prefill), then one
    token per decode. The full logits are recorded at the last `--prompt-tail` prompt positions and
    at every generated position except the last. Row r is the output at token index `row0 + r` and
@@ -74,24 +75,24 @@ through later layers, which is why the floor is not tiny.
 
 ### Settings fixed in every phase
 
-**v2 settings.** From M6 on, every device run and every CPU reference and floor run uses flash
-attention on, a q8_0 K and V cache and llama.cpp's Hadamard KV rotation off (D17, V2-SW-22,
-[SW](v2/06-software-verification.md) §10.4, [AT](v2/03-attention-kv.md) §14). The KV cache and
+From M6 on, every device run and every CPU reference and floor run uses flash
+attention on, a q8_0 K and V cache and llama.cpp's Hadamard KV rotation off (D17, SW-22,
+[SW](design/06-software-verification.md) §10.4, [AT](design/03-attention-kv.md) §14). The KV cache and
 attention stay on the host in M6 (`offload_kqv` = false) and move to the device in M7
 (`offload_kqv` = true). The tool has had these settings since P3.3: they are the defaults of every
 phase (`--phase m6`; `--phase m7` turns `offload_kqv` on), `klcheck all` passes them to every child,
 and each file records them (header version 2, below); `compare` warns when two files differ in them.
-`--fa`, `-ctk` / `-ctv`, `--offload-kqv` and `--attn-rot on` exist for experiments only. The v1
-results below ("v1 settings") were measured with flash attention off and an f16 KV cache on the host,
-and are not comparable with the M6 ones; the table in "Results" names the settings of every row.
+`--fa`, `-ctk` / `-ctv`, `--offload-kqv` and `--attn-rot on` exist for experiments only. Some
+results below ("FA-off settings") were measured with flash attention off and an f16 KV cache on the
+host, and are not comparable with the M6 ones; the table in "Results" names the settings of every row.
 
 | Setting | Value | Why |
 | --- | --- | --- |
-| Flash attention | **v2: on** (the default; `--fa off` only for experiments), recorded in the file. v1: off (`--fa off`) | v2: the pinned llama.cpp refuses a quantized V cache without FA (`src/llama-context.cpp:566-569`), and the device's attention is `FLASH_ATTN_EXT` only (D17); the device, CPU and floor runs use the same FA setting. v1: `auto` resolves to *off* on the device run (layer on Tesseract0, FA on CPU) and *on* on a CPU-only run, which would compare two attention kernels |
-| KV cache | **v2: q8_0 for K and V** (`-ctk q8_0 -ctv q8_0`) in every run; on the host in M6 (`offload_kqv=false`), on the device in M7 (`offload_kqv=true`). v1: f16, on the host (`offload_kqv=false`) | v2: D17; fixing the KV type already in M6 keeps the baselines constant from M6 to M7, so the M7 delta measures the device attention only. v1: v1 constraint (`docs/llama-pin.md`) |
-| Hadamard KV rotation | **v2: off** (`LLAMA_ATTN_ROT_DISABLE=1`, set by the tool for every phase and recorded in the file; `--attn-rot on` unsets it). v1: not applicable (f16 cache) | With a quantized cache llama.cpp rotates Q, K and V by an F32 graph-input matrix that the MVM cannot use, which would split attention into CPU islands (V2-SW-16, V2-AT-17); the CPU reference uses the same setting, so the comparison stays fair |
+| Flash attention | **on** (the default; `--fa off` only for experiments), recorded in the file | the pinned llama.cpp refuses a quantized V cache without FA (`src/llama-context.cpp:566-569`), and the device's attention is `FLASH_ATTN_EXT` only (D17); the device, CPU and floor runs use the same FA setting |
+| KV cache | **q8_0 for K and V** (`-ctk q8_0 -ctv q8_0`) in every run; on the host in M6 (`offload_kqv=false`), on the device in M7 (`offload_kqv=true`) | D17; fixing the KV type already in M6 keeps the baselines constant from M6 to M7, so the M7 delta measures the device attention only |
+| Hadamard KV rotation | **off** (`LLAMA_ATTN_ROT_DISABLE=1`, set by the tool for every phase and recorded in the file; `--attn-rot on` unsets it) | With a quantized cache llama.cpp rotates Q, K and V by an F32 graph-input matrix that the MVM cannot use, which would split attention into CPU islands (SW-16, AT-17); the CPU reference uses the same setting, so the comparison stays fair |
 | CPU weight repack (`use_extra_bufts`) | off (`--repack` turns it on) | repacking copies the weights into anonymous memory; 32B Q4_K_M (19 GB) does not fit in 14 GB RAM, while mmap'd weights can be evicted |
-| Device selection | `--device sim\|mock\|vkernel\|xrt`: `TSR_DEVICE` = that value, `devices = {Tesseract0}`, `n_gpu_layers = 999`. `--device cpu`: `TSR_DEVICE=none`, `devices = {}` | the device phase checks that a Tesseract device is registered; a CPU phase never opens a transport. `sim` and `mock` run the v2 stack on the simulator; `vkernel` is not available until the v2 server exists (P5.3); `xrt` needs a build with `-DTSR_WITH_XRT=ON` and an xclbin (the v1 `xrt` transport ran this check on the card; the v2 card path is work package W6, [`docs/xrt-host.md`](xrt-host.md)) |
+| Device selection | `--device sim\|mock\|vkernel\|xrt`: `TSR_DEVICE` = that value, `devices = {Tesseract0}`, `n_gpu_layers = 999`. `--device cpu`: `TSR_DEVICE=none`, `devices = {}` | the device phase checks that a Tesseract device is registered; a CPU phase never opens a transport. `sim` and `mock` run on the simulator; `vkernel` is not available until the two-clock server exists (P5.3); `xrt` needs a build with `-DTSR_WITH_XRT=ON` and an xclbin (the card path is work package W6, [`docs/xrt-host.md`](xrt-host.md)) |
 | Threads | `-t` (default: online CPUs / 2) | the simulator uses `TSR_SIM_THREADS` (default min(CPUs, 8)) |
 | Context | `n_ctx` = longest sequence rounded up to 256, `n_outputs_max` = rows actually needed | keeps the KV cache, compute buffers and the device IO region small |
 
@@ -148,31 +149,30 @@ n_rows, timings, EOG count), then `int32 tokens[n_prompt + n_gen]`, then
 `f32 logits[n_rows][n_vocab]`, with `row0 + n_rows = n_prompt + n_gen − 1`. The header records the
 model (description, parameter count, size, file), the device, the mode (generate / replay
 batch|step), the input path (tokens / embd / embd+1ulp and seed), flash attention, threads, repack,
-chat and timings, and since version 2 (P3.3) the v2 settings in five words of the former reserved
+chat and timings, and since version 2 (P3.3) the settings in five words of the former reserved
 area: `type_k`, `type_v` (ggml types), `offload_kqv`, `attn_rot_disable` (LLAMA_ATTN_ROT_DISABLE was 1
-for the run) and `phase` (6 / 7). Version 1 files are still read; they show as the v1 settings
-(phase "v1", f16 / f16 on the host, rotation not disabled), and `--resume` refuses to continue one with
-v2 options. `klcheck info` prints the settings line. `n_seq` counts complete records and is rewritten after each one. A phase streams
+for the run) and `phase` (6 / 7). Version 1 files are still read, as f16 / f16 on the host with
+rotation not disabled, and `--resume` refuses to continue one with the M6 options. `klcheck info` prints the settings line. `n_seq` counts complete records and is rewritten after each one. A phase streams
 one sequence at a time (G = 64: 39 MB per sequence for a 152k vocabulary), and `compare` streams
 rows, so neither depends on the model size.
 
 ## Results
 
-Every row names its device, its settings and its provenance. "v1 settings" are flash attention off
+Every row names its device, its settings and its provenance. "FA-off settings" are flash attention off
 and an f16 KV cache on the host; "M6 settings" are flash attention on, a q8_0 K and V cache, rotation
 off and `offload_kqv` false (`--phase m6`). The limits are ratio ≤ 3 and top-1 ≥ 80 %; every row
 passes.
 
 | Model | Device | Settings | Positions | Mean KL device / floor | Ratio | Top-1 | Provenance |
 | --- | --- | --- | ---: | --- | ---: | ---: | --- |
-| Qwen2.5-0.5B Q8_0 | sim | v1 | 512 (8 × 64) | 1.095e-3 / 1.136e-3 | 0.964 | 98.05 % | measured on the simulator (v1) |
-| Qwen2.5-0.5B Q8_0 | xrt, k1 | v1 | 512 | 1.0950e-3 / 1.1357e-3 | 0.964 | 98.05 % | measured on the card (v1, k1, 300 MHz) |
-| Qwen2.5-0.5B Q8_0 | xrt, k4 | v1 | 512 | 1.0950e-3 / 1.1357e-3 | 0.964 | 98.05 % | measured on the card (v1, k4, 276.3 MHz) |
-| Qwen2.5-0.5B Q8_0 | sim | M6 | 512 (8 × 64) | 2.595e-3 / 2.530e-3 | 1.026 | 97.07 % | measured on the simulator (v2, `83ac601`) |
-| Qwen2.5-0.5B Q8_0 | sim | M6 | 128 (4 × 32; ctest `tools_klcheck_qwen05b`) | 2.089e-3 / 2.912e-3 | 0.717 | 96.88 % | measured on the simulator (v2, `83ac601`) |
-| Qwen2.5-32B Q4_K_M | sim | v1 | 256 (4 × 64) | 2.550e-3 / 1.876e-3 | 1.360 | 98.83 % | measured on the simulator (v1, M1) |
-| Qwen2.5-32B Q4_K_M | xrt, k4 | v1 | 512 (8 × 64) | 2.4113e-3 / 1.8487e-3 | 1.304 | 99.02 % | measured on the card (v1, M4) |
-| Qwen2.5-32B Q4_K_M | sim | M6 | 512 (8 × 64) | 2.886e-3 / 2.246e-3 | 1.285 | 98.44 % | measured on the simulator (v2, `83ac601`) |
+| Qwen2.5-0.5B Q8_0 | sim | FA off | 512 (8 × 64) | 1.095e-3 / 1.136e-3 | 0.964 | 98.05 % | measured on the simulator |
+| Qwen2.5-0.5B Q8_0 | xrt, k1 | FA off | 512 | 1.0950e-3 / 1.1357e-3 | 0.964 | 98.05 % | measured on the card (k1, 300 MHz) |
+| Qwen2.5-0.5B Q8_0 | xrt, k4 | FA off | 512 | 1.0950e-3 / 1.1357e-3 | 0.964 | 98.05 % | measured on the card (k4, 276.3 MHz) |
+| Qwen2.5-0.5B Q8_0 | sim | M6 | 512 (8 × 64) | 2.595e-3 / 2.530e-3 | 1.026 | 97.07 % | measured on the simulator (`83ac601`) |
+| Qwen2.5-0.5B Q8_0 | sim | M6 | 128 (4 × 32; ctest `tools_klcheck_qwen05b`) | 2.089e-3 / 2.912e-3 | 0.717 | 96.88 % | measured on the simulator (`83ac601`) |
+| Qwen2.5-32B Q4_K_M | sim | FA off | 256 (4 × 64) | 2.550e-3 / 1.876e-3 | 1.360 | 98.83 % | measured on the simulator (M1) |
+| Qwen2.5-32B Q4_K_M | xrt, k4 | FA off | 512 (8 × 64) | 2.4113e-3 / 1.8487e-3 | 1.304 | 99.02 % | measured on the card (M4) |
+| Qwen2.5-32B Q4_K_M | sim | M6 | 512 (8 × 64) | 2.886e-3 / 2.246e-3 | 1.285 | 98.44 % | measured on the simulator (`83ac601`) |
 
 On the card the 0.5B run gives the simulator's mean KL to seven digits (1.095007e-3), and the small
 identity check (`klcheck compare --expect-identical`, sim against xrt, 8 of 8 rows bit-identical on k1
@@ -182,14 +182,13 @@ every setting; `docs/numcheck.md` shows that part of the device-to-CPU distance 
 own error on the Q6_K tensors that the device converts to Q8_0, which a KL against the CPU cannot
 separate from device error.
 
-### Qwen2.5-0.5B-Instruct Q8_0 with the v1 settings
+### Qwen2.5-0.5B-Instruct Q8_0 with the FA-off settings
 
 Measurement conditions: `models/qwen2.5-0.5b-instruct-q8_0.gguf`, build `build/dev` (Release,
 GGML_NATIVE with AVX512, llama.cpp pin `e3797b18` + patch 0001), `TSR_DEVICE=sim` with default
 T_MAX = 1, 8 simulator threads, `-t 8`, FA off, f16 KV on the host, CPU without repack. Command:
 `klcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf -o DIR -n 64`: 8 built-in prompts (7, 13,
-11, 12, 25, 12, 7, 11 tokens), G = 64, prompt tail 1, giving **512 positions**. The run was made with the v1 stack
-(before tag `v1-m4`).
+11, 12, 25, 12, 7, 11 tokens), G = 64, prompt tail 1, giving **512 positions**.
 
 | | mean KL (nats) | median | max | top-1 vs CPU | bit-identical rows |
 | --- | --- | --- | --- | --- | --- |
@@ -219,7 +218,7 @@ Supporting measurements on the same 512 positions (head on CPU):
 | `--prompt-tail 8` (566 positions) | all 1.114e-3 vs floor 1.086e-3 (ratio 1.03, top-1 98.06 %): PASS. The 54 prompt rows alone: device 1.30e-3 vs floor 6.1e-4 (ratio 2.1, top-1 98.1 %). The 1-ulp floor is smaller early in a sequence (26/54 of those rows are bit-identical), while the device's rounding differences are present from the first token |
 | `TSR_SIM_TMAX=8` device run vs T_MAX = 1 | bit-identical, 566/566 rows (prefill MVMs with T > 1 change nothing) |
 | Device run repeated; CPU replay repeated; `--input embd` vs tokens | all bit-identical |
-| ctest `tools_klcheck_qwen05b` (4 prompts × 32 tokens, v1 settings at the time) | 1.168e-3 vs floor 9.94e-4, ratio 1.18, top-1 99.22 %: PASS (re-run with the head on the device: 1.1683e-3, ratio 1.176, top-1 99.22 %) |
+| ctest `tools_klcheck_qwen05b` (4 prompts × 32 tokens, FA-off settings at the time) | 1.168e-3 vs floor 9.94e-4, ratio 1.18, top-1 99.22 %: PASS (re-run with the head on the device: 1.1683e-3, ratio 1.176, top-1 99.22 %) |
 
 In short, the device sits at the floor (ratio ≈ 1). Its distance from the CPU is the same size as
 the CPU's distance from itself under a 1-ulp input change, or under its own batch-vs-step
@@ -238,12 +237,12 @@ Timings (0.5B, simulator; other jobs shared the machine during part of the runs)
 
 Each logits file is 311 MB (8 × 64 rows × 151936 × 4 B).
 
-On the card (v1) the same command with `--device xrt` took 20.6 s of device decoding on k1 (40 ms per
+On the card the same command with `--device xrt` took 20.6 s of device decoding on k1 (40 ms per
 token) and 9.5 s on k4 (18 ms per token), `build/card/klc_all` and `build/card/k4/klc_all`.
 
-### Qwen2.5-0.5B-Instruct Q8_0 with the M6 settings (v2 on the simulator)
+### Qwen2.5-0.5B-Instruct Q8_0 with the M6 settings (on the simulator)
 
-Measured on the simulator (v2, `83ac601`) on the v2 software stack: the backend's MUL_MATs as op lists
+Measured on the simulator (`83ac601`): the backend's MUL_MATs as op lists
 of the `graph` kernel on the simulator kind (`TSR_DEVICE=sim`: the RISC-V interpreter and the queue
 model behind the core CSR port; T_MAX 1, 4 simulator threads), attention and KV on the host, the M6
 settings. Command: the ctest `tools_klcheck_qwen05b`, `klcheck all -m
@@ -264,21 +263,17 @@ kinds, and `sim` and `mock` (the adapter model) agree bit for bit (the `tools_kl
 ctest repeats it on 2 prompts × 8 tokens).
 
 **Full prompt set** (`build/dev`, `TSR_DEVICE=sim`, T_MAX 1, 8 simulator threads, fixed schedule, the
-M6 settings, all 8 built-in prompts × 64 tokens = 512 positions), measured on the simulator (v2,
-`83ac601`):
+M6 settings, all 8 built-in prompts × 64 tokens = 512 positions), measured on the simulator
+(`83ac601`):
 
 | Check | Result |
 | --- | --- |
 | generate on sim, replay the tokens on sim (`--tokens`, step), `compare --expect-identical` | **512/512 rows bit-identical** |
-| v1 vs v2, same M6 settings: this tree's `klcheck` binary on `build/v1/bin`'s libraries (v1 backend, transport and simulator; `LD_LIBRARY_PATH=build/v1/bin`) against the v2 run | **512/512 bit-identical**, same generated tokens |
-| v1's own `build/v1/bin/klcheck` (`--fa on`; it has no `-ctk` / `-ctv`, so its KV cache is f16) against v2 with `--fa on -ctk f16 -ctv f16` | **512/512 bit-identical**, same generated tokens |
-| KL vs CPU (CPU, floor and embd runs on the v2 device tokens) | mean KL 2.595e-3 vs floor 2.530e-3, **ratio 1.026**, top-1 97.07 %: PASS; embd path bit-identical |
+| KL vs CPU (CPU, floor and embd runs on the device tokens) | mean KL 2.595e-3 vs floor 2.530e-3, **ratio 1.026**, top-1 97.07 %: PASS; embd path bit-identical |
 
-Decode 90–95 ms/token on the simulator (gen 47.1 s for 512 tokens, prefill 6.0 s; v1 on the same
-host: 86–88 ms/token); 145.00 launches per token (one per split, v1's 145 execs), 1.17 MUL_MAT records
+Decode 90–95 ms/token on the simulator (gen 47.1 s for 512 tokens, prefill 6.0 s); 145.00 launches per token (one per split), 1.17 MUL_MAT records
 per launch, 0 staged chunks (`llama-completion` with its default host output buffer: 1 per token);
-OPL cache 73,385 hits / 855 misses (98.9 %; every decode pass after the first hits). The v2 stack
-uses 17 % more device cycles than v1 in M6 (a launch per split; the MVM cycles are identical).
+OPL cache 73,385 hits / 855 misses (98.9 %; every decode pass after the first hits).
 
 ### Qwen2.5-32B-Instruct Q4_K_M
 
@@ -292,8 +287,8 @@ TSR_SIM_DRAM_DIR=build/simdram build/dev/bin/klcheck all \
     -o build/klcheck-32b-sim-m6 --device sim --phase m6 -n 64 --resume
 ```
 
-The M1 and M4 rows were made with the v1 tools (flash attention off, f16 KV cache, 4 prompts for
-M1); this tree's `klcheck` can set those with `--fa off -ctk f16 -ctv f16` (experiments only), and
+The M1 and M4 rows were made with flash attention off and an f16 KV cache (4 prompts for
+M1); `klcheck` sets those with `--fa off -ctk f16 -ctv f16` (experiments only), and
 `--n-prompts N` limits the prompt set. Rerun the same command to resume after an interruption.
 `TSR_SIM_DRAM_DIR` matters only to the device phase (the CPU phases open no transport). It must
 exist and have ~20 GiB free: the weights take 19.3 GiB in simulator DRAM (13.9 GiB Q4_K and
@@ -303,9 +298,9 @@ take 39 MB per prompt each (311 MB for 8 prompts).
 
 | Run | Positions | Device phase | Whole `klcheck all` | Provenance |
 | --- | ---: | --- | --- | --- |
-| M1, sim, v1 settings, 4 prompts | 256 | 2,535 s wall; decode ~9.0 s/token (9,044–10,074 ms) | 44 min 23 s | measured on the simulator (v1, M1) |
-| M6, sim, M6 settings, 8 prompts | 512 | 4,434 s wall: prefill 232.0 s (98 prompt tokens), decode 4,170.0 s for 512 tokens = 8.1 s/token (7.9–9.0 s per sequence) | 1 h 17 min 06 s, peak RSS 13.0 GiB (mostly file pages) | measured on the simulator (v2, `83ac601`) |
-| M4, card, v1 settings, 8 prompts | 512 | 196.9 s wall: model load 17.6 s, decode 342 ms/token | about 6 min | measured on the card (v1, M4) |
+| M1, sim, FA-off settings, 4 prompts | 256 | 2,535 s wall; decode ~9.0 s/token (9,044–10,074 ms) | 44 min 23 s | measured on the simulator (M1) |
+| M6, sim, M6 settings, 8 prompts | 512 | 4,434 s wall: prefill 232.0 s (98 prompt tokens), decode 4,170.0 s for 512 tokens = 8.1 s/token (7.9–9.0 s per sequence) | 1 h 17 min 06 s, peak RSS 13.0 GiB (mostly file pages) | measured on the simulator (`83ac601`) |
+| M4, card, FA-off settings, 8 prompts | 512 | 196.9 s wall: model load 17.6 s, decode 342 ms/token | about 6 min | measured on the card (M4) |
 
 The M6 run (report `build/klcheck-32b-sim-m6/report.json`, not in git):
 
@@ -317,8 +312,8 @@ The M6 run (report `build/klcheck-32b-sim-m6/report.json`, not in git):
 **Ratio 1.285 (limit 3), top-1 98.44 % (limit 80 %): PASS.** Per sequence the device/floor ratio runs
 from 0.68 to 1.96; the largest KL is at sequence 0, row 44, for the device and the floor alike. Max
 |Δlogit| 3.15 (floor 5.40), min cosine 0.9654. The embd input path equals the token path bit for bit
-on this model too. The M1 run (4 prompts, v1 settings) gave mean KL 2.5504e-3 against a floor of
-1.8758e-3 (ratio 1.360, top-1 98.83 %), and the M4 run on the card (8 prompts, v1 settings) 2.4113e-3
+on this model too. The M1 run (4 prompts, FA-off settings) gave mean KL 2.5504e-3 against a floor of
+1.8758e-3 (ratio 1.360, top-1 98.83 %), and the M4 run on the card (8 prompts, FA-off settings) 2.4113e-3
 against 1.8487e-3 (ratio 1.304, top-1 99.02 %).
 
 `TSR_SIM_TMAX=8` cuts the prefill passes of the simulator (from 43 to 7 for 4 prompts, about 12 % of
@@ -332,7 +327,7 @@ is 1 (the k1 value; the k4 bitstream has 8), and the gate runs keep it.
   independent long-double evaluation (1e-9 relative); the verdict as the ratio limit crosses the
   measured value; incomplete files fail.
 - `tools_klcheck_selftest` also checks the version 2 header: the settings survive a write / read, a
-  version 1 file reads with the v1 settings, version 3 is refused.
+  version 1 file reads as f16 / f16 on the host, version 3 is refused.
 - `tools_klcheck_qwen05b` (registered only if `models/qwen2.5-0.5b-instruct-q8_0.gguf` exists,
   label `model`, ~25 s): `klcheck all --device sim --phase m6 --n-prompts 4 -n 32` with the default
   criteria and the embd identity check.

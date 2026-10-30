@@ -6,14 +6,14 @@ recorded results bit for bit. The sets here are the regression suite of the simu
 today and the stimulus of the RTL later.
 
 > **Scope.** User and developer documentation of the trace sets and their tools. Normative:
-> [SW](../docs/v2/06-software-verification.md) §5 (trace format v2) and §10.2 (ctest plan). The trace data
+> [SW](../docs/design/06-software-verification.md) §5 (trace format) and §10.2 (ctest plan). The trace data
 > is **not in git**: git holds only the `regen.sh` scripts, the two tool wrappers
-> (`v2_tools.sh`, `v1_tools.sh`), `m3/trace_stats.py` and `MANIFEST.sha256`. Every v2 set
+> (`v2_tools.sh`, `v1_tools.sh`), `m3/trace_stats.py` and `MANIFEST.sha256`. Every set except `model`
 > regenerates byte-identically from fixed seeds.
 
 ## The format in one page
 
-A trace is a directory ([SW](../docs/v2/06-software-verification.md) §5.1 to §5.5):
+A trace is a directory ([SW](../docs/design/06-software-verification.md) §5.1 to §5.5):
 
 ```text
 <trace>/meta.json              configuration, kind, image or push stream, the expected answer, schedule, perf
@@ -24,13 +24,13 @@ A trace is a directory ([SW](../docs/v2/06-software-verification.md) §5.1 to §
 <set>/images/<id>.elf          firmware images, shared by the traces of a set (kind launch)
 ```
 
-`meta.json` (version 2) has a `kind`: `ops` is a tile-only push stream (the sets below), `launch`
+`meta.json` (format version 2) has a `kind`: `ops` is a tile-only push stream (the sets below), `launch`
 is an image plus a launch descriptor (what `TSR_TRACE` captures). A push record holds the eight
 instruction words, two dependencies as tickets relative to the unit's base sequence, the push
 value and the entry kind (op, queue control, trace mark), so a trace does not depend on absolute
 sequence numbers. DRAM outside the init regions is zero.
 
-Replay compares ([SW](../docs/v2/06-software-verification.md) §5.4), everywhere: the answer
+Replay compares ([SW](../docs/design/06-software-verification.md) §5.4), everywhere: the answer
 record, every expect region bit for bit, the set of written DRAM beats against the expect regions,
 the set of read DRAM against init and earlier writes, the per-unit completion counts and the error
 records; and, where the push stream is observable (the simulator), the per-unit projections of
@@ -41,21 +41,21 @@ SPM line an op reads is written earlier in the same trace.
 
 | Set | Traces | Content | Generator |
 | --- | ---: | --- | --- |
-| `m2` | 172 | QACT groups and LD to ST copies, no MVM: `tmax1` 60, `tmax8` 16, `small1ch` 16 (1 channel, 64 KiB SPM), `ch3` 8, `errors` 40 (every M2 fault kind and the v2 endings `BAD_DEP`, `DEP_FAILED` chains, `ABORTED`, `QABORT` recipe, `QCLEAR` recovery), `errors8` 32 | `tsr-trace-gen --ops m2` |
+| `m2` | 172 | QACT groups and LD to ST copies, no MVM: `tmax1` 60, `tmax8` 16, `small1ch` 16 (1 channel, 64 KiB SPM), `ch3` 8, `errors` 40 (every M2 fault kind and the endings `BAD_DEP`, `DEP_FAILED` chains, `ABORTED`, `QABORT` recipe, `QCLEAR` recovery), `errors8` 32 | `tsr-trace-gen --ops m2` |
 | `gen` | 32 | LD, QACT, MVM (with ACC), ST programs with interleaved groups: `tmax1` 24, `tmax8` 8 | `--ops gen` |
-| `m3` | 284 | MVM-centred groups mixed with the M2 groups: `tmax1` 64, `tmax8` 32, `small1ch` 24, `ch3` 16, `ch16` 12, `errors` 68 and `errors8` 68 (the 23 MVM fault kinds and the 12 M2 and v2 kinds) | `--ops m3` |
+| `m3` | 284 | MVM-centred groups mixed with the M2 groups: `tmax1` 64, `tmax8` 32, `small1ch` 24, `ch3` 16, `ch16` 12, `errors` 68 and `errors8` 68 (the 23 MVM fault kinds and the 12 M2 kinds and endings) | `--ops m3` |
 | `vu` | 240 | every vector-unit op with legal and illegal encodings: `m8` 96, `m6` 32 (capabilities of the M6 bitstream: `TOPK` and `DQROW` refused), `errors` 88 (40 fault kinds), `small1ch` 24 | `--ops vu` |
 | `at` | 160 | the seven attention ops and the flash-attention chain across the DMA, QACT, MVM and VU queues: `tmax8` 64, `tmax1` 24, `errors` 56, `ch3` 16 | `--ops at` |
 | `ctrl` | 148 | the issue path: credits and back-pressure, data-flow graphs over every unit, hold windows, `FENCE`, `QABORT` and `QCLEAR`, `BAD_DEP`, `DEP_FAILED`: `tmax8` 64, `errors` 36, `deep` 16 (queue depth 31), `shallow` 16 (depth 1), `nocaps` 16 (no VU or AT) | `--ops ctrl` |
-| `model-v1conv` | 290 | the 290 v1 real-model traces of `model`, converted: every split of a one-token Qwen2.5-0.5B Q8_0 run and of a Q4_K_M requantization (145 each), each v1 instruction a push that depends on the previous one (a serial chain keeps v1's sequential semantics) | `tsr-trace-conv` |
-| `model` | 290 | the v1 input of the conversion (`cmd.bin` traces); reproducible only with the v1 tools | `build/v1` (tag `v1-m4`) |
+| `model-v1conv` | 290 | regression traces converted from the earlier op format: every split of a one-token Qwen2.5-0.5B Q8_0 run and of a Q4_K_M requantization (145 each), each instruction a push that depends on the previous one (a serial chain keeps the sequential semantics of the source) | `tsr-trace-conv` |
+| `model` | 290 | the input of the conversion (`cmd.bin` traces of the earlier op format); the current tools cannot regenerate it | none |
 
 On-disk sizes: `m3` 166 MB, `model` 998 MB, `model-v1conv` 1001 MB, `at` 32 MB, `ctrl` 26 MB, `m2`
 12 MB, `vu` 12 MB, `gen` 5.3 MB. The counts are the number of directories with a `meta.json`
 (`find traces/<set> -name meta.json | wc -l`).
 
-`model-v1conv` is the check that the results of the tile units did not change from v1 to v2: the
-replay must match v1's recorded results bit for bit.
+`model-v1conv` is the check that the results of the tile units match the results recorded when the
+traces were made: the replay must match the recorded results bit for bit.
 
 ## Regenerate a set
 
@@ -65,7 +65,7 @@ traces/model-v1conv/regen.sh build/dev
 ```
 
 Each `regen.sh` needs `bin/tsr-trace-gen` and `bin/tsr-trace-replay` of the build directory (targets
-`tsr-trace-gen`, `tsr-trace-replay`, `tsr-trace-conv`; `traces/v2_tools.sh` refuses a v1 tool). It
+`tsr-trace-gen`, `tsr-trace-replay`, `tsr-trace-conv`; `traces/v2_tools.sh` checks the tools before anything is deleted). It
 deletes the set, runs the generator with the seeds and options written in its header, then replays
 every trace under the fixed schedule and two random ones (`random:1`, `random:2`) with the race
 detector fatal, tile-only and through the `replay` kernel of the build's production image
@@ -74,14 +74,10 @@ the script.
 
 `traces/model-v1conv/regen.sh` converts `traces/model` (it needs that set on disk) with
 `tsr-trace-conv`, replays the result, and replaces the old set only after every replay passed.
-`traces/model/regen.sh` is the only script that needs the v1 tools: a binary copy of tag `v1-m4` in
-`build/v1` (not in git) and the models `models/qwen2.5-0.5b-instruct-q8_0.gguf` and
-`models/qwen2.5-0.5b-instruct-q4_k_m-requant.gguf`. It runs `llama-completion` once per model with
-`TSR_TRACE` on the v1 stack, and `m3/trace_stats.py` summarises the result.
 
 ## Verify a set against the manifest
 
-`MANIFEST.sha256` holds, per v2 set, the number of files and the digest of the files in byte-order
+`MANIFEST.sha256` holds, per set, the number of files and the digest of the files in byte-order
 path order (the `regen.sh` of the set is excluded):
 
 ```sh
@@ -101,7 +97,7 @@ cd traces && find <set> -type f ! -name regen.sh -print0 | LC_ALL=C sort -z | xa
 The digests are those of the dev host (the sets on disk match them). The generator draws some random
 inputs through libm (normal deviates, the ROPE constants), so another libm may produce different
 bytes: the replay still has to pass, but the digest can differ. A frozen reference set goes into git
-once the v2 ISA is frozen for the RTL, after the M6 RTL.
+once the ISA is frozen for the RTL, after the M6 RTL.
 
 ## Replay
 
@@ -138,7 +134,7 @@ tsr-trace-conv [-q] [--replay] [--sched S]... [--limit N] [--pick P1,P2,...] -o 
 error injection (a faulting op, `BAD_DEP`, a `DEP_FAILED` chain, the `QABORT` or `QCLEAR` recipe), and
 runs each on the simulator to fill the answer, the expect regions and the tickets. `tsr-trace-gen
 --help` lists every option; `--mutant-stale` produces a trace that must be refused (a test of the
-launch-stateless check). `tsr-trace-conv` reads v1 traces and writes trace v2.
+launch-stateless check). `tsr-trace-conv` reads traces of the earlier op format (`cmd.bin`) and writes `ops` traces.
 
 ## Capture a trace
 
@@ -160,16 +156,4 @@ replays on a freshly booted simulator, where it runs as sequence 0.
 | Transport kinds `sim`, `mock` | on the simulator: `tsr-trace-replay --device`, `tsr-selftest --traces` |
 | RTL, tile-only replay into the issue FIFO | planned (W4, W5): a Verilator bench pushes `push.bin` straight into the issue FIFO with no control core |
 | RTL with the control core (Ibex lockstep against `tsr_rv`) | planned (W5) |
-| The card | planned (W6); `--device xrt` after the v2 bitstream |
-
-## History: v1 (tag `v1-m4`)
-
-v1 traces held a `cmd.bin` command-buffer program and a host run (`cmd_addr_beat`, arguments) and
-were replayed by the v1 tools; at the tag the `m2` and `gen` data were in git. The v1 sets were `traces/m2` (172 traces), `gen` (32), `m3` (284, 7
-configurations, 23 MVM fault kinds), `model` (290) and the dumps of `test-backend-ops` (`tbo`,
-1,402 traces per T_MAX), and they drove the RTL regression (`tb/fastreplay`, four memory regimes
-per trace) and the card self-test. Their recipes and numbers are in the tag
-(`git show v1-m4:traces/m3/regen.sh`, `git show v1-m4:docs/rtl-m3.md`); the RTL results are summarised
-in [`docs/rtl-m3.md`](../docs/rtl-m3.md) §10 and §13. The v2 sets `m2`, `gen` and `m3` keep v1's
-seeds and configurations as `ops` traces; v1's register-relative addressing became absolute
-immediates and v1's fetch endings are gone. `traces/model` stays only as the input of `tsr-trace-conv`.
+| The card | planned (W6); `--device xrt` after the bitstream with the control core |

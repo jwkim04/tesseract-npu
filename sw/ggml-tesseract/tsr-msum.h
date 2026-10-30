@@ -1,8 +1,8 @@
-// tsr-msum.h — the mask-summary producer of the ggml-tesseract backend (docs/v2/03-attention-kv.md
-// "AT" §7.3 MSUM, §5.5 AMASK and the f32 mask copy, §6.6 the chunk planner; docs/v2/06-software-
-// verification.md "SW" §9.3 M7 "Mask summaries", V2-SW-32, V2-SW-15; W3b P3.5).
+// tsr-msum.h — the mask-summary producer of the ggml-tesseract backend (docs/design/03-attention-kv.md
+// "AT" §7.3 MSUM, §5.5 AMASK and the f32 mask copy, §6.6 the chunk planner; docs/design/06-software-
+// verification.md "SW" §9.3 M7 "Mask summaries", SW-32, SW-15; W3b P3.5).
 //
-// The device never reads ggml's F16 KQ mask (the VU has no f16, V2-AT-14). For each mask the
+// The device never reads ggml's F16 KQ mask (the VU has no f16, AT-14). For each mask the
 // scheduler writes into a Tesseract buffer (set_tensor of a tensor whose name contains "kq_mask":
 // llama.cpp's attn_inp_kq_mask and the scheduler's input copies "<backend>#attn_inp_kq_mask#<n>",
 // src/llama-graph.cpp:30-46, ggml-backend.cpp:1529), the backend writes next to the mask, inside

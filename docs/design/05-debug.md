@@ -1,15 +1,14 @@
-# Tesseract v2, area DB — debug: RISC-V debug module, GDB over PCIe, tile-level debug, profiler
+# Tesseract, area DB — debug: RISC-V debug module, GDB over PCIe, tile-level debug, profiler
 
-Status: **design contract for M6, not implemented** (2026-10-30). Area DB of the v2 design set
-(`docs/v2/`): EX execution model (`docs/v2/01-execution-model.md`), VU vector unit, AT attention /
-KV, CC control core (`docs/v2/04-control-core.md`), DB debug (this file), SW software and
-verification (`docs/v2/06-software-verification.md`). It replaces `docs/ctrl-riscv.md` §10
-(`docs/ctrl-riscv.md:1441-1499`) and every part of `docs/prof-dbg.md` that depends on the host
-command-buffer path, for the user decisions D14–D18 (`docs/ctrl-riscv.md:38-46`). Source-of-truth
-order: `docs/spec.md` (after its v2 edits) > `docs/v2/*` > `docs/ctrl-riscv.md` >
-`docs/prof-dbg.md`. Every number marked *estimate* is not measured; every Ibex, riscv-dbg, GDB or
-XRT fact marked *confirm* is recalled from documentation and is checked when the dependency is
-vendored or at card bring-up.
+Status: **design contract for M6, not implemented** (2026-10-30). Area DB of the design set
+(`docs/design/`): EX execution model (`docs/design/01-execution-model.md`), VU vector unit, AT attention /
+KV, CC control core (`docs/design/04-control-core.md`), DB debug (this file), SW software and
+verification (`docs/design/06-software-verification.md`). It is the contract behind
+`docs/ctrl-riscv.md` §10 and `docs/prof-dbg.md` and follows the user decisions D14–D18 (user
+decisions table in `docs/ctrl-riscv.md`). Source-of-truth order: `docs/spec.md` > `docs/design/*` >
+`docs/ctrl-riscv.md` > `docs/prof-dbg.md`. Every number marked *estimate* is not measured; every
+Ibex, riscv-dbg, GDB or XRT fact marked *confirm* is recalled from documentation and is checked
+when the dependency is vendored or at card bring-up.
 
 **Alignment rule used in this file.** Host-visible registers (CSR offsets, `CTRL` / `STATUS`,
 PERF, log ring, watchdog, `SOFT_RESET`, launch records) are EX's (EX owns the CSR map,
@@ -19,29 +18,26 @@ drafts differ on something DB uses, §13.3 lists DB's choice.
 
 ---
 
-## 1. Scope and what changes
+## 1. Scope
 
 Area DB owns: the debug semantics of the RISC-V (debug module use, halt / step / breakpoint /
 watchpoint behaviour, halt-on-boot and halt-on-launch), the GDB RSP server, tile-level debug (stop
 points, QSTEP, serial mode, tile breakpoints and watchpoints, dispatch history, unit probes), the
 log record format, the crash dump and trap record, hang triage and the recovery ladder, the
-profiler (completion records, hardware trace writer, timeline format, TSR_STATS v2, DB's PERF
+profiler (completion records, hardware trace writer, timeline format, TSR_STATS, DB's PERF
 slots), the debug parts of the simulator and of `tsr-dbg`, and the DBG register block at core CSR
 0x800–0xAFC (EX §5.1).
 
-| Item | Before (prof-dbg PD2 / ctrl-riscv §10) | v2 |
-|---|---|---|
-| Command-processor debug block (HALT / STEP / IA and retire breakpoints at instruction boundaries, `DBG_IR*`, `DBG_OPA*`, `DBG_R*`, `DBG_HIST*`, `STATUS.HALTED`), `docs/prof-dbg.md:157-187` | planned for M4 | **deleted** with `tsr_cmdproc` (D14); offsets reused (§10) |
-| Trace ring `TRC_*` (`docs/prof-dbg.md:778-793`) | conditional | **deleted**; dispatch history ring (§5.6) and trace writer (§8.3) |
-| Prefix runs, halt emulation, per-exec shadow transport, `split` attribution (`docs/prof-dbg.md:458-506`, `:594-607`) | PD1 | **deleted** (no command buffers); divergence search uses tile stop points (§9.4) |
-| Debug SPM window, SPM client 3 (`docs/prof-dbg.md:223-242`) | PD2 | **deleted**; the debugger reaches SPM through SBA (V2-CC-16, §3.6) |
-| GDB through OpenOCD and a software JTAG TAP (`docs/ctrl-riscv.md:1458-1466`) | plan | **replaced** by an RSP server that drives DMI directly (V2-DB-1) |
-| SBA answered with an error (`docs/ctrl-riscv.md:1453-1456`) | plan | **connected** (V2-CC-16); all debugger memory access (V2-DB-3) |
-| `DBG_HIST` of 8 IAs | PD4 | history ring of 512 full ops with push PC (§5.6) |
-| Firmware text to a DRAM log ring (`docs/ctrl-riscv.md:1190`) | plan | EX's core-domain log ring (EX §4.10) with DB's record format (§6.1) |
-| PERF gated by the host run's BUSY | v1 | EX's ACTIVE / QHALT gates (EX §6) plus three DB slots (§8.1) |
-| Completion records to the RISC-V, streamed to DRAM by the runtime (EX §4.3) | plan | records kept for firmware use (§8.2); the host timeline comes from a **hardware trace writer** (§8.3, V2-DB-16) |
-| Kept | | ILA debug-build recipe (`docs/prof-dbg.md:828-847`); no JTAG on the U200 (`docs/prof-dbg.md:815-826`); Perfetto output and `tsr-prof` (`docs/prof-dbg.md:676-704`); dumps under `TSR_DUMP_DIR` (`docs/prof-dbg.md:402-439`); every CSR access completes in bounded time |
+| Item | Mechanism |
+|---|---|
+| Debugger memory access (SPM, TCMs, windows) | SBA, connected by CC (CC-16, DB-3, §3.6) |
+| GDB | an RSP server that drives DMI directly (DB-1) |
+| Tile stop points, divergence search | stop logic at the queue heads (§5, §9.4) |
+| Dispatch history | ring of 512 full ops with push PC (§5.6) |
+| Firmware log | EX's core-domain log ring (EX §4.10) with DB's record format (§6.1) |
+| PERF gating | EX's ACTIVE / QHALT gates (EX §6) plus three DB slots (§8.1) |
+| Host timeline | hardware trace writer (§8.3, DB-16); completion records stay with the firmware (§8.2) |
+| Other | ILA debug-build recipe and no JTAG on the U200 (`docs/prof-dbg.md` §4); Perfetto output and `tsr-prof` (`docs/prof-dbg.md` §3); dumps under `TSR_DUMP_DIR` (§7.4); every CSR access completes in bounded time |
 
 ---
 
@@ -83,11 +79,11 @@ CC instantiates the parts (CC §3.2); DB fixes what they must do.
 
 | Item | Value | Note |
 |---|---|---|
-| Debug spec | 0.13.2 (`dmstatus.version` = 2) | riscv-dbg release pinned by CC (V2-CC-2) |
+| Debug spec | 0.13.2 (`dmstatus.version` = 2) | riscv-dbg release pinned by CC (CC-2) |
 | `dm_top` | `NrHarts` 1, `BusWidth` 32, `DmBaseAddress` 0x1000_0000, two-scratch ROM, `SelectableHarts` 1; `ProgBufSize` 8, `DataCount` 2 | *confirm* |
 | Ibex | `DbgTriggerEn` 1, `DbgHwBreakNum` 2, `DmHaltAddr` 0x1000_0800, `DmExceptionAddr` 0x1000_0808 | triggers match execute addresses only (*confirm*) |
 | SBA | connected, round robin with Ibex's data port per access, 8 / 16 / 32-bit | refusals §3.6 |
-| `RV_HALTED` | last granted fetch in 0x1000_0000–0x1000_0FFF (V2-CC-29); host copy `STATUS.RV_HALTED` | DB uses it for holds, PERF, the stop poll |
+| `RV_HALTED` | last granted fetch in 0x1000_0000–0x1000_0FFF (CC-29); host copy `STATUS.RV_HALTED` | DB uses it for holds, PERF, the stop poll |
 | `ndmreset` | starts the RISC-V reset sequence; the DM's DMI side follows `ap_rst_n` only | a debugger stays attached across RISC-V resets and `SOFT_RESET` (EX §8.5) |
 | Ibex `debug_req_i` | DM request ∨ DB's `dbg_req_rv` (§3.3) | CC requirement (§13) |
 | Ibex outputs DB taps | `crash_dump_o` {current_pc, next_pc, last_data_addr, exception_pc, exception_addr}, `core_sleep_o`, `double_fault_seen_o` | names *confirm* |
@@ -98,7 +94,7 @@ CC instantiates the parts (CC §3.2); DB fixes what they must do.
   CSR read is a DMI read, a write a DMI write; the crossing, its 4,096-core-cycle bound with
   `STATUS.DMI_TIMEOUT` and the tag-based discard of late answers are CC's
   (CC §11.2, EX §5.1, §5.3).
-- **DMI enable (V2-DB-2).** Debug-spec reads have side effects (a `sbdata0` read with
+- **DMI enable (DB-2).** Debug-spec reads have side effects (a `sbdata0` read with
   `sbreadondata` starts a bus read; a `data0` read with `abstractauto` starts a command), but EX's
   rule is that CSR reads have none (EX §5.1). The window therefore acts
   only while `DBG_CFG.DMI_EN` = 1; with 0 a read returns 0 and a write is dropped without reaching
@@ -159,19 +155,18 @@ store to the control window (D15; CC's interface, CC §16).
 
 ### 3.6 Memory access: SBA
 
-All debugger memory access uses SBA (V2-DB-3): it works with the hart running, halted, parked or
+All debugger memory access uses SBA (DB-3): it works with the hart running, halted, parked or
 in reset-halt, never changes hart state, and reports bad addresses as `sberror`.
 
 | Region | SBA read | SBA write |
 |---|---|---|
-| ITCM, DTCM | yes | yes while `RV_RUN` = 1; while `RV_RUN` = 0 the hardware refuses SBA TCM writes (V2-CC-33) and the server uses EX's `LOAD_*` (0x0C0–0x0D4) instead |
+| ITCM, DTCM | yes | yes while `RV_RUN` = 1; while `RV_RUN` = 0 the hardware refuses SBA TCM writes (CC-33) and the server uses EX's `LOAD_*` (0x0C0–0x0D4) instead |
 | DM 0x1000_0000–0x1000_0FFF | refused | refused |
-| control window 0x2000_0000–0x2000_0FFF | yes (reads side-effect free) | hardware refuses every write (V2-CC-33: issue staging and push, `QCTRL`, `TRACE_MARK`, `LQ_POP`, `LCQ_POST`, `LOG_PUSH`, …); the server refuses them too |
+| control window 0x2000_0000–0x2000_0FFF | yes (reads side-effect free) | hardware refuses every write (CC-33: issue staging and push, `QCTRL`, `TRACE_MARK`, `LQ_POP`, `LCQ_POST`, `LOG_PUSH`, …); the server refuses them too |
 | core window 0x2000_1000–0x2000_1FFF | yes (`LOAD_DATA` and the DMI window read 0, CC §5.3) | refused |
 | SPM windows 0x4000_0000, 0x5000_0000 | yes, any time (racy while ops run) | hardware allows; the server allows it only in a stopped tile state (`DBG_STATUS.DRAINED`, or `QQUIESCENT` with the hart halted), else error unless `monitor spm-write unsafe` |
 
-This is the v2 form of the debug SPM window rule EX asks for
-(EX §2.3, §14): the host sees SPM only through the debug module.
+As EX asks (EX §2.3, §14), the host sees SPM only through the debug module.
 
 Sequences (`sbcs` per Debug Spec 0.13: `sbbusyerror` 22 W1C, `sbbusy` 21, `sbreadonaddr` 20,
 `sbaccess` [19:17], `sbautoincrement` 16, `sbreadondata` 15, `sberror` [14:12] W1C):
@@ -194,7 +189,7 @@ are ≥ 70 ns apart at the CSR port, so TCM blocks run back to back and SPM writ
 - **Hardware breakpoints**: Ibex triggers 0–1: `tselect` = i, `tdata1` = 0x2800_1044 (type 2
   mcontrol, dmode, action = enter debug mode, m, execute), `tdata2` = address; read back
   (*confirm* writable fields).
-- **RV watchpoints (V2-DB-6)**: Ibex has no data triggers (*confirm*), so DB adds two comparators
+- **RV watchpoints (DB-6)**: Ibex has no data triggers (*confirm*), so DB adds two comparators
   on Ibex's data requests (clk_rv; SBA accesses are not watched). An access [addr, addr + size)
   (size from the byte enables) hits watchpoint j when `DBG_RVWPj_CTL.EN`, its kind (LOAD / STORE)
   matches and it overlaps [LO, HI). A hit counts in `HITS`, latches `DBG_RV_WPADDR`, sets
@@ -213,7 +208,7 @@ are ≥ 70 ns apart at the CSR port, so TCM blocks run back to back and SPM writ
   `STATUS.RV_RESET_DONE`, `CTRL.QCLEAR` when QIDLE (the aborted entries drain because the hard
   hold yields to a QABORT, §5.2), set or clear HALT_ON_BOOT, `RV_RUN` 0 → 1. The TCM image stays;
   `load` rewrites it.
-- **Halt-on-launch (V2-DB-7)**: the runtime calls `tsr_rt_launch_hook(kernel_index, seq)`
+- **Halt-on-launch (DB-7)**: the runtime calls `tsr_rt_launch_hook(kernel_index, seq)`
   (noinline) at EX's step R5 before calling the kernel (EX §4.7); it
   executes `ebreak` at the label `__tsr_launch_halt` when `__tsr_dbg.attached` ∧
   `__tsr_dbg.launch_break` ∈ {0xFFFF_FFFF, kernel_index + 1} (§6.3). The hart stops at kernel
@@ -223,12 +218,12 @@ are ≥ 70 ns apart at the CSR port, so TCM blocks run back to back and SPM writ
 
 - A RISC-V halt stops only the hart; with HOLD_ON_HALT the heads are held too (CC hold source
   "debug halt", CC §9.6). Running ops finish; then `QQUIESCENT`.
-  RISC-V halted ∧ `QQUIESCENT` is the quiescent state of `docs/ctrl-riscv.md:622-630`.
+  RISC-V halted ∧ `QQUIESCENT` is the quiescent state of `docs/ctrl-riscv.md` §4.6.
 - **D15 holds**: no CSR maps an issue register; SBA writes to the whole control window are refused
   in hardware; the
   program buffer never stores to the control window; the server refuses all GDB writes to the
   control window. GDB inferior calls (`call f()`) run in normal mode; if `f` issues, it corrupts
-  the interrupted push's staging (`docs/ctrl-riscv.md:316-320`): unsupported, and the server warns
+  the interrupted push's staging (`docs/ctrl-riscv.md` §3.2): unsupported, and the server warns
   when GDB moves `pc` away from `dpc`.
 - While a DB stop or the debug-halt hold is in effect, DB drives the level `dbg_stop` into clk_rv.
   CC suspends the `ISSUE_WAIT_MAX` count while it is 1, so a debug stop never turns a waiting push
@@ -265,7 +260,7 @@ OpenOCD's `remote_bitbang` needs one socket message per JTAG bit, ≈ 50–100 p
 - **Library** `libtsr_dbg` (`sw/tools/dbg/`): DMI driver (§3.5, §3.6), breakpoint and stop
   logic, RSP, monitor commands, tile commands (§5), log decoder (§6.1), dumps (§7.4). It uses only
   the transport API (§9.2), so it runs on `sim`, `mock`, `vkernel` and `xrt`.
-- **Embedded (V2-DB-17)**: one process owns the device, because `xrt::ip` opens the compute unit
+- **Embedded (DB-17)**: one process owns the device, because `xrt::ip` opens the compute unit
   exclusively (EX §2.4). In that process (llama.cpp backend,
   `tsr_rt`, PyTorch), `TSR_GDB=tcp:<port>|unix:<path>` starts the debug service as a transport
   thread; every device access takes the transport's mutex. `TSR_GDB_WAIT=boot|launch` halts at
@@ -402,9 +397,9 @@ Tile ops have no instruction boundary: up to six units run concurrently, each in
 (CC §9). The comparable observation point is the **push-order
 prefix**: every entry with push index < T has completed and no entry with push index ≥ T has
 started or completed. For a valid program (race-free and schedule-independent,
-`docs/ctrl-riscv.md:1419-1437`) the tile-written SPM and DRAM in that state equal the sequential
+`docs/ctrl-riscv.md` §9.5) the tile-written SPM and DRAM in that state equal the sequential
 simulator after entries 0 … T−1 (§5.8). DB reaches it by **holding every queue head whose push
-index is ≥ T** (V2-DB-8). Because the dispatcher enqueues in push order and an entry cannot start
+index is ≥ T** (DB-8). Because the dispatcher enqueues in push order and an entry cannot start
 earlier than 3 cycles after it is enqueued (enqueue t, head load t+1, evaluation t+2, `cmd_valid`
 t+3, CC §7.6, §9.3), a threshold set when an entry is enqueued
 (registered at t+1) always holds it in time. No dispatcher gate is needed: pushes continue into the
@@ -424,7 +419,7 @@ never overflows); per-unit shadow queues (§8.3). Derived:
   completed entries (the oldest outstanding entry of each unit, compared by age against
   `DBG_NEXT_PIDX`). CC implements it as a **hard hold** (CC §9.2–§9.3): `dbg_hold[u]` is
   evaluated **before** the non-running completions in `H_EVAL` (poisoned, ABORTED, DEP_FAILED,
-  SYNC), so a held entry neither starts nor completes (V2-DB-9); the other hold sources keep CC's
+  SYNC), so a held entry neither starts nor completes (DB-9); the other hold sources keep CC's
   order. Two exceptions keep every reset finite: after any QABORT (host, RISC-V, `LQ_CANCEL`,
   RISC-V reset, `SOFT_RESET`) and until the next QCLEAR, `dbg_hold` blocks starts only, so aborted
   entries drain; and while `STATUS.SR_BUSY` it is forced to 0. `SOFT_RESET` step 1 also clears `S`,
@@ -448,8 +443,8 @@ Events (one of STOP_NOW, RELEASE, QSTEP per `DBG_CTRL` write; priority QSTEP > R
 | a stop becomes active with `STOP_HALT_RV` or a TBP's `HALT_RV` | RISC-V halt request (§3.3) |
 
 `DBG_STEP_PIDX` shows X. A stop activation is recorded as a STOP record in the trace writer (§8.3)
-and pulses the internal net `dbg_stop_evt`, the ILA trigger of debug builds (replacing `dbg_trig`,
-`docs/prof-dbg.md:836-842`).
+and pulses the internal net `dbg_stop_evt`, the ILA trigger of debug builds
+(`docs/prof-dbg.md` §4.1).
 
 ### 5.3 Tile breakpoints and watchpoints
 
@@ -542,14 +537,14 @@ unit u (CC ids 0 DMA, 1 QACT, 2 MVM, 3 VU, 4 AT, 5 SYNC; 6–7 read 0):
   simulator running the same program in its serial schedule and stopped at T. With the RISC-V
   halted after n retired instructions, its registers, TCMs and SPM stores equal the simulator
   advanced to n retired instructions, given the co-simulation log of timing-dependent MMIO values
-  (`docs/ctrl-riscv.md:622-630`).
+  (`docs/ctrl-riscv.md` §9.4).
 - **Invariant Q (step).** From a DRAINED state at T, k QSTEPs give the DRAINED state at T + k.
 - **Invariant S (serial).** In serial mode completions occur in push order (checkable in the trace
   records) and the final state equals normal mode.
 - **Invariant H (history).** For a valid program the history entries (words, deps, tickets, push
   indices, push PCs) equal the simulator's push stream; dispatch times are not compared.
 - HOLD_ON_HALT alone (no tile stop) gives the completion-vector form of
-  `docs/ctrl-riscv.md:622-630`, not a push-order prefix.
+  `docs/ctrl-riscv.md` §4.6, not a push-order prefix.
 
 ---
 
@@ -561,7 +556,7 @@ Hardware and host protocol are EX's (EX §4.10): the RISC-V writes
 `LOG_PUSH` (control window 0x280) after checking `LOG_FREE` (0x284) ≥ 1 + N, so records are never
 torn; the host reads words [`LOG_RD`, `LOG_WR`) from 0x400 + 4 × (k mod 256) and writes `LOG_RD`;
 `LOG_CFG` (0x098: ENABLE, BLOCK, LEVEL); `LOG_DROPPED`, `STATUS.LOG_DROP`. DB keeps the 256-word
-depth and the drop-whole-record policy (V2-DB-12) and defines the record, merging EX's framing
+depth and the drop-whole-record policy (DB-12) and defines the record, merging EX's framing
 fields and SW's binary format (SW §6.6):
 
 | Header bits | Field |
@@ -639,7 +634,7 @@ The transport turns a TRAP record into a launch failure with a decoded report (c
 ### 7.1 Always answerable
 
 Every DBG register is a core-domain register mux; reads never wait on a unit, on clk_rv or on
-memory (the AXI firewall rule, `docs/prof-dbg.md:159-162`). The only DBG accesses that wait on
+memory (the AXI firewall rule, `docs/prof-dbg.md` §2). The only DBG accesses that wait on
 clk_rv (`RV_SAMPLE`, `RVWP_APPLY`) end within 4,096 core cycles.
 
 ### 7.2 Triage table (`tsr-dbg status` applies it)
@@ -688,12 +683,12 @@ new process can open a compute unit left by a dead one without disturbing it is 
 
 ## 8. Profiler
 
-### 8.1 PERF in v2
+### 8.1 PERF
 
 EX defines the counters and their gates (EX §6): time counters
 count with ACTIVE (TAKEN ≠ ANSWERED: a launch is in progress) ∧ ¬QHALT (`RV_HALTED` ∧
 `QQUIESCENT`), event counters with ACTIVE; PERF does not move between launches. DB adopts this
-(V2-DB-15) and owns three slots at the top of the range, recorded in EX §6's table next to VU's
+(DB-15) and owns three slots at the top of the range, recorded in EX §6's table next to VU's
 (X + 13 … X + 15), AT's (X + 16 … X + 19) and CC's (X + 20, X + 21); at `NUM_CH` = 16 the
 extensions end at 58, so they never collide:
 
@@ -724,7 +719,7 @@ and emit NODE markers; the host timeline itself comes from the trace writer.
 
 Bulk records must not cross PCIe as MMIO reads (≈ 6 µs per record) or occupy the RISC-V, which is
 issue-bound in exactly the phases worth profiling, so a small engine writes them to a host-allocated
-DRAM ring (V2-DB-16):
+DRAM ring (DB-16):
 
 - **Inputs**: the enqueue tap (dispatch time), CC's head info (time an entry becomes head), start
   and completion strobes {seq, pidx, code, ran} with MTIME, TRACE_MARK entries, stop events,
@@ -789,13 +784,13 @@ stalls: EX's `PUSH_STALL`; WFI time: EX's `RV_WFI`.
 
 ### 8.6 Outputs, `tsr-prof`, TSR_STATS
 
-- `tsr-prof` (`docs/prof-dbg.md:690-704`) gains source `trw`: Perfetto JSON with process
+- `tsr-prof` (`docs/prof-dbg.md` §3) has the source `trw`: Perfetto JSON with process
   `Tesseract0`, one thread per unit (slices = RUN; QWAIT / HWAIT as args and as preceding "waiting"
   slices), a RISC-V thread (launch and node slices from markers, PC-sample track), counter tracks
   per channel (GB/s and idle % from PERF per launch). `tsr-prof report` adds per-node, per-layer and
   per-unit tables and the line "DDR idle while active" per channel. `TSR_PROF_EVERY=n` keeps full
   TRW for every n-th token.
-- **TSR_STATS v2** (printed at backend free, per decode token; SW adds launches and ops per launch,
+- **TSR_STATS** (printed at backend free, per decode token; SW adds launches and ops per launch,
   SW §9.2): wall; device time `CYCLES` / f; host overhead =
   wall − device time; `DBG_STOP_CYCLES` (must be 0); `MVM_CYCLES`, `MVM_WAIT`, `MVM_EMPTY` as % of
   `CYCLES`; per channel read GB/s and idle %; `RV_WFI` %; `PUSH_STALL`; `LOG_DROPPED`. Cost: ≈ 16
@@ -865,7 +860,7 @@ Batch mode for CI and agents: `-ex`, `-x script`, `--json` (one JSON object per 
 
 ### 9.4 Divergence search (`tsr-dbg diverge`)
 
-1. Run the launch (SW's v2 trace: image, inputs, descriptors) on `sim` in serial schedule: push
+1. Run the launch (SW's trace: image, inputs, descriptors) on `sim` in serial schedule: push
    stream with push indices and, per entry, the written SPM lines and DRAM beats.
 2. On the device: `SERIAL` on, `STOP_AT` checkpoints at NODE markers or doubling push indices; at
    each DRAINED stop compare the history entries (a word mismatch is a control divergence: the
@@ -874,7 +869,7 @@ Batch mode for CI and agents: `-ex`, `-x script`, `--json` (one JSON object per 
 3. In the first bad interval, QSTEP entry by entry to the first wrong op; report it with its
    ticket, disassembly, `file:line` of its push, the first wrong element (line, f32 index,
    expected, actual, ulp), and for MVM the channel / cluster.
-4. `repro/`: the op and its source lines as a SW v2 trace for the `replay` kernel
+4. `repro/`: the op and its source lines as a SW trace for the `replay` kernel
    (SW §7.7), replayable on `sim`, vkernel and the card.
 5. A mismatch that disappears in serial mode is reported as a concurrency defect.
 
@@ -891,7 +886,7 @@ Batch mode for CI and agents: `-ex`, `-x script`, `--json` (one JSON object per 
 | `TSR_PROF=<prefix>`, `TSR_PROF_TRW_MIB`, `TSR_PROF_EVERY`, `TSR_PROF_RV_SAMPLE_US` | profiler, TRW ring size, sampling |
 | `TSR_STATS=1` | §8.6 |
 
-Names avoid the `TSR_DBG` prefix (the backend's logging macro, `docs/prof-dbg.md:535`).
+Names avoid the `TSR_DBG` prefix (the backend's logging macro in `sw/ggml-tesseract/ggml-tesseract.cpp`).
 
 ---
 
@@ -1002,29 +997,29 @@ boundaries; the history ring and staging sit away from the SPM URAM columns. If 
 
 | Id | Topic | Choice | Alternatives | Rationale |
 |---|---|---|---|---|
-| V2-DB-1 | GDB transport | RSP server in `libtsr_dbg`, DMI through the CSR window, embedded in the owning process or standalone | OpenOCD + software JTAG TAP (`remote_bitbang`); OpenOCD with a custom adapter | One CSR access per DMI access instead of ≈ 50–100 socket messages; no OpenOCD build or second process (which exclusive `xrt::ip` would forbid anyway); the same server on sim, vkernel and xrt; tile debug, log and crash data in the same session as monitor commands. A JTAG DMI backend can be added for ASIC ports behind the same interface. |
-| V2-DB-2 | DMI side effects | `DBG_CFG.DMI_EN` gates the DMI window (reads 0 when off) | accept side effects; a key register | Debug-spec reads can start bus reads and commands, which would let a generic CSR dump perturb the hart; one bit keeps EX's "no read side effects" rule for every other agent. |
-| V2-DB-3 | Memory access | SBA for all debugger memory access; program buffer only for `fence.i` | program-buffer loads and stores; abstract Access Memory | SBA works without halting (crash records of a parked hart, live variables), never changes hart state and reports errors cleanly; riscv-dbg lacks Access Memory (*confirm*); CC connected SBA (V2-CC-16). |
-| V2-DB-4 | D15 enforcement | hardware refusal of every SBA write to the control and core windows (V2-CC-33) + server policy (no window writes, no control-window stores in the program buffer); inferior calls that issue are unsupported | drop pushes in hardware while the hart is in debug mode | The program buffer's content is the server's; a debug-mode drop would not catch inferior calls (normal mode) either, which are documented as unsupported. |
-| V2-DB-5 | Halt sources | DB's halt request ORed into `debug_req_i`, one-shot by toggle, cleared on `RV_HALTED` | DM halts only | Tile stops, RV watchpoints and halt-on-boot must halt the hart without a DMI round trip; the toggle prevents re-halting after a resume. |
-| V2-DB-6 | Breakpoints / watchpoints | 2 Ibex execute triggers, unlimited ITCM software breakpoints, 2 DB data watchpoints on the Ibex data port | more triggers; GDB software watchpoints; modify Ibex | ITCM is writable, so software breakpoints cover almost everything; Ibex triggers are execute-only (*confirm*); GDB's software watchpoints single-step at 20–40 µs per instruction over PCIe and are unusable; two comparators cost ≈ 0.1 K LUT. |
-| V2-DB-7 | Halt at boot / launch | boot: DB request pending at reset release; launch: runtime hook with `ebreak` controlled by `__tsr_dbg` | riscv-dbg `resethaltreq`; halt on the descriptor doorbell; GDB conditional breakpoints | `resethaltreq` support is uncertain (*confirm*); a doorbell halt stops at an arbitrary point; conditional breakpoints cost a round trip per launch. The hook stops exactly at kernel entry for two loads per launch. |
-| V2-DB-8 | Tile stop mechanism | push-index threshold T applied at the queue heads (`dbg_hold`), matches registered at enqueue | stop the dispatcher; stop only the matching head; halt the RISC-V | Holding every head with pidx ≥ T yields exactly the push-order prefix, which the sequential simulator reproduces (§5.8); it uses CC's hold inputs and adds nothing to the dispatch path; a dispatcher gate adds logic at the checker's output; a head-only stop lets later pushes on other units run; a RISC-V halt does not stop queued ops. |
-| V2-DB-9 | Hard hold | `dbg_hold` also blocks non-running completions, except after a QABORT (until the next QCLEAR) and during `SOFT_RESET`, which also clears the stop state | CC's normal hold order; a hard hold without exceptions (the draft) | Otherwise poisoned / ABORTED / DEP_FAILED entries beyond T complete and change error states, breaking invariant G. After a QABORT invariant G no longer applies (every unit is in error state), and a hold of aborted entries would hang `SOFT_RESET` and the RISC-V reset. |
-| V2-DB-10 | Serial mode | head holds keep only the oldest outstanding entry runnable | dispatcher admission; SW's OPL SERIAL (join per op) | Same mechanism as the stop logic, no dispatcher or firmware change, the op stream is untouched; exactly one op in flight with push-order completion. |
-| V2-DB-11 | History ring | 512 entries × full op + deps + ticket + push PC + time; freeze 256 after the first error | 8 IAs; completion records only | A hang needs the ops that never completed; full words allow disassembly and replay (`push.bin` export); 256 / 256 around the first error keeps cause and propagation; 7 RAMB36. |
-| V2-DB-12 | Log | EX's 256-word ring, drop whole new records (never torn), BLOCK for lossless debugging; DB header merging EX's framing (N, LEVEL, SOURCE, launch SEQ) with SW's (SYNC, TS, format address) and TYPE | CC's overwrite-oldest 1,024-word ring with resynchronisation; DRAM ring | Never-torn records need no resync heuristics; BLOCK makes printf debugging lossless; the crash context does not depend on the log (`__tsr_crash` and the TRAP record carry it); the host drains every poll, so 1 KiB holds ≥ 10 ms of normal output; DRAM rings need working queues. |
-| V2-DB-13 | Crash path | debugger attached: restore and `ebreak` at `__tsr_trap_halt`, the server shows the faulting context; else `__tsr_crash` + TRAP log + EX's TRAP record + park | always park; Debug Spec exception triggers | GDB then shows the fault like a native crash; Ibex has no exception trigger (*confirm*); the record survives without a debugger and is readable through SBA without halting. |
-| V2-DB-14 | Push PC | Ibex `current_pc` captured at the push and carried to the history ring | firmware markers only | Every tile op maps to its C++ line for 32 bits per FIFO entry; markers cost RISC-V cycles and are coarse. |
-| V2-DB-15 | PERF in v2 | EX's ACTIVE / QHALT gating and counters; DB adds `TRW_RECORDS`, `TRW_DROPS`, `DBG_STOP_CYCLES` (slots 61–63) | a runtime activity flag; per-channel idle counters | EX's hardware ACTIVE is exact because kernels never leave ops running (R6); channel idle time is `CYCLES` − `CH_RD_BEATS` − `CH_WAIT`, so it needs no counter; `DBG_STOP_CYCLES` makes debugged measurements detectable. |
-| V2-DB-16 | Timeline transport | hardware trace writer to a DRAM ring (second write source on channel `TRW_CH` = 0, ring in the ch0 IO region); REC stays for firmware | the runtime streams REC to DRAM with ST (EX's PROF note, SW); on-chip ring read by MMIO | MMIO costs ≈ 6 µs per record (≈ 30 ms per 32B token); firmware streaming costs RISC-V time exactly in the issue-bound phases being measured and needs an interrupt-driven drain that may not issue; the writer steals < 0.02 % of one channel. |
-| V2-DB-17 | Who runs the server | the process that owns the device (embedded service) or `tsr-dbg` when nothing else does | a separate process attaching to a live CU | `xrt::ip` is exclusive (EX §2.4); the embedded service shares the transport's mutex. |
-| V2-DB-18 | Simulator debug model | behavioural DM covering the DMI profile; exact stop / history / TRW semantics | link the RTL DM; model the debug ROM | The DMI profile is all the server uses, so behaviour is identical where it matters; a ROM in the interpreter adds nothing. |
-| V2-DB-19 | Watchdog | EX's progress watchdog; DB adds `HUNG_STOP`, history freeze and `DBG_Uu_AGE` | a second, age-based DB watchdog | EX's counter resets on progress, so the 32B output head never trips it; one watchdog is enough. |
-| V2-DB-20 | Recovery | 5-level ladder, dump first; DB evidence survives everything below a card reset | ad-hoc resets | Post-mortem data must exist before any destructive step; `SOFT_RESET` flushes the rings and PERF; no partial datapath reset exists. |
-| V2-DB-21 | s registers for the host | read-only `SREG0`–`15` at 0x9C0–0x9FC inside the DBG range, the one read location for the host and the RISC-V (core window), present whenever the VU is built | none (only the RISC-V reads them); CC's `SREG` at 0x0C0 | EX's map uses 0x0C0 for `LOAD_ADDR`; one location serves every reader; a stopped tile state is incomplete without the scalars. |
-| V2-DB-22 | SPM bulk dump | a `replay` launch of ST ops, then a bo read; SBA for small reads | a dedicated dump kernel; a debug SPM window; `tsr.oplist_seq` (withdrawn, V2-EX-29) | D15-compliant, no new kernel and no SPM client; SBA covers the dead-firmware case. |
-| V2-DB-23 | Register placement | DBG at 0x800–0xAFC, RISC-V page at 0x160–0x17C and 0x400, PERF slots 61–63 | — | EX's and CC's reservations for DB (EX §5.1, §6; CC §5.1, §5.2). |
+| DB-1 | GDB transport | RSP server in `libtsr_dbg`, DMI through the CSR window, embedded in the owning process or standalone | OpenOCD + software JTAG TAP (`remote_bitbang`); OpenOCD with a custom adapter | One CSR access per DMI access instead of ≈ 50–100 socket messages; no OpenOCD build or second process (which exclusive `xrt::ip` would forbid anyway); the same server on sim, vkernel and xrt; tile debug, log and crash data in the same session as monitor commands. A JTAG DMI backend can be added for ASIC ports behind the same interface. |
+| DB-2 | DMI side effects | `DBG_CFG.DMI_EN` gates the DMI window (reads 0 when off) | accept side effects; a key register | Debug-spec reads can start bus reads and commands, which would let a generic CSR dump perturb the hart; one bit keeps EX's "no read side effects" rule for every other agent. |
+| DB-3 | Memory access | SBA for all debugger memory access; program buffer only for `fence.i` | program-buffer loads and stores; abstract Access Memory | SBA works without halting (crash records of a parked hart, live variables), never changes hart state and reports errors cleanly; riscv-dbg lacks Access Memory (*confirm*); CC connected SBA (CC-16). |
+| DB-4 | D15 enforcement | hardware refusal of every SBA write to the control and core windows (CC-33) + server policy (no window writes, no control-window stores in the program buffer); inferior calls that issue are unsupported | drop pushes in hardware while the hart is in debug mode | The program buffer's content is the server's; a debug-mode drop would not catch inferior calls (normal mode) either, which are documented as unsupported. |
+| DB-5 | Halt sources | DB's halt request ORed into `debug_req_i`, one-shot by toggle, cleared on `RV_HALTED` | DM halts only | Tile stops, RV watchpoints and halt-on-boot must halt the hart without a DMI round trip; the toggle prevents re-halting after a resume. |
+| DB-6 | Breakpoints / watchpoints | 2 Ibex execute triggers, unlimited ITCM software breakpoints, 2 DB data watchpoints on the Ibex data port | more triggers; GDB software watchpoints; modify Ibex | ITCM is writable, so software breakpoints cover almost everything; Ibex triggers are execute-only (*confirm*); GDB's software watchpoints single-step at 20–40 µs per instruction over PCIe and are unusable; two comparators cost ≈ 0.1 K LUT. |
+| DB-7 | Halt at boot / launch | boot: DB request pending at reset release; launch: runtime hook with `ebreak` controlled by `__tsr_dbg` | riscv-dbg `resethaltreq`; halt on the descriptor doorbell; GDB conditional breakpoints | `resethaltreq` support is uncertain (*confirm*); a doorbell halt stops at an arbitrary point; conditional breakpoints cost a round trip per launch. The hook stops exactly at kernel entry for two loads per launch. |
+| DB-8 | Tile stop mechanism | push-index threshold T applied at the queue heads (`dbg_hold`), matches registered at enqueue | stop the dispatcher; stop only the matching head; halt the RISC-V | Holding every head with pidx ≥ T yields exactly the push-order prefix, which the sequential simulator reproduces (§5.8); it uses CC's hold inputs and adds nothing to the dispatch path; a dispatcher gate adds logic at the checker's output; a head-only stop lets later pushes on other units run; a RISC-V halt does not stop queued ops. |
+| DB-9 | Hard hold | `dbg_hold` also blocks non-running completions, except after a QABORT (until the next QCLEAR) and during `SOFT_RESET`, which also clears the stop state | CC's normal hold order; a hard hold without exceptions (the draft) | Otherwise poisoned / ABORTED / DEP_FAILED entries beyond T complete and change error states, breaking invariant G. After a QABORT invariant G no longer applies (every unit is in error state), and a hold of aborted entries would hang `SOFT_RESET` and the RISC-V reset. |
+| DB-10 | Serial mode | head holds keep only the oldest outstanding entry runnable | dispatcher admission; SW's OPL SERIAL (join per op) | Same mechanism as the stop logic, no dispatcher or firmware change, the op stream is untouched; exactly one op in flight with push-order completion. |
+| DB-11 | History ring | 512 entries × full op + deps + ticket + push PC + time; freeze 256 after the first error | completion records only | A hang needs the ops that never completed; full words allow disassembly and replay (`push.bin` export); 256 / 256 around the first error keeps cause and propagation; 7 RAMB36. |
+| DB-12 | Log | EX's 256-word ring, drop whole new records (never torn), BLOCK for lossless debugging; DB header merging EX's framing (N, LEVEL, SOURCE, launch SEQ) with SW's (SYNC, TS, format address) and TYPE | CC's overwrite-oldest 1,024-word ring with resynchronisation; DRAM ring | Never-torn records need no resync heuristics; BLOCK makes printf debugging lossless; the crash context does not depend on the log (`__tsr_crash` and the TRAP record carry it); the host drains every poll, so 1 KiB holds ≥ 10 ms of normal output; DRAM rings need working queues. |
+| DB-13 | Crash path | debugger attached: restore and `ebreak` at `__tsr_trap_halt`, the server shows the faulting context; else `__tsr_crash` + TRAP log + EX's TRAP record + park | always park; Debug Spec exception triggers | GDB then shows the fault like a native crash; Ibex has no exception trigger (*confirm*); the record survives without a debugger and is readable through SBA without halting. |
+| DB-14 | Push PC | Ibex `current_pc` captured at the push and carried to the history ring | firmware markers only | Every tile op maps to its C++ line for 32 bits per FIFO entry; markers cost RISC-V cycles and are coarse. |
+| DB-15 | PERF | EX's ACTIVE / QHALT gating and counters; DB adds `TRW_RECORDS`, `TRW_DROPS`, `DBG_STOP_CYCLES` (slots 61–63) | a runtime activity flag; per-channel idle counters | EX's hardware ACTIVE is exact because kernels never leave ops running (R6); channel idle time is `CYCLES` − `CH_RD_BEATS` − `CH_WAIT`, so it needs no counter; `DBG_STOP_CYCLES` makes debugged measurements detectable. |
+| DB-16 | Timeline transport | hardware trace writer to a DRAM ring (second write source on channel `TRW_CH` = 0, ring in the ch0 IO region); REC stays for firmware | the runtime streams REC to DRAM with ST (EX's PROF note, SW); on-chip ring read by MMIO | MMIO costs ≈ 6 µs per record (≈ 30 ms per 32B token); firmware streaming costs RISC-V time exactly in the issue-bound phases being measured and needs an interrupt-driven drain that may not issue; the writer steals < 0.02 % of one channel. |
+| DB-17 | Who runs the server | the process that owns the device (embedded service) or `tsr-dbg` when nothing else does | a separate process attaching to a live CU | `xrt::ip` is exclusive (EX §2.4); the embedded service shares the transport's mutex. |
+| DB-18 | Simulator debug model | behavioural DM covering the DMI profile; exact stop / history / TRW semantics | link the RTL DM; model the debug ROM | The DMI profile is all the server uses, so behaviour is identical where it matters; a ROM in the interpreter adds nothing. |
+| DB-19 | Watchdog | EX's progress watchdog; DB adds `HUNG_STOP`, history freeze and `DBG_Uu_AGE` | a second, age-based DB watchdog | EX's counter resets on progress, so the 32B output head never trips it; one watchdog is enough. |
+| DB-20 | Recovery | 5-level ladder, dump first; DB evidence survives everything below a card reset | ad-hoc resets | Post-mortem data must exist before any destructive step; `SOFT_RESET` flushes the rings and PERF; no partial datapath reset exists. |
+| DB-21 | s registers for the host | read-only `SREG0`–`15` at 0x9C0–0x9FC inside the DBG range, the one read location for the host and the RISC-V (core window), present whenever the VU is built | none (only the RISC-V reads them); CC's `SREG` at 0x0C0 | EX's map uses 0x0C0 for `LOAD_ADDR`; one location serves every reader; a stopped tile state is incomplete without the scalars. |
+| DB-22 | SPM bulk dump | a `replay` launch of ST ops, then a bo read; SBA for small reads | a dedicated dump kernel; a debug SPM window | D15-compliant, no new kernel and no SPM client; SBA covers the dead-firmware case. |
+| DB-23 | Register placement | DBG at 0x800–0xAFC, RISC-V page at 0x160–0x17C and 0x400, PERF slots 61–63 | — | EX's and CC's reservations for DB (EX §5.1, §6; CC §5.1, §5.2). |
 
 ---
 
@@ -1035,10 +1030,10 @@ boundaries; the history ring and staging sit away from the SPM URAM columns. If 
 | Area | DB provides | DB assumes from the area |
 |---|---|---|
 | **EX** | DBG block contents; GDB server in the owning process; halt rules on top of `HOLD_ON_HALT`; the SPM access rule through SBA (§3.6); stop / step / serial semantics and invariants G, Q, S, H; log record format; trap-record content (`__tsr_crash`); marker encoding; PERF slots 61–63 | CSR map (DBG 0x800–0xAFC, DMI 0xC00–0xDFC, `CTRL`, `STATUS`, `RV_*`, `LOAD_*`, `Q_*`, `RT_*`, log ring, PERF); ACTIVE / QHALT gating; launch records incl. TRAP 0x81; `SOFT_RESET` keeping the DBG configuration (and, DB requirement, DB evidence: history, TRW pointers, RV snapshot); the progress watchdog; `tsr_transport_csr_write`; the valid-program definition; the opcode table (disassembly, OPCODE breakpoints); per-op expected DRAM beats (§8.7). The descriptor's PROF bit means "REC for the runtime + NODE markers" and the host timeline is the hardware trace writer, not a runtime-streamed DRAM ring (accepted, EX §4.3) |
-| **CC** | `dbg_hold[u]`, `dbg_step[u]`, `dbg_stop`, `dbg_req_rv`; record / trace formats; contents of the control-window reservations (§10.2) | already in CC §16: DM with DMI, SBA with issue-register refusals, `RV_HALTED`, `ndmreset` → reset sequence, HOLD_ON_HALT, `dbg_hold` / `dbg_step`, head info one cycle before a start, start / done strobes {seq, pidx, code} with MTIME, the REC flag, the reservations. **Additionally required**: (1) `dbg_hold` checked before non-running completions in `H_EVAL`, with the QABORT / `SR_BUSY` exceptions of §5.2 (CC §9.2); (2) completion strobes for non-running completions too, with a `ran` bit; (3) the dispatcher enqueue tap {pidx, ticket, unit, code, w0–w7, DEP0 / DEP1, REC, push PC, the checker's four tagged operand extents}, registered with the queue write, and no start earlier than 3 cycles after enqueue; (4) the head state (CC §9.3) and per-head hold sources as outputs; (5) push PC in the issue-FIFO entry (+32 bits); (6) CTRL code 5 TRACE_MARK (w1 = value) through the issue FIFO; (7) Ibex `debug_req_i` = DM ∨ `dbg_req_rv`, a tap of Ibex data requests {req, gnt, addr, we, be}, `crash_dump_o`, `core_sleep_o`, `double_fault_seen_o`, the RISC-V reset level; (8) `ISSUE_WAIT_MAX` not counting while `dbg_stop` = 1; (9) the DMI window gated by `DBG_CFG.DMI_EN`; (10) SBA TCM writes refused while `RV_RUN` = 0, and every SBA write to the control and core windows refused (V2-CC-33); (11) a second write source in `tsr_mem_arb` on `TRW_CH` = 0, burst-arbitrated with the DMA, and per-channel outstanding read / write counts; (12) the VU s bank wired to `SREG` (0x9C0). All twelve are taken in CC §16 |
-| **VU** | breakpoints, history and trace records for VU ops (and for AT's vector ops it executes); `SREG` | VU ops' operand extents through the checker class (four tagged extents, CC §8.2; the matcher is sized for four); start / completion through CC's head; the s bank exported (V2-CC-14) |
+| **CC** | `dbg_hold[u]`, `dbg_step[u]`, `dbg_stop`, `dbg_req_rv`; record / trace formats; contents of the control-window reservations (§10.2) | already in CC §16: DM with DMI, SBA with issue-register refusals, `RV_HALTED`, `ndmreset` → reset sequence, HOLD_ON_HALT, `dbg_hold` / `dbg_step`, head info one cycle before a start, start / done strobes {seq, pidx, code} with MTIME, the REC flag, the reservations. **Additionally required**: (1) `dbg_hold` checked before non-running completions in `H_EVAL`, with the QABORT / `SR_BUSY` exceptions of §5.2 (CC §9.2); (2) completion strobes for non-running completions too, with a `ran` bit; (3) the dispatcher enqueue tap {pidx, ticket, unit, code, w0–w7, DEP0 / DEP1, REC, push PC, the checker's four tagged operand extents}, registered with the queue write, and no start earlier than 3 cycles after enqueue; (4) the head state (CC §9.3) and per-head hold sources as outputs; (5) push PC in the issue-FIFO entry (+32 bits); (6) CTRL code 5 TRACE_MARK (w1 = value) through the issue FIFO; (7) Ibex `debug_req_i` = DM ∨ `dbg_req_rv`, a tap of Ibex data requests {req, gnt, addr, we, be}, `crash_dump_o`, `core_sleep_o`, `double_fault_seen_o`, the RISC-V reset level; (8) `ISSUE_WAIT_MAX` not counting while `dbg_stop` = 1; (9) the DMI window gated by `DBG_CFG.DMI_EN`; (10) SBA TCM writes refused while `RV_RUN` = 0, and every SBA write to the control and core windows refused (CC-33); (11) a second write source in `tsr_mem_arb` on `TRW_CH` = 0, burst-arbitrated with the DMA, and per-channel outstanding read / write counts; (12) the VU s bank wired to `SREG` (0x9C0). All twelve are taken in CC §16 |
+| **VU** | breakpoints, history and trace records for VU ops (and for AT's vector ops it executes); `SREG` | VU ops' operand extents through the checker class (four tagged extents, CC §8.2; the matcher is sized for four); start / completion through CC's head; the s bank exported (CC-14) |
 | **AT** | the same for AT ops (unit 4) | AT ops' extents; per-op expected DRAM beats for §8.7; that its ops make progress the watchdog sees |
-| **SW** | `libtsr_dbg`, `tsr-dbg`, `tsr-prof` `trw` source, TSR_STATS v2 items, the DMI profile, the runtime debug contract (`__tsr_dbg`, `__tsr_crash`, trap handler steps, launch hook, log records, markers) | transport needs of §9.2; `tsr_dm.c` and the simulator models of the stop logic, history, REC, TRW and log; a serial schedule in the simulator; the SDK implementing §6.3; the v2 trace format and `push.bin`; the `replay` kernel; ctest wiring of §14 |
+| **SW** | `libtsr_dbg`, `tsr-dbg`, `tsr-prof` `trw` source, TSR_STATS items, the DMI profile, the runtime debug contract (`__tsr_dbg`, `__tsr_crash`, trap handler steps, launch hook, log records, markers) | transport needs of §9.2; `tsr_dm.c` and the simulator models of the stop logic, history, REC, TRW and log; a serial schedule in the simulator; the SDK implementing §6.3; the trace format and `push.bin`; the `replay` kernel; ctest wiring of §14 |
 
 ### 13.2 Degradation if a requirement is not taken
 
@@ -1050,17 +1045,17 @@ serial still work from head info).
 ### 13.3 Draft differences (resolved in the integrated set)
 
 DB's draft chose EX on every host-visible point below; the integrated documents adopt these
-choices everywhere (CC §5–§6, SW §6, `docs/v2/README.md`).
+choices everywhere (CC §5–§6, SW §6, `docs/design/README.md`).
 
 | Topic | CC draft | EX draft | DB uses |
 |---|---|---|---|
 | Host control / status | `CTL_*` at 0xB00 | `CTRL` / `STATUS` at 0x020 / 0x024, `CTL_*` dissolved | EX |
-| Log ring | 1,024 words, overwrite, window at 0xE00 | 256 words, drop whole record, 0x400 | EX (V2-DB-12) |
+| Log ring | 1,024 words, overwrite, window at 0xE00 | 256 words, drop whole record, 0x400 | EX (DB-12) |
 | Error records, completion counts | 0x500 + 32u, 0xBC0 | `Q_*` at 0xE00–0xF1C | EX |
-| s registers for the host | `SREG` at 0x0C0 | none (0x0C0 is `LOAD_ADDR`) | `SREG` at 0x9C0 (V2-DB-21) |
-| PERF list and gating | free-running, CC list | ACTIVE / QHALT, EX list | EX (V2-DB-15) |
+| s registers for the host | `SREG` at 0x0C0 | none (0x0C0 is `LOAD_ADDR`) | `SREG` at 0x9C0 (DB-21) |
+| PERF list and gating | free-running, CC list | ACTIVE / QHALT, EX list | EX (DB-15) |
 | RISC-V `LOG_PUSH` | 0x1C0 | 0x280 | EX |
-| `SOFT_RESET` | none (V2-CC-22) | device-level sequence | EX |
+| `SOFT_RESET` | none (CC-22) | device-level sequence | EX |
 
 ---
 

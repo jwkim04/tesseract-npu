@@ -1,8 +1,8 @@
 // tsr/plan_attn.hpp — planners of SET_ROWS_KV (0x18) and FLASH_ATTN (0x19), and the FA chunk planner
-// shared with tsr_ref_fa (docs/v2/06-software-verification.md "SW" §7.2, §7.5; docs/v2/03-attention-
+// shared with tsr_ref_fa (docs/design/06-software-verification.md "SW" §7.2, §7.5; docs/design/03-attention-
 // kv.md "AT" §4, §5, §6.6, §7, §12; W2b P2.7). Freestanding, C++17-compatible, constexpr-friendly:
 // the firmware's kind handlers (sw/ctrl/kernels/k_kv.cpp, k_fattn.cpp) and the host's supports_op
-// (W3b) call the same functions (V2-SW-20).
+// (W3b) call the same functions (SW-20).
 //
 // The planner contract and the declarations are tsr/plan.hpp's ("M7 planning"), which includes this
 // file after them; including this file first works too (it includes plan.hpp). Owner: W2b kvfa.

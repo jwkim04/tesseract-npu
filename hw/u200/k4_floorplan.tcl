@@ -117,7 +117,7 @@ if {$nch == 0} { error "k4_floorplan: no MVM cluster under $mvm" }
 for {set c 0} {$c < $nch} {incr c} {
   k4fp_add $k4fp_rest [k4fp_cell [k4fp_path $k4fp_core "g_ch\[$c\].u_arb"]] "g_ch\[$c\].u_arb"
 }
-# X0 (docs/v2 EX §12): u_cmdproc and u_fetch are deleted; Y5 adds the v2 blocks (CC §13) here.
+# Y5 adds the control core blocks (CC §13) here.
 foreach b {u_spm u_dma u_qact u_csr} {
   k4fp_add $k4fp_rest [k4fp_cell [k4fp_path $k4fp_core $b]] $b
 }

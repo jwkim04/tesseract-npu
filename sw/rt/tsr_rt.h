@@ -5,15 +5,11 @@
 // firmware image ($TSR_IMAGE or the build's) when it opens the device, and shares the ggml backend's
 // code (tsr_lower: shape checks, the range allocator, the symmetric weight scatter, the OPL builder,
 // OPL cache and `graph` launcher of tsr-opl.h). A linear call is one launch of the firmware's
-// `graph` kernel per IO tile (docs/v2/06-software-verification.md §9.4): an op list with one
+// `graph` kernel per IO tile (docs/design/06-software-verification.md §9.4): an op list with one
 // MUL_MAT record per weight part (K parts as further records with ACC_DST), which the kernel runs
 // per T tile as
 //
 //     LD x tile -> QACT (A32 / A256) -> MVM (Q8_0 / Q4_K) -> ST y tile
-//
-// (v1's lowering, so the results are v1's bit for bit; v1 emitted these as host programs cached in
-// the CMD region, deleted with the command buffer in X0). The public API is v1's, so sw/torch only
-// needs a rebuild.
 //
 // Numerics are the llama.cpp path's (docs/spec.md "수치 규칙", "로드 시 변환"):
 //   - weights given as f32 / f16 / bf16 become Q8_0 at upload with ggml's quantize_row_q8_0_ref
@@ -108,7 +104,7 @@ struct weight_info {
 struct counters {
     uint64_t linears = 0;          // linear() calls with T >= 1
     uint64_t tokens = 0;           // sum of their T
-    // v2: launches of `graph` and op-list cache hits / misses (v1: programs run, found, emitted).
+    // launches of `graph` and op-list cache hits / misses.
     uint64_t execs = 0;            // graph launches
     uint64_t prog_hits = 0;        // op lists found in the OPL cache
     uint64_t prog_misses = 0;      // op lists built and written to the OPL region

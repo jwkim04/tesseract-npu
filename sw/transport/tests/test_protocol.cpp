@@ -1,6 +1,6 @@
-// test_protocol.cpp — ctest transport_protocol (docs/v2/06-software-verification.md "SW" §10.2;
-// docs/v2/01-execution-model.md "EX" §15 item 2): the v2 protocol layer, one binary for every kind it
-// can run. sim and mock always; vkernel when TSR_VKERNEL_SERVER / TSR_VKERNEL_SOCKET name a v2
+// test_protocol.cpp — ctest transport_protocol (docs/design/06-software-verification.md "SW" §10.2;
+// docs/design/01-execution-model.md "EX" §15 item 2): the protocol layer, one binary for every kind it
+// can run. sim and mock always; vkernel when TSR_VKERNEL_SERVER / TSR_VKERNEL_SOCKET name a two-clock
 // server (P5.3; else reported as not run). Firmware: the fw_rt test image (sw/ctrl/tests/fw/
 // rt_kernels.cpp: rt_args0-7, rt_nop, rt_ret, rt_copy, rt_tile_err, rt_stop, rt_cancel, rt_log,
 // rt_trap) and the production image tsr-fw.elf.
@@ -989,13 +989,13 @@ int main(int argc, char ** argv) {
     test_tcm_fault();
     ladder_kind("sim");
     ladder_kind("mock");
-    // vkernel: only with a v2 server (P5.3).
+    // vkernel: only with a two-clock server (P5.3).
     if ((getenv("TSR_VKERNEL_SERVER") && getenv("TSR_VKERNEL_SERVER")[0]) || (getenv("TSR_VKERNEL_SOCKET") && getenv("TSR_VKERNEL_SOCKET")[0])) {
         observed vk;
         run_kind("vkernel", &vk);
         compare("sim vs vkernel", sim_min, vk);
     } else {
-        printf("== vkernel: not run (no v2 Verilated kernel server until P5.3; set TSR_VKERNEL_SERVER)\n");
+        printf("== vkernel: not run (no Verilated kernel server until P5.3; set TSR_VKERNEL_SERVER)\n");
     }
     printf("transport_protocol: %d checks, %d failed\n", g_checks.load(), g_fail.load());
     return g_fail.load() ? 1 : 0;

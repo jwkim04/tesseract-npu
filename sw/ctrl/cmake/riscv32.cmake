@@ -6,7 +6,7 @@
 #
 # The compiler prefix is TSR_RISCV_PREFIX (e.g. /x/bin/riscv-none-elf-). The main build passes its
 # effective prefix (sw/sim/CMakeLists.txt: the cache variables TSR_RISCV_PREFIX / TSR_RISCV_TOOLS,
-# else the pinned xPack of docs/v2/toolchain.lock). A standalone configure of sw/ctrl without it
+# else the pinned xPack of docs/design/toolchain.lock). A standalone configure of sw/ctrl without it
 # falls back to the same default: the xPack directory of the lock file under build/tools/riscv
 # (sw/ctrl/tools/install-toolchain.sh's default prefix).
 
@@ -17,8 +17,8 @@ if (NOT TSR_RISCV_PREFIX)
     get_filename_component(_tsr_root "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
     set(_tsr_dir "xpack-riscv-none-elf-gcc-14.2.0-3")
     set(_tsr_pfx "riscv-none-elf-")
-    if (EXISTS "${_tsr_root}/docs/v2/toolchain.lock")
-        file(STRINGS "${_tsr_root}/docs/v2/toolchain.lock" _tsr_lines REGEX "^xpack_gcc\\.(dir|prefix) *=")
+    if (EXISTS "${_tsr_root}/docs/design/toolchain.lock")
+        file(STRINGS "${_tsr_root}/docs/design/toolchain.lock" _tsr_lines REGEX "^xpack_gcc\\.(dir|prefix) *=")
         foreach(_l ${_tsr_lines})
             if (_l MATCHES "^xpack_gcc\\.dir *= *([^ #]+)")
                 set(_tsr_dir "${CMAKE_MATCH_1}")
@@ -36,7 +36,7 @@ if (IS_ABSOLUTE "${TSR_RISCV_PREFIX}" AND NOT EXISTS "${TSR_RISCV_PREFIX}g++")
     message(FATAL_ERROR
         "RISC-V compiler not found: ${TSR_RISCV_PREFIX}g++ (SW §6.1, §9.6). Install the pinned tools "
         "without sudo with sw/ctrl/tools/install-toolchain.sh (default prefix build/tools/riscv, pins in "
-        "docs/v2/toolchain.lock), or set TSR_RISCV_PREFIX to another bare-metal RISC-V GCC prefix.")
+        "docs/design/toolchain.lock), or set TSR_RISCV_PREFIX to another bare-metal RISC-V GCC prefix.")
 endif()
 
 set(CMAKE_C_COMPILER   "${TSR_RISCV_PREFIX}gcc")

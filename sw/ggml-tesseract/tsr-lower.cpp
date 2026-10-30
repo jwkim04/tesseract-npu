@@ -25,7 +25,7 @@ uint64_t tsr_mm_lines_per_token(uint32_t fmt, uint32_t N, uint32_t K) {
 
 bool tsr_mm_shape_ok(const tsr_config & cfg, uint32_t fmt, uint64_t N, uint64_t K) {
     if (cfg.beat_bits != 512) {
-        return false;                          // v1 software assumes 64-byte beats/lines
+        return false;                          // the software assumes 64-byte beats/lines
     }
     if (!tsr_fmt_valid(fmt)) {
         return false;

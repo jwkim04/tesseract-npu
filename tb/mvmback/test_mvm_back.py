@@ -45,7 +45,7 @@ cocotb tests (each configuration runs all of them):
   back_reset       synchronous reset in the middle of an MVM (beats, partial sums, tree and result
                    FIFO occupied, also with res_ready = 0), reset values, then checked MVMs
   back_comb_probe  no combinational path from any input to any output (clock stopped, inputs wiggled)
-Configurations: t1 (U200 v1: K_MAX 32768, T_MAX 1, default latencies), t8 (T_MAX 8, defaults),
+Configurations: t1 (U200: K_MAX 32768, T_MAX 1, default latencies), t8 (T_MAX 8, defaults),
 lat1 (every latency 1), lat8 (every latency 8), mix (K_MAX 65280, T_MAX 5, ACT 3 / MAC 1 / MUL 8 /
 ADD 7: the d*Dx path is longer than the integer path, so the f32 sums are the delayed ones), k256
 (K_MAX 256 = the docs/rtl-m3.md §1 edge value, T_MAX 8, ACT 1 / MAC 8 / MUL 1 / ADD 8: no row

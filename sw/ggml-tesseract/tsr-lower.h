@@ -1,4 +1,4 @@
-// tsr-lower.h — SPM tiling of one MUL_MAT (spec "ggml 백엔드 통합", lowering (v1)).
+// tsr-lower.h — SPM tiling of one MUL_MAT (spec "ggml 백엔드 통합", lowering).
 //
 // The plan a MUL_MAT of N x K weights and T f32 tokens follows on the device, per T tile:
 // LD the x tile, QACT it, MVM against W_OFF, ST the y tile. The SPM is partitioned
@@ -6,10 +6,8 @@
 // (spec SPM 규칙). The backend's supports_op and weight placement and the runtime's weight split
 // use the shape check. No ggml dependency.
 //
-// X0 (docs/v2/01-execution-model.md §12): the host-side instruction emission, its disassembly and
-// the program cache are deleted with the command-buffer path;
-// the firmware MUL_MAT kind emits the ops, and this tiling moves to the shared, freestanding
-// plan.hpp (P2.4, docs/v2/06-software-verification.md §9.3, V2-SW-20).
+// The firmware MUL_MAT kind emits the ops with the shared, freestanding plan.hpp (P2.4,
+// docs/design/06-software-verification.md §9.3, SW-20).
 #pragma once
 
 #include <cstdint>
@@ -44,7 +42,7 @@ bool tsr_mm_shape_ok(const tsr_config & cfg, uint32_t fmt, uint64_t N, uint64_t 
 bool tsr_mm_plan_tiling(const tsr_config & cfg, uint32_t fmt, uint32_t N, uint32_t K, uint32_t T,
                         tsr_mm_tiling * out);
 
-// Staging of one MUL_MAT through the IO stage (spec "v1 lowering 제약"; SW §9.3 step 2): whether
+// Staging of one MUL_MAT through the IO stage (spec "lowering constraints"; SW §9.3 step 2): whether
 // src1 / dst must pass through the stage, and the stage tiles. A MUL_MAT is staged when src1 or
 // dst is not in an IO window (host memory), or when its dst rows do not start on a line
 // (N*4 % 64 != 0) with T > 1. Each stage tile of <= tc_max tokens holds the staged x rows

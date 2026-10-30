@@ -1,10 +1,10 @@
-# Tesseract v2 — area SW: software stack, firmware SDK, simulator, verification and work plan
+# Tesseract — area SW: software stack, firmware SDK, simulator, verification and work plan
 
-Status: **design, not implemented** (2026-10-30). One of the six v2 area documents in `docs/v2/`
+Status: **design, not implemented** (2026-10-30). One of the six area documents in `docs/design/`
 (EX execution model, VU vector unit, AT attention and KV, CC control core, DB debug, SW this
-document). Source-of-truth order: `docs/spec.md` > ISA simulator (`sw/sim`) > the v2 area
+document). Source-of-truth order: `docs/spec.md` > ISA simulator (`sw/sim`) > the area
 documents > `docs/ctrl-riscv.md`. The user decisions D1–D6, D12 and D14–D18
-(`docs/ctrl-riscv.md:15-46`) are fixed. Every choice marked V2-SW-n (§13) was made under the user's
+(`docs/ctrl-riscv.md:15-46`) are fixed. Every choice marked SW-n (§13) was made under the user's
 delegation. Numbers marked *estimate* are not measured. *confirm* marks a fact about a third-party
 tool that must be checked when the tool is pinned.
 
@@ -22,9 +22,9 @@ Summary of the design:
 - **Simulator.** `sw/sim` gets an in-house RV32IMC + Zicsr interpreter (`tsr_rv`), with Spike as
   its oracle in tests only. It also gets an event-driven model of the issue queues on the
   core-cycle time base (fixed or random schedules), a vector-clock race detector, the VU and AT op
-  semantics, and `tsr_ref_math.c`. The host command path (START, CMD_*, ARG*, R0–R15, LI, ADDI,
-  END, fetch, CALL) is deleted (D14).
-- **Trace v2.** One directory per launch: the firmware image (by id), the launch descriptor, DRAM
+  semantics, and `tsr_ref_math.c`. The host starts work only through the launch queue and
+  completion ring (D14).
+- **Trace format.** One directory per launch: the firmware image (by id), the launch descriptor, DRAM
   init and expect regions, the DONE record, per-unit ticket records, and the pushed op stream in
   push order (`ops/push.bin`) with relative tickets. Tile-only traces replay through a standard
   `replay` kernel, so they also run on the card without host access to the issue port (D15).
@@ -34,12 +34,12 @@ Summary of the design:
   kernel table and the tile/VU header library. Three base kernels exist from M6: `graph` (the
   op-list executor), `selftest` and `replay` (EX §4.6).
 - **Graph execution.** The ggml backend turns each split into a pre-resolved op list in DRAM
-  (format OPL v1, §7.2) and launches `graph` once. In M6 the list holds only MUL_MAT records; M7
+  (the op list format, §7.2) and launches `graph` once. In M6 the list holds only MUL_MAT records; M7
   adds the op kinds that make one decode token one launch (§8). The host computes the dependencies
   between ops. The firmware maps them to tickets and issues ahead, so units overlap (D3).
 - **Host.** EX's transport API (EX §10) with one protocol layer (bind, load and VERIFY, boot,
   launch, wait, cancel, stop, soft reset, log) over every kdev: `sim` (in process), `mock`,
-  `vkernel` and `xrt` (`ap_ctrl_none` with polling). Weight upload is unchanged.
+  `vkernel` and `xrt` (`ap_ctrl_none` with polling).
 - **Toolchain.** No RISC-V compiler, Spike or RISC-V GDB is installed on the build host (checked
   2026-10-30). The plan installs the xPack `riscv-none-elf-gcc` (with its GDB) and builds Spike
   and dtc from source, all in user space, no sudo (§9.6).
@@ -49,40 +49,29 @@ Summary of the design:
   utilization measured.
 - **Work plan.** P1 references and simulator → P2 SDK and kernels on sim → P3 host and llama.cpp
   end to end on sim → P4 RTL → P5 Verilator full system → P6 card (§11). The software path works
-  end to end on the simulator before any v2 RTL exists.
+  end to end on the simulator before the RTL for the control core exists.
 
 ---
 
-## 2. What v2 removes from the software (D14, D16)
+## 2. Host interface (D14, D16)
 
-| Item | Where today | v2 |
-|---|---|---|
-| Host START / `CTRL` / `STATUS.BUSY|DONE|ERR` run protocol, `CMD_ADDR_*`, `CMD_COUNT`, `ARG0-7`, `ERR_PC`, `PC` | `tsr_isa.h`, `tsr_sim.c`, transports | deleted in X0 (EX §12); launches go through EX's launch queue and completion ring (§6.4) |
-| R0–R15, `LI`, `ADDI`, `END`, register-relative address fields | `tsr_sim.c`, `tsr_trace_gen.c` | deleted; address fields are immediates and ra/rb/rc/rd must be 0 (`docs/spec.md:416`) |
-| Command fetch, CMD region use for programs, `CALL` | `tsr_sim.c`, `tsr-lower.cpp`, `tsr_rt.cpp` | deleted; the CMD region becomes the OPL region (§7.2) |
-| `tsr_transport_exec`, `tsr_exec_result`, `kargs`, `kdev::start/wait/settle`, `regs_*`/`kds_*`, `TSR_XRT_CTRL=run|regs` | `sw/transport` | replaced by load / launch / wait (§9.1) |
-| MUL_MAT instruction emission and the program cache (`tsr_mm_emit`, `tsr_prog_cache`) | `tsr-lower.cpp` | tiling moves to `plan.hpp`, shared by host and firmware; emission moves to the firmware MUL_MAT kernel; the op-list cache replaces the program cache |
-| Trace v1 (`cmd.bin`) writing and replay | `tsr_trace.c`, tools, tb | trace v2 (§5); a v1 reader survives only inside the converter |
-| `tsr_xrt_selftest` (host-driven programs) | `sw/tools` | `tsr-selftest`, whose device programs are the `selftest` kernel (D15) |
-| `tsr_cmdproc`/`tsr_fetch` benches, the M2 core suite, `cmd.bin` fastreplay | `tb/` | deleted or rewritten (§10.3) |
-
-`TSR_DEVICE=none` and the weight path (`tsr-weights`, `tsr-wlayout`, `tsr-alloc`, symmetric
-allocation, load-time Q8_0 conversion) are unchanged. Every deletion of this table happens at once
-in X0, the first M6 commit (EX §12, D16); tests that depend on a deleted part return with their
-v2 replacement (§10.2).
+The host starts work only through EX's launch queue and completion ring (§6.4); the transport API is
+load, launch and wait (§9.1). Tile ops are issued by firmware: their address fields are immediates
+and ra/rb/rc/rd must be 0 (`docs/spec.md:416`), tiling is in `plan.hpp` (shared by host and
+firmware), and op lists live in the OPL region (§7.2).
 
 ---
 
-## 3. Repository layout (software, v2)
+## 3. Repository layout (software)
 
 ```
 sw/
-├── tables/                  # tsr_tables.py: the single table source (EX/CC/DB/VU/AT own rows, V2-EX-30)
+├── tables/                  # tsr_tables.py: the single table source (EX/CC/DB/VU/AT own rows, EX-30)
 │                            # gen_tables.py: generator (SV package, C header, mmio/vu/at.hpp, tb Python)
 ├── sim/                     # libtsr_sim, libtsr_ref (C, host only)
 │   ├── include/             # tsr_isa.h (+ generated tsr_tables.h), tsr_ref.h, tsr_ref_math.h, tsr_ref_vu.h,
 │   │                        # tsr_ref_at.h, tsr_sim.h, tsr_rv.h, tsr_bus.h, tsr_dm.h, tsr_dbg.h, tsr_race.h, tsr_trace.h
-│   ├── tsr_ref.c            # existing references (fp helpers, layouts, QACT, dot products, dequant)
+│   ├── tsr_ref.c            # references (fp helpers, layouts, QACT, dot products, dequant)
 │   ├── tsr_ref_vu.c         # VU op references: VOP, RED, ROPE, TOPK, SOP, DQROW (VU §5-§6)
 │   ├── tsr_ref_at.c         # AT references: KV planes, KVST, ATTQK, ATTPV, vector ops, FA (AT §13.1)
 │   ├── tsr_ref_math.c       # EXPK, SIGMOID, SILU, GELU (tanh, fp16 form), TANH, SIN, COS (algorithms: VU §6)
@@ -98,7 +87,7 @@ sw/
 │   ├── tsr_sched.c          # TSR_SIM_SCHED, the random schedule's draws and RISC-V-side view (P1.8; the fixed
 │   │                        # time base is in tsr_q.c, spin fast-forward in tsr_bus.c's RISC-V agent)
 │   ├── tsr_race.c           # race detector and SPM_STALE
-│   ├── tsr_trace.c          # trace v2 read / write / capture / replay
+│   ├── tsr_trace.c          # trace read / write / capture / replay
 │   └── tests/
 ├── ctrl/                    # firmware SDK (RISC-V), separate CMake project (ExternalProject)
 │   ├── CMakeLists.txt       # the firmware project: tsr-fw.elf (+ .map, size report) and test images
@@ -117,13 +106,13 @@ sw/
 │   └── tools/               # tsr-elf/ (image id, kernel table, log-format table, size report),
 │                            # install-toolchain.sh (§9.6)
 ├── transport/               # tsr_transport (C API), protocol layer, kdevs: sim, mock, vkernel, xrt
-├── ggml-tesseract/          # backend: weights (unchanged), tsr-opl.* (op-list builder), tsr-kvbuf.* (M7)
-├── rt/, torch/              # tsr_rt on op lists; PyTorch unchanged above tsr_rt
+├── ggml-tesseract/          # backend: weights, tsr-opl.* (op-list builder), tsr-kvbuf.* (M7)
+├── rt/, torch/              # tsr_rt on op lists; PyTorch above tsr_rt
 └── tools/                   # tsr-selftest, tsr-trace-gen/-replay/-conv, tsr-log, klcheck, numcheck, tsr_bw
 ```
 
-`third_party/` gains no RISC-V tool sources. The toolchains live outside the repository (§9.6),
-and their versions are recorded in `docs/v2/toolchain.lock` (created in P1.11).
+`third_party/` holds no RISC-V tool sources. The toolchains live outside the repository (§9.6),
+and their versions are recorded in `docs/design/toolchain.lock` (created in P1.11).
 
 ---
 
@@ -131,7 +120,7 @@ and their versions are recorded in `docs/v2/toolchain.lock` (created in P1.11).
 
 ### 4.1 Model overview
 
-The simulator stays one C library, linked into the backend, the tools and the tests. It models:
+The simulator is one C library, linked into the backend, the tools and the tests. It models:
 
 - the **core** (core clock domain): SPM, per-channel DRAM, the host CSR port (EX §5: CSRs, the LQ /
   LCQ / log rings, `Q_*`, PERF, DMI), the dispatcher, the checker, the unit queues, and the units
@@ -139,12 +128,12 @@ The simulator stays one C library, linked into the backend, the tools and the te
 - the **control core** (RISC-V clock domain): `tsr_rv`, ITCM and DTCM, the control window, the
   core window, the SPM window and the debug module.
 
-Functional results come only from the C references (`tsr_ref*.c`), as today
+Functional results come only from the C references (`tsr_ref*.c`)
 (`docs/spec.md:1086` rule 3). An op's effects (SPM and DRAM writes, scalar-register writes) are
 applied atomically at its modelled completion time. For race-free programs this choice is
 invisible (`docs/ctrl-riscv.md:1326-1333`).
 
-### 4.2 RISC-V model `tsr_rv` (V2-SW-1)
+### 4.2 RISC-V model `tsr_rv` (SW-1)
 
 - **ISA:** RV32IMC + Zicsr + Zifencei, M-mode only (CC's configuration). An unimplemented encoding
   or CSR raises an illegal-instruction trap (`mcause` 2, `mtval` = the instruction bits).
@@ -176,7 +165,7 @@ invisible (`docs/ctrl-riscv.md:1326-1333`).
   of CC §3.2, from Ibex's documentation (`doc/03_reference/pipeline_details.rst` stall cycles,
   `rtl/ibex_id_stage.sv` for the writeback stage; *confirm* items checked by the RVFI bench P5.2),
   in `tsr_rv.h` (`TSR_RV_CPI_MAXPERF`, `TSR_RV_CPI_SMALL`), selected by `TSR_SIM_RV_CORE` =
-  `maxperf` (default: CC's decided configuration, V2-CC-34) | `small` (`tsr_sim_opts.rv_core`;
+  `maxperf` (default: CC's decided configuration, CC-34) | `small` (`tsr_sim_opts.rv_core`;
   `tsr_rv_set_core`). Per class, maxperf / small: ALU, LUI / AUIPC, fence, not-taken branch and
   CSR read 1 / 1; a CSR write other than `mscratch` / `mepc` 2 / 2 (pipeline flush); taken branch
   2 / 3; JAL, JALR, `fence.i` 2 / 2; load / store base 0 / 1 plus the bus latency (TCM 1), and on
@@ -205,20 +194,19 @@ T_RANGE → OPERAND → SPM_RANGE → DRAM_RANGE), poisoned entries, error state
 I1–I3, and per-unit error records with push indices. Queue depths, unit ids and the opcode → unit
 map come from the generated table and the config, so they change without code changes.
 
-The existing unit code paths in `tsr_sim.c` (LD, ST, QACT, MVM and their checks) are kept; only
-their entry changes, from "cmdproc executes instruction i" to "the queue head starts entry e". VU
-and AT ops are new (§4.5). The host CSR port serves EX's map (EX §5): `CTRL` / `STATUS`, the
+The unit code paths in `tsr_sim.c` (LD, ST, QACT, MVM and their checks) start when the queue head
+starts entry e. VU and AT ops are in §4.5. The host CSR port serves EX's map (EX §5): `CTRL` / `STATUS`, the
 loader with receive CRC and VERIFY, `RV_BOOT`, the LQ / LCQ / log rings and watermarks,
-`SOFT_RESET` (EX §8.5, CC §12.2), PERF v2, `Q_*`, `SREG`, the DBG block (`tsr_dbg.c`) and DMI (`tsr_dm.c`).
+`SOFT_RESET` (EX §8.5, CC §12.2), PERF, `Q_*`, `SREG`, the DBG block (`tsr_dbg.c`) and DMI (`tsr_dm.c`).
 Reads have no side effects except EX's PERF LO snapshot (`docs/spec.md:693`).
 
-### 4.4 Scheduler and time base (V2-SW-2)
+### 4.4 Scheduler and time base (SW-2)
 
 - **Time** is in core cycles (u64). The event kinds are unit-op completion, dispatcher crossing,
   RISC-V progress (RV cycles × ratio), the LQ / LCQ / log crossings, and the `MTIMECMP` timer.
 - Ties are broken deterministically by (time, event-kind priority, unit id, sequence).
 - **`TSR_SIM_SCHED`:**
-  - `fixed` (default): op durations come from the existing cycle model, the issue-FIFO crossing
+  - `fixed` (default): op durations come from the cycle model, the issue-FIFO crossing
     takes 2 cycles, and the RISC-V-side synchronised copies (`DONE_SEQ`, credits, `QSTATUS`, error
     records, interrupt levels) show the core state without lag (the W1a time base, bit-identical).
   - `random:<seed>[,<min>,<max>]`: every op duration is multiplied by a factor drawn uniformly
@@ -239,10 +227,10 @@ Reads have no side effects except EX's PERF LO snapshot (`docs/spec.md:693`).
 
 | Ops | Semantics source | Reference code | Status |
 |---|---|---|---|
-| LD, ST, QACT, MVM, NOP, FENCE | `docs/spec.md:394-473`, `:1021-1076` | `tsr_ref.c` (unchanged) | kept; register fields must be 0; END/LI/ADDI/CALL and opcodes 0x04–0x09 are ILLEGAL_OP |
+| LD, ST, QACT, MVM, NOP, FENCE | `docs/spec.md:394-473`, `:1021-1076` | `tsr_ref.c` | register fields must be 0; END/LI/ADDI/CALL and opcodes 0x04–0x09 are ILLEGAL_OP |
 | VOP (incl. GELU-tanh, GELU16, GEGLU16, TANH), RED (segmented, post RCP / RMS), ROPE (angle recurrence), TOPK, SOP, DQROW | VU §5–§6 (base: `docs/spec.md:288-321`, `:437-472`) | `tsr_ref_vu.c` (ops), `tsr_ref_math.c` (approximations) | in the simulator: `tsr_vu.c` (P1.4; TOPK and DQROW from M6 in the simulator, their RTL is M8). VMASK is M9 |
 | KVST, ATTQK, ATTPV, ASMAX, AMASK, AMERGE, ANORM | AT §5–§6 (vector ops executed by the VU, VU §5.11) | `tsr_ref_at.c` (AT §13.1) | in the simulator: `tsr_at.c` (P1.5) |
-| QCLEAR, QABORT, hold control entries | area EX | `tsr_q.c` | new |
+| QCLEAR, QABORT, hold control entries | area EX | `tsr_q.c` | in the simulator |
 
 **`tsr_ref_math.c`.** Area VU fixes each algorithm: range reduction, polynomial or table, the
 coefficients as f32 bit patterns, and the evaluation order. SW implements the file under these
@@ -267,12 +255,12 @@ rules:
    The names are VU's (VU §6.1). RECIP_APPROX does not exist: every reciprocal is `tsr_frecip`.
 3. The same file compiles for RV32 (soft-float libgcc is never needed, because the `tsr_f*`
    helpers are what get called) and for Python ctypes (cocotb).
-4. Each function's verification is in §10.1 (V2-SW-23).
+4. Each function's verification is in §10.1 (SW-23).
 
-### 4.6 Race detector and the launch-stateless rule (V2-SW-3, V2-SW-4)
+### 4.6 Race detector and the launch-stateless rule (SW-3, SW-4)
 
 - **Happens-before:** vector clocks over the agents {each unit, the RISC-V, the host}. The edges
-  are those of `docs/ctrl-riscv.md:1336-1354` without CALL and host runs:
+  are those of `docs/ctrl-riscv.md:1336-1354`:
   - queue order;
   - dependencies;
   - RISC-V program order;
@@ -284,7 +272,7 @@ rules:
     answer record and everything the host does after it (H2, the runtime joins before it posts).
 - **Access sets per op** come from its operands (VU and AT ops from their documents). RISC-V SPM
   accesses are tracked per byte. Issue-bank scalar registers are tracked as 16 locations.
-- **Launch-stateless rule (V2-SW-4):** a launch's observable results depend only on (image,
+- **Launch-stateless rule (SW-4):** a launch's observable results depend only on (image,
   descriptor args, DRAM contents). The detector reports `SPM_STALE` when an op or the RISC-V reads
   an SPM line that nothing wrote since the runtime popped the descriptor. Dependence on DTCM state left by an
   earlier launch has no mechanical check. It is caught instead by the trace round trip (§10.1):
@@ -294,8 +282,7 @@ rules:
 
 ### 4.7 Determinism (what is bit-exact)
 
-The definition follows `docs/ctrl-riscv.md:1419-1437` and `docs/spec.md:821`, restated for
-v2. A program (image + descriptor args + DRAM inputs) is **valid** if it is race-free and the
+The definition follows `docs/ctrl-riscv.md:1419-1437` and `docs/spec.md:821`. A program (image + descriptor args + DRAM inputs) is **valid** if it is race-free and the
 following are the same under every schedule:
 
 - the per-unit op streams (words, push flags, deps as relative tickets);
@@ -314,7 +301,7 @@ the final state is unique. RTL and the card must reproduce:
 Never compared: poll counts, `MTIME`, `PERF_*`, record word r7, completion records (REC) and log
 content.
 
-Firmware rule (V2-SW-30): no value read from a timing-dependent register (`DONE_SEQ`, credits,
+Firmware rule (SW-30): no value read from a timing-dependent register (`DONE_SEQ`, credits,
 `QSTATUS`, `MTIME`, `LQ_AVAIL`, `LCQ_FREE`, `LOG_FREE`) may influence pushed words, deps, SPM
 stores or records. Such values may only end a wait loop. `ISSUE_PIDX` and `ISSUED_SEQ` are not
 timing-dependent (only the RISC-V's own pushes move them). The error records (`ERR_CODE`,
@@ -331,10 +318,10 @@ This holds by construction for every kernel in §7.
 At the llama.cpp level, the same image and the same inputs give bit-identical logits on `sim`,
 `mock`, `vkernel` and `xrt`. That is the M6 and M7 end-to-end check.
 
-### 4.8 C API (v2) and the register table
+### 4.8 C API and the register table
 
 The register and encoding table `sw/tables/tsr_tables.py` (plain Python data, no dependencies) is
-the single source (V2-EX-30). One generator (`sw/tables/gen_tables.py`, P1.1) produces from it the
+the single source (EX-30). One generator (`sw/tables/gen_tables.py`, P1.1) produces from it the
 RTL package (`rtl/core/tsr_tables_pkg.sv`), the C header (`sw/sim/include/tsr_tables.h`, included
 by `tsr_isa.h`), the firmware headers (`sw/ctrl/include/tsr/{mmio,vu,at}.hpp`) and the Python
 module for cocotb (`tb/common/tables.py`), with `--check` in lint. EX, CC, DB, VU and AT own the
@@ -342,7 +329,7 @@ table rows; SW owns the generator.
 
 ```c
 typedef struct tsr_sim_opts {
-    const char * dram_dir;   // file-backed DRAM (as today)
+    const char * dram_dir;   // file-backed DRAM
     uint32_t     threads;    // MVM worker threads (results independent of it)
     const char * sched;      // "fixed" | "random:<seed>[,<min>,<max>]"
     double       rv_ratio;   // F_RV / F_CORE, default 166.7/276.3
@@ -375,7 +362,7 @@ uint32_t   tsr_sim_push(tsr_sim * sim, const uint32_t w[8], uint32_t dep0, uint3
 uint32_t   tsr_sim_qctrl(tsr_sim * sim, uint32_t bits);      // QCTRL write; QCLEAR returns its ticket
 int        tsr_sim_run_until_idle(tsr_sim * sim, uint64_t max_cycles);
 
-// Launch capture (trace v2) and race reports.
+// Launch capture and race reports.
 void       tsr_sim_capture_launch(tsr_sim * sim, int on);    // capture each descriptor .. answer record
 int        tsr_sim_capture_take(tsr_sim * sim, tsr_trace2 * out);   // 0 = one launch taken
 size_t     tsr_sim_race_reports(const tsr_sim * sim, const tsr_race_report ** out);
@@ -386,8 +373,7 @@ uint32_t   tsr_sim_rv_pc(const tsr_sim * sim);
 uint64_t   tsr_sim_rv_instret(const tsr_sim * sim);
 ```
 
-`tsr_config` loses `nireg` and `loop_depth` and gains `itcm_bytes`, `dtcm_bytes`, `ctl_id` and the
-queue depths.
+`tsr_config` includes `itcm_bytes`, `dtcm_bytes`, `ctl_id` and the queue depths.
 
 ### 4.9 Environment (simulator and `sim` transport)
 
@@ -399,24 +385,24 @@ queue depths.
 | `TSR_SIM_RACE` | `off`, `report`, `fatal` | `off` (ctest: `fatal`) |
 | `TSR_SIM_LOG` | `stderr` or a file: RV retire lines (optional), push / start / done events | off |
 | `TSR_SIM_THREADS`, `TSR_SIM_DRAM_DIR`, `TSR_SIM_TMAX`, `TSR_SIM_CH_GIB` | as today | as today |
-| `TSR_TRACE` | directory: one trace v2 per launch (`<dir>/<seq 6 digits>/`) | off |
+| `TSR_TRACE` | directory: one trace per launch (`<dir>/<seq 6 digits>/`) | off |
 
 ---
 
-## 5. Trace format v2 (V2-SW-5)
+## 5. Trace format (SW-5)
 
 ### 5.1 Directory
 
 ```
 <trace>/meta.json
 <trace>/ops/push.bin                 # pushed entries in push order (5.2)
-<trace>/init/ch<c>_<off>.bin         # DRAM before the launch (as v1)
-<trace>/expect/ch<c>_<off>.bin       # DRAM written by the launch (as v1)
+<trace>/init/ch<c>_<off>.bin         # DRAM before the launch
+<trace>/expect/ch<c>_<off>.bin       # DRAM written by the launch
 <trace>/expect/tickets.bin           # per-unit counts and error records (5.3)
 <set>/images/<image id hex>.elf      # firmware images, shared by every trace of a set
 ```
 
-`meta.json` (version 2):
+`meta.json` (format version 2):
 
 ```json
 { "format": "tesseract-trace", "version": 2,
@@ -439,7 +425,7 @@ queue depths.
   "perf":   { "core_cycles":N, "rv_instret":N, "unit_busy":[..], "ch_rd_beats":[..] } }
 ```
 
-`perf` is informational, as in v1 (`docs/spec.md:1061`).
+`perf` is informational (`docs/spec.md:1061`).
 
 ### 5.2 `ops/push.bin`
 
@@ -477,7 +463,7 @@ struct tsr_trace_unit {                                      // n_units x 32 byt
 
 ### 5.4 Replay rules
 
-- DRAM outside the init regions is zero, as in v1 (`docs/spec.md:1062`). The replayer loads the
+- DRAM outside the init regions is zero (`docs/spec.md:1062`). The replayer loads the
   init regions.
 - **Kind `launch`:** boot the image (HELLO), push the recorded descriptor, wait for its DONE
   record.
@@ -503,7 +489,7 @@ struct tsr_trace_unit {                                      // n_units x 32 byt
 ### 5.5 Capture
 
 `TSR_TRACE=<dir>` dumps one `launch` trace per launch (descriptor to answer record). The capture
-follows v1's rules:
+follows these rules:
 
 - init = DRAM read before it was written, copied at first read;
 - expect = DRAM written, taken at the answer record;
@@ -516,22 +502,26 @@ follows v1's rules:
 `tsr-trace-gen` writes `ops` traces directly (random tile programs with dependencies, concurrency
 and error injection). It runs each on the simulator to fill `done`, `expect` and `tickets`.
 
-### 5.6 Migration of the 778 v1 traces (V2-SW-6)
+### 5.6 Trace sets (SW-6)
 
-| Set | Count | Facts (counted 2026-10-30) | v2 plan |
-|---|---|---|---|
-| `traces/m2` (git) | 172 | 164 use LI/ADDI, 163 register-relative operands, 93 end in an error (44 ILLEGAL_OP) | **regenerate** with `tsr-trace-gen` v2 (`regen.sh`, same seeds and configurations) as `ops` traces. Random register bases become random absolute immediates. v1-only endings (fetch beyond the DRAM limit, missing END, nonzero `CMD_ADDR_HI`) are dropped. v2 endings are added: BAD_DEP, DEP_FAILED chains, ABORTED after an error state, QABORT/QCLEAR |
-| `traces/gen` (git) | 32 | all register-relative, 5 errors | regenerate (as m2) |
-| `traces/m3` (disk, regenerable) | 284 | 280 register-relative, 156 errors | regenerate (MVM boundary cases and the 23 MVM error kinds keep their generator code paths) |
-| `traces/model` (disk, regenerable) | 290 | R0 only, no LI/ADDI, no errors | **convert** with `tsr-trace-conv` into `traces/model-v1conv`. Each v1 instruction becomes a push that depends on the previous push (a serial chain, which keeps v1's sequential semantics; replayed with the `replay` flag SERIAL), END is dropped, and init/expect are kept. This is the regression check that the units' results did not change from v1 to v2 |
-| `traces/tmp` (tbo dumps, no script, not in git) | 2,804 | — | dropped; `TSR_TRACE` dumps of `test-backend-ops` on v2 replace them when needed |
-| new | — | — | `traces/vu`, `traces/at` (generator `--ops vu|at`), `traces/ctrl` (concurrency, credits, errors, holds), `traces/model-v2` (0.5B Q8_0 and Q4_K_M "Hi", one launch per split in M6, then one launch per token in M7) |
+| Set | Count | Content |
+|---|---|---|
+| `traces/m2` | 172 | `ops` traces from `tsr-trace-gen` (`regen.sh`, fixed seeds and configurations) with absolute immediate addresses; endings include ILLEGAL_OP, BAD_DEP, DEP_FAILED chains, ABORTED after an error state and QABORT / QCLEAR |
+| `traces/gen` | 32 | as m2 |
+| `traces/m3` | 284 | MVM boundary cases and the 23 MVM error kinds |
+| `traces/model-v1conv` | 290 | the recorded model traces (`traces/model`, on disk, not in git), converted with `tsr-trace-conv`. Each instruction becomes a push that depends on the previous push (a serial chain, replayed with the `replay` flag SERIAL), and init and expect are kept. This checks the units' results against the recorded ones |
+| `traces/vu`, `traces/at` | 240, 160 | generator `--ops vu|at` |
+| `traces/ctrl` | 148 | concurrency, credits, errors, holds |
+| `traces/model-launch` | — | 0.5B Q8_0 and Q4_K_M "Hi", one launch per split in M6, then one launch per token in M7 |
 
-The regenerated v2 sets are not in git (W1b): each `regen.sh` reproduces its set byte-identically
+`tsr-trace-conv` converts only traces without register-relative operands; the m2, gen and m3 sets
+are generated, not converted.
+
+The generated sets are not in git (W1b): each `regen.sh` reproduces its set byte-identically
 from fixed seeds, and `traces/MANIFEST.sha256` holds a digest per set. A frozen reference set goes
-into git once the v2 ISA is frozen for the RTL.
+into git once the ISA is frozen for the RTL.
 
-Every generated trace obeys the launch-stateless rule (§4.6, V2-SW-4) as one launch: each SPM line in
+Every generated trace obeys the launch-stateless rule (§4.6, SW-4) as one launch: each SPM line in
 the read extent of an op that runs (its checker extents, so a strided operand includes its gap lines)
 is written by an earlier op of the same trace. `tsr-trace-gen` checks this in its verification. Each
 `regen.sh` (its whole set) and `tools_trace_gen_replay` (its small per-mode sets, plus a
@@ -542,15 +532,6 @@ T_MAX > 1) had a strided QACT source loaded per token whose stride gaps nothing 
 now also loads the gaps, with seeds and configurations unchanged. Those 41 traces changed and every
 other trace stayed byte-identical; the set sizes (172, 32, 284; vu 240, at 160, ctrl 148) did not
 change. traces/model-v1conv is converted, not generated, and is not affected.
-
-Mechanical conversion of the register-relative sets would also be possible (LI and ADDI depend only
-on immediates and ARG). It is rejected because 93 + 5 + 156 error expectations would have to be
-re-derived anyway, and the generators exist with fixed seeds.
-
-X0 deleted the whole v1 generator and trace library (EX §12 "X0 as done"): `tsr-trace-gen` v2
-starts from `v1-m4:sw/tools/tsr_trace_gen.c` (random programs, MVM boundary and error generators,
-seeds), and `tsr-trace-conv` takes its v1 reader from `v1-m4:sw/sim/tsr_trace.c`. Until then the
-v1 sets are reproduced only by the v1 tools of `build/v1` (`traces/*/regen.sh`).
 
 ---
 
@@ -567,10 +548,10 @@ v1 sets are reproduced only by the v1 tools of `build/v1` (`traces/*/regen.sh`).
 - **Flags:** `-march=rv32imc_zicsr_zifencei -mabi=ilp32 -Os -ffreestanding -fno-exceptions
   -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit -ffp-contract=off -nostdlib
   -nostartfiles -g -std=c++20`, then `libgcc.a` only (integer helpers).
-- **Hot path** (V2-SW-34): `kernels/graph.cpp` and every `kernels/k_*.cpp` (the executor and the
+- **Hot path** (SW-34): `kernels/graph.cpp` and every `kernels/k_*.cpp` (the executor and the
   kind implementations, which run once per op record) are compiled with `-O2` after those flags
   (`TSR_FW_HOT_FLAGS` / `TSR_FW_HOT_GLOBS` in `sw/ctrl/CMakeLists.txt`, recorded as
-  `firmware.cxxflags_hot` in `docs/v2/toolchain.lock`); the runtime, `selftest`, `replay` and libc
+  `firmware.cxxflags_hot` in `docs/design/toolchain.lock`); the runtime, `selftest`, `replay` and libc
   stay `-Os`. *Measured* (simulator, Ibex maxperf, 166.7 MHz, fixed schedule, `fw_m6_perf` /
   `fw_exec_perf` on the final tree of the executor-optimisation workflow): per 0.5B MUL_MAT op
   record 442 → 437 RISC-V cycles, JOIN record 147 → 140, NOP record 92 → 85, one 0.5B decode
@@ -586,13 +567,13 @@ v1 sets are reproduced only by the v1 tools of `build/v1` (`traces/*/regen.sh`).
 - **libgcc:** taken from `-print-libgcc-file-name` for the same `-march`. If that multilib is
   absent, the `rv32im_zicsr/ilp32` one is used (*confirm* the xPack multilib set). Code without
   C instructions runs on an RV32IMC core.
-- **Firmware float:** none in M6/M7 (V2-SW-8). Every f32 constant (eps, 1/n, scales, the RoPE
+- **Firmware float:** none in M6/M7 (SW-8). Every f32 constant (eps, 1/n, scales, the RoPE
   `theta_scale` and freq-factor tables) is computed by the host and passed as bits. If firmware
   ever needs spec fp math, it calls the `tsr_ref` helpers (`docs/ctrl-riscv.md:229-240`).
 - **CMake:** the firmware is its own CMake project (`ExternalProject_Add(tsr_fw …)`), because one
   CMake project cannot have two C++ compilers. It produces `tsr-fw.elf` (with DWARF) and
   `tsr-fw.map`. Its path is compiled into the host libraries as the default image (`TSR_IMAGE`
-  overrides, EX §10.2). The RISC-V toolchain is a **required** dependency of a v2 build; configure
+  overrides, EX §10.2). The RISC-V toolchain is a **required** dependency of the build; configure
   fails with the install hint of §9.6.
 
 ### 6.2 Image format
@@ -634,7 +615,7 @@ Kernel order (W2a): the table is sorted by (rank, name), rank 0 `graph`, 1 `self
 (EX §4.6's base kernels at indices 0–2), 5 for every other kernel; `TSR_KERNEL` places each entry in
 section `.tsr_kernels.<rank>.<name>` and `link.ld` sorts by name. Tools look kernels up by name.
 
-**Image id (V2-SW-9, EX §3.2).** `tsr-elf` computes it after linking: SHA-256 over every `PT_LOAD`
+**Image id (SW-9, EX §3.2).** `tsr-elf` computes it after linking: SHA-256 over every `PT_LOAD`
 segment in ascending physical address, each as (u32 paddr LE, u32 padded filesz LE, padded bytes),
 with the 8 bytes of `.tsr_id` taken as zero; the id is the first 8 digest bytes read as a
 little-endian `uint64`. `tsr-elf` writes it into `.tsr_id`. The runtime echoes it in HELLO (r2 =
@@ -717,7 +698,7 @@ struct tsr_args {
 - Long kernels poll `tsr::stop_requested()` at safe points (EX §4.9).
 - Kernels obey the launch-stateless rule (§4.6) and the timing rule (§4.7).
 
-### 6.6 Traps, panic and logging (V2-SW-11)
+### 6.6 Traps, panic and logging (SW-11)
 
 - **Traps and panic:** DB §6.3 is normative. The handler switches to the trap stack; with a
   debugger attached (`__tsr_dbg.attached`) it restores the registers and stops at
@@ -750,7 +731,7 @@ struct tsr_args {
 
 ### 6.7 Tile/VU header library (`tsr/kernel.hpp` and friends)
 
-The base is `docs/ctrl-riscv.md:1090-1155`, with `CALL` removed and these additions:
+The base is `docs/ctrl-riscv.md:1090-1155`, with these additions:
 
 ```cpp
 namespace tsr {
@@ -792,12 +773,12 @@ public:
 }
 ```
 
-`plan.hpp` is freestanding C++ (no STL, no heap). The host backend compiles it too (V2-SW-20). It
-holds the MUL_MAT tiling (today's `tsr_mm_plan_tiling` and `tsr_mm_lines_per_token`), the T-tile
+`plan.hpp` is freestanding C++ (no STL, no heap). The host backend compiles it too (SW-20). It
+holds the MUL_MAT tiling (`tsr_mm_plan_tiling` and `tsr_mm_lines_per_token`), the T-tile
 choice for an SPM budget, `QA_LINES`, `ROW_BEATS`, and the per-kind scratch requirements of §7.5.
 The host therefore rejects in `supports_op` exactly what the firmware cannot plan.
 
-### 6.8 Host build of the kernels (V2-SW-25)
+### 6.8 Host build of the kernels (SW-25)
 
 The kernel sources also compile for the host against `backend_host.hpp`:
 
@@ -824,10 +805,10 @@ These are EX's base kernels (EX §4.6). PING is part of the runtime (descriptor 
 kernel. MoE kernels, decode steps, the resident loop and JIT
 entry points come with M8 and M9.
 
-### 7.2 Op list format OPL v1 (V2-SW-12)
+### 7.2 Op list format (OPL, SW-12)
 
-An op list is one 64-byte-aligned blob in device DRAM, normally in the OPL region (today's CMD
-region, ch0 0–64 MiB, §9.3). It is little-endian.
+An op list is one 64-byte-aligned blob in device DRAM, normally in the OPL region (ch0 0–64 MiB,
+§9.3). It is little-endian.
 
 **Header (64 bytes):**
 
@@ -835,7 +816,7 @@ region, ch0 0–64 MiB, §9.3). It is little-endian.
 |---|---|---|
 | 0 | `magic` u32 | 0x4C50_4F54 ("TOPL") |
 | 4 | `version` u16, `hdr_bytes` u16 | 1, 64 |
-| 8 | `n_ops` u32 | number of op records, 1–4096 (V2-SW-29) |
+| 8 | `n_ops` u32 | number of op records, 1–4096 (SW-29) |
 | 12 | `n_slots` u32 | 64-byte slots in the op area |
 | 16 | `ops_off` u32 | byte offset of the op area (64) |
 | 20 | `flags` u32 | bit0 REC (completion records on every push), bit1 MARK (TRACE_MARK with the op index before each op; pushed before the executor reads the op's record, so a record it then rejects has its marker too, §7.3), bit2 SERIAL (join after every op: debugging), bit3 STOP_ON_ERROR (stop pushing once an error is seen; the backend always sets it) |
@@ -847,7 +828,7 @@ region, ch0 0–64 MiB, §9.3). It is little-endian.
 | 44 | `crc32` u32 | CRC-32/ISO-HDLC of bytes [64, total_bytes), checked when the launch flag VERIFY_CRC is set |
 | 48–63 | reserved | 0 |
 
-**Preload entry (16 bytes; V2-SW-15):**
+**Preload entry (16 bytes; SW-15):**
 
 | Field | Meaning |
 |---|---|
@@ -890,7 +871,7 @@ rows: `rows` = ne1·ne2·ne3, and every row of a tensor starts on a line (ensure
 | 0x16 | ROPE | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 pos preload byte offset (I32 per token), 5 table handle (AUX f32 × n_dims/2: the freq-factor table, or the A table with mode bit1; 0xFFFF_FFFF none), 6 TS = `powf(freq_base, -2.0f/n_dims)` bits (host libm, as ggml-cpu), 7 M = attn_factor (f32), 8 freq_scale (f32; 1.0 = none), 9 head_dim, 10 n_dims, 11 n_heads, 12 n_tokens, 13 mode (bit0 NEOX; bit1 ATAB: YaRN form with a host-folded A table, VU §6.7) | ROPE: the angle recurrence of ggml-cpu (VU §6.7), bit-identical angles for ext_factor = 0 |
 | 0x17 | GET_ROWS | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 ids preload byte offset (I32), 5 n_ids, 6 row lines | GET_ROWS on f32 activations (`inp_out_ids`) |
 | 0x18 | SET_ROWS_KV | 0 cache base handle, 1 cache row stride (AT units), 2 src, 3 src stride, 4 idx preload byte offset (I64; the host checks idx < 2^31), 5 n_rows, 6 row elements, 7 which (0 K, 1 V), 8 plane base, 9 E/64 \| LG << 16, 10 plane kind, 11 stream (AT §12) | SET_ROWS into a KV buffer: QACT A32 + KVST per run of consecutive cells (AT §5.1) |
-| 0x19 | FLASH_ATTN | 0 dst, 1 dst token stride, 2 q, 3 q head stride, 4 q token stride, 5 K cache base, 6 V cache base, 7 n_kv, 8 head_dim, 9 n_head, 10 n_head_kv, 11 n_tokens, 12 MSUM preload byte offset, 13 f32-mask handle (with a mask: always the copy for this record's scale, written only when needed, because the cached list outlives per-token mask changes and a rule-3 GENERAL tile reads it also when the MSUM is not GENERAL; 0xFFFF_FFFF only without a mask; W3b, V2-SW-48), 14 scale (f32), 15 softcap (must be 0), 16 K plane base, 17 V plane base, 18 E/64 \| LG << 16, 19 D, 20 G, 21 flags (AT §12; two slots) | FLASH_ATTN_EXT with K/V in KV buffers; the device never reads the F16 mask |
+| 0x19 | FLASH_ATTN | 0 dst, 1 dst token stride, 2 q, 3 q head stride, 4 q token stride, 5 K cache base, 6 V cache base, 7 n_kv, 8 head_dim, 9 n_head, 10 n_head_kv, 11 n_tokens, 12 MSUM preload byte offset, 13 f32-mask handle (with a mask: always the copy for this record's scale, written only when needed, because the cached list outlives per-token mask changes and a rule-3 GENERAL tile reads it also when the MSUM is not GENERAL; 0xFFFF_FFFF only without a mask; W3b, SW-48), 14 scale (f32), 15 softcap (must be 0), 16 K plane base, 17 V plane base, 18 E/64 \| LG << 16, 19 D, 20 G, 21 flags (AT §12; two slots) | FLASH_ATTN_EXT with K/V in KV buffers; the device never reads the F16 mask |
 | 0x1A | CPY | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 row lines, 5 rows | CPY/CONT f32 → f32 with contiguous rows |
 | 0x1B | UNARY | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 n, 5 rows, 6 func (0 TANH, 1 GELU16 (llama.cpp GELU), 2 SILU, 3 EXP, 4 GELU exact tanh form) | UNARY ops the VU has |
 | 0x20–0x3F | reserved for M8 | MUL_MAT_ID, TOPK/ARGMAX, SOFT_MAX | |
@@ -945,7 +926,7 @@ table above leaves a choice, the kernels, their planners and the references impl
   SET_ROWS_KV index entry (AT §6.6 rule 7, §12).
 
 Shapes and device limits are the kinds' planners' (`tsr/plan.hpp` "M7 planning": `tsr::plan_<kind>`,
-shared by the firmware and the backend's supports_op, V2-SW-20). `plan::dev_cfg` carries C (CFG0
+shared by the firmware and the backend's supports_op, SW-20). `plan::dev_cfg` carries C (CFG0
 NUM_CH), PCAP (CFG3), VL and CAPS besides the M6 fields; 0 means unknown, and a kind that needs the
 value plans nothing (BAD_RECORD), so a host that fills only the M6 fields keeps rejecting M7 kinds.
 
@@ -1022,7 +1003,7 @@ Independent ops overlap on different units: Q/K/V projections, gate and up, and 
 beside the MVM of the next. Every unit therefore starts the moment its inputs are done, with no
 RISC-V round trip in between.
 
-**Hot path (V2-SW-35, executor optimisation, 2026-10-30).** The per-record cost of §7.8 comes from:
+**Hot path (SW-35, executor optimisation, 2026-10-30).** The per-record cost of §7.8 comes from:
 
 - *The loop* (`graph.cpp` `op_loop`, instantiated for in-place and streamed lists): the kind table
   in .rodata holds per kind the handler and word0's expected n_args and reserved bits plus the
@@ -1058,7 +1039,7 @@ RISC-V round trip in between.
 - *Diagnostics:* `exec_state` (opl.hpp, by symbol `__tsr_exec_state`) counts the MUL_MAT records
   that left the fast path and the ring's software joins and full-algorithm allocations, off the
   hot path; a launch rejected before step 2 (header, CRC, preload, layout) reports 0 for the ring's
-  counters, not the previous launch's (nothing carries over, V2-SW-4).
+  counters, not the previous launch's (nothing carries over, SW-4).
 
 MUL_MAT's tile-op order, operand words, deps and scratch placement are W2a's: all 26 launch
 traces of `fw_m6_e2e` (two T = 3 lists, a T = 1 decode list, selftest, replay) are byte-identical
@@ -1072,13 +1053,13 @@ and compares every push, `fw_hdr_host` compares the ring's blocks, deps and join
 (`spm_ring::join_hook`, host builds only) with W2a's algorithm at 128 blocks, and `fw_exec_rv`,
 `fw_m6_e2e` and `fw_m6_perf` assert PERF PUSH_STALL = 0 (no push waited for a credit, CC §7.3).
 A deliberate change of these pushes is a decision: record it here and update the digests. Planning
-stays in the firmware (V2-SW-20 unchanged, OPL v1 unchanged): the T = 1 plan costs ≈ 35
+stays in the firmware (SW-20 unchanged, the op list format unchanged): the T = 1 plan costs ≈ 35
 instructions of a ≈ 280-instruction record, and plan fields carried in the record would still
 have to be checked against QA_LINES and ⌈N/16⌉ for the block's safety, which is the same
 arithmetic.
 
-**M7 kinds in the executor (W2b infra, integration and fix, 2026-10-30 / 31; V2-SW-36, V2-SW-37,
-V2-SW-39).**
+**M7 kinds in the executor (W2b infra, integration and fix, 2026-10-30 / 31; SW-36, SW-37,
+SW-39).**
 
 - *Kind table.* Kinds 0x11–0x1B have their handlers (`tsr::kind_add` … `kind_unary`, exec.hpp), their
   argument counts and, for the ten short kinds (all but FLASH_ATTN), a fast entry `kind_<name>_fast`
@@ -1087,7 +1068,7 @@ V2-SW-39).**
   strong definitions replace them (RISC-V images link every kernel object; the host archive
   `tsr_fw_host` extracts the first member that defines the symbol, and the stub file sorts after every
   kernel source). A wrong n_args is the record check's BAD_RECORD, before any handler (`fw_exec` sc_m7).
-- *Dispatch (V2-SW-37, integration).* An M7 record goes to its fast entry first, with the record's
+- *Dispatch (SW-37, integration).* An M7 record goes to its fast entry first, with the record's
   argument words in place, its kind flags and d = after(ticket[dep0], ticket[dep1]) from the loop's
   registers: a leaf in its common path (no call: nothing of the executor's state is saved around it),
   which takes the record and returns its ticket, or returns KIND_NOT_FAST having pushed and changed
@@ -1101,7 +1082,7 @@ V2-SW-39).**
   the two per-record flag tests fold away (5–10 RISC-V cycles per record). `fw_m6_perf` gives 389 /
   403 / 377 cycles of work per MUL_MAT-list record (deep queues / U200 depths / no MARK; W2a-opt 387
   / 402 / 383), a JOIN record 135 (140).
-- *The one-tile block (V2-SW-36, integration; size W2b fix).* Every single-tile record of a
+- *The one-tile block (SW-36, integration; size W2b fix).* Every single-tile record of a
   DMA-bracketed kind uses one fixed SPM block below the preload area (`plan.hpp` `one_block_lines`:
   1,024 lines on the U200,
   `kind_ctx::one` / `one_lines`) instead of a ring block: ADD, MUL, SCALE, RMS_NORM, GLU, ROPE and UNARY
@@ -1137,7 +1118,7 @@ V2-SW-39).**
   the shadow does not already hold the value (RMS_NORM's 1/n and eps, ROPE's TS / M, SCALE's s / b
   repeat across records). VU ops run in VU queue order, so every later VU op reads that value. Rule: a
   push that writes s[i] otherwise (RED with TO_S, SOP other than STS) clears bit i (`sreg_clobber`) in
-  the same record. The shadow starts empty at every launch (V2-SW-4) and depends only on the pushes
+  the same record. The shadow starts empty at every launch (SW-4) and depends only on the pushes
   (§4.7). Registers: RMS_NORM s1 (RED TO_S result), s2 = 1/n, s3 = eps; ROPE s4 = M, s5 = TS, s6 =
   freq_scale; SCALE / scalar-b ADD and MUL s12, s13.
 - *Shared planning rules* (`plan.hpp`): `plan_rows` (one tile when all rows fit the budget, no divide;
@@ -1149,7 +1130,7 @@ V2-SW-39).**
   fields; equal words by static_assert), `load_rows` / `store_rows`, and the general paths' out-of-line
   `push_g` / `alloc_g` / `fold_deps` (one copy per image). `k_mulmat.hpp` takes `drop_dma` and
   `NOT_FAST` from it.
-- *Staged-word reuse and hot entries (V2-SW-39, W2b fix).* `kf::push_s<SKIP, TICKET>` is the
+- *Staged-word reuse and hot entries (SW-39, W2b fix).* `kf::push_s<SKIP, TICKET>` is the
   no-credit-check push without the `ISSUE_W` stores of the words in SKIP and without the
   `ISSUE_TICKET` read unless TICKET: CC §5.1 keeps the staged words after a push and sends word i of
   WMASK from `ISSUE_Wi`, so a word the previous push of the same record staged with the same value
@@ -1172,14 +1153,14 @@ V2-SW-39).**
   still miss 350 (§7.8): Gemma 4's per-head norms (rows > 1, 405–455), ROPE with a freq-factor table
   or freq_scale ≠ 1 (439–475), and records whose s-register values change (each MOVI is one push more).
 
-**DTCM state** is rebuilt at every launch (V2-SW-4).
+**DTCM state** is rebuilt at every launch (SW-4).
 
 ### 7.4 MUL_MAT kernel
 
-The kernel follows v1's lowering (`docs/spec.md:502-512`), so its numerics match v1 bit for bit
-(`traces/model-v1conv` checks this). Every converted v1 trace has T_MAX 1, so the push-stream
-comparison there covers single-tile ops only; for T > T_MAX the kernel pushes the LD of tile t+1
-before the ST of tile t (the double buffering below), where v1 pushed LD, QACT, MVM, ST per tile.
+The kernel follows the lowering of `docs/spec.md:502-512`, so its numerics match the recorded model
+traces bit for bit (`traces/model-v1conv` checks this). Every trace of that set has T_MAX 1, so the
+push-stream comparison there covers single-tile ops only; for T > T_MAX the kernel pushes the LD of
+tile t+1 before the ST of tile t (the double buffering below).
 Per T tile (`plan.hpp`, T_MAX and the ring budget):
 
 1. LD x (tile).
@@ -1220,7 +1201,7 @@ calls in the same order, and the kernel tests compare the firmware against it bi
 Changing a sequence changes logits, so the change goes with a firmware ABI bump and new klcheck
 baselines.
 
-### 7.6 `selftest` kernel (V2-SW-28)
+### 7.6 `selftest` kernel (SW-28)
 
 | Id | Test |
 |---|---|
@@ -1249,7 +1230,7 @@ inputs and args. It compares DONE, every output byte and the per-unit completion
 3. For each record:
    - kind 0: issue the words with the push value and deps mapped back as (u, base_u + rel_seq);
      with flag SERIAL, the deps are replaced by the ticket of the previous kind-0 record (a
-     dependency chain: with I1 this is v1's sequential semantics);
+     dependency chain: with I1 this gives strictly sequential execution);
    - kind 1: write QCTRL;
    - kind 2: write TRACE_MARK.
 4. Run `join_all()`. RET = 0 if no unit is in error state, else 1 + (`ERR_PIDX` of the first error
@@ -1267,7 +1248,7 @@ inputs and args. It compares DONE, every output byte and the per-unit completion
   executor's own share ≈ 200 cycles per record (`fw_exec_perf`); one decode layer (7 MUL_MAT +
   2 JOIN) costs the RISC-V 107 µs against 197 µs of MVM time, and the MVM unit still idles on issue
   for ≈ 14 % of its span (the small k / v projections). *Measured after the executor optimisation*
-  (§7.3 "Hot path", V2-SW-35; simulator, fixed schedule, 166.7 / 276.3 MHz, `fw_m6_perf` on the same
+  (§7.3 "Hot path", SW-35; simulator, fixed schedule, 166.7 / 276.3 MHz, `fw_m6_perf` on the same
   lists, Ibex maxperf (CC §3.2, the default) / small; "work" = the RISC-V's busy cycles up to the
   launch's last op push, without the iterations of wait loops after their first test, `fw_prof.h`):
   387 / 485 RISC-V cycles of work per op record with deep queues (278 instructions; 498 / 624 per
@@ -1319,11 +1300,11 @@ inputs and args. It compares DONE, every output byte and the per-unit completion
   backend's list flags, no MARK). Short records at the 0.5B decode shapes (`fw_exec_perf_m7`, n = 896,
   deep / U200 queues): ADD 335, MUL 336, SCALE 305, SCALE with a bias 336, RMS_NORM 324 / 326, GLU 330,
   ROPE 325, UNARY 308, GET_ROWS 254, CPY 223: **≤ 350 met by every kind** (W2b fix: staged-word reuse,
-  hot entries and the `op_loop` variant, V2-SW-39; at the integration RMS_NORM 395, ROPE 420 and SCALE
+  hot entries and the `op_loop` variant, SW-39; at the integration RMS_NORM 395, ROPE 420 and SCALE
   with a bias 380 missed it). The packages' harnesses at the larger decode shapes (deep / U200 queues;
   the units, not the RISC-V, set the pace there, so the figures include first tests of credit waits):
   `fw_kernels_elem_perf` ADD 32B residual 351 / 356, MUL 12B norm weight 350 / 357, per-head weight
-  348 / 354, GLU 0.5B 351 / 355, GLU 12B (n 15,360, a ring block, V2-SW-36) 461 / 470;
+  348 / 354, GLU 0.5B 351 / 355, GLU 12B (n 15,360, a ring block, SW-36) 461 / 470;
   `fw_kernels_normrope_perf` RMS_NORM 32B 347, ROPE 32B 325 / 331. **Not met** at decode shapes:
   Gemma 4's per-head RMS_NORMs (q_norm 16 × 256 with weight 443 / 455, v_norm 8 × 256 without 405 /
   408: the general fast form, about 120 cycles above the hot entry), ROPE with Gemma 4's rope_freqs
@@ -1358,15 +1339,15 @@ inputs and args. It compares DONE, every output byte and the per-unit completion
   DMA queue in the CC RTL; planning the next
   FLASH_ATTN during credit waits, or pushing its first ops before the rest is planned).
 - **Launch:** EX §4.11 (empty-launch round trip ≤ 10 µs target; descriptor push → kernel entry
-  ≤ 5 µs; answer record → host ≤ one poll interval). The v1 exec cost was 35 µs per exec
-  (`docs/platform-u200.md:1049`). *Measured at W2a* (`tsr-fw.elf`, fixed schedule, F_RV / F_CORE =
+  ≤ 5 µs; answer record → host ≤ one poll interval). An exec start and completion wait on the
+  card cost 35 µs, measured before the control core was added (`docs/platform-u200.md`). *Measured at W2a* (`tsr-fw.elf`, fixed schedule, F_RV / F_CORE =
   166.7 / 276.3 MHz): descriptor push → kernel entry 605 core cycles = 2.19 µs; empty launch push →
   DONE in the LCQ 1,538 core cycles = 5.57 µs (device part); 8 outstanding launches 1,579 core
   cycles each (175 K launches/s). *Measured after the executor optimisation* (the runtime is
   unchanged; Ibex maxperf, the default / small): descriptor push → kernel entry 1.68 / 2.19 µs,
   empty launch 4.23 / 5.50 µs, 8 outstanding launches 4.34 / 5.64 µs each (230 K / 177 K
   launches/s); at 250 MHz 1.12 / 1.46 µs and 2.82 / 3.67 µs.
-- **Image size:** ITCM ≤ 80 KiB of 128 KiB (W2b integration, V2-SW-38; was 48 KiB before the M7 kinds);
+- **Image size:** ITCM ≤ 80 KiB of 128 KiB (W2b integration, SW-38; was 48 KiB before the M7 kinds);
   DTCM ≤ 56 KiB of 64 KiB including the 8 KiB stack,
   the 512 B trap stack and the 32 KiB executor tables. *Measured at W2a* (`tsr-elf size`): ITCM
   25,720 B, DTCM 46,312 B. After the executor optimisation (hot path `-O2`, §6.1): ITCM 32,808 B
@@ -1397,7 +1378,7 @@ The M7 target is that every decode graph produces exactly one Tesseract split. T
    `src/llama-graph.cpp:2745-2753`), the scheduler's assignment passes ignore the flag
    (`ggml-backend.cpp:1298-1317`), and a supported DUP there would create a second Tesseract split.
    `graph_compute` skips nodes without the flag and makes no launch for a split that has none.
-   *As built (W3b, V2-SW-40):* supports_op does not test the flag (test-backend-ops asks before the
+   *As built (W3b, SW-40):* supports_op does not test the flag (test-backend-ops asks before the
    flag is set); the unselected branches are refused by their own rules (DUP, a non-KV SET_ROWS, the
    quantized `tok_embd` GET_ROWS), and `graph_compute` skips flagless nodes.
 2. **R2 — token embedding stays on the CPU.** llama.cpp keeps the input layer on the CPU
@@ -1406,7 +1387,7 @@ The M7 target is that every decode graph produces exactly one Tesseract split. T
 3. **R3 — KV cache on the device (M7):** run without `-nkvo` (`offload_kqv` = true), with
    `-ctk q8_0 -ctv q8_0` and `-fa on`. The pinned llama.cpp refuses a quantized V cache without FA
    (`src/llama-context.cpp:566-569`). M6 runs with `offload_kqv` = false (§10.4).
-4. **R4 — Hadamard KV rotation off (V2-SW-16).** With a quantized KV cache and head_dim % 64 = 0,
+4. **R4 — Hadamard KV rotation off (SW-16).** With a quantized KV cache and head_dim % 64 = 0,
    llama.cpp rotates Q, K and V and un-rotates the attention output by `MUL_MAT(rot, x)`, where
    `rot` is an F32 graph input (`src/llama-kv-cache.cpp:316-356`, `src/llama-graph.cpp:3228`,
    `:3273`). That src0 is not a weight and cannot become an MVM weight, so the rotations would
@@ -1415,7 +1396,7 @@ The M7 target is that every decode graph produces exactly one Tesseract split. T
 5. **R5 — graph inputs** (`inp_pos`, `kq_mask`, `k_idxs`, `v_idxs`, `inp_out_ids`) are written by
    the scheduler through `set_tensor` before the launch. They are copies, not launches. The builder
    lists the index inputs in the preload table.
-6. **R6 — compute buffers fit the device (V2-SW-26).** Compute-buffer chunks are placed in a
+6. **R6 — compute buffers fit the device (SW-26).** Compute-buffer chunks are placed in a
    per-channel compute heap between the top of the weights and the bottom of the KV planes (EX
    §11), sized from the reserve graph, plus ch0 [64, 320) MiB and ch1–ch3 [0, 512) MiB; there are
    no fixed 512 MiB windows, and the buffer type's `get_max_size` is at least the largest single
@@ -1424,10 +1405,10 @@ The M7 target is that every decode graph produces exactly one Tesseract split. T
    = min(n_ubatch, n_outputs_max), `src/llama-context.cpp:346`), with the softcap's SCALE / TANH /
    SCALE beside it. A chunk that still does not fit is staged and runs in its own launch: correct,
    but it costs one extra launch per token, which TSR_STATS reports as "staged chunks".
-   *As built (W3b, V2-SW-46):* a buffer gets one window: ch0 IO, else the low 512 MiB of ch1–3, else
+   *As built (W3b, SW-46):* a buffer gets one window: ch0 IO, else the low 512 MiB of ch1–3, else
    symmetric WEIGHT-heap reservations of ≥ 64 MiB between the weights and the KV planes;
    `get_max_size` = 512 MiB. Gemma 4 12B at `-ub 512`: 0 staged chunks. Only MUL_MAT is staged: the
-   M7 kinds address their operands in place, so they need device-resident buffers (V2-SW-53).
+   M7 kinds address their operands in place, so they need device-resident buffers (SW-53).
    supports_op refuses an M7 op with an operand in host memory or in a buffer that will be (an ANY
    buffer of leaf data only: llama.cpp's control vectors and LoRA adapters; every buffer under
    `TSR_FORCE_HOST`), which then runs on the CPU (a control vector costs one CPU island per steered
@@ -1472,7 +1453,7 @@ projection), no `output.weight` (tied), `layer_output_scale` [1]. The pinned lla
 
 ## 9. Host software
 
-### 9.1 Transport v2 API (`sw/transport/tsr_transport.h`)
+### 9.1 Transport API (`sw/transport/tsr_transport.h`)
 
 EX §10.1 is the API, verbatim: open / close / name / config / write / read / csr_read /
 csr_write, `tsr_image_open` / `close` / `kernel` / `id` (64-bit), `tsr_transport_boot` (warm if
@@ -1506,7 +1487,7 @@ typedef struct tsr_transport_stats {
 void tsr_transport_get_stats(const tsr_transport * t, tsr_transport_stats * s);
 ```
 
-**Protocol layer (`tsr_kdev.cpp`, V2-SW-18).** One implementation serves every kind and follows
+**Protocol layer (`tsr_kdev.cpp`, SW-18).** One implementation serves every kind and follows
 EX §2.1, §3, §4.8 and §10.2:
 
 - **Open:**
@@ -1555,23 +1536,22 @@ EX §2.1, §3, §4.8 and §10.2:
   below the oldest unanswered launch 2^30 launches after its write, so it never wraps onto new
   launches (it would after 2^31).
 
-**kdev v2** (EX §10.2).
+**kdev** (EX §10.2).
 
-- Keeps: `reg_read`, `reg_write`, `mem_read`, `mem_write`, `num_ch`, `ch_bytes`, `ch_addr`,
+- Methods: `reg_read`, `reg_write`, `mem_read`, `mem_write`, `num_ch`, `ch_bytes`, `ch_addr`,
   `describe`.
-- Drops: `start`, `wait`, `settle`, `kargs`, `regs_*`, `kds_*`.
-- Adds `KREG_ADAPTER_CTRL` and `virtual void idle(uint32_t poll_iter, uint64_t interval_ns)` (EX's
+- `KREG_ADAPTER_CTRL` and `virtual void idle(uint32_t poll_iter, uint64_t interval_ns)` (EX's
   `advance` hint), with `now_ns()` (the time base), `simulated()`, `has_adapter()` and `sim()`
   (as implemented in W3a, `sw/transport/tsr_kdev.h`):
 
 | kdev | `idle()` and specifics |
 |---|---|
-| `sim` | in-process simulator behind the core CSR port; `idle()` = `tsr_sim_advance(budget)`; a host read of `LCQ_WR`, `STATUS` or `LOG_WR` first runs the model to the next host-visible event (EX §10.2). Replaces `tsr_transport_sim.c` |
+| `sim` | in-process simulator behind the core CSR port; `idle()` = `tsr_sim_advance(budget)`; a host read of `LCQ_WR`, `STATUS` or `LOG_WR` first runs the model to the next host-visible event (EX §10.2) |
 | `mock` | the `sim` kdev plus the `ap_ctrl_none` adapter register model (channel bases, `MEM_EN`, `ADAPTER_STATUS`, error injection) |
 | `vkernel` | the Verilated kernel server with two clocks (P5); `idle()` runs the server's clocks |
 | `xrt` | `ap_ctrl_none` compute unit opened through `xrt::ip` with exclusive access; registers through `read_register`/`write_register`; one device-only BO per channel as today; `idle()` sleeps (backoff). *confirm* the BO bank lookup without an `xrt::kernel` (memory topology from `xrt::xclbin`, EX §9.1) |
 
-`TSR_XRT_CTRL` disappears. The `TSR_XRT_DMA*` and `TSR_XRT_CH_GIB` settings stay.
+The `xrt` kdev reads the `TSR_XRT_DMA*` and `TSR_XRT_CH_GIB` settings.
 
 ### 9.2 Environment (host)
 
@@ -1582,7 +1562,7 @@ EX §2.1, §3, §4.8 and §10.2:
 | `TSR_LAUNCH_TIMEOUT_MS`, `TSR_ABORT_MS`, `TSR_BOOT_MS`, `TSR_RESET_MS` | wait timeout per launch (debug-aware, §9.1), cancel wait, HELLO wait, `SOFT_RESET` wait (EX §10.2) | 60000, 10000, 2000, 15000 |
 | `TSR_LOG`, `TSR_LOG_LEVEL` | decode the log to `stderr` or a file; `LOG_CFG.LEVEL` 0 FATAL … 5 TRACE (DB §6.1) | off, 3 |
 | `TSR_ATTACH` | open without `SOFT_RESET` or load (debugger, post-mortem) | 0 |
-| `TSR_TRACE` | per-launch trace v2 dumps | off |
+| `TSR_TRACE` | per-launch trace dumps | off |
 | `TSR_STATS` | as today, plus launches per token, ops per launch, fused ops, staged chunks (DB §8.6) | off |
 | `TSR_GDB`, `TSR_GDB_WAIT`, `TSR_DEBUGGER`, `TSR_DUMP_DIR`, `TSR_TILE_SERIAL`, `TSR_PROF*` | DB §9.5 | off |
 | `LLAMA_ATTN_ROT_DISABLE` | must be 1 for device runs and baselines (R4) | set by klcheck/numcheck/tests |
@@ -1595,20 +1575,16 @@ EX §2.1, §3, §4.8 and §10.2:
   1. Build an OPL with one MUL_MAT record per MUL_MAT node, plus JOINs. Two MUL_MATs are
      dependent only if one reads the other's output; host-side hazard analysis over DRAM byte
      ranges covers WAR and WAW.
-  2. Stage host-memory chunks as v1 does (X0 deleted that code with the emission; P3.2 restores
-     `tsr_lower_staged` and `tsr_act_loc` from tag `v1-m4`, EX §12 "X0 as done").
+  2. Stage host-memory chunks (`tsr_lower_staged`, `tsr_act_loc`).
   3. Write the OPL into the OPL cache (an LRU in the 64 MiB OPL region, keyed by content hash).
   4. Launch `graph` and wait.
   5. On DONE STATUS TILE_ERR, map RET−1 to the ggml node and abort with the node name, the error
-     code and `ERR_INFO` (as v1 does on `STATUS.ERR`).
-- `supports_op` (MUL_MAT rules) is unchanged, so splits are v1's: one launch per split, 145 (0.5B)
-  and 385 (32B) per token (`docs/platform-u200.md:1053`).
-- New: `tsr-opl.{h,cpp}` (builder, hazards, encoding, cache).
-- Deleted in X0 (EX §12): the emission and program-cache parts of `tsr-lower.*`; tiling moves to
-  `plan.hpp`.
-- Weights, buffers and the load-time conversion are unchanged. The lazy conversion of raw-buffer
-  src0 (`tsr_lazy_*`; `test-backend-ops` puts src0 in non-WEIGHTS buffers) and
-  `tsr_resolve_weight` were deleted in X0 and come back from tag `v1-m4`.
+     code and `ERR_INFO`.
+- `supports_op` (MUL_MAT rules) gives one launch per split: 145 (0.5B) and 385 (32B) per token
+  (`docs/platform-u200.md:1053`).
+- `tsr-opl.{h,cpp}` holds the builder, hazards, encoding and cache. Tiling is in `plan.hpp`.
+- MUL_MAT src0 is resolved by `tsr_resolve_weight`; raw-buffer src0 (`test-backend-ops` puts src0
+  in non-WEIGHTS buffers) is converted lazily (`tsr_lazy_*`).
 
 **M7 (P3.5):**
 
@@ -1626,9 +1602,9 @@ EX §2.1, §3, §4.8 and §10.2:
   scheduler's input copy of each KQ mask), the backend writes its MSUM next to it and, if the mask
   is GENERAL (or a reader's tile takes the GENERAL path, AT §7.3), an f32 copy of the mask per FA
   scale; the buffer type's `get_alloc_size` reserves the bytes for both on those tensors (as built:
-  below, V2-SW-48). The FLASH_ATTN record refers to the MSUM through the preload table, so the
+  below, SW-48). The FLASH_ATTN record refers to the MSUM through the preload table, so the
   cached op list stays valid while the mask changes per token.
-- **KV buffers (V2-SW-17):**
+- **KV buffers (SW-17):**
   - At the first data access (clear), a buffer whose tensors are all named `cache_k_l*`/`cache_v_l*`
     is placed in a KV heap in the layout AT defines.
   - Its `set_tensor`/`get_tensor`/`memset_tensor`/`clear` convert between ggml `block_q8_0` and
@@ -1640,7 +1616,7 @@ EX §2.1, §3, §4.8 and §10.2:
 | Op | Supported when |
 |---|---|
 | NONE, RESHAPE, VIEW, PERMUTE, TRANSPOSE | always |
-| MUL_MAT | v1 rules (`docs/spec.md:491-498`) |
+| MUL_MAT | the M6 rules (`docs/spec.md:491-498`) |
 | ADD, MUL | F32; src1 broadcast by whole rows (a row period) or a single scalar |
 | SCALE | F32 |
 | RMS_NORM | F32 rows |
@@ -1657,7 +1633,7 @@ EX §2.1, §3, §4.8 and §10.2:
 **M7 builder as built (W3b builder, 2026-10-31; `sw/ggml-tesseract/tsr-build.{h,cpp}`, the glue in
 `ggml-tesseract.cpp`).**
 
-- *One lowering for supports_op and the builder (V2-SW-20).* `tsr_lower_m7` turns a node into its
+- *One lowering for supports_op and the builder (SW-20).* `tsr_lower_m7` turns a node into its
   record (§7.2 words); supports_op runs it in probe mode (handles 0, the KV shape from
   `tsr_kv_identify`, no device state) and asks the kind's planner (`plan_kind` on the device's CFG0-3 /
   CAPS values) and `opl::check_args`, so the host refuses exactly what the firmware cannot plan or the
@@ -1670,7 +1646,7 @@ EX §2.1, §3, §4.8 and §10.2:
   with one stream: starting at the plane's cell 0, cells `row_size(E)` and heads `row_size(D)` apart
   (W3b fix: probe mode now refuses what the build mode cannot encode). Operands in host memory are
   refused (below, R6).
-- *Flagless nodes (amends R1 / V2-SW-33).* supports_op does not test `GGML_TENSOR_FLAG_COMPUTE`:
+- *Flagless nodes (amends R1 / SW-33).* supports_op does not test `GGML_TENSOR_FLAG_COMPUTE`:
   test-backend-ops asks before `ggml_build_forward_expand` sets the flag
   (`tests/test-backend-ops.cpp:1415-1421`), so the rule would refuse every op there. The unselected
   embedding branches are refused anyway (DUP, a non-KV SET_ROWS, the quantized `tok_embd` GET_ROWS),
@@ -1722,20 +1698,20 @@ EX §2.1, §3, §4.8 and §10.2:
   `get_alloc_size` pads to 64 bytes only where ggml allows it (`[TAG_ALLOC_SIZE_EXPAND]`: leaves,
   views, quantized types, MUL_MAT, FLASH_ATTN_EXT); ggml-alloc pads every block to the 64-byte
   alignment, which holds a single row's whole-line store.
-- *Knobs.* `TSR_KINDS=m6` restricts the device to MUL_MAT (M6 runs keep v1's splits; the M6 e2e
-  ctests run with it and `TSR_COMPUTE_WINDOWS=io`, v1's IO-only windows).
+- *Knobs.* `TSR_KINDS=m6` restricts the device to MUL_MAT (M6 runs use the MUL_MAT-only splits; the M6 e2e
+  ctests run with it and `TSR_COMPUTE_WINDOWS=io`, the IO-only windows).
 - *Weight placement.* llama.cpp places a weight by a probe op (`src/llama-model-loader.cpp:928`); its
   ROPE probe has every parameter 0, which the planner would refuse, so probe mode plans a ROPE with
   `n_dims` 0 and a freq-factor tensor as a full rotation: Gemma 4's `rope_freqs` lives on the device
   (else every full-attention layer's ROPE would read it from the CPU and cut the split).
 
 **KV buffers and mask summaries as built (W3b kv, 2026-10-31; `sw/ggml-tesseract/tsr-kvbuf.{h,cpp}`,
-`tsr-msum.{h,cpp}`, the "W3b kv" hunks of `ggml-tesseract.cpp`; V2-SW-47, V2-SW-48).**
+`tsr-msum.{h,cpp}`, the "W3b kv" hunks of `ggml-tesseract.cpp`; SW-47, SW-48).**
 
 - *KV buffers.* `init_tensor` records each tensor; a buffer of usage ANY whose tensors are **all**
   `cache_<tag>k_l<n>` / `cache_<tag>v_l<n>`, q8_0, 3D contiguous `[E, kv_size, n_stream]` with
   E % 64 = 0, 64 ≤ E ≤ min(K_MAX, 511 · 64), LG < 2^16 and a plane < 2^28 beats is a KV candidate
-  (AT §4.6's identification; a buffer with any other tensor keeps v1's rules). Its planes are placed at
+  (AT §4.6's identification; a buffer with any other tensor keeps the ordinary buffer rules). Its planes are placed at
   the first data access (llama.cpp's clear), not at `init_tensor` (AT §4.6 as amended): one plane per
   (tensor, stream), top-down in the symmetric WEIGHT heap (`alloc_top`, the same offset on every
   channel, 4 KiB aligned, the first tensor highest); when they do not fit, the lazily converted weights
@@ -1764,7 +1740,7 @@ EX §2.1, §3, §4.8 and §10.2:
   scale (§7.2), so the cached list stays valid while the mask changes. An FA without a mask gets an
   all-visible MSUM (`nomask`, once per (n_q, n_kv)). Summaries are forgotten on buffer free, reset
   and LINEAR clear; after a partial `set_tensor` or a memset the mask is read back from the device.
-- *Data-dependent FA refusals (AT §6.6 rule 5 / 6; V2-SW-44).* When the planner would refuse a tile
+- *Data-dependent FA refusals (AT §6.6 rule 5 / 6; SW-44).* When the planner would refuse a tile
   (−3), the producer promotes the MSUM to GENERAL (flags bit0, header word 4 = the reserved copy's
   handle; the rows keep their runs) and writes the copy, so every tile then plans under rule 1 and
   the executor never refuses for mask data; no CPU fallback. Never triggered at U200 parameters (0 of
@@ -1776,35 +1752,34 @@ EX §2.1, §3, §4.8 and §10.2:
 **M7 on the simulator (W3b integration, 2026-10-31).** One launch per decode token and one Tesseract
 split per decode graph for Qwen2.5-0.5B Q8_0, Gemma 4 12B Q4_K_M / Q8_0 and Qwen2.5-32B Q4_K_M; KL
 within klcheck's criterion; the results and what is still open are in §10.4 (M7 gate, status).
-`klcheck` / `tsr-numcheck` `--phase m6` now restrict the device to MUL_MAT (V2-SW-49).
+`klcheck` / `tsr-numcheck` `--phase m6` now restrict the device to MUL_MAT (SW-49).
 
 ### 9.4 `sw/rt` and `sw/torch`
 
 `tsr_rt::linear` emits one `graph` launch per IO tile, with one MUL_MAT record per N part × K part
-(K parts after the first with ACC_DST), instead of a cached program. The OPL cache replaces the
-CMD-slot cache. The public API and the numerics (`sw/rt/tsr_rt.h:1-49`) are unchanged, so
-`sw/torch` needs only a rebuild. The PyTorch move onto the M7 kernels is M8.
+(K parts after the first with ACC_DST). The OPL cache holds the op lists. The public API and the
+numerics are defined in `sw/rt/tsr_rt.h:1-49`. The PyTorch move onto the M7 kernels is M8.
 
 ### 9.5 Tools
 
-| Tool | v2 |
+| Tool | Function |
 |---|---|
-| `tsr-selftest` (was `tsr_xrt_selftest`) | identity (CSRs, `CTL_ID`, `RV_FREQ`, `Q_DEPTH`, adapter); host memory tests (unchanged); load + VERIFY + HELLO + image id + PING round-trip time and pipelined launch rate (EX §4.11); the `selftest` kernel tests with in-process sim shadow; `--traces DIR` v2 replays through `replay` or full launches; `--debug` DMI halt/resume/step smoke (DB's checks); log drain |
-| `tsr-trace-gen` | v2 `ops` traces: `--ops m2|m3|vu|at|ctrl`, errors, concurrency, seeds kept |
-| `tsr-trace-replay` | v2 on the simulator (full or tile-only), `--schedules N` determinism mode; `--device KIND` replays through a transport |
-| `tsr-trace-conv` | v1 → v2 for `traces/model` (§5.6) |
+| `tsr-selftest` | identity (CSRs, `CTL_ID`, `RV_FREQ`, `Q_DEPTH`, adapter); host memory tests; load + VERIFY + HELLO + image id + PING round-trip time and pipelined launch rate (EX §4.11); the `selftest` kernel tests with in-process sim shadow; `--traces DIR` replays through `replay` or full launches; `--debug` DMI halt/resume/step smoke (DB's checks); log drain |
+| `tsr-trace-gen` | `ops` traces: `--ops m2|m3|vu|at|ctrl`, errors, concurrency, fixed seeds |
+| `tsr-trace-replay` | replay on the simulator (full or tile-only), `--schedules N` determinism mode; `--device KIND` replays through a transport |
+| `tsr-trace-conv` | converts `traces/model` into `traces/model-v1conv` (§5.6) |
 | `tsr-elf` | image id, kernel table, sizes, `.tsr_logfmt` dump |
 | `tsr-log` | decode raw log words (DB §6.1 header) with an ELF |
-| `klcheck`, `numcheck` | settings move to FA on (V2-SW-22, §10.4); `--fa` records `on`; KV type q8_0/q8_0; `offload_kqv` = false in M6 and true in M7; `LLAMA_ATTN_ROT_DISABLE=1` in every phase (recorded in the `.klc` header and the numcheck run metadata). numcheck's per-node observation (`cb_eval`) makes the scheduler compute one node per `graph_compute`, which on v2 is one launch per node, so numcheck needs no device mode (V2-SW-27). W3b (M7): klcheck runs the SWA layers' KV cache as the ring llama-cli and llama-server use (`--swa-full off`, the default; recorded in the `.klc` header, 0 = an older file, full-size), so the long Gemma 4 prompts of the M7 gate wrap it; the `embd` and floor inputs of klcheck and numcheck carry the token-row scale the graph gives token rows only (√n_embd for Gemma 3 / 3n / 4, `inp_scale_rows`), without which the Gemma 4 floor was 8 nats; `klcheck -v` marks each `llama_decode` (the graph tests' launch count per decode) |
-| `tsr_bw` | unchanged (separate M0 bandwidth kernel) |
+| `klcheck`, `numcheck` | settings: FA on (SW-22, §10.4); `--fa` records `on`; KV type q8_0/q8_0; `offload_kqv` = false in M6 and true in M7; `LLAMA_ATTN_ROT_DISABLE=1` in every phase (recorded in the `.klc` header and the numcheck run metadata). numcheck's per-node observation (`cb_eval`) makes the scheduler compute one node per `graph_compute`, which is one launch per node, so numcheck needs no device mode (SW-27). W3b (M7): klcheck runs the SWA layers' KV cache as the ring llama-cli and llama-server use (`--swa-full off`, the default; recorded in the `.klc` header, 0 = an older file, full-size), so the long Gemma 4 prompts of the M7 gate wrap it; the `embd` and floor inputs of klcheck and numcheck carry the token-row scale the graph gives token rows only (√n_embd for Gemma 3 / 3n / 4, `inp_scale_rows`), without which the Gemma 4 floor was 8 nats; `klcheck -v` marks each `llama_decode` (the graph tests' launch count per decode) |
+| `tsr_bw` | separate M0 bandwidth kernel |
 
-### 9.6 Toolchain installation without sudo (V2-SW-7)
+### 9.6 Toolchain installation without sudo (SW-7)
 
 Checked on the build host (Ubuntu 24.04, 2026-10-30): no `riscv*-elf-gcc`, no `clang` binary
 (only `libclang` 18), no `ld.lld`, no Spike, no OpenOCD, and a host-only `gdb`. Verilator 5.046 and
 GCC 13.3 are present.
 
-| Tool | Plan (user space, under `~/.local/opt`, versions in `docs/v2/toolchain.lock`) |
+| Tool | Plan (user space, under `~/.local/opt`, versions in `docs/design/toolchain.lock`) |
 |---|---|
 | RISC-V GCC + GDB | xPack GNU RISC-V Embedded GCC `riscv-none-elf-gcc`, pinned release 14.2.0-3 linux-x64 tarball from `github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack` (*confirm* that the release exists and its multilibs), unpacked to `~/.local/opt/xpack-riscv-none-elf-gcc-14.2.0-3`. It includes `riscv-none-elf-gdb`, which serves for GDB over DMI (D18) |
 | Clang (optional) | conda-forge `clang`/`lld` in a separate conda env; uses the xPack `libgcc.a` |
@@ -1832,21 +1807,20 @@ the tools through `TSR_RISCV_PREFIX`, `TSR_SPIKE` and `PATH`.
 | Firmware kernels | `sw/ctrl/ref` C++ references; the host build | RV build on sim bit-exact with the reference and with the host build; 8 schedules; race `fatal` |
 | Backend and executor | ggml CPU | `test-backend-ops` NMSE per supported op (sim); klcheck KL (sim, then card) |
 | Cross-transport | sim | identical logits and DRAM outputs on `mock`, `vkernel`, `xrt` for the same image and inputs |
-| Launch traces | fresh-boot replay | every `TSR_TRACE` capture in ctest replays bit-exact on a freshly booted simulator (catches DTCM state leaks, V2-SW-4) |
+| Launch traces | fresh-boot replay | every `TSR_TRACE` capture in ctest replays bit-exact on a freshly booted simulator (catches DTCM state leaks, SW-4) |
 
 ### 10.2 ctest plan
 
-The 42 existing project ctests:
+Host-side, simulator and tool ctests:
 
-| Fate | Tests |
+| Group | Tests |
 |---|---|
-| **Kept unchanged** (7) | `ref_layout`, `ref_fp`, `ref_ggml_fp16`, `ref_ggml_qact`, `ref_ggml_dequant`, `ref_dot`, `ref_ctypes` |
-| **Kept, run on v2** (same assertions, new transport underneath) (15) | `ggml_tesseract_e2e`, `_tmax8`, `_hosted`, `_hosted_tmax8`, `ggml_tesseract_scalar_nmse`, `ggml_tesseract_backend_ops` (W3a: without the one 2.1 M-token case, which runs as `ggml_tesseract_backend_ops_bigt`, `slow`), `rt_sim`, `rt_sim_tmax8`, `rt_mock`, `rt_mock_tmax8`, `rt_vkernel_k4t1` (opt-in, skipped until P5.3), `torch_pytest`, `torch_pytest_tmax8` (`TSR_WITH_TORCH`), `transport_ggml_e2e_mock`, `_tmax8` (W3a: defined in `sw/ggml-tesseract/CMakeLists.txt`) |
-| **Rewritten** for v2 semantics (13) | `sim_basic` (EX §15 item 2 on the simulator: CSRs, load with VERIFY, LQ / LCQ launch flow, HELLO, PING, BAD_DESC, cancel and stop, `SOFT_RESET`, errors, holds), `sim_mvm` (MVM through the queue), `sim_trace`, `sim_trace_ubsan` (trace v2), `sim_transport` (boot / launch / wait / soft reset), `transport_kdev` (protocol on mock: timeouts, stale core at open, adapter faults), `transport_xrt_noop` (xrt kdev against the no-op shim; `TSR_WITH_XRT`), `ggml_tesseract_units` (OPL builder: hazards, JOINs, encoding, OPL cache, staging plan; fusion is M7), `tools_trace_gen_replay` (v2), `tools_xrt_selftest_mock`, `_tmax8`, `_1ch`, `_faults` → `tools_selftest_mock*` |
-| **Rewritten settings** (FA on, q8_0 KV, rotation off) (5) | `tools_klcheck_selftest`, `tools_klcheck_qwen05b`, `tools_numcheck_selftest`, `tools_numcheck_dump_selftest`, `tools_numcheck_dump_qwen05b` |
-| **Deleted** (2) | `tools_xrt_selftest_mock_m3`, `_m3_tmax8` (v1 m3 replays over the adapter), replaced by `tools_selftest_mock_traces` over the regenerated v2 m3 set |
+| **Reference** | `ref_layout`, `ref_fp`, `ref_ggml_fp16`, `ref_ggml_qact`, `ref_ggml_dequant`, `ref_dot`, `ref_ctypes` |
+| **Backend, runtime and PyTorch on the transports** | `ggml_tesseract_e2e`, `_tmax8`, `_hosted`, `_hosted_tmax8`, `ggml_tesseract_scalar_nmse`, `ggml_tesseract_backend_ops` (W3a: without the one 2.1 M-token case, which runs as `ggml_tesseract_backend_ops_bigt`, `slow`), `rt_sim`, `rt_sim_tmax8`, `rt_mock`, `rt_mock_tmax8`, `rt_vkernel_k4t1` (opt-in, skipped until P5.3), `torch_pytest`, `torch_pytest_tmax8` (`TSR_WITH_TORCH`), `transport_ggml_e2e_mock`, `_tmax8` (W3a: defined in `sw/ggml-tesseract/CMakeLists.txt`) |
+| **Simulator, transport and tools** | `sim_basic` (EX §15 item 2 on the simulator: CSRs, load with VERIFY, LQ / LCQ launch flow, HELLO, PING, BAD_DESC, cancel and stop, `SOFT_RESET`, errors, holds), `sim_mvm` (MVM through the queue), `sim_trace`, `sim_trace_ubsan` (the trace format), `sim_transport` (boot / launch / wait / soft reset), `transport_kdev` (protocol on mock: timeouts, stale core at open, adapter faults), `transport_xrt_noop` (xrt kdev against the no-op shim; `TSR_WITH_XRT`), `ggml_tesseract_units` (OPL builder: hazards, JOINs, encoding, OPL cache, staging plan; fusion is M7), `tools_trace_gen_replay`, `tools_selftest_mock`, `_tmax8`, `_1ch`, `_faults`, `tools_selftest_mock_traces` (trace-set replays through `tsr-selftest`) |
+| **Model checks** (FA on, q8_0 KV, rotation off) | `tools_klcheck_selftest`, `tools_klcheck_qwen05b`, `tools_numcheck_selftest`, `tools_numcheck_dump_selftest`, `tools_numcheck_dump_qwen05b` |
 
-New ctests:
+Other ctests:
 
 - `ref_math_<fn>`, including `ref_math_gelu16` (the 65,536 fp16 inputs against the pinned
   `ggml_table_gelu_f16`);
@@ -1865,7 +1839,7 @@ New ctests:
   and `fw_runtime_stale` (a mutant image must give exactly one `SPM_STALE`);
 - `fw_kernels_host` (ASan/UBSan; also MUL_MAT's decode fast path against the general path on twin
   simulators, push for push, §7.3) and `fw_kernels_rv` (per kind, 8 schedules, race `fatal`), with
-  `fw_kernels_rv_v1conv` (a sample of `traces/model-v1conv` regrouped into MUL_MAT ops: v1's outputs
+  `fw_kernels_rv_v1conv` (a sample of `traces/model-v1conv` regrouped into MUL_MAT ops: the recorded outputs
   and push streams), `fw_kernels_rv_mutant_race` / `_mutant_v1` (mutant images must be caught) and
   the `slow` `fw_kernels_rv_v1conv_all` and `fw_kernels_rv_shapes` (0.5B / 32B / Gemma 4 12B shapes);
 - `fw_selftest_sim`, `fw_replay_sim` (incl. SERIAL on a stream whose recorded deps are not the
@@ -1874,7 +1848,7 @@ New ctests:
   `fw_elf_test_image`, `_nok`, `_hello` (P2.1: `tsr-elf`, `link.ld`, image id, test images);
   `fw_hdr_host`, `fw_hdr_rv`, `fw_hdr_rv_mutant`, `fw_hdr_constexpr` (P2.3: builders, tickets,
   `group`, `spm_ring` incl. its blocks, deps and joined tickets against W2a's algorithm, host
-  backend); `fw_exec_rv`, `fw_exec_host`, `fw_exec_perf` (P2.4: OPL v1 and the executor; the
+  backend); `fw_exec_rv`, `fw_exec_host`, `fw_exec_perf` (P2.4: the op list format and the executor; the
   streamed lists' launch-trace digests pinned to W2a's, PERF PUSH_STALL = 0);
 - `fw_m6_e2e` (W2a integration: the production image through the loader with VERIFY, HELLO = the
   `tsr-elf` id, PING, a two-layer 0.5B-shaped MUL_MAT list through `graph`, `selftest` ids 1–10,
@@ -1940,7 +1914,7 @@ New ctests:
   context byte for byte, sequence state into a cleared context);
 - `ggml_tesseract_graph_qwen_tiny` and `ggml_tesseract_graph_gemma_tiny`: exactly one Tesseract
   split (asserted with `GGML_SCHED_DEBUG=2`) and one launch per decode token, KL vs CPU on
-  synthetic tiny models (V2-SW-21: a gguf-py script
+  synthetic tiny models (SW-21: a gguf-py script
   generates 2-layer Qwen2 and 4-layer Gemma 4 GGUFs with random weights, SWA + global layers and
   a 64-row vocabulary at build time; no binary is checked in).
   As built (W3b, `sw/ggml-tesseract/tests/tiny.cmake`, `gen_tiny_models.py`, `m7_tests.py`): also
@@ -1955,7 +1929,7 @@ New ctests:
   the device; the bounds and injected-error measurements are in `tiny.cmake`). W3b: Qwen2 KL ratio
   0.47 (Q8_0) / 0.99 (Q4_K), Gemma 4 6.9·10⁻⁴ (ratio 4.8), 0.5B 0.89 (top-1 97 %); 1.3–5.5 s per tiny
   test, 23 s for 0.5B. `ggml_tesseract_graph_qwen_tiny_ub1024` (W3b fix): one prompt of 692 tokens
-  (four prompts joined) at `-ub 1024`, one prefill ubatch whose FLASH_ATTN (T > 680, V2-SW-43) runs on
+  (four prompts joined) at `-ub 1024`, one prefill ubatch whose FLASH_ATTN (T > 680, SW-43) runs on
   the CPU; prefill launches reported only, 16 decodes one launch each, KL ratio 0.66;
 - `ggml_tesseract_backend_ops_<op>` (W3b; SW §10.4 M7 gate item 4 with `ggml_tesseract_backend_ops`):
   test-backend-ops on `sim` per M7 op filter (ADD, MUL, RMS_NORM, SWIGLU, GEGLU, ROPE, GET_ROWS, CPY,
@@ -1967,28 +1941,27 @@ New ctests:
 
 ### 10.3 tb (pytest) plan
 
-The RTL areas own the RTL benches. The plan here fixes their fate:
+The RTL areas own the RTL benches. The layout of the benches:
 
-| Fate | Benches |
+| Group | Benches |
 |---|---|
-| **Deleted** | `tb/cmdproc`; the M2 command-path suite `tb/core/test_core.py`; the v1 parts of `tb/common` (`csr_driver`, `proggen`, `pycore` command path, `replay`, `trace` v1) |
-| **Rewritten** | `tb/core/test_core_m3.py` → `tb/core` v2 (issue-port tile-only replays of `push.bin`, MVM concurrency under queues); `tb/fastreplay` (C++ tile-only replay, then the full-system bench with Ibex and RVFI lockstep); `tb/platform` (`ap_ctrl_none` adapter; carries over the regmap / errors / misaligned / reset directed tests of `v1-m4:tb/platform/kernel_bench.cpp`, deleted whole in X0); `tb/platform/vkernel` (two clocks); `tb/run_all.sh` |
-| **Kept** | `tb/dma`, `tb/fp`, `tb/mvm`, `tb/mvmback`, `tb/mvmfront`, `tb/qact`, `tb/spm`, `tb/tech` (unit ports; `tb/spm` and `tb/dma` extended by EX/AT for round robin and banking) |
-| **New** | `tb/ctrl` (issue path, two clocks), `tb/vu`, `tb/at`, `tb/rv` (riscv-tests from ITCM, signatures against Spike), `tb/dbg` |
+| **Core and platform** | `tb/core` (issue-port tile-only replays of `push.bin`, MVM concurrency under queues); `tb/fastreplay` (C++ tile-only replay, then the full-system bench with Ibex and RVFI lockstep); `tb/platform` (`ap_ctrl_none` adapter; regmap / errors / misaligned / reset directed tests); `tb/platform/vkernel` (two clocks); `tb/run_all.sh` |
+| **Units** | `tb/dma`, `tb/fp`, `tb/mvm`, `tb/mvmback`, `tb/mvmfront`, `tb/qact`, `tb/spm`, `tb/tech` (unit ports; `tb/spm` and `tb/dma` extended by EX/AT for round robin and banking) |
+| **Control core, VU, AT, debug** | `tb/ctrl` (issue path, two clocks), `tb/vu`, `tb/at`, `tb/rv` (riscv-tests from ITCM, signatures against Spike), `tb/dbg` |
 
 ### 10.4 Gates
 
-Common baseline settings (V2-SW-22): `-fa on`, `-ctk q8_0 -ctv q8_0`, `LLAMA_ATTN_ROT_DISABLE=1`,
+Common baseline settings (SW-22): `-fa on`, `-ctk q8_0 -ctv q8_0`, `LLAMA_ATTN_ROT_DISABLE=1`,
 klcheck's other fixed settings (`docs/klcheck.md:66-75`). `offload_kqv` is false in M6 (attention
 on the CPU) and true in M7. The CPU reference and floor runs use the same KV type, FA and rotation
 settings.
 
-**M6 gate** (the spec criterion; MVMs are issued by RISC-V kernels because no other path exists;
+**M6 gate** (the spec criterion; MVMs are issued by RISC-V kernels;
 `offload_kqv` = false, so attention runs on the CPU and the device AT ops are verified by the
 selftest, `traces/at` and `ggml_tesseract_attn`, AT §13.6):
 
 1. `tsr-selftest --device xrt` passes every test, including VU, AT and errors, with sim shadow,
-   plus replays of `traces/m3`-v2, `traces/vu`, `traces/at`, `traces/ctrl` and
+   plus replays of `traces/m3`, `traces/vu`, `traces/at`, `traces/ctrl` and
    `traces/model-v1conv`.
 2. 0.5B Q8_0: `klcheck run --device xrt` generates; `klcheck run --device sim --tokens` replays the
    same tokens; `klcheck compare --expect-identical` must report every row bit-identical
@@ -1997,7 +1970,7 @@ selftest, `traces/at` and `ggml_tesseract_attn`, AT §13.6):
    ≥ 80 %, `docs/spec.md:801`).
 4. GDB smoke on the card (DB): halt, register read, breakpoint in a kernel, step, resume, with the
    launch then completing correctly.
-5. Recorded, not gated: tok/s for 0.5B and 32B (M4: 54.7 and 2.93 tok/s), launches per token,
+5. Recorded, not gated: tok/s for 0.5B and 32B (M4, before the control core was added: 54.7 and 2.93 tok/s), launches per token,
    launch wall time.
 6. Before the card: the same 0.5B identity on `vkernel` (2 tokens) and items 2–3 on `sim`.
 
@@ -2019,7 +1992,7 @@ selftest, `traces/at` and `ggml_tesseract_attn`, AT §13.6):
    and the largest Gemma 4; the Gemma 4 12B KL with the CPU reference built with and without
    `GGML_GELU_FP16` (the residual of GELU16, VU §6.9).
 
-*Status on the simulator (W3b integration, 2026-10-31; the card items wait for the v2 bitstream).*
+*Status on the simulator (W3b integration, 2026-10-31; the card items wait for the bitstream with the control core).*
 Settings `--phase m7` (FA on, q8_0 / q8_0 KV on the device, `LLAMA_ATTN_ROT_DISABLE=1`), `sim` with 4
 channels and T_MAX 1; no llama.cpp patch beyond 0001.
 
@@ -2032,13 +2005,13 @@ channels and T_MAX 1; no llama.cpp patch beyond 0001.
 | 2 (sim side): a second sim run | bit-identical, 512 / 512 rows; also with `TSR_SIM_SCHED=random:7 TSR_SIM_RACE=fatal` | bit-identical, 66 / 66 rows | — | — |
 | 3 (sim, short): KL vs CPU, klcheck's criterion | mean 2.22·10⁻³, floor 2.43·10⁻³, ratio 0.914, top-1 98.05 % (8 × 64) | 3.07·10⁻², floor 4.51·10⁻², ratio 0.680, top-1 96.97 % (2 × 33) | 2.23·10⁻², floor 2.65·10⁻², ratio 0.843, top-1 96.97 % (2 × 33) | (2 rows) mean 4.63·10⁻³, floor 4.80·10⁻³, ratio 0.964, top-1 2 / 2 |
 | sim wall time per decode token | 89 ms | 0.82–0.86 s | 1.50–1.75 s | 7.44 s (prefill of 7 tokens 20.4 s, load 28 s) |
-| device cycles per decode token (`PERF_CYCLES`, 276.3 MHz) | 2.48 M = 9.0 ms (M6: 2.63 M in 145 launches, attention on the CPU) | ≈ 35 M ≈ 0.13 s (mean over all launches) | ≈ 57 M ≈ 0.21 s (mean over all launches) | 83.5 M = 0.30 s (MVM 81.5 M; one decode by difference of 2- and 3-token runs; v1 on the card: 341.7 ms per token) |
+| device cycles per decode token (`PERF_CYCLES`, 276.3 MHz) | 2.48 M = 9.0 ms (M6: 2.63 M in 145 launches, attention on the CPU) | ≈ 35 M ≈ 0.13 s (mean over all launches) | ≈ 57 M ≈ 0.21 s (mean over all launches) | 83.5 M = 0.30 s (MVM 81.5 M; one decode by difference of 2- and 3-token runs; 341.7 ms per token on the card, measured before the control core was added) |
 
 Item 4: the `ggml_tesseract_backend_ops*` ctests, `ggml_tesseract_attn` / `_tmax8`, `_kvbuf` and
 `_kvstate` pass (`ctest -LE slow`: 278 / 278 after the W3b review fixes, which added `_attn_split1` and `_graph_qwen_tiny_ub1024`; `ggml_tesseract_backend_ops_bigt` passes). Not yet run:
 the long-prompt runs of item 3 (2K and 16K tokens; a prefill ubatch of more than ≈ 450 tokens (Qwen2.5)
 or ≈ 240 (Gemma 4) is cut into several launches by the 256-line preload area, and a FLASH_ATTN of more
-than 680 tokens runs on the CPU, V2-SW-43), the full 32B
+than 680 tokens runs on the CPU, SW-43), the full 32B
 klcheck (8 × 64; projected ≈ 72 min on this host: 512 tokens × 7.44 s + ≈ 230 s of prefill + 28 s load, then ≈ 3 min of CPU runs; M6 took 1 h 17 min), Gemma 4 31B (no GGUF), and every card item.
 
 ---
@@ -2049,9 +2022,9 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
 
 | Pkg | Content | Depends on | KLOC | Days |
 |---|---|---|---|---|
-| **P0** | X0 (EX §12): delete every v1-only part of every layer in one commit; remove the dependent ctests and benches | — | −(large) | 1 |
-| **P1.1** | table source `sw/tables/tsr_tables.py` (EX / CC / DB / VU / AT rows from `docs/v2`) + `gen_tables.py` (SV, C, C++, Python, `--check`) | P0 | 0.6 | 2 |
-| P1.2 | v2 host CSR port in `sw/sim` (EX §5: `CTRL` / `STATUS`, loader with VERIFY, LQ / LCQ / log rings and watermarks, `SOFT_RESET`, `Q_*`, PERF v2, `MTIME`) | P1.1 | 1.2 | 4 |
+| **P0** | one issue path (EX §12): tile ops are pushed only by firmware, in every layer | — | — | 1 |
+| **P1.1** | table source `sw/tables/tsr_tables.py` (EX / CC / DB / VU / AT rows from `docs/design`) + `gen_tables.py` (SV, C, C++, Python, `--check`) | P0 | 0.6 | 2 |
+| P1.2 | host CSR port in `sw/sim` (EX §5: `CTRL` / `STATUS`, loader with VERIFY, LQ / LCQ / log rings and watermarks, `SOFT_RESET`, `Q_*`, PERF, `MTIME`) | P1.1 | 1.2 | 4 |
 | P1.3 | `tsr_ref_math.c` (incl. GELU16), VU/AT references, numpy models, exhaustive tests, `ref_math_gelu16` | VU, AT docs | 1.6 | 6 |
 | P1.4 | VU unit semantics in sim + cycle model | P1.3 | 1.2 | 4 |
 | P1.5 | AT unit semantics in sim + cycle model | P1.3 | 1.0 | 4 |
@@ -2059,41 +2032,41 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
 | P1.7 | `tsr_rv` + `tsr_bus` | P1.1 | 2.0 | 6 |
 | P1.8 | scheduler, random schedules, fast-forward | P1.6, P1.7 | 0.5 | 2 |
 | P1.9 | race detector + `SPM_STALE` | P1.6 | 1.0 | 4 |
-| P1.10 | trace v2 library, capture, sim replay, `tsr-trace-conv` (v1 reader from `v1-m4:sw/sim/tsr_trace.c`), `tsr-trace-gen` v2 (from `v1-m4:sw/tools/tsr_trace_gen.c`), set regeneration | P1.6 | 2.0 | 6 |
+| P1.10 | trace library, capture, sim replay, `tsr-trace-conv`, `tsr-trace-gen`, set regeneration | P1.6 | 2.0 | 6 |
 | P1.11 | toolchain install script, Spike/riscv-tests/arch-test harness, random-program lockstep | P1.7 | 0.6 | 3 |
 | P1.12 | debug-module model `tsr_dm.c` (DB's DMI profile, DB §9.1) | P1.7, DB doc | 0.8 | 3 |
 | P1.13 | DB simulator models: stop logic, QSTEP, serial mode, the hard hold, history ring, REC FIFO, TRW records, log records (DB §5, §6.1, §8) | P1.6, P1.12 | 1.2 | 5 |
 | **P2.1** | `sw/ctrl` build (ExternalProject, toolchain file), `tsr-elf` | P1.11 | 0.6 | 2 |
 | P2.2 | crt0, `link.ld`, runtime R1–R10 (EX §4.7), traps and panic (DB §6.3), log records (DB §6.1) | P2.1, P1.2 | 0.9 | 4 |
 | P2.3 | `kernel.hpp`, generated `vu.hpp`/`at.hpp`/`mmio.hpp`, `spm_ring`, host backend | P2.1, P1.6 | 1.2 | 4 |
-| P2.4 | `plan.hpp`, OPL v1, executor core | P2.3 | 1.2 | 5 |
+| P2.4 | `plan.hpp`, the op list format, executor core | P2.3 | 1.2 | 5 |
 | P2.5 | M6 kernels: MUL_MAT kind, `selftest`, `replay` | P2.4 (VU/AT selftest parts after P1.4/P1.5) | 1.2 | 4 |
 | P2.6 | M7 kinds: ADD/MUL/SCALE/RMS_NORM/GLU/ROPE/GET_ROWS/CPY/UNARY + references | P2.4, P1.4 | 1.5 | 5 |
 | P2.7 | M7 SET_ROWS_KV and FLASH_ATTN + references | P2.4, P1.5 | 1.2 | 6 |
-| **P3.1** | transport v2 (EX §10): protocol layer, debug-aware wait and recovery ladder, `sim`/`mock` kdevs, `xrt` kdev (`ap_ctrl_none`, compiles; card in P6), `vkernel` kdev port | P2.2, P1.2 | 1.6 | 6 |
-| P3.2 | backend M6 (OPL builder MUL_MAT, cache, deletions; lazy src0 conversion, staging and `tsr_resolve_weight` restored from `v1-m4`, §9.3), `tsr_rt`/torch port | P2.5, P3.1 | 1.0 | 4 |
+| **P3.1** | transport (EX §10): protocol layer, debug-aware wait and recovery ladder, `sim`/`mock` kdevs, `xrt` kdev (`ap_ctrl_none`, compiles; card in P6), `vkernel` kdev port | P2.2, P1.2 | 1.6 | 6 |
+| P3.2 | backend M6 (OPL builder MUL_MAT, cache; lazy src0 conversion, staging and `tsr_resolve_weight`, §9.3), `tsr_rt`/torch port | P2.5, P3.1 | 1.0 | 4 |
 | P3.3 | tools: `tsr-selftest`, trace tools, `tsr-log`, klcheck/numcheck settings | P3.1, P2.5 | 1.5 | 5 |
-| P3.4 | **M6 on sim**: ctest green, 0.5B and 32B klcheck on sim (FA on), `traces/model-v2` | P3.2, P3.3 | — | 2 (+ ≈ 1 day of 32B sim time) |
+| P3.4 | **M6 on sim**: ctest green, 0.5B and 32B klcheck on sim (FA on), `traces/model-launch` | P3.2, P3.3 | — | 2 (+ ≈ 1 day of 32B sim time) |
 | P3.5 | backend M7: supports_op set (incl. the DUP / no-COMPUTE rule), KV buffers, MSUM producer and f32 mask copies (AT §7.3), builder (fusion, hazards, preload), compute heap (R6) | P2.6, P2.7, P3.2 | 2.3 | 9 |
 | P3.6 | tiny-model generator; **M7 on sim**: one launch per token, `test-backend-ops`, klcheck Qwen and Gemma | P3.5 | 0.3 | 3 (+ sim time) |
 | P3.7 | `libtsr_dbg` + `tsr-dbg`: DMI driver (DB §3.5–§3.6), RSP server (§4), monitor and tile commands, dumps (§7.4), the embedded `TSR_GDB` service; riscv-tests `debug/gdbserver.py` subset on sim | P1.12, P2.2, P3.1 | 3.0 | 10 |
-| P3.8 | `tsr-prof` `trw` source and TSR_STATS v2 (DB §8.6) | P1.13 | 0.8 | 3 |
-| **P4** | RTL (owners EX, VU, AT, CC, DB; sizes in their documents): command-path deletion, issue path and queues, VU, AT and SPM banks, Ibex + TCM + CDC, debug module + DMI, `ap_ctrl_none` adapter, unit benches | area docs; references from P1.3 | ≈ 8–12 SV + benches | per area |
-| **P5.1** | tile-only fastreplay v2 (`push.bin` into the issue FIFO) | P4 issue path, P1.10 | 0.8 | 3 |
+| P3.8 | `tsr-prof` `trw` source and the TSR_STATS counters (DB §8.6) | P1.13 | 0.8 | 3 |
+| **P4** | RTL (owners EX, VU, AT, CC, DB; sizes in their documents): issue path and queues, VU, AT and SPM banks, Ibex + TCM + CDC, debug module + DMI, `ap_ctrl_none` adapter, unit benches | area docs; references from P1.3 | ≈ 8–12 SV + benches | per area |
+| **P5.1** | tile-only fastreplay (`push.bin` into the issue FIFO) | P4 issue path, P1.10 | 0.8 | 3 |
 | P5.2 | full-system Verilator bench: Ibex + RVFI lockstep with `tsr_rv`, two clocks, random ratios | P4, P1.7, P2.2 | 1.5 | 6 |
-| P5.3 | `vkernel` v2 (two clocks, `ap_ctrl_none`) | P4, P3.1 | 0.6 | 3 |
+| P5.3 | `vkernel` (two clocks, `ap_ctrl_none`) | P4, P3.1 | 0.6 | 3 |
 | P5.4 | riscv-tests / arch-test on RTL | P5.2, P1.11 | 0.3 | 2 |
-| P5.5 | 0.5B on `vkernel` bit-identical to sim (2 tokens); v2 trace sets replayed | P5.3, P3.4 | — | 2 (+ run time) |
+| P5.5 | 0.5B on `vkernel` bit-identical to sim (2 tokens); trace sets replayed | P5.3, P3.4 | — | 2 (+ run time) |
 | P5.6 | Vivado OOC and the k4 link with the control core (≥ 276 MHz, D13 as restated) | P4 | — | 3 (links ≈ 4 h each with swap, `docs/platform-u200.md`) |
 | **P6.1** | card bring-up: load, HELLO, PING, `tsr-selftest` | P5.6 | — | 2 |
-| P6.2 | v2 trace replays on the card | P6.1 | — | 1 |
+| P6.2 | trace replays on the card | P6.1 | — | 1 |
 | P6.3 | GDB smoke (DB) | P6.1, P3.7 | — | 1 |
 | P6.4 | **M6 gate** (§10.4) | P6.1–P6.3, P3.4 | — | 2 |
 | P6.5 | **M7 gate** | P6.4, P3.6 | — | 3 |
 | P6.6 | performance: U, H/G/F/E, launch costs | P6.4 | — | 2 |
 
-- **Order.** P0 (the X0 deletion) first, then P1.1. P1.2–P1.13 in parallel where their
-  dependencies allow. P2 on the simulator. P3.4 (M6 on sim) before any v2 RTL is needed. P4 runs
+- **Order.** P0 first, then P1.1. P1.2–P1.13 in parallel where their
+  dependencies allow. P2 on the simulator. P3.4 (M6 on sim) before the RTL is needed. P4 runs
   in parallel from the area documents onward.
 - **Critical path to M6:** P0 → P1.1 → P1.6/P1.7 → P2.2–P2.5 → P3.1–P3.2 → P3.4, then (with P4)
   P5.2 → P5.5 → P5.6 → P6.4; P3.7 (debug tools) must be done before P6.3, which the M6 gate needs.
@@ -2105,7 +2078,7 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
 
 | Area | SW assumes from it | SW provides to it |
 |---|---|---|
-| **EX** (execution model) | the host CSR map (EX §5); the launch protocol (LQ / LCQ, descriptor and record formats, STATUS precedence, runtime contract R1–R10, cancel and stop watermarks, EX §4); image format, 64-bit image id, loader with VERIFY and warm restart (EX §3); `SOFT_RESET` (EX §8.5); unit ids and the opcode table (EX §7); error codes 1–8, 11–13 and the check order (EX §8.1); PERF v2 (EX §6); the `ap_ctrl_none` adapter (EX §9); the transport API (EX §10); the DRAM map (EX §11); the D16 deletion order (EX §12) | the simulator models of every EX register and ring (deterministic advance); the SDK runtime; the base kernels `graph`, `replay`, `selftest`; trace v2 and the trace migration; the table generator |
+| **EX** (execution model) | the host CSR map (EX §5); the launch protocol (LQ / LCQ, descriptor and record formats, STATUS precedence, runtime contract R1–R10, cancel and stop watermarks, EX §4); image format, 64-bit image id, loader with VERIFY and warm restart (EX §3); `SOFT_RESET` (EX §8.5); unit ids and the opcode table (EX §7); error codes 1–8, 11–13 and the check order (EX §8.1); PERF (EX §6); the `ap_ctrl_none` adapter (EX §9); the transport API (EX §10); the DRAM map (EX §11) | the simulator models of every EX register and ring (deterministic advance); the SDK runtime; the base kernels `graph`, `replay`, `selftest`; the trace format and the trace sets; the table generator |
 | **VU** | encodings, checks and numerics of VOP / RED / ROPE / TOPK / SOP / DQROW (VU §5–§6), including GELU16 / GEGLU16 and the RoPE angle recurrence; AT's vector ops on the VU (VU §5.11); the `tsr_ref_math` algorithms with coefficients as bit patterns; accuracy figures to measure; per-op cycle model | `tsr_ref_math.c` and its exhaustive tests; VU semantics in sim; `traces/vu`; kernels and the generated `vu.hpp` builders; host-computed constants (TS, M, 1/n, eps) |
 | **AT** | the KV plane layout and its C conversion (AT §4); KVST, ATTQK, ATTPV and the vector ops (AT §5–§6); the normative FA sequence (AT §6.6); the MSUM format (AT §7.3); the `supports_op` contract (AT §2.6); the SET_ROWS_KV / FLASH_ATTN argument layout (AT §12) | SET_ROWS_KV and FLASH_ATTN kernels; KV buffers in the backend; the MSUM producer and f32 mask copies; AT semantics in sim; `traces/at`; `ggml_tesseract_attn` |
 | **CC** | Ibex configuration and CSR list; the RISC-V address map and control window (CC §4–§5) including `ISSUE_PIDX`; TCM sizes; vector table and boot at `RV_BOOT` + 0x80; reset sequence and SR sequencer; interrupt map; `MTIME`; `RV_FREQ`; RVFI in simulation builds; F_RV | `link.ld`/crt0 matching the map; `tsr_rv` modelling the configuration (and its test bus profile); Spike harness; riscv-tests on RTL; lockstep co-simulation bench |
@@ -2117,59 +2090,59 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
 
 | Id | Topic | Choice | Alternatives | Rationale |
 |---|---|---|---|---|
-| V2-SW-1 | RISC-V model | in-house `tsr_rv` interpreter inside `sw/sim`; Spike only as test oracle (on a separate test bus profile at 0x8000_0000) | link Spike as a library; Ibex RTL model as reference; QEMU | Keeps the simulator one deterministic C library with exact co-scheduling against the tile model and MMIO hooks. It also stays usable inside the llama.cpp backend. Spike still anchors ISA correctness through signatures and lockstep random programs, and RVFI lockstep anchors Ibex-specific behaviour (`docs/ctrl-riscv.md:1318-1325`). |
-| V2-SW-2 | Time model | event-driven on core cycles, `fixed` by default, `random:<seed>` for determinism tests, spin/WFI fast-forward | cycle-by-cycle lockstep; untimed (ops complete at push) | Untimed hides every ordering bug. Cycle-by-cycle is slow on 32B shapes. Events with randomized durations expose schedule dependence cheaply, and fast-forward bounds the cost of polling joins. |
-| V2-SW-3 | Race detector policy | vector clocks; `fatal` in ctest, `off` in model runs, `report` nightly | always on; hardware detection | The 2–3× cost (*estimate*) matters only on long model runs. Every kernel and executor path is already covered by ctest with `fatal`. |
-| V2-SW-4 | Launch state | launches are stateless: results depend only on image, args and DRAM; `SPM_STALE` check; fresh-boot trace replay | traces with SPM and DTCM snapshots; resident state across launches | Makes every per-launch trace self-contained and replayable on any target from a fresh boot. The op list and tables are small enough to reload per launch (≈ 150 KB for 32B, *estimate*). Resident state can come later (M9) with its own trace rules. |
-| V2-SW-5 | Trace layout | one directory per launch; single push-ordered `ops/push.bin` with relative tickets; images shared by id | per-unit `ops/u<k>.bin` (spec text); one ELF copy per trace | Replay needs the global push order (a dep must not point to an unpushed ticket); per-unit files lose it, and the per-unit view is a filter. Relative tickets make traces independent of history. Sharing images avoids 290 copies. The spec's trace paragraph (`docs/spec.md:823-830`) needs the matching edit. |
-| V2-SW-6 | v1 trace migration | regenerate m2/m3/gen with the v2 generator; convert the 290 model traces as a serial chain (`replay` SERIAL); drop `traces/tmp` | convert everything (EX's and CC's drafts) | Generators and seeds exist, and 254 error expectations must be re-derived for v2 anyway. Model traces are large and error-free, and they convert exactly, which gives a strong v1 → v2 unit-equivalence check. Adopted by EX §12 and CC §15.3. |
-| V2-SW-7 | Toolchain | xPack `riscv-none-elf-gcc` 14.2.0-3 (with GDB) in user space, the only supported compiler; Spike and dtc from source; Clang optional | distro packages (need sudo; no rv32imc multilib, no libstdc++ headers); building GCC from source; Clang only | No sudo is needed, versions are pinned, and the result is reproducible. The xPack bundle includes GDB for D18. Clang alone lacks an rv32 compiler-rt here. |
-| V2-SW-8 | Firmware language rules | freestanding C++20, no heap/exceptions/RTTI, `-Os` (hot path `-O2`, V2-SW-34), libgcc only, no libstdc++ headers; no f32 math in firmware (the host precomputes constants) | allow soft-float in kernels; C | Avoids soft-float cost and any risk of a firmware-side fp rounding path (the spec fp rules stay in host-computed constants and in device ops). C++ templates keep the op builders zero-cost (D6). |
-| V2-SW-9 | Image identity | EX §3.2: build-time SHA-256 over the `PT_LOAD` segments, first 8 bytes as a little-endian `uint64`, stored in an 8-byte `.tsr_id`, echoed in HELLO r2 / r3 | a 16-byte id (the draft); runtime hashing of TCMs; CRC only | Hashing 128 KiB on Ibex would take ≈ 80 ms (*estimate*). 64 bits tell builds apart; the load CRC and VERIFY prove the transfer. Excluding the not-loaded log strings keeps the id stable across log-text edits. |
-| V2-SW-10 | Host ↔ RISC-V protocol | **withdrawn**: EX's LQ / LCQ protocol (V2-EX-1 … V2-EX-5) with the runtime contract R1–R10; up to `LQ_DEPTH` launches outstanding | the single-slot H2R / R2H mailbox with one outstanding launch (the draft) | EX owns the launch protocol; the queue lets the host pipeline launches with posted writes only, and one channel carries launches, answers, HELLO, TRAP and events. |
-| V2-SW-11 | Logging | binary records (format-string address + args) with DB's header (DB §6.1) through EX's log ring; whole-record drop with a counter; runtime filter `LOG_CFG.LEVEL` | text over the LCQ; DRAM log ring; SW's own 2-bit-level header and a LOGCTL message (the draft) | No TCM is spent on strings, and the ring is readable even when queues are wedged, unlike a DRAM ring that needs a working DMA (`docs/ctrl-riscv.md:1190`). Whole-record drop keeps the stream parseable. One header for the encoder and the decoders. |
-| V2-SW-12 | Graph execution model | host builds a pre-resolved ggml-level op list (OPL), computes the dependencies, and caches it per graph; firmware kernels per kind | host emits tile-op programs for a replay kernel; firmware parses ggml tensors and computes hazards | Static tile programs cannot express per-token KV write rows without register-relative addressing (removed, D14). Parsing ggml views and hazards in firmware would cost TCM and RISC-V cycles. The host does the ggml work once per graph, and the firmware reads fixed-size args. |
-| V2-SW-13 | Data placement in M7 | tensors stay in DRAM between ops; per-op SPM scratch from a ring with release tickets; fusion of bias/residual through MVM ACC and of RMS_NORM × weight | keep intermediates resident in SPM; no fusion | DRAM round trips cost ≈ 2 % of a 32B token (*estimate*) and are simple to make race-free. Fusion through ACC is bit-identical (one commutative f32 add) and removes the most common round trips. SPM residency is an optimisation for after the gate. |
-| V2-SW-14 | M6 llama.cpp path | the same `graph` executor with MUL_MAT-only op lists, one launch per v1 split (adopted by EX as V2-EX-29) | a `mul_mat` kernel per MUL_MAT; keeping tile-program lowering with `tsr.oplist_seq` (EX's draft) | One mechanism from M6 to M7, so M7 only adds kinds and supports_op entries. Splits stay v1's, so M6's KL and identity gates compare like with like. |
-| V2-SW-15 | Index inputs | preload all RISC-V-read graph inputs at launch start with one join: KV write indices, row ids, positions and each KQ mask's MSUM | LD and join per op | A join per SET_ROWS or FLASH_ATTN would stall run-ahead behind every queued DMA op (2–3 × layers per token). One join at the start costs one DMA latency. |
-| V2-SW-16 | KV rotation | `LLAMA_ATTN_ROT_DISABLE=1` in device runs and in every baseline; device rotation is a follow-up | device f32 MUL_MAT for graph-input matrices; a Walsh-Hadamard kernel; leave the rotations on the CPU | The rotation matrix is an F32 graph input that MVM cannot use, and leaving it on the CPU breaks one launch per token. Comparing against a CPU with the same setting keeps the KL criterion fair. q8_0 KV gains little from rotation, compared with 4-bit KV. |
-| V2-SW-17 | KV buffers (as built: V2-SW-47) | recognise llama.cpp KV buffers by tensor names at first access; AT layout in a KV heap; converting get/set; context shift unsupported in M7 | a ggml-identical byte layout on the device; a custom buffer type | llama.cpp allocates the KV cache through the device buffer type without a usage flag (`docs/llama-pin.md:193-200`). Names are the stable signal. Converting accessors keep state save/load working whatever layout AT picks. |
-| V2-SW-18 | Host protocol | one protocol layer over all kdevs implementing EX §10; `sim` becomes a kdev with `idle()` | separate sim transport (today) | The exact host code path that runs on the card (bind, load, VERIFY, launch, wait, recovery, log) is then tested on every sim and mock run. |
-| V2-SW-19 | Test access to queues | `tsr_sim_push`/`tsr_sim_qctrl` test hooks in the simulator library, never in `tsr_transport` | no hooks (every test needs firmware); expose to the host | Lets directed queue tests and tile-only sim replays run without firmware, while D15 still holds for every real device path. |
-| V2-SW-20 | Planning code | `plan.hpp` freestanding, compiled for host and firmware | separate host and firmware implementations | `supports_op` must reject exactly what firmware cannot plan; one source makes that true by construction. |
-| V2-SW-21 | Gemma test models | synthetic tiny Gemma 4 and Qwen2 GGUFs generated by a gguf-py script at build time; real 12B (on disk) and 31B (when available) for gates | only real models; checked-in binaries | The smallest real dense Gemma 4 is 12B, too slow for ctest on sim. Generated models cover SWA/global layers, per-head norms and GEGLU in seconds without binaries in git. |
-| V2-SW-22 | Baselines | FA on, q8_0/q8_0 KV, rotation off for device and CPU runs from M6 on; KV on host (`offload_kqv` = false) in M6, on device in M7 | keep FA off until M7 | D17 requires FA on. Fixing the KV type and rotation already in M6 keeps baselines constant from M6 to M7, so the M7 delta measures the device attention only. |
-| V2-SW-23 | Approximate-math verification | exhaustive 2^32 bit-exact check against an independent numpy model, ulp bounds against double, RTL exhaustive opt-in; GELU16 enumerated over all 65,536 fp16 inputs against the pinned ggml table | random sampling only; MPFR | Unary f32 functions are fully enumerable, which leaves no gap for coding errors. The numpy model is written from the VU text and does not share code. Double-precision references are enough for f32 ulp classification. |
-| V2-SW-24 | Launch watchdog | 60 s default, counted only while the RISC-V is not halted and no tile stop is active, off in SERIAL mode; the mutex is released between polls; on timeout DB's ladder: dump, `LQ_CANCEL`, then `SOFT_RESET` + warm restart | an unconditional timeout with dump and reset (the draft); no timeout | A wedged queue or a parked hart must not hang llama.cpp, but a GDB user stopped at a breakpoint inside llama.cpp must not have the device reset under them (D18). The dump preserves the post-mortem before any destructive step. |
-| V2-SW-25 | Kernel test builds | host build (ASan/UBSan) plus RV build on the simulator, the RV build being the reference | RV only; host only | The host build finds logic bugs in milliseconds with sanitizers; only the RV build proves control flow, MMIO timing behaviour and ABI. |
-| V2-SW-26 | Compute buffers (amended by V2-SW-46) | a per-channel compute heap between the weights and the KV planes, sized from the reserve graph, plus ch0 IO and ch1–ch3 [0, 512) MiB; `get_max_size` ≥ the largest tensor | fixed IO windows (ch0 IO + ch1–ch3 low 512 MiB, the draft); ch0 IO only (v1) | Gemma 4's 512 MiB logits chunk at `-ub 512` fills a whole fixed window; a heap sized from the reserve graph keeps every chunk on the device (one launch per token) and spreads activation DMA over the channels. |
-| V2-SW-27 | numcheck on v2 | rely on per-node observation, which gives one launch per node | a special per-op launch mode in the backend | llama.cpp's `cb_eval` already splits the graph per observed node; no backend mode means no second code path to keep correct. |
-| V2-SW-28 | Card selftest | `selftest` kernel with in-process sim shadow comparison | host-written tile programs (forbidden by D15); fixed expected files | D15 requires kernels. Running the same image on the simulator gives exact expectations for any test parameters without stored golden files. |
-| V2-SW-29 | Op-list size | ≤ 4096 ops per launch (32 KiB of DTCM tables); larger graphs are split by the builder | unbounded with streamed tables | Decode graphs need ≈ 1,300–2,000 ops (*estimate*). A fixed cap keeps DTCM use static and the executor simple. |
-| V2-SW-30 | Timing independence | firmware never lets a timing-dependent read influence pushes, deps, stores or records (only waits); the ring allocator decides deps by count; `ISSUE_PIDX` and `ISSUED_SEQ` are exact | allow opportunistic decisions | This is what makes programs valid in the sense of §4.7, so card logits can be bit-identical to the simulator. |
-| V2-SW-31 | GELU in llama.cpp graphs | GGML GELU and GEGLU map to the VU's GELU16 / GEGLU16 (the CPU's fp16-table form); the exact tanh GELU stays for M8 / PyTorch | exact tanh GELU everywhere (the draft's default) | The pinned ggml CPU defines `GGML_GELU_FP16` (`vec.h:46`) and rounds x and the result to fp16 (relative error up to 3.9·10⁻³); matching that form removes an fp16-level difference on every GEGLU element of every Gemma 4 layer. |
-| V2-SW-32 | Mask summaries (amended by V2-SW-48) | the backend writes the MSUM (and, for GENERAL masks, an f32 copy) on `set_tensor` of tensors named `kq_mask`, reserving the bytes through `get_alloc_size`; the FA record refers to it through the preload table | the device reads F16 masks; per-token op-list patching | The VU has no f16; the summary keeps the cached op list valid per token and lets ATTQK skip masked bandwidth (AT V2-AT-14). |
-| V2-SW-33 | Unselected graph branches (flag rule amended by V2-SW-40) | `GGML_OP_DUP`, non-KV SET_ROWS and nodes without `GGML_TENSOR_FLAG_COMPUTE` are unsupported; `graph_compute` skips flagless nodes and makes no launch for an empty split | rely on "everything else false" | `ggml_build_forward_select` leaves unselected embedding branches in every decode graph, and the scheduler ignores the flag when it assigns backends; a supported DUP would add a second split and launch per token. |
-| V2-SW-34 | Firmware optimisation flags (2026-10-30, executor optimisation; amends V2-SW-8) | `-Os` for the image; the executor and kind sources (`kernels/graph.cpp`, `kernels/k_*.cpp`) add `-O2` (§6.1) | `-Os` everywhere; `-O2` everywhere; `-O3` / `-O2 -fpeel-loops` on the hot files | Measured (§6.1): −1 % per MUL_MAT record, −5 to −7 % per JOIN / NOP record (the cheap records that bound M7) and −23 % RISC-V time per 0.5B layer (the launch's fixed part) for +2.2 KiB of ITCM; the whole image at `-O2` adds 5.8 KiB for nothing per record, `-O3` / peeling cost more ITCM for no gain on the optimised executor. Keeps the ITCM headroom for M7's kinds, which join the hot set by file name. |
-| V2-SW-35 | Executor hot path (2026-10-30, executor optimisation; §7.3 "Hot path", §7.8) | records read in place through the line-buffered alias after the op's control-window accesses (MARK before the record is read: in PROF launches a malformed record has its marker and a streamed list's chunk LD follows the marker of the record before which it is pushed; otherwise the executor's own pushes are W2a's, and every launch trace of `fw_m6_e2e`, `fw_exec_rv` and `fw_kernels_rv` is byte-identical to W2a's); a streamed list's chunk LD where W2a pushed it (after the record's check, before its handler); a decode fast path for T = 1 MUL_MAT records (leaf function, one credit read per op when it covers the pushes, `spm_ring::alloc_dma_first`); planning stays in the firmware (`plan.hpp`, shifts, limits per launch); `spm_ring` O(1) with a 128-block table; the MUL_MAT push stream unchanged, pinned by trace digests (§7.3) | move MUL_MAT planning into the OPL record (host-planned words); hand-written assembly; a per-push credit cache; inlining the fast path into the loop; the chunk LD after the handler (the first version: one record later than W2a, which changed later deps and a failing chunk load's outcome) | Measured (§7.8), as spin-free executor work with deep queues: 1,518 → 387 RISC-V cycles per 0.5B decode record on Ibex maxperf (1,966 → 485 on small); with U200 queue depths 401, by W2a's method 437 (both above 400). The M6 outcome: the MVM no longer idles on issue. Host planning would save ≈ 35 of ≈ 280 instructions and the firmware would still check the block geometry; the credit cache and inlining measured slower (more live registers); assembly is not maintainable. |
-| V2-SW-36 | The one-tile block (2026-10-31, W2b integration; size W2b fix; §7.3, `plan.hpp`) | one fixed SPM block below the preload area (1,024 lines on the U200; `one_block_lines`) for every single-tile record of a DMA-bracketed kind (ADD, MUL, SCALE, RMS_NORM, GLU, ROPE, UNARY; every tile of GET_ROWS / CPY; every SET_ROWS_KV run), in the fast and the general path alike; MUL_MAT and FLASH_ATTN keep the ring, whose budget shrinks by the block (60,144 lines); GLU's decode rows larger than the block take a ring block in the fast path (`alloc_dma_first`); `plan.hpp` pins MUL_MAT's prefill T-tiles of the model shapes by static_assert | `spm_ring::alloc_dma_first` per record (the packages' form); merging consecutive DMA-first blocks into one ring record; the block at the ring's bottom; 4,096 lines (the integration's: every decode tile of Qwen2.5 0.5B–72B and Gemma 4, but MUL_MAT's prefill T-tile of every Qwen2.5 output head drops from 3 to 2, +50 % head weight traffic in an all-logits prefill); 1,536 lines (also Qwen2.5 1.5B / 3B GLU, a 68-line margin on 32B's head) | The DMA queue runs one op after another, so DMA-bracketed tiles are serialised whatever their SPM lines: the fixed block needs no dep, no record and no release and costs no concurrency; it saved 60–80 RISC-V cycles per short record (the ring's table was full of short blocks, so every allocation joined and dropped its oldest) and the ring code left every fast path; at the top the M6 lists' ring blocks keep their lines (the M6 trace digests are unchanged). 1,024 lines keep MUL_MAT's tiling of Qwen2.5 0.5B–32B as before W2b (72B's head: 2) at the cost of GLU's ring block on larger models (about 130 RISC-V cycles once per layer whose device time is milliseconds; the general path would cost 1,250) |
-| V2-SW-37 | M7 dispatch (2026-10-31, W2b integration; §7.3) | the kind table holds a fast entry per short kind (`kind_<name>_fast`, a leaf in its common path, KIND_NOT_FAST when it does not take the record, weak "not taken" stubs); the executor calls it with (args, kflags, d) and falls back to the handler out of line, re-reading word0 / word1; `[[unlikely]]` on the fast paths' refusal tests | the handler with the fast path inlined (the packages' form); inlining the fast paths into `op_loop` | −10 to −25 RISC-V cycles per short record (the handler's prologue saved up to 12 registers, the refusal tests were laid out as fall-through); `op_loop` keeps nothing live across the call, so MUL_MAT's path is unchanged within ±2 cycles; inlining would grow `op_loop`'s register pressure for every kind |
-| V2-SW-38 | ITCM budget (2026-10-31, W2b integration; amends §7.8's 48 KiB) | 80 KiB for the production image (69,732 B with the M7 kinds; M8 / M9 keep 48 KiB of the 128 KiB ITCM, V2-CC-3); test images are stamped against the whole ITCM | keep 48 KiB (would need ≈ 22 KB out of the M7 kinds: shared fast-path bodies cost 22–29 RISC-V cycles per record, `-Os` fast paths more); 96 KiB | The per-kind leaf fast paths are what meets the issue-rate requirement; V2-CC-3 sized the ITCM for "M7's graph executor, two model families, M8 MoE, sampling and debug formatting" |
-| V2-SW-39 | Staged-word reuse and hot entries (2026-10-31, W2b fix; §7.3, `k_fast.hpp`) | `kf::push_s<SKIP, TICKET>`: a fast path's push without the `ISSUE_W` stores of words the previous push of its record staged with the same value (CC §5.1 keeps staged words; WMASK unchanged, so the pushed words are the op's) and without unused `ISSUE_TICKET` reads; host builds check every SKIP claim; RMS_NORM / ROPE straight-line hot entries for their common decode record that tail-call the general fast form; ADD / MUL / GLU wait for one credit read covering their pushes; `op_loop` without MARK / SERIAL tests for plain in-place lists; the `fw_exec_perf_m7 --strict` gate holds every short kind (and SCALE with a bias) to 350 | regression ceilings for RMS_NORM / ROPE (the integration's I6); precomputed ROPE words in the record (an OPL change); a software shadow of the staged words across records; one fast entry for every RMS_NORM shape (+60 cycles: register pressure) | W2b's issue-rate requirement (≤ 350 RISC-V cycles of work per short decode record) without an OPL change: RMS_NORM 395 → 324, ROPE 420 → 325, SCALE with a bias 380 → 336; the SKIP claims are static per call site and checked on the host, the RISC-V tests check the results bit for bit |
-| V2-SW-40 | Flagless nodes (2026-10-31, W3b; amends §8 R1 and V2-SW-33) | supports_op does not test `GGML_TENSOR_FLAG_COMPUTE`; DUP, a SET_ROWS whose destination is not a KV-cache tensor and the quantized `tok_embd` GET_ROWS are refused by their own rules; `graph_compute` skips flagless nodes and makes no launch for a split without computed nodes | the flag rule of R1 / V2-SW-33 | test-backend-ops asks supports_op before `ggml_build_forward_expand` sets the flag (`tests/test-backend-ops.cpp:1415-1421`), so the rule would refuse every op there and the M7 gate's test-backend-ops item would test nothing. The unselected branches are refused anyway: the Qwen2.5-0.5B and Gemma 4 12B decode graphs are one CPU split (the embedding) and one Tesseract split (`GGML_SCHED_DEBUG`) |
-| V2-SW-41 | supports_op of the M7 kinds (2026-10-31, W3b; V2-SW-20 as built) | supports_op and the builder share one lowering (`tsr_lower_m7`): probe mode (handles 0, the KV shape from `tsr_kv_identify`, no device state), then `opl::check_args` and the kind's planner (`plan_kind` on the device's CFG0-3 and CAPS). The 64-byte rule: every row operand's base and row stride are multiples of 64 bytes, and a result that is a view has rows of whole lines (the kinds store whole lines; a result of its own may be one row ending inside a line: ggml-alloc pads blocks to 64 bytes; W3b fix: multi-row views were accepted and their neighbours' bytes overwritten). KV views as llama.cpp builds them with one stream (cell 0; cells `row_size(E)`, heads `row_size(D)` apart) in probe and build mode alike; operands in host memory refused (V2-SW-53). llama.cpp's weight-placement probe of a ROPE (every parameter 0, `src/llama-model-loader.cpp:998-1008`) with a freq-factor tensor is planned as a full rotation | a separate supports_op table; refusing the probe | The host refuses exactly what the firmware cannot plan or the builder cannot encode, by construction (2,850 shapes in `ggml_tesseract_units`, 1,234 supported, 0 disagreements). Refusing the probe left Gemma 4's `rope_freqs` on the CPU and cut each token into 3 launches |
-| V2-SW-42 | Fusion conditions (2026-10-31, W3b; §9.3 pass 3, V2-SW-13) | MUL_MAT + ADD (a bias row: addend stride 0; the residual: its row stride) and RMS_NORM + MUL (a weight of row period 1 or dense per-row weights) when the first node's ggml use count over the whole graph is 1, it is not a view or an output, every operand is in device memory, and no node in between writes the other operand or reads / writes the result (byte ranges); the fused record takes the first node's place | fusing by adjacency only; use counts within the split | Bit-identical to the unfused device records (`ggml_tesseract_opl_launch` F); whole-graph use counts keep consumers in other splits and observed nodes safe. Qwen2.5-0.5B: 168 fused pairs per decode token; Gemma 4 12B: 289 per token |
-| V2-SW-43 | List cuts and FA_NEW (2026-10-31, W3b; §7.2 word 21, AT §12) | A split is one list unless it reaches 4,096 records or a preload entry does not fit the 256-line area; FA_NEW names the indices of the SET_ROWS_KV that wrote the FA's K plane earlier in the same `graph_compute`, added as a preload entry of the FA's own list when the lists were cut between them | cut per layer; FA_NEW only within one list | One launch per decode token; the chunk order, hence the output, does not depend on the cuts. Evidence (W3b fix): `ggml_tesseract_attn`'s wrapped ring of 2,048 cells with the new cell in the low run and three chunks (AT §6.6 rule 7 reorders them) is bit-exact to `tsr_ref_fa`, also as `ggml_tesseract_attn_split1` (`TSR_OPL_SPLIT=1`: FA_NEW in the FA's own list); a wrong FA_NEW count or FA_NEW only within one list changes 387–557 of 1,024 outputs. (The earlier evidence, Qwen2.5-0.5B with `TSR_OPL_SPLIT=7` bit-identical to one launch, cannot show it: in causal decode the new cell is in the last chunk already.) Prefill ubatches above ≈ 450 tokens (Qwen2.5) or ≈ 240 (Gemma 4 iSWA) need more than 256 preload lines and are cut (open item: a larger preload area); a FLASH_ATTN of T > 680 tokens (MSUM and FA_NEW indices together over 256 lines) is refused by supports_op and runs on the CPU (W3b fix; it aborted in graph_compute for T 681–1022) |
-| V2-SW-44 | Data-dependent FA refusals (2026-10-31, W3b; AT §6.6 rules 5 / 6) | The mask producer plans every query tile of every registered reader at `set_tensor` (and on a new reader); a tile the planner would refuse promotes the MSUM to GENERAL with the f32 copy, so the executor never refuses for mask data | a CPU fallback per launch; pre-planning FA in the builder; refusing in supports_op (it cannot see mask data) | Keeps one launch per token; the GENERAL path is implemented by the firmware and `tsr_ref_fa`, and the simulator reads the same MSUM, so it stays the bit-exact oracle. Never triggered at U200 parameters (0 of 257,084 random tiny-SWA prefill tiles at PCAP 9,344); exercised at a small PCAP in `ggml_tesseract_kvbuf` |
-| V2-SW-45 | Plan cache (2026-10-31, W3b; §8 R7) | A graph's launched lists are kept under `tsr_graph_key` (node and source addresses, ops, flags, types, shapes, strides, op parameters; not values) salted with a placement epoch (bumped on a buffer free, a weight release, a lazy eviction); a hit re-registers the FLASH_ATTN mask readers and is rebuilt if their words moved; builds that stage a MUL_MAT or convert a weight lazily are not kept; LRU of 16 graphs | key by the ggml_cgraph pointer; no cache | A decode token reruns its list and its inputs change only through the preload table: Qwen2.5-0.5B 8 × 64 tokens: 512 `graph_compute` calls, 6 builds, 506 hits |
-| V2-SW-46 | Compute windows (2026-10-31, W3b; amends V2-SW-26 and §8 R6) | A LINEAR buffer gets one window in one channel: ch0 IO, else the low 512 MiB of ch1-3 (the channel with the most free bytes), else symmetric WEIGHT-heap reservations of ≥ 64 MiB between the weights and the KV planes, shared out per channel; `get_max_size` = 512 MiB; `get_alloc_size` pads to 64 bytes only where ggml allows it (`[TAG_ALLOC_SIZE_EXPAND]`: leaves, views, quantized types, MUL_MAT, FLASH_ATTN_EXT) | a heap sized from the reserve graph (V2-SW-26's text); padding every tensor | Reservations from the WEIGHT heap need no reserve-graph pass; the logits chunks (Qwen2.5 297 MiB, Gemma 4 512 MiB at `-ub 512`) stay on the device: staged chunks 0 for Qwen2.5-0.5B and Gemma 4 12B at `-ub 512 -c 4096`. Padding every tensor trips ggml's `get_alloc_size` assertion (CONT in test-backend-ops) |
-| V2-SW-47 | KV buffers as built (2026-10-31, W3b; V2-SW-17, AT §4.6) | Recognised from the `init_tensor` records (every tensor `cache_<tag>k_l<n>` / `cache_<tag>v_l<n>`, q8_0, 3D contiguous, E % 64 = 0, 64 ≤ E ≤ min(K_MAX, 511 · 64), LG < 2^16, plane < 2^28 beats); planes placed at the first data access (the clear), top-down in the symmetric WEIGHT heap, one per (tensor, stream), 4 KiB aligned; if they do not fit, lazy weights are dropped and the allocation retried, else abort; get / set / memset / clear convert any byte range in windows of whole local groups (8 MiB) with AT's reference, reading a window only when the access does not cover its rows | layout fixed at `init_tensor` (AT §4.6's text); whole-tensor conversion | ggml decides a buffer's usage after `init_tensor`, as for every other storage mode; top-down planes stay clear of the bottom-up weights and the compute-heap reservations; state files are bit-identical to the CPU's (`ggml_tesseract_kvstate`) |
-| V2-SW-48 | Mask readers and f32 copies (2026-10-31, W3b; amends V2-SW-32, §7.2 word 13, AT §7.3) | Masks are tensors named `*kq_mask*`, F16 `[n_kv, n_q, 1, 1]`; every FLASH_ATTN registers as a reader (scale, E, D, G) on every build and cached reuse; the reader set only grows until the shape changes or the buffer is freed / reset; one f32 copy per distinct scale (the first in the `get_alloc_size` reservation, further ones as side allocations of the WEIGHT heap), written only when the MSUM is GENERAL or the planner puts a reader's tile on the GENERAL path; word 13 always names the copy of the record's scale (HANDLE_NONE only without a mask, whose FA gets an all-visible `nomask` MSUM); summaries are forgotten on free, reset and LINEAR clear | copies only for GENERAL masks (the draft); per-token op-list patching | The scales are known only from the graph; a growing reader set keeps copy handles stable, so cached lists stay valid while the mask changes per token; rule-3 GENERAL tiles (prefill rows with two runs, holes, a wrapped SWA ring) need the copy although the MSUM is not GENERAL. Every llama.cpp mask is ±0 / −inf, so decode writes no copy (0 copies in the 0.5B and 12B runs) |
-| V2-SW-49 | Device kinds per phase (2026-10-31, W3b) | `TSR_KINDS=m6` restricts the device to MUL_MAT; `klcheck run` / `tsr-numcheck run` set it for `--phase m6` and clear it for `--phase m7`; the M6 e2e ctests run with `TSR_KINDS=m6 TSR_COMPUTE_WINDOWS=io` (v1's IO-only windows); `TSR_OPL_SPLIT=n` cuts lists for tests | M7 kinds in M6 runs | V2-SW-14: M6 keeps v1's splits (145 launches per Qwen2.5-0.5B token), so M6 numbers stay comparable; with the M7 kinds and `offload_kqv` false the M6 phase would be a hybrid of neither milestone |
-| V2-SW-50 | M7 graph tests (2026-10-31, W3b; §10.2, V2-SW-21) | Tiny Qwen2 (Q8_0 and pure Q4_K, no Q6_K) and Gemma 4 (Q8_0) from `gen_tiny_models.py`; `m7_tests.py graph` counts launches per `llama_decode` from `klcheck -v` markers and TSR_DEBUG launch lines, splits from `GGML_SCHED_DEBUG=2`; one Tesseract split per single-token decode graph, one launch per single-token decode, one per prefill ubatch; KL with klcheck's criterion (tiny Gemma 4 with `--min-kl 3e-3`), top-1 ≥ 0.95 for the tiny models | a backend hook for launch counts; a Q4_K_M-like mix; the spec's top-1 0.8 for tiny models | The Q4_K_M mix converts Q6_K to Q8_0 on the device, so a tiny model's floor cannot absorb it (ratio 87 in M6); a 4-layer random model's 1-ulp floor is degenerate (ratio 4.2 already in M6); 3e-3 lies below the injected sliding-window, RoPE-base and eps errors, and 0.95 catches the sliding-window error that 0.8 would pass |
-| V2-SW-51 | klcheck settings for SWA models (2026-10-31, W3b; §9.5) | `--swa-full off` (default): the SWA ring llama-cli and llama-server use, recorded in a spare header word (0 = older file, read as full-size); the `embd` and floor rows carry llama.cpp's token-row scale (√n_embd for Gemma 3 / 3n / 4), in klcheck and numcheck | `llama_context_default_params`' full-size SWA cache; unscaled embd rows | Long Gemma 4 prompts must wrap the ring (M7 gate item 3); without the scale the Gemma 4 floor was 8.2 nats with top-1 0 %, with it the embd path equals the token path bit for bit |
-| V2-SW-52 | test-backend-ops coverage of the M7 kinds (2026-10-31, W3b; §10.4 item 4) | One ctest per op filter (`ggml_tesseract_backend_ops_<op>`, 21) with a minimum count of supported cases (0 for SCALE / SOFTCAP, whose cases have 10- or 100-float rows, and for SET_ROWS / ROPE_SET_ROWS / FLASH_ATTN_EXT, whose tensors are not KV-cache tensors); FA and SET_ROWS on the device are covered by `ggml_tesseract_attn` | one ctest for every op; exact supported counts | Per-op reports; the minimum stops a supports_op regression from passing as "everything unsupported"; test-backend-ops cannot place its K / V / dst in a KV buffer (amends AT §13.6) |
-| V2-SW-53 | Host memory and the M7 kinds (2026-10-31, W3b fix; amends §8 R6, V2-SW-26 / 46) | Only MUL_MAT is staged; supports_op refuses an M7 op with an operand in a HOSTED buffer or one that will be (ANY with leaf data only: control vectors, LoRA adapters; every buffer under `TSR_FORCE_HOST`), so it runs on the CPU; a compute buffer without a window is found only at graph_compute, which aborts naming it and the remedies; a refused SET_ROWS into the device KV cache is reported before the scheduler stops (R10: streams, `TSR_FORCE_HOST` needs `-nkvo`) | staging every M7 operand through IO; a host fallback per record | Correct runs with a control vector (tiny Qwen2: 2 launches per token, text identical to the CPU) and `TSR_FORCE_HOST -nkvo` instead of aborts; staging all kinds is a lowering of its own for a case that does not occur at `-ub 512 -c 4096` (0 staged chunks for every model run) |
+| SW-1 | RISC-V model | in-house `tsr_rv` interpreter inside `sw/sim`; Spike only as test oracle (on a separate test bus profile at 0x8000_0000) | link Spike as a library; Ibex RTL model as reference; QEMU | Keeps the simulator one deterministic C library with exact co-scheduling against the tile model and MMIO hooks. It also stays usable inside the llama.cpp backend. Spike still anchors ISA correctness through signatures and lockstep random programs, and RVFI lockstep anchors Ibex-specific behaviour (`docs/ctrl-riscv.md:1318-1325`). |
+| SW-2 | Time model | event-driven on core cycles, `fixed` by default, `random:<seed>` for determinism tests, spin/WFI fast-forward | cycle-by-cycle lockstep; untimed (ops complete at push) | Untimed hides every ordering bug. Cycle-by-cycle is slow on 32B shapes. Events with randomized durations expose schedule dependence cheaply, and fast-forward bounds the cost of polling joins. |
+| SW-3 | Race detector policy | vector clocks; `fatal` in ctest, `off` in model runs, `report` nightly | always on; hardware detection | The 2–3× cost (*estimate*) matters only on long model runs. Every kernel and executor path is already covered by ctest with `fatal`. |
+| SW-4 | Launch state | launches are stateless: results depend only on image, args and DRAM; `SPM_STALE` check; fresh-boot trace replay | traces with SPM and DTCM snapshots; resident state across launches | Makes every per-launch trace self-contained and replayable on any target from a fresh boot. The op list and tables are small enough to reload per launch (≈ 150 KB for 32B, *estimate*). Resident state can come later (M9) with its own trace rules. |
+| SW-5 | Trace layout | one directory per launch; single push-ordered `ops/push.bin` with relative tickets; images shared by id | per-unit `ops/u<k>.bin` (spec text); one ELF copy per trace | Replay needs the global push order (a dep must not point to an unpushed ticket); per-unit files lose it, and the per-unit view is a filter. Relative tickets make traces independent of history. Sharing images avoids 290 copies. The spec's trace paragraph (`docs/spec.md:823-830`) needs the matching edit. |
+| SW-6 | Trace sets | generate m2/m3/gen with `tsr-trace-gen` and fixed seeds; convert the 290 model traces as a serial chain (`replay` SERIAL) | convert everything (EX's and CC's drafts) | Generators and seeds exist, and the error expectations come from the simulator. Model traces are large and error-free, and they convert exactly, which gives a strong unit-equivalence check against the recorded results. Adopted by EX §12 and CC §15.3. |
+| SW-7 | Toolchain | xPack `riscv-none-elf-gcc` 14.2.0-3 (with GDB) in user space, the only supported compiler; Spike and dtc from source; Clang optional | distro packages (need sudo; no rv32imc multilib, no libstdc++ headers); building GCC from source; Clang only | No sudo is needed, versions are pinned, and the result is reproducible. The xPack bundle includes GDB for D18. Clang alone lacks an rv32 compiler-rt here. |
+| SW-8 | Firmware language rules | freestanding C++20, no heap/exceptions/RTTI, `-Os` (hot path `-O2`, SW-34), libgcc only, no libstdc++ headers; no f32 math in firmware (the host precomputes constants) | allow soft-float in kernels; C | Avoids soft-float cost and any risk of a firmware-side fp rounding path (the spec fp rules stay in host-computed constants and in device ops). C++ templates keep the op builders zero-cost (D6). |
+| SW-9 | Image identity | EX §3.2: build-time SHA-256 over the `PT_LOAD` segments, first 8 bytes as a little-endian `uint64`, stored in an 8-byte `.tsr_id`, echoed in HELLO r2 / r3 | a 16-byte id (the draft); runtime hashing of TCMs; CRC only | Hashing 128 KiB on Ibex would take ≈ 80 ms (*estimate*). 64 bits tell builds apart; the load CRC and VERIFY prove the transfer. Excluding the not-loaded log strings keeps the id stable across log-text edits. |
+| SW-10 | Host ↔ RISC-V protocol | EX's LQ / LCQ protocol (EX-1 … EX-5) with the runtime contract R1–R10; up to `LQ_DEPTH` launches outstanding | the single-slot H2R / R2H mailbox with one outstanding launch (the draft) | EX owns the launch protocol; the queue lets the host pipeline launches with posted writes only, and one channel carries launches, answers, HELLO, TRAP and events. |
+| SW-11 | Logging | binary records (format-string address + args) with DB's header (DB §6.1) through EX's log ring; whole-record drop with a counter; runtime filter `LOG_CFG.LEVEL` | text over the LCQ; DRAM log ring; SW's own 2-bit-level header and a LOGCTL message (the draft) | No TCM is spent on strings, and the ring is readable even when queues are wedged, unlike a DRAM ring that needs a working DMA (`docs/ctrl-riscv.md:1190`). Whole-record drop keeps the stream parseable. One header for the encoder and the decoders. |
+| SW-12 | Graph execution model | host builds a pre-resolved ggml-level op list (OPL), computes the dependencies, and caches it per graph; firmware kernels per kind | host emits tile-op programs for a replay kernel; firmware parses ggml tensors and computes hazards | Static tile programs cannot express per-token KV write rows without register-relative addressing (not in the ISA, D14). Parsing ggml views and hazards in firmware would cost TCM and RISC-V cycles. The host does the ggml work once per graph, and the firmware reads fixed-size args. |
+| SW-13 | Data placement in M7 | tensors stay in DRAM between ops; per-op SPM scratch from a ring with release tickets; fusion of bias/residual through MVM ACC and of RMS_NORM × weight | keep intermediates resident in SPM; no fusion | DRAM round trips cost ≈ 2 % of a 32B token (*estimate*) and are simple to make race-free. Fusion through ACC is bit-identical (one commutative f32 add) and removes the most common round trips. SPM residency is an optimisation for after the gate. |
+| SW-14 | M6 llama.cpp path | the same `graph` executor with MUL_MAT-only op lists, one launch per split (adopted by EX as EX-29) | a `mul_mat` kernel per MUL_MAT; keeping tile-program lowering with `tsr.oplist_seq` (EX's draft) | One mechanism from M6 to M7, so M7 only adds kinds and supports_op entries. The splits depend only on the MUL_MAT rules of `supports_op`. |
+| SW-15 | Index inputs | preload all RISC-V-read graph inputs at launch start with one join: KV write indices, row ids, positions and each KQ mask's MSUM | LD and join per op | A join per SET_ROWS or FLASH_ATTN would stall run-ahead behind every queued DMA op (2–3 × layers per token). One join at the start costs one DMA latency. |
+| SW-16 | KV rotation | `LLAMA_ATTN_ROT_DISABLE=1` in device runs and in every baseline; device rotation is a follow-up | device f32 MUL_MAT for graph-input matrices; a Walsh-Hadamard kernel; leave the rotations on the CPU | The rotation matrix is an F32 graph input that MVM cannot use, and leaving it on the CPU breaks one launch per token. Comparing against a CPU with the same setting keeps the KL criterion fair. q8_0 KV gains little from rotation, compared with 4-bit KV. |
+| SW-17 | KV buffers (as built: SW-47) | recognise llama.cpp KV buffers by tensor names at first access; AT layout in a KV heap; converting get/set; context shift unsupported in M7 | a ggml-identical byte layout on the device; a custom buffer type | llama.cpp allocates the KV cache through the device buffer type without a usage flag (`docs/llama-pin.md:193-200`). Names are the stable signal. Converting accessors keep state save/load working whatever layout AT picks. |
+| SW-18 | Host protocol | one protocol layer over all kdevs implementing EX §10; `sim` is a kdev with `idle()` | a separate sim transport | The exact host code path that runs on the card (bind, load, VERIFY, launch, wait, recovery, log) is then tested on every sim and mock run. |
+| SW-19 | Test access to queues | `tsr_sim_push`/`tsr_sim_qctrl` test hooks in the simulator library, never in `tsr_transport` | no hooks (every test needs firmware); expose to the host | Lets directed queue tests and tile-only sim replays run without firmware, while D15 still holds for every real device path. |
+| SW-20 | Planning code | `plan.hpp` freestanding, compiled for host and firmware | separate host and firmware implementations | `supports_op` must reject exactly what firmware cannot plan; one source makes that true by construction. |
+| SW-21 | Gemma test models | synthetic tiny Gemma 4 and Qwen2 GGUFs generated by a gguf-py script at build time; real 12B (on disk) and 31B (when available) for gates | only real models; checked-in binaries | The smallest real dense Gemma 4 is 12B, too slow for ctest on sim. Generated models cover SWA/global layers, per-head norms and GEGLU in seconds without binaries in git. |
+| SW-22 | Baselines | FA on, q8_0/q8_0 KV, rotation off for device and CPU runs from M6 on; KV on host (`offload_kqv` = false) in M6, on device in M7 | keep FA off until M7 | D17 requires FA on. Fixing the KV type and rotation already in M6 keeps baselines constant from M6 to M7, so the M7 delta measures the device attention only. |
+| SW-23 | Approximate-math verification | exhaustive 2^32 bit-exact check against an independent numpy model, ulp bounds against double, RTL exhaustive opt-in; GELU16 enumerated over all 65,536 fp16 inputs against the pinned ggml table | random sampling only; MPFR | Unary f32 functions are fully enumerable, which leaves no gap for coding errors. The numpy model is written from the VU text and does not share code. Double-precision references are enough for f32 ulp classification. |
+| SW-24 | Launch watchdog | 60 s default, counted only while the RISC-V is not halted and no tile stop is active, off in SERIAL mode; the mutex is released between polls; on timeout DB's ladder: dump, `LQ_CANCEL`, then `SOFT_RESET` + warm restart | an unconditional timeout with dump and reset (the draft); no timeout | A wedged queue or a parked hart must not hang llama.cpp, but a GDB user stopped at a breakpoint inside llama.cpp must not have the device reset under them (D18). The dump preserves the post-mortem before any destructive step. |
+| SW-25 | Kernel test builds | host build (ASan/UBSan) plus RV build on the simulator, the RV build being the reference | RV only; host only | The host build finds logic bugs in milliseconds with sanitizers; only the RV build proves control flow, MMIO timing behaviour and ABI. |
+| SW-26 | Compute buffers (amended by SW-46) | a per-channel compute heap between the weights and the KV planes, sized from the reserve graph, plus ch0 IO and ch1–ch3 [0, 512) MiB; `get_max_size` ≥ the largest tensor | fixed IO windows (ch0 IO + ch1–ch3 low 512 MiB, the draft); ch0 IO only | Gemma 4's 512 MiB logits chunk at `-ub 512` fills a whole fixed window; a heap sized from the reserve graph keeps every chunk on the device (one launch per token) and spreads activation DMA over the channels. |
+| SW-27 | numcheck launches | rely on per-node observation, which gives one launch per node | a special per-op launch mode in the backend | llama.cpp's `cb_eval` already splits the graph per observed node; no backend mode means no second code path to keep correct. |
+| SW-28 | Card selftest | `selftest` kernel with in-process sim shadow comparison | host-written tile programs (forbidden by D15); fixed expected files | D15 requires kernels. Running the same image on the simulator gives exact expectations for any test parameters without stored golden files. |
+| SW-29 | Op-list size | ≤ 4096 ops per launch (32 KiB of DTCM tables); larger graphs are split by the builder | unbounded with streamed tables | Decode graphs need ≈ 1,300–2,000 ops (*estimate*). A fixed cap keeps DTCM use static and the executor simple. |
+| SW-30 | Timing independence | firmware never lets a timing-dependent read influence pushes, deps, stores or records (only waits); the ring allocator decides deps by count; `ISSUE_PIDX` and `ISSUED_SEQ` are exact | allow opportunistic decisions | This is what makes programs valid in the sense of §4.7, so card logits can be bit-identical to the simulator. |
+| SW-31 | GELU in llama.cpp graphs | GGML GELU and GEGLU map to the VU's GELU16 / GEGLU16 (the CPU's fp16-table form); the exact tanh GELU stays for M8 / PyTorch | exact tanh GELU everywhere (the draft's default) | The pinned ggml CPU defines `GGML_GELU_FP16` (`vec.h:46`) and rounds x and the result to fp16 (relative error up to 3.9·10⁻³); matching that form removes an fp16-level difference on every GEGLU element of every Gemma 4 layer. |
+| SW-32 | Mask summaries (amended by SW-48) | the backend writes the MSUM (and, for GENERAL masks, an f32 copy) on `set_tensor` of tensors named `kq_mask`, reserving the bytes through `get_alloc_size`; the FA record refers to it through the preload table | the device reads F16 masks; per-token op-list patching | The VU has no f16; the summary keeps the cached op list valid per token and lets ATTQK skip masked bandwidth (AT AT-14). |
+| SW-33 | Unselected graph branches (flag rule amended by SW-40) | `GGML_OP_DUP`, non-KV SET_ROWS and nodes without `GGML_TENSOR_FLAG_COMPUTE` are unsupported; `graph_compute` skips flagless nodes and makes no launch for an empty split | rely on "everything else false" | `ggml_build_forward_select` leaves unselected embedding branches in every decode graph, and the scheduler ignores the flag when it assigns backends; a supported DUP would add a second split and launch per token. |
+| SW-34 | Firmware optimisation flags (2026-10-30, executor optimisation; amends SW-8) | `-Os` for the image; the executor and kind sources (`kernels/graph.cpp`, `kernels/k_*.cpp`) add `-O2` (§6.1) | `-Os` everywhere; `-O2` everywhere; `-O3` / `-O2 -fpeel-loops` on the hot files | Measured (§6.1): −1 % per MUL_MAT record, −5 to −7 % per JOIN / NOP record (the cheap records that bound M7) and −23 % RISC-V time per 0.5B layer (the launch's fixed part) for +2.2 KiB of ITCM; the whole image at `-O2` adds 5.8 KiB for nothing per record, `-O3` / peeling cost more ITCM for no gain on the optimised executor. Keeps the ITCM headroom for M7's kinds, which join the hot set by file name. |
+| SW-35 | Executor hot path (2026-10-30, executor optimisation; §7.3 "Hot path", §7.8) | records read in place through the line-buffered alias after the op's control-window accesses (MARK before the record is read: in PROF launches a malformed record has its marker and a streamed list's chunk LD follows the marker of the record before which it is pushed; otherwise the executor's own pushes are W2a's, and every launch trace of `fw_m6_e2e`, `fw_exec_rv` and `fw_kernels_rv` is byte-identical to W2a's); a streamed list's chunk LD where W2a pushed it (after the record's check, before its handler); a decode fast path for T = 1 MUL_MAT records (leaf function, one credit read per op when it covers the pushes, `spm_ring::alloc_dma_first`); planning stays in the firmware (`plan.hpp`, shifts, limits per launch); `spm_ring` O(1) with a 128-block table; the MUL_MAT push stream unchanged, pinned by trace digests (§7.3) | move MUL_MAT planning into the OPL record (host-planned words); hand-written assembly; a per-push credit cache; inlining the fast path into the loop; the chunk LD after the handler (the first version: one record later than W2a, which changed later deps and a failing chunk load's outcome) | Measured (§7.8), as spin-free executor work with deep queues: 1,518 → 387 RISC-V cycles per 0.5B decode record on Ibex maxperf (1,966 → 485 on small); with U200 queue depths 401, by W2a's method 437 (both above 400). The M6 outcome: the MVM no longer idles on issue. Host planning would save ≈ 35 of ≈ 280 instructions and the firmware would still check the block geometry; the credit cache and inlining measured slower (more live registers); assembly is not maintainable. |
+| SW-36 | The one-tile block (2026-10-31, W2b integration; size W2b fix; §7.3, `plan.hpp`) | one fixed SPM block below the preload area (1,024 lines on the U200; `one_block_lines`) for every single-tile record of a DMA-bracketed kind (ADD, MUL, SCALE, RMS_NORM, GLU, ROPE, UNARY; every tile of GET_ROWS / CPY; every SET_ROWS_KV run), in the fast and the general path alike; MUL_MAT and FLASH_ATTN keep the ring, whose budget shrinks by the block (60,144 lines); GLU's decode rows larger than the block take a ring block in the fast path (`alloc_dma_first`); `plan.hpp` pins MUL_MAT's prefill T-tiles of the model shapes by static_assert | `spm_ring::alloc_dma_first` per record (the packages' form); merging consecutive DMA-first blocks into one ring record; the block at the ring's bottom; 4,096 lines (the integration's: every decode tile of Qwen2.5 0.5B–72B and Gemma 4, but MUL_MAT's prefill T-tile of every Qwen2.5 output head drops from 3 to 2, +50 % head weight traffic in an all-logits prefill); 1,536 lines (also Qwen2.5 1.5B / 3B GLU, a 68-line margin on 32B's head) | The DMA queue runs one op after another, so DMA-bracketed tiles are serialised whatever their SPM lines: the fixed block needs no dep, no record and no release and costs no concurrency; it saved 60–80 RISC-V cycles per short record (the ring's table was full of short blocks, so every allocation joined and dropped its oldest) and the ring code left every fast path; at the top the M6 lists' ring blocks keep their lines (the M6 trace digests are unchanged). 1,024 lines keep MUL_MAT's tiling of Qwen2.5 0.5B–32B as before W2b (72B's head: 2) at the cost of GLU's ring block on larger models (about 130 RISC-V cycles once per layer whose device time is milliseconds; the general path would cost 1,250) |
+| SW-37 | M7 dispatch (2026-10-31, W2b integration; §7.3) | the kind table holds a fast entry per short kind (`kind_<name>_fast`, a leaf in its common path, KIND_NOT_FAST when it does not take the record, weak "not taken" stubs); the executor calls it with (args, kflags, d) and falls back to the handler out of line, re-reading word0 / word1; `[[unlikely]]` on the fast paths' refusal tests | the handler with the fast path inlined (the packages' form); inlining the fast paths into `op_loop` | −10 to −25 RISC-V cycles per short record (the handler's prologue saved up to 12 registers, the refusal tests were laid out as fall-through); `op_loop` keeps nothing live across the call, so MUL_MAT's path is unchanged within ±2 cycles; inlining would grow `op_loop`'s register pressure for every kind |
+| SW-38 | ITCM budget (2026-10-31, W2b integration; amends §7.8's 48 KiB) | 80 KiB for the production image (69,732 B with the M7 kinds; M8 / M9 keep 48 KiB of the 128 KiB ITCM, CC-3); test images are stamped against the whole ITCM | keep 48 KiB (would need ≈ 22 KB out of the M7 kinds: shared fast-path bodies cost 22–29 RISC-V cycles per record, `-Os` fast paths more); 96 KiB | The per-kind leaf fast paths are what meets the issue-rate requirement; CC-3 sized the ITCM for "M7's graph executor, two model families, M8 MoE, sampling and debug formatting" |
+| SW-39 | Staged-word reuse and hot entries (2026-10-31, W2b fix; §7.3, `k_fast.hpp`) | `kf::push_s<SKIP, TICKET>`: a fast path's push without the `ISSUE_W` stores of words the previous push of its record staged with the same value (CC §5.1 keeps staged words; WMASK unchanged, so the pushed words are the op's) and without unused `ISSUE_TICKET` reads; host builds check every SKIP claim; RMS_NORM / ROPE straight-line hot entries for their common decode record that tail-call the general fast form; ADD / MUL / GLU wait for one credit read covering their pushes; `op_loop` without MARK / SERIAL tests for plain in-place lists; the `fw_exec_perf_m7 --strict` gate holds every short kind (and SCALE with a bias) to 350 | regression ceilings for RMS_NORM / ROPE (the integration's I6); precomputed ROPE words in the record (an OPL change); a software shadow of the staged words across records; one fast entry for every RMS_NORM shape (+60 cycles: register pressure) | W2b's issue-rate requirement (≤ 350 RISC-V cycles of work per short decode record) without an OPL change: RMS_NORM 395 → 324, ROPE 420 → 325, SCALE with a bias 380 → 336; the SKIP claims are static per call site and checked on the host, the RISC-V tests check the results bit for bit |
+| SW-40 | Flagless nodes (2026-10-31, W3b; amends §8 R1 and SW-33) | supports_op does not test `GGML_TENSOR_FLAG_COMPUTE`; DUP, a SET_ROWS whose destination is not a KV-cache tensor and the quantized `tok_embd` GET_ROWS are refused by their own rules; `graph_compute` skips flagless nodes and makes no launch for a split without computed nodes | the flag rule of R1 / SW-33 | test-backend-ops asks supports_op before `ggml_build_forward_expand` sets the flag (`tests/test-backend-ops.cpp:1415-1421`), so the rule would refuse every op there and the M7 gate's test-backend-ops item would test nothing. The unselected branches are refused anyway: the Qwen2.5-0.5B and Gemma 4 12B decode graphs are one CPU split (the embedding) and one Tesseract split (`GGML_SCHED_DEBUG`) |
+| SW-41 | supports_op of the M7 kinds (2026-10-31, W3b; SW-20 as built) | supports_op and the builder share one lowering (`tsr_lower_m7`): probe mode (handles 0, the KV shape from `tsr_kv_identify`, no device state), then `opl::check_args` and the kind's planner (`plan_kind` on the device's CFG0-3 and CAPS). The 64-byte rule: every row operand's base and row stride are multiples of 64 bytes, and a result that is a view has rows of whole lines (the kinds store whole lines; a result of its own may be one row ending inside a line: ggml-alloc pads blocks to 64 bytes; W3b fix: multi-row views were accepted and their neighbours' bytes overwritten). KV views as llama.cpp builds them with one stream (cell 0; cells `row_size(E)`, heads `row_size(D)` apart) in probe and build mode alike; operands in host memory refused (SW-53). llama.cpp's weight-placement probe of a ROPE (every parameter 0, `src/llama-model-loader.cpp:998-1008`) with a freq-factor tensor is planned as a full rotation | a separate supports_op table; refusing the probe | The host refuses exactly what the firmware cannot plan or the builder cannot encode, by construction (2,850 shapes in `ggml_tesseract_units`, 1,234 supported, 0 disagreements). Refusing the probe left Gemma 4's `rope_freqs` on the CPU and cut each token into 3 launches |
+| SW-42 | Fusion conditions (2026-10-31, W3b; §9.3 pass 3, SW-13) | MUL_MAT + ADD (a bias row: addend stride 0; the residual: its row stride) and RMS_NORM + MUL (a weight of row period 1 or dense per-row weights) when the first node's ggml use count over the whole graph is 1, it is not a view or an output, every operand is in device memory, and no node in between writes the other operand or reads / writes the result (byte ranges); the fused record takes the first node's place | fusing by adjacency only; use counts within the split | Bit-identical to the unfused device records (`ggml_tesseract_opl_launch` F); whole-graph use counts keep consumers in other splits and observed nodes safe. Qwen2.5-0.5B: 168 fused pairs per decode token; Gemma 4 12B: 289 per token |
+| SW-43 | List cuts and FA_NEW (2026-10-31, W3b; §7.2 word 21, AT §12) | A split is one list unless it reaches 4,096 records or a preload entry does not fit the 256-line area; FA_NEW names the indices of the SET_ROWS_KV that wrote the FA's K plane earlier in the same `graph_compute`, added as a preload entry of the FA's own list when the lists were cut between them | cut per layer; FA_NEW only within one list | One launch per decode token; the chunk order, hence the output, does not depend on the cuts. Evidence (W3b fix): `ggml_tesseract_attn`'s wrapped ring of 2,048 cells with the new cell in the low run and three chunks (AT §6.6 rule 7 reorders them) is bit-exact to `tsr_ref_fa`, also as `ggml_tesseract_attn_split1` (`TSR_OPL_SPLIT=1`: FA_NEW in the FA's own list); a wrong FA_NEW count or FA_NEW only within one list changes 387–557 of 1,024 outputs. (The earlier evidence, Qwen2.5-0.5B with `TSR_OPL_SPLIT=7` bit-identical to one launch, cannot show it: in causal decode the new cell is in the last chunk already.) Prefill ubatches above ≈ 450 tokens (Qwen2.5) or ≈ 240 (Gemma 4 iSWA) need more than 256 preload lines and are cut (open item: a larger preload area); a FLASH_ATTN of T > 680 tokens (MSUM and FA_NEW indices together over 256 lines) is refused by supports_op and runs on the CPU (W3b fix; it aborted in graph_compute for T 681–1022) |
+| SW-44 | Data-dependent FA refusals (2026-10-31, W3b; AT §6.6 rules 5 / 6) | The mask producer plans every query tile of every registered reader at `set_tensor` (and on a new reader); a tile the planner would refuse promotes the MSUM to GENERAL with the f32 copy, so the executor never refuses for mask data | a CPU fallback per launch; pre-planning FA in the builder; refusing in supports_op (it cannot see mask data) | Keeps one launch per token; the GENERAL path is implemented by the firmware and `tsr_ref_fa`, and the simulator reads the same MSUM, so it stays the bit-exact oracle. Never triggered at U200 parameters (0 of 257,084 random tiny-SWA prefill tiles at PCAP 9,344); exercised at a small PCAP in `ggml_tesseract_kvbuf` |
+| SW-45 | Plan cache (2026-10-31, W3b; §8 R7) | A graph's launched lists are kept under `tsr_graph_key` (node and source addresses, ops, flags, types, shapes, strides, op parameters; not values) salted with a placement epoch (bumped on a buffer free, a weight release, a lazy eviction); a hit re-registers the FLASH_ATTN mask readers and is rebuilt if their words moved; builds that stage a MUL_MAT or convert a weight lazily are not kept; LRU of 16 graphs | key by the ggml_cgraph pointer; no cache | A decode token reruns its list and its inputs change only through the preload table: Qwen2.5-0.5B 8 × 64 tokens: 512 `graph_compute` calls, 6 builds, 506 hits |
+| SW-46 | Compute windows (2026-10-31, W3b; amends SW-26 and §8 R6) | A LINEAR buffer gets one window in one channel: ch0 IO, else the low 512 MiB of ch1-3 (the channel with the most free bytes), else symmetric WEIGHT-heap reservations of ≥ 64 MiB between the weights and the KV planes, shared out per channel; `get_max_size` = 512 MiB; `get_alloc_size` pads to 64 bytes only where ggml allows it (`[TAG_ALLOC_SIZE_EXPAND]`: leaves, views, quantized types, MUL_MAT, FLASH_ATTN_EXT) | a heap sized from the reserve graph (SW-26's text); padding every tensor | Reservations from the WEIGHT heap need no reserve-graph pass; the logits chunks (Qwen2.5 297 MiB, Gemma 4 512 MiB at `-ub 512`) stay on the device: staged chunks 0 for Qwen2.5-0.5B and Gemma 4 12B at `-ub 512 -c 4096`. Padding every tensor trips ggml's `get_alloc_size` assertion (CONT in test-backend-ops) |
+| SW-47 | KV buffers as built (2026-10-31, W3b; SW-17, AT §4.6) | Recognised from the `init_tensor` records (every tensor `cache_<tag>k_l<n>` / `cache_<tag>v_l<n>`, q8_0, 3D contiguous, E % 64 = 0, 64 ≤ E ≤ min(K_MAX, 511 · 64), LG < 2^16, plane < 2^28 beats); planes placed at the first data access (the clear), top-down in the symmetric WEIGHT heap, one per (tensor, stream), 4 KiB aligned; if they do not fit, lazy weights are dropped and the allocation retried, else abort; get / set / memset / clear convert any byte range in windows of whole local groups (8 MiB) with AT's reference, reading a window only when the access does not cover its rows | layout fixed at `init_tensor` (AT §4.6's text); whole-tensor conversion | ggml decides a buffer's usage after `init_tensor`, as for every other storage mode; top-down planes stay clear of the bottom-up weights and the compute-heap reservations; state files are bit-identical to the CPU's (`ggml_tesseract_kvstate`) |
+| SW-48 | Mask readers and f32 copies (2026-10-31, W3b; amends SW-32, §7.2 word 13, AT §7.3) | Masks are tensors named `*kq_mask*`, F16 `[n_kv, n_q, 1, 1]`; every FLASH_ATTN registers as a reader (scale, E, D, G) on every build and cached reuse; the reader set only grows until the shape changes or the buffer is freed / reset; one f32 copy per distinct scale (the first in the `get_alloc_size` reservation, further ones as side allocations of the WEIGHT heap), written only when the MSUM is GENERAL or the planner puts a reader's tile on the GENERAL path; word 13 always names the copy of the record's scale (HANDLE_NONE only without a mask, whose FA gets an all-visible `nomask` MSUM); summaries are forgotten on free, reset and LINEAR clear | copies only for GENERAL masks (the draft); per-token op-list patching | The scales are known only from the graph; a growing reader set keeps copy handles stable, so cached lists stay valid while the mask changes per token; rule-3 GENERAL tiles (prefill rows with two runs, holes, a wrapped SWA ring) need the copy although the MSUM is not GENERAL. Every llama.cpp mask is ±0 / −inf, so decode writes no copy (0 copies in the 0.5B and 12B runs) |
+| SW-49 | Device kinds per phase (2026-10-31, W3b) | `TSR_KINDS=m6` restricts the device to MUL_MAT; `klcheck run` / `tsr-numcheck run` set it for `--phase m6` and clear it for `--phase m7`; the M6 e2e ctests run with `TSR_KINDS=m6 TSR_COMPUTE_WINDOWS=io` (the IO-only windows); `TSR_OPL_SPLIT=n` cuts lists for tests | M7 kinds in M6 runs | SW-14: M6 uses the MUL_MAT-only splits (145 launches per Qwen2.5-0.5B token); with the M7 kinds and `offload_kqv` false the M6 phase would be a hybrid of neither milestone |
+| SW-50 | M7 graph tests (2026-10-31, W3b; §10.2, SW-21) | Tiny Qwen2 (Q8_0 and pure Q4_K, no Q6_K) and Gemma 4 (Q8_0) from `gen_tiny_models.py`; `m7_tests.py graph` counts launches per `llama_decode` from `klcheck -v` markers and TSR_DEBUG launch lines, splits from `GGML_SCHED_DEBUG=2`; one Tesseract split per single-token decode graph, one launch per single-token decode, one per prefill ubatch; KL with klcheck's criterion (tiny Gemma 4 with `--min-kl 3e-3`), top-1 ≥ 0.95 for the tiny models | a backend hook for launch counts; a Q4_K_M-like mix; the spec's top-1 0.8 for tiny models | The Q4_K_M mix converts Q6_K to Q8_0 on the device, so a tiny model's floor cannot absorb it (ratio 87 in M6); a 4-layer random model's 1-ulp floor is degenerate (ratio 4.2 already in M6); 3e-3 lies below the injected sliding-window, RoPE-base and eps errors, and 0.95 catches the sliding-window error that 0.8 would pass |
+| SW-51 | klcheck settings for SWA models (2026-10-31, W3b; §9.5) | `--swa-full off` (default): the SWA ring llama-cli and llama-server use, recorded in a spare header word (0 = older file, read as full-size); the `embd` and floor rows carry llama.cpp's token-row scale (√n_embd for Gemma 3 / 3n / 4), in klcheck and numcheck | `llama_context_default_params`' full-size SWA cache; unscaled embd rows | Long Gemma 4 prompts must wrap the ring (M7 gate item 3); without the scale the Gemma 4 floor was 8.2 nats with top-1 0 %, with it the embd path equals the token path bit for bit |
+| SW-52 | test-backend-ops coverage of the M7 kinds (2026-10-31, W3b; §10.4 item 4) | One ctest per op filter (`ggml_tesseract_backend_ops_<op>`, 21) with a minimum count of supported cases (0 for SCALE / SOFTCAP, whose cases have 10- or 100-float rows, and for SET_ROWS / ROPE_SET_ROWS / FLASH_ATTN_EXT, whose tensors are not KV-cache tensors); FA and SET_ROWS on the device are covered by `ggml_tesseract_attn` | one ctest for every op; exact supported counts | Per-op reports; the minimum stops a supports_op regression from passing as "everything unsupported"; test-backend-ops cannot place its K / V / dst in a KV buffer (amends AT §13.6) |
+| SW-53 | Host memory and the M7 kinds (2026-10-31, W3b fix; amends §8 R6, SW-26 / 46) | Only MUL_MAT is staged; supports_op refuses an M7 op with an operand in a HOSTED buffer or one that will be (ANY with leaf data only: control vectors, LoRA adapters; every buffer under `TSR_FORCE_HOST`), so it runs on the CPU; a compute buffer without a window is found only at graph_compute, which aborts naming it and the remedies; a refused SET_ROWS into the device KV cache is reported before the scheduler stops (R10: streams, `TSR_FORCE_HOST` needs `-nkvo`) | staging every M7 operand through IO; a host fallback per record | Correct runs with a control vector (tiny Qwen2: 2 launches per token, text identical to the CPU) and `TSR_FORCE_HOST -nkvo` instead of aborts; staging all kinds is a lowering of its own for a case that does not occur at `-ub 512 -c 4096` (0 staged chunks for every model run) |
 
 ---
 
@@ -2185,7 +2158,7 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
 | Toolchain availability (xPack multilib, Spike build deps) | blocks P2 | the libgcc fallback multilib; Clang + conda as a second route; Spike optional for the build, needed only for `rv_*` tests |
 | Simulator speed for 32B/Gemma runs with RV interpretation | slow gates on sim | fast-forward; race detector off by default; `TSR_SIM_THREADS`; short prompts for the sim identity runs |
 | `xrt::ip` with `ap_ctrl_none` and BO bank discovery | host cannot open the CU | *confirm* in P3.1 against the no-op shim and in hw_emu if needed; EX §9.1 fallback; the adapter keeps the channel-base registers |
-| v1 deleted now (D16) while v2 is not on the card | no in-tree path to run models | `build/v1` binaries and tag `v1-m4` for comparisons; the sim path is end to end before RTL (P3.4) |
+| The control core is not on the card yet | models run only on the simulator until P6 | the sim path is end to end before RTL (P3.4) |
 | k4 link time and 14 GB host RAM | slow P5.6/P6 iterations (≈ 4 h per link with swap) | k1 and OOC first; link only frozen RTL; card runs batched |
 | Log ring full during long kernels | lost diagnostics | whole-record drop with counters; host drains during waits; levels; BLOCK mode |
 | Composite-kernel sequence changes after baselines | KL baselines silently stale | sequence documented per kernel; firmware ABI bump forces rebaseline |
@@ -2203,9 +2176,9 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
   (still unmeasured, `docs/spec.md:994`), and the RISC-V run-ahead margin of the executor on 0.5B.
 - The Gemma 4 KL gap of GELU16 (§10.4). The mismatch rate against the pinned table is measured
   (W0: 0.415 %, GELU16 correctly rounded in every mismatch, VU §6.5).
-- Device support for llama.cpp's Hadamard KV rotation (V2-SW-16 follow-up), M8 or later.
-- Spec edits that follow this document (at the spec v2 rewrite, README): the trace paragraph
+- Device support for llama.cpp's Hadamard KV rotation (SW-16 follow-up), M8 or later.
+- Spec edits that follow this document (at the spec rewrite, README): the trace paragraph
   (`docs/spec.md:823-830`), the CMD region → OPL region in the DRAM map (`docs/spec.md:134`), and
   the transport row of the backend table (`docs/spec.md:489`).
 - Unrelated observation: `git status` shows the `third_party/llama.cpp` submodule with modified
-  content; the v2 design work made no changes there.
+  content; the design work made no changes there.

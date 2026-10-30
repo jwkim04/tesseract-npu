@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Independent numpy model of the VU ops on an SPM image (V2-SW-23, SW §10.1, VU §10 item 1).
+"""Independent numpy model of the VU ops on an SPM image (SW-23, SW §10.1, VU §10 item 1).
 
-Written from the text of docs/v2/02-vector-unit.md alone: §4.1-§4.5 (fp rules, the rows x m
+Written from the text of docs/design/02-vector-unit.md alone: §4.1-§4.5 (fp rules, the rows x m
 operand model with line strides, stride 0, the tail rule, the n = 0 rule, c from an s register or
 an SPM row vector, aliasing), §5.2-§5.8 (what each field means), §6.2 (RED: 128 partials, the
 complete tree, the z() skip rule, the post-ops), §6.7 (ROPE: both angle forms, the rotation, the
@@ -96,7 +96,7 @@ def mint(a, b):
 # VOP element functions (VU §5.2 table); each takes uint32 arrays a, b, c
 # ---------------------------------------------------------------------------
 def _expsub(a, x):
-    # EXPSUB(a, x) = (DAZ(a) = -inf) ? +0 : EXPK(FS(a, x), P1)   (VU §6.5, V2-VU-21)
+    # EXPSUB(a, x) = (DAZ(a) = -inf) ? +0 : EXPK(FS(a, x), P1)   (VU §6.5, VU-21)
     return np.where(RM.daz(a) == NINF, U32(0), RM.expk(RM.FS(a, x), "p1")).astype(U32)
 
 
@@ -748,7 +748,7 @@ def self_test():
     spm[176:178] = [0x00000001, 0x807FFFFF]
     vop(spm, 0x09, 0, 12, 11, 0, 0, 2, 1, 0, 0, 0)
     ck.same("copy raw", spm[192:194], [0x00000001, 0x807FFFFF])
-    # EXPSUB(-inf, x) = +0 also for x = -inf and NaN (V2-VU-21)
+    # EXPSUB(-inf, x) = +0 also for x = -inf and NaN (VU-21)
     ck.same("expsub -inf", vop_elem(0x0F, u32([NINF, NINF, NINF]), u32([NINF, CANON, 0]), 0), [0, 0, 0])
     # ROPE: position 0 gives phi = 0, cos 1, sin 0: the rotation is the identity (M = 1)
     spm = gen_finite(np.random.default_rng(1), 16 * 64)

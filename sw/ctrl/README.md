@@ -10,10 +10,10 @@ stays the reference.
 
 > **Scope.** Developer documentation of the firmware SDK as built in this tree. Status words: *on
 > the simulator* means implemented here and tested against the simulator (`sw/sim`, RISC-V
-> interpreter `tsr_rv`); there is no v2 RTL or bitstream yet, so nothing here has run on the card.
-> Numbers are labelled with their provenance. Normative: [SW](../../docs/v2/06-software-verification.md)
-> §6 (SDK) and §7 (kernels and executor), [EX](../../docs/v2/01-execution-model.md) §3 and §4 (image and
-> launch protocol), [DB](../../docs/v2/05-debug.md) §6 (log and crash contract).
+> interpreter `tsr_rv`); there is no RTL or bitstream with the control core yet, so nothing here has run on the card.
+> Numbers are labelled with their provenance. Normative: [SW](../../docs/design/06-software-verification.md)
+> §6 (SDK) and §7 (kernels and executor), [EX](../../docs/design/01-execution-model.md) §3 and §4 (image and
+> launch protocol), [DB](../../docs/design/05-debug.md) §6 (log and crash contract).
 
 <p align="center"><img src="../../docs/fig/stack.svg" alt="The Tesseract software stack: front ends, backends, transport, firmware on the control core, the NPU core and the tools beside them. The firmware layer lists the runtime, the graph executor, the kernels and the header library." width="100%"></p>
 
@@ -43,7 +43,7 @@ sw/ctrl/tools/install-toolchain.sh        # installs under build/tools/riscv
 ```
 
 The pins (xPack `riscv-none-elf-gcc` 14.2.0-3, dtc, Spike, riscv-tests, riscv-arch-test) are data in
-[`docs/v2/toolchain.lock`](../../docs/v2/toolchain.lock); the script verifies them and
+[`docs/design/toolchain.lock`](../../docs/design/toolchain.lock); the script verifies them and
 `install-toolchain.sh --help` lists its steps. Another install root is `-DTSR_RISCV_TOOLS=<prefix>`,
 another bare-metal GCC `-DTSR_RISCV_PREFIX=<dir>/bin/riscv-none-elf-`.
 
@@ -62,8 +62,8 @@ project (the option `TSR_FW_WERROR` of `sw/ctrl/CMakeLists.txt` is on).
 | Setting | Value |
 | --- | --- |
 | Architecture | `-march=rv32imc_zicsr_zifencei -mabi=ilp32`, libgcc of the `rv32imc/ilp32` multilib (integer helpers only) |
-| Language | `-std=c++20 -ffreestanding -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit -ffp-contract=off`; no libc, no libstdc++, no heap, no float (V2-SW-8) |
-| Optimisation | `-Os` for the image; `-O2` for `kernels/graph.cpp` and `kernels/k_*.cpp` (V2-SW-34); the flags are recorded in `docs/v2/toolchain.lock` and the build warns when they drift |
+| Language | `-std=c++20 -ffreestanding -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit -ffp-contract=off`; no libc, no libstdc++, no heap, no float (SW-8) |
+| Optimisation | `-Os` for the image; `-O2` for `kernels/graph.cpp` and `kernels/k_*.cpp` (SW-34); the flags are recorded in `docs/design/toolchain.lock` and the build warns when they drift |
 | Link | `rt/link.ld`: ITCM at `0x0000_0000` (128 KiB), DTCM at `0x0010_0000` (64 KiB), kernel table, image id, debug flags and crash record in DTCM, log format strings at `0xF000_0000` (in the file, not loaded) |
 
 Outputs in `build/dev/fw/`: `tsr-fw.elf` (the production image), `tsr-fw.map`, `tsr-fw.size.txt`,
@@ -107,9 +107,9 @@ repeats the validation rules (kernel table order, note fields, segment placement
 
 ## The runtime (R1 to R10)
 
-`rt/runtime.cpp` implements the launch dispatcher that [EX](../../docs/v2/01-execution-model.md) §4.7
+`rt/runtime.cpp` implements the launch dispatcher that [EX](../../docs/design/01-execution-model.md) §4.7
 defines as steps R1 to R10; `rt/trap.cpp` and `rt/log.cpp` implement the debug and log contract of
-[DB](../../docs/v2/05-debug.md) §6. In short:
+[DB](../../docs/design/05-debug.md) §6. In short:
 
 | Step | What the runtime does |
 | --- | --- |
@@ -135,9 +135,9 @@ seven 32-bit arguments (EX §4.3).
 
 | Kernel | Arguments | Purpose |
 | --- | --- | --- |
-| `graph` | a0 op-list handle, a1 op-list bytes, a2 flags (bit 0 verify CRC) | executes an op list (OPL v1, below) |
+| `graph` | a0 op-list handle, a1 op-list bytes, a2 flags (bit 0 verify CRC) | executes an op list (the op list format, below) |
 | `selftest` | a0 test id 1 to 10, a1 data area handle, a2 area lines, a3 seed, a4 flags | card and simulator self-test programs: LD/ST on every channel, QACT, MVM, every VU and AT op, concurrency, error recovery, SPM windows, log, credits; `tsr-selftest` drives it (`sw/ctrl/ref/selftest_abi.hpp` has the data layouts and return codes) |
-| `replay` | a0 `push.bin` handle, a1 record count, a2 flags (SERIAL, BUF), a3 and a4 buffer placement | replays a tile-only push stream of trace v2 through the issue port, for trace sets, SPM dumps and divergence search ([`traces/README.md`](../../traces/README.md)) |
+| `replay` | a0 `push.bin` handle, a1 record count, a2 flags (SERIAL, BUF), a3 and a4 buffer placement | replays a tile-only push stream of a trace through the issue port, for trace sets, SPM dumps and divergence search ([`traces/README.md`](../../traces/README.md)) |
 
 ### The graph executor and the record kinds
 
@@ -170,7 +170,7 @@ image" (`BAD_RECORD`).
 
 The numerics of a kind are fixed by its tile-op sequence (SW §7.5), which `sw/ctrl/ref/*` and the
 simulator's references implement. The planners in `plan*.hpp` are shared with the host backend, so
-`supports_op` rejects exactly what the firmware cannot plan (V2-SW-20).
+`supports_op` rejects exactly what the firmware cannot plan (SW-20).
 
 ## Writing a kernel
 
@@ -248,7 +248,7 @@ Two rules decide whether a kernel is correct, and the tests enforce both:
   dependency, an SPM store or the return value. `DONE_SEQ`, the credits, `QSTATUS` and `MTIME` only
   end waits. The same op stream must come out under the fixed schedule and under every random
   schedule of the simulator (`TSR_SIM_SCHED`), and on the host build.
-- **Launch-stateless (SW §4.6, V2-SW-4).** A launch reads only SPM lines it wrote itself and keeps
+- **Launch-stateless (SW §4.6, SW-4).** A launch reads only SPM lines it wrote itself and keeps
   no state in DTCM that changes what it pushes (a ring is `init()`-ed per launch). The race detector
   reports a read of SPM that the launch did not write as `SPM_STALE`.
 
@@ -307,7 +307,7 @@ same rules); the handler declaration in `include/tsr/exec.hpp` and the entry in 
 `kernels/graph.cpp`; and the handler in a new `kernels/k_<name>.cpp` (the build picks it up by
 glob; add a weak stub to `zz_kind_stubs.cpp` so images without it still link).
 
-**Short kinds and the fast path (V2-SW-35).** The executor issues one record per decode step of a
+**Short kinds and the fast path (SW-35).** The executor issues one record per decode step of a
 layer, so the cost of a short record (a norm, RoPE, an activation) matters: the requirement is at
 most 350 RISC-V cycles of work per record at decode shapes. A short kind has a leaf entry
 `kind_<name>_fast` that the executor calls first. It follows the pattern of `kernels/k_fast.hpp`:
@@ -321,7 +321,7 @@ the form is `tests/fw/exec_ref_unary.cpp`.
 
 ## Host build of the kernels
 
-`tsr_fw_host` (SW §6.8, V2-SW-25) compiles every `kernels/*.cpp` and the host shim with
+`tsr_fw_host` (SW §6.8, SW-25) compiles every `kernels/*.cpp` and the host shim with
 `TSR_FW_HOST` defined. `tsr/backend_host.hpp` then maps the hardware access (`tsr::hw`) onto the
 simulator's test hooks, so the same `issue()`, `join()` and `spm_ring` code runs against a
 `tsr_sim` on the host, under ASan and UBSan in the sanitiser variants. A test binds a simulator with
@@ -341,7 +341,7 @@ run a group with `-R`:
 | Header library | `hdr_host`, `hdr_rv`, `hdr_rv_mutant`, `hdr_constexpr` | builders against the checker, tickets, deps, `group`, `spm_ring` against a line-level model; the RISC-V image under the fixed and 7 random schedules with the race detector fatal; a mutant without the ring's wait deps must be caught; builder fields that do not fit must not compile |
 | Runtime | `runtime`, `runtime_stale` | R1 to R10, every status of EX §4.4, traps, logging, cancel and stop, 0 to 7 arguments, argument blocks; a read beyond the staged argument lines is `SPM_STALE` |
 | Executor and plans | `exec_rv`, `exec_host`, `exec_perf*`, `opl_m7`, `plan_cxx17` | every return code, streaming lists, preload, dependencies, error location; the planner header compiles as C++17 |
-| M6 kernels | `kernels_rv*`, `kernels_host`, `selftest_sim`, `replay_sim*`, `m6_e2e`, `m6_perf` | MUL_MAT bit-exact against `ref/mulmat_ref.cpp` (shapes, addends, ACC_DST), v1 conversion identity, mutants, every selftest id, replay of the trace sets, the production image end to end |
+| M6 kernels | `kernels_rv*`, `kernels_host`, `selftest_sim`, `replay_sim*`, `m6_e2e`, `m6_perf` | MUL_MAT bit-exact against `ref/mulmat_ref.cpp` (shapes, addends, ACC_DST), bit identity with the converted regression traces, mutants, every selftest id, replay of the trace sets, the production image end to end |
 | M7 kinds | `kernels_elem_*`, `kernels_normrope_*`, `kvfa_*`, `m7_layer_*` | element-wise, norm, RoPE, KV store and flash attention against their references under 8 schedules with the race detector fatal, against ggml-cpu for the layer outputs, and whole decoder layers |
 
 The long sweeps (`fw_kernels_rv_v1conv_all`, `fw_kernels_rv_shapes`, `fw_replay_sim_all`, `fw_kernels_elem_rv_shapes`, `fw_kvfa_rv_slow`) carry the label `slow` too (`ctest -L slow`). The Spike and
@@ -376,7 +376,7 @@ the control core at `clk_rv` 166.7 MHz, Ibex "maxperf" table); the card has not 
 | Qwen2.5-0.5B M7 decode layer (15 records and a join): issue loss against a near-ideal issuer | 5.1 % of the launch with the U200 queue depths, 2.1 % with deep queues, 2.5 % at a 250 MHz control core | simulator cycle model, tree of `a775222` (`ctest -R fw_m7_layer_perf -V`) |
 
 The loss of a whole M7 decode layer comes from the 8-entry DMA queue and the planning time of
-FLASH_ATTN, not from the short records ([README of docs/v2](../../docs/v2/README.md) risk 9,
+FLASH_ATTN, not from the short records ([README of docs/design](../../docs/design/README.md) risk 9,
 SW §7.8).
 
 ## Limits

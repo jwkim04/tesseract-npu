@@ -1,10 +1,10 @@
 // tsr_vu.c — the simulator's VU unit (P1.4): decode, dispatch checks, operand extents, execution and
 // cycle model of VOP 0x30, RED 0x31, ROPE 0x32, TOPK 0x33, SOP 0x40 and DQROW 0x12 on unit 3.
 //
-// Normative sources: docs/v2/02-vector-unit.md (VU) §4 (operand model, n = 0 and tail rules, the s
+// Normative sources: docs/design/02-vector-unit.md (VU) §4 (operand model, n = 0 and tail rules, the s
 // bank, aliasing), §5.1–§5.9 (encodings, dispatch checks, extents), §5.10 (CAPS, PERF) and §7 (the
-// datapath the cycle model follows); docs/v2/01-execution-model.md (EX) §6 (PERF), §7.1 (x16),
-// §8.1 (error codes and their order); docs/v2/06-software-verification.md (SW) §4.5. Every numeric
+// datapath the cycle model follows); docs/design/01-execution-model.md (EX) §6 (PERF), §7.1 (x16),
+// §8.1 (error codes and their order); docs/design/06-software-verification.md (SW) §4.5. Every numeric
 // result comes from tsr_ref_vu.c (which builds on tsr_ref_math.c and tsr_ref.c): this file decodes
 // with the generated field constants (tsr_tables.h), checks, and points the references at the
 // simulator's SPM and s bank. AT's vector ops 0x34–0x37 also run on unit 3 but are AT's ops

@@ -2,7 +2,7 @@
 //
 // The DM (sw/sim/tsr_dm.c, include/tsr_dm.h) is driven through its DMI API (tsr_dm_dmi_read /
 // _write: what the DBG model's window at host CSR 0xC00 + 4r forwards, and what the sim
-// transport's DMI helpers call, DB §9.2), with the DMI sequences of docs/v2/05-debug.md (DB)
+// transport's DMI helpers call, DB §9.2), with the DMI sequences of docs/design/05-debug.md (DB)
 // §3.5 and §3.6 verbatim. The hart runs hand-encoded RV32 programs written into ITCM while
 // RV_RUN = 0 (no toolchain needed), booted through the host CSR port. Checks:
 //   - the DMI profile (DB §9.1): reset values, dmactive gating, hartinfo, abstractcs, sbcs, the
@@ -652,7 +652,7 @@ static void test_sba(void) {
     W(D_SBCS, 0x00127000u);                               // 16-bit read on address
     W(D_SBADDR, TSR_RV_DTCM_BASE + 0x106u);
     CHECK(R(D_SBDATA) == 0xBEEFu, "16-bit read");
-    // Refusals (CC §4.3, V2-CC-33) and errors: each sets sberror, changes nothing; W1C clears it.
+    // Refusals (CC §4.3, CC-33) and errors: each sets sberror, changes nothing; W1C clears it.
     W(D_SBCS, 0x00140000u | 0x7000u);                     // 32-bit, read on address
     W(D_SBADDR, TSR_RV_DM_BASE);
     CHECK(((R(D_SBCS) >> 12) & 7u) == TSR_DM_SBERR_BADADDR, "DM range read refused");
@@ -1106,7 +1106,7 @@ static int test_fw(const char * path) {
     cw(CSR_DCSR, cr(CSR_DCSR) & ~4u);
     CHECK(dm_resume(), "continue");
     run_for(20000);
-    // Live variables through SBA while the hart runs (V2-DB-3).
+    // Live variables through SBA while the hart runs (DB-3).
     const uint32_t c0 = sba_rd32(g_count);
     run_for(20000);
     const uint32_t c1 = sba_rd32(g_count);

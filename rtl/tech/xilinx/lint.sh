@@ -7,7 +7,7 @@
 #                                      URAM / BRAM / LUTRAM sizes, RD_LAT 1..4; tsr_mac_lane: N 32 /
 #                                      5 / 2 / 1, T 1..8, every register allocation LAT 1..10 and
 #                                      an extra output register), every module that instantiates
-#                                      them, tsr_core with the xilinx filelist (U200 v1, T_MAX 8,
+#                                      them, tsr_core with the xilinx filelist (U200, T_MAX 8,
 #                                      the U200 bitstream implementation parameters, reduced
 #                                      configurations), an XSim elaboration of the core and the
 #                                      MVM unit (xvlog / xelab of Vivado, skipped without it), and

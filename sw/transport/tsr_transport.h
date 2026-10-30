@@ -1,20 +1,20 @@
-// tsr_transport.h — host <-> device transport v2 (docs/v2/01-execution-model.md "EX" §10.1, the
-// API verbatim; docs/v2/06-software-verification.md "SW" §9.1-§9.2, the conveniences and the
+// tsr_transport.h — host <-> device transport (docs/design/01-execution-model.md "EX" §10.1, the
+// API verbatim; docs/design/06-software-verification.md "SW" §9.1-§9.2, the conveniences and the
 // environment).
 //
 // The only target-dependent part of the software stack. Every kind runs the same register
-// protocol (V2-SW-18, EX §10.2): the protocol layer in tsr_kdev.cpp over a device-access layer
+// protocol (SW-18, EX §10.2): the protocol layer in tsr_kdev.cpp over a device-access layer
 // (kdev, tsr_kdev.h):
 //   "sim"     the simulator in-process behind the core CSR port, no adapter (tsr_kdev_sim.cpp)
 //   "mock"    the sim kdev plus the ap_ctrl_none adapter register model (tsr_kdev_mock.cpp)
-//   "vkernel" the Verilated kernel in a server process (tsr_kdev_vkernel.cpp; the two-clock v2
+//   "vkernel" the Verilated kernel in a server process (tsr_kdev_vkernel.cpp; the two-clock
 //             server is P5.3)
 //   "xrt"     the Alveo card through xrt::ip and one device-only buffer per channel
 //             (tsr_transport_xrt.cpp, built with -DTSR_WITH_XRT=ON)
 //   kinds registered at run time (tsr::register_kdev, tsr_kdev.h)
 // Selected with TSR_DEVICE (default sim). The host never runs programs: it binds channel memory,
 // loads a firmware image into the RISC-V's TCMs, boots it and launches kernels (EX §2.1). DRAM
-// transfers are unchanged from v1.
+// transfers are in EX §2.1.
 //
 // Environment (SW §9.2, read at open): TSR_DEVICE; TSR_IMAGE (tsr_image_open_default);
 // TSR_LAUNCH_TIMEOUT_MS (60000; 0 = none), TSR_ABORT_MS (10000), TSR_BOOT_MS (2000),
@@ -52,15 +52,15 @@ typedef struct tsr_transport tsr_transport;
 // ---------------------------------------------------------------------------------------------
 // unchanged: open, close, name, config, write, read, csr_read
 // Open by kind ("sim", "mock", "vkernel", "xrt", registered kinds); NULL or "" means
-// getenv("TSR_DEVICE") or "sim". v2: checks the identity (ID, VERSION major 2, CFG*, CAPS, CFG3,
+// getenv("TSR_DEVICE") or "sim". Checks the identity (ID, VERSION major 2, CFG*, CAPS, CFG3,
 // CTL_ID, RV_CFG, Q_DEPTH, RV_FREQ != 0), clears ADAPTER_STATUS, then SOFT_RESET + bind (channel
 // bases, MEM_EN), unless TSR_ATTACH=1 (SW §9.1). NULL on failure (message on stderr).
-tsr_transport *    tsr_transport_open(const char * kind);   // v2: SOFT_RESET + bind, unless TSR_ATTACH=1
+tsr_transport *    tsr_transport_open(const char * kind);   // SOFT_RESET + bind, unless TSR_ATTACH=1
 void               tsr_transport_close(tsr_transport * t);
 const char *       tsr_transport_name(const tsr_transport * t);
 // Configuration as read from the CFG*/CAPS CSRs (+ ch_bytes, which the CSRs do not carry).
 const tsr_config * tsr_transport_config(const tsr_transport * t);
-// Host access to channel DRAM (EX §2.1 "Data": unchanged from v1). Offsets / sizes in bytes, any
+// Host access to channel DRAM (EX §2.1 "Data"). Offsets / sizes in bytes, any
 // alignment. 0 on success.
 int      tsr_transport_write(tsr_transport * t, uint32_t ch, uint64_t off, const void * src, size_t size);
 int      tsr_transport_read (tsr_transport * t, uint32_t ch, uint64_t off, void * dst, size_t size);

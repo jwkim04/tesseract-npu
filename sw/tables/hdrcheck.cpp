@@ -1,5 +1,5 @@
 // sw/tables/hdrcheck.cpp — build-time check that the generated headers compile together and agree
-// (V2-EX-30, P1.1). Compiled as an object library in every build (C++20, the SDK's dialect, SW §6.1):
+// (EX-30, P1.1). Compiled as an object library in every build (C++20, the SDK's dialect, SW §6.1):
 // the firmware headers sw/ctrl/include/tsr/{mmio,vu,at}.hpp and the C header tsr_tables.h in one
 // translation unit, with constexpr spot checks across the two emitters. Nothing is linked.
 #include "tsr/at.hpp"

@@ -1,4 +1,4 @@
-# docs/v2/toolchain.lock - pinned RISC-V tools for Tesseract v2 (SW §9.6, V2-SW-7, README risk 14).
+# docs/design/toolchain.lock - pinned RISC-V tools for Tesseract (SW §9.6, SW-7, README risk 14).
 #
 # Format: one "key = value" per line; '#' starts a comment; keys are <tool>.<field>. The file is
 # data, never sourced: sw/ctrl/tools/install-toolchain.sh parses it, installs exactly these
@@ -89,7 +89,7 @@ arch_test.paths = riscv-test-suite/env riscv-test-suite/rv32i_m/I riscv-test-sui
 # --- Firmware compile flags (SW §6.1; checked by the script's "check" step) ------------------------
 firmware.cxxflags = -march=rv32imc_zicsr_zifencei -mabi=ilp32 -Os -ffreestanding -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit -ffp-contract=off -nostdlib -nostartfiles -g -std=c++20
 # Hot-path sources (sw/ctrl/CMakeLists.txt TSR_FW_HOT_GLOBS: kernels/graph.cpp, kernels/k_*.cpp) are
-# compiled with firmware.cxxflags followed by firmware.cxxflags_hot (SW §6.1, V2-SW-34; added by the
+# compiled with firmware.cxxflags followed by firmware.cxxflags_hot (SW §6.1, SW-34; added by the
 # executor-optimisation workflow, 2026-10-30).
 firmware.cxxflags_hot = -O2
 firmware.libs = libgcc.a from -print-libgcc-file-name with -march=rv32imc_zicsr_zifencei -mabi=ilp32

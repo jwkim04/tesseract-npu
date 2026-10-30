@@ -1,13 +1,12 @@
-// tsr_core.sv — Tesseract core datapath without a command source (X0): CSR port, NUM_CH channel
+// tsr_core.sv — Tesseract core datapath without a command source: CSR port, NUM_CH channel
 // memory ports.
 //
-// Owner: core agent (docs/rtl-m2.md §2, block (f); docs/v2 CC §13). X0 (docs/v2 EX §12, D14 / D16):
-// the host command path is deleted — the instruction fetch, the command processor, the run
-// registers of the CSR block and the `done` output. What stays is the datapath the v2 dispatcher
-// will drive: the CSR block (identification and PERF), the DMA, QACT and MVM units, the SPM and the
+// Owner: core agent (docs/rtl-m2.md §2, block (f); docs/design CC §13). D14 / D16: the core has no
+// host command path (no instruction fetch, command processor, run registers or `done` output).
+// It is the datapath the dispatcher will drive: the CSR block (identification and PERF), the DMA, QACT and MVM units, the SPM and the
 // per-channel memory arbiters, with the reset distribution and the unit-local integration checks.
 // The units' command ports are idle until Y4, where tsr_core_dp (CC §13.2: tsr_issue with
-// tsr_chk, the v2 tsr_csr, these units) takes over this netlist and tsr_core gets the v2 boundary
+// tsr_chk, the full tsr_csr, these units) takes over this netlist and tsr_core gets the final boundary
 // (clk_rv, rst_rv_n, plat_err_i, host_irq_o; EX §9.3). Until then the core elaborates and lints in
 // every configuration but does no work: no unit is ever offered a command, so no memory request
 // leaves it.
@@ -27,7 +26,7 @@
 //     Q4_K beat; CFG0 reports it).
 //   HAS_MVM = 0: no MVM unit; the weight-stream sources of the arbiters and SPM client
 //     TSR_SPM_CL_MVM are tied off.
-//   Memory source TSR_SRC_AUX (0) of every arbiter is tied off (V2-CC-26).
+//   Memory source TSR_SRC_AUX (0) of every arbiter is tied off (CC-26).
 // Implementation parameters (results identical for every legal value; tests vary them):
 //   SPM_RD_LAT (SPM read latency seen by every SPM client; 1..4, U200 timing wants 4 at 4 MiB,
 //   docs/rtl-m2.md §12), and for HAS_MVM = 1 (docs/rtl-m3.md §1): MVM_WS_FIFO (weight FIFO beats
@@ -44,8 +43,8 @@
 //   behaviour after the reset identical); the registers start in reset (configuration INIT /
 //   simulation initial value 0). P = 0: no extra flops.
 // Verification: rtl/lint.sh (every configuration); the unit benches (tb/dma, tb/qact, tb/mvm, ...)
-// test the blocks; the core-level replay benches return with the v2 dispatcher (docs/v2 SW §10.3:
-// tb/core v2, tb/fastreplay). Simulation-only integration checks I1, I2, I4 at the end of this file.
+// test the blocks; the core-level replay benches come with the dispatcher (docs/design SW §10.3:
+// tb/core, tb/fastreplay). Simulation-only integration checks I1, I2, I4 at the end of this file.
 
 module tsr_core
   import tsr_pkg::*;
@@ -116,7 +115,7 @@ module tsr_core
   // Elaboration checks (same limits as tsr_sim_create's cfg_problem(), plus M2 restrictions)
   // -------------------------------------------------------------------------------------------
   if (BEAT_BITS != 512) begin : g_chk_beat
-    $fatal(1, "tsr_core: BEAT_BITS must be 512 (a beat is one 64-byte SPM line in v1)");
+    $fatal(1, "tsr_core: BEAT_BITS must be 512 (a beat is one 64-byte SPM line)");
   end
   if (NUM_CH < 1 || NUM_CH > TSR_NUM_CH_MAX) begin : g_chk_ch
     $fatal(1, "tsr_core: NUM_CH must be in [1, 16] (4-bit LD/ST channel field)");
@@ -212,7 +211,7 @@ module tsr_core
   );
 
   // -------------------------------------------------------------------------------------------
-  // Unit command ports: idle until the v2 dispatcher (tsr_chk + tsr_issue, CC §13, Y4) drives
+  // Unit command ports: idle until the dispatcher (tsr_chk + tsr_issue, CC §13, Y4) drives
   // them (header).
   // -------------------------------------------------------------------------------------------
   logic            dma_cmd_valid, dma_cmd_ready, dma_done;
@@ -365,7 +364,7 @@ module tsr_core
   // Per-channel memory arbiters
   // -------------------------------------------------------------------------------------------
   for (genvar c = 0; c < NUM_CH; c++) begin : g_ch
-    // Source AUX: tied off on every channel (V2-CC-26).
+    // Source AUX: tied off on every channel (CC-26).
     assign s_rd_req_valid[c][TSR_SRC_AUX] = 1'b0;
     assign s_rd_req_addr[c][TSR_SRC_AUX]  = '0;
     assign s_rd_req_len[c][TSR_SRC_AUX]   = '0;
@@ -426,11 +425,9 @@ module tsr_core
   // -------------------------------------------------------------------------------------------
   // Integration checks (simulation only; docs/rtl-m2.md §3.0, §5; docs/rtl-m3.md §3.0, §6.4,
   // §10.4). Armed by the first clock edge with rst_n low (before it, Verilator's X randomisation
-  // makes state arbitrary); with RST_PIPE they see the blocks' delayed reset. X0 keeps the
-  // unit-local rules; v1's one-instruction-in-flight rules (one unit offered a command at a time,
-  // never while another holds one, never two units on the SPM in one cycle) and I3 (memory
-  // traffic only during a host run, quiet at DONE) are deleted with the command path: v2 runs the
-  // units concurrently (CC §9.4 defines its integration checks).
+  // makes state arbitrary); with RST_PIPE they see the blocks' delayed reset. Only the
+  // unit-local rules are checked here: the units run concurrently, and CC §9.4 defines the
+  // integration checks of the dispatcher.
   //   I1 a unit pulses done only while it holds an op (never in its accepting cycle); no MVM
   //      command with HAS_MVM = 0. MVM: cmd_ready is low while it holds the op, and perf_mvm_busy
   //      equals "holds an op" in every cycle (from the cycle after the accepting edge up to and

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # test_klcheck_identity.sh KLCHECK MODEL OUT — ctest tools_klcheck_identity_qwen05b (docs/klcheck.md;
-# docs/v2/06-software-verification.md §10.4 M6 gate item 2 on the simulator kinds, §10.1 "cross-transport"
+# docs/design/06-software-verification.md §10.4 M6 gate item 2 on the simulator kinds, §10.1 "cross-transport"
 # row): generate on sim (M6 settings), replay the same tokens on mock (the adapter register model; step
 # replay, the default of a device replay), and require every logits row bit-identical.
 set -eu

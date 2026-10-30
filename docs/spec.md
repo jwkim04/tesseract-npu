@@ -2,25 +2,24 @@
 
 Oct 22, 2026 · Jiwoo Kim
 
-This is the master specification of the Tesseract core (ISA 2.0): architecture, data layouts,
+This is the master specification of the Tesseract core: architecture, data layouts,
 numerics, ISA, interfaces, verification strategy, milestones and open items. It is the single
 technical entry point. The detail that this document summarises lives in the six area documents of
-[`docs/v2/`](v2/README.md): [EX](v2/01-execution-model.md) (execution model, host interface, global
-tables), [VU](v2/02-vector-unit.md) (vector unit and approximate math), [AT](v2/03-attention-kv.md)
-(attention and KV cache), [CC](v2/04-control-core.md) (control core, issue path, SPM, clock domains),
-[DB](v2/05-debug.md) (debug and profiling) and [SW](v2/06-software-verification.md) (simulator,
+[`docs/design/`](design/README.md): [EX](design/01-execution-model.md) (execution model, host interface, global
+tables), [VU](design/02-vector-unit.md) (vector unit and approximate math), [AT](design/03-attention-kv.md)
+(attention and KV cache), [CC](design/04-control-core.md) (control core, issue path, SPM, clock domains),
+[DB](design/05-debug.md) (debug and profiling) and [SW](design/06-software-verification.md) (simulator,
 firmware, host software, verification).
 
-> **Scope.** The architecture contract of core v2 and of the software that drives it. A section that
-> summarises a `docs/v2` section says so; that `docs/v2` section is the normative definition and is
-> incorporated into this document by reference (one definition per table, `docs/v2/README.md` §4).
-> Status words: *on the card* (ran on the Alveo U200 with the v1 core, tag `v1-m4`), *on the
-> simulator* (implemented in this tree and tested against it), *designed* (specified in `docs/v2`,
+> **Scope.** The architecture contract of the Tesseract core and of the software that drives it. A
+> section that summarises a `docs/design` section says so; that `docs/design` section is the normative
+> definition and is incorporated into this document by reference (one definition per table,
+> `docs/design/README.md` §4). Status words: *on the card* (ran on the Alveo U200), *on the
+> simulator* (implemented in this tree and tested against it), *designed* (specified in `docs/design`,
 > no implementation), *planned* (a work package not started), *idea* (not scheduled).
 
-**Revision note.** This revision specifies core v2 (ISA 2.0, decisions D14 to D18 of `docs/v2`) and
-is written in English; earlier revisions were Korean. The v1 command-buffer mechanisms survive only
-as History paragraphs and in the last group of section 21. The v0.2.1 clarifications are section 21.
+**Revision note.** This revision is written in English; earlier revisions were Korean. The design
+decisions D14 to D18 are in section 16. The v0.2.1 clarifications are section 21.
 
 **Contents**
 
@@ -58,17 +57,17 @@ which stream weights from DDR4 and compute. This configuration (four MVM cluster
 that runs on the control core is named Tesseract Basis ("Basis"). Decoding a dense model reads every weight once per
 token, so the design is built around an unbroken weight stream and not around raw compute.
 
-Two generations exist. The v1 core (tag `v1-m4`) is programmed by the host through command buffers;
-it ran on the card up to milestone M4. The v2 core is designed in `docs/v2`; so far it is
-implemented on the simulator (simulator, firmware SDK and kernels, transport, M6 backend, tools),
-and its RTL is planned (section 19).
+The design is in `docs/design`. The DMA, QACT, MVM clusters, SPM and the CSR skeleton are RTL and ran
+on the card up to milestone M4. The control core, vector unit, on-device attention and KV cache,
+firmware SDK and kernels, transport, M6 backend and tools are implemented on the simulator, and
+their RTL is planned (section 19).
 
 ### Goals
 
-**v1 goal (reached).** Run a 32B Q4_K_M GGUF on an Alveo U200 with llama.cpp, end to end, without
-converting the model file, at no less than 1 tok/s decode on four channels. Milestone M4 reached it:
-Qwen2.5-32B Q4_K_M decodes at 2.93 tok/s with a KL ratio of 1.304 (measured on the card (v1, M4)).
-The parts of the v1 goal that still define the project:
+The first goal, reached at M4, was to run a 32B Q4_K_M GGUF on an Alveo U200 with llama.cpp, end to
+end, without converting the model file, at no less than 1 tok/s decode on four channels. Qwen2.5-32B
+Q4_K_M decodes at 2.93 tok/s with a KL ratio of 1.304 (measured on the card, M4). The parts of it
+that still define the project:
 
 - **GGUF as shipped.** The hardware supports two weight formats, 8-bit Q8_0 and 4-bit Q4_K. Weights
   of any other type are converted to Q8_0 at load time, including the Q6_K tensors that Q4_K_M files
@@ -80,7 +79,7 @@ The parts of the v1 goal that still define the project:
   and the numeric rules of this document.
 - **Correctness first.** Running correctly end to end comes before speed.
 
-**v2 goals.**
+The remaining goals:
 
 - **Control core.** An on-chip RISC-V core (Ibex) issues every tile op asynchronously. The host
   loads firmware and launches kernels; it runs no instruction programs and has no access to the
@@ -125,12 +124,13 @@ The parts of the v1 goal that still define the project:
 
 ### Authority and status words
 
-Order of authority: this document, then the simulator (`sw/sim`), then `docs/v2/*`, then the other
-documents. A section here that points to a `docs/v2` section summarises it and incorporates it by
+Order of authority: this document, then the simulator (`sw/sim`), then `docs/design/*`, then the other
+documents. A section here that points to a `docs/design` section summarises it and incorporates it by
 reference; a difference between the two is a defect to fix in whichever document is wrong. Status
 words are those of the Scope box. A number carries its provenance in parentheses: *measured on the
-card (v1, M4)*, *measured on the simulator (v2, 83ac601)*, *estimate (`docs/v2` section)*. Nothing
-in this document is measured on the card with the v2 core.
+card, M4*, *measured on the simulator, 83ac601*, *estimate (`docs/design` section)*. Card measurements
+were taken before the control core was added, with the host issuing the ops. Nothing in this
+document is measured on the card with the control core.
 
 ### Terminology
 
@@ -145,7 +145,7 @@ in this document is measured on the card with the v2 core.
 | N, K | Rows (output dimension) and columns (input dimension) of a weight matrix W |
 | T | Number of tokens (activation vectors) one MVM processes |
 | s0–s15 | One bank of f32 scalar registers inside the VU for reduction results and constants. Only VU ops write them; the control core and the host read them as `SREG0`–`15` (core CSR 0x9C0), section 9 |
-| Control core | The RISC-V processor (Ibex) inside the core. It issues every tile op (section 16, [CC](v2/04-control-core.md)) |
+| Control core | The RISC-V processor (Ibex) inside the core. It issues every tile op (section 16, [CC](design/04-control-core.md)) |
 | Firmware image, kernel | The RV32 ELF that runs on the control core. A kernel is a function of the image that the host launches (`graph`, `replay`, `selftest`) |
 | Launch | One host-visible run of a kernel: an 8-word descriptor in the launch queue (LQ) and an 8-word answer record in the completion ring (LCQ), section 10 |
 | Op list (OPL), record | The data the `graph` kernel executes: records of kinds such as `MUL_MAT` (section 12) |
@@ -158,17 +158,17 @@ in this document is measured on the card with the v2 core.
 ### Decision index
 
 Decisions are recorded in two places. The user decisions D1 to D18 are in the table of section 16 and
-in [`docs/ctrl-riscv.md`](ctrl-riscv.md). The design decisions of core v2 are numbered per area and
-logged with their rationale in [`docs/v2/README.md`](v2/README.md) §6:
+in [`docs/ctrl-riscv.md`](ctrl-riscv.md). The design decisions are numbered per area and logged
+with their rationale in [`docs/design/README.md`](design/README.md) §6:
 
 | Area | Decisions | Log |
 | --- | --- | --- |
-| EX, execution model and host interface | V2-EX-1 to V2-EX-30 | `docs/v2/README.md` §6.1 |
-| VU, vector unit | V2-VU-1 to V2-VU-27 | §6.2 |
-| AT, attention and KV cache | V2-AT-1 to V2-AT-22 | §6.3 |
-| CC, control core, issue path, floorplan | V2-CC-1 to V2-CC-34 | §6.4 |
-| DB, debug and profiling | V2-DB-1 to V2-DB-23 | §6.5 |
-| SW, software and verification | V2-SW-1 to V2-SW-39 | §6.6 |
+| EX, execution model and host interface | EX-1 to EX-30 | `docs/design/README.md` §6.1 |
+| VU, vector unit | VU-1 to VU-27 | §6.2 |
+| AT, attention and KV cache | AT-1 to AT-22 | §6.3 |
+| CC, control core, issue path, floorplan | CC-1 to CC-34 | §6.4 |
+| DB, debug and profiling | DB-1 to DB-23 | §6.5 |
+| SW, software and verification | SW-1 to SW-39 | §6.6 |
 
 The same file lists where each global table lives (§4), the review findings that were not applied
 (§7), the remaining risks (§8), the open measurements and third-party confirmations (§9) and the
@@ -187,7 +187,7 @@ platform adapter) plus a transport. The software and the core change only their 
 | Platform adapter | Control register bridge; memory port to AXI4 or similar | Written per target |
 
 Status of the Core row: the DMA, QACT, MVM clusters, SPM and the CSR skeleton are RTL (verified, ran
-on the card with the v1 core). The control core, issue path, vector unit, attention modes of the
+on the card). The control core, issue path, vector unit, attention modes of the
 clusters and debug block are designed and run on the simulator; their RTL is planned (W4).
 
 <p align="center"><img src="fig/layers.svg" alt="The four layers across three targets. Software (sw/) and the core (rtl/core) span all targets; the transport, platform adapter and tech wrappers are written per target: Alveo U200 (xrt, alveo_xrt, xilinx; NUM_CH 4, BEAT_BITS 512), Zynq or Kria and SoC or ASIC (ideas, not scheduled). rtl/tech/generic serves simulation and lint on any target." width="100%"></p>
@@ -197,7 +197,7 @@ per target; dashed tiles are ideas, not scheduled.
 
 | Target-specific piece | Alveo U200 | Zynq / Kria (idea) | SoC (idea) |
 | --- | --- | --- | --- |
-| Transport | `xrt`. The v1 transport ran on the card; the v2 `xrt` kdev is written and unit-tested against the XRT no-op shim and has not run on a card | Zynq AXI | SoC driver |
+| Transport | `xrt`. The `xrt` kdev is written and unit-tested against the XRT no-op shim and has not run on a card | Zynq AXI | SoC driver |
 | Platform adapter | `rtl/platform/alveo_xrt`: AXI4-Lite to CSR port, one AXI4 bridge per DDR4 channel, kernel tops `tsr_u200_k1` / `tsr_u200_k4`, the M0 bandwidth kernel. Register-only, `ap_ctrl_none` | To be written | To be written |
 | Tech wrappers | `rtl/tech/xilinx`: URAM, BRAM, DSP48E2 (two int8 tokens per DSP), inferred through attributes so that Verilator runs the same files | To be written | SRAM macros (for example on an open PDK) |
 | Core parameters | `NUM_CH` 4, `BEAT_BITS` 512 | `NUM_CH` 1–2, `BEAT_BITS` about 128 | To be decided |
@@ -216,9 +216,8 @@ Porting notes:
 <p align="center"><img src="fig/system.svg" alt="Host PC (llama.cpp, ggml-tesseract, tsr_transport and the firmware image) connected over PCIe to the XRT shell of the Alveo U200; a control bridge to the core's CSR port; tsr_core with the planned control core and issue path, the 4 MiB SPM, a planned vector unit, the x broadcast and y gather bus and four clusters; each cluster fed by its own DDR4 channel through an AXI4 bridge; blocks tagged with their SLR under floorplan C' (clusters 0 and 2 in SLR0, clusters 1 and 3 in SLR2, the rest of the core and the adapter in SLR1)." width="100%"></p>
 
 Fat arrows are the per-channel memory paths that carry the weight streams: the weight stream of a
-channel flows only into the cluster of that channel. Dashed blocks are the v2
-additions (designed, simulator-verified, RTL planned). Blocks with a single home carry their SLR tag
-under floorplan C'.
+channel flows only into the cluster of that channel. Dashed blocks are designed and verified on the
+simulator; their RTL is planned. Blocks with a single home carry their SLR tag under floorplan C'.
 
 - **Host** (llama.cpp with `ggml-tesseract`, or PyTorch with `tsr_rt`): turns the graph into an op
   list (OPL), repacks the weights, loads the firmware image and launches kernels through the
@@ -228,13 +227,13 @@ under floorplan C'.
   `ADAPTER_CTRL.MEM_EN`, section 10) and one AXI4 memory bridge per channel. It reaches the core
   through the CSR port and the platform error input `plat_err_i` (Core boundary interface below).
 - **Core** (vendor-independent SystemVerilog): the issue path, the SPM (activations, intermediate
-  values, QA; 64 B lines; 4 MiB; in v2 even and odd line banks with two read paths), the vector unit
+  values, QA; 64 B lines; 4 MiB; even and odd line banks with two read paths), the vector unit
   (element ops, reductions, RoPE, the softmax steps of attention; VL 16; s0–s15) and clusters 0–3
-  (stream and unpack, 128 MACs, fp accumulate, and in v2 the attention modes ATTQK and ATTPV). An x
+  (stream and unpack, 128 MACs, fp accumulate, and the attention modes ATTQK and ATTPV). An x
   broadcast and a y gather bus connect the SPM and the clusters.
-- **Control core** (v2, M6): RISC-V (Ibex RV32IMC), ITCM 128 KiB and DTCM 64 KiB, issue port, SPM
+- **Control core** (M6): RISC-V (Ibex RV32IMC), ITCM 128 KiB and DTCM 64 KiB, issue port, SPM
   window and debug module, on its own clock `clk_rv` (derived from `ap_clk_2`), placed in SLR1
-  (section 16, [CC](v2/04-control-core.md)).
+  (section 16, [CC](design/04-control-core.md)).
 - **DDR4 ch0–ch3**: cluster *c* receives its weight stream from channel *c* only (up to 19.2 GB/s per
   channel = 300 MHz × 64 B, through the AXI4 memory bridge). Channel 0 also holds the OPL, IO and
   AUX regions (section 4) and a quarter of the weight rows; channels 1–3 hold a quarter each.
@@ -246,8 +245,8 @@ clusters do not fit the dynamic region of SLR1, though: they need 1,348 DSP (1,3
 the region has 1,320, and they would use 408 of its 420 RAMB36. The U200 placement is therefore
 floorplan C' ([`docs/rtl-m3.md`](rtl-m3.md) §14, M3 part C): clusters 0 and 2 in SLR0, clusters 1
 and 3 in SLR2, and the rest of the core (CSR, SPM, DMA, QACT, the per-channel arbiters and the
-centre of the result gather) in SLR1. The v2 blocks (control core, issue path, vector unit, debug
-block) also go into SLR1 as floorplan C'' (designed, CC §14.2).
+centre of the result gather) in SLR1. The control core, issue path, vector unit and debug block also
+go into SLR1 as floorplan C'' (designed, CC §14.2).
 
 Every signal that crosses an SLR passes a register pipe: per cluster the activation broadcast, the
 weight request and response, the result-gather job and start pipes and the reset copies, plus the
@@ -257,16 +256,16 @@ in one SLR, so LD and ST data do not cross an SLR inside the core.
 
 ### Inside `tsr_core`
 
-<p align="center"><img src="fig/core.svg" alt="Blocks of tsr_core in two clock domains. In the clk_rv domain: the control core (Ibex) with ITCM, DTCM, debug module and control window. In the core clock domain: tsr_csr (host CSR port, launch queue, completion ring, log ring, PERF), the issue FIFO, the checker tsr_chk, the dispatcher with one queue per unit feeding DMA, QACT, the MVM clusters and the vector unit; tsr_spm with even and odd banks and the RISC-V bridge; one tsr_mem_arb per channel; the x broadcast and y gather. Modules that exist in RTL are solid; the v2 additions are dashed." width="100%"></p>
+<p align="center"><img src="fig/core.svg" alt="Blocks of tsr_core in two clock domains. In the clk_rv domain: the control core (Ibex) with ITCM, DTCM, debug module and control window. In the core clock domain: tsr_csr (host CSR port, launch queue, completion ring, log ring, PERF), the issue FIFO, the checker tsr_chk, the dispatcher with one queue per unit feeding DMA, QACT, the MVM clusters and the vector unit; tsr_spm with even and odd banks and the RISC-V bridge; one tsr_mem_arb per channel; the x broadcast and y gather. Modules that exist in RTL are solid; the others are dashed." width="100%"></p>
 
-The units keep the dispatch handshake of the v1 RTL (`cmd_valid`, `cmd_ready`, `done`); the v2
-dispatcher drives the same signals ([`docs/rtl-m2.md`](rtl-m2.md) §3, CC §8). One `tsr_mem_arb` per
-channel merges the weight stream and the DMA onto that channel's memory port (channel 0 also takes
-the trace writer of the debug block); there is no instruction fetch.
+The units use the dispatch handshake `cmd_valid`, `cmd_ready`, `done`, driven by the dispatcher
+([`docs/rtl-m2.md`](rtl-m2.md) §3, CC §8). One `tsr_mem_arb` per channel merges the weight stream
+and the DMA onto that channel's memory port (channel 0 also takes the trace writer of the debug
+block); there is no instruction fetch.
 
 ### Core boundary interface
 
-(v2; the normative definition is EX §9.3.) The core does not use AXI directly. It exposes only:
+(The normative definition is EX §9.3.) The core does not use AXI directly. It exposes only:
 
 - **CSR port**: 32-bit register read and write (`addr`, `wdata`, `we`, `rdata`, `valid/ready`). The
   adapter converts it to `s_axi_control` or similar. Image load, launches and debug access all go
@@ -283,7 +282,7 @@ the trace writer of the debug block); there is no instruction fetch.
 - **Host interrupt** `host_irq_o` = `CTRL.IRQ_EN` ∧ (LCQ_WR ≠ LCQ_RD): for ports that have a host
   interrupt (Zynq and similar). The U200 does not connect it and polls.
 
-The completion level `done` of v1 (converted by the adapter to `ap_done`) does not exist in v2 (D14).
+The core has no completion level output; a launch is answered in the completion ring (section 10).
 
 Memory port rules:
 
@@ -292,9 +291,8 @@ Memory port rules:
 - Read responses are ordered only within one `id`. The core may leave at most `RD_OUTSTANDING`
   requests per channel outstanding.
 - The cluster's weight stream and the DMA share one channel port, split by the core's internal
-  arbiter (in v2 the trace writer of the debug block joins as a write source on channel 0). v2 has
-  no instruction fetch: memory source 0 (FETCH) is tied off and the source numbers are not changed
-  (EX §11).
+  arbiter (the trace writer of the debug block joins as a write source on channel 0). There is no
+  instruction fetch: memory source 0 (FETCH) is tied off (EX §11).
 
 ## 3. Configuration parameters
 
@@ -305,7 +303,7 @@ registers `CFG_*`. The U200 values are:
 | --- | --- | --- |
 | `NUM_CH` (C) | Number of channels = number of clusters (1–16; the 4-bit channel field of `LD` and `ST` is the limit) | 4 |
 | `BEAT_BITS` | Memory port data width | 512 |
-| `F_CORE` | Core clock target | 300 MHz (the k4 link reached 276.3 MHz, measured in Vivado 2024.2 (linked, v1)) |
+| `F_CORE` | Core clock target | 300 MHz (the k4 link reached 276.3 MHz, measured in Vivado 2024.2, linked) |
 | `LANES` | MAC lanes per cluster (weights per beat). Fixed by `BEAT_BITS` / 4 (the weights of one Q4_K beat); not an independent parameter | 128 |
 | `T_MAX` | Maximum tokens per MVM | Synthesised 8 (4-channel kernel k4; 1 in the 1-channel bring-up kernel k1); architectural maximum 8 |
 | `K_MAX` | Largest supported K | 32768 |
@@ -315,14 +313,12 @@ registers `CFG_*`. The U200 values are:
 | `RD_OUTSTANDING` | Outstanding read requests per channel | 16 |
 | `CH_BYTES` | DRAM capacity per channel | 16 GiB |
 | `ADDR_BEAT_W` | Width of a channel address in beats | 28 |
-| `ITCM_BYTES`, `DTCM_BYTES` | Instruction and data SRAM of the control core | 128 KiB, 64 KiB (V2-CC-3) |
+| `ITCM_BYTES`, `DTCM_BYTES` | Instruction and data SRAM of the control core | 128 KiB, 64 KiB (CC-3) |
 | `Q_DEPTH_*` | Queue depth per unit (DMA, QACT, MVM, VU, unit 4, SYNC) | 8, 4, 4, 16, 0 (unit 4 absent), 4 (CC §7.4) |
 | `ISSUE_FIFO_DEPTH` | Depth of the issue FIFO (`ISSUE_CREDIT` reports the free space, so it does not depend on the sum of the queue depths) | 32 (U200), 8 (ASIC) |
 | `F_RV` | Control-core clock. The implementation decides; `RV_FREQ` measures it (not an RTL parameter) | Planning value 166.7 MHz (250 MHz if Ibex closes there, 125 MHz fallback) |
 
-The rows from `ITCM_BYTES` on are v2 design values (designed). v1 parameters that no longer exist:
-`NIREG` (R0–R15 are gone, D14), `LOOP_DEPTH` (LOOP was retired) and `HAS_CTRL` (a v2 core always has
-the control core, EX §12).
+The rows from `ITCM_BYTES` on are design values (designed).
 
 The control-core parameters are not placed in `CFG_*` (EX §5.1). The control-core version and
 features are read from `CTL_ID` (0x01C), the TCM sizes from `RV_CFG` (0x030), the clock from
@@ -347,7 +343,7 @@ today) can become the upper channel bits, and existing programs stay valid.
 ## 4. Memory model
 
 The core sees two address spaces: DRAM (per channel) and the SPM. The host accesses DRAM only and
-cannot see the SPM. The control core (v2) has its own 32-bit address space (ITCM, DTCM, control
+cannot see the SPM. The control core has its own 32-bit address space (ITCM, DTCM, control
 window, SPM window): it reads and writes the SPM byte by byte but cannot see DRAM (section 16). The
 ordering rules between the host, the control core and the units are in section 16 (Memory model).
 
@@ -371,7 +367,7 @@ expert, and each expert is split by rows over the four channels as above. Expert
 therefore uses the bandwidth of all four channels, and building the address from an expert number
 that the device computed takes one multiplication.
 
-**Per-channel DRAM map** (v2; the normative definition is [EX](v2/01-execution-model.md) §11, which
+**Per-channel DRAM map** (the normative definition is [EX](design/01-execution-model.md) §11, which
 is incorporated here by reference. Every channel uses the same map):
 
 - **OPL**, ch0, 0–64 MiB: op lists (OPL), the push streams of the `replay` kernel, kernel argument
@@ -383,8 +379,8 @@ is incorporated here by reference. Every channel uses the same map):
 - **WEIGHT / heap**, 512 MiB to the end, every channel: repacked weights and expert tensors are
   allocated symmetrically upward from 512 MiB. KV planes are allocated symmetrically downward from the
   end of the channel (one plane = one (layer, stream, K or V); layout in
-  [AT](v2/03-attention-kv.md) §4). Between the two lies the per-channel compute heap, sized from the
-  reserve graph ([SW](v2/06-software-verification.md) §8, R6).
+  [AT](design/03-attention-kv.md) §4). Between the two lies the per-channel compute heap, sized from the
+  reserve graph ([SW](design/06-software-verification.md) §8, R6).
 - **Low 512 MiB of ch1–3**: compute chunks and other activations.
 
 A 32B Q4_K_M model (about 20 GB) needs about 5 GB per channel, and the same model in Q8_0 (about
@@ -428,7 +424,7 @@ tensors that are not 8-bit or 4-bit use 8-bit bandwidth.
 - Q4_K_M files carry Q6_K for `attn_v`, half of `ffn_down` and `output`, so they take this path. For
   Qwen2.5-32B Q4_K_M it adds about 1.3 GB (about 6 %) of device memory and of bytes read per token,
   and decode is slower by the same share.
-- Accuracy (measured on the simulator (v1), [`docs/numcheck.md`](numcheck.md) B3): measured against
+- Accuracy (measured on the simulator, [`docs/numcheck.md`](numcheck.md) B3): measured against
   the fp64 exact value, the relative error of Q6_K converted to Q8_0 is smaller than the CPU's (32B
   median 0.62 times). The CPU multiplies Q6_K by Q8_K activations (one scale per 256 values); the
   conversion path uses A32 (one per 32). Q5_0 converted to Q8_0 is about 1.25 times the CPU error:
@@ -583,7 +579,7 @@ The terms of a row enter the 16 partial sums in turn, and the fixed tree of fadd
   reference implementation, and the RTL must match it bit for bit.
 
 **Approximate math.** The vector unit's functions are defined by integer algorithms and the
-primitives above, not by libm ([VU](v2/02-vector-unit.md) §6, summarised in section 9). Their accuracy
+primitives above, not by libm ([VU](design/02-vector-unit.md) §6, summarised in section 9). Their accuracy
 is a property of the algorithms, measured exhaustively on the simulator reference; it is reported in
 section 9. Agreement with the ggml CPU is not bit-exact in general and is covered by the KL criterion
 (section 17).
@@ -596,9 +592,8 @@ unbroken supply of beats.
 
 <p align="center"><img src="fig/cluster.svg" alt="MVM datapath of one cluster: the broadcast reader, gather and ACC of tsr_mvm; the cluster's broadcast tsr_vpipe and result tsr_rpipe; the front end (stream requester, chunk parser, meta and unpack) fed by DDR4 channel c; the back end (activation buffer, 128 MAC lanes, integer scale, i2f, fmul, block term, accumulate, tree16); the planned attention modes ATTQK and ATTPV on the MAC lanes." width="100%"></p>
 
-In v2 a cluster also has two attention modes, ATTQK and ATTPV, that feed the MAC lanes from KV
-planes (designed, [AT](v2/03-attention-kv.md) §8; the tile ops are in section 11). The weight path
-described here is unchanged.
+A cluster also has two attention modes, ATTQK and ATTPV, that feed the MAC lanes from KV
+planes (designed, [AT](design/03-attention-kv.md) §8; the tile ops are in section 11).
 
 **Pipeline stages** (valid/ready flow control in every stage; if the DRAM response stalls, everything
 stalls)
@@ -664,7 +659,7 @@ lowering all of them and only adds CDC cost. A clock domain is split only betwee
 throughput differs, not by location (for example the RISC-V control core). If timing is short, fix
 the paths, and if that fails lower the whole kernel clock. The first plan put each cluster in the SLR
 of the DDR controller of its channel; on the U200 two T_MAX 8 clusters do not fit SLR1, so floorplan
-C' is used (section 2). Measured on the U200 (measured in Vivado 2024.2 (out of context, v1)): the DSPs
+C' is used (section 2). Measured on the U200 (measured in Vivado 2024.2, out of context): the DSPs
 of the MAC lanes are 128 per cluster at T_MAX 1 (one DSP per product) and 512 at T_MAX 8 (two tokens
 share a DSP).
 
@@ -678,7 +673,7 @@ the work follows the card measurements (section 14).
 
 ### Attention and the KV cache
 
-(Designed; the normative definition is [AT](v2/03-attention-kv.md), incorporated here by reference.
+(Designed; the normative definition is [AT](design/03-attention-kv.md), incorporated here by reference.
 The AT ops run on the simulator; their RTL is planned, W4.) Attention runs in the MVM clusters and
 not in the VU: one SPM port moves 64 B per cycle while the four DDR channels deliver 256 B per cycle,
 so only the clusters, each streaming its own channel, can consume the KV cache at the DDR rate.
@@ -709,9 +704,9 @@ so only the clusters, each streaming its own channel, can consume the KV cache a
 ## 9. Vector unit and scalar registers
 
 This section is a summary. The normative definition of the VU programming model, encodings, dispatch
-checks and numerics (the bit-level algorithms and constants) is [VU](v2/02-vector-unit.md) §4–§6 and
+checks and numerics (the bit-level algorithms and constants) is [VU](design/02-vector-unit.md) §4–§6 and
 Appendix A, incorporated here by reference. The vector ops of attention (ASMAX, AMASK, AMERGE, ANORM)
-take their meaning from [AT](v2/03-attention-kv.md) §5.4–§5.7 and are executed by the VU (VU §5.11).
+take their meaning from [AT](design/03-attention-kv.md) §5.4–§5.7 and are executed by the VU (VU §5.11).
 Status: the simulator model, the C reference and the firmware kernels exist (on the simulator); the
 RTL is planned (W4).
 
@@ -763,7 +758,7 @@ fp result is never subnormal and a NaN is always 0x7FC00000. The shared C refere
 DQROW), `sw/sim/tsr_ref_at.c` (the vector ops of attention and the flash-attention reference) and the
 primitives in `sw/sim/tsr_ref.c`. It is checked against a numpy model written separately from this
 document and the VU text, and by exhaustive comparison of the unary functions over all 2^32 inputs
-([SW](v2/06-software-verification.md) §10.1).
+([SW](design/06-software-verification.md) §10.1).
 
 - **RECIP_APPROX does not exist.** Every reciprocal (VOP.RECIP, the RED post-ops, the reciprocals
   inside SIGMOID, SILU, GELU and TANH) is the correctly rounded `tsr_frecip`. SQRT, DIV and RSQRT
@@ -775,7 +770,7 @@ document and the VU text, and by exhaustive comparison of the unary functions ov
 - **Composite functions**: SIGMOID(x) = RC(1 + EXPK(−x)), SILU(x) = x × SIGMOID(x), SwiGLU(a, b) =
   SILU(a) × b. GELU (tanh form) is computed as 0.5·(1 + tanh u) = σ(2u). TANH uses a cubic for
   |x| < 2^−6 and EXPK(−2|x|) elsewhere.
-- **GELU16 and GEGLU16**: the GELU and GEGLU of llama.cpp graphs run as these (V2-SW-31). Like ggml
+- **GELU16 and GEGLU16**: the GELU and GEGLU of llama.cpp graphs run as these (SW-31). Like ggml
   CPU (`GGML_GELU_FP16`) they clamp at ±10 and round input and result to binary16. The tanh-form GELU
   is for M8 and PyTorch.
 - **SIN and COS**: exact 64-bit integer range reduction by 2/π, Cephes f32 polynomials, and an
@@ -789,7 +784,7 @@ document and the VU text, and by exhaustive comparison of the unary functions ov
   pairs); head_dim must be a multiple of 16 (≤ 1024), and n_dims a multiple of 32 for NEOX and of
   16 for NORM (otherwise `OPERAND`).
 
-**Accuracy of the approximate functions** (measured on the simulator reference (v2, `452e27b`):
+**Accuracy of the approximate functions** (measured on the simulator reference, `452e27b`:
 exhaustive maximum over all 2^32 inputs against double libm; ulp is taken at max(⌊log₂|r|⌋, −126),
 results below 2^−126 are not measured; every maximum is within the 2× gate of the model figure, VU
 §6.9):
@@ -807,7 +802,7 @@ results below 2^−126 are not measured; every maximum is within the 2× gate of
 No VU op is bit-exact with the ggml CPU in general; the KL criterion (section 17) covers the
 differences. GELU16 differs from the pinned ggml fp16 GELU table in 272 of 65,536 entries (265 by one
 fp16 ulp, 7 by two); in all 272 GELU16 is the correctly rounded value (`ref_math_gelu16`, measured on
-the simulator reference (v2, `452e27b`)). The other known sources are the CPU's double-precision
+the simulator reference, `452e27b`). The other known sources are the CPU's double-precision
 RMSNorm sum, its `cosf` and `sinf` and possible FMA contraction in RoPE, its SIMD exp approximation
 in SiLU, and its own expf and f16 paths in flash attention (VU §6.9, AT §6.7).
 
@@ -819,25 +814,21 @@ per-token vector c (VU §8.1).
 
 ## 10. Execution model and control interface
 
-This section summarises EX §2–§5 and §8–§9 ([EX](v2/01-execution-model.md)). EX is the normative
+This section summarises EX §2–§5 and §8–§9 ([EX](design/01-execution-model.md)). EX is the normative
 definition and is incorporated here by reference: the host model, the firmware image and its load,
 the launch protocol and the runtime contract R1–R10, the core CSR map (EX §5.1, the only map the
 host sees), PERF (EX §6), the error codes and the check order (EX §8.1), the control actions
 (EX §8.5) and the XRT adapter (EX §9). Figure: `launch.svg` in section 12.
 
-Status: the CSR and ring model, the firmware runtime and the transport v2 (kinds `sim` and `mock`)
-are on the simulator; the CSR block, loader and rings in RTL are planned (W4); the card ran only the
-v1 core.
-
-History: v1 (tag `v1-m4`). In v1 the host wrote an array of instructions to the CMD region of ch0 and
-ran it sequentially with `CTRL.START`, with R0–R15 and `ARG0`–`7`, `END` and the `done` output. That
-path was removed (D14). The text of the v1 section is at tag `v1-m4`.
+Status: the CSR and ring model, the firmware runtime and the transport (kinds `sim` and `mock`) are
+on the simulator; the CSR block, loader and rings in RTL are planned (W4); none of it has run on the
+card.
 
 **What the host does** (EX §2). The host does not run programs. It opens the device (`xrt::ip`, one
 buffer per channel), makes it a known state with `SOFT_RESET` unless it attaches, writes the channel
 base addresses, sets `ADAPTER_CTRL.MEM_EN`, loads and verifies the firmware image into the TCMs,
 boots the control core, waits for HELLO and then **launches** kernels. Weights, inputs and op lists
-are written to and read from DRAM by PCIe DMA, as in v1. The control core issues all tile ops through
+are written to and read from DRAM by PCIe DMA. The control core issues all tile ops through
 the issue port; the host cannot reach the issue port (D15). Bring-up, the card selftest and trace
 replay are also control-core kernels. The device states (RESET, LOADED, BOOTING, READY, BUSY,
 TRAPPED, HUNG, FAILED) and the transitions between them are in EX §2.2. One process owns the device
@@ -874,9 +865,8 @@ DTCM segments, ITCM VERIFY (reloading only segments that differ) and then boot.
 - Cancellation is a sequence watermark. `LQ_CANCEL` is a hard cancel: if the running launch is
   covered, the host QABORT is applied at once, and covered launches in the queue are not run and are
   answered ABORTED. `LQ_STOP` is a soft stop: the covered kernel returns STOPPED at a safe point.
-  They replace the `CTRL.ABORT` of v1.
 - The log of the control core reaches the host through a 256-word log ring of the core domain (record
-  header: [DB](v2/05-debug.md) §6.1). It can be read even if the queues are stuck.
+  header: [DB](design/05-debug.md) §6.1). It can be read even if the queues are stuck.
 - Kernels of the default image: `graph` (executor of op lists, OPL; the only offload path from M6),
   `replay` (replays a push stream of tile ops; the SERIAL flag gives sequential semantics) and
   `selftest` (the card selftest).
@@ -886,8 +876,8 @@ DTCM segments, ITCM VERIFY (reloading only segments that differ) and then boot.
 offset reads 0 and ignores writes, and every access completes within a bound even without `clk_rv`.
 The blocks are:
 
-- 0x000–0x03C: `ID` (0x5453_5231 "TSR1", unchanged), `VERSION` (ISA 2.0 = 0x0000_0200; a v1 tool
-  with a different major version rejects the device when it opens it), `CFG0`–`CFG2` (unchanged),
+- 0x000–0x03C: `ID` (0x5453_5231 "TSR1"), `VERSION` (format version 2.0 = 0x0000_0200; a host tool
+  with a different major version rejects the device when it opens it), `CFG0`–`CFG2`,
   `CAPS`, `CFG3` (VU lane count, PCAP/16 of AT), `CTL_ID`, `CTRL` (0x020), `STATUS` (0x024),
   `RV_BOOT`, `RV_FREQ`, `RV_CFG`, `WDOG_CFG`, `RT_STATE`, `RT_INFO`.
 - 0x040–0x09C: the LQ staging words `LQ_W0`–`7` and `LQ_PUSH`, the sequence numbers (`LQ_SEQ`,
@@ -896,51 +886,49 @@ The blocks are:
 - 0x0C0–0x0D4: the image loader (`LOAD_ADDR`, `LOAD_DATA`, `LOAD_CRC`, `LOAD_COUNT`, `LOAD_CTRL`,
   `LOAD_STATUS`).
 - 0x100–0x2FC: `PERF_0`–`PERF_63` (below). 0x300–0x3FC: LCQ records. 0x400–0x7FC: the log ring.
-- 0x800–0xAFC: the debug block `DBG_*` ([DB](v2/05-debug.md) §10.1). Inside it, 0x9C0–0x9FC are
+- 0x800–0xAFC: the debug block `DBG_*` ([DB](design/05-debug.md) §10.1). Inside it, 0x9C0–0x9FC are
   `SREG0`–`15`, which read s0–s15; they exist whenever a VU is present, independent of the debug
   block.
-- 0xB00–0xBFC: reserved (the `CTL_*` block that was once planned does not exist). 0xC00–0xDFC: the
+- 0xB00–0xBFC: reserved. 0xC00–0xDFC: the
   DMI window of the debug module of the control core (active only while `DBG_CFG.DMI_EN` is set).
   0xE00–0xF1C: the queue status `Q_*` (per-unit done and issue counts, state, first error record;
   readable even if the control core is dead).
 
 `CTRL` has the level bits `RV_RUN`, `HOST_HOLD`, `HOLD_ON_HALT` and `IRQ_EN` and the pulse bits
 `QABORT`, `QCLEAR` and `SOFT_RESET`. `STATUS` holds control-core, queue and ring state levels and
-sticky error bits (EX §5.2–§5.3). The v1 registers `CTRL.START` and `ABORT`, `STATUS.BUSY`, `DONE`,
-`ERR` and `HALTED`, `CMD_ADDR_LO` and `HI`, `CMD_COUNT`, `ERR_PC`, `ERR_CODE`, `ERR_INFO`, `PC`,
-`ARG0`–`7`, `TRC_*`, `CTL_PERF_*`, the `CTL_*` block and the mailbox do not exist. `CAPS` has bit 0
+sticky error bits (EX §5.2–§5.3). `CAPS` has bit 0
 VU, bit 3 TOPK (RTL M8), bit 5 ATT (the seven AT ops) and bit 6 DQROW (RTL M8) and bit 7 VMASK (M9);
 the retired bits 2 and 4 are never set or reused (EX §7.5). The backend reads `CAPS` to choose its
 path, so that the same software can handle bitstreams with different features.
 
 **PERF counters** (EX §6). There is one counter space. Time counters count while the device is
 ACTIVE and not stopped as a whole by the debugger (QHALT); event counters count only while ACTIVE.
-The runtime joins every tile op before it posts its answer, so PERF does not change between launches
-(the launch form of the v1 property "PERF unchanged between runs"). If launches are not overlapped,
-the difference of two reads is the value of that one launch. `SOFT_RESET` zeroes all counters, and
-the rule for sampling the 64-bit LO read is unchanged. Index 0 `CYCLES`, 2 `MVM_CYCLES`, 3
-`VU_CYCLES` and, per channel, 5 + c `CH_RD_BEATS` and 5 + C + c `CH_WAIT` keep their meaning with the
+The runtime joins every tile op before it posts its answer, so PERF does not change between
+launches. If launches are not overlapped, the difference of two reads is the value of that one
+launch. `SOFT_RESET` zeroes all counters, and a read of the LO word of a 64-bit counter samples the
+whole counter (section 21). Index 0 `CYCLES`, 2 `MVM_CYCLES`, 3
+`VU_CYCLES` and, per channel, 5 + c `CH_RD_BEATS` and 5 + C + c `CH_WAIT` count under the
 gates above. Index 1 `RETIRED` is the number of completed queue entries on all units (whatever the
 outcome), and 4 is reserved. Because there is no instruction fetch, `CH_RD_BEATS[0]` can be
 compared exactly with the hardware. From X = 5 + 2C on there are extension counters (`MVM_WAIT`,
 `MVM_EMPTY` and others belonging to VU, AT and CC), and 61–63 belong to debug.
 
-**Determinism rules** ([SW](v2/06-software-verification.md) §4.7). A program (image, launch arguments,
+**Determinism rules** ([SW](design/06-software-verification.md) §4.7). A program (image, launch arguments,
 DRAM inputs) is *valid* if it is race-free and these four are identical under every schedule: the
 per-unit op streams (words, push flags, dependencies as relative tickets), the completion records
 r0–r6 (r7, the duration, is timing), the SPM store stream of the control core, and the final written
 DRAM and SPM lines. The simulator checks this with eight or more schedules (`fixed` and random
 seeds). For a valid program the RTL and the card must reproduce the expect DRAM regions, the DONE
 record (r0–r6), the completion counts per unit and the error records. Never compared: polling
-counts, `MTIME`, `PERF_*`, r7, completion records (REC) and log content. Firmware rule (V2-SW-30): a
+counts, `MTIME`, `PERF_*`, r7, completion records (REC) and log content. Firmware rule (SW-30): a
 value read from a timing-dependent register (`DONE_SEQ`, credits, `QSTATUS`, `MTIME`, `LQ_AVAIL`,
 `LCQ_FREE`, `LOG_FREE`) may end a wait loop but must not influence pushed words, dependencies, SPM
 stores or records. At the llama.cpp level the same image and inputs give bit-identical logits on
 `sim`, `mock`, `vkernel` and `xrt`.
 
-**Errors** (EX §8). Error codes 1–12 keep their meaning (3 `QA_MISMATCH`, 9 and 10 are reserved and
-never raised), and 13 `OPERAND` (a value range violation of a VU or AT op, `ERR_INFO` = that value)
-is new. The dispatch check order is `ILLEGAL_OP` → `BAD_DEP` → `BAD_FMT` → `K_RANGE` → `T_RANGE` →
+**Errors** (EX §8). Error codes 1–13 are defined in EX §8.1 (3 `QA_MISMATCH`, 9 and 10 are reserved
+and never raised; 13 `OPERAND` is a value range violation of a VU or AT op, `ERR_INFO` = that
+value). The dispatch check order is `ILLEGAL_OP` → `BAD_DEP` → `BAD_FMT` → `K_RANGE` → `T_RANGE` →
 `OPERAND` → `SPM_RANGE` → `DRAM_RANGE`; the table and each condition are in EX §8.1. A tile op that
 has started does not fail: every error is found by the dispatch check, and data-dependent conditions
 (NaN, a length read from the SPM) are defined behaviour. A unit that raised an error ends the
@@ -958,30 +946,23 @@ reset (EX §8.6).
 **XRT adapter** (EX §9). The kernel is `ap_ctrl_none` and has no interrupt. The host accesses the
 registers with `xrt::ip` and polls; it never uses `xrt::run`, so a control core halted by the
 debugger cannot break the XRT scheduler. The only kernel arguments are the channel buffers `ch<c>`
-(base address at 0x040 + 8c); `cmd_addr`, `cmd_count`, `arg0`–`7` and the ap_ctrl_hs control
-registers do not exist. `ADAPTER_CTRL` (0x0E0) bit 0 `MEM_EN` checks the 4 KiB alignment of all base
+(base address at 0x040 + 8c). `ADAPTER_CTRL` (0x0E0) bit 0 `MEM_EN` checks the 4 KiB alignment of all base
 addresses when it is set and latches them in the bridges; while it is set, writes to a base address
 are ignored (`BASE_LOCKED`). While `MEM_EN` = 0 the memory requests of the core are held, not dropped
-(`REQ_HELD`). `ADAPTER_STATUS` (0x0F0) and `ADAPTER_VERSION` (0x0F4, version 2) are the adapter's own
+(`REQ_HELD`). `ADAPTER_STATUS` (0x0F0) and `ADAPTER_VERSION` (0x0F4, format version 2) are the adapter's own
 state, and the whole core CSR space is always visible in the window at 0x1000 + offset (the debug
 block at 0x1800–0x1AFC). The memory bridges and the reset scheme are those of
 [`docs/platform-u200.md`](platform-u200.md) §4–§5. The control core receives a second clock
 `ap_clk_2` (planning value 166.7 MHz). Whether v++ 2024.2 accepts an `ap_ctrl_none` RTL kernel with
 `m_axi` arguments is confirmed at the first smoke link; if it does not, the kernel is declared
-`ap_ctrl_hs` but still never run with `xrt::run` (EX §9.1). The v1 adapter is at tag `v1-m4`, and the
-tree holds the register-only adapter of the X0 state; the v2 additions (`MEM_EN`, `ADAPTER_VERSION`
-2, `ap_clk_2`, `plat_err_i`) are designed.
+`ap_ctrl_hs` but still never run with `xrt::run` (EX §9.1). The tree holds the register-only adapter
+of the X0 state; `MEM_EN`, `ADAPTER_VERSION` = 2, `ap_clk_2` and `plat_err_i` are designed.
 
 ## 11. ISA
 
-(ISA 2.0, [EX](v2/01-execution-model.md) §7.) A tile op is a fixed 256 bits (32 B) split into 32-bit
+([EX](design/01-execution-model.md) §7.) A tile op is a fixed 256 bits (32 B) split into 32-bit
 words w0–w7 (little-endian). The control core issues every tile op through the issue port. An address
-field is the immediate word itself (A = imm); there is no base register. The v2 encodings of LD, ST,
-QACT, MVM, NOP and FENCE are bit-identical to the v1 encodings with ra–rd = 0.
-
-History: v1 (tag `v1-m4`). v1 defined every address as "register + immediate", and the lowering used
-only R0 as the base register; it had the integer registers R0–R15 and the instructions `LI`, `ADDI`
-and `END`. The v1 text of this section is at tag `v1-m4`.
+field is the immediate word itself (A = imm); there is no base register.
 
 **w0 format**
 
@@ -990,7 +971,7 @@ and `END`. The v1 text of this section is at tag `v1-m4`.
 | [7:0] | opcode | The instruction |
 | [11:8] | sub | Sub-code per instruction: format code, mode, channel |
 | [15:12] | flags | Per-instruction flags |
-| [31:16] | x16 | Per-instruction field (v2). x16 bit i = w0 bit 16 + i. Bits that the definition of the instruction does not use must be 0 (otherwise `ILLEGAL_OP`). LD, ST, QACT, MVM, NOP and FENCE have x16 = 0; the VU and AT ops define their own fields. In v1 these bits were ra[19:16], rb[23:20], rc[27:24] and rd[31:28] |
+| [31:16] | x16 | Per-instruction field. x16 bit i = w0 bit 16 + i. Bits that the definition of the instruction does not use must be 0 (otherwise `ILLEGAL_OP`). LD, ST, QACT, MVM, NOP and FENCE have x16 = 0; the VU and AT ops define their own fields |
 
 **Common rules**
 
@@ -1005,20 +986,19 @@ and `END`. The v1 text of this section is at tag `v1-m4`.
   Errors).
 
 **Instruction list** (stage = the milestone in which the hardware first implements it). The global
-table that fixes unit and v2 status per opcode is [EX](v2/01-execution-model.md) §7.2, incorporated
+table that fixes unit and status per opcode is [EX](design/01-execution-model.md) §7.2, incorporated
 here by reference. The encodings, checks and semantics of the VU and AT ops are fixed by VU §5–§6 and
-[AT](v2/03-attention-kv.md) §5–§6; the table only points to those rows. LD, ST, QACT, MVM, NOP and
-FENCE have RTL that ran on the card (v1); every other row is designed and runs on the simulator.
+[AT](design/03-attention-kv.md) §5–§6; the table only points to those rows. LD, ST, QACT, MVM, NOP and
+FENCE have RTL that ran on the card; every other row is designed and runs on the simulator.
 
 | Opcode | Name | sub | Operands | Action | Stage |
 | --- | --- | --- | --- | --- | --- |
 | 0x00 | `NOP` | – | – (w1–w7 = 0) | Join point of the SYNC unit: completes when its dependencies are done | M2 |
-| 0x01–0x03 | (`END`, `LI`, `ADDI`) | – | – | Reserved in v2, `ILLEGAL_OP` (v1 M2: completion notice, R[rd] = w1, R[rd] = R[ra] + w1) | Reserved |
-| 0x04–0x08 | (`MULI`, `RLD`, `LOOP`, `WAITM`, `JUMP`) | – | – | Retired (plan revision of 2026-10-24, never implemented). Never reused | Retired |
-| 0x09 | (`CALL`) | – | – | Retired (never implemented, D14). Never reused | Retired |
+| 0x01–0x03 | (reserved) | – | – | `ILLEGAL_OP`. Never reused | Reserved |
+| 0x04–0x09 | (retired) | – | – | `ILLEGAL_OP`. Never implemented, never reused | Retired |
 | 0x10 | `LD` | ch | A1 = SPM dst (w1), A2 = DRAM src (w2), w3 n_lines | DRAM → SPM | M2 |
 | 0x11 | `ST` | ch | A1 = SPM src (w1), A2 = DRAM dst (w2), w3 n_lines | SPM → DRAM | M2 |
-| 0x12 | `DQROW` | fmt | VU §5.6 | Repacked row loaded to the SPM → f32 (VU unit; replaces the DRAM-row form of the v1 plan). Simulator M6 | M8 |
+| 0x12 | `DQROW` | fmt | VU §5.6 | Repacked row loaded to the SPM → f32 (VU unit). Simulator M6 | M8 |
 | 0x14 | `KVST` | | AT §5.1 | Store a K or V row into a KV plane (DMA unit) | M6 |
 | 0x18 | `QACT` | 0 A32, 1 A256 | A1 = QA dst (w1), A2 = f32 src (w2), w3 K, w4 T, w5 src_stride | T f32 vectors → T QA vectors | M2 |
 | 0x20 | `MVM` | fmt | A1 = dst (w1), A2 = x (w2), A3 = W_OFF (w3), w4 N, w5 K[15:0]·T[19:16], w6 dst_stride | Matrix × activations. flags bit 0 ACC | M3 |
@@ -1040,19 +1020,19 @@ never reused for another instruction.
 **Issue and units** (EX §7.2–§7.3). The issue port accepts every opcode. An opcode that is reserved,
 retired or not built into the bitstream still gets a ticket on the SYNC unit (5) and ends with
 `ILLEGAL_OP`, so every issue has a completion. The opcode → unit table is static and is generated
-from the table source (`sw/tables/tsr_tables.py`, V2-EX-30) into the RTL, the simulator and the SDK.
+from the table source (`sw/tables/tsr_tables.py`, EX-30) into the RTL, the simulator and the SDK.
 The units are 0 DMA (LD, ST, KVST), 1 QACT, 2 MVM (MVM, ATTQK, ATTPV), 3 VU (VOP, RED, ROPE, TOPK,
 SOP, DQROW, ASMAX–ANORM, and VMASK from M9), 4 reserved (a possible later attention engine; absent
-in M6; it was CMD in the v1 plan) and 5 SYNC (NOP, FENCE, QCLEAR, rejected opcodes). A dependency on
+in M6) and 5 SYNC (NOP, FENCE, QCLEAR, rejected opcodes). A dependency on
 an absent unit or on units 6–14 is `BAD_DEP`. QCLEAR, QABORT, QHOLD and TRACE_MARK are control
-window entries, not opcodes ([CC](v2/04-control-core.md) §5.1).
+window entries, not opcodes ([CC](design/04-control-core.md) §5.1).
 
 **MVM `fmt` codes**: 0 = Q8_0, 1 = Q4_K, 2–15 reserved. The only candidates are 4-bit formats
 (Q4_0, MXFP4); there is no 5- or 6-bit path.
 
-**VU function codes** (VU §5.2, §5.8): VOP functions 0–9 keep the numbers of the earlier revision
-(MULS and ADDS become MULC and ADDC with `cmode` 1), and 0x0A–0x18 are added. SOP sub-codes 0–8 are
-unchanged, and 9–14 (SUB, DIV, RSQRT, MAX, MIN, EXP) are added.
+**VU function codes** (VU §5.2, §5.8): the VOP functions are numbered 0–24 (0x00–0x18; the
+multiply and add with c, MULC and ADDC, take `cmode` 1) and the SOP sub-codes 0–14 (9–14 are SUB,
+DIV, RSQRT, MAX, MIN, EXP).
 
 **MVM semantics**
 
@@ -1083,26 +1063,23 @@ for t in 0 .. T-1:
   the channel the control core computed (`tsr_row_location`) and loaded into the SPM with LD, is
   unpacked to f32 by the bit interpretation of section 5 (`tsr_dequant_row`; d × q, and for Q4_K
   d × sc × q − dmin × m). Each multiplication and subtraction is rounded separately.
-- `LOOP`, `WAITM` and `JUMP` were retired in the plan revision of 2026-10-24; the nesting and WAITM
-  rules of the earlier text do not apply.
 
 ## 12. ggml backend integration
 
 `ggml-tesseract` registers one card as one device. For each split it receives, it builds an op list
-(OPL v1, [SW](v2/06-software-verification.md) §7.2), writes it to the OPL region of DRAM and launches
-the `graph` kernel once (v2; in v1 the backend lowered the nodes of a split into an ISA command
-buffer and ran it in one piece). Development is pinned to one llama.cpp commit (`third_party/llama.cpp`,
-[`docs/llama-pin.md`](llama-pin.md)); the names and signatures of the backend interface are checked
+(the op list format, [SW](design/06-software-verification.md) §7.2), writes it to the OPL region of DRAM
+and launches the `graph` kernel once. Development is pinned to one llama.cpp commit
+(`third_party/llama.cpp`, [`docs/llama-pin.md`](llama-pin.md)); the names and signatures of the backend interface are checked
 against `ggml-backend-impl.h` of that commit.
 
 Status: the M6 path (`MUL_MAT` as op-list records through the `graph` kernel) is on the simulator. The
 eleven M7 record kinds exist as firmware kernels and are verified at layer level on the simulator;
-the backend does not emit them yet (W3b). Nothing of the v2 path has run on the card.
+the backend does not emit them yet (W3b). Nothing of this path has run on the card.
 
-<p align="center"><img src="fig/stack.svg" alt="Software stack from top to bottom: front ends (llama.cpp with llama-cli, llama-server and llama-completion; PyTorch with torch.compile and the tesseract backend); backends (ggml-tesseract with the device Tesseract0, weight repack and conversion, op-list builder and cache; tsr_rt); the transport tsr_transport with the kinds sim, mock, vkernel and xrt; the firmware on the control core (runtime, graph executor, kernels, selftest and replay, header library); the NPU core (issue path and unit queues, DMA, QACT, MVM clusters, vector unit, SPM, DDR4). A tools column holds the simulator, tsr-selftest, klcheck and numcheck, the trace tools, tsr-log, GDB debugging and tsr-prof. Tiles carry status tags: on the card (v1), simulator (v2), planned." width="100%"></p>
+<p align="center"><img src="fig/stack.svg" alt="Software stack from top to bottom: front ends (llama.cpp with llama-cli, llama-server and llama-completion; PyTorch with torch.compile and the tesseract backend); backends (ggml-tesseract with the device Tesseract0, weight repack and conversion, op-list builder and cache; tsr_rt); the transport tsr_transport with the kinds sim, mock, vkernel and xrt; the firmware on the control core (runtime, graph executor, kernels, selftest and replay, header library); the NPU core (issue path and unit queues, DMA, QACT, MVM clusters, vector unit, SPM, DDR4). A tools column holds the simulator, tsr-selftest, klcheck and numcheck, the trace tools, tsr-log, GDB debugging and tsr-prof. Tiles carry status tags: on the card, simulator, planned." width="100%"></p>
 
-The status tags in the figure correspond to the status words of the Scope box: *ON THE CARD · V1*,
-*SIMULATOR · V2*, *PLANNED*.
+The status tags in the figure correspond to the status words of the Scope box: *ON THE CARD*,
+*SIMULATOR*, *PLANNED*.
 
 **Components**
 
@@ -1113,16 +1090,16 @@ The status tags in the figure correspond to the status words of the Scope box: *
 | set_tensor | Weights in a WEIGHTS buffer: collect in a host staging area, convert to Q8_0 if needed, then repack, split by rows and write per channel. Everything else: write the bytes unchanged to the IO window (or host memory) |
 | get_tensor | IO window, host memory, AUX: read the bytes unchanged (`test-backend-ops` reads src0 this way and hands it to the CPU). Weights of a WEIGHTS buffer: unpack the repacking (for debugging; a converted type re-encodes the device copy, so the bytes are not the original bytes) |
 | supports_op | The conditions below |
-| graph_compute | (v2) split → OPL (M6: `MUL_MAT` records and JOINs only; other kinds from M7), OPL cache looked up by content, `graph` launch, wait for the answer record. On TILE_ERR the first error is traced back to the ggml node (SW §9.3) |
-| transport | `tsr_transport` (the normative API is [EX](v2/01-execution-model.md) §10, incorporated here by reference): open (`SOFT_RESET` and channel binding, skipped with `TSR_ATTACH`), per-channel DRAM read and write, CSR read and write, firmware image load and boot (warm or cold, HELLO check), launch, wait (a timeout that does not count while the debugger has the device halted, and the recovery steps), cancel and stop, `SOFT_RESET`, log drain. The kdevs are `sim` (the simulator is built in and advances deterministically when the host reads), `mock` (adapter register model), `vkernel` (Verilated kernel) and `xrt` (`xrt::ip`); all share one protocol layer. A `zynq` kdev may follow |
+| graph_compute | Split → OPL (M6: `MUL_MAT` records and JOINs only; other kinds from M7), OPL cache looked up by content, `graph` launch, wait for the answer record. On TILE_ERR the first error is traced back to the ggml node (SW §9.3) |
+| transport | `tsr_transport` (the normative API is [EX](design/01-execution-model.md) §10, incorporated here by reference): open (`SOFT_RESET` and channel binding, skipped with `TSR_ATTACH`), per-channel DRAM read and write, CSR read and write, firmware image load and boot (warm or cold, HELLO check), launch, wait (a timeout that does not count while the debugger has the device halted, and the recovery steps), cancel and stop, `SOFT_RESET`, log drain. The kdevs are `sim` (the simulator is built in and advances deterministically when the host reads), `mock` (adapter register model), `vkernel` (Verilated kernel) and `xrt` (`xrt::ip`); all share one protocol layer. A `zynq` kdev may follow |
 
 <p align="center"><img src="fig/launch.svg" alt="Swimlane timeline from llama.cpp through ggml-tesseract and tsr_transport to card DRAM and the control core running firmware: model load (supports_op, set_tensor with conversion and repack, firmware image load, VERIFY, boot and HELLO), then for each launch the input writes, the op list written to OPL, the descriptor pushed with posted CSR writes, the control core running the graph kernel and issuing LD, QACT, MVM and ST tile ops to the unit queues, the answer record in the completion ring, the host polling, and the readback. A dashed note marks one launch per token as planned for M7." width="100%"></p>
 
 The figure shows model load once and then one launch: a graph split in M6, one decode token in M7.
 
 **supports_op**: only a `MUL_MAT` that meets all of the following is true. Every other op is sent to
-the CPU by the scheduler. M6 keeps this rule, so the splits are those of v1 (145 per token for 0.5B,
-385 for 32B). The M7 table is [SW](v2/06-software-verification.md) §9.3.
+the CPU by the scheduler. In M6 this gives 145 splits per token for 0.5B and
+385 for 32B. The M7 table is [SW](design/06-software-verification.md) §9.3.
 
 - src0 is a 2D weight that lives in a Tesseract buffer (not a COMPUTE buffer). Whatever its GGUF
   type, the device holds it as Q8_0 or Q4_K. The type in the tensor metadata is still the original
@@ -1140,10 +1117,10 @@ the CPU by the scheduler. M6 keeps this rule, so the splits are those of v1 (145
   large vocabulary (N + K > 131072, Qwen2.5 and Llama-3) would silently stay on the CPU. Rejecting a
   resident weight at run time for a large T would make the scheduler read that weight from the device
   every time and copy it to the CPU (a loss for converted types, an abort for some I-quants). Cases
-  where the activations do not fit into IO are handled by the staging path (v1 lowering constraints
+  where the activations do not fit into IO are handled by the staging path (lowering constraints
   below).
 
-**Attention (v2, D17; the normative definition is [AT](v2/03-attention-kv.md) §2.6, incorporated here
+**Attention (D17; the normative definition is [AT](design/03-attention-kv.md) §2.6, incorporated here
 by reference)**: attention is accepted only as llama.cpp's `FLASH_ATTN_EXT`. `SOFT_MAX`, the
 attention `MUL_MAT` on the KV cache and the Hadamard rotation `MUL_MAT` are accepted in no milestone
 (the rotation is turned off with `LLAMA_ATTN_ROT_DISABLE=1`). M6 runs with `offload_kqv` = false
@@ -1160,28 +1137,24 @@ The op set is extended after M7 as described in section 13 (MoE support) and sec
 independence roadmap). The backend reads the CSR `CAPS` and chooses the path that matches the features
 of the bitstream.
 
-**Lowering (v1) and the op list.** History: v1 (tag `v1-m4`). For every `MUL_MAT` node of a split the
-backend emitted `LD` of src1, `QACT`, `MVM` and `ST` of dst, closed the command buffer with `END` and
-ran the whole split once; it cached generated command buffers by graph shape (64 MiB and 4096 entries
-at most, least recently used out first, none above 4 MiB). In v2 the firmware's `MUL_MAT` kernel
-issues the same `LD → QACT → MVM → ST` sequence for every `MUL_MAT` record of the op list. The tiling
-(tokens beyond `T_MAX` form `T_MAX` tiles; v1 hardware had `T_MAX` = 1, so prefill was slow) is done
-by `plan.hpp`, which the host and the firmware share, and an OPL cache replaces the program cache
-(SW §7.4, §9.3). Input tensors that change per token (token ids, positions, KQ mask, KV write
-indices) live in the IO region and the program reads them every time, so a cached op list never needs
-patching. `src1` and `dst` are placed by ggml-alloc in a Tesseract compute buffer, so the copies
-between host and device are done by the scheduler. If that buffer is an IO window, the program reads
-and writes it in place; if it is host memory, graph_compute moves the data through the IO staging
-area (v1 lowering constraints).
+**Lowering and the op list.** The firmware's `MUL_MAT` kernel issues the sequence `LD` of src1,
+`QACT`, `MVM` and `ST` of dst for every `MUL_MAT` record of the op list. The tiling (tokens beyond
+`T_MAX` form `T_MAX` tiles) is done by `plan.hpp`, which the host and the firmware share, and the OPL
+cache is keyed by content (SW §7.4, §9.3). Input tensors that change per token (token ids,
+positions, KQ mask, KV write indices) live in the IO region and the kernel reads them every time, so
+a cached op list never needs patching. `src1` and `dst` are placed by ggml-alloc in a Tesseract
+compute buffer, so the copies between host and device are done by the scheduler. If that buffer is
+an IO window, the kernel reads and writes it in place; if it is host memory, graph_compute moves the
+data through the IO staging area (lowering constraints below).
 
 **Notes**
 
 - **Split upload**: llama.cpp can upload a large tensor in several `set_tensor(offset, size)` calls.
   Repacking happens only after the whole tensor (or a row range that is complete) has arrived.
-- **Number of splits**: only `MUL_MAT` goes to the device in v1 and M6, so there are hundreds of
+- **Number of splits**: only `MUL_MAT` goes to the device in M6, so there are hundreds of
   splits per token. The backend must stay inside the scheduler's split and input limits at the pinned
   commit. `GGML_SCHED_DEBUG` shows the split structure. M6 launches per token on the simulator: 145
-  (0.5B) and 385 (32B) (measured on the simulator (v2, 83ac601)).
+  (0.5B) and 385 (32B) (measured on the simulator, 83ac601).
 - **output.weight**: for Qwen2.5-32B it is a Q6_K matrix with N = 152064, converted at load to Q8_0
   (about 0.83 GB), so one MVM is large. With `-ngl` ≥ 1 llama.cpp assigns the output layer to the
   device first, and thanks to the T-independent `supports_op` above it passes the 512-token probe and
@@ -1194,12 +1167,10 @@ area (v1 lowering constraints).
   CPU; the environment variables `TSR_DEVICE=sim|xrt|mock|vkernel` and `TSR_TRACE=<directory>` choose
   the device and dump traces. `mock` is the adapter register model with the simulator; `vkernel` runs
   the Verilated U200 kernel as a server process and drives it with the register sequence of the real
-  XRT path (v1 results: [`docs/xrt-host.md`](xrt-host.md), [`docs/platform-u200.md`](platform-u200.md)
-  §13; the v2 two-clock server is P5.3, planned).
-- **v1 lowering constraints** (M1 implementation, details in
+  XRT path (results: [`docs/xrt-host.md`](xrt-host.md), [`docs/platform-u200.md`](platform-u200.md)
+  §13; the two-clock server with the control core is P5.3, planned).
+- **Lowering constraints** (M1 implementation, details in
   [`sw/ggml-tesseract/README.md`](../sw/ggml-tesseract/README.md) and [`docs/llama-pin.md`](llama-pin.md)).
-  History: v1 (tag `v1-m4`). The staging code was restored from v1 for the M6 backend, so the
-  constraints below still hold unless a bullet says otherwise; "command buffer" reads "launch" in v2.
   - The activations that a program reads and writes directly (src1, dst) live in the ch0 IO region
     (256 MiB). The software divides the IO region into a compute-buffer window (lower part) and a
     staging area (top, max(16 MiB, 2 × `SPM_BYTES`), 16 MiB on the U200). The backend's
@@ -1217,9 +1188,9 @@ area (v1 lowering constraints).
     fits into the SPM, one token also fits into the staging area (at least twice the SPM). The traffic
     is the same as with an IO window (graph_compute does the src1 write and the dst read in place of
     the scheduler).
-  - llama.cpp wants to put the KV cache in a device buffer, so v1 ran with `-nkvo` (v1 has no KV
-    ops). In v2 M6 also runs with `-nkvo` (`offload_kqv` = false). From M7 `-nkvo` is not needed, and
-    `-fa on -ctk q8_0 -ctv q8_0` puts the KV cache and attention on the device (Attention (v2) above).
+  - llama.cpp wants to put the KV cache in a device buffer, so M6 runs with `-nkvo`
+    (`offload_kqv` = false). From M7 `-nkvo` is not needed, and
+    `-fa on -ctk q8_0 -ctv q8_0` puts the KV cache and attention on the device (Attention above).
   - K must be a multiple of 32 so that the f32 rows of src1 start on a line boundary (the same
     condition as for the Q8_0 conversion). A shape for which x + QA + y of one token does not fit
     into the SPM is also rejected.
@@ -1240,7 +1211,7 @@ numeric rules are those of the llama.cpp path. float32, float16 and bfloat16 wei
 `quantize_row_q8_0_ref` at upload, so the blocks are byte-identical to llama.cpp's load-time
 conversion. The activations are quantized on the device with QACT A32 and the products are f32. Bias
 and `alpha` and `beta` are applied on the CPU in f32. Below it, the runtime `tsr_rt` (`sw/rt`)
-provides weight upload and `y = x·Wᵀ` without a ggml graph. In v2 a linear call is one launch of the
+provides weight upload and `y = x·Wᵀ` without a ggml graph. A linear call is one launch of the
 `graph` kernel per IO tile, with an op list that holds one `MUL_MAT` record, cached by content (SW
 §9.4). `tsr_rt` shares the op-list builder, the allocator, the weight layout (`tsr_lower`) and the
 load-time conversion (`tsr-weights.cpp`) with `ggml-tesseract`. Verification follows the oracle chain
@@ -1248,7 +1219,7 @@ of section 17: the device output is bit-identical to `libtsr_ref` and to the num
 model level the KL is examined. A Hugging Face float32 checkpoint has no CPU run of the same quantized
 model, so the floor ratio is measured against a reference (cpu-q8) that computes the same 8-bit
 operands with a torch f32 GEMM. For Qwen2.5-0.5B-Instruct over 32 tokens this ratio is 2.92, and 1.72
-at the 16 positions where the floor moved (measured on the simulator (v1),
+at the 16 positions where the floor moved (measured on the simulator,
 [`docs/torch-backend.md`](torch-backend.md)). The value is reported and is not used as a pass line.
 
 ## 13. MoE support
@@ -1268,8 +1239,8 @@ layout is `EXP_STRIDE` of section 4.
 | Device | The device does the router, softmax, TOPK and the expert MVMs by itself | Control core (reads the TOPK result from the SPM window, computes the expert addresses, issues asynchronously), TOPK RTL (`CAPS` bit 3) | M8 |
 | Prefill | Group the tokens per expert and run MVMs with T > 1 | Host or device sorting; not decided | After M8 |
 
-The earlier host-assisted stage (M5) assumed the v1 command-buffer path and no longer exists; M5 was
-merged into M8 (D14). The router and the expert tensors are placed as sections 4 and 5 say.
+Milestone M5 was merged into M8 (D14). The router and the expert tensors are placed as sections 4
+and 5 say.
 
 **Device-only example** (a C++ kernel of the control core, one token, 8 experts, expert matrices
 2048 ↔ 768, the router probability multiplied into h beforehand and summed by the ACC of the down
@@ -1295,8 +1266,8 @@ The control core issues the tile ops of all 8 experts without waiting (if a queu
 `issue` waits for one). The queue order protects the reuse order of G, U, H and HQ: the gate MVM of
 the next expert is behind the previous down MVM in the MVM queue, and that down MVM starts after the
 QACT and VU ops. s1 is written and read in VU queue order, so no op of another kernel can come in
-between (in v2 there is one s register bank; `CALL` and host command-buffer execution do not exist).
-The `VOP_MULS` of this example is the VOP MULC with `cmode` 1 in v2.
+between (there is one s register bank). The `VOP_MULS` of this example is the VOP MULC with
+`cmode` 1.
 
 y is initialised with the residual (or 0) before the loop. Because the probability is multiplied
 before the down MVM, the accumulation order differs from ggml (which multiplies after down), so the
@@ -1319,9 +1290,9 @@ path that has not been verified on the card.
 wall-clock time, so host time counts. By cause, U is split as follows (the product is an
 approximation):
 
-- H: the share of wall-clock time in which the device is not BUSY (v2: no launch is ACTIVE). Host CPU
+- H: the share of wall-clock time in which the device is not BUSY (no launch is ACTIVE). Host CPU
   work, PCIe round trips, synchronisation between launches.
-- G: the share of device time outside the MVM (LD, QACT, VU, ST). In v2 the counters `MVM_WAIT` and
+- G: the share of device time outside the MVM (LD, QACT, VU, ST). The counters `MVM_WAIT` and
   `MVM_EMPTY` split it into a dependency-bound and an issue-bound share (section 10, PERF counters).
 - F: fill, broadcast and tail inside the MVM.
 - E: the effective bandwidth while the MVM reads weights, divided by B_M0. DDR efficiency (refresh,
@@ -1330,11 +1301,11 @@ approximation):
 U ≈ (1 − H) × (1 − G) × (1 − F) × E. H is measured with host timestamps, the rest with the `PERF_*`
 counters ([`docs/prof-dbg.md`](prof-dbg.md)).
 
-**Measured position on the card (v1 core)**: B_M0 is 72.05 GB/s for four channels (read bursts of 64
-beats at 300 MHz, measured on the card (v1, M0)). In decode of Qwen2.5-32B Q4_K_M the MVM unit is busy
+**Measured position on the card**: B_M0 is 72.05 GB/s for four channels (read bursts of 64
+beats at 300 MHz, measured on the card, M0). In decode of Qwen2.5-32B Q4_K_M the MVM unit is busy
 98.2 % of the device cycles, the weight streams read 20.74 GB per token at 69.4 GB/s (17.4 GB/s per
-channel), and the host share is 12.3 % of the wall-clock time per token (measured on the card (v1,
-k4, 276.3 MHz), TSR_STATS, difference of a 65-token and a 1-token run). For 12B Q8_0 the same figures
+channel), and the host share is 12.3 % of the wall-clock time per token (measured on the card,
+k4, 276.3 MHz, TSR_STATS, difference of a 65-token and a 1-token run). For 12B Q8_0 the same figures
 are 97.4 %, 12.69 GB per token, 68.8 GB/s and 16.8 %. The weight path is therefore the limit: at
 276.3 MHz a channel delivers at most 64 B per cycle = 17.7 GB/s, slightly less than the 18.0 GB/s
 that the DRAM gives at 300 MHz. U for the 32B decode is about 0.84 (derived from 20.74 GB per
@@ -1344,7 +1315,7 @@ measurement). The details are in [`docs/performance.md`](performance.md).
 **Order of reduction** (check each step with measured H, G, F and E)
 
 1. H: remove host round trips. M7 puts norms, RoPE, activations, attention and the KV cache on the
-   device and makes a decode token one launch (v1 and M6 need 145 launches per token for 0.5B and 385
+   device and makes a decode token one launch (M6 needs 145 launches per token for 0.5B and 385
    for 32B); M9 removes the remaining per-token host work with a resident loop.
 2. G: start the weight stream of the next MVM while ops that are not MVMs run. The asynchronous issue
    of the control core (fork and join) does this.
@@ -1353,7 +1324,7 @@ measurement). The details are in [`docs/performance.md`](performance.md).
    and balance the row distribution between channels.
 
 Target value (proposal, set before the card measurements): U ≥ 85 % at M9 for 32B Q4_K_M decode.
-Intermediate targets are set after the v2 card measurements (W6). The measured U above shows that this
+Intermediate targets are set after the card measurements with the control core (W6). The measured U above shows that this
 value needs to be re-examined (section 20, Open items).
 
 ## 15. Host independence roadmap
@@ -1363,7 +1334,8 @@ is the same, and only the input tensors change from token to token (token id, po
 write index). Host involvement is reduced in three stages. The op-list cache of stage A uses this
 property (cached per graph shape), and in stages B and C the C++ kernels of the control core handle
 the position themselves. The KV padding unit and llama.cpp's graph reuse path are checked at the
-pinned commit.
+pinned commit. Status: in M6 the host launches the `graph` kernel once per split on the simulator;
+the three stages below are planned.
 
 | Stage | What the host does per token | What the device needs | Relation to llama.cpp | Milestone |
 | --- | --- | --- | --- | --- |
@@ -1371,13 +1343,13 @@ pinned commit.
 | B. One-token decode in a control-core kernel | Write 2 arguments (token id, position), read the result | Control core, a C++ decode-step kernel, DQROW (embedding lookup), TOPK | An optimisation inside the backend; where sampling happens must be checked | M8 |
 | C. Resident decode loop on the device | Poll the output token ring, signal stop or a new prompt | A resident C++ decode loop in the control core, device sampling, the token ring | A dedicated runner (`sw/runner`, not yet existing) for the decode loop only | M9 |
 
-**ggml ops needed for stage A** (v2, M7): `RMS_NORM`, `MUL`, `ADD`, `SCALE`, `GLU` (SwiGLU, GEGLU),
+**ggml ops needed for stage A** (M7): `RMS_NORM`, `MUL`, `ADD`, `SCALE`, `GLU` (SwiGLU, GEGLU),
 `ROPE` (position tensor), `GET_ROWS` (f32 rows; the `GET_ROWS` of the token embedding stays in the
 CPU input layer until M7 and becomes DQROW in M8), `SET_ROWS` (KV write, KVST), `CPY` and `CONT`,
 `UNARY` (TANH, GELU), attention only as `FLASH_ATTN_EXT` (q8_0 KV; `SOFT_MAX` and the attention
-`MUL_MAT` are not used, D17, [AT](v2/03-attention-kv.md) §2.6) and the metadata ops (`VIEW`,
+`MUL_MAT` are not used, D17, [AT](design/03-attention-kv.md) §2.6) and the metadata ops (`VIEW`,
 `RESHAPE`, `PERMUTE`, `TRANSPOSE`). The list per model and the conditions are in
-[SW](v2/06-software-verification.md) §8 and §9.3. When this stage is done a token has one split and
+[SW](design/06-software-verification.md) §8 and §9.3. When this stage is done a token has one split and
 one launch. Status: the kernels for these ops are on the simulator; the backend side is planned
 (W3b).
 
@@ -1385,10 +1357,9 @@ one launch. Status: the kernels for these ops are on the simulator; the backend 
 id and the position as launch arguments. The control core computes the embedding row (DQROW), the RoPE
 position, the KV write address and the number of KV blocks that attention runs over. The body of a
 layer is also a C++ kernel that issues tile ops directly, and addresses that depend on the position
-are computed in C++. There is no register-relative lowering mode in the backend (decision,
-2026-10-24). In single-sequence decode the causal mask is "everything up to the position is valid", so
+are computed in C++. In single-sequence decode the causal mask is "everything up to the position is valid", so
 no mask tensor is needed. The pass criterion is defined at the start of M8
-([`docs/v2/README.md`](v2/README.md) §2).
+([`docs/design/README.md`](design/README.md) §2).
 
 **Stage C** (M9, optional): llama.cpp is used only for model loading, the tokenizer, the chat template
 and graph generation, and the decode loop is resident in the control core. A launch starts the loop;
@@ -1415,15 +1386,15 @@ decided.
 ## 16. Control core (RISC-V)
 
 The control core is part of M6 and issues every tile op (D14). This section is a summary. The
-normative definition is [CC](v2/04-control-core.md) (RTL: control core, issue path, SPM, clock
-domains), [EX](v2/01-execution-model.md) (host-visible model) and [DB](v2/05-debug.md) (debug),
+normative definition is [CC](design/04-control-core.md) (RTL: control core, issue path, SPM, clock
+domains), [EX](design/01-execution-model.md) (host-visible model) and [DB](design/05-debug.md) (debug),
 incorporated here by reference. The design record (candidates, estimates, review history) is
 [`docs/ctrl-riscv.md`](ctrl-riscv.md). Status: designed, and on the simulator (RV32 interpreter, queue
 model, firmware SDK and kernels); the RTL is planned (W4); no part of it has run on the card.
 
 **Decisions** (user decisions, `docs/ctrl-riscv.md`, D1–D13 of 2026-10-24 and D14–D18 of 2026-10-30)
 
-| # | Decision | Status in v2 |
+| # | Decision | Status |
 | --- | --- | --- |
 | D1 | Embed a RISC-V control processor: simple, in-order, no branch prediction, superscalar, out-of-order execution or cache | Valid |
 | D2 | Code, data and stack in local SRAM (TCMs); instruction fetch uses no DRAM bandwidth | Valid |
@@ -1431,25 +1402,25 @@ model, firmware SDK and kernels); the RTL is planned (W4); no part of it has run
 | D4 | The SPM is mapped into the RISC-V address space | Valid |
 | D5 | Own clock domain; the clock is chosen by the implementation | Valid |
 | D6 | Kernels in C++ with stock GCC or Clang and a header library; a JIT calls precompiled kernels | Valid |
-| D7 | The llama.cpp path (host command buffers, sequential semantics) stays | Superseded by D14 |
-| D8 | An s0–s15 bank per path | Superseded: one bank (D14) |
-| D9 | The transport alternates command-buffer execution and launches | Obsolete (D14) |
-| D10 | Decode steps of M8 and M9 are C++ kernels that issue tile ops; `CALL` only for position-independent command buffers | Kernels valid; `CALL` dropped (D14) |
-| D11 | One checker shared with the command processor | Obsolete: `tsr_chk` serves only the dispatcher (V2-CC-9) |
+| D8 | One s0–s15 bank | Valid (D14) |
+| D10 | Decode steps of M8 and M9 are C++ kernels that issue tile ops | Valid |
+| D11 | One checker, `tsr_chk`, in front of the dispatcher | Valid (CC-9) |
 | D12 | Control-core clock: planning value 166.7 MHz (250 MHz if Ibex closes there, 125 MHz fallback) | Valid |
-| D13 | Timing gate: 300 MHz with the control core | Restated: k4 link at or above 276.3 MHz, target 300 MHz (V2-CC-23) |
-| D14 | The host command-buffer path is removed (no START, `CMD_*`, `ARG*`, `tsr_cmdproc`, `tsr_fetch`, R0–R15, `LI`, `ADDI`, `END`, `CALL`); the host loads firmware and launches kernels; every tile op is issued by the RISC-V | Valid |
+| D13 | Timing gate: 300 MHz with the control core | Restated: k4 link at or above 276.3 MHz, target 300 MHz (CC-23) |
+| D14 | The host loads firmware and launches kernels; every tile op is issued by the RISC-V | Valid |
 | D15 | No host debug access to the issue port; bring-up, selftest and trace replay are RISC-V kernels | Valid |
-| D16 | v1 is deleted now; tag `v1-m4` keeps it | Done |
+| D16 | One execution path in the tree; the software path runs end to end on the simulator first | Valid |
 | D17 | Device KV cache in q8_0; attention as `FLASH_ATTN_EXT`; klcheck and numcheck baselines with FA on | Valid |
-| D18 | The first v2 has full debug: RISC-V debug module, GDB over PCIe, tile-level debug | Valid |
+| D18 | Full debug: RISC-V debug module, GDB over PCIe, tile-level debug | Valid |
+
+The numbers D7 and D9 are not used.
 
 **The core.** lowRISC Ibex, pinned and unmodified, RV32IMC + Zicsr + Zifencei, machine mode only, no F
-and no A, in the "maxperf" pipeline configuration (V2-CC-34); ITCM 128 KiB and DTCM 64 KiB (V2-CC-3);
+and no A, in the "maxperf" pipeline configuration (CC-34); ITCM 128 KiB and DTCM 64 KiB (CC-3);
 clock `clk_rv` (planning value 166.7 MHz); the upstream riscv-dbg debug module (RISC-V Debug Spec 0.13.2); placed in SLR1. Ibex
 and riscv-dbg are vendored when the RTL starts (W4; `third_party/` does not hold them yet). The
 reasons (maturity of verification, standard debug, Verilator support) and the comparison of
-candidates are in [`docs/ctrl-riscv.md`](ctrl-riscv.md) §2. Firmware does no f32 arithmetic (V2-SW-8):
+candidates are in [`docs/ctrl-riscv.md`](ctrl-riscv.md) §2. Firmware does no f32 arithmetic (SW-8):
 elementwise numerics are VU tile ops, and constants are computed by the host.
 
 **Address map** (CC §4.1; 32-bit byte addresses, everything not listed is an access fault)
@@ -1526,16 +1497,15 @@ asserts the invariants of CC §9.4.
      does not change it either; the SPM is undefined only after a hardware reset. A kernel may keep
      SPM state across launches, and the runtime owns its allocation. In M6 and M7, however, the kernels
      of SW do not: the results of a launch must not depend on SPM contents left by an earlier launch
-     (V2-SW-4; the race detector of the simulator reports such a read as `SPM_STALE`), so every
+     (SW-4; the race detector of the simulator reports such a read as `SPM_STALE`), so every
      launch trace replays on a freshly booted device. A persistent SPM region would need an explicit
      declaration that the detector and the trace capture know about (a later optimisation; decided in
      W1b).
    - **H5.** Descriptor words follow the PCIe posted-write order and the AXI4-Lite write-channel order,
      and the adapter handles writes in arrival order, so `LQ_PUSH` always sees the staging words that
      were written before it.
-6. (Deleted in v2.) The exclusion rule between command-buffer execution and queue ops: there is no
-   command-buffer execution (D14). The serial chain into which the v1 model traces were converted
-   obtains sequential semantics from the SERIAL flag of the `replay` kernel (EX §4.6).
+6. A serial chain of tile ops obtains sequential semantics from the SERIAL flag of the `replay`
+   kernel (EX §4.6).
 7. As-if optimisations inside a unit (the overlapping of consecutive MVMs, section 8) stay allowed.
 
 **Clock domains** (CC §11–§12). The control core (Ibex, debug module, ITCM and DTCM, control window)
@@ -1549,7 +1519,7 @@ debug module. A control-core reset (`RV_RUN` 1 → 0, debug-module `ndmreset`) i
 applies QABORT, the control-core side accepts no new accesses and waits for the accesses in flight
 (at most 4,096 cycles), then the reset is applied (TCMs are kept). On the U200 the kernel gets
 `ap_clk_2` and `ap_rst_n_2`; `clk_rv` is generated from `ap_clk_2` (a v++ frequency request, or a
-divider in `rtl/tech/xilinx`, V2-CC-18).
+divider in `rtl/tech/xilinx`, CC-18).
 
 **Software** (SW §6–§9). The SDK `sw/ctrl` contains the header library `tsr/kernel.hpp` and its
 companions (tile-op builders, `issue`, `ticket`, `after`, `join`, `join_all`, SPM views), crt0, the
@@ -1561,35 +1531,31 @@ or DRAM handles {channel[31:28], beat[27:0]}); larger arguments are passed in an
 OPL region. A JIT does not generate RV code; it selects a precompiled kernel from the kernel table
 and fills in its arguments, and an op without a matching kernel stays on the host.
 
-**Coexistence with the command-buffer path (v1)**: deleted. v1 let the host run command buffers next to
-the control core (exclusivity rules, alternating ownership, `CALL`); v2 has no host command-buffer
-path (D14), and the text is at tag `v1-m4` and in [`docs/ctrl-riscv.md`](ctrl-riscv.md) §6.
-
 ## 17. Verification strategy
 
 Verification is an oracle chain: the ggml CPU checks the simulator, and the simulator checks the RTL
 and the hardware bit for bit. The simulator is built before the RTL, and the backend uses the
-simulator as a fake device from the start with `TSR_DEVICE=sim`. In v2 the chain has two more
+simulator as a fake device from the start with `TSR_DEVICE=sim`. The control core adds two
 references: the Spike RISC-V simulator checks the RV32 interpreter, and the host build of the
 firmware kernels checks the RISC-V build.
 
-<p align="center"><img src="fig/verify.svg" alt="Verification chain of core v2: libtsr_ref, tsr_ref_vu, tsr_ref_at, the numpy spec models, the ggml CPU backend and Spike check the simulator and the firmware host build; numcheck, klcheck, test-backend-ops, the firmware tests under eight schedules with the race detector, and tsr-selftest are the checks; trace sets from tsr-trace-gen and TSR_TRACE dumps replay on the simulator kinds and through the replay kernel; RTL replay (tile-only replay into the issue FIFO and Ibex lockstep, planned W4/W5) and the card (the v1 core ran, v2 planned W6) are dashed." width="100%"></p>
+<p align="center"><img src="fig/verify.svg" alt="Verification chain: libtsr_ref, tsr_ref_vu, tsr_ref_at, the numpy spec models, the ggml CPU backend and Spike check the simulator and the firmware host build; numcheck, klcheck, test-backend-ops, the firmware tests under eight schedules with the race detector, and tsr-selftest are the checks; trace sets from tsr-trace-gen and TSR_TRACE dumps replay on the simulator kinds and through the replay kernel; RTL replay (tile-only replay into the issue FIFO and Ibex lockstep, planned W4/W5) and the card with the control core (planned W6) are dashed." width="100%"></p>
 
 Solid blocks exist in this tree. Dashed blocks are planned.
 
 | Stage | Reference (oracle) | Pass condition | Tool | Status |
 | --- | --- | --- | --- | --- |
-| Op level (simulator) | ggml CPU backend | NMSE within tolerance | `test-backend-ops` | On the simulator; on the card (v1) |
-| Whole model (simulator) | ggml CPU backend, and the CPU itself with a 1-ulp input change (the floor) | Mean KL ≤ floor KL × 3 and top-1 agreement ≥ 80 % (initial values, the adjustment is open) | `klcheck` (own tool), `llama-perplexity` | On the simulator; on the card (v1) |
+| Op level (simulator) | ggml CPU backend | NMSE within tolerance | `test-backend-ops` | On the simulator; on the card |
+| Whole model (simulator) | ggml CPU backend, and the CPU itself with a 1-ulp input change (the floor) | Mean KL ≤ floor KL × 3 and top-1 agreement ≥ 80 % (initial values, the adjustment is open) | `klcheck` (own tool), `llama-perplexity` | On the simulator; on the card |
 | Whole-model numerics (simulator) | `libtsr_ref`, a numpy spec model that shares no code with it, the fp64 exact value | Every output element of every weight MUL_MAT bit-identical to both models; zero violations of the fp32 error bound | `numcheck` (own tool) | On the simulator |
 | Control core (simulator) | Spike | riscv-tests and riscv-arch-test signatures match; random programs match instruction by instruction in lockstep | RV32 interpreter `tsr_rv` of the simulator | On the simulator (the lockstep tests use the Spike of the toolchain install) |
 | Concurrency and issue path (simulator) | Race-free programs: the fixed schedule | Eight or more schedules (fixed and random) give the same per-unit op streams, final state and answer records; the race detector finds no race | Scheduler, queue model and race detector of the simulator; ctest labels `fw`, `rv` | On the simulator |
 | Firmware | The host build of the kernels and the C++ references (composed per layer), ggml-cpu for whole layers | The same push stream from the RISC-V build and the host build; every record bit-exact against the references | ctest labels `fw`, `rv` | On the simulator |
 | Trace replay (simulator) | The recorded expected state | Every trace replays on the `sim` and `mock` kinds, tile-only and through the `replay` kernel | `tsr-trace-replay` | On the simulator |
-| RTL blocks | The shared C reference functions | Bit-identical | cocotb + Verilator | RTL of the v1 units: on the card (v1); v2 blocks: planned (W4) |
+| RTL blocks | The shared C reference functions | Bit-identical | cocotb + Verilator | RTL of the DMA, QACT, MVM and SPM units: on the card; the other blocks: planned (W4) |
 | RTL whole core | The simulator | Tile-only replay of `push.bin` into the issue FIFO bit-identical; Ibex lockstep co-simulation with zero mismatches at all clock ratios; final state of race-free programs identical (all clock ratios, random delays); zero violations of the completion-rule and error-visibility assertions; zero `report_cdc` violations; k4 link at or above 276.3 MHz | cocotb + Verilator (two clocks), `tb/ctrl`, Vivado | Planned (W4, W5) |
-| Kernel and host software (RTL) | The simulator | Same logits and tokens for the same model run; zero adapter and AXI check violations | `TSR_DEVICE=vkernel` (Verilated kernel server) | v1: ran, RTL simulation record ([`docs/platform-u200.md`](platform-u200.md) §13); v2: planned (P5.3) |
-| Hardware | The simulator | Trace replay, logits and tokens bit-identical for the same model run | `tsr-selftest`, `klcheck compare --expect-identical` (`TSR_DEVICE=xrt` against `sim`) | v1: on the card (M3, M4); v2: planned (W6) |
+| Kernel and host software (RTL) | The simulator | Same logits and tokens for the same model run; zero adapter and AXI check violations | `TSR_DEVICE=vkernel` (Verilated kernel server) | Ran, RTL simulation record ([`docs/platform-u200.md`](platform-u200.md) §13); with the control core: planned (P5.3) |
+| Hardware | The simulator | Trace replay, logits and tokens bit-identical for the same model run | `tsr-selftest`, `klcheck compare --expect-identical` (`TSR_DEVICE=xrt` against `sim`) | On the card (M3, M4); with the control core: planned (W6) |
 
 **Model-level KL criterion**: bit agreement with the CPU is impossible because the accumulation order
 of the device differs from the CPU's, and one int8 value that is rounded differently spreads into the
@@ -1597,7 +1563,7 @@ later layers. The floor is therefore "how far the CPU itself moves when its inpu
 and the question is whether the device is near that floor. The tokens that the device produced for a
 prompt are fed to the CPU again, so every position is compared in the same context. The method and the
 initial pass lines follow [openTPU's verification method](https://github.com/FeSens/openTPU). The
-baseline settings of v2 are FA on, q8_0 KV cache, rotation off and `offload_kqv` false in M6 (true in
+baseline settings are FA on, q8_0 KV cache, rotation off and `offload_kqv` false in M6 (true in
 M7; D17); method, settings and results are in [`docs/klcheck.md`](klcheck.md).
 
 **Model-level numeric check (numcheck)**: KL only measures the distance to the CPU, so a short prompt
@@ -1636,11 +1602,11 @@ cannot produce is the job of the lockstep co-simulation at all clock ratios (pla
 program the RTL and the hardware must match the final state bit for bit. Polling counts, `MTIME`,
 `PERF_*` and completion records' timing are not compared.
 
-**Trace format** (v2; the normative definition is [SW](v2/06-software-verification.md) §5, incorporated
+**Trace format** (the normative definition is [SW](design/06-software-verification.md) §5, incorporated
 here by reference). The SPM is undefined at the start, so every input comes from DRAM. One trace is
 one launch and one directory.
 
-- `meta.json` (version 2): the configuration parameters (including `caps`, `ctl_id`, `cfg3`, the TCM
+- `meta.json` (format version 2): the configuration parameters (including `caps`, `ctl_id`, `cfg3`, the TCM
   sizes and the queue depth per unit), the kind (`launch`: image plus descriptor; `ops`: a push stream
   of tile ops only), the image id, the descriptor, the expected DONE record (r0–r6), the lists of
   init and expect regions, and the schedule and clock ratio. `perf` is informational.
@@ -1657,14 +1623,12 @@ one launch and one directory.
 - The firmware image is stored once per set in `images/<image id>.elf`.
 
 Replay: a `launch` trace boots the image, pushes the recorded descriptor and waits for the DONE record.
-An `ops` trace writes `push.bin` to DRAM and replays it with the `replay` kernel (the serial chain
-into which the v1 model traces were converted uses the SERIAL flag). What is compared is the DONE
+An `ops` trace writes `push.bin` to DRAM and replays it with the `replay` kernel. What is compared is the DONE
 fields, the expect regions (bit for bit), the set of written DRAM beats (= the union of the expect
 regions), the DRAM that was read (⊆ the init regions or written earlier in the same launch), the
 completion count per unit and the error records. Where the push stream can be observed (the
 simulator, the issue-FIFO monitor in Verilator), the push stream per unit is compared as well. The
-RTL tile replay bench pushes `push.bin` into the issue FIFO directly, without RISC-V. The v1 format
-(`cmd.bin`, an array of instructions) survives only in the converter `tsr-trace-conv`.
+RTL tile replay bench pushes `push.bin` into the issue FIFO directly, without RISC-V.
 
 With `TSR_TRACE=<directory>`, the `sim` device dumps a `launch` trace for every launch of a real
 llama.cpp run (capture, SW §5.5), so the real tensor shapes of real models become RTL regression
@@ -1682,13 +1646,9 @@ details in [`traces/README.md`](../traces/README.md)):
 | `traces/vu` | `--ops vu`: every VU op, legal and illegal encodings, special values, error injection | 240 traces |
 | `traces/at` | `--ops at`: the seven AT ops and the flash-attention chain across DMA, QACT, MVM and VU | 160 traces |
 | `traces/ctrl` | `--ops ctrl`: issue path: credits, back-pressure, dependencies, joins, fences, error chains, QABORT and QCLEAR recoveries, queue depths 1 and 31, CAPS 0 | 148 traces |
-| `traces/model` | v1 real-model traces: every split of a one-token run of Qwen2.5-0.5B Q8_0 and of Q4_K_M (requantized), prompt "Hi" | 290 traces |
-| `traces/model-v1conv` | `traces/model` converted to trace v2 by `tsr-trace-conv` (serial chain): the regression check that the results of the tile units did not change from v1 to v2 | 290 traces |
 
-`traces/model-v2` (the same two models, one launch per split in M6 and then one launch per token in
-M7) is planned. The `test-backend-ops` dumps (`traces/tmp/tbo`, 1,402 traces each) of v1 are deleted
-(X0). The v1 sets and their replay results are at tag `v1-m4` and in
-[`docs/rtl-m3.md`](rtl-m3.md) §13.
+A set of real-model traces (Qwen2.5-0.5B Q8_0 and Q4_K_M requantized, one launch per split in M6 and
+then one launch per token in M7) is planned.
 
 **Block-level test coverage**
 
@@ -1710,7 +1670,7 @@ cycles gives the effective bandwidth.
 
 ## 18. Profiler and debugger
 
-This section is a summary. The debug and profiling design is [DB](v2/05-debug.md), incorporated here by
+This section is a summary. The debug and profiling design is [DB](design/05-debug.md), incorporated here by
 reference (D18); the as-built tools and the access paths are in [`docs/prof-dbg.md`](prof-dbg.md). The
 profiler shows where device and host time goes, and the debugger shows where the hardware starts to be
 wrong or stuck. Neither changes the datapath, the numeric rules, the ISA encoding or the sequential
@@ -1719,7 +1679,7 @@ unless the debugger itself modifies registers, SPM or DRAM.
 
 Status: the simulator models of the debug module (`sw/sim/tsr_dm.c`) and of the DBG block
 (`sw/sim/tsr_dbg.c`), the trap and log contract of the firmware, and `tsr-log` exist (on the
-simulator). The GDB server (`libtsr_dbg`) and `tsr-dbg` (P3.7), `tsr-prof` and TSR_STATS v2 (P3.8)
+simulator). The GDB server (`libtsr_dbg`) and `tsr-dbg` (P3.7), `tsr-prof` and the extended `TSR_STATS` output (P3.8)
 are planned; so are the debug RTL (W4) and everything on the card (W6).
 
 **Control-core debug.** The control core halts and single-steps through the RISC-V debug module
@@ -1740,7 +1700,7 @@ block is at core CSR 0x800–0xAFC (`s_axi_control` 0x1800–0x1AFC on the U200)
 
 **Profiler.** The profiler uses the PERF counters of EX §6 (DB owns slots 61–63), the completion
 records (REC), the hardware trace writer (TRW: 32-byte records into a DRAM ring on channel 0) and
-TSR_STATS v2. Principles that hold:
+the extended `TSR_STATS` output. Principles that hold:
 
 - **Software first.** What the existing CSRs and the simulator comparison can answer is done without
   RTL; RTL is added only for stops between tile ops, internal state during a run and SPM access. The
@@ -1784,12 +1744,6 @@ and ILAs in regular builds, llama.cpp patches and node stops via `cb_eval`, chan
 `PERF_*` indices, `CAPS` bits or error codes, and always-on RTL instrumentation in the default path.
 The reasons are in [`docs/prof-dbg.md`](prof-dbg.md).
 
-History: v1 (tag `v1-m4`). The v1 plan for the command-buffer path (phases PD1–PD5: a debug block at
-CSR 0x800–0x9FC with stops at instruction boundaries, prefix runs, per-run shadow comparison,
-`split` attribution, GDB through OpenOCD, and a trace ring `TRC_*`) was dropped with `tsr_cmdproc`
-(D14, D18). What stays from it: no JTAG on the U200, ILA only in debug builds, every CSR access ends
-within a bound, the Perfetto output and `tsr-prof`, and the `TSR_DUMP_DIR` dump.
-
 ## 19. Repository layout and milestones
 
 The repository maps the layer separation onto directories. llama.cpp is a submodule pinned to one
@@ -1798,16 +1752,16 @@ commit; the backend is linked into `ggml/src/ggml-tesseract` and enabled with th
 
 ```
 tesseract/
-├── docs/                    # spec.md (this document), v2/ (the normative design set), records and figures (fig/)
+├── docs/                    # spec.md (this document), design/ (the normative design set), records and figures (fig/)
 ├── sw/
-│   ├── tables/              # table source tsr_tables.py and generator gen_tables.py: SV package, C header, mmio/vu/at.hpp, tb Python (V2-EX-30)
+│   ├── tables/              # table source tsr_tables.py and generator gen_tables.py: SV package, C header, mmio/vu/at.hpp, tb Python (EX-30)
 │   ├── ggml-tesseract/      # backend: reg/device/buffer, repacker, OPL builder and cache (M7: KV buffers, planned)
-│   ├── sim/                 # simulator and references: tsr_ref*.c, CSR and queue model, VU and AT units, RV32 interpreter, scheduler, race detector, trace v2, debug models
+│   ├── sim/                 # simulator and references: tsr_ref*.c, CSR and queue model, VU and AT units, RV32 interpreter, scheduler, race detector, trace format, debug models
 │   ├── ctrl/                # firmware SDK: header library tsr/*.hpp, runtime, graph executor, kernels graph, replay and selftest, host build, tsr-elf
 │   ├── transport/           # tsr_transport: protocol layer and the kdevs sim, mock, vkernel, xrt
 │   ├── rt/                  # tsr_rt: runtime without ggml (weight upload, linear), shares tsr_lower
 │   ├── torch/               # PyTorch backend: torch.compile backend "tesseract", extension module, tests, hf_check
-│   ├── tools/               # klcheck, numcheck, tsr-selftest, tsr-log, trace tools (gen, replay, conv), tsr_bw; tsr-dbg and tsr-prof are planned (P3.7, P3.8)
+│   ├── tools/               # klcheck, numcheck, tsr-selftest, tsr-log, trace tools (gen, replay), tsr_bw; tsr-dbg and tsr-prof are planned (P3.7, P3.8)
 │   ├── xrt-driver/          # patches that build the XRT 2.18.179 drivers for Linux 6.8 to 7.0
 │   └── runner/              # host side of stage C: ring-buffer polling (M9, planned; no content yet)
 ├── rtl/
@@ -1827,35 +1781,33 @@ tesseract/
 
 There are ten milestones, M0 to M9. Each has a pass criterion that must be met before the next one
 starts, with the exception of M0, which needed the card and was done after M1 to M3 had started. M4 is
-the v1 goal, M5 was merged into M8, and M7 to M9 are the host-independence stages A to C.
+the goal of section 1, M5 was merged into M8, and M7 to M9 are the host-independence stages A to C.
 
-<p align="center"><img src="fig/milestones.svg" alt="Milestones M0 to M9 as a vertical list with work and pass criterion per row and a status tag: M0 to M4 done (M1 and M2 on the simulator and in RTL simulation, M0, M3 and M4 on the card with the v1 core), M5 merged into M8, M6 in development (simulator and firmware done, RTL planned), M7 planned (kernels on the simulator), M8 and M9 planned." width="100%"></p>
+<p align="center"><img src="fig/milestones.svg" alt="Milestones M0 to M9 as a vertical list with work and pass criterion per row and a status tag: M0 to M4 done (M1 and M2 on the simulator and in RTL simulation, M0, M3 and M4 on the card), M5 merged into M8, M6 in development (simulator and firmware done, RTL planned), M7 planned (kernels on the simulator), M8 and M9 planned." width="100%"></p>
 
 | Milestone | Work | Pass criterion | Status |
 | --- | --- | --- | --- |
-| M0 · Shell bring-up | A DMA test kernel measures per-channel and 4-channel concurrent bandwidth | The measured bandwidth is recorded as the baseline for performance prediction | Passed on the card: 18.0 GB/s read per channel, 72.0 GB/s on four channels (measured on the card (v1, M0)) |
+| M0 · Shell bring-up | A DMA test kernel measures per-channel and 4-channel concurrent bandwidth | The measured bandwidth is recorded as the baseline for performance prediction | Passed on the card: 18.0 GB/s read per channel, 72.0 GB/s on four channels (measured on the card, M0) |
 | M1 · ISA simulator + backend | `TSR_DEVICE=sim`, only MUL_MAT offloaded, no hardware | test-backend-ops; the 32B KL criterion on the simulator | Passed on the simulator: 32B KL ratio 1.36, top-1 98.83 % |
-| M2 · RTL core skeleton | Command processor (R0–R15, LI, ADDI), DMA, LD/ST, QACT | Verilator trace replay bit-identical | Passed in RTL simulation: 172 traces. The command processor is gone in v2; DMA, LD/ST and QACT stay |
-| M3 · MVM clusters, Q8_0 | Start with 1 channel, then 4 | Qwen2.5-0.5B Q8_0 on the card | Passed on the card (v1): logits bit-identical to the simulator and KL criterion met with k1 (300 MHz, 24.8 tok/s) and k4 (276.3 MHz, 54.7 tok/s) |
-| M4 · Q4_K unpack, 4 channels | The v1 goal; other types are converted to Q8_0 at load | 32B Q4_K_M on the card at ≥ 1 tok/s | Passed on the card (v1): 2.93 tok/s, KL ratio 1.304, top-1 99.02 % (measured on the card (v1, M4)) |
-| M5 · (merged into M8) | Host-assisted MoE assumed the v1 command-buffer path and was dropped with the v2 restructure | – | – |
-| M6 · Core v2 hardware | The host command-buffer path removed; RISC-V control core (Ibex) with asynchronous issue queues; vector unit; attention and KV on the device (q8_0 KV, flash attention); second SPM read path; debug including GDB over PCIe | On v2, Qwen2.5-0.5B Q8_0 logits bit-identical to the simulator and the 32B Q4_K_M KL criterion met (MVMs issued by RISC-V kernels; attention on the CPU: `offload_kqv` = false); GDB smoke on the card | In development. On the simulator: simulator and references, firmware SDK with the M6 kernels, transport v2, M6 backend and tools (W0 to W3a). Planned: RTL (W4), integration (W5), card (W6) |
+| M2 · RTL core skeleton | DMA, LD/ST, QACT | Verilator trace replay bit-identical | Passed in RTL simulation: 172 traces |
+| M3 · MVM clusters, Q8_0 | Start with 1 channel, then 4 | Qwen2.5-0.5B Q8_0 on the card | Passed on the card: logits bit-identical to the simulator and KL criterion met with k1 (300 MHz, 24.8 tok/s) and k4 (276.3 MHz, 54.7 tok/s) |
+| M4 · Q4_K unpack, 4 channels | The goal of section 1; other types are converted to Q8_0 at load | 32B Q4_K_M on the card at ≥ 1 tok/s | Passed on the card: 2.93 tok/s, KL ratio 1.304, top-1 99.02 % (measured on the card, M4) |
+| M5 · (merged into M8) | Merged into M8 (D14) | – | – |
+| M6 · Control core hardware | RISC-V control core (Ibex) with asynchronous issue queues; vector unit; attention and KV on the device (q8_0 KV, flash attention); second SPM read path; debug including GDB over PCIe | Qwen2.5-0.5B Q8_0 logits bit-identical to the simulator and the 32B Q4_K_M KL criterion met (MVMs issued by RISC-V kernels; attention on the CPU: `offload_kqv` = false); GDB smoke on the card | In development. On the simulator: simulator and references, firmware SDK with the M6 kernels, transport, M6 backend and tools (W0 to W3a). Planned: RTL (W4), integration (W5), card (W6) |
 | M7 · RISC-V kernel library, graph execution | Kernels for RMSNorm, RoPE, SwiGLU, GELU, residual, flash attention, activation quantization; a ggml split is written as an op list and launched once | Qwen2.5 and Gemma 4 (dense) with one launch per token (KV cache and attention on the device), logits bit-identical to the simulator, KL criterion met; DDR utilisation measured | Planned. On the simulator: the kernels, verified per layer (W2b). Planned: the M7 backend and M7 on the simulator (W3b) |
 | M8 · Device MoE, PyTorch on the kernels | MUL_MAT_ID with TOPK and expert placement; stage B decode step; PyTorch on the same kernels; device embedding lookup (DQROW RTL), TOPK RTL | Defined at the start of M8 (working target: Qwen3-30B-A3B on the card) | Planned |
 | M9 · Resident decode loop (optional) | Stage C: a decode loop resident in the control core, token ring buffer, device sampling, `sw/runner`; VMASK | The host only polls the ring buffer | Planned |
 
-**v2 restructure** (decision, 2026-10-30): the path on which the host runs command buffers (v1) is
-removed, and the host only launches kernels that were loaded onto the RISC-V control core. All tile
-ops are issued by the RISC-V. The control core, vector unit and attention and KV hardware come in
-together in M6 (core v2), and M7 builds the kernel library and graph-level execution. There is no
-host issue window for debugging; bring-up, selftest and trace replay are RISC-V kernels too. v1 is
-deleted from the tree (the last v1 is tag `v1-m4`, M4 passed; `build/v1`, not in git, holds the v1
-binaries and bitstreams for card runs). The KV cache is q8_0 and attention is accepted as llama.cpp's
-`FLASH_ATTN_EXT` (an 8-bit V cache needs FA). The first v2 has GDB debugging over PCIe. The design is
-`docs/v2/` (an integrated design of six area documents); the decisions are D14 to D18 in
-[`docs/ctrl-riscv.md`](ctrl-riscv.md) and `docs/v2/README.md` §2 and §6, and the details of the pass
-criteria are in [SW](v2/06-software-verification.md) §10.4. The work packages W0 to W6 are in
-`docs/v2/README.md` §10.
+The host only launches kernels that were loaded onto the RISC-V control core (decision,
+2026-10-30). All tile ops are issued by the RISC-V. The control core, vector unit and attention and
+KV hardware come in together in M6, and M7 builds the kernel library and graph-level execution.
+There is no host issue window for debugging; bring-up, selftest and trace replay are RISC-V kernels
+too. The KV cache is q8_0 and attention is accepted as llama.cpp's `FLASH_ATTN_EXT` (an 8-bit V
+cache needs FA). GDB debugging over PCIe is part of M6. The design is `docs/design/` (an integrated
+design of six area documents); the decisions are D14 to D18 in [`docs/ctrl-riscv.md`](ctrl-riscv.md)
+and `docs/design/README.md` §2 and §6, and the details of the pass criteria are in
+[SW](design/06-software-verification.md) §10.4. The work packages W0 to W6 are in `docs/design/README.md`
+§10.
 
 **Multi-chip scale-out** (planned after M9, not designed yet): one Tesseract Core per card, the cards
 linked in a mesh over the two QSFP28 ports of the U200 (100 Gb/s each). The weights are split across
@@ -1866,16 +1818,15 @@ links.
 
 | Date | Step | Result |
 | --- | --- | --- |
-| 2026-10-22 | M1 passed | 32B klcheck ratio 1.36, top-1 98.83 % (simulator, v1 settings) |
+| 2026-10-22 | M1 passed | 32B klcheck ratio 1.36, top-1 98.83 % (simulator, FA off) |
 | 2026-10-23 | M2 passed | 172 traces of `traces/m2` replay bit-identically in Verilator |
-| 2026-10-24 | M3 RTL and platform (parts A to C) done up to the card | The host stack on the Verilated kernel (`TSR_DEVICE=vkernel`; k1 = 1 channel, T_MAX 1; k4t1 = 4 channels, T_MAX 1; k4 = 4 channels, T_MAX 8) ran Qwen2.5-0.5B Q8_0 with logits and tokens bit-identical to `TSR_DEVICE=sim`. `PERF_CYCLES` per decoded token 2.28 M with 4 channels (7.6 ms at 300 MHz) and 8.48 M with 1 channel (RTL simulation, ideal memory, v1). The whole core met 300 MHz in Vivado out-of-context runs in all three configurations. `tb/run_all.sh`: 211 tests passed (v1 tree) |
+| 2026-10-24 | M3 RTL and platform (parts A to C) done up to the card | The host stack on the Verilated kernel (`TSR_DEVICE=vkernel`; k1 = 1 channel, T_MAX 1; k4t1 = 4 channels, T_MAX 1; k4 = 4 channels, T_MAX 8) ran Qwen2.5-0.5B Q8_0 with logits and tokens bit-identical to `TSR_DEVICE=sim`. `PERF_CYCLES` per decoded token 2.28 M with 4 channels (7.6 ms at 300 MHz) and 8.48 M with 1 channel (RTL simulation, ideal memory). The whole core met 300 MHz in Vivado out-of-context runs in all three configurations. `tb/run_all.sh`: 211 tests passed on that date |
 | 2026-10-25 | M0 passed on the card | 18.0 GB/s read per channel, 16 GiB per channel without aliasing, so the card has 64 GB (`docs/m0-bw.md` §7.1). M3 with k1 at 300 MHz |
 | 2026-10-26 | M3 passed on the card with k4 | 54.7 tok/s at 276.3 MHz; the k4 link missed 300 MHz by 0.285 ns and `v++` lowered the kernel clock (`docs/platform-u200.md` §14) |
 | 2026-10-30 | M4 passed on the card | Qwen2.5-32B Q4_K_M, 2.93 tok/s, `klcheck all` PASS (ratio 1.304, top-1 99.02 %) (`docs/platform-u200.md` §14) |
-| 2026-10-30 | v2 design and work packages W0 to W3a | Design set `docs/v2` (`85b7713`); W0 (`452e27b`, `43dcf74`: v1 path deleted, table source, VU reference math); W1 (`a54a6e6`, `1ed7460`: simulator, RV32 interpreter with Spike lockstep, VU and AT units, scheduler, race detector, trace v2, debug models); W2a (`92f0b17`, `41eb0da`: firmware SDK, runtime, graph executor, MUL_MAT, selftest and replay kernels; executor optimisation); W3a (`83ac601`: transport v2, M6 backend, tools; M6 on the simulator) |
+| 2026-10-30 | Control core design and work packages W0 to W3a | Design set `docs/design` (`85b7713`); W0 (`452e27b`, `43dcf74`: table source, VU reference math); W1 (`a54a6e6`, `1ed7460`: simulator, RV32 interpreter with Spike lockstep, VU and AT units, scheduler, race detector, trace format, debug models); W2a (`92f0b17`, `41eb0da`: firmware SDK, runtime, graph executor, MUL_MAT, selftest and replay kernels; executor optimisation); W3a (`83ac601`: transport, M6 backend, tools; M6 on the simulator) |
 
-After the v1 path was removed, the tree runs a model again from W3a on, on the simulator. Card runs and
-comparisons with v1 use tag `v1-m4` and `build/v1`. The detailed measurements and their history are in
+From W3a on the tree runs a model on the simulator. The detailed measurements and their history are in
 [`docs/performance.md`](performance.md).
 
 M1 completes the software path first; from M2 on all hardware stages are verified with the same
@@ -1900,22 +1851,16 @@ section 11 from the start.
   held 8 GB per channel, `CH_BYTES` and the transport channel size would have been set to 8 GiB, which
   fits 32B Q4_K_M (about 20.7 GB of weights, about 5.2 GB per channel) and 30B-A3B but not 70B.
 - [x] Approximation algorithms and coefficients of exp, reciprocal, sin and cos
-  (`tsr_ref_math.c`, before M6). Decided in v2: [VU](v2/02-vector-unit.md) §6 and Appendix A define
+  (`tsr_ref_math.c`, before M6). Decided: [VU](design/02-vector-unit.md) §6 and Appendix A define
   EXPK, the correctly rounded reciprocal (no RECIP_APPROX), SIN and COS with an exact 2/π integer
   range reduction, and GELU16 bit for bit. The exhaustive (2^32 inputs) accuracy figures were measured
   and are all inside the 2× gate of the model figures (VU §6.9; section 9).
-- [x] (Not applicable in v2: there is no command-buffer path, D14.) Whether to introduce out-of-order
-  execution (overlap between units) in the command-buffer path. The control-core path already uses
-  the units concurrently through the issue queues, so this item only concerned overlap inside a
-  command buffer. The decision was to be made from the instruction-gap share in the M4 performance
-  counters (metric: MVM gap share G = 1 − Σ`PERF_MVM_CYCLES` / Σ`PERF_CYCLES`; reference: Qwen2.5-0.5B
-  Q8_0, one token of `traces/model`, cycle model G = 3.98 %).
 - [ ] `T_MAX` synthesis value and token packing. Eight is synthesised: the 4-channel T_MAX 8 core met
   300 MHz out of context (WNS +0.022 ns, 272,025 LUT, 2,728 DSP, 808 RAMB36, 128 URAM; T_MAX 1: 4.0
-  times the LUT, 4.3 times the DSP; measured in Vivado 2024.2 (out of context, v1)), the k4 kernel
+  times the LUT, 4.3 times the DSP; measured in Vivado 2024.2, out of context), the k4 kernel
   with T_MAX 8 ran on the card, and the DSP packing multiplies the same weight by two tokens. On the
   Verilated kernel a 6-token prefill ran as one T = 6 pass of 3.14 M cycles (T_MAX 1: 13.67 M; RTL
-  simulation, v1). Remaining: the output head (N ≈ 150,000) needs about 9,600 lines of x + QA + y per
+  simulation). Remaining: the output head (N ≈ 150,000) needs about 9,600 lines of x + QA + y per
   token, so the 4 MiB SPM holds only 6 tokens, and with T = 7 to 8 the head weights are read twice
   (+0.83 GB per pass on 32B, +4 %). If the backend splits the head along N, 12 to 13 tokens fit.
   Ordinary prefill computes only the logits of the last token, so it is not affected; the item
@@ -1927,8 +1872,8 @@ section 11 from the start.
   so greedy output can differ at near-ties (seen at the 37th token of 0.5B). With a device, auto FA is
   off; with `-fa on` the output is identical for n_kv < 512 and T ≤ 63. FA on differs from the M1
   verification setting (FA off), so adopting it requires rerunning klcheck and numcheck (done for the
-  v2 baseline, D17).
-- [x] KV cache layout (decided in v2, D17 and [AT](v2/03-attention-kv.md) §4): K and V in q8_0
+  current baseline, D17).
+- [x] KV cache layout (decided in D17 and [AT](design/03-attention-kv.md) §4): K and V in q8_0
   (`-ctk q8_0 -ctv q8_0`, FA on), groups u of 16 cells interleaved over channel u mod C, K plane
   token-major, V plane slice-major, symmetric allocation downward from the end of the channel. (The
   question was a layout other than a row range split, such as row interleave r → channel r mod C, when
@@ -1948,10 +1893,8 @@ section 11 from the start.
 - [ ] Adjustment of the model-level KL pass line (M1). numcheck showed that the 1-ulp floor is 0 at the
   early positions of quantized models. Proposal: compute the ratio only over the positions where the
   floor moved.
-- [x] (Resolved in v2, [EX](v2/01-execution-model.md) §6: there is no instruction fetch, so
-  `CH_RD_BEATS[0]` is exact.) `PERF_CH_RD_BEATS[0]` mixed in the instruction-fetch beats, so the LD beats
-  of channel 0 could not be compared with the hardware. Options had been to exclude fetch or to add
-  `PERF_FETCH_BEATS` (index 5 + 2 × `NUM_CH`); the interim proposal was to subtract ⌈`CMD_COUNT` / 2⌉.
+- [x] `PERF_CH_RD_BEATS[0]` is exact, so the LD beats of channel 0 can be compared with the hardware:
+  there is no instruction fetch ([EX](design/01-execution-model.md) §6).
 - [ ] Where sampling happens in stage B: check whether the pinned commit has a path that moves llama.cpp
   sampling to the device; if not, the control core (TOPK + C++) samples and `sw/runner` only receives
   the result (M8).
@@ -1959,112 +1902,90 @@ section 11 from the start.
   VU softmax + a software random number, fixed seed for reproducibility). Open: the criterion for
   agreement with the llama.cpp sampler (M9).
 - [ ] `sw/runner` and how it connects to llama-server (M9).
-- [x] (Not applicable in v2: the kernel is `ap_ctrl_none`, the host always uses `xrt::ip` and never
-  `xrt::run`, [EX](v2/01-execution-model.md) §9.) CSR window access while a run is in progress with XRT
-  (to be checked at M3 on the card). The question was whether `read_register` and `write_register` of an
-  exclusive CU work while an `xrt::run` is pending, and whether BO reads and writes work while it is
-  stopped; the run-mode ABORT by timeout (writing `CTRL.ABORT` through the window) and the PC sample
-  depended on it, and the debugger always used the regs mode. The control core's window accesses never
-  overlapped `xrt::run`.
-- [ ] Measure the latency of the PCIe CSR window (v2: it closes when the MMIO read and posted-write
+- [x] CSR window access while a launch is in progress with XRT: the kernel is `ap_ctrl_none`, and the
+  host always uses `xrt::ip` and never `xrt::run` ([EX](design/01-execution-model.md) §9).
+- [ ] Measure the latency of the PCIe CSR window (it closes when the MMIO read and posted-write
   latencies are measured on the card; the launch round trip and rate, cold and warm load time, and DMI
-  and SBA times depend on it, `docs/v2/README.md` §9): reads and posted writes. The `PERF_*` read set
-  per run, the PC sample interval, the dump time of the SPM window and whether to sample all counters
-  simultaneously were to be decided from it, and so are the control core's image load time, the cost
-  per launch and the host control cost estimate ([`docs/ctrl-riscv.md`](ctrl-riscv.md) §5.7). Counted
-  on the Verilated kernel (v1): with the XRT scheduler order 21 register writes + 6 reads per exec and
-  145 execs per 0.5B decode token, that is about 3,000 posted writes and about 870 reads per token.
-  Measured on the card (v1, k4, 276.3 MHz): 35 to 36 µs per exec (start and completion wait), which
-  does not separate read and write latency; the latencies themselves are not measured.
+  and SBA times depend on it, `docs/design/README.md` §9): reads and posted writes. The `PERF_*` read set
+  per launch, the dump time of the SPM window and whether to sample all counters simultaneously are
+  decided from it, and so are the control core's image load time, the cost per launch and the host
+  control cost estimate ([`docs/ctrl-riscv.md`](ctrl-riscv.md) §5.7). Measured on the card (k4,
+  276.3 MHz): 35 to 36 µs per kernel run (start and completion wait), which does not separate read
+  and write latency; the latencies themselves are not measured.
 - [ ] U200 debug build check (M4): whether BSCANE2 really cannot be placed in the user kernel of this
   DFX shell (UG909), and whether a debug build with ILAs (`hw/u200/k4_dbg.cfg`) keeps 300 MHz and the
   timing of the SLR crossings.
-- [x] (Decided in v2, [EX](v2/01-execution-model.md) §8.6: there is no forced unit reset because AXI
-  transactions cannot be cancelled. The unit progress watchdog (`WDOG_CFG`, `UNIT_HUNG`) diagnoses it,
-  and recovery is a card reset after a dump.) Forced release of a stuck unit (M4). ABORT and
-  SOFT_RESET waited for an instruction boundary, so a stuck unit could only be released by a hardware
-  reset, which loses the post-mortem state. The issue queues were affected as well: with a stuck unit
-  QIDLE never arrives, a QCLEAR of the control core never finishes and the host's QCLEAR is refused.
-- [x] (Decided in v2: the extension counters are the table in EX §6 (`MVM_WAIT`, `MVM_EMPTY` and others),
-  and the trace ring `TRC_*` is dropped in favour of the hardware trace writer of the debug block,
-  V2-DB-16.) Whether to introduce unit occupancy and issue-gap counters (M4 to M8) and a trace ring (M8
-  to M9).
-- [x] (Withdrawn, 2026-10-24) The meaning of `PC`, `ERR_PC`, `CMD_COUNT` and the debugger's instruction
-  address across a `JUMP` chain: JUMP was retired, so there is nothing to decide.
+- [x] Forced release of a stuck unit (M4). Decided ([EX](design/01-execution-model.md) §8.6): there is no
+  forced unit reset because AXI transactions cannot be cancelled. The unit progress watchdog
+  (`WDOG_CFG`, `UNIT_HUNG`) diagnoses it, and recovery is a card reset after a dump, which loses the
+  post-mortem state. With a stuck unit QIDLE never arrives, a QCLEAR of the control core never
+  finishes and the host's QCLEAR is refused.
+- [x] (Decided: the extension counters are the table in EX §6 (`MVM_WAIT`, `MVM_EMPTY` and others),
+  and the hardware trace writer of the debug block records the trace, DB-16.) Whether to introduce
+  unit occupancy and issue-gap counters (M4 to M8) and a trace ring (M8 to M9).
 - [ ] Debug on porting targets (when a port starts): whether the BSCANE2 bridge of Zynq and Kria is
   used, the debug block configuration of small targets (with or without the SPM window), memory
   access for debugging on an ASIC without a host bus, `PERF_*` reads when JTAG and a host bus exist
   together, and whether the preservation of the SPM across runs becomes a permanent guarantee.
-- [x] (Replaced in v2 by D14: one s0–s15 bank.) Scalar registers of the issue path (decision,
-  2026-10-24; M6): the issue path had its own bank and the command-buffer runs theirs, so there was no
-  s register conflict between the two paths. The alternative of one bank with s0–s15 in the race
-  definition was not adopted.
-- [x] (Not applicable in v2, D14.) Ownership between command-buffer execution and control-core
-  execution (decision, 2026-10-24; M8): the transport alternated the two.
-- [x] (Not applicable in v2: `CALL` is retired, D14.) `CALL` of lowered layer programs (decision,
-  2026-10-24; M8 to M9): decode steps are C++ kernels that issue tile ops directly, and addresses that
-  depend on the position are computed in C++; the backend has no register-relative lowering mode.
-- [x] (Replaced in v2 by D14: the checker `tsr_chk` serves only the dispatcher, V2-CC-9.) The checker of
-  the issue path (decision, 2026-10-24): one checker shared with the command processor; a second
-  checker (estimate 1 to 2 K LUT) is not added.
+- [x] Scalar registers (D14): one s0–s15 bank, which is part of the race definition.
+- [x] Decode steps (decision, 2026-10-24; M8 to M9): they are C++ kernels that issue tile ops
+  directly, and addresses that depend on the position are computed in C++.
+- [x] The checker of the issue path (decision, 2026-10-24): `tsr_chk` serves the dispatcher
+  (CC-9); a second checker (estimate 1 to 2 K LUT) is not added.
 - [x] Control-core clock (decision, 2026-10-24; U200): planning value 166.7 MHz; 250 MHz only if the
   out-of-context synthesis of Ibex closes there with margin; alternative 125 MHz. How the clock is made:
   see the item "`ap_clk_2` generation" below.
-- [x] (Restated in v2, V2-CC-23: with the control core the k4 link stays at or above 276.3 MHz, target
+- [x] (Restated, CC-23: with the control core the k4 link stays at or above 276.3 MHz, target
   300 MHz.) CR2 timing gate (decision, 2026-10-24; M8): the control-core RTL is frozen only after the
-  out-of-context runs of k1, k4t1 and k4 built with `HAS_CTRL` = 1 and the k4 v++ link met 300 MHz.
-- [ ] `ap_clk_2` generation (v2: V2-CC-18, checked at the first smoke link; CR2 smoke link): whether
+  out-of-context runs of k1, k4t1 and k4 built with the control core and the k4 v++ link met 300 MHz.
+- [ ] `ap_clk_2` generation (CC-18, checked at the first smoke link; CR2 smoke link): whether
   v++ can set the frequency of `ap_clk_2` directly (`--kernel_frequency`, `--clock.*`); if not, divide
   500 MHz inside the kernel (BUFGCE_DIV, `rtl/tech/xilinx`).
 - [ ] DRAM cost of concurrency (M8, on the card): measure whether an ST between weight streams on the
   same channel (read/write turnaround) and an LD of another row (row conflict) cost more than their
   beats (`tsr_bw`). If so, the SDK delays the ST until after the MVM of the same channel.
-- [x] (Decided in v2, V2-EX-1: a launch queue LQ and a completion ring LCQ filled by posted CSR writes,
-  depth 8, polled; there is no mailbox.) Launch request path (before CR5): a one-slot-per-direction
-  mailbox needs one or more PCIe reads per request. Whether a DRAM request ring with a doorbell is
+- [x] (Decided, EX-1: a launch queue LQ and a completion ring LCQ filled by posted CSR writes,
+  depth 8, polled.) Launch request path (before CR5): whether a DRAM request ring with a doorbell is
   needed for frequent JIT launches, and whether to connect waiting for R2H to an adapter interrupt, was
   to be decided from the per-request cost measured on the card.
-- [x] (Decided in v2, V2-SW-8: firmware does no f32 arithmetic, constants are computed by the host.)
+- [x] (Decided, SW-8: firmware does no f32 arithmetic, constants are computed by the host.)
   Revisit the F extension: if soft float exceeded 1 % of token time in a profile, move that computation
   to SOP or VU, and if it were still large, consider a core with Zfinx or F.
-- [ ] Adoption of Zba, Zbb, Zbs: decided from SDK code size and cycles (the M6 configuration of v2 is
-  `RV32BNone`, [CC](v2/04-control-core.md) §3.2).
-- [x] (Decided in v2, V2-CC-3: ITCM 128 KiB + DTCM 64 KiB.) ITCM and DTCM sizes (proposal 64 KiB + 64
+- [ ] Adoption of Zba, Zbb, Zbs: decided from SDK code size and cycles (the M6 configuration is
+  `RV32BNone`, [CC](design/04-control-core.md) §3.2).
+- [x] (Decided, CC-3: ITCM 128 KiB + DTCM 64 KiB.) ITCM and DTCM sizes (proposal 64 KiB + 64
   KiB): to be fixed from the code and data size of the first SDK build and the table size of the M9
   loop.
-- [x] (Decided in v2, V2-CC-8: DMA 8, QACT 4, MVM 4, VU 16, SYNC 4, no unit 4; issue FIFO 32.) Issue
-  queue depths (proposal DMA 8, QACT 4, MVM 4, VU 8, CMD 2, SYNC 4): to be fixed from kernel
+- [x] (Decided, CC-8: DMA 8, QACT 4, MVM 4, VU 16, SYNC 4, no unit 4; issue FIFO 32.) Issue
+  queue depths (proposal DMA 8, QACT 4, MVM 4, VU 8, SYNC 4): to be fixed from kernel
   measurements.
-- [x] (Decided in v2, V2-CC-12 and V2-CC-13: even and odd line banks 2R2W, per-bank round robin, a
+- [x] (Decided, CC-12 and CC-13: even and odd line banks 2R2W, per-bank round robin, a
   burst-level space reservation of the DMA LD (a 512-beat queue), so the channel response path does not
   stall.) SPM arbitration: switching to round robin can fill the beat queue of the DMA LD, and since the
   channel response path is head-of-line, weight beats wait meanwhile. The loss was to be measured in a
   contention testbench (4 clients, including a same-channel LD/MVM deadlock test), and if it is large,
   a burst-level DMA reservation (queue of 128 to 256 beats), per-source response buffers in
   `tsr_mem_arb` or a length-limited DMA write priority were to be added.
-- [x] (Decided in v2, V2-EX-6 and V2-CC-19: `ap_ctrl_none`, `xrt::ip` and polling.) Whether to wrap
+- [x] (Decided, EX-6 and CC-19: `ap_ctrl_none`, `xrt::ip` and polling.) Whether to wrap
   control-core execution in `ap_ctrl_hs` (using the reserved adapter offset 0x01C; allowing XRT's
   `run.wait` and interrupts) or leave it to CSR window polling. Only the wrapping depends on the CSR
   window access item above (window access while the M9 resident loop runs).
-- [x] (Decided in v2, V2-DB-1: no OpenOCD; the RSP server writes the DMI of the CSR window directly.)
+- [x] (Decided, DB-1: no OpenOCD; the RSP server writes the DMI of the CSR window directly.)
   Debug transfer speed: if OpenOCD remote_bitbang with a software DTM is too slow, build a dedicated
   DMI transport.
-- [x] (Decided in v2, V2-CC-4: a line-buffer alias at 0x5000_0000, invalidated by SPM stores, window
+- [x] (Decided, CC-4: a line-buffer alias at 0x5000_0000, invalidated by SPM stores, window
   accesses, interrupts and `SPM_LB_INV`.) A line buffer for the SPM bridge (invalidated at joins): only
   if bulk reads of the SPM window become a bottleneck.
-- [x] (Not applicable in v2, D14.) Relaxing the exclusion rule: whether to overlap command-buffer
-  execution with queue ops (it would weaken the per-run attribution of `PERF_*` and the debug
-  invariant).
 - [x] Whether M7 attention is a C++ kernel of the control core (which would pull the control-core RTL
-  forward to M7). To be judged at the end of M6. Decided in v2: the control-core RTL is M6, and the FA
+  forward to M7). To be judged at the end of M6. Decided: the control-core RTL is M6, and the FA
   kernel of M7 (`k_fattn.cpp`) issues the AT ops from the control core
-  ([AT](v2/03-attention-kv.md) §6.6, §7).
+  ([AT](design/03-attention-kv.md) §6.6, §7).
 - [ ] Control-core image for a target without a host bus: the TCMs are undefined after reset and the
   load path is only CSR writes. Whether to add a small boot ROM as a parameter (DRAM or flash → SPM →
   TCM), or whether JTAG → `CTL_LOAD_*` is enough (when a port starts).
 - [ ] Re-set the DDR utilisation target of section 14 (U ≥ 85 % at M9 for 32B Q4_K_M decode), which was
-  proposed before the card measurement: the v1 core on the card already reaches about 84 % (derived,
-  section 14), so the target has to be re-set against the card measurements of W6 before it is used as a pass
+  proposed before the card measurement: the card measurements taken before the control core was added
+  already reach about 84 % (derived, section 14), so the target has to be re-set against the card measurements of W6 before it is used as a pass
   line.
 
 ## 21. Implementation clarifications (v0.2.1)
@@ -2073,16 +1994,10 @@ When M1 started, the parts of the main text that were still open and that the si
 must agree on bit for bit were fixed as follows. The C mirrors are `sw/sim/include/tsr_isa.h` and
 `tsr_ref.h`.
 
-For v2: the items that concern command-buffer execution are v1 rules and are collected at the end of
-this section (Command-buffer path (v1, tag `v1-m4`)). Their v2 counterparts are in
-[EX](v2/01-execution-model.md) §5 (CSR), §6 (PERF and the invariance between launches) and §8 (errors,
-check order, `SOFT_RESET`), and in rule H4 of section 16 (SPM preservation). The numeric rules (FTZ,
-QACT input and special values, agreement with ggml, fp16 NaN), the tail bytes, stride 0,
-`QA_MISMATCH`, the fields used per instruction (x16 = 0 in v2), the sub values, K and T of QACT, the
-range check (a = immediate), zero length, overlapping operands, ACC addition, the deterministic model
-of the performance counters, the DRAM rules of trace replay, the absence of side effects when reading
-CSRs while running, and the memory side of the hardware reset and `RST_PIPE` are valid in v2 as well.
-The check order is replaced by EX §8.1 (including `BAD_DEP` and `OPERAND`).
+The CSR behaviour, the performance counters and the errors are defined in
+[EX](design/01-execution-model.md) §5 (CSR), §6 (PERF and the invariance between launches) and §8 (errors,
+check order, `SOFT_RESET`), and in rule H4 of section 16 (SPM preservation). The check order is
+EX §8.1 (including `BAD_DEP` and `OPERAND`).
 
 - **FTZ decision point**: an f32 operation first turns subnormal inputs into signed zero (DAZ),
   computes with IEEE RNE in the binary32 exponent range as it is (including gradual underflow), and
@@ -2142,7 +2057,7 @@ The following were fixed while building the simulator (`sw/sim/tsr_sim.c`, M1 st
 behaviour that the RTL and the hardware show, so trace replay verifies them together.
 
 - **Fields used per instruction** (all other bits, words and fields are reserved, and `ILLEGAL_OP` if
-  non-zero; in v2 x16 = 0 for these instructions):
+  non-zero; x16 = 0 for these instructions):
 
   | Instruction | Fields of w0 that are used | Words used |
   | --- | --- | --- |
@@ -2151,18 +2066,17 @@ behaviour that the RTL and the hardware show, so trace replay verifies them toge
   | `QACT` | opcode, sub (QA kind) | w1–w5 |
   | `MVM` | opcode, sub (fmt), flags bit 0 (ACC) | w1–w4, w5[19:0], w6 |
 
-  The VU and AT ops define their own fields (VU §5, AT §5). In v1 the fields ra, rb and rc were used
-  as well, and `LI` (rd, w1) and `ADDI` (ra, rd, w1) existed.
+  The VU and AT ops define their own fields (VU §5, AT §5).
 - **Sub values**: for `LD` and `ST` a channel ≥ `NUM_CH` is `ILLEGAL_OP`. A `QACT` sub (QA kind) of 2 or
   more is `ILLEGAL_OP` (it is not a weight format, so not `BAD_FMT`). An `MVM` fmt of 2 or more is
   `BAD_FMT`. The opcode of a feature whose `CAPS` bit is 0 (a simulator with `CAPS` = 0 has no VU, SOP
-  or TOPK at all; `DQROW` and `TOPK` in an M6 bitstream), the retired opcodes 0x04–0x08 (always),
-  `CALL` (always) and undefined opcodes are `ILLEGAL_OP`.
+  or TOPK at all; `DQROW` and `TOPK` in an M6 bitstream), the reserved opcodes 0x01–0x03 and the retired
+  opcodes 0x04–0x09 (always) and undefined opcodes are `ILLEGAL_OP`.
 - **K and T of QACT**: K must satisfy 0 < K ≤ `K_MAX` and be a multiple of the QA block size (A32 32,
   A256 256), otherwise `K_RANGE`. T must satisfy 1 ≤ T ≤ `T_MAX`, otherwise `T_RANGE` (the same rule
   as MVM).
-- **Range check**: for the start address a of an operand (the immediate word; in v1 R[x] + imm after
-  32-bit wrap) and the extent e (lines or beats, computed in 64 bits), the check passes if
+- **Range check**: for the start address a of an operand (the immediate word) and the extent e
+  (lines or beats, computed in 64 bits), the check passes if
   a + e ≤ limit (without wrap). e is n_lines for `LD` and `ST`; for an operand that places T tokens
   with a stride, (T − 1) × stride + the length per token (stride 0 replaced by the rule above); for the
   `MVM` weights, R × `ROW_BEATS` (taken at channel 0, which has the most rows; 0 if N = 0). The same
@@ -2183,7 +2097,7 @@ behaviour that the RTL and the hardware show, so trace replay verifies them toge
   described in the comments of `tsr_sim.c` and are not subject to bit agreement. Among the per-channel
   read beat counts, those of the `MVM` weights (channel c: rows_c × `ROW_BEATS`) and of `LD` must
   equal the hardware's.
-- **Trace replay rules** (v2; the normative definition is [SW](v2/06-software-verification.md) §5.4):
+- **Trace replay rules** (the normative definition is [SW](design/06-software-verification.md) §5.4):
   DRAM outside the init regions is 0. The replayer loads the init regions, runs the launch (or replays
   `push.bin` with the `replay` kernel), and compares the DONE fields and the expect regions bit for
   bit. The set of DRAM beats written by the launch must equal the union of the expect regions, and the
@@ -2191,14 +2105,14 @@ behaviour that the RTL and the hardware show, so trace replay verifies them toge
   launch. `perf` is informational.
 
 The following were fixed while building the M2 RTL (`docs/rtl-m2.md` §11 P3 to P10). Many of the cases
-(CSR access during a run, hardware reset) cannot be observed with the simulator, so they were verified
-with the directed tests of `tb/core` at tag `v1-m4`; their v2 replacements return with W4.
+(CSR access during a run, hardware reset) cannot be observed with the simulator, so they are verified
+with the directed tests of `tb/core`; the cases of the control core and the issue path are added with W4.
 
 - **CSR reads while running**: every CSR can be read at any time, and a read has no side effect. The
   only exception is the `PERF_*` snapshot below. The host polls `STATUS` and `PERF_*` while a launch
   runs.
 - **`PERF_*` hardware meaning**: `PERF_CYCLES` is the number of cycles in which the device is active
-  (v2: ACTIVE and not QHALT, section 10); `PERF_CH_WAIT[c]` is the number of cycles in which channel c
+  (ACTIVE and not QHALT, section 10); `PERF_CH_WAIT[c]` is the number of cycles in which channel c
   has at least one unfinished read and no read beat arrives. `PERF_MVM_CYCLES` is the number of cycles
   in which the MVM unit holds an instruction (from the cycle after acceptance up to the done cycle,
   M3); an MVM with N = 0 adds 1, and an MVM that ended in the check with an error adds 0. A read of the
@@ -2206,7 +2120,7 @@ with the directed tests of `tb/core` at tag `v1-m4`; their v2 replacements retur
   the HI word of the same counter returns the HI of that sample once. Other HI reads give the current
   value, and `SOFT_RESET` discards the sample.
 - **Hardware reset**: `ap_rst_n` is synchronous active-low. After the reset all CSRs have their
-  power-on value, and unlike `SOFT_RESET` the SPM content is undefined (and in v2 the TCMs are
+  power-on value, and unlike `SOFT_RESET` the SPM content is undefined (and the TCMs are
   undefined too). The memory side must be reset together with the core: a transaction that has not
   finished is not completed and is dropped, and a response to a request made before the reset must not
   arrive after it. The platform adapter guarantees this (U200: `tsr_xrt_reset`, M3 part C); the
@@ -2214,44 +2128,8 @@ with the directed tests of `tb/core` at tag `v1-m4`; their v2 replacements retur
   implementation parameter `RST_PIPE` = P the reset reaches every flip-flop through a P-stage pipe,
   exactly P cycles late. The core outputs therefore become quiet P cycles after `rst_n` falls, and
   `rst_n` must stay low for P + 1 cycles or more. With P = 3 on the U200 the minimum `ap_rst_n` width of
-  the kernel is 4 cycles (v2, with the control core: max(P + 1 core cycles, 3 `clk_rv` cycles), at
-  166.7 MHz 18 ns = 6 core cycles; Vitis uses far longer). The default P = 0 behaves as before.
-
-**Command-buffer path (v1, tag `v1-m4`)**. These rules describe command-buffer execution, which v2
-does not have (D14). They are kept as the record of v1; the text of the tag is the authority for them.
-
-- **Instruction buffer end**: executing `CMD_COUNT` instructions without an `END` gave `ILLEGAL_OP` with
-  `ERR_PC` = `CMD_COUNT`.
-- **Instruction fetch**: instruction pc was taken from byte 32 × (pc mod 2) of ch0 beat `CMD_ADDR` +
-  ⌊pc/2⌋. If that beat was outside the DRAM limit: `DRAM_RANGE`, `ERR_PC` = pc, `ERR_INFO` = the low 32
-  bits of the beat address. Prefetch read only inside `CMD_COUNT`, and the range error was reported
-  only when it was that instruction's turn. A program that modified its own buffer with `ST` while it
-  ran had an undefined result.
-- **STATUS on error**: a run that stopped on an error left `STATUS` = DONE | ERR with BUSY cleared, and
-  the `done` output was raised too (so that the adapter could signal an error end through `ap_done`).
-- **ABORT**: checked only between instructions. The `ERR_PC` of `ABORTED` was the first instruction
-  that was not executed, `ERR_INFO` = 0. An ABORT written while not BUSY had no effect (the next START
-  cleared it). An ABORT that arrived at a START waiting for queue ops ended it without starting
-  (`ERR_CODE` = `ABORTED`, `ERR_PC` = 0).
-- **CSR extra rules**: a START while BUSY was ignored. START zeroed `ERR_PC`, `ERR_CODE`, `ERR_INFO`
-  and `PC`, set R1 to R7 to 0 and R8 to R15 to `ARG0` to `ARG7`. The W1C bits of `STATUS` were DONE and
-  ERR only. SOFT_RESET zeroed `STATUS`, `ERR_*`, `PC`, the registers and `PERF_*` and left `CMD_ADDR`,
-  `CMD_COUNT`, `ARG*`, the SPM and DRAM alone; it acted on the command-buffer path only. In v2
-  undefined CSR offsets still read 0 and ignore writes.
-- **SOFT_RESET during BUSY**: it stopped at the next instruction boundary like an ABORT and was applied
-  when the run had ended; `STATUS` went from BUSY to 0 and DONE was not set. A START in the same CTRL
-  write was ignored.
-- **ABORT and instruction buffer end**: ABORT was checked before the end-of-buffer check, so an ABORT
-  seen after the last instruction was `ABORTED` with `ERR_PC` = `CMD_COUNT`, not `ILLEGAL_OP`. ABORT did
-  not change `PC`.
-- **DONE implies memory stop**: `STATUS.DONE` and `done` were raised only after all memory transactions
-  of the run had finished, including discarded instruction prefetches.
-- **PERF unchanged between runs (v1)**: while not BUSY, `PERF_*` changed only by SOFT_RESET and
-  hardware reset, so the difference of the values read before and after a run was the value of that
-  run. In v2 the same property holds per launch (section 10, PERF counters).
-- **START and SPM (v1)**: a START changed neither the SPM nor DRAM, so the SPM content written by the
-  previous run was still there in the next one; the lowering and the traces did not rely on it. In v2
-  this is rule H4 of section 16.
+  the kernel is 4 cycles (with the control core: max(P + 1 core cycles, 3 `clk_rv` cycles), at
+  166.7 MHz 18 ns = 6 core cycles; Vitis uses far longer). With the default P = 0 the reset has no pipe.
 
 ## 22. Working rules
 
@@ -2262,7 +2140,7 @@ make the code match.
 
 1. This document (`docs/spec.md`) is the single source of truth. A change to the ISA, the memory
    layout or the numeric rules goes into the same commit as the edit of the document (and of the
-   `docs/v2` section it summarises).
+   `docs/design` section it summarises).
 2. The simulator is the oracle. An RTL change is merged only if the relevant trace replay is
    bit-identical.
 3. There is one reference implementation of repacking, QA quantization, dot products and approximate
@@ -2282,4 +2160,4 @@ History: the order in which M1 was started (repository skeleton and pin; referen
 simulator; `tsr_transport` with `sim` and the trace tools; the `ggml-tesseract` skeleton; the
 `test-backend-ops` MUL_MAT comparison; Qwen2.5-0.5B Q8_0 and then Qwen2.5-32B Q4_K_M on the
 simulator with `klcheck`, which was the M1 pass criterion) was followed and M1 passed. The order of the
-v2 work is the work packages W0 to W6 of `docs/v2/README.md` §10.
+later work is the work packages W0 to W6 of `docs/design/README.md` §10.

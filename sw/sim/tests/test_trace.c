@@ -1,4 +1,4 @@
-// test_trace.c — trace v2 library unit tests (ctest sim_trace and sim_trace_ubsan; docs/v2/06-
+// test_trace.c — trace library unit tests (ctest sim_trace and sim_trace_ubsan; docs/design/06-
 // software-verification.md "SW" §5, §10.2). What it checks:
 //   - the EX §3.2 image id: SHA-256 known answers (digests computed with Python's hashlib), word
 //     padding, .tsr_id taken as zero, and the EX §3.1 image checks (TCM ranges, alignment, overlap);

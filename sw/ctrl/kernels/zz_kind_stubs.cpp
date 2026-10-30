@@ -1,5 +1,5 @@
 // zz_kind_stubs.cpp — weak default definitions of the M7 kind handlers (tsr/exec.hpp kind_add ...
-// kind_unary; docs/v2/06-software-verification.md "SW" §7.2, §7.3; W2b infra). Each one refuses its
+// kind_unary; docs/design/06-software-verification.md "SW" §7.2, §7.3; W2b infra). Each one refuses its
 // record (ctx.ret = BAD_RECORD, no push: "this kind is not in the image"), so the executor's kind
 // table can name every M7 handler while a kernel package has not landed, and an image built without
 // a kind's source still links and answers BAD_RECORD for its records (SW §7.3 return codes).

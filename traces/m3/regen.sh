@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# traces/m3/regen.sh [BUILD_DIR] — the M3 regression traces as trace v2 `ops` traces (docs/v2/
-# 06-software-verification.md §5.6): tsr-trace-gen v2 --ops m3 (MVM-centred groups mixed with the M2
-# QACT / copy groups), with v1's seeds and configurations (tag v1-m4, traces/m3/regen.sh there), then
+# traces/m3/regen.sh [BUILD_DIR] — the M3 regression traces as `ops` traces (docs/design/
+# 06-software-verification.md §5.6): tsr-trace-gen --ops m3 (MVM-centred groups mixed with the M2
+# QACT / copy groups), with fixed seeds and configurations, then
 # every trace replayed under the fixed and two random schedules (race detector fatal),
 # tile-only and through the replay kernel (one launch per trace: SPM_STALE is fatal, SW §4.6). The
-# generator prints the MVM count and weight traffic per set (v1's trace_stats.py reads v1 traces only;
-# it stays for traces/model).
+# generator prints the MVM count and weight traffic per set (trace_stats.py reads the
+# cmd.bin traces of traces/model only).
 #
 #   tmax1/    64 traces, U200 config (4 ch, T_MAX 1, 4 MiB SPM, 16 GiB/ch, CAPS 0), ~10% error
 #             injections, traces 0, 25, 50 "big" (one long weight stream, 4x the per-trace weight budget)
@@ -16,9 +16,9 @@
 #   ch3/      16 traces, 3 channels, T_MAX 3, 256 KiB SPM, ~15% error injections
 #   ch16/     12 traces, 16 channels, T_MAX 2, 256 KiB SPM, 1 GiB/ch, K_MAX 8192, ~10% error injections
 #   errors/   68 short programs (one group each) with an error injection, U200 config: two cycles
-#             through the 23 MVM fault kinds of v1 (reserved fields, BAD_FMT fmt 2..15, K_RANGE incl.
+#             through the 23 MVM fault kinds (reserved fields, BAD_FMT fmt 2..15, K_RANGE incl.
 #             the 16-bit K field, T_RANGE, SPM_RANGE on A1 / A2, DRAM_RANGE on A3, with lower-priority
-#             violations and 32-bit-wrapping extents) and the 12 M2 / v2 kinds
+#             violations and 32-bit-wrapping extents) and the 12 M2 / dependency kinds
 #   errors8/  68 like errors/, T_MAX 8 (multi-token extents, (T-1) x dst_stride >= 2^32)
 # Not in git (.gitignore): regenerate with this script. Weight traffic: --max-wbeats 16384 MVM weight
 # beats per trace on the busiest channel (channel 0; 4096 in the error sets). Every SPM line an op

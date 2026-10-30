@@ -1,5 +1,5 @@
 # sw/ctrl/tests/kvfa.cmake — W2b P2.7 tests of the SET_ROWS_KV and FLASH_ATTN kinds (sw/ctrl/kernels/
-# k_kv.cpp, k_fattn.cpp; docs/v2/06-software-verification.md "SW" §7.5, §10.2; docs/v2/03-attention-
+# k_kv.cpp, k_fattn.cpp; docs/design/06-software-verification.md "SW" §7.5, §10.2; docs/design/03-attention-
 # kv.md "AT" §6.6, §13). Included by sw/ctrl/host/CMakeLists.txt (after kernels.cmake: it reuses the
 # sanitizer build of the host kernels). Every test has label fw; long ones add slow.
 #

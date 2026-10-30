@@ -1,5 +1,5 @@
 // ref_math_gelu16.c — tsr_m_gelu16 / tsr_m_geglu16 against the pinned ggml CPU (VU §6.5,
-// §10 item 1; SW §10.1; risk 7 of docs/v2/README.md).
+// §10 item 1; SW §10.1; risk 7 of docs/design/README.md).
 //
 // The CPU (GGML_GELU_FP16, ggml-cpu/vec.h:46) evaluates GELU as
 //     x <= -10 ? 0 : x >= 10 ? x : FP16_TO_FP32(ggml_table_gelu_f16[FP32_TO_FP16(x)])
@@ -12,7 +12,7 @@
 //   1. All 65,536 fp16 inputs: GELU16 against the CPU form. Report the mismatches, their
 //      fp16-ulp distance, and which side equals the exact GELU(x) rounded to fp16 (double
 //      reference). NaN inputs give NaN on both sides (encodings differ: canonical here).
-//      Target and gate (VU §6.5, SW §10.1, risk 7 of docs/v2/README.md): < 1 % of the entries,
+//      Target and gate (VU §6.5, SW §10.1, risk 7 of docs/design/README.md): < 1 % of the entries,
 //      no sign-of-zero mismatch, and every mismatch of more than 1 fp16 ulp is one where GELU16
 //      is the correctly rounded value and the CPU table entry is not (the CPU's
 //      0.5·x·(1 + tanhf(u)) cancels in f32 for x << 0). Whether every mismatch is <= 1 fp16 ulp

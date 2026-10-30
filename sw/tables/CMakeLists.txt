@@ -1,4 +1,4 @@
-# sw/tables — the single table source of v2 (tsr_tables.py) and its generator (V2-EX-30, P1.1).
+# sw/tables — the single table source (tsr_tables.py) and its generator (EX-30, P1.1).
 #
 # The generated files are checked in (rtl/core/tsr_tables_pkg.sv, sw/sim/include/tsr_tables.h,
 # sw/ctrl/include/tsr/{mmio,vu,at}.hpp, tb/common/tables.py); nothing is generated at build

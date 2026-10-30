@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """rv_random.py - random RV32IMC + Zicsr programs, Spike vs tsr_rv retire by retire (P1.11).
 
-docs/v2/06-software-verification.md §10.1 (tsr_rv oracle: "random programs (in-house Python
+docs/design/06-software-verification.md §10.1 (tsr_rv oracle: "random programs (in-house Python
 generator, placed at 0x8000_0000 on both) compared retire by retire with spike --log-commits"),
 §4.2 (test bus profile), §10.2 (rv_random). Stdlib only; profiles, runner contract and log
 format: rvcommon.py.
@@ -298,7 +298,7 @@ class Gen:
     def program(self):
         g = self.g
         o = self.out
-        o += ["# rv_random.py seed=%d n=%d (generated; docs/v2/06-software-verification.md §10.1)"
+        o += ["# rv_random.py seed=%d n=%d (generated; docs/design/06-software-verification.md §10.1)"
               % (self.seed, self.n),
               '\t.section .text.init, "ax", @progbits', "\t.globl _start", "\t.option norvc",
               "_start:", "j reset",

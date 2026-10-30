@@ -1,13 +1,13 @@
 """Figure `milestones`: milestones M0 to M9 with their work, their gate and their status.
 
 Replaces the Korean JPG of the spec. Source: docs/spec.md §19 (Repository layout and milestones:
-the milestone table), docs/v2/README.md §2 (milestones M6 to M9 and their pass criteria) and §10
+the milestone table), docs/design/README.md §2 (milestones M6 to M9 and their pass criteria) and §10
 (work packages W0 to W6: which part of each milestone exists). One row per milestone: its name
 (left, with a status tag on the top edge), its work (two lines) and its gate (two lines, right).
-Status words (STYLE.md "Planned and unconfirmed things"): DONE · CARD (V1) = ran on the Alveo U200 with
-the v1 core (tag v1-m4: M0, M3, M4); DONE · SIMULATOR (M1) and DONE · RTL SIM (M2) = passed in the
-simulator or in RTL simulation, not on the card; MERGED INTO M8 (M5: host-assisted MoE assumed the
-v1 command-buffer path, which v2 removes, D14, docs/v2/README.md §2); IN DEVELOPMENT (M6: the
+Status words (STYLE.md "Planned and unconfirmed things"): DONE · CARD = ran on the Alveo U200
+(M0, M3, M4); DONE · SIMULATOR (M1) and DONE · RTL SIM (M2) = passed in the simulator or in RTL
+simulation, not on the card; MERGED INTO M8 (M5: host-assisted MoE; the control core issues the
+expert ops, D14, docs/design/README.md §2); IN DEVELOPMENT (M6: the
 simulator and the firmware are done, the RTL follows in W4 and W5, the card in W6); PLANNED (M7:
 the kernels exist on the simulator, the backend that emits one launch per token is W3b; M8, M9).
 The gates are the pass criteria of the spec; numbers of measured results are in
@@ -28,7 +28,7 @@ WX, WW = 424, 540                     # work
 GX, GW = 1016, 480                    # gate (right edge 1496)
 ROW_GAP = 24
 
-CARD = ("DONE · CARD (V1)", "dark")
+CARD = ("DONE · CARD", "dark")
 SIM = ("DONE · SIMULATOR", "outline")
 RTLSIM = ("DONE · RTL SIMULATION", "outline")
 DEV = ("IN DEVELOPMENT", "outline")
@@ -44,18 +44,18 @@ ROWS = [
      "TSR_DEVICE=sim, MUL_MAT offload\nonly, no hardware",
      "test-backend-ops; the 32B KL\ncheck in the simulator"),
     ("M2", "RTL core skeleton", "", RTLSIM,
-     "v1 core: command processor,\nDMA (LD, ST), QACT",
+     "Core skeleton: CSR block,\nDMA (LD, ST), QACT",
      "Verilator trace replay,\nbit-exact"),
     ("M3", "MVM clusters, Q8_0", "", CARD,
      "One cluster per DDR4 channel:\n1 channel, then 4",
      "Qwen2.5-0.5B Q8_0 on the card: logits\nbit-identical to the simulator, KL met"),
-    ("M4", "Q4_K, 4 channels", "the v1 goal", CARD,
+    ("M4", "Q4_K, 4 channels", "", CARD,
      "Q4_K unpack on 4 channels; other\ntypes converted to Q8_0 at load",
      "Qwen2.5-32B Q4_K_M on the card\nat ≥ 1 tok/s"),
     ("M5", "Host-assisted MoE", "", MERGED,
-     "Needed the v1 command-buffer path,\nwhich v2 removes",
+     "Replaced by device MoE (M8):\nthe control core issues the expert ops",
      "-"),
-    ("M6", "Core v2 hardware", "sim + firmware done\nRTL W4, W5 · card W6", DEV,
+    ("M6", "Control core hardware", "sim + firmware done\nRTL W4, W5 · card W6", DEV,
      "RISC-V control core, issue path,\nvector unit, attention and KV ops,\nSPM banks, GDB debug",
      "0.5B Q8_0 logits bit-identical to the\nsimulator, 32B KL criterion, GDB smoke"),
     ("M7", "Kernel library", "kernels on the sim;\nbackend: W3b", PLAN,
@@ -86,12 +86,12 @@ Y = PY0 + 56
 ys = []
 for i, (mid_, name, note, st, work, gate) in enumerate(ROWS):
     if mid_ == "M0":
-        P_V1 = Y
+        P_FIRST = Y
         Y += 40
     if mid_ == "M5":
         Y += 16
     if mid_ == "M6":
-        P_V2 = Y
+        P_SECOND = Y
         Y += 56
     h_ = max(row_h(name, note), 104 + 24 * (work_lines(work) - 2))
     ys.append((Y, h_))
@@ -103,9 +103,9 @@ H = LEG_Y + 112
 f = Fig("milestones", W, H,
         title="Tesseract milestones M0 to M9",
         desc="Ten milestones as rows with name, work, gate and status. M0 shell bring-up, M3 MVM "
-             "clusters with Q8_0 and M4 Q4_K on four channels ran on the Alveo U200 with the v1 "
-             "core; M1 the simulator and backend and M2 the RTL core skeleton passed in the "
-             "simulator and in RTL simulation; M5 host-assisted MoE is merged into M8; M6 core v2 "
+             "clusters with Q8_0 and M4 Q4_K on four channels ran on the Alveo U200; M1 the "
+             "simulator and backend and M2 the RTL core skeleton passed in the simulator and in "
+             "RTL simulation; M5 host-assisted MoE is merged into M8; M6 control core "
              "hardware is in development (simulator and firmware done, RTL next); M7 kernels and "
              "graph execution, M8 device MoE and PyTorch, and M9 a resident decode loop are "
              "planned.")
@@ -118,8 +118,8 @@ def phase(y, text):
     f.tag(MX + 16, y, text, anchor="start")
 
 
-phase(P_V1, "V1 · HOST COMMAND BUFFERS · TAG v1-m4")
-phase(P_V2, "V2 · CONTROL CORE, ISSUE PATH, VECTOR UNIT, ATTENTION · docs/v2")
+phase(P_FIRST, "M0 TO M5")
+phase(P_SECOND, "M6 TO M9 · CONTROL CORE, ISSUE PATH, VECTOR UNIT, ATTENTION · docs/design")
 
 for (mid_, name, note, st, work, gate), (y, h) in zip(ROWS, ys):
     planned = st in (PLAN, MERGED)
@@ -139,9 +139,9 @@ f.text(WX + WW / 2, ys[0][0] - 18, "WORK", "callout", anchor="middle", valign="m
 f.legend(W / 2, LEG_Y, [("control", "DONE"), ("host", "IN DEVELOPMENT"),
                         ("neutral", "PLANNED", True)], gap=48)
 f.text(W / 2, LEG_Y + 38, wrap(
-    "Dark badge: ran on the Alveo U200 with the v1 core. Outlined badge: passed in the simulator or "
+    "Dark badge: ran on the Alveo U200. Outlined badge: passed in the simulator or "
     "in RTL simulation, or implemented on the simulator. Dashed: planned. Measured results are in "
-    "docs/performance.md; the gates are those of docs/spec.md §19 and docs/v2/README.md §2.",
+    "docs/performance.md; the gates are those of docs/spec.md §19 and docs/design/README.md §2.",
     1440), "note", anchor="middle", color=INK_SOFT)
 
 f.save(scale=1)

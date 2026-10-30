@@ -1,11 +1,10 @@
 // tsr_csr.sv — CSR block: CSR port, the identification / configuration registers and PERF_*.
 //
-// Owner: core (docs/rtl-m2.md §2, block (a); CSR rules §6). X0 (docs/v2 EX §12): the v1 run
-// registers (CTRL START / SOFT_RESET / ABORT, STATUS, the command-buffer address and count,
-// ARG0..7, ERR_PC, ERR_CODE, ERR_INFO, PC) and the `done` output are deleted; the v2 map (EX §5:
-// LQ / LCQ / log rings, SR sequencer, loader with VERIFY, Q_*, PERF v2) replaces this block in Y4.
+// Owner: core (docs/rtl-m2.md §2, block (a); CSR rules §6). There are no run
+// registers and no `done` output; the full map (EX §5: LQ / LCQ / log rings, SR sequencer, loader
+// with VERIFY, Q_*, PERF) replaces this block in Y4.
 //
-// CSR port (core boundary; protocol unchanged in v2): the master drives csr_valid with
+// CSR port (core boundary; protocol fixed): the master drives csr_valid with
 // csr_addr/csr_we/csr_wdata and holds them until csr_ready. csr_ready is a registered one-cycle
 // strobe with csr_rdata (reads; 0 for writes); the transfer completes at the edge where
 // csr_valid && csr_ready. Unmapped or unaligned (addr[1:0] != 0) offsets read 0, writes are ignored.
@@ -20,7 +19,7 @@
 //   STATUS included) reads 0.
 // PERF (cleared by reset only):
 //   MVM_CYCLES += perf_mvm_busy; CH_RD_BEATS[c] += perf_ch_rd_beat[c]; CH_WAIT[c] += perf_ch_wait[c].
-//   CYCLES and RETIRED read 0 until their v2 sources exist (the ACTIVE gate and the queue
+//   CYCLES and RETIRED read 0 until their sources exist (the ACTIVE gate and the queue
 //   completions, EX §6, Y4), as VU_CYCLES and slot 4 (reserved).
 //   A read of counter i's LO half returns LO and snapshots HI (both sampled in S1); the next read
 //   of i's HI half returns the snapshot and consumes it (tear-free 64-bit reads: read LO first,

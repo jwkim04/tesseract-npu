@@ -1,5 +1,5 @@
 # GENERATED FILE, DO NOT EDIT: produced by sw/tables/gen_tables.py from sw/tables/tsr_tables.py.
-"""Tesseract v2 global tables for the cocotb benches (V2-EX-30).
+"""Tesseract global tables for the cocotb benches (EX-30).
 
 Same names as sw/sim/include/tsr_tables.h without the TSR_ prefix. Besides the constants:
 LAYOUTS (bit-field layouts), ENCODINGS (instruction fields), OP_UNIT / OP_LEGAL / OP_CAPS,
@@ -10,7 +10,7 @@ the PERF slot functions, and field_get / field_put / encode / decode.
 # -------------------------------------------------------------------------------------------------
 # Scalar constants (CONSTANTS)
 # -------------------------------------------------------------------------------------------------
-ID_MAGIC              = 0x54535231  # EX §5.1: ID register: "TSR1" (unchanged from v1)
+ID_MAGIC              = 0x54535231  # EX §5.1: ID register: "TSR1"
 ISA_MAJOR             = 2           # EX §7.5: VERSION[15:8]
 ISA_MINOR             = 0           # EX §7.5: VERSION[7:0]
 VERSION_VALUE         = 0x200       # EX §7.5: VERSION register: ISA 2.0
@@ -698,7 +698,7 @@ VERSION_MINOR_W   = 8
 VERSION_MAJOR     = 0xFF00  # [15:8] 2
 VERSION_MAJOR_LSB = 8
 VERSION_MAJOR_W   = 8
-# CFG0 (EX §5.1): unchanged from v1
+# CFG0 (EX §5.1): geometry configuration
 CFG0_NUM_CH     = 0xFF      # [7:0] channels C
 CFG0_NUM_CH_LSB = 0
 CFG0_NUM_CH_W   = 8
@@ -708,7 +708,7 @@ CFG0_LANES_W    = 12
 CFG0_T_MAX      = 0xF00000  # [23:20] token slots
 CFG0_T_MAX_LSB  = 20
 CFG0_T_MAX_W    = 4
-# CFG2 (EX §5.1): unchanged from v1
+# CFG2 (EX §5.1): geometry configuration
 CFG2_VL            = 0xFF        # [7:0] vector length
 CFG2_VL_LSB        = 0
 CFG2_VL_W          = 8
@@ -737,11 +737,11 @@ CAPS_VMASK_W     = 1
 CAPS_VU_RSVD     = 0xF00   # [11:8] reserved for VU extensions, 0
 CAPS_VU_RSVD_LSB = 8
 CAPS_VU_RSVD_W   = 4
-CAPS_AT_RSVD     = 0xF000  # [15:12] reserved for AT, 0 in v2.0
+CAPS_AT_RSVD     = 0xF000  # [15:12] reserved for AT, 0
 CAPS_AT_RSVD_LSB = 12
 CAPS_AT_RSVD_W   = 4
-# bit 2 retired (v1 RLD / MULI / LOOP), never set, never reused
-# bit 4 retired (v1 WAITM / JUMP), never set, never reused
+# bit 2 retired (RLD / MULI / LOOP), never set, never reused
+# bit 4 retired (WAITM / JUMP), never set, never reused
 # CFG3 (EX §7.5, VU §5.10, AT §5.10): [15:0] VU, [31:16] AT
 CFG3_VU_FRONT     = 0x1F        # [4:0] VU front lanes with an EXP core (information for cycle models)
 CFG3_VU_FRONT_LSB = 0
@@ -1858,9 +1858,9 @@ QDEPTH_U200_REG   = 0x8081088  # Q_DEPTH register value of the U200 M6 bitstream
 # Opcodes (EX §7.2); reserved and retired opcodes complete ILLEGAL_OP on SYNC
 # -------------------------------------------------------------------------------------------------
 OP_NOP    = 0x0   # kept, unit SYNC: EX §7.2: SYNC join point: completes when its dependencies are done
-OP_END    = 0x1   # reserved, unit SYNC: EX §7.2: v1 END: ILLEGAL_OP
-OP_LI     = 0x2   # reserved, unit SYNC: EX §7.2: v1 LI: ILLEGAL_OP
-OP_ADDI   = 0x3   # reserved, unit SYNC: EX §7.2: v1 ADDI: ILLEGAL_OP
+OP_END    = 0x1   # reserved, unit SYNC: EX §7.2: END: ILLEGAL_OP
+OP_LI     = 0x2   # reserved, unit SYNC: EX §7.2: LI: ILLEGAL_OP
+OP_ADDI   = 0x3   # reserved, unit SYNC: EX §7.2: ADDI: ILLEGAL_OP
 OP_MULI   = 0x4   # retired, unit SYNC: EX §7.2: retired, never reused
 OP_RLD    = 0x5   # retired, unit SYNC: EX §7.2: retired, never reused
 OP_LOOP   = 0x6   # retired, unit SYNC: EX §7.2: retired, never reused
@@ -1943,8 +1943,8 @@ ERR_ABORTED     = 8   # completed without running: a QABORT, or its unit was in 
 ERR_DEP_FAILED  = 11  # a dependency completed with an error; ERR_INFO = 0
 ERR_BAD_DEP     = 12  # a dependency on a ticket not pushed yet, on unit 6..14 or an absent unit, or below its unit's clear point; ERR_INFO = 0
 ERR_OPERAND     = 13  # an operand value outside the range its op defines, other than K, T and the address ranges (VU and AT ops only); ERR_INFO = the offending value
-# code 9 retired (v1 LOOP_NEST), never raised, never reused
-# code 10 retired (v1 WAIT_TIMEOUT), never raised, never reused
+# code 9 retired (LOOP_NEST), never raised, never reused
+# code 10 retired (WAIT_TIMEOUT), never raised, never reused
 ERR_CHECK_N = 8  # dispatch check order: ILLEGAL_OP > BAD_DEP > BAD_FMT > K_RANGE > T_RANGE > OPERAND > SPM_RANGE > DRAM_RANGE
 
 ERR_CHECK_ORDER = [
@@ -2030,7 +2030,7 @@ def perf_slots(C):
 
 
 # -------------------------------------------------------------------------------------------------
-# Instruction encodings of the v1 ops, unchanged (spec ISA, EX §7.2)
+# Instruction encodings of the base ops (spec ISA, EX §7.2)
 # -------------------------------------------------------------------------------------------------
 # NOP 0x00 (spec ISA, EX §7.1, owner spec)
 NOP_RSV_W0 = 0xFFFFFF00  # must be 0 (ILLEGAL_OP)

@@ -1,8 +1,8 @@
 """Figure `dataflow`: how data and control flow for one decode token, from the host to the hardware
 and back, as seven numbered steps over three bands (host, firmware, hardware).
 
-Content follows docs/v2/01-execution-model.md §2.1, §4 (launch protocol, runtime contract),
-docs/v2/06-software-verification.md §7 (op list, `graph` kernel), §8, §9.3 (backend) and
+Content follows docs/design/01-execution-model.md §2.1, §4 (launch protocol, runtime contract),
+docs/design/06-software-verification.md §7 (op list, `graph` kernel), §8, §9.3 (backend) and
 docs/spec.md §2 (four MVM clusters of 128 MAC lanes, 4 MiB SPM, four DDR4 channels):
 1. llama.cpp builds the ggml graph; ggml-tesseract lowers it to an op list (cached after the first
    token); the weights already sit in the card DDR (written at model load);
@@ -14,7 +14,7 @@ docs/spec.md §2 (four MVM clusters of 128 MAC lanes, 4 MiB SPM, four DDR4 chann
 6. results go back to DDR; the runtime posts an answer record;
 7. the host reads the answer and the logits.
 The bus under the issue path stands for the unit queues. Control core and units are planned RTL;
-the flow runs on the simulator today (docs/v2/06-software-verification.md §4.2).
+the flow runs on the simulator today (docs/design/06-software-verification.md §4.2).
 
 Run: build/tools/svgvenv/bin/python docs/fig/src/dataflow.py
 """

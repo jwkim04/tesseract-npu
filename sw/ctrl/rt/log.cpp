@@ -1,5 +1,5 @@
-// log.cpp — log records and tsr::panic (docs/v2/06-software-verification.md "SW" §6.6;
-// docs/v2/05-debug.md "DB" §6.1, §6.3; docs/v2/01-execution-model.md "EX" §4.10). The record format
+// log.cpp — log records and tsr::panic (docs/design/06-software-verification.md "SW" §6.6;
+// docs/design/05-debug.md "DB" §6.1, §6.3; docs/design/01-execution-model.md "EX" §4.10). The record format
 // and the API are described in tsr/log.hpp.
 //
 // Writer (rt::log_write), in this order:

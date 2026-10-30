@@ -1,15 +1,14 @@
 # Getting started
 
-How to build Tesseract, run a model on the simulator, on PyTorch and on the card, verify the
-result, and find your way around the repository. Every command names a target, tool or script of
-the current tree, except the card commands, which need the card and use the v1 binaries.
+How to build Tesseract, run a model on the simulator and on PyTorch, verify the result, and find
+your way around the repository. Every command names a target, tool or script of the current tree.
 
-> **Scope.** User and developer documentation. Status words: *on the card* means the v1 core (tag
-> `v1-m4`) ran it on the Alveo U200; *on the simulator* means this tree runs it against the
-> simulator (`TSR_DEVICE=sim`); *designed* and *planned* are as in
-> [`docs/v2/README.md`](v2/README.md) §10. The v2 core has no RTL and no bitstream yet, so
+> **Scope.** User and developer documentation. Status words: *on the card* means it ran on the
+> Alveo U200; *on the simulator* means this tree runs it against the simulator
+> (`TSR_DEVICE=sim`); *designed* and *planned* are as in
+> [`docs/design/README.md`](design/README.md) §10. The control core has no RTL and no bitstream yet, so
 > everything in this tree runs on the simulator. Normative for the host stack:
-> [SW](v2/06-software-verification.md) §6, §9, §10 and [EX](v2/01-execution-model.md) §10.
+> [SW](design/06-software-verification.md) §6, §9, §10 and [EX](design/01-execution-model.md) §10.
 
 ## Requirements
 
@@ -25,20 +24,21 @@ the current tree, except the card commands, which need the card and use the v1 b
   sw/ctrl/tools/install-toolchain.sh     # downloads and verifies the pins; installs under build/tools/riscv
   ```
 
-  The pins are in [`docs/v2/toolchain.lock`](v2/toolchain.lock): xPack `riscv-none-elf-gcc`
+  The pins are in [`docs/design/toolchain.lock`](design/toolchain.lock): xPack `riscv-none-elf-gcc`
   14.2.0-3 (compiler, binutils, newlib, GDB), dtc 1.8.1, Spike (`5a76066`), riscv-tests
   (`3df703c`) and riscv-arch-test 3.10.0. `--steps xpack,check` installs the compiler alone; the
   Spike-based `rv_*` tests then report "Skipped". For another location pass
   `-DTSR_RISCV_TOOLS=<prefix of install-toolchain.sh>` or
   `-DTSR_RISCV_PREFIX=<dir>/bin/riscv-none-elf-` at configure time (and `-DTSR_SPIKE=<spike>`).
-  Background: [SW](v2/06-software-verification.md) §6.1, §9.2, §9.6.
+  Background: [SW](design/06-software-verification.md) §6.1, §9.2, §9.6.
 - **Python 3 with numpy**, used by `ctest` (the numpy models of the VU math and of numcheck), by
   `numcheck.py` and by the cocotb tests. The interpreter for the `ref_math_np_*` and `ref_vu_np`
   comparisons is `-DTSR_REF_MATH_PYTHON=<interpreter>` (default: `build/tools/torchvenv/bin/python`
   if it exists, else the `python3` CMake finds; configure warns if it has no numpy).
 - **For the RTL tests** (optional): Verilator 5, cocotb and pytest. The development host runs
   Verilator 5.046, cocotb 2.0.1 and pytest 9.0.2.
-- **For bitstream builds** (optional, v1 only): Vivado and Vitis 2024.2 with the U200
+- **For bitstream builds** (optional; `hw/u200/build_xclbin.sh` is disabled until the control core
+  has RTL, the M0 bandwidth kernel still builds): Vivado and Vitis 2024.2 with the U200
   development platform `xilinx_u200_gen3x16_xdma_2_202110_1` for `v++` links.
 - **For the card** (optional): XRT 2.18.179 and, on kernels newer than 6.8, the patched drivers of
   [`sw/xrt-driver`](../sw/xrt-driver/README.md).
@@ -92,7 +92,7 @@ ctest --test-dir build/dev -LE slow
 ## Run a model on the simulator
 
 Model files are not part of the repository: put GGUF files in `models/` (ignored by git). The
-settings below are the M6 settings of the v2 software path: the weight `MUL_MAT`s run on the
+settings below are the M6 settings of the software path: the weight `MUL_MAT`s run on the
 Tesseract device as op lists through the firmware's `graph` kernel, and attention and the KV cache
 stay on the CPU.
 
@@ -107,16 +107,16 @@ build/dev/bin/klcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf -o build/klc
   scheduler aborts (`pre-allocated tensor (cache_k_l0 (view)) in a buffer (Tesseract0) that cannot
   run the operation (SET_ROWS)`). The device KV cache arrives with M7.
 - `-fa on -ctk q8_0 -ctv q8_0` and `LLAMA_ATTN_ROT_DISABLE=1` (no Hadamard KV rotation) are the
-  v2 baselines: flash attention, a q8_0 KV cache, no rotation. `klcheck` and `tsr-numcheck` set
-  them themselves. Without them the run also works (the v1 settings: flash attention off, f16 KV),
-  but its results are not comparable with the v2 baselines.
+  baseline settings: flash attention, a q8_0 KV cache, no rotation. `klcheck` and `tsr-numcheck`
+  set them themselves. Without them the run also works (flash attention off, f16 KV), but its
+  results are not comparable with the baselines.
 - `-no-cnv` turns off the chat mode that `llama-completion` starts by itself for models with a chat
   template.
 - `klcheck all` runs the device, the CPU, the 1-ulp floor and the embedding-path check, and prints
   the verdict (`docs/klcheck.md`). Its defaults are the M6 settings, 8 built-in prompts and
   `-n` generated tokens each.
 - The simulator is slow. On the 16-core development host, 0.5B decodes at about 92 ms per token
-  (measured on the simulator, v2, `83ac601`: 145 launches per token) and 32B at about 8 s per token.
+  (measured on the simulator, `83ac601`: 145 launches per token) and 32B at about 8 s per token.
   `TSR_SIM_THREADS` sets the number of MVM threads (default min(CPUs, 8)). A 32B model needs
   file-backed simulator DRAM, `TSR_SIM_DRAM_DIR=<dir>` with about 20 GiB free.
 - Models checked on the simulator: Qwen2.5-0.5B-Instruct Q8_0 and Qwen2.5-32B-Instruct Q4_K_M
@@ -145,44 +145,17 @@ backend with eager PyTorch; `--download Qwen/Qwen2.5-0.5B-Instruct` fills the mo
 the Hub. Architecture, tests and results: [`docs/torch-backend.md`](torch-backend.md),
 [`sw/torch/README.md`](../sw/torch/README.md), [`sw/rt/README.md`](../sw/rt/README.md).
 
-The Python suite and `hf_check.py` last ran on the v1 stack (simulator and card; results in
-`docs/torch-backend.md`); on the v2 stack only the C++ runtime tests have run
-(`ctest --test-dir build/dev -R '^rt_'`), so the commands above are expected to work but their v2
-re-run is pending.
+In this tree only the C++ runtime tests have run (`ctest --test-dir build/dev -R '^rt_'`). The
+Python suite and `hf_check.py` are expected to work with the commands above, and their re-run is
+pending (last results: `docs/torch-backend.md`).
 
-## Run a model on the card (v1)
+## Run a model on the card
 
-No v2 bitstream exists yet, so the card runs with the v1 core. The in-tree v1 path was deleted
-(work package W0); card runs use a binary copy of tag `v1-m4`: `build/v1` (not in git) holds the
-v1 host binaries (`llama-*`, `klcheck`, `test-backend-ops`, `test-ggml-tesseract`,
-`tsr_xrt_selftest`, `tsr_bw`, ...), the xclbins `tsr_u200_k1`, `tsr_u200_k4` and `tsr_bw_k4` in
-`build/v1/xclbin`, and `env.sh`.
-
-The binaries are not self-contained: their RUNPATH is the absolute path of the tree they were
-built in (`build/xrt/bin`), which holds v2 code once it is rebuilt. Always `source build/v1/env.sh`
-(it puts `build/v1/bin` first on `LD_LIBRARY_PATH`) or set `LD_LIBRARY_PATH` yourself; never run
-them bare.
-
-```sh
-source build/v1/env.sh    # XRT setup, PATH and LD_LIBRARY_PATH to build/v1/bin,
-                          # TSR_DEVICE=xrt, TSR_XCLBIN=build/v1/xclbin/tsr_u200_k4.xclbin
-llama-completion -m models/qwen2.5-32b-instruct-q4_k_m-00001-of-00005.gguf -ngl 99 -nkvo -no-cnv -p "..." -n 64
-klcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf --device xrt -o build/klcheck-05b-card -n 64
-tsr_xrt_selftest -v       # the v1 bring-up checklist
-```
-
-- Use `-ngl 99 -nkvo` with the v1 binaries (`-nkvo` keeps attention and the KV cache on the CPU);
-  flash attention is off in v1.
-- `TSR_XCLBIN=build/v1/xclbin/tsr_u200_k1.xclbin` selects the 1-channel bring-up kernel;
-  `tsr_bw` with `tsr_bw_k4.xclbin` is the M0 bandwidth tool ([`docs/m0-bw.md`](m0-bw.md)).
-- On another host, check out tag `v1-m4`, configure with `-DTSR_WITH_XRT=ON` (XRT installed), and
-  link the xclbins with that tag's `hw/u200/build_xclbin.sh k1|k4` (a k4 link took 3 h 51 min on
-  the 14 GB development host). The bring-up runbook and its results are in
-  [`docs/platform-u200.md`](platform-u200.md) §14.
-- `-DTSR_WITH_XRT=ON` in this tree builds the v2 `xrt` transport. It is written and unit-tested
-  against the XRT no-op shim; it has not run on a card. The v2 card path is work package W6
-  ([`docs/v2/README.md`](v2/README.md) §10).
-- Measured results of these runs: [`docs/performance.md`](performance.md).
+The card runs again once the bitstream with the control core is built (work package W6,
+[`docs/design/README.md`](design/README.md) §10); the `xrt` transport (`-DTSR_WITH_XRT=ON`) is written and
+unit-tested against the XRT no-op shim and has not run on a card. Card measurements were taken
+before the control core was added, with the host issuing the ops, and are in
+[`docs/performance.md`](performance.md).
 
 ## Verify
 
@@ -230,14 +203,12 @@ Notes:
   ones with the race detector fatal, tile-only and through the replay kernel). The second command
   prints the digest to compare with the line of the set in `traces/MANIFEST.sha256`. Generation is
   deterministic (fixed seeds), but the digests are those of the development host:
-  the generator draws some random inputs through libm. `traces/model` holds the v1 traces of two
-  real models; `traces/model/regen.sh` reproduces them with the v1 tools of `build/v1`, and
-  `traces/model-v1conv/regen.sh` converts them to trace v2. Sets, formats and sizes:
+  the generator draws some random inputs through libm. Sets, formats and sizes:
   [`traces/README.md`](../traces/README.md).
-- **Not runnable in this tree** (v1 only; they return with the RTL work packages W4 and W5): the
+- **Not runnable in this tree** (they return with the RTL work packages W4 and W5): the
   Verilated U200 kernel (`TSR_DEVICE=vkernel` is "not available until P5.3"), `tb/fastreplay/run.py`
-  and the cocotb core replays, and hardware emulation of k1. The v1 versions are reproducible at
-  tag `v1-m4`, with the results in [`docs/performance.md`](performance.md).
+  and the cocotb core replays, and hardware emulation of k1. Their results are in
+  [`docs/performance.md`](performance.md).
 
 ## Environment variables
 
@@ -248,7 +219,7 @@ is never silently ignored. Component documents hold the complete lists for their
 | --- | --- | --- |
 | `TSR_DEVICE` | Transport kind: `sim` (default), `mock` (the `ap_ctrl_none` adapter register model around the simulator), `vkernel` (the Verilated kernel; not available until P5.3), `xrt` (the card; needs `-DTSR_WITH_XRT=ON`). `none` registers no ggml device | `sw/transport/tsr_transport.c`, `sw/ggml-tesseract/ggml-tesseract.cpp` |
 | `TSR_IMAGE` | Firmware ELF to boot. Default: the build's `tsr-fw.elf` | `sw/transport/tsr_image.cpp` |
-| `TSR_LAUNCH_TIMEOUT_MS`, `TSR_ABORT_MS`, `TSR_BOOT_MS`, `TSR_RESET_MS` | Transport timeouts in ms: launch wait (60000; 0 = none), cancel (10000), boot and VERIFY (2000), SOFT_RESET (15000). The v1 names `TSR_XRT_TIMEOUT_MS` and `TSR_XRT_ABORT_MS` are renamed; setting them prints a note | `sw/transport/tsr_kdev.cpp` |
+| `TSR_LAUNCH_TIMEOUT_MS`, `TSR_ABORT_MS`, `TSR_BOOT_MS`, `TSR_RESET_MS` | Transport timeouts in ms: launch wait (60000; 0 = none), cancel (10000), boot and VERIFY (2000), SOFT_RESET (15000) | `sw/transport/tsr_kdev.cpp` |
 | `TSR_ATTACH=1` | Open without SOFT_RESET or bind, for diagnosis | `sw/transport/tsr_kdev.cpp` |
 | `TSR_XCLBIN`, `TSR_XRT_DEVICE`, `TSR_XRT_KERNEL`, `TSR_XRT_CH_GIB`, `TSR_XRT_DMA` (`direct`, `staged`, `m2m`), `TSR_XRT_DMA_CHUNK_MIB`, `TSR_XRT_DMA_ALIGN` | Options of the `xrt` transport | `sw/transport/tsr_transport_xrt.cpp`, [`sw/transport/README.md`](../sw/transport/README.md) |
 | `TSR_MOCK_NUM_CH`, `TSR_MOCK_TMAX`, `TSR_MOCK_CH_GIB`, `TSR_MOCK_DMA_*`, `TSR_MOCK_INJECT`, `TSR_MOCK_TCM_FAULT`, `TSR_MOCK_HANG` | Configuration and fault injection of the `mock` transport | `sw/transport/tsr_kdev_mock.cpp` |
@@ -263,7 +234,7 @@ is never silently ignored. Component documents hold the complete lists for their
 | `TSR_SIM_RACE` | Race detector: `off` (default), `report` or `fatal` | `sw/sim/tsr_sim.c` |
 | `TSR_SIM_LOG` | `stderr` or a file; the prefix `rv,` adds one line per retired RISC-V instruction | `sw/sim/tsr_sim.c` |
 | `TSR_SIM_RV_CORE`, `TSR_SIM_RV_RATIO` | Ibex cycle table `small` or `maxperf` (default); `clk_rv` over core clock, 0.05 to 4 (default 166.7 / 276.3) | `sw/sim/tsr_sim.c` |
-| `TSR_TRACE` | Directory: dump every launch as a trace v2 directory; several processes never overwrite each other's launches | `sw/sim/tsr_sim.c` |
+| `TSR_TRACE` | Directory: dump every launch as a trace directory; several processes never overwrite each other's launches | `sw/sim/tsr_sim.c` |
 | `TSR_DUMP_DIR` | Directory for hang dumps (recovery ladder level 0) | `sw/transport/tsr_kdev.cpp` |
 | `TSR_GDB_WAIT` | `boot` or `launch`: leave a trapped device for a debugger instead of restarting it. The GDB service itself is planned (P3.7) | `sw/transport/tsr_kdev.cpp` |
 | `TSR_TILE_SERIAL`, `TSR_TILE_HIST` | `1` sets and `0` clears tile-level serial mode and the dispatch history in `DBG_CFG` at open | `sw/transport/tsr_kdev.cpp` |
@@ -277,7 +248,7 @@ is never silently ignored. Component documents hold the complete lists for their
 | `TSR_TORCH_DEBUG` | PyTorch backend: `1` partition and counters, `2` also every device call, `3` also the rewritten aten graphs | `sw/torch/tesseract_torch/runtime.py` |
 | `TSR_TORCH_VERIFY=1` | PyTorch backend: check every device matmul bit for bit against `libtsr_ref` | `sw/torch/tesseract_torch/runtime.py` |
 | `TSR_TORCH_EXT_DIR` | Where to find the extension `_tesseract_rt` if it is not on `sys.path` | `sw/torch/tesseract_torch/_ext.py` |
-| `LLAMA_ATTN_ROT_DISABLE=1` | llama.cpp: no Hadamard rotation of the KV cache (a v2 baseline setting) | llama.cpp; read by `klcheck` and `tsr-numcheck` |
+| `LLAMA_ATTN_ROT_DISABLE=1` | llama.cpp: no Hadamard rotation of the KV cache (a baseline setting) | llama.cpp; read by `klcheck` and `tsr-numcheck` |
 | `GGML_SCHED_DEBUG=1` or `2` | llama.cpp's scheduler log (use with `-v`) | llama.cpp |
 
 `TSR_GDB`, `TSR_DEBUGGER` and `TSR_PROF*` are accepted and ignored with a note until the GDB
@@ -291,12 +262,12 @@ are described in the files that read them.
 
 ```
 tesseract/
-├── docs/                    documents (index below); v2/ is the normative design set,
+├── docs/                    documents (index below); design/ is the normative design set,
 │                            fig/ the figures and their scripts, logo/ the logo
 ├── sw/
 │   ├── sim/                 simulator and references: libtsr_ref (bit-exact numerics, VU and AT
 │   │                        references), libtsr_sim (CSR and queue model, RV32 interpreter,
-│   │                        units, scheduler, race detector, trace v2, debug models), tests
+│   │                        units, scheduler, race detector, trace format, debug models), tests
 │   ├── ctrl/                firmware SDK for the control core: runtime, header library, graph
 │   │                        executor, kernels, tsr-elf, host build of the kernels, tests
 │   ├── transport/           tsr_transport: the protocol layer and the kinds sim, mock,
@@ -327,17 +298,17 @@ tesseract/
 ```
 
 The control core, the issue path, the vector unit and the debug block are designed
-([`docs/v2`](v2/README.md)) and exist in the simulator and the firmware, not in `rtl/core` yet. The
+([`docs/design`](design/README.md)) and exist in the simulator and the firmware, not in `rtl/core` yet. The
 device runner of milestone M9 (`sw/runner`) is planned and not in the tree.
 
 ### Documentation index
 
 **Start.** This file; [`performance.md`](performance.md) (every measurement with its provenance, the
-estimates for v2, the measurement history).
+estimates, the measurement history).
 
 **Design.** [`spec.md`](spec.md) (the master specification: architecture, layouts, numerics, ISA,
-interfaces, verification strategy, milestones, open items); [`v2/README.md`](v2/README.md) (the core
-v2 design set, M6 to M9: execution model, vector unit, attention and KV cache, control core, debug,
+interfaces, verification strategy, milestones, open items); [`design/README.md`](design/README.md) (the
+design set, M6 to M9: execution model, vector unit, attention and KV cache, control core, debug,
 software and verification); [`fig/`](fig) (the figures and the scripts that draw them).
 
 **Hardware and platform.** [`rtl-m2.md`](rtl-m2.md) and [`rtl-m3.md`](rtl-m3.md) (RTL contract of the
@@ -363,7 +334,7 @@ transport); [`../sw/ggml-tesseract/README.md`](../sw/ggml-tesseract/README.md) a
 ## Working rules
 
 1. **The specification first.** [`docs/spec.md`](spec.md) is the master specification and
-   [`docs/v2`](v2/README.md) its normative design set. A change to the ISA, the memory layout, the
+   [`docs/design`](design/README.md) its normative design set. A change to the ISA, the memory layout, the
    numerics or a table goes into the same commit as the matching edit of the specification (and of
    `sw/tables/tsr_tables.py` for tables); if code and specification disagree, fix the specification
    first. The order of authority is stated in `docs/spec.md` §1.

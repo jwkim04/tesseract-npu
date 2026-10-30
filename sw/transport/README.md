@@ -8,10 +8,10 @@ boots it, launches kernels and collects their answers. The ggml backend, `tsr_rt
 
 > **Scope.** Developer documentation of the transport as built in this tree. Status words: *on the
 > simulator* means implemented and tested against the simulator. The `xrt` kind is written and
-> unit-tested against XRT's no-op shim only; no v2 kernel exists on the card yet. Normative:
-> [EX](../../docs/v2/01-execution-model.md) §10 (the API), §2 to §4 (launch protocol), §8 (errors and
-> recovery); [SW](../../docs/v2/06-software-verification.md) §9.1 and §9.2;
-> [DB](../../docs/v2/05-debug.md) §7 (recovery ladder) and §9 (transport debug). The
+> unit-tested against XRT's no-op shim only; no firmware kernel has run on the card yet. Normative:
+> [EX](../../docs/design/01-execution-model.md) §10 (the API), §2 to §4 (launch protocol), §8 (errors and
+> recovery); [SW](../../docs/design/06-software-verification.md) §9.1 and §9.2;
+> [DB](../../docs/design/05-debug.md) §7 (recovery ladder) and §9 (transport debug). The
 > [`docs/xrt-host.md`](../../docs/xrt-host.md) document covers the card side.
 
 <p align="center"><img src="../../docs/fig/launch.svg" alt="From a ggml graph to device work: the lanes llama.cpp, ggml-tesseract, tsr_transport, card DRAM and the control core. Model load writes weights and the firmware image; each launch writes inputs and the op list, pushes a launch descriptor, the firmware issues tile ops to the unit queues, and the host reads the answer record." width="100%"></p>
@@ -36,8 +36,6 @@ The protocol layer talks to a kdev through five operations: 32-bit register read
 adapter registers and the core CSR window at `0x1000`), channel memory read and write, and a time
 base. Everything else (what a launch is, how long to wait, what to do when the device does not
 answer) is the protocol layer, so a behaviour tested on `sim` is the behaviour on the card.
-v1's run interface (start, wait, settle, `kargs`) does not exist any more; the v1 transport is
-history (tag `v1-m4`, `git show v1-m4:sw/transport/`).
 
 ## API
 
@@ -132,8 +130,8 @@ return `TSR_TE_LOST`.
 | --- | --- | --- |
 | `sim` | on the simulator | the default; the simulator in-process behind the core CSR port, no adapter registers; the host triggers time (a read of the completion ring runs the model until something happens), so results are deterministic and independent of host timing |
 | `mock` | on the simulator | `sim` inside a register model of the `ap_ctrl_none` adapter (`ch<c>_base`, `MEM_EN`, `ADAPTER_STATUS`, `ADAPTER_VERSION`), with configurable DMA rules (alignment, chunk size, bounce buffer) and fault injection; tests the protocol layer and the tools on the hardware register path |
-| `vkernel` | planned (P5.3) | the client of the Verilated kernel server exists; the open fails with "not available until P5.3" because no two-clock v2 server exists (`TSR_VKERNEL_SERVER` or `TSR_VKERNEL_SOCKET` name one) |
-| `xrt` | written, not yet run with v2 | built with `-DTSR_WITH_XRT=ON`; opens the kernel through `xrt::ip` (exclusive access, no `xrt::kernel`, no `xrt::run`: the kernel is `ap_ctrl_none`), refuses a v1 xclbin; unit-tested against XRT's no-op shim (`transport_xrt_noop`, when XRT is configured). The v1 xrt transport ran on the card (M0, M3, M4); the v2 card path is work package W6 |
+| `vkernel` | planned (P5.3) | the client of the Verilated kernel server exists; the open fails with "not available until P5.3" because no two-clock server exists (`TSR_VKERNEL_SERVER` or `TSR_VKERNEL_SOCKET` name one) |
+| `xrt` | written, not yet run with the control core | built with `-DTSR_WITH_XRT=ON`; opens the kernel through `xrt::ip` (exclusive access, no `xrt::kernel`, no `xrt::run`: the kernel is `ap_ctrl_none`), refuses an xclbin that breaks the kernel contract; unit-tested against XRT's no-op shim (`transport_xrt_noop`, when XRT is configured). The card runs of M0, M3 and M4 were made before the control core was added; the card path is work package W6 |
 | registered | any | `tsr::register_kdev(kind, factory)` adds a kind at run time; the built-in names are refused |
 
 ## Environment
@@ -167,9 +165,7 @@ Read at open; a malformed value makes the open fail with a message and is never 
 `TSR_GDB`, `TSR_DEBUGGER` and `TSR_PROF`, `TSR_PROF_TRW_MIB`, `TSR_PROF_EVERY`,
 `TSR_PROF_RV_SAMPLE_US` are reserved for the embedded debug service (`libtsr_dbg`, P3.7) and the
 trace-writer profiler (`tsr-prof`, P3.8); the transport prints one note when one is set and
-ignores it. The v1 variables `TSR_XRT_TIMEOUT_MS`, `TSR_XRT_ABORT_MS` (renamed `TSR_LAUNCH_TIMEOUT_MS`
-and `TSR_ABORT_MS`) and `TSR_XRT_CTRL` (the run protocol) are noted and ignored too (EX §10.2). The
-ggml backend adds its own variables (`TSR_STATS` for its host-time split, `TSR_STAGE_KIB`,
+ignores it. The ggml backend adds its own variables (`TSR_STATS` for its host-time split, `TSR_STAGE_KIB`,
 `TSR_LOAD_THREADS`, `TSR_OPL_CRC`, `TSR_FORCE_HOST`, `TSR_DEBUG`; see
 [`sw/ggml-tesseract/README.md`](../ggml-tesseract/README.md)).
 
@@ -198,8 +194,8 @@ the faults a kdev has to survive.
 
 ## Limits
 
-- `vkernel` is not available until the two-clock v2 server exists (P5.3), and `xrt` has not run a
-  v2 kernel: only `sim` and `mock` carry the measured results of this tree.
+- `vkernel` is not available until the two-clock server exists (P5.3), and `xrt` has not run a
+  firmware kernel: only `sim` and `mock` carry the measured results of this tree.
 - The launch queue and the completion ring have eight entries; `tsr_transport_launch` blocks when
   eight launches are outstanding.
 - PCIe MMIO read latency, which sets the real cost of a wait poll, is not measured; the numbers of

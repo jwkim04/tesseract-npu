@@ -1,16 +1,16 @@
-# sw/tools — tools (docs/v2/06-software-verification.md "SW" §9.5, §10.2):
-#   tsr-selftest      card bring-up checklist over any transport v2 (tsr_selftest.cpp; was tsr_xrt_selftest):
+# sw/tools — tools (docs/design/06-software-verification.md "SW" §9.5, §10.2):
+#   tsr-selftest      card bring-up checklist over any transport (tsr_selftest.cpp):
 #                     identity, memory, boot, PING latency / rate, the `selftest` kernel with the in-process
-#                     shadow simulator, trace v2 replays through the device, DMI smoke, log and status
+#                     shadow simulator, trace replays through the device, DMI smoke, log and status
 #   tsr-log           decode raw device log words with a firmware ELF (tsr_log.cpp, DB §6.1)
-#   tsr_devrun        launch targets (a transport or the shadow simulator) and trace v2 replays through
+#   tsr_devrun        launch targets (a transport or the shadow simulator) and trace replays through
 #                     them (tsr_devrun.h): tsr-selftest and tsr-trace-replay --device
-#   tsr-trace-gen / -replay / -conv   trace v2 tools (trace_gen.cmake, trace_tools.cmake; P1.10)
+#   tsr-trace-gen / -replay / -conv   trace tools (trace_gen.cmake, trace_tools.cmake; P1.10)
 #   klcheck           model-level KL check vs the ggml CPU backend (docs/klcheck.md). Links llama, so it is
 #                     only built when the llama targets exist
 #   tsr-numcheck      per-node numeric dump (docs/numcheck.md); links llama as well
 #   tsr_bw            M0 bandwidth tool (XRT builds, once tsr_bw.cpp exists)
-# klcheck and numcheck run with the v2 settings (V2-SW-22, SW §10.4): FA on, q8_0 / q8_0 KV,
+# klcheck and numcheck run with the SW-22 settings (SW-22, SW §10.4): FA on, q8_0 / q8_0 KV,
 # LLAMA_ATTN_ROT_DISABLE=1, offload_kqv false in M6 (--phase m6, the default) and true in M7.
 
 if (NOT DEFINED TSR_FP_FLAGS)
@@ -18,7 +18,7 @@ if (NOT DEFINED TSR_FP_FLAGS)
 endif()
 find_program(TSR_BASH_TOOLS bash)
 
-# The trace v2 library is part of tsr_sim only with sw/sim/trace.cmake (TSR_SIM_SKIP_SNIPPETS may
+# The trace library is part of tsr_sim only with sw/sim/trace.cmake (TSR_SIM_SKIP_SNIPPETS may
 # leave it out); the tools below that read traces or run the shadow need it.
 set(_tsr_have_trace FALSE)
 if (EXISTS ${TESSERACT_ROOT}/sw/sim/trace.cmake AND NOT "trace" IN_LIST TSR_SIM_SKIP_SNIPPETS)
@@ -43,8 +43,8 @@ if (_tsr_have_trace)
     target_link_libraries(tsr_devrun PUBLIC tsr_transport tsr_sim tsr_ref)
 endif()
 
-# P1.10 trace v2 tools, each snippet owned by its package: trace_tools.cmake (tsr-trace-replay,
-# tsr-trace-conv) and trace_gen.cmake (tsr-trace-gen v2). Both link the trace v2 library and are left
+# P1.10 trace tools, each snippet owned by its package: trace_tools.cmake (tsr-trace-replay,
+# tsr-trace-conv) and trace_gen.cmake (tsr-trace-gen). Both link the trace library and are left
 # out without it, and each one by its own name in TSR_SIM_SKIP_SNIPPETS.
 if (_tsr_have_trace)
     foreach(_snip trace_tools trace_gen)
@@ -70,7 +70,7 @@ target_compile_options(tsr-log PRIVATE -Wall -Wextra -Wshadow)
 target_link_libraries(tsr-log PRIVATE tsr_transport tsr_elf tsr_fw_paths)
 
 # ---------------------------------------------------------------------------
-# tsr-selftest (SW §9.5, §7.6, V2-SW-28): the card checklist; mock / sim here, xrt on the card.
+# tsr-selftest (SW §9.5, §7.6, SW-28): the card checklist; mock / sim here, xrt on the card.
 # ---------------------------------------------------------------------------
 if (TARGET tsr_devrun)
     add_executable(tsr-selftest tsr_selftest.cpp)
@@ -103,9 +103,8 @@ if (TARGET tsr_devrun)
                  COMMAND ${TSR_BASH_TOOLS} ${CMAKE_CURRENT_SOURCE_DIR}/test_selftest_faults.sh
                          $<TARGET_FILE:tsr-selftest> ${TSR_FW_ELF} ${CMAKE_CURRENT_BINARY_DIR}/selftest_faults)
         set_tests_properties(tools_selftest_mock_faults PROPERTIES TIMEOUT 600 ENVIRONMENT "TSR_SIM_THREADS=2")
-        # Replays of the v2 trace sets through mock with the shadow (test_selftest_traces.sh; replaces
-        # tools_xrt_selftest_mock_m3*): every trace of traces/m3, vu, at, ctrl and model-v1conv (SERIAL)
-        # that fits the device, at T_MAX 1 (the U200 v1 core) and T_MAX 8 (k4). The sets are not in
+        # Replays of the trace sets through mock with the shadow (test_selftest_traces.sh): every trace of traces/m3, vu, at, ctrl and model-v1conv (SERIAL)
+        # that fits the device, at T_MAX 1 (the U200 core) and T_MAX 8 (k4). The sets are not in
         # git (traces/*/regen.sh): skipped (77) when none is on disk. 690 traces in about 2 s.
         add_test(NAME tools_selftest_mock_traces
                  COMMAND ${TSR_BASH_TOOLS} ${CMAKE_CURRENT_SOURCE_DIR}/test_selftest_traces.sh
@@ -164,7 +163,7 @@ function(tsr_add_klcheck)
     if (TARGET ggml-base)
         target_link_libraries(klcheck PRIVATE ggml-base)          # gguf_*, ggml_get_type_traits
     endif()
-    # No model needed: file format (v2 header with the settings, v1 files still read), resume, the
+    # No model needed: file format (format version 2 header with the settings, version 1 files still read), resume, the
     # 1-ulp perturbation and the KL arithmetic.
     add_test(NAME tools_klcheck_selftest
              COMMAND klcheck selftest ${CMAKE_BINARY_DIR}/sw/tools/klcheck_selftest)
@@ -211,8 +210,8 @@ function(tsr_add_numcheck)
     add_test(NAME tools_numcheck_dump_selftest COMMAND tsr-numcheck selftest)
     # Qwen2.5-0.5B Q8_0 with the M6 settings: cpu, floor, dev (sim), cpu-tok and dev-noobs runs, then
     # selfcheck (identical node lists, the same settings in every run, observation invariance, embd ==
-    # token path, weight MUL_MATs on Tesseract). On v2 the per-node observation makes every observed
-    # node its own launch (V2-SW-27). ~10 s.
+    # token path, weight MUL_MATs on Tesseract). The per-node observation makes every observed
+    # node its own launch (SW-27). ~10 s.
     set(_tsr_model ${TESSERACT_ROOT}/models/qwen2.5-0.5b-instruct-q8_0.gguf)
     if (EXISTS ${_tsr_model})
         add_test(NAME tools_numcheck_dump_qwen05b

@@ -68,7 +68,7 @@ foreach e $amap {
   lassign [split $e :] c s
   tsr_add $s [get_cells -quiet "g_ch\[$c\].u_arb"]
 }
-foreach pat {u_spm u_dma u_qact u_csr} {            ;# u_cmdproc / u_fetch: deleted in X0 (docs/v2 EX §12)
+foreach pat {u_spm u_dma u_qact u_csr} {            ;
   tsr_add $rest [get_cells -quiet $pat]
 }
 # central part of the gather: every leaf cell outside the per-cluster assemblers and pipes

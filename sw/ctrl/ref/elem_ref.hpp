@@ -1,5 +1,5 @@
 // elem_ref.hpp — host C++ reference of the firmware's element-wise and row kinds: ADD 0x11, MUL 0x12,
-// SCALE 0x13, GLU 0x15, GET_ROWS 0x17, CPY 0x1A, UNARY 0x1B (docs/v2/06-software-verification.md
+// SCALE 0x13, GLU 0x15, GET_ROWS 0x17, CPY 0x1A, UNARY 0x1B (docs/design/06-software-verification.md
 // "SW" §7.2, §7.5 and its last paragraph): it composes the tsr_ref_vu calls the kernels' tile ops
 // execute, in the kernels' order, so the kernel tests compare the firmware against it bit for bit.
 //

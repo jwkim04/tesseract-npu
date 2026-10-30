@@ -1,4 +1,4 @@
-// backend_host.cpp — the host backend of the tile/VU header library (SW §6.8, V2-SW-25):
+// backend_host.cpp — the host backend of the tile/VU header library (SW §6.8, SW-25):
 // tsr::hw on the simulator's test hooks (tsr/backend_host.hpp has the contract). Part of the host
 // library tsr_fw_host (sw/ctrl/tests/hdr.cmake), compiled with TSR_FW_HOST.
 //

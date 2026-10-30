@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test_selftest_faults.sh SELFTEST IMAGE OUT — ctest tools_selftest_mock_faults (docs/v2/
+# test_selftest_faults.sh SELFTEST IMAGE OUT — ctest tools_selftest_mock_faults (docs/design/
 # 06-software-verification.md §10.2; was tools_xrt_selftest_mock_faults): tsr-selftest on the mock kdev
 # must fail (exit 1, the failing check named) whenever the protocol layer reports a fault, also when
 # every result it could compare is right, and must pass without one. Faults (sw/transport/

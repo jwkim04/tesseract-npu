@@ -1,6 +1,6 @@
 // test_sim_basic.c — ISA simulator op-level core: CSRs, LD/ST, every reachable op error code
 // (with ERR_INFO and "no state change"), reserved-field checks including x16 (EX §7.1), the
-// reserved and retired v1 opcodes, perf counters.
+// reserved and retired opcodes, perf counters.
 #include "test_sim_util.h"
 
 static const uint64_t IO_BEAT = TSR_REGION_IO_OFF / TSR_BEAT_BYTES;   // 64 MiB / 64
@@ -72,7 +72,7 @@ static void test_csr(void) {
     CHECK(tsr_sim_csr_read(s, TSR_CSR_CFG1) == 65536u, "CFG1");
     CHECK(tsr_sim_csr_read(s, TSR_CSR_CFG2) == (16u | (16u << 8) | (128u << 16)), "CFG2 0x%x", tsr_sim_csr_read(s, TSR_CSR_CFG2));
     CHECK(tsr_sim_csr_read(s, TSR_CSR_CAPS) == 0, "CAPS");
-    // The rest of the v2 map (EX §5) is sim_csr's. Gaps of the map read 0, unaligned offsets too.
+    // The rest of the map (EX §5) is sim_csr's. Gaps of the map read 0, unaligned offsets too.
     for (uint32_t off = 0x08C; off < TSR_CSR_PERF_BASE; off += 4) {
         if (off == 0x08C || (off >= 0x0A0 && off < TSR_CSR_LOAD_ADDR) || off > TSR_CSR_LOAD_STATUS)
             CHECK(tsr_sim_csr_read(s, off) == 0, "offset 0x%03x reads 0", off);
@@ -98,7 +98,7 @@ static void test_csr(void) {
     CHECK(tsr_sim_csr_read(s, TSR_CSR_PERF_BASE + 8 * TSR_PERF_RETIRED) == 3 &&
           tsr_sim_csr_read(s, TSR_CSR_PERF_BASE + 8 * TSR_PERF_RETIRED + 4) == 0, "PERF CSR");
     CHECK(tsr_sim_csr_read(s, TSR_CSR_PERF_BASE + 8 * tsr_perf_ch_rd_beats(1)) == 3, "PERF ch1 CSR");
-    // tsr_sim_op counts the v1 op-level set only: no unit busy time in the extension slots.
+    // tsr_sim_op counts the op-level set only: no unit busy time in the extension slots.
     CHECK(tsr_sim_csr_read(s, TSR_CSR_PERF_BASE + 8 * TSR_PERF_DMA_CYCLES(4)) == 0, "DMA_CYCLES not counted by tsr_sim_op");
     // A failing op counts as retired (EX §6: any outcome) and adds no cycles.
     uint32_t info = 1;
@@ -221,7 +221,7 @@ static void test_ldst(void) {
 
 // ---------------------------------------------------------------------------
 // Reserved fields: flipping any bit an op does not use -> ILLEGAL_OP. That includes every bit
-// of x16 (w0[31:16], v1's register fields; EX §7.1).
+// of x16 (w0[31:16], the former register fields; EX §7.1).
 // ---------------------------------------------------------------------------
 typedef struct {
     const char * name;
@@ -287,7 +287,7 @@ static void test_reserved_fields(void) {
         snprintf(what, sizeof(what), "opcode 0x%02x", op);
         expect_insn_error(s, insn_raw(op, 0, 0, 0, 0, 0, 0, 0), TSR_ERR_ILLEGAL_OP, 0, what);
     }
-    // v1's END, LI and ADDI (0x01-0x03, reserved in v2) with the fields they used to have, a
+    // The reserved END, LI and ADDI (0x01-0x03) with the fields they used to have, a
     // retired MULI, and a later-milestone SOP MOVI: all ILLEGAL_OP, and none changes state.
     expect_insn_error(s, insn_raw(0x00000001u, 0, 0, 0, 0, 0, 0, 0), TSR_ERR_ILLEGAL_OP, 0, "END");
     expect_insn_error(s, insn_raw(0x10000002u, 5, 0, 0, 0, 0, 0, 0), TSR_ERR_ILLEGAL_OP, 0, "LI R1 = 5");
@@ -295,10 +295,10 @@ static void test_reserved_fields(void) {
     expect_insn_error(s, insn_raw(0x10020004u, 3, 0, 0, 0, 0, 0, 0), TSR_ERR_ILLEGAL_OP, 0, "MULI");
     expect_insn_error(s, insn_raw(tsr_w0(TSR_OP_SOP, TSR_SOP_SUB_MOVI, 0, 0), 1, 0x3F800000u, 0, 0, 0, 0, 0),
                       TSR_ERR_ILLEGAL_OP, 0, "SOP");
-    // v1 register-relative operands (a base register in x16) are refused, not reinterpreted.
+    // Register-relative operands (a base register in x16) are refused, not reinterpreted.
     tsr_insn rel = tsr_enc_ld(0, 0, (uint32_t)IO_BEAT, 1);
-    rel.w[0] |= 8u << 20;                                   // v1: A2 = R8 + w2
-    expect_insn_error(s, rel, TSR_ERR_ILLEGAL_OP, 0, "LD with a v1 base register");
+    rel.w[0] |= 8u << 20;                                   // would have meant A2 = R8 + w2
+    expect_insn_error(s, rel, TSR_ERR_ILLEGAL_OP, 0, "LD with a base register");
     tsr_sim_destroy(s);
 }
 

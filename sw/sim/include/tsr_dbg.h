@@ -1,4 +1,4 @@
-// tsr_dbg.h — DB simulator models (P1.13; docs/v2/05-debug.md "DB", docs/v2/06-software-
+// tsr_dbg.h — DB simulator models (P1.13; docs/design/05-debug.md "DB", docs/design/06-software-
 // verification.md "SW" §11): the tile-level debug logic, the DBG register block, DB's RISC-V
 // control-window registers, the profiler's record paths, and the decoders of their formats.
 //

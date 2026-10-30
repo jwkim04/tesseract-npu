@@ -1,4 +1,4 @@
-// exec_kinds.cpp — test kinds of the graph executor tests (P2.4; docs/v2/06-software-verification.md
+// exec_kinds.cpp — test kinds of the graph executor tests (P2.4; docs/design/06-software-verification.md
 // "SW" §7.3, §10.2): handlers for kinds 0x30-0x3F (exec.hpp tsr_exec_test_kind), linked into the
 // test image fw_exec (tsr_fw_image, sw/ctrl/tests/exec.cmake) and into the host driver
 // test_fw_exec_host. They give the executor tests real data flow (copies through the ring, DRAM

@@ -19,7 +19,7 @@ option(TSR_WITH_TORCH "Build the PyTorch extension sw/torch (_tesseract_rt; need
 
 enable_testing()
 
-add_subdirectory(sw/tables)      # v2 table source: --check / self-test ctests, generated-header compile check
+add_subdirectory(sw/tables)      # table source: --check / self-test ctests, generated-header compile check
 add_subdirectory(sw/sim)         # tsr_ref, tsr_sim (+ unit tests)
 add_subdirectory(sw/ctrl/host)   # firmware SDK, host side: tsr-elf, the tsr_fw ExternalProject
                                  # (RISC-V image tsr-fw.elf, SW §6.1), host build of the kernels, fw_* tests

@@ -1,5 +1,5 @@
 // test_fw_exec.cpp — ctests fw_exec_host, fw_exec_rv and fw_exec_perf (P2.4): the graph executor
-// (sw/ctrl/kernels/graph.cpp) against docs/v2/06-software-verification.md "SW" §7.2, §7.3, §7.8,
+// (sw/ctrl/kernels/graph.cpp) against docs/design/06-software-verification.md "SW" §7.2, §7.3, §7.8,
 // §4.7 and §10.2.
 //
 // One driver, two builds of the executor:
@@ -70,7 +70,7 @@ extern "C" int32_t graph(const tsr_args * args);
 #endif
 
 #ifdef TSR_EXEC_HAVE_LOWER
-#include "tsr-lower.h"     // v1's tiling (sw/ggml-tesseract, tag v1-m4): the per-token line counts
+#include "tsr-lower.h"     // the reference tiling (sw/ggml-tesseract): the per-token line counts
 #endif
 
 using tsr::opl::writer;
@@ -852,7 +852,7 @@ static void sc_sizes(env & e) {
         CHECK(all, "%s: n_ops 4096: %u copies", T, copies);
         opl::exec_state st{};
         if (e.exec_state(&st)) CHECK(st.n_done == 4096 && st.chunks == 3, "%s: 4096: n_done %u chunks %u", T, st.n_done, st.chunks);
-        // 4097 ops: TOO_MANY_OPS (the builder must split, V2-SW-29)
+        // 4097 ops: TOO_MANY_OPS (the builder must split, SW-29)
         writer w2;
         for (uint32_t i = 0; i < 4097; ++i) w2.add(opl::K_NOP, {});
         CHECK(w2.finish().empty() && !w2.ok(), "%s: the writer refuses 4097 ops", T);
@@ -1265,7 +1265,7 @@ static void sc_plan(env & e) {
     printf("%s: plan parity: %u shapes (%u plannable), device = host\n", T, n_done, ok_count);
 }
 
-// Host-only: plan.hpp geometry against tsr_ref (independent C code) and v1's tiling.
+// Host-only: plan.hpp geometry against tsr_ref (independent C code) and the reference tiling.
 static void plan_host_checks() {
     uint32_t bad = 0;
     for (uint32_t fmt = 0; fmt < 2; ++fmt)
@@ -1283,7 +1283,7 @@ static void plan_host_checks() {
               l.one_line == 60391 && l.ring_lines == 60391,
           "exec layout");
 #ifdef TSR_EXEC_HAVE_LOWER
-    // v1 (sw/ggml-tesseract tsr-lower): same per-token line counts; v1's SPM-based shape check
+    // Reference tiling (sw/ggml-tesseract tsr-lower): same per-token line counts; its SPM-based shape check
     // accepts everything plan.hpp accepts.
     tsr_config c = test_cfg();
     uint32_t diff = 0, n = 0;
@@ -1299,7 +1299,7 @@ static void plan_host_checks() {
             ++diff;
         if (v1ok && !ok && (uint64_t)v1.x_lines + v1.qa_lines + v1.y_lines <= plan::ring_budget(dev_of(c))) ++diff;
     }
-    CHECK(diff == 0, "plan.hpp vs v1 tsr_mm_plan_tiling: %u differences over %u shapes", diff, n);
+    CHECK(diff == 0, "plan.hpp vs tsr_mm_plan_tiling: %u differences over %u shapes", diff, n);
 #endif
 }
 

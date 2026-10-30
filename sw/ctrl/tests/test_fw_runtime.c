@@ -1,6 +1,6 @@
-// test_fw_runtime.c — fw_runtime (docs/v2/06-software-verification.md "SW" §10.2; P2.2): the SDK
-// runtime (sw/ctrl/rt: crt0, R1-R10 of docs/v2/01-execution-model.md "EX" §4.7, traps and panic of
-// docs/v2/05-debug.md "DB" §6.3, log records of DB §6.1) as the RISC-V binary on the simulator
+// test_fw_runtime.c — fw_runtime (docs/design/06-software-verification.md "SW" §10.2; P2.2): the SDK
+// runtime (sw/ctrl/rt: crt0, R1-R10 of docs/design/01-execution-model.md "EX" §4.7, traps and panic of
+// docs/design/05-debug.md "DB" §6.3, log records of DB §6.1) as the RISC-V binary on the simulator
 // (tsr_rv executing the real image is the reference, SW §6.8), driven through the host CSR port as
 // the transport will drive it (EX §3.3-§3.5, §4.8-§4.9).
 //

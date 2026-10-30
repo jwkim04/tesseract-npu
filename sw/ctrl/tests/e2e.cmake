@@ -1,5 +1,5 @@
-# sw/ctrl/tests/e2e.cmake — the W2a integration tests (docs/v2/06-software-verification.md "SW" §11
-# P2.1-P2.5, §10.1, §10.2; docs/v2/README.md §10 W2a). Included by sw/ctrl/host/CMakeLists.txt after
+# sw/ctrl/tests/e2e.cmake — the W2a integration tests (docs/design/06-software-verification.md "SW" §11
+# P2.1-P2.5, §10.1, §10.2; docs/design/README.md §10 W2a). Included by sw/ctrl/host/CMakeLists.txt after
 # the package snippets (it uses kernels.cmake's tsr_fw_ref and the tsr_elf library).
 #
 #   fw_m6_e2e    the production image tsr-fw.elf end to end on the simulator, fixed + 7 random

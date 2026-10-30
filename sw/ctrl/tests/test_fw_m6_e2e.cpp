@@ -1,5 +1,5 @@
-// test_fw_m6_e2e.cpp — ctests fw_m6_e2e and fw_m6_perf (W2a integration: docs/v2/06-software-
-// verification.md "SW" §11 P2.1-P2.5, §10.1 "launch traces", §4.7, §7.8; docs/v2/README.md §10 W2a).
+// test_fw_m6_e2e.cpp — ctests fw_m6_e2e and fw_m6_perf (W2a integration: docs/design/06-software-
+// verification.md "SW" §11 P2.1-P2.5, §10.1 "launch traces", §4.7, §7.8; docs/design/README.md §10 W2a).
 //
 //   test_fw_m6_e2e IMAGE SCRATCH [TRACES]
 //   A. One session per schedule (fixed + random:1..7), each on a fresh simulator with the race
@@ -30,7 +30,7 @@
 //        - `graph` again with the same list, its inputs rewritten by the host first (EX §2.3 H1), after
 //          every other kernel ran on this image: the same y rows; its captured trace replays on a
 //          fresh simulator in B, so DTCM state that the executor carried from its first launch (or
-//          from the other kernels) shows there (V2-SW-4: a first launch after boot cannot show it);
+//          from the other kernels) shows there (SW-4: a first launch after boot cannot show it);
 //        - a last PING; the device idle, no unit in error state, no race report.
 //      Equal under all 8 schedules: every answer record r0-r6, the SW §4.7 observables (per-unit op
 //      streams with relative tickets, the RISC-V SPM store stream, the final written DRAM and SPM
@@ -38,7 +38,7 @@
 //      init / expect regions, image); the schedules change the timing. PERF PUSH_STALL = 0 in every
 //      session (CC §7.3). The three graph launches' trace digests (fw_trace_digest.h) equal the W2a
 //      image's (92f0b17): MUL_MAT's push stream is W2a's (SW §7.3, §7.4).
-//   B. Trace round trip (SW §10.1, V2-SW-4: a DTCM state leak between launches would show here):
+//   B. Trace round trip (SW §10.1, SW-4: a DTCM state leak between launches would show here):
 //      the fixed session's TSR_TRACE directory holds one trace per captured launch, equal to the
 //      in-memory capture; each replays on fresh simulators under fixed and random:11; the random:3
 //      session's in-memory captures replay under fixed.

@@ -1,8 +1,8 @@
-# sw/ggml-tesseract/tests/tiny.cmake — M7 on the simulator (P3.6, docs/v2/06-software-verification.md
+# sw/ggml-tesseract/tests/tiny.cmake — M7 on the simulator (P3.6, docs/design/06-software-verification.md
 # §10.2, §10.4): the tiny-model graph tests and the test-backend-ops coverage of the M7 kinds.
 # Included from ../CMakeLists.txt (after the llama.cpp targets exist).
 #
-# Tiny models (V2-SW-21): gen_tiny_models.py (gguf-py from the pinned llama.cpp + numpy) writes, at
+# Tiny models (SW-21): gen_tiny_models.py (gguf-py from the pinned llama.cpp + numpy) writes, at
 # build time, into ${TSR_TINY_MODEL_DIR}:
 #   qwen2-tiny-q8_0.gguf, qwen2-tiny-q4_k.gguf (2 layers), gemma4-tiny-q8_0.gguf (4 layers, 3 SWA +
 #   1 full), tiny-prompts.txt — random weights, 64-row vocabularies, no binary in git.
@@ -95,7 +95,7 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${_tiny_gguf_py}
             ${_tiny_py} ${CMAKE_CURRENT_LIST_DIR}/gen_tiny_models.py --out-dir ${TSR_TINY_MODEL_DIR} --check -q
     DEPENDS ${CMAKE_CURRENT_LIST_DIR}/gen_tiny_models.py ${_tiny_gguf_py}/gguf/quants.py ${_tiny_gguf_py}/gguf/gguf_writer.py
-    COMMENT "Generating the tiny Qwen2 / Gemma 4 GGUFs (V2-SW-21)"
+    COMMENT "Generating the tiny Qwen2 / Gemma 4 GGUFs (SW-21)"
     VERBATIM)
 add_custom_target(tsr_tiny_models ALL DEPENDS ${_tiny_outputs})
 
@@ -121,7 +121,7 @@ if (TARGET llama)
                          --min-kl ${_min_kl} --min-top1 ${_min_top1})
         set_tests_properties(${_name} PROPERTIES TIMEOUT 300 ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal")
     endforeach()
-    # W3b fix (V2-SW-43): a prefill ubatch of 692 tokens (the first four prompts joined, -ub 1024): its
+    # W3b fix (SW-43): a prefill ubatch of 692 tokens (the first four prompts joined, -ub 1024): its
     # FLASH_ATTN needs 174 MSUM + 87 FA_NEW preload lines (> 256, one list), so supports_op
     # keeps it on the CPU (extra launches in that prefill, reported, not checked); the decodes stay one
     # launch each and the KL criterion holds. Before the fix graph_compute aborted (T 681-1022).

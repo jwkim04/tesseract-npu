@@ -114,12 +114,12 @@ a same-colour stroke of 34 font units; the library does this.
 
 **Casing.**
 
-- Block titles, callouts, tags and band labels are UPPERCASE. Examples: `COMMAND PROCESSOR`,
+- Block titles, callouts, tags and band labels are UPPERCASE. Examples: `ISSUE PATH`,
   `WEIGHT STREAM`, `TSR_CORE`.
 - Detail lines (`sub`) are lower or sentence case.
 - Code identifiers keep their case everywhere except block titles: `tsr_mem_arb`, `m_axi_ch0`,
   `s_axi_control`. So do units: `4 MiB`, `64 B`, `19.2 GB/s`, `300 MHz`.
-- Put a block title on two centred lines when it is long (`COMMAND\nPROCESSOR`).
+- Put a block title on two centred lines when it is long (`MEMORY\nARBITER`).
 
 **Glyphs.**
 
@@ -143,7 +143,7 @@ a same-colour stroke of 34 font units; the library does this.
 | Hollow arrow | `arrow(pts)` (shaft 24, head 54 × 26) | normal data or command flow between blocks. `tail=True` makes it two-way. Elbow it with more points (axis-aligned only). |
 | Fat hollow arrow | `arrow(pts, fat=True)` (shaft 40, head 84 × 36) | bulk data: weight streams and DRAM beat streams. Use it for the traffic the figure is about. |
 | Dashed hollow arrow | `arrow(pts, dashed=True)` | flow to or from a planned block |
-| Thin connector | `line(pts)` (solid head; `start=True` adds a head at the start) | side paths and signals: instruction fetch, `done`, control strobes, a shared port. Make it dashed when the path is secondary or shared (`system`: fetch / LD / ST on ch0). |
+| Thin connector | `line(pts)` (solid head; `start=True` adds a head at the start) | side paths and signals: `done`, control strobes, a shared port. Make it dashed when the path is secondary or shared (`core`: the unit-queue bus). |
 | Leader + dot | `callout(text, xy, target, via=...)` | annotation only, never flow. The dot sits on the thing named. Leaders are horizontal or vertical, with at most two bends. |
 | Bracket | `bracket(x1, x2, y, label)` | a span: a group of channels, `× NUM_CH`, a stage range |
 
@@ -161,7 +161,7 @@ a same-colour stroke of 34 font units; the library does this.
 ## Planned and unconfirmed things
 
 **Status drawing rule.** A block is drawn solid only if it exists in `rtl/` (or, for software, in
-the tree) and ran on the Alveo U200 with the v1 core (tag `v1-m4`). Everything that exists only in
+the tree) and ran on the Alveo U200. Everything that exists only in
 the simulator and the firmware is planned: dashed, pale, tagged. **Never draw a block as solid RTL
 that is not in `rtl/`.** The RTL in the tree is the X0 state: the datapath units, the CSR skeleton
 and the platform adapter, with no control core, issue path, vector unit or attention modes.
@@ -181,17 +181,17 @@ and the platform adapter, with no control core, issue path, vector unit or atten
   collide with arrows.
 - **Planned paths.** Draw them as dashed arrows or connectors (the unit-queue bus in `stack` and
   `core`).
-- **Status badges** (`stack`, `milestones`; at most three texts per figure): `ON THE CARD · V1`
-  (dark badge: ran on the card with the v1 core), `SIMULATOR · V2` (outlined badge: implemented
+- **Status badges** (`stack`, `milestones`; at most three texts per figure): `ON THE CARD`
+  (dark badge: ran on the card), `SIMULATOR` (outlined badge: implemented
   and verified on the simulator; `milestones` also uses `DONE · RTL SIMULATION`) and `PLANNED`
   (dashed badge on a dashed block). A panel carries the status of its tiles on its top edge; a
   tile carries its own badge only where it differs. A figure with badges explains them in a key at
   the bottom and says which statement a badge makes (`stack`: the status of the block as drawn; the
-  xrt transport ran on the card in v1, the v2 kind awaits the v2 core).
+  xrt kind has not run on the card with the control core, so it is `PLANNED`).
 - **Unconfirmed facts.** Expected but unmeasured facts, such as a clock that is only a planning
   value (`clk_rv` 166.7 MHz), are drawn as expected and named as such in a footnote (`note` role,
   `INK_SOFT`) or a callout. Never present them as fact.
-- **Hardware not yet run** (the v2 core on the card) is drawn as `docs/v2` describes it, with no
+- **Hardware not yet run** (the control core on the card) is drawn as `docs/design` describes it, with no
   internals beyond what the design states.
 
 ## Repeated units and channel counts
@@ -347,10 +347,10 @@ this (not the README, and not for a GitHub page that has to show in the mobile a
 
 ## Accuracy
 
-Every block, arrow, label and number must be backed by `docs/spec.md`, `docs/v2/*` (the normative
+Every block, arrow, label and number must be backed by `docs/spec.md`, `docs/design/*` (the normative
 design), `docs/rtl-m2.md`, `docs/rtl-m3.md`, `docs/platform-u200.md`, `docs/xrt-host.md`, the
 `rtl/core` sources or the code under `sw/`. The script's docstring names its sources by document
 and section, never by line number. Cite English documents only. When a figure adds a fact that the
-cited documents do not show, say where it comes from in the docstring. v2 facts follow `docs/v2`
+cited documents do not show, say where it comes from in the docstring. Design facts follow `docs/design`
 (4 channels, 128 lanes per cluster, T_MAX 8, SPM 4 MiB, `clk_rv` 166.7 MHz planning value, core
-clock 276.3 MHz on the k4 kernel); a v2 block without RTL is planned.
+clock 276.3 MHz on the k4 kernel); a block without RTL is planned.

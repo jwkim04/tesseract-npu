@@ -1,4 +1,4 @@
-// test_sim_dbg.c — the DB simulator models (tsr_dbg.c, P1.13; docs/v2/05-debug.md "DB" §14 item 1,
+// test_sim_dbg.c — the DB simulator models (tsr_dbg.c, P1.13; docs/design/05-debug.md "DB" §14 item 1,
 // §5.8 invariants G / Q / S / H on the simulator): every DBG register's access type and reset
 // value, the DMI gate, stop points in push order against prefix runs, RELEASE, STOP_NOW, QSTEP
 // (with DBG_STEP_N, and through the debug-halt hold with dbg_step), serial mode, tile breakpoints
@@ -599,7 +599,7 @@ static void test_qstep_as_stop_now(void) {
     WR(s, TSR_CSR_DBG_STOP_AT, 4);
     adv(s, 1000);
     CHECK(RD(s, TSR_CSR_Q_DONE(TSR_UNIT_SYNC)) == 4 && (ST(s) & TSR_DBG_STATUS_DRAINED), "T = 4 lets pidx 3 through");
-    // The hard hold (V2-DB-9): a held poisoned entry neither completes nor sets the error state
+    // The hard hold (DB-9): a held poisoned entry neither completes nor sets the error state
     tsr_sim_push(s, tsr_enc_qact(0, 0, 0, 33, 1, 0).w, NONE, NONE, ALL);   // pidx 4: K_RANGE
     adv(s, 1000);
     CHECK(RD(s, TSR_CSR_Q_DONE(TSR_UNIT_QACT)) == 0 && RD(s, TSR_CSR_Q_ERR_CODE(TSR_UNIT_QACT)) == 0, "poisoned entry held");
@@ -1069,7 +1069,7 @@ static void test_trw(const prog_t * p) {
 }
 
 // ---------------------------------------------------------------------------
-// 10. ERR_STOP, the hard hold against QABORT and SOFT_RESET (DB §5.2, V2-DB-9)
+// 10. ERR_STOP, the hard hold against QABORT and SOFT_RESET (DB §5.2, DB-9)
 // ---------------------------------------------------------------------------
 static void test_err_stop(void) {
     tsr_sim * s = mk();

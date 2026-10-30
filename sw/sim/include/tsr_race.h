@@ -1,5 +1,5 @@
 // tsr_race.h — the simulator's race detector and the launch-stateless check (P1.9;
-// docs/v2/06-software-verification.md "SW" §4.6, V2-SW-3 / V2-SW-4; memory model
+// docs/design/06-software-verification.md "SW" §4.6, SW-3 / SW-4; memory model
 // docs/ctrl-riscv.md §5.5 and EX §2.3). Implementation and the exact rules: tsr_race.c.
 //
 // The detector is an optional model of the simulator library (sw/sim/race.cmake adds tsr_race.c;
@@ -11,11 +11,11 @@
 //   2 fatal    the first report is printed to stderr and the process aborts (ctest's mode).
 //
 // What it checks, over the agents {units 0-5, the RISC-V, the host}:
-//   - races (V2-SW-3): two accesses to the same SPM byte, DRAM beat or issue-bank s register, at
+//   - races (SW-3): two accesses to the same SPM byte, DRAM beat or issue-bank s register, at
 //     least one a write, by two agents, not ordered by the happens-before edges of SW §4.6.
 //     Reported once per (kind, pair of sites) with both sides; later hits of the same pair only
 //     increase `count`;
-//   - SPM_STALE (V2-SW-4): while a launch runs (from its LQ_POP to its answer post), an op of the
+//   - SPM_STALE (SW-4): while a launch runs (from its LQ_POP to its answer post), an op of the
 //     launch reads an SPM line no byte of which was written since that LQ_POP, or the RISC-V
 //     reads an SPM byte not written since it. Reported once per reading site.
 // A site is an op's push (unit, opcode, push pc, ra at the push: the call site of a push helper)

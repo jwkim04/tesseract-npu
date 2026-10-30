@@ -43,12 +43,12 @@ if (Python3_Interpreter_FOUND)
 endif()
 
 # ---------------------------------------------------------------------------
-# Simulator / capture / transport tests (owner: M1 step 3/4; v2 core: P1.2 / P1.6). Prefix sim_.
+# Simulator / capture / transport tests (owner: M1 step 3/4; control core: P1.2 / P1.6). Prefix sim_.
 # Run: ctest --test-dir <build> -R '^sim_' --output-on-failure
 # sim_basic / sim_mvm / sim_capture test the units through the tsr_sim_op test hook (op-level,
 # outside the queues); sim_csr tests the host CSR port (EX §5) and the RISC-V side of the rings;
 # sim_queue tests the queue model (dispatcher, checker order, tickets, deps, SYNC, errors) through
-# the control window. The v1 trace round trip returns with trace v2 (P1.10); sim_transport is
+# the control window. The trace round trip is test_trace (P1.10); sim_transport is
 # rewritten for the launch path in P3.1.
 # ---------------------------------------------------------------------------
 find_package(Threads REQUIRED)
@@ -110,7 +110,7 @@ if (TSR_HAVE_UBSAN)
 endif()
 
 # ---------------------------------------------------------------------------
-# P1.8 scheduler (docs/v2/06-software-verification.md §4.4, §4.7, §10.2; sw/sim/tsr_sched.c)
+# P1.8 scheduler (docs/design/06-software-verification.md §4.4, §4.7, §10.2; sw/sim/tsr_sched.c)
 #   sim_sched_unit         xoshiro128** vectors, TSR_SIM_SCHED parsing, options and environment,
 #                          listener list and push events, tie-breaking, random durations and
 #                          crossings, the CDC lag of the RISC-V-side copies, access events, TSR_SIM_LOG,
@@ -173,7 +173,7 @@ if (TSR_HAVE_UBSAN)
 endif()
 
 # ---------------------------------------------------------------------------
-# W1b integration (docs/v2/README.md §10 W1): sim_w1b_e2e — the sim_rv_issue firmware with every W1b
+# W1b integration (docs/design/README.md §10 W1): sim_w1b_e2e — the sim_rv_issue firmware with every W1b
 # model attached (DM, DBG, RACE fatal, TRACE capture): fixed + 7 random schedules with equal SW §4.7
 # observables and captured traces, the captured launch traces replayed on fresh simulators under 3
 # schedules, and a GDB-style DMI session through host CSR 0xC00 + 4r (halt mid-launch, registers
@@ -202,8 +202,8 @@ foreach(_t sim_csr sim_queue sim_queue_race sim_queue_ubsan)
 endforeach()
 
 # ---------------------------------------------------------------------------
-# RISC-V cycle model (docs/v2/06-software-verification.md §4.2; docs/v2/04-control-core.md §3.2,
-# V2-CC-34): rv_timing runs test_rv_isa's cycle-table checks alone, for both Ibex configurations
+# RISC-V cycle model (docs/design/06-software-verification.md §4.2; docs/design/04-control-core.md §3.2,
+# CC-34): rv_timing runs test_rv_isa's cycle-table checks alone, for both Ibex configurations
 # ("maxperf", the default, and "small"): per-class costs, the load-use and 32-bit-target penalties,
 # the CSR pipeline flush, the class statistics, the crossing latencies at three clock ratios.
 # (rv_unit runs the same checks among all the others; test_rv_isa is defined by sw/sim/rv.cmake.)

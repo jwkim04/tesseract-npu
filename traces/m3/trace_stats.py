@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""trace_stats.py — MVM shape coverage and weight traffic of v1 trace directories (the cmd.bin
-format of tag v1-m4's sw/sim/include/tsr_trace.h).
+"""trace_stats.py — MVM shape coverage and weight traffic of trace directories in the older cmd.bin
+format (trace format version 1).
 
     python3 traces/m3/trace_stats.py [--per-trace] [--classes] [--json FILE] [--big BEATS] PATH...
 
 PATH is a trace directory or a directory searched recursively for trace directories (they hold
 meta.json). Traces are grouped into sets by their parent directory. Only executed instructions
 count: the prefix before ERR_PC when the trace ends in an error, else everything before the END
-that stopped it (v1 programs have no jumps). Per set it prints the number of traces, size on disk,
+that stopped it (those programs have no jumps). Per set it prints the number of traces, size on disk,
 error endings, the executed MVMs by format, K, N, T, ACC and dst_stride, and the MVM weight
 traffic: channel c reads rows_c x ROW_BEATS beats per MVM (spec 구현 명확화, PERF), so channel 0
 (R = ceil(N/C) rows) is the busiest; "weight beats" below are channel-0 beats summed over a

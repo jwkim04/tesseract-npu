@@ -1,4 +1,4 @@
-// k_rope.cpp — the ROPE kind of the graph executor (OPL v1 kind 0x16; docs/v2/06-software-
+// k_rope.cpp — the ROPE kind of the graph executor (op list kind 0x16; docs/design/06-software-
 // verification.md "SW" §7.2, §7.5; handler interface tsr/exec.hpp, SW §7.3; planning
 // tsr/plan_norm.hpp). ggml's ROPE (rope_ext) on n_tokens tokens of n_heads heads of head_dim f32:
 // NORM (adjacent pairs) or NEOX (half-split pairs), the recurrence form of ggml-cpu's angles (TS =
@@ -7,7 +7,7 @@
 //
 // Tile-op sequence (the numerical contract, SW §7.5 last paragraph; sw/ctrl/ref/rope_ref.cpp runs the
 // same tsr_ref_vu ROPE), per token tile of Tt tokens in one block [x | table] (the one-tile block for an
-// op's only tile, V2-SW-36; else the ring):
+// op's only tile, SW-36; else the ring):
 //   1. LD x: the tile's tokens (H = n_heads head_dim / 16 lines each; one LD when the DRAM tokens are
 //      dense, src stride = H or Tt = 1, else one per token);
 //   2. with a table: LD the freq-factor / A table (ceil(n_dims / 32) lines; per tile, so the tile
@@ -33,11 +33,11 @@
 // Push order of a multi-tile op (prefill): LD x_0 [LD t_0], MOVIs, then per tile: ROPE_t, the
 // prefetch of tile t+1 (alloc, LD x_{t+1} [LD t_{t+1}]), ST_t (MUL_MAT's double buffering, SW §7.4).
 //
-// Decode fast path (SW §7.3 "Hot path", V2-SW-35; the k_fast.hpp form): a one-token record (every
+// Decode fast path (SW §7.3 "Hot path", SW-35; the k_fast.hpp form): a one-token record (every
 // decode ROPE) runs in kind_rope_fast (exec.hpp: the executor's first call) with no call: the argument
 // words read in place (all before the first control-window access), plan_norm.hpp's checks for one
 // token with the preload check (rope_t1_ok, equal to rope_check + kind_ctx::pre_ok by static_assert),
-// kf::alloc_fast (the one-tile block, V2-SW-36), the shadow's answer for the MOVIs, one ISSUE_CREDIT
+// kf::alloc_fast (the one-tile block, SW-36), the shadow's answer for the MOVIs, one ISSUE_CREDIT
 // read covering the 3-7 pushes (wait_credits: it waits only while the RISC-V is ahead), the ROPE words
 // without range checks (rope_fast: the plan bounds every field), no ISSUE_TICKET read for a push whose
 // ticket nothing uses (push_nt), and exactly the general path's pushes (fw_kernels_normrope_host

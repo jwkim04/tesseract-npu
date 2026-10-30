@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """rvtests.py - riscv-tests and riscv-arch-test on Spike and on tsr_rv (P1.11).
 
-docs/v2/06-software-verification.md §4.2 (test bus profile), §9.6 (tools), §10.1 (oracle chain:
+docs/design/06-software-verification.md §4.2 (test bus profile), §9.6 (tools), §10.1 (oracle chain:
 Spike -> tsr_rv), §10.2 (rv_isa). Stdlib only. Profiles, the tsr_rv runner contract and the
 commit-log format: rvcommon.py.
 
-Suites (sources pinned in docs/v2/toolchain.lock, fetched by sw/ctrl/tools/install-toolchain.sh):
+Suites (sources pinned in docs/design/toolchain.lock, fetched by sw/ctrl/tools/install-toolchain.sh):
   riscv-tests  rv32ui, rv32um, rv32uc, rv32mi in the physical-memory "-p" environment, built here
                (not with the suite's Makefile) with the pinned xPack compiler:
                  -march=rv32im_zicsr_zifencei (rv32uc: rv32imc_zicsr_zifencei) -mabi=ilp32 -static

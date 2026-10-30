@@ -19,7 +19,7 @@
 
 #include "tsr-alloc.h"     // tsr_lower
 #include "tsr-lower.h"
-#include "tsr-opl.h"       // OPL builder, OPL cache, the `graph` kernel (docs/v2/06-software-verification.md §9.4)
+#include "tsr-opl.h"       // OPL builder, OPL cache, the `graph` kernel (docs/design/06-software-verification.md §9.4)
 #include "tsr-wlayout.h"
 #include "tsr-weights.h"   // tsr_row_to_dev_blocks: the ggml backend's load-time conversion (ggml-base)
 
@@ -134,11 +134,10 @@ const char * make_plan(const tsr_config & cfg, dtype t, uint32_t N, uint32_t K, 
     p->k_part  = pb * bs;
     p->k_parts = (B + pb - 1) / pb;
 
-    // SPM per token: the x row (all of K, K * 4 / 64 lines), the QA of the largest K part, y (v1's
-    // rule). v2: a part must also plan in the firmware's per-op ring budget (plan.hpp ring_budget,
-    // SPM minus the executor's argument, OPL and preload areas and its one-tile block; V2-SW-20,
-    // V2-SW-36), which caps the lines of one token. With T_MAX >= 2 the SPM / T_MAX cap is the smaller
-    // one, so the parts are v1's.
+    // SPM per token: the x row (all of K, K * 4 / 64 lines), the QA of the largest K part, y. A part must also plan in the firmware's per-op ring budget (plan.hpp ring_budget,
+    // SPM minus the executor's argument, OPL and preload areas and its one-tile block; SW-20,
+    // SW-36), which caps the lines of one token. With T_MAX >= 2 the SPM / T_MAX cap is the smaller
+    // one, so the parts follow the SPM rule alone.
     const uint64_t spm_lines = cfg.spm_bytes / TSR_LINE_BYTES;
     const uint64_t budget = tsr::plan::ring_budget(tsr_plan_cfg(cfg));
     const uint64_t base = (uint64_t) K / 16 + tsr_qa_lines(p->kind, p->k_part);
@@ -151,7 +150,7 @@ const char * make_plan(const tsr_config & cfg, dtype t, uint32_t N, uint32_t K, 
     p->n_part  = (uint32_t) ((N + np - 1) / np);
     p->n_parts = (uint32_t) ((N + p->n_part - 1) / p->n_part);
     if (p->k_parts == 1 && !tsr_mm_shape_ok(cfg, fmt, p->n_part, K)) return "shape not lowerable (tsr_mm_shape_ok)";
-    // every record (N part x K part) must plan in the firmware (plan.hpp, V2-SW-20)
+    // every record (N part x K part) must plan in the firmware (plan.hpp, SW-20)
     for (uint32_t kk : { p->k_part, K - (p->k_parts - 1) * p->k_part }) {
         for (uint32_t nn : { p->n_part, N - (p->n_parts - 1) * p->n_part }) {
             if (!tsr::plan::mm_supported(tsr_plan_cfg(cfg), fmt, nn, kk)) return "shape cannot be planned by the firmware (plan.hpp)";
@@ -287,7 +286,7 @@ struct device::impl {
 
     // The op list of one linear call of tc tokens (SW §9.4): per N part i one MUL_MAT record per K
     // part j over the x columns [k0, k0 + k) (x rows K / 16 lines apart), the parts after the first
-    // with ACC_DST (y += W x: one f32 add per part, in order, as v1's MVM.ACC). The builder orders
+    // with ACC_DST (y += W x: one f32 add per part, in order, as MVM.ACC does). The builder orders
     // the K parts of an N part (each reads and writes its y rows); the N parts are independent. A
     // list that would exceed 4096 records runs in pieces.
     void run_linear(const weight & w, uint32_t tc) {
@@ -357,7 +356,7 @@ device::device(const open_options & o) : p_(new impl) {
     const tsr_config * c = tsr_transport_config(d.tp);
     const char * bad = nullptr;
     if (c == nullptr)                                 bad = "no configuration";
-    else if (c->beat_bits != 512)                     bad = "BEAT_BITS != 512 (v1 software assumes 64-byte beats)";
+    else if (c->beat_bits != 512)                     bad = "BEAT_BITS != 512 (the software assumes 64-byte beats)";
     else if (c->num_ch < 1 || c->num_ch > TSR_NUM_CH_MAX) bad = "NUM_CH outside 1..16";
     else if (c->t_max < 1)                            bad = "T_MAX == 0";
     else if (c->spm_bytes < 64 * TSR_LINE_BYTES)      bad = "SPM too small";

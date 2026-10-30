@@ -1,4 +1,4 @@
-// rope_ref.hpp — host C++ reference of the firmware's ROPE kind (OPL v1 kind 0x16; docs/v2/
+// rope_ref.hpp — host C++ reference of the firmware's ROPE kind (op list kind 0x16; docs/design/
 // 06-software-verification.md "SW" §7.2, §7.5 and its last paragraph): the tsr_ref_vu ROPE call the
 // kernel's tile op executes (VU §5.4, §6.7), on the same operands, so the kernel tests compare the
 // firmware against it bit for bit.

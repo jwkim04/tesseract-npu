@@ -10,7 +10,7 @@ if (NOT DEFINED TSR_FP_FLAGS)
 endif()
 
 # Allocator, SPM tiling, OPL builder and cache (the tsr_lower library, lower.cmake), no ggml and no
-# device needed (docs/v2/06-software-verification.md §10.2: ggml_tesseract_units rewritten for the
+# device needed (docs/design/06-software-verification.md §10.2: ggml_tesseract_units rewritten for the
 # OPL builder).
 add_executable(test-tsr-backend-units tests/test-tsr-backend-units.cpp)
 target_link_libraries(test-tsr-backend-units PRIVATE tsr_lower tsr_ref)
@@ -54,8 +54,8 @@ set_tests_properties(ggml_tesseract_opl_launch_mock PROPERTIES ENVIRONMENT
     "TSR_DEVICE=mock;TSR_SIM_RACE=fatal;TSR_MOCK_DMA_ALIGN=64;TSR_MOCK_DMA_CHUNK_KIB=64")
 
 if (TARGET ggml AND TARGET ggml-tesseract)
-    # The ctests below are v1's with the same assertions, run on v2 (docs/v2/06-software-verification.md
-    # §10.2 "Kept, run on v2"): every MUL_MAT goes through an op list and the firmware's `graph` kernel
+    # The ctests below are the MUL_MAT end-to-end tests (docs/design/06-software-verification.md
+    # §10.2): every MUL_MAT goes through an op list and the firmware's `graph` kernel
     # (TSR_IMAGE: the build's image), on the sim transport unless TSR_DEVICE says otherwise, with the
     # simulator's race detector fatal (SW §4.6: ctest uses fatal).
 
@@ -81,8 +81,8 @@ if (TARGET ggml AND TARGET ggml-tesseract)
     set_tests_properties(ggml_tesseract_e2e_hosted_tmax8 PROPERTIES ENVIRONMENT
         "TSR_FORCE_HOST=1;TSR_STAGE_KIB=64;TSR_SIM_TMAX=8;TSR_SIM_RACE=fatal")
     # The same on the mock kdev (the protocol layer with the ap_ctrl_none adapter model and DMA rules
-    # that force bounce / read-modify-write transfers). v1 defined these two in sw/transport; they
-    # moved here with the backend's op-list path (P3.2), as they test the backend end to end.
+    # that force bounce / read-modify-write transfers). These two live here, not in sw/transport,
+    # as they test the backend end to end.
     add_test(NAME transport_ggml_e2e_mock COMMAND test-ggml-tesseract)
     set_tests_properties(transport_ggml_e2e_mock PROPERTIES
         ENVIRONMENT "TSR_DEVICE=mock;TSR_MOCK_DMA_ALIGN=64;TSR_MOCK_DMA_CHUNK_KIB=64;TSR_SIM_RACE=fatal")
@@ -91,7 +91,7 @@ if (TARGET ggml AND TARGET ggml-tesseract)
         "TSR_DEVICE=mock;TSR_MOCK_TMAX=8;TSR_MOCK_NUM_CH=3;TSR_MOCK_DMA_ALIGN=4096;TSR_MOCK_DMA_CHUNK_KIB=12;TSR_SIM_RACE=fatal")
     # W3b builder: these e2e cases are M6's (MUL_MAT only: "ADD must be rejected"; the IO region
     # filled to force host memory and the staged path): they run with the device restricted to M6's
-    # kinds (TSR_KINDS=m6, V2-SW-14) and v1's IO-only compute windows (TSR_COMPUTE_WINDOWS=io). M7 is
+    # kinds (TSR_KINDS=m6, SW-14) and IO-only compute windows (TSR_COMPUTE_WINDOWS=io). M7 is
     # covered by ggml_tesseract_units, _opl_launch, _attn and the tiny-model graph tests.
     foreach (_tsr_t ggml_tesseract_e2e ggml_tesseract_e2e_tmax8 ggml_tesseract_e2e_hosted ggml_tesseract_e2e_hosted_tmax8
                     transport_ggml_e2e_mock transport_ggml_e2e_mock_tmax8)
@@ -125,7 +125,7 @@ if (TARGET ggml AND TARGET ggml-tesseract)
     set_tests_properties(ggml_tesseract_attn PROPERTIES ENVIRONMENT "TSR_SIM_RACE=fatal")
     add_test(NAME ggml_tesseract_attn_tmax8 COMMAND test-tsr-attn)
     set_tests_properties(ggml_tesseract_attn_tmax8 PROPERTIES ENVIRONMENT "TSR_SIM_TMAX=8;TSR_SIM_RACE=fatal")
-    # W3b fix: every record in its own op list, so FA_NEW crosses a cut (V2-SW-43)
+    # W3b fix: every record in its own op list, so FA_NEW crosses a cut (SW-43)
     add_test(NAME ggml_tesseract_attn_split1 COMMAND test-tsr-attn)
     set_tests_properties(ggml_tesseract_attn_split1 PROPERTIES ENVIRONMENT "TSR_OPL_SPLIT=1;TSR_SIM_RACE=fatal")
 
@@ -136,10 +136,10 @@ if (TARGET ggml AND TARGET ggml-tesseract)
     # fresh random data; with the spec's 8-bit weights and activations it exceeds 5e-4 in ~15%
     # of runs on a correct device (measured: 299/2000 trials, the same count as an exact dot
     # product of the 8-bit operands). The full, unfiltered command is in README.md.
-    # v2 (P3.2): the case MUL_MAT(type_a=f16,type_b=f32,m=16,n=2105344,k=32) (2.1 M tokens, staged in
+    # P3.2: the case MUL_MAT(type_a=f16,type_b=f32,m=16,n=2105344,k=32) (2.1 M tokens, staged in
     # 16 launches of 131,072 single-token tiles at the sim's T_MAX 1: 8.4 M tile ops through the
     # interpreted firmware, ~50 s, and over 15 min with the race detector) runs in its own ctest
-    # labelled slow, without the race detector; the two ctests together run v1's case set.
+    # labelled slow, without the race detector; the two ctests together run the whole case set.
     if (TARGET test-backend-ops)
         add_test(NAME ggml_tesseract_backend_ops
                  COMMAND test-backend-ops test -o MUL_MAT -b Tesseract0
@@ -153,8 +153,8 @@ endif()
 
 # llama.cpp's own tests that load models with default offload settings (no --no-kv-offload):
 # with the Tesseract device registered (GPU type) llama.cpp puts the KV cache in a Tesseract
-# buffer, and v1 runs no KV ops (SET_ROWS, attention), so the scheduler aborts — the documented
-# v1 constraint (spec "v1 lowering 제약", docs/llama-pin.md: run llama.cpp with -nkvo). These
+# buffer, and M6 runs no KV ops (SET_ROWS, attention), so the scheduler aborts — the documented
+# M6 constraint (spec "lowering constraints", docs/llama-pin.md: run llama.cpp with -nkvo). These
 # tests check llama.cpp itself, so they run with TSR_DEVICE=none (no Tesseract device).
 if (CMAKE_VERSION VERSION_GREATER_EQUAL 3.28)
     foreach (t test-llama-context test-llama-context-model test-thread-safety)

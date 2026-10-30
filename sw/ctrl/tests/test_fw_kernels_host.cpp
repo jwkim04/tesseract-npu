@@ -1,5 +1,5 @@
-// test_fw_kernels_host.cpp — fw_kernels_host: the P2.5 kernels compiled for the host (docs/v2/
-// 06-software-verification.md "SW" §6.8, V2-SW-25: tsr_fw_host under ASan + UBSan), driven through the
+// test_fw_kernels_host.cpp — fw_kernels_host: the P2.5 kernels compiled for the host (docs/design/
+// 06-software-verification.md "SW" §6.8, SW-25: tsr_fw_host under ASan + UBSan), driven through the
 // simulator's test hooks (tsr/backend_host.hpp). The reference stays the RV binary on tsr_rv (SW §6.8):
 // every host result here is also compared with it or with the C++ references.
 //

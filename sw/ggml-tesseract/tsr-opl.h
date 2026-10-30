@@ -1,9 +1,9 @@
-// tsr-opl.h — the host side of the op-list path (docs/v2/06-software-verification.md "SW" §9.3
-// M6 (P3.2), §9.4; OPL v1 SW §7.2; the `graph` kernel SW §7.1, §7.3; launch protocol EX §4,
+// tsr-opl.h — the host side of the op-list path (docs/design/06-software-verification.md "SW" §9.3
+// M6 (P3.2), §9.4; op list format SW §7.2; the `graph` kernel SW §7.1, §7.3; launch protocol EX §4,
 // transport API EX §10.1 + SW §9.1). Part of the tsr_lower library, shared by the ggml backend
 // (ggml-tesseract.cpp) and the ggml-free runtime (sw/rt). No ggml dependency.
 //
-//   tsr_opl_builder   one OPL v1 record per op, appended in program order, with dependencies from
+//   tsr_opl_builder   one op list record per op, appended in program order, with dependencies from
 //                     a hazard analysis over DRAM byte ranges (SW §9.3 step 1): op k depends on an
 //                     earlier op i iff k reads what i writes (RAW), k writes what i reads (WAR) or
 //                     k writes what i writes (WAW). The conflicting set is transitively reduced
@@ -14,8 +14,7 @@
 //                     equal blobs.
 //   tsr_opl_cache     an LRU of op lists in the OPL region (ch0 [0, 64 MiB), EX §11) keyed by
 //                     content (64-bit FNV-1a, confirmed by a byte compare against the host copy):
-//                     a list seen before is not written again (SW §9.3 step 3, §9.4: replaces v1's
-//                     program cache and CMD-slot cache).
+//                     a list seen before is not written again (SW §9.3 step 3, §9.4).
 //   tsr_opl_dev       the `graph` kernel on an open transport: boot (warm if possible, EX §3.5) with
 //                     $TSR_IMAGE or the build's image unless the transport is booted already, the
 //                     kernel index, and run = place in the cache, LAUNCH {a0 handle, a1 bytes, a2
@@ -23,7 +22,7 @@
 //                     caller maps the answer to its ops (tsr_opl_describe; step 5).
 //
 // MUL_MAT records (SW §7.2 kind 0x10): the args are tsr::opl::mm's words; handles are {ch[31:28],
-// beat[27:0]} of 64-byte beats; strides are in lines. Tiling is the firmware's (plan.hpp, V2-SW-20),
+// beat[27:0]} of 64-byte beats; strides are in lines. Tiling is the firmware's (plan.hpp, SW-20),
 // so a record carries the whole T; the host only checks with the same plan.hpp that the firmware can
 // plan it (supports_op). In an M6 list (MUL_MAT records only) every DRAM access of a record but the
 // weight stream is an LD or ST on the one DMA queue, whose order already orders the records; the
@@ -34,7 +33,7 @@
 // kind_ranges gives the DRAM ranges each kind reads and writes from its argument words (whole lines of
 // every row operand, row periods, KV planes on every channel, FLASH_ATTN's f32 mask copy), which feed
 // the same hazard analysis; preload() adds the list's preload entries (SW §7.2 "Preload entry",
-// V2-SW-15: positions, ids, KV indices, mask summaries), one per (source, size), and refuses (NO_ROOM)
+// SW-15: positions, ids, KV indices, mask summaries), one per (source, size), and refuses (NO_ROOM)
 // an entry that would take the preload area beyond 256 lines, so the caller cuts the list there.
 //
 // Files: tsr-opl.cpp (ranges, builder, cache; no device calls, so the unit tests link without one)
@@ -109,7 +108,7 @@ public:
     uint32_t flags() const                { return flags_; }
 
     // One op reading rd and writing wr (byte ranges). Returns its op index, NO_ROOM if the record
-    // and its JOINs would exceed 4096 ops (V2-SW-29; nothing is added), or FAILED.
+    // and its JOINs would exceed 4096 ops (SW-29; nothing is added), or FAILED.
     uint32_t add(uint32_t kind, const uint32_t * args, uint32_t n_args, const std::vector<tsr_dram_range> & rd,
                  const std::vector<tsr_dram_range> & wr, int32_t tag);
 
@@ -138,7 +137,7 @@ public:
     void kind_ranges(uint32_t kind, const uint32_t * args, uint64_t aux, std::vector<tsr_dram_range> & rd,
                      std::vector<tsr_dram_range> & wr) const;
 
-    // Preload entries (SW §7.2, V2-SW-15): the pre_byte of an entry of `bytes` bytes from DRAM handle
+    // Preload entries (SW §7.2, SW-15): the pre_byte of an entry of `bytes` bytes from DRAM handle
     // `src`, added unless an entry with the same (src, bytes) is in the list already (positions,
     // KV indices and a mask's MSUM are shared by every record that reads them). NO_ROOM when a new
     // entry would take the preload area beyond 256 lines (nothing is added; the caller runs the

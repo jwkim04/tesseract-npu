@@ -1,5 +1,5 @@
-// kvfa_ref.hpp — host C++ references of the firmware's SET_ROWS_KV and FLASH_ATTN kinds (docs/v2/
-// 06-software-verification.md "SW" §7.5 last paragraph; docs/v2/03-attention-kv.md "AT" §5.1, §6.6,
+// kvfa_ref.hpp — host C++ references of the firmware's SET_ROWS_KV and FLASH_ATTN kinds (docs/design/
+// 06-software-verification.md "SW" §7.5 last paragraph; docs/design/03-attention-kv.md "AT" §5.1, §6.6,
 // §13.1; W2b P2.7): they compose the tsr_ref calls the kernels' tile ops execute, in the kernels'
 // order, from an OPL record's argument words, so the kernel tests compare the firmware against them
 // bit for bit. sw/ctrl/ref/kv_ref.cpp and fattn_ref.cpp; the backend's tests (W3b) can use them too.

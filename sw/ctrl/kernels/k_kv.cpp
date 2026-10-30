@@ -1,5 +1,5 @@
-// k_kv.cpp — the SET_ROWS_KV kind of the graph executor (OPL v1 kind 0x18; docs/v2/06-software-
-// verification.md "SW" §7.2, §7.5; docs/v2/03-attention-kv.md "AT" §4, §5.1, §7.2, §12; W2b P2.7).
+// k_kv.cpp — the SET_ROWS_KV kind of the graph executor (op list kind 0x18; docs/design/06-software-
+// verification.md "SW" §7.2, §7.5; docs/design/03-attention-kv.md "AT" §4, §5.1, §7.2, §12; W2b P2.7).
 //
 // SET_ROWS into a KV buffer: n_rows f32 source rows of E values go to the cells idx[0 .. n_rows) of
 // one K or V plane, quantized as llama.cpp's q8_0 (QACT A32 = quantize_row_q8_0_ref) and placed by
@@ -18,16 +18,16 @@
 // order, as ggml's rows in order). sw/ctrl/ref/kv_ref.cpp composes the same calls.
 //
 // Block and deps (MUL_MAT's rules, SW §7.4): one block per run [rows | QA]: the one-tile block when
-// it fits (a run is DMA-bracketed: LD ... KVST; V2-SW-36), else a ring block; the op's deps and a ring
+// it fits (a run is DMA-bracketed: LD ... KVST; SW-36), else a ring block; the op's deps and a ring
 // block's deps go on the run's first LD without DMA tickets (the DMA queue order implies them); QACT
 // depends on the run's last LD, the later QACTs of the run follow it in the QACT queue; KVST depends
 // on the run's last QACT; a ring block is released after its KVST. The returned ticket
 // is the last KVST: it implies every LD and KVST (DMA queue order) and every QACT (each run's last
 // QACT is a dep of its KVST; QACT queue order), I1.
 //
-// Decode fast path (SW §7.3 "Hot path", V2-SW-35; k_fast.hpp): n_rows = 1, the words read in place,
+// Decode fast path (SW §7.3 "Hot path", SW-35; k_fast.hpp): n_rows = 1, the words read in place,
 // the index read from the preload area (one I64), plan_attn.hpp's argument rules on the locals, the
-// one-tile block from alloc_fast (V2-SW-36; the general path's runs take it too), one credit read for
+// one-tile block from alloc_fast (SW-36; the general path's runs take it too), one credit read for
 // the three pushes (LD, QACT, KVST), no call; anything else (n_rows != 1, a refused record or index)
 // goes to the general path, which pushes the same ops for the records both take.
 //

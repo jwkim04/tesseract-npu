@@ -1,4 +1,4 @@
-// tsr_kdev_mock.cpp — the "mock" kdev (tsr_kdev_mock.h): the v2 adapter register model around the
+// tsr_kdev_mock.cpp — the "mock" kdev (tsr_kdev_mock.h): the adapter register model around the
 // sim kdev. TSR_DEVICE=mock opens it with these environment variables (a malformed value makes
 // the open fail):
 //   TSR_MOCK_NUM_CH         channels, 1..16 (default 4)
@@ -118,7 +118,7 @@ int mock_kdev::reg_read(uint32_t off, uint32_t * val) {
     } else if (off == KREG_ADAPTER_VERSION) {
         v = o_.adapter_version != 0 ? o_.adapter_version : (TSR_PUT(TSR_ADAPTER_VERSION_MAJOR, TSR_ADAPTER_MAJOR) | (o_.num_ch & 0xFFu));
     } else {
-        unmapped_accesses++;               // reads 0 (v1's AP_CTRL .. arg7 included)
+        unmapped_accesses++;               // reads 0
     }
     *val = v;
     return 0;

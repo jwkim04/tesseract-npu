@@ -1,6 +1,6 @@
 // test_fw_kvfa_rv.cpp — fw_kvfa_rv_*: the SET_ROWS_KV and FLASH_ATTN kinds (sw/ctrl/kernels/k_kv.cpp,
 // k_fattn.cpp; W2b P2.7) in the RISC-V image on tsr_rv, launched through the `graph` executor
-// (docs/v2/06-software-verification.md "SW" §7.2, §7.5, §10.2 "fw_kernels_rv": per kind, 8 schedules,
+// (docs/design/06-software-verification.md "SW" §7.2, §7.5, §10.2 "fw_kernels_rv": per kind, 8 schedules,
 // race fatal, outputs bit-exact against the references).
 //
 //   test_fw_kvfa_rv IMAGE suite GROUP [--scheds N] [--threads N] [--only NAME]

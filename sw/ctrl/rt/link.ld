@@ -52,7 +52,7 @@ __tsr_dbg_bytes        = 64;
 __tsr_crash_bytes      = 192;
 /* .note.tsr values that do not come from the layout. */
 __tsr_sdk_abi          = 1;
-PROVIDE(__tsr_ctl_id_min = 2);     /* CTL_ID[7:0] of the v2 control core (EX §5.1) */
+PROVIDE(__tsr_ctl_id_min = 2);     /* CTL_ID[7:0] of the control core (EX §5.1) */
 PROVIDE(__tsr_caps_req   = 0);     /* an image needing CAPS bits defines this absolute symbol */
 
 SECTIONS
@@ -186,7 +186,7 @@ SECTIONS
        section is dropped); listed so that --orphan-handling=warn stays quiet. */
     .rela.dyn : { *(.rela.*) } > ITCM
 
-    /* No unwinding, no exceptions, no destructors at exit (SW §6.1 flags, V2-SW-8). */
+    /* No unwinding, no exceptions, no destructors at exit (SW §6.1 flags, SW-8). */
     /DISCARD/ : {
         *(.eh_frame .eh_frame_hdr .gcc_except_table .gcc_except_table.*)
         *(.fini_array .fini_array.* .dtors .dtors.*)

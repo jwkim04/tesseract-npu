@@ -1,13 +1,13 @@
 """Figure `launch`: from a ggml graph to device work, as a swimlane timeline (time runs down).
 
 Lanes: llama.cpp, ggml-tesseract, tsr_transport, card DRAM, the control core (firmware) and a thin
-lane for the units. Content follows docs/v2/01-execution-model.md §2.1 (what the host does), §3.3
+lane for the units. Content follows docs/design/01-execution-model.md §2.1 (what the host does), §3.3
 (cold load), §3.4 (boot), §4.1-§4.8 (launch protocol, runtime contract R1-R10, host procedures),
-§11 (DRAM map) and docs/v2/06-software-verification.md §7.2-§7.3 (op list OPL v1, the `graph`
-kernel), §8 (one launch per token), §9.3 (the backend); docs/spec.md §10 and §12:
+§11 (DRAM map) and docs/design/06-software-verification.md §7.2-§7.3 (the op list format, the
+`graph` kernel), §8 (one launch per token), §9.3 (the backend); docs/spec.md §10 and §12:
 - model load: supports_op probe with 512 tokens (llama.cpp's placement probe), set_tensor of a
   weight, conversion to Q8_0 if needed and repacking of rows into chunks, write of every channel's
-  rows at W_OFF (the weight path is unchanged from v1: docs/spec.md §12, docs/xrt-host.md);
+  rows at W_OFF (the weight path: docs/spec.md §12, docs/xrt-host.md);
   firmware image: PT_LOAD segments written through the CSR loader with a receive CRC, VERIFY
   (read-back CRC of the TCMs), boot (CTRL.RV_RUN = 1), HELLO record (EX §3.3, §3.4);
 - each launch: activations to the IO window of channel 0; the backend lowers one graph split to
@@ -22,7 +22,7 @@ kernel), §8 (one launch per token), §9.3 (the backend); docs/spec.md §10 and 
   device did not take: in M6 attention, norms and RoPE (D17, SW §10.4 `offload_kqv` = false);
 - the dashed note names M7 (one launch per token, SW §8), which is planned (work package W3b).
 The control core is drawn planned (no RTL yet); the flow runs today on the simulator, where the
-firmware executes on the RV32 interpreter (docs/v2/06-software-verification.md §4.2).
+firmware executes on the RV32 interpreter (docs/design/06-software-verification.md §4.2).
 The loop panel is the per-record loop of the executor; its arrow back is the next record. The
 units lane stands for the five unit queues (DMA, QACT, MVM, VU, SYNC; CC §7.4).
 

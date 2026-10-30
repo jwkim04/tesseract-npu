@@ -4,7 +4,7 @@
 // relative error ticket and push index, ERR_INFO, ERR_W0) and the expect regions (every DRAM range
 // the launch wrote, with its content at the answer). FNV-1a 64 over little-endian words.
 //
-// Used to pin the executor's push stream to W2a's (docs/v2/06-software-verification.md "SW" §7.3,
+// Used to pin the executor's push stream to W2a's (docs/design/06-software-verification.md "SW" §7.3,
 // §7.4; executor optimisation review, 2026-10-30): fw_exec_rv's streamed lists and fw_m6_e2e's graph
 // launches compare the digests of their captured traces with golden values taken from the W2a
 // images (92f0b17). A deliberate change of what the executor or a kind pushes changes them; it is a

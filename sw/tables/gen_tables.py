@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""sw/tables/gen_tables.py — generate the v2 tables from sw/tables/tsr_tables.py (V2-EX-30, P1.1).
+"""sw/tables/gen_tables.py — generate the tables from sw/tables/tsr_tables.py (EX-30, P1.1).
 
     sw/tables/gen_tables.py           write the generated files below (only those that changed)
     sw/tables/gen_tables.py --check   regenerate in memory; exit 1 if a file is missing or stale
@@ -8,7 +8,7 @@ Outputs (each starts with a do-not-edit banner naming the source):
     rtl/core/tsr_tables_pkg.sv        SystemVerilog package tsr_tables_pkg
     sw/sim/include/tsr_tables.h       C header (C11 and C++): macros and static inline lookups
     sw/ctrl/include/tsr/mmio.hpp      freestanding C++20: maps, opcodes, units, errors, PERF, launch
-                                      and debug formats, the v1-op encodings, tsr::op
+                                      and debug formats, the base-op encodings, tsr::op
     sw/ctrl/include/tsr/vu.hpp        freestanding C++20: VU encodings and constexpr op builders
     sw/ctrl/include/tsr/at.hpp        freestanding C++20: AT encodings and constexpr op builders
     tb/common/tables.py               Python constants, tables and encode / decode for the benches
@@ -471,7 +471,7 @@ def walk(m: Model, part: str):
             add(("const", "ERR_" + name, code, "err", ("%s %s" % ("(reserved)" if status == "reserved" else "", c)).strip() or None))
         for code, name, status, esrc, cond, info in m.errors:
             if status == "retired":
-                add(("note", "code %d retired (v1 %s), never raised, never reused" % (code, name)))
+                add(("note", "code %d retired (%s), never raised, never reused" % (code, name)))
         add(("const", "ERR_CHECK_N", len(m.check_order), "count", "dispatch check order: " + " > ".join(m.check_order)))
         add(("func_src", "err_tables", gen_err_funcs(m)))
 
@@ -485,7 +485,7 @@ def walk(m: Model, part: str):
                 add(("const", "PERF_XOFF_" + name, slot[1], "count", comment(psrc, "X + %d, %s, %s" % (slot[1], kind, desc))))
         add(("func_src", "perf", gen_perf_funcs(m)))
 
-        add(("section", "Instruction encodings of the v1 ops, unchanged (spec ISA, EX §7.2)"))
+        add(("section", "Instruction encodings of the base ops (spec ISA, EX §7.2)"))
         for e in m.encs.values():
             if e.owner == "spec":
                 emit_enc(m, e, add)
@@ -900,10 +900,10 @@ def c_value(value: int, kind: str) -> str:
 def gen_c(m: Model) -> str:
     out = ["// " + BANNER,
            "//",
-           "// tsr_tables.h — Tesseract v2 global tables (V2-EX-30): host CSR map and DBG block, RISC-V",
+           "// tsr_tables.h — Tesseract global tables (EX-30): host CSR map and DBG block, RISC-V",
            "// address map and control window, adapter map, bit-field layouts, launch / log / trace",
            "// formats, opcodes and the opcode -> unit table, units and queue depths, error codes and",
-           "// the check order, PERF slots, and every instruction encoding (v1 ops, VU, AT).",
+           "// the check order, PERF slots, and every instruction encoding (base ops, VU, AT).",
            "// Included by tsr_isa.h. Names: see sw/tables/gen_tables.py. Usable from C11 and C++.",
            "#ifndef TSR_TABLES_H",
            "#define TSR_TABLES_H",
@@ -963,13 +963,13 @@ def cpp_type(kind: str) -> str:
 def gen_cpp(m: Model, part: str) -> str:
     title = {
         "mmio": ("mmio.hpp", "the RISC-V and host maps, opcodes, units, errors, PERF, the launch / log / trace\n"
-                 "// formats, the v1-op encodings and tsr::op"),
+                 "// formats, the base-op encodings and tsr::op"),
         "vu": ("vu.hpp", "the VU encodings (VU §5) and their constexpr builders"),
         "at": ("at.hpp", "the AT encodings (AT §5) and their constexpr builders"),
     }[part]
     out = ["// " + BANNER,
            "//",
-           "// tsr/%s — Tesseract v2 tables for the firmware SDK (V2-EX-30, SW §6):" % title[0],
+           "// tsr/%s — Tesseract tables for the firmware SDK (EX-30, SW §6):" % title[0],
            "// %s." % title[1],
            "// Freestanding C++20: no libstdc++ headers, no heap, everything constexpr in namespace tsr.",
            "// Names as tsr_tables.h without the TSR_ prefix (see sw/tables/gen_tables.py)."]
@@ -1087,7 +1087,7 @@ def sv_decl(name: str, value: int, kind: str) -> str:
 def gen_sv(m: Model) -> str:
     out = ["// " + BANNER,
            "//",
-           "// tsr_tables_pkg.sv — Tesseract v2 global tables (V2-EX-30) for the RTL: CSR offsets, opcodes,",
+           "// tsr_tables_pkg.sv — Tesseract global tables (EX-30) for the RTL: CSR offsets, opcodes,",
            "// units, error codes, PERF indices, bit-field layouts and instruction field positions; the",
            "// opcode -> unit table as functions. C mirror: sw/sim/include/tsr_tables.h (same names).",
            "",
@@ -1146,7 +1146,7 @@ def py_value(value: int, kind: str) -> str:
 
 def gen_py(m: Model) -> str:
     out = ["# " + BANNER,
-           '"""Tesseract v2 global tables for the cocotb benches (V2-EX-30).',
+           '"""Tesseract global tables for the cocotb benches (EX-30).',
            "",
            "Same names as sw/sim/include/tsr_tables.h without the TSR_ prefix. Besides the constants:",
            "LAYOUTS (bit-field layouts), ENCODINGS (instruction fields), OP_UNIT / OP_LEGAL / OP_CAPS,",

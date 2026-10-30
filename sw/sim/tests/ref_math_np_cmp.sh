@@ -1,6 +1,6 @@
 #!/bin/sh
 # ref_math_np_cmp.sh — compare the independent numpy model (ref_math_np.py) with the C reference
-# (ref_math_dump --check) bit for bit (VU §10 item 1, SW §10.1, V2-SW-23). Used by the
+# (ref_math_dump --check) bit for bit (VU §10 item 1, SW §10.1, SW-23). Used by the
 # ref_math_np_* ctests of sw/sim/ref_math.cmake.
 #
 #   ref_math_np_cmp.sh PYTHON NP_PY DUMP strided FUNC [B...]

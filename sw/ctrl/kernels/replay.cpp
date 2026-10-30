@@ -1,5 +1,5 @@
-// replay.cpp — the `replay` base kernel (docs/v2/01-execution-model.md "EX" §4.6; docs/v2/
-// 06-software-verification.md "SW" §7.7, §5.2, §5.4): replays a tile-only push stream (trace v2
+// replay.cpp — the `replay` base kernel (docs/design/01-execution-model.md "EX" §4.6; docs/design/
+// 06-software-verification.md "SW" §7.7, §5.2, §5.4): replays a tile-only push stream (trace format
 // ops/push.bin, 48-byte records) from device DRAM through the issue port. Used for the trace sets
 // (traces/m2, gen, m3, vu, at, ctrl and, with SERIAL, model-v1conv), DB's SPM bulk dumps (a stream of
 // ST ops, DB §5.7) and the divergence search; on the simulator through tsr_trace2_replay_sim's
@@ -8,7 +8,7 @@
 // Arguments (SW §7.1 a0-a2; a3 / a4 are this kernel's extension, decision P2.5):
 //   a0  push.bin handle {ch[31:28], beat[27:0]}       a1  record count
 //   a2  flags: bit0 SERIAL (every op record depends on the previous op record instead of its
-//       recorded deps; with I1 that is v1's strictly sequential semantics), bit1 BUF (a3 / a4 valid)
+//       recorded deps; with I1 that is strictly sequential issue), bit1 BUF (a3 / a4 valid)
 //   a3  BUF: first SPM line of the chunk buffers      a4  BUF: records per chunk (a multiple of 4,
 //                                                         4 .. CHUNK_MAX; 0 = CHUNK_MAX)
 // Without BUF the two buffers are the 2 x 1023 lines just below the runtime argument range. A

@@ -1,5 +1,5 @@
 // test_fw_kvfa_host.cpp — fw_kvfa_host: the SET_ROWS_KV and FLASH_ATTN kinds compiled for the host
-// (docs/v2/06-software-verification.md "SW" §6.8, V2-SW-25: tsr_fw_host under ASan + UBSan), the
+// (docs/design/06-software-verification.md "SW" §6.8, SW-25: tsr_fw_host under ASan + UBSan), the
 // `graph` executor run through tsr::host_run on the simulator's test hooks (tsr/backend_host.hpp).
 // The reference stays the RV binary on tsr_rv (fw_kvfa_rv_*); this build adds the sanitizers.
 //

@@ -1,5 +1,5 @@
-# sw/sim/dbg.cmake — the DB simulator models (P1.13, docs/v2/05-debug.md §3.3, §3.7-§3.9, §5, §6,
-# §7.1, §8.1-§8.4, §9.1, §10; docs/v2/06-software-verification.md §11): tsr_dbg.c, the tile-level
+# sw/sim/dbg.cmake — the DB simulator models (P1.13, docs/design/05-debug.md §3.3, §3.7-§3.9, §5, §6,
+# §7.1, §8.1-§8.4, §9.1, §10; docs/design/06-software-verification.md §11): tsr_dbg.c, the tile-level
 # debug logic (stop points, QSTEP, serial mode, tile breakpoints, dispatch history, unit probes),
 # the DBG register block and DB's control-window registers, the DMI gate in front of the DM model,
 # DB's halt requests, RV watchpoints and halt-on-boot, completion records (REC) and the trace

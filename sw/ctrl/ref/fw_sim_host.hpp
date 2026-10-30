@@ -2,7 +2,7 @@
 // P2.5 (sw/ctrl/tests/test_fw_kernels*.cpp, test_fw_selftest*.c, test_fw_replay*.c). Plain C (also
 // valid C++): the C tests include it like a .h file.
 //
-// What the transport will do with a kdev (EX §3.3-§3.4, §4.8; docs/v2/06-software-verification.md
+// What the transport will do with a kdev (EX §3.3-§3.4, §4.8; docs/design/06-software-verification.md
 // "SW" §9.1), reduced to what the tests need:
 //   fwh_open        a simulator with an image: cold load through LOAD_ADDR / LOAD_DATA with the
 //                   receive CRC and VERIFY (EX §3.3), RV_BOOT, RV_RUN, LOG_CFG, wait for HELLO

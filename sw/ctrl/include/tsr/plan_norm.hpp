@@ -1,7 +1,7 @@
-// tsr/plan_norm.hpp — planners of RMS_NORM (0x14) and ROPE (0x16) (docs/v2/06-software-verification.md
+// tsr/plan_norm.hpp — planners of RMS_NORM (0x14) and ROPE (0x16) (docs/design/06-software-verification.md
 // "SW" §7.2, §7.5; W2b P2.6). Freestanding, C++17-compatible, constexpr-friendly: the firmware's kind
 // handlers (sw/ctrl/kernels/k_norm.cpp, k_rope.cpp) and the host's supports_op (W3b) call the same
-// functions (V2-SW-20).
+// functions (SW-20).
 //
 // The planner contract and the declarations are tsr/plan.hpp's ("M7 planning"), which includes this
 // file after them; including this file first works too (it includes plan.hpp).

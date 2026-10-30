@@ -1,4 +1,4 @@
-// tsr-kvbuf.cpp — see tsr-kvbuf.h (SW §9.3 M7 "KV buffers", V2-SW-17; AT §4, §4.5, §4.6).
+// tsr-kvbuf.cpp — see tsr-kvbuf.h (SW §9.3 M7 "KV buffers", SW-17; AT §4, §4.5, §4.6).
 #include "tsr-kvbuf.h"
 
 #include <algorithm>

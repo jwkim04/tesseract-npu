@@ -105,7 +105,7 @@ module tsr_qact
   input  logic                         clk,
   input  logic                         rst_n,
 
-  // ---- dispatch (the v2 dispatcher, Y4) ----
+  // ---- dispatch (the dispatcher, Y4) ----
   input  logic                         cmd_valid,
   output logic                         cmd_ready,
   input  tsr_qact_cmd_t                cmd,

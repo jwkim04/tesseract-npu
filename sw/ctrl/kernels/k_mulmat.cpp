@@ -1,17 +1,17 @@
-// k_mulmat.cpp — the MUL_MAT kind of the graph executor (OPL v1 kind 0x10; docs/v2/
+// k_mulmat.cpp — the MUL_MAT kind of the graph executor (op list kind 0x10; docs/design/
 // 06-software-verification.md "SW" §7.2, §7.4; handler interface tsr/exec.hpp, SW §7.3).
 //
 // y = W x for T tokens, optionally y = addend + W x (a fused bias or residual, ggml's MUL_MAT + ADD)
-// or y += W x (ACC_DST). The tile-op sequence is v1's lowering (docs/spec.md:502-512,
-// v1-m4:sw/ggml-tesseract/tsr-lower.cpp tsr_mm_emit), so the numerics are v1's bit for bit
+// or y += W x (ACC_DST). The tile-op sequence is the spec's lowering (docs/spec.md:502-512),
+// so the numerics match the converted traces bit for bit
 // (traces/model-v1conv checks it, sw/ctrl/tests/test_fw_kernels*); per T tile (plan.hpp mm_plan:
 // t_tile tokens, the last tile shorter):
 //   1. LD x: the tile's x rows (K f32 each) into the tile's x block (x_lines apart; one LD when the
 //      rows are dense in DRAM, x stride = x_lines, else one LD per token);
 //   2. with an addend: LD the addend rows into the y block (one LD for dense rows, else one per
 //      token; addend stride 0 repeats row 0 for every token); with ACC_DST: LD the old y rows;
-//   3. QACT (A32 for Q8_0, A256 for Q4_K) of the tile's tokens, src stride x_lines (as v1);
-//   4. MVM fmt, N, K, t_tile tokens, dst stride y_lines (as v1), ACC when step 2 loaded a row;
+//   3. QACT (A32 for Q8_0, A256 for Q4_K) of the tile's tokens, src stride x_lines;
+//   4. MVM fmt, N, K, t_tile tokens, dst stride y_lines, ACC when step 2 loaded a row;
 //   5. ST y (one ST for dense rows, y stride = y_lines, else one per token).
 // Numerics: y = tsr_fadd(old, tsr_dot_row(W row, QACT(x))) with an addend or ACC_DST (one f32
 // addition, commutative: bit-identical to ggml's separate ADD on the device), else the dot product;
@@ -19,7 +19,7 @@
 // ACC_DST is refused (BAD_RECORD: the y block holds one old row; decision P2.5), as are MUL_MAT
 // kind flags (none is defined).
 //
-// Scratch (spm_ring, SW §6.7): one contiguous block per tile, [x | QA | y] (v1's partition order),
+// Scratch (spm_ring, SW §6.7): one contiguous block per tile, [x | QA | y] (the spec's partition order),
 // t_tile x lpt lines; plan.hpp sizes t_tile so that two tiles fit the planning budget (double
 // buffering), else 1. The block's ring deps (releases of the older blocks it overlaps) go on the
 // tile's first LD; every other write to the block follows it (DMA queue order, the QACT's and the

@@ -1,7 +1,7 @@
 // test_fw_kvfa.h — the cases of fw_kvfa_* (sw/ctrl/tests/test_fw_kvfa_rv.cpp, test_fw_kvfa_host.cpp;
 // W2b P2.7): one OPL list per case, SET_ROWS_KV of the new tokens' K rows, SET_ROWS_KV of their V
-// rows, then FLASH_ATTN over the cache (docs/v2/06-software-verification.md "SW" §7.2, §7.5;
-// docs/v2/03-attention-kv.md "AT" §6.6, §7). Header-only C++20, host side.
+// rows, then FLASH_ATTN over the cache (docs/design/06-software-verification.md "SW" §7.2, §7.5;
+// docs/design/03-attention-kv.md "AT" §6.6, §7). Header-only C++20, host side.
 //
 // A case is a model shape (D, n_head_kv, G), a cache of n_kv cells holding positions (llama.cpp's
 // layout: cell p for position p, or p mod n_kv for a wrapped SWA ring), T new tokens at positions

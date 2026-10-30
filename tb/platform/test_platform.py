@@ -3,20 +3,17 @@
   test_platform_lint              rtl/platform/alveo_xrt/lint.sh: gen_tops.py --check and the lint
                                   runs of the adapter modules, kernel configurations and tops
   test_build_xclbin_disabled      hw/u200/build_xclbin.sh k1 / k4 stop (exit 4) with the "disabled
-                                  until Y5" message: no v2 core kernel is built before the control
-                                  core (Y4) and the adapter v2 (Y5) exist (docs/v2 EX §12)
+                                  until Y5" message: no core kernel is built before the control
+                                  core (Y4) and the adapter (Y5) exist
   test_build_xclbin_no_platform   TSR_U200_PLATFORMINFO=1: the script stops (exit 3) without the
                                   platform
   test_build_xclbin_platform      TSR_U200_PLATFORMINFO=1 with PLATFORM_REPO_PATHS unset: the script
                                   finds the extracted development platform (build/platforms/...) and
                                   its platforminfo shows the DDR bank SLRs of hw/u200/k1.cfg / k4.cfg
                                   (skipped without the extracted platform or Vitis 2024.2)
-Removed in X0 (docs/v2 EX §12, SW §10.3: tb/platform is rewritten for the `ap_ctrl_none` adapter
-in Y5): the C++ kernel bench (kernel_bench.cpp, kernel_dut.h) with test_kernel_directed (regmap,
-apctrl, window, errors, misaligned, reset), test_kernel_replay, test_kernel_error_injection,
-test_packaged_k4 / _k1 (v1 trace replays through the kernel's ap_ctrl_hs start / done) and
-test_adapter_mutants (mutate_adapter.py), and tb/platform/vkernel (the v1 vkernel protocol server
-and test_vkernel). tb/platform/bw (the M0 bandwidth kernel) is independent of the core and stays.
+The kernel bench for the `ap_ctrl_none` adapter (register map, window, errors, misaligned
+bases, reset, trace replay, adapter mutants) and tb/platform/vkernel come in Y5
+(docs/design SW §10.3). tb/platform/bw (the M0 bandwidth kernel) is independent of the core and stays.
 """
 from __future__ import annotations
 

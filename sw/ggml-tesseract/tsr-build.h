@@ -1,7 +1,7 @@
 // tsr-build.h — the M7 part of the op-list builder of the ggml-tesseract backend
-// (docs/v2/06-software-verification.md "SW" §9.3 M7: builder passes 1-6, supports_op (M7), mask
+// (docs/design/06-software-verification.md "SW" §9.3 M7: builder passes 1-6, supports_op (M7), mask
 // summaries, KV buffers; §8 R1-R10 one launch per decode token; §7.2 OPL kinds and their argument
-// words; docs/v2/03-attention-kv.md "AT" §2.6 the supports_op contract, §12 the FA flags word).
+// words; docs/design/03-attention-kv.md "AT" §2.6 the supports_op contract, §12 the FA flags word).
 // W3b (P3.5).
 //
 // ggml-aware and device-free: the backend (ggml-tesseract.cpp) supplies where tensors live through
@@ -12,9 +12,9 @@
 //                       handle and a row stride in lines) and the encoding words of pass 6. The same
 //                       function serves supports_op in "probe" mode (no device locations: handles 0,
 //                       alignment from the tensor's address or view offset) followed by the kind's
-//                       planner (tsr/plan.hpp plan_kind, V2-SW-20), so the host refuses exactly what
+//                       planner (tsr/plan.hpp plan_kind, SW-20), so the host refuses exactly what
 //                       the firmware cannot plan and what the builder cannot encode.
-//   tsr_build_supports  supports_op for every op but MUL_MAT (whose v1 rules stay the backend's).
+//   tsr_build_supports  supports_op for every op but MUL_MAT (whose rules stay the backend's).
 //   tsr_build_fusion    pass 3: MUL_MAT + ADD of a bias or the residual (through the MUL_MAT
 //                       addend, SW §7.4) and RMS_NORM + MUL by a weight (the fused weight word).
 //   tsr_encode          passes 4-6 for one record: preload entries (deduplicated per list, the
@@ -29,7 +29,7 @@
 // is tsr_node_is_noop / the backend's loop.
 //
 // Decisions (W3b builder; the integration records them in SW §9.3 / §13):
-//   - supports_op does not test GGML_TENSOR_FLAG_COMPUTE (SW §8 R1 / V2-SW-33 say it should):
+//   - supports_op does not test GGML_TENSOR_FLAG_COMPUTE (SW §8 R1 / SW-33 say it should):
 //     test-backend-ops asks supports_op before ggml_build_forward_expand sets the flag
 //     (tests/test-backend-ops.cpp:1415-1421), so the rule would refuse every op there. The nodes
 //     the rule is for are refused anyway (DUP, a SET_ROWS whose destination is not a KV cache, the

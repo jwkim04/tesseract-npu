@@ -44,9 +44,8 @@ set_target_properties(tsr_rt_shared PROPERTIES OUTPUT_NAME tsr_rt
 
 # ---------------------------------------------------------------------------
 # Tests (prefix rt_): device vs an independent model (ggml conversion + libtsr_ref) bit for bit,
-# linear_ref, read_blocks, N / K / T / IO splits, op-list cache, counters, threads (v1's
-# assertions, run on v2: docs/v2/06-software-verification.md §10.2 "Kept, run on v2"; the simulator's
-# race detector fatal, SW §4.6).
+# linear_ref, read_blocks, N / K / T / IO splits, op-list cache, counters, threads
+# (docs/design/06-software-verification.md §10.2; the simulator's race detector fatal, SW §4.6).
 # ---------------------------------------------------------------------------
 add_executable(test-tsr-rt tests/test_tsr_rt.cpp)
 set_target_properties(test-tsr-rt PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
@@ -70,14 +69,14 @@ set_tests_properties(rt_mock_tmax8 PROPERTIES ENVIRONMENT
     "TSR_DEVICE=mock;TSR_MOCK_TMAX=8;TSR_MOCK_NUM_CH=3;TSR_MOCK_DMA_ALIGN=4096;TSR_MOCK_DMA_CHUNK_KIB=12;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal")
 
 # Verilated U200 kernel (RTL) through the vkernel kdev: a few shapes on k4t1. Opt-in; until the
-# two-clock v2 vkernel server exists (P5.3, docs/v2/06-software-verification.md §11) the v2
+# two-clock vkernel server exists (P5.3, docs/design/06-software-verification.md §11) the
 # transport has no vkernel device to run on, so the test is reported as skipped (exit 77) when the
 # server is absent.
-option(TSR_RT_VKERNEL_TEST "Add the rt_vkernel_k4t1 ctest (needs the v2 k4t1 vkernel server, P5.3)" OFF)
+option(TSR_RT_VKERNEL_TEST "Add the rt_vkernel_k4t1 ctest (needs the k4t1 vkernel server, P5.3)" OFF)
 if (TSR_RT_VKERNEL_TEST)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     set(_tsr_vk ${TESSERACT_ROOT}/tb/platform/vkernel/vkernel.py)
     add_test(NAME rt_vkernel_k4t1
-             COMMAND sh -c "if [ ! -f '${_tsr_vk}' ]; then echo 'rt_vkernel_k4t1: no v2 vkernel server yet (P5.3): skipped'; exit 77; fi; exec '${Python3_EXECUTABLE}' '${_tsr_vk}' run --config k4t1 -- '$<TARGET_FILE:test-tsr-rt>' --quick")
+             COMMAND sh -c "if [ ! -f '${_tsr_vk}' ]; then echo 'rt_vkernel_k4t1: no vkernel server yet (P5.3): skipped'; exit 77; fi; exec '${Python3_EXECUTABLE}' '${_tsr_vk}' run --config k4t1 -- '$<TARGET_FILE:test-tsr-rt>' --quick")
     set_tests_properties(rt_vkernel_k4t1 PROPERTIES SKIP_RETURN_CODE 77)
 endif()

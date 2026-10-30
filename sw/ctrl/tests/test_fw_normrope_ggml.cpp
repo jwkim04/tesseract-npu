@@ -1,6 +1,6 @@
 // test_fw_normrope_ggml.cpp — fw_kernels_normrope_ggml: the RMS_NORM and ROPE kinds' outputs (the
 // RISC-V image on tsr_rv through `graph`, sw/ctrl/kernels/k_norm.cpp / k_rope.cpp) against ggml-cpu's
-// rms_norm (+ mul by the weight) and rope_ext on the same inputs (docs/v2/06-software-verification.md
+// rms_norm (+ mul by the weight) and rope_ext on the same inputs (docs/design/06-software-verification.md
 // "SW" §7.5; VU §6.9: no VU op is bit-exact with the CPU in general, the differences are measured
 // here at kernel level). TSR_WITH_LLAMA builds only (links the pinned ggml-cpu).
 //

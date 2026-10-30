@@ -1,4 +1,4 @@
-// fw_example_vadd: the README's vadd kernel on the simulator, through the transport v2 API.
+// fw_example_vadd: the README's vadd kernel on the simulator, through the transport API.
 #include "tsr_fw_paths.h"
 #include "tsr_ref.h"
 #include "tsr_transport.h"

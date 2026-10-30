@@ -1,4 +1,4 @@
-// tsr-msum.cpp — see tsr-msum.h (AT §7.3, §5.5, §6.6; SW §9.3 M7 "Mask summaries", V2-SW-32).
+// tsr-msum.cpp — see tsr-msum.h (AT §7.3, §5.5, §6.6; SW §9.3 M7 "Mask summaries", SW-32).
 #include "tsr-msum.h"
 
 #include <algorithm>

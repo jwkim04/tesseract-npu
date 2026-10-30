@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # tb/core/viv/core_ooc.sh — whole-core out-of-context Vivado runs of the U200 configurations
 # (tb/core/viv/core_ooc.tcl; results: docs/rtl-m3.md §14). Opt-in, needs Vivado 2024.2.
-# X0 (docs/v2 EX §12): tsr_core has no command source until Y4 (rtl/core/tsr_core.sv header), so
-# synthesis removes its units; meaningful again with the v2 dispatcher (tsr_core_dp, Y4).
+# tsr_core has no command source until Y4 (rtl/core/tsr_core.sv header), so
+# synthesis removes its units; meaningful again with the dispatcher (tsr_core_dp, Y4).
 #
 # usage: tb/core/viv/core_ooc.sh <config> <outdir> [core_ooc.tcl args ...]
 #   config  k1    NUM_CH 1, T_MAX 1   (bring-up kernel tsr_u200_k1)

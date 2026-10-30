@@ -1,4 +1,4 @@
-// test_trace_roundtrip.c — ctest trace_v2_roundtrip (docs/v2/06-software-verification.md "SW" §5.5,
+// test_trace_roundtrip.c — ctest trace_v2_roundtrip (docs/design/06-software-verification.md "SW" §5.5,
 // §10.1 "launch traces: fresh-boot replay", §10.2): launch capture on the simulator, the trace set
 // on disk, and replay on freshly booted simulators.
 //

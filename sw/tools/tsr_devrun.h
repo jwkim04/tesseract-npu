@@ -1,7 +1,7 @@
-// tsr_devrun.h — launch targets and trace v2 replays for the tools (P3.3; docs/v2/
-// 06-software-verification.md "SW" §7.6, §9.5, V2-SW-28; docs/v2/01-execution-model.md "EX" §4).
+// tsr_devrun.h — launch targets and trace replays for the tools (P3.3; docs/design/
+// 06-software-verification.md "SW" §7.6, §9.5, SW-28; docs/design/01-execution-model.md "EX" §4).
 //
-// A target is either a device behind a transport v2 (EX §10.1: any kind, the card included) or an
+// A target is either a device behind a transport (EX §10.1: any kind, the card included) or an
 // in-process simulator booted the same way: the "shadow" of tsr-selftest, which runs every launch
 // with the same image, inputs and arguments as the device (SW §7.6). Both answer the same calls,
 // so a tool runs one sequence on both and compares what SW §4.7 makes comparable: the answer
@@ -116,7 +116,7 @@ int tsr_tgt_log_drain(tsr_tgt * g, uint32_t ** words, size_t * n);
 uint32_t tsr_tgt_compare(const tsr_tgt_run * a, const tsr_tgt_run * b, char * msg, size_t msglen);
 
 // ---------------------------------------------------------------------------
-// Trace v2 replays through targets
+// Trace replays through targets
 // ---------------------------------------------------------------------------
 typedef struct tsr_devrun_opts {
     const char * image;             // ELF with the `replay` kernel (kind ops); the target's booted

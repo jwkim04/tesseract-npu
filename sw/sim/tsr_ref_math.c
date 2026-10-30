@@ -1,9 +1,9 @@
 // tsr_ref_math.c — the VU's approximate and composite math, bit for bit.
 //
-// Normative source: docs/v2/02-vector-unit.md §6.3 (EXPK), §6.5 (composites), §6.6 (SIN/COS)
+// Normative source: docs/design/02-vector-unit.md §6.3 (EXPK), §6.5 (composites), §6.6 (SIN/COS)
 // and Appendix A (constants). Step numbers in the comments are the document's.
 //
-// Implementation rules (docs/v2/06-software-verification.md §4.5)
+// Implementation rules (docs/design/06-software-verification.md §4.5)
 //   - Every f32 operation is a call to tsr_fadd/fsub/fmul/frecip (tsr_ref.c: DAZ, RNE, FTZ,
 //     canonical NaN). Everything else works on integer bit patterns; no libm, no float
 //     operators. The file is plain C11 and builds for RV32: integers are at most uint64_t, and

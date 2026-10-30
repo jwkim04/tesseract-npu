@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test_log.sh TSR_LOG SELFTEST IMAGE OUT — ctest tools_log_selftest (docs/v2/06-software-verification.md
+# test_log.sh TSR_LOG SELFTEST IMAGE OUT — ctest tools_log_selftest (docs/design/06-software-verification.md
 # §9.5; DB §6.1): the `selftest` kernel's id 9 on the sim kind writes two FMT records; tsr-selftest saves
 # every drained log word (--log-out), tsr-log decodes them with the ELF (binary and --hex input give the
 # same text), then `tsr-log selftest` checks every record type, the malformed ones and the resync.

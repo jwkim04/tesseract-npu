@@ -1,6 +1,6 @@
 // tsr/traits.hpp — the few type traits and integer helpers the firmware SDK needs, so that it
 // includes nothing from libstdc++ (SW §6.1: only <stdint.h>, <stddef.h>, <stdarg.h> and this
-// header). Freestanding C++20: no heap, no exceptions, no RTTI, no float (V2-SW-8). Everything is
+// header). Freestanding C++20: no heap, no exceptions, no RTTI, no float (SW-8). Everything is
 // constexpr in namespace tsr; the names follow <type_traits> where they mirror it.
 #ifndef TSR_TRAITS_HPP
 #define TSR_TRAITS_HPP
@@ -44,7 +44,7 @@ template <bool B, class T, class F> struct conditional { using type = T; };
 template <class T, class F> struct conditional<false, T, F> { using type = F; };
 template <bool B, class T, class F> using conditional_t = typename conditional<B, T, F>::type;
 
-// Integral types of the SDK (no float: V2-SW-8).
+// Integral types of the SDK (no float: SW-8).
 template <class T> struct is_integral : false_type {};
 template <> struct is_integral<bool> : true_type {};
 template <> struct is_integral<char> : true_type {};

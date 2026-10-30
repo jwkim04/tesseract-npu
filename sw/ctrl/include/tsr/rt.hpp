@@ -1,5 +1,5 @@
-// tsr/rt.hpp — firmware SDK runtime interface (docs/v2/06-software-verification.md "SW" §6.2-§6.5;
-// docs/v2/01-execution-model.md "EX" §3.1, §4.3-§4.7; docs/v2/05-debug.md "DB" §3.8, §6.3).
+// tsr/rt.hpp — firmware SDK runtime interface (docs/design/06-software-verification.md "SW" §6.2-§6.5;
+// docs/design/01-execution-model.md "EX" §3.1, §4.3-§4.7; docs/design/05-debug.md "DB" §3.8, §6.3).
 //
 // What a kernel and the tools need from the runtime:
 //   - struct tsr_args, the kernel ABI (SW §6.5), and struct tsr_kernel_desc, the 36-byte entry of
@@ -100,7 +100,7 @@ struct kernel_info {
 };
 
 // The running launch (EX §4.7 R2 / R5). Filled by the runtime before the kernel is called; valid
-// during the kernel. DTCM state of the runtime, rebuilt at every launch (V2-SW-4).
+// during the kernel. DTCM state of the runtime, rebuilt at every launch (SW-4).
 struct launch_info {
     uint32_t desc[8];               // the descriptor words copied at R2 (LQ_HEAD_W0..7)
     uint32_t seq;                   // its sequence number (LQ_HEAD_SEQ)

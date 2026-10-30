@@ -1,5 +1,5 @@
-// runtime.cpp — the launch dispatcher (docs/v2/01-execution-model.md "EX" §4.7 R1-R10, normative;
-// docs/v2/06-software-verification.md "SW" §6.3-§6.5; EX §4.3-§4.5, §4.9; docs/v2/05-debug.md
+// runtime.cpp — the launch dispatcher (docs/design/01-execution-model.md "EX" §4.7 R1-R10, normative;
+// docs/design/06-software-verification.md "SW" §6.3-§6.5; EX §4.3-§4.5, §4.9; docs/design/05-debug.md
 // "DB" §3.8, §8.2, §8.4).
 //
 //   R1  Boot (after crt0.S): CFG0 / CFG1 through the core window, kernel table check, qclear() and a

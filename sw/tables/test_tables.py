@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""sw/tables/test_tables.py — self-consistency checks of sw/tables/tsr_tables.py (V2-EX-30, P1.1).
+"""sw/tables/test_tables.py — self-consistency checks of sw/tables/tsr_tables.py (EX-30, P1.1).
 
     sw/tables/test_tables.py          run every check, print one line per check, exit 1 on a failure
     pytest sw/tables/test_tables.py   the same checks as pytest tests
@@ -7,7 +7,7 @@
 Checks: every row cites a document section; no overlapping CSR / control-window / adapter offsets
 or ranges; the DBG block holds the DBG rows; no overlapping RISC-V regions; bit fields fit their
 32-bit word (or the 256-bit instruction) and do not overlap; opcodes cover 0x00..0xFF exactly once,
-are unique, keep the EX §7.2 assignments, and the retired v1 opcodes stay unassigned; unit ids are
+are unique, keep the EX §7.2 assignments, and the retired opcodes stay unassigned; unit ids are
 dense; error codes and the check order match EX §8.1; PERF slots are unique for every NUM_CH 1..16;
 every name emitted into the generated files is unique per language; the generated files are
 current. Expected values below are typed from the documents, not read from the table source.
@@ -44,10 +44,10 @@ ASSIGNED = {
     0x33: ("TOPK", "VU"), 0x34: ("ASMAX", "VU"), 0x35: ("AMASK", "VU"), 0x36: ("AMERGE", "VU"),
     0x37: ("ANORM", "VU"), 0x38: ("VMASK", "VU"), 0x40: ("SOP", "VU"), 0x7F: ("FENCE", "SYNC"),
 }
-# EX §7.2: v1 opcodes that are reserved or retired and never reused.
+# EX §7.2: opcodes that are reserved or retired and never reused.
 RETIRED_V1 = {0x01: "END", 0x02: "LI", 0x03: "ADDI", 0x04: "MULI", 0x05: "RLD", 0x06: "LOOP",
               0x07: "WAITM", 0x08: "JUMP", 0x09: "CALL"}
-# V2-EX-15: opcode blocks per owner.
+# EX-15: opcode blocks per owner.
 BLOCKS = {
     "VU": [0x13, *range(0x38, 0x40), *range(0x41, 0x48)],
     "AT": [*range(0x14, 0x18), *range(0x19, 0x1C), *range(0x21, 0x24), *range(0x34, 0x38)],
@@ -283,7 +283,7 @@ def test_encodings():
         assert o["owner"] == e.owner, "%s: encoding owner %s, opcode owner %s" % (e.name, e.owner, o["owner"])
     legal = {o["mnem"] for o in M.ops if o["legal"]}
     assert legal == set(M.encs), "legal opcodes without an encoding: %s" % (legal - set(M.encs))
-    # v1 encodings bit-identical with ra..rd = 0 (EX §7.1): v1 reserved masks plus the old register fields
+    # base encodings bit-identical with ra..rd = 0 (EX §7.1): reserved masks plus the old register fields
     assert M.encs["LD"].rsv[0] == 0xFFFFF000 and M.encs["ST"].rsv[0] == 0xFFFFF000
     assert M.encs["QACT"].rsv[0] == 0xFFFFF000 and M.encs["MVM"].rsv[0] == 0xFFFFE000
     assert M.encs["MVM"].rsv[5] == 0xFFF00000 and M.encs["MVM"].rsv[7] == 0xFFFFFFFF
@@ -326,11 +326,11 @@ def test_opcodes():
     for code, mnem in RETIRED_V1.items():
         o = M.ops[code]
         assert o["mnem"] == mnem and o["status"] in ("reserved", "retired") and not o["legal"], \
-            "retired v1 opcode 0x%02X (%s) reused" % (code, mnem)
+            "retired opcode 0x%02X (%s) reused" % (code, mnem)
         assert M.op_unit(code) == UNIT_IDS["SYNC"], "0x%02X must complete ILLEGAL_OP on SYNC" % code
     for owner, codes in BLOCKS.items():
         for code in codes:
-            assert M.ops[code]["owner"] == owner, "0x%02X: owner %s, V2-EX-15 says %s" % (code, M.ops[code]["owner"], owner)
+            assert M.ops[code]["owner"] == owner, "0x%02X: owner %s, EX-15 says %s" % (code, M.ops[code]["owner"], owner)
     for o in M.ops:
         if not o["legal"]:
             assert o["caps"] is None and M.op_unit(o["code"]) == UNIT_IDS["SYNC"], "0x%02X" % o["code"]

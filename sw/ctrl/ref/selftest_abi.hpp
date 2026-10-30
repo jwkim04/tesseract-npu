@@ -1,5 +1,5 @@
-// selftest_abi.hpp — the `selftest` kernel's interface (docs/v2/06-software-verification.md "SW"
-// §7.1, §7.6, V2-SW-28; kernel sw/ctrl/kernels/selftest.cpp): argument words, the parameter line,
+// selftest_abi.hpp — the `selftest` kernel's interface (docs/design/06-software-verification.md "SW"
+// §7.1, §7.6, SW-28; kernel sw/ctrl/kernels/selftest.cpp): argument words, the parameter line,
 // the data-area layout of every test id, and the return codes. Shared by the kernel (freestanding
 // C++20), the sim tests (sw/ctrl/tests/test_fw_selftest_sim.c, C) and later tsr-selftest (P3.3), so it
 // is written in the common subset of C11 and C++ (macros, plain structs, static inline functions).

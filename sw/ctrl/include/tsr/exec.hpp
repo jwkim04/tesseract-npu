@@ -1,19 +1,19 @@
-// tsr/exec.hpp — the graph executor's kind-handler interface (docs/v2/06-software-verification.md
-// "SW" §7.3, §7.4, §7.5; V2-SW-12).
+// tsr/exec.hpp — the graph executor's kind-handler interface (docs/design/06-software-verification.md
+// "SW" §7.3, §7.4, §7.5; SW-12).
 //
-// The `graph` kernel (sw/ctrl/kernels/graph.cpp) walks an OPL v1 list (tsr/opl.hpp) and, for each
+// The `graph` kernel (sw/ctrl/kernels/graph.cpp) walks an op list (tsr/opl.hpp) and, for each
 // op record, calls the handler of the record's kind with the record's argument words, the deps of
 // its predecessors and a context. A handler:
 //   - allocates its SPM scratch from ctx.ring (spm_ring::alloc; its writes also wait for the deps
 //     alloc returns), plans its tiles with tsr/plan.hpp (the host's supports_op uses the same
-//     functions, V2-SW-20), and pushes its tile ops with issue(op, deps, ctx.push_flags | ...);
+//     functions, SW-20), and pushes its tile ops with issue(op, deps, ctx.push_flags | ...);
 //     every op it pushes depends (directly or through others of the op) on `d`;
 //   - returns ONE ticket T whose completion implies that every tile op of the op is done (the last
 //     op depends on the others, or a join2 provides that; I1, docs/ctrl-riscv.md:544-550), and
 //     releases its scratch blocks with release(block, T) before returning;
 //   - never joins itself (no software wait inside the op stream: SW §7.3 "Overlap"; the ring's
 //     own software joins, chosen by count, are the exception), never reads a timing-dependent
-//     register (SW §4.7, V2-SW-30), keeps no state across launches (V2-SW-4);
+//     register (SW §4.7, SW-30), keeps no state across launches (SW-4);
 //   - may read the preload area with the RISC-V (the executor joined its loads before op 0;
 //     kind_ctx::pre_ok / pre_lb / pre_line below), or hand its lines to a unit as an operand;
 //   - on arguments it cannot run (bad fmt, a shape the ring cannot hold) pushes nothing more, sets
@@ -30,7 +30,7 @@
 // archive tsr_fw_host: the stubs' member comes last, so a kernel member defining the handler is
 // the one the linker extracts, see that file).
 //
-// Short kinds (SW §7.3 "Hot path", V2-SW-35, V2-SW-36, V2-SW-37; W2b's performance requirement:
+// Short kinds (SW §7.3 "Hot path", SW-35, SW-36, SW-37; W2b's performance requirement:
 // <= 350 RV cycles of work per decode record): a leaf fast entry (kind_<name>_fast below, the
 // executor's first call; no calls in its common path), its argument words read in place into locals
 // before the first push, the plan by shifts and compares (plan.hpp, no divide for one tile), the
@@ -69,7 +69,7 @@ struct kind_ctx {
     // last push of this launch that writes s[i] is an SOP.MOVI of sreg_val[i], so every VU op pushed
     // after it reads that value and a kind needing it there pushes no MOVI (k_fast.hpp sreg_movi;
     // RMS_NORM's 1/n and eps, ROPE's TS / M / freq_scale repeat across a list's records). 0 at launch
-    // start (the bank survives launches in hardware, but a kernel never relies on it, V2-SW-4).
+    // start (the bank survives launches in hardware, but a kernel never relies on it, SW-4).
     // Depends only on the pushes (SW §4.7). Rule: every push of a kind that writes s[i] other than
     // through sreg_movi (RED TO_S, SOP other than STS) clears bit i (sreg_clobber) in the same
     // record, before any later record can push.
@@ -176,7 +176,7 @@ struct kind_entry {
 extern "C" bool tsr_exec_test_kind(uint32_t kind, tsr::kind_entry * out) __attribute__((weak));
 
 namespace tsr {
-// Executor state for the debugger and the tests (DTCM, rebuilt at every launch, V2-SW-4): the
+// Executor state for the debugger and the tests (DTCM, rebuilt at every launch, SW-4): the
 // done ticket and the first push index of each op (SW §7.3 "DTCM tables") and a summary of the
 // last launch (opl::exec_state, defined in opl.hpp so host tools can read it from the DTCM).
 // Symbols: __tsr_exec_ticket, __tsr_exec_pidx, __tsr_exec_state.

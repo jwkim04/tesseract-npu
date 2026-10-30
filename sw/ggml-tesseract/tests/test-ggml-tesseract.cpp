@@ -12,9 +12,8 @@
 // heads), host-memory buffers with staged MUL_MATs, and a resident weight with T > IO.
 //
 // TSR_TEST_DUMP=<file> appends every device output the test reads back (tagged records: u32 tag
-// length, tag, u64 byte count, bytes) to <file>, so that two backends can be compared byte for byte
-// on the same inputs (the inputs come from a fixed-seed generator): e.g. this binary against the v1
-// libraries of build/v1 (LD_LIBRARY_PATH=build/v1/bin TSR_DEVICE=sim) and against this build's.
+// length, tag, u64 byte count, bytes) to <file>, so that two builds can be compared byte for byte
+// on the same inputs (the inputs come from a fixed-seed generator).
 #include <algorithm>
 #include <cinttypes>
 #include <cmath>
@@ -589,7 +588,7 @@ static void check_output_head_placement() {
     const uint32_t N = 152064, K = 5120;
     size_t free_b = 0, total_b = 0;
     ggml_backend_dev_memory(ggml_backend_get_device(g_tsr), &free_b, &total_b);
-    const uint64_t num_ch   = 4;    // U200 v1 / sim default (spec 구성 파라미터)
+    const uint64_t num_ch   = 4;    // U200 / sim default (spec 구성 파라미터)
     const uint64_t per_ch   = tsr_tensor_ch_beats(TSR_FMT_Q8_0, N, K, (uint32_t) num_ch) * 64;
     const uint64_t spm_need = (uint64_t) K * 4 / 64 + tsr_qa_lines(TSR_QA_A32, K) + ((uint64_t) N * 4 + 63) / 64;
     CHECK(per_ch == (uint64_t) 38016 * 85 * 64, "32B head per-channel size %" PRIu64, per_ch);

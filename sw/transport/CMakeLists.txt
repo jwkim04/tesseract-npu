@@ -1,5 +1,5 @@
-# sw/transport — tsr_transport v2: host <-> device transport (docs/v2/01-execution-model.md "EX" §10;
-# docs/v2/06-software-verification.md "SW" §9.1-§9.2; docs/v2/05-debug.md "DB" §4.1, §7.3, §9.2).
+# sw/transport — tsr_transport: host <-> device transport (docs/design/01-execution-model.md "EX" §10;
+# docs/design/06-software-verification.md "SW" §9.1-§9.2; docs/design/05-debug.md "DB" §4.1, §7.3, §9.2).
 #
 #   tsr_transport   static, PIC (linked into libggml-tesseract.so, tsr_rt, the tools): the C API
 #                   (tsr_transport.h), one protocol layer for every kind (tsr_kdev.cpp: open, bind,
@@ -9,7 +9,7 @@
 #                   decoder (tsr_logdec.cpp), and the kdevs: "sim" (the simulator in-process behind the
 #                   core CSR port, tsr_kdev_sim.cpp), "mock" (the sim kdev in the ap_ctrl_none adapter
 #                   model with fault injection, tsr_kdev_mock.cpp), "vkernel" (client of the Verilated
-#                   kernel server; the two-clock v2 server is P5.3, until then the open says so) and,
+#                   kernel server; the two-clock server is P5.3, until then the open says so) and,
 #                   with -DTSR_WITH_XRT=ON, "xrt" (xrt::ip with exclusive access + one device-only buffer
 #                   per channel, tsr_transport_xrt.cpp; on the card from P6).
 #
@@ -108,7 +108,7 @@ add_test(NAME transport_kdev COMMAND test-tsr-kdev)
 set_tests_properties(transport_kdev PROPERTIES TIMEOUT 120)
 
 # transport_protocol: EX §15 item 2, one binary for every kind it can run (sim, mock; vkernel when
-# TSR_VKERNEL_SERVER / _SOCKET name a v2 server, P5.3): cold / warm boot, image-id mismatch,
+# TSR_VKERNEL_SERVER / _SOCKET name a two-clock server, P5.3): cold / warm boot, image-id mismatch,
 # .note.tsr refusal, VERIFY with an injected TCM fault (mock), PING, 0-7 args, BAD_DESC, 8
 # outstanding and the credit rule, forced LQ_OVERFLOW and RING_RD_BAD, events while waiting, the
 # log (FMT / TEXT / EVENT / BLOB decode, drop), cancel and stop, SOFT_RESET mid-launch, the
@@ -125,9 +125,9 @@ set_tests_properties(transport_protocol PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 
 
 # transport_xrt_noop: the xrt kdev against XRT's userspace with its no-op shim (no card, no driver):
 # xclbin load, kernel / argument / memory discovery from the xclbin, xrt::ip with exclusive access
-# for the ap_ctrl_none kernel of the v2 contract (and the EX §9.1 fallback ap_ctrl_hs without an
-# interrupt), device-only buffers, and refusal of xclbins that break the kernel contract (v1 run
-# arguments included).
+# for the ap_ctrl_none kernel of the contract (and the EX §9.1 fallback ap_ctrl_hs without an
+# interrupt), device-only buffers, and refusal of xclbins that break the kernel contract (run
+# arguments such as cmd_addr / cmd_count included).
 if (TSR_WITH_XRT AND EXISTS ${_tsr_xrt_root}/lib/libxrt_noop.so)
     add_executable(test-tsr-xrt-noop tests/test_xrt_noop.cpp)
     set_target_properties(test-tsr-xrt-noop PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON

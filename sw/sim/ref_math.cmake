@@ -1,6 +1,6 @@
 # sw/sim/ref_math.cmake — the VU's approximate and composite math (sw/sim/tsr_ref_math.c,
-# docs/v2/02-vector-unit.md §6) in the reference library, and its tests (VU §10 items 1-2,
-# docs/v2/06-software-verification.md §10.1-§10.2, V2-SW-23).
+# docs/design/02-vector-unit.md §6) in the reference library, and its tests (VU §10 items 1-2,
+# docs/design/06-software-verification.md §10.1-§10.2, SW-23).
 #
 # Include from sw/sim/CMakeLists.txt after tsr_c_target() is defined:
 #     include(${CMAKE_CURRENT_SOURCE_DIR}/ref_math.cmake)

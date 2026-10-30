@@ -1,4 +1,4 @@
-# sw/ctrl/tests/runtime.cmake — fw_runtime (P2.2; docs/v2/06-software-verification.md "SW" §10.2):
+# sw/ctrl/tests/runtime.cmake — fw_runtime (P2.2; docs/design/06-software-verification.md "SW" §10.2):
 # the SDK runtime (sw/ctrl/rt: crt0, R1-R10 of EX §4.7, traps and panic, log records) as the
 # RISC-V image on the simulator, under the fixed and 7 random schedules with TSR_SIM_RACE=fatal.
 #
@@ -11,7 +11,7 @@
 #                       kernel table, log formats)
 #   ctest fw_runtime    test_fw_runtime <fw_rt.elf>; prints the EX §4.11 launch costs
 #   image fw_rt_stale   the same with RT_MUTANT_STALE (rt_blk1 reads beyond its staged line)
-#   ctest fw_runtime_stale  the race detector reports exactly that read as SPM_STALE (V2-SW-4)
+#   ctest fw_runtime_stale  the race detector reports exactly that read as SPM_STALE (SW-4)
 #
 # Run: ctest --test-dir <build> -R '^fw_runtime$' --output-on-failure
 

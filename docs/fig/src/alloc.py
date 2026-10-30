@@ -5,9 +5,9 @@ Content follows docs/spec.md §4 (Memory model: symmetric allocation, the per-ch
 R = ceil(N/4) rows (ch0: rows 0 .. R-1, ch1: R .. 2R-1, ch2: 2R .. 3R-1, ch3: 3R .. N-1); every
 range sits at the same offset W_OFF of its channel, and cluster c streams only channel c.
 Additions, with their sources:
-- the per-channel map (docs/v2/01-execution-model.md §11, DRAM map v2): OPL, IO and AUX in the
+- the per-channel map (docs/design/01-execution-model.md §11, the DRAM map): OPL, IO and AUX in the
   low 512 MiB of ch0; the low 512 MiB of ch1-ch3 hold compute chunks and other activations; the
-  WEIGHT heap runs from 512 MiB up (the KV planes of docs/v2/03-attention-kv.md §4.5 grow down
+  WEIGHT heap runs from 512 MiB up (the KV planes of docs/design/03-attention-kv.md §4.5 grow down
   from the end of the channel and are not drawn);
 - row r of channel c starts at W_OFF + (r - c*R) x ROW_BEATS(fmt, K) (docs/spec.md §4); rows
   start on 64 B beat boundaries (docs/spec.md §5);
@@ -17,7 +17,6 @@ Additions, with their sources:
 The inset on the right magnifies the ch3 slice (rows 3R .. N-1 back to back from W_OFF); its top
 edge is the W_OFF line itself and a dashed zoom line joins the slice's bottom to the inset's.
 Row ranges are written "0 TO R-1" because the ellipsis glyph is too small at README width.
-The allocation is the v1 one and is unchanged in v2; the v2 DRAM map only renames CMD to OPL.
 
 Run: build/tools/svgvenv/bin/python docs/fig/src/alloc.py
 """

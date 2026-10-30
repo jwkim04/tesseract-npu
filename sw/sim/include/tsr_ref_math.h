@@ -1,10 +1,10 @@
 // tsr_ref_math.h — the VU's approximate and composite math, defined bit for bit.
 //
-// Normative source: docs/v2/02-vector-unit.md §6 (EXPK §6.3, composites §6.5, SIN/COS §6.6,
+// Normative source: docs/design/02-vector-unit.md §6 (EXPK §6.3, composites §6.5, SIN/COS §6.6,
 // constants Appendix A). The simulator, the RTL benches (ctypes on libtsr_ref.so) and the
 // firmware's host build call these functions; the RTL must match them bit for bit.
 //
-// Rules (docs/v2/06-software-verification.md §4.5):
+// Rules (docs/design/06-software-verification.md §4.5):
 //   - every f32 operation is a tsr_fadd / tsr_fsub / tsr_fmul / tsr_frecip call (DAZ on the
 //     inputs, RNE, FTZ, canonical NaN 0x7FC00000; see tsr_ref.h); everything else is integer
 //     bit manipulation. No libm, no float operators, no __int128 (RV32-clean).

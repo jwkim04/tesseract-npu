@@ -1,4 +1,4 @@
-// test_ref_at.c — the AT references (sw/sim/tsr_ref_at.c; docs/v2/03-attention-kv.md §13.2).
+// test_ref_at.c — the AT references (sw/sim/tsr_ref_at.c; docs/design/03-attention-kv.md §13.2).
 //
 // Usage: ref_at self | ggml [-v]
 //   self  layout round trips and placement, KVST (bytes, RMW counts; with ggml: against

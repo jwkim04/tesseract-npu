@@ -1,16 +1,17 @@
 # llama.cpp pin and verified backend API
 
 Tesseract uses only the pinned llama.cpp commit (`docs/spec.md` §22, Working rules). This file records
-the pin and every item that `docs/spec.md` and `docs/v2` mark "check at the pinned commit", with
+the pin and every item that `docs/spec.md` and `docs/design` mark "check at the pinned commit", with
 file:line references into `third_party/llama.cpp` **at the pin, before our patch** unless a line says
 otherwise; the references stay valid as long as the pin does. Our changes to llama.cpp live in
 `third_party/patches/` until a fork exists.
 
 > **Scope.** Verification record for the pin, and the rules of the M6 backend (`sw/ggml-tesseract`,
 > whose README is its developer reference) that follow from it. The M6 backend *runs on the
-> simulator*; M7's device KV cache and one launch per token are *planned* (W3b). Measurements marked
-> v1 were made with the v1 backend on the simulator (M1) and not repeated for v2 unless stated.
-> See [AT](v2/03-attention-kv.md) §2 (what llama.cpp hands the device) and [SW](v2/06-software-verification.md)
+> simulator*; M7's device KV cache and one launch per token are *planned* (W3b). Simulator
+> measurements that name no commit were made before the control core was added and are not repeated
+> unless stated.
+> See [AT](design/03-attention-kv.md) §2 (what llama.cpp hands the device) and [SW](design/06-software-verification.md)
 > §8 (one launch per token), §9.3 (the backend).
 
 ## Pin
@@ -131,7 +132,7 @@ META. llama.cpp collects offload targets in `src/llama.cpp:222-273`: GPU devices
   CPU (`CPU_Mapped model buffer size = 275.89 MiB` = token_embd + output.weight for 0.5B)
   while llama.cpp still printed "offloading output layer to GPU". Tesseract's supports_op has
   no token-count condition since (`docs/spec.md` §12, supports_op); activations that do not fit IO are
-  staged (see "Compute buffers" below). Now (*measured on the simulator (v1, M1)*; the placement is
+  staged (see "Compute buffers" below). Now (*measured on the simulator, M1*; the placement is
   unchanged in M6): `Tesseract0 model buffer size = 500.52 MiB`
   (was 362.58), `CPU_Mapped model buffer size = 137.95 MiB` (token_embd only), and
   `GGML_SCHED_DEBUG=2` shows `result_output [Tesseract0] ... output.weight (137M) [Tesseract0]`.
@@ -201,14 +202,14 @@ staging path.
   backend and cause (`ggml_backend_sched_new` :1962-1963, printing :1145-1183 called at
   :1551-1553). Output goes through `GGML_LOG_DEBUG`, so llama.cpp tools need `-v`.
   `GGML_SCHED_DEBUG_REALLOC` reports graph reallocations (:1969-1970).
-- Measured split structure (v1 backend, M1; Qwen2.5 dense; `GGML_SCHED_DEBUG=1 llama-completion -m
+- Measured split structure (on the simulator, M1; Qwen2.5 dense; `GGML_SCHED_DEBUG=1 llama-completion -m
   qwen2.5-0.5b-instruct-q8_0.gguf -ngl 99 -nkvo -c 512 -v`): every graph has **290 splits, 145
   on Tesseract0**, i.e. **6 Tesseract splits per layer** plus one for the output head. q, k, v
   and o are each followed by a CPU op (bias ADD, RoPE / attention, residual), but `ffn_gate` and
   `ffn_up` read the same input and share one split (the next CPU split takes both as inputs).
   For 64 layers that is ≈385 Tesseract splits (≈770 in all) per token. M6 has the same splits, one launch
-  each: 145.00 launches per token on the 0.5B decode and 385 on the 32B (*measured on the simulator
-  (v2, 83ac601)*); M7 aims at one.
+  each: 145.00 launches per token on the 0.5B decode and 385 on the 32B (*measured on the simulator,
+  83ac601*); M7 aims at one.
 
 ## KV cache placement (M6 constraint, M7 plan)
 
@@ -220,17 +221,17 @@ false: attention, with the KV cache and its updates, stays on the CPU. Without i
 ANY buffer of leaf tensors) is kept in host memory, and the scheduler aborts as soon as it splits a
 graph that writes the cache, already at the context's graph reservation:
 `ggml-backend.cpp:1089: pre-allocated tensor (cache_k_l0 (view)) in a buffer (Tesseract0) that
-cannot run the operation (SET_ROWS)` (checked with the v1 backend, `-ngl 99 -c 512`; M6's supports_op
+cannot run the operation (SET_ROWS)` (checked on the simulator, `-ngl 99 -c 512`; M6's supports_op
 is the same for these ops).
 
 **M7** (planned, W3b; decision D17) moves the KV cache to the device: run without `-nkvo`
 (`offload_kqv` = true) with `-ctk q8_0 -ctv q8_0 -fa on`, because the pinned llama.cpp refuses a
 quantized V cache without flash attention (`src/llama-context.cpp:566-569`). The backend then supports
 SET_ROWS into KV tensors (and only those) and `FLASH_ATTN_EXT`, the device KV planes hold exactly
-llama.cpp's q8_0 values ([AT](v2/03-attention-kv.md) §2, §4), and the scheduler no longer aborts
+llama.cpp's q8_0 values ([AT](design/03-attention-kv.md) §2, §4), and the scheduler no longer aborts
 because the cache is a Tesseract buffer that can run its ops (SW §8 R1, R3). The M6 settings, which
 `klcheck` and `numcheck` use as baselines, are `-ngl 99 -nkvo -fa on -ctk q8_0 -ctv q8_0` with
-`LLAMA_ATTN_ROT_DISABLE=1` (SW §10.4, V2-SW-22).
+`LLAMA_ATTN_ROT_DISABLE=1` (SW §10.4, SW-22).
 
 With a **quantized KV cache** (`-ctk q8_0` / `-ctv q8_0`) llama.cpp rotates Q and K/V with a Hadamard
 matrix (`src/llama-kv-cache.cpp:325-351`) unless `LLAMA_ATTN_ROT_DISABLE` is set
@@ -238,10 +239,10 @@ matrix (`src/llama-kv-cache.cpp:325-351`) unless `LLAMA_ATTN_ROT_DISABLE` is set
 `ggml_mul_mat(rot, x)` whose src0 `attn_inp_k_rot` / `attn_inp_v_rot` is an F32 [64, 64] graph input
 (`ggml_set_input`, `src/llama-kv-cache.cpp:1472-1492`). It is not a weight, so Tesseract's supports_op
 rejects it (unallocated src0 that is a graph input) and the rotation stays on the CPU with the rest of
-attention. Before this rule the scheduler put these MUL_MATs on Tesseract and the v1 backend converted
+attention. Before this rule the scheduler put these MUL_MATs on Tesseract and the backend converted
 the matrix to Q8_0 again for every layer of every token (120 lazy conversions for 4 tokens); with the
 rule, 0, same text. In M7 the rotation would split attention into CPU islands, so device runs and all
-baselines set `LLAMA_ATTN_ROT_DISABLE=1` (SW §8 R4, V2-SW-16); the backend warns once if it sees
+baselines set `LLAMA_ATTN_ROT_DISABLE=1` (SW §8 R4, SW-16); the backend warns once if it sees
 `attn_inp_k_rot` / `attn_inp_v_rot`.
 
 ## test-backend-ops
@@ -268,12 +269,12 @@ baselines set `LLAMA_ATTN_ROT_DISABLE=1` (SW §8 R4, V2-SW-16); the backend warn
 - The "very large N" case (`F16 x F32, m=16, n=2105344, k=32`, :11083) has a 257 MiB src1. It
   gets its own buffer (larger than `get_max_size`), which is kept in host memory, so the MUL_MAT
   is staged through the IO stage in 17 tiles of 131072 tokens (≈7 s on the sim). It was
-  "not supported" while supports_op still limited src1 + dst to the IO region. In v2 the case runs in its own
+  "not supported" while supports_op still limited src1 + dst to the IO region. The case runs in its own
   ctest, `ggml_tesseract_backend_ops_bigt` (label `slow`): 8.4 M single-token tile ops through the
   interpreted firmware at the simulator's T_MAX 1, about 50 s according to the comment in
   `sw/ggml-tesseract/CMakeLists.txt` (not re-measured).
 
-Result on the real `sim` transport (*measured on the simulator (v1, M1 step 6)*): 1403 MUL_MAT cases are
+Result on the real `sim` transport (*measured on the simulator, M1 step 6*): 1403 MUL_MAT cases are
 supported, 1462 not supported (882 batched 3D/4D src0, 452 F16/BF16 src1, 67 strided views
 `k_v`, 14 permuted non-contiguous, 47 K % 32 != 0). The same 1403 also pass with
 `TSR_FORCE_HOST=1 TSR_STAGE_KIB=256` (every buffer in host memory, every MUL_MAT staged). The supported set
@@ -312,12 +313,7 @@ ctest `ggml_tesseract_scalar_nmse` covers it with a stricter oracle (bit-exact v
 on 2000 seeded trials, failures identical to the exact 8-bit dot product) and `ggml_tesseract_backend_ops_bigt`
 runs the large case.
 
-v1: with `TSR_TRACE=<dir>` every exec of a test-backend-ops run was dumped as a trace and
-`tsr-trace-replay <dir>` replayed all of them bit-exactly: 1419 traces (2.6 GiB) for the 1403
-cases, one per case plus 16 more for the 17 stage tiles of the "very large N" case (re-run after
-the staging change). Earlier, with 1402 cases, this was also checked with `TSR_SIM_TMAX=8`,
-where 1296 of the traces contain T > 1 MVMs (*measured on the simulator (v1)*). In v2 `TSR_TRACE` dumps one
-trace v2 per launch (SW §5.5, §9.2); `traces/README.md` has the replay tools.
+`TSR_TRACE=<dir>` dumps one trace per launch (SW §5.5, §9.2); `traces/README.md` has the replay tools.
 
 llama.cpp's own model tests (`test-llama-context`, `test-llama-context-model`,
 `test-thread-safety`) load models with default offload, which puts the KV cache in a
@@ -336,14 +332,14 @@ constraint above). In this build they run with `TSR_DEVICE=none`
   `src/llama-graph.cpp:1478`, per-input `can_reuse` e.g. the KQ mask :49, :563). On reuse there
   is no `ggml_backend_sched_reset` / `alloc_graph`: the same split graphs with the same tensor
   addresses are computed again, only the inputs are re-set, which is what the Tesseract
-  op-list cache keys on (v1: the program cache). `LLAMA_GRAPH_REUSE_DISABLE=1` turns reuse off
+  op-list cache keys on. `LLAMA_GRAPH_REUSE_DISABLE=1` turns reuse off
   (`src/llama-context.cpp:378-379`).
 
   M7 status: planned (W3b). The op-list cache of the backend keys on the graph identity and the node
   addresses and relies on this reuse (SW §8 R7): per token the host writes the graph inputs
   (`inp_pos`, `kq_mask`, `k_idxs`, `v_idxs`, `inp_out_ids`), launches once and reads the logits, and
   a new KV bucket builds one new op list. In M6 the same reuse gives the op-list cache its hits: 73,385
-  hits and 855 misses (98.9 %) on the Qwen2.5-0.5B decode (*measured on the simulator (v2, 83ac601)*).
+  hits and 855 misses (98.9 %) on the Qwen2.5-0.5B decode (*measured on the simulator, 83ac601*).
 
 ## For M8: sampling
 
@@ -370,8 +366,8 @@ host until M8.
   buffer into chunks of at most 240 MiB, and a single larger tensor gets a chunk of its own
   (`ggml/src/ggml-alloc.c:160-178`). A chunk that fits a free IO window at its first data access
   is an IO window; any other chunk is kept in host memory and the MUL_MATs that use it are
-  staged through the IO stage in T tiles (`docs/spec.md` §12, v1 lowering constraints). There is no `-ub` limit
-  from IO any more. llama.cpp reserves the compute buffer for the worst case,
+  staged through the IO stage in T tiles (`docs/spec.md` §12). There is no `-ub` limit
+  from IO. llama.cpp reserves the compute buffer for the worst case,
   `n_outputs = min(n_ubatch, n_outputs_max)` logits (`src/llama-context.cpp:786-797`;
   `n_outputs_max` defaults to `n_batch`, :346), although decode and prefill only compute the
   output rows: for Qwen2.5-0.5B at `-ub 512`, `Tesseract0 compute buffer size = 317.50 MiB` =
@@ -380,9 +376,9 @@ host until M8.
   Pages of that chunk are only touched for the rows actually computed. klcheck sets
   `n_outputs_max` to the rows it needs, so there everything is in IO.
   M7 (planned) replaces these windows by a per-channel compute heap between the top of the weights and
-  the bottom of the KV planes ([EX](v2/01-execution-model.md) §11), sized from the reserve graph, so
+  the bottom of the KV planes ([EX](design/01-execution-model.md) §11), sized from the reserve graph, so
   that the reserved logits chunk stays on the device (Qwen 152,064 × 512 × 4 B = 297 MiB at `-ub 512`;
-  Gemma 4 262,144 × 512 × 4 B = 512 MiB) and no launch is staged in decode (SW §8 R6, V2-SW-26); a chunk
+  Gemma 4 262,144 × 512 × 4 B = 512 MiB) and no launch is staged in decode (SW §8 R6, SW-26); a chunk
   that still does not fit is staged and costs one extra launch per token, reported by `TSR_STATS` as
   "staged chunks".
 - **LoRA adapters** (`--lora`): `llama_adapter_lora_init` allocates the adapter tensors on the

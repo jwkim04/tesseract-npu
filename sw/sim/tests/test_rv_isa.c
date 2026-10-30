@@ -6,7 +6,7 @@
 // step, ebreak, triggers, program buffer, dret), the firmware address map and its access rules
 // (CC §4.1), the SPM line buffer (CC §10.5), waiting / yielding stores (CC §7.3), SBA (CC §4.3),
 // the test profile with HTIF and the ELF loader. Expected values come from C arithmetic on the
-// same inputs or from the documents (docs/v2/04-control-core.md, 06-software-verification.md
+// same inputs or from the documents (docs/design/04-control-core.md, 06-software-verification.md
 // §4.2); Ibex-specific expectations are the *confirm* items of tsr_rv.c.
 //
 // No toolchain needed. `test_rv_isa --dump-enc` prints the encoder outputs for a cross-check

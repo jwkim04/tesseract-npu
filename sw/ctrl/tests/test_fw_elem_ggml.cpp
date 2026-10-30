@@ -1,6 +1,6 @@
 // test_fw_elem_ggml.cpp — fw_kernels_elem_ggml: the element-wise and row kinds' numerics (sw/ctrl/ref/
 // elem_ref.cpp, bit-exact with the firmware by fw_kernels_elem_rv / _host) against the pinned
-// ggml-cpu's ops on the same inputs (docs/v2/06-software-verification.md "SW" §7.5; VU §6.9 "Accuracy
+// ggml-cpu's ops on the same inputs (docs/design/06-software-verification.md "SW" §7.5; VU §6.9 "Accuracy
 // and differences from the ggml CPU backend"). Built with TSR_WITH_LLAMA only (links ggml-cpu).
 //
 // Per op: inputs N(0, sigma) f32 (no subnormals, no specials: those are VU §4.1's DAZ / FTZ / canonical

@@ -1,7 +1,7 @@
 // tsr/plan_elem.hpp — planners of the element-wise kinds: ADD, MUL, SCALE, GLU, UNARY, CPY, GET_ROWS
-// (docs/v2/06-software-verification.md "SW" §7.2, §7.5; W2b P2.6). Freestanding, C++17-compatible,
+// (docs/design/06-software-verification.md "SW" §7.2, §7.5; W2b P2.6). Freestanding, C++17-compatible,
 // constexpr-friendly: the firmware's kind handlers (sw/ctrl/kernels/k_elem.cpp, k_glu.cpp,
-// k_rows.cpp) and the host's supports_op (W3b) call the same functions (V2-SW-20).
+// k_rows.cpp) and the host's supports_op (W3b) call the same functions (SW-20).
 //
 // The planner contract and the declarations are tsr/plan.hpp's ("M7 planning"), which includes this
 // file after them; including this file first works too (it includes plan.hpp).

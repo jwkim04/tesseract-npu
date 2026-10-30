@@ -1,7 +1,7 @@
 // tsr_bus.h — the RISC-V bus of the simulator: the address maps tsr_rv runs on (SW §4.2).
 //
-// Two profiles (docs/v2/06-software-verification.md "SW" §4.2):
-//   firmware  the control core's map (docs/v2/04-control-core.md "CC" §4.1, TSR_RV_* in
+// Two profiles (docs/design/06-software-verification.md "SW" §4.2):
+//   firmware  the control core's map (docs/design/04-control-core.md "CC" §4.1, TSR_RV_* in
 //             tsr_tables.h): ITCM (fetch, byte / half / word), DTCM (byte / half / word), debug
 //             module memory (fetch, word), control window (word), core window (word loads),
 //             SPM window and its line-buffered alias (byte / half / word). Everything else, and

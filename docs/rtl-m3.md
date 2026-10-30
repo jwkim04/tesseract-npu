@@ -2,44 +2,45 @@
 
 This document is the RTL record of the MVM unit and of the implementation work that took it to the U200: the
 architecture of one cluster per DDR4 channel, its interfaces, the bit-exact numerics, throughput, the
-verification of the unit, and the Vivado results (§14). The behaviour of the weight MVM is unchanged in v2.
+verification of the unit, and the Vivado results (§14). The control core does not change the behaviour of
+the weight MVM.
 
-> **Scope.** Record of the RTL of tag `v1-m4` (M3 MVM unit, integration, Vivado results of part C). The tree
-> after X0 (`452e27b`) holds the MVM unit and its block benches; its dispatcher and the core-level benches
-> are deleted, so §13 are v1 results (RTL simulation, reproducible at tag `v1-m4`) and §14 are Vivado 2024.2
-> measurements of the v1 core (RTL v3) that stay true for the retained blocks. Normative for v2:
-> [AT](v2/03-attention-kv.md) §5-§6, §8 and [CC](v2/04-control-core.md) §8-§10, §14. Authority:
-> `docs/spec.md` > simulator (`sw/sim`) > `docs/v2` > this file > [`rtl-m2.md`](rtl-m2.md) > `tsr_pkg.sv`.
+> **Scope.** Record of the RTL of the MVM unit (M3 MVM unit, integration, Vivado results of part C). The tree
+> holds the MVM unit and its block benches; the dispatcher and the core-level benches are planned (W4, W5).
+> §13 are results of RTL simulation and §14 are Vivado 2024.2 measurements. The card measurements and the
+> results of §13 and §14 were taken before the control core was added, with the host issuing the ops, and stay
+> true for the blocks in the tree. Normative for the issue path and the attention modes:
+> [AT](design/03-attention-kv.md) §5-§6, §8 and [CC](design/04-control-core.md) §8-§10, §14. Authority:
+> `docs/spec.md` > simulator (`sw/sim`) > `docs/design` > this file > [`rtl-m2.md`](rtl-m2.md) > `tsr_pkg.sv`.
 
-Status words: *kept*, *deleted* (X0), *designed*, *planned*. Kept in the tree: `rtl/core/tsr_mvm*.sv`,
+Status words: *in the tree*, *designed*, *planned*. In the tree: `rtl/core/tsr_mvm*.sv`,
 `tsr_fp_add.sv`, `tsr_vpipe.sv`, `tsr_rpipe.sv`, the technology wrappers in `rtl/tech/{generic,xilinx}` and the
-block benches `tb/mvmfront`, `tb/mvmback`, `tb/mvm`, `tb/fp`, `tb/tech`. Deleted by X0: `tsr_cmdproc` (the
-dispatcher), `tb/core`, and the `tb/fastreplay` replays of `cmd.bin` traces. The simulator's `ex_mvm`
-(`tsr_sim.c`) and `tsr_ref.c` are the numeric oracle.
+block benches `tb/mvmfront`, `tb/mvmback`, `tb/mvm`, `tb/fp`, `tb/tech`. The dispatcher is the issue path
+(CC §8-§9, planned). The simulator's `ex_mvm` (`tsr_sim.c`) and `tsr_ref.c` are the numeric oracle.
 
-**Results at a glance (v1 core).** The MVM unit runs on the card: the k1 xclbin (1 channel, T_MAX 1, 300 MHz)
+**Results at a glance.** The MVM unit runs on the card: the k1 xclbin (1 channel, T_MAX 1, 300 MHz)
 passed the M3 gate on the Alveo U200, and the k4 xclbin (4 channels, T_MAX 8, floorplan C', kernel clock
 276.3 MHz after `v++` scaling) ran Qwen2.5-0.5B Q8_0 at 54.7 tok/s and Qwen2.5-32B Q4_K_M at 2.93 tok/s
-(measured on the card, v1, k4; [`platform-u200.md`](platform-u200.md) §14, [`performance.md`](performance.md)).
+(measured on the card, k4; [`platform-u200.md`](platform-u200.md) §14, [`performance.md`](performance.md)).
 The weight stream is busy 97-98 % of the cycles in decode. The k4 link ran (§14.8).
 
-**v2 additions to the cluster (designed, W4).** In v2 the MVM unit is dispatched from CC's queue heads
-([CC](v2/04-control-core.md) §8-§9; the checks of `tsr_cmdproc` live on in `tsr_chk`), reads the SPM through the
+**Control core and attention modes (designed, W4).** The MVM unit is dispatched from CC's queue heads
+([CC](design/04-control-core.md) §8-§9; the checks are in `tsr_chk`), reads the SPM through the
 even / odd banks (CC §10), and is checked by tile-only replays of `push.bin` traces (§13). The weight MVM itself
-(§4-§7, the numerics and `RB_MIN`) is unchanged. The cluster gains two attention modes: `ATTQK` (0x21: scores and
+(§4-§7, the numerics and `RB_MIN`) does not change. The cluster gains two attention modes: `ATTQK` (0x21: scores and
 row maxima over KV groups, the Q8_0 path with segment counters, per-slot activation read addresses and a gather
 line buffer per pass row) and `ATTPV` (0x22: P·V with block-floating-point weights accumulated in the MAC DSPs,
 a PV mode of `tsr_mac_lane`, a 64-beat delay FIFO, a capture bank and convert / add pipes). Their contract is AT
 §5.2-§5.3 and §6; their structure and cost are AT §8.1, §8.2 and §8.4 (about 19-27 K LUT per cluster,
 *estimate*); §6.5 below points to them.
 
-**M3 scope (v1).** The MVM unit (spec §8, "MVM cluster microarchitecture", stages 1-10: one cluster per
+**M3 scope.** The MVM unit (spec §8, "MVM cluster microarchitecture", stages 1-10: one cluster per
 channel, the activation broadcast, the result gather with ACC) integrated into `tsr_core` with `HAS_MVM = 1`,
 executing every legal `MVM` bit-exactly like the simulator (Q8_0 with A32 QA, Q4_K with A256 QA, any legal K / N
-/ T, ACC, `dst_stride`, register-relative operands in v1), reading exactly `rows_c × ROW_BEATS` weight beats per
+/ T, ACC, `dst_stride`), reading exactly `rows_c × ROW_BEATS` weight beats per
 channel, and sustaining one weight beat per cycle per cluster at T = 1 when the memory delivers (rows of at
 least `RB_MIN` beats, §7.5). DSP packing and the URAM / BRAM mapping (`rtl/tech/xilinx`) were done in M3 part C
-(§7.2, §9.3, §14). Not in M3: overlapping consecutive MVMs (spec §8, "Overlapping consecutive MVMs", M5; in v2 the MVM
+(§7.2, §9.3, §14). Not in M3: overlapping consecutive MVMs (spec §8, "Overlapping consecutive MVMs", M5; the MVM
 queue head may accept the next MVM before the previous one is done, CC §9.3 and invariant I3). The U200 platform adapter, kernel packaging and
 the XRT transport were also M3 (the M3 gate was "Qwen2.5-0.5B Q8_0 runs on the card", spec §19 milestone table)
 and have their own documents.
@@ -78,7 +79,7 @@ of `tsr_core` (rtl-m2 §10).
 
   `tsr_core` exposes `MVM_WS_FIFO`, `MVM_BC_PIPE`, `MVM_RES_PIPE` and the latencies
   `MVM_ACT_RD_LAT`, `MVM_MAC_LAT`, `MVM_MUL_LAT`, `MVM_ADD_LAT`, `MVM_WS_RD_LAT` (additive,
-  defaults `TSR_DEF_*`; the tests and tb/fastreplay vary them, §13.1).
+  defaults `TSR_DEF_*`; the tests vary them, §13.1).
 - **Files** (`rtl/filelist.f` order: packages, tech, fp, SPM, arbiter, pipes, DMA, QACT, MVM
   bottom-up, control, core): `tech/generic/tsr_mac_lane.sv`, `core/tsr_fp_add.sv`,
   `core/tsr_vpipe.sv`, `core/tsr_rpipe.sv`, `core/tsr_mvm_ws.sv`, `core/tsr_mvm_front.sv`,
@@ -86,7 +87,7 @@ of `tsr_core` (rtl-m2 §10).
   `core/tsr_mvm_gather.sv`, `core/tsr_mvm.sv`. A new file is a filelist change (ask the lead).
 - **Lint**: `rtl/lint.sh` lints every new module as its own top with edge parameters (NUM_CH 1 / 3
   / 16, T_MAX 1 / 8, K_MAX 256 / 65280, latencies 1 / 8, pipes 0 / 3, FIFO 64 / 1024). The
-  integration step adds `tsr_core -GHAS_MVM=1` configurations (U200 v1, 1 / 3 / 16 channels, T_MAX
+  integration step adds `tsr_core -GHAS_MVM=1` configurations (U200, 1 / 3 / 16 channels, T_MAX
   8, small K_MAX, pipe and FIFO extremes).
 - The skeletons in `rtl/core` (and `tsr_mac_lane`) carry the final port lists and a behavioural
   contract comment; bodies are tied off and lint clean. `tsr_vpipe` / `tsr_rpipe` are complete.
@@ -129,11 +130,11 @@ The figure draws the datapath of one cluster as in the tree (solid) and the plan
 | (front) | front agent | `rtl/core/tsr_mvm_ws.sv`, `tsr_mvm_front.sv`, `tb/mvmfront/` | §3.2, §3.3, §4 | `tb/mvmfront/test_mvm_front.py` |
 | (back) | back agent | `rtl/core/tsr_mvm_back.sv`, `tsr_mvm_actbuf.sv`, `rtl/tech/generic/tsr_mac_lane.sv`, `tb/mvmback/` | §3.3–§3.5, §5, §7 | `tb/mvmback/test_mvm_back.py` |
 | (top) | top agent | `rtl/core/tsr_mvm.sv`, `tsr_mvm_cluster.sv`, `tsr_mvm_gather.sv`, `tb/mvm/` | §3.0, §3.1, §3.2, §3.5, §6 | `tb/mvm/test_mvm.py` |
-| (int) | integration | `rtl/core/tsr_core.sv` (HAS_MVM = 1 wiring, checks); `tb/core/` held the v1 core benches (deleted in X0) | §10.4 | `tb/core/test_core.py` (v1) |
+| (int) | integration | `rtl/core/tsr_core.sv` (HAS_MVM = 1 wiring, checks) | §10.4 | core-level replays (planned, W5) |
 | infra | architecture | `tsr_pkg.sv`, `tsr_vpipe.sv`, `tsr_rpipe.sv`, `rtl/filelist.f`, `rtl/lint.sh`, `tb/common/`, `tb/conftest.py`, `tb/pytest.ini`, `tb/run_all.sh`, this file | all | `tb/common/test_common.py` |
 
-\* The dispatcher is the v2 queue head of the MVM unit (`tsr_issue`, planned, CC §9.1); in v1 it was
-`tsr_cmdproc`. In the tree the unit's command port (`mvm_cmd_*`, `mvm_done`) exists and is idle.
+\* The dispatcher is the queue head of the MVM unit (`tsr_issue`, planned, CC §9.1). In the tree the
+unit's command port (`mvm_cmd_*`, `mvm_done`) exists and is idle.
 
 Block tests that need several RTL blocks (e.g. the back end with the real activation buffer, or a
 cluster with a stub back end) put wrappers in `tb/<block>/hdl/` (linted by `rtl/lint.sh`).
@@ -142,13 +143,13 @@ cluster with a stub back end) put wrappers in `tb/<block>/hdl/` (linted by `rtl/
 
 ## 3. Internal interfaces
 
-### 3.0 Dispatch (tsr_cmdproc → tsr_mvm)
+### 3.0 Dispatch (dispatcher → tsr_mvm)
 
-(v1 wording, kept as the statement of what the MVM unit may assume. In v2 the same `tsr_mvm_cmd_t` fields
-come from `tsr_chk` through CC's queue heads, and the guarantees below are `tsr_chk`'s; CC §8.1.)
+The `tsr_mvm_cmd_t` fields come from `tsr_chk` through CC's queue head, and the guarantees below are
+`tsr_chk`'s (CC §8.1). They state what the MVM unit may assume.
 
 `tsr_mvm_cmd_t` (294 bits) and the dispatch protocol are those of `docs/rtl-m2.md` §3.0/§3.4.
-`tsr_cmdproc` (HAS_MVM = 1, already verified against the simulator in `tb/cmdproc`) guarantees:
+`tsr_chk` guarantees:
 `fmt` ∈ {0, 1}; `0 < k ≤ K_MAX`, `k % bs == 0` (bs 32 / 256); `1 ≤ t ≤ T_MAX`;
 `y_lines = ceil(n/16)`; `dst_stride` resolved (`w6 = 0` → `y_lines`; 0 when n = 0);
 `rows_per_ch = ceil(n/NUM_CH)`; `row_beats = ROW_BEATS(fmt, k)`; `qa_lines = QA_LINES(fmt, k)`;
@@ -283,7 +284,7 @@ which follows the last broadcast line, whose read has returned). Write port: the
   ROW_BEATS`: no over-fetch, no prefetch beyond the channel's rows (spec §21, "Performance counters":
   `PERF_CH_RD_BEATS[c]` MVM beats = `rows_c × ROW_BEATS`; spec §8, stage 1: "R × ROW_BEATS is an upper
   bound and an allocation size, not the amount read"). `rows_c = 0` → no request at all. Reference: `tsr_sim.c`
-  759–769 (`cap_read(sim, c, woff, rows_c × row_beats)`).
+  `ex_mvm` (`cap_read(sim, c, woff, rows_c × row_beats)`).
 - **Reserve before request** (R4 / M6): the weight FIFO has `WS_FIFO_BEATS` entries; a burst is
   loaded into the request register only when `WS_FIFO_BEATS − (beats buffered + beats requested
   and not received) ≥ len`, and that space is taken at the load. `rd_rsp_ready` is therefore
@@ -352,7 +353,7 @@ SLR1 and get their weights through the weight-stream pipes (§14.5).
 
 ### 6.3 Gather (tsr_mvm_gather): partial lines, byte enables, ACC, tails
 
-Semantics (tsr_sim.c `ex_mvm` 788–803): token tk < T writes f32 element n_row of its y vector at
+Semantics (tsr_sim.c `ex_mvm`, the write loop): token tk < T writes f32 element n_row of its y vector at
 SPM line `dst + tk·stride + n_row/16`, lane `n_row % 16`, value `y` or (ACC) `fadd(y_old, y)`
 (spec §21, "ACC addition": one f32 addition with the fp rules, old value first — addition is
 commutative bit-exactly), and the bytes after element N−1 in the token's last line are 0 (also
@@ -393,10 +394,10 @@ needs its last weight beat, which is the last of the exactly `beats_c` requested
 read is outstanding; no SPM read is outstanding (the gather's done waits for its last write,
 which follows its last read). The integration step asserts it in simulation (§10.4).
 
-### 6.5 v2: attention modes in the cluster (designed)
+### 6.5 Attention modes in the cluster (designed)
 
 The cluster gains `ATTQK` and `ATTPV` for attention over the q8_0 KV cache; the weight MVM of this section
-is unchanged. The contract is [AT](v2/03-attention-kv.md) §5.2-§5.3 (operands) and §6 (numerics and the
+is unchanged. The contract is [AT](design/03-attention-kv.md) §5.2-§5.3 (operands) and §6 (numerics and the
 normative flash-attention sequence); the hardware structure, throughput and cost are AT §8 and §9:
 `ATTQK` uses the front end's Q8_0 path with row and segment counters, per-slot activation read addresses and a
 gather line buffer per pass row (at most 128 rows, 2 RAMB36) with a row-maximum tracker; `ATTPV` adds a
@@ -630,9 +631,7 @@ mutation (scratch copy) and the report says which.
 
 ### 10.1 Infrastructure (tb/common, architecture)
 
-(Kept in the tree: `tsr_ref.py`, `isa.py`, `mvm_model.py`, `mem_model.py`. Deleted by X0 with the v1 command
-path and described here as the v1 infrastructure: `pycore.py`, `simlib.py`, `proggen.py`, `trace.py`,
-`replay.py`, `csr_driver.py`.)
+(In the tree: `tsr_ref.py`, `isa.py`, `mvm_model.py`, `mem_model.py`.)
 
 - `tsr_ref.py` (`ref()`): every reference function the M3 tests need — `fadd fsub fmul daz
   i32_to_f32 fp16_to_f32`, `tree16`, `dot_row`, `term_q8_0 / term_q4_K / term(fmt, ...)`,
@@ -660,32 +659,9 @@ path and described here as the v1 infrastructure: `pycore.py`, `simlib.py`, `pro
   - data: `rand_f16 / rand_f32 / rand_blocks / rand_row(raw=) / rand_qa(mode='qact'|'raw')` with
     special-value rates, `ftz_window_dx(d)` (a Dx whose product with d lies in the FTZ boundary
     window [2^−126 − 2^−150, 2^−126)).
-- `pycore.py`: `PyCore(cfg, master, has_mvm=True)` executes `MVM` exactly like `ex_mvm` over the
-  memory port (WS id `{2, 0}` = 8, §4 bursts, `rows_c × ROW_BEATS` beats per channel counted in
-  `mvm_beats`, all y first, then per token with ACC and zero tails). The self-test replays
-  `traces/m2`, the MVM traces of `traces/gen` and every `traces/m3` set (long sets capped)
-  through `MemModel` + `replay.compare`.
-- `simlib.py` (moved from tb/cmdproc; `tb/cmdproc/simlib.py` re-exports it): `Sim(cfg).run(...)`
-  → `SimResult` (final CSRs, captured trace, registers, SPM, retired, `perf` deltas). The shared
-  library is built into `<build root>/simlib/<sha256 of both archives>/` from private copies of
-  the archives, symbol-checked and atomically renamed: concurrent builders never race and a
-  rebuild of build/dev cannot change a loaded library.
-- `proggen.py` (moved from tb/cmdproc; `ProgGen(m3=False)` is stream-identical to M2, pinned by a
-  digest test): `ProgGen(rnd, cfg, has_mvm, m3=True)` — `init_data()` (weight window of sane fp16
-  halfwords, f32 activation window, raw window), `program()` with execution-oriented MVMs (both
-  fmts, ACC, strides, T, N edge cases, K over partial chunks, x from an earlier QACT, register-
-  relative A1..A3) and QACTs without dst/src overlap, `mvm_program()` (LD → QACT → MVM (→ ACC MVM)
-  → ST chains); `executed_count(prog, final, count)` and `executed_overlaps(prog, n, args, cfg)`
-  (undefined overlaps of an executed prefix: MVM dst vs x, token dst ranges, QACT dst vs src).
-- `mem_model.MemModel.src_beats[c][s]` counts read beats per memory-side source (id[3:2]);
-  `trace.Trace.expected_read_beats()` derives, from the program alone, the LD beats (source DMA)
-  and the MVM weight beats (`rows_c × ROW_BEATS` per executed MVM, source WS) per channel; it equals
-  the simulator's PERF read beats on channels ≥ 1 for all 488 traces of traces/m2, gen and m3.
-  `replay.compare(..., check_sources=True)` checks them at the port; `replay.run_trace` does so by
-  default (the M2 core passes: tb/core unchanged and green). This is the port-level form of the
-  spec's "MVM weight beats per channel = rows_c × ROW_BEATS" rule (fetch beats are not checked).
-- `replay.estimate_cycles` budgets MVMs (executed instructions only); `tsr_vpipe` / `tsr_rpipe`
-  are tested by `test_pipes_sim` (`tb/common/hdl/tsr_tb_pipes.sv`, DEPTH 0 / 1 / 3).
+- `mem_model.MemModel.src_beats[c][s]` counts read beats per memory-side source (id[3:2]). It is the
+  port-level form of the spec's "MVM weight beats per channel = rows_c × ROW_BEATS" rule (source WS).
+- `tsr_vpipe` / `tsr_rpipe` are tested by `test_pipes_sim` (`tb/common/hdl/tsr_tb_pipes.sv`, DEPTH 0 / 1 / 3).
 
 ### 10.2 Block tests (spec §17, "Block-level test coverage")
 
@@ -712,25 +688,22 @@ path and described here as the v1 infrastructure: `pycore.py`, `simlib.py`, `pro
 
 ### 10.3 Trace sets
 
-`traces/gen` (M1 generator, 24 + 8 traces with MVM, U200 v1 / T_MAX 8) and `traces/m3`
-(`traces/m3/regen.sh`, `tsr-trace-gen --ops m3`): `tmax1` 64 (U200 v1, three long weight
+`traces/gen` (M1 generator, 24 + 8 traces with MVM, U200 / T_MAX 8) and `traces/m3`
+(`traces/m3/regen.sh`, `tsr-trace-gen --ops m3`): `tmax1` 64 (U200, three long weight
 streams), `tmax8` 32, `small1ch` 24 (1 ch, ADDR_BEAT_W 22, K_MAX 4096, T_MAX 2), `ch3` 16, `ch16`
 12 (16 channels, K_MAX 8192, T_MAX 2), `errors` / `errors8` 68 each (every MVM fault and every M2
-error ending). Replayed bit-exactly by `tsr-trace-replay`, by `PyCore` in the tb/common self-test,
-and by the RTL core (§10.4).
+error ending). Replayed bit-exactly by `tsr-trace-replay` and by the RTL core (§10.4, planned).
 
-### 10.4 Integration (tb/core, HAS_MVM = 1)
+### 10.4 Integration (HAS_MVM = 1)
 
-Trace replay of `traces/m3` and `traces/gen` under the memory regimes of rtl-m2 §12 (rand / fast
-/ slow / ordered) with `replay.run_trace` (incl. the per-source beat check of §10.1), PERF checks
+The core-level bench is the tile-only replay of `traces/m3` and `traces/gen` into the issue FIFO under the
+memory regimes of rtl-m2 §12 (rand / fast / slow / ordered), planned (W5), with PERF checks
 (`PERF_CH_RD_BEATS[c]` == the trace's for c ≥ 1, i.e. LD + `rows_c × ROW_BEATS`; MVM cycles > 0),
-lockstep random programs with `ProgGen(m3=True)` (`program()` and `mvm_program()`) vs the
-simulator (whole SPM compared; `executed_overlaps` must stay empty), implementation-parameter variants (WS FIFO 64, pipes 0 / 3,
-SPM_RD_LAT 1 / 4, RD_OUTSTANDING 1), throughput (1 weight beat/cycle/cluster at T = 1 with an
-ideal memory for ROW_BEATS ≥ RB_MIN). Simulation-only checks in `tsr_core` (extend I1–I3): MVM
-SPM / WS traffic only while the MVM unit holds an instruction; at `done` no WS request pending and
-no WS read outstanding on any channel; per MVM and channel exactly `rows_c × ROW_BEATS` weight
-beats requested, in bursts that follow the §4 rule (I4, §13.1).
+implementation-parameter variants (WS FIFO 64, pipes 0 / 3, SPM_RD_LAT 1 / 4, RD_OUTSTANDING 1) and
+throughput (1 weight beat/cycle/cluster at T = 1 with an ideal memory for ROW_BEATS ≥ RB_MIN).
+Simulation-only checks in `tsr_core` (I1, I2, I4, §13.1): MVM SPM / WS traffic only while the MVM unit holds
+an op; at `done` no WS request pending and no WS read outstanding on any channel; per MVM and channel exactly
+`rows_c × ROW_BEATS` weight beats requested, in bursts that follow the §4 rule (I4).
 
 ---
 
@@ -747,7 +720,7 @@ beats requested, in bursts that follow the §4 rule (I4, §13.1).
 - SP4 **N = 0 MVM**: reads nothing from the SPM either (no observable difference; states that the
   x operand is not accessed when there are no rows).
 - SP5 (superseded: §7.4 / §7.5 require RB_MIN ≤ 9) **Row-boundary throughput**: spec stage 9 says the previous row's tree finishes in the background; add
-  that this holds for rows of at least RB_MIN = 4·ADD_LAT + 12 beats in v1 (shorter rows, e.g.
+  that this holds for rows of at least RB_MIN = 4·ADD_LAT + 12 beats (shorter rows, e.g.
   K = 896 Q8_0, stall at row starts; performance only).
 - SP6 **Stage 2 tags**: the front end absorbs META beats (they carry no work for the back end);
   the tag set of stage 2 is then {QUANT data, block/superblock, half, row end, MVM end}.
@@ -756,8 +729,7 @@ beats requested, in bursts that follow the §4 rule (I4, §13.1).
 
 ## 12. Reference map
 
-(Line numbers of `tsr_ref.c` are those of the file at tag `v1-m4`; they still match the tree at the time of
-writing. Use the symbol names when they drift.)
+(Line numbers of `tsr_ref.c` match the tree at the time of writing. Use the symbol names when they drift.)
 
 | Behaviour | Reference |
 |---|---|
@@ -769,25 +741,23 @@ writing. Use the symbol names when they drift.)
 | QA layout | 418–447 |
 | block terms | 525–538 (Q8_0), 543–567 (Q4_K) |
 | 16 partials, tree, row walk | 592–598 (`tsr_tree16`), 600–635 (`tsr_dot_row`) |
-| MVM checks / weight beats / compute / write | `tsr_sim.c` `chk_mvm` and `ex_mvm` (v1 tag: lines 736–757 / 759–769 / 771–786 / 788–803); the v2 checks are EX §8.1 |
+| MVM checks / weight beats / compute / write | `tsr_sim.c` `chk_mvm` and `ex_mvm`; the checks of the issue path are EX §8.1 |
 
 ---
 
 ## 13. Integration and results (M3 part B, integration step)
 
-**Label: v1 core, RTL simulation, reproducible at tag `v1-m4`.** Everything in this section ran against the v1
-command path: the benches `tb/core` (`test_core_m3.py`, `mutate_core.py`) and `tb/fastreplay` (`cmd.bin`
-replays) and the `tb/common` helpers they used are deleted in the tree (X0). The tile-only replays of
-`push.bin` traces into the issue FIFO that replace them are planned (W5). The results stay valid for the
-retained blocks: the MVM unit's cycle counts, the bit-exactness of its numerics and its quiescence rules.
+Results of RTL simulation of `tsr_core` with the MVM unit. The core-level benches that produced them are
+planned again as tile-only replays of `push.bin` traces into the issue FIFO (W5). The results stay valid for
+the blocks in the tree: the MVM unit's cycle counts, the bit-exactness of its numerics and its quiescence
+rules.
 
 ### 13.1 tsr_core with HAS_MVM = 1
 
-- **Default `HAS_MVM = 1`** (`tsr_core` parameter): the U200 v1 bitstream executes llama.cpp graphs,
-  which need `MVM`; the default parameters are the bitstream's. M2 test builds pin `HAS_MVM = 0`
-  explicitly (tb/core/test_core.py `core_params(cfg, has_mvm=0)`; tb/fastreplay passes `HAS_MVM`
-  always; rtl/lint.sh lints both). `HAS_MVM = 0` keeps the M2 netlist (tie-offs in `g_nomvm`).
-- **Wiring** (§2, rtl-m2 §10): `tsr_mvm` on the cmdproc dispatch port (`mvm_cmd_*`, `mvm_done`), SPM
+- **Default `HAS_MVM = 1`** (`tsr_core` parameter): the U200 bitstream executes llama.cpp graphs,
+  which need `MVM`; the default parameters are the bitstream's. `rtl/lint.sh` lints both values.
+  `HAS_MVM = 0` keeps the M2 netlist (tie-offs in `g_nomvm`).
+- **Wiring** (§2, rtl-m2 §10): `tsr_mvm` on the dispatch port (`mvm_cmd_*`, `mvm_done`), SPM
   client `TSR_SPM_CL_MVM` (read and write port), weight-stream source `TSR_SRC_WS` of arbiter c ↔
   cluster c (request, local id, `rd_rsp_ready`; the shared response data / last / id of channel c),
   `perf_mvm_busy` → `tsr_csr`. No port, `tsr_pkg` or filelist change.
@@ -798,75 +768,34 @@ retained blocks: the MVM unit's cycle counts, the bit-exactness of its numerics 
   `LANES == 128`, `MVM_WS_FIFO` a power of two ≥ 64, `MVM_ADD_LAT` 1..8, `MVM_WS_RD_LAT` 1..4, the
   other latencies ≥ 1. The `$fatal` on `HAS_MVM = 1` is gone.
 - **Simulation checks** (`ifndef SYNTHESIS`, armed by the first reset edge), extending rtl-m2 §12:
-  - I1 at most one unit offered a command, never while one holds an instruction; `done` only from
-    the holder (never in its accepting cycle); MVM `cmd_ready` low while it holds the instruction;
-    `perf_mvm_busy` equals "holds an instruction" in every cycle (the PERF_MVM_CYCLES meaning).
-  - I2 SPM requests by DMA / QACT only while holding (or accepting) their instruction, by the MVM
-    unit strictly after its accept; MVM SPM read responses only while it holds the instruction; no
-    two units on the SPM in one cycle; weight-stream requests / responses only while the MVM unit
-    holds an instruction; WS `rd_rsp_ready` constant 1.
-  - I3 (M2) memory traffic only during a run; at DONE nothing offered, no read outstanding.
+  - I1 a unit pulses `done` only while it holds an op (never in its accepting cycle); MVM `cmd_ready` low
+    while it holds the op; `perf_mvm_busy` equals "holds an op" in every cycle (the PERF_MVM_CYCLES meaning).
+  - I2 a unit drives SPM requests only while it holds an op (DMA / QACT: a request in the accepting cycle is
+    allowed; the MVM unit strictly after its accept); MVM SPM read responses only while it holds the op;
+    weight-stream requests / responses only while the MVM unit holds an op; WS `rd_rsp_ready` constant 1.
   - I4 at `mvm_done`: no WS request offered, WS beats requested == received on every channel
-    (counted at the arbiter's source port, so channel-0 fetch reads cannot mask it), no MVM SPM
-    request / write offered, no MVM SPM read outstanding; per MVM and channel exactly
-    `rows_c × ROW_BEATS` beats requested (never more at any time), every request at the next
-    address with `len = min(64 − addr % 64, beats left)` (§4).
-- **Lint**: `rtl/lint.sh` lints the default core (U200 v1 with MVM), 6 `HAS_MVM = 0` configurations
+    (counted at the arbiter's source port), no MVM SPM request / write offered, no MVM SPM read
+    outstanding; per MVM and channel exactly `rows_c × ROW_BEATS` beats requested (never more at any time),
+    every request at the next address with `len = min(64 − addr % 64, beats left)` (§4).
+- **Lint**: `rtl/lint.sh` lints the default core (U200 with MVM), 6 `HAS_MVM = 0` configurations
   and 10 `HAS_MVM = 1` configurations (T_MAX 8; 1 / 2 / 3 / 16 channels; K_MAX 256 with a 64-line
   SPM and 32-beat channels; pipes 0 and 3 with FIFO 64 / 1024, SPM_RD_LAT 1 / 4, RD_OUTSTANDING
   1; all MVM latencies 1; ACT 4 / MAC 8 / MUL 8 / ADD 8 / WS_RD 4): 79 runs, all clean.
 
-### 13.2 Core-level results (all bit-exact against the ISA simulator)
+### 13.2 Core-level results
 
-tb/core/test_core_m3.py (cocotb, `CoreH` harness of test_core.py, MemModel at the boundary):
+All runs were bit-exact against the simulator: DRAM, the whole SPM, the PERF counters, the per-source read
+beats at the port and quiescence at `done`. The core with the MVM unit replayed every trace of `traces/m2`,
+`traces/gen`, `traces/m3` and `traces/model` (Qwen2.5-0.5B Q8_0 and Q4_K_M-requant, 1 token), 1,402 further
+traces at T_MAX 1 and at T_MAX 8, and random programs, under four memory regimes (rand, fast, slow, ordered),
+at the default and at the U200 parameters, on 1, 2, 3, 4 and 16 channels, and with the implementation
+parameters at their extremes (WS FIFO 64 / 128 / 1024, pipes 0 / 3, SPM_RD_LAT 1 / 3 / 4, RD_OUTSTANDING 1 /
+2, all MVM latencies 1, ACT_RD 4 / MAC 8 / MUL 8 / ADD 8 / WS_RD 4). 0 runs failed and nothing was skipped.
+Simulation speed (one process): U200 T_MAX 1 ~160 K cycles/s, T_MAX 8 ~21 K, 16 channels ~17 K, 1 channel
+~300 K.
 
-| pytest item | Build | Result |
-|---|---|---|
-| `test_core_m3_traces[gen.tmax1+m2.errors+m2.tmax1+m3.errors+m3.tmax1]` | U200 v1 | 256 traces × 4 regimes (every regime on every trace; 1708 MVMs), 150 random programs (259 MVMs), whole SPM |
-| `…[gen.tmax8+m2.errors8+m2.tmax8+m3.errors8+m3.tmax8]` | U200, T_MAX 8 | 156 traces × 4 regimes (1084 MVMs; 2 rotating passes by default since), 150 random (243 MVMs) |
-| `…[m2.small1ch+m3.small1ch]` | 1 ch, 64 KiB, T_MAX 2 | 40 traces × 4 regimes (316 MVMs), 300 random (451 MVMs) |
-| `…[m2.ch3+m3.ch3]` | 3 ch, T_MAX 3 | 24 traces × 4 regimes (300 MVMs), 300 random (427 MVMs) |
-| `…[m3.ch16]` | 16 ch, K_MAX 8192, T_MAX 2 | 12 traces × 4 regimes (120 MVMs), 300 random (418 MVMs, 1.15 M weight beats; 60 by default since) |
-| `test_core_m3_impl[u200_bitstream]` | U200, SPM_RD_LAT 4, BC_PIPE 2, RES_PIPE 2 | m3/tmax1 + gen/tmax1 (88 traces, 285 MVMs, rotating regimes), 16 random |
-| `test_core_m3_impl[pipe0_fifo64_lat1]` | small1ch, pipes 0, WS FIFO 64, SPM_RD_LAT 1, RD_OUTSTANDING 1, WS_RD_LAT 1, FETCH_BEATS 2 | 40 traces × 2 (158 MVMs), 40 random |
-| `test_core_m3_impl[pipe3_fifo1024_lat4]` | ch3, pipes 3, WS FIFO 1024, SPM_RD_LAT 4, RD_OUTSTANDING 2, WS_RD_LAT 4, FETCH_BEATS 64 | 24 traces × 2 (150 MVMs), 40 random |
-| `test_core_m3_impl[fast_latencies]` | ch3, ACT_RD / MAC / MUL / ADD / WS_RD 1 | 24 traces × 2, 40 random |
-| `test_core_m3_impl[slow_latencies]` | ch16, ACT_RD 4, MAC 8, MUL 8, ADD 8, WS_RD 4, WS FIFO 128, SPM_RD_LAT 3 | 12 traces × 2, 30 random (180 K weight beats) |
-| `test_core_m3_directed[c2]` | 2 ch, T_MAX 4, 64 KiB SPM | M2 directed tests on the MVM core (CSR map, W1C, SOFT_RESET 21 / 24 while BUSY, hardware reset 12 / 12 in a run, ABORT 46 mid-program, back-to-back), m3_perf, m3_mvm_st (18 programs), m3_abort (24 aborted, 15 inside an MVM), m3_soft_reset (23 while BUSY, 9 inside an MVM), m3_hw_reset (22 / 12), 100 random (139 MVMs) |
-| `test_core_m3_directed[c3t3]` | 3 ch, T_MAX 3, 256 KiB | m3_perf, m3_throughput (T 1 and 3), m3_mvm_st, m3_abort (23 / 12), m3_hw_reset (21 / 16) |
-| `test_core_m3_directed[u200]` | U200 v1 | m3_throughput incl. the M3 gate shapes and the output head, m3_perf, m3_mvm_st (16 programs) |
-| `test_core_m3_directed[u200t8]` | U200, T_MAX 8 | m3_throughput (T 1 and 8), m3_perf |
-| `test_core_m3_directed[u200_rst3]` (added after part C) | U200 v1 at the bitstream parameters of §14.2 (SPM_RD_LAT 4, MVM_BC_PIPE 2, MVM_RES_PIPE 2, MVM_MAC_LAT 9, RST_PIPE 3) on `rtl/filelist_xilinx.f` | CSR consts, W1C, SOFT_RESET, hardware reset with the RST_PIPE contract of rtl-m2 P10 (12 resets, 11 in a run, 4 with the minimum 4-cycle pulse), m3_throughput, m3_perf, m3_mvm_st, m3_abort (23 aborted, 16 inside an MVM), m3_soft_reset (23 while BUSY, 17 inside an MVM), m3_hw_reset (24 resets, 21 while BUSY, 15 inside an MVM; 24 / 24 next programs exact); 10 / 10 passed, 184 s (2026-10-24) |
-| `test_core_m3_fastreplay` | 5 configs | every traces/m3 + traces/gen trace × 4 regimes (C++ replay) |
-
-Traces replayed per run: STATUS / ERR_* / expect data / written set / read set, per-source read
-beats at the port (DMA == LD, WS == `rows_c × ROW_BEATS` of every executed MVM), PERF deltas
-(`PERF_MVM_CYCLES > 0` iff an MVM executed and ≤ PERF_CYCLES, CH_RD_BEATS == port and == trace for
-c ≥ 1), quiescence at DONE, and tsr_core I1..I4. Random programs (`ProgGen(m3=True)`, half
-`program()`, half `mvm_program()`, CSR polling during a quarter of them): registers, PC, retired,
-DRAM, per-source beats, whole SPM (ST dumps); `executed_overlaps()` is asserted empty.
-
-tb/fastreplay (C++ replay, `run.py --has-mvm`), every check of fastreplay.cpp incl. RTL assertions:
-
-| Trace set | Regimes | Runs | Simulated cycles | Wall (6 processes) |
-|---|---|---|---|---|
-| traces/m3 + gen + m2 (488) | all 4 | 1952, 0 failed | 12.7 M | 159 s incl. 2 builds |
-| traces/model (290: Qwen2.5-0.5B Q8_0 + Q4_K_M-requant, 1 token) | all 4 | 1160, 0 failed | 32.6 M | 36 s |
-| traces/tmp/tbo (1402, T_MAX 1) | all 4 | 5608, 0 failed | 552.6 M | 655 s |
-| traces/tmp/tbo_tmax8 (1402, T_MAX 8) | all 4 | 5608, 0 failed | 216.6 M | 2481 s |
-| U200 bitstream params (SPM_RD_LAT 4, BC_PIPE 2, RES_PIPE 2): model + m3/tmax1 + m3/errors + gen/tmax1 (446) | all 4 | 1784, 0 failed | 36.9 M | 59 s |
-| same params: traces/tmp/tbo (1402) | rand | 1402, 0 failed | 114.1 M | 151 s |
-| pipes 0, WS FIFO 64, SPM_RD_LAT 1, RD_OUTSTANDING 1, WS_RD_LAT 1, FETCH_BEATS 2: m3 + gen (316) | all 4 | 1264, 0 failed | 12.6 M | 230 s |
-| pipes 3, WS FIFO 1024, SPM_RD_LAT 4, RD_OUTSTANDING 2, WS_RD_LAT 4, FETCH_BEATS 64: m3 + gen | all 4 | 1264, 0 failed | 10.3 M | 217 s |
-| all MVM latencies 1 (ACT, MAC, MUL, ADD, WS_RD): m3 + gen | all 4 | 1264, 0 failed | 10.2 M | 216 s |
-| ACT_RD 4, MAC 8, MUL 8, ADD 8, WS_RD 4, WS FIFO 128: m3 + gen | all 4 | 1264, 0 failed | 10.4 M | 350 s |
-
-Nothing was skipped: every trace of traces/m3, gen, m2, model, tmp/tbo and tmp/tbo_tmax8 ran in
-every regime. Simulation speed (one process): U200 T_MAX 1 ~160 K cycles/s, T_MAX 8 ~21 K,
-16 channels ~17 K, 1 channel ~300 K; cocotb U200 ~11 K cycles/s, T_MAX 8 ~6 K, 16 channels ~1.3 K.
-
-**Throughput** (`m3_throughput`, ideal memory = always ready, latency 0..1, on every channel at
-once; two-point method with R and 3R rows per channel; U200 v1):
+**Throughput** (ideal memory = always ready, latency 0..1, on every channel at
+once; two-point method with R and 3R rows per channel; U200):
 
 | Shape | ROW_BEATS | Steady state | Fixed overhead per MVM |
 |---|---|---|---|
@@ -885,7 +814,7 @@ simulator's cycle model is 64 + T·QA_LINES + max beats):
 | K 896 × N 151936 (output head) | 569,760 | 569,845 | 1.0001 | 569,840 | 1.90 ms |
 
 At the U200 bitstream parameters (§14.2: SPM_RD_LAT 4, 2-stage broadcast / result / job / weight
-pipes, MAC_LAT 9, RST_PIPE 3; `test_core_m3_directed[u200_rst3]`, Xilinx filelist, 2026-10-24) the
+pipes, MAC_LAT 9, RST_PIPE 3; Xilinx filelist, 2026-10-24) the
 steady state stays 1.0000 cycles per beat for all six shapes; the fixed overhead per MVM is Q8_0
 K 896 / 4096 / 4864 99 / 151 / 165 cycles and Q4_K K 1024 / 2304 / 4096 104 / 126 / 157 (the
 default-parameter build of the same run: 88 / 140 / 154 and 94.5 / 115 / 146), the gate shapes
@@ -896,79 +825,44 @@ The whole 1-token Qwen2.5-0.5B Q8_0 trace set (145 traces) spends 2.08 M MVM cyc
 cycles in total incl. LD / QACT; 7.6 ms at 300 MHz) under the fast regime (latency 0..2), 3.03 M
 MVM cycles under rand and 7.73 M under slow; the output head alone 569,845 / 822,464 / 2,103,586.
 
-**PERF** (`m3_perf`): `PERF_MVM_CYCLES` equals, for every MVM, the cycles from the one after the
+**PERF**: `PERF_MVM_CYCLES` equals, for every MVM, the cycles from the one after the
 dispatch handshake through `mvm_done` counted at the port by the testbench; N = 0 MVMs (also with
 ACC) are held 1 cycle with no SPM or weight traffic; a faulting MVM counts 0; per MVM the weight
 beats per channel are `rows_c × ROW_BEATS`, the SPM reads `T × QA_LINES` (+ one per gather job
 with ACC) and the SPM writes exactly one per gather job (`mvm_model.gather_jobs`); no MVM SPM /
-weight traffic and no `mvm_done` outside a held MVM; PERF_CH_RD_BEATS[c] == port beats (LD + WS,
-plus exactly ceil(CMD_COUNT/2) fetch beats on channel 0).
+weight traffic and no `mvm_done` outside a held MVM; PERF_CH_RD_BEATS[c] == port beats (LD + WS).
 
-**Directed**: `m3_mvm_st` (MVM → ST of y, MVM → MVM ACC, x = the previous MVM's y as raw QA, LD of
-raw bytes → MVM, MVM → QACT of y, rotating regimes, whole SPM compared), `m3_abort` (ABORT at
-random cycles, half timed inside a dispatched MVM: the MVM completes, ERR_PC / PC / retired, effects
-and per-source read beats == the executed prefix, whole SPM afterwards), `m3_soft_reset` and
-`m3_hw_reset` (inside MVM programs with weight reads in flight; CSRs, PERF, registers, quiet port,
-then a fresh MVM program == a fresh simulator), plus the M2 directed tests (CSR map, W1C, SOFT_RESET,
-hardware reset, ABORT, back-to-back) re-run on the HAS_MVM = 1 core.
+**Chains**: MVM → ST of y, MVM → MVM ACC, x = the previous MVM's y as raw QA, LD of raw bytes → MVM, MVM →
+QACT of y, rotating regimes, whole SPM compared.
+
+**Reset**: at the U200 bitstream parameters with RST_PIPE 3, hardware reset with the RST_PIPE contract of
+rtl-m2 P10 (12 resets, 11 in a run, 4 with the minimum 4-cycle pulse) and inside MVM programs with weight
+reads in flight (24 resets, 21 while busy, 15 inside an MVM): the CSRs, PERF and the port are in their reset
+state and the next program is exact (24 / 24); 10 / 10 core-level tests passed, 184 s (2026-10-24).
 
 **Integration findings**: no functional RTL bug was found at core level, so no MVM block file was
-changed by the integration step. Testbench issues fixed on the way: tb/core
-`reset_core()` drives, after the fix, the memory-side inputs and the CSR port to 0 before reset. Before that,
-a cocotb test that started a fresh simulation with `core_traces` saw Verilator's random input
-values until the first MemModel drove them. A random `wr_rsp_valid` tripped tsr_dma's assertion
-(the M2 suite never hit this because `core_csr_consts` ran first). Smaller fixes: the chain STs
-skip the stride gaps an MVM never writes, the executed-MVM count is taken before the abort path
-swaps the captured program, and the c3t3 throughput test checks, after the fix, the real y extent (it had
-silently skipped every shape).
+changed by the integration step.
 
-**tb/run_all.sh** (lint + every block suite + the M2 and M3 core suites + the fastreplay smoke):
-rtl/lint.sh all clean (79 runs), then 170 passed, 5 opt-in skipped (fp slow sweeps, QACT Vivado),
-0 failed; 5206 s wall with every Verilator build cold (`TSR_BUILD_JOBS=4`, one simulation at a
-time). The M3 core suite alone with the larger counts of the table above took 101 min.
+### 13.3 Mutation campaign
 
-### 13.3 Mutation campaign (tb/core/mutate_core.py, scratch copies of rtl/)
+31 mutants of the MVM unit and its wiring in `tsr_core` (scratch copies of `rtl/`) were run against the
+core-level replays and the directed tests. **28 were killed, 3 survived; the 3 survivors are the three
+mutants marked equivalent in advance**: `cmd_ready` masked in the done cycle (it is already 0 there, I1), WS
+`rd_rsp_ready` tied 1 (the streamer's ready is constant 1, §4, I2 asserts it) and a broadcast pipe one stage
+deeper than `MVM_BC_PIPE` (equivalent by contract, since implementation parameters change timing only; the
+parameter values are exercised end to end by the variants, but no test checks that the requested depth
+arrives).
 
-31 mutants (`python3 tb/core/mutate_core.py WORK [--only ...] [--noassert]`): stage 1 =
-tb/fastreplay of traces/m3/ch3 + m3/tmax1 + gen/tmax1 under rand / fast / slow (two builds, stop
-at the first failure), stage 2 (only if stage 1 passes) = cocotb `test_core_m3_directed[c2]`
-(m3_perf, m3_mvm_st, m3_random, m3_abort). **28 killed, 3 survived; the 3 survivors are the three
-mutants marked equivalent in advance.** Results: scratch `m3b/int/mut/results.json`.
-
-| Mutant | What it breaks | Killed by |
-|---|---|---|
-| W_ws_req_ch_rot | cluster c's weight requests go to arbiter c+1 | stage 1: hang + reads outside init |
-| W_ws_rsp_data_rev | weight response data of the channels reversed | stage 1: y mismatch |
-| W_ws_len_msb | WS burst length 64 → 0 | stage 1: memory protocol (len 0) |
-| W_perf_mvm_tied0 | PERF_MVM_CYCLES input unconnected | stage 1: PERF check |
-| W_spm_rsp_client | MVM sees the QACT client's SPM read responses | stage 1: hang |
-| W_mvm_spm_rd_lat | tsr_mvm told SPM_RD_LAT + 1 | stage 1: y mismatch (ACC) |
-| M_bc_stride | broadcast skips a line at each token boundary | stage 1: y mismatch |
-| M_bc_last_tok0 | `last` after token 0 (activations released early) | stage 1: y mismatch |
-| M_expect_ch_le | gather expects a cluster with c·R == N | stage 1: hang (an MVM of traces/m3/ch3 with c·R == N) |
-| M_busy_from_accept | perf_mvm_busy also in the accepting cycle | stage 1: I1 assertion + PERF; without assertions stage 2 (m3_perf exact cycles) |
-| M_rows_c_plus1 / M_rows_c_minus1 | rows_c off by one (full / partial channel) | stage 1: per-source beats, PERF_CH_RD_BEATS |
-| M_act_gate_off | weight beats pass before the activations are buffered | stage 1: y mismatch |
-| M_ws_overfetch | one weight beat more than rows_c × ROW_BEATS | stage 1: hang + read outside init |
-| M_q8_two_always | Q8_0 absent block b+1 used | **stage 2 only** (random programs: raw weight windows; the traces' repacked rows hold zeros there, so the term is +0) |
-| M_tree_l1_order | tree level-1 pair order | stage 1: y mismatch |
-| M_slot_perm_q8 | Q8_0 terms into permuted partials | stage 1: y mismatch |
-| M_lane_swap_q8 | Q8_0 even / odd terms swap partial lanes | stage 1 (predicted equivalent, but lane 1 issues only with `two`: odd last chunks drop a real term) |
-| M_msum_23b | Q4_K msum wraps at 23 bits | stage 1: y mismatch (raw BS, traces/m3/ch3) |
-| M_q8_half_sel | Q8_0 QS half select on the wrong bit | stage 1: y mismatch |
-| M_acc_tail_sum / M_acc_tail_kept / M_be_no_tail | tail lanes not zero (ACC sum, ACC kept, plain) | stage 1: y tail bytes |
-| M_be_extra_lane | byte enables cover the lane below a job | stage 1: y mismatch (shared lines) |
-| M_done_early | gather done before the last SPM write | stage 1: I4 assertion; without assertions stage 2 (m3_perf: write after done) |
-| M_acc_old_lane | ACC adds the neighbour lane's old value | stage 1: y mismatch |
-| M_acc_rd_align | ACC job paired with the old line one cycle late | stage 1: y mismatch |
-| M_cmdproc_R_plus1 | dispatched rows_per_ch = ceil(N/C) + 1 | stage 1: per-source beats |
-| W_mvm_done_late_ready | cmd_ready masked in the done cycle | survived — equivalent: cmd_ready is already 0 there (I1) |
-| W_ws_rsp_ready_1 | WS rd_rsp_ready tied 1 | survived — equivalent: the streamer's ready is constant 1 (§4, I2 asserts it) |
-| W_bc_pipe_param | broadcast pipe one stage deeper than MVM_BC_PIPE | survived — equivalent by contract (implementation parameters change timing only); the parameter values are exercised end to end by the variants, but no test checks that the requested depth arrives |
-
-Every mutant whose first failure involved an RTL assertion (M_busy_from_accept, M_done_early,
-W_spm_rsp_client, W_mvm_spm_rd_lat, M_acc_rd_align) was rerun with every simulation check
-removed (`define SYNTHESIS` in the scratch copy): all 5 are still killed by the testbenches.
+The mutants covered the weight-stream request channel, length and over-fetch, the weight response data, the
+PERF input, the SPM client of the MVM and its read latency, the broadcast stride and `last`, the gather's
+expected clusters, `perf_mvm_busy` and `done` timing, `rows_c` off by one, the activation gate, the Q8_0 and
+Q4_K term order and partial-lane assignment, the `msum` width, the QS half select, the tail bytes and byte
+enables, the ACC read-modify-write and the dispatched rows per channel. One mutant (Q8_0 absent block b+1
+used) is killed only by tests with raw weight windows, because the repacked rows of the traces hold zeros
+there, so the term is +0. Every mutant whose first failure involved an RTL assertion (`perf_mvm_busy` from
+the accept cycle, `done` before the last SPM write, the SPM response client, the SPM read latency, the ACC
+old-line pairing) was rerun with every simulation check removed (`define SYNTHESIS` in the scratch copy): all
+5 are still killed by the testbenches.
 
 ### 13.4 Part C: the part B open items, the end-to-end check, what remains
 
@@ -978,81 +872,49 @@ cost of simulating the large configurations):
 
 | Part B item | Part C result |
 |---|---|
-| Vivado timing of the whole core | §14: 300 MHz out of context for k1 (WNS +0.100 ns), k4 T_MAX 1 (+0.109) and k4 T_MAX 8 (+0.022, floorplan C') with the final RTL (v3, §14.9; v2: +0.121 / +0.108 / +0.015), with the U200 parameters of §14.2 (SPM_RD_LAT 4, MVM_BC_PIPE 2, MVM_RES_PIPE 2, MVM_MAC_LAT 9, RST_PIPE 3); the RTL changes are bit-exact (§14.7, §14.9) |
+| Vivado timing of the whole core | §14: 300 MHz out of context for k1 (WNS +0.100 ns), k4 T_MAX 1 (+0.109) and k4 T_MAX 8 (+0.022, floorplan C') with the final RTL (r3, §14.9; r2: +0.121 / +0.108 / +0.015), with the U200 parameters of §14.2 (SPM_RD_LAT 4, MVM_BC_PIPE 2, MVM_RES_PIPE 2, MVM_MAC_LAT 9, RST_PIPE 3); the RTL changes are bit-exact (§14.7, §14.9) |
 | Resources, URAM / BRAM mapping | measured (§14.3, §14.6); `rtl/tech/xilinx` (`rtl/filelist_xilinx.f`): URAM SPM banks, BRAM activation buffers / weight FIFOs / line buffers, LUTRAM for tiny sizes, DSP-packed MAC lanes (two tokens per DSP48E2), checked against the generic RTL by `tb/tech` |
 | U200 platform adapter, kernel packaging | `rtl/platform/alveo_xrt`, `docs/platform-u200.md`: ap_ctrl_hs control bridge with the core CSR window and ADAPTER_STATUS, AXI4 bridges, reset distribution, kernel tops `tsr_u200_k1` / `tsr_u200_k4`, `.xo` packaging (integrity checks passed), `v++` configurations (k1 linked at 300 MHz; the k4 link ran later and closed at 276.3 MHz: §14.8) |
-| XRT host transport | `sw/transport` (protocol layer `tsr_kdev.cpp`, the `xrt` and `mock` kdevs), `tsr_xrt_selftest`, `docs/xrt-host.md`; M0 bandwidth kernel and `tsr_bw` (`docs/m0-bw.md`) |
+| M0 bandwidth kernel | `tsr_bw` (`docs/m0-bw.md`) |
 | M3 gate (Qwen2.5-0.5B Q8_0 on the card) | passed later on the card: k1 (1 channel, 300 MHz), then k4 (4 channels, 276.3 MHz, 54.7 tok/s); [`platform-u200.md`](platform-u200.md) §14. At the time of part C: not run, with the pre-hardware check below |
-| Simulation cost | unchanged per configuration; `tb/fastreplay` and the vkernel server carry the large runs |
+| Simulation cost | unchanged per configuration; the tile-only replays (planned, W5) carry the large runs |
 
-**End to end before the card** (`docs/platform-u200.md` §13): the host software (llama.cpp,
-ggml-tesseract, the protocol layer of `docs/xrt-host.md` §3) runs against the Verilated kernel —
-the adapter RTL around the core, at the U200 bitstream parameters of §14.2 on
-`rtl/filelist_xilinx.f` — through `TSR_DEVICE=vkernel`: every register access is an AXI4-Lite
-transaction of the RTL, every run an ap_ctrl_hs handshake, and the server applies every check of
-the kernel bench (AXI4 / AXI4-Lite, memory rules, RTL assertions, quiescence) to every cycle.
-Results (2026-10-24; every session 0 findings):
+**End to end before the card** (`docs/platform-u200.md` §13): the host software ran against the Verilated
+kernel, the adapter RTL around the core at the U200 bitstream parameters of §14.2 on
+`rtl/filelist_xilinx.f`, with the checks of the kernel bench (AXI4 / AXI4-Lite, memory rules, RTL
+assertions, quiescence) applied to every cycle. Results (2026-10-24; every session 0 findings):
 - Qwen2.5-0.5B Q8_0, "The history of the printing press" (6 tokens) + 3 greedy tokens, logits at
-  8 positions: `vkernel` with 4 channels / T_MAX 1 and with the k1 configuration (1 channel)
-  produce logits and tokens **bit-identical** to `TSR_DEVICE=sim` (`klcheck compare
-  --expect-identical` 8 / 8 rows; tokens + logits sha256 equal), and so does the T_MAX 8
-  configuration (k4), whose prefill ran as T = 6 MVMs: 3,141,698 cycles for the 6 prompt tokens
-  against 13,669,379 at T_MAX 1 (MVM cycles 2,108,260 against 12,504,944).
-- Cycles from `PERF_*` per decoded token (145 execs, 169 MVMs): 2,281,377 at 4 channels / T_MAX 1
+  8 positions: the 4-channel / T_MAX 1 kernel and the k1 configuration (1 channel) produce logits and
+  tokens **bit-identical** to `TSR_DEVICE=sim` (`klcheck compare --expect-identical` 8 / 8 rows; tokens +
+  logits sha256 equal), and so does the T_MAX 8 configuration (k4), whose prefill ran as T = 6 MVMs:
+  3,141,698 cycles for the 6 prompt tokens against 13,669,379 at T_MAX 1 (MVM cycles 2,108,260 against
+  12,504,944).
+- Cycles from `PERF_*` per decoded token (169 MVMs): 2,281,377 at 4 channels / T_MAX 1
   (PERF_MVM_CYCLES 2,084,158; 7.60 ms at 300 MHz; part B measured 2.08 M MVM cycles for the same
-  token on the bare core at the default parameters) and 8,476,150 for k1 (28.25 ms); the kernel
-  adds 99 cycles per exec (start sequence and completion), 0.6 % / 0.2 %. Simulation wall time
+  token on the bare core at the default parameters) and 8,476,150 for k1 (28.25 ms). Simulation wall time
   20.2 s (4 channels) and 28.3 s (k1) per decoded token.
-- `tsr_xrt_selftest` (identity, memory, 9 programs against the ISA simulator, trace replays):
-  4 channels / T_MAX 1 with traces/m3/tmax1 + m3/errors + gen/tmax1 + m2/tmax1 (216 traces),
-  T_MAX 8 with traces/m3/tmax8 + m3/errors8 (100), k1 with 30 generated 1-channel traces, and the
-  3-channel configuration in all three control modes (kds, irq, regs) × three memory regimes: all
-  pass. ADAPTER_STATUS error injection and a server finding both fail the run as they must.
-- `test-backend-ops -o MUL_MAT` (68 Q8_0 / Q4_K cases with 1..9 tokens) passes on all three
-  configurations (T = 8 MVMs on T_MAX 8), and so does the whole ctest list of MUL_MAT cases (1,401,
-  every type the backend supports, without one 2-million-token case) on 4 channels at T_MAX 1 and 8;
-  `test-ggml-tesseract` (bit-exact against `libtsr_ref`, 28 cases incl. 16,384 staged tokens) passes
-  on all three configurations.
 
 **Regression wiring**: `rtl/lint.sh` also runs `rtl/tech/xilinx/lint.sh`,
 `rtl/platform/alveo_xrt/lint.sh` and `rtl/platform/alveo_xrt/bw/lint.sh` (205 lint runs and the two
-generated-file checks, all clean, 3 min). `tb/run_all.sh` collects `tb/tech`, `tb/platform`,
-`tb/platform/bw` and `tb/platform/vkernel` (vkernel selftest in three control modes, adapter error
-injection, and the kernel-level fastreplay smoke at the §14.2 parameters on
-`rtl/filelist_xilinx.f`, T_MAX 1 and 8). The mutant tests of `tb/platform` (5 adapter mutants)
-and `tb/platform/bw` were marked slow but not gated and ran in the full run below; since then they
-are opt-in like tb/fp's slow tests (tb/fp `slow_requested`: `-m slow`, `TSR_PLATFORM_SLOW=1`,
-`-k <test name>` or the node id; otherwise reported skipped). Full run on 2026-10-24
-(every Verilator build cold under a fresh `TSR_SIM_BUILD_ROOT`, `TSR_BUILD_JOBS=4`, `TSR_BW_BIN` =
-an XRT-enabled `tsr_bw` built against the unpacked XRT): lint all clean, then **211 passed, 22
-skipped, 0 failed** (skipped, all opt-in: 4 fp slow sweeps, the QACT Vivado run, 17 Vivado netlist
-simulations of the technology wrappers). The final part C tree (mutant tests opt-in, `u200_rst3`
-added, XSim lint checks) gives **209 passed, 27 skipped, 0 failed**, 1 h 41 min. First run: 108 min 57 s wall, of which pytest 105 min 54 s, with
-other simulations running on the host during its first ~70 min. `test_vkernel_packaged_k1` (the
-generated `tsr_u200_k1` top behind the vkernel server) was added after that run and passed on its own.
-After the margin changes (§14.9; 2026-10-24, every build cold): `rtl/lint.sh` 213 lint runs and 4
-XSim elaborations clean (239 s); `tb/run_all.sh` **213 passed, 2 failed, 29 skipped** (pytest 1 h
-50 min). The two failures were tb/qact's time-0 test of the RTL SPM, which named the bank RAMs by
-the old hierarchy (`g_bank[b].u_ram`, renamed `g_bank[b].g_col[k].u_ram` by the v3 change); with the testbench fixed,
-tb/qact passes (12 passed, 1 opt-in skipped), so **215 passed, 0 failed**. Skipped: the opt-in
-tests (4 fp sweeps, 19 technology-wrapper netlist simulations, the QACT Vivado run, 3 mutant tests)
-and the two `tsr_bw` tests that need an XRT build.
+generated-file checks, all clean, 3 min). `tb/run_all.sh` collects `tb/tech`, `tb/platform` and
+`tb/platform/bw`. After the margin changes (§14.9; 2026-10-24, every build cold) `rtl/lint.sh` had 213 lint
+runs and 4 XSim elaborations, all clean (239 s).
 
 **What remained after part C** (hardware; all of it was done afterwards, see [`platform-u200.md`](platform-u200.md)
 §14 for the card results):
 - The kernel tops carried §14.2's `MVM_MAC_LAT` 9 and `RST_PIPE` 3 (`gen_tops.py` `COMMON`; `.xo`
   repackaged 2026-10-24 07:15, k1's again at 21:35 for its relink; k4's predates §14.9 and
   `build_xclbin.sh` repackages it); the packaged k1 top replays the 0.5B model bit-identically
-  (`docs/platform-u200.md` §13.1, and again on the v3 RTL, §14.9). Floorplan C' is implemented for
+  (`docs/platform-u200.md` §13.1, and again on the r3 RTL, §14.9). Floorplan C' is implemented for
   the kernel in `hw/u200/k4_floorplan.tcl` (§14.8).
-- The k1 hardware link met 300 MHz: first WNS +0.011 ns, then, relinked on the v3 RTL (§14.9),
+- The k1 hardware link met 300 MHz: first WNS +0.011 ns, then, relinked on the r3 RTL (§14.9),
   kernel clock WNS +0.060 ns with +0.075 ns on the worst kernel path (§14.8). The k4 link was not yet
   run: its memory was estimated at 25–27 GB against the dev server's 14 GB; its out-of-context margin is
-  +0.022 ns (v3). It ran later (3 h 51 min with swap): routed WNS -0.285 ns at 300 MHz, 809 failing endpoints,
-  and `v++` scaled the kernel clock to **276.3 MHz** (measured in Vivado 2024.2, linked, v1; §14.8).
+  +0.022 ns (r3). It ran later (3 h 51 min with swap): routed WNS -0.285 ns at 300 MHz, 809 failing endpoints,
+  and `v++` scaled the kernel clock to **276.3 MHz** (measured in Vivado 2024.2, linked; §14.8).
 - On the card: DMA, interrupts, the XRT scheduler path, the per-exec host cost (21 register writes
   and 6 reads per exec in the scheduler sequence, 145 execs per decoded token of the 0.5B model) and
-  the channel capacity of the 64 GB card (`docs/spec.md` §20, Open items). Measured later on the card (v1):
+  the channel capacity of the 64 GB card (`docs/spec.md` §20, Open items). Measured later on the card:
   16 GiB per channel without aliasing ([`m0-bw.md`](m0-bw.md) §7.1), 35-36 µs per exec
   ([`platform-u200.md`](platform-u200.md) §14.2).
 
@@ -1062,13 +924,13 @@ and the two `tsr_bw` tests that need an XRT build.
 
 Whole-core out-of-context (OOC) runs of `tsr_core` on the U200 part with the Xilinx target
 (`rtl/filelist_xilinx.f`: URAM / BRAM / DSP-packed tech wrappers). Every number below is a
-Vivado 2024.2 measurement of the v1 core's RTL unless it is marked as an estimate (provenance: measured in
-Vivado 2024.2, out of context, v1; linked results are labelled linked). The out-of-context runs do not include the
+Vivado 2024.2 measurement of the core's RTL unless it is marked as an estimate (provenance: measured in
+Vivado 2024.2, out of context; linked results are labelled linked). The out-of-context runs do not include the
 shell, the AXI bridges, the DDR4 controllers and the memory subsystem; the linked designs have them (§14.8).
 The bitstreams built from this RTL ran on the card (k1 and k4; [`platform-u200.md`](platform-u200.md) §14). The
 U200 development platform is extracted (not installed); its `platforminfo` gives the DDR bank SLRs and the
-per-SLR dynamic region used in §14.5. The v2 control core, issue path, vector unit and attention modes are
-not in these numbers: their estimates are CC §14.1 and §14.5, and the v2 floorplan is called C'' (CC §14.2).
+per-SLR dynamic region used in §14.5. The control core, issue path, vector unit and attention modes are
+not in these numbers: their estimates are CC §14.1 and §14.5, and their floorplan is called C'' (CC §14.2).
 
 ### 14.1 Flow
 
@@ -1086,7 +948,7 @@ not in these numbers: their estimates are CC §14.1 and §14.5, and the v2 floor
   Vivado's default (the platform MMCM's jitter is not modelled), ports unplaced.
 - Dev server (14 GB RAM, swap): 4-channel T_MAX 8 synthesis 8 min / 9.6 GB; implementation
   40 min wall, Vivado peak 13.5 GB (with congestion, the stopped run below: > 3.5 h of routing);
-  the v3 run (§14.9): synthesis 7 min 12 s / 10.4 GB, implementation 35.5 min / 14.2 GB.
+  the r3 run (§14.9): synthesis 7 min 12 s / 10.4 GB, implementation 35.5 min / 14.2 GB.
 
 ### 14.2 U200 bitstream parameters (result of this section)
 
@@ -1105,8 +967,8 @@ identical (bit-exact replays below), only latencies change.
 ### 14.3 Runs
 
 `k1` = NUM_CH 1, T_MAX 1 (bring-up kernel), `k4t1` = NUM_CH 4, T_MAX 1, `k4` = NUM_CH 4,
-T_MAX 8 (target kernel). RTL v0 = M3 part B + rtl/tech/xilinx; v1 = first fix set; v2 = the
-fixes of §14.4 (the RTL of the first k1 / M0 links); v3 = final, v2 + the margin changes of §14.9.
+T_MAX 8 (target kernel). RTL revisions: r0 = M3 part B + rtl/tech/xilinx; r1 = first fix set; r2 = the
+fixes of §14.4 (the RTL of the first k1 / M0 links); r3 = final, r2 + the margin changes of §14.9.
 Floorplans (§14.5): none, B (clusters 0 / 2 in SLR0, 1 in SLR1, 3 in SLR2, arbiter c
 next to DDR[c]), C (clusters 0 / 2 in SLR0, 1 / 3 in SLR2), C' (C with all arbiters and the rest of
 the core in SLR1 and the end stages of every crossing pipe pinned); in B, C and C' the SLR1 pblock
@@ -1114,21 +976,21 @@ is the dynamic-region stand-in CLOCKREGION_X0Y5:X2Y9.
 
 | Run | RTL, MAC_LAT / RST_PIPE | Floorplan | WNS / WHS (ns) | TNS (ns) / failing endpoints | CLB LUT | FF | DSP | RAMB36 | URAM |
 |---|---|---|---|---|---|---|---|---|---|
-| k1 | v0, 5 / – | none | +0.051 / +0.030 | 0 / 0 | 30,287 | 38,032 | 182 | 40 | 128 |
-| k4t1 | v0, 5 / – | synthesis only | (est. +0.734) | – | 62,812 | 85,010 | 632 | 136 | 128 |
-| k4 | v0, 5 / – | none | **−0.877** / +0.012 | −10,273 / 46,606 | 269,314 | 277,040 | 2,728 | 808 | 128 |
-| k4 | v1, 7 / 2 | B | post-place +0.114; router −0.787 after its first iteration, routing congestion level 5–6 in the gather; stopped after 3.5 h of routing | – | – | – | – | – | – |
-| k4 | v1, 7 / 2 | C | **−0.159** / +0.021 | −27.0 / 727 | 266,467 | 309,875 | 2,728 | 808 | 128 |
-| k4 | v2, 9 / 3 | C' | +0.015 / +0.020 | 0 / 0 | 270,910 | 345,578 | 2,728 | 808 | 128 |
-| k1 | v2, 9 / 3 | none | +0.121 / +0.024 | 0 / 0 | 30,890 | 43,154 | 182 | 40 | 128 |
-| k4t1 | v2, 9 / 3 | C' | +0.108 / +0.005 | 0 / 0 | 67,071 | 112,192 | 632 | 136 | 128 |
-| **k4** | **v3, 9 / 3** | **C'** | **+0.022 / +0.019** | **0 / 0** | 272,025 | 349,199 | 2,728 | 808 | 128 |
-| **k1** | **v3, 9 / 3** | none | **+0.100 / +0.009** | **0 / 0** | 30,902 | 44,516 | 182 | 40 | 128 |
-| **k4t1** | **v3, 9 / 3** | C' | **+0.109 / +0.012** | **0 / 0** | 67,345 | 113,748 | 632 | 136 | 128 |
+| k1 | r0, 5 / – | none | +0.051 / +0.030 | 0 / 0 | 30,287 | 38,032 | 182 | 40 | 128 |
+| k4t1 | r0, 5 / – | synthesis only | (est. +0.734) | – | 62,812 | 85,010 | 632 | 136 | 128 |
+| k4 | r0, 5 / – | none | **−0.877** / +0.012 | −10,273 / 46,606 | 269,314 | 277,040 | 2,728 | 808 | 128 |
+| k4 | r1, 7 / 2 | B | post-place +0.114; router −0.787 after its first iteration, routing congestion level 5–6 in the gather; stopped after 3.5 h of routing | – | – | – | – | – | – |
+| k4 | r1, 7 / 2 | C | **−0.159** / +0.021 | −27.0 / 727 | 266,467 | 309,875 | 2,728 | 808 | 128 |
+| k4 | r2, 9 / 3 | C' | +0.015 / +0.020 | 0 / 0 | 270,910 | 345,578 | 2,728 | 808 | 128 |
+| k1 | r2, 9 / 3 | none | +0.121 / +0.024 | 0 / 0 | 30,890 | 43,154 | 182 | 40 | 128 |
+| k4t1 | r2, 9 / 3 | C' | +0.108 / +0.005 | 0 / 0 | 67,071 | 112,192 | 632 | 136 | 128 |
+| **k4** | **r3, 9 / 3** | **C'** | **+0.022 / +0.019** | **0 / 0** | 272,025 | 349,199 | 2,728 | 808 | 128 |
+| **k1** | **r3, 9 / 3** | none | **+0.100 / +0.009** | **0 / 0** | 30,902 | 44,516 | 182 | 40 | 128 |
+| **k4t1** | **r3, 9 / 3** | C' | **+0.109 / +0.012** | **0 / 0** | 67,345 | 113,748 | 632 | 136 | 128 |
 
-So 300 MHz closes out of context for all three configurations with the v2 and the final (v3) RTL
-and parameters; the measured Fmax of the earlier k4 states was 237 MHz (v0, no floorplan) and
-286 MHz (v1, C). Worst paths of the v2 runs (v3: §14.9):
+So 300 MHz closes out of context for all three configurations with the r2 and the final (r3) RTL
+and parameters; the measured Fmax of the earlier k4 states was 237 MHz (r0, no floorplan) and
+286 MHz (r1, C). Worst paths of the r2 runs (r3: §14.9):
 - k4 (+0.015): SPM write-port bank select -> URAM cascade enable (4 levels, tsr_spm, as the xtech
   OOC run of tsr_spm found); then broadcast pipe last stage -> cluster command register (0
   levels, SLR crossing landing, +0.027); activation write data -> BRAM (+0.030); activation
@@ -1137,14 +999,14 @@ and parameters; the measured Fmax of the earlier k4 states was 237 MHz (v0, no f
   +0.05..0.10); assembler -> job pipe slice (+0.089). No MAC-tree, gather-select or reset path
   is below +0.08 ns; the only SLR-crossing path below +0.1 ns is the broadcast landing above.
 - k1 (+0.121): SPM write / read address -> URAM cascade (3 levels); activation RAM enables.
-- k4t1 (+0.108): cmdproc state (v1; in v2 the queue head's command register, CC §9.1) -> DMA / MVM command register clock enables (0 levels); SPM
+- k4t1 (+0.108): dispatcher state (the queue head's command register, CC §9.1) -> DMA / MVM command register clock enables (0 levels); SPM
   write grant -> SPM input register; SPM read address -> URAM cascade; per-part reset copies
   (+0.19..0.30; in this run Vivado drove cluster 3's resets from a replica of the gather's copy,
   i.e. two `keep` copies ended up merged).
 
 ### 14.4 What failed and the fixes (all bit-exact; only latencies change)
 
-The first k4 run (v0, no floorplan) failed in 46,606 endpoints. Grouped by structure: result
+The first k4 run (r0, no floorplan) failed in 46,606 endpoints. Grouped by structure: result
 pipe -> gather buffers (13.8 K endpoints, −0.76 ns, D and CE), rst_n -> back-end resets (5.6 K,
 −0.58), activation write data -> BRAMs (9.0 K, −0.74), weight register -> MAC DSP B ports (2.2 K,
 −0.73), MAC tree -> integer-scale DSP A ports (2.0 K, −0.81), gather output register clock enable
@@ -1163,8 +1025,8 @@ SLR0), so congestion inflated every route. Causes and fixes:
 2. **Gather job select.** The job data was one NUM_CH × 2 × T_MAX : 1 (64:1 at k4) select of the
    assembly buffers whose select lines fanned out to every buffer flop: −0.88 ns, and in
    floorplan B the router's congested nets were exactly these (`buf_q`, the select). First fix
-   (v1): registered selects (`req_q`, `jb_q`, `jy_q` per cluster, cycle-identical) — still
-   −0.16 in C. Final fix (v2): `tsr_mvm_gather` split into one assembler per cluster
+   (r1): registered selects (`req_q`, `jb_q`, `jy_q` per cluster, cycle-identical) — still
+   −0.16 in C. Final fix (r2): `tsr_mvm_gather` split into one assembler per cluster
    (`tsr_mvm_gasm`, the buffers and everything that grows with T_MAX; a job is a 2 × T_MAX : 1
    select of flops with registered selects) and a central part (round robin over NUM_CH job-pipe
    heads, credits, ACC, write queue), with `JOB_PIPE` register slices in between (`tsr_mvm`
@@ -1176,7 +1038,7 @@ SLR0), so congestion inflated every route. Causes and fixes:
    port with its 1.6 ns budget; the platform's reset copy is also a single register). Fix: new
    `tsr_core` parameter `RST_PIPE` (0..8, default 0 = no extra flops): with P ≥ 1 every flop sees
    `rst_n` exactly P cycles late, through P − min(P, 2) shared stages and min(P, 2) kept stages
-   per block (CSR, cmdproc and fetch (v1 modules, deleted in X0), DMA, QACT, SPM, each arbiter; inside `tsr_mvm`, new parameter
+   per block (CSR, DMA, QACT, SPM, each arbiter; inside `tsr_mvm`, new parameter
    `RST_LOCAL`: top, gather and every cluster with its pipes). The first per-block copy can sit
    at the SLR boundary, the second (replicated by phys_opt) at the loads. The core is a P-cycle
    delayed copy of the `RST_PIPE = 0` core; the registers start in reset (INIT 0). Boundary
@@ -1184,7 +1046,7 @@ SLR0), so congestion inflated every route. Causes and fixes:
    must stay low for at least P + 1 cycles.
 4. **MAC tree -> integer-scale DSP.** Vivado absorbs the MAC lane's output register into the
    integer-scale multiplier's AREG, so the last tree segment ends at a DSP A port: MAC_LAT 5
-   (two adder levels + three levels) −0.81 (v0), MAC_LAT 7 (IN AD M P | 1 | 2 | 2) −0.07 in C;
+   (two adder levels + three levels) −0.81 (r0), MAC_LAT 7 (IN AD M P | 1 | 2 | 2) −0.07 in C;
    MAC_LAT 9 (a register after every adder level) has no MAC path among the worst 30 of the final
    k4 run. Cost: +5.9 K FF per T_MAX 8 cluster over MAC_LAT 7 (MAC lanes 17.7 K FF per cluster).
 5. **Write registers with large clock enables.** The cluster's activation write register `aw_q`
@@ -1203,7 +1065,7 @@ SLR0), so congestion inflated every route. Causes and fixes:
    register-to-register hop.
 
 Results of the fixes, measured (k4, C'): 7,010 SLLs used (3,481 SLR0–SLR1, 3,529 SLR1–SLR2, of
-17,280 per boundary), WNS +0.015 ns. The v1 fixes alone (1, 2 first step, 3 with RST_PIPE 2, 4
+17,280 per boundary), WNS +0.015 ns. The r1 fixes alone (1, 2 first step, 3 with RST_PIPE 2, 4
 with MAC_LAT 7, 5) gave +0.114 post-place in B but did not route (congestion), and −0.159 routed
 in C.
 
@@ -1233,16 +1095,16 @@ FF, 61 RAMB36 and 3 DSP per bank in its SLR (`docs/platform-u200.md` §8.2).
 **Clusters in their DDR SLRs (DDR0 SLR0, DDR1 / DDR2 SLR1, DDR3 SLR2, as `platforminfo` records
 them) does not fit**: two T_MAX 8
 clusters in SLR1 need 2 × 674 + 32 (QACT) = 1,380 DSP of 1,320 and 2 × 200 + 8 = 408 of 420
-RAMB36 (measured cluster sizes). Floorplan C' (measured, routed, 300 MHz met; v2 run, v3 in
+RAMB36 (measured cluster sizes). Floorplan C' (measured, routed, 300 MHz met; r2 run, r3 in
 §14.9):
 
 | SLR | Content | CLB LUT | FF | RAMB36 | URAM | DSP |
 |---|---|---|---|---|---|---|
 | SLR0 | clusters 0, 2 + their assemblers | 122,929 (31 %) | 152,226 | 400 (56 %) | 0 | 1,348 (59 %) |
-| SLR1 (X0–X2 only) | SPM, central gather, cmdproc, DMA, QACT, fetch, CSR, 4 arbiters, MVM dispatch (v1 core) | 25,068 (12 % of the region) | 41,719 | 8 | 128 (80 % of the region) | 32 |
+| SLR1 (X0–X2 only) | SPM, central gather, DMA, QACT, CSR, 4 arbiters, dispatch | 25,068 (12 % of the region) | 41,719 | 8 | 128 (80 % of the region) | 32 |
 | SLR2 | clusters 1, 3 + their assemblers | 122,913 (31 %) | 151,633 | 400 (56 %) | 0 | 1,348 (59 %) |
 
-Signals crossing an SLR boundary (C', measured: 7,006 nets crossing, 7,010 SLLs; v3: 8,240,
+Signals crossing an SLR boundary (C', measured: 7,006 nets crossing, 7,010 SLLs; r3: 8,240,
 §14.9): per cluster
 the broadcast pipe (529 bits) and the weight-stream response pipe (516 bits), 3,578 nets for the
 four clusters; the gather job pipe (561 bits, 2,165 nets) and start pipe (68 bits, 272 nets); the
@@ -1258,7 +1120,7 @@ the platform's own pblocks, with bridges 0 / 3 crossing in their AXI slices (`do
 
 ### 14.6 T_MAX 1 vs T_MAX 8
 
-| (synthesis, final RTL v3) | k4t1 | k4 | Ratio |
+| (synthesis, final RTL r3) | k4t1 | k4 | Ratio |
 |---|---|---|---|
 | CLB LUT | 68,334 | 275,657 | 4.0 |
 | FF | 113,671 | 348,978 | 3.1 |
@@ -1266,12 +1128,12 @@ the platform's own pblocks, with bridges 0 / 3 crossing in their AXI slices (`do
 | RAMB36 | 136 | 808 | 5.9 |
 | URAM | 128 | 128 | 1 |
 
-(v2: 68,082 / 274,248 CLB LUT and 112,185 / 345,379 FF, the same ratios.) Per cluster, T_MAX 1 -> 8
+(r2: 68,082 / 274,248 CLB LUT and 112,185 / 345,379 FF, the same ratios.) Per cluster, T_MAX 1 -> 8
 adds 7 × the per-token back end (5.3 K LUT, 4.7 K FF, 20 DSP: 12 integer-scale products, 8 for 4
 `tsr_fp_mul`), the packed MAC lanes (128 -> 512 DSP: two tokens per DSP; 2.3 K -> 18.0 K LUT of
 adder trees), 7 × 24 RAMB36 of activation buffer and the larger assembler (2 × 8 × 512 buffer
-flops). Timing: both close at 300 MHz with the same parameters and floorplan (v3: k4t1 +0.109 ns, k4
-+0.022 ns; v2 +0.108 / +0.015); T_MAX 8 has the smaller margin. Share of the dynamic region
+flops). Timing: both close at 300 MHz with the same parameters and floorplan (r3: k4t1 +0.109 ns, k4
++0.022 ns; r2 +0.108 / +0.015); T_MAX 8 has the smaller margin. Share of the dynamic region
 (`platforminfo` figures of §14.5) used by k4: 28 % LUT, 46 % DSP, 16 % URAM, 43 % RAMB36 (808 of
 1,860).
 
@@ -1283,8 +1145,8 @@ parameters; k1 stays a single-SLR design (SLR1, DDR[1]).
 
 ### 14.7 Verification of the RTL changes
 
-The benches named here are v1 benches (`tb/core`, `tb/fastreplay`, `tb/platform`) and are reproducible at tag
-`v1-m4`; the block benches (`tb/mvm`, `tb/spm`, `tb/tech`, `tb/mvmback`) are in the tree.
+The replays named here are RTL simulation; the block benches (`tb/mvm`, `tb/spm`, `tb/tech`, `tb/mvmback`) are in
+the tree.
 
 - Lint: `rtl/lint.sh` 82 runs clean (the new `tsr_mvm_gasm` is linted as its own top),
   `rtl/tech/xilinx/lint.sh` clean; extra Verilator lint of `tsr_core` (both filelists) with
@@ -1292,30 +1154,27 @@ The benches named here are v1 benches (`tb/core`, `tb/fastreplay`, `tb/platform`
   and of the gather / assembler with JOB_PIPE 0..3, NUM_CH 1 / 3 / 4 / 16, T_MAX 1 / 3 / 8.
 - Block tests: `python3 -m pytest tb/mvm` 14 passed (gather in 4 configurations incl. the perf
   latencies and the no-combinational-path test; tsr_mvm with real clusters).
-- Replays (tb/fastreplay, every trace of traces/m2, gen, m3, model in all four memory regimes):
+- Replays (every trace of traces/m2, gen, m3, model in all four memory regimes):
   default parameters (generic filelist) 778 traces / 3,112 runs, 0 failed; U200 parameters on
   `rtl/filelist_xilinx.f` (SPM_RD_LAT 4, BC_PIPE 2, RES_PIPE 2, MAC_LAT 9, RST_PIPE 3) 3,112 runs,
   0 failed; the same with `--reset-each` (hardware reset before every trace) on traces/m3 + gen
-  1,264 runs, 0 failed. The v1 state was replayed the same way (MAC_LAT 7, RST_PIPE 2: 3,112 +
+  1,264 runs, 0 failed. The r1 state was replayed the same way (MAC_LAT 7, RST_PIPE 2: 3,112 +
   1,264 runs, 0 failed).
-- Core directed tests (cocotb, tb/core `test_core_m3_directed`, RST_PIPE 0): the four
-  configurations c2, c3t3, u200, u200t8 pass (24 tests: CSR map / consts, STATUS W1C, hardware
-  and soft reset, ABORT, back-to-back, m3_throughput incl. the M3 gate shapes and the output head,
-  m3_perf, m3_mvm_st, m3_abort / soft / hw reset, random programs). With RST_PIPE
-  3 (scratch copy with the default changed) the `c2` set (CSR map / consts, hardware reset, soft
-  reset, ABORT, back-to-back, m3_perf, m3_abort, m3_soft_reset, m3_hw_reset, m3_mvm_st, random)
-  fails only `core_hw_reset` / `m3_hw_reset`'s "outputs quiet from the first reset cycle" check
-  (expected, §14.4 item 3); with that check starting at reset cycle P and reset pulses of ≥ P + 1
-  cycles (scratch test copy) the whole set passes. The v1 `tb/core` benches followed this rule (deleted in X0): `core_hw_reset` / `m3_hw_reset` start the quiet check at reset cycle RST_PIPE with pulses of at
-  least RST_PIPE + 1 cycles, and `test_core_m3_directed[u200_rst3]` runs the bitstream parameters
-  with RST_PIPE 3 (10 / 10 passed, §13.2).
-- Throughput (tb/core `m3_throughput`, U200 v1 build at the default implementation parameters,
+- Core-level directed tests (RST_PIPE 0): the four configurations (2 channels T_MAX 4, 3 channels T_MAX 3,
+  U200 T_MAX 1 and 8) pass (24 tests: CSR map / consts, hardware and soft reset, throughput including the M3
+  gate shapes and the output head, PERF, MVM chains, random programs). With RST_PIPE 3 (scratch copy with the
+  default changed) the 2-channel set fails only the "outputs quiet from the first reset cycle" check of the
+  hardware-reset tests (expected, §14.4 item 3); with that check starting at reset cycle P and reset pulses of
+  ≥ P + 1 cycles (scratch test copy) the whole set passes. The reset tests followed this rule afterwards
+  (quiet check from reset cycle RST_PIPE, pulses of at least RST_PIPE + 1 cycles) and ran the bitstream
+  parameters with RST_PIPE 3 (10 / 10 passed, §13.2).
+- Throughput (U200 build at the default implementation parameters,
   ideal memory): steady state unchanged (1.0000 cycles per weight beat; Q4_K K 1024 0.9994); the
   fixed overhead per MVM grew by 1–3.5 cycles (job pipe and weight-stream pipes of one stage
   each): Q8_0 K 896 / 4096 / 4864 88 / 140 / 154 cycles (part B: 85 / 139 / 153), Q4_K K 1024 /
   2304 / 4096 94.5 / 115 / 146 (91 / 114 / 145); M3 gate shapes 3,448 / 18,328 / 18,298 cycles
   and the output head 569,848 (part B 3,445 / 18,325 / 18,297 / 569,845). At the U200 parameters
-  (`test_core_m3_directed[u200_rst3]`, Xilinx filelist, 2026-10-24): steady state 1.0000 cycles
+  (Xilinx filelist, 2026-10-24): steady state 1.0000 cycles
   per beat, 11–12 fixed cycles per MVM more than the default build (Q8_0 K 896 / 4096 / 4864:
   99 / 151 / 165; gate shapes 3,459 / 18,339 / 18,309, output head 569,860; §13.2).
 - XSim (Vivado 2024.2 `xvlog` / `xelab`, the hw_emu simulator), 2026-10-24: the reset-stage
@@ -1329,8 +1188,8 @@ The benches named here are v1 benches (`tb/core`, `tb/fastreplay`, `tb/platform`
   simulated in XSim asserts and releases every reset copy exactly 3 cycles after `rst_n` and
   answers CSR ID / CFG0. Replays after the change: default parameters 3,112 runs, U200 parameters
   on `rtl/filelist_xilinx.f` 3,112 runs, `--reset-each` 1,264 runs, 0 failed.
-- Mutants (scratch copies, simulation checks off): the v1 gather without the `jy_q` forwarding
-  and the v2 assembler with `last` on every group's final job, without the lane mask, or active
+- Mutants (scratch copies, simulation checks off): the r1 gather without the `jy_q` forwarding
+  and the r2 assembler with `last` on every group's final job, without the lane mask, or active
   without rows are killed by tb/mvm `gather_random` / done / `res_ready while idle` checks (the
   last survives only the 1-channel configuration, where every MVM has rows).
 
@@ -1341,27 +1200,26 @@ The benches named here are v1 benches (`tb/core`, `tb/fastreplay`, `tb/platform`
   of swap): routed WNS **-0.285 ns** at 300 MHz, 809 failing endpoints, TNS -56.5 ns, so `v++` scaled the kernel
   clock to **276.3 MHz** (`AUTO-FREQ-SCALING-04`); the worst paths are in the gather's job pipes
   (`u_gather/g_asm[c].u_jp/g_slices.g_s[1]`). The projection below (-0.1 to -0.2 ns) was optimistic. On the card k4 at
-  276.3 MHz ran Qwen2.5-0.5B Q8_0 at 54.7 tok/s (measured on the card, v1, k4, 276.3 MHz). The v2 fix proposal for
+  276.3 MHz ran Qwen2.5-0.5B Q8_0 at 54.7 tok/s (measured on the card, k4, 276.3 MHz). The fix proposal for
   these paths is CC §14.4. The hardware `v++` link of k1 ran on 2026-10-24 (the development platform, extracted
   not installed; `docs/platform-u200.md` §8.2): 57 min, routed WNS **+0.011 ns** (TNS 0, WHS
   +0.009 ns), the kernel clock kept at 300 MHz (auto-scaling computed 301.0 MHz); 33,276 LUT,
   49,929 FF, 40 RAMB36, 128 URAM, 182 DSP, all in SLR1. Its worst path was the one of the
   out-of-context k1 run (§14.3), the SPM read offset `g_in_reg.rd_off_s` → URAM cascade address
   `CAS_IN_ADDR_A` (3 URAM levels), with 0.110 ns less margin; next the bridge reset copy
-  (+0.037 ns). **Relinked on the v3 RTL** (§14.9; 57 min 18 s with the repackaging): routed WNS
+  (+0.037 ns). **Relinked on the r3 RTL** (§14.9; 57 min 18 s with the repackaging): routed WNS
   +0.017 ns (the shell's XDMA clock), TNS 0, WHS +0.009 ns; kernel clock WNS **+0.060 ns** (shell
   logic on that clock), auto-scaling computed 305.5 MHz, 300 MHz kept. The worst kernel path is
   +0.075 ns, a gather job-pipe slice's `rdy_q` → `skid_q` clock enable (0 levels, fan-out 154),
-  against +0.100 ns for the v3 k1 core out of context; the first link's paths: SPM cascade address
+  against +0.100 ns for the r3 k1 core out of context; the first link's paths: SPM cascade address
   +0.237 ns, reset copy → bridge counters +1.381 ns. 33,502 LUT, 51,212 FF, 40 RAMB36, 128 URAM,
-  182 DSP, all in SLR1. hw_emu of k1 ran the host software (`docs/xrt-host.md` §9) on the v2 RTL;
+  182 DSP, all in SLR1. hw_emu of k1 ran the host software (`docs/xrt-host.md` §9) on the r2 RTL;
   its xclbin was not rebuilt.
 - Before the k4 link ran, its memory was estimated at 25–27 GB against the dev server's 14 GB (it needed swap, see
-  above). From the v2 margin (+0.015 ns) and the 0.11 / 0.22 ns the first k1 and M0 links lost against
+  above). From the r2 margin (+0.015 ns) and the 0.11 / 0.22 ns the first k1 and M0 links lost against
   their out-of-context runs it was projected at about −0.1 to −0.2 ns; the proposals of
   [`platform-u200.md`](platform-u200.md) §8.2 (SPM cascade address, `tsr_rslice` clock enable, bridge reset
-  fan-out) and the back-end control copies were applied after the first links (§14.9: v3, commit `fec5dcf`, the
-  last commit that touched `rtl/` before X0). With them k4 has +0.022 ns out of context. The card runs and the k4
+  fan-out) and the back-end control copies were applied after the first links (§14.9: r3, commit `fec5dcf`). With them k4 has +0.022 ns out of context. The card runs and the k4
   link above came after that commit and measured -0.285 ns linked at 300 MHz.
 - Platform facts are recorded: the DDR bank SLRs (bank0 SLR0, bank1 / bank2 SLR1, bank3 SLR2) and
   the per-SLR dynamic-region resources (`platforminfo`, §14.5), and the platform's pblocks
@@ -1373,9 +1231,9 @@ The benches named here are v1 benches (`tb/core`, `tb/fastreplay`, `tb/platform`
   pblocks, applied by `hw/u200/k4.cfg`; it is validated on netlists (the k4 out-of-context
   checkpoint and a synthesized 4-channel kernel: every group found, 48 pipe stages pinned;
   `docs/platform-u200.md` §8.1), not yet placed with the shell.
-- Reset copies: two of the `keep` copies ended up merged in the v2 k4t1 run (cluster 3 reset from
+- Reset copies: two of the `keep` copies ended up merged in the r2 k4t1 run (cluster 3 reset from
   a replica of the gather's copy); timing was met, but if the real floorplan needs them apart they
-  want `DONT_TOUCH`. The v3 k4 run's worst path starts at a phys_opt replica of a cluster reset
+  want `DONT_TOUCH`. The r3 k4 run's worst path starts at a phys_opt replica of a cluster reset
   copy (`g_rst.rc_q[1][0]_replica` → cluster 0 `row_q` R, +0.022 ns, 3.112 ns of routing); the
   core's reset copies are not pinned by `core_slr.tcl` / `k4_floorplan.tcl`.
 - In the v++ flow Vivado read the `tsr_vpipe` parameter named `KEEP` as the instance's KEEP
@@ -1383,13 +1241,13 @@ The benches named here are v1 benches (`tb/core`, `tb/fastreplay`, `tb/platform`
   register keeps KEEP = yes and none is packed into an SRL; `docs/platform-u200.md` §8.2). The
   parameter is `KEEP_REGS` (same function) after the rename: the k1 relink's kernel synthesis has 0 critical
   warnings, and a `tsr_core` k1 synthesis with the clock XDC read before `synth_design` (the v++
-  condition) gives exactly the 5 warnings on the v2 RTL and none on v3, with the kept registers
+  condition) gives exactly the 5 warnings on the r2 RTL and none on r3, with the kept registers
   still KEEP = yes (`u_bcp` 1,058, `u_wrp` 1,032, `u_sp` 134) and 0 SRL.
-- Weak spots of v3 (§14.9): `tsr_rslice`'s `rdy_q` drives, in v3, every `skid_q` clock enable and
+- Weak spots of r3 (§14.9): `tsr_rslice`'s `rdy_q` drives, in r3, every `skid_q` clock enable and
   the `main_q` select directly (the worst kernel path of both relinks, k1 +0.075 ns and M0
   +0.110 ns; out of context in k4 the arbiter response and result-pipe slices, +0.064 / +0.066 ns);
   in k4, 1,288 job-pipe stage-0 registers of assemblers 0–2 were placed in SLR1 outside their
-  pblock (not LOC-fixed; v2: 75; cause not investigated); each SPM address bit drives, in v3, 32
+  pblock (not LOC-fixed; r2: 75; cause not investigated); each SPM address bit drives, in r3, 32
   per-slice copies (the worst path of the `tsr_spm` run in the SLR1 pblock, +0.051 ns, inside the
   1.6 ns input budget; one copy per two slices is the untried middle option); the cluster's
   format register `fmt_q` (about 3,100 loads) stays shared, since cycle-identical per-token copies
@@ -1397,18 +1255,18 @@ The benches named here are v1 benches (`tb/core`, `tb/fastreplay`, `tb/platform`
 - `RST_PIPE ≥ 1` changes the core's reset boundary behaviour (outputs quiet P cycles after
   `rst_n` falls; `rst_n` low ≥ P + 1 cycles): in the kernel `ap_rst_n` must stay low for
   ≥ RST_PIPE + 1 = 4 cycles (`docs/platform-u200.md` §5; XRT holds it far longer, not measured on
-  a card). [`rtl-m2.md`](rtl-m2.md) §11 (P10) states the contract, and tb/core `core_hw_reset` /
-  `m3_hw_reset` follow it (quiet check from reset cycle P, pulses of at least P + 1 cycles, a
-  third of them exactly P + 1), run at RST_PIPE 3 by `test_core_m3_directed[u200_rst3]` (§13.2).
-- Not measured: the routed k4 at MAC_LAT 5 / 7 with the final RTL (only v0 / v1 data above);
+  a card). [`rtl-m2.md`](rtl-m2.md) §11 (P10) states the contract; the core-level
+  hardware-reset tests followed it (quiet check from reset cycle P, pulses of at least P + 1 cycles, a
+  third of them exactly P + 1) at RST_PIPE 3 (§13.2).
+- Not measured: the routed k4 at MAC_LAT 5 / 7 with the final RTL (only r0 / r1 data above);
   placement variance (one run per configuration; in the k1 runs of the SPM change, paths outside
   the SPM moved by 0.1–0.2 ns between runs); the linked k4; power.
 
-### 14.9 Margin changes after the first links (v3, 2026-10-24)
+### 14.9 Margin changes after the first links (r3, 2026-10-24)
 
-The structures that limited the first k1 / M0 links and the v2 k4 run (§14.3, §14.8) were changed.
+The structures that limited the first k1 / M0 links and the r2 k4 run (§14.3, §14.8) were changed.
 All changes are structural: no parameter and no latency changed, results and cycle counts are those
-of v2 (the SPM's RAM inputs are the same in every cycle; a register slice's output data differs
+of r2 (the SPM's RAM inputs are the same in every cycle; a register slice's output data differs
 only while it is not valid).
 1. **SPM column slices** (`rtl/core/tsr_spm.sv`): each depth bank is 8 column slices of 64 bits
    (at 4 MiB 8 × `tsr_sram_1r1w` 16 K × 64, each one 4-deep URAM cascade: still 128 URAM). Every
@@ -1417,7 +1275,7 @@ only while it is not valid).
    cascade head is driven by a flop of its own (fan-out 1 instead of 32) with no LUT in between;
    only the write-data register stays shared per bank, and the last bank-select stage has one
    copy per slice (fan-out 64 instead of 512). The Xilinx wrapper's URAM rule
-   (`rtl/tech/xilinx/tsr_sram_1r1w.sv`) is DEPTH ≥ 4096 and DEPTH × WIDTH ≥ 4096 × 64 in v3 (was
+   (`rtl/tech/xilinx/tsr_sram_1r1w.sv`) is DEPTH ≥ 4096 and DEPTH × WIDTH ≥ 4096 × 64 in r3 (was
    × 72), so the 256 KiB SPM's 4 K × 64 slices stay in URAM (8 URAM, 0 RAMB36); no other RAM of
    the core has DEPTH ≥ 4096.
 2. **`tsr_rslice` payload enables** and **reset copies per bridge part** (`docs/platform-u200.md`
@@ -1430,9 +1288,9 @@ only while it is not valid).
 4. **`tsr_vpipe` `KEEP` → `KEEP_REGS`** (§14.8).
 
 Block-level runs (Vivado 2024.2, xcu200-2, 3.333 ns, I/O budget 1.6 ns, routed; one run each,
-before = the v2 RTL):
+before = the r2 RTL):
 
-| | v2 | v3 |
+| | r2 | r3 |
 |---|---|---|
 | `tsr_spm` 4 MiB, RD_LAT 4 (`tb/tech/viv/tech_ooc.tcl`): WNS / WHS | +0.072 / +0.059 (bank select → read data) | +0.147 / +0.045 (input port → a slice's address copy, 1 level, inside the input budget) |
 | `tsr_spm`: register-to-register WNS; URAM cascade address / enable | +0.072; +0.081 (`rd_off_s` → `CAS_IN_ADDR_A`, fan-out 32, 2.16 ns of routing) | +0.442; +0.467 / +0.455 |
@@ -1448,19 +1306,19 @@ bank (`tsr_spm` +0.158, the cascade still its worst path; k1 core +0.064), `casc
 (+0.101, 3,264 LUT), 8 K-line banks (+0.098), `max_fanout` on the cascade heads
 (register-to-register +0.284, but the generic filelist's synthesis grew to 15,183 FF).
 
-**Whole core, v3** (the flow, parameters and floorplans of §14.1–§14.3; rows in §14.3): k1
+**Whole core, r3** (the flow, parameters and floorplans of §14.1–§14.3; rows in §14.3): k1
 +0.100 / +0.009 ns (134,283 endpoints), k4t1 +0.109 / +0.012 (340,288), k4 +0.022 / +0.019
-(1,154,989; post-place +0.501, v2 +0.170), 0 failing endpoints in each. The structures of the
-margin proposals, v2 → v3 (the same queries on the v2 and v3 routed checkpoints):
-- SPM URAM inputs, worst: k1 +0.121 → +0.276 (in v3 the shared write data → `CAS_IN_DIN_B`, 3
+(1,154,989; post-place +0.501, r2 +0.170), 0 failing endpoints in each. The structures of the
+margin proposals, r2 → r3 (the same queries on the r2 and r3 routed checkpoints):
+- SPM URAM inputs, worst: k1 +0.121 → +0.276 (in r3 the shared write data → `CAS_IN_DIN_B`, 3
   levels), k4t1 +0.198 → +0.364, k4 +0.015 → +0.265.
-- k4 back end: clock enables +0.051 → +0.093, resets +0.103 → +0.180, data +0.050 → +0.093 (in v3 a
+- k4 back end: clock enables +0.051 → +0.093, resets +0.103 → +0.180, data +0.050 → +0.093 (in r3 a
   5-level multiplier path, not control); largest back-end net 1,386 → 517 pins. The broadcast
-  landing (v2's second, +0.027) is not among the 30 worst groups.
+  landing (r2's second, +0.027) is not among the 30 worst groups.
 - New: the slices' `rdy_q` drives the payload enables directly; k4 arbiter response slice `rdy_q`
-  → `skid_q` CE +0.064 (v2's worst arbiter-slice CE path +0.673), result-pipe slice +0.066.
+  → `skid_q` CE +0.064 (r2's worst arbiter-slice CE path +0.673), result-pipe slice +0.066.
 
-Worst paths of the v3 runs:
+Worst paths of the r3 runs:
 - k4 (+0.022): a phys_opt replica of the cluster reset copy (`g_mvm.u_mvm/g_rst.rc_q[1][0]_replica`
   → cluster 0 `row_q` R, 0 levels, 3.112 ns of routing); activation write data → BRAM (+0.028);
   result-pipe slice `rdy_q` → `main_q` (+0.036, 1 level); result pipe → assembler buffer
@@ -1471,24 +1329,24 @@ Worst paths of the v3 runs:
 - k1 (+0.100): QACT multiplier operand → DSP (5 levels); back-end / actbuf QS BRAM address and
   enables (+0.164 .. +0.197); SPM write grant → the per-slice byte-enable copies (+0.223).
 
-SLR crossings (k4): 8,240 SLLs (SLR0–SLR1 4,269, SLR1–SLR2 3,971; v2 7,010) and 8,232 crossing
-nets (v2 7,006). 1,288 stage-0 `main_q` registers of the job pipes of assemblers 0–2 were placed in
-SLR1 although their pblock is SLR0 / SLR2 (not LOC-fixed; v2: 75), so for those bits the crossing
-lies before the register (the 3-level path above); k4t1 6,940 SLLs (v2 7,005). Resources (routed,
+SLR crossings (k4): 8,240 SLLs (SLR0–SLR1 4,269, SLR1–SLR2 3,971; r2 7,010) and 8,232 crossing
+nets (r2 7,006). 1,288 stage-0 `main_q` registers of the job pipes of assemblers 0–2 were placed in
+SLR1 although their pblock is SLR0 / SLR2 (not LOC-fixed; r2: 75), so for those bits the crossing
+lies before the register (the 3-level path above); k4t1 6,940 SLLs (r2 7,005). Resources (routed,
 CLB LUT / FF): k1 +12 / +1,362 (SPM FF 1,165 → 2,275), k4t1 +274 / +1,556, k4 +1,115 / +3,621;
 DSP, RAMB36 and URAM unchanged. Run cost: k4 synthesis 7 min 12 s (10.4 GB), implementation
 35.5 min (Vivado-reported peak 14.2 GB, 11.9 GB resident); k1 102 s + 259 s, k4t1 158 s + 609 s.
 
-**Links on v3** (`docs/platform-u200.md` §8.2, `docs/m0-bw.md` §4.1): k1 and M0 relinked, both
+**Links on r3** (`docs/platform-u200.md` §8.2, `docs/m0-bw.md` §4.1): k1 and M0 relinked, both
 300 MHz with timing met; kernel clock WNS +0.060 ns (k1) and +0.055 ns (M0), both on shell logic;
 the worst kernel paths +0.075 ns (k1) and +0.110 ns (M0), both a slice's `rdy_q` fan-out.
 
-**Verification** (v1 benches, reproducible at tag `v1-m4`; v3 against the v2 RTL that was HEAD before the change, replayed with the same arguments, every result field of every
-run compared: cycles, PERF_*, MVM cycles, port beats, STATUS / ERR, kernel fields; 0 runs differ,
-0 failed):
-- tb/fastreplay, traces/m2 + gen + m3 + model, all regimes: default parameters 3,112 runs
+**Verification** (RTL simulation; r3 against the r2 RTL that was HEAD before the change, replayed with the same
+arguments, every result field of every run compared: cycles, PERF_*, MVM cycles, port beats, kernel fields;
+0 runs differ, 0 failed):
+- Replays of traces/m2 + gen + m3 + model, all regimes: default parameters 3,112 runs
   (45,331,704 simulated cycles), U200 parameters on `rtl/filelist_xilinx.f` 3,112 (45,389,109,
-  equal to the v2 run in total and per group), `--reset-each` on gen + m3 1,264 (10,361,292);
+  equal to the r2 run in total and per group), `--reset-each` on gen + m3 1,264 (10,361,292);
   `tsr_u200_k4` on m3/tmax8 + m3/errors8 400 runs and on traces/tmp/tbo_tmax8 (300 traces, rand /
   fast) 600; kernel body 1,952, `AXI_SLICES` 1 / 3 496 each, U200 parameters `--reset-each` 688,
   `tsr_u200_k1` 448 + 224 `--reset-each`, `tsr_u200_k4` `--reset-each` 200.
@@ -1497,8 +1355,8 @@ run compared: cycles, PERF_*, MVM cycles, port beats, STATUS / ERR, kernel field
   findings; per-run PERF identical to HEAD (k1 PERF_CYCLES 59,314,184; k4 5,423,076).
 - Blocks: tb/spm 18 passed; tb/tech 16 (SRAM equivalence in 21 configurations incl. 16 K × 64 and
   4 K × 64, 0 mismatches; tb/spm's tests on the Xilinx wrapper in 4 configurations; netlist
-  simulations of 16 K × 64 and 4 K × 64, 0 mismatches); tb/mvm 14; tb/mvmback 18; the v3 back end
-  in lockstep with the v2 one (all outputs and the per-token accumulators, tree and hold registers
+  simulations of 16 K × 64 and 4 K × 64, 0 mismatches); tb/mvm 14; tb/mvmback 18; the r3 back end
+  in lockstep with the r2 one (all outputs and the per-token accumulators, tree and hold registers
   every cycle; random inputs incl. format flips, random tags and resets; 18 runs × 300 K cycles):
   0 mismatches. Mutants: 8 / 8 SPM mutants killed by tb/spm; of the 11 tb/mvmback mutants whose
   patterns changed, 10 killed and the known equivalent survives; the adapter campaign

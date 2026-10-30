@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Tiny synthetic Qwen2 and Gemma 4 GGUFs for the M7 graph tests (V2-SW-21).
+"""Tiny synthetic Qwen2 and Gemma 4 GGUFs for the M7 graph tests (SW-21).
 
-docs/v2/06-software-verification.md §10.2 (ggml_tesseract_graph_qwen_tiny / _gemma_tiny), §13
-V2-SW-21: the smallest real dense Gemma 4 is 12B, too slow for ctest on the simulator, so the
+docs/design/06-software-verification.md §10.2 (ggml_tesseract_graph_qwen_tiny / _gemma_tiny), §13
+SW-21: the smallest real dense Gemma 4 is 12B, too slow for ctest on the simulator, so the
 build generates small models with random weights that keep the structure llama.cpp builds its
 graphs from (SW §8 "Ops in the two model families"):
 

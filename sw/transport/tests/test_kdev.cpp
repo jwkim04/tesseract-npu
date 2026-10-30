@@ -1,4 +1,4 @@
-// test_kdev.cpp — ctest transport_kdev (docs/v2/06-software-verification.md "SW" §10.2): the
+// test_kdev.cpp — ctest transport_kdev (docs/design/06-software-verification.md "SW" §10.2): the
 // protocol layer (tsr_kdev.cpp) on the mock kdev, its adapter register model, and the chunked /
 // aligned transfer engine against a strict fake DMA (docs/xrt-host.md §6).
 //
@@ -6,7 +6,7 @@
 // vs the bound buffers, 4 KiB-aligned buffers, RV_FREQ = 0: no clk_rv), ADAPTER_STATUS left by an
 // earlier process (reported, cleared, the adapter log), the bind (MEM_EN, the latched bases equal the
 // buffers), the adapter model (bases RW while MEM_EN = 0, BASE_LOCKED, BASE_MISALIGNED at the MEM_EN
-// edge, REQ_HELD with the model held, ADAPTER_STATUS W1C, v1's registers reading 0), timeouts
+// edge, REQ_HELD with the model held, ADAPTER_STATUS W1C, the reserved registers reading 0), timeouts
 // (SOFT_RESET that never completes at open: TSR_RESET_MS; no HELLO: TSR_BOOT_MS), the stale core at
 // open (a booted device with a launch running, left by a "dead process": TSR_ATTACH=1 opens it
 // without a reset and refuses launches; a normal open soft-resets it and boots warm), a reopen
@@ -274,7 +274,7 @@ static void test_protocol_basic() {
     tsr_transport_close(t);
 }
 
-// A kdev that forwards to a mock, with hooks (v1 core, fewer channels, a frozen LCQ).
+// A kdev that forwards to a mock, with hooks (an older core, fewer channels, a frozen LCQ).
 struct wrap_kdev final : kdev {
     std::unique_ptr<mock_kdev> in;
     uint32_t ch_less = 0;
@@ -300,7 +300,7 @@ struct wrap_kdev final : kdev {
     bool simulated() const override { return true; }
 };
 
-// Opens that must fail: not a Tesseract core, a v1 core (ISA major 1, adapter major 1), NUM_CH vs
+// Opens that must fail: not a Tesseract core, an older core (ISA major 1, adapter major 1), NUM_CH vs
 // the bound buffers, a channel buffer that is not 4 KiB aligned, no clk_rv, SOFT_RESET stuck.
 static void test_open_refusals() {
     printf("protocol: refusals at open\n");
@@ -313,12 +313,12 @@ static void test_open_refusals() {
         if (t) tsr_transport_close(t);
     };
     refused("wrong ID", [](mock_kdev & m) { m.id_override = 0x12345678u; });
-    refused("ISA 1.0 core (v1 bitstream)", [](mock_kdev & m) { m.version_override = 0x0100u; });
+    refused("ISA 1.0 core (older bitstream)", [](mock_kdev & m) { m.version_override = 0x0100u; });
     refused("unaligned channel buffer", [](mock_kdev & m) { m.set_ch_addr(2, m.ch_addr(2) + 64); });
     refused("RV_FREQ = 0 (no clk_rv)", [](mock_kdev & m) { m.rv_freq_override = 0; });
     {
         mock_options o1 = o;
-        o1.adapter_version = 0x00010004u;   // a v1 adapter
+        o1.adapter_version = 0x00010004u;   // an older adapter
         std::unique_ptr<mock_kdev> mk(new mock_kdev(o1));
         CHECK(transport_open_kdev(std::move(mk)) == nullptr, "ADAPTER_VERSION major 1 refused");
         o1.adapter_version = 0x00020003u;   // reports 3 channels, 4 bound
@@ -359,7 +359,7 @@ static void test_mock_regs() {
     CHECK(m.reg_read(KREG_CH_BASE0 + 8, &v) == 0 && v == 0x12345000u, "ch1_base lo (0x%x)", v);
     CHECK(m.reg_read(KREG_CH_BASE0 + 12, &v) == 0 && v == 0x40u, "ch1_base hi (0x%x)", v);
     CHECK(m.reg_read(KREG_CH_BASE0, &v) == 0 && v == 0, "ch0_base untouched");
-    // v1's run registers are gone: read 0, writes ignored
+    // the old run registers are gone: read 0, writes ignored
     for (uint32_t off = 0; off < KREG_CH_BASE0; off += 4) {
         m.reg_write(off, 0xFFFFFFFFu);
         CHECK(m.reg_read(off, &v) == 0 && v == 0, "offset 0x%03x reads 0 (0x%x)", off, v);
@@ -846,7 +846,7 @@ static void test_dispatch() {
     unsetenv("TSR_DEVICE");
     unsetenv("TSR_XCLBIN");
     CHECK(tsr_transport_open("xrt") == nullptr, "xrt: not built in, or TSR_XCLBIN unset");
-    CHECK(tsr_transport_open("vkernel") == nullptr, "vkernel: no v2 server until P5.3");
+    CHECK(tsr_transport_open("vkernel") == nullptr, "vkernel: no server until P5.3");
     // Record helpers.
     tsr_record rec{};
     rec.w[0] = 0x05080101u;   // DONE, TILE_ERR, code 8, seq 5

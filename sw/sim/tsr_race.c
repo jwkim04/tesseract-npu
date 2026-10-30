@@ -1,5 +1,5 @@
 // tsr_race.c — the simulator's race detector and the launch-stateless check (P1.9;
-// docs/v2/06-software-verification.md "SW" §4.6, V2-SW-3 / V2-SW-4). Public API: tsr_race.h.
+// docs/design/06-software-verification.md "SW" §4.6, SW-3 / SW-4). Public API: tsr_race.h.
 // It is an optional model (tsr_sim_int.h "Optional models"): tsr_race_attach registers a queue
 // listener and an access listener when tsr_sim_opt_race() != 0, and keeps its state in the
 // TSR_MODEL_RACE slot. Nothing here changes the simulation: the detector only observes.
@@ -78,7 +78,7 @@
 // completion clocks indexed by sequence (HIST_MAX entries; a dep on a ticket older than that
 // joins the oldest kept clock instead, which by E1 is later: conservative, counted in
 // tsr_race_stats.old_refs).
-// SPM_STALE (V2-SW-4), "popped" defined: at every accepted LQ_POP the SPM write generation
+// SPM_STALE (SW-4), "popped" defined: at every accepted LQ_POP the SPM write generation
 // advances, and every SPM byte counts as unwritten for that launch. A write (op extent line, RISC-V
 // store byte, SBA store byte) marks the bytes written in the current generation. While the launch
 // runs — from its LQ_POP until its answer post or any RISC-V reset (host CTRL, SOFT_RESET, DB's

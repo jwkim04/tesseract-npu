@@ -1,4 +1,4 @@
-// tsr_trace.c — trace format v2 (docs/v2/06-software-verification.md "SW" §5; API and file format
+// tsr_trace.c — trace format (docs/design/06-software-verification.md "SW" §5; API and file format
 // in include/tsr_trace.h): the trace object, the meta.json writer and its strict reader, push.bin /
 // tickets.bin / region files, the EX §3.2 image id (SHA-256) and the image checks of EX §3.1, the
 // TRACE model of the simulator (launch capture, SW §5.5, attached by tsr_sim_create_opts), and

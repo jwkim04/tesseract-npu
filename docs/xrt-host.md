@@ -4,22 +4,16 @@ This document describes the host side of the device interface: the transport `ts
 (`sw/transport`) with its layers and kinds, the protocol layer that every kind shares, the `xrt` kdev
 that drives an Alveo card through XRT 2.18, the card selftest, the tests that need no hardware, and
 the card bring-up. The kernel on the other side is described in [`platform-u200.md`](platform-u200.md);
-the launch protocol itself is [EX](v2/01-execution-model.md) §2-§4. `sw/transport/README.md` is the
+the launch protocol itself is [EX](design/01-execution-model.md) §2-§4. `sw/transport/README.md` is the
 developer summary of the same code.
 
 > **Scope.** As-built documentation. Status words: the protocol layer and the `sim` and `mock` kdevs
 > are *implemented and tested on the simulator*; the `xrt` kdev is *written and unit-tested against
-> XRT's no-op shim only* (§6), with no run on a card or in hw_emu (no v2 xclbin before Y5); the
-> `vkernel` client is implemented, its two-clock server *planned* (P5.3). The v1 `xrt` transport ran
-> on the card (`platform-u200.md` §14). Normative: [EX](v2/01-execution-model.md) §9-§10,
-> [SW](v2/06-software-verification.md) §9.1-§9.2, [DB](v2/05-debug.md) §7, §9.
-
-**History: v1 (tag `v1-m4`).** The v1 transport executed one host command buffer per
-`tsr_transport_exec` call on an `ap_ctrl_hs` kernel: `xrt::kernel` with `xrt::run` (or
-`TSR_XRT_CTRL=regs`), kdev `start` / `wait` / `settle`, the arguments `cmd_addr`, `cmd_count` and
-`arg0`-`7`, and `tsr_xrt_selftest` with its program checks. X0 deleted all of it (EX §12). The v1 text
-of this document is `git show v1-m4:docs/xrt-host.md`; the v1 binaries are in `build/v1` (not in git).
-The device memory handling (§4.2) and the hw_emu record (§9) are v1 results that still apply.
+> XRT's no-op shim only* (§6), with no run on a card or in hw_emu (no xclbin with the control core
+> before Y5); the `vkernel` client is implemented, its two-clock server *planned* (P5.3). The card and
+> hw_emu results (§8, §9, `platform-u200.md` §14) were taken before the control core was added, with
+> the host issuing the ops. Normative: [EX](design/01-execution-model.md) §9-§10,
+> [SW](design/06-software-verification.md) §9.1-§9.2, [DB](design/05-debug.md) §7, §9.
 
 ## 1. Layers
 
@@ -48,7 +42,6 @@ ggml-tesseract, tsr_rt, tools         tsr_transport.h: open, close, config, writ
   0x2000), `mem_write` / `mem_read` on a channel buffer, `num_ch`, `ch_bytes`, `ch_addr`, `describe`,
   and the time base: `now_ns()` and `idle()` (the poll loops call `idle()` between polls; it sleeps on
   `xrt`, advances the model on the simulated kinds), `simulated()`, `has_adapter()` and `sim()`.
-  v1's run interface (`start`, `wait`, `settle`, `kargs`, `regs_*`, `kds_*`) is gone.
 - **`tsr::dma_engine`** turns byte-granular requests into transfers that obey a DMA path's rules
   (offset, size and host address multiples of `align`, at most `max_xfer` bytes each), with
   read-modify-write of unaligned edges through a bounce buffer. The `xrt` kdev and the `mock` kdev use
@@ -72,23 +65,22 @@ ggml-tesseract, tsr_rt, tools         tsr_transport.h: open, close, config, writ
 ## 2. Kernel contract (software view)
 
 The kernels `tsr_u200_k1` (NUM_CH 1, T_MAX 1) and `tsr_u200_k4` (NUM_CH 4, T_MAX 8) are `ap_ctrl_none`
-RTL kernels with one clock `ap_clk` (and `ap_clk_2` in v2), `ap_rst_n`, `s_axi_control` (AXI4-Lite, 13-bit
-address space) and `m_axi_ch<c>` (AXI4, 512-bit) for c < NUM_CH. The full map is
+RTL kernels with one clock `ap_clk` (the control core adds `ap_clk_2`, Y5), `ap_rst_n`,
+`s_axi_control` (AXI4-Lite, 13-bit address space) and `m_axi_ch<c>` (AXI4, 512-bit) for c < NUM_CH. The full map is
 [`platform-u200.md`](platform-u200.md) §2 and EX §9.2. What the software uses (byte offsets):
 
 | Offset | Register | Software use |
 | --- | --- | --- |
-| 0x000-0x03C | reserved, read 0 | never accessed (v1: `AP_CTRL`, `GIE`, `IER`, `ISR`, `cmd_addr`, `cmd_count`, `arg0`-`7`) |
+| 0x000-0x03C | reserved, read 0 | never accessed |
 | 0x040 + 8c | `ch<c>_base` lo / hi | written at bind with the device address of the buffer of channel c (4 KiB aligned) while `MEM_EN` = 0 |
 | 0x0E0 | `ADAPTER_CTRL` | bit0 `MEM_EN`, set after the bases; it must read back 1 |
 | 0x0F0 | `ADAPTER_STATUS` | read and cleared (W1C) at open; read again on `PLAT_ERR`; sticky bits 0-5 and a saturating count in [31:16] |
 | 0x0F4 | `ADAPTER_VERSION` | `{16'h0002, 8'h00, NUM_CH}`: major 2 and NUM_CH are checked at open |
 | 0x1000 + off | core CSR window | every access of the launch protocol (EX §5), at any time |
 
-The adapter RTL in the tree is the X0 state without `ADAPTER_CTRL` and with `ADAPTER_VERSION` 1
-(`platform-u200.md` §2); the v2 adapter arrives in Y5. The protocol layer implements the v2 map, and the
-`mock` kdev models it, including `MEM_EN`, `BASE_LOCKED`, `REQ_HELD` and `plat_err_i`. The `sim` kdev
-has no adapter at all (`has_adapter()` is false): the protocol skips `ADAPTER_STATUS` and the bind.
+The adapter RTL in the tree has no `ADAPTER_CTRL` yet (`platform-u200.md` §2); the adapter described
+here arrives in Y5. The protocol layer implements this map, and the `mock` kdev models it,
+including `MEM_EN`, `BASE_LOCKED`, `REQ_HELD` and `plat_err_i`. The `sim` kdev has no adapter at all (`has_adapter()` is false): the protocol skips `ADAPTER_STATUS` and the bind.
 
 The `xrt` kdev finds the arguments by register offset, not by name, and refuses an xclbin whose
 kernel:
@@ -98,17 +90,15 @@ kernel:
   kernel XML port, `xclbin_parser.cpp` `get_address_range`);
 - is neither `ap_ctrl_none` nor, as EX §9.1's fallback, `ap_ctrl_hs` (never started);
 - has an argument outside `ch<c>` at 0x40 + 8c (8 bytes, with a memory connection, contiguous from
-  c = 0, at most `TSR_NUM_CH_MAX` = 16). A v1 xclbin (`cmd_addr`, `cmd_count`, `arg0`-`7`) is refused with
-  a message that points to the tools in `build/v1`.
+  c = 0, at most `TSR_NUM_CH_MAX` = 16).
 
 ## 3. Protocol layer (tsr_kdev.cpp)
 
-One implementation serves every kind (V2-SW-18). It follows EX §2.1, §3, §4.8-§4.9, §8.4-§8.6 and
+One implementation serves every kind (SW-18). It follows EX §2.1, §3, §4.8-§4.9, §8.4-§8.6 and
 §10, as refined by SW §9.1 and DB §4.1, §6.1, §6.3, §7.3-§7.4, §9.2.
 
-- **Open.** Reads `ADAPTER_VERSION` (major 2, NUM_CH equal to the number of channel buffers; "a v1
-  bitstream?" otherwise), then `ID` (0x54535231, "TSR1"), `VERSION` (major 2), `CFG0`-`CFG3`, `CAPS`,
-  `CTL_ID`, `RV_CFG`, `Q_DEPTH`, `RV_FREQ` (0 means "no `clk_rv`"), `LQ_CFG`, `PERF_INFO` and `DBG_ID`
+- **Open.** Reads `ADAPTER_VERSION` (major 2, NUM_CH equal to the number of channel buffers), then
+  `ID` (0x54535231, "TSR1"), `VERSION` (major 2), `CFG0`-`CFG3`, `CAPS`, `CTL_ID`, `RV_CFG`, `Q_DEPTH`, `RV_FREQ` (0 means "no `clk_rv`"), `LQ_CFG`, `PERF_INFO` and `DBG_ID`
   through the window, and clears `ADAPTER_STATUS`. The host counters (`LQ_SEQ`, `LCQ_RD`, `LOG_RD`) and
   the `LQ_W` shadow are read from the device: the rings keep counting across processes, and only a
   card reset zeroes them. Unless `TSR_ATTACH=1` it then writes `SOFT_RESET` and waits for
@@ -196,8 +186,8 @@ discovered from the xclbin (§2). `idle()` sleeps, so the poll policy and the ti
 
 Each channel gets one `xrt::bo(device, size, xrt::bo::flags::device_only, group)`, where `group` is
 the memory index of the bank that argument `ch<c>` is connected to
-(`xrt::xclbin::arg::get_mems()`, EX §9.1; v1 asked `xrt::kernel::group_id`, and the card has to
-confirm that the two agree). Size: `TSR_XRT_CH_GIB` (1..16), default the bank size from the xclbin
+(`xrt::xclbin::arg::get_mems()`, EX §9.1; the card has to confirm that it equals what
+`xrt::kernel::group_id` reports). Size: `TSR_XRT_CH_GIB` (1..16), default the bank size from the xclbin
 memory topology (16 GiB on the U200 DDR4 banks), shrunk in 256 MiB steps if the allocation fails (down
 to 1 GiB). Evidence from the XRT 2.18.179 sources (`build/xrt-driver/xrt-202420`, driver
 `.../core/pcie/driver/linux/xocl`):
@@ -245,8 +235,8 @@ column.
 | --- | --- | --- |
 | `TSR_DEVICE` | `sim` | the kind: `sim`, `mock`, `vkernel`, `xrt`, or a registered kind (`none` is understood by the ggml backend only: it registers no device) |
 | `TSR_IMAGE` | the build's `tsr-fw.elf` | firmware image (`tsr_image_open_default`) |
-| `TSR_LAUNCH_TIMEOUT_MS` | 60000 (0 = none) | wait timeout per launch, debug-aware (§3); v1: `TSR_XRT_TIMEOUT_MS` |
-| `TSR_ABORT_MS` | 10000 | wait for the answers after `LQ_CANCEL`; v1: `TSR_XRT_ABORT_MS` |
+| `TSR_LAUNCH_TIMEOUT_MS` | 60000 (0 = none) | wait timeout per launch, debug-aware (§3) |
+| `TSR_ABORT_MS` | 10000 | wait for the answers after `LQ_CANCEL` |
 | `TSR_BOOT_MS`, `TSR_RESET_MS` | 2000, 15000 | wait for HELLO; wait for `SR_BUSY` = 0 after `SOFT_RESET` |
 | `TSR_ATTACH` | 0 | 1: open without `SOFT_RESET` or bind, for diagnosis (boot an image before launching) |
 | `TSR_LOG`, `TSR_LOG_LEVEL` | off, 3 | decode the device log to `stderr` or a file (appended); `LOG_CFG.LEVEL` 0 FATAL to 5 TRACE |
@@ -263,13 +253,11 @@ column.
 | `TSR_MOCK_NUM_CH`, `TSR_MOCK_TMAX`, `TSR_MOCK_CH_GIB` | 4, 1, 16 | `mock` core configuration; `TSR_SIM_THREADS` applies too |
 | `TSR_MOCK_DMA_ALIGN`, `TSR_MOCK_DMA_CHUNK_KIB`, `TSR_MOCK_DMA_BOUNCE` | 1, 65536, 0 | DMA rules the mock enforces |
 | `TSR_MOCK_INJECT`, `TSR_MOCK_TCM_FAULT`, `TSR_MOCK_HANG` | none | tests: `N:V[,N:V...]` ORs V into `ADAPTER_STATUS` at the N-th `LQ_PUSH` (N = 0: left by an earlier process, before the open); `ADDR:XOR` corrupts one word-aligned TCM word after every `LOAD_DATA` write (VERIFY must catch it); n makes the MVM unit hang at the n-th `LQ_PUSH` |
-| `TSR_VKERNEL_SERVER`, `TSR_VKERNEL_SOCKET` | none | `vkernel`: server command line (the client appends `--fd N`), or the path of a Unix socket a server listens on; the v2 server is P5.3 (`platform-u200.md` §13) |
+| `TSR_VKERNEL_SERVER`, `TSR_VKERNEL_SOCKET` | none | `vkernel`: server command line (the client appends `--fd N`), or the path of a Unix socket a server listens on; the two-clock server is P5.3 (`platform-u200.md` §13) |
 
 Accepted and ignored with one message until their tools exist: `TSR_GDB`, `TSR_DEBUGGER` (the embedded
 debug service, P3.7) and `TSR_PROF`, `TSR_PROF_TRW_MIB`, `TSR_PROF_EVERY`, `TSR_PROF_RV_SAMPLE_US` (the
-trace-writer profiler, P3.8). The v1 variables `TSR_XRT_TIMEOUT_MS`, `TSR_XRT_ABORT_MS` and
-`TSR_XRT_CTRL` are ignored with a message that names the replacement (or says that the variable is
-gone); `TSR_MOCK_CTRL` and `TSR_VKERNEL_CTRL` no longer exist.
+trace-writer profiler, P3.8).
 
 With `TSR_XRT_CH_GIB` below 16 the core still range-checks against its `CH_BYTES` = 16 GiB: a faulty
 launch could address memory past the buffer (other BOs, or a DECERR that shows up in
@@ -279,7 +267,7 @@ launch could address memory past the buffer (other BOs, or a DECERR that shows u
 
 `tsr-selftest [--device KIND] [--image ELF] [--mem-mib N] [--no-mem] [--no-kernel] [--ids LIST]
 [--no-shadow] [--rate-n N] [--traces DIR]... [--traces-serial DIR]... [--max-traces N] [--debug]
-[--log-out FILE] [--seed N] [-v]` (`sw/tools/tsr_selftest.cpp`; SW §9.5, §7.6, V2-SW-28). Default device
+[--log-out FILE] [--seed N] [-v]` (`sw/tools/tsr_selftest.cpp`; SW §9.5, §7.6, SW-28). Default device
 `$TSR_DEVICE`, else `xrt`; `mock` (the adapter register model, used by the ctests) and `sim` check the
 tool and the protocol path. Exit code 0 = every check passed, 1 = a check failed, 2 = the transport
 did not open or bad usage. Sections:
@@ -288,7 +276,7 @@ did not open or bad usage. Sections:
    `RV_FREQ`, `RV_CFG`, `Q_DEPTH`, `LQ_CFG`, `PERF_INFO`, `LOG_CFG`, `STATUS`; the adapter
    (`ADAPTER_VERSION` major 2 and NUM_CH, `ADAPTER_STATUS` at open and now, `MEM_EN`, bases equal to the
    buffers' device addresses) or "no adapter".
-2. Memory per channel (unchanged from v1): pattern write and read-back at aligned, unaligned, 4 KiB- and
+2. Memory per channel: pattern write and read-back at aligned, unaligned, 4 KiB- and
    4 GiB-crossing and end-of-channel ranges with guard bytes; channel aliasing; write and read
    bandwidth of an `--mem-mib` transfer.
 3. Boot: the image (id, base kernels `graph` / `selftest` / `replay` at 0 / 1 / 2); a boot with the
@@ -300,7 +288,7 @@ did not open or bad usage. Sections:
    simulator with the same image, inputs and arguments; the answers, every output byte, the per-unit
    completion counts, the kernel events and the log records must be equal; plus the device-side
    checks and references computed in the tool.
-6. `--traces DIR`: every trace v2 below DIR replayed through the device (kind `ops` through the
+6. `--traces DIR`: every trace below DIR replayed through the device (kind `ops` through the
    `replay` kernel, kind `launch` as full launches of their own image); `--traces-serial DIR` with the
    `replay` kernel's `SERIAL` flag (`traces/model-v1conv`). Answer, expect regions and device = shadow
    are compared; traces made for another configuration are skipped.
@@ -308,10 +296,7 @@ did not open or bad usage. Sections:
 8. Log and status: every drained word decodes, no record dropped, no sticky error in `STATUS`, the
    transport's recovery counters 0, `ADAPTER_STATUS` clean at the end and no `PLAT_ERR` seen.
 
-`--log-out FILE` keeps every drained log word, raw, for `tsr-log`. **History: v1 (tag `v1-m4`).**
-`tsr_xrt_selftest` checked the identity, the memory ranges and nine device programs (END, argument
-packing, LD / ST, QACT, MVM with and without ACC, a `DRAM_RANGE` fault) bit-exactly against the ISA
-simulator, and replayed v1 traces; a v1 binary is in `build/v1/bin`.
+`--log-out FILE` keeps every drained log word, raw, for `tsr-log`.
 
 ## 6. Tests (no hardware)
 
@@ -320,22 +305,16 @@ Names are the ctest names; `ctest --test-dir build/dev -N` lists them.
 | ctest | What | Result |
 | --- | --- | --- |
 | `transport_kdev` (`test-tsr-kdev`) | the protocol layer on the `mock` kdev: identity checks and adapter faults at open (ID, ISA major, `ADAPTER_VERSION`, NUM_CH, `RV_FREQ` = 0, `ADAPTER_STATUS` left by an earlier process), bind (`MEM_EN`, misaligned base, `BASE_LOCKED`, held requests), timeouts (`SOFT_RESET` stuck, no HELLO), the stale core at open (a booted device with a launch running, left by a "dead process", with and without `TSR_ATTACH`), adapter errors during a launch (`PLAT_ERR`), a hung unit ("card reset needed"), the registry, `TSR_MOCK_*` parsing, `xrt_env_defaults`, and the chunked and aligned transfer engine (byte-granular transfers under DMA rules from align 1 to 4096, across 4 GiB, against a strict fake DMA) | passes in `build/dev` (run for this document) |
-| `transport_protocol` (`test-tsr-protocol`) | one binary for every kind it can run (`sim`, `mock`; `vkernel` when a v2 server is named): cold and warm boot, image-id mismatch, `.note.tsr` refusal, VERIFY with an injected TCM fault (mock), PING, 0-7 arguments, `BAD_DESC`, 8 outstanding launches and the credit rule, forced `LQ_OVERFLOW` and `RING_RD_BAD`, events while waiting, the log (FMT / TEXT / EVENT / BLOB decode, drop), cancel and stop, `SOFT_RESET` mid-launch, the debug-aware timeout with a hart halted through the DM model, the recovery ladder (levels 2 and 3), TRAP handling (decode with `mepc` → function and line against `addr2line`, warm restart), minimal record reads against full reads; records and DRAM identical across the kinds; the EX §4.11 numbers on `sim` (boot, empty-launch round trip, pipelined rate) | passes in `build/dev` (run for this document) |
-| `transport_xrt_noop` (XRT builds only) | the `xrt` kdev on XRT's userspace with its no-op shim (`XCL_EMULATION_MODE=noop`, `libxrt_noop`; no card, no driver) and generated metadata-only xclbins of `tsr_u200_k4`: xclbin load, kernel pick, arguments by offset, the memory bank of each channel argument from the xclbin, bank-size default, device-only buffers, the compute unit opened through `xrt::ip` for `ap_ctrl_none` and for the `ap_ctrl_hs` fallback; refusals with a reason (range 0x1000, a foreign argument, v1's `cmd_addr` / `cmd_count` / `arg0`-`7`, no Tesseract kernel, `TSR_XRT_CH_GIB` above the bank); register access and unmanaged DMA fail cleanly (the shim implements neither: the open stops at the first register read); `TSR_XRT_DMA=m2m` allocates its staging buffers at open | 32 checks, 0 failed, in a scratch build with the unpacked 2.18.179 deb (§7; run for this document) |
+| `transport_protocol` (`test-tsr-protocol`) | one binary for every kind it can run (`sim`, `mock`; `vkernel` when a server is named): cold and warm boot, image-id mismatch, `.note.tsr` refusal, VERIFY with an injected TCM fault (mock), PING, 0-7 arguments, `BAD_DESC`, 8 outstanding launches and the credit rule, forced `LQ_OVERFLOW` and `RING_RD_BAD`, events while waiting, the log (FMT / TEXT / EVENT / BLOB decode, drop), cancel and stop, `SOFT_RESET` mid-launch, the debug-aware timeout with a hart halted through the DM model, the recovery ladder (levels 2 and 3), TRAP handling (decode with `mepc` → function and line against `addr2line`, warm restart), minimal record reads against full reads; records and DRAM identical across the kinds; the EX §4.11 numbers on `sim` (boot, empty-launch round trip, pipelined rate) | passes in `build/dev` (run for this document) |
+| `transport_xrt_noop` (XRT builds only) | the `xrt` kdev on XRT's userspace with its no-op shim (`XCL_EMULATION_MODE=noop`, `libxrt_noop`; no card, no driver) and generated metadata-only xclbins of `tsr_u200_k4`: xclbin load, kernel pick, arguments by offset, the memory bank of each channel argument from the xclbin, bank-size default, device-only buffers, the compute unit opened through `xrt::ip` for `ap_ctrl_none` and for the `ap_ctrl_hs` fallback; refusals with a reason (range 0x1000, a foreign argument, no Tesseract kernel, `TSR_XRT_CH_GIB` above the bank); register access and unmanaged DMA fail cleanly (the shim implements neither: the open stops at the first register read); `TSR_XRT_DMA=m2m` allocates its staging buffers at open | 32 checks, 0 failed, in a scratch build with the unpacked 2.18.179 deb (§7; run for this document) |
 | `transport_ggml_e2e_mock`, `..._tmax8` | `test-ggml-tesseract` (bit-exact backend checks) on the `mock` kdev, DMA align 64 / chunk 64 KiB; T_MAX 8 with 3 channels, align 4096 / chunk 12 KiB | defined in `sw/ggml-tesseract/CMakeLists.txt`; not re-run |
-| `tools_selftest_mock`, `..._tmax8`, `..._1ch`, `..._faults`, `..._traces`, `..._traces_tmax8` | `tsr-selftest` on the `mock` kdev with the shadow, the DMI smoke and the log written for `tsr-log`: 4 channels T_MAX 1 with DMA rules that force the bounce path; T_MAX 8 (the k4 configuration); 1 channel (k1); the fault cases (an AXI error during a launch, `ADAPTER_STATUS` left by an earlier process, a TCM write fault, a hung unit: the selftest must fail with the reason named, and pass without them); replays of the trace v2 sets that fit the device | defined in `sw/tools/CMakeLists.txt`; not re-run |
+| `tools_selftest_mock`, `..._tmax8`, `..._1ch`, `..._faults`, `..._traces`, `..._traces_tmax8` | `tsr-selftest` on the `mock` kdev with the shadow, the DMI smoke and the log written for `tsr-log`: 4 channels T_MAX 1 with DMA rules that force the bounce path; T_MAX 8 (the k4 configuration); 1 channel (k1); the fault cases (an AXI error during a launch, `ADAPTER_STATUS` left by an earlier process, a TCM write fault, a hung unit: the selftest must fail with the reason named, and pass without them); replays of the trace sets that fit the device | defined in `sw/tools/CMakeLists.txt`; not re-run |
 | `tools_log_selftest`, `tools_trace_replay_device` | `tsr-log` end to end; `tsr-trace-replay --device` through `sim` with the shadow and through `mock` | defined in `sw/tools/CMakeLists.txt`; not re-run |
 
 The `xrt` kdev has no ctest on a card. The no-op test builds with
 `cmake -S . -B <build> -DCMAKE_BUILD_TYPE=Release -DTSR_WITH_XRT=ON -DTSR_XRT_ROOT=build/xrt-local/opt/xilinx/xrt`
 and `cmake --build <build> --target test-tsr-xrt-noop -j2`; `build/dev` itself is configured without
 XRT, so it does not list `transport_xrt_noop`.
-
-**History: v1 results (tag `v1-m4`, measured on the `mock` kdev with XRT builds, 2026-10-23).** The v1
-`transport_kdev` ran 9,613 checks (the scheduler's `ap_done` sequence, stale completions, the run
-protocol), `transport_xrt_noop` 28 checks, and the six `tools_xrt_selftest_mock*` tests replayed the v1
-trace sets; all 290 `traces/model` traces passed through the mock with 4 KiB DMA alignment, and
-`test-backend-ops -o MUL_MAT -b Tesseract0` passed 1402 / 1402 on the mock. The v2 tests replace them.
 
 ## 7. Building without an installed XRT
 
@@ -353,7 +332,7 @@ functions the headers call, and the system `libuuid.so.1` is linked by soname. W
 `/opt/xilinx/xrt` (which pulls `uuid-dev`) the stand-in is not used. Binaries find `libxrt_coreutil`
 through the build RPATH; XRT itself finds its driver shim through `XILINX_XRT` or `/opt/xilinx/xrt`,
 so with only the unpacked deb a program that opens a device stops at "No such library
-'/opt/xilinx/xrt/lib/libxrt_core.so.2'" (exit 2; observed with the v1 `tsr_xrt_selftest`), and without
+'/opt/xilinx/xrt/lib/libxrt_core.so.2'" (exit 2), and without
 `TSR_XCLBIN` at "TSR_XCLBIN is not set". With `XILINX_XRT` pointing at the unpacked tree and
 `XCL_EMULATION_MODE=hw_emu`, XRT loads its hw_emu shim from it instead (§9); `transport_xrt_noop`
 loads `libxrt_noop` from the root it is given. `tsr_bw` (`docs/m0-bw.md` §6) is built by the same
@@ -361,23 +340,17 @@ configure.
 
 ## 8. Card bring-up procedure
 
-**v1 (tag `v1-m4`): done on the card.** The v1 procedure ran from 2026-10-25 and passed (M0, M3, M4);
-its steps, pass criteria and results are `platform-u200.md` §14. In outline: install XRT 2.18.179
-and the patched DKMS driver (`sw/xrt-driver/README.md`), the U200 platform, flash the shell with
-`xbmgmt`, `xbutil validate`; M0 bandwidth (`tsr_bw`, `docs/m0-bw.md`); `tsr_xrt_selftest` on k1 and
-then k4 (identity, memory including unaligned and 4 GiB ranges, programs, traces); the backend tests;
-the M3 gate (Qwen2.5-0.5B Q8_0 with `-ngl 99 -nkvo`) and the M4 gate. Fallbacks that were available
-for a failing step: `TSR_XRT_CTRL=regs` (the scheduler path), `TSR_XRT_DMA=staged` /
-`TSR_XRT_DMA_ALIGN=64` (DMA alignment), `TSR_XRT_TIMEOUT_MS` (long programs). The card runs used the
-transport of the v1 tag: xclbin load, 16 GiB device-only buffers, unmanaged DMA in both the `direct`
-and the `staged` mode (`platform-u200.md` §14.3) and, in the default control mode, one `xrt::run` per
-exec. The card results recorded there do not mention `m2m`, `TSR_XRT_CTRL=regs`, a timeout with
-`CTRL.ABORT` against hardware and the behaviour after `xbutil reset`.
+Done on the card: steps, pass criteria and results are `platform-u200.md` §14. From 2026-10-25
+the card ran XRT 2.18.179 with the patched DKMS driver (`sw/xrt-driver/README.md`), the U200 platform,
+the shell flash with `xbmgmt`, `xbutil validate`, the M0 bandwidth run (`tsr_bw`, `docs/m0-bw.md`) and
+the Qwen2.5-0.5B Q8_0 gates M3 and M4. Those runs used the xclbin load, 16 GiB device-only buffers
+and unmanaged DMA in both the `direct` and the `staged` mode (`platform-u200.md` §14.3). They did not
+cover `m2m` and the behaviour after `xbutil reset`.
 
-**v2: planned, W6** ([`docs/v2/README.md`](v2/README.md) §10; SW §11 P6.1-P6.6, §10.4 for the gates).
-It starts when a v2 xclbin exists (Y5, `platform-u200.md` §8.4) and uses the card, XRT and driver
+Planned, W6 ([`docs/design/README.md`](design/README.md) §10; SW §11 P6.1-P6.6, §10.4 for the gates).
+It starts when an xclbin with the control core exists (Y5, `platform-u200.md` §8.4) and uses the card, XRT and driver
 steps that are already done. In order:
-1. `TSR_XCLBIN=<k1 xclbin> tsr-selftest --device xrt`: identity (ADAPTER_VERSION 2, ID, VERSION,
+1. `TSR_XCLBIN=<k1 xclbin> tsr-selftest --device xrt`: identity (ADAPTER_VERSION, ID, VERSION,
    CTL_ID, RV_FREQ), bind, cold load with VERIFY, HELLO, PING round trip, the `selftest` kernel
    against the shadow, trace replays, the DMI smoke (§5). k1 first, then k4 with the sets that fit.
 2. The backend tests (`test-ggml-tesseract`, `test-backend-ops -o MUL_MAT -b Tesseract0`) with
@@ -389,23 +362,22 @@ steps that are already done. In order:
    `TSR_XRT_DMA=staged` / `TSR_XRT_DMA_ALIGN=64` for DMA alignment, `TSR_LAUNCH_TIMEOUT_MS` for long
    launches, `TSR_GDB_WAIT=launch` to keep a trapped device.
 
-**Untested for the v2 `xrt` kdev** (everything that needs a card; the no-op test of §6 covers the
+**Untested for the `xrt` kdev** (everything that needs a card; the no-op test of §6 covers the
 discovery logic only): every register access through `xrt::ip` and the exclusive-access refusal of a
-second process; that the memory group from `xrt::xclbin::arg::get_mems()` equals the v1
-`xrt::kernel::group_id` (EX §9.1, *confirm*); `load_xclbin` of a v2 xclbin; a v2 xclbin that `v++`
-accepts as `ap_ctrl_none` (`platform-u200.md` §12); the unmanaged DMA, `staged` fallback and `m2m` on
-the 16 GiB device-only buffers with this kdev (the `dma_engine` and the DMA modes are v1 code that ran
-on the card, except `m2m`); the host-time poll policy and timeouts against a real core; behaviour
+second process; that the memory group from `xrt::xclbin::arg::get_mems()` equals what
+`xrt::kernel::group_id` reports (EX §9.1, *confirm*); `load_xclbin` of an xclbin with the control core;
+such an xclbin that `v++` accepts as `ap_ctrl_none` (`platform-u200.md` §12); the unmanaged DMA, `staged` fallback and `m2m` on
+the 16 GiB device-only buffers with this kdev (the `dma_engine` and the DMA modes ran on the card, except
+`m2m`, before the control core was added); the host-time poll policy and timeouts against a real core; behaviour
 after `xbutil reset`; the `m2m` staging allocation with a full bank (the no-op shim does not enforce
 bank capacity). Launch costs: `platform-u200.md` §14.5.
 
-## 9. Hardware emulation (hw_emu) of `tsr_u200_k1` (v1, 2026-10-24)
+## 9. Hardware emulation (hw_emu) of `tsr_u200_k1` (2026-10-24)
 
-The v1 host binaries, unchanged and built with `-DTSR_WITH_XRT=ON` against the unpacked XRT (§7),
-ran over `TSR_DEVICE=xrt` against the k1 kernel in Vitis hardware emulation: XRT's hw_emu shim
+The host binaries, built with `-DTSR_WITH_XRT=ON` against the unpacked XRT (§7), ran over `TSR_DEVICE=xrt` against the k1 kernel in Vitis hardware emulation: XRT's hw_emu shim
 (`libxrt_hwemu.so`, in the unpacked deb), the extracted development platform, and xsim from Vivado
-2024.2. This needed no root, no driver and no install. Everything below is simulation and came before the card runs (`platform-u200.md` §14). There is no v2
-xclbin, so v2 has no hw_emu run yet; the two workaround defaults below stay in the `xrt` kdev.
+2024.2. This needed no root, no driver and no install. Everything below is simulation and came before the card runs (`platform-u200.md` §14). There is no
+xclbin with the control core, so it has no hw_emu run yet; the two workaround defaults below stay in the `xrt` kdev.
 
 **xclbin.** `TSR_VIVADO_LOCK=<lock> PLATFORM_REPO_PATHS=$PWD/build/platforms/root/opt/xilinx/platforms
 hw/u200/build_xclbin.sh k1 hw_emu` (the `.xo` manifest matched, so no repackaging): `v++` rc 0 after
@@ -462,28 +434,13 @@ path (XDMA, DDR4). The card, and every other emulation mode, keeps the defaults 
    checks pass. `TSR_XRT_DMA=staged TSR_XRT_DMA_ALIGN=4096` (§4.2) starts every raw transfer on a
    4 KiB boundary, and with it every range passes.
 
-**Results** (`TSR_XRT_CH_GIB=3`, `staged` / 4096 unless noted):
+With the two defaults, the xclbin load, the 16 GiB device-only buffer, the memory ranges
+of a 3 GiB channel and the DMA paths passed their checks in hw_emu.
 
-| Run | Result |
-| --- | --- |
-| `tsr_xrt_selftest --no-mem --no-programs` (16 GiB, `direct`) | PASS, 8 checks: `load_xclbin`, kernel `tsr_u200_k1` (exclusive), 16 GiB device-only BO at 0x800000000 (memory group 1), ID "TSR1", ISA 1.0, NUM_CH 1, T_MAX 1, SPM 4 MiB, ADAPTER_VERSION 0x00010001, ADAPTER_STATUS clean; 30.5 s |
-| `tsr_xrt_selftest --mem-mib 1 --traces <26 one-channel traces> --traces traces/m3/tmax1 --traces traces/gen/tmax1 --traces traces/m3/errors`, `TSR_XRT_CTRL=run` (`xrt::run` through XRT's hw_emu scheduler) | PASS, 44 checks: the memory ranges of a 3 GiB channel (no 4 GiB crossing); 9 programs bit-exact against the ISA simulator (END, ARG packing, LD->ST, QACT A32 + A256, MVM Q8_0 / Q4_K with and without ACC, DRAM_RANGE fault); 19 traces replayed (8 m3, 4 m2 and 7 error endings: ILLEGAL_OP × 3, BAD_FMT, T_RANGE × 2, SPM_RANGE); 163 skipped (156 NUM_CH 4, 6 with regions beyond 3 GiB, 1 DRAM_RANGE at 16 GiB); ADAPTER_STATUS clean throughout; 115.5 s |
-| the same with `TSR_XRT_CTRL=regs` | PASS, 44 checks, the same 19 traces; PERF cycles of the 9 programs equal to the `run` mode; 105.5 s |
-| `tsr_xrt_selftest --mem-mib 1` + 7 new one-channel traces, with none of `TSR_XRT_CH_GIB` / `TSR_XRT_DMA` / `TSR_XRT_DMA_ALIGN` set (the hw_emu defaults; same xclbin) | the defaults line on stderr; 3.00 GiB channel, `staged`, align 4096; PASS, 31 checks: 6 memory ranges, the 9 programs bit-exact with the PERF cycles of the rows above, 6 traces replayed, 1 skipped; 75.6 s. With `TSR_XRT_CH_GIB=1` set (`--no-mem --no-programs`), the 1 GiB value is used, only the two DMA defaults apply, PASS, 8 checks |
-| `test-backend-ops test -o MUL_MAT -b Tesseract0`, 3 cases: q8_0 m 16 n 3 / 9 k 256, q4_K m 16 n 3 k 256 | 3 / 3 OK; 30.5 s; host process plus xsim at most 0.8 GB RSS |
-
-The one-channel traces came from the v1 `tsr-trace-gen -q --num-ch 1` with these option sets:
-`--ops m3 -n 6 -s 61 --max-wbeats 2048`; `--ops m3 -n 6 -s 65 --max-wbeats 2048`;
-`--ops m2 -n 4 -s 62`; `--ops m3 -n 4 -s 63 --max-wbeats 1024 --errors 100`;
-`--ops m2 -n 6 -s 64 --errors 100`. No checked-in set fitted NUM_CH 1.
-
-Speed: each exec of a short program (27–1,017 cycles) took about 1.3 s of wall time with `run`
-and 0.7 s with `regs`. One 1-channel MVM trace of 136,818 cycles (ISA cycle model) added 45 s,
-i.e. about 3 K cycles/s with the upload. That is roughly 100× slower than the Verilated kernel
-(docs/platform-u200.md §13.1, 355 K cycles/s on k1). The host-to-card figure the selftest prints
-(0.05 GB/s) is emulation time and says nothing about the card.
+Speed: one MVM run of 136,818 cycles added 45 s, i.e. about 3 K cycles/s with the upload. That is
+roughly 100x slower than the Verilated kernel (`platform-u200.md` §13, 355 K cycles/s on k1). The
+host-to-card figure that a transfer test prints (0.05 GB/s) is emulation time and says nothing about
+the card.
 
 Not run in hw_emu: the k4 kernel; 16 GiB channels and the ranges across 4 GiB and at 12 GiB
-(defect 1); `direct` DMA beyond the failing ranges (defect 2); `m2m`; DRAM_RANGE-ending traces
-(they need the 16 GiB channel); timeout / ABORT; `test-ggml-tesseract` (546.7 M cycles on k1:
-about two days at this speed) and model runs.
+(defect 1); `direct` DMA beyond the failing ranges (defect 2); `m2m`; timeout and cancel.

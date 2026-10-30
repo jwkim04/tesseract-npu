@@ -2,8 +2,8 @@
 # linked by the backend (ggml-tesseract, see sources.cmake) and by the runtime sw/rt (tsr_rt).
 #
 #   tsr-lower.{h,cpp}    MUL_MAT shape checks and SPM tiling (weight placement, staging; the
-#                        firmware tiles with plan.hpp, V2-SW-20)
-#   tsr-opl.{h,cpp}      the op-list path (docs/v2/06-software-verification.md §9.3, §9.4): OPL v1
+#                        firmware tiles with plan.hpp, SW-20)
+#   tsr-opl.{h,cpp}      the op-list path (docs/design/06-software-verification.md §9.3, §9.4): the op list format
 #                        builder with DRAM-range hazards and JOINs, the OPL cache; tsr-opl-dev.cpp:
 #                        the `graph` kernel on a transport (boot, launch, wait, error text)
 #   tsr-alloc.{h,cpp}    first-fit range allocator (IO windows, AUX, symmetric WEIGHT heap, OPL cache)
@@ -12,7 +12,7 @@
 # Included by the top-level CMakeLists after sw/transport and before llama.cpp (the backend's stub
 # only checks tsr_ref and tsr_transport; targets are linked by name, so the order is for
 # readability). Static, PIC (it is linked into libggml-tesseract.so). The firmware SDK's freestanding
-# headers tsr/opl.hpp (OPL v1 + host writer) and tsr/plan.hpp (the shared MUL_MAT planner) come from
+# headers tsr/opl.hpp (op list format + host writer) and tsr/plan.hpp (the shared MUL_MAT planner) come from
 # sw/ctrl/include.
 
 if (NOT DEFINED TSR_FP_FLAGS)

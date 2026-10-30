@@ -1,6 +1,6 @@
 // GENERATED FILE, DO NOT EDIT: produced by sw/tables/gen_tables.py from sw/tables/tsr_tables.py.
 //
-// tsr/at.hpp — Tesseract v2 tables for the firmware SDK (V2-EX-30, SW §6):
+// tsr/at.hpp — Tesseract tables for the firmware SDK (EX-30, SW §6):
 // the AT encodings (AT §5) and their constexpr builders.
 // Freestanding C++20: no libstdc++ headers, no heap, everything constexpr in namespace tsr.
 // Names as tsr_tables.h without the TSR_ prefix (see sw/tables/gen_tables.py).

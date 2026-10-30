@@ -1,6 +1,6 @@
 // tsr_kdev_sim.h — the "sim" kdev: the simulator in-process behind the core CSR port, with no
-// adapter (docs/v2/01-execution-model.md "EX" §10.2; docs/v2/06-software-verification.md "SW"
-// §9.1, §4.9). It replaces v1's direct "sim" transport (tsr_transport_sim.c, V2-SW-18): the
+// adapter (docs/design/01-execution-model.md "EX" §10.2; docs/design/06-software-verification.md "SW"
+// §9.1, §4.9, SW-18). The
 // protocol layer drives it through the same registers as the card.
 //
 // Time (EX §10.2): nothing moves unless the host lets it. A host read of LCQ_WR, STATUS or LOG_WR

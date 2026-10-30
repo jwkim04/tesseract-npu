@@ -24,9 +24,9 @@ Subcommands
 Dump format (written by tsr-numcheck, docs/numcheck.md): <run>/meta.json {"format": "tsr-numcheck",
 "version": 2, "run", "model", "n_tokens", "n_vocab", "logits_file", "info", "nodes": [{"i", "name", "op", "ne",
 "file", "backend", "weight", "weight_type", "src1_file", "src1_ne"}]}, little-endian f32 files. Version 2
-(P3.3) records the v2 settings in "info" (V2-SW-22: "phase" m6|m7, "flash_attn", "type_k", "type_v",
+(P3.3) records the settings in "info" (SW-22: "phase" m6|m7, "flash_attn", "type_k", "type_v",
 "offload_kqv", "attn_rot_disable"); compare requires the same settings in every run and reports them.
-Version 1 dumps (v1 settings: FA off, f16 KV, no rotation setting) are still read.
+Version 1 dumps (FA-off settings: FA off, f16 KV, no rotation setting) are still read.
 
 Native code: build/numcheck/sw/sim/libtsr_ref.so and build/numcheck/sw/tools/libnumcheck_helper.so
 (cmake --build build/numcheck --target numcheck_helper tsr_ref_shared -j4).
@@ -566,7 +566,7 @@ class Run:
             die(f"{mp} missing")
         self.meta = json.loads(mp.read_text())
         if self.meta.get("format") != "tsr-numcheck" or self.meta.get("version") not in (1, 2):
-            die(f"{mp}: not a tsr-numcheck v1 / v2 dump")
+            die(f"{mp}: not a tsr-numcheck version 1 / 2 dump")
         self.label = label
         self.nodes = self.meta["nodes"]
 
@@ -727,7 +727,7 @@ PRODUCERS = {  # weight role -> producer node names (first match wins), {l} = la
     "ffn_down": ("ffn_swiglu-{l}", "ffn_geglu-{l}", "ffn_gelu-{l}", "ffn_silu-{l}", "ffn_relu-{l}"),
 }
 OUTPUT_PRODUCERS = {"output.weight": ("result_norm",), "token_embd.weight": ("result_norm",)}
-# With flash attention (the v2 settings, V2-SW-22) attn_output's src1 is the FLASH_ATTN_EXT output
+# With flash attention (the baseline settings, SW-22) attn_output's src1 is the FLASH_ATTN_EXT output
 # [D, n_head, T] seen through a reshape view (kqv_out-N, not dumped): the same bytes as [K, T].
 FA_ROLES = ("attn_output",)
 
@@ -1849,13 +1849,13 @@ def sanitize(o):
 
 
 MODEL_KEYS = ("model_desc", "n_params", "n_layer", "n_embd")     # meta.json "info" fields that identify the model
-# meta.json "info" fields of the v2 settings (V2-SW-22); a version 1 dump has the v1 values
+# meta.json "info" fields of the settings (SW-22); a version 1 dump has the FA-off values
 SETTING_KEYS = ("phase", "flash_attn", "type_k", "type_v", "offload_kqv", "attn_rot_disable")
 V1_SETTINGS = {"phase": "v1", "flash_attn": "off", "type_k": "f16", "type_v": "f16", "offload_kqv": False, "attn_rot_disable": False}
 
 
 def run_settings(meta: dict) -> dict:
-    """The v2 settings a run was made with (version 1: the v1 settings)."""
+    """The settings a run was made with (version 1: the FA-off settings)."""
     if meta.get("version", 1) < 2:
         return dict(V1_SETTINGS)
     info = meta.get("info") or {}
@@ -1880,7 +1880,7 @@ def check_run_set(runs: dict, noobs) -> list:
         for f in ("n_tokens", "n_vocab", "tokens"):
             if m.get(f) != ref.get(f):
                 die(f"{k} run: {f} differs from the dev run (the runs must use the same prompt and model)")
-        if run_settings(m) != run_settings(ref):    # one comparison, one attention / KV configuration (V2-SW-22)
+        if run_settings(m) != run_settings(ref):    # one comparison, one attention / KV configuration (SW-22)
             die(f"{k} run: settings {run_settings(m)} differ from the dev run's {run_settings(ref)}")
     if noobs is not None:
         m = noobs.meta
@@ -2165,7 +2165,7 @@ def cmd_selftest(args) -> int:
               ("6 weight MUL_MATs checked", rep["mm"]["checked"] == 6),
               ("converted types present (q6_K, f16, f32)", all(t in types and not types[t]["native"] for t in ("q6_K", "f16", "f32"))),
               ("B1 elements = sum N*T", rep["mm"]["b1_elements"] == sum(N for (_, _, N) in specs.values()) * 6),
-              ("v2 settings reported (m6, FA on, q8_0 / q8_0 KV on the host, rotation off)",
+              ("settings reported (m6, FA on, q8_0 / q8_0 KV on the host, rotation off)",
                rep.get("settings") == {"phase": "m6", "flash_attn": "on", "type_k": "q8_0", "type_v": "q8_0",
                                        "offload_kqv": False, "attn_rot_disable": True})]
     # 2b. runs with different settings (here: the floor made with an f16 V cache) must be refused
@@ -2181,7 +2181,7 @@ def cmd_selftest(args) -> int:
         refused = ex.code == 2
     fm.write_text(fm_orig)
     checks.append(("runs with different settings refused", refused))
-    # 2c. version 1 dumps (v1 settings) are still read: as a set of three they compare
+    # 2c. version 1 dumps (FA-off settings) are still read: as a set of three they compare
     for d in dirs.values():
         mp = d / "meta.json"
         m1 = json.loads(mp.read_text())
@@ -2193,7 +2193,7 @@ def cmd_selftest(args) -> int:
     r1v = json.loads((out / "report-v1" / "report.json").read_text())
     for d in dirs.values():
         (d / "meta.v2.json").replace(d / "meta.json")
-    checks.append(("version 1 dumps read with the v1 settings", rc1 == 0 and r1v.get("settings", {}).get("phase") == "v1"))
+    checks.append(("version 1 dumps read with the FA-off settings", rc1 == 0 and r1v.get("settings", {}).get("phase") == "v1"))
     # 3. fault injection: 1-ulp change in one dev output of the Q4_K tensor -> B1 must report exactly that element
     meta = json.loads((dirs["dev"] / "meta.json").read_text())
     node = next(n for n in meta["nodes"] if n["weight"] == "blk.0.ffn_up.weight")

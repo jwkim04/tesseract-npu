@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Independent numpy bit model of the VU's approximate and composite math (V2-SW-23).
+"""Independent numpy bit model of the VU's approximate and composite math (SW-23).
 
-Written from the text of docs/v2/02-vector-unit.md §6 alone (with the fp rules it cites: VU §4.1,
+Written from the text of docs/design/02-vector-unit.md §6 alone (with the fp rules it cites: VU §4.1,
 docs/spec.md "fp 공통 규칙" and "구현 명확화 (v0.2.1)"). It deliberately shares no code with
 sw/sim/tsr_ref_math.c: the ref_math_* ctests compare the two bit for bit, so a coding error in
 either one shows up as a mismatch.

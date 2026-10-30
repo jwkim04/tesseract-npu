@@ -1,9 +1,9 @@
-// k_glu.cpp — the GLU kind of the graph executor (OPL v1 kind 0x15, the split form; docs/v2/
+// k_glu.cpp — the GLU kind of the graph executor (op list kind 0x15, the split form; docs/design/
 // 06-software-verification.md "SW" §7.2, §7.5; VU §5.2, §6.5; handler interface tsr/exec.hpp).
 //
 // dst = act(gate) * up per element, with the variant (word 8): 0 SWIGLU (VOP.SWIGLU: FM(SILU(gate),
 // up), tsr_m_silu), 1 GEGLU16 (VOP.GEGLU16: the ggml-CPU fp16 GELU of VU §6.5, tsr_m_gelu16, what
-// llama.cpp graphs use, V2-SW-31), 2 GEGLU (VOP.GEGLU: FM(GELU(gate), up) with the exact tanh form,
+// llama.cpp graphs use, SW-31), 2 GEGLU (VOP.GEGLU: FM(GELU(gate), up) with the exact tanh form,
 // tsr_m_gelu_tanh; M8 / PyTorch). Tile-op sequence (k_elem.cpp's engine, plan_elem.hpp EB_ROWS):
 // per row tile, LD the gate rows, LD the up rows (operand b, rows form: b stride L), the VOP in place
 // on the gate rows, ST; sw/ctrl/ref/elem_ref.cpp composes the same tsr_ref_vop calls. The decode

@@ -1,5 +1,5 @@
-// tsr_log.cpp — tsr-log: decode raw device log words with a firmware ELF (docs/v2/
-// 06-software-verification.md "SW" §9.5; record format docs/v2/05-debug.md "DB" §6.1). The text of
+// tsr_log.cpp — tsr-log: decode raw device log words with a firmware ELF (docs/design/
+// 06-software-verification.md "SW" §9.5; record format docs/design/05-debug.md "DB" §6.1). The text of
 // each record is the transport's decoder (sw/transport/tsr_logdec.h, the same lines TSR_LOG prints),
 // so a saved log reads exactly like a live one.
 //

@@ -1,7 +1,6 @@
 // tsr_transport.c — transport selection (TSR_DEVICE=sim|mock|vkernel|xrt|<registered>, default
-// sim) and the record helpers of SW §9.1 (docs/v2/06-software-verification.md; EX §4.4). Every
-// kind is the protocol layer over a kdev (tsr_kdev.cpp, V2-SW-18): there is no direct "sim" path
-// any more (X0 removed v1's exec; P3.1 replaced tsr_transport_sim.c with the sim kdev).
+// sim) and the record helpers of SW §9.1 (docs/design/06-software-verification.md; EX §4.4). Every
+// kind is the protocol layer over a kdev (tsr_kdev.cpp, SW-18); the sim kind is the sim kdev.
 
 #include "tsr_transport.h"
 #include "tsr_transport_impl.h"

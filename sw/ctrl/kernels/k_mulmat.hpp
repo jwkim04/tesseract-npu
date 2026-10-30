@@ -1,4 +1,4 @@
-// k_mulmat.hpp — shared pieces of the MUL_MAT kind and its decode fast path (docs/v2/
+// k_mulmat.hpp — shared pieces of the MUL_MAT kind and its decode fast path (docs/design/
 // 06-software-verification.md "SW" §7.4, §7.8); kernel-private, included by k_mulmat.cpp and by the
 // graph executor (graph.cpp).
 //
@@ -56,8 +56,8 @@ TSR_HOT ticket push_qact(qa kind, spm q, spm x, uint32_t K, uint32_t tt, uint32_
     (void)ld_x;
     return issue_c<CHK>(QACT(kind, q, x, K, tt, x_lines), deps{}, pf);
 #elif defined(TSR_KMM_MUTANT) && TSR_KMM_MUTANT == 2
-    // P2.5 negative test image fw_kmm_mut_stride: src stride 0 (the same lines, but not v1's encoding;
-    // the v1 stream comparison must report it).
+    // P2.5 negative test image fw_kmm_mut_stride: src stride 0 (the same lines, but not the spec's encoding;
+    // the stream comparison must report it).
     (void)x_lines;
     return issue_c<CHK>(QACT(kind, q, x, K, tt, 0u), deps{ld_x}, pf);
 #else

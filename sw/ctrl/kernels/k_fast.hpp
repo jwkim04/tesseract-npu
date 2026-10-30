@@ -1,5 +1,5 @@
-// k_fast.hpp — the fast-path toolkit of the short M7 kinds (docs/v2/06-software-verification.md
-// "SW" §7.3 "Hot path" (V2-SW-35), §7.5, §7.8; W2b infra). Kernel-private: included by the kind
+// k_fast.hpp — the fast-path toolkit of the short M7 kinds (docs/design/06-software-verification.md
+// "SW" §7.3 "Hot path" (SW-35), §7.5, §7.8; W2b infra). Kernel-private: included by the kind
 // sources in sw/ctrl/kernels (and by k_mulmat.hpp, whose decode fast path these pieces come from).
 //
 // The form (MUL_MAT's mulmat_t1_fast, 387 RV cycles of work per decode record; W2b's requirement
@@ -13,7 +13,7 @@
 //      locals, without the args copy); otherwise return NOT_FAST having changed nothing, and the
 //      general path (out of line, [[gnu::cold]] / noinline) handles the record;
 //   3. the op's block from alloc_fast: the executor's one-tile block (kind_ctx::one, plan.hpp
-//      one_block_lines; W2b integration, V2-SW-36), which a DMA-bracketed tile reuses without deps,
+//      one_block_lines; W2b integration, SW-36), which a DMA-bracketed tile reuses without deps,
 //      ring record or release (the DMA queue orders every reuse); too large -> NOT_FAST (GLU's rows
 //      of the larger models take a ring block instead, k_elem.hpp ew2_fast RING);
 //   4. one ISSUE_CREDIT read for the record's pushes (credits_for: per-unit fields and the
@@ -23,7 +23,7 @@
 //   5. the first push (an LD) carries first_deps(d): the op's deps without DMA tickets;
 //   6. nothing to release (kf::release is empty: kept for the call sites' symmetry);
 //   7. no calls in the common path: everything here is forced inline (TSR_HOT), the kind's fast
-//      entry (exec.hpp kind_<name>_fast, called by the executor first; V2-SW-37) is a leaf, and its
+//      entry (exec.hpp kind_<name>_fast, called by the executor first; SW-37) is a leaf, and its
 //      refusal tests are [[unlikely]] (else GCC lays them out as the fall-through);
 //   8. VU words without run-time range checks for planned fields (vop_fast, red_fast, sop_movi: the
 //      generated builders spend ~3 instructions per field on checks), and no SOP.MOVI for an s
@@ -36,7 +36,7 @@
 //      about 60 RV cycles more, register pressure).
 // The kind sources are compiled -O2 (SW §6.1 TSR_FW_HOT_GLOBS: kernels/k_*.cpp).
 //
-// Determinism (SW §4.7, V2-SW-30): ISSUE_CREDIT only chooses between the two push forms; the ring
+// Determinism (SW §4.7, SW-30): ISSUE_CREDIT only chooses between the two push forms; the ring
 // state, the record words and the tickets decide everything pushed.
 #pragma once
 

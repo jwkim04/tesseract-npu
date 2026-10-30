@@ -9,11 +9,11 @@ target, a tile inside a lane is written per target.
   runtime, kernels, header library; runs on the control core on every target) and the simulator
   with libtsr_ref (the `sim` transport runs it in process).
 - Transport (sw/transport, per target): xrt (U200), Zynq AXI, SoC driver (docs/xrt-host.md,
-  docs/v2/01-execution-model.md §10).
+  docs/design/01-execution-model.md §10).
 - Platform adapter (rtl/platform/TARGET, per target): U200 alveo_xrt = AXI4-Lite to the CSR port
   and one AXI4 bridge per DDR4 channel, `ap_ctrl_none` (EX §9); Zynq / SoC: to be written.
 - Core (rtl/core, shared, parameters only): control core with the issue path and the vector unit
-  (planned, M6: docs/v2/04-control-core.md §2.1, docs/v2/02-vector-unit.md §7), DMA, QACT, SPM,
+  (planned, M6: docs/design/04-control-core.md §2.1, docs/design/02-vector-unit.md §7), DMA, QACT, SPM,
   MVM clusters x NUM_CH. Parameters: U200 NUM_CH 4, BEAT_BITS 512; Zynq NUM_CH 1-2, BEAT_BITS about
   128 (needs RTL work: the current RTL requires BEAT_BITS = 512 and LANES = 128, docs/spec.md §2,
   §3); SoC to be decided.
@@ -21,9 +21,9 @@ target, a tile inside a lane is written per target.
   §14); Zynq to be written; SoC SRAM macros (for example on an open PDK). rtl/tech/generic:
   behavioural wrappers for simulation and lint on any target (shared).
 - Interfaces between the layers (edge labels): tsr_transport API; CSR access, DRAM buffers; CSR
-  port, memory ports and the two clocks (docs/v2/04-control-core.md §13.1); tsr_sram_1r1w,
+  port, memory ports and the two clocks (docs/design/04-control-core.md §13.1); tsr_sram_1r1w,
   tsr_mac_lane.
-Status (STYLE.md): the U200 transport, adapter and tech wrappers ran on the card with the v1 core;
+Status (STYLE.md): the U200 transport, adapter and tech wrappers ran on the card;
 Zynq / Kria and SoC / ASIC are ideas, not scheduled (docs/spec.md §15 roadmap), drawn dashed with an
 IDEA tag; the planned core blocks carry PLANNED.
 
@@ -98,7 +98,7 @@ def row_head(y_mid, name="", path="", tag=""):
 f.panel(PX0, PY0, PX1 - PX0, PY1 - PY0)
 for x in LANE_X:
     f.band(x, BAND_Y, LANE_W, BAND_B - BAND_Y)
-heads = [("ALVEO U200", "ran on the card (v1 core)"), ("ZYNQ / KRIA", "idea, not scheduled"),
+heads = [("ALVEO U200", "ran on the card"), ("ZYNQ / KRIA", "idea, not scheduled"),
          ("SOC / ASIC", "idea, not scheduled")]
 for (name, sub), x in zip(heads, LANE_X):
     f.label_block(x, HEAD_Y, LANE_W, HEAD_H, name, sub)
@@ -187,8 +187,8 @@ f.legend(800, LEG_Y, [("host", "HOST SOFTWARE"), ("adapter", "PLATFORM ADAPTER")
                       ("neutral", "PLANNED / IDEA", True)], gap=28)
 f.text(800, LEG_Y + 38, wrap(
     "A block across all three columns is the same on every target. The U200 transport, platform "
-    "adapter and tech wrappers ran on the card with the v1 core. The dashed core blocks are the v2 "
-    "additions (planned, M6). Zynq / Kria and SoC / ASIC are ideas, not scheduled.", 1440),
+    "adapter and tech wrappers ran on the card. The dashed core blocks run on the simulator and "
+    "are planned for the card (M6). Zynq / Kria and SoC / ASIC are ideas, not scheduled.", 1440),
        "note", anchor="middle", color=INK_SOFT)
 
 f.save(scale=2)

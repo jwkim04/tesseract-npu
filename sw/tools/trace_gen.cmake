@@ -1,13 +1,13 @@
-# sw/tools/trace_gen.cmake — tsr-trace-gen v2 (P1.10; docs/v2/06-software-verification.md §5.5,
+# sw/tools/trace_gen.cmake — tsr-trace-gen (P1.10; docs/design/06-software-verification.md §5.5,
 # §5.6, §10.2), included by sw/tools/CMakeLists.txt when present.
-#   tsr-trace-gen             random tile programs as trace v2 `ops` traces (--ops gen|m2|m3|vu|at|ctrl)
+#   tsr-trace-gen             random tile programs as `ops` traces (--ops gen|m2|m3|vu|at|ctrl)
 #   tools_trace_gen_replay    a small set per --ops mode with a fixed seed, generated twice (byte-identical),
 #                             each trace replayed under the fixed and two random schedules (the
 #                             generator's --check-sched, and tsr-trace-replay when it is built), with
 #                             the race detector fatal; when the build has the race detector and the
 #                             firmware (tsr_fw), also through the `replay` kernel of the production image,
 #                             where a read of SPM nothing wrote in the trace is an SPM_STALE abort (SW §4.6,
-#                             V2-SW-4), and the generator's --mutant-stale trace must be refused by both
+#                             SW-4), and the generator's --mutant-stale trace must be refused by both
 # The trace sets themselves come from traces/{m2,gen,m3,vu,at,ctrl}/regen.sh.
 
 add_executable(tsr-trace-gen ${CMAKE_CURRENT_SOURCE_DIR}/tsr_trace_gen.c)

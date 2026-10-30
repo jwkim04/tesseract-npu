@@ -1,6 +1,6 @@
 // tsr_ref_vu.h — reference semantics of the VU ops VOP, RED, ROPE, TOPK, SOP and DQROW, bit for bit.
 //
-// Normative source: docs/v2/02-vector-unit.md (VU) §4 (fp rules, operand model, c, aliasing),
+// Normative source: docs/design/02-vector-unit.md (VU) §4 (fp rules, operand model, c, aliasing),
 // §5.2–§5.8 (functions, kinds, modes and what each field means), §6.2 (reductions), §6.7 (ROPE)
 // and §6.8 (total order, raw ops, TOPK, DQROW). The element math is tsr_ref_math.c (EXPK and the
 // composites, SIN/COS: VU §6.3–§6.6) and the f32 primitives FA, FS, FM, FD, SQ, RC are tsr_ref.c's.
@@ -49,7 +49,7 @@ extern "C" {
 static inline uint32_t tsr_ref_vu_lines(uint32_t n) { return (n >> 4) + ((n & 15u) != 0u); }
 
 // ---------------------------------------------------------------------------
-// Total order, MAXT, MINT (VU §6.8, V2-VU-22)
+// Total order, MAXT, MINT (VU §6.8, VU-22)
 // ---------------------------------------------------------------------------
 // Order key of a non-NaN value after DAZ: sign ? ~bits : bits | 2^31, so that
 // -inf < ... < -0 < +0 < ... < +inf as unsigned keys. (NaN is above every key; callers test it.)
@@ -84,7 +84,7 @@ void     tsr_ref_red_partials(uint32_t kind, const uint32_t * x, uint32_t m, uin
 // The complete binary tree over p_0 .. p_127: level 1 FA(p_2k, p_2k+1), adjacent pairs left to
 // right, 7 levels (docs/spec.md:296). This is the definition.
 uint32_t tsr_ref_red_tree128(const uint32_t p[TSR_RED_PARTIALS]);
-// The skip implementation that VU §6.2 allows (V2-VU-2), as a model for the RTL: only partials
+// The skip implementation that VU §6.2 allows (VU-2), as a model for the RTL: only partials
 // below n_present = min(128, group·ceil(n_written/group)) exist; a node whose subtree holds none is
 // skipped, a node with one existing child passes z(child) upward (z: -0 -> +0, else unchanged),
 // and an all-skipped tree gives +0. group 1 skips at leaf granularity; group 8 is the hardware's
@@ -106,7 +106,7 @@ void     tsr_ref_red(uint32_t kind, uint32_t post, uint32_t rows, uint32_t m, ui
                      const uint32_t * a, uint32_t a_stride, uint32_t sk, uint32_t se);
 
 // ---------------------------------------------------------------------------
-// ROPE 0x32 (VU §5.4, §6.7, V2-VU-19)
+// ROPE 0x32 (VU §5.4, §6.7, VU-19)
 // ---------------------------------------------------------------------------
 typedef struct tsr_ref_rope_cfg {
     uint32_t mode;        // TSR_ROPE_MODE_NORM (pairs 2i, 2i+1) or TSR_ROPE_MODE_NEOX (i, i + n_dims/2)
@@ -126,7 +126,7 @@ typedef struct tsr_ref_rope_cfg {
 // tsr_i32_to_f32(pos), theta_(i+1) = FM(theta_i, TS); phi_i = FF ? FD(theta_i, table[i]) : theta_i;
 // FS: phi_i <- FM(freq_scale, phi_i). A-table form: phi_i = FM(Pf, table[i]). table may be NULL
 // when neither FF nor ATAB is set. Bit-identical to ggml-cpu's ggml_rope_cache_init angles for
-// ext_factor = 0 (V2-VU-19; test_ref_vu checks it against the pinned ggml-cpu).
+// ext_factor = 0 (VU-19; test_ref_vu checks it against the pinned ggml-cpu).
 void tsr_ref_rope_angles(const tsr_ref_rope_cfg * cfg, int32_t pos, const uint32_t * table, uint32_t * phi);
 // c_i = FM(M, COS(phi_i)), s_i = FM(M, SIN(phi_i)) for i < n_dims/2.
 void tsr_ref_rope_cs(const tsr_ref_rope_cfg * cfg, int32_t pos, const uint32_t * table,
@@ -141,7 +141,7 @@ void tsr_ref_rope(const tsr_ref_rope_cfg * cfg, uint32_t * d, uint32_t d_stride,
                   const uint32_t * pos, const uint32_t * table);
 
 // ---------------------------------------------------------------------------
-// TOPK 0x33 (VU §5.5, §6.8, V2-VU-14)
+// TOPK 0x33 (VU §5.5, §6.8, VU-14)
 // ---------------------------------------------------------------------------
 // Per row: candidates (j, x^_j), x^ = DAZ(x) with every NaN as 0x7FC00000, sorted by x^ descending
 // under the total order (NaN above everything), ties by smaller j first. Pair i < k: word 2i = j
@@ -160,7 +160,7 @@ void tsr_ref_topk(uint32_t k, uint32_t rows, uint32_t m, uint32_t * d, uint32_t 
 uint32_t tsr_ref_sop(uint32_t sub, uint32_t sa, uint32_t sb, uint32_t imm, uint32_t mem);
 
 // ---------------------------------------------------------------------------
-// DQROW 0x12 (VU §5.6, §6.8, V2-VU-15)
+// DQROW 0x12 (VU §5.6, §6.8, VU-15)
 // ---------------------------------------------------------------------------
 // rows rows of K elements: row r = tsr_dequant_row(fmt, src + 64·r·src_stride', K) as f32 bits at
 // d + 16·r·d_stride', tail rule. src points at row 0's repacked bytes in the SPM (as LD loaded them

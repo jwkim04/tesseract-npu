@@ -1,7 +1,7 @@
 # sw/sim/units.cmake — the VU and AT unit semantics of the simulator (P1.4 / P1.5,
-# docs/v2/06-software-verification.md §4.3, §4.5, §11): tsr_vu.c (VOP, RED, ROPE, TOPK, SOP, DQROW;
-# docs/v2/02-vector-unit.md §5) and tsr_at.c (KVST, ATTQK, ATTPV, ASMAX, AMASK, AMERGE, ANORM;
-# docs/v2/03-attention-kv.md §5), each with its dispatch checks, operand extents, execution through
+# docs/design/06-software-verification.md §4.3, §4.5, §11): tsr_vu.c (VOP, RED, ROPE, TOPK, SOP, DQROW;
+# docs/design/02-vector-unit.md §5) and tsr_at.c (KVST, ATTQK, ATTPV, ASMAX, AMASK, AMERGE, ANORM;
+# docs/design/03-attention-kv.md §5), each with its dispatch checks, operand extents, execution through
 # the references (tsr_ref_vu.c, tsr_ref_at.c) and cycle model.
 #
 # Included by sw/sim/CMakeLists.txt after tsr_sim / tsr_sim_shared exist (snippet loop "rv units";

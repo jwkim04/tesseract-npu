@@ -1,5 +1,5 @@
 // test_sim_capture.c — access capture semantics of the simulator (the part of the trace dumps that
-// lives in tsr_sim; trace v2 builds on it, docs/v2/06-software-verification.md §5.5): init =
+// lives in tsr_sim; the trace format builds on it, docs/design/06-software-verification.md §5.5): init =
 // DRAM read before it was written, copied at first read; expect = DRAM written, taken at the
 // end; merging of adjacent and overlapping ranges, sorting by (channel, offset), empty
 // captures, and the capture of a large MVM. Built a second time with UBSan (sim_capture_ubsan).

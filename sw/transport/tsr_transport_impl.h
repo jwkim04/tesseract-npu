@@ -1,5 +1,5 @@
 // tsr_transport_impl.h — private: the entry from the C dispatcher (tsr_transport.c) into the
-// protocol layer (tsr_kdev.cpp), which implements every kind (V2-SW-18, EX §10.2).
+// protocol layer (tsr_kdev.cpp), which implements every kind (SW-18, EX §10.2).
 #pragma once
 
 #include "tsr_transport.h"

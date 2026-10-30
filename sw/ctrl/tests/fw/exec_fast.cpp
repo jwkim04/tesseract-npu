@@ -1,4 +1,4 @@
-// exec_fast.cpp — the executor tests' fast-path reference kind (W2b infra; docs/v2/06-software-
+// exec_fast.cpp — the executor tests' fast-path reference kind (W2b infra; docs/design/06-software-
 // verification.md "SW" §7.3 "Hot path", §7.8): test kind 0x39 FASTVU, the k_fast.hpp form of a
 // short VU record, linked into the fw_exec test image and the host driver with exec_kinds.cpp
 // (which dispatches 0x39 here). fw_exec_perf's "short VU record" scenarios measure it beside the

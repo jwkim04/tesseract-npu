@@ -1,5 +1,5 @@
-# sw/sim/trace.cmake — trace format v2 in the simulator (P1.10, docs/v2/06-software-verification.md
-# §5, V2-SW-5): tsr_trace.c (read / write / strict validation of trace directories, the EX §3.2
+# sw/sim/trace.cmake — trace format in the simulator (P1.10, docs/design/06-software-verification.md
+# §5, SW-5): tsr_trace.c (read / write / strict validation of trace directories, the EX §3.2
 # image id, the TRACE model that captures one `launch` trace per launch for TSR_TRACE and
 # tsr_sim_capture_launch / _take, and replay on a fresh simulator with the SW §5.4 comparisons;
 # API in include/tsr_trace.h).

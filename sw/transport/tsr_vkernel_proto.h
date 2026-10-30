@@ -1,6 +1,6 @@
 // tsr_vkernel_proto.h — wire protocol between the "vkernel" kdev (tsr_kdev_vkernel.cpp, in the
-// host process) and the Verilated kernel server (tb/platform/vkernel; the v1 server is deleted in
-// X0, the two-clock v2 server is P5.3). docs/platform-u200.md §13.
+// host process) and the Verilated kernel server (tb/platform/vkernel; the two-clock server is P5.3).
+// docs/platform-u200.md §13.
 //
 // One stream connection (a socketpair to a server the client spawned, or a Unix socket), one
 // request at a time, native byte order (both ends run on the same host). Every request is a
@@ -10,12 +10,10 @@
 // completion, cycle budget): the client fetches the messages with VK_MSGS and fails the
 // operation as soon as the count grows, so a protocol bug cannot pass silently.
 //
-// Version 2 (X0, docs/v2/01-execution-model.md §12): VK_WAIT (6), the scheduler's side of an
-// ap_ctrl_hs run, is deleted with the run protocol; a version-1 server refuses the HELLO.
-// Version 3 (P3.1, EX §10.2): the kernel is ap_ctrl_none and its clocks run only when the client
-// lets device time pass: VK_ADVANCE (10), the "advance" hint of the kdev layer (kdev::idle), and
-// VK_TIME (11), the device time the protocol's timeouts count. The two-clock v2 server that
-// implements them is P5.3 (docs/v2/06-software-verification.md §11); until then no server exists
+// Protocol version 3 (P3.1, EX §10.2): the kernel is ap_ctrl_none and its clocks run only when the
+// client lets device time pass: VK_ADVANCE (10), the "advance" hint of the kdev layer (kdev::idle), and
+// VK_TIME (11), the device time the protocol's timeouts count. The two-clock server that
+// implements them is P5.3 (docs/design/06-software-verification.md §11); until then no server exists
 // and TSR_DEVICE=vkernel stops at the open with a message naming P5.3.
 #pragma once
 
@@ -31,7 +29,7 @@ enum tsr_vk_op {
     VK_REG_WR = 3,   // a = offset, b = value (one AXI4-Lite write, WSTRB 0xF)
     VK_MEM_WR = 4,   // a = channel, b = byte offset, c = bytes (payload follows; host DMA, no cycles)
     VK_MEM_RD = 5,   // a = channel, b = byte offset, c = bytes -> payload
-                     // 6: deleted (v1 VK_WAIT), never reused
+                     // 6: never used
     VK_STATS  = 7,   // -> payload: JSON summary of the session so far (NUL-terminated)
     VK_MSGS   = 8,   // -> payload: findings not fetched yet, one per line (NUL-terminated)
     VK_BYE    = 9,   // the server prints its summary and exits

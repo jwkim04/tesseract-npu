@@ -1,11 +1,11 @@
-// k_rows.cpp — the row-copy kinds GET_ROWS (0x17) and CPY (0x1A) of the graph executor (docs/v2/
+// k_rows.cpp — the row-copy kinds GET_ROWS (0x17) and CPY (0x1A) of the graph executor (docs/design/
 // 06-software-verification.md "SW" §7.2, §7.5; handler interface tsr/exec.hpp, SW §7.3; fast path
 // SW §7.3 "Hot path", k_elem.hpp / k_fast.hpp).
 //
 // Both copy f32 rows bit for bit through the ring (no VU op; DMA only, so the tile-op sequence has no
 // numerics): per tile (tsr/plan_elem.hpp, kind_plan: t rows of rl lines, or one chunk of a row that
 // does not fit half the budget), one block (the one-tile block when it fits: copies are DMA only,
-// V2-SW-36; else the ring), then
+// SW-36; else the ring), then
 //   1. LD the tile's source rows into the block, packed (rl lines apart): CPY rows r0 .. r0 + t - 1
 //      (one LD for dense rows; a CPY dense on both sides, or of one row, is one run of rows x rl
 //      lines, CP_MERGED); GET_ROWS rows ids[r0] ..., the ids read by the RISC-V from the preload area

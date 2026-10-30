@@ -1,5 +1,5 @@
 /* sw/sim/tests/rvtests/random.ld - random lockstep programs (rv_random.py) on the test bus
-   profile: RAM at 0x8000_0000 (docs/v2/06-software-verification.md §4.2). */
+   profile: RAM at 0x8000_0000 (docs/design/06-software-verification.md §4.2). */
 OUTPUT_ARCH( "riscv" )
 ENTRY(_start)
 

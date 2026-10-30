@@ -1,5 +1,5 @@
 // test_fw_hdr.cpp — ctests fw_hdr_host and fw_hdr_rv of P2.3, the tile/VU header library and the
-// host backend (docs/v2/06-software-verification.md "SW" §6.7, §6.8, §10.2; CC §5, §7-§9, §12;
+// host backend (docs/design/06-software-verification.md "SW" §6.7, §6.8, §10.2; CC §5, §7-§9, §12;
 // EX §4.9). One source, two executables (sw/ctrl/tests/hdr.cmake):
 //
 // fw_hdr_host (TSR_HDR_TEST_HOST; the ASan / UBSan variant of tsr_fw_host):

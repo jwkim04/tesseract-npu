@@ -5,12 +5,12 @@ specification says on every weight matmul, and how far its results are from exac
 second model-level check next to `klcheck` and the bit-exact one.
 
 > **Scope.** User documentation and measurement record of `tsr-numcheck` and `numcheck.py`. Status
-> words: *on the simulator* means a run through the software stack with `TSR_DEVICE=sim` or `mock`
-> (the v2 stack from P3.3 on). The results in "Results" are the **v1 baseline**: flash attention off,
-> f16 KV cache on the host, measured on the simulator with the v1 tools; "M6 check" has the v2
-> numbers. Nothing here has run on the card. Normative: `docs/spec.md` §7 (Numeric rules) and §17
-> (Verification strategy, *Model-level numeric check (numcheck)*), [SW](v2/06-software-verification.md)
-> §10.1 and §10.4, V2-SW-22 and V2-SW-27.
+> words: *on the simulator* means a run through the software stack with `TSR_DEVICE=sim` or `mock`.
+> The results in "Results" are the **FA-off baseline**: flash attention off, f16 KV cache on the
+> host, measured on the simulator before the control core was added, with the host issuing the ops;
+> "M6 check" has the M6 numbers. Nothing here has run on the card. Normative: `docs/spec.md` §7 (Numeric rules) and §17
+> (Verification strategy, *Model-level numeric check (numcheck)*), [SW](design/06-software-verification.md)
+> §10.1 and §10.4, SW-22 and SW-27.
 
 ## Purpose
 
@@ -22,7 +22,7 @@ produces the number the spec says it must produce, and how far is it from exact 
 - One short prompt (a fixed English sentence, T tokens), one prefill batch, logits for every position.
 - Three runs per model, each its own process: `cpu`, `floor` (cpu with a 1-ulp nudged input) and
   `dev` (Tesseract). Every run records every graph node. The `dev` run can use the simulator kinds
-  (`sim`, `mock`); `vkernel` is not available until P5.3 and `xrt` follows the v2 bitstream.
+  (`sim`, `mock`); `vkernel` is not available until P5.3 and `xrt` follows the bitstream with the control core.
 - The comparison is offline: (A) drift of every node and of the logits, (B) every weight
   MUL_MAT checked element by element: B1 bit-exact against the reference model (`libtsr_ref`), B1b
   bit-exact against an independent numpy model of the spec text, B2 inside a proven fp32 error
@@ -46,21 +46,21 @@ Tools: `tsr-numcheck` (`sw/tools/numcheck.cpp`, the dumper, links llama.cpp) and
 
 All three main runs use the embd input path, so their graphs are identical node for node (with
 token input llama.cpp computes a different branch of its input selection). Model and context
-settings are klcheck's (`docs/klcheck.md`, "Settings fixed in every phase"). **v2 settings (from
+settings are klcheck's (`docs/klcheck.md`, "Settings fixed in every phase"). **Settings (from
 P3.3):** flash attention on, a q8_0 K and V cache, `LLAMA_ATTN_ROT_DISABLE=1` (set by the tool),
 `offload_kqv` false in M6 (`--phase m6`, the default: KV cache and attention on the host) and true in
-M7 (`--phase m7`), the same in every run of a set (V2-SW-22); each run records them in `meta.json`
-`info` (version 2), and `selfcheck` and `numcheck.py compare` refuse a set whose runs differ in them.
-`--fa`, `-ctk` / `-ctv`, `--offload-kqv` and `--attn-rot on` exist for experiments only. (v1: flash
-attention off, KV cache f16 on the host; the v1 results below were measured so.) Further: CPU weight
+M7 (`--phase m7`), the same in every run of a set (SW-22); each run records them in `meta.json`
+`info` (format version 2), and `selfcheck` and `numcheck.py compare` refuse a set whose runs differ in them.
+`--fa`, `-ctk` / `-ctv`, `--offload-kqv` and `--attn-rot on` exist for experiments only. (The results below were measured with flash
+attention off and the KV cache f16 on the host.) Further: CPU weight
 repack off (`use_extra_bufts = false`), threads `-t` (default online CPUs / 2), `n_ctx` = T rounded up
 to 256, `n_batch = n_ubatch = 256` (T must fit one ubatch), every position an output. The prompt is
 truncated to T tokens; T defaults to 16 for models above 8 B parameters and 32 otherwise.
 `TSR_SIM_THREADS` defaults to 4 when unset.
 
 Observation uses `llama_context_params.cb_eval`: the callback asks for every computed non-view
-node, so the scheduler computes the graph one node at a time (on v2 one device launch per observed
-node: numcheck needs no device mode of its own, V2-SW-27), synchronizes, and the node's output
+node, so the scheduler computes the graph one node at a time (one device launch per observed
+node: numcheck needs no device mode of its own, SW-27), synchronizes, and the node's output
 (and, for a weight MUL_MAT, its src1) is read with `ggml_backend_tensor_get`, which also reads
 device buffers. On `dev` the src1 read is the scheduler's input copy in the Tesseract buffer, i.e.
 exactly the activation the device quantized.
@@ -107,7 +107,7 @@ own functions through `libnumcheck_helper.so`.
   selftest: the mutant fails B1 and B1b and passes B2). The order is checked by B1 and B1b.
 - **x without a src1 dump** (`--src1-from-producer`). A weight MUL_MAT outside the dumper's
   `--mm-layers` has no src1 dump, but its src1 is the output of a node that is always dumped (llama.cpp
-  names: `attn_norm-N` for attn_q / k / v, `kqv_out-N` for attn_output (with flash attention, the v2
+  names: `attn_norm-N` for attn_q / k / v, `kqv_out-N` for attn_output (with flash attention, the default
   setting, `kqv_out-N` is a reshape view that is not dumped: the producer is the layer's FLASH_ATTN_EXT
   node, [D, n_head, T] with D × n_head = K, the same bytes), `ffn_norm-N` for ffn_gate / up,
   `ffn_swiglu-N` for ffn_down, `result_norm` for the output head). The device reads a byte copy of
@@ -363,8 +363,8 @@ the current version (3: B2 bound + numpy spec model) is reused, older ones are r
 comparer stays below 0.6 GB RSS on 0.5B and about 1 GB on 32B.
 
 The three models of the results section, in this tree's command forms (`tsr-numcheck` is
-`build/dev/bin/tsr-numcheck`). The results below were measured with the v1 tools and the v1
-settings; this tree's tool selects them with `--fa off -ctk f16 -ctv f16` (experiments only, the
+`build/dev/bin/tsr-numcheck`). The results below were measured with flash attention off and
+an f16 KV cache; the tool selects them with `--fa off -ctk f16 -ctv f16` (experiments only, the
 same in every run of a set), and its default is the M6 settings:
 
 ```
@@ -386,12 +386,12 @@ python3 sw/tools/numcheck.py --build build/dev compare --cpu R/cpu --floor R/flo
     --src1-from-producer
 ```
 
-ctest: `tools_numcheck_selftest` (comparer, no model; also: the v2 settings in the report, a set
-with different settings refused, version 1 dumps read with the v1 settings), `tools_numcheck_dump_selftest`
+ctest: `tools_numcheck_selftest` (comparer, no model; also: the settings in the report, a set
+with different settings refused, version 1 dumps read as FA off / f16), `tools_numcheck_dump_selftest`
 (dumper, no model), `tools_numcheck_dump_qwen05b` (label `model`: `all --phase m6 --checks full` on
 0.5B Q8_0, ~9 s).
 
-**M6 check (v2).** Measured on the simulator (v2, `83ac601`): `tsr-numcheck all -m
+**M6 check.** Measured on the simulator (`83ac601`): `tsr-numcheck all -m
 models/qwen2.5-0.5b-instruct-q8_0.gguf -T 32 --phase m6 --checks full`: selfcheck PASS, 533 nodes per run, 169/169 weight MUL_MATs computed by
 Tesseract0 (one `graph` launch each), dev logits = dev-noobs logits bit for bit, 8.8 s. A second set
 with `--mm-layers 0,output --checks none` compared with `numcheck.py compare --src1-from-producer`:
@@ -401,7 +401,7 @@ on 16 src1 dumps (attn_output's src1 is the FLASH_ATTN_EXT output with FA on).
 
 ## File format
 
-### Run directory (version 2)
+### Run directory (format version 2)
 
 ```
 <run_dir>/meta.json           written last (atomic rename): the run is complete iff it exists
@@ -412,14 +412,14 @@ on 16 src1 dumps (attn_output's src1 is the FLASH_ATTN_EXT output with FA on).
 
 All `.f32` files are little-endian float32 in ggml element order (ne0 fastest). Non-contiguous
 tensors are gathered element by element; F16 / BF16 / I32 outputs are converted to f32 and quantized
-outputs dequantized with ggml's `to_float` (with the v2 q8_0 KV cache: the two SET_ROWS per layer,
+outputs dequantized with ggml's `to_float` (with the q8_0 KV cache: the two SET_ROWS per layer,
 whose outputs are views of the cache).
 
-`meta.json`: `format` `"tsr-numcheck"`, `version` 2 (P3.3; version 1 dumps, with the v1 settings, are
-still read), `model` (absolute path of the GGUF given, the first split), `run`, `device` (`none` |
+`meta.json`: `format` `"tsr-numcheck"`, `version` 2 (P3.3; version 1 dumps, with flash attention off and an f16 KV cache,
+are still read), `model` (absolute path of the GGUF given, the first split), `run`, `device` (`none` |
 `sim` | `mock` | `vkernel` | `xrt`), `input` (`embd` | `embd+1ulp`; `tokens` only for the cpu-tok check
 run), `seed`, `n_tokens`, `tokens`, `n_vocab`, `logits_file`, `info` (settings, prompt, timings,
-counts, `TSR_*` and `LLAMA_ATTN_ROT_DISABLE` environment; the v2 settings as `phase` (`m6` | `m7`),
+counts, `TSR_*` and `LLAMA_ATTN_ROT_DISABLE` environment; the settings as `phase` (`m6` | `m7`),
 `flash_attn` (`on` | `off`), `type_k`, `type_v` (ggml type names), `offload_kqv` and
 `attn_rot_disable` (booleans)) and `nodes`. Per node:
 
@@ -432,19 +432,19 @@ counts, `TSR_*` and `LLAMA_ATTN_ROT_DISABLE` environment; the v2 settings as `ph
 | `weight`, `weight_type` | for `MUL_MAT` / `MUL_MAT_ID` whose src0 is a leaf named like a GGUF tensor (a scheduler copy `<backend>#<name>#<n>` resolves to `<name>`): that name and `ggml_type_name(src0->type)` (the GGUF type, e.g. `q6_K` also when the device converted it); else `null` |
 | `src1_file`, `src1_ne` | weight MUL_MATs within `--mm-layers`: the src1 the computing backend read (on dev the Tesseract input copy); else `null` |
 
-Qwen2 graphs with the v2 settings (flash attention on) have 22 dumped nodes per layer (RMS_NORM, MUL,
+Qwen2 graphs with the default settings (flash attention on) have 22 dumped nodes per layer (RMS_NORM, MUL,
 Q / K / V MUL_MATs with bias ADDs and ROPEs, two SET_ROWS into the q8_0 cache, FLASH_ATTN_EXT, the
 `attn_output` MUL_MAT (unnamed, `node_N`: its src1 is the FLASH_ATTN_EXT output through the
 `kqv_out-N` reshape view), residual ADD, RMS_NORM, MUL, `ffn_gate` / `ffn_up` MUL_MATs, GLU,
 `ffn_down` MUL_MAT, residual ADD) plus the last layer's two `GET_ROWS` (output ids), `norm`,
 `result_norm`, `result_output`: 533 nodes for 24 layers. Weight MUL_MATs: 7 per layer + the output
-head; in M6 all of them run on Tesseract0 and every other node on the CPU. (v1, flash attention
+head; in M6 all of them run on Tesseract0 and every other node on the CPU. (With flash attention
 off: 25 nodes per layer with `kq` MUL_MAT, SOFT_MAX, `kqv` MUL_MAT and CONT instead of FLASH_ATTN_EXT;
 605 nodes for 24 layers, 1605 for 64.)
 
 ### Report directory
 
-`report.md` (human-readable), `report.json` (version 2; everything except per-node rows:
+`report.md` (human-readable), `report.json` (format version 2; everything except per-node rows:
 `selfcheck`, `logits`, `drift`, `mm` with per-tensor entries (`b1`, `b1b`, `b2`, `b3` with
 `dominant_tokens`, the all-token values and `per_token` errors) and per-type entries, `verdict`,
 `fails`, `coverage_gaps`, `warnings`), `drift_nodes.json` (one row per node). All three are removed
@@ -453,7 +453,7 @@ when compare starts and written at the end (temporary name + rename). ROOT/`runs
 
 ## Runtime
 
-Measured on the simulator (v1), host: 16 cores, 14 GB RAM; `TSR_SIM_THREADS=4`, T_MAX = 1, `-t 8`. Peak RSS of the 32B runs is
+Measured on the simulator, host: 16 cores, 14 GB RAM; `TSR_SIM_THREADS=4`, T_MAX = 1, `-t 8`. Peak RSS of the 32B runs is
 mostly mmap'd GGUF / simulator-DRAM file pages (reclaimable page cache), not anonymous memory.
 
 | Model | T | cpu | floor | dev | checks | dumps per run | compare |
@@ -471,9 +471,9 @@ mostly mmap'd GGUF / simulator-DRAM file pages (reclaimable page cache), not ano
   selftest 4 s. B1b doubles the 0.5B compare time (15 s → 31 s, mostly the 152k-row output head).
 - Local Q4_K_M requantization of the 0.5B model: 0.9 s. Disk: 559 MiB per 0.5B root, 2.5 GiB for 32B.
 
-## Results (v1 baseline)
+## Results (FA-off baseline)
 
-Flash attention off, f16 KV cache on the host, measured on the simulator (v1). All three models:
+Flash attention off, f16 KV cache on the host, measured on the simulator. All three models:
 **PASS**. One prompt per model (the built-in sentence, 32 or 16 tokens), one
 prefill batch; reports in `build/numcheck-runs/<tag>/report/`, the shared boundtest in
 `build/numcheck-runs/boundtest.json` (version 3). No sim, backend or spec defect was found. The
@@ -509,7 +509,7 @@ touch only `selfcheck` and `all`, not what a run writes).
   QACT placement and the 16-partial / fixed-tree accumulation order, on real data, including the
   152k-row output heads.
 - **Observed vs normal execution.** With `cb_eval` asking for every node, the scheduler hands the
-  device one node per graph compute; normally several MUL_MATs share one program (e.g. `ffn_gate`
+  device one node per graph compute; normally several MUL_MATs share one launch (e.g. `ffn_gate`
   and `ffn_up`). The two are tied by `dev-noobs`: dev logits without observation are bit-identical
   to the observed ones on all three models (32B: 16/16 rows, from a separate
   `tsr-numcheck run --run dev --no-observe -T 16` of 103 s, passed to compare as `--dev-noobs`).
@@ -534,11 +534,10 @@ touch only `selfcheck` and `all`, not what a run writes).
   has CPU rel_err 15.0 % vs device 2.8 % over tokens 1–15 (9.2 % vs 1.7 % over all tokens); at token
   0, row 2159 the CPU gives 7.43 for an exact 8.74 (one x of 17.1 in a block with rms 0.127), the
   device 8.50. The output head: CPU 4.1 % vs device 1.7 %.
-- **Earlier version of this document:** it reported a q6_K range up to 1.345 and called
-  `blk.4.ffn_down` "the one exception, where the requantization cost shows". That was an artifact of
-  pooling over tokens: token 0 holds 99.99 % of that tensor's ‖Wx‖², so the pooled value measured
-  one token (1.57 there; tokens 1–15: 0.40–0.92, together 0.615). B3 leaves such tokens out of
-  the ratio and lists them (all-token values stay in the report).
+- **Dominant tokens.** Pooling over tokens can measure a single token: token 0 holds 99.99 % of
+  `blk.4.ffn_down`'s ‖Wx‖², so its pooled value would be that token's (1.57 there; tokens 1–15:
+  0.40–0.92, together 0.615). B3 leaves such tokens out of the ratio and lists them (all-token
+  values stay in the report).
 
 **Drift and the floor.**
 - **The floor partly vanishes.** Floor logits are bit-identical to cpu at positions 0–6 (0.5B
@@ -576,4 +575,4 @@ touch only `selfcheck` and `all`, not what a run writes).
 **Not covered here.** MUL_MAT_ID (MoE) weights are tagged by the dumper but not modelled by B
 (a model with them gets INCOMPLETE). The ACC accumulate path is not used by these graphs. The
 attention operations run on the CPU in M6 (KV cache and attention on the host); their check on the
-device belongs to M7 ([AT](v2/03-attention-kv.md) §13). Observation invariance on 32B (see above).
+device belongs to M7 ([AT](design/03-attention-kv.md) §13). Observation invariance on 32B (see above).

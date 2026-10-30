@@ -9,18 +9,18 @@ band per layer and a column of developer tools beside the middle layers. Top to 
 2. backends: `ggml-tesseract` (backend device `Tesseract0`, op-list builder and cache;
    sw/ggml-tesseract/README.md) and `tsr_rt` (weight upload, linear; sw/rt/README.md);
 3. transport: `tsr_transport`, one protocol layer (image load, launch, wait, log) over four kinds:
-   `sim`, `mock`, `vkernel`, `xrt` (docs/v2/01-execution-model.md §10, docs/v2/
+   `sim`, `mock`, `vkernel`, `xrt` (docs/design/01-execution-model.md §10, docs/design/
    06-software-verification.md §9.1; sw/transport/tsr_transport.h);
-4. firmware on the control core: runtime (launch protocol, traps, logs), graph executor (op lists,
-   OPL v1), kernels (`MUL_MAT`, norms, RoPE, flash attention, KV; docs/v2/
+4. firmware on the control core: runtime (launch protocol, traps, logs), graph executor (op lists),
+   kernels (`MUL_MAT`, norms, RoPE, flash attention, KV; docs/design/
    06-software-verification.md §7), `selftest` and `replay`; the tile / VU header library
    (`sw/ctrl/include/tsr/*.hpp`, freestanding C++20; SW §6.7);
 5. NPU core: control core (Ibex RV32IMC, clock `clk_rv`), issue path with one in-order queue per
-   unit, the units DMA, QACT, MVM clusters and VU, and the SPM (docs/v2/04-control-core.md §2.1,
+   unit, the units DMA, QACT, MVM clusters and VU, and the SPM (docs/design/04-control-core.md §2.1,
    §7.4; docs/spec.md §2). The dashed bus from the issue path to the units stands for the unit
    queues (CC §7.4); the SPM bar under the units for their SPM clients (CC §10);
 6. the Alveo U200 card: XRT shell (PCIe), four DDR4 channels, 64 GB (docs/platform-u200.md §1).
-Developer tools (docs/v2/06-software-verification.md §9.5, §10; docs/v2/05-debug.md §9):
+Developer tools (docs/design/06-software-verification.md §9.5, §10; docs/design/05-debug.md §9):
 simulator (bit-exact oracle, cycle model, race detector; sw/sim), `tsr-selftest`, `klcheck` and
 `numcheck`, trace tools (`tsr-trace-gen`, `tsr-trace-replay`, `tsr-trace-conv`), `tsr-log`,
 GDB debugging (designed, DB §4, §9) and the profiler (`tsr-prof`, DB §8.6; both planned).
@@ -31,15 +31,15 @@ trademark notes in docs/fig/logos/SOURCES.md): llama.cpp (icon, on its own dark 
 (the lockup, on a white tile; it replaces the tile title), Hugging Face (beside "Hugging Face
 models"). No logo of a company, an ISA or an IP core.
 
-Status tags (STYLE.md "Planned and unconfirmed things"; at most three texts): ON THE CARD · V1
-(dark badge: ran on the Alveo U200 with the v1 core, tag v1-m4), SIMULATOR · V2 (outlined badge:
+Status tags (STYLE.md "Planned and unconfirmed things"; at most three texts): ON THE CARD
+(dark badge: ran on the Alveo U200), SIMULATOR (outlined badge:
 implemented in this tree and verified on the simulator; commits 92f0b17, 83ac601), PLANNED
-(dashed badge on a dashed pale block: designed in docs/v2, RTL or tool still to do; work packages
+(dashed badge on a dashed pale block: designed in docs/design, RTL or tool still to do; work packages
 W3b, W4-W6). A panel carries the status of its tiles on its top edge; a tile carries its own tag
-only where it differs. The xrt kind is tagged PLANNED: the v1 transport ran on the card, but the
-v2 kind never has; it is written and unit-tested against the XRT shim (commit 83ac601) and runs on
-the card with the v2 bitstream (W6). The applications carry no tag: they are third-party programs. The core panel
-says ON THE CARD · V1 for the datapath (MVM clusters, DMA LD / ST, QACT, SPM: rtl/core); its
+only where it differs. The xrt kind is tagged PLANNED: it is written and unit-tested against the
+XRT shim (commit 83ac601) and runs on the card with the control core bitstream (W6). The
+applications carry no tag: they are third-party programs. The core panel
+says ON THE CARD for the datapath (MVM clusters, DMA LD / ST, QACT, SPM: rtl/core); its
 control core, issue path and vector unit are drawn as planned blocks (rtl/core has no control
 core, issue path or VU yet). Colour: host software butter, firmware and control mint, tools white,
 hardware by role (STYLE.md palette).
@@ -62,8 +62,8 @@ FOOT = 24                             # tile bottom to panel bottom
 TILE_GAP = 24
 LOGO_X, LOGO_GAP = 24, 20             # tile edge to logo; logo to the tile's text
 
-CARD_TAG = ("ON THE CARD · V1", "dark")
-SIM_TAG = ("SIMULATOR · V2", "outline")
+CARD_TAG = ("ON THE CARD", "dark")
+SIM_TAG = ("SIMULATOR", "outline")
 PLAN_TAG = ("PLANNED", "planned")
 
 
@@ -217,8 +217,8 @@ f = Fig("stack", W, H,
              "sits beside the middle layers: bit-exact simulator, tsr-selftest, klcheck and "
              "numcheck, trace tools, tsr-log, and planned GDB debugging and "
              "profiler. Tags give "
-             "each block's status: on the card (v1), on the simulator (v2) or planned; the xrt "
-             "kind is planned because only the v1 transport has run on the card.")
+             "each block's status: on the card, on the simulator or planned; the xrt kind is "
+             "planned because it has not run on the card yet.")
 
 IX0, IX1 = MX0 + PAD, MX1 - PAD       # tile area of the main panels
 mid = (MX0 + MX1) / 2
@@ -308,18 +308,19 @@ for t in tools:
 
 # status key and footnote
 ky = KEY_Y
-key = [(CARD_TAG, "ran on the Alveo U200 with the v1 core (tag v1-m4)"),
-       (SIM_TAG, "implemented and bit-exact on the simulator; the card follows with the v2 core"),
-       (PLAN_TAG, "designed in docs/v2; simulated or in firmware where it exists; RTL and card planned (W4 to W6)")]
+key = [(CARD_TAG, "ran on the Alveo U200"),
+       (SIM_TAG, "implemented and bit-exact on the simulator; the card follows (W6)"),
+       (PLAN_TAG, "designed in docs/design; simulated or in firmware where it exists; RTL and card planned (W4 to W6)")]
 kx = 56 + 32
 for (txt, style), desc in key:
     f.tag(kx, ky, txt, anchor="start", style=style, role="tag_l")
-    f.text(kx + 260, ky, desc, "note_l", valign="middle")
+    f.text(kx + 200, ky, desc, "note_l", valign="middle")
     ky += 40
 f.text(kx, ky + 8, wrap(
     "A panel's tag applies to its blocks; a block with its own tag differs from its panel. "
-    "xrt: the v1 transport ran on the card; the v2 kind has not, it awaits the v2 bitstream. "
-    "Throughput numbers measured on the card are v1 numbers.", 1400, "note_l"),
+    "xrt: written and tested against the XRT shim; it runs on the card with the control core "
+    "bitstream (W6). Card measurements were taken before the control core was added, with the "
+    "host issuing the ops.", 1400, "note_l"),
     "note_l", color=INK_SOFT)
 
 f.save(scale=1)

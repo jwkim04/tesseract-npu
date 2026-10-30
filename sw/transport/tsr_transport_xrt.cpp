@@ -1,16 +1,16 @@
 // tsr_transport_xrt.cpp — the "xrt" kdev: one Tesseract kernel (tsr_u200_k1 / tsr_u200_k4) on an
-// Alveo card through XRT 2.18 (docs/xrt-host.md; v2: docs/v2/01-execution-model.md "EX" §9.1,
-// docs/v2/06-software-verification.md "SW" §9.1). Built only with -DTSR_WITH_XRT=ON; the protocol
+// Alveo card through XRT 2.18 (docs/xrt-host.md; docs/design/01-execution-model.md "EX" §9.1,
+// docs/design/06-software-verification.md "SW" §9.1). Built only with -DTSR_WITH_XRT=ON; the protocol
 // on top (identity, bind, load, boot, launch, wait, recovery) is tsr_kdev.cpp.
 //
-// v2 (P3.1): the kernel is ap_ctrl_none (EX §9.1) and is opened through xrt::ip, which XRT opens
+// The kernel is ap_ctrl_none (EX §9.1) and is opened through xrt::ip, which XRT opens
 // with exclusive access (EX §2.4): register access is xrt::ip::read_register / write_register (an
 // mmap'ed MMIO access); no xrt::kernel and no xrt::run exist, so a halted RISC-V cannot break
 // XRT's scheduler. EX §9.1's fallback form (ap_ctrl_hs with interrupt="false", never started) opens
-// the same way. The only kernel arguments are the channel buffers ch<c> at 0x040 + 8c; a v1 xclbin
-// (cmd_addr / cmd_count / arg0-7) is refused at open. The buffer of channel c is a device-only
+// the same way. The only kernel arguments are the channel buffers ch<c> at 0x040 + 8c; a kernel
+// with other arguments (cmd_addr / cmd_count / arg0-7) is refused at open. The buffer of channel c is a device-only
 // xrt::bo in the memory bank of arg ch<c> from xrt::xclbin::arg::get_mems() (EX §9.1; *confirm* on
-// the card that this equals the group xrt::kernel::group_id reported in v1). idle() sleeps (the
+// the card that this equals the group id of the kernel argument). idle() sleeps (the
 // default): the protocol's poll policy and timeouts count host time.
 //
 // Environment (read at open; a malformed value makes the open fail):
@@ -199,7 +199,7 @@ xrt_kdev::xrt_kdev() {
                                      kname_.c_str(), (size_t) cus[0].get_size(), KREG_SPACE, KREG_CSR_WINDOW));
     }
 
-    // EX §9.1: ap_ctrl_none (the v2 contract), or its fallback ap_ctrl_hs without an interrupt,
+    // EX §9.1: ap_ctrl_none (the contract), or its fallback ap_ctrl_hs without an interrupt,
     // never started. Both open through xrt::ip; a kernel with an interrupt is not the contract.
     const auto ctl = cus[0].get_control_type();
     const char * ctl_name = ctl == xrt::xclbin::ip::control_type::none ? "ap_ctrl_none" :
@@ -211,7 +211,7 @@ xrt_kdev::xrt_kdev() {
     cuname_ = cus[0].get_name();
 
     // Arguments, identified by their register offset (kernel contract, EX §9.1); names are free.
-    // The channel buffers are the only arguments: v1's cmd_addr / cmd_count / arg0-7 are refused.
+    // The channel buffers are the only arguments: cmd_addr / cmd_count / arg0-7 are refused.
     std::vector<int> ch_by_slot(KERNEL_MAX_CH, -1);
     for (const auto & a : xk.get_args()) {
         const uint64_t off = a.get_offset(), sz = a.get_size();
@@ -221,7 +221,7 @@ xrt_kdev::xrt_kdev() {
             ch_by_slot[(off - KREG_CH_BASE0) / 8] = idx;
         } else {
             throw std::runtime_error(fmt("kernel %s: argument %s (offset 0x%" PRIx64 ", %" PRIu64 " bytes) is not in the "
-                                         "kernel contract (a v1 xclbin? its tools are in build/v1)", kname_.c_str(),
+                                         "kernel contract (an older xclbin without the control core?)", kname_.c_str(),
                                          a.get_name().c_str(), off, sz));
         }
     }

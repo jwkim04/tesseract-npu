@@ -1,5 +1,5 @@
 // exec_ref_unary.cpp — the k_fast.hpp reference short kind on the production dispatch path (W2b
-// infra; docs/v2/06-software-verification.md "SW" §7.3 "Hot path", §7.8). Linked only into the test
+// infra; docs/design/06-software-verification.md "SW" §7.3 "Hot path", §7.8). Linked only into the test
 // image fw_exec_ref (sw/ctrl/tests/exec.cmake: graph.cpp, k_mulmat.cpp, zz_kind_stubs.cpp, the
 // runtime kernels and this file; no W2b kernel package), where it is tsr::kind_unary: the executor
 // reaches it through its kind table exactly as a production M7 kind (fw_exec's test kinds pay the

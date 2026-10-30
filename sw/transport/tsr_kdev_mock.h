@@ -1,6 +1,6 @@
-// tsr_kdev_mock.h — the "mock" kdev: the sim kdev (tsr_kdev_sim.h) inside a model of the v2
-// ap_ctrl_none platform adapter's s_axi_control registers (docs/v2/01-execution-model.md "EX" §9.2;
-// docs/v2/06-software-verification.md "SW" §9.1), with device memory reached through the
+// tsr_kdev_mock.h — the "mock" kdev: the sim kdev (tsr_kdev_sim.h) inside a model of the
+// ap_ctrl_none platform adapter's s_axi_control registers (docs/design/01-execution-model.md "EX" §9.2;
+// docs/design/06-software-verification.md "SW" §9.1), with device memory reached through the
 // dma_engine under configurable DMA rules, and fault injection. It tests the protocol layer and
 // the tools on the hardware register path without hardware (TSR_DEVICE=mock).
 //

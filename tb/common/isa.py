@@ -1,11 +1,11 @@
 """Python mirror of rtl/core/tsr_pkg.sv (and sw/sim/include/tsr_isa.h) for the testbenches.
 
 Constants (opcodes, CSR offsets, error codes, memory-port encoding), encoders of the unit
-instructions (LD, ST, QACT, MVM, NOP, FENCE; v2 encodings = v1 with x16 = 0, docs/v2 EX §7.1), and
+instructions (LD, ST, QACT, MVM, NOP, FENCE, docs/design EX §7.1), and
 the internal-interface struct layouts of tsr_pkg.sv with pack/unpack helpers (packed SV structs:
 the first member is the most significant). test_common.py checks the struct widths and field order
-against the RTL. X0 (docs/v2 EX §12): the host command path is gone — no run registers, no
-integer registers, no LI / ADDI / END (reserved opcodes), no fetch struct.
+against the RTL. There are no run registers, no
+integer registers, no LI / ADDI / END (reserved opcodes) and no fetch struct.
 """
 from __future__ import annotations
 
@@ -43,13 +43,13 @@ U200_V1 = dict(num_ch=4, beat_bits=512, lanes=128, t_max=1, k_max=32768, spm_byt
 LEN_W = 7
 SRC_ID_W = 2
 MEM_ID_W = 4
-SRC_AUX, SRC_DMA, SRC_WS = 0, 1, 2     # AUX: freed by the fetch removal, tied off (V2-CC-26)
+SRC_AUX, SRC_DMA, SRC_WS = 0, 1, 2     # AUX: freed by the fetch removal, tied off (CC-26)
 
 SPM_CL_DMA, SPM_CL_QACT, SPM_CL_MVM = 0, 1, 2
 SPM_NCL = 3
 
 # ---------------------------------------------------------------------------------------------
-# CSR map (the offsets v1 and v2 share; the rest of the v2 map: EX §5, generated tables)
+# CSR map (the map: EX §5, generated tables)
 # ---------------------------------------------------------------------------------------------
 CSR_AW = 12
 CSR_ID = 0x000

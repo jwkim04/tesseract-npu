@@ -20,7 +20,7 @@
 //   row r holds the logits computed at token index row0 + r, i.e. the prediction of token
 //   row0 + r + 1; row0 + n_rows = n_prompt + n_gen - 1. Generate mode: row0 = n_prompt - tail.
 // The header's n_seq counts complete records only and is rewritten after each one (--resume).
-// Settings (v2, V2-SW-22, docs/v2/06-software-verification.md §9.5, §10.4): every phase runs with
+// Settings (SW-22, docs/design/06-software-verification.md §9.5, §10.4): every phase runs with
 // flash attention on, a q8_0 K and V cache and LLAMA_ATTN_ROT_DISABLE=1 (set by the tool);
 // offload_kqv is false in M6 (--phase m6, the default) and true in M7 (--phase m7); all of it is
 // recorded in the file header (version 2), and compare warns when two files differ. The phase also
@@ -175,9 +175,9 @@ enum { KLC_INPUT_TOKENS = 0, KLC_INPUT_EMBD = 1, KLC_INPUT_EMBD_ULP = 2 };
 enum { KLC_FLAG_REPACK = 1u << 0, KLC_FLAG_CHAT = 1u << 1 };
 
 static const char KLC_MAGIC[8] = {'T', 'S', 'R', 'K', 'L', 'C', '0', '1'};
-// Version 2 (P3.3, 2026-10-30) records the v2 baseline settings (V2-SW-22, SW §9.5, §10.4) in five
+// Version 2 (P3.3, 2026-10-30) records the baseline settings (SW-22, SW §9.5, §10.4) in five
 // words of the former reserved area: K / V cache types, offload_kqv, LLAMA_ATTN_ROT_DISABLE and the
-// phase. Version 1 files (v1 settings: f16 KV on the host, no rotation setting) are still read; their
+// phase. Version 1 files (FA-off settings: f16 KV on the host, no rotation setting) are still read; their
 // fields read as KLC_PHASE_V1 with f16 / f16.
 static const uint32_t KLC_VERSION = 2;
 enum { KLC_PHASE_V1 = 0, KLC_PHASE_M6 = 6, KLC_PHASE_M7 = 7 };
@@ -219,10 +219,10 @@ struct klc_header {
     char     model_desc[128];
     char     model_file[128];
     char     tokens_from[64];  // replay: basename of the tokens file
-    // version 2 (the v2 settings, V2-SW-22); a version 1 file reads as f16 / f16, 0, 0, KLC_PHASE_V1
-    int32_t  type_k;           // ggml_type of the K cache (v2: GGML_TYPE_Q8_0)
-    int32_t  type_v;           // ggml_type of the V cache (v2: GGML_TYPE_Q8_0)
-    uint32_t offload_kqv;      // 1: KV cache and attention on the device (M7); 0: on the host (M6, v1)
+    // version 2 (the baseline settings, SW-22); a version 1 file reads as f16 / f16, 0, 0, KLC_PHASE_V1
+    int32_t  type_k;           // ggml_type of the K cache (GGML_TYPE_Q8_0 in version 2)
+    int32_t  type_v;           // ggml_type of the V cache (GGML_TYPE_Q8_0 in version 2)
+    uint32_t offload_kqv;      // 1: KV cache and attention on the device (M7); 0: on the host (M6, or a version 1 file)
     uint32_t attn_rot_disable; // 1: the run had LLAMA_ATTN_ROT_DISABLE=1 (llama.cpp's Hadamard KV rotation off)
     uint32_t phase;            // KLC_PHASE_M6 / _M7: which phase's settings; KLC_PHASE_V1 for a version 1 file
     uint32_t swa_cache;        // KLC_SWA_* (0 in files written before the field)
@@ -259,7 +259,7 @@ static const char * type_name_or(int32_t t) {
     return t >= 0 && t < GGML_TYPE_COUNT && ggml_type_name((ggml_type) t) ? ggml_type_name((ggml_type) t) : "?";
 }
 static const char * phase_name(uint32_t p) { return p == KLC_PHASE_M6 ? "M6" : p == KLC_PHASE_M7 ? "M7" : p == KLC_PHASE_V1 ? "v1" : "?"; }
-// The settings a file was written with (V2-SW-22), one line.
+// The settings a file was written with (SW-22), one line.
 static std::string settings_str(const klc_header & h) {
     char b[320];
     snprintf(b, sizeof(b), "%s settings: flash attn %s, KV %s/%s on the %s (offload_kqv %u), KV rotation %s%s",
@@ -296,7 +296,7 @@ static bool klc_read_header(FILE * f, const std::string & path, klc_header * h, 
         *err = path + ": unsupported klcheck file version";
         return false;
     }
-    if (h->version == 1) {      // v1 settings (docs/klcheck.md "Settings fixed in every phase")
+    if (h->version == 1) {      // FA-off settings (docs/klcheck.md "Settings fixed in every phase")
         h->type_k = h->type_v = GGML_TYPE_F16;
         h->offload_kqv = 0;
         h->attn_rot_disable = 0;
@@ -596,7 +596,7 @@ struct run_opts {
     int         input = KLC_INPUT_TOKENS;
     int         replay = -1;                      // -1: step on a device (identity), batch on the CPU
     int         threads = default_threads(), n_ctx = 0, n_batch = 2048, n_ubatch = 512;
-    // v2 baseline settings (V2-SW-22, SW §10.4): FA on, q8_0 / q8_0 KV, LLAMA_ATTN_ROT_DISABLE=1 in
+    // baseline settings (SW-22, SW §10.4): FA on, q8_0 / q8_0 KV, LLAMA_ATTN_ROT_DISABLE=1 in
     // every phase; KV cache and attention on the host in M6 (offload_kqv false), on the device in M7.
     int         fa = 1;
     int         phase = KLC_PHASE_M6;
@@ -667,7 +667,7 @@ static void create_context(session & s, const run_opts & o, int n_ctx_needed, in
     cp.n_threads       = o.threads;
     cp.n_threads_batch = o.threads;
     cp.flash_attn_type = o.fa ? LLAMA_FLASH_ATTN_TYPE_ENABLED : LLAMA_FLASH_ATTN_TYPE_DISABLED;
-    cp.type_k          = o.type_k;           // -ctk q8_0 (V2-SW-22)
+    cp.type_k          = o.type_k;           // -ctk q8_0 (SW-22)
     cp.type_v          = o.type_v;           // -ctv q8_0 (needs FA: src/llama-context.cpp refuses a quantized V without it)
     cp.offload_kqv     = o.offload();        // M6: false (-nkvo, attention on the host); M7: true
     cp.swa_full        = o.swa_full != 0;    // default off: the SWA ring, as llama-cli / llama-server (KLC_SWA_*)
@@ -800,7 +800,7 @@ static void usage_run() {
         "                      compare --expect-identical, SW §10.4 M6 gate item 2)\n"
         "  --repack            CPU: allow repacked weight buffers (anonymous memory; off by default)\n"
         "  -t N  -c N  -b N  -ub N  --resume  -v\n"
-        "  v2 settings (V2-SW-22; every phase of a comparison must use the same, all are recorded in the file):\n"
+        "  settings (SW-22; every phase of a comparison must use the same, all are recorded in the file):\n"
         "  --phase m6|m7       M6 (default): KV cache and attention on the host; M7: on the device (offload_kqv)\n"
         "  --offload-kqv on|off  override the phase's offload_kqv\n"
         "  --fa on|off         flash attention (default on)\n"
@@ -877,11 +877,11 @@ static int cmd_run(int argc, char ** argv) {
     if (o.device == "cpu") setenv("TSR_DEVICE", "none", 1);
     else                   setenv("TSR_DEVICE", o.device.c_str(), 1);
     // llama.cpp's Hadamard KV rotation (src/llama-kv-cache.cpp reads the variable when a context is
-    // created): off for every phase, device and CPU alike (V2-SW-16, V2-SW-22).
+    // created): off for every phase, device and CPU alike (SW-16, SW-22).
     if (o.attn_rot_disable) setenv("LLAMA_ATTN_ROT_DISABLE", "1", 1);
     else                    unsetenv("LLAMA_ATTN_ROT_DISABLE");
     // The phase also picks the device's kinds (read by the backend's supports_op): M6 runs MUL_MAT
-    // only, v1's splits (V2-SW-14); M7 every kind of SW §9.3 (W3b integration, V2-SW-49).
+    // only (SW-14); M7 every kind of SW §9.3 (W3b integration, SW-49).
     if (o.phase == KLC_PHASE_M6) setenv("TSR_KINDS", "m6", 1);
     else                         unsetenv("TSR_KINDS");
 
@@ -1205,7 +1205,7 @@ static void check_pair(const klc_header & a, const std::string & pa, const klc_h
     if (a.flash_attn != b.flash_attn) {
         fprintf(stderr, "klcheck: WARNING: %s and %s differ in flash attention\n", pa.c_str(), pb.c_str());
     }
-    // V2-SW-22: the device, CPU and floor runs of one comparison use the same KV type, FA and
+    // SW-22: the device, CPU and floor runs of one comparison use the same KV type, FA and
     // rotation settings (offload_kqv differs legitimately between a device run and a CPU run only
     // in what it moves; it is reported, not checked).
     if (a.type_k != b.type_k || a.type_v != b.type_v || a.attn_rot_disable != b.attn_rot_disable || a.phase != b.phase ||
@@ -1500,7 +1500,7 @@ static int cmd_all(int argc, char ** argv, const char * self) {
         else if (a == "-t" || a == "-c" || a == "-b" || a == "-ub" || a == "--fa" || a == "--replay" || a == "--phase" ||
                  a == "--offload-kqv" || a == "-ctk" || a == "--cache-type-k" || a == "-ctv" || a == "--cache-type-v" ||
                  a == "--attn-rot" || a == "--swa-full") {
-            common.push_back(a); common.push_back(val());   // the v2 settings go to every phase (V2-SW-22)
+            common.push_back(a); common.push_back(val());   // the baseline settings go to every phase (SW-22)
         }
         else if (a == "--repack" || a == "--resume" || a == "-v") common.push_back(a);
         else if (a == "--kl-ratio" || a == "--min-top1" || a == "--min-kl") { cmp.push_back(a); cmp.push_back(val()); }
@@ -1856,8 +1856,8 @@ static int cmd_selftest(int argc, char ** argv) {
         cmp_result R;
         ST_CHECK(compare_files(o, R) == 1 && !R.complete, "incomplete reference must fail");
     }
-    // 7. header versions: the v2 settings survive a write / read; a version 1 file (reserved bytes
-    //    zero) reads with the v1 settings, and a resume check against v2 options sees the difference
+    // 7. header versions: the settings survive a write / read; a version 1 file (reserved bytes
+    //    zero) reads with the FA-off settings, and a resume check against the current options sees the difference
     {
         klc_header h = st_header(V, NS, "sim", KLC_MODE_GENERATE);
         h.phase = KLC_PHASE_M7;
@@ -1870,10 +1870,10 @@ static int cmd_selftest(int argc, char ** argv) {
         FILE * f = fopen(fi.c_str(), "rb");
         klc_header g;
         std::string err;
-        ST_CHECK(f && klc_read_header(f, fi, &g, &err), "v2 header read: %s", err.c_str());
+        ST_CHECK(f && klc_read_header(f, fi, &g, &err), "version 2 header read: %s", err.c_str());
         if (f) fclose(f);
         ST_CHECK(g.version == 2 && g.phase == KLC_PHASE_M7 && g.offload_kqv == 1 && g.type_k == GGML_TYPE_Q8_0 &&
-                 g.type_v == GGML_TYPE_F16 && g.attn_rot_disable == 1 && g.flash_attn == 1, "v2 settings round trip: %s",
+                 g.type_v == GGML_TYPE_F16 && g.attn_rot_disable == 1 && g.flash_attn == 1, "settings round trip: %s",
                  settings_str(g).c_str());
         ST_CHECK(settings_str(g) == "M7 settings: flash attn on, KV q8_0/f16 on the device (offload_kqv 1), KV rotation off "
                                     "(LLAMA_ATTN_ROT_DISABLE=1)", "settings string: %s", settings_str(g).c_str());
@@ -1884,7 +1884,7 @@ static int cmd_selftest(int argc, char ** argv) {
             w.create(fi, h);
         }
         f = fopen(fi.c_str(), "rb");
-        ST_CHECK(f && klc_read_header(f, fi, &g, &err), "v2 header (SWA ring) read: %s", err.c_str());
+        ST_CHECK(f && klc_read_header(f, fi, &g, &err), "version 2 header (SWA ring) read: %s", err.c_str());
         if (f) fclose(f);
         ST_CHECK(g.swa_cache == KLC_SWA_RING && settings_str(g) == "M7 settings: flash attn on, KV q8_0/f16 on the device "
                  "(offload_kqv 1), KV rotation off (LLAMA_ATTN_ROT_DISABLE=1), SWA cache ring", "SWA field round trip: %s",
@@ -1900,13 +1900,13 @@ static int cmd_selftest(int argc, char ** argv) {
             w.write_seq(seqs[0], toks[0], lref[0].data());
         }
         f = fopen(fi.c_str(), "rb");
-        ST_CHECK(f && klc_read_header(f, fi, &g, &err), "v1 header read: %s", err.c_str());
+        ST_CHECK(f && klc_read_header(f, fi, &g, &err), "version 1 header read: %s", err.c_str());
         if (f) fclose(f);
         ST_CHECK(g.version == 1 && g.phase == KLC_PHASE_V1 && g.type_k == GGML_TYPE_F16 && g.type_v == GGML_TYPE_F16 &&
-                 g.offload_kqv == 0 && g.attn_rot_disable == 0, "v1 file reads with the v1 settings: %s", settings_str(g).c_str());
+                 g.offload_kqv == 0 && g.attn_rot_disable == 0, "version 1 file reads with the FA-off settings: %s", settings_str(g).c_str());
         klc_reader r;
         r.open(fi);
-        ST_CHECK(r.next() && r.toks == toks[0], "v1 file: record readable");
+        ST_CHECK(r.next() && r.toks == toks[0], "version 1 file: record readable");
         klc_header v3 = v1;
         v3.version = 3;
         {

@@ -1,5 +1,5 @@
-# sw/sim/race.cmake — the race detector (P1.9, docs/v2/06-software-verification.md §4.6, V2-SW-3 /
-# V2-SW-4): tsr_race.c (vector clocks over units / RISC-V / host, SPM_STALE; API tsr_race.h).
+# sw/sim/race.cmake — the race detector (P1.9, docs/design/06-software-verification.md §4.6, SW-3 /
+# SW-4): tsr_race.c (vector clocks over units / RISC-V / host, SPM_STALE; API tsr_race.h).
 #
 # Included by sw/sim/CMakeLists.txt's model snippet loop after tsr_sim / tsr_sim_shared and the
 # units' sanitizer variants exist (-DTSR_SIM_SKIP_SNIPPETS=race leaves it out). It adds tsr_race.c

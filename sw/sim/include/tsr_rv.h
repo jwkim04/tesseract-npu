@@ -1,5 +1,5 @@
 // tsr_rv.h — RV32IMC + Zicsr + Zifencei interpreter modelling the control core's Ibex
-// (docs/v2/06-software-verification.md "SW" §4.2, V2-SW-1; docs/v2/04-control-core.md "CC" §3).
+// (docs/design/06-software-verification.md "SW" §4.2, SW-1; docs/design/04-control-core.md "CC" §3).
 //
 // The interpreter is the architectural oracle of the RISC-V side: the firmware runs on it inside
 // the simulator, and it is checked against Spike (riscv-tests, riscv-arch-test and random
@@ -9,7 +9,7 @@
 // *estimate*, schedule only, never architectural).
 //
 // Ibex configuration modelled (CC §3.2): the "maxperf" pipeline (WritebackStage 1, BranchTargetALU
-// 1, RV32M SingleCycle, V2-CC-34; the "small" cycle table stays selectable), RV32B None, PMPEnable
+// 1, RV32M SingleCycle, CC-34; the "small" cycle table stays selectable), RV32B None, PMPEnable
 // 0, MHPMCounterNum 0, DbgTriggerEn 1 with DbgHwBreakNum 2, DmHaltAddr 0x1000_0800,
 // DmExceptionAddr 0x1000_0808, hart_id 0. Ibex always implements U-mode (misa.U = 1; mstatus.MPP is M or U); the firmware runs
 // in M-mode only. Ibex facts recalled from its documentation and RTL are marked *confirm* in
@@ -218,7 +218,7 @@ typedef struct tsr_rv_cpi {
 // Ibex configurations of the timing model (CC §3.2): TSR_SIM_RV_CORE / tsr_sim_opts.rv_core.
 #define TSR_RV_CORE_SMALL    0u   // RV32MFast, WritebackStage 0, BranchTargetALU 0
 #define TSR_RV_CORE_MAXPERF  1u   // RV32MSingleCycle, WritebackStage 1, BranchTargetALU 1
-#define TSR_RV_CORE_DEFAULT  TSR_RV_CORE_MAXPERF   // the configuration CC §3.2 decides (V2-CC-34)
+#define TSR_RV_CORE_DEFAULT  TSR_RV_CORE_MAXPERF   // the configuration CC §3.2 decides (CC-34)
 #define TSR_RV_CPI_DEFAULT   TSR_RV_CPI_MAXPERF    // its table
 // "small" / "maxperf" -> *core: 0, else -1. Name of a core (NULL if unknown).
 int          tsr_rv_core_parse(const char * name, uint32_t * core);
@@ -344,7 +344,7 @@ void     tsr_rv_request_stop(tsr_rv * rv);
 uint32_t tsr_rv_reg(const tsr_rv * rv, unsigned i);              // x0..x31
 void     tsr_rv_set_reg(tsr_rv * rv, unsigned i, uint32_t v);    // x0 writes are ignored
 // The next instruction (parked: TSR_RV_DM_HALT_ADDR). During a bus callback: the pc of the
-// instruction making the access (e.g. the push PC of CC §7.1 for trace v2 and DB's history).
+// instruction making the access (e.g. the push PC of CC §7.1 for the trace format and DB's history).
 uint32_t tsr_rv_pc(const tsr_rv * rv);
 void     tsr_rv_set_pc(tsr_rv * rv, uint32_t pc);                // bit 0 is cleared
 uint32_t tsr_rv_priv(const tsr_rv * rv);

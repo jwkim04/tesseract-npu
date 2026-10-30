@@ -2,9 +2,9 @@
 //
 // Owner: the core (tsr_sim.c, tsr_q.c). Users: tsr_vu.c / tsr_at.c (unit semantics, P1.4 / P1.5),
 // tsr_rv.c / tsr_bus.c (the RISC-V model and its bus, P1.7), and later the scheduler (P1.8), the
-// race detector (P1.9), trace v2 (P1.10) and the debug models (P1.12 / P1.13). The public API is
+// race detector (P1.9), the trace format (P1.10) and the debug models (P1.12 / P1.13). The public API is
 // tsr_sim.h (host CSR port = EX §5 through tsr_sim_csr_read / tsr_sim_csr_write, time base, test
-// hooks); nothing here is ABI. docs/v2/06-software-verification.md (SW) §4 is the model.
+// hooks); nothing here is ABI. docs/design/06-software-verification.md (SW) §4 is the model.
 //
 //   1. operand extents (CC §8.2): what a checker class reports for each op;
 //   2. per-opcode handler table (tsr_op_handler, tsr_sim_register_op): checker class, execution
@@ -148,7 +148,7 @@ void tsr_at_register(void);       // tsr_at.c (P1.5)
 // tsr_sim.h already has: tsr_sim_spm(sim) (SPM bytes, spm_bytes long; the RISC-V's SPM window
 // 0x4000_0000 + i, CC §4.1, is byte i), tsr_sim_dram(sim, ch) (byte 0 of channel ch),
 // tsr_sim_dram_limit_beats(sim), tsr_sim_config(sim) (NUM_CH, T_MAX, K_MAX, SPM size, VL, CAPS),
-// tsr_sim_sreg(sim) (the s bank s0..s15 as 16 floats, VU §4.4 / V2-VU-11/12: written only by
+// tsr_sim_sreg(sim) (the s bank s0..s15 as 16 floats, VU §4.4 / VU-11/12: written only by
 // VU-queue ops' exec; read by the host at SREG0-15 = 0x9C0 and by the RISC-V through the core
 // window; +0.0 after create, kept across SOFT_RESET, EX §7.4).
 uint32_t tsr_sim_spm_lines(const tsr_sim * sim);       // SPM_BYTES / 64
@@ -303,7 +303,7 @@ struct tsr_rv_agent * tsr_sim_rv_agent(tsr_sim * sim);
 uint64_t tsr_sim_next_event(const tsr_sim * sim);
 void     tsr_sim_request_stop(tsr_sim * sim);
 
-// Queue events (trace v2, race detector, DB history and records). Called synchronously from the
+// Queue events (trace format, race detector, DB history and records). Called synchronously from the
 // time base (or from the push / QCTRL store that caused them); a listener may read state and call
 // tsr_sim_request_stop, nothing else.
 //   PUSH       an ISSUE_PUSH accepted into the issue FIFO (by the RISC-V or tsr_sim_push), at the
@@ -312,7 +312,7 @@ void     tsr_sim_request_stop(tsr_sim * sim);
 //              the deps as pushed (before the dispatcher's BAD_DEP rule), push = the ISSUE_PUSH
 //              value, rec = its REC bit, pc = the push PC (CC §7.1; TSR_SIM_PC_HOOK for
 //              tsr_sim_push and the other test hooks), code 0.
-//              These and QCTRL / MARK_PUSH are trace v2's push.bin records, in push order (SW §5.2)
+//              These and QCTRL / MARK_PUSH are the trace's push.bin records, in push order (SW §5.2)
 //   QCTRL      a QCTRL write accepted into the issue FIFO (all of its entries, CC §5.1): w[0] = the
 //              value written; unit SYNC with the QCLEAR's ticket and push index when bit 3 is set,
 //              else unit TSR_UNIT_NONE, TSR_TICKET_NONE and pidx = the next push index; pc. A write

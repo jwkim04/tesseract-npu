@@ -1,5 +1,5 @@
 # sw/ctrl/tests/elem.cmake — W2b P2.6 tests of the element-wise and row kinds ADD, MUL, SCALE, GLU,
-# UNARY, CPY, GET_ROWS (docs/v2/06-software-verification.md "SW" §7.2, §7.5, §10.2). Included by
+# UNARY, CPY, GET_ROWS (docs/design/06-software-verification.md "SW" §7.2, §7.5, §10.2). Included by
 # sw/ctrl/host/CMakeLists.txt (main project, after kernels.cmake). Every test has label fw.
 #
 #   fw_kernels_elem_rv        the kinds in tsr-fw.elf on tsr_rv through the graph executor: decode and

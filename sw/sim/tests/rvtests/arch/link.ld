@@ -1,5 +1,5 @@
 /* sw/sim/tests/rvtests/arch/link.ld - riscv-arch-test programs on the test bus profile
-   (RAM at 0x8000_0000, docs/v2/06-software-verification.md §4.2); the layout of the suite's
+   (RAM at 0x8000_0000, docs/design/06-software-verification.md §4.2); the layout of the suite's
    riscof-plugins/rv32/spike_simple/env/link.ld. */
 OUTPUT_ARCH( "riscv" )
 ENTRY(rvtest_entry_point)

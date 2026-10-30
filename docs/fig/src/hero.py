@@ -1,35 +1,36 @@
-"""Figure `hero`: the Tesseract v2 NPU core as a stylised die, with one MVM cluster zoomed.
+"""Figure `hero`: the Tesseract NPU core as a stylised die, with one MVM cluster zoomed.
 
 The picture for the top of the README, in the manner of Tenstorrent's chip-and-tile art: tsr_core
 drawn as a die, the four DDR4 channels off-die, and one MVM cluster opened up by dashed zoom
 lines. It is a stylised view, not a floorplan, and the figure says so.
 
 Status drawing rule (STYLE.md "Planned and unconfirmed things"): solid blocks exist in rtl/ and ran
-on the card with the v1 core (tag v1-m4); the v2 additions exist in the simulator and the firmware
-only, so they are dashed and pale with a PLANNED · M6 tag, or, where a solid v1 block gains a mode,
-carry a dashed "+ ..." tag (DMA + KVST, SPM + even / odd banks, MAC lanes + ATTQK / ATTPV).
+on the card; the control core, issue path, vector unit and debug block exist in the simulator and
+the firmware only, so they are dashed and pale with a PLANNED · M6 tag, or, where a solid block
+gains a mode, carry a dashed "+ ..." tag (DMA + KVST, SPM + even / odd banks, MAC lanes + ATTQK /
+ATTPV).
 
 Die content, with sources:
 - four MVM clusters of 128 MACs (NUM_CH = 4, LANES = 128), cluster c next to DDR4 channel c and
   fed only by it, through one tsr_mem_arb per channel (docs/spec.md §2, §3; docs/rtl-m2.md §2);
 - SPM, 4 MiB in 64 B lines, in the centre, with the x broadcast / y gather of tsr_mvm between it
-  and the clusters (docs/rtl-m3.md §2, §3); v2: even / odd line-interleaved banks, 2R2W
-  (docs/v2/04-control-core.md §10.1, V2-CC-12), planned;
-- tsr_csr on the die edge: the core boundary is a CSR port; v2 adds the launch queue LQ, the
-  completion ring LCQ, the log ring and the firmware loader to it (docs/v2/01-execution-model.md
-  §4, §5, §3.3), planned; the platform adapter maps the port to s_axi_control of the XRT shell;
-- planned: the control core (Ibex RV32IMC, ITCM 128 KiB, DTCM 64 KiB; docs/v2/04-control-core.md
-  §2.1, §3, V2-CC-3), the issue path (checker tsr_chk, dispatcher, one in-order queue per unit;
-  CC §7, §8), the debug module (riscv-dbg, GDB over the DMI window; docs/v2/05-debug.md §3), the
-  vector unit (VL 16: norms, RoPE, activations, reductions, softmax parts; docs/v2/
-  02-vector-unit.md §1, §7), KVST in the DMA (docs/v2/03-attention-kv.md §5.1, §8.3);
+  and the clusters (docs/rtl-m3.md §2, §3); even / odd line-interleaved banks, 2R2W
+  (docs/design/04-control-core.md §10.1, CC-12), planned;
+- tsr_csr on the die edge: the core boundary is a CSR port; the launch queue LQ, the completion
+  ring LCQ, the log ring and the firmware loader sit on it (docs/design/01-execution-model.md §4, §5,
+  §3.3), planned; the platform adapter maps the port to s_axi_control of the XRT shell;
+- planned: the control core (Ibex RV32IMC, ITCM 128 KiB, DTCM 64 KiB; docs/design/04-control-core.md
+  §2.1, §3, CC-3), the issue path (checker tsr_chk, dispatcher, one in-order queue per unit;
+  CC §7, §8), the debug module (riscv-dbg, GDB over the DMI window; docs/design/05-debug.md §3), the
+  vector unit (VL 16: norms, RoPE, activations, reductions, softmax parts; docs/design/
+  02-vector-unit.md §1, §7), KVST in the DMA (docs/design/03-attention-kv.md §5.1, §8.3);
 - DMA (LD, ST) and QACT (f32 -> QA) are solid (rtl/core/tsr_dma.sv, tsr_qact.sv).
 Zoomed cluster (docs/rtl-m3.md §2, §7; docs/spec.md §8): weight streamer tsr_mvm_ws (64-beat
 bursts, 512-beat FIFO), parse + unpack (tsr_mvm_front: chunk parser, meta, Q4_K scales, int8
 lanes), activation buffer tsr_mvm_actbuf (QS, D, BS per token, filled by the x broadcast), 128 MAC
 lanes (4 x tsr_mac_lane, int8 x int8), integer scale + fp term + accumulate (16 partials per row),
 tree16 (8 + 4 + 2 + 1 fadds), y gather back to the SPM. Weight beats: 64 B per cycle. Planned on
-the MAC lanes: the ATTQK and ATTPV modes (docs/v2/03-attention-kv.md §8.1, §8.2).
+the MAC lanes: the ATTQK and ATTPV modes (docs/design/03-attention-kv.md §8.1, §8.2).
 "FP ACCUMULATE" stands for the stages integer scale, fp term, accumulator of docs/rtl-m3.md §7.
 Left out on purpose: the platform adapter and the XRT shell (the system figure shows them) and
 the paths between the units and the arbiters. The footnote says so. The die places clusters 1 and
@@ -93,8 +94,8 @@ f = Fig("hero", W, H,
         title="The Tesseract NPU core",
         desc="Stylised die of tsr_core: four MVM clusters of 128 MACs at the corners, each next "
              "to its own DDR4 channel and memory arbiter; the 4 MiB SPM in the centre with the x "
-             "broadcast / y gather to the clusters; DMA, QACT and the CSR block on the v1 core; "
-             "the v2 additions drawn dashed: control core (Ibex RV32IMC, ITCM and DTCM), debug "
+             "broadcast / y gather to the clusters; DMA, QACT and the CSR block drawn solid; "
+             "drawn dashed: control core (Ibex RV32IMC, ITCM and DTCM), debug "
              "module, issue path with unit queues, vector unit, KVST in the DMA, even and odd SPM "
              "banks. The host reaches the CSR port over PCIe and XRT with a launch queue and a "
              "completion ring. One cluster is opened up: weight streamer, unpack, activation "
@@ -227,9 +228,9 @@ _lg = {"key": "tesseract-core", "h": 40, "backing": True, "pad": 6}
 _lw, _lh = logo_box(**_lg)
 f.logo(x=W - 72 - _lw, y=LEG_Y - _lh + 6, **_lg)             # name of the configuration, bottom right
 f.text(W / 2, LEG_Y + 38, wrap(
-    "Stylised view of tsr_core, not a floorplan. Solid blocks: the v1 core (run on the card). "
-    "Dashed blocks and tags: the v2 additions (milestone M6), verified in the simulator and in "
-    "firmware; their RTL is planned (W4). The issue path dispatches tile "
+    "Stylised view of tsr_core, not a floorplan. Solid blocks ran on the card. "
+    "Dashed blocks and tags run on the simulator and in firmware (milestone M6); "
+    "their RTL is planned (W4). The issue path dispatches tile "
     "ops to the unit queues of the DMA, QACT, MVM and VU. Cluster c streams weights only from "
     "DDR4 channel c. The platform adapter and the XRT shell are left out.", 1440),
     "note", anchor="middle", color=INK_SOFT)

@@ -1,13 +1,13 @@
-// k_elem.hpp — shared pieces of the element-wise and row kinds of the graph executor (OPL v1 ADD
-// 0x11, MUL 0x12, SCALE 0x13, GLU 0x15, GET_ROWS 0x17, CPY 0x1A, UNARY 0x1B; docs/v2/
+// k_elem.hpp — shared pieces of the element-wise and row kinds of the graph executor (op list ADD
+// 0x11, MUL 0x12, SCALE 0x13, GLU 0x15, GET_ROWS 0x17, CPY 0x1A, UNARY 0x1B; docs/design/
 // 06-software-verification.md "SW" §7.2, §7.3 "Hot path", §7.5, §7.8; VU §5.2, §9). Kernel-private:
 // included by k_elem.cpp (ADD, MUL, SCALE, UNARY and the element-wise tile engine), k_glu.cpp (GLU)
 // and k_rows.cpp (GET_ROWS, CPY).
 //
 // Every kind has two paths that push the same ops for the records both take:
-//   - the decode fast path (V2-SW-35's form, k_fast.hpp): the argument words read in place into
+//   - the decode fast path (SW-35's form, k_fast.hpp): the argument words read in place into
 //     locals, a one-tile plan by shifts and compares (no divide) that is plan_elem.hpp's for the
-//     record, the one-tile block from kf::alloc_fast (V2-SW-36: no deps, no ring record; the
+//     record, the one-tile block from kf::alloc_fast (SW-36: no deps, no ring record; the
 //     general path takes it for an op's only tile too; GLU's larger rows a ring block), one
 //     ISSUE_CREDIT read for the op's pushes when it covers them (kf::credits_for; else issue()'s wait
 //     per push: kpush below; ADD / MUL / GLU and SCALE's common case wait until one read covers them
@@ -16,7 +16,7 @@
 //     period, one scalar for several rows, (GLU) a ring wrap or a block released by a non-DMA
 //     ticket, a record the planner refuses;
 //   - the general path ([[gnu::cold]], compiled for size): the planner of tsr/plan_elem.hpp (shared
-//     with the host's supports_op, V2-SW-20), any number of tiles, double-buffered like MUL_MAT's
+//     with the host's supports_op, SW-20), any number of tiles, double-buffered like MUL_MAT's
 //     (SW §7.4), spm_ring::alloc.
 // Deps (MUL_MAT's rule, SW §7.4): the op's deps (and its first block's ring deps) go on its first LD
 // without DMA tickets (queue order implies them); each VOP depends on its tile's last LD (DMA,

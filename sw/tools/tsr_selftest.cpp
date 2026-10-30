@@ -1,5 +1,5 @@
-// tsr_selftest.cpp — tsr-selftest: the card bring-up checklist over any transport (docs/v2/
-// 06-software-verification.md "SW" §9.5, §7.6, V2-SW-28; docs/v2/01-execution-model.md "EX" §3-§5,
+// tsr_selftest.cpp — tsr-selftest: the card bring-up checklist over any transport (docs/design/
+// 06-software-verification.md "SW" §9.5, §7.6, SW-28; docs/design/01-execution-model.md "EX" §3-§5,
 // §4.11; was tsr_xrt_selftest, docs/xrt-host.md §5).
 //
 //   tsr-selftest [--device KIND] [--image ELF] [--mem-mib N] [--no-mem] [--no-kernel] [--ids LIST]
@@ -15,7 +15,7 @@
 //   --no-shadow     run section 5 and the replays without the in-process simulator (device-side and
 //                   reference checks only)
 //   --rate-n N      launches of the PING latency and rate measurements (default 1000)
-//   --traces DIR    replay every trace v2 below DIR (kind ops through the `replay` kernel, kind
+//   --traces DIR    replay every trace below DIR (kind ops through the `replay` kernel, kind
 //                   launch as full launches of their own image); --traces-serial DIR with the replay
 //                   kernel's SERIAL flag (traces/model-v1conv, SW §5.4); repeatable; --max-traces N
 //                   caps the replays per directory
@@ -27,7 +27,7 @@
 //      RV_FREQ (clk_rv present; F_RV / F_CORE), RV_CFG, Q_DEPTH per unit, LQ_CFG ring depths,
 //      PERF_INFO, LOG_CFG, STATUS; the adapter (ADAPTER_VERSION major 2 and NUM_CH, ADAPTER_STATUS at
 //      open and now, MEM_EN, channel bases = the buffers' device addresses) or "no adapter" (sim).
-//   2. Memory, per channel (unchanged from v1): pattern write / read-back at aligned, unaligned,
+//   2. Memory, per channel: pattern write / read-back at aligned, unaligned,
 //      4 KiB- and 4 GiB-crossing and end-of-channel ranges with guard bytes; channel aliasing;
 //      write / read bandwidth.
 //   3. Boot (EX §3.3-§3.5): the image (id, base kernels graph / selftest / replay at 0 / 1 / 2); a
@@ -44,7 +44,7 @@
 //      log records; plus RET (the device-side checks of ids 1, 7, 8, 10) and references computed
 //      here for ids 1, 2, 3, 7, 8 and 9 (copies, QACT, MVM, the recovery round trip, the SPM window
 //      pattern, the id 9 log strings from the ELF and its event).
-//   6. --traces: trace v2 replays through the device (tsr_devrun.h): answer = the trace's DONE, every
+//   6. --traces: trace replays through the device (tsr_devrun.h): answer = the trace's DONE, every
 //      expect region, and device = shadow; traces made for another configuration are skipped.
 //   7. --debug: the DMI smoke (needs CTL_ID.DM).
 //   8. Log and status: every drained word decodes (DB §6.1), no record dropped (LOG_DROPPED,
@@ -240,7 +240,7 @@ void identity(tsr_transport * t) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Memory (unchanged from v1)
+// 2. Memory
 // ---------------------------------------------------------------------------
 void memory(tsr_transport * t, uint64_t mem_mib, rng & r) {
     const tsr_config * c = tsr_transport_config(t);

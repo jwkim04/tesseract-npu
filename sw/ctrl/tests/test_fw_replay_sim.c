@@ -1,5 +1,5 @@
 // test_fw_replay_sim.c — fw_replay_sim: trace replay through the `replay` kernel of the production
-// image (docs/v2/06-software-verification.md "SW" §5.4, §7.7, §10.2; EX §4.6), the route P2.5 adds to
+// image (docs/design/06-software-verification.md "SW" §5.4, §7.7, §10.2; EX §4.6), the route P2.5 adds to
 // tsr_trace2_replay_sim (sw/sim/tsr_trace.c "kernel_replay").
 //
 //   test_fw_replay_sim IMAGE TRACES_DIR [--all]
@@ -11,7 +11,7 @@
 //     (the DONE fields incl. the kernel's RET rule, expect regions, written / read DRAM, per-unit counts,
 //     error records and push-stream projections), i.e. the kernel route gives the tile-only route's
 //     results. The race detector runs in report mode and allows no report, SPM_STALE included (a
-//     replayed op reads SPM that nothing wrote since the launch's LQ_POP, V2-SW-4): every generated
+//     replayed op reads SPM that nothing wrote since the launch's LQ_POP, SW-4): every generated
 //     set obeys the launch-stateless rule since the generator loads strided QACT sources' stride gaps
 //     (2026-10-30, SW §5.6; until then 41 traces of m2, gen and m3 read the initial SPM fill and were
 //     allowed here).

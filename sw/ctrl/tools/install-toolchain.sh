@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # sw/ctrl/tools/install-toolchain.sh - install the pinned RISC-V tools in user space, without sudo
-# (docs/v2/06-software-verification.md §9.6, V2-SW-7; README risk 14). The pins are data in
-# docs/v2/toolchain.lock; this script installs exactly those, verifies them and records what it
+# (docs/design/06-software-verification.md §9.6, SW-7; README risk 14). The pins are data in
+# docs/design/toolchain.lock; this script installs exactly those, verifies them and records what it
 # found in <prefix>/installed.lock.
 #
 # Usage: sw/ctrl/tools/install-toolchain.sh [options]
 #   --prefix DIR   install root (default: $TSR_TOOLS_PREFIX, else <repo>/build/tools/riscv, which
 #                  .gitignore covers; SW §9.6's ~/.local/opt layout: --prefix ~/.local/opt/tsr-riscv)
-#   --lock FILE    pin file (default: <repo>/docs/v2/toolchain.lock)
+#   --lock FILE    pin file (default: <repo>/docs/design/toolchain.lock)
 #   --steps LIST   comma-separated subset of xpack,dtc,spike,sources,check,sanity (default: all,
 #                  always run in that order)
 #   --jobs N       parallel make jobs (default: $TSR_JOBS, else 4)
@@ -45,7 +45,7 @@ umask 022
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$SCRIPT_DIR/../../.." && pwd)
 PREFIX=${TSR_TOOLS_PREFIX:-$REPO/build/tools/riscv}
-LOCK=$REPO/docs/v2/toolchain.lock
+LOCK=$REPO/docs/design/toolchain.lock
 JOBS=${TSR_JOBS:-4}
 STEPS_ALL="xpack dtc spike sources check sanity"
 STEPS=$STEPS_ALL

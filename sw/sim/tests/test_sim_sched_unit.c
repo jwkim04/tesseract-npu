@@ -1,4 +1,4 @@
-// test_sim_sched_unit.c — P1.8 unit tests (ctest sim_sched_unit; docs/v2/06-software-verification.md
+// test_sim_sched_unit.c — P1.8 unit tests (ctest sim_sched_unit; docs/design/06-software-verification.md
 // "SW" §4.4, §4.7-§4.9; the interface is sw/sim/tsr_sim_int.h §5 / §5b):
 //   1. xoshiro128** against the reference vectors (state {1, 2, 3, 4}) and the splitmix64 stream
 //      seeding pinned (a seed must reproduce the same schedule in every version);

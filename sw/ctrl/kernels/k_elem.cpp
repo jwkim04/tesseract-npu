@@ -1,12 +1,12 @@
 // k_elem.cpp — the element-wise kinds ADD (0x11), MUL (0x12), SCALE (0x13) and UNARY (0x1B) of the
 // graph executor, and the element-wise tile engine they share with GLU (k_glu.cpp)
-// (docs/v2/06-software-verification.md "SW" §7.2, §7.5; VU §5.2, §6.5, §9; handler interface
+// (docs/design/06-software-verification.md "SW" §7.2, §7.5; VU §5.2, §6.5, §9; handler interface
 // tsr/exec.hpp, SW §7.3; fast path SW §7.3 "Hot path", k_elem.hpp).
 //
 // Tile-op sequence (the numerical contract, SW §7.5 last paragraph; sw/ctrl/ref/elem_ref.cpp
 // composes the same tsr_ref_vu calls). Per row tile [r0, r0 + t) (tsr/plan_elem.hpp: kind_plan
 // tile_rows; one tile at decode shapes), in one block [a rows | b part] (the one-tile block for an op's
-// only tile, V2-SW-36; else the ring):
+// only tile, SW-36; else the ring):
 //   1. LD the a rows (one LD for dense rows, a stride = L(n), else one per row);
 //   2. LD the b part (plan_elem.hpp EB_*): b rows r0 .. (rows form), b row 0 (broadcast), b rows
 //      0 .. p-1 (period), the scalar's line (tile 0 only), the per-row scalars' lines from r0/16;

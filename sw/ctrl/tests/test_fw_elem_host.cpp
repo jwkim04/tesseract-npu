@@ -1,6 +1,6 @@
 // test_fw_elem_host.cpp — fw_kernels_elem_host: the element-wise and row kinds (ADD, MUL, SCALE, GLU,
 // UNARY, CPY, GET_ROWS; sw/ctrl/kernels/k_elem.cpp, k_glu.cpp, k_rows.cpp) compiled for the host
-// (docs/v2/06-software-verification.md "SW" §6.8, V2-SW-25: tsr_fw_host under ASan + UBSan), driven
+// (docs/design/06-software-verification.md "SW" §6.8, SW-25: tsr_fw_host under ASan + UBSan), driven
 // through the simulator's test hooks (tsr/backend_host.hpp). The reference stays the RV binary on
 // tsr_rv (fw_kernels_elem_rv runs the same sources there).
 //

@@ -3,8 +3,8 @@
 #
 #   hw/u200/build_xclbin.sh k1|k4 [hw|hw_emu]        (default target: hw)
 #
-# DISABLED until Y5 (docs/v2 EX §12): X0 deleted the v1 command path, so the kernels have no
-# working core until the control core lands (Y4) and the adapter v2 (ap_ctrl_none, MEM_EN,
+# DISABLED until Y5 (docs/design EX §12): the kernels have no
+# working core until the control core lands (Y4) and the adapter (ap_ctrl_none, MEM_EN,
 # ap_clk_2; EX §9) is in place (Y5). The script stops with exit status 4 after the argument check;
 # only TSR_U200_PLATFORMINFO=1 (platform lookup and platforminfo, below) still runs. The M0
 # bandwidth kernel builds as before (hw/u200/bw/build_bw_xclbin.sh). Y5 removes the stop and keeps
@@ -49,10 +49,9 @@ case "$TARGET" in
 esac
 if [ "${TSR_U200_PLATFORMINFO:-0}" != 1 ]; then
   cat >&2 <<EOM
-build_xclbin.sh: the U200 core kernel build (tsr_u200_$K) is disabled until Y5 (docs/v2 EX §12).
-  X0 deleted the v1 host command path; the kernels get a working core with the control core (Y4)
-  and the adapter v2 (ap_ctrl_none, MEM_EN, ap_clk_2; docs/v2 EX §9) in Y5. The v1 bitstreams and
-  tools are in build/v1 (tag v1-m4). The M0 bandwidth kernel still builds:
+build_xclbin.sh: the U200 core kernel build (tsr_u200_$K) is disabled until Y5 (docs/design EX §12).
+  The kernels get a working core with the control core (Y4) and the adapter
+  (ap_ctrl_none, MEM_EN, ap_clk_2; docs/design EX §9) in Y5. The M0 bandwidth kernel still builds:
   hw/u200/bw/build_bw_xclbin.sh. TSR_U200_PLATFORMINFO=1 still resolves the platform.
 EOM
   exit 4

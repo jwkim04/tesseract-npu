@@ -1,6 +1,6 @@
 // test_fw_m7_layer.cpp — fw_m7_layer_*: one whole decoder layer as one OPL list on the RISC-V image
-// (W2b integration; docs/v2/06-software-verification.md "SW" §7.2, §7.5 last paragraph, §7.8,
-// §10.2; docs/v2/README.md W2 exit). The list is what the W3b backend will build for a layer (tile
+// (W2b integration; docs/design/06-software-verification.md "SW" §7.2, §7.5 last paragraph, §7.8,
+// §10.2; docs/design/README.md W2 exit). The list is what the W3b backend will build for a layer (tile
 // ops of every M7 kind in one launch, the executor's deps, scratch reuse across kinds, overlap of
 // the MVM with the VU / AT kinds), launched through the `graph` kernel.
 //

@@ -1,5 +1,5 @@
 # sw/sim/rvtests.cmake — RV32 conformance harness (P1.11): riscv-tests, riscv-arch-test and random
-# lockstep programs on Spike and on tsr_rv's test bus profile (docs/v2/06-software-verification.md
+# lockstep programs on Spike and on tsr_rv's test bus profile (docs/design/06-software-verification.md
 # §4.2, §9.6, §10.1-§10.2; README risk 14). Scripts: sw/sim/tests/rvtests/ (stdlib Python; the
 # Spike profiles and the tsr_rv runner contract are documented in rvcommon.py).
 #
@@ -7,7 +7,7 @@
 #     include(${CMAKE_CURRENT_SOURCE_DIR}/rvtests.cmake)
 #
 # Tools: sw/ctrl/tools/install-toolchain.sh installs them without sudo under build/tools/riscv/
-# with the pins of docs/v2/toolchain.lock (xPack riscv-none-elf-gcc 14.2.0-3, dtc, Spike, the
+# with the pins of docs/design/toolchain.lock (xPack riscv-none-elf-gcc 14.2.0-3, dtc, Spike, the
 # riscv-tests and riscv-arch-test sources). Cache variables (defaults follow that layout):
 #   TSR_RISCV_TOOLS     install root (default ${TESSERACT_ROOT}/build/tools/riscv)
 #   TSR_RISCV_PREFIX    compiler prefix (default <root>/xpack-riscv-none-elf-gcc-14.2.0-3/bin/riscv-none-elf-)

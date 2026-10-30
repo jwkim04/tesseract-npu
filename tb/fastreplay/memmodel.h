@@ -1,6 +1,6 @@
 // memmodel.h — cycle-level C++ model of the tsr_core memory ports (docs/rtl-m2.md §4), the fast
-// counterpart of tb/common/mem_model.py (MemModel) for the C++ benches (tb/platform/bw; the v2
-// tile-only replay of tb/fastreplay, docs/v2 SW §10.3).
+// counterpart of tb/common/mem_model.py (MemModel) for the C++ benches (tb/platform/bw; the
+// tile-only replay of tb/fastreplay, docs/design SW §10.3).
 //
 // One MemModel serves NUM_CH channels. It knows nothing about Verilator: the testbench samples
 // the DUT outputs of every channel into a ChOut before the rising edge, calls edge(), lets the DUT
@@ -95,7 +95,7 @@ static inline uint64_t prob_thr(double p) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Regimes (the REGIMES of v1's tb/core/test_core.py, tag v1-m4, on top of the MemModel defaults)
+// Regimes (the REGIMES of the core bench, on top of the MemModel defaults)
 // ---------------------------------------------------------------------------------------------
 enum WrOrder { WR_ANY = 0, WR_REQ_FIRST = 1, WR_DATA_FIRST = 2, WR_RANDOM = 3 };
 

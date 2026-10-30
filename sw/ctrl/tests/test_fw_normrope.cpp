@@ -1,5 +1,5 @@
 // test_fw_normrope.cpp — the RMS_NORM (0x14) and ROPE (0x16) kinds of W2b P2.6 (sw/ctrl/kernels/
-// k_norm.cpp, k_rope.cpp; docs/v2/06-software-verification.md "SW" §7.2, §7.5, §10.2: per kind, 8
+// k_norm.cpp, k_rope.cpp; docs/design/06-software-verification.md "SW" §7.2, §7.5, §10.2: per kind, 8
 // schedules, race fatal, outputs bit-exact against the C++ references sw/ctrl/ref/rmsnorm_ref.cpp and
 // rope_ref.cpp). One source, two programs:
 //

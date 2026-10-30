@@ -1,4 +1,4 @@
-// k_norm.cpp — the RMS_NORM kind of the graph executor (OPL v1 kind 0x14; docs/v2/06-software-
+// k_norm.cpp — the RMS_NORM kind of the graph executor (op list kind 0x14; docs/design/06-software-
 // verification.md "SW" §7.2, §7.5; handler interface tsr/exec.hpp, SW §7.3; planning
 // tsr/plan_norm.hpp). y_r = x_r * rms(x_r) [* w_(r mod p)] for `rows` rows of n f32: RMS_NORM and the
 // fused RMS_NORM + MUL(weight) of ggml, including the per-head Q / K / V norms (rows = n_head T,
@@ -6,11 +6,11 @@
 //
 // Tile-op sequence (the numerical contract, SW §7.5 last paragraph; sw/ctrl/ref/rmsnorm_ref.cpp
 // composes the same tsr_ref_vu calls), per row tile of R rows in one block [x | w | v] (the one-tile block
-// for an op's only tile, V2-SW-36; else the ring):
+// for an op's only tile, SW-36; else the ring):
 //   1. LD x: the tile's rows into x (L = ceil(n/16) lines each; one LD when the DRAM rows are dense,
 //      src stride = L or R = 1, else one per row);
 //   2. with a weight: LD w: one row (period 1) or the tile's R weight rows (period p > 1);
-//   3. SOP.MOVI s2 = inv_n, SOP.MOVI s3 = eps (the host's f32 bits, V2-SW-8), each only when the
+//   3. SOP.MOVI s2 = inv_n, SOP.MOVI s3 = eps (the host's f32 bits, SW-8), each only when the
 //      launch's s-register shadow does not already hold the value (kind_ctx::sreg_valid,
 //      k_fast.hpp sreg_movi: a list's norms share them);
 //   4. RED.SUMSQ post RMS, sk = s2, se = s3, over the R rows of x: TO_S s1 when R = 1, else the
@@ -36,11 +36,11 @@
 // VU works on tile t; when the ring cannot place tile t+1 beside tile t, ST_t is pushed and its block
 // released first. A tile never crosses a weight period block (its weight rows are contiguous).
 //
-// Decode fast path (SW §7.3 "Hot path", V2-SW-35; the k_fast.hpp form): a record whose rows fit one
+// Decode fast path (SW §7.3 "Hot path", SW-35; the k_fast.hpp form): a record whose rows fit one
 // tile with dense rows and weight period 1 (or none) — every decode RMS_NORM, per-head norms
 // included — runs in kind_rms_norm_fast (exec.hpp: the executor's first call) with no call: the
 // argument words read in place (all before the first control-window access), the field checks of
-// plan_norm.hpp (no divide), kf::alloc_fast (the one-tile block, V2-SW-36), the shadow's answer for
+// plan_norm.hpp (no divide), kf::alloc_fast (the one-tile block, SW-36), the shadow's answer for
 // the MOVIs, one ISSUE_CREDIT read covering the 4-7 pushes (wait_credits: it waits only while the
 // RISC-V is ahead of the units), the VU words without range checks (kf::red_fast / vop_fast: the plan
 // bounds every field), no ISSUE_TICKET read for a push whose ticket nothing uses, the staged words

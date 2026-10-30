@@ -1,6 +1,6 @@
 // tsr_ref_at.h — references of area AT (attention and the KV cache on the device), bit for bit.
 //
-// Normative source: docs/v2/03-attention-kv.md (AT): the KV plane layout §4, the ops KVST §5.1,
+// Normative source: docs/design/03-attention-kv.md (AT): the KV plane layout §4, the ops KVST §5.1,
 // ATTQK §5.2, ATTPV §5.3, ASMAX §5.4, AMASK §5.5, AMERGE §5.6, ANORM §5.7, their numerics §6.1–§6.5,
 // the composite flash attention §6.6 (normative kernel algorithm), the mask summary MSUM §7.3 and
 // the reference list §13.1 (which names tsr_ref.c; the AT references live in their own file of the
@@ -13,7 +13,7 @@
 // simulator's AT unit semantics (P1.5) decode and check an op (AT §5.8) and call these functions
 // with pointers into the SPM and the channel DRAM; the firmware's host reference (sw/ctrl/ref)
 // composes them in kernel order; the backend uses the layout and MSUM functions for KV tensors
-// (get/set_tensor, V2-SW-17) and masks; the cocotb benches call them through libtsr_ref.so.
+// (get/set_tensor, SW-17) and masks; the cocotb benches call them through libtsr_ref.so.
 //
 // Conventions
 //   - KV planes (AT §4) are passed as one pointer per channel: plane[c] points at byte 64·B of
@@ -85,7 +85,7 @@ void tsr_kv_unpack_row(uint32_t kv, const tsr_kv_geom * g, const uint8_t * const
                        tsr_block_q8_0 * row);
 // Byte ranges of one stream of a ggml KV tensor [E, kv_size] q8_0 (row j = cell j, row size
 // E/32·34 bytes): bytes [off, off + size) of the ggml image go to / come from the plane
-// (set_tensor / get_tensor, V2-SW-17). Any byte range is allowed, partial blocks and rows
+// (set_tensor / get_tensor, SW-17). Any byte range is allowed, partial blocks and rows
 // included; off + size must not exceed 16·C·LG rows. The caller splits a multi-stream tensor at
 // stream boundaries (one plane per stream, AT §4.5).
 void tsr_kv_set_bytes(uint32_t kv, const tsr_kv_geom * g, uint8_t * const plane[],
@@ -248,7 +248,7 @@ int tsr_msum_view(const uint32_t * words, size_t n_words, tsr_msum * out);
 // The f32 copy AMASK reads (GENERAL): row q at dst + q·16·ceil(n_kv/16) words; word j =
 // fdiv(fp16 -> f32 of the mask, scale), words [n_kv, 16·ceil(n_kv/16)) of each row = -inf. scale is
 // the reading FA op's (ggml op_params[0]; finite, normal, > 0, else abort). AMASK adds the copy to
-// the raw score and ASMAX / AMERGE scale the sum (AT §5.5, V2-AT-9), so the pre-division makes a
+// the raw score and ASMAX / AMERGE scale the sum (AT §5.5, AT-9), so the pre-division makes a
 // finite mask value m enter as scale·(s + m/scale) = scale·s + m, the CPU's form, up to f32
 // rounding; +-0 and -inf are unchanged by it (every mask of the supported models), and scale = 1
 // gives the exact fp16 -> f32 copy. The backend keeps one copy per distinct scale of the FA ops
@@ -257,7 +257,7 @@ void tsr_msum_mask_f32(const uint16_t * mask, size_t row_stride, uint32_t n_kv, 
                        float * dst);
 
 // ---------------------------------------------------------------------------
-// Composite flash attention (AT §6.6, normative; V2-AT-15 pass rule, V2-AT-19 chunk policy)
+// Composite flash attention (AT §6.6, normative; AT-15 pass rule, AT-19 chunk policy)
 // ---------------------------------------------------------------------------
 typedef struct tsr_att_cfg {
     uint32_t C;       // NUM_CH

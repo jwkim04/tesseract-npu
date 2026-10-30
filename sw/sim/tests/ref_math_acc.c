@@ -1,5 +1,5 @@
 // ref_math_acc.c — accuracy of the tsr_ref_math functions against double-precision libm, and
-// their structural properties (VU §10 items 1-2, SW §10.1 (b), V2-SW-23).
+// their structural properties (VU §10 items 1-2, SW §10.1 (b), SW-23).
 //
 //   ref_math_acc [--full | --count N --stride S --start X] [--threads T] [--slow] [func ...]
 //
@@ -23,7 +23,7 @@
 // The domains of the gated figures are this file's choice where §6.9 states none (see the
 // metric labels): SILU is measured where σ(x) >= 2^-126 (below that SIG is flushed to 0 by the
 // spec's FTZ and SILU returns -0), SIN/COS on |θ| <= 2^18 (the model's sample range and the
-// RoPE range of V2-VU-6); |θ| < 2^24 is reported as well, larger θ only property-checked.
+// RoPE range of VU-6); |θ| < 2^24 is reported as well, larger θ only property-checked.
 
 #define _POSIX_C_SOURCE 200809L   // clock_gettime, sysconf
 

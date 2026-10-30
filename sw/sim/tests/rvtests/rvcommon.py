@@ -1,4 +1,4 @@
-"""Shared helpers of the RV32 conformance harness (P1.11; docs/v2/06-software-verification.md
+"""Shared helpers of the RV32 conformance harness (P1.11; docs/design/06-software-verification.md
 §4.2 test bus profile, §9.6 toolchain, §10.1 oracle chain Spike -> tsr_rv).
 
 Stdlib only (Python >= 3.8). Used by rvtests.py (riscv-tests, riscv-arch-test) and rv_random.py
@@ -53,11 +53,11 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[3]                       # sw/sim/tests/rvtests -> repository root
-LOCK_FILE = REPO / "docs" / "v2" / "toolchain.lock"
+LOCK_FILE = REPO / "docs" / "design" / "toolchain.lock"
 SKIP = 77                                    # ctest SKIP_RETURN_CODE
 
 INSTALL_HINT = ("install the pinned tools with sw/ctrl/tools/install-toolchain.sh "
-                "(docs/v2/06-software-verification.md §9.6; pins in docs/v2/toolchain.lock)")
+                "(docs/design/06-software-verification.md §9.6; pins in docs/design/toolchain.lock)")
 
 # Spike command-line options per profile (see the module docstring).
 SPIKE_PROFILES = {
@@ -76,7 +76,7 @@ DEFAULT_TIMEOUT = 20.0
 
 
 def read_lock(path=LOCK_FILE):
-    """docs/v2/toolchain.lock as {key: value} ("key = value" lines, '#' comments)."""
+    """docs/design/toolchain.lock as {key: value} ("key = value" lines, '#' comments)."""
     out = {}
     with open(path, encoding="utf-8") as f:
         for line in f:

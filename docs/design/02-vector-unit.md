@@ -1,9 +1,9 @@
-# Tesseract v2 — vector unit and approximate math (area VU)
+# Tesseract — vector unit and approximate math (area VU)
 
-Status: **design contract for M6, not implemented** (2026-10-30). Area VU of the v2 design set in
-`docs/v2/`: EX execution model (`01-execution-model.md`), VU (this file), AT attention and KV, CC
+Status: **design contract for M6, not implemented** (2026-10-30). Area VU of the design set in
+`docs/design/`: EX execution model (`01-execution-model.md`), VU (this file), AT attention and KV, CC
 control core (`04-control-core.md`), DB debug, SW software and verification
-(`06-software-verification.md`). Order of authority, as in the other v2 documents: `docs/spec.md`
+(`06-software-verification.md`). Order of authority, as in the other design documents: `docs/spec.md`
 (to be updated from these documents) > ISA simulator > this document. Every number marked
 *estimate* is unmeasured. Numbers marked *model* come from a numpy/mpmath model of the algorithms
 in §6 run on 2026-10-30 (scratch scripts, not the C reference). The exhaustive tests of §10 replace
@@ -116,7 +116,7 @@ them.
 
 ### 2.2 Changes against `docs/spec.md`
 
-| Item | spec v0.2 | v2 (this document) |
+| Item | spec revision 0.2 | This document |
 |---|---|---|
 | VOP | 1-D length n; 10 functions; scalar only from s | rows × m with per-operand strides; c from s or an SPM row vector; 25 functions (incl. GELU16 / GEGLU16) |
 | RED | 1-D, result to an s register | per-row results to an SPM vector or (rows = 1) an s register; post-ops RCP, RMS |
@@ -128,7 +128,7 @@ them.
 | AT vector ops | — | ASMAX, AMASK, AMERGE, ANORM (0x34–0x37, AT's semantics) executed by the VU (§5.11) |
 | RECIP_APPROX | approximate | **removed**; every reciprocal is correctly rounded (`tsr_frecip`) |
 | EXP, SIN, COS | "defined by `tsr_ref_math.c`" | defined here bit for bit (§6) |
-| s registers | two banks (ctrl-riscv D8) | one bank, written only by VU ops, read-only for the RISC-V and the host |
+| s registers | two banks | one bank, written only by VU ops, read-only for the RISC-V and the host |
 | Register fields ra–rd | must be 0 | `x16` carries VU fields |
 
 ---
@@ -298,7 +298,7 @@ A function that uses c requires `cmode` ≠ 0; one that does not requires `cmode
 | 0x19–0xFF | — | | `ILLEGAL_OP` | |
 
 Codes 0–9 keep the spec's numbers. MULS and ADDS become MULC and ADDC with `cmode` 1. llama.cpp
-graphs use GELU16 / GEGLU16 (V2-SW-31); GELU / GEGLU (exact tanh form) serve M8 and PyTorch.
+graphs use GELU16 / GEGLU16 (SW-31); GELU / GEGLU (exact tanh form) serve M8 and PyTorch.
 
 ### 5.3 RED (0x31)
 
@@ -409,7 +409,7 @@ VMASK before M9 (`ILLEGAL_OP` until then, `CAPS` bit7).
 
 ### 5.8 SOP (0x40)
 
-The v1 word layout is kept: w1[3:0] sd, [7:4] sa, [11:8] sb (w1[31:12] = 0); w2 imm (f32 bits);
+Word layout: w1[3:0] sd, [7:4] sa, [11:8] sb (w1[31:12] = 0); w2 imm (f32 bits);
 w3[27:0] SPM word address for LDS/STS (w3[31:28] = 0); w4–w7 = 0 and x16 = 0. Fields that a
 function does not use are 0.
 
@@ -501,7 +501,7 @@ AT's vector ops are AT §5.8's rows.
 
 AT defines the semantics (AT §5.4–§5.7, normative) and the checks (AT §5.8); the VU executes the
 ops on unit 3 with the datapath of §7. This table restates the encodings for the VU decoder; both
-come from the single table source (V2-EX-30). For every op x16 = 0 and unused words are 0, else
+come from the single table source (EX-30). For every op x16 = 0 and unused words are 0, else
 `ILLEGAL_OP`.
 
 | Op | w0 | w1 | w2 | w3 | w4 | w5 | w6 | w7 |
@@ -1032,7 +1032,7 @@ All figures are *estimates* (± 30 %; FM ≈ 140 LUT assumed). CC's SLR1 budget 
 
 **Placement:** SLR1 next to `tsr_spm`. The SPM-facing stage (pair-read registers, output FIFO)
 sits beside the URAM columns, with the lanes in adjacent clock regions. Fallback, the third remedy
-of CC's 65 % gate (V2-CC-24, after the shrink knobs and DB's optional blocks): the lanes move to
+of CC's 65 % gate (CC-24, after the shrink knobs and DB's optional blocks): the lanes move to
 SLR0 behind registered pipes. That takes
 about 1.6 K SLLs (2 × 512 read + 512 write + control) and adds 8–12 cycles of latency; results
 are unchanged.
@@ -1120,7 +1120,7 @@ The simulator is the oracle; every VU op has a C reference, and the RTL must mat
    - `tsr_ref_math.c`: EXPK, the composites (incl. GELU16), SIN/COS. `tsr_ref_vu.c`: VOP,
      reductions, ROPE (both angle forms), TOPK, SOP; DQROW reuses `tsr_dequant_row`; VMASK from
      M9. `tsr_ref_at.c`: AT's vector ops (AT §13.1).
-   - An independent numpy model is written from this text alone (SW V2-SW-23). It is compared bit
+   - An independent numpy model is written from this text alone (SW SW-23). It is compared bit
      for bit over all 2³² inputs for each unary function: EXPK × 4 κ, SIG, SILU, GELU, TANH, SIN,
      COS. Opt-in `slow`; the default runs 2²⁴ strided points plus specials.
    - Properties: EXPK monotonic in v for K > 0; EXPK(v, N2) = EXPK(2v, N1); EXPK never −0 or
@@ -1179,7 +1179,7 @@ The simulator is the oracle; every VU op has a C reference, and the RTL must mat
 
 ## 11. Decisions
 
-- **V2-VU-1 Operand model.**
+- **VU-1 Operand model.**
   - *Choice:* rows × m with line-aligned rows, a line stride per operand (0 = repeat) and a
     per-row scalar c (s or SPM vector), for every VU op.
   - *Alternatives:* element-granular strides or gathers; separate per-head opcodes; 3-D shapes.
@@ -1187,19 +1187,19 @@ The simulator is the oracle; every VU op has a C reference, and the RTL must mat
     cuts the survey's ≈ 18 K ops per token to tens per layer. Line alignment keeps the SPM side
     one line per operand per cycle, and the address generators are counters. Element-granular
     strides would need a gather network across lanes.
-- **V2-VU-2 Reduction order.**
+- **VU-2 Reduction order.**
   - *Choice:* keep the spec's 128 partials (i mod 128) and the complete tree, per row. Allow the
     skip of unwritten subtrees, passing z(q) (−0 → +0) for a skipped pairing, which is exact.
   - *Alternatives:* a line tree first, then 8 phases; 16 partials with interleaved rows.
   - *Rationale:* it is already the contract (`docs/spec.md:296`), it is independent of lane counts,
     and the skip makes short rows cheap without changing bits. The draft's claim that a tree value
     is never −0 was wrong (FTZ keeps the sign); z() restores exactness (§6.2).
-- **V2-VU-3 Segmented RED output and fused post-ops.**
+- **VU-3 Segmented RED output and fused post-ops.**
   - *Choice:* per-row vector (or an s register for one row), with post RCP and RMS (exact SQ, RC).
   - *Alternatives:* vector SQRT / RECIP passes; a scalar loop on the RISC-V.
   - *Rationale:* per-head norms and softmax sums become one op with the spec's rounding sequence,
     so the 1-row RMSNorm needs 2 ops instead of 7, bit-identical.
-- **V2-VU-4 EXP algorithm.**
+- **VU-4 EXP algorithm.**
   - *Choice:* a fixed-point integer algorithm (§6.3), f32 in and out, with constants as hex
     integers.
   - *Alternatives:* Cody-Waite reduction plus an f32 polynomial (about 7 FM + 5 FA per lane);
@@ -1211,57 +1211,57 @@ The simulator is the oracle; every VU op has a C reference, and the RTL must mat
       SLR1 is the constrained resource.
     - Integers make the definition exact and portable (all in uint64).
     - The constant K folds sign, the ×2 of TANH and GELU's C2G into the reduction for free.
-- **V2-VU-5 Reciprocal.**
+- **VU-5 Reciprocal.**
   - *Choice:* every reciprocal is correctly rounded (= `tsr_frecip`); RECIP_APPROX is removed.
   - *Alternatives:* a bit-defined Newton-Raphson approximation.
   - *Rationale:* a correction product makes exact rounding cheap (about 5 DSP + 1 RAMB18 per
     lane). The contract is then a library function, with exhaustive RTL proof over 2²³ mantissas
     and no table to specify.
-- **V2-VU-6 SIN/COS.**
+- **VU-6 SIN/COS.**
   - *Choice:* exact 64-bit 2/π integer reduction, f32 Cephes polynomials, a small-angle identity
     below 2⁻¹².
   - *Alternatives:* 3-piece f32 Cody-Waite π/2; CORDIC; tables.
   - *Rationale:* θ reaches 2¹⁸ (positions × A_0), where f32 Cody-Waite loses precision. The
     integer reduction is exact for |θ| < 2²⁴ and runs once per angle, not per element, so its
     multipliers are cheap.
-- **V2-VU-7 Function set.**
+- **VU-7 Function set.**
   - *Choice:* SILU, SWIGLU, SIGMOID, GELU / GEGLU in tanh form computed as x·σ(2u), GELU16 /
-    GEGLU16 (V2-VU-26), TANH with a small-argument path, EXP, EXPSUB(C), RECIP, MIN, the fused
+    GEGLU16 (VU-26), TANH with a small-argument path, EXP, EXPSUB(C), RECIP, MIN, the fused
     MULCB / MULCADD / ADDMULC, SETC.
   - *Alternatives:* erf GELU; separate tanh-based GELU; no fused forms.
   - *Rationale:* these cover Qwen2.5 and Gemma 4 dense end to end with one shared EXP + RC
     datapath. σ(2u) reuses SiLU's datapath exactly. erf GELU waits for a model that needs it.
-- **V2-VU-8 Lane split.**
+- **VU-8 Lane split.**
   - *Choice:* 16 front lanes (incl. EXPK) at full rate, 8 back lanes for the half-rate functions.
   - *Alternatives:* 16 back lanes (+9 K LUT); EXP at half rate.
   - *Rationale:* decode costs for SwiGLU / GEGLU at half rate are < 0.15 % of token time. EXP stays
     at full rate because softmax over long contexts of small models (0.5B, 4 K) would otherwise
     exceed the KV bandwidth time.
-- **V2-VU-9 Flow control.**
+- **VU-9 Flow control.**
   - *Choice:* credit-based (reads issued against output space), no clock enable in the lanes,
     fixed latency classes.
   - *Alternatives:* global `ce` stall.
   - *Rationale:* a `ce` fanning out to about 45 K FFs at ≥ 276 MHz is a timing risk; credits obey
     R4 and cost one FIFO.
-- **V2-VU-10 SPM access.**
+- **VU-10 SPM access.**
   - *Choice:* CC's pair reads (alternate a-pairs and b-pairs); no operand placement rule; no
     operand caches.
   - *Alternatives:* skew buffers with a same-parity penalty; caching repeated b rows.
   - *Rationale:* pairs are parity-proof by construction. Two sources stream at full rate whatever
     their alignment, so lowering has no parity constraint.
-- **V2-VU-11 s-register access.**
+- **VU-11 s-register access.**
   - *Choice:* one bank; writes only by VU ops (SOP.MOVI for constants); read-only for the RISC-V
     (core window) and the host (`SREG`).
   - *Alternatives:* RISC-V MMIO writes; SPM words only.
   - *Rationale:* writes stay in queue order with deps, so no new race class exists. The read
     location is `SREG0`–`15` at core CSR 0x9C0 for the host and, through the core window, for the
-    RISC-V (CC V2-CC-14, DB V2-DB-21).
-- **V2-VU-12 s reset.**
+    RISC-V (CC CC-14, DB DB-21).
+- **VU-12 s reset.**
   - *Choice:* +0.0 at hardware reset; kept across `SOFT_RESET`, RISC-V reset, QABORT, QCLEAR.
   - *Alternatives:* clear on launch.
   - *Rationale:* EX's requirement. Kernels initialise what they read, and the SDK prologue does
     it.
-- **V2-VU-13 Mask.**
+- **VU-13 Mask.**
   - *Choice:* `VMASK` (0x38), an in-place position-window mask (causal + SWA; row-to-position by G
     and P), deferred to M9 (neither simulator nor RTL before; `CAPS` bit7). llama.cpp attention
     masks are AT's (mask summaries, ATTQK bounds, AMASK).
@@ -1270,13 +1270,13 @@ The simulator is the oracle; every VU op has a C reference, and the RTL must mat
     reorderable KV caches break (Gemma 4's 1,536-cell SWA ring wraps); AT's design handles them.
     The M9 resident loop owns a linear cache where VMASK is exact; deferring it saves ≈ 1 K LUT in
     SLR1 now.
-- **V2-VU-14 TOPK.**
+- **VU-14 TOPK.**
   - *Choice:* fully specified now (rows, padding, total order); simulator in M6, RTL in M8 with a
     running-threshold filter.
   - *Alternatives:* RTL in M6; omit.
   - *Rationale:* M6 / M7 sample on the host; M8 (MoE) and M9 need it. Keeping 4 K LUT out of the
     first k4 link helps SLR1.
-- **V2-VU-15 DQROW.**
+- **VU-15 DQROW.**
   - *Choice:* keep 0x12, re-specified as SPM → f32 on the VU (LD brings the repacked row);
     simulator from M6, RTL in M8 (`CAPS` bit6 = 0 in M6 bitstreams). The M8 embedding lookup is
     LD (ROW_BEATS) + DQROW; an f32 `tok_embd` copy remains the exact alternative for other GGUF
@@ -1285,24 +1285,24 @@ The simulator is the oracle; every VU op has a C reference, and the RTL must mat
   - *Rationale:* the VU already has the fp datapath. The DMA stays a pure mover, and the RISC-V
     computes the row location anyway. Token embedding stays on the CPU through M7 (SW R2), so the
     RTL waits for M8 and saves ≈ 1.3 K LUT in SLR1 now.
-- **V2-VU-16 Errors.**
+- **VU-16 Errors.**
   - *Choice:* EX's `OPERAND` (13) with the offending value; enumeration mismatches are
     `ILLEGAL_OP`.
   - *Alternatives:* a VU-specific code.
-  - *Rationale:* follows EX V2-EX-17; values make failures self-explaining.
-- **V2-VU-17 Field widths.**
+  - *Rationale:* follows EX EX-17; values make failures self-explaining.
+- **VU-17 Field widths.**
   - *Choice:* 24-bit line addresses and m; 16-bit rows, strides, heads, T; functions and s indices
     in `x16`.
   - *Alternatives:* 32-bit words per field (does not fit 8 words); 20-bit addresses.
   - *Rationale:* everything fits in one 256-bit op with headroom to 1 GiB of SPM. Larger shapes
     split into several ops.
-- **V2-VU-18 Softmax ops.**
+- **VU-18 Softmax ops.**
   - *Choice:* no generic fused online-softmax VOP; the attention softmax uses AT's vector ops
-    (ASMAX, AMASK, AMERGE, ANORM) executed by the VU (V2-VU-27), two VU ops per chunk.
+    (ASMAX, AMASK, AMERGE, ANORM) executed by the VU (VU-27), two VU ops per chunk.
   - *Alternatives:* compose 7 generic VU ops per KV block (the draft); a VSOFTMAX block op.
   - *Rationale:* AT fixed the dataflow (scores and P·V on the clusters, AT §6.6); its ops fuse the
     softmax steps the generic composition needed. 0x39–0x3F stay free.
-- **V2-VU-19 ROPE shape and angles.**
+- **VU-19 ROPE shape and angles.**
   - *Choice:* T tokens with a position vector; angles by ggml-cpu's recurrence θ_0 = f32(p),
     θ_{i+1} = FM(θ_i, TS) with TS from an s register, then FD by the freq factor and FM by
     freq_scale when given; the A-table form θ = FM(f32(p), A_i) only for YaRN; c and s scaled by M
@@ -1314,37 +1314,37 @@ The simulator is the oracle; every VU op has a C reference, and the RTL must mat
     (checked numerically), the dominant RoPE difference in long-context KL runs. Line-aligned pair
     halves keep the rotation at one line per cycle, and one op per layer covers q and k for all
     tokens.
-- **V2-VU-20 Accept-ahead.**
+- **VU-20 Accept-ahead.**
   - *Choice:* up to 2 VU ops held; RAW, WAW and s hazards checked by extent intervals.
   - *Alternatives:* strictly one op (drain about 20–64 cycles per op).
   - *Rationale:* many short independent ops (norm rows, per-head groups, AT's per-chunk ops) would
     otherwise pay full latency each. CC's I3 allows S − D ≤ 2 for unit 3 (CC §9.4).
-- **V2-VU-21 EXPSUB −∞ rule.**
+- **VU-21 EXPSUB −∞ rule.**
   - *Choice:* EXPSUB(−∞, x) = +0, also for x = −∞ or NaN.
   - *Alternatives:* IEEE (NaN for −∞ − (−∞)).
   - *Rationale:* makes fully masked blocks harmless in online softmax without a software ordering
     rule.
-- **V2-VU-22 MAX / MIN.**
+- **VU-22 MAX / MIN.**
   - *Choice:* the spec's total order; MAX propagates NaN, MIN returns the non-NaN operand.
   - *Alternatives:* IEEE-2019 minimum / maximum.
   - *Rationale:* one comparator implements both and TOPK, consistent with `docs/spec.md:298`.
-- **V2-VU-23 Raw ops.**
+- **VU-23 Raw ops.**
   - *Choice:* COPY, SETC, MOVI / LDS / STS, VMASK pass-through and the ROPE tail copy bits.
   - *Alternatives:* canonicalise as fp.
   - *Rationale:* COPY then serves CPY / CONT / GET_ROWS of any 32-bit data, and positions and
     indices pass unchanged.
-- **V2-VU-24 Reduction unit size.**
+- **VU-24 Reduction unit size.**
   - *Choice:* an 8-input subtree (7 FA) + 2 scheduled FA, rows < 256 elements at half rate.
   - *Alternatives:* a 16-input tree + 7-FA top (22 FA, full rate for every row).
   - *Rationale:* saves about 5.5 K LUT. The half-rate cases are short rows (head_dim 64 / 128 or
     small blocks), which no target model reduces per head.
-- **V2-VU-25 Accuracy contract.**
+- **VU-25 Accuracy contract.**
   - *Choice:* functions are defined by their algorithms (bit-exact); error bounds are informative
     and measured.
   - *Alternatives:* define functions by error bounds.
   - *Rationale:* bit-exactness between the simulator, the RTL and the card is the project's
     verification basis. Bounds without an algorithm cannot be replayed.
-- **V2-VU-26 CPU-compatible GELU.**
+- **VU-26 CPU-compatible GELU.**
   - *Choice:* VOP 0x17 GELU16 and 0x18 GEGLU16 reproduce the ggml CPU's `GGML_GELU_FP16` form
     (clamps at ±10, binary16 rounding of the input and of the result, §6.5); llama.cpp's GELU and
     GEGLU map to them; the exact tanh GELU stays for M8 / PyTorch.
@@ -1355,7 +1355,7 @@ The simulator is the oracle; every VU op has a C reference, and the RTL must mat
     error up to 3.9·10⁻³); an exact device GELU would differ from it at fp16 level everywhere,
     against a KL floor of a 1-ulp perturbation. The computed form matches the table except at fp16
     rounding boundaries, for ≈ 0.6 K LUT; the mismatch rate is measured exhaustively.
-- **V2-VU-27 AT's vector ops on the VU.**
+- **VU-27 AT's vector ops on the VU.**
   - *Choice:* ASMAX, AMASK, AMERGE and ANORM (AT's semantics) run on unit 3 with the front lanes,
     the reduction unit's MAX path and a multi-pass AMERGE (prepass for a_r, b_r; then ≈ 4–5 cycles
     per output line at C = 4); ANORM uses the back lanes' RC in a prepass.
@@ -1386,7 +1386,7 @@ The simulator is the oracle; every VU op has a C reference, and the RTL must mat
    RTL freeze; gate: measured ≤ 2 × model. *Done in W0 (2026-10-30):* every figure measured over
    all 2³² inputs and within the gate (§6.9).
 2. The `ref_math_gelu16` mismatch rate (*measured in W0:* 0.415 %, GELU16 correctly rounded in
-   every mismatch, §6.5) and the Gemma 4 12B KL gap (V2-VU-26, open).
+   every mismatch, §6.5) and the Gemma 4 12B KL gap (VU-26, open).
 3. Gemma 4 31B dimensions from a GGUF, when one is available (12B is confirmed, §3).
 4. The out-of-context `tsr_vu` utilisation, which fixes the knob setting against CC's gate.
 

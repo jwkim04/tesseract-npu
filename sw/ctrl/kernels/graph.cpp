@@ -1,5 +1,5 @@
-// graph.cpp — the `graph` kernel: the OPL v1 op-list executor (docs/v2/06-software-verification.md
-// "SW" §7.1-§7.3, §7.8; EX §4.6; V2-SW-12, V2-SW-15, V2-SW-29, V2-SW-30). Kernel arguments:
+// graph.cpp — the `graph` kernel: the op list executor (docs/design/06-software-verification.md
+// "SW" §7.1-§7.3, §7.8; EX §4.6; SW-12, SW-15, SW-29, SW-30). Kernel arguments:
 // a0 = DRAM handle of the op list, a1 = its size in bytes, a2 = flags (bit0 VERIFY_CRC).
 //
 // SPM layout (SW §7.3, tsr/plan.hpp exec_layout; L = SPM lines):
@@ -14,11 +14,11 @@
 //                            whose lines wrap the 4096-line area, or that starts in chunk c - 1 when
 //                            chunk c + 1 is loaded, is copied to DTCM; every other record is read
 //                            in place).
-//   [opl - pre_lines, opl)   preload area (header pre_lines <= 256, V2-SW-15)
+//   [opl - pre_lines, opl)   preload area (header pre_lines <= 256, SW-15)
 //   [0, opl - pre_lines)     scratch ring (spm_ring), handed to the kind handlers
 // DTCM: ticket[4096] (the op's done ticket, with a sentinel word in front) and pidx[4096] (its first
 // push index), 32 KiB, plus the record copy for wrapping records (1 KiB), the scratch ring's table
-// (128 records, 2 KiB) and the per-launch state, all rebuilt at every launch (V2-SW-4).
+// (128 records, 2 KiB) and the per-launch state, all rebuilt at every launch (SW-4).
 //
 // Algorithm (SW §7.3):
 //   1. LD the list (or its first 256 KiB) into the OPL area and join; validate the header
@@ -56,7 +56,7 @@
 //     the failing op;
 //   - else 0.
 //
-// Determinism (SW §4.7, V2-SW-30): pushed words, deps and records depend only on the list, the
+// Determinism (SW §4.7, SW-30): pushed words, deps and records depend only on the list, the
 // preload contents and ISSUE_PIDX; QSTATUS is read only for the STOP_ON_ERROR poll (allowed by
 // SW §7.3). The first error after join_all and SERIAL's post-join stop come from the error records
 // (ERR_CODE / ERR_PIDX, exact once the tickets concerned are done, I2; fix W2a: not QSTATUS, whose
@@ -547,7 +547,7 @@ uint32_t run(const tsr_args * a, uint32_t * n_done) {
         if (opl::crc_final(c) != h.crc32) return opl::RET_CRC;
     }
 
-    // --- preload (V2-SW-15): every entry, one join ----------------------------------------------
+    // --- preload (SW-15): every entry, one join ----------------------------------------------
     plan::exec_layout lay{};
     if (!plan::layout(L, h.pre_lines, &lay)) return opl::RET_SCRATCH;
     if (h.n_pre != 0u) {

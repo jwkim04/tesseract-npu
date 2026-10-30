@@ -1,5 +1,5 @@
 // test-tsr-backend-units.cpp — unit tests of the ggml-independent parts of ggml-tesseract
-// (ctest ggml_tesseract_units, rewritten for the OPL builder in P3.2, docs/v2/
+// (ctest ggml_tesseract_units, rewritten for the OPL builder in P3.2, docs/design/
 // 06-software-verification.md §10.2): the range allocator (tsr-alloc), the MUL_MAT shape checks,
 // SPM tiling and staging decisions (tsr-lower), and the op-list path's host side (tsr-opl): the
 // encoding through
@@ -1159,7 +1159,7 @@ static void test_build_key() {
     CHECK(tsr_graph_key(g, 1) == k0);
 }
 
-// supports_op (probe mode) against the planners on independently built words (V2-SW-20), with the
+// supports_op (probe mode) against the planners on independently built words (SW-20), with the
 // 64-byte rule, over sweeps of shapes per kind; plus the rules that are not the planners'.
 static int g_sweep_cases = 0, g_sweep_ok = 0;
 static bool plans(uint32_t kind, const uint32_t * a, uint32_t n) {
@@ -1388,7 +1388,7 @@ static void test_supports_rules() {
         CHECK(tsr_build_supports(env, ggml_scale(c.ctx, c.f32(17, 1, 0x2000, "r"), 2.0f), &why));
     }
     {
-        // KV views the builder cannot encode (V2-SW-41: supports_op refuses them too): K / V starting at
+        // KV views the builder cannot encode (SW-41: supports_op refuses them too): K / V starting at
         // cell 16, K / V with other strides, a SET_ROWS into a view of the cache at cell 16 or of every
         // other cell
         gctx c;
@@ -1415,7 +1415,7 @@ static void test_supports_rules() {
         CHECK(tsr_build_supports(env, ggml_set_rows(c.ctx, ck, src, idx), &why));
         CHECK(!tsr_build_supports(env, ggml_set_rows(c.ctx, ggml_view_2d(c.ctx, ck, E, 64, es, 16 * es), src, idx), &why));
         CHECK(!tsr_build_supports(env, ggml_set_rows(c.ctx, ggml_view_2d(c.ctx, ck, E, 64, 2 * es, 0), src, idx), &why));   // every other cell
-        // the preload area (V2-SW-43): a FLASH_ATTN of T tokens needs ceil((32 + 16 T) / 64) lines of MSUM
+        // the preload area (SW-43): a FLASH_ATTN of T tokens needs ceil((32 + 16 T) / 64) lines of MSUM
         // and ceil(8 T / 64) of FA_NEW indices in one list: T = 680 fits (171 + 85 = 256), T = 681 not
         ggml_tensor * ck2 = ggml_new_tensor_3d(c.ctx, GGML_TYPE_Q8_0, E, 1024, 1);
         ggml_set_name(ck2, "cache_k_l1");

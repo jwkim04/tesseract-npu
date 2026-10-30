@@ -83,8 +83,8 @@ target_compile_options(tesseract_torch_ext PRIVATE -Wall -Wextra -Wno-unused-par
 target_link_libraries(tesseract_torch_ext PRIVATE tsr_rt ${_tsr_torch_libs})
 set_property(TARGET tesseract_torch_ext APPEND PROPERTY BUILD_RPATH ${_TSR_TORCH_LIBDIR})
 
-# pytest suite (sw/torch/tests) as one ctest, in the interpreter the module was built for (v1's,
-# run on v2: tsr_rt launches one-op op lists, docs/v2/06-software-verification.md §9.4, §10.2)
+# pytest suite (sw/torch/tests) as one ctest, in the interpreter the module was built for
+# (tsr_rt launches one-op op lists, docs/design/06-software-verification.md §9.4, §10.2)
 add_test(NAME torch_pytest
          COMMAND ${_tsr_py} -m pytest -q -p no:cacheprovider ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 set_tests_properties(torch_pytest PROPERTIES ENVIRONMENT

@@ -1,10 +1,10 @@
 // tsr_ref_vu.c — reference semantics of the VU ops VOP, RED, ROPE, TOPK, SOP and DQROW, bit for bit.
 //
-// Normative source: docs/v2/02-vector-unit.md (VU) §4 (fp rules, operand model), §5.2–§5.8 (field
+// Normative source: docs/design/02-vector-unit.md (VU) §4 (fp rules, operand model), §5.2–§5.8 (field
 // meaning), §6.2 (RED), §6.7 (ROPE), §6.8 (total order, TOPK, DQROW). The API and its conventions
 // (word arrays, line strides, the tail and n = 0 rules, aliasing) are in tsr_ref_vu.h.
 //
-// Implementation rules (as tsr_ref_math.c, docs/v2/06-software-verification.md §4.5)
+// Implementation rules (as tsr_ref_math.c, docs/design/06-software-verification.md §4.5)
 //   - Every f32 operation is a call to the tsr_ref.c primitives (FA tsr_fadd, FS tsr_fsub, FM
 //     tsr_fmul, FD tsr_fdiv, SQ tsr_fsqrt, RC tsr_frecip: DAZ, RNE, FTZ, canonical NaN) or to the
 //     tsr_ref_math.c functions; everything else is integer bit manipulation. No float operators.
@@ -369,7 +369,7 @@ void tsr_ref_rope(const tsr_ref_rope_cfg * cfg, uint32_t * d, uint32_t d_stride,
                 y[j1] = FA(FM(x0, s[i]), FM(x1, c[i]));
             }
             for (uint32_t j = nd; j < hd; ++j) {
-                y[j] = x[j];                           // raw tail copy (V2-VU-23)
+                y[j] = x[j];                           // raw tail copy (VU-23)
             }
         }
     }

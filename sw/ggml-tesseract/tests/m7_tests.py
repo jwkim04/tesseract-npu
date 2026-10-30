@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M7 ctest drivers of sw/ggml-tesseract (docs/v2/06-software-verification.md §8, §10.2, §10.4; P3.6).
+"""M7 ctest drivers of sw/ggml-tesseract (docs/design/06-software-verification.md §8, §10.2, §10.4; P3.6).
 
 graph   one tiny-model graph test (ggml_tesseract_graph_qwen_tiny, _gemma_tiny, _qwen_tiny_q4k):
         1. klcheck generates on the device with the M7 settings (--phase m7: FA on, q8_0 / q8_0 KV
@@ -13,7 +13,7 @@ graph   one tiny-model graph test (ggml_tesseract_graph_qwen_tiny, _gemma_tiny, 
            at least --min-decodes single-token decodes; no launch outside a decode; the launch
            lines agree with TSR_STATS; with --prefill any the prefill launches are only reported
            (ggml_tesseract_graph_qwen_tiny_ub1024: one 700-token ubatch, whose FLASH_ATTN of more than
-           680 tokens stays on the CPU, V2-SW-43), and --min-prefill-tokens requires such a ubatch;
+           680 tokens stays on the CPU, SW-43), and --min-prefill-tokens requires such a ubatch;
         3. KL against the CPU backend with klcheck's criterion: CPU replay, 1-ulp floor, the embd
            identity check (as `klcheck all`), then `klcheck compare` with --min-kl / --min-top1
            (the criterion is mean KL <= max(min-kl, 3 x floor) and top-1 >= min-top1;

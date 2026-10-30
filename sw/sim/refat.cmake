@@ -1,7 +1,7 @@
-# sw/sim/refat.cmake — the AT references (sw/sim/tsr_ref_at.c, docs/v2/03-attention-kv.md §13.1:
+# sw/sim/refat.cmake — the AT references (sw/sim/tsr_ref_at.c, docs/design/03-attention-kv.md §13.1:
 # KV plane layout and conversion, KVST, ATTQK, ATTPV, ASMAX, AMASK, AMERGE, ANORM, the MSUM and the
 # composite FA of AT §6.6) in the reference library, and their tests (AT §13.2,
-# docs/v2/06-software-verification.md §10.1-§10.2).
+# docs/design/06-software-verification.md §10.1-§10.2).
 #
 # sw/sim/CMakeLists.txt includes it (snippet loop "refvu refat", after ref_math.cmake: tsr_ref_at.c
 # calls tsr_m_exp; -DTSR_SIM_SKIP_SNIPPETS=refat leaves it out). Before the tsr_ref /

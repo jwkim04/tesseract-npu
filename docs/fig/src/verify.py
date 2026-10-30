@@ -1,9 +1,9 @@
-"""Figure `verify`: the verification oracle chain of v2, from the references to the RTL and the card.
+"""Figure `verify`: the verification oracle chain, from the references to the RTL and the card.
 
 Content follows docs/spec.md §17 (Verification strategy: stages, oracles, trace format, block-level
-coverage) and docs/v2/06-software-verification.md §10.1 (oracle chain), §10.2 (ctest plan), §10.4
-(gates), §5 (trace format v2), docs/v2/README.md §10 (work packages). Three panels.
-1. Simulator and backend against the references (docs/v2/06-software-verification.md §4.2, §4.5,
+coverage) and docs/design/06-software-verification.md §10.1 (oracle chain), §10.2 (ctest plan), §10.4
+(gates), §5 (trace format), docs/design/README.md §10 (work packages). Three panels.
+1. Simulator and backend against the references (docs/design/06-software-verification.md §4.2, §4.5,
    §10.1; docs/numcheck.md, docs/klcheck.md):
    - references: Spike (oracle of the RV32 interpreter `tsr_rv`: riscv-tests, riscv-arch-test, a
      retire-by-retire comparison of random programs), libtsr_ref (the one C reference of the
@@ -23,9 +23,9 @@ coverage) and docs/v2/06-software-verification.md §10.1 (oracle chain), §10.2 
    from the simulator; they replay on the simulator kinds (`tsr-trace-replay`, full or tile-only,
    N schedules) and through the `replay` kernel (SW §7.7). Planned and drawn dashed: the RTL replay
    (tile-only replay into the issue FIFO under Verilator, tb/opreplay, and the Ibex lockstep
-   against the RV32 interpreter; docs/v2/04-control-core.md §15; work packages W4, W5), the mutation
-   campaigns of the v2 RTL tests (the v1 campaigns ran on the v1 RTL: docs/rtl-m3.md §13.3) and the
-   card (the v1 traces ran on it; v2 with the `replay` kernel in W6).
+   against the RV32 interpreter; docs/design/04-control-core.md §15; work packages W4, W5), the mutation
+   campaigns of the RTL tests (docs/rtl-m3.md §13.3) and the card (traces replay on it through the
+   `replay` kernel in W6).
 Colours: the references are white (neutral), so lavender keeps its data-movement meaning from the
 architecture figures; code under test is host-software butter; checks are mint, traces salmon, the
 RTL sky (the key below); planned is a dashed pale swatch, as in every figure.
@@ -146,7 +146,7 @@ f.box(SET_X, S_Y, SET_W, S_H, "memory", "TRACE SETS",
 f.box(SET_X, RP_Y, 320, RP_H, "host", "SIMULATOR KINDS", sub="tsr-trace-replay: full or\ntile-only, N schedules")
 f.box(SET_X + 344, RP_Y, 320, RP_H, "control", "REPLAY KERNEL", sub="tile-only push.bin\nthrough the issue path")
 f.box(SET_X, V_Y, SET_W, V_H, "neutral", "U200 CARD",
-      sub="v1: traces ran; v2: replay kernel", planned=True, tag="PLANNED · W6")
+      sub="traces through the replay kernel", planned=True, tag="PLANNED · W6")
 f.box(MUT_X, T_Y, MUT_W, T_H, "control", "MUTATION\nCAMPAIGNS", sub="of the RTL tests", planned=True,
       tag="PLANNED · W4")
 f.panel(RTL_X, S_Y, RTL_W, V_Y + V_H - S_Y, label="RTL REPLAY · BIT-EXACT", fill=None, cut=16,
@@ -180,8 +180,8 @@ f.legend(W / 2, LEG_Y, [("neutral", "REFERENCE"), ("host", "CODE UNDER TEST"),
                         ("control", "CHECK"), ("memory", "TRACES"), ("compute", "RTL"),
                         ("neutral", "PLANNED", True)])
 f.text(W / 2, LEG_Y + 36, wrap(
-    "Solid blocks run today on the simulator. The RTL of v2 does not exist yet: its replay, "
-    "lockstep and mutation campaigns are planned (W4, W5), and the card replays v2 traces in W6.",
+    "Solid blocks run today on the simulator. The control core RTL does not exist yet: its replay, "
+    "lockstep and mutation campaigns are planned (W4, W5), and the card replays traces in W6.",
     1440), "note", anchor="middle", color=INK_SOFT)
 
 f.save(scale=1)

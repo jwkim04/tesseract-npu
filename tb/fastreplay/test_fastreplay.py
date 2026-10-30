@@ -3,11 +3,9 @@
   test_memmodel_selftest          memmodel.h against selftest.cpp (legal traffic, every protocol
                                   assertion P1..P6 fires on its violation, ordering, tracking)
 
-memmodel.h is also the memory model of the M0 bandwidth bench (tb/platform/bw). X0 (docs/v2 EX §12,
-SW §10.3) deleted the v1 replay of cmd.bin traces on tsr_core (run.py, fastreplay.cpp,
-fr_common.h, mutate.py) and its tests test_fastreplay_m2, test_fastreplay_impl,
-test_fastreplay_detects_corrupt and test_fastreplay_detects_mutants; the bench is rewritten as the
-C++ tile-only replay of v2 `push.bin` traces, then the full-system bench with Ibex and RVFI lockstep.
+memmodel.h is also the memory model of the M0 bandwidth bench (tb/platform/bw). The C++ tile-only
+replay of `push.bin` traces on tsr_core and then the full-system bench with Ibex and RVFI lockstep
+are planned (docs/design SW §10.3).
 """
 from __future__ import annotations
 

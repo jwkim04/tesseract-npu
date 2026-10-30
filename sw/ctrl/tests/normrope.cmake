@@ -1,5 +1,5 @@
 # sw/ctrl/tests/normrope.cmake — W2b P2.6 tests of the RMS_NORM (0x14) and ROPE (0x16) kinds
-# (sw/ctrl/kernels/k_norm.cpp, k_rope.cpp; docs/v2/06-software-verification.md "SW" §7.5, §7.8,
+# (sw/ctrl/kernels/k_norm.cpp, k_rope.cpp; docs/design/06-software-verification.md "SW" §7.5, §7.8,
 # §10.2). Included by sw/ctrl/host/CMakeLists.txt (main project) after kernels.cmake. Label fw.
 #
 #   fw_kernels_normrope_rv          the production image on tsr_rv through `graph`: suite "decode"

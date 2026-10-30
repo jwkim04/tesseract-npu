@@ -3,7 +3,7 @@
 // a corrupted TCM and an address-decode fault), the launch queue and completion ring (ordering,
 // sequence numbers, ACTIVE, flow control, faults, read-pointer rule), watermarks and the hard
 // cancel, the log ring (DB §6.1 records, overflow drop with LOG_DROPPED), SOFT_RESET (EX §8.5:
-// what it clears and keeps, SR_BUSY over a running op), PERF v2 gating by ACTIVE and the LO/HI
+// what it clears and keeps, SR_BUSY over a running op), PERF gating by ACTIVE and the LO/HI
 // snapshot, STATUS levels / sticky bits, MTIME and the timer, and one launch end to end through a
 // scripted RISC-V agent on the time base, PERF RV_WFI gated by ACTIVE.
 #include "test_sim_util.h"
@@ -333,7 +333,7 @@ static void test_log(void) {
 }
 
 // ---------------------------------------------------------------------------
-// PERF v2: gated by ACTIVE (EX §6); the LO read snapshot.
+// PERF: gated by ACTIVE (EX §6); the LO read snapshot.
 static const uint32_t PUSH_ALL = 0xFF00u;
 
 static void test_perf(void) {

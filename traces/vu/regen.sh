@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# traces/vu/regen.sh [BUILD_DIR] — VU regression traces (trace v2 `ops`, docs/v2/06-software-
-# verification.md §5.6 "new"): tsr-trace-gen v2 --ops vu, every VU op of docs/v2/02-vector-unit.md
+# traces/vu/regen.sh [BUILD_DIR] — VU regression traces (`ops` traces, docs/design/06-software-
+# verification.md §5.6 "new"): tsr-trace-gen --ops vu, every VU op of docs/design/02-vector-unit.md
 # §5 with legal and illegal encodings, then every trace replayed under the fixed and two random
 # schedules (race detector fatal),
 # tile-only and through the replay kernel (one launch per trace: SPM_STALE is fatal, SW §4.6).
@@ -14,7 +14,7 @@
 #   errors/  88 traces with an error injection: two cycles through the 40 VU fault kinds (reserved
 #            bits, undefined enumerations, unused fields, every OPERAND condition of VU §5.9 with its
 #            ERR_INFO, SPM_RANGE per operand in field order, SOP LDS / STS addresses, DQROW BAD_FMT /
-#            K_RANGE, VMASK and reserved VU opcodes) and the v2 endings (BAD_DEP, DEP_FAILED chain,
+#            K_RANGE, VMASK and reserved VU opcodes) and the dependency endings (BAD_DEP, DEP_FAILED chain,
 #            QABORT recipe, QCLEAR recovery)
 #   small1ch/ 24 traces, 1 channel, 64 KiB SPM, 1 GiB channel with ADDR_BEAT_W 22, T_MAX 1, CAPS m8
 set -eu

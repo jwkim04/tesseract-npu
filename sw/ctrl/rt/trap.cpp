@@ -1,5 +1,5 @@
-// trap.cpp — the runtime debug contract and the trap handler's C side (docs/v2/05-debug.md "DB"
-// §3.8, §6.1, §6.3; docs/v2/06-software-verification.md "SW" §6.6; docs/v2/01-execution-model.md
+// trap.cpp — the runtime debug contract and the trap handler's C side (docs/design/05-debug.md "DB"
+// §3.8, §6.1, §6.3; docs/design/06-software-verification.md "SW" §6.6; docs/design/01-execution-model.md
 // "EX" §4.4, §4.7). The assembly entry (register frame, nesting, the debugger path at
 // __tsr_trap_halt) is in crt0.S.
 //

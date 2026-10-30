@@ -1,4 +1,4 @@
-// test_sim_obs.h — SW §4.7's determinism observables of a simulator run (docs/v2/06-software-
+// test_sim_obs.h — SW §4.7's determinism observables of a simulator run (docs/design/06-software-
 // verification.md §4.7), collected through the listeners of tsr_sim_int.h §5: the per-unit op
 // streams (PUSH / QCTRL events projected per unit, deps as relative tickets), the RISC-V's SPM
 // store stream (RV_SPM_WR access events) and the final written DRAM beats and SPM lines (write

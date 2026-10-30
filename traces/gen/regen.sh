@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # traces/gen/regen.sh [BUILD_DIR] — the M1 generator's LD -> QACT -> MVM (-> MVM ACC) -> ST programs
-# as trace v2 `ops` traces (docs/v2/06-software-verification.md §5.6): tsr-trace-gen v2 --ops gen with
-# v1's seeds and configurations (tag v1-m4: the tsr-traces target of sw/tools/CMakeLists.txt), then
+# as `ops` traces (docs/design/06-software-verification.md §5.6): tsr-trace-gen --ops gen with
+# fixed seeds and configurations (the tsr-traces target of sw/tools/CMakeLists.txt), then
 # every trace replayed under the fixed and two random schedules (race detector fatal),
 # tile-only and through the replay kernel (one launch per trace: SPM_STALE is fatal, SW §4.6).
 #

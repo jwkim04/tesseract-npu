@@ -1,5 +1,5 @@
-// tsr_dm.h — debug-module model of the simulator (P1.12; docs/v2/05-debug.md "DB" §3, §9.1;
-// docs/v2/04-control-core.md "CC" §3.2, §4.3, §12.2; docs/v2/06-software-verification.md "SW"
+// tsr_dm.h — debug-module model of the simulator (P1.12; docs/design/05-debug.md "DB" §3, §9.1;
+// docs/design/04-control-core.md "CC" §3.2, §4.3, §12.2; docs/design/06-software-verification.md "SW"
 // §4.2). Implementation: sw/sim/tsr_dm.c.
 //
 // A behavioural riscv-dbg dm_top (Debug Spec 0.13.2, NrHarts 1, BusWidth 32, ProgBufSize 8,
@@ -7,7 +7,7 @@
 // built-in hart (tsr_rv) and bus (tsr_bus). It implements DB §9.1's DMI profile exactly; every
 // other DM register reads 0 and ignores writes (abstractauto, haltsum*, authdata, nextdm, ...).
 // Abstract commands act on the interpreter state directly and the program buffer runs in the
-// interpreter in debug mode (V2-DB-18); the debug ROM is not modelled (tsr_rv.h).
+// interpreter in debug mode (DB-18); the debug ROM is not modelled (tsr_rv.h).
 //
 // DMI registers (7-bit addresses TSR_DMI_* in tsr_tables.h; host CSR 0xC00 + 4r through the DBG
 // model's window, gated by DBG_CFG.DMI_EN, DB §3.2; in a library without the DBG model the core
@@ -28,7 +28,7 @@
 //   dmstatus (0x11)        version 2, authenticated 1, impebreak 0, hasresethaltreq 0, and for the
 //                          selected hart all* = any* (one hart): halted = RV_HALTED (the hart in
 //                          debug mode, parked or running the program buffer: DB §3.1's "last fetch
-//                          in the DM range", V2-CC-29), running, unavail (the hart held in reset:
+//                          in the DM range", CC-29), running, unavail (the hart held in reset:
 //                          CTRL.RV_RUN = 0, ndmreset, or a boot not yet taken by the time base),
 //                          resumeack, havereset (1 after create; set again whenever the hart
 //                          leaves a reset; ackhavereset clears it), nonexistent (hartsel 1)

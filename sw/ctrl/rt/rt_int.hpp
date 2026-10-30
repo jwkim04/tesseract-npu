@@ -1,5 +1,5 @@
 // rt_int.hpp — internals shared by the runtime sources (crt0.S's C side, runtime.cpp, trap.cpp,
-// log.cpp; docs/v2/06-software-verification.md "SW" §6.3-§6.6). Not part of the SDK API.
+// log.cpp; docs/design/06-software-verification.md "SW" §6.3-§6.6). Not part of the SDK API.
 //
 // Register access goes straight to the control window (CC §5) and the core window (CC §5.3)
 // through the generated offsets of tsr/mmio.hpp. Waits use WFI with mstatus.MIE = 0: the runtime

@@ -1,4 +1,4 @@
-// test_fw_selftest_sim.c — fw_selftest_sim: every `selftest` id (docs/v2/06-software-verification.md
+// test_fw_selftest_sim.c — fw_selftest_sim: every `selftest` id (docs/design/06-software-verification.md
 // "SW" §7.6, §10.2; kernel sw/ctrl/kernels/selftest.cpp, interface sw/ctrl/ref/selftest_abi.hpp) on
 // the production image on tsr_rv.
 //

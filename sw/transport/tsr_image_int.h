@@ -1,6 +1,6 @@
 // tsr_image_int.h — private: the firmware image behind tsr_image (tsr_image.cpp) as the protocol
-// layer, the log decoder and the tests use it (docs/v2/01-execution-model.md "EX" §3;
-// docs/v2/06-software-verification.md "SW" §6.2; docs/v2/05-debug.md "DB" §6.3).
+// layer, the log decoder and the tests use it (docs/design/01-execution-model.md "EX" §3;
+// docs/design/06-software-verification.md "SW" §6.2; docs/design/05-debug.md "DB" §6.3).
 #pragma once
 
 #include <cstdint>

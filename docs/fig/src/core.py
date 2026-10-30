@@ -1,29 +1,28 @@
-"""Figure `core`: inside tsr_core v2, two clock domains, the issue path and the units.
+"""Figure `core`: inside tsr_core, two clock domains, the issue path and the units.
 
-Content follows docs/v2/04-control-core.md §2.1 (block diagram), §2.2 (hierarchy, domains), §3
+Content follows docs/design/04-control-core.md §2.1 (block diagram), §2.2 (hierarchy, domains), §3
 (Ibex and the debug module), §4 (TCMs and buses), §5 (control window), §7 (issue path: push, issue
-FIFO, queues and depths), §8 (dispatcher and checker), §10 (SPM v2), §11 (clock domains and CDC),
-§13.2 (module table); docs/rtl-m2.md §2 for the v1 blocks that stay (tsr_csr, tsr_dma, tsr_qact,
-tsr_spm, tsr_mem_arb) and docs/rtl-m3.md §2 for tsr_mvm:
+FIFO, queues and depths), §8 (dispatcher and checker), §10 (SPM banks and arbitration), §11 (clock domains
+and CDC), §13.2 (module table); docs/rtl-m2.md §2 for tsr_csr, tsr_dma, tsr_qact, tsr_spm and
+tsr_mem_arb, and docs/rtl-m3.md §2 for tsr_mvm:
 - clk_rv band: Ibex RV32IMC with ITCM 128 KiB, DTCM 64 KiB, the debug module (upstream riscv-dbg,
   reached through the DMI window) and the control window `tsr_ctl_win` (issue port with credits
   and tickets, queue control, LQ / LCQ registers, log, timer; CC §5). Planning clock 166.7 MHz
-  (V2-CC-3, D12);
+  (CC-3, D12);
 - clock-domain crossings (`tsr_ctrl_cdc`, CC §11.2): the issue FIFO (32 entries), gray-coded
   counters, tagged handshakes, so the host and the SPM bridge never wait on clk_rv;
 - core clock band (276.3 MHz on the k4 kernel, `docs/platform-u200.md` §14): `tsr_csr` (host CSR
-  port; v2 adds LQ, LCQ, the log ring and the image loader, CC §13.2), the issue FIFO, the checker
+  port with LQ, LCQ, the log ring and the image loader, CC §13.2), the issue FIFO, the checker
   `tsr_chk` (EX §8.1 order), the dispatcher with one in-order queue per unit (CC §7.4: DMA 8,
   QACT 4, MVM 4, VU 16, SYNC 4; unit 4 is reserved and absent), the units DMA (LD, ST; KVST
   planned), QACT, MVM (NUM_CH clusters; attention modes planned), VU, and `tsr_spm` (4 MiB, 64 B
-  lines; v2 even / odd banks, 2R2W, with the RISC-V bridge as client 3, CC §10); one
+  lines; even / odd banks, 2R2W, with the RISC-V bridge as client 3, CC §10); one
   `tsr_mem_arb` per channel (sources DMA and weight stream; channel 0 also the trace writer,
   CC §13.2);
 - the dashed bus under the dispatcher stands for the unit queues feeding every unit (CC §7.4).
-The old command processor `tsr_cmdproc` and the instruction fetch `tsr_fetch` are deleted (X0,
-docs/v2/01-execution-model.md §12) and do not appear. Status (STYLE.md): solid blocks exist in
-rtl/core and ran on the card with the v1 core (docs/rtl-m2.md, docs/rtl-m3.md); dashed blocks are
-the v2 additions (planned), and a dashed tag on a solid block marks the mode that block gains.
+Status (STYLE.md): solid blocks exist in rtl/core and ran on the card (docs/rtl-m2.md,
+docs/rtl-m3.md); dashed blocks run on the simulator and are planned for the card, and a dashed tag
+on a solid block marks the mode that block gains.
 Every block of a planned band or row is dashed without its own tag; the band carries it.
 Arrow direction: weights flow from the arbiter into the clusters (as the `system` figure does).
 
@@ -65,7 +64,7 @@ H = LEG_Y + 112
 
 f = Fig("core", W, H,
         title="Inside tsr_core",
-        desc="tsr_core v2 in two clock domains. In the clk_rv domain, drawn planned: the Ibex "
+        desc="tsr_core in two clock domains. In the clk_rv domain, drawn planned: the Ibex "
              "RV32IMC control core with ITCM, DTCM, a debug module and the control window. Clock "
              "domain crossings connect it to the core clock domain: tsr_csr with the launch "
              "queue, completion ring and log ring, the issue FIFO, the checker tsr_chk and the "
@@ -211,8 +210,7 @@ f.callout("RESPONSES\nROUTED BY ID;\nEVERY STREAM\nTHROUGH A\nREGISTER SLICE", (
 f.legend(800, LEG_Y, [("control", "CONTROL"), ("compute", "COMPUTE"), ("memory", "MEMORY"),
                       ("io", "DATA MOVEMENT"), ("neutral", "PLANNED", True)])
 f.text(800, LEG_Y + 38, wrap(
-    "Solid blocks exist in rtl/core and ran on the card with the v1 core. Dashed blocks and tags "
-    "are the v2 additions (planned, milestone M6; verified on the simulator). tsr_cmdproc and "
-    "tsr_fetch of the v1 core are gone.", 1440), "note", anchor="middle", color=INK_SOFT)
+    "Solid blocks exist in rtl/core and ran on the card. Dashed blocks and tags run on the "
+    "simulator and are planned for the card (milestone M6).", 1440), "note", anchor="middle", color=INK_SOFT)
 
 f.save(scale=1)

@@ -78,7 +78,7 @@ module tsr_dma
   input  logic                                  clk,
   input  logic                                  rst_n,
 
-  // ---- dispatch (the v2 dispatcher, Y4) ----
+  // ---- dispatch (the dispatcher, Y4) ----
   input  logic                                  cmd_valid,
   output logic                                  cmd_ready,
   input  tsr_dma_cmd_t                          cmd,

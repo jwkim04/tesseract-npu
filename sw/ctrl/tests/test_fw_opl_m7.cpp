@@ -1,5 +1,5 @@
-// test_fw_opl_m7.cpp — ctest fw_opl_m7 (W2b infra): the OPL v1 M7 kinds' argument words in
-// tsr/opl.hpp and the M7 planning glue in tsr/plan.hpp against docs/v2/06-software-verification.md
+// test_fw_opl_m7.cpp — ctest fw_opl_m7 (W2b infra): the op list M7 kinds' argument words in
+// tsr/opl.hpp and the M7 planning glue in tsr/plan.hpp against docs/design/06-software-verification.md
 // "SW" §7.2 (kinds 0x11-0x1B, preload entries) and §7.3 (record checks), host C++17 (the backend's
 // language: the headers must stay C++17-compatible).
 //

@@ -1,4 +1,4 @@
-// hdr_kernels.cpp — test kernels of the tile/VU header library (P2.3; docs/v2/06-software-
+// hdr_kernels.cpp — test kernels of the tile/VU header library (P2.3; docs/design/06-software-
 // verification.md "SW" §6.7, §6.8; CC §5, §7-§9, §12; EX §4.9). Built into the test image fw_hdr
 // (tsr_fw_image, sw/ctrl/tests/hdr.cmake) for tsr_rv and, with TSR_FW_HOST, into the host tests
 // (test_fw_hdr.cpp), so the same source pushes through both backends and the two push streams can
@@ -6,7 +6,7 @@
 //
 // Every kernel obeys SW §4.7's timing rule (no DONE_SEQ / credit / QSTATUS / MTIME value reaches
 // pushed words, deps, SPM stores or RET; join / join_irq / the ring's software joins only wait) and
-// the launch-stateless rule (V2-SW-4: every SPM line read was written by the launch; the ring is
+// the launch-stateless rule (SW-4: every SPM line read was written by the launch; the ring is
 // init()'d per launch). Exceptions, by design: hdr_stop (how long it spins depends on when the
 // host writes LQ_STOP), excluded from the determinism comparisons.
 //
@@ -77,7 +77,7 @@ TSR_KERNEL(hdr_xring, 5, 0, 0);
 
 namespace {
 
-// A ticket relative to the launch's base sequences (trace v2's relative tickets, SW §5.2).
+// A ticket relative to the launch's base sequences (the trace format's relative tickets, SW §5.2).
 uint32_t rel(ticket t) {
     if (t.none() || t.unit() >= NUM_UNITS) return t.v;
     return make_ticket(t.unit(), t.seq() - launch().base[t.unit()]).v;
@@ -106,7 +106,7 @@ uint32_t qa_lines_of(uint32_t kind, uint32_t K) {
     return qs + d + bs;
 }
 
-spm_ring g_ring;   // DTCM; init()'d by every launch that uses it (V2-SW-4)
+spm_ring g_ring;   // DTCM; init()'d by every launch that uses it (SW-4)
 
 }  // namespace
 

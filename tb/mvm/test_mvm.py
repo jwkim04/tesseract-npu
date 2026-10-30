@@ -14,10 +14,9 @@ and a configurable result capacity (knobs written per MVM). test_mvm_real runs t
 tests with the real rtl/core modules (pytest skips it while they are still skeletons).
 
 Oracle: common.mvm_model.mvm_reference (libtsr_ref dot rows + the tsr_sim.c ex_mvm write loop) on
-a model of the SPM holding the same x images and old y. Until X0 (docs/v2 EX §12) the oracle was
-the ISA simulator running LD / MVM / END programs, and mvm_reference was checked against it on every
-MVM; the program runner is deleted with the command path, the simulator's op-level API returns in
-Y1. GOLDEN_DIGEST (pinned from the simulator) did not move. Checks on every MVM:
+a model of the SPM holding the same x images and old y. mvm_reference is tied to the
+simulator's op-level API by tb/common test_mvm_model_vs_simulator. GOLDEN_DIGEST is pinned from the
+simulator. Checks on every MVM:
   - the y lines (all tokens, incl. tails and token gaps) == the oracle's SPM, bit-exact
     (mvm_golden: through the digest of the DUT's y bytes against the pinned value);
   - SPM client 2 writes: every byte of the T y ranges written exactly once (byte enables), no
@@ -895,7 +894,7 @@ async def mvm_golden(dut):
             dut_d, ref, len(bad), len(recs), i, describe(m), tb.diff(m, g, w)))
 
 
-GOLDEN_DIGEST = "5e28386055f9e494"   # y bytes of golden_list (pinned from the ISA simulator before X0 = the
+GOLDEN_DIGEST = "5e28386055f9e494"   # y bytes of golden_list (pinned from the ISA simulator = the
                                      # mvm_reference oracle = every DUT configuration)
 
 

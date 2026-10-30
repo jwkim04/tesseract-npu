@@ -1,5 +1,5 @@
-// tsr_fa_plan.h — the flash-attention chunk planner (docs/v2/03-attention-kv.md "AT" §6.6 steps 2-3,
-// §7.3; V2-AT-15 pass rule, V2-AT-19 chunk policy): ONE source for the reference and the firmware.
+// tsr_fa_plan.h — the flash-attention chunk planner (docs/design/03-attention-kv.md "AT" §6.6 steps 2-3,
+// §7.3; AT-15 pass rule, AT-19 chunk policy): ONE source for the reference and the firmware.
 //
 // tsr_ref_at.c (tsr_fa_pass_rule, tsr_fa_ncg, tsr_fa_plan, hence tsr_ref_fa) and the firmware's
 // FLASH_ATTN kernel (sw/ctrl/kernels/k_fattn.cpp, through sw/ctrl/include/tsr/plan_attn.hpp) both

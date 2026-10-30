@@ -1,4 +1,4 @@
-// test_xrt_noop.cpp — ctest transport_xrt_noop (docs/v2/06-software-verification.md "SW" §10.2): the
+// test_xrt_noop.cpp — ctest transport_xrt_noop (docs/design/06-software-verification.md "SW" §10.2): the
 // "xrt" kdev against XRT's own userspace with its no-op shim (XCL_EMULATION_MODE=noop, libxrt_noop):
 // no card, no driver (docs/xrt-host.md §6).
 //
@@ -6,12 +6,12 @@
 // MEM_TOPOLOGY with four DDR4 banks, CONNECTIVITY) and checks what XRT itself checks: xclbin
 // load, kernel lookup by name, argument discovery by register offset, the memory bank of each
 // channel argument from the xclbin (xrt::xclbin::arg::get_mems(), EX §9.1), device-only buffer
-// allocation, and the compute unit opened through xrt::ip (exclusive access, EX §2.4) for the v2
+// allocation, and the compute unit opened through xrt::ip (exclusive access, EX §2.4) for the
 // contract's ap_ctrl_none kernel (what rtl/platform/alveo_xrt/kernel_k*.xml declare) and for EX
 // §9.1's fallback form (ap_ctrl_hs without an interrupt). The noop shim implements neither
 // register access nor unmanaged DMA, so those calls must fail cleanly (and tsr_transport_open("xrt")
 // stops at the first register read, ADAPTER_VERSION). Broken xclbins (s_axi_control range 0x1000,
-// a foreign argument, v1's cmd_addr / cmd_count / arg0-7 arguments, no Tesseract kernel) must be
+// a foreign argument, cmd_addr / cmd_count / arg0-7 arguments, no Tesseract kernel) must be
 // refused with a reason. Whether XRT refuses a second exclusive open of the compute unit depends
 // on the shim (the noop shim's context bookkeeping); it is printed, not asserted (*confirm* on the
 // card, P6).
@@ -49,8 +49,8 @@ struct variant {
     uint32_t    range       = 0x2000;
     uint32_t    num_ch      = 4;
     bool        foreign_arg = false;
-    bool        v1_args     = false;   // v1's run arguments (cmd_addr at 0x10, cmd_count, arg0..7)
-    bool        ctrl_none   = true;    // ap_ctrl_none (kernel.xml and IP_LAYOUT), the v2 contract; false: EX §9.1's fallback
+    bool        v1_args     = false;   // run arguments (cmd_addr at 0x10, cmd_count, arg0..7)
+    bool        ctrl_none   = true;    // ap_ctrl_none (kernel.xml and IP_LAYOUT), the contract; false: EX §9.1's fallback
     uint64_t    bank_kb     = 64 * 1024;   // 64 MiB banks: the noop shim memsets every buffer
 };
 
@@ -148,7 +148,7 @@ static bool write_xclbin(const std::string & path, const variant & v) {
     {
         connectivity * k = (connectivity *) con.data();
         k->m_count = (int32_t) v.num_ch;
-        const int32_t first_ch_arg = v.v1_args ? 10 : 0;   // the channel args follow v1's 10 run args, if any
+        const int32_t first_ch_arg = v.v1_args ? 10 : 0;   // the channel args follow the 10 run args, if any
         for (uint32_t c = 0; c < v.num_ch; ++c) k->m_connection[c] = connection{ first_ch_arg + (int32_t) c, 0, (int32_t) c };
     }
     struct sec { axlf_section_kind kind; const char * name; const void * p; size_t n; };
@@ -274,14 +274,14 @@ int main(int argc, char ** argv) {
     bads[2].v.kname = "other_kernel";
     bads[2].what = "xclbin without a Tesseract kernel refused";
     bads[3].v.v1_args = true;
-    bads[3].what = "v1 kernel (cmd_addr / cmd_count / arg0..7 arguments) refused";
+    bads[3].what = "kernel with cmd_addr / cmd_count / arg0..7 arguments refused";
     for (int i = 0; i < 4; ++i) {
         const std::string p = dir + "/bad" + std::to_string(i) + ".xclbin";
         CHECK(write_xclbin(p, bads[i].v), "write bad %d", i);
         setenv("TSR_XCLBIN", p.c_str(), 1);
         std::string msg;
         CHECK(!open_capture(dir, &msg), "%s", bads[i].what);
-        if (bads[i].v.v1_args) CHECK(msg.find("build/v1") != std::string::npos, "the v1 refusal points to build/v1: \"%s\"", msg.c_str());
+        if (bads[i].v.v1_args) CHECK(msg.find("kernel contract") != std::string::npos, "the refusal names the kernel contract: \"%s\"", msg.c_str());
     }
     setenv("TSR_XCLBIN", xgood.c_str(), 1);
     // m2m: the staging buffers are allocated at open, before the channel buffers (the noop shim

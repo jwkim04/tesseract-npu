@@ -1,7 +1,7 @@
 // test_fw_elem_rv.cpp — fw_elem_rv*: the element-wise and row kinds ADD, MUL, SCALE, GLU, UNARY,
-// CPY, GET_ROWS (sw/ctrl/kernels/k_elem.cpp, k_glu.cpp, k_rows.cpp; docs/v2/06-software-
+// CPY, GET_ROWS (sw/ctrl/kernels/k_elem.cpp, k_glu.cpp, k_rows.cpp; docs/design/06-software-
 // verification.md "SW" §7.2, §7.5) in the RISC-V image on tsr_rv, launched through the `graph`
-// executor with OPL v1 lists (SW §10.2 "fw_kernels_rv": per kind, 8 schedules, race fatal, outputs
+// executor with op lists (SW §10.2 "fw_kernels_rv": per kind, 8 schedules, race fatal, outputs
 // bit-exact against the references).
 //
 //   test_fw_elem_rv IMAGE suite [--scheds N] [--only K]

@@ -1,14 +1,14 @@
-"""Figure `system`: the Tesseract v2 NPU core on the Alveo U200, host to DDR4.
+"""Figure `system`: the Tesseract NPU core on the Alveo U200, host to DDR4.
 
 Content follows docs/platform-u200.md §1 (system structure, adapter, weight traffic) and
 docs/spec.md §2 (System structure): host stack, PCIe + XRT shell, platform adapter (control
 bridge, one AXI4 bridge per channel), tsr_core (control core and issue path, SPM, x broadcast /
 y gather, four MVM clusters, vector unit), DDR4 ch0..ch3 each feeding its own cluster.
-v2 status (STYLE.md "Planned and unconfirmed things"): the control core, the issue path and the
-vector unit are planned blocks (docs/v2/04-control-core.md §2.1, docs/v2/02-vector-unit.md §7; no
-RTL yet: rtl/ is the X0 state); everything solid is in rtl/ and, as the v1 core, ran on the card.
+Status (STYLE.md "Planned and unconfirmed things"): the control core, the issue path and the
+vector unit are planned blocks (docs/design/04-control-core.md §2.1, docs/design/02-vector-unit.md §7; no
+RTL yet: rtl/ is the X0 state); everything solid is in rtl/ and ran on the card.
 The host chain is llama.cpp -> ggml-tesseract -> tsr_transport; the firmware image
-(`tsr-fw.elf`, docs/v2/01-execution-model.md §3) is loaded, booted and launched by the transport
+(`tsr-fw.elf`, docs/design/01-execution-model.md §3) is loaded, booted and launched by the transport
 over the same PCIe path (EX §2.1, §4). The adapter is `ap_ctrl_none` (EX §9.1): the control
 bridge maps `s_axi_control` to the core's CSR port and there is no done / ap_done path.
 SLR tags: floorplan C' of the 4-channel T_MAX 8 kernel (hw/u200/k4_floorplan.tcl, docs/rtl-m3.md
@@ -23,7 +23,7 @@ weight-stream request / response and gather job / start pipes (MVM_BC_PIPE, MVM_
 the U200, docs/rtl-m3.md §14.2), the reset copies, and the AXI slices of bridges 0 and 3, whose
 AXI-side stages sit in SLR0 / SLR2. The weight-response pipe carries one beat per cycle without
 backpressure, so the crossing keeps the channel's full rate (docs/platform-u200.md §8.1).
-The k4 kernel linked at 276.3 MHz and ran on the card with the v1 core (docs/platform-u200.md
+The k4 kernel linked at 276.3 MHz and ran on the card (docs/platform-u200.md
 §14); the footnote says so. 64 B x 300 MHz = 19.2 GB/s is the design value per channel; the
 card's clock was 276.3 MHz (17.7 GB/s per channel, docs/performance.md). The control core's
 clock clk_rv (planning value 166.7 MHz, D12) comes from ap_clk_2, a second platform clock (CC
@@ -185,8 +185,8 @@ f.legend(800, LEG_Y, [("host", "HOST SOFTWARE"), ("vendor", "VENDOR-SPECIFIC"),
                       ("neutral", "PLANNED", True)], gap=32)
 f.text(800, LEG_Y + 38, wrap(
     "SLR tags: floorplan C' of the 4-channel T_MAX 8 kernel (hw/u200/k4_floorplan.tcl), which "
-    "ran on the card with the v1 core at 276.3 MHz; k1 sits entirely in SLR1. PLANNED: the v2 "
-    "additions (milestone M6), verified on the simulator and in firmware; clk_rv is a planning "
+    "ran on the card at 276.3 MHz; k1 sits entirely in SLR1. PLANNED: control core, issue "
+    "path, vector unit (M6), verified on the simulator and in firmware; clk_rv is a planning "
     "value.", 1440), "note", anchor="middle", color=INK_SOFT)
 
 f.save()

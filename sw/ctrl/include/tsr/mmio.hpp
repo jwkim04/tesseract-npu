@@ -1,8 +1,8 @@
 // GENERATED FILE, DO NOT EDIT: produced by sw/tables/gen_tables.py from sw/tables/tsr_tables.py.
 //
-// tsr/mmio.hpp — Tesseract v2 tables for the firmware SDK (V2-EX-30, SW §6):
+// tsr/mmio.hpp — Tesseract tables for the firmware SDK (EX-30, SW §6):
 // the RISC-V and host maps, opcodes, units, errors, PERF, the launch / log / trace
-// formats, the v1-op encodings and tsr::op.
+// formats, the base-op encodings and tsr::op.
 // Freestanding C++20: no libstdc++ headers, no heap, everything constexpr in namespace tsr.
 // Names as tsr_tables.h without the TSR_ prefix (see sw/tables/gen_tables.py).
 #ifndef TSR_MMIO_HPP
@@ -15,7 +15,7 @@ namespace tsr {
 // -----------------------------------------------------------------------------------------------
 // Scalar constants (CONSTANTS)
 // -----------------------------------------------------------------------------------------------
-constexpr uint32_t ID_MAGIC              = 0x54535231u;  // EX §5.1: ID register: "TSR1" (unchanged from v1)
+constexpr uint32_t ID_MAGIC              = 0x54535231u;  // EX §5.1: ID register: "TSR1"
 constexpr uint32_t ISA_MAJOR             = 2u;           // EX §7.5: VERSION[15:8]
 constexpr uint32_t ISA_MINOR             = 0u;           // EX §7.5: VERSION[7:0]
 constexpr uint32_t VERSION_VALUE         = 0x200u;       // EX §7.5: VERSION register: ISA 2.0
@@ -560,7 +560,7 @@ constexpr uint32_t VERSION_MINOR_W   = 8u;
 constexpr uint32_t VERSION_MAJOR     = 0x0000FF00u;  // [15:8] 2
 constexpr uint32_t VERSION_MAJOR_LSB = 8u;
 constexpr uint32_t VERSION_MAJOR_W   = 8u;
-// CFG0 (EX §5.1): unchanged from v1
+// CFG0 (EX §5.1): geometry configuration
 constexpr uint32_t CFG0_NUM_CH     = 0x000000FFu;  // [7:0] channels C
 constexpr uint32_t CFG0_NUM_CH_LSB = 0u;
 constexpr uint32_t CFG0_NUM_CH_W   = 8u;
@@ -570,7 +570,7 @@ constexpr uint32_t CFG0_LANES_W    = 12u;
 constexpr uint32_t CFG0_T_MAX      = 0x00F00000u;  // [23:20] token slots
 constexpr uint32_t CFG0_T_MAX_LSB  = 20u;
 constexpr uint32_t CFG0_T_MAX_W    = 4u;
-// CFG2 (EX §5.1): unchanged from v1
+// CFG2 (EX §5.1): geometry configuration
 constexpr uint32_t CFG2_VL            = 0x000000FFu;  // [7:0] vector length
 constexpr uint32_t CFG2_VL_LSB        = 0u;
 constexpr uint32_t CFG2_VL_W          = 8u;
@@ -599,11 +599,11 @@ constexpr uint32_t CAPS_VMASK_W     = 1u;
 constexpr uint32_t CAPS_VU_RSVD     = 0x00000F00u;  // [11:8] reserved for VU extensions, 0
 constexpr uint32_t CAPS_VU_RSVD_LSB = 8u;
 constexpr uint32_t CAPS_VU_RSVD_W   = 4u;
-constexpr uint32_t CAPS_AT_RSVD     = 0x0000F000u;  // [15:12] reserved for AT, 0 in v2.0
+constexpr uint32_t CAPS_AT_RSVD     = 0x0000F000u;  // [15:12] reserved for AT, 0
 constexpr uint32_t CAPS_AT_RSVD_LSB = 12u;
 constexpr uint32_t CAPS_AT_RSVD_W   = 4u;
-// bit 2 retired (v1 RLD / MULI / LOOP), never set, never reused
-// bit 4 retired (v1 WAITM / JUMP), never set, never reused
+// bit 2 retired (RLD / MULI / LOOP), never set, never reused
+// bit 4 retired (WAITM / JUMP), never set, never reused
 // CFG3 (EX §7.5, VU §5.10, AT §5.10): [15:0] VU, [31:16] AT
 constexpr uint32_t CFG3_VU_FRONT     = 0x0000001Fu;  // [4:0] VU front lanes with an EXP core (information for cycle models)
 constexpr uint32_t CFG3_VU_FRONT_LSB = 0u;
@@ -1720,9 +1720,9 @@ constexpr uint32_t QDEPTH_U200_REG   = 0x08081088u;  // Q_DEPTH register value o
 // Opcodes (EX §7.2); reserved and retired opcodes complete ILLEGAL_OP on SYNC
 // -----------------------------------------------------------------------------------------------
 constexpr uint32_t OP_NOP    = 0x00u;  // kept, unit SYNC: EX §7.2: SYNC join point: completes when its dependencies are done
-constexpr uint32_t OP_END    = 0x01u;  // reserved, unit SYNC: EX §7.2: v1 END: ILLEGAL_OP
-constexpr uint32_t OP_LI     = 0x02u;  // reserved, unit SYNC: EX §7.2: v1 LI: ILLEGAL_OP
-constexpr uint32_t OP_ADDI   = 0x03u;  // reserved, unit SYNC: EX §7.2: v1 ADDI: ILLEGAL_OP
+constexpr uint32_t OP_END    = 0x01u;  // reserved, unit SYNC: EX §7.2: END: ILLEGAL_OP
+constexpr uint32_t OP_LI     = 0x02u;  // reserved, unit SYNC: EX §7.2: LI: ILLEGAL_OP
+constexpr uint32_t OP_ADDI   = 0x03u;  // reserved, unit SYNC: EX §7.2: ADDI: ILLEGAL_OP
 constexpr uint32_t OP_MULI   = 0x04u;  // retired, unit SYNC: EX §7.2: retired, never reused
 constexpr uint32_t OP_RLD    = 0x05u;  // retired, unit SYNC: EX §7.2: retired, never reused
 constexpr uint32_t OP_LOOP   = 0x06u;  // retired, unit SYNC: EX §7.2: retired, never reused
@@ -1795,8 +1795,8 @@ constexpr uint32_t ERR_ABORTED     = 8u;   // completed without running: a QABOR
 constexpr uint32_t ERR_DEP_FAILED  = 11u;  // a dependency completed with an error; ERR_INFO = 0
 constexpr uint32_t ERR_BAD_DEP     = 12u;  // a dependency on a ticket not pushed yet, on unit 6..14 or an absent unit, or below its unit's clear point; ERR_INFO = 0
 constexpr uint32_t ERR_OPERAND     = 13u;  // an operand value outside the range its op defines, other than K, T and the address ranges (VU and AT ops only); ERR_INFO = the offending value
-// code 9 retired (v1 LOOP_NEST), never raised, never reused
-// code 10 retired (v1 WAIT_TIMEOUT), never raised, never reused
+// code 9 retired (LOOP_NEST), never raised, never reused
+// code 10 retired (WAIT_TIMEOUT), never raised, never reused
 constexpr uint32_t ERR_CHECK_N = 8u;  // dispatch check order: ILLEGAL_OP > BAD_DEP > BAD_FMT > K_RANGE > T_RANGE > OPERAND > SPM_RANGE > DRAM_RANGE
 constexpr uint32_t ERR_CHECK_ORDER[8] = {ERR_ILLEGAL_OP, ERR_BAD_DEP, ERR_BAD_FMT, ERR_K_RANGE, ERR_T_RANGE, ERR_OPERAND, ERR_SPM_RANGE, ERR_DRAM_RANGE};
 constexpr uint32_t LCQ_STATUS_PRECEDENCE[8] = {LCQ_R0_STATUS_TRAP, LCQ_R0_STATUS_BAD_DESC, LCQ_R0_STATUS_ABORTED, LCQ_R0_STATUS_TILE_ERR, LCQ_R0_STATUS_PLAT_ERR, LCQ_R0_STATUS_STOPPED, LCQ_R0_STATUS_KERNEL_ERR, LCQ_R0_STATUS_OK};
@@ -1850,7 +1850,7 @@ constexpr uint32_t perf_ch_rd_beats(uint32_t c) { return 5u + c; }
 constexpr uint32_t perf_ch_wait(uint32_t C, uint32_t c) { return 5u + 1u * C + c; }
 
 // -----------------------------------------------------------------------------------------------
-// Instruction encodings of the v1 ops, unchanged (spec ISA, EX §7.2)
+// Instruction encodings of the base ops (spec ISA, EX §7.2)
 // -----------------------------------------------------------------------------------------------
 // NOP 0x00 (spec ISA, EX §7.1, owner spec)
 constexpr uint32_t NOP_RSV_W0 = 0xFFFFFF00u;  // must be 0 (ILLEGAL_OP)

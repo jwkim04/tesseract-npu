@@ -1,6 +1,6 @@
 // test_fw_kernels_rv.cpp — fw_kernels_rv*: the MUL_MAT kind (sw/ctrl/kernels/k_mulmat.cpp, SW §7.4)
-// in the RISC-V image on tsr_rv, launched through the `graph` executor with OPL v1 lists
-// (docs/v2/06-software-verification.md §10.2 "fw_kernels_rv": per kind, 8 schedules, race fatal,
+// in the RISC-V image on tsr_rv, launched through the `graph` executor with op lists
+// (docs/design/06-software-verification.md §10.2 "fw_kernels_rv": per kind, 8 schedules, race fatal,
 // outputs bit-exact against the references).
 //
 //   test_fw_kernels_rv IMAGE suite [--scheds N]
@@ -20,16 +20,16 @@
 //       152,064 x 5120 and 262,144 x 3840), T = 1 and T_MAX, Q8_0 and Q4_K where the model has it
 //       (slow; default 2 schedules).
 //   test_fw_kernels_rv IMAGE v1conv DIR... [--sample N]
-//       The v1 lowering check (SW §7.4): every converted v1 MUL_MAT trace of traces/model-v1conv
+//       The lowering check (SW §7.4): every converted MUL_MAT trace of traces/model-v1conv
 //       (or a sample of N per set) is regrouped into its MUL_MAT ops (consecutive tiles with the same
 //       format, shape and weights and contiguous x / y rows), launched as one op list on a fresh
 //       simulator loaded with the trace's init regions, and compared: the expect regions bit for
-//       bit (v1's outputs), the written beats = the expect regions, and the per-unit op streams of
-//       the kernel against the trace's push stream modulo the v2 forms: SPM line numbers (the ring
+//       bit (the trace's outputs), the written beats = the expect regions, and the per-unit op streams of
+//       the kernel against the trace's push stream modulo the operand forms: SPM line numbers (the ring
 //       places the tiles; the kernel's dataflow LD -> QACT -> MVM -> ST is checked instead), the
 //       deps (the converter's serial chain vs the kernel's tickets) and the push WMASK. Every
 //       converted trace has T_MAX 1, so the stream identity holds for single-tile ops only; for
-//       T > T_MAX the kernel's prefetch (LD x_{t+1} before ST_t) differs from v1's per-tile order by
+//       T > T_MAX the kernel's prefetch (LD x_{t+1} before ST_t) differs from the trace's per-tile order by
 //       design (SW §7.4), and those outputs are checked against mulmat_ref (suite).
 // Exit 0 when everything passed, 1 on a failure, 77 (skipped) when the image or a trace set is
 // missing.
@@ -445,9 +445,9 @@ suite suite_shapes(uint32_t which) {
 }
 
 // ---------------------------------------------------------------------------
-// v1 lowering check against traces/model-v1conv
+// Lowering check against traces/model-v1conv
 // ---------------------------------------------------------------------------
-// The SPM fields of the tile ops (w1 of LD / ST, w1 / w2 of QACT and MVM) are the v2 operand forms
+// The SPM fields of the tile ops (w1 of LD / ST, w1 / w2 of QACT and MVM) are the operand forms
 // that differ; everything else of the per-unit streams must be equal.
 void mask_spm(uint32_t w[8]) {
     const uint32_t opc = w[0] & 0xFFu;
@@ -471,7 +471,7 @@ bool v1conv_one(const char * dir) {
         CHECK(0, "%s: %s", dir, err);
         return false;
     }
-    // Regroup the v1 tiles (LD, QACT, MVM, ST each) into MUL_MAT ops.
+    // Regroup the trace's tiles (LD, QACT, MVM, ST each) into MUL_MAT ops.
     struct mmop { uint32_t a[12]; };
     std::vector<mmop> ops;
     bool shape_ok = t->n_push % 4u == 0u;
@@ -501,15 +501,15 @@ bool v1conv_one(const char * dir) {
         o.a[mm::ADD] = NONE;
         ops.push_back(o);
     }
-    CHECK(shape_ok && !ops.empty(), "%s: not a v1 MUL_MAT trace (LD, QACT, MVM, ST tiles)", dir);
+    CHECK(shape_ok && !ops.empty(), "%s: not a MUL_MAT trace (LD, QACT, MVM, ST tiles)", dir);
     if (!shape_ok || ops.empty()) { tsr_trace2_free(t); return false; }
-    // The list (independent ops: v1 ran them in sequence, they share no data within a split).
+    // The list (independent ops: the trace ran them in sequence, they share no data within a split).
     tsr::opl::writer w(tsr::opl::F_STOP_ON_ERROR, 0x1C0);
     for (const auto & o : ops)
         w.mul_mat(o.a[mm::X], o.a[mm::X_STRIDE], o.a[mm::Y], o.a[mm::Y_STRIDE], o.a[mm::W_OFF], o.a[mm::FMT], o.a[mm::N],
                   o.a[mm::K], o.a[mm::T]);
     const std::vector<uint8_t> blob = w.finish();
-    // A fresh simulator with the trace's config (T_MAX from the trace: v1's tiling) and its init.
+    // A fresh simulator with the trace's config (T_MAX from the trace) and its init.
     tsr_config cfg = t->cfg.core;
     tsr_sim_opts so;
     memset(&so, 0, sizeof(so));
@@ -521,7 +521,7 @@ bool v1conv_one(const char * dir) {
     bool ok = sim != nullptr;
     for (size_t i = 0; ok && i < t->mem.n_init; ++i)
         tsr_sim_dram_write(sim, t->mem.init[i].ch, t->mem.init[i].byte_off, t->mem.init[i].data, t->mem.init[i].size);
-    // The list in the OPL region, after the v1 command program (init region at ch0 0).
+    // The list in the OPL region, after the trace's init region (init region at ch0 0).
     const uint32_t opl_h = H(0, 0x100000u / 64u);
     if (ok) tsr_sim_dram_write(sim, 0, uint64_t(opl_h) * LINE, blob.data(), blob.size());
     std::vector<cap_push> pushes;
@@ -542,7 +542,7 @@ bool v1conv_one(const char * dir) {
     }
     if (ok) {
         CHECK(fwh_status(&h) == TSR_LCQ_R0_STATUS_OK && fwh_ret(&h) == 0, "%s: DONE 0x%08x RET 0x%08x", dir, h.done[0], h.done[2]);
-        // v1's outputs, bit for bit.
+        // The trace's outputs, bit for bit.
         for (size_t i = 0; i < t->mem.n_expect; ++i) {
             const tsr_region * x = &t->mem.expect[i];
             const uint8_t * got = tsr_sim_dram(sim, x->ch) + x->byte_off;

@@ -75,7 +75,7 @@ static const ggml_tensor * tsr_base(const ggml_tensor * t) {
 }
 
 // A leaf: a graph input or data, written before the launch (never by a node of the graph). The preload
-// table may only carry such tensors: the executor loads it before op 0 (SW §7.3, V2-SW-15).
+// table may only carry such tensors: the executor loads it before op 0 (SW §7.3, SW-15).
 static bool tsr_is_leaf(const ggml_tensor * t) {
     return tsr_base(t)->op == GGML_OP_NONE;
 }
@@ -208,13 +208,13 @@ static bool tsr_index_input(const tsr_build_env & env, bool probe, const ggml_te
                         (unsigned long long) n);
     }
     if (!tsr_is_leaf(t)) {
-        return tsr_fail(why, "%s '%s' is computed in the graph: the preload table carries graph inputs only (V2-SW-15)",
+        return tsr_fail(why, "%s '%s' is computed in the graph: the preload table carries graph inputs only (SW-15)",
                         what, t->name);
     }
     return tsr_addr(env, probe, t, what, h, why);
 }
 
-// The planner of the kind on the record's words (V2-SW-20), and the host reader's structural rules.
+// The planner of the kind on the record's words (SW-20), and the host reader's structural rules.
 static bool tsr_plan_ok(const tsr_build_env & env, const tsr_rec & r, std::string * why) {
     const uint32_t e = opl::check_args(r.kind, r.args, r.n_args, tsr::plan::PRE_MAX_LINES);
     if (e != opl::RET_OK) {
@@ -355,7 +355,7 @@ static bool tsr_lower_rms(const tsr_build_env & env, bool probe, const ggml_tens
     return true;
 }
 
-// GLU: SWIGLU, or GEGLU as GEGLU16 (the CPU's fp16-table form, V2-SW-31); split form (gate = src0,
+// GLU: SWIGLU, or GEGLU as GEGLU16 (the CPU's fp16-table form, SW-31); split form (gate = src0,
 // up = src1) or the non-swapped single form (gate = the first half of src0's row, up = the second).
 static bool tsr_lower_glu(const tsr_build_env & env, bool probe, const ggml_tensor * node, tsr_rec * r, std::string * why) {
     const enum ggml_glu_op op = ggml_get_glu_op(node);
@@ -652,7 +652,7 @@ static bool tsr_lower_fa(const tsr_build_env & env, bool probe, const ggml_tenso
     // The preload entries of this record alone, as in a list cut just before it: the MSUM of T rows and
     // FA_NEW's K indices (the SET_ROWS_KV of the same ubatch: T cells) must fit the 256-line area
     // together, each entry from a 64-byte boundary: T <= 680 (the MSUM alone would allow 1022). A
-    // longer ubatch's FLASH_ATTN stays on the CPU (W3b fix; V2-SW-43).
+    // longer ubatch's FLASH_ATTN stays on the CPU (W3b fix; SW-43).
     const uint64_t pre_lines = (4ull * (opl::MSUM_HDR_WORDS + (uint64_t) opl::MSUM_ROW_WORDS * T) + opl::PRE_ALIGN - 1) / opl::PRE_ALIGN +
                                ((uint64_t) opl::PRE_KVIDX_BYTES * T + opl::PRE_ALIGN - 1) / opl::PRE_ALIGN;
     if (pre_lines > opl::PRE_MAX_LINES) {
@@ -720,7 +720,7 @@ static bool tsr_lower_unary(const tsr_build_env & env, bool probe, const ggml_te
     if (op == GGML_UNARY_OP_TANH) {
         func = opl::unary::TANH;
     } else if (op == GGML_UNARY_OP_GELU) {
-        func = opl::unary::GELU16;    // llama.cpp's GELU: ggml-cpu's fp16 table form (V2-SW-31)
+        func = opl::unary::GELU16;    // llama.cpp's GELU: ggml-cpu's fp16 table form (SW-31)
     } else {
         return tsr_fail(why, "UNARY %s is not on the device (TANH, GELU)", ggml_unary_op_name(op));
     }

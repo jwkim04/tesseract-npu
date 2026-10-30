@@ -1,5 +1,5 @@
 // fw_prof.h — RISC-V profile from the tsr_rv retire stream, for the firmware perf harnesses
-// (fw_m6_perf in test_fw_m6_e2e.cpp, fw_exec_perf in test_fw_exec.cpp; docs/v2/06-software-
+// (fw_m6_perf in test_fw_m6_e2e.cpp, fw_exec_perf in test_fw_exec.cpp; docs/design/06-software-
 // verification.md "SW" §7.8). Header-only C++17, host side.
 //
 // Every retired instruction's cost is the RV-cycle delta since the previous retire (tsr_rv_cycles:

@@ -1,15 +1,15 @@
 // tsr_isa.h — Tesseract ISA encoding, CSR offsets, error codes, config parameters.
 //
 // This header is the C mirror of docs/spec.md ("ISA", "구성 파라미터", "메모리 모델") as amended by
-// the v2 execution model (docs/v2/01-execution-model.md, "EX": ISA v2 §7, CSR map §5, error codes
+// the execution model (docs/design/01-execution-model.md, "EX": ISA §7, CSR map §5, error codes
 // §8, DRAM map §11). If they disagree, fix the documents first, then this file. Shared by the ISA
 // simulator, the reference library, the ggml backend, the runtime and the tools.
 //
-// v1's host command-buffer path is deleted (X0, EX §12, D14): no run registers, no R0-R15, no
-// LI / ADDI / END, no register-relative addressing. What remains is what the tile ops LD, ST,
-// QACT, MVM, NOP and FENCE need; their encodings are unchanged from v1 with x16 = 0 (EX §7.1).
-// The v2 tables (opcodes, units, error codes, the whole CSR map, PERF v2, DRAM map, the VU / AT
-// encodings) are generated from the single table source sw/tables/tsr_tables.py (V2-EX-30, P1.1)
+// There are no run registers, no R0-R15, no LI / ADDI / END and no register-relative addressing
+// (EX §12, D14). What is here is what the tile ops LD, ST, QACT, MVM, NOP and FENCE need, with
+// x16 = 0 (EX §7.1).
+// The tables (opcodes, units, error codes, the whole CSR map, PERF, DRAM map, the VU / AT
+// encodings) are generated from the single table source sw/tables/tsr_tables.py (EX-30, P1.1)
 // into tsr_tables.h, included here; this header keeps only what the table source does not hold
 // (configuration struct, partial-sum counts, the tile-op encoders).
 #pragma once
@@ -26,7 +26,7 @@ extern "C" {
 // Fixed architecture constants
 // ---------------------------------------------------------------------------
 // From tsr_tables.h: TSR_INSN_BYTES / TSR_INSN_WORDS, TSR_ID_MAGIC, TSR_ISA_MAJOR / MINOR
-// (VERSION = 0x0200, EX §7.5: a v1 core or tool fails the major check), TSR_NUM_CH_MAX.
+// (VERSION = 0x0200, EX §7.5: a tool built for another major version fails the check), TSR_NUM_CH_MAX.
 #define TSR_BEAT_BYTES      64u      // DRAM beat (U200 BEAT_BITS = 512)
 #define TSR_LINE_BYTES      64u      // SPM line
 #define TSR_ROW_PARTIALS    16u      // MVM row accumulation partial sums (spec 수치 규칙)
@@ -38,7 +38,7 @@ extern "C" {
 // and TSR_REGION_WEIGHT_OFF come from tsr_tables.h. OPL (was CMD), IO and AUX are on ch0. The
 // core fetches nothing from DRAM: OPL holds op lists, replay push streams and argument blocks
 // that RISC-V kernels read. The backend splits IO into compute-buffer windows (bottom) and a
-// staging area (top, max(16 MiB, 2 x SPM)) for activations kept in host memory (spec "v1 lowering
+// staging area (top, max(16 MiB, 2 x SPM)) for activations kept in host memory (spec "lowering
 // 제약"); that split is a software convention, the hardware sees one region.
 #define TSR_MiB             (1024ull * 1024ull)
 
@@ -47,7 +47,7 @@ extern "C" {
 // ---------------------------------------------------------------------------
 typedef struct tsr_config {
     uint32_t num_ch;          // NUM_CH (C)
-    uint32_t beat_bits;       // BEAT_BITS (v1 software assumes 512)
+    uint32_t beat_bits;       // BEAT_BITS (software assumes 512)
     uint32_t lanes;           // LANES
     uint32_t t_max;           // T_MAX (synthesized value; architecture upper bound 8)
     uint32_t k_max;           // K_MAX
@@ -60,7 +60,7 @@ typedef struct tsr_config {
     uint32_t caps;            // CAPS register value (TSR_CAPS_*)
 } tsr_config;
 
-// U200 values (the tile core of the M4 bitstreams; NIREG and LOOP_DEPTH have no v2 meaning).
+// U200 values (the tile core of the M4 bitstreams; NIREG and LOOP_DEPTH have no meaning here).
 #define TSR_CONFIG_U200_V1 { \
     /*num_ch*/ 4, /*beat_bits*/ 512, /*lanes*/ 128, /*t_max*/ 1, /*k_max*/ 32768, \
     /*spm_bytes*/ 4u * 1024u * 1024u, /*vl*/ 16, /*nsreg*/ 16,                     \
@@ -72,12 +72,11 @@ typedef struct tsr_config {
 
 // ---------------------------------------------------------------------------
 // CSRs, PERF slots, error codes, opcodes, formats: tsr_tables.h (EX §5-§8, VU §5, AT §5).
-// This software uses the identity, configuration and PERF CSRs, which keep their v1 offsets in
-// the v2 map (EX §5.1). PERF counter i is at TSR_CSR_PERF_LO(i) (LO) and + 4 (HI); fixed slots
+// This software uses the identity, configuration and PERF CSRs, which are at fixed offsets
+// in the map (EX §5.1). PERF counter i is at TSR_CSR_PERF_LO(i) (LO) and + 4 (HI); fixed slots
 // TSR_PERF_CYCLES .. TSR_PERF_VU_CYCLES (4 reserved), per-channel TSR_PERF_CH_RD_BEATS(c) and
-// TSR_PERF_CH_WAIT(C, c), then the extension slots X + k (TSR_PERF_XOFF_*). The v1 run registers,
-// END / LI / ADDI and v1's VOP / RED / ROPE / SOP sub-codes are gone (the v2 VU encodings are
-// TSR_VOP_FUNC_*, TSR_RED_*, TSR_ROPE_*, TSR_SOP_SUB_*).
+// TSR_PERF_CH_WAIT(C, c), then the extension slots X + k (TSR_PERF_XOFF_*). The VU encodings are
+// TSR_VOP_FUNC_*, TSR_RED_*, TSR_ROPE_*, TSR_SOP_SUB_*.
 // ---------------------------------------------------------------------------
 #define TSR_CSR_PERF_BASE   TSR_CSR_PERF_LO_BASE   // counter i: LO at + 8i, HI at + 8i + 4
 

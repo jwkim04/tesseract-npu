@@ -1,9 +1,9 @@
-// tsr_sim.h — Tesseract simulator (the oracle, spec 검증 전략; docs/v2/06-software-verification.md
+// tsr_sim.h — Tesseract simulator (the oracle, spec 검증 전략; docs/design/06-software-verification.md
 // "SW" §4).
 //
 // The core model: SPM, per-channel DRAM, the s bank, the host CSR port (EX §5: identity, CTRL /
 // STATUS, the firmware loader, the launch queue LQ, the completion ring LCQ, the log ring,
-// watermarks, PERF v2, Q_*, SREG, SOFT_RESET), the RISC-V side control window (CC §5; internal
+// watermarks, PERF, Q_*, SREG, SOFT_RESET), the RISC-V side control window (CC §5; internal
 // interface in sw/sim/tsr_sim_int.h), the dispatcher with the checker, the six unit queues with
 // tickets, dependencies, SYNC, errors and poisoning (tsr_q.c, EX §7-§8, CC §7-§9), the units with
 // their checks and cycle models, per-channel beat counters and access capture. Every numeric
@@ -50,7 +50,7 @@ uint32_t tsr_sim_caps_implemented(void);
 //                                every architectural result is the same under both
 //   race       TSR_SIM_RACE      off | report | fatal = 0 | 1 | 2 (needs the race detector, P1.9)
 //   log        TSR_SIM_LOG       stderr | <file>, optionally prefixed "rv," for RV retire lines
-//   trace_dir  TSR_TRACE         one trace v2 per launch under the directory (P1.10)
+//   trace_dir  TSR_TRACE         one trace per launch under the directory (P1.10)
 // A value that does not parse makes tsr_sim_create_opts fail (message on stderr).
 typedef struct tsr_sim_opts {
     const char *    dram_dir;     // file-backed DRAM (see tsr_sim_create); NULL: anonymous memory
@@ -142,7 +142,7 @@ uint64_t tsr_sim_now(const tsr_sim * sim);                  // MTIME, core cycle
 int      tsr_sim_run_until_idle(tsr_sim * sim, uint64_t max_cycles);
 
 // ---------------------------------------------------------------------------
-// Test hooks: never reachable through tsr_transport (D15, V2-SW-19).
+// Test hooks: never reachable through tsr_transport (D15, SW-19).
 // ---------------------------------------------------------------------------
 // As the RISC-V's ISSUE_W0..7 / ISSUE_DEP0 / ISSUE_DEP1 stores followed by an ISSUE_PUSH store of
 // push_val ([15:8] WMASK: word i with bit i clear is sent as 0, w0 always; bit0 REC): pass 0xFF00
@@ -186,7 +186,7 @@ void tsr_sim_set_log(tsr_sim * sim, void * file /* FILE* */);
 void tsr_sim_set_threads(tsr_sim * sim, unsigned n);
 
 // ---------------------------------------------------------------------------
-// Access capture for trace dumps (spec 트레이스 형식; trace v2 builds on it, SW §5.5)
+// Access capture for trace dumps (spec 트레이스 형식; the trace format builds on it, SW §5.5)
 // While capture is on, the simulator records, in beat granularity per channel:
 //   - init: every DRAM range the ops READ (LD sources, MVM weight rows) whose bytes were not
 //           written earlier during the capture; the bytes are copied at first read, i.e. the

@@ -4,24 +4,24 @@
 // holds the directed cases and the cross-checks against ggml.
 //
 // Checks (one function each):
-//   order      total order, MAXT / MINT (VU §6.8, V2-VU-22): NaN, ±0, DAZ, ±inf
-//   vop_elem   every function's specials (VU §6.5 table, V2-VU-21, V2-VU-23 raw ops) and each
+//   order      total order, MAXT / MINT (VU §6.8, VU-22): NaN, ±0, DAZ, ±inf
+//   vop_elem   every function's specials (VU §6.5 table, VU-21, VU-23 raw ops) and each
 //              function against its VU §5.2 formula on tsr_ref_math / tsr_ref primitives
 //   vop_shape  rows x m with line strides, stride-0 broadcast, cmode SREG / VEC, the tail rule,
 //              words outside the extent untouched, in place, m = 0 / rows = 0 (VU §4.2–§4.5)
 //   red        the -0 subtree cases of VU §6.2 at m = 8k + r (complete tree against both skip
 //              models; the naive skip without z() is shown to differ), empty rows, MAX order,
-//              SUMSQ rounding, the post-ops (RMS = the spec's SOP recipe, V2-VU-3), TO_S, the
+//              SUMSQ rounding, the post-ops (RMS = the spec's SOP recipe, VU-3), TO_S, the
 //              vector destination and its tail
 //   rope       identity at position 0, NORM / NEOX pairs, the raw tail, in place, strides; the
 //              angles against a C transcription of ggml_rope_cache_init (ext_factor = 0) for
 //              Qwen2.5 and Gemma 4 parameters at positions 0 .. 2^17 - 1 (bit-identical,
-//              V2-VU-19, VU §10 item 1); the rotation's accuracy against double
+//              VU-19, VU §10 item 1); the rotation's accuracy against double
 //   topk       ties, NaN, ±0, DAZ, padding, tail, strides; random rows against a sort
 //   sop        every sub incl. the two-rounding RSQRT and the raw moves
 //   dqrow      against tsr_dequant_row with strides and tails
 //   softmax    EXPSUB sequences: an online softmax composed of RED / VOP / SOP steps, a fully
-//              masked first block stays finite (V2-VU-21), accuracy against double
+//              masked first block stays finite (VU-21), accuracy against double
 // With TSR_REF_VU_GGML (TSR_WITH_LLAMA builds; links the pinned ggml-cpu):
 //   ggml_rope  ggml_rope_ext on ggml-cpu, Qwen2.5 / Gemma 4 parameters (NEOX; bases 1e6 / 1e4;
 //              head_dim 64 / 128 / 256 and Gemma 4's global 512 with rope_freqs), positions
@@ -119,7 +119,7 @@ static void test_order(void) {
 static uint32_t ve(uint32_t func, uint32_t a, uint32_t b, uint32_t c) { return tsr_ref_vop_elem(func, a, b, c); }
 
 static void test_vop_elem(void) {
-    // Raw functions keep every bit (V2-VU-23).
+    // Raw functions keep every bit (VU-23).
     const uint32_t raws[] = { 0x7F800001u, 0xFFFFFFFFu, 0x00000001u, 0x807FFFFFu, NZERO, 0x12345678u };
     for (size_t i = 0; i < sizeof raws / sizeof raws[0]; ++i) {
         EQ("COPY raw", ve(TSR_VOP_FUNC_COPY, raws[i], 0, 0), raws[i]);
@@ -172,7 +172,7 @@ static void test_vop_elem(void) {
     EQ("GELU16 10", ve(TSR_VOP_FUNC_GELU16, 0x41200000u, 0, 0), 0x41200000u);
     EQ("GEGLU16 -10*NaN", ve(TSR_VOP_FUNC_GEGLU16, 0xC1200000u, CANON, 0), 0u);
     EQ("GEGLU16 -inf*inf", ve(TSR_VOP_FUNC_GEGLU16, NINF, PINF, 0), 0u);
-    // EXPSUB's -inf rule (V2-VU-21): +0 whatever the subtrahend, also -inf and NaN.
+    // EXPSUB's -inf rule (VU-21): +0 whatever the subtrahend, also -inf and NaN.
     const uint32_t xs[] = { NINF, PINF, CANON, 0xFFC00001u, 0u, NZERO, fb(-3.0f), 0x7F7FFFFFu };
     for (size_t i = 0; i < sizeof xs / sizeof xs[0]; ++i) {
         EQ("EXPSUB(-inf, x)", ve(TSR_VOP_FUNC_EXPSUB, NINF, xs[i], 0), 0u);
@@ -408,7 +408,7 @@ static void test_red(void) {
     // SUMSQ squares round first: x = 1 + 2^-12, x² = 1 + 2^-11 + 2^-24 -> 1 + 2^-11 (tie to even).
     const uint32_t sq1[] = { fb(1.0f + 0x1p-12f) };
     EQ("SUMSQ rounding", tsr_ref_red_row(TSR_RED_KIND_SUMSQ, 0, sq1, 1, 0, 0), fb(1.0f + 0x1p-11f));
-    // RMS = the spec's recipe SOP.MULI -> ADDI -> SQRT -> RECIP (V2-VU-3), on random sums.
+    // RMS = the spec's recipe SOP.MULI -> ADDI -> SQRT -> RECIP (VU-3), on random sums.
     for (int it = 0; it < 20000; ++it) {
         const uint32_t y = rand_val(&r), sk = rand_val(&r), se = rand_val(&r);
         uint32_t s = tsr_ref_sop(TSR_SOP_SUB_MULI, y, 0, sk, 0);

@@ -1,7 +1,7 @@
 """Figure `issue`: from a kernel's `issue()` to a unit, and the queues of one flash-attention layer.
 
-Upper panel: the issue path of one tile op, left to right (docs/v2/04-control-core.md §7 issue
-path, §8 dispatcher and checker, §11.1 clocks; docs/v2/01-execution-model.md §7-§8; the firmware
+Upper panel: the issue path of one tile op, left to right (docs/design/04-control-core.md §7 issue
+path, §8 dispatcher and checker, §11.1 clocks; docs/design/01-execution-model.md §7-§8; the firmware
 side in `sw/ctrl/include/tsr/kernel.hpp`): the kernel calls `issue(op, after(a, b))` on the
 control core (clk_rv); the push checks the unit's credit (queue depth, FIFO space), assigns the
 ticket {unit, sequence} and writes the 256-bit op with up to two dependencies into the 32-entry
@@ -10,7 +10,7 @@ EX §8.1; the dispatcher appends it to the in-order queue of its unit; a queue h
 dependencies are done and then starts on the unit. Credit, ticket and dependencies are what let
 the firmware issue ahead and join later (D3).
 Lower panel: the queue contents of the normative flash-attention sequence for a decode layer with
-three KV chunks (docs/v2/03-attention-kv.md §6.6 step 4 and §7.1, the queue orders listed there):
+three KV chunks (docs/design/03-attention-kv.md §6.6 step 4 and §7.1, the queue orders listed there):
 DMA: KVST K, KVST V; QACT: the query rows; MVM: ATTQK 0, ATTQK 1, ATTPV 0, ATTQK 2, ATTPV 1,
 ATTPV 2; VU: ASMAX 0, ASMAX 1, AMERGE 0, ASMAX 2, AMERGE 1, AMERGE 2, ANORM. Dependencies (AT §7.1
 code): ATTQK k after QACT, the last ATTQK also after KVST K; ASMAX k after ATTQK k; ATTPV k after

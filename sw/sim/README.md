@@ -6,9 +6,9 @@ that runs real firmware images. The ggml backend, the transport, the tools, the 
 (through `ctypes`) and the firmware tests all call this code; the numerics exist nowhere else.
 
 > **Scope.** Developer documentation of the simulator as built in this tree. Normative:
-> [SW](../../docs/v2/06-software-verification.md) §4 (simulator), §5 (trace format) and §10
-> (verification), [EX](../../docs/v2/01-execution-model.md) §5 to §8 (CSRs, PERF, ISA, errors),
-> [VU](../../docs/v2/02-vector-unit.md) §4 to §6 and [AT](../../docs/v2/03-attention-kv.md) §4 to §6
+> [SW](../../docs/design/06-software-verification.md) §4 (simulator), §5 (trace format) and §10
+> (verification), [EX](../../docs/design/01-execution-model.md) §5 to §8 (CSRs, PERF, ISA, errors),
+> [VU](../../docs/design/02-vector-unit.md) §4 to §6 and [AT](../../docs/design/03-attention-kv.md) §4 to §6
 > (vector and attention numerics). Where this directory and `docs/spec.md` disagree, the
 > specification wins and the simulator is fixed. The simulator has no timing of its own that the
 > card has to match: device cycles come from an informational cycle model, and nothing in the
@@ -30,13 +30,13 @@ structs.
 
 | Part | File | Models |
 | --- | --- | --- |
-| Core | `tsr_sim.c` | SPM, per-channel DRAM (lazily mapped; `TSR_SIM_DRAM_DIR` file-backed), the host CSR port (identity, `CTRL`, `STATUS`, firmware loader with receive CRC and `VERIFY`, launch queue LQ, completion ring LCQ, log ring, watermarks, `PERF`, `Q_*`, `SREG`, `SOFT_RESET`), the units `NOP`, `LD`, `ST`, `QACT`, `MVM`, `FENCE`, PERF v2 |
+| Core | `tsr_sim.c` | SPM, per-channel DRAM (lazily mapped; `TSR_SIM_DRAM_DIR` file-backed), the host CSR port (identity, `CTRL`, `STATUS`, firmware loader with receive CRC and `VERIFY`, launch queue LQ, completion ring LCQ, log ring, watermarks, `PERF`, `Q_*`, `SREG`, `SOFT_RESET`), the units `NOP`, `LD`, `ST`, `QACT`, `MVM`, `FENCE` and the PERF counters |
 | Queue model | `tsr_q.c` | the control window and issue port, the issue FIFO, the dispatcher and the checker (error order of EX §8.1), one in-order queue per unit with tickets, dependencies, `SYNC`, `QCLEAR`, `QHOLD`, `QABORT`, error capture and poisoning, invariants I1 to I3 |
 | Schedule | `tsr_sched.c` | the time base's policies (below) |
 | Vector and attention units | `tsr_vu.c`, `tsr_at.c` | decode, dispatch checks, operand extents and a cycle model of the VU ops and of the attention ops (`KVST`, `ATTQK`, `ATTPV`, `ASMAX`, `AMASK`, `AMERGE`, `ANORM`); every numeric result is a call into `tsr_ref_vu.c` or `tsr_ref_at.c` |
 | Control core | `tsr_rv.c`, `tsr_bus.c` | `tsr_rv`: an RV32IMC + Zicsr + Zifencei interpreter of the control core's Ibex (machine mode, interrupts, debug mode, two cycle tables `small` and `maxperf`); `tsr_bus.c`: the firmware bus profile (ITCM, DTCM, debug module memory, control window, core window, SPM window and its line-buffered alias), a test profile (RAM with HTIF, for riscv-tests), the system-bus master for the debug module, the ELF loader, and the agent that runs the hart on the core's time base |
 | Race detector | `tsr_race.c` | vector clocks over the units, the RISC-V and the host; reports races on SPM bytes, DRAM beats and the `s` registers, and `SPM_STALE` (a launch that reads SPM it did not write) |
-| Trace v2 | `tsr_trace.c` | reading, writing and strict validation of trace directories, the image id, capture of one trace per launch, replay with the comparisons of SW §5.4 |
+| Trace | `tsr_trace.c` | reading, writing and strict validation of trace directories, the image id, capture of one trace per launch, replay with the comparisons of SW §5.4 |
 | Debug | `tsr_dm.c`, `tsr_dbg.c` | a behavioural riscv-dbg debug module on the built-in hart (DMI profile of DB §9.1) and the tile-level debug models of DB (stop points, step, serial mode, tile breakpoints, dispatch history, unit probes, the trace writer) |
 
 The optional models (units, RISC-V, race detector, trace, debug) are separate CMake snippets
@@ -75,7 +75,7 @@ not architectural.
 
 A program is *valid* when it is race-free and, under every schedule, the per-unit op streams (words,
 flags, dependencies as relative tickets), the completion records r0 to r6, the RISC-V's SPM stores
-and the final written DRAM and SPM lines are the same ([SW](../../docs/v2/06-software-verification.md)
+and the final written DRAM and SPM lines are the same ([SW](../../docs/design/06-software-verification.md)
 §4.7). The tests run the fixed schedule and seven random ones with the race
 detector fatal. Never compared: poll counts, `MTIME`, `PERF`, record word r7 (duration), completion
 records (REC) and the log. RTL and the card have to reproduce the expect DRAM regions, the answer
@@ -88,7 +88,7 @@ detector checks the launch-stateless rule: `SPM_STALE` is reported when an op or
 SPM line that nothing wrote since the runtime popped the launch descriptor.
 
 The RISC-V time base: `TSR_SIM_RV_CORE=maxperf|small` selects the Ibex cycle table (default
-`maxperf`, V2-CC-34; timing only, every architectural result is the same) and `TSR_SIM_RV_RATIO`
+`maxperf`, CC-34; timing only, every architectural result is the same) and `TSR_SIM_RV_RATIO`
 the ratio of the control-core clock to the core clock (0.05 to 4, default 166.7 / 276.3 = 0.603).
 Both are informational estimates until the RVFI lockstep against the RTL exists (work package W5).
 
@@ -101,7 +101,7 @@ Both are informational estimates until the RVFI lockstep against the RTL exists 
 | `TSR_SIM_RV_CORE` | `maxperf`, `small` | `tsr_sim_create_opts` |
 | `TSR_SIM_RV_RATIO` | number in `[0.05, 4]` | `tsr_sim_create_opts` |
 | `TSR_SIM_LOG` | `stderr` or a file, optionally prefixed `rv,` | `tsr_sim_create_opts`: queue events (push, enqueue, start, done) and one line per `tsr_sim_op`; `rv,` adds one line per retired RISC-V instruction |
-| `TSR_TRACE` | a directory | `tsr_sim_create_opts`: one trace v2 per launch, in `<dir>/<seq, 6 digits>/`, firmware images in `<dir>/images/` |
+| `TSR_TRACE` | a directory | `tsr_sim_create_opts`: one trace per launch, in `<dir>/<seq, 6 digits>/`, firmware images in `<dir>/images/` |
 | `TSR_TRACE_KR_DUMP` | any value | `tsr_trace.c`: with verbose replay through the replay kernel, prints the captured launch (debugging aid) |
 | `TSR_SIM_THREADS` | 1 to 64 | MVM worker threads of the simulator behind the `sim` and `mock` transport kinds (default `min(online CPUs, 8)`) and of the tools that create simulators themselves (`tsr-trace-replay`, `tsr-trace-conv`, the `tsr-selftest` shadow: default 1; `tsr-numcheck`: 4 when unset). The library default is 1. Results do not depend on it |
 | `TSR_SIM_TMAX`, `TSR_SIM_CH_GIB`, `TSR_SIM_DRAM_DIR` | 1 to 8 (default 1), 1 to 16 (default 16), a directory | the `sim` transport kind (configuration of the simulated core: `T_MAX`, channel size, file-backed DRAM for models that do not fit in RAM) |
@@ -132,7 +132,7 @@ the firmware does.
 ## Speed
 
 The simulator is single-process, with `TSR_SIM_THREADS` worker threads for large MVMs. Measured on
-the simulator (v2, `83ac601`, dev host with 16 cores): Qwen2.5-0.5B decodes at 90 to 95 ms per token
+the simulator (`83ac601`, dev host with 16 cores): Qwen2.5-0.5B decodes at 90 to 95 ms per token
 with 145 launches per token; Qwen2.5-32B at about 8 s per token with file-backed DRAM
 (`TSR_SIM_DRAM_DIR`, about 20 GiB free) and 385 launches per token. A 32B klcheck run (8 prompts of
 64 tokens) takes about 77 minutes. The RISC-V interpreter itself is fast; the cost is the MVM
@@ -151,7 +151,7 @@ arithmetic.
 | Schedules and races | `sim_sched_unit`, `sim_sched_determinism`, `sim_race*`, `sim_*_race`, `sim_rv_issue*`, `sim_w1b_e2e` | the random schedule's streams and determinism, the race detector on directed programs and on firmware, the W1 end-to-end program |
 | RISC-V | `rv_unit`, `rv_unit_enc`, `rv_agent`, `rv_sim`, `rv_timing`, `rv_isa`, `rv_arch`, `rv_lockstep`, `rv_random`, `rv_random_long`, `rv_spike_*`, `rv_harness_selftest` | the interpreter against hand-encoded sequences, the GNU assembler, riscv-tests, riscv-arch-test and random programs, in lockstep against Spike; label `rv` |
 | Debug | `sim_dm*`, `sim_dbg*` | the debug-module model (halt, resume, abstract commands, system bus, breakpoints, a GDB-style session) and the tile-level debug models |
-| Trace | `sim_trace*`, `trace_v2_roundtrip` | trace v2 read, write, validation, capture and replay under three schedules |
+| Trace | `sim_trace*`, `trace_v2_roundtrip` | trace read, write, validation, capture and replay under three schedules |
 
 The Spike-based tests (`rv_spike_*`, `rv_arch`, `rv_lockstep`, `rv_random`) need the pinned tools of
 `sw/ctrl/tools/install-toolchain.sh` and report "Skipped" without them; `rv_random_long` runs only
@@ -166,7 +166,7 @@ Python); `-DTSR_SPIKE=<path>` and `-DTSR_RISCV_TOOLS=<prefix>` point it at anoth
 - Effects of an op are applied atomically at its modelled completion time. For race-free programs
   this is invisible; the race detector rejects the others.
 - The debug-module model does not model the debug ROM (abstract commands act on the interpreter
-  directly, V2-DB-18).
+  directly, DB-18).
 - `VMASK` (M9) has no handler and completes `ILLEGAL_OP`; `TOPK` and `DQROW` exist in the simulator
   (RTL in M8).
 - Ibex facts that were recalled from its documentation and not yet checked against the vendored

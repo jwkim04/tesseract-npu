@@ -1,4 +1,4 @@
-// tsr_trace.h — trace format v2 (docs/v2/06-software-verification.md "SW" §5, V2-SW-5): read,
+// tsr_trace.h — trace format (docs/design/06-software-verification.md "SW" §5, SW-5): read,
 // write and validate trace directories, capture one `launch` trace per launch on the simulator
 // (SW §5.5, TSR_TRACE), and replay a trace on a fresh simulator with every comparison of SW §5.4.
 // Implementation: sw/sim/tsr_trace.c (part of tsr_sim when sw/sim/trace.cmake is included).
@@ -6,8 +6,8 @@
 // Directory (SW §5.1):
 //   <trace>/meta.json                  version 2, every field below
 //   <trace>/ops/push.bin               tsr_trace_push records (48 bytes, little-endian), push order
-//   <trace>/init/ch<c>_<off>.bin       DRAM before the launch (as v1: <off> = 10 hex digits, bytes)
-//   <trace>/expect/ch<c>_<off>.bin     DRAM written by the launch (as v1)
+//   <trace>/init/ch<c>_<off>.bin       DRAM before the launch (<off> = 10 hex digits, bytes)
+//   <trace>/expect/ch<c>_<off>.bin     DRAM written by the launch
 //   <trace>/expect/tickets.bin         16-byte header {n_units, 0, 0, 0} + n_units tsr_trace_unit
 //   <set>/images/<image id hex>.elf    firmware images (kind launch), shared by every trace of a set;
 //                                      meta "image.file" is the path relative to <trace>
@@ -109,7 +109,7 @@ typedef struct tsr_trace2_config {
     uint8_t    q_depth[TSR_NUM_UNITS];
 } tsr_trace2_config;
 
-typedef struct tsr_trace2_perf {    // informational (SW §5.1, as v1)
+typedef struct tsr_trace2_perf {    // informational (SW §5.1)
     int      valid;
     uint64_t core_cycles;           // MTIME from LQ_POP to the answer (kind launch) / of the run (ops)
     uint64_t rv_instret;            // RISC-V instructions retired in that interval
@@ -248,7 +248,7 @@ typedef struct tsr_trace2_result {
     uint64_t rv_instret;
     int      perf_differs;          // informational: "perf" present and different
     // P2.5: the replay simulator's race detector at the end (TSR_SIM_RACE / opts.race report): reports,
-    // and of those SPM_STALE (a read of SPM never written since the launch's LQ_POP, V2-SW-4)
+    // and of those SPM_STALE (a read of SPM never written since the launch's LQ_POP, SW-4)
     uint32_t race_reports, race_stale;
 } tsr_trace2_result;
 

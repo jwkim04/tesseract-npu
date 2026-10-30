@@ -1,6 +1,6 @@
-// tsr/kernel.hpp — the tile/VU header library of the firmware SDK (docs/v2/06-software-
+// tsr/kernel.hpp — the tile/VU header library of the firmware SDK (docs/design/06-software-
 // verification.md "SW" §6.7; base docs/ctrl-riscv.md §8.2 without CALL). Freestanding C++20
-// (SW §6.1: no libstdc++, no heap, no exceptions / RTTI, no float, V2-SW-8), header-only.
+// (SW §6.1: no libstdc++, no heap, no exceptions / RTTI, no float, SW-8), header-only.
 //
 // What is here (namespace tsr):
 //   - types: spm, dram, handle() / from_handle(), wref, qa, op (mmio.hpp), ticket, deps, after();
@@ -25,13 +25,13 @@
 // hardware deps (ISSUE_DEP0 / DEP1). after() folds same-unit pairs; issue() pushes the deps it
 // is given unchanged (the replay kernel relies on that).
 //
-// Determinism (SW §4.7, V2-SW-30): nothing here lets a timing-dependent value (DONE_SEQ, credits,
+// Determinism (SW §4.7, SW-30): nothing here lets a timing-dependent value (DONE_SEQ, credits,
 // QSTATUS, MTIME, ...) reach pushed words, deps or SPM stores. Such values only end wait loops:
 // issue() spins on the credit, join() on DONE_SEQ, spm_ring joins in software chosen by count,
 // group folds by unit order. first_error() / error() / err_units() read the error records
 // (ERR_CODE / ERR_SEQ / ...), which are exact once the tickets concerned are done (I2); called
 // earlier they are a snapshot (timing-dependent). err_units_poll() (QSTATUS) is never exact.
-// The library keeps no state that changes what is pushed across launches (V2-SW-4): spm_ring is
+// The library keeps no state that changes what is pushed across launches (SW-4): spm_ring is
 // rebuilt by init() per launch; the only DTCM caches hold hardware constants (ISSUE_UNITS, CAPS
 // and the opcode -> unit table derived from them).
 //
@@ -369,7 +369,7 @@ TSR_HOT ticket issue(const op & o, deps d = {}, uint32_t flags = 0) {
 // fields for that (VU's 16-deep queue is mostly empty, so its field is usually the FIFO's). The
 // batch then pushes with issue_nc. The value is timing-dependent: it only chooses between pushing
 // at once and issue()'s per-push wait, which push the same words, deps and flags (SW §4.7,
-// V2-SW-30).
+// SW-30).
 inline uint32_t credits() { return hw::cw_read(CW_ISSUE_CREDIT); }
 TSR_HOT bool credits_cover(uint32_t c, uint32_t n_total) {
     const uint32_t a = detail::credit_of(c, UNIT_DMA), b = detail::credit_of(c, UNIT_VU);
@@ -651,7 +651,7 @@ struct group {
 // the newest record (the block just used: one probe).
 //
 // Tickets are only meaningful until the next qclear() (a dep below the clear point is BAD_DEP),
-// so a ring is init()'d per launch (the runtime's R9 QCLEAR separates launches; V2-SW-4).
+// so a ring is init()'d per launch (the runtime's R9 QCLEAR separates launches; SW-4).
 class spm_ring {
 public:
     // Power of two (table index masks). A full table makes alloc join its oldest (released) block,

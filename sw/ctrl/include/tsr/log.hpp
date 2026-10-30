@@ -1,5 +1,5 @@
-// tsr/log.hpp — firmware logging and panic (docs/v2/06-software-verification.md "SW" §6.6;
-// docs/v2/05-debug.md "DB" §6.1, §6.3; docs/v2/01-execution-model.md "EX" §4.10).
+// tsr/log.hpp — firmware logging and panic (docs/design/06-software-verification.md "SW" §6.6;
+// docs/design/05-debug.md "DB" §6.1, §6.3; docs/design/01-execution-model.md "EX" §4.10).
 //
 // Records go to EX's log ring (LOG_PUSH) with DB's header (the only definition, DB §6.1):
 //   [7:0] N payload words, [11:8] LEVEL (0 FATAL .. 5 TRACE), [15:12] SOURCE (0 runtime, 1 kernel,
@@ -15,7 +15,7 @@
 // level must be a constant expression: records above TSR_LOG_MAX_LEVEL (default 3 INFO; 4 DEBUG
 // in a debug build: no NDEBUG, or TSR_FW_DEBUG) are compiled out. Conversions (decoded on the host
 // from the ELF): %d %u %x %08x, %f (argument = f32 bits, pass a uint32_t; firmware has no float,
-// V2-SW-8), %t (a ticket: pass tsr::ticket or its uint32_t), 64-bit integers as two words (lo, hi;
+// SW-8), %t (a ticket: pass tsr::ticket or its uint32_t), 64-bit integers as two words (lo, hi;
 // %lld / %llu / %llx), %s for strings in loaded sections (the word is the address). The argument
 // word count is fixed at compile time: an integer of 8 bytes takes two words, everything else one.
 // The header's LEVEL (0..5) is the log level; FMT records are at most 1 + 253 argument words.

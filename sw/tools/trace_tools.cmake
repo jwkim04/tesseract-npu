@@ -1,20 +1,20 @@
-# sw/tools/trace_tools.cmake — trace v2 tools (P1.10; docs/v2/06-software-verification.md §5.4,
+# sw/tools/trace_tools.cmake — trace tools (P1.10; docs/design/06-software-verification.md §5.4,
 # §5.6, §9.5), included by sw/tools/CMakeLists.txt when present (before trace_gen.cmake, whose test
 # uses tsr-trace-replay).
-#   tsr-trace-replay   replays trace v2 directories or sets on fresh simulators (tsr_trace.h):
+#   tsr-trace-replay   replays trace directories or sets on fresh simulators (tsr_trace.h):
 #                      tsr-trace-replay [-q | -v] [--sched S]... [--threads N] [--max-cycles N]
 #                      [--tmax N] PATH...; summary line, exit 0 / 1 (mismatch) / 2 (unreadable);
 #                      P3.3: tsr-trace-replay --device KIND [--shadow] [--replay-image ELF] [--serial] PATH...
-#                      replays through a transport v2 (tsr_devrun.h; linked by sw/tools/CMakeLists.txt)
-#   tsr-trace-conv     v1 traces (cmd.bin) -> kind-ops v2 traces, serial dependency chain (SW §5.6):
+#                      replays through a transport (tsr_devrun.h; linked by sw/tools/CMakeLists.txt)
+#   tsr-trace-conv     cmd.bin traces -> kind-ops traces, serial dependency chain (SW §5.6):
 #                      tsr-trace-conv [-q] [--replay] [--sched S]... [--limit N] [--pick LIST]
 #                      -o OUT IN...
 # Tests:
 #   trace_conv_model       10 traces of traces/model (both models, Q8_0 and Q4_K MVMs, single and
 #                          two-MVM splits) converted into the build tree and replayed under the
-#                          fixed schedule and a random one: the units' results equal v1's expect
-#                          bit for bit. Skipped (77) when traces/model is not on disk
-#                          (traces/model/regen.sh with the v1 tools)
+#                          fixed schedule and a random one: the units' results equal the traces'
+#                          expected results bit for bit. Skipped (77) when traces/model is not on disk
+#                          (traces/model/regen.sh)
 #   trace_conv_model_full  (LABELS slow) all 290 traces converted into the build tree and replayed
 # The converted set itself is traces/model-v1conv (traces/model-v1conv/regen.sh).
 
@@ -24,7 +24,7 @@
 # ---------------------------------------------------------------------------
 if (TSR_TRACE_CONV_TEST)
     if (NOT EXISTS "${IN}")
-        message("trace_conv_model: ${IN} not on disk (traces/model/regen.sh with the v1 tools); skipped")
+        message("trace_conv_model: ${IN} not on disk (traces/model/regen.sh); skipped")
         cmake_language(EXIT 77)
     endif()
     file(REMOVE_RECURSE "${OUT}")

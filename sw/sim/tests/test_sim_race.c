@@ -1,4 +1,4 @@
-// test_sim_race.c — the race detector and SPM_STALE (P1.9; SW §4.6, V2-SW-3 / V2-SW-4; tsr_race.c).
+// test_sim_race.c — the race detector and SPM_STALE (P1.9; SW §4.6, SW-3 / SW-4; tsr_race.c).
 //
 // Modes (sw/sim/race.cmake):
 //   sim_race tile                      ctest sim_race: directed tile programs through the test hooks

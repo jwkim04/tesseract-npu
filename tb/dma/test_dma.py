@@ -12,7 +12,7 @@ pytest functions:
                                          exceeded (shared with the background sources)
                         sys_throughput   memory/SPM always ready: ~1 beat per cycle
                         sys_wr_modes     ST under the memory's req_first / data_first orders (M5)
-                      configurations: u200 (U200 v1: 4 ch, 4 MiB SPM, ADDR_BEAT_W 28, RD_OUT 16),
+                      configurations: u200 (U200: 4 ch, 4 MiB SPM, ADDR_BEAT_W 28, RD_OUT 16),
                       ch3aw36 (3 ch, 256-line SPM, ADDR_BEAT_W 36: DRAM operands crossing 2^32,
                       RD_OUT 3, SPM_RD_LAT 1), tiny (1 ch, 3-line SPM, ADDR_BEAT_W 5: 32-beat
                       channel, RD_OUT 1, SPM_RD_LAT 4), aw33 (2 ch, 128-line SPM, ADDR_BEAT_W 33:

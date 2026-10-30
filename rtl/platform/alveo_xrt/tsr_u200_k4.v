@@ -3,11 +3,11 @@
 // Vitis RTL kernel `tsr_u200_k4` (module name = kernel name): tsr_xrt_kernel with NUM_CH 4, T_MAX 8,
 // SPM 4 MiB (default) with SPM_RD_LAT 4, MVM_BC_PIPE 2, MVM_RES_PIPE 2,
 // MVM_MAC_LAT 9, RST_PIPE 3 (U200 bitstream parameters, docs/rtl-m3.md §14.2), CH_BYTES 16 GiB (default),
-// the other tsr_core parameters at the U200 v1 defaults, AXI_SLICES 2, RST_STAGES 3;
+// the other tsr_core parameters at the U200 defaults, AXI_SLICES 2, RST_STAGES 3;
 // ap_rst_n low for >= 4 cycles (RST_PIPE + 1, docs/platform-u200.md §5).
 // Ports: ap_clk, ap_rst_n (active low, synchronous), s_axi_control (AXI4-Lite, 32-bit
 // data, 13-bit address), m_axi_ch<c> for c < 4 (AXI4, 512-bit data, 64-bit address, 4-bit ID).
-// Register map and protocol: docs/v2 EX §9 (ap_ctrl_none); packaging: docs/platform-u200.md;
+// Register map and protocol: docs/design EX §9 (ap_ctrl_none); packaging: docs/platform-u200.md;
 // kernel_k4.xml describes the args.
 // Plain Verilog-2001 (the IP packager and IP integrator expect a Verilog top); the body is SystemVerilog.
 

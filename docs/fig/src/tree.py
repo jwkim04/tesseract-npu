@@ -18,7 +18,7 @@ Additions, with their sources:
 - callouts: docs/spec.md §7 and docs/numcheck.md ("16 partials" is an architectural constant; two
   terms of one partial are at least 8 cycles apart; a sequential-sum mutant is wrong on 67-87 % of
   the elements, so the order is verified bit-exactly; every product and sum rounded separately).
-The numerics are the v1 ones and are unchanged in v2 (the VU has its own bit-exact rules, VU §6).
+The VU has its own bit-exact rules (VU §6).
 
 Helpers defined here (not in tsrfig): join() draws the bracket that joins two tree inputs into
 one fadd node.

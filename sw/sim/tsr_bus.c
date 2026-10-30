@@ -474,7 +474,7 @@ static int sba_write(tsr_bus * b, uint32_t addr, uint32_t size, uint32_t val) {
         b->lb_valid = 0;
         if (b->env.spm_access) b->env.spm_access(b->env.ctx, off, size, 1);
         return 0;
-    default:                      // control and core windows (D15, V2-CC-33), DM range, unmapped
+    default:                      // control and core windows (D15, CC-33), DM range, unmapped
         return -1;
     }
 }

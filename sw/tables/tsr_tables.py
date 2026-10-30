@@ -1,17 +1,17 @@
-"""sw/tables/tsr_tables.py — the single table source of Tesseract v2 (V2-EX-30, work package P1.1).
+"""sw/tables/tsr_tables.py — the single table source of Tesseract (EX-30, work package P1.1).
 
 Plain Python data: literals only, no imports, no code. sw/tables/gen_tables.py reads this file and
 emits rtl/core/tsr_tables_pkg.sv, sw/sim/include/tsr_tables.h, sw/ctrl/include/tsr/mmio.hpp,
 vu.hpp, at.hpp and tb/common/tables.py; sw/tables/test_tables.py checks it. Change rows here
 and regenerate; never edit a generated file.
 
-Owners (docs/v2/README.md §4): EX owns the host CSR map, PERF, opcodes, units, error codes and the
+Owners (docs/design/README.md §4): EX owns the host CSR map, PERF, opcodes, units, error codes and the
 launch formats; CC the RISC-V address map, the control window, queue depths and the issue FIFO;
 DB the DBG block, its control-window rows, the log header and the REC / TRW / marker formats; VU
 and AT the encodings of their ops; SW the generator. When two documents disagree, the row follows
 the owner; the disagreement is reported with the P1.1 change, not resolved here.
 
-Citations: every row carries `src`, the document section it comes from. Areas: EX = docs/v2/
+Citations: every row carries `src`, the document section it comes from. Areas: EX = docs/design/
 01-execution-model.md, VU = 02-vector-unit.md, AT = 03-attention-kv.md, CC = 04-control-core.md,
 DB = 05-debug.md, SW = 06-software-verification.md, spec = docs/spec.md. A group whose rows all come
 from one section (a bit-field layout, an encoding, a word table) carries `src` once for the group;
@@ -27,12 +27,12 @@ Names are upper case without the TSR_ prefix; the generator adds the per-languag
 """
 
 DOCS = {
-    "EX": "docs/v2/01-execution-model.md",
-    "VU": "docs/v2/02-vector-unit.md",
-    "AT": "docs/v2/03-attention-kv.md",
-    "CC": "docs/v2/04-control-core.md",
-    "DB": "docs/v2/05-debug.md",
-    "SW": "docs/v2/06-software-verification.md",
+    "EX": "docs/design/01-execution-model.md",
+    "VU": "docs/design/02-vector-unit.md",
+    "AT": "docs/design/03-attention-kv.md",
+    "CC": "docs/design/04-control-core.md",
+    "DB": "docs/design/05-debug.md",
+    "SW": "docs/design/06-software-verification.md",
     "spec": "docs/spec.md",
 }
 
@@ -41,7 +41,7 @@ DOCS = {
 # =================================================================================================
 CONSTANTS = [
     # Identity and versions
-    ("ID_MAGIC",              0x5453_5231, "EX §5.1",  'ID register: "TSR1" (unchanged from v1)'),
+    ("ID_MAGIC",              0x5453_5231, "EX §5.1",  'ID register: "TSR1"'),
     ("ISA_MAJOR",             2,           "EX §7.5",  "VERSION[15:8]"),
     ("ISA_MINOR",             0,           "EX §7.5",  "VERSION[7:0]"),
     ("VERSION_VALUE",         0x0000_0200, "EX §7.5",  "VERSION register: ISA 2.0"),
@@ -158,10 +158,10 @@ LAYOUTS = {
     "VERSION": dict(src="EX §5.1, §7.5", desc="ISA version", fields=[
         ("7:0",  "MINOR", "0"), ("15:8", "MAJOR", "2"),
     ]),
-    "CFG0": dict(src="EX §5.1", desc="unchanged from v1", fields=[
+    "CFG0": dict(src="EX §5.1", desc="geometry configuration", fields=[
         ("7:0", "NUM_CH", "channels C"), ("19:8", "LANES", "MAC lanes"), ("23:20", "T_MAX", "token slots"),
     ]),
-    "CFG2": dict(src="EX §5.1", desc="unchanged from v1", fields=[
+    "CFG2": dict(src="EX §5.1", desc="geometry configuration", fields=[
         ("7:0", "VL", "vector length"), ("15:8", "NSREG", "s registers"), ("31:16", "K_MAX_256", "K_MAX / 256"),
     ]),
     "CAPS": dict(src="EX §7.5", desc="capability bits; retired bits are never set and never reused", fields=[
@@ -171,10 +171,10 @@ LAYOUTS = {
         ("6",     "DQROW",   "DQROW in the SPM form (RTL from M8; the simulator from M6)"),
         ("7",     "VMASK",   "VMASK (M9)"),
         ("11:8",  "VU_RSVD", "reserved for VU extensions, 0"),
-        ("15:12", "AT_RSVD", "reserved for AT, 0 in v2.0"),
+        ("15:12", "AT_RSVD", "reserved for AT, 0"),
     ], retired=[
-        (2, "RLD_LOOP",   "v1 RLD / MULI / LOOP"),
-        (4, "WAITM_JUMP", "v1 WAITM / JUMP"),
+        (2, "RLD_LOOP",   "RLD / MULI / LOOP"),
+        (4, "WAITM_JUMP", "WAITM / JUMP"),
     ]),
     "CFG3": dict(src="EX §7.5, VU §5.10, AT §5.10", desc="[15:0] VU, [31:16] AT", fields=[
         ("4:0",   "VU_FRONT", "VU front lanes with an EXP core (information for cycle models)"),
@@ -673,7 +673,7 @@ CTL_DB_RANGES = [(0x160, 0x180), (0x400, 0x800)]   # DB §10.2
 
 # XRT adapter s_axi_control map (EX §9.2), range 0x2000.
 SAXI = [
-    (0x000,  None,              "-",     "EX", "EX §9.2", "reserved, read 0 (v1 AP_CTRL, GIE, IER, ISR, cmd_addr, cmd_count, arg* deleted)", dict(block=0x40)),
+    (0x000,  None,              "-",     "EX", "EX §9.2", "reserved, read 0 (AP_CTRL, GIE, IER, ISR, cmd_addr, cmd_count, arg* deleted)", dict(block=0x40)),
     (0x040,  "CH_BASE_LO",      "RW",    "EX", "EX §9.2", "device byte address of the channel-c buffer, bits [31:0]; 4 KiB aligned; written while MEM_EN = 0", dict(n=16, stride=8)),
     (0x044,  "CH_BASE_HI",      "RW",    "EX", "EX §9.2", "bits [63:32]", dict(n=16, stride=8)),
     (0x0E0,  "ADAPTER_CTRL",    "RW",    "EX", "EX §9.2", "MEM_EN"),
@@ -760,9 +760,9 @@ UNITS_RESERVED = (6, 13, "EX §7.3")   # ids 6..13 reserved; a dependency on the
 # =================================================================================================
 OPCODES = [
     (0x00, 0x00, "NOP",    "kept",     "SYNC", None,    "spec", "EX §7.2", "SYNC join point: completes when its dependencies are done"),
-    (0x01, 0x01, "END",    "reserved", "SYNC", None,    "-",    "EX §7.2", "v1 END: ILLEGAL_OP"),
-    (0x02, 0x02, "LI",     "reserved", "SYNC", None,    "-",    "EX §7.2", "v1 LI: ILLEGAL_OP"),
-    (0x03, 0x03, "ADDI",   "reserved", "SYNC", None,    "-",    "EX §7.2", "v1 ADDI: ILLEGAL_OP"),
+    (0x01, 0x01, "END",    "reserved", "SYNC", None,    "-",    "EX §7.2", "END: ILLEGAL_OP"),
+    (0x02, 0x02, "LI",     "reserved", "SYNC", None,    "-",    "EX §7.2", "LI: ILLEGAL_OP"),
+    (0x03, 0x03, "ADDI",   "reserved", "SYNC", None,    "-",    "EX §7.2", "ADDI: ILLEGAL_OP"),
     (0x04, 0x04, "MULI",   "retired",  "SYNC", None,    "-",    "EX §7.2", "retired, never reused"),
     (0x05, 0x05, "RLD",    "retired",  "SYNC", None,    "-",    "EX §7.2", "retired, never reused"),
     (0x06, 0x06, "LOOP",   "retired",  "SYNC", None,    "-",    "EX §7.2", "retired, never reused"),
@@ -804,7 +804,7 @@ OPCODES = [
 
 # =================================================================================================
 # Error codes (EX §8.1): (code, NAME or None, status, src, condition, ERR_INFO). status: active,
-# reserved (defined name, never raised), retired (old v1 name, never raised, never reused).
+# reserved (defined name, never raised), retired (old name, never raised, never reused).
 # =================================================================================================
 ERRORS = [
     (0,  "NONE",         "active",   "EX §8.1", "", ""),
@@ -816,8 +816,8 @@ ERRORS = [
     (6,  "K_RANGE",      "active",   "EX §8.1", "K > K_MAX or not a multiple of the block size", "0"),
     (7,  "T_RANGE",      "active",   "EX §8.1", "T = 0 or T > T_MAX", "0"),
     (8,  "ABORTED",      "active",   "EX §8.1", "completed without running: a QABORT, or its unit was in error state", "0"),
-    (9,  "LOOP_NEST",    "retired",  "EX §8.1", "v1, never raised", ""),
-    (10, "WAIT_TIMEOUT", "retired",  "EX §8.1", "v1, never raised", ""),
+    (9,  "LOOP_NEST",    "retired",  "EX §8.1", "never raised", ""),
+    (10, "WAIT_TIMEOUT", "retired",  "EX §8.1", "never raised", ""),
     (11, "DEP_FAILED",   "active",   "EX §8.1", "a dependency completed with an error", "0"),
     (12, "BAD_DEP",      "active",   "EX §8.1", "a dependency on a ticket not pushed yet, on unit 6..14 or an absent unit, or below its unit's clear point", "0"),
     (13, "OPERAND",      "active",   "EX §8.1", "an operand value outside the range its op defines, other than K, T and the address ranges (VU and AT ops only)", "the offending value"),
@@ -945,7 +945,7 @@ WORD_TABLES = {
 # `values` maps a field to its value list, or to the name of a shared ENUMS entry.
 # =================================================================================================
 ENCODINGS = {
-    # ---- v1 ops, encodings unchanged (spec ISA; EX §7.1-§7.2: x16 = 0, A = imm) ----------------
+    # ---- base ops, encodings unchanged (spec ISA; EX §7.1-§7.2: x16 = 0, A = imm) ----------------
     "NOP":   dict(src="spec ISA, EX §7.1", owner="spec", fields=[]),
     "FENCE": dict(src="spec ISA, EX §7.1", owner="spec", fields=[]),
     "LD": dict(src="spec ISA, EX §7.2", owner="spec", fields=[

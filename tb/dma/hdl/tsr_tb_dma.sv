@@ -3,7 +3,7 @@
 // tsr_dma + one tsr_mem_arb per channel, wired like tsr_core (DMA = source TSR_SRC_DMA of every
 // channel), with the other read sources exposed so Python can generate background traffic:
 //   f_*  : source TSR_SRC_AUX (0, the former fetch source) of channel 0 as a background reader
-//          (channels > 0 tie it off; tsr_core ties it off on every channel, V2-CC-26)
+//          (channels > 0 tie it off; tsr_core ties it off on every channel, CC-26)
 //   w_*  : source TSR_SRC_WS of every channel (packed [NUM_CH]; the M3 weight-stream port)
 //   m_*  : the channel memory ports (tsr_core naming, for common.mem_model.MemModel)
 //   spm_*: the DMA's SPM client port. RTL_SPM = 0: driven by a Python SPM model. RTL_SPM = 1:

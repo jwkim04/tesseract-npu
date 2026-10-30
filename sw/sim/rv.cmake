@@ -1,6 +1,6 @@
-# sw/sim/rv.cmake — the RISC-V side of the simulator (P1.7, docs/v2/06-software-verification.md
-# §4.2, V2-SW-1): tsr_rv.c (RV32IMC + Zicsr + Zifencei interpreter of the control core's Ibex,
-# docs/v2/04-control-core.md §3) and tsr_bus.c (firmware and test bus profiles, SBA, HTIF, ELF
+# sw/sim/rv.cmake — the RISC-V side of the simulator (P1.7, docs/design/06-software-verification.md
+# §4.2, SW-1): tsr_rv.c (RV32IMC + Zicsr + Zifencei interpreter of the control core's Ibex,
+# docs/design/04-control-core.md §3) and tsr_bus.c (firmware and test bus profiles, SBA, HTIF, ELF
 # loader, and the RISC-V agent that runs the hart on the simulator's time base).
 #
 # Included by sw/sim/CMakeLists.txt after tsr_sim / tsr_sim_shared exist (needs tsr_c_target):

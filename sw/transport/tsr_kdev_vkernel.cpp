@@ -2,11 +2,9 @@
 // Verilated Alveo kernel running in a separate server process (wire protocol
 // tsr_vkernel_proto.h), so a host process exercises the real host path — register map, the CSR
 // window, ADAPTER_STATUS, transfers — against the RTL without linking Verilator.
-// docs/platform-u200.md §13. X0 deleted the v1 server (tb/platform/vkernel) and the v1 run
-// control of this client (environment switches for the start sequence and polling, VK_WAIT);
-// the two-clock v2 server comes with P5.3 (docs/v2/06-software-verification.md §11). P3.1 ported
-// the client to the v2 kdev interface (EX §10.2): idle() lets device time pass (VK_ADVANCE, the
-// "advance" hint) and now_ns() is the server's device time at the nominal kernel clock (VK_TIME),
+// docs/platform-u200.md §13. The two-clock server comes with P5.3
+// (docs/design/06-software-verification.md §11). The client follows the kdev interface (EX §10.2):
+// idle() lets device time pass (VK_ADVANCE, the "advance" hint) and now_ns() is the server's device time at the nominal kernel clock (VK_TIME),
 // so the protocol's timeouts count simulated time, as on the simulator kinds.
 // TSR_DEVICE=vkernel opens it with:
 //   TSR_VKERNEL_SERVER   server command line (words separated by blanks, no quoting): the client
@@ -132,12 +130,12 @@ public:
             if (!spawn(srv)) return false;
         } else {
             return fail("not available until P5.3: set TSR_VKERNEL_SERVER (server command line) or TSR_VKERNEL_SOCKET "
-                        "to a two-clock v2 vkernel server (protocol version 3); there is no in-tree server yet");
+                        "to a two-clock vkernel server (protocol version 3); there is no in-tree server yet");
         }
         tsr_vk_rsp r{};
         std::vector<uint8_t> pl;
         if (!call(VK_HELLO, TSR_VK_PROTO_VERSION, 0, 0, nullptr, 0, &r, &pl) || r.rc != 0) {
-            return fail("the server refused the connection (protocol version 3 of the v2 server, P5.3, or a start-up check)");
+            return fail("the server refused the connection (protocol version 3 of the two-clock server, P5.3, or a start-up check)");
         }
         nch_ = r.val;
         chb_ = r.x;

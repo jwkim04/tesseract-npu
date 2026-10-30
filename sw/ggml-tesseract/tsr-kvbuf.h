@@ -1,6 +1,6 @@
-// tsr-kvbuf.h — KV-cache buffers of the ggml-tesseract backend (docs/v2/06-software-verification.md
-// "SW" §9.3 M7 "KV buffers", V2-SW-17; docs/v2/03-attention-kv.md "AT" §4 plane layout, §4.5 region,
-// §4.6 correspondence with ggml; docs/v2/01-execution-model.md "EX" §11 DRAM map). W3b (P3.5).
+// tsr-kvbuf.h — KV-cache buffers of the ggml-tesseract backend (docs/design/06-software-verification.md
+// "SW" §9.3 M7 "KV buffers", SW-17; docs/design/03-attention-kv.md "AT" §4 plane layout, §4.5 region,
+// §4.6 correspondence with ggml; docs/design/01-execution-model.md "EX" §11 DRAM map). W3b (P3.5).
 //
 // A llama.cpp KV cache with the cache offloaded (offload_kqv = true, -ctk q8_0 -ctv q8_0, SW §8 R3)
 // is one ggml buffer per cache whose tensors are all `cache_<tag>k_l<n>` / `cache_<tag>v_l<n>`
@@ -10,7 +10,7 @@
 //   - one plane per (tensor, stream) = per (layer, stream, K/V) (AT §4.5), geometry {E, C, LG} with
 //     LG = ceil(kv_size / (16 C)) (tsr_kv_lg_min), K token-major (AT §4.3), V slice-major (§4.4);
 //   - planes are allocated symmetrically (the same byte offset on every channel), top-down from the
-//     end of the channels (tsr_range_alloc::alloc_top on the WEIGHT heap; EX §11, V2-AT-21), 4 KiB
+//     end of the channels (tsr_range_alloc::alloc_top on the WEIGHT heap; EX §11, AT-21), 4 KiB
 //     aligned (AT §4.5: recommended, not required);
 //   - set / get / memset / clear on byte ranges of the ggml image convert between ggml block_q8_0
 //     rows and the planes with AT's C reference (tsr_kv_set_bytes / tsr_kv_get_bytes, a pure byte

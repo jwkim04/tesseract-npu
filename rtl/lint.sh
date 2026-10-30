@@ -2,7 +2,7 @@
 # rtl/lint.sh — Verilator lint (-Wall, warnings are errors) of the RTL in rtl/filelist.f.
 #
 #   rtl/lint.sh            lint every module as its own top with default parameters (tsr_core:
-#                          the U200 configuration with the MVM unit; since X0 the core datapath
+#                          the U200 configuration with the MVM unit; the core datapath
 #                          without a command source, rtl/core/tsr_core.sv header), then tsr_core
 #                          with HAS_MVM = 0 and HAS_MVM = 1 in reduced configurations
 #                          (1 / 2 / 3 / 16 channels, small SPM, T_MAX 8, small K_MAX, narrow DRAM
@@ -11,7 +11,7 @@
 #                          latencies 1 / 8, reset register stages RST_PIPE 1 / 3 / 8), then the
 #                          M3 blocks with edge parameters (tsr_mvm also RST_LOCAL 1 / 2), then the
 #                          testbench-only HDL under tb/*/hdl (each file as top, with the other
-#                          files of its directory), then the generated v2 tables (V2-EX-30, CC
+#                          files of its directory), then the generated tables (EX-30, CC
 #                          §13.4: sw/tables/gen_tables.py --check and a lint of
 #                          rtl/core/tsr_tables_pkg.sv on its own, when the generator exists), then
 #                          the target and platform lint scripts (M3 part C):
@@ -129,7 +129,7 @@ for d in "$ROOT"/tb/*/hdl; do
     done
 done
 
-# Generated v2 tables (V2-EX-30, CC §13.4): the generated files are current, and the SV package
+# Generated tables (EX-30, CC §13.4): the generated files are current, and the SV package
 # lints on its own (no core module imports it before Y4).
 if [ -f "$ROOT/sw/tables/gen_tables.py" ]; then
     if out=$(python3 "$ROOT/sw/tables/gen_tables.py" --check 2>&1); then

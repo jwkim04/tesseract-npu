@@ -2,11 +2,11 @@
 // configuration defaults, helper functions and the internal-interface structs of the core.
 //
 // C mirror: sw/sim/include/tsr_isa.h (encoding, CSR map, error codes) and tsr_ref.h (QA layout
-// helpers). Contract: docs/spec.md and docs/v2 (EX §5, §7, §11); RTL architecture and interface
-// rules: docs/rtl-m2.md, docs/rtl-m3.md. X0 (docs/v2 EX §12, D14 / D16): the host command path
-// is deleted — no instruction fetch, no run registers, no integer registers; LI / ADDI / END are
-// reserved opcodes. The v2 offsets, opcodes and units come from the generated tsr_tables_pkg
-// (V2-EX-30, Y4); this package keeps what the remaining blocks use.
+// helpers). Contract: docs/spec.md and docs/design (EX §5, §7, §11); RTL architecture and interface
+// rules: docs/rtl-m2.md, docs/rtl-m3.md. D14 / D16: there is no host command
+// path (no instruction fetch, no run registers, no integer registers); LI / ADDI / END are
+// reserved opcodes. The offsets, opcodes and units come from the generated tsr_tables_pkg
+// (EX-30, Y4); this package keeps what the remaining blocks use.
 // Every constant below must match tsr_isa.h exactly; tb/common/isa.py mirrors this file for the
 // testbenches and tb/common/test_common.py cross-checks the struct widths.
 //
@@ -41,7 +41,7 @@ package tsr_pkg;
   localparam logic [7:0]  TSR_ISA_MINOR       = 8'd0;
   localparam logic [31:0] TSR_CANON_NAN       = 32'h7FC0_0000;
 
-  // Channel DRAM map (byte offsets inside a channel; OPL/IO/AUX on ch0 only; docs/v2 EX §11).
+  // Channel DRAM map (byte offsets inside a channel; OPL/IO/AUX on ch0 only; docs/design EX §11).
   localparam longint unsigned TSR_MIB               = 64'd1048576;
   localparam longint unsigned TSR_REGION_OPL_OFF    = 64'd0;          // op lists (was CMD)
   localparam longint unsigned TSR_REGION_OPL_SIZE   = 64 * TSR_MIB;
@@ -52,7 +52,7 @@ package tsr_pkg;
   localparam longint unsigned TSR_REGION_WEIGHT_OFF = 512 * TSR_MIB;
 
   // -------------------------------------------------------------------------------------------
-  // Elaboration parameter defaults: U200 v1 (spec 구성 파라미터, TSR_CONFIG_U200_V1).
+  // Elaboration parameter defaults: U200 (spec 구성 파라미터, TSR_CONFIG_U200_V1).
   // tsr_core takes each of these as a parameter; these are only the defaults.
   // -------------------------------------------------------------------------------------------
   localparam int unsigned     TSR_DEF_NUM_CH         = 4;
@@ -75,7 +75,7 @@ package tsr_pkg;
   localparam int unsigned TSR_SRC_ID_W = 2;   // id inside one source (source-local)
   localparam int unsigned TSR_MEM_ID_W = 4;   // memory-side id = {source[1:0], local[1:0]}
   localparam int unsigned TSR_NSRC     = 3;   // read sources per channel arbiter
-  localparam int unsigned TSR_SRC_AUX   = 0;  // freed by the fetch removal; tied off (V2-CC-26)
+  localparam int unsigned TSR_SRC_AUX   = 0;  // freed by the fetch removal; tied off (CC-26)
   localparam int unsigned TSR_SRC_DMA   = 1;  // LD/ST (reads and writes)
   localparam int unsigned TSR_SRC_WS    = 2;  // M3 MVM weight stream (tied off in M2)
 
@@ -89,10 +89,8 @@ package tsr_pkg;
   localparam int unsigned TSR_SPM_BE_W    = TSR_LINE_BYTES;
 
   // -------------------------------------------------------------------------------------------
-  // CSR map (32-bit registers, byte offsets; tsr_isa.h enum tsr_csr). The offsets v1 and v2 share
-  // (docs/v2 EX §5.1); the v1 run registers (command-buffer address and count, ARG0..7, ERR_PC,
-  // ERR_CODE, ERR_INFO, PC) and the v1 CTRL / STATUS bits are deleted (X0). CTRL / STATUS bits
-  // and the rest of the v2 map: EX §5.2-§5.4, generated tsr_tables_pkg (Y4).
+  // CSR map (32-bit registers, byte offsets; tsr_isa.h enum tsr_csr). Offsets: docs/design
+  // EX §5.1. CTRL / STATUS bits and the rest of the map: EX §5.2-§5.4, generated tsr_tables_pkg (Y4).
   // -------------------------------------------------------------------------------------------
   localparam int unsigned TSR_CSR_AW = 12;
   localparam logic [TSR_CSR_AW-1:0] TSR_CSR_ID          = 12'h000;
@@ -101,8 +99,8 @@ package tsr_pkg;
   localparam logic [TSR_CSR_AW-1:0] TSR_CSR_CFG1        = 12'h00C;  // SPM size in lines
   localparam logic [TSR_CSR_AW-1:0] TSR_CSR_CFG2        = 12'h010;  // VL[7:0] NSREG[15:8] K_MAX/256[31:16]
   localparam logic [TSR_CSR_AW-1:0] TSR_CSR_CAPS        = 12'h014;
-  localparam logic [TSR_CSR_AW-1:0] TSR_CSR_CTRL        = 12'h020;  // v2 bits: EX §5.2
-  localparam logic [TSR_CSR_AW-1:0] TSR_CSR_STATUS      = 12'h024;  // v2 bits: EX §5.3
+  localparam logic [TSR_CSR_AW-1:0] TSR_CSR_CTRL        = 12'h020;  // bits: EX §5.2
+  localparam logic [TSR_CSR_AW-1:0] TSR_CSR_STATUS      = 12'h024;  // bits: EX §5.3
   localparam logic [TSR_CSR_AW-1:0] TSR_CSR_PERF_BASE   = 12'h100;  // counter i: LO +8i, HI +8i+4
 
   localparam logic [31:0] TSR_CAPS_VU         = 32'h1;   // bit0
@@ -127,7 +125,7 @@ package tsr_pkg;
   localparam logic [TSR_ERR_W-1:0] TSR_ERR_NONE         = 4'd0;
   localparam logic [TSR_ERR_W-1:0] TSR_ERR_ILLEGAL_OP   = 4'd1;
   localparam logic [TSR_ERR_W-1:0] TSR_ERR_BAD_FMT      = 4'd2;
-  localparam logic [TSR_ERR_W-1:0] TSR_ERR_QA_MISMATCH  = 4'd3;  // reserved: never raised in v1
+  localparam logic [TSR_ERR_W-1:0] TSR_ERR_QA_MISMATCH  = 4'd3;  // reserved: never raised
   localparam logic [TSR_ERR_W-1:0] TSR_ERR_SPM_RANGE    = 4'd4;
   localparam logic [TSR_ERR_W-1:0] TSR_ERR_DRAM_RANGE   = 4'd5;
   localparam logic [TSR_ERR_W-1:0] TSR_ERR_K_RANGE      = 4'd6;
@@ -137,7 +135,7 @@ package tsr_pkg;
   localparam logic [TSR_ERR_W-1:0] TSR_ERR_WAIT_TIMEOUT = 4'd10;
 
   // -------------------------------------------------------------------------------------------
-  // Opcodes and sub-codes (tsr_isa.h; docs/v2 EX §7.2). 0x01 END, 0x02 LI, 0x03 ADDI: reserved
+  // Opcodes and sub-codes (tsr_isa.h; docs/design EX §7.2). 0x01 END, 0x02 LI, 0x03 ADDI: reserved
   // (ILLEGAL_OP); 0x04..0x08 MULI, RLD, LOOP, WAITM, JUMP and 0x09 CALL: retired, never reused.
   // -------------------------------------------------------------------------------------------
   localparam logic [7:0] TSR_OP_NOP   = 8'h00;
@@ -294,7 +292,7 @@ package tsr_pkg;
   // ===========================================================================================
 
   // ---- architecture constants of the MVM datapath (spec 디바이스 가중치 레이아웃, 수치 규칙) ----
-  localparam int unsigned TSR_MVM_LANES       = 128;  // weight lanes per beat (= LANES, U200 v1)
+  localparam int unsigned TSR_MVM_LANES       = 128;  // weight lanes per beat (= LANES, U200)
   localparam int unsigned TSR_MVM_GROUPS      = 4;    // 32-lane groups per beat (one sum each)
   localparam int unsigned TSR_MVM_GROUP_LANES = 32;   // lanes summed per group (block / sub-block)
   localparam int unsigned TSR_MVM_SUM_W       = 21;   // signed group sum: |sum| <= 32*128*128 = 2^19

@@ -1,8 +1,8 @@
-// tsr_dm.c — debug-module model of the simulator (P1.12, V2-DB-18): DB §9.1's DMI profile on the
+// tsr_dm.c — debug-module model of the simulator (P1.12, DB-18): DB §9.1's DMI profile on the
 // built-in hart (tsr_rv) and its bus (tsr_bus). The register-level contract, the model decisions
 // and the timing rules are in include/tsr_dm.h.
 //
-// Normative sources: docs/v2/05-debug.md (DB) §3.1-§3.8, §9.1, §14 item 1; docs/v2/04-control-
+// Normative sources: docs/design/05-debug.md (DB) §3.1-§3.8, §9.1, §14 item 1; docs/design/04-control-
 // core.md (CC) §3.2 (dm_top configuration, RV_HALTED), §4.3 (SBA refusals), §12.2 (ndmreset);
 // the RISC-V Debug Specification 0.13.2 (§3 Debug Module) for everything the profile leaves to
 // it; riscv-dbg (pulp-platform) for its implementation choices (memory layout, hartinfo,

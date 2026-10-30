@@ -2,10 +2,10 @@
 // cycle model of KVST 0x14 (unit 0 DMA), ATTQK 0x21 and ATTPV 0x22 (unit 2 MVM), and of the vector
 // ops ASMAX 0x34, AMASK 0x35, AMERGE 0x36 and ANORM 0x37 (unit 3, executed by the VU).
 //
-// Normative sources: docs/v2/03-attention-kv.md (AT) §4 (KV planes), §5 (encodings and semantics),
+// Normative sources: docs/design/03-attention-kv.md (AT) §4 (KV planes), §5 (encodings and semantics),
 // §5.8 (checks), §5.10 (CAPS, CFG3, units), §8–§10 and §13.4 (structure, rates, PERF, the cycle
-// model); docs/v2/02-vector-unit.md (VU) §5.11, §7.4, §7.9 (the vector ops on the VU and their
-// rates); docs/v2/01-execution-model.md (EX) §6, §7.1, §8.1. Every numeric result and every byte
+// model); docs/design/02-vector-unit.md (VU) §5.11, §7.4, §7.9 (the vector ops on the VU and their
+// rates); docs/design/01-execution-model.md (EX) §6, §7.1, §8.1. Every numeric result and every byte
 // placement comes from tsr_ref_at.c; this file decodes with the generated field constants
 // (tsr_tables.h), checks, and points the references at the simulator's SPM and channel DRAM.
 // CAPS bit5 (ATT) is implemented when all seven ops are registered (tsr_at_register).

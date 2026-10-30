@@ -1,5 +1,5 @@
-// selftest.cpp — the `selftest` base kernel (docs/v2/01-execution-model.md "EX" §4.6; docs/v2/
-// 06-software-verification.md "SW" §7.1, §7.6, V2-SW-28): the card and simulator self-test programs
+// selftest.cpp — the `selftest` base kernel (docs/design/01-execution-model.md "EX" §4.6; docs/design/
+// 06-software-verification.md "SW" §7.1, §7.6, SW-28): the card and simulator self-test programs
 // that tsr-selftest launches (D15: the host never pushes tile ops itself). The arguments, every test's
 // parameters and data layout, and the return codes are in sw/ctrl/ref/selftest_abi.hpp (shared with
 // the host side); each test's sequence is described at its function below.

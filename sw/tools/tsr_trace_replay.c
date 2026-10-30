@@ -1,5 +1,5 @@
-// tsr_trace_replay.c — tsr-trace-replay v2 (docs/v2/06-software-verification.md "SW" §5.4, §9.5):
-// replays trace v2 directories on fresh simulators and compares everything SW §5.4 lists (the
+// tsr_trace_replay.c — tsr-trace-replay (docs/design/06-software-verification.md "SW" §5.4, §9.5):
+// replays trace directories on fresh simulators and compares everything SW §5.4 lists (the
 // DONE fields, expect regions bit-exactly, written beats = the union of the expect regions, reads
 // inside init or written earlier, per-unit completion counts and error records, the per-unit
 // projections of push.bin). Kind `launch` boots the trace's image and pushes its descriptor; kind
@@ -26,7 +26,7 @@
 //   --replay-kernel NAME the kernel's name in .tsr_kernels (default "replay")
 //   --serial      (with --replay-image or --device) the replay kernel's SERIAL flag: every op record
 //                 depends on the previous op record (traces/model-v1conv, SW §5.4)
-//   --device KIND (P3.3, SW §9.5) replay through a transport v2 instead of fresh simulators (sim, mock,
+//   --device KIND (P3.3, SW §9.5) replay through a transport instead of fresh simulators (sim, mock,
 //                 vkernel, xrt; tsr_devrun.h): the device boots --replay-image (default $TSR_IMAGE, else
 //                 the build's tsr-fw.elf); kind ops go through its `replay` kernel, kind launch boots
 //                 the trace's own image and pushes its descriptor; compared: the answer with the
@@ -178,7 +178,7 @@ static void usage(void) {
     fprintf(stderr, "usage: tsr-trace-replay [-q | -v] [--sched S]... [--rv-ratio R] [--threads N] [--max-cycles N] [--tmax N]\n"
                     "                        [--replay-image ELF [--replay-kernel NAME] [--serial]] PATH...\n"
                     "       tsr-trace-replay [-q | -v] --device KIND [--shadow] [--replay-image ELF] [--serial] PATH...\n"
-                    "  PATH: a trace v2 directory or a set of them (searched recursively for meta.json)\n");
+                    "  PATH: a trace directory or a set of them (searched recursively for meta.json)\n");
 }
 
 int main(int argc, char ** argv) {

@@ -1,5 +1,5 @@
 // test_sim_queue.c — the queue model (tsr_q.c; EX §7-§8, CC §5.1, §7-§9) through the RISC-V side
-// control window and the push / QCTRL test hooks: checker codes in EX §8.1 order for every v1 tile
+// control window and the push / QCTRL test hooks: checker codes in EX §8.1 order for every tile
 // op (with ERR_INFO / ERR_W0 / ERR_SEQ / ERR_PIDX records and "a poisoned op changes no state"),
 // refused opcodes on SYNC, BAD_DEP rules and its place in the order, OPERAND through a stub VU
 // handler, the four tagged extents and their limits, tickets and ISSUE_PIDX (+1 per push and per

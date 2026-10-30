@@ -1,5 +1,5 @@
 // test-tsr-opl-launch.cpp — the op-list path's launcher on a device (ctest ggml_tesseract_opl_launch;
-// docs/v2/06-software-verification.md §9.3 steps 3-5, §7.3): tsr_opl_dev boots the transport selected
+// docs/design/06-software-verification.md §9.3 steps 3-5, §7.3): tsr_opl_dev boots the transport selected
 // by TSR_DEVICE (default sim) with the build's firmware image and runs lists built by tsr_opl_builder
 // through the `graph` kernel. No ggml.
 //

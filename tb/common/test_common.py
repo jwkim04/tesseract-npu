@@ -17,11 +17,9 @@ M3 (docs/rtl-m3.md §10.1):
                      API (tsr_sim_op through libtsr_sim.so, CMake target tsr_sim_shared)
   test_pipes_sim     cocotb on tb/common/hdl/tsr_tb_pipes.sv: tsr_vpipe / tsr_rpipe at DEPTH 0/1/3
 cocotb tests (loop_*, pipes_*) are not collected by pytest directly; the runner selects them.
-Removed in X0 (docs/v2 EX §12, SW §10.3; they return with the v2 trace format and the
-dispatcher): test_traces_load, test_replay_compare_detects_mismatches, loop_csr (CsrDriver),
-test_core_skeleton_sim, test_pycore_traces, test_proggen_*, test_simlib_keyed_build.
-test_mvm_model_vs_simulator ran MVM programs through the simulator's v1 program runner; it now
-issues the LD and MVM ops one at a time through tsr_sim_op.
+Planned with the trace format and the dispatcher (docs/design SW §10.3): trace loading and
+replay comparison tests, loop_csr (CsrDriver), the core skeleton and pycore trace tests.
+test_mvm_model_vs_simulator issues the LD and MVM ops one at a time through tsr_sim_op.
 """
 from __future__ import annotations
 

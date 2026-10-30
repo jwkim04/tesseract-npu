@@ -1,10 +1,10 @@
-// tsr_trace_conv.c — tsr-trace-conv (docs/v2/06-software-verification.md "SW" §5.6 row
-// traces/model, V2-SW-6; §9.5): converts v1 trace directories (cmd.bin programs, format version 1)
-// into trace v2 kind-ops traces, and optionally replays each converted trace on the simulator.
+// tsr_trace_conv.c — tsr-trace-conv (docs/design/06-software-verification.md "SW" §5.6 row
+// traces/model, SW-6; §9.5): converts trace directories of format version 1 (cmd.bin programs)
+// into kind-ops traces of format version 2, and optionally replays each converted trace on the simulator.
 //
 //   tsr-trace-conv [-q] [--replay] [--sched S]... [--limit N] [--pick P1,P2,...] -o OUT IN...
 //
-//   IN            a v1 trace directory or a set of them (searched recursively for meta.json); a
+//   IN            a format version 1 trace directory or a set of them (searched recursively for meta.json); a
 //                 trace at IN/<rel> is written to OUT/<rel> (a trace given directly: OUT/<its name>)
 //   --pick        convert only the traces whose <rel> is listed (comma-separated)
 //   --limit N     convert only the first N traces (sorted)
@@ -14,21 +14,21 @@
 // Summary: tsr-trace-conv: <n> converted, <bytes> written, <s> s; <p> replays passed, <f> failed,
 //          <e> errors. Exit status 0, 1 (a replay mismatch), 2 (a trace not convertible, or usage).
 //
-// Conversion (SW §5.6): each v1 instruction up to END becomes one push record (kind 0, all eight
+// Conversion (SW §5.6): each instruction up to END becomes one push record (kind 0, all eight
 // words, ISSUE_PUSH WMASK 0xFF) that depends on the previous push record (dep0 = its relative
-// ticket, tsr_trace2_ticket_of; dep1 none): a serial chain, which with I1 keeps v1's sequential
+// ticket, tsr_trace2_ticket_of; dep1 none): a serial chain, which with I1 keeps the sequential
 // semantics. END and everything after it are dropped; init and expect are kept as they are
-// (including v1's command-buffer bytes in init, which no v2 op reads). Only what v2 encodes the
-// same way is accepted: NOP, LD, ST, QACT, MVM, FENCE with every v1 register field (w0[31:16]) 0
-// and a v1 run that ended DONE without an error; anything else (LI / ADDI, register-relative
-// operands, v1's VU encodings, error endings) is refused: those sets are regenerated with
-// tsr-trace-gen v2 instead. The v2 DONE is OK (RET 0, no failing ticket), tickets.bin counts the
+// (including the cmd.bin bytes in init, which no op reads). Only what the kind ops encode the
+// same way is accepted: NOP, LD, ST, QACT, MVM, FENCE with every register field (w0[31:16]) 0
+// and a run that ended DONE without an error; anything else (LI / ADDI, register-relative
+// operands, the old VU encodings, error endings) is refused: those sets are regenerated with
+// tsr-trace-gen instead. The DONE is OK (RET 0, no failing ticket), tickets.bin counts the
 // pushes per unit with no error record, ops.load is chosen outside every region, sched "fixed",
-// no perf (v1's op-level cycle counts are not comparable). config takes v1's elaboration
+// no perf (the op-level cycle counts are not comparable). config takes the elaboration
 // parameters (NIREG and LOOP_DEPTH dropped) and CTL_ID, CFG3, Q_DEPTH and the TCM sizes of a
 // simulator built from them.
 //
-// The v1 reader below is v1-m4:sw/sim/tsr_trace.c (tsr_trace_read and its JSON parser), kept as
+// The version 1 reader below is a copy of the old tsr_trace_read and its JSON parser, kept as
 // it was apart from the names (v1_trace, v1_config) and the parts a reader does not need.
 #define _GNU_SOURCE
 
@@ -46,7 +46,7 @@
 #include <unistd.h>
 
 // ---------------------------------------------------------------------------
-// v1 trace (v1-m4:sw/sim/include/tsr_trace.h, tsr_isa.h)
+// format version 1 trace
 // ---------------------------------------------------------------------------
 #define TRACE_FORMAT     "tesseract-trace"
 #define TRACE_VERSION    1u
@@ -85,7 +85,7 @@ static void v1_trace_free(v1_trace * tr);
 static void terr(const char * fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    fputs("tsr-trace-conv: v1 reader: ", stderr);
+    fputs("tsr-trace-conv: version 1 reader: ", stderr);
     vfprintf(stderr, fmt, ap);
     fputc('\n', stderr);
     va_end(ap);
@@ -715,7 +715,7 @@ static void v1_trace_free(v1_trace * tr) {
 // ---------------------------------------------------------------------------
 // Conversion (SW §5.6)
 // ---------------------------------------------------------------------------
-// The v2 config of a v1 one, with CTL_ID / CFG3 / Q_DEPTH / TCM sizes from a simulator (cached).
+// The version 2 config of a version 1 one, with CTL_ID / CFG3 / Q_DEPTH / TCM sizes from a simulator (cached).
 static int v2_config(const v1_config * v, tsr_trace2_config * out, char * why, size_t wn) {
     static tsr_config last;
     static tsr_trace2_config last_out;
@@ -731,7 +731,7 @@ static int v2_config(const v1_config * v, tsr_trace2_config * out, char * why, s
     }
     tsr_sim * sim = tsr_sim_create(&c, NULL);
     if (sim == NULL) {
-        snprintf(why, wn, "the simulator does not support this v1 config");
+        snprintf(why, wn, "the simulator does not support this version 1 config");
         return -1;
     }
     tsr_trace2_config_from_sim(out, sim);
@@ -745,7 +745,7 @@ static int v2_config(const v1_config * v, tsr_trace2_config * out, char * why, s
 
 static int convert(const v1_trace * v, tsr_trace2 * t, char * why, size_t wn) {
     if (v->status != V1_STATUS_DONE || v->err_code != 0) {
-        snprintf(why, wn, "v1 run ended with STATUS %u ERR_CODE %u: error traces are regenerated with tsr-trace-gen v2 "
+        snprintf(why, wn, "run ended with STATUS %u ERR_CODE %u: error traces are regenerated with tsr-trace-gen "
                           "(SW §5.6), not converted", v->status, v->err_code);
         return -1;
     }
@@ -763,11 +763,11 @@ static int convert(const v1_trace * v, tsr_trace2 * t, char * why, size_t wn) {
             break;
         }
         if ((w[0] >> 16) != 0) {
-            snprintf(why, wn, "instruction %u (w0 0x%08x) uses v1 registers: register-relative sets are regenerated (SW §5.6)", i, w[0]);
+            snprintf(why, wn, "instruction %u (w0 0x%08x) uses registers: register-relative sets are regenerated (SW §5.6)", i, w[0]);
             return -1;
         }
         if (op != TSR_OP_NOP && op != TSR_OP_LD && op != TSR_OP_ST && op != TSR_OP_QACT && op != TSR_OP_MVM && op != TSR_OP_FENCE) {
-            snprintf(why, wn, "instruction %u: v1 opcode 0x%02x has no unchanged v2 encoding (EX §7.2)", i, op);
+            snprintf(why, wn, "instruction %u: opcode 0x%02x has no unchanged kind-op encoding (EX §7.2)", i, op);
             return -1;
         }
         const uint32_t dep0 = t->n_push ? tsr_trace2_ticket_of(t, t->n_push - 1) : TSR_TICKET_NONE;
@@ -927,7 +927,7 @@ int main(int argc, char ** argv) {
             char why[600];
             tsr_trace2 * t = tsr_trace2_new();
             if (v1_trace_read(src, &v) != 0) {
-                printf("ERROR %s: not a readable v1 trace\n", src);
+                printf("ERROR %s: not a readable version 1 trace\n", src);
                 ++errors;
             } else {
                 if (convert(&v, t, why, sizeof(why)) != 0) {

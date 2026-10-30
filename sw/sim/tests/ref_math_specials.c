@@ -133,7 +133,7 @@ static void test_composites(void) {
         const float want2 = tsr_fmul(tsr_fsub(1.0f, e), tsr_frecip(tsr_fadd(1.0f, e)));
         EQ("tanh exp path", 0x3C800000u, tsr_m_tanh(hi), f2u(want2));
     }
-    // EXPSUB: a = -inf gives +0 whatever x is (V2-VU-21); otherwise EXPK(FS(a, x), P1).
+    // EXPSUB: a = -inf gives +0 whatever x is (VU-21); otherwise EXPK(FS(a, x), P1).
     const uint32_t xs[] = { NINF, PINF, CANON, 0u, 0x80000000u, 0x42C80000u, 0xC2C80000u };
     for (size_t i = 0; i < sizeof xs / sizeof xs[0]; ++i) {
         EQ("expsub(-inf, x)", xs[i], tsr_m_expsub(u2f(NINF), u2f(xs[i])), 0u);

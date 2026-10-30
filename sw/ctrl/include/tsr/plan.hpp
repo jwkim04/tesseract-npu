@@ -1,9 +1,9 @@
-// tsr/plan.hpp — planning code shared by the firmware and the host backend (docs/v2/
-// 06-software-verification.md "SW" §6.7 last paragraph, §7.3, §7.4, §7.5; V2-SW-20).
+// tsr/plan.hpp — planning code shared by the firmware and the host backend (docs/design/
+// 06-software-verification.md "SW" §6.7 last paragraph, §7.3, §7.4, §7.5; SW-20).
 //
 // Freestanding and C++17-compatible: no libstdc++, no heap, no float. The firmware's kind handlers
 // plan their tiles with it, and the host's supports_op asks the same functions, so the host
-// rejects exactly what the firmware cannot plan (V2-SW-20: one source, true by construction).
+// rejects exactly what the firmware cannot plan (SW-20: one source, true by construction).
 //
 // Contents:
 //   - device parameters that planning depends on (dev_cfg: SPM lines, T_MAX, K_MAX), read by the
@@ -11,9 +11,8 @@
 //   - the executor's SPM layout (SW §7.3): argument range, OPL area, preload area, scratch ring,
 //     and the ring's planning budget;
 //   - format geometry: QA_LINES (QA kinds A32 / A256), ROW_BEATS (repacked weight rows), f32 lines;
-//   - MUL_MAT tiling (v1's tsr_mm_lines_per_token / tsr_mm_shape_ok / tsr_mm_plan_tiling, tag
-//     v1-m4:sw/ggml-tesseract/tsr-lower.cpp, constraints spec "supports_op (v1)" and "lowering
-//     (v1)"), with the T-tile chosen for the ring budget instead of the whole SPM;
+//   - MUL_MAT tiling (tsr_mm_lines_per_token / tsr_mm_shape_ok / tsr_mm_plan_tiling, constraints spec
+//     "supports_op" and "lowering"), with the T-tile chosen for the ring budget instead of the whole SPM;
 //   - the per-kind plan (plan_op / check_op): RET_OK, RET_SCRATCH (cannot be planned in the ring)
 //     or RET_BAD_RECORD (arguments the device cannot run), and the scratch lines per tile;
 //   - M7 planning (W2b): plan_limits / kind_plan, the planners tsr::plan_<kind> (declared here,
@@ -88,7 +87,7 @@ constexpr dev_cfg U200_K4 = {65536u, 8u, 32768u, 4u, 9344u, 16u, CAPS_VU | CAPS_
 // and costs no concurrency (consecutive DMA-bracketed tiles are serialised by the DMA queue
 // whatever their SPM lines). MUL_MAT (whose blocks the M6 traces pin) and FLASH_ATTN keep the ring.
 //
-// Its size (W2b fix, SW §7.3 / V2-SW-36): the block comes out of the ring's planning budget, which
+// Its size (W2b fix, SW §7.3 / SW-36): the block comes out of the ring's planning budget, which
 // sets MUL_MAT's prefill T-tile (two tiles in the budget). 1,024 lines (64 KiB) keeps the T-tile of
 // every Qwen2.5 0.5B-32B output head at 3 tokens (budget 60,144; 4,096 lines made it 2: +50 % head
 // weight traffic in an all-logits prefill) and still holds every decode tile of Qwen2.5 0.5B / 32B
@@ -211,7 +210,7 @@ TSR_PLAN_HOT constexpr uint32_t mm_t_max(const dev_cfg & c) {
     uint32_t t = c.t_max < T_MAX_ARCH ? c.t_max : T_MAX_ARCH;
     return t < T_FIELD_MAX ? t : T_FIELD_MAX;
 }
-// Lines one token needs (x + QA + y); 0 if fmt / K cannot be lowered (v1: K % 32 == 0).
+// Lines one token needs (x + QA + y); 0 if fmt / K cannot be lowered (K % 32 == 0).
 // (No overflow: K / 16 + QA_LINES + ceil(N / 16) < 2^28 + 2^27 + 2^28 for 32-bit K and N.)
 TSR_PLAN_HOT constexpr uint32_t mm_lines_per_token(uint32_t fmt, uint32_t N, uint32_t K) {
     if (!fmt_valid(fmt) || K == 0u || (K & 31u) != 0u || (K & (fmt_block(fmt) - 1u)) != 0u || N == 0u) return 0u;
@@ -231,7 +230,7 @@ struct mm_tiling {
 // Argument checks (RET_BAD_RECORD: the device cannot run it at all) then the ring check
 // (RET_SCRATCH: one token does not fit the budget). T-tile: as many tokens as T_MAX allows while
 // two tiles fit the budget (double buffering), else 1 (a single buffer; still plannable while one
-// token fits). T itself never makes a shape unplannable (spec "supports_op (v1)": no condition on
+// token fits). T itself never makes a shape unplannable (spec "supports_op": no condition on
 // T), so the host checks T = 1.
 // The device limits mm_plan checks against (K field / K_MAX, T_MAX, the ring budget), derived from
 // dev_cfg once: the executor computes them once per launch (kind_ctx::mml).
@@ -322,7 +321,7 @@ static_assert(detail::mm_t_tile_u200(FMT_Q8_0, 151936u, 896u) == 3u && detail::m
 //     0) or RET_SCRATCH (the smallest tile does not fit l.budget); the other fields only with RET_OK;
 //   - returns out->status == RET_OK;
 //   - depends only on (args, n_args, l): not on the list's preload size or the ring's state, so
-//     the host's supports_op (W3b) and the firmware agree (V2-SW-20, decision P2.4);
+//     the host's supports_op (W3b) and the firmware agree (SW-20, decision P2.4);
 //   - the preload references are checked against the list's preload area by the caller (the
 //     handler: kind_ctx::pre_ok, exec.hpp; the host reader: opl::check_args), not here;
 //   - per-op work is shifts, adds and compares when the op has one tile (decode shapes, T = 1): a

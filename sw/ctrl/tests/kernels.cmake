@@ -1,5 +1,5 @@
 # sw/ctrl/tests/kernels.cmake — P2.5 tests of the M6 kernels: the MUL_MAT kind, `selftest` and
-# `replay` (docs/v2/06-software-verification.md "SW" §7.4, §7.6, §7.7, §10.2). Included by
+# `replay` (docs/design/06-software-verification.md "SW" §7.4, §7.6, §7.7, §10.2). Included by
 # sw/ctrl/host/CMakeLists.txt (main project). Every test has label fw; long sweeps add slow.
 #
 #   fw_kernels_rv          MUL_MAT through the graph executor of tsr-fw.elf on tsr_rv: three op lists
@@ -9,10 +9,10 @@
 #                          observables equal (test_fw_kernels_rv.cpp)
 #   fw_kernels_rv_mutant_race, fw_kernels_rv_mutant_v1   negative tests: images with a mutated MUL_MAT
 #                          (QACT without its LD dep; QACT src stride 0) must be caught by the race
-#                          detector / the v1 stream comparison
-#   fw_kernels_rv_v1conv   the v1 lowering check: a sample of 10 traces/model-v1conv traces regrouped into
-#                          MUL_MAT ops, outputs = v1's expect bit for bit, push streams = v1's modulo the
-#                          v2 forms (skipped without the set on disk)
+#                          detector / the stream comparison
+#   fw_kernels_rv_v1conv   the lowering check: a sample of 10 traces/model-v1conv traces regrouped into
+#                          MUL_MAT ops, outputs = the trace's expect bit for bit, push streams = the trace's
+#                          modulo the operand forms (skipped without the set on disk)
 #   fw_kernels_rv_v1conv_all  (slow) all 290 converted traces
 #   fw_kernels_rv_shapes   (slow) Qwen2.5-0.5B / 32B and Gemma 4 12B shapes incl. the vocab projections
 #   fw_kernels_host        the kernels compiled for the host (SW §6.8) under ASan + UBSan: kind_mulmat

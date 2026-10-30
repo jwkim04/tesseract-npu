@@ -1,9 +1,9 @@
-// tsr_ref_at.c — references of area AT (docs/v2/03-attention-kv.md), bit for bit.
+// tsr_ref_at.c — references of area AT (docs/design/03-attention-kv.md), bit for bit.
 //
 // Normative sources: AT §4 (KV plane layout), §5.1–§5.7 (the seven ops), §6 (numerics), §6.6 (the
 // composite FA, normative), §7.3 (mask summary). The simulator's AT units, the firmware's host
 // reference and the backend's KV tensor conversion call these functions; the RTL must match them
-// bit for bit. Rules as tsr_ref.c / tsr_ref_math.c (docs/v2/06-software-verification.md §4.5):
+// bit for bit. Rules as tsr_ref.c / tsr_ref_math.c (docs/design/06-software-verification.md §4.5):
 // every f32 operation is a tsr_fadd / tsr_fsub / tsr_fmul / tsr_fdiv / tsr_frecip call (DAZ, RNE,
 // FTZ, canonical NaN), EXP is tsr_m_exp (VU §6.3), everything else is integer bit manipulation;
 // device images are accessed byte-wise little-endian. Built with -ffp-contract=off -fno-fast-math.
@@ -716,7 +716,7 @@ void tsr_msum_mask_f32(const uint16_t * mask, size_t row_stride, uint32_t n_kv, 
 }
 
 // ---------------------------------------------------------------------------
-// Chunk planner (AT §6.6 step 3, §7.3, V2-AT-19)
+// Chunk planner (AT §6.6 step 3, §7.3, AT-19)
 //
 // W2b kvfa (P2.7): the planner's rules and code live in include/tsr_fa_plan.h, shared with the
 // firmware's FLASH_ATTN kernel (sw/ctrl/kernels/k_fattn.cpp), so the two chunk lists are the same

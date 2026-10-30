@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# test_trace_gen.sh GEN OUT_DIR [REPLAY [IMAGE]] — ctest tools_trace_gen_replay (docs/v2/06-software-
-# verification.md §10.2, P1.10): tsr-trace-gen v2 per --ops mode with a fixed seed.
+# test_trace_gen.sh GEN OUT_DIR [REPLAY [IMAGE]] — ctest tools_trace_gen_replay (docs/design/06-software-
+# verification.md §10.2, P1.10): tsr-trace-gen per --ops mode with a fixed seed.
 #   1. a small set per mode (gen, m2, m3, vu, at, ctrl; errors on), each trace verified by the
 #      generator (prediction of every completion, serial check, SPM_STALE check, host references)
 #      and replayed under two random schedules (--check-sched 2);
@@ -12,7 +12,7 @@
 #   4. with IMAGE (a firmware image with the `replay` kernel, SW §7.7; given by the build when it has
 #      the race detector): every trace replayed through the kernel under the same three schedules
 #      with TSR_SIM_RACE=fatal — a trace is one launch there, so a read of SPM that nothing wrote in
-#      the trace is an SPM_STALE abort (SW §4.6, V2-SW-4);
+#      the trace is an SPM_STALE abort (SW §4.6, SW-4);
 #   5. the SPM_STALE mutant (--mutant-stale: per-token loads leave the stride gaps of a strided QACT
 #      source unwritten, the generator before 2026-10-30): the generator's verification must refuse the
 #      trace, and with IMAGE the race detector must report SPM_STALE on its kernel-route replay

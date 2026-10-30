@@ -9,15 +9,15 @@
 //          output head offloaded, KV cache and attention on the host in M6 (offload_kqv = false),
 //          on the device in M7 (--phase m7), input "embd"
 // All three use the embd input path, so the three graphs are identical node for node. Settings
-// (v2, V2-SW-22, docs/v2/06-software-verification.md §9.5, §10.4), the same in every run: flash
+// (SW-22, docs/design/06-software-verification.md §9.5, §10.4), the same in every run: flash
 // attention on, q8_0 K and V cache, LLAMA_ATTN_ROT_DISABLE=1 (set by the tool), offload_kqv by
-// phase; recorded in meta.json "info" and checked equal across the runs by selfcheck. On v2 the
+// phase; recorded in meta.json "info" and checked equal across the runs by selfcheck. The
 // per-node observation below makes the scheduler compute one node per graph_compute, i.e. one
-// device launch per observed node: numcheck needs no device mode of its own (V2-SW-27). Each run
+// device launch per observed node: numcheck needs no device mode of its own (SW-27). Each run
 // observes the graph through llama_context_params.cb_eval and writes a run directory:
 //
-//   <run_dir>/meta.json     format "tsr-numcheck" version 2 (fields below; version 1 = the v1
-//                           settings, still read), written last
+//   <run_dir>/meta.json     format "tsr-numcheck" version 2 (fields below; version 1 = the
+//                           FA-off settings, still read), written last
 //   <run_dir>/logits.f32    f32 [T][n_vocab]
 //   <run_dir>/t/NNNNNN.f32  node i's output, f32, ggml element order (ne0 fastest); non-contiguous
 //                           tensors are gathered element by element; F16/BF16/I32 converted to f32,
@@ -26,7 +26,7 @@
 //
 // meta.json: { "format", "version", "model" (absolute GGUF path), "run" (cpu|floor|dev),
 //   "device" (none|sim|mock|vkernel|xrt), "input" (embd|embd+1ulp; "tokens" only for the self-check run),
-//   "seed", "n_tokens", "tokens", "n_vocab", "logits_file", "info" {settings, timings, counts; v2
+//   "seed", "n_tokens", "tokens", "n_vocab", "logits_file", "info" {settings, timings, counts;
 //   settings: "phase" (m6|m7), "flash_attn" (on|off), "type_k", "type_v" (ggml type names),
 //   "offload_kqv" (bool), "attn_rot_disable" (bool: LLAMA_ATTN_ROT_DISABLE was 1 for the context)},
 //   "nodes": [ {"i", "name", "op" (ggml_op_name), "ne" [4], "file", "backend", "weight",
@@ -553,7 +553,7 @@ struct run_opts {
     int         T = 0, threads = default_threads();
     uint64_t    seed = 1;
     bool        observe = true;
-    // v2 settings (V2-SW-22; klcheck's): FA on, q8_0 / q8_0 KV, rotation off; offload_kqv by phase
+    // settings (SW-22; klcheck's): FA on, q8_0 / q8_0 KV, rotation off; offload_kqv by phase
     std::string phase = "m6";
     int         fa = 1, offload_kqv = -1, attn_rot_disable = 1;   // offload_kqv -1: the phase's value
     ggml_type   type_k = GGML_TYPE_Q8_0, type_v = GGML_TYPE_Q8_0;
@@ -587,7 +587,7 @@ static void usage_run() {
         "  --prompt TEXT       prompt (default: a built-in English sentence)\n"
         "  -t N                CPU threads (default online CPUs / 2, as klcheck)\n"
         "  -v                  llama.cpp log\n"
-        "  v2 settings (V2-SW-22, every run of a set must use the same; recorded in meta.json):\n"
+        "  settings (SW-22, every run of a set must use the same; recorded in meta.json):\n"
         "  --phase m6|m7       M6 (default): KV cache and attention on the host; M7: on the device\n"
         "  --offload-kqv on|off  override the phase's offload_kqv\n"
         "  --fa on|off  -ctk TYPE  -ctv TYPE  --attn-rot on|off   (defaults: on, q8_0, q8_0, off)\n");
@@ -675,10 +675,10 @@ static int cmd_run(int argc, char ** argv) {
     // The device is chosen through the environment before ggml's backend registry is created.
     setenv("TSR_DEVICE", dev ? o.device.c_str() : "none", 1);
     if (!getenv("TSR_SIM_THREADS")) setenv("TSR_SIM_THREADS", "4", 1);   // shared host (docs/numcheck.md)
-    // llama.cpp's Hadamard KV rotation off in every run (V2-SW-16, V2-SW-22; read at context creation)
+    // llama.cpp's Hadamard KV rotation off in every run (SW-16, SW-22; read at context creation)
     if (o.attn_rot_disable) setenv("LLAMA_ATTN_ROT_DISABLE", "1", 1);
     else                    unsetenv("LLAMA_ATTN_ROT_DISABLE");
-    // the phase's device kinds, as klcheck: M6 MUL_MAT only (V2-SW-14), M7 every kind (V2-SW-49)
+    // the phase's device kinds, as klcheck: M6 MUL_MAT only (SW-14), M7 every kind (SW-49)
     if (o.phase == "m6") setenv("TSR_KINDS", "m6", 1);
     else                 unsetenv("TSR_KINDS");
 
@@ -751,7 +751,7 @@ static int cmd_run(int argc, char ** argv) {
     cp.n_threads       = o.threads;
     cp.n_threads_batch = o.threads;
     cp.flash_attn_type = o.fa ? LLAMA_FLASH_ATTN_TYPE_ENABLED : LLAMA_FLASH_ATTN_TYPE_DISABLED;   // the same in every run
-    cp.type_k          = o.type_k;                         // -ctk q8_0 (V2-SW-22)
+    cp.type_k          = o.type_k;                         // -ctk q8_0 (SW-22)
     cp.type_v          = o.type_v;                         // -ctv q8_0 (a quantized V needs FA)
     cp.offload_kqv     = o.offload();                      // M6: false (-nkvo, attention on the host); M7: true
     cp.no_perf         = false;
@@ -914,7 +914,7 @@ static bool load_run(const std::string & dir, run_dir & r) {
         die("%s/meta.json: %s", dir.c_str(), e.what());
     }
     const int ver = r.meta.value("format", "") == "tsr-numcheck" ? r.meta.value("version", 0) : 0;
-    if (ver != 1 && ver != 2) die("%s: not a tsr-numcheck v1 / v2 run", dir.c_str());
+    if (ver != 1 && ver != 2) die("%s: not a tsr-numcheck version 1 / 2 run", dir.c_str());
     if (!read_file(dir + "/" + r.meta["logits_file"].get<std::string>(), raw)) die("%s: no logits file", dir.c_str());
     r.logits.resize(raw.size() / 4);
     memcpy(r.logits.data(), raw.data(), r.logits.size() * 4);
@@ -978,7 +978,7 @@ static int cmd_selfcheck(int argc, char ** argv) {
     check(same_hdr, "all %zu runs: same model, tokens (T = %d), n_vocab (%d), logits files [T][V]", all.size(),
           cpu.meta["n_tokens"].get<int>(), cpu.meta["n_vocab"].get<int>());
     check(cpu.meta["seed"] == flr.meta["seed"], "floor seed %" PRIu64, flr.meta["seed"].get<uint64_t>());
-    {   // the same v2 settings in every run (V2-SW-22): one comparison, one attention / KV configuration
+    {   // the same settings in every run (SW-22): one comparison, one attention / KV configuration
         auto settings = [](const run_dir & r) {
             const json & i = r.meta.contains("info") ? r.meta["info"] : json::object();
             json v = json::object();
@@ -1165,7 +1165,7 @@ static int cmd_all(int argc, char ** argv, const char * self) {
         else if (a == "-m" || a == "--model" || a == "-T" || a == "--seed" || a == "--nodes" || a == "--mm-layers" ||
                  a == "--prompt" || a == "-t" || a == "--threads" || a == "--phase" || a == "--fa" || a == "--offload-kqv" ||
                  a == "--attn-rot" || a == "-ctk" || a == "--cache-type-k" || a == "-ctv" || a == "--cache-type-v") {
-            common.push_back(a); common.push_back(val());   // the v2 settings go to every run (V2-SW-22)
+            common.push_back(a); common.push_back(val());   // the settings go to every run (SW-22)
         }
         else if (a == "-v")               common.push_back(a);
         else die("all: unknown option %s\nusage: tsr-numcheck all -m MODEL [-o ROOT] [--device sim] [-T N] [--seed S] [--nodes RE] "

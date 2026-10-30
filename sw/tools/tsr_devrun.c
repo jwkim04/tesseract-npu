@@ -1,7 +1,7 @@
 // tsr_devrun.c — launch targets (a device behind a transport, or the in-process shadow simulator)
-// and trace v2 replays through them, for tsr-selftest and tsr-trace-replay --device (P3.3). The
+// and trace replays through them, for tsr-selftest and tsr-trace-replay --device (P3.3). The
 // interface and the comparison rules are in tsr_devrun.h; the protocol references are EX §3-§5
-// (docs/v2/01-execution-model.md) and SW §5.4, §7.6, §7.7 (docs/v2/06-software-verification.md).
+// (docs/design/01-execution-model.md) and SW §5.4, §7.6, §7.7 (docs/design/06-software-verification.md).
 // Decisions:
 //   - The shadow is a fresh tsr_sim with the device's configuration (tsr_tgt_cfg: CFG*/CAPS, the
 //     inner simulator's tsr_config for sim / mock, Q_DEPTH, RV_CFG), booted by the host loader of

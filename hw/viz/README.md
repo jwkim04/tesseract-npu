@@ -4,9 +4,9 @@ Two steps turn a routed Vivado checkpoint into a device-view image like Vivado's
 without the GUI. Every used site is drawn at its real position in the colour of the module that owns
 most of its cells. A third script turns a terminal recording into a video.
 
-> **Scope.** Tool documentation. The images in `docs/fig/floorplan/` are **v1**: they show the v1
-> core (tag `v1-m4`) as routed by Vivado 2024.2; the v2 core has no RTL yet, so there is no v2
-> floorplan. The v2 placement is a design item, not an image: [CC](../../docs/v2/04-control-core.md)
+> **Scope.** Tool documentation. The images in `docs/fig/floorplan/` show the core
+> before the control core was added, as routed by Vivado 2024.2; the control core has no RTL yet, so
+> there is no floorplan of it. Its placement is a design item, not an image: [CC](../../docs/design/04-control-core.md)
 > §14.2. The scripts need Vivado only for `fp_dump.tcl`; `fp_render.py` and `term2mp4.py` run in the
 > figure environment `build/tools/svgvenv`.
 
@@ -32,8 +32,8 @@ build/tools/svgvenv/bin/python hw/viz/fp_render.py OUT out.png --mode core|link 
 
 ## The images
 
-All three were made on 2026-10-24 from routed checkpoints of the v1 core (measured in Vivado 2024.2,
-v1):
+All three were made on 2026-10-24 from routed checkpoints of the core before the control core was
+added (measured in Vivado 2024.2):
 
 | Image | Checkpoint | Shows |
 | --- | --- | --- |
@@ -52,7 +52,7 @@ linked k4 design (276.3 MHz, the card's bitstream) has no image; its placement a
 `term2mp4.py` turns a `script` recording (util-linux, classic timing) into an MP4. It runs in
 real time and keeps every delay of the recording, so the rates on screen are the measured ones.
 It uses pyte as the terminal emulator, Pillow and the ffmpeg of imageio-ffmpeg, all in
-`build/tools/svgvenv`. The card demo videos were made with it (v1 card runs).
+`build/tools/svgvenv`. The card demo videos were made with it (card runs before the control core was added).
 
 ```sh
 script -q -T demo.tim -c 'stty cols 132 rows 36; ./demo.sh' demo.raw

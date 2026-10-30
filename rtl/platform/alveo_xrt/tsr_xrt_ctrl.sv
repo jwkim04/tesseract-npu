@@ -2,25 +2,23 @@
 // (AXI4-Lite slave, 32-bit data, 13-bit address) with the channel bases, ADAPTER_STATUS and the
 // window onto the tsr_core CSR port.
 //
-// Owner: adapter agent (docs/platform-u200.md §2, §3; docs/v2 EX §9). X0 (docs/v2 EX §12): the
-// ap_ctrl_hs state machine (AP_CTRL, GIE, IER, ISR, the interrupt output, queued starts), the run
-// sequencer (the core CSR writes of a start), the SOFT_RESET watch and the kernel argument
-// registers (command-buffer address and count, arg0..7) are deleted; the host only uses register
-// access (EX §9.1, `ap_ctrl_none`). Adapter v2 (Y5) adds ADAPTER_CTRL.MEM_EN (bases latched and
+// Owner: adapter agent (docs/platform-u200.md §2, §3; docs/design EX §9). The host only uses register
+// access (EX §9.1, `ap_ctrl_none`); there is no start sequencer, interrupt or kernel argument
+// register. The adapter gains ADAPTER_CTRL.MEM_EN in Y5 (bases latched and
 // locked, core memory requests held while 0) and ADAPTER_VERSION 2 (EX §9.2).
 //
 // Register map (byte offsets; reads of unmapped offsets return 0, writes to them are ignored;
 // offsets are decoded on bits [12:2]; every response is OKAY):
-//   0x000..0x03C    reserved, read 0 (v1 AP_CTRL, GIE, IER, ISR and the kernel arguments)
+//   0x000..0x03C    reserved, read 0 (no AP_CTRL, GIE, IER, ISR or kernel arguments)
 //   0x040 + 8c      ch<c>_base lo / hi, c < NUM_CH: device byte address of the buffer bound to
 //                   m_axi_ch<c> (4 KiB aligned by the host); passed to the bridges as written
-//                   (X0: no latch until MEM_EN, Y5)
+//                   (no latch until MEM_EN, Y5)
 //   0x0F0           ADAPTER_STATUS (R / W1C, sticky): bit0 RRESP error, bit1 BRESP error, bit2
-//                   response with no outstanding request for its id, bit3 0 (v2: base misaligned
+//                   response with no outstanding request for its id, bit3 0 (base misaligned
 //                   at MEM_EN, Y5); bits [31:16] saturating count of error responses (R beats and B
 //                   with RRESP / BRESP != OKAY). W1C: a 1 in bit k (k < 3) clears bit k, a 1 in
 //                   any of bits [31:16] clears the count. A new event in the same cycle wins.
-//   0x0F4           ADAPTER_VERSION (R) = {16'h0001, 8'h00, NUM_CH} (2 with the v2 map, Y5)
+//   0x0F4           ADAPTER_VERSION (R) = {16'h0001, 8'h00, NUM_CH} (2 with the full map, Y5)
 //   0x1000 + off    tsr_core CSR port, off < 0x1000 (EX §5), at any time. Writes need WSTRB = 4'hF
 //                   (others are dropped: the CSR port has no byte enables).
 // Writes use the byte strobes (RW registers); ADAPTER_STATUS acts on the bytes whose strobe is set.

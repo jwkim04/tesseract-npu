@@ -14,9 +14,9 @@
 // phases, write-order modes, the regimes, protocol checks P1-P6) behind an AXI4 translation (beat
 // = (AxADDR - buffer address) / 64; the 16 AXI IDs are mapped onto the model's read / write ids,
 // which keeps per-ID order and is stricter than AXI), with optional SLVERR / DECERR injection and
-// stale responses, like the v1 kernel bench (tag v1-m4). The extra "ideal" regime has latency 0 and every
+// stale responses. The extra "ideal" regime has latency 0 and every
 // READY / VALID at 1.
-// AXI4 checker (every channel, every cycle; the checks of the v1 kernel bench): VALID held with a
+// AXI4 checker (every channel, every cycle): VALID held with a
 // stable payload until READY, AxSIZE 6, INCR, AxCACHE 0011, AxPROT / AxLOCK / AxQOS 0, addresses
 // 64-byte aligned inside the channel buffer, AxLEN <= 63, no 4 KiB crossing, WSTRB all ones, WLAST
 // exactly at the end of each burst (P4), no VALID during reset (after 3 cycles) nor in the first
@@ -142,7 +142,7 @@ std::string jesc(const std::string& s) {
     return o;
 }
 
-// ---- bit access on Verilator port types (as the v1 tb/fastreplay/fr_common.h, tag v1-m4) ----
+// ---- bit access on Verilator port types ----
 inline uint64_t mask64(unsigned w) { return w >= 64 ? ~0ull : ((1ull << w) - 1); }
 template <typename T>
 inline uint64_t getb(const T& v, unsigned lsb, unsigned w) {
@@ -177,7 +177,7 @@ inline uint32_t* wide_words(T& v) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// AXI4-Lite master (XRT-like host): the v1 kernel bench's XrtHost (tag v1-m4; serial lanes only)
+// AXI4-Lite master (XRT-like host; serial lanes only)
 // ---------------------------------------------------------------------------------------------
 struct LiteTx {
     bool we = false;
@@ -572,7 +572,7 @@ class Bench {
             running_ = false;
             mem_.set_active(false);
         }
-        // AP_CTRL / ISR / interrupt after the run (as the v1 kernel bench's post_run)
+        // AP_CTRL / ISR / interrupt after the run
         if (finished_) {
             const uint32_t c1 = reg(AP_CTRL, &ok), c2 = reg(AP_CTRL, &ok);
             const uint32_t want1 = irq_mode_ ? (AP_IDLE | AP_DONE | AP_READY) : AP_IDLE;
@@ -853,7 +853,7 @@ class Bench {
     static unsigned rmid(unsigned id) { return 4 + (id & 7); }   // model read ids: DMA 4..7, WS 8..11
     static unsigned wmid(unsigned id) { return 4 + (id & 3); }   // model write ids: DMA 4..7
 
-    // A 4 KiB aligned device address with the whole buffer below 2^64 (as the v1 kernel bench).
+    // A 4 KiB aligned device address with the whole buffer below 2^64.
     uint64_t pick_base() {
         const uint64_t span = CH_BYTES;
         const uint64_t top = ~0ull - span + 1;

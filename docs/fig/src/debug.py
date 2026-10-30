@@ -1,13 +1,13 @@
-"""Figure `debug`: debugging and observing the device over PCIe (v2 design).
+"""Figure `debug`: debugging and observing the device over PCIe.
 
-Content follows docs/v2/05-debug.md §2 (overview diagram and the layer table), §3 (RISC-V debug:
+Content follows docs/design/05-debug.md §2 (overview diagram and the layer table), §3 (RISC-V debug:
 DMI window, halt / resume / step, SBA memory access, breakpoints and watchpoints, halt at boot and
 at launch), §4 (GDB RSP server: the debug service in the device-owning process, or the standalone
 `tsr-dbg`, no OpenOCD), §5 (tile-level debug: stop at a push index, step op by op, serial mode,
 tile breakpoints, the 512-entry dispatch history with the pushing C++ line, unit probes), §6 (log
 ring and crash record), §8 (PERF slots 61-63, the hardware trace writer to a DRAM ring on channel
 0, `tsr-prof`), §10.1 (register map: DMI 0xC00, DBG block 0x800-0xAFC, log ring 0x400-0x7FC in the
-core CSR window) and docs/v2/01-execution-model.md §2.4 (one process owns the device). The host
+core CSR window) and docs/design/01-execution-model.md §2.4 (one process owns the device). The host
 reaches every register through the PCIe CSR window and the transport; there is no JTAG on the
 U200 (docs/platform-u200.md §1, docs/prof-dbg.md). The tile-level block observes and stops the
 queue heads and changes nothing (D15).
@@ -119,7 +119,7 @@ f.legend(W / 2, LEG_Y, [("neutral", "THIRD-PARTY"), ("host", "HOST SOFTWARE"),
                         ("control", "CONTROL"), ("memory", "MEMORY"), ("compute", "COMPUTE"),
                         ("neutral", "PLANNED", True)], gap=36)
 f.text(W / 2, LEG_Y + 36, wrap(
-    "Designed in docs/v2/05-debug.md. The simulator models the debug module and the DBG block; "
+    "Designed in docs/design/05-debug.md. The simulator models the debug module and the DBG block; "
     "the RSP server, tsr-dbg, tsr-prof and the RTL are planned (M6).", 1440),
        "note", anchor="middle", color=INK_SOFT)
 

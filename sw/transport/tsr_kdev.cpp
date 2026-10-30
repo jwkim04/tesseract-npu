@@ -1,7 +1,7 @@
 // tsr_kdev.cpp — the protocol layer: tsr_transport over any kdev (tsr_kdev.h), one implementation
-// for every kind (V2-SW-18). It implements docs/v2/01-execution-model.md "EX" §2.1, §3, §4.8-§4.9,
-// §8.4-§8.6 and §10, as refined by docs/v2/06-software-verification.md "SW" §9.1-§9.2 and
-// docs/v2/05-debug.md "DB" §4.1, §6.1, §6.3, §7.3-§7.4, §9.2:
+// for every kind (SW-18). It implements docs/design/01-execution-model.md "EX" §2.1, §3, §4.8-§4.9,
+// §8.4-§8.6 and §10, as refined by docs/design/06-software-verification.md "SW" §9.1-§9.2 and
+// docs/design/05-debug.md "DB" §4.1, §6.1, §6.3, §7.3-§7.4, §9.2:
 //
 //   open    identity (ADAPTER_VERSION, ID, VERSION 2, CFG*, CAPS, CFG3, CTL_ID, RV_CFG, Q_DEPTH,
 //           RV_FREQ != 0, LQ_CFG, PERF_INFO, DBG_ID), ADAPTER_STATUS read and cleared; the host
@@ -1371,8 +1371,8 @@ struct tsr_transport {
             }
             const uint32_t maj = TSR_GET(r_adapter_version, TSR_ADAPTER_VERSION_MAJOR);
             if (maj != TSR_ADAPTER_MAJOR) {
-                msg("ADAPTER_VERSION 0x%08x: adapter major %u, this software implements %u (a v1 bitstream? its tools are in "
-                    "build/v1)", r_adapter_version, maj, TSR_ADAPTER_MAJOR);
+                msg("ADAPTER_VERSION 0x%08x: adapter major %u, this software implements %u "
+                    "(an older bitstream without the control core?)", r_adapter_version, maj, TSR_ADAPTER_MAJOR);
                 return TSR_TE_DEVICE;
             }
             if (TSR_GET(r_adapter_version, TSR_ADAPTER_VERSION_NUM_CH) != dev->num_ch()) {
@@ -1400,7 +1400,7 @@ struct tsr_transport {
              rd(TSR_CSR_PERF_INFO, &r_perf_info) && rd(TSR_CSR_DBG_ID, &r_dbg_id);
         if (!ok) return TSR_TE_IO;
         if ((r_version >> 8 & 0xFFu) != TSR_ISA_MAJOR) {
-            msg("core ISA version %u.%u, this software implements major %u (a v1 bitstream reports 1; its tools are in build/v1)",
+            msg("core ISA version %u.%u, this software implements major %u (an older bitstream without the control core reports 1)",
                 (r_version >> 8) & 0xFFu, r_version & 0xFFu, TSR_ISA_MAJOR);
             return TSR_TE_DEVICE;
         }
@@ -1560,13 +1560,13 @@ struct tsr_transport {
             for (const char * n : { "TSR_PROF", "TSR_PROF_TRW_MIB", "TSR_PROF_EVERY", "TSR_PROF_RV_SAMPLE_US" })
                 if (const char * e = getenv(n); e != nullptr && e[0] != '\0')
                     msg("%s is set: the trace-writer profiler arrives with tsr-prof trw (P3.8); ignored", n);
-            // EX §10.2: renamed and removed v1 variables.
+            // EX §10.2: renamed and removed variables.
             static const char * const renamed[][2] = { { "TSR_XRT_TIMEOUT_MS", "TSR_LAUNCH_TIMEOUT_MS" }, { "TSR_XRT_ABORT_MS", "TSR_ABORT_MS" } };
             for (const auto & rn : renamed)
                 if (const char * e = getenv(rn[0]); e != nullptr && e[0] != '\0')
-                    msg("%s is a v1 variable, renamed %s in v2 (EX §10.2); ignored", rn[0], rn[1]);
+                    msg("%s is no longer used, it is now %s (EX §10.2); ignored", rn[0], rn[1]);
             if (const char * e = getenv("TSR_XRT_CTRL"); e != nullptr && e[0] != '\0')
-                msg("TSR_XRT_CTRL is a v1 variable (the run protocol), removed in v2 (EX §10.2); ignored");
+                msg("TSR_XRT_CTRL is no longer used (EX §10.2); ignored");
         });
         return 0;
     }

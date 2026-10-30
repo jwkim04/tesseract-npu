@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test_trace_replay_device.sh GEN REPLAY IMAGE OUT [SELFTEST] — ctest tools_trace_replay_device (docs/v2/
+# test_trace_replay_device.sh GEN REPLAY IMAGE OUT [SELFTEST] — ctest tools_trace_replay_device (docs/design/
 # 06-software-verification.md §9.5: tsr-trace-replay --device KIND): a small generated set per --ops
 # mode (m3, vu, at, ctrl; errors on; T_MAX 8 like the device below) replayed through transports:
 #   1. --device sim --shadow: every trace through the `replay` kernel of IMAGE, answer and expect

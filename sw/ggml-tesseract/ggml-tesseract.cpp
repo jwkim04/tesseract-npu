@@ -1,5 +1,5 @@
-// ggml-tesseract.cpp — ggml backend for the Tesseract NPU core (spec "ggml 백엔드 통합"; v2:
-// docs/v2/06-software-verification.md "SW" §9.3, M6 = P3.2, M7 = P3.5 (W3b)).
+// ggml-tesseract.cpp — ggml backend for the Tesseract NPU core (spec "ggml 백엔드 통합";
+// docs/design/06-software-verification.md "SW" §9.3, M6 = P3.2, M7 = P3.5 (W3b)).
 //
 //   reg "Tesseract" -> one device "Tesseract0" (GGML_BACKEND_DEVICE_TYPE_GPU, so -ngl offloads to it)
 //   buffer type     -> a virtual address space; each buffer's storage is fixed at its first data
@@ -9,12 +9,12 @@
 //           (tsr_repack_row) and stored with symmetric allocation in the WEIGHT heap of every
 //           channel. Anything else (1D norms, odd shapes) is stored raw in AUX (ch0).
 //       KV buffers (W3b kv, tsr-kvbuf.h): an ANY buffer whose tensors are all llama.cpp KV-cache
-//           tensors is stored as KV planes (AT §4), converted on get / set (V2-SW-17).
+//           tensors is stored as KV planes (AT §4), converted on get / set (SW-17).
 //       ANY / COMPUTE buffers: raw bytes, byte-for-byte like any GPU buffer (activations,
 //           test-backend-ops tensors), either
 //           "LINEAR": the whole buffer is one window that the device ops read and write in place:
 //               in the ch0 IO region, the low 512 MiB of ch1..ch(C-1), or the compute heap
-//               (W3b, SW §8 R6, V2-SW-26: symmetric reservations of the WEIGHT heap between the
+//               (W3b, SW §8 R6, SW-26: symmetric reservations of the WEIGHT heap between the
 //               weights and the KV planes, shared out per channel); or
 //           "HOSTED": host memory, when no window fits (device memory exhausted; with
 //               TSR_COMPUTE_WINDOWS=io: the IO region) or the buffer holds only leaf tensors (data
@@ -22,12 +22,12 @@
 //               the src1/dst rows of a MUL_MAT through the IO staging area (top of IO) in T tiles.
 //           A MUL_MAT src0 found in such a buffer is converted lazily at graph_compute into the
 //           WEIGHT heap and cached by (buffer, offset, type, shape, write generation).
-//   graph_compute   -> one op list (OPL v1) per split, run as one launch of the firmware's `graph`
+//   graph_compute   -> one op list (op list format) per split, run as one launch of the firmware's `graph`
 //                      kernel (SW §9.3; one launch per decode token, SW §8):
 //                      M6: every MUL_MAT node becomes one MUL_MAT record (dependencies from a hazard
 //                      analysis over DRAM byte ranges, JOINs above two predecessors, tsr-opl.h); the
-//                      firmware tiles each record with plan.hpp and pushes LD / QACT / MVM / ST (v1's
-//                      lowering, SW §7.4).
+//                      firmware tiles each record with plan.hpp and pushes LD / QACT / MVM / ST
+//                      (SW §7.4).
 //                      M7 (W3b, tsr-build.h): every node of the supports_op table becomes a record of
 //                      its kind (SW §7.2): passes 1-6 (no-ops dropped; tensors resolved to handles and
 //                      line strides; MUL_MAT + ADD and RMS_NORM + MUL fused; dependencies; the preload
@@ -35,7 +35,7 @@
 //                      graph cached by its identity (R7: a decode token runs its list again; only the
 //                      inputs change). A list is cut early only at 4096 records or 256 preload lines.
 //                      A MUL_MAT whose src1 or dst is in host memory (or whose dst rows do not start on
-//                      a line, N*4 % 64 != 0 with T > 1) is staged as v1 did: it runs on its own, one
+//                      a line, N*4 % 64 != 0 with T > 1) is staged: it runs on its own, one
 //                      one-record launch per IO stage tile. Every list goes through the OPL cache (an LRU
 //                      in the ch0 OPL region keyed by content). A TILE_ERR answer is mapped back to the
 //                      ggml node (RET - 1 = the failing record, of any kind) and aborts with its name,
@@ -47,14 +47,14 @@
 //
 // Environment: TSR_DEBUG=1|2 (lowering and placement log on stderr; 2 adds every launched op
 // list's records and preload entries, and supports_op's reasons). TSR_KINDS=m6 restricts the device
-// to M6's MUL_MAT (M6 runs: v1's splits, V2-SW-14). Test knobs: TSR_FORCE_HOST=1 keeps every
+// to M6's MUL_MAT (M6 runs, SW-14). Test knobs: TSR_FORCE_HOST=1 keeps every
 // non-WEIGHTS buffer in host memory (exercises the staged path), TSR_COMPUTE_WINDOWS=io limits
-// compute windows to ch0 IO (v1's placement), TSR_OPL_SPLIT=<n> cuts every op list after n records,
+// compute windows to ch0 IO (M6 placement), TSR_OPL_SPLIT=<n> cuts every op list after n records,
 // TSR_STAGE_KIB=<n> sets the IO staging area size,
 // TSR_OPL_CRC=1 sets the `graph` launch flag VERIFY_CRC (the executor checks each list's CRC, SW
 // §7.3). TSR_LOAD_THREADS=<n> sets the workers that convert and repack weights while they are
 // uploaded (default: online CPUs, at most 16). TSR_STATS=1 prints, when the backend is freed, the
-// upload statistics and (SW §9.2, TSR_STATS v2) graph_compute calls, launches, op records per launch,
+// upload statistics and (SW §9.2) graph_compute calls, launches, op records per launch,
 // launches per scheduler pass (≈ per token) and per graph_compute, fused ops, records per kind, the
 // plan cache, lists cut early, staged chunks, OPL cache hits / misses, the wall time spent in
 // graph_compute and in launches and the device's PERF counters over the same span (host overhead =
@@ -91,7 +91,7 @@
 #include "tsr-opl.h"
 #include "tsr-weights.h"
 #include "tsr-wlayout.h"
-// W3b kv: KV-cache buffers (AT §4.6, V2-SW-17) and the mask-summary producer (AT §7.3, V2-SW-32)
+// W3b kv: KV-cache buffers (AT §4.6, SW-17) and the mask-summary producer (AT §7.3, SW-32)
 #include <memory>
 #include "tsr-kvbuf.h"
 #include "tsr-msum.h"
@@ -109,7 +109,7 @@ static constexpr uint64_t TSR_VADDR_GUARD    = 1ull << 30;
 static constexpr uint64_t TSR_HEAP_ALIGN     = 4096;
 static constexpr size_t   TSR_XFER_CHUNK     = 8u << 20;                 // host-side staging granularity
 // IO staging area (top of the ch0 IO region, reserved at open): activations of HOSTED buffers
-// and line-padded output rows pass through it (staged as v1 does, SW §9.3 step 2). At least
+// and line-padded output rows pass through it (staged, SW §9.3 step 2). At least
 // 2 x SPM so that one token of any lowerable MUL_MAT (whose x + QA + y fit the SPM) always fits.
 static constexpr uint64_t TSR_STAGE_DEFAULT  = 16ull << 20;
 
@@ -252,7 +252,7 @@ struct tsr_buffer_ctx {
     tsr_bmode mode = tsr_bmode::UNDECIDED;
     bool     has_io = false;
     uint64_t io_off = 0;          // LINEAR: byte offset of the window in channel `ch` (base <-> io_off)
-    // W3b builder (SW §8 R6, V2-SW-26, EX §11): the window's channel and region: ch0 IO, the low
+    // W3b builder (SW §8 R6, SW-26, EX §11): the window's channel and region: ch0 IO, the low
     // 512 MiB of ch1..ch(C-1), or the compute heap (a symmetric reservation of the WEIGHT heap that
     // the channels share out, reservation `win_res`).
     uint32_t ch = 0;
@@ -320,7 +320,7 @@ struct tsr_device {
     tsr_range_alloc io;           // ch0 IO region below the stage: LINEAR buffer windows
     tsr_range_alloc aux;          // ch0 AUX region: RAW tensors of weight buffers
     tsr_range_alloc heap;         // WEIGHT heap, symmetric: an offset is reserved on every channel
-    // W3b builder: compute windows besides ch0 IO (SW §8 R6, V2-SW-26): low[c] = [0, 512 MiB) of
+    // W3b builder: compute windows besides ch0 IO (SW §8 R6, SW-26): low[c] = [0, 512 MiB) of
     // channel c >= 1; the compute heap: symmetric reservations of the WEIGHT heap between the
     // weights (bottom-up) and the KV planes (top-down), each shared out per channel.
     std::vector<tsr_range_alloc> low;
@@ -412,7 +412,7 @@ static bool tsr_dev_open_locked(tsr_device * d) {
     const tsr_config * c = tsr_transport_config(tp);
     const char * bad = nullptr;
     if (c == nullptr)                                     bad = "no configuration";
-    else if (c->beat_bits != 512)                         bad = "BEAT_BITS != 512 (v1 software assumes 64-byte beats)";
+    else if (c->beat_bits != 512)                         bad = "BEAT_BITS != 512 (the software assumes 64-byte beats)";
     else if (c->num_ch < 1)                               bad = "NUM_CH == 0";
     else if (c->t_max < 1)                                bad = "T_MAX == 0";
     else if (c->spm_bytes < 64 * TSR_LINE_BYTES)          bad = "SPM too small";
@@ -858,7 +858,7 @@ static void tsr_placed_fill(tsr_device * d, tsr_buffer_ctx * b, uint64_t addr, u
 
 // ---------------------------------------------------------------------------
 // W3b kv: KV-cache buffers and the mask-summary store (SW §9.3 M7 "KV buffers" / "Mask summaries",
-// V2-SW-17, V2-SW-32; AT §4.6, §7.3; tsr-kvbuf.h, tsr-msum.h). Callers hold dev->mtx, device open.
+// SW-17, SW-32; AT §4.6, §7.3; tsr-kvbuf.h, tsr-msum.h). Callers hold dev->mtx, device open.
 // ---------------------------------------------------------------------------
 
 // The mask-summary store, set up at its first use: the chunk planner's AT parameters (C, T_MAX,
@@ -940,7 +940,7 @@ static const char * tsr_usage_name(enum ggml_backend_buffer_usage u) {
     return "?";
 }
 
-// W3b builder: compute windows (SW §8 R6, V2-SW-26, EX §11). A buffer the device addresses in place
+// W3b builder: compute windows (SW §8 R6, SW-26, EX §11). A buffer the device addresses in place
 // (LINEAR) gets one contiguous window in one channel, tried in this order: the ch0 IO region (below
 // the stage), the low 512 MiB of ch1..ch(C-1) (the channel with the most free bytes first, which
 // spreads activation traffic over the channels), the compute heap. The compute heap takes symmetric
@@ -951,7 +951,7 @@ static const char * tsr_usage_name(enum ggml_backend_buffer_usage u) {
 enum : uint8_t { TSR_WIN_NONE = 0, TSR_WIN_IO = 1, TSR_WIN_LOW = 2, TSR_WIN_HEAP = 3 };
 static constexpr uint64_t TSR_CHEAP_GRAIN = 64ull << 20;
 
-// TSR_COMPUTE_WINDOWS=io: ch0 IO windows only (M6 / v1 placement: a buffer that does not fit IO is
+// TSR_COMPUTE_WINDOWS=io: ch0 IO windows only (M6 placement: a buffer that does not fit IO is
 // kept in host memory and its MUL_MATs staged; get_max_size the IO capacity). Test knob.
 static bool tsr_io_windows_only() {
     static const bool on = [] {
@@ -1545,7 +1545,7 @@ static size_t tsr_buft_get_alignment(ggml_backend_buffer_type_t buft) {
     return TSR_TENSOR_ALIGN;
 }
 
-// One buffer type serves weights and activations. W3b builder (SW §8 R6, V2-SW-26): the limit is
+// One buffer type serves weights and activations. W3b builder (SW §8 R6, SW-26): the limit is
 // 512 MiB, the size of a low window of ch1..ch3 (at least the IO window capacity), so that ggml-alloc
 // cuts compute buffers into chunks that each get a window (IO, a low window or the compute heap) and
 // the reserved logits of a large vocabulary stay on the device (Qwen2.5 at -ub 512: 297 MiB in one
@@ -1760,7 +1760,7 @@ static void tsr_seg_add_mm(tsr_device * d, tsr_segment & seg, const uint32_t * a
     tsr_seg_maybe_cut(d, seg);
     uint32_t idx = seg.ops.mul_mat(args, (int32_t) seg.names.size());
     if (idx == tsr_opl_builder::NO_ROOM) {
-        tsr_flush(d, seg);                    // 4096 records per list (V2-SW-29): run what is pending
+        tsr_flush(d, seg);                    // 4096 records per list (SW-29): run what is pending
         d->st_cut_lists++;
         idx = seg.ops.mul_mat(args, (int32_t) seg.names.size());
     }
@@ -1959,7 +1959,7 @@ static void tsr_mm_args(uint32_t * a, uint32_t x, uint32_t y, const tsr_wref & w
 // A MUL_MAT whose operands the device cannot address in place: src1 or dst in host memory
 // (HOSTED buffer), or dst rows that do not start on a line (N*4 % 64 != 0 with T > 1). It runs
 // on its own (after everything pending), one single-record launch per T tile that fits the IO
-// stage (SW §9.3 step 2, as v1 ran one program per stage tile):
+// stage (SW §9.3 step 2):
 //   src1 rows host -> stage (unless src1 is in a LINEAR window: LD reads it in place),
 //   LD / QACT / MVM / ST (dst rows to the stage, line-padded, or straight into a LINEAR dst),
 //   stage -> dst rows (compacted to N*4 bytes each; host memory or the LINEAR window).
@@ -2352,7 +2352,7 @@ static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key
             if (h != nullptr) {
                 GGML_ABORT("tesseract: op %s ('%s') reached graph_compute but cannot run on the device: '%s' is in host "
                            "memory (a compute buffer the device had no window for); the M7 kinds address their operands "
-                           "in place and only MUL_MAT is staged (docs/v2/06-software-verification.md §8 R6): use a "
+                           "in place and only MUL_MAT is staged (docs/design/06-software-verification.md §8 R6): use a "
                            "smaller -ub or -c, or keep the device to MUL_MAT (TSR_KINDS=m6)", ggml_op_desc(node), node->name,
                            h->name);
             }
@@ -2432,7 +2432,7 @@ static void tsr_backend_free(ggml_backend_t backend) {
                 " evictions, %zu lists / %.2f MiB resident\n",
                 d->st_mm, d->st_mm_records, d->st_joins, d->st_staged_mm, d->st_staged_launches, cs.hits, cs.misses,
                 cs.evictions, d->odev.cache().entries(), tsr_mib(d->odev.cache().used_bytes()));
-        // W3b (TSR_STATS v2, SW §9.2): launches per graph_compute, fused ops, records per kind, the
+        // W3b (TSR_STATS, SW §9.2): launches per graph_compute, fused ops, records per kind, the
         // plan cache (R7) and lists cut early
         fprintf(stderr, "[tesseract] stats: graph_compute calls with 0 / 1 / 2 / >= 3 launches: %" PRIu64 " / %" PRIu64 " / %" PRIu64
                 " / %" PRIu64 "; fused ops %" PRIu64 "; plan cache %" PRIu64 " hits, %" PRIu64 " builds (%" PRIu64
@@ -2608,10 +2608,10 @@ static bool tsr_is_our_buffer(const tsr_device * d, const ggml_backend_buffer * 
     return buf != nullptr && buf->buft == &d->buft;
 }
 
-// spec "supports_op (v1)", unchanged in M6 (SW §9.3, so the splits are v1's): MUL_MAT only, with a
+// spec "supports_op", unchanged in M6 (SW §9.3): MUL_MAT only, with a
 // 2D weight src0 that the device can hold (Q8_0 / Q4_K natively, anything else with to_float
 // converted to Q8_0) and F32 activations; the shape must also be one the firmware can plan
-// (plan.hpp mm_supported on the device's CFG values, V2-SW-20: the host rejects exactly what the
+// (plan.hpp mm_supported on the device's CFG values, SW-20: the host rejects exactly what the
 // `graph` kernel would refuse). The no-op ops (leaves and views) are "supported" as on every GPU
 // backend: they cost nothing in graph_compute, test-backend-ops asks for every tensor of a test
 // graph, and the scheduler aborts on a view of a Tesseract-resident tensor that no backend claims.
@@ -2620,7 +2620,7 @@ static bool tsr_is_our_buffer(const tsr_device * d, const ggml_backend_buffer * 
 // tsr_build_supports: the node is lowered to its OPL record in probe mode (the same function the
 // builder encodes with) and the kind's planner (plan.hpp plan_kind on the device's CFG values) must
 // accept it, so the host refuses exactly what the firmware cannot plan or the builder cannot encode.
-// TSR_KINDS=m6 restricts the device to M6's MUL_MAT (V2-SW-14: M6 runs keep v1's splits).
+// TSR_KINDS=m6 restricts the device to M6's MUL_MAT (SW-14).
 static bool tsr_m6_only() {
     static const bool on = [] {
         const char * e = getenv("TSR_KINDS");
@@ -2661,7 +2661,7 @@ static bool tsr_dev_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) 
                     static std::once_flag warned;
                     std::call_once(warned, [op] {
                         GGML_LOG_ERROR("tesseract: %s '%s' writes into the device KV cache: context shift and KV "
-                                       "defragmentation are not supported in M7 (docs/v2/06-software-verification.md §8 "
+                                       "defragmentation are not supported in M7 (docs/design/06-software-verification.md §8 "
                                        "R10); keep the cache on the CPU (-nkvo) or disable context shift\n",
                                        ggml_op_desc(op), op->name);
                     });
@@ -2675,7 +2675,7 @@ static bool tsr_dev_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) 
                         if (kvs.n_stream > 1) {
                             GGML_LOG_ERROR("tesseract: SET_ROWS '%s' writes a device KV cache of %u sequence streams: "
                                            "multi-sequence KV streams are not supported in M7 "
-                                           "(docs/v2/06-software-verification.md §8 R10); use --kv-unified or keep the "
+                                           "(docs/design/06-software-verification.md §8 R10); use --kv-unified or keep the "
                                            "cache on the CPU (-nkvo)\n", op->name, kvs.n_stream);
                         } else {
                             // the cell indices are one preload entry: at most 256 lines of I64 per ubatch
@@ -2731,7 +2731,7 @@ static bool tsr_dev_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) 
     }
     // No limit on the token count: the size of src1 / dst grows with T, but the activations are
     // never all resident at once. Compute buffers that do not fit the IO region live in host
-    // memory and graph_compute stages them through IO in T tiles (spec v1 lowering 제약). A
+    // memory and graph_compute stages them through IO in T tiles (spec "lowering constraints"). A
     // T-dependent rejection here would also misplace weights: llama.cpp decides where a weight
     // lives with a fixed 512-token probe (weight_buft_supported), so the output head of any
     // large-vocabulary model would silently stay on the CPU, and a resident weight rejected at
@@ -2754,7 +2754,7 @@ static bool tsr_dev_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) 
         std::call_once(warned, [] {
             GGML_LOG_WARN("tesseract: the graph rotates Q/K/V with a Hadamard matrix (attn_inp_k_rot / attn_inp_v_rot, "
                           "quantized KV cache): those MUL_MATs stay on the CPU; set LLAMA_ATTN_ROT_DISABLE=1 for "
-                          "device runs and their baselines (docs/v2/06-software-verification.md §8 R4)\n");
+                          "device runs and their baselines (docs/design/06-software-verification.md §8 R4)\n");
         });
         return false;
     }

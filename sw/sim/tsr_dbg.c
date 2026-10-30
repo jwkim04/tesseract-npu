@@ -1,6 +1,6 @@
 // tsr_dbg.c — DB simulator models (P1.13): tile-level debug, the DBG register block, DB's control-
 // window registers, completion records, the trace writer, the dispatch history, RV watchpoints and
-// DB's halt requests (docs/v2/05-debug.md "DB" §3.3, §3.7-§3.9, §5, §6.1-§6.2, §7.1, §8.1-§8.4,
+// DB's halt requests (docs/design/05-debug.md "DB" §3.3, §3.7-§3.9, §5, §6.1-§6.2, §7.1, §8.1-§8.4,
 // §9.1, §10.1-§10.2; EX §5-§6, §8.5; CC §9.2-§9.6). Interface and scope: include/tsr_dbg.h.
 //
 // The model works only through the simulator's hooks (tsr_sim_int.h §5): the debug hooks (DBG block

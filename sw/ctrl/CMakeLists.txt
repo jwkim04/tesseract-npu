@@ -66,7 +66,7 @@ set(TSR_FW_ITCM_BYTES ${_itcm} CACHE STRING "ITCM size the images are linked for
 set(TSR_FW_DTCM_BYTES ${_dtcm} CACHE STRING "DTCM size the images are linked for (RV_CFG; default from tsr_tables.h)")
 
 # ---------------------------------------------------------------------------
-# Flags (SW §6.1, exactly; docs/v2/toolchain.lock firmware.cxxflags records the same list)
+# Flags (SW §6.1, exactly; docs/design/toolchain.lock firmware.cxxflags records the same list)
 # ---------------------------------------------------------------------------
 set(TSR_FW_ARCH -march=rv32imc_zicsr_zifencei -mabi=ilp32)
 set(TSR_FW_CXX_FLAGS ${TSR_FW_ARCH} -Os -ffreestanding -fno-exceptions -fno-rtti -fno-threadsafe-statics
@@ -75,7 +75,7 @@ set(TSR_FW_ASM_FLAGS ${TSR_FW_ARCH} -g)
 # Hot path (SW §6.1): the graph executor and the kind implementations run once per op record and
 # are compiled for speed; these flags come after TSR_FW_CXX_FLAGS on their command lines (the last
 # -O wins). Everything else (runtime, selftest, replay, libc) stays -Os for the image budget
-# (SW §7.8). docs/v2/toolchain.lock firmware.cxxflags_hot records the same list.
+# (SW §7.8). docs/design/toolchain.lock firmware.cxxflags_hot records the same list.
 set(TSR_FW_HOT_FLAGS -O2)
 set(TSR_FW_HOT_GLOBS kernels/graph.cpp kernels/k_*.cpp)
 option(TSR_FW_WERROR "Treat firmware compiler warnings as errors" ON)
@@ -96,7 +96,7 @@ foreach(_c RELWITHDEBINFO MINSIZEREL)
 endforeach()
 
 # The lock file's record of the flags must not drift from what is built.
-set(_lock ${TESSERACT_ROOT}/docs/v2/toolchain.lock)
+set(_lock ${TESSERACT_ROOT}/docs/design/toolchain.lock)
 if (EXISTS ${_lock})
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_lock})
     foreach(_k cxxflags cxxflags_hot)
@@ -109,7 +109,7 @@ if (EXISTS ${_lock})
             string(STRIP "${CMAKE_MATCH_1}" _lock_flags)
             string(REPLACE ";" " " _ours "${${_v}}")
             if (NOT _lock_flags STREQUAL _ours)
-                message(WARNING "sw/ctrl: firmware flags differ from docs/v2/toolchain.lock firmware.${_k}:\n"
+                message(WARNING "sw/ctrl: firmware flags differ from docs/design/toolchain.lock firmware.${_k}:\n"
                                 "  built: ${_ours}\n  lock:  ${_lock_flags}")
             endif()
         endif()

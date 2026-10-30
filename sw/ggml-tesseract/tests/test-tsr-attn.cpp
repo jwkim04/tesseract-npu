@@ -1,9 +1,9 @@
-// test-tsr-attn.cpp — ctest ggml_tesseract_attn (docs/v2/06-software-verification.md §10.2, §10.4 M7
-// gate item 4; docs/v2/03-attention-kv.md §13.6; W3b P3.5): the KV cache and attention on the
+// test-tsr-attn.cpp — ctest ggml_tesseract_attn (docs/design/06-software-verification.md §10.2, §10.4 M7
+// gate item 4; docs/design/03-attention-kv.md §13.6; W3b P3.5): the KV cache and attention on the
 // Tesseract backend through the public ggml API, against the CPU backend and the AT references, on the
 // transport TSR_DEVICE selects (default sim).
 //
-//   1. KV buffers (SW §9.3 M7, V2-SW-17, AT §4.6): a ggml context of cache_k_l<n> / cache_v_l<n> q8_0
+//   1. KV buffers (SW §9.3 M7, SW-17, AT §4.6): a ggml context of cache_k_l<n> / cache_v_l<n> q8_0
 //      tensors allocated on the device becomes a KV buffer at its clear (storage "kv"), planes
 //      top-down (the first tensor's highest); set / get / memset of random byte ranges equal a host
 //      mirror (partial blocks and rows, whole tensors, two streams); llama.cpp's state save / load
@@ -671,7 +671,7 @@ void test_fa(const tsr_att_cfg & cfg) {
 }
 
 // =================================================================================================
-// 4. supports_op and where operands live (W3b fix; SW §8 R6 and §9.3 as built, V2-SW-41)
+// 4. supports_op and where operands live (W3b fix; SW §8 R6 and §9.3 as built, SW-41)
 // =================================================================================================
 void test_placement_rules() {
     printf("placement rules of supports_op\n");

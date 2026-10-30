@@ -19,7 +19,7 @@ This directory turns that tree into one that builds cleanly and behaves the same
 
 > **Scope.** The driver port that the U200 card runs on: the 19-patch series, how it was verified at
 > build, header and object level, and what the card has exercised (section "On the card"). It belongs
-> to the platform, not to the Tesseract core: the v1 and v2 cards use it alike.
+> to the platform, not to the Tesseract core.
 
 Status: all patched builds pass (0 errors, modpost clean, no warnings outside the known set
 below). The series is loaded on the development host and the U200 card runs on it (kernel
@@ -205,7 +205,7 @@ verify/hdrcheck.sh /lib/modules/*/build
 
 The series was installed with DKMS and loaded on the development host (Ubuntu 24.04, kernel
 7.0.0-38-generic). The U200 (`xilinx_u200_gen3x16_xdma_base_2`) came up on it, and every card run of
-the project used these drivers (measured on the card, v1; logs in `build/card/`, not in git;
+the project used these drivers (card measurements were taken before the control core was added, with the host issuing the ops; logs in `build/card/`, not in git;
 [`docs/platform-u200.md`](../../docs/platform-u200.md) §14):
 
 | Check | Result |

@@ -1,4 +1,4 @@
-// rmsnorm_ref.hpp — host C++ reference of the firmware's RMS_NORM kind (OPL v1 kind 0x14; docs/v2/
+// rmsnorm_ref.hpp — host C++ reference of the firmware's RMS_NORM kind (op list kind 0x14; docs/design/
 // 06-software-verification.md "SW" §7.2, §7.5 and its last paragraph): it composes the tsr_ref_vu calls
 // the kernel's tile ops execute, in the kernel's order, so the kernel tests compare the firmware
 // against it bit for bit.
@@ -15,7 +15,7 @@
 // Row tiles do not change any value (every row is reduced and scaled on its own), so the reference
 // runs one RED over all rows and one VOP per weight-period block (one VOP when p = 1 or p >= rows).
 //
-// rmsnorm_ref_7op is the spec's v1 lowering (docs/spec.md:311-321: RED.SUMSQ, SOP.MULI inv_n,
+// rmsnorm_ref_7op is the spec's lowering (docs/spec.md:311-321: RED.SUMSQ, SOP.MULI inv_n,
 // SOP.ADDI eps, SOP.SQRT, SOP.RECIP, VOP.MULS, VOP.MUL) on the same rows; VU §6.2 states the two are
 // bit-identical when s[sk] holds the MULI immediate, and the kernel tests check it.
 #pragma once

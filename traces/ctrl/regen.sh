@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# traces/ctrl/regen.sh [BUILD_DIR] — issue-path regression traces (trace v2 `ops`, docs/v2/06-software-
-# verification.md §5.6 "new"; docs/v2/04-control-core.md §7-§9): tsr-trace-gen v2 --ops ctrl, then
+# traces/ctrl/regen.sh [BUILD_DIR] — issue-path regression traces (`ops` traces, docs/design/06-software-
+# verification.md §5.6 "new"; docs/design/04-control-core.md §7-§9): tsr-trace-gen --ops ctrl, then
 # every trace replayed under the fixed and two random schedules (race detector fatal),
 # tile-only and through the replay kernel (one launch per trace: SPM_STALE is fatal, SW §4.6).
 #

@@ -7,7 +7,7 @@ read-modify-write), the per-cluster tsr_vpipe / tsr_rpipe, and one tsr_mvm_clust
 (stages 1-4: tsr_mvm_ws, chunk parser, meta + unpack), activation buffer, back end (stages 5-9:
 4 x tsr_mac_lane, integer scale, 2 x i2f, fmul d*Dx, block term, accumulate into 16 partials,
 tree16), DDR4 channel c. The two SPM ports (read port, write port of the same scratchpad) are drawn
-as one block. The datapath is the v1 RTL, unchanged in v2 (rtl/core, solid; ran on the card).
+as one block. The datapath is solid (rtl/core; ran on the card).
 
 Facts with their sources:
 - one tsr_vpipe and one tsr_rpipe per cluster: rtl/core/tsr_mvm.sv (both inside the g_cl generate
@@ -26,7 +26,7 @@ Facts with their sources:
   broadcast; beats enter the back end only once the activation buffer is complete), §7.4 (the tree
   finishes one row while the next accumulates), §14.2 (MVM_BC_PIPE, MVM_RES_PIPE >= 2 for clusters
   in another SLR).
-Planned, drawn dashed (docs/v2/03-attention-kv.md §8, docs/rtl-m3.md §6.5; no RTL yet): the
+Planned, drawn dashed (docs/design/03-attention-kv.md §8, docs/rtl-m3.md §6.5; no RTL yet): the
 attention modes ATTQK (scores and row maxima) and ATTPV (P.V partial outputs and row sums) reuse
 the front end and the MAC lanes. In tsr_mvm they add the p broadcast and the gather ATT path (a
 line buffer per pass row, full-line SPM writes, a max tracker per row; AT §8.1, §8.2); in the
@@ -224,8 +224,8 @@ f.legend(W / 2, LEG_Y, [("control", "CONTROL"), ("compute", "COMPUTE"), ("memory
                         ("io", "DATA MOVEMENT"), ("neutral", "PLANNED", True)])
 f.text(W / 2, LEG_Y + 38, wrap(
     "TSR_SPM is one scratchpad: the broadcast and ACC reads use its read port, the gather and ACC "
-    "write through its write port. Solid blocks are the v1 datapath (RTL, ran on the card); the "
-    "dashed blocks are the attention modes of v2 (planned).", 1440), "note", anchor="middle",
+    "write through its write port. Solid blocks are the datapath (RTL, ran on the card); the "
+    "dashed blocks are the attention modes (planned).", 1440), "note", anchor="middle",
        color=INK_SOFT)
 
 f.save()

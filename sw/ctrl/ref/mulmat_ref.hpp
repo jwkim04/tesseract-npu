@@ -1,8 +1,8 @@
-// mulmat_ref.hpp — host C++ reference of the firmware's MUL_MAT kind (docs/v2/06-software-verification.md
+// mulmat_ref.hpp — host C++ reference of the firmware's MUL_MAT kind (docs/design/06-software-verification.md
 // "SW" §7.4, §7.5 last paragraph): it composes the tsr_ref calls the kernel's tile ops execute, in the
 // kernel's order, so the kernel tests compare the firmware against it bit for bit.
 //
-// The kernel (sw/ctrl/kernels/k_mulmat.cpp) runs, per T tile of a MUL_MAT record (OPL v1 kind 0x10,
+// The kernel (sw/ctrl/kernels/k_mulmat.cpp) runs, per T tile of a MUL_MAT record (op list kind 0x10,
 // SW §7.2 argument words, tsr::opl::mm):
 //   LD x rows -> QACT (A32 for Q8_0, A256 for Q4_K; one QA vector per token) -> [LD the addend rows,
 //   or the old y rows for ACC_DST, into the y block] -> MVM (ACC when a row was loaded) -> ST y.

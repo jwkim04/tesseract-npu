@@ -1,5 +1,5 @@
 # sw/ctrl/tests/hdr.cmake — P2.3 tests of the tile/VU header library and the host backend
-# (docs/v2/06-software-verification.md "SW" §6.7, §6.8, §10.2). Included by
+# (docs/design/06-software-verification.md "SW" §6.7, §6.8, §10.2). Included by
 # sw/ctrl/host/CMakeLists.txt (main project). The host backend itself (sw/ctrl/host/backend_host.cpp,
 # shim_host.cpp) is part of tsr_fw_host there (every sw/ctrl/host/*.cpp).
 #

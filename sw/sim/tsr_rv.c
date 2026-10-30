@@ -1,7 +1,7 @@
-// tsr_rv.c — RV32IMC + Zicsr + Zifencei interpreter of the control core's Ibex (V2-SW-1).
+// tsr_rv.c — RV32IMC + Zicsr + Zifencei interpreter of the control core's Ibex (SW-1).
 //
-// Normative sources: docs/v2/06-software-verification.md (SW) §4.2, docs/v2/04-control-core.md
-// (CC) §3 (Ibex configuration), §7.3 (waiting pushes), §12.3 (interrupts), docs/v2/05-debug.md (DB)
+// Normative sources: docs/design/06-software-verification.md (SW) §4.2, docs/design/04-control-core.md
+// (CC) §3 (Ibex configuration), §7.3 (waiting pushes), §12.3 (interrupts), docs/design/05-debug.md (DB)
 // §3 (debug mode use), the RISC-V unprivileged / privileged specifications (20191213 / 1.12) and
 // the Debug Specification 0.13.2. Where the specifications leave a choice to the implementation,
 // this file follows Ibex; such facts are recalled from Ibex's documentation and RTL and marked
@@ -9,7 +9,7 @@
 // RVFI lockstep bench (P5.2).
 //
 // Ibex behaviour modelled here (CC §3.2 configuration: WritebackStage 1, BranchTargetALU 1,
-// RV32MSingleCycle (V2-CC-34; only the cycle tables of tsr_rv.h depend on these three), RV32BNone,
+// RV32MSingleCycle (CC-34; only the cycle tables of tsr_rv.h depend on these three), RV32BNone,
 // PMPEnable 0, MHPMCounterNum 0, DbgTriggerEn 1, DbgHwBreakNum 2, SecureIbex 0, ICache 0):
 //   ISA        RV32I, M, C (no Zcb / Zba / Zbb), Zicsr, Zifencei. FENCE and FENCE.I are no-ops
 //              (no cache; SW §4.2). Every other encoding is an illegal instruction (mcause 2,

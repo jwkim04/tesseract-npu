@@ -1,6 +1,6 @@
 // rt_kernels.cpp — test kernels of the fw_runtime image (sw/ctrl/tests/runtime.cmake, P2.2;
-// docs/v2/06-software-verification.md "SW" §6.3-§6.6, §10.2). Each exercises one runtime step of
-// EX §4.7 (docs/v2/01-execution-model.md) or one SDK service; sw/ctrl/tests/test_fw_runtime.c
+// docs/design/06-software-verification.md "SW" §6.3-§6.6, §10.2). Each exercises one runtime step of
+// EX §4.7 (docs/design/01-execution-model.md) or one SDK service; sw/ctrl/tests/test_fw_runtime.c
 // launches them on the simulator and checks every record, log word and output. They obey the
 // launch-stateless and timing rules (SW §4.6-§4.7): nothing read from a timing-dependent register
 // reaches a pushed word, a dependency or a record (the poll loops only end waits).
@@ -37,7 +37,7 @@ int32_t blk_common(const tsr_args * a, uint32_t lines) {
     if (b == nullptr) return -1;
 #ifdef RT_MUTANT_STALE
     // fw_runtime_stale (runtime.cmake): reads the whole argument range, 15 lines more than the
-    // runtime staged for rt_blk1; the race detector must report SPM_STALE (SW §4.6, V2-SW-4).
+    // runtime staged for rt_blk1; the race detector must report SPM_STALE (SW §4.6, SW-4).
     const uint32_t rd_lines = 16u;
 #else
     const uint32_t rd_lines = lines;

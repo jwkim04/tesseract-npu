@@ -1,5 +1,5 @@
-// tsr_logdec.h — decoder of the device log (docs/v2/05-debug.md "DB" §6.1 records on EX's log ring,
-// docs/v2/01-execution-model.md "EX" §4.10; docs/v2/06-software-verification.md "SW" §6.6) and of
+// tsr_logdec.h — decoder of the device log (docs/design/05-debug.md "DB" §6.1 records on EX's log ring,
+// docs/design/01-execution-model.md "EX" §4.10; docs/design/06-software-verification.md "SW" §6.6) and of
 // TRAP records (EX §4.4, DB §6.3). The transport decodes its log with it (TSR_LOG); tools that hold
 // raw words (tsr_transport_log_drain, saved dumps; SW §9.5 tsr-log) use the same functions.
 //
