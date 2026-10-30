@@ -975,15 +975,15 @@ token), one decoded Qwen2.5-0.5B Q8_0 token takes 2,281,377 PERF cycles on k4t1 
 Everything below except [Run a model on the card (v1)](#run-a-model-on-the-card-v1) runs without
 an FPGA: the backend uses the ISA simulator as its device.
 
-These instructions are for v1 (tag `v1-m4`). X0, the first v2 commit, deletes the in-tree v1 path
-(the command-buffer execution, its traces and benches), so until the v2 software path runs end to
-end on the simulator (W3 in [`docs/v2/README.md`](docs/v2/README.md) §10) these need a checkout
-of tag `v1-m4` or the v1 binaries in `build/v1`: running a model on the Tesseract device (in the
-X0 tree `-ngl` keeps the weights on the CPU), trace replay (`tsr-trace-replay`,
-`tb/fastreplay/run.py`), regenerating the v1 trace sets, the Verilated kernel
-(`tb/platform/vkernel/vkernel.py`) and `tsr_xrt_selftest`'s program checks. The card itself is
-run with the v1 binary copy described below. The build, `ctest`, `rtl/lint.sh` and
-`tb/run_all.sh` work on the X0 tree.
+X0, the first v2 commit, deleted the in-tree v1 path (the command-buffer execution, its traces and
+benches). Since W3a (P3.1–P3.4 in [`docs/v2/README.md`](docs/v2/README.md) §10) the v2 software
+path runs end to end on the simulator again: a model runs on the Tesseract device with the M6
+settings (its MUL_MATs as op lists through the firmware's `graph` kernel, attention and the KV
+cache on the CPU), `tsr-selftest` replaces `tsr_xrt_selftest`, and `tsr-trace-replay` replays the
+v2 trace sets. Still on v1 (a checkout of tag `v1-m4` or the v1 binaries in `build/v1`): the card
+(run with the v1 binary copy described below until a v2 bitstream exists), the Verilated kernel
+(`tb/platform/vkernel/vkernel.py`; v2 is P5.3), `tb/fastreplay/run.py` and regenerating the v1
+trace sets. The build, `ctest`, `rtl/lint.sh` and `tb/run_all.sh` work on this tree.
 
 ### Requirements
 
@@ -1021,7 +1021,7 @@ A narrower build and the backend tests:
 
 ```sh
 cmake --build build/dev -j4 --target test-backend-ops test-ggml-tesseract test-tsr-backend-units llama-completion
-build/dev/bin/test-tsr-backend-units                  # allocator + lowering
+build/dev/bin/test-tsr-backend-units                  # allocator, lowering, OPL builder
 build/dev/bin/test-ggml-tesseract                     # bit-exact vs tsr_ref + NMSE vs CPU
 TSR_SIM_TMAX=8 build/dev/bin/test-ggml-tesseract      # token tiling with T > 1
 ctest --test-dir build/dev -R '^ref_' --output-on-failure
@@ -1030,15 +1030,19 @@ ctest --test-dir build/dev -R '^ref_' --output-on-failure
 ### Run a model on the simulator
 
 Model files are not part of the repository; put GGUF files in `models/` (ignored by git).
-Remember `-nkvo`. `-no-cnv` turns off the chat mode that llama-completion starts by itself for
-models with a chat template:
+Remember `-nkvo` (M6: attention and the KV cache stay on the CPU). The v2 baselines use flash
+attention, a q8_0 KV cache and no KV rotation (klcheck and numcheck set these themselves).
+`-no-cnv` turns off the chat mode that llama-completion starts by itself for models with a chat
+template:
 
 ```sh
-build/dev/bin/llama-completion -m models/qwen2.5-0.5b-instruct-q8_0.gguf -ngl 99 -nkvo -no-cnv -p "..." -n 16
+LLAMA_ATTN_ROT_DISABLE=1 build/dev/bin/llama-completion -m models/qwen2.5-0.5b-instruct-q8_0.gguf \
+    -ngl 99 -nkvo -fa on -ctk q8_0 -ctv q8_0 -no-cnv -p "..." -n 16
 build/dev/bin/klcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf -o build/klcheck-05b -n 64
 ```
 
-The simulator is slow: on the 16-core dev host, 0.5B decode takes about 84 ms per token. A 32B
+The simulator is slow: on the 16-core dev host, 0.5B decode takes about 92 ms per token (v2, M6,
+145 launches per token) and 32B about 7.7 s per token. A 32B
 model needs file-backed simulator DRAM (`TSR_SIM_DRAM_DIR=<dir>` with about 20 GiB free); see
 [`docs/klcheck.md`](docs/klcheck.md) and [`docs/numcheck.md`](docs/numcheck.md).
 
