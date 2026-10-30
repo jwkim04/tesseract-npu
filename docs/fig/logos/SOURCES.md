@@ -1,7 +1,7 @@
 # Logo sources
 
 The software stack figure (`docs/fig/stack.svg`, `stack-dark.svg`; script `docs/fig/src/stack.py`)
-shows the official logos of four programs it names: llama.cpp, PyTorch, Hugging Face and GDB. The
+shows the official logos of three programs it names: llama.cpp, PyTorch and Hugging Face. The
 files in this directory are those logos, sanitised and otherwise unmodified. The rules for using
 them are in `docs/fig/src/STYLE.md` ("Logos").
 
@@ -25,7 +25,6 @@ stored files contain only `<svg>`, `<g>`, `<defs>` and basic shapes.
 | `llamacpp.svg` | llama.cpp icon (`llama1-icon.svg`) | `stack`: LLAMA.CPP tile, own dark tile, no backing | 1311 | `097fa4e27e5f016d2545432c8e6b0aaa555b54a8152f5a3cc3421b263aecbd28` |
 | `pytorch.svg` | PyTorch lockup (flame and wordmark) | `stack`: PyTorch tile, on a white backing tile; the lockup carries the name | 1771 | `7973d0cbfa1065e5480b5153015ccab36f8848c0782d114e5b224f4e7c503f62` |
 | `huggingface.svg` | Hugging Face logo (the hugging face) | `stack`: line "Hugging Face models" in the PyTorch tile, on a white backing tile | 35306 | `c3a5e196066609fbc9cbf7a6c0d096f03e8cd7a6aae35df9a0c9be674b015237` |
-| `gdb.svg` | GDB archer fish | `stack`: GDB tile in the developer tools, on a white backing tile | 18792 | `0aa4a66256b9b6c88fdff317e1969c45c2bc3fdebc9f3c3b1dda1a4d9679d7a7` |
 
 ## llama.cpp: `llamacpp.svg`
 
@@ -78,22 +77,6 @@ stored files contain only `<svg>`, `<g>`, `<defs>` and basic shapes.
   entry.
 - **Changed:** re-serialised by `logoclean.py` (an XML declaration and an explicit `xmlns` first;
   the original has no style, metadata or ids to remove).
-
-## GDB: `gdb.svg`
-
-- **Source:** the archer fish that the GDB home page shows, <https://sourceware.org/gdb/images/archer.svg>
-  (the GDB project's own site; the GNU address `www.gnu.org/software/gdb/` has no such file).
-- **sha256 of the file as retrieved:** `0b395702ca5d13ef32f7b9643b24a0c968ad193f45c22601ac3049b0575273ff`
-- **Licence:** <https://sourceware.org/gdb/mascot/> says that Jamie Guinan drew the original Archer
-  Fish Logo, that Andreas Arnez made its vector versions, and that the original logo and the vector
-  versions are licensed under CC BY-SA 3.0 US (<https://creativecommons.org/licenses/by-sa/3.0/us/>).
-  Attribution: archer fish logo by Jamie Guinan, vector version by Andreas Arnez, CC BY-SA 3.0 US,
-  from the GDB project (<https://sourceware.org/gdb/>). The logo is embedded unmodified; the
-  share-alike condition applies to a changed version of the logo, and the file here is not changed.
-  GDB is a GNU project of the Free Software Foundation.
-- **Changed:** sanitised (the two `style` attributes that carry only text and layout properties,
-  such as `block-progression` and `text-align`, are dropped; the two `stroke-dasharray:none` styles
-  become attributes; three unused layer ids are dropped).
 
 ## Adding or replacing a logo
 

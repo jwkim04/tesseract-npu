@@ -253,17 +253,7 @@ precedence = "aggregate"
 SPDX-FileCopyrightText = "Hugging Face, Inc. (Hugging Face logo)"
 SPDX-License-Identifier = "LicenseRef-Trademark-HuggingFace"
 
-# GDB archer fish. CC BY-SA 3.0 US has no SPDX id, hence the LicenseRef.
-[[annotations]]
-path = "docs/fig/logos/gdb.svg"
-precedence = "aggregate"
-SPDX-FileCopyrightText = [
-  "Jamie Guinan (archer fish logo)",
-  "Andreas Arnez (vector version)",
-]
-SPDX-License-Identifier = "LicenseRef-CC-BY-SA-3.0-US"
-
-# The software stack figure draws the four logos above as vector shapes (stack.png is a render of
+# The software stack figure draws the three logos above as vector shapes (stack.png is a render of
 # stack.svg). The drawing is the author's, the logos keep their terms. This entry comes after the
 # docs/fig/*.svg and *.png entry on purpose: the last matching table is the one used.
 [[annotations]]
@@ -279,7 +269,5 @@ SPDX-FileCopyrightText = [
   "2023-2026 The ggml authors (llama.cpp icon)",
   "The Linux Foundation (PyTorch logo)",
   "Hugging Face, Inc. (Hugging Face logo)",
-  "Jamie Guinan (archer fish logo)",
-  "Andreas Arnez (archer fish vector version)",
 ]
-SPDX-License-Identifier = "Apache-2.0 AND OFL-1.1 AND MIT AND LicenseRef-Trademark-PyTorch AND LicenseRef-Trademark-HuggingFace AND LicenseRef-CC-BY-SA-3.0-US"
+SPDX-License-Identifier = "Apache-2.0 AND OFL-1.1 AND MIT AND LicenseRef-Trademark-PyTorch AND LicenseRef-Trademark-HuggingFace"

@@ -264,7 +264,7 @@ Hugging Face, GDB); the architecture figures have none.
   `pytorch-logo-flame.svg` in the PyTorch repository is the old flame, so the lockup is used).
 - **Sources are written down.** Every logo has a section in `docs/fig/logos/SOURCES.md`: URL
   (pinned to a commit where there is one), retrieval date, sha256 of the download, licence or
-  trademark note (and the attribution a licence asks for, as for the GDB fish under CC BY-SA), and
+  trademark note (and any attribution a licence asks for), and
   what was changed. Read the owner's brand rules first; if they forbid the use, leave the logo out.
   Say in the note that the logo only refers to the project.
 - **Sanitised vector, no raster.** The download is untrusted data: put it in its own empty directory

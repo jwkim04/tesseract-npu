@@ -68,14 +68,6 @@ https://github.com/notofonts/latin-greek-cyrillic
   License text: LICENSES/OFL-1.1.txt.
 
 
-GDB archer fish logo (Creative Commons Attribution-ShareAlike 3.0 United States)
-Logo by Jamie Guinan, vector version by Andreas Arnez, from the GDB project
-(https://sourceware.org/gdb/).
-
-  docs/fig/logos/gdb.svg (sanitised, see docs/fig/logos/SOURCES.md), also drawn in
-  docs/fig/stack.svg, stack-dark.svg and stack.png.
-  License text: LICENSES/LicenseRef-CC-BY-SA-3.0-US.txt (https://creativecommons.org/licenses/by-sa/3.0/us/).
-
 
 The PyTorch and Hugging Face logos in docs/fig/logos are trademarks of their owners. No license is
 granted for them (LICENSES/LicenseRef-Trademark-PyTorch.txt, LicenseRef-Trademark-HuggingFace.txt;

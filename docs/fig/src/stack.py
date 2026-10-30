@@ -29,7 +29,7 @@ Logos (STYLE.md "Logos"; the only marks that are not drawn in the figure style):
 logos of the software the figure names, embedded unmodified from docs/fig/logos (sources and
 trademark notes in docs/fig/logos/SOURCES.md): llama.cpp (icon, on its own dark tile), PyTorch
 (the lockup, on a white tile; it replaces the tile title), Hugging Face (beside "Hugging Face
-models") and GDB (the archer fish, on a white tile). No logo of a company, an ISA or an IP core.
+models"). No logo of a company, an ISA or an IP core.
 
 Status tags (STYLE.md "Planned and unconfirmed things"; at most three texts): ON THE CARD · V1
 (dark badge: ran on the Alveo U200 with the v1 core, tag v1-m4), SIMULATOR · V2 (outlined badge:
@@ -178,8 +178,7 @@ tools = [T("neutral", "KLCHECK\nNUMCHECK", "accuracy vs the CPU"),
          T("neutral", "TSR-SELFTEST", "device self-tests"),
          T("neutral", "TSR-LOG", "firmware log decoder"),
          T("neutral", "SIMULATOR", "bit-exact oracle\ncycle model · races"),
-         T("neutral", "GDB", "debugging\nover PCIe", tag=PLAN_TAG,
-           logo={"key": "gdb", "h": 60, "backing": True, "pad": 6}),
+         T("neutral", "GDB", "debugging\nover PCIe", tag=PLAN_TAG),
          T("neutral", "TSR-PROF", "timeline · counters", tag=PLAN_TAG)]
 
 # ---- vertical layout -----------------------------------------------------------------------------
@@ -209,7 +208,7 @@ f = Fig("stack", W, H,
              "issue path with unit queues, DMA, QACT, MVM clusters, vector unit, SPM); the Alveo "
              "U200 card with the XRT shell and four DDR4 channels. A column of developer tools "
              "sits beside the middle layers: bit-exact simulator, tsr-selftest, klcheck and "
-             "numcheck, trace tools, tsr-log, and planned GDB debugging (with the GDB logo) and "
+             "numcheck, trace tools, tsr-log, and planned GDB debugging and "
              "profiler. Tags give "
              "each block's status: on the card (v1), on the simulator (v2) or planned; the xrt "
              "kind is planned because only the v1 transport has run on the card.")
