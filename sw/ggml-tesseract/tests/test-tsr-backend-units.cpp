@@ -10,6 +10,18 @@
 // 4096-op limit, a random property check (every conflicting pair ordered, every direct dependency a
 // conflict), and the OPL cache (hits, misses, LRU eviction by bytes and by entries, a list larger
 // than the region, a failing write). No device: tsr-opl-dev.cpp (the launcher) is not linked in.
+// W3b (SW §9.3 M7): the DRAM ranges of every M7 kind (row periods, per-row scalars, weights, KV planes,
+// the f32 mask copy) and the plane hazards SET_ROWS_KV -> FLASH_ATTN -> SET_ROWS_KV; the preload table
+// (deduplication, 64-byte entries, the 256-line limit, NO_ROOM). With ggml-base (TSR_UNITS_BUILD:
+// tsr-build.cpp compiled in, graphs on fake device addresses): fusion pairs (MUL_MAT + bias / residual
+// ADD, RMS_NORM + MUL) and the cases that must not fuse (a second user, an output, the addend written
+// in between, a scalar b, the norm as src1, an addend off the device); records of views (a fused-qkv
+// projection's q / k views read by ROPE, a copy into the k part) and KV planes with their
+// dependencies, one shared positions entry and FA_NEW naming the K indices (also in a list of its
+// own); the graph key (addresses, shapes and parameters, not values); supports_op in probe mode
+// against the planners on independently built argument words with the 64-byte rule, over sweeps of
+// shapes of every kind (ADD / MUL / SCALE / UNARY / RMS_NORM / GLU / CONT / GET_ROWS / ROPE /
+// SET_ROWS / FLASH_ATTN_EXT).
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -25,6 +37,16 @@
 #include "tsr-opl.h"
 #include "tsr_isa.h"
 #include "tsr_ref.h"
+#include "tsr_ref_at.h"
+#if defined(TSR_UNITS_BUILD)
+// W3b: the M7 builder (tsr-build.cpp, compiled into this test with ggml-base when it exists)
+#include <cmath>
+#include <functional>
+#include <string>
+#include "ggml.h"
+#include "tsr-build.h"
+#include "tsr/plan.hpp"
+#endif
 
 namespace opl = tsr::opl;
 namespace mm  = tsr::opl::mm;
@@ -286,7 +308,7 @@ static void test_opl_encoding() {
     CHECK(r.open(blob.data(), (uint32_t) blob.size(), true) == opl::RET_OK);
     CHECK(r.hdr().n_ops == 7 && r.hdr().flags == opl::F_STOP_ON_ERROR && r.hdr().graph_id == r.hdr().crc32);
     CHECK(opl::check_header(r.hdr(), (uint32_t) blob.size()) == opl::RET_OK);
-    opl::record rec;
+    opl::record rec{};
     const tsr::plan::dev_cfg pc = tsr_plan_cfg(c);
     for (uint32_t i = 0; i < 7; ++i) {
         CHECK(r.next(rec) == opl::RET_OK && rec.kind == opl::K_MUL_MAT && rec.n_args == mm::NARGS && rec.n_slots == 1);
@@ -680,6 +702,742 @@ static void test_opl_cache() {
     CHECK(tsr_opl_cache::hash((const uint8_t *) "a", 1) == 0xaf63dc4c8601ec8cull);
 }
 
+// =============================================================================================
+// W3b (SW §9.3 M7): the builder's DRAM ranges of every kind, the preload table, and (with ggml) the
+// records of ggml nodes, fusion, dependencies through views and KV planes, FA_NEW, the graph key and
+// supports_op against the planners.
+// =============================================================================================
+
+static void test_kind_ranges() {
+    tsr_opl_builder b(4);
+    std::vector<tsr_dram_range> rd, wr;
+    const uint64_t a0 = 0x100000, b0 = 0x200000, d0 = 0x300000;
+    const uint32_t A = tsr_dram_handle(1, a0), B = tsr_dram_handle(1, b0), D = tsr_dram_handle(2, d0);
+    uint32_t w[opl::fa::NARGS];
+    // ADD, n = 100 (L = 7 lines), 8 rows, b one row broadcast (stride 0)
+    opl::put_args(opl::ew_args{ D, 7, A, 7, B, 0, 100, 8, 1, 0 }, w);
+    b.kind_ranges(opl::K_ADD, w, 0, rd, wr);
+    CHECK(rd.size() == 2 && wr.size() == 1);
+    CHECK(rd[0].ch == 1 && rd[0].lo == a0 && rd[0].hi == a0 + 8 * 7 * 64 && rd[0].row == 0);
+    CHECK(rd[1].ch == 1 && rd[1].lo == b0 && rd[1].hi == b0 + 7 * 64);
+    CHECK(wr[0].ch == 2 && wr[0].lo == d0 && wr[0].hi == d0 + 8 * 7 * 64);
+    // MUL by per-row scalars (FLAG_B_SCALAR, period 40 >= 20 rows: words 0..19 = 2 lines)
+    opl::put_args(opl::ew_args{ D, 7, A, 7, B, 0, 100, 20, 40, opl::ew::FLAG_B_SCALAR }, w);
+    b.kind_ranges(opl::K_MUL, w, 0, rd, wr);
+    CHECK(rd.size() == 2 && rd[1].lo == b0 && rd[1].hi == b0 + 2 * 64);
+    // ADD with a row period of 4 of 8 rows (b stride 7 lines): b rows 0..3
+    opl::put_args(opl::ew_args{ D, 7, A, 7, B, 7, 100, 8, 4, 0 }, w);
+    b.kind_ranges(opl::K_ADD, w, 0, rd, wr);
+    CHECK(rd[1].lo == b0 && rd[1].hi == b0 + 4 * 7 * 64);
+    // RMS_NORM: a per-row weight of period 3 (dense rows), and no weight
+    opl::put_args(opl::rms_norm_args{ D, 7, A, 7, 100, 8, 0, 0, B, 3 }, w);
+    b.kind_ranges(opl::K_RMS_NORM, w, 0, rd, wr);
+    CHECK(rd.size() == 2 && rd[1].lo == b0 && rd[1].hi == b0 + 3 * 7 * 64 && wr[0].hi == d0 + 8 * 7 * 64);
+    opl::put_args(opl::rms_norm_args{ D, 7, A, 7, 100, 8, 0, 0, opl::HANDLE_NONE, 3 }, w);
+    b.kind_ranges(opl::K_RMS_NORM, w, 0, rd, wr);
+    CHECK(rd.size() == 1);
+    // ROPE: 3 tokens of 14 heads x 64 (56 lines) in a fused-qkv view (token stride 60 lines): strided
+    // source rows, the freq-factor table (32 values: 2 lines), contiguous result
+    opl::put_args(opl::rope_args{ D, 56, A, 60, 0, B, 0, 0, 0, 64, 64, 14, 3, opl::rope::MODE_NEOX }, w);
+    b.kind_ranges(opl::K_ROPE, w, 0, rd, wr);
+    CHECK(rd.size() == 2 && rd[0].row == 56 * 64 && rd[0].stride == 60 * 64 && rd[0].hi == a0 + 2 * 60 * 64 + 56 * 64);
+    CHECK(rd[1].lo == b0 && rd[1].hi == b0 + 2 * 64 && wr[0].row == 0 && wr[0].hi == d0 + 3 * 56 * 64);
+    // GET_ROWS: every row of the source (aux = its rows) may be read; 5 ids written
+    opl::put_args(opl::get_rows_args{ D, 56, A, 56, 0, 5, 56 }, w);
+    b.kind_ranges(opl::K_GET_ROWS, w, 1000, rd, wr);
+    CHECK(rd.size() == 1 && rd[0].hi == a0 + 1000 * 56 * 64 && wr[0].hi == d0 + 5 * 56 * 64);
+    // SET_ROWS_KV (E = 128, LG = 3): the source rows, and its plane written on every channel (LG·17·E/64 beats)
+    const uint32_t geom = opl::geom_word(2, 3);
+    opl::put_args(opl::set_rows_kv_args{ 0, 0, A, 8, 0, 2, 128, 0, 0x4000, geom, 0, 0 }, w);
+    b.kind_ranges(opl::K_SET_ROWS_KV, w, 0, rd, wr);
+    CHECK(rd.size() == 1 && rd[0].hi == a0 + 2 * 8 * 64 && wr.size() == 4);
+    tsr_kv_geom g = { 128, 4, 3 };
+    for (uint32_t c = 0; c < 4; ++c) {
+        CHECK(wr[c].ch == c && wr[c].lo == 0x4000ull * 64 && wr[c].hi == 0x4000ull * 64 + tsr_kv_plane_beats(&g) * 64);
+    }
+    // FLASH_ATTN: q, the K and V planes on every channel and its f32 mask copy (2 rows of L(300) = 19 lines)
+    opl::flash_attn_args f{};
+    f.dst = D; f.dst_stride = 8; f.q = A; f.q_head_stride = 4; f.q_token_stride = 8; f.n_kv = 300; f.head_dim = 64;
+    f.n_head = 2; f.n_head_kv = 2; f.n_tokens = 2; f.mask = B; f.k_plane = 0x4000; f.v_plane = 0x5000; f.geom = geom; f.d = 64; f.g = 1;
+    opl::put_args(f, w);
+    b.kind_ranges(opl::K_FLASH_ATTN, w, 0, rd, wr);
+    CHECK(rd.size() == 1 + 4 + 4 + 1 && wr.size() == 1);
+    CHECK(rd[0].hi == a0 + 2 * 8 * 64 && rd[5].lo == 0x5000ull * 64 && rd[9].lo == b0 && rd[9].hi == b0 + 2 * 19 * 64);
+    f.mask = opl::HANDLE_NONE;
+    opl::put_args(f, w);
+    b.kind_ranges(opl::K_FLASH_ATTN, w, 0, rd, wr);
+    CHECK(rd.size() == 9);
+    // the plane ranges order a FLASH_ATTN after the SET_ROWS_KV writing its K plane (RAW) and a later
+    // SET_ROWS_KV after it (WAR)
+    tsr_opl_builder h(4);
+    opl::put_args(opl::set_rows_kv_args{ 0, 0, A, 8, 0, 2, 128, 0, 0x4000, geom, 0, 0 }, w);
+    std::vector<tsr_dram_range> r2, w2;
+    h.kind_ranges(opl::K_SET_ROWS_KV, w, 0, r2, w2);
+    const uint32_t s0 = h.add(opl::K_SET_ROWS_KV, w, opl::setrows::NARGS, r2, w2, 0);
+    opl::put_args(f, w);
+    h.kind_ranges(opl::K_FLASH_ATTN, w, 0, r2, w2);
+    const uint32_t f0 = h.add(opl::K_FLASH_ATTN, w, opl::fa::NARGS, r2, w2, 1);
+    opl::put_args(opl::set_rows_kv_args{ 0, 0, A, 8, 0, 2, 128, 1, 0x5000, geom, 0, 0 }, w);
+    h.kind_ranges(opl::K_SET_ROWS_KV, w, 0, r2, w2);
+    const uint32_t s1 = h.add(opl::K_SET_ROWS_KV, w, opl::setrows::NARGS, r2, w2, 2);
+    CHECK(h.op(f0).dep0 == s0 && h.op(s1).dep0 == f0 && h.op(s1).dep1 == opl::DEP_NONE);
+}
+
+static void test_builder_preload() {
+    tsr_opl_builder b(4);
+    const uint32_t P = tsr_dram_handle(1, 0x1000), K = tsr_dram_handle(1, 0x2000);
+    CHECK(b.preload(P, 4) == 0 && b.preload(P, 4) == 0 && b.n_pre() == 1);   // one entry per (source, size)
+    CHECK(b.preload(K, 8) == 64 && b.n_pre() == 2 && b.pre_lines() == 2);
+    CHECK(b.preload(P, 8) == 128 && b.n_pre() == 3);                        // same source, another size
+    CHECK(b.preload_lines_with({ { P, 4 }, { K, 8 } }) == 3);               // nothing new
+    CHECK(b.preload_lines_with({ { K, 16000 } }) == (192 + 16000 + 63) / 64);
+    CHECK(b.preload(tsr_dram_handle(1, 0x9000), 16384) == tsr_opl_builder::NO_ROOM && b.n_pre() == 3);
+    CHECK(b.preload(P, 0) == tsr_opl_builder::FAILED);
+    CHECK(b.preload(tsr_dram_handle(1, 0xA000), 64 * 253) == 192 && b.pre_lines() == 256);   // exactly full
+    CHECK(b.preload(tsr_dram_handle(1, 0xB000), 4) == tsr_opl_builder::NO_ROOM);
+    // the blob carries the table: entries at 64-aligned offsets, pre_lines covering the last one
+    uint32_t a[mm::NARGS];
+    mm_args(a, IO, IO + 0x10000, 0x800000u, 64, 64, 1);
+    CHECK(b.mul_mat(a, 0) == 0);
+    const std::vector<uint8_t> blob = b.finish();
+    opl::reader r;
+    CHECK(r.open(blob.data(), (uint32_t) blob.size(), true) == opl::RET_OK && r.hdr().n_pre == 4 && r.hdr().pre_lines == 256);
+    CHECK(r.pre(0).src == P && r.pre(0).bytes == 4 && r.pre(1).pre_byte == 64 && r.pre(3).pre_byte == 192);
+    b.reset();
+    CHECK(b.n_pre() == 0 && b.pre_lines() == 0 && b.preload(K, 8) == 0);
+}
+
+#if defined(TSR_UNITS_BUILD)
+// ---- ggml graphs on fake device addresses (no device) ----
+// Every allocated tensor's data is a fake address FAKE + byte; the fake environment maps it to channel 1
+// at that byte. Weights get addresses too (RAW tensors in the real backend). KV-cache tensors resolve by
+// name to fake planes.
+static const uint64_t FAKE = 0x7e0000000000ull;
+static void * fake_at(uint64_t off) { return (void *) (uintptr_t) (FAKE + off); }
+
+struct fake_kv {
+    std::map<std::string, tsr_kv_tensor> t;
+    void add(const char * name, uint32_t which, uint32_t E, uint32_t kv_size, uint64_t plane_off) {
+        tsr_kv_tensor & x = t[name];
+        x.name = name;
+        x.shape.which = which;
+        x.shape.E = E;
+        x.shape.kv_size = kv_size;
+        x.shape.n_stream = 1;
+        x.shape.C = 4;
+        x.shape.LG = tsr_kv_lg_min(kv_size, 4);
+        x.shape.row_bytes = (size_t) E / 32 * 34;
+        tsr_kv_plane p;
+        p.which = which;
+        p.kv_size = kv_size;
+        p.geom = { E, 4, x.shape.LG };
+        p.off = plane_off;
+        p.bytes = tsr_kv_plane_beats(&p.geom) * 64;
+        x.planes.push_back(p);
+    }
+};
+
+static tsr_build_env fake_env(fake_kv * kv, uint32_t t_max = 8) {
+    tsr_build_env e;
+    e.cfg = tsr::plan::U200_K4;
+    e.cfg.t_max = t_max;
+    e.pl = tsr::plan::plan_limits_of(e.cfg);
+    e.num_ch = 4;
+    e.loc = [](const ggml_tensor * t, tsr_tloc * l) {
+        const uint64_t a = (uint64_t) (uintptr_t) t->data;
+        if (t->data == nullptr || a < FAKE || a >= FAKE + (1ull << 34)) {
+            return false;
+        }
+        l->ch = 1;
+        l->off = a - FAKE;
+        return true;
+    };
+    e.kv_view = [kv](const ggml_tensor * t, tsr_kv_view * v) {
+        const ggml_tensor * base = t->view_src != nullptr ? t->view_src : t;
+        auto it = kv != nullptr ? kv->t.find(base->name) : std::map<std::string, tsr_kv_tensor>::iterator();
+        if (kv == nullptr || it == kv->t.end() || t->data == nullptr || base->data == nullptr) {
+            return false;
+        }
+        const uint64_t rel = (uint64_t) ((const char *) t->data - (const char *) base->data);
+        v->t = &it->second;
+        v->plane = &it->second.planes[0];
+        v->stream = 0;
+        v->cell0 = (uint32_t) (rel / it->second.shape.row_bytes);
+        v->byte_in_row = (uint32_t) (rel % it->second.shape.row_bytes);
+        return true;
+    };
+    e.fa_mask = [](const ggml_tensor * fa) {
+        tsr_msum_ref r;
+        r.valid = true;
+        r.n_q = (uint32_t) fa->src[0]->ne[1];
+        r.n_kv = (uint32_t) fa->src[1]->ne[1];
+        r.msum_handle = tsr_dram_handle(1, 0x3F000000);
+        r.mask_handle = fa->src[3] != nullptr ? tsr_dram_handle(1, 0x3E000000) : opl::HANDLE_NONE;
+        return r;
+    };
+    e.raw_ok = [](const ggml_tensor * t) {
+        return (t->view_src == nullptr || t->view_offs % 64 == 0) && strncmp(t->name, "devw", 4) != 0;
+    };
+    e.kv_probe = [](const ggml_tensor * t, tsr_kv_shape * s) {
+        const ggml_tensor * base = t->view_src != nullptr ? t->view_src : t;
+        return tsr_kv_identify(base->name, base->type == GGML_TYPE_Q8_0, base->ne, base->nb, 4, 32768, s, nullptr);
+    };
+    e.fa_mask_probe = [](const ggml_tensor *) { return true; };
+    return e;
+}
+
+struct gctx {
+    ggml_context * ctx;
+    gctx() {
+        ggml_init_params ip = { 64u << 20, nullptr, true };
+        ctx = ggml_init(ip);
+    }
+    ~gctx() { ggml_free(ctx); }
+    ggml_tensor * f32(int64_t n0, int64_t n1, uint64_t off, const char * name, int64_t n2 = 1) {
+        ggml_tensor * t = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n0, n1, n2);
+        t->data = fake_at(off);
+        ggml_set_name(t, name);
+        return t;
+    }
+};
+
+static ggml_cgraph * graph_of(ggml_context * ctx, ggml_tensor * out) {
+    ggml_cgraph * g = ggml_new_graph(ctx);
+    ggml_build_forward_expand(g, out);
+    return g;
+}
+
+static int node_index(const ggml_cgraph * g, const ggml_tensor * t) {
+    for (int i = 0; i < ggml_graph_n_nodes(const_cast<ggml_cgraph *>(g)); ++i) {
+        if (ggml_graph_node(const_cast<ggml_cgraph *>(g), i) == t) return i;
+    }
+    return -1;
+}
+
+// Pass 3: the pairs of a Qwen-like chain and the cases that must not fuse.
+static void test_build_fusion() {
+    fake_kv kv;
+    const tsr_build_env env = fake_env(&kv);
+    {
+        gctx c;
+        ggml_tensor * x = c.f32(896, 2, 0x0, "x");
+        ggml_tensor * wq = ggml_new_tensor_2d(c.ctx, GGML_TYPE_Q8_0, 896, 896);
+        wq->data = fake_at(0x10000000);
+        ggml_tensor * bq = c.f32(896, 1, 0x100000, "bq");
+        ggml_tensor * nw = c.f32(896, 1, 0x101000, "nw");
+        ggml_tensor * q = ggml_mul_mat(c.ctx, wq, x);
+        q->data = fake_at(0x200000);
+        ggml_tensor * qb = ggml_add(c.ctx, q, bq);                 // bias: fuses (in place, as ggml-alloc does)
+        qb->data = q->data;
+        ggml_tensor * n = ggml_rms_norm(c.ctx, qb, 1e-6f);
+        n->data = fake_at(0x210000);
+        ggml_tensor * nm = ggml_mul(c.ctx, n, nw);                 // RMS_NORM + MUL(weight): fuses
+        nm->data = fake_at(0x220000);
+        ggml_tensor * wo = ggml_new_tensor_2d(c.ctx, GGML_TYPE_Q8_0, 896, 896);
+        wo->data = fake_at(0x11000000);
+        ggml_tensor * o = ggml_mul_mat(c.ctx, wo, nm);
+        o->data = fake_at(0x230000);
+        ggml_tensor * r = ggml_add(c.ctx, x, o);                   // residual, the MUL_MAT as src1: fuses
+        r->data = fake_at(0x240000);
+        ggml_cgraph * g = graph_of(c.ctx, r);
+        const tsr_fusion f = tsr_build_fusion(env, g);
+        CHECK(f.n_pairs == 3);
+        CHECK(f.with[node_index(g, q)] == node_index(g, qb) && f.into[node_index(g, qb)] == node_index(g, q));
+        CHECK(f.with[node_index(g, n)] == node_index(g, nm) && f.with[node_index(g, o)] == node_index(g, r));
+        // the fused MUL_MAT words: y = the ADD's result, addend = x rows (stride 56 lines, 2 tokens)
+        uint32_t a[mm::NARGS];
+        mm_args(a, 0x220000, 0x230000, 0x800000u, 896, 896, 2);
+        std::string why;
+        CHECK(tsr_fuse_mm_add(env, o, r, a, &why));
+        CHECK(a[mm::Y] == tsr_dram_handle(1, 0x240000) && a[mm::Y_STRIDE] == 56 && a[mm::ADD] == tsr_dram_handle(1, 0) &&
+              a[mm::ADD_STRIDE] == 56);
+        mm_args(a, 0x0, 0x200000, 0x800000u, 896, 896, 2);
+        CHECK(tsr_fuse_mm_add(env, q, qb, a, &why) && a[mm::ADD] == tsr_dram_handle(1, 0x100000) && a[mm::ADD_STRIDE] == 0);
+        // the fused RMS_NORM record: the weight word and the MUL's result
+        tsr_rec rec;
+        CHECK(tsr_lower_m7(env, false, n, nm, &rec, &why));
+        CHECK(rec.kind == opl::K_RMS_NORM && rec.args[opl::rms::W] == tsr_dram_handle(1, 0x101000) && rec.args[opl::rms::W_PERIOD] == 1 &&
+              rec.args[opl::rms::DST] == tsr_dram_handle(1, 0x220000) && rec.args[opl::rms::SRC] == tsr_dram_handle(1, 0x200000) &&
+              rec.args[opl::rms::ROWS] == 2 && rec.args[opl::rms::N] == 896);
+    }
+    {
+        // not fused: a second user, an output, a node writing the addend in between, a scalar b, the
+        // MUL's weight as src0, an addend outside device memory
+        gctx c;
+        ggml_tensor * x = c.f32(64, 1, 0x0, "x");
+        ggml_tensor * w = ggml_new_tensor_2d(c.ctx, GGML_TYPE_Q8_0, 64, 64);
+        w->data = fake_at(0x10000000);
+        ggml_tensor * b = c.f32(64, 1, 0x1000, "b");
+        ggml_tensor * s1 = c.f32(1, 1, 0x2000, "s1");
+        ggml_tensor * q1 = ggml_mul_mat(c.ctx, w, x);     q1->data = fake_at(0x10000);
+        ggml_tensor * a1 = ggml_add(c.ctx, q1, b);        a1->data = fake_at(0x11000);
+        ggml_tensor * u1 = ggml_scale(c.ctx, q1, 2.0f);   u1->data = fake_at(0x12000);   // q1's second user
+        ggml_tensor * q2 = ggml_mul_mat(c.ctx, w, x);     q2->data = fake_at(0x20000);
+        ggml_tensor * t2 = ggml_scale(c.ctx, x, 3.0f);    t2->data = b->data;            // writes b in between
+        ggml_tensor * a2 = ggml_add(c.ctx, q2, b);        a2->data = fake_at(0x21000);
+        ggml_tensor * q3 = ggml_mul_mat(c.ctx, w, x);     q3->data = fake_at(0x30000);
+        ggml_tensor * a3 = ggml_add(c.ctx, q3, s1);       a3->data = fake_at(0x31000);   // b.ne0 = 1
+        ggml_tensor * n4 = ggml_rms_norm(c.ctx, x, 1e-6f); n4->data = fake_at(0x40000);
+        ggml_tensor * m4 = ggml_mul(c.ctx, b, n4);        m4->data = fake_at(0x41000);   // the norm is src1
+        ggml_tensor * q5 = ggml_mul_mat(c.ctx, w, x);     q5->data = fake_at(0x50000);
+        ggml_tensor * bh = c.f32(64, 1, 0, "b_host");     bh->data = (void *) (uintptr_t) 0x1000;   // not on the device
+        ggml_tensor * a5 = ggml_add(c.ctx, q5, bh);       a5->data = fake_at(0x51000);
+        ggml_tensor * q6 = ggml_mul_mat(c.ctx, w, x);     q6->data = fake_at(0x60000);
+        ggml_set_output(q6);
+        ggml_tensor * a6 = ggml_add(c.ctx, q6, b);        a6->data = fake_at(0x61000);
+        ggml_cgraph * g = ggml_new_graph(c.ctx);     // program order: q2, t2 (writes b), a2
+        for (ggml_tensor * t : { a1, u1, q2, t2, a2, a3, m4, a5, a6 }) {
+            ggml_build_forward_expand(g, t);
+        }
+        const tsr_fusion f = tsr_build_fusion(env, g);
+        CHECK(f.n_pairs == 0);
+        for (int i = 0; i < ggml_graph_n_nodes(g); ++i) {
+            if (f.with[i] >= 0) {
+                fprintf(stderr, "  unexpected fusion: %s + %s\n", ggml_graph_node(g, i)->name, ggml_graph_node(g, f.with[i])->name);
+            }
+        }
+    }
+}
+
+// Passes 2 and 4-6: records of views and KV planes, their dependencies, the shared preload entries and
+// FA_NEW (SET_ROWS_KV -> FLASH_ATTN), also across a cut list.
+static void test_build_deps_views() {
+    fake_kv kv;
+    kv.add("cache_k_l0", TSR_KV_K, 128, 256, 0x40000000);
+    kv.add("cache_v_l0", TSR_KV_V, 128, 256, 0x40100000);
+    const tsr_build_env env = fake_env(&kv);
+    gctx c;
+    const int64_t T = 2, D = 64;
+    // a fused qkv projection result [4·64, T] (q: 2 heads, k: 1, v: 1) and its q / k views (ROPE reads views)
+    ggml_tensor * qkv = c.f32(4 * D, T, 0x100000, "qkv");
+    ggml_tensor * qv = ggml_view_3d(c.ctx, qkv, D, 2, T, D * 4, qkv->nb[1], 0);
+    ggml_tensor * kvw = ggml_view_3d(c.ctx, qkv, D, 1, T, D * 4, qkv->nb[1], 2 * D * 4);
+    ggml_tensor * pos = ggml_new_tensor_1d(c.ctx, GGML_TYPE_I32, T);
+    pos->data = fake_at(0x200000);
+    ggml_tensor * qr = ggml_rope_ext(c.ctx, qv, pos, nullptr, D, GGML_ROPE_TYPE_NEOX, 32768, 1e6f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f);
+    qr->data = fake_at(0x300000);
+    ggml_tensor * kr = ggml_rope_ext(c.ctx, kvw, pos, nullptr, D, GGML_ROPE_TYPE_NEOX, 32768, 1e6f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f);
+    kr->data = fake_at(0x310000);
+    // a copy into the k part of qkv (bytes [512, 768) of every row): WAR after the K ROPE only
+    ggml_tensor * kdst = ggml_view_2d(c.ctx, qkv, D, T, qkv->nb[1], 2 * D * 4);
+    ggml_tensor * kc = ggml_cpy(c.ctx, ggml_reshape_2d(c.ctx, kr, D, T), kdst);
+    // KV: SET_ROWS K / V, then FLASH_ATTN over the cache views
+    ggml_tensor * ck = ggml_new_tensor_3d(c.ctx, GGML_TYPE_Q8_0, 128, 256, 1);
+    ggml_set_name(ck, "cache_k_l0");
+    ck->data = fake_at(0x1000000);
+    ggml_tensor * cv = ggml_new_tensor_3d(c.ctx, GGML_TYPE_Q8_0, 128, 256, 1);
+    ggml_set_name(cv, "cache_v_l0");
+    cv->data = fake_at(0x1100000);
+    ggml_tensor * ksrc = c.f32(128, T, 0x400000, "kcur");
+    ggml_tensor * vsrc = c.f32(128, T, 0x410000, "vcur");
+    ggml_tensor * kidx = ggml_new_tensor_1d(c.ctx, GGML_TYPE_I64, T);
+    kidx->data = fake_at(0x500000);
+    ggml_tensor * vidx = ggml_new_tensor_1d(c.ctx, GGML_TYPE_I64, T);
+    vidx->data = fake_at(0x500100);
+    ggml_tensor * sk = ggml_set_rows(c.ctx, ck, ksrc, kidx);
+    ggml_tensor * sv = ggml_set_rows(c.ctx, cv, vsrc, vidx);
+    ggml_tensor * q = c.f32(D, 2 * 2, 0x600000, "q", T);         // [64, 4 heads, T]
+    q->ne[1] = 4; q->ne[2] = T; q->nb[2] = q->nb[1] * 4;
+    ggml_tensor * kview = ggml_view_4d(c.ctx, ck, D, 2, 256, 1, ggml_row_size(GGML_TYPE_Q8_0, D), ggml_row_size(GGML_TYPE_Q8_0, 128),
+                                       ggml_row_size(GGML_TYPE_Q8_0, 128) * 256, 0);
+    ggml_tensor * vview = ggml_view_4d(c.ctx, cv, D, 2, 256, 1, ggml_row_size(GGML_TYPE_Q8_0, D), ggml_row_size(GGML_TYPE_Q8_0, 128),
+                                       ggml_row_size(GGML_TYPE_Q8_0, 128) * 256, 0);
+    ggml_tensor * mask = ggml_new_tensor_2d(c.ctx, GGML_TYPE_F16, 256, T);
+    ggml_set_name(mask, "attn_inp_kq_mask");
+    mask->data = fake_at(0x700000);
+    ggml_tensor * fa = ggml_flash_attn_ext(c.ctx, ggml_permute(c.ctx, q, 0, 2, 1, 3), ggml_permute(c.ctx, kview, 0, 2, 1, 3),
+                                           ggml_permute(c.ctx, vview, 0, 2, 1, 3), mask, 0.125f, 0.0f, 0.0f);
+    fa->data = fake_at(0x800000);
+    ggml_tensor * qa = ggml_add(c.ctx, qkv, qkv);
+    qa->data = qkv->data;   // in place: writes qkv first
+
+    std::string why;
+    tsr_rec r_add, r_qr, r_kr, r_kc, r_sk, r_sv, r_fa;
+    CHECK(tsr_lower_m7(env, false, qa, nullptr, &r_add, &why));
+    CHECK(tsr_lower_m7(env, false, qr, nullptr, &r_qr, &why));
+    CHECK(tsr_lower_m7(env, false, kr, nullptr, &r_kr, &why));
+    CHECK(tsr_lower_m7(env, false, kc, nullptr, &r_kc, &why));
+    CHECK(tsr_lower_m7(env, false, sk, nullptr, &r_sk, &why));
+    CHECK(tsr_lower_m7(env, false, sv, nullptr, &r_sv, &why));
+    CHECK(tsr_lower_m7(env, false, fa, nullptr, &r_fa, &why));
+    if (!why.empty()) fprintf(stderr, "  lowering: %s\n", why.c_str());
+    // the words of SW §7.2: ROPE token strides (qkv row = 16 lines), heads, TS; SET_ROWS_KV plane words;
+    // FLASH_ATTN q strides, planes, GEOM, D, G
+    CHECK(r_qr.args[opl::rope::SRC] == tsr_dram_handle(1, 0x100000) && r_qr.args[opl::rope::SRC_STRIDE] == 16 &&
+          r_qr.args[opl::rope::DST_STRIDE] == 8 && r_qr.args[opl::rope::N_HEADS] == 2 && r_qr.args[opl::rope::N_TOKENS] == 2 &&
+          r_qr.args[opl::rope::TS] == opl::writer::f32_bits(powf(1e6f, -2.0f / 64.0f)) && r_qr.args[opl::rope::MODE] == opl::rope::MODE_NEOX);
+    CHECK(r_kr.args[opl::rope::SRC] == tsr_dram_handle(1, 0x100000 + 512) && r_kr.args[opl::rope::N_HEADS] == 1);
+    CHECK(r_sk.args[opl::setrows::PLANE] == 0x40000000u / 64 && r_sk.args[opl::setrows::WHICH] == 0 &&
+          r_sv.args[opl::setrows::WHICH] == 1 && r_sk.args[opl::setrows::GEOM] == opl::geom_word(2, tsr_kv_lg_min(256, 4)) &&
+          r_sk.args[opl::setrows::N_ROWS] == 2 && r_sk.args[opl::setrows::ROW_ELEMS] == 128);
+    CHECK(r_fa.args[opl::fa::Q_HEAD_STRIDE] == 4 && r_fa.args[opl::fa::Q_TOKEN_STRIDE] == 16 && r_fa.args[opl::fa::DST_STRIDE] == 16 &&
+          r_fa.args[opl::fa::K_PLANE] == 0x40000000u / 64 && r_fa.args[opl::fa::V_PLANE] == 0x40100000u / 64 &&
+          r_fa.args[opl::fa::D] == 64 && r_fa.args[opl::fa::G] == 2 && r_fa.args[opl::fa::N_HEAD] == 4 &&
+          r_fa.args[opl::fa::N_HEAD_KV] == 2 && r_fa.args[opl::fa::N_KV] == 256 && r_fa.args[opl::fa::MASK] == tsr_dram_handle(1, 0x3E000000) &&
+          r_fa.args[opl::fa::SCALE] == opl::writer::f32_bits(0.125f));
+
+    // encode in program order: dependencies through the views and the planes, one positions entry,
+    // FA_NEW pointing at the K indices' entry
+    tsr_opl_builder b(4);
+    tsr_fanew_map fanew;
+    const uint32_t i_add = tsr_encode(b, r_add, 0, fanew);
+    const uint32_t i_qr = tsr_encode(b, r_qr, 1, fanew);
+    const uint32_t i_kr = tsr_encode(b, r_kr, 2, fanew);
+    const uint32_t i_kc = tsr_encode(b, r_kc, 3, fanew);
+    tsr_note_kv_write(r_sk, &fanew);
+    const uint32_t i_sk = tsr_encode(b, r_sk, 4, fanew);
+    tsr_note_kv_write(r_sv, &fanew);
+    const uint32_t i_sv = tsr_encode(b, r_sv, 5, fanew);
+    tsr_rec r_fa2 = r_fa;
+    const uint32_t i_fa = tsr_encode(b, r_fa, 6, fanew);
+    CHECK(i_add == 0 && i_qr == 1 && i_kr == 2 && i_kc == 3 && i_sk == 4 && i_sv == 5 && i_fa == 6 && b.n_joins() == 0);
+    CHECK(b.op(i_qr).dep0 == i_add && b.op(i_kr).dep0 == i_add);                 // RAW through the views
+    CHECK(b.op(i_kc).dep0 == i_kr && b.op(i_kc).dep1 == opl::DEP_NONE);           // WAR on k; WAW on qkv implied
+    CHECK(b.op(i_sk).dep0 == opl::DEP_NONE && b.op(i_sv).dep0 == opl::DEP_NONE);
+    CHECK(b.op(i_fa).dep0 == i_sk && b.op(i_fa).dep1 == i_sv);                   // RAW on both planes
+    CHECK(r_qr.args[opl::rope::POS] == r_kr.args[opl::rope::POS] && b.n_pre() == 4);   // pos, k idx, v idx, MSUM
+    CHECK(r_fa.args[opl::fa::FLAGS] == tsr::plan::attn::fa_flags(r_sk.args[opl::setrows::IDX], 2));
+    // the record reads back through the reader with the host's argument rules
+    const std::vector<uint8_t> blob = b.finish();
+    opl::reader rd;
+    CHECK(rd.open(blob.data(), (uint32_t) blob.size(), true) == opl::RET_OK);
+    opl::record rr;
+    while (rd.next(rr) == opl::RET_OK) {
+        CHECK(rd.check_args(rr) == opl::RET_OK);
+    }
+    // the FLASH_ATTN alone in a new list (as after a cut): FA_NEW gets its own entry for the K indices
+    tsr_opl_builder b2(4);
+    CHECK(tsr_encode(b2, r_fa2, 0, fanew) == 0 && b2.n_pre() == 2 &&
+          r_fa2.args[opl::fa::FLAGS] == tsr::plan::attn::fa_flags(r_fa2.args[opl::fa::MSUM] == 0 ? 64u : 0u, 2));
+    // a list whose preload area has no room left: NO_ROOM, nothing added
+    tsr_opl_builder b3(4);
+    CHECK(b3.preload(tsr_dram_handle(1, 0x900000), 64 * 255) == 0);
+    tsr_rec r_fa3 = r_fa;
+    CHECK(tsr_encode(b3, r_fa3, 0, fanew) == tsr_opl_builder::NO_ROOM && b3.n_ops() == 0 && b3.n_pre() == 1);
+}
+
+// R7: the graph key follows shapes, addresses and parameters, not values.
+static void test_build_key() {
+    gctx c;
+    ggml_tensor * x = c.f32(64, 1, 0x0, "x");
+    ggml_tensor * w = c.f32(64, 1, 0x1000, "w");
+    ggml_tensor * y = ggml_mul(c.ctx, x, w);
+    y->data = fake_at(0x2000);
+    ggml_tensor * z = ggml_scale(c.ctx, y, 0.5f);
+    z->data = fake_at(0x3000);
+    ggml_cgraph * g = graph_of(c.ctx, z);
+    const uint64_t k0 = tsr_graph_key(g, 1);
+    CHECK(k0 == tsr_graph_key(g, 1) && k0 != tsr_graph_key(g, 2));    // the placement epoch salts it
+    float v = 2.0f;
+    memcpy(&w->op_params[0], &v, 4);                                 // a leaf's op_params: not a node of the graph
+    CHECK(tsr_graph_key(g, 1) == k0);
+    x->data = fake_at(0x4000);                                       // a source moved
+    CHECK(tsr_graph_key(g, 1) != k0);
+    x->data = fake_at(0x0);
+    CHECK(tsr_graph_key(g, 1) == k0);
+    float s = 0.25f;
+    memcpy(&z->op_params[0], &s, 4);                                 // another scale
+    CHECK(tsr_graph_key(g, 1) != k0);
+    s = 0.5f;
+    memcpy(&z->op_params[0], &s, 4);
+    CHECK(tsr_graph_key(g, 1) == k0);
+    // W3b fix: a node of another shape (or strides) at the same address is another graph, even when no
+    // other part of the key (FLASH_ATTN's mask words in the backend) would notice
+    y->ne[0] = 32;
+    y->ne[1] = 2;
+    CHECK(tsr_graph_key(g, 1) != k0);
+    y->ne[0] = 64;
+    y->ne[1] = 1;
+    CHECK(tsr_graph_key(g, 1) == k0);
+    y->nb[1] = 512;
+    CHECK(tsr_graph_key(g, 1) != k0);
+    y->nb[1] = 256;
+    CHECK(tsr_graph_key(g, 1) == k0);
+    x->ne[1] = 3;                                                    // a source's shape
+    CHECK(tsr_graph_key(g, 1) != k0);
+    x->ne[1] = 1;
+    CHECK(tsr_graph_key(g, 1) == k0);
+}
+
+// supports_op (probe mode) against the planners on independently built words (V2-SW-20), with the
+// 64-byte rule, over sweeps of shapes per kind; plus the rules that are not the planners'.
+static int g_sweep_cases = 0, g_sweep_ok = 0;
+static bool plans(uint32_t kind, const uint32_t * a, uint32_t n) {
+    tsr::plan::kind_plan kp{};
+    const tsr::plan::plan_limits l = tsr::plan::plan_limits_of(tsr::plan::U200_K4);
+    return opl::check_args(kind, a, n, tsr::plan::PRE_MAX_LINES) == opl::RET_OK && tsr::plan::plan_kind(l, kind, a, n, &kp);
+}
+static void sweep_check(bool got, bool want, const char * what, int64_t p0, int64_t p1, int64_t p2) {
+    g_sweep_cases++;
+    g_sweep_ok += got ? 1 : 0;
+    if (got != want) {
+        fprintf(stderr, "  supports_op %s (%lld, %lld, %lld): got %d, the planner and the 64-byte rule say %d\n", what,
+                (long long) p0, (long long) p1, (long long) p2, (int) got, (int) want);
+        g_fail++;
+    }
+}
+static uint32_t L16(int64_t n) { return (uint32_t) ((n + 15) / 16); }
+
+static void test_supports_sweep() {
+    fake_kv kv;
+    const tsr_build_env env = fake_env(&kv);
+    const int64_t ns[] = { 1, 15, 16, 17, 64, 100, 896, 4096, 15360, 262144, 1048560, 1048576 };
+    const int64_t rws[] = { 1, 2, 7, 512, 70000 };
+    std::string why;
+    // element-wise: ADD / MUL with b the same shape, one row, one scalar, per-row scalars; SCALE; UNARY
+    for (int64_t n : ns) {
+        for (int64_t rows : rws) {
+            if (n * rows > (1ll << 31)) continue;
+            gctx c;
+            ggml_tensor * a = ggml_new_tensor_2d(c.ctx, GGML_TYPE_F32, n, rows);
+            const uint32_t L = L16(n), st = rows > 1 ? (uint32_t) (n * 4 / 64) : L;
+            const bool rows_ok = rows == 1 || (n * 4) % 64 == 0;
+            for (int bm = 0; bm < 4; ++bm) {
+                ggml_tensor * b = bm == 0 ? ggml_new_tensor_2d(c.ctx, GGML_TYPE_F32, n, rows)
+                                : bm == 1 ? ggml_new_tensor_1d(c.ctx, GGML_TYPE_F32, n)
+                                : bm == 2 ? ggml_new_tensor_1d(c.ctx, GGML_TYPE_F32, 1)
+                                          : ggml_new_tensor_2d(c.ctx, GGML_TYPE_F32, 1, rows);
+                for (int op = 0; op < 2; ++op) {
+                    ggml_tensor * t = op == 0 ? ggml_add(c.ctx, a, b) : ggml_mul(c.ctx, a, b);
+                    const bool scal = bm >= 2 && n > 1;
+                    const uint32_t p = bm == 1 || bm == 2 ? 1u : (uint32_t) rows;
+                    const uint32_t w[] = { 0, st, 0, st, 0, scal || p == 1 ? 0u : st, (uint32_t) n, (uint32_t) rows, p,
+                                           scal ? opl::ew::FLAG_B_SCALAR : 0u };
+                    const bool want = rows_ok && plans(op == 0 ? opl::K_ADD : opl::K_MUL, w, 10);
+                    sweep_check(tsr_build_supports(env, t, &why), want, op == 0 ? "ADD" : "MUL", n, rows, bm);
+                }
+            }
+            ggml_tensor * s = ggml_scale_bias(c.ctx, a, 0.5f, 0.25f);
+            const uint32_t ws[] = { 0, st, 0, st, (uint32_t) n, (uint32_t) rows, opl::writer::f32_bits(0.5f), opl::writer::f32_bits(0.25f) };
+            sweep_check(tsr_build_supports(env, s, &why), rows_ok && plans(opl::K_SCALE, ws, 8), "SCALE", n, rows, 0);
+            for (int u = 0; u < 4; ++u) {
+                const ggml_unary_op uo[] = { GGML_UNARY_OP_TANH, GGML_UNARY_OP_GELU, GGML_UNARY_OP_SILU, GGML_UNARY_OP_EXP };
+                ggml_tensor * t = ggml_unary(c.ctx, a, uo[u]);
+                const uint32_t wu[] = { 0, st, 0, st, (uint32_t) n, (uint32_t) rows, u == 0 ? opl::unary::TANH : opl::unary::GELU16 };
+                sweep_check(tsr_build_supports(env, t, &why), u < 2 && rows_ok && plans(opl::K_UNARY, wu, 7), "UNARY", n, rows, u);
+            }
+            // RMS_NORM (and fused with a weight row: the probe of the norm alone)
+            ggml_tensor * r = ggml_rms_norm(c.ctx, a, 1e-6f);
+            const uint32_t wr[] = { 0, st, 0, st, (uint32_t) n, (uint32_t) rows, opl::writer::f32_bits(1e-6f),
+                                    opl::writer::f32_bits(1.0f / (float) n), opl::HANDLE_NONE, 1 };
+            sweep_check(tsr_build_supports(env, r, &why), rows_ok && plans(opl::K_RMS_NORM, wr, 10), "RMS_NORM", n, rows, 0);
+            // GLU split / single form, SWIGLU / GEGLU / REGLU
+            for (int v = 0; v < 3; ++v) {
+                const ggml_glu_op go[] = { GGML_GLU_OP_SWIGLU, GGML_GLU_OP_GEGLU, GGML_GLU_OP_REGLU };
+                ggml_tensor * t = ggml_glu_split(c.ctx, a, ggml_new_tensor_2d(c.ctx, GGML_TYPE_F32, n, rows), go[v]);
+                const uint32_t wg[] = { 0, st, 0, st, 0, st, (uint32_t) n, (uint32_t) rows, v == 0 ? opl::glu::SWIGLU : opl::glu::GEGLU16 };
+                sweep_check(tsr_build_supports(env, t, &why), v < 2 && rows_ok && plans(opl::K_GLU, wg, 9), "GLU split", n, rows, v);
+            }
+            if (2 * n <= 1048576) {
+                ggml_tensor * a2 = ggml_new_tensor_2d(c.ctx, GGML_TYPE_F32, 2 * n, rows);
+                ggml_tensor * t = ggml_glu(c.ctx, a2, GGML_GLU_OP_SWIGLU, false);
+                const uint32_t st2 = rows > 1 ? (uint32_t) (2 * n * 4 / 64) : L16(2 * n);
+                const uint32_t wg[] = { 0, L, 0, st2, 0, st2, (uint32_t) n, (uint32_t) rows, opl::glu::SWIGLU };
+                const bool want = (n * 4) % 64 == 0 && (rows == 1 || (2 * n * 4) % 64 == 0) && plans(opl::K_GLU, wg, 9);
+                sweep_check(tsr_build_supports(env, t, &why), want, "GLU single", n, rows, 0);
+                ggml_tensor * ts = ggml_glu(c.ctx, a2, GGML_GLU_OP_SWIGLU, true);
+                sweep_check(tsr_build_supports(env, ts, &why), false, "GLU swapped", n, rows, 0);
+            }
+            // CONT / CPY (f32 rows), GET_ROWS (f32 source, ids of a leaf)
+            ggml_tensor * ct = ggml_cont(c.ctx, a);
+            const uint32_t wc[] = { 0, st, 0, st, L, (uint32_t) rows };
+            sweep_check(tsr_build_supports(env, ct, &why), rows_ok && plans(opl::K_CPY, wc, 6), "CONT", n, rows, 0);
+            ggml_tensor * ids = ggml_new_tensor_1d(c.ctx, GGML_TYPE_I32, rows);
+            ggml_tensor * gr = ggml_get_rows(c.ctx, a, ids);
+            const uint32_t wgr[] = { 0, st, 0, st, 0, (uint32_t) rows, L };
+            sweep_check(tsr_build_supports(env, gr, &why), rows_ok && plans(opl::K_GET_ROWS, wgr, 7), "GET_ROWS", n, rows, 0);
+            ggml_tensor * gh = ggml_get_rows(c.ctx, ggml_new_tensor_2d(c.ctx, GGML_TYPE_F16, n, rows), ids);
+            sweep_check(tsr_build_supports(env, gh, &why), false, "GET_ROWS f16", n, rows, 0);
+        }
+    }
+    // ROPE: head dims, heads, tokens, modes, rotated dims, freq factors
+    for (int64_t hd : { 16, 48, 64, 100, 128, 256, 512, 1024, 1040 }) {
+        for (int64_t nh : { 1, 14, 40 }) {
+            for (int64_t T : { 1, 3 }) {
+                for (int mode : { GGML_ROPE_TYPE_NORMAL, GGML_ROPE_TYPE_NEOX, GGML_ROPE_TYPE_MROPE }) {
+                    for (int64_t nd : { hd, hd / 2, (int64_t) 32, (int64_t) 48 }) {
+                        for (int ffm = 0; ffm < 2; ++ffm) {
+                            gctx c;
+                            ggml_tensor * x = ggml_new_tensor_3d(c.ctx, GGML_TYPE_F32, hd, nh, T);
+                            ggml_tensor * pos = ggml_new_tensor_1d(c.ctx, GGML_TYPE_I32, mode == GGML_ROPE_TYPE_MROPE ? 4 * T : T);
+                            ggml_tensor * ff = ffm ? ggml_new_tensor_1d(c.ctx, GGML_TYPE_F32, std::max<int64_t>(nd / 2, 1)) : nullptr;
+                            int sections[GGML_MROPE_SECTIONS] = { 8, 8, 8, 8 };
+                            ggml_tensor * t = mode == GGML_ROPE_TYPE_MROPE
+                                ? ggml_rope_multi(c.ctx, x, pos, ff, (int) nd, sections, mode, 4096, 1e6f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f)
+                                : ggml_rope_ext(c.ctx, x, pos, ff, (int) nd, mode, 4096, 1e6f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f);
+                            const uint32_t H = (uint32_t) (hd * nh / 16);
+                            const bool lines_ok = (hd * 4) % 64 == 0;     // heads on lines (the token rows then are too)
+                            const uint32_t w[] = { 0, H, 0, H, 0, ffm ? 0u : opl::HANDLE_NONE, 0, 0, 0, (uint32_t) hd, (uint32_t) nd,
+                                                   (uint32_t) nh, (uint32_t) T, mode == GGML_ROPE_TYPE_NEOX ? opl::rope::MODE_NEOX : 0u };
+                            const bool want = mode != GGML_ROPE_TYPE_MROPE && (T == 1 || lines_ok) && plans(opl::K_ROPE, w, 14);
+                            sweep_check(tsr_build_supports(env, t, &why), want, "ROPE", hd, nh * 1000 + T, mode * 100000 + nd * 10 + ffm);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // SET_ROWS into KV caches of several E; into a plain tensor (R1: never)
+    for (int64_t E : { 64, 96, 128, 576, 1024, 8192, 32704, 32768 }) {
+        gctx c;
+        ggml_tensor * cache = ggml_new_tensor_3d(c.ctx, GGML_TYPE_Q8_0, E, 512, 1);
+        ggml_set_name(cache, "cache_k_l3");
+        ggml_tensor * src = ggml_new_tensor_2d(c.ctx, GGML_TYPE_F32, E, 4);
+        ggml_tensor * idx = ggml_new_tensor_1d(c.ctx, GGML_TYPE_I64, 4);
+        ggml_tensor * t = ggml_set_rows(c.ctx, cache, src, idx);
+        tsr_kv_shape s;
+        const bool is_kv = tsr_kv_identify("cache_k_l3", true, cache->ne, cache->nb, 4, 32768, &s, nullptr);
+        const uint32_t w[] = { 0, 0, 0, (uint32_t) (E * 4 / 64), 0, 4, (uint32_t) E, 0, 0, opl::geom_word((uint32_t) E / 64, s.LG), 0, 0 };
+        sweep_check(tsr_build_supports(env, t, &why), is_kv && plans(opl::K_SET_ROWS_KV, w, 12), "SET_ROWS", E, 512, 0);
+        ggml_tensor * plain = ggml_new_tensor_2d(c.ctx, GGML_TYPE_F32, E, 512);
+        sweep_check(tsr_build_supports(env, ggml_set_rows(c.ctx, plain, src, idx), &why), false, "SET_ROWS plain", E, 512, 0);
+    }
+    // FLASH_ATTN_EXT on KV-cache views: D, KV heads, GQA ratio, tokens, cells
+    for (int64_t D : { 64, 96, 128, 256, 512 }) {
+        for (int64_t nkv : { 1, 2, 8 }) {
+            for (int64_t G : { 1, 2, 7, 16, 65 }) {
+                for (int64_t T : { 1, 8 }) {
+                    for (int64_t cells : { 256, 4096 }) {
+                        if (D * nkv > 32768) continue;
+                        gctx c;
+                        const int64_t E = D * nkv;
+                        ggml_tensor * ck = ggml_new_tensor_3d(c.ctx, GGML_TYPE_Q8_0, E, cells, 1);
+                        ggml_set_name(ck, "cache_k_l0");
+                        ggml_tensor * cv = ggml_new_tensor_3d(c.ctx, GGML_TYPE_Q8_0, E, cells, 1);
+                        ggml_set_name(cv, "cache_v_l0");
+                        ggml_tensor * q = ggml_new_tensor_3d(c.ctx, GGML_TYPE_F32, D, G * nkv, T);
+                        const size_t rs = ggml_row_size(GGML_TYPE_Q8_0, D), es = ggml_row_size(GGML_TYPE_Q8_0, E);
+                        ggml_tensor * k = ggml_view_4d(c.ctx, ck, D, nkv, cells, 1, rs, es, es * cells, 0);
+                        ggml_tensor * v = ggml_view_4d(c.ctx, cv, D, nkv, cells, 1, rs, es, es * cells, 0);
+                        ggml_tensor * m = ggml_new_tensor_2d(c.ctx, GGML_TYPE_F16, cells, T);
+                        ggml_tensor * fa = ggml_flash_attn_ext(c.ctx, ggml_permute(c.ctx, q, 0, 2, 1, 3), ggml_permute(c.ctx, k, 0, 2, 1, 3),
+                                                               ggml_permute(c.ctx, v, 0, 2, 1, 3), m, 0.125f, 0.0f, 0.0f);
+                        tsr_kv_shape s;
+                        const bool is_kv = tsr_kv_identify("cache_k_l0", true, ck->ne, ck->nb, 4, 32768, &s, nullptr);
+                        const uint32_t K = (uint32_t) (G * nkv * D);
+                        opl::flash_attn_args f{};
+                        f.dst_stride = K / 16; f.q_head_stride = (uint32_t) D / 16; f.q_token_stride = K / 16; f.n_kv = (uint32_t) cells;
+                        f.head_dim = (uint32_t) D; f.n_head = (uint32_t) (G * nkv); f.n_head_kv = (uint32_t) nkv; f.n_tokens = (uint32_t) T;
+                        f.mask = opl::HANDLE_NONE; f.scale = opl::writer::f32_bits(0.125f); f.geom = opl::geom_word((uint32_t) E / 64, s.LG);
+                        f.d = (uint32_t) D; f.g = (uint32_t) G;
+                        uint32_t w[opl::fa::NARGS];
+                        opl::put_args(f, w);
+                        const bool want = is_kv && (D == 64 || D == 128 || D == 256 || D == 512) && plans(opl::K_FLASH_ATTN, w, 22);
+                        sweep_check(tsr_build_supports(env, fa, &why), want, "FLASH_ATTN", D, nkv * 100 + G, T * 100000 + cells);
+                    }
+                }
+            }
+        }
+    }
+    // the no-ops are supported; DUP is not (R1)
+    {
+        gctx c;
+        ggml_tensor * a = ggml_new_tensor_2d(c.ctx, GGML_TYPE_F32, 64, 4);
+        CHECK(tsr_build_supports(env, ggml_reshape_1d(c.ctx, a, 256), &why) && tsr_build_supports(env, ggml_transpose(c.ctx, a), &why));
+        CHECK(!tsr_build_supports(env, ggml_dup(c.ctx, a), &why));
+        // a view at a non-64-byte offset (the 64-byte rule) and a device-format weight as an operand
+        ggml_tensor * vv = ggml_view_2d(c.ctx, a, 32, 2, a->nb[1], 32);
+        CHECK(!tsr_build_supports(env, ggml_scale(c.ctx, vv, 2.0f), &why));
+        ggml_tensor * dw = ggml_new_tensor_2d(c.ctx, GGML_TYPE_F32, 64, 4);
+        ggml_set_name(dw, "devw");
+        CHECK(!tsr_build_supports(env, ggml_get_rows(c.ctx, dw, ggml_new_tensor_1d(c.ctx, GGML_TYPE_I32, 2)), &why));
+    }
+    printf("  supports_op sweep: %d cases against the planners, %d supported\n", g_sweep_cases, g_sweep_ok);
+    CHECK(g_sweep_ok > g_sweep_cases / 4 && g_sweep_ok < g_sweep_cases);
+}
+
+// W3b fix (review findings): rules of supports_op that the shape sweep does not reach.
+static void test_supports_rules() {
+    fake_kv kv;
+    const tsr_build_env env = fake_env(&kv);
+    std::string why;
+    {
+        // the stride rule (SW §9.3): rows 80 bytes apart ([16 x 4] of a [20 x 4] f32), as an operand and
+        // as the result, are refused although every row is one whole line
+        gctx c;
+        ggml_tensor * big = c.f32(20, 4, 0x0, "big");
+        ggml_tensor * other = c.f32(16, 4, 0x1000, "other");
+        ggml_tensor * sv = ggml_view_2d(c.ctx, big, 16, 4, big->nb[1], 0);
+        CHECK(!tsr_build_supports(env, ggml_add(c.ctx, sv, other), &why));          // operand a
+        CHECK(!tsr_build_supports(env, ggml_add(c.ctx, other, sv), &why));          // operand b
+        CHECK(!tsr_build_supports(env, ggml_add_inplace(c.ctx, sv, other), &why));  // result (and a)
+        CHECK(!tsr_build_supports(env, ggml_cpy(c.ctx, other, sv), &why));          // CPY into it
+        CHECK(!tsr_build_supports(env, ggml_cpy(c.ctx, sv, other), &why));          // CPY from it
+        CHECK(tsr_build_supports(env, ggml_add(c.ctx, other, other), &why));        // the control
+    }
+    {
+        // a result that is a view must have rows of whole lines: [17 x 4] of a [32 x 4] f32 (rows 128
+        // bytes apart; the whole-line stores of rows of 68 bytes would overwrite columns 17-31)
+        gctx c;
+        ggml_tensor * A = c.f32(32, 4, 0x0, "A");
+        ggml_tensor * S = c.f32(32, 4, 0x1000, "S");
+        ggml_tensor * vA = ggml_view_2d(c.ctx, A, 17, 4, A->nb[1], 0);
+        ggml_tensor * vS = ggml_view_2d(c.ctx, S, 17, 4, S->nb[1], 0);
+        CHECK(!tsr_build_supports(env, ggml_cpy(c.ctx, vS, vA), &why));
+        CHECK(!tsr_build_supports(env, ggml_add_inplace(c.ctx, vA, vS), &why));
+        CHECK(!tsr_build_supports(env, ggml_scale_inplace(c.ctx, vA, 2.0f), &why));
+        CHECK(!tsr_build_supports(env, ggml_tanh_inplace(c.ctx, vA), &why));
+        ggml_tensor * vA1 = ggml_view_2d(c.ctx, A, 17, 1, A->nb[1], 0);              // one row of 68 bytes
+        CHECK(tsr_build_supports(env, ggml_scale(c.ctx, vA1, 2.0f), &why));        // a view read, a new result
+        CHECK(!tsr_build_supports(env, ggml_scale_inplace(c.ctx, vA1, 2.0f), &why));
+        // whole-line rows of a view: [16 x 4] of [32 x 4]
+        ggml_tensor * wA = ggml_view_2d(c.ctx, A, 16, 4, A->nb[1], 0);
+        ggml_tensor * wS = ggml_view_2d(c.ctx, S, 16, 4, S->nb[1], 0);
+        CHECK(tsr_build_supports(env, ggml_cpy(c.ctx, wS, wA), &why) && tsr_build_supports(env, ggml_add_inplace(c.ctx, wA, wS), &why));
+        // a single row of a tensor of its own may end inside a line (ggml-alloc pads it)
+        CHECK(tsr_build_supports(env, ggml_scale(c.ctx, c.f32(17, 1, 0x2000, "r"), 2.0f), &why));
+    }
+    {
+        // KV views the builder cannot encode (V2-SW-41: supports_op refuses them too): K / V starting at
+        // cell 16, K / V with other strides, a SET_ROWS into a view of the cache at cell 16 or of every
+        // other cell
+        gctx c;
+        const int64_t D = 64, nkvh = 2, E = D * nkvh, cells = 256, n_kv = 128;
+        ggml_tensor * ck = ggml_new_tensor_3d(c.ctx, GGML_TYPE_Q8_0, E, cells, 1);
+        ggml_set_name(ck, "cache_k_l0");
+        ggml_tensor * cv = ggml_new_tensor_3d(c.ctx, GGML_TYPE_Q8_0, E, cells, 1);
+        ggml_set_name(cv, "cache_v_l0");
+        const size_t rs = ggml_row_size(GGML_TYPE_Q8_0, D), es = ggml_row_size(GGML_TYPE_Q8_0, E);
+        auto fa_of = [&](size_t off, bool swap, int64_t T) {
+            ggml_tensor * q = ggml_new_tensor_3d(c.ctx, GGML_TYPE_F32, D, 2 * nkvh, T);
+            ggml_tensor * k = swap ? ggml_view_4d(c.ctx, ck, D, nkvh, n_kv, 1, es, rs, es * cells, off)
+                                   : ggml_view_4d(c.ctx, ck, D, nkvh, n_kv, 1, rs, es, es * cells, off);
+            ggml_tensor * v = ggml_view_4d(c.ctx, cv, D, nkvh, n_kv, 1, rs, es, es * cells, off);
+            ggml_tensor * m = ggml_new_tensor_2d(c.ctx, GGML_TYPE_F16, n_kv, T);
+            return ggml_flash_attn_ext(c.ctx, ggml_permute(c.ctx, q, 0, 2, 1, 3), ggml_permute(c.ctx, k, 0, 2, 1, 3),
+                                       ggml_permute(c.ctx, v, 0, 2, 1, 3), m, 0.125f, 0.0f, 0.0f);
+        };
+        CHECK(tsr_build_supports(env, fa_of(0, false, 1), &why));
+        CHECK(!tsr_build_supports(env, fa_of(16 * es, false, 1), &why));
+        CHECK(!tsr_build_supports(env, fa_of(0, true, 1), &why));
+        ggml_tensor * src = ggml_new_tensor_2d(c.ctx, GGML_TYPE_F32, E, 4);
+        ggml_tensor * idx = ggml_new_tensor_1d(c.ctx, GGML_TYPE_I64, 4);
+        CHECK(tsr_build_supports(env, ggml_set_rows(c.ctx, ck, src, idx), &why));
+        CHECK(!tsr_build_supports(env, ggml_set_rows(c.ctx, ggml_view_2d(c.ctx, ck, E, 64, es, 16 * es), src, idx), &why));
+        CHECK(!tsr_build_supports(env, ggml_set_rows(c.ctx, ggml_view_2d(c.ctx, ck, E, 64, 2 * es, 0), src, idx), &why));   // every other cell
+        // the preload area (V2-SW-43): a FLASH_ATTN of T tokens needs ceil((32 + 16 T) / 64) lines of MSUM
+        // and ceil(8 T / 64) of FA_NEW indices in one list: T = 680 fits (171 + 85 = 256), T = 681 not
+        ggml_tensor * ck2 = ggml_new_tensor_3d(c.ctx, GGML_TYPE_Q8_0, E, 1024, 1);
+        ggml_set_name(ck2, "cache_k_l1");
+        ggml_tensor * cv2 = ggml_new_tensor_3d(c.ctx, GGML_TYPE_Q8_0, E, 1024, 1);
+        ggml_set_name(cv2, "cache_v_l1");
+        for (int64_t T : { 680, 681, 1022 }) {
+            ggml_tensor * q = ggml_new_tensor_3d(c.ctx, GGML_TYPE_F32, D, 2 * nkvh, T);
+            ggml_tensor * k = ggml_view_4d(c.ctx, ck2, D, nkvh, 1024, 1, rs, es, es * 1024, 0);
+            ggml_tensor * v = ggml_view_4d(c.ctx, cv2, D, nkvh, 1024, 1, rs, es, es * 1024, 0);
+            ggml_tensor * m = ggml_new_tensor_2d(c.ctx, GGML_TYPE_F16, 1024, T);
+            ggml_tensor * fa = ggml_flash_attn_ext(c.ctx, ggml_permute(c.ctx, q, 0, 2, 1, 3), ggml_permute(c.ctx, k, 0, 2, 1, 3),
+                                                   ggml_permute(c.ctx, v, 0, 2, 1, 3), m, 0.125f, 0.0f, 0.0f);
+            const bool got = tsr_build_supports(env, fa, &why);
+            if (got != (T <= 680)) {
+                fprintf(stderr, "  FLASH_ATTN T=%lld: supports_op %d (%s)\n", (long long) T, (int) got, why.c_str());
+            }
+            CHECK(got == (T <= 680));
+        }
+    }
+}
+#endif   // TSR_UNITS_BUILD
+
 int main() {
     test_alloc_basic();
     test_alloc_random();
@@ -695,6 +1453,17 @@ int main() {
     test_opl_capacity();
     test_opl_random();
     test_opl_cache();
+    test_kind_ranges();
+    test_builder_preload();
+#if defined(TSR_UNITS_BUILD)
+    test_build_fusion();
+    test_build_deps_views();
+    test_build_key();
+    test_supports_sweep();
+    test_supports_rules();
+#else
+    printf("test-tsr-backend-units: built without ggml: the M7 builder's ggml tests are skipped\n");
+#endif
     if (g_fail) {
         fprintf(stderr, "test-tsr-backend-units: %d check(s) FAILED\n", g_fail);
         return 1;

@@ -4,10 +4,15 @@
 
 set(GGML_TESSERACT_DIR ${CMAKE_CURRENT_LIST_DIR})
 
-# tsr-alloc, tsr-lower, tsr-opl and tsr-wlayout (no ggml) are the static library tsr_lower
-# (lower.cmake), shared with the runtime sw/rt; only the ggml-dependent sources are listed here.
+# tsr-alloc, tsr-lower, tsr-opl, tsr-wlayout, tsr-kvbuf and tsr-msum (no ggml) are the static
+# library tsr_lower (lower.cmake), shared with the runtime sw/rt; only the ggml-dependent sources are
+# listed here. tsr-build (W3b: the M7 records of ggml nodes, supports_op M7, fusion, the graph key;
+# docs/v2/06-software-verification.md §9.3) is ggml-aware but device-free, so the unit tests compile
+# it too (CMakeLists.txt, test-tsr-backend-units).
 set(GGML_TESSERACT_SOURCES
     ${GGML_TESSERACT_DIR}/ggml-tesseract.cpp
+    ${GGML_TESSERACT_DIR}/tsr-build.cpp
+    ${GGML_TESSERACT_DIR}/tsr-build.h
     ${GGML_TESSERACT_DIR}/tsr-weights.cpp
     ${GGML_TESSERACT_DIR}/tsr-weights.h
 )

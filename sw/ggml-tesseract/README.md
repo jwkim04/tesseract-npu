@@ -1,9 +1,9 @@
 # ggml-tesseract
 
 ggml backend for the Tesseract NPU core (spec "ggml 백엔드 통합"). One registry
-`"Tesseract"` with one device `"Tesseract0"` of type `GGML_BACKEND_DEVICE_TYPE_GPU`; M6 (like v1)
-runs `MUL_MAT` only, everything else stays on the CPU. Pin and verified llama.cpp API:
-`docs/llama-pin.md`.
+`"Tesseract"` with one device `"Tesseract0"` of type `GGML_BACKEND_DEVICE_TYPE_GPU`. M7 (W3b) runs a
+whole decode token of Qwen2.5 / Gemma 4 as one launch with the KV cache on the device; M6 (like v1,
+`TSR_KINDS=m6`) runs `MUL_MAT` only. Pin and verified llama.cpp API: `docs/llama-pin.md`.
 
 > **v2 (M6, `docs/v2/06-software-verification.md` §9.3, P3.2).** The host no longer emits
 > LD/QACT/MVM/ST programs. Each split's MUL_MATs become one op list (OPL v1, SW §7.2) of MUL_MAT
@@ -14,12 +14,24 @@ runs `MUL_MAT` only, everything else stays on the CPU. Pin and verified llama.cp
 > host-memory activations are v1's (the last two were deleted in X0 and restored from `v1-m4`).
 > M6 keeps attention on the CPU (`-nkvo`, `offload_kqv = false`); M7 (P3.5) adds the other kinds.
 
+> **v2 M7 (W3b, SW §8, §9.3 M7, P3.5).** `supports_op` takes the whole SW §9.3 table (RMS_NORM, MUL,
+> ADD, SCALE, GLU, ROPE, GET_ROWS, SET_ROWS into KV buffers, FLASH_ATTN_EXT on KV-buffer views, CPY /
+> CONT, UNARY TANH / GELU), so a llama.cpp decode graph of Qwen2.5 or Gemma 4 is one CPU split (the
+> token embedding) and **one Tesseract split, run as one launch** (`-fa on -ctk q8_0 -ctv q8_0`,
+> no `-nkvo`, `LLAMA_ATTN_ROT_DISABLE=1`). The builder (`tsr-build.{h,cpp}`) lowers each node to a
+> record of its kind, fuses MUL_MAT + ADD (bias, residual) and RMS_NORM + MUL (weight), orders the
+> records by DRAM byte ranges, puts positions / ids / KV indices / mask summaries into the list's
+> preload table and caches each graph's plan by identity, so a decode token reuses its list and only
+> its inputs change. Compute buffers live in device memory (IO, the low 512 MiB of ch1-3, the compute
+> heap), so nothing is staged.
+
 ## Files
 
 | File | Content |
 | --- | --- |
 | `ggml-tesseract.cpp` | reg / device / buffer type / buffer / backend, placement, lazy conversion, segments (op lists), staging, execution |
-| `tsr-opl.{h,cpp}`, `tsr-opl-dev.cpp` | the op-list path (no ggml): OPL builder (MUL_MAT records, hazards over DRAM byte ranges, transitive reduction, JOINs; encoding by `sw/ctrl/include/tsr/opl.hpp`'s writer), the OPL cache, the `graph` kernel on a transport (boot, launch, wait, error text) |
+| `tsr-opl.{h,cpp}`, `tsr-opl-dev.cpp` | the op-list path (no ggml): OPL builder (records of every kind, their DRAM ranges (`kind_ranges`), hazards over DRAM byte ranges, transitive reduction, JOINs, the preload table; encoding by `sw/ctrl/include/tsr/opl.hpp`'s writer), the OPL cache, the `graph` kernel on a transport (boot, launch, wait, error text) |
+| `tsr-build.{h,cpp}` | W3b, the M7 builder (ggml-aware, device-free): the record of each ggml node in probe mode (supports_op) or build mode, fusion (pass 3), the encoding of one record with its preload entries and FA_NEW (passes 4-6), the graph key (R7); the device enters through callbacks (`tsr_build_env`) |
 | `tsr-lower.{h,cpp}` | MUL_MAT shape checks and SPM tiling (placement and staging; the firmware tiles with `plan.hpp`) |
 | `tsr-weights.{h,cpp}` | ggml type → device format (Q8_0, Q4_K native; others `to_float` + `quantize_row_q8_0_ref`) and back |
 | `tsr-alloc.{h,cpp}` | first-fit range allocator for IO / AUX / WEIGHT heap |
@@ -45,6 +57,14 @@ Public C API (`third_party/llama.cpp/ggml/include/ggml-tesseract.h`, from the pa
   Alignment 64, `get_alloc_size` = nbytes rounded up to 64 (the line-granular ST tail of the
   last output row lands in this padding), `get_max_size` = IO window capacity (IO region minus
   the stage: 240 MiB), so ggml-alloc cuts compute buffers into chunks that can each get a window.
+- **Compute windows (W3b, SW §8 R6, V2-SW-26).** A buffer the device addresses in place (`io`)
+  gets one window in one channel: the ch0 IO region, else the low 512 MiB of ch1..ch3 (the channel
+  with the most free bytes), else the compute heap: symmetric reservations (≥ 64 MiB) of the WEIGHT
+  heap between the weights (bottom-up) and the KV planes (top-down), shared out per channel.
+  `get_max_size` is 512 MiB, so the reserved logits of Qwen2.5 (297 MiB at `-ub 512`) or Gemma 4
+  (512 MiB) are one chunk on the device. `get_alloc_size` pads to 64 bytes only where ggml allows it
+  (leaves, views, quantized types, MUL_MAT / FLASH_ATTN_EXT: `[TAG_ALLOC_SIZE_EXPAND]`); ggml-alloc
+  pads every block to the 64-byte alignment anyway, which holds a single row's whole-line store.
 - **Storage mode, fixed at a buffer's first data access** (`tsr_buf_decide`; llama.cpp calls
   `init_tensor` while usage is still ANY and sets WEIGHTS afterwards, so `init_tensor` only
   records metadata):
@@ -93,13 +113,47 @@ Public C API (`third_party/llama.cpp/ggml/include/ggml-tesseract.h`, from the pa
   MUL_MAT runs on its own in T tiles that fit the stage, one single-record launch per tile:
   src1 rows host → stage (a LINEAR src1 is read in place), the record (the firmware's LD / QACT /
   MVM / ST), dst rows stage → host or → the LINEAR dst (compacted to N*4 bytes). Only one tile
-  has to be resident in IO, whatever T is, so supports_op has no token-count limit. Typical case:
-  llama.cpp reserves the output head for n_ubatch logits (Qwen2.5 at -ub 512: 296.75 MiB), a
-  chunk that is HOSTED; decode computes one row of it, one extra launch per token (TSR_STATS:
-  "staged chunks"). (Single-token outputs with N*4 % 64 != 0 ST straight into a LINEAR dst; the
-  tail lands in the 64-byte padding.) LLM projections have N % 16 == 0 and are staged only
-  through HOSTED buffers.
-- **supports_op** (v1's rules, unchanged in M6, so the splits are v1's): MUL_MAT with src1/dst
+  has to be resident in IO, whatever T is, so supports_op has no token-count limit. Since W3b's
+  compute windows only a device without room (or `TSR_FORCE_HOST=1` / `TSR_COMPUTE_WINDOWS=io`)
+  leaves a compute chunk in host memory (only MUL_MAT is staged: an M7 op on such a chunk aborts
+  graph_compute naming it, V2-SW-53); before them the reserved logits of a large vocabulary
+  (Qwen2.5 at -ub 512: 296.75 MiB) were such a chunk, one extra launch per token (TSR_STATS: "staged
+  chunks"). (Single-token outputs with N*4 % 64 != 0 ST straight into a LINEAR dst; the tail lands in
+  the 64-byte padding.) LLM projections have N % 16 == 0 and are staged only through HOSTED buffers.
+- **M7 graph_compute and supports_op (W3b, `tsr-build.h`).** Every non-MUL_MAT node of SW §9.3's
+  table is lowered by `tsr_lower_m7` to its record (SW §7.2 words): F32 row operands as a handle and a
+  row stride in lines (the 64-byte rule: base and stride multiples of 64 bytes; a result that is a view
+  has rows of whole lines, since the kinds store whole lines; a result of its own may be one row ending
+  inside a line), ADD / MUL broadcast as a row period or per-row scalars
+  (`FLAG_B_SCALAR`), ROPE on `[head_dim, n_heads, T]` views with contiguous heads (a fused-qkv view's
+  token stride), SET_ROWS / FLASH_ATTN on KV planes (`tsr_kv_view_of`; views as llama.cpp's
+  `cpy_k` / `get_k` build them with one stream: cell 0, cells `row_size(E)` and heads `row_size(D)`
+  apart), FLASH_ATTN's mask through its
+  summary (`tsr_fa_mask_ref`), index inputs (positions, ids, KV indices: graph leaves) and MSUMs as
+  preload entries. `supports_op` runs the same lowering in probe mode and the kind's planner
+  (`plan.hpp` `plan_kind` on the device's CFG values, V2-SW-20). Operands in host memory (a HOSTED
+  buffer, or one that will be: an ANY buffer of leaf data only, e.g. llama.cpp's control vectors and
+  LoRA adapters, and every buffer under `TSR_FORCE_HOST`) are refused, since only MUL_MAT is staged
+  (SW §8 R6 as built, V2-SW-53): such ops run on the CPU. A compute buffer that gets no window is
+  placed after the scheduler split the graph; graph_compute then aborts naming it. Fusion (`tsr_build_fusion`): a
+  MUL_MAT whose only user (ggml use count over the whole graph) is an ADD of a bias row or the
+  residual takes it as its addend; an RMS_NORM whose only user is a MUL by a weight takes the weight;
+  the fused record sits at the first node's place when nothing in between writes the other operand or
+  touches the result (bit-identical: `ggml_tesseract_opl_launch` F). FLASH_ATTN's FA_NEW word names
+  the indices of the SET_ROWS_KV that wrote its K plane (AT §12). A list is cut early only at 4096
+  records or a full 256-line preload area (prefill ubatches of a few hundred tokens: TSR_STATS "lists
+  cut early"); a FLASH_ATTN's MSUM and FA_NEW indices must fit one list together, so one of more than
+  680 tokens is refused and runs on the CPU (V2-SW-43). When a cut separates a SET_ROWS_KV from its
+  FLASH_ATTN, graph_compute checks that no node between them overwrote the K indices the FA's list
+  preloads again (tsr-build.h). The plan of a graph (its lists) is cached by `tsr_graph_key` (addresses, shapes, op
+  parameters; not values) salted with a placement epoch; a cached plan re-registers its FLASH_ATTN
+  nodes as mask readers and runs. Nodes without `GGML_TENSOR_FLAG_COMPUTE` are skipped; supports_op
+  does not test the flag (test-backend-ops asks before the flag is set), DUP and non-KV SET_ROWS are
+  refused (R1). A refused op writing into the device KV cache (context shift, defragmentation, a
+  SET_ROWS into a cache of several sequence streams or under `TSR_FORCE_HOST`) is reported once
+  before the scheduler stops on it (SW §8 R10). llama.cpp's weight-placement probe of `rope_freqs` (ROPE with every parameter 0) is
+  accepted, so Gemma 4's freq factors live on the device.
+- **supports_op of MUL_MAT** (v1's rules, unchanged since M6): MUL_MAT with src1/dst
   F32, src0 `ne2 = ne3 = 1`, all contiguous, src0 type loadable, `tsr_mm_shape_ok` (K ≤ K_MAX,
   K % 32 == 0 (Q4_K: % 256), one token fits SPM) and `plan.hpp`'s `mm_supported` on the device's
   CFG values (one token fits the firmware's scratch-ring budget: the host rejects exactly what the
@@ -125,11 +179,14 @@ Public C API (`third_party/llama.cpp/ggml/include/ggml-tesseract.h`, from the pa
 | --- | --- |
 | `TSR_DEVICE` | transport kind (`sim` default, `xrt`); `none` registers no device |
 | `TSR_IMAGE` | firmware image (default: the build's `tsr-fw.elf`) |
-| `TSR_DEBUG=1` | placement, lowering and launch log on stderr; `2` adds buffer events and the records of every launched op list |
-| `TSR_FORCE_HOST=1` | test knob: every non-WEIGHTS buffer in host memory, so every MUL_MAT takes the staged path |
+| `TSR_DEBUG=1` | placement, lowering and launch log on stderr; `2` adds buffer events, the records and preload entries of every launched op list and supports_op's reasons |
+| `TSR_KINDS=m6` | the device takes MUL_MAT only (M6 runs, v1's splits); default: every M7 kind |
+| `TSR_COMPUTE_WINDOWS=io` | test knob: compute windows in ch0 IO only (v1's placement; larger buffers in host memory, their MUL_MATs staged) |
+| `TSR_OPL_SPLIT=<n>` | test knob: cut every op list after n records (a split's results do not depend on the cuts: Qwen2.5-0.5B with n = 7, 53 launches per token, gives logits bit-identical to one launch per token) |
+| `TSR_FORCE_HOST=1` | test knob: every non-WEIGHTS buffer in host memory, so every MUL_MAT takes the staged path and the other kinds stay on the CPU (with M7 settings add `-nkvo`: a KV cache on the device needs its SET_ROWS on the device) |
 | `TSR_STAGE_KIB=<n>` | test knob: IO stage size in KiB (default max(16 MiB, 2 × SPM)); a small stage forces several T tiles |
 | `TSR_OPL_CRC=1` | debug knob: `graph` launch flag VERIFY_CRC (the executor checks each list's CRC-32 before running it) |
-| `TSR_STATS=1` | at backend free: upload statistics; graph_compute calls, launches, launches per scheduler pass (≈ per token: a split seen again starts a pass), op records per launch, MUL_MAT / JOIN records, staged chunks and their launches, OPL cache hits / misses / evictions, launch wall time, PERF counter deltas |
+| `TSR_STATS=1` | at backend free: upload statistics; graph_compute calls, launches, launches per scheduler pass (≈ per token: a split seen again starts a pass) and per graph_compute (0 / 1 / 2 / ≥ 3), op records per launch, records per kind, fused ops, MUL_MAT / JOIN records, staged chunks and their launches, the plan cache (hits, builds, builds not cacheable), lists cut early, OPL cache hits / misses / evictions, launch wall time, PERF counter deltas; with the KV agent's lines on mask summaries |
 | `TSR_SIM_*`, `TSR_TRACE`, `TSR_LOG`, `TSR_LAUNCH_TIMEOUT_MS`, … | handled by the transport (`sw/transport/tsr_transport.h`, SW §9.2) |
 
 ## Build and test
@@ -142,8 +199,10 @@ build/dev/bin/test-tsr-backend-units                        # allocator, tiling,
 build/dev/bin/test-ggml-tesseract                            # bit-exact vs tsr_ref + NMSE vs CPU
 TSR_SIM_TMAX=8 build/dev/bin/test-ggml-tesseract             # T tiling with T > 1
 build/dev/bin/test-backend-ops test -o MUL_MAT -b Tesseract0 # vs CPU, NMSE 5e-4
-LLAMA_ATTN_ROT_DISABLE=1 build/dev/bin/llama-completion -m models/qwen2.5-0.5b-instruct-q8_0.gguf \
+LLAMA_ATTN_ROT_DISABLE=1 TSR_KINDS=m6 build/dev/bin/llama-completion -m models/qwen2.5-0.5b-instruct-q8_0.gguf \
     -ngl 99 -nkvo -fa on -ctk q8_0 -ctv q8_0 -p "..." -n 16          # M6 settings (SW §10.4)
+LLAMA_ATTN_ROT_DISABLE=1 TSR_STATS=1 build/dev/bin/llama-completion -m models/qwen2.5-0.5b-instruct-q8_0.gguf \
+    -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -p "..." -n 16                # M7: one launch per token
 ```
 
 Configure only through the top-level CMakeLists. It defines `tsr_ref`, `tsr_transport` and
@@ -154,12 +213,18 @@ llama.cpp, so its ctest also lists `rt_sim`, `rt_sim_tmax8`, `rt_mock` and `rt_m
 
 ctest names: `ggml_tesseract_units` (allocator, tiling, staging decisions, OPL builder: encoding,
 hazards incl. strided rows, transitive reduction, JOINs, the 4096-op limit, a random property check;
-OPL cache), `ggml_tesseract_opl_launch` and `_mock` (`tests/test-tsr-opl-launch.cpp`: the launcher on
-a device: a JOIN and an ACC_DST record against the spec model, a cache hit, TILE_ERR and KERNEL_ERR
-answers mapped to their op), `ggml_tesseract_e2e`, `ggml_tesseract_e2e_tmax8`,
+OPL cache; W3b: the DRAM ranges of every M7 kind, the preload table, and with ggml-base the M7 builder:
+fusion pairs and non-pairs, records of views and KV planes with their dependencies and FA_NEW, the
+graph key incl. shape and stride changes, supports_op against the planners over 2,850 shapes and the
+rules the sweep does not reach: strided and partial-line views, KV views, the FLASH_ATTN preload limit), `ggml_tesseract_opl_launch` and
+`_mock` (`tests/test-tsr-opl-launch.cpp`: the launcher on a device: a JOIN and an ACC_DST record
+against the spec model, a cache hit, TILE_ERR and KERNEL_ERR answers mapped to their op; W3b: fusion
+bit-identical to the unfused records, a chain of every short kind with preload entries whose inputs
+change through the cached list, a TILE_ERR in GET_ROWS named by its tag), `ggml_tesseract_e2e`, `ggml_tesseract_e2e_tmax8`,
 `ggml_tesseract_e2e_hosted` and `ggml_tesseract_e2e_hosted_tmax8` (`TSR_FORCE_HOST=1
 TSR_STAGE_KIB=64`, with and without `TSR_SIM_TMAX=8`), `transport_ggml_e2e_mock` and
-`transport_ggml_e2e_mock_tmax8` (the same test on the mock kdev; defined here since P3.2),
+`transport_ggml_e2e_mock_tmax8` (the same test on the mock kdev; defined here since P3.2; the e2e
+tests are M6's and run with `TSR_KINDS=m6 TSR_COMPUTE_WINDOWS=io`),
 `ggml_tesseract_scalar_nmse`, `ggml_tesseract_backend_ops` and `ggml_tesseract_backend_ops_bigt`
 (label `slow`: the one case `MUL_MAT(f16, m=16, n=2105344, k=32)`, 8.4 M single-token tile ops
 through the interpreted firmware at the sim's T_MAX 1, ~50 s; the two together run v1's case set).
@@ -178,5 +243,114 @@ bit-exactly against the spec model instead; numbers in `docs/llama-pin.md` (test
 The unfiltered `test-backend-ops test -o MUL_MAT -b Tesseract0` above therefore reports
 1402/1403 in about one run in seven.
 
-llama.cpp must run with `-nkvo` (KV cache on the CPU, M6) and an explicit `-ngl`; see
-`docs/llama-pin.md` for how compute buffers, the output head and LoRA adapters are placed.
+M6 runs llama.cpp with `-nkvo` (KV cache on the CPU) and `TSR_KINDS=m6`; M7 without `-nkvo` (the
+KV cache in KV buffers), with `-fa on -ctk q8_0 -ctv q8_0` and `LLAMA_ATTN_ROT_DISABLE=1`, always with
+an explicit `-ngl`; see `docs/llama-pin.md` for how compute buffers, the output head and LoRA adapters
+are placed. `klcheck run` and `tsr-numcheck run` set `TSR_KINDS` from `--phase` (m6: MUL_MAT only;
+m7: every kind; V2-SW-49).
+
+## M7 on the simulator (W3b integration, 2026-10-31)
+
+Settings: `--phase m7` (FA on, q8_0 / q8_0 KV on the device, `LLAMA_ATTN_ROT_DISABLE=1`), `TSR_DEVICE=sim`
+(4 channels, T_MAX 1), race detector off unless noted; sim times are host wall time of the interpreted
+firmware on this 16-core host, device times are `PERF_CYCLES` at the restated k4 clock of 276.3 MHz.
+
+| Model | Launches | Splits per decode graph | KL vs CPU (klcheck criterion) | Sim time per token |
+| --- | --- | --- | --- | --- |
+| Qwen2.5-0.5B Q8_0, 8 × 64 tokens | 512 for 504 decodes + 8 prefills (1.00 per token), 0 staged | CPU + 1 Tesseract | mean 2.22·10⁻³, floor 2.43·10⁻³, ratio 0.914, top-1 98.05 %: PASS | 89 ms (11.3 tokens/s) |
+| Gemma 4 12B Q4_K_M, 2 × 33 tokens | 66 for 64 decodes + 2 prefills, 0 staged at `-ub 512 -c 4096` | CPU + 1 Tesseract | mean 3.07·10⁻², floor 4.51·10⁻², ratio 0.680, top-1 96.97 %: PASS | 0.82-0.86 s |
+| Gemma 4 12B Q8_0, 2 × 33 tokens | 66 for 64 decodes + 2 prefills, 0 staged at `-ub 512 -c 4096` | CPU + 1 Tesseract | mean 2.23·10⁻², floor 2.65·10⁻², ratio 0.843, top-1 96.97 %: PASS | 1.5-1.75 s |
+| Qwen2.5-32B Q4_K_M, smoke 1 × 2 tokens (`TSR_SIM_DRAM_DIR`) | 2 for 1 decode + 1 prefill, 0 staged | CPU + 1 Tesseract | 2 rows: mean 4.63·10⁻³, floor 4.80·10⁻³, ratio 0.964, top-1 2 / 2 | 7.44 s; full 8 × 64 klcheck projected ≈ 72 min |
+
+- **Identity.** A second 0.5B sim run replaying the tokens is bit-identical (512 / 512 rows); so is a
+  replay with `TSR_SIM_SCHED=random:7 TSR_SIM_RACE=fatal` (no race in 512 launches of the whole graph),
+  and a replay of the Gemma 4 12B Q4_K_M tokens (66 / 66 rows).
+- **Qwen2.5-32B.** One decode token is 83.5 M device cycles (MVM 81.5 M) = 0.30 s at 276.3 MHz (the
+  difference of a 2- and a 3-token run; v1 on the card: 341.7 ms per token), 965 records per launch.
+- **Device cycles per 0.5B decode token** (two lengths, 32 decodes apart): M7 2.48 M cycles (MVM 2.22 M,
+  incl. ATTQK / ATTPV) in 1 launch = 9.0 ms, ≈ 111 tokens/s of device time; M6 2.63 M cycles (MVM 2.08 M)
+  in 145 launches, with attention, norms and the other ops on the CPU besides. Records per 0.5B decode
+  launch: 365 (169 MUL_MAT, 168 of them fused with an ADD or a MUL, 49 RMS_NORM, 24 GLU, 48 ROPE,
+  48 SET_ROWS_KV, 24 FLASH_ATTN, 2 GET_ROWS, 1 ADD); Gemma 4 12B: 1,152 records, 289 fused pairs.
+- **Plan cache.** 0.5B 8 × 64: 512 `graph_compute` calls, 6 builds, 506 cached runs; Gemma 4 12B: 3
+  builds for 66 calls.
+
+## KV cache and mask summaries (M7, W3b P3.5)
+
+`tsr-kvbuf.{h,cpp}` and `tsr-msum.{h,cpp}` (no ggml, part of `tsr_lower`; their headers are the
+reference) implement SW §9.3's "KV buffers" (V2-SW-17) and "Mask summaries" (V2-SW-32):
+
+- **KV buffers.** A buffer of usage ANY whose tensors are all `cache_<tag>k_l<n>` /
+  `cache_<tag>v_l<n>` q8_0 `[E, kv_size, n_stream]` (an offloaded llama.cpp cache, `-ctk q8_0 -ctv
+  q8_0`, AT §4.6) becomes storage `kv` at its first data access (llama.cpp's clear): one plane per
+  (tensor, stream) in AT's layout (K token-major, V slice-major, LG = ⌈kv_size / 16C⌉), allocated
+  symmetrically and top-down in the WEIGHT heap (EX §11, V2-AT-21). `set_tensor` / `get_tensor` /
+  `memset_tensor` / `clear` on any byte range convert between ggml `block_q8_0` rows and the planes
+  with AT's C reference (`tsr_kv_set_bytes` / `tsr_kv_get_bytes`) in windows of whole local groups
+  (read-modify-write unless the access covers the window's rows), so state save / load is lossless.
+  The builder resolves the SET_ROWS / FLASH_ATTN views with `tsr_kv_view_of` (plane base beat,
+  GEOM word, stream) and supports_op asks `tsr_kv_tensor_supported`.
+- **Mask summaries.** `get_alloc_size` of an F16 `*kq_mask*` tensor `[n_kv, n_q, 1, 1]` reserves,
+  behind the mask, its MSUM (AT §7.3) and one f32 copy (`n_q · 64 · ⌈n_kv/16⌉` bytes). On every
+  `set_tensor` of such a mask in device memory (the scheduler's input copy, once per token) the
+  producer writes the MSUM (`tsr_msum_build_f16`) and, when some tile reads it, the f32 copy
+  (`tsr_msum_mask_f32`, fdiv(m, scale)). The builder registers every FLASH_ATTN as a reader of its
+  mask (`tsr_fa_mask_ref`: scale, E, D, G) and gets the preload source (word 12) and the copy handle
+  for its scale (word 13). Decisions (tsr-msum.h): readers only grow; one copy per distinct scale (the
+  first in the reservation, further ones as side allocations); a copy is written when the MSUM is
+  GENERAL or the shared planner puts a tile on the GENERAL path; a tile the planner would refuse
+  (AT §6.6 rule 5 / 6) promotes the MSUM to GENERAL, so the executor never refuses for mask data.
+- **Tests.** `ggml_tesseract_kvbuf` (`tests/test-tsr-kvbuf.cpp`, no device: placement, conversion
+  against `tsr_kv_pack_row` images after random partial accesses and windows, state save / load,
+  MSUM / copies / readers / promotion / side copies) and `ggml_tesseract_attn`, `_tmax8`, `_split1`
+  (`TSR_OPL_SPLIT=1`) (`tests/test-tsr-attn.cpp`, on the device: KV buffers through the ggml API, the
+  device's MSUMs and copies against the references, and SET_ROWS + FLASH_ATTN_EXT in llama.cpp's graph
+  shape against the CPU backend (NMSE) and `tsr_ref_fa` (bit for bit), several tokens per graph
+  through the cached op list, incl. a wrapped ring whose output bits depend on FA_NEW; supports_op's
+  placement rules: results that are views, leaf data in host memory) and `ggml_tesseract_kvstate` (`tests/test-tsr-kvstate.cpp`, llama.cpp's state API on the tiny
+  Qwen2 model: device → device bit-identical logits, the device's state file loaded by a CPU context
+  byte for byte, sequence state into a cleared context). Test hooks:
+  `ggml_backend_tesseract_kv_plane`, `ggml_backend_tesseract_mask_summary`,
+  `ggml_backend_tesseract_att_cfg` (signatures at their definitions in `ggml-tesseract.cpp`).
+
+## M7 on the simulator: tiny models, graph tests, test-backend-ops per op (P3.6)
+
+Everything is defined in `tests/tiny.cmake` (included from `CMakeLists.txt`); the rationale of each
+bound and the W3b measurements are in its header.
+
+- **Tiny models (V2-SW-21).** `tests/gen_tiny_models.py` writes, at build time (target
+  `tsr_tiny_models`, part of `all`), `build/<tree>/models/tiny/`: `qwen2-tiny-q8_0.gguf` and
+  `qwen2-tiny-q4_k.gguf` (2 layers, n_embd 256, GQA 4:2, head_dim 64, Q/K/V bias, SWIGLU),
+  `gemma4-tiny-q8_0.gguf` (4 layers: 3 SWA with head_dim 64 / GQA 16:8 and 1 full with head_dim 128 /
+  16:1, no `attn_v` on the full layer, per-head Q/K norms, `rope_freqs`, `layer_output_scale`, GEGLU,
+  tied head, softcap 30, n_swa 16) and `tiny-prompts.txt`. Random weights from numpy's legacy
+  `RandomState` (identical files on every host), 64-row vocabularies with valid tokenizer metadata
+  (Qwen2: GPT-2 byte-level BPE `gpt2` / `qwen2`; Gemma 4: `gemma4` BPE), Q8_0 by gguf-py, Q4_K by
+  the script's encoder checked against gguf-py's dequantizer. No binary is in git. Python: the first
+  of `TSR_TINY_PYTHON`, `build/tools/torchvenv/bin/python`, `TSR_REF_MATH_PYTHON` and python3 that
+  imports numpy and `third_party/llama.cpp/gguf-py`.
+- **Graph tests** (`tests/m7_tests.py graph`): `ggml_tesseract_graph_qwen_tiny`, `_qwen_tiny_q4k`,
+  `_gemma_tiny` (1-6 s each) and, with `models/qwen2.5-0.5b-instruct-q8_0.gguf` present,
+  `ggml_tesseract_graph_qwen05b` (label `model`, ~23 s). klcheck generates on `sim` with the M7
+  settings (`--phase m7`, the SWA ring as llama-cli) under `TSR_DEBUG=1`, `GGML_SCHED_DEBUG=2`,
+  `TSR_STATS=1` and `-v` (decode markers); the test asserts one Tesseract split in every single-token
+  decode graph, one launch per single-token decode (64 for the tiny models, 128 for 0.5B), one launch
+  per ubatch in prefill (`-ub 16`: 3-22 ubatches per prompt; the long prompts cross the 256-cell KV
+  bucket in decode and in prefill and wrap Gemma 4's SWA ring), no launch outside a decode, the launch
+  count of TSR_STATS, the embd-path identity, and klcheck's KL criterion against the CPU (Gemma 4 with
+  `--min-kl 3e-3`, see the header). `ggml_tesseract_graph_qwen_tiny_ub1024` runs one 692-token prompt
+  (`--join-prompts 4`) at `-ub 1024`: its prefill FLASH_ATTN (T > 680) stays on the CPU, so prefill
+  launches are only reported (`--prefill any`), with `--min-prefill-tokens 681`. Files of a run: `build/<tree>/sw/ggml-tesseract/<test>/`
+  (`dev.log`, `graph.json`, `report.json`). By hand:
+  `python3 sw/ggml-tesseract/tests/m7_tests.py graph --klcheck build/dev/bin/klcheck --model
+  build/dev/models/tiny/gemma4-tiny-q8_0.gguf --prompts build/dev/models/tiny/tiny-prompts.txt
+  --out-dir /tmp/g --min-kl 3e-3`.
+- **test-backend-ops per op** (`tests/m7_tests.py ops`): `ggml_tesseract_backend_ops_<op>` for ADD,
+  MUL, RMS_NORM, SWIGLU, GEGLU, ROPE, GET_ROWS, CPY, CONT, TANH, GELU, SCALE, SOFTCAP, the fused cases
+  RMS_NORM_MUL_ADD, ADD_RMS_NORM, ADD_ADD, MUL_MAT_ADD, RMS_NORM_MUL_ROPE, and SET_ROWS, ROPE_SET_ROWS,
+  FLASH_ATTN_EXT (q8_0 K / V): Tesseract0 against the CPU with the race detector fatal; every supported
+  case must pass, at least one must be supported (none for SCALE / SOFTCAP, whose test shapes have
+  10-float rows, and the KV-cache ops, which need KV-buffer tensors: `ggml_tesseract_attn`), and the
+  unsupported cases are counted, listed and written to
+  `build/<tree>/sw/ggml-tesseract/backend_ops/<op>.unsupported.txt`. `ggml_tesseract_backend_ops`
+  (MUL_MAT) is unchanged.

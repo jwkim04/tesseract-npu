@@ -15,6 +15,15 @@
 //   D. A MUL_MAT with K = 48 (not a multiple of 32): the executor refuses it before pushing,
 //      KERNEL_ERR with RET 0x8000_0004 (BAD_RECORD), named by tsr_opl_describe.
 //   E. A valid launch after the errors gives the results of A again (the device recovered).
+//   M7 (W3b, SW §9.3; lists as the backend's builder makes them: kind_ranges, preload entries):
+//   F. Fusion is bit-identical to the unfused device sequence: MUL_MAT with a bias row / the residual
+//      as its addend vs MUL_MAT then ADD (and ADD = one f32 addition of the spec model); RMS_NORM with
+//      its weight vs RMS_NORM then MUL, for a decode row, 3 rows, per-head rows and per-row weights.
+//   G. A chain of GET_ROWS (ids from the preload table), CPY, SCALE, MUL by per-row scalars, ADD of a
+//      broadcast row, UNARY, GLU, ROPE (positions from the preload table) and a fused RMS_NORM: the
+//      exact kinds equal the spec model, every output equals a SERIAL run of the same records; then
+//      new positions and ids through the same list (an OPL cache hit) give the new results.
+//   H. A GET_ROWS with a negative id answers TILE_ERR DRAM_RANGE at its record, named by its tag.
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
@@ -110,6 +119,218 @@ static size_t bit_diff(const std::vector<float> & a, const std::vector<float> & 
     size_t bad = 0;
     for (size_t i = 0; i < a.size() && i < b.size(); ++i) bad += memcmp(&a[i], &b[i], 4) != 0;
     return bad + (a.size() != b.size() ? 1 : 0);
+}
+
+// =============================================================================================
+// M7 (W3b): lists of the M7 kinds as the backend's builder makes them (tsr_opl_builder: kind_ranges
+// for the dependencies, preload entries), on the device
+// =============================================================================================
+static uint32_t H0(uint64_t off) { return tsr_dram_handle(0, off); }
+
+static uint32_t add_kind(tsr_opl_builder & b, uint32_t kind, const uint32_t * a, int32_t tag, uint64_t aux = 0) {
+    std::vector<tsr_dram_range> rd, wr;
+    b.kind_ranges(kind, a, aux, rd, wr);
+    const uint32_t i = b.add(kind, a, opl::kind_nargs(kind), rd, wr, tag);
+    CHECK(i != tsr_opl_builder::NO_ROOM && i != tsr_opl_builder::FAILED, "add %u: %s", kind, b.error());
+    return i;
+}
+template <class A> static uint32_t add_m7(tsr_opl_builder & b, uint32_t kind, const A & args, int32_t tag, uint64_t aux = 0) {
+    uint32_t w[opl::fa::NARGS] = {};
+    opl::put_args(args, w);
+    return add_kind(b, kind, w, tag, aux);
+}
+
+static bool run_list(tsr_opl_dev & dev, const std::vector<uint8_t> & blob, const tsr_dram_write_fn & write, const char * what) {
+    const tsr_opl_run_result r = dev.run(blob, 0, write);
+    const bool ok = r.rc == 0 && r.res.type == TSR_LCQ_R0_TYPE_DONE && r.res.status == TSR_LCQ_R0_STATUS_OK && r.res.ret == 0;
+    CHECK(ok, "%s: %s", what, tsr_opl_describe(r, nullptr).c_str());
+    return ok;
+}
+
+static void write_f32(tsr_transport * tp, uint64_t off, const std::vector<float> & v) {
+    CHECK(tsr_transport_write(tp, 0, off, v.data(), v.size() * 4) == 0, "write");
+}
+
+static std::vector<float> rnd_vec(size_t n, float scale = 1.0f) {
+    std::vector<float> v(n);
+    for (float & x : v) x = rnd() * scale;
+    return v;
+}
+
+static uint32_t fb(float f) { return opl::writer::f32_bits(f); }
+
+template <class F>
+static void test_m7(tsr_transport * tp, const tsr_config & cfg, tsr_opl_dev & dev, const tsr_dram_write_fn & write, F next_w) {
+    const uint64_t IO = TSR_REGION_IO_OFF + 0x100000;
+    const int fail0 = g_fail;
+
+    // ---- F: fusion is bit-identical to the unfused device pair (SW §7.4, the builder's pass 3) ----
+    {
+        // MUL_MAT + ADD of a bias row (addend stride 0) and of the residual (addend stride N/16)
+        const uint32_t N = 64, K = 64, T = 3;
+        const weight w = next_w(N, K);
+        const uint64_t X = IO, BIAS = IO + 0x1000, RES = IO + 0x2000, Y1 = IO + 0x3000, Y2 = IO + 0x4000, Y3 = IO + 0x5000, Y4 = IO + 0x6000,
+                       Y5 = IO + 0x7000, Y6 = IO + 0x8000;
+        write_f32(tp, X, rnd_vec(T * K));
+        const std::vector<float> bias = rnd_vec(N), res = rnd_vec(T * N);
+        write_f32(tp, BIAS, bias);
+        write_f32(tp, RES, res);
+        uint32_t a[mm::NARGS];
+        tsr_opl_builder u(cfg.num_ch);
+        mm_args(a, X, K / 16, Y1, N / 16, w, K, T);
+        u.mul_mat(a, 0);
+        add_m7(u, opl::K_ADD, opl::ew_args{ H0(Y2), N / 16, H0(Y1), N / 16, H0(BIAS), 0, N, T, 1, 0 }, 1);
+        mm_args(a, X, K / 16, Y4, N / 16, w, K, T);
+        u.mul_mat(a, 2);
+        add_m7(u, opl::K_ADD, opl::ew_args{ H0(Y5), N / 16, H0(Y4), N / 16, H0(RES), N / 16, N, T, T, 0 }, 3);
+        tsr_opl_builder f(cfg.num_ch);
+        mm_args(a, X, K / 16, Y3, N / 16, w, K, T);
+        a[mm::ADD] = H0(BIAS);
+        a[mm::ADD_STRIDE] = 0;
+        f.mul_mat(a, 0);
+        mm_args(a, X, K / 16, Y6, N / 16, w, K, T);
+        a[mm::ADD] = H0(RES);
+        a[mm::ADD_STRIDE] = N / 16;
+        f.mul_mat(a, 1);
+        run_list(dev, u.finish(), write, "F unfused MUL_MAT + ADD");
+        run_list(dev, f.finish(), write, "F fused MUL_MAT + addend");
+        const std::vector<float> y2 = read_f32(tp, Y2, T * N), y3 = read_f32(tp, Y3, T * N), y5 = read_f32(tp, Y5, T * N),
+                                 y6 = read_f32(tp, Y6, T * N), y1 = read_f32(tp, Y1, T * N);
+        CHECK(bit_diff(y2, y3) == 0, "F: bias: fused differs from MUL_MAT + ADD in %zu values", bit_diff(y2, y3));
+        CHECK(bit_diff(y5, y6) == 0, "F: residual: fused differs from MUL_MAT + ADD in %zu values", bit_diff(y5, y6));
+        std::vector<float> want(T * N);
+        for (uint32_t i = 0; i < T * N; ++i) want[i] = tsr_fadd(y1[i], bias[i % N]);
+        CHECK(bit_diff(y2, want) == 0, "F: the device ADD is not one f32 addition");
+        // RMS_NORM + MUL by a weight: one row of 896, per-head rows (14 heads x 2 tokens of 64, period 1),
+        // per-row weights (period = rows)
+        struct norm_case { uint32_t n, rows, period; const char * what; };
+        const norm_case nc[] = { { 896, 1, 1, "0.5B decode row" }, { 896, 3, 1, "3 rows" }, { 64, 28, 1, "per-head rows" },
+                                 { 128, 3, 3, "per-row weights" } };
+        for (const norm_case & c : nc) {
+            const uint32_t L = (c.n + 15) / 16;
+            const uint64_t XN = IO + 0x10000, W = IO + 0x20000, Z1 = IO + 0x30000, Z2 = IO + 0x40000, Z3 = IO + 0x50000;
+            write_f32(tp, XN, rnd_vec(c.rows * L * 16, 3.0f));
+            write_f32(tp, W, rnd_vec(c.period * L * 16));
+            const uint32_t eps = fb(1e-6f), inv_n = fb(1.0f / (float) c.n);
+            tsr_opl_builder un(cfg.num_ch), fu(cfg.num_ch);
+            add_m7(un, opl::K_RMS_NORM, opl::rms_norm_args{ H0(Z1), L, H0(XN), L, c.n, c.rows, eps, inv_n, opl::HANDLE_NONE, 1 }, 0);
+            add_m7(un, opl::K_MUL, opl::ew_args{ H0(Z2), L, H0(Z1), L, H0(W), c.period > 1 ? L : 0u, c.n, c.rows, c.period, 0 }, 1);
+            add_m7(fu, opl::K_RMS_NORM, opl::rms_norm_args{ H0(Z3), L, H0(XN), L, c.n, c.rows, eps, inv_n, H0(W), c.period }, 0);
+            CHECK(un.op(1).dep0 == 0, "F: MUL after RMS_NORM (RAW)");
+            run_list(dev, un.finish(), write, "F unfused RMS_NORM + MUL");
+            run_list(dev, fu.finish(), write, "F fused RMS_NORM");
+            const std::vector<float> z2 = read_f32(tp, Z2, c.rows * L * 16), z3 = read_f32(tp, Z3, c.rows * L * 16);
+            std::vector<float> z2n, z3n;   // the rows' n values (the line tails are not part of the result)
+            for (uint32_t r = 0; r < c.rows; ++r) {
+                z2n.insert(z2n.end(), z2.begin() + r * L * 16, z2.begin() + r * L * 16 + c.n);
+                z3n.insert(z3n.end(), z3.begin() + r * L * 16, z3.begin() + r * L * 16 + c.n);
+            }
+            CHECK(bit_diff(z2n, z3n) == 0, "F: RMS_NORM + MUL (%s): fused differs in %zu values", c.what, bit_diff(z2n, z3n));
+        }
+        printf("  F: fusion bit-identical: MUL_MAT + ADD (bias, residual), RMS_NORM + MUL (4 shapes)  %s\n",
+               g_fail == fail0 ? "ok" : "FAILED");
+    }
+
+    // ---- G: a chain of every short kind with preload entries, its inputs changed between launches ----
+    {
+        const int fail1 = g_fail;
+        const uint32_t n = 64, L = 4, SR = 8;
+        const uint64_t PP = IO + 0x60000, PI = IO + 0x60040, S = IO + 0x61000, V = IO + 0x62000, BR = IO + 0x63000, Q = IO + 0x64000,
+                       W64 = IO + 0x65000, G1 = IO + 0x70000, C1 = IO + 0x71000, S1 = IO + 0x72000, M1 = IO + 0x73000, A1 = IO + 0x74000,
+                       U1 = IO + 0x75000, GL = IO + 0x76000, RQ = IO + 0x77000, RN = IO + 0x78000;
+        const std::vector<float> src = rnd_vec(SR * n), vs = rnd_vec(16), brow = rnd_vec(n);
+        write_f32(tp, S, src);
+        write_f32(tp, V, vs);
+        write_f32(tp, BR, brow);
+        write_f32(tp, Q, rnd_vec(2 * 2 * n));
+        write_f32(tp, W64, rnd_vec(n));
+        auto set_inputs = [&](const int32_t (&pos)[2], const int32_t (&ids)[3]) {
+            CHECK(tsr_transport_write(tp, 0, PP, pos, sizeof pos) == 0 && tsr_transport_write(tp, 0, PI, ids, sizeof ids) == 0, "inputs");
+        };
+        auto build = [&](uint32_t flags) {
+            tsr_opl_builder b(cfg.num_ch, flags);
+            const uint32_t pp = b.preload(H0(PP), 8), pi = b.preload(H0(PI), 12);
+            CHECK(pp == 0 && pi == 64 && b.preload(H0(PP), 8) == 0, "preload entries %u %u", pp, pi);
+            add_m7(b, opl::K_GET_ROWS, opl::get_rows_args{ H0(G1), L, H0(S), L, pi, 3, L }, 0, SR);
+            add_m7(b, opl::K_CPY, opl::cpy_args{ H0(C1), L, H0(G1), L, L, 3 }, 1);
+            add_m7(b, opl::K_SCALE, opl::scale_args{ H0(S1), L, H0(C1), L, n, 3, fb(0.5f), fb(0.25f) }, 2);
+            add_m7(b, opl::K_MUL, opl::ew_args{ H0(M1), L, H0(S1), L, H0(V), 0, n, 3, 3, opl::ew::FLAG_B_SCALAR }, 3);
+            add_m7(b, opl::K_ADD, opl::ew_args{ H0(A1), L, H0(M1), L, H0(BR), 0, n, 3, 1, 0 }, 4);
+            add_m7(b, opl::K_UNARY, opl::unary_args{ H0(U1), L, H0(A1), L, n, 3, opl::unary::TANH }, 5);
+            add_m7(b, opl::K_GLU, opl::glu_args{ H0(GL), L, H0(A1), L, H0(U1), L, n, 3, opl::glu::SWIGLU }, 6);
+            add_m7(b, opl::K_ROPE, opl::rope_args{ H0(RQ), 2 * L, H0(Q), 2 * L, pp, opl::HANDLE_NONE, fb(powf(10000.0f, -2.0f / 64.0f)),
+                                                   fb(1.0f), fb(1.0f), 64, 64, 2, 2, opl::rope::MODE_NEOX }, 7);
+            add_m7(b, opl::K_RMS_NORM, opl::rms_norm_args{ H0(RN), L, H0(RQ), L, n, 4, fb(1e-6f), fb(1.0f / 64.0f), H0(W64), 1 }, 8);
+            CHECK(b.op(1).dep0 == 0 && b.op(2).dep0 == 1 && b.op(6).dep0 == 5 && b.op(6).dep1 == opl::DEP_NONE && b.op(8).dep0 == 7 &&
+                  b.op(7).dep0 == opl::DEP_NONE, "G: dependencies");
+            return b.finish();
+        };
+        const std::vector<uint8_t> blob = build(opl::F_STOP_ON_ERROR), serial = build(opl::F_STOP_ON_ERROR | opl::F_SERIAL);
+        const uint64_t outs[] = { G1, C1, S1, M1, A1, U1, GL, RQ, RN };
+        auto read_all = [&]() {
+            std::vector<std::vector<float>> o;
+            for (uint64_t off : outs) o.push_back(read_f32(tp, off, off == RQ || off == RN ? 4 * n : 3 * n));
+            return o;
+        };
+        auto check_exact = [&](const int32_t (&ids)[3], const std::vector<std::vector<float>> & o, const char * when) {
+            std::vector<float> g(3 * n), s1(3 * n), m1(3 * n), a1(3 * n);
+            for (uint32_t r = 0; r < 3; ++r) {
+                for (uint32_t i = 0; i < n; ++i) {
+                    g[r * n + i] = src[(size_t) ids[r] * n + i];
+                    s1[r * n + i] = tsr_fadd(tsr_fmul(g[r * n + i], 0.5f), 0.25f);
+                    m1[r * n + i] = tsr_fmul(s1[r * n + i], vs[r]);
+                    a1[r * n + i] = tsr_fadd(m1[r * n + i], brow[i]);
+                }
+            }
+            CHECK(bit_diff(o[0], g) == 0 && bit_diff(o[1], g) == 0, "G (%s): GET_ROWS / CPY are not the source rows", when);
+            CHECK(bit_diff(o[2], s1) == 0, "G (%s): SCALE x·0.5 + 0.25", when);
+            CHECK(bit_diff(o[3], m1) == 0, "G (%s): MUL by per-row scalars", when);
+            CHECK(bit_diff(o[4], a1) == 0, "G (%s): ADD of a broadcast row", when);
+        };
+        const int32_t pos0[2] = { 5, 6 }, ids0[3] = { 7, 0, 3 };
+        set_inputs(pos0, ids0);
+        run_list(dev, serial, write, "G serial");
+        const auto ref0 = read_all();
+        run_list(dev, blob, write, "G");
+        const auto got0 = read_all();
+        check_exact(ids0, got0, "first inputs");
+        for (size_t i = 0; i < got0.size(); ++i) {
+            CHECK(bit_diff(got0[i], ref0[i]) == 0, "G: output %zu differs from the SERIAL run", i);
+        }
+        // the next "token": new positions and ids through the same list (an OPL cache hit, no rebuild)
+        const int32_t pos1[2] = { 900, 17 }, ids1[3] = { 2, 2, 6 };
+        set_inputs(pos1, ids1);
+        const uint64_t hits = dev.cache().get_stats().hits;
+        run_list(dev, blob, write, "G again");
+        CHECK(dev.cache().get_stats().hits == hits + 1, "G: the list was not a cache hit");
+        const auto got1 = read_all();
+        check_exact(ids1, got1, "second inputs");
+        CHECK(bit_diff(got1[7], got0[7]) != 0, "G: ROPE did not read the new positions");
+        run_list(dev, serial, write, "G serial again");
+        const auto ref1 = read_all();
+        for (size_t i = 0; i < got1.size(); ++i) {
+            CHECK(bit_diff(got1[i], ref1[i]) == 0, "G: output %zu differs from the SERIAL run (second inputs)", i);
+        }
+        printf("  G: GET_ROWS, CPY, SCALE, MUL (per-row scalars), ADD, UNARY, GLU, ROPE, RMS_NORM with preload entries; new "
+               "inputs through the cached list  %s\n", g_fail == fail1 ? "ok" : "FAILED");
+    }
+
+    // ---- H: a TILE_ERR in an M7 record names its tag (SW §9.3 step 5 for every kind) ----
+    {
+        const int fail2 = g_fail;
+        const uint64_t PI = IO + 0x80000, S = IO + 0x61000, G2 = IO + 0x81000, A2 = IO + 0x82000;
+        const int32_t ids[2] = { 1, -1 };      // a negative id: LD beat 0xFFFF_FFFF, DRAM_RANGE (SW §7.2)
+        CHECK(tsr_transport_write(tp, 0, PI, ids, sizeof ids) == 0, "ids");
+        tsr_opl_builder b(cfg.num_ch);
+        const uint32_t pi = b.preload(H0(PI), 8);
+        add_m7(b, opl::K_ADD, opl::ew_args{ H0(A2), 4, H0(S), 4, H0(S), 4, 64, 2, 2, 0 }, 20);
+        add_m7(b, opl::K_GET_ROWS, opl::get_rows_args{ H0(G2), 4, H0(S), 4, pi, 2, 4 }, 21, 8);
+        const tsr_opl_run_result r = dev.run(b.finish(), 0, write);
+        CHECK(r.rc == 0 && r.res.status == TSR_LCQ_R0_STATUS_TILE_ERR && r.res.err_code == TSR_ERR_DRAM_RANGE && tsr_opl_failed_op(r, b.n_ops()) == 1 &&
+                  tsr_opl_failed_tag(b, r) == 21,
+              "H: status %u ret %d err %u: %s", r.res.status, r.res.ret, r.res.err_code, tsr_opl_describe(r, "get_rows").c_str());
+        printf("  H: %s  %s\n", tsr_opl_describe(r, "GET_ROWS (tag 21)").c_str(), g_fail == fail2 ? "ok" : "FAILED");
+    }
 }
 
 int main() {
@@ -250,6 +471,9 @@ int main() {
     CHECK(r.rc == 0 && r.res.status == TSR_LCQ_R0_STATUS_OK && r.res.ret == 0, "E: rc %d status %u", r.rc, r.res.status);
     CHECK(bit_diff(read_f32(tp, Y4, want4.size()), want4) == 0, "E: y4 differs after the failed launches");
     printf("  E: valid list after the errors  %s\n", g_fail == 0 ? "ok" : "FAILED");
+
+    // ---- M7 (W3b, SW §9.3): the builder's fusion, preload table, kind ranges and error mapping ----
+    test_m7(tp, cfg, dev, write, next_w);
     printf("  launches %" PRIu64 ", op records %" PRIu64 "\n", dev.launches, dev.ops);
 
     tsr_transport_close(tp);

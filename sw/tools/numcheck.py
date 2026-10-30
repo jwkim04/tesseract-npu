@@ -1728,11 +1728,12 @@ def write_md(rep: dict, path: Path) -> None:
     w(f"\nKL ratio dev/floor = **{f(lg['kl_ratio'])}**\n")
     fz = lg["floor_identical_positions"]
     if fz:
+        # no position moved at all (tiny models at small T): the means are None, there is no ratio
+        kdm, kfm = lg["kl_dev_mean_floor_moved"], lg["kl_floor_mean_floor_moved"]
         w(f"- floor logits bit-identical to cpu at {len(fz)} positions {fz}: the residual stream there still carries "
           f"the 1-ulp nudge, but every int8 activation quantization of the CPU (each MUL_MAT, the output head "
           f"included) maps it to the same ints and scales. Means over the other positions: KL dev "
-          f"{e(lg['kl_dev_mean_floor_moved'])}, floor {e(lg['kl_floor_mean_floor_moved'])}, ratio "
-          f"{f(ratio(lg['kl_dev_mean_floor_moved'], lg['kl_floor_mean_floor_moved']))}")
+          f"{e(kdm)}, floor {e(kfm)}, ratio {f(ratio(kdm, kfm) if kdm is not None and kfm is not None else None)}")
     if lg.get("observe_check") is not None:
         w(f"- dev logits with vs without observation (`{lg['observe_check']['dir']}`) bit-identical: "
           f"{lg['observe_check']['bit_identical']}")

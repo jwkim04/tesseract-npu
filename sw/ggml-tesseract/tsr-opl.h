@@ -30,6 +30,13 @@
 // dependencies are still part of the list (the OPL contract, SW §7.2) and order the units once M7's
 // kinds put VU / AT work between them.
 //
+// M7 records (W3b, SW §7.2 kinds 0x11-0x1B; the backend's tsr-build.h lowers ggml nodes to them):
+// kind_ranges gives the DRAM ranges each kind reads and writes from its argument words (whole lines of
+// every row operand, row periods, KV planes on every channel, FLASH_ATTN's f32 mask copy), which feed
+// the same hazard analysis; preload() adds the list's preload entries (SW §7.2 "Preload entry",
+// V2-SW-15: positions, ids, KV indices, mask summaries), one per (source, size), and refuses (NO_ROOM)
+// an entry that would take the preload area beyond 256 lines, so the caller cuts the list there.
+//
 // Files: tsr-opl.cpp (ranges, builder, cache; no device calls, so the unit tests link without one)
 // and tsr-opl-dev.cpp (tsr_opl_dev, tsr_opl_describe: the transport calls).
 #pragma once
@@ -116,6 +123,32 @@ public:
     // their length are strided ranges (the gaps are not accessed).
     void mm_ranges(const uint32_t * args, std::vector<tsr_dram_range> & rd, std::vector<tsr_dram_range> & wr) const;
 
+    // M7 (W3b, SW §9.3 builder pass 4): the DRAM ranges a record of any kind reads and writes, from
+    // its argument words (SW §7.2) the way its kernel accesses them (SW §7.5): every row operand as
+    // rows of whole lines (L(n) = ceil(n/16) lines; the kinds LD / ST whole lines, so a row's tail
+    // padding is included), a row stride of 0 as one row, a row period p as min(p, rows) rows; ADD /
+    // MUL's FLAG_B_SCALAR vector as its words' lines; RMS_NORM's weight rows (dense, L(n) lines
+    // apart, SW §7.2); ROPE's table (L(n_dims/2) lines); SET_ROWS_KV writes, and FLASH_ATTN reads, the
+    // whole KV planes on every channel (the cells are data: AT §4.5's plane, tsr_kv_plane_beats of
+    // {E, C, LG} from GEOM); FLASH_ATTN reads its f32 mask copy (word 13; n_tokens rows of
+    // L(n_kv) lines) when there is one. The preload area is not a DRAM access of a record (the
+    // executor loads it before op 0, SW §7.3). aux: GET_ROWS's source rows (its ids are data, so
+    // every source row may be read; 0: unknown, the source is taken as one row per id, which the
+    // caller must not rely on). MUL_MAT: mm_ranges. NOP / JOIN / unknown kinds: nothing.
+    void kind_ranges(uint32_t kind, const uint32_t * args, uint64_t aux, std::vector<tsr_dram_range> & rd,
+                     std::vector<tsr_dram_range> & wr) const;
+
+    // Preload entries (SW §7.2, V2-SW-15): the pre_byte of an entry of `bytes` bytes from DRAM handle
+    // `src`, added unless an entry with the same (src, bytes) is in the list already (positions,
+    // KV indices and a mask's MSUM are shared by every record that reads them). NO_ROOM when a new
+    // entry would take the preload area beyond 256 lines (nothing is added; the caller runs the
+    // list and retries in a new one); FAILED for an empty entry.
+    uint32_t preload(uint32_t src, uint32_t bytes);
+    // Lines the preload area would have after adding the entries (src, bytes) not in it yet.
+    uint32_t preload_lines_with(const std::vector<std::pair<uint32_t, uint32_t>> & entries) const;
+    uint32_t pre_lines() const            { return w_.pre_lines(); }
+    uint32_t n_pre() const                { return (uint32_t) pre_.size(); }
+
     bool        empty() const             { return ops_.empty(); }
     uint32_t    n_ops() const             { return (uint32_t) ops_.size(); }
     uint32_t    n_joins() const           { return n_joins_; }
@@ -140,6 +173,7 @@ private:
     uint32_t num_ch_;
     uint32_t flags_;
     tsr::opl::writer w_;
+    std::vector<std::pair<std::pair<uint32_t, uint32_t>, uint32_t>> pre_;   // ((src, bytes), pre_byte)
     std::vector<op_info> ops_;
     std::vector<std::vector<uint64_t>> anc_;   // ancestor bitsets (bit i: op i), per op
     uint32_t n_joins_ = 0, n_deps_ = 0, n_dropped_ = 0;

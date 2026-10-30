@@ -1,5 +1,5 @@
 // ggml-tesseract.cpp — ggml backend for the Tesseract NPU core (spec "ggml 백엔드 통합"; v2:
-// docs/v2/06-software-verification.md "SW" §9.3, M6 = P3.2).
+// docs/v2/06-software-verification.md "SW" §9.3, M6 = P3.2, M7 = P3.5 (W3b)).
 //
 //   reg "Tesseract" -> one device "Tesseract0" (GGML_BACKEND_DEVICE_TYPE_GPU, so -ngl offloads to it)
 //   buffer type     -> a virtual address space; each buffer's storage is fixed at its first data
@@ -8,44 +8,58 @@
 //           converted to the device format (Q8_0 / Q4_K, spec 로드 시 변환), repacked
 //           (tsr_repack_row) and stored with symmetric allocation in the WEIGHT heap of every
 //           channel. Anything else (1D norms, odd shapes) is stored raw in AUX (ch0).
+//       KV buffers (W3b kv, tsr-kvbuf.h): an ANY buffer whose tensors are all llama.cpp KV-cache
+//           tensors is stored as KV planes (AT §4), converted on get / set (V2-SW-17).
 //       ANY / COMPUTE buffers: raw bytes, byte-for-byte like any GPU buffer (activations,
 //           test-backend-ops tensors), either
-//           "LINEAR": the whole buffer is one window in the ch0 IO region, read and written by
-//               the device ops in place; or
-//           "HOSTED": host memory, when the buffer does not fit the free IO windows (e.g. the
-//               worst-case logits of the output head that llama.cpp reserves for n_ubatch
-//               outputs) or holds only leaf tensors (data such as LoRA adapters, which no
-//               device op addresses directly). graph_compute stages the src1/dst rows of a
-//               MUL_MAT through the IO staging area (top of IO) in T tiles.
+//           "LINEAR": the whole buffer is one window that the device ops read and write in place:
+//               in the ch0 IO region, the low 512 MiB of ch1..ch(C-1), or the compute heap
+//               (W3b, SW §8 R6, V2-SW-26: symmetric reservations of the WEIGHT heap between the
+//               weights and the KV planes, shared out per channel); or
+//           "HOSTED": host memory, when no window fits (device memory exhausted; with
+//               TSR_COMPUTE_WINDOWS=io: the IO region) or the buffer holds only leaf tensors (data
+//               such as LoRA adapters, which no device op addresses directly). graph_compute stages
+//               the src1/dst rows of a MUL_MAT through the IO staging area (top of IO) in T tiles.
 //           A MUL_MAT src0 found in such a buffer is converted lazily at graph_compute into the
 //           WEIGHT heap and cached by (buffer, offset, type, shape, write generation).
-//   graph_compute   -> M6 (SW §9.3 steps 1-5): every MUL_MAT node becomes one OPL v1 MUL_MAT record
-//                      (tsr-opl.h: dependencies from a hazard analysis over DRAM byte ranges, JOINs
-//                      above two predecessors); the split's list goes into the OPL cache (an LRU in
-//                      the ch0 OPL region keyed by content) and runs as one launch of the firmware's
-//                      `graph` kernel, which tiles each record with plan.hpp and pushes LD / QACT /
-//                      MVM / ST (v1's lowering, so the numerics are v1's bit for bit, SW §7.4). A
-//                      MUL_MAT whose src1 or dst is in host memory (or whose dst rows do not start on
+//   graph_compute   -> one op list (OPL v1) per split, run as one launch of the firmware's `graph`
+//                      kernel (SW §9.3; one launch per decode token, SW §8):
+//                      M6: every MUL_MAT node becomes one MUL_MAT record (dependencies from a hazard
+//                      analysis over DRAM byte ranges, JOINs above two predecessors, tsr-opl.h); the
+//                      firmware tiles each record with plan.hpp and pushes LD / QACT / MVM / ST (v1's
+//                      lowering, SW §7.4).
+//                      M7 (W3b, tsr-build.h): every node of the supports_op table becomes a record of
+//                      its kind (SW §7.2): passes 1-6 (no-ops dropped; tensors resolved to handles and
+//                      line strides; MUL_MAT + ADD and RMS_NORM + MUL fused; dependencies; the preload
+//                      table of positions, ids, KV indices and mask summaries; encoding), the plan of a
+//                      graph cached by its identity (R7: a decode token runs its list again; only the
+//                      inputs change). A list is cut early only at 4096 records or 256 preload lines.
+//                      A MUL_MAT whose src1 or dst is in host memory (or whose dst rows do not start on
 //                      a line, N*4 % 64 != 0 with T > 1) is staged as v1 did: it runs on its own, one
-//                      one-record launch per IO stage tile. A TILE_ERR answer is mapped back to the
-//                      ggml node (RET - 1 = the failing op) and aborts with its name, the error code
-//                      and ERR_INFO.
+//                      one-record launch per IO stage tile. Every list goes through the OPL cache (an LRU
+//                      in the ch0 OPL region keyed by content). A TILE_ERR answer is mapped back to the
+//                      ggml node (RET - 1 = the failing record, of any kind) and aborts with its name,
+//                      the error code and ERR_INFO.
 //
 // The device: the transport selected by TSR_DEVICE (default sim; "none" registers no device) is
 // opened (SOFT_RESET + bind, EX §10.1) and booted with TSR_IMAGE or the build's firmware image
 // (tsr_image_open_default) at the first use.
 //
 // Environment: TSR_DEBUG=1|2 (lowering and placement log on stderr; 2 adds every launched op
-// list's records). Test knobs: TSR_FORCE_HOST=1 keeps every non-WEIGHTS buffer in host memory
-// (exercises the staged path), TSR_STAGE_KIB=<n> sets the IO staging area size, TSR_OPL_CRC=1 sets
-// the `graph` launch flag VERIFY_CRC (the executor checks each list's CRC, SW §7.3).
-// TSR_LOAD_THREADS=<n> sets the workers that convert and repack weights while they are uploaded
-// (default: online CPUs, at most 16). TSR_STATS=1 prints, when the backend is freed, the upload
-// statistics and (SW §9.2, TSR_STATS v2) graph_compute calls, launches, op records per launch,
-// launches per scheduler pass (≈ per token), staged chunks, OPL cache hits / misses, the wall time
-// spent in graph_compute and in launches and the device's PERF counters over the same span (host
-// overhead = launch wall - PERF_CYCLES / f_kernel). The transport handles TSR_SIM_*, TSR_TRACE,
-// TSR_LOG and the timeouts itself.
+// list's records and preload entries, and supports_op's reasons). TSR_KINDS=m6 restricts the device
+// to M6's MUL_MAT (M6 runs: v1's splits, V2-SW-14). Test knobs: TSR_FORCE_HOST=1 keeps every
+// non-WEIGHTS buffer in host memory (exercises the staged path), TSR_COMPUTE_WINDOWS=io limits
+// compute windows to ch0 IO (v1's placement), TSR_OPL_SPLIT=<n> cuts every op list after n records,
+// TSR_STAGE_KIB=<n> sets the IO staging area size,
+// TSR_OPL_CRC=1 sets the `graph` launch flag VERIFY_CRC (the executor checks each list's CRC, SW
+// §7.3). TSR_LOAD_THREADS=<n> sets the workers that convert and repack weights while they are
+// uploaded (default: online CPUs, at most 16). TSR_STATS=1 prints, when the backend is freed, the
+// upload statistics and (SW §9.2, TSR_STATS v2) graph_compute calls, launches, op records per launch,
+// launches per scheduler pass (≈ per token) and per graph_compute, fused ops, records per kind, the
+// plan cache, lists cut early, staged chunks, OPL cache hits / misses, the wall time spent in
+// graph_compute and in launches and the device's PERF counters over the same span (host overhead =
+// launch wall - PERF_CYCLES / f_kernel). The transport handles TSR_SIM_*, TSR_TRACE, TSR_LOG and the
+// timeouts itself.
 #include "ggml-tesseract.h"
 
 #include <algorithm>
@@ -72,10 +86,15 @@
 #include "tsr_transport.h"
 
 #include "tsr-alloc.h"
+#include "tsr-build.h"
 #include "tsr-lower.h"
 #include "tsr-opl.h"
 #include "tsr-weights.h"
 #include "tsr-wlayout.h"
+// W3b kv: KV-cache buffers (AT §4.6, V2-SW-17) and the mask-summary producer (AT §7.3, V2-SW-32)
+#include <memory>
+#include "tsr-kvbuf.h"
+#include "tsr-msum.h"
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
 #error "ggml-tesseract writes op lists and tensors in host byte order; only little-endian hosts are supported"
@@ -220,7 +239,8 @@ struct tsr_tensor_rec {
     uint64_t raw_off = 0;         // ch0 byte offset
 };
 
-enum class tsr_bmode : uint8_t { UNDECIDED, LINEAR, PLACED, HOSTED };
+enum class tsr_bmode : uint8_t { UNDECIDED, LINEAR, PLACED, HOSTED,
+                                 KV /* W3b kv: a KV-cache buffer stored as KV planes (tsr-kvbuf.h) */ };
 
 struct tsr_device;
 
@@ -231,11 +251,19 @@ struct tsr_buffer_ctx {
     uint64_t size = 0;
     tsr_bmode mode = tsr_bmode::UNDECIDED;
     bool     has_io = false;
-    uint64_t io_off = 0;          // LINEAR: ch0 byte offset of the window (base <-> io_off)
+    uint64_t io_off = 0;          // LINEAR: byte offset of the window in channel `ch` (base <-> io_off)
+    // W3b builder (SW §8 R6, V2-SW-26, EX §11): the window's channel and region: ch0 IO, the low
+    // 512 MiB of ch1..ch(C-1), or the compute heap (a symmetric reservation of the WEIGHT heap that
+    // the channels share out, reservation `win_res`).
+    uint32_t ch = 0;
+    uint8_t  win = 0;             // tsr_win_*
+    int32_t  win_res = -1;
+    bool     computed_view = false;   // init_tensor saw the view result of an op (not leaf data)
     uint8_t * host  = nullptr;    // HOSTED: the buffer's bytes in host memory (base <-> host)
     uint8_t  clear_value = 0;     // PLACED: value read back for never-written tensors
     std::map<uint64_t, tsr_tensor_rec> recs;   // PLACED (and UNDECIDED non-COMPUTE): by vaddr
     uint64_t gen = 1;             // bumped on every host or device write
+    std::unique_ptr<tsr_kvbuf> kv;   // W3b kv: KV mode: the planes of the buffer's cache tensors
 };
 
 struct tsr_lazy_key {
@@ -261,6 +289,27 @@ struct tsr_lazy_entry {
     uint64_t ch_bytes = 0;
 };
 
+// W3b builder: a graph's cached plan (SW §8 R7, §9.3 "cached per graph identity"): the op lists one
+// graph_compute of it launched, in order. A plan is kept only when its build was static (no staged
+// MUL_MAT, no lazily converted weight), so running its lists again is exactly what a rebuild would
+// launch; the inputs that change per token (positions, KV indices, masks) reach the device through
+// the lists' preload tables.
+struct tsr_buffer_ctx;
+struct tsr_plan_list {
+    std::vector<uint8_t>     blob;
+    std::vector<std::string> names;        // node names by record tag
+    std::vector<int32_t>     tags;         // record index -> tag (-1: JOIN)
+    uint32_t n_ops = 0, n_joins = 0, n_fused = 0;
+    uint32_t n_kind[tsr::opl::N_KINDS] = {};
+    std::vector<tsr_buffer_ctx *> written; // buffers the list writes (their generations)
+};
+struct tsr_plan {
+    std::vector<tsr_plan_list> lists;
+    std::vector<const ggml_tensor *> fa_nodes;   // re-registered as mask readers on every reuse
+    std::vector<tsr_msum_ref> fa_refs;           // the words the lists carry
+    uint64_t used = 0;                           // LRU stamp
+};
+
 struct tsr_device {
     std::mutex   mtx;
     bool         tried_open = false;
@@ -271,6 +320,15 @@ struct tsr_device {
     tsr_range_alloc io;           // ch0 IO region below the stage: LINEAR buffer windows
     tsr_range_alloc aux;          // ch0 AUX region: RAW tensors of weight buffers
     tsr_range_alloc heap;         // WEIGHT heap, symmetric: an offset is reserved on every channel
+    // W3b builder: compute windows besides ch0 IO (SW §8 R6, V2-SW-26): low[c] = [0, 512 MiB) of
+    // channel c >= 1; the compute heap: symmetric reservations of the WEIGHT heap between the
+    // weights (bottom-up) and the KV planes (top-down), each shared out per channel.
+    std::vector<tsr_range_alloc> low;
+    struct cheap_res {
+        uint64_t off = 0, size = 0;            // the reservation (every channel)
+        std::vector<tsr_range_alloc> ch;       // its windows, per channel
+    };
+    std::vector<cheap_res> cheap;
 
     uint64_t stage_off  = 0;      // ch0 byte offset of the IO staging area (top of IO)
     uint64_t stage_size = 0;
@@ -284,6 +342,18 @@ struct tsr_device {
     tsr_opl_dev odev;             // the `graph` kernel: boot, OPL cache, launches (tsr-opl.h)
     uint32_t    launch_flags = 0; // `graph` a2 (TSR_OPL_CRC=1: VERIFY_CRC)
 
+    // W3b builder: the per-graph plan cache (R7), keyed by tsr_graph_key salted with the placement
+    // epoch (bumped whenever a buffer is freed or a weight / lazily converted weight moves).
+    std::map<uint64_t, tsr_plan> plans;
+    uint64_t plan_epoch = 1, plan_stamp = 0;
+    bool     build_dynamic = false;     // the build in progress staged a MUL_MAT or converted a weight
+    tsr::plan::dev_cfg m7cfg = {};      // the planner's device view with the M7 fields (CFG3 PCAP, CAPS)
+    bool     m7cfg_ok = false;
+
+    // W3b kv: the AT parameters (C, T_MAX, PCAP from CFG3, K_MAX) and the mask summaries
+    tsr_att_cfg    att_cfg = {};
+    tsr_msum_store msum;
+
     // TSR_STATS=1
     uint64_t st_graphs = 0;        // graph_compute calls
     uint64_t st_compute_ns = 0;    // their wall time
@@ -292,6 +362,11 @@ struct tsr_device {
     uint64_t st_joins = 0;         // JOIN records launched
     uint64_t st_staged_mm = 0;     // MUL_MATs that took the staged path ("staged chunks", SW §8 R6)
     uint64_t st_staged_launches = 0;
+    uint64_t st_fused = 0;         // W3b: fused records (MUL_MAT + ADD, RMS_NORM + MUL) launched
+    uint64_t st_kind[tsr::opl::N_KINDS] = {};   // W3b: records launched per kind
+    uint64_t st_plan_hits = 0, st_plan_misses = 0, st_plan_dynamic = 0;   // W3b: plan cache (R7)
+    uint64_t st_cut_lists = 0;     // W3b: lists cut early (4096 records or 256 preload lines)
+    uint64_t st_launch_hist[4] = {};   // W3b: graph_compute calls with 0, 1, 2, >= 3 launches
     uint64_t st_passes = 0;        // scheduler passes (≈ tokens): a split seen again starts a new pass
     std::set<const ggml_cgraph *> st_pass_splits;
     std::vector<uint64_t> st_perf0;   // every PERF_* counter at the first launch
@@ -375,6 +450,11 @@ static bool tsr_dev_open_locked(tsr_device * d) {
     d->io.init  (TSR_REGION_IO_OFF,  TSR_REGION_IO_SIZE - stage, TSR_TENSOR_ALIGN);
     d->aux.init (TSR_REGION_AUX_OFF, TSR_REGION_AUX_SIZE, TSR_TENSOR_ALIGN);
     d->heap.init(TSR_REGION_WEIGHT_OFF, c->ch_bytes - TSR_REGION_WEIGHT_OFF, TSR_HEAP_ALIGN);
+    // W3b builder: the low 512 MiB of ch1..ch(C-1) hold compute windows (EX §11, SW §8 R6)
+    d->low.assign(c->num_ch, tsr_range_alloc());
+    for (uint32_t ch = 1; ch < c->num_ch; ++ch) {
+        d->low[ch].init(0, TSR_REGION_WEIGHT_OFF, TSR_TENSOR_ALIGN);
+    }
     d->force_host = getenv("TSR_FORCE_HOST") != nullptr && atoi(getenv("TSR_FORCE_HOST")) != 0;
 
     char desc[256];
@@ -486,7 +566,17 @@ static void tsr_load_weight_rows(tsr_device * d, tsr_tensor_rec & rec, uint32_t 
 // PLACED (weights) buffers
 // ---------------------------------------------------------------------------
 
+// W3b builder: something a cached plan may have baked into its lists moved or went away (a weight's
+// W_OFF, a lazily converted weight, a buffer): forget every plan (R7).
+static void tsr_plans_invalidate(tsr_device * d) {
+    d->plan_epoch++;
+    d->plans.clear();
+}
+
 static void tsr_rec_release(tsr_device * d, tsr_tensor_rec & r) {
+    if (r.kind != tsr_kind::UNPLACED) {
+        tsr_plans_invalidate(d);
+    }
     if (r.kind == tsr_kind::DEVWEIGHT) {
         d->heap.release(r.w_off);
     } else if (r.kind == tsr_kind::RAW) {
@@ -512,6 +602,7 @@ static void tsr_lazy_evict_all(tsr_device * d) {
     }
     if (!d->lazy.empty()) {
         TSR_DBG(1, "evicted %zu lazily converted weights\n", d->lazy.size());
+        tsr_plans_invalidate(d);
     }
     d->lazy.clear();
 }
@@ -519,6 +610,7 @@ static void tsr_lazy_evict_all(tsr_device * d) {
 static void tsr_lazy_evict_buffer(tsr_device * d, uint64_t buf_id) {
     for (auto it = d->lazy.begin(); it != d->lazy.end();) {
         if (it->first.buf_id == buf_id) {
+            tsr_plans_invalidate(d);
             d->heap.release(it->second.w_off);
             it = d->lazy.erase(it);
         } else {
@@ -765,6 +857,77 @@ static void tsr_placed_fill(tsr_device * d, tsr_buffer_ctx * b, uint64_t addr, u
 }
 
 // ---------------------------------------------------------------------------
+// W3b kv: KV-cache buffers and the mask-summary store (SW §9.3 M7 "KV buffers" / "Mask summaries",
+// V2-SW-17, V2-SW-32; AT §4.6, §7.3; tsr-kvbuf.h, tsr-msum.h). Callers hold dev->mtx, device open.
+// ---------------------------------------------------------------------------
+
+// The mask-summary store, set up at its first use: the chunk planner's AT parameters (C, T_MAX,
+// PCAP = CFG3[31:16] x 16, K_MAX: the values the firmware reads per launch, SW §7.3) and side
+// allocations (the f32 copy of a further FA scale, all-visible MSUMs) from the WEIGHT heap, without
+// evicting lazily converted weights (a pending op list may reference them).
+static tsr_msum_store & tsr_mask_store(tsr_device * d) {
+    if (!d->msum.ready()) {
+        const uint32_t cfg3 = tsr_transport_csr_read(d->tp, TSR_CSR_CFG3);
+        d->att_cfg = { d->cfg.num_ch, d->cfg.t_max, ((cfg3 & TSR_CFG3_PCAP16) >> TSR_CFG3_PCAP16_LSB) * 16u, d->cfg.k_max };
+        d->msum.init(d->att_cfg,
+            [d](uint32_t ch, uint64_t off, const void * p, size_t n) { tsr_write(d, ch, off, p, n); },
+            [d](uint64_t bytes, uint32_t * ch, uint64_t * off) { *ch = 0; return d->heap.alloc(bytes, off); },
+            [d](uint32_t ch, uint64_t off) { GGML_UNUSED(ch); d->heap.release(off); });
+        TSR_DBG(1, "mask summaries: AT C=%u T_MAX=%u PCAP=%u K_MAX=%u\n", d->att_cfg.C, d->att_cfg.t_max, d->att_cfg.pcap,
+                d->att_cfg.k_max);
+    }
+    return d->msum;
+}
+
+// A buffer whose tensors (init_tensor records) are all KV-cache tensors the device can hold (AT
+// §4.6: cache_<tag>k_l<n> / cache_<tag>v_l<n>, q8_0, [E, kv_size, n_stream]; tsr_kv_identify).
+static bool tsr_kv_candidate(const tsr_device * d, const tsr_buffer_ctx * b) {
+    if (b->recs.empty()) {
+        return false;
+    }
+    for (const auto & kv : b->recs) {
+        const tsr_tensor_rec & r = kv.second;
+        if (!tsr_kv_identify(r.name.c_str(), r.type == GGML_TYPE_Q8_0, r.ne, r.nb, d->cfg.num_ch, d->cfg.k_max, nullptr, nullptr)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Make b a KV buffer: one plane per (tensor, stream), top-down in the WEIGHT heap (AT §4.5, EX §11).
+// Called at the buffer's first data access (llama.cpp clears a KV buffer right after allocating it).
+static void tsr_kv_place(tsr_device * d, tsr_buffer_ctx * b) {
+    b->kv.reset(new tsr_kvbuf(d->cfg.num_ch, &d->heap,
+        [d](uint32_t ch, uint64_t off, void * p, size_t n) { tsr_read(d, ch, off, p, n); },
+        [d](uint32_t ch, uint64_t off, const void * p, size_t n) { tsr_write(d, ch, off, p, n); }));
+    for (const auto & kv : b->recs) {
+        const tsr_tensor_rec & r = kv.second;
+        tsr_kv_shape s;
+        tsr_kv_identify(r.name.c_str(), true, r.ne, r.nb, d->cfg.num_ch, d->cfg.k_max, &s, nullptr);
+        b->kv->add(r.name, r.vaddr, r.nbytes, s);
+    }
+    std::string err;
+    if (!b->kv->place(&err)) {
+        tsr_lazy_evict_all(d);             // a cache of converted weights: drop it and retry
+        if (!b->kv->place(&err)) {
+            GGML_ABORT("tesseract: the KV cache does not fit the device: %s (reduce the context, or keep the cache on the "
+                       "CPU with -nkvo)", err.c_str());
+        }
+    }
+    b->mode = tsr_bmode::KV;
+    b->recs.clear();
+    TSR_DBG(1, "buffer #%" PRIu64 " (%.2f MiB): KV cache, %zu tensors -> KV planes, %.2f MiB per channel x %u ch\n",
+            b->id, tsr_mib(b->size), b->kv->tensors().size(), tsr_mib(b->kv->device_bytes_per_ch()), d->cfg.num_ch);
+    for (const tsr_kv_tensor & t : b->kv->tensors()) {
+        for (const tsr_kv_plane & p : t.planes) {
+            TSR_DBG(2, "  plane %-24s stream %u: %c E=%u LG=%u (%u cells) B=0x%07x (%.2f MiB/ch)\n", t.name.c_str(), p.stream,
+                    p.which == TSR_KV_K ? 'K' : 'V', p.geom.E, p.geom.LG, (unsigned) tsr_kv_plane_cells(&p.geom),
+                    p.base_beat(), tsr_mib(p.bytes));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // LINEAR buffers (IO window)
 // ---------------------------------------------------------------------------
 
@@ -777,6 +940,102 @@ static const char * tsr_usage_name(enum ggml_backend_buffer_usage u) {
     return "?";
 }
 
+// W3b builder: compute windows (SW §8 R6, V2-SW-26, EX §11). A buffer the device addresses in place
+// (LINEAR) gets one contiguous window in one channel, tried in this order: the ch0 IO region (below
+// the stage), the low 512 MiB of ch1..ch(C-1) (the channel with the most free bytes first, which
+// spreads activation traffic over the channels), the compute heap. The compute heap takes symmetric
+// reservations of the WEIGHT heap (bottom-up, above the weights llama.cpp loads first; the KV planes
+// grow top-down, AT §4.5) of at least 64 MiB and shares each one out per channel; a reservation that
+// is empty on every channel goes back. Only when nothing fits is a buffer kept in host memory (its
+// MUL_MATs staged, one extra launch per chunk: TSR_STATS "staged chunks").
+enum : uint8_t { TSR_WIN_NONE = 0, TSR_WIN_IO = 1, TSR_WIN_LOW = 2, TSR_WIN_HEAP = 3 };
+static constexpr uint64_t TSR_CHEAP_GRAIN = 64ull << 20;
+
+// TSR_COMPUTE_WINDOWS=io: ch0 IO windows only (M6 / v1 placement: a buffer that does not fit IO is
+// kept in host memory and its MUL_MATs staged; get_max_size the IO capacity). Test knob.
+static bool tsr_io_windows_only() {
+    static const bool on = [] {
+        const char * e = getenv("TSR_COMPUTE_WINDOWS");
+        return e != nullptr && strcmp(e, "io") == 0;
+    }();
+    return on;
+}
+
+static bool tsr_window_alloc(tsr_device * d, uint64_t size, uint32_t * ch, uint64_t * off, uint8_t * win, int32_t * res) {
+    if (d->io.alloc(size, off)) {
+        *ch = 0;
+        *win = TSR_WIN_IO;
+        return true;
+    }
+    if (tsr_io_windows_only()) {
+        return false;
+    }
+    // low windows: the channel with the most free bytes that fits
+    int best = -1;
+    for (uint32_t c = 1; c < (uint32_t) d->low.size(); ++c) {
+        if (d->low[c].largest_free() >= tsr_pad(size, TSR_TENSOR_ALIGN) &&
+            (best < 0 || d->low[c].free_bytes() > d->low[(size_t) best].free_bytes())) {
+            best = (int) c;
+        }
+    }
+    if (best > 0 && d->low[(size_t) best].alloc(size, off)) {
+        *ch = (uint32_t) best;
+        *win = TSR_WIN_LOW;
+        return true;
+    }
+    // the compute heap: an existing reservation on any channel, else a new one
+    for (size_t r = 0; r < d->cheap.size(); ++r) {
+        for (uint32_t c = 0; c < (uint32_t) d->cheap[r].ch.size(); ++c) {
+            if (d->cheap[r].ch[c].alloc(size, off)) {
+                *ch = c;
+                *win = TSR_WIN_HEAP;
+                *res = (int32_t) r;
+                return true;
+            }
+        }
+    }
+    tsr_device::cheap_res nr;
+    nr.size = tsr_pad(std::max<uint64_t>(size, 1), TSR_CHEAP_GRAIN);
+    if (!d->heap.alloc(nr.size, &nr.off)) {
+        return false;
+    }
+    nr.ch.assign(d->cfg.num_ch, tsr_range_alloc());
+    for (tsr_range_alloc & a : nr.ch) {
+        a.init(nr.off, nr.size, TSR_TENSOR_ALIGN);
+    }
+    if (!nr.ch[0].alloc(size, off)) {
+        d->heap.release(nr.off);
+        return false;
+    }
+    TSR_DBG(1, "compute heap: reserved %.0f MiB at +0x%09" PRIx64 " on every channel (WEIGHT heap %.0f MiB free)\n",
+            tsr_mib(nr.size), nr.off, tsr_mib(d->heap.free_bytes()));
+    d->cheap.push_back(std::move(nr));
+    *ch = 0;
+    *win = TSR_WIN_HEAP;
+    *res = (int32_t) d->cheap.size() - 1;
+    return true;
+}
+
+static void tsr_window_release(tsr_device * d, tsr_buffer_ctx * b) {
+    if (b->win == TSR_WIN_IO) {
+        d->io.release(b->io_off);
+    } else if (b->win == TSR_WIN_LOW) {
+        d->low[b->ch].release(b->io_off);
+    } else if (b->win == TSR_WIN_HEAP && b->win_res >= 0 && (size_t) b->win_res < d->cheap.size()) {
+        tsr_device::cheap_res & r = d->cheap[(size_t) b->win_res];
+        r.ch[b->ch].release(b->io_off);
+        bool empty = true;
+        for (const tsr_range_alloc & a : r.ch) {
+            empty = empty && a.used() == 0;
+        }
+        if (empty && (size_t) b->win_res + 1 == d->cheap.size()) {   // the last one: give it back (indices stay valid)
+            d->heap.release(r.off);
+            d->cheap.pop_back();
+        }
+    }
+    b->win = TSR_WIN_NONE;
+}
+
 // Fix the buffer's storage mode at its first data access (llama.cpp sets WEIGHTS usage right
 // after allocating a weight buffer and before uploading; compute buffers get COMPUTE usage
 // right after allocation; init_tensor runs while usage is still ANY).
@@ -786,6 +1045,16 @@ static const char * tsr_usage_name(enum ggml_backend_buffer_usage u) {
 //                                    a MUL_MAT src0 among them is converted into the heap
 //   otherwise (ANY, COMPUTE)      -> LINEAR if a window of the IO region is free, else HOSTED
 //                                    (graph_compute stages its MUL_MAT rows through IO)
+// An ANY buffer whose recorded tensors are all leaf data (no op result, no input): it becomes HOSTED
+// (tsr_buf_decide); supports_op asks it ahead of the decision (tsr_probe_raw_ok).
+static bool tsr_buf_leaves_only(const tsr_buffer_ctx * b, const ggml_backend_buffer * gbuf) {
+    bool leaves_only = gbuf->usage == GGML_BACKEND_BUFFER_USAGE_ANY && !b->recs.empty() && !b->computed_view;
+    for (const auto & kv : b->recs) {
+        leaves_only = leaves_only && kv.second.leaf;
+    }
+    return leaves_only;
+}
+
 static void tsr_buf_decide(tsr_buffer_ctx * b, ggml_backend_buffer_t gbuf) {
     if (b->mode != tsr_bmode::UNDECIDED) {
         return;
@@ -796,18 +1065,26 @@ static void tsr_buf_decide(tsr_buffer_ctx * b, ggml_backend_buffer_t gbuf) {
         TSR_DBG(1, "buffer #%" PRIu64 " (%.2f MiB): WEIGHTS -> per-tensor placement\n", b->id, tsr_mib(b->size));
         return;
     }
-    bool leaves_only = gbuf->usage == GGML_BACKEND_BUFFER_USAGE_ANY && !b->recs.empty();
-    for (const auto & kv : b->recs) {
-        leaves_only = leaves_only && kv.second.leaf;
+    // W3b kv: only KV-cache tensors (an offloaded llama.cpp KV cache, -ctk q8_0 -ctv q8_0) -> KV planes
+    if (gbuf->usage == GGML_BACKEND_BUFFER_USAGE_ANY && tsr_kv_candidate(d, b)) {
+        tsr_kv_place(d, b);
+        return;
     }
+    const bool leaves_only = tsr_buf_leaves_only(b, gbuf);
     uint64_t off = 0;
-    if (!d->force_host && !leaves_only && d->io.alloc(b->size, &off)) {
-        b->mode   = tsr_bmode::LINEAR;
-        b->has_io = true;
-        b->io_off = off;
+    uint32_t ch = 0;
+    uint8_t win = TSR_WIN_NONE;
+    int32_t res = -1;
+    if (!d->force_host && !leaves_only && tsr_window_alloc(d, b->size, &ch, &off, &win, &res)) {
+        b->mode    = tsr_bmode::LINEAR;
+        b->has_io  = true;
+        b->io_off  = off;
+        b->ch      = ch;
+        b->win     = win;
+        b->win_res = res;
         b->recs.clear();
-        TSR_DBG(1, "buffer #%" PRIu64 " (%.2f MiB, %s): IO window ch0+0x%09" PRIx64 "\n",
-                b->id, tsr_mib(b->size), tsr_usage_name(gbuf->usage), off);
+        TSR_DBG(1, "buffer #%" PRIu64 " (%.2f MiB, %s): %s window ch%u+0x%09" PRIx64 "\n", b->id, tsr_mib(b->size),
+                tsr_usage_name(gbuf->usage), win == TSR_WIN_IO ? "IO" : win == TSR_WIN_LOW ? "low" : "compute-heap", ch, off);
         return;
     }
     b->host = (uint8_t *) calloc((size_t) std::max<uint64_t>(b->size, 1), 1);
@@ -820,11 +1097,12 @@ static void tsr_buf_decide(tsr_buffer_ctx * b, ggml_backend_buffer_t gbuf) {
             tsr_usage_name(gbuf->usage),
             leaves_only ? "leaf tensors only" : d->force_host ? "TSR_FORCE_HOST" : "no free IO window, staged");
     if (!leaves_only && !d->force_host) {
-        // not an error: the MUL_MATs that use it are staged through IO in T tiles
-        GGML_LOG_INFO("tesseract: %s buffer #%" PRIu64 " of %.2f MiB does not fit the IO region (largest free window "
-                      "%.2f MiB of %.2f MiB): kept in host memory, MUL_MAT activations in it pass through the "
-                      "%.0f MiB IO stage\n", tsr_usage_name(gbuf->usage), b->id, tsr_mib(b->size),
-                      tsr_mib(d->io.largest_free()), tsr_mib(d->io.total()), tsr_mib(d->stage_size));
+        // not an error for MUL_MAT: the MUL_MATs that use it are staged through IO in T tiles; the M7
+        // kinds address their operands in place only (graph_compute aborts on one, naming the buffer)
+        GGML_LOG_INFO("tesseract: %s buffer #%" PRIu64 " of %.2f MiB does not fit a device window (largest free IO "
+                      "window %.2f MiB of %.2f MiB): kept in host memory, MUL_MAT activations in it pass through the "
+                      "%.0f MiB IO stage; the other device kinds cannot use it (SW §8 R6)\n", tsr_usage_name(gbuf->usage),
+                      b->id, tsr_mib(b->size), tsr_mib(d->io.largest_free()), tsr_mib(d->io.total()), tsr_mib(d->stage_size));
     }
 }
 
@@ -835,6 +1113,7 @@ static const char * tsr_bmode_name(tsr_bmode m) {
         case tsr_bmode::LINEAR:    return "io";
         case tsr_bmode::PLACED:    return "placed";
         case tsr_bmode::HOSTED:    return "host";
+        case tsr_bmode::KV:        return "kv";     // W3b kv
     }
     return "?";
 }
@@ -851,6 +1130,185 @@ static void tsr_check_range(const tsr_buffer_ctx * b, uint64_t addr, size_t size
 }
 
 // ---------------------------------------------------------------------------
+// W3b kv: the mask-summary producer hook, helpers for the M7 builder and supports_op, test hooks
+// (tsr-kvbuf.h, tsr-msum.h). Callers hold dev->mtx (the test hooks take it).
+// ---------------------------------------------------------------------------
+
+// Device channel and byte offset of a tensor byte in a buffer the device addresses in place (LINEAR:
+// its IO window on ch0). False for host-memory, placed and KV buffers.
+static bool tsr_dev_loc(const tsr_buffer_ctx * b, uint64_t vaddr, uint32_t * ch, uint64_t * off) {
+    if (b->mode != tsr_bmode::LINEAR) {
+        return false;
+    }
+    *ch  = b->ch;                      // W3b builder: the window's channel (compute heap, SW §8 R6)
+    *off = b->io_off + (vaddr - b->base);
+    return true;
+}
+
+// After set_tensor / memset_tensor of a KQ mask (name *kq_mask*, F16 [n_kv, n_q, 1, 1]) in device
+// memory: its MSUM and the f32 copies its registered FA readers need, written into the bytes
+// get_alloc_size reserved behind it (AT §7.3, SW §9.3). data: the bytes just written at `offset`
+// (nullptr, or a partial write: the mask is read back).
+static void tsr_msum_on_write(tsr_device * d, tsr_buffer_ctx * b, const ggml_tensor * t, const void * data,
+                              size_t offset, size_t size) {
+    if (t->view_src != nullptr || !tsr_msum_is_mask_name(t->name)) {
+        return;
+    }
+    tsr_msum_layout L;
+    if (!tsr_msum_layout_of(t->name, t->type == GGML_TYPE_F16, t->ne, t->nb, ggml_nbytes(t), &L)) {
+        return;
+    }
+    const uint64_t a = tsr_vaddr(t->data);
+    uint32_t ch = 0;
+    uint64_t off = 0;
+    if (!tsr_dev_loc(b, a, &ch, &off)) {
+        return;                            // host memory: no FLASH_ATTN can read this mask in place
+    }
+    if (a - b->base + L.total > b->size) {
+        static std::once_flag warned;      // allocated without this buffer type's get_alloc_size
+        std::call_once(warned, [t] {
+            GGML_LOG_WARN("tesseract: mask '%s' has no room for its mask summary (allocated without the buffer type's "
+                          "get_alloc_size); FLASH_ATTN cannot read it on the device\n", t->name);
+        });
+        return;
+    }
+    std::vector<uint16_t> tmp;
+    const uint16_t * f16 = (const uint16_t *) data;
+    if (data == nullptr || offset != 0 || size != ggml_nbytes(t)) {
+        tmp.resize(ggml_nbytes(t) / 2);
+        tsr_read(d, ch, off, tmp.data(), ggml_nbytes(t));
+        f16 = tmp.data();
+    }
+    tsr_mask_store(d).on_set(a, ch, off, L, f16);
+}
+
+// The M7 builder (SW §9.3; SET_ROWS_KV words 0, 8-11, FLASH_ATTN words 5-6, 16-18): the KV plane a
+// tensor lies in (a view of a cache tensor: cpy_k / cpy_v's SET_ROWS dst, get_k / get_v), with its
+// stream and first cell. False if it is not in a placed KV buffer.
+[[maybe_unused]] static bool tsr_kv_view_of(tsr_device * d, const ggml_tensor * t, tsr_kv_view * out) {
+    const ggml_tensor * base = t->view_src != nullptr ? t->view_src : t;
+    const ggml_backend_buffer * gb = base->buffer;
+    if (gb == nullptr || gb->buft != &d->buft || gb->context == nullptr || t->data == nullptr) {
+        return false;
+    }
+    const tsr_buffer_ctx * b = (const tsr_buffer_ctx *) gb->context;
+    if (b->mode != tsr_bmode::KV || !b->kv) {
+        return false;
+    }
+    return b->kv->resolve(tsr_vaddr(t->data), out);
+}
+
+// supports_op (SW §9.3 M7 table: SET_ROWS dst / FLASH_ATTN k, v): `base` (the tensor they view) is a
+// KV-cache tensor (tsr_kv_identify) in a Tesseract buffer that is a KV buffer or becomes one at its
+// first data access (every record is a KV-cache tensor; no records: llama.cpp's no_alloc probe
+// buffer, whose tensors are never initialized). shape (optional): its plane geometry.
+[[maybe_unused]] static bool tsr_kv_tensor_supported(tsr_device * d, const ggml_tensor * base, tsr_kv_shape * shape = nullptr) {
+    if (!tsr_kv_identify(base->name, base->type == GGML_TYPE_Q8_0, base->ne, base->nb, d->cfg.num_ch, d->cfg.k_max,
+                         shape, nullptr)) {
+        return false;
+    }
+    const ggml_backend_buffer * gb = base->buffer;
+    if (gb == nullptr || gb->buft != &d->buft || gb->context == nullptr) {
+        return false;
+    }
+    const tsr_buffer_ctx * b = (const tsr_buffer_ctx *) gb->context;
+    if (b->mode == tsr_bmode::KV) {
+        return true;
+    }
+    if (b->mode != tsr_bmode::UNDECIDED || gb->usage != GGML_BACKEND_BUFFER_USAGE_ANY) {
+        return false;
+    }
+    return b->recs.empty() || tsr_kv_candidate(d, b);
+}
+
+// supports_op: FLASH_ATTN_EXT's mask (src[3]) is one the producer summarizes (name *kq_mask*, F16
+// [n_kv, n_q, 1, 1] with n_kv = K's cells and n_q = Q's tokens: the MSUM's n_kv / n_q must equal
+// FLASH_ATTN words 7 / 11), or there is none.
+[[maybe_unused]] static bool tsr_fa_mask_supported(const ggml_tensor * fa) {
+    const ggml_tensor * m = fa->src[3];
+    if (m == nullptr) {
+        return true;
+    }
+    tsr_msum_layout L;
+    return m->view_src == nullptr && tsr_msum_layout_of(m->name, m->type == GGML_TYPE_F16, m->ne, m->nb, ggml_nbytes(m), &L) &&
+           m->ne[0] == fa->src[1]->ne[1] && m->ne[1] == fa->src[0]->ne[1];
+}
+
+// The M7 builder: the mask-summary words of a FLASH_ATTN_EXT node (FLASH_ATTN word 12 via
+// writer.pre_msum(ref.msum_handle, ref.n_q), word 13 = ref.mask_handle; the record reads
+// ref.copy_range). Registers the node as a reader of its mask (scale = op_params[0], E = D·n_head_kv,
+// D, G = n_head / n_head_kv); no mask: an all-visible MSUM. valid = false: no summary on the device.
+[[maybe_unused]] static tsr_msum_ref tsr_fa_mask_ref(tsr_device * d, const ggml_tensor * fa) {
+    const ggml_tensor * q = fa->src[0];
+    const ggml_tensor * k = fa->src[1];
+    const ggml_tensor * m = fa->src[3];
+    if (m == nullptr) {
+        return tsr_mask_store(d).nomask((uint32_t) q->ne[1], (uint32_t) k->ne[1]);
+    }
+    if (m->view_src != nullptr || m->data == nullptr || k->ne[2] <= 0) {
+        return tsr_msum_ref();
+    }
+    tsr_msum_reader r;
+    memcpy(&r.scale_bits, &fa->op_params[0], sizeof(uint32_t));
+    r.D = (uint32_t) k->ne[0];
+    r.E = (uint32_t) (k->ne[0] * k->ne[2]);
+    r.G = (uint32_t) (q->ne[2] / k->ne[2]);
+    return tsr_mask_store(d).attach(tsr_vaddr(m->data), r);
+}
+
+// Test hook "ggml_backend_tesseract_kv_plane": the KV plane of t (a cache tensor or a view of one):
+// info = {which, stream, cell0, base beat, GEOM word, E, LG, kv_size, C}; 0, or -1 if t is not in a
+// KV buffer.
+static int tsr_hook_kv_plane(const ggml_tensor * t, uint32_t * info) {
+    tsr_device * d = tsr_dev_singleton();
+    std::lock_guard<std::mutex> lock(d->mtx);
+    tsr_kv_view v;
+    if (!tsr_kv_view_of(d, t, &v)) {
+        return -1;
+    }
+    const uint32_t w[9] = { v.plane->which, v.stream, v.cell0, v.plane->base_beat(), v.plane->geom_word(), v.plane->geom.E,
+                            v.plane->geom.LG, v.plane->kv_size, v.plane->geom.C };
+    memcpy(info, w, sizeof w);
+    return 0;
+}
+
+// Test hook "ggml_backend_tesseract_att_cfg": the AT parameters the producer plans with (= what the
+// firmware reads per launch): out = {C, T_MAX, PCAP, K_MAX}; 0, or -1 without a device.
+static int tsr_hook_att_cfg(uint32_t * out) {
+    tsr_device * d = tsr_dev_singleton();
+    std::lock_guard<std::mutex> lock(d->mtx);
+    if (!tsr_dev_open_locked(d)) {
+        return -1;
+    }
+    tsr_mask_store(d);
+    const uint32_t w[4] = { d->att_cfg.C, d->att_cfg.t_max, d->att_cfg.pcap, d->att_cfg.k_max };
+    memcpy(out, w, sizeof w);
+    return 0;
+}
+
+// Test hook "ggml_backend_tesseract_mask_summary": attaches the FLASH_ATTN_EXT node fa as the builder
+// does (tsr_fa_mask_ref) and reads back from the device its MSUM (up to n_words words) and, when copy
+// is not NULL, its scale's f32 copy (up to n_floats); returns the MSUM's word count, 0 without one.
+static size_t tsr_hook_mask_summary(const ggml_tensor * fa, uint32_t * words, size_t n_words, float * copy, size_t n_floats) {
+    tsr_device * d = tsr_dev_singleton();
+    std::lock_guard<std::mutex> lock(d->mtx);
+    if (!tsr_dev_open_locked(d)) {
+        return 0;
+    }
+    const tsr_msum_ref r = tsr_fa_mask_ref(d, fa);
+    if (!r.valid) {
+        return 0;
+    }
+    const size_t nw = tsr_msum_words(r.n_q);
+    tsr_read(d, r.msum_range.ch, r.msum_range.lo, words, std::min(nw, n_words) * 4u);
+    if (copy != nullptr && r.mask_handle != tsr::opl::HANDLE_NONE) {
+        const size_t nf = (size_t) ((r.copy_range.hi - r.copy_range.lo) / 4u);
+        tsr_read(d, r.copy_range.ch, r.copy_range.lo, copy, std::min(nf, n_floats) * 4u);
+    }
+    return nw;
+}
+
+// ---------------------------------------------------------------------------
 // ggml buffer interface
 // ---------------------------------------------------------------------------
 
@@ -860,12 +1318,17 @@ static void tsr_buffer_free(ggml_backend_buffer_t buffer) {
     {
         std::lock_guard<std::mutex> lock(d->mtx);
         if (b->has_io) {
-            d->io.release(b->io_off);
+            tsr_window_release(d, b);     // W3b builder: IO, a low window or the compute heap
         }
+        tsr_plans_invalidate(d);          // W3b builder: cached plans may name this buffer (R7)
         for (auto & kv : b->recs) {
             tsr_rec_release(d, kv.second);
         }
         tsr_lazy_evict_buffer(d, b->id);
+        b->kv.reset();                                    // W3b kv: the KV planes go back to the heap
+        if (d->msum.ready()) {
+            d->msum.forget(b->base, b->base + b->size);   // W3b kv: summaries of masks in this buffer
+        }
         TSR_DBG(2, "buffer #%" PRIu64 " freed\n", b->id);
     }
     free(b->host);
@@ -879,6 +1342,12 @@ static void * tsr_buffer_get_base(ggml_backend_buffer_t buffer) {
 static enum ggml_status tsr_buffer_init_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor) {
     tsr_buffer_ctx * b = tsr_buf(buffer);
     if (tensor->view_src != nullptr) {
+        if (tensor->op != GGML_OP_NONE) {
+            // W3b builder: an in-place op's result (a view, e.g. test-backend-ops' inplace cases) makes
+            // the buffer one the device computes into, not leaf data (tsr_buf_decide)
+            std::lock_guard<std::mutex> lock(b->dev->mtx);
+            b->computed_view = true;
+        }
         return GGML_STATUS_SUCCESS;     // views resolve by address to their base tensor
     }
     if (buffer->usage == GGML_BACKEND_BUFFER_USAGE_COMPUTE) {
@@ -887,6 +1356,9 @@ static enum ggml_status tsr_buffer_init_tensor(ggml_backend_buffer_t buffer, ggm
     std::lock_guard<std::mutex> lock(b->dev->mtx);
     if (b->mode == tsr_bmode::LINEAR || b->mode == tsr_bmode::HOSTED) {
         return GGML_STATUS_SUCCESS;     // raw storage needs no per-tensor state
+    }
+    if (b->mode == tsr_bmode::KV) {
+        return GGML_STATUS_SUCCESS;     // W3b kv: the planes were fixed at the first data access
     }
     const uint64_t a = tsr_vaddr(tensor->data);
     const size_t nbytes = ggml_nbytes(tensor);
@@ -932,12 +1404,15 @@ static void tsr_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * te
     b->gen++;
     const uint64_t t0 = tsr_stats_on() ? tsr_now_ns() : 0;
     if (b->mode == tsr_bmode::LINEAR) {
-        tsr_write(d, 0, b->io_off + (addr - b->base), data, size);
+        tsr_write(d, b->ch, b->io_off + (addr - b->base), data, size);
     } else if (b->mode == tsr_bmode::HOSTED) {
         memcpy(b->host + (addr - b->base), data, size);
+    } else if (b->mode == tsr_bmode::KV) {
+        b->kv->set(addr, data, size);      // W3b kv: ggml q8_0 rows -> KV planes (AT §4.6)
     } else {
         tsr_placed_write(d, b, addr, (const uint8_t *) data, size);
     }
+    tsr_msum_on_write(d, b, tensor, data, offset, size);   // W3b kv: a KQ mask's summary (AT §7.3)
     if (tsr_stats_on()) {
         d->st_set_ns += tsr_now_ns() - t0;
         d->st_set_bytes += size;
@@ -952,9 +1427,11 @@ static void tsr_buffer_get_tensor(ggml_backend_buffer_t buffer, const ggml_tenso
     const uint64_t addr = tsr_vaddr(tensor->data) + offset;
     tsr_check_range(b, addr, size);
     if (b->mode == tsr_bmode::LINEAR) {
-        tsr_read(d, 0, b->io_off + (addr - b->base), data, size);
+        tsr_read(d, b->ch, b->io_off + (addr - b->base), data, size);
     } else if (b->mode == tsr_bmode::HOSTED) {
         memcpy(data, b->host + (addr - b->base), size);
+    } else if (b->mode == tsr_bmode::KV) {
+        b->kv->get(addr, data, size);      // W3b kv: KV planes -> ggml q8_0 rows (AT §4.6)
     } else {
         tsr_placed_read(d, b, addr, (uint8_t *) data, size);
     }
@@ -969,12 +1446,15 @@ static void tsr_buffer_memset_tensor(ggml_backend_buffer_t buffer, ggml_tensor *
     tsr_check_range(b, addr, size);
     b->gen++;
     if (b->mode == tsr_bmode::LINEAR) {
-        tsr_fill(d, 0, b->io_off + (addr - b->base), value, size);
+        tsr_fill(d, b->ch, b->io_off + (addr - b->base), value, size);
     } else if (b->mode == tsr_bmode::HOSTED) {
         memset(b->host + (addr - b->base), value, size);
+    } else if (b->mode == tsr_bmode::KV) {
+        b->kv->fill(addr, value, size);    // W3b kv
     } else {
         tsr_placed_fill(d, b, addr, value, size);
     }
+    tsr_msum_on_write(d, b, tensor, nullptr, offset, size);   // W3b kv: a KQ mask's summary
 }
 
 static void tsr_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
@@ -983,8 +1463,15 @@ static void tsr_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
     std::lock_guard<std::mutex> lock(d->mtx);
     tsr_buf_decide(b, buffer);
     b->gen++;
+    if (b->mode == tsr_bmode::KV) {
+        b->kv->clear(value);               // W3b kv: every plane (llama.cpp clears a KV buffer to 0)
+        return;
+    }
+    if (d->msum.ready()) {
+        d->msum.forget(b->base, b->base + b->size);   // W3b kv: masks in it no longer match their summaries
+    }
     if (b->mode == tsr_bmode::LINEAR) {
-        tsr_fill(d, 0, b->io_off, value, b->size);
+        tsr_fill(d, b->ch, b->io_off, value, b->size);
         return;
     }
     if (b->mode == tsr_bmode::HOSTED) {
@@ -1005,6 +1492,9 @@ static void tsr_buffer_reset(ggml_backend_buffer_t buffer) {
     std::lock_guard<std::mutex> lock(b->dev->mtx);
     if (b->mode != tsr_bmode::PLACED) {
         b->recs.clear();
+    }
+    if (b->dev->msum.ready() && b->mode != tsr_bmode::KV) {
+        b->dev->msum.forget(b->base, b->base + b->size);   // W3b kv: ggml-alloc lays the tensors out anew
     }
 }
 
@@ -1055,23 +1545,41 @@ static size_t tsr_buft_get_alignment(ggml_backend_buffer_type_t buft) {
     return TSR_TENSOR_ALIGN;
 }
 
-// One buffer type serves weights and activations. The limit is the IO window capacity (IO
-// region minus the stage), so that ggml-alloc cuts compute buffers into chunks of which the
-// first can live in IO; weight buffers above it become ggml multi-buffers. A single tensor
-// larger than this still gets its own buffer (HOSTED unless it fits a free window).
+// One buffer type serves weights and activations. W3b builder (SW §8 R6, V2-SW-26): the limit is
+// 512 MiB, the size of a low window of ch1..ch3 (at least the IO window capacity), so that ggml-alloc
+// cuts compute buffers into chunks that each get a window (IO, a low window or the compute heap) and
+// the reserved logits of a large vocabulary stay on the device (Qwen2.5 at -ub 512: 297 MiB in one
+// chunk; Gemma 4: 512 MiB). A single tensor larger than this still gets its own buffer (the compute
+// heap holds any size the WEIGHT heap has room for); weight buffers above it become ggml
+// multi-buffers (placed per tensor anyway).
 static size_t tsr_buft_get_max_size(ggml_backend_buffer_type_t buft) {
     tsr_device * d = (tsr_device *) buft->context;
     std::lock_guard<std::mutex> lock(d->mtx);
     if (!tsr_dev_open_locked(d)) {
         return (size_t) TSR_REGION_IO_SIZE;
     }
-    return (size_t) d->io.total();
+    return (size_t) (tsr_io_windows_only() ? d->io.total() : std::max<uint64_t>(d->io.total(), TSR_REGION_WEIGHT_OFF));
 }
 
 // Pad to whole lines: a line-granular ST of the last row lands in this padding.
 static size_t tsr_buft_get_alloc_size(ggml_backend_buffer_type_t buft, const ggml_tensor * tensor) {
     GGML_UNUSED(buft);
-    return (size_t) tsr_pad(ggml_nbytes(tensor), TSR_TENSOR_ALIGN);
+    // W3b kv: a KQ mask (*kq_mask*, F16) also reserves its MSUM and one f32 copy (AT §7.3, tsr-msum.h)
+    tsr_msum_layout L;
+    if (tensor->view_src == nullptr &&
+        tsr_msum_layout_of(tensor->name, tensor->type == GGML_TYPE_F16, tensor->ne, tensor->nb, ggml_nbytes(tensor), &L)) {
+        return (size_t) L.total;
+    }
+    // W3b builder: ggml lets get_alloc_size exceed ggml_nbytes only for empty ops (leaves, views),
+    // quantized types and the ops of ggml_op_alloc_size_may_expand (MUL_MAT, FLASH_ATTN_EXT, ...;
+    // ggml-backend.cpp [TAG_ALLOC_SIZE_EXPAND] asserts it). Every other result keeps nbytes: ggml-alloc
+    // pads each block to the 64-byte alignment anyway (ggml-alloc.c aligned_offset), which holds an M7
+    // kind's whole-line store of a single row (tsr-build.cpp tsr_out_rows refuses it into a view).
+    const size_t n = ggml_nbytes(tensor);
+    if (ggml_op_is_empty(tensor->op) || ggml_is_quantized(tensor->type) || ggml_op_alloc_size_may_expand(tensor->op)) {
+        return (size_t) tsr_pad(n, TSR_TENSOR_ALIGN);
+    }
+    return n;
 }
 
 static bool tsr_buft_is_host(ggml_backend_buffer_type_t buft) {
@@ -1091,25 +1599,42 @@ static const ggml_backend_buffer_type_i tsr_buft_iface = {
 };
 
 // ---------------------------------------------------------------------------
-// Lowering and execution (SW §9.3 M6: MUL_MAT records in one op list per split)
+// Lowering and execution (SW §9.3: M6 MUL_MAT records; M7 (W3b) every kind of the supports_op table,
+// one op list per split)
 // ---------------------------------------------------------------------------
 
-// A segment: MUL_MATs whose operands the device addresses in place (src1 and dst in LINEAR IO
-// windows), built into one op list and run as one `graph` launch.
-struct tsr_segment {
-    explicit tsr_segment(uint32_t num_ch) : ops(num_ch, tsr::opl::F_STOP_ON_ERROR) {}
+struct tsr_gctx;
 
-    tsr_opl_builder               ops;        // records, hazards, JOINs (tsr-opl.h)
+// A segment: the records of the pending op list (tsr_opl_builder: hazards over DRAM byte ranges,
+// JOINs, the preload table), built in program order and run as one `graph` launch.
+struct tsr_segment {
+    explicit tsr_segment(uint32_t num_ch, tsr_gctx * g = nullptr) : ops(num_ch, tsr::opl::F_STOP_ON_ERROR), gctx(g) {}
+
+    tsr_opl_builder               ops;        // records, hazards, JOINs, preload (tsr-opl.h)
+    tsr_gctx *                    gctx;       // the graph_compute recording its lists (nullptr: none)
     std::vector<std::string>      names;      // node name per record tag
     std::set<tsr_buffer_ctx *>    written;    // buffers the pending list writes
     std::vector<uint64_t>         w_offs;     // W_OFF (bytes) of the pending MUL_MATs
+    uint32_t                      n_fused = 0;
+    uint32_t                      n_kind[tsr::opl::N_KINDS] = {};
 
     void clear() {
         ops.reset();
         names.clear();
         written.clear();
         w_offs.clear();
+        n_fused = 0;
+        std::fill(std::begin(n_kind), std::end(n_kind), 0u);
     }
+};
+
+// The graph_compute in progress (W3b): the builder's environment, the fusion pairs (pass 3), the
+// FA_NEW sources (the SET_ROWS_KV of each K plane), and the plan being recorded for the cache (R7).
+struct tsr_gctx {
+    tsr_build_env env;
+    tsr_fusion    fusion;
+    tsr_fanew_map fanew;
+    tsr_plan      plan;
 };
 
 // Every PERF_* counter: CYCLES, RETIRED, MVM, VU, (reserved), CH_RD_BEATS[c], CH_WAIT[c].
@@ -1124,72 +1649,119 @@ static std::vector<uint64_t> tsr_perf_all(tsr_device * d) {
     return v;
 }
 
-// TSR_DEBUG=2: the records of a launched list.
-static void tsr_dump_opl(const std::vector<uint8_t> & blob, const tsr_segment & seg) {
+// TSR_DEBUG=2: the records of a launched list, with their nodes.
+static void tsr_dump_opl(const tsr_plan_list & L) {
     tsr::opl::reader rd;
-    if (rd.open(blob.data(), (uint32_t) blob.size(), false) != tsr::opl::RET_OK) {
+    if (rd.open(L.blob.data(), (uint32_t) L.blob.size(), false) != tsr::opl::RET_OK) {
         return;
+    }
+    for (uint32_t i = 0; i < rd.hdr().n_pre; ++i) {
+        const tsr::opl::pre_entry e = rd.pre(i);
+        fprintf(stderr, "[tesseract]   pre  %2u: ch%u+0x%09" PRIx64 " %5u B -> preload byte %u\n", i, tsr_handle_ch(e.src),
+                tsr_handle_byte(e.src), e.bytes, e.pre_byte);
     }
     tsr::opl::record r;
     while (rd.next(r) == tsr::opl::RET_OK) {
-        const int32_t tag = seg.ops.tag_of(r.idx);
-        fprintf(stderr, "[tesseract]   %4u %-7s deps %5d %5d", r.idx, r.kind == tsr::opl::K_JOIN ? "JOIN" : "MUL_MAT",
+        const int32_t tag = r.idx < L.tags.size() ? L.tags[r.idx] : -1;
+        fprintf(stderr, "[tesseract]   %4u %-11s deps %5d %5d", r.idx, tsr_kind_name(r.kind),
                 r.dep0 == tsr::opl::DEP_NONE ? -1 : (int) r.dep0, r.dep1 == tsr::opl::DEP_NONE ? -1 : (int) r.dep1);
         for (uint32_t i = 0; i < r.n_args; ++i) {
             fprintf(stderr, " %08x", r.arg(i));
         }
-        fprintf(stderr, "%s%s\n", tag >= 0 ? "  " : "", tag >= 0 ? seg.names[tag].c_str() : "");
+        fprintf(stderr, "%s%s\n", tag >= 0 ? "  " : "", tag >= 0 && (size_t) tag < L.names.size() ? L.names[tag].c_str() : "");
     }
 }
 
-// Run the pending list: OPL cache, `graph` launch, wait; abort on any error with the failing node.
-static void tsr_flush(tsr_device * d, tsr_segment & seg) {
-    if (seg.ops.empty()) {
-        return;
-    }
-    const std::vector<uint8_t> blob = seg.ops.finish();
-    if (blob.empty()) {
-        GGML_ABORT("tesseract: op list build failed: %s", seg.ops.error());
-    }
+// Run one list: OPL cache, `graph` launch, wait; abort on any error with the failing node (SW §9.3
+// step 5: RET - 1 is the failing record, mapped to its tag and node name for every kind).
+static void tsr_run_list(tsr_device * d, const tsr_plan_list & L) {
     const bool stats = tsr_stats_on();
     if (stats && d->st_perf0.empty()) {
         d->st_perf0 = tsr_perf_all(d);
     }
-    const tsr_opl_run_result r = d->odev.run(blob, d->launch_flags,
+    const tsr_opl_run_result r = d->odev.run(L.blob, d->launch_flags,
         [d](uint32_t ch, uint64_t off, const void * p, size_t n) { tsr_write(d, ch, off, p, n); });
-    const uint32_t n_ops = seg.ops.n_ops(), n_joins = seg.ops.n_joins();
-    TSR_DBG(1, "launch #%" PRIu64 ": %u MUL_MAT + %u JOIN records (%u deps, %u implied), %zu B at OPL ch0+0x%07" PRIx64 "%s, "
-               "%.3f ms\n", d->odev.launches, n_ops - n_joins, n_joins, seg.ops.n_deps(), seg.ops.n_dropped(), blob.size(),
-            r.opl_off, r.cache_hit ? " (cached)" : "", r.wall_ns * 1e-6);
+    const uint32_t n_pre = L.blob.size() >= tsr::opl::HDR_BYTES ? tsr::opl::rd32(L.blob.data() + 4u * tsr::opl::hw::N_PRE) : 0u;
+    TSR_DBG(1, "launch #%" PRIu64 ": %u records (%u MUL_MAT, %u fused, %u JOIN), %u preload entries, %zu B at OPL ch0+0x%07" PRIx64
+               "%s, %.3f ms\n", d->odev.launches, L.n_ops, L.n_kind[tsr::opl::K_MUL_MAT], L.n_fused, L.n_joins, n_pre,
+            L.blob.size(), r.opl_off, r.cache_hit ? " (cached)" : "", r.wall_ns * 1e-6);
     if (tsr_debug_level() >= 2) {
-        tsr_dump_opl(blob, seg);
+        tsr_dump_opl(L);
     }
     const bool ok = r.rc == 0 && r.res.type == TSR_LCQ_R0_TYPE_DONE && r.res.status == TSR_LCQ_R0_STATUS_OK && r.res.ret == 0;
     if (!ok) {
         const char * name = nullptr;
-        if (tsr_opl_failed_op(r, seg.ops.n_ops()) >= 0) {     // SW §9.3 step 5: TILE_ERR -> the node
-            const int32_t tag = tsr_opl_failed_tag(seg.ops, r);
-            name = tag >= 0 && (size_t) tag < seg.names.size() ? seg.names[tag].c_str() : "(JOIN)";
+        const int32_t op = tsr_opl_failed_op(r, L.n_ops);
+        if (op >= 0) {                        // SW §9.3 step 5: TILE_ERR -> the node
+            const int32_t tag = (size_t) op < L.tags.size() ? L.tags[(size_t) op] : -1;
+            name = tag >= 0 && (size_t) tag < L.names.size() ? L.names[(size_t) tag].c_str() : "(JOIN)";
         }
         GGML_ABORT("tesseract: device execution failed%s%s: %s (op list of %u records, %zu B at OPL ch0+0x%" PRIx64 ", graph_id 0x%08x)",
-                   name ? " in node " : "", name ? name : "", tsr_opl_describe(r, name).c_str(), n_ops, blob.size(), r.opl_off,
-                   tsr::opl::rd32(blob.data() + 4u * tsr::opl::hw::GRAPH_ID));
+                   name ? " in node " : "", name ? name : "", tsr_opl_describe(r, name).c_str(), L.n_ops, L.blob.size(), r.opl_off,
+                   tsr::opl::rd32(L.blob.data() + 4u * tsr::opl::hw::GRAPH_ID));
     }
     if (stats) {
-        d->st_mm_records += n_ops - n_joins;
-        d->st_joins += n_joins;
+        d->st_mm_records += L.n_kind[tsr::opl::K_MUL_MAT];
+        d->st_joins += L.n_joins;
+        d->st_fused += L.n_fused;
+        for (uint32_t k = 0; k < tsr::opl::N_KINDS; ++k) {
+            d->st_kind[k] += L.n_kind[k];
+        }
     }
-    for (tsr_buffer_ctx * b : seg.written) {
+    for (tsr_buffer_ctx * b : L.written) {
         b->gen++;
+    }
+}
+
+// Run the pending list (and record it in the graph_compute's plan).
+static void tsr_flush(tsr_device * d, tsr_segment & seg) {
+    if (seg.ops.empty()) {
+        return;
+    }
+    tsr_plan_list L;
+    L.blob = seg.ops.finish();
+    if (L.blob.empty()) {
+        GGML_ABORT("tesseract: op list build failed: %s", seg.ops.error());
+    }
+    L.names = seg.names;
+    L.n_ops = seg.ops.n_ops();
+    L.n_joins = seg.ops.n_joins();
+    L.n_fused = seg.n_fused;
+    L.tags.resize(L.n_ops);
+    for (uint32_t i = 0; i < L.n_ops; ++i) {
+        L.tags[i] = seg.ops.tag_of(i);
+    }
+    std::copy(std::begin(seg.n_kind), std::end(seg.n_kind), std::begin(L.n_kind));
+    L.written.assign(seg.written.begin(), seg.written.end());
+    TSR_DBG(1, "op list: %u records, %u deps kept, %u implied, preload %u entries / %u lines\n", L.n_ops, seg.ops.n_deps(),
+            seg.ops.n_dropped(), seg.ops.n_pre(), seg.ops.pre_lines());
+    tsr_run_list(d, L);
+    if (seg.gctx != nullptr) {
+        seg.gctx->plan.lists.push_back(std::move(L));
     }
     seg.clear();
 }
 
+// TSR_OPL_SPLIT=<n> (test knob): cut every op list after n records, as a full list is cut (a split's
+// results must not depend on where its lists are cut: FA_NEW, the preload entries per list).
+static uint32_t tsr_opl_split() {
+    static const uint32_t n = [] {
+        const char * e = getenv("TSR_OPL_SPLIT");
+        return e != nullptr ? (uint32_t) std::max(0, atoi(e)) : 0u;
+    }();
+    return n;
+}
+
+static void tsr_seg_maybe_cut(tsr_device * d, tsr_segment & seg);
+
 // Append one MUL_MAT record (args: tsr::opl::mm words) for node `name`; a full list is run first.
-static void tsr_seg_add_mm(tsr_device * d, tsr_segment & seg, const uint32_t * args, const char * name, tsr_buffer_ctx * dst_buf) {
+static void tsr_seg_add_mm(tsr_device * d, tsr_segment & seg, const uint32_t * args, const char * name, tsr_buffer_ctx * dst_buf,
+                           bool fused) {
+    tsr_seg_maybe_cut(d, seg);
     uint32_t idx = seg.ops.mul_mat(args, (int32_t) seg.names.size());
     if (idx == tsr_opl_builder::NO_ROOM) {
         tsr_flush(d, seg);                    // 4096 records per list (V2-SW-29): run what is pending
+        d->st_cut_lists++;
         idx = seg.ops.mul_mat(args, (int32_t) seg.names.size());
     }
     if (idx == tsr_opl_builder::NO_ROOM || idx == tsr_opl_builder::FAILED) {
@@ -1197,6 +1769,40 @@ static void tsr_seg_add_mm(tsr_device * d, tsr_segment & seg, const uint32_t * a
     }
     seg.names.push_back(name);
     seg.w_offs.push_back((uint64_t) args[tsr::opl::mm::W_OFF] * TSR_BEAT_BYTES);
+    seg.n_kind[tsr::opl::K_MUL_MAT]++;
+    seg.n_fused += fused ? 1u : 0u;
+    if (dst_buf != nullptr) {
+        seg.written.insert(dst_buf);
+    }
+}
+
+static void tsr_seg_maybe_cut(tsr_device * d, tsr_segment & seg) {
+    if (tsr_opl_split() != 0 && seg.ops.n_ops() >= tsr_opl_split()) {
+        tsr_flush(d, seg);
+        d->st_cut_lists++;
+    }
+}
+
+// Append one M7 record (W3b, SW §9.3 passes 4-6: preload entries, ranges, dependencies, JOINs); a
+// list without room for it (4096 records or 256 preload lines) is run first.
+static void tsr_seg_add_rec(tsr_device * d, tsr_segment & seg, tsr_rec & r, const std::string & name, tsr_buffer_ctx * dst_buf,
+                            bool fused) {
+    static const tsr_fanew_map no_fanew;
+    const tsr_fanew_map & fanew = seg.gctx != nullptr ? seg.gctx->fanew : no_fanew;
+    tsr_seg_maybe_cut(d, seg);
+    uint32_t idx = tsr_encode(seg.ops, r, (int32_t) seg.names.size(), fanew);
+    if (idx == tsr_opl_builder::NO_ROOM) {
+        tsr_flush(d, seg);
+        d->st_cut_lists++;
+        idx = tsr_encode(seg.ops, r, (int32_t) seg.names.size(), fanew);
+    }
+    if (idx == tsr_opl_builder::NO_ROOM || idx == tsr_opl_builder::FAILED) {
+        GGML_ABORT("tesseract: cannot add %s '%s' to the op list: %s", tsr_kind_name(r.kind), name.c_str(),
+                   idx == tsr_opl_builder::NO_ROOM ? "its preload entries alone exceed the 256-line preload area" : seg.ops.error());
+    }
+    seg.names.push_back(name);
+    seg.n_kind[r.kind]++;
+    seg.n_fused += fused ? 1u : 0u;
     if (dst_buf != nullptr) {
         seg.written.insert(dst_buf);
     }
@@ -1208,10 +1814,11 @@ struct tsr_wref {
 };
 
 // Convert a MUL_MAT src0 stored as raw ggml bytes into the WEIGHT heap (cached). The bytes are
-// at ch0 byte offset `src_off` (LINEAR window, RAW tensor of a weight buffer), or at `host` for
-// a HOSTED buffer (src_off is then the offset inside the buffer and only keys the cache).
-static tsr_wref tsr_lazy_weight(tsr_device * d, tsr_segment & seg, tsr_buffer_ctx * b, uint64_t src_off,
+// at byte offset `src_off` of channel `src_ch` (LINEAR window, RAW tensor of a weight buffer), or at
+// `host` for a HOSTED buffer (src_off is then the offset inside the buffer and only keys the cache).
+static tsr_wref tsr_lazy_weight(tsr_device * d, tsr_segment & seg, tsr_buffer_ctx * b, uint32_t src_ch, uint64_t src_off,
                                 const uint8_t * host, enum ggml_type type, uint32_t N, uint32_t K, const char * name) {
+    d->build_dynamic = true;    // W3b: a plan that converts weights is rebuilt every time (R7)
     if (seg.written.count(b)) {
         tsr_flush(d, seg);      // src0 may be produced by the pending list
     }
@@ -1252,14 +1859,14 @@ static tsr_wref tsr_lazy_weight(tsr_device * d, tsr_segment & seg, tsr_buffer_ct
         for (uint32_t r = 0; r < N; r += batch) {
             const uint32_t n = std::min(batch, N - r);
             rows.resize((size_t) n * src_rb);
-            tsr_read(d, 0, src_off + (uint64_t) r * src_rb, rows.data(), rows.size());
+            tsr_read(d, src_ch, src_off + (uint64_t) r * src_rb, rows.data(), rows.size());
             tsr_store_weight_rows(d, type, fmt, N, K, it->second.w_off, rows.data(), r, r + n);
         }
     }
     it->second.gen = b->gen;
-    TSR_DBG(1, "lazy   %-28s %-6s [%6u x %6u] -> %s W_OFF=0x%09" PRIx64 " (from %s+0x%09" PRIx64 ", gen %" PRIu64 ")\n",
+    TSR_DBG(1, "lazy   %-28s %-6s [%6u x %6u] -> %s W_OFF=0x%09" PRIx64 " (from %s%u+0x%09" PRIx64 ", gen %" PRIu64 ")\n",
             name, ggml_type_name(type), N, K, fmt == TSR_FMT_Q8_0 ? "Q8_0" : "Q4_K", it->second.w_off,
-            host != nullptr ? "host" : "ch0", src_off, b->gen);
+            host != nullptr ? "host" : "ch", src_ch, src_off, b->gen);
     return { it->second.fmt, it->second.w_off };
 }
 
@@ -1273,20 +1880,21 @@ static tsr_buffer_ctx * tsr_tensor_buf(tsr_device * d, const ggml_tensor * t, co
     return b;
 }
 
-// Where the bytes of a MUL_MAT activation (src1 or dst) live: in a LINEAR window of the IO
-// region (the device reads / writes them in place) or in a HOSTED buffer (staged).
+// Where the bytes of a MUL_MAT activation (src1 or dst) live: in a LINEAR window (IO, a low window or
+// the compute heap: the device reads / writes them in place) or in a HOSTED buffer (staged).
 struct tsr_act {
     tsr_buffer_ctx * b;
     uint64_t rel;                 // byte offset inside the buffer
     bool     io;                  // LINEAR
-    uint64_t  io_off() const { return b->io_off + rel; }
+    uint64_t  io_off() const { return b->io_off + rel; }                      // byte offset in channel b->ch
+    uint32_t  handle(uint64_t extra = 0) const { return tsr_dram_handle(b->ch, b->io_off + rel + extra); }
     uint8_t * host()   const { return b->host + rel; }
 };
 
 static tsr_act tsr_act_loc(tsr_device * d, const ggml_tensor * t, const char * what) {
     tsr_buffer_ctx * b = tsr_tensor_buf(d, t, what);
-    if (b->mode == tsr_bmode::PLACED) {
-        GGML_ABORT("tesseract: %s '%s' is in a weight buffer; MUL_MAT activations must be in compute buffers", what, t->name);
+    if (b->mode == tsr_bmode::PLACED || b->mode == tsr_bmode::KV) {
+        GGML_ABORT("tesseract: %s '%s' is in a weight / KV buffer; MUL_MAT activations must be in compute buffers", what, t->name);
     }
     const uint64_t a = tsr_vaddr(t->data);
     tsr_check_range(b, a, ggml_nbytes(t));
@@ -1300,11 +1908,14 @@ static tsr_wref tsr_resolve_weight(tsr_device * d, tsr_segment & seg, const ggml
     const uint64_t a = tsr_vaddr(src0->data);
     if (b->mode == tsr_bmode::LINEAR) {
         tsr_check_range(b, a, ggml_nbytes(src0));
-        return tsr_lazy_weight(d, seg, b, b->io_off + (a - b->base), nullptr, src0->type, N, K, src0->name);
+        return tsr_lazy_weight(d, seg, b, b->ch, b->io_off + (a - b->base), nullptr, src0->type, N, K, src0->name);
     }
     if (b->mode == tsr_bmode::HOSTED) {
         tsr_check_range(b, a, ggml_nbytes(src0));
-        return tsr_lazy_weight(d, seg, b, a - b->base, b->host + (a - b->base), src0->type, N, K, src0->name);
+        return tsr_lazy_weight(d, seg, b, 0, a - b->base, b->host + (a - b->base), src0->type, N, K, src0->name);
+    }
+    if (b->mode == tsr_bmode::KV) {
+        GGML_ABORT("tesseract: MUL_MAT src0 '%s' is a KV cache; attention runs as FLASH_ATTN only (AT §2.6)", src0->name);
     }
     tsr_tensor_rec * r = tsr_find_rec(b, a);
     if (r == nullptr) {
@@ -1322,18 +1933,18 @@ static tsr_wref tsr_resolve_weight(tsr_device * d, tsr_segment & seg, const ggml
         }
         return { r->fmt, r->w_off };
     }
-    // RAW in a weight buffer (e.g. a 1D f32 tensor used as a 1 x K matrix)
-    return tsr_lazy_weight(d, seg, b, r->raw_off + (a - r->vaddr), nullptr, src0->type, N, K, src0->name);
+    // RAW in a weight buffer (e.g. a 1D f32 tensor used as a 1 x K matrix): ch0 (AUX or the heap)
+    return tsr_lazy_weight(d, seg, b, 0, r->raw_off + (a - r->vaddr), nullptr, src0->type, N, K, src0->name);
 }
 
-// The MUL_MAT record (SW §7.2 kind 0x10) of T tokens: x rows x_lines apart at byte x_off, y rows
-// y_lines apart at byte y_off (ch0), no addend, no ACC_DST.
-static void tsr_mm_args(uint32_t * a, uint64_t x_off, uint64_t y_off, const tsr_wref & w, uint32_t N, uint32_t K, uint32_t T,
+// The MUL_MAT record (SW §7.2 kind 0x10) of T tokens: x rows x_lines apart at handle x, y rows
+// y_lines apart at handle y, no addend, no ACC_DST.
+static void tsr_mm_args(uint32_t * a, uint32_t x, uint32_t y, const tsr_wref & w, uint32_t N, uint32_t K, uint32_t T,
                         const tsr_mm_tiling & tl) {
     namespace mm = tsr::opl::mm;
-    a[mm::X]          = tsr_dram_handle(0, x_off);
+    a[mm::X]          = x;
     a[mm::X_STRIDE]   = tl.x_lines;
-    a[mm::Y]          = tsr_dram_handle(0, y_off);
+    a[mm::Y]          = y;
     a[mm::Y_STRIDE]   = tl.y_lines;
     a[mm::W_OFF]      = (uint32_t) (w.w_off / TSR_BEAT_BYTES);
     a[mm::FMT]        = w.fmt;
@@ -1356,6 +1967,7 @@ static void tsr_mm_args(uint32_t * a, uint64_t x_off, uint64_t y_off, const tsr_
 static void tsr_lower_staged(tsr_device * d, tsr_segment & seg, const ggml_tensor * node, const tsr_act & ax,
                              const tsr_act & ay, const tsr_stage_plan & sp, uint32_t fmt, uint32_t N, uint32_t K,
                              uint32_t T, const tsr_mm_tiling & tl) {
+    d->build_dynamic = true;    // W3b: host transfers between launches: not a cached plan (R7)
     tsr_flush(d, seg);          // program order: what is pending may produce src1 / src0
     const ggml_tensor * src0 = node->src[0];
     const tsr_wref w = tsr_resolve_weight(d, seg, src0);
@@ -1381,9 +1993,10 @@ static void tsr_lower_staged(tsr_device * d, tsr_segment & seg, const ggml_tenso
             tsr_write(d, 0, xs, ax.host() + t0 * x_row, (size_t) (tc * x_row));
         }
         uint32_t args[tsr::opl::mm::NARGS];
-        tsr_mm_args(args, stage_x ? xs : ax.io_off() + t0 * x_row, stage_y ? ys : ay.io_off() + t0 * y_stride, w, N, K, tc, tl);
+        tsr_mm_args(args, stage_x ? tsr_dram_handle(0, xs) : ax.handle(t0 * x_row),
+                    stage_y ? tsr_dram_handle(0, ys) : ay.handle(t0 * y_stride), w, N, K, tc, tl);
         tsr_segment one(d->cfg.num_ch);
-        tsr_seg_add_mm(d, one, args, node->name, stage_y ? nullptr : ay.b);
+        tsr_seg_add_mm(d, one, args, node->name, stage_y ? nullptr : ay.b, false);
         tsr_flush(d, one);
         if (stage_y) {
             yb.resize((size_t) (tc * y_stride));
@@ -1393,7 +2006,7 @@ static void tsr_lower_staged(tsr_device * d, tsr_segment & seg, const ggml_tenso
                 for (uint32_t t = 0; t < tc; ++t) {
                     memcpy(packed.data() + t * row_bytes, yb.data() + t * y_stride, (size_t) row_bytes);
                 }
-                tsr_write(d, 0, ay.io_off() + t0 * row_bytes, packed.data(), packed.size());
+                tsr_write(d, ay.b->ch, ay.io_off() + t0 * row_bytes, packed.data(), packed.size());
             } else {
                 for (uint32_t t = 0; t < tc; ++t) {
                     memcpy(ay.host() + (t0 + t) * row_bytes, yb.data() + t * y_stride, (size_t) row_bytes);
@@ -1410,11 +2023,14 @@ static void tsr_lower_staged(tsr_device * d, tsr_segment & seg, const ggml_tenso
     TSR_DBG(1, "MUL_MAT %-24s %-6s N=%u K=%u T=%u W_OFF=0x%09" PRIx64 " staged: src1 %s, dst %s, "
                "%u stage tile(s) of <= %" PRIu64 " tokens, one launch each\n",
             node->name, ggml_type_name(src0->type), N, K, T, w.w_off,
-            stage_x ? "host->stage" : "in IO", stage_y ? (ay.io ? "stage->IO (compacted)" : "stage->host") : "in IO",
+            stage_x ? "host->stage" : "in place", stage_y ? (ay.io ? "stage->window (compacted)" : "stage->host") : "in place",
             n_tiles, tc_max);
 }
 
-static void tsr_lower_mul_mat(tsr_device * d, tsr_segment & seg, const ggml_tensor * node) {
+// One MUL_MAT node; `add`: the ADD that tsr_build_fusion folded into it (a bias or the residual
+// through the MUL_MAT addend, SW §7.4). Returns whether the ADD was fused (it is then not lowered
+// on its own; a staged MUL_MAT or an addend the record cannot address leaves it to its own record).
+static bool tsr_lower_mul_mat(tsr_device * d, tsr_segment & seg, const ggml_tensor * node, const ggml_tensor * add) {
     const ggml_tensor * src0 = node->src[0];
     const ggml_tensor * src1 = node->src[1];
     if (src1->type != GGML_TYPE_F32 || node->type != GGML_TYPE_F32 || src0->ne[2] != 1 || src0->ne[3] != 1 ||
@@ -1425,7 +2041,7 @@ static void tsr_lower_mul_mat(tsr_device * d, tsr_segment & seg, const ggml_tens
     const uint32_t N = (uint32_t) src0->ne[1];
     const int64_t  T64 = ggml_nrows(src1);
     if (N == 0 || T64 == 0) {
-        return;
+        return false;
     }
     GGML_ASSERT(node->ne[0] == (int64_t) N && ggml_nrows(node) == T64);
     if (T64 > (int64_t) UINT32_MAX) {
@@ -1447,7 +2063,7 @@ static void tsr_lower_mul_mat(tsr_device * d, tsr_segment & seg, const ggml_tens
     const bool stage_x = sp.stage_x;
     const bool stage_y = sp.stage_y;
     if ((ax.io && ax.io_off() % TSR_BEAT_BYTES != 0) || (ay.io && ay.io_off() % TSR_BEAT_BYTES != 0)) {
-        GGML_ABORT("tesseract: MUL_MAT '%s': src1/dst not 64-byte aligned in IO", node->name);
+        GGML_ABORT("tesseract: MUL_MAT '%s': src1/dst not 64-byte aligned in device memory", node->name);
     }
     if (!stage_y) {
         // the ST writes whole lines: T*N*4 bytes exactly (N % 16 == 0), or the single row plus
@@ -1460,18 +2076,327 @@ static void tsr_lower_mul_mat(tsr_device * d, tsr_segment & seg, const ggml_tens
     }
     if (stage_x || stage_y) {
         tsr_lower_staged(d, seg, node, ax, ay, sp, fmt, N, K, T, tl);
-        return;
+        return false;
     }
 
     const tsr_wref w = tsr_resolve_weight(d, seg, src0);
     GGML_ASSERT(w.fmt == fmt && w.w_off % TSR_BEAT_BYTES == 0);
 
     uint32_t args[tsr::opl::mm::NARGS];
-    tsr_mm_args(args, ax.io_off(), ay.io_off(), w, N, K, T, tl);
-    tsr_seg_add_mm(d, seg, args, node->name, ay.b);
+    tsr_mm_args(args, ax.handle(), ay.handle(), w, N, K, T, tl);
+    bool fused = false;
+    std::string name = node->name;
+    tsr_buffer_ctx * dst_buf = ay.b;
+    if (add != nullptr && seg.gctx != nullptr) {
+        std::string why;
+        fused = tsr_fuse_mm_add(seg.gctx->env, node, add, args, &why);
+        if (fused) {
+            name = std::string(node->name) + " + " + add->name;
+            dst_buf = tsr_tensor_buf(d, add, "ADD result");
+        } else {
+            TSR_DBG(1, "MUL_MAT %s + ADD %s not fused: %s\n", node->name, add->name, why.c_str());
+        }
+    }
+    tsr_seg_add_mm(d, seg, args, name.c_str(), dst_buf, fused);
 
-    TSR_DBG(1, "MUL_MAT %-24s %-6s N=%u K=%u T=%u W_OFF=0x%09" PRIx64 " x=ch0+0x%09" PRIx64 " y=ch0+0x%09" PRIx64 "\n",
-            node->name, ggml_type_name(src0->type), N, K, T, w.w_off, ax.io_off(), ay.io_off());
+    TSR_DBG(1, "MUL_MAT %-24s %-6s N=%u K=%u T=%u W_OFF=0x%09" PRIx64 " x=ch%u+0x%09" PRIx64 " y=ch%u+0x%09" PRIx64 "%s%s\n",
+            node->name, ggml_type_name(src0->type), N, K, T, w.w_off, ax.b->ch, ax.io_off(), tsr_handle_ch(args[tsr::opl::mm::Y]),
+            tsr_handle_byte(args[tsr::opl::mm::Y]), fused ? " + addend of " : "", fused ? add->name : "");
+    return fused;
+}
+
+// ---------------------------------------------------------------------------
+// W3b builder: the M7 environment (tsr-build.h) on this device
+// ---------------------------------------------------------------------------
+
+// Device location of a tensor's first byte that the M7 kinds address in place: a LINEAR window, or
+// a RAW tensor of a weight buffer (AUX or the heap, ch0). Not: host memory, device-format weights,
+// KV planes (tsr_kv_view_of), never-written weights.
+static bool tsr_tensor_loc(tsr_device * d, const ggml_tensor * t, tsr_tloc * out) {
+    const ggml_tensor * base = t->view_src != nullptr ? t->view_src : t;
+    ggml_backend_buffer_t gb = base->buffer;
+    if (gb == nullptr || gb->buft != &d->buft || gb->context == nullptr || t->data == nullptr) {
+        return false;
+    }
+    tsr_buffer_ctx * b = tsr_buf(gb);
+    tsr_buf_decide(b, gb);
+    const uint64_t a = tsr_vaddr(t->data);
+    if (a < b->base || a + ggml_nbytes(t) > b->base + b->size) {
+        return false;
+    }
+    if (b->mode == tsr_bmode::LINEAR) {
+        out->ch = b->ch;
+        out->off = b->io_off + (a - b->base);
+        return true;
+    }
+    if (b->mode == tsr_bmode::PLACED) {
+        const tsr_tensor_rec * r = tsr_find_rec(b, a);
+        if (r == nullptr || r->kind != tsr_kind::RAW || a + ggml_nbytes(t) > r->vaddr + r->nbytes) {
+            return false;
+        }
+        out->ch = 0;
+        out->off = r->raw_off + (a - r->vaddr);
+        return true;
+    }
+    return false;
+}
+
+// supports_op's probe of an operand (tsr-build.h raw_ok): its bytes will be raw rows in device memory
+// at a 64-byte-aligned address: not a device-format weight, not a KV cache, not host memory; a view
+// 64-byte aligned within what it views; a tensor of another backend's buffer is copied in by the
+// scheduler (aligned) into a compute buffer.
+//
+// Host memory (W3b fix; SW §8 R6 as built): the M7 kinds address their operands in place and have no
+// staging (only MUL_MAT does, tsr_lower_staged), so an operand in a HOSTED buffer, or in one that will
+// become HOSTED (TSR_FORCE_HOST, or an ANY buffer holding only leaf data: llama.cpp's control vectors
+// and LoRA adapters), keeps its op on the CPU. A compute buffer that gets no window is decided only at
+// its first data access, after the scheduler has split the graph: graph_compute then aborts naming it.
+static bool tsr_probe_raw_ok(tsr_device * d, const ggml_tensor * t) {
+    const ggml_tensor * base = t->view_src != nullptr ? t->view_src : t;
+    const ggml_backend_buffer * gb = base->buffer;
+    if (t->view_src != nullptr && t->view_offs % TSR_TENSOR_ALIGN != 0) {
+        return false;
+    }
+    if (d->force_host) {
+        return false;     // every compute buffer, hence every result and copied-in operand, is HOSTED
+    }
+    if (gb == nullptr || gb->buft != &d->buft || gb->context == nullptr) {
+        return true;
+    }
+    tsr_buffer_ctx * b = (tsr_buffer_ctx *) gb->context;
+    if (t->data != nullptr && tsr_vaddr(t->data) % TSR_TENSOR_ALIGN != 0) {
+        return false;
+    }
+    if (b->mode == tsr_bmode::KV || (b->mode == tsr_bmode::UNDECIDED && gb->usage == GGML_BACKEND_BUFFER_USAGE_ANY &&
+                                     tsr_kv_candidate(d, b))) {
+        return false;
+    }
+    if (b->mode == tsr_bmode::HOSTED || (b->mode == tsr_bmode::UNDECIDED && tsr_buf_leaves_only(b, gb))) {
+        return false;
+    }
+    if (b->mode == tsr_bmode::PLACED || gb->usage == GGML_BACKEND_BUFFER_USAGE_WEIGHTS) {
+        const tsr_tensor_rec * r = base->data != nullptr ? tsr_find_rec(b, tsr_vaddr(base->data)) : nullptr;
+        if (r != nullptr) {
+            return r->kind == tsr_kind::RAW || (r->kind == tsr_kind::UNPLACED && !tsr_rec_is_devweight_shape(d, *r));
+        }
+    }
+    return true;
+}
+
+// supports_op: base is a KV-cache tensor (tsr_kv_identify; its shape in *s) in a Tesseract buffer that is
+// or becomes a KV buffer. llama.cpp's no_alloc passes (memory fitting, src/llama-kv-cache.cpp:280) put
+// the cache in a dummy size-0 buffer of this type, which has no context: it never holds data, so the
+// graph they reserve is planned as with a KV buffer.
+static bool tsr_kv_probe_tensor(tsr_device * d, const ggml_tensor * base, tsr_kv_shape * s, bool dbg) {
+    std::string why;
+    if (!tsr_kv_identify(base->name, base->type == GGML_TYPE_Q8_0, base->ne, base->nb, d->cfg.num_ch, d->cfg.k_max, s, &why)) {
+        if (dbg) {
+            TSR_DBG(2, "supports_op: '%s' is not a KV-cache tensor the device holds: %s\n", base->name, why.c_str());
+        }
+        return false;
+    }
+    const ggml_backend_buffer * gb = base->buffer;
+    const bool dummy = gb != nullptr && gb->buft == &d->buft && gb->context == nullptr && gb->size == 0;
+    if (!dummy && !tsr_kv_tensor_supported(d, base)) {
+        if (dbg) {
+            TSR_DBG(2, "supports_op: '%s' is not in a Tesseract buffer that is (or becomes) a KV buffer\n", base->name);
+        }
+        return false;
+    }
+    return true;
+}
+
+// The planner's view of the device with the M7 fields (SW §7.2: C, PCAP, VL, CAPS; 0 = unknown).
+static tsr::plan::dev_cfg tsr_plan_cfg_m7(tsr_device * d) {
+    tsr::plan::dev_cfg c = tsr_plan_cfg(d->cfg);
+    const uint32_t cfg3 = tsr_transport_csr_read(d->tp, TSR_CSR_CFG3);
+    c.num_ch = d->cfg.num_ch;
+    c.pcap = ((cfg3 & TSR_CFG3_PCAP16) >> TSR_CFG3_PCAP16_LSB) * 16u;
+    c.vl = d->cfg.vl;
+    c.caps = d->cfg.caps;
+    return c;
+}
+
+// The builder's environment (tsr-build.h) for this device. Callers hold dev->mtx (device open).
+static tsr_build_env tsr_env_of(tsr_device * d) {
+    if (!d->m7cfg_ok) {
+        d->m7cfg = tsr_plan_cfg_m7(d);   // one CFG3 read per device
+        d->m7cfg_ok = true;
+    }
+    tsr_build_env e;
+    e.cfg = d->m7cfg;
+    e.pl = tsr::plan::plan_limits_of(e.cfg);
+    e.num_ch = d->cfg.num_ch;
+    e.loc = [d](const ggml_tensor * t, tsr_tloc * l) { return tsr_tensor_loc(d, t, l); };
+    e.kv_view = [d](const ggml_tensor * t, tsr_kv_view * v) { return tsr_kv_view_of(d, t, v); };
+    e.fa_mask = [d](const ggml_tensor * fa) { return tsr_fa_mask_ref(d, fa); };
+    e.raw_ok = [d](const ggml_tensor * t) { return tsr_probe_raw_ok(d, t); };
+    e.kv_probe = [d](const ggml_tensor * t, tsr_kv_shape * s) {
+        return tsr_kv_probe_tensor(d, t->view_src != nullptr ? t->view_src : t, s, true);
+    };
+    e.fa_mask_probe = [](const ggml_tensor * fa) { return tsr_fa_mask_supported(fa); };
+    return e;
+}
+
+// The buffer a record writes (its generation is bumped after the launch; nullptr for KV planes).
+static tsr_buffer_ctx * tsr_written_buf(tsr_device * d, const ggml_tensor * t) {
+    const ggml_tensor * base = t->view_src != nullptr ? t->view_src : t;
+    ggml_backend_buffer_t gb = base->buffer;
+    if (gb == nullptr || gb->buft != &d->buft || gb->context == nullptr) {
+        return nullptr;
+    }
+    tsr_buffer_ctx * b = tsr_buf(gb);
+    return b->mode == tsr_bmode::KV ? nullptr : b;
+}
+
+// A cached plan is reused only while its FLASH_ATTN records' mask words are what the producer hands
+// out now (re-registering every reader, tsr-msum.h: the producer then keeps their copies current).
+static bool tsr_plan_masks_hold(tsr_device * d, const tsr_plan & p) {
+    for (size_t i = 0; i < p.fa_nodes.size(); ++i) {
+        const tsr_msum_ref r = tsr_fa_mask_ref(d, p.fa_nodes[i]);
+        if (!r.valid || r.msum_handle != p.fa_refs[i].msum_handle || r.mask_handle != p.fa_refs[i].mask_handle) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// An operand of an M7 node (or of the MUL folded into it) that lives in host memory (a HOSTED buffer:
+// a compute buffer the device had no window for); nullptr if none.
+static const ggml_tensor * tsr_hosted_operand(tsr_device * d, const ggml_tensor * node, const ggml_tensor * mul) {
+    std::vector<const ggml_tensor *> ts = { node, mul };
+    for (const ggml_tensor * n : { node, mul }) {
+        for (int s = 0; n != nullptr && s < GGML_MAX_SRC; ++s) {
+            ts.push_back(n->src[s]);
+        }
+    }
+    for (const ggml_tensor * t : ts) {
+        const ggml_tensor * base = t != nullptr && t->view_src != nullptr ? t->view_src : t;
+        const ggml_backend_buffer * gb = base != nullptr ? base->buffer : nullptr;
+        if (gb != nullptr && gb->buft == &d->buft && gb->context != nullptr &&
+            ((const tsr_buffer_ctx *) gb->context)->mode == tsr_bmode::HOSTED) {
+            return t;
+        }
+    }
+    return nullptr;
+}
+
+// The SET_ROWS_KV of a K plane in this graph_compute (FA_NEW's source): its index input, its node and
+// the list it went into (tsr_gctx plan.lists index).
+struct tsr_kv_write {
+    const ggml_tensor * idx;
+    int                 node;
+    size_t              list;
+};
+
+// FA_NEW across a cut (tsr-build.h, the assumption): the FLASH_ATTN's list preloads the K indices from
+// DRAM again, so no node between the SET_ROWS_KV and the FLASH_ATTN may have written their bytes (ggml-
+// alloc may reuse them: the FLASH_ATTN is not their ggml consumer). Never the case in llama.cpp's graphs
+// (only the V SET_ROWS_KV lies between); checked whenever a cut separates the two.
+static void tsr_check_fanew_source(const ggml_cgraph * cg, const tsr_kv_write & w, int fa_node) {
+    const uint64_t lo = (uint64_t) (uintptr_t) w.idx->data, hi = lo + ggml_nbytes(w.idx);
+    for (int j = w.node + 1; j < fa_node; ++j) {
+        const ggml_tensor * n = cg->nodes[j];
+        if ((n->flags & GGML_TENSOR_FLAG_COMPUTE) == 0 || tsr_node_is_noop(n) || n->data == nullptr) {
+            continue;
+        }
+        const uint64_t a = (uint64_t) (uintptr_t) n->data, b = a + ggml_nbytes(n);
+        if (a < hi && lo < b) {
+            GGML_ABORT("tesseract: '%s' overwrites the K indices '%s' between their SET_ROWS_KV and the FLASH_ATTN '%s', "
+                       "and an op-list cut separates the two, so the FLASH_ATTN's FA_NEW entry would read the "
+                       "overwritten bytes (tsr-build.h FA_NEW assumption; SW §9.3)", n->name, w.idx->name,
+                       cg->nodes[fa_node]->name);
+        }
+    }
+}
+
+// SW §9.3 M7 passes 1-6 over one graph, launching each list as it fills (a split is one list unless a
+// list fills, a MUL_MAT is staged or a src0 must be converted after the pending list ran).
+static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key) {
+    tsr_gctx g;
+    g.env = tsr_env_of(d);
+    g.fusion = tsr_build_fusion(g.env, cgraph);
+    d->build_dynamic = false;
+    std::vector<char> absorbed(cgraph->n_nodes, 0);
+    tsr_segment seg(d->cfg.num_ch, &g);
+    std::map<uint32_t, tsr_kv_write> kv_writes;      // by plane base beat, as tsr_fanew_map
+    for (int i = 0; i < cgraph->n_nodes; i++) {
+        ggml_tensor * node = cgraph->nodes[i];
+        if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0 || tsr_node_is_noop(node) || absorbed[i]) {
+            continue;                        // pass 1 (and the second node of a fused pair)
+        }
+        if (ggml_is_empty(node)) {
+            continue;
+        }
+        const int32_t k = g.fusion.with[i];
+        if (node->op == GGML_OP_MUL_MAT) {
+            if (tsr_lower_mul_mat(d, seg, node, k >= 0 ? cgraph->nodes[k] : nullptr) && k >= 0) {
+                absorbed[k] = 1;
+            }
+            if (tsr_stats_on()) {
+                d->st_mm++;
+            }
+            continue;
+        }
+        const ggml_tensor * mul = node->op == GGML_OP_RMS_NORM && k >= 0 ? cgraph->nodes[k] : nullptr;
+        tsr_rec r;
+        std::string why;
+        bool ok = tsr_lower_m7(g.env, false, node, mul, &r, &why);
+        if (!ok && mul != nullptr) {
+            TSR_DBG(1, "RMS_NORM %s + MUL %s not fused: %s\n", node->name, mul->name, why.c_str());
+            mul = nullptr;
+            ok = tsr_lower_m7(g.env, false, node, nullptr, &r, &why);
+        }
+        if (!ok) {
+            const ggml_tensor * h = tsr_hosted_operand(d, node, mul);
+            if (h != nullptr) {
+                GGML_ABORT("tesseract: op %s ('%s') reached graph_compute but cannot run on the device: '%s' is in host "
+                           "memory (a compute buffer the device had no window for); the M7 kinds address their operands "
+                           "in place and only MUL_MAT is staged (docs/v2/06-software-verification.md §8 R6): use a "
+                           "smaller -ub or -c, or keep the device to MUL_MAT (TSR_KINDS=m6)", ggml_op_desc(node), node->name,
+                           h->name);
+            }
+            GGML_ABORT("tesseract: op %s ('%s') reached graph_compute but cannot run on the device: %s", ggml_op_desc(node),
+                       node->name, why.c_str());
+        }
+        if (mul != nullptr) {
+            absorbed[k] = 1;
+        }
+        if (r.kind == tsr::opl::K_FLASH_ATTN) {
+            g.plan.fa_nodes.push_back(node);
+            g.plan.fa_refs.push_back(r.mask);
+        }
+        tsr_note_kv_write(r, &g.fanew);
+        const std::string name = mul != nullptr ? std::string(node->name) + " + " + mul->name : std::string(node->name);
+        tsr_seg_add_rec(d, seg, r, name, tsr_written_buf(d, mul != nullptr ? mul : node), mul != nullptr);
+        if (r.kind == tsr::opl::K_SET_ROWS_KV) {
+            kv_writes[r.kv_plane] = { node->src[1], i, g.plan.lists.size() };
+        } else if (r.kind == tsr::opl::K_FLASH_ATTN && (r.args[tsr::opl::fa::FLAGS] & 1u)) {
+            const auto w = kv_writes.find(r.kv_plane);
+            if (w != kv_writes.end() && w->second.list != g.plan.lists.size()) {
+                tsr_check_fanew_source(cgraph, w->second, i);     // a cut lies between them
+            }
+        }
+        TSR_DBG(1, "%-11s %-32s%s\n", tsr_kind_name(r.kind), name.c_str(),
+                r.kind == tsr::opl::K_FLASH_ATTN && (r.args[tsr::opl::fa::FLAGS] & 1u) ? " (FA_NEW)" : "");
+    }
+    tsr_flush(d, seg);
+    if (d->build_dynamic) {
+        d->st_plan_dynamic++;
+        return;
+    }
+    // R7: keep the plan for this graph identity (at most 16 graphs, least recently used out)
+    if (d->plans.size() >= 16) {
+        auto lru = d->plans.begin();
+        for (auto it = d->plans.begin(); it != d->plans.end(); ++it) {
+            if (it->second.used < lru->second.used) {
+                lru = it;
+            }
+        }
+        d->plans.erase(lru);
+    }
+    g.plan.used = ++d->plan_stamp;
+    d->plans[key] = std::move(g.plan);
 }
 
 // ---------------------------------------------------------------------------
@@ -1502,11 +2427,26 @@ static void tsr_backend_free(ggml_backend_t backend) {
                 "%.2f per scheduler pass (%" PRIu64 " passes, ~tokens), %.2f op records per launch\n",
                 d->st_graphs, d->st_compute_ns * 1e-9, launches, d->odev.launch_ns * 1e-9,
                 passes ? (double) launches / passes : 0.0, passes, launches ? (double) d->odev.ops / launches : 0.0);
-        fprintf(stderr, "[tesseract] stats: MUL_MAT nodes %" PRIu64 ", MUL_MAT records %" PRIu64 ", JOIN records %" PRIu64
+        fprintf(stderr, "[tesseract] stats: MUL_MAT nodes lowered %" PRIu64 ", MUL_MAT records %" PRIu64 ", JOIN records %" PRIu64
                 ", staged chunks %" PRIu64 " (%" PRIu64 " launches); OPL cache %" PRIu64 " hits, %" PRIu64 " misses, %" PRIu64
                 " evictions, %zu lists / %.2f MiB resident\n",
                 d->st_mm, d->st_mm_records, d->st_joins, d->st_staged_mm, d->st_staged_launches, cs.hits, cs.misses,
                 cs.evictions, d->odev.cache().entries(), tsr_mib(d->odev.cache().used_bytes()));
+        // W3b (TSR_STATS v2, SW §9.2): launches per graph_compute, fused ops, records per kind, the
+        // plan cache (R7) and lists cut early
+        fprintf(stderr, "[tesseract] stats: graph_compute calls with 0 / 1 / 2 / >= 3 launches: %" PRIu64 " / %" PRIu64 " / %" PRIu64
+                " / %" PRIu64 "; fused ops %" PRIu64 "; plan cache %" PRIu64 " hits, %" PRIu64 " builds (%" PRIu64
+                " not cacheable); lists cut early %" PRIu64 "\n", d->st_launch_hist[0], d->st_launch_hist[1], d->st_launch_hist[2],
+                d->st_launch_hist[3], d->st_fused, d->st_plan_hits, d->st_plan_misses, d->st_plan_dynamic, d->st_cut_lists);
+        std::string kinds;
+        for (uint32_t k = 0; k < tsr::opl::N_KINDS; ++k) {
+            if (d->st_kind[k] != 0) {
+                char b[64];
+                snprintf(b, sizeof(b), "%s%s %" PRIu64, kinds.empty() ? "" : ", ", tsr_kind_name(k), d->st_kind[k]);
+                kinds += b;
+            }
+        }
+        fprintf(stderr, "[tesseract] stats: records per kind: %s\n", kinds.empty() ? "none" : kinds.c_str());
         fprintf(stderr, "[tesseract] stats: PERF_CYCLES %" PRIu64 ", MVM %" PRIu64 ", RETIRED %" PRIu64 "\n",
                 p[TSR_PERF_CYCLES], p[TSR_PERF_MVM_CYCLES], p[TSR_PERF_RETIRED]);
         const size_t nch = (p.size() - 5) / 2;
@@ -1521,43 +2461,42 @@ static void tsr_backend_free(ggml_backend_t backend) {
                 d->st_write_ns ? d->st_write_bytes / (double) d->st_write_ns : 0.0);
         fprintf(stderr, "[tesseract] stats: weight stores %.3f s (%u load threads), conversion to Q8_0 %.3f s of CPU time\n",
                 d->st_store_ns * 1e-9, tsr_load_threads(), d->st_conv_ns.load() * 1e-9);
+        if (d->msum.ready()) {   // W3b kv
+            fprintf(stderr, "[tesseract] stats: mask summaries %" PRIu64 " (GENERAL %" PRIu64 ", promoted %" PRIu64 "), f32 mask "
+                    "copies %" PRIu64 ", re-produced for new readers %" PRIu64 "\n", d->msum.st_produced, d->msum.st_general,
+                    d->msum.st_promoted, d->msum.st_copies, d->msum.st_reattach);
+        }
     }
     delete (tsr_backend_ctx *) backend->context;
     delete backend;
 }
 
-// SW §9.3 M6: the split's MUL_MATs as one op list (plus staged ones on their own), one launch.
+// SW §9.3: the split as one op list (M6: its MUL_MATs; M7: every node, fused, with the preload table),
+// one launch; staged MUL_MATs on their own. The plan of a graph is cached by its identity (R7): a
+// decode token's graph runs its lists again without a rebuild while only the inputs change.
 static enum ggml_status tsr_backend_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     tsr_device * d = ((tsr_backend_ctx *) backend->context)->dev;
     std::lock_guard<std::mutex> lock(d->mtx);
     const uint64_t t_start = tsr_stats_on() ? tsr_now_ns() : 0;
-    tsr_segment seg(d->cfg.num_ch);
-    for (int i = 0; i < cgraph->n_nodes; i++) {
-        ggml_tensor * node = cgraph->nodes[i];
-        if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
-            continue;
+    const uint64_t launches0 = d->odev.launches;
+    const uint64_t key = tsr_graph_key(cgraph, d->plan_epoch);
+    auto it = d->plans.find(key);
+    if (it != d->plans.end() && tsr_plan_masks_hold(d, it->second)) {
+        it->second.used = ++d->plan_stamp;
+        TSR_DBG(1, "graph %p (%d nodes): cached plan, %zu list(s)\n", (void *) cgraph, cgraph->n_nodes, it->second.lists.size());
+        for (const tsr_plan_list & L : it->second.lists) {
+            tsr_run_list(d, L);
         }
-        switch (node->op) {
-            case GGML_OP_NONE:
-            case GGML_OP_VIEW:
-            case GGML_OP_RESHAPE:
-            case GGML_OP_PERMUTE:
-            case GGML_OP_TRANSPOSE:
-                continue;
-            case GGML_OP_MUL_MAT:
-                if (!ggml_is_empty(node)) {
-                    tsr_lower_mul_mat(d, seg, node);
-                    if (tsr_stats_on()) {
-                        d->st_mm++;
-                    }
-                }
-                continue;
-            default:
-                GGML_ABORT("tesseract: op %s ('%s') reached graph_compute but is not supported", ggml_op_desc(node), node->name);
+        d->st_plan_hits++;
+    } else {
+        if (it != d->plans.end()) {
+            d->plans.erase(it);              // a mask summary moved: build again
         }
+        d->st_plan_misses++;
+        tsr_build_and_run(d, cgraph, key);
     }
-    tsr_flush(d, seg);
     if (tsr_stats_on()) {
+        d->st_launch_hist[std::min<uint64_t>(d->odev.launches - launches0, 3)]++;
         d->st_graphs++;
         d->st_compute_ns += tsr_now_ns() - t_start;
         // a scheduler pass (one llama_decode, ~ one token) calls each split once: a split seen
@@ -1676,6 +2615,20 @@ static bool tsr_is_our_buffer(const tsr_device * d, const ggml_backend_buffer * 
 // `graph` kernel would refuse). The no-op ops (leaves and views) are "supported" as on every GPU
 // backend: they cost nothing in graph_compute, test-backend-ops asks for every tensor of a test
 // graph, and the scheduler aborts on a view of a Tesseract-resident tensor that no backend claims.
+//
+// M7 (W3b, SW §9.3 supports_op (M7), AT §2.6): every other op of the table through tsr-build's
+// tsr_build_supports: the node is lowered to its OPL record in probe mode (the same function the
+// builder encodes with) and the kind's planner (plan.hpp plan_kind on the device's CFG values) must
+// accept it, so the host refuses exactly what the firmware cannot plan or the builder cannot encode.
+// TSR_KINDS=m6 restricts the device to M6's MUL_MAT (V2-SW-14: M6 runs keep v1's splits).
+static bool tsr_m6_only() {
+    static const bool on = [] {
+        const char * e = getenv("TSR_KINDS");
+        return e != nullptr && strcmp(e, "m6") == 0;
+    }();
+    return on;
+}
+
 static bool tsr_dev_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
     tsr_device * d = (tsr_device *) dev->context;
     switch (op->op) {
@@ -1687,8 +2640,58 @@ static bool tsr_dev_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) 
             return true;
         case GGML_OP_MUL_MAT:
             break;
-        default:
-            return false;
+        default: {
+            if (tsr_m6_only()) {
+                return false;
+            }
+            std::lock_guard<std::mutex> lock(d->mtx);
+            if (!tsr_dev_open_locked(d)) {
+                return false;
+            }
+            std::string why;
+            const bool ok = tsr_build_supports(tsr_env_of(d), op, &why);
+            if (!ok) {
+                TSR_DBG(2, "supports_op: %s '%s' not on the device: %s\n", ggml_op_desc(op), op->name, why.c_str());
+                // SW §8 R10: an op writing into a device KV cache other than SET_ROWS (llama.cpp's context
+                // shift ROPEs the cache, defragmentation copies cells) makes the scheduler abort on the
+                // pre-allocated tensor; say why first
+                const ggml_tensor * base = op->view_src != nullptr ? op->view_src : op;
+                tsr_kv_shape kvs;
+                if (op->op != GGML_OP_SET_ROWS && base != op && tsr_kv_tensor_supported(d, base)) {
+                    static std::once_flag warned;
+                    std::call_once(warned, [op] {
+                        GGML_LOG_ERROR("tesseract: %s '%s' writes into the device KV cache: context shift and KV "
+                                       "defragmentation are not supported in M7 (docs/v2/06-software-verification.md §8 "
+                                       "R10); keep the cache on the CPU (-nkvo) or disable context shift\n",
+                                       ggml_op_desc(op), op->name);
+                    });
+                } else if (op->op == GGML_OP_SET_ROWS && base != op && tsr_kv_probe_tensor(d, base, &kvs, false)) {
+                    // W3b fix: a SET_ROWS into a device KV cache must run here (the scheduler stops on the
+                    // pre-allocated tensor otherwise): name the cause first, e.g. several sequence streams
+                    // (llama.cpp -np N without --kv-unified) or TSR_FORCE_HOST's host-memory compute buffers
+                    static std::once_flag warned_kv;
+                    const bool force_host = d->force_host;
+                    std::call_once(warned_kv, [op, &kvs, &why, force_host] {
+                        if (kvs.n_stream > 1) {
+                            GGML_LOG_ERROR("tesseract: SET_ROWS '%s' writes a device KV cache of %u sequence streams: "
+                                           "multi-sequence KV streams are not supported in M7 "
+                                           "(docs/v2/06-software-verification.md §8 R10); use --kv-unified or keep the "
+                                           "cache on the CPU (-nkvo)\n", op->name, kvs.n_stream);
+                        } else {
+                            // the cell indices are one preload entry: at most 256 lines of I64 per ubatch
+                            const int64_t max_rows = (int64_t) tsr::opl::PRE_MAX_LINES * tsr::opl::PRE_ALIGN /
+                                                     tsr::opl::PRE_KVIDX_BYTES;
+                            const bool many = op->src[0] != nullptr && ggml_nrows(op->src[0]) > max_rows;
+                            GGML_LOG_ERROR("tesseract: SET_ROWS '%s' into the device KV cache cannot run on the device "
+                                           "(%s)%s; %skeep the cache on the CPU (-nkvo)\n", op->name, why.c_str(),
+                                           force_host ? ": TSR_FORCE_HOST keeps the compute buffers in host memory" : "",
+                                           many ? "use -ub <= 2048 (the device writes at most 2048 cells per ubatch) or " : "");
+                        }
+                    });
+                }
+            }
+            return ok;
+        }
     }
     const ggml_tensor * src0 = op->src[0];
     const ggml_tensor * src1 = op->src[1];
@@ -1857,6 +2860,16 @@ static void * tsr_reg_get_proc_address(ggml_backend_reg_t reg, const char * name
     GGML_UNUSED(reg);
     if (name != nullptr && strcmp(name, "ggml_backend_tesseract_buffer_storage") == 0) {
         return (void *) tsr_buffer_storage;
+    }
+    // W3b kv: test hooks (tests/test-tsr-attn.cpp)
+    if (name != nullptr && strcmp(name, "ggml_backend_tesseract_kv_plane") == 0) {
+        return (void *) tsr_hook_kv_plane;
+    }
+    if (name != nullptr && strcmp(name, "ggml_backend_tesseract_mask_summary") == 0) {
+        return (void *) tsr_hook_mask_summary;
+    }
+    if (name != nullptr && strcmp(name, "ggml_backend_tesseract_att_cfg") == 0) {
+        return (void *) tsr_hook_att_cfg;
     }
     return nullptr;
 }

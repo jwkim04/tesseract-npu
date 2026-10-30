@@ -24,7 +24,10 @@ add_library(tsr_lower STATIC
     ${CMAKE_CURRENT_LIST_DIR}/tsr-lower.cpp
     ${CMAKE_CURRENT_LIST_DIR}/tsr-opl.cpp
     ${CMAKE_CURRENT_LIST_DIR}/tsr-opl-dev.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/tsr-wlayout.cpp)
+    ${CMAKE_CURRENT_LIST_DIR}/tsr-wlayout.cpp
+    # W3b kv: KV-cache buffers (tsr-kvbuf, AT §4.6) and the mask-summary producer (tsr-msum, AT §7.3)
+    ${CMAKE_CURRENT_LIST_DIR}/tsr-kvbuf.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/tsr-msum.cpp)
 set_target_properties(tsr_lower PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
     POSITION_INDEPENDENT_CODE ON)

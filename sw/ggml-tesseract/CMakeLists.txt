@@ -18,6 +18,26 @@ target_compile_features(test-tsr-backend-units PRIVATE cxx_std_17)
 target_compile_options(test-tsr-backend-units PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra)
 set_target_properties(test-tsr-backend-units PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 add_test(NAME ggml_tesseract_units COMMAND test-tsr-backend-units)
+# W3b builder: the M7 builder (tsr-build.cpp: the records of ggml nodes, supports_op M7, fusion,
+# the graph key; SW §9.3) is ggml-aware but device-free: the unit tests compile it with ggml-base
+# when it exists (fusion, dependencies of views, the preload table, the plan key, supports_op against
+# the planners), else they test the ggml-free parts only.
+if (TARGET ggml-base)
+    target_sources(test-tsr-backend-units PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tsr-build.cpp)
+    target_include_directories(test-tsr-backend-units PRIVATE
+        ${TESSERACT_ROOT}/third_party/llama.cpp/ggml/include ${TESSERACT_ROOT}/third_party/llama.cpp/ggml/src)
+    target_link_libraries(test-tsr-backend-units PRIVATE ggml-base)
+    target_compile_definitions(test-tsr-backend-units PRIVATE TSR_UNITS_BUILD=1)
+endif()
+
+# W3b kv: KV-cache buffers (tsr-kvbuf: planes, conversion, state save / load) and the mask-summary
+# producer (tsr-msum: MSUM, f32 copies, readers, promotion) on a host image of the channels (SW §9.3 M7).
+add_executable(test-tsr-kvbuf tests/test-tsr-kvbuf.cpp)
+target_link_libraries(test-tsr-kvbuf PRIVATE tsr_lower tsr_ref)
+target_compile_features(test-tsr-kvbuf PRIVATE cxx_std_17)
+target_compile_options(test-tsr-kvbuf PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra)
+set_target_properties(test-tsr-kvbuf PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+add_test(NAME ggml_tesseract_kvbuf COMMAND test-tsr-kvbuf)
 
 # The launcher on a device (TSR_DEVICE, default sim; the build's firmware image): a list with a JOIN
 # and an ACC_DST record against the spec model, an OPL cache hit, a TILE_ERR (DRAM_RANGE in op 1)
@@ -69,6 +89,14 @@ if (TARGET ggml AND TARGET ggml-tesseract)
     add_test(NAME transport_ggml_e2e_mock_tmax8 COMMAND test-ggml-tesseract)
     set_tests_properties(transport_ggml_e2e_mock_tmax8 PROPERTIES ENVIRONMENT
         "TSR_DEVICE=mock;TSR_MOCK_TMAX=8;TSR_MOCK_NUM_CH=3;TSR_MOCK_DMA_ALIGN=4096;TSR_MOCK_DMA_CHUNK_KIB=12;TSR_SIM_RACE=fatal")
+    # W3b builder: these e2e cases are M6's (MUL_MAT only: "ADD must be rejected"; the IO region
+    # filled to force host memory and the staged path): they run with the device restricted to M6's
+    # kinds (TSR_KINDS=m6, V2-SW-14) and v1's IO-only compute windows (TSR_COMPUTE_WINDOWS=io). M7 is
+    # covered by ggml_tesseract_units, _opl_launch, _attn and the tiny-model graph tests.
+    foreach (_tsr_t ggml_tesseract_e2e ggml_tesseract_e2e_tmax8 ggml_tesseract_e2e_hosted ggml_tesseract_e2e_hosted_tmax8
+                    transport_ggml_e2e_mock transport_ggml_e2e_mock_tmax8)
+        set_property(TEST ${_tsr_t} APPEND PROPERTY ENVIRONMENT "TSR_KINDS=m6" "TSR_COMPUTE_WINDOWS=io")
+    endforeach()
 
     # The single-output MUL_MAT case of test-backend-ops (f32 x f32, m=1 n=1 k=2048), checked
     # bit-exactly against the spec model; see the header of the source for why.
@@ -81,6 +109,25 @@ if (TARGET ggml AND TARGET ggml-tesseract)
     set_target_properties(test-tsr-scalar-nmse PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
     add_test(NAME ggml_tesseract_scalar_nmse COMMAND test-tsr-scalar-nmse)
     set_tests_properties(ggml_tesseract_scalar_nmse PROPERTIES ENVIRONMENT "TSR_SIM_RACE=fatal")
+
+    # W3b kv: SW §10.2 ggml_tesseract_attn: KV buffers (planes, conversion, state save / load), mask
+    # summaries and f32 copies, and SET_ROWS + FLASH_ATTN_EXT on the device against the CPU backend
+    # (NMSE) and tsr_ref_fa (bit for bit), D 64 / 128 / 256, GQA, decode and prefill, causal / SWA /
+    # wrapped ring / GENERAL masks; _tmax8: T_MAX 8 (query tiles of several tokens, head subsets).
+    add_executable(test-tsr-attn tests/test-tsr-attn.cpp)
+    target_include_directories(test-tsr-attn PRIVATE
+        ${TESSERACT_ROOT}/third_party/llama.cpp/ggml/src)          # ggml-quants.h (quantize_row_q8_0_ref)
+    target_link_libraries(test-tsr-attn PRIVATE ggml ggml-base ggml-cpu tsr_ref)
+    target_compile_features(test-tsr-attn PRIVATE cxx_std_17)
+    target_compile_options(test-tsr-attn PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra)
+    set_target_properties(test-tsr-attn PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    add_test(NAME ggml_tesseract_attn COMMAND test-tsr-attn)
+    set_tests_properties(ggml_tesseract_attn PROPERTIES ENVIRONMENT "TSR_SIM_RACE=fatal")
+    add_test(NAME ggml_tesseract_attn_tmax8 COMMAND test-tsr-attn)
+    set_tests_properties(ggml_tesseract_attn_tmax8 PROPERTIES ENVIRONMENT "TSR_SIM_TMAX=8;TSR_SIM_RACE=fatal")
+    # W3b fix: every record in its own op list, so FA_NEW crosses a cut (V2-SW-43)
+    add_test(NAME ggml_tesseract_attn_split1 COMMAND test-tsr-attn)
+    set_tests_properties(ggml_tesseract_attn_split1 PROPERTIES ENVIRONMENT "TSR_OPL_SPLIT=1;TSR_SIM_RACE=fatal")
 
     # test-backend-ops: Tesseract0 vs the CPU backend (spec 검증 전략, 연산 단위), every MUL_MAT
     # case, tolerances untouched. One case is left out here and covered by
@@ -126,4 +173,22 @@ if (CMAKE_VERSION VERSION_GREATER_EQUAL 3.28)
         set_property(TEST test-tokenizers-ggml-vocabs DIRECTORY ${TESSERACT_ROOT}/third_party/llama.cpp/tests
                      PROPERTY DISABLED ON)
     endif()
+endif()
+
+# W3b tiny (P3.6): tiny-model graph tests (ggml_tesseract_graph_*_tiny) and the M7 test-backend-ops
+# coverage (ggml_tesseract_backend_ops_<op>); the generator, the drivers and the rationale are in tests/.
+include(${CMAKE_CURRENT_SOURCE_DIR}/tests/tiny.cmake)
+
+# W3b kv: llama.cpp's state save / load with the KV cache in device KV planes (SW §9.3 "KV buffers",
+# AT §4.6) on the tiny Qwen2 model: device -> device bit-identical logits, device -> CPU state bytes,
+# sequence state into a cleared context (tests/test-tsr-kvstate.cpp).
+if (TARGET llama AND TARGET tsr_tiny_models AND TARGET ggml-tesseract)
+    add_executable(test-tsr-kvstate tests/test-tsr-kvstate.cpp)
+    target_link_libraries(test-tsr-kvstate PRIVATE llama ggml)
+    target_compile_features(test-tsr-kvstate PRIVATE cxx_std_17)
+    target_compile_options(test-tsr-kvstate PRIVATE -Wall -Wextra)
+    set_target_properties(test-tsr-kvstate PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    add_test(NAME ggml_tesseract_kvstate COMMAND test-tsr-kvstate ${TSR_TINY_MODEL_DIR}/qwen2-tiny-q8_0.gguf)
+    set_tests_properties(ggml_tesseract_kvstate PROPERTIES TIMEOUT 300
+        ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal;LLAMA_ATTN_ROT_DISABLE=1")
 endif()

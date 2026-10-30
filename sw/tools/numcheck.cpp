@@ -235,6 +235,25 @@ static std::unordered_map<std::string, ggml_type> gguf_tensor_types(const std::v
     return m;
 }
 
+// The token-row scale of the model graph (klcheck.cpp's token_row_scale, the same rule): llama.cpp
+// multiplies token rows only by tok_scale (`inp_scale_rows`, src/llama-graph.cpp:2766-2783, :104-112),
+// sqrtf(n_embd) for Gemma 3 / 3n / 4 and the Gemma embedding models; the embd rows fed here carry it
+// so that the embd path stays the token path (and the "tokens" self-check run bit-identical).
+static float token_row_scale(gguf_context * g) {
+    const int64_t ka = gguf_find_key(g, "general.architecture");
+    if (ka < 0 || gguf_get_kv_type(g, ka) != GGUF_TYPE_STRING) return 1.0f;
+    const std::string arch = gguf_get_val_str(g, ka);
+    static const char * const scaled[] = {"gemma3", "gemma3n", "gemma4", "gemma-embedding", "gemma-embedding2"};
+    if (std::find_if(std::begin(scaled), std::end(scaled), [&](const char * a) { return arch == a; }) == std::end(scaled)) {
+        return 1.0f;
+    }
+    const int64_t ke = gguf_find_key(g, (arch + ".embedding_length").c_str());
+    if (ke < 0) die("%s: no %s.embedding_length", arch.c_str(), arch.c_str());
+    const int64_t n_embd = gguf_get_kv_type(g, ke) == GGUF_TYPE_UINT64 ? (int64_t) gguf_get_val_u64(g, ke)
+                                                                        : (int64_t) gguf_get_val_u32(g, ke);
+    return sqrtf((float) n_embd);
+}
+
 struct embd_table {
     std::string     file;
     int             fd       = -1;
@@ -243,6 +262,7 @@ struct embd_table {
     int64_t         n_embd   = 0, n_rows = 0;
     size_t          row_size = 0;
     ggml_to_float_t to_float = nullptr;
+    float           tok_scale = 1.0f;       // token_row_scale() (first split's metadata)
 
     ~embd_table() { if (fd >= 0) close(fd); }
 
@@ -251,6 +271,7 @@ struct embd_table {
             gguf_init_params gp = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
             gguf_context * g = gguf_init_from_file(path.c_str(), gp);
             if (!g) die("%s: cannot read GGUF", path.c_str());
+            if (&path == &files[0]) tok_scale = token_row_scale(g);
             const int64_t t = gguf_find_tensor(g, "token_embd.weight");
             if (t >= 0) {
                 const int64_t * ne = gguf_get_tensor_ne(g, t);
@@ -271,7 +292,8 @@ struct embd_table {
         die("%s: token_embd.weight not found", files[0].c_str());
     }
 
-    // the row the CPU backend's GET_ROWS produces for `tok` (ggml to_float of the GGUF bytes)
+    // the row the CPU backend's GET_ROWS produces for `tok` (ggml to_float of the GGUF bytes), times
+    // the token-row scale (one f32 multiply, as ggml's MUL by inp_scale_rows)
     void row(int32_t tok, float * dst) const {
         if (tok < 0 || tok >= n_rows) die("token %d outside token_embd (%" PRId64 " rows)", tok, n_rows);
         std::vector<uint8_t> raw(row_size);
@@ -280,6 +302,9 @@ struct embd_table {
         }
         if (to_float) to_float(raw.data(), dst, n_embd);
         else memcpy(dst, raw.data(), sizeof(float) * n_embd);
+        if (tok_scale != 1.0f) {
+            for (int64_t j = 0; j < n_embd; ++j) dst[j] *= tok_scale;
+        }
     }
 };
 
@@ -653,6 +678,9 @@ static int cmd_run(int argc, char ** argv) {
     // llama.cpp's Hadamard KV rotation off in every run (V2-SW-16, V2-SW-22; read at context creation)
     if (o.attn_rot_disable) setenv("LLAMA_ATTN_ROT_DISABLE", "1", 1);
     else                    unsetenv("LLAMA_ATTN_ROT_DISABLE");
+    // the phase's device kinds, as klcheck: M6 MUL_MAT only (V2-SW-14), M7 every kind (V2-SW-49)
+    if (o.phase == "m6") setenv("TSR_KINDS", "m6", 1);
+    else                 unsetenv("TSR_KINDS");
 
     llama_log_set(log_cb, nullptr);
     llama_backend_init();
@@ -800,6 +828,7 @@ static int cmd_run(int argc, char ** argv) {
     info["n_layer"]         = n_layer;
     info["n_embd"]          = n_embd;
     info["token_embd_type"] = o.input != "tokens" ? json(ggml_type_name(embd.type)) : json(nullptr);
+    info["token_row_scale"] = o.input != "tokens" ? json((double) embd.tok_scale) : json(nullptr);   // Gemma 3/4: sqrt(n_embd)
     info["prompt"]          = o.prompt;
     info["prompt_used"]     = detok(vocab, toks);
     info["n_ctx"]           = cp.n_ctx;
@@ -1029,8 +1058,9 @@ static int cmd_selfcheck(int argc, char ** argv) {
         for (const auto & kv : wtypes) types += (types.empty() ? "" : ", ") + kv.first + " " + std::to_string(kv.second);
         check(wmm > 0 && wmm_tsr == wmm, "dev: %zu/%zu weight MUL_MATs computed by Tesseract (%s)%s", wmm_tsr, wmm, types.c_str(),
               first_bad.empty() ? "" : (", first not: " + first_bad).c_str());
-        printf("         dev: %zu other MUL_MATs (attention, KV on the host), %zu non-weight nodes on Tesseract, %zu nodes on CPU\n",
-               mm_other, other_tsr, cpu_nodes);
+        const bool kv_dev = dev.meta.contains("info") && dev.meta["info"].value("offload_kqv", false);
+        printf("         dev: %zu other MUL_MATs (%s), %zu non-weight nodes on Tesseract, %zu nodes on CPU\n", mm_other,
+               kv_dev ? "M7: attention and KV on the device" : "attention, KV on the host", other_tsr, cpu_nodes);
         size_t src1 = 0;
         for (const json & e : dev.meta["nodes"]) src1 += !e["src1_file"].is_null();
         printf("         dev: %zu weight MUL_MATs with src1 dumps\n", src1);

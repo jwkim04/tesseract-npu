@@ -23,7 +23,8 @@
 // Settings (v2, V2-SW-22, docs/v2/06-software-verification.md §9.5, §10.4): every phase runs with
 // flash attention on, a q8_0 K and V cache and LLAMA_ATTN_ROT_DISABLE=1 (set by the tool);
 // offload_kqv is false in M6 (--phase m6, the default) and true in M7 (--phase m7); all of it is
-// recorded in the file header (version 2), and compare warns when two files differ.
+// recorded in the file header (version 2), and compare warns when two files differ. The phase also
+// sets TSR_KINDS (m6: the device takes MUL_MAT only; m7: every M7 kind).
 
 #include "ggml-backend.h"
 #include "ggml.h"
@@ -180,6 +181,12 @@ static const char KLC_MAGIC[8] = {'T', 'S', 'R', 'K', 'L', 'C', '0', '1'};
 // fields read as KLC_PHASE_V1 with f16 / f16.
 static const uint32_t KLC_VERSION = 2;
 enum { KLC_PHASE_V1 = 0, KLC_PHASE_M6 = 6, KLC_PHASE_M7 = 7 };
+// The SWA layers' KV cache (W3b, one more word of the reserved area, version unchanged): 0 = not
+// recorded (files written before; klcheck then used llama_context_default_params' full-size SWA
+// cache), 1 = full-size (--swa-full on), 2 = the SWA ring of pad(n_swa + n_ubatch, 256) cells
+// (--swa-full off, the default: llama-cli's and llama-server's default, common.h swa_full = false;
+// the M7 gate's long Gemma 4 prompts must wrap it, AT §13.6). Models without SWA layers ignore it.
+enum { KLC_SWA_UNRECORDED = 0, KLC_SWA_FULL = 1, KLC_SWA_RING = 2 };
 
 struct klc_header {
     char     magic[8];
@@ -218,7 +225,8 @@ struct klc_header {
     uint32_t offload_kqv;      // 1: KV cache and attention on the device (M7); 0: on the host (M6, v1)
     uint32_t attn_rot_disable; // 1: the run had LLAMA_ATTN_ROT_DISABLE=1 (llama.cpp's Hadamard KV rotation off)
     uint32_t phase;            // KLC_PHASE_M6 / _M7: which phase's settings; KLC_PHASE_V1 for a version 1 file
-    uint8_t  reserved[12];
+    uint32_t swa_cache;        // KLC_SWA_* (0 in files written before the field)
+    uint8_t  reserved[8];
 };
 static_assert(sizeof(klc_header) == 512, "klc_header layout");
 
@@ -253,12 +261,15 @@ static const char * type_name_or(int32_t t) {
 static const char * phase_name(uint32_t p) { return p == KLC_PHASE_M6 ? "M6" : p == KLC_PHASE_M7 ? "M7" : p == KLC_PHASE_V1 ? "v1" : "?"; }
 // The settings a file was written with (V2-SW-22), one line.
 static std::string settings_str(const klc_header & h) {
-    char b[256];
-    snprintf(b, sizeof(b), "%s settings: flash attn %s, KV %s/%s on the %s (offload_kqv %u), KV rotation %s",
+    char b[320];
+    snprintf(b, sizeof(b), "%s settings: flash attn %s, KV %s/%s on the %s (offload_kqv %u), KV rotation %s%s",
              phase_name(h.phase), h.flash_attn ? "on" : "off", type_name_or(h.type_k), type_name_or(h.type_v),
-             h.offload_kqv ? "device" : "host", h.offload_kqv, h.attn_rot_disable ? "off (LLAMA_ATTN_ROT_DISABLE=1)" : "not disabled");
+             h.offload_kqv ? "device" : "host", h.offload_kqv, h.attn_rot_disable ? "off (LLAMA_ATTN_ROT_DISABLE=1)" : "not disabled",
+             h.swa_cache == KLC_SWA_RING ? ", SWA cache ring" : h.swa_cache == KLC_SWA_FULL ? ", SWA cache full-size" : "");
     return b;
 }
+// a file without the field ran with the full-size SWA cache
+static uint32_t swa_cache_of(const klc_header & h) { return h.swa_cache == KLC_SWA_UNRECORDED ? (uint32_t) KLC_SWA_FULL : h.swa_cache; }
 // The device kinds a run accepts (SW §9.2 TSR_DEVICE values with a device, and cpu).
 static bool device_kind_ok(const std::string & d) {
     return d == "cpu" || d == "sim" || d == "mock" || d == "vkernel" || d == "xrt";
@@ -460,6 +471,28 @@ static std::vector<std::string> load_prompts(const std::string & file) {
 // ---------------------------------------------------------------------------------------------
 // token_embd rows straight from the GGUF (all splits), dequantized with ggml's to_float — the
 // function the CPU backend's GET_ROWS uses, so `--input embd` reproduces the token path exactly.
+// Rows are scaled by the token-row scale the model graph gives token rows only: llama.cpp's
+// build_inp_embd(tok_embd, tok_scale) multiplies by `inp_scale_rows`, which is tok_scale for token
+// rows and 1 for embd rows (src/llama-graph.cpp:2766-2783, :104-112). Gemma 3 / 3n / 4 and the
+// Gemma embedding models pass sqrtf(n_embd) (src/models/gemma4.cpp:171); without the same factor
+// here the embd and floor runs would feed unscaled rows (W3b: the Gemma 4 floor was 8 nats, top-1
+// 0 %). The product is one f32 multiply, as ggml's MUL, so the embd path stays bit-identical.
+// Gemma and Gemma 2 scale after the select, for both paths alike: no factor here.
+
+static float token_row_scale(gguf_context * g) {
+    const int64_t ka = gguf_find_key(g, "general.architecture");
+    if (ka < 0 || gguf_get_kv_type(g, ka) != GGUF_TYPE_STRING) return 1.0f;
+    const std::string arch = gguf_get_val_str(g, ka);
+    static const char * const scaled[] = {"gemma3", "gemma3n", "gemma4", "gemma-embedding", "gemma-embedding2"};
+    if (std::find_if(std::begin(scaled), std::end(scaled), [&](const char * a) { return arch == a; }) == std::end(scaled)) {
+        return 1.0f;
+    }
+    const int64_t ke = gguf_find_key(g, (arch + ".embedding_length").c_str());
+    if (ke < 0) die("%s: no %s.embedding_length", arch.c_str(), arch.c_str());
+    const int64_t n_embd = gguf_get_kv_type(g, ke) == GGUF_TYPE_UINT64 ? (int64_t) gguf_get_val_u64(g, ke)
+                                                                        : (int64_t) gguf_get_val_u32(g, ke);
+    return sqrtf((float) n_embd);                   // the graph's sqrtf(n_embd) of an int64_t n_embd
+}
 
 struct embd_table {
     std::string         file;           // the GGUF (split) that holds token_embd.weight
@@ -470,6 +503,7 @@ struct embd_table {
     int64_t             n_rows   = 0;
     size_t              row_size = 0;
     ggml_to_float_t     to_float = nullptr;
+    float               tok_scale = 1.0f;   // token_row_scale() of the model (first split's metadata)
     std::vector<uint8_t> raw;
     std::unordered_map<int32_t, std::vector<float>> cache;
 
@@ -490,6 +524,7 @@ struct embd_table {
                     default: break;
                 }
             }
+            tok_scale = token_row_scale(g);         // the model's metadata is in the first split
         }
         const int64_t t = gguf_find_tensor(g, "token_embd.weight");
         if (t >= 0) {
@@ -533,6 +568,9 @@ struct embd_table {
         std::vector<float> v((size_t) n_embd);
         if (to_float) to_float(raw.data(), v.data(), n_embd);
         else memcpy(v.data(), raw.data(), sizeof(float) * n_embd);
+        if (tok_scale != 1.0f) {
+            for (float & x : v) x *= tok_scale;
+        }
         return cache.emplace(tok, std::move(v)).first->second.data();
     }
 };
@@ -565,6 +603,7 @@ struct run_opts {
     int         offload_kqv = -1;                 // -1: the phase's value; 0 / 1: --offload-kqv
     ggml_type   type_k = GGML_TYPE_Q8_0, type_v = GGML_TYPE_Q8_0;
     int         attn_rot_disable = 1;             // --attn-rot on: 0 (experiments only; recorded)
+    int         swa_full = 0;                     // --swa-full on: llama_context_default_params' full-size SWA cache
     bool        offload() const { return offload_kqv >= 0 ? offload_kqv != 0 : phase == KLC_PHASE_M7; }
 };
 
@@ -631,6 +670,7 @@ static void create_context(session & s, const run_opts & o, int n_ctx_needed, in
     cp.type_k          = o.type_k;           // -ctk q8_0 (V2-SW-22)
     cp.type_v          = o.type_v;           // -ctv q8_0 (needs FA: src/llama-context.cpp refuses a quantized V without it)
     cp.offload_kqv     = o.offload();        // M6: false (-nkvo, attention on the host); M7: true
+    cp.swa_full        = o.swa_full != 0;    // default off: the SWA ring, as llama-cli / llama-server (KLC_SWA_*)
     cp.no_perf         = false;
     s.ctx = llama_init_from_model(s.model, cp);
     if (!s.ctx) die("failed to create the llama context");
@@ -722,6 +762,10 @@ static void decode_span(session & s, uint32_t seq_index, const std::vector<int32
             b.seq_id[k][0] = 0;
             b.logits[k]    = (i >= r0 && i < r1) ? 1 : 0;
         }
+        // -v: one marker line before and after each llama_decode, so that a log reader can assign
+        // the backend's per-launch lines (TSR_DEBUG=1) and the scheduler's split listings
+        // (GGML_SCHED_DEBUG) to a decode call (the tiny-model graph ctests, SW §10.2)
+        if (g_verbose) fprintf(stderr, "klcheck: decode begin seq %u tokens [%d, %d) n_tokens %d\n", seq_index, c0, c1, c1 - c0);
         const int ret = llama_decode(s.ctx, b);
         if (ret != 0) die("llama_decode failed (%d) at token index %d", ret, c0);
         for (int i = std::max(c0, r0); i < std::min(c1, r1); ++i) {
@@ -730,6 +774,7 @@ static void decode_span(session & s, uint32_t seq_index, const std::vector<int32
             memcpy(rows + (size_t) (i - row0) * s.n_vocab, lg, sizeof(float) * s.n_vocab);
         }
         llama_synchronize(s.ctx);
+        if (g_verbose) fprintf(stderr, "klcheck: decode end\n");
         if (c1 - c0 > 1) s.n_prefill_tok += c1 - c0; else s.n_gen_tok++;
     }
 }
@@ -760,7 +805,9 @@ static void usage_run() {
         "  --offload-kqv on|off  override the phase's offload_kqv\n"
         "  --fa on|off         flash attention (default on)\n"
         "  -ctk TYPE -ctv TYPE K / V cache types (default q8_0 / q8_0)\n"
-        "  --attn-rot on|off   llama.cpp's Hadamard KV rotation (default off: LLAMA_ATTN_ROT_DISABLE=1)\n");
+        "  --attn-rot on|off   llama.cpp's Hadamard KV rotation (default off: LLAMA_ATTN_ROT_DISABLE=1)\n"
+        "  --swa-full on|off   full-size SWA KV cache (default off: the SWA ring of pad(n_swa + n_ubatch, 256) cells,\n"
+        "                      as llama-cli / llama-server; recorded)\n");
 }
 
 static void parse_run(int argc, char ** argv, run_opts & o) {
@@ -800,6 +847,7 @@ static void parse_run(int argc, char ** argv, run_opts & o) {
         else if (a == "--fa")                  o.fa = parse_on_off("--fa", val());
         else if (a == "--offload-kqv")         o.offload_kqv = parse_on_off("--offload-kqv", val());
         else if (a == "--attn-rot")            o.attn_rot_disable = !parse_on_off("--attn-rot", val());
+        else if (a == "--swa-full")            o.swa_full = parse_on_off("--swa-full", val());
         else if (a == "--phase")               o.phase = parse_phase(val());
         else if (a == "-ctk" || a == "--cache-type-k") o.type_k = parse_cache_type("-ctk", val());
         else if (a == "-ctv" || a == "--cache-type-v") o.type_v = parse_cache_type("-ctv", val());
@@ -832,6 +880,10 @@ static int cmd_run(int argc, char ** argv) {
     // created): off for every phase, device and CPU alike (V2-SW-16, V2-SW-22).
     if (o.attn_rot_disable) setenv("LLAMA_ATTN_ROT_DISABLE", "1", 1);
     else                    unsetenv("LLAMA_ATTN_ROT_DISABLE");
+    // The phase also picks the device's kinds (read by the backend's supports_op): M6 runs MUL_MAT
+    // only, v1's splits (V2-SW-14); M7 every kind of SW §9.3 (W3b integration, V2-SW-49).
+    if (o.phase == KLC_PHASE_M6) setenv("TSR_KINDS", "m6", 1);
+    else                         unsetenv("TSR_KINDS");
 
     const bool replay = !o.tokens.empty();
     std::vector<plan_seq> plan;
@@ -877,7 +929,8 @@ static int cmd_run(int argc, char ** argv) {
             h.perturb_seed != (o.perturb ? o.seed : 0) || fixed_str(h.device, sizeof(h.device)) != o.device ||
             h.flash_attn != (uint32_t) o.fa || (!replay && (h.n_gen != (uint32_t) o.n_gen || h.prompt_tail != (uint32_t) o.prompt_tail)) ||
             h.type_k != (int32_t) o.type_k || h.type_v != (int32_t) o.type_v || h.offload_kqv != (uint32_t) o.offload() ||
-            h.attn_rot_disable != (uint32_t) o.attn_rot_disable || h.phase != (uint32_t) o.phase) {
+            h.attn_rot_disable != (uint32_t) o.attn_rot_disable || h.phase != (uint32_t) o.phase ||
+            swa_cache_of(h) != (o.swa_full ? (uint32_t) KLC_SWA_FULL : (uint32_t) KLC_SWA_RING)) {
             die("--resume: %s was written with different options (%s)", o.out.c_str(), settings_str(h).c_str());
         }
         if (h.n_seq >= plan.size()) {
@@ -955,6 +1008,7 @@ static int cmd_run(int argc, char ** argv) {
     h.type_v           = (int32_t) o.type_v;
     h.offload_kqv      = o.offload() ? 1u : 0u;
     h.phase            = (uint32_t) o.phase;
+    h.swa_cache        = o.swa_full ? KLC_SWA_FULL : KLC_SWA_RING;
     {   // what the context saw (set above, before llama_init_from_model)
         const char * e = getenv("LLAMA_ATTN_ROT_DISABLE");
         h.attn_rot_disable = e != nullptr && atoi(e) != 0 ? 1u : 0u;
@@ -1154,7 +1208,8 @@ static void check_pair(const klc_header & a, const std::string & pa, const klc_h
     // V2-SW-22: the device, CPU and floor runs of one comparison use the same KV type, FA and
     // rotation settings (offload_kqv differs legitimately between a device run and a CPU run only
     // in what it moves; it is reported, not checked).
-    if (a.type_k != b.type_k || a.type_v != b.type_v || a.attn_rot_disable != b.attn_rot_disable || a.phase != b.phase) {
+    if (a.type_k != b.type_k || a.type_v != b.type_v || a.attn_rot_disable != b.attn_rot_disable || a.phase != b.phase ||
+        swa_cache_of(a) != swa_cache_of(b)) {
         fprintf(stderr, "klcheck: WARNING: %s and %s were written with different settings:\n  %s\n  %s\n", pa.c_str(),
                 pb.c_str(), settings_str(a).c_str(), settings_str(b).c_str());
     }
@@ -1341,10 +1396,10 @@ static int compare_files(const cmp_opts & o, cmp_result & R) {
         fprintf(f, "  \"model\": %s, \"n_vocab\": %u, \"n_seq\": %u, \"n_rows\": %zu,\n",
                 json_str(fixed_str(dev.h.model_desc, 128)).c_str(), n_vocab, n_seq, R.rows.size());
         fprintf(f, "  \"settings\": {\"phase\": %s, \"flash_attn\": %s, \"type_k\": %s, \"type_v\": %s, \"offload_kqv\": %s, "
-                   "\"attn_rot_disable\": %s},\n",
+                   "\"attn_rot_disable\": %s, \"swa_cache\": %s},\n",
                 json_str(phase_name(dev.h.phase)).c_str(), dev.h.flash_attn ? "true" : "false", json_str(type_name_or(dev.h.type_k)).c_str(),
                 json_str(type_name_or(dev.h.type_v)).c_str(), dev.h.offload_kqv ? "true" : "false",
-                dev.h.attn_rot_disable ? "true" : "false");
+                dev.h.attn_rot_disable ? "true" : "false", json_str(swa_cache_of(dev.h) == KLC_SWA_RING ? "ring" : "full").c_str());
         fprintf(f, "  \"kl_ratio_limit\": %g, \"min_top1\": %g, \"min_kl\": %g, \"ratio\": %.6f, \"cap\": %.9e,\n", o.kl_ratio,
                 o.min_top1, o.min_kl, R.ratio, R.cap);
         fprintf(f, "  \"complete\": %s, \"nonfinite\": %" PRIu64 ", \"pass\": %s,\n", R.complete ? "true" : "false", R.nonfinite,
@@ -1444,7 +1499,7 @@ static int cmd_all(int argc, char ** argv, const char * self) {
         else if (a == "--chat")                 gen_only.push_back(a);
         else if (a == "-t" || a == "-c" || a == "-b" || a == "-ub" || a == "--fa" || a == "--replay" || a == "--phase" ||
                  a == "--offload-kqv" || a == "-ctk" || a == "--cache-type-k" || a == "-ctv" || a == "--cache-type-v" ||
-                 a == "--attn-rot") {
+                 a == "--attn-rot" || a == "--swa-full") {
             common.push_back(a); common.push_back(val());   // the v2 settings go to every phase (V2-SW-22)
         }
         else if (a == "--repack" || a == "--resume" || a == "-v") common.push_back(a);
@@ -1594,7 +1649,8 @@ static int cmd_embd(int argc, char ** argv) {
         else if (a == "--pos" && i + 1 < argc) pos = (uint32_t) parse_int("--pos", argv[++i], 0, UINT32_MAX);
         else toks.push_back((int32_t) parse_int("TOKEN", argv[i], 0, INT32_MAX));
     }
-    printf("token_embd.weight: %s [%" PRId64 ", %" PRId64 "] in %s\n", ggml_type_name(t.type), t.n_embd, t.n_rows, t.file.c_str());
+    printf("token_embd.weight: %s [%" PRId64 ", %" PRId64 "] in %s, token-row scale %.9g\n", ggml_type_name(t.type), t.n_embd,
+           t.n_rows, t.file.c_str(), t.tok_scale);
     for (int32_t tok : toks) {
         const float * r = t.row(tok);
         const uint64_t key = embd_nudge_key(seed, seq, pos);
@@ -1821,6 +1877,18 @@ static int cmd_selftest(int argc, char ** argv) {
                  settings_str(g).c_str());
         ST_CHECK(settings_str(g) == "M7 settings: flash attn on, KV q8_0/f16 on the device (offload_kqv 1), KV rotation off "
                                     "(LLAMA_ATTN_ROT_DISABLE=1)", "settings string: %s", settings_str(g).c_str());
+        ST_CHECK(swa_cache_of(g) == KLC_SWA_FULL, "a header without the SWA field reads as the full-size SWA cache");
+        h.swa_cache = KLC_SWA_RING;
+        {
+            klc_writer w;
+            w.create(fi, h);
+        }
+        f = fopen(fi.c_str(), "rb");
+        ST_CHECK(f && klc_read_header(f, fi, &g, &err), "v2 header (SWA ring) read: %s", err.c_str());
+        if (f) fclose(f);
+        ST_CHECK(g.swa_cache == KLC_SWA_RING && settings_str(g) == "M7 settings: flash attn on, KV q8_0/f16 on the device "
+                 "(offload_kqv 1), KV rotation off (LLAMA_ATTN_ROT_DISABLE=1), SWA cache ring", "SWA field round trip: %s",
+                 settings_str(g).c_str());
         klc_header v1 = st_header(V, NS, "sim", KLC_MODE_GENERATE);
         v1.version = 1;
         v1.flash_attn = 0;

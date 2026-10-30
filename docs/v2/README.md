@@ -231,8 +231,10 @@ The integration applied them as follows (each item names the winning definition)
 31. **Debug software packages** — P1.13, P3.7, P3.8 added to the work plan.
 32. **Toolchain** — xPack GCC is the supported compiler; `tsr_rv` gets a test bus profile for
     riscv-tests and Spike.
-33. **Unselected graph branches** — DUP and flagless nodes are unsupported (V2-SW-33).
-34. **Compute heap** sized from the reserve graph instead of fixed 512 MiB windows (V2-SW-26).
+33. **Unselected graph branches** — DUP and flagless nodes are unsupported (V2-SW-33; the flag rule
+    amended by V2-SW-40 at W3b).
+34. **Compute heap** sized from the reserve graph instead of fixed 512 MiB windows (V2-SW-26; as built,
+    WEIGHT-heap reservations, V2-SW-46).
 
 Open items that the drafts left and the integration resolved: the 4-extent checker slot, I3 for
 the VU, the VU / AT / DB resource figures in the SLR1 budget, whether AT has a separate unit (no),
@@ -429,7 +431,7 @@ the alternatives and the full rationale.
 | V2-SW-14 | M6 llama.cpp path | The graph executor with MUL_MAT-only op lists, one launch per v1 split | One mechanism from M6 to M7; like-for-like gates |
 | V2-SW-15 | Index inputs | Preload KV write indices, row ids, positions and each KQ mask's MSUM at launch start with one join | Avoids a join per SET_ROWS or FA op |
 | V2-SW-16 | llama.cpp Hadamard KV rotation | LLAMA_ATTN_ROT_DISABLE=1 for device runs and every baseline; device rotation is a follow-up | The rotation matrix is a graph input that MVM cannot use |
-| V2-SW-17 | KV cache buffers | Recognise llama.cpp KV buffers by tensor names; AT's layout in a KV heap; converting get/set/clear; no context shift in M7 | Names are the stable signal; state save/load keeps working |
+| V2-SW-17 | KV cache buffers (as built: V2-SW-47) | Recognise llama.cpp KV buffers by tensor names; AT's layout in a KV heap; converting get/set/clear; no context shift in M7 | Names are the stable signal; state save/load keeps working |
 | V2-SW-18 | Host protocol layer | One protocol implementation of EX §10 over all kdevs; sim is a kdev with idle() | The card's host code path is tested on every sim run |
 | V2-SW-19 | Test access to the queues | tsr_sim_push / tsr_sim_qctrl hooks in the simulator library only, never through tsr_transport | Directed tests without firmware; D15 holds for every real path |
 | V2-SW-20 | Planning code | Freestanding plan.hpp (tiling, QA_LINES, ROW_BEATS, scratch needs) compiled for host and firmware | supports_op rejects exactly what the firmware cannot plan |
@@ -438,20 +440,34 @@ the alternatives and the full rationale.
 | V2-SW-23 | Approximate-math verification | Exhaustive 2^32 bit-exact check vs an independent numpy model, ulp bounds vs double, RTL exhaustive opt-in; GELU16 over all 65,536 fp16 inputs vs the pinned table | Unary f32 functions are fully enumerable |
 | V2-SW-24 | Launch watchdog | 60 s default, counted only while not halted and no tile stop is active, off in SERIAL; transport mutex released between polls; DB's ladder on timeout | A GDB breakpoint inside llama.cpp must not trigger a device reset (D18) |
 | V2-SW-25 | Kernel test builds | Host build (ASan/UBSan) plus RV build on tsr_rv (the reference); ctest runs both | Fast logic checks; the RV build proves control flow and ABI |
-| V2-SW-26 | Compute-buffer placement | Per-channel compute heap between weights and KV planes sized from the reserve graph, plus ch0 IO and ch1-3 low 512 MiB; get_max_size ≥ largest tensor | Gemma 4's 512 MiB logits chunk would fill a fixed window and add a launch per token |
+| V2-SW-26 | Compute-buffer placement (amended by V2-SW-46) | Per-channel compute heap between weights and KV planes sized from the reserve graph, plus ch0 IO and ch1-3 low 512 MiB; get_max_size ≥ largest tensor | Gemma 4's 512 MiB logits chunk would fill a fixed window and add a launch per token |
 | V2-SW-27 | numcheck on v2 | Rely on cb_eval per-node observation (one launch per node); no special backend mode | No second code path to keep correct |
 | V2-SW-28 | Card selftest | selftest kernel with numbered sub-tests; tsr-selftest compares with the same image on the in-process simulator | D15 requires kernels; exact expectations without golden files |
 | V2-SW-29 | Op-list size cap | At most 4096 ops per launch (32 KiB of DTCM tables); the builder splits larger graphs | Static DTCM use; decode needs about 1.3-2 K ops |
 | V2-SW-30 | Timing independence of firmware | Timing-dependent reads never influence pushes, deps, stores or records; ISSUE_PIDX and ISSUED_SEQ are exact | Makes card logits bit-identical to the simulator |
 | V2-SW-31 | GELU in llama.cpp graphs | GGML GELU and GEGLU map to the VU's GELU16/GEGLU16; exact tanh GELU for M8/PyTorch | Matches the CPU's fp16-table form |
-| V2-SW-32 | Mask summaries | Backend writes the MSUM (and an f32 copy for GENERAL masks) on set_tensor of 'kq_mask' tensors, reserved via get_alloc_size; FA refers to it via the preload table | The cached op list stays valid per token; the device never reads F16 |
-| V2-SW-33 | Unselected graph branches | DUP, non-KV SET_ROWS and nodes without GGML_TENSOR_FLAG_COMPUTE unsupported; graph_compute skips flagless nodes | Prevents a second split and launch per token |
+| V2-SW-32 | Mask summaries (amended by V2-SW-48) | Backend writes the MSUM (and an f32 copy for GENERAL masks) on set_tensor of 'kq_mask' tensors, reserved via get_alloc_size; FA refers to it via the preload table | The cached op list stays valid per token; the device never reads F16 |
+| V2-SW-33 | Unselected graph branches (flag rule amended by V2-SW-40) | DUP, non-KV SET_ROWS and nodes without GGML_TENSOR_FLAG_COMPUTE unsupported; graph_compute skips flagless nodes | Prevents a second split and launch per token |
 | V2-SW-34 | Firmware optimisation flags (amends V2-SW-8) | -Os for the image; kernels/graph.cpp and kernels/k_*.cpp add -O2 | −1 % per MUL_MAT record, −5 to −7 % per JOIN / NOP record, −23 % RISC-V time per 0.5B layer for +2.2 KiB ITCM |
 | V2-SW-35 | Executor hot path | Records read in place after the op's control-window accesses; T = 1 MUL_MAT fast path (leaf, one credit read per op, ring alloc without deps); planning stays in firmware; spm_ring O(1), 128-block table; streamed lists keep W2a's chunk-LD position; the executor's and MUL_MAT's pushes are W2a's except PROF markers, pinned by trace-digest tests | The MVM no longer idles on issue; 1,518 → 387 RISC-V cycles per 0.5B decode record as spin-free work with deep queues (Ibex maxperf; small 1,966 → 485); 401 with U200 queues, 437 by W2a's method |
 | V2-SW-36 | The one-tile block (W2b integration; size W2b fix) | One fixed SPM block (1,024 lines) for every single-tile record of a DMA-bracketed kind, fast and general path alike; MUL_MAT and FLASH_ATTN keep the ring (budget 60,144 lines); GLU's larger decode rows take a ring block in the fast path | The DMA queue serialises DMA-bracketed tiles anyway: no dep, record or release; −60 to −80 RISC-V cycles per short record; M6 trace digests unchanged; 1,024 (not 4,096) lines keep MUL_MAT's prefill T-tile of the Qwen2.5 0.5B–32B output heads at 3 |
 | V2-SW-37 | M7 dispatch (W2b integration) | A leaf fast entry per short kind in the kind table, called with (args, kflags, d); the handler out of line on "not taken" | −10 to −25 cycles per short record; MUL_MAT's path unchanged |
 | V2-SW-38 | ITCM budget (W2b integration) | 80 KiB for the production image (69.7 KB with the M7 kinds), 48 KiB left for M8 / M9; test images bound by the ITCM | The per-kind leaf fast paths meet the issue-rate requirement; shared bodies cost 22–29 cycles per record |
 | V2-SW-39 | Staged-word reuse and hot entries (W2b fix) | Fast-path pushes skip `ISSUE_W` stores of words the record's previous push staged with the same value (CC §5.1; host builds check each claim) and unused ticket reads; straight-line hot entries for RMS_NORM / ROPE's common decode records; `op_loop` without MARK / SERIAL tests for plain lists | Every short kind ≤ 350 RISC-V cycles at the decode shapes (RMS_NORM 324, ROPE 325, SCALE with a bias 336) without an OPL change |
+| V2-SW-40 | Flagless nodes (W3b; amends R1 / V2-SW-33) | supports_op does not test GGML_TENSOR_FLAG_COMPUTE; DUP, non-KV SET_ROWS and the quantized tok_embd GET_ROWS are refused by their own rules; graph_compute skips flagless nodes | test-backend-ops asks before the flag is set; decode graphs are still one CPU + one Tesseract split |
+| V2-SW-41 | supports_op of the M7 kinds (W3b) | One lowering (`tsr_lower_m7`) in probe mode + `check_args` + the kind's planner; 64-byte rule (a result that is a view has rows of whole lines; one row of its own may end inside a line); KV views as llama.cpp builds them; llama.cpp's ROPE placement probe planned as a full rotation | The host refuses exactly what the firmware cannot plan (2,850 shapes, 0 disagreements); Gemma 4's rope_freqs stays on the device |
+| V2-SW-42 | Fusion conditions (W3b) | MUL_MAT + ADD (bias, residual) and RMS_NORM + MUL (weight) when the first node's whole-graph use count is 1, no view / output, all operands on the device, nothing in between touches the operands or result | Bit-identical to the unfused records; 168 pairs per 0.5B token, 289 per Gemma 4 12B token |
+| V2-SW-43 | List cuts and FA_NEW (W3b) | Cut only at 4,096 records or a full 256-line preload area; FA_NEW across cuts as a preload entry of the FA's list; FLASH_ATTN of T > 680 tokens on the CPU (MSUM + FA_NEW indices over 256 lines) | One launch per decode token; outputs independent of cuts (a 3-chunk wrapped ring bit-exact with every record in its own list) |
+| V2-SW-44 | Data-dependent FA refusals (W3b) | The mask producer plans every reader's tiles and promotes a refused tile's MSUM to GENERAL with the f32 copy; no CPU fallback | One launch per token; the simulator stays the bit-exact oracle; never triggered at U200 parameters |
+| V2-SW-45 | Plan cache (W3b; R7) | Lists cached by `tsr_graph_key` (addresses, shapes, op params; not values) + placement epoch; mask readers re-registered on a hit; LRU of 16 | 0.5B 8 × 64 tokens: 6 builds, 506 hits |
+| V2-SW-46 | Compute windows (W3b; amends V2-SW-26) | ch0 IO, else ch1-3 low 512 MiB, else ≥ 64 MiB WEIGHT-heap reservations; get_max_size 512 MiB; get_alloc_size pads only where ggml allows | Logits chunks stay on the device: 0 staged chunks for 0.5B and Gemma 4 12B at -ub 512 |
+| V2-SW-47 | KV buffers as built (W3b; V2-SW-17) | Recognised at init_tensor, planes placed top-down at the first data access; converting get/set/memset/clear on any byte range in 8 MiB windows of whole local groups | Usage is known only after init_tensor; state files bit-identical to the CPU's |
+| V2-SW-48 | Mask readers and f32 copies (W3b; amends V2-SW-32) | Every FLASH_ATTN registers (scale, E, D, G); one copy per distinct scale, written only when the MSUM is GENERAL or a tile takes the GENERAL path; FA word 13 always names the copy | Cached lists stay valid per token; rule-3 GENERAL tiles need the copy; decode writes none |
+| V2-SW-49 | Device kinds per phase (W3b) | TSR_KINDS=m6 (MUL_MAT only), set by klcheck / numcheck for --phase m6; M6 e2e ctests with TSR_KINDS=m6 TSR_COMPUTE_WINDOWS=io | M6 keeps v1's splits (145 launches per 0.5B token) |
+| V2-SW-50 | M7 graph tests (W3b; V2-SW-21) | Tiny Qwen2 Q8_0 / pure Q4_K and Gemma 4 Q8_0; launches per llama_decode from klcheck -v markers, splits from GGML_SCHED_DEBUG=2; tiny Gemma 4 with --min-kl 3e-3; top-1 ≥ 0.95 | A Q6_K mix and a 4-layer model's degenerate floor would make the criterion meaningless; the bounds catch injected SWA / RoPE / eps errors |
+| V2-SW-51 | klcheck for SWA models (W3b) | --swa-full off (the SWA ring, recorded in the header); token-row scale √n_embd in the embd / floor rows | Long Gemma 4 prompts wrap the ring; the Gemma 4 floor was 8.2 nats without the scale |
+| V2-SW-52 | test-backend-ops for the M7 kinds (W3b) | One ctest per op filter with a minimum supported count; FA / SET_ROWS covered by ggml_tesseract_attn | test-backend-ops cannot place K / V / dst in a KV buffer |
+| V2-SW-53 | Host memory and the M7 kinds (W3b fix; amends R6) | Only MUL_MAT is staged: M7 ops with operands in host memory (control vectors, LoRA, TSR_FORCE_HOST) stay on the CPU; a compute buffer without a window aborts naming it | Correct runs instead of aborts; staging every kind is not needed at -ub 512 -c 4096 |
 
 ---
 
@@ -585,6 +601,24 @@ wait and recovery ladder; sim, mock, vkernel and xrt kdevs), the backend's M6 OP
 0.5B identity and the 32B KL on the simulator), the M7 backend (supports_op, KV buffers, MSUM
 producer, compute heap), **M7 on sim** (P3.6: one launch per token for the tiny and real models),
 `libtsr_dbg` / `tsr-dbg` (P3.7) and `tsr-prof trw` / TSR_STATS v2 (P3.8).
+*Status (2026-10-31):* W3a (P3.1–P3.4) done (83ac601): transport v2, the M6 backend and tools; M6 on
+sim: 0.5B 8 × 64 bit-identical across sim, replay, mock and the v1 stack (KL ratio 1.026, 145 launches
+per token), 32B Q4_K_M KL ratio 1.285 (top-1 98.44 %). W3b (P3.5–P3.6) integrated: the M7 backend
+(`tsr-build`: one lowering for supports_op and the builder, fusion, byte-range dependencies, the
+preload table, FA_NEW, the per-graph plan cache; KV buffers `tsr-kvbuf`; the mask-summary producer
+`tsr-msum`; compute windows up to 512 MiB), the tiny Qwen2 / Gemma 4 models and graph tests, per-op
+test-backend-ops ctests, `ggml_tesseract_attn` / `_kvbuf` / `_kvstate`; no new llama.cpp patch.
+**M7 on sim:** exactly one launch per decode token and one Tesseract split per decode graph for
+Qwen2.5-0.5B Q8_0 (504 decodes), Gemma 4 12B Q4_K_M and Q8_0 (64 decodes each, 0 staged chunks at
+`-ub 512`) and Qwen2.5-32B Q4_K_M (smoke); KL vs CPU within klcheck's criterion (0.5B 8 × 64 ratio
+0.914; Gemma 4 12B 2 × 33: Q4_K_M 0.680, Q8_0 0.843); 0.5B and Gemma 4 12B replays bit-identical,
+0.5B also under a random schedule with the race detector fatal; device time per decode token 2.48 M
+cycles for 0.5B in one launch (M6: 2.63 M in 145 launches) and 83.5 M (0.30 s at 276.3 MHz) for 32B. Decisions V2-SW-40 … V2-SW-53; the table is SW §10.4. The W3b review fixes: results that are
+views need rows of whole lines, KV views as llama.cpp builds them, M7 ops with operands in host memory
+(control vectors, `TSR_FORCE_HOST`) and FLASH_ATTN ubatches of more than 680 tokens stay on the CPU
+instead of aborting, clear reports for multi-stream KV caches. Open: prefill ubatches
+above ≈ 450 (Qwen2.5) / ≈ 240 (Gemma 4) tokens need several launches (256-line preload area), the
+full 32B klcheck and the long-prompt runs, P3.7, P3.8.
 
 **W4 — RTL (P4), each block bit-exact against the simulator.**
 1. Core-domain issue path: `tsr_chk`, `tsr_issue` (queues, heads, SYNC, hard hold), `tsr_csr` v2

@@ -146,8 +146,8 @@ bit-exact FWHT definition, in case a later milestone offloads the rotation as a 
 
 | Op | Device accepts when | Otherwise |
 |---|---|---|
-| `FLASH_ATTN_EXT` | q F32 contiguous per token (`[D, n_head, T]` before the permute); k and v q8_0 views of KV-cache tensors in a Tesseract KV buffer (§4.6); D = DK = DV ∈ {64, 128, 256, 512}; n_head % n_head_kv = 0; mask F16 or none; `max_bias` = 0, `logit_softcap` = 0, no sinks, `n_kv_max` = 0; precision default or F32; ne3 = n_stream (M7: 1) | false. With a device KV buffer the scheduler would then copy the cache per op, so the backend reports the unsupported feature at graph build (SW R10) |
-| `SET_ROWS` | dst is a KV-cache tensor (q8_0, Tesseract KV buffer); src F32 with rows of E; idx I64 < 2^31 | false |
+| `FLASH_ATTN_EXT` | q F32 contiguous per token (`[D, n_head, T]` before the permute); k and v q8_0 views of KV-cache tensors in a Tesseract KV buffer (§4.6); D = DK = DV ∈ {64, 128, 256, 512}; n_head % n_head_kv = 0; mask F16 or none; `max_bias` = 0, `logit_softcap` = 0, no sinks, `n_kv_max` = 0; precision default or F32; ne3 = n_stream (M7: 1). As built (W3b): k / v start at the plane's cell 0 with cells `row_size(E)` and heads `row_size(D)` apart (llama.cpp's `get_k` / `get_v`); T ≤ 680, so that the MSUM and the FA_NEW indices fit one list's 256 preload lines (SW V2-SW-43; a longer ubatch's FA runs on the CPU) | false. With a device KV buffer the scheduler would then copy the cache per op, so the backend reports the unsupported feature at graph build (SW R10) |
+| `SET_ROWS` | dst is a KV-cache tensor (q8_0, Tesseract KV buffer) viewed from cell 0 with rows of E values (`cpy_k` / `cpy_v`, one stream); src F32 with rows of E; idx I64 < 2^31 | false; the scheduler then stops on the pre-allocated cache tensor, after the backend names the cause (SW R10) |
 | Hadamard `MUL_MAT` | never (rotation is off, V2-AT-17) | — |
 | Other attention ops (`SOFT_MAX`, attention `MUL_MAT` on the cache) | never (D17: FA only) | — |
 
@@ -259,8 +259,11 @@ use about 40 % of a 16 GiB channel; 128K contexts also fit (*estimate*).
 
 - **Identification.** The backend treats a tensor as a KV-cache tensor when it is q8_0, 3D
   `[E, kv_size, n_stream]` in a Tesseract buffer, named `cache_*k_l<n>` or `cache_*v_l<n>`
-  (`src/llama-kv-cache.cpp:236-237`). Its layout is fixed at `init_tensor`: E and kv_size are known
-  there, and the layout does not depend on D.
+  (`src/llama-kv-cache.cpp:236-237`). Its layout is fixed by E and kv_size, both known at
+  `init_tensor`, and does not depend on D. As built (W3b, SW V2-SW-47): the tensor is recognised from
+  the `init_tensor` records, and the planes are placed at the buffer's first data access (llama.cpp's
+  clear), because ggml sets a buffer's usage after `init_tensor`; a buffer counts only if all its
+  tensors qualify.
 - **Clear.** The plane is zeroed on clear (`:293`): zero scales and zero quants, which is also the
   ggml image.
 - **Lossless conversion.** `set_tensor` and `get_tensor` on row ranges (state save and load)
@@ -704,18 +707,23 @@ mask (`set_tensor`), and stores it next to the mask in device memory. Then the c
 stays valid while the mask changes per token. MSUM layout (little-endian words):
 
 ```
-hdr : 'MSUM', n_q, n_kv, flags (bit0 GENERAL), f32_mask handle (valid iff GENERAL), 3 × 0
+hdr : 'MSUM', n_q, n_kv, flags (bit0 GENERAL), f32_mask handle (the reserved copy; valid iff GENERAL), 3 × 0
 row q: lo0, hi0, lo1, hi1     — at most two runs of cells with mask == +0/−0; every other cell is −inf
 ```
 
-**GENERAL** is set when some row has a finite nonzero value or more than two runs. The backend then
+**GENERAL** is set when some row has a value other than ±0 / −inf (finite nonzero, +inf or NaN; the
+reference `tsr_msum_build_f16` treats all three alike) or more than two runs, and by the producer
+when the planner would refuse one of a reader's tiles (§6.6 rules 5 / 6, data-dependent: the
+promotion keeps the rows' runs and makes every tile plan under rule 1; W3b, SW V2-SW-44). The backend then
 also writes an f32 copy of the mask, with row stride ⌈n_kv/16⌉ lines. It writes the copy too when a
 multi-row query tile of a FLASH_ATTN that reads the mask takes the GENERAL path although the MSUM is
 not GENERAL (§6.6 rule 3: rows with two runs, holes, a wrapped SWA ring in prefill; W2b kvfa); without
 it that record is BAD_RECORD (`tsr_ref_fa`: TSR_FA_E_MASK). The producer can tell by running the
 planner (`tsr_fa_plan`) on the MSUM's tiles. AMASK reads that copy. Its
 values are fdiv(m, scale) with the reading FA op's scale (§5.5), so a mask read by FA ops with
-different scales needs one copy per scale.
+different scales needs one copy per scale. As built (W3b, SW V2-SW-48): every FLASH_ATTN registers
+as a reader of its mask, the copy of each distinct scale has a fixed handle, and FLASH_ATTN word 13
+names it whether or not it was written, so a cached op list stays valid while the mask changes.
 
 **Kernel use, per pass:**
 - every row has one run, and the runs fit lo_q, hi_q of §5.2 for some c_lo, c_hi, CAUSAL, SLIDE
@@ -1025,10 +1033,14 @@ this document only, does not share code with `tsr_ref`, and must agree bit for b
 
 - **`test-backend-ops`** on sim, vkernel and xrt: `FLASH_ATTN_EXT` with q8_0 K/V (the shapes
   above, n_stream 1), `SET_ROWS` into q8_0 KV tensors, and state save/load round trips. NMSE vs
-  CPU, and bit-identical across sim, vkernel and xrt.
+  CPU, and bit-identical across sim, vkernel and xrt. *As built (W3b, SW V2-SW-52):* test-backend-ops'
+  K / V / dst tensors are never KV-cache tensors in a KV buffer, so supports_op refuses its
+  `FLASH_ATTN_EXT` and `SET_ROWS` cases by design; `ggml_tesseract_attn` (SET_ROWS + FLASH_ATTN_EXT in
+  llama.cpp's graph shape through KV buffers: bit-exact against `tsr_ref_fa`, NMSE vs CPU) and
+  `ggml_tesseract_kvstate` (state save / load) carry these checks instead.
 - **M6 gate** (SW §10.4): `offload_kqv` = false, so FA runs on the CPU. In M6 the AT ops are
-  verified by the `selftest` kernel's test 5, `traces/at`, `ggml_tesseract_attn` and
-  `test-backend-ops` (`FLASH_ATTN_EXT`, `SET_ROWS`) on sim, vkernel and the card.
+  verified by the `selftest` kernel's test 5, `traces/at` and `ggml_tesseract_attn` on sim, vkernel
+  and the card (not `test-backend-ops`, see above).
 - **M7 gate** (D17 baselines: `-fa on -ctk q8_0 -ctv q8_0`, rotation off, KV on the device):
   - Qwen2.5-0.5B Q8_0: `--expect-identical` device vs sim;
   - Qwen2.5-32B Q4_K_M: mean KL ≤ 3 × floor and top-1 ≥ 80 %;

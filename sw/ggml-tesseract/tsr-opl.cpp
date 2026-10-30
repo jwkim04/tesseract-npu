@@ -26,6 +26,7 @@ tsr_opl_builder::tsr_opl_builder(uint32_t num_ch, uint32_t flags) : num_ch_(num_
 
 void tsr_opl_builder::reset() {
     w_ = opl::writer(flags_);
+    pre_.clear();
     ops_.clear();
     anc_.clear();
     n_joins_ = n_deps_ = n_dropped_ = 0;
@@ -122,6 +123,164 @@ void tsr_opl_builder::mm_ranges(const uint32_t * a, std::vector<tsr_dram_range> 
         }
     }
     wr.push_back(y);
+}
+
+// Lines of n f32 values (L(n), VU §4.2).
+static uint32_t tsr_f32_lines(uint32_t n) {
+    return (n >> 4) + ((n & 15u) != 0u ? 1u : 0u);
+}
+
+// The plane bytes of every channel (AT §4.5: the same beat range [B, B + LG·GB) in each channel).
+static void tsr_plane_ranges(uint32_t num_ch, uint32_t base_beat, uint32_t geom, std::vector<tsr_dram_range> & out) {
+    const uint64_t e64 = opl::geom_e64(geom), lg = opl::geom_lg(geom);
+    const uint64_t beats = lg * 17u * e64;              // tsr_kv_plane_beats: LG · GB, GB = 17·E/64
+    if (beats == 0) {
+        return;
+    }
+    for (uint32_t c = 0; c < num_ch; ++c) {
+        out.push_back(tsr_rows_range(c, (uint64_t) base_beat * TSR_BEAT_BYTES, 1, beats * TSR_BEAT_BYTES, 0));
+    }
+}
+
+void tsr_opl_builder::kind_ranges(uint32_t kind, const uint32_t * a, uint64_t aux, std::vector<tsr_dram_range> & rd,
+                                  std::vector<tsr_dram_range> & wr) const {
+    rd.clear();
+    wr.clear();
+    switch (kind) {
+        case opl::K_MUL_MAT:
+            mm_ranges(a, rd, wr);
+            return;
+        case opl::K_ADD:
+        case opl::K_MUL: {
+            namespace e = opl::ew;
+            const uint32_t L = tsr_f32_lines(a[e::N]), rows = a[e::ROWS], p = std::max<uint32_t>(a[e::B_PERIOD], 1u);
+            rd.push_back(tsr_rows_of(a[e::A], rows, a[e::A_STRIDE], L));
+            if (a[e::FLAGS] & e::FLAG_B_SCALAR) {
+                // the per-row scalars: words 0 .. min(p, rows) - 1 of the f32 vector at b (SW §7.2)
+                rd.push_back(tsr_rows_of(a[e::B], 1, 0, tsr_f32_lines(std::min(p, rows))));
+            } else if (p == 1u || a[e::B_STRIDE] == 0u) {
+                rd.push_back(tsr_rows_of(a[e::B], 1, 0, L));
+            } else {
+                rd.push_back(tsr_rows_of(a[e::B], std::min(p, rows), a[e::B_STRIDE], L));
+            }
+            wr.push_back(tsr_rows_of(a[e::DST], rows, a[e::DST_STRIDE], L));
+            return;
+        }
+        case opl::K_SCALE: {
+            namespace s = opl::scl;
+            const uint32_t L = tsr_f32_lines(a[s::N]);
+            rd.push_back(tsr_rows_of(a[s::SRC], a[s::ROWS], a[s::SRC_STRIDE], L));
+            wr.push_back(tsr_rows_of(a[s::DST], a[s::ROWS], a[s::DST_STRIDE], L));
+            return;
+        }
+        case opl::K_RMS_NORM: {
+            namespace r = opl::rms;
+            const uint32_t L = tsr_f32_lines(a[r::N]), rows = a[r::ROWS];
+            rd.push_back(tsr_rows_of(a[r::SRC], rows, a[r::SRC_STRIDE], L));
+            if (a[r::W] != opl::HANDLE_NONE) {
+                // weight rows r mod p, dense (L lines apart, SW §7.2): min(p, rows) of them
+                const uint32_t wr_rows = std::min(std::max<uint32_t>(a[r::W_PERIOD], 1u), rows);
+                rd.push_back(tsr_rows_of(a[r::W], wr_rows, L, L));
+            }
+            wr.push_back(tsr_rows_of(a[r::DST], rows, a[r::DST_STRIDE], L));
+            return;
+        }
+        case opl::K_GLU: {
+            namespace g = opl::glu;
+            const uint32_t L = tsr_f32_lines(a[g::N]), rows = a[g::ROWS];
+            rd.push_back(tsr_rows_of(a[g::GATE], rows, a[g::GATE_STRIDE], L));
+            rd.push_back(tsr_rows_of(a[g::UP], rows, a[g::UP_STRIDE], L));
+            wr.push_back(tsr_rows_of(a[g::DST], rows, a[g::DST_STRIDE], L));
+            return;
+        }
+        case opl::K_ROPE: {
+            namespace r = opl::rope;
+            const uint32_t H = (uint32_t) (((uint64_t) a[r::N_HEADS] * a[r::HEAD_DIM]) >> 4), T = a[r::N_TOKENS];
+            rd.push_back(tsr_rows_of(a[r::SRC], T, a[r::SRC_STRIDE], H));
+            if (a[r::TABLE] != opl::HANDLE_NONE) {
+                rd.push_back(tsr_rows_of(a[r::TABLE], 1, 0, tsr_f32_lines(a[r::N_DIMS] >> 1)));
+            }
+            wr.push_back(tsr_rows_of(a[r::DST], T, a[r::DST_STRIDE], H));
+            return;
+        }
+        case opl::K_GET_ROWS: {
+            namespace g = opl::getrows;
+            const uint32_t rl = a[g::ROW_LINES], n = a[g::N_IDS];
+            rd.push_back(tsr_rows_of(a[g::SRC], (uint32_t) std::min<uint64_t>(aux != 0 ? aux : n, UINT32_MAX), a[g::SRC_STRIDE], rl));
+            wr.push_back(tsr_rows_of(a[g::DST], n, a[g::DST_STRIDE], rl));
+            return;
+        }
+        case opl::K_SET_ROWS_KV: {
+            namespace s = opl::setrows;
+            rd.push_back(tsr_rows_of(a[s::SRC], a[s::N_ROWS], a[s::SRC_STRIDE], tsr_f32_lines(a[s::ROW_ELEMS])));
+            tsr_plane_ranges(num_ch_, a[s::PLANE], a[s::GEOM], wr);
+            return;
+        }
+        case opl::K_FLASH_ATTN: {
+            namespace f = opl::fa;
+            const uint32_t T = a[f::N_TOKENS], ql = (uint32_t) (((uint64_t) a[f::N_HEAD] * a[f::D]) >> 4);
+            rd.push_back(tsr_rows_of(a[f::Q], T, a[f::Q_TOKEN_STRIDE], ql));
+            tsr_plane_ranges(num_ch_, a[f::K_PLANE], a[f::GEOM], rd);
+            tsr_plane_ranges(num_ch_, a[f::V_PLANE], a[f::GEOM], rd);
+            if (a[f::MASK] != opl::HANDLE_NONE) {
+                const uint32_t ml = tsr_f32_lines(a[f::N_KV]);     // the f32 copy: rows of ceil(n_kv/16) lines
+                rd.push_back(tsr_rows_of(a[f::MASK], T, ml, ml));
+            }
+            wr.push_back(tsr_rows_of(a[f::DST], T, a[f::DST_STRIDE], ql));
+            return;
+        }
+        case opl::K_CPY: {
+            namespace c = opl::cpy;
+            rd.push_back(tsr_rows_of(a[c::SRC], a[c::ROWS], a[c::SRC_STRIDE], a[c::ROW_LINES]));
+            wr.push_back(tsr_rows_of(a[c::DST], a[c::ROWS], a[c::DST_STRIDE], a[c::ROW_LINES]));
+            return;
+        }
+        case opl::K_UNARY: {
+            namespace u = opl::unary;
+            const uint32_t L = tsr_f32_lines(a[u::N]);
+            rd.push_back(tsr_rows_of(a[u::SRC], a[u::ROWS], a[u::SRC_STRIDE], L));
+            wr.push_back(tsr_rows_of(a[u::DST], a[u::ROWS], a[u::DST_STRIDE], L));
+            return;
+        }
+        default:
+            return;
+    }
+}
+
+uint32_t tsr_opl_builder::preload_lines_with(const std::vector<std::pair<uint32_t, uint32_t>> & entries) const {
+    uint64_t end = (uint64_t) w_.pre_lines() * opl::PRE_ALIGN;     // entries start 64-aligned (the writer)
+    std::vector<std::pair<uint32_t, uint32_t>> seen;
+    for (const auto & e : entries) {
+        bool have = false;
+        for (const auto & p : pre_) have = have || p.first == e;
+        for (const auto & p : seen) have = have || p == e;
+        if (have || e.second == 0) {
+            continue;
+        }
+        seen.push_back(e);
+        end = (end + opl::PRE_ALIGN - 1) / opl::PRE_ALIGN * opl::PRE_ALIGN + e.second;
+    }
+    return (uint32_t) ((end + opl::SLOT_BYTES - 1) / opl::SLOT_BYTES);
+}
+
+uint32_t tsr_opl_builder::preload(uint32_t src, uint32_t bytes) {
+    if (bytes == 0) {
+        return FAILED;
+    }
+    for (const auto & p : pre_) {
+        if (p.first.first == src && p.first.second == bytes) {
+            return p.second;
+        }
+    }
+    if (preload_lines_with({ { src, bytes } }) > opl::PRE_MAX_LINES) {
+        return NO_ROOM;
+    }
+    const uint32_t at = w_.add_preload(src, bytes);
+    if (at == opl::HANDLE_NONE) {
+        return FAILED;
+    }
+    pre_.push_back({ { src, bytes }, at });
+    return at;
 }
 
 bool tsr_opl_builder::is_ancestor(uint32_t a, uint32_t b) const {
