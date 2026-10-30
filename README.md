@@ -6,20 +6,11 @@
 
 **A full-stack, open-source NPU for LLM inference.**
 
-Tesseract is the whole stack, not just a core: every layer between a GGUF file and the DRAM pins is
-open and in this repository.
+- **Hardware**: NPU core in SystemVerilog with an on-chip RISC-V control core.
+- **Firmware**: C++20 runtime, kernel library and kernel SDK.
+- **Software**: llama.cpp and PyTorch backends, bit-exact simulator, verification tools.
 
-- **Hardware.** The NPU core in vendor-independent SystemVerilog, with an on-chip RISC-V control
-  core, matrix-vector clusters, a vector unit and attention on the device.
-- **Firmware.** A runtime and a kernel library in C++20 on the control core, and an SDK for your
-  own kernels.
-- **Software.** Backends for [llama.cpp](https://github.com/ggml-org/llama.cpp) (`-ngl`, shipped
-  GGUF files, no model conversion) and PyTorch, the host runtime and transport, a bit-exact
-  simulator and model-level verification tools.
-
-It is built around DRAM bandwidth, not raw compute: one matrix-vector cluster per memory channel
-streams the weights at one 64-byte beat per cycle. The simulator, the RTL and the card agree bit
-for bit. Tesseract is implemented on an AMD Alveo U200 FPGA today.
+Runs shipped GGUF models with `-ngl`. Implemented on an AMD Alveo U200 FPGA.
 
 <p align="center"><img src="docs/fig/hero.png" alt="Stylised die of the Tesseract NPU core: four MVM clusters of 128 MAC lanes at the corners, each fed by its own DDR4 channel through a memory arbiter; the 4 MiB scratchpad in the centre inside the x broadcast and y gather; DMA, QACT and CSR blocks; and, drawn dashed as the v2 additions, a RISC-V control core with an issue path and unit queues, a vector unit and a debug block. One cluster is opened up: weight streamer, unpack, activation buffer, 128 MAC lanes, FP accumulate and tree16." width="100%"></p>
 
