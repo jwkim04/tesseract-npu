@@ -86,6 +86,22 @@ int tsr_sim_cw_access(tsr_sim * sim, int is_write, uint32_t off, uint32_t * val)
     return TSR_CW_OK;
 }
 
+// P1.8: the agent's scheduler / access-event / fast-forward interface (tsr_sim_int.h §5, §5b), as
+// the fixed schedule without listeners or a log: the agent behaves exactly as before.
+int tsr_sim_cw_access_pc(tsr_sim * sim, int is_write, uint32_t off, uint32_t * val, uint32_t pc) {
+    (void)pc;
+    return tsr_sim_cw_access(sim, is_write, off, val);
+}
+void tsr_sim_corewin_note(tsr_sim * sim, uint32_t off, uint32_t val, uint32_t pc) { (void)sim; (void)off; (void)val; (void)pc; }
+void tsr_sim_acc_emit(tsr_sim * sim, const tsr_sim_acc * a) { (void)sim; (void)a; }
+int  tsr_sim_acc_listened(const tsr_sim * sim) { (void)sim; return 0; }
+int  tsr_sim_sched_random(const tsr_sim * sim) { (void)sim; return 0; }
+uint32_t tsr_sched_rv_handshake(tsr_sim * sim) { (void)sim; return 0; }
+int  tsr_sched_rv_cpi(tsr_sim * sim) { (void)sim; return 0; }
+int  tsr_sim_fast_forward(const tsr_sim * sim) { (void)sim; return 1; }
+int  tsr_sim_log_rv(const tsr_sim * sim) { (void)sim; return 0; }
+void tsr_sim_log_line(tsr_sim * sim, const char * fmt, ...) { (void)sim; (void)fmt; }
+
 uint64_t tsr_sim_next_event(const tsr_sim * sim) {
     (void)sim;
     uint64_t t = UINT64_MAX;

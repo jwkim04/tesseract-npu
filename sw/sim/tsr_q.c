@@ -35,6 +35,10 @@
 //   - QCLEAR (RISC-V): after its snapshot, clears every error state and record and sets
 //     clear_pt[u] = snap[u]. Host QCLEAR: only with QIDLE and the RISC-V quiet (in reset, or halted);
 //     clear_pt[u] = cnt[u].
+// P1.8 (tsr_sim_int.h §5, §5b): the listener lists (queue and access events; PUSH / QCTRL /
+// MARK_PUSH at the issue-FIFO store with the push PC), the schedule policy's draws (issue
+// crossings, op durations: tsr_sched.c) and, under the random schedule, the RISC-V side's lagging
+// view of the core state (view_*: DONE_SEQ, credits, QSTATUS, error records, interrupt levels).
 
 #define _GNU_SOURCE
 #define TSR_SIM_CORE_INTERNAL
@@ -98,6 +102,9 @@ void tsr_q_init(tsr_sim * sim, const uint8_t * depth) {
     sim->wait_credit = TSR_CW_WAIT_CREDIT_RESET;
     sim->mtimecmp = UINT64_MAX;                      // reset all ones
     sim->agent_next = TSR_SIM_AGENT_WAIT;
+    sim->set_lis_id = -1;
+    sim->ff = 1;
+    tsr_q_view_flush(sim);                           // random: the view starts as the core state
 }
 
 void tsr_q_free(tsr_sim * sim) {
@@ -108,22 +115,114 @@ void tsr_q_free(tsr_sim * sim) {
 }
 
 // ---------------------------------------------------------------------------
+// Listeners (tsr_sim_int.h §5): queue events and access events, in registration order
+// ---------------------------------------------------------------------------
+static int lis_find(const tsr_lis_slot * v, uint32_t n, int id) {
+    for (uint32_t i = 0; i < n; ++i)
+        if (v[i].id == id) return (int)i;
+    return -1;
+}
+static int acc_find(const tsr_acc_slot * v, uint32_t n, int id) {
+    for (uint32_t i = 0; i < n; ++i)
+        if (v[i].id == id) return (int)i;
+    return -1;
+}
+
+int tsr_sim_add_listener(tsr_sim * sim, tsr_q_listener fn, void * ctx) {
+    if (fn == NULL || sim->n_lis >= TSR_SIM_LISTENERS_MAX) return -1;
+    const int id = sim->lis_next_id++;
+    sim->lis[sim->n_lis].id = id;
+    sim->lis[sim->n_lis].fn = fn;
+    sim->lis[sim->n_lis].ctx = ctx;
+    sim->n_lis++;
+    return id;
+}
+
+void tsr_sim_remove_listener(tsr_sim * sim, int id) {
+    const int i = lis_find(sim->lis, sim->n_lis, id);
+    if (i < 0) return;
+    memmove(&sim->lis[i], &sim->lis[i + 1], (sim->n_lis - (uint32_t)i - 1u) * sizeof(sim->lis[0]));
+    sim->n_lis--;
+    if (sim->set_lis_id == id) sim->set_lis_id = -1;
+}
+
+void tsr_sim_set_listener(tsr_sim * sim, tsr_q_listener fn, void * ctx) {
+    const int i = sim->set_lis_id >= 0 ? lis_find(sim->lis, sim->n_lis, sim->set_lis_id) : -1;
+    if (i >= 0 && fn != NULL && sim->lis[i].fn == fn) {   // same function: new context, same place
+        sim->lis[i].ctx = ctx;
+        return;
+    }
+    if (i >= 0) tsr_sim_remove_listener(sim, sim->set_lis_id);
+    sim->set_lis_id = fn != NULL ? tsr_sim_add_listener(sim, fn, ctx) : -1;
+}
+
+static void q_call(tsr_sim * sim, const tsr_q_event * ev) {
+    if (sim->n_lis == 0) return;
+    tsr_lis_slot v[TSR_SIM_LISTENERS_MAX];
+    const uint32_t n = sim->n_lis;
+    memcpy(v, sim->lis, n * sizeof(v[0]));
+    sim->in_cb++;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (i > 0 && lis_find(sim->lis, sim->n_lis, v[i].id) < 0) continue;   // removed meanwhile
+        v[i].fn(v[i].ctx, sim, ev);
+    }
+    sim->in_cb--;
+}
+
+int tsr_sim_add_acc_listener(tsr_sim * sim, tsr_sim_acc_fn fn, void * ctx) {
+    if (fn == NULL || sim->n_acc >= TSR_SIM_LISTENERS_MAX) return -1;
+    const int id = sim->acc_next_id++;
+    sim->acc[sim->n_acc].id = id;
+    sim->acc[sim->n_acc].fn = fn;
+    sim->acc[sim->n_acc].ctx = ctx;
+    sim->n_acc++;
+    return id;
+}
+
+void tsr_sim_remove_acc_listener(tsr_sim * sim, int id) {
+    const int i = acc_find(sim->acc, sim->n_acc, id);
+    if (i < 0) return;
+    memmove(&sim->acc[i], &sim->acc[i + 1], (sim->n_acc - (uint32_t)i - 1u) * sizeof(sim->acc[0]));
+    sim->n_acc--;
+}
+
+int tsr_sim_acc_listened(const tsr_sim * sim) { return sim->n_acc != 0; }
+
+void tsr_sim_acc_call(tsr_sim * sim, const tsr_sim_acc * a) {
+    if (sim->n_acc == 0) return;
+    tsr_sim_acc c = *a;
+    c.time = sim->now;
+    tsr_acc_slot v[TSR_SIM_LISTENERS_MAX];
+    const uint32_t n = sim->n_acc;
+    memcpy(v, sim->acc, n * sizeof(v[0]));
+    sim->in_cb++;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (i > 0 && acc_find(sim->acc, sim->n_acc, v[i].id) < 0) continue;
+        v[i].fn(v[i].ctx, sim, &c);
+    }
+    sim->in_cb--;
+}
+
+void tsr_sim_acc_emit(tsr_sim * sim, const tsr_sim_acc * a) { tsr_sim_acc_call(sim, a); }
+
+// ---------------------------------------------------------------------------
 // Logging and events
 // ---------------------------------------------------------------------------
+// ENQ / START / DONE of entry e, or MARK of FIFO entry f.
 static void q_emit(tsr_sim * sim, uint32_t kind, uint32_t unit, const tsr_qent * e, uint32_t code, uint32_t ran,
-                   const uint32_t * mark_w) {
+                   const tsr_ifent * f) {
     static const char * const names[] = { "?", "enq", "start", "done", "mark" };
     if (sim->log) {
         if (kind == TSR_QEV_MARK) {
-            tsr_sim_log_line(sim, "%10llu mark value=%08x next_pidx=%u", (unsigned long long)sim->now, mark_w[1],
-                             sim->q_pidx);
+            tsr_sim_log_line(sim, "%10llu mark  value=%08x next_pidx=%u pc=%08x", (unsigned long long)sim->now, f->w[1],
+                             sim->q_pidx, f->pc);
         } else {
             tsr_sim_log_line(sim, "%10llu %-5s u%u seq=%u pidx=%u w0=%08x code=%u%s", (unsigned long long)sim->now,
                              names[kind], unit, e->seq, e->pidx, e->w[0], code,
                              kind == TSR_QEV_DONE ? (ran ? " ran" : " norun") : "");
         }
     }
-    if (sim->lis == NULL) return;
+    if (sim->n_lis == 0) return;
     tsr_q_event ev;
     memset(&ev, 0, sizeof(ev));
     ev.kind = kind;
@@ -133,7 +232,8 @@ static void q_emit(tsr_sim * sim, uint32_t kind, uint32_t unit, const tsr_qent *
         ev.ticket = TSR_TICKET_NONE;
         ev.pidx = sim->q_pidx;
         ev.dep[0] = ev.dep[1] = TSR_TICKET_NONE;
-        ev.w = mark_w;
+        ev.w = f->w;
+        ev.pc = f->pc;
     } else {
         ev.ticket = tk_make(unit, e->seq);
         ev.pidx = e->pidx;
@@ -144,10 +244,30 @@ static void q_emit(tsr_sim * sim, uint32_t kind, uint32_t unit, const tsr_qent *
         ev.dep[1] = e->dep[1];
         ev.w = e->w;
         ev.ext = &e->ext;
+        ev.push = e->push;
+        ev.pc = e->pc;
     }
-    sim->in_cb++;
-    sim->lis(sim->lis_ctx, sim, &ev);
-    sim->in_cb--;
+    q_call(sim, &ev);
+}
+
+// PUSH / QCTRL / MARK_PUSH: an issue-FIFO acceptance at the store (tsr_sim_int.h §5).
+static void q_emit_push(tsr_sim * sim, uint32_t kind, uint32_t unit, uint32_t ticket, uint32_t pidx,
+                        const uint32_t * w, const uint32_t * dep, uint32_t push, uint32_t rec, uint32_t pc) {
+    if (sim->n_lis == 0) return;
+    tsr_q_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.kind = kind;
+    ev.unit = unit;
+    ev.ticket = ticket;
+    ev.pidx = pidx;
+    ev.rec = rec;
+    ev.dep[0] = dep ? dep[0] : TSR_TICKET_NONE;
+    ev.dep[1] = dep ? dep[1] : TSR_TICKET_NONE;
+    ev.time = sim->now;
+    ev.w = w;
+    ev.push = push;
+    ev.pc = pc;
+    q_call(sim, &ev);
 }
 
 // ---------------------------------------------------------------------------
@@ -159,10 +279,11 @@ static int any_err(const tsr_sim * sim) {
     return 0;
 }
 
-// ISSUE_STATUS.ERR_IRQ: set on the rising edge of "some unit in error state" (CC §5.1).
+// ISSUE_STATUS.ERR_IRQ: set on the rising edge of "some unit in error state" (CC §5.1). Under the
+// random schedule the clk_rv side sees the edge when the view carrying it becomes visible.
 static void err_edge(tsr_sim * sim) {
     const int now_err = any_err(sim);
-    if (now_err && !sim->err_any) sim->iss_status |= TSR_ISSUE_STATUS_ERR_IRQ;
+    if (now_err && !sim->err_any && !sim->view_on) sim->iss_status |= TSR_ISSUE_STATUS_ERR_IRQ;
     sim->err_any = now_err;
 }
 
@@ -344,28 +465,152 @@ uint32_t tsr_q_csr_read(const tsr_sim * sim, uint32_t off) {
 }
 
 // ---------------------------------------------------------------------------
+// RISC-V-side view of the core state under the random schedule (tsr_sim_int.h §5b, CC §5.1,
+// §11.2): the synchronised copies trail the core by a crossing per change, in order.
+// ---------------------------------------------------------------------------
+static void view_capture(const tsr_sim * sim, tsr_rvview * v) {
+    memset(v, 0, sizeof(*v));
+    for (uint32_t u = 0; u < TSR_NUM_UNITS; ++u) {
+        const tsr_qunit * q = &sim->u[u];
+        v->D[u] = q->D;
+        v->S[u] = q->S;
+        if (q->err) v->qbits |= 1u << (TSR_QSTATUS_ERR_LSB + u);
+        if (q->n) v->qbits |= 1u << (TSR_QSTATUS_NONEMPTY_LSB + u);
+        v->err[u][0] = q->err;
+        v->err[u][1] = q->err_seq;
+        v->err[u][2] = q->err_code;
+        v->err[u][3] = q->err_info;
+        v->err[u][4] = q->err_w0;
+        v->err[u][5] = q->err_pidx;
+    }
+    const uint32_t h = hold_src(sim);
+    if (h) v->qbits |= TSR_QSTATUS_HOLD;
+    if (h & TSR_HOLD_SRC_HOST) v->qbits |= TSR_QSTATUS_HOLD_HOST;
+    if (h & TSR_HOLD_SRC_RV) v->qbits |= TSR_QSTATUS_HOLD_RV;
+    if (h & TSR_HOLD_SRC_HALT) v->qbits |= TSR_QSTATUS_HOLD_HALT;
+    v->f_out = sim->f_out;
+    if (sim->pushed != sim->taken && !tsr_sim_active(sim)) v->lines |= TSR_RV_MIP_FAST(2);
+    if ((uint32_t)(sim->lcq_wr - sim->lcq_rd) < TSR_LCQ_DEPTH) v->lines |= TSR_RV_MIP_FAST(3);
+    v->err_any = (uint32_t)any_err(sim);
+}
+
+static int view_same(const tsr_rvview * a, const tsr_rvview * b) {
+    return memcmp(a->D, b->D, sizeof(*a) - offsetof(tsr_rvview, D)) == 0;
+}
+
+static const tsr_rvview * view_cur(const tsr_sim * sim) { return &sim->view[sim->v_rd]; }
+
+// The oldest pending change becomes the visible one (ERR_IRQ on a rising "some unit in error").
+static void view_step(tsr_sim * sim) {
+    const uint32_t old_err = sim->view[sim->v_rd].err_any;
+    sim->v_rd = (sim->v_rd + 1u) % TSR_VIEW_RING;
+    sim->v_n--;
+    if (sim->view[sim->v_rd].err_any && !old_err) sim->iss_status |= TSR_ISSUE_STATUS_ERR_IRQ;
+}
+
+// Makes every change due by MTIME visible; 1 if the visible view changed.
+static int view_apply(tsr_sim * sim) {
+    int changed = 0;
+    while (sim->view_on && sim->v_n > 1 && sim->view[(sim->v_rd + 1u) % TSR_VIEW_RING].vis <= sim->now) {
+        view_step(sim);
+        changed = 1;
+    }
+    return changed;
+}
+
+static uint64_t view_next(const tsr_sim * sim) {
+    if (!sim->view_on || sim->v_n <= 1) return UINT64_MAX;
+    return sim->view[(sim->v_rd + 1u) % TSR_VIEW_RING].vis;
+}
+
+void tsr_q_view_note(tsr_sim * sim) {
+    if (!sim->view_on) return;
+    tsr_rvview v;
+    view_capture(sim, &v);
+    tsr_rvview * last = &sim->view[(sim->v_rd + sim->v_n - 1u) % TSR_VIEW_RING];
+    if (view_same(&v, last)) return;
+    if (sim->v_n > 1 && last->made == sim->now) {    // a pending change of this MTIME: it is replaced
+        v.made = last->made;
+        v.vis = last->vis;
+        *last = v;
+        return;
+    }
+    uint64_t vis = sim->now + tsr_sched_view_lag(sim);
+    if (vis < last->vis) vis = last->vis;            // in order (gray counters, CC §11.2)
+    if (sim->v_n == TSR_VIEW_RING) view_step(sim);   // cannot happen (lags <= 8): keep the order anyway
+    v.made = sim->now;
+    v.vis = vis;
+    sim->view[(sim->v_rd + sim->v_n) % TSR_VIEW_RING] = v;
+    sim->v_n++;
+}
+
+void tsr_q_view_flush(tsr_sim * sim) {
+    if (!sim->view_on) return;
+    view_capture(sim, &sim->view[0]);
+    sim->view[0].made = sim->view[0].vis = sim->now;
+    sim->v_rd = 0;
+    sim->v_n = 1;
+}
+
+// The clk_rv side's credit (CC §7.3) and issue-FIFO free entries from the view: ISSUED_SEQ and the
+// FIFO write count are its own; S[u] and the FIFO read count are the synchronised copies.
+static uint32_t fifo_free_rv(const tsr_sim * sim) {
+    if (!sim->view_on) return TSR_ISSUE_FIFO_DEPTH - sim->f_n;
+    const uint32_t used = sim->f_in - view_cur(sim)->f_out;
+    return used >= TSR_ISSUE_FIFO_DEPTH ? 0u : TSR_ISSUE_FIFO_DEPTH - used;
+}
+
+static uint32_t credit_rv(const tsr_sim * sim, uint32_t u) {
+    if (!sim->view_on) return q_credit(sim, u);
+    const tsr_qunit * q = &sim->u[u];
+    if (q->depth == 0) return 0;
+    const uint32_t used = seq_sub(q->issued, view_cur(sim)->S[u]);
+    uint32_t c = used >= q->depth ? 0 : q->depth - used;
+    const uint32_t ff = fifo_free_rv(sim);
+    if (c > ff) c = ff;
+    if (c > 15) c = 15;
+    return c;
+}
+
+// Ticket done as the clk_rv side sees it (DONE_SEQ copies).
+static int ticket_done_rv(const tsr_sim * sim, uint32_t t) {
+    if (!sim->view_on) return ticket_done(sim, t);
+    const uint32_t v = tk_unit(t);
+    if (v == TSR_UNIT_NONE) return 1;
+    if (!built(sim, v)) return 0;
+    const uint32_t d = seq_sub(view_cur(sim)->D[v], tk_seq(t));
+    return d >= 1 && d < TSR_SEQ_HALF28;
+}
+
+// ---------------------------------------------------------------------------
 // Issue FIFO, push, QCTRL
 // ---------------------------------------------------------------------------
-static tsr_ifent * fifo_push(tsr_sim * sim) {
+static tsr_ifent * fifo_push(tsr_sim * sim, uint32_t pc) {
     tsr_ifent * f = &sim->fifo[(sim->f_rd + sim->f_n) % TSR_ISSUE_FIFO_DEPTH];
     memset(f, 0, sizeof(*f));
-    uint64_t t = sim->now + TSR_Q_XING;
+    uint64_t t = sim->now + tsr_sched_issue_crossing(sim);
     if (t <= sim->f_last) t = sim->f_last + 1;       // the dispatcher takes one entry per cycle
     sim->f_last = t;
     f->t_disp = t;
+    f->pc = pc;
     sim->f_n++;
+    sim->f_in++;
     return f;
 }
 
-static int q_push(tsr_sim * sim, uint32_t val) {
+// The push condition (CC §7.1) uses the clk_rv side's credit: the same as the core's under the
+// fixed schedule, the lagging copy under the random one (never more than the core's, so the queue
+// cannot overflow).
+static int q_push(tsr_sim * sim, uint32_t val, uint32_t pc) {
     const uint32_t opcode = sim->iss_w[0] & 0xFFu;
     const tsr_op_handler * h = tsr_sim_accept_op(sim, opcode);
     const uint32_t u = h ? h->unit : TSR_UNIT_SYNC;
-    if (q_credit(sim, u) == 0) return TSR_CW_WAIT;
-    tsr_ifent * f = fifo_push(sim);
+    if (credit_rv(sim, u) == 0 || q_credit(sim, u) == 0) return TSR_CW_WAIT;
+    tsr_ifent * f = fifo_push(sim, pc);
     f->kind = TSR_IFIFO_KIND_OP;
     f->refused = h == NULL;
     f->rec = (val & TSR_ISSUE_PUSH_REC) ? 1 : 0;
+    f->push = val;
     const uint32_t wmask = TSR_GET(val, TSR_ISSUE_PUSH_WMASK);
     for (uint32_t i = 0; i < 8; ++i) f->w[i] = (i == 0 || ((wmask >> i) & 1u)) ? sim->iss_w[i] : 0u;
     f->dep[0] = sim->iss_dep[0];
@@ -377,24 +622,27 @@ static int q_push(tsr_sim * sim, uint32_t val) {
     sim->iss_dep[0] = sim->iss_dep[1] = TSR_TICKET_NONE;
     tsr_sim_perf_add(sim, TSR_PERF_PUSHES(sim->num_ch), 1);
     if (sim->log)
-        tsr_sim_log_line(sim, "%10llu push  u%u seq=%u pidx=%u w0=%08x dep=%08x,%08x%s", (unsigned long long)sim->now, u,
-                         tk_seq(f->ticket), f->pidx, f->w[0], f->dep[0], f->dep[1], f->refused ? " (refused)" : "");
+        tsr_sim_log_line(sim, "%10llu push  u%u seq=%u pidx=%u w0=%08x dep=%08x,%08x pc=%08x%s", (unsigned long long)sim->now,
+                         u, tk_seq(f->ticket), f->pidx, f->w[0], f->dep[0], f->dep[1], pc, f->refused ? " (refused)" : "");
+    q_emit_push(sim, TSR_QEV_PUSH, u, f->ticket, f->pidx, f->w, f->dep, val, f->rec, pc);
     return TSR_CW_OK;
 }
 
 // QCTRL store: each set bit of [3:0] is one CTRL entry, in bit order; all or nothing.
-static int q_qctrl(tsr_sim * sim, uint32_t bits) {
+static int q_qctrl(tsr_sim * sim, uint32_t value, uint32_t pc) {
     static const uint8_t codes[4] = { TSR_IFIFO_CTRL_CODE_QABORT, TSR_IFIFO_CTRL_CODE_QHOLD_SET,
                                       TSR_IFIFO_CTRL_CODE_QHOLD_CLR, TSR_IFIFO_CTRL_CODE_QCLEAR };
-    bits &= 0xFu;
+    const uint32_t bits = value & 0xFu;
     uint32_t n = 0;
     for (uint32_t b = 0; b < 4; ++b) n += (bits >> b) & 1u;
     if (n == 0) return TSR_CW_OK;
-    if (TSR_ISSUE_FIFO_DEPTH - sim->f_n < n) return TSR_CW_WAIT;
-    if ((bits & TSR_QCTRL_QCLEAR) && q_credit(sim, TSR_UNIT_SYNC) == 0) return TSR_CW_WAIT;
+    if (fifo_free_rv(sim) < n || TSR_ISSUE_FIFO_DEPTH - sim->f_n < n) return TSR_CW_WAIT;
+    if ((bits & TSR_QCTRL_QCLEAR) && (credit_rv(sim, TSR_UNIT_SYNC) == 0 || q_credit(sim, TSR_UNIT_SYNC) == 0))
+        return TSR_CW_WAIT;
+    uint32_t ticket = TSR_TICKET_NONE, pidx = sim->iss_pidx;
     for (uint32_t b = 0; b < 4; ++b) {
         if (!((bits >> b) & 1u)) continue;
-        tsr_ifent * f = fifo_push(sim);
+        tsr_ifent * f = fifo_push(sim, pc);
         f->kind = TSR_IFIFO_KIND_CTRL;
         f->ctrl = codes[b];
         f->w[0] = codes[b];
@@ -405,24 +653,34 @@ static int q_qctrl(tsr_sim * sim, uint32_t bits) {
             f->pidx = sim->iss_pidx++;
             s->issued = (s->issued + 1) & TSR_SEQ_MASK;
             sim->iss_ticket = f->ticket;
+            ticket = f->ticket;
+            pidx = f->pidx;
             tsr_sim_perf_add(sim, TSR_PERF_PUSHES(sim->num_ch), 1);
         } else {
             f->ticket = TSR_TICKET_NONE;
             f->pidx = sim->iss_pidx;                 // informational: no push index taken
         }
     }
+    if (sim->log)
+        tsr_sim_log_line(sim, "%10llu qctrl value=%08x ticket=%08x pidx=%u pc=%08x", (unsigned long long)sim->now, value,
+                         ticket, pidx, pc);
+    const uint32_t w[8] = { value, 0, 0, 0, 0, 0, 0, 0 };
+    q_emit_push(sim, TSR_QEV_QCTRL, ticket != TSR_TICKET_NONE ? TSR_UNIT_SYNC : TSR_UNIT_NONE, ticket, pidx, w, NULL, 0,
+                0, pc);
     return TSR_CW_OK;
 }
 
-static int q_trace_mark(tsr_sim * sim, uint32_t value) {
-    if (sim->f_n >= TSR_ISSUE_FIFO_DEPTH) return TSR_CW_WAIT;
-    tsr_ifent * f = fifo_push(sim);
+static int q_trace_mark(tsr_sim * sim, uint32_t value, uint32_t pc) {
+    if (fifo_free_rv(sim) == 0 || sim->f_n >= TSR_ISSUE_FIFO_DEPTH) return TSR_CW_WAIT;
+    tsr_ifent * f = fifo_push(sim, pc);
     f->kind = TSR_IFIFO_KIND_CTRL;
     f->ctrl = TSR_IFIFO_CTRL_CODE_TRACE_MARK;
     f->w[0] = TSR_IFIFO_CTRL_CODE_TRACE_MARK;
     f->w[1] = value;
     f->ticket = TSR_TICKET_NONE;
     f->pidx = sim->iss_pidx;
+    const uint32_t w[8] = { value, 0, 0, 0, 0, 0, 0, 0 };
+    q_emit_push(sim, TSR_QEV_MARK_PUSH, TSR_UNIT_MARKER, TSR_TICKET_NONE, sim->iss_pidx, w, NULL, 0, 0, pc);
     return TSR_CW_OK;
 }
 
@@ -476,12 +734,13 @@ static void q_dispatch_one(tsr_sim * sim) {
     tsr_ifent f = sim->fifo[sim->f_rd];
     sim->f_rd = (sim->f_rd + 1) % TSR_ISSUE_FIFO_DEPTH;
     sim->f_n--;
+    sim->f_out++;
     if (f.kind == TSR_IFIFO_KIND_CTRL) {
         switch (f.ctrl) {
         case TSR_IFIFO_CTRL_CODE_QABORT:    tsr_q_abort(sim); return;
         case TSR_IFIFO_CTRL_CODE_QHOLD_SET: sim->hold_rv = 1; return;
         case TSR_IFIFO_CTRL_CODE_QHOLD_CLR: sim->hold_rv = 0; return;
-        case TSR_IFIFO_CTRL_CODE_TRACE_MARK: q_emit(sim, TSR_QEV_MARK, TSR_UNIT_MARKER, NULL, 0, 0, f.w); return;
+        case TSR_IFIFO_CTRL_CODE_TRACE_MARK: q_emit(sim, TSR_QEV_MARK, TSR_UNIT_MARKER, NULL, 0, 0, &f); return;
         case TSR_IFIFO_CTRL_CODE_QCLEAR: break;
         default: return;
         }
@@ -495,6 +754,8 @@ static void q_dispatch_one(tsr_sim * sim) {
     e.seq = q->cnt;
     e.pidx = f.pidx;
     e.rec = f.rec;
+    e.push = f.push;
+    e.pc = f.pc;
     e.t_enq = sim->now;
     e.dep[0] = e.dep[1] = TSR_TICKET_NONE;
     if (f.kind == TSR_IFIFO_KIND_CTRL) {             // QCLEAR: a SYNC entry with a snapshot
@@ -568,7 +829,9 @@ static int q_head(tsr_sim * sim, uint32_t u) {
     if (!deps_done(sim, e)) { q->head = TSR_QH_DEP_WAIT; return 0; }
     if ((e->kind == TSR_QK_FENCE || e->kind == TSR_QK_QCLEAR) && !snap_ok(sim, e)) { q->head = TSR_QH_SNAP_WAIT; return 0; }
     const int db = (db_hold_mask(sim) >> u) & 1u;
-    if (db && !sim->abort_active && !sim->sr_busy) { q->head = TSR_QH_DBHOLD; return 0; }   // hard hold
+    // P1.13: dbg_step[u] (CC §9.3) lets this head through the hard hold and the hold sources.
+    const int step = (sim->have_dbg && sim->dbg.unit_step) ? (int)((sim->dbg.unit_step(sim->dbg.ctx) >> u) & 1u) : 0;
+    if (db && !step && !sim->abort_active && !sim->sr_busy) { q->head = TSR_QH_DBHOLD; return 0; }   // hard hold
     uint32_t code = TSR_ERR_NONE;
     int run = 0;
     if (e->kind == TSR_QK_QCLEAR) {
@@ -581,7 +844,7 @@ static int q_head(tsr_sim * sim, uint32_t u) {
         code = TSR_ERR_DEP_FAILED;
     } else if (e->kind == TSR_QK_NOP || e->kind == TSR_QK_FENCE) {
         code = TSR_ERR_NONE;
-    } else if (hold_src(sim) || db) {
+    } else if ((hold_src(sim) || db) && !step) {    // P1.13: !step
         q->head = TSR_QH_HELD;
         return 0;
     } else {
@@ -599,7 +862,7 @@ static int q_head(tsr_sim * sim, uint32_t u) {
     if (run) {
         const tsr_op_handler * h = tsr_sim_op_handler((uint8_t)(q->cur.w[0] & 0xFFu));
         uint64_t cyc = (h && h->cycles) ? h->cycles(sim, q->cur.w) : 1;
-        if (cyc == 0) cyc = 1;
+        cyc = tsr_sched_op_cycles(sim, u, cyc ? cyc : 1);   // fixed: the cycle model; random: x f
         q->cur.t_start = sim->now;
         q->t_done = sim->now + cyc;
         q_emit(sim, TSR_QEV_START, u, &q->cur, 0, 1, NULL);
@@ -648,17 +911,22 @@ static void q_invariants(const tsr_sim * sim) {
 // ---------------------------------------------------------------------------
 uint64_t tsr_sim_now(const tsr_sim * sim) { return sim->now; }
 
-static int agent_live(const tsr_sim * sim) { return sim->agent != NULL && (sim->ctrl & TSR_CTRL_RV_RUN); }
+static int agent_live(const tsr_sim * sim) {
+    return sim->agent != NULL && (sim->ctrl & TSR_CTRL_RV_RUN) && !sim->ndmreset;
+}
 
 uint64_t tsr_sim_next_event(const tsr_sim * sim) {
     uint64_t t = UINT64_MAX;
     for (uint32_t u = 0; u < TSR_NUM_UNITS; ++u)
         if (sim->u[u].busy && sim->u[u].t_done < t) t = sim->u[u].t_done;
     if (sim->f_n != 0 && sim->fifo[sim->f_rd].t_disp < t) t = sim->fifo[sim->f_rd].t_disp;
+    const uint64_t tv = view_next(sim);                  // a RISC-V-side visibility change (random)
+    if (tv < t) t = tv > sim->now ? tv : sim->now;
     if (agent_live(sim)) {
         if (sim->agent_next != TSR_SIM_AGENT_WAIT) {
             const uint64_t a = sim->agent_next > sim->now ? sim->agent_next : sim->now;
             if (a < t) t = a;
+            if (sim->agent_wake_ev && sim->agent_kick && sim->now < t) t = sim->now;   // P1.12
         } else {
             if (sim->agent_kick && sim->now < t) t = sim->now;
             if (sim->mtimecmp > sim->now && sim->mtimecmp < t) t = sim->mtimecmp;
@@ -672,7 +940,9 @@ static void q_integrate(tsr_sim * sim, uint64_t dt) {
     if (dt == 0 || !tsr_sim_active(sim)) return;
     const uint32_t C = sim->num_ch;
     const int halted = (sim->ctrl & TSR_CTRL_RV_RUN) && (sim->rv_state & TSR_STATUS_RV_HALTED);
-    if (halted) sim->perf[TSR_PERF_DBG_STOP_CYCLES] += dt;
+    // P1.13: DBG_STOP_CYCLES = ACTIVE and (RV_HALTED or DB's STOP_ACTIVE), not gated by QHALT
+    if (halted || (sim->have_dbg && sim->dbg.stop_active && sim->dbg.stop_active(sim->dbg.ctx)))
+        sim->perf[TSR_PERF_DBG_STOP_CYCLES] += dt;
     if (halted && quiescent(sim)) return;           // QHALT
     sim->perf[TSR_PERF_CYCLES] += dt;
     // RV_WFI: the hart sleeps in WFI (the RISC-V model reports RV_SLEEP from the core time it
@@ -717,12 +987,16 @@ static void q_timepoint(tsr_sim * sim) {
     for (uint32_t u = 0; u < TSR_NUM_UNITS; ++u) act |= q_head(sim, u);
     tsr_sim_sr_poll(sim);
     q_invariants(sim);
+    tsr_q_view_note(sim);                               // random: what the clk_rv side sees later
+    act |= view_apply(sim);
     if (agent_live(sim)) {
         const int due = sim->agent_next != TSR_SIM_AGENT_WAIT
-                            ? sim->agent_next <= sim->now
+                            ? (sim->agent_next <= sim->now ||
+                               (sim->agent_wake_ev && (act || sim->agent_kick)))   // P1.12: waiting store
                             : (act || sim->agent_kick || sim->now == sim->mtimecmp);
         if (due) {
             sim->agent_kick = 0;
+            sim->agent_wake_ev = 0;                     // P1.12: set again by a store that still waits
             // While the agent runs it is not an event of its own: tsr_sim_next_event() then
             // reports the next core event (completion, dispatch, MTIMECMP) and the agent's slice
             // runs up to it instead of one instruction (tsr_bus.c).
@@ -766,7 +1040,7 @@ static host_view host_view_of(const tsr_sim * sim) {
     h.log_wr = sim->log_wr;
     h.halted = (run && (sim->rv_state & TSR_STATUS_RV_HALTED)) ||
                TSR_GET(sim->rt_state, TSR_RT_STATE_PHASE) == TSR_RT_STATE_PHASE_TRAPPED;
-    h.reset_done = !run;
+    h.reset_done = !run || sim->ndmreset;
     h.sr_busy = sim->sr_busy;
     h.qidle = tsr_q_idle(sim);
     return h;
@@ -806,18 +1080,16 @@ int tsr_sim_run_until_idle(tsr_sim * sim, uint64_t max_cycles) {
     const uint64_t t_end = (UINT64_MAX - sim->now < max_cycles) ? UINT64_MAX : sim->now + max_cycles;
     q_timepoint(sim);
     for (;;) {
-        if (tsr_q_idle(sim)) return 1;
-        if (sim->now >= t_end) return 0;
+        // W1b fix: under the random schedule also until the RISC-V-side view has caught up (§5b),
+        // so that control-window reads right after it see the idle state, as under fixed.
+        const int idle = tsr_q_idle(sim);
+        if (idle && !(sim->view_on && sim->v_n > 1u)) return 1;
+        if (sim->now >= t_end) return idle;
         q_step(sim, t_end);
     }
 }
 
 void tsr_sim_request_stop(tsr_sim * sim) { sim->stop_req = 1; }
-
-void tsr_sim_set_listener(tsr_sim * sim, tsr_q_listener fn, void * ctx) {
-    sim->lis = fn;
-    sim->lis_ctx = ctx;
-}
 
 void tsr_sim_set_rv_agent(tsr_sim * sim, tsr_sim_agent_step step, void * ctx) {
     sim->agent = step;
@@ -838,11 +1110,22 @@ void tsr_sim_set_dbg_hooks(tsr_sim * sim, const tsr_sim_dbg_hooks * hooks) {
 // ---------------------------------------------------------------------------
 // Control window (CC §5)
 // ---------------------------------------------------------------------------
+// QSTATUS.QIDLE as the clk_rv side computes it from its copies (random schedule): ISSUED_SEQ =
+// DONE_SEQ for every unit and the issue FIFO empty (CC §5.1).
+static int qidle_rv(const tsr_sim * sim, const tsr_rvview * v) {
+    if (sim->f_in != v->f_out) return 0;
+    for (uint32_t u = 0; u < TSR_NUM_UNITS; ++u)
+        if (built(sim, u) && sim->u[u].issued != v->D[u]) return 0;
+    return 1;
+}
+
 static uint32_t q_cw_read(const tsr_sim * sim, uint32_t off) {
     if (off < TSR_CW_ISSUE_W(8)) return sim->iss_w[off / 4];
+    const tsr_rvview * vw = sim->view_on ? view_cur(sim) : NULL;   // random: the synchronised copies
     if (off >= TSR_CW_DONE_SEQ(0) && off < TSR_CW_DONE_SEQ(TSR_UNIT_SLOTS)) {
         const uint32_t u = (off - TSR_CW_DONE_SEQ(0)) / 4;
-        return built(sim, u) ? sim->u[u].D : 0;
+        if (!built(sim, u)) return 0;
+        return vw ? vw->D[u] : sim->u[u].D;
     }
     if (off >= TSR_CW_ISSUED_SEQ(0) && off < TSR_CW_ISSUED_SEQ(TSR_UNIT_SLOTS)) {
         const uint32_t u = (off - TSR_CW_ISSUED_SEQ(0)) / 4;
@@ -853,15 +1136,16 @@ static uint32_t q_cw_read(const tsr_sim * sim, uint32_t off) {
         if (!built(sim, u)) return 0;
         const tsr_qunit * q = &sim->u[u];
         switch ((off - TSR_CW_ERR_SEQ(0)) % 16) {
-        case 0:  return q->err_seq;
-        case 4:  return q->err_code & 0xFFu;
-        case 8:  return q->err_info;
-        default: return q->err_w0;
+        case 0:  return vw ? vw->err[u][1] : q->err_seq;
+        case 4:  return (vw ? vw->err[u][2] : q->err_code) & 0xFFu;
+        case 8:  return vw ? vw->err[u][3] : q->err_info;
+        default: return vw ? vw->err[u][4] : q->err_w0;
         }
     }
     if (off >= TSR_CW_ERR_PIDX(0) && off < TSR_CW_ERR_PIDX(TSR_UNIT_SLOTS)) {
         const uint32_t u = (off - TSR_CW_ERR_PIDX(0)) / 4;
-        return built(sim, u) ? sim->u[u].err_pidx : 0;
+        if (!built(sim, u)) return 0;
+        return vw ? vw->err[u][5] : sim->u[u].err_pidx;
     }
     switch (off) {
     case TSR_CW_ISSUE_DEP0:   return sim->iss_dep[0];
@@ -869,7 +1153,7 @@ static uint32_t q_cw_read(const tsr_sim * sim, uint32_t off) {
     case TSR_CW_ISSUE_TICKET: return sim->iss_ticket;
     case TSR_CW_ISSUE_CREDIT: {
         uint32_t v = 0;
-        for (uint32_t u = 0; u < TSR_NUM_UNITS; ++u) v |= q_credit(sim, u) << (TSR_CREDIT_FIELD_W * u);
+        for (uint32_t u = 0; u < TSR_NUM_UNITS; ++u) v |= credit_rv(sim, u) << (TSR_CREDIT_FIELD_W * u);
         return v;
     }
     case TSR_CW_ISSUE_UNITS: {
@@ -880,6 +1164,7 @@ static uint32_t q_cw_read(const tsr_sim * sim, uint32_t off) {
     case TSR_CW_ISSUE_STATUS: return sim->iss_status;
     case TSR_CW_ISSUE_PIDX:   return sim->iss_pidx;
     case TSR_CW_QSTATUS: {
+        if (vw) return (qidle_rv(sim, vw) ? TSR_QSTATUS_QIDLE : 0u) | vw->qbits;
         const uint32_t h = hold_src(sim);
         uint32_t v = tsr_q_idle(sim) ? TSR_QSTATUS_QIDLE : 0u;
         if (h) v |= TSR_QSTATUS_HOLD;
@@ -902,7 +1187,7 @@ static uint32_t q_cw_read(const tsr_sim * sim, uint32_t off) {
     }
 }
 
-static int q_cw_write(tsr_sim * sim, uint32_t off, uint32_t v) {
+static int q_cw_write(tsr_sim * sim, uint32_t off, uint32_t v, uint32_t pc) {
     if (off < TSR_CW_ISSUE_W(8)) {
         sim->iss_w[off / 4] = v;
         return TSR_CW_OK;
@@ -910,14 +1195,14 @@ static int q_cw_write(tsr_sim * sim, uint32_t off, uint32_t v) {
     switch (off) {
     case TSR_CW_ISSUE_DEP0:   sim->iss_dep[0] = v; return TSR_CW_OK;
     case TSR_CW_ISSUE_DEP1:   sim->iss_dep[1] = v; return TSR_CW_OK;
-    case TSR_CW_ISSUE_PUSH:   return q_push(sim, v);
+    case TSR_CW_ISSUE_PUSH:   return q_push(sim, v, pc);
     case TSR_CW_ISSUE_STATUS:
         sim->iss_status &= ~(v & (TSR_ISSUE_STATUS_PUSH_TIMEOUT | TSR_ISSUE_STATUS_ERR_IRQ));
         return TSR_CW_OK;
-    case TSR_CW_QCTRL:        return q_qctrl(sim, v);
+    case TSR_CW_QCTRL:        return q_qctrl(sim, v, pc);
     case TSR_CW_WAIT_TICKET:  sim->wait_ticket = v; return TSR_CW_OK;
     case TSR_CW_WAIT_CREDIT:  sim->wait_credit = v & (TSR_WAIT_CREDIT_UNIT | TSR_WAIT_CREDIT_EN); return TSR_CW_OK;
-    case TSR_CW_TRACE_MARK:   return q_trace_mark(sim, v);
+    case TSR_CW_TRACE_MARK:   return q_trace_mark(sim, v, pc);
     case TSR_CW_SPM_LB_INV:   return TSR_CW_OK;     // the line buffer is the bus model's (tsr_bus)
     case TSR_CW_MTIMECMP_LO:  sim->mtimecmp = (sim->mtimecmp & 0xFFFFFFFF00000000ull) | v; return TSR_CW_OK;
     case TSR_CW_MTIMECMP_HI:  sim->mtimecmp = (sim->mtimecmp & 0xFFFFFFFFull) | ((uint64_t)v << 32); return TSR_CW_OK;
@@ -925,7 +1210,7 @@ static int q_cw_write(tsr_sim * sim, uint32_t off, uint32_t v) {
     }
 }
 
-int tsr_q_cw_access(tsr_sim * sim, int is_write, uint32_t off, uint32_t * val) {
+static int cw_raw(tsr_sim * sim, int is_write, uint32_t off, uint32_t * val, uint32_t pc) {
     if (off % 4 != 0 || off >= TSR_RV_CTL_SIZE) {
         if (!is_write) *val = 0;
         return TSR_CW_OK;
@@ -946,16 +1231,66 @@ int tsr_q_cw_access(tsr_sim * sim, int is_write, uint32_t off, uint32_t * val) {
         *val = q_cw_read(sim, off);
         return TSR_CW_OK;
     }
-    return q_cw_write(sim, off, *val);
+    return q_cw_write(sim, off, *val, pc);
+}
+
+// Every control-window access (the hart's through the agent, the tests' plain forms): the
+// RISC-V-side view is brought up to MTIME first (random schedule), a completed access is reported
+// to the access listeners, and a store's effect on the core state is noted for the view.
+static int cw_access(tsr_sim * sim, int is_write, uint32_t off, uint32_t * val, uint32_t pc) {
+    view_apply(sim);
+    const int rc = cw_raw(sim, is_write, off, val, pc);
+    if (rc == TSR_CW_OK) {
+        if (sim->n_acc && pc != TSR_SIM_PC_SBA) {
+            tsr_sim_acc a;
+            memset(&a, 0, sizeof(a));
+            a.kind = is_write ? TSR_ACC_RV_CW_WR : TSR_ACC_RV_CW_RD;
+            a.size = 4;
+            a.off = off;
+            a.val = *val;
+            a.pc = pc;
+            tsr_sim_acc_call(sim, &a);
+        }
+        if (is_write) tsr_q_view_note(sim);
+    }
+    return rc;
+}
+
+int tsr_q_cw_access(tsr_sim * sim, int is_write, uint32_t off, uint32_t * val) {
+    return cw_access(sim, is_write, off, val, TSR_SIM_PC_HOOK);
+}
+
+// P1.12: a store the agent must retry (TSR_CW_WAIT) makes it due also at the next core event or
+// host action (q_timepoint), not only at the time it asks for (its CC §7.3 deadline): the credit
+// may come back through events created after its step (a hold released by the host, DB's RELEASE).
+static int cw_wait_note(tsr_sim * sim, int r) {
+    if (r == TSR_CW_WAIT) sim->agent_wake_ev = 1;
+    return r;
 }
 
 int tsr_sim_cw_access(tsr_sim * sim, int is_write, uint32_t off, uint32_t * val) {
-    return tsr_q_cw_access(sim, is_write, off, val);
+    return cw_wait_note(sim, cw_access(sim, is_write, off, val, TSR_SIM_PC_HOOK));
+}
+
+int tsr_sim_cw_access_pc(tsr_sim * sim, int is_write, uint32_t off, uint32_t * val, uint32_t pc) {
+    return cw_wait_note(sim, cw_access(sim, is_write, off, val, pc));
+}
+
+void tsr_sim_corewin_note(tsr_sim * sim, uint32_t csr_off, uint32_t val, uint32_t pc) {
+    if (sim->n_acc == 0) return;
+    tsr_sim_acc a;
+    memset(&a, 0, sizeof(a));
+    a.kind = TSR_ACC_RV_CORE_RD;
+    a.size = 4;
+    a.off = csr_off;
+    a.val = val;
+    a.pc = pc;
+    tsr_sim_acc_call(sim, &a);
 }
 
 uint32_t tsr_sim_cw_read(tsr_sim * sim, uint32_t off) {
     uint32_t v = 0;
-    tsr_q_cw_access(sim, 0, off, &v);
+    cw_access(sim, 0, off, &v, TSR_SIM_PC_HOOK);
     return v;
 }
 
@@ -1006,16 +1341,23 @@ uint32_t tsr_sim_qctrl(tsr_sim * sim, uint32_t bits) {
     return (rc == TSR_CW_OK && (bits & TSR_QCTRL_QCLEAR)) ? sim->iss_ticket : TSR_TICKET_NONE;
 }
 
-// Interrupt levels (CC §12.3) as an Ibex mip mask.
+// Interrupt levels (CC §12.3) as an Ibex mip mask; under the random schedule from the clk_rv
+// side's synchronised copies (tsr_sim_int.h §5b).
 uint32_t tsr_sim_rv_irq(tsr_sim * sim) {
+    view_apply(sim);
     uint32_t m = 0;
     if (sim->now >= sim->mtimecmp) m |= TSR_RV_MIP_MTIP;
-    if (tk_unit(sim->wait_ticket) != TSR_UNIT_NONE && ticket_done(sim, sim->wait_ticket)) m |= TSR_RV_MIP_FAST(0);
+    if (tk_unit(sim->wait_ticket) != TSR_UNIT_NONE && ticket_done_rv(sim, sim->wait_ticket)) m |= TSR_RV_MIP_FAST(0);
     if (sim->iss_status & TSR_ISSUE_STATUS_ERR_IRQ) m |= TSR_RV_MIP_FAST(1);
-    if (sim->pushed != sim->taken && !tsr_sim_active(sim)) m |= TSR_RV_MIP_FAST(2);
-    if ((uint32_t)(sim->lcq_wr - sim->lcq_rd) < TSR_LCQ_DEPTH) m |= TSR_RV_MIP_FAST(3);
+    if (sim->view_on) {
+        m |= view_cur(sim)->lines;
+    } else {
+        if (sim->pushed != sim->taken && !tsr_sim_active(sim)) m |= TSR_RV_MIP_FAST(2);
+        if ((uint32_t)(sim->lcq_wr - sim->lcq_rd) < TSR_LCQ_DEPTH) m |= TSR_RV_MIP_FAST(3);
+    }
     if ((sim->wait_credit & TSR_WAIT_CREDIT_EN) && TSR_GET(sim->wait_credit, TSR_WAIT_CREDIT_UNIT) < TSR_NUM_UNITS &&
-        q_credit(sim, TSR_GET(sim->wait_credit, TSR_WAIT_CREDIT_UNIT)) != 0)
+        credit_rv(sim, TSR_GET(sim->wait_credit, TSR_WAIT_CREDIT_UNIT)) != 0)
         m |= TSR_RV_MIP_FAST(5);
+    if (sim->have_dbg && sim->dbg.rv_irq) m |= sim->dbg.rv_irq(sim->dbg.ctx);   // P1.13: irq_fast[4] (REC)
     return m;
 }

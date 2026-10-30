@@ -55,19 +55,30 @@
 //              waits (CC §7.3). Priority: irq_fast[0] .. irq_fast[14], MEI, MSI, MTI. mepc = the
 //              next instruction. WFI: sleeps until (mip & mie) != 0 whatever mstatus.MIE is, or a
 //              debug request; a no-op in debug mode and while single-stepping.
-//   Debug      entry causes (priority): trigger (an enabled execute trigger matches the pc of the
-//              next instruction; it does not execute), ebreak with dcsr.ebreakm (M) / ebreaku
-//              (U) (dpc = the ebreak), halt request, step (after one instruction, which may have
-//              trapped: dpc = the handler). Entry saves dpc, dcsr.cause and dcsr.prv and sets
-//              priv M; in debug mode interrupts are off, ebreak re-parks without touching dpc /
-//              dcsr, an exception parks without touching any CSR (DmExceptionAddr), dret leaves
-//              (illegal outside debug mode). dcsr: xdebugver 4, ebreakm, ebreaku, stepie (no
-//              effect), cause (read only here), step, prv (M / U; other values become M);
-//              nmip, mprven, stopcount, stoptime, ebreaks read 0 (*confirm*). Triggers: tselect
-//              0..1 (larger writes select 1), tdata1 reads 0x2800_1040 | execute << 2 (type 2,
-//              dmode 1, action 1 = enter debug mode, m; *confirm* the u bit), tdata2 = address,
-//              tdata3 reads 0; trigger CSRs are writable in debug mode only (dmode = 1; M-mode
-//              writes are ignored, *confirm*).
+//   Debug      entry before an instruction, cause priority (Ibex DBG_TAKEN_IF, *confirm*; Debug
+//              Spec 0.13.2 priorities trigger > ebreak > haltreq > step): trigger (an enabled
+//              execute trigger matches the pc of the next instruction; it does not execute; also
+//              right after a dret / resume to that pc), halt request (a level; also wakes WFI;
+//              dpc = the next instruction), step (dcsr.step at the resume: the one instruction
+//              that ran may have trapped, dpc = the next instruction, i.e. the handler then). A
+//              debug entry has priority over interrupts. ebreak with dcsr.ebreakm (M) / ebreaku
+//              (U) enters when it executes (dpc = the ebreak). Not while a store waits (CC §7.3;
+//              DB §3.4: the halt follows the push). Entry saves dpc, dcsr.cause and dcsr.prv and
+//              sets priv M; in debug mode interrupts are off, ebreak re-parks without touching
+//              dpc / dcsr, an exception parks without touching any CSR (DmExceptionAddr), dret
+//              leaves (illegal outside debug mode). While single-stepping interrupts are off and
+//              WFI is a no-op (Ibex stepie = 0). dcsr: xdebugver 4, ebreakm, ebreaku, cause (read
+//              only), step, prv (M / U; other values become M); stepie, stopcount, stoptime,
+//              mprven, nmip, ebreaks read 0 and ignore writes (Ibex forces them, *confirm*), so
+//              mcycle / minstret also count in debug mode (P1.12 decision: stopcount hardwired
+//              0; DB §3.4's server reads it back). Triggers: tselect 0..1 (larger writes select
+//              1), tdata1 reads 0x2800_1040 | execute << 2 (type 2, dmode 1, action 1 = enter
+//              debug mode, m; *confirm* the u bit), tdata2 = address, tdata3 reads 0; tselect and
+//              the trigger CSRs are writable in debug mode only (dmode = 1; M-mode writes are
+//              ignored, *confirm*: Ibex gates tselect_we with debug_mode too).
+//   Hooks      debug events (tsr_rv_set_debug_hook) ENTER / PARK / RESUME / RESET for the debug-
+//              module model (tsr_dm.c, P1.12); data watch (tsr_rv_set_data_watch) on every data
+//              transaction the hart issues, for DB's RV watchpoints (tsr_dbg.c, P1.13).
 //
 // Model-only conventions: the debug ROM's park loop is not interpreted (see tsr_rv.h);
 // x1..x31 reset to 0. The cycle table (struct tsr_rv_cpi) is the SW §4.2 *estimate*.
@@ -89,7 +100,6 @@
 #define DCSR_XDEBUGVER (4u << 28)
 #define DCSR_EBREAKM   (1u << 15)
 #define DCSR_EBREAKU   (1u << 12)
-#define DCSR_STEPIE    (1u << 11)
 #define DCSR_CAUSE_SH  6u
 #define DCSR_CAUSE     (7u << 6)
 #define DCSR_STEP      (1u << 2)
@@ -132,6 +142,7 @@ struct tsr_rv {
 
     tsr_rv_retire_fn retire_fn;  void * retire_ctx;
     tsr_rv_debug_fn  debug_fn;   void * debug_ctx;
+    tsr_rv_data_watch_fn watch_fn; void * watch_ctx;
 };
 
 // One instruction in flight.
@@ -215,10 +226,14 @@ void tsr_rv_reset(tsr_rv * rv, uint32_t boot) {
     rv->dbg_mode = rv->parked = rv->sleeping = 0;
     rv->stepping = rv->step_done = rv->waiting = rv->intr_next = 0;
     rv->wait_cycles = 0;
+    // The hart leaves reset here (the debug_req level is an input and survives): a halt request
+    // raised by this event is taken before the first instruction (DB §3.8 halt-on-boot).
+    debug_event(rv, TSR_RV_DBG_EV_RESET, boot);
 }
 
 void tsr_rv_set_retire_hook(tsr_rv * rv, tsr_rv_retire_fn fn, void * ctx) { rv->retire_fn = fn; rv->retire_ctx = ctx; }
 void tsr_rv_set_debug_hook(tsr_rv * rv, tsr_rv_debug_fn fn, void * ctx)   { rv->debug_fn = fn; rv->debug_ctx = ctx; }
+void tsr_rv_set_data_watch(tsr_rv * rv, tsr_rv_data_watch_fn fn, void * ctx) { rv->watch_fn = fn; rv->watch_ctx = ctx; }
 void tsr_rv_set_cpi(tsr_rv * rv, const tsr_rv_cpi * cpi) {
     if (cpi) rv->cpi = *cpi;
     else { tsr_rv_cpi d = TSR_RV_CPI_DEFAULT; rv->cpi = d; }
@@ -326,7 +341,8 @@ static void csr_write_raw(tsr_rv * rv, uint32_t csr, uint32_t w, int dbg, ix * c
     case 0x7B0: {
         uint32_t prv = w & DCSR_PRV;
         if (prv != TSR_RV_PRIV_M && prv != TSR_RV_PRIV_U) prv = TSR_RV_PRIV_M;
-        rv->dcsr = DCSR_XDEBUGVER | (w & (DCSR_EBREAKM | DCSR_EBREAKU | DCSR_STEPIE | DCSR_STEP)) |
+        // stepie, stopcount, stoptime, mprven, nmip, ebreaks: forced 0 (Ibex, *confirm*).
+        rv->dcsr = DCSR_XDEBUGVER | (w & (DCSR_EBREAKM | DCSR_EBREAKU | DCSR_STEP)) |
                    (rv->dcsr & DCSR_CAUSE) | prv;
         break;
     }
@@ -436,6 +452,12 @@ static int bus_xfer(tsr_rv * rv, int write, uint32_t addr, uint32_t n, uint32_t 
     return rv->bus.load ? rv->bus.load(rv->bus.ctx, addr, n, (uint32_t)rv->dbg_mode, v) : TSR_RV_BUS_FAULT;
 }
 
+// Data watch (tsr_rv_set_data_watch, DB §3.7): one call per issued transaction, while the
+// instruction is in flight (rv->pc = its pc).
+static inline void data_watch(tsr_rv * rv, uint32_t addr, uint32_t n, int write) {
+    if (rv->watch_fn) rv->watch_fn(rv->watch_ctx, addr, n, write, rv->pc);
+}
+
 // One load or store of `size` bytes at addr. Returns 0 on success; on WAIT / YIELD sets
 // c->status; on a fault raises the exception in c. *v: the store value / the loaded bytes.
 static int data_access(tsr_rv * rv, ix * c, uint32_t addr, uint32_t size, int write, uint32_t * v) {
@@ -445,6 +467,7 @@ static int data_access(tsr_rv * rv, ix * c, uint32_t addr, uint32_t size, int wr
         uint32_t val = write ? *v : 0u;
         int r = bus_xfer(rv, write, addr, size, &val);
         if (r == TSR_RV_BUS_WAIT || r == TSR_RV_BUS_YIELD) { c->status = r; return -1; }
+        data_watch(rv, addr, size, write);
         if (r < 0) {
             c->exc = 1; c->cause = write ? TSR_RV_EXC_STORE_FAULT : TSR_RV_EXC_LOAD_FAULT; c->tval = addr;
             return -1;
@@ -461,6 +484,8 @@ static int data_access(tsr_rv * rv, ix * c, uint32_t addr, uint32_t size, int wr
     int r1 = bus_xfer(rv, write, addr, n1, &v1);
     if (r1 == TSR_RV_BUS_WAIT || r1 == TSR_RV_BUS_YIELD) { c->status = r1; return -1; }
     int r2 = bus_xfer(rv, write, a2, n2, &v2);
+    data_watch(rv, addr, n1, write);
+    data_watch(rv, a2, n2, write);
     // WAIT / YIELD are only allowed on an instruction's first transaction (tsr_rv.h); a bus that
     // returns them here is treated as faulting.
     c->cost += 1u + (r1 > 0 ? (uint32_t)r1 : 0u) + (r2 > 0 ? (uint32_t)r2 : 0u);
@@ -831,17 +856,18 @@ static void emit(tsr_rv * rv, const ix * c, uint32_t pc, uint32_t priv, uint32_t
 }
 
 static uint32_t rv_boundary(tsr_rv * rv, uint64_t * n) {
-    if (rv->parked) return TSR_RV_STOP_HALTED;
+    // The levels are sampled also while parked: mip read by the debugger is the live view.
     uint32_t lines = rv->bus.irq ? (rv->bus.irq(rv->bus.ctx) & TSR_RV_IRQ_LINES) : 0u;
     rv->lines = lines;
+    if (rv->parked) return TSR_RV_STOP_HALTED;
     if (!rv->waiting) {
+        // Debug entry before the next instruction, ahead of interrupts: trigger > haltreq > step
+        // (header). A sleeping hart has no next instruction yet; a halt request wakes it.
         if (!rv->dbg_mode) {
-            if (rv->step_done) {
-                enter_debug(rv, rv->debug_req ? TSR_RV_DBG_CAUSE_HALTREQ : TSR_RV_DBG_CAUSE_STEP, rv->pc);
-                return TSR_RV_STOP_HALTED;
-            }
-            if (rv->debug_req) {
-                enter_debug(rv, TSR_RV_DBG_CAUSE_HALTREQ, rv->pc);
+            const int trig = !rv->sleeping && trigger_match(rv, rv->pc);
+            if (trig || rv->debug_req || rv->step_done) {
+                enter_debug(rv, trig ? TSR_RV_DBG_CAUSE_TRIGGER :
+                                rv->debug_req ? TSR_RV_DBG_CAUSE_HALTREQ : TSR_RV_DBG_CAUSE_STEP, rv->pc);
                 return TSR_RV_STOP_HALTED;
             }
         }
@@ -861,6 +887,7 @@ static uint32_t rv_boundary(tsr_rv * rv, uint64_t * n) {
             rv->intr_next = 1;
             add_cycles(rv, rv->cpi.trap, 0);
         }
+        // The instruction after a wake-up or an interrupt entry (the handler's first) may match.
         if (!rv->dbg_mode && trigger_match(rv, rv->pc)) {
             enter_debug(rv, TSR_RV_DBG_CAUSE_TRIGGER, rv->pc);
             return TSR_RV_STOP_HALTED;

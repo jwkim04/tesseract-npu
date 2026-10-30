@@ -14,6 +14,18 @@ if (NOT DEFINED TSR_FP_FLAGS)
     set(TSR_FP_FLAGS -ffp-contract=off -fno-fast-math)
 endif()
 
+# P1.10 trace v2 tools, each snippet owned by its package: trace_tools.cmake (tsr-trace-replay,
+# tsr-trace-conv) and trace_gen.cmake (tsr-trace-gen v2). Both link the trace v2 library, which is
+# part of tsr_sim only with sw/sim/trace.cmake: they are left out when that snippet is absent or
+# skipped (TSR_SIM_SKIP_SNIPPETS contains "trace"), and each one by its own name in that list.
+if (EXISTS ${TESSERACT_ROOT}/sw/sim/trace.cmake AND NOT "trace" IN_LIST TSR_SIM_SKIP_SNIPPETS)
+    foreach(_snip trace_tools trace_gen)
+        if (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${_snip}.cmake AND NOT _snip IN_LIST TSR_SIM_SKIP_SNIPPETS)
+            include(${CMAKE_CURRENT_SOURCE_DIR}/${_snip}.cmake)
+        endif()
+    endforeach()
+endif()
+
 # tsr_xrt_selftest (docs/xrt-host.md): card bring-up checklist on any transport (xrt on the card;
 # mock here, without hardware). Built in every configuration so the mock checks always run.
 # X0 reduced it to identity and memory (no host-written programs, D15); it becomes tsr-selftest

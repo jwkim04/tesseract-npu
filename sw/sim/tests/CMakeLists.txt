@@ -76,6 +76,10 @@ add_test(NAME sim_csr COMMAND sim_csr)
 
 tsr_sim_test(sim_queue test_sim_queue.c tsr_sim tsr_ref)        # issue port, checker order, deps, SYNC, errors, credits
 add_test(NAME sim_queue COMMAND sim_queue)
+if ("${TSR_SIM_DEFS}" MATCHES "TSR_SIM_HAVE_RACE")               # P1.9: the same with the race detector fatal
+    add_test(NAME sim_queue_race COMMAND sim_queue)
+    set_tests_properties(sim_queue_race PROPERTIES ENVIRONMENT TSR_SIM_RACE=fatal TIMEOUT 120)
+endif()
 
 # The transport target is defined in sw/transport (added after sw/sim); names resolve at generate time.
 tsr_sim_test(sim_transport test_sim_transport.c tsr_transport tsr_sim tsr_ref)   # sim transport + TSR_* env
@@ -104,3 +108,95 @@ if (TSR_HAVE_UBSAN)
         add_test(NAME sim_${_t}_ubsan COMMAND sim_${_t}_ubsan)
     endforeach()
 endif()
+
+# ---------------------------------------------------------------------------
+# P1.8 scheduler (docs/v2/06-software-verification.md §4.4, §4.7, §10.2; sw/sim/tsr_sched.c)
+#   sim_sched_unit         xoshiro128** vectors, TSR_SIM_SCHED parsing, options and environment,
+#                          listener list and push events, tie-breaking, random durations and
+#                          crossings, the CDC lag of the RISC-V-side copies, access events, TSR_SIM_LOG,
+#                          ndmreset (stub op handlers; no toolchain needed)
+#   sim_sched_determinism  SW §4.7 under fixed + 7 random schedules: the sim_rv_issue firmware at two
+#                          RV / core ratios (test_sim_rvhost.h), random tile programs with correct
+#                          deps, a racy program that some seed exposes, spin fast-forward on a long
+#                          MVM against the run without it. The firmware part reports "Skipped" (77)
+#                          only if the RISC-V compiler was missing at configure time.
+# ---------------------------------------------------------------------------
+tsr_sim_test(sim_sched_unit test_sim_sched_unit.c tsr_sim tsr_ref)
+add_test(NAME sim_sched_unit COMMAND sim_sched_unit ${TSR_SIM_TEST_SCRATCH})
+set_tests_properties(sim_sched_unit PROPERTIES TIMEOUT 120)
+
+if (TARGET tsr_rv)                                     # the simulator has its RISC-V model (rv.cmake)
+    tsr_sim_test(sim_sched_determinism test_sim_sched.c tsr_sim tsr_ref)
+    if (TARGET rv_issue_fw)
+        add_dependencies(sim_sched_determinism rv_issue_fw)
+    endif()
+    add_test(NAME sim_sched_determinism COMMAND sim_sched_determinism ${_rv_fw_elf})
+    set_tests_properties(sim_sched_determinism PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+    # With the race detector built in: the same runs under TSR_SIM_RACE=fatal (the valid programs
+    # of parts 1, 2 and 4 are race-free; part 3 turns the detector off for its racy program).
+    if ("${TSR_SIM_DEFS}" MATCHES "TSR_SIM_HAVE_RACE")
+        add_test(NAME sim_sched_determinism_race COMMAND sim_sched_determinism ${_rv_fw_elf})
+        set_tests_properties(sim_sched_determinism_race PROPERTIES ENVIRONMENT TSR_SIM_RACE=fatal
+                             SKIP_RETURN_CODE 77 TIMEOUT 300)
+    endif()
+endif()
+# UBSan builds of both (the simulator sources compiled in, as sim_queue_ubsan).
+if (TSR_HAVE_UBSAN)
+    set(_sched_ubsan sched_unit)
+    if (TARGET tsr_rv)
+        list(APPEND _sched_ubsan sched)
+    endif()
+    foreach(_t ${_sched_ubsan})
+        set(_n sim_${_t}_ubsan)
+        if (_t STREQUAL "sched")
+            set(_n sim_sched_determinism_ubsan)
+        endif()
+        add_executable(${_n} test_sim_${_t}.c ${TSR_REF_SOURCES} ${TSR_SIM_SOURCES})
+        tsr_c_target(${_n})
+        target_include_directories(${_n} PRIVATE ${TSR_SIM_INCLUDE_DIR} ${TSR_SIM_INT_DIR})
+        if (TSR_SIM_DEFS)
+            target_compile_definitions(${_n} PRIVATE ${TSR_SIM_DEFS})
+        endif()
+        target_compile_options(${_n} PRIVATE -fsanitize=undefined -fno-sanitize-recover=all)
+        target_link_options(${_n} PRIVATE -fsanitize=undefined)
+        target_link_libraries(${_n} PRIVATE Threads::Threads m)
+    endforeach()
+    add_test(NAME sim_sched_unit_ubsan COMMAND sim_sched_unit_ubsan ${TSR_SIM_TEST_SCRATCH})
+    set_tests_properties(sim_sched_unit_ubsan PROPERTIES TIMEOUT 300)
+    if (TARGET sim_sched_determinism_ubsan)
+        if (TARGET rv_issue_fw)
+            add_dependencies(sim_sched_determinism_ubsan rv_issue_fw)
+        endif()
+        add_test(NAME sim_sched_determinism_ubsan COMMAND sim_sched_determinism_ubsan ${_rv_fw_elf})
+        set_tests_properties(sim_sched_determinism_ubsan PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# W1b integration (docs/v2/README.md §10 W1): sim_w1b_e2e — the sim_rv_issue firmware with every W1b
+# model attached (DM, DBG, RACE fatal, TRACE capture): fixed + 7 random schedules with equal SW §4.7
+# observables and captured traces, the captured launch traces replayed on fresh simulators under 3
+# schedules, and a GDB-style DMI session through host CSR 0xC00 + 4r (halt mid-launch, registers
+# and SPM / DTCM through SBA, 5 single steps, a hardware breakpoint at the kernel's first push, resume
+# to completion) whose run ends with the undisturbed run's observables (DB §5.8, §9.1). Added only
+# when the library has the RISC-V model and all four W1b models; "Skipped" (77) without the
+# firmware (no RISC-V compiler at configure time).
+# ---------------------------------------------------------------------------
+if (TARGET tsr_rv AND "${TSR_SIM_DEFS}" MATCHES "TSR_SIM_HAVE_DM" AND "${TSR_SIM_DEFS}" MATCHES "TSR_SIM_HAVE_DBG"
+    AND "${TSR_SIM_DEFS}" MATCHES "TSR_SIM_HAVE_RACE" AND "${TSR_SIM_DEFS}" MATCHES "TSR_SIM_HAVE_TRACE")
+    tsr_sim_test(sim_w1b_e2e test_sim_w1b_e2e.c tsr_sim tsr_ref)
+    if (TARGET rv_issue_fw)
+        add_dependencies(sim_w1b_e2e rv_issue_fw)
+    endif()
+    add_test(NAME sim_w1b_e2e COMMAND sim_w1b_e2e ${_rv_fw_elf} ${TSR_SIM_TEST_SCRATCH})
+    set_tests_properties(sim_w1b_e2e PROPERTIES ENVIRONMENT TSR_SIM_RACE=fatal SKIP_RETURN_CODE 77 TIMEOUT 300)
+endif()
+
+# Tests whose assertions include the fixed schedule's timing and that leave tsr_sim_opts.sched
+# unset: an exported TSR_SIM_SCHED (SW §4.9) must not change them (W1b fix; the sw/sim ones are
+# pinned in sw/sim/CMakeLists.txt).
+foreach(_t sim_csr sim_queue sim_queue_race sim_queue_ubsan)
+    if (TEST ${_t})
+        set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT "TSR_SIM_SCHED=")
+    endif()
+endforeach()

@@ -80,7 +80,8 @@ sw/
 ├── tables/                  # tsr_tables.py: the single table source (EX/CC/DB/VU/AT own rows, V2-EX-30)
 │                            # gen_tables.py: generator (SV package, C header, mmio/vu/at.hpp, tb Python)
 ├── sim/                     # libtsr_sim, libtsr_ref (C, host only)
-│   ├── include/             # tsr_isa.h (+ generated tsr_tables.h), tsr_ref.h, tsr_ref_math.h, tsr_sim.h, tsr_trace.h
+│   ├── include/             # tsr_isa.h (+ generated tsr_tables.h), tsr_ref.h, tsr_ref_math.h, tsr_ref_vu.h,
+│   │                        # tsr_ref_at.h, tsr_sim.h, tsr_rv.h, tsr_bus.h, tsr_dm.h, tsr_dbg.h, tsr_race.h, tsr_trace.h
 │   ├── tsr_ref.c            # existing references (fp helpers, layouts, QACT, dot products, dequant)
 │   ├── tsr_ref_vu.c         # VU op references: VOP, RED, ROPE, TOPK, SOP, DQROW (VU §5-§6)
 │   ├── tsr_ref_at.c         # AT references: KV planes, KVST, ATTQK, ATTPV, vector ops, FA (AT §13.1)
@@ -91,9 +92,12 @@ sw/
 │   ├── tsr_q.c              # issue port, dispatcher, checker order, unit queues, tickets, deps, SYNC, errors, time base
 │   ├── tsr_sim_int.h        # internal interface between the sim's files (handler table, accessors, hooks)
 │   ├── tsr_rv.c, tsr_bus.c  # RV32IMC+Zicsr interpreter; RISC-V address map and MMIO
-│   ├── tsr_dm.c             # debug module model (area DB's contract)
-│   ├── tsr_sched.c          # random schedules and fast-forward (P1.8; the fixed time base is in tsr_q.c)
-│   ├── tsr_race.c           # race detector
+│   ├── tsr_dm.c             # debug module model (area DB's contract, DB §9.1's DMI profile)
+│   ├── tsr_dbg.c            # DB simulator models: stop logic, QSTEP, serial mode, TBPs, history, probes, REC, TRW,
+│   │                        # the DBG registers, the DMI gate, DB's halt requests, RV watchpoints (P1.13)
+│   ├── tsr_sched.c          # TSR_SIM_SCHED, the random schedule's draws and RISC-V-side view (P1.8; the fixed
+│   │                        # time base is in tsr_q.c, spin fast-forward in tsr_bus.c's RISC-V agent)
+│   ├── tsr_race.c           # race detector and SPM_STALE
 │   ├── tsr_trace.c          # trace v2 read / write / capture / replay
 │   └── tests/
 ├── ctrl/                    # firmware SDK (RISC-V), separate CMake project (ExternalProject)
@@ -184,7 +188,7 @@ The existing unit code paths in `tsr_sim.c` (LD, ST, QACT, MVM and their checks)
 their entry changes, from "cmdproc executes instruction i" to "the queue head starts entry e". VU
 and AT ops are new (§4.5). The host CSR port serves EX's map (EX §5): `CTRL` / `STATUS`, the
 loader with receive CRC and VERIFY, `RV_BOOT`, the LQ / LCQ / log rings and watermarks,
-`SOFT_RESET` (EX §8.5, CC §12.2), PERF v2, `Q_*`, `SREG`, the DBG block and DMI (`tsr_dm.c`).
+`SOFT_RESET` (EX §8.5, CC §12.2), PERF v2, `Q_*`, `SREG`, the DBG block (`tsr_dbg.c`) and DMI (`tsr_dm.c`).
 Reads have no side effects except EX's PERF LO snapshot (`docs/spec.md:693`).
 
 ### 4.4 Scheduler and time base (V2-SW-2)
@@ -193,8 +197,9 @@ Reads have no side effects except EX's PERF LO snapshot (`docs/spec.md:693`).
   RISC-V progress (RV cycles × ratio), the LQ / LCQ / log crossings, and the `MTIMECMP` timer.
 - Ties are broken deterministically by (time, event-kind priority, unit id, sequence).
 - **`TSR_SIM_SCHED`:**
-  - `fixed` (default): op durations come from the existing cycle model and crossings take
-    2 cycles.
+  - `fixed` (default): op durations come from the existing cycle model, the issue-FIFO crossing
+    takes 2 cycles, and the RISC-V-side synchronised copies (`DONE_SEQ`, credits, `QSTATUS`, error
+    records, interrupt levels) show the core state without lag (the W1a time base, bit-identical).
   - `random:<seed>[,<min>,<max>]`: every op duration is multiplied by a factor drawn uniformly
     from [min, max] (default 0.25–4); crossings take 2–8 cycles; the RV CPI of each instruction
     varies by ±1 cycle. The generator is xoshiro128**, seeded from `<seed>`.
@@ -484,6 +489,10 @@ and error injection). It runs each on the simulator to fill `done`, `expect` and
 | `traces/model` (disk, regenerable) | 290 | R0 only, no LI/ADDI, no errors | **convert** with `tsr-trace-conv` into `traces/model-v1conv`. Each v1 instruction becomes a push that depends on the previous push (a serial chain, which keeps v1's sequential semantics; replayed with the `replay` flag SERIAL), END is dropped, and init/expect are kept. This is the regression check that the units' results did not change from v1 to v2 |
 | `traces/tmp` (tbo dumps, no script, not in git) | 2,804 | — | dropped; `TSR_TRACE` dumps of `test-backend-ops` on v2 replace them when needed |
 | new | — | — | `traces/vu`, `traces/at` (generator `--ops vu|at`), `traces/ctrl` (concurrency, credits, errors, holds), `traces/model-v2` (0.5B Q8_0 and Q4_K_M "Hi", one launch per split in M6, then one launch per token in M7) |
+
+The regenerated v2 sets are not in git (W1b): each `regen.sh` reproduces its set byte-identically
+from fixed seeds, and `traces/MANIFEST.sha256` holds a digest per set. A frozen reference set goes
+into git once the v2 ISA is frozen for the RTL.
 
 Mechanical conversion of the register-relative sets would also be possible (LI and ADDI depend only
 on immediates and ARG). It is rejected because 93 + 5 + 156 error expectations would have to be
@@ -1258,7 +1267,9 @@ New ctests:
   Spike the Spike runs are reported as not run), `rv_arch` (riscv-arch-test signatures of
   `tsr_rv` equal to Spike's), `rv_lockstep` (the riscv-tests on both, commit logs compared retire
   by retire) and `rv_random` (the last three skipped with a message if Spike is absent);
-- `sim_queue`, `sim_race`, `sim_sched_determinism`, `sim_vu`, `sim_at`, `sim_dm`;
+- `sim_queue`, `sim_race`, `sim_sched_determinism`, `sim_vu`, `sim_at`, `sim_dm`, `sim_dbg`, and
+  `sim_w1b_e2e` (the W1b models together on the W1a test firmware: 8 schedules with race `fatal`,
+  launch capture with fresh-boot replays, a GDB-style DMI session that leaves the results unchanged);
 - `fw_runtime` (R1–R10: boot, HELLO id, PING, BAD_DESC, argument block, 8 outstanding launches,
   cancel and stop watermarks, TRAP record, panic as a TRAP with `mcause` 24, log drop and BLOCK);
 - `fw_kernels_host` (ASan/UBSan) and `fw_kernels_rv` (per kind, 8 schedules, race `fatal`);

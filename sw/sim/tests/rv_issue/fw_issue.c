@@ -191,7 +191,13 @@ static int32_t k_mvm_act(const uint32_t * a, uint32_t seq) {
     i = enc_red_sum_s(0, Z, N);
     const uint32_t t_red = push(&i, t_vop, none);
     i = tsr_enc_st(TSR_GET(yh, TSR_TICKET_UNIT), Z, yh & 0x0FFFFFFFu, yl);
+#ifdef FW_ISSUE_MUTANT_ST_NODEP
+    // P1.9 (sw/sim/race.cmake): the mutant without the ST's dependency on the VOP; only the race
+    // detector catches it (sim_race_rv). Off by default.
+    const uint32_t t_st = push(&i, none, none);
+#else
     const uint32_t t_st = push(&i, t_vop, none);
+#endif
     CW(TSR_CW_RT_INFO) = 6;
 
     wait_ticket(t_red);                                    // done also when it failed or was aborted

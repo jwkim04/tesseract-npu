@@ -41,6 +41,8 @@ struct tsr_bus {
     tsr_bus_watch_fn watch;
     void *     watch_ctx;
     tsr_bus_stats stats;
+    uint64_t   mmio_gen;            // +1 per hart store (any region) and per hart MMIO load (P1.8 spin rule)
+    int        in_sba;              // serving tsr_bus_sba_* (env callbacks act for the SBA)
 };
 
 // ---------------------------------------------------------------------------
@@ -196,6 +198,11 @@ static void lb_fill(tsr_bus * b, uint32_t line) {
     if (b->env.spm_access) b->env.spm_access(b->env.ctx, line * TSR_LINE_BYTES, TSR_LINE_BYTES, 0);
 }
 
+// Extra latency of one hart access that left clk_rv and completed (env->xlat, tsr_bus.h).
+static inline int bus_xlat(tsr_bus * b, uint32_t region, uint32_t off) {
+    return b->env.xlat ? (int)b->env.xlat(b->env.ctx, region, off) : 0;
+}
+
 static int bus_load(tsr_bus * b, uint32_t addr, uint32_t n, uint32_t * val) {
     uint32_t off, v = 0;
     int r = decode(b, addr, &off);
@@ -212,35 +219,39 @@ static int bus_load(tsr_bus * b, uint32_t addr, uint32_t n, uint32_t * val) {
         if (bus_yield(b)) return TSR_RV_BUS_YIELD;
         b->lb_valid = 0;
         ++b->stats.cw_reads;
+        ++b->mmio_gen;
         if (b->env.cw && b->env.cw(b->env.ctx, 0, off, &v) != TSR_BUS_ENV_OK) return TSR_RV_BUS_FAULT;
         *val = v;
-        return TSR_BUS_LAT_CW;
+        return TSR_BUS_LAT_CW + bus_xlat(b, TSR_BUS_REGION_CW, off);
     case R_CORE:
         if (!word_only(addr, n)) return TSR_RV_BUS_FAULT;
         if (bus_yield(b)) return TSR_RV_BUS_YIELD;
         b->lb_valid = 0;
         ++b->stats.core_reads;
+        ++b->mmio_gen;
         if (!core_masked(off) && b->env.core_read &&
             b->env.core_read(b->env.ctx, off, &v) != TSR_BUS_ENV_OK) return TSR_RV_BUS_FAULT;
         *val = core_masked(off) ? 0u : v;
-        return TSR_BUS_LAT_CORE;
+        return TSR_BUS_LAT_CORE + bus_xlat(b, TSR_BUS_REGION_CORE, off);
     case R_SPM:
         if (bus_yield(b)) return TSR_RV_BUS_YIELD;
         *val = rd_le(b->env.spm + off, n);
         ++b->stats.spm_reads;
+        ++b->mmio_gen;
         if (b->env.spm_access) b->env.spm_access(b->env.ctx, off, n, 0);
-        return TSR_BUS_LAT_SPM;
+        return TSR_BUS_LAT_SPM + bus_xlat(b, TSR_BUS_REGION_SPM, off);
     case R_SPMLB: {
         uint32_t line = off / TSR_LINE_BYTES;
+        ++b->mmio_gen;
         if (b->lb_valid && b->lb_line == line) {
             ++b->stats.lb_hits;
             *val = rd_le(b->lb + off % TSR_LINE_BYTES, n);
             return TSR_BUS_LAT_LBHIT;
         }
-        if (bus_yield(b)) return TSR_RV_BUS_YIELD;
+        if (bus_yield(b)) { --b->mmio_gen; return TSR_RV_BUS_YIELD; }
         lb_fill(b, line);
         *val = rd_le(b->lb + off % TSR_LINE_BYTES, n);
-        return TSR_BUS_LAT_SPM;
+        return TSR_BUS_LAT_SPM + bus_xlat(b, TSR_BUS_REGION_SPM, line * TSR_LINE_BYTES);
     }
     default:
         return TSR_RV_BUS_FAULT;
@@ -253,34 +264,39 @@ static int bus_store(tsr_bus * b, uint32_t addr, uint32_t n, uint32_t val) {
     switch (r) {
     case R_ITCM: case R_DTCM:
         wr_le(region_mem(b, r) + off, n, val);
+        ++b->mmio_gen;
         return TSR_BUS_LAT_TCM;
     case R_RAM:
         wr_le(b->ram + off, n, val);
+        ++b->mmio_gen;
         if (b->htif) htif_store(b, addr, n);
         return TSR_BUS_LAT_TCM;
     case R_DM:
         if (!word_only(addr, n)) return TSR_RV_BUS_FAULT;
         wr_le(b->dm + off, 4, val);
+        ++b->mmio_gen;
         return TSR_BUS_LAT_TCM;
     case R_CW: {
         if (!word_only(addr, n)) return TSR_RV_BUS_FAULT;
         if (bus_yield(b)) return TSR_RV_BUS_YIELD;
         b->lb_valid = 0;
-        if (b->env.cw == NULL) { ++b->stats.cw_writes; return TSR_BUS_LAT_CW; }
+        if (b->env.cw == NULL) { ++b->stats.cw_writes; ++b->mmio_gen; return TSR_BUS_LAT_CW; }
         uint32_t v = val;
         int e = b->env.cw(b->env.ctx, 1, off, &v);
         if (e == TSR_BUS_ENV_WAIT) { ++b->stats.cw_waits; return TSR_RV_BUS_WAIT; }
         if (e != TSR_BUS_ENV_OK) return TSR_RV_BUS_FAULT;
         ++b->stats.cw_writes;
-        return TSR_BUS_LAT_CW;
+        ++b->mmio_gen;
+        return TSR_BUS_LAT_CW + bus_xlat(b, TSR_BUS_REGION_CW, off);
     }
     case R_SPM: case R_SPMLB:
         if (bus_yield(b)) return TSR_RV_BUS_YIELD;
         wr_le(b->env.spm + off, n, val);
         b->lb_valid = 0;
         ++b->stats.spm_writes;
+        ++b->mmio_gen;
         if (b->env.spm_access) b->env.spm_access(b->env.ctx, off, n, 1);
-        return TSR_BUS_LAT_SPM;
+        return TSR_BUS_LAT_SPM + bus_xlat(b, TSR_BUS_REGION_SPM, off);
     default:   // R_CORE (read only), unmapped
         return TSR_RV_BUS_FAULT;
     }
@@ -399,7 +415,7 @@ uint8_t * tsr_bus_mem(tsr_bus * b, uint32_t addr, uint32_t n) {
 // ---------------------------------------------------------------------------
 // SBA (CC §4.3, DB §3.6)
 // ---------------------------------------------------------------------------
-int tsr_bus_sba_read(tsr_bus * b, uint32_t addr, uint32_t size, uint32_t * val) {
+static int sba_read(tsr_bus * b, uint32_t addr, uint32_t size, uint32_t * val) {
     uint32_t off, v = 0;
     if ((size != 1u && size != 2u && size != 4u) || (addr & (size - 1u))) return -1;
     int r = decode(b, addr, &off);
@@ -426,7 +442,7 @@ int tsr_bus_sba_read(tsr_bus * b, uint32_t addr, uint32_t size, uint32_t * val) 
     }
 }
 
-int tsr_bus_sba_write(tsr_bus * b, uint32_t addr, uint32_t size, uint32_t val) {
+static int sba_write(tsr_bus * b, uint32_t addr, uint32_t size, uint32_t val) {
     uint32_t off;
     if ((size != 1u && size != 2u && size != 4u) || (addr & (size - 1u))) return -1;
     int r = decode(b, addr, &off);
@@ -447,6 +463,21 @@ int tsr_bus_sba_write(tsr_bus * b, uint32_t addr, uint32_t size, uint32_t val) {
         return -1;
     }
 }
+
+// The env callbacks these reach (control window, core window, SPM access) see in_sba = 1.
+int tsr_bus_sba_read(tsr_bus * b, uint32_t addr, uint32_t size, uint32_t * val) {
+    b->in_sba++;
+    const int r = sba_read(b, addr, size, val);
+    b->in_sba--;
+    return r;
+}
+int tsr_bus_sba_write(tsr_bus * b, uint32_t addr, uint32_t size, uint32_t val) {
+    b->in_sba++;
+    const int r = sba_write(b, addr, size, val);
+    b->in_sba--;
+    return r;
+}
+int tsr_bus_in_sba(const tsr_bus * b) { return b->in_sba != 0; }
 
 // ---------------------------------------------------------------------------
 // ELF32
@@ -569,12 +600,32 @@ struct tsr_rv_agent {
     double     ratio;               // F_RV / F_CORE
     uint64_t   gen;                 // tsr_sim_rv_boot_gen the hart was reset for
     int        started;
-    uint64_t   t0, c0;              // anchor: core time t0 <-> RV cycle count c0
-    uint64_t   slice_c0;            // RV cycles at the start of the running slice
+    uint64_t   t0, c0;              // anchor: core time t0 <-> effective RV cycle count c0
+    uint64_t   slice_c0;            // the hart's RV cycles at the start of the running slice
     int        in_step;
     uint32_t   state;               // STATUS bits last reported
     uint32_t   perf_x;              // PERF extension base X = 5 + 2C
+    // P1.8 random schedule (tsr_sim_int.h §5b): effective RV cycles = the hart's + jit
+    int        jitter;              // CPI deltas and handshake latencies are drawn
+    int        hooked;              // the agent's retire hook is installed on the hart
+    int64_t    jit;                 // accumulated CPI deltas
+    uint64_t   raw_mark;            // the hart's cycles after the previous retire record
+    uint64_t   slice_end;           // effective cycle count at which the slice ends (jitter)
+    tsr_rv_retire_fn user_fn;       // tsr_rv_agent_set_retire_hook
+    void *     user_ctx;
+    // P1.8 spin fast-forward: the last timing-register read and its repeat count
+    uint32_t   sp_off, sp_val, sp_n;
+    uint64_t   sp_gen;              // tsr_bus mmio_gen of that read
+    int        sp_valid;
+    int        ff_pending;          // the 4th identical read happened in this slice
+    int        ff_wait;             // the last step jumped: wake no earlier than the hart's own time
+    uint64_t   ff_jumps;
 };
+
+// Effective RV cycles (the hart's, plus the random schedule's CPI deltas).
+static uint64_t ag_eff(const tsr_rv_agent * a) {
+    return (uint64_t)((int64_t)tsr_rv_cycles(a->rv) + a->jit);
+}
 
 // RV cycles elapsed by core time t (t >= t0).
 static uint64_t ag_rv_at(const tsr_rv_agent * a, uint64_t t) {
@@ -605,9 +656,34 @@ static void ag_external(tsr_rv_agent * a) {
     if (a->in_step) tsr_rv_request_stop(a->rv);
 }
 
+// Spin detection (SW §4.4, tsr_sim_int.h §5b): reads of the timing-dependent registers. A run is
+// the same register with the same value, each read the hart's next MMIO access or store after the
+// previous one (the bus's mmio_gen moved by exactly this read).
+static int ag_timing_reg(uint32_t off) {
+    return (off >= TSR_CW_DONE_SEQ(0) && off < TSR_CW_DONE_SEQ(TSR_UNIT_SLOTS)) || off == TSR_CW_ISSUE_CREDIT ||
+           off == TSR_CW_QSTATUS || off == TSR_CW_LQ_AVAIL || off == TSR_CW_LCQ_FREE || off == TSR_CW_LOG_FREE;
+}
+
+static void ag_spin(tsr_rv_agent * a, uint32_t off, uint32_t val) {
+    if (!ag_timing_reg(off)) return;              // (any other access moved mmio_gen: the run breaks)
+    const uint64_t g = a->bus->mmio_gen;
+    if (a->sp_valid && off == a->sp_off && val == a->sp_val && g == a->sp_gen + 1u) {
+        ++a->sp_n;
+    } else {
+        a->sp_off = off;
+        a->sp_val = val;
+        a->sp_n = 1;
+        a->sp_valid = 1;
+    }
+    a->sp_gen = g;
+    if (a->sp_n >= 4u && a->in_step && tsr_sim_fast_forward(a->sim)) a->ff_pending = 1;
+}
+
 static int ag_cw(void * ctx, int is_write, uint32_t off, uint32_t * val) {
     tsr_rv_agent * a = (tsr_rv_agent *)ctx;
-    int r = tsr_sim_cw_access(a->sim, is_write, off, val);
+    const int sba = tsr_bus_in_sba(a->bus);
+    int r = tsr_sim_cw_access_pc(a->sim, is_write, off, val, sba ? TSR_SIM_PC_SBA : tsr_rv_pc(a->rv));
+    if (!sba && !is_write && r == TSR_CW_OK) ag_spin(a, off, *val);
     ag_external(a);
     if (r == TSR_CW_OK) return TSR_BUS_ENV_OK;
     if (r == TSR_CW_WAIT && is_write) {
@@ -623,16 +699,74 @@ static int ag_cw(void * ctx, int is_write, uint32_t off, uint32_t * val) {
 static int ag_core_read(void * ctx, uint32_t off, uint32_t * val) {
     tsr_rv_agent * a = (tsr_rv_agent *)ctx;
     *val = tsr_sim_corewin_read(a->sim, off);
+    if (!tsr_bus_in_sba(a->bus)) tsr_sim_corewin_note(a->sim, off, *val, tsr_rv_pc(a->rv));
     ag_external(a);
     return TSR_BUS_ENV_OK;
 }
 
 static void ag_spm_access(void * ctx, uint32_t off, uint32_t n, int is_write) {
     tsr_rv_agent * a = (tsr_rv_agent *)ctx;
-    (void)off; (void)n; (void)is_write;
     tsr_sim_perf_add(a->sim, a->perf_x + TSR_PERF_XOFF_BRIDGE_ACC, 1);
     tsr_sim_perf_add(a->sim, a->perf_x + TSR_PERF_XOFF_BRIDGE_WAIT, TSR_BUS_LAT_SPM - TSR_BUS_LAT_TCM);
+    if (!tsr_bus_in_sba(a->bus) && tsr_sim_acc_listened(a->sim)) {
+        // The hart's SPM transaction (race detector, the SW §4.7 SPM store stream): the bytes have
+        // moved, so the value is the SPM's.
+        tsr_sim_acc e;
+        memset(&e, 0, sizeof(e));
+        e.kind = is_write ? TSR_ACC_RV_SPM_WR : TSR_ACC_RV_SPM_RD;
+        e.size = n;
+        e.len = n;
+        e.addr = off;
+        e.val = n <= 4u ? rd_le(a->bus->env.spm + off, n) : 0u;
+        e.pc = tsr_rv_pc(a->rv);
+        tsr_sim_acc_emit(a->sim, &e);
+    }
     ag_external(a);
+}
+
+// Random schedule: the handshake crossings of the LQ / LCQ / log registers, the core window and
+// the SPM bridge as extra access latency (tsr_sim_int.h §5b). The rest of the control window is
+// clk_rv registers (CC §5.1).
+static uint32_t ag_xlat(void * ctx, uint32_t region, uint32_t off) {
+    tsr_rv_agent * a = (tsr_rv_agent *)ctx;
+    if (!a->jitter) return 0;
+    if (region == TSR_BUS_REGION_CW && !(off >= TSR_CW_LQ_HEAD_W(0) && off < TSR_CW_MTIME_LO)) return 0;
+    return tsr_sched_rv_handshake(a->sim);
+}
+
+// TSR_SIM_LOG RV line of one retire record (tsr_bus.h).
+static void ag_log(tsr_rv_agent * a, const tsr_rv_retire * r) {
+    char x[96];
+    size_t n = 0;
+    x[0] = '\0';
+    if (r->trap) {
+        n += (size_t)snprintf(x + n, sizeof(x) - n, " trap %u", r->cause);
+    } else {
+        if (r->rd) n += (size_t)snprintf(x + n, sizeof(x) - n, " x%u=%08x", r->rd, r->rd_val);
+        if (r->mem_size && n < sizeof(x))
+            n += (size_t)snprintf(x + n, sizeof(x) - n, " %s %08x=%08x", r->mem_write ? "st" : "ld", r->mem_addr,
+                                  r->mem_val);
+    }
+    tsr_sim_log_line(a->sim, "%10llu rv    pc=%08x insn=%08x%s", (unsigned long long)ag_time_of(a, ag_eff(a)), r->pc,
+                     r->insn, x);
+}
+
+// The agent's retire hook (installed when needed): the random CPI delta of the instruction, the
+// effective-cycle end of the slice, RV log lines, then the chained hook.
+static int ag_retire(void * ctx, const tsr_rv_retire * r) {
+    tsr_rv_agent * a = (tsr_rv_agent *)ctx;
+    int stop = 0;
+    const uint64_t raw = tsr_rv_cycles(a->rv);
+    if (a->jitter) {
+        int d = tsr_sched_rv_cpi(a->sim);
+        if (d < 0 && raw - a->raw_mark < 2u) d = 0;   // every instruction keeps >= 1 cycle
+        a->jit += d;
+        if (a->in_step && ag_eff(a) >= a->slice_end) stop = 1;
+    }
+    a->raw_mark = raw;
+    if (tsr_sim_log_rv(a->sim)) ag_log(a, r);
+    if (a->user_fn && a->user_fn(a->user_ctx, r)) stop = 1;
+    return stop;
 }
 
 static uint32_t ag_irq(void * ctx) { return tsr_sim_rv_irq(((tsr_rv_agent *)ctx)->sim); }
@@ -649,6 +783,9 @@ static uint64_t ag_step(void * ctx, tsr_sim * sim) {
     uint64_t now = tsr_sim_now(sim);
     uint64_t gen = tsr_sim_rv_boot_gen(sim);
     if (!a->started || gen != a->gen) {
+        // P1.12: the boot cleared STATUS.RV_* in the core; without this a hart that halts (or
+        // sleeps) again in the same state as before the reset would never be reported.
+        a->state = 0;
         tsr_rv_reset(a->rv, tsr_sim_rv_boot(sim));
         tsr_bus_lb_invalidate(a->bus);
         a->gen = gen;
@@ -656,10 +793,19 @@ static uint64_t ag_step(void * ctx, tsr_sim * sim) {
         a->ratio = tsr_sim_rv_ratio(sim);
         if (!(a->ratio > 0.0)) a->ratio = 166.7 / 276.3;
         a->t0 = now;
-        a->c0 = tsr_rv_cycles(a->rv);
+        a->c0 = ag_eff(a);
+        a->ff_wait = 0;
+        a->sp_valid = 0;
+    }
+    // After a spin jump the agent is woken by the next time point, which may come before the hart
+    // finished the read that completed the spin: it then continues at its own time.
+    if (a->ff_wait) {
+        a->ff_wait = 0;
+        const uint64_t t_own = ag_time_of(a, ag_eff(a));
+        if (t_own > now) return t_own - now;
     }
     // Credit the time that passed since the hart last ran (asleep, parked, waiting, rounding).
-    uint64_t c = tsr_rv_cycles(a->rv), target = ag_rv_at(a, now);
+    uint64_t c = ag_eff(a), target = ag_rv_at(a, now);
     if (target > c) {
         if (tsr_rv_waiting(a->rv)) tsr_sim_perf_add(sim, a->perf_x + TSR_PERF_XOFF_PUSH_STALL, target - c);
         tsr_rv_idle(a->rv, target - c);
@@ -667,7 +813,8 @@ static uint64_t ag_step(void * ctx, tsr_sim * sim) {
     }
     // Slice: instructions that start before the next core event. While this step runs, the core's
     // tsr_sim_next_event() leaves the agent itself out (tsr_q.c) and counts MTIMECMP, so the
-    // slice ends before the next completion, dispatch or timer edge.
+    // slice ends before the next completion, dispatch, timer edge or (random schedule) visibility
+    // change.
     uint64_t next = tsr_sim_next_event(sim), max_cycles = 1;
     if (next == UINT64_MAX) {
         max_cycles = SLICE_MAX_CYCLES;
@@ -675,21 +822,45 @@ static uint64_t ag_step(void * ctx, tsr_sim * sim) {
         uint64_t last = ag_rv_at(a, next - 1u);
         max_cycles = last >= c ? last - c + 1u : 1u;
     }
-    a->slice_c0 = c;
+    a->slice_c0 = tsr_rv_cycles(a->rv);
+    a->raw_mark = a->slice_c0;
+    a->ff_pending = 0;
+    uint64_t raw_budget = max_cycles;
+    if (a->jitter) {
+        // The budget is in effective cycles, checked by ag_retire after every instruction; the
+        // hart's own count can exceed it by at most one cycle per instruction.
+        a->slice_end = c + max_cycles;
+        raw_budget = max_cycles + SLICE_MAX_INSNS;
+    }
     a->in_step = 1;
-    uint32_t r = tsr_rv_run(a->rv, SLICE_MAX_INSNS, max_cycles);
+    uint32_t r = tsr_rv_run(a->rv, SLICE_MAX_INSNS, raw_budget);
     a->in_step = 0;
     if (r == TSR_RV_STOP_WFI) {
         // The slice ran ahead of MTIME: the hart reached the WFI at its own cycle count. STATUS
         // RV_SLEEP and PERF RV_WFI start at that core time, so the agent wakes there to report it
         // (a sleeping hart with no pending interrupt stops again at once, without using cycles).
-        const uint64_t t = ag_time_of(a, tsr_rv_cycles(a->rv));
+        const uint64_t t = ag_time_of(a, ag_eff(a));
         if (t > now) {
             ag_report_state(a, 0);
             return t - now;
         }
     }
+    // P1.13: likewise a debug entry inside the slice: STATUS.RV_HALTED (QHALT, PERF
+    // DBG_STOP_CYCLES, DB's RVHALT records) rises at the core time the hart entered debug mode, not
+    // at the start of the slice; the parked hart reports it when the agent runs again there.
+    if (r == TSR_RV_STOP_HALTED && !(a->state & TSR_STATUS_RV_HALTED)) {
+        const uint64_t t = ag_time_of(a, ag_eff(a));
+        if (t > now) return t - now;
+    }
     ag_report_state(a, 1);
+    if (a->ff_pending && (r == TSR_RV_STOP_REQUEST || r == TSR_RV_STOP_BUDGET)) {
+        // Spin fast-forward (SW §4.4): nothing the loop reads can change before the next time
+        // point, so the hart idles until then (tsr_sim_int.h §5b).
+        a->ff_pending = 0;
+        a->ff_wait = 1;
+        ++a->ff_jumps;
+        return TSR_SIM_AGENT_WAIT;
+    }
     switch (r) {
     case TSR_RV_STOP_WFI:
     case TSR_RV_STOP_HALTED:
@@ -699,15 +870,22 @@ static uint64_t ag_step(void * ctx, tsr_sim * sim) {
         // one, or at the CC §7.3 deadline.
         uint64_t w = tsr_rv_wait_cycles(a->rv);
         uint64_t left = w < TSR_ISSUE_WAIT_MAX ? TSR_ISSUE_WAIT_MAX - w : 0u;
-        uint64_t t = ag_time_of(a, tsr_rv_cycles(a->rv) + left);
+        uint64_t t = ag_time_of(a, ag_eff(a) + left);
         uint64_t nx = tsr_sim_next_event(sim);
         if (nx < t) t = nx;
         return t > now ? t - now : 1u;
     }
     default: {
-        uint64_t t = ag_time_of(a, tsr_rv_cycles(a->rv));
+        uint64_t t = ag_time_of(a, ag_eff(a));
         return t > now ? t - now : 1u;
     }
+    }
+}
+
+static void ag_hook(tsr_rv_agent * a) {
+    if (!a->hooked && (a->jitter || a->user_fn || tsr_sim_log_rv(a->sim))) {
+        tsr_rv_set_retire_hook(a->rv, ag_retire, a);
+        a->hooked = 1;
     }
 }
 
@@ -729,12 +907,23 @@ tsr_rv_agent * tsr_rv_agent_create(tsr_sim * sim) {
     env.irq = ag_irq;
     env.yield = ag_yield;
     env.rv_run = ag_rv_run;
+    env.xlat = ag_xlat;
     a->bus = tsr_bus_create_fw(&cfg, &env);
     if (a->bus == NULL) { free(a); return NULL; }
     a->rv = tsr_rv_create(tsr_bus_iface(a->bus));
     tsr_bus_attach(a->bus, a->rv);
+    a->jitter = tsr_sim_sched_random(sim);
+    ag_hook(a);
     tsr_sim_set_rv_agent(sim, ag_step, a);
     return a;
+}
+
+uint64_t tsr_rv_agent_ff_jumps(const tsr_rv_agent * a) { return a ? a->ff_jumps : 0u; }
+
+void tsr_rv_agent_set_retire_hook(tsr_rv_agent * a, tsr_rv_retire_fn fn, void * ctx) {
+    a->user_fn = fn;
+    a->user_ctx = ctx;
+    ag_hook(a);
 }
 
 void tsr_rv_agent_destroy(tsr_rv_agent * a) {
@@ -747,4 +936,11 @@ void tsr_rv_agent_destroy(tsr_rv_agent * a) {
 
 tsr_rv * tsr_rv_agent_rv(tsr_rv_agent * a) { return a->rv; }
 tsr_bus * tsr_rv_agent_bus(tsr_rv_agent * a) { return a->bus; }
+
+// P1.12: the DM model's state report (tsr_bus.h): always reported (the cache is invalidated).
+void tsr_rv_agent_sync(tsr_rv_agent * a) {
+    if (a == NULL) return;
+    a->state = ~0u;
+    ag_report_state(a, 1);
+}
 #endif   // TSR_RV_WITH_SIM

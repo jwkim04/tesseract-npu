@@ -94,7 +94,11 @@ These replace memory-model rule 5 (`docs/spec.md:756`).
   bus, DB §3.6). The hardware never
   changes SPM between launches, and `SOFT_RESET` does not change it either. SPM is undefined only
   after a hardware reset. Kernels may keep SPM state across launches; the runtime (SW) owns its
-  allocation.
+  allocation. In M6–M7 SW's kernels do not: a launch's results must not depend on SPM contents
+  left by an earlier launch (V2-SW-4; the simulator's race detector reports such a read as
+  `SPM_STALE`), so every launch trace replays on a freshly booted device. A persistent SPM region
+  would need an explicit declaration that the detector and the trace capture know about (a later
+  optimisation, decided in W1b).
 - **H5.** Descriptor words are ordered by PCIe posted-write order and by the AXI4-Lite write
   channel. The adapter handles writes in arrival order (`docs/platform-u200.md:83-85`), so
   `LQ_PUSH` always sees the staging words written before it.

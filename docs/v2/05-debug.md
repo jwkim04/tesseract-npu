@@ -818,7 +818,7 @@ stalls: EX's `PUSH_STALL`; WFI time: EX's `RV_WFI`.
 
 ### 9.1 Device parity
 
-| Feature | sim (SW's `tsr_rv` + `tsr_q` + `tsr_dm`) | vkernel | xrt |
+| Feature | sim (SW's `tsr_rv` + `tsr_q` + `tsr_dm` + `tsr_dbg`) | vkernel | xrt |
 |---|---|---|---|
 | DMI, DM | behavioural DM (`sw/sim/tsr_dm.c`, SW §3) implementing the **DMI profile** below; abstract commands act on the interpreter; the program buffer runs in the interpreter in debug mode | RTL riscv-dbg | RTL |
 | SBA | the RV bus model with CC's refusals | RTL | RTL |

@@ -29,11 +29,14 @@
 //     WFI sleeps until (mip & mie) != 0 whatever mstatus.MIE is;
 //   - debug mode (Debug Spec 0.13.2 as Ibex implements it): entered by a halt request
 //     (tsr_rv_set_debug_req), an execute trigger (tselect / tdata1-2, two triggers), ebreak with
-//     dcsr.ebreakm / ebreaku, or a single step (dcsr.step). The debug ROM is not interpreted: the
-//     hart "parks" (tsr_rv_halted) and the debug-module model (tsr_dm.c, P1.12, DB §9.1) acts on
-//     it directly — abstract register access through tsr_rv_reg / tsr_rv_csr_*, the program
-//     buffer through tsr_rv_debug_exec (runs from the DM region until ebreak, or an exception,
-//     parks it again), resume through tsr_rv_debug_resume (as dret).
+//     dcsr.ebreakm / ebreaku, or a single step (dcsr.step); before an instruction the cause
+//     priority is trigger > haltreq > step, ahead of interrupts. dcsr.stepie / stopcount read 0
+//     (Ibex): no interrupts during a step, counters count in debug mode. The debug ROM is not
+//     interpreted: the hart "parks" (tsr_rv_halted) and the debug-module model (tsr_dm.c, P1.12,
+//     DB §9.1) acts on it directly — abstract register access through tsr_rv_reg / tsr_rv_csr_*,
+//     the program buffer through tsr_rv_debug_exec (runs from the DM region until ebreak, or an
+//     exception, parks it again), resume through tsr_rv_debug_resume (as dret). DB's RISC-V
+//     halted level RV_HALTED (last fetch in the DM range, DB §3.1) is tsr_rv_debug_mode here.
 #pragma once
 
 #include <stddef.h>
@@ -205,11 +208,24 @@ typedef int (*tsr_rv_retire_fn)(void * ctx, const tsr_rv_retire * r);
 
 // Debug-module events (P1.12): ENTER (arg = dcsr.cause) when the hart enters debug mode and
 // parks; PARK (arg = 0 ebreak, 1 exception) when program-buffer execution ends; RESUME when it
-// leaves debug mode.
+// leaves debug mode (tsr_rv_debug_resume or a dret); RESET (arg = the boot address) at the end
+// of tsr_rv_reset, i.e. when the hart leaves reset: a debug request set from this event (or
+// before) halts the hart before its first instruction (cause haltreq, dpc = boot + 0x80; DB §3.8
+// halt-on-boot). The callback may call tsr_rv_set_debug_req and read state, nothing else.
 #define TSR_RV_DBG_EV_ENTER  1u
 #define TSR_RV_DBG_EV_PARK   2u
 #define TSR_RV_DBG_EV_RESUME 3u
+#define TSR_RV_DBG_EV_RESET  4u
 typedef void (*tsr_rv_debug_fn)(void * ctx, uint32_t ev, uint32_t arg);
+
+// Data watch (DB §3.7 RV watchpoints, P1.13): called once for every data transaction the hart
+// issues on its data port (each half of a split misaligned access separately, with the bytes of
+// that half: addr / size as the byte enables give them), after the bus took it and before the
+// instruction completes, also when the transaction faults and in debug mode (program buffer);
+// never for a WAIT / YIELD attempt (re-executed later), never for SBA (the bus's master, not the
+// hart), never for fetches. pc = the accessing instruction. tsr_rv_set_debug_req from the
+// callback halts the hart right after this instruction (cause haltreq, dpc = the next one).
+typedef void (*tsr_rv_data_watch_fn)(void * ctx, uint32_t addr, uint32_t size, int is_store, uint32_t pc);
 
 // ---------------------------------------------------------------------------
 // Lifecycle and execution
@@ -269,9 +285,11 @@ void     tsr_rv_freeze_wait(tsr_rv * rv, int on);
 int      tsr_rv_csr_read(tsr_rv * rv, uint32_t csr, uint32_t * val);
 int      tsr_rv_csr_write(tsr_rv * rv, uint32_t csr, uint32_t val);
 
-// Hooks.
+// Hooks (one slot each; fn = NULL removes). In the simulator the debug hook belongs to the DM
+// model (tsr_dm.c forwards the events, tsr_dm.h) and the data watch to DB's model (tsr_dbg.c).
 void     tsr_rv_set_retire_hook(tsr_rv * rv, tsr_rv_retire_fn fn, void * ctx);
 void     tsr_rv_set_debug_hook(tsr_rv * rv, tsr_rv_debug_fn fn, void * ctx);
+void     tsr_rv_set_data_watch(tsr_rv * rv, tsr_rv_data_watch_fn fn, void * ctx);
 void     tsr_rv_set_cpi(tsr_rv * rv, const tsr_rv_cpi * cpi);
 
 // ---------------------------------------------------------------------------

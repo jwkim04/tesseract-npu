@@ -39,19 +39,32 @@ typedef struct tsr_sim tsr_sim;
 uint32_t tsr_sim_caps_implemented(void);
 #define TSR_SIM_CAPS_IMPLEMENTED tsr_sim_caps_implemented()
 
-// Options beyond the elaboration parameters (SW §4.8). Zero / NULL fields take the defaults.
+// Options beyond the elaboration parameters (SW §4.8). Zero / NULL fields take the defaults. The
+// fields marked (env) take the SW §4.9 environment variable when left unset:
+//   sched      TSR_SIM_SCHED     "fixed" (default) | "random:<seed>[,<min>,<max>]" (tsr_sim_int.h
+//                                §5b: random op durations x [min, max] (default 0.25-4), crossings
+//                                2-8 cycles, RV CPI +-1; seed decimal or 0x hex)
+//   rv_ratio   TSR_SIM_RV_RATIO  F_RV / F_CORE in [0.05, 4]
+//   race       TSR_SIM_RACE      off | report | fatal = 0 | 1 | 2 (needs the race detector, P1.9)
+//   log        TSR_SIM_LOG       stderr | <file>, optionally prefixed "rv," for RV retire lines
+//   trace_dir  TSR_TRACE         one trace v2 per launch under the directory (P1.10)
+// A value that does not parse makes tsr_sim_create_opts fail (message on stderr).
 typedef struct tsr_sim_opts {
     const char *    dram_dir;     // file-backed DRAM (see tsr_sim_create); NULL: anonymous memory
     uint32_t        threads;      // MVM worker threads (results independent of it); 0 = 1
-    const char *    sched;        // NULL or "fixed" (P1.6); "random:<seed>[,<min>,<max>]" comes with P1.8
-    double          rv_ratio;     // F_RV / F_CORE for the RISC-V agent; 0 = 166.7 / 276.3
-    uint32_t        race;         // race detector (P1.9): 0 off; other values are refused until then
-    void *          log;          // FILE*: per-op and queue event lines (TSR_SIM_LOG), or NULL
+    const char *    sched;        // (env) NULL: TSR_SIM_SCHED, else "fixed"
+    double          rv_ratio;     // (env) F_RV / F_CORE for the RISC-V agent; 0 = 166.7 / 276.3
+    uint32_t        race;         // (env) race detector: 0 off, 1 report, 2 fatal
+    void *          log;          // (env) FILE*: queue event lines (push / enq / start / done) and
+                                  // one line per tsr_sim_op call, or NULL
     const uint8_t * q_depth;      // NULL: U200 M6 depths (DMA 8, QACT 4, MVM 4, VU 16, unit 4
                                   // absent, SYNC 4); else 6 depths, 0 = unit absent, max 31, SYNC >= 1
     uint32_t        itcm_bytes;   // 0 = TSR_ITCM_BYTES; else a multiple of 1 KiB, <= 1 MiB
     uint32_t        dtcm_bytes;   // 0 = TSR_DTCM_BYTES; same rule
+    uint32_t        log_flags;    // TSR_SIM_LOG_RV: also one line per retired RV instruction
+    const char *    trace_dir;    // (env) TSR_TRACE directory, or NULL
 } tsr_sim_opts;
+#define TSR_SIM_LOG_RV 1u
 
 // Create a simulator. Channel DRAM is cfg->ch_bytes per channel, mapped lazily
 // (MAP_NORESERVE) so a 4 x 16 GiB address space costs only what is touched; it starts zeroed.
@@ -71,8 +84,16 @@ tsr_sim * tsr_sim_create_opts(const tsr_config * cfg, const tsr_sim_opts * opts)
 void      tsr_sim_destroy(tsr_sim * sim);
 const tsr_config * tsr_sim_config(const tsr_sim * sim);
 
-// Direct DRAM access (host side). Returns a pointer to byte 0 of channel ch.
+// Direct DRAM access (host side). Returns a pointer to byte 0 of channel ch. Accesses through the
+// pointer are invisible to the simulator's observers (race detector, trace capture, SW §4.6,
+// §5.5); the calls below are the visible forms: tsr_sim_dram_write / _read copy len bytes at byte
+// offset off of channel ch, tsr_sim_dram_note_write reports a write already made through the
+// pointer. write / read return 0, or -1 (nothing done) if ch or [off, off + len) is outside the
+// channel; note_write ignores such a range.
 uint8_t * tsr_sim_dram(tsr_sim * sim, uint32_t ch);
+int       tsr_sim_dram_write(tsr_sim * sim, uint32_t ch, uint64_t off, const void * src, uint64_t len);
+int       tsr_sim_dram_read(tsr_sim * sim, uint32_t ch, uint64_t off, void * dst, uint64_t len);
+void      tsr_sim_dram_note_write(tsr_sim * sim, uint32_t ch, uint64_t off, uint64_t len);
 uint8_t * tsr_sim_spm(tsr_sim * sim);            // debug view, spm_bytes long
 // Addressable beats per channel: min(ch_bytes / 64, 2^ADDR_BEAT_W). A DRAM operand
 // [a, a + n) is in range iff a + n <= this value (spec 구현 명확화, 범위 검사).
@@ -83,7 +104,9 @@ uint64_t  tsr_sim_dram_limit_beats(const tsr_sim * sim);
 // the watermarks, the LCQ and log rings with their read pointers, LQ_CFG, PERF_INFO, Q_DEPTH,
 // LOG_CFG / LOG_DROPPED, the loader (LOAD_*, receive CRC and VERIFY), PERF_0..63 (a LO read
 // snapshots the counter for the next HI read), SREG0..15 (0x9C0), Q_* (0xE00-0xF1C). The DBG block
-// and DMI read 0 until the debug models exist. Undefined offsets read 0 and ignore writes; reads
+// (0x800-0xAFC) and the DMI window (0xC00-0xDFC, gated by DBG_CFG.DMI_EN) are the DB models'
+// (tsr_dbg.c, tsr_dm.c; DB §3.2, §10.1); in a library without tsr_dbg.c they read 0 (DBG_ID = 0:
+// block absent) and ignore writes. Undefined offsets read 0 and ignore writes; reads
 // have no side effects except the PERF snapshot. Accesses act at the current MTIME; actions that
 // take time (SOFT_RESET's drain, ops started by a launch) need the caller to advance time.
 uint32_t tsr_sim_csr_read(tsr_sim * sim, uint32_t off);
@@ -103,7 +126,9 @@ void     tsr_sim_csr_write(tsr_sim * sim, uint32_t off, uint32_t val);
 // the current time are processed first; max_cycles = 0 processes only those.
 uint32_t tsr_sim_advance(tsr_sim * sim, uint64_t max_cycles);
 uint64_t tsr_sim_now(const tsr_sim * sim);                  // MTIME, core cycles
-// Advances until QIDLE (nothing queued, running or in the issue FIFO) or until max_cycles passed.
+// Advances until QIDLE (nothing queued, running or in the issue FIFO) or until max_cycles passed;
+// under a random schedule also until the RISC-V-side copies (DONE_SEQ, credits, QSTATUS, error
+// records, interrupt levels, which lag the core there: tsr_sim_int.h §5b) show that state.
 // Returns 1 if idle.
 int      tsr_sim_run_until_idle(tsr_sim * sim, uint64_t max_cycles);
 
@@ -143,7 +168,8 @@ uint32_t tsr_sim_rv_pc(const tsr_sim * sim);
 uint64_t tsr_sim_rv_instret(const tsr_sim * sim);
 
 // Optional log to a FILE* (NULL disables): one line per tsr_sim_op call, and one per queue event
-// (push, enqueue, start, done) of the queue model.
+// (push, qctrl, enqueue, start, done, mark) of the queue model; RV retire lines need
+// tsr_sim_opts.log_flags TSR_SIM_LOG_RV (or TSR_SIM_LOG=rv,...) at create. Deterministic content.
 void tsr_sim_set_log(tsr_sim * sim, void * file /* FILE* */);
 
 // Worker threads used for large MVMs (rows are split across threads; results are identical

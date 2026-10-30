@@ -367,10 +367,8 @@ static int retire_cb(void * ctx, const tsr_rv_retire * r) {
 }
 static uint32_t DBG_EV[16], DBG_ARG[16];
 static int NDBG;
-static void debug_cb(void * ctx, uint32_t ev, uint32_t arg) {
-    (void)ctx;
-    if (NDBG < 16) { DBG_EV[NDBG] = ev; DBG_ARG[NDBG] = arg; ++NDBG; }
-}
+static int HALT_ON_RESET;   // P1.12: debug_cb raises the halt request at the RESET event
+static void debug_cb(void * ctx, uint32_t ev, uint32_t arg);
 
 static uint8_t * mem(uint32_t a, uint32_t n) {
     uint8_t * p = tsr_bus_mem(B, a, n);
@@ -389,6 +387,11 @@ static uint32_t csr(uint32_t c) {
     return v;
 }
 static void setcsr(uint32_t c, uint32_t v) { CHECK(tsr_rv_csr_write(RV, c, v) == 0, "csr 0x%03x writable", c); }
+static void debug_cb(void * ctx, uint32_t ev, uint32_t arg) {
+    (void)ctx;
+    if (NDBG < 16) { DBG_EV[NDBG] = ev; DBG_ARG[NDBG] = arg; ++NDBG; }
+    if (ev == TSR_RV_DBG_EV_RESET && HALT_ON_RESET) tsr_rv_set_debug_req(RV, 1);
+}
 static uint32_t X(unsigned i) { return tsr_rv_reg(RV, i); }
 static void setx(unsigned i, uint32_t v) { tsr_rv_set_reg(RV, i, v); }
 
@@ -762,7 +765,8 @@ static void test_csr(void) {
     setcsr(0x7A0, 1); setcsr(0x7A1, 0);
     // dcsr / dpc / dscratch through the debug API.
     CHECK(csr(0x7B0) == 0x40000003u, "dcsr reset");
-    setcsr(0x7B0, 0xFFFFFFFFu);  CHECK(csr(0x7B0) == 0x40009807u, "dcsr writable fields 0x%08x", csr(0x7B0));
+    // P1.12: stepie (bit 11), stopcount, stoptime, mprven, nmip, ebreaks forced 0 (Ibex).
+    setcsr(0x7B0, 0xFFFFFFFFu);  CHECK(csr(0x7B0) == 0x40009007u, "dcsr writable fields 0x%08x", csr(0x7B0));
     setcsr(0x7B0, 0x00000002u);  CHECK(csr(0x7B0) == 0x40000003u, "dcsr prv 2 -> M");
     setcsr(0x7B0, 0x00000000u);  CHECK(csr(0x7B0) == 0x40000000u, "dcsr prv U");
     setcsr(0x7B0, 0x40000003u);
@@ -1317,6 +1321,122 @@ static void test_watch(void) {
 }
 
 // ---------------------------------------------------------------------------
+// P1.12 additions: debug-entry priority (trigger > haltreq > step, ahead of interrupts), the
+// RESET event and a halt before the first instruction (DB §3.8), the hart's data watch
+// (tsr_rv_set_data_watch, DB §3.7), counters in debug mode (stopcount 0)
+// ---------------------------------------------------------------------------
+static struct { uint32_t addr, n, pc; int w; } HW[8];
+static int NHW, HW_HALT;
+static void hart_watch_cb(void * ctx, uint32_t addr, uint32_t size, int is_store, uint32_t pc) {
+    (void)ctx;
+    if (NHW < 8) { HW[NHW].addr = addr; HW[NHW].n = size; HW[NHW].w = is_store; HW[NHW].pc = pc; ++NHW; }
+    if (HW_HALT && is_store) tsr_rv_set_debug_req(RV, 1);
+}
+static uint32_t dcause(void) { return (csr(0x7B0) >> 6) & 7u; }
+
+static void test_debug_p112(void) {
+    // Trigger and halt request at one boundary: cause trigger, dpc = the matching instruction.
+    fresh();
+    org(0x800); for (int i = 0; i < 4; ++i) i32(ADDI(2, 2, 1));
+    setcsr(0x7A0, 0); setcsr(0x7A2, 0x804); setcsr(0x7A1, 0x28001044u);
+    run_at(0x800, 1);
+    tsr_rv_set_debug_req(RV, 1);
+    CHECK(tsr_rv_step(RV, 1) == TSR_RV_STOP_HALTED && csr(0x7B1) == 0x804u && dcause() == 2u && X(2) == 1u,
+          "trigger beats haltreq (dpc 0x%x cause %u)", csr(0x7B1), dcause());
+    tsr_rv_set_debug_req(RV, 0);
+    // Resuming onto a matching pc re-enters at once; nothing executes.
+    tsr_rv_debug_resume(RV);
+    CHECK(tsr_rv_step(RV, 1) == TSR_RV_STOP_HALTED && csr(0x7B1) == 0x804u && dcause() == 2u && X(2) == 1u,
+          "resume onto a trigger");
+    // A single step whose next instruction matches: cause trigger, not step.
+    setcsr(0x7A2, 0x808);
+    setcsr(0x7B0, csr(0x7B0) | 4u);
+    tsr_rv_debug_resume(RV);
+    CHECK(tsr_rv_step(RV, 5) == TSR_RV_STOP_HALTED && X(2) == 2u && csr(0x7B1) == 0x808u && dcause() == 2u,
+          "trigger beats step");
+    setcsr(0x7A1, 0);
+    tsr_rv_debug_resume(RV);
+    CHECK(tsr_rv_step(RV, 5) == TSR_RV_STOP_HALTED && X(2) == 3u && csr(0x7B1) == 0x80Cu && dcause() == 4u,
+          "step once the trigger is off");
+    setcsr(0x7B0, csr(0x7B0) & ~4u);
+
+    // A halt request beats a pending enabled interrupt (dpc = the instruction, not the handler);
+    // no interrupt while halted; it is taken after the resume.
+    fresh();
+    org(0x800); for (int i = 0; i < 4; ++i) i32(ADDI(2, 2, 1));
+    setcsr(0x304, TSR_RV_LINE_FAST(0)); setcsr(0x300, TSR_RV_MSTATUS_MIE);
+    E.irq = TSR_RV_LINE_FAST(0);
+    tsr_rv_set_pc(RV, 0x800);
+    tsr_rv_set_debug_req(RV, 1);
+    CHECK(tsr_rv_step(RV, 1) == TSR_RV_STOP_HALTED && csr(0x7B1) == 0x800u && dcause() == 3u && csr(0x342) == 0u,
+          "halt before a pending interrupt");
+    tsr_rv_set_debug_req(RV, 0);
+    // stopcount = 0: mcycle runs while parked; minstret counts program-buffer instructions.
+    uint32_t mc0 = csr(0xB00), mi0 = csr(0xB02);
+    tsr_rv_idle(RV, 100);
+    org(DM + 0x360u); i32(ADDI(5, 0, 1)); i32(EBREAK);
+    tsr_rv_debug_exec(RV, DM + 0x360u);
+    CHECK(tsr_rv_step(RV, 10) == TSR_RV_STOP_HALTED && csr(0x342) == 0u, "no interrupt in debug mode");
+    CHECK(csr(0xB00) - mc0 >= 100u && csr(0xB02) - mi0 == 1u, "mcycle / minstret count in debug mode (%u, %u)",
+          csr(0xB00) - mc0, csr(0xB02) - mi0);
+    tsr_rv_debug_resume(RV);
+    tsr_rv_step(RV, 1);
+    CHECK(csr(0x342) == (TSR_RV_MCAUSE_IRQ | 16u) && csr(0x341) == 0x800u, "interrupt after the resume");
+    E.irq = 0;
+
+    // RESET event; a request raised there halts before the first instruction; the level survives
+    // a reset.
+    fresh();
+    org(0x280); i32(ADDI(1, 0, 7));
+    NDBG = 0; HALT_ON_RESET = 1;
+    const uint64_t ret0 = tsr_rv_retired(RV);
+    tsr_rv_reset(RV, 0x200);
+    HALT_ON_RESET = 0;
+    CHECK(NDBG == 1 && DBG_EV[0] == TSR_RV_DBG_EV_RESET && DBG_ARG[0] == 0x200u, "RESET event");
+    CHECK(tsr_rv_step(RV, 5) == TSR_RV_STOP_HALTED && csr(0x7B1) == 0x280u && dcause() == 3u && X(1) == 0u &&
+          tsr_rv_retired(RV) == ret0, "halt before the first instruction (dpc 0x%x)", csr(0x7B1));
+    tsr_rv_reset(RV, 0x200);
+    CHECK(!tsr_rv_debug_mode(RV) && tsr_rv_step(RV, 1) == TSR_RV_STOP_HALTED && csr(0x7B1) == 0x280u,
+          "the request level survives a reset");
+    tsr_rv_set_debug_req(RV, 0);
+    tsr_rv_debug_resume(RV);
+    tsr_rv_step(RV, 1);
+    CHECK(X(1) == 7u, "runs after the resume");
+
+    // Data watch: every issued transaction once, both halves of a split, faulting ones too; not
+    // the WAIT attempts of a push; pc of the accessing instruction; program buffer included.
+    fresh();
+    tsr_rv_set_data_watch(RV, hart_watch_cb, NULL);
+    setx(10, DTCM); setx(11, 0x11223344u); setx(12, CW); setx(13, 1);
+    org(0xD00); i32(LW(1, 10, 0)); i32(SW(11, 10, 6)); i32(LW(2, 12, 2)); i32(NOP);
+    NHW = 0;
+    run_at(0xD00, 3);
+    CHECK(NHW == 5, "five transactions (%d)", NHW);
+    CHECK(HW[0].addr == DTCM && HW[0].n == 4u && !HW[0].w && HW[0].pc == 0xD00u, "load");
+    CHECK(HW[1].addr == DTCM + 6u && HW[1].n == 2u && HW[1].w && HW[1].pc == 0xD04u &&
+          HW[2].addr == DTCM + 8u && HW[2].n == 2u && HW[2].w && HW[2].pc == 0xD04u, "split store halves");
+    CHECK(HW[3].addr == CW + 2u && HW[4].addr == CW + 4u && HW[3].pc == 0xD08u && !HW[3].w, "faulting split load");
+    org(0xE00); i32(SW(13, 12, TSR_CW_ISSUE_PUSH)); i32(NOP);
+    NHW = 0; E.credit = 0;
+    CHECK(run_at(0xE00, 2) == TSR_RV_STOP_WAIT && tsr_rv_step(RV, 1) == TSR_RV_STOP_WAIT && NHW == 0,
+          "a waiting push is not reported");
+    E.credit = 1;
+    tsr_rv_step(RV, 1);
+    CHECK(NHW == 1 && HW[0].addr == CW + TSR_CW_ISSUE_PUSH && HW[0].w && HW[0].pc == 0xE00u, "the push, once");
+    HW_HALT = 1; NHW = 0;
+    run_at(0xD04, 5);
+    HW_HALT = 0;
+    CHECK(tsr_rv_halted(RV) && csr(0x7B1) == 0xD08u && dcause() == 3u, "halt right after the watched store");
+    tsr_rv_set_debug_req(RV, 0);
+    org(DM + 0x360u); i32(LW(3, 10, 0)); i32(EBREAK);
+    NHW = 0;
+    tsr_rv_debug_exec(RV, DM + 0x360u);
+    tsr_rv_step(RV, 5);
+    CHECK(NHW == 1 && HW[0].pc == DM + 0x360u && HW[0].addr == DTCM, "program-buffer access reported");
+    tsr_rv_set_data_watch(RV, NULL, NULL);
+}
+
+// ---------------------------------------------------------------------------
 // Test profile: HTIF, ELF loader
 // ---------------------------------------------------------------------------
 static void test_htif(void) {
@@ -1431,6 +1551,7 @@ int main(int argc, char ** argv) {
     test_retire();
     test_sba();
     test_watch();
+    test_debug_p112();
     test_htif();
     test_elf(dir);
     if (RV) tsr_rv_destroy(RV);

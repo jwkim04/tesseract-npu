@@ -75,7 +75,12 @@ static void test_identity(void) {
     // Unmapped / reserved / absent blocks read 0
     const uint32_t zero_offs[] = { 0x08C, 0x0A0, 0x0D8, 0x0FC, 0x800, 0x804, 0x9BC, 0xA00, 0xB00, 0xC00, 0xDFC, 0xF20, 0xFFC,
                                    0x1000, 0x2001 };
-    for (size_t i = 0; i < sizeof(zero_offs) / 4; ++i) CHECK(rd(s, zero_offs[i]) == 0, "offset 0x%x reads 0", zero_offs[i]);
+    for (size_t i = 0; i < sizeof(zero_offs) / 4; ++i) {
+        // P1.13: with the DBG model attached (tsr_dbg.c) DBG_ID reports the block (sim_dbg checks it)
+        void ** dbg_slot = tsr_sim_model_slot(s, TSR_MODEL_DBG);
+        if (zero_offs[i] == TSR_CSR_DBG_ID && dbg_slot != NULL && *dbg_slot != NULL) continue;
+        CHECK(rd(s, zero_offs[i]) == 0, "offset 0x%x reads 0", zero_offs[i]);
+    }
     // SREG: the s bank, also through the core window
     tsr_sim_sreg(s)[3] = 1.5f;
     tsr_sim_sreg(s)[15] = -0.0f;

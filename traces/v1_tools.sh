@@ -1,4 +1,6 @@
-# traces/v1_tools.sh — sourced by traces/{m2,m3,model}/regen.sh: select and check the v1 tools.
+# traces/v1_tools.sh — sourced by traces/model/regen.sh: select and check the v1 tools. (traces/m2,
+# traces/gen and traces/m3 are trace v2 sets from P1.10 on, made by tsr-trace-gen v2 through
+# traces/v2_tools.sh; the v1 traces/model set stays as the input of tsr-trace-conv, SW §5.6.)
 #
 # X0 (docs/v2 EX §12) deleted tsr-trace-gen, tsr-trace-replay and the per-exec TSR_TRACE dump from
 # the tree, so the v1 trace sets can only be reproduced with the v1 tools of tag v1-m4: the binary

@@ -74,7 +74,18 @@ typedef struct tsr_bus_env {
     int      (*yield)(void * ctx);
     // Optional: RV_RUN for the SBA refusals (CC §4.3). NULL: the value of tsr_bus_set_rv_run.
     int      (*rv_run)(void * ctx);
+    // Optional: extra RV cycles of latency for one hart access that completed (P1.8's random
+    // handshake crossings): region TSR_BUS_REGION_CW (off = control-window offset), _CORE (off =
+    // CSR offset), _SPM (an exact-window access or a line-buffer fill; off = SPM byte). Added to
+    // the access latency; never called for SBA accesses or line-buffer hits. NULL: 0.
+    uint32_t (*xlat)(void * ctx, uint32_t region, uint32_t off);
 } tsr_bus_env;
+#define TSR_BUS_REGION_CW   1u
+#define TSR_BUS_REGION_CORE 2u
+#define TSR_BUS_REGION_SPM  3u
+// 1 while the bus serves a debug-module system-bus access (tsr_bus_sba_*): the env callbacks it
+// calls then act for the SBA, not for the hart.
+int       tsr_bus_in_sba(const struct tsr_bus * bus);
 
 typedef struct tsr_bus_fw_cfg {
     uint8_t * itcm;          // NULL: allocated and owned by the bus (zeroed)
@@ -182,7 +193,24 @@ int       tsr_rv_elf_load(tsr_bus * bus, const tsr_rv_elf * elf);
 //     tsr_sim_cw_push_timeout and takes a store access fault; SPM bridge transactions count in
 //     BRIDGE_ACC and BRIDGE_WAIT (the modelled latency);
 //   - reports STATUS.RV_HALTED (debug mode) and RV_SLEEP (WFI) with tsr_sim_rv_set_state, and
-//     sleeps (TSR_SIM_AGENT_WAIT) while asleep or parked.
+//     sleeps (TSR_SIM_AGENT_WAIT) while asleep or parked;
+//   - passes the accessing instruction's pc with every control-window access
+//     (tsr_sim_cw_access_pc: the push PC of CC §7.1) and reports the hart's SPM-window and
+//     core-window accesses as access events (tsr_sim_acc_emit / tsr_sim_corewin_note); accesses the
+//     bus makes for the SBA are not the hart's and are not reported here;
+//   - under the random schedule (tsr_sim_int.h §5b): adds tsr_sched_rv_cpi() to the cost of every
+//     instruction (effective cycles = the hart's cycles + the accumulated deltas; each instruction
+//     keeps >= 1 cycle; the slice budget is checked in effective cycles) and
+//     tsr_sched_rv_handshake() cycles to every LQ / LCQ / log register, core-window and SPM-bridge
+//     access;
+//   - fast-forward (tsr_sim_int.h §5b): counts reads of the timing-dependent registers; at the 4th
+//     identical read in a row with no store or other MMIO access in between it ends the slice
+//     and sleeps until the next time point (TSR_SIM_AGENT_WAIT; never earlier than the hart's own
+//     time), unless tsr_sim_fast_forward() is 0;
+//   - TSR_SIM_LOG with TSR_SIM_LOG_RV: one line per retired instruction ("<MTIME> rv pc=.. insn=..
+//     [x<rd>=..] [ld|st <addr>=<val>] [trap <mcause>]", MTIME = the core time the instruction ends).
+// The agent owns the hart's retire hook (tsr_rv_set_retire_hook) when it needs it (random schedule
+// or RV log lines); other models chain theirs with tsr_rv_agent_set_retire_hook instead.
 // tsr_sim_create creates one (the built-in agent, tsr_sim_rv_agent in tsr_sim_int.h) and
 // tsr_sim_destroy destroys it; the simulator's users never call these two. A test may still create
 // another agent on the same simulator (it replaces the built-in one as the time base's agent, and
@@ -194,6 +222,15 @@ tsr_rv_agent * tsr_rv_agent_create(struct tsr_sim * sim);
 void           tsr_rv_agent_destroy(tsr_rv_agent * a);
 tsr_rv *       tsr_rv_agent_rv(tsr_rv_agent * a);
 tsr_bus *      tsr_rv_agent_bus(tsr_rv_agent * a);
+// Spin fast-forward jumps taken since create (tsr_sim_int.h §5b).
+uint64_t       tsr_rv_agent_ff_jumps(const tsr_rv_agent * a);
+// A retire hook called after the agent's own for every record (NULL removes it); its return value
+// stops the slice as with tsr_rv_set_retire_hook.
+void           tsr_rv_agent_set_retire_hook(tsr_rv_agent * a, tsr_rv_retire_fn fn, void * ctx);
+// P1.12: reports STATUS.RV_HALTED / RV_SLEEP of the hart now (tsr_sim_rv_set_state), for the DM
+// model, which changes the hart outside the agent's step (a resume); the agent's own reports
+// continue from this state.
+void           tsr_rv_agent_sync(tsr_rv_agent * a);
 
 #ifdef __cplusplus
 }

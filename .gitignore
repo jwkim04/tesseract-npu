@@ -12,6 +12,18 @@ results.xml
 !/traces/m3/trace_stats.py
 /traces/model/*
 !/traces/model/regen.sh
+/traces/model-v1conv/*
+!/traces/model-v1conv/regen.sh
+/traces/m2/*
+!/traces/m2/regen.sh
+/traces/gen/*
+!/traces/gen/regen.sh
+/traces/vu/*
+!/traces/vu/regen.sh
+/traces/at/*
+!/traces/at/regen.sh
+/traces/ctrl/*
+!/traces/ctrl/regen.sh
 
 # Logo previews written by docs/logo/src/render_final.py (not assets)
 /docs/logo/sheet.png

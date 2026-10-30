@@ -315,6 +315,9 @@ const tsr_op_handler * tsr_sim_accept_op(const tsr_sim * sim, uint32_t opcode) {
 // Capture
 // ---------------------------------------------------------------------------
 void tsr_sim_cap_read(tsr_sim * sim, uint32_t ch, uint64_t lo, uint64_t n) {
+#if defined(TSR_SIM_HAVE_RACE) && TSR_SIM_HAVE_RACE
+    if (sim->models[TSR_MODEL_RACE] != NULL) tsr_race_cap_note(sim, ch, lo, n, 0);   // P1.9: exact DRAM access sets
+#endif
     if (!sim->capturing || n == 0 || ch >= sim->num_ch) return;
     cap_ch * cc = &sim->cap[ch];
     const uint64_t hi = lo + n;
@@ -361,6 +364,9 @@ void tsr_sim_cap_read(tsr_sim * sim, uint32_t ch, uint64_t lo, uint64_t n) {
 }
 
 void tsr_sim_cap_write(tsr_sim * sim, uint32_t ch, uint64_t lo, uint64_t n) {
+#if defined(TSR_SIM_HAVE_RACE) && TSR_SIM_HAVE_RACE
+    if (sim->models[TSR_MODEL_RACE] != NULL) tsr_race_cap_note(sim, ch, lo, n, 1);   // P1.9: exact DRAM access sets
+#endif
     if (!sim->capturing || n == 0 || ch >= sim->num_ch) return;
     iset_add(&sim->cap[ch].written, lo, lo + n);
     iset_add(&sim->cap[ch].seen, lo, lo + n);
@@ -478,12 +484,18 @@ static const char * cfg_problem(const tsr_config * c) {
     return NULL;
 }
 
+#if defined(TSR_SIM_HAVE_RACE) && TSR_SIM_HAVE_RACE
+#define HAVE_RACE_MODEL 1
+#else
+#define HAVE_RACE_MODEL 0
+#endif
+
 static const char * opts_problem(const tsr_sim_opts * o) {
-    if (o->sched != NULL && strcmp(o->sched, "fixed") != 0)
-        return "sched: only \"fixed\" is implemented (random schedules come with the P1.8 scheduler)";
-    if (o->race != 0) return "race: the race detector (P1.9) is not implemented yet";
+    if (o->race > 2u) return "race must be 0 (off), 1 (report) or 2 (fatal)";
+    if (o->race != 0 && !HAVE_RACE_MODEL) return "race: this simulator library was built without the race detector (tsr_race.c)";
     if (o->rv_ratio < 0.0 || (o->rv_ratio != 0.0 && (o->rv_ratio < 0.05 || o->rv_ratio > 4.0)))
         return "rv_ratio must be in [0.05, 4] (SW §4.9)";
+    if (o->log_flags & ~TSR_SIM_LOG_RV) return "log_flags: unknown bits";
     if (o->q_depth != NULL) {
         for (uint32_t u = 0; u < TSR_NUM_UNITS; ++u)
             if (o->q_depth[u] > TSR_QDEPTH_MAX) return "q_depth: a depth is above 31 (5-bit Q_DEPTH field)";
@@ -492,6 +504,62 @@ static const char * opts_problem(const tsr_sim_opts * o) {
     const uint32_t tcm[2] = { o->itcm_bytes, o->dtcm_bytes };
     for (int i = 0; i < 2; ++i)
         if (tcm[i] % 1024u != 0 || tcm[i] > (1u << 20)) return "itcm_bytes / dtcm_bytes: a multiple of 1 KiB up to 1 MiB";
+    return NULL;
+}
+
+// SW §4.9: the environment fills the options left unset (tsr_sim.h). *log_open receives a FILE
+// the simulator opened itself (TSR_SIM_LOG=<file>, appended to), else NULL. Returns NULL or a
+// problem (written to buf).
+static const char * env_fill(tsr_sim_opts * o, FILE ** log_open, char * buf, size_t n) {
+    *log_open = NULL;
+    const char * e;
+    if (o->sched == NULL) o->sched = getenv("TSR_SIM_SCHED");
+    if (o->rv_ratio == 0.0 && (e = getenv("TSR_SIM_RV_RATIO")) != NULL && e[0] != '\0') {
+        char * end = NULL;
+        const double r = strtod(e, &end);
+        if (end == e || *end != '\0' || !(r >= 0.05 && r <= 4.0)) {
+            snprintf(buf, n, "TSR_SIM_RV_RATIO=\"%s\": expected a number in [0.05, 4]", e);
+            return buf;
+        }
+        o->rv_ratio = r;
+    }
+    if (o->race == 0 && (e = getenv("TSR_SIM_RACE")) != NULL && e[0] != '\0') {
+        uint32_t r;
+        if (strcmp(e, "off") == 0) r = 0;
+        else if (strcmp(e, "report") == 0) r = 1;
+        else if (strcmp(e, "fatal") == 0) r = 2;
+        else {
+            snprintf(buf, n, "TSR_SIM_RACE=\"%s\": expected off, report or fatal", e);
+            return buf;
+        }
+        // Without the race detector compiled in the variable is ignored (one note per process),
+        // so that a global TSR_SIM_RACE does not break libraries built without tsr_race.c.
+        static atomic_int noted;
+        if (r != 0 && !HAVE_RACE_MODEL) {
+            if (atomic_exchange(&noted, 1) == 0)
+                fprintf(stderr, "tsr_sim: TSR_SIM_RACE=%s ignored: built without the race detector\n", e);
+            r = 0;
+        }
+        o->race = r;
+    }
+    if (o->log == NULL && (e = getenv("TSR_SIM_LOG")) != NULL && e[0] != '\0') {
+        if (strncmp(e, "rv,", 3) == 0) {
+            o->log_flags |= TSR_SIM_LOG_RV;
+            e += 3;
+        }
+        if (strcmp(e, "stderr") == 0) {
+            o->log = stderr;
+        } else {
+            FILE * f = fopen(e, "a");
+            if (f == NULL) {
+                snprintf(buf, n, "TSR_SIM_LOG=\"%s\": cannot open: %s", e, strerror(errno));
+                return buf;
+            }
+            *log_open = f;
+            o->log = f;
+        }
+    }
+    if (o->trace_dir == NULL && (e = getenv("TSR_TRACE")) != NULL && e[0] != '\0') o->trace_dir = e;
     return NULL;
 }
 
@@ -555,7 +623,26 @@ tsr_sim * tsr_sim_create_opts(const tsr_config * cfg, const tsr_sim_opts * opts)
         fprintf(stderr, "tsr_sim_create: unsupported options: %s\n", why);
         return NULL;
     }
+    char ebuf[256];
+    FILE * log_open = NULL;
+    why = env_fill(&o, &log_open, ebuf, sizeof(ebuf));
+    tsr_sched_spec sched;
+    if (why == NULL && tsr_sched_parse(o.sched, &sched, ebuf, sizeof(ebuf)) != 0) why = ebuf;
+    if (why != NULL) {
+        fprintf(stderr, "tsr_sim_create: unsupported options: %s\n", why);
+        if (log_open) fclose(log_open);
+        return NULL;
+    }
     tsr_sim * sim = (tsr_sim *)xcalloc(1, sizeof(tsr_sim));
+    sim->log_owned = log_open;
+    sim->log_flags = o.log_flags;
+    sim->race = o.race;
+    if (o.trace_dir != NULL) {
+        const size_t n = strlen(o.trace_dir) + 1;
+        sim->trace_dir = (char *)xrealloc(NULL, n);
+        memcpy(sim->trace_dir, o.trace_dir, n);
+    }
+    tsr_sched_init(sim, &sched);
     sim->cfg = *cfg;
     sim->num_ch = cfg->num_ch;
     sim->ch_bytes = cfg->ch_bytes;
@@ -599,6 +686,19 @@ tsr_sim * tsr_sim_create_opts(const tsr_config * cfg, const tsr_sim_opts * opts)
         return NULL;
     }
 #endif
+    // Optional models (tsr_sim_int.h §5), in this order; tsr_sim_destroy detaches in reverse.
+#if defined(TSR_SIM_HAVE_DM) && TSR_SIM_HAVE_DM
+    tsr_dm_attach(sim);
+#endif
+#if defined(TSR_SIM_HAVE_DBG) && TSR_SIM_HAVE_DBG
+    tsr_dbg_attach(sim);
+#endif
+#if defined(TSR_SIM_HAVE_RACE) && TSR_SIM_HAVE_RACE
+    tsr_race_attach(sim);
+#endif
+#if defined(TSR_SIM_HAVE_TRACE) && TSR_SIM_HAVE_TRACE
+    tsr_trace_attach(sim);
+#endif
     return sim;
 }
 
@@ -611,6 +711,20 @@ tsr_sim * tsr_sim_create(const tsr_config * cfg, const char * dram_dir) {
 
 void tsr_sim_destroy(tsr_sim * sim) {
     if (sim == NULL) return;
+    // The optional models first, in the reverse attach order (each frees its slot). A model whose
+    // attach did not run (create failed earlier) sees a NULL slot.
+#if defined(TSR_SIM_HAVE_TRACE) && TSR_SIM_HAVE_TRACE
+    tsr_trace_detach(sim);
+#endif
+#if defined(TSR_SIM_HAVE_RACE) && TSR_SIM_HAVE_RACE
+    tsr_race_detach(sim);
+#endif
+#if defined(TSR_SIM_HAVE_DBG) && TSR_SIM_HAVE_DBG
+    tsr_dbg_detach(sim);
+#endif
+#if defined(TSR_SIM_HAVE_DM) && TSR_SIM_HAVE_DM
+    tsr_dm_detach(sim);
+#endif
 #if defined(TSR_SIM_HAVE_RV) && TSR_SIM_HAVE_RV
     tsr_rv_agent_destroy(sim->rv_agent);
     sim->rv_agent = NULL;
@@ -633,6 +747,8 @@ void tsr_sim_destroy(tsr_sim * sim) {
     free(sim->ybuf);
     free(sim->gaps);
     free(sim->scratch);
+    free(sim->trace_dir);
+    if (sim->log_owned) fclose(sim->log_owned);
     free(sim);
 }
 
@@ -667,6 +783,44 @@ uint64_t tsr_sim_rv_instret(const tsr_sim * sim) { (void)sim; return 0u; }
 #endif
 
 void tsr_sim_set_log(tsr_sim * sim, void * file) { sim->log = (FILE *)file; }
+int  tsr_sim_log_on(const tsr_sim * sim) { return sim->log != NULL; }
+int  tsr_sim_log_rv(const tsr_sim * sim) { return sim->log != NULL && (sim->log_flags & TSR_SIM_LOG_RV) != 0; }
+
+void ** tsr_sim_model_slot(tsr_sim * sim, int id) {
+    return (id >= 0 && id < TSR_MODEL_COUNT) ? &sim->models[id] : NULL;
+}
+uint32_t     tsr_sim_opt_race(const tsr_sim * sim) { return sim->race; }
+const char * tsr_sim_opt_trace_dir(const tsr_sim * sim) { return sim->trace_dir; }
+
+// Host DRAM through the API (visible to the access listeners, tsr_sim_int.h §5).
+static int dram_range_ok(const tsr_sim * sim, uint32_t ch, uint64_t off, uint64_t len) {
+    return ch < sim->num_ch && off <= sim->ch_bytes && len <= sim->ch_bytes - off;
+}
+static void dram_acc(tsr_sim * sim, uint32_t kind, uint32_t ch, uint64_t off, uint64_t len) {
+    if (sim->n_acc == 0) return;
+    tsr_sim_acc a;
+    memset(&a, 0, sizeof(a));
+    a.kind = kind;
+    a.ch = ch;
+    a.addr = off;
+    a.len = len;
+    tsr_sim_acc_call(sim, &a);
+}
+int tsr_sim_dram_write(tsr_sim * sim, uint32_t ch, uint64_t off, const void * src, uint64_t len) {
+    if (!dram_range_ok(sim, ch, off, len)) return -1;
+    if (len) memcpy(sim->dram[ch] + off, src, (size_t)len);
+    dram_acc(sim, TSR_ACC_HOST_DRAM_WR, ch, off, len);
+    return 0;
+}
+int tsr_sim_dram_read(tsr_sim * sim, uint32_t ch, uint64_t off, void * dst, uint64_t len) {
+    if (!dram_range_ok(sim, ch, off, len)) return -1;
+    dram_acc(sim, TSR_ACC_HOST_DRAM_RD, ch, off, len);
+    if (len) memcpy(dst, sim->dram[ch] + off, (size_t)len);
+    return 0;
+}
+void tsr_sim_dram_note_write(tsr_sim * sim, uint32_t ch, uint64_t off, uint64_t len) {
+    if (dram_range_ok(sim, ch, off, len)) dram_acc(sim, TSR_ACC_HOST_DRAM_WR, ch, off, len);
+}
 
 void tsr_sim_log_line(tsr_sim * sim, const char * fmt, ...) {
     if (sim->log == NULL) return;
@@ -722,7 +876,10 @@ uint32_t  tsr_sim_rv_boot(const tsr_sim * sim) { return sim->rv_boot; }
 uint64_t  tsr_sim_rv_boot_gen(const tsr_sim * sim) { return sim->rv_boot_gen; }
 double    tsr_sim_rv_ratio(const tsr_sim * sim) { return sim->rv_ratio; }
 void      tsr_sim_rv_set_state(tsr_sim * sim, uint32_t bits) {
+    const uint32_t old = sim->rv_state;
     sim->rv_state = bits & (TSR_STATUS_RV_HALTED | TSR_STATUS_RV_SLEEP);
+    tsr_q_view_note(sim);                                 // random: the debug-halt hold source
+    if (sim->rv_state != old && sim->have_dbg && sim->dbg.rv_state) sim->dbg.rv_state(sim->dbg.ctx);   // P1.13
 }
 uint8_t * tsr_sim_itcm(tsr_sim * sim, uint32_t * bytes) { if (bytes) *bytes = sim->itcm_bytes; return sim->itcm; }
 uint8_t * tsr_sim_dtcm(tsr_sim * sim, uint32_t * bytes) { if (bytes) *bytes = sim->dtcm_bytes; return sim->dtcm; }
@@ -782,6 +939,30 @@ static void rv_reset_seq(tsr_sim * sim) {
     sim->rv_state = 0;
 }
 
+void tsr_sim_rv_ndmreset(tsr_sim * sim, int level) {
+    level = level != 0;
+    if (level == sim->ndmreset) return;
+    if (level) {
+        const uint32_t run = sim->ctrl & TSR_CTRL_RV_RUN;
+        rv_reset_seq(sim);                                // QABORT, ANSWERED := TAKEN, clk_rv resets
+        sim->ctrl |= run;                                 // CTRL.RV_RUN keeps the host's value
+        sim->ndmreset = 1;
+    } else {
+        sim->ndmreset = 0;
+        if (sim->ctrl & TSR_CTRL_RV_RUN) {                // the hart restarts at RV_BOOT + 0x80
+            sim->rv_boot_gen++;
+            sim->rv_state = 0;
+            sim->agent_next = sim->now;
+            tsr_q_view_flush(sim);
+        }
+    }
+    sim->agent_kick = 1;
+    tsr_q_view_note(sim);
+}
+
+// P1.12: the DM model's kick (tsr_sim_int.h §5b).
+void tsr_sim_rv_kick(tsr_sim * sim) { sim->agent_kick = 1; }
+
 static void soft_reset_start(tsr_sim * sim) {
     if (sim->sr_busy) return;
     sim->sr_busy = 1;
@@ -814,7 +995,7 @@ static int covered(uint32_t wm, uint32_t q) { return (uint32_t)(wm - q) < TSR_SE
 
 static uint32_t status_read(const tsr_sim * sim) {
     uint32_t st = sim->sticky | TSR_STATUS_RV_CLK_OK | tsr_q_status(sim);
-    if (sim->ctrl & TSR_CTRL_RV_RUN) st |= TSR_STATUS_RV_RUNNING | sim->rv_state;
+    if ((sim->ctrl & TSR_CTRL_RV_RUN) && !sim->ndmreset) st |= TSR_STATUS_RV_RUNNING | sim->rv_state;
     else st |= TSR_STATUS_RV_RESET_DONE;
     if (tsr_sim_active(sim)) st |= TSR_STATUS_ACTIVE;
     if (sim->sr_busy) st |= TSR_STATUS_SR_BUSY;
@@ -843,9 +1024,9 @@ static uint32_t csr_read(tsr_sim * sim, uint32_t off, int host) {
     case TSR_CSR_CFG2:         return (c->vl & 0xFFu) | ((c->nsreg & 0xFFu) << 8) | (((c->k_max / 256u) & 0xFFFFu) << 16);
     case TSR_CSR_CAPS:         return c->caps;
     case TSR_CSR_CFG3:         return cfg3_read(sim);
-    case TSR_CSR_CTL_ID:       return TSR_PUT(TSR_CTL_ID_VERSION, TSR_CTL_VERSION) | TSR_CTL_ID_BRIDGE | TSR_CTL_ID_LOG |
-                                      TSR_CTL_ID_WDOG | TSR_CTL_ID_SPM_LB |
-                                      ((sim->have_dbg && sim->dbg.csr_read) ? TSR_CTL_ID_DM : 0u);
+    case TSR_CSR_CTL_ID:       // W1b fix: DM only with the DM model and DBG's DMI window (tsr_sim_int.h §3)
+                               return TSR_SIM_CTL_ID_BASE |
+                                      ((sim->models[TSR_MODEL_DM] != NULL && sim->have_dbg && sim->dbg.csr_read) ? TSR_CTL_ID_DM : 0u);
     case TSR_CSR_CTRL:         return sim->ctrl & (TSR_CTRL_RV_RUN | TSR_CTRL_HOST_HOLD | TSR_CTRL_HOLD_ON_HALT | TSR_CTRL_IRQ_EN);
     case TSR_CSR_STATUS:       return status_read(sim);
     case TSR_CSR_RV_BOOT:      return sim->rv_boot;
@@ -921,7 +1102,21 @@ static uint32_t csr_read(tsr_sim * sim, uint32_t off, int host) {
     return 0;
 }
 
-uint32_t tsr_sim_csr_read(tsr_sim * sim, uint32_t off) { return csr_read(sim, off, 1); }
+static void csr_acc(tsr_sim * sim, uint32_t kind, uint32_t off, uint32_t val) {
+    tsr_sim_acc a;
+    memset(&a, 0, sizeof(a));
+    a.kind = kind;
+    a.size = 4;
+    a.off = off;
+    a.val = val;
+    tsr_sim_acc_call(sim, &a);
+}
+
+uint32_t tsr_sim_csr_read(tsr_sim * sim, uint32_t off) {
+    const uint32_t v = csr_read(sim, off, 1);
+    if (sim->n_acc) csr_acc(sim, TSR_ACC_HOST_CSR_RD, off, v);
+    return v;
+}
 uint32_t tsr_sim_corewin_read(tsr_sim * sim, uint32_t csr_off) { return csr_read(sim, csr_off, 0); }
 
 static void ctrl_write(tsr_sim * sim, uint32_t val) {
@@ -938,6 +1133,7 @@ static void ctrl_write(tsr_sim * sim, uint32_t val) {
         sim->rv_boot_gen++;
         sim->rv_state = 0;
         sim->agent_next = sim->now;
+        tsr_q_view_flush(sim);                            // the clk_rv side reloads (CC §12.2)
     } else if ((old & TSR_CTRL_RV_RUN) && !run) {
         sim->ctrl |= TSR_CTRL_RV_RUN;                     // rv_reset_seq clears it
         rv_reset_seq(sim);
@@ -955,7 +1151,17 @@ static void ring_rd_write(tsr_sim * sim, uint32_t * rd, uint32_t wr, uint32_t v)
     else sim->sticky |= TSR_STATUS_RING_RD_BAD;
 }
 
+static void csr_write(tsr_sim * sim, uint32_t off, uint32_t val);
+
+// Every host CSR write: the core-state change is noted for the RISC-V-side view (random
+// schedule), then the write is reported to the access listeners.
 void tsr_sim_csr_write(tsr_sim * sim, uint32_t off, uint32_t val) {
+    csr_write(sim, off, val);
+    tsr_q_view_note(sim);
+    if (sim->n_acc) csr_acc(sim, TSR_ACC_HOST_CSR_WR, off, val);
+}
+
+static void csr_write(tsr_sim * sim, uint32_t off, uint32_t val) {
     if (off % 4 != 0 || off >= 0x1000u) return;
     sim->agent_kick = 1;
     switch (off) {
