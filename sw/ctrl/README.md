@@ -250,6 +250,14 @@ Two rules decide whether a kernel is correct, and the tests enforce both:
   no state in DTCM that changes what it pushes (a ring is `init()`-ed per launch). The race detector
   reports a read of SPM that the launch did not write as `SPM_STALE`.
 
+
+A complete, tested example is [`examples/vadd.cpp`](examples/vadd.cpp) (`y = a + b` over n floats;
+the kernel shown in the top-level README). `tests/examples.cmake` builds it into the test image
+`fw_example_vadd`, and `tests/test_fw_example_vadd.cpp` boots it on the simulator through the
+transport, launches `vadd` and compares all 1024 results bit-exactly with `tsr_fadd`, under the fixed
+schedule and under `TSR_SIM_SCHED=random:1` with `TSR_SIM_RACE=fatal`. Run it with
+`ctest --test-dir build/dev -R fw_example_vadd`.
+
 ## Writing a record kind for `graph`
 
 A record kind is a handler `ticket handler(const volatile uint32_t * args, uint32_t n_args,
