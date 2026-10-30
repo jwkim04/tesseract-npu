@@ -42,12 +42,12 @@ DOCS = {
 CONSTANTS = [
     # Identity and versions
     ("ID_MAGIC",              0x5453_5231, "EX §5.1",  'ID register: "TSR1"'),
-    ("ISA_MAJOR",             2,           "EX §7.5",  "VERSION[15:8]"),
-    ("ISA_MINOR",             0,           "EX §7.5",  "VERSION[7:0]"),
-    ("VERSION_VALUE",         0x0000_0200, "EX §7.5",  "VERSION register: ISA 2.0"),
-    ("CTL_VERSION",           2,           "EX §5.1",  "CTL_ID[7:0]: control-core version"),
-    ("ADAPTER_MAJOR",         2,           "EX §9.2",  "ADAPTER_VERSION[31:16] (ADAPTER_VERSION_MAJOR field)"),
-    ("DBG_VERSION",           2,           "DB §10.1", "DBG_ID[7:0]; DBG_ID = 0 means the DBG block is absent"),
+    ("ISA_MAJOR",             1,           "EX §7.5",  "VERSION[15:8]: Tesseract Core capability major"),
+    ("ISA_MINOR",             0,           "EX §7.5",  "VERSION[7:0]: Tesseract Core capability minor"),
+    ("VERSION_VALUE",         0x0000_0100, "EX §7.5",  "VERSION register: Tesseract Core capability 1.0"),
+    ("CTL_VERSION",           1,           "EX §5.1",  "CTL_ID[7:0]: control-core revision; 0 = no control core"),
+    ("ADAPTER_MAJOR",         1,           "EX §9.2",  "ADAPTER_VERSION[31:16] (ADAPTER_VERSION_MAJOR field)"),
+    ("DBG_VERSION",           1,           "DB §10.1", "DBG_ID[7:0]: DBG register map; DBG_ID = 0 means the DBG block is absent"),
     ("CANON_NAN",             0x7FC0_0000, "VU §4.1",  "the only NaN an fp result has"),
     # Instruction format
     ("INSN_WORDS",            8,           "EX §7.1",  "an instruction is 256 bits, w0..w7, little-endian"),
@@ -155,8 +155,8 @@ LAYOUTS = {
         ("31:16", "X16",    "op-specific field; must be 0 (ILLEGAL_OP) where the op does not assign it"),
     ]),
     # ---- identity and configuration (EX §5.1, §7.5) -------------------------------------------
-    "VERSION": dict(src="EX §5.1, §7.5", desc="ISA version", fields=[
-        ("7:0",  "MINOR", "0"), ("15:8", "MAJOR", "2"),
+    "VERSION": dict(src="EX §5.1, §7.5", desc="Tesseract Core capability MAJOR.MINOR; [31:16] 0", fields=[
+        ("7:0",  "MINOR", "capability minor (0)"), ("15:8", "MAJOR", "capability major (1)"),
     ]),
     "CFG0": dict(src="EX §5.1", desc="geometry configuration", fields=[
         ("7:0", "NUM_CH", "channels C"), ("19:8", "LANES", "MAC lanes"), ("23:20", "T_MAX", "token slots"),
@@ -181,8 +181,8 @@ LAYOUTS = {
         ("9:5",   "VU_BACK",  "VU back lanes (information for cycle models)"),
         ("31:16", "PCAP16",   "PCAP / 16 (U200: 584)"),
     ]),
-    "CTL_ID": dict(src="EX §5.1", desc="control-core version and features", fields=[
-        ("7:0", "VERSION", "control-core version (2)"),
+    "CTL_ID": dict(src="EX §5.1", desc="control-core revision and features", fields=[
+        ("7:0", "VERSION", "control-core revision (1); 0: no control core"),
         ("8",   "DM",      "debug module"),
         ("9",   "REC",     "completion records"),
         ("10",  "BRIDGE",  "SPM bridge"),
@@ -285,8 +285,8 @@ LAYOUTS = {
         ("5", "BASE_LOCKED", "a base write while MEM_EN = 1 was ignored"),
         ("31:16", "ERR_COUNT", "saturating count of error responses"),
     ]),
-    "ADAPTER_VERSION": dict(src="EX §9.2", desc="{16'h0002, 8'h00, NUM_CH}", fields=[
-        ("7:0", "NUM_CH", ""), ("31:16", "MAJOR", "2"),
+    "ADAPTER_VERSION": dict(src="EX §9.2", desc="{16'h0001, 8'h00, NUM_CH}", fields=[
+        ("7:0", "NUM_CH", ""), ("31:16", "MAJOR", "1"),
     ]),
     # ---- launch formats (EX §4.3, §4.4) ------------------------------------------------------
     "HANDLE": dict(src="EX §4.3", desc="DRAM handle (descriptor args, OPL, DBG_TRW_BASE)", fields=[
@@ -318,8 +318,11 @@ LAYOUTS = {
                    (6, "PLAT_ERR", "STATUS.PLAT_ERR was set when the runtime answered"),
                    (7, "STOPPED", "the kernel honoured a soft stop")],
     }),
-    "HELLO_R4": dict(src="EX §4.4", desc="HELLO record word r4", fields=[
-        ("15:0", "SDK_ABI", "SDK ABI version"), ("31:16", "RT_VERSION", "runtime version"),
+    "HELLO_R4": dict(src="EX §4.4, SW §6.9", desc="HELLO record word r4", fields=[
+        ("15:0", "SDK_ABI", "Basis ABI"), ("31:16", "KINDS_SIG", "kind table signature (opl::kinds_sig)"),
+    ]),
+    "HELLO_R6": dict(src="EX §4.4, SW §6.9", desc="HELLO record word r6: Tesseract Basis version; [31:24] 0", fields=[
+        ("7:0", "PATCH", ""), ("15:8", "MINOR", ""), ("23:16", "MAJOR", ""),
     ]),
     # ---- RISC-V control window (CC §5.1, EX §4.5, DB §10.2) ----------------------------------
     "ISSUE_PUSH": dict(src="CC §5.1", desc="ISSUE_PUSH write data", fields=[
@@ -405,7 +408,7 @@ LAYOUTS = {
                         (15, "PAD", "ignored")]}),
     # ---- DBG block (DB §10.1) ----------------------------------------------------------------
     "DBG_ID": dict(src="DB §10.1", desc="0 = block absent", fields=[
-        ("7:0", "VERSION", "2"), ("8", "HIST", "history"), ("9", "TRW", "trace writer"),
+        ("7:0", "VERSION", "1"), ("8", "HIST", "history"), ("9", "TRW", "trace writer"),
         ("10", "RVWP", "RV watchpoints"), ("11", "REC", "completion records"), ("14:12", "NTBP", "tile breakpoints"),
         ("16:15", "NRVWP", "RV watchpoints"), ("23:20", "LOG2_HIST", "log2 HIST_DEPTH"),
     ]),
@@ -502,13 +505,13 @@ WIDE_LAYOUTS = {
 # Host CSR map: core CSR port, U200 s_axi_control 0x1000 + offset (EX §5).
 HOST_CSR = [
     (0x000, "ID",           "R",      "EX",     "EX §5.1",        '"TSR1" (unchanged)', dict(reset=0x5453_5231)),
-    (0x004, "VERSION",      "R",      "EX",     "EX §5.1, §7.5",  "[15:8] ISA major 2, [7:0] minor 0", dict(reset=0x0000_0200)),
+    (0x004, "VERSION",      "R",      "EX",     "EX §5.1, §7.5",  "Tesseract Core capability: [15:8] major 1, [7:0] minor 0", dict(reset=0x0000_0100)),
     (0x008, "CFG0",         "R",      "EX",     "EX §5.1",        "NUM_CH, LANES, T_MAX (unchanged)"),
     (0x00C, "CFG1",         "R",      "EX",     "EX §5.1",        "SPM size in lines (unchanged)"),
     (0x010, "CFG2",         "R",      "EX",     "EX §5.1",        "VL, NSREG, K_MAX/256 (unchanged)"),
     (0x014, "CAPS",         "R",      "EX",     "EX §5.1, §7.5",  "capability bits"),
     (0x018, "CFG3",         "R",      "VU, AT", "EX §5.1, §7.5",  "[15:0] VU, [31:16] AT"),
-    (0x01C, "CTL_ID",       "R",      "EX, CC", "EX §5.1",        "control-core version and features"),
+    (0x01C, "CTL_ID",       "R",      "EX, CC", "EX §5.1",        "control-core revision and features; 0 = no control core"),
     (0x020, "CTRL",         "RW/W1",  "EX",     "EX §5.1, §5.2",  "device control"),
     (0x024, "STATUS",       "R/W1C",  "EX",     "EX §5.1, §5.3",  "device status; W1C clears the sticky bits only"),
     (0x028, "RV_BOOT",      "RW",     "CC",     "EX §5.1",        "boot vector, taken when RV_RUN rises"),
@@ -678,7 +681,7 @@ SAXI = [
     (0x044,  "CH_BASE_HI",      "RW",    "EX", "EX §9.2", "bits [63:32]", dict(n=16, stride=8)),
     (0x0E0,  "ADAPTER_CTRL",    "RW",    "EX", "EX §9.2", "MEM_EN"),
     (0x0F0,  "ADAPTER_STATUS",  "R/W1C", "EX", "EX §9.2", "sticky adapter errors"),
-    (0x0F4,  "ADAPTER_VERSION", "R",     "EX", "EX §9.2", "{16'h0002, 8'h00, NUM_CH}"),
+    (0x0F4,  "ADAPTER_VERSION", "R",     "EX", "EX §9.2", "{16'h0001, 8'h00, NUM_CH}"),
     (0x1000, "CORE",            "-",     "EX", "EX §9.2", "core CSR window: 0x1000 + offset, any time; writes need WSTRB = 0xF", dict(block=0x1000)),
 ]
 SAXI_BYTES = 0x2000   # EX §9.1
@@ -893,7 +896,7 @@ WORD_TABLES = {
     "LCQ_HELLO": dict(src="EX §4.4, SW §6.3", words=8, desc="HELLO record (0x80, event)", rows=[
         (0, "R0", ""), (1, "TAKEN", "TAKEN at the post"), (2, "ID_LO", "image id [31:0]"),
         (3, "ID_HI", "image id [63:32]"), (4, "VERSIONS", "layout HELLO_R4"), (5, "N_KERNELS", "kernel count"),
-        (7, "BOOT_CYCLES", "boot core cycles"),
+        (6, "BASIS", "Tesseract Basis version, layout HELLO_R6"), (7, "BOOT_CYCLES", "boot core cycles"),
     ]),
     "LCQ_TRAP": dict(src="EX §4.4, DB §6.3", words=8, desc="TRAP record (0x81)", rows=[
         (0, "R0", ""), (1, "SEQ", "SEQ (answer) or TAKEN (event)"), (2, "MCAUSE", ""), (3, "MEPC", ""),

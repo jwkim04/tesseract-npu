@@ -2,10 +2,11 @@
 // docs/design/06-software-verification.md "SW" §6.3-§6.5; EX §4.3-§4.5, §4.9; docs/design/05-debug.md
 // "DB" §3.8, §8.2, §8.4).
 //
-//   R1  Boot (after crt0.S): CFG0 / CFG1 through the core window, kernel table check, qclear() and a
-//       join on it, RT_STATE := IDLE, HELLO as an event (r1 TAKEN, r2 / r3 image id from .tsr_id,
-//       r4 SDK ABI | runtime version << 16, r5 kernel count, r7 boot core cycles: MTIME from
-//       crt0's entry to the post). Descriptors pushed before HELLO stay queued.
+//   R1  Boot (after crt0.S): CFG0 / CFG1 through the core window, kernel table check, the kind table
+//       signature (tsr::opl::kinds_sig over .tsr_kinds' revisions, SW §6.9), qclear() and a join on
+//       it, RT_STATE := IDLE, HELLO as an event (r1 TAKEN, r2 / r3 image id from .tsr_id, r4 Basis
+//       ABI | kind table signature << 16, r5 kernel count, r6 Tesseract Basis version, r7 boot core
+//       cycles: MTIME from crt0's entry to the post). Descriptors pushed before HELLO stay queued.
 //   R2  Take: WFI on irq_fast[2] (LQ_AVAIL != 0 and not ACTIVE); copy LQ_HEAD_W0..7 and
 //       LQ_HEAD_SEQ into DTCM (tsr_rt_launch); LQ_POP; t0 = MTIME (DURATION).
 //   R4  Validate (before R3: EX §4.4 precedence BAD_DESC > ABORTED, see below): unknown TYPE,
@@ -47,6 +48,7 @@
 #include "rt_int.hpp"
 #include "tsr/kernel.hpp"
 #include "tsr/log.hpp"
+#include "tsr/opl.hpp"
 
 using namespace tsr;
 using tsr::rt::cw;
@@ -54,10 +56,17 @@ using tsr::rt::cw;
 extern "C" {
 extern const tsr_kernel_desc __tsr_kernels_start[];
 extern const tsr_kernel_desc __tsr_kernels_end[];
+extern const tsr_kind_desc __tsr_kinds_start[];
+extern const tsr_kind_desc __tsr_kinds_end[];
 
 // .tsr_id: 8 bytes, zero in the linker output; tsr-elf writes the image id (EX §3.2). Read through
 // volatile: the value in DTCM is the stamped one, not the compiler's 0.
 const volatile uint32_t __tsr_image_id[2] __attribute__((section(".tsr_id"), used, aligned(8))) = { 0u, 0u };
+
+// The image's Tesseract Basis version: the link's absolute symbol (--defsym, sw/ctrl/cmake/
+// tsr_version.cmake; TSR_BASIS_VERSION of tsr/version.h unless the image overrides it), the value
+// .note.tsr word 6 carries, so HELLO r6 and the note agree by construction (SW §6.9).
+extern const uint8_t __tsr_basis_version[];
 
 [[noreturn]] void tsr_rt_main(uint32_t boot_mtime);
 void tsr_rt_launch_hook(uint32_t kernel, uint32_t seq, const tsr_args * args);
@@ -117,6 +126,16 @@ inline uint32_t r0_of(uint32_t type, uint32_t status, uint32_t err_code, uint32_
 }
 
 void qclear_join() { join(qclear()); }
+
+// R1: HELLO r4[31:16], the signature of the image's kind table (SW §6.9): the 64 revision bytes
+// (0 = kind absent) through tsr::opl::kinds_sig, as the host computes it from the ELF's .tsr_kinds.
+// The host refuses a malformed table before the boot; an entry beyond 0x3F is skipped here.
+uint32_t kinds_signature() {
+    uint8_t rev[opl::N_KINDS] = {};
+    for (const tsr_kind_desc * d = __tsr_kinds_start; d < __tsr_kinds_end; ++d)
+        if (d->kind < opl::N_KINDS) rev[d->kind] = d->rev;
+    return opl::kinds_sig(rev);
+}
 
 // R3-R7 for the popped descriptor; fills r0..r6 (r1 already holds SEQ, r3 TICKET_NONE, the rest 0).
 // Returns true if R7 (or the staging LD) found a unit in error state.
@@ -304,8 +323,8 @@ extern "C" [[noreturn]] void tsr_rt_main(uint32_t boot_mtime) {
     rt::set_state(RT_STATE_PHASE_IDLE);
     {
         const uint32_t hello[8] = { r0_of(LCQ_R0_TYPE_HELLO, 0u, 0u, 0u), cw(CW_LQ_HEAD_SEQ), __tsr_image_id[0],
-                                    __tsr_image_id[1], TSR_SDK_ABI | (TSR_RT_VERSION << HELLO_R4_RT_VERSION_LSB),
-                                    g_n_kernels, 0u, cw(CW_MTIME_LO) - boot_mtime };
+                                    __tsr_image_id[1], TSR_SDK_ABI | (kinds_signature() << HELLO_R4_KINDS_SIG_LSB),
+                                    g_n_kernels, uint32_t(uintptr_t(__tsr_basis_version)), cw(CW_MTIME_LO) - boot_mtime };
         rt::post(hello, 0u);
     }
 

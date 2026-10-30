@@ -17,7 +17,7 @@ set keep [expr {[llength $argv] > 3 && [lindex $argv 3] eq "keep"}]
 set sopt [expr {$keep ? "-keep_equivalent_registers" : ""}]
 set_param general.maxThreads 4
 set root $repo/rtl/core
-read_verilog -sv [list $root/tsr_pkg.sv $root/tsr_fp_pkg.sv $repo/rtl/tech/generic/tsr_sram_1r1w.sv \
+read_verilog -sv [list $root/tsr_tables_pkg.sv $root/tsr_pkg.sv $root/tsr_fp_pkg.sv $repo/rtl/tech/generic/tsr_sram_1r1w.sv \
                        $root/tsr_fp_mul.sv $root/tsr_fp_div.sv $root/tsr_qact.sv]
 set gopt [expr {$gen ne "-" ? [list -generic $gen] : [list]}]
 synth_design -mode out_of_context -part xcu200-fsgd2104-2-e -top tsr_qact {*}$gopt {*}$sopt

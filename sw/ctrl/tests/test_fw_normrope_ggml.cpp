@@ -42,7 +42,7 @@ uint32_t L16(uint32_t n) { return (n + 15u) / 16u; }
 uint32_t fb(float f) { return f2u(f); }
 
 tsr_config cfg_u200() {
-    tsr_config c = TSR_CONFIG_U200_V1;
+    tsr_config c = TSR_CONFIG_U200;
     c.t_max = 8;
     c.ch_bytes = 1ull << 30;
     c.caps = TSR_SIM_CAPS_IMPLEMENTED;

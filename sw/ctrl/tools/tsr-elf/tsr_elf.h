@@ -1,8 +1,9 @@
 // tsr_elf.h — Tesseract firmware images on the host (SW §6.2, §9.5; EX §3.1-§3.2; P2.1).
 //
 // A parsed RV32 firmware ELF: its PT_LOAD segments (what the loader writes, EX §3.3), the image id
-// (EX §3.2), the kernel table (.tsr_kernels), the image requirements (.note.tsr), the log-format
-// table (.tsr_logfmt, SW §6.6) and the size report against SW §7.8's budget. Used by the tool
+// (EX §3.2), the kernel table (.tsr_kernels), the kind table (.tsr_kinds, SW §6.9), the image
+// requirements and versions (.note.tsr), the log-format table (.tsr_logfmt, SW §6.6) and the size
+// report against SW §7.8's budget. Used by the tool
 // tsr-elf (stamping after the link, checks, dumps) and by host code that needs the same facts
 // (decoders of FMT log records, loaders, tests). C API, implemented in C++17 (tsr_elf.cpp); the
 // SHA-256 here is independent of sw/sim/tsr_trace.c's (fw_elf compares the two).
@@ -16,6 +17,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
+#include "tsr/version.h"   // TSR_SDK_ABI, TSR_BASIS_VERSION (SW §6.9)
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,7 +34,9 @@ extern "C" {
 #define TSR_ELF_NOTE_NAME        "TSR"
 #define TSR_ELF_NOTE_TYPE        1u
 #define TSR_ELF_NOTE_DESC_BYTES  32u
-#define TSR_ELF_SDK_ABI          1u
+#define TSR_ELF_SDK_ABI          TSR_SDK_ABI   // the Basis ABI this tool checks images against
+#define TSR_ELF_KIND_BYTES       4u            // kind table entry: kind, rev, rsvd (u16)
+#define TSR_ELF_N_KINDS          64u           // op list kinds 0x00-0x3F (tsr/opl.hpp N_KINDS)
 #define TSR_ELF_RESET_OFFSET     0x80u         // reset entry at RV_BOOT + 0x80 (RV_BOOT = 0)
 #define TSR_ELF_BUDGET_ITCM      (80u * 1024u) // SW §7.8 image-size targets (ITCM 48 -> 80 KiB: W2b integration, M7 kinds)
 #define TSR_ELF_BUDGET_DTCM      (56u * 1024u)
@@ -59,15 +64,16 @@ typedef struct tsr_elf_kernel {
     char     name[TSR_ELF_KNAME_BYTES + 1];   // NUL-terminated copy
 } tsr_elf_kernel;
 
-// .note.tsr descriptor (EX §3.1, SW §6.2).
+// .note.tsr descriptor (EX §3.1, SW §6.2, §6.9).
 typedef struct tsr_elf_note {
-    uint32_t sdk_abi;
-    uint32_t ctl_id_min;        // required CTL_ID[7:0]
+    uint32_t sdk_abi;           // Basis ABI
+    uint32_t cap_min;           // Tesseract Core capability the image needs: major << 8 | minor (VERSION[15:0])
     uint32_t itcm_min;          // bytes
     uint32_t dtcm_min;          // bytes
     uint32_t caps_req;          // required CAPS bits
     uint32_t n_kernels;
-    uint32_t rsv[2];
+    uint32_t basis_version;     // Tesseract Basis version: major << 16 | minor << 8 | patch (0: none)
+    uint32_t rsv;               // word 7, 0
 } tsr_elf_note;
 
 // Memory the checks assume: ITCM / DTCM sizes (RV_CFG; 0 = the U200 defaults of tsr_tables.h)
@@ -121,6 +127,10 @@ uint32_t               tsr_elf_n_kernels(const tsr_elf * e);    // whole entries
 const tsr_elf_kernel * tsr_elf_kernel_at(const tsr_elf * e, uint32_t index);
 int                    tsr_elf_kernel_find(const tsr_elf * e, const char * name);   // index or -1
 int                    tsr_elf_get_note(const tsr_elf * e, tsr_elf_note * note);    // 0, -1 if absent
+// The kind table .tsr_kinds (SW §6.9): rev[k] = the image's revision of kind k, 0 if absent (no
+// section: no kinds). Returns the number of kinds, or -1 for a malformed table (size not a multiple
+// of 4, a kind >= 0x40, a kind twice, revision 0, rsvd != 0; why says which, NUL-terminated).
+int                    tsr_elf_kinds(const tsr_elf * e, uint8_t rev[TSR_ELF_N_KINDS], char * why, size_t whylen);
 // The format string of an FMT log record (DB §6.1): the NUL-terminated string at addr inside
 // .tsr_logfmt (addresses inside a string are valid: the linker may merge string tails). NULL if
 // addr is outside the section or the string is unterminated.
@@ -139,9 +149,11 @@ const char * tsr_elf_string(const tsr_elf * e, uint32_t addr);
 // flags bit0 only; argblk_lines 1..16 with ARGBLK and nargs >= 1, 0 without; entry in an executable
 // ITCM segment and equal to the symbol of the same name; sorted by index, i.e. by (rank, name) with
 // rank 0 graph, 1 selftest, 2 replay, 5 every other kernel: tsr/rt.hpp's TSR_KERNEL rule);
-// .note.tsr (exactly one note "TSR" type 1 with a 32-byte descriptor: sdk_abi 1, ctl_id_min
-// 1..0xFF, itcm_min / dtcm_min covering the image and within the TCMs, n_kernels = table entries,
-// reserved words 0); .tsr_logfmt at TSR_LOGFMT_VMA, not allocated, its last string terminated.
+// the kind table (tsr_elf_kinds's rules; a non-empty table in the file data of a DTCM PT_LOAD);
+// .note.tsr (exactly one note "TSR" type 1 with a 32-byte descriptor: sdk_abi = TSR_SDK_ABI, cap_min
+// a capability 0x0001..0xFFFF, itcm_min / dtcm_min covering the image and within the TCMs, n_kernels
+// = table entries, basis_version a version (nonzero, [31:24] 0), word 7 0); .tsr_logfmt at
+// TSR_LOGFMT_VMA, not allocated, its last string terminated.
 // Flags: TSR_ELF_CHECK_ID also checks that the stored id equals the computed one (a stamped,
 // untampered image); TSR_ELF_CHECK_BASE that EX §4.6's base kernels graph, selftest and replay
 // are kernels 0, 1 and 2 (the production image).

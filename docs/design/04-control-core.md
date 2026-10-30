@@ -339,7 +339,7 @@ control subsystem:
 
 | EX offset | Registers | CC implementation |
 |---|---|---|
-| 0x000–0x01C | `ID` (0x5453_5231 "TSR1"), `VERSION` 0x0000_0200, `CFG*`, `CAPS`, `CFG3`, `CTL_ID` | constants from the table source |
+| 0x000–0x01C | `ID` (0x5453_5231 "TSR1"), `VERSION` 0x0000_0100 (Tesseract Core capability 1.0), `CFG*`, `CAPS`, `CFG3`, `CTL_ID` | constants from the table source |
 | 0x020 / 0x024 | `CTRL`, `STATUS` | level and pulse bits as EX §5.2–§5.3; `RV_RUN` drives the RISC-V reset sequence (§12.2); `SOFT_RESET` starts the SR sequencer (§12.2) |
 | 0x028–0x03C | `RV_BOOT`, `RV_FREQ`, `RV_CFG`, `WDOG_CFG`, `RT_STATE`, `RT_INFO` | `RV_FREQ` = clk_rv cycles in the last 2^16 core cycles (16-bit gray counter); `RT_*` are core-domain mirrors of the RISC-V's registers |
 | 0x040–0x09C | LQ, LCQ, log ring control, `PERF_INFO`, `Q_DEPTH` (0x088) | core-domain rings and counters (EX §4.1–§4.2) |
@@ -847,7 +847,7 @@ EX §9.1–§9.3 are normative (CC-19):
   alignment-checks all bases on its rising edge, locks them while set, and holds core memory
   requests while 0; 0x0F0 `ADAPTER_STATUS` (bits 0–2 response errors, bit3 base misaligned at
   `MEM_EN`, bit4 `REQ_HELD`, bit5 `BASE_LOCKED`, [31:16] saturating error count); 0x0F4
-  `ADAPTER_VERSION` = {16'h0002, 8'h00, NUM_CH}; 0x1000 + off the core CSR window.
+  `ADAPTER_VERSION` = {16'h0001, 8'h00, NUM_CH}; 0x1000 + off the core CSR window.
 - `plat_err_i` = `ADAPTER_STATUS` bits 0–2 or error count ≠ 0; `host_irq_o` is unconnected.
 - Kernel arguments: only `ch<c>` (0x040 + 8c, `void*` on `m_axi_ch<c>`) for connectivity.
 - Second clock `ap_clk_2` / `ap_rst_n_2` on `tsr_u200_k1` / `k4` (`gen_tops.py`, `kernel_k*.xml`).
@@ -1106,7 +1106,7 @@ T1–T4 of §14.3; `report_cdc` on every out-of-context run; `report_timing` bet
 | CC-17 | Log | EX's 256-word core-domain ring (drop-new, never torn, DB's header); CC's part: `LOG_PUSH` → 16-entry CDC FIFO, and `LOG_FREE` from a `clk_rv` push count and a handshaked `LOG_RD` | the draft's 1,024-word overwrite-oldest ring with windowed reads; DRAM log ring | Works when queues wedge; never stalls the RISC-V by default; does not consume issue credits; whole records need no resynchronisation (DB-12). |
 | CC-18 | Clocks | `ap_clk_2` 166.7 MHz via v++ clock request, BUFGCE_DIV ÷ 3 of 500 MHz as fallback; asynchronous CDC | `ap_clk` / 2 synchronous | D5 / D12; independent of core-clock scaling; the CDC design of ctrl-riscv is kept. |
 | CC-19 | Kernel control | `ap_ctrl_none` per EX §9 (fallback: declare `ap_ctrl_hs`, never run); `xrt::ip` and polling; no interrupt on the U200; `MEM_EN` latch | `user_managed` (the draft; not in XRT 2.18's control types); `ap_ctrl_hs` with runs | A halted RISC-V under an outstanding `xrt::run` breaks KDS; the pinned XRT routes `AP_CTRL_NONE` to `xrt::ip`, which is the register-level path the host needs. |
-| CC-20 | ID / VERSION | `ID` is 0x5453_5231 "TSR1", `VERSION` 0x0000_0200 (EX-12) | "TSR2" (the draft) | Host open code refuses a different ISA major (`docs/xrt-host.md:72-74`), so a tool built for another ISA major fails cleanly without a new magic. |
+| CC-20 | ID / VERSION | `ID` is 0x5453_5231 "TSR1", `VERSION` 0x0000_0100: Tesseract Core capability 1.0 (EX-12, SW §6.9) | "TSR2" (the draft) | Host open code refuses a different capability major, so a tool built for another major fails cleanly without a new magic. |
 | CC-21 | PERF | EX §6 (ACTIVE / QHALT gating, zeroed by `SOFT_RESET`, X = 5 + 2C); CC adds X + 20 / X + 21 SPM wait counters | 64 free-running fixed slots with `PERF_CLEAR` (the draft) | ACTIVE gives the property "PERF does not change between executions" per launch with no software bit; one counter space for the whole device. |
 | CC-22 | Recovery | no partial datapath reset and no op cancel; `SOFT_RESET` is EX's device-level sequence (SR sequencer, CC-31); a wedged unit needs a card reset | a datapath soft reset; per-unit kill | Resetting units with outstanding memory transactions breaks the "no pre-reset response" contract of the arbiters; the log ring, `Q_*` and DB's evidence give the post-mortem first. |
 | CC-23 | Timing gate | k4 link ≥ 276.3 MHz with all M6 hardware, target 300 MHz | 300 MHz hard gate | D13 (technical default); 300 MHz is pursued by the cycle-identical gather fix rather than gating M6 on it. |

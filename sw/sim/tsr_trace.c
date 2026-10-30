@@ -849,7 +849,7 @@ void tsr_trace2_config_from_sim(tsr_trace2_config * c, tsr_sim * sim) {
 void tsr_trace2_init(tsr_trace2 * t) {
     memset(t, 0, sizeof(*t));
     t->kind = TSR_TRACE2_KIND_OPS;
-    const tsr_config u200 = TSR_CONFIG_U200_V1;
+    const tsr_config u200 = TSR_CONFIG_U200;
     tsr_trace2_config_from_core(&t->cfg, &u200);
     t->load_ch = TSR_TRACE2_LOAD_AUTO;
     t->done.err_ticket_rel = TSR_TICKET_NONE;

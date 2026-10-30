@@ -51,7 +51,7 @@ LINE_MASK = (1 << LINE_BITS) - 1
 
 # tsr_spm defaults (tsr_core instantiates it with SPM_BYTES, NCL = TSR_SPM_NCL and
 # RD_LAT = SPM_RD_LAT = tsr_pkg TSR_DEF_SPM_RD_LAT = 2; BANK_LINES keeps the module default).
-DEFAULTS = dict(SPM_BYTES=isa.U200_V1["spm_bytes"], NCL=isa.SPM_NCL, RD_LAT=2, BANK_LINES=16384)
+DEFAULTS = dict(SPM_BYTES=isa.U200["spm_bytes"], NCL=isa.SPM_NCL, RD_LAT=2, BANK_LINES=16384)
 
 # name -> (parameter overrides, cocotb tests, random cycles)
 SMALL_TESTS = ["spm_reset_state", "spm_directed", "spm_sweep", "spm_random", "spm_reset_midflight"]
@@ -78,7 +78,7 @@ CONFIGS = {
 
 def spm_sources():
     """Only the files tsr_spm needs (from rtl/filelist.f, in its order)."""
-    names = ("tsr_pkg.sv", "tsr_sram_1r1w.sv", "tsr_spm.sv")
+    names = ("tsr_tables_pkg.sv", "tsr_pkg.sv", "tsr_sram_1r1w.sv", "tsr_spm.sv")
     srcs = [s for s in rtl_sources() if s.name in names]
     assert [s.name for s in srcs] == list(names), srcs
     return srcs

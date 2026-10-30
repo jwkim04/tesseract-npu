@@ -586,6 +586,7 @@ EX §3.1–§3.2 are normative. Linker script memory map (CC §4.1): ITCM at 0x0
 | `.vectors` | ITCM 0x0 (`RV_BOOT` = 0) | yes | 32 vector slots × 4 B (`j` to handlers), reset entry at +0x80 |
 | `.text` | ITCM | yes | code |
 | `.tsr_kernels` | DTCM | yes | kernel table (below), sorted by index |
+| `.tsr_kinds` | DTCM | yes | kind table (below, §6.9): the op list kinds the image provides with their numerics revisions |
 | `.rodata`, `.data` | DTCM | yes | loaded directly by the host; crt0 copies nothing |
 | `.tsr_id` | DTCM | yes | 8-byte image id (EX §3.2) |
 | `.tsr_dbg` | DTCM | yes | DB's debugger flags (DB §6.3) |
@@ -607,9 +608,22 @@ struct tsr_kernel_desc {
 };
 ```
 
-`.note.tsr` descriptor (32 bytes): `sdk_abi` (1), `ctl_id_min`, `itcm_min`, `dtcm_min`,
-`caps_req`, `n_kernels`, two reserved words. `itcm_min` / `dtcm_min` are in bytes (W2a: `tsr-elf` and
-`link.ld` fill them at link time; the host compares them with `RV_CFG` KiB × 1024).
+`.note.tsr` descriptor (32 bytes, eight words; §6.9):
+
+| Word | Field | Value |
+|---|---|---|
+| 0 | `sdk_abi` | the Basis ABI (1), `TSR_SDK_ABI` of `tsr/version.h` |
+| 1 | `cap_min` | the Tesseract Core capability the image needs, `VERSION[15:0]` encoding (0x0100 = 1.0) |
+| 2, 3 | `itcm_min`, `dtcm_min` | bytes (W2a: `link.ld` fills them at link time; the host compares them with `RV_CFG` KiB × 1024) |
+| 4 | `caps_req` | `CAPS` bits the image needs |
+| 5 | `n_kernels` | entries of `.tsr_kernels` |
+| 6 | `basis_version` | the Tesseract Basis version, major << 16 \| minor << 8 \| patch (0x0000_0100 = 0.1.0); 0 = built before versioning (refused) |
+| 7 | reserved | 0 |
+
+Words 0, 1 and 6 come from the link's `--defsym` (`sw/ctrl/cmake/tsr_version.cmake`: `tsr/version.h`
+and `VERSION_VALUE`). Kind table entry (4 bytes; `tsr/rt.hpp`, `TSR_KIND(NAME)` beside each kind's
+handler): `{u8 kind, u8 rev = opl::kind_rev(kind), u16 0}`, unique kinds in any order; a kind declared
+twice in one image is a link error.
 
 Kernel order (W2a): the table is sorted by (rank, name), rank 0 `graph`, 1 `selftest`, 2 `replay`
 (EX §4.6's base kernels at indices 0–2), 5 for every other kernel; `TSR_KERNEL` places each entry in
@@ -636,8 +650,8 @@ that is both invalid and covered by a watermark answers BAD_DESC, by EX §4.4's 
 (BAD_DESC above ABORTED):
 
 - **R1 Boot.** Push `qclear()` and join it; `RT_STATE` := IDLE; post HELLO as an event (r2 / r3 =
-  image id, r4 = [15:0] SDK ABI | [31:16] runtime version, r5 = kernel count, r7 = boot core
-  cycles). Descriptors pushed before HELLO stay queued.
+  image id, r4 = [15:0] Basis ABI | [31:16] kind table signature, r5 = kernel count, r6 = Tesseract
+  Basis version, r7 = boot core cycles; §6.9). Descriptors pushed before HELLO stay queued.
 - **R2 Take.** WFI on `irq_fast[2]` (`LQ_AVAIL` ≠ 0 ∧ ¬ACTIVE); copy `LQ_HEAD_W0`–`7` and
   `LQ_HEAD_SEQ` into DTCM; write `LQ_POP`.
 - **R3 Cancelled or stopped before start.** Covered by `LQ_CANCEL` or `LQ_STOP` (EX §4.9): answer
@@ -789,6 +803,67 @@ The kernel sources also compile for the host against `backend_host.hpp`:
 The host build runs the same kernels in milliseconds under ASan and UBSan. It is a convenience. The
 reference is the RV binary on `tsr_rv`, and ctest runs both builds (§10.2).
 
+### 6.9 Versions (SW-54, normative)
+
+Four public numbers, in CUDA's terms: the **Tesseract Core capability** (compute capability), the
+**Tesseract Basis version** (toolkit version), the **Basis ABI** (driver ABI) and each kind's
+**numerics revision**.
+
+| Number | Value | Source | Carried in |
+|---|---|---|---|
+| Tesseract Core capability MAJOR.MINOR | 1.0 | `sw/tables/tsr_tables.py` `ISA_MAJOR` / `ISA_MINOR` | `VERSION` (EX §7.5), `.note.tsr` `cap_min` (the image's need) |
+| Tesseract Basis MAJOR.MINOR.PATCH (SemVer) | 0.1.0 | `sw/ctrl/include/tsr/version.h` | `.note.tsr` word 6 and HELLO r6, both from the link's `__tsr_basis_version` (major << 16 \| minor << 8 \| patch); `tsr_fw_image(... BASIS_VERSION <code>)` links a test image as another version |
+| Basis ABI | 1 | `version.h` `TSR_SDK_ABI` (the only source) | `.note.tsr` word 0, HELLO r4[15:0] |
+| Kind revision (u8, 0 = absent) | 1 for the 14 kinds of §7.2 | `tsr/opl.hpp` `kind_rev` | `.tsr_kinds`; HELLO r4[31:16] = the kind table signature |
+
+- **Capability.** Bumped by the hardware owner (EX §7.5): major for an incompatible hardware-contract
+  change (any tile op's result bits included), minor for an addition present in every configuration
+  of that minor; an optional feature is a `CAPS` bit.
+- **Basis version.** Bumped at release by the coordinator, with `CHANGELOG.md` (the section
+  heading's "(unreleased)" becomes the date) and an annotated tag `basis-vX.Y.Z`. Major (from 1.0.0): an ABI break. Minor:
+  new kinds, kernels, kind variants or flags, a planner accepting more shapes, any revision bump, new
+  host API or tools. Patch: fixes and performance work that leave every output bit of every kind,
+  every interface and every planner's acceptance unchanged. 0.x until the M7 card gate, then 1.0.0;
+  in 0.x an incompatible change bumps the minor and the ABI.
+- **Basis ABI.** Covers `tsr_args`, `TSR_KERNEL` and the kernel table entry, the `.note.tsr` layout
+  and the `.tsr_kinds` entry, the launch protocol as the runtime implements it (descriptor, record
+  and HELLO layouts, R1–R10), the op list format (header, record layout, every kind's argument words
+  and their meaning, removing a kind) and a planner accepting less (SW-20). Bumped by the breaking
+  change itself. ABI 1 is defined as of Basis 0.1.0.
+- **Kind revision.** Bumped in the change that can alter any output bit of the kind for the same
+  record words, input bytes and configuration (`CFG0`–`CFG3`, `CAPS`) on the same capability; not
+  for push order, scheduling or scratch use, nor for accepting new inputs (a Basis minor). A new kind
+  starts at 1; revisions never decrease and are never reused. Procedure: change `opl::kind_rev`, run
+  `test_fw_kind_revs tsr-fw.elf sw/ctrl/tests/kind_revs.txt --update`, add a line to the
+  CHANGELOG's unreleased section. `fw_kind_revs` compares each kind's outputs on a fixed corpus with the recorded
+  digest at that revision, so (capability, configuration, kind, revision) identifies a result. The
+  corpus takes the decode fast entries production decode runs (a retire hook counts the entries into
+  the image's general-path and fast-path functions, and each launch states which it must take), so a
+  numerics change confined to a fast entry changes a digest too. `--update` applies the table's rules
+  first: it refuses a digest that moved at an unchanged revision, a bump without a change and a lowered
+  revision, so it records only what a revision bump announced.
+- **Kind table.** `TSR_KIND(NAME)` beside each handler (NOP and JOIN in `graph.cpp`) emits
+  `{kind, rev, 0}` into `.tsr_kinds`; the signature is FNV-1a 32 over the 64 revision bytes (0 for an
+  absent kind), folded to 16 bits (`opl::kinds_sig`: no kinds 0xB51B, NOP + JOIN + MUL_MAT 0x512E,
+  the 14 kinds 0xFA6F). The runtime computes it at R1; the host computes it from the ELF.
+
+Who refuses what:
+
+| Check | Where | Rule |
+|---|---|---|
+| device identity | `tsr_transport_open`, reads only, in this order | `ADAPTER_VERSION` major 1 and `NUM_CH` (kinds with an adapter); `ID` = "TSR1"; `VERSION` major = 1 (any minor); `CTL_ID` ≠ 0 right after it |
+| image | `tsr_image_open` | `.note.tsr` present; `sdk_abi` = `TSR_SDK_ABI`; `basis_version` ≠ 0; `.tsr_kinds` well formed |
+| device vs image | `tsr_transport_boot`, before any load | same capability major, device minor ≥ `cap_min`'s; `CAPS` ⊇ `caps_req`; TCM sizes; the ABI |
+| HELLO | every cold and warm boot | image id; r4[15:0] = the note's ABI; r4[31:16] = the signature of `.tsr_kinds`; r5 kernel count; r6 = the note's Basis version; no other record first |
+| backend vs image | ggml-tesseract and `sw/rt` at open | the image's Basis (major, minor) ≥ the backend's (patch ignored; a newer image is fine). Not a transport rule, so captured traces of older images stay replayable |
+| launch | supports_op; the builder | only kinds the booted image declares; the executor still answers BAD_RECORD for a kind it lacks and BAD_VERSION for an op list format it does not know |
+
+Internal identifiers, never shown as product versions: `CTL_ID[7:0]` = 1 (control-core revision;
+0 = no control core), `ADAPTER_VERSION` major 1, `DBG_ID[7:0]` = 1 (DB §10.1), the kind table
+signature, the image id. File-format versions are unchanged (OPL header 1, trace meta 2, `.klc` 2,
+numcheck meta 2, DBG_INFO 1, CRASH 1, MSUM 1). Display (`tsr_versions_str`): "Tesseract Core 1.0 (VU
+ATT), Tesseract Basis 0.1.0 (ABI 1, 14 kinds)".
+
 ---
 
 ## 7. Kernels and the graph executor
@@ -855,26 +930,27 @@ word2..: args[n_args]                  (n_args <= 16 * n_slots - 2)
 - Row strides are in lines.
 - All f32 parameters are bit patterns computed by the host (§6.1).
 
-**Kinds and argument words.** M6 implements 0x01 and 0x10; M7 the rest. Shapes are flattened to
+**Kinds and argument words.** M6 implements 0x01 and 0x10; M7 the rest. Rev is the kind's numerics
+revision at Tesseract Basis 0.1.0 (`opl::kind_rev`, §6.9). Shapes are flattened to
 rows: `rows` = ne1·ne2·ne3, and every row of a tensor starts on a line (ensured by `supports_op`).
 
-| Kind | Name | Args (word index: meaning) | ggml source |
-|---|---|---|---|
-| 0x00 | NOP | — (no tile ops; its ticket is "none") | placeholder |
-| 0x01 | JOIN | — (SYNC NOP over dep0, dep1) | builder |
-| 0x10 | MUL_MAT | 0 x, 1 x stride, 2 y, 3 y stride, 4 W_OFF (beats), 5 fmt (0 Q8_0, 1 Q4_K), 6 N, 7 K, 8 T, 9 addend handle (0xFFFF_FFFF none), 10 addend stride (0 = row 0 broadcast to every token), 11 flags (bit0 ACC_DST: y += W·x) | MUL_MAT; fused MUL_MAT+ADD(bias or residual) |
-| 0x11 | ADD | 0 dst, 1 dst stride, 2 a, 3 a stride, 4 b, 5 b stride, 6 n (ne0), 7 rows, 8 b row period (b row = r mod p, p ≥ 1), 9 flags (bit0 b is one f32 scalar) | ADD |
-| 0x12 | MUL | as ADD | MUL (norm weights, Gemma `out_scale`) |
-| 0x13 | SCALE | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 n, 5 rows, 6 s (f32), 7 b (f32) | SCALE (`x·s`, then `+b` if b ≠ 0) |
-| 0x14 | RMS_NORM | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 n, 5 rows, 6 eps (f32), 7 inv_n = `tsr_fdiv(1, n)` (f32), 8 weight handle (0xFFFF_FFFF none), 9 weight row period | RMS_NORM, fused RMS_NORM+MUL(weight) |
-| 0x15 | GLU | 0 dst, 1 dst stride, 2 gate, 3 gate stride, 4 up, 5 up stride, 6 n, 7 rows, 8 variant (0 SWIGLU, 1 GEGLU16: ggml-CPU-compatible fp16 GELU, VU §6.5; 2 GEGLU: exact tanh form, M8 / PyTorch) | GLU split form |
-| 0x16 | ROPE | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 pos preload byte offset (I32 per token), 5 table handle (AUX f32 × n_dims/2: the freq-factor table, or the A table with mode bit1; 0xFFFF_FFFF none), 6 TS = `powf(freq_base, -2.0f/n_dims)` bits (host libm, as ggml-cpu), 7 M = attn_factor (f32), 8 freq_scale (f32; 1.0 = none), 9 head_dim, 10 n_dims, 11 n_heads, 12 n_tokens, 13 mode (bit0 NEOX; bit1 ATAB: YaRN form with a host-folded A table, VU §6.7) | ROPE: the angle recurrence of ggml-cpu (VU §6.7), bit-identical angles for ext_factor = 0 |
-| 0x17 | GET_ROWS | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 ids preload byte offset (I32), 5 n_ids, 6 row lines | GET_ROWS on f32 activations (`inp_out_ids`) |
-| 0x18 | SET_ROWS_KV | 0 cache base handle, 1 cache row stride (AT units), 2 src, 3 src stride, 4 idx preload byte offset (I64; the host checks idx < 2^31), 5 n_rows, 6 row elements, 7 which (0 K, 1 V), 8 plane base, 9 E/64 \| LG << 16, 10 plane kind, 11 stream (AT §12) | SET_ROWS into a KV buffer: QACT A32 + KVST per run of consecutive cells (AT §5.1) |
-| 0x19 | FLASH_ATTN | 0 dst, 1 dst token stride, 2 q, 3 q head stride, 4 q token stride, 5 K cache base, 6 V cache base, 7 n_kv, 8 head_dim, 9 n_head, 10 n_head_kv, 11 n_tokens, 12 MSUM preload byte offset, 13 f32-mask handle (with a mask: always the copy for this record's scale, written only when needed, because the cached list outlives per-token mask changes and a rule-3 GENERAL tile reads it also when the MSUM is not GENERAL; 0xFFFF_FFFF only without a mask; W3b, SW-48), 14 scale (f32), 15 softcap (must be 0), 16 K plane base, 17 V plane base, 18 E/64 \| LG << 16, 19 D, 20 G, 21 flags (AT §12; two slots) | FLASH_ATTN_EXT with K/V in KV buffers; the device never reads the F16 mask |
-| 0x1A | CPY | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 row lines, 5 rows | CPY/CONT f32 → f32 with contiguous rows |
-| 0x1B | UNARY | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 n, 5 rows, 6 func (0 TANH, 1 GELU16 (llama.cpp GELU), 2 SILU, 3 EXP, 4 GELU exact tanh form) | UNARY ops the VU has |
-| 0x20–0x3F | reserved for M8 | MUL_MAT_ID, TOPK/ARGMAX, SOFT_MAX | |
+| Kind | Name | Rev | Args (word index: meaning) | ggml source |
+|---|---|---|---|---|
+| 0x00 | NOP | 1 | — (no tile ops; its ticket is "none") | placeholder |
+| 0x01 | JOIN | 1 | — (SYNC NOP over dep0, dep1) | builder |
+| 0x10 | MUL_MAT | 1 | 0 x, 1 x stride, 2 y, 3 y stride, 4 W_OFF (beats), 5 fmt (0 Q8_0, 1 Q4_K), 6 N, 7 K, 8 T, 9 addend handle (0xFFFF_FFFF none), 10 addend stride (0 = row 0 broadcast to every token), 11 flags (bit0 ACC_DST: y += W·x) | MUL_MAT; fused MUL_MAT+ADD(bias or residual) |
+| 0x11 | ADD | 1 | 0 dst, 1 dst stride, 2 a, 3 a stride, 4 b, 5 b stride, 6 n (ne0), 7 rows, 8 b row period (b row = r mod p, p ≥ 1), 9 flags (bit0 b is one f32 scalar) | ADD |
+| 0x12 | MUL | 1 | as ADD | MUL (norm weights, Gemma `out_scale`) |
+| 0x13 | SCALE | 1 | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 n, 5 rows, 6 s (f32), 7 b (f32) | SCALE (`x·s`, then `+b` if b ≠ 0) |
+| 0x14 | RMS_NORM | 1 | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 n, 5 rows, 6 eps (f32), 7 inv_n = `tsr_fdiv(1, n)` (f32), 8 weight handle (0xFFFF_FFFF none), 9 weight row period | RMS_NORM, fused RMS_NORM+MUL(weight) |
+| 0x15 | GLU | 1 | 0 dst, 1 dst stride, 2 gate, 3 gate stride, 4 up, 5 up stride, 6 n, 7 rows, 8 variant (0 SWIGLU, 1 GEGLU16: ggml-CPU-compatible fp16 GELU, VU §6.5; 2 GEGLU: exact tanh form, M8 / PyTorch) | GLU split form |
+| 0x16 | ROPE | 1 | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 pos preload byte offset (I32 per token), 5 table handle (AUX f32 × n_dims/2: the freq-factor table, or the A table with mode bit1; 0xFFFF_FFFF none), 6 TS = `powf(freq_base, -2.0f/n_dims)` bits (host libm, as ggml-cpu), 7 M = attn_factor (f32), 8 freq_scale (f32; 1.0 = none), 9 head_dim, 10 n_dims, 11 n_heads, 12 n_tokens, 13 mode (bit0 NEOX; bit1 ATAB: YaRN form with a host-folded A table, VU §6.7) | ROPE: the angle recurrence of ggml-cpu (VU §6.7), bit-identical angles for ext_factor = 0 |
+| 0x17 | GET_ROWS | 1 | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 ids preload byte offset (I32), 5 n_ids, 6 row lines | GET_ROWS on f32 activations (`inp_out_ids`) |
+| 0x18 | SET_ROWS_KV | 1 | 0 cache base handle, 1 cache row stride (AT units), 2 src, 3 src stride, 4 idx preload byte offset (I64; the host checks idx < 2^31), 5 n_rows, 6 row elements, 7 which (0 K, 1 V), 8 plane base, 9 E/64 \| LG << 16, 10 plane kind, 11 stream (AT §12) | SET_ROWS into a KV buffer: QACT A32 + KVST per run of consecutive cells (AT §5.1) |
+| 0x19 | FLASH_ATTN | 1 | 0 dst, 1 dst token stride, 2 q, 3 q head stride, 4 q token stride, 5 K cache base, 6 V cache base, 7 n_kv, 8 head_dim, 9 n_head, 10 n_head_kv, 11 n_tokens, 12 MSUM preload byte offset, 13 f32-mask handle (with a mask: always the copy for this record's scale, written only when needed, because the cached list outlives per-token mask changes and a rule-3 GENERAL tile reads it also when the MSUM is not GENERAL; 0xFFFF_FFFF only without a mask; W3b, SW-48), 14 scale (f32), 15 softcap (must be 0), 16 K plane base, 17 V plane base, 18 E/64 \| LG << 16, 19 D, 20 G, 21 flags (AT §12; two slots) | FLASH_ATTN_EXT with K/V in KV buffers; the device never reads the F16 mask |
+| 0x1A | CPY | 1 | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 row lines, 5 rows | CPY/CONT f32 → f32 with contiguous rows |
+| 0x1B | UNARY | 1 | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 n, 5 rows, 6 func (0 TANH, 1 GELU16 (llama.cpp GELU), 2 SILU, 3 EXP, 4 GELU exact tanh form) | UNARY ops the VU has |
+| 0x20–0x3F | reserved for M8 | — | MUL_MAT_ID, TOPK/ARGMAX, SOFT_MAX | |
 
 **M7 argument rules (W2b infra, 2026-10-30; `tsr/opl.hpp`).** The words of each kind are a struct in
 word order (`opl::ew_args` for ADD / MUL, `scale_args`, `rms_norm_args`, `glu_args`, `rope_args`,
@@ -1467,6 +1543,11 @@ conveniences on top of it, not a second protocol:
 int             tsr_image_open_default(tsr_image ** out);   // $TSR_IMAGE or the build's tsr-fw.elf
 const char *    tsr_image_path(const tsr_image * img);
 const tsr_image * tsr_transport_image(const tsr_transport * t);   // booted image or NULL
+// §6.9: the device's capability and CAPS, the image's Basis version, ABI, kinds and revisions
+int      tsr_image_versions(const tsr_image * img, tsr_versions * v);
+int      tsr_transport_versions(const tsr_transport * t, tsr_versions * v);
+uint32_t tsr_basis_version(void);                                  // this host library's Basis version
+int      tsr_versions_str(const tsr_versions * v, int verbose, char * buf, size_t n);
 
 // Decoded view of a record (accessors over tsr_record.w[], EX §4.4)
 typedef struct tsr_result {
@@ -1505,7 +1586,8 @@ EX §2.1, §3, §4.8 and §10.2:
      CSR write.
 - **Boot:** per EX §3.3–§3.5: warm restart when VERIFY of every ITCM segment matches, else a cold
   load (`LOAD_ADDR`, `LOAD_DATA` words, receive CRC, VERIFY CRC); `RV_BOOT` = 0; `RV_RUN` = 1; wait
-  for HELLO (`TSR_BOOT_MS`) and check the image id, SDK ABI and kernel count.
+  for HELLO (`TSR_BOOT_MS`) and check the image id, the Basis ABI, the kind table signature, the
+  kernel count and the Tesseract Basis version (§6.9).
 - **Launch:** EX §4.8: at most `LQ_DEPTH` launches outstanding (host-side credit, no read); write
   the `LQ_W` words that differ from the shadow copy; write `LQ_PUSH`.
 - **Wait:**
@@ -1700,6 +1782,14 @@ The `xrt` kdev reads the `TSR_XRT_DMA*` and `TSR_XRT_CH_GIB` settings.
   alignment, which holds a single row's whole-line store.
 - *Knobs.* `TSR_KINDS=m6` restricts the device to MUL_MAT (M6 runs use the MUL_MAT-only splits; the M6 e2e
   ctests run with it and `TSR_COMPUTE_WINDOWS=io`, the IO-only windows).
+- *Versions (§6.9, SW-54).* At open the backend refuses an image whose Tesseract Basis (major, minor) is
+  older than its own and builds a kind mask from the booted image's `.tsr_kinds` (`TSR_KINDS=m6`
+  intersects it with NOP, JOIN and MUL_MAT); supports_op, the MUL_MAT path included, refuses a kind
+  outside the mask ("kind ADD is not in the booted image (Tesseract Basis 0.1.0, image <id>)", at
+  `TSR_DEBUG=2`), so a subset image leaves those ops on the CPU; the builder asserts the mask before
+  each launch. The description reads "Tesseract Core 1.0 (VU ATT; sim, C=4, …), Tesseract Basis
+  0.1.0 (ABI 1, 14 kinds, image <id>)"; `get_proc_address("ggml_backend_tesseract_versions")` returns
+  the `tsr_versions` of the opened device. `sw/rt` applies the Basis rule and requires MUL_MAT.
 - *Weight placement.* llama.cpp places a weight by a probe op (`src/llama-model-loader.cpp:928`); its
   ROPE probe has every parameter 0, which the planner would refuse, so probe mode plans a ROPE with
   `n_dims` 0 and a freq-factor tensor as a full rotation: Gemma 4's `rope_freqs` lives on the device
@@ -1764,13 +1854,13 @@ numerics are defined in `sw/rt/tsr_rt.h:1-49`. The PyTorch move onto the M7 kern
 
 | Tool | Function |
 |---|---|
-| `tsr-selftest` | identity (CSRs, `CTL_ID`, `RV_FREQ`, `Q_DEPTH`, adapter); host memory tests; load + VERIFY + HELLO + image id + PING round-trip time and pipelined launch rate (EX §4.11); the `selftest` kernel tests with in-process sim shadow; `--traces DIR` replays through `replay` or full launches; `--debug` DMI halt/resume/step smoke (DB's checks); log drain |
+| `tsr-selftest` | identity (Tesseract Core capability, CSRs, `CTL_ID`, `RV_FREQ`, `Q_DEPTH`, adapter); the image's and the host's versions and kinds (§6.9; `--version`); host memory tests; load + VERIFY + HELLO + image id + PING round-trip time and pipelined launch rate (EX §4.11); the `selftest` kernel tests with in-process sim shadow; `--traces DIR` replays through `replay` or full launches; `--debug` DMI halt/resume/step smoke (DB's checks); log drain |
 | `tsr-trace-gen` | `ops` traces: `--ops m2|m3|vu|at|ctrl`, errors, concurrency, fixed seeds |
 | `tsr-trace-replay` | replay on the simulator (full or tile-only), `--schedules N` determinism mode; `--device KIND` replays through a transport |
 | `tsr-trace-conv` | converts `traces/model` into `traces/model-v1conv` (§5.6) |
-| `tsr-elf` | image id, kernel table, sizes, `.tsr_logfmt` dump |
+| `tsr-elf` | image id, kernel table, kind table (`kinds`: one line per kind and revision, the signature), `.note.tsr` (`note`: `cap_min` and `basis_version` as versions), sizes, `.tsr_logfmt` dump, `--version` |
 | `tsr-log` | decode raw log words (DB §6.1 header) with an ELF |
-| `klcheck`, `numcheck` | settings: FA on (SW-22, §10.4); `--fa` records `on`; KV type q8_0/q8_0; `offload_kqv` = false in M6 and true in M7; `LLAMA_ATTN_ROT_DISABLE=1` in every phase (recorded in the `.klc` header and the numcheck run metadata). numcheck's per-node observation (`cb_eval`) makes the scheduler compute one node per `graph_compute`, which is one launch per node, so numcheck needs no device mode (SW-27). W3b (M7): klcheck runs the SWA layers' KV cache as the ring llama-cli and llama-server use (`--swa-full off`, the default; recorded in the `.klc` header, 0 = an older file, full-size), so the long Gemma 4 prompts of the M7 gate wrap it; the `embd` and floor inputs of klcheck and numcheck carry the token-row scale the graph gives token rows only (√n_embd for Gemma 3 / 3n / 4, `inp_scale_rows`), without which the Gemma 4 floor was 8 nats; `klcheck -v` marks each `llama_decode` (the graph tests' launch count per decode) |
+| `klcheck`, `numcheck` | settings: FA on (SW-22, §10.4); `--fa` records `on`; KV type q8_0/q8_0; `offload_kqv` = false in M6 and true in M7; `LLAMA_ATTN_ROT_DISABLE=1` in every phase (recorded in the `.klc` header and the numcheck run metadata). numcheck's per-node observation (`cb_eval`) makes the scheduler compute one node per `graph_compute`, which is one launch per node, so numcheck needs no device mode (SW-27). W3b (M7): klcheck runs the SWA layers' KV cache as the ring llama-cli and llama-server use (`--swa-full off`, the default; recorded in the `.klc` header, 0 = an older file, full-size), so the long Gemma 4 prompts of the M7 gate wrap it; the `embd` and floor inputs of klcheck and numcheck carry the token-row scale the graph gives token rows only (√n_embd for Gemma 3 / 3n / 4, `inp_scale_rows`), without which the Gemma 4 floor was 8 nats; `klcheck -v` marks each `llama_decode` (the graph tests' launch count per decode). §6.9: a device run records the Tesseract Core capability, the Tesseract Basis version and the kind table signature (`.klc` header, 0 = not recorded; `report.json` `versions`); numcheck's dev run records them with every kind's revision (`meta.json` / `report.json` `versions`) |
 | `tsr_bw` | separate M0 bandwidth kernel |
 
 ### 9.6 Toolchain installation without sudo (SW-7)
@@ -1845,7 +1935,14 @@ Other ctests:
 - `fw_selftest_sim`, `fw_replay_sim` (incl. SERIAL on a stream whose recorded deps are not the
   chain; `slow`: `fw_replay_sim_all`);
 - W2a's package tests: `fw_elf`, `fw_elf_asan`, `fw_elf_link`, `fw_elf_image`, `fw_elf_hello`,
-  `fw_elf_test_image`, `_nok`, `_hello` (P2.1: `tsr-elf`, `link.ld`, image id, test images);
+  `fw_elf_test_image`, `_nok`, `_hello` (P2.1: `tsr-elf`, `link.ld`, image id, test images; §6.9: the
+  note's versions, the kind table and its mutations, HELLO r4 / r6), `fw_elf_kinds_exec_ref` (a subset
+  image's kind table); `fw_kind_revs` (§6.9: every kind's output digest on a fixed corpus against
+  `sw/ctrl/tests/kind_revs.txt` at its revision; the image declares exactly the kinds with a
+  revision; each launch takes its fast or general path); `ggml_tesseract_versions_full`, `_subset`, `_m6`,
+  `_old` (§6.9, §9.3: description, versions hook, supports_op by the booted image's kinds, an ADD of two
+  MUL_MAT results routed by them, an image of an older Basis refused); `rt_sim_basis_old`,
+  `rt_sim_no_mulmat` (§6.9: `tsr_rt` refuses an image of an older Basis and one without MUL_MAT);
   `fw_hdr_host`, `fw_hdr_rv`, `fw_hdr_rv_mutant`, `fw_hdr_constexpr` (P2.3: builders, tickets,
   `group`, `spm_ring` incl. its blocks, deps and joined tickets against W2a's algorithm, host
   backend); `fw_exec_rv`, `fw_exec_host`, `fw_exec_perf` (P2.4: the op list format and the executor; the
@@ -2143,6 +2240,7 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
 | SW-51 | klcheck settings for SWA models (2026-10-31, W3b; §9.5) | `--swa-full off` (default): the SWA ring llama-cli and llama-server use, recorded in a spare header word (0 = older file, read as full-size); the `embd` and floor rows carry llama.cpp's token-row scale (√n_embd for Gemma 3 / 3n / 4), in klcheck and numcheck | `llama_context_default_params`' full-size SWA cache; unscaled embd rows | Long Gemma 4 prompts must wrap the ring (M7 gate item 3); without the scale the Gemma 4 floor was 8.2 nats with top-1 0 %, with it the embd path equals the token path bit for bit |
 | SW-52 | test-backend-ops coverage of the M7 kinds (2026-10-31, W3b; §10.4 item 4) | One ctest per op filter (`ggml_tesseract_backend_ops_<op>`, 21) with a minimum count of supported cases (0 for SCALE / SOFTCAP, whose cases have 10- or 100-float rows, and for SET_ROWS / ROPE_SET_ROWS / FLASH_ATTN_EXT, whose tensors are not KV-cache tensors); FA and SET_ROWS on the device are covered by `ggml_tesseract_attn` | one ctest for every op; exact supported counts | Per-op reports; the minimum stops a supports_op regression from passing as "everything unsupported"; test-backend-ops cannot place its K / V / dst in a KV buffer (amends AT §13.6) |
 | SW-53 | Host memory and the M7 kinds (2026-10-31, W3b fix; amends §8 R6, SW-26 / 46) | Only MUL_MAT is staged; supports_op refuses an M7 op with an operand in a HOSTED buffer or one that will be (ANY with leaf data only: control vectors, LoRA adapters; every buffer under `TSR_FORCE_HOST`), so it runs on the CPU; a compute buffer without a window is found only at graph_compute, which aborts naming it and the remedies; a refused SET_ROWS into the device KV cache is reported before the scheduler stops (R10: streams, `TSR_FORCE_HOST` needs `-nkvo`) | staging every M7 operand through IO; a host fallback per record | Correct runs with a control vector (tiny Qwen2: 2 launches per token, text identical to the CPU) and `TSR_FORCE_HOST -nkvo` instead of aborts; staging all kinds is a lowering of its own for a case that does not occur at `-ub 512 -c 4096` (0 staged chunks for every model run) |
+| SW-54 | Versions (2026-10-31; §6.9, EX §7.5, EX-12) | Four numbers: the Tesseract Core capability in `VERSION` (1.0); the Tesseract Basis SemVer in `tsr/version.h` (0.1.0; `.note.tsr` word 6, HELLO r6); the Basis ABI (1); a numerics revision per kind (`opl::kind_rev`, `.tsr_kinds`, HELLO r4[31:16] = the kind table signature), guarded by `fw_kind_revs`. Images name the capability they need (`cap_min`); a core without the control core is refused by `CTL_ID` = 0; the backends refuse an image of an older Basis (major, minor) and route only the booted image's kinds; `CTL_ID[7:0]`, `ADAPTER_VERSION` major and `DBG_ID[7:0]` are 1 | one product version for everything; the Basis version in `tsr_tables.py`; a runtime version in HELLO; a control-core version images compare with; pinning revisions in the host | The capability is the hardware contract and the Basis version the software's, so a software release never regenerates RTL packages; a capability per image works as a cubin's `sm_XY`; the existing bit-exact tests compare kernels with references that move with them, so only a digest guard makes (kind, revision) a reproducibility key; recording revisions in reports (klcheck, numcheck) is enough for reproducibility, enforcing them would break subset images |
 
 ---
 

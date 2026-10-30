@@ -34,6 +34,12 @@
 // is RET_SCRATCH.
 #include "k_elem.hpp"
 
+// The op list kinds this source handles (SW §6.9: .tsr_kinds entries at tsr/opl.hpp kind_rev).
+TSR_KIND(ADD);
+TSR_KIND(MUL);
+TSR_KIND(SCALE);
+TSR_KIND(UNARY);
+
 namespace tsr {
 
 namespace ek {

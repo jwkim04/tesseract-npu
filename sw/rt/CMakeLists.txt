@@ -68,6 +68,18 @@ add_test(NAME rt_mock_tmax8 COMMAND test-tsr-rt)
 set_tests_properties(rt_mock_tmax8 PROPERTIES ENVIRONMENT
     "TSR_DEVICE=mock;TSR_MOCK_TMAX=8;TSR_MOCK_NUM_CH=3;TSR_MOCK_DMA_ALIGN=4096;TSR_MOCK_DMA_CHUNK_KIB=12;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal")
 
+# The image rules of tsr_rt (SW §6.9, as the ggml backend's): an image of an older Tesseract Basis
+# (fw_basis_old, 0.0.5: the production image linked as such) and an image without the MUL_MAT kind
+# (fw_no_mulmat: the production image with its TSR_KIND(MUL_MAT) left out) are refused at open, with the reason.
+add_test(NAME rt_sim_basis_old COMMAND test-tsr-rt --quick)
+set_tests_properties(rt_sim_basis_old PROPERTIES
+    ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_THREADS=4;TSR_IMAGE=${TSR_FW_TEST_ELF_fw_basis_old}"
+    PASS_REGULAR_EXPRESSION "older than this library's ")
+add_test(NAME rt_sim_no_mulmat COMMAND test-tsr-rt --quick)
+set_tests_properties(rt_sim_no_mulmat PROPERTIES
+    ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_THREADS=4;TSR_IMAGE=${TSR_FW_TEST_ELF_fw_no_mulmat}"
+    PASS_REGULAR_EXPRESSION "does not provide the MUL_MAT kind")
+
 # Verilated U200 kernel (RTL) through the vkernel kdev: a few shapes on k4t1. Opt-in; until the
 # two-clock vkernel server exists (P5.3, docs/design/06-software-verification.md §11) the
 # transport has no vkernel device to run on, so the test is reported as skipped (exit 77) when the

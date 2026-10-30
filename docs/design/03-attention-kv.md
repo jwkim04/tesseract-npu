@@ -489,7 +489,7 @@ of the repacked row (VU §5.6), simulator from M6, RTL in M8.
 
 ### 5.10 CAPS, CFG3, units
 
-- `CAPS` bit5 ATT (EX): all seven AT ops are present. Bits 12–15 are reserved for AT and 0 at format version 2.0.
+- `CAPS` bit5 ATT (EX): all seven AT ops are present. Bits 12–15 are reserved for AT and 0 at Tesseract Core capability 1.0.
 - `CFG3[31:16]` = PCAP / 16 (U200 T_MAX 8: 584).
 - **Units.** KVST is in the DMA class (unit 0). ATTQK and ATTPV are in the MVM class (unit 2).
   ASMAX, AMASK, AMERGE and ANORM are in the VU class (unit 3); the VU executes them (VU §5.11,

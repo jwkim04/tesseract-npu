@@ -228,25 +228,7 @@ static bool tsr_plan_ok(const tsr_build_env & env, const tsr_rec & r, std::strin
     return true;
 }
 
-const char * tsr_kind_name(uint32_t kind) {
-    switch (kind) {
-        case opl::K_NOP:         return "NOP";
-        case opl::K_JOIN:        return "JOIN";
-        case opl::K_MUL_MAT:     return "MUL_MAT";
-        case opl::K_ADD:         return "ADD";
-        case opl::K_MUL:         return "MUL";
-        case opl::K_SCALE:       return "SCALE";
-        case opl::K_RMS_NORM:    return "RMS_NORM";
-        case opl::K_GLU:         return "GLU";
-        case opl::K_ROPE:        return "ROPE";
-        case opl::K_GET_ROWS:    return "GET_ROWS";
-        case opl::K_SET_ROWS_KV: return "SET_ROWS_KV";
-        case opl::K_FLASH_ATTN:  return "FLASH_ATTN";
-        case opl::K_CPY:         return "CPY";
-        case opl::K_UNARY:       return "UNARY";
-        default:                 return "?";
-    }
-}
+const char * tsr_kind_name(uint32_t kind) { return opl::kind_name(kind); }
 
 // ---------------------------------------------------------------------------------------------
 // Lowering, one function per kind (SW §7.2 argument words; the ggml semantics they implement)
@@ -758,6 +740,9 @@ bool tsr_lower_m7(const tsr_build_env & env, bool probe, const ggml_tensor * nod
         case GGML_OP_UNARY:          ok = tsr_lower_unary(env, probe, node, out, why); break;
         default:
             return tsr_fail(why, "op %s has no device kind", ggml_op_desc(node));
+    }
+    if (ok && !tsr_kind_in_image(env.kinds, out->kind)) {   // SW §6.9: a kind the booted image lacks
+        return tsr_fail(why, "kind %s is not in the booted image (%s)", tsr_kind_name(out->kind), env.image.c_str());
     }
     return ok && tsr_plan_ok(env, *out, why);
 }

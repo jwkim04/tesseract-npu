@@ -24,6 +24,10 @@
 // one row or a dense run, within half the budget: LD, ST (2 pushes).
 #include "k_elem.hpp"
 
+// The op list kinds this source handles (SW §6.9: .tsr_kinds entries at tsr/opl.hpp kind_rev).
+TSR_KIND(GET_ROWS);
+TSR_KIND(CPY);
+
 namespace tsr {
 
 namespace ek {

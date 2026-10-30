@@ -46,7 +46,7 @@ uint32_t H(uint32_t ch, uint64_t beat) { return (ch << 28) | uint32_t(beat & 0x0
 uint32_t L16(uint32_t n) { return (n + 15u) / 16u; }
 
 tsr_config cfg_u200(uint32_t spm_bytes = 4u << 20) {
-    tsr_config c = TSR_CONFIG_U200_V1;
+    tsr_config c = TSR_CONFIG_U200;
     c.t_max = 8;
     c.spm_bytes = spm_bytes;
     c.ch_bytes = 1ull << 28;

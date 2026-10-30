@@ -265,7 +265,7 @@ static const uint32_t k_ro[] = {
 static void test_regs(void) {
     tsr_sim * s = mk();
     const uint32_t id = RD(s, TSR_CSR_DBG_ID);
-    CHECK(TSR_GET(id, TSR_DBG_ID_VERSION) == 2 && (id & TSR_DBG_ID_HIST) && (id & TSR_DBG_ID_TRW) && (id & TSR_DBG_ID_RVWP) &&
+    CHECK(TSR_GET(id, TSR_DBG_ID_VERSION) == 1 && (id & TSR_DBG_ID_HIST) && (id & TSR_DBG_ID_TRW) && (id & TSR_DBG_ID_RVWP) &&
           (id & TSR_DBG_ID_REC) && TSR_GET(id, TSR_DBG_ID_NTBP) == 4 && TSR_GET(id, TSR_DBG_ID_NRVWP) == 2 &&
           TSR_GET(id, TSR_DBG_ID_LOG2_HIST) == 9, "DBG_ID 0x%08x", id);
     // CTL_ID.DM needs the DM model behind DBG's DMI window too (W1b fix; test_dmi_gate checks both ways)

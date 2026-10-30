@@ -21,7 +21,7 @@
 // Configs
 // ---------------------------------------------------------------------------
 static inline tsr_config cfg_u200(uint32_t t_max) {
-    tsr_config c = TSR_CONFIG_U200_V1;
+    tsr_config c = TSR_CONFIG_U200;
     c.t_max = t_max;
     return c;
 }

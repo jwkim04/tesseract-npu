@@ -14,7 +14,8 @@
 //                       alignment from the tensor's address or view offset) followed by the kind's
 //                       planner (tsr/plan.hpp plan_kind, SW-20), so the host refuses exactly what
 //                       the firmware cannot plan and what the builder cannot encode.
-//   tsr_build_supports  supports_op for every op but MUL_MAT (whose rules stay the backend's).
+//   tsr_build_supports  supports_op for every op but MUL_MAT (whose rules stay the backend's); a kind
+//                       the booted image does not provide is refused (env.kinds, SW §6.9).
 //   tsr_build_fusion    pass 3: MUL_MAT + ADD of a bias or the residual (through the MUL_MAT
 //                       addend, SW §7.4) and RMS_NORM + MUL by a weight (the fused weight word).
 //   tsr_encode          passes 4-6 for one record: preload entries (deduplicated per list, the
@@ -83,6 +84,12 @@ struct tsr_build_env {
     tsr::plan::dev_cfg     cfg = {};     // the device (tsr_plan_cfg)
     tsr::plan::plan_limits pl = {};      // plan_limits_of(cfg): what the firmware plans against
     uint32_t num_ch = 1;
+    // The op list kinds the booted image provides (SW §6.9: bit k set iff its .tsr_kinds has kind k;
+    // TSR_KINDS=m6 keeps NOP, JOIN and MUL_MAT) and the image named in the reason of a refusal
+    // ("Tesseract Basis 0.1.0, image <id>"). A record of another kind (or any record when JOIN is
+    // missing) is refused while lowering, in probe and build mode.
+    uint64_t kinds = ~0ull;
+    std::string image;
 
     // Build mode: where the device addresses the tensor's bytes in place (a compute buffer's window
     // in IO or the compute heap; a raw tensor of a weight buffer in AUX or the heap). False when it
@@ -174,5 +181,10 @@ uint32_t tsr_encode(tsr_opl_builder & b, tsr_rec & r, int32_t tag, const tsr_fan
 // mixed into a 64-bit hash with `salt` (the backend's placement epoch). Values are not part of it.
 uint64_t tsr_graph_key(const ggml_cgraph * cg, uint64_t salt);
 
-// Name of a kind for logs and statistics ("MUL_MAT", "FLASH_ATTN", ...).
+// Name of a kind for logs and statistics ("MUL_MAT", "FLASH_ATTN", ...): tsr/opl.hpp kind_name.
 const char * tsr_kind_name(uint32_t kind);
+
+// The booted image provides kind (and JOIN, which every list may need): env.kinds (SW §6.9).
+inline bool tsr_kind_in_image(uint64_t kinds, uint32_t kind) {
+    return kind < tsr::opl::N_KINDS && ((kinds >> kind) & 1u) != 0 && ((kinds >> tsr::opl::K_JOIN) & 1u) != 0;
+}

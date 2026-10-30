@@ -1,0 +1,19 @@
+# sw/ctrl/tests/kind_revs.txt — the numerics revision of every op list kind and the digest of its
+# outputs on test_fw_kind_revs's fixed corpus (ctest fw_kind_revs; docs/design/06-software-
+# verification.md §6.9, SW-54). Written by `test_fw_kind_revs tsr-fw.elf kind_revs.txt --update` after
+# a deliberate revision bump in tsr/opl.hpp kind_rev, together with a CHANGELOG "Unreleased" line.
+# kind  name         rev  digest (FNV-1a 64: DONE status / RET and every output region, per launch)
+0x00  NOP          1    29034675a49f07c2
+0x01  JOIN         1    29034675a49f07c2
+0x10  MUL_MAT      1    e3ee2265e76d2173
+0x11  ADD          1    5bbe1519a26d9bb7
+0x12  MUL          1    0351b11ec1d19ae6
+0x13  SCALE        1    be3265723732fbc4
+0x14  RMS_NORM     1    a1e622ff76e3469f
+0x15  GLU          1    8192bd8c319ddf77
+0x16  ROPE         1    be2cce2dc5cb965e
+0x17  GET_ROWS     1    6a5ab0f714f8665d
+0x18  SET_ROWS_KV  1    09cbfa2d937f5782
+0x19  FLASH_ATTN   1    8102aefbfe9cdb64
+0x1a  CPY          1    13765fbcaffb74ae
+0x1b  UNARY        1    96c49683d0a034dd

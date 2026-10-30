@@ -19,7 +19,7 @@ System structure): the core sees only its CSR port and one memory port per chann
 | Control protocol | `ap_ctrl_none`, `interrupt="false"`; the host reads and writes registers | same; fallback `ap_ctrl_hs` with `interrupt="false"`, never started (EX §9.1) |
 | Kernel arguments | `ch<c>` at 0x040 + 8c | same |
 | Channel bases | used live from the registers | latched at the rising edge of `ADAPTER_CTRL.MEM_EN`, locked while set |
-| `ADAPTER_VERSION` | `{16'h0001, 8'h00, NUM_CH}` | `{16'h0002, 8'h00, NUM_CH}` |
+| `ADAPTER_VERSION` | `{16'h0001, 8'h00, NUM_CH}` | unchanged |
 | Clocks | `ap_clk` | `ap_clk` and `ap_clk_2` / `ap_rst_n_2` (control core clock `clk_rv`) |
 | Core boundary | no `done`; the core issues no memory request | `clk_rv`, `rst_rv_n`, `plat_err_i`, `host_irq_o` (unconnected on the U200) |
 | xclbin build | k1 and k4 stop with exit status 4; the M0 kernel builds | k1 and k4 enabled |
@@ -89,7 +89,7 @@ OKAY. RW registers honour WSTRB. The tree column is `tsr_xrt_ctrl.sv`; the last 
 | 0x040 + 8c | `ch<c>_base` lo / hi | RW (c < NUM_CH) | device byte address of beat 0 of channel c; the host writes a 4 KiB-aligned address; the bridge uses the register value as written (no latch, no refusal of a misaligned base; the bridge only asserts the alignment in simulation) | written while `MEM_EN` = 0; a write while `MEM_EN` = 1 is ignored and sets `BASE_LOCKED` |
 | 0x0E0 | `ADAPTER_CTRL` | RW | not implemented (reads 0) | bit0 `MEM_EN`: at its rising edge every base is checked for 4 KiB alignment and latched into the bridges (else `MEM_EN` stays 0 and `ADAPTER_STATUS` bit3 is set); core memory requests are held, not dropped, while it is 0 (`REQ_HELD`) |
 | 0x0F0 | `ADAPTER_STATUS` | R / W1C, sticky | bit0 RRESP error, bit1 BRESP error, bit2 response with no outstanding request for its ID; bit3 reads 0; bits [31:16] saturating count of error responses (R beats and B responses with RRESP / BRESP not OKAY). W1C: a 1 in bit k (k < 3) clears bit k; a 1 anywhere in bits [31:16] clears the count (0xFFFFFFFF clears everything). An event in the same cycle wins over the clear | bit3 base not 4 KiB aligned at the `MEM_EN` edge, bit4 `REQ_HELD`, bit5 `BASE_LOCKED` (W1C for bits k < 6) |
-| 0x0F4 | `ADAPTER_VERSION` | R | `{16'h0001, 8'h00, NUM_CH}` | `{16'h0002, 8'h00, NUM_CH}` |
+| 0x0F4 | `ADAPTER_VERSION` | R | `{16'h0001, 8'h00, NUM_CH}`: major from `tsr_tables_pkg::TSR_ADAPTER_MAJOR` | unchanged |
 | 0x1000 + off | core CSR window | | `off` < 0x1000 passes to the core CSR port at any time. Writes need WSTRB = 0xF (the CSR port has no byte enables; partial writes are dropped, still OKAY) | unchanged; the map behind it is EX §5 |
 
 Access latency (measured in RTL simulation, ideal AXI4-Lite master, cycles from the
@@ -737,8 +737,8 @@ passes; `rtl/platform/alveo_xrt/bw/lint.sh` is clean too (both run for this docu
 
 ## 11. Host software notes
 
-- Open: read `ADAPTER_VERSION` first (major 2, `[7:0]` = NUM_CH, cross-checked against the number of
-  channel buffers bound), then ID, VERSION (major 2), CFG0-3, CAPS, CTL_ID and RV_FREQ through the
+- Open: read `ADAPTER_VERSION` first (major 1, `[7:0]` = NUM_CH, cross-checked against the number of
+  channel buffers bound), then ID, VERSION (capability major 1), CFG0-3, CAPS, CTL_ID and RV_FREQ through the
   window (`docs/xrt-host.md` §3).
 - Bind: write `ch<c>_base` (4 KiB aligned; XRT buffers are) while `MEM_EN` = 0, then set
   `ADAPTER_CTRL.MEM_EN` and check that it reads back 1 (EX §9.2). The tree has no `MEM_EN` yet: the
@@ -1042,7 +1042,7 @@ are done and unchanged. The remaining steps:
 1. **xclbin.** Y5 links k1 first (T4, the fast link) and then k4 (T3). The first smoke link confirms
    `ap_ctrl_none` (§12). `hw/u200/build_xclbin.sh k1|k4` is enabled by the same change.
 2. **Selftest.** `tsr-selftest --device xrt` with `TSR_XCLBIN=<xclbin>` (`docs/xrt-host.md` §5).
-   Pass: identity (ADAPTER_VERSION major 2, ID, VERSION major 2, CTL_ID, RV_FREQ not 0), memory per
+   Pass: identity (ADAPTER_VERSION major 1, ID, Tesseract Core capability 1.x, CTL_ID, RV_FREQ not 0), memory per
    channel, boot (cold, then a second boot that must be warm), PING round trip and rate, the `selftest` kernel against the shadow
    simulator, trace replays through the `replay` kernel, the DMI smoke (`--debug`).
 3. **M6 gate** (SW §10.4): the selftest, Qwen2.5-0.5B Q8_0 logits bit-identical to the simulator

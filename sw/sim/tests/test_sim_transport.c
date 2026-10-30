@@ -40,7 +40,7 @@ static void test_open_and_config(void) {
     if (!t) return;
     CHECK(strcmp(tsr_transport_name(t), "sim") == 0, "name");
     const tsr_config * c = tsr_transport_config(t);
-    const tsr_config u = TSR_CONFIG_U200_V1;
+    const tsr_config u = TSR_CONFIG_U200;
     CHECK(c->num_ch == u.num_ch && c->lanes == u.lanes && c->t_max == 1 && c->k_max == u.k_max &&
           c->spm_bytes == u.spm_bytes && c->vl == u.vl && c->nsreg == u.nsreg && c->ch_bytes == u.ch_bytes &&
           c->beat_bits == 512 && c->caps == tsr_sim_caps_implemented() && (c->caps & TSR_CAPS_VU),
@@ -48,7 +48,8 @@ static void test_open_and_config(void) {
     CHECK(tsr_transport_csr_read(t, TSR_CSR_CAPS) == c->caps && tsr_transport_csr_read(t, TSR_CSR_CTL_ID) != 0 &&
           tsr_transport_csr_read(t, TSR_CSR_RV_FREQ) != 0, "CAPS, CTL_ID, RV_FREQ through the CSR port");
     CHECK(tsr_transport_csr_read(t, TSR_CSR_ID) == TSR_ID_MAGIC, "csr read");
-    CHECK(tsr_transport_csr_read(t, TSR_CSR_VERSION) >> 8 == TSR_ISA_MAJOR && TSR_ISA_MAJOR == 2, "ISA major 2");
+    CHECK(tsr_transport_csr_read(t, TSR_CSR_VERSION) >> 8 == TSR_ISA_MAJOR && TSR_ISA_MAJOR == 1,
+          "Tesseract Core capability major 1");
     CHECK(tsr_transport_csr_read(t, TSR_CSR_PERF_BASE + 8 * TSR_PERF_RETIRED) == 0, "perf readable, 0 without ops");
     // DRAM access bounds
     uint8_t buf[256];

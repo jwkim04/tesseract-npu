@@ -95,6 +95,7 @@ FUNCS_SV = HDL / "tsr_fp_funcs_tb.sv"
 SWEEP_SV = HDL / "tsr_fp_sweep_tb.sv"
 DEFAULTS_SV = HDL / "tsr_fp_defaults_tb.sv"
 PKG_SV = REPO / "rtl" / "core" / "tsr_pkg.sv"   # only for the default-LAT check
+TABLES_SV = REPO / "rtl" / "core" / "tsr_tables_pkg.sv"   # tsr_pkg takes the VERSION fields from it
 SWEEP_CPP = REPO / "tb" / "fp" / "cpp" / "fp_sweep.cpp"
 OOC_TCL = REPO / "tb" / "fp" / "viv" / "fp_ooc.tcl"
 MUL_LAT_U200 = 4          # tsr_fp_mul default LAT: the 300 MHz U200 configuration
@@ -999,7 +1000,7 @@ def test_fp_lint():
                            capture_output=True, text=True)
         assert p.returncode == 0, "lint %s %s:\n%s" % (top, args, p.stderr)
     p = subprocess.run([vl, "--lint-only", "-Wall", "--top-module", "tsr_fp_defaults_tb",
-                        str(PKG_SV)] + [str(f) for f in FP_SOURCES] + [str(DEFAULTS_SV)],
+                        str(TABLES_SV), str(PKG_SV)] + [str(f) for f in FP_SOURCES] + [str(DEFAULTS_SV)],
                        capture_output=True, text=True)
     assert p.returncode == 0, "lint tsr_fp_defaults_tb:\n%s" % p.stderr
 
@@ -1029,7 +1030,7 @@ def test_fp_add(lat):
 def test_fp_default_lats():
     """tsr_pkg::TSR_DEF_FMUL_LAT / TSR_DEF_FADD_LAT = the measured default LAT of tsr_fp_mul /
     tsr_fp_add = MUL_LAT_U200 / ADD_LAT_U200 (cocotb fp_defaults)."""
-    run("tsr_fp_defaults_tb", __name__, sources=[PKG_SV] + FP_SOURCES + [DEFAULTS_SV],
+    run("tsr_fp_defaults_tb", __name__, sources=[TABLES_SV, PKG_SV] + FP_SOURCES + [DEFAULTS_SV],
         testcase="fp_defaults")
 
 

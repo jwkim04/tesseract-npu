@@ -120,9 +120,10 @@ A static RV32 ELF (no relocations), built by the SDK of SW / CC (`docs/ctrl-risc
 - `.tsr_kernels`: the kernel table. The **kernel index** in a descriptor is the position in this
   table (0-based). SW defines the entry format (`docs/ctrl-riscv.md:1165-1167`: name hash, entry,
   nargs, flags with bit0 = argument block, name).
-- `.note.tsr`: SDK ABI version, required control-core version (`CTL_ID[7:0]`), minimum ITCM and
-  DTCM sizes, required `CAPS` bits. The host refuses an image whose requirements the device does
-  not meet, before loading it.
+- `.note.tsr`: Basis ABI, the Tesseract Core capability the image needs (`cap_min`, §7.5), minimum
+  ITCM and DTCM sizes, required `CAPS` bits, the Tesseract Basis version (SW §6.2, §6.9). The host
+  refuses an image whose requirements the device does not meet, before loading it.
+- `.tsr_kinds`: the op list kinds the image provides with their numerics revisions (SW §6.9).
 - `.tsr_id`: 8 bytes in a DTCM `PT_LOAD` segment, holding the image id (§3.2).
 
 ### 3.2 Image id
@@ -178,8 +179,9 @@ RV_BOOT := vector table base (256-byte aligned, normally 0)
 
 `CTRL.RV_RUN` := 1. The RISC-V leaves reset and fetches at `RV_BOOT` + 0x80
 (`docs/ctrl-riscv.md:1014-1015`). crt0 and the runtime boot (§4.7 R1) end with a HELLO event. The
-host consumes it within `TSR_BOOT_MS` (default 2,000 ms) and checks four things: the image id,
-the SDK ABI version, the kernel count, and that no other record came first.
+host consumes it within `TSR_BOOT_MS` (default 2,000 ms) and checks: the image id, the Basis ABI,
+the kind table signature, the kernel count, the Tesseract Basis version (SW §6.9), and that no other
+record came first.
 
 ### 3.5 Warm restart
 
@@ -281,9 +283,9 @@ SEQ[7:0]. With r0 alone the host can classify a record and match it to a launch.
 | r1 | SEQ of the answered descriptor | SEQ | TAKEN at the post | SEQ (answer) or TAKEN | SEQ of the running launch |
 | r2 | RET: kernel return value (int32) | ARG0 echo | image id [31:0] | `mcause` | kernel-defined |
 | r3 | first failing ticket; 0xF000_0000 = none | 0 | image id [63:32] | `mepc` | kernel-defined |
-| r4 | its `ERR_INFO` | 0 | [15:0] SDK ABI, [31:16] runtime version | `mtval` | kernel-defined |
+| r4 | its `ERR_INFO` | 0 | [15:0] Basis ABI, [31:16] kind table signature (SW §6.9) | `mtval` | kernel-defined |
 | r5 | its `ERR_W0` | 0 | kernel count | `RT_STATE` at the trap | kernel-defined |
-| r6 | its `ERR_PIDX` | 0 | 0 | `RT_INFO` | kernel-defined |
+| r6 | its `ERR_PIDX` | 0 | Tesseract Basis version: [23:16] major, [15:8] minor, [7:0] patch (SW §6.9) | `RT_INFO` | kernel-defined |
 | r7 | DURATION: core cycles from the pop to the post, saturating at 2^32 − 1 | same | boot core cycles | MTIME[31:0] | kernel-defined |
 
 **Launch STATUS** (r0[15:8] of DONE):
@@ -493,13 +495,13 @@ their registers inside it, and the RISC-V reads it through CC's core window (CC 
 | Offset | Name | Access | Content | Owner |
 |---|---|---|---|---|
 | 0x000 | `ID` | R | 0x5453_5231 "TSR1" | EX |
-| 0x004 | `VERSION` | R | [15:8] ISA major = **2**, [7:0] minor = 0 | EX |
+| 0x004 | `VERSION` | R | Tesseract Core capability (§7.5): [15:8] major = **1**, [7:0] minor = 0 | EX |
 | 0x008 | `CFG0` | R | NUM_CH[7:0], LANES[19:8], T_MAX[23:20] | EX |
 | 0x00C | `CFG1` | R | SPM size in lines | EX |
 | 0x010 | `CFG2` | R | VL[7:0], NSREG[15:8], K_MAX/256[31:16] | EX |
 | 0x014 | `CAPS` | R | §7.5 | EX |
 | 0x018 | `CFG3` | R | [15:0] defined by VU, [31:16] defined by AT; 0 until they are assigned | VU, AT |
-| 0x01C | `CTL_ID` | R | [7:0] control-core version (2), bit8 debug module, bit9 completion records, bit10 SPM bridge, bit11 log ring, bit12 watchdog, bit13 SBA connected, bit14 SPM line-buffered alias | EX, CC |
+| 0x01C | `CTL_ID` | R | [7:0] control-core revision (1; 0 = no control core: the host refuses the device), bit8 debug module, bit9 completion records, bit10 SPM bridge, bit11 log ring, bit12 watchdog, bit13 SBA connected, bit14 SPM line-buffered alias | EX, CC |
 | 0x020 | `CTRL` | RW / W1 | §5.2 | EX |
 | 0x024 | `STATUS` | R / W1C | §5.3 | EX |
 | 0x028 | `RV_BOOT` | RW | boot vector, 256-byte aligned ([7:0] read 0); taken when `RV_RUN` rises (was `CTL_BOOT`) | CC |
@@ -758,8 +760,18 @@ requirement: `SOFT_RESET` does not change it, and a hardware reset sets it to +0
 
 ### 7.5 `VERSION`, `CAPS`, `CFG3`
 
-- `VERSION` = 0x0000_0200 (ISA major 2, minor 0). A tool built for another ISA major fails at the
-  ISA-major check (`docs/xrt-host.md:72-74`).
+- `VERSION` = 0x0000_0100: the **Tesseract Core capability** 1.0 ([15:8] major, [7:0] minor,
+  [31:16] 0), the compute-capability number of the hardware contract (SW §6.9). The host requires
+  the same major and accepts any minor at open; an image names the capability it needs in
+  `.note.tsr` (`cap_min`: same major, device minor ≥ its minor) and is refused before loading
+  otherwise. The hardware owner bumps it in `sw/tables/tsr_tables.py` (`ISA_MAJOR` / `ISA_MINOR`) in
+  the change that alters the RTL and the simulator: **major** for an incompatible change of the
+  hardware contract (an instruction encoding, a CSR / LQ / LCQ / record field the software relies
+  on, a removed opcode, any tile op's result bits for the same inputs, a smaller control-core ISA);
+  **minor** for a backward-compatible addition present in every configuration of that minor (an
+  opcode or unit, a CSR field, a control-core ISA extension the compiler may target). An optional
+  per-configuration feature is a `CAPS` bit, never a minor; the `CFG0`–`CFG3` parameters are
+  configuration, not capability. Shown as "Tesseract Core 1.0 (VU ATT)".
 - `CAPS`: bit0 VU (VOP, RED, ROPE, SOP present), bit1 0, bit2 retired, bit3 TOPK (RTL from M8),
   bit4 retired, **bit5 ATT** (the seven AT ops are present), **bit6 DQROW** (RTL from M8), bit7
   VMASK (M9), bits 8–11 reserved for VU, bits 12–15 reserved for AT, bits 16–31 0. Retired bits are
@@ -926,7 +938,7 @@ module follows the hardware reset only, so a debugger stays attached.
 | 0x040 + 8c | `ch<c>_base` lo / hi | RW | device byte address of the channel-c buffer; 4 KiB aligned. Written while `MEM_EN` = 0; a write while `MEM_EN` = 1 is ignored and sets `BASE_LOCKED` |
 | 0x0E0 | `ADAPTER_CTRL` | RW | bit0 `MEM_EN`. Rising edge: if every base is 4 KiB aligned, latch all bases into the bridges and set `MEM_EN`; otherwise stay 0 and set `ADAPTER_STATUS` bit3. While `MEM_EN` = 0, core memory requests are held (not forwarded, not dropped) and set bit4 |
 | 0x0F0 | `ADAPTER_STATUS` | R / W1C sticky | bits 0–2 and [31:16] as in `docs/platform-u200.md` §2; bit3 means "base misaligned at `MEM_EN`"; **bit4 `REQ_HELD`**, **bit5 `BASE_LOCKED`** |
-| 0x0F4 | `ADAPTER_VERSION` | R | {16'h0002, 8'h00, NUM_CH} |
+| 0x0F4 | `ADAPTER_VERSION` | R | {16'h0001, 8'h00, NUM_CH}: adapter major 1 (the host requires it) |
 | 0x1000 + off | core CSR window | | off < 0x1000, any time, writes need WSTRB = 0xF |
 
 The transport clears `MEM_EN` only when the core is idle (after `SOFT_RESET`). Outstanding
@@ -1122,10 +1134,14 @@ the user's delegation (2026-10-30).
     other. The map fits 4 KiB with 1.25 KiB still reserved, so `s_axi_control` and the CSR port
     need no wider address.
 - **EX-12 Identity.**
-  - *Choice:* `ID` is "TSR1"; `VERSION` is 0x0000_0200 (ISA major 2); `ADAPTER_VERSION` is 2.
-  - *Alternatives:* a different magic number.
-  - *Rationale:* `ID` names the core family and `VERSION` carries the ISA. Host open code fails
-    cleanly on a major mismatch (`docs/xrt-host.md:72-74`).
+  - *Choice:* `ID` is "TSR1"; `VERSION` is the Tesseract Core capability, 0x0000_0100 (1.0);
+    `CTL_ID[7:0]` is 1 (0: no control core); `ADAPTER_VERSION` major is 1 (SW §6.9, SW-54).
+  - *Alternatives:* a different magic number; a separate control-core version that images compare
+    with; one product version in `VERSION` for hardware and software together.
+  - *Rationale:* `ID` names the core family and `VERSION` carries the capability. Host open code
+    fails cleanly on a major mismatch. A core without the control core reads `CTL_ID` = 0, which the
+    host refuses right after `VERSION`, before any write, so no version number has to tell such a
+    bitstream apart.
 - **EX-13 PERF semantics.**
   - *Choice:* one counter space, gated by ACTIVE (time counters also by ¬QHALT). `SOFT_RESET`
     zeroes it. The split counters `MVM_WAIT` and `MVM_EMPTY` count idle time by cause.

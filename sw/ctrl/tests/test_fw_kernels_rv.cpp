@@ -291,7 +291,7 @@ bool run_scheds(suite & s, uint32_t n_sched, uint32_t threads) {
 // Suites
 // ---------------------------------------------------------------------------
 tsr_config base_cfg(uint32_t spm_bytes, uint64_t ch_bytes) {
-    tsr_config c = TSR_CONFIG_U200_V1;
+    tsr_config c = TSR_CONFIG_U200;
     c.t_max = 8;
     c.spm_bytes = spm_bytes;
     c.ch_bytes = ch_bytes;

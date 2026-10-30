@@ -52,6 +52,9 @@
 #include "k_fast.hpp"
 #include "tsr/plan.hpp"
 
+// The op list kinds this source handles (SW §6.9: .tsr_kinds entries at tsr/opl.hpp kind_rev).
+TSR_KIND(ROPE);
+
 namespace tsr {
 
 // The kind handler (exec.hpp kind_fn; registered in graph.cpp's kind table).

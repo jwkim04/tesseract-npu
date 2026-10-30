@@ -320,7 +320,7 @@ registers `CFG_*`. The U200 values are:
 
 The rows from `ITCM_BYTES` on are design values (designed).
 
-The control-core parameters are not placed in `CFG_*` (EX §5.1). The control-core version and
+The control-core parameters are not placed in `CFG_*` (EX §5.1). The control-core revision and
 features are read from `CTL_ID` (0x01C), the TCM sizes from `RV_CFG` (0x030), the clock from
 `RV_FREQ` (0x02C) and the queue depth of each unit from `Q_DEPTH` (0x088). Control-core software
 sees the free space of a queue in `ISSUE_CREDIT`.
@@ -842,7 +842,7 @@ image id `.tsr_id` (the first 8 bytes of the SHA-256 of the `PT_LOAD` segments a
 `uint64`, defined in EX §3.2). Loading happens while `RV_RUN` = 0: each segment is written with
 `LOAD_ADDR` and `LOAD_DATA` words, the receiver's CRC-32 (`LOAD_CRC`, zlib `crc32`) is checked, and
 `LOAD_CTRL.VERIFY` reads the TCM back and checks its CRC. Boot is `CTRL.RV_RUN` = 1; the control core
-starts at `RV_BOOT` + 0x80 and posts a HELLO record (image id, SDK ABI, number of kernels). After a
+starts at `RV_BOOT` + 0x80 and posts a HELLO record (image id, Basis ABI, kind table signature, number of kernels, Tesseract Basis version). After a
 TRAP, or when the same image is still resident, a warm restart is used: `SOFT_RESET`, reload of the
 DTCM segments, ITCM VERIFY (reloading only segments that differ) and then boot.
 
@@ -876,8 +876,8 @@ DTCM segments, ITCM VERIFY (reloading only segments that differ) and then boot.
 offset reads 0 and ignores writes, and every access completes within a bound even without `clk_rv`.
 The blocks are:
 
-- 0x000–0x03C: `ID` (0x5453_5231 "TSR1"), `VERSION` (format version 2.0 = 0x0000_0200; a host tool
-  with a different major version rejects the device when it opens it), `CFG0`–`CFG2`,
+- 0x000–0x03C: `ID` (0x5453_5231 "TSR1"), `VERSION` (Tesseract Core capability 1.0 = 0x0000_0100; a host tool
+  with a different major rejects the device when it opens it), `CFG0`–`CFG2`,
   `CAPS`, `CFG3` (VU lane count, PCAP/16 of AT), `CTL_ID`, `CTRL` (0x020), `STATUS` (0x024),
   `RV_BOOT`, `RV_FREQ`, `RV_CFG`, `WDOG_CFG`, `RT_STATE`, `RT_INFO`.
 - 0x040–0x09C: the LQ staging words `LQ_W0`–`7` and `LQ_PUSH`, the sequence numbers (`LQ_SEQ`,
@@ -949,14 +949,14 @@ debugger cannot break the XRT scheduler. The only kernel arguments are the chann
 (base address at 0x040 + 8c). `ADAPTER_CTRL` (0x0E0) bit 0 `MEM_EN` checks the 4 KiB alignment of all base
 addresses when it is set and latches them in the bridges; while it is set, writes to a base address
 are ignored (`BASE_LOCKED`). While `MEM_EN` = 0 the memory requests of the core are held, not dropped
-(`REQ_HELD`). `ADAPTER_STATUS` (0x0F0) and `ADAPTER_VERSION` (0x0F4, format version 2) are the adapter's own
+(`REQ_HELD`). `ADAPTER_STATUS` (0x0F0) and `ADAPTER_VERSION` (0x0F4, major 1) are the adapter's own
 state, and the whole core CSR space is always visible in the window at 0x1000 + offset (the debug
 block at 0x1800–0x1AFC). The memory bridges and the reset scheme are those of
 [`docs/platform-u200.md`](platform-u200.md) §4–§5. The control core receives a second clock
 `ap_clk_2` (planning value 166.7 MHz). Whether v++ 2024.2 accepts an `ap_ctrl_none` RTL kernel with
 `m_axi` arguments is confirmed at the first smoke link; if it does not, the kernel is declared
 `ap_ctrl_hs` but still never run with `xrt::run` (EX §9.1). The tree holds the register-only adapter
-of the X0 state; `MEM_EN`, `ADAPTER_VERSION` = 2, `ap_clk_2` and `plat_err_i` are designed.
+of the X0 state; `MEM_EN`, `ap_clk_2` and `plat_err_i` are designed (`ADAPTER_VERSION` stays major 1).
 
 ## 11. ISA
 

@@ -8,10 +8,13 @@
  *   BIG_TEXT    82 KiB more code: over SW §7.8's 80 KiB ITCM budget
  *   BAD_START   _start at +0x84                 -> link.ld ASSERT (reset entry)
  *   BAD_KT      a 4-byte .tsr_kernels fragment  -> link.ld ASSERT (whole entries)
+ *   BAD_KINDS   a 2-byte .tsr_kinds fragment    -> link.ld ASSERT (whole entries)
+ *   NO_DEFSYM   (build.cmake: linked without the version --defsym) -> undefined __tsr_* in the note
  *   BAD_DBG     a 32-byte .tsr_dbg              -> link.ld ASSERT (DB §6.3 size)
  *   BIG_BSS     a 60 KiB .bss                   -> DTCM overflow into the stacks
  * Kernel hashes are FNV-1a 32 of the names (computed outside: graph 0xb9780647, selftest
- * 0x9692f9c3, replay 0xd0500bd2, k_alpha 0x18133c51, k_beta 0x59a73f25).
+ * 0x9692f9c3, replay 0xd0500bd2, k_alpha 0x18133c51, k_beta 0x59a73f25). The kind table declares
+ * MUL_MAT, NOP and JOIN at revision 1, in that order (any order is valid; signature 0x512e).
  */
     .section .vectors, "ax", @progbits
     .option push
@@ -81,6 +84,19 @@ k_beta:     li a0, 4
 #ifdef BAD_KT
     .section .tsr_kernels.9.junk, "aw"
     .word   0
+#endif
+
+/* Kind table entries (SW §6.2): kind, revision, 0 (tsr/rt.hpp TSR_KIND). */
+    .section .tsr_kinds, "aw"
+    .p2align 2
+    .byte   0x10, 1
+    .half   0
+    .byte   0x00, 1
+    .half   0
+    .byte   0x01, 1
+    .half   0
+#ifdef BAD_KINDS
+    .half   0
 #endif
 
     .section .tsr_id, "aw"

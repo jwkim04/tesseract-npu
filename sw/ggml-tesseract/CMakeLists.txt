@@ -110,6 +110,25 @@ if (TARGET ggml AND TARGET ggml-tesseract)
     add_test(NAME ggml_tesseract_scalar_nmse COMMAND test-tsr-scalar-nmse)
     set_tests_properties(ggml_tesseract_scalar_nmse PROPERTIES ENVIRONMENT "TSR_SIM_RACE=fatal")
 
+    # SW §6.9 versions: the description and the versions hook on tsr-fw.elf (full); a subset image
+    # (fw_exec_ref: NOP, JOIN, MUL_MAT) and TSR_KINDS=m6 route MUL_MAT only, the ADD of two MUL_MAT
+    # results runs on the CPU (subset, m6; on the device with the full image); an image older than this
+    # backend's Tesseract Basis (fw_basis_old, 0.0.5) is not opened (old). The expected numbers are
+    # derived from tsr/version.h, tsr_tables.h and tsr/opl.hpp.
+    add_executable(test-tsr-versions tests/test-tsr-versions.cpp)
+    target_link_libraries(test-tsr-versions PRIVATE ggml ggml-base ggml-cpu)
+    target_include_directories(test-tsr-versions PRIVATE ${TESSERACT_ROOT}/sw/transport ${TESSERACT_ROOT}/sw/sim/include
+                               ${TESSERACT_ROOT}/sw/ctrl/include)
+    target_compile_features(test-tsr-versions PRIVATE cxx_std_17)
+    target_compile_options(test-tsr-versions PRIVATE -Wall -Wextra)
+    set_target_properties(test-tsr-versions PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    add_test(NAME ggml_tesseract_versions_full COMMAND test-tsr-versions full)
+    add_test(NAME ggml_tesseract_versions_subset COMMAND test-tsr-versions subset ${TSR_FW_TEST_ELF_fw_exec_ref})
+    add_test(NAME ggml_tesseract_versions_m6 COMMAND test-tsr-versions m6)
+    add_test(NAME ggml_tesseract_versions_old COMMAND test-tsr-versions old ${TSR_FW_TEST_ELF_fw_basis_old})
+    set_tests_properties(ggml_tesseract_versions_full ggml_tesseract_versions_subset ggml_tesseract_versions_m6
+                         ggml_tesseract_versions_old PROPERTIES TIMEOUT 120 ENVIRONMENT "TSR_SIM_RACE=fatal")
+
     # W3b kv: SW §10.2 ggml_tesseract_attn: KV buffers (planes, conversion, state save / load), mask
     # summaries and f32 copies, and SET_ROWS + FLASH_ATTN_EXT on the device against the CPU backend
     # (NMSE) and tsr_ref_fa (bit for bit), D 64 / 128 / 256, GQA, decode and prefill, causal / SWA /

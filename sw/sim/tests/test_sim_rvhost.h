@@ -26,6 +26,7 @@
 #include "tsr_ref_vu.h"
 #include "tsr_rv.h"
 #include "tsr_sim_int.h"
+#include "../../ctrl/include/tsr/version.h"   // TSR_SDK_ABI, TSR_BASIS_VERSION (HELLO r4 / r6)
 
 #define NCH       2u
 #define N_LAUNCH  8u
@@ -214,7 +215,7 @@ typedef struct observed {
 static void scenario(const char * elf_path, const rvh_run * run, observed * ob) {
     char tag[128];
     const double ratio = run->ratio;
-    tsr_config cfg = TSR_CONFIG_U200_V1;
+    tsr_config cfg = TSR_CONFIG_U200;
     cfg.num_ch = NCH;
     cfg.ch_bytes = 1ull << 30;
     cfg.caps = TSR_CAPS_VU;
@@ -277,8 +278,11 @@ static void scenario(const char * elf_path, const rvh_run * run, observed * ob) 
     tsr_sim_csr_write(sim, TSR_CSR_CTRL, TSR_CTRL_RV_RUN);
     if (!run_until(&h, 1, 1)) goto out;
     CHECK(TSR_GET(h.rec[0].r[0], TSR_LCQ_R0_TYPE) == TSR_LCQ_R0_TYPE_HELLO, "%s: HELLO first (0x%08x)", tag, h.rec[0].r[0]);
+    // r4: Basis ABI | the signature of an empty kind table (tsr/opl.hpp kinds_sig 0xB51B); r6: the
+    // Tesseract Basis version (SW §6.9; fw_issue.c posts both).
     CHECK(h.rec[0].r[1] == 0u && h.rec[0].r[2] == 0x5EED0001u && h.rec[0].r[3] == 0x0000F00Du &&
-          h.rec[0].r[4] == 0x00010001u && h.rec[0].r[5] == 1u, "%s: HELLO r1-r5", tag);
+          h.rec[0].r[4] == (0xB51Bu << 16 | TSR_SDK_ABI) && h.rec[0].r[5] == 1u && h.rec[0].r[6] == TSR_BASIS_VERSION,
+          "%s: HELLO r1-r6", tag);
     for (uint32_t i = 2; i < N_LAUNCH; ++i) push_launch(&h, desc[i]);
     // 13 records in all; the host consumes only when the ring is full (or nothing happens).
     if (!run_until(&h, 13, 1000)) goto out;

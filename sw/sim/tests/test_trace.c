@@ -159,7 +159,7 @@ static void fill_bytes(uint8_t * p, size_t n, uint32_t seed) {
 }
 
 static tsr_config small_cfg(void) {
-    tsr_config c = TSR_CONFIG_U200_V1;
+    tsr_config c = TSR_CONFIG_U200;
     c.num_ch = 2;
     c.ch_bytes = 1ull << 26;
     return c;

@@ -61,7 +61,7 @@ typedef struct tsr_config {
 } tsr_config;
 
 // U200 values (the tile core of the M4 bitstreams; NIREG and LOOP_DEPTH have no meaning here).
-#define TSR_CONFIG_U200_V1 { \
+#define TSR_CONFIG_U200 { \
     /*num_ch*/ 4, /*beat_bits*/ 512, /*lanes*/ 128, /*t_max*/ 1, /*k_max*/ 32768, \
     /*spm_bytes*/ 4u * 1024u * 1024u, /*vl*/ 16, /*nsreg*/ 16,                     \
     /*rd_outstanding*/ 16, /*ch_bytes*/ 16ull << 30, /*addr_beat_w*/ 28, /*caps*/ 0 }

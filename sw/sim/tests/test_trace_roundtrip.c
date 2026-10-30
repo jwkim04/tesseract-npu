@@ -191,7 +191,7 @@ static void expect_fail(const tsr_trace2 * t, uint32_t cls, const char * what) {
 // Scenarios
 // ---------------------------------------------------------------------------
 static tsr_sim * make_sim(const char * dump_dir) {
-    tsr_config cfg = TSR_CONFIG_U200_V1;
+    tsr_config cfg = TSR_CONFIG_U200;
     cfg.num_ch = NCH;
     cfg.ch_bytes = 1ull << 30;
     cfg.caps = TSR_CAPS_VU;

@@ -11,20 +11,25 @@
 //       rv_issue firmware) get the two-implementation id comparison.
 //   test_fw_elf dump <dir>
 //       writes the synthesized ELFs (to recompute the golden ids with another implementation).
-//   test_fw_elf image <image.elf> [--base] [--has K | --only K]
+//   test_fw_elf image <image.elf> [--base] [--has K | --only K] [--kinds all|K1,K2,...] [--tool T]
 //       a built firmware image: every tsr-elf check including the stored id (and, with --base, EX
 //       §4.6's base kernels at 0, 1, 2 and no static constructor), SW §7.8's budget as a failure,
 //       the id against tsr_trace.c's and the segments against the simulator's ELF reader; --has /
-//       --only: the
-//       probe kernel K of tests/elf/k_probe.cpp is in the table (after the base kernels / alone).
+//       --only: the probe kernel K of tests/elf/k_probe.cpp is in the table (after the base kernels /
+//       alone); --kinds: .tsr_kinds holds exactly these kinds (all: every kind with a revision) at
+//       tsr/opl.hpp kind_rev (SW §6.9); --tool: `tsr-elf kinds` and `note` print the same table,
+//       signature and versions.
 //   test_fw_elf hello <image.elf>
 //       boots the image on the simulator through the host CSR loader (EX §3.3: receive CRC and
 //       VERIFY per segment), RV_BOOT = 0, RV_RUN; the first record must be HELLO with r2 / r3 = the
-//       id tsr-elf computes (= the stored one), r4[15:0] = the note's sdk_abi and r5 = the kernel
-//       count (EX §3.4, SW §6.3 R1); under the fixed and 7 random schedules, race detector fatal.
+//       id tsr-elf computes (= the stored one), r4[15:0] = the note's sdk_abi, r4[31:16] = the kind
+//       table signature of .tsr_kinds (tsr/opl.hpp kinds_sig), r5 = the kernel count and r6 = the
+//       note's basis_version (EX §3.4, SW §6.3 R1, §6.9); under the fixed and 7 random schedules,
+//       race detector fatal.
 // Exit 0 when every check passed, else 1.
 #include "tsr_elf.h"
 
+#include "tsr/opl.hpp"   // kind_rev, kind_name, kinds_sig (SW §6.9)
 #include "tsr_bus.h"
 #include "tsr_isa.h"
 #include "tsr_sim.h"
@@ -82,6 +87,11 @@ bool exists(const std::string & p) {
     struct stat st;
     return ::stat(p.c_str(), &st) == 0;
 }
+// The capability the images need as tsr-elf note prints it ("MAJOR.MINOR" of VERSION[15:0], tsr_tables.h).
+std::string cap_min_str() {
+    return std::to_string((TSR_VERSION_VALUE >> 8) & 0xFFu) + "." + std::to_string(TSR_VERSION_VALUE & 0xFFu);
+}
+
 std::string slurp(const std::string & p) {
     Bytes b;
     return read_file(p, &b) ? std::string(b.begin(), b.end()) : std::string();
@@ -411,8 +421,18 @@ void test_layout(const Img & m) {
     tsr_elf_get_sizes(e, nullptr, &z);
     tsr_elf_note n;
     CHECK(tsr_elf_get_note(e, &n) == 0, "note present");
-    CHECK(n.sdk_abi == 1 && n.ctl_id_min == TSR_CTL_VERSION && n.caps_req == 0 && n.n_kernels == 5 && n.rsv[0] == 0 && n.rsv[1] == 0,
-          "note: sdk_abi %u ctl %u caps %u n %u", n.sdk_abi, n.ctl_id_min, n.caps_req, n.n_kernels);
+    CHECK(n.sdk_abi == TSR_SDK_ABI && n.cap_min == (TSR_VERSION_VALUE & 0xFFFFu) && n.caps_req == 0 && n.n_kernels == 5 &&
+              n.basis_version == TSR_BASIS_VERSION && n.rsv == 0,
+          "note: sdk_abi %u cap_min 0x%04x caps %u n %u basis 0x%06x", n.sdk_abi, n.cap_min, n.caps_req, n.n_kernels,
+          n.basis_version);
+    // Kind table (SW §6.9): elf_img.S declares MUL_MAT, NOP, JOIN at revision 1.
+    uint8_t rev[TSR_ELF_N_KINDS];
+    char why[96];
+    CHECK(tsr_elf_kinds(e, rev, why, sizeof(why)) == 3 && rev[0x00] == 1 && rev[0x01] == 1 && rev[0x10] == 1,
+          "kinds: NOP, JOIN, MUL_MAT (%s)", why);
+    CHECK(tsr::opl::kinds_sig(rev) == 0x512Eu, "kinds signature 0x%04x", tsr::opl::kinds_sig(rev));
+    uint8_t none[TSR_ELF_N_KINDS] = {};
+    CHECK(tsr::opl::kinds_sig(none) == 0xB51Bu, "empty kind table signature 0x%04x", tsr::opl::kinds_sig(none));
     CHECK(n.itcm_min == z.itcm_used && n.dtcm_min == TSR_DTCM_BYTES, "note: itcm_min %u (used %u), dtcm_min %u", n.itcm_min,
           z.itcm_used, n.dtcm_min);
     uint32_t a = 0, off = 0, size = 0, type = 0;
@@ -559,6 +579,7 @@ void test_validation(const Img & stamped, const Img & nobase, const Img & big) {
     const Bytes & sb = stamped.b;
     const uint32_t kt = [&] { Bytes b = sb; return sec_off(b, ".tsr_kernels"); }();
     const uint32_t nd = [&] { Bytes b = sb; return sec_off(b, ".note.tsr") + 16; }();   // descriptor
+    const uint32_t kk = [&] { Bytes b = sb; return sec_off(b, ".tsr_kinds"); }();       // MUL_MAT, NOP, JOIN
     auto kd = [&](Bytes & b, uint32_t i) { return &b[kt + 36 * i]; };
     auto set_name = [&](Bytes & b, uint32_t i, const char * nm) {
         uint8_t * p = kd(b, i);
@@ -610,14 +631,22 @@ void test_validation(const Img & stamped, const Img & nobase, const Img & big) {
     mk("kt-size", ".tsr_kernels 4 bytes short", [&](Bytes & b) { uint8_t * sh = shdr(b, ".tsr_kernels"); wr32(sh + 20, rd32(sh + 20) - 4); });
     // .note.tsr
     mk("note-abi", "sdk_abi 2", [&](Bytes & b) { wr32(&b[nd], 2); });
-    mk("note-ctl", "ctl_id_min 0", [&](Bytes & b) { wr32(&b[nd + 4], 0); });
-    mk("note-ctl", "ctl_id_min 0x100", [&](Bytes & b) { wr32(&b[nd + 4], 0x100); });
+    mk("note-cap", "cap_min 0", [&](Bytes & b) { wr32(&b[nd + 4], 0); });
+    mk("note-cap", "cap_min 0x10000", [&](Bytes & b) { wr32(&b[nd + 4], 0x10000); });
+    mk("note-basis", "basis_version 0 (built before versioning)", [&](Bytes & b) { wr32(&b[nd + 24], 0); });
+    mk("note-basis", "basis_version [31:24] != 0", [&](Bytes & b) { wr32(&b[nd + 24], 0x01000100); });
+    // .tsr_kinds (SW §6.9)
+    mk("kinds", "kind 0x10 twice", [&](Bytes & b) { b[kk + 4] = 0x10; });
+    mk("kinds", "kind 0x40", [&](Bytes & b) { b[kk + 8] = 0x40; });
+    mk("kinds", "revision 0", [&](Bytes & b) { b[kk + 1] = 0; });
+    mk("kinds", "rsvd bits", [&](Bytes & b) { b[kk + 2] = 1; });
+    mk("kinds", ".tsr_kinds 2 bytes short", [&](Bytes & b) { uint8_t * sh = shdr(b, ".tsr_kinds"); wr32(sh + 20, rd32(sh + 20) - 2); });
     mk("note-itcm", "itcm_min below the image", [&](Bytes & b) { wr32(&b[nd + 8], 4); });
     mk("note-itcm", "itcm_min beyond ITCM", [&](Bytes & b) { wr32(&b[nd + 8], TSR_ITCM_BYTES + 4); });
     mk("note-dtcm", "dtcm_min below the stack top", [&](Bytes & b) { wr32(&b[nd + 12], 0x8000); });
     mk("note-dtcm", "dtcm_min beyond DTCM", [&](Bytes & b) { wr32(&b[nd + 12], TSR_DTCM_BYTES * 2); });
     mk("note-nkernels", "n_kernels 6", [&](Bytes & b) { wr32(&b[nd + 20], 6); });
-    mk("note-rsv", "reserved word set", [&](Bytes & b) { wr32(&b[nd + 28], 1); });
+    mk("note-rsv", "word 7 set", [&](Bytes & b) { wr32(&b[nd + 28], 1); });
     mk("note-format", "28-byte descriptor", [&](Bytes & b) { wr32(&b[nd - 12], 28); });
     mk("note-missing", "owner TSX", [&](Bytes & b) { b[nd - 2] = 'X'; });
     mk("note-missing", "note type 2", [&](Bytes & b) { wr32(&b[nd - 8], 2); });
@@ -734,7 +763,16 @@ void test_cli(const std::string & tool, const std::string & dir, const std::stri
               r.out.find("flags=0x01\targblk_lines=2") != std::string::npos,
           "kernels:\n%s", r.out.c_str());
     r = run(tool + " note " + out);
-    CHECK(r.rc == 0 && r.out.find("sdk_abi=1\n") == 0 && r.out.find("n_kernels=5\n") != std::string::npos, "note:\n%s", r.out.c_str());
+    CHECK(r.rc == 0 && r.out.find("sdk_abi=" + std::to_string(TSR_SDK_ABI) + "\n") == 0 &&
+              r.out.find("\ncap_min=" + cap_min_str() + "\n") != std::string::npos && r.out.find("n_kernels=5\n") != std::string::npos &&
+              r.out.find("\nbasis_version=" TSR_BASIS_VERSION_STRING "\n") != std::string::npos,
+          "note:\n%s", r.out.c_str());
+    r = run(tool + " kinds " + out);
+    CHECK(r.rc == 0 && r.out == "0x00\tNOP\trev=1\n0x01\tJOIN\trev=1\n0x10\tMUL_MAT\trev=1\nsignature=0x512e\n", "kinds:\n%s",
+          r.out.c_str());
+    r = run(tool + " --version");
+    CHECK(r.rc == 0 && r.out == "tsr-elf (Tesseract Basis " TSR_BASIS_VERSION_STRING ", Basis ABI " + std::to_string(TSR_SDK_ABI) + ")\n",
+          "--version: %s", r.out.c_str());
     // Segment CRCs are the LOAD_CRC values of EX §3.3.
     r = run(tool + " segments " + out);
     if (e) {
@@ -815,6 +853,8 @@ void test_corrupt(const Bytes & good) {
         (void)tsr_elf_id(e);
         tsr_elf_note n;
         (void)tsr_elf_get_note(e, &n);
+        uint8_t rv[TSR_ELF_N_KINDS];
+        (void)tsr_elf_kinds(e, rv, nullptr, 0);
         for (uint32_t i = 0; i < tsr_elf_logfmt_count(e); ++i) (void)tsr_elf_logfmt_at(e, i, nullptr);
         (void)tsr_elf_logfmt(e, TSR_LOGFMT_VMA + rnd() % 64);
         (void)tsr_elf_string(e, TSR_RV_DTCM_BASE + rnd() % 1024);
@@ -876,8 +916,11 @@ int mode_dump(const std::string & dir) {
 }
 
 // has: a kernel that must be in the table after the base kernels, as k_probe.cpp declares it
-// (nargs 2, ARGBLK, 4 lines); only: the same, and the only kernel.
-int mode_image(const std::string & path, bool base, const std::string & has, bool only) {
+// (nargs 2, ARGBLK, 4 lines); only: the same, and the only kernel. kinds: "all" (every kind with a
+// revision) or kind names "NOP,JOIN,MUL_MAT": .tsr_kinds holds exactly those at kind_rev. tool:
+// tsr-elf's `kinds` and `note` agree with the library.
+int mode_image(const std::string & path, bool base, const std::string & has, bool only, const std::string & kinds,
+               const std::string & tool) {
     Bytes b;
     if (!read_file(path, &b)) {
         CHECK(false, "%s: the image was not built", path.c_str());
@@ -906,6 +949,40 @@ int mode_image(const std::string & path, bool base, const std::string & has, boo
         CHECK(!base || k >= 3, "%s: %s after the base kernels", path.c_str(), has.c_str());
         CHECK(!only || (k == 0 && tsr_elf_n_kernels(e) == 1), "%s: %s is the only kernel", path.c_str(), has.c_str());
     }
+    if (!kinds.empty()) {   // SW §6.9: the kind table
+        uint8_t rev[TSR_ELF_N_KINDS];
+        char why[96];
+        const int nk = tsr_elf_kinds(e, rev, why, sizeof(why));
+        CHECK(nk >= 0, "%s: .tsr_kinds: %s", path.c_str(), why);
+        std::string want = "," + kinds + ",";
+        int n_want = 0;
+        for (uint32_t k = 0; k < TSR_ELF_N_KINDS; ++k) {
+            const bool in = kinds == "all" ? tsr::opl::kind_rev(k) != 0
+                                           : want.find("," + std::string(tsr::opl::kind_name(k)) + ",") != std::string::npos;
+            n_want += in;
+            CHECK(rev[k] == (in ? tsr::opl::kind_rev(k) : 0u), "%s: kind 0x%02x %s: revision %u in .tsr_kinds, expected %u",
+                  path.c_str(), k, tsr::opl::kind_name(k), rev[k], in ? tsr::opl::kind_rev(k) : 0u);
+        }
+        CHECK(nk == n_want, "%s: %d kinds, expected %d", path.c_str(), nk, n_want);
+        if (!tool.empty() && nk >= 0) {
+            std::string lines;
+            for (uint32_t k = 0; k < TSR_ELF_N_KINDS; ++k) {
+                if (!rev[k]) continue;
+                char ln[64];
+                std::snprintf(ln, sizeof(ln), "0x%02x\t%s\trev=%u\n", k, tsr::opl::kind_name(k), rev[k]);
+                lines += ln;
+            }
+            char sig[32];
+            std::snprintf(sig, sizeof(sig), "signature=0x%04x\n", tsr::opl::kinds_sig(rev));
+            Run cli = run(tool + " kinds " + path);
+            CHECK(cli.rc == 0 && cli.out == lines + sig, "%s: tsr-elf kinds:\n%s", path.c_str(), cli.out.c_str());
+            cli = run(tool + " note " + path);
+            CHECK(cli.rc == 0 && cli.out.find("\ncap_min=" + cap_min_str() + "\n") != std::string::npos &&
+                      cli.out.find("\nbasis_version=" TSR_BASIS_VERSION_STRING "\n") != std::string::npos,
+                  "%s: tsr-elf note:\n%s", path.c_str(), cli.out.c_str());
+            std::printf("%s: %d kinds, %s", path.c_str(), nk, sig);
+        }
+    }
     std::vector<char> rep(1 << 16);
     tsr_elf_size_report(e, nullptr, rep.data(), rep.size());
     std::printf("%s", rep.data());
@@ -916,7 +993,7 @@ int mode_image(const std::string & path, bool base, const std::string & has, boo
 // One boot: cold load from tsr-elf's segments (EX §3.3: padded words, receive CRC, VERIFY),
 // RV_BOOT = 0, RV_RUN, until the first record. The record in r; false if none came.
 bool hello_boot(const tsr_elf * e, const char * sched, uint32_t r[8]) {
-    tsr_config cfg = TSR_CONFIG_U200_V1;
+    tsr_config cfg = TSR_CONFIG_U200;
     cfg.num_ch = 2;
     cfg.ch_bytes = 1ull << 30;
     tsr_sim_opts o;
@@ -978,6 +1055,9 @@ int mode_hello(const std::string & path) {
     std::memset(&n, 0, sizeof(n));
     CHECK(tsr_elf_stored_id(e, &stored) == 0 && stored == id, "the image is stamped");
     CHECK(tsr_elf_get_note(e, &n) == 0, "the image has its note");
+    uint8_t rev[TSR_ELF_N_KINDS];
+    CHECK(tsr_elf_kinds(e, rev, nullptr, 0) >= 0, "the image's kind table is well formed");
+    const uint32_t sig = tsr::opl::kinds_sig(rev);
     static const char * const scheds[8] = { "fixed", "random:1", "random:2", "random:3", "random:4", "random:5", "random:6", "random:7" };
     uint32_t first[8] = { 0 };
     for (int k = 0; k < 8; ++k) {
@@ -986,16 +1066,24 @@ int mode_hello(const std::string & path) {
         CHECK(TSR_GET(r[0], TSR_LCQ_R0_TYPE) == TSR_LCQ_R0_TYPE_HELLO, "%s: first record HELLO (r0 0x%08x)", scheds[k], r[0]);
         CHECK(r[2] == uint32_t(id) && r[3] == uint32_t(id >> 32), "%s: HELLO id %08x%08x, tsr-elf %016llx", scheds[k], r[3], r[2],
               (unsigned long long)id);
-        CHECK(TSR_GET(r[4], TSR_HELLO_R4_SDK_ABI) == n.sdk_abi, "%s: HELLO SDK ABI %u, note %u", scheds[k],
+        CHECK(TSR_GET(r[4], TSR_HELLO_R4_SDK_ABI) == n.sdk_abi, "%s: HELLO Basis ABI %u, note %u", scheds[k],
               TSR_GET(r[4], TSR_HELLO_R4_SDK_ABI), n.sdk_abi);
         CHECK(r[5] == tsr_elf_n_kernels(e) && r[5] == n.n_kernels, "%s: HELLO kernel count %u, table %u", scheds[k], r[5],
               tsr_elf_n_kernels(e));
+        // SW §6.9: r4[31:16] the signature of the kind table the host reads from the ELF, r6 the note's
+        // Tesseract Basis version.
+        CHECK(TSR_GET(r[4], TSR_HELLO_R4_KINDS_SIG) == sig, "%s: HELLO kind table signature 0x%04x, .tsr_kinds 0x%04x", scheds[k],
+              TSR_GET(r[4], TSR_HELLO_R4_KINDS_SIG), sig);
+        CHECK(r[6] == n.basis_version && r[6] == TSR_BASIS_VERSION, "%s: HELLO r6 0x%08x, note basis_version 0x%08x", scheds[k],
+              r[6], n.basis_version);
         if (k == 0) {
             std::memcpy(first, r, sizeof(first));
-            std::printf("fw_elf_hello: %s HELLO id %08x%08x, SDK ABI %u, runtime %u, %u kernels\n", path.c_str(), r[3], r[2],
-                        TSR_GET(r[4], TSR_HELLO_R4_SDK_ABI), TSR_GET(r[4], TSR_HELLO_R4_RT_VERSION), r[5]);
+            std::printf("fw_elf_hello: %s HELLO id %08x%08x, Basis ABI %u, kind table 0x%04x, %u kernels, Tesseract Basis %u.%u.%u\n",
+                        path.c_str(), r[3], r[2], TSR_GET(r[4], TSR_HELLO_R4_SDK_ABI), TSR_GET(r[4], TSR_HELLO_R4_KINDS_SIG), r[5],
+                        TSR_GET(r[6], TSR_HELLO_R6_MAJOR), TSR_GET(r[6], TSR_HELLO_R6_MINOR), TSR_GET(r[6], TSR_HELLO_R6_PATCH));
         } else {
-            CHECK(r[0] == first[0] && r[2] == first[2] && r[3] == first[3] && r[4] == first[4] && r[5] == first[5],
+            CHECK(r[0] == first[0] && r[2] == first[2] && r[3] == first[3] && r[4] == first[4] && r[5] == first[5] &&
+                      r[6] == first[6],
                   "%s: HELLO differs from the fixed schedule's", scheds[k]);
         }
     }
@@ -1013,20 +1101,24 @@ int main(int argc, char ** argv) {
         mode_dump(argv[2]);
     } else if (mode == "image" && argc >= 3) {
         bool base = false, only = false;
-        std::string has;
+        std::string has, kinds, tool;
         for (int i = 3; i < argc; ++i) {
             if (std::strcmp(argv[i], "--base") == 0) base = true;
             else if ((std::strcmp(argv[i], "--has") == 0 || std::strcmp(argv[i], "--only") == 0) && i + 1 < argc) {
                 only = std::strcmp(argv[i], "--only") == 0;
                 has = argv[++i];
+            } else if (std::strcmp(argv[i], "--kinds") == 0 && i + 1 < argc) {
+                kinds = argv[++i];
+            } else if (std::strcmp(argv[i], "--tool") == 0 && i + 1 < argc) {
+                tool = argv[++i];
             }
         }
-        mode_image(argv[2], base, has, only);
+        mode_image(argv[2], base, has, only, kinds, tool);
     } else if (mode == "hello" && argc == 3) {
         mode_hello(argv[2]);
     } else {
-        std::fprintf(stderr, "usage: test_fw_elf unit <elf dir> <tsr-elf> [elf ...] | dump <dir> | image <elf> [--base] [--has K|--only K] | "
-                     "hello <elf>\n");
+        std::fprintf(stderr, "usage: test_fw_elf unit <elf dir> <tsr-elf> [elf ...] | dump <dir> | image <elf> [--base] [--has K|--only K] "
+                     "[--kinds all|K,...] [--tool T] | hello <elf>\n");
         return 2;
     }
     std::printf("fw_elf %s: %d checks, %d failed\n", mode.c_str(), g_checks, g_fail);

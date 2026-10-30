@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test_selftest_faults.sh SELFTEST IMAGE OUT — ctest tools_selftest_mock_faults (docs/design/
+# test_selftest_faults.sh SELFTEST IMAGE OUT BASIS CAP TSR_ELF — ctest tools_selftest_mock_faults (docs/design/
 # 06-software-verification.md §10.2; was tools_xrt_selftest_mock_faults): tsr-selftest on the mock kdev
 # must fail (exit 1, the failing check named) whenever the protocol layer reports a fault, also when
 # every result it could compare is right, and must pass without one. Faults (sw/transport/
@@ -9,10 +9,16 @@
 # DB §7.3, "card reset needed", EX §8.6).
 # Launch numbering with "--rate-n 2": 1 PING + 2 sequential + 2 pipelined PINGs, then section 5's PING
 # (push 6) and the first id given to --ids (push 7).
+# BASIS and CAP are the Tesseract Basis version (tsr/version.h) and the Tesseract Core capability
+# (tsr_tables.h VERSION) of the build, "X.Y.Z" and "X.Y"; the kinds the boot lists are read from the
+# image with TSR_ELF (tsr-elf kinds), so a release or a kind revision bump does not edit this file.
 set -u
 ST=$1
 IMG=$2
 OUT=$3
+BASIS=$4
+CAP=$5
+ELFTOOL=$6
 mkdir -p "$OUT"
 fail() { echo "FAIL: $*"; exit 1; }
 [ -f "$IMG" ] || fail "no firmware image $IMG"
@@ -38,6 +44,17 @@ expect() {   # expect PATTERN WHAT: the last run's output must contain PATTERN
 
 run 0 "control: no fault" -- --ids 1,7
 expect "PASS$" "the control run did not pass"
+# The versions (SW §6.9): the device's Tesseract Core capability, the image's Tesseract Basis version.
+dots() { printf '%s' "${1//./\\.}"; }
+expect "Tesseract Core capability $(dots "$CAP") (VERSION 0x" "the identity block does not name the capability"
+expect "Tesseract Basis $(dots "$BASIS"), Basis ABI [0-9][0-9]*, needs capability $(dots "$CAP"); host Tesseract Basis $(dots "$BASIS")" \
+       "the boot does not name the versions"
+kinds_out=$("$ELFTOOL" kinds "$IMG") || fail "tsr-elf kinds $IMG"
+nk=$(printf '%s\n' "$kinds_out" | grep -c '^0x')
+sig=$(printf '%s\n' "$kinds_out" | sed -n 's/^signature=//p')
+first3=$(printf '%s\n' "$kinds_out" | grep '^0x' | head -3 | awk -F'\t' '{ sub("rev=", "", $3); printf "%s%s r%s", (NR > 1 ? " " : ""), $2, $3 }')
+[ "$nk" -gt 0 ] && [ -n "$sig" ] && [ -n "$first3" ] || fail "no kinds from tsr-elf kinds $IMG"
+expect "kinds ($nk, signature $sig): $first3" "the boot does not list the kinds"
 
 run 1 "ADAPTER_STATUS left by an earlier process" TSR_MOCK_INJECT=0:0x00020004 -- --no-kernel
 expect "FAIL  ADAPTER_STATUS clean at open" "the leftover was not reported"

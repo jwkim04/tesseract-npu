@@ -240,7 +240,8 @@ public:
     tsr_opl_dev & operator=(const tsr_opl_dev &) = delete;
 
     // Boots tp (warm if possible) with $TSR_IMAGE / the build's image unless it already runs an image,
-    // finds the `graph` kernel and sets up the OPL cache over the OPL region. False with *err.
+    // finds the `graph` kernel, reads the versions of the device and the booted image (SW §6.9) and
+    // sets up the OPL cache over the OPL region. False with *err.
     bool open(tsr_transport * tp, std::string * err);
     bool is_open() const                 { return tp_ != nullptr; }
 
@@ -253,6 +254,8 @@ public:
     uint64_t image_id() const            { return image_id_; }
     const char * image_path() const      { return image_path_.c_str(); }
     int      graph_kernel() const        { return k_graph_; }
+    // Tesseract Core capability and CAPS, the image's Tesseract Basis version, ABI and kinds (SW §6.9).
+    const tsr_versions & versions() const { return versions_; }
 
     uint64_t launches = 0;               // graph launches answered or failed
     uint64_t launch_ns = 0;              // their wall time (launch + wait)
@@ -263,6 +266,7 @@ private:
     int k_graph_ = -1;
     uint64_t image_id_ = 0;
     std::string image_path_;
+    tsr_versions versions_ = {};
     tsr_opl_cache cache_;
 };
 

@@ -44,12 +44,12 @@ answer) is the protocol layer, so a behaviour tested on `sim` is the behaviour o
 
 | Call | Does |
 | --- | --- |
-| `tsr_transport_open(kind)` | opens `kind`, or `$TSR_DEVICE`, or `sim`; checks the identity (ID, ISA major 2, configuration, capabilities, control-core version, `RV_FREQ`), clears `ADAPTER_STATUS`, then `SOFT_RESET` and binds the channel buffers (`MEM_EN`), unless `TSR_ATTACH=1` |
+| `tsr_transport_open(kind)` | opens `kind`, or `$TSR_DEVICE`, or `sim`; checks the identity (ID, Tesseract Core capability major 1, a control core (`CTL_ID` ≠ 0), configuration, capabilities, `RV_FREQ`), clears `ADAPTER_STATUS`, then `SOFT_RESET` and binds the channel buffers (`MEM_EN`), unless `TSR_ATTACH=1` |
 | `tsr_transport_close`, `_name`, `_config` | close; kind name; the configuration as read from the CFG and CAPS registers |
 | `tsr_transport_write`, `_read` | channel DRAM, byte offset and size of any alignment (the kdev's DMA rules are applied underneath) |
 | `tsr_transport_csr_read`, `_csr_write` | raw core CSR access (offsets below `0x1000`) for PERF, debug and tools |
-| `tsr_image_open`, `_close`, `_kernel`, `_id`, `tsr_image_open_default` | parse and check a firmware image (segments, kernel table, `.note.tsr`, stored id equals computed id); kernel index by name; the default image is `$TSR_IMAGE`, else the build's `tsr-fw.elf` |
-| `tsr_transport_boot(t, img)` | refuses an image whose requirements the device does not meet; `VERIFY` of every ITCM segment and a cold load (receive CRC, `VERIFY` CRC) of those that differ; DTCM always reloaded and verified; releases the control core and waits for HELLO (image id, SDK ABI, kernel count). A matching image already in the ITCM is a warm start |
+| `tsr_image_open`, `_close`, `_kernel`, `_id`, `tsr_image_open_default` | parse and check a firmware image (segments, kernel table, kind table, `.note.tsr` with this host's Basis ABI and a Basis version, stored id equals computed id); kernel index by name; the default image is `$TSR_IMAGE`, else the build's `tsr-fw.elf` |
+| `tsr_transport_boot(t, img)` | refuses an image whose requirements the device does not meet; `VERIFY` of every ITCM segment and a cold load (receive CRC, `VERIFY` CRC) of those that differ; DTCM always reloaded and verified; releases the control core and waits for HELLO (image id, Basis ABI, kind table signature, kernel count, Tesseract Basis version). A matching image already in the ITCM is a warm start |
 | `tsr_transport_launch(t, &launch, &seq)` | pushes a descriptor (kernel index, flags, seven arguments) into the launch queue and returns its sequence number; blocks only while the queue (depth 8) is full |
 | `tsr_transport_wait(t, seq, timeout_ns, &rec)` | waits for the answer of one launch; reads only the words EX §4.8 requires for an OK answer; on a timeout runs the recovery ladder |
 | `tsr_transport_call` | launch and wait |
@@ -84,7 +84,7 @@ only code that follows them):
    a `VERIFY` CRC); reload and verify every DTCM segment. When no ITCM segment had to be written the
    start is warm.
 3. *Boot.* Write `RV_BOOT`, raise `RV_RUN`, and read the completion ring until the HELLO record
-   arrives (image id, SDK ABI, kernel count, all checked).
+   arrives (image id, Basis ABI, kind table signature, kernel count and Tesseract Basis version, all checked).
 4. *Launch.* Write the eight descriptor words into the launch queue registers `LQ_W0` to `LQ_W7`
    (only the words that differ from the host's shadow of them) and write `LQ_PUSH`. The host keeps
    its own count of free queue slots, so a launch reads nothing from the device.

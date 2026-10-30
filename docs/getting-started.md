@@ -309,7 +309,9 @@ estimates, the measurement history).
 **Design.** [`spec.md`](spec.md) (the master specification: architecture, layouts, numerics, ISA,
 interfaces, verification strategy, milestones, open items); [`design/README.md`](design/README.md) (the
 design set, M6 to M9: execution model, vector unit, attention and KV cache, control core, debug,
-software and verification); [`fig/`](fig) (the figures and the scripts that draw them).
+software and verification); [`fig/`](fig) (the figures and the scripts that draw them);
+[`versioning.md`](versioning.md) (Tesseract Core capability, Basis version, ABI and kind revisions) and
+[`../CHANGELOG.md`](../CHANGELOG.md).
 
 **Hardware and platform.** [`rtl-m2.md`](rtl-m2.md) and [`rtl-m3.md`](rtl-m3.md) (RTL contract of the
 core infrastructure; the MVM unit with its numerics, throughput and Vivado results);

@@ -10,7 +10,7 @@
 // request is held and sets REQ_HELD: the model then holds the whole simulator while an op is
 // queued or running, an approximation, since the hardware holds only the memory requests);
 // ADAPTER_STATUS (W1C as the RTL with all strobes set: a 1 in bit k < 6 clears bit k, a 1 anywhere
-// in [31:16] clears the whole count); ADAPTER_VERSION {16'h0002, 8'h00, NUM_CH}; plat_err_i =
+// in [31:16] clears the whole count); ADAPTER_VERSION {16'h0001, 8'h00, NUM_CH}; plat_err_i =
 // ADAPTER_STATUS bits 0-2 or a count != 0 (EX §9.3), shown in STATUS.PLAT_ERR (and in the
 // RISC-V's LQ_FLAGS when the simulator models the input, tsr_sim_set_plat_err); the core CSR
 // window at 0x1000. The latched bases must equal the channel buffers' device addresses, else the
@@ -35,7 +35,7 @@ struct mock_options {
     uint64_t  ch_bytes = 16ull << 30;
     unsigned  threads  = 1;
     dma_rules dma;                       // rules the mock's raw DMA enforces (violations fail the transfer)
-    uint32_t  adapter_version = 0;       // 0: {16'h0002, 8'h00, NUM_CH}
+    uint32_t  adapter_version = 0;       // 0: {16'h0001, 8'h00, NUM_CH} (ADAPTER_MAJOR)
     // Faults (0 = none):
     uint32_t  tcm_fault_addr = 0, tcm_fault_xor = 0;   // after every LOAD_DATA write to this TCM word
     uint32_t  hang_at_push = 0;                        // the unit MVM hangs at this LQ_PUSH (1-based)
@@ -69,6 +69,7 @@ public:
     void         inject_at_push(uint32_t n, uint32_t v) { push_inj_.push_back({ n, v }); }
     uint32_t     id_override = 0;                   // non-zero: the window's ID reads this
     uint32_t     version_override = 0;              // non-zero: the window's VERSION reads this
+    uint32_t     ctl_id_override = UINT32_MAX;      // not UINT32_MAX: CTL_ID reads this (0: no control core)
     uint32_t     rv_freq_override = UINT32_MAX;     // not UINT32_MAX: RV_FREQ reads this (0: no clk_rv)
     bool         sr_stuck = false;                  // SOFT_RESET never completes (SR_BUSY stays 1)
     // Observations.

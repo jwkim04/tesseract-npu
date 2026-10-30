@@ -2,6 +2,7 @@
 // Paths are relative to this file's directory: use `verilator -F rtl/filelist.f`
 // (tb/common/runner.py reads the same list). Order: packages first, then tech, then core.
 // A target filelist (e.g. rtl/filelist_u200.f, M4) swaps tech/generic for tech/xilinx.
+core/tsr_tables_pkg.sv
 core/tsr_pkg.sv
 core/tsr_fp_pkg.sv
 tech/generic/tsr_sram_1r1w.sv

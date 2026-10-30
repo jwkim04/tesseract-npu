@@ -405,7 +405,7 @@ void build(const lcase & c, layer_data & L, uint32_t n_layers = 1, bool mark = f
     const model & m = *c.m;
     L.c = &c;
     L.m = &m;
-    L.cfg = TSR_CONFIG_U200_V1;
+    L.cfg = TSR_CONFIG_U200;
     L.cfg.t_max = 8;
     L.cfg.ch_bytes = 512ull << 20;
     L.cfg.caps = TSR_SIM_CAPS_IMPLEMENTED;

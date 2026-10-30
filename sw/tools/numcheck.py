@@ -1681,6 +1681,13 @@ def write_md(rep: dict, path: Path) -> None:
           f"{st.get('type_v')} on the {'device' if st.get('offload_kqv') else 'host'}, KV rotation "
           f"{'off (LLAMA_ATTN_ROT_DISABLE=1)' if st.get('attn_rot_disable') else 'not disabled'}; device "
           f"`{rep.get('device')}`\n")
+    vs = rep.get("versions")
+    if vs:
+        kinds = " ".join(f"{k} r{r}" for k, r in (vs.get("kinds") or {}).items())
+        w(f"versions (dev run): Tesseract Core {vs.get('core')}, Tesseract Basis {vs.get('basis')} (ABI {vs.get('abi')}, "
+          f"image {vs.get('image')}, kind table {vs.get('kinds_sig')}: {kinds})\n")
+    else:
+        w("versions (dev run): not recorded\n")
     w("PASS iff B1 (libtsr_ref model) and B1b (independent numpy spec model) have zero mismatches, B2 zero bound "
       "violations, the bound/QACT/spec-model self-test passed and every selected weight MUL_MAT was checked on the "
       "device (else INCOMPLETE). B3 and drift are reported, not judged (WARN for native tensors with "
@@ -1974,7 +1981,10 @@ def cmd_compare(args) -> int:
     toks = runs["dev"].meta.get("tokens")
     rep = {"format": "tsr-numcheck-report", "version": 2, "model": model_path,
            "runs": {k: str(r.dir) for k, r in runs.items()}, "tokens": toks,
-           "settings": run_settings(runs["dev"].meta), "device": runs["dev"].meta.get("device")}
+           "settings": run_settings(runs["dev"].meta), "device": runs["dev"].meta.get("device"),
+           # SW §6.9: the Tesseract Core capability, Tesseract Basis version and kind revisions of the
+           # dev run (tsr-numcheck's meta.json; None for runs written before the field)
+           "versions": runs["dev"].meta.get("versions")}
     rep["selfcheck"] = selfcheck(nat, args)
     rep["logits"] = logits_section(runs, noobs)
     lg = rep["logits"]
@@ -2072,6 +2082,11 @@ def write_synth_gguf(nat: Native, path: Path, rng) -> dict:
     return specs
 
 
+# The versions block a dev run's meta.json carries (tsr-numcheck, SW §6.9), for the synthetic runs.
+SYNTH_VERSIONS = {"core": "1.0", "caps": 105, "basis": "0.1.0", "abi": 1, "image": "0123456789abcdef", "kinds_sig": "0x512e",
+                  "kinds": {"NOP": 1, "JOIN": 1, "MUL_MAT": 1}}
+
+
 def write_synth_runs(nat: Native, root: Path, model: Path, specs: dict, rng, T=6, V=256) -> dict:
     """cpu / floor / dev run dirs with a fake graph: norm -> weight MUL_MATs -> l_out nodes -> result_output."""
     rng_x = np.random.default_rng(11)
@@ -2127,6 +2142,7 @@ def write_synth_runs(nat: Native, root: Path, model: Path, specs: dict, rng, T=6
         meta = {"format": "tsr-numcheck", "version": 2, "model": str(model), "run": run,
                 "device": "sim" if run == "dev" else "none", "input": "embd+1ulp" if run == "floor" else "embd",
                 "seed": 1, "n_tokens": T, "tokens": list(range(T)), "n_vocab": V, "logits_file": "logits.f32",
+                "versions": SYNTH_VERSIONS if run == "dev" else None,
                 "info": {"phase": "m6", "flash_attn": "on", "type_k": "q8_0", "type_v": "q8_0", "offload_kqv": False,
                          "attn_rot_disable": True},
                 "nodes": meta_nodes}
@@ -2167,7 +2183,9 @@ def cmd_selftest(args) -> int:
               ("B1 elements = sum N*T", rep["mm"]["b1_elements"] == sum(N for (_, _, N) in specs.values()) * 6),
               ("settings reported (m6, FA on, q8_0 / q8_0 KV on the host, rotation off)",
                rep.get("settings") == {"phase": "m6", "flash_attn": "on", "type_k": "q8_0", "type_v": "q8_0",
-                                       "offload_kqv": False, "attn_rot_disable": True})]
+                                       "offload_kqv": False, "attn_rot_disable": True}),
+              ("the dev run's versions reported (SW §6.9)", rep.get("versions") == SYNTH_VERSIONS and
+               "Tesseract Basis 0.1.0 (ABI 1" in (out / "report-clean" / "report.md").read_text())]
     # 2b. runs with different settings (here: the floor made with an f16 V cache) must be refused
     fm = dirs["floor"] / "meta.json"
     fmeta = json.loads(fm.read_text())

@@ -3,6 +3,7 @@
 // LUTRAM by size, DSP48E2-packed MAC lanes; no unisim primitives, so Verilator simulates it too).
 // Paths are relative to this file's directory, order as rtl/filelist.f: packages, tech, core.
 // Keep the core list identical to rtl/filelist.f (rtl/tech/xilinx/lint.sh checks it).
+core/tsr_tables_pkg.sv
 core/tsr_pkg.sv
 core/tsr_fp_pkg.sv
 tech/xilinx/tsr_sram_1r1w.sv

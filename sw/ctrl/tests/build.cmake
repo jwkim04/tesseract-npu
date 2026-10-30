@@ -3,7 +3,8 @@
 #
 # Test images: sw/ctrl/tests/elf/elf_img.S linked with the real sw/ctrl/rt/link.ld and
 # sw/ctrl/cmake/tsr_note.S by the RISC-V compiler, without TCM --defsym (so link.ld's defaults
-# are what the tests see) and with --fatal-warnings (link.ld must place every section):
+# are what the tests see), with the version --defsym of every firmware link (TSR_FW_VERSION_DEFSYMS)
+# and with --fatal-warnings (link.ld must place every section):
 #   fw_elf/elf_img.elf            five kernels, every SW §6.2 section, not stamped
 #   fw_elf/elf_img_no_base.elf    no graph / selftest / replay
 #   fw_elf/elf_img_big_text.elf   over SW §7.8's ITCM budget (80 KiB)
@@ -16,11 +17,16 @@
 #                 images, the command line
 #   fw_elf_asan   the same with tsr-elf's reader under ASan / UBSan
 #   fw_elf_link   link.ld's link-time checks: _start not at +0x80, a partial kernel table entry,
-#                 a wrong-size .tsr_dbg, .bss running into the stacks (this file in script mode)
+#                 a partial kind table entry, a wrong-size .tsr_dbg, .bss running into the stacks,
+#                 a link without the version --defsym (this file in script mode)
 #   fw_elf_image  the production image tsr-fw.elf: every check with the stored id, the base kernels
-#                 at 0-2, SW §7.8's budget as a failure, ids and segments against the simulator's code
+#                 at 0-2, SW §7.8's budget as a failure, ids and segments against the simulator's code,
+#                 the kind table = every kind at its revision (tsr-elf kinds / note agree, SW §6.9)
+#   fw_elf_kinds_exec_ref  the test image fw_exec_ref (graph.cpp + k_mulmat.cpp): its kind table is
+#                 exactly NOP, JOIN and MUL_MAT (signature 0x512e)
 #   fw_elf_hello  tsr-fw.elf booted on the simulator through the CSR loader: HELLO carries the id
-#                 tsr-elf computed, the note's SDK ABI and the kernel count
+#                 tsr-elf computed, the note's Basis ABI, the kind table signature, the kernel count
+#                 and the note's Tesseract Basis version
 #   fw_elf_test_image, _nok, _hello
 #                 the tsr_fw_image() path: fw_elf_probe (production + tests/elf/k_probe.cpp: the
 #                 probe kernel after the base kernels) and fw_elf_probe_nok (NO_KERNELS, DEFINES:
@@ -28,7 +34,7 @@
 
 # ---------------------------------------------------------------------------
 # Script mode: cmake -DTSR_FW_ELF_LINK_CHECK=1 -DPREFIX=<riscv-none-elf-> -DSRC=<elf_img.S>
-#              -DLD=<link.ld> -DNOTE=<tsr_note.S> -DOUT=<dir> -P build.cmake
+#              -DLD=<link.ld> -DNOTE=<tsr_note.S> -DOUT=<dir> "-DDEFSYMS=<link options>" -P build.cmake
 # ---------------------------------------------------------------------------
 if (TSR_FW_ELF_LINK_CHECK)
     file(MAKE_DIRECTORY "${OUT}")
@@ -38,8 +44,10 @@ if (TSR_FW_ELF_LINK_CHECK)
         "NONE|"
         "BAD_START|the reset entry _start must be at RV_BOOT \\+ 0x80"
         "BAD_KT|is not a whole number of kernel table entries"
+        "BAD_KINDS|is not a whole number of kind table entries"
         "BAD_DBG|.tsr_dbg must be 64 bytes"
-        "BIG_BSS|DTCM overflow: .bss / .tsr_crash run into the stacks")
+        "BIG_BSS|DTCM overflow: .bss / .tsr_crash run into the stacks"
+        "NO_DEFSYM|undefined reference to `__tsr_")
     foreach(_c IN LISTS _cases)
         string(REPLACE "|" ";" _c "${_c}")
         list(GET _c 0 _v)
@@ -48,9 +56,13 @@ if (TSR_FW_ELF_LINK_CHECK)
         if (_n GREATER 1)
             list(GET _c 1 _msg)
         endif()
+        set(_ds ${DEFSYMS})
+        if (_v STREQUAL "NO_DEFSYM")      # the versions are --defsym only (no default in link.ld)
+            set(_ds "")
+        endif()
         execute_process(
             COMMAND "${PREFIX}gcc" -march=rv32imc_zicsr_zifencei -mabi=ilp32 -g -nostdlib -nostartfiles -D${_v}
-                    -T "${LD}" -Wl,--orphan-handling=warn "${SRC}" "${NOTE}" -o "${OUT}/link_${_v}.elf"
+                    -T "${LD}" -Wl,--orphan-handling=warn ${_ds} "${SRC}" "${NOTE}" -o "${OUT}/link_${_v}.elf"
             RESULT_VARIABLE _r OUTPUT_VARIABLE _o ERROR_VARIABLE _o)
         if (_msg STREQUAL "")
             if (NOT _r EQUAL 0)
@@ -93,7 +105,7 @@ foreach(_v "elf_img|" "elf_img_no_base|-DNO_BASE" "elf_img_big_text|-DBIG_TEXT")
     add_custom_command(
         OUTPUT ${_fwe_dir}/${_name}.elf
         COMMAND "${TSR_RISCV_PREFIX_EFFECTIVE}gcc" -march=rv32imc_zicsr_zifencei -mabi=ilp32 -g -nostdlib -nostartfiles
-                ${_def} -T ${_fwe_ld} -Wl,--orphan-handling=warn -Wl,--fatal-warnings
+                ${_def} -T ${_fwe_ld} -Wl,--orphan-handling=warn -Wl,--fatal-warnings ${TSR_FW_VERSION_DEFSYMS}
                 -Wl,-Map=${_fwe_dir}/${_name}.map ${_fwe_src} ${_fwe_note} -o ${_fwe_dir}/${_name}.elf
         DEPENDS ${_fwe_src} ${_fwe_ld} ${_fwe_note}
         COMMENT "fw_elf test image ${_name}.elf"
@@ -114,7 +126,8 @@ add_dependencies(test_fw_elf fw_elf_images tsr-elf)
 # The same driver with tsr-elf's library compiled under ASan / UBSan (the reader parses files).
 add_executable(test_fw_elf_asan ${TSR_CTRL_DIR}/tests/test_fw_elf.cpp ${TSR_CTRL_DIR}/tools/tsr-elf/tsr_elf.cpp)
 set_target_properties(test_fw_elf_asan PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
-target_include_directories(test_fw_elf_asan PRIVATE ${TSR_CTRL_DIR}/tools/tsr-elf ${TESSERACT_ROOT}/sw/sim/include)
+target_include_directories(test_fw_elf_asan PRIVATE ${TSR_CTRL_DIR}/tools/tsr-elf ${TSR_CTRL_INCLUDE_DIR}
+                           ${TESSERACT_ROOT}/sw/sim/include)
 target_compile_options(test_fw_elf_asan PRIVATE -Wall -Wextra -Wshadow -fsanitize=address,undefined
                        -fno-sanitize-recover=all -fno-omit-frame-pointer)
 target_link_options(test_fw_elf_asan PRIVATE -fsanitize=address,undefined)
@@ -126,8 +139,11 @@ add_test(NAME fw_elf COMMAND test_fw_elf unit ${_fwe_dir} $<TARGET_FILE:tsr-elf>
 add_test(NAME fw_elf_asan COMMAND test_fw_elf_asan unit ${_fwe_dir} $<TARGET_FILE:tsr-elf> ${_rv_issue_elf})
 add_test(NAME fw_elf_link
          COMMAND ${CMAKE_COMMAND} -DTSR_FW_ELF_LINK_CHECK=1 "-DPREFIX=${TSR_RISCV_PREFIX_EFFECTIVE}" -DSRC=${_fwe_src}
-                 -DLD=${_fwe_ld} -DNOTE=${_fwe_note} -DOUT=${_fwe_dir}/link -P ${CMAKE_CURRENT_LIST_FILE})
-add_test(NAME fw_elf_image COMMAND test_fw_elf image ${TSR_FW_ELF} --base)
+                 -DLD=${_fwe_ld} -DNOTE=${_fwe_note} -DOUT=${_fwe_dir}/link "-DDEFSYMS=${TSR_FW_VERSION_DEFSYMS}"
+                 -P ${CMAKE_CURRENT_LIST_FILE})
+add_test(NAME fw_elf_image COMMAND test_fw_elf image ${TSR_FW_ELF} --base --kinds all --tool $<TARGET_FILE:tsr-elf>)
+add_test(NAME fw_elf_kinds_exec_ref
+         COMMAND test_fw_elf image ${TSR_FW_BINARY_DIR}/fw_exec_ref.elf --kinds NOP,JOIN,MUL_MAT --tool $<TARGET_FILE:tsr-elf>)
 add_test(NAME fw_elf_hello COMMAND test_fw_elf hello ${TSR_FW_ELF})
 
 # tsr_fw_image(): a test image with one extra kernel (production sources + k_probe.cpp) and one
@@ -139,5 +155,5 @@ add_test(NAME fw_elf_test_image
 add_test(NAME fw_elf_test_image_nok
          COMMAND test_fw_elf image ${TSR_FW_TEST_ELF_fw_elf_probe_nok} --only k_fw_elf_probe)
 add_test(NAME fw_elf_test_image_hello COMMAND test_fw_elf hello ${TSR_FW_TEST_ELF_fw_elf_probe_nok})
-set_tests_properties(fw_elf fw_elf_asan fw_elf_link fw_elf_image fw_elf_hello fw_elf_test_image fw_elf_test_image_nok
-                     fw_elf_test_image_hello PROPERTIES LABELS fw TIMEOUT 60)
+set_tests_properties(fw_elf fw_elf_asan fw_elf_link fw_elf_image fw_elf_kinds_exec_ref fw_elf_hello fw_elf_test_image
+                     fw_elf_test_image_nok fw_elf_test_image_hello PROPERTIES LABELS fw TIMEOUT 60)

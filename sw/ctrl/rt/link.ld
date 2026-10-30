@@ -4,12 +4,17 @@
  * Memory map (CC §4.1): ITCM at 0x0000_0000, DTCM at 0x0010_0000. Their sizes are the build's
  * ITCM_BYTES / DTCM_BYTES (what RV_CFG reports; U200: 128 KiB / 64 KiB), passed by the build as
  * --defsym __tsr_itcm_bytes / __tsr_dtcm_bytes; the defaults below are the U200 values. The
- * control-core version the image needs (__tsr_ctl_id_min, CTL_ID[7:0]) comes the same way.
+ * .note.tsr versions come the same way, with no default here (sw/ctrl/cmake/tsr_version.cmake):
+ * __tsr_sdk_abi (the Basis ABI) and __tsr_basis_version (the Tesseract Basis version) from
+ * sw/ctrl/include/tsr/version.h, and __tsr_cap_min (the Tesseract Core capability the image needs,
+ * VERSION[15:0] encoding) from tsr_tables.h's VERSION_VALUE.
  *
  * Sections (SW §6.2):
  *   ITCM, loaded   .vectors  32 vector slots x 4 B at RV_BOOT = 0, reset entry _start at +0x80
  *                  .text     code
  *   DTCM, loaded   .tsr_kernels  kernel table, sorted by index (below)
+ *                  .tsr_kinds    kind table: one 4-byte entry {kind, revision, 0} per TSR_KIND
+ *                                (tsr/rt.hpp), unique kinds in any order (SW §6.9)
  *                  .rodata, .data (incl. .init_array, small data); loaded directly by the host,
  *                            crt0 copies nothing
  *                  .tsr_id   the 8-byte image id (EX §3.2), written by tsr-elf after linking
@@ -33,7 +38,8 @@
  * __zero_start / __zero_end (word aligned), __bss_start / __bss_end, __tsr_crash_start /
  * __tsr_crash_end, __init_array_start / __init_array_end, __trap_stack_bottom / __trap_stack_top,
  * __stack_bottom / __stack_top (16-byte aligned), __tsr_kernels_start / __tsr_kernels_end,
- * __tsr_n_kernels, __itcm_end, __dtcm_load_end, __tsr_logfmt_start / __tsr_logfmt_end.
+ * __tsr_kinds_start / __tsr_kinds_end, __tsr_n_kernels, __itcm_end, __dtcm_load_end,
+ * __tsr_logfmt_start / __tsr_logfmt_end.
  */
 OUTPUT_ARCH("riscv")
 ENTRY(_start)
@@ -48,11 +54,11 @@ MEMORY
 __tsr_stack_bytes      = 8K;
 __tsr_trap_stack_bytes = 512;
 __tsr_kdesc_bytes      = 36;       /* sizeof(tsr_kernel_desc), SW §6.2 */
+__tsr_kind_bytes       = 4;        /* sizeof(tsr_kind_desc), SW §6.2 */
 __tsr_dbg_bytes        = 64;
 __tsr_crash_bytes      = 192;
-/* .note.tsr values that do not come from the layout. */
-__tsr_sdk_abi          = 1;
-PROVIDE(__tsr_ctl_id_min = 2);     /* CTL_ID[7:0] of the control core (EX §5.1) */
+/* .note.tsr values that do not come from the layout: __tsr_sdk_abi, __tsr_basis_version and
+   __tsr_cap_min are the build's --defsym (above); a link without them fails on tsr_note.S. */
 PROVIDE(__tsr_caps_req   = 0);     /* an image needing CAPS bits defines this absolute symbol */
 
 SECTIONS
@@ -77,6 +83,13 @@ SECTIONS
         KEEP(*(SORT_BY_NAME(.tsr_kernels.*)))
         KEEP(*(.tsr_kernels))
         __tsr_kernels_end = .;
+    } > DTCM
+
+    .tsr_kinds : {
+        . = ALIGN(4);
+        __tsr_kinds_start = .;
+        KEEP(*(.tsr_kinds .tsr_kinds.*))
+        __tsr_kinds_end = .;
     } > DTCM
 
     .rodata : {
@@ -205,6 +218,8 @@ ASSERT(_start == ORIGIN(ITCM) + 0x80, "link.ld: the reset entry _start must be a
 ASSERT(SIZEOF(.vectors) >= 0x80, "link.ld: .vectors must hold 32 vector slots of 4 bytes (SW §6.2)")
 ASSERT((__tsr_kernels_end - __tsr_kernels_start) % __tsr_kdesc_bytes == 0,
        "link.ld: .tsr_kernels is not a whole number of kernel table entries (SW §6.2)")
+ASSERT((__tsr_kinds_end - __tsr_kinds_start) % __tsr_kind_bytes == 0,
+       "link.ld: .tsr_kinds is not a whole number of kind table entries (SW §6.2)")
 ASSERT(SIZEOF(.tsr_id) == 8, "link.ld: .tsr_id must be 8 bytes (EX §3.2)")
 ASSERT(SIZEOF(.tsr_dbg) == 0 || SIZEOF(.tsr_dbg) == __tsr_dbg_bytes, "link.ld: .tsr_dbg must be 64 bytes (DB §6.3)")
 ASSERT(SIZEOF(.tsr_crash) == 0 || SIZEOF(.tsr_crash) == __tsr_crash_bytes, "link.ld: .tsr_crash must be 192 bytes (DB §6.3)")

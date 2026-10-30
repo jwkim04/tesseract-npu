@@ -688,7 +688,7 @@ def test_mvm_model_vs_simulator():
     the same MVM through tsr_sim_op (whole SPM compared), for both fmts, ACC, T, strides and N edge
     cases; per-channel weight beats (PERF CH_RD_BEATS) == rows_c x ROW_BEATS."""
     rnd = random.Random(34)
-    cfg = dict(isa.U200_V1, t_max=8, num_ch=3, spm_bytes=256 * 1024)
+    cfg = dict(isa.U200, t_max=8, num_ch=3, spm_bytes=256 * 1024)
     sim = _OpSim(cfg)
     woff, io = isa.REGION_WEIGHT_OFF // 64, isa.REGION_IO_OFF // 64
     n_runs = 0

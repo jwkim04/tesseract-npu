@@ -262,7 +262,7 @@ the alternatives and the full rationale.
 | EX-9 | Image identity | 64-bit prefix of a SHA-256 over the PT_LOAD segments, stored in .tsr_id and echoed in HELLO | Identifies the exact build cheaply; integrity is the CRC's job |
 | EX-10 | Warm restart | SOFT_RESET, reload the DTCM segments, VERIFY ITCM (reload only on a mismatch), boot | Avoids stale .data, about 10× cheaper than a cold load; ITCM is writable so it is checked |
 | EX-11 | CSR map | One host CSR map (EX §5): CTRL/STATUS at 0x020/0x024, CTL_* block dissolved, CTL_PERF merged into PERF, DBG 0x800-0xAFC, 12-bit space kept; CC, DB, VU, AT place registers inside it | A second control block would only duplicate; the map fits 4 KiB |
-| EX-12 | Identity and version | ID stays 'TSR1'; VERSION 0x0000_0200; ADAPTER_VERSION 2 | The host open code already refuses a different ISA major, so no new magic is needed |
+| EX-12 | Identity and version | ID stays 'TSR1'; VERSION 0x0000_0100 = Tesseract Core capability 1.0; CTL_ID[7:0] 1 (0 = no control core); ADAPTER_VERSION major 1 (SW-54) | The host open code refuses a different capability major and CTL_ID = 0, so no new magic is needed |
 | EX-13 | PERF semantics | One counter space gated by ACTIVE (time counters also by ¬QHALT), zeroed by SOFT_RESET; MVM_WAIT and MVM_EMPTY; one slot table incl. VU X+13..15, AT X+16..19, CC X+20..21, DB 61-63 | Restores 'PERF unchanged between executions' per launch; splits MVM idle time into issue- and dependency-bound |
 | EX-14 | x16 field | w0[31:16] is the op-specific field x16 (x16 bit i = w0 bit 16+i); must be 0 for every opcode that does not assign it | VU and AT get 16 bits of encoding space |
 | EX-15 | Opcode allocation | Blocks beside each class (VU 0x13, 0x38-0x3F, 0x41-0x47; AT 0x14-0x17, 0x19-0x1B, 0x21-0x23, 0x34-0x37; SYNC 0x0A-0x0F, 0x70-0x7E); assigned KVST 0x14, ATTQK 0x21, ATTPV 0x22, ASMAX-ANORM 0x34-0x37, VMASK 0x38 (M9); retired opcodes never reused | Areas work in parallel without collisions; class decode stays cheap |
@@ -364,7 +364,7 @@ the alternatives and the full rationale.
 | CC-17 | Log path | EX's 256-word ring; CC part: LOG_PUSH into a 16-entry CDC FIFO, LOG_FREE from a clk_rv push count and a handshaked LOG_RD | Never stalls, never torn, works with wedged queues |
 | CC-18 | RISC-V clock | ap_clk_2 at 166.7 MHz via a v++ clock request, else BUFGCE_DIV ÷ 3 of the 500 MHz platform clock; fully asynchronous CDC | D5/D12; independent of core-clock scaling |
 | CC-19 | Kernel control protocol | ap_ctrl_none per EX §9 (fallback: declare ap_ctrl_hs, never run); xrt::ip and polling; MEM_EN latch; no interrupt on the U200 | XRT 2.18 has no user_managed type and routes AP_CTRL_NONE to xrt::ip |
-| CC-20 | ID and VERSION | Withdrawn: ID 'TSR1' and VERSION 0x0000_0200 per EX-12 | The host open code already refuses a different ISA major |
+| CC-20 | ID and VERSION | Withdrawn: ID 'TSR1' and VERSION 0x0000_0100 (Tesseract Core capability 1.0) per EX-12 | The host open code already refuses a different capability major |
 | CC-21 | PERF counters | Withdrawn: EX §6's counter space; CC adds X+20 SPM_RD_WAIT and X+21 SPM_WR_WAIT | One counter space with protocol-defined gating |
 | CC-22 | Recovery and reset | No partial datapath reset and no op cancel; SOFT_RESET per EX via the SR sequencer; a wedged unit needs a card reset | Unit resets with outstanding AXI bursts break the arbiter contracts |
 | CC-23 | Timing gate (D13 restated) | T1 control core OOC at 166.7 MHz; T2 k4 core OOC at 3.333 ns after the OOC VU run; T3 k4 link ≥ 276.3 MHz, target 300 MHz; T4 k1 link 300 MHz | Restated D13; 300 MHz is pursued by the cycle-identical gather fix |
@@ -465,6 +465,7 @@ the alternatives and the full rationale.
 | SW-51 | klcheck for SWA models (W3b) | --swa-full off (the SWA ring, recorded in the header); token-row scale √n_embd in the embd / floor rows | Long Gemma 4 prompts wrap the ring; the Gemma 4 floor was 8.2 nats without the scale |
 | SW-52 | test-backend-ops for the M7 kinds (W3b) | One ctest per op filter with a minimum supported count; FA / SET_ROWS covered by ggml_tesseract_attn | test-backend-ops cannot place K / V / dst in a KV buffer |
 | SW-53 | Host memory and the M7 kinds (W3b fix; amends R6) | Only MUL_MAT is staged: M7 ops with operands in host memory (control vectors, LoRA, TSR_FORCE_HOST) stay on the CPU; a compute buffer without a window aborts naming it | Correct runs instead of aborts; staging every kind is not needed at -ub 512 -c 4096 |
+| SW-54 | Versions (SW §6.9) | Tesseract Core capability 1.0 in VERSION; Tesseract Basis 0.1.0 (SemVer, tsr/version.h; .note.tsr word 6, HELLO r6); Basis ABI 1; a numerics revision per kind (.tsr_kinds, HELLO r4[31:16]) guarded by fw_kind_revs; backends refuse an older Basis and route only the booted image's kinds | One number per contract (hardware, software, ABI, numerics), as CUDA's compute capability, toolkit, driver ABI; (kind, revision) is a reproducibility key |
 
 ---
 

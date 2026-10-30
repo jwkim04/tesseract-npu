@@ -11,6 +11,9 @@
 // VOP, ST.
 #include "k_elem.hpp"
 
+// The op list kinds this source handles (SW §6.9: .tsr_kinds entries at tsr/opl.hpp kind_rev).
+TSR_KIND(GLU);
+
 namespace tsr {
 
 namespace ek {

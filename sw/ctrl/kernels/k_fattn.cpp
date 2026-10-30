@@ -71,6 +71,9 @@
 #include "k_mulmat.hpp"
 #include "tsr/plan_attn.hpp"
 
+// The op list kinds this source handles (SW §6.9: .tsr_kinds entries at tsr/opl.hpp kind_rev).
+TSR_KIND(FLASH_ATTN);
+
 namespace tsr {
 
 namespace {

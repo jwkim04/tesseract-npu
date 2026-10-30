@@ -96,13 +96,13 @@ function(tsr_transport_test tgt src)
     endif()
 endfunction()
 
-# transport_kdev: the protocol layer on the mock kdev (SW §10.2): identity checks and adapter
-# faults at open (ID, ISA major, ADAPTER_VERSION, NUM_CH, RV_FREQ = 0, ADAPTER_STATUS left by an
-# earlier process), bind (MEM_EN, misaligned base, BASE_LOCKED, held requests), timeouts (SOFT_RESET
-# stuck, no HELLO), the stale core at open (a booted device with a launch running left by a "dead
-# process", with and without TSR_ATTACH), adapter errors during a launch (PLAT_ERR), a hung unit
-# ("card reset needed"), the registry and TSR_MOCK_* parsing, and the chunked / aligned transfer
-# engine (byte-granular transfers under DMA rules from align 1 to 4096, across 4 GiB).
+# transport_kdev: the protocol layer on the mock kdev (SW §10.2): identity checks and adapter faults
+# at open (ID, capability major, CTL_ID = 0, ADAPTER_VERSION, NUM_CH, RV_FREQ = 0, ADAPTER_STATUS
+# left by an earlier process), bind (MEM_EN, misaligned base, BASE_LOCKED, held requests), timeouts
+# (SOFT_RESET stuck, no HELLO), the stale core at open (a booted device with a launch running left
+# by a "dead process", with and without TSR_ATTACH), adapter errors during a launch (PLAT_ERR), a
+# hung unit ("card reset needed"), the registry and TSR_MOCK_* parsing, and the chunked / aligned
+# transfer engine (byte-granular transfers under DMA rules from align 1 to 4096, across 4 GiB).
 tsr_transport_test(test-tsr-kdev tests/test_kdev.cpp)
 add_test(NAME transport_kdev COMMAND test-tsr-kdev)
 set_tests_properties(transport_kdev PROPERTIES TIMEOUT 120)

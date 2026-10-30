@@ -33,14 +33,14 @@
 #include <stdint.h>
 
 #include "tsr_isa.h"
+#include "../../../ctrl/include/tsr/version.h"   // TSR_SDK_ABI, TSR_BASIS_VERSION (HELLO r4 / r6, SW §6.9)
 
 #define CW(o)   (*(volatile uint32_t *)(uintptr_t)(TSR_RV_CTL_BASE + (o)))    // control window, CC §5
 #define CORE(o) (*(volatile uint32_t *)(uintptr_t)(TSR_RV_CORE_BASE + (o)))   // core window, CC §5.3
 #define MIE_FAST(i) (1u << (16u + (i)))                                        // irq_fast[i] (CC §12.3)
 
 #define N_KERNELS   1u
-#define SDK_ABI     1u
-#define RT_VERSION  0x0001u
+#define KINDS_SIG   0xB51Bu          // HELLO r4[31:16] of an image without op list kinds (tsr/opl.hpp kinds_sig)
 #define IMAGE_ID_LO 0x5EED0001u      // a constant instead of EX §3.2's SHA-256 id (no tsr-elf here)
 #define IMAGE_ID_HI 0x0000F00Du
 
@@ -242,7 +242,7 @@ int main(void) {
     qclear();
     CW(TSR_CW_RT_STATE) = TSR_RT_STATE_PHASE_IDLE;
     const uint32_t hello[8] = { TSR_LCQ_R0_TYPE_HELLO, CW(TSR_CW_LQ_HEAD_SEQ), IMAGE_ID_LO, IMAGE_ID_HI,
-                                (RT_VERSION << 16) | SDK_ABI, N_KERNELS, 0u, CW(TSR_CW_MTIME_LO) };
+                                (KINDS_SIG << 16) | TSR_SDK_ABI, N_KERNELS, TSR_BASIS_VERSION, CW(TSR_CW_MTIME_LO) };
     post(hello, 0);
 
     for (;;) {

@@ -30,6 +30,7 @@
 #include <stdint.h>
 
 #include "tsr_isa.h"
+#include "../../../ctrl/include/tsr/version.h"   // TSR_SDK_ABI, TSR_BASIS_VERSION (HELLO r4 / r6, SW §6.9)
 
 #define CW(o)   (*(volatile uint32_t *)(uintptr_t)(TSR_RV_CTL_BASE + (o)))
 #define SPMW(l, i) (*(volatile uint32_t *)(uintptr_t)(TSR_RV_SPM_BASE + 64u * (l) + 4u * (i)))
@@ -191,7 +192,9 @@ int main(void) {
     CW(TSR_CW_RT_STATE) = TSR_RT_STATE_PHASE_BOOT;
     qclear();
     CW(TSR_CW_RT_STATE) = TSR_RT_STATE_PHASE_IDLE;
-    const uint32_t hello[8] = { TSR_LCQ_R0_TYPE_HELLO, CW(TSR_CW_LQ_HEAD_SEQ), 0x5EED0002u, 0u, 1u, 9u, 0u, 0u };
+    // r4 Basis ABI | the signature of an empty kind table (tsr/opl.hpp kinds_sig), r6 the Basis version
+    const uint32_t hello[8] = { TSR_LCQ_R0_TYPE_HELLO, CW(TSR_CW_LQ_HEAD_SEQ), 0x5EED0002u, 0u, (0xB51Bu << 16) | TSR_SDK_ABI,
+                                9u, TSR_BASIS_VERSION, 0u };
     post(hello, 0);
     for (;;) {
         set_mie(MIE_FAST(2));

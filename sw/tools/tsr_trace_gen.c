@@ -5220,7 +5220,7 @@ static int parse_u(const char * s, unsigned long lo, unsigned long hi, unsigned 
 int main(int argc, char ** argv) {
     opts_t o;
     memset(&o, 0, sizeof(o));
-    const tsr_config u200 = TSR_CONFIG_U200_V1;
+    const tsr_config u200 = TSR_CONFIG_U200;
     o.cfg = u200;
     const uint8_t depth_u200[TSR_NUM_UNITS] = { TSR_QDEPTH_U200_DMA, TSR_QDEPTH_U200_QACT, TSR_QDEPTH_U200_MVM,
                                                 TSR_QDEPTH_U200_VU,  TSR_QDEPTH_U200_ATT,  TSR_QDEPTH_U200_SYNC };

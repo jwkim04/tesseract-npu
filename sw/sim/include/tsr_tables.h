@@ -18,12 +18,12 @@ extern "C" {
 // Scalar constants (CONSTANTS)
 // -----------------------------------------------------------------------------------------------
 #define TSR_ID_MAGIC              0x54535231u  // EX §5.1: ID register: "TSR1"
-#define TSR_ISA_MAJOR             2u           // EX §7.5: VERSION[15:8]
-#define TSR_ISA_MINOR             0u           // EX §7.5: VERSION[7:0]
-#define TSR_VERSION_VALUE         0x200u       // EX §7.5: VERSION register: ISA 2.0
-#define TSR_CTL_VERSION           2u           // EX §5.1: CTL_ID[7:0]: control-core version
-#define TSR_ADAPTER_MAJOR         2u           // EX §9.2: ADAPTER_VERSION[31:16] (ADAPTER_VERSION_MAJOR field)
-#define TSR_DBG_VERSION           2u           // DB §10.1: DBG_ID[7:0]; DBG_ID = 0 means the DBG block is absent
+#define TSR_ISA_MAJOR             1u           // EX §7.5: VERSION[15:8]: Tesseract Core capability major
+#define TSR_ISA_MINOR             0u           // EX §7.5: VERSION[7:0]: Tesseract Core capability minor
+#define TSR_VERSION_VALUE         0x100u       // EX §7.5: VERSION register: Tesseract Core capability 1.0
+#define TSR_CTL_VERSION           1u           // EX §5.1: CTL_ID[7:0]: control-core revision; 0 = no control core
+#define TSR_ADAPTER_MAJOR         1u           // EX §9.2: ADAPTER_VERSION[31:16] (ADAPTER_VERSION_MAJOR field)
+#define TSR_DBG_VERSION           1u           // DB §10.1: DBG_ID[7:0]: DBG register map; DBG_ID = 0 means the DBG block is absent
 #define TSR_CANON_NAN             0x7FC00000u  // VU §4.1: the only NaN an fp result has
 #define TSR_INSN_WORDS            8u           // EX §7.1: an instruction is 256 bits, w0..w7, little-endian
 #define TSR_INSN_BYTES            32u          // EX §7.1
@@ -122,14 +122,14 @@ extern "C" {
 // -----------------------------------------------------------------------------------------------
 #define TSR_CSR_ID             0x000u       // [R] EX §5.1: "TSR1" (unchanged)
 #define TSR_CSR_ID_RESET       0x54535231u
-#define TSR_CSR_VERSION        0x004u       // [R] EX §5.1, §7.5: [15:8] ISA major 2, [7:0] minor 0
-#define TSR_CSR_VERSION_RESET  0x00000200u
+#define TSR_CSR_VERSION        0x004u       // [R] EX §5.1, §7.5: Tesseract Core capability: [15:8] major 1, [7:0] minor 0
+#define TSR_CSR_VERSION_RESET  0x00000100u
 #define TSR_CSR_CFG0           0x008u       // [R] EX §5.1: NUM_CH, LANES, T_MAX (unchanged)
 #define TSR_CSR_CFG1           0x00Cu       // [R] EX §5.1: SPM size in lines (unchanged)
 #define TSR_CSR_CFG2           0x010u       // [R] EX §5.1: VL, NSREG, K_MAX/256 (unchanged)
 #define TSR_CSR_CAPS           0x014u       // [R] EX §5.1, §7.5: capability bits
 #define TSR_CSR_CFG3           0x018u       // [R] EX §5.1, §7.5: [15:0] VU, [31:16] AT
-#define TSR_CSR_CTL_ID         0x01Cu       // [R] EX §5.1: control-core version and features
+#define TSR_CSR_CTL_ID         0x01Cu       // [R] EX §5.1: control-core revision and features; 0 = no control core
 #define TSR_CSR_CTRL           0x020u       // [RW/W1] EX §5.1, §5.2: device control
 #define TSR_CSR_STATUS         0x024u       // [R/W1C] EX §5.1, §5.3: device status; W1C clears the sticky bits only
 #define TSR_CSR_RV_BOOT        0x028u       // [RW] EX §5.1: boot vector, taken when RV_RUN rises
@@ -439,7 +439,7 @@ extern "C" {
 #define TSR_SAXI_CH_BASE_HI(i) (0x044u + 8u * (i))
 #define TSR_SAXI_ADAPTER_CTRL    0x00E0u  // [RW] EX §9.2: MEM_EN
 #define TSR_SAXI_ADAPTER_STATUS  0x00F0u  // [R/W1C] EX §9.2: sticky adapter errors
-#define TSR_SAXI_ADAPTER_VERSION 0x00F4u  // [R] EX §9.2: {16'h0002, 8'h00, NUM_CH}
+#define TSR_SAXI_ADAPTER_VERSION 0x00F4u  // [R] EX §9.2: {16'h0001, 8'h00, NUM_CH}
 #define TSR_SAXI_CORE_BASE       0x1000u  // [-] EX §9.2: core CSR window: 0x1000 + offset, any time; writes need WSTRB = 0xF
 #define TSR_SAXI_CORE_BYTES      4096u
 
@@ -522,11 +522,11 @@ extern "C" {
 #define TSR_W0_X16        0xFFFF0000u  // [31:16] op-specific field; must be 0 (ILLEGAL_OP) where the op does not assign it
 #define TSR_W0_X16_LSB    16u
 #define TSR_W0_X16_W      16u
-// VERSION (EX §5.1, §7.5): ISA version
-#define TSR_VERSION_MINOR     0x000000FFu  // [7:0] 0
+// VERSION (EX §5.1, §7.5): Tesseract Core capability MAJOR.MINOR; [31:16] 0
+#define TSR_VERSION_MINOR     0x000000FFu  // [7:0] capability minor (0)
 #define TSR_VERSION_MINOR_LSB 0u
 #define TSR_VERSION_MINOR_W   8u
-#define TSR_VERSION_MAJOR     0x0000FF00u  // [15:8] 2
+#define TSR_VERSION_MAJOR     0x0000FF00u  // [15:8] capability major (1)
 #define TSR_VERSION_MAJOR_LSB 8u
 #define TSR_VERSION_MAJOR_W   8u
 // CFG0 (EX §5.1): geometry configuration
@@ -583,8 +583,8 @@ extern "C" {
 #define TSR_CFG3_PCAP16       0xFFFF0000u  // [31:16] PCAP / 16 (U200: 584)
 #define TSR_CFG3_PCAP16_LSB   16u
 #define TSR_CFG3_PCAP16_W     16u
-// CTL_ID (EX §5.1): control-core version and features
-#define TSR_CTL_ID_VERSION     0x000000FFu  // [7:0] control-core version (2)
+// CTL_ID (EX §5.1): control-core revision and features
+#define TSR_CTL_ID_VERSION     0x000000FFu  // [7:0] control-core revision (1); 0: no control core
 #define TSR_CTL_ID_VERSION_LSB 0u
 #define TSR_CTL_ID_VERSION_W   8u
 #define TSR_CTL_ID_DM          0x00000100u  // [8] debug module
@@ -861,11 +861,11 @@ extern "C" {
 #define TSR_ADAPTER_STATUS_ERR_COUNT           0xFFFF0000u  // [31:16] saturating count of error responses
 #define TSR_ADAPTER_STATUS_ERR_COUNT_LSB       16u
 #define TSR_ADAPTER_STATUS_ERR_COUNT_W         16u
-// ADAPTER_VERSION (EX §9.2): {16'h0002, 8'h00, NUM_CH}
+// ADAPTER_VERSION (EX §9.2): {16'h0001, 8'h00, NUM_CH}
 #define TSR_ADAPTER_VERSION_NUM_CH     0x000000FFu  // [7:0]
 #define TSR_ADAPTER_VERSION_NUM_CH_LSB 0u
 #define TSR_ADAPTER_VERSION_NUM_CH_W   8u
-#define TSR_ADAPTER_VERSION_MAJOR      0xFFFF0000u  // [31:16] 2
+#define TSR_ADAPTER_VERSION_MAJOR      0xFFFF0000u  // [31:16] 1
 #define TSR_ADAPTER_VERSION_MAJOR_LSB  16u
 #define TSR_ADAPTER_VERSION_MAJOR_W    16u
 // HANDLE (EX §4.3): DRAM handle (descriptor args, OPL, DBG_TRW_BASE)
@@ -921,13 +921,23 @@ extern "C" {
 #define TSR_LCQ_R0_STATUS_ABORTED    5u           // cancelled (ERR_CODE 0), or the first error is ABORTED (ERR_CODE 8)
 #define TSR_LCQ_R0_STATUS_PLAT_ERR   6u           // STATUS.PLAT_ERR was set when the runtime answered
 #define TSR_LCQ_R0_STATUS_STOPPED    7u           // the kernel honoured a soft stop
-// HELLO_R4 (EX §4.4): HELLO record word r4
-#define TSR_HELLO_R4_SDK_ABI        0x0000FFFFu  // [15:0] SDK ABI version
-#define TSR_HELLO_R4_SDK_ABI_LSB    0u
-#define TSR_HELLO_R4_SDK_ABI_W      16u
-#define TSR_HELLO_R4_RT_VERSION     0xFFFF0000u  // [31:16] runtime version
-#define TSR_HELLO_R4_RT_VERSION_LSB 16u
-#define TSR_HELLO_R4_RT_VERSION_W   16u
+// HELLO_R4 (EX §4.4, SW §6.9): HELLO record word r4
+#define TSR_HELLO_R4_SDK_ABI       0x0000FFFFu  // [15:0] Basis ABI
+#define TSR_HELLO_R4_SDK_ABI_LSB   0u
+#define TSR_HELLO_R4_SDK_ABI_W     16u
+#define TSR_HELLO_R4_KINDS_SIG     0xFFFF0000u  // [31:16] kind table signature (opl::kinds_sig)
+#define TSR_HELLO_R4_KINDS_SIG_LSB 16u
+#define TSR_HELLO_R4_KINDS_SIG_W   16u
+// HELLO_R6 (EX §4.4, SW §6.9): HELLO record word r6: Tesseract Basis version; [31:24] 0
+#define TSR_HELLO_R6_PATCH     0x000000FFu  // [7:0]
+#define TSR_HELLO_R6_PATCH_LSB 0u
+#define TSR_HELLO_R6_PATCH_W   8u
+#define TSR_HELLO_R6_MINOR     0x0000FF00u  // [15:8]
+#define TSR_HELLO_R6_MINOR_LSB 8u
+#define TSR_HELLO_R6_MINOR_W   8u
+#define TSR_HELLO_R6_MAJOR     0x00FF0000u  // [23:16]
+#define TSR_HELLO_R6_MAJOR_LSB 16u
+#define TSR_HELLO_R6_MAJOR_W   8u
 // ISSUE_PUSH (CC §5.1): ISSUE_PUSH write data
 #define TSR_ISSUE_PUSH_REC       0x00000001u  // [0] completion record wanted (DB §8.2)
 #define TSR_ISSUE_PUSH_REC_LSB   0u
@@ -1172,7 +1182,7 @@ extern "C" {
 #define TSR_TRW_W0_KIND_DROP   4u
 #define TSR_TRW_W0_KIND_PAD    15u          // ignored
 // DBG_ID (DB §10.1): 0 = block absent
-#define TSR_DBG_ID_VERSION       0x000000FFu  // [7:0] 2
+#define TSR_DBG_ID_VERSION       0x000000FFu  // [7:0] 1
 #define TSR_DBG_ID_VERSION_LSB   0u
 #define TSR_DBG_ID_VERSION_W     8u
 #define TSR_DBG_ID_HIST          0x00000100u  // [8] history
@@ -1570,6 +1580,7 @@ extern "C" {
 #define TSR_LCQ_HELLO_ID_HI_WORD       3u  // image id [63:32]
 #define TSR_LCQ_HELLO_VERSIONS_WORD    4u  // layout HELLO_R4
 #define TSR_LCQ_HELLO_N_KERNELS_WORD   5u  // kernel count
+#define TSR_LCQ_HELLO_BASIS_WORD       6u  // Tesseract Basis version, layout HELLO_R6
 #define TSR_LCQ_HELLO_BOOT_CYCLES_WORD 7u  // boot core cycles
 // LCQ_TRAP (EX §4.4, DB §6.3): TRAP record (0x81)
 #define TSR_LCQ_TRAP_NWORDS        8u

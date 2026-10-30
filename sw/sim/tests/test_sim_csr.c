@@ -1,11 +1,11 @@
 // test_sim_csr.c — host CSR port (EX §5) and the RISC-V side of the rings (EX §4.5): identity and
-// configuration (VERSION 0x0200), the firmware loader with receive CRC and VERIFY (EX §3.3, incl.
-// a corrupted TCM and an address-decode fault), the launch queue and completion ring (ordering,
-// sequence numbers, ACTIVE, flow control, faults, read-pointer rule), watermarks and the hard
-// cancel, the log ring (DB §6.1 records, overflow drop with LOG_DROPPED), SOFT_RESET (EX §8.5:
-// what it clears and keeps, SR_BUSY over a running op), PERF gating by ACTIVE and the LO/HI
-// snapshot, STATUS levels / sticky bits, MTIME and the timer, and one launch end to end through a
-// scripted RISC-V agent on the time base, PERF RV_WFI gated by ACTIVE.
+// configuration (VERSION 0x0100: Tesseract Core capability 1.0), the firmware loader with receive
+// CRC and VERIFY (EX §3.3, incl. a corrupted TCM and an address-decode fault), the launch queue
+// and completion ring (ordering, sequence numbers, ACTIVE, flow control, faults, read-pointer rule),
+// watermarks and the hard cancel, the log ring (DB §6.1 records, overflow drop with LOG_DROPPED),
+// SOFT_RESET (EX §8.5: what it clears and keeps, SR_BUSY over a running op), PERF gating by ACTIVE
+// and the LO/HI snapshot, STATUS levels / sticky bits, MTIME and the timer, and one launch end to
+// end through a scripted RISC-V agent on the time base, PERF RV_WFI gated by ACTIVE.
 #include "test_sim_util.h"
 #include "tsr_sim_int.h"
 
@@ -48,12 +48,12 @@ static uint32_t crc32_words(const uint32_t * w, size_t n) {
 static void test_identity(void) {
     tsr_sim * s = mk_sim();
     CHECK(rd(s, TSR_CSR_ID) == 0x54535231u, "ID");
-    CHECK(rd(s, TSR_CSR_VERSION) == 0x00000200u, "VERSION 0x%x", rd(s, TSR_CSR_VERSION));
+    CHECK(rd(s, TSR_CSR_VERSION) == 0x00000100u, "VERSION 0x%x (Tesseract Core capability 1.0)", rd(s, TSR_CSR_VERSION));
     CHECK(rd(s, TSR_CSR_CFG0) == (4u | (128u << 8) | (1u << 20)), "CFG0");
     CHECK(rd(s, TSR_CSR_CFG1) == 65536u, "CFG1");
     CHECK(rd(s, TSR_CSR_CFG2) == (16u | (16u << 8) | (128u << 16)), "CFG2");
     CHECK(rd(s, TSR_CSR_CAPS) == 0 && rd(s, TSR_CSR_CFG3) == 0, "CAPS / CFG3 without VU and AT");
-    CHECK(TSR_GET(rd(s, TSR_CSR_CTL_ID), TSR_CTL_ID_VERSION) == 2 && (rd(s, TSR_CSR_CTL_ID) & TSR_CTL_ID_LOG), "CTL_ID 0x%x",
+    CHECK(TSR_GET(rd(s, TSR_CSR_CTL_ID), TSR_CTL_ID_VERSION) == 1 && (rd(s, TSR_CSR_CTL_ID) & TSR_CTL_ID_LOG), "CTL_ID 0x%x",
           rd(s, TSR_CSR_CTL_ID));
     CHECK(rd(s, TSR_CSR_RV_CFG) == (128u | (64u << 16)), "RV_CFG 0x%x", rd(s, TSR_CSR_RV_CFG));
     const uint32_t f = rd(s, TSR_CSR_RV_FREQ);
@@ -90,7 +90,7 @@ static void test_identity(void) {
     CHECK(rd(s, TSR_CSR_SREG(3)) == f2u(1.5f), "SREG read-only");
     // The RISC-V view of the configuration
     CHECK(cwr(s, TSR_CW_ISSUE_UNITS) == 0x2Fu, "ISSUE_UNITS 0x%x (unit 4 absent)", cwr(s, TSR_CW_ISSUE_UNITS));
-    CHECK(tsr_sim_corewin_read(s, TSR_CSR_VERSION) == 0x200u && tsr_sim_corewin_read(s, TSR_CSR_Q_DEPTH) == TSR_QDEPTH_U200_REG,
+    CHECK(tsr_sim_corewin_read(s, TSR_CSR_VERSION) == 0x100u && tsr_sim_corewin_read(s, TSR_CSR_Q_DEPTH) == TSR_QDEPTH_U200_REG,
           "core window identity");
     tsr_sim_destroy(s);
 }

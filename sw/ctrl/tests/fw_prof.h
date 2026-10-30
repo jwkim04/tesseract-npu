@@ -205,6 +205,9 @@ public:
         return -1;
     }
 
+    // The function symbols (ascending address; demangled names), for a harness that counts entries.
+    const std::vector<sym> & symbols() const { return syms_; }
+
     const char * func_of(uint32_t pc) const {
         auto it = std::upper_bound(syms_.begin(), syms_.end(), pc, [](uint32_t v, const sym & s) { return v < s.lo; });
         if (it == syms_.begin()) return "?";

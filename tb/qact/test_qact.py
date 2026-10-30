@@ -99,7 +99,7 @@ def full_config(over: dict) -> dict:
     return cfg
 
 
-def qact_sources(names=("tsr_pkg.sv", "tsr_fp_pkg.sv", "tsr_sram_1r1w.sv", "tsr_fp_mul.sv",
+def qact_sources(names=("tsr_tables_pkg.sv", "tsr_pkg.sv", "tsr_fp_pkg.sv", "tsr_sram_1r1w.sv", "tsr_fp_mul.sv",
                          "tsr_fp_div.sv", "tsr_qact.sv")):
     """The files tsr_qact needs, in filelist order. $TSR_QACT_RTL replaces rtl/core/tsr_qact.sv
     (used to check that the bench catches seeded bugs)."""
@@ -132,7 +132,7 @@ RTL_SPM_CFG = dict(K_MAX=2048, T_MAX=4, SPM_BYTES=64 * 1024, SPM_RD_LAT=2, BANK_
 
 
 def run_rtl_spm(tests=("qact_rtl_spm",), extra_env: dict | None = None):
-    srcs = qact_sources(("tsr_pkg.sv", "tsr_fp_pkg.sv", "tsr_sram_1r1w.sv", "tsr_fp_mul.sv",
+    srcs = qact_sources(("tsr_tables_pkg.sv", "tsr_pkg.sv", "tsr_fp_pkg.sv", "tsr_sram_1r1w.sv", "tsr_fp_mul.sv",
                          "tsr_fp_div.sv", "tsr_spm.sv", "tsr_qact.sv"))
     full = dict(RTL_SPM_CFG)
     full["LINES"] = full["SPM_BYTES"] // 64

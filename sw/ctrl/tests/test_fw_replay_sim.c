@@ -151,7 +151,7 @@ static void set_run(const char * root, const char * set, uint32_t flags, size_t 
 // ---------------------------------------------------------------------------
 static void synthetic(uint32_t n_sched) {
     tsr_trace2 * t = tsr_trace2_new();
-    tsr_config core = TSR_CONFIG_U200_V1;
+    tsr_config core = TSR_CONFIG_U200;
     core.ch_bytes = 1ull << 28;
     tsr_trace2_config_from_core(&t->cfg, &core);
     t->cfg.ctl_id = tsr_trace2_ctl_id_full();
@@ -200,7 +200,7 @@ static void synthetic(uint32_t n_sched) {
 // The stream: deps = the previous record (chain = 1) or none (chain = 0); same ops otherwise.
 static tsr_trace2 * serial_stream(int chain) {
     tsr_trace2 * t = tsr_trace2_new();
-    tsr_config core = TSR_CONFIG_U200_V1;
+    tsr_config core = TSR_CONFIG_U200;
     core.ch_bytes = 1ull << 28;
     tsr_trace2_config_from_core(&t->cfg, &core);
     t->cfg.ctl_id = tsr_trace2_ctl_id_full();

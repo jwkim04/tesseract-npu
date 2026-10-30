@@ -91,7 +91,7 @@ uint32_t h1(uint32_t beat) { return (1u << 28) | beat; }
 // -----------------------------------------------------------------------------------------------
 tsr_sim * mk_sim(const char * sched, uint32_t race, uint32_t caps, uint32_t t_max = 1, const uint8_t * q_depth = nullptr,
                  uint32_t num_ch = NCH, uint64_t ch_bytes = 1ull << 30) {
-    tsr_config c = TSR_CONFIG_U200_V1;
+    tsr_config c = TSR_CONFIG_U200;
     c.num_ch = num_ch;
     c.ch_bytes = ch_bytes;
     c.caps = caps;

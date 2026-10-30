@@ -7,9 +7,13 @@
 //
 // Per kind:
 //   boot      cold, then warm (no ITCM write), a different image (cold), back (cold); a corrupted
-//             ITCM word found by VERIFY on a warm restart (that segment reloaded); image-id and
-//             kernel-count mismatches at HELLO; a .note.tsr requirement the device lacks; the mock's
-//             TCM write fault (the receive CRC matches, VERIFY does not: the boot fails);
+//             ITCM word found by VERIFY on a warm restart (that segment reloaded); image-id,
+//             kernel-count, Tesseract Basis version and kind table signature mismatches at HELLO;
+//             .note.tsr requirements the device lacks (CAPS, Tesseract Core capability 1.1 and 2.0);
+//             the mock's TCM write fault (the receive CRC matches, VERIFY does not: the boot fails);
+//   versions  tsr_image_open on mutated copies of tsr-fw.elf (Basis ABI 2, no Basis version, a newer
+//             Basis version, a kind declared twice); tsr_transport_versions / tsr_versions_str after
+//             booting tsr-fw.elf (SW §6.9);
 //   launches  PING (ARG0 echo), rt_args0-7 with seven arguments (the kernel sees nargs of them, its
 //             event carries them, RET), KERNEL_ERR, TILE_ERR (first-error ticket / info / w0 / pidx),
 //             rt_copy (DRAM out = in), BAD_DESC (unknown TYPE, a reserved w0 bit, KERNEL beyond the
@@ -46,6 +50,8 @@
 
 #include <atomic>
 
+#include "tsr/opl.hpp"   // kind_rev, kinds_sig (SW §6.9)
+#include "tsr/version.h"   // TSR_BASIS_VERSION, TSR_SDK_ABI
 #include "tsr_dm.h"
 #include "tsr_elf.h"
 #include "tsr_fw_paths.h"
@@ -87,6 +93,45 @@ static std::atomic<int> g_fail{ 0 }, g_checks{ 0 };
 namespace {
 
 std::string g_addr2line, g_scratch = ".";
+
+// The numbers the build defines (tsr/version.h, tsr_tables.h VERSION, tsr/opl.hpp kind_rev): the version tests
+// derive what they expect from them, so a release or a kind revision bump does not edit this file.
+uint32_t core_cap() { return TSR_VERSION_VALUE & 0xFFFFu; }
+std::string cap_str(uint32_t cap) { return std::to_string(cap >> 8) + "." + std::to_string(cap & 0xFFu); }
+std::string basis_str(uint32_t v) {
+    return std::to_string(TSR_BASIS_MAJOR_OF(v)) + "." + std::to_string(TSR_BASIS_MINOR_OF(v)) + "." + std::to_string(TSR_BASIS_PATCH_OF(v));
+}
+uint32_t n_defined_kinds() {
+    uint32_t n = 0;
+    for (uint32_t k = 0; k < opl::N_KINDS; ++k) n += opl::kind_rev(k) != 0u;
+    return n;
+}
+// "NAME rN" of a kind, as tsr_versions_str lists it.
+std::string kind_rev_str(uint32_t k) { return std::string(opl::kind_name(k)) + " r" + std::to_string(opl::kind_rev(k)); }
+
+// What f writes to stderr (the transport's messages), also echoed there.
+std::string stderr_of(const std::function<void()> & f) {
+    fflush(stderr);
+    FILE * tmp = tmpfile();
+    const int saved = dup(2);
+    if (tmp == nullptr || saved < 0) {
+        f();
+        return "";
+    }
+    dup2(fileno(tmp), 2);
+    f();
+    fflush(stderr);
+    dup2(saved, 2);
+    close(saved);
+    std::string out;
+    rewind(tmp);
+    char buf[4096];
+    size_t k;
+    while ((k = fread(buf, 1, sizeof(buf), tmp)) > 0) out.append(buf, k);
+    fclose(tmp);
+    fputs(out.c_str(), stderr);
+    return out;
+}
 const char * const RT_IMAGE = TSR_FW_TEST_IMAGE_fw_rt;
 const char * const FW_IMAGE = TSR_FW_DEFAULT_IMAGE;
 
@@ -229,18 +274,43 @@ void test_boot(session & s) {
     image_test_set_n_kernels(s.rt, nk + 1);
     CHECK(tsr_transport_boot(s.t, s.rt) == TSR_TE_IMAGE, "%s: HELLO with another kernel count refused", K);
     image_test_set_n_kernels(s.rt, nk);
-    // .note.tsr requirements (EX §3.1): a CAPS bit the device lacks; a control-core version above it.
+    // .note.tsr requirements (EX §3.1, SW §6.9): a CAPS bit the device lacks; a Tesseract Core
+    // capability the device does not have (a higher minor, another major).
     const image_note n0 = image_get_note(s.rt);
     image_note n = n0;
     n.caps_req = 0x00010000u;
     image_test_set_note(s.rt, n);
     CHECK(tsr_transport_boot(s.t, s.rt) == TSR_TE_IMAGE, "%s: CAPS requirement refused before loading", K);
     n = n0;
-    n.ctl_id_min = 200;
+    const uint32_t minor_up = core_cap() + 1u, major_up = (core_cap() & 0xFF00u) + 0x0100u;
+    n.cap_min = uint16_t(minor_up);
     image_test_set_note(s.rt, n);
-    CHECK(tsr_transport_boot(s.t, s.rt) == TSR_TE_IMAGE, "%s: control-core version requirement refused", K);
+    std::string err = stderr_of([&] { CHECK(tsr_transport_boot(s.t, s.rt) == TSR_TE_IMAGE, "%s: a higher capability minor refused", K); });
+    CHECK(err.find(" Tesseract Core capability " + cap_str(minor_up) + " (device " + cap_str(core_cap()) + ");") != std::string::npos,
+          "%s: capability message: %s", K, err.c_str());
+    n.cap_min = uint16_t(major_up);
+    image_test_set_note(s.rt, n);
+    err = stderr_of([&] { CHECK(tsr_transport_boot(s.t, s.rt) == TSR_TE_IMAGE, "%s: another capability major refused", K); });
+    CHECK(err.find(" Tesseract Core capability " + cap_str(major_up) + " (device " + cap_str(core_cap()) + ");") != std::string::npos,
+          "%s: capability message: %s", K, err.c_str());
+    // HELLO r6 / r4[31:16] (SW §6.9): the device reports another Basis version or kind table than the
+    // host read from the image.
+    n = n0;
+    const uint32_t basis_up = TSR_BASIS_VERSION + 0x100u;   // the next minor
+    n.basis_version = basis_up;
+    image_test_set_note(s.rt, n);
+    err = stderr_of([&] { CHECK(tsr_transport_boot(s.t, s.rt) == TSR_TE_IMAGE, "%s: HELLO with another Basis version refused", K); });
+    CHECK(err.find(" Tesseract Basis " + basis_str(TSR_BASIS_VERSION) + ", expected " + basis_str(basis_up) + ";") != std::string::npos,
+          "%s: Basis message: %s", K, err.c_str());
     image_test_set_note(s.rt, n0);
-    CHECK(tsr_transport_boot(s.t, s.rt) == 0, "%s: boot again with the true id and note", K);
+    uint8_t rev[64] = {};
+    rev[0x10] = 2;                          // the host believes in MUL_MAT r2; fw_rt has no kinds
+    image_test_set_kinds(s.rt, rev);
+    err = stderr_of([&] { CHECK(tsr_transport_boot(s.t, s.rt) == TSR_TE_IMAGE, "%s: HELLO with another kind table refused", K); });
+    CHECK(err.find(" kind table signature 0xb51b, expected 0x") != std::string::npos, "%s: kind table message: %s", K, err.c_str());
+    std::memset(rev, 0, sizeof(rev));
+    image_test_set_kinds(s.rt, rev);
+    CHECK(tsr_transport_boot(s.t, s.rt) == 0, "%s: boot again with the true id, note and kind table", K);
     tsr_image_close(fw);
 }
 
@@ -910,6 +980,94 @@ void measure(session & s) {
     tsr_image_close(fw);
 }
 
+// SW §6.9: what tsr_image_open refuses (mutated copies of tsr-fw.elf), and the versions of a booted
+// device.
+void test_versions() {
+    printf("== versions\n");
+    char err[256];
+    tsr_elf * e = nullptr;
+    if (tsr_elf_read(FW_IMAGE, &e, err, sizeof(err)) != 0) {
+        CHECK(0, "tsr-elf: %s", err);
+        return;
+    }
+    size_t nb = 0;
+    const uint8_t * b0 = tsr_elf_bytes(e, &nb);
+    const std::vector<uint8_t> good(b0, b0 + nb);
+    uint32_t a = 0, note_off = 0, kinds_off = 0, sz = 0, ty = 0;
+    CHECK(tsr_elf_section(e, ".note.tsr", &a, &note_off, &sz, &ty) == 0 && tsr_elf_section(e, ".tsr_kinds", &a, &kinds_off, &sz, &ty) == 0,
+          "tsr-fw.elf: .note.tsr and .tsr_kinds");
+    uint8_t rev[64];
+    CHECK(tsr_elf_kinds(e, rev, nullptr, 0) == int(n_defined_kinds()), "tsr-fw.elf declares the %u kinds of tsr/opl.hpp", n_defined_kinds());
+    const uint32_t sig = tsr::opl::kinds_sig(rev);
+    tsr_elf_free(e);
+    const uint32_t desc = note_off + 16u;   // .note.tsr: 12-byte header, "TSR\0", then the descriptor
+    auto put32 = [](std::vector<uint8_t> & b, uint32_t at, uint32_t v) { for (int i = 0; i < 4; ++i) b[at + i] = uint8_t(v >> 8 * i); };
+    struct mut { const char * what; std::function<void(std::vector<uint8_t> &)> f; int rc; const char * msg; };
+    const std::string abi_msg = ": Basis ABI " + std::to_string(TSR_SDK_ABI + 1u) + ", this host implements ABI " + std::to_string(TSR_SDK_ABI);
+    const mut muts[] = {
+        { "another Basis ABI", [&](std::vector<uint8_t> & b) { put32(b, desc, TSR_SDK_ABI + 1u); }, TSR_TE_IMAGE,
+          abi_msg.c_str() },
+        { "no Basis version", [&](std::vector<uint8_t> & b) { put32(b, desc + 24, 0); }, TSR_TE_IMAGE,
+          ": no Tesseract Basis version in .note.tsr (built before versioning)" },
+        { "a newer Basis minor with the same ABI", [&](std::vector<uint8_t> & b) { put32(b, desc + 24, TSR_BASIS_VERSION + 0x100u); }, 0, "" },
+        { "kind 0x10 twice", [&](std::vector<uint8_t> & b) { b[kinds_off + 4] = b[kinds_off]; }, TSR_TE_IMAGE,
+          ": malformed kind table .tsr_kinds (kind 0x" },
+    };
+    for (const mut & m : muts) {
+        std::vector<uint8_t> b = good;
+        m.f(b);
+        const std::string p = g_scratch + "/versions.elf";
+        FILE * f = fopen(p.c_str(), "wb");
+        CHECK(f && fwrite(b.data(), 1, b.size(), f) == b.size(), "write %s", p.c_str());
+        if (f) fclose(f);
+        tsr_image * img = nullptr;
+        int rc = 0;
+        const std::string msg = stderr_of([&] { rc = tsr_image_open(p.c_str(), &img); });
+        CHECK(rc == m.rc, "tsr_image_open with %s: rc %d, expected %d (%s)", m.what, rc, m.rc, msg.c_str());
+        CHECK(msg.find(m.msg) != std::string::npos, "tsr_image_open with %s: message: %s", m.what, msg.c_str());
+        if (img) {
+            tsr_versions v;
+            CHECK(tsr_image_versions(img, &v) == 0 && v.basis == TSR_BASIS_VERSION + 0x100u && v.core == 0 && v.abi == TSR_SDK_ABI,
+                  "%s: image versions", m.what);
+            tsr_image_close(img);
+        }
+    }
+    // A booted device: the capability and CAPS of the device, the image's Basis version, ABI and
+    // kinds as HELLO proved them.
+    session s("sim");
+    if (!s.ok) return;
+    tsr_image * fw = nullptr;
+    CHECK(tsr_image_open(FW_IMAGE, &fw) == 0 && tsr_transport_boot(s.t, fw) == 0, "boot tsr-fw.elf");
+    tsr_versions v;
+    CHECK(tsr_transport_versions(s.t, &v) == 0, "tsr_transport_versions");
+    CHECK(v.core == core_cap() && v.caps == tsr_transport_config(s.t)->caps && v.core_min == core_cap() && v.basis == TSR_BASIS_VERSION &&
+              v.basis == tsr_basis_version() && v.abi == TSR_SDK_ABI && v.n_kinds == n_defined_kinds() &&
+              v.kind_rev[opl::K_FLASH_ATTN] == opl::kind_rev(opl::K_FLASH_ATTN) && v.kind_rev[0x20] == 0 && v.kinds_sig == sig &&
+              v.image_id == tsr_image_id(fw),
+          "versions: core 0x%04x basis 0x%06x abi %u kinds %u sig 0x%04x", v.core, v.basis, v.abi, v.n_kinds, v.kinds_sig);
+    char str[512];
+    const int len = tsr_versions_str(&v, 0, str, sizeof(str));
+    const std::string core_pre = "Tesseract Core " + cap_str(core_cap()) + " (VU";
+    const std::string basis_part = ", Tesseract Basis " + basis_str(TSR_BASIS_VERSION) + " (ABI " + std::to_string(TSR_SDK_ABI) + ", " +
+                                   std::to_string(n_defined_kinds()) + " kinds)";
+    CHECK(len > 0 && strstr(str, core_pre.c_str()) == str && strstr(str, basis_part.c_str()) != nullptr, "tsr_versions_str: %s", str);
+    tsr_versions_str(&v, 1, str, sizeof(str));
+    char sigs[32];
+    snprintf(sigs, sizeof(sigs), ", kinds 0x%04x: ", sig);
+    const std::string kinds_pre = std::string(sigs) + kind_rev_str(opl::K_NOP) + " " + kind_rev_str(opl::K_JOIN) + " " +
+                                  kind_rev_str(opl::K_MUL_MAT) + " ";
+    CHECK(strstr(str, kinds_pre.c_str()) != nullptr && strstr(str, (" " + kind_rev_str(opl::K_UNARY)).c_str()) != nullptr,
+          "tsr_versions_str verbose: %s", str);
+    printf("versions: %s\n", str);
+    tsr_image_close(fw);
+    // An image of an older Basis (fw_basis_old, 0.0.5 in its note and HELLO r6) boots: the Basis rule
+    // is the backends' (ggml-tesseract, sw/rt), so captured traces of older images stay replayable.
+    tsr_image * old = nullptr;
+    CHECK(tsr_image_open(TSR_FW_TEST_IMAGE_fw_basis_old, &old) == 0 && tsr_transport_boot(s.t, old) == 0, "boot fw_basis_old");
+    CHECK(tsr_transport_versions(s.t, &v) == 0 && v.basis == 0x000005u, "fw_basis_old: Tesseract Basis 0x%06x", v.basis);
+    tsr_image_close(old);
+}
+
 void run_kind(const std::string & kind, observed * ob) {
     printf("== %s\n", kind.c_str());
     session s(kind);
@@ -984,6 +1142,7 @@ int main(int argc, char ** argv) {
     }
     compare("sim minimal vs full reads", sim_min, sim_full);
     compare("sim vs mock", sim_min, mock_min);
+    test_versions();
     test_gdb_wait("sim");
     test_stale_debug_config();
     test_tcm_fault();

@@ -5,7 +5,7 @@
 // Owner: adapter agent (docs/platform-u200.md §2, §3; docs/design EX §9). The host only uses register
 // access (EX §9.1, `ap_ctrl_none`); there is no start sequencer, interrupt or kernel argument
 // register. The adapter gains ADAPTER_CTRL.MEM_EN in Y5 (bases latched and
-// locked, core memory requests held while 0) and ADAPTER_VERSION 2 (EX §9.2).
+// locked, core memory requests held while 0); ADAPTER_VERSION stays major 1 (EX §9.2).
 //
 // Register map (byte offsets; reads of unmapped offsets return 0, writes to them are ignored;
 // offsets are decoded on bits [12:2]; every response is OKAY):
@@ -18,7 +18,7 @@
 //                   at MEM_EN, Y5); bits [31:16] saturating count of error responses (R beats and B
 //                   with RRESP / BRESP != OKAY). W1C: a 1 in bit k (k < 3) clears bit k, a 1 in
 //                   any of bits [31:16] clears the count. A new event in the same cycle wins.
-//   0x0F4           ADAPTER_VERSION (R) = {16'h0001, 8'h00, NUM_CH} (2 with the full map, Y5)
+//   0x0F4           ADAPTER_VERSION (R) = {16'h0001, 8'h00, NUM_CH} (EX §9.2: major 1)
 //   0x1000 + off    tsr_core CSR port, off < 0x1000 (EX §5), at any time. Writes need WSTRB = 4'hF
 //                   (others are dropped: the CSR port has no byte enables).
 // Writes use the byte strobes (RW registers); ADAPTER_STATUS acts on the bytes whose strobe is set.
@@ -78,7 +78,8 @@ module tsr_xrt_ctrl
     $fatal(1, "tsr_xrt_ctrl: NUM_CH must be in [1, 16]");
   end
 
-  localparam logic [31:0] ADAPTER_VERSION = {16'h0001, 8'h00, 8'(NUM_CH)};
+  // The adapter major is the table's (EX §9.2), the host's TSR_ADAPTER_MAJOR: one source.
+  localparam logic [31:0] ADAPTER_VERSION = {16'(tsr_tables_pkg::TSR_ADAPTER_MAJOR), 8'h00, 8'(NUM_CH)};
 
   // Register offsets (byte address bits [11:0] of the adapter half, bit 12 = 0)
   localparam logic [11:0] A_BASE0    = 12'h040;

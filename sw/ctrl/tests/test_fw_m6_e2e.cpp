@@ -8,8 +8,9 @@
 //        - the production image tsr-fw.elf cold-loaded through the host CSR loader with the receive
 //          CRC and VERIFY (EX §3.3), booted; HELLO first with r2 / r3 = the image id that tsr-elf
 //          computes (sw/ctrl/tools/tsr-elf), that tsr-elf stamped into .tsr_id and that the
-//          simulator's trace library computes (tsr_trace2_image_id), r4 = the SDK ABI of .note.tsr,
-//          r5 = 3 kernels; graph / selftest / replay at EX §4.6's indices 0 / 1 / 2; PING -> PONG;
+//          simulator's trace library computes (tsr_trace2_image_id), r4 = the Basis ABI of
+//          .note.tsr | the signature of .tsr_kinds << 16, r5 = 3 kernels, r6 = .note.tsr's Tesseract
+//          Basis version (SW §6.9); graph / selftest / replay at EX §4.6's indices 0 / 1 / 2; PING -> PONG;
 //        - `graph` with a multi-layer MUL_MAT op list: two Qwen2.5-0.5B-shaped layers (q / k / v with
 //          bias rows, o with the residual, gate, up, down with the residual; JOIN records for the
 //          three-predecessor ops; Q8_0 and, for layer 0's down projection, Q4_K) and an 8192-row
@@ -101,6 +102,7 @@ const char * g_image = nullptr;
 const char * g_traces = nullptr;
 uint64_t g_elf_id = 0;                   // tsr-elf's computation
 uint32_t g_sdk_abi = 0, g_nkern = 0;
+uint32_t g_kinds_sig = 0, g_basis = 0;    // .tsr_kinds' signature, .note.tsr basis_version (SW §6.9)
 
 uint32_t H(uint32_t ch, uint64_t beat) { return (ch << 28) | uint32_t(beat & 0x0FFFFFFFu); }
 uint32_t h_ch(uint32_t h) { return h >> 28; }
@@ -109,7 +111,7 @@ uint64_t h_beat(uint32_t h) { return h & 0x0FFFFFFFu; }
 // The M6 U200 configuration (EX §11, CC): 4 channels of 16 GiB (lazily mapped), 4 MiB SPM, T_MAX 8,
 // the M6 CAPS (VU and the AT ops; TOPK and DQROW come with M8), U200 queue depths (the default).
 tsr_config e2e_cfg() {
-    tsr_config c = TSR_CONFIG_U200_V1;
+    tsr_config c = TSR_CONFIG_U200;
     c.t_max = 8;
     c.caps = TSR_CAPS_VU | TSR_CAPS_ATT;
     return c;
@@ -575,8 +577,10 @@ void run_session(const char * sched, e2e_run & R, const graph_case & g, const gr
         const uint64_t id = (uint64_t(h[3]) << 32) | h[2];
         CHECK(id == g_elf_id && id == s.h.image_id, "[%s] HELLO id %016llx, tsr-elf %016llx, trace library %016llx", sched,
               (unsigned long long)id, (unsigned long long)g_elf_id, (unsigned long long)s.h.image_id);
-        CHECK((h[4] & 0xFFFFu) == g_sdk_abi && h[5] == g_nkern && h[5] == 3u, "[%s] HELLO r4 0x%08x (SDK ABI %u) r5 %u (%u kernels)",
+        CHECK((h[4] & 0xFFFFu) == g_sdk_abi && h[5] == g_nkern && h[5] == 3u, "[%s] HELLO r4 0x%08x (Basis ABI %u) r5 %u (%u kernels)",
               sched, h[4], g_sdk_abi, h[5], g_nkern);
+        CHECK((h[4] >> 16) == g_kinds_sig && h[6] == g_basis, "[%s] HELLO kind table signature 0x%04x (.tsr_kinds 0x%04x), r6 0x%08x "
+              "(.note.tsr basis_version 0x%08x)", sched, h[4] >> 16, g_kinds_sig, h[6], g_basis);
     }
     static const char * const names[3] = { "graph", "selftest", "replay" };
     for (int k = 0; k < 3; ++k) {
@@ -1328,6 +1332,10 @@ int main(int argc, char ** argv) {
         tsr_elf_note note;
         CHECK(tsr_elf_get_note(e, &note) == 0, "tsr-elf: .note.tsr");
         g_sdk_abi = note.sdk_abi;
+        g_basis = note.basis_version;
+        uint8_t rev[TSR_ELF_N_KINDS];
+        CHECK(tsr_elf_kinds(e, rev, nullptr, 0) == 14, "tsr-elf: the production image declares the 14 kinds");
+        g_kinds_sig = opl::kinds_sig(rev);
         g_nkern = tsr_elf_n_kernels(e);
         CHECK(g_nkern == note.n_kernels, "tsr-elf: %u kernels, .note.tsr says %u", g_nkern, note.n_kernels);
         tsr_elf_free(e);

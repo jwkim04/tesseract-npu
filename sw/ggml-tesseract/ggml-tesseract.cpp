@@ -43,11 +43,16 @@
 //
 // The device: the transport selected by TSR_DEVICE (default sim; "none" registers no device) is
 // opened (SOFT_RESET + bind, EX §10.1) and booted with TSR_IMAGE or the build's firmware image
-// (tsr_image_open_default) at the first use.
+// (tsr_image_open_default) at the first use. Versions (SW §6.9): an image whose Tesseract Basis
+// (major, minor) is older than this backend's is refused (its planners may refuse what this
+// backend's accept); supports_op routes only the kinds the booted image declares (.tsr_kinds), so
+// a subset image leaves the other ops on the CPU; the description names the Tesseract Core
+// capability and the Tesseract Basis version (get_proc_address "ggml_backend_tesseract_versions").
 //
 // Environment: TSR_DEBUG=1|2 (lowering and placement log on stderr; 2 adds every launched op
 // list's records and preload entries, and supports_op's reasons). TSR_KINDS=m6 restricts the device
-// to M6's MUL_MAT (M6 runs, SW-14). Test knobs: TSR_FORCE_HOST=1 keeps every
+// to M6's MUL_MAT (M6 runs, SW-14: the booted image's kinds intersected with NOP, JOIN and MUL_MAT).
+// Test knobs: TSR_FORCE_HOST=1 keeps every
 // non-WEIGHTS buffer in host memory (exercises the staged path), TSR_COMPUTE_WINDOWS=io limits
 // compute windows to ch0 IO (M6 placement), TSR_OPL_SPLIT=<n> cuts every op list after n records,
 // TSR_STAGE_KIB=<n> sets the IO staging area size,
@@ -315,7 +320,10 @@ struct tsr_device {
     bool         tried_open = false;
     tsr_transport * tp = nullptr;
     tsr_config   cfg = {};
-    std::string  description = "Tesseract NPU core (not opened)";
+    std::string  description = "Tesseract Core (not opened)";
+    uint64_t     kind_mask = 0;   // the op list kinds supports_op may route (SW §6.9: the booted image's,
+                                  // TSR_KINDS=m6: those of them in {NOP, JOIN, MUL_MAT})
+    std::string  image_desc;      // "Tesseract Basis 0.1.0, image <id>" (supports_op's reasons)
 
     tsr_range_alloc io;           // ch0 IO region below the stage: LINEAR buffer windows
     tsr_range_alloc aux;          // ch0 AUX region: RAW tensors of weight buffers
@@ -394,6 +402,15 @@ static tsr_buffer_ctx * tsr_buf(ggml_backend_buffer_t buffer) {
 // Transport access (callers hold dev->mtx)
 // ---------------------------------------------------------------------------
 
+// TSR_KINDS=m6 (SW-14): the device takes MUL_MAT only (supports_op's kind mask keeps NOP, JOIN and MUL_MAT).
+static bool tsr_m6_only() {
+    static const bool on = [] {
+        const char * e = getenv("TSR_KINDS");
+        return e != nullptr && strcmp(e, "m6") == 0;
+    }();
+    return on;
+}
+
 static bool tsr_dev_open_locked(tsr_device * d) {
     if (d->tp != nullptr) {
         return true;
@@ -442,6 +459,32 @@ static bool tsr_dev_open_locked(tsr_device * d) {
         tsr_transport_close(tp);
         return false;
     }
+    // SW §6.9: the image's Tesseract Basis (major, minor) must be at least this backend's (CUDA's
+    // "insufficient driver" rule; the patch is ignored, a newer image is fine): the backend's planners
+    // are the image's (SW-20), so an older image could refuse what supports_op accepts.
+    const tsr_versions & v = d->odev.versions();
+    const uint32_t host = tsr_basis_version();
+    char hb[32], ib[32];
+    snprintf(hb, sizeof(hb), "%u.%u.%u", (host >> 16) & 0xFFu, (host >> 8) & 0xFFu, host & 0xFFu);
+    snprintf(ib, sizeof(ib), "%u.%u.%u", (v.basis >> 16) & 0xFFu, (v.basis >> 8) & 0xFFu, v.basis & 0xFFu);
+    if ((v.basis >> 8) < (host >> 8)) {
+        GGML_LOG_ERROR("tesseract: the booted image %s has Tesseract Basis %s, older than this backend's %s: its planners may "
+                       "refuse what this backend sends; rebuild the image or unset TSR_IMAGE\n", d->odev.image_path(), ib, hb);
+        tsr_transport_close(tp);
+        return false;
+    }
+    d->kind_mask = 0;
+    for (uint32_t k = 0; k < tsr::opl::N_KINDS; ++k) {
+        d->kind_mask |= v.kind_rev[k] != 0 ? 1ull << k : 0ull;
+    }
+    if (tsr_m6_only()) {                  // SW-14: M6 runs take MUL_MAT only
+        d->kind_mask &= 1ull << tsr::opl::K_NOP | 1ull << tsr::opl::K_JOIN | 1ull << tsr::opl::K_MUL_MAT;
+    }
+    {
+        char idb[96];
+        snprintf(idb, sizeof(idb), "Tesseract Basis %s, image %016" PRIx64, ib, v.image_id);
+        d->image_desc = idb;
+    }
     d->launch_flags = getenv("TSR_OPL_CRC") != nullptr && atoi(getenv("TSR_OPL_CRC")) != 0 ? tsr::opl::LF_VERIFY_CRC : 0u;
     d->tp  = tp;
     d->cfg = *c;
@@ -457,14 +500,26 @@ static bool tsr_dev_open_locked(tsr_device * d) {
     }
     d->force_host = getenv("TSR_FORCE_HOST") != nullptr && atoi(getenv("TSR_FORCE_HOST")) != 0;
 
-    char desc[256];
-    snprintf(desc, sizeof(desc), "Tesseract NPU core (%s, C=%u, LANES=%u, T_MAX=%u, K_MAX=%u, SPM=%u KiB, %.0f GiB/ch, "
-             "firmware %016" PRIx64 ")",
-             tsr_transport_name(tp), c->num_ch, c->lanes, c->t_max, c->k_max, c->spm_bytes / 1024,
-             (double) c->ch_bytes / (1024.0 * 1024.0 * 1024.0), d->odev.image_id());
+    // "Tesseract Core 1.0 (VU ATT; sim, C=4, ...), Tesseract Basis 0.1.0 (ABI 1, 14 kinds, image <id>)":
+    // tsr_versions_str's two parts (SW §6.9), the configuration and the image id added inside them.
+    char part[256], cfgs[160];
+    snprintf(cfgs, sizeof(cfgs), "%s, C=%u, LANES=%u, T_MAX=%u, K_MAX=%u, SPM=%u KiB, %.0f GiB/ch", tsr_transport_name(tp),
+             c->num_ch, c->lanes, c->t_max, c->k_max, c->spm_bytes / 1024, (double) c->ch_bytes / (1024.0 * 1024.0 * 1024.0));
+    tsr_versions only = v;
+    only.basis = 0;
+    tsr_versions_str(&only, 0, part, sizeof(part));            // "Tesseract Core 1.0 (VU ATT)"
+    std::string desc = part;
+    desc = desc.back() == ')' ? desc.substr(0, desc.size() - 1) + "; " + cfgs + ")" : desc + " (" + cfgs + ")";
+    only = v;
+    only.core = 0;
+    tsr_versions_str(&only, 0, part, sizeof(part));            // "Tesseract Basis 0.1.0 (ABI 1, 14 kinds)"
+    std::string bas = part;
+    char idb[32];
+    snprintf(idb, sizeof(idb), ", image %016" PRIx64 ")", v.image_id);
+    desc += ", " + (bas.empty() ? std::string() : bas.substr(0, bas.size() - 1) + idb);
     d->description = desc;
     TSR_DBG(1, "opened %s; image %s (graph = kernel %d); IO windows %.2f MiB, IO stage %.2f MiB at ch0+0x%09" PRIx64 "%s\n",
-            desc, d->odev.image_path(), d->odev.graph_kernel(), tsr_mib(d->io.total()), tsr_mib(stage), d->stage_off,
+            desc.c_str(), d->odev.image_path(), d->odev.graph_kernel(), tsr_mib(d->io.total()), tsr_mib(stage), d->stage_off,
             d->force_host ? ", TSR_FORCE_HOST" : "");
     return true;
 }
@@ -1676,6 +1731,12 @@ static void tsr_dump_opl(const tsr_plan_list & L) {
 // step 5: RET - 1 is the failing record, mapped to its tag and node name for every kind).
 static void tsr_run_list(tsr_device * d, const tsr_plan_list & L) {
     const bool stats = tsr_stats_on();
+    // SW §6.9: supports_op routed only the booted image's kinds, so every record is one of them.
+    for (uint32_t k = 0; k < tsr::opl::N_KINDS; ++k) {
+        if ((L.n_kind[k] != 0 || (k == tsr::opl::K_JOIN && L.n_joins != 0)) && !((d->kind_mask >> k) & 1u)) {
+            GGML_ABORT("tesseract: internal error: record of kind %s, which the booted image does not provide", tsr_kind_name(k));
+        }
+    }
     if (stats && d->st_perf0.empty()) {
         d->st_perf0 = tsr_perf_all(d);
     }
@@ -2227,6 +2288,8 @@ static tsr_build_env tsr_env_of(tsr_device * d) {
     e.cfg = d->m7cfg;
     e.pl = tsr::plan::plan_limits_of(e.cfg);
     e.num_ch = d->cfg.num_ch;
+    e.kinds = d->kind_mask;              // SW §6.9: the booted image's kinds (TSR_KINDS=m6: MUL_MAT only)
+    e.image = d->image_desc;
     e.loc = [d](const ggml_tensor * t, tsr_tloc * l) { return tsr_tensor_loc(d, t, l); };
     e.kv_view = [d](const ggml_tensor * t, tsr_kv_view * v) { return tsr_kv_view_of(d, t, v); };
     e.fa_mask = [d](const ggml_tensor * fa) { return tsr_fa_mask_ref(d, fa); };
@@ -2620,15 +2683,8 @@ static bool tsr_is_our_buffer(const tsr_device * d, const ggml_backend_buffer * 
 // tsr_build_supports: the node is lowered to its OPL record in probe mode (the same function the
 // builder encodes with) and the kind's planner (plan.hpp plan_kind on the device's CFG values) must
 // accept it, so the host refuses exactly what the firmware cannot plan or the builder cannot encode.
-// TSR_KINDS=m6 restricts the device to M6's MUL_MAT (SW-14).
-static bool tsr_m6_only() {
-    static const bool on = [] {
-        const char * e = getenv("TSR_KINDS");
-        return e != nullptr && strcmp(e, "m6") == 0;
-    }();
-    return on;
-}
-
+// SW §6.9: only the kinds the booted image declares are routed (the device's kind mask, which
+// TSR_KINDS=m6 restricts to M6's MUL_MAT, SW-14): a subset image leaves the others on the CPU.
 static bool tsr_dev_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
     tsr_device * d = (tsr_device *) dev->context;
     switch (op->op) {
@@ -2641,9 +2697,6 @@ static bool tsr_dev_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) 
         case GGML_OP_MUL_MAT:
             break;
         default: {
-            if (tsr_m6_only()) {
-                return false;
-            }
             std::lock_guard<std::mutex> lock(d->mtx);
             if (!tsr_dev_open_locked(d)) {
                 return false;
@@ -2714,6 +2767,11 @@ static bool tsr_dev_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) 
     {
         std::lock_guard<std::mutex> lock(d->mtx);
         if (!tsr_dev_open_locked(d)) {
+            return false;
+        }
+        if (!tsr_kind_in_image(d->kind_mask, tsr::opl::K_MUL_MAT)) {   // SW §6.9: a subset image without MUL_MAT
+            TSR_DBG(2, "supports_op: %s '%s' not on the device: kind MUL_MAT is not in the booted image (%s)\n",
+                    ggml_op_desc(op), op->name, d->image_desc.c_str());
             return false;
         }
         cfg = d->cfg;
@@ -2856,8 +2914,26 @@ static const char * tsr_buffer_storage(ggml_backend_buffer_t buffer) {
     return tsr_bmode_name(tsr_buf(buffer)->mode);
 }
 
+// Hook "ggml_backend_tesseract_versions" (SW §6.9; klcheck, numcheck): the versions of the opened
+// device and its booted image (tsr_transport_versions); false if the device is not open.
+static bool tsr_hook_versions(ggml_backend_dev_t dev, tsr_versions * v) {
+    if (dev == nullptr || v == nullptr) {
+        return false;
+    }
+    tsr_device * d = (tsr_device *) dev->context;
+    std::lock_guard<std::mutex> lock(d->mtx);
+    if (d->tp == nullptr) {
+        return false;
+    }
+    *v = d->odev.versions();
+    return true;
+}
+
 static void * tsr_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
+    if (name != nullptr && strcmp(name, "ggml_backend_tesseract_versions") == 0) {
+        return (void *) tsr_hook_versions;
+    }
     if (name != nullptr && strcmp(name, "ggml_backend_tesseract_buffer_storage") == 0) {
         return (void *) tsr_buffer_storage;
     }

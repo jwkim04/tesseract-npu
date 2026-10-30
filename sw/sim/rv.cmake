@@ -170,6 +170,7 @@ if (EXISTS "${_rv_prefix}gcc")
                 ${_rv_fw_dir}/crt0.S ${_rv_fw_dir}/fw_issue.c ${_rv_libgcc} -o ${_rv_fw_elf}
         DEPENDS ${_rv_fw_dir}/crt0.S ${_rv_fw_dir}/fw_issue.c ${_rv_fw_dir}/link.ld
                 ${TSR_SIM_INCLUDE_DIR}/tsr_isa.h ${TSR_SIM_INCLUDE_DIR}/tsr_tables.h
+                ${TESSERACT_ROOT}/sw/ctrl/include/tsr/version.h
         COMMENT "RISC-V test firmware rv_issue/fw_issue.elf"
         VERBATIM)
     add_custom_target(rv_issue_fw ALL DEPENDS ${_rv_fw_elf})

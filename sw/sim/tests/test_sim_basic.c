@@ -67,7 +67,8 @@ static void test_csr(void) {
     tsr_sim * s = tsr_sim_create(&c, NULL);
     CHECK(s != NULL, "create");
     CHECK(tsr_sim_csr_read(s, TSR_CSR_ID) == 0x54535231u, "ID");
-    CHECK(tsr_sim_csr_read(s, TSR_CSR_VERSION) == 0x0200u, "VERSION 0x%x", tsr_sim_csr_read(s, TSR_CSR_VERSION));
+    CHECK(tsr_sim_csr_read(s, TSR_CSR_VERSION) == 0x0100u, "VERSION 0x%x (Tesseract Core capability 1.0)",
+          tsr_sim_csr_read(s, TSR_CSR_VERSION));
     CHECK(tsr_sim_csr_read(s, TSR_CSR_CFG0) == (4u | (128u << 8) | (1u << 20)), "CFG0 0x%x", tsr_sim_csr_read(s, TSR_CSR_CFG0));
     CHECK(tsr_sim_csr_read(s, TSR_CSR_CFG1) == 65536u, "CFG1");
     CHECK(tsr_sim_csr_read(s, TSR_CSR_CFG2) == (16u | (16u << 8) | (128u << 16)), "CFG2 0x%x", tsr_sim_csr_read(s, TSR_CSR_CFG2));

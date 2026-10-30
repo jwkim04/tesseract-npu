@@ -2,8 +2,9 @@
 // protocol layer (tsr_kdev.cpp) on the mock kdev, its adapter register model, and the chunked /
 // aligned transfer engine against a strict fake DMA (docs/xrt-host.md §6).
 //
-// Covers: the identity checks at open (ID, ISA major 2, ADAPTER_VERSION major 2 and NUM_CH, NUM_CH
-// vs the bound buffers, 4 KiB-aligned buffers, RV_FREQ = 0: no clk_rv), ADAPTER_STATUS left by an
+// Covers: the identity checks at open (ID, Tesseract Core capability major 1 with any minor, CTL_ID
+// != 0 (a core without the control core), ADAPTER_VERSION major 1 and NUM_CH, NUM_CH vs the bound
+// buffers, 4 KiB-aligned buffers, RV_FREQ = 0: no clk_rv), ADAPTER_STATUS left by an
 // earlier process (reported, cleared, the adapter log), the bind (MEM_EN, the latched bases equal the
 // buffers), the adapter model (bases RW while MEM_EN = 0, BASE_LOCKED, BASE_MISALIGNED at the MEM_EN
 // edge, REQ_HELD with the model held, ADAPTER_STATUS W1C, the reserved registers reading 0), timeouts
@@ -230,7 +231,8 @@ static void test_protocol_basic() {
           "config decode (CAPS 0x%x)", c->caps);
     CHECK(transport_kdev(t) == m && transport_sim(t) == m->sim(), "transport_kdev / transport_sim");
     CHECK(tsr_transport_csr_read(t, TSR_CSR_ID) == TSR_ID_MAGIC, "window ID");
-    CHECK(tsr_transport_csr_read(t, TSR_CSR_VERSION) == 0x0200u, "window VERSION 0x%x", tsr_transport_csr_read(t, TSR_CSR_VERSION));
+    CHECK(tsr_transport_csr_read(t, TSR_CSR_VERSION) == 0x0100u, "window VERSION 0x%x (Tesseract Core capability 1.0)",
+          tsr_transport_csr_read(t, TSR_CSR_VERSION));
     const uint64_t wr0 = m->window_reads;
     (void) tsr_transport_csr_read(t, TSR_CSR_CFG0);
     CHECK(m->window_reads == wr0 + 1, "csr_read is one window read");
@@ -274,7 +276,7 @@ static void test_protocol_basic() {
     tsr_transport_close(t);
 }
 
-// A kdev that forwards to a mock, with hooks (an older core, fewer channels, a frozen LCQ).
+// A kdev that forwards to a mock, with hooks (fewer channels, a frozen LCQ).
 struct wrap_kdev final : kdev {
     std::unique_ptr<mock_kdev> in;
     uint32_t ch_less = 0;
@@ -300,8 +302,10 @@ struct wrap_kdev final : kdev {
     bool simulated() const override { return true; }
 };
 
-// Opens that must fail: not a Tesseract core, an older core (ISA major 1, adapter major 1), NUM_CH vs
-// the bound buffers, a channel buffer that is not 4 KiB aligned, no clk_rv, SOFT_RESET stuck.
+// Opens that must fail: not a Tesseract core, another Tesseract Core capability major, a core without
+// the control core (CTL_ID = 0, even with VERSION 0x0100), adapter major 2, NUM_CH vs the bound
+// buffers, a channel buffer that is not 4 KiB aligned, no clk_rv, SOFT_RESET stuck. A higher
+// capability minor opens.
 static void test_open_refusals() {
     printf("protocol: refusals at open\n");
     mock_options o = small_mock();
@@ -313,15 +317,31 @@ static void test_open_refusals() {
         if (t) tsr_transport_close(t);
     };
     refused("wrong ID", [](mock_kdev & m) { m.id_override = 0x12345678u; });
-    refused("ISA 1.0 core (older bitstream)", [](mock_kdev & m) { m.version_override = 0x0100u; });
+    refused("Tesseract Core capability 2.0", [](mock_kdev & m) { m.version_override = 0x0200u; });
+    refused("CTL_ID = 0 (no control core) with VERSION 0x0100", [](mock_kdev & m) {
+        m.version_override = 0x0100u;
+        m.ctl_id_override = 0u;
+    });
+    {
+        std::unique_ptr<mock_kdev> mk(new mock_kdev(o));
+        mk->version_override = 0x0101u;     // capability 1.1: a minor only adds
+        tsr_transport * t = transport_open_kdev(std::move(mk));
+        CHECK(t != nullptr, "Tesseract Core capability 1.1 opens");
+        if (t) {
+            tsr_versions v;
+            CHECK(tsr_transport_versions(t, &v) == 0 && v.core == 0x0101u && v.basis == 0 && v.n_kinds == 0,
+                  "versions before a boot: core 0x%04x, no image", v.core);
+            tsr_transport_close(t);
+        }
+    }
     refused("unaligned channel buffer", [](mock_kdev & m) { m.set_ch_addr(2, m.ch_addr(2) + 64); });
     refused("RV_FREQ = 0 (no clk_rv)", [](mock_kdev & m) { m.rv_freq_override = 0; });
     {
         mock_options o1 = o;
-        o1.adapter_version = 0x00010004u;   // an older adapter
+        o1.adapter_version = 0x00020004u;   // another adapter major
         std::unique_ptr<mock_kdev> mk(new mock_kdev(o1));
-        CHECK(transport_open_kdev(std::move(mk)) == nullptr, "ADAPTER_VERSION major 1 refused");
-        o1.adapter_version = 0x00020003u;   // reports 3 channels, 4 bound
+        CHECK(transport_open_kdev(std::move(mk)) == nullptr, "ADAPTER_VERSION major 2 refused");
+        o1.adapter_version = 0x00010003u;   // reports 3 channels, 4 bound
         mk.reset(new mock_kdev(o1));
         CHECK(transport_open_kdev(std::move(mk)) == nullptr, "ADAPTER_VERSION.NUM_CH vs the bound buffers refused");
     }
@@ -365,7 +385,7 @@ static void test_mock_regs() {
         CHECK(m.reg_read(off, &v) == 0 && v == 0, "offset 0x%03x reads 0 (0x%x)", off, v);
     }
     CHECK(m.unmapped_accesses == 2 * (KREG_CH_BASE0 / 4), "unmapped accesses counted (%" PRIu64 ")", m.unmapped_accesses);
-    CHECK(m.reg_read(KREG_ADAPTER_VERSION, &v) == 0 && v == 0x00020002u, "ADAPTER_VERSION 0x%x", v);
+    CHECK(m.reg_read(KREG_ADAPTER_VERSION, &v) == 0 && v == 0x00010002u, "ADAPTER_VERSION 0x%x", v);
     CHECK(m.reg_read(KREG_SPACE, &v) != 0 && m.reg_read(2, &v) != 0, "outside / unaligned refused");
     // MEM_EN rising edge with a misaligned base: refused, BASE_MISALIGNED.
     m.reg_write(KREG_CH_BASE0, 0x2000u + 64);

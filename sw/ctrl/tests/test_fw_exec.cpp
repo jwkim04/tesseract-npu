@@ -97,7 +97,7 @@ static inline uint32_t h0(uint32_t beat) { return beat; }                  // ch
 static inline uint32_t h1(uint32_t beat) { return (1u << 28) | beat; }     // ch1 handle
 
 static tsr_config test_cfg() {
-    tsr_config c = TSR_CONFIG_U200_V1;
+    tsr_config c = TSR_CONFIG_U200;
     c.num_ch = NCH;
     c.ch_bytes = CH_BYTES;
     c.t_max = 8;

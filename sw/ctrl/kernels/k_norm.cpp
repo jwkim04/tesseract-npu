@@ -57,6 +57,9 @@
 #include "k_fast.hpp"
 #include "tsr/plan.hpp"
 
+// The op list kinds this source handles (SW §6.9: .tsr_kinds entries at tsr/opl.hpp kind_rev).
+TSR_KIND(RMS_NORM);
+
 namespace tsr {
 
 #if defined(TSR_FW_HOST)

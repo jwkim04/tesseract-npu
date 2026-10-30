@@ -54,7 +54,7 @@ if (TSR_RISCV_PREFIX_EFFECTIVE AND EXISTS "${_race_pfx}gcc")
         -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes -Werror
         -I${TSR_SIM_INCLUDE_DIR} -T ${_race_issue_dir}/link.ld)
     set(_race_deps ${_race_issue_dir}/crt0.S ${_race_issue_dir}/link.ld
-        ${TSR_SIM_INCLUDE_DIR}/tsr_isa.h ${TSR_SIM_INCLUDE_DIR}/tsr_tables.h)
+        ${TSR_SIM_INCLUDE_DIR}/tsr_isa.h ${TSR_SIM_INCLUDE_DIR}/tsr_tables.h ${TESSERACT_ROOT}/sw/ctrl/include/tsr/version.h)
     add_custom_command(
         OUTPUT ${_race_nodep_elf}
         COMMAND "${_race_pfx}gcc" ${_race_cflags} -DFW_ISSUE_MUTANT_ST_NODEP

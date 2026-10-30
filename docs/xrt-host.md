@@ -75,7 +75,7 @@ RTL kernels with one clock `ap_clk` (the control core adds `ap_clk_2`, Y5), `ap_
 | 0x040 + 8c | `ch<c>_base` lo / hi | written at bind with the device address of the buffer of channel c (4 KiB aligned) while `MEM_EN` = 0 |
 | 0x0E0 | `ADAPTER_CTRL` | bit0 `MEM_EN`, set after the bases; it must read back 1 |
 | 0x0F0 | `ADAPTER_STATUS` | read and cleared (W1C) at open; read again on `PLAT_ERR`; sticky bits 0-5 and a saturating count in [31:16] |
-| 0x0F4 | `ADAPTER_VERSION` | `{16'h0002, 8'h00, NUM_CH}`: major 2 and NUM_CH are checked at open |
+| 0x0F4 | `ADAPTER_VERSION` | `{16'h0001, 8'h00, NUM_CH}`: major 1 and NUM_CH are checked at open |
 | 0x1000 + off | core CSR window | every access of the launch protocol (EX §5), at any time |
 
 The adapter RTL in the tree has no `ADAPTER_CTRL` yet (`platform-u200.md` §2); the adapter described
@@ -97,8 +97,8 @@ kernel:
 One implementation serves every kind (SW-18). It follows EX §2.1, §3, §4.8-§4.9, §8.4-§8.6 and
 §10, as refined by SW §9.1 and DB §4.1, §6.1, §6.3, §7.3-§7.4, §9.2.
 
-- **Open.** Reads `ADAPTER_VERSION` (major 2, NUM_CH equal to the number of channel buffers), then
-  `ID` (0x54535231, "TSR1"), `VERSION` (major 2), `CFG0`-`CFG3`, `CAPS`, `CTL_ID`, `RV_CFG`, `Q_DEPTH`, `RV_FREQ` (0 means "no `clk_rv`"), `LQ_CFG`, `PERF_INFO` and `DBG_ID`
+- **Open.** Reads `ADAPTER_VERSION` (major 1, NUM_CH equal to the number of channel buffers), then
+  `ID` (0x54535231, "TSR1"), `VERSION` (Tesseract Core capability major 1), `CFG0`-`CFG3`, `CAPS`, `CTL_ID`, `RV_CFG`, `Q_DEPTH`, `RV_FREQ` (0 means "no `clk_rv`"), `LQ_CFG`, `PERF_INFO` and `DBG_ID`
   through the window, and clears `ADAPTER_STATUS`. The host counters (`LQ_SEQ`, `LCQ_RD`, `LOG_RD`) and
   the `LQ_W` shadow are read from the device: the rings keep counting across processes, and only a
   card reset zeroes them. Unless `TSR_ATTACH=1` it then writes `SOFT_RESET` and waits for
@@ -272,9 +272,9 @@ launch could address memory past the buffer (other BOs, or a DECERR that shows u
 tool and the protocol path. Exit code 0 = every check passed, 1 = a check failed, 2 = the transport
 did not open or bad usage. Sections:
 
-1. Identity: the kdev description, `ID`, `VERSION` (major 2), `CFG0`-`CFG3`, `CAPS`, `CTL_ID`,
+1. Identity: the kdev description, `ID`, `VERSION` (Tesseract Core capability 1.x), `CFG0`-`CFG3`, `CAPS`, `CTL_ID`,
    `RV_FREQ`, `RV_CFG`, `Q_DEPTH`, `LQ_CFG`, `PERF_INFO`, `LOG_CFG`, `STATUS`; the adapter
-   (`ADAPTER_VERSION` major 2 and NUM_CH, `ADAPTER_STATUS` at open and now, `MEM_EN`, bases equal to the
+   (`ADAPTER_VERSION` major 1 and NUM_CH, `ADAPTER_STATUS` at open and now, `MEM_EN`, bases equal to the
    buffers' device addresses) or "no adapter".
 2. Memory per channel: pattern write and read-back at aligned, unaligned, 4 KiB- and
    4 GiB-crossing and end-of-channel ranges with guard bytes; channel aliasing; write and read
@@ -304,7 +304,7 @@ Names are the ctest names; `ctest --test-dir build/dev -N` lists them.
 
 | ctest | What | Result |
 | --- | --- | --- |
-| `transport_kdev` (`test-tsr-kdev`) | the protocol layer on the `mock` kdev: identity checks and adapter faults at open (ID, ISA major, `ADAPTER_VERSION`, NUM_CH, `RV_FREQ` = 0, `ADAPTER_STATUS` left by an earlier process), bind (`MEM_EN`, misaligned base, `BASE_LOCKED`, held requests), timeouts (`SOFT_RESET` stuck, no HELLO), the stale core at open (a booted device with a launch running, left by a "dead process", with and without `TSR_ATTACH`), adapter errors during a launch (`PLAT_ERR`), a hung unit ("card reset needed"), the registry, `TSR_MOCK_*` parsing, `xrt_env_defaults`, and the chunked and aligned transfer engine (byte-granular transfers under DMA rules from align 1 to 4096, across 4 GiB, against a strict fake DMA) | passes in `build/dev` (run for this document) |
+| `transport_kdev` (`test-tsr-kdev`) | the protocol layer on the `mock` kdev: identity checks and adapter faults at open (ID, capability major, `CTL_ID` = 0, `ADAPTER_VERSION`, NUM_CH, `RV_FREQ` = 0, `ADAPTER_STATUS` left by an earlier process), bind (`MEM_EN`, misaligned base, `BASE_LOCKED`, held requests), timeouts (`SOFT_RESET` stuck, no HELLO), the stale core at open (a booted device with a launch running, left by a "dead process", with and without `TSR_ATTACH`), adapter errors during a launch (`PLAT_ERR`), a hung unit ("card reset needed"), the registry, `TSR_MOCK_*` parsing, `xrt_env_defaults`, and the chunked and aligned transfer engine (byte-granular transfers under DMA rules from align 1 to 4096, across 4 GiB, against a strict fake DMA) | passes in `build/dev` (run for this document) |
 | `transport_protocol` (`test-tsr-protocol`) | one binary for every kind it can run (`sim`, `mock`; `vkernel` when a server is named): cold and warm boot, image-id mismatch, `.note.tsr` refusal, VERIFY with an injected TCM fault (mock), PING, 0-7 arguments, `BAD_DESC`, 8 outstanding launches and the credit rule, forced `LQ_OVERFLOW` and `RING_RD_BAD`, events while waiting, the log (FMT / TEXT / EVENT / BLOB decode, drop), cancel and stop, `SOFT_RESET` mid-launch, the debug-aware timeout with a hart halted through the DM model, the recovery ladder (levels 2 and 3), TRAP handling (decode with `mepc` → function and line against `addr2line`, warm restart), minimal record reads against full reads; records and DRAM identical across the kinds; the EX §4.11 numbers on `sim` (boot, empty-launch round trip, pipelined rate) | passes in `build/dev` (run for this document) |
 | `transport_xrt_noop` (XRT builds only) | the `xrt` kdev on XRT's userspace with its no-op shim (`XCL_EMULATION_MODE=noop`, `libxrt_noop`; no card, no driver) and generated metadata-only xclbins of `tsr_u200_k4`: xclbin load, kernel pick, arguments by offset, the memory bank of each channel argument from the xclbin, bank-size default, device-only buffers, the compute unit opened through `xrt::ip` for `ap_ctrl_none` and for the `ap_ctrl_hs` fallback; refusals with a reason (range 0x1000, a foreign argument, no Tesseract kernel, `TSR_XRT_CH_GIB` above the bank); register access and unmanaged DMA fail cleanly (the shim implements neither: the open stops at the first register read); `TSR_XRT_DMA=m2m` allocates its staging buffers at open | 32 checks, 0 failed, in a scratch build with the unpacked 2.18.179 deb (§7; run for this document) |
 | `transport_ggml_e2e_mock`, `..._tmax8` | `test-ggml-tesseract` (bit-exact backend checks) on the `mock` kdev, DMA align 64 / chunk 64 KiB; T_MAX 8 with 3 channels, align 4096 / chunk 12 KiB | defined in `sw/ggml-tesseract/CMakeLists.txt`; not re-run |

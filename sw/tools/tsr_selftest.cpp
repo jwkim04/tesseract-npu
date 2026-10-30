@@ -5,6 +5,7 @@
 //   tsr-selftest [--device KIND] [--image ELF] [--mem-mib N] [--no-mem] [--no-kernel] [--ids LIST]
 //                [--no-shadow] [--rate-n N] [--traces DIR]... [--traces-serial DIR]...
 //                [--max-traces N] [--debug] [--log-out FILE] [--seed N] [-v]
+//   tsr-selftest --version          this tool's Tesseract Basis version and Basis ABI
 //
 //   --device KIND   transport (default: $TSR_DEVICE, else xrt): xrt on the card; mock (the adapter
 //                   register model, ctest) and sim check the tool and the protocol path
@@ -23,17 +24,19 @@
 //   --log-out FILE  every log word drained during the run, raw little-endian (decode: tsr-log)
 //
 // Sections (each check prints PASS / FAIL with -v, FAIL always):
-//   1. Identity: kdev description; ID, VERSION (major 2), CFG0-3, CAPS, CTL_ID (control core 2),
-//      RV_FREQ (clk_rv present; F_RV / F_CORE), RV_CFG, Q_DEPTH per unit, LQ_CFG ring depths,
-//      PERF_INFO, LOG_CFG, STATUS; the adapter (ADAPTER_VERSION major 2 and NUM_CH, ADAPTER_STATUS at
-//      open and now, MEM_EN, channel bases = the buffers' device addresses) or "no adapter" (sim).
+//   1. Identity: kdev description; ID, VERSION (Tesseract Core capability 1.x, EX §7.5), CFG0-3,
+//      CAPS, CTL_ID (a control core present), RV_FREQ (clk_rv present; F_RV / F_CORE), RV_CFG,
+//      Q_DEPTH per unit, LQ_CFG ring depths, PERF_INFO, LOG_CFG, STATUS; the adapter (ADAPTER_VERSION
+//      major 1 and NUM_CH, ADAPTER_STATUS at open and now, MEM_EN, channel bases = the buffers'
+//      device addresses) or "no adapter" (sim).
 //   2. Memory, per channel: pattern write / read-back at aligned, unaligned,
 //      4 KiB- and 4 GiB-crossing and end-of-channel ranges with guard bytes; channel aliasing;
 //      write / read bandwidth.
-//   3. Boot (EX §3.3-§3.5): the image (id, base kernels graph / selftest / replay at 0 / 1 / 2); a
-//      boot (load with the receive CRC and VERIFY, HELLO with the image id, SDK ABI and kernel
-//      count: the transport checks them) and a second boot that must be a warm restart (no ITCM
-//      segment written); the booted image's id; RT_STATE IDLE.
+//   3. Boot (EX §3.3-§3.5): the image (id, base kernels graph / selftest / replay at 0 / 1 / 2; its
+//      Tesseract Basis version, Basis ABI, the capability it needs and its kinds, SW §6.9); a boot
+//      (load with the receive CRC and VERIFY, HELLO with the image id, Basis ABI, kind table
+//      signature, kernel count and Basis version: the transport checks them) and a second boot that
+//      must be a warm restart (no ITCM segment written); the booted image's id; RT_STATE IDLE.
 //   4. PING (EX §4.11): one round trip with the ARG0 echo; N sequential round trips (median / p99
 //      host wall time, the device's DURATION); N pipelined launches (LQ_DEPTH outstanding): rate.
 //      Measured values, not gated (EX §4.11's targets are estimates for the card).
@@ -65,6 +68,7 @@
 #include "tsr_transport.h"
 
 #include "selftest_abi.hpp"   // sw/ctrl/ref: the selftest kernel's arguments and layouts
+#include "tsr/opl.hpp"         // kind_name (SW §6.9)
 
 #include <algorithm>
 #include <chrono>
@@ -184,12 +188,20 @@ void identity(tsr_transport * t) {
     const uint32_t cfg3 = R(TSR_CSR_CFG3), caps = R(TSR_CSR_CAPS), ctl = R(TSR_CSR_CTL_ID), freq = R(TSR_CSR_RV_FREQ);
     const uint32_t rvcfg = R(TSR_CSR_RV_CFG), qd = R(TSR_CSR_Q_DEPTH), lqcfg = R(TSR_CSR_LQ_CFG), pinfo = R(TSR_CSR_PERF_INFO);
     const uint32_t logcfg = R(TSR_CSR_LOG_CFG), st = R(TSR_CSR_STATUS), wdog = R(TSR_CSR_WDOG_CFG);
-    printf("  ID 0x%08x  VERSION 0x%08x (ISA %u.%u)  CFG0 0x%08x  CFG1 0x%08x  CFG2 0x%08x  CFG3 0x%08x  CAPS 0x%08x\n", id, ver,
-           (ver >> 8) & 0xFFu, ver & 0xFFu, cfg0, cfg1, cfg2, cfg3, caps);
+    tsr_versions dv;                                      // the device part of tsr_versions_str (SW §6.9):
+    tsr_transport_versions(t, &dv);                       // "Tesseract Core 1.0 (VU ATT)"
+    dv.basis = 0;
+    char core[128];
+    tsr_versions_str(&dv, 0, core, sizeof(core));
+    const char * capn = strchr(core, '(');
+    printf("  ID 0x%08x  Tesseract Core capability %u.%u (VERSION 0x%08x), CAPS 0x%08x %s\n", id, (ver >> 8) & 0xFFu, ver & 0xFFu, ver,
+           caps, capn ? capn : "");
+    printf("  CFG0 0x%08x  CFG1 0x%08x  CFG2 0x%08x  CFG3 0x%08x\n", cfg0, cfg1, cfg2, cfg3);
     printf("  NUM_CH %u  LANES %u  T_MAX %u  K_MAX %u  SPM %u KiB  VL %u  NSREG %u  ch_bytes %.3f GiB\n", c->num_ch, c->lanes, c->t_max,
            c->k_max, c->spm_bytes / 1024, c->vl, c->nsreg, (double) c->ch_bytes / (1ull << 30));
-    printf("  CTL_ID 0x%08x (control core %u%s%s%s%s%s%s%s)  RV_CFG ITCM %u KiB DTCM %u KiB  RV_FREQ %u (F_RV / F_CORE %.4f)\n", ctl,
-           TSR_GET(ctl, TSR_CTL_ID_VERSION), (ctl & TSR_CTL_ID_DM) ? ", debug module" : "", (ctl & (1u << 9)) ? ", completion records" : "",
+    // The low byte of CTL_ID is an internal identifier (SW §6.9), shown in the raw value only.
+    printf("  CTL_ID 0x%08x (control core%s%s%s%s%s%s%s)  RV_CFG ITCM %u KiB DTCM %u KiB  RV_FREQ %u (F_RV / F_CORE %.4f)\n", ctl,
+           (ctl & TSR_CTL_ID_DM) ? ", debug module" : "", (ctl & (1u << 9)) ? ", completion records" : "",
            (ctl & (1u << 10)) ? ", SPM bridge" : "", (ctl & (1u << 11)) ? ", log ring" : "", (ctl & (1u << 12)) ? ", watchdog" : "",
            (ctl & (1u << 13)) ? ", SBA" : "", (ctl & (1u << 14)) ? ", SPM alias" : "", rvcfg & 0xFFFFu, rvcfg >> 16, freq,
            freq / 65536.0);
@@ -200,8 +212,9 @@ void identity(tsr_transport * t) {
            TSR_GET(pinfo, TSR_PERF_INFO_COUNT), TSR_GET(pinfo, TSR_PERF_INFO_X), wdog, logcfg);
     printf("  STATUS 0x%08x after open\n", st);
     result(id == TSR_ID_MAGIC, "ID is \"TSR1\"", strf("0x%08x", id));
-    result((ver >> 8) == TSR_ISA_MAJOR, "ISA major 2", strf("%u", ver >> 8));
-    result(TSR_GET(ctl, TSR_CTL_ID_VERSION) == 2u, "CTL_ID: control core version 2", strf("0x%08x", ctl));
+    result(TSR_GET(ver, TSR_VERSION_MAJOR) == TSR_ISA_MAJOR, strf("Tesseract Core capability %u.x", TSR_ISA_MAJOR),
+           strf("%u.%u", (ver >> 8) & 0xFFu, ver & 0xFFu));
+    result(TSR_GET(ctl, TSR_CTL_ID_VERSION) != 0u, "CTL_ID: control core present", strf("0x%08x", ctl));
     result(freq != 0, "RV_FREQ != 0 (clk_rv runs)", strf("%u", freq));
     result((rvcfg & 0xFFFFu) != 0 && (rvcfg >> 16) != 0, "RV_CFG: ITCM and DTCM present", strf("0x%08x", rvcfg));
     result(((qd >> 0) & 0x1F) && ((qd >> 5) & 0x1F) && ((qd >> 10) & 0x1F) && ((qd >> 25) & 0x1F), "Q_DEPTH: DMA, QACT, MVM and SYNC built",
@@ -222,7 +235,8 @@ void identity(tsr_transport * t) {
         result(ok && at_open == 0, "ADAPTER_STATUS clean at open",
                at_open == 0 ? std::string("ok") : tsr::adapter_status_str(at_open) + " (left by an earlier run; cleared at open)");
         result(ok && as == 0, "ADAPTER_STATUS clean after open", tsr::adapter_status_str(as));
-        result((av >> 16) == 2u && (av & 0xFFu) == c->num_ch, "ADAPTER_VERSION: major 2, NUM_CH = CFG0.NUM_CH", strf("0x%08x", av));
+        result(TSR_GET(av, TSR_ADAPTER_VERSION_MAJOR) == TSR_ADAPTER_MAJOR && (av & 0xFFu) == c->num_ch,
+               strf("ADAPTER_VERSION: major %u, NUM_CH = CFG0.NUM_CH", TSR_ADAPTER_MAJOR), strf("0x%08x", av));
         result((actl & TSR_ADAPTER_CTRL_MEM_EN) != 0, "ADAPTER_CTRL.MEM_EN (bound at open)", strf("0x%08x", actl));
         for (uint32_t ch = 0; ch < kd->num_ch(); ++ch) {
             uint32_t lo = 0, hi = 0;
@@ -334,6 +348,17 @@ bool boot(tsr_transport * t, tsr_image * img) {
     printf("== boot (%s, id %016" PRIx64 ")\n", tsr_image_path(img), tsr_image_id(img));
     const int kg = tsr_image_kernel(img, "graph"), ks = tsr_image_kernel(img, "selftest"), kr = tsr_image_kernel(img, "replay");
     result(kg == 0 && ks == 1 && kr == 2, "base kernels graph / selftest / replay at 0 / 1 / 2 (EX §4.6)", strf("%d / %d / %d", kg, ks, kr));
+    // The image's versions (SW §6.9), as the transport read them from .note.tsr and .tsr_kinds.
+    tsr_versions iv;
+    tsr_image_versions(img, &iv);
+    const uint32_t hb = tsr_basis_version();
+    printf("  image %s: id %016" PRIx64 ", Tesseract Basis %u.%u.%u, Basis ABI %u, needs capability %u.%u; host Tesseract Basis "
+           "%u.%u.%u\n", tsr_image_path(img), iv.image_id, (iv.basis >> 16) & 0xFFu, (iv.basis >> 8) & 0xFFu, iv.basis & 0xFFu, iv.abi,
+           (iv.core_min >> 8) & 0xFFu, iv.core_min & 0xFFu, (hb >> 16) & 0xFFu, (hb >> 8) & 0xFFu, hb & 0xFFu);
+    std::string kl;
+    for (uint32_t k = 0; k < 64; ++k)
+        if (iv.kind_rev[k]) kl += strf(" %s r%u", tsr::opl::kind_name(k), iv.kind_rev[k]);
+    printf("  kinds (%u, signature 0x%04x):%s\n", iv.n_kinds, iv.kinds_sig, kl.c_str());
     bool all = true;
     for (int pass = 0; pass < 2; ++pass) {
         const auto t0 = std::chrono::steady_clock::now();
@@ -344,9 +369,15 @@ bool boot(tsr_transport * t, tsr_image * img) {
                "%.3f ms wall, crt0 to HELLO %u core cycles\n", pass + 1, rc == 0 ? "ok" : tsr_transport_strerror(rc),
                bi.warm ? "warm restart" : "cold load", bi.itcm_loaded, bi.dtcm_loaded, bi.words_written, bi.time_ns / 1e6, w * 1e3,
                bi.hello_cycles);
-        result(rc == 0, strf("boot %d: load, VERIFY, HELLO with the image id, SDK ABI and kernel count", pass + 1),
+        result(rc == 0, strf("boot %d: load, VERIFY, HELLO with the image id, Basis ABI, kind table and kernel count", pass + 1),
                rc ? tsr_transport_strerror(rc) : "");
         if (rc) return false;
+        tsr_versions bv;
+        result(tsr_transport_versions(t, &bv) == 0 && bv.basis == iv.basis && bv.abi == iv.abi && bv.kinds_sig == iv.kinds_sig &&
+                   bv.image_id == iv.image_id,
+               strf("boot %d: HELLO: Tesseract Basis, ABI and kind table match the image", pass + 1),
+               strf("%u.%u.%u, ABI %u, kinds 0x%04x", (bv.basis >> 16) & 0xFFu, (bv.basis >> 8) & 0xFFu, bv.basis & 0xFFu, bv.abi,
+                    bv.kinds_sig));
         const tsr_image * cur = tsr_transport_image(t);
         result(cur != nullptr && tsr_image_id(cur) == tsr_image_id(img), strf("boot %d: the booted image's id", pass + 1),
                cur ? strf("%016" PRIx64, tsr_image_id(cur)) : "none");
@@ -1227,12 +1258,19 @@ void log_and_status(tsr_transport * t, const tsr_image * img, std::vector<uint32
 void usage() {
     fprintf(stderr, "usage: tsr-selftest [--device KIND] [--image ELF] [--mem-mib N] [--no-mem] [--no-kernel] [--ids LIST]\n"
                     "                    [--no-shadow] [--rate-n N] [--traces DIR]... [--traces-serial DIR]... [--max-traces N]\n"
-                    "                    [--debug] [--log-out FILE] [--seed N] [-v]\n");
+                    "                    [--debug] [--log-out FILE] [--seed N] [-v]\n"
+                    "       tsr-selftest --version\n");
 }
 
 } // namespace
 
 int main(int argc, char ** argv) {
+    if (argc == 2 && strcmp(argv[1], "--version") == 0) {
+        const uint32_t v = tsr_basis_version();
+        printf("tsr-selftest (Tesseract Basis %u.%u.%u, Basis ABI %u; Tesseract Core capability %u.x)\n", (v >> 16) & 0xFFu,
+               (v >> 8) & 0xFFu, v & 0xFFu, TSR_SDK_ABI, TSR_ISA_MAJOR);
+        return 0;
+    }
     const char * dev = getenv("TSR_DEVICE");
     if (dev == nullptr || dev[0] == '\0') dev = "xrt";
     const char * image_path = nullptr, * log_out = nullptr;

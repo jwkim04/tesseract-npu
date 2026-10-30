@@ -871,7 +871,7 @@ The as-built design (SW-10):
   with `_start` at +0x80; `.text` in ITCM; `.rodata`, `.data`, `.bss` and the stack (8 KiB, top of
   DTCM) in DTCM; a kernel table `.tsr_kernels` of 36-byte entries (name hash, entry, nargs, flags,
   argument-block lines, name) sorted by rank and name (`graph`, `selftest`, `replay` are kernels 0, 1, 2);
-  `.note.tsr` records the SDK ABI, the minimum control-core version and TCM sizes, and required CAPS bits;
+  `.note.tsr` records the Basis ABI, the Tesseract Core capability and TCM sizes it needs, required CAPS bits and its Basis version;
   `.tsr_id` holds the 64-bit image id (a SHA-256 prefix of the loaded segments) that `tsr-elf stamp`
   writes.
 - **Launch protocol**: EX §4. The host writes an 8-word descriptor into the launch queue LQ (depth 8) by

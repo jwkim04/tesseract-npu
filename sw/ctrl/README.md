@@ -81,8 +81,10 @@ A firmware image is a static RV32 ELF with these properties (EX §3, SW §6.2): 
 at `RV_BOOT`, reset entry at +0x80) and a loaded DTCM segment (kernel table, `.rodata`, `.data`,
 image id, debug flags), the rest of DTCM zeroed by `crt0`. The table `.tsr_kernels` lists the kernels
 in a fixed order (`graph` 0, `selftest` 1, `replay` 2, then others by name); the index is the
-kernel number in a launch descriptor. `.note.tsr` states the SDK ABI, the control-core version and
-memory sizes the image needs, so the transport can refuse an image the device does not meet.
+kernel number in a launch descriptor. `.tsr_kinds` lists the op list kinds the image provides with
+their numerics revisions. `.note.tsr` states the Basis ABI, the Tesseract Core capability and memory
+sizes the image needs and its Tesseract Basis version, so the transport can refuse an image the device
+does not meet (versions: [SW](../../docs/design/06-software-verification.md) §6.9).
 `.tsr_id` holds the 64-bit image id (a hash of the loaded segments), which the runtime reports in
 HELLO and which names the image in traces.
 
@@ -94,16 +96,18 @@ tsr-elf stamp IN.elf -o OUT.elf [--report F] [--logfmt F] [limits] [--strict-bud
 tsr-elf check IMAGE [limits] [--strict-budget] [--no-id] [--base]
 tsr-elf id IMAGE [--stored]
 tsr-elf size IMAGE [limits] [--strict-budget]
-tsr-elf kernels|note|logfmt|segments IMAGE
+tsr-elf kernels|kinds|note|logfmt|segments IMAGE
+tsr-elf --version
 limits: --itcm BYTES --dtcm BYTES --budget-itcm BYTES --budget-dtcm BYTES
 ```
 
 `stamp` is the last step of every image build: it validates the layout, computes the id, writes it
 into `.tsr_id` and produces the size report and the log-format table (`<name>.logfmt.txt`, address
 and format string of every `TSR_LOG` call, for `tsr-log` and the transport's log decoder). `check`
-repeats the validation rules (kernel table order, note fields, segment placement, size budget);
-`id` prints the computed id (`--stored` the one in the file); `kernels`, `note`, `logfmt` and
-`segments` dump the corresponding tables.
+repeats the validation rules (kernel table order, kind table, note fields, segment placement, size
+budget); `id` prints the computed id (`--stored` the one in the file); `kernels`, `kinds` (each kind
+with its numerics revision, then the kind table signature), `note`, `logfmt` and `segments` dump the
+corresponding tables.
 
 ## The runtime (R1 to R10)
 
@@ -113,7 +117,7 @@ defines as steps R1 to R10; `rt/trap.cpp` and `rt/log.cpp` implement the debug a
 
 | Step | What the runtime does |
 | --- | --- |
-| R1 boot | reads the configuration, checks the kernel table, clears the queues (`QCLEAR` and a join), posts HELLO (image id, SDK ABI, kernel count) |
+| R1 boot | reads the configuration, checks the kernel table, clears the queues (`QCLEAR` and a join), posts HELLO (image id, Basis ABI, kind table signature, kernel count, Tesseract Basis version) |
 | R2 take | sleeps until a descriptor is in the launch queue (LQ), copies it to DTCM, pops it |
 | R4, R3 validate | unknown type, reserved bits, bad kernel index or argument block: `BAD_DESC`; a launch the host cancelled or stopped before it started: `ABORTED` |
 | R5 run | stages the argument block in the top 16 SPM lines when the kernel asks for one, records the launch's first push index and per-unit base sequences, calls the kernel between `TRACE_MARK` launch markers |
@@ -318,6 +322,31 @@ nothing; take the executor's one-tile SPM block (`alloc_fast`, no ring record, n
 on the common path. The general path (more tiles, odd shapes) is the out-of-line handler, which
 starts with the same function so that both entries push the same ops. The reference short kind for
 the form is `tests/fw/exec_ref_unary.cpp`.
+
+## Versions
+
+Basis has a version, MAJOR.MINOR.PATCH, and an ABI number, `TSR_SDK_ABI`. Both are defined in
+`include/tsr/version.h` only. Each record kind has a numerics revision, `opl::kind_rev()` in
+`include/tsr/opl.hpp`. The build writes the version, the ABI and the capability the image needs
+(`cap_min`) into `.note.tsr`. An image lists its kinds with their revisions in `.tsr_kinds`, and the
+runtime reports the version, the ABI and a signature of that list in HELLO. The meaning of each number
+and the compatibility rules are in [docs/versioning.md](../../docs/versioning.md). This is what a change to
+the kernels needs:
+
+- A new kind: add `kind_rev()` and `kind_name()` entries in `opl.hpp` (the revision starts at 1), put
+  `TSR_KIND(NAME);` in the source that defines the handler, add a case to the corpus of
+  `tests/test_fw_kind_revs.cpp`, run `test_fw_kind_revs tsr-fw.elf tests/kind_revs.txt --update` and add
+  a line to `CHANGELOG.md`. A kind declared twice is a link error.
+- A change that can alter any output bit of a kind: raise its `kind_rev()` in the same commit, update
+  `tests/kind_revs.txt` the same way and add a line such as "ROPE r2: ..." to `CHANGELOG.md`. The ctest
+  `fw_kind_revs` fails with "bump the revision" when the bits moved and with "revert the bump" when
+  only the number did.
+- A change that leaves every output bit alone (push order, scheduling, scratch use) needs no revision.
+- A change that breaks the layout of `tsr_args`, `.note.tsr`, the launch protocol or the op list format
+  raises `TSR_SDK_ABI` in the same commit.
+
+The Basis version itself is raised at release, together with the `CHANGELOG.md` heading and the git tag
+`basis-vX.Y.Z`. `tsr-elf note IMAGE` and `tsr-elf kinds IMAGE` print what an image carries.
 
 ## Host build of the kernels
 

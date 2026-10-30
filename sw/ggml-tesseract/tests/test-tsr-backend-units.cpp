@@ -126,7 +126,7 @@ static void test_alloc_random() {
 }
 
 static tsr_config cfg_with_tmax(uint32_t t_max) {
-    tsr_config c = TSR_CONFIG_U200_V1;
+    tsr_config c = TSR_CONFIG_U200;
     c.t_max = t_max;
     return c;
 }

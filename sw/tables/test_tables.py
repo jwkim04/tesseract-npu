@@ -418,6 +418,22 @@ def test_word_tables():
     assert SRC.WORD_TABLES["DESC"]["words"] * 4 == SRC_CONST("LCQ_REC_BYTES")
 
 
+def test_versions():
+    # EX §5.1, §7.5, §9.2, DB §10.1, SW §6.9: Tesseract Core capability 1.0; the internal identifiers 1.
+    assert (SRC_CONST("VERSION_VALUE"), SRC_CONST("ISA_MAJOR"), SRC_CONST("ISA_MINOR")) == (0x100, 1, 0), "VERSION 1.0"
+    assert SRC_CONST("VERSION_VALUE") == SRC_CONST("ISA_MAJOR") << 8 | SRC_CONST("ISA_MINOR"), "VERSION = MAJOR.MINOR"
+    assert (SRC_CONST("CTL_VERSION"), SRC_CONST("ADAPTER_MAJOR"), SRC_CONST("DBG_VERSION")) == (1, 1, 1), "CTL / ADAPTER / DBG"
+    ver = [r for r in SRC.HOST_CSR if r[1] == "VERSION"][0]
+    assert ver[6]["reset"] == 0x100, "VERSION reset 0x0000_0100"
+    r4 = M.layouts["HELLO_R4"]
+    assert (r4.field("SDK_ABI").lsb, r4.field("SDK_ABI").width) == (0, 16), "HELLO_R4.SDK_ABI [15:0]"
+    assert (r4.field("KINDS_SIG").lsb, r4.field("KINDS_SIG").width) == (16, 16), "HELLO_R4.KINDS_SIG [31:16]"
+    r6 = M.layouts["HELLO_R6"]
+    assert [(f.name, f.lsb, f.width) for f in r6.fields] == [("PATCH", 0, 8), ("MINOR", 8, 8), ("MAJOR", 16, 8)], "HELLO_R6"
+    rows = {row[0]: row[1] for row in SRC.WORD_TABLES["LCQ_HELLO"]["rows"]}
+    assert rows.get(4) == "VERSIONS" and rows.get(6) == "BASIS", "LCQ_HELLO r4 VERSIONS, r6 BASIS"
+
+
 def _names(text, pattern):
     return re.findall(pattern, text, flags=re.M)
 

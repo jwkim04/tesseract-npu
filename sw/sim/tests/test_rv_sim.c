@@ -39,7 +39,7 @@ static void put(uint32_t w) {
 }
 
 int main(void) {
-    tsr_config cfg = TSR_CONFIG_U200_V1;
+    tsr_config cfg = TSR_CONFIG_U200;
     cfg.num_ch = 1;
     cfg.ch_bytes = 1ull << 28;
     tsr_sim * sim = tsr_sim_create(&cfg, NULL);

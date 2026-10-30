@@ -110,6 +110,7 @@ See [Getting started](docs/getting-started.md) for requirements, tests, PyTorch 
 - [Specification](docs/spec.md)
 - [Design documents](docs/design/README.md)
 - [Basis kernel SDK](sw/ctrl/README.md)
+- [Versions](docs/versioning.md): core capability, Basis version and ABI, kind revisions
 
 ## Roadmap
 

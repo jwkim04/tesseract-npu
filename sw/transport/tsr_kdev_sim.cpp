@@ -14,7 +14,7 @@
 namespace tsr {
 
 bool sim_options_from_env(const char * who, sim_options * o) {
-    tsr_config cfg = TSR_CONFIG_U200_V1;
+    tsr_config cfg = TSR_CONFIG_U200;
     cfg.caps = tsr_sim_caps_implemented();   // EX §7.5: the simulator reports what it implements
     uint64_t v = 0;
     int r;

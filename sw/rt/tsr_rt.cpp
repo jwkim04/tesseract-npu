@@ -375,10 +375,23 @@ device::device(const open_options & o) : p_(new impl) {
     // takes the OPL region (EX §11)
     std::string err;
     if (!d.odev.open(d.tp, &err)) throw error(strf("tsr_rt: %s: %s", d.kind.c_str(), err.c_str()));   // ~impl closes
+    // SW §6.9, as the ggml backend: the image's Tesseract Basis (major, minor) at least this library's
+    // (its planners are the image's, SW-20), and the image provides MUL_MAT (and JOIN).
+    const tsr_versions & v = d.odev.versions();
+    const uint32_t host = tsr_basis_version();
+    if ((v.basis >> 8) < (host >> 8))
+        throw error(strf("tsr_rt: the booted image %s has Tesseract Basis %u.%u.%u, older than this library's %u.%u.%u: its "
+                         "planners may refuse what tsr_rt sends; rebuild the image or unset TSR_IMAGE", d.odev.image_path(),
+                         (v.basis >> 16) & 0xFFu, (v.basis >> 8) & 0xFFu, v.basis & 0xFFu, (host >> 16) & 0xFFu,
+                         (host >> 8) & 0xFFu, host & 0xFFu));
+    if (v.kind_rev[tsr::opl::K_MUL_MAT] == 0 || v.kind_rev[tsr::opl::K_JOIN] == 0)
+        throw error(strf("tsr_rt: the booted image %s does not provide the MUL_MAT kind (.tsr_kinds)", d.odev.image_path()));
     d.perf_snapshot(d.perf_last);
-    d.desc = strf("Tesseract (%s, C=%u, LANES=%u, T_MAX=%u, K_MAX=%u, SPM=%u KiB, %.0f GiB/ch, firmware %016" PRIx64 ")",
+    char vs[256];
+    tsr_versions_str(&v, 0, vs, sizeof(vs));
+    d.desc = strf("Tesseract (%s, C=%u, LANES=%u, T_MAX=%u, K_MAX=%u, SPM=%u KiB, %.0f GiB/ch, image %016" PRIx64 "; %s)",
                   d.kind.c_str(), c->num_ch, c->lanes, c->t_max, c->k_max, c->spm_bytes / 1024,
-                  (double) c->ch_bytes / (1024.0 * 1024.0 * 1024.0), d.odev.image_id());
+                  (double) c->ch_bytes / (1024.0 * 1024.0 * 1024.0), d.odev.image_id(), vs);
     TSR_RT_DBG(1, "opened %s; image %s; IO %.2f MiB\n", d.desc.c_str(), d.odev.image_path(), mib(d.io_size));
 }
 

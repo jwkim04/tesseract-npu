@@ -252,7 +252,7 @@ one cycle with `csr_rdata` (reads; 0 for writes); the transfer ends at the edge 
 csr_ready`. A write's effect is visible to every later access and to the core when the transfer ends.
 Unmapped or unaligned offsets read 0, writes ignored.
 
-In the tree: `ID` = `0x54535231`, `VERSION` = `0x0200`, `CFG0` = `NUM_CH[7:0] |
+In the tree: `ID` = `0x54535231`, `VERSION` = `0x0100` (capability 1.0), `CFG0` = `NUM_CH[7:0] |
 LANES[19:8] | T_MAX[23:20]`, `CFG1` = `SPM_BYTES/64`, `CFG2` = `VL[7:0] | NSREG[15:8] | (K_MAX/256)[31:16]`,
 `CAPS` from a parameter (0 by default), and the 64-bit `PERF_*` counters at `0x100 + 8i` (LO) / `+4` (HI),
 `i < 5 + 2*NUM_CH`, with the tear-free read rule (a LO read snapshots HI; the next HI read of that counter

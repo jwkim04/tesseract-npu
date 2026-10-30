@@ -26,7 +26,11 @@
 //
 // meta.json: { "format", "version", "model" (absolute GGUF path), "run" (cpu|floor|dev),
 //   "device" (none|sim|mock|vkernel|xrt), "input" (embd|embd+1ulp; "tokens" only for the self-check run),
-//   "seed", "n_tokens", "tokens", "n_vocab", "logits_file", "info" {settings, timings, counts;
+//   "seed", "n_tokens", "tokens", "n_vocab", "logits_file", "versions" (dev runs: the Tesseract Core
+//   capability, CAPS, the booted image's Tesseract Basis version, Basis ABI, id, kind table signature
+//   and every kind's numerics revision, SW §6.9: {"core": "1.0", "caps": N, "basis": "0.1.0", "abi":
+//   1, "image": "<16 hex>", "kinds_sig": "0xfa6f", "kinds": {"MUL_MAT": 1, ...}}; null otherwise),
+//   "info" {settings, timings, counts;
 //   settings: "phase" (m6|m7), "flash_attn" (on|off), "type_k", "type_v" (ggml type names),
 //   "offload_kqv" (bool), "attn_rot_disable" (bool: LLAMA_ATTN_ROT_DISABLE was 1 for the context)},
 //   "nodes": [ {"i", "name", "op" (ggml_op_name), "ne" [4], "file", "backend", "weight",
@@ -63,6 +67,9 @@
 #include "llama.h"
 
 #include <nlohmann/json.hpp>
+
+#include "tsr/opl.hpp"        // kind_name (SW §6.9)
+#include "tsr_transport.h"    // tsr_versions (the backend's hook "ggml_backend_tesseract_versions")
 
 #include <algorithm>
 #include <cerrno>
@@ -821,6 +828,32 @@ static int cmd_run(int argc, char ** argv) {
     m["tokens"]      = toks;
     m["n_vocab"]     = n_vocab;
     m["logits_file"] = "logits.f32";
+    m["versions"]    = nullptr;
+    if (dev) {   // SW §6.9: what the dev run ran on, every kind with its numerics revision
+        typedef bool (*versions_fn)(ggml_backend_dev_t, tsr_versions *);
+        ggml_backend_reg_t reg = devs[0] ? ggml_backend_dev_backend_reg(devs[0]) : nullptr;
+        versions_fn fn = reg ? (versions_fn) ggml_backend_reg_get_proc_address(reg, "ggml_backend_tesseract_versions") : nullptr;
+        tsr_versions v;
+        if (fn && fn(devs[0], &v)) {
+            char b[32];
+            json jv = json::object();
+            snprintf(b, sizeof(b), "%u.%u", (v.core >> 8) & 0xFFu, v.core & 0xFFu);
+            jv["core"] = b;
+            jv["caps"] = v.caps;
+            snprintf(b, sizeof(b), "%u.%u.%u", (v.basis >> 16) & 0xFFu, (v.basis >> 8) & 0xFFu, v.basis & 0xFFu);
+            jv["basis"] = b;
+            jv["abi"] = v.abi;
+            snprintf(b, sizeof(b), "%016" PRIx64, v.image_id);
+            jv["image"] = b;
+            snprintf(b, sizeof(b), "0x%04x", v.kinds_sig);
+            jv["kinds_sig"] = b;
+            json kinds = json::object();
+            for (uint32_t k = 0; k < 64; ++k)
+                if (v.kind_rev[k]) kinds[tsr::opl::kind_name(k)] = v.kind_rev[k];
+            jv["kinds"] = kinds;
+            m["versions"] = jv;
+        }
+    }
     json info = json::object();
     info["model_desc"]      = desc;
     info["model_files"]     = files;
@@ -967,6 +1000,12 @@ static int cmd_selfcheck(int argc, char ** argv) {
           "floor: run floor, input embd+1ulp, device none");
     check(dev.meta["run"] == "dev" && dev.meta["input"] == "embd" && dev.meta["device"] != "none", "dev: run dev, input embd, device %s",
           dev.meta["device"].get<std::string>().c_str());
+    {   // SW §6.9: the dev run recorded what it ran on (CPU runs: null)
+        const json & v = dev.meta.contains("versions") ? dev.meta["versions"] : json(nullptr);
+        check(v.is_object() && v.contains("core") && v.contains("basis") && v.contains("kinds") && v["kinds"].contains("MUL_MAT") &&
+                  cpu.meta.contains("versions") && cpu.meta["versions"].is_null(),
+              "dev: versions recorded (%s)", v.dump().c_str());
+    }
     std::vector<run_dir *> all = {&cpu, &flr, &dev};
     if (noobs.present) all.push_back(&noobs);
     if (tok.present) all.push_back(&tok);

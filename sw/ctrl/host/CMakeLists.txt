@@ -14,7 +14,7 @@
 #                      shim sw/ctrl/host/*.cpp, C++20 with TSR_FW_HOST defined (tsr/backend_host.hpp),
 #                      linking tsr_sim. tsr_fw_host_lib(<target> [SANITIZE]) makes another variant,
 #                      e.g. the ASan / UBSan one of fw_kernels_host.
-#   tsr_fw_image(<name> [SOURCES <file> ...] [NO_KERNELS] [DEFINES <def> ...])
+#   tsr_fw_image(<name> [SOURCES <file> ...] [NO_KERNELS] [DEFINES <def> ...] [BASIS_VERSION <code>])
 #                      requests a test image built by the firmware project from the production sources
 #                      plus the extra ones (sw/ctrl/CMakeLists.txt has the same signature); sets
 #                      TSR_FW_TEST_ELF_<name> (also as an internal cache variable)
@@ -30,7 +30,7 @@
 #   sw/ctrl/tests/e2e.cmake      fw_m6_e2e, fw_m6_perf (W2a integration)
 # and, required (W2b): sw/ctrl/tests/elem.cmake (fw_kernels_elem_*, P2.6), kvfa.cmake (fw_kvfa_*,
 # P2.7), normrope.cmake (fw_kernels_normrope_*, P2.6), m7layer.cmake (fw_m7_layer_*, which links the
-# other three's references).
+# other three's references), kindrevs.cmake (fw_kind_revs: the kinds' numerics revisions, SW §6.9).
 #
 # The RISC-V toolchain is required (SW §6.1): configure fails with the install hint of SW §9.6
 # when the compiler is absent. The prefix is sw/sim/CMakeLists.txt's (cache TSR_RISCV_PREFIX, else
@@ -76,12 +76,18 @@ add_library(tsr_elf STATIC ${_elf_dir}/tsr_elf.cpp)
 set_target_properties(tsr_elf PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
                       POSITION_INDEPENDENT_CODE ON)
 target_compile_options(tsr_elf PRIVATE -Wall -Wextra -Wshadow)
-target_include_directories(tsr_elf PUBLIC ${_elf_dir} PRIVATE ${TESSERACT_ROOT}/sw/sim/include)
+# PUBLIC sw/ctrl/include: tsr_elf.h includes tsr/version.h (the Basis ABI and version, SW §6.9).
+target_include_directories(tsr_elf PUBLIC ${_elf_dir} ${TSR_CTRL_INCLUDE_DIR} PRIVATE ${TESSERACT_ROOT}/sw/sim/include)
 
 add_executable(tsr-elf ${_elf_dir}/main.cpp)
 set_target_properties(tsr-elf PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_compile_options(tsr-elf PRIVATE -Wall -Wextra -Wshadow)
 target_link_libraries(tsr-elf PRIVATE tsr_elf)
+
+# The versions every firmware link writes into .note.tsr (SW §6.9): TSR_BASIS_VERSION_STRING,
+# TSR_FW_VERSION_DEFSYMS ... (sw/ctrl/cmake/tsr_version.cmake; the fw_elf test images link with them).
+include(${TSR_CTRL_DIR}/cmake/tsr_version.cmake)
+tsr_read_versions(${TESSERACT_ROOT})
 
 # ---------------------------------------------------------------------------
 # Image paths
@@ -124,7 +130,7 @@ tsr_fw_host_lib(tsr_fw_host)
 # ---------------------------------------------------------------------------
 set_property(GLOBAL PROPERTY TSR_FW_IMAGE_CALLS "")
 function(tsr_fw_image name)
-    cmake_parse_arguments(A "NO_KERNELS" "" "SOURCES;DEFINES" ${ARGN})
+    cmake_parse_arguments(A "NO_KERNELS" "BASIS_VERSION" "SOURCES;DEFINES" ${ARGN})
     # The name is a target of the firmware project: not the production image's or its libraries'.
     if (name MATCHES "^(tsr-fw|tsr_fw_rt|tsr_fw_kernels|tsr_fw_flags)$" OR NOT name MATCHES "^[A-Za-z0-9_][A-Za-z0-9_+-]*$")
         message(FATAL_ERROR "tsr_fw_image: bad image name '${name}'")
@@ -150,6 +156,9 @@ function(tsr_fw_image name)
             string(APPEND _c " \"${_d}\"")
         endforeach()
     endif()
+    if (DEFINED A_BASIS_VERSION)
+        string(APPEND _c " BASIS_VERSION ${A_BASIS_VERSION}")
+    endif()
     string(APPEND _c ")")
     set_property(GLOBAL APPEND PROPERTY TSR_FW_IMAGE_CALLS "${_c}")
     set_property(GLOBAL APPEND PROPERTY TSR_FW_IMAGE_NAMES "${name}")
@@ -165,8 +174,9 @@ foreach(_snip build hdr runtime exec kernels e2e)   # e2e: W2a integration (fw_m
         include(${TSR_CTRL_DIR}/tests/${_snip}.cmake)
     endif()
 endforeach()
-# W2b: the M7 kinds' tests, required (m7layer links the other three snippets' reference libraries).
-foreach(_snip elem kvfa normrope m7layer)
+# W2b: the M7 kinds' tests, required (m7layer links the other three snippets' reference libraries);
+# kindrevs: the kinds' numerics revisions (fw_kind_revs, SW §6.9).
+foreach(_snip elem kvfa normrope m7layer kindrevs)
     include(${TSR_CTRL_DIR}/tests/${_snip}.cmake)
 endforeach()
 # [additive] SDK example kernel (sw/ctrl/examples/vadd.cpp, ctest fw_example_vadd)

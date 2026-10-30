@@ -49,7 +49,7 @@ constexpr uint64_t LINE = 64u;
 const char * g_image = nullptr;
 
 tsr_config cfg_u200(uint64_t ch_bytes) {
-    tsr_config c = TSR_CONFIG_U200_V1;
+    tsr_config c = TSR_CONFIG_U200;
     c.t_max = 8;
     c.ch_bytes = ch_bytes;
     c.caps = TSR_SIM_CAPS_IMPLEMENTED;
@@ -510,7 +510,7 @@ void replay_host(const tsr_trace2 * t, const char * name, uint32_t buf_line, uin
 void test_replay(const char * trace_dir) {
     // Synthetic: 3,100 records (chunks of 1,364), deps across chunk boundaries.
     tsr_trace2 * t = tsr_trace2_new();
-    tsr_config core = TSR_CONFIG_U200_V1;
+    tsr_config core = TSR_CONFIG_U200;
     core.ch_bytes = 1ull << 28;
     tsr_trace2_config_from_core(&t->cfg, &core);
     t->cfg.ctl_id = tsr_trace2_ctl_id_full();

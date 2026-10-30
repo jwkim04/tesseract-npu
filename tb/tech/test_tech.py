@@ -160,7 +160,8 @@ def test_tech_spm(cfg):
         sys.path.insert(0, spm)
     import test_spm                # noqa: E402 (tb/spm on sys.path)
     over, tests, cycles = SPM_XIL[cfg]
-    srcs = [REPO / "rtl" / "core" / "tsr_pkg.sv", REPO / "rtl" / "tech" / "xilinx" / "tsr_sram_1r1w.sv",
+    srcs = [REPO / "rtl" / "core" / "tsr_tables_pkg.sv", REPO / "rtl" / "core" / "tsr_pkg.sv",
+            REPO / "rtl" / "tech" / "xilinx" / "tsr_sram_1r1w.sv",
             REPO / "rtl" / "core" / "tsr_spm.sv"]
     run("tsr_spm", "test_spm", parameters=over, sources=srcs, name="xspm_" + cfg, testcase=tests,
         extra_env={"TSR_SPM_CFG": json.dumps(test_spm.full_config(over)), "TSR_SPM_CYCLES": str(cycles)})

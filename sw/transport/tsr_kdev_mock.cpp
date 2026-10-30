@@ -44,7 +44,7 @@ constexpr uint32_t AST_W1C_BITS = 0x3Fu;   // bits 0-5 (EX §9.2)
 
 mock_kdev::mock_kdev(const mock_options & o) : o_(o), dma_(*this, o.dma) {
     sim_options so;
-    so.cfg = TSR_CONFIG_U200_V1;
+    so.cfg = TSR_CONFIG_U200;
     so.cfg.caps = tsr_sim_caps_implemented();
     so.cfg.num_ch = o.num_ch;
     so.cfg.t_max = o.t_max;
@@ -88,6 +88,7 @@ void mock_kdev::inject_status(uint32_t v) {
 uint32_t mock_kdev::window_read(uint32_t c) {
     if (c == TSR_CSR_ID && id_override != 0) return id_override;
     if (c == TSR_CSR_VERSION && version_override != 0) return version_override;
+    if (c == TSR_CSR_CTL_ID && ctl_id_override != UINT32_MAX) return ctl_id_override;
     if (c == TSR_CSR_RV_FREQ && rv_freq_override != UINT32_MAX) return rv_freq_override;
     uint32_t v = core_->csr_read(c);
     if (c == TSR_CSR_STATUS) {

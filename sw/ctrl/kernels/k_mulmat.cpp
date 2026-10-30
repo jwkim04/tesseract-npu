@@ -51,6 +51,11 @@
 // tile the loop is: alloc, load_tile, compute_tile, store_tile, release).
 #include "k_mulmat.hpp"
 
+// The op list kinds this source handles (SW §6.9: .tsr_kinds entries at tsr/opl.hpp kind_rev).
+#if !defined(TSR_TEST_NO_KIND_MUL_MAT)   // the test image fw_no_mulmat (kindrevs.cmake): an image without the kind
+TSR_KIND(MUL_MAT);
+#endif
+
 namespace tsr {
 
 namespace {

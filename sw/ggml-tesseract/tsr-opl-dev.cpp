@@ -50,6 +50,10 @@ bool tsr_opl_dev::open(tsr_transport * tp, std::string * err) {
     }
     image_id_ = tsr_image_id(img);
     image_path_ = tsr_image_path(img) ? tsr_image_path(img) : "";
+    if (tsr_transport_versions(tp, &versions_) != 0) {
+        *err = "the transport reports no versions for the booted image";
+        return false;
+    }
     cache_.init(0, TSR_REGION_OPL_OFF, TSR_REGION_OPL_SIZE);
     tp_ = tp;
     return true;

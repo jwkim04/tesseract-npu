@@ -3,18 +3,21 @@
 // §8.4-§8.6 and §10, as refined by docs/design/06-software-verification.md "SW" §9.1-§9.2 and
 // docs/design/05-debug.md "DB" §4.1, §6.1, §6.3, §7.3-§7.4, §9.2:
 //
-//   open    identity (ADAPTER_VERSION, ID, VERSION 2, CFG*, CAPS, CFG3, CTL_ID, RV_CFG, Q_DEPTH,
-//           RV_FREQ != 0, LQ_CFG, PERF_INFO, DBG_ID), ADAPTER_STATUS read and cleared; the host
+//   open    identity (ADAPTER_VERSION major 1, ID, VERSION: Tesseract Core capability major 1, CTL_ID
+//           != 0 right after it, CFG*, CAPS, CFG3, RV_CFG, Q_DEPTH, RV_FREQ != 0, LQ_CFG, PERF_INFO,
+//           DBG_ID), ADAPTER_STATUS read and cleared; the host
 //           counters (LQ_SEQ, LCQ_RD, LOG_RD) and the LQ_W shadow read from the device (the rings
 //           keep counting across processes: only a card reset zeroes them); unless TSR_ATTACH=1:
 //           SOFT_RESET (stops a control core left running by an earlier process and discards the
 //           records and log words it left unread), bind (MEM_EN 0, ch<c>_base, MEM_EN 1, checked),
 //           LOG_CFG and the DBG_CFG settings; a debug configuration left armed (SERIAL, stop
 //           sources, TBPs: DB keeps them across SOFT_RESET) makes the waits debug-aware.
-//   boot    .note.tsr requirements against the device; VERIFY of every ITCM segment, a cold load
-//           (LOAD_ADDR, LOAD_DATA words, receive CRC, VERIFY CRC) of each that does not match and
-//           of every DTCM segment; RV_BOOT = 0, RV_RUN = 1; HELLO first, with the image id, the SDK
-//           ABI and the kernel count (EX §3.3-§3.5). Warm = no ITCM segment written.
+//   boot    .note.tsr requirements against the device (the Tesseract Core capability: same major,
+//           device minor >= cap_min's; CAPS, TCMs, the Basis ABI); VERIFY of every ITCM segment, a
+//           cold load (LOAD_ADDR, LOAD_DATA words, receive CRC, VERIFY CRC) of each that does not
+//           match and of every DTCM segment; RV_BOOT = 0, RV_RUN = 1; HELLO first, with the image id,
+//           the Basis ABI, the kind table signature, the kernel count and the Tesseract Basis version
+//           (EX §3.3-§3.5, SW §6.9). Warm = no ITCM segment written.
 //   launch  host-side credit (at most LQ_DEPTH outstanding, no device read), the LQ_W words that
 //           differ from the shadow, LQ_PUSH (EX §4.8).
 //   wait    LCQ consumption (an OK DONE / PONG of the oldest launch: r0, plus r2 unless the kernel
@@ -868,11 +871,15 @@ struct tsr_transport {
     int check_requirements(const tsr_image * im) {
         const image_note n = image_get_note(im);
         std::string why;
-        if (n.sdk_abi != TSR_ELF_SDK_ABI) why += " SDK ABI " + std::to_string(n.sdk_abi) + " (this host speaks " +
-                                                        std::to_string(TSR_ELF_SDK_ABI) + ");";
-        if (n.ctl_id_min > TSR_GET(r_ctl_id, TSR_CTL_ID_VERSION))
-            why += " control-core version " + std::to_string(n.ctl_id_min) + " (device CTL_ID[7:0] " +
-                   std::to_string(TSR_GET(r_ctl_id, TSR_CTL_ID_VERSION)) + ");";
+        // The Tesseract Core capability (EX §7.5, SW §6.9): the same major, the device's minor at least
+        // the image's (a minor adds what every configuration of it has).
+        const uint32_t dev_major = TSR_GET(r_version, TSR_VERSION_MAJOR), dev_minor = TSR_GET(r_version, TSR_VERSION_MINOR);
+        const uint32_t img_major = (n.cap_min >> 8) & 0xFFu, img_minor = n.cap_min & 0xFFu;
+        if (img_major != dev_major || img_minor > dev_minor) {
+            char b[96];
+            snprintf(b, sizeof(b), " Tesseract Core capability %u.%u (device %u.%u);", img_major, img_minor, dev_major, dev_minor);
+            why += b;
+        }
         if (n.itcm_min > itcm_bytes) why += " ITCM " + std::to_string(n.itcm_min) + " B (device " + std::to_string(itcm_bytes) + ");";
         if (n.dtcm_min > dtcm_bytes) why += " DTCM " + std::to_string(n.dtcm_min) + " B (device " + std::to_string(dtcm_bytes) + ");";
         if (n.caps_req & ~r_caps) {
@@ -889,6 +896,8 @@ struct tsr_transport {
                 why += b;
             }
         }
+        if (n.sdk_abi != TSR_SDK_ABI)
+            why += " Basis ABI " + std::to_string(n.sdk_abi) + " (this host speaks " + std::to_string(TSR_SDK_ABI) + ");";
         if (!why.empty()) {
             msg("image %s refused: the device does not meet its requirements (.note.tsr, EX §3.1):%s", tsr_image_path(im), why.c_str());
             return TSR_TE_IMAGE;
@@ -1038,7 +1047,9 @@ struct tsr_transport {
                 }
                 const uint64_t id = (uint64_t) h.w[TSR_LCQ_HELLO_ID_HI_WORD] << 32 | h.w[TSR_LCQ_HELLO_ID_LO_WORD];
                 const uint32_t abi = TSR_GET(h.w[TSR_LCQ_HELLO_VERSIONS_WORD], TSR_HELLO_R4_SDK_ABI);
+                const uint32_t sig = TSR_GET(h.w[TSR_LCQ_HELLO_VERSIONS_WORD], TSR_HELLO_R4_KINDS_SIG);
                 const uint32_t nk = h.w[TSR_LCQ_HELLO_N_KERNELS_WORD];
+                const uint32_t basis = h.w[TSR_LCQ_HELLO_BASIS_WORD];
                 std::string why;
                 char b[160];
                 if (id != tsr_image_id(im)) {
@@ -1046,7 +1057,18 @@ struct tsr_transport {
                     why += b;
                 }
                 if (abi != image_get_note(im).sdk_abi) {
-                    snprintf(b, sizeof(b), " SDK ABI %u, expected %u;", abi, image_get_note(im).sdk_abi);
+                    snprintf(b, sizeof(b), " Basis ABI %u, expected %u;", abi, image_get_note(im).sdk_abi);
+                    why += b;
+                }
+                const uint32_t want_basis = image_get_note(im).basis_version;
+                if (basis != want_basis) {
+                    snprintf(b, sizeof(b), " Tesseract Basis %u.%u.%u, expected %u.%u.%u;", TSR_BASIS_MAJOR_OF(basis),
+                             TSR_BASIS_MINOR_OF(basis), TSR_BASIS_PATCH_OF(basis), TSR_BASIS_MAJOR_OF(want_basis),
+                             TSR_BASIS_MINOR_OF(want_basis), TSR_BASIS_PATCH_OF(want_basis));
+                    why += b;
+                }
+                if (sig != image_kinds_sig(im)) {
+                    snprintf(b, sizeof(b), " kind table signature 0x%04x, expected 0x%04x;", sig, image_kinds_sig(im));
                     why += b;
                 }
                 if (nk != image_n_kernels(im)) {
@@ -1371,8 +1393,8 @@ struct tsr_transport {
             }
             const uint32_t maj = TSR_GET(r_adapter_version, TSR_ADAPTER_VERSION_MAJOR);
             if (maj != TSR_ADAPTER_MAJOR) {
-                msg("ADAPTER_VERSION 0x%08x: adapter major %u, this software implements %u "
-                    "(an older bitstream without the control core?)", r_adapter_version, maj, TSR_ADAPTER_MAJOR);
+                msg("ADAPTER_VERSION 0x%08x: adapter major %u, this software implements %u (EX §9.2)", r_adapter_version, maj,
+                    TSR_ADAPTER_MAJOR);
                 return TSR_TE_DEVICE;
             }
             if (TSR_GET(r_adapter_version, TSR_ADAPTER_VERSION_NUM_CH) != dev->num_ch()) {
@@ -1399,14 +1421,21 @@ struct tsr_transport {
              rd(TSR_CSR_Q_DEPTH, &r_q_depth) && rd(TSR_CSR_RV_FREQ, &r_rv_freq) && rd(TSR_CSR_LQ_CFG, &r_lq_cfg) &&
              rd(TSR_CSR_PERF_INFO, &r_perf_info) && rd(TSR_CSR_DBG_ID, &r_dbg_id);
         if (!ok) return TSR_TE_IO;
-        if ((r_version >> 8 & 0xFFu) != TSR_ISA_MAJOR) {
-            msg("core ISA version %u.%u, this software implements major %u (an older bitstream without the control core reports 1)",
-                (r_version >> 8) & 0xFFu, r_version & 0xFFu, TSR_ISA_MAJOR);
+        // The Tesseract Core capability (EX §7.5, SW §6.9): this software speaks major TSR_ISA_MAJOR, any
+        // minor (a higher minor only adds). A core without the control core reads CTL_ID = 0: refused
+        // here, before any write.
+        if (TSR_GET(r_version, TSR_VERSION_MAJOR) != TSR_ISA_MAJOR) {
+            msg("Tesseract Core capability %u.%u (VERSION 0x%08x): this software supports capability %u.x (EX §7.5)",
+                TSR_GET(r_version, TSR_VERSION_MAJOR), TSR_GET(r_version, TSR_VERSION_MINOR), r_version, TSR_ISA_MAJOR);
+            return TSR_TE_DEVICE;
+        }
+        if (r_ctl_id == 0) {
+            msg("CTL_ID = 0: no control core (EX §5.1)");
             return TSR_TE_DEVICE;
         }
         // CSR-visible parameters from CFG0..2 / CAPS; BEAT_BITS, RD_OUTSTANDING and ADDR_BEAT_W are
         // fixed by the U200 kernel contract (512-bit m_axi ports).
-        tsr_config d = TSR_CONFIG_U200_V1;
+        tsr_config d = TSR_CONFIG_U200;
         d.num_ch = cfg0 & 0xFFu;
         d.lanes = (cfg0 >> 8) & 0xFFFu;
         d.t_max = (cfg0 >> 20) & 0xFu;
@@ -1421,10 +1450,6 @@ struct tsr_transport {
         }
         if (d.t_max < 1 || d.t_max > TSR_T_MAX_ARCH || d.lanes == 0 || d.spm_bytes == 0 || d.k_max == 0) {
             msg("implausible configuration CFG0 0x%08x CFG1 0x%08x CFG2 0x%08x", cfg0, cfg1, cfg2);
-            return TSR_TE_DEVICE;
-        }
-        if (r_ctl_id == 0) {
-            msg("CTL_ID = 0: no control core (EX §5.1)");
             return TSR_TE_DEVICE;
         }
         itcm_bytes = TSR_GET(r_rv_cfg, TSR_RV_CFG_ITCM_KIB) * 1024u;
@@ -1930,6 +1955,17 @@ extern "C" const tsr_image * tsr_transport_image(const tsr_transport * t) {
     tsr_transport * m = const_cast<tsr_transport *>(t);   // the state is written by boots and restarts on other threads
     guard g(m);
     return m->state == dstate::ready || m->state == dstate::trapped ? m->img : nullptr;
+}
+
+extern "C" int tsr_transport_versions(const tsr_transport * t, tsr_versions * v) {
+    if (t == nullptr || v == nullptr) return TSR_TE_INVAL;
+    tsr_transport * m = const_cast<tsr_transport *>(t);
+    guard g(m);
+    memset(v, 0, sizeof(*v));
+    if (m->img != nullptr && (m->state == dstate::ready || m->state == dstate::trapped)) tsr_image_versions(m->img, v);
+    v->core = m->r_version & 0xFFFFu;
+    v->caps = m->r_caps;
+    return 0;
 }
 
 extern "C" void tsr_transport_get_stats(const tsr_transport * t, tsr_transport_stats * s) {

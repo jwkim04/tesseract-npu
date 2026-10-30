@@ -103,7 +103,7 @@ inline const std::vector<kcase> & cases() {
 }
 
 inline tsr_config sim_cfg(uint32_t kmax = 0) {
-    tsr_config c = TSR_CONFIG_U200_V1;
+    tsr_config c = TSR_CONFIG_U200;
     c.t_max = 8;
     if (kmax) c.k_max = kmax;
     c.ch_bytes = 256ull << 20;

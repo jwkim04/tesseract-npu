@@ -1,12 +1,14 @@
 // tsr_image.cpp — firmware images on the host: tsr_image_* of tsr_transport.h (EX §3.1-§3.2, SW §6.2,
 // SW §9.1) on top of the tsr-elf library (sw/ctrl/tools/tsr-elf), plus what the protocol layer and
 // the trap report need from an image (tsr_image_int.h): the padded PT_LOAD segments with their
-// CRC-32 (EX §3.3), .note.tsr, the kernel table, and pc -> function / line (DB §6.3: "mepc ->
-// function and line") from .symtab and DWARF .debug_line (versions 2-5; the SDK builds with -g,
-// SW §6.1).
+// CRC-32 (EX §3.3), .note.tsr, the kernel table, the kind table (SW §6.9), and pc -> function /
+// line (DB §6.3: "mepc -> function and line") from .symtab and DWARF .debug_line (versions 2-5; the
+// SDK builds with -g, SW §6.1). The versions API of tsr_transport.h (tsr_versions_str) is here too.
 
 #include "tsr_image_int.h"
 
+#include "tsr/opl.hpp"      // kind_name, kinds_sig (SW §6.9)
+#include "tsr/version.h"    // TSR_SDK_ABI, TSR_BASIS_VERSION
 #include "tsr_elf.h"
 #include "tsr_fw_paths.h"
 
@@ -30,6 +32,8 @@ struct tsr_image {
     tsr::image_note             note;
     std::vector<tsr::image_seg> segs;
     std::vector<std::string>    knames;
+    uint8_t                     kind_rev[TSR_ELF_N_KINDS] = {};   // .tsr_kinds (SW §6.9)
+    uint32_t                    n_kinds = 0, kinds_sig = 0;
 
     // Symbolization, built on first use.
     struct sym {
@@ -75,6 +79,9 @@ uint32_t image_n_kernels(const tsr_image * img) { return (uint32_t) img->knames.
 const char * image_kernel_name(const tsr_image * img, uint32_t index) {
     return index < img->knames.size() ? img->knames[index].c_str() : "";
 }
+const uint8_t * image_kind_revs(const tsr_image * img) { return img->kind_rev; }
+uint32_t image_n_kinds(const tsr_image * img) { return img->n_kinds; }
+uint32_t image_kinds_sig(const tsr_image * img) { return img->kinds_sig; }
 
 void image_ref(const tsr_image * img) {
     if (img) const_cast<tsr_image *>(img)->refs.fetch_add(1);
@@ -88,6 +95,14 @@ void image_test_set_note(tsr_image * img, const image_note & note) { img->note =
 void image_test_set_n_kernels(tsr_image * img, uint32_t n) {
     while (img->knames.size() < n) img->knames.push_back("test_kernel_" + std::to_string(img->knames.size()));
     img->knames.resize(n);
+}
+void image_test_set_kinds(tsr_image * img, const uint8_t rev[TSR_ELF_N_KINDS]) {
+    img->n_kinds = 0;
+    for (uint32_t k = 0; k < TSR_ELF_N_KINDS; ++k) {
+        img->kind_rev[k] = rev[k];
+        img->n_kinds += rev[k] != 0;
+    }
+    img->kinds_sig = tsr::opl::kinds_sig(img->kind_rev);
 }
 
 // ---------------------------------------------------------------------------
@@ -447,6 +462,33 @@ extern "C" int tsr_image_open(const char * elf_path, tsr_image ** out) {
     std::unique_ptr<tsr_image> img(new tsr_image);
     img->path = elf_path;
     img->elf = e;
+    // The versions first (SW §6.9), with their own messages: the Basis ABI, a Tesseract Basis
+    // version, a well-formed kind table. tsr_elf_check below would refuse them less clearly.
+    tsr_elf_note n{};
+    if (tsr_elf_get_note(e, &n) != 0) {
+        fprintf(stderr, "tsr_image: %s has no .note.tsr\n", elf_path);
+        return TSR_TE_IMAGE;
+    }
+    char host[32];
+    snprintf(host, sizeof(host), "%u.%u.%u", TSR_BASIS_VERSION_MAJOR, TSR_BASIS_VERSION_MINOR, TSR_BASIS_VERSION_PATCH);
+    if (n.sdk_abi != TSR_SDK_ABI) {
+        fprintf(stderr, "tsr_image: %s: Basis ABI %u, this host implements ABI %u (Tesseract Basis %s): rebuild the image with "
+                "this tree's SDK\n", elf_path, n.sdk_abi, TSR_SDK_ABI, host);
+        return TSR_TE_IMAGE;
+    }
+    if (n.basis_version == 0) {
+        fprintf(stderr, "tsr_image: %s: no Tesseract Basis version in .note.tsr (built before versioning): rebuild the image\n",
+                elf_path);
+        return TSR_TE_IMAGE;
+    }
+    char why[96] = "";
+    const int nk = tsr_elf_kinds(e, img->kind_rev, why, sizeof(why));
+    if (nk < 0) {
+        fprintf(stderr, "tsr_image: %s: malformed kind table .tsr_kinds (%s)\n", elf_path, why);
+        return TSR_TE_IMAGE;
+    }
+    img->n_kinds = uint32_t(nk);
+    img->kinds_sig = tsr::opl::kinds_sig(img->kind_rev);
     // EX §3.1 / SW §6.2 rules, and a stamped image whose stored id is the computed one (EX §3.2).
     std::vector<char> rep(8192);
     const int nerr = tsr_elf_check(e, nullptr, TSR_ELF_CHECK_ID, rep.data(), rep.size());
@@ -455,17 +497,13 @@ extern "C" int tsr_image_open(const char * elf_path, tsr_image ** out) {
                 rep.data());
         return TSR_TE_IMAGE;
     }
-    tsr_elf_note n{};
-    if (tsr_elf_get_note(e, &n) != 0) {
-        fprintf(stderr, "tsr_image: %s has no .note.tsr\n", elf_path);
-        return TSR_TE_IMAGE;
-    }
     img->note.sdk_abi = n.sdk_abi;
-    img->note.ctl_id_min = n.ctl_id_min;
+    img->note.cap_min = n.cap_min;
     img->note.itcm_min = n.itcm_min;
     img->note.dtcm_min = n.dtcm_min;
     img->note.caps_req = n.caps_req;
     img->note.n_kernels = n.n_kernels;
+    img->note.basis_version = n.basis_version;
     img->id = tsr_elf_id(e);
     for (uint32_t i = 0; i < tsr_elf_nseg(e); ++i) {
         const tsr_elf_seg * s = tsr_elf_segment(e, i);
@@ -498,4 +536,60 @@ extern "C" int tsr_image_open_default(tsr_image ** out) {
     const char * p = getenv("TSR_IMAGE");
     if (p == nullptr || p[0] == '\0') p = TSR_FW_DEFAULT_IMAGE;
     return tsr_image_open(p, out);
+}
+
+// ---------------------------------------------------------------------------
+// Versions (SW §6.9)
+// ---------------------------------------------------------------------------
+extern "C" uint32_t tsr_basis_version(void) { return TSR_BASIS_VERSION; }
+
+extern "C" int tsr_image_versions(const tsr_image * img, tsr_versions * v) {
+    if (img == nullptr || v == nullptr) return TSR_TE_INVAL;
+    memset(v, 0, sizeof(*v));
+    v->core_min = img->note.cap_min;
+    v->basis = img->note.basis_version;
+    v->abi = img->note.sdk_abi;
+    v->kinds_sig = img->kinds_sig;
+    v->n_kinds = img->n_kinds;
+    memcpy(v->kind_rev, img->kind_rev, sizeof(v->kind_rev));
+    v->image_id = img->id;
+    return 0;
+}
+
+extern "C" int tsr_versions_str(const tsr_versions * v, int verbose, char * buf, size_t n) {
+    if (v == nullptr || (buf == nullptr && n != 0)) return TSR_TE_INVAL;
+    std::string s;
+    char b[96];
+    if (v->core != 0) {
+        snprintf(b, sizeof(b), "Tesseract Core %u.%u", (v->core >> 8) & 0xFFu, v->core & 0xFFu);
+        s += b;
+        static const struct { uint32_t bit; const char * name; } caps[] = {
+            { TSR_CAPS_VU, "VU" }, { TSR_CAPS_TOPK, "TOPK" }, { TSR_CAPS_ATT, "ATT" }, { TSR_CAPS_DQROW, "DQROW" },
+            { TSR_CAPS_VMASK, "VMASK" } };
+        std::string c;
+        for (const auto & x : caps)
+            if (v->caps & x.bit) c += (c.empty() ? "" : " ") + std::string(x.name);
+        if (!c.empty()) s += " (" + c + ")";
+    }
+    if (v->basis != 0) {
+        snprintf(b, sizeof(b), "%sTesseract Basis %u.%u.%u (ABI %u, %u kinds", s.empty() ? "" : ", ", TSR_BASIS_MAJOR_OF(v->basis),
+                 TSR_BASIS_MINOR_OF(v->basis), TSR_BASIS_PATCH_OF(v->basis), v->abi, v->n_kinds);
+        s += b;
+        s += ")";
+        if (verbose) {
+            snprintf(b, sizeof(b), ", image %016" PRIx64 ", kinds 0x%04x:", v->image_id, v->kinds_sig);
+            s += b;
+            for (uint32_t k = 0; k < TSR_ELF_N_KINDS; ++k) {
+                if (v->kind_rev[k] == 0) continue;
+                snprintf(b, sizeof(b), " %s r%u", tsr::opl::kind_name(k), v->kind_rev[k]);
+                s += b;
+            }
+        }
+    }
+    if (n != 0) {
+        const size_t k = std::min(s.size(), n - 1);
+        memcpy(buf, s.data(), k);
+        buf[k] = '\0';
+    }
+    return int(s.size());
 }

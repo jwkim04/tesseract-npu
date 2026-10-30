@@ -74,6 +74,9 @@
 #include "tsr/rt.hpp"
 
 TSR_KERNEL(graph, 3, 0, 0);
+// NOP and JOIN are the executor's own kinds (SW §6.9: .tsr_kinds entries at tsr/opl.hpp kind_rev).
+TSR_KIND(NOP);
+TSR_KIND(JOIN);
 
 extern "C" {
 // The ticket table with a sentinel word in front: __tsr_exec_tick1[0] = TICKET_NONE ("no dep"),

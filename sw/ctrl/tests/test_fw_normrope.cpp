@@ -375,7 +375,7 @@ std::vector<ival_t> written_rows(const suite & s) {
 }
 
 tsr_config base_cfg(uint32_t spm_bytes) {
-    tsr_config c = TSR_CONFIG_U200_V1;
+    tsr_config c = TSR_CONFIG_U200;
     c.t_max = 8;
     c.spm_bytes = spm_bytes;
     c.ch_bytes = 1ull << 30;

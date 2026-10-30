@@ -11,12 +11,12 @@ the PERF slot functions, and field_get / field_put / encode / decode.
 # Scalar constants (CONSTANTS)
 # -------------------------------------------------------------------------------------------------
 ID_MAGIC              = 0x54535231  # EX §5.1: ID register: "TSR1"
-ISA_MAJOR             = 2           # EX §7.5: VERSION[15:8]
-ISA_MINOR             = 0           # EX §7.5: VERSION[7:0]
-VERSION_VALUE         = 0x200       # EX §7.5: VERSION register: ISA 2.0
-CTL_VERSION           = 2           # EX §5.1: CTL_ID[7:0]: control-core version
-ADAPTER_MAJOR         = 2           # EX §9.2: ADAPTER_VERSION[31:16] (ADAPTER_VERSION_MAJOR field)
-DBG_VERSION           = 2           # DB §10.1: DBG_ID[7:0]; DBG_ID = 0 means the DBG block is absent
+ISA_MAJOR             = 1           # EX §7.5: VERSION[15:8]: Tesseract Core capability major
+ISA_MINOR             = 0           # EX §7.5: VERSION[7:0]: Tesseract Core capability minor
+VERSION_VALUE         = 0x100       # EX §7.5: VERSION register: Tesseract Core capability 1.0
+CTL_VERSION           = 1           # EX §5.1: CTL_ID[7:0]: control-core revision; 0 = no control core
+ADAPTER_MAJOR         = 1           # EX §9.2: ADAPTER_VERSION[31:16] (ADAPTER_VERSION_MAJOR field)
+DBG_VERSION           = 1           # DB §10.1: DBG_ID[7:0]: DBG register map; DBG_ID = 0 means the DBG block is absent
 CANON_NAN             = 0x7FC00000  # VU §4.1: the only NaN an fp result has
 INSN_WORDS            = 8           # EX §7.1: an instruction is 256 bits, w0..w7, little-endian
 INSN_BYTES            = 32          # EX §7.1
@@ -119,14 +119,14 @@ def field_put(mask, lsb, x):
 # -------------------------------------------------------------------------------------------------
 CSR_ID             = 0x000       # [R] EX §5.1: "TSR1" (unchanged)
 CSR_ID_RESET       = 0x54535231
-CSR_VERSION        = 0x004       # [R] EX §5.1, §7.5: [15:8] ISA major 2, [7:0] minor 0
-CSR_VERSION_RESET  = 0x200
+CSR_VERSION        = 0x004       # [R] EX §5.1, §7.5: Tesseract Core capability: [15:8] major 1, [7:0] minor 0
+CSR_VERSION_RESET  = 0x100
 CSR_CFG0           = 0x008       # [R] EX §5.1: NUM_CH, LANES, T_MAX (unchanged)
 CSR_CFG1           = 0x00C       # [R] EX §5.1: SPM size in lines (unchanged)
 CSR_CFG2           = 0x010       # [R] EX §5.1: VL, NSREG, K_MAX/256 (unchanged)
 CSR_CAPS           = 0x014       # [R] EX §5.1, §7.5: capability bits
 CSR_CFG3           = 0x018       # [R] EX §5.1, §7.5: [15:0] VU, [31:16] AT
-CSR_CTL_ID         = 0x01C       # [R] EX §5.1: control-core version and features
+CSR_CTL_ID         = 0x01C       # [R] EX §5.1: control-core revision and features; 0 = no control core
 CSR_CTRL           = 0x020       # [RW/W1] EX §5.1, §5.2: device control
 CSR_STATUS         = 0x024       # [R/W1C] EX §5.1, §5.3: device status; W1C clears the sticky bits only
 CSR_RV_BOOT        = 0x028       # [RW] EX §5.1: boot vector, taken when RV_RUN rises
@@ -608,7 +608,7 @@ def SAXI_CH_BASE_HI(i):
 
 SAXI_ADAPTER_CTRL    = 0x0E0   # [RW] EX §9.2: MEM_EN
 SAXI_ADAPTER_STATUS  = 0x0F0   # [R/W1C] EX §9.2: sticky adapter errors
-SAXI_ADAPTER_VERSION = 0x0F4   # [R] EX §9.2: {16'h0002, 8'h00, NUM_CH}
+SAXI_ADAPTER_VERSION = 0x0F4   # [R] EX §9.2: {16'h0001, 8'h00, NUM_CH}
 SAXI_CORE_BASE       = 0x1000  # [-] EX §9.2: core CSR window: 0x1000 + offset, any time; writes need WSTRB = 0xF
 SAXI_CORE_BYTES      = 4096
 
@@ -691,11 +691,11 @@ W0_FLAGS_W    = 4
 W0_X16        = 0xFFFF0000  # [31:16] op-specific field; must be 0 (ILLEGAL_OP) where the op does not assign it
 W0_X16_LSB    = 16
 W0_X16_W      = 16
-# VERSION (EX §5.1, §7.5): ISA version
-VERSION_MINOR     = 0xFF    # [7:0] 0
+# VERSION (EX §5.1, §7.5): Tesseract Core capability MAJOR.MINOR; [31:16] 0
+VERSION_MINOR     = 0xFF    # [7:0] capability minor (0)
 VERSION_MINOR_LSB = 0
 VERSION_MINOR_W   = 8
-VERSION_MAJOR     = 0xFF00  # [15:8] 2
+VERSION_MAJOR     = 0xFF00  # [15:8] capability major (1)
 VERSION_MAJOR_LSB = 8
 VERSION_MAJOR_W   = 8
 # CFG0 (EX §5.1): geometry configuration
@@ -752,8 +752,8 @@ CFG3_VU_BACK_W    = 5
 CFG3_PCAP16       = 0xFFFF0000  # [31:16] PCAP / 16 (U200: 584)
 CFG3_PCAP16_LSB   = 16
 CFG3_PCAP16_W     = 16
-# CTL_ID (EX §5.1): control-core version and features
-CTL_ID_VERSION     = 0xFF    # [7:0] control-core version (2)
+# CTL_ID (EX §5.1): control-core revision and features
+CTL_ID_VERSION     = 0xFF    # [7:0] control-core revision (1); 0: no control core
 CTL_ID_VERSION_LSB = 0
 CTL_ID_VERSION_W   = 8
 CTL_ID_DM          = 0x100   # [8] debug module
@@ -1030,11 +1030,11 @@ ADAPTER_STATUS_BASE_LOCKED_W       = 1
 ADAPTER_STATUS_ERR_COUNT           = 0xFFFF0000  # [31:16] saturating count of error responses
 ADAPTER_STATUS_ERR_COUNT_LSB       = 16
 ADAPTER_STATUS_ERR_COUNT_W         = 16
-# ADAPTER_VERSION (EX §9.2): {16'h0002, 8'h00, NUM_CH}
+# ADAPTER_VERSION (EX §9.2): {16'h0001, 8'h00, NUM_CH}
 ADAPTER_VERSION_NUM_CH     = 0xFF        # [7:0]
 ADAPTER_VERSION_NUM_CH_LSB = 0
 ADAPTER_VERSION_NUM_CH_W   = 8
-ADAPTER_VERSION_MAJOR      = 0xFFFF0000  # [31:16] 2
+ADAPTER_VERSION_MAJOR      = 0xFFFF0000  # [31:16] 1
 ADAPTER_VERSION_MAJOR_LSB  = 16
 ADAPTER_VERSION_MAJOR_W    = 16
 # HANDLE (EX §4.3): DRAM handle (descriptor args, OPL, DBG_TRW_BASE)
@@ -1090,13 +1090,23 @@ LCQ_R0_STATUS_TRAP       = 4           # TRAP records only
 LCQ_R0_STATUS_ABORTED    = 5           # cancelled (ERR_CODE 0), or the first error is ABORTED (ERR_CODE 8)
 LCQ_R0_STATUS_PLAT_ERR   = 6           # STATUS.PLAT_ERR was set when the runtime answered
 LCQ_R0_STATUS_STOPPED    = 7           # the kernel honoured a soft stop
-# HELLO_R4 (EX §4.4): HELLO record word r4
-HELLO_R4_SDK_ABI        = 0xFFFF      # [15:0] SDK ABI version
-HELLO_R4_SDK_ABI_LSB    = 0
-HELLO_R4_SDK_ABI_W      = 16
-HELLO_R4_RT_VERSION     = 0xFFFF0000  # [31:16] runtime version
-HELLO_R4_RT_VERSION_LSB = 16
-HELLO_R4_RT_VERSION_W   = 16
+# HELLO_R4 (EX §4.4, SW §6.9): HELLO record word r4
+HELLO_R4_SDK_ABI       = 0xFFFF      # [15:0] Basis ABI
+HELLO_R4_SDK_ABI_LSB   = 0
+HELLO_R4_SDK_ABI_W     = 16
+HELLO_R4_KINDS_SIG     = 0xFFFF0000  # [31:16] kind table signature (opl::kinds_sig)
+HELLO_R4_KINDS_SIG_LSB = 16
+HELLO_R4_KINDS_SIG_W   = 16
+# HELLO_R6 (EX §4.4, SW §6.9): HELLO record word r6: Tesseract Basis version; [31:24] 0
+HELLO_R6_PATCH     = 0xFF      # [7:0]
+HELLO_R6_PATCH_LSB = 0
+HELLO_R6_PATCH_W   = 8
+HELLO_R6_MINOR     = 0xFF00    # [15:8]
+HELLO_R6_MINOR_LSB = 8
+HELLO_R6_MINOR_W   = 8
+HELLO_R6_MAJOR     = 0xFF0000  # [23:16]
+HELLO_R6_MAJOR_LSB = 16
+HELLO_R6_MAJOR_W   = 8
 # ISSUE_PUSH (CC §5.1): ISSUE_PUSH write data
 ISSUE_PUSH_REC       = 0x1     # [0] completion record wanted (DB §8.2)
 ISSUE_PUSH_REC_LSB   = 0
@@ -1341,7 +1351,7 @@ TRW_W0_KIND_RVHALT = 3
 TRW_W0_KIND_DROP   = 4
 TRW_W0_KIND_PAD    = 15          # ignored
 # DBG_ID (DB §10.1): 0 = block absent
-DBG_ID_VERSION       = 0xFF      # [7:0] 2
+DBG_ID_VERSION       = 0xFF      # [7:0] 1
 DBG_ID_VERSION_LSB   = 0
 DBG_ID_VERSION_W     = 8
 DBG_ID_HIST          = 0x100     # [8] history
@@ -1739,6 +1749,7 @@ LCQ_HELLO_ID_LO_WORD       = 2  # image id [31:0]
 LCQ_HELLO_ID_HI_WORD       = 3  # image id [63:32]
 LCQ_HELLO_VERSIONS_WORD    = 4  # layout HELLO_R4
 LCQ_HELLO_N_KERNELS_WORD   = 5  # kernel count
+LCQ_HELLO_BASIS_WORD       = 6  # Tesseract Basis version, layout HELLO_R6
 LCQ_HELLO_BOOT_CYCLES_WORD = 7  # boot core cycles
 # LCQ_TRAP (EX §4.4, DB §6.3): TRAP record (0x81)
 LCQ_TRAP_NWORDS        = 8
@@ -3189,7 +3200,8 @@ LAYOUTS = {   # layout -> field -> (lsb, width)
     'TICKET': {'SEQ': (0, 28), 'UNIT': (28, 4)},
     'DESC': {'TYPE': (0, 8), 'PROF': (8, 1), 'KERNEL': (16, 16)},
     'LCQ_R0': {'TYPE': (0, 8), 'STATUS': (8, 8), 'ERR_CODE': (16, 8), 'SEQ': (24, 8)},
-    'HELLO_R4': {'SDK_ABI': (0, 16), 'RT_VERSION': (16, 16)},
+    'HELLO_R4': {'SDK_ABI': (0, 16), 'KINDS_SIG': (16, 16)},
+    'HELLO_R6': {'PATCH': (0, 8), 'MINOR': (8, 8), 'MAJOR': (16, 8)},
     'ISSUE_PUSH': {'REC': (0, 1), 'WMASK': (8, 8)},
     'ISSUE_CREDIT': {'DMA': (0, 4), 'QACT': (4, 4), 'MVM': (8, 4), 'VU': (12, 4), 'ATT': (16, 4), 'SYNC': (20, 4)},
     'ISSUE_UNITS': {'DMA': (0, 1), 'QACT': (1, 1), 'MVM': (2, 1), 'VU': (3, 1), 'ATT': (4, 1), 'SYNC': (5, 1)},

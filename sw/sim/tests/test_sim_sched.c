@@ -106,7 +106,7 @@ typedef struct prog {
 static const tk TK_NONE = { TSR_TICKET_NONE, 0 };
 
 static tsr_sim * mk_tile_sim(const char * sched) {
-    tsr_config cfg = TSR_CONFIG_U200_V1;
+    tsr_config cfg = TSR_CONFIG_U200;
     cfg.num_ch = 2;
     cfg.ch_bytes = 64ull << 20;
     cfg.caps = tsr_sim_caps_implemented() & TSR_CAPS_VU;
@@ -451,7 +451,7 @@ static void pc_cb(void * ctx, tsr_sim * sim, const tsr_q_event * ev) {
 }
 
 static void spin_run(const char * sched, int ff, spin_res * res) {
-    tsr_config cfg = TSR_CONFIG_U200_V1;
+    tsr_config cfg = TSR_CONFIG_U200;
     cfg.num_ch = 2;
     cfg.ch_bytes = 64ull << 20;
     tsr_sim_opts o;

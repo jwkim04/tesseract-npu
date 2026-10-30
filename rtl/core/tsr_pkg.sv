@@ -37,8 +37,9 @@ package tsr_pkg;
   localparam int unsigned TSR_T_MAX_ARCH      = 8;
   localparam int unsigned TSR_NUM_CH_MAX      = 16;   // LD/ST channel field is 4 bits
   localparam logic [31:0] TSR_ID_MAGIC        = 32'h5453_5231;  // "TSR1"
-  localparam logic [7:0]  TSR_ISA_MAJOR       = 8'd2;   // VERSION 0x0200 (EX §7.5), as tsr_tables_pkg
-  localparam logic [7:0]  TSR_ISA_MINOR       = 8'd0;
+  // VERSION = the Tesseract Core capability MAJOR.MINOR (EX §7.5), from the generated package.
+  localparam logic [7:0]  TSR_ISA_MAJOR       = 8'(tsr_tables_pkg::TSR_ISA_MAJOR);
+  localparam logic [7:0]  TSR_ISA_MINOR       = 8'(tsr_tables_pkg::TSR_ISA_MINOR);
   localparam logic [31:0] TSR_CANON_NAN       = 32'h7FC0_0000;
 
   // Channel DRAM map (byte offsets inside a channel; OPL/IO/AUX on ch0 only; docs/design EX §11).
@@ -52,7 +53,7 @@ package tsr_pkg;
   localparam longint unsigned TSR_REGION_WEIGHT_OFF = 512 * TSR_MIB;
 
   // -------------------------------------------------------------------------------------------
-  // Elaboration parameter defaults: U200 (spec 구성 파라미터, TSR_CONFIG_U200_V1).
+  // Elaboration parameter defaults: U200 (spec 구성 파라미터, TSR_CONFIG_U200).
   // tsr_core takes each of these as a parameter; these are only the defaults.
   // -------------------------------------------------------------------------------------------
   localparam int unsigned     TSR_DEF_NUM_CH         = 4;

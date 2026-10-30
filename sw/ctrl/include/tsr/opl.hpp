@@ -112,6 +112,62 @@ constexpr uint32_t kind_nargs(uint32_t kind) {
 // Smallest slot count holding n_args argument words.
 constexpr uint32_t slots_for_nargs(uint32_t n_args) { return (n_args + 2u + SLOT_WORDS - 1u) / SLOT_WORDS; }
 
+// Numerics revision of each defined kind (SW §6.9, SW-54), 0 for a kind without a definition. A
+// result is reproducible by (Tesseract Core capability, configuration CFG0-CFG3 / CAPS, kind,
+// revision). Bump a kind's revision in the change that can alter any output bit for the same record
+// words, input bytes and configuration (not for push order, scheduling or scratch use, nor for
+// accepting new inputs: that is a Basis minor), together with its digest in
+// sw/ctrl/tests/kind_revs.txt (test_fw_kind_revs --update) and a line in the CHANGELOG's unreleased section. A new
+// kind starts at 1; revisions never decrease and are never reused. Images declare the kinds they
+// provide with TSR_KIND (tsr/rt.hpp), which records these values in .tsr_kinds.
+constexpr uint32_t kind_rev(uint32_t kind) {
+    switch (kind) {
+        case K_NOP:         return 1u;
+        case K_JOIN:        return 1u;
+        case K_MUL_MAT:     return 1u;
+        case K_ADD:         return 1u;
+        case K_MUL:         return 1u;
+        case K_SCALE:       return 1u;
+        case K_RMS_NORM:    return 1u;
+        case K_GLU:         return 1u;
+        case K_ROPE:        return 1u;
+        case K_GET_ROWS:    return 1u;
+        case K_SET_ROWS_KV: return 1u;
+        case K_FLASH_ATTN:  return 1u;
+        case K_CPY:         return 1u;
+        case K_UNARY:       return 1u;
+        default:            return 0u;
+    }
+}
+// Name of a kind for logs, tools and statistics ("MUL_MAT", "FLASH_ATTN", ...); "?" if undefined.
+constexpr const char * kind_name(uint32_t kind) {
+    switch (kind) {
+        case K_NOP:         return "NOP";
+        case K_JOIN:        return "JOIN";
+        case K_MUL_MAT:     return "MUL_MAT";
+        case K_ADD:         return "ADD";
+        case K_MUL:         return "MUL";
+        case K_SCALE:       return "SCALE";
+        case K_RMS_NORM:    return "RMS_NORM";
+        case K_GLU:         return "GLU";
+        case K_ROPE:        return "ROPE";
+        case K_GET_ROWS:    return "GET_ROWS";
+        case K_SET_ROWS_KV: return "SET_ROWS_KV";
+        case K_FLASH_ATTN:  return "FLASH_ATTN";
+        case K_CPY:         return "CPY";
+        case K_UNARY:       return "UNARY";
+        default:            return "?";
+    }
+}
+// The kind table signature (HELLO r4[31:16], SW §6.9): FNV-1a 32 over the 64 revision bytes rev[k]
+// (the image's revision of kind k, 0 if absent), folded to 16 bits. It does not depend on the order
+// of .tsr_kinds. No kinds: 0xB51B; NOP, JOIN and MUL_MAT at revision 1: 0x512E.
+constexpr uint32_t kinds_sig(const uint8_t (&rev)[N_KINDS]) {
+    uint32_t h = 2166136261u;
+    for (uint32_t k = 0; k < N_KINDS; ++k) h = (h ^ rev[k]) * 16777619u;
+    return (h ^ (h >> 16)) & 0xFFFFu;
+}
+
 // MUL_MAT (0x10) argument words (SW §7.2). Handles are {ch[31:28], beat[27:0]}; strides in lines.
 namespace mm {
 constexpr uint32_t X = 0, X_STRIDE = 1, Y = 2, Y_STRIDE = 3, W_OFF = 4, FMT = 5, N = 6, K = 7, T = 8,

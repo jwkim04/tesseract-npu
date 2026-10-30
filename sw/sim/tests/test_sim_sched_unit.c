@@ -55,7 +55,7 @@ static uint32_t op(tsr_sim * s, uint32_t opcode, uint32_t cycles, uint32_t dep0,
 }
 
 static tsr_sim * mk(const char * sched) {
-    tsr_config cfg = TSR_CONFIG_U200_V1;
+    tsr_config cfg = TSR_CONFIG_U200;
     cfg.num_ch = 2;
     cfg.ch_bytes = 1ull << 24;
     tsr_sim_opts o;
@@ -169,7 +169,7 @@ static void test_parse(void) {
 // 3. Options and environment (SW §4.8, §4.9)
 // ---------------------------------------------------------------------------
 static void test_opts(void) {
-    tsr_config cfg = TSR_CONFIG_U200_V1;
+    tsr_config cfg = TSR_CONFIG_U200;
     cfg.num_ch = 1;
     cfg.ch_bytes = 1ull << 20;
     tsr_sim_opts o;
@@ -674,7 +674,7 @@ typedef struct rvline { uint64_t t; uint32_t pc; } rvline;
 // (TSR_SIM_LOG_RV: the core time each instruction completed, effective RV cycles), at most max.
 static uint32_t rv_lines(const char * sched, const uint32_t * prog, uint32_t nw, void (*pre)(tsr_sim *), uint64_t cycles,
                          rvline * out, uint32_t max) {
-    tsr_config cfg = TSR_CONFIG_U200_V1;
+    tsr_config cfg = TSR_CONFIG_U200;
     cfg.num_ch = 2;
     cfg.ch_bytes = 1ull << 24;
     FILE * f = tmpfile();

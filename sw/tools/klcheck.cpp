@@ -24,12 +24,17 @@
 // flash attention on, a q8_0 K and V cache and LLAMA_ATTN_ROT_DISABLE=1 (set by the tool);
 // offload_kqv is false in M6 (--phase m6, the default) and true in M7 (--phase m7); all of it is
 // recorded in the file header (version 2), and compare warns when two files differ. The phase also
-// sets TSR_KINDS (m6: the device takes MUL_MAT only; m7: every M7 kind).
+// sets TSR_KINDS (m6: the device takes MUL_MAT only; m7: every M7 kind). A device run records the
+// versions it ran with (SW §6.9: the Tesseract Core capability, the Tesseract Basis version and the
+// kind table signature of the booted image) in the header; compare prints them and report.json
+// carries them ("versions", null when not recorded).
 
 #include "ggml-backend.h"
 #include "ggml.h"
 #include "gguf.h"
 #include "llama.h"
+
+#include "tsr_transport.h"   // tsr_versions (the backend's hook "ggml_backend_tesseract_versions")
 
 #include <algorithm>
 #include <cerrno>
@@ -226,7 +231,11 @@ struct klc_header {
     uint32_t attn_rot_disable; // 1: the run had LLAMA_ATTN_ROT_DISABLE=1 (llama.cpp's Hadamard KV rotation off)
     uint32_t phase;            // KLC_PHASE_M6 / _M7: which phase's settings; KLC_PHASE_V1 for a version 1 file
     uint32_t swa_cache;        // KLC_SWA_* (0 in files written before the field)
-    uint8_t  reserved[8];
+    // The versions a device run used (SW §6.9; the last reserved bytes, version unchanged; 0 = not
+    // recorded: a CPU run or a file written before the fields)
+    uint32_t basis;            // Tesseract Basis version of the booted image (major << 16 | minor << 8 | patch)
+    uint16_t core;             // Tesseract Core capability (VERSION[15:0]: major << 8 | minor)
+    uint16_t kinds_sig;        // kind table signature of the booted image (HELLO r4[31:16])
 };
 static_assert(sizeof(klc_header) == 512, "klc_header layout");
 
@@ -270,6 +279,15 @@ static std::string settings_str(const klc_header & h) {
 }
 // a file without the field ran with the full-size SWA cache
 static uint32_t swa_cache_of(const klc_header & h) { return h.swa_cache == KLC_SWA_UNRECORDED ? (uint32_t) KLC_SWA_FULL : h.swa_cache; }
+// The versions a device run recorded (SW §6.9), one phrase: "Tesseract Core 1.0, Tesseract Basis 0.1.0
+// (kind table 0xfa6f)", or "versions not recorded".
+static std::string versions_str(const klc_header & h) {
+    if (h.basis == 0 && h.core == 0) return "versions not recorded";
+    char b[128];
+    snprintf(b, sizeof(b), "Tesseract Core %u.%u, Tesseract Basis %u.%u.%u (kind table 0x%04x)", (h.core >> 8) & 0xFFu, h.core & 0xFFu,
+             (h.basis >> 16) & 0xFFu, (h.basis >> 8) & 0xFFu, h.basis & 0xFFu, h.kinds_sig);
+    return b;
+}
 // The device kinds a run accepts (SW §9.2 TSR_DEVICE values with a device, and cpu).
 static bool device_kind_ok(const std::string & d) {
     return d == "cpu" || d == "sim" || d == "mock" || d == "vkernel" || d == "xrt";
@@ -1009,6 +1027,19 @@ static int cmd_run(int argc, char ** argv) {
     h.offload_kqv      = o.offload() ? 1u : 0u;
     h.phase            = (uint32_t) o.phase;
     h.swa_cache        = o.swa_full ? KLC_SWA_FULL : KLC_SWA_RING;
+    if (o.device != "cpu") {    // the device and image the model loaded onto (SW §6.9)
+        typedef bool (*versions_fn)(ggml_backend_dev_t, tsr_versions *);
+        ggml_backend_dev_t dev = find_tesseract_device();
+        ggml_backend_reg_t reg = dev ? ggml_backend_dev_backend_reg(dev) : nullptr;
+        versions_fn fn = reg ? (versions_fn) ggml_backend_reg_get_proc_address(reg, "ggml_backend_tesseract_versions") : nullptr;
+        tsr_versions v;
+        if (fn && fn(dev, &v)) {
+            h.basis = v.basis;
+            h.core = (uint16_t) v.core;
+            h.kinds_sig = (uint16_t) v.kinds_sig;
+        }
+        fprintf(stderr, "klcheck [%s]: %s\n", o.device.c_str(), versions_str(h).c_str());
+    }
     {   // what the context saw (set above, before llama_init_from_model)
         const char * e = getenv("LLAMA_ATTN_ROT_DISABLE");
         h.attn_rot_disable = e != nullptr && atoi(e) != 0 ? 1u : 0u;
@@ -1321,6 +1352,7 @@ static int compare_files(const cmp_opts & o, cmp_result & R) {
         printf("model: %s, n_vocab %u, %u sequences, %zu positions (%" PRIu64 " prompt-tail, %" PRIu64 " generated)\n",
                fixed_str(dev.h.model_desc, 128).c_str(), n_vocab, n_seq, R.rows.size(), R.dev_prompt.n, R.dev_gen.n);
         printf("dev %s\n", settings_str(dev.h).c_str());
+        printf("dev: %s, %s\n", fixed_str(dev.h.device, 16).c_str(), versions_str(dev.h).c_str());
         printf("\n%-4s %6s %5s  %-11s %-11s %7s  %8s %8s  %s\n", "seq", "prompt", "rows", "KL(ref|dev)", "KL(floor)", "ratio",
                "top1 dev", "top1 flr", "first top-1 miss (row)");
         size_t k = 0;
@@ -1400,6 +1432,13 @@ static int compare_files(const cmp_opts & o, cmp_result & R) {
                 json_str(phase_name(dev.h.phase)).c_str(), dev.h.flash_attn ? "true" : "false", json_str(type_name_or(dev.h.type_k)).c_str(),
                 json_str(type_name_or(dev.h.type_v)).c_str(), dev.h.offload_kqv ? "true" : "false",
                 dev.h.attn_rot_disable ? "true" : "false", json_str(swa_cache_of(dev.h) == KLC_SWA_RING ? "ring" : "full").c_str());
+        if (dev.h.basis == 0 && dev.h.core == 0) {
+            fprintf(f, "  \"versions\": null,\n");
+        } else {
+            fprintf(f, "  \"versions\": {\"core\": \"%u.%u\", \"basis\": \"%u.%u.%u\", \"kinds_sig\": \"0x%04x\"},\n",
+                    (dev.h.core >> 8) & 0xFFu, dev.h.core & 0xFFu, (dev.h.basis >> 16) & 0xFFu, (dev.h.basis >> 8) & 0xFFu,
+                    dev.h.basis & 0xFFu, dev.h.kinds_sig);
+        }
         fprintf(f, "  \"kl_ratio_limit\": %g, \"min_top1\": %g, \"min_kl\": %g, \"ratio\": %.6f, \"cap\": %.9e,\n", o.kl_ratio,
                 o.min_top1, o.min_kl, R.ratio, R.cap);
         fprintf(f, "  \"complete\": %s, \"nonfinite\": %" PRIu64 ", \"pass\": %s,\n", R.complete ? "true" : "false", R.nonfinite,
@@ -1605,6 +1644,7 @@ static int cmd_info(int argc, char ** argv) {
            h.n_gen, h.prompt_tail, h.flash_attn ? "on" : "off", h.n_threads, (h.flags & KLC_FLAG_REPACK) ? "on" : "off",
            (h.flags & KLC_FLAG_CHAT) ? "on" : "off");
     printf("  file version %u, %s\n", h.version, settings_str(h).c_str());
+    printf("  %s\n", versions_str(h).c_str());
     printf("  load %.2f s, prefill %.2f s (%" PRIu64 " tok in batches), gen %.2f s (%" PRIu64 " single-token decodes%s)\n", h.t_load_s,
            h.t_prefill_s, h.n_prefill_tok, h.t_gen_s, h.n_gen_tok,
            h.n_gen_tok && h.t_gen_s > 0 ? (", " + std::to_string((int) (1e3 * h.t_gen_s / h.n_gen_tok)) + " ms each").c_str() : "");
@@ -1878,7 +1918,12 @@ static int cmd_selftest(int argc, char ** argv) {
         ST_CHECK(settings_str(g) == "M7 settings: flash attn on, KV q8_0/f16 on the device (offload_kqv 1), KV rotation off "
                                     "(LLAMA_ATTN_ROT_DISABLE=1)", "settings string: %s", settings_str(g).c_str());
         ST_CHECK(swa_cache_of(g) == KLC_SWA_FULL, "a header without the SWA field reads as the full-size SWA cache");
+        ST_CHECK(g.basis == 0 && g.core == 0 && g.kinds_sig == 0 && versions_str(g) == "versions not recorded",
+                 "a header without the version fields: %s", versions_str(g).c_str());
         h.swa_cache = KLC_SWA_RING;
+        h.basis = 0x000100u;          // SW §6.9: the versions of a device run survive a write / read
+        h.core = 0x0100u;
+        h.kinds_sig = 0xFA6Fu;
         {
             klc_writer w;
             w.create(fi, h);
@@ -1889,6 +1934,9 @@ static int cmd_selftest(int argc, char ** argv) {
         ST_CHECK(g.swa_cache == KLC_SWA_RING && settings_str(g) == "M7 settings: flash attn on, KV q8_0/f16 on the device "
                  "(offload_kqv 1), KV rotation off (LLAMA_ATTN_ROT_DISABLE=1), SWA cache ring", "SWA field round trip: %s",
                  settings_str(g).c_str());
+        ST_CHECK(g.basis == 0x000100u && g.core == 0x0100u && g.kinds_sig == 0xFA6Fu &&
+                 versions_str(g) == "Tesseract Core 1.0, Tesseract Basis 0.1.0 (kind table 0xfa6f)", "versions round trip: %s",
+                 versions_str(g).c_str());
         klc_header v1 = st_header(V, NS, "sim", KLC_MODE_GENERATE);
         v1.version = 1;
         v1.flash_attn = 0;

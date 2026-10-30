@@ -899,7 +899,7 @@ brackets; nothing here is reset by QABORT, QCLEAR, the RISC-V reset or `SOFT_RES
 
 | Offset | Name | Access | Content |
 |---|---|---|---|
-| 0x800 | `DBG_ID` | R | [7:0] version 2; bit8 history; bit9 TRW; bit10 RV watchpoints; bit11 REC; [14:12] TBPs (4); [16:15] RV watchpoints (2); [23:20] log2 `HIST_DEPTH` (9); 0 = block absent |
+| 0x800 | `DBG_ID` | R | [7:0] version 1 (of this register map; SW §6.9); bit8 history; bit9 TRW; bit10 RV watchpoints; bit11 REC; [14:12] TBPs (4); [16:15] RV watchpoints (2); [23:20] log2 `HIST_DEPTH` (9); 0 = block absent |
 | 0x804 | `DBG_CTRL` | W, reads 0 | pulses: bit0 STOP_NOW, bit1 RELEASE, bit2 QSTEP (one of bits 0–2 per write: QSTEP > RELEASE > STOP_NOW); bit4 HIST_CLEAR; bit5 RV_SAMPLE (completes after the sample or 4,096 cycles); bit6 RVWP_APPLY; bit7 TRW_FLUSH; bit8 RV_HALT_CANCEL; bit9 MATCHQ_CLEAR |
 | 0x808 | `DBG_CFG` | RW [0x30] | bit0 DMI_EN; bit1 SERIAL; bit2 ERR_STOP; bit3 STOP_HALT_RV; bit4 HIST_EN; bit5 HIST_FREEZE_ERR; bit6 HIST_FREEZE; bit7 HUNG_STOP; bit8 HALT_ON_BOOT; bit9 RV_HALT_EN; bit10 TRW_EN; bit11 TRW_STOP_FULL |
 | 0x80C | `DBG_STATUS` | R / W1C | levels: bit0 STOP_ACTIVE; bit1 DRAINED; bit2 STEP_BUSY; bit3 a head held by DB; [8:4] cause of the current stop (NOW, BP, STEP, ERR, HUNG); [12:9] BP_HIT; bit15 RV_HALT_PEND; bit16 RVWP_BUSY; bit17 HIST_FROZEN; bit18 RV_HALTED; bit19 RV_SLEEP; bit31 S_VALID. Sticky W1C: [14:13] RVWP_HIT; bit20 TRW_DROP; bit21 REC_DROP; bit22 SBA_REFUSED; bit23 DMI_BLOCKED; bit24 RV_SAMPLE_TIMEOUT; bit25 RV_DFAULT; bit26 PTR_ERR; bit27 RVWP_TIMEOUT; bit28 MATCHQ_OVF (never expected); bit29 DMI_RESP_ERR |

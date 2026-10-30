@@ -52,9 +52,10 @@ typedef struct tsr_transport tsr_transport;
 // ---------------------------------------------------------------------------------------------
 // unchanged: open, close, name, config, write, read, csr_read
 // Open by kind ("sim", "mock", "vkernel", "xrt", registered kinds); NULL or "" means
-// getenv("TSR_DEVICE") or "sim". Checks the identity (ID, VERSION major 2, CFG*, CAPS, CFG3,
-// CTL_ID, RV_CFG, Q_DEPTH, RV_FREQ != 0), clears ADAPTER_STATUS, then SOFT_RESET + bind (channel
-// bases, MEM_EN), unless TSR_ATTACH=1 (SW §9.1). NULL on failure (message on stderr).
+// getenv("TSR_DEVICE") or "sim". Checks the identity (ADAPTER_VERSION major 1 and NUM_CH on
+// adapter kinds, ID, VERSION: Tesseract Core capability major 1 (EX §7.5), CTL_ID != 0 (a control
+// core), CFG*, CAPS, CFG3, RV_CFG, Q_DEPTH, RV_FREQ != 0), clears ADAPTER_STATUS, then SOFT_RESET +
+// bind (channel bases, MEM_EN), unless TSR_ATTACH=1 (SW §9.1). NULL on failure (message on stderr).
 tsr_transport *    tsr_transport_open(const char * kind);   // SOFT_RESET + bind, unless TSR_ATTACH=1
 void               tsr_transport_close(tsr_transport * t);
 const char *       tsr_transport_name(const tsr_transport * t);
@@ -70,9 +71,10 @@ uint32_t tsr_transport_csr_read(tsr_transport * t, uint32_t off);
 int      tsr_transport_csr_write(tsr_transport * t, uint32_t off, uint32_t val);   // new (DB, tools)
 
 // Firmware image (EX §3): a parsed static RV32 ELF. tsr_image_open checks the segments, the
-// kernel table and .note.tsr (EX §3.1, SW §6.2) and that the stored image id equals the computed
-// one (EX §3.2). Images are reference counted: a transport keeps the image it booted alive after
-// tsr_image_close.
+// kernel table, the kind table and .note.tsr (EX §3.1, SW §6.2) and that the stored image id equals
+// the computed one (EX §3.2); it refuses an image of another Basis ABI or without a Tesseract Basis
+// version (SW §6.9). Images are reference counted: a transport keeps the image it booted alive
+// after tsr_image_close.
 typedef struct tsr_image tsr_image;                                   // parsed firmware ELF
 int         tsr_image_open(const char * elf_path, tsr_image ** out);  // checks segments and .note.tsr
 void        tsr_image_close(tsr_image * img);
@@ -80,10 +82,12 @@ int         tsr_image_kernel(const tsr_image * img, const char * name); // index
 uint64_t    tsr_image_id(const tsr_image * img);
 
 // Boot (EX §3.3-§3.5, SW §9.1): refuses an image whose .note.tsr requirements the device does not
-// meet; VERIFY of every ITCM segment, a cold load (receive CRC, VERIFY CRC) of each one that does
+// meet (the Tesseract Core capability: same major, device minor >= the image's; CAPS; TCMs; the Basis
+// ABI); VERIFY of every ITCM segment, a cold load (receive CRC, VERIFY CRC) of each one that does
 // not match, every DTCM segment reloaded and verified (a warm restart when no ITCM segment had to
-// be written); RV_BOOT = 0, RV_RUN = 1; HELLO within TSR_BOOT_MS with the image id, the SDK ABI and
-// the kernel count checked, and no other record first. A booted device is soft-reset first.
+// be written); RV_BOOT = 0, RV_RUN = 1; HELLO within TSR_BOOT_MS with the image id, the Basis ABI,
+// the kind table signature, the kernel count and the Tesseract Basis version checked, and no other
+// record first. A booted device is soft-reset first.
 int tsr_transport_boot(tsr_transport * t, const tsr_image * img);    // warm if possible, else cold; HELLO checked
 
 // Launches (EX §4.3, §4.4, §4.8). tsr_launch: type TSR_DESC_TYPE_LAUNCH / _PING, flags = w0[15:8]
@@ -131,6 +135,29 @@ const char *      tsr_image_path(const tsr_image * img);
 // The booted image (ready or trapped) or NULL. The transport holds a reference: the pointer stays
 // valid until a boot of another image or tsr_transport_close.
 const tsr_image * tsr_transport_image(const tsr_transport * t);   // booted image or NULL
+
+// Versions (SW §6.9): the device's Tesseract Core capability (VERSION, EX §7.5) and CAPS, an
+// image's Tesseract Basis version, Basis ABI and kind table (.note.tsr, .tsr_kinds; on a booted
+// device HELLO r4 / r6 proved them, EX §4.4).
+typedef struct tsr_versions {
+    uint32_t core;          // device Tesseract Core capability: VERSION[15:0] (major << 8 | minor); 0 = no device
+    uint32_t caps;          // device CAPS
+    uint32_t core_min;      // the image's .note.tsr cap_min: the capability it needs
+    uint32_t basis;         // the image's Tesseract Basis version (major << 16 | minor << 8 | patch) = HELLO r6
+    uint32_t abi;           // the image's Basis ABI = HELLO r4[15:0]
+    uint32_t kinds_sig;     // = HELLO r4[31:16]
+    uint32_t n_kinds;
+    uint8_t  kind_rev[64];  // numerics revision of kind k, 0 = not in the image
+    uint64_t image_id;
+} tsr_versions;
+uint32_t tsr_basis_version(void);                                       // this host library's Basis version
+int      tsr_image_versions(const tsr_image * img, tsr_versions * v);   // the image's fields; core = caps = 0
+int      tsr_transport_versions(const tsr_transport * t, tsr_versions * v);   // device fields + the booted
+                                                                              // image's (zeros before a boot)
+// "Tesseract Core 1.0 (VU ATT), Tesseract Basis 0.1.0 (ABI 1, 14 kinds)" (parts without a value are
+// left out); verbose adds ", image <id>, kinds 0xfa6f: NOP r1 JOIN r1 ...". Returns the length (as
+// snprintf; the text is truncated at n), or TSR_TE_INVAL.
+int      tsr_versions_str(const tsr_versions * v, int verbose, char * buf, size_t n);
 
 // Decoded view of a record (accessors over tsr_record.w[], EX §4.4)
 typedef struct tsr_result {

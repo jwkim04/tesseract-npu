@@ -10,6 +10,10 @@
 //     (tsr::rt_stop_requested, which kernel.hpp's stop_requested() calls), the SPM argument range.
 // Logging and panic are in tsr/log.hpp.
 //
+// The kind table .tsr_kinds (SW §6.2, §6.9): TSR_KIND(NAME) beside each op list kind's handler emits
+// one 4-byte entry {kind, revision, 0}; the runtime folds the table into HELLO r4[31:16] (the kind
+// table signature, tsr::opl::kinds_sig) and the host reads it from the ELF before the boot.
+//
 // Kernel index rule (EX §3.1, §4.6). The kernel index of a descriptor is the position in
 // .tsr_kernels. TSR_KERNEL puts each entry in the input section ".tsr_kernels.<rank>.<name>" and the
 // linker script collects them with KEEP(*(SORT_BY_NAME(.tsr_kernels.*))) between __tsr_kernels_start
@@ -23,6 +27,7 @@
 //
 // Link-time sections and symbols the runtime relies on (sw/ctrl/rt/link.ld, SW §6.2): .vectors at
 // RV_BOOT with _start at +0x80 (crt0.S), .tsr_kernels (DTCM, loaded: __tsr_kernels_start / _end),
+// .tsr_kinds (DTCM, loaded: __tsr_kinds_start / _end),
 // .tsr_id (DTCM, loaded, 8 bytes: __tsr_image_id, written by tsr-elf), .tsr_dbg (DTCM, loaded,
 // 64 B: __tsr_dbg), .bss and .tsr_crash (DTCM, not loaded: crt0 zeroes [__zero_start, __zero_end),
 // which holds __tsr_crash), .init_array (__init_array_start / _end), the 512 B trap stack
@@ -39,13 +44,13 @@
 #include <stdint.h>
 
 #include "tsr/mmio.hpp"
+#include "tsr/version.h"
 
 // ---------------------------------------------------------------------------------------------
-// Versions (HELLO r4, EX §4.4; .note.tsr sdk_abi, SW §6.2)
+// Versions (SW §6.9): the Tesseract Basis version TSR_BASIS_VERSION and the Basis ABI TSR_SDK_ABI
+// come from tsr/version.h only; the link writes both into .note.tsr (words 6 and 0, --defsym), the
+// runtime posts them in HELLO (r6 from the link's __tsr_basis_version, r4[15:0]).
 // ---------------------------------------------------------------------------------------------
-#define TSR_SDK_ABI     1u        // HELLO r4[15:0], .note.tsr sdk_abi
-#define TSR_RT_VERSION  0x0001u   // HELLO r4[31:16]: runtime version (R1-R10 of EX §4.7)
-
 // Kernel table flags (SW §6.2).
 #define TSR_KFLAG_ARGBLK 0x01u    // ARG0 is the DRAM handle of an argument block (<= 1 KiB)
 
@@ -82,6 +87,15 @@ struct tsr_kernel_desc {
 // SW §6.2 calls the entry 32 bytes, but its fields sum to 36: the fields win (link.ld's
 // __tsr_kdesc_bytes = 36, tsr-elf), so names keep 23 characters.
 static_assert(sizeof(tsr_kernel_desc) == 36, "SW §6.2 kernel table entry: 4 + 4 + 1 + 1 + 2 + 24 bytes");
+
+// Kind table entry (SW §6.2, §6.9), 4 bytes, in .tsr_kinds (unique kinds, any order): an op list kind
+// the image provides and its numerics revision (tsr/opl.hpp kind_rev). TSR_KIND emits it.
+struct tsr_kind_desc {
+    uint8_t  kind;           // 0x00..0x3F (tsr::opl::K_*)
+    uint8_t  rev;            // 1..255
+    uint16_t rsvd;           // 0
+};
+static_assert(sizeof(tsr_kind_desc) == 4, "SW §6.2 kind table entry: 1 + 1 + 2 bytes");
 
 namespace tsr {
 
@@ -215,6 +229,28 @@ inline uint32_t argblk_line() { return spm_lines() - TSR_ARG_LINES; }
     TSR_KERNEL_CHECK_(name, nargs, flags, blk_lines);                                               \
     inline constexpr ::tsr::kernel_info tsr_kinfo_##name = { uint8_t(nargs), uint8_t(flags),        \
                                                              uint16_t(blk_lines), #name }
+#endif
+
+// ---------------------------------------------------------------------------------------------
+// TSR_KIND(NAME) (SW §6.2, §6.9)
+// ---------------------------------------------------------------------------------------------
+// Declares that the image provides op list kind tsr::opl::K_<NAME> at its revision
+// tsr::opl::kind_rev(K_<NAME>): one .tsr_kinds entry, written once beside the kind's handler (the
+// source that defines it strongly; the executor's NOP and JOIN in graph.cpp). The includer has
+// tsr/opl.hpp. A kind declared twice in one image is a link error (the symbol tsr_kind_<NAME>);
+// fw_kind_revs checks that the production image declares exactly the kinds it handles. Host build
+// (TSR_FW_HOST): a constexpr tsr_kinfo_kind_<NAME> only.
+#ifndef TSR_FW_HOST
+#define TSR_KIND(NAME)                                                                                  \
+    static_assert(::tsr::opl::kind_rev(::tsr::opl::K_##NAME) >= 1u, "TSR_KIND " #NAME ": no revision"); \
+    extern "C" __attribute__((used, aligned(4), section(".tsr_kinds")))                                 \
+    const tsr_kind_desc tsr_kind_##NAME = {                                                             \
+        uint8_t(::tsr::opl::K_##NAME), uint8_t(::tsr::opl::kind_rev(::tsr::opl::K_##NAME)), 0u }
+#else
+#define TSR_KIND(NAME)                                                                                  \
+    static_assert(::tsr::opl::kind_rev(::tsr::opl::K_##NAME) >= 1u, "TSR_KIND " #NAME ": no revision"); \
+    inline constexpr tsr_kind_desc tsr_kinfo_kind_##NAME = {                                            \
+        uint8_t(::tsr::opl::K_##NAME), uint8_t(::tsr::opl::kind_rev(::tsr::opl::K_##NAME)), 0u }
 #endif
 
 #endif  // TSR_RT_HPP

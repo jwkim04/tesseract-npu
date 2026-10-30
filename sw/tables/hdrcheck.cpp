@@ -8,6 +8,9 @@
 #include "tsr_tables.h"
 
 static_assert(tsr::VERSION_VALUE == TSR_VERSION_VALUE && tsr::ISA_MAJOR == TSR_ISA_MAJOR, "VERSION");
+static_assert(tsr::HELLO_R6_MAJOR == TSR_HELLO_R6_MAJOR && tsr::HELLO_R6_MINOR_LSB == TSR_HELLO_R6_MINOR_LSB &&
+              tsr::HELLO_R4_KINDS_SIG_LSB == TSR_HELLO_R4_KINDS_SIG_LSB && tsr::LCQ_HELLO_BASIS_WORD == TSR_LCQ_HELLO_BASIS_WORD,
+              "HELLO r4 / r6 (SW §6.9)");
 static_assert(tsr::OP_MVM == TSR_OP_MVM && tsr::OP_ATTQK == TSR_OP_ATTQK, "opcodes");
 static_assert(tsr::ERR_ILLEGAL_OP == TSR_ERR_ILLEGAL_OP, "error codes");
 static_assert(tsr::CSR_PERF_LO_BASE == TSR_CSR_PERF_LO_BASE && tsr::CW_ISSUE_PIDX == TSR_CW_ISSUE_PIDX, "maps");

@@ -47,7 +47,7 @@ endif()
 set(TSR_FW_IMAGES_FILE "" CACHE FILEPATH "generated tsr_fw_image() calls of the main project (test images)")
 
 # ---------------------------------------------------------------------------
-# Memory sizes and versions from the generated table header (CC §4.1, EX §5.1)
+# Memory sizes from the generated table header (CC §4.1); versions (SW §6.9)
 # ---------------------------------------------------------------------------
 set(_tables_h ${TESSERACT_ROOT}/sw/sim/include/tsr_tables.h)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_tables_h})
@@ -61,7 +61,10 @@ function(_tsr_table_value name out)
 endfunction()
 _tsr_table_value(ITCM_BYTES _itcm)
 _tsr_table_value(DTCM_BYTES _dtcm)
-_tsr_table_value(CTL_VERSION _ctl)
+# .note.tsr words 0, 1 and 6: the Basis ABI and the Tesseract Basis version (tsr/version.h), the
+# Tesseract Core capability the images need (VERSION_VALUE); passed to every link as --defsym.
+include(${TSR_CTRL_DIR}/cmake/tsr_version.cmake)
+tsr_read_versions(${TESSERACT_ROOT})
 set(TSR_FW_ITCM_BYTES ${_itcm} CACHE STRING "ITCM size the images are linked for (RV_CFG; default from tsr_tables.h)")
 set(TSR_FW_DTCM_BYTES ${_dtcm} CACHE STRING "DTCM size the images are linked for (RV_CFG; default from tsr_tables.h)")
 
@@ -135,6 +138,8 @@ endfunction()
 _tsr_libgcc(TSR_FW_LIBGCC)
 message(STATUS "sw/ctrl: ${CMAKE_CXX_COMPILER} (${CMAKE_CXX_COMPILER_VERSION}), libgcc ${TSR_FW_LIBGCC}, "
                "ITCM ${TSR_FW_ITCM_BYTES} B, DTCM ${TSR_FW_DTCM_BYTES} B, ${CMAKE_BUILD_TYPE}")
+message(STATUS "sw/ctrl: Tesseract Basis ${TSR_BASIS_VERSION_STRING} (Basis ABI ${TSR_SDK_ABI_VALUE}), images need "
+               "Tesseract Core capability ${TSR_CAP_STRING}")
 
 # Settings shared by every firmware object.
 add_library(tsr_fw_flags INTERFACE)
@@ -168,15 +173,17 @@ if (TSR_FW_KERNEL_SOURCES)
 endif()
 
 # ---------------------------------------------------------------------------
-# tsr_fw_image(<name> [SOURCES <file> ...] [NO_KERNELS] [DEFINES <def> ...])
+# tsr_fw_image(<name> [SOURCES <file> ...] [NO_KERNELS] [DEFINES <def> ...] [BASIS_VERSION <code>])
 #   Links <name>.unstamped.elf from the sw/ctrl/rt objects, the sw/ctrl/kernels objects (unless
-#   NO_KERNELS) and the given extra sources (compiled with DEFINES), then `tsr-elf stamp` writes
+#   NO_KERNELS) and the given extra sources (compiled with DEFINES), with the Tesseract Basis version
+#   <code> (major << 16 | minor << 8 | patch) instead of tsr/version.h's in .note.tsr and HELLO r6
+#   when BASIS_VERSION is given (a test image of an older Basis, SW §6.9), then `tsr-elf stamp` writes
 #   <name>.elf (image id in .tsr_id), <name>.size.txt and <name>.logfmt.txt. Target <name> (ALL).
 #   The main project has a function of the same name and signature that records the call for this
 #   project (TSR_FW_IMAGES_FILE) and sets TSR_FW_TEST_ELF_<name>.
 # ---------------------------------------------------------------------------
 function(tsr_fw_image name)
-    cmake_parse_arguments(A "NO_KERNELS" "" "SOURCES;DEFINES" ${ARGN})
+    cmake_parse_arguments(A "NO_KERNELS" "BASIS_VERSION" "SOURCES;DEFINES" ${ARGN})
     if (NOT TARGET tsr_fw_rt)
         message(STATUS "sw/ctrl: image ${name} not built: no sw/ctrl/rt sources yet")
         return()
@@ -196,11 +203,16 @@ function(tsr_fw_image name)
     set_target_properties(${_link} PROPERTIES OUTPUT_NAME ${name}.unstamped SUFFIX .elf
                           LINK_DEPENDS "${TSR_FW_LINK_SCRIPT}")
     set(_out ${CMAKE_CURRENT_BINARY_DIR})
+    set(_versions ${TSR_FW_VERSION_DEFSYMS})
+    if (DEFINED A_BASIS_VERSION)
+        list(TRANSFORM _versions REPLACE "^-Wl,--defsym=__tsr_basis_version=.*$"
+             "-Wl,--defsym=__tsr_basis_version=${A_BASIS_VERSION}")
+    endif()
     target_link_options(${_link} PRIVATE ${TSR_FW_ARCH} -nostdlib -nostartfiles
         -T ${TSR_FW_LINK_SCRIPT}
         -Wl,--defsym=__tsr_itcm_bytes=${TSR_FW_ITCM_BYTES}
         -Wl,--defsym=__tsr_dtcm_bytes=${TSR_FW_DTCM_BYTES}
-        -Wl,--defsym=__tsr_ctl_id_min=${_ctl}
+        ${_versions}
         -Wl,--orphan-handling=warn
         -Wl,-Map=${_out}/${name}.map)
     # SW §7.8's budget is the production image's (tsr-fw; fw_elf_image / fw_elf_test_image check it on

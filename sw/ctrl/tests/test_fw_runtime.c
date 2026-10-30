@@ -15,7 +15,8 @@
 // observable, but every record here is deterministic). Phases, in launch order:
 //   A  cold load (load_image of test_sim_rvhost.h: receive CRC and VERIFY), 8 descriptors pushed
 //      before boot (the LQ full, no LQ_OVERFLOW): HELLO first (image id = tsr-elf's stored and
-//      computed id, SDK ABI | runtime version, kernel count), then PING -> PONG and rt_args0..6,
+//      computed id, Basis ABI | kind table signature, kernel count, Tesseract Basis version), then
+//      PING -> PONG and rt_args0..6,
 //      with the host consuming only when the LCQ is full (R8 back-pressure);
 //   B  rt_args7 (0-7 arguments: args beyond nargs read 0), ARGBLK of 1 and 16 lines (R5 staging:
 //      blk = the top 16 SPM lines, content = the DRAM block), BAD_DESC variants (unknown TYPE,
@@ -63,6 +64,7 @@
 #include "tsr_dm.h"
 #include "tsr_elf.h"
 #include "tsr_race.h"
+#include "tsr/version.h"     // TSR_SDK_ABI, TSR_BASIS_VERSION (HELLO r4 / r6)
 
 #define N_SCHED 10
 static const char * const k_sched[N_SCHED] = {
@@ -324,9 +326,11 @@ static void chk_event(run * r, uint32_t i, uint32_t type, uint32_t seq, const ch
 }
 static void chk_hello(run * r, uint32_t i, uint32_t taken, const char * what) {
     const rec8 * x = at(r, i);
+    // r4: Basis ABI | the signature of fw_rt's empty kind table (no op list kinds: tsr/opl.hpp
+    // kinds_sig = 0xB51B); r6: the Tesseract Basis version (SW §6.9).
     CHECK(x->r[0] == TSR_LCQ_R0_TYPE_HELLO && x->r[1] == taken && x->r[2] == (uint32_t)G.id &&
-          x->r[3] == (uint32_t)(G.id >> 32) && x->r[4] == (1u | (1u << 16)) && x->r[5] == G.n_kernels && x->r[6] == 0u &&
-          x->r[7] > 0u,
+          x->r[3] == (uint32_t)(G.id >> 32) && x->r[4] == (TSR_SDK_ABI | (0xB51Bu << 16)) && x->r[5] == G.n_kernels &&
+          x->r[6] == TSR_BASIS_VERSION && x->r[7] > 0u,
           "%s: %s: HELLO r0-r7 = %08x %u %08x %08x %08x %u %u %u (id 0x%016llx, %u kernels, TAKEN %u)", r->sched, what,
           x->r[0], x->r[1], x->r[2], x->r[3], x->r[4], x->r[5], x->r[6], x->r[7], (unsigned long long)G.id, G.n_kernels,
           taken);
@@ -498,7 +502,7 @@ static uint32_t ld_w0(uint32_t ch) { return TSR_OP_LD | (ch << 8); }
 
 static void fw_scenario(run * r) {
     char what[160];
-    tsr_config cfg = TSR_CONFIG_U200_V1;
+    tsr_config cfg = TSR_CONFIG_U200;
     cfg.num_ch = 2;
     cfg.ch_bytes = 1ull << 30;
     cfg.caps = TSR_CAPS_VU;
@@ -1205,7 +1209,7 @@ static void compare(const run * a, const run * b) {
 // Launch costs (EX §4.11), fixed schedule, default F_RV / F_CORE
 // ---------------------------------------------------------------------------------------------
 static void measure(void) {
-    tsr_config cfg = TSR_CONFIG_U200_V1;
+    tsr_config cfg = TSR_CONFIG_U200;
     cfg.num_ch = 2;
     cfg.ch_bytes = 1ull << 30;
     cfg.caps = TSR_CAPS_VU;
@@ -1267,7 +1271,7 @@ static void measure(void) {
 // read as SPM_STALE in its launch, and nothing else.
 static int stale_main(const char * path) {
     if (!img_open(path)) return test_finish("fw_runtime_stale");
-    tsr_config cfg = TSR_CONFIG_U200_V1;
+    tsr_config cfg = TSR_CONFIG_U200;
     cfg.num_ch = 2;
     cfg.ch_bytes = 1ull << 30;
     cfg.caps = TSR_CAPS_VU;

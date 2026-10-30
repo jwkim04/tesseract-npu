@@ -12,6 +12,8 @@ from __future__ import annotations
 import struct as _struct
 from dataclasses import dataclass
 
+from . import tables as _tables   # generated from sw/tables/tsr_tables.py
+
 # ---------------------------------------------------------------------------------------------
 # Architecture constants
 # ---------------------------------------------------------------------------------------------
@@ -24,7 +26,7 @@ BURST_ALIGN = 64          # bursts stay inside one 64-beat (4 KiB) block
 T_MAX_ARCH = 8
 NUM_CH_MAX = 16
 ID_MAGIC = 0x54535231
-ISA_MAJOR, ISA_MINOR = 2, 0     # VERSION 0x0200 (EX §7.5)
+ISA_MAJOR, ISA_MINOR = _tables.ISA_MAJOR, _tables.ISA_MINOR   # VERSION: Tesseract Core capability (EX §7.5)
 CANON_NAN = 0x7FC00000
 
 MIB = 1024 * 1024
@@ -34,8 +36,8 @@ REGION_AUX_OFF, REGION_AUX_SIZE = 320 * MIB, 192 * MIB
 REGION_WEIGHT_OFF = 512 * MIB
 
 # U200 defaults (tsr_pkg TSR_DEF_*), keyed like the fields of tsr_config (sw/sim/include/tsr_isa.h).
-U200_V1 = dict(num_ch=4, beat_bits=512, lanes=128, t_max=1, k_max=32768, spm_bytes=4 * MIB,
-               vl=16, nsreg=16, rd_outstanding=16, ch_bytes=16 << 30, addr_beat_w=28, caps=0)
+U200 = dict(num_ch=4, beat_bits=512, lanes=128, t_max=1, k_max=32768, spm_bytes=4 * MIB,
+            vl=16, nsreg=16, rd_outstanding=16, ch_bytes=16 << 30, addr_beat_w=28, caps=0)
 
 # ---------------------------------------------------------------------------------------------
 # Memory port encoding

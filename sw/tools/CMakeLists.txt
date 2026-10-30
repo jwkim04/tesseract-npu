@@ -18,6 +18,11 @@ if (NOT DEFINED TSR_FP_FLAGS)
 endif()
 find_program(TSR_BASH_TOOLS bash)
 
+# The versions the selftest tests expect (SW §6.9): TSR_BASIS_VERSION_STRING from tsr/version.h and
+# TSR_CAP_STRING from tsr_tables.h VERSION, as the firmware links get them.
+include(${TESSERACT_ROOT}/sw/ctrl/cmake/tsr_version.cmake)
+tsr_read_versions(${TESSERACT_ROOT})
+
 # The trace library is part of tsr_sim only with sw/sim/trace.cmake (TSR_SIM_SKIP_SNIPPETS may
 # leave it out); the tools below that read traces or run the shadow need it.
 set(_tsr_have_trace FALSE)
@@ -101,19 +106,22 @@ if (TARGET tsr_devrun)
         # (VERIFY), a hung unit (recovery ladder, "card reset needed"); and pass without them.
         add_test(NAME tools_selftest_mock_faults
                  COMMAND ${TSR_BASH_TOOLS} ${CMAKE_CURRENT_SOURCE_DIR}/test_selftest_faults.sh
-                         $<TARGET_FILE:tsr-selftest> ${TSR_FW_ELF} ${CMAKE_CURRENT_BINARY_DIR}/selftest_faults)
+                         $<TARGET_FILE:tsr-selftest> ${TSR_FW_ELF} ${CMAKE_CURRENT_BINARY_DIR}/selftest_faults
+                         ${TSR_BASIS_VERSION_STRING} ${TSR_CAP_STRING} $<TARGET_FILE:tsr-elf>)
         set_tests_properties(tools_selftest_mock_faults PROPERTIES TIMEOUT 600 ENVIRONMENT "TSR_SIM_THREADS=2")
         # Replays of the trace sets through mock with the shadow (test_selftest_traces.sh): every trace of traces/m3, vu, at, ctrl and model-v1conv (SERIAL)
         # that fits the device, at T_MAX 1 (the U200 core) and T_MAX 8 (k4). The sets are not in
         # git (traces/*/regen.sh): skipped (77) when none is on disk. 690 traces in about 2 s.
         add_test(NAME tools_selftest_mock_traces
                  COMMAND ${TSR_BASH_TOOLS} ${CMAKE_CURRENT_SOURCE_DIR}/test_selftest_traces.sh
-                         $<TARGET_FILE:tsr-selftest> ${TSR_FW_ELF} ${TESSERACT_ROOT}/traces)
+                         $<TARGET_FILE:tsr-selftest> ${TSR_FW_ELF} ${TESSERACT_ROOT}/traces
+                         ${TSR_BASIS_VERSION_STRING} ${TSR_CAP_STRING})
         set_tests_properties(tools_selftest_mock_traces PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900
                              ENVIRONMENT "TSR_SIM_THREADS=4")
         add_test(NAME tools_selftest_mock_traces_tmax8
                  COMMAND ${TSR_BASH_TOOLS} ${CMAKE_CURRENT_SOURCE_DIR}/test_selftest_traces.sh
-                         $<TARGET_FILE:tsr-selftest> ${TSR_FW_ELF} ${TESSERACT_ROOT}/traces)
+                         $<TARGET_FILE:tsr-selftest> ${TSR_FW_ELF} ${TESSERACT_ROOT}/traces
+                         ${TSR_BASIS_VERSION_STRING} ${TSR_CAP_STRING})
         set_tests_properties(tools_selftest_mock_traces_tmax8 PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900
                              ENVIRONMENT "TSR_MOCK_TMAX=8;TSR_MOCK_DMA_ALIGN=64;TSR_SIM_THREADS=4")
         # tsr-log end to end: the selftest kernel's id 9 on sim, its log words saved and decoded with
@@ -159,6 +167,8 @@ function(tsr_add_klcheck)
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
     target_compile_options(klcheck PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra)
+    # tsr_transport.h (the struct tsr_versions of the backend's versions hook, SW §6.9), no library
+    target_include_directories(klcheck PRIVATE ${TESSERACT_ROOT}/sw/transport ${TESSERACT_ROOT}/sw/sim/include)
     target_link_libraries(klcheck PRIVATE llama ggml)
     if (TARGET ggml-base)
         target_link_libraries(klcheck PRIVATE ggml-base)          # gguf_*, ggml_get_type_traits
@@ -201,6 +211,9 @@ function(tsr_add_numcheck)
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
     target_compile_options(tsr-numcheck PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra)
+    # tsr_transport.h (tsr_versions of the backend's versions hook) and tsr/opl.hpp (kind names), no library
+    target_include_directories(tsr-numcheck PRIVATE ${TESSERACT_ROOT}/sw/transport ${TESSERACT_ROOT}/sw/sim/include
+                               ${TESSERACT_ROOT}/sw/ctrl/include)
     target_link_libraries(tsr-numcheck PRIVATE llama ggml)
     target_include_directories(tsr-numcheck PRIVATE ${TESSERACT_ROOT}/third_party/llama.cpp/vendor)   # nlohmann/json.hpp
     if (TARGET ggml-base)

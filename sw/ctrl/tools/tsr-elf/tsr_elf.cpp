@@ -5,6 +5,7 @@
 #include "tsr_elf.h"
 
 #include "tsr_tables.h"   // TSR_ITCM_BYTES, TSR_DTCM_BYTES, TSR_RV_DTCM_BASE, TSR_LOGFMT_VMA
+#include "tsr/opl.hpp"    // N_KINDS (the kind table, SW §6.9)
 
 #include <algorithm>
 #include <cstdarg>
@@ -181,7 +182,7 @@ struct tsr_elf {
     std::vector<Seg>            segs;        // ascending paddr
     std::vector<tsr_elf_seg>    pubsegs;
     std::vector<Section>        secs;
-    int                         id_sec = -1, kt_sec = -1, logfmt_sec = -1;
+    int                         id_sec = -1, kt_sec = -1, kinds_sec = -1, logfmt_sec = -1;
     std::vector<tsr_elf_kernel> kernels;
     std::vector<NoteFound>      notes;       // every note with owner "TSR"
     std::vector<std::pair<uint32_t, uint32_t>> logfmt;   // (address, file offset) per string
@@ -304,6 +305,7 @@ static int parse_into(tsr_elf * e, char * err, size_t en) {
 
     e->id_sec = e->find_sec(".tsr_id");
     e->kt_sec = e->find_sec(".tsr_kernels");
+    e->kinds_sec = e->find_sec(".tsr_kinds");
     e->logfmt_sec = e->find_sec(".tsr_logfmt");
 
     // Kernel table: whole entries (tsr_elf_check reports a partial one).
@@ -342,13 +344,13 @@ static int parse_into(tsr_elf * e, char * err, size_t en) {
                 if (f.desc_ok) {
                     const uint8_t * d = b + desc_o;
                     f.desc.sdk_abi = rd32(d);
-                    f.desc.ctl_id_min = rd32(d + 4);
+                    f.desc.cap_min = rd32(d + 4);
                     f.desc.itcm_min = rd32(d + 8);
                     f.desc.dtcm_min = rd32(d + 12);
                     f.desc.caps_req = rd32(d + 16);
                     f.desc.n_kernels = rd32(d + 20);
-                    f.desc.rsv[0] = rd32(d + 24);
-                    f.desc.rsv[1] = rd32(d + 28);
+                    f.desc.basis_version = rd32(d + 24);
+                    f.desc.rsv = rd32(d + 28);
                 }
                 e->notes.push_back(f);
             }
@@ -540,6 +542,31 @@ int tsr_elf_get_note(const tsr_elf * e, tsr_elf_note * note) {
     return -1;
 }
 
+int tsr_elf_kinds(const tsr_elf * e, uint8_t rev[TSR_ELF_N_KINDS], char * why, size_t whylen) {
+    static_assert(TSR_ELF_N_KINDS == tsr::opl::N_KINDS, "kind table size");
+    std::memset(rev, 0, TSR_ELF_N_KINDS);
+    if (why && whylen) why[0] = '\0';
+    if (e->kinds_sec < 0) return 0;                      // no TSR_KIND in the image: no kinds
+    const Section & s = e->secs[size_t(e->kinds_sec)];
+    if (!s.has_data() || s.size == 0) return 0;
+    if (s.size % TSR_ELF_KIND_BYTES != 0) {
+        fmt_to(why, whylen, "size %u not a multiple of %u", s.size, TSR_ELF_KIND_BYTES);
+        return -1;
+    }
+    const uint8_t * p = e->buf.data() + s.off;
+    int n = 0;
+    for (uint32_t i = 0; i < s.size / TSR_ELF_KIND_BYTES; ++i, p += TSR_ELF_KIND_BYTES) {
+        const uint32_t kind = p[0], r = p[1], rsvd = rd16(p + 2);
+        if (kind >= TSR_ELF_N_KINDS) { fmt_to(why, whylen, "kind 0x%02x out of range", kind); return -1; }
+        if (rev[kind] != 0) { fmt_to(why, whylen, "kind 0x%02x twice", kind); return -1; }
+        if (r == 0) { fmt_to(why, whylen, "kind 0x%02x revision 0", kind); return -1; }
+        if (rsvd != 0) { fmt_to(why, whylen, "kind 0x%02x reserved bits 0x%04x", kind, rsvd); return -1; }
+        rev[kind] = uint8_t(r);
+        ++n;
+    }
+    return n;
+}
+
 const char * tsr_elf_logfmt(const tsr_elf * e, uint32_t addr) {
     if (e->logfmt_sec < 0) return nullptr;
     const Section & s = e->secs[size_t(e->logfmt_sec)];
@@ -649,10 +676,16 @@ void tsr_elf_size_report(const tsr_elf * e, const tsr_elf_limits * lim, char * o
     for (const tsr_elf_kernel & k : e->kernels)
         r += strf("  %3u %-24s entry 0x%08x nargs %u flags 0x%02x argblk_lines %u\n", k.index, k.name, k.entry, k.nargs,
                   k.flags, k.argblk_lines);
+    uint8_t rev[TSR_ELF_N_KINDS];
+    const int nk = tsr_elf_kinds(e, rev, nullptr, 0);
+    r += nk < 0 ? std::string("kinds      (malformed .tsr_kinds)\n") : strf("kinds      %d\n", nk);
+    for (uint32_t k = 0; nk > 0 && k < TSR_ELF_N_KINDS; ++k)
+        if (rev[k]) r += strf("  0x%02x %-24s rev %u\n", k, tsr::opl::kind_name(k), rev[k]);
     tsr_elf_note nt;
     if (tsr_elf_get_note(e, &nt) == 0)
-        r += strf("note.tsr   sdk_abi %u ctl_id_min %u itcm_min %u dtcm_min %u caps_req 0x%08x n_kernels %u\n", nt.sdk_abi,
-                  nt.ctl_id_min, nt.itcm_min, nt.dtcm_min, nt.caps_req, nt.n_kernels);
+        r += strf("note.tsr   sdk_abi %u cap_min %u.%u itcm_min %u dtcm_min %u caps_req 0x%08x n_kernels %u basis_version %u.%u.%u\n",
+                  nt.sdk_abi, nt.cap_min >> 8, nt.cap_min & 0xFFu, nt.itcm_min, nt.dtcm_min, nt.caps_req, nt.n_kernels,
+                  (nt.basis_version >> 16) & 0xFFu, (nt.basis_version >> 8) & 0xFFu, nt.basis_version & 0xFFu);
     if (out && outlen) {
         std::strncpy(out, r.c_str(), outlen - 1);
         out[outlen - 1] = '\0';
@@ -809,6 +842,18 @@ int tsr_elf_check(const tsr_elf * e, const tsr_elf_limits * lim, unsigned flags,
                                              unsigned(i - 1), p.name));
         }
     }
+    // --- kind table (SW §6.2, §6.9) ---
+    {
+        uint8_t rev[TSR_ELF_N_KINDS];
+        char why[96];
+        if (tsr_elf_kinds(e, rev, why, sizeof(why)) < 0) error("kinds", strf(".tsr_kinds is malformed: %s", why));
+        if (e->kinds_sec >= 0) {
+            const Section & s = e->secs[size_t(e->kinds_sec)];
+            if (s.size > 0 && (!s.has_data() || !s.alloc() || e->seg_with_data(s.addr, s.size) < 0 ||
+                               !in_dtcm(s.addr, uint64_t(s.addr) + s.size, l.dtcm_bytes)))
+                error("kinds", strf(".tsr_kinds at 0x%08x is not in the file data of a DTCM PT_LOAD (SW §6.2)", s.addr));
+        }
+    }
     if (flags & TSR_ELF_CHECK_BASE) {
         static const char * const base[3] = { "graph", "selftest", "replay" };
         for (uint32_t i = 0; i < 3; ++i)
@@ -833,15 +878,18 @@ int tsr_elf_check(const tsr_elf * e, const tsr_elf_limits * lim, unsigned flags,
     } else {
         const tsr_elf_note & n = t1[0]->desc;
         const uint32_t itcm_need = uint32_t(itcm_end), dtcm_need = uint32_t(dtcm_end - TSR_RV_DTCM_BASE);
-        if (n.sdk_abi != TSR_ELF_SDK_ABI) error("note-abi", strf("sdk_abi %u (this SDK: %u)", n.sdk_abi, TSR_ELF_SDK_ABI));
-        if (n.ctl_id_min == 0 || n.ctl_id_min > 0xFFu) error("note-ctl", strf("ctl_id_min %u is not a CTL_ID[7:0] version", n.ctl_id_min));
+        if (n.sdk_abi != TSR_ELF_SDK_ABI) error("note-abi", strf("sdk_abi %u (this SDK: Basis ABI %u)", n.sdk_abi, TSR_ELF_SDK_ABI));
+        if (n.cap_min == 0 || n.cap_min > 0xFFFFu)
+            error("note-cap", strf("cap_min 0x%08x is not a Tesseract Core capability (VERSION[15:0], EX §7.5)", n.cap_min));
+        if (n.basis_version == 0 || (n.basis_version >> 24) != 0)
+            error("note-basis", strf("basis_version 0x%08x is not a Tesseract Basis version (SW §6.9)", n.basis_version));
         if (n.itcm_min < itcm_need || n.itcm_min > l.itcm_bytes)
             error("note-itcm", strf("itcm_min %u: the image occupies %u B of a %u B ITCM", n.itcm_min, itcm_need, l.itcm_bytes));
         if (n.dtcm_min < dtcm_need || n.dtcm_min > l.dtcm_bytes)
             error("note-dtcm", strf("dtcm_min %u: the image occupies %u B of a %u B DTCM", n.dtcm_min, dtcm_need, l.dtcm_bytes));
         if (n.n_kernels != e->kernels.size())
             error("note-nkernels", strf("n_kernels %u, the kernel table has %u entries", n.n_kernels, unsigned(e->kernels.size())));
-        if (n.rsv[0] != 0 || n.rsv[1] != 0) error("note-rsv", "reserved note words are not 0");
+        if (n.rsv != 0) error("note-rsv", "reserved note word 7 is not 0");
     }
     for (const Section & s : e->secs) {   // truncated notes
         if (!(s.type == SHT_NOTE_ || s.name == ".note.tsr") || !s.has_data()) continue;

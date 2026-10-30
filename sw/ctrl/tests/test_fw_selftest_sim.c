@@ -22,7 +22,7 @@ static const char * g_image;
 // One session per schedule
 // ---------------------------------------------------------------------------
 static void run(const char * sched, obs * o, session * s) {
-    tsr_config cfg = TSR_CONFIG_U200_V1;
+    tsr_config cfg = TSR_CONFIG_U200;
     cfg.num_ch = NCH;
     cfg.t_max = 8;
     cfg.ch_bytes = 1ull << 30;

@@ -10,7 +10,10 @@
 //   tsr-elf id IMAGE [--stored]     the computed (or stored) id, 16 hex digits
 //   tsr-elf size IMAGE [limits] [--strict-budget]   size report against SW §7.8's budget
 //   tsr-elf kernels IMAGE           kernel table
-//   tsr-elf note IMAGE              .note.tsr
+//   tsr-elf kinds IMAGE             kind table (SW §6.9): "0x10<TAB>MUL_MAT<TAB>rev=1" per kind, then
+//                                   "signature=0xfa6f" (HELLO r4[31:16], tsr/opl.hpp kinds_sig)
+//   tsr-elf note IMAGE              .note.tsr (cap_min and basis_version as versions)
+//   tsr-elf --version               the Tesseract Basis version and Basis ABI of this tool
 //   tsr-elf logfmt IMAGE            log-format table: "0xADDR<TAB>string" per line (C escapes)
 //   tsr-elf segments IMAGE          PT_LOAD segments as loaded: paddr, filesz, padded, memsz, CRC-32
 //                                   (zlib, of the padded bytes: the LOAD_CRC the host expects, EX §3.3)
@@ -18,6 +21,8 @@
 // BYTES (default SW §7.8: 80 KiB / 56 KiB). Numbers take 0x and K suffixes.
 // --strict-budget turns a budget overrun into a failure (exit 1).
 #include "tsr_elf.h"
+
+#include "tsr/opl.hpp"   // kind_name, kinds_sig (SW §6.9)
 
 #include <cstdio>
 #include <cstdlib>
@@ -33,7 +38,8 @@ void usage() {
                  "       tsr-elf check IMAGE [limits] [--strict-budget] [--no-id] [--base]\n"
                  "       tsr-elf id IMAGE [--stored]\n"
                  "       tsr-elf size IMAGE [limits] [--strict-budget]\n"
-                 "       tsr-elf kernels|note|logfmt|segments IMAGE\n"
+                 "       tsr-elf kernels|kinds|note|logfmt|segments IMAGE\n"
+                 "       tsr-elf --version\n"
                  "limits: --itcm BYTES --dtcm BYTES --budget-itcm BYTES --budget-dtcm BYTES\n");
 }
 
@@ -103,9 +109,19 @@ std::string report_of(const tsr_elf * e, const tsr_elf_limits * l) {
     return b.data();
 }
 
+std::string version_str(uint32_t v) {
+    char b[32];
+    std::snprintf(b, sizeof(b), "%u.%u.%u", TSR_BASIS_MAJOR_OF(v), TSR_BASIS_MINOR_OF(v), TSR_BASIS_PATCH_OF(v));
+    return b;
+}
+
 }  // namespace
 
 int main(int argc, char ** argv) {
+    if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
+        std::printf("tsr-elf (Tesseract Basis %s, Basis ABI %u)\n", version_str(TSR_BASIS_VERSION).c_str(), TSR_SDK_ABI);
+        return 0;
+    }
     if (argc < 3) {
         usage();
         return 2;
@@ -205,10 +221,16 @@ int main(int argc, char ** argv) {
                 tsr_elf_free(e);
                 return 1;
             }
-            if (!quiet)
-                std::printf("tsr-elf: %s id %016llx, ITCM %u B, DTCM %u B (budget %u / %u), %u kernels, %u log formats\n",
+            if (!quiet) {
+                tsr_elf_note n{};
+                uint8_t rev[TSR_ELF_N_KINDS];
+                (void)tsr_elf_get_note(e, &n);   // the checks above passed: present
+                const int nk = tsr_elf_kinds(e, rev, nullptr, 0);
+                std::printf("tsr-elf: %s id %016llx, ITCM %u B, DTCM %u B (budget %u / %u), %u kernels, %u log formats, "
+                            "Tesseract Basis %s, ABI %u, %d kinds\n",
                             out.c_str(), (unsigned long long)id, z.itcm_used, z.dtcm_used, z.budget_itcm, z.budget_dtcm,
-                            tsr_elf_n_kernels(e), tsr_elf_logfmt_count(e));
+                            tsr_elf_n_kernels(e), tsr_elf_logfmt_count(e), version_str(n.basis_version).c_str(), n.sdk_abi, nk);
+            }
         } else if (!quiet) {
             std::printf("%s: ok, id %016llx\n", in.c_str(), (unsigned long long)tsr_elf_id(e));
         }
@@ -235,14 +257,26 @@ int main(int argc, char ** argv) {
             std::printf("%u\t%s\tentry=0x%08x\tnargs=%u\tflags=0x%02x\targblk_lines=%u\thash=0x%08x\n", k->index, k->name,
                         k->entry, k->nargs, k->flags, k->argblk_lines, k->name_hash);
         }
+    } else if (cmd == "kinds") {
+        uint8_t rev[TSR_ELF_N_KINDS];
+        char why[96];
+        if (tsr_elf_kinds(e, rev, why, sizeof(why)) < 0) {
+            std::fprintf(stderr, "tsr-elf: %s: malformed kind table .tsr_kinds (%s)\n", in.c_str(), why);
+            rc = 1;
+        } else {
+            for (uint32_t k = 0; k < TSR_ELF_N_KINDS; ++k)
+                if (rev[k]) std::printf("0x%02x\t%s\trev=%u\n", k, tsr::opl::kind_name(k), rev[k]);
+            std::printf("signature=0x%04x\n", tsr::opl::kinds_sig(rev));
+        }
     } else if (cmd == "note") {
         tsr_elf_note n;
         if (tsr_elf_get_note(e, &n) != 0) {
             std::fprintf(stderr, "tsr-elf: %s has no .note.tsr\n", in.c_str());
             rc = 1;
         } else {
-            std::printf("sdk_abi=%u\nctl_id_min=%u\nitcm_min=%u\ndtcm_min=%u\ncaps_req=0x%08x\nn_kernels=%u\n", n.sdk_abi,
-                        n.ctl_id_min, n.itcm_min, n.dtcm_min, n.caps_req, n.n_kernels);
+            std::printf("sdk_abi=%u\ncap_min=%u.%u\nitcm_min=%u\ndtcm_min=%u\ncaps_req=0x%08x\nn_kernels=%u\nbasis_version=%s\n",
+                        n.sdk_abi, n.cap_min >> 8, n.cap_min & 0xFFu, n.itcm_min, n.dtcm_min, n.caps_req, n.n_kernels,
+                        version_str(n.basis_version).c_str());
         }
     } else if (cmd == "logfmt") {
         std::fputs(logfmt_table(e).c_str(), stdout);

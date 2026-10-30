@@ -140,7 +140,7 @@ static void li(uint32_t rd, uint32_t v) {                    // lui + addi (the 
 }
 
 static void sim_new_sched(double ratio, const char * sched) {
-    tsr_config cfg = TSR_CONFIG_U200_V1;
+    tsr_config cfg = TSR_CONFIG_U200;
     cfg.num_ch = 1;
     cfg.ch_bytes = 1ull << 28;
     tsr_sim_opts o;
