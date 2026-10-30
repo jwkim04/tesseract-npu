@@ -14,45 +14,9 @@ Runs shipped GGUF models with `-ngl`. Implemented on an AMD Alveo U200 FPGA.
 
 <p align="center"><img src="docs/fig/hero.png" alt="Stylised die of the Tesseract NPU core: four MVM clusters of 128 MAC lanes at the corners, each fed by its own DDR4 channel through a memory arbiter; the 4 MiB scratchpad in the centre inside the x broadcast and y gather; DMA, QACT and CSR blocks; and, drawn dashed as the v2 additions, a RISC-V control core with an issue path and unit queues, a vector unit and a debug block. One cluster is opened up: weight streamer, unpack, activation buffer, 128 MAC lanes, FP accumulate and tree16." width="100%"></p>
 
-Dashed blocks are the v2 additions: verified in the simulator and in firmware; RTL planned (W4).
-
-## Highlights
-
-**Hardware**
-
-- **Built around memory bandwidth.** One MVM cluster per DDR4 channel streams weights at one
-  64-byte beat per cycle; four channels read 72 GB/s on the card.
-- **Q8_0 and Q4_K in hardware.** Every other GGUF weight type is converted to Q8_0 at load. Models
-  up to the card's 64 GB.
-- **Bit-exact by construction.** The order and rounding of every floating-point operation are
-  fixed, so the simulator, the RTL and the card agree bit for bit; Qwen2.5-0.5B logits are
-  bit-identical to the simulator on the card.
-- **Portable core.** A new target rewrites only the tech wrappers, the platform adapter and the
-  transport.
-- **An on-chip RISC-V control core (in development).** An Ibex core runs firmware kernels and
-  issues every tile op asynchronously to per-unit queues; the host only loads firmware and
-  launches kernels.
-- **Vector unit and attention on the device (in development).** Norms, RoPE, activations and
-  reductions on a vector unit; flash attention over a q8_0 KV cache on the MVM clusters.
-
-**Software**
-
-- **A ggml backend for llama.cpp.** `-ngl` offload of unmodified GGUF models; no model conversion.
-- **PyTorch.** `torch.compile(model, backend="tesseract")` runs the weight matmuls on the device
-  (verified on the v1 stack; the v2 re-run is pending).
-- **A bit-exact simulator** with a RISC-V interpreter, cycle model, race detector and
-  record/replay traces. The whole stack runs on it without a card (`TSR_DEVICE=sim`).
-- **A firmware SDK.** Kernels in freestanding C++20 with a header library; the host build of the
-  same kernels issues the same tile-op stream as the RISC-V build.
-- **Deterministic verification.** `klcheck` (model-level KL against the CPU), `numcheck` (every
-  weight matmul checked bit for bit), `tsr-selftest`, trace generation and replay.
-- **GDB over PCIe (in development).** RISC-V source-level debugging through a debug module, plus
-  tile-level stops and a dispatch history.
+<p align="center"><img src="docs/fig/hero.png" alt="Stylised die of the Tesseract NPU core: four MVM clusters of 128 MAC lanes at the corners, each fed by its own DDR4 channel through a memory arbiter; the 4 MiB scratchpad in the centre inside the x broadcast and y gather; DMA, QACT and CSR blocks; and, drawn dashed as the v2 additions, a RISC-V control core with an issue path and unit queues, a vector unit and a debug block. One cluster is opened up: weight streamer, unpack, activation buffer, 128 MAC lanes, FP accumulate and tree16." width="100%"></p>
 
 ## Performance
-
-Decode is memory-bound: on the 12B and 32B models the weight stream is busy in 97 to 98 % of the
-device's cycles.
 
 | Model | Weights | Decode (tok/s)¹ |
 | --- | --- | --- |
@@ -61,56 +25,25 @@ device's cycles.
 | Gemma 4 12B | Q4_K_M | 6.91 |
 | Qwen2.5-32B-Instruct | Q4_K_M | 2.93 |
 
-¹ Decode throughput, batch 1, measured on an Alveo U200 with the v1 core (tag `v1-m4`, 276 MHz
-kernel clock; attention and norms on the CPU). The v2 core (control core, vector unit, attention on
-the device) runs on the simulator; its card numbers follow the v2 bitstream.
+¹ Batch 1, measured on an Alveo U200 with the v1 core. The v2 core (dashed blocks above) runs on the simulator.
 
-More numbers, conditions and the measurement history: [`docs/performance.md`](docs/performance.md).
+Conditions and history: [`docs/performance.md`](docs/performance.md).
 
 ## Architecture
 
 <p align="center"><img src="docs/fig/system.png" alt="Host PC (llama.cpp, ggml-tesseract, tsr_transport and a firmware image) connected over PCIe to the XRT shell of the Alveo U200; a control bridge to the core's CSR port; tsr_core with a control core and issue path, the 4 MiB SPM, a vector unit and four MVM clusters; each cluster fed by its own DDR4 channel through an AXI4 bridge; blocks tagged with their SLR under floorplan C' (clusters 0 and 2 in SLR0, clusters 1 and 3 in SLR2, the rest of the core and the adapter in SLR1). The control core, issue path and vector unit are drawn as planned v2 blocks." width="100%"></p>
 
-One **MVM cluster** per DDR4 channel streams that channel's share of every weight matrix at one
-64-byte beat per cycle (19.2 GB/s at the 300 MHz design clock) into 128 MAC lanes. Decoding a dense
-model reads every weight once per token, so the design aims to keep that stream unbroken rather
-than to add MACs. A 4 MiB scratchpad (SPM) holds activations and results. In v2, an embedded
-RISC-V control core runs firmware kernels and issues tile ops through a checked issue path to
-in-order unit queues; a vector unit handles norms, RoPE, activations and reductions; attention runs
-on the MVM clusters over a q8_0 KV cache; and the host only loads the firmware image and launches
-kernels (in development). Specification: [`docs/spec.md`](docs/spec.md); v2 design set:
-[`docs/v2/README.md`](docs/v2/README.md).
+One MVM cluster per DDR4 channel streams weights at one 64-byte beat per cycle into 128 MAC lanes. A 4 MiB scratchpad holds activations and results.
 
 ## Software stack
 
 <p align="center"><img src="docs/fig/stack.png" alt="The Tesseract software stack as layered bands from the applications down: llama.cpp (llama-cli and llama-server) and PyTorch with Hugging Face models, each shown with its logo; the ggml-tesseract backend and the tsr_rt runtime; tsr_transport with the kinds sim, mock, vkernel (planned) and xrt (planned: the v1 transport ran on the card, the v2 kind awaits the v2 bitstream); firmware on the control core (runtime, executor, kernels, selftest and replay); the NPU core with control core, issue path, DMA, QACT, MVM clusters, vector unit and SPM; and the FPGA card with the U200, the XRT shell and four DDR4 channels. A column of developer tools lists klcheck and numcheck, the trace tools, tsr-selftest, tsr-log and the simulator, with GDB debugging (shown with the GDB logo) and tsr-prof planned. Tags mark what runs on the simulator, what ran on the card with v1 and what is planned." width="100%"></p>
 
-- **Applications.** `llama-cli`, `llama-server` and `llama-completion` offload with `-ngl`; PyTorch
-  uses `torch.compile(backend="tesseract")`.
-- **ggml-tesseract backend.** Registers the device `Tesseract0`, converts and repacks weights at
-  load, builds op lists (cached) and launches them.
-- **Transport.** One protocol layer over four device kinds: `sim` (the default, in-process),
-  `mock`, `xrt` (the card; the v1 transport ran on the card, the v2 kind awaits the v2 bitstream)
-  and `vkernel` (the Verilated kernel, planned).
-- **Firmware kernels.** Freestanding C++20 on the control core: weight matmuls, and norms, RoPE,
-  activations, KV updates and flash attention verified on the simulator.
-- **Simulator.** Bit-exact, with a RISC-V interpreter, a cycle model and a race detector.
-- **Checks.** `tsr-selftest`, `klcheck`, `numcheck`, trace generation and replay, `tsr-log`.
-- **Debugging and profiling (in development).** GDB over PCIe, tile-level debug, `tsr-prof`.
+Logos belong to their owners; sources and licences: [`docs/fig/logos/SOURCES.md`](docs/fig/logos/SOURCES.md).
 
-The logos in the figure are those of llama.cpp, PyTorch, Hugging Face and GDB. They belong to their
-owners, are used only to name those projects and do not mean that the projects endorse Tesseract.
-The GDB archer fish is by Jamie Guinan (vector version by Andreas Arnez), CC BY-SA 3.0 US. Sources
-and licences: [`docs/fig/logos/SOURCES.md`](docs/fig/logos/SOURCES.md).
+## Custom kernels
 
-## Custom kernels in C++
-
-Every operation the core runs is a kernel on its RISC-V control core, and you can write your own in
-plain C++20. The SDK's header library turns tile ops (DMA loads and stores, activation
-quantization, matrix-vector products, vector-unit math, attention steps) into hardware commands that
-the units execute asynchronously; tickets and `after()` express the dependencies, and the hardware
-checks every op before it runs. The same source builds for the host too, and runs bit-exactly on
-the simulator before it ever touches the card.
+Kernels are freestanding C++20 that run on the RISC-V control core and build for the host too.
 
 ```cpp
 #include "tsr/kernel.hpp"
@@ -132,23 +65,7 @@ extern "C" int32_t vadd(const tsr_args * args) {
 }
 ```
 
-The host launches it by name through the transport (`tsr_image_kernel(img, "vadd")`, then
-`tsr_transport_call`). SDK guide, the header library and the rules a kernel follows:
-[`sw/ctrl/README.md`](sw/ctrl/README.md).
-
-## Supported models
-
-| Model | Weights | Runs today |
-| --- | --- | --- |
-| Qwen2.5-0.5B-Instruct | Q8_0 | card (v1); simulator (v2 path) |
-| Gemma 4 12B | Q8_0, Q4_K_M | card (v1) |
-| Qwen2.5-32B-Instruct | Q4_K_M | card (v1); simulator (v2 path, KL checked) |
-| Qwen2.5-0.5B-Instruct (Hugging Face) | float32, through PyTorch | card (v1 stack); simulator (v1 stack, v2 re-run pending) |
-| Qwen3-30B-A3B (mixture of experts) | Q4_K | planned (M8) |
-
-The hardware formats are Q8_0 and Q4_K; every other 2D weight type is converted to Q8_0 at load.
-Weights live in the card's 64 GB of DRAM. Limits: no model above 64 GB, no training, no multi-card.
-Other dense GGUF models are not part of the verified set.
+Guide and header library: [`sw/ctrl/README.md`](sw/ctrl/README.md).
 
 ## Quick start
 
@@ -164,40 +81,15 @@ LLAMA_ATTN_ROT_DISABLE=1 build/dev/bin/llama-completion -m models/qwen2.5-0.5b-i
     -ngl 99 -nkvo -fa on -ctk q8_0 -ctv q8_0 -no-cnv -p "The capital of France is" -n 16
 ```
 
-Requirements, the test suite, PyTorch, the card and every check:
-[`docs/getting-started.md`](docs/getting-started.md).
+Requirements, tests, PyTorch and the card: [`docs/getting-started.md`](docs/getting-started.md).
 
 ## Documentation
 
-- [`docs/getting-started.md`](docs/getting-started.md): build, run on the simulator, PyTorch and
-  the card, verify, environment variables, repository layout, and the index of every document.
-- [`docs/performance.md`](docs/performance.md): every measurement with its provenance, the
-  estimates for v2, the measurement history.
-- [`docs/spec.md`](docs/spec.md): the master specification: architecture, layouts, numerics, ISA,
-  interfaces, verification strategy, milestones, open items.
-- [`docs/v2/README.md`](docs/v2/README.md): the core v2 design set (M6 to M9): execution model,
-  vector unit, attention and KV cache, control core, debug, software and verification.
-- [`sw/ggml-tesseract/README.md`](sw/ggml-tesseract/README.md): the llama.cpp backend.
-- [`sw/ctrl/README.md`](sw/ctrl/README.md): the firmware SDK.
-- [`sw/sim/README.md`](sw/sim/README.md): the simulator and the references.
-- [`sw/transport/README.md`](sw/transport/README.md): the transport.
-
-## Roadmap
-
-**Done (v1, tag `v1-m4`).** M0 DDR bandwidth, M1 ggml backend and simulator, M2 RTL core, M3 MVM
-clusters on four channels, M4 Qwen2.5-32B Q4_K_M at 2.93 tok/s. M0, M3 and M4 ran on the Alveo
-U200.
-
-**In development (v2).**
-
-- M6: the RISC-V control core, the vector unit, the attention and KV hardware modes and debug over
-  PCIe. The firmware, simulator and host stack run on the simulator; RTL and the card follow.
-- M7: a kernel library and graph execution: norms, RoPE, activations and flash attention on the
-  device, one launch per decoded token for Qwen2.5 and Gemma 4.
-- M8: device-side mixture of experts (Qwen3-30B-A3B) and PyTorch on the kernels.
-- M9 (optional): a resident decode loop.
-
-**Ideas, not scheduled.** HBM Alveo cards, Zynq or Kria boards, an open-PDK ASIC prototype.
+- [`docs/getting-started.md`](docs/getting-started.md): build, run, verify, repository layout
+- [`docs/performance.md`](docs/performance.md): measurements and their provenance
+- [`docs/spec.md`](docs/spec.md): master specification
+- [`docs/v2/README.md`](docs/v2/README.md): v2 design set
+- [`sw/ctrl/README.md`](sw/ctrl/README.md): firmware SDK
 
 ## License
 

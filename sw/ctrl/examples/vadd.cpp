@@ -1,4 +1,4 @@
-// Example kernel: y = a + b over n floats (the "Custom kernels in C++" example of README.md).
+// Example kernel: y = a + b over n floats (the "Custom kernels" example of README.md).
 // Built into the test image fw_example_vadd and checked bit-exactly by tests/test_fw_example_vadd.cpp.
 #include "tsr/kernel.hpp"
 #include "tsr/rt.hpp"
