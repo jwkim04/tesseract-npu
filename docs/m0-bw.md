@@ -1,15 +1,29 @@
-# M0 — DMA bandwidth kernel `tsr_bw_k4` and host tool `tsr_bw`
+# M0: DMA bandwidth kernel `tsr_bw_k4` and host tool `tsr_bw`
 
-Status: M3 part C (2026-10-24). The kernel, its packaging and the host tool are done and verified
-without hardware: the RTL in Verilator against the adapter's AXI memory model, the tool against a
-C++ model of the kernel and against XRT's no-op shim. The xclbin is built with the extracted
-development platform (`build/u200/bw/tsr_bw_k4.xclbin`, 2026-10-24, relinked the same day after the
-slice-enable and reset-copy changes of docs/platform-u200.md §8.3: 300 MHz kept, timing met, §4.1).
-**Nothing ran on a card** (no U200 or XRT install on the dev server; no hw_emu of this kernel, no
-bandwidth number of the card). The numbers in this document are simulation measurements unless
-marked otherwise. Source-of-truth order: `docs/spec.md` (마일스톤 M0: "DMA
-테스트 커널로 채널별·4채널 동시 대역폭 측정 — 실측 대역폭 기록 · 성능 예측의 기준값") > this
-document.
+M0 is the first card milestone: how much bandwidth one DDR4 channel and all four channels together
+deliver to a kernel clocked like the Tesseract core, for reads, writes and both at once. This
+document describes the bandwidth kernel `tsr_bw_k4`, its packaging and build, the bench that verifies
+it, the host tool `tsr_bw`, and the results measured on the Alveo U200. The kernel does not contain the
+core: it reuses only the platform adapter's reset, register slices and AXI4 bridge
+([`platform-u200.md`](platform-u200.md) §4, §5), which X0 and v2 leave unchanged. The results are the
+baseline of the performance model (`docs/spec.md` §14, Performance goal: keep the DDR bandwidth busy)
+and bound decode (§7.2).
+
+> **Scope.** Measurement record and as-built description of milestone M0 (`docs/spec.md` §19). Status
+> words: M0 *ran on the card* (§7.1: `tsr_bw_k4.xclbin`, 300 MHz kernel clock); kernel, bench and tool
+> are in the tree, unchanged by X0. Unlike the core kernels (`ap_ctrl_none` since X0), `tsr_bw_k4` is
+> its own kernel with `ap_ctrl_hs` and an interrupt; `tsr_bw` builds with `-DTSR_WITH_XRT=ON`. Card
+> numbers are in §7.1 and the summary below; the others are simulation or Vivado results and say so.
+
+| Measurement (card, 300 MHz, 64-beat bursts) | Result |
+|---|---|
+| Capacity | 16 GiB per channel, no aliasing; the card has 64 GB |
+| Read | 18.01 GB/s per channel (93.8 % of 19.2), 72.05 GB/s on four channels |
+| Write | 15.92 GB/s per channel (82.9 %), 63.68 GB/s on four |
+| Read and write at once | 35.6 + 35.6 = 71.2 GB/s on four |
+| First-beat read latency | 67 cycles (223 ns) |
+
+All rows are *measured on the card (v1, M0, tsr_bw_k4 at 300 MHz)*; the full table is §7.1.
 
 | Path | Content |
 |---|---|
@@ -56,7 +70,7 @@ every response OKAY; RW registers honour WSTRB):
 
 | Offset | Name | Access | Content |
 |---|---|---|---|
-| 0x000 | AP_CTRL | | as the Tesseract kernels (docs/platform-u200.md §2–§3): bit0 ap_start (a write of 1 sets it; cleared when the start is accepted, ap_idle drops in the same edge), bit1 ap_done (COR), bit2 ap_idle, bit3 ap_ready (COR), bit7 auto_restart (not supported) |
+| 0x000 | AP_CTRL | | as Vitis `ap_ctrl_hs` (UG1393; the v1 core kernels had the same block, `platform-u200.md` §3): bit0 ap_start (a write of 1 sets it; cleared when the start is accepted, ap_idle drops in the same edge), bit1 ap_done (COR), bit2 ap_idle, bit3 ap_ready (COR), bit7 auto_restart (not supported) |
 | 0x004 / 0x008 / 0x00C | GIE / IER / ISR | RW / RW / R, toggle on write | interrupt = GIE & IER[0] & ISR[0]; ISR[0] set at completion while IER[0] = 1 |
 | 0x010 | `seed` | RW, arg | pattern seed (all channels) |
 | 0x014 .. 0x01C | — | reserved | |
@@ -83,16 +97,17 @@ Result block (offsets inside the block):
 Kernel arguments (`kernel_bw_k4.xml`, ids in this order; XRT writes every one before each start):
 `seed` (0), then per channel `ctrl<c>`, `bytes<c>`, `rd_off<c>`, `wr_off<c>` (1 .. 16), then `ch0`
 .. `ch3` (17 .. 20). The result registers are not arguments; the tool reads them with
-`xrt::kernel::read_register` (exclusive compute-unit access, as the transport, docs/xrt-host.md §4.1).
+`xrt::kernel::read_register` (exclusive compute-unit access, as the v1 transport did; the v2 transport
+opens its `ap_ctrl_none` kernels with `xrt::ip`, `docs/xrt-host.md` §4.1).
 
 ## 3. Behaviour
 
 - **Start**: ap_start while idle is accepted in the next cycle (ap_start := 0, ap_idle := 0 in
-  the same edge, as `tsr_xrt_ctrl`); all arguments are latched (a snapshot: later register writes
+  the same edge, as the v1 `tsr_xrt_ctrl`); all arguments are latched (a snapshot: later register writes
   do not affect the run); a toggle goes to the four engines through `CTRL_PIPE` register stages.
   Each engine latches its configuration, checks it (3 cycles), and starts generating at **go**.
   Completion: when every engine has returned the toggle → ap_done, ap_ready, ap_idle, ISR.
-  ap_start written during a run stays pending (as the adapter). Disabled channels finish at once.
+  ap_start written during a run stays pending (as the v1 adapter). Disabled channels finish at once.
 - **Configuration check** (enabled channels; failure → CFG_ERR, no traffic, the other channels
   run normally): mode (read / write bits) not 0, B and outstanding in 1..64, id_log2 ≤ 4, buffer
   address 4 KiB aligned, `bytes` and the offset of every enabled direction multiples of 64, every
@@ -182,7 +197,9 @@ extracted development platform under `build/platforms` (as `hw/u200/build_xclbin
 platform it stops with exit 3 and says what to install (tested). `TSR_VIVADO_LOCK` serialises
 Vivado / v++ runs.
 
-### 4.1 Packaging, timing and resources (Vivado 2024.2, dev server)
+### 4.1 Packaging, timing and resources (Vivado 2024.2, dev host)
+
+*Measured in Vivado 2024.2 (out of context and linked, v1 platform adapter).*
 
 Packaging (`package_bw_xo.tcl` under the shared Vivado lock; first 2026-10-23, repackaged 2026-10-24
 02:11 after the review fixes with the `core` hints, and 07:15 for the XSim-legal reset block of the
@@ -283,16 +300,16 @@ Not built: the `wide` variant, `TSR_BW_FLOORPLAN=1`, hw_emu of this kernel.
 `bw_bench.cpp` (Verilator C++; class `Vbw` = `tsr_bw_kernel` with any parameters, or the packaged
 `tsr_bw_k4` behind `kwrap_tsr_bw_k4.sv`), built and run by `run_bw.py`:
 
-- **Host**: the adapter bench's XRT-like AXI4-Lite master (a copy of `tb/platform/kernel_dut.h`
-  XrtHost, serial lanes: random VALID delays, early / late BREADY / RREADY, checks of the slave), writing the whole
+- **Host**: the v1 adapter bench's XRT-like AXI4-Lite master (a copy of `tb/platform/kernel_dut.h` of tag `v1-m4`,
+  class XrtHost, serial lanes: random VALID delays, early / late BREADY / RREADY, checks of the slave), writing the whole
   argument map 0x010 .. 0x0BC like XRT, GIE / IER, AP_CTRL = 1; completion by interrupt or by
   polling AP_CTRL every 16 cycles (random per run).
 - **Memory**: the adapter's `fr::MemModel` (tb/fastreplay/memmodel.h) behind an AXI4 translation,
-  as `kernel_dut.h` does it; the 16 AXI IDs are mapped onto the model's 8 read / 4 write ids (stricter
+  as the v1 `kernel_dut.h` did it; the 16 AXI IDs are mapped onto the model's 8 read / 4 write ids (stricter
   than AXI: order kept within each group, interleaving across groups). Regimes: `ideal` (latency 0,
   every READY / VALID 1), `fast`, `rand`, `slow`, `ordered`. Random 4 KiB aligned buffer
   addresses up to near 2^64. Optional SLVERR / DECERR and stale responses.
-- **Checks**: the adapter bench's AXI4 checks (VALID / payload held, SIZE 6, INCR, CACHE 0011,
+- **Checks**: the v1 adapter bench's AXI4 checks (VALID / payload held, SIZE 6, INCR, CACHE 0011,
   PROT / LOCK / QOS 0, aligned, inside the buffer, LEN ≤ 63, no 4 KiB crossing, WSTRB all ones,
   WLAST, nothing during / right after reset) plus: every AR / AW equals the next burst of the
   reference sequence (address, length, ID), in-flight bursts ≤ outstanding, no traffic on a disabled
@@ -313,6 +330,8 @@ Not built: the `wide` variant, `TSR_BW_FLOORPLAN=1`, hw_emu of this kernel.
   (16 MiB read + write on all channels).
 
 ### 5.2 Results (2026-10-23, Verilator 5.046)
+
+*Measured in RTL simulation (v1 adapter bridge; ideal and random memory regimes).*
 
 | Run | Build | Runs | Result |
 |---|---|---|---|
@@ -387,7 +406,7 @@ Survivors, all equivalent:
 `rtl/platform/alveo_xrt/bw/lint.sh`: `gen_bw.py --check` and 12 Verilator `-Wall` runs (engine,
 control block and body with edge parameters — 1 / 2 / 3 / 4 channels, `ADDR_BEAT_W` 7 / 20 / 28 / 52,
 `AXI_SLICES` 1..4, `CTRL_PIPE` 1..4, `CNT_W` 33 / 64 — the packaged top, the bench wrapper): all
-clean. Waiver: `SYMRSVDWORD` on the `interrupt` port only (as the adapter).
+clean (run for this document, with the adapter's `lint.sh`). Waiver: `SYMRSVDWORD` on the `interrupt` port only.
 
 ## 6. Host tool `tsr_bw` (`sw/tools/tsr_bw.cpp`)
 
@@ -418,8 +437,8 @@ TSR_XCLBIN=build/u200/bw/tsr_bw_k4.xclbin <build>/bin/tsr_bw [options]
 Flow: device and xclbin (kernel lookup, one compute unit, ap_ctrl_hs, control range ≥ 0x1000,
 every argument by name with the offset and size of `tsr_bw_regs.h`, BW_VERSION, the DATA clock of
 the clock topology; AP_CTRL read until idle, which consumes a completion an earlier process did not
-wait for — accepting a start does not clear ap_done and `xrt::run` would otherwise complete the
-first run at once, the transport's issue of docs/xrt-host.md §3; after every run AP_CTRL must be
+wait for: accepting a start does not clear ap_done and `xrt::run` would otherwise complete the
+first run at once (the v1 transport had the same issue, `git show v1-m4:docs/xrt-host.md` §3); after every run AP_CTRL must be
 idle again, else the completion was stale and the tool waits for the run), one device-only buffer
 per channel; **self-check** per channel (4 MiB of host
 random data read by the kernel → checksum; a 4 MiB kernel write read back by the host → pattern);
@@ -432,7 +451,7 @@ outstanding, aggregate read / write / sum GB/s by the kernel's cycles, % of 64 B
 direction, wall-clock GB/s, first-beat latencies, ok / FAIL with the findings. Exit status 0 = all
 checks passed, 1 = a check failed, 2 = setup error.
 
-Verified without a card (2026-10-23, XRT 2.18.179 unpacked, `-DTSR_WITH_XRT=ON -DTSR_WITH_LLAMA=OFF`):
+Verified without a card (v1, 2026-10-23, XRT 2.18.179 unpacked, `-DTSR_WITH_XRT=ON -DTSR_WITH_LLAMA=OFF`):
 compiles and links with `-Wall -Wextra` warning-free; `--mock` (sizes 64K / 1M / 8M, bursts 1 / 16 /
 64, 2 repetitions, PCIe, outstanding sweep): 387 runs, 0 failed; each injected mock fault (wrong
 checksum, one corrupted written word, a BRESP error, a short read) makes the affected runs fail and
@@ -442,28 +461,36 @@ override), allocates a buffer per bank, sets every argument (XRT checks the size
 `xrt::run` start / wait; a wrong argument offset, a wrong size, a missing argument, a 0x800 control
 range, two compute units, an unknown kernel and a buffer larger than its bank are refused with the
 reason; the no-op xclbin's argument table equals `kernel_bw_k4.xml` (12 checks, all pass). Not
-run: anything on a card (register reads, DMA, real runs and their numbers).
+run: anything on a card (register reads, DMA, real runs and their numbers); the card runs are §7.1.
+Re-checked for this document: the tool builds in a scratch XRT build of the current tree (`-DTSR_WITH_XRT=ON`,
+target `tsr_bw`) and `tsr_bw --mock --sizes 1M --bursts 64 --reps 1 --modes r` completes 10 runs, 0 failed.
 
 ## 7. M0 on the card
 
-1. Install XRT 2.18.179 + the patched driver, the U200 platform, flash, `xbutil validate`
-   (docs/xrt-host.md §8). The bank SLRs of `platforminfo -p xilinx_u200_gen3x16_xdma_2_202110_1`
-   are recorded (docs/platform-u200.md §8); repeat only if the platform files change.
-2. `TSR_VIVADO_LOCK=... hw/u200/bw/build_bw_xclbin.sh` → `build/u200/bw/tsr_bw_k4.xclbin` (the
-   Tesseract kernels' m_axi hints: the baseline). Built 2026-10-24 with the kernel clock at 300 MHz
-   (§4.1; the tool prints the xclbin's DATA clock); rebuild only when the `.xo` manifest no longer
-   matches. Optionally `TSR_BW_HINTS=wide` → `build/u200/bw_wide/` for the outstanding sweep with
-   an interconnect sized for 64 / 64, and record which xclbin each number comes from.
-3. `tsr_bw --dry-run`, then `tsr_bw --pcie --sweep-outstanding --ids 1 --csv m0_ids1.csv` and
-   `tsr_bw --ids 16 --csv m0_ids16.csv` (the core uses up to 16 IDs per channel), optionally
-   `--sizes 4G,8G --ch-mib 16384` for whole-bank runs.
-4. Record in this document: per-channel and 4-channel read / write / read + write GB/s at bursts 64
-   and the core's patterns (weight stream: 64-beat bursts; DMA LD/ST: up to 64), latency-bound
-   rates (outstanding sweep), first-beat latency, PCIe rates; then use them as the baseline of the
-   performance model (spec 성능 검증; the core's `PERF_*` cycle counters are directly comparable:
-   same clock, same bridge).
+M0 ran on 2026-10-25 with the xclbin built in §4.1. The procedure:
+1. Install XRT 2.18.179 with the patched driver, the U200 platform, flash the shell, `xbutil validate`
+   (`platform-u200.md` §14 steps 1-5). The bank SLRs of
+   `platforminfo -p xilinx_u200_gen3x16_xdma_2_202110_1` are recorded there (§8); repeat them only if
+   the platform files change.
+2. `TSR_VIVADO_LOCK=... hw/u200/bw/build_bw_xclbin.sh` → `build/u200/bw/tsr_bw_k4.xclbin` (the Tesseract
+   kernels' m_axi hints: the baseline); a copy is `build/v1/xclbin/tsr_bw_k4.xclbin`. Built 2026-10-24 with
+   the kernel clock at 300 MHz (§4.1; the tool prints the xclbin's DATA clock); rebuild only when the
+   `.xo` manifest no longer matches. Optionally `TSR_BW_HINTS=wide` → `build/u200/bw_wide/` for the
+   outstanding sweep with an interconnect sized for 64 / 64; record which xclbin each number comes
+   from.
+3. `TSR_XCLBIN=build/u200/bw/tsr_bw_k4.xclbin tsr_bw --dry-run`, then `tsr_bw --pcie
+   --sweep-outstanding --ids 1 --csv m0_ids1.csv` and `tsr_bw --ids 16 --csv m0_ids16.csv` (the core
+   uses up to 16 IDs per channel), and `tsr_bw --sizes 8G --ch-mib 16384 --bursts 64 --modes w,r --reps 1
+   --verify full` for the capacity and aliasing check.
+4. Record per-channel and 4-channel read / write / read + write GB/s at bursts 64 and the core's
+   patterns (weight stream: 64-beat bursts; DMA LD / ST: up to 64), latency-bound rates (outstanding
+   sweep), first-beat latency and PCIe rates; use them as the baseline of the performance model
+   (`docs/spec.md` §17, Performance verification; the core's `PERF_*` cycle counters are directly
+   comparable: same clock, same bridge).
 
 ### 7.1 Results (2026-10-25)
+
+*Measured on the card (v1, M0, `tsr_bw_k4` at 300 MHz).*
 
 `build/u200/bw/tsr_bw_k4.xclbin` (UUID `709e512f-…-073cd64b03b6`, DATA clock 300 MHz) on the card
 (shell `xilinx_u200_gen3x16_xdma_base_2`, SC 4.6.21). All 1,633 runs (`--ids 1` with `--pcie
@@ -485,17 +512,44 @@ run: anything on a card (register reads, DMA, real runs and their numbers).
 For the performance model: the weight stream (64-beat bursts) has 18.0 GB/s per channel, 93.8 % of
 the 19.2 GB/s the spec assumes. Two outstanding bursts already give 91 %.
 
+### 7.2 How M0 bounds decode
+
+Decode streams every weight byte once per token (batch 1), so with 64 B per beat per channel and one
+beat per cycle the upper bound is the memory side: tokens per second <= read bandwidth / bytes read per
+token. M0 gives the bandwidth, the decode statistics of the card runs give the bytes
+(`platform-u200.md` §14.2). The arithmetic below is derived from those two measurements; it is not a
+separate measurement.
+
+| | Gemma 4 12B Q8_0 | Qwen2.5-32B Q4_K_M |
+|---|---|---|
+| Bytes read per decode token, 4 channels (`PERF_CH_RD_BEATS` × 64 B) | 12.69 GB | 20.74 GB |
+| Bound at M0 (4 × 18.01 GB/s = 72.05 GB/s, 300 MHz) | 5.68 tok/s | 3.47 tok/s |
+| Bound at the achieved kernel clock (4 × 64 B × 276.3 MHz = 70.7 GB/s) | 5.57 tok/s | 3.41 tok/s |
+| Measured decode (k4, 276.3 MHz) | 4.50 tok/s (221.9 ms) | 2.93 tok/s (340.6 ms in the stats run) |
+| Read rate over the wall time of a token | 57.2 GB/s | 60.9 GB/s |
+| Read rate while the device is busy (`PERF_CYCLES`) | 68.8 GB/s | 69.4 GB/s |
+
+At 276.3 MHz the kernel's 64 B per cycle (17.7 GB/s per channel) is slightly below what the DRAM
+delivers at 300 MHz (18.01 GB/s per channel in §7.1), so the device reads at 17.2-17.4 GB/s per
+channel while it is busy, 97-98 % of the cycles. The gap between the busy read rate (68.8 / 69.4 GB/s)
+and the bound (70.7 GB/s) is the cycles with no beat; DRAM stalls are 0.07 % of the cycles
+(`PERF_CH_WAIT`). The gap between the busy rate and the wall-time rate is the host share of a token
+(12.3-16.8 %: launch overhead, the CPU's attention, norms and RoPE, sampling; `platform-u200.md`
+§14.2). So decode is bound by the weight stream, M0 is its yardstick, and closing 300 MHz is worth
+about 4-5 %, not the clock ratio. *Measured on the card (v1, k4, 276.3 MHz) and (v1, M0); the
+quotients are arithmetic on those measurements.* The v2 design does not change this bound; it targets
+the host share (attention and norms on the device, one launch per token, `docs/spec.md` §14).
+
 ## 8. Open items
 
-- Host → card DMA in `tsr_bw --pcie` is 2.0 GB/s, while `xrt-smi validate` measures 7.3–7.9 GB/s.
-  The tool writes from a pageable buffer; the validate test uses host-pinned buffers. Weight upload
-  is a one-time cost (32B Q4_K_M: ~10 s at 2 GB/s); check the transport's upload path with an
-  aligned or pinned staging buffer when M4 loads 32B.
-- The xclbin is built (§4.1): without a
-  floorplan the placer put all four engines and bridges in SLR1 and met 300 MHz, so
-  `bw_floorplan.tcl` is not used and not needed for timing.
+- Closed (M4): host → card DMA in `tsr_bw --pcie` is 2.0 GB/s while `xrt-smi validate` measures
+  7.3-7.9 GB/s, because the tool writes from a pageable buffer and the validate test uses host-pinned
+  buffers. The transport's `staged` mode (a pinned bounce buffer) reaches 8-9 GB/s and its `direct` mode
+  2.2-3.9 GB/s (`platform-u200.md` §14.3; `docs/xrt-host.md` §4.2).
+- The xclbin is built (§4.1): without a floorplan the placer put all four engines and bridges in SLR1
+  and met 300 MHz, so `bw_floorplan.tcl` is not used and not needed for timing.
 - Timing (§4.1): the first link had +0.025 ns on the kernel clock, on the R slice's clock-enable
-  fan-out in `tsr_rslice`, which every Tesseract bridge shares. Changed since (docs/platform-u200.md
+  fan-out in `tsr_rslice`, which every Tesseract bridge shares. Changed since (`platform-u200.md`
   §8.3: the payload registers of the always-ready R / B chains have no clock enable now; out of
   context the worst bridge payload-enable path went from +0.286 ns, this path, to +0.569 ns, from an
   AXI READY input; WNS +0.278 ns on a control-to-engine path), and the relinked xclbin has +0.055 ns
@@ -506,11 +560,13 @@ the 19.2 GB/s the spec assumes. Two outstanding bursts already give 91 %.
   misses on reset nets, the per-channel reset copies need protection from phys_opt's
   equivalent-driver rewiring (a vendor attribute, adapter / tech layer).
 - The kernel cannot be aborted; a hung run needs `xbutil reset` (the tool's timeout message says so).
-- `bw_bench.cpp` carries copies of the adapter bench's AXI4-Lite host and AXI4 checks
-  (`tb/platform/kernel_dut.h` is the adapter's file and is tied to the trace replayer); a shared
-  header would remove the duplication.
+- `bw_bench.cpp` carries its own copy of the XRT-like AXI4-Lite host and the AXI4 checks of the v1
+  kernel bench (`tb/platform/kernel_dut.h` at tag `v1-m4`; the file was deleted in X0, so the
+  duplication is gone). The v2 adapter bench (Y5) may share a header with it again.
 - The tool's no-hardware checks (`--mock`, `noop_smoke.sh`) run from `tb/platform/bw/test_bw.py`
-  only when a `tsr_bw` binary exists; they are not ctests of the XRT build yet.
-- `tsr_bw` reads results with the deprecated `xrt::kernel::read_register` (exclusive CU), as the
-  transport; on XRT versions that drop it, use `xrt::ip` without `xrt::run` (register-driven
-  start, as the transport's `TSR_XRT_CTRL=regs`).
+  only when a `tsr_bw` binary exists; they are not ctests of the XRT build.
+- `tsr_bw` reads results with the deprecated `xrt::kernel::read_register` (exclusive compute-unit
+  access), as the v1 transport did. The v2 transport opens its `ap_ctrl_none` kernels with `xrt::ip`
+  (`docs/xrt-host.md` §4.1). On XRT versions that drop `read_register`, the tool can use `xrt::ip`
+  without `xrt::run` (a register-driven start, as the v1 transport's `TSR_XRT_CTRL=regs` mode did);
+  `xrt::ip` cannot share a compute unit with `xrt::run`.

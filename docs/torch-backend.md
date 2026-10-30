@@ -1,15 +1,19 @@
 # PyTorch backend (`torch.compile(model, backend="tesseract")`)
 
-Status: 2026-10-25. The backend, its C++ runtime `tsr_rt` and their tests are implemented. They pass
-on `TSR_DEVICE=sim` and `mock`. The runtime tests and a 33-test subset of the PyTorch suite also pass
-on the Verilated U200 kernels k4t1 and k4 (`TSR_DEVICE=vkernel`).
-Qwen2.5-0.5B-Instruct from Hugging Face safetensors runs end to end on the simulator, and an 8-token
-forward on the k4t1 kernel gives the simulator's logits bit for bit (§6.6). On the U200 card
-(`TSR_DEVICE=xrt`, `tsr_u200_k1`, 2026-10-25) the suite passes with `TSR_TORCH_VERIFY=1`, and the
-same forward gives the simulator's logits bit for bit (`docs/platform-u200.md` §14.1). Source-of-truth order:
-`docs/spec.md` (수치 규칙, 디바이스 가중치 레이아웃, 양자화 활성값(QA) 레이아웃) > the ISA simulator
-(`sw/sim`) > this document. The package reference (every API, every counter) is
-`sw/torch/README.md`, the runtime's is `sw/rt/README.md`.
+The PyTorch backend runs the weight matmuls of a `torch.compile`d model on a Tesseract device and
+leaves everything else to the CPU. Above the C++ runtime `tsr_rt` it is unchanged since v1; `tsr_rt`
+runs each device matmul as a one-op op list through the firmware's `graph` kernel (W3a). The
+PyTorch move onto the M7 kernels is M8.
+
+> **Scope.** User documentation, as-built record and measurement record of `sw/torch` and `sw/rt`. The
+> backend, `tsr_rt` and their tests are implemented. On the v2 stack the C++ runtime tests (`rt_sim`,
+> `rt_sim_tmax8`, `rt_mock`, `rt_mock_tmax8`) pass on the simulator kinds; the Python suite
+> (`torch_pytest`) and `hf_check.py` were last run with the v1 stack, on the simulator, on the
+> Verilated k4t1 and k4 kernels and on the card (`tsr_u200_k1`). Numbers in §6 are labelled by the
+> stack that produced them. Order of authority: `docs/spec.md` (§5 Device weight layout, §6 Quantized
+> activation layout, §7 Numeric rules) > the simulator (`sw/sim`) > this document. Normative for the
+> software split: [SW](v2/06-software-verification.md) §9.4. The package reference (every API, every
+> counter) is `sw/torch/README.md`, the runtime's is `sw/rt/README.md`.
 
 ## 1. What it is
 
@@ -25,15 +29,17 @@ with torch.no_grad():                                # or torch.inference_mode()
 ```
 
 - **Device**: `TSR_DEVICE` picks the transport (`sim` by default; `mock`, `vkernel`, `xrt` through
-  the same `tsr_transport` as the llama.cpp path).
+  the same `tsr_transport` as the llama.cpp path). `sim` and `mock` run on the simulator; `vkernel`
+  is not available until P5.3; `xrt` ran on the card with the v1 core (§6.8) and follows the v2
+  bitstream.
 - **What goes to the device**: a matmul (`mm`, `addmm`, `linear`, `matmul`, `mv`) with one operand
   that is a parameter, buffer or graph constant. That operand must be a float32 / float16 / bfloat16
   CPU tensor with K % 32 == 0 and a shape the device accepts. Attention, norms, activations,
-  embeddings, bias adds and every other op run on the CPU, as in the llama.cpp path's v1 (spec
-  "ggml 백엔드 통합", supports\_op).
+  embeddings, bias adds and every other op run on the CPU, as in the llama.cpp path's M6
+  (`docs/spec.md` §12, ggml backend integration, `supports_op`).
 - **Numerics**: the llama.cpp path's. A weight becomes Q8_0 when it is uploaded, with ggml's
   `quantize_row_q8_0_ref`, so its blocks are byte-identical to llama.cpp's load-time conversion
-  (spec 로드 시 변환). Activations are quantized on the device by QACT A32, and the products are f32 (§3.7).
+  (`docs/spec.md` §5, *Load-time conversion*). Activations are quantized on the device by QACT A32, and the products are f32 (§3.7).
 - **Equivalence**: with the CPU ops unchanged, a compiled model gives exactly eager PyTorch's
   results with every supported `nn.Linear` replaced by the device's reference model
   (`tt.reference_linears()`). The tests check this bit for bit.
@@ -95,19 +101,17 @@ build/tools/torchvenv/bin/python -I sw/torch/tools/hf_check.py models/hf/Qwen2.5
 build/tools/torchvenv/bin/python -I sw/torch/examples/hf_compare.py models/hf/Qwen2.5-0.5B-Instruct --dtype bfloat16
 ```
 
-On the RTL, the Verilated kernel runs as a server process (docs/platform-u200.md §13), with
-`vkernel.py run` building the server if the RTL changed:
+`TSR_DEVICE=mock` runs the same suite on the adapter model of the transport, and `TSR_SIM_TMAX=8`
+gives the simulated core `T_MAX` 8.
 
-```
-tb/platform/vkernel/vkernel.py run --config k4t1 -- build/tools/torchvenv/bin/python -m pytest -q sw/torch/tests/...
-TSR_DEVICE=vkernel TSR_VKERNEL_CTRL=kds TSR_XRT_TIMEOUT_MS=0 \
-TSR_VKERNEL_SERVER="<k4t1 server> --regime fast --seed 1 --summary s.json" \
-  build/tools/torchvenv/bin/python -I sw/torch/tools/hf_check.py MODEL --forward-only --tokens 8 --expect sim.npy
-```
-
-`--expect` takes the logits a `TSR_DEVICE=sim` run saved with `--save-logits` and requires the same
-bits. This is the card-level check of spec 검증 전략 ("같은 모델 실행의 logits 비트 일치"), done from
-PyTorch.
+**History: RTL (v1, tag `v1-m4`).** With the v1 core the Verilated kernel ran as a server process
+(`tb/platform/vkernel/vkernel.py run --config k4t1 -- <command>`, deleted in X0, see
+`git show v1-m4:tb/platform/vkernel/vkernel.py`; `docs/platform-u200.md` §13), and
+`hf_check.py --forward-only --tokens 8 --expect sim.npy` compared the forward's logits bit for bit with
+a `TSR_DEVICE=sim` run saved with `--save-logits`. That is the model-level check of `docs/spec.md` §17
+(same model run, bit-identical logits), done from PyTorch. X0 deleted the v1 server; the two-clock v2
+server is P5.3, and `TSR_DEVICE=vkernel` is not available until then. The same `--expect` check runs
+against any device kind.
 
 ## 3. Architecture
 
@@ -120,30 +124,33 @@ torch.compile(model, backend="tesseract")
        │               the rewritten graph runs eagerly (FX GraphModule, no Inductor)
        └─ runtime.py   device singleton, WeightCache, eager linear / linear_ref, counters, debug, verify
             └─ _tesseract_rt (C++ extension, sw/torch/csrc/tsr_torch.cpp; torch tensors in and out, GIL released)
-                 └─ tsr_rt (sw/rt): weight upload, linear, N / K parts, program cache, counters, reference path
-                      ├─ tsr_lower (sw/ggml-tesseract/lower.cmake): tsr_mm_emit, allocator, weight layout  ← shared
+                 └─ tsr_rt (sw/rt): weight upload, linear, N / K parts, op list per call, OPL cache, counters, reference path
+                      ├─ tsr_lower (sw/ggml-tesseract/lower.cmake): shape checks, OPL builder and cache, `graph` launcher, allocator, weight layout  ← shared
                       ├─ tsr-weights.cpp + ggml-base (pinned llama.cpp): quantize_row_q8_0_ref, f16 / bf16 to_float ← shared
                       ├─ tsr_ref (libtsr_ref): the reference model behind linear_ref and TSR_TORCH_VERIFY
-                      └─ tsr_transport: sim | mock | vkernel | xrt
+                      └─ tsr_transport: sim | mock | vkernel | xrt  →  firmware `graph` kernel (MUL_MAT records)
 ```
 
-The two lines marked "shared" are the same code the ggml backend uses: both paths emit a weight
-matmul with the same emitter (`tsr_mm_emit`) and store the same weight bytes.
+The two lines marked "shared" are the same code the ggml backend uses: both paths build a weight
+matmul as an op list with the same builder and launcher and store the same weight bytes. The
+firmware tiles the matmul with `plan.hpp`, the planner the host's `supports_op` uses.
 
 ### 3.2 Shared code: `tsr_lower` and the load-time conversion
 
-`tsr_lower` is a static PIC library with no ggml dependency. It holds `tsr-lower` (SPM tiling,
-`LD / QACT / MVM / ST` emission, disassembly, program cache), `tsr-alloc` (first-fit range
-allocator) and the new `tsr-wlayout` (device-format row bytes, row repack, symmetric scatter /
-gather over the channels). The files stay in `sw/ggml-tesseract`. `lower.cmake` defines the target,
+`tsr_lower` is a static PIC library with no ggml dependency. It holds `tsr-lower` (MUL_MAT shape
+checks and the SPM tiling used to place and split weights), `tsr-opl` and `tsr-opl-dev` (the OPL v1
+builder with its hazard analysis and JOINs, the OPL cache, and the launcher of the `graph` kernel on a
+transport), `tsr-alloc` (first-fit range allocator) and `tsr-wlayout` (device-format row bytes, row
+repack, symmetric scatter / gather over the channels). The files stay in `sw/ggml-tesseract`.
+`lower.cmake` defines the target,
 and the top-level CMakeLists includes it before llama.cpp. `ggml-tesseract` links it with a deferred
 `target_link_libraries` in `sources.cmake`, so the llama.cpp patch (0001) is unchanged. The ggml
-backend's weight store and read-back now call the shared scatter / gather.
+backend's weight store and read-back call the shared scatter / gather.
 
 The f32 / f16 / bf16 → Q8_0 conversion is the backend's own `tsr-weights.cpp`, compiled into
 `tsr_rt`, linked with `ggml-base`. libtsr_ref's `tsr_qact` (A32) was measured as a replacement and
 rejected. It equals `quantize_row_q8_0_ref` on 200000 / 200000 ordinary blocks but differs on 9 of
-160 blocks with subnormals or a tiny maximum (DAZ / FTZ of spec 구현 명확화), and it writes a QA image
+160 blocks with subnormals or a tiny maximum (DAZ / FTZ, `docs/spec.md` §21), and it writes a QA image
 with an f32 scale, not `block_q8_0`. Only ggml's function gives "the same blocks as llama.cpp".
 
 ### 3.3 The runtime `tsr_rt` (sw/rt)
@@ -153,30 +160,32 @@ with an f32 scale, not `block_q8_0`. Only ggml's function gives "the same blocks
 member function takes one device mutex. Targets: `tsr_rt` (static, PIC; linked into the extension)
 and `tsr_rt_shared` (`libtsr_rt.so`, which needs only `libggml-base.so`).
 
-- **Device memory.** CMD (ch0, 64 MiB) holds the cached programs, one slot each. IO (ch0,
-  256 MiB) holds the x rows and the y rows of one program. WEIGHT (every channel, from 512 MiB)
-  holds the weights, with symmetric allocation (same W_OFF on every channel, 4 KiB aligned). AUX is
-  unused.
+- **Device memory.** OPL (ch0, 64 MiB) holds the cached op lists. IO (ch0, 256 MiB) holds the x
+  rows and the y rows of one launch. WEIGHT (every channel, from 512 MiB) holds the weights, with
+  symmetric allocation (same W_OFF on every channel, 4 KiB aligned). AUX is unused.
 - **Upload.** f32 / f16 / bf16 → Q8_0 (§3.2), or native Q8_0 / Q4_K ggml blocks
   (`upload_blocks`). Any row stride is accepted, and so are misaligned rows. Rows are repacked into
-  the device layout (spec 디바이스 가중치 레이아웃) and scattered over the channels.
-- **`linear(h, x [T, K] f32) → y [T, N] f32`.** x is staged in IO. For every N part,
-  `tsr_mm_emit` (the ggml backend's emitter) emits `LD / QACT / MVM / ST` with T tiles of
-  min(T_MAX, SPM capacity) tokens. One program covers the whole call, per IO-sized chunk of T.
+  the device layout (`docs/spec.md` §5) and scattered over the channels.
+- **`linear(h, x [T, K] f32) → y [T, N] f32`.** x is staged in IO. The call builds one op list with a
+  MUL_MAT record per N part and K part (the ggml backend's builder) and launches the `graph` kernel
+  once, per IO-sized chunk of T. The firmware tiles T by min(T_MAX, its scratch ring) and issues the
+  `LD / QACT / MVM / ST` tile ops, the sequence v1 emitted from the host, so the results are v1's bit
+  for bit.
 - **N parts.** A weight is split into row ranges when x + QA + y of T_MAX tokens would not fit the
   SPM. Each part is its own allocation and MVM. Rows are independent, so the result is bit-identical
   to an unsplit weight. Example: N = 130000, K = 896 at T_MAX 8 gives 2 parts.
-- **K parts.** When K > K_MAX (32768), the columns are cut into equal block-multiple parts. The
-  program loads the x tile once and, per part, runs QACT on its columns and an MVM with `ACC` after
-  the first: y = ((y₀ + y₁) + y₂)…, one f32 add each (spec ACC). This differs from the unsplit dot
-  product, and `linear_ref` models it exactly.
-- **Program cache.** The key is format, K, T, the x and y beats, and every part's (n, k₀, k, W_OFF).
-  Each program stays resident in its own CMD slot, so a repeated call only writes x, runs, and reads
-  y. Measured for N = 64, K = 896, T = 3 at T_MAX 1 on a repeated call: 1 exec, 1 hit, 0 misses;
-  h2d 10752 B (exactly x), d2h 768 B (exactly y), no weight bytes; device reads 195520 B =
-  3 × 61440 (weight) + 10752 (LD) + 448 (instruction fetch).
-- **Counters**: `execs`, `prog_hits` / `prog_misses`, PERF cycle deltas, device read bytes
-  (Σ PERF_CH_RD_BEATS × 64), h2d (of which weights) and d2h bytes.
+- **K parts.** When K > K_MAX (32768), the columns are cut into equal block-multiple parts. The first
+  record of an N part writes y; the others carry `ACC_DST`, so the kernel loads the old y rows and runs
+  the MVM with `ACC`: y = ((y₀ + y₁) + y₂)…, one f32 add each (`docs/spec.md` §21, *ACC addition*).
+  This differs from the unsplit dot product, and `linear_ref` models it exactly.
+- **Op-list cache.** The key is the bytes of the list (formats, shapes, T, the x and y handles, every
+  part's W_OFF). An LRU in the OPL region keeps the lists resident, so a repeated call writes x,
+  launches, and reads y. Measured on the simulator (v1, program cache) for N = 64, K = 896, T = 3 at
+  T_MAX 1 on a repeated call: 1 exec, 1 hit, 0 misses; h2d 10752 B (exactly x), d2h 768 B (exactly y),
+  no weight bytes; device reads 195520 B = 3 × 61440 (weight) + 10752 (LD) + 448 (instruction fetch,
+  which v2 does not have).
+- **Counters**: `execs` (launches), `prog_hits` / `prog_misses` (op-list cache hits and misses), PERF
+  cycle deltas, device read bytes (Σ PERF_CH_RD_BEATS × 64), h2d (of which weights) and d2h bytes.
 
 ### 3.4 The extension `_tesseract_rt`
 
@@ -249,8 +258,8 @@ and dtype.
 | Weight f32 / f16 / bf16 → Q8_0 | host, at upload (tsr_rt) | f16 / bf16 widened exactly, then `quantize_row_q8_0_ref` (llama.cpp's load-time conversion), repacked into the device layout |
 | Native Q8_0 / Q4_K blocks | host, at upload | no conversion, only the repack (`upload_blocks`) |
 | Activation x | host | widened exactly to f32 if it is f16 / bf16 |
-| QACT A32 | device | spec 양자화 규칙 (= `quantize_row_q8_0_ref`); A256 for Q4_K weights |
-| MVM | device | spec 수치 규칙: exact integer block sums, 16 partials, fixed tree, no FMA; y in f32 |
+| QACT A32 | device | `docs/spec.md` §6 (*Quantization rules*, = `quantize_row_q8_0_ref`); A256 for Q4_K weights |
+| MVM | device | `docs/spec.md` §7 (Numeric rules): exact integer block sums, 16 partials, fixed tree, no FMA; y in f32 |
 | `alpha`, `beta · input`, `linear` bias | host | f32 (`out.mul_(alpha)`, `out.add_(bias, alpha=beta)`); `beta = 0` ignores the input, as in torch |
 | Output | host | one cast from f32 to the op's output dtype (= the input dtype) |
 
@@ -285,7 +294,7 @@ read back from the device and raises on the first differing bit (for vkernel / x
 | matmul of two activations (attention scores, SDPA) | CPU | neither operand is a weight; the fused SDPA op stays on the CPU |
 | a weight computed in the graph (autocast `_to_copy`, dequantization) | CPU | not a parameter / buffer / constant |
 | matmuls in other HOP bodies | CPU | reported as CPU nodes |
-| norms, activations, RoPE, softmax, embeddings, residuals, bias adds | CPU | no vector unit before M6 |
+| norms, activations, RoPE, softmax, embeddings, residuals, bias adds | CPU | the vector unit and the M7 kernels exist on the simulator, but this backend only emits MUL_MAT records until M8 |
 | graphs that need autograd | CPU, eager | one warning; `strict=True` raises |
 | WEIGHT heap full, or 4 uploads in a row | CPU (that weight, that node) | one warning, `cpu_fallback_calls` |
 | native Q8_0 / Q4_K ggml blocks | Tesseract | extension API `Device.upload_blocks` + `linear`; the backend itself only sees float weights |
@@ -294,13 +303,13 @@ read back from the device and raises on the first differing bit (for vkernel / x
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `TSR_DEVICE` | `sim` | transport: `sim`, `mock`, `vkernel`, `xrt`; with their own variables (`TSR_SIM_*`, `TSR_MOCK_*`, `TSR_VKERNEL_*`, `TSR_XRT_*`, `TSR_TRACE`; README "Environment variables", docs/xrt-host.md §4.3) |
+| `TSR_DEVICE` | `sim` | transport: `sim`, `mock`, `vkernel`, `xrt`; with their own variables (`TSR_SIM_*`, `TSR_MOCK_*`, `TSR_VKERNEL_*`, `TSR_XRT_*`, `TSR_IMAGE`, `TSR_TRACE`, `TSR_LOG`: [`sw/transport/README.md`](../sw/transport/README.md), [`docs/getting-started.md`](getting-started.md#environment-variables)) |
 | `TSR_TORCH_DEBUG` | 0 | `1`: partition of every compiled graph, every upload, counters at exit; `2`: also every device call; `3`: also the rewritten aten graphs |
 | `TSR_TORCH_VERIFY` | 0 | `1`: every device matmul is checked bit for bit against libtsr_ref on the read-back weight rows; a mismatch raises, naming the weight, the element and both values |
 | `TSR_TORCH_EXT_DIR` | — | where to find `_tesseract_rt` if it is not on `sys.path` |
 | `TSR_TORCH_PYTHON` | venv, else `python3` | CMake cache variable: interpreter whose torch the extension is built against |
 | `TSR_TORCH_HF_MODEL` | — | model directory for the opt-in `test_hf.py` |
-| `TSR_RT_DEBUG` | 0 | tsr_rt's log: `1` uploads and programs, `2` also a disassembly of every new program |
+| `TSR_RT_DEBUG` | 0 | tsr_rt's log: `1` uploads, calls and launches |
 
 `tt.compile(model, strict=False, debug=None, verify=None, offload=True, **kw)` passes the same
 switches as `options=` of `torch.compile`. `offload=False` prints the partition but keeps every
@@ -308,8 +317,11 @@ matmul on the CPU.
 
 ## 6. Tests and measured results
 
-All numbers are from 2026-10-24: build trees `build/rt` and `build/torch` (Release, torch 2.9.1,
-Python 3.13), `TSR_SIM_THREADS=4` in the ctests, on the 16-core / 14 GB dev host.
+§6.1 to §6.7 are the v1 baseline: measured on the simulator and on the Verilated kernels with the v1
+stack (build trees `build/rt` and `build/torch`, Release, torch 2.9.1, Python 3.13,
+`TSR_SIM_THREADS=4` in the ctests, on the 16-core / 14 GB dev host). "Program" and "program cache" in
+those sections are v1's names for what v2 calls an op list and the op-list cache (the tests make the
+same assertions on both). §6.1 ends with the v2 re-run of the runtime tests; §6.8 has the card.
 
 ### 6.1 tsr_rt (`test-tsr-rt`)
 
@@ -327,10 +339,17 @@ and 33024 / 33280 (> K_MAX, 2 K parts); N 1 … 4864; T 1 … 20; forced N parts
 | `rt_mock` (DMA align 64, chunk 64 KiB), `rt_mock_tmax8` (3 ch, T_MAX 8, align 4096, chunk 12 KiB) | 43 / 43 each |
 | vkernel k4t1 (RTL, 4 ch, T_MAX 1) | 43 / 43 bit-exact; server: 67 runs, 0 findings, 0 reads of unwritten memory; 9 s |
 | vkernel k4 (RTL, 4 ch, T_MAX 8, `--big`) | 44 / 44 bit-exact incl. K-split ACC with T tiles and the N = 130000 head (73.7 s); 68 runs, 0 findings, 0 bad reads; 112 s |
-| program cache, traffic | see §3.3; PERF_CYCLES of that call 1753 on sim, 3052 on vkernel k4t1 |
+| op-list (v1: program) cache, traffic | see §3.3; PERF_CYCLES of that call 1753 on sim, 3052 on vkernel k4t1 (v1) |
 | IO split, free / re-upload, refusals, threads | a 64 KiB IO area with T = 40 gives 3 programs, bit-exact; memory fully returned after free, double free rejected; K = 48, Q4_K with K = 288, N = 0 and `max_part_k = 48` rejected; 2 threads × 12 calls bit-exact |
 | mutation check (scratch builds of tsr_rt.cpp) | detected: wrong QACT column offset in K parts (12 failed checks), dropped ACC (12), shifted N-part y gather (10), K part converted from column 0 (24), wrong x stride (6); an equivalent mutant (N part + 1 row) still passes, as it should |
 | build | fresh configure with `TSR_WITH_LLAMA=ON` and `OFF` both succeed (`tsr_lower` builds without llama.cpp); `libtsr_rt.so` linked alone runs a linear on sim with y == `linear_ref`; no compiler warnings |
+
+The runs above are measured on the simulator (v1) and, for the vkernel rows, in RTL simulation (v1,
+ideal memory). **v2 re-run.** With the op-list runtime (`tsr_rt` launching the `graph` kernel),
+`ctest --test-dir build/dev -R '^rt_'` passes on the simulator kinds: `rt_sim` 43 / 43 cases,
+`rt_sim_tmax8` 44 / 44 (with the N = 130000 head), `rt_mock` 43 / 43, `rt_mock_tmax8` 43 / 43, the same
+assertions as v1 (measured on the simulator, v2, `a775222`; 3 s for the four).
+`rt_vkernel_k4t1` (opt-in, `-DTSR_RT_VKERNEL_TEST=ON`) reports "skipped" until P5.3.
 
 ### 6.2 pytest suite (`sw/torch/tests`)
 
@@ -374,7 +393,7 @@ leaves out the large shapes, because the kernel simulates about 15 K cycles/s:
 - **NMSE against torch float32** (uniform [−1, 1]; 12 shapes × 3 weight dtypes × 5 seeds = 180
   cases, all with N·T ≥ 16): min 7.95e-6, median 2.83e-5, p90 3.92e-5, p99 6.77e-5, max 8.90e-5.
   The max is 17.8 % of the 5e-4 limit of test-backend-ops.
-- **Single-output exception** (spec 검증 전략, "연산 단위 NMSE의 예외"). For N = T = 1, K = 2048,
+- **Single-output exception** (`docs/spec.md` §17, *Exception to op-level NMSE*). For N = T = 1, K = 2048,
   f32, the NMSE is one squared relative error. In 1000 seeded trials it was ≥ 5e-4 in 149 (14.9 %;
   `docs/llama-pin.md`: 15.4 % of 10000). The exact f64 product of the same 8-bit operands fails on
   exactly the same 149, and the device is bit-exact with the reference on all 1000. Like the ggml
@@ -384,16 +403,17 @@ leaves out the large shapes, because the kernel simulates about 15 K cycles/s:
   < 5e-4. In the block, 7 matmuls run on the device, and attention stays inside the fused SDPA op
   on the CPU. Fallback nodes (K % 32 != 0, float64) are bit-identical to eager.
 
-### 6.4 The llama.cpp path did not regress
+### 6.4 The llama.cpp path did not regress (v1)
 
-- No `sw/ggml-tesseract` source or CMake file changed after the `tsr_lower` refactor (§3.2), so
-  the trace diff below still applies. The top-level CMake change for torch is behind
-  `TSR_WITH_TORCH`, which defaults to OFF.
+- No `sw/ggml-tesseract` source or CMake file changed after the `tsr_lower` refactor (§3.2), so the
+  trace diff below still applies. The top-level CMake change for torch is behind `TSR_WITH_TORCH`,
+  which defaults to OFF.
 - **Trace diff.** `TSR_TRACE` dumps from the unmodified and the modified build were compared, for
   `test-ggml-tesseract` on sim, tmax8, hosted and hosted_tmax8: 98 + 98 + 5564 + 5564 traces, every
-  file byte-identical (cmd.bin, init DRAM including the weights, expect). For
-  `test-backend-ops -o MUL_MAT -b Tesseract0`: 1418 traces, 0 cmd.bin differences, 1402 / 1402
-  passed in both builds.
+  file byte-identical (program, init DRAM including the weights, expect). For
+  `test-backend-ops -o MUL_MAT -b Tesseract0`: 1418 traces, 0 program differences, 1402 / 1402
+  passed in both builds. (Measured on the simulator, v1; the v1 trace format held a `cmd.bin`
+  program, see `traces/README.md`.)
 - **After the review fixes**, ctest in `build/rt` passed 11 / 11 in 38.9 s: `rt_*` (4) and
   `ggml_tesseract_*` (7, including `_backend_ops` with 1402 / 1402). `test-ggml-tesseract`:
   "all 28 cases OK".
@@ -430,7 +450,7 @@ generated tokens and PERF cycles are identical to two runs made before the revie
 - **KL ratio.** Device KL / floor KL is 1.0e9 against the f32 CPU. That only says the gap is the
   8-bit quantization: an unquantized f32 model's floor is ~1e-12. Against cpu-q8 the ratio is
   **2.92**. cpu-q8's floor is exactly 0 at positions 0–15, because the 8-bit activations absorb the
-  nudge (the effect spec 검증 전략 describes for llama.cpp). Over the 16 positions where it moved,
+  nudge (the effect `docs/spec.md` §17 describes for llama.cpp). Over the 16 positions where it moved,
   the ratio is **1.72**. hf_check reports the ratios but does not gate on them.
 - **Top-1 misses.** The device and cpu-q8 miss top-1 at the same two positions (20, 23).
 - **Generation.** The 16 greedy tokens of CPU and device are identical (" that the printing of books
@@ -481,7 +501,7 @@ differ, because that GGUF was not made from this checkpoint's tensors. For the 4
 So the GGUF's layer tensors are per-channel rescaled versions of these weights. Only the
 untransformed embedding can be compared byte for byte.
 
-### 6.6 RTL: Qwen2.5-0.5B forward on the Verilated kernel
+### 6.6 RTL: Qwen2.5-0.5B forward on the Verilated kernel (v1)
 
 `hf_check.py --forward-only --tokens 8 --expect <sim logits>` ran on `TSR_DEVICE=vkernel` with the
 k4t1 server (4 ch, T_MAX 1, built from the M3 RTL at 04:37 that day, `--regime fast --seed 1`,
@@ -491,7 +511,7 @@ k4t1 server (4 ch, T_MAX 1, built from the M3 RTL at 04:37 that day, `--regime f
 - The server reported 169 runs, 0 findings and 0 reads of unwritten memory.
 - RTL PERF was 2,278,155 cycles per token (MVM 2,084,161), against 2,166,305 in the sim's cycle
   model. At the 300 MHz target clock that is 7.6 ms of device time per token, computed, not measured
-  on a card. The spec's progress note gives the same 2.28 M per decode token on 4 channels for the
+  on a card. `docs/rtl-m3.md` §13.2 gives the same 2.28 M cycles per decode token on 4 channels for the
   llama.cpp path.
 - Wall time 164 s, of which 150 s in device calls (122 K cycles/s). Peak RSS 3.6 GiB.
 
@@ -527,11 +547,28 @@ Also clean in the review:
   a model; exec errors propagate and the device recovers (`TSR_MOCK_INJECT`).
 - Build: the torch C++11 ABI matches, and the RUNPATH has torch/lib and build/torch/bin.
 
+### 6.8 Card (v1)
+
+Measured on the card (v1, k1, 300 MHz; `tsr_u200_k1`, one channel, `T_MAX` 1), with the v1 transport
+and the program-cache runtime of §6.1 to §6.7 (`docs/platform-u200.md` §14.1):
+
+- `TSR_DEVICE=xrt TSR_TORCH_VERIFY=1`, the pytest suite: **85 passed, 2 skipped** (the sim-only and
+  model-path tests), 12.1 s. `TSR_TORCH_VERIFY=1` recomputes every device matmul with libtsr_ref on
+  the weight rows read back from the card.
+- The opt-in `test_hf.py` (Qwen2.5-0.5B-Instruct) passed.
+- `hf_check.py --forward-only --tokens 8 --expect <sim logits>`: **8 / 8 rows bit-identical** to the
+  simulator, sha256 `4a5e7b24…7f66`, the same as on `sim` and on the Verilated kernel (§6.6). The
+  forward made 169 device calls (169 matmul nodes on the device, 0 on the CPU, 0 CPU fallbacks); the
+  PERF counters read 9.06 M cycles per token, 8.83 M of them in the MVM (one channel); the 8-token
+  forward took 2.8 s including the compilation, the whole script 6.3 s.
+
+The v2 stack has not run PyTorch on a card: the v2 card path is work package W6.
+
 ## 7. Limitations
 
 - **Inference only.** Graphs that need autograd run eagerly on the CPU.
 - **Weight matmuls only.** Bias, activations, norms, RoPE, attention and embeddings run on the
-  CPU, as in llama.cpp v1. Every device matmul is its own transport exec
+  CPU, as in the llama.cpp path's M6. Every device matmul is its own launch of the `graph` kernel
   (169 per Qwen2.5-0.5B forward), with x and y crossing the host link each time.
 - **No KV cache.** Generation in `hf_check` and `hf_compare` recomputes the whole sequence per step.
   Every new length is a new program: the 15 generation forwards (lengths 33 to 47) made 2535 device
@@ -545,23 +582,27 @@ Also clean in the review:
   matmuls in HOP bodies other than `invoke_subgraph`, `cond`, `while_loop` and `map`.
 - **Weight identity** is by storage. Writes through `.data`, and inference-tensor changes that miss
   the 64 × 64 sample, are not seen (§3.6).
-- **Not run in this work**: `TSR_DEVICE=xrt` (no card); the full pytest suite on vkernel, and the
-  suite after the review fixes on vkernel; a model forward at T_MAX 8 (the k4 kernel or
-  `TSR_SIM_TMAX=8`); the bf16 model on the RTL.
+- **Not run**: the Python suite and `hf_check.py` on the v2 stack (only the C++ runtime tests ran,
+  §6.1); the full pytest suite on the Verilated kernels, and the suite after the review fixes on them;
+  a model forward at T_MAX 8 (the k4 kernel or `TSR_SIM_TMAX=8`); the bf16 model on the RTL or the
+  card; PyTorch on the card with the k4 kernel (the card run of §6.8 used k1).
 
 ## 8. Next steps
 
-1. **Card.** On the U200, run the pytest suite and `hf_check --forward-only --expect` against
-   saved sim logits with `TSR_DEVICE=xrt`, as the M3 gate does for llama.cpp
-   (`docs/xrt-host.md` §8).
-2. **Bias and activation fusion after M6.** With the vector unit (spec M6: RMSNorm, RoPE, SwiGLU,
-   residual, softmax), the partitioner can take a matmul's bias add, SiLU × mul, residual and norm
-   into the same program, and keep activations in IO between the ops of a layer. That replaces one
-   exec per matmul with one per layer or more. The aten-graph pattern matching is the place for
-   this, and `TSR_TORCH_VERIFY` would check the new ops against the reference model.
+1. **Card with the v2 core.** On the U200, run the pytest suite and `hf_check --forward-only --expect`
+   against saved sim logits with `TSR_DEVICE=xrt`, as the M6 gate does for llama.cpp (work package
+   W6, [`docs/xrt-host.md`](xrt-host.md)). The v1 card run is §6.8.
+2. **PyTorch on the kernels (M8).** With the M7 kernels (RMS_NORM, ROPE, GLU, element-wise kinds,
+   flash attention, KV store) on the simulator, the partitioner can take a matmul's bias add, SiLU ×
+   mul, residual and norm into the same op list and keep activations in IO between the ops of a layer.
+   That replaces one launch per matmul with one per layer or more. The aten-graph pattern matching is
+   the place for this, and `TSR_TORCH_VERIFY` would check the new ops against the reference model.
+   PyTorch uses the exact tanh GELU (the GLU variant `GEGLU`, `UNARY` `GELU`), not the fp16-table form
+   that the llama.cpp graphs use (V2-SW-31). The plan for M8 is in [`docs/v2/README.md`](v2/README.md)
+   §2 and §10.
 3. **Q4_K (and Q8_0) from GGUF tensors.** Load a GGUF's own blocks with `upload_blocks`, so that a
    Q4_K_M file runs from PyTorch with the bandwidth of the llama.cpp path. `upload_blocks` is
-   already bit-exact on sim, mock and vkernel. This needs a loader that maps GGUF tensor names to
+   already bit-exact on sim, mock and vkernel (v1). This needs a loader that maps GGUF tensor names to
    modules and a weight representation the partitioner recognises (a module swap or a tensor
    subclass). Because the Qwen2.5 GGUF's layer tensors are rescaled (§6.5), the whole model,
    including the norms, has to come from the GGUF, not just the matmul weights.
@@ -570,11 +611,13 @@ Also clean in the review:
    copy the parameter itself (`model.to("tesseract")`). That removes the host copy and the
    identity / `_version` cache with its `.data` caveat, and placement errors would surface at
    `.to()`. Eager `F.linear` would then dispatch to the device without torch.compile.
-5. **RISC-V control core kernels.** `docs/ctrl-riscv.md` (§8.6, phase CR5 after M9) names a
-   torch.compile backend as a first JIT target. It would select precompiled C++ kernels from the
-   image's registry by pattern (linear with GGUF weights, RMSNorm, SiLU × mul, SDPA) and leave the
-   rest eager on the CPU. This backend's partitioner, weight cache and verification are the
-   pieces such a backend reuses. Its device calls would become kernel launches instead of command
-   buffers.
-6. **Smaller items.** A KV-cache path (static cache, so that decode is T = 1 with cached programs),
-   the k4 kernel (T_MAX 8) for model prefill, and the full suite on vkernel after the review fixes.
+5. **Kernel selection by pattern.** Device calls are launches of firmware kernels since W3a. A
+   torch.compile backend could select precompiled kernels from the image's registry by pattern
+   (linear with GGUF weights, RMSNorm, SiLU × mul, SDPA) and leave the rest eager on the CPU; this
+   backend's partitioner, weight cache and verification are the pieces it would reuse
+   ([`docs/ctrl-riscv.md`](ctrl-riscv.md) §8.6 names it as a JIT target). It is an idea, not
+   scheduled.
+6. **Smaller items.** A KV-cache path (static cache, so that decode is T = 1 with cached op lists),
+   the k4 kernel (T_MAX 8) for model prefill, the Python suite on the v2 stack in the ctest list
+   (`torch_pytest`, `torch_pytest_tmax8` with `-DTSR_WITH_TORCH=ON`), and the full suite on the
+   Verilated kernel once the v2 server exists.

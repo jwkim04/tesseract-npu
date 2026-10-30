@@ -3,8 +3,8 @@
 XRT 2024.2 (`xrt_202420.2.18.179_24.04-amd64-xrt.deb`, version 2.18.179) builds its Alveo
 PCIe drivers with DKMS: `xocl.ko` (user PF) and `xclmgmt.ko` (management PF), from
 `/usr/src/xrt-2.18.179`. That source targets the Ubuntu 24.04 GA kernel (6.8). It does not
-build on the HWE kernels this machine runs (7.0.0-31 now, 7.0.0-38 next boot, 6.17.0-35
-fallback): 413 compiler errors on 7.0.
+build on the HWE kernels of the development host (7.0.0-38, which the card runs on, 7.0.0-31 and
+6.17.0-35 as fallbacks): 413 compiler errors on 7.0.
 
 This directory turns that tree into one that builds cleanly and behaves the same on 6.8,
 6.17 and 7.0:
@@ -17,13 +17,18 @@ This directory turns that tree into one that builds cleanly and behaves the same
 | `verify/hdrcheck.sh` | shows, per kernel header tree, which side of every patched API the headers are on |
 | `manifest/*.sha256` | sha256 of all 223 files of the official DKMS tree, pristine and patched |
 
+> **Scope.** The driver port that the U200 card runs on: the 19-patch series, how it was verified at
+> build, header and object level, and what the card has exercised (section "On the card"). It belongs
+> to the platform, not to the Tesseract core: the v1 and v2 cards use it alike.
+
 Status: all patched builds pass (0 errors, modpost clean, no warnings outside the known set
-below). The card is not installed yet, so nothing has been loaded or run on hardware.
+below). The series is loaded on the development host and the U200 card runs on it (kernel
+7.0.0-38, see "On the card").
 
 | Kernel headers | Result | Warnings (all known, see "Warnings") |
 | --- | --- | --- |
-| 7.0.0-31-generic (7.0.14), running | OK | 51 |
-| 7.0.0-38-generic (7.0.14), next boot | OK | 51 |
+| 7.0.0-31-generic (7.0.14) | OK | 51 |
+| 7.0.0-38-generic (7.0.14), the kernel of the card runs | OK | 51 |
 | 6.17.0-35-generic (6.17.13) | OK | 63 |
 | 7.0.0-28-generic (7.0.12), also installed | OK | 51 |
 | 6.8.0-147-generic (6.8.12), GA kernel, extracted deb | OK, object code identical to the unpatched tree | 49 (same as unpatched) |
@@ -196,6 +201,24 @@ verify/eqcheck.sh -k <kdir> -a /tmp/xrt-a/src -b /tmp/xrt-b/src
 verify/hdrcheck.sh /lib/modules/*/build
 ```
 
+## On the card
+
+The series was installed with DKMS and loaded on the development host (Ubuntu 24.04, kernel
+7.0.0-38-generic). The U200 (`xilinx_u200_gen3x16_xdma_base_2`) came up on it, and every card run of
+the project used these drivers (measured on the card, v1; logs in `build/card/`, not in git;
+[`docs/platform-u200.md`](../../docs/platform-u200.md) §14):
+
+| Check | Result |
+| --- | --- |
+| `xrt-smi examine` (`xbutil examine`) | XRT 2.18.179 with `xocl` and `xclmgmt` 2.18.179 (hash `3ade2e67`), the user PF listed, `Device Ready: Yes`, device status HEALTHY |
+| `xrt-smi validate` | 8 tests passed: aux-connection, pcie-link, sc-version (passed with a warning: SC firmware 4.2 was running, 4.6.21 expected; `xbmgmt program --base` updated it, `docs/platform-u200.md` §14.1), verify, dma (16 MB buffer on bank0), iops (440,542 IOPS), mem-bw (67.2 GB/s over the four DDR4 banks), m2m (bank0 to bank1 11.8 GB/s) |
+| xclbin load and BO paths | every M0, M3 and M4 run loaded an xclbin and moved data through device-only BOs of the four DDR4 banks; the host-to-card and card-to-host rates are in `docs/platform-u200.md` §14 |
+| P2P | disabled (`P2P Status: disabled`); patch 0019 was therefore **not** exercised |
+
+Not covered by what ran: patch 0019 (P2P), and no record shows whether the UART-lite (0003) and
+CMA/userptr (0014) paths were reached; both need hardware this card does not use. The list under
+"What each check covers" below says which patches the checks that did run depend on.
+
 ## Warnings
 
 What remains after the series:
@@ -211,7 +234,7 @@ What remains after the series:
 There are no objtool warnings, no modpost warnings or undefined symbols, and no section
 mismatches. `build.sh --strict` fails on any warning not in this table.
 
-## Applying it on this machine (run by you, needs sudo)
+## Applying it (needs sudo)
 
 1. Install XRT. Its DKMS step is expected to fail on 6.17/7.0 kernels; the user-space
    part installs anyway.
@@ -224,7 +247,7 @@ mismatches. `build.sh --strict` fails on any warning not in this table.
    and builds for the running kernel as a normal user):
 
    ```
-   cd /home/limagin-dev/tesseract/sw/xrt-driver
+   cd sw/xrt-driver
    ./build.sh --src /usr/src/xrt-2.18.179 -w /tmp/xrt-check -k "$(uname -r)"
    ```
 
@@ -232,7 +255,7 @@ mismatches. `build.sh --strict` fails on any warning not in this table.
 
    ```
    cd /usr/src/xrt-2.18.179
-   for p in /home/limagin-dev/tesseract/sw/xrt-driver/patches/*.patch; do
+   for p in <repository>/sw/xrt-driver/patches/*.patch; do
        patch -p1 --dry-run --forward --batch < "$p" > /dev/null || { echo "FAILS: $p"; break; }
        sudo patch -p1 --forward --batch --no-backup-if-mismatch < "$p" || break
    done
@@ -284,7 +307,7 @@ Notes:
 - Secure Boot is off. DKMS on Ubuntu still signs the modules with the MOK key if one
   exists, which does no harm.
 
-## Checks once the U200 is installed
+## Checks on the card
 
 The U200 needs its deployment platform packages (gen3x16_xdma_2 base, plus validate, CMC
 and SC firmware) from the AMD U200 download page for `xbmgmt program` and `xbutil validate`.
@@ -333,7 +356,8 @@ What each check covers:
 
 ## Limitations
 
-- Not run on hardware yet. Everything above is build-, header- and object-level evidence.
+- The card exercised part of the series (section "On the card"); the rest is build-, header- and
+  object-level evidence.
 - 0007 can differ from 6.8 only on a machine where an IOMMU is registered but does not
   translate the Alveo card. Then 6.13+ hands the P2P BAR to the management PF; that is the
   per-device answer the check is meant to give. No 6.13+ API gives the old bus-wide answer.
@@ -350,7 +374,7 @@ What each check covers:
 
 ## Review log
 
-Findings from the independent review on 2026-10-23, and what was done:
+Findings from the independent review, and what was done:
 
 | Finding | Verdict | Action |
 | --- | --- | --- |

@@ -1,44 +1,48 @@
-"""Figure `hero`: the Tesseract NPU core as a stylised die, with one MVM cluster zoomed.
+"""Figure `hero`: the Tesseract v2 NPU core as a stylised die, with one MVM cluster zoomed.
 
-A picture for the top of README "Architecture", in the manner of Tenstorrent's chip-and-tile art:
-tsr_core drawn as a die, the four DDR4 channels off-die, and one MVM cluster opened up by dashed
-zoom lines. It is a stylised view, not a floorplan, and the figure says so.
+The picture for the top of the README, in the manner of Tenstorrent's chip-and-tile art: tsr_core
+drawn as a die, the four DDR4 channels off-die, and one MVM cluster opened up by dashed zoom
+lines. It is a stylised view, not a floorplan, and the figure says so.
 
-Die content (README "System on the Alveo U200", "Inside tsr_core", "Core boundary"):
+Status drawing rule (STYLE.md "Planned and unconfirmed things"): solid blocks exist in rtl/ and ran
+on the card with the v1 core (tag v1-m4); the v2 additions exist in the simulator and the firmware
+only, so they are dashed and pale with a PLANNED · M6 tag, or, where a solid v1 block gains a mode,
+carry a dashed "+ ..." tag (DMA + KVST, SPM + even / odd banks, MAC lanes + ATTQK / ATTPV).
+
+Die content, with sources:
 - four MVM clusters of 128 MACs (NUM_CH = 4, LANES = 128), cluster c next to DDR4 channel c and
-  fed only by it, through tsr_mem_arb channel c (one arbiter per channel, every memory-port
-  output registered there);
-- SPM, 4 MiB in 64 B lines, in the centre; the x broadcast / y gather of tsr_mvm between the SPM
-  and the clusters (README system Mermaid: SPM <-> x broadcast / y gather <-> clusters 0..3);
-- command processor (fetch, decode, R0-R15), CSR block (tsr_csr), DMA (tsr_dma: LD, ST), QACT
-  (tsr_qact: f32 -> QA);
-- vector + scalar unit, planned for M6 (README milestone table);
-- host interface: the core boundary is a CSR port and `done` (plus the memory ports); the
-  platform adapter maps them to s_axi_control / ap_done of the XRT shell, which the host
-  reaches over PCIe (README system Mermaid and bullets).
-Zoomed cluster (README "MVM unit": Mermaid, stage table; docs/rtl-m3.md §2, §7; spec "MVM
-클러스터 마이크로아키텍처"): weight streamer tsr_mvm_ws (64-beat bursts, 512-beat FIFO), parse +
-unpack (tsr_mvm_front: chunk parser, meta, Q4_K scales, int8 lanes), activation buffer
-tsr_mvm_actbuf (QS, D, BS per token, filled by the x broadcast), 128 MAC lanes (4 x tsr_mac_lane,
-int8 x int8), integer scale + fp term + accumulate (16 partials per row), tree16 (8 + 4 + 2 + 1
-fadds), y gather back to the SPM. Weight beats: 64 B per cycle (README design principles).
-"FP ACCUMULATE" stands for spec stages 7-9 (integer scale, fp term, accumulator), as the spec's
-own one-line summary of a cluster does ("스트림·언팩, MAC 128, fp 누산").
-The platform adapter (control bridge, AXI4 bridges) and the XRT shell are left out on purpose;
-the footnote says so and points to the system figure. The DMA <-> arbiter and fetch paths are not
-drawn either; the footnote names them (README tsr_mem_arb row: "ch0 sources: FETCH, DMA, WS0 · ch c
-sources: DMA, WS c"). The weight streamer is lavender (data movement), as the stream requester in
-the cluster figure. The die places clusters 1 and 2 at opposite corners for symmetry. The U200 SLR
-placement (floorplan C': clusters 0 and 2 in SLR0, 1 and 3 in SLR2, the rest of the core in SLR1;
-hw/u200/k4_floorplan.tcl, docs/rtl-m3.md §14.5) is in the system figure, and the footnote points
-there; the die makes no SLR claim.
+  fed only by it, through one tsr_mem_arb per channel (docs/spec.md §2, §3; docs/rtl-m2.md §2);
+- SPM, 4 MiB in 64 B lines, in the centre, with the x broadcast / y gather of tsr_mvm between it
+  and the clusters (docs/rtl-m3.md §2, §3); v2: even / odd line-interleaved banks, 2R2W
+  (docs/v2/04-control-core.md §10.1, V2-CC-12), planned;
+- tsr_csr on the die edge: the core boundary is a CSR port; v2 adds the launch queue LQ, the
+  completion ring LCQ, the log ring and the firmware loader to it (docs/v2/01-execution-model.md
+  §4, §5, §3.3), planned; the platform adapter maps the port to s_axi_control of the XRT shell;
+- planned: the control core (Ibex RV32IMC, ITCM 128 KiB, DTCM 64 KiB; docs/v2/04-control-core.md
+  §2.1, §3, V2-CC-3), the issue path (checker tsr_chk, dispatcher, one in-order queue per unit;
+  CC §7, §8), the debug module (riscv-dbg, GDB over the DMI window; docs/v2/05-debug.md §3), the
+  vector unit (VL 16: norms, RoPE, activations, reductions, softmax parts; docs/v2/
+  02-vector-unit.md §1, §7), KVST in the DMA (docs/v2/03-attention-kv.md §5.1, §8.3);
+- DMA (LD, ST) and QACT (f32 -> QA) are solid (rtl/core/tsr_dma.sv, tsr_qact.sv).
+Zoomed cluster (docs/rtl-m3.md §2, §7; docs/spec.md §8): weight streamer tsr_mvm_ws (64-beat
+bursts, 512-beat FIFO), parse + unpack (tsr_mvm_front: chunk parser, meta, Q4_K scales, int8
+lanes), activation buffer tsr_mvm_actbuf (QS, D, BS per token, filled by the x broadcast), 128 MAC
+lanes (4 x tsr_mac_lane, int8 x int8), integer scale + fp term + accumulate (16 partials per row),
+tree16 (8 + 4 + 2 + 1 fadds), y gather back to the SPM. Weight beats: 64 B per cycle. Planned on
+the MAC lanes: the ATTQK and ATTPV modes (docs/v2/03-attention-kv.md §8.1, §8.2).
+"FP ACCUMULATE" stands for the stages integer scale, fp term, accumulator of docs/rtl-m3.md §7.
+Left out on purpose: the platform adapter and the XRT shell (the system figure shows them) and
+the paths between the units and the arbiters. The footnote says so. The die places clusters 1 and
+2 at opposite corners for symmetry. The U200 SLR placement (floorplan C') is in the system figure;
+the die makes no SLR claim. The upper clusters start lower than the die's top edge so that all four
+clusters have the same height around the SPM collar.
 
-Run: build/tools/svgvenv/bin/python docs/fig/src/hero.py
+Run: build/tools/svgvenv/bin/python docs/fig/src/hero.py        (TSR_FIG_THEME=dark: hero-dark.svg)
 """
 import sys
 
 sys.dont_write_bytecode = True        # keep docs/fig/src free of __pycache__
-from tsrfig import DASH, INK, INK_SOFT, Fig, chamfer, fmt  # noqa: E402
+from tsrfig import DASH, INK, INK_SOFT, Fig, chamfer, fmt, wrap  # noqa: E402
 
 W = 1600
 
@@ -60,47 +64,53 @@ def zoom_line(f, a, b, sw=2):
 # ---- geometry --------------------------------------------------------------------------------------
 # die (x)
 DIE_X0, DIE_X1 = 72, 1008
-CLW = 176
-CL_L, CL_R = 104, DIE_X1 - 32 - CLW                  # cluster columns: 104..280, 800..976
-CEN_X0, CEN_X1 = CL_L + CLW + 48, CL_R - 48          # centre rows r0, r2: 328..752
-COL_X0, COL_X1 = CL_L + CLW + 80, CL_R - 80          # x broadcast / y gather collar: 360..720
+CLW = 152
+CL_L, CL_R = 104, DIE_X1 - 32 - CLW                  # cluster columns: 104..256, 824..976
+CEN_X0, CEN_X1 = CL_L + CLW + 48, CL_R - 48          # centre column: 304..776
+COL_X0, COL_X1 = CL_L + CLW + 80, CL_R - 80          # x broadcast / y gather collar: 336..744
 EDGE_W, EDGE_H = 136, 48                             # tiles on the die edge (arbiters, CSR)
 # die (y)
 DDR_T_Y, DDR_H = 64, 80
 DIE_Y0 = 216
-Y0 = 280                                              # interior top
-R0_H = 112                                            # command processor, vector unit
-COL_Y0, COL_Y1 = Y0 + R0_H + 48, Y0 + R0_H + 48 + 256  # collar 440..696
-R2_Y, R2_H = COL_Y1 + 48, 112                         # DMA, QACT
-Y1 = R2_Y + R2_H                                      # interior bottom 840
-CL_H = (Y1 - Y0 - 48) / 2
+Y0 = 296                                              # interior top
+A1_H = 152                                            # row 1: control core, issue path
+A2_Y, A2_H = Y0 + A1_H + 56, 112                      # row 2: debug, vector unit (504..616)
+COL_Y0, COL_H = A2_Y + A2_H + 48, 240                 # collar 664..904
+COL_Y1 = COL_Y0 + COL_H
+R2_Y, R2_H = COL_Y1 + 48, 112                         # DMA, QACT (952..1064)
+Y1 = R2_Y + R2_H                                      # interior bottom 1064
+MID = (COL_Y0 + COL_Y1) // 2                          # 784: the gap between the cluster rows
+CL_H = Y1 - (MID + 24)                                # 256: all four clusters
 DIE_Y1 = Y1 + 56
 DDR_B_Y = DIE_Y1 + 64
 # zoom panel
 ZX0, ZX1 = 1064, 1544
 ZY0, ZY1 = DIE_Y0, DIE_Y1
 LEG_Y = DDR_B_Y + DDR_H + 64
-H = LEG_Y + 136
+H = LEG_Y + 144
 
 f = Fig("hero", W, H,
         title="The Tesseract NPU core",
         desc="Stylised die of tsr_core: four MVM clusters of 128 MACs at the corners, each next "
              "to its own DDR4 channel and memory arbiter; the 4 MiB SPM in the centre with the x "
-             "broadcast / y gather to the clusters; command processor, CSR, DMA, QACT and a "
-             "planned vector + scalar unit (M6); the host reaches the CSR port over PCIe and XRT. "
-             "One cluster is opened up: weight streamer, parse and unpack, activation buffer, 128 "
-             "MAC lanes, fp accumulate and tree16.")
+             "broadcast / y gather to the clusters; DMA, QACT and the CSR block on the v1 core; "
+             "the v2 additions drawn dashed: control core (Ibex RV32IMC, ITCM and DTCM), debug "
+             "module, issue path with unit queues, vector unit, KVST in the DMA, even and odd SPM "
+             "banks. The host reaches the CSR port over PCIe and XRT with a launch queue and a "
+             "completion ring. One cluster is opened up: weight streamer, unpack, activation "
+             "buffer, 128 MAC lanes with planned attention modes, fp accumulate and tree16.")
 
 # ---- the die, DDR4 channels and weight streams ---------------------------------------------------------
 f.panel(DIE_X0, DIE_Y0, DIE_X1 - DIE_X0, DIE_Y1 - DIE_Y0)
 cl_x = {0: CL_L, 1: CL_R, 2: CL_R, 3: CL_L}
-cl_y = {0: Y0, 1: Y0, 2: Y0 + CL_H + 48, 3: Y0 + CL_H + 48}
+cl_y = {0: MID - 24 - CL_H, 1: MID - 24 - CL_H, 2: MID + 24, 3: MID + 24}
 top = {0: True, 1: True, 2: False, 3: False}
 zc = 1                                                # the cluster opened up on the right
 hx, hy, hw, hh = cl_x[zc] - 8, cl_y[zc] - 8, CLW + 16, CL_H + 16
 for c in range(4):
     x = cl_x[c]
-    f.box(x, DDR_T_Y if top[c] else DDR_B_Y, CLW, DDR_H, "memory", f"DDR4 CH{c}", cut=12)
+    f.box(x, DDR_T_Y if top[c] else DDR_B_Y, CLW, DDR_H, "memory", f"DDR4 CH{c}", cut=12,
+          label_role="label_s")
     f.box(x, cl_y[c], CLW, CL_H, "compute", f"CLUSTER\n{c}", sub="128 MACs")
 outline(f, hx, hy, hw, hh)                            # under the arrows, like ref2's marked tile
 for c in range(4):
@@ -114,38 +124,55 @@ for c in range(4):
     f.box(cx - EDGE_W / 2, ey - EDGE_H / 2, EDGE_W, EDGE_H, "io", "MEM ARB",
           label_role="label_s", cut=10)
 
-# command processor, planned vector + scalar unit
-cp_w = 200
-cp_x = CEN_X0
-vu_x = cp_x + cp_w + 48
-f.box(cp_x, Y0, cp_w, R0_H, "control", "COMMAND\nPROCESSOR", sub="R0–R15")
-f.box(vu_x, Y0, CEN_X1 - vu_x, R0_H, "compute", "VECTOR +\nSCALAR UNIT", planned=True,
-      tag="PLANNED · M6", label_role="label_s")
+# centre column, row 1: control core -> issue path (planned)
+cc_w, is_w = 216, 200
+cc_x, is_x = CEN_X0, CEN_X1 - is_w
+f.box(cc_x, Y0, cc_w, A1_H, "control", "CONTROL CORE",
+      sub="Ibex RV32IMC\nITCM 128 KiB\nDTCM 64 KiB", planned=True, tag="PLANNED",
+      label_role="label_s")
+f.box(is_x, Y0, is_w, A1_H, "control", "ISSUE PATH", sub="checker\nunit queues", planned=True,
+      tag="PLANNED", label_role="label_s")
+f.arrow([(cc_x + cc_w - 12, Y0 + A1_H / 2), (is_x + 12, Y0 + A1_H / 2)])
+# row 2: debug module under the control core, vector unit under the issue path (planned)
+f.box(cc_x, A2_Y, cc_w, A2_H, "control", "DEBUG", sub="debug module\nGDB over PCIe",
+      planned=True, tag="PLANNED", label_role="label_s")
+f.box(is_x, A2_Y, is_w, A2_H, "compute", "VECTOR UNIT", sub="VL 16 · norms\nRoPE · softmax",
+      planned=True, tag="PLANNED", label_role="label_s")
+# arrows meet the top edges 48 right of the block's left edge, clear of the right-hand PLANNED tags
+cc_c, is_c = cc_x + 48, is_x + 48
+f.arrow([(cc_c, Y0 + A1_H - 8), (cc_c, A2_Y + 12)], tail=True)       # control core <-> debug
+f.arrow([(is_c, Y0 + A1_H - 8), (is_c, A2_Y + 12)], dashed=True)     # tile ops to the unit
+f.text(is_c - 40, Y0 + A1_H + 28, "TILE OPS", "callout", anchor="end", valign="middle")
 
-# host interface: CSR port and done, through the platform adapter and XRT to the host
-csr_cx = cp_x + cp_w / 2
+# host interface: the CSR port, through the platform adapter and XRT to the host
+csr_cx = cc_c
 f.arrow([(csr_cx, 104), (csr_cx, DIE_Y0 - 12)], tail=True)
+f.arrow([(csr_cx, DIE_Y0 + EDGE_H / 2 - 8), (csr_cx, Y0 + 12)], tail=True)   # LQ, LCQ
 f.box(csr_cx - EDGE_W / 2, DIE_Y0 - EDGE_H / 2, EDGE_W, EDGE_H, "control", "CSR",
       label_role="label_s", cut=10)
-f.text(csr_cx, 76, "HOST · PCIe · XRT", "callout", anchor="middle", valign="middle")
-f.text(csr_cx + 40, 156, "CSR PORT · DONE", "callout", valign="middle")
+f.text(csr_cx - 40, 76, "HOST · PCIe · XRT", "callout", valign="middle")
+f.text(csr_cx + 40, 150, "CSR PORT ·\nLAUNCH QUEUE ·\nCOMPLETION RING", "callout", valign="middle")
 f.tag(csr_cx + EDGE_W / 2 + 32, DIE_Y0, "TSR_CORE", anchor="start")
 
 # SPM inside the x broadcast / y gather collar
 f.box(COL_X0, COL_Y0, COL_X1 - COL_X0, COL_Y1 - COL_Y0, "io", "")
-f.box(COL_X0 + 24, COL_Y0 + 24, COL_X1 - COL_X0 - 48, COL_Y1 - COL_Y0 - 96, "memory", "SPM",
-      sub="4 MiB · 64 B lines")
+f.box(COL_X0 + 24, COL_Y0 + 32, COL_X1 - COL_X0 - 48, COL_Y1 - COL_Y0 - 104, "memory", "SPM",
+      sub="4 MiB · 64 B lines", tag="+ EVEN / ODD BANKS", tag_style="planned")
 f.text((COL_X0 + COL_X1) / 2, COL_Y1 - 36, "X BROADCAST · Y GATHER", "callout",
        anchor="middle", valign="middle")
-up_y, dn_y = COL_Y0 + 40, COL_Y1 - 64
+up_y, dn_y = COL_Y0 + 48, COL_Y1 - 72
 for y in (up_y, dn_y):
     f.arrow([(CL_L + CLW - 12, y), (COL_X0 + 12, y)], tail=True)
     f.arrow([(CL_R + 12, y), (COL_X1 - 12, y)], tail=True)
 
-# DMA, QACT
+# units: the vector unit, DMA and QACT use the SPM
+f.arrow([(is_c, A2_Y + A2_H - 8), (is_c, COL_Y0 + 12)], tail=True)
 half = (CEN_X1 - CEN_X0 - 48) / 2
-f.box(CEN_X0, R2_Y, half, R2_H, "io", "DMA", sub="LD, ST")
-f.box(CEN_X1 - half, R2_Y, half, R2_H, "compute", "QACT", sub="f32 to QA")
+dma_x, qa_x = CEN_X0, CEN_X1 - half
+f.box(dma_x, R2_Y, half, R2_H, "io", "DMA", sub="LD · ST", tag="+ KVST", tag_style="planned")
+f.box(qa_x, R2_Y, half, R2_H, "compute", "QACT", sub="f32 to QA")
+for x in (dma_x + 48, qa_x + 48):                      # left of the "+ KVST" tag
+    f.arrow([(x, COL_Y1 - 8), (x, R2_Y + 12)], tail=True)
 
 # ---- zoom: cluster 1 ---------------------------------------------------------------------------------
 zoom_line(f, (hx + hw, hy + 18), (ZX0, ZY0 + 20))
@@ -156,11 +183,12 @@ ZL1 = ZL0 + 188                                       # left column: weight path
 ZR0 = ZL1 + 56                                        # right column: activation buffer, tree16
 zcw, zrw = ZL1 - ZL0, ZR1 - ZR0
 lcx, rcx = (ZL0 + ZL1) / 2, (ZR0 + ZR1) / 2
-WS_Y, WS_H = ZY0 + 32, 112
-UN_Y, UN_H = WS_Y + WS_H + 56, 112
-MAC_Y, MAC_H = UN_Y + UN_H + 56, 96
-ACC_Y = MAC_Y + MAC_H + 56
-ACC_H = ZY1 - 32 - ACC_Y
+GAP = 104
+WS_Y, WS_H = ZY0 + 32, 128
+UN_Y, UN_H = WS_Y + WS_H + GAP, 128
+MAC_Y, MAC_H = UN_Y + UN_H + GAP, 112
+ACC_Y = MAC_Y + MAC_H + GAP
+ACC_H = ZY1 - 40 - ACC_Y
 AB_Y0, AB_Y1 = WS_Y, UN_Y + UN_H
 
 # external connections of the cluster (drawn before the panel: they cross its edge)
@@ -180,6 +208,7 @@ f.box(ZR0, AB_Y0, zrw, AB_Y1 - AB_Y0, "memory", "ACTIVATION\nBUFFER", sub="QS, D
       label_role="label_s")
 f.box(ZL0, MAC_Y, ZR1 - ZL0, MAC_H, "compute", "128 MAC LANES",
       sub="4 × tsr_mac_lane · int8 × int8")
+f.tag(ZR1 - 22, MAC_Y + MAC_H, "+ ATTQK · ATTPV", anchor="end", style="planned")
 f.box(ZL0, ACC_Y, zcw, ACC_H, "compute", "FP\nACCUMULATE", sub="16 partials\nper row",
       label_role="label_s")
 f.box(ZR0, ACC_Y, zrw, ACC_H, "compute", "TREE16", sub="8 + 4 + 2 + 1\nfadds",
@@ -194,10 +223,12 @@ f.arrow([(ZL1 - 12, acc_cy), (ZR0 + 8, acc_cy)])      # tip 8 inside: clear of "
 # ---- legend and footnote -----------------------------------------------------------------------------
 f.legend(W / 2, LEG_Y, [("control", "CONTROL"), ("compute", "COMPUTE"), ("memory", "MEMORY"),
                         ("io", "DATA MOVEMENT"), ("neutral", "PLANNED", True)])
-f.text(W / 2, LEG_Y + 38, "Stylised view of tsr_core, not a floorplan. Cluster c streams weights "
-       "only from DDR4 channel c.\nEach MEM ARB also carries the "
-       "DMA's LD/ST, and ch0's carries instruction fetch. The platform adapter and the XRT shell\n"
-       "are left out; the system figure shows them and the U200 SLR placement.", "note",
-       anchor="middle", color=INK_SOFT)
+f.text(W / 2, LEG_Y + 38, wrap(
+    "Stylised view of tsr_core, not a floorplan. Solid blocks: the v1 core (run on the card). "
+    "Dashed blocks and tags: the v2 additions (milestone M6), verified in the simulator and in "
+    "firmware; their RTL is planned (W4). The issue path dispatches tile "
+    "ops to the unit queues of the DMA, QACT, MVM and VU. Cluster c streams weights only from "
+    "DDR4 channel c. The platform adapter and the XRT shell are left out.", 1440),
+    "note", anchor="middle", color=INK_SOFT)
 
 f.save(scale=2)          # preview PNG at 2x for checking; _gh.png at 880 px

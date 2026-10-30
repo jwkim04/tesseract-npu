@@ -1,21 +1,24 @@
 """Figure `tree`: deterministic row summation, block terms to the SPM write.
 
-Content follows README "Numerics" (block terms, the row-accumulation Mermaid block, the tree
-formula and the "16 partials" paragraph): block term i of a row goes to partial p_(i mod 16);
-the 16 partials start at +0.0 for every row; y is the fixed tree16 sum (8 + 4 + 2 + 1 fadds,
-pairs taken from the left); the ACC flag of the MVM selects y_out = y or y_out = y_old + y.
+Content follows docs/spec.md §7 (Numeric rules: block terms, the row accumulation, the tree
+formula, the 16 partials) and docs/rtl-m3.md §7.3-§7.4 (accumulators and the tree): block term i of
+a row goes to partial p_(i mod 16); the 16 partials start at +0.0 for every row; y is the fixed
+tree16 sum (8 + 4 + 2 + 1 fadds, pairs taken from the left); the ACC flag of the MVM selects
+y_out = y or y_out = y_old + y.
 
-Additions beyond the Mermaid block, with their sources:
-- block-term formulas, one term per 32 (Q8_0) or 256 (Q4_K) weights, no FMA: README Numerics
-  "Block terms" and the Mermaid node BT.
+Additions, with their sources:
+- block-term formulas, one term per 32 (Q8_0) or 256 (Q4_K) weights, no FMA: docs/spec.md §7
+  (block terms) and docs/rtl-m3.md §7.1.
 - module names tsr_mvm_back (stage 9, accumulator and tree) and tsr_mvm_gather (stage 10,
-  output, ACC read-modify-write): README MVM unit stage table and step 4.
-- "ACC: one fadd, old value first": docs/spec.md 구현 명확화 "ACC 덧셈", docs/rtl-m3.md §6.3.
-- SPM placement of row n, token t (line dst + t·stride + n/16, lane n mod 16): README stage table
-  stage 10.
-- callouts: README Numerics ("16 partials" is an architectural constant; two terms of one
-  partial are at least 8 cycles apart; a sequential-sum mutant is wrong on 67-87 % of the
-  elements, so the order is verified bit-exactly; every product and sum rounded separately).
+  output, ACC read-modify-write): docs/rtl-m3.md §2, §6.3, §7.
+- "ACC: one fadd, old value first": docs/spec.md §21 (Implementation clarifications, "ACC
+  addition"), docs/rtl-m3.md §6.3.
+- SPM placement of row n, token t (line dst + t·stride + n/16, lane n mod 16): docs/rtl-m3.md
+  §6.3 (gather).
+- callouts: docs/spec.md §7 and docs/numcheck.md ("16 partials" is an architectural constant; two
+  terms of one partial are at least 8 cycles apart; a sequential-sum mutant is wrong on 67-87 % of
+  the elements, so the order is verified bit-exactly; every product and sum rounded separately).
+The numerics are the v1 ones and are unchanged in v2 (the VU has its own bit-exact rules, VU §6).
 
 Helpers defined here (not in tsrfig): join() draws the bracket that joins two tree inputs into
 one fadd node.

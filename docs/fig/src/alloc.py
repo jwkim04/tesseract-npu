@@ -1,21 +1,23 @@
 """Figure `alloc`: symmetric allocation of one weight tensor over the four DDR4 channels.
 
-Content follows README "Memory model" (the symmetric-allocation Mermaid block and the paragraph
-above it): a weight tensor of N rows x K is split into four contiguous row ranges of R = ceil(N/4)
-rows (ch0: rows 0 .. R-1, ch1: R .. 2R-1, ch2: 2R .. 3R-1, ch3: 3R .. N-1); every range sits at
-the same offset W_OFF of its channel, and cluster c streams only channel c.
-Additions beyond the Mermaid block, with their sources:
-- the per-channel map (README "Memory model" table, docs/spec.md "메모리 모델"): CMD, IO, AUX in
-  0 - 512 MiB of ch0, the same low region empty on ch1-ch3 in v1, WEIGHT heap from 512 MiB;
-- row r of channel c starts at W_OFF + (r - c*R) x ROW_BEATS(fmt, K) (README "Memory model");
-  rows start on 64 B beat boundaries (README "Data formats");
-- the host converts (unless Q8_0 or Q4_K) and repacks row by row before writing (README "Weight
-  placement and conversion");
-- one MVM names the tensor with one offset; each cluster works on its own range (README
-  "Memory model").
+Content follows docs/spec.md §4 (Memory model: symmetric allocation, the per-channel map) and §5
+(Device weight layout): a weight tensor of N rows x K is split into four contiguous row ranges of
+R = ceil(N/4) rows (ch0: rows 0 .. R-1, ch1: R .. 2R-1, ch2: 2R .. 3R-1, ch3: 3R .. N-1); every
+range sits at the same offset W_OFF of its channel, and cluster c streams only channel c.
+Additions, with their sources:
+- the per-channel map (docs/v2/01-execution-model.md §11, DRAM map v2): OPL, IO and AUX in the
+  low 512 MiB of ch0; the low 512 MiB of ch1-ch3 hold compute chunks and other activations; the
+  WEIGHT heap runs from 512 MiB up (the KV planes of docs/v2/03-attention-kv.md §4.5 grow down
+  from the end of the channel and are not drawn);
+- row r of channel c starts at W_OFF + (r - c*R) x ROW_BEATS(fmt, K) (docs/spec.md §4); rows
+  start on 64 B beat boundaries (docs/spec.md §5);
+- the host converts (unless Q8_0 or Q4_K) and repacks row by row before writing (docs/spec.md
+  §12, ggml backend integration: weight placement and conversion);
+- one MVM names the tensor with one offset; each cluster works on its own range (docs/spec.md §4).
 The inset on the right magnifies the ch3 slice (rows 3R .. N-1 back to back from W_OFF); its top
 edge is the W_OFF line itself and a dashed zoom line joins the slice's bottom to the inset's.
 Row ranges are written "0 TO R-1" because the ellipsis glyph is too small at README width.
+The allocation is the v1 one and is unchanged in v2; the v2 DRAM map only renames CMD to OPL.
 
 Run: build/tools/svgvenv/bin/python docs/fig/src/alloc.py
 """
@@ -82,11 +84,11 @@ for c in range(4):
     f.text(x + COLW / 2, WT_Y + 64, "512 MiB – end", "sub", anchor="middle", color=INK_SOFT)
     # low region
     if c == 0:
-        f.box(x, LO_Y, COLW, LO_H, "neutral", "CMD, IO, AUX", sub="0 – 512 MiB",
+        f.box(x, LO_Y, COLW, LO_H, "neutral", "OPL, IO, AUX", sub="0 – 512 MiB",
               label_role="label_s")
     else:
         f.band(x, LO_Y, COLW, LO_H, fill=BAND)
-        f.text(x + COLW / 2, LO_Y + LO_H / 2, "EMPTY IN V1\n0 – 512 MiB", "sub",
+        f.text(x + COLW / 2, LO_Y + LO_H / 2, "compute chunks,\nactivations\n0 – 512 MiB", "sub",
                anchor="middle", valign="middle", color=INK_SOFT)
     f.box(x, WOFF, COLW, SL_H, "memory", "ROWS\n" + RANGES[c], label_role="label_s")
     f.box(x, HD_Y, COLW, HD_H, "memory", f"DDR4 CH{c}", label_role="label_s", cut=12)

@@ -1,42 +1,48 @@
 """Figure `cluster`: the MVM unit datapath of one cluster, DDR4 weight beats to the SPM write.
 
-Content follows README "MVM unit" (the Mermaid block, its caption, the four steps and the stage
-table): tsr_mvm (shared by all clusters: broadcast reader, gather, ACC read-modify-write), the
-per-cluster tsr_vpipe / tsr_rpipe, and one tsr_mvm_cluster: front end (stages 1-4: tsr_mvm_ws,
-chunk parser, meta + unpack), activation buffer, back end (stages 5-9: 4 x tsr_mac_lane, integer
-scale, 2 x i2f, fmul d*Dx, block term, accumulate into 16 partials, tree16), DDR4 channel c.
-The Mermaid block's two tsr_spm nodes (read port, write port of the same scratchpad, as its
-caption says) are drawn as one block.
+Content follows docs/rtl-m3.md §2 (block diagram), §3 (internal interfaces), §4 (weight-stream
+protocol), §5 (activation buffer), §6 (flow, broadcast, gather), §7 (back end) and docs/spec.md §8
+(MVM cluster microarchitecture): tsr_mvm (shared by all clusters: broadcast reader, gather, ACC
+read-modify-write), the per-cluster tsr_vpipe / tsr_rpipe, and one tsr_mvm_cluster: front end
+(stages 1-4: tsr_mvm_ws, chunk parser, meta + unpack), activation buffer, back end (stages 5-9:
+4 x tsr_mac_lane, integer scale, 2 x i2f, fmul d*Dx, block term, accumulate into 16 partials,
+tree16), DDR4 channel c. The two SPM ports (read port, write port of the same scratchpad) are drawn
+as one block. The datapath is the v1 RTL, unchanged in v2 (rtl/core, solid; ran on the card).
 
-Additions beyond the Mermaid block, with their sources:
-- one tsr_vpipe and one tsr_rpipe per cluster: rtl/core/tsr_mvm.sv (both inside the g_cl
-  generate loop), docs/rtl-m3.md §3.1.
-- the setup command goes first through the broadcast pipe and starts the cluster's weight
-  requests (the cluster wrapper sends the front command to tsr_mvm_ws), and only the QA lines
-  fill the activation buffer: README MVM steps 1-2, docs/rtl-m3.md §3.1, §3.2, §3.4. The arrow
-  into the buffer is therefore named QA LINES and the setup is named in the bottom callout.
-- bursts of up to 64 beats, never across a 64-beat block: README stage table (stage 1),
-  docs/rtl-m3.md §4.
+Facts with their sources:
+- one tsr_vpipe and one tsr_rpipe per cluster: rtl/core/tsr_mvm.sv (both inside the g_cl generate
+  loop), docs/rtl-m3.md §3.1.
+- the tile op's setup goes first through the broadcast pipe and starts the cluster's weight
+  requests (the cluster wrapper sends the front command to tsr_mvm_ws), and only the QA lines fill
+  the activation buffer: docs/rtl-m3.md §3.1, §3.2, §3.4, §6.1. The arrow into the buffer is
+  therefore named QA LINES and the setup is named in the bottom callout.
+- bursts of up to 64 beats, never across a 64-beat block: docs/rtl-m3.md §4.
 - the ACC read uses the SPM read port, every write the write port: docs/rtl-m3.md §3.6, §6.3.
-- QS / BS / Dx on the activation-buffer reads: README Data formats (QA regions), docs/rtl-m3.md
-  §3.4, §7.2.
-- 32 int8 products and an exact sum per MAC lane: README stage table (stage 6).
-- "all T tokens read with one address": README stage table (stage 5).
-- "rows_c x ROW_BEATS beats, one contiguous range": README MVM unit, first paragraph.
-- callouts: README MVM steps 2-3 (weights requested at once, DRAM latency hidden behind the
-  broadcast; beats enter the back end only once the activation buffer is complete), stage table
-  stage 9 (the tree finishes one row while the next accumulates), implementation parameters
-  (MVM_BC_PIPE, MVM_RES_PIPE >= 2 for clusters in another SLR).
+- QS / BS / Dx on the activation-buffer reads: docs/spec.md §6, docs/rtl-m3.md §3.4, §7.1.
+- 32 int8 products and an exact sum per MAC lane: docs/rtl-m3.md §7.1, §7.2.
+- "all T tokens read with one address": docs/rtl-m3.md §5.
+- "rows_c x ROW_BEATS beats, one contiguous range": docs/spec.md §5 (device weight layout).
+- callouts: docs/rtl-m3.md §6.1-§6.2 (weights requested at once, DRAM latency hidden behind the
+  broadcast; beats enter the back end only once the activation buffer is complete), §7.4 (the tree
+  finishes one row while the next accumulates), §14.2 (MVM_BC_PIPE, MVM_RES_PIPE >= 2 for clusters
+  in another SLR).
+Planned, drawn dashed (docs/v2/03-attention-kv.md §8, docs/rtl-m3.md §6.5; no RTL yet): the
+attention modes ATTQK (scores and row maxima) and ATTPV (P.V partial outputs and row sums) reuse
+the front end and the MAC lanes. In tsr_mvm they add the p broadcast and the gather ATT path (a
+line buffer per pass row, full-line SPM writes, a max tracker per row; AT §8.1, §8.2); in the
+cluster they add per-slot activation read addresses, the w-unit (16 fmul per cycle), the capture
+bank (512 x 38 bit) and the convert pipes (AT §8.2). The two blocks are drawn where there is room;
+the arrows into them are not drawn because the modes use the paths that exist.
 
 Helper defined here (not in tsrfig): stacked_panel() draws offset copies of a panel behind it
 for a unit repeated NUM_CH times (8 up and right per copy, as tsrfig box(stack=) does).
 
-Run: TSR_FIG_PNG_DIR=... build/tools/svgvenv/bin/python docs/fig/src/cluster.py
+Run: build/tools/svgvenv/bin/python docs/fig/src/cluster.py
 """
 import sys
 
 sys.dont_write_bytecode = True        # keep docs/fig/src free of __pycache__
-from tsrfig import CUT_PANEL, INK_SOFT, PANEL, Fig, chamfer  # noqa: E402
+from tsrfig import CUT_PANEL, INK_SOFT, PANEL, Fig, chamfer, wrap  # noqa: E402
 
 W = 1600
 PL, PR = 56, 1360                     # panels; callouts in the right margin
@@ -65,12 +71,13 @@ RC_Y, RC_H = 1184, 168                # row C: meta + unpack, parser, stream req
 CL_B = 1416
 DDR_Y, DDR_H = 1496, 120
 LEG_Y = 1672
-H = LEG_Y + 72
+H = LEG_Y + 96
 
 f = Fig("cluster", W, H,
         title="MVM unit: one cluster, DDR4 weight beats to the SPM write",
         desc="tsr_mvm, shared by all clusters, reads the QA lines from the SPM read port and "
-             "broadcasts a setup command, which starts the cluster's weight requests, then the "
+             "broadcasts the setup of the MVM tile op, which starts the cluster's weight "
+             "requests, then the "
              "lines through each cluster's own tsr_vpipe into the cluster's activation buffer. "
              "DDR4 channel c streams weight beats into the "
              "front end (stream requester with a 512-beat FIFO, chunk parser, meta + unpack); "
@@ -78,7 +85,10 @@ f = Fig("cluster", W, H,
              "lanes, integer scale, 2 x i2f, fmul d*Dx, block term, accumulate into 16 partials "
              "per row, tree16. Row results return through the cluster's tsr_rpipe to the shared "
              "gather, which "
-             "writes 16 rows per SPM line, or with ACC reads the old line and adds first.")
+             "writes 16 rows per SPM line, or with ACC reads the old line and adds first. "
+             "Planned, drawn dashed: the attention modes ATTQK and ATTPV, with the p broadcast "
+             "and gather ATT path in tsr_mvm and the w-unit, capture bank and convert pipes in "
+             "the cluster.")
 
 
 def stacked_panel(fig, x, y, w, h, n, d=8):
@@ -102,6 +112,8 @@ f.box(CX[FT], SHB_Y, CW[FT], SHB_H, "compute", "ACC", sub="read old line\n16 × 
 f.box(CX[ACU], SHB_Y, CW[ACU], SHB_H, "io", "GATHER", sub="16 rows per\nSPM line,\nbyte enables")
 f.text(PL + 36, SHB_Y + SHB_H / 2, "SHARED BY\nALL CLUSTERS", "panel", valign="middle",
        color=INK_SOFT)                                  # left of the broadcast reader
+f.box(624, SHB_Y, 208, SHB_H, "io", "ATT PATH", sub="p broadcast,\nline buffers,\nmax tracker",
+      planned=True, tag="PLANNED · M6", label_role="label_s")
 
 # ---- cluster panel, stacked x NUM_CH -----------------------------------------------------------
 stacked_panel(f, PL, CL_Y, PR - PL, CL_B - CL_Y, 2)
@@ -149,6 +161,11 @@ f.box(CX[ISC], RC_Y, CW[ISC], RC_H, "control", "CHUNK\nPARSER",
       sub="META or quant\nrow, block tags")
 f.box(ws_x, RC_Y, ws_w, RC_H, "io", "STREAM REQUESTER",
       sub="tsr_mvm_ws · ≤ 64-beat bursts\n512-beat FIFO: 1 beat/cycle\nup to ~440 cycles round trip")
+
+# planned attention modes: right of the stream requester, in the front-end band's free space
+f.box(CX[ACU] - 32, RC_Y, CW[ACU] + 32, RC_H, "compute", "ATTQK · ATTPV",
+      sub="per-slot reads\nw-unit, capture\nconvert pipes", planned=True,
+      tag="PLANNED · M6", label_role="label_s")
 
 # DDR4 channel c
 ws_mid = ws_x + ws_w / 2
@@ -204,9 +221,11 @@ f.callout("AFTER SETUP,\nWEIGHT REQUESTS\nSTART AT ONCE:\nDRAM LATENCY\nHIDES BE
 
 # ---- legend and footnote -----------------------------------------------------------------------
 f.legend(W / 2, LEG_Y, [("control", "CONTROL"), ("compute", "COMPUTE"), ("memory", "MEMORY"),
-                        ("io", "DATA MOVEMENT")])
-f.text(W / 2, LEG_Y + 38, "TSR_SPM is one scratchpad: the broadcast and ACC reads use its read "
-       "port, the gather and ACC write through its write port.", "note", anchor="middle",
+                        ("io", "DATA MOVEMENT"), ("neutral", "PLANNED", True)])
+f.text(W / 2, LEG_Y + 38, wrap(
+    "TSR_SPM is one scratchpad: the broadcast and ACC reads use its read port, the gather and ACC "
+    "write through its write port. Solid blocks are the v1 datapath (RTL, ran on the card); the "
+    "dashed blocks are the attention modes of v2 (planned).", 1440), "note", anchor="middle",
        color=INK_SOFT)
 
 f.save()

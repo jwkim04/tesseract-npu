@@ -1,159 +1,127 @@
-# Tesseract on the Alveo U200 — XRT platform adapter, kernels, packaging and build
+# Alveo U200 platform: XRT adapter, kernels, packaging and build
 
-Status: M3 part C (2026-10-24). The adapter, the two kernel tops (with the U200 bitstream parameters
-of `docs/rtl-m3.md` §14.2) and their packaging are done and verified in simulation; the k4 floorplan
-C' targets the platform's own pblocks. Nothing has run on hardware: no card and no XRT install on the
-dev server. The U200 development platform is extracted there (not installed, §14); with it the
-hardware links of `tsr_u200_k1` and of the M0 bandwidth kernel ran on 2026-10-24 and ran again the
-same day after the margin changes of §8.3 (k1: 57 min, kernel clock WNS +0.060 ns, 300 MHz kept:
-`build/u200/k1/tsr_u200_k1.xclbin`, §8.2; M0: `docs/m0-bw.md` §4.1), and the host software ran
-against hw_emu of k1 (`docs/xrt-host.md` §9, the RTL before §8.3). The `tsr_u200_k4` link has
-not run (estimated 25–27 GB peak against the dev server's 14 GB, §8.2). Source-of-truth order:
-`docs/spec.md` > the lead's kernel contract (reproduced in §1–§4) > this document. Spec layers
-(spec "시스템 구조"): the adapter is the **platform adapter** of the Alveo XRT target; the core
-(`tsr_core`) is unchanged and sees only its CSR port, `done` and one memory port per channel
-(`docs/rtl-m2.md` §4, §6).
+This document records the platform side of Tesseract on the Alveo U200: the XRT platform adapter
+(`rtl/platform/alveo_xrt`) around `tsr_core`, the packaged kernels `tsr_u200_k1` and `tsr_u200_k4`, the
+`v++` flow with its floorplan, the hardware results, and the card bring-up runbook with the results
+of the card runs. The adapter is the platform adapter of the Alveo XRT target (`docs/spec.md` §2,
+System structure): the core sees only its CSR port and one memory port per channel
+([`docs/rtl-m2.md`](rtl-m2.md) §4, §6).
 
-**v2 (2026-10-30, W0 of `docs/v2/README.md`).** This document is the v1 adapter (tag `v1-m4`). In v2
-the adapter changes as `docs/v2/01-execution-model.md` §9 and `docs/v2/04-control-core.md` §13.3
-define, and the transport above it as EX §10:
-- `ap_ctrl_none` instead of `ap_ctrl_hs` (no interrupt). The host uses `xrt::ip` register
-  access and polls; no `xrt::run` is ever started. If v++ 2024.2 refuses `ap_ctrl_none` with
-  `m_axi` args, the fallback declares `ap_ctrl_hs` with `interrupt="false"` and never runs it
-  (EX §9.1, checked in the first v2 smoke link).
-- The `ap_ctrl_hs` run path is removed in X0, the first M6 commit (EX §12): the AP_CTRL FSM, the
-  queued-start behaviour, the run sequencer (13 core CSR transfers per start), the `SOFT_RESET`
-  watch, the interrupt output, the `cmd_addr` / `cmd_count` / `arg0`–`7` registers, the
-  `kernel_k*.xml` cmd args and the `gen_tops.py` v1 table. The v2 platform build is disabled until
-  Y5.
-- The only kernel args are `ch<c>` at 0x040 + 8c. `ADAPTER_CTRL` (0x0E0) bit0 `MEM_EN` latches all
-  channel bases (4 KiB alignment checked) on its rising edge and locks them while set; core memory
-  requests are held while it is 0. `ADAPTER_STATUS` adds bit4 `REQ_HELD` and bit5 `BASE_LOCKED`;
-  `ADAPTER_VERSION` becomes 2.
-- The core loses `done` and gains `clk_rv` / `rst_rv_n` (from `ap_clk_2` / `ap_rst_n_2`, planning
-  value 166.7 MHz), `plat_err_i` (driven from `ADAPTER_STATUS` bits 0–2 or the error count) and
-  `host_irq_o` (unconnected on the U200) (EX §9.3).
-- The memory bridges (§4) and the reset scheme (§5) are unchanged.
+> **Scope.** As-built record and measurement record; every number carries its provenance. Status
+> words: *on the card* = ran on an Alveo U200 with the v1 core (tag `v1-m4`, `ap_ctrl_hs`, §14);
+> *in the tree* = the adapter after X0 (`452e27b`): `ap_ctrl_none`, simulated and linted, no k1 / k4
+> xclbin build until Y5; *designed* = in `docs/v2` without RTL (`MEM_EN`, `ADAPTER_VERSION` 2,
+> `ap_clk_2`, `plat_err_i`). Normative for the v2 adapter: [EX](v2/01-execution-model.md) §9 and
+> [CC](v2/04-control-core.md) §13.3, §14.
 
-The card results in §14 (M0, M3 and M4, 2026-10-25 to 2026-10-30) were measured with v1: the
-`tsr_u200_k1`, `tsr_u200_k4` and `tsr_bw_k4` xclbins and the host binaries of tag `v1-m4`. A working
-copy of those binaries, the three xclbins and an `env.sh` is kept in `build/v1` (not in git) for
-card runs until v2 runs on the card.
+| | v1 adapter (tag `v1-m4`, on the card) | Tree after X0 (`452e27b`) | v2 adapter (designed, Y5) |
+|---|---|---|---|
+| Control protocol | `ap_ctrl_hs` with interrupt | `ap_ctrl_none`, `interrupt="false"`; the host reads and writes registers | same; fallback `ap_ctrl_hs` with `interrupt="false"`, never started (EX §9.1) |
+| Kernel arguments | `cmd_addr`, `cmd_count`, `arg0`-`7`, `ch<c>` | `ch<c>` at 0x040 + 8c | same |
+| Channel bases | latched at the start | used live from the registers | latched at the rising edge of `ADAPTER_CTRL.MEM_EN`, locked while set |
+| `ADAPTER_VERSION` | `{16'h0001, 8'h00, NUM_CH}` | same as v1 | `{16'h0002, 8'h00, NUM_CH}` |
+| Clocks | `ap_clk` | `ap_clk` | `ap_clk` and `ap_clk_2` / `ap_rst_n_2` (control core clock `clk_rv`) |
+| Core boundary | `done` | no `done`; the core issues no memory request | `clk_rv`, `rst_rv_n`, `plat_err_i`, `host_irq_o` (unconnected on the U200) |
+| xclbin build | k1, k4, M0 kernel | k1 and k4 stop with exit status 4; the M0 kernel builds | k1 and k4 enabled |
+
+**History: v1 (tag `v1-m4`).** The v1 adapter started one run per host command buffer: the kernel
+arguments `cmd_addr`, `cmd_count` and `arg0`-`7` were written by the XRT scheduler, an `ap_ctrl_hs`
+state machine accepted `ap_start`, a run sequencer made 13 core CSR transfers, and the core's `done`
+completed the run and raised the interrupt. X0 deleted all of that (EX §12); the memory bridges
+(§4) and the reset scheme (§5) are unchanged. The v1 text of this document is
+`git show v1-m4:docs/platform-u200.md`. The card results of §14 were measured with the xclbins
+`tsr_u200_k1`, `tsr_u200_k4` and `tsr_bw_k4` and the host binaries of that tag. A working copy of the
+binaries, the three xclbins and an `env.sh` is kept in `build/v1` (not in git) for card runs until a
+v2 bitstream exists (`source build/v1/env.sh`).
 
 | Path | Content |
 |---|---|
 | `rtl/platform/alveo_xrt/tsr_xrt_kernel.sv` | the kernel body: reset distribution, control bridge, `tsr_core`, one AXI4 bridge per channel; AXI ports as packed `[NUM_CH]` vectors |
-| `rtl/platform/alveo_xrt/tsr_xrt_ctrl.sv` | `s_axi_control` (AXI4-Lite slave), ap_ctrl_hs, kernel args, run sequencer, ADAPTER_STATUS, core CSR window and port arbiter |
+| `rtl/platform/alveo_xrt/tsr_xrt_ctrl.sv` | `s_axi_control` (AXI4-Lite slave): `ch<c>_base`, `ADAPTER_STATUS`, `ADAPTER_VERSION`, the core CSR window and its port arbiter (v1: also `ap_ctrl_hs`, the kernel arguments and the run sequencer) |
 | `rtl/platform/alveo_xrt/tsr_xrt_axi_bridge.sv` | one channel: core memory port ↔ AXI4 master, register slices, response ID filter, error events |
 | `rtl/platform/alveo_xrt/tsr_xrt_slices.sv`, `tsr_xrt_reset.sv` | N register slices in series (`tsr_rslice`); reset pipeline and replication |
-| `rtl/platform/alveo_xrt/tsr_u200_k1.v`, `tsr_u200_k4.v`, `kernel_k1.xml`, `kernel_k4.xml` | the packaged kernel tops (Verilog-2001, named ports) and their Vitis kernel descriptions — generated by `gen_tops.py` |
+| `rtl/platform/alveo_xrt/tsr_u200_k1.v`, `tsr_u200_k4.v`, `kernel_k1.xml`, `kernel_k4.xml` | the packaged kernel tops (Verilog-2001, named ports) and their Vitis kernel descriptions, generated by `gen_tops.py` |
 | `rtl/platform/alveo_xrt/filelist.f`, `lint.sh`, `package_xo.tcl` | platform filelist (after a core filelist), lint, `.xo` packaging |
-| `hw/u200/k1.cfg`, `k4.cfg`, `k4_floorplan.tcl`, `build_xclbin.sh` | `v++` link configurations, the k4 SLR floorplan C' (§8.1), xclbin build |
-| `tb/platform/` | the Verilator C++ kernel bench (`kernel_dut.h`, `kernel_bench.cpp`), wrappers `sv/kwrap_*.sv`, `test_platform.py`, `mutate_adapter.py`, `viv/kernel_ooc.tcl` |
-| `tb/fastreplay/` | `run.py --top kernel / tsr_u200_k1 / tsr_u200_k4`; the replay checks moved to `fr_common.h` (shared with the core replayer, unchanged behaviour) |
-| `tb/platform/vkernel/`, `sw/transport/tsr_kdev_vkernel.cpp`, `sw/transport/tsr_vkernel_proto.h` | `TSR_DEVICE=vkernel`: the host software against the Verilated kernel in a server process (§13) |
+| `hw/u200/k1.cfg`, `k4.cfg`, `k4_floorplan.tcl`, `build_xclbin.sh` | `v++` link configurations, the k4 SLR floorplan C' (§8.1), the xclbin build (k1 and k4 disabled until Y5, §8) |
+| `hw/u200/bw/` | the M0 kernel's link configuration and build script (`docs/m0-bw.md` §4) |
+| `tb/platform/` | `test_platform.py` (adapter lint, build-script checks), the wrappers `sv/kwrap_*.sv`, `viv/kernel_ooc.tcl`; `bw/` is the M0 bench. The v1 kernel bench, `mutate_adapter.py` and the vkernel server were deleted in X0 and are readable at the tag (§10, §13) |
+| `sw/transport/tsr_kdev_vkernel.cpp`, `sw/transport/tsr_vkernel_proto.h` | the `vkernel` client of the transport; the v2 two-clock server is P5.3 (§13) |
 
 ---
 
-## 1. Kernel interface (lead's contract)
+## 1. Kernel interface
 
-**v1 (2026-10-30, W0 of `docs/v2/README.md`).** The v2 kernel interface is `ap_ctrl_none` with a
-second clock `ap_clk_2` (EX §9, CC §13.3); see the v2 note at the top.
-
-Vitis RTL kernels, `ap_ctrl_hs`, one clock `ap_clk` (300 MHz), `ap_rst_n` (active low,
-synchronous), `interrupt`. Module name = kernel name.
+Vitis RTL kernels, module name = kernel name. The control protocol is **`ap_ctrl_none`**
+(`hwControlProtocol="ap_ctrl_none"`, `interrupt="false"` in `kernel_k*.xml`): there is no
+`ap_start` / `ap_done` and no interrupt; the host opens the compute unit with `xrt::ip`, reads and
+writes registers and polls (EX §9.1; `docs/xrt-host.md` §2). The only kernel arguments are the
+channel buffers `ch<c>`. Clocks: `ap_clk` (the core clock: 300 MHz requested, 276.3 MHz achieved in
+the k4 link, §8.2), `ap_rst_n` (active low, synchronous). The v2 adapter adds `ap_clk_2` /
+`ap_rst_n_2` for the control core (designed: the platform's KERNEL clock of 500 MHz; `clk_rv`
+planning value 166.7 MHz, from a `v++` frequency request or a divide-by-3 clock buffer,
+CC §11.1).
 
 | Kernel | `NUM_CH` | `T_MAX` | Role |
 |---|---|---|---|
-| `tsr_u200_k1` | 1 | 1 | 1-channel bring-up bitstream (M3 gate: Qwen2.5-0.5B Q8_0 on hardware) |
-| `tsr_u200_k4` | 4 | 8 | the v1 target (4 channels, prefill up to 8 tokens) |
+| `tsr_u200_k1` | 1 | 1 | 1-channel bring-up bitstream (v1: the M3 gate, Qwen2.5-0.5B Q8_0 on the card) |
+| `tsr_u200_k4` | 4 | 8 | the target (4 channels, prefill up to 8 tokens) |
 
-Both: the U200 bitstream parameters of `docs/rtl-m3.md` §14.2 — SPM 4 MiB with `SPM_RD_LAT` 4,
-`MVM_BC_PIPE` 2, `MVM_RES_PIPE` 2, `MVM_MAC_LAT` 9, `RST_PIPE` 3 (the core's own reset stages with a
-copy per block; §5) — `CH_BYTES` 16 GiB, the other `tsr_core` parameters at the U200 v1 defaults
-(`tsr_pkg::TSR_DEF_*`), `AXI_SLICES` 2, `RST_STAGES` 3 (`gen_tops.py` `COMMON`; `tb/fastreplay/run.py`
-`PACKAGED` carries the same values). `ap_rst_n` must stay low for ≥ 4 cycles (§5). Synthesis sources: `rtl/filelist_xilinx.f` (Xilinx technology wrappers,
-behaviour identical to `rtl/filelist.f`) + `rtl/platform/alveo_xrt/filelist.f`.
+Both: the U200 bitstream parameters of `docs/rtl-m3.md` §14.2 (SPM 4 MiB with `SPM_RD_LAT` 4,
+`MVM_BC_PIPE` 2, `MVM_RES_PIPE` 2, `MVM_MAC_LAT` 9, `RST_PIPE` 3: the core's own reset stages with a
+copy per block, §5), `CH_BYTES` 16 GiB, the other `tsr_core` parameters at the U200 defaults
+(`tsr_pkg::TSR_DEF_*`), `AXI_SLICES` 2, `RST_STAGES` 3 (`gen_tops.py` `COMMON`). `ap_rst_n` must stay
+low for at least 4 cycles (§5). Synthesis sources: `rtl/filelist_xilinx.f` (Xilinx technology
+wrappers, behaviour identical to `rtl/filelist.f`) + `rtl/platform/alveo_xrt/filelist.f`.
 
 Ports: `s_axi_control` (AXI4-Lite, 32-bit data, 13-bit address, control range 0x2000) and
 `m_axi_ch<c>` for c < `NUM_CH` (AXI4, 512-bit data, 64-bit address, 4-bit ID; signals ID, ADDR,
 LEN, SIZE, BURST, LOCK, CACHE, PROT, QOS on AR / AW, DATA / STRB / LAST on W, ID / RESP on B,
 ID / DATA / RESP / LAST on R).
 
-Kernel arguments (`kernel_k*.xml`; XRT writes 0x010 .. the last argument before every start, never
-the window):
+Kernel arguments (`kernel_k*.xml`): `ch<c>` at 0x040 + 8c, 8 bytes, `void*` on `m_axi_ch<c>` (the
+buffer bound to channel c); the argument ids are 0 to NUM_CH - 1. The core CSR window at 0x1000 has no
+arguments. v1 had in addition `cmd_addr` (0x010), `cmd_count` (0x018) and `arg0`-`7` (0x020 + 4i), and
+the `ch<c>` ids started at 10.
 
-| id | name | offset | size | type |
-|---|---|---|---|---|
-| 0 | `cmd_addr` | 0x010 | 8 | `ulong` (ch0 beat address of the command buffer) |
-| 1 | `cmd_count` | 0x018 | 4 | `uint` |
-| 2..9 | `arg0` .. `arg7` | 0x020 + 4i | 4 | `uint` (→ R8..R15) |
-| 10 + c | `ch<c>` | 0x040 + 8c | 8 | `void*` on `m_axi_ch<c>` (the buffer bound to channel c) |
+The v2 core boundary (EX §9.3): the core loses `done` and gains `clk_rv` / `rst_rv_n` (from
+`ap_clk_2` / `ap_rst_n_2`), `plat_err_i` (a level from the platform: on the U200 `ADAPTER_STATUS` bits
+0-2 or the error count not 0; it shows in `STATUS.PLAT_ERR`) and `host_irq_o` (not connected on the
+U200). The tree has the X0 boundary: no `done`, and neither of the new signals.
 
 ## 2. `s_axi_control` register map
 
-**v1 (2026-10-30, W0 of `docs/v2/README.md`).** The v2 map is EX §9.2: 0x000–0x03C reserved (read
-0), `ch<c>_base` at 0x040 + 8c, `ADAPTER_CTRL` at 0x0E0, `ADAPTER_STATUS` and `ADAPTER_VERSION` as
-below with the v2 additions, the core CSR window at 0x1000 + off unchanged.
-
 Byte offsets, decoded on bits [12:2]; unmapped offsets read 0 and ignore writes; every response is
-OKAY. RW registers honour WSTRB.
+OKAY. RW registers honour WSTRB. The tree column is `tsr_xrt_ctrl.sv`; the v2 column is EX §9.2
+(designed, Y5).
 
-| Offset | Name | Access | Content |
-|---|---|---|---|
-| 0x000 | AP_CTRL | see §3 | bit0 ap_start (RW: a write of 1 sets it; cleared when the adapter accepts the start), bit1 ap_done (R, clear on read), bit2 ap_idle (R), bit3 ap_ready (R, clear on read), bit7 auto_restart (not supported: reads 0, writes ignored) |
-| 0x004 | GIE | RW | bit0 global interrupt enable |
-| 0x008 | IER | RW | bit0 ap_done interrupt enable (bit1, ap_ready interrupt: not supported, reads 0) |
-| 0x00C | ISR | R / TOW | bit0: set when a run completes while IER[0] = 1 (as Vitis HLS), toggled by a write of 1 |
-| 0x010 / 0x014 | cmd_addr | RW | → core CMD_ADDR_LO / HI at the start |
-| 0x018 | cmd_count | RW | → core CMD_COUNT; 0x01C reserved |
-| 0x020 + 4i | arg\<i\> | RW | → core ARG\<i\> |
-| 0x040 + 8c | ch\<c\>_base lo / hi | RW (c < NUM_CH) | device byte address of beat 0 of channel c; latched at the start; must be 4 KiB aligned |
-| 0x0F0 | ADAPTER_STATUS | R / W1C, sticky | bit0 RRESP error, bit1 BRESP error, bit2 response with no outstanding request for its ID, bit3 base not 4 KiB aligned at start; bits[31:16] saturating count of error responses (R beats and B responses with RRESP / BRESP ≠ OKAY). W1C: a 1 in bit k (k < 4) clears bit k; a 1 anywhere in bits [31:16] clears the count (0xFFFFFFFF clears everything). An event in the same cycle wins over the clear. Not cleared by a start: the host checks it after every run |
-| 0x0F4 | ADAPTER_VERSION | R | `{16'h0001, 8'h00, NUM_CH}` |
-| 0x1000 + off | core CSR window | spec CSR map | `off` < 0x1000 passes to the core CSR port at any time, also while a run is in progress (STATUS / PERF polling, ABORT, SOFT_RESET). Writes need WSTRB = 0xF (the CSR port has no byte enables; partial writes are dropped, still OKAY) |
+| Offset | Name | Access | In the tree (X0) | v2 addition |
+|---|---|---|---|---|
+| 0x000-0x03C | reserved | R | reads 0 (v1: `AP_CTRL`, `GIE`, `IER`, `ISR`, `cmd_addr`, `cmd_count`, `arg0`-`7`) | unchanged |
+| 0x040 + 8c | `ch<c>_base` lo / hi | RW (c < NUM_CH) | device byte address of beat 0 of channel c; the host writes a 4 KiB-aligned address; the bridge uses the register value as written (no latch, no refusal of a misaligned base; the bridge only asserts the alignment in simulation) | written while `MEM_EN` = 0; a write while `MEM_EN` = 1 is ignored and sets `BASE_LOCKED` |
+| 0x0E0 | `ADAPTER_CTRL` | RW | not implemented (reads 0) | bit0 `MEM_EN`: at its rising edge every base is checked for 4 KiB alignment and latched into the bridges (else `MEM_EN` stays 0 and `ADAPTER_STATUS` bit3 is set); core memory requests are held, not dropped, while it is 0 (`REQ_HELD`) |
+| 0x0F0 | `ADAPTER_STATUS` | R / W1C, sticky | bit0 RRESP error, bit1 BRESP error, bit2 response with no outstanding request for its ID; bit3 reads 0; bits [31:16] saturating count of error responses (R beats and B responses with RRESP / BRESP not OKAY). W1C: a 1 in bit k (k < 3) clears bit k; a 1 anywhere in bits [31:16] clears the count (0xFFFFFFFF clears everything). An event in the same cycle wins over the clear | bit3 base not 4 KiB aligned at the `MEM_EN` edge, bit4 `REQ_HELD`, bit5 `BASE_LOCKED` (W1C for bits k < 6) |
+| 0x0F4 | `ADAPTER_VERSION` | R | `{16'h0001, 8'h00, NUM_CH}` | `{16'h0002, 8'h00, NUM_CH}` |
+| 0x1000 + off | core CSR window | | `off` < 0x1000 passes to the core CSR port at any time. Writes need WSTRB = 0xF (the CSR port has no byte enables; partial writes are dropped, still OKAY) | unchanged; the map behind it is EX §5 |
 
-Access latency (measured, ideal AXI4-Lite master, cycles from the issuing cycle to the response
-handshake): adapter register read 5, write 5; window read 10, write 10. One transaction at a time;
-when a read and a write are both pending they alternate.
+Access latency (measured in RTL simulation, v1 adapter, ideal AXI4-Lite master, cycles from the
+issuing cycle to the response handshake): adapter register read 5, write 5; window read 10,
+write 10. One transaction at a time; when a read and a write are both pending they alternate.
 
-## 3. Start / done protocol (ap_ctrl_hs, UG1393)
+The host (`docs/xrt-host.md` §3) reads and clears `ADAPTER_STATUS` at open, binds the channels
+(bases, then `MEM_EN`, v2) and reads it again when a launch answers `PLAT_ERR`. Under `xrt::ip` the
+register access is memory-mapped MMIO and the compute unit is opened exclusively (EX §2.4, §9.1).
 
-**v1 (2026-10-30, W0 of `docs/v2/README.md`).** Removed in X0. v2 has no start / done protocol: the
-host binds the channels with `MEM_EN`, loads and boots the firmware and launches kernels through the
-core CSR window (EX §2–§4).
+## 3. Start / done protocol (v1, `ap_ctrl_hs`)
 
-1. The host writes the arguments (XRT: the whole map 0x010 .. last argument), then AP_CTRL = 1.
-2. **Accept** (adapter idle, the next cycle): `ap_start := 0` and `ap_idle := 0` in the same edge —
-   XRT treats "ap_start = 0 and (ap_done or ap_idle)" as completion, so a read never shows
-   start = 0, idle = 1, done = 0 during a run (every AP_CTRL read of the directed tests is checked
-   for this). The channel bases are latched (writes to ch<c>_base during a run have no effect).
-3. **Start sequence** on the core CSR port: CMD_ADDR_LO, CMD_ADDR_HI, CMD_COUNT, ARG0..7,
-   STATUS := DONE | ERR (W1C), CTRL := START — 13 transfers of ~6 cycles. (The W1C step is
-   redundant with the core's own START, which sets STATUS := BUSY when not BUSY — the mutation
-   campaign confirms it, §10.3 — but it is part of the contract and costs 6 cycles.)
-4. **Completion**: the first cycle after the START write in which the core's `done` (= STATUS.DONE,
-   also with ERR) is 1 → ap_done := 1, ap_ready := 1, ap_idle := 1, ISR[0] := 1 if IER[0];
-   `interrupt` = GIE & IER[0] & ISR[0] (registered). Measured overhead of the kernel against the
-   core's BUSY time (PERF_CYCLES): 77–80 cycles from the AP_CTRL write to the interrupt (0.26 µs
-   at 300 MHz), 77–107 cycles to the AP_CTRL read that sees ap_done when polling every 16 cycles.
-5. The host reads AP_CTRL (ap_done / ap_ready clear on read), then STATUS / ERR_* through the window
-   and ADAPTER_STATUS (W1C).
-
-Other cases:
-- **ap_start while a run is in progress**: stays pending (reads 1) and is accepted as soon as the
-  adapter is idle again — a queued run with the register values of that moment. XRT does not do
-  this for ap_ctrl_hs (one command per compute unit at a time); tested (`apctrl`).
-- **Misaligned base** (any ch<c>_base[11:0] ≠ 0 at accept): ADAPTER_STATUS bit3, the run is refused
-  (the core is not touched, no memory traffic) and ap_done / ap_ready are raised at once, so the
-  host never hangs. No AXI burst can cross a 4 KiB boundary.
-- **SOFT_RESET through the window during a run**: the core ends the run without DONE (spec 구현
-  명확화). The adapter sees the window write and then polls STATUS every 16 cycles; it completes
-  when DONE = 1 or BUSY = 0.
-- **ABORT through the window**: the run ends with DONE | ERR (ABORTED) → normal completion.
-- **CTRL.START through the window** while the adapter is idle runs the core without an ap_ctrl_hs
-  handshake (its `done` is ignored); an ap_start during such a run completes with that run's done.
-- Window writes to CMD_ADDR / CMD_COUNT / ARG* are overwritten by the next start sequence.
+Removed in X0. v2 has no start / done protocol: the host binds the channels with `MEM_EN`, loads
+and boots the firmware image and launches kernels through the core CSR window (launch queue and
+completion ring, EX §2-§4). The v1 protocol, for reference at the tag: `ap_start` accepted in the
+next cycle, 13 core CSR transfers per start, `ap_done` / `ap_ready` clear on read, `interrupt` =
+GIE & IER[0] & ISR[0]; measured overhead of the v1 kernel against the core's BUSY time: 77-80
+cycles from the `AP_CTRL` write to the interrupt (0.26 µs at 300 MHz), 77-107 cycles to the
+`AP_CTRL` read that sees `ap_done` when polling every 16 cycles (measured in RTL simulation, v1; §13.1
+has 99 cycles per exec through `vkernel`). The v2 launch costs are compared with the v1 exec costs of
+§14.2.
 
 ## 4. Memory bridges (one per channel)
 
@@ -171,7 +139,7 @@ Other cases:
   throughput, valid / ready / payload registered on both sides) for the SLR crossings; R and B get
   one more slice after the ID filter, so every output of the kernel comes from a flop. The slice's
   payload registers load on enables of its own flops, never on the incoming valid (§8.3). Added
-  latency: +2 cycles on requests, +3 on responses; measured on the Qwen2.5-0.5B output-head MVM
+  latency: +2 cycles on requests, +3 on responses; measured in RTL simulation (v1) on the Qwen2.5-0.5B output-head MVM
   (569,760 weight beats per channel, `fast` memory): 569,853 MVM cycles through the kernel vs
   569,848 on the core alone — +5 cycles per MVM, no throughput loss (1.0002 cycles / beat).
 - **ID filter**: per ID the number of bursts whose AR (AW) handshake happened at the AXI boundary
@@ -186,8 +154,9 @@ Other cases:
   that the zero-margin variants are equivalent (§10.3).
 - **Errors**: R beats / B responses with RRESP / BRESP ≠ OKAY are forwarded like OKAY ones (the core
   has no error path for memory: its data may be wrong) and counted (ADAPTER_STATUS bits 0 / 1 and
-  the count). The host checks ADAPTER_STATUS after every run and treats a set bit as a failed run.
-- The bases are registered next to the adders (64-bit add per request).
+  the count). The host reads ADAPTER_STATUS (§11) and treats a set bit as a failed launch.
+- The bases are registered next to the adders (64-bit add per request). In the X0 tree the adders read the
+  `ch<c>_base` registers as written; in v2 they read the copy latched at the `MEM_EN` edge (§2).
 
 ## 5. Reset behaviour
 
@@ -200,9 +169,9 @@ every copy one cycle after `rst1_q` (each chain stage is AND-ed with `rst1_q`, w
 out of shift-register primitives); deassertion ripples, so the core leaves reset after the bridges
 (a bridge slice in reset reports s_ready = 1 and would drop a request of a core already running).
 Inside the core, `RST_PIPE` (passed through `tsr_xrt_kernel`; 3 in the U200 tops) adds
-`RST_PIPE` − 2 = 1 shared stage and two stages replicated per block (CSR, command processor, fetch,
+`RST_PIPE` − 2 = 1 shared stage and two stages replicated per block (CSR,
 DMA, QACT, SPM, the arbiter of every channel, the MVM top, gather and every cluster; `tsr_core.sv`,
-rtl-m3 §14.4): with the arbiters and clusters of the four channels in three SLRs, one reset net from
+rtl-m3 §14.4; the v1 core also had the command processor and fetch): with the arbiters and clusters of the four channels in three SLRs, one reset net from
 `tsr_xrt_reset` to all of them would miss 300 MHz. The core is a `RST_PIPE`-cycle-delayed copy of
 itself (results and cycle behaviour after the reset unchanged), so its blocks see both edges of
 `ap_rst_n` `RST_STAGES` − 2 + `RST_PIPE` = 4 cycles after the bridges.
@@ -223,22 +192,22 @@ Requirements and guarantees:
     while the core's blocks are reset from edge `RST_PIPE` + 2 on, so its outputs are quiet only
     after that edge. A released bridge sees only a quiet core when L + 1 ≥ `RST_PIPE` + 2, i.e.
     L ≥ `RST_PIPE` + 1; a shorter pulse lets a request or write beat of the pre-reset core through.
-    Measured on the packaged k1 (`RST_PIPE` 3): with 3-cycle pulses the directed `reset` test failed
+    Measured in RTL simulation (v1) on the packaged k1 (`RST_PIPE` 3): with 3-cycle pulses the directed `reset` test failed
     in 5 of 8 seeds ("write data offered while no run is active", always after a 3-cycle pulse);
     with 4, 5 and 20 cycles it passed seeds 1–12. The core itself sees its `rst_n` low for
     L + `RST_STAGES` − 2 = L + 1 cycles, ≥ `RST_PIPE` + 1 (rtl-m3 §14.4) for every L ≥ 3, so
     `tsr_xrt_reset` with `RST_STAGES` 3 needs no change.
   `tsr_xrt_kernel` checks the minimum in simulation (`$error` "ap_rst_n low for N cycles, minimum
-  M"); the kernel bench's directed `reset` test uses 4, 5 and 20 cycles (`RST_MIN` = 4 in
-  `kernel_dut.h`, the minimum for every `RST_PIPE` ≤ 3).
+  M"); the v1 kernel bench's directed `reset` test used 4, 5 and 20 cycles (`RST_MIN` = 4 in
+  `kernel_dut.h`, the minimum for every `RST_PIPE` ≤ 3; the test returns in Y5).
 - **Everything inside the kernel is reset**: every slice, counter and FSM of the adapter and every
   control flop of the core. No beat buffered in the adapter before the reset reaches the core
-  afterwards; ADAPTER_STATUS, the arguments and the bases read 0; the core CSRs have their power-on
-  values (spec 구현 명확화 "하드웨어 리셋").
-- **Responses to pre-reset requests** (spec: "리셋 전 요청의 응답이 리셋 후에 오면 안 된다 … M4 플랫폼
-  어댑터가 보장한다"): in Vitis the kernel's `ap_rst_n` and the interconnect / memory subsystem of the
+  afterwards; ADAPTER_STATUS and the bases read 0; the core CSRs have their power-on
+  values (`docs/spec.md` §21, Hardware reset).
+- **Responses to pre-reset requests** (`docs/spec.md` §21, Hardware reset: a response to a request issued
+  before the reset must not arrive after it; the platform adapter guarantees this): in Vitis the kernel's `ap_rst_n` and the interconnect / memory subsystem of the
   dynamic region come from the same reset and are asserted together (at xclbin load; XRT has no
-  per-kernel reset for ap_ctrl_hs kernels, `xbutil reset` resets the whole device), and AXI defines
+  per-kernel reset for a kernel, `xbutil reset` resets the whole device), and AXI defines
   one ARESETn per interface for master and slave. So the adapter relies on the platform for the
   interconnect half: no response of a pre-reset request can arrive. On top of that it **detects and
   drops** any response whose ID has no outstanding request (§4) — a stale response that arrives
@@ -248,16 +217,25 @@ Requirements and guarantees:
   the next write when the interconnect *was* reset); both would need a common reset, which Vitis
   provides.
 
+In v2, `ap_rst_n_2` passes to the core as `rst_rv_n` (CC §13.3); `tsr_xrt_reset` is unchanged for `ap_clk`,
+and the reset sequencing of the control core is CC §12.2.
+
 ## 6. Kernel tops and kernel.xml
 
 `gen_tops.py` writes, from one table: `tsr_u200_k1.v` / `tsr_u200_k4.v` (Verilog-2001 like the RTL
-Kernel Wizard's tops — the IP packager warns that SystemVerilog tops are "not fully supported";
-the body is SystemVerilog), `kernel_k1.xml` / `kernel_k4.xml` (args at the offsets of §1, control
-range 0x2000, `hwControlProtocol="ap_ctrl_hs"`, `interrupt="true"`) and the testbench wrappers
-`tb/platform/sv/kwrap_*.sv` (the named top with the packed port list of `tsr_xrt_kernel`, so one
-C++ bench drives the body and both packaged tops). `gen_tops.py --check` (run by `lint.sh`) fails
-when a generated file is stale. Vitis names the interrupt port `interrupt`, a C++ keyword:
-Verilator renames it (`__SYM__interrupt`), with a targeted `SYMRSVDWORD` waiver.
+Kernel Wizard's tops: the IP packager warns that SystemVerilog tops are "not fully supported"; the
+body is SystemVerilog), `kernel_k1.xml` / `kernel_k4.xml` (the `ch<c>` arguments at the offsets of §1,
+control range 0x2000, `hwControlProtocol="ap_ctrl_none"`, `interrupt="false"`) and the testbench
+wrappers `tb/platform/sv/kwrap_*.sv` (the named top with the packed port list of `tsr_xrt_kernel`, so
+one C++ testbench can drive the body and both packaged tops). `gen_tops.py --check` (run by
+`lint.sh`) fails when a generated file is stale; it passes in the tree. The v1 table (the scalar
+arguments, the `ap_ctrl_hs` protocol and the `interrupt` port) is deleted (X0). The M0 kernel keeps
+`ap_ctrl_hs` and an `interrupt` port (`docs/m0-bw.md` §2); Vitis names that port `interrupt`, a C++
+keyword, which Verilator renames (`__SYM__interrupt`), with a targeted `SYMRSVDWORD` waiver in
+`gen_bw.py`. Y5 adds `ap_clk_2` / `ap_rst_n_2` to the tops and confirms in its first smoke link that
+`v++` 2024.2 accepts an `ap_ctrl_none` RTL kernel with `s_axi_control` and `m_axi` arguments and
+honours its `sp=` connectivity; the fallback that needs no RTL change is EX §9.1's (`ap_ctrl_hs`
+with `interrupt="false"`, 0x000 reading a constant `ap_idle`, never started).
 
 ## 7. Packaging (`package_xo.tcl`)
 
@@ -280,7 +258,7 @@ matches the working tree; `hw/u200/build_xclbin.sh` repackages when it does not 
 is missing), so a later core change can no longer slip into a link through a stale `.xo`
 (review finding: the `.xo` of the first packaging predated core changes of the same evening).
 
-Run on the dev server (Vivado 2024.2; first packaging 2026-10-23 evening, repackaged 2026-10-24
+Packaging of the v1 tops on the dev host (Vivado 2024.2; first packaging 2026-10-23 evening, repackaged 2026-10-24
 02:10 with `RST_PIPE` 2 in the tops, and again 2026-10-24 07:15 with the U200 bitstream parameters
 (`MVM_MAC_LAT` 9, `RST_PIPE` 3), the reset-pulse check of §5 and the XSim-legal reset block, after
 the core changes of part C — the table shows this packaging. Its manifests matched the working tree
@@ -294,31 +272,43 @@ may still change: check the manifest before linking; `build_xclbin.sh` repackage
 | `tsr_u200_k4` | 17 s | passed / passed | `build/u200/xo/tsr_u200_k4.xo` 171,852 bytes, manifest of 35 files | the same with m_axi_ch0..3 and ch0..ch3 |
 | `tsr_bw_k4` (M0, `docs/m0-bw.md` §4) | 16 s | passed / passed | `build/u200/xo/tsr_bw_k4.xo` 47,915 bytes, manifest of 12 files | repackaged for the reset block it shares (`tsr_xrt_reset.sv`) |
 
+The k4 `.xo` was repackaged on 2026-10-25 (35 manifest files, integrity passed) for the k4 link (§8.2).
+X0 changed `kernel_k*.xml` (`ap_ctrl_none`, `ch<c>` arguments only) and `package_xo.tcl` (no `CTRL` /
+`GIER` / `IP_IER` / `IP_ISR` registers); no k1 or k4 `.xo` has been packaged since, and Y5 does it again (§8).
+
 Remaining packager warnings are cosmetic (no product guide, IP description = name) or transient
 (FREQ_HZ / association warnings printed by `ipx::package_project` before the script sets them).
 
-## 8. xclbin build (`hw/u200`) — k1 linked, k4 not yet
+## 8. xclbin build (`hw/u200`)
 
 `hw/u200/build_xclbin.sh k1|k4 [hw|hw_emu]`: packages the `.xo` when it is missing or its source
 manifest no longer matches the working tree (§7), then `v++ --link -t <target> --platform <xpfm>
---config <out>/<k>.link.cfg` → `build/u200/<k>/tsr_u200_<k>.xclbin`. `<k>.link.cfg` is
-`hw/u200/<k>.cfg` with its hook paths made absolute: the configs give them relative to
-`build/u200/<k>`, because v++ resolves a `TCL.PRE` path against its working directory (measured: a
+--config <out>/<k>.link.cfg` → `build/u200/<k>/tsr_u200_<k>.xclbin`. **In the tree the k1 and k4 builds
+are disabled until Y5** (EX §12): X0 left the kernels without a working core, so the script stops with
+exit status 4 and a message after the argument check (`tb/platform/test_platform.py`
+`test_build_xclbin_disabled`). `TSR_U200_PLATFORMINFO=1` still resolves the platform and prints its
+`platforminfo` (`test_build_xclbin_platform`, `test_build_xclbin_no_platform`). The M0 kernel builds
+as before: `hw/u200/bw/build_bw_xclbin.sh [hw|hw_emu]` (`docs/m0-bw.md` §4). Y5 removes the stop and
+keeps the steps described here; the links of §8.2 were made with this script before X0, and the
+xclbins that ran on the card are in `build/v1/xclbin`.
+
+`<k>.link.cfg` is `hw/u200/<k>.cfg` with its hook paths made absolute: the configs give them relative
+to `build/u200/<k>`, because v++ resolves a `TCL.PRE` path against its working directory (measured: a
 path relative to the config file's directory fails with `[v++ 82-1104] A file path set by
 'vivado.prop' option ... does not exist`). Platform `xilinx_u200_gen3x16_xdma_2_202110_1`, searched
 in `$PLATFORM_REPO_PATHS` and `/opt/xilinx/platforms`; with `PLATFORM_REPO_PATHS` unset the script
 uses `build/platforms/root/opt/xilinx/platforms` (the development platform extracted on the dev
-server, §14) when that directory exists; when the platform is missing it stops with exit status 3
-and says what to install (tested: `test_build_xclbin_no_platform`; the dev-platform default:
+host, §14) when that directory exists; when the platform is missing it stops with exit status 3 and
+says what to install (tested: `test_build_xclbin_no_platform`; the dev-platform default:
 `test_build_xclbin_platform`). Environment: `TSR_VIVADO_LOCK` (serialises Vivado / v++ runs with
 `flock`), `TSR_U200_FLOORPLAN=0` (k4 without the floorplan), `TSR_U200_OUT` (output directory),
 `TSR_VPP_TO_STEP` (`v++ --to_step`, e.g. `vpl.config_hw_runs`: project, block design, output
-products and the implementation runs with their hooks, nothing synthesized),
+products and the implementation runs with their hooks, nothing synthesised),
 `TSR_U200_PLATFORMINFO=1` (resolve the platform, print its `platforminfo`, stop). Memory: on the
-dev server (14 GB RAM, swap) the k1 link peaked at 15.3 GB and the M0 link at 18.3 GB
-(Vivado-reported, write_bitstream) and both completed, using swap; the k4 link is estimated at 25–27 GB
-(§8.2), so it wants a host with 32 GB or more (the script warns below 30 GiB).
-`hw/u200/bw/build_bw_xclbin.sh` (M0) has the same platform default.
+dev host (14 GB RAM, swap) the k1 link peaked at 15.3 GB and the M0 link at 18.3 GB
+(Vivado-reported, write_bitstream) and both completed, using swap; the k4 link peaked at 29.6 GB
+(§8.2) and completed with swap in 3 h 51 min. The script warns below 30 GiB of RAM.
+`hw/u200/bw/build_bw_xclbin.sh` has the same platform default.
 
 | Config | Connectivity | Implementation |
 |---|---|---|
@@ -354,7 +344,7 @@ platform's pblocks, which the script never creates (it stops with an error when 
 |---|---|
 | `pblock_dynamic_SLR0` | clusters 0 and 2 with their result assemblers (`u_core/g_mvm.u_mvm/g_cl[c].u_cl`, `u_gather/g_asm[c].u_asm`); the AXI side of bridge 0 |
 | `pblock_dynamic_SLR2` | clusters 1 and 3 with their assemblers; the AXI side of bridge 3 |
-| `pblock_dynamic_SLR1` | the four memory arbiters, SPM, central gather, MVM dispatch, cmdproc, DMA, QACT, fetch, CSR; the control bridge `u_ctrl`, the reset block `u_rst`, bridges 1 and 2, the core side of bridges 0 and 3 |
+| `pblock_dynamic_SLR1` | the four memory arbiters, SPM, central gather, MVM dispatch, DMA, QACT, CSR (v1: also cmdproc and fetch); the control bridge `u_ctrl`, the reset block `u_rst`, bridges 1 and 2, the core side of bridges 0 and 3 |
 
 As in core_slr.tcl, the pipes between a cluster (with its assembler) and the centre
 (`g_cl[c].u_bcp` / `u_wrp` / `u_wqp`, `g_asm[c].u_sp` / `u_jp`) get their first stage in the source
@@ -384,16 +374,29 @@ Validation without a link (Vivado 2024.2; stand-in pblocks copied verbatim from 
   (LUT sites = 8 × the SLICE sites in the pblock; the SLR1 pblock counts 199,680, against 205,440
   in `platforminfo` and in the out-of-context stand-in over the same clock regions.)
 - **4-channel kernel** (`tsr_u200_k4` with T_MAX 1 under an IP-style wrapper instance `inst`,
-  synthesized out of context from the working tree: 2 min 6 s, 5.6 GB peak): the instance found by
+  synthesised out of context from the working tree: 2 min 6 s, 5.6 GB peak): the instance found by
   REF_NAME; 48 stages pinned; bridges 0 and 3: 3,595 leaf cells each on the DDR side (the five
   AXI-side slice stages and the handshake flops), 6,404 in SLR1; 12.0 s. Vivado's `-filter {NAME
   =~ ...}` takes `[ ]` literally (the same leaf count as through `current_instance`).
 
-Not validated: placement, routing and timing with the shell (the k4 link has not run, §8.2). The
-memory subsystem that v++ adds per DDR bank is measured in the M0 link; the pblock budget with it is
-an estimate (§8.2).
+Placement, routing and timing with the shell: the k4 link of §8.2 (floorplan C' as validated here).
+The memory subsystem that v++ adds per DDR bank was measured in the M0 link.
 
-### 8.2 What ran (2026-10-24)
+**Real placement.** The image below is the routed 4-channel `T_MAX` 8 core of the v1 design (out of
+context, floorplan C'), drawn from the checkpoint by [`hw/viz`](../hw/viz/README.md): every used site
+in the colour of its module. Clusters 0 and 2 fill SLR0, clusters 1 and 3 fill SLR2, and SLR1 holds
+the central gather, QACT, control, the SPM's URAM column and the pipes that cross the SLR
+boundaries. Full-device views after the `v++` link:
+[k1 kernel with the XRT shell](fig/floorplan/k1-linked.png) and
+[M0 bandwidth kernel with the four DDR4 controllers](fig/floorplan/bw-linked.png).
+
+<p align="center"><img src="fig/floorplan/k4-core-ooc.png" alt="Placement of the routed 4-channel T_MAX 8 tsr_core of the v1 design on the VU9P: clusters 0 and 2 in SLR0, clusters 1 and 3 in SLR2, gather, QACT, control and SPM in SLR1" width="100%"></p>
+
+### 8.2 What ran: partial links, hardware links, relinks, hw_emu, the k4 link
+
+These runs used `build_xclbin.sh` and `build_bw_xclbin.sh` as they were at tag `v1-m4` (2026-10-24 to
+2026-10-26); the k1 / k4 build is disabled in the tree (§8). Provenance: *measured in Vivado 2024.2
+(linked, v1)* unless stated.
 
 - `TSR_U200_PLATFORMINFO=1 hw/u200/build_xclbin.sh k4` with `PLATFORM_REPO_PATHS` unset: the script
   finds `build/platforms/root/opt/xilinx/platforms/xilinx_u200_gen3x16_xdma_2_202110_1/
@@ -402,7 +405,7 @@ an estimate (§8.2).
 - `TSR_VPP_TO_STEP=vpl.config_hw_runs TSR_U200_OUT=<scratch> hw/u200/build_xclbin.sh k4`, then `k1`
   (`PLATFORM_REPO_PATHS` unset; the `.xo` manifests matched, so no repackaging): `v++` rc 0 after
   `vpl.config_hw_runs` (system link, block design with the compute unit and the memory subsystem,
-  output products, synthesis and implementation runs set up; nothing synthesized), 2 min 7 s (k4) /
+  output products, synthesis and implementation runs set up; nothing synthesised), 2 min 7 s (k4) /
   1 min 20 s (k1) of `v++` time. The only warnings: `kernel_frequency=300` equals the platform default
   and is ignored (`[v++ 60-889]`), and no generated-reports log yet. In the generated project:
   - k4: `scripts/impl_1/_full_place_pre.tcl` sources v++'s own place hook, then
@@ -450,7 +453,7 @@ an estimate (§8.2).
     497): Vivado reads the `tsr_vpipe` parameter named `KEEP` as the instance's KEEP property and
     drops that instance-level value. Harmless: on the kernel synthesis checkpoint every kept stage
     register still has KEEP = yes (`u_bcp` 1,058, `u_wrp` 1,032, `u_sp` 134) and none is packed into
-    an SRL; the out-of-context runs of rtl-m3 §14 do not show them. The parameter is now `KEEP_REGS`
+    an SRL; the out-of-context runs of rtl-m3 §14 do not show them. The parameter is `KEEP_REGS`
     (renamed after these links, 2026-10-24); the k1 relink's kernel synthesis (below) has no
     critical warning. Both first hardware links also give 1 CRITICAL WARNING `[Vivado 12-4430]` (the
     HDPR-5 DRC lowered to a warning), from v++'s own `_vpl_pre_place.tcl`.
@@ -474,7 +477,7 @@ an estimate (§8.2).
     → `main_q` D +0.083, the result-pipe slice `g_cl[0].u_rp` +0.087 (fan-out 240), the QACT
     multiplier +0.091 (5 DSP levels), cmdproc state → `dma_cmd_q` CE +0.093 (fan-out 596). The
     first link's two worst: SPM cascade address +0.011 → +0.237 ns (enables +0.146 → +0.215; the
-    SPM's worst is now the shared write data → `CAS_IN_DIN_B`, +0.134), reset copy → bridge
+    SPM's worst is the shared write data → `CAS_IN_DIN_B`, +0.134), reset copy → bridge
     counters +0.037 → +1.381 ns (the stage feeding the copies +0.379).
   - Resources: 33,502 LUT (+226), 51,212 FF (+1,283: SPM +1,043, bridge +124, MVM +101, reset
     +11), 1,805 LUTRAM, 40 RAMB36, 128 URAM, 182 DSP, all in SLR1, 0 kernel nets crossing an SLR;
@@ -494,32 +497,54 @@ an estimate (§8.2).
   port's memory group), but the metadata-only xclbins of the no-op tests
   (`sw/transport/tests/test_xrt_noop.cpp`, `tb/platform/bw/noop/mk_bw_xclbin.cpp`) use `MEM_DDR4`
   for every bank.
+- **k4 hardware link** (2026-10-25; `TSR_VIVADO_LOCK=<lock> hw/u200/build_xclbin.sh k4`: target hw,
+  floorplan C' and `AltSpreadLogic_high` from `k4.cfg`; the `.xo` was repackaged first, integrity
+  passed, 35 manifest files, so the link has the RTL with the §8.3 changes): `v++` rc 0 after
+  3 h 51 min 5 s wall on the 14 GB dev host with swap. Vivado steps (elapsed): opt_design 13:05,
+  place_design 58:58, phys_opt 10:07, route_design 59:55, post-route phys_opt 22:42, write_bitstream
+  9:20. Output `build/u200/k4/tsr_u200_k4.xclbin`, 75,757,475 bytes, UUID
+  `cf69a2cd-981d-ae88-43f0-b8c11f25e63a`.
+  - Timing, routed and after post-route phys_opt (identical): **WNS -0.285 ns, TNS -56.460 ns, 809
+    failing endpoints of 2,214,116, WHS +0.007 ns**. `v++` scaled the kernel clock from the requested
+    300 MHz to **276.3 MHz** (`AUTO-FREQ-SCALING-04`); the xclbin's clock topology has DATA_CLK
+    276 MHz (`ss_ucs_aclk_kernel_00`, scalable) and KERNEL_CLK 500 MHz (`ss_ucs_aclk_kernel_01`,
+    requested and achieved 500 MHz). The worst paths are in the gather's job pipes (§14.1 step 12).
+  - Resources (kernel utilisation report, routed): 280,331 LUT (4,938 as memory), 374,402 FF, 808
+    RAMB36, 128 URAM, 2,728 DSP. Whole design with the shell, per SLR (SLR0 / SLR1 / SLR2): CLB LUT
+    156,977 / 227,188 / 158,409 (39.8 / 57.7 / 40.2 % of the SLR), DSP 1,351 / 42 / 1,351, RAMB36
+    tiles 462.5 / 313 / 462.5, URAM 0 / 148 / 0; 13,822 SLLs in the design.
+  - Memory: Vivado-reported peaks 19.8 GB (opt_design), 27.0 GB (place_design), 29.3 GB
+    (route_design), 29.6 GB (write_bitstream). Measured with up to 28 GB of swap in use (§14.1).
+  - Source: `build/u200/k4/` (`v++_link.log`, `reports/link/imp/*.rpt`; not in git). *Measured in
+    Vivado 2024.2 (linked, v1).*
 
-Not run: the `tsr_u200_k4` link (hw or hw_emu). Estimate from the measured runs, not a
-measurement:
+What the measured runs predicted before the k4 link (an estimate, kept to show how it compared):
 - Memory: Vivado's place / route peak was 16.5 GB in the M0 link (four DDR banks, a small kernel),
   13.7 GB in the k1 link, 13.5 GB in the out-of-context k4 run (6.1 GB out-of-context k1), so the
-  linked k4 should need about 25 GB at place / route and 27 GB at write_bitstream: 11–13 GB in swap
-  on the dev server, at least 3 h with a real risk of thrashing. A host with 32 GB or more is the
-  safe choice; on this host lower `synth.jobs` in `k4.cfg` to 1–2.
+  linked k4 was expected to need about 25 GB at place / route and 27 GB at write_bitstream. The
+  measured peaks were 27.0, 29.3 and 29.6 GB.
 - Placement: the M0 link shows what v++ adds per extra DDR bank in that bank's SLR (about 30.5 K
-  LUT, 42.5 K FF, 61 RAMB36, 3 DSP); with floorplan C', SLR0 and SLR2 then come to about 155 K LUT
-  (40 %), 461 RAMB36 (64 %) and 1,351 DSP (59 %) of their pblocks: it should still fit.
+  LUT, 42.5 K FF, 61 RAMB36, 3 DSP); with floorplan C', SLR0 and SLR2 were then expected at about
+  155 K LUT (40 %), 461 RAMB36 (64 %) and 1,351 DSP (59 %) of their pblocks. Measured: 157-158 K
+  LUT, 462.5 RAMB36, 1,351 DSP per SLR (whole design with the shell).
 - Timing: the first links cost 0.110 ns of margin on k1 and 0.216 ns on the M0 kernel clock against
-  their out-of-context runs; with k4's then +0.015 ns out of context its link might have ended near
-  −0.1 to −0.2 ns (v++ would then lower the scalable kernel clock to about 291 / 283 MHz).
+  their out-of-context runs; with k4's then +0.015 ns out of context its link was expected near
+  -0.1 to -0.2 ns (`v++` would then lower the scalable kernel clock to about 291 / 283 MHz). The
+  measured link missed by 0.285 ns, at 276.3 MHz.
   Proposals made then: one kept copy of `tsr_spm`'s read / write address register per bank, or
   `cascade_height = 2` on the URAM style of `rtl/tech/xilinx/tsr_sram_1r1w.sv` with the extra
   output mux absorbed in the `SPM_RD_LAT` 4 pipeline (the SPM cascade address: k1's and the
   out-of-context k4's worst); `tsr_rslice` loading `main_q` whenever `m_free` (`if (m_free) main_q
   <= rdy_q ? s_data : skid_q;`, equivalent at the valid-qualified interface; the clock-enable
   fan-out is the M0 link's worst, and the slice is in every bridge); `tsr_xrt_reset`'s `ch_q`
-  replicated per bridge part at the same stage (k1's second worst). All three are applied since:
-  the last two as proposed (§8.3), the SPM as 8 column slices per bank with a kept input-register
-  copy per slice (the per-bank copy and `cascade_height = 2` were measured and rejected; rtl-m3
-  §14.9). After them, measured: k4 +0.022 ns out of context (rtl-m3 §14.9); in the relinks the
-  worst kernel path is +0.075 ns on k1 (the k1 core out of context: +0.100 ns) and +0.110 ns on
-  M0 (out of context: +0.278 ns, §8.3). The k4 link itself is not measured.
+  replicated per bridge part at the same stage (k1's second worst). All three were applied before
+  the k4 link: the last two as proposed (§8.3), the SPM as 8 column slices per bank with a kept
+  input-register copy per slice (the per-bank copy and `cascade_height = 2` were measured and
+  rejected; rtl-m3 §14.9). After them, measured: k4 +0.022 ns out of context (rtl-m3 §14.9); in the
+  relinks the worst kernel path is +0.075 ns on k1 (the k1 core out of context: +0.100 ns) and
+  +0.110 ns on M0 (out of context: +0.278 ns, §8.3). The linked k4 was limited elsewhere: the
+  gather's job-pipe slices; the v2 fix (`tsr_rslice` FORM 1 on the last stage of every job pipe,
+  pinning the job-pipe stage-0 registers) is CC §14.4 and part of gate T3 (§8.4).
 
 ### 8.3 Margin changes after the links: slice enables, reset copies (2026-10-24)
 
@@ -563,7 +588,7 @@ payload-enable path is +0.168 ns; in k1 the reset copy → bridge counters path 
 slice's `rdy_q` (k1: `skid_q` CE, +0.075 ns, fan-out 154; M0: a W slice's `main_q` S pin,
 +0.110 ns, fan-out 283). Not measured: a k4 link.
 
-Verification (Verilator 5.046; "A/B" = the same replay with the same seeds on base and on base plus
+Verification (the v1 benches of tag `v1-m4`, deleted in X0; Verilator 5.046; "A/B" = the same replay with the same seeds on base and on base plus
 these changes, every per-run field compared: STATUS / ERR, cycles, PERF_*, MVM cycles, per-port and
 weight-stream beats, kernel overhead and bases): all identical, 0 failed:
 - `tsr_rslice` alone, old vs new on the same random stimulus (1 and 3 stages, random and
@@ -583,9 +608,38 @@ weight-stream beats, kernel overhead and bases): all identical, 0 failed:
   form (`main_q` loaded without `m_free`) and a skid mutant (`skid_q` loaded without `rdy_q`) are
   both killed by its traces/m2 stage (scratch run).
 
+### 8.4 v2: floorplan C'' and the SLR1 budget (designed)
+
+The v2 additions (control core, issue path, vector unit, debug block, attention modes) are designed
+in [CC](v2/04-control-core.md) §14; nothing of it is in RTL. *Estimate (docs/v2/04-control-core.md
+section 14.1)* unless stated.
+
+- **Floorplan C''** extends C' (`hw/u200/k4_floorplan.tcl` and `tb/core/viv/core_slr.tcl`): a
+  `ctrl_rv` sub-pblock of `pblock_dynamic_SLR1` with at least 64 RAMB36 sites (the TCMs use 48)
+  holds Ibex, the debug module, the TCMs, the control window and the `clk_rv` side of the
+  clock-domain crossings; `tsr_issue`, `tsr_chk` and `tsr_csr` sit in SLR1 between the CSR bridge
+  and the units; the clusters, with the attention modes, stay in SLR0 and SLR2. X0 already
+  removed `u_cmdproc` and `u_fetch` from the cell list of `k4_floorplan.tcl`; Y5 adds the v2 blocks.
+  k1 stays entirely in SLR1 and remains the fast bring-up link (about 1 h in v1, §8.2).
+- **SLR1 budget** (`pblock_dynamic_SLR1`: 199,680 LUT sites, 420 RAMB36, 160 URAM, 1,320 DSP): the
+  v1 part in SLR1 (25.5 K LUT, 8 RAMB36, 128 URAM, 32 DSP, measured out of context) and the DDR[2]
+  memory subsystem (30.5 K LUT, 61 RAMB36, 3 DSP, measured in the M0 link) plus the v2 blocks come to
+  about 125-143 K LUT (62-72 % of the LUT sites), 148 RAMB36 (35 %), 128 URAM and 405-407 DSP (31 %).
+  The vector unit is the largest item (about 48 K LUT and 366 DSP, +-30 %). **Gate V2-CC-24:** at
+  most 65 % of the LUT sites (about 130 K) after synthesis; the remedies, in order, are the VU shrink
+  knobs (`VU_EXP_LANES` 8, `VU_BACK_LANES` 4: -8.7 K LUT, -124 DSP), DB `HAS_TRW` = 0 with
+  `HIST_DEPTH` = 0, and moving the VU lanes to SLR0 behind registered pipes. The table is CC §14.1.
+- **Timing gates** (CC §14.3): T1, the control core out of context at 166.7 MHz (6.0 ns met with at
+  least 0.3 ns margin); T2, the k4 core with control core, VU, attention modes, DB and floorplan C''
+  out of context at 3.333 ns (WNS not below 0, SLR1 at most 65 %), preceded by the out-of-context
+  VU run that fixes the VU configuration; T3, the k4 `v++` link with a kernel clock of at least
+  276.3 MHz (the v1 result, §8.2; target 300 MHz), zero unconstrained `ap_clk` / `ap_clk_2` paths
+  and a clean `report_cdc`; T4, the k1 link at 300 MHz. The fix of the gather job-pipe paths that
+  limited the v1 k4 link (`tsr_rslice` FORM 1, CC §14.4) is part of T3.
+
 ## 9. Timing and resources (Vivado OOC synthesis of `tsr_u200_k1`)
 
-`tb/platform/viv/kernel_ooc.tcl` (synth only, 3.333 ns `ap_clk`, every I/O budgeted 1.6 ns outside,
+*Measured in Vivado 2024.2 (out of context, v1 adapter).* `tb/platform/viv/kernel_ooc.tcl` (synth only, 3.333 ns `ap_clk`, every I/O budgeted 1.6 ns outside,
 `rtl/filelist_xilinx.f`, final adapter logic, Vivado 2024.2, 2026-10-23, i.e. the generated top of that
 date, before the U200 parameters `MVM_MAC_LAT` 9 / `RST_PIPE` 3; the core with them: rtl-m3 §14.3;
 synthesis 1 min 55 s, 5.1 GB peak with the timing queries):
@@ -605,12 +659,32 @@ internal +1.748 ns (7 levels: ADAPTER_STATUS write decode → error count). Befo
 AR / AW handshake for the ID counters, `m_axi_ch0_awready` → write counter → `wr_nz_q` was the
 adapter's worst path (+0.585 ns, 6 levels). The adapter adds no long path; per channel it costs
 ~3.6 K LUT / 6.3 K FF (mostly the 512-bit R and W slices). Placement and routing of k1: the
-hardware link (§8.2). Not run: the 4-channel kernel (the vivcore agent's whole-core runs cover the
-core).
+hardware link (§8.2). The 4-channel kernel: the k4 link of §8.2 and the whole-core out-of-context runs of rtl-m3 §14.3 (the
+control bridge of the X0 adapter has no run sequencer and is smaller than the one measured here; not
+re-measured).
 
 ## 10. Verification
 
-### 10.1 Kernel bench (`tb/platform`)
+What exists in the tree today (all without hardware):
+- `rtl/platform/alveo_xrt/lint.sh`: `gen_tops.py --check` and 27 Verilator `-Wall` runs, clean (§10.4).
+  The M0 kernel has its own (`rtl/platform/alveo_xrt/bw/lint.sh`, clean).
+- `tb/platform/test_platform.py`: the adapter lint, the exit-4 refusal of `build_xclbin.sh k1|k4`,
+  and the two platform-lookup checks (§8). `tb/platform/bw/test_bw.py`: the M0 bench (`docs/m0-bw.md`
+  §5). Both are part of `tb/run_all.sh`.
+- The register-level behaviour of the X0 adapter has no bench until Y5: the v1 kernel bench is
+  deleted, and the adapter v2 bench carries over its directed tests (reset values and read-back with
+  strobes, `ADAPTER_VERSION`, the CSR window, SLVERR / DECERR with `ADAPTER_STATUS` W1C and count
+  saturation, misaligned accesses, reset) and adds `MEM_EN` and the bases (EX §12,
+  [SW](v2/06-software-verification.md) §10.3). Until
+  then the adapter is covered by lint and by the `mock` kdev's register model on the host side
+  (`docs/xrt-host.md` §6).
+
+§10.1-§10.3 are the v1 record: the kernel bench of tag `v1-m4` (`tb/platform/kernel_bench.cpp`,
+`kernel_dut.h`, `mutate_adapter.py`; deleted in X0) and what it measured with the v1 adapter.
+Everything below is *measured in RTL simulation (v1, Verilator 5.046)* unless stated; the memory
+bridges, the reset scheme and the register slices it exercised are unchanged in the tree.
+
+### 10.1 Kernel bench (`tb/platform`, v1; deleted in X0)
 
 `kernel_bench.cpp` + `kernel_dut.h`, Verilator C++ (class `Vkernel`: `tsr_xrt_kernel` with any
 configuration, or `kwrap_tsr_u200_k1` / `k4`), built and run by `tb/fastreplay/run.py --top
@@ -640,7 +714,7 @@ kernel | tsr_u200_k1 | tsr_u200_k4` (same CLI, cache and JSON as the core replay
 - **Directed** (`kernel_bench --directed all`): regmap, apctrl, window, errors, misaligned, reset —
   the list is in the header of `kernel_bench.cpp`.
 
-### 10.2 Results (2026-10-23, Verilator 5.046, final adapter RTL)
+### 10.2 Results (v1 adapter, 2026-10-23, Verilator 5.046, final adapter RTL)
 
 | Run | Build(s) | Runs | Result |
 |---|---|---|---|
@@ -678,7 +752,7 @@ reset block; the core RTL of that morning):
 | `--reset-each --dut rst=3` / `rst=4`, 2 traces | packaged k1 | 2 + 2 | 3 cycles: the simulation check fires ("ap_rst_n low for 3 cycles, minimum 4"); 4 cycles: pass |
 | directed, all six tests | packaged k1 (`rtl/filelist_xilinx.f`, seeds 1 / 2 / 3), packaged k4 (`rtl/filelist.f`, seed 5) | 4 runs | **all pass** (k4: regmap 170, apctrl 32, window 482, errors 40, misaligned 47, reset 198 checks) |
 | `run.py --top tsr_u200_k1 --filelist rtl/filelist_xilinx.f --regimes all`: 64 + 24 generated 1-channel U200 traces, the recipes of traces/m3/tmax1 (`--ops m3 -n 64 -s 31 --errors 10 --big-pct 4 --num-ch 1`) and traces/gen/tmax1 (`-n 24 -s 1 --num-ch 1`); ISA-simulator replay 88 passed | packaged k1 | 88 × 4 = 352 | **0 failed**, 6,849,564 cycles |
-| `python3 -m pytest tb/platform -m "not slow"` (the adapter, bw and vkernel tests: `test_packaged_k4` / `_k1`, `test_vkernel_packaged_k1`, `test_kernel_u200_smoke[t1 / t8]` with traces/m3/tmax1 + m3/errors + gen/tmax1 and m3/tmax8 + m3/errors8 through the body, `test_build_xclbin_platform`, ...) | | 31 selected | **28 passed, 2 skipped** (no `tsr_bw` binary), **1 failed: `test_bw_xclbin_no_platform`**, which assumed an unset `PLATFORM_REPO_PATHS` means no platform; fixed (it now points the variable at an empty directory) and re-run with both build-script tests: 3 passed. 667 s |
+| `python3 -m pytest tb/platform -m "not slow"` (the adapter, bw and vkernel tests: `test_packaged_k4` / `_k1`, `test_vkernel_packaged_k1`, `test_kernel_u200_smoke[t1 / t8]` with traces/m3/tmax1 + m3/errors + gen/tmax1 and m3/tmax8 + m3/errors8 through the body, `test_build_xclbin_platform`, ...) | | 31 selected | **28 passed, 2 skipped** (no `tsr_bw` binary), **1 failed: `test_bw_xclbin_no_platform`**, which assumed an unset `PLATFORM_REPO_PATHS` means no platform; fixed (it points the variable at an empty directory) and re-run with both build-script tests: 3 passed. 667 s |
 
 Throughput through the adapter: the Qwen2.5-0.5B output-head MVM (569,760 weight beats per
 channel, U200 bitstream parameters, `fast` memory) takes 569,853 MVM cycles through the kernel and
@@ -691,7 +765,7 @@ shorter than the reset pipeline (now a documented minimum of 3 cycles; 4 since `
 Vivado warnings in the control bridge (a function assigning its input, block-local variables
 inferred as registers).
 
-### 10.3 Mutation campaign (`tb/platform/mutate_adapter.py`)
+### 10.3 Mutation campaign (`tb/platform/mutate_adapter.py`, v1; deleted in X0)
 
 Every mutant is applied to a scratch copy of `rtl/platform/alveo_xrt`; stage 1 = replay of
 traces/m3/ch3 + m3/small1ch + m2/small1ch through the kernel (rand, fast, slow; stop at the first
@@ -700,7 +774,8 @@ passes both stages. **33 mutants: 29 killed, 4 survived, all 4 equivalent** — 
 was predicted equivalent in advance; the other three were first expected to be killed and are
 equivalent on analysis (results: scratch `m3c/adapter/mut*/results.json`). Re-run after the §8.3
 changes (2026-10-24) with `R_ch_copy_late` added: **34 mutants, 30 killed, the same 4 equivalent
-survivors**; every first error as before.
+survivors**; every first error as before. The `B_*` (bridge) and `R_*` (reset) mutants apply to code that
+remains in the tree; the `C_*` mutants target the v1 `ap_ctrl_hs` control block, which X0 deleted.
 
 | Mutant | What it breaks | Killed by (first error) |
 |---|---|---|
@@ -748,66 +823,80 @@ the bridge with `CNT_RST` 1 / 16) and `rtl/lint.sh` (213 lint runs with its sub-
 elaborates the three tops (0 warnings) and simulates `tsr_xrt_reset` with 4 copies per channel in
 4-state (INIT 0, every copy equal to `rst1_q` one edge later, the core copy as before; 200 cycles
 of random `ap_rst_n`, 0 errors).
-Waivers: `SYMRSVDWORD` on the `interrupt` port only.
+Waivers: `SYMRSVDWORD` on the `interrupt` port of the M0 kernel only (the k1 / k4 tops have no
+interrupt port since X0). In the X0 tree `lint.sh` gives 27 `lint ok` lines and `gen_tops.py --check`
+passes; `rtl/platform/alveo_xrt/bw/lint.sh` is clean too (both run for this document).
 
 ## 11. Host software notes
 
-- Check ADAPTER_VERSION (`[7:0]` = NUM_CH) and the core ID / CFG through the window when opening.
-- Accepting a start does **not** clear ap_done / ap_ready (only an AP_CTRL read does, UG1393). The
-  XRT scheduler starts a compute unit without reading AP_CTRL and completes the command on the
-  first read with ap_done, so a completion nobody consumed (a run an earlier process started with
-  register access and did not wait for, or one stopped by ABORT at open) would complete the next
-  `xrt::run` at once. The host reads AP_CTRL at open and checks ap_idle after every completion
-  (`docs/xrt-host.md` §3).
-- After every run: AP_CTRL (or the interrupt), STATUS / ERR_* through the window, ADAPTER_STATUS
-  (any bit set = the run is not trustworthy; clear with 0xFFFFFFFF).
-- Buffers bound to `ch<c>` must be 4 KiB aligned (XRT buffers are); the adapter refuses otherwise.
-- Register access for the window: XRT 2.18 needs exclusive access for `read_register` /
-  `write_register` (see `docs/xrt-host.md`); the range check uses the kernel XML range 0x2000.
+- Open: read `ADAPTER_VERSION` first (major 2, `[7:0]` = NUM_CH, cross-checked against the number of
+  channel buffers bound), then ID, VERSION (major 2), CFG0-3, CAPS, CTL_ID and RV_FREQ through the
+  window (`docs/xrt-host.md` §3). A v1 bitstream fails the major check and is refused with a pointer
+  to the tools in `build/v1`.
+- Bind: write `ch<c>_base` (4 KiB aligned; XRT buffers are) while `MEM_EN` = 0, then set
+  `ADAPTER_CTRL.MEM_EN` and check that it reads back 1 (v2; EX §9.2). The X0 tree has no `MEM_EN`: the
+  bridges use the registers directly.
+- `ADAPTER_STATUS` is sticky and W1C. The protocol layer reads and clears it at open and reads it
+  again when a launch answers `PLAT_ERR` (the adapter raises `plat_err_i` for bits 0-2 or a nonzero
+  count, EX §9.3); any bit set means the launch is not trustworthy. Clear with 0xFFFFFFFF.
+- Access: `xrt::ip` with exclusive access to the compute unit, so one process owns the card at a
+  time (the debugger runs inside it, EX §2.4). XRT 2.18's `xrt::kernel` refuses an `ap_ctrl_none`
+  unit. The range check uses the kernel XML range 0x2000 (`docs/xrt-host.md` §2, §4.1).
+- v1 only: accepting a start did not clear `ap_done` / `ap_ready` (only an `AP_CTRL` read did), so the
+  v1 host read `AP_CTRL` at open and after every completion to consume a completion nobody had
+  consumed (the XRT scheduler starts a compute unit without reading `AP_CTRL`). v2 has no
+  `ap_done`.
 
 ## 12. Open items
 
-- Nothing ran on hardware. The hardware links of k1 (WNS +0.011 ns) and of the M0 kernel (+0.017 ns)
-  met 300 MHz, and so did their relinks after the margin changes of §8.3 (kernel clock WNS +0.060 /
-  +0.055 ns, design WNS +0.017 ns in the shell, §8.2); hw_emu of k1 ran the host software (§8.2).
-  The k4 link has not run: it needs a host with more memory (estimate 25–27 GB); the margin
-  proposals of §8.2 are applied, and k4 has +0.022 ns out of context with them (rtl-m3 §14.9). The
-  platform facts are recorded (DDR bank0 SLR0, bank1 / bank2 SLR1, bank3 SLR2; one dynamic-region
-  pblock per SLR, §8); the shell flashed on the card is still to be checked with `xbutil examine` /
-  `xbmgmt examine` (§14 step 3).
-- `tsr_u200_k4`: floorplan C' (§8.1) is validated on netlists only (every group found, assignments
-  and pblock fit before placement; the memory subsystem's cost per bank is measured in the M0 link,
-  §8.2); placement and routing come with the first k4 link. k4 has no `slr=`, so v++ takes SLR0 as
-  its affinity (reset and control from SLR0, §8.2); if those inputs limit timing,
+- **No v2 xclbin.** The k1 and k4 builds stop until Y5 (§8). The first v2 smoke link confirms that
+  `v++` 2024.2 accepts an `ap_ctrl_none` kernel with `s_axi_control` and `m_axi` arguments and
+  honours its `sp=` connectivity, else EX §9.1's fallback applies. It also settles the source of
+  `clk_rv`: a `v++` frequency request for `ap_clk_2` (`--clock.freqHz 166666666:tsr_k4.ap_clk_2`
+  or the legacy `--kernel_frequency "0:300|1:166.7"`, to be confirmed) or a divide-by-3 buffer
+  (`tsr_clk_div`, BUFGCE_DIV) on the 500 MHz clock (CC §11.1).
+- **k4 clock.** The v1 k4 link missed 300 MHz by 0.285 ns and ran at 276.3 MHz (§8.2). Gate T3 asks
+  for at least 276.3 MHz with the control core and targets 300 MHz with the job-pipe fix (§8.4).
+  If two `keep` reset copies of the core merge (rtl-m3 §14.8), they want `DONT_TOUCH`.
+- **k4 compute-unit placement.** k4 has no `slr=`, so `v++` takes SLR0 as its affinity (reset and
+  control from SLR0, §8.2). The v1 link worked that way. If those inputs limit timing,
   `slr=tsr_k4:SLR1` is the alternative to try (not tried: it may also put the whole compute unit
-  into `pblock_dynamic_SLR1`). If two `keep` reset copies of the core merge (rtl-m3 §14.8), they
-  want `DONT_TOUCH`.
-- `ap_rst_n` minimum of 4 cycles with `RST_PIPE` 3 (§5): the platform's processor-system reset is
+  into `pblock_dynamic_SLR1`).
+- **`ap_rst_n` minimum.** 4 cycles with `RST_PIPE` 3 (§5). The platform's processor-system reset is
   expected to hold it much longer; not measured on a card.
-- The `tsr_vpipe` parameter `KEEP` gave `[Netlist 29-72]` critical warnings in the v++ flow
-  (harmless, §8.2); it is now `KEEP_REGS`, and the k1 relink's kernel synthesis has 0 critical
-  warnings.
-- The register slices' `rdy_q` now drives the payload enables directly (§8.3): its paths are the
-  worst inside the kernel in both relinks (§8.2) and, out of context in k4, +0.064 / +0.066 ns in
-  the arbiter response and result-pipe slices (rtl-m3 §14.9). `rst1_q` drives about 50 reset copies
-  at k4 (54 in `tsr_bw_k4`; `rst1_q` → copies +0.890 ns out of context in `tsr_bw_k4`, +0.130 ns in
-  the M0 relink, +0.379 ns in the k1 relink); with `u_rst` in SLR1 under floorplan C' the AXI-side
-  copies of bridges 0 / 3 cross an SLR (not measured). phys_opt still moves loads between the equal
-  reset copies (`DONT_TOUCH` would stop it but also blocks replication; not tried).
-- The `.xo` files capture the RTL of their packaging time (§7; k1 and M0 repackaged for the relinks
-  on 2026-10-24, 21:35 / 20:07; k4's of 07:15 predates the margin changes), and the xclbins in
-  `build/u200/k1` and `build/u200/bw` were linked from the repackaged ones; check
-  `build/u200/xo/<kernel>.sources.sha256` before a link outside `build_xclbin.sh` (which repackages
-  when it does not match).
+- **PCIe CSR latency.** MMIO posted-write and read latency over PCIe is not measured; EX §4.11's
+  launch round trip (4-8 µs) is an estimate against the 35-36 µs per exec measured in v1 (§14.2),
+  and `docs/spec.md` §20 keeps the open item.
+- **Slice enables and reset copies.** The register slices' `rdy_q` drives the payload enables
+  directly (§8.3): its paths are the worst inside the kernel in both relinks (§8.2) and, out of
+  context in k4, +0.064 / +0.066 ns in the arbiter response and result-pipe slices (rtl-m3 §14.9).
+  `rst1_q` drives about 50 reset copies at k4 (54 in `tsr_bw_k4`; `rst1_q` → copies +0.890 ns out
+  of context in `tsr_bw_k4`, +0.130 ns in the M0 relink, +0.379 ns in the k1 relink); with `u_rst`
+  in SLR1 under floorplan C' the AXI-side copies of bridges 0 / 3 cross an SLR (not measured
+  separately). phys_opt still moves loads between the equal reset copies (`DONT_TOUCH` would stop it
+  but also blocks replication; not tried).
+- **Stale `.xo`.** The `.xo` files capture the RTL of their packaging time (§7). The manifest
+  `build/u200/xo/<kernel>.sources.sha256` tells whether an `.xo` still matches the working tree;
+  `build_xclbin.sh` repackages when it does not (a link outside the script must check it first).
+- Closed: the `tsr_vpipe` parameter `KEEP` gave `[Netlist 29-72]` critical warnings in the v++ flow
+  (harmless, §8.2); it is `KEEP_REGS` and the k1 relink's kernel synthesis has none.
+  Closed: the shell flashed on the card is `xilinx_u200_gen3x16_xdma_base_2` (§14.1).
 
 ---
 
 ## 13. End to end without hardware: `TSR_DEVICE=vkernel`
 
-The host software runs unchanged — llama.cpp → ggml-tesseract → `tsr_transport` → the protocol
-layer (`tsr_kdev.cpp`, `docs/xrt-host.md` §3) — against the RTL kernel instead of a card. The
-`vkernel` kdev (`sw/transport/tsr_kdev_vkernel.cpp`, built into every host build) talks to a
-server process that holds the Verilated kernel, so no host binary links Verilator:
+`vkernel` runs the host software against the RTL kernel instead of a card: the `vkernel` kdev
+(`sw/transport/tsr_kdev_vkernel.cpp`, built into every host build) talks to a server process that
+holds the Verilated kernel, so no host binary links Verilator. **Status:** the client is in the tree
+and speaks the v2 kdev interface; the v1 server (`tb/platform/vkernel/vkernel_server.cpp`, the
+launcher `vkernel.py` and `test_vkernel.py`) was deleted in X0, and the two-clock v2 server for the
+`ap_ctrl_none` adapter is P5.3 (`docs/v2/06-software-verification.md` §11); without a server,
+`TSR_DEVICE=vkernel` stops at open with "not available until P5.3". The rest of this section is the
+v1 record (tag `v1-m4`, Verilator 5.046): how it worked and what it measured with the v1 adapter.
+
+In v1 the host software ran unchanged: llama.cpp → ggml-tesseract → `tsr_transport` → the protocol
+layer (`tsr_kdev.cpp`, `docs/xrt-host.md` §3) against the RTL kernel:
 
 ```
 llama.cpp / tsr_xrt_selftest / test-backend-ops
@@ -846,7 +935,7 @@ vkernel_server (tb/platform/vkernel/vkernel_server.cpp)
   (cycles, retired, MVM cycles, read beats per channel, read through the window after each
   completion), STATUS / ERR_CODE, wall time, `bad_reads`. `--summary`: the session totals.
 
-Usage (the server is built on first use, `TSR_SIM_BUILD_ROOT/vkernel` or `build/vkernel`):
+Usage at the tag `v1-m4` (the server was built on first use, `TSR_SIM_BUILD_ROOT/vkernel` or `build/vkernel`):
 
 ```
 tb/platform/vkernel/vkernel.py run --config k1|k4t1|k4|ch3 [--top body|packaged] [--ctrl kds|irq|regs] \
@@ -877,7 +966,7 @@ memory model in the chosen regime), MSI-X delivery, XRT's scheduler internals be
 sequence, several host processes on one card at once. The server's clock rate is that of the
 simulation (17 K–340 K cycles/s), not 300 MHz: wall times below are simulation times.
 
-### 13.1 Results (2026-10-24, Verilator 5.046, host build `-DCMAKE_BUILD_TYPE=Release`)
+### 13.1 Results (v1, 2026-10-24, Verilator 5.046, host build `-DCMAKE_BUILD_TYPE=Release`)
 
 Every run below: 0 findings and 0 reads of unwritten memory reported by the server (except the two
 rows that inject a failure on purpose). Wall times: other simulations ran on the 16-core host at the
@@ -940,7 +1029,7 @@ decode; " is a"), against `--device sim` with the same options: `klcheck compare
 59,314,184 = the body k1's 50,838,034 (prefill) + 8,476,150 (one decoded token) above, cycle for
 cycle; 313 K cycles/s.
 
-### 13.2 Tests
+### 13.2 Tests (v1; deleted in X0)
 
 `tb/platform/vkernel/test_vkernel.py` (part of `tb/run_all.sh`):
 - `test_vkernel_selftest[kds-fast|irq-rand|regs-slow]`: the selftest, compiled from the sources
@@ -960,31 +1049,41 @@ part of `run_all.sh` (minutes of simulation per token); repeat them with
 
 ## 14. Hardware bring-up runbook
 
-**v1 (2026-10-30, W0 of `docs/v2/README.md`).** Every result in §14 was measured with v1 (tag
-`v1-m4`; binaries and xclbins in `build/v1`). The v2 bring-up is W6 of `docs/v2/README.md` §10; its
-launch costs are compared with the v1 exec costs of §14.2.
+Every result in §14 was measured with the v1 core: the xclbins `tsr_u200_k1`, `tsr_u200_k4` and
+`tsr_bw_k4` and the host binaries of tag `v1-m4`, which are kept in `build/v1` (`bin/`, `xclbin/`,
+`env.sh`; not in git). The commands below use those binaries (`tsr_xrt_selftest`, `tsr_bw`, `klcheck`,
+`test-backend-ops`, `test-ggml-tesseract`, `llama-cli`, `tsr-trace-gen`, all in `build/v1/bin`). In the
+current tree `tsr-selftest` replaces `tsr_xrt_selftest` and `build_xclbin.sh k1|k4` is disabled
+(§8). The v2 bring-up is W6 of [`docs/v2/README.md`](v2/README.md) §10; §14.5 lists what changes
+and its launch costs are compared with the v1 exec costs of §14.2.
 
-The steps in order, each with its pass criterion. Steps 1–12 ran on the card on 2026-10-25 / 26 and passed
-(§14.1). The k4 link ran on the 14 GB dev server with swap and auto-scaled the clock to 276 MHz. What exists on the dev server: Vivado / Vitis 2024.2
-(`/tool/Xilinx`, not on PATH), the U200 **development** platform extracted without installing
+The steps in order, each with its pass criterion. Steps 1-12 ran on the card on 2026-10-25 / 26 and
+passed (§14.1). The k4 link ran on the 14 GB dev host with swap and auto-scaled the clock to
+276.3 MHz (§8.2). What exists on the dev host: Vivado / Vitis 2024.2 (`/tool/Xilinx`, not on PATH), the
+U200 **development** platform extracted without installing
 (`build/platforms/root/opt/xilinx/platforms/xilinx_u200_gen3x16_xdma_2_202110_1`, sha256-verified,
 `build/platforms/scripts/finish-dev-platform.sh`), the **deployment** packages (signature-verified,
 `build/platforms/deploy/`: base 2-3498633, validate 2-3514848, CMC 1.2.23, SC firmware 4.6.21), the
-XRT 2.18.179 deb (`build/xrt-driver/deb-dl/`) and the patched driver series (`sw/xrt-driver/`).
-`platforminfo` of the extracted platform was recorded on 2026-10-23
+XRT 2.18.179 deb (`build/xrt-driver/deb-dl/`) and the patched driver series (`sw/xrt-driver/`, the
+19-patch port). `platforminfo` of the extracted platform was recorded on 2026-10-23
 (`build/platforms/vpp-smoke/platforminfo.txt`): DDR banks bank0 SLR0, bank1 SLR1, bank2 SLR1,
 bank3 SLR2; dynamic region per SLR 388,160 / 205,440 / 385,440 LUT, 2,280 / 1,320 / 2,280 DSP,
 720 / 420 / 720 BRAM, 320 / 160 / 320 URAM; kernel clocks 300 MHz (default) and 500 MHz.
 
-Every host step can be rehearsed first on the RTL: the same command under
-`tb/platform/vkernel/vkernel.py run --config k1 -- <command>` with `--device vkernel` instead of
-`xrt` (§13).
+Every host step could be rehearsed first on the RTL: the same command under the v1 `vkernel` launcher
+(`tb/platform/vkernel/vkernel.py run --config k1 -- <command>` at the tag, with `--device vkernel`
+instead of `xrt`, §13).
 
 **Before the first link** (done 2026-10-24): `gen_tops.py` `COMMON` carries the U200 bitstream
 parameters of rtl-m3 §14.2 (`MVM_MAC_LAT` 9, `RST_PIPE` 3), the `.xo` files are repackaged (§7;
 `build_xclbin.sh` repackages by itself when a manifest no longer matches), and
 `hw/u200/k4_floorplan.tcl` implements floorplan C' on the platform's pblocks, applied by `k4.cfg`
 (§8.1).
+
+The v1 trace sets named in steps 9 and 12 (`traces/m3`, `m2`, `gen`, `model`) are v1 `cmd.bin` sets.
+In the tree the sets of those names (except `model`, the input of `tsr-trace-conv`) are trace v2
+sets (`traces/README.md`); the v1 sets are reproduced only with the v1 tools of `build/v1`
+(`traces/v1_tools.sh`).
 
 1. **Card.** Power off; the U200 in a PCIe Gen3 ×16 slot with its auxiliary power cable (AMD
    UG1301); boot. Pass: `lspci -d 10ee: -nn` lists two functions (management PF .0, user PF .1).
@@ -998,7 +1097,7 @@ parameters of rtl-m3 §14.2 (`MVM_MAC_LAT` 9, `RST_PIPE` 3), the `.xo` files are
 3. **Platform packages** (sudo): `apt install ./build/platforms/deploy/*.deb` (needs XRT; does not
    flash). Then `source /opt/xilinx/xrt/setup.sh; sudo xbmgmt examine`: the shell must be
    `xilinx_u200_gen3x16_xdma_base_2` (the user flashed the stock shell after delivery and the
-   `xbutil` tests passed then, spec 미결정 사항). Only on a mismatch or the golden image:
+   `xbutil` tests passed then; `docs/spec.md` §20). Only on a mismatch or the golden image:
    `sudo xbmgmt program --base --device <mgmt BDF>`, then a cold power cycle. `sudo` resets
    `PATH`, so give the full path `/opt/xilinx/xrt/bin/xbmgmt`. On 2026-10-25 the card came up as
    the golden image (`10ee:d000`, one function, shell `xilinx_u200_GOLDEN_5`). The first
@@ -1006,17 +1105,22 @@ parameters of rtl-m3 §14.2 (`MVM_MAC_LAT` 9, `RST_PIPE` 3), the `.xo` files are
    from 4.2 to 4.6.21 (validate warns `SC firmware mismatch` until then), followed by another cold
    boot.
 4. **Card checks.** `xbutil examine -d <user BDF> -r all` (record the memory topology and DIMM
-   sizes: spec 미결정 사항, the 32 GB card caveat) and `xbutil validate -d <user BDF>`. Pass: every
+   sizes: the 32 GB card caveat of `docs/spec.md` §20, closed by M0 in §14.1) and `xbutil validate -d <user BDF>`. Pass: every
    validate test PASSED.
 5. **Platform SLR check.** `platforminfo -p xilinx_u200_gen3x16_xdma_2_202110_1` (with
    `PLATFORM_REPO_PATHS=$PWD/build/platforms/root/opt/xilinx/platforms`, after sourcing Vitis'
    `settings64.sh` with `set +u`). Pass: the DDR bank SLRs and dynamic-region resources above
    (recorded already; repeat only if the platform files change), matching `hw/u200/k1.cfg`
    (`sp=...:DDR[1]`, `slr=SLR1`), `k4.cfg` and the k4 floorplan.
-6. **Host builds** with the installed XRT: `cmake -S . -B build/xrt -DCMAKE_BUILD_TYPE=Release
-   -DTSR_WITH_XRT=ON && cmake --build build/xrt -j4` (`tsr_xrt_selftest`, `tsr_bw`, `klcheck`,
-   `test-backend-ops`, `test-ggml-tesseract`, `llama-cli`). Pass: `ctest -R 'transport_|tools_xrt'`.
-7. **xclbins, k1 first.** `TSR_VIVADO_LOCK=<lock> hw/u200/build_xclbin.sh k1` (with
+6. **Host builds** with the installed XRT. The v1 binaries are in `build/v1/bin` (`tsr_xrt_selftest`,
+   `tsr_bw`, `klcheck`, `test-backend-ops`, `test-ggml-tesseract`, `llama-cli`). To build the tag elsewhere:
+   check out `v1-m4`, then `cmake -S . -B build/xrt -DCMAKE_BUILD_TYPE=Release
+   -DTSR_WITH_XRT=ON && cmake --build build/xrt -j4`.
+   Pass: `ctest -R 'transport_|tools_xrt'` (10 / 10 on the card host, §14.1). The same configure in the
+   current tree builds the v2 transport, `tsr-selftest` and `tsr_bw`; its `transport_xrt_noop` test
+   needs only the XRT no-op shim (`docs/xrt-host.md` §6, §7).
+7. **xclbins, k1 first** (at the tag; disabled in the tree, §8; the linked xclbins are in
+   `build/v1/xclbin`). `TSR_VIVADO_LOCK=<lock> hw/u200/build_xclbin.sh k1` (with
    `PLATFORM_REPO_PATHS` unset it uses the extracted platform under `build/platforms`; §8) →
    `build/u200/k1/tsr_u200_k1.xclbin`
    (also `hw/u200/bw/build_bw_xclbin.sh` for M0). Pass: `v++` rc 0, the link summary shows the
@@ -1032,15 +1136,15 @@ parameters of rtl-m3 §14.2 (`MVM_MAC_LAT` 9, `RST_PIPE` 3), the `.xo` files are
    writes [0, 8 GiB), the write run [8 GiB, 16 GiB), the read run then checksums [0, 8 GiB) against
    the fill: an upper half that aliases the lower half fails the read. Pass: 0 failed checks; record
    the GB/s figures in `docs/m0-bw.md`. If a channel holds 8 GiB, stop: `CH_BYTES` and the transport
-   channel size become 8 GiB (spec 미결정 사항).
+   channel size become 8 GiB (`docs/spec.md` §20). Result: 16 GiB per channel (§14.1).
 9. **Selftest on k1.** Generate 1-channel U200 traces (no checked-in set has NUM_CH 1 with a 4 MiB
-   SPM): `build/xrt/bin/tsr-trace-gen -q --ops m3 --prefix k1 -o build/k1traces/m3 -n 20 -s 61
+   SPM): `build/v1/bin/tsr-trace-gen -q --ops m3 --prefix k1 -o build/k1traces/m3 -n 20 -s 61
    --errors 10 --num-ch 1 --max-wbeats 8192` and `... --ops m2 --prefix k1m2 -o build/k1traces/m2
    -n 10 -s 62 --errors 5 --num-ch 1`; then `TSR_XCLBIN=build/u200/k1/tsr_u200_k1.xclbin
-   build/xrt/bin/tsr_xrt_selftest --traces build/k1traces`. Pass: exit 0 (58 checks on the RTL,
+   build/v1/bin/tsr_xrt_selftest --traces build/k1traces`. Pass: exit 0 (58 checks on the RTL,
    §13.1). On failures: `TSR_XRT_CTRL=regs` (scheduler path), `TSR_XRT_DMA=staged` /
    `TSR_XRT_DMA_ALIGN=64` (DMA alignment), `docs/xrt-host.md` §8.
-10. **Backend on k1.** `TSR_DEVICE=xrt TSR_XCLBIN=... build/xrt/bin/test-ggml-tesseract` and
+10. **Backend on k1.** `TSR_DEVICE=xrt TSR_XCLBIN=... build/v1/bin/test-ggml-tesseract` and
     `test-backend-ops test -o MUL_MAT -b Tesseract0 -p '<the 68-case pattern of §13.1>'`. Pass:
     all OK.
 11. **M3 gate: Qwen2.5-0.5B Q8_0 on k1.** `klcheck run -m models/qwen2.5-0.5b-instruct-q8_0.gguf
@@ -1067,7 +1171,7 @@ with headers). Card: shell `xilinx_u200_gen3x16_xdma_base_2`, SC 4.6.21, PCIe Ge
 | Step | Result |
 |---|---|
 | 1–3 | Golden image at first (step 3 note), then the shell: mgmt PF `01:00.0` (`10ee:5000`), user PF `01:00.1` (`10ee:5001`). No driver warnings in dmesg |
-| 4 | `xrt-smi validate`: all 8 tests PASSED (after the SC update). Its kernels: mem-bw 16.8 GB/s per bank, 67.2 GB/s total; DMA host → card 7.3–7.9 GB/s, card → host 13.3–13.5 GB/s. Memory topology bank0–3 16 GB each |
+| 4 | `xrt-smi validate`: all 8 tests PASSED (after the SC update). Its kernels: mem-bw 16.8 GB/s per bank, 67.2 GB/s total; DMA host → card 7.3–7.9 GB/s, card → host 13.3–13.5 GB/s. Memory topology bank0–3 16 GB each. `xrt-smi examine -r all` at idle (no hardware context): power 20.4 W (maximum 225 W), FPGA 40 °C, PCB 35-39 °C, no fans listed, P2P disabled |
 | 6 | `build/xrt` builds; `ctest -R 'transport_\|tools_xrt'` 10 / 10 |
 | 8 | M0 (`tsr_bw_k4.xclbin`, 300 MHz): 16 GiB per channel without aliasing; per channel 18.01 GB/s read, 15.92 write; 4 channels 72.05 read, 63.68 write, 71.2 read + write; 1,633 runs, 0 failed checks (`docs/m0-bw.md` §7.1) |
 | 9 | `tsr_xrt_selftest` on k1 with 30 generated 1-channel traces: PASS, 58 checks (as on the RTL, §13.1) |
@@ -1081,7 +1185,7 @@ with headers). Card: shell `xilinx_u200_gen3x16_xdma_base_2`, SC 4.6.21, PCIe Ge
 `TSR_STATS=1` (ggml-tesseract) prints the time spent in `graph_compute` and in device execs, and
 the device's `PERF_CYCLES` over the same span. The figures below are the difference between a
 `-n 65` and a `-n 1` run of `llama-completion -ngl 99 -nkvo -c 4096`, divided by the 64 decode
-tokens. Card: k4 at 276.3 MHz.
+tokens. *Measured on the card (v1, k4, 276.3 MHz).*
 
 | Per decode token | Gemma 4 12B Q8_0 | Qwen2.5-32B Q4_K_M |
 |---|---|---|
@@ -1093,10 +1197,11 @@ tokens. Card: k4 at 276.3 MHz.
 | Host total | 37.3 ms (16.8 %) | 41.8 ms (12.3 %) |
 | Device round trips (graphs = execs) | 281 | 385 |
 
-The largest part of the host share is the CPU work between MUL_MATs. M6 and M7 remove it. The
+The largest part of the host share is the CPU work between MUL_MATs. M7 removes it (attention, norms and
+RoPE on the device, one launch per token); M6 keeps attention on the CPU. The
 exec and backend parts (6–7 %) can be cut in software.
 
-Device counters over the same 64 tokens, per token (`TSR_STATS=1` now also prints MVM cycles and
+Device counters over the same 64 tokens, per token (`TSR_STATS=1` also prints MVM cycles and
 read beats and DRAM-wait cycles per channel):
 
 | Per decode token | Gemma 4 12B Q8_0 | Qwen2.5-32B Q4_K_M |
@@ -1118,7 +1223,7 @@ of the 20.74 GB), or several tokens per weight pass (T > 1: batching).
 ### 14.3 Model load time (2026-10-30)
 
 `TSR_STATS=1` also splits `set_tensor`: transport writes, weight stores, and the conversion of
-non-native rows to Q8_0. The runs are `llama-completion -n 1` on k4.
+non-native rows to Q8_0. The runs are `llama-completion -n 1` on k4. *Measured on the card (v1, k4, 276.3 MHz).*
 
 | | 12B Q4_K_M, file cached, `direct` | same, `staged` | 32B Q4_K_M, partly cold, `staged` |
 |---|---|---|---|
@@ -1157,5 +1262,31 @@ and ~9 s outside `set_tensor` for 32B (llama loader and warmup, not analysed).
 `klcheck all --device xrt -m models/qwen2.5-32b-instruct-q4_k_m-00001-of-00005.gguf -n 64` (8 prompts,
 512 positions): mean KL 2.4113e-3 ≤ 3 × floor 1.8487e-3 (ratio 1.304; M1 on the simulator 1.36),
 top-1 agreement 99.02 %, PASS. Wall time: device 197 s, CPU reference 50 s, floor 48 s, embedding
-check 49 s. Decode 2.93 tok/s (§14.2), above the M4 criterion of 1 tok/s.
+check 49 s. Decode 2.93 tok/s (§14.2), above the M4 criterion of 1 tok/s. *Measured on the card (v1, M4).*
 
+### 14.5 v2 bring-up (W6, planned)
+
+The v2 card runs follow the v2 bitstream (W4 RTL, W5 Vivado with gates T1-T4, §8.4) and belong to W6
+of [`docs/v2/README.md`](v2/README.md) §10 (P6.1-P6.6 of SW §11). Steps 1-5 of the runbook (card, XRT with the patched
+driver, platform packages, `xbutil` checks, platform SLR check) are done and unchanged. What changes:
+
+1. **xclbin.** Y5 links k1 first (T4, the fast link) and then k4 (T3). The first smoke link confirms
+   `ap_ctrl_none` (§12). `hw/u200/build_xclbin.sh k1|k4` is enabled by the same change.
+2. **Selftest.** `tsr-selftest --device xrt` with `TSR_XCLBIN=<v2 xclbin>` replaces
+   `tsr_xrt_selftest` (`docs/xrt-host.md` §5). Pass: identity (ADAPTER_VERSION major 2, ID, VERSION
+   major 2, CTL_ID, RV_FREQ not 0), memory per channel (the v1 checks), boot (cold, then a second
+   boot that must be warm), PING round trip and rate, the `selftest` kernel against the shadow
+   simulator, trace v2 replays through the `replay` kernel, the DMI smoke (`--debug`).
+3. **M6 gate** (SW §10.4): the selftest, Qwen2.5-0.5B Q8_0 logits bit-identical to the simulator
+   (`klcheck run --device xrt`, `klcheck run --device sim --tokens <file>`, `klcheck compare
+   --expect-identical`), the Qwen2.5-32B Q4_K_M KL criterion on the card (`klcheck all --device
+   xrt`) and a GDB smoke (halt, register read, breakpoint in a kernel, step, resume).
+4. **M7 gate and performance:** one launch per decode token, device KV cache, the KL criterion on
+   the card; then DDR utilisation with the H / G / F / E split and the launch costs.
+
+Launch costs to compare with the v1 exec costs of §14.2 (35-36 µs per exec to start and wait;
+*measured on the card (v1, k4, 276.3 MHz)*): the round trip of an empty launch is estimated at 4-8 µs
+with a target of at most 10 µs, and a cold firmware load at most about 10 ms (*estimate
+(docs/v2/01-execution-model.md section 4.11, section 3.3)*). MMIO posted-write and read latency over
+PCIe, the pipelined launch rate and the cold and warm load times are measured by `tsr-selftest` on
+the card; they replace these estimates.

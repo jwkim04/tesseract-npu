@@ -16,6 +16,9 @@ Coordinates are SVG user units, y down; the card is 1600 units wide by conventio
     f.arrow([(300, 340), (300, 480)])
     f.callout("WEIGHT STREAM", (600, 410), target=(300, 410))
     f.save()           # docs/fig/demo.svg + scratchpad preview PNG
+
+Dark variant: `TSR_FIG_THEME=dark build/tools/svgvenv/bin/python docs/fig/src/<name>.py` writes
+docs/fig/<name>-dark.svg (and the previews <name>-dark.png / <name>-dark_gh.png).
 """
 from __future__ import annotations
 
@@ -50,22 +53,65 @@ FONT_SHA256 = {          # the files the committed figures were made with (Ubunt
 # --------------------------------------------------------------------------------------------
 # Palette (STYLE.md lists the same values; change both together)
 # --------------------------------------------------------------------------------------------
-INK = "#2B2B2B"          # outlines, text, dots
-INK_SOFT = "#5C5B55"     # secondary text (notes, panel labels on tinted bands)
-CARD = "#ECEBE4"         # outer card
-PANEL = "#F8F8F5"        # inner panel
-BAND = "#E7E5DC"         # tinted band inside a panel (SLRs, lanes); a step darker than CARD
-ARROW = "#EAF4F1"        # hollow-arrow fill
-WHITE = "#FFFFFF"
+# Two themes with the same roles. "light" is the default and what every committed <name>.svg uses.
+# TSR_FIG_THEME=dark writes <name>-dark.svg with the dark palette, for the <picture> embeds of the
+# README figures (STYLE.md "Dark variants"). The theme is read once, at import, so a script's
+# `from tsrfig import INK, ...` sees the palette of the run.
+THEME = os.environ.get("TSR_FIG_THEME", "light")
+if THEME not in ("light", "dark"):
+    raise SystemExit(f"tsrfig: TSR_FIG_THEME must be 'light' or 'dark', not {THEME!r}")
+
+_PALETTE = {
+    "light": {
+        "INK": "#2B2B2B",        # outlines, text, dots, dark tags
+        "INK_SOFT": "#5C5B55",   # secondary text (notes, panel labels on tinted bands)
+        "CARD": "#ECEBE4",       # outer card
+        "PANEL": "#F8F8F5",      # inner panel
+        "BAND": "#E7E5DC",       # tinted band inside a panel (SLRs, lanes); a step darker than CARD
+        "ARROW": "#EAF4F1",      # hollow-arrow fill
+        "WHITE": "#FFFFFF",      # plain block
+        "control": "#A8E0D5",    # mint: sequencing, control bridges
+        "compute": "#9EDCF2",    # sky: MAC clusters, datapaths, functional units
+        "memory": "#F8AFA3",     # salmon: SPM, DRAM, buffers
+        "io": "#DCD5F7",         # lavender: interconnect, buses, memory/AXI bridges, DMA
+        "host": "#F4DE9C",       # butter: host software (llama.cpp, backend, transport)
+        "adapter": "#F9C89B",    # peach: per-target platform adapter (control / AXI4 bridges)
+        "vendor": "#DAD8CF",     # stone: third-party / vendor IP (XRT shell, PCIe)
+    },
+    "dark": {
+        "INK": "#ECEBE4",
+        "INK_SOFT": "#B4B3A9",
+        "CARD": "#1D1E1B",
+        "PANEL": "#292A26",
+        "BAND": "#33342F",
+        "ARROW": "#33403C",
+        "WHITE": "#3C3D38",
+        "control": "#2D6A5F",
+        "compute": "#276683",
+        "memory": "#8E4539",
+        "io": "#574D8B",
+        "host": "#76651F",
+        "adapter": "#8F5528",
+        "vendor": "#55544C",
+    },
+}[THEME]
+
+INK = _PALETTE["INK"]
+INK_SOFT = _PALETTE["INK_SOFT"]
+CARD = _PALETTE["CARD"]
+PANEL = _PALETTE["PANEL"]
+BAND = _PALETTE["BAND"]
+ARROW = _PALETTE["ARROW"]
+WHITE = _PALETTE["WHITE"]
 
 ROLES = {                # semantic role -> block fill
-    "control": "#A8E0D5",   # mint: sequencing, command processing, control bridges
-    "compute": "#9EDCF2",   # sky: MAC clusters, datapaths, functional units
-    "memory": "#F8AFA3",    # salmon: SPM, DRAM, buffers
-    "io": "#DCD5F7",        # lavender: interconnect, buses, memory/AXI bridges, NoC
-    "host": "#F4DE9C",      # butter: host software (llama.cpp, backend, transport)
-    "adapter": "#F9C89B",   # peach: per-target platform adapter (control / AXI4 bridges)
-    "vendor": "#DAD8CF",    # stone: third-party / vendor IP (XRT shell, PCIe)
+    "control": _PALETTE["control"],
+    "compute": _PALETTE["compute"],
+    "memory": _PALETTE["memory"],
+    "io": _PALETTE["io"],
+    "host": _PALETTE["host"],
+    "adapter": _PALETTE["adapter"],
+    "vendor": _PALETTE["vendor"],
     "neutral": WHITE,       # plain block
 }
 
@@ -102,6 +148,13 @@ TYPE = {                 # role -> (size, weight, tracking in em, line-height fa
     "callout": (19, "medium", 0.02, 1.4),  # leader-line callouts and arrow names, uppercase
     "note": (17, "regular", 0.0, 1.35),    # footnotes, legend entries
     "tag": (15, "bold", 0.08, 1.2),        # badges: panel names, PLANNED · M6, x4
+    # Large type for the product-style stack figure (STYLE.md "Large type"): the same families
+    # scaled up, so the figure stays readable at README width and on a phone.
+    "label_l": (28, "bold", 0.02, 1.25),   # tile title in `stack`
+    "sub_l": (21, "regular", 0.0, 1.35),   # tile detail lines in `stack`
+    "panel_l": (21, "bold", 0.10, 1.25),   # layer names in `stack`
+    "note_l": (19, "regular", 0.0, 1.35),  # footnote in `stack`
+    "tag_l": (17, "bold", 0.08, 1.2),      # status badges and layer names in `stack`
 }
 MEDIUM_STROKE = 34       # font units of same-colour stroke that turns Regular into "medium"
 
@@ -197,6 +250,22 @@ def text_width(s: str, size: float = 22, track: float = 0.0, weight: str = "regu
     return n * f.adv * size / f.upm + max(n - 1, 0) * track * size
 
 
+def wrap(text: str, maxw: float, role="note") -> str:
+    """Greedy word wrap of `text` to lines of at most `maxw` units in the TYPE role `role`, joined
+    by \\n (so a footnote never leaves the card)."""
+    size, weight, track, _ = _style(role)
+    lines, cur = [], ""
+    for word in text.split(" "):
+        trial = (cur + " " + word).strip()
+        if cur and text_width(trial, size, track, weight) > maxw:
+            lines.append(cur)
+            cur = word
+        else:
+            cur = trial
+    lines.append(cur)
+    return "\n".join(lines)
+
+
 def measure(text: str, role="label", **kw):
     """(width, height) of a text block; height runs from the first cap top to the last baseline."""
     size, weight, track, lh = _style(role, kw.get("weight"), kw.get("track"), kw.get("lh"))
@@ -236,7 +305,8 @@ class Fig:
             f'rx="{CARD_R}" fill="{fill}" stroke="{INK}" stroke-width="{SW}"/>')
 
     def panel(self, x, y, w, h, label: str = "", fill: str = PANEL, cut: float = CUT_PANEL,
-              dashed: bool = False, label_at: str = "start", stroke: str = INK):
+              dashed: bool = False, label_at: str = "start", stroke: str = INK,
+              label_role: str = "tag"):
         """Inner panel (chamfered, lighter). `label` is its name, drawn as a dark tag sitting on
         the top edge (label_at: start = left, end = right, middle). fill=None: outline only, for
         a region nested in a panel (draw bands under it first)."""
@@ -244,7 +314,7 @@ class Fig:
         if label:
             off = cut + 16
             tx = {"start": x + off, "end": x + w - off, "middle": x + w / 2}[label_at]
-            self.tag(tx, y, label, anchor=label_at)
+            self.tag(tx, y, label, anchor=label_at, role=label_role)
 
     def band(self, x, y, w, h, fill: str = BAND, label: str = "", label_xy=None,
              anchor: str = "start", color: str = INK_SOFT):
@@ -265,11 +335,14 @@ class Fig:
     def box(self, x, y, w, h, role: str = "compute", label: str = "", sub: str = "",
             cut: float = CUT, planned: bool = False, tag: str = "", fill: str = "",
             label_role: str = "label", sub_role: str = "sub", stack: int = 0,
-            align: str = "middle", pad: float = 20):
+            align: str = "middle", pad: float = 20, tag_style: str = "", tag_role: str = "tag",
+            plan_tag: bool = True):
         """Chamfered block filled by `role` (ROLES key). `label` is the uppercase title (\\n for
         lines), `sub` the detail lines below it. planned=True: dashed outline, paler fill, and a
         PLANNED tag unless `tag` is given. stack=n draws n offset outlines behind the block for a
-        repeated unit. Returns the block's centre."""
+        repeated unit. `tag_style` ("dark", "outline", "planned") picks the badge look of a given
+        `tag` on a solid block; a planned block has the planned badge unless plan_tag=False (use
+        that inside a lane or panel that is already marked planned). Returns the block's centre."""
         col = fill or ROLES[role]
         if planned:
             col = tint(col, 0.55)
@@ -279,9 +352,11 @@ class Fig:
         self.poly(chamfer(x, y, w, h, cut), col, dashed=planned)
         self.label_block(x, y, w, h, label, sub, label_role, sub_role, align, pad)
         if planned:
-            self.tag(x + w - cut - 8, y, tag or "PLANNED", anchor="end", planned=True)
+            if plan_tag:
+                self.tag(x + w - cut - 8, y, tag or "PLANNED", anchor="end", planned=True,
+                         role=tag_role)
         elif tag:
-            self.tag(x + w - cut - 8, y, tag, anchor="end")
+            self.tag(x + w - cut - 8, y, tag, anchor="end", style=tag_style, role=tag_role)
         return x + w / 2, y + h / 2
 
     def label_block(self, x, y, w, h, label="", sub="", label_role="label", sub_role="sub",
@@ -312,23 +387,31 @@ class Fig:
         for off, s, r in base:
             self.text(tx, top + off, s, r, anchor=align)
 
-    def tag(self, x, y, text: str, anchor: str = "middle", planned: bool = False):
+    def tag(self, x, y, text: str, anchor: str = "middle", planned: bool = False,
+            style: str = "", role: str = "tag"):
         """Small badge centred vertically on y, so it sits on a panel's or block's top edge.
         anchor is the side of x: start / middle / end. Names (panels, x4 counts) are dark with
-        light text; planned=True gives the PLANNED style: light fill, dashed ink outline."""
-        size, weight, track, _ = _style("tag")
+        light text; planned=True gives the PLANNED style: light fill, dashed ink outline.
+        `style` names the look: "dark" (default), "planned" (as planned=True) or "outline"
+        (light fill, solid ink outline: the SIMULATOR status badge of `stack`). `role` is the
+        TYPE role of the text ("tag", or "tag_l" in the large `stack` figure)."""
+        style = style or ("planned" if planned else "dark")
+        size, weight, track, _ = _style(role)
         tw = text_width(text, size, track, weight)
         f = font(weight)
         cap = f.cap * size / f.upm
         bw, bh = tw + 24, cap + 16
         bx = x - bw / 2 if anchor == "middle" else (x - bw if anchor == "end" else x)
-        if planned:
+        if style == "planned":
             self.poly(chamfer(bx, y - bh / 2, bw, bh, 5), PANEL, dashed=True, sw=1.5)
+            color = INK
+        elif style == "outline":
+            self.poly(chamfer(bx, y - bh / 2, bw, bh, 5), PANEL, sw=1.5)
             color = INK
         else:
             self.poly(chamfer(bx, y - bh / 2, bw, bh, 5), INK, stroke=INK, sw=1)
             color = CARD
-        self.text(bx + bw / 2, y + cap / 2, text, "tag", anchor="middle", color=color)
+        self.text(bx + bw / 2, y + cap / 2, text, role, anchor="middle", color=color)
         return bx, bw
 
     def legend(self, x, y, items, gap: float = 40, anchor: str = "middle"):
@@ -484,10 +567,11 @@ class Fig:
     def save(self, svg_path=None, png_path=None, scale: float = 1.0, gh_preview: bool = True):
         """Write docs/fig/<name>.svg and the PNG preview(s) in PNG_DIR (not in the repo):
         <name>.png at `scale` and, with gh_preview, <name>_gh.png at GitHub's ~880 px width."""
-        svg_path = Path(svg_path or FIG_DIR / f"{self.name}.svg")
+        suffix = "-dark" if THEME == "dark" else ""      # TSR_FIG_THEME=dark: <name>-dark.svg
+        svg_path = Path(svg_path or FIG_DIR / f"{self.name}{suffix}.svg")
         data = self.svg()
         svg_path.write_text(data, encoding="utf-8")
-        png_path = Path(png_path or PNG_DIR / f"{self.name}.png")
+        png_path = Path(png_path or PNG_DIR / f"{self.name}{suffix}.png")
         png_path.parent.mkdir(parents=True, exist_ok=True)
         render_png(data, png_path, int(self.w * scale))
         msg = [str(svg_path), str(png_path)]

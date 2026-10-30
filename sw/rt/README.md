@@ -1,17 +1,22 @@
-# sw/rt — tsr_rt, the ggml-free Tesseract runtime
+# Runtime (`sw/rt`)
 
 `tsr_rt` uploads weight matrices to a Tesseract device and runs `y = x · Wᵀ` on it, without
 ggml graphs or llama.cpp. It is the host stack of the PyTorch backend (`torch.compile(...,
 backend="tesseract")`: the weight matmuls go to the device, everything else stays on the CPU;
 `sw/torch`, whose extension `_tesseract_rt` binds this API). It runs on `tsr_transport`, so
-`TSR_DEVICE=sim | mock | vkernel | xrt` select the device as for the ggml backend.
+`TSR_DEVICE=sim | mock | vkernel | xrt` select the device as for the ggml backend (`sim` and `mock`
+run on the simulator; `vkernel` is not available until P5.3; `xrt` has run with the v1 core only).
 
-> **v2 (`docs/v2/06-software-verification.md` §9.4, P3.2).** A `linear` call is one launch of
-> the firmware's `graph` kernel per IO tile: an op list with one MUL_MAT record per weight part
-> (K parts as further records with ACC_DST), cached by content in the OPL region (an LRU that
-> replaces v1's CMD-slot program cache). The kernel runs v1's LD / QACT / MVM / ST sequence, so the
-> results are v1's bit for bit; the public API and the counters are v1's (`execs` = launches,
-> `prog_*` = op-list cache hits / misses).
+A `linear` call is one launch of the firmware's `graph` kernel per IO tile: an op list with one
+MUL_MAT record per weight part (K parts as further records with `ACC_DST`), cached by content in the
+OPL region. The kernel issues the `LD / QACT / MVM / ST` tile ops that v1 emitted from the host, so the
+results are v1's bit for bit; the public API and the counters are v1's (`execs` = launches, `prog_*` =
+op-list cache hits and misses). Design: [SW](../../docs/v2/06-software-verification.md) §9.4.
+
+> **Scope.** Developer documentation of the runtime as built in this tree. Status words: *on the
+> simulator* means implemented and tested against the simulator kinds (`sim`, `mock`); the v1
+> results are labelled as such. The package built on top is [`sw/torch`](../torch/README.md); the
+> design record of the PyTorch backend is [`docs/torch-backend.md`](../../docs/torch-backend.md).
 
 ## Files
 
@@ -63,12 +68,12 @@ one device mutex.
 
 ## Numerics
 
-The llama.cpp path's (spec 수치 규칙, 로드 시 변환): f32 / f16 / bf16 weights become Q8_0 with
+The llama.cpp path's (`docs/spec.md` §7 Numeric rules, §5 *Load-time conversion*): f32 / f16 / bf16 weights become Q8_0 with
 `quantize_row_q8_0_ref` (f16 / bf16 widened exactly first), Q8_0 / Q4_K blocks are stored as they
 are, activations are quantized by QACT on the device (A32 / A256), results are f32.
 libtsr_ref's `tsr_qact` (A32) is not used for weights: measured against `quantize_row_q8_0_ref` it
 agrees on 200000 / 200000 ordinary blocks but differs on 9 of 160 blocks with subnormals or a tiny
-amax (DAZ / FTZ of spec 구현 명확화), and it emits a QA image (f32 scale), not `block_q8_0`.
+amax (DAZ / FTZ, `docs/spec.md` §21), and it emits a QA image (f32 scale), not `block_q8_0`.
 
 ## Lowering
 
@@ -91,8 +96,8 @@ amax (DAZ / FTZ of spec 구현 명확화), and it emits a QA image (f32 scale), 
   unsplit weight bit for bit. Example: N = 130000, K = 896 at T_MAX 8 → 2 parts of 65000.
 - **K parts**: when K > K_MAX (32768), the columns are cut into equal parts (block multiples). The
   first record of an N part writes y, the others have ACC_DST (the kernel loads the old y rows and
-  runs MVM with ACC): y = ((y₀ + y₁) + y₂)… with one f32 add each (spec ACC), as v1's in-SPM ACC
-  chain. This is not the unsplit dot product; `linear_ref` and `weight_info.k_part` describe it
+  runs MVM with ACC): y = ((y₀ + y₁) + y₂)… with one f32 add each (`docs/spec.md` §21, *ACC addition*),
+  as v1's in-SPM ACC chain. This is not the unsplit dot product; `linear_ref` and `weight_info.k_part` describe it
   exactly.
 - **Op-list cache**: keyed by the list's bytes (formats, shapes, T, x / y handles, W_OFFs). A hit
   writes nothing to the OPL region; a decode call writes x, launches, reads y.
@@ -113,18 +118,15 @@ timeouts; SW §9.2). `TSR_RT_DEBUG=1` logs uploads, calls and launches.
 
 ## Build and test
 
-```
-cmake -S . -B build/rt -DCMAKE_BUILD_TYPE=Release
-cmake --build build/rt -j4 --target tsr_rt tsr_rt_shared test-tsr-rt
-cd build/rt && ctest -R '^rt_'
-# RTL smoke (v1, tag v1-m4; X0 deleted the v1 vkernel server, the two-clock v2 one is P5.3, until
-# then the opt-in rt_vkernel_k4t1 ctest reports "skipped"):
-tb/platform/vkernel/vkernel.py run --config k4t1 -- build/rt/bin/test-tsr-rt --quick
+```sh
+cmake -S . -B build/dev -DCMAKE_BUILD_TYPE=Release
+cmake --build build/dev -j4 --target tsr_rt tsr_rt_shared test-tsr-rt
+ctest --test-dir build/dev -R '^rt_'
 ```
 
 ctests: `rt_sim`, `rt_sim_tmax8` (`--big`: the N = 130000 head), `rt_mock` (DMA align 64, chunk
-64 KiB), `rt_mock_tmax8` (3 channels, T_MAX 8, align 4096, chunk 12 KiB); `rt_vkernel_k4t1` with
-`-DTSR_RT_VKERNEL_TEST=ON`. Each run checks 37 shapes (f32 / f16 / bf16 → Q8_0, native Q8_0 / Q4_K;
+64 KiB), `rt_mock_tmax8` (3 channels, T_MAX 8, align 4096, chunk 12 KiB); all run with
+`TSR_SIM_RACE=fatal`. Each run checks 37 shapes (f32 / f16 / bf16 → Q8_0, native Q8_0 / Q4_K;
 K 32 … 4864 and 33024 / 33280 (> K_MAX); N 1 … 4864 (130000 with `--big`); T 1 … 20; forced N
 and K parts; strided x / y; padded and misaligned weight rows): `read_blocks` equals ggml's blocks
 byte for byte, `linear` and `linear_ref` equal the model bit for bit, y padding untouched, NMSE
@@ -132,11 +134,19 @@ against an f64 product of the dequantized weight < 1e-3 (measured 0 … 7.9e-5).
 cache and exact host traffic, free / re-upload, unsupported shapes, two threads, an IO area of
 64 KiB (T = 40 → 3 launches).
 
-Results of v1, 2026-10-24 (`build/rt`, Release): all 43 cases OK on `rt_sim`, `rt_mock`, `rt_mock_tmax8`,
-44 on `rt_sim_tmax8` (with the N = 130000 head: 2 N parts, T = 9). On the Verilated kernel
-(`TSR_DEVICE=vkernel`, servers built from the M3 RTL at 04:37 the same day, regime fast): k4t1
-(4 ch, T_MAX 1) all 43 cases, 67 runs, 0 findings, 0 reads of unwritten memory, 9 s wall; k4 (4 ch,
-T_MAX 8) all 44 cases with `--big`, 68 runs, 0 findings, 0 reads of unwritten memory, 112 s wall.
-Mutation check (scratch builds of tsr_rt.cpp): a wrong QACT column offset in K parts, a dropped
-ACC, a shifted y gather of N parts, a K part converted from column 0, and x packed with the wrong
-stride each fail the test (6 to 24 failed checks).
+Results, measured on the simulator (v2, `a775222`): `rt_sim` 43 / 43 cases,
+`rt_sim_tmax8` 44 / 44 (with the N = 130000 head: 2 N parts, T = 9), `rt_mock` 43 / 43,
+`rt_mock_tmax8` 43 / 43, 3 s for the four.
+
+An opt-in `rt_vkernel_k4t1` ctest (`-DTSR_RT_VKERNEL_TEST=ON`) is meant for the Verilated k4t1 kernel
+and reports "skipped" (exit 77) until the two-clock v2 vkernel server exists (P5.3).
+
+**History: v1 (tag `v1-m4`).** The same tests passed with the v1 runtime (program cache in CMD slots) on
+the simulator (43 / 43 on `rt_sim`, `rt_mock`, `rt_mock_tmax8`, 44 on `rt_sim_tmax8`) and, in RTL
+simulation (v1, ideal memory) on the Verilated kernel (`TSR_DEVICE=vkernel`, servers built from the M3
+RTL, regime fast): k4t1 (4 ch, T_MAX 1) all 43 cases, 67 runs, 0 findings, 0 reads of unwritten memory,
+9 s wall; k4 (4 ch, T_MAX 8) all 44 cases with `--big`, 68 runs, 0 findings, 0 reads of unwritten
+memory, 112 s wall. A mutation check (scratch builds of `tsr_rt.cpp`: a wrong QACT column offset in K
+parts, a dropped ACC, a shifted y gather of N parts, a K part converted from column 0, x packed with
+the wrong stride) was caught by 6 to 24 failed checks each. The v1 vkernel server was deleted in X0
+(`git show v1-m4:tb/platform/vkernel/vkernel.py`).

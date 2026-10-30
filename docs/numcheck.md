@@ -1,4 +1,16 @@
-# numcheck — one-prompt numeric verification
+# numcheck: one-prompt numeric verification
+
+numcheck checks, with one short prompt per model, that the device computes exactly what the
+specification says on every weight matmul, and how far its results are from exact math. It is the
+second model-level check next to `klcheck` and the bit-exact one.
+
+> **Scope.** User documentation and measurement record of `tsr-numcheck` and `numcheck.py`. Status
+> words: *on the simulator* means a run through the software stack with `TSR_DEVICE=sim` or `mock`
+> (the v2 stack from P3.3 on). The results in "Results" are the **v1 baseline**: flash attention off,
+> f16 KV cache on the host, measured on the simulator with the v1 tools; "M6 check" has the v2
+> numbers. Nothing here has run on the card. Normative: `docs/spec.md` §7 (Numeric rules) and §17
+> (Verification strategy, *Model-level numeric check (numcheck)*), [SW](v2/06-software-verification.md)
+> §10.1 and §10.4, V2-SW-22 and V2-SW-27.
 
 ## Purpose
 
@@ -9,7 +21,8 @@ produces the number the spec says it must produce, and how far is it from exact 
 
 - One short prompt (a fixed English sentence, T tokens), one prefill batch, logits for every position.
 - Three runs per model, each its own process: `cpu`, `floor` (cpu with a 1-ulp nudged input) and
-  `dev` (Tesseract). Every run records every graph node.
+  `dev` (Tesseract). Every run records every graph node. The `dev` run can use the simulator kinds
+  (`sim`, `mock`); `vkernel` is not available until P5.3 and `xrt` follows the v2 bitstream.
 - The comparison is offline: (A) drift of every node and of the logits, (B) every weight
   MUL_MAT checked element by element: B1 bit-exact against the reference model (`libtsr_ref`), B1b
   bit-exact against an independent numpy model of the spec text, B2 inside a proven fp32 error
@@ -33,8 +46,8 @@ Tools: `tsr-numcheck` (`sw/tools/numcheck.cpp`, the dumper, links llama.cpp) and
 
 All three main runs use the embd input path, so their graphs are identical node for node (with
 token input llama.cpp computes a different branch of its input selection). Model and context
-settings are klcheck's (`docs/klcheck.md`, "Settings fixed in every phase"). **v2 (P3.3,
-2026-10-30):** flash attention on, a q8_0 K and V cache, `LLAMA_ATTN_ROT_DISABLE=1` (set by the tool),
+settings are klcheck's (`docs/klcheck.md`, "Settings fixed in every phase"). **v2 settings (from
+P3.3):** flash attention on, a q8_0 K and V cache, `LLAMA_ATTN_ROT_DISABLE=1` (set by the tool),
 `offload_kqv` false in M6 (`--phase m6`, the default: KV cache and attention on the host) and true in
 M7 (`--phase m7`), the same in every run of a set (V2-SW-22); each run records them in `meta.json`
 `info` (version 2), and `selfcheck` and `numcheck.py compare` refuse a set whose runs differ in them.
@@ -75,7 +88,7 @@ own functions through `libnumcheck_helper.so`.
   allocation over channels, T tiling, staging and QACT placement on real data. Any mismatch is a
   defect; the report lists row, token, both values and the ulp distance.
 - **B1b, bit-exact against the spec text.** `y_dev == spec_model_y(...)` bit for bit for every
-  element, where `spec_model_y` (numcheck.py) evaluates the spec's 수치 규칙 in numpy without any
+  element, where `spec_model_y` (numcheck.py) evaluates the numeric rules of `docs/spec.md` §7 in numpy without any
   `libtsr_ref` code: activation ints and scales from the numpy QACT model `np_qact`, weight ints and
   scales parsed in numpy, block terms `(d·Dx)·f32(isum)` (Q4_K: `− (dmin·Dx)·f32(msum)`) with every
   multiply and subtract rounded separately in binary32 with DAZ / FTZ, 16 partials `p_(i mod 16)`
@@ -141,8 +154,8 @@ own functions through `libnumcheck_helper.so`.
 
 ### B2 bound: derivation
 
-Spec references: 수치 규칙 (block terms, row accumulation, fp 공통 규칙) and 구현 명확화 (v0.2.1)
-(FTZ 판정 시점, QACT 입력).
+Spec references: `docs/spec.md` §7 (Numeric rules: *Block terms*, *Row accumulation*, *Common fp
+rules*) and §21 (Implementation clarifications: *FTZ decision point*, *QACT input*).
 
 Notation: `u = 2⁻²⁴`, `λ = 2⁻¹²⁶`, `γₙ = n·u / (1 − n·u)`. `fl(·)` is one f32 operation under the
 spec rules: DAZ on inputs, IEEE RNE in the binary32 exponent range, then FTZ (a subnormal result
@@ -183,7 +196,7 @@ becomes ±0).
 **Both formats.** With `γc = γ₂` (Q8_0) or `γ₄` (Q4_K), `Mᵢ = |Tᵢ|` (Q8_0) or `M` (Q4_K) and `εᵢ`
 the λ terms: `|t̂ᵢ − Tᵢ| ≤ γc·Mᵢ + εᵢ` and `|t̂ᵢ| ≤ (1+γc)Mᵢ + εᵢ`.
 
-**Row accumulation** over n terms (Q8_0 blocks or Q4_K super-blocks; spec 행 누적):
+**Row accumulation** over n terms (Q8_0 blocks or Q4_K super-blocks; spec §7, *Row accumulation*):
 - Partial `p_(i mod 16)` starts at +0, so its first addition is exact; the fixed tree adds 4 levels.
   Every term passes through at most `h = ⌈n/16⌉ + 3` rounded additions.
 - There are at most `n + 15` additions; each can flush once (`|η| < λ`), and that error is later
@@ -285,18 +298,26 @@ the 16 lanes are added as whole vectors. The only shared code with B1 is ggml's 
   reproduced all 775 dev files; a `--nodes` / `--mm-layers` filtered run matched the unfiltered one.
 - **Independent spec model on real tensors before it became B1b.** A one-off numpy script during
   integration (own Q5_0 → Q8_0 requantization as well) reproduced 7 tensors bit for bit. That check
-  is now B1b and runs on every weight MUL_MAT of every compare (results below). Sequential-sum
+  is B1b and runs on every weight MUL_MAT of every compare (results below). Sequential-sum
   mutant on real tensors: differs in 67 % (0.5B `blk.3.ffn_down`, q4_K) to 87 % (`blk.5.ffn_down`,
   q6_K → q8_0) of the elements; 32B `blk.35.ffn_down` 84.9 %.
 
 ## Usage
 
-Build (only in `build/numcheck`; Release, the options of `build/dev`; at most -j4):
+Build (in the main build tree, `build/dev` here; add `llama-quantize` to the targets if a requantized
+model is needed):
 
 ```
-cmake -S /home/limagin-dev/tesseract -B /home/limagin-dev/tesseract/build/numcheck -DCMAKE_BUILD_TYPE=Release
-cmake --build build/numcheck -j4 --target tsr-numcheck numcheck_helper tsr_ref_shared   # + llama-quantize if needed
+cmake -S . -B build/dev -DCMAKE_BUILD_TYPE=Release
+cmake --build build/dev -j4 --target tsr-numcheck numcheck_helper tsr_ref_shared
 ```
+
+`numcheck.py` needs Python 3 with numpy (in the commands below `python3` is such an interpreter; the
+ctest `tools_numcheck_selftest` uses the one CMake found, the cache variable `TSR_PYTHON3`). It reads
+GGUF metadata with the `gguf-py` of the pinned llama.cpp (`third_party/llama.cpp/gguf-py`) and finds
+`libtsr_ref.so` and `libnumcheck_helper.so` in the build directory given by `--build`, which goes
+before the subcommand. The default is `build/numcheck`, a separate tree that the first runs used; with the
+main tree use `--build build/dev`.
 
 Dumps (one process per run; `all` runs them as children, records exit code, wall time and peak RSS
 of each in ROOT/`runs.json`, then runs `selfcheck`):
@@ -326,11 +347,11 @@ Comparison (`--build DIR` goes before the subcommand; exit code 0 = PASS, 1 = FA
 2 = usage / input error or crash, in which case `-o` holds no report):
 
 ```
-python3 sw/tools/numcheck.py compare --cpu R/cpu --floor R/floor --dev R/dev [--dev-noobs R/dev-noobs] \
-        -o R/report [-m MODEL] [--mm-layers 0,1,31,output] [--src1-from-producer] [--threads 4] \
-        [--boundtest-report FILE]
-python3 sw/tools/numcheck.py boundtest [--rows 1000000] [-o FILE]   # model-free B2 / QACT validation
-python3 sw/tools/numcheck.py selftest -o DIR                        # boundtest + synthetic runs + injected faults
+python3 sw/tools/numcheck.py --build build/dev compare --cpu R/cpu --floor R/floor --dev R/dev \
+        [--dev-noobs R/dev-noobs] -o R/report [-m MODEL] [--mm-layers 0,1,31,output] \
+        [--src1-from-producer] [--threads 4] [--boundtest-report FILE]
+python3 sw/tools/numcheck.py --build build/dev boundtest [--rows 1000000] [-o FILE]   # model-free B2 / QACT validation
+python3 sw/tools/numcheck.py --build build/dev selftest -o DIR                        # boundtest + synthetic runs + injected faults
 ```
 
 `-m` defaults to the model in the dev run's `meta.json` (for split files the first shard; the
@@ -341,24 +362,28 @@ the current version (3: B2 bound + numpy spec model) is reused, older ones are r
 `boundtest`). Weight rows are read in chunks of about `--chunk-elems / (K/32 · T)` rows, so the
 comparer stays below 0.6 GB RSS on 0.5B and about 1 GB on 32B.
 
-The three models of the results section:
+The three models of the results section, in this tree's command forms (`tsr-numcheck` is
+`build/dev/bin/tsr-numcheck`). The results below were measured with the v1 tools and the v1
+settings; this tree's tool selects them with `--fa off -ctk f16 -ctv f16` (experiments only, the
+same in every run of a set), and its default is the M6 settings:
 
 ```
 # 1. Qwen2.5-0.5B Q8_0
 tsr-numcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf -o build/numcheck-runs/q8_0-0.5b -T 32 --checks full
 # 2. Qwen2.5-0.5B Q4_K_M, requantized locally from the Q8_0 file
-build/numcheck/bin/llama-quantize --allow-requantize models/qwen2.5-0.5b-instruct-q8_0.gguf \
+build/dev/bin/llama-quantize --allow-requantize models/qwen2.5-0.5b-instruct-q8_0.gguf \
     models/qwen2.5-0.5b-instruct-q4_k_m-requant.gguf Q4_K_M
 tsr-numcheck all -m models/qwen2.5-0.5b-instruct-q4_k_m-requant.gguf -o build/numcheck-runs/q4_k_m-0.5b -T 32 --checks full
 # 3. Qwen2.5-32B Q4_K_M (file-backed simulator DRAM, ~20 GiB free needed)
 mkdir -p build/simdram
-TSR_SIM_THREADS=4 TSR_SIM_DRAM_DIR=/home/limagin-dev/tesseract/build/simdram \
+TSR_SIM_THREADS=4 TSR_SIM_DRAM_DIR=build/simdram \
   tsr-numcheck all -m models/qwen2.5-32b-instruct-q4_k_m-00001-of-00005.gguf -o build/numcheck-runs/q4_k_m-32b \
     -T 16 --mm-layers 0,1,31,62,63,output --checks none
 # each:
-python3 sw/tools/numcheck.py boundtest -o build/numcheck-runs/boundtest.json
-python3 sw/tools/numcheck.py compare --cpu R/cpu --floor R/floor --dev R/dev [--dev-noobs R/dev-noobs] \
-    -o R/report --boundtest-report build/numcheck-runs/boundtest.json --src1-from-producer
+python3 sw/tools/numcheck.py --build build/dev boundtest -o build/numcheck-runs/boundtest.json
+python3 sw/tools/numcheck.py --build build/dev compare --cpu R/cpu --floor R/floor --dev R/dev \
+    [--dev-noobs R/dev-noobs] -o R/report --boundtest-report build/numcheck-runs/boundtest.json \
+    --src1-from-producer
 ```
 
 ctest: `tools_numcheck_selftest` (comparer, no model; also: the v2 settings in the report, a set
@@ -366,8 +391,8 @@ with different settings refused, version 1 dumps read with the v1 settings), `to
 (dumper, no model), `tools_numcheck_dump_qwen05b` (label `model`: `all --phase m6 --checks full` on
 0.5B Q8_0, ~9 s).
 
-**v2 check (M6, sim, 2026-10-30).** `tsr-numcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf -T 32
---phase m6 --checks full`: selfcheck PASS, 533 nodes per run, 169/169 weight MUL_MATs computed by
+**M6 check (v2).** Measured on the simulator (v2, `83ac601`): `tsr-numcheck all -m
+models/qwen2.5-0.5b-instruct-q8_0.gguf -T 32 --phase m6 --checks full`: selfcheck PASS, 533 nodes per run, 169/169 weight MUL_MATs computed by
 Tesseract0 (one `graph` launch each), dev logits = dev-noobs logits bit for bit, 8.8 s. A second set
 with `--mm-layers 0,output --checks none` compared with `numcheck.py compare --src1-from-producer`:
 PASS, all 169 weight MUL_MATs checked, B1 0 mismatches (bit-exact with libtsr_ref), B1b 0, B2 0
@@ -428,7 +453,7 @@ when compare starts and written at the end (temporary name + rename). ROOT/`runs
 
 ## Runtime
 
-Host: 16 cores, 14 GB RAM; `TSR_SIM_THREADS=4`, T_MAX = 1, `-t 8`. Peak RSS of the 32B runs is
+Measured on the simulator (v1), host: 16 cores, 14 GB RAM; `TSR_SIM_THREADS=4`, T_MAX = 1, `-t 8`. Peak RSS of the 32B runs is
 mostly mmap'd GGUF / simulator-DRAM file pages (reclaimable page cache), not anonymous memory.
 
 | Model | T | cpu | floor | dev | checks | dumps per run | compare |
@@ -438,17 +463,18 @@ mostly mmap'd GGUF / simulator-DRAM file pages (reclaimable page cache), not ano
 | 32B Q4_K_M | 16 | 15.9 s, 12.4 GiB | 15.9 s, 12.6 GiB | 107 s (load + conversion 47 s, decode 59 s), 11.8 GiB | dev-noobs 103 s (made separately with `run --no-observe`) | 841 MiB (1605 nodes + 36 src1) | 388 s, 1.0 GiB (all 449 weight MUL_MATs, B1b and `--dev-noobs` included; 275–315 s before B1b) |
 
 - 32B `tsr-numcheck all` (cpu, floor, dev, selfcheck): **2 min 21 s** wall. The dev decode (59 s
-  for 16 tokens) is far below the 16 × ~15 s per-token estimate of `docs/klcheck.md`. A likely
-  reason (not measured): a prefill MUL_MAT makes its 16 passes (T_MAX = 1) over one weight matrix
-  back to back, so only the first pass reads the simulator DRAM files from disk and the others hit
-  the page cache.
+  for the 16-token prefill, 3.7 s per token pass) is below the 8 to 9 s per token of klcheck's decode
+  on the same model (`docs/klcheck.md`). A likely reason (not measured): a prefill MUL_MAT makes its
+  16 passes (T_MAX = 1) over one weight matrix back to back, so only the first pass reads the
+  simulator DRAM files from disk and the others hit the page cache.
 - The boundtest alone takes 2.8 s (3.7 s wall, 73 MiB) with the spec-model check; the comparer
   selftest 4 s. B1b doubles the 0.5B compare time (15 s → 31 s, mostly the 152k-row output head).
 - Local Q4_K_M requantization of the 0.5B model: 0.9 s. Disk: 559 MiB per 0.5B root, 2.5 GiB for 32B.
 
-## Results
+## Results (v1 baseline)
 
-All three models: **PASS**. One prompt per model (the built-in sentence, 32 or 16 tokens), one
+Flash attention off, f16 KV cache on the host, measured on the simulator (v1). All three models:
+**PASS**. One prompt per model (the built-in sentence, 32 or 16 tokens), one
 prefill batch; reports in `build/numcheck-runs/<tag>/report/`, the shared boundtest in
 `build/numcheck-runs/boundtest.json` (version 3). No sim, backend or spec defect was found. The
 numbers below come from the final comparer on the existing dumps (the dumper's changes since then
@@ -511,7 +537,7 @@ touch only `selfcheck` and `all`, not what a run writes).
 - **Earlier version of this document:** it reported a q6_K range up to 1.345 and called
   `blk.4.ffn_down` "the one exception, where the requantization cost shows". That was an artifact of
   pooling over tokens: token 0 holds 99.99 % of that tensor's ‖Wx‖², so the pooled value measured
-  one token (1.57 there; tokens 1–15: 0.40–0.92, together 0.615). B3 now leaves such tokens out of
+  one token (1.57 there; tokens 1–15: 0.40–0.92, together 0.615). B3 leaves such tokens out of
   the ratio and lists them (all-token values stay in the report).
 
 **Drift and the floor.**
@@ -540,7 +566,8 @@ touch only `selfcheck` and `all`, not what a run writes).
   - Excluding token 0, the ratio falls to 1.85 by layer 31 and 1.10 at layer 63; `result_norm` 1.04.
 - **Logit KL ratio.** 1.38 / 1.46 / 2.12, all below the spec's limit of 3. The 32B value from one
   16-token prompt is a coarse estimate: per-position KL ratios over positions 1–15 range from 0.2 to
-  4.8. klcheck's 4 × 64-token run gave 1.36 on the same model. Part of the measured dev–cpu distance
+  4.8. klcheck's 4 × 64-token run gave 1.36 on the same model (and 1.304 on the card, 1.285 with the M6
+  settings on the simulator, both 8 × 64 tokens: `docs/klcheck.md`). Part of the measured dev–cpu distance
   is the CPU's own q6_K error described above. KL against the CPU cannot separate that from device
   error; B1–B3 do.
 - **0.5B Q4_K_M layer 0** (ratio 2705) is the q5_0 requantization: the device multiplies by different
@@ -548,5 +575,5 @@ touch only `selfcheck` and `all`, not what a run writes).
 
 **Not covered here.** MUL_MAT_ID (MoE) weights are tagged by the dumper but not modelled by B
 (a model with them gets INCOMPLETE). The ACC accumulate path is not used by these graphs. The
-attention MUL_MATs run on the CPU (KV cache on the host, v1). Observation invariance on 32B (see
-above).
+attention operations run on the CPU in M6 (KV cache and attention on the host); their check on the
+device belongs to M7 ([AT](v2/03-attention-kv.md) §13). Observation invariance on 32B (see above).

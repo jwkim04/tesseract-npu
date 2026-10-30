@@ -1,6 +1,6 @@
 # Figure style guide
 
-The architecture figures in `docs/fig/*.svg` are drawn as illustrations, not flowcharts. The model
+The figures in `docs/fig/*.svg` are drawn as illustrations, not flowcharts. The model
 is Tenstorrent's architecture art: a warm card, a lighter inner panel, flat pastel blocks with cut
 corners and a thin dark outline, fat hollow arrows, and small uppercase callouts on leader lines.
 Every figure is a Python script in this directory built on `tsrfig.py`. Use the library for every
@@ -11,9 +11,10 @@ mark, so the figures stay consistent and the output stays deterministic.
 | What | Where |
 | --- | --- |
 | Figure script | `docs/fig/src/<name>.py` (one figure per script, `Fig("<name>", ...)`) |
-| Output | `docs/fig/<name>.svg` (committed) |
+| Output | `docs/fig/<name>.svg` (committed); the README figures also have `docs/fig/<name>-dark.svg` (see "Dark variants") |
 | Previews | `$TSR_FIG_PNG_DIR/<name>.png` at 1:1 and `<name>_gh.png` at 880 px (about GitHub's README width). The default is `build/fig/png`, which git ignores. Previews are never committed. |
 | Interpreter | `build/tools/svgvenv/bin/python docs/fig/src/<name>.py` (needs cairosvg, fontTools) |
+| All figures | `docs/fig/src/build.sh` runs every script, light and dark where a dark variant exists |
 
 - Start each script with `sys.dont_write_bytecode = True` before `from tsrfig import ...`, so
   no `__pycache__` is left in the repo.
@@ -43,6 +44,13 @@ mark, so the figures stay consistent and the output stays deterministic.
   Callout text should stay at least 20 units inside the card edge.
 - **Scale check.** GitHub shows the card at about 0.55×, so 19 units become about 10 px. Keep
   body text at 17 or more; use 15 only for tags.
+- **Long figures.** A swimlane or a stack may be taller than it is wide (`launch`, `stack`,
+  `verify`: 2000 units and more). Keep the width and the type scale, and stack panels instead of
+  shrinking text.
+- **Large type.** `stack` is the product-style figure and uses the `*_l` roles of the type table
+  (28 / 21 / 17 / 19 units) with fewer words per tile, so it stays readable at README width. At
+  phone width every 1600-unit figure is small; the SVG scales without loss, and the product
+  figures (`hero`, `stack`, `system`) keep their text short for that reason.
 
 ## Palette
 
@@ -56,14 +64,14 @@ Fills mark a block's role. Use the role, not a raw hex, so all figures agree.
 | `PANEL` | `#F8F8F5` | inner panels |
 | `BAND` | `#E7E5DC` | flat tinted regions inside a panel (SLRs, lanes, pipeline stages) |
 | `ARROW` | `#EAF4F1` | fill of hollow arrows |
-| `control` | `#A8E0D5` mint | sequencing and control: command processor, fetch, CSRs, FSMs |
+| `control` | `#A8E0D5` mint | sequencing and control: the control core, issue path, checker, dispatcher, CSRs, FSMs, and **firmware** (the kernels and the runtime that run on the control core) |
 | `compute` | `#9EDCF2` sky | MVM clusters, MAC lanes, fp units, functional units |
 | `memory` | `#F8AFA3` salmon | SPM, DRAM channels, buffers, FIFOs |
 | `io` | `#DCD5F7` lavender | data movement: DMA (LD, ST), weight-stream requester, broadcast / gather buses and pipes, arbiters, ports |
-| `host` | `#F4DE9C` butter | host software: llama.cpp, `ggml-tesseract`, transport, simulator |
+| `host` | `#F4DE9C` butter | host software: llama.cpp, `ggml-tesseract`, `tsr_rt`, transport, simulator, code under test in `verify` |
 | `adapter` | `#F9C89B` peach | per-target platform adapter: control bridge, AXI4 bridges |
 | `vendor` | `#DAD8CF` stone | vendor-specific parts: the XRT shell, PCIe, tech wrappers |
-| `neutral` | `#FFFFFF` | plain blocks, such as data items in a memory map; references in `verify` |
+| `neutral` | `#FFFFFF` | plain blocks, such as data items in a memory map; references in `verify`; developer tools in `stack`; work and gate boxes in `milestones` |
 
 Do not use gradients, shadows, transparency or 3D effects. Text is always `INK` (or `INK_SOFT`
 for secondary notes) on the pastel fills; on dark tags it is `CARD`.
@@ -95,6 +103,11 @@ a same-colour stroke of 34 font units; the library does this.
 | `panel` | 20 | bold | 0.10 em | band labels (`SLR0`), UPPERCASE, `INK_SOFT` |
 | `note` | 17 | regular | 0 | legend entries, footnotes |
 | `tag` | 15 | bold | 0.08 em | badges: panel names, `PLANNED · M6`, `× 4` |
+| `label_l` | 28 | bold | 0.02 em | tile title in `stack` |
+| `sub_l` | 21 | regular | 0 | tile detail lines in `stack` |
+| `panel_l` | 21 | bold | 0.10 em | layer names in `stack`, `INK_SOFT` |
+| `note_l` | 19 | regular | 0 | layer captions and the footnote in `stack` |
+| `tag_l` | 17 | bold | 0.08 em | status badges in `stack` |
 
 **Casing.**
 
@@ -144,15 +157,39 @@ a same-colour stroke of 34 font units; the library does this.
 
 ## Planned and unconfirmed things
 
+**Status drawing rule.** A block is drawn solid only if it exists in `rtl/` (or, for software, in
+the tree) and ran on the Alveo U200 with the v1 core (tag `v1-m4`). Everything that exists only in
+the simulator and the firmware is planned: dashed, pale, tagged. **Never draw a block as solid RTL
+that is not in `rtl/`.** The RTL in the tree is the X0 state: the datapath units, the CSR skeleton
+and the platform adapter, with no control core, issue path, vector unit or attention modes.
+
 - **Planned blocks.** Use `box(..., planned=True, tag="PLANNED · M6")`. This gives a dashed
-  outline, a fill 55 % paler than the role colour, and a light dashed tag on the top edge. Always
-  name the milestone in the tag.
-- **Planned paths.** Draw them as dashed arrows or connectors.
-- **Unconfirmed facts.** Expected but unmeasured facts, such as the shell flashed on the card
-  (to be checked with `xbutil examine`), are drawn as expected and named as such in a footnote
-  (`note` role, `INK_SOFT`) or a callout. Never present them as fact.
-- **Hardware not yet run** (the k4 link, the card) is drawn as the README describes it, with no
-  internals beyond what the README states.
+  outline, a fill 55 % paler than the role colour, and a light dashed tag on the top edge. Name the
+  milestone or work package in the tag (`PLANNED · M6`, `PLANNED · W6`). Where an arrow meets the
+  same top edge and `PLANNED · M6` would collide with it (`hero`, `system`, `core`, `stack`), the
+  tag may read `PLANNED` if the legend or the footnote names the milestone, and the arrow meets the
+  edge 48 units from the block's left edge, clear of the right-hand tag.
+- **A band or lane that is planned as a whole** (`core`: the `clk_rv` band; `launch`: the control
+  core lane) carries one `PLANNED` tag on the band or on the lane head; the blocks inside are
+  dashed and pale with `plan_tag=False`, so their text is not covered by a tag per block.
+- **A solid block that gains a mode** (DMA + KVST, SPM + 2R2W banks, the MAC lanes + ATTQK / ATTPV,
+  `tsr_csr` + LQ / LCQ / log) stays solid and carries a dashed tag that starts with `+`
+  (`tag="+ KVST", tag_style="planned"`), or a small dashed tile inside it where a tag would
+  collide with arrows.
+- **Planned paths.** Draw them as dashed arrows or connectors (the unit-queue bus in `stack` and
+  `core`).
+- **Status badges** (`stack`, `milestones`; at most three texts per figure): `ON THE CARD · V1`
+  (dark badge: ran on the card with the v1 core), `SIMULATOR · V2` (outlined badge: implemented
+  and verified on the simulator; `milestones` also uses `DONE · RTL SIMULATION`) and `PLANNED`
+  (dashed badge on a dashed block). A panel carries the status of its tiles on its top edge; a
+  tile carries its own badge only where it differs. A figure with badges explains them in a key at
+  the bottom and says which statement a badge makes (`stack`: the status of the block as drawn; the
+  xrt transport ran on the card in v1, the v2 kind awaits the v2 core).
+- **Unconfirmed facts.** Expected but unmeasured facts, such as a clock that is only a planning
+  value (`clk_rv` 166.7 MHz), are drawn as expected and named as such in a footnote (`note` role,
+  `INK_SOFT`) or a callout. Never present them as fact.
+- **Hardware not yet run** (the v2 core on the card) is drawn as `docs/v2` describes it, with no
+  internals beyond what the design states.
 
 ## Repeated units and channel counts
 
@@ -164,7 +201,7 @@ a same-colour stroke of 34 font units; the library does this.
   (`tag(x + w + 16, y - 16, ..., anchor="end")`) when an arrow meets the block's top edge.
   A repeated panel uses the same offsets (`cluster`). Alternatively, put a `bracket` labelled
   `× NUM_CH` under a row, or say "one per cluster" in the block's detail line.
-- **Parameters.** Show them by name where the README does (`NUM_CH`, `T_MAX`, `MVM_BC_PIPE`).
+- **Parameters.** Show them by name where `docs/spec.md` §3 does (`NUM_CH`, `T_MAX`, `MVM_BC_PIPE`).
   Give the U200 value only when it is fixed (`NUM_CH = 4`).
 
 ## Bands and regions
@@ -187,7 +224,7 @@ a same-colour stroke of 34 font units; the library does this.
 ## Legend
 
 A row of swatches at the bottom of the card, made with `legend()`, is optional. Use one when a
-figure relies on colour roles that the README text does not explain. List only the roles the
+figure relies on colour roles that the text around it does not explain. List only the roles the
 figure uses. Name roles, not instances, with the same words in every figure:
 
 | Role | Legend label |
@@ -202,13 +239,46 @@ figure uses. Name roles, not instances, with the same words in every figure:
 | planned | `("neutral", "PLANNED", True)`, a dashed pale swatch; `layers` says `PLANNED / IDEA` |
 
 `verify` is the one figure about tests rather than hardware, and it keeps its own small key:
-`REFERENCE` (neutral), `HOST SOFTWARE` (host), `CHECK` (mint), `TRACES` (salmon), `RTL` (sky)
+`REFERENCE` (neutral), `CODE UNDER TEST` (host), `CHECK` (mint), `TRACES` (salmon), `RTL` (sky)
 and `PLANNED`. It never reuses lavender, so a reader carrying the key over from the architecture
-figures is not misled.
+figures is not misled. `stack` has no colour legend, only the status key (three badge samples
+with one line each); `milestones` has `DONE` (mint), `IN DEVELOPMENT` (butter) and `PLANNED`.
+
+## Dark variants
+
+The README figures (`hero`, `stack`, `system`) also exist as `<name>-dark.svg`, for the
+`<picture>` embed with `prefers-color-scheme`. The card carries its own background, so the light
+files read fine on GitHub's dark theme; the dark files are for pages that want the figure to match
+the theme. The same script draws both: `tsrfig.py` reads `TSR_FIG_THEME` (`light` by default,
+`dark`) once at import and swaps the palette; nothing else changes, so the layout, the text and
+the roles are identical.
+
+| Token / role | Dark hex | Token / role | Dark hex |
+| --- | --- | --- | --- |
+| `INK` | `#ECEBE4` | `io` | `#574D8B` |
+| `INK_SOFT` | `#B4B3A9` | `host` | `#76651F` |
+| `CARD` | `#1D1E1B` | `adapter` | `#8F5528` |
+| `PANEL` | `#292A26` | `vendor` | `#55544C` |
+| `BAND` | `#33342F` | `neutral` | `#3C3D38` |
+| `ARROW` | `#33403C` | `control` | `#2D6A5F` |
+| `compute` | `#276683` | `memory` | `#8E4539` |
+
+Text is `INK` on every role fill with a contrast of at least 4.8 : 1; the dark tags are `INK` on
+`CARD`. Planned blocks mix the role colour toward `PANEL` as in the light theme. Embed:
+
+```html
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/fig/hero-dark.svg">
+  <img src="docs/fig/hero.svg" alt="..." width="100%">
+</picture>
+```
 
 ## Accuracy
 
-Every block, arrow, label and number must be backed by the README (the fact-checked text and
-the Mermaid blocks it replaces), `docs/spec.md`, `docs/rtl-m2.md`, `docs/rtl-m3.md`,
-`docs/platform-u200.md` or the `rtl/core` sources. The script's docstring names its sources.
-When a figure adds a fact the replaced Mermaid block did not show, cite it in the docstring.
+Every block, arrow, label and number must be backed by `docs/spec.md`, `docs/v2/*` (the normative
+design), `docs/rtl-m2.md`, `docs/rtl-m3.md`, `docs/platform-u200.md`, `docs/xrt-host.md`, the
+`rtl/core` sources or the code under `sw/`. The script's docstring names its sources by document
+and section, never by line number. Cite English documents only. When a figure adds a fact that the
+cited documents do not show, say where it comes from in the docstring. v2 facts follow `docs/v2`
+(4 channels, 128 lanes per cluster, T_MAX 8, SPM 4 MiB, `clk_rv` 166.7 MHz planning value, core
+clock 276.3 MHz on the k4 kernel); a v2 block without RTL is planned.
