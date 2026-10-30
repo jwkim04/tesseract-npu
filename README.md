@@ -6,9 +6,9 @@
 
 **A full-stack, open-source NPU for LLM inference.**
 
-- **Hardware**: NPU core in SystemVerilog with an on-chip RISC-V control core.
-- **Firmware**: C++20 runtime, kernel library and kernel SDK.
-- **Software**: llama.cpp and PyTorch backends, bit-exact simulator, verification tools.
+- Hardware: NPU core in SystemVerilog with an on-chip RISC-V control core.
+- Firmware: C++20 runtime, kernel library and kernel SDK.
+- Software: llama.cpp and PyTorch backends, bit-exact simulator, verification tools.
 
 Runs shipped GGUF models with `-ngl`. Implemented on an AMD Alveo U200 FPGA.
 
@@ -18,16 +18,15 @@ Runs shipped GGUF models with `-ngl`. Implemented on an AMD Alveo U200 FPGA.
 
 ## Performance
 
-| Model | Weights | Decode (tok/s)¹ |
+| Model | Weights | Decode (tok/s) |
 | --- | --- | --- |
 | Qwen2.5-0.5B-Instruct | Q8_0 | 54.7 |
 | Gemma 4 12B | Q8_0 | 4.50 |
 | Gemma 4 12B | Q4_K_M | 6.91 |
 | Qwen2.5-32B-Instruct | Q4_K_M | 2.93 |
 
-¹ Batch 1, measured on an Alveo U200 with the v1 core. The v2 core (dashed blocks above) runs on the simulator.
-
-Conditions and history: [`docs/performance.md`](docs/performance.md).
+Batch 1 on an Alveo U200 with the v1 core. The v2 core runs on the simulator. Details:
+[docs/performance.md](docs/performance.md).
 
 ## Architecture
 
@@ -39,7 +38,7 @@ One MVM cluster per DDR4 channel streams weights at one 64-byte beat per cycle i
 
 <p align="center"><img src="docs/fig/stack.png" alt="The Tesseract software stack as layered bands from the applications down: llama.cpp (llama-cli and llama-server) and PyTorch with Hugging Face models, each shown with its logo; the ggml-tesseract backend and the tsr_rt runtime; tsr_transport with the kinds sim, mock, vkernel (planned) and xrt (planned: the v1 transport ran on the card, the v2 kind awaits the v2 bitstream); firmware on the control core (runtime, executor, kernels, selftest and replay); the NPU core with control core, issue path, DMA, QACT, MVM clusters, vector unit and SPM; and the FPGA card with the U200, the XRT shell and four DDR4 channels. A column of developer tools lists klcheck and numcheck, the trace tools, tsr-selftest, tsr-log and the simulator, with GDB debugging (shown with the GDB logo) and tsr-prof planned. Tags mark what runs on the simulator, what ran on the card with v1 and what is planned." width="100%"></p>
 
-Logos belong to their owners; sources and licences: [`docs/fig/logos/SOURCES.md`](docs/fig/logos/SOURCES.md).
+Logos belong to their owners ([sources and licences](docs/fig/logos/SOURCES.md)).
 
 ## Custom kernels
 
@@ -65,7 +64,7 @@ extern "C" int32_t vadd(const tsr_args * args) {
 }
 ```
 
-Guide and header library: [`sw/ctrl/README.md`](sw/ctrl/README.md).
+See the [firmware SDK guide](sw/ctrl/README.md).
 
 ## Quick start
 
@@ -81,15 +80,15 @@ LLAMA_ATTN_ROT_DISABLE=1 build/dev/bin/llama-completion -m models/qwen2.5-0.5b-i
     -ngl 99 -nkvo -fa on -ctk q8_0 -ctv q8_0 -no-cnv -p "The capital of France is" -n 16
 ```
 
-Requirements, tests, PyTorch and the card: [`docs/getting-started.md`](docs/getting-started.md).
+See [Getting started](docs/getting-started.md) for requirements, tests, PyTorch and the card.
 
 ## Documentation
 
-- [`docs/getting-started.md`](docs/getting-started.md): build, run, verify, repository layout
-- [`docs/performance.md`](docs/performance.md): measurements and their provenance
-- [`docs/spec.md`](docs/spec.md): master specification
-- [`docs/v2/README.md`](docs/v2/README.md): v2 design set
-- [`sw/ctrl/README.md`](sw/ctrl/README.md): firmware SDK
+- [Getting started](docs/getting-started.md): build, run, verify, repository layout
+- [Performance](docs/performance.md): measurements and conditions
+- [Specification](docs/spec.md)
+- [v2 design documents](docs/v2/README.md)
+- [Firmware SDK](sw/ctrl/README.md)
 
 ## License
 
