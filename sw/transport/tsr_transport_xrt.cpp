@@ -1,14 +1,17 @@
 // tsr_transport_xrt.cpp — the "xrt" kdev: one Tesseract kernel (tsr_u200_k1 / tsr_u200_k4) on an
-// Alveo card through XRT 2.18 (docs/xrt-host.md). Built only with -DTSR_WITH_XRT=ON; the
-// protocol on top (config, ADAPTER_STATUS, transfers) is tsr_kdev.cpp.
+// Alveo card through XRT 2.18 (docs/xrt-host.md; v2: docs/v2/01-execution-model.md "EX" §9.1,
+// docs/v2/06-software-verification.md "SW" §9.1). Built only with -DTSR_WITH_XRT=ON; the protocol
+// on top (identity, bind, load, boot, launch, wait, recovery) is tsr_kdev.cpp.
 //
-// v1's run control (xrt::run or register-level ap_ctrl_hs starts and their environment switch,
-// the cmd_addr / cmd_count / arg0-7 arguments) is deleted (X0, EX §9-§10): the only kernel
-// arguments are the channel buffers ch<c> at 0x040 + 8c (EX §9.1), so a v1 xclbin is refused at
-// open. Register access still goes through xrt::kernel, which XRT refuses for ap_ctrl_none
-// compute units; the move to xrt::ip with the bank lookup from xrt::xclbin is P3.1 (EX §9.1).
-// Until then an ap_ctrl_none kernel (the kernel.xml this tree packages) is refused at open with a
-// message naming P3.1, so between X0 and P3.1 / Y5 no xclbin opens here: build/v1 is the card path.
+// v2 (P3.1): the kernel is ap_ctrl_none (EX §9.1) and is opened through xrt::ip, which XRT opens
+// with exclusive access (EX §2.4): register access is xrt::ip::read_register / write_register (an
+// mmap'ed MMIO access); no xrt::kernel and no xrt::run exist, so a halted RISC-V cannot break
+// XRT's scheduler. EX §9.1's fallback form (ap_ctrl_hs with interrupt="false", never started) opens
+// the same way. The only kernel arguments are the channel buffers ch<c> at 0x040 + 8c; a v1 xclbin
+// (cmd_addr / cmd_count / arg0-7) is refused at open. The buffer of channel c is a device-only
+// xrt::bo in the memory bank of arg ch<c> from xrt::xclbin::arg::get_mems() (EX §9.1; *confirm* on
+// the card that this equals the group xrt::kernel::group_id reported in v1). idle() sleeps (the
+// default): the protocol's poll policy and timeouts count host time.
 //
 // Environment (read at open; a malformed value makes the open fail):
 //   TSR_XCLBIN             the xclbin to load (required; loading the one already on the card is cheap)
@@ -43,10 +46,10 @@
 #include <string>
 #include <vector>
 
+#include <experimental/xrt_ip.h>
 #include <experimental/xrt_xclbin.h>
 #include <xrt/xrt_bo.h>
 #include <xrt/xrt_device.h>
-#include <xrt/xrt_kernel.h>
 
 namespace tsr {
 
@@ -121,8 +124,8 @@ private:
     xrt::device  dev_;
     xrt::xclbin  xb_;
     xrt::uuid    uuid_;
-    xrt::kernel  krn_;
-    std::string  kname_, info_;
+    xrt::ip      ip_;
+    std::string  kname_, cuname_, info_;
     std::vector<int>      a_ch_;
     std::vector<int>      grp_;
     std::vector<xrt::bo>  bo_, stage_;
@@ -196,14 +199,16 @@ xrt_kdev::xrt_kdev() {
                                      kname_.c_str(), (size_t) cus[0].get_size(), KREG_SPACE, KREG_CSR_WINDOW));
     }
 
-    // xrt::kernel refuses ap_ctrl_none compute units (the v2 kernel contract, EX §9.1); say so here
-    // instead of failing later inside XRT. The xrt::ip path is P3.1.
-    if (cus[0].get_control_type() == xrt::xclbin::ip::control_type::none) {
-        throw std::runtime_error(fmt("kernel %s is ap_ctrl_none (the v2 kernel contract); this transport still opens "
-                                     "kernels through xrt::kernel, which XRT refuses for ap_ctrl_none: the xrt::ip "
-                                     "access arrives with transport v2 (P3.1). Until then the card runs v1 from build/v1",
-                                     kname_.c_str()));
+    // EX §9.1: ap_ctrl_none (the v2 contract), or its fallback ap_ctrl_hs without an interrupt,
+    // never started. Both open through xrt::ip; a kernel with an interrupt is not the contract.
+    const auto ctl = cus[0].get_control_type();
+    const char * ctl_name = ctl == xrt::xclbin::ip::control_type::none ? "ap_ctrl_none" :
+                            (ctl == xrt::xclbin::ip::control_type::hs ? "ap_ctrl_hs (EX §9.1 fallback)" : nullptr);
+    if (ctl_name == nullptr) {
+        throw std::runtime_error(fmt("kernel %s: control protocol %d is not the kernel contract (ap_ctrl_none, or the EX §9.1 "
+                                     "fallback ap_ctrl_hs without an interrupt)", kname_.c_str(), (int) ctl));
     }
+    cuname_ = cus[0].get_name();
 
     // Arguments, identified by their register offset (kernel contract, EX §9.1); names are free.
     // The channel buffers are the only arguments: v1's cmd_addr / cmd_count / arg0-7 are refused.
@@ -235,20 +240,27 @@ xrt_kdev::xrt_kdev() {
     // transport_xrt_noop ctest) implements only the hw_context flow, i.e. register_xclbin.
     const char * em = getenv("XCL_EMULATION_MODE");
     uuid_ = (em != nullptr && strcmp(em, "noop") == 0) ? dev_.register_xclbin(xb_) : dev_.load_xclbin(xb_);
-    krn_ = xrt::kernel(dev_, uuid_, kname_, xrt::kernel::cu_access_mode::exclusive);
+    // Exclusive access to the compute unit (EX §2.4): a second process cannot open it.
+    try {
+        ip_ = xrt::ip(dev_, uuid_, cuname_);
+    } catch (const std::exception & e) {
+        throw std::runtime_error(fmt("cannot open compute unit %s through xrt::ip (exclusive; is another process using the "
+                                     "card?): %s", cuname_.c_str(), e.what()));
+    }
 
-    // One device-only buffer per channel in the bank its m_axi port is connected to.
+    // One device-only buffer per channel in the bank its m_axi port is connected to: the memory
+    // index of arg ch<c> (xrt::xclbin::arg::get_mems(), EX §9.1).
     const auto mems = xb_.get_mems();
+    std::vector<xrt::xclbin::arg> kargs = xk.get_args();
     for (size_t c = 0; c < a_ch_.size(); ++c) {
-        const int grp = krn_.group_id(a_ch_[c]);   // xcl_bo_flags: bank [15:0], slot [23:16]
-        uint64_t bank = KERNEL_CH_BYTES;
-        std::string tag = fmt("group %d", grp);
-        for (const auto & m : mems) {
-            if (m.get_index() == (grp & 0xFFFF)) {
-                bank = m.get_size_kb() * 1024ull;
-                tag = m.get_tag();
-            }
+        xrt::xclbin::mem m;
+        for (const auto & a : kargs) {
+            if ((int) a.get_index() == a_ch_[c] && !a.get_mems().empty()) m = a.get_mems().front();
         }
+        if (!m) throw std::runtime_error(fmt("kernel %s: arg ch%zu has no memory connection", kname_.c_str(), c));
+        const int grp = m.get_index();
+        const uint64_t bank = m.get_size_kb() * 1024ull;
+        const std::string tag = m.get_tag();
         uint64_t sz = gib_set ? gib * GiB : std::min(bank, KERNEL_CH_BYTES);
         if (gib_set && sz > bank) {
             throw std::runtime_error(fmt("TSR_XRT_CH_GIB=%" PRIu64 "%s exceeds memory %s of channel %zu (%.2f GiB)", gib, gib_note,
@@ -303,8 +315,8 @@ xrt_kdev::xrt_kdev() {
         bdf = dev_.get_info<xrt::info::device::bdf>();
     } catch (const std::exception &) {
     }
-    info_ = fmt("device %s (%s), xclbin %s (uuid %s), kernel %s\n", devname.c_str(), bdf.c_str(), xclbin,
-                uuid_.to_string().c_str(), kname_.c_str());
+    info_ = fmt("device %s (%s), xclbin %s (uuid %s), kernel %s, compute unit %s through xrt::ip (exclusive), %s\n",
+                devname.c_str(), bdf.c_str(), xclbin, uuid_.to_string().c_str(), kname_.c_str(), cuname_.c_str(), ctl_name);
     info_ += fmt("DMA %s, chunk %" PRIu64 " MiB, align %" PRIu64 "%s\n", dma_mode_name(dma_), chunk / MiB, align,
                  dma_ == dma_mode::m2m ? ", a staging buffer of one chunk per channel (host + its bank)" : "");
     for (size_t c = 0; c < bo_.size(); ++c) {
@@ -313,13 +325,10 @@ xrt_kdev::xrt_kdev() {
     }
 }
 
-// read_register / write_register are deprecated in XRT 2.18 in favour of xrt::ip (P3.1); they
-// remain the supported way for an exclusive-access xrt::kernel (xrt_kernel.cpp get_cuidx_or_error).
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+// EX §9.1: xrt::ip register access (offsets inside the compute unit's s_axi_control range).
 int xrt_kdev::reg_read(uint32_t off, uint32_t * val) {
     try {
-        *val = krn_.read_register(off);
+        *val = ip_.read_register(off);
         return 0;
     } catch (const std::exception & e) {
         fprintf(stderr, "tsr_transport(xrt): register read at 0x%x failed: %s\n", off, e.what());
@@ -329,14 +338,13 @@ int xrt_kdev::reg_read(uint32_t off, uint32_t * val) {
 
 int xrt_kdev::reg_write(uint32_t off, uint32_t val) {
     try {
-        krn_.write_register(off, val);
+        ip_.write_register(off, val);
         return 0;
     } catch (const std::exception & e) {
         fprintf(stderr, "tsr_transport(xrt): register write at 0x%x failed: %s\n", off, e.what());
         return -1;
     }
 }
-#pragma GCC diagnostic pop
 
 xrt::bo & xrt_kdev::stage(uint32_t ch) { return stage_[ch]; }   // allocated at open (m2m only)
 

@@ -1,27 +1,39 @@
-// test_kdev.cpp — the protocol-layer transport (tsr_kdev.cpp) on the mock kdev, and the
-// chunked / aligned transfer engine against a strict fake DMA (docs/xrt-host.md §6).
+// test_kdev.cpp — ctest transport_kdev (docs/v2/06-software-verification.md "SW" §10.2): the
+// protocol layer (tsr_kdev.cpp) on the mock kdev, its adapter register model, and the chunked /
+// aligned transfer engine against a strict fake DMA (docs/xrt-host.md §6).
 //
-// Covers: CSR window offsets, configuration decode, identity checks at open (ID, ISA major 2,
-// NUM_CH vs the bound buffers, 4 KiB-aligned buffers), ADAPTER_STATUS left at open and the
-// adapter log, the protocol layer never touching the adapter's unmapped registers (v1's AP_CTRL ..
-// arg7), the mock's register model (channel bases, ADAPTER_STATUS W1C of the count), the kdev
-// registry and TSR_MOCK_* parsing, and byte-granular transfers at odd offsets / sizes / host
-// addresses, across and beyond 4 GiB, under DMA rules from align 1 to 4096 with small chunks
-// (shadow-memory compare, guard bytes untouched, every raw transfer checked against the rules).
-// The xrt kdev's hw_emu environment defaults (xrt_env_defaults). v1's run protocol tests
-// (argument packing, start / done, timeout -> ABORT, stale completions) are deleted with it (X0);
-// the v2 protocol tests (transport_protocol, SW §10.2) come with P3.1.
+// Covers: the identity checks at open (ID, ISA major 2, ADAPTER_VERSION major 2 and NUM_CH, NUM_CH
+// vs the bound buffers, 4 KiB-aligned buffers, RV_FREQ = 0: no clk_rv), ADAPTER_STATUS left by an
+// earlier process (reported, cleared, the adapter log), the bind (MEM_EN, the latched bases equal the
+// buffers), the adapter model (bases RW while MEM_EN = 0, BASE_LOCKED, BASE_MISALIGNED at the MEM_EN
+// edge, REQ_HELD with the model held, ADAPTER_STATUS W1C, v1's registers reading 0), timeouts
+// (SOFT_RESET that never completes at open: TSR_RESET_MS; no HELLO: TSR_BOOT_MS), the stale core at
+// open (a booted device with a launch running, left by a "dead process": TSR_ATTACH=1 opens it
+// without a reset and refuses launches; a normal open soft-resets it and boots warm), a reopen
+// after an earlier process (the host counters from the device: nothing it consumed taken again,
+// what it left unread discarded, no stale log), the watermark refresh (EX §4.9 wrap), adapter
+// errors during a launch (TSR_MOCK_INJECT N:V: plat_err_i, DONE PLAT_ERR, ADAPTER_STATUS read,
+// reported and cleared; pipelined at depth 1, 4, 7: only the episode's launches flagged), a hung unit (TSR_MOCK_HANG: UNIT_HUNG at the timeout, "card reset
+// needed", FAILED), the kdev registry and TSR_MOCK_* parsing, byte-granular transfers at odd
+// offsets / sizes / host addresses, across and beyond 4 GiB, under DMA rules from align 1 to 4096
+// with small chunks (shadow-memory compare, guard bytes untouched, every raw transfer checked
+// against the rules), and the xrt kdev's hw_emu environment defaults (xrt_env_defaults).
 
+#include "tsr_fw_paths.h"
 #include "tsr_kdev.h"
 #include "tsr_kdev_mock.h"
-#include "tsr_transport_impl.h"
+#include "tsr_sim_int.h"
 
+#include <chrono>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <memory>
+#include <string>
+#include <unistd.h>
 #include <vector>
 
 using namespace tsr;
@@ -170,6 +182,23 @@ static void test_dma_engine() {
 // ---------------------------------------------------------------------------
 // Protocol layer on the mock kdev
 // ---------------------------------------------------------------------------
+static void clear_env() {
+    for (const char * v : { "TSR_DEVICE", "TSR_IMAGE", "TSR_LAUNCH_TIMEOUT_MS", "TSR_ABORT_MS", "TSR_BOOT_MS", "TSR_RESET_MS", "TSR_LOG",
+                            "TSR_LOG_LEVEL", "TSR_ATTACH", "TSR_STATS", "TSR_DUMP_DIR", "TSR_GDB_WAIT", "TSR_TILE_SERIAL",
+                            "TSR_TILE_HIST", "TSR_MOCK_INJECT", "TSR_MOCK_TCM_FAULT", "TSR_MOCK_HANG", "TSR_MOCK_NUM_CH",
+                            "TSR_MOCK_TMAX", "TSR_MOCK_CH_GIB", "TSR_MOCK_DMA_ALIGN", "TSR_MOCK_DMA_CHUNK_KIB", "TSR_MOCK_DMA_BOUNCE",
+                            "TSR_SIM_SCHED", "TSR_SIM_RACE", "TSR_SIM_LOG", "TSR_TRACE" })
+        unsetenv(v);
+    setenv("TSR_SIM_THREADS", "2", 1);
+}
+
+static mock_options small_mock(uint32_t num_ch = 4) {
+    mock_options o;
+    o.num_ch = num_ch;
+    o.threads = 2;
+    return o;
+}
+
 static tsr_transport * open_mock(mock_options o, mock_kdev ** out) {
     std::unique_ptr<mock_kdev> m(new mock_kdev(o));
     CHECK(m->ok(), "mock created");
@@ -177,9 +206,19 @@ static tsr_transport * open_mock(mock_options o, mock_kdev ** out) {
     return transport_open_kdev(std::move(m));
 }
 
+static tsr_launch L(uint8_t type, uint16_t kernel, std::vector<uint32_t> a = {}) {
+    tsr_launch l{};
+    l.type = type;
+    l.kernel = kernel;
+    for (size_t i = 0; i < a.size() && i < 7; ++i) l.arg[i] = a[i];
+    return l;
+}
+
+static uint32_t st_of(const tsr_record & r) { return TSR_GET(r.w[0], TSR_LCQ_R0_STATUS); }
+
 static void test_protocol_basic() {
-    printf("protocol\n");
-    mock_options o;
+    printf("protocol: open, identity, bind\n");
+    mock_options o = small_mock();
     mock_kdev * m = nullptr;
     tsr_transport * t = open_mock(o, &m);
     CHECK(t != nullptr, "open");
@@ -187,16 +226,24 @@ static void test_protocol_basic() {
     const tsr_config * c = tsr_transport_config(t);
     CHECK(strcmp(tsr_transport_name(t), "mock") == 0, "name %s", tsr_transport_name(t));
     CHECK(c->num_ch == 4 && c->t_max == 1 && c->lanes == 128 && c->k_max == 32768 && c->spm_bytes == 4u << 20 && c->vl == 16 &&
-              c->nsreg == 16 && c->caps == 0 && c->beat_bits == 512 && c->ch_bytes == (16ull << 30),
-          "config decode");
-    CHECK(transport_kdev(t) == m, "transport_kdev");
+              c->nsreg == 16 && c->caps == tsr_sim_caps_implemented() && c->beat_bits == 512 && c->ch_bytes == (16ull << 30),
+          "config decode (CAPS 0x%x)", c->caps);
+    CHECK(transport_kdev(t) == m && transport_sim(t) == m->sim(), "transport_kdev / transport_sim");
     CHECK(tsr_transport_csr_read(t, TSR_CSR_ID) == TSR_ID_MAGIC, "window ID");
     CHECK(tsr_transport_csr_read(t, TSR_CSR_VERSION) == 0x0200u, "window VERSION 0x%x", tsr_transport_csr_read(t, TSR_CSR_VERSION));
     const uint64_t wr0 = m->window_reads;
     (void) tsr_transport_csr_read(t, TSR_CSR_CFG0);
     CHECK(m->window_reads == wr0 + 1, "csr_read is one window read");
     CHECK(tsr_transport_csr_read(t, 0x1000) == 0xFFFFFFFFu, "csr_read outside the window refused");
+    CHECK(tsr_transport_csr_write(t, 0x1000, 0) == TSR_TE_INVAL, "csr_write outside the window refused");
     CHECK(m->ch_addr(1) > (4ull << 30), "device addresses above 4 GiB");
+    // The open: SOFT_RESET (EX §8.5) and the bind (EX §9.2).
+    bool sr = false;
+    for (uint32_t off : m->window_write_log) sr = sr || off == TSR_CSR_CTRL;
+    CHECK(sr, "SOFT_RESET written at open");
+    CHECK(m->mem_en() && m->bind_errors == 0, "MEM_EN set, the latched bases are the buffers");
+    for (uint32_t ch = 0; ch < 4; ++ch) CHECK(m->latched_base(ch) == m->ch_addr(ch), "ch%u latched base", ch);
+    CHECK((tsr_transport_csr_read(t, TSR_CSR_LOG_CFG) & 0xF3u) == (TSR_LOG_CFG_ENABLE | (3u << 4)), "LOG_CFG ENABLE, LEVEL 3");
     // PERF through the window equals the simulator's (LO then HI)
     const uint32_t cmd[8] = { tsr_enc_ld(1, 0, 1000, 3).w[0], 0, 1000, 3, 0, 0, 0, 0 };
     CHECK(tsr_sim_op(m->sim(), cmd, nullptr) == TSR_ERR_NONE, "an op on the mock's simulator");
@@ -216,116 +263,161 @@ static void test_protocol_basic() {
     CHECK(dram[off - 1] == 0x3C && dram[off + big.size() - 1] == 0xC3, "neighbours untouched");
     CHECK(tsr_transport_read(t, C - 1, off + 1, back.data() + 3, big.size() - 2) == 0 && memcmp(back.data() + 3, big.data() + 2, big.size() - 2) == 0,
           "odd read");
-    CHECK(tsr_transport_write(t, 0, c->ch_bytes - 10, big.data(), 11) != 0, "write past the channel refused");
-    CHECK(tsr_transport_read(t, C, 0, back.data(), 1) != 0, "bad channel refused");
-
+    CHECK(tsr_transport_write(t, 0, c->ch_bytes - 10, big.data(), 11) == TSR_TE_INVAL, "write past the channel refused");
+    CHECK(tsr_transport_read(t, C, 0, back.data(), 1) == TSR_TE_INVAL, "bad channel refused");
+    tsr_transport_stats st;
+    tsr_transport_get_stats(t, &st);
+    CHECK(st.bytes_written == big.size() - 1 && st.bytes_read == big.size() - 2 && st.csr_reads > 10 && st.csr_writes > 5,
+          "stats: %" PRIu64 " B written, %" PRIu64 " B read, %" PRIu64 " / %" PRIu64 " CSR", st.bytes_written, st.bytes_read,
+          st.csr_reads, st.csr_writes);
     CHECK(m->unmapped_accesses == 0, "protocol layer touched unmapped adapter registers %" PRIu64 " times", m->unmapped_accesses);
-    CHECK(m->window_writes == 0, "protocol layer wrote %" PRIu64 " core CSRs", m->window_writes);
     tsr_transport_close(t);
 }
 
-// Opens that must fail: not a Tesseract core, a v1 core (ISA major 1), NUM_CH vs the bound
-// buffers, a channel buffer that is not 4 KiB aligned.
+// A kdev that forwards to a mock, with hooks (v1 core, fewer channels, a frozen LCQ).
+struct wrap_kdev final : kdev {
+    std::unique_ptr<mock_kdev> in;
+    uint32_t ch_less = 0;
+    bool     freeze_lcq = false;
+    uint32_t lcq_seen = 0;
+    explicit wrap_kdev(const mock_options & mo) : in(new mock_kdev(mo)) {}
+    const char * name() const override { return "wrap"; }
+    uint32_t num_ch() const override { return in->num_ch() - ch_less; }
+    uint64_t ch_bytes(uint32_t ch) const override { return in->ch_bytes(ch); }
+    uint64_t ch_addr(uint32_t ch) const override { return in->ch_addr(ch); }
+    int reg_read(uint32_t off, uint32_t * val) override {
+        const int rc = in->reg_read(off, val);
+        if (freeze_lcq && off == KREG_CSR_WINDOW + TSR_CSR_LCQ_WR) *val = lcq_seen;   // records never appear
+        else if (off == KREG_CSR_WINDOW + TSR_CSR_LCQ_WR) lcq_seen = *val;
+        return rc;
+    }
+    int reg_write(uint32_t off, uint32_t val) override { return in->reg_write(off, val); }
+    int mem_write(uint32_t ch, uint64_t off, const void * src, size_t n) override { return in->mem_write(ch, off, src, n); }
+    int mem_read(uint32_t ch, uint64_t off, void * dst, size_t n) override { return in->mem_read(ch, off, dst, n); }
+    uint64_t now_ns() override { return in->now_ns(); }
+    void idle(uint32_t it, uint64_t ns) override { in->idle(it, ns); }
+    tsr_sim * sim() override { return in->sim(); }
+    bool simulated() const override { return true; }
+};
+
+// Opens that must fail: not a Tesseract core, a v1 core (ISA major 1, adapter major 1), NUM_CH vs
+// the bound buffers, a channel buffer that is not 4 KiB aligned, no clk_rv, SOFT_RESET stuck.
 static void test_open_refusals() {
-    mock_options o;
-    mock_kdev * m = nullptr;
-    {
+    printf("protocol: refusals at open\n");
+    mock_options o = small_mock();
+    auto refused = [&](const char * what, const std::function<void(mock_kdev &)> & f) {
         std::unique_ptr<mock_kdev> mk(new mock_kdev(o));
-        mk->id_override = 0x12345678u;
-        CHECK(transport_open_kdev(std::move(mk)) == nullptr, "wrong ID refused");
-    }
-    {
-        std::unique_ptr<mock_kdev> mk(new mock_kdev(o));
-        mk->set_ch_addr(2, mk->ch_addr(2) + 64);
-        CHECK(transport_open_kdev(std::move(mk)) == nullptr, "unaligned channel buffer refused");
-    }
+        f(*mk);
+        tsr_transport * t = transport_open_kdev(std::move(mk));
+        CHECK(t == nullptr, "%s refused", what);
+        if (t) tsr_transport_close(t);
+    };
+    refused("wrong ID", [](mock_kdev & m) { m.id_override = 0x12345678u; });
+    refused("ISA 1.0 core (v1 bitstream)", [](mock_kdev & m) { m.version_override = 0x0100u; });
+    refused("unaligned channel buffer", [](mock_kdev & m) { m.set_ch_addr(2, m.ch_addr(2) + 64); });
+    refused("RV_FREQ = 0 (no clk_rv)", [](mock_kdev & m) { m.rv_freq_override = 0; });
     {
         mock_options o1 = o;
-        o1.adapter_version = 0x00010003u;   // reports 3 channels; the core still has 4: not checked
-        tsr_transport * t = open_mock(o1, &m);
-        CHECK(t != nullptr, "ADAPTER_VERSION is informational");
-        tsr_transport_close(t);
+        o1.adapter_version = 0x00010004u;   // a v1 adapter
+        std::unique_ptr<mock_kdev> mk(new mock_kdev(o1));
+        CHECK(transport_open_kdev(std::move(mk)) == nullptr, "ADAPTER_VERSION major 1 refused");
+        o1.adapter_version = 0x00020003u;   // reports 3 channels, 4 bound
+        mk.reset(new mock_kdev(o1));
+        CHECK(transport_open_kdev(std::move(mk)) == nullptr, "ADAPTER_VERSION.NUM_CH vs the bound buffers refused");
     }
-    // A v1 bitstream reports ISA 1.0: refused (its tools are in build/v1).
-    struct v1_core final : kdev {
-        std::unique_ptr<mock_kdev> in;
-        explicit v1_core(const mock_options & mo) : in(new mock_kdev(mo)) {}
-        const char * name() const override { return "v1core"; }
-        uint32_t num_ch() const override { return in->num_ch(); }
-        uint64_t ch_bytes(uint32_t ch) const override { return in->ch_bytes(ch); }
-        uint64_t ch_addr(uint32_t ch) const override { return in->ch_addr(ch); }
-        int reg_read(uint32_t off, uint32_t * val) override {
-            if (off == KREG_CSR_WINDOW + TSR_CSR_VERSION) {
-                *val = 0x0100u;
-                return 0;
-            }
-            return in->reg_read(off, val);
-        }
-        int reg_write(uint32_t off, uint32_t val) override { return in->reg_write(off, val); }
-        int mem_write(uint32_t ch, uint64_t off, const void * src, size_t n) override { return in->mem_write(ch, off, src, n); }
-        int mem_read(uint32_t ch, uint64_t off, void * dst, size_t n) override { return in->mem_read(ch, off, dst, n); }
-    };
-    CHECK(transport_open_kdev(std::unique_ptr<kdev>(new v1_core(o))) == nullptr, "ISA 1.0 core refused");
-    // NUM_CH of the core differs from the bound buffers.
-    struct fewer final : kdev {
-        std::unique_ptr<mock_kdev> in;
-        explicit fewer(const mock_options & mo) : in(new mock_kdev(mo)) {}
-        const char * name() const override { return "fewer"; }
-        uint32_t num_ch() const override { return in->num_ch() - 1; }
-        uint64_t ch_bytes(uint32_t ch) const override { return in->ch_bytes(ch); }
-        uint64_t ch_addr(uint32_t ch) const override { return in->ch_addr(ch); }
-        int reg_read(uint32_t off, uint32_t * val) override { return in->reg_read(off, val); }
-        int reg_write(uint32_t off, uint32_t val) override { return in->reg_write(off, val); }
-        int mem_write(uint32_t ch, uint64_t off, const void * src, size_t n) override { return in->mem_write(ch, off, src, n); }
-        int mem_read(uint32_t ch, uint64_t off, void * dst, size_t n) override { return in->mem_read(ch, off, dst, n); }
-    };
-    CHECK(transport_open_kdev(std::unique_ptr<kdev>(new fewer(o))) == nullptr, "NUM_CH vs bound buffers refused");
+    {
+        std::unique_ptr<wrap_kdev> w(new wrap_kdev(o));
+        w->ch_less = 1;
+        CHECK(transport_open_kdev(std::move(w)) == nullptr, "CFG0.NUM_CH vs bound buffers refused");
+    }
+    // SOFT_RESET that never completes (a stuck unit): the open fails after TSR_RESET_MS.
+    setenv("TSR_RESET_MS", "3", 1);
+    refused("SOFT_RESET stuck at open", [](mock_kdev & m) { m.sr_stuck = true; });
+    unsetenv("TSR_RESET_MS");
     CHECK(transport_open_kdev(nullptr) == nullptr, "no kdev");
+    // Malformed environment.
+    for (const char * kv : { "TSR_LAUNCH_TIMEOUT_MS=x", "TSR_ABORT_MS=0", "TSR_LOG_LEVEL=6", "TSR_ATTACH=2", "TSR_GDB_WAIT=always" }) {
+        const std::string s = kv;
+        const size_t eq = s.find('=');
+        setenv(s.substr(0, eq).c_str(), s.substr(eq + 1).c_str(), 1);
+        tsr_transport * t = tsr_transport_open("mock");
+        CHECK(t == nullptr, "%s refused", kv);
+        if (t) tsr_transport_close(t);
+        unsetenv(s.substr(0, eq).c_str());
+    }
 }
 
-// The mock's adapter registers against tsr_xrt_ctrl.
+// The adapter model's registers (EX §9.2).
 static void test_mock_regs() {
-    mock_options o;
-    o.num_ch = 2;
+    printf("mock adapter registers\n");
+    mock_options o = small_mock(2);
     mock_kdev m(o);
     uint32_t v = 0;
-    // channel bases: plain storage, lo / hi per channel
+    // channel bases: RW while MEM_EN = 0
     m.reg_write(KREG_CH_BASE0 + 8, 0x12345000u);
     m.reg_write(KREG_CH_BASE0 + 12, 0x40u);
     CHECK(m.reg_read(KREG_CH_BASE0 + 8, &v) == 0 && v == 0x12345000u, "ch1_base lo (0x%x)", v);
     CHECK(m.reg_read(KREG_CH_BASE0 + 12, &v) == 0 && v == 0x40u, "ch1_base hi (0x%x)", v);
     CHECK(m.reg_read(KREG_CH_BASE0, &v) == 0 && v == 0, "ch0_base untouched");
-    CHECK(m.unmapped_accesses == 0, "bases are mapped");
     // v1's run registers are gone: read 0, writes ignored
     for (uint32_t off = 0; off < KREG_CH_BASE0; off += 4) {
         m.reg_write(off, 0xFFFFFFFFu);
         CHECK(m.reg_read(off, &v) == 0 && v == 0, "offset 0x%03x reads 0 (0x%x)", off, v);
     }
     CHECK(m.unmapped_accesses == 2 * (KREG_CH_BASE0 / 4), "unmapped accesses counted (%" PRIu64 ")", m.unmapped_accesses);
-    CHECK(m.reg_read(KREG_ADAPTER_VERSION, &v) == 0 && v == 0x00010002u, "ADAPTER_VERSION 0x%x", v);
+    CHECK(m.reg_read(KREG_ADAPTER_VERSION, &v) == 0 && v == 0x00020002u, "ADAPTER_VERSION 0x%x", v);
     CHECK(m.reg_read(KREG_SPACE, &v) != 0 && m.reg_read(2, &v) != 0, "outside / unaligned refused");
-    // ADAPTER_STATUS W1C: bits [3:0] one by one, any 1 in [31:16] clears the whole count
+    // MEM_EN rising edge with a misaligned base: refused, BASE_MISALIGNED.
+    m.reg_write(KREG_CH_BASE0, 0x2000u + 64);
+    m.reg_write(KREG_ADAPTER_CTRL, TSR_ADAPTER_CTRL_MEM_EN);
+    CHECK(m.reg_read(KREG_ADAPTER_CTRL, &v) == 0 && v == 0 && !m.mem_en(), "MEM_EN stays 0 with a misaligned base");
+    CHECK(m.reg_read(KREG_ADAPTER_STATUS, &v) == 0 && (v & AST_BASE_ALIGN), "BASE_MISALIGNED (0x%x)", v);
+    m.reg_write(KREG_ADAPTER_STATUS, 0xFFFFFFFFu);
+    // REQ_HELD: an op while MEM_EN = 0 holds the model (time moves, the op does not).
+    const uint32_t ld[8] = { tsr_enc_ld(0, 0, 100, 1).w[0], 0, 100, 1, 0, 0, 0, 0 };
+    tsr_sim_push(m.sim(), ld, TSR_TICKET_NONE, TSR_TICKET_NONE, 0xFF00u);
+    const uint64_t t0 = m.now_ns();
+    m.idle(0, 1000000);
+    CHECK(m.reg_read(KREG_ADAPTER_STATUS, &v) == 0 && (v & AST_REQ_HELD), "REQ_HELD while MEM_EN = 0 (0x%x)", v);
+    CHECK(!(tsr_sim_csr_read(m.sim(), TSR_CSR_STATUS) & TSR_STATUS_QIDLE) && m.now_ns() - t0 >= 999000, "the op is held, time moved");
+    // Aligned bases: MEM_EN latches them; a base write while MEM_EN = 1 is ignored (BASE_LOCKED).
+    m.reg_write(KREG_CH_BASE0, (uint32_t) m.ch_addr(0));
+    m.reg_write(KREG_CH_BASE0 + 4, (uint32_t) (m.ch_addr(0) >> 32));
+    m.reg_write(KREG_CH_BASE0 + 8, (uint32_t) m.ch_addr(1));
+    m.reg_write(KREG_CH_BASE0 + 12, (uint32_t) (m.ch_addr(1) >> 32));
+    m.reg_write(KREG_ADAPTER_CTRL, TSR_ADAPTER_CTRL_MEM_EN);
+    CHECK(m.mem_en() && m.latched_base(1) == m.ch_addr(1) && m.bind_errors == 0, "MEM_EN latched the bases");
+    m.idle(0, 1000000);
+    CHECK(tsr_sim_csr_read(m.sim(), TSR_CSR_STATUS) & TSR_STATUS_QIDLE, "the held op ran after MEM_EN");
+    m.reg_write(KREG_CH_BASE0 + 8, 0x5000u);
+    CHECK(m.reg_read(KREG_CH_BASE0 + 8, &v) == 0 && v == (uint32_t) m.ch_addr(1), "base write ignored while MEM_EN = 1");
+    CHECK(m.reg_read(KREG_ADAPTER_STATUS, &v) == 0 && (v & AST_BASE_LOCKED) && (v & AST_REQ_HELD), "BASE_LOCKED (0x%x)", v);
+    // ADAPTER_STATUS W1C: bits [5:0] one by one, any 1 in [31:16] clears the whole count; plat_err_i
+    m.reg_write(KREG_ADAPTER_STATUS, 0xFFFFFFFFu);
     m.inject_status(AST_RRESP | AST_ORPHAN | (3u << 16));
     CHECK(m.reg_read(KREG_ADAPTER_STATUS, &v) == 0 && v == (AST_RRESP | AST_ORPHAN | (3u << 16)), "injected 0x%x", v);
+    CHECK((m.reg_read(KREG_CSR_WINDOW + TSR_CSR_STATUS, &v) == 0) && (v & TSR_STATUS_PLAT_ERR), "plat_err_i: STATUS.PLAT_ERR");
     m.reg_write(KREG_ADAPTER_STATUS, 0x00010000u);
     CHECK(m.reg_read(KREG_ADAPTER_STATUS, &v) == 0 && v == (AST_RRESP | AST_ORPHAN), "count cleared as a whole (0x%x)", v);
     m.reg_write(KREG_ADAPTER_STATUS, AST_ORPHAN);
     CHECK(m.reg_read(KREG_ADAPTER_STATUS, &v) == 0 && v == AST_RRESP, "bit2 cleared alone (0x%x)", v);
     m.reg_write(KREG_ADAPTER_STATUS, 0xFFFFFFFFu);
     CHECK(m.reg_read(KREG_ADAPTER_STATUS, &v) == 0 && v == 0, "all cleared (0x%x)", v);
+    CHECK((m.reg_read(KREG_CSR_WINDOW + TSR_CSR_STATUS, &v) == 0) && !(v & TSR_STATUS_PLAT_ERR), "plat_err_i low again");
     m.inject_status(0xFFFF0000u);
     m.inject_status(5u << 16);
     CHECK(m.reg_read(KREG_ADAPTER_STATUS, &v) == 0 && v == 0xFFFF0000u, "count saturates (0x%x)", v);
-    // the CSR window reaches the simulator; writes are forwarded (and ignored by it)
+    // the CSR window reaches the simulator
     CHECK(m.reg_read(KREG_CSR_WINDOW + TSR_CSR_CFG0, &v) == 0 && v == (2u | (128u << 8) | (1u << 20)), "window CFG0 0x%x", v);
-    m.reg_write(KREG_CSR_WINDOW + 0x20, 1);
-    CHECK(m.window_writes == 1 && m.window_write_log.size() == 1 && m.window_write_log[0] == 0x20, "window write logged");
+    const size_t n0 = m.window_write_log.size();
+    m.reg_write(KREG_CSR_WINDOW + TSR_CSR_LOG_CFG, 0xF1u);
+    CHECK(m.window_write_log.size() == n0 + 1 && m.window_write_log.back() == TSR_CSR_LOG_CFG, "window write logged");
 }
 
 // The adapter log: what the protocol layer saw in ADAPTER_STATUS at open (it clears the register).
 static void test_adapter_log() {
-    mock_options o;
-    o.num_ch = 1;
+    printf("protocol: ADAPTER_STATUS at open\n");
+    mock_options o = small_mock(1);
     std::unique_ptr<mock_kdev> mk(new mock_kdev(o));
     mock_kdev * m = mk.get();
     m->inject_status(AST_RRESP | (2u << 16));   // left by an earlier process
@@ -339,11 +431,372 @@ static void test_adapter_log() {
     CHECK(transport_adapter_log(nullptr).at_open == 0, "no transport: empty log");
     tsr_transport_close(t);
     tsr_transport * ts = tsr_transport_open("sim");
-    CHECK(ts != nullptr && transport_adapter_log(ts).at_open == 0 && transport_kdev(ts) == nullptr, "sim: empty log, no kdev");
+    CHECK(ts != nullptr && transport_adapter_log(ts).at_open == 0 && transport_kdev(ts) != nullptr && !transport_kdev(ts)->has_adapter(),
+          "sim: empty log, no adapter");
     tsr_transport_close(ts);
 }
 
+// A booted device with a launch running, left by a process that died; then TSR_ATTACH and a normal
+// open (SOFT_RESET, warm boot).
+static void test_stale_core() {
+    printf("protocol: stale core at open\n");
+    tsr_image * img = nullptr;
+    if (tsr_image_open(TSR_FW_TEST_IMAGE_fw_rt, &img) != 0) {
+        CHECK(0, "fw_rt image");
+        return;
+    }
+    mock_kdev * m = nullptr;
+    tsr_transport * a = open_mock(small_mock(), &m);
+    CHECK(a != nullptr && tsr_transport_boot(a, img) == 0, "process A: boot");
+    if (!a) return;
+    const tsr_launch l = L(TSR_DESC_TYPE_LAUNCH, (uint16_t) tsr_image_kernel(img, "rt_stop"), { 0xFFFFFFF0u, 1 });
+    uint32_t q = 0;
+    CHECK(tsr_transport_launch(a, &l, &q) == 0, "process A: a long launch");
+    for (int i = 0; i < 100 && TSR_GET(tsr_transport_csr_read(a, TSR_CSR_RT_STATE), TSR_RT_STATE_PHASE) != TSR_RT_STATE_PHASE_KERNEL; ++i)
+        (void) tsr_transport_csr_read(a, TSR_CSR_STATUS);   // runs the model (sim kinds)
+    std::unique_ptr<kdev> dead = transport_detach_kdev(a);   // process A dies
+    uint32_t st = 0;
+    dead->reg_read(KREG_CSR_WINDOW + TSR_CSR_STATUS, &st);
+    CHECK((st & TSR_STATUS_RV_RUNNING) && (st & TSR_STATUS_ACTIVE), "the core is left running a launch (STATUS 0x%08x)", st);
+    // TSR_ATTACH=1: no reset, no bind; the state is visible; launches refused until a boot.
+    setenv("TSR_ATTACH", "1", 1);
+    tsr_transport * b = transport_open_kdev(std::move(dead));
+    unsetenv("TSR_ATTACH");
+    CHECK(b != nullptr, "TSR_ATTACH open");
+    if (!b) return;
+    CHECK(TSR_GET(tsr_transport_csr_read(b, TSR_CSR_RT_STATE), TSR_RT_STATE_PHASE) == TSR_RT_STATE_PHASE_KERNEL &&
+          (tsr_transport_csr_read(b, TSR_CSR_STATUS) & TSR_STATUS_ACTIVE), "attach: the running launch is still there");
+    tsr_record r;
+    const tsr_launch ping = L(TSR_DESC_TYPE_PING, 0, { 5 });
+    CHECK(tsr_transport_call(b, &ping, TSR_TIMEOUT_DEFAULT, &r) == TSR_TE_STATE, "attach: launches refused before a boot");
+    dead = transport_detach_kdev(b);
+    // A normal open: SOFT_RESET stops the core (EX §8.5), then a warm boot (the ITCM is intact).
+    tsr_transport * c = transport_open_kdev(std::move(dead));
+    CHECK(c != nullptr, "normal open of the stale core");
+    if (!c) return;
+    st = tsr_transport_csr_read(c, TSR_CSR_STATUS);
+    CHECK(!(st & (TSR_STATUS_RV_RUNNING | TSR_STATUS_ACTIVE)) && (st & TSR_STATUS_QIDLE), "SOFT_RESET at open stopped it (STATUS 0x%08x)", st);
+    CHECK(tsr_transport_csr_read(c, TSR_CSR_LQ_TAKEN) == tsr_transport_csr_read(c, TSR_CSR_LQ_SEQ) &&
+          tsr_transport_csr_read(c, TSR_CSR_LCQ_RD) == tsr_transport_csr_read(c, TSR_CSR_LCQ_WR), "rings flushed");
+    CHECK(tsr_transport_boot(c, img) == 0 && transport_boot_info(c).warm, "warm boot after the stale core");
+    uint32_t q2 = 0;
+    CHECK(tsr_transport_launch(c, &ping, &q2) == 0 && q2 == q + 1, "the sequence continues after the dead launch (%u, %u)", q2, q);
+    CHECK(tsr_transport_wait(c, q2, TSR_TIMEOUT_DEFAULT, &r) == 0 && r.w[2] == 5, "PING");
+    tsr_transport_close(c);
+    tsr_image_close(img);
+}
+
+// stderr of a code section (the transport's messages), echoed to stdout for the ctest log.
+static std::string capture_stderr(const std::function<void()> & f) {
+    fflush(stderr);
+    FILE * tmp = tmpfile();
+    const int saved = dup(2);
+    if (tmp == nullptr || saved < 0 || dup2(fileno(tmp), 2) < 0) {
+        CHECK(0, "stderr capture");
+        f();
+        return std::string();
+    }
+    f();
+    fflush(stderr);
+    dup2(saved, 2);
+    close(saved);
+    std::string s;
+    rewind(tmp);
+    char b[4096];
+    for (size_t n; (n = fread(b, 1, sizeof(b), tmp)) > 0;) s.append(b, n);
+    fclose(tmp);
+    if (!s.empty()) printf("  [stderr] %s", s.c_str());
+    return s;
+}
+
+static bool has(const std::string & s, const char * sub) { return s.find(sub) != std::string::npos; }
+
+// A process that used the device, then a new open of it (the ring counters count on: only a card
+// reset zeroes them). The open must start at the device's read pointers: no record or log word the
+// earlier process consumed is taken for a new one ("HELLO outside a boot", an answer with no launch
+// outstanding, an LCQ resync), and what it left unread is discarded by the SOFT_RESET, not decoded
+// (no stale log in this process's log or tsr_transport_log_drain).
+static void test_stale_reopen() {
+    printf("protocol: reopen after an earlier process\n");
+    tsr_image * img = nullptr;
+    if (tsr_image_open(TSR_FW_TEST_IMAGE_fw_rt, &img) != 0) {
+        CHECK(0, "fw_rt image");
+        return;
+    }
+    const tsr_launch ping = L(TSR_DESC_TYPE_PING, 0, { 0x51u });
+    auto stale_msgs = [](const std::string & e) {
+        return has(e, "HELLO outside a boot") || has(e, "no launch outstanding") || has(e, "resynchronising") || has(e, "out of order");
+    };
+    for (int pings : { 3, 20 }) {
+        mock_kdev * m = nullptr;
+        tsr_transport * a = open_mock(small_mock(), &m);
+        CHECK(a != nullptr && tsr_transport_boot(a, img) == 0, "process A: boot");
+        if (!a) continue;
+        tsr_record r;
+        for (int i = 0; i < pings; ++i) CHECK(tsr_transport_call(a, &ping, TSR_TIMEOUT_DEFAULT, &r) == 0, "process A: PING %d", i);
+        const uint32_t last = r.w[1];
+        std::unique_ptr<kdev> d = transport_detach_kdev(a);   // process A exits
+        tsr_transport * b = nullptr;
+        const std::string e = capture_stderr([&] { b = transport_open_kdev(std::move(d)); });
+        CHECK(b != nullptr, "reopen after %d PINGs", pings);
+        if (!b) continue;
+        CHECK(!stale_msgs(e) && !has(e, "discards"), "reopen after %d consumed PINGs: no stale record taken (stderr: %s)", pings, e.c_str());
+        const std::string e2 = capture_stderr([&] {
+            CHECK(tsr_transport_boot(b, img) == 0 && transport_boot_info(b).warm, "reopen: warm boot");
+            uint32_t q = 0;
+            CHECK(tsr_transport_launch(b, &ping, &q) == 0 && q == last + 1, "reopen: the sequence continues (%u after %u)", q, last);
+            CHECK(tsr_transport_wait(b, q, TSR_TIMEOUT_DEFAULT, &r) == 0 && r.w[1] == q && r.w[2] == 0x51u, "reopen: PING");
+        });
+        CHECK(!stale_msgs(e2), "reopen after %d PINGs: boot and launch see no stale record (stderr: %s)", pings, e2.c_str());
+        tsr_transport_close(b);
+    }
+    {
+        // Process A leaves an answered rt_log launch (5 FMT log records) and a PONG unread.
+        mock_kdev * m = nullptr;
+        tsr_transport * a = open_mock(small_mock(), &m);
+        CHECK(a != nullptr && tsr_transport_boot(a, img) == 0, "process A: boot");
+        if (a) {
+            const tsr_launch lg = L(TSR_DESC_TYPE_LAUNCH, (uint16_t) tsr_image_kernel(img, "rt_log"), { 1, 5, 0xABu });
+            uint32_t q0 = 0, q1 = 0;
+            CHECK(tsr_transport_launch(a, &lg, &q0) == 0 && tsr_transport_launch(a, &ping, &q1) == 0, "process A: 2 launches");
+            for (int i = 0; i < 1000 && tsr_transport_csr_read(a, TSR_CSR_LCQ_WR) - tsr_transport_csr_read(a, TSR_CSR_LCQ_RD) < 2; ++i) {
+            }
+            const uint32_t unread = tsr_transport_csr_read(a, TSR_CSR_LCQ_WR) - tsr_transport_csr_read(a, TSR_CSR_LCQ_RD);
+            const uint32_t words = tsr_transport_csr_read(a, TSR_CSR_LOG_WR) - tsr_transport_csr_read(a, TSR_CSR_LOG_RD);
+            CHECK(unread == 2 && words > 0, "process A leaves 2 records (%u) and log words (%u) unread", unread, words);
+            std::unique_ptr<kdev> d = transport_detach_kdev(a);
+            tsr_transport * b = nullptr;
+            const std::string e = capture_stderr([&] { b = transport_open_kdev(std::move(d)); });
+            CHECK(b != nullptr, "reopen");
+            if (b) {
+                char want[96];
+                snprintf(want, sizeof(want), "discards %u LCQ records and %u log words", unread, words);
+                CHECK(has(e, want) && !stale_msgs(e), "reopen: the unread records are discarded, not taken (stderr: %s)", e.c_str());
+                std::vector<uint32_t> w(4096);
+                size_t n = 1;
+                CHECK(tsr_transport_log_drain(b, w.data(), w.size(), &n) == 0 && n == 0, "reopen: no stale log words (%zu)", n);
+                tsr_record r;
+                const std::string e2 = capture_stderr([&] {
+                    CHECK(tsr_transport_boot(b, img) == 0, "reopen: boot");
+                    CHECK(tsr_transport_call(b, &ping, TSR_TIMEOUT_DEFAULT, &r) == 0 && r.w[1] == q1 + 1 && r.w[2] == 0x51u, "reopen: PING");
+                });
+                CHECK(!stale_msgs(e2), "reopen: no stale record later (stderr: %s)", e2.c_str());
+                tsr_transport_close(b);
+            }
+        }
+    }
+    tsr_image_close(img);
+}
+
+// EX §4.9: a watermark covers q iff (s - q) mod 2^32 < 2^31 and stays valid until SOFT_RESET, so
+// the transport moves a valid one below the oldest unanswered launch every 2^30 launches (here
+// every 4, transport_set_wm_refresh) and never once SOFT_RESET has invalidated it.
+static void test_watermark_refresh() {
+    printf("protocol: watermark refresh\n");
+    tsr_image * img = nullptr;
+    if (tsr_image_open(TSR_FW_TEST_IMAGE_fw_rt, &img) != 0) return;
+    mock_kdev * m = nullptr;
+    tsr_transport * t = open_mock(small_mock(), &m);
+    if (t && tsr_transport_boot(t, img) == 0) {
+        transport_set_wm_refresh(t, 4);
+        const tsr_launch ping = L(TSR_DESC_TYPE_PING, 0, { 0x77u });
+        tsr_record r;
+        CHECK(tsr_transport_call(t, &ping, TSR_TIMEOUT_DEFAULT, &r) == 0, "PING");
+        const uint32_t q0 = r.w[1];
+        CHECK(tsr_transport_cancel(t, q0) == 0 && tsr_transport_stop(t, q0) == 0, "cancel and stop at the last answered launch");
+        bool ok = true;
+        for (int i = 0; i < 12; ++i)
+            ok = ok && tsr_transport_call(t, &ping, TSR_TIMEOUT_DEFAULT, &r) == 0 && st_of(r) == 0 && r.w[2] == 0x77u;
+        CHECK(ok, "launches after the watermarks are not covered (r0 0x%08x)", r.w[0]);
+        const uint32_t pushed = tsr_transport_csr_read(t, TSR_CSR_LQ_SEQ);
+        const uint32_t c = tsr_transport_csr_read(t, TSR_CSR_LQ_CANCEL), s = tsr_transport_csr_read(t, TSR_CSR_LQ_STOP);
+        CHECK(c != q0 && s != q0 && (int32_t) (c - q0) > 0 && (int32_t) (pushed - 1 - c) >= 0 && pushed - 1 - c <= 4 && s == c,
+              "watermarks moved up behind the answered launches: LQ_CANCEL %u, LQ_STOP %u (written at %u; LQ_SEQ %u)", c, s, q0, pushed);
+        // After a SOFT_RESET both are invalid: never rewritten.
+        CHECK(tsr_transport_soft_reset(t) == 0 && tsr_transport_boot(t, img) == 0, "soft reset + boot");
+        const size_t n0 = m->window_write_log.size();
+        for (int i = 0; i < 12; ++i) CHECK(tsr_transport_call(t, &ping, TSR_TIMEOUT_DEFAULT, &r) == 0 && st_of(r) == 0, "PING");
+        uint32_t wm_writes = 0;
+        for (size_t j = n0; j < m->window_write_log.size(); ++j)
+            wm_writes += m->window_write_log[j] == TSR_CSR_LQ_CANCEL || m->window_write_log[j] == TSR_CSR_LQ_STOP;
+        CHECK(wm_writes == 0, "no watermark write after SOFT_RESET invalidated them (%u)", wm_writes);
+        // A watermark ahead of PUSHED covers launches to come: kept, they answer ABORTED.
+        const uint32_t ahead = tsr_transport_csr_read(t, TSR_CSR_LQ_SEQ) + 8;
+        CHECK(tsr_transport_cancel(t, ahead) == 0, "cancel ahead of PUSHED");
+        uint32_t aborted = 0;
+        for (int i = 0; i < 6; ++i) {
+            CHECK(tsr_transport_call(t, &ping, TSR_TIMEOUT_DEFAULT, &r) == 0, "PING");
+            aborted += st_of(r) == TSR_LCQ_R0_STATUS_ABORTED;
+        }
+        CHECK(aborted == 6 && tsr_transport_csr_read(t, TSR_CSR_LQ_CANCEL) == ahead,
+              "a watermark ahead of PUSHED is kept (%u of 6 covered launches ABORTED, LQ_CANCEL %u, written %u)", aborted,
+              tsr_transport_csr_read(t, TSR_CSR_LQ_CANCEL), ahead);
+    } else {
+        CHECK(0, "open + boot");
+    }
+    tsr_transport_close(t);
+    tsr_image_close(img);
+}
+
+// Timeouts at boot: no HELLO within TSR_BOOT_MS (device time on the simulator kinds).
+static void test_boot_timeout() {
+    printf("protocol: no HELLO\n");
+    tsr_image * img = nullptr;
+    if (tsr_image_open(TSR_FW_TEST_IMAGE_fw_rt, &img) != 0) return;
+    std::unique_ptr<wrap_kdev> w(new wrap_kdev(small_mock()));
+    wrap_kdev * wk = w.get();
+    tsr_transport * t = transport_open_kdev(std::move(w));
+    CHECK(t != nullptr, "open");
+    if (t) {
+        transport_set_timeouts(t, 0, 0, 3, 0);   // TSR_BOOT_MS 3
+        wk->freeze_lcq = true;
+        const uint64_t t0 = wk->now_ns();
+        CHECK(tsr_transport_boot(t, img) == TSR_TE_TIMEOUT, "boot without HELLO times out");
+        CHECK(wk->now_ns() - t0 >= 3000000, "after TSR_BOOT_MS of device time");
+        wk->freeze_lcq = false;
+        CHECK(tsr_transport_boot(t, img) == 0, "boot again (the HELLO now visible)");
+        tsr_transport_close(t);
+    }
+    tsr_image_close(img);
+}
+
+// Adapter errors during a launch: plat_err_i -> DONE PLAT_ERR -> ADAPTER_STATUS read, reported,
+// cleared (EX §8.6); a hung unit: "card reset needed".
+static void test_launch_faults() {
+    printf("protocol: adapter errors and a hung unit during launches\n");
+    tsr_image * img = nullptr;
+    if (tsr_image_open(TSR_FW_TEST_IMAGE_fw_rt, &img) != 0) return;
+    const uint16_t knop = (uint16_t) tsr_image_kernel(img, "rt_nop");
+    {
+        mock_kdev * m = nullptr;
+        tsr_transport * t = open_mock(small_mock(), &m);
+        if (t && tsr_transport_boot(t, img) == 0) {
+            m->inject_at_push(2, AST_BRESP | (1u << 16));   // an AXI write error during the 2nd launch
+            tsr_record r;
+            const tsr_launch l = L(TSR_DESC_TYPE_LAUNCH, knop);
+            CHECK(tsr_transport_call(t, &l, TSR_TIMEOUT_DEFAULT, &r) == 0 && st_of(r) == 0, "launch 1 OK");
+            CHECK(tsr_transport_call(t, &l, TSR_TIMEOUT_DEFAULT, &r) == 0 && st_of(r) == TSR_LCQ_R0_STATUS_PLAT_ERR,
+                  "launch 2: DONE PLAT_ERR (r0 0x%08x)", r.w[0]);
+            const adapter_log lg = transport_adapter_log(t);
+            CHECK(lg.plat_errs == 1 && lg.last == (AST_BRESP | (1u << 16)), "ADAPTER_STATUS read (0x%x)", lg.last);
+            uint32_t v = 1;
+            m->reg_read(KREG_ADAPTER_STATUS, &v);
+            CHECK(v == 0, "ADAPTER_STATUS cleared (0x%x)", v);
+            CHECK(tsr_transport_call(t, &l, TSR_TIMEOUT_DEFAULT, &r) == 0 && st_of(r) == 0, "launch 3 OK again");
+        } else {
+            CHECK(0, "open + boot");
+        }
+        tsr_transport_close(t);
+    }
+    {
+        // STATUS.PLAT_ERR seen while waiting, before the answer: a kernel without a previous
+        // duration backs off at once and reads STATUS, and rt_stop runs longer than the sim kdev's
+        // 2^20-cycle run-ahead. ADAPTER_STATUS (plat_err_i) must stay set until every launch in
+        // flight has answered, so both answer DONE PLAT_ERR (R7) instead of KERNEL_ERR / OK; one
+        // event; cleared after the last answer.
+        mock_kdev * m = nullptr;
+        tsr_transport * t = open_mock(small_mock(), &m);
+        if (t && tsr_transport_boot(t, img) == 0) {
+            m->inject_at_push(1, AST_BRESP | (1u << 16));
+            const tsr_launch ls = L(TSR_DESC_TYPE_LAUNCH, (uint16_t) tsr_image_kernel(img, "rt_stop"), { 1u << 20, 1 });
+            const tsr_launch ln = L(TSR_DESC_TYPE_LAUNCH, knop);
+            uint32_t s1 = 0, s2 = 0;
+            CHECK(tsr_transport_launch(t, &ls, &s1) == 0 && tsr_transport_launch(t, &ln, &s2) == 0, "PLAT_ERR while waiting: 2 launches");
+            tsr_record r1{}, r2{};
+            CHECK(tsr_transport_wait(t, s1, TSR_TIMEOUT_DEFAULT, &r1) == 0 && st_of(r1) == TSR_LCQ_R0_STATUS_PLAT_ERR,
+                  "PLAT_ERR while waiting: the long launch answers DONE PLAT_ERR (r0 0x%08x)", r1.w[0]);
+            CHECK(tsr_transport_wait(t, s2, TSR_TIMEOUT_DEFAULT, &r2) == 0 && st_of(r2) == TSR_LCQ_R0_STATUS_PLAT_ERR,
+                  "PLAT_ERR while waiting: the launch behind it answers DONE PLAT_ERR too (r0 0x%08x)", r2.w[0]);
+            const adapter_log lg = transport_adapter_log(t);
+            CHECK(lg.plat_errs == 1 && lg.last == (AST_BRESP | (1u << 16)), "PLAT_ERR while waiting: one event (%u, 0x%x)", lg.plat_errs,
+                  lg.last);
+            uint32_t v = 1;
+            m->reg_read(KREG_ADAPTER_STATUS, &v);
+            CHECK(v == 0, "PLAT_ERR while waiting: ADAPTER_STATUS cleared after the last answer (0x%x)", v);
+            tsr_record r;
+            CHECK(tsr_transport_call(t, &ln, TSR_TIMEOUT_DEFAULT, &r) == 0 && st_of(r) == 0, "PLAT_ERR while waiting: OK again");
+        } else {
+            CHECK(0, "open + boot");
+        }
+        tsr_transport_close(t);
+    }
+    for (uint32_t depth : { 1u, 4u, 7u }) {
+        // Pipelined launches (depth kept outstanding, so one is always in flight): one transient
+        // AXI error at the 5th push. The episode covers the launches pushed before it was seen;
+        // ADAPTER_STATUS is cleared once they answered, and every later launch answers OK.
+        mock_kdev * m = nullptr;
+        tsr_transport * t = open_mock(small_mock(), &m);
+        if (t && tsr_transport_boot(t, img) == 0) {
+            m->inject_at_push(5, AST_BRESP | (1u << 16));
+            const tsr_launch ln = L(TSR_DESC_TYPE_LAUNCH, knop);
+            std::vector<uint32_t> seqs;
+            std::vector<uint32_t> status;
+            size_t done = 0;
+            const int N = 60;
+            for (int i = 0; i < N; ++i) {
+                uint32_t q = 0;
+                CHECK(tsr_transport_launch(t, &ln, &q) == 0, "pipelined PLAT_ERR: launch %d", i);
+                seqs.push_back(q);
+                while (seqs.size() - done > depth) {
+                    tsr_record r{};
+                    CHECK(tsr_transport_wait(t, seqs[done], TSR_TIMEOUT_DEFAULT, &r) == 0, "pipelined PLAT_ERR: wait");
+                    status.push_back(st_of(r));
+                    done++;
+                }
+            }
+            for (; done < seqs.size(); ++done) {
+                tsr_record r{};
+                CHECK(tsr_transport_wait(t, seqs[done], TSR_TIMEOUT_DEFAULT, &r) == 0, "pipelined PLAT_ERR: wait");
+                status.push_back(st_of(r));
+            }
+            uint32_t n_plat = 0, n_ok = 0;
+            size_t last_plat = 0;
+            for (size_t i = 0; i < status.size(); ++i) {
+                if (status[i] == TSR_LCQ_R0_STATUS_PLAT_ERR) {
+                    n_plat++;
+                    last_plat = i;
+                } else if (status[i] == 0) {
+                    n_ok++;
+                }
+            }
+            CHECK(n_plat >= 1 && n_plat <= 2 * depth + 2 && n_ok + n_plat == (uint32_t) N && last_plat < 5 + 2 * depth + 2,
+                  "pipelined PLAT_ERR, depth %u: %u PLAT_ERR (the last at launch %zu), %u OK of %d", depth, n_plat, last_plat, n_ok, N);
+            const adapter_log lg = transport_adapter_log(t);
+            CHECK(lg.plat_errs == 1, "pipelined PLAT_ERR, depth %u: one event (%u)", depth, lg.plat_errs);
+            uint32_t v = 1;
+            m->reg_read(KREG_ADAPTER_STATUS, &v);
+            CHECK(v == 0, "pipelined PLAT_ERR, depth %u: ADAPTER_STATUS cleared (0x%x)", depth, v);
+            printf("pipelined PLAT_ERR, depth %u: %u PLAT_ERR answers (launches up to %zu), then %u OK\n", depth, n_plat, last_plat, n_ok);
+        } else {
+            CHECK(0, "open + boot");
+        }
+        tsr_transport_close(t);
+    }
+    {
+        mock_options o = small_mock();
+        o.hang_at_push = 2;
+        mock_kdev * m = nullptr;
+        tsr_transport * t = open_mock(o, &m);
+        if (t && tsr_transport_boot(t, img) == 0) {
+            transport_set_timeouts(t, 2, 2, 0, 2);
+            tsr_record r;
+            const tsr_launch l = L(TSR_DESC_TYPE_LAUNCH, knop);
+            CHECK(tsr_transport_call(t, &l, TSR_TIMEOUT_DEFAULT, &r) == 0, "launch 1 OK");
+            CHECK(tsr_transport_call(t, &l, TSR_TIMEOUT_DEFAULT, &r) == TSR_TE_DEVICE, "hung unit: TSR_TE_DEVICE");
+            const recovery_log rl = transport_recovery_log(t);
+            CHECK(rl.failed && rl.timeouts == 1 && rl.level2 == 0, "FAILED at the ladder's UNIT_HUNG check");
+            CHECK(tsr_transport_call(t, &l, TSR_TIMEOUT_DEFAULT, &r) == TSR_TE_DEVICE, "further launches refused");
+            CHECK(tsr_transport_soft_reset(t) == TSR_TE_DEVICE && tsr_transport_boot(t, img) == TSR_TE_DEVICE, "no reset, no boot");
+        } else {
+            CHECK(0, "open + boot (hang)");
+        }
+        tsr_transport_close(t);
+    }
+    tsr_image_close(img);
+}
+
 static void test_dispatch() {
+    printf("dispatch and environment\n");
     setenv("TSR_MOCK_NUM_CH", "3", 1);
     setenv("TSR_MOCK_TMAX", "8", 1);
     tsr_transport * t = tsr_transport_open("mock");
@@ -354,7 +807,7 @@ static void test_dispatch() {
     unsetenv("TSR_MOCK_DMA_ALIGN");
     unsetenv("TSR_MOCK_NUM_CH");
     unsetenv("TSR_MOCK_TMAX");
-    setenv("TSR_MOCK_INJECT", "0:0x00010002,0:4", 1);
+    setenv("TSR_MOCK_INJECT", "0:0x00010002,0:4,3:1", 1);
     t = tsr_transport_open("mock");
     CHECK(t != nullptr, "TSR_MOCK_INJECT");
     if (t) {
@@ -362,16 +815,25 @@ static void test_dispatch() {
               transport_adapter_log(t).at_open);
         tsr_transport_close(t);
     }
-    for (const char * bad : { "1", "1:", "x:5", "1:0", "1:0x100000000", "1:5,", "-1:5", "1:5", "0:4,2:4" }) {
+    for (const char * bad : { "1", "1:", "x:5", "1:0", "1:0x100000000", "1:5,", "-1:5" }) {
         setenv("TSR_MOCK_INJECT", bad, 1);
         CHECK(tsr_transport_open("mock") == nullptr, "TSR_MOCK_INJECT=%s refused", bad);
     }
     unsetenv("TSR_MOCK_INJECT");
+    for (const char * bad : { "0x101:1", "x", "4:0" }) {
+        setenv("TSR_MOCK_TCM_FAULT", bad, 1);
+        CHECK(tsr_transport_open("mock") == nullptr, "TSR_MOCK_TCM_FAULT=%s refused", bad);
+    }
+    unsetenv("TSR_MOCK_TCM_FAULT");
+    setenv("TSR_MOCK_HANG", "0", 1);
+    CHECK(tsr_transport_open("mock") == nullptr, "TSR_MOCK_HANG=0 refused");
+    unsetenv("TSR_MOCK_HANG");
 
     CHECK(!register_kdev("xrt", [] { return std::unique_ptr<kdev>(); }), "built-in names are reserved");
     CHECK(register_kdev("testkind", [] {
               mock_options o;
               o.num_ch = 1;
+              o.threads = 1;
               return std::unique_ptr<kdev>(new mock_kdev(o));
           }),
           "register");
@@ -379,8 +841,24 @@ static void test_dispatch() {
     CHECK(t != nullptr && tsr_transport_config(t)->num_ch == 1, "registered kind");
     tsr_transport_close(t);
     CHECK(tsr_transport_open("nosuchkind") == nullptr, "unknown kind refused");
+    setenv("TSR_DEVICE", "nosuchkind", 1);
+    CHECK(tsr_transport_open(nullptr) == nullptr, "TSR_DEVICE=nosuchkind refused");
+    unsetenv("TSR_DEVICE");
     unsetenv("TSR_XCLBIN");
     CHECK(tsr_transport_open("xrt") == nullptr, "xrt: not built in, or TSR_XCLBIN unset");
+    CHECK(tsr_transport_open("vkernel") == nullptr, "vkernel: no v2 server until P5.3");
+    // Record helpers.
+    tsr_record rec{};
+    rec.w[0] = 0x05080101u;   // DONE, TILE_ERR, code 8, seq 5
+    rec.w[1] = 0x105;
+    rec.w[2] = (uint32_t) -3;
+    rec.w[7] = 99;
+    tsr_result res;
+    tsr_record_decode(&rec, &res);
+    CHECK(res.type == 1 && res.status == 1 && res.err_code == 8 && res.seq == 0x105 && res.ret == -3 && res.duration == 99, "tsr_record_decode");
+    CHECK(!strcmp(tsr_status_name(0), "OK") && !strcmp(tsr_status_name(1), "TILE_ERR") && !strcmp(tsr_status_name(7), "STOPPED") &&
+          !strcmp(tsr_status_name(9), "RESERVED"), "tsr_status_name");
+    CHECK(strcmp(tsr_transport_strerror(TSR_TE_LOST), "unknown error") != 0, "tsr_transport_strerror");
 }
 
 // The xrt kdev's hw_emu defaults (docs/xrt-host.md §9): only under XCL_EMULATION_MODE=hw_emu,
@@ -429,12 +907,22 @@ static void test_xrt_env_defaults() {
 }
 
 int main() {
+    clear_env();
     test_xrt_env_defaults();
     test_dma_engine();
     test_mock_regs();
     test_protocol_basic();
     test_open_refusals();
     test_adapter_log();
+    if (access(TSR_FW_TEST_IMAGE_fw_rt, R_OK) == 0) {
+        test_stale_core();
+        test_stale_reopen();
+        test_watermark_refresh();
+        test_boot_timeout();
+        test_launch_faults();
+    } else {
+        printf("firmware image %s not built: stale-core, boot-timeout and launch-fault tests not run\n", TSR_FW_TEST_IMAGE_fw_rt);
+    }
     test_dispatch();
     printf("test-tsr-kdev: %d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

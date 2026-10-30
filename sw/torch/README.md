@@ -3,10 +3,10 @@
 Inference with the weight matmuls on Tesseract and everything else on the CPU. The device is
 `TSR_DEVICE` (`sim` today; `mock`, `vkernel`, `xrt` through the same transport).
 
-> **State after X0 (v2, `docs/v2/01-execution-model.md` §12).** The runtime under this package
-> (`sw/rt`) has no device execution until the op-list path (P3.2): uploads and the reference path
-> work, a device matmul raises `TesseractError`. The `torch_pytest` ctests are not registered
-> until then; nothing in this package changes (`docs/v2/06-software-verification.md` §9.4).
+> **v2 (`docs/v2/06-software-verification.md` §9.4).** The runtime under this package (`sw/rt`)
+> runs each device matmul as a one-op op list through the firmware's `graph` kernel (P3.2); the
+> API, the numerics and this package are unchanged (a rebuild only). "Programs" below are those op
+> lists (`rt_execs` = launches, `rt_prog_*` = op-list cache hits / misses).
 
 Numerics are the llama.cpp path's (docs/spec.md 수치 규칙, 로드 시 변환):
 
@@ -139,7 +139,7 @@ with `close_device()` can raise it too). `tt.device()` afterwards opens a new de
 
 | Variable | Effect |
 | --- | --- |
-| `TSR_DEVICE` | transport: `sim` (default), `mock`, `vkernel`, `xrt`; with its own variables (`TSR_SIM_*`, `TSR_MOCK_*`, `TSR_VKERNEL_*`, `TSR_XRT_*`; v1's per-exec `TSR_TRACE` dump is deleted in X0, trace v2 is P1.10) |
+| `TSR_DEVICE` | transport: `sim` (default), `mock`, `vkernel`, `xrt`; with its own variables (`TSR_SIM_*`, `TSR_MOCK_*`, `TSR_VKERNEL_*`, `TSR_XRT_*`; `TSR_IMAGE`, `TSR_TRACE` (trace v2 per launch), `TSR_LOG`; SW §9.2) |
 | `TSR_TORCH_DEBUG` | `1`: the partition of every compiled graph (which matmuls go to the device, why the others stay on the CPU), every upload, the counters at exit; `2`: also every device call; `3`: also the rewritten aten graphs |
 | `TSR_TORCH_VERIFY` | `1`: every device matmul is also computed by the reference model (libtsr_ref on the weight rows read back from the device) and compared bit for bit; a mismatch raises `TesseractError` naming the weight, the element and both values (for vkernel / xrt bring-up) |
 | `TSR_TORCH_EXT_DIR` | where to find `_tesseract_rt` if it is not on `sys.path` |

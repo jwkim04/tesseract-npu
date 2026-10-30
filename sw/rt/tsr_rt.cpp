@@ -19,11 +19,12 @@
 
 #include "tsr-alloc.h"     // tsr_lower
 #include "tsr-lower.h"
+#include "tsr-opl.h"       // OPL builder, OPL cache, the `graph` kernel (docs/v2/06-software-verification.md §9.4)
 #include "tsr-wlayout.h"
 #include "tsr-weights.h"   // tsr_row_to_dev_blocks: the ggml backend's load-time conversion (ggml-base)
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
-#error "tsr_rt writes weights in host byte order; only little-endian hosts are supported"
+#error "tsr_rt writes op lists and weights in host byte order; only little-endian hosts are supported"
 #endif
 
 namespace tsr::rt {
@@ -133,18 +134,28 @@ const char * make_plan(const tsr_config & cfg, dtype t, uint32_t N, uint32_t K, 
     p->k_part  = pb * bs;
     p->k_parts = (B + pb - 1) / pb;
 
-    // SPM per token: the x row (all of K, K * 4 / 64 lines), the QA of the largest K part, y.
+    // SPM per token: the x row (all of K, K * 4 / 64 lines), the QA of the largest K part, y (v1's
+    // rule). v2: a part must also plan in the firmware's per-op ring budget (plan.hpp ring_budget,
+    // SPM minus the executor's argument, OPL and preload areas; V2-SW-20), which caps the lines of
+    // one token. With T_MAX >= 2 the SPM / T_MAX cap is the smaller one, so the parts are v1's.
     const uint64_t spm_lines = cfg.spm_bytes / TSR_LINE_BYTES;
+    const uint64_t budget = tsr::plan::ring_budget(tsr_plan_cfg(cfg));
     const uint64_t base = (uint64_t) K / 16 + tsr_qa_lines(p->kind, p->k_part);
-    if (base + 1 > spm_lines) return "one token of x and its QA does not fit the SPM";
-    const uint64_t per_tok = spm_lines / tsr_mm_t_max(cfg);
-    const uint64_t yl_cap = per_tok > base ? per_tok - base : spm_lines - base;   // T_MAX tokens if possible
+    if (base + 1 > std::min(spm_lines, budget)) return "one token of x and its QA does not fit the SPM";
+    const uint64_t per_tok = std::min<uint64_t>(spm_lines / tsr_mm_t_max(cfg), budget);
+    const uint64_t yl_cap = per_tok > base ? per_tok - base : budget - base;   // T_MAX tokens if possible
     uint64_t rows_cap = std::min<uint64_t>(yl_cap * (TSR_LINE_BYTES / 4), UINT32_MAX);
     if (o.max_part_rows != 0) rows_cap = std::min<uint64_t>(rows_cap, o.max_part_rows);
     const uint64_t np = (N + rows_cap - 1) / rows_cap;
     p->n_part  = (uint32_t) ((N + np - 1) / np);
     p->n_parts = (uint32_t) ((N + p->n_part - 1) / p->n_part);
     if (p->k_parts == 1 && !tsr_mm_shape_ok(cfg, fmt, p->n_part, K)) return "shape not lowerable (tsr_mm_shape_ok)";
+    // every record (N part x K part) must plan in the firmware (plan.hpp, V2-SW-20)
+    for (uint32_t kk : { p->k_part, K - (p->k_parts - 1) * p->k_part }) {
+        for (uint32_t nn : { p->n_part, N - (p->n_parts - 1) * p->n_part }) {
+            if (!tsr::plan::mm_supported(tsr_plan_cfg(cfg), fmt, nn, kk)) return "shape cannot be planned by the firmware (plan.hpp)";
+        }
+    }
     return nullptr;
 }
 
@@ -179,14 +190,19 @@ struct device::impl {
     std::string kind;
     std::string desc;
 
+    bool        read_perf = true;
+
     uint64_t io_off = 0;              // ch0 byte offset of the activation area (IO region)
     uint64_t io_size = 0;
     tsr_range_alloc heap;             // WEIGHT heap, symmetric (one offset on every channel)
+    tsr_opl_dev odev;                 // `graph` kernel + OPL cache over the OPL region (tsr-opl.h)
 
     std::unordered_map<weight_handle, weight> weights;
     weight_handle next_handle = 1;
 
+    std::vector<uint64_t> perf_last;  // PERF_CYCLES, PERF_MVM_CYCLES, PERF_CH_RD_BEATS[c]
     counters cnt;
+    std::vector<uint8_t> hbuf;        // host staging (x packing, y gathering)
 
     ~impl() {
         if (tp != nullptr) tsr_transport_close(tp);
@@ -209,6 +225,106 @@ struct device::impl {
         cnt.d2h_bytes += size;
     }
 
+    uint64_t perf(uint32_t idx) {
+        const uint32_t lo = tsr_transport_csr_read(tp, TSR_CSR_PERF_BASE + 8 * idx);       // LO first: snapshot
+        const uint32_t hi = tsr_transport_csr_read(tp, TSR_CSR_PERF_BASE + 8 * idx + 4);
+        return ((uint64_t) hi << 32) | lo;
+    }
+    void perf_snapshot(std::vector<uint64_t> & v) {
+        v.resize(2 + cfg.num_ch);
+        v[0] = perf(TSR_PERF_CYCLES);
+        v[1] = perf(TSR_PERF_MVM_CYCLES);
+        for (uint32_t c = 0; c < cfg.num_ch; ++c) v[2 + c] = perf(tsr_perf_ch_rd_beats(c));
+    }
+
+    // -- op lists -------------------------------------------------------------
+    // Run one op list through `graph` (OPL cache: a list seen before is not written again).
+    void run(const tsr_opl_builder & b) {
+        const std::vector<uint8_t> blob = b.finish();
+        if (blob.empty()) throw error(strf("tsr_rt: internal error: op list build failed: %s", b.error()));
+        const tsr_opl_run_result r = odev.run(blob, 0u, [this](uint32_t ch, uint64_t off, const void * src, size_t size) {
+            write(ch, off, src, size);
+        });
+        if (!r.too_big) {
+            cnt.execs++;
+            (r.cache_hit ? cnt.prog_hits : cnt.prog_misses)++;
+        }
+        if (read_perf) {
+            std::vector<uint64_t> now;
+            perf_snapshot(now);
+            // PERF_* do not change between launches while the device is idle, so now - last is this
+            // launch's; a counter that went down was reset (SOFT_RESET): count from zero.
+            auto delta = [&](size_t i) { return now[i] >= perf_last[i] ? now[i] - perf_last[i] : now[i]; };
+            cnt.perf_cycles += delta(0);
+            cnt.perf_mvm_cycles += delta(1);
+            for (uint32_t c = 0; c < cfg.num_ch; ++c) cnt.dev_read_bytes += delta(2 + c) * TSR_BEAT_BYTES;
+            perf_last.swap(now);
+        }
+        TSR_RT_DBG(1, "launch: %u records (%u JOIN), %zu B at OPL ch0+0x%07" PRIx64 "%s, %.3f ms\n", b.n_ops(), b.n_joins(),
+                   blob.size(), r.opl_off, r.cache_hit ? " (cached)" : "", r.wall_ns * 1e-6);
+        const bool ok = r.rc == 0 && r.res.type == TSR_LCQ_R0_TYPE_DONE && r.res.status == TSR_LCQ_R0_STATUS_OK && r.res.ret == 0;
+        if (!ok) {
+            std::string name;
+            if (tsr_opl_failed_op(r, b.n_ops()) >= 0) {
+                const int32_t tag = tsr_opl_failed_tag(b, r);
+                name = tag >= 0 ? strf("MUL_MAT of N part %d, K part %d", tag >> 16, tag & 0xFFFF) : "JOIN";
+            }
+            throw error(strf("tsr_rt: device execution failed on %s: %s (op list of %u records, %zu B)", kind.c_str(),
+                             tsr_opl_describe(r, name.empty() ? nullptr : name.c_str()).c_str(), b.n_ops(), blob.size()));
+        }
+    }
+
+    // IO layout of one linear call of tc tokens: x rows (K * 4 bytes each) at io_off, then per N
+    // part i its y rows (y_lines(n_i) * 64 bytes each).
+    static uint32_t y_lines(uint32_t n) { return (uint32_t) tsr_ceil_div_u64((uint64_t) n * 4, TSR_LINE_BYTES); }
+
+    uint64_t y_off(const weight & w, uint32_t tc, uint32_t i) const {
+        uint64_t off = io_off + (uint64_t) tc * w.K * 4;
+        for (uint32_t ii = 0; ii < i; ++ii) off += (uint64_t) tc * y_lines(w.at(ii, 0).n) * TSR_LINE_BYTES;
+        return off;
+    }
+
+    // The op list of one linear call of tc tokens (SW §9.4): per N part i one MUL_MAT record per K
+    // part j over the x columns [k0, k0 + k) (x rows K / 16 lines apart), the parts after the first
+    // with ACC_DST (y += W x: one f32 add per part, in order, as v1's MVM.ACC). The builder orders
+    // the K parts of an N part (each reads and writes its y rows); the N parts are independent. A
+    // list that would exceed 4096 records runs in pieces.
+    void run_linear(const weight & w, uint32_t tc) {
+        namespace mm = tsr::opl::mm;
+        tsr_opl_builder b(cfg.num_ch, tsr::opl::F_STOP_ON_ERROR);
+        for (uint32_t i = 0; i < w.pl.n_parts; ++i) {
+            for (uint32_t j = 0; j < w.pl.k_parts; ++j) {
+                const part & p = w.at(i, j);
+                uint32_t a[mm::NARGS];
+                a[mm::X]          = tsr_dram_handle(0, io_off + (uint64_t) p.k0 * 4);
+                a[mm::X_STRIDE]   = w.K / 16;
+                a[mm::Y]          = tsr_dram_handle(0, y_off(w, tc, i));
+                a[mm::Y_STRIDE]   = y_lines(p.n);
+                a[mm::W_OFF]      = (uint32_t) (p.w_off / TSR_BEAT_BYTES);
+                a[mm::FMT]        = w.pl.fmt;
+                a[mm::N]          = p.n;
+                a[mm::K]          = p.k;
+                a[mm::T]          = tc;
+                a[mm::ADD]        = tsr::opl::HANDLE_NONE;
+                a[mm::ADD_STRIDE] = 0;
+                a[mm::FLAGS]      = j == 0 ? 0u : mm::FLAG_ACC_DST;
+                const int32_t tag = (int32_t) ((i << 16) | j);
+                uint32_t idx = b.mul_mat(a, tag);
+                if (idx == tsr_opl_builder::NO_ROOM) {
+                    run(b);
+                    b.reset();
+                    idx = b.mul_mat(a, tag);
+                }
+                if (idx == tsr_opl_builder::NO_ROOM || idx == tsr_opl_builder::FAILED) {
+                    throw error(strf("tsr_rt: internal error: op list: %s", b.error()));
+                }
+            }
+        }
+        TSR_RT_DBG(1, "linear: %s [%u x %u] T=%u, %u x %u parts\n", w.pl.fmt == TSR_FMT_Q8_0 ? "Q8_0" : "Q4_K", w.N, w.K, tc,
+                   w.pl.n_parts, w.pl.k_parts);
+        run(b);
+    }
+
     const weight & get(weight_handle h) const {
         auto it = weights.find(h);
         if (it == weights.end()) throw std::invalid_argument(strf("tsr_rt: unknown weight handle %" PRIu64, h));
@@ -229,6 +345,7 @@ struct device::impl {
 
 device::device(const open_options & o) : p_(new impl) {
     impl & d = *p_;
+    d.read_perf = o.read_perf;
     d.tp = tsr_transport_open(o.kind);
     if (d.tp == nullptr) {
         const char * env = getenv("TSR_DEVICE");
@@ -254,9 +371,15 @@ device::device(const open_options & o) : p_(new impl) {
         if (d.io_size == 0) throw std::invalid_argument("tsr_rt: open_options.io_bytes must be >= 64");
     }
     d.heap.init(TSR_REGION_WEIGHT_OFF, d.cfg.ch_bytes - TSR_REGION_WEIGHT_OFF, HEAP_ALIGN);
-    d.desc = strf("Tesseract (%s, C=%u, LANES=%u, T_MAX=%u, K_MAX=%u, SPM=%u KiB, %.0f GiB/ch)", d.kind.c_str(), c->num_ch,
-                  c->lanes, c->t_max, c->k_max, c->spm_bytes / 1024, (double) c->ch_bytes / (1024.0 * 1024.0 * 1024.0));
-    TSR_RT_DBG(1, "opened %s; IO %.2f MiB\n", d.desc.c_str(), mib(d.io_size));
+    // boot the firmware (warm if possible) with $TSR_IMAGE or the build's image; the OPL cache
+    // takes the OPL region (EX §11)
+    std::string err;
+    if (!d.odev.open(d.tp, &err)) throw error(strf("tsr_rt: %s: %s", d.kind.c_str(), err.c_str()));   // ~impl closes
+    d.perf_snapshot(d.perf_last);
+    d.desc = strf("Tesseract (%s, C=%u, LANES=%u, T_MAX=%u, K_MAX=%u, SPM=%u KiB, %.0f GiB/ch, firmware %016" PRIx64 ")",
+                  d.kind.c_str(), c->num_ch, c->lanes, c->t_max, c->k_max, c->spm_bytes / 1024,
+                  (double) c->ch_bytes / (1024.0 * 1024.0 * 1024.0), d.odev.image_id());
+    TSR_RT_DBG(1, "opened %s; image %s; IO %.2f MiB\n", d.desc.c_str(), d.odev.image_path(), mib(d.io_size));
 }
 
 device::~device() = default;
@@ -401,12 +524,47 @@ void device::linear(weight_handle h, const float * x, uint32_t T, float * y, siz
     const size_t ys = y_stride != 0 ? y_stride : w.N;
     if (xs < w.K || ys < w.N) throw std::invalid_argument("tsr_rt: linear: x_stride < K or y_stride < N");
     if (x == nullptr || y == nullptr) throw std::invalid_argument("tsr_rt: linear: null x or y");
-    // v1 ran a cached LD / QACT / MVM / ST program per call through the transport's run
-    // interface; that path is deleted with the host command buffer (X0). The one-op OPL launch of the `graph` kernel
-    // replaces it (docs/v2/06-software-verification.md §9.4, P3.2).
-    throw error(strf("tsr_rt: linear on %s: device execution is not available in this build (the v1 command-buffer "
-                     "path is deleted; linear returns with the op-list launch path). linear_ref computes the same "
-                     "result on the host.", d.kind.c_str()));
+    const uint64_t x_row = (uint64_t) w.K * 4;
+    uint64_t y_tok = 0;
+    for (uint32_t i = 0; i < w.pl.n_parts; ++i) y_tok += (uint64_t) impl::y_lines(w.at(i, 0).n) * TSR_LINE_BYTES;
+    const uint64_t t_io = d.io_size / (x_row + y_tok);
+    if (t_io == 0) {
+        throw error(strf("tsr_rt: one token of x and y needs %" PRIu64 " bytes of IO, %" PRIu64 " available",
+                         x_row + y_tok, d.io_size));
+    }
+    // One launch per IO tile: a record carries the tile's T, the firmware tiles it (plan.hpp).
+    const uint32_t tc_max = (uint32_t) std::min<uint64_t>((uint64_t) T, t_io);
+    const bool direct_y = w.pl.n_parts == 1 && w.N % 16 == 0 && ys == w.N;
+
+    for (uint32_t t0 = 0; t0 < T; t0 += tc_max) {
+        const uint32_t tc = std::min(tc_max, T - t0);
+        // x tile -> IO (rows of K floats; K % 32 == 0 so every row starts on a line)
+        if (xs == w.K) {
+            d.write(0, d.io_off, x + (size_t) t0 * w.K, (size_t) tc * x_row);
+        } else {
+            d.hbuf.resize((size_t) tc * x_row);
+            for (uint32_t t = 0; t < tc; ++t) {
+                memcpy(d.hbuf.data() + (size_t) t * x_row, x + (size_t) (t0 + t) * xs, (size_t) x_row);
+            }
+            d.write(0, d.io_off, d.hbuf.data(), d.hbuf.size());
+        }
+        d.run_linear(w, tc);
+        if (direct_y) {
+            d.read(0, d.y_off(w, tc, 0), y + (size_t) t0 * w.N, (size_t) tc * w.N * 4);
+        } else {
+            for (uint32_t i = 0; i < w.pl.n_parts; ++i) {
+                const part & p = w.at(i, 0);
+                const uint64_t ystr = (uint64_t) impl::y_lines(p.n) * TSR_LINE_BYTES;
+                d.hbuf.resize((size_t) (tc * ystr));
+                d.read(0, d.y_off(w, tc, i), d.hbuf.data(), d.hbuf.size());
+                for (uint32_t t = 0; t < tc; ++t) {
+                    memcpy(y + (size_t) (t0 + t) * ys + p.r0, d.hbuf.data() + (size_t) t * ystr, (size_t) p.n * 4);
+                }
+            }
+        }
+    }
+    d.cnt.linears++;
+    d.cnt.tokens += T;
 }
 
 void device::linear_ref(weight_handle h, const float * x, uint32_t T, float * y, size_t x_stride, size_t y_stride) const {
@@ -496,6 +654,8 @@ memory_info device::memory() const {
     m.weight_free = d.heap.free_bytes();
     m.weight_largest_free = d.heap.largest_free();
     m.n_weights = (uint32_t) d.weights.size();
+    m.prog_cached = d.odev.cache().entries();
+    m.prog_cmd_bytes = d.odev.cache().used_bytes();
     return m;
 }
 

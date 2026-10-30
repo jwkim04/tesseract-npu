@@ -5,12 +5,19 @@
 //   cpu    ggml CPU backend only, input = token_embd rows ("embd", bit-exact with the token path)
 //   floor  CPU only, input = token_embd rows with every element nudged by 1 ulp (klcheck's
 //          embd_nudge, sequence 0, position = token index, seed --seed)
-//   dev    Tesseract device (TSR_DEVICE=sim): every layer and the output head offloaded, KV cache
-//          and attention on the host (offload_kqv = false), input "embd"
-// All three use the embd input path, so the three graphs are identical node for node. Each run
+//   dev    Tesseract device (TSR_DEVICE=sim, or --device mock|vkernel|xrt): every layer and the
+//          output head offloaded, KV cache and attention on the host in M6 (offload_kqv = false),
+//          on the device in M7 (--phase m7), input "embd"
+// All three use the embd input path, so the three graphs are identical node for node. Settings
+// (v2, V2-SW-22, docs/v2/06-software-verification.md §9.5, §10.4), the same in every run: flash
+// attention on, q8_0 K and V cache, LLAMA_ATTN_ROT_DISABLE=1 (set by the tool), offload_kqv by
+// phase; recorded in meta.json "info" and checked equal across the runs by selfcheck. On v2 the
+// per-node observation below makes the scheduler compute one node per graph_compute, i.e. one
+// device launch per observed node: numcheck needs no device mode of its own (V2-SW-27). Each run
 // observes the graph through llama_context_params.cb_eval and writes a run directory:
 //
-//   <run_dir>/meta.json     format "tsr-numcheck" version 1 (fields below), written last
+//   <run_dir>/meta.json     format "tsr-numcheck" version 2 (fields below; version 1 = the v1
+//                           settings, still read), written last
 //   <run_dir>/logits.f32    f32 [T][n_vocab]
 //   <run_dir>/t/NNNNNN.f32  node i's output, f32, ggml element order (ne0 fastest); non-contiguous
 //                           tensors are gathered element by element; F16/BF16/I32 converted to f32,
@@ -18,8 +25,10 @@
 //   <run_dir>/t/NNNNNN.src1.f32  src1 (the activation x) of a weight MUL_MAT, same layout
 //
 // meta.json: { "format", "version", "model" (absolute GGUF path), "run" (cpu|floor|dev),
-//   "device" (none|sim|xrt), "input" (embd|embd+1ulp; "tokens" only for the self-check run),
-//   "seed", "n_tokens", "tokens", "n_vocab", "logits_file", "info" {settings, timings, counts},
+//   "device" (none|sim|mock|vkernel|xrt), "input" (embd|embd+1ulp; "tokens" only for the self-check run),
+//   "seed", "n_tokens", "tokens", "n_vocab", "logits_file", "info" {settings, timings, counts; v2
+//   settings: "phase" (m6|m7), "flash_attn" (on|off), "type_k", "type_v" (ggml type names),
+//   "offload_kqv" (bool), "attn_rot_disable" (bool: LLAMA_ATTN_ROT_DISABLE was 1 for the context)},
 //   "nodes": [ {"i", "name", "op" (ggml_op_name), "ne" [4], "file", "backend", "weight",
 //               "weight_type", "src1_file", "src1_ne"} ] }
 //   i         index of the node among ALL computed non-view nodes of the graph in graph order.
@@ -519,12 +528,31 @@ struct run_opts {
     int         T = 0, threads = default_threads();
     uint64_t    seed = 1;
     bool        observe = true;
+    // v2 settings (V2-SW-22; klcheck's): FA on, q8_0 / q8_0 KV, rotation off; offload_kqv by phase
+    std::string phase = "m6";
+    int         fa = 1, offload_kqv = -1, attn_rot_disable = 1;   // offload_kqv -1: the phase's value
+    ggml_type   type_k = GGML_TYPE_Q8_0, type_v = GGML_TYPE_Q8_0;
+    bool        offload() const { return offload_kqv >= 0 ? offload_kqv != 0 : phase == "m7"; }
 };
+
+static int parse_on_off(const char * opt, const std::string & v) {
+    if (v == "on" || v == "1") return 1;
+    if (v == "off" || v == "0") return 0;
+    die("%s: on or off", opt);
+}
+
+static ggml_type parse_cache_type(const char * opt, const std::string & v) {
+    for (int t = 0; t < GGML_TYPE_COUNT; ++t) {
+        const char * n = ggml_type_name((ggml_type) t);
+        if (n && v == n && ggml_get_type_traits((ggml_type) t)->blck_size > 0) return (ggml_type) t;
+    }
+    die("%s: unknown ggml type \"%s\" (e.g. q8_0, f16, f32)", opt, v.c_str());
+}
 
 static void usage_run() {
     fprintf(stderr,
         "usage: tsr-numcheck run -m MODEL -o RUN_DIR --run cpu|floor|dev [options]\n"
-        "  --device sim|xrt    device of the dev run (default sim; cpu/floor never open a device)\n"
+        "  --device KIND       device of the dev run: sim (default), mock, vkernel, xrt (cpu/floor never open one)\n"
         "  -T N                prompt tokens (default: 16 for models > 8 B parameters, else 32)\n"
         "  --seed S            floor: 1-ulp perturbation seed (default 1)\n"
         "  --nodes REGEX       dump only nodes whose name matches (std::regex search; default all)\n"
@@ -533,7 +561,11 @@ static void usage_run() {
         "  --input tokens|embd override the input path (tokens: only for the embd-identity check)\n"
         "  --prompt TEXT       prompt (default: a built-in English sentence)\n"
         "  -t N                CPU threads (default online CPUs / 2, as klcheck)\n"
-        "  -v                  llama.cpp log\n");
+        "  -v                  llama.cpp log\n"
+        "  v2 settings (V2-SW-22, every run of a set must use the same; recorded in meta.json):\n"
+        "  --phase m6|m7       M6 (default): KV cache and attention on the host; M7: on the device\n"
+        "  --offload-kqv on|off  override the phase's offload_kqv\n"
+        "  --fa on|off  -ctk TYPE  -ctv TYPE  --attn-rot on|off   (defaults: on, q8_0, q8_0, off)\n");
 }
 
 static void parse_run(int argc, char ** argv, run_opts & o) {
@@ -556,12 +588,21 @@ static void parse_run(int argc, char ** argv, run_opts & o) {
         else if (a == "--prompt")               o.prompt = val();
         else if (a == "-t" || a == "--threads") o.threads = (int) parse_int("-t", val(), 1, 1024);
         else if (a == "-v" || a == "--verbose") g_verbose = 1;
+        else if (a == "--phase")                o.phase = val();
+        else if (a == "--fa")                   o.fa = parse_on_off("--fa", val());
+        else if (a == "--offload-kqv")          o.offload_kqv = parse_on_off("--offload-kqv", val());
+        else if (a == "--attn-rot")             o.attn_rot_disable = !parse_on_off("--attn-rot", val());
+        else if (a == "-ctk" || a == "--cache-type-k") o.type_k = parse_cache_type("-ctk", val());
+        else if (a == "-ctv" || a == "--cache-type-v") o.type_v = parse_cache_type("-ctv", val());
         else if (a == "-h" || a == "--help")    { usage_run(); exit(0); }
         else { usage_run(); die("run: unknown option %s", a.c_str()); }
     }
     if (o.model.empty() || o.out.empty() || o.run.empty()) { usage_run(); die("run: -m, -o and --run are required"); }
     if (o.run != "cpu" && o.run != "floor" && o.run != "dev") die("--run: cpu, floor or dev");
-    if (o.run == "dev" && o.device != "sim" && o.device != "xrt") die("--device: sim or xrt");
+    if (o.phase != "m6" && o.phase != "m7") die("--phase: m6 or m7");
+    if (o.run == "dev" && o.device != "sim" && o.device != "mock" && o.device != "vkernel" && o.device != "xrt") {
+        die("--device: sim, mock, vkernel or xrt");
+    }
     const std::string def = o.run == "floor" ? "embd+1ulp" : "embd";
     if (o.input.empty()) o.input = def;
     if (o.input == "embd" && o.run == "floor") o.input = def;       // the floor is always nudged
@@ -609,6 +650,9 @@ static int cmd_run(int argc, char ** argv) {
     // The device is chosen through the environment before ggml's backend registry is created.
     setenv("TSR_DEVICE", dev ? o.device.c_str() : "none", 1);
     if (!getenv("TSR_SIM_THREADS")) setenv("TSR_SIM_THREADS", "4", 1);   // shared host (docs/numcheck.md)
+    // llama.cpp's Hadamard KV rotation off in every run (V2-SW-16, V2-SW-22; read at context creation)
+    if (o.attn_rot_disable) setenv("LLAMA_ATTN_ROT_DISABLE", "1", 1);
+    else                    unsetenv("LLAMA_ATTN_ROT_DISABLE");
 
     llama_log_set(log_cb, nullptr);
     llama_backend_init();
@@ -678,8 +722,10 @@ static int cmd_run(int argc, char ** argv) {
     cp.n_outputs_max   = (uint32_t) std::min<int>(T, cp.n_batch);
     cp.n_threads       = o.threads;
     cp.n_threads_batch = o.threads;
-    cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;   // the same in every run (klcheck --fa off)
-    cp.offload_kqv     = false;                            // -nkvo: KV cache and attention on the host
+    cp.flash_attn_type = o.fa ? LLAMA_FLASH_ATTN_TYPE_ENABLED : LLAMA_FLASH_ATTN_TYPE_DISABLED;   // the same in every run
+    cp.type_k          = o.type_k;                         // -ctk q8_0 (V2-SW-22)
+    cp.type_v          = o.type_v;                         // -ctv q8_0 (a quantized V needs FA)
+    cp.offload_kqv     = o.offload();                      // M6: false (-nkvo, attention on the host); M7: true
     cp.no_perf         = false;
     cp.cb_eval           = o.observe ? observe_cb : nullptr;
     cp.cb_eval_user_data = o.observe ? &obs : nullptr;
@@ -737,7 +783,7 @@ static int cmd_run(int argc, char ** argv) {
     auto envs = [](const char * k) -> json { const char * v = getenv(k); return v ? json(v) : json(nullptr); };
     json m = json::object();
     m["format"]      = "tsr-numcheck";
-    m["version"]     = 1;
+    m["version"]     = 2;
     m["model"]       = model_abs;
     m["run"]         = o.run;
     m["device"]      = dev ? o.device : "none";
@@ -761,8 +807,15 @@ static int cmd_run(int argc, char ** argv) {
     info["n_ubatch"]        = cp.n_ubatch;
     info["n_threads"]       = o.threads;
     info["n_gpu_layers"]    = mp.n_gpu_layers;
-    info["flash_attn"]      = "off";
-    info["offload_kqv"]     = false;
+    info["phase"]           = o.phase;
+    info["flash_attn"]      = o.fa ? "on" : "off";
+    info["type_k"]          = ggml_type_name(o.type_k);
+    info["type_v"]          = ggml_type_name(o.type_v);
+    info["offload_kqv"]     = o.offload();
+    {
+        const char * e = getenv("LLAMA_ATTN_ROT_DISABLE");
+        info["attn_rot_disable"] = e != nullptr && atoi(e) != 0;
+    }
     info["use_extra_bufts"] = false;
     info["observe"]         = o.observe;
     info["nodes_regex"]     = o.nodes_re.empty() ? json(nullptr) : json(o.nodes_re);
@@ -777,6 +830,7 @@ static int cmd_run(int argc, char ** argv) {
     info["t_load_s"]        = t_load;
     info["t_decode_s"]      = t_decode;
     info["TSR_DEVICE"]      = envs("TSR_DEVICE");
+    info["LLAMA_ATTN_ROT_DISABLE"] = envs("LLAMA_ATTN_ROT_DISABLE");
     info["TSR_SIM_THREADS"] = envs("TSR_SIM_THREADS");
     info["TSR_SIM_TMAX"]    = envs("TSR_SIM_TMAX");
     info["TSR_SIM_DRAM_DIR"] = envs("TSR_SIM_DRAM_DIR");
@@ -830,7 +884,8 @@ static bool load_run(const std::string & dir, run_dir & r) {
     } catch (const std::exception & e) {
         die("%s/meta.json: %s", dir.c_str(), e.what());
     }
-    if (r.meta.value("format", "") != "tsr-numcheck" || r.meta.value("version", 0) != 1) die("%s: not a tsr-numcheck v1 run", dir.c_str());
+    const int ver = r.meta.value("format", "") == "tsr-numcheck" ? r.meta.value("version", 0) : 0;
+    if (ver != 1 && ver != 2) die("%s: not a tsr-numcheck v1 / v2 run", dir.c_str());
     if (!read_file(dir + "/" + r.meta["logits_file"].get<std::string>(), raw)) die("%s: no logits file", dir.c_str());
     r.logits.resize(raw.size() / 4);
     memcpy(r.logits.data(), raw.data(), r.logits.size() * 4);
@@ -894,6 +949,21 @@ static int cmd_selfcheck(int argc, char ** argv) {
     check(same_hdr, "all %zu runs: same model, tokens (T = %d), n_vocab (%d), logits files [T][V]", all.size(),
           cpu.meta["n_tokens"].get<int>(), cpu.meta["n_vocab"].get<int>());
     check(cpu.meta["seed"] == flr.meta["seed"], "floor seed %" PRIu64, flr.meta["seed"].get<uint64_t>());
+    {   // the same v2 settings in every run (V2-SW-22): one comparison, one attention / KV configuration
+        auto settings = [](const run_dir & r) {
+            const json & i = r.meta.contains("info") ? r.meta["info"] : json::object();
+            json v = json::object();
+            for (const char * k : {"phase", "flash_attn", "type_k", "type_v", "offload_kqv", "attn_rot_disable"})
+                v[k] = i.contains(k) ? i[k] : json(nullptr);
+            return v;
+        };
+        const json ref = settings(cpu);
+        std::string bad;
+        for (run_dir * r : all)
+            if (settings(*r) != ref) bad += (bad.empty() ? "" : ", ") + r->meta["run"].get<std::string>() + " " + settings(*r).dump();
+        check(bad.empty(), "all %zu runs: the same settings %s%s", all.size(), ref.dump().c_str(),
+              bad.empty() ? "" : ("; differ: " + bad).c_str());
+    }
     for (run_dir * r : all) {
         bool finite = true;
         for (float v : r->logits) finite = finite && std::isfinite(v);
@@ -1063,12 +1133,13 @@ static int cmd_all(int argc, char ** argv, const char * self) {
         else if (a == "--checks")         checks = val();
         else if (a == "--device")         { dev_only.push_back(a); dev_only.push_back(val()); }
         else if (a == "-m" || a == "--model" || a == "-T" || a == "--seed" || a == "--nodes" || a == "--mm-layers" ||
-                 a == "--prompt" || a == "-t" || a == "--threads") {
-            common.push_back(a); common.push_back(val());
+                 a == "--prompt" || a == "-t" || a == "--threads" || a == "--phase" || a == "--fa" || a == "--offload-kqv" ||
+                 a == "--attn-rot" || a == "-ctk" || a == "--cache-type-k" || a == "-ctv" || a == "--cache-type-v") {
+            common.push_back(a); common.push_back(val());   // the v2 settings go to every run (V2-SW-22)
         }
         else if (a == "-v")               common.push_back(a);
         else die("all: unknown option %s\nusage: tsr-numcheck all -m MODEL [-o ROOT] [--device sim] [-T N] [--seed S] [--nodes RE] "
-                 "[--mm-layers L] [--prompt TEXT] [-t N] [--checks none|cheap|full]", a.c_str());
+                 "[--mm-layers L] [--prompt TEXT] [-t N] [--phase m6|m7] [--checks none|cheap|full]", a.c_str());
     }
     if (checks != "none" && checks != "cheap" && checks != "full") die("--checks: none, cheap or full");
     // without -o: a private temporary directory, removed afterwards (ctest)
@@ -1246,7 +1317,7 @@ static int cmd_selftest() {
 static void usage() {
     fprintf(stderr,
         "tsr-numcheck — one-prompt node dump for numeric verification (docs/numcheck.md)\n"
-        "  tsr-numcheck run -m MODEL -o RUN_DIR --run cpu|floor|dev [--device sim] [-T N] [--seed 1]\n"
+        "  tsr-numcheck run -m MODEL -o RUN_DIR --run cpu|floor|dev [--device sim] [-T N] [--seed 1] [--phase m6|m7]\n"
         "                   [--nodes REGEX] [--mm-layers 0,1,31,output] [--no-observe] [--prompt TEXT] [-t N]\n"
         "  tsr-numcheck all -m MODEL [-o ROOT] [run options] [--checks none|cheap|full]   (no -o: temp dir, removed)\n"
         "                   ROOT/{cpu,floor,dev} (+ cpu-tok: cheap, + dev-noobs: full), then selfcheck\n"

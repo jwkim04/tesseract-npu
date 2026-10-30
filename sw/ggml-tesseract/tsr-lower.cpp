@@ -69,3 +69,22 @@ bool tsr_mm_plan_tiling(const tsr_config & cfg, uint32_t fmt, uint32_t N, uint32
     *out = t;
     return true;
 }
+
+bool tsr_plan_stage(uint64_t stage_off, uint64_t stage_size, uint32_t N, uint32_t T, uint64_t x_row, uint64_t y_stride,
+                    bool x_in_io, bool y_in_io, tsr_stage_plan * out) {
+    tsr_stage_plan p = {};
+    p.stage_x = !x_in_io;
+    p.stage_y = !y_in_io || (((uint64_t) N * 4) % TSR_LINE_BYTES != 0 && T > 1);
+    if (!p.stage_x && !p.stage_y) {
+        *out = p;
+        return false;
+    }
+    p.per_token = (p.stage_x ? x_row : 0) + (p.stage_y ? y_stride : 0);
+    p.tc_max    = std::min<uint64_t>(T, stage_size / p.per_token);
+    p.x_off     = stage_off;
+    p.y_off     = stage_off + (p.stage_x ? p.tc_max * x_row : 0);
+    p.n_tiles   = p.tc_max ? (T + p.tc_max - 1) / p.tc_max : 0;
+    *out = p;
+    return p.tc_max > 0;
+}
+

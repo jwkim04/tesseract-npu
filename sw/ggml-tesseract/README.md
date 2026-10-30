@@ -1,37 +1,30 @@
 # ggml-tesseract
 
 ggml backend for the Tesseract NPU core (spec "ggml 백엔드 통합"). One registry
-`"Tesseract"` with one device `"Tesseract0"` of type `GGML_BACKEND_DEVICE_TYPE_GPU`; v1 runs
-`MUL_MAT` only, everything else stays on the CPU. Pin and verified llama.cpp API:
+`"Tesseract"` with one device `"Tesseract0"` of type `GGML_BACKEND_DEVICE_TYPE_GPU`; M6 (like v1)
+runs `MUL_MAT` only, everything else stays on the CPU. Pin and verified llama.cpp API:
 `docs/llama-pin.md`.
 
-> **State after X0 (v2, `docs/v2/01-execution-model.md` §12).** The v1 MUL_MAT execution is
-> deleted: lowering into LD/QACT/MVM/ST programs, the CMD-region double buffer, the program
-> cache, the staged and lazily converted MUL_MATs. The device and its buffer type stay
-> registered and weights upload, convert and read back as described below, but `supports_op`
-> accepts only the no-op ops and `graph_compute` runs nothing, so every compute op runs on
-> another backend (with llama.cpp the weights then stay on the CPU). The sections on lowering,
-> segments, the program cache and execution describe v1 (tag `v1-m4`). MUL_MAT returns as OPL
-> records for the `graph` kernel (`docs/v2/06-software-verification.md` §9.3, P3.2), together
-> with the ctests listed at the end, which are not registered until then.
->
-> X0 deleted more than EX §12 lists (the emission and the program cache): the lazy conversion
-> of raw-buffer MUL_MAT src0 into the WEIGHT heap (`tsr_lazy_*`, `tsr_heap_alloc` with its
-> evict-and-retry), the host-memory staging (`tsr_lower_staged`, `tsr_act_loc`) and
-> `tsr_resolve_weight` went too, because nothing calls them without an execution path. SW §9.3
-> keeps them unchanged for M6 (`test-backend-ops` puts src0 in non-WEIGHTS buffers), so P3.2
-> restores them from `v1-m4:sw/ggml-tesseract/ggml-tesseract.cpp`.
+> **v2 (M6, `docs/v2/06-software-verification.md` §9.3, P3.2).** The host no longer emits
+> LD/QACT/MVM/ST programs. Each split's MUL_MATs become one op list (OPL v1, SW §7.2) of MUL_MAT
+> records (+ JOINs), written into an OPL cache in the ch0 OPL region and run by one launch of the
+> firmware's `graph` kernel, which tiles each record with the shared planner `plan.hpp` and pushes
+> v1's tile-op sequence (SW §7.4), so results are v1's bit for bit. `supports_op`, the buffers,
+> the weight placement and load-time conversion, the lazy conversion of raw src0 and the staging of
+> host-memory activations are v1's (the last two were deleted in X0 and restored from `v1-m4`).
+> M6 keeps attention on the CPU (`-nkvo`, `offload_kqv = false`); M7 (P3.5) adds the other kinds.
 
 ## Files
 
 | File | Content |
 | --- | --- |
-| `ggml-tesseract.cpp` | reg / device / buffer type / buffer / backend, placement, lazy conversion, segments, program cache, execution |
-| `tsr-lower.{h,cpp}` | MUL_MAT lowering v1: SPM tiling and `LD / QACT / MVM / ST` emission (no ggml dependency) |
+| `ggml-tesseract.cpp` | reg / device / buffer type / buffer / backend, placement, lazy conversion, segments (op lists), staging, execution |
+| `tsr-opl.{h,cpp}`, `tsr-opl-dev.cpp` | the op-list path (no ggml): OPL builder (MUL_MAT records, hazards over DRAM byte ranges, transitive reduction, JOINs; encoding by `sw/ctrl/include/tsr/opl.hpp`'s writer), the OPL cache, the `graph` kernel on a transport (boot, launch, wait, error text) |
+| `tsr-lower.{h,cpp}` | MUL_MAT shape checks and SPM tiling (placement and staging; the firmware tiles with `plan.hpp`) |
 | `tsr-weights.{h,cpp}` | ggml type → device format (Q8_0, Q4_K native; others `to_float` + `quantize_row_q8_0_ref`) and back |
 | `tsr-alloc.{h,cpp}` | first-fit range allocator for IO / AUX / WEIGHT heap |
 | `tsr-wlayout.{h,cpp}` | device-format row bytes, row repack + symmetric scatter / gather over the channels (no ggml) |
-| `lower.cmake` | static library `tsr_lower` = tsr-lower + tsr-alloc + tsr-wlayout (no ggml), linked by this backend and by the runtime `sw/rt` (`tsr_rt`) |
+| `lower.cmake` | static library `tsr_lower` = tsr-lower + tsr-opl + tsr-alloc + tsr-wlayout (no ggml; links `tsr_transport`, includes `sw/ctrl/include`), linked by this backend and by the runtime `sw/rt` (`tsr_rt`) |
 | `sources.cmake` | source list (the ggml-dependent files), included by llama.cpp's `ggml/src/ggml-tesseract/CMakeLists.txt` (patch 0001); links `tsr_lower` with a deferred call, so the patch is unchanged |
 | `CMakeLists.txt`, `tests/` | unit tests and the end-to-end test (added by the top-level CMakeLists after llama.cpp) |
 
@@ -42,8 +35,11 @@ Public C API (`third_party/llama.cpp/ggml/include/ggml-tesseract.h`, from the pa
 
 ## Design (where to look)
 
-- **Transport**: `tsr_transport_open(NULL)` on first use (`tsr_dev_open_locked`); config from
-  `tsr_transport_config`. All device state is behind one mutex (`tsr_device::mtx`).
+- **Transport and firmware**: `tsr_transport_open(NULL)` on first use (`tsr_dev_open_locked`;
+  v2: `SOFT_RESET` + bind), config from `tsr_transport_config`, then `tsr_opl_dev::open` boots
+  `$TSR_IMAGE` or the build's `tsr-fw.elf` (`tsr_image_open_default`, warm if the image is already
+  loaded) unless the transport runs an image already, and finds the `graph` kernel. All device
+  state is behind one mutex (`tsr_device::mtx`); the transport has its own.
 - **Buffer type = virtual address space**: each buffer gets a 64-aligned base in a
   non-canonical range (`0x4000...`, never dereferenced); `tensor->data = base + offset`.
   Alignment 64, `get_alloc_size` = nbytes rounded up to 64 (the line-granular ST tail of the
@@ -61,42 +57,53 @@ Public C API (`third_party/llama.cpp/ggml/include/ggml-tesseract.h`, from the pa
     *LINEAR* (the whole buffer is one window in the ch0 IO region) if a window is free, else
     *HOSTED* (host memory, `calloc`). An ANY buffer whose tensors are all leaves (op NONE, not
     a graph input: LoRA adapters, control vectors, a KV cache without `-nkvo`) is HOSTED from the
-    start: no program addresses it, so it takes no IO.
+    start: no op list addresses it, so it takes no IO.
   - IO layout: windows below, the **stage** at the top (max(16 MiB, 2 × SPM), reserved at open).
 - **MUL_MAT src0 resolution** (`tsr_resolve_weight`): a DEVWEIGHT is used in place; any other
   src0 (raw bytes in IO, host memory or AUX, any loadable type) is converted lazily into the
   heap at graph_compute and cached by (buffer id, offset, type, N, K) and the buffer's write
   generation (bumped by every host write and by device writes into it). test-backend-ops
   therefore reads back exact src0 bytes, and in a pre-allocated graph an F32 src0 produced by
-  an earlier device op works (the pending program is executed first). In llama.cpp graphs
+  an earlier device op works (the pending op list is launched first). In llama.cpp graphs
   supports_op keeps such src0 on the CPU (see supports_op).
 - **Split uploads**: a DEVWEIGHT is staged on the host until every byte has arrived, then
   converted and scattered row by row; updates of a complete weight re-store whole rows
   (partial rows: read-modify-write for Q8_0/Q4_K, abort for converted types).
   `get_tensor` of a DEVWEIGHT un-repacks (exact for Q8_0/Q4_K; converted types are re-encoded
   from the device copy with a warning — debug only).
-- **graph_compute** (`tsr_backend_graph_compute`): skips nodes without
-  `GGML_TENSOR_FLAG_COMPUTE` and NONE/VIEW/RESHAPE/PERMUTE/TRANSPOSE; lowers each MUL_MAT
-  (`tsr_lower_mul_mat`) into a *segment*; a segment becomes one command buffer + END, written
-  to the CMD half not used last (double buffering) and run with `tsr_transport_exec`; device
-  errors abort with ERR_CODE / ERR_PC / ERR_INFO and the disassembled instruction.
-  T is tiled by `min(T_MAX, SPM capacity)`; src1 `[K, T, B2, B3]` contiguous is flattened.
+- **graph_compute** (`tsr_backend_graph_compute`, SW §9.3 steps 1-5): skips nodes without
+  `GGML_TENSOR_FLAG_COMPUTE` and NONE/VIEW/RESHAPE/PERMUTE/TRANSPOSE; each MUL_MAT
+  (`tsr_lower_mul_mat`) becomes one MUL_MAT record of a *segment* (`tsr_segment` = a
+  `tsr_opl_builder`): x / y handles of its IO window rows (strides in lines), W_OFF, fmt, N, K and
+  the whole T (src1 `[K, T, B2, B3]` contiguous is flattened); no addend, no ACC_DST in M6.
+  Dependencies come from DRAM byte ranges: a record depends on an earlier one iff it reads what
+  that one writes or writes what that one reads or writes (x rows, the weight on every channel,
+  the line-padded y rows); conflicts implied through another kept predecessor are dropped, and
+  more than two predecessors are folded by JOIN records. The segment's list (graph_id = its CRC)
+  goes into the **OPL cache** (`tsr_opl_cache`: LRU over the 64 MiB OPL region, keyed by a 64-bit
+  hash of the bytes and confirmed by a byte compare, so a list seen before, e.g. the same split of
+  the next decode token, is not written again) and runs as one `graph` launch (a0 handle, a1
+  bytes, a2 flags; `tsr_transport_call` with the transport's debug-aware timeout). A list is
+  launched early when it would exceed 4096 records, before a src0 in a buffer it writes is
+  converted, and before a staged MUL_MAT. Any answer but DONE OK with RET 0 aborts: on TILE_ERR
+  RET − 1 is the failing op, mapped back to its node name, with the first error's code, ERR_INFO,
+  ticket, w0 and push index; executor refusals (KERNEL_ERR, RET 0x8000_000x) by name.
 - **Staged MUL_MATs** (`tsr_lower_staged`): src1 or dst in a HOSTED buffer, or dst rows that
   are not line-aligned (N*4 % 64 != 0 with T > 1). Everything pending runs first, then the
-  MUL_MAT runs on its own in T tiles that fit the stage: src1 rows host → stage (a LINEAR src1
-  is read in place), LD/QACT/MVM/ST, dst rows stage → host or → the LINEAR dst (compacted to
-  N*4 bytes). Only one tile has to be resident in IO, whatever T is, so supports_op has no
-  token-count limit. Typical case: llama.cpp reserves the output head for n_ubatch logits
-  (Qwen2.5 at -ub 512: 296.75 MiB), a chunk that is HOSTED; decode computes one row of it.
-  (Single-token outputs with N*4 % 64 != 0 ST straight into a LINEAR dst; the tail lands in the
-  64-byte padding.) LLM projections have N % 16 == 0 and are staged only through HOSTED buffers.
-- **Program cache** (`tsr_prog_cache`, tsr-lower): key = the resolved MUL_MAT descriptors of a
-  segment (fmt, N, K, T, W_OFF, x/y beats); a program still resident in its CMD half runs
-  without being rewritten. Bounded to 64 MiB and 4096 entries with LRU eviction; programs above
-  4 MiB (long prefills: with T_MAX = 1 a program has 4 instructions per token per MUL_MAT) are
-  run without being cached.
-- **supports_op**: MUL_MAT with src1/dst F32, src0 `ne2 = ne3 = 1`, all contiguous, src0 type
-  loadable, `tsr_mm_shape_ok` (K ≤ K_MAX, K % 32 == 0 (Q4_K: % 256), one token fits SPM),
+  MUL_MAT runs on its own in T tiles that fit the stage, one single-record launch per tile:
+  src1 rows host → stage (a LINEAR src1 is read in place), the record (the firmware's LD / QACT /
+  MVM / ST), dst rows stage → host or → the LINEAR dst (compacted to N*4 bytes). Only one tile
+  has to be resident in IO, whatever T is, so supports_op has no token-count limit. Typical case:
+  llama.cpp reserves the output head for n_ubatch logits (Qwen2.5 at -ub 512: 296.75 MiB), a
+  chunk that is HOSTED; decode computes one row of it, one extra launch per token (TSR_STATS:
+  "staged chunks"). (Single-token outputs with N*4 % 64 != 0 ST straight into a LINEAR dst; the
+  tail lands in the 64-byte padding.) LLM projections have N % 16 == 0 and are staged only
+  through HOSTED buffers.
+- **supports_op** (v1's rules, unchanged in M6, so the splits are v1's): MUL_MAT with src1/dst
+  F32, src0 `ne2 = ne3 = 1`, all contiguous, src0 type loadable, `tsr_mm_shape_ok` (K ≤ K_MAX,
+  K % 32 == 0 (Q4_K: % 256), one token fits SPM) and `plan.hpp`'s `mm_supported` on the device's
+  CFG values (one token fits the firmware's scratch-ring budget: the host rejects exactly what the
+  `graph` kernel cannot plan, V2-SW-20),
   src0 (or the tensor it views) in a Tesseract buffer that is not COMPUTE (a WEIGHTS tensor only
   unsliced; usage ANY includes llama.cpp's size-0 placement-probe buffer), or unallocated and a
   leaf that is not a graph input (test-backend-ops asks before allocating; in llama.cpp an
@@ -117,10 +124,13 @@ Public C API (`third_party/llama.cpp/ggml/include/ggml-tesseract.h`, from the pa
 | Variable | Effect |
 | --- | --- |
 | `TSR_DEVICE` | transport kind (`sim` default, `xrt`); `none` registers no device |
-| `TSR_DEBUG=1` | placement, lowering and exec log on stderr; `2` adds buffer events and a disassembly of every executed program |
+| `TSR_IMAGE` | firmware image (default: the build's `tsr-fw.elf`) |
+| `TSR_DEBUG=1` | placement, lowering and launch log on stderr; `2` adds buffer events and the records of every launched op list |
 | `TSR_FORCE_HOST=1` | test knob: every non-WEIGHTS buffer in host memory, so every MUL_MAT takes the staged path |
 | `TSR_STAGE_KIB=<n>` | test knob: IO stage size in KiB (default max(16 MiB, 2 × SPM)); a small stage forces several T tiles |
-| `TSR_SIM_*` | handled by the sim transport (`sw/transport/tsr_transport.h`); v1's per-exec `TSR_TRACE` dump is deleted (X0), trace v2 capture is P1.10 |
+| `TSR_OPL_CRC=1` | debug knob: `graph` launch flag VERIFY_CRC (the executor checks each list's CRC-32 before running it) |
+| `TSR_STATS=1` | at backend free: upload statistics; graph_compute calls, launches, launches per scheduler pass (≈ per token: a split seen again starts a pass), op records per launch, MUL_MAT / JOIN records, staged chunks and their launches, OPL cache hits / misses / evictions, launch wall time, PERF counter deltas |
+| `TSR_SIM_*`, `TSR_TRACE`, `TSR_LOG`, `TSR_LAUNCH_TIMEOUT_MS`, … | handled by the transport (`sw/transport/tsr_transport.h`, SW §9.2) |
 
 ## Build and test
 
@@ -128,11 +138,12 @@ Public C API (`third_party/llama.cpp/ggml/include/ggml-tesseract.h`, from the pa
 third_party/apply-patches.sh
 cmake -S . -B build/dev -DCMAKE_BUILD_TYPE=Release
 cmake --build build/dev -j4 --target test-backend-ops test-ggml-tesseract test-tsr-backend-units llama-completion
-build/dev/bin/test-tsr-backend-units                        # allocator + lowering
+build/dev/bin/test-tsr-backend-units                        # allocator, tiling, OPL builder + cache
 build/dev/bin/test-ggml-tesseract                            # bit-exact vs tsr_ref + NMSE vs CPU
 TSR_SIM_TMAX=8 build/dev/bin/test-ggml-tesseract             # T tiling with T > 1
 build/dev/bin/test-backend-ops test -o MUL_MAT -b Tesseract0 # vs CPU, NMSE 5e-4
-build/dev/bin/llama-completion -m models/qwen2.5-0.5b-instruct-q8_0.gguf -ngl 99 -nkvo -p "..." -n 16
+LLAMA_ATTN_ROT_DISABLE=1 build/dev/bin/llama-completion -m models/qwen2.5-0.5b-instruct-q8_0.gguf \
+    -ngl 99 -nkvo -fa on -ctk q8_0 -ctv q8_0 -p "..." -n 16          # M6 settings (SW §10.4)
 ```
 
 Configure only through the top-level CMakeLists. It defines `tsr_ref`, `tsr_transport` and
@@ -141,10 +152,21 @@ is missing, and `test-tsr-backend-units` links it. The same tree adds the runtim
 llama.cpp, so its ctest also lists `rt_sim`, `rt_sim_tmax8`, `rt_mock` and `rt_mock_tmax8`
 (`sw/rt/README.md`; the PyTorch backend on top of it: `docs/torch-backend.md`).
 
-ctest names: `ggml_tesseract_units`, `ggml_tesseract_e2e`, `ggml_tesseract_e2e_tmax8`,
+ctest names: `ggml_tesseract_units` (allocator, tiling, staging decisions, OPL builder: encoding,
+hazards incl. strided rows, transitive reduction, JOINs, the 4096-op limit, a random property check;
+OPL cache), `ggml_tesseract_opl_launch` and `_mock` (`tests/test-tsr-opl-launch.cpp`: the launcher on
+a device: a JOIN and an ACC_DST record against the spec model, a cache hit, TILE_ERR and KERNEL_ERR
+answers mapped to their op), `ggml_tesseract_e2e`, `ggml_tesseract_e2e_tmax8`,
 `ggml_tesseract_e2e_hosted` and `ggml_tesseract_e2e_hosted_tmax8` (`TSR_FORCE_HOST=1
-TSR_STAGE_KIB=64`, with and without `TSR_SIM_TMAX=8`), `ggml_tesseract_scalar_nmse`,
-`ggml_tesseract_backend_ops`. Test hook for the storage decision:
+TSR_STAGE_KIB=64`, with and without `TSR_SIM_TMAX=8`), `transport_ggml_e2e_mock` and
+`transport_ggml_e2e_mock_tmax8` (the same test on the mock kdev; defined here since P3.2),
+`ggml_tesseract_scalar_nmse`, `ggml_tesseract_backend_ops` and `ggml_tesseract_backend_ops_bigt`
+(label `slow`: the one case `MUL_MAT(f16, m=16, n=2105344, k=32)`, 8.4 M single-token tile ops
+through the interpreted firmware at the sim's T_MAX 1, ~50 s; the two together run v1's case set).
+The device ctests run with the simulator's race detector fatal (`TSR_SIM_RACE=fatal`, SW §4.6),
+except `_bigt` (over 15 minutes with it). `TSR_TEST_DUMP=<file>` makes
+`test-ggml-tesseract` append every device output it reads, so two builds can be compared byte for
+byte (e.g. `LD_LIBRARY_PATH=build/v1/bin` runs the same binary on v1's libraries). Test hook for the storage decision:
 `ggml_backend_reg_get_proc_address(reg, "ggml_backend_tesseract_buffer_storage")` returns
 `const char * (*)(ggml_backend_buffer_t)` ("undecided", "io", "placed", "host").
 
@@ -156,5 +178,5 @@ bit-exactly against the spec model instead; numbers in `docs/llama-pin.md` (test
 The unfiltered `test-backend-ops test -o MUL_MAT -b Tesseract0` above therefore reports
 1402/1403 in about one run in seven.
 
-llama.cpp must run with `-nkvo` (KV cache on the CPU) and an explicit `-ngl`; see
+llama.cpp must run with `-nkvo` (KV cache on the CPU, M6) and an explicit `-ngl`; see
 `docs/llama-pin.md` for how compute buffers, the output head and LoRA adapters are placed.

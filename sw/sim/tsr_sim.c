@@ -1021,8 +1021,12 @@ static uint32_t status_read(const tsr_sim * sim) {
     if (sim->sr_busy) st |= TSR_STATUS_SR_BUSY;
     if (sim->lcq_wr != sim->lcq_rd) st |= TSR_STATUS_LCQ_PENDING;
     if (sim->log_wr != sim->log_rd) st |= TSR_STATUS_LOG_PENDING;
+    if (sim->plat_err) st |= TSR_STATUS_PLAT_ERR;          // P3.1 (transport, additive): plat_err_i
     return st;
 }
+
+// P3.1 (transport, additive): plat_err_i (EX §9.3), see tsr_sim.h.
+void tsr_sim_set_plat_err(tsr_sim * sim, int level) { sim->plat_err = level != 0; }
 
 static uint32_t cfg3_read(const tsr_sim * sim) {
     uint32_t v = 0;
@@ -1260,7 +1264,8 @@ int tsr_sim_lq_cw_access(tsr_sim * sim, int is_write, uint32_t off, uint32_t * v
             case TSR_CW_LQ_STOP:     v = sim->stop_wm; break;
             case TSR_CW_LQ_FLAGS:
                 v = (sim->cancel_valid ? TSR_LQ_FLAGS_CANCEL_VALID : 0u) | (sim->stop_valid ? TSR_LQ_FLAGS_STOP_VALID : 0u) |
-                    (tsr_sim_active(sim) ? TSR_LQ_FLAGS_ACTIVE : 0u);
+                    (tsr_sim_active(sim) ? TSR_LQ_FLAGS_ACTIVE : 0u) |
+                    (sim->plat_err ? TSR_LQ_FLAGS_PLAT_ERR : 0u);   // P3.1 (transport, additive): plat_err_i
                 break;
             case TSR_CW_LCQ_FREE:    v = lcq_free; break;
             case TSR_CW_LOG_FREE:    v = TSR_LOG_DEPTH - (sim->log_wr - sim->log_rd); break;

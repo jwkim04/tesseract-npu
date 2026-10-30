@@ -1,20 +1,39 @@
-// tsr_transport.h — host <-> device transport (spec "ggml 백엔드 통합", 전송 계층).
+// tsr_transport.h — host <-> device transport v2 (docs/v2/01-execution-model.md "EX" §10.1, the
+// API verbatim; docs/v2/06-software-verification.md "SW" §9.1-§9.2, the conveniences and the
+// environment).
 //
-// The only target-dependent part of the software stack. Implementations:
-//   "sim"  — in-process ISA simulator (sw/transport/tsr_transport_sim.c)
-//   "xrt"  — Alveo via XRT: the protocol layer (tsr_kdev.cpp) over the XRT kdev
-//            (tsr_transport_xrt.cpp, built only with -DTSR_WITH_XRT=ON)
-//   "mock" — the same protocol layer over a model of the platform adapter around the ISA
-//            simulator (tsr_kdev_mock.cpp): tests the hardware path without hardware
-//   "vkernel" — the same protocol layer over the Verilated kernel (RTL) in a server process
-//            (tsr_kdev_vkernel.cpp, tb/platform/vkernel; TSR_VKERNEL_*)
-//   other kdev kinds registered at run time (tsr::register_kdev, tsr_kdev.h)
-// Selected with TSR_DEVICE (default sim). Region allocation policy lives in the backend; the
-// transport opens the device, reads its configuration and moves bytes. The v1 run interface
-// (one host-started command buffer per exec) is deleted (X0, D14): the host only launches
-// RISC-V kernels, through the v2 API of docs/v2/01-execution-model.md §10 (image, boot,
-// launch, wait, cancel, stop, soft reset, log), which arrives with P3.1. docs/xrt-host.md has
-// the environment of the xrt / mock transports (TSR_XCLBIN, TSR_XRT_*, TSR_MOCK_*).
+// The only target-dependent part of the software stack. Every kind runs the same register
+// protocol (V2-SW-18, EX §10.2): the protocol layer in tsr_kdev.cpp over a device-access layer
+// (kdev, tsr_kdev.h):
+//   "sim"     the simulator in-process behind the core CSR port, no adapter (tsr_kdev_sim.cpp)
+//   "mock"    the sim kdev plus the ap_ctrl_none adapter register model (tsr_kdev_mock.cpp)
+//   "vkernel" the Verilated kernel in a server process (tsr_kdev_vkernel.cpp; the two-clock v2
+//             server is P5.3)
+//   "xrt"     the Alveo card through xrt::ip and one device-only buffer per channel
+//             (tsr_transport_xrt.cpp, built with -DTSR_WITH_XRT=ON)
+//   kinds registered at run time (tsr::register_kdev, tsr_kdev.h)
+// Selected with TSR_DEVICE (default sim). The host never runs programs: it binds channel memory,
+// loads a firmware image into the RISC-V's TCMs, boots it and launches kernels (EX §2.1). DRAM
+// transfers are unchanged from v1.
+//
+// Environment (SW §9.2, read at open): TSR_DEVICE; TSR_IMAGE (tsr_image_open_default);
+// TSR_LAUNCH_TIMEOUT_MS (60000; 0 = none), TSR_ABORT_MS (10000), TSR_BOOT_MS (2000),
+// TSR_RESET_MS (15000); TSR_LOG (stderr | <file>: decode the device log there) and TSR_LOG_LEVEL
+// (LOG_CFG.LEVEL, 0 FATAL .. 5 TRACE, default 3); TSR_ATTACH=1 (open without SOFT_RESET or bind,
+// for diagnosis); TSR_STATS=1 (transport statistics on stderr at close); DB §9.5: TSR_DUMP_DIR
+// (hang dumps, recovery ladder level 0), TSR_GDB_WAIT (leave a trapped device for the debugger),
+// TSR_TILE_SERIAL / TSR_TILE_HIST (DBG_CFG at open). Kind-specific variables: tsr_kdev_*.cpp
+// (TSR_SIM_*, TSR_MOCK_*, TSR_VKERNEL_*, TSR_XCLBIN / TSR_XRT_*). A malformed value makes the open
+// fail with a message (never silently ignored).
+//
+// Time: on sim, mock and vkernel (whose server reports its time) every timeout and the poll policy
+// count device time (core cycles at the nominal 276.3 MHz kernel clock), so results and recoveries
+// do not depend on host load; on xrt they count host time (CLOCK_MONOTONIC).
+//
+// Threads: one mutex per transport serialises every call (EX §2.4). tsr_transport_wait releases it
+// between polls, so another thread of the owning process (DB's in-process debug service) can use
+// the device while a launch waits. The event callback runs on the waiting thread with the mutex
+// held; it may call the transport (the mutex is recursive).
 #pragma once
 
 #include <stddef.h>
@@ -28,26 +47,124 @@ extern "C" {
 
 typedef struct tsr_transport tsr_transport;
 
-// Open by kind ("sim", "xrt", "mock", "vkernel", registered kinds); NULL means getenv("TSR_DEVICE") or "sim".
-// Returns NULL on failure (message on stderr).
-// sim honours: TSR_SIM_DRAM_DIR (file-backed DRAM), TSR_SIM_TMAX (override T_MAX),
-//              TSR_SIM_CH_GIB (per-channel size, default 16),
-//              TSR_SIM_THREADS (MVM worker threads, default min(online CPUs, 8)),
-//              TSR_SIM_LOG ("stderr" or a file: per-op log of the simulator).
-//              A malformed value makes the open fail (see tsr_transport_sim.c).
-tsr_transport * tsr_transport_open(const char * kind);
-void            tsr_transport_close(tsr_transport * t);
-const char *    tsr_transport_name(const tsr_transport * t);
-
-// Configuration as read from the CFG*/CAPS CSRs (+ ch_bytes, which the CSRs don't carry).
+// ---------------------------------------------------------------------------------------------
+// EX §10.1 (verbatim). Return codes: 0 on success, < 0 one of TSR_TE_* below (message on stderr).
+// ---------------------------------------------------------------------------------------------
+// unchanged: open, close, name, config, write, read, csr_read
+// Open by kind ("sim", "mock", "vkernel", "xrt", registered kinds); NULL or "" means
+// getenv("TSR_DEVICE") or "sim". v2: checks the identity (ID, VERSION major 2, CFG*, CAPS, CFG3,
+// CTL_ID, RV_CFG, Q_DEPTH, RV_FREQ != 0), clears ADAPTER_STATUS, then SOFT_RESET + bind (channel
+// bases, MEM_EN), unless TSR_ATTACH=1 (SW §9.1). NULL on failure (message on stderr).
+tsr_transport *    tsr_transport_open(const char * kind);   // v2: SOFT_RESET + bind, unless TSR_ATTACH=1
+void               tsr_transport_close(tsr_transport * t);
+const char *       tsr_transport_name(const tsr_transport * t);
+// Configuration as read from the CFG*/CAPS CSRs (+ ch_bytes, which the CSRs do not carry).
 const tsr_config * tsr_transport_config(const tsr_transport * t);
-
-// Host access to channel DRAM. Offsets/sizes in bytes, any alignment. 0 on success.
-int tsr_transport_write(tsr_transport * t, uint32_t ch, uint64_t off, const void * src, size_t size);
-int tsr_transport_read (tsr_transport * t, uint32_t ch, uint64_t off, void * dst, size_t size);
-
-// Raw CSR access (perf counters, debug).
+// Host access to channel DRAM (EX §2.1 "Data": unchanged from v1). Offsets / sizes in bytes, any
+// alignment. 0 on success.
+int      tsr_transport_write(tsr_transport * t, uint32_t ch, uint64_t off, const void * src, size_t size);
+int      tsr_transport_read (tsr_transport * t, uint32_t ch, uint64_t off, void * dst, size_t size);
+// Raw core CSR access (EX §5 offsets < 0x1000; PERF, debug, tools). A failed read returns
+// 0xFFFFFFFF; csr_write returns 0 or a TSR_TE_* code.
 uint32_t tsr_transport_csr_read(tsr_transport * t, uint32_t off);
+int      tsr_transport_csr_write(tsr_transport * t, uint32_t off, uint32_t val);   // new (DB, tools)
+
+// Firmware image (EX §3): a parsed static RV32 ELF. tsr_image_open checks the segments, the
+// kernel table and .note.tsr (EX §3.1, SW §6.2) and that the stored image id equals the computed
+// one (EX §3.2). Images are reference counted: a transport keeps the image it booted alive after
+// tsr_image_close.
+typedef struct tsr_image tsr_image;                                   // parsed firmware ELF
+int         tsr_image_open(const char * elf_path, tsr_image ** out);  // checks segments and .note.tsr
+void        tsr_image_close(tsr_image * img);
+int         tsr_image_kernel(const tsr_image * img, const char * name); // index, -1 if absent
+uint64_t    tsr_image_id(const tsr_image * img);
+
+// Boot (EX §3.3-§3.5, SW §9.1): refuses an image whose .note.tsr requirements the device does not
+// meet; VERIFY of every ITCM segment, a cold load (receive CRC, VERIFY CRC) of each one that does
+// not match, every DTCM segment reloaded and verified (a warm restart when no ITCM segment had to
+// be written); RV_BOOT = 0, RV_RUN = 1; HELLO within TSR_BOOT_MS with the image id, the SDK ABI and
+// the kernel count checked, and no other record first. A booted device is soft-reset first.
+int tsr_transport_boot(tsr_transport * t, const tsr_image * img);    // warm if possible, else cold; HELLO checked
+
+// Launches (EX §4.3, §4.4, §4.8). tsr_launch: type TSR_DESC_TYPE_LAUNCH / _PING, flags = w0[15:8]
+// (bit0 PROF; the rest must be 0), kernel = w0[31:16] (an index of tsr_image_kernel), arg = ARG0-6.
+typedef struct tsr_launch { uint8_t type; uint8_t flags; uint16_t kernel; uint32_t arg[7]; } tsr_launch;
+typedef struct tsr_record { uint32_t w[8]; } tsr_record;               // §4.4; accessors in tsr_isa.h
+// Pushes a descriptor and returns its sequence number (EX §4.2). Blocks (consuming answers) only
+// while LQ_DEPTH launches are outstanding (host-side credit, no device read).
+int tsr_transport_launch(tsr_transport * t, const tsr_launch * l, uint32_t * seq);  // blocks only at LQ_DEPTH outstanding
+// Waits for the answer of launch seq (once per launch). An OK DONE / PONG is read with EX §4.8's
+// minimal reads: r0, and r2 unless the kernel's RET is 0 on success (graph, replay, SW §6.4); r1
+// (the SEQ), r3 (TICKET_NONE) and r4-r6 (0) follow from EX §4.4; r7 (DURATION) reads as 0. Every
+// other record is read whole. timeout_ns: TSR_TIMEOUT_DEFAULT (0) =
+// TSR_LAUNCH_TIMEOUT_MS, TSR_TIMEOUT_NONE = none, else device-aware nanoseconds. On a timeout the
+// transport runs DB's recovery ladder (§7.3: hang dump, LQ_CANCEL, SOFT_RESET + warm restart) and
+// returns TSR_TE_TIMEOUT (rec = the ABORTED answer if the cancel produced one, else zeros). A TRAP
+// answer returns 0 with rec = the TRAP record (status TRAP), after the log was drained, the trap
+// reported and the device restarted (unless TSR_GDB_WAIT). Launches flushed by a SOFT_RESET return
+// TSR_TE_LOST.
+int tsr_transport_wait(tsr_transport * t, uint32_t seq, uint64_t timeout_ns, tsr_record * rec);
+        // 0: answered (rec->w[0] has the status); <0: transport failure or timeout (device diagnosed, §8.6)
+        // the timeout counts only while the RISC-V is not halted and no tile stop is active (§4.8)
+int tsr_transport_call(tsr_transport * t, const tsr_launch * l, uint64_t timeout_ns, tsr_record * rec);  // launch + wait
+// Watermarks (EX §4.9): every launch q with (seq_upto - q) mod 2^32 < 2^31 is covered. cancel: hard
+// (QABORT of a covered running launch, covered queued launches answered ABORTED); stop: soft. A
+// watermark stays valid until SOFT_RESET; 2^30 launches after it was written the transport moves it
+// just below the oldest unanswered launch, so it never comes to cover new launches.
+int tsr_transport_cancel(tsr_transport * t, uint32_t seq_upto);
+int tsr_transport_stop(tsr_transport * t, uint32_t seq_upto);
+// Kernel events (records 0xC0-0xFF, EX §4.4) and other unsolicited records are passed to cb as they
+// are consumed (any wait or launch); NULL removes it (events are then dropped).
+int tsr_transport_set_event_cb(tsr_transport * t, void (*cb)(void *, const tsr_record *), void * user);
+// CTRL.SOFT_RESET, wait SR_BUSY = 0 (TSR_RESET_MS). The RISC-V is left in reset: boot again (warm).
+// Outstanding launches are lost (their waits return TSR_TE_LOST).
+int tsr_transport_soft_reset(tsr_transport * t);                        // SOFT_RESET, wait SR_BUSY = 0
+// Raw log words (DB §6.1 records), oldest first: the words the transport drained earlier and kept
+// (up to 64 Ki words), then the device ring. *n = words returned.
+int tsr_transport_log_drain(tsr_transport * t, uint32_t * words, size_t max, size_t * n);
+
+// ---------------------------------------------------------------------------------------------
+// SW §9.1 conveniences (no second protocol)
+// ---------------------------------------------------------------------------------------------
+int               tsr_image_open_default(tsr_image ** out);   // $TSR_IMAGE or the build's tsr-fw.elf
+const char *      tsr_image_path(const tsr_image * img);
+// The booted image (ready or trapped) or NULL. The transport holds a reference: the pointer stays
+// valid until a boot of another image or tsr_transport_close.
+const tsr_image * tsr_transport_image(const tsr_transport * t);   // booted image or NULL
+
+// Decoded view of a record (accessors over tsr_record.w[], EX §4.4)
+typedef struct tsr_result {
+    uint8_t  type, status, err_code;       // r0
+    uint32_t seq;                          // r1
+    int32_t  ret;                          // r2 (DONE)
+    uint32_t err_ticket, err_info, err_w0, err_pidx;   // r3-r6 (DONE, first error)
+    uint32_t duration;                     // r7, core cycles; 0 for an OK DONE / PONG (minimal reads)
+} tsr_result;
+void         tsr_record_decode(const tsr_record * rec, tsr_result * out);
+const char * tsr_status_name(uint8_t status);   // "OK", "TILE_ERR", … (EX §4.4)
+
+// Statistics since open. launch_wall_ns: host time from each answered launch's push to the
+// consumption of its answer, summed; csr_*: core CSR and adapter register accesses; bytes_*:
+// DRAM transfers; log_words: log words drained; log_records_dropped: records the firmware reported
+// dropped ("dropped n" EVENT records, DB §6.1); staged_chunks: 0 here (the backend counts its
+// staged chunks, DB §8.6). TSR_STATS=1 prints them at close.
+typedef struct tsr_transport_stats {
+    uint64_t launches, launch_wall_ns, csr_reads, csr_writes, bytes_written, bytes_read,
+             log_words, log_records_dropped, staged_chunks;
+} tsr_transport_stats;
+void tsr_transport_get_stats(const tsr_transport * t, tsr_transport_stats * s);
+
+// Error codes of the int-returning calls, and wait timeouts.
+#define TSR_TE_INVAL   (-1)   // bad argument or API misuse (unknown or already waited sequence, no image)
+#define TSR_TE_IO      (-2)   // a device access failed (kdev error, connection lost)
+#define TSR_TE_TIMEOUT (-3)   // wait timed out; the device was diagnosed and recovered (EX §8.6)
+#define TSR_TE_LOST    (-4)   // the launch was flushed by a SOFT_RESET / restart without an answer
+#define TSR_TE_DEVICE  (-5)   // device failure: unit hung ("card reset needed"), no clk_rv, reset stuck
+#define TSR_TE_IMAGE   (-6)   // image refused: requirements, CRC / VERIFY mismatch, HELLO checks
+#define TSR_TE_STATE   (-7)   // wrong device state for the call (not booted, trapped, failed)
+const char * tsr_transport_strerror(int rc);
+#define TSR_TIMEOUT_DEFAULT 0ull            // tsr_transport_wait / _call: TSR_LAUNCH_TIMEOUT_MS
+#define TSR_TIMEOUT_NONE    UINT64_MAX      // no timeout
 
 #ifdef __cplusplus
 }

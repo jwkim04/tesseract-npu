@@ -3,7 +3,9 @@
 # uses tsr-trace-replay).
 #   tsr-trace-replay   replays trace v2 directories or sets on fresh simulators (tsr_trace.h):
 #                      tsr-trace-replay [-q | -v] [--sched S]... [--threads N] [--max-cycles N]
-#                      [--tmax N] PATH...; summary line, exit 0 / 1 (mismatch) / 2 (unreadable)
+#                      [--tmax N] PATH...; summary line, exit 0 / 1 (mismatch) / 2 (unreadable);
+#                      P3.3: tsr-trace-replay --device KIND [--shadow] [--replay-image ELF] [--serial] PATH...
+#                      replays through a transport v2 (tsr_devrun.h; linked by sw/tools/CMakeLists.txt)
 #   tsr-trace-conv     v1 traces (cmd.bin) -> kind-ops v2 traces, serial dependency chain (SW §5.6):
 #                      tsr-trace-conv [-q] [--replay] [--sched S]... [--limit N] [--pick LIST]
 #                      -o OUT IN...

@@ -27,21 +27,27 @@ Tools: `tsr-numcheck` (`sw/tools/numcheck.cpp`, the dumper, links llama.cpp) and
 | --- | --- | --- | --- |
 | `cpu` | ggml CPU only (`TSR_DEVICE=none`, `devices = {}`, `n_gpu_layers = 0`) | `embd`: `token_embd.weight` rows, ggml `to_float` (bit-exact with the token path) | reference |
 | `floor` | same as `cpu` | `embd+1ulp`: every element `nextafterf` ±1 ulp (klcheck's `embd_nudge`, sequence 0, position = token index, `--seed`, default 1) | the CPU's own sensitivity |
-| `dev` | Tesseract (`TSR_DEVICE=sim`, `devices = {Tesseract0}`, `n_gpu_layers = 999`: every layer and the output head) | `embd` | device under test |
+| `dev` | Tesseract (`TSR_DEVICE=sim`, or `--device mock\|vkernel\|xrt`; `devices = {Tesseract0}`, `n_gpu_layers = 999`: every layer and the output head) | `embd` | device under test |
 | `cpu-tok` (check) | CPU, no observation | token ids | embd path == token path, observing does not change CPU numerics |
 | `dev-noobs` (check) | Tesseract, no observation | `embd` | observing does not change device numerics |
 
 All three main runs use the embd input path, so their graphs are identical node for node (with
 token input llama.cpp computes a different branch of its input selection). Model and context
-settings are klcheck's (`docs/klcheck.md`, "Settings fixed in every phase"): flash attention off,
-KV cache f16 on the host (`offload_kqv = false`, required by the backend), CPU weight repack off
-(`use_extra_bufts = false`), threads `-t` (default online CPUs / 2), `n_ctx` = T rounded up to 256,
-`n_batch = n_ubatch = 256` (T must fit one ubatch), every position an output. The prompt is
+settings are klcheck's (`docs/klcheck.md`, "Settings fixed in every phase"). **v2 (P3.3,
+2026-10-30):** flash attention on, a q8_0 K and V cache, `LLAMA_ATTN_ROT_DISABLE=1` (set by the tool),
+`offload_kqv` false in M6 (`--phase m6`, the default: KV cache and attention on the host) and true in
+M7 (`--phase m7`), the same in every run of a set (V2-SW-22); each run records them in `meta.json`
+`info` (version 2), and `selfcheck` and `numcheck.py compare` refuse a set whose runs differ in them.
+`--fa`, `-ctk` / `-ctv`, `--offload-kqv` and `--attn-rot on` exist for experiments only. (v1: flash
+attention off, KV cache f16 on the host; the v1 results below were measured so.) Further: CPU weight
+repack off (`use_extra_bufts = false`), threads `-t` (default online CPUs / 2), `n_ctx` = T rounded up
+to 256, `n_batch = n_ubatch = 256` (T must fit one ubatch), every position an output. The prompt is
 truncated to T tokens; T defaults to 16 for models above 8 B parameters and 32 otherwise.
 `TSR_SIM_THREADS` defaults to 4 when unset.
 
 Observation uses `llama_context_params.cb_eval`: the callback asks for every computed non-view
-node, so the scheduler computes the graph one node at a time, synchronizes, and the node's output
+node, so the scheduler computes the graph one node at a time (on v2 one device launch per observed
+node: numcheck needs no device mode of its own, V2-SW-27), synchronizes, and the node's output
 (and, for a weight MUL_MAT, its src1) is read with `ggml_backend_tensor_get`, which also reads
 device buffers. On `dev` the src1 read is the scheduler's input copy in the Tesseract buffer, i.e.
 exactly the activation the device quantized.
@@ -88,7 +94,9 @@ own functions through `libnumcheck_helper.so`.
   selftest: the mutant fails B1 and B1b and passes B2). The order is checked by B1 and B1b.
 - **x without a src1 dump** (`--src1-from-producer`). A weight MUL_MAT outside the dumper's
   `--mm-layers` has no src1 dump, but its src1 is the output of a node that is always dumped (llama.cpp
-  names: `attn_norm-N` for attn_q / k / v, `kqv_out-N` for attn_output, `ffn_norm-N` for ffn_gate / up,
+  names: `attn_norm-N` for attn_q / k / v, `kqv_out-N` for attn_output (with flash attention, the v2
+  setting, `kqv_out-N` is a reshape view that is not dumped: the producer is the layer's FLASH_ATTN_EXT
+  node, [D, n_head, T] with D × n_head = K, the same bytes), `ffn_norm-N` for ffn_gate / up,
   `ffn_swiglu-N` for ffn_down, `result_norm` for the output head). The device reads a byte copy of
   that output. With the option, the comparer first verifies the mapping bit for bit on every src1 dump
   of the dev and cpu runs, and only then uses the producer output as x for the other weight MUL_MATs
@@ -295,9 +303,11 @@ of each in ROOT/`runs.json`, then runs `selfcheck`):
 
 ```
 tsr-numcheck all -m MODEL [-o ROOT] [-T N] [--seed 1] [--nodes REGEX] [--mm-layers LIST] [--prompt TEXT]
-                 [-t N] [--device sim] [--checks none|cheap|full]
-tsr-numcheck run -m MODEL -o RUN_DIR --run cpu|floor|dev [--device sim] [-T N] [--seed 1] [--nodes REGEX]
-                 [--mm-layers LIST] [--no-observe] [--input tokens|embd] [--prompt TEXT] [-t N] [-v]
+                 [-t N] [--device sim|mock|vkernel|xrt] [--phase m6|m7] [--checks none|cheap|full]
+tsr-numcheck run -m MODEL -o RUN_DIR --run cpu|floor|dev [--device sim] [--phase m6|m7] [-T N] [--seed 1]
+                 [--nodes REGEX] [--mm-layers LIST] [--no-observe] [--input tokens|embd] [--prompt TEXT] [-t N] [-v]
+# experiments only (every run of a set must use the same): --fa on|off, -ctk TYPE, -ctv TYPE,
+# --offload-kqv on|off, --attn-rot on|off
 tsr-numcheck selfcheck ROOT
 tsr-numcheck selftest
 ```
@@ -351,12 +361,22 @@ python3 sw/tools/numcheck.py compare --cpu R/cpu --floor R/floor --dev R/dev [--
     -o R/report --boundtest-report build/numcheck-runs/boundtest.json --src1-from-producer
 ```
 
-ctest: `tools_numcheck_selftest` (comparer, no model), `tools_numcheck_dump_selftest` (dumper, no
-model), `tools_numcheck_dump_qwen05b` (label `model`: `all --checks full` on 0.5B Q8_0, ~9 s).
+ctest: `tools_numcheck_selftest` (comparer, no model; also: the v2 settings in the report, a set
+with different settings refused, version 1 dumps read with the v1 settings), `tools_numcheck_dump_selftest`
+(dumper, no model), `tools_numcheck_dump_qwen05b` (label `model`: `all --phase m6 --checks full` on
+0.5B Q8_0, ~9 s).
+
+**v2 check (M6, sim, 2026-10-30).** `tsr-numcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf -T 32
+--phase m6 --checks full`: selfcheck PASS, 533 nodes per run, 169/169 weight MUL_MATs computed by
+Tesseract0 (one `graph` launch each), dev logits = dev-noobs logits bit for bit, 8.8 s. A second set
+with `--mm-layers 0,output --checks none` compared with `numcheck.py compare --src1-from-producer`:
+PASS, all 169 weight MUL_MATs checked, B1 0 mismatches (bit-exact with libtsr_ref), B1b 0, B2 0
+violations, logits KL ratio 1.20 and top-1 32/32 against the floor; the producer mapping was verified
+on 16 src1 dumps (attn_output's src1 is the FLASH_ATTN_EXT output with FA on).
 
 ## File format
 
-### Run directory (version 1)
+### Run directory (version 2)
 
 ```
 <run_dir>/meta.json           written last (atomic rename): the run is complete iff it exists
@@ -367,12 +387,16 @@ model), `tools_numcheck_dump_qwen05b` (label `model`: `all --checks full` on 0.5
 
 All `.f32` files are little-endian float32 in ggml element order (ne0 fastest). Non-contiguous
 tensors are gathered element by element; F16 / BF16 / I32 outputs are converted to f32 and quantized
-outputs dequantized with ggml's `to_float` (none occur with an f16 KV cache).
+outputs dequantized with ggml's `to_float` (with the v2 q8_0 KV cache: the two SET_ROWS per layer,
+whose outputs are views of the cache).
 
-`meta.json`: `format` `"tsr-numcheck"`, `version` 1, `model` (absolute path of the GGUF given, the
-first split), `run`, `device` (`none` | `sim` | `xrt`), `input` (`embd` | `embd+1ulp`; `tokens` only
-for the cpu-tok check run), `seed`, `n_tokens`, `tokens`, `n_vocab`, `logits_file`, `info`
-(settings, prompt, timings, counts, `TSR_*` environment) and `nodes`. Per node:
+`meta.json`: `format` `"tsr-numcheck"`, `version` 2 (P3.3; version 1 dumps, with the v1 settings, are
+still read), `model` (absolute path of the GGUF given, the first split), `run`, `device` (`none` |
+`sim` | `mock` | `vkernel` | `xrt`), `input` (`embd` | `embd+1ulp`; `tokens` only for the cpu-tok check
+run), `seed`, `n_tokens`, `tokens`, `n_vocab`, `logits_file`, `info` (settings, prompt, timings,
+counts, `TSR_*` and `LLAMA_ATTN_ROT_DISABLE` environment; the v2 settings as `phase` (`m6` | `m7`),
+`flash_attn` (`on` | `off`), `type_k`, `type_v` (ggml type names), `offload_kqv` and
+`attn_rot_disable` (booleans)) and `nodes`. Per node:
 
 | Field | Meaning |
 | --- | --- |
@@ -383,13 +407,15 @@ for the cpu-tok check run), `seed`, `n_tokens`, `tokens`, `n_vocab`, `logits_fil
 | `weight`, `weight_type` | for `MUL_MAT` / `MUL_MAT_ID` whose src0 is a leaf named like a GGUF tensor (a scheduler copy `<backend>#<name>#<n>` resolves to `<name>`): that name and `ggml_type_name(src0->type)` (the GGUF type, e.g. `q6_K` also when the device converted it); else `null` |
 | `src1_file`, `src1_ne` | weight MUL_MATs within `--mm-layers`: the src1 the computing backend read (on dev the Tesseract input copy); else `null` |
 
-Qwen2 graphs have 25 dumped nodes per layer (RMS_NORM, MUL, Q / K / V MUL_MATs with bias ADDs and
-ROPEs, two SET_ROWS, `kq` MUL_MAT, SOFT_MAX, `kqv` MUL_MAT, CONT, `attn_output` MUL_MAT, residual
-ADD, RMS_NORM, MUL, `ffn_gate` / `ffn_up` MUL_MATs, GLU, `ffn_down` MUL_MAT, residual ADD) plus the
-last layer's two `GET_ROWS` (output ids), `norm`, `result_norm`, `result_output`: 605 nodes for 24
-layers, 1605 for 64. Weight MUL_MATs: 7 per layer + the output head. On dev all of them run on
-Tesseract0; the attention MUL_MATs (`kq`, `kqv`; KV cache on the host) and every other node run on
-the CPU.
+Qwen2 graphs with the v2 settings (flash attention on) have 22 dumped nodes per layer (RMS_NORM, MUL,
+Q / K / V MUL_MATs with bias ADDs and ROPEs, two SET_ROWS into the q8_0 cache, FLASH_ATTN_EXT, the
+`attn_output` MUL_MAT (unnamed, `node_N`: its src1 is the FLASH_ATTN_EXT output through the
+`kqv_out-N` reshape view), residual ADD, RMS_NORM, MUL, `ffn_gate` / `ffn_up` MUL_MATs, GLU,
+`ffn_down` MUL_MAT, residual ADD) plus the last layer's two `GET_ROWS` (output ids), `norm`,
+`result_norm`, `result_output`: 533 nodes for 24 layers. Weight MUL_MATs: 7 per layer + the output
+head; in M6 all of them run on Tesseract0 and every other node on the CPU. (v1, flash attention
+off: 25 nodes per layer with `kq` MUL_MAT, SOFT_MAX, `kqv` MUL_MAT and CONT instead of FLASH_ATTN_EXT;
+605 nodes for 24 layers, 1605 for 64.)
 
 ### Report directory
 

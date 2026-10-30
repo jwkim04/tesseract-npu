@@ -4,7 +4,7 @@
 
 set(GGML_TESSERACT_DIR ${CMAKE_CURRENT_LIST_DIR})
 
-# tsr-alloc, tsr-lower and tsr-wlayout (no ggml) are the static library tsr_lower
+# tsr-alloc, tsr-lower, tsr-opl and tsr-wlayout (no ggml) are the static library tsr_lower
 # (lower.cmake), shared with the runtime sw/rt; only the ggml-dependent sources are listed here.
 set(GGML_TESSERACT_SOURCES
     ${GGML_TESSERACT_DIR}/ggml-tesseract.cpp
@@ -16,6 +16,7 @@ set(GGML_TESSERACT_INCLUDE_DIRS
     ${GGML_TESSERACT_DIR}
     ${TESSERACT_ROOT}/sw/sim/include
     ${TESSERACT_ROOT}/sw/transport
+    ${TESSERACT_ROOT}/sw/ctrl/include     # tsr/opl.hpp, tsr/plan.hpp (firmware SDK, freestanding)
 )
 
 # The stub creates ggml-tesseract after including this file and links tsr_ref / tsr_transport;

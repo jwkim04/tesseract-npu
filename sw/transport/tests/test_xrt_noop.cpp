@@ -1,18 +1,20 @@
-// test_xrt_noop.cpp — the "xrt" kdev against XRT's own userspace with its no-op shim
-// (XCL_EMULATION_MODE=noop, libxrt_noop): no card, no driver (docs/xrt-host.md §6).
+// test_xrt_noop.cpp — ctest transport_xrt_noop (docs/v2/06-software-verification.md "SW" §10.2): the
+// "xrt" kdev against XRT's own userspace with its no-op shim (XCL_EMULATION_MODE=noop, libxrt_noop):
+// no card, no driver (docs/xrt-host.md §6).
 //
 // Writes metadata-only xclbins of tsr_u200_k4 (EMBEDDED_METADATA kernel XML, IP_LAYOUT,
 // MEM_TOPOLOGY with four DDR4 banks, CONNECTIVITY) and checks what XRT itself checks: xclbin
-// load, kernel lookup by name, argument discovery by register offset, memory groups and bank
-// sizes, device-only buffer allocation. The kernels have only the channel-buffer arguments of the
-// v2 contract (docs/v2/01-execution-model.md §9.1) and declare ap_ctrl_hs without an interrupt
-// (its fallback form; xrt::kernel refuses ap_ctrl_none, P3.1 moves to xrt::ip). The noop shim
-// implements neither register access nor unmanaged DMA, so those calls must fail cleanly (and
-// tsr_transport_open("xrt") stops at the first register read). Broken xclbins (s_axi_control
-// range 0x1000, a foreign argument, v1's cmd_addr / cmd_count / arg0-7 arguments, no Tesseract
-// kernel) must be refused with a reason. The ap_ctrl_none kernel of the v2 contract (what
-// rtl/platform/alveo_xrt/kernel_k*.xml declare since X0) must be refused with a message naming
-// P3.1 until the kdev moves to xrt::ip.
+// load, kernel lookup by name, argument discovery by register offset, the memory bank of each
+// channel argument from the xclbin (xrt::xclbin::arg::get_mems(), EX §9.1), device-only buffer
+// allocation, and the compute unit opened through xrt::ip (exclusive access, EX §2.4) for the v2
+// contract's ap_ctrl_none kernel (what rtl/platform/alveo_xrt/kernel_k*.xml declare) and for EX
+// §9.1's fallback form (ap_ctrl_hs without an interrupt). The noop shim implements neither
+// register access nor unmanaged DMA, so those calls must fail cleanly (and tsr_transport_open("xrt")
+// stops at the first register read, ADAPTER_VERSION). Broken xclbins (s_axi_control range 0x1000,
+// a foreign argument, v1's cmd_addr / cmd_count / arg0-7 arguments, no Tesseract kernel) must be
+// refused with a reason. Whether XRT refuses a second exclusive open of the compute unit depends
+// on the shim (the noop shim's context bookkeeping); it is printed, not asserted (*confirm* on the
+// card, P6).
 //
 //   test-tsr-xrt-noop <XRT root> <scratch dir>
 
@@ -48,7 +50,7 @@ struct variant {
     uint32_t    num_ch      = 4;
     bool        foreign_arg = false;
     bool        v1_args     = false;   // v1's run arguments (cmd_addr at 0x10, cmd_count, arg0..7)
-    bool        ctrl_none   = false;   // ap_ctrl_none (kernel.xml and IP_LAYOUT), the v2 contract
+    bool        ctrl_none   = true;    // ap_ctrl_none (kernel.xml and IP_LAYOUT), the v2 contract; false: EX §9.1's fallback
     uint64_t    bank_kb     = 64 * 1024;   // 64 MiB banks: the noop shim memsets every buffer
 };
 
@@ -209,21 +211,42 @@ int main(int argc, char ** argv) {
     setenv("TSR_XCLBIN", xgood.c_str(), 1);
     {
         std::unique_ptr<kdev> d = open_xrt_kdev();
-        CHECK(d != nullptr, "open the xrt kdev on the noop shim");
+        CHECK(d != nullptr, "open the xrt kdev (ap_ctrl_none through xrt::ip) on the noop shim");
         if (d) {
             printf("%s", d->describe().c_str());
             CHECK(d->num_ch() == 4, "4 channels found by argument offset (%u)", d->num_ch());
             for (uint32_t c = 0; c < d->num_ch(); ++c) {
                 CHECK(d->ch_bytes(c) == good.bank_kb * 1024, "ch%u buffer = bank size (%llu)", c, (unsigned long long) d->ch_bytes(c));
+                const std::string g = "ch" + std::to_string(c) + ": arg " + std::to_string(c) + ", memory group " + std::to_string(c);
+                CHECK(d->describe().find(g) != std::string::npos, "ch%u in the bank of its argument (from the xclbin)", c);
             }
-            CHECK(d->describe().find("tsr_u200_k4") != std::string::npos, "describe names the kernel");
+            CHECK(d->describe().find("tsr_u200_k4") != std::string::npos && d->describe().find("xrt::ip") != std::string::npos &&
+                  d->describe().find("ap_ctrl_none") != std::string::npos, "describe names the kernel, xrt::ip, ap_ctrl_none");
+            CHECK(!d->simulated(), "host time base");
             uint32_t v = 0;
             CHECK(d->reg_read(KREG_CSR_WINDOW, &v) != 0, "noop shim: register read fails cleanly");
+            CHECK(d->reg_write(KREG_CSR_WINDOW + TSR_CSR_LOG_CFG, 0) != 0, "noop shim: register write fails cleanly");
             uint8_t b[100] = {};
             CHECK(d->mem_write(0, 3, b, sizeof(b)) != 0, "noop shim: unmanaged DMA fails cleanly (after the staged retry)");
+            // A second exclusive open of the same compute unit (another process would get the same answer
+            // from the driver on the card).
+            std::unique_ptr<kdev> d2 = open_xrt_kdev();
+            printf("second xrt::ip open of the compute unit while the first is open: %s (noop shim; *confirm* exclusive refusal on the card)\n",
+                   d2 ? "accepted" : "refused");
         }
     }
     CHECK(tsr_transport_open("xrt") == nullptr, "the protocol layer stops at the first register read");
+    // EX §9.1's fallback form: ap_ctrl_hs without an interrupt, opened the same way (never started).
+    {
+        variant hs;
+        hs.ctrl_none = false;
+        const std::string p = dir + "/tsr_u200_k4_ctrl_hs.xclbin";
+        CHECK(write_xclbin(p, hs), "write ap_ctrl_hs");
+        setenv("TSR_XCLBIN", p.c_str(), 1);
+        std::unique_ptr<kdev> d = open_xrt_kdev();
+        CHECK(d != nullptr && d->describe().find("fallback") != std::string::npos, "ap_ctrl_hs fallback opens through xrt::ip");
+        setenv("TSR_XCLBIN", xgood.c_str(), 1);
+    }
 
     // Default kernel choice: tsr_u200_k1 when there is no k4.
     variant k1;
@@ -256,19 +279,9 @@ int main(int argc, char ** argv) {
         const std::string p = dir + "/bad" + std::to_string(i) + ".xclbin";
         CHECK(write_xclbin(p, bads[i].v), "write bad %d", i);
         setenv("TSR_XCLBIN", p.c_str(), 1);
-        CHECK(open_xrt_kdev() == nullptr, "%s", bads[i].what);
-    }
-    // The v2 contract's ap_ctrl_none kernel: refused before XRT is asked, naming P3.1 (xrt::ip).
-    {
-        variant none;
-        none.ctrl_none = true;
-        const std::string p = dir + "/tsr_u200_k4_ctrl_none.xclbin";
-        CHECK(write_xclbin(p, none), "write ap_ctrl_none");
-        setenv("TSR_XCLBIN", p.c_str(), 1);
         std::string msg;
-        CHECK(!open_capture(dir, &msg), "ap_ctrl_none kernel refused until P3.1");
-        CHECK(msg.find("ap_ctrl_none") != std::string::npos && msg.find("P3.1") != std::string::npos,
-              "the refusal names ap_ctrl_none and P3.1: \"%s\"", msg.c_str());
+        CHECK(!open_capture(dir, &msg), "%s", bads[i].what);
+        if (bads[i].v.v1_args) CHECK(msg.find("build/v1") != std::string::npos, "the v1 refusal points to build/v1: \"%s\"", msg.c_str());
     }
     setenv("TSR_XCLBIN", xgood.c_str(), 1);
     // m2m: the staging buffers are allocated at open, before the channel buffers (the noop shim

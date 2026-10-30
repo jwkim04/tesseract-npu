@@ -13,7 +13,7 @@ Subcommands
                      tokens holding > 50 % of ||W x||^2 listed and left out of the ratio
              exit 0 PASS, 1 FAIL, 3 INCOMPLETE (a selected weight MUL_MAT not checked), 2 input error / crash
              --src1-from-producer: weight MUL_MATs without a src1 dump take x from the dumped producer node
-                 (attn_norm-N, kqv_out-N, ffn_norm-N, ffn_swiglu-N, result_norm) after the mapping is verified
+                 (attn_norm-N, kqv_out-N or with FA the FLASH_ATTN_EXT node, ffn_norm-N, ffn_swiglu-N, result_norm) after the mapping is verified
                  bit for bit on every src1 dump
   boundtest  >= 1e6 random / adversarial dot products: the B2 bound vs libtsr_ref (zero violations),
              the numpy spec model vs libtsr_ref (bit-exact; sequential-sum mutant must differ),
@@ -22,8 +22,11 @@ Subcommands
              faults that must be caught
 
 Dump format (written by tsr-numcheck, docs/numcheck.md): <run>/meta.json {"format": "tsr-numcheck",
-"version": 1, "run", "model", "n_tokens", "n_vocab", "logits_file", "nodes": [{"i", "name", "op", "ne",
-"file", "backend", "weight", "weight_type", "src1_file", "src1_ne"}]}, little-endian f32 files.
+"version": 2, "run", "model", "n_tokens", "n_vocab", "logits_file", "info", "nodes": [{"i", "name", "op", "ne",
+"file", "backend", "weight", "weight_type", "src1_file", "src1_ne"}]}, little-endian f32 files. Version 2
+(P3.3) records the v2 settings in "info" (V2-SW-22: "phase" m6|m7, "flash_attn", "type_k", "type_v",
+"offload_kqv", "attn_rot_disable"); compare requires the same settings in every run and reports them.
+Version 1 dumps (v1 settings: FA off, f16 KV, no rotation setting) are still read.
 
 Native code: build/numcheck/sw/sim/libtsr_ref.so and build/numcheck/sw/tools/libnumcheck_helper.so
 (cmake --build build/numcheck --target numcheck_helper tsr_ref_shared -j4).
@@ -562,8 +565,8 @@ class Run:
         if not mp.exists():
             die(f"{mp} missing")
         self.meta = json.loads(mp.read_text())
-        if self.meta.get("format") != "tsr-numcheck" or self.meta.get("version") != 1:
-            die(f"{mp}: not a tsr-numcheck v1 dump")
+        if self.meta.get("format") != "tsr-numcheck" or self.meta.get("version") not in (1, 2):
+            die(f"{mp}: not a tsr-numcheck v1 / v2 dump")
         self.label = label
         self.nodes = self.meta["nodes"]
 
@@ -724,6 +727,9 @@ PRODUCERS = {  # weight role -> producer node names (first match wins), {l} = la
     "ffn_down": ("ffn_swiglu-{l}", "ffn_geglu-{l}", "ffn_gelu-{l}", "ffn_silu-{l}", "ffn_relu-{l}"),
 }
 OUTPUT_PRODUCERS = {"output.weight": ("result_norm",), "token_embd.weight": ("result_norm",)}
+# With flash attention (the v2 settings, V2-SW-22) attn_output's src1 is the FLASH_ATTN_EXT output
+# [D, n_head, T] seen through a reshape view (kqv_out-N, not dumped): the same bytes as [K, T].
+FA_ROLES = ("attn_output",)
 
 
 def producer_names(wname: str):
@@ -734,7 +740,8 @@ def producer_names(wname: str):
 
 
 def find_producer(run, nd: dict, K: int):
-    """Latest node before nd named like nd's src1 producer with ne [K, T, 1, 1], or None."""
+    """Latest node before nd named like nd's src1 producer with ne [K, T, 1, 1]; for attn_output with flash
+    attention, the latest FLASH_ATTN_EXT node before nd with ne [D, H, T, 1], D x H = K; or None."""
     idx = getattr(run, "_by_name", None)
     if idx is None:
         idx = run._by_name = {}
@@ -745,7 +752,19 @@ def find_producer(run, nd: dict, K: int):
         c = [n for n in idx.get(pn, []) if n["i"] < nd["i"] and [int(v) for v in n["ne"]] == [K, T, 1, 1]]
         if c:
             return c[-1]
+    m = re.match(r"^blk\.\d+\.([A-Za-z0-9_]+)\.weight$", nd["weight"] or "")
+    if m and m.group(1) in FA_ROLES:
+        c = [n for n in run.nodes if n["i"] < nd["i"] and n["op"] == "FLASH_ATTN_EXT"]
+        if c:
+            ne = [int(v) for v in c[-1]["ne"]]
+            if ne[0] * ne[1] == K and ne[2] == T and ne[3] == 1:
+                return c[-1]
     return None
+
+
+def load_producer(run, p: dict, K: int, T: int) -> np.ndarray:
+    """A producer's output as [T][K] (a FLASH_ATTN_EXT output [D, H, T] is contiguous: D x H = K per token)."""
+    return run.load(p).reshape(T, K)
 
 
 def producer_validation(runs: dict, model: GGUFModel) -> dict:
@@ -762,7 +781,7 @@ def producer_validation(runs: dict, model: GGUFModel) -> dict:
                 out["no_producer"].append(f"{label}:{nd['weight']}")
                 continue
             out["checked"] += 1
-            if np.array_equal(f32bits(run.load(p)), f32bits(run.load_src1(nd))):
+            if np.array_equal(f32bits(load_producer(run, p, K, int(nd["ne"][1]))), f32bits(run.load_src1(nd))):
                 out["identical"] += 1
             else:
                 out["differ"].append(f"{label}:{nd['weight']} vs node {p['i']} {p['name']}")
@@ -780,7 +799,7 @@ def load_x(run, nd: dict, K: int, glob: dict, label: str):
     p = find_producer(run, nd, K)
     if p is None:
         return None, None
-    return run.load(p), f"node {p['i']} {p['name']}"
+    return load_producer(run, p, K, int(nd["ne"][1])), f"node {p['i']} {p['name']}"
 
 
 def check_weight_mm(nat: Native, model: GGUFModel, nd: dict, nc: dict | None, runs: dict, args, glob: dict) -> dict:
@@ -1656,6 +1675,12 @@ def write_md(rep: dict, path: Path) -> None:
     w(f"# numcheck report: {rep['verdict']}\n")
     w(f"model `{rep['model']}`, prompt {rep['logits']['n_tokens']} tokens, runs cpu `{rep['runs']['cpu']}`, "
       f"floor `{rep['runs']['floor']}`, dev `{rep['runs']['dev']}`; {rep['seconds']} s\n")
+    st = rep.get("settings") or {}
+    if st:
+        w(f"settings ({st.get('phase')}, every run): flash attention {st.get('flash_attn')}, KV {st.get('type_k')}/"
+          f"{st.get('type_v')} on the {'device' if st.get('offload_kqv') else 'host'}, KV rotation "
+          f"{'off (LLAMA_ATTN_ROT_DISABLE=1)' if st.get('attn_rot_disable') else 'not disabled'}; device "
+          f"`{rep.get('device')}`\n")
     w("PASS iff B1 (libtsr_ref model) and B1b (independent numpy spec model) have zero mismatches, B2 zero bound "
       "violations, the bound/QACT/spec-model self-test passed and every selected weight MUL_MAT was checked on the "
       "device (else INCOMPLETE). B3 and drift are reported, not judged (WARN for native tensors with "
@@ -1823,6 +1848,17 @@ def sanitize(o):
 
 
 MODEL_KEYS = ("model_desc", "n_params", "n_layer", "n_embd")     # meta.json "info" fields that identify the model
+# meta.json "info" fields of the v2 settings (V2-SW-22); a version 1 dump has the v1 values
+SETTING_KEYS = ("phase", "flash_attn", "type_k", "type_v", "offload_kqv", "attn_rot_disable")
+V1_SETTINGS = {"phase": "v1", "flash_attn": "off", "type_k": "f16", "type_v": "f16", "offload_kqv": False, "attn_rot_disable": False}
+
+
+def run_settings(meta: dict) -> dict:
+    """The v2 settings a run was made with (version 1: the v1 settings)."""
+    if meta.get("version", 1) < 2:
+        return dict(V1_SETTINGS)
+    info = meta.get("info") or {}
+    return {k: info.get(k) for k in SETTING_KEYS}
 
 
 def check_run_set(runs: dict, noobs) -> list:
@@ -1843,6 +1879,8 @@ def check_run_set(runs: dict, noobs) -> list:
         for f in ("n_tokens", "n_vocab", "tokens"):
             if m.get(f) != ref.get(f):
                 die(f"{k} run: {f} differs from the dev run (the runs must use the same prompt and model)")
+        if run_settings(m) != run_settings(ref):    # one comparison, one attention / KV configuration (V2-SW-22)
+            die(f"{k} run: settings {run_settings(m)} differ from the dev run's {run_settings(ref)}")
     if noobs is not None:
         m = noobs.meta
         if os.path.realpath(noobs.dir) == os.path.realpath(runs["dev"].dir):
@@ -1934,7 +1972,8 @@ def cmd_compare(args) -> int:
         log(f"note: {x}")
     toks = runs["dev"].meta.get("tokens")
     rep = {"format": "tsr-numcheck-report", "version": 2, "model": model_path,
-           "runs": {k: str(r.dir) for k, r in runs.items()}, "tokens": toks}
+           "runs": {k: str(r.dir) for k, r in runs.items()}, "tokens": toks,
+           "settings": run_settings(runs["dev"].meta), "device": runs["dev"].meta.get("device")}
     rep["selfcheck"] = selfcheck(nat, args)
     rep["logits"] = logits_section(runs, noobs)
     lg = rep["logits"]
@@ -2084,9 +2123,11 @@ def write_synth_runs(nat: Native, root: Path, model: Path, specs: dict, rng, T=6
                 ent["src1_ne"] = [int(s.shape[1]), int(s.shape[0]), 1, 1]
             meta_nodes.append(ent)
         np.ascontiguousarray(nodes[-1]["data"][run], dtype="<f4").tofile(d / "logits.f32")
-        meta = {"format": "tsr-numcheck", "version": 1, "model": str(model), "run": run,
+        meta = {"format": "tsr-numcheck", "version": 2, "model": str(model), "run": run,
                 "device": "sim" if run == "dev" else "none", "input": "embd+1ulp" if run == "floor" else "embd",
                 "seed": 1, "n_tokens": T, "tokens": list(range(T)), "n_vocab": V, "logits_file": "logits.f32",
+                "info": {"phase": "m6", "flash_attn": "on", "type_k": "q8_0", "type_v": "q8_0", "offload_kqv": False,
+                         "attn_rot_disable": True},
                 "nodes": meta_nodes}
         (d / "meta.json").write_text(json.dumps(meta, indent=1))
         dirs[run] = d
@@ -2122,7 +2163,36 @@ def cmd_selftest(args) -> int:
               ("clean synthetic compare PASS", rc == 0 and rep["verdict"] == "PASS"),
               ("6 weight MUL_MATs checked", rep["mm"]["checked"] == 6),
               ("converted types present (q6_K, f16, f32)", all(t in types and not types[t]["native"] for t in ("q6_K", "f16", "f32"))),
-              ("B1 elements = sum N*T", rep["mm"]["b1_elements"] == sum(N for (_, _, N) in specs.values()) * 6)]
+              ("B1 elements = sum N*T", rep["mm"]["b1_elements"] == sum(N for (_, _, N) in specs.values()) * 6),
+              ("v2 settings reported (m6, FA on, q8_0 / q8_0 KV on the host, rotation off)",
+               rep.get("settings") == {"phase": "m6", "flash_attn": "on", "type_k": "q8_0", "type_v": "q8_0",
+                                       "offload_kqv": False, "attn_rot_disable": True})]
+    # 2b. runs with different settings (here: the floor made with an f16 V cache) must be refused
+    fm = dirs["floor"] / "meta.json"
+    fmeta = json.loads(fm.read_text())
+    fm_orig = fm.read_text()
+    fmeta["info"]["type_v"] = "f16"
+    fm.write_text(json.dumps(fmeta))
+    try:
+        cmd_compare(argparse.Namespace(**base, out=str(out / "report-settings")))
+        refused = False
+    except SystemExit as ex:
+        refused = ex.code == 2
+    fm.write_text(fm_orig)
+    checks.append(("runs with different settings refused", refused))
+    # 2c. version 1 dumps (v1 settings) are still read: as a set of three they compare
+    for d in dirs.values():
+        mp = d / "meta.json"
+        m1 = json.loads(mp.read_text())
+        m1["version"] = 1
+        m1.pop("info", None)
+        (d / "meta.v2.json").write_text(mp.read_text())
+        mp.write_text(json.dumps(m1))
+    rc1 = cmd_compare(argparse.Namespace(**base, out=str(out / "report-v1")))
+    r1v = json.loads((out / "report-v1" / "report.json").read_text())
+    for d in dirs.values():
+        (d / "meta.v2.json").replace(d / "meta.json")
+    checks.append(("version 1 dumps read with the v1 settings", rc1 == 0 and r1v.get("settings", {}).get("phase") == "v1"))
     # 3. fault injection: 1-ulp change in one dev output of the Q4_K tensor -> B1 must report exactly that element
     meta = json.loads((dirs["dev"] / "meta.json").read_text())
     node = next(n for n in meta["nodes"] if n["weight"] == "blk.0.ffn_up.weight")
@@ -2270,7 +2340,7 @@ def cmd_selftest(args) -> int:
 
     # 11. --dev-noobs: the observed dev dir itself is refused; a proper --no-observe run is compared
     def noobs(m):
-        m["info"] = {"observe": False}
+        m["info"] = dict(m.get("info") or {}, observe=False)
         m["nodes"] = []
     rc11a, _ = run_compare(dict(base, dev_noobs=str(dirs["dev"])), "report-noobs-self")
     rc11b, r11b = run_compare(dict(base, dev_noobs=variant("dev", "noobs", noobs)), "report-noobs")

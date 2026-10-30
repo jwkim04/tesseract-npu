@@ -1,4 +1,5 @@
-// tsr_transport_impl.h — private: the per-implementation operation table behind tsr_transport.
+// tsr_transport_impl.h — private: the entry from the C dispatcher (tsr_transport.c) into the
+// protocol layer (tsr_kdev.cpp), which implements every kind (V2-SW-18, EX §10.2).
 #pragma once
 
 #include "tsr_transport.h"
@@ -7,25 +8,9 @@
 extern "C" {
 #endif
 
-typedef struct tsr_transport_ops {
-    const char * name;
-    void               (*close)(void * impl);
-    const tsr_config * (*config)(void * impl);
-    int                (*write)(void * impl, uint32_t ch, uint64_t off, const void * src, size_t size);
-    int                (*read)(void * impl, uint32_t ch, uint64_t off, void * dst, size_t size);
-    uint32_t           (*csr_read)(void * impl, uint32_t off);
-} tsr_transport_ops;
-
-// Each returns an implementation handle and its ops, or NULL (message on stderr).
-void * tsr_transport_sim_open(const tsr_transport_ops ** ops);
-// Every other kind ("xrt", "mock", "vkernel", kinds registered with tsr::register_kdev): the
-// protocol layer over a kdev (tsr_kdev.cpp).
-void * tsr_transport_kdev_open(const char * kind, const tsr_transport_ops ** ops);
-
-// Wrap an already opened implementation (tsr::transport_open_kdev); NULL on failure (impl untouched).
-tsr_transport *           tsr_transport_wrap(const tsr_transport_ops * ops, void * impl);
-const tsr_transport_ops * tsr_transport_get_ops(const tsr_transport * t);
-void *                    tsr_transport_get_impl(const tsr_transport * t);
+// Opens kind ("sim", "mock", "vkernel", "xrt" or a kind registered with tsr::register_kdev):
+// the kdev, then the protocol layer's open. NULL on failure (message on stderr).
+tsr_transport * tsr_transport_kdev_open(const char * kind);
 
 #ifdef __cplusplus
 }

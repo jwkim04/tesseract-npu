@@ -1,6 +1,12 @@
-// test_sim_transport.c — the "sim" transport: selection, environment variables, configuration
-// and identity through the CSRs, DRAM access bounds, file-backed DRAM. Nothing executes through a
-// transport until the v2 launch path (P3.1); the transport's launch tests return with it.
+// test_sim_transport.c — ctest sim_transport (docs/v2/06-software-verification.md "SW" §10.2,
+// rewritten for v2 in P3.1): the "sim" kind through the public C API only (tsr_transport.h):
+// selection, environment variables, configuration and identity through the CSRs (CAPS = what the
+// simulator implements, EX §7.5), DRAM access bounds, file-backed DRAM; then boot / launch / wait /
+// soft reset with the production image (tsr_image_open_default: TSR_IMAGE or the build's
+// tsr-fw.elf): cold and warm boot, the base kernels at 0 / 1 / 2, PING, an empty `replay` launch,
+// pipelined launches, the record decode, a soft reset with launches in flight (answered or
+// TSR_TE_LOST, the rings flushed), launches refused until the next (warm) boot, the statistics. The
+// protocol in depth is transport_protocol's (sw/transport/tests).
 #include "test_sim_util.h"
 #include "tsr_transport.h"
 
@@ -37,7 +43,10 @@ static void test_open_and_config(void) {
     const tsr_config u = TSR_CONFIG_U200_V1;
     CHECK(c->num_ch == u.num_ch && c->lanes == u.lanes && c->t_max == 1 && c->k_max == u.k_max &&
           c->spm_bytes == u.spm_bytes && c->vl == u.vl && c->nsreg == u.nsreg && c->ch_bytes == u.ch_bytes &&
-          c->beat_bits == 512 && c->caps == 0, "default config is U200 v1");
+          c->beat_bits == 512 && c->caps == tsr_sim_caps_implemented() && (c->caps & TSR_CAPS_VU),
+          "default config: the U200 tile core, CAPS = what the simulator implements (0x%x)", c->caps);
+    CHECK(tsr_transport_csr_read(t, TSR_CSR_CAPS) == c->caps && tsr_transport_csr_read(t, TSR_CSR_CTL_ID) != 0 &&
+          tsr_transport_csr_read(t, TSR_CSR_RV_FREQ) != 0, "CAPS, CTL_ID, RV_FREQ through the CSR port");
     CHECK(tsr_transport_csr_read(t, TSR_CSR_ID) == TSR_ID_MAGIC, "csr read");
     CHECK(tsr_transport_csr_read(t, TSR_CSR_VERSION) >> 8 == TSR_ISA_MAJOR && TSR_ISA_MAJOR == 2, "ISA major 2");
     CHECK(tsr_transport_csr_read(t, TSR_CSR_PERF_BASE + 8 * TSR_PERF_RETIRED) == 0, "perf readable, 0 without ops");
@@ -133,10 +142,103 @@ static void test_file_dram(void) {
     clear_env();
 }
 
+// v2 (P3.1): boot / launch / wait / soft reset through the public API (EX §10.1).
+static tsr_launch mk_launch(uint8_t type, uint16_t kernel, uint32_t a0, uint32_t a1, uint32_t a2) {
+    tsr_launch l;
+    memset(&l, 0, sizeof(l));
+    l.type = type;
+    l.kernel = kernel;
+    l.arg[0] = a0;
+    l.arg[1] = a1;
+    l.arg[2] = a2;
+    return l;
+}
+
+static void test_boot_launch(void) {
+    clear_env();
+    unsetenv("TSR_IMAGE");
+    tsr_image * img = NULL;
+    if (tsr_image_open_default(&img) != 0) {
+        printf("sim_transport: the build's firmware image is missing: boot / launch tests not run\n");
+        return;
+    }
+    tsr_transport * t = tsr_transport_open("sim");
+    CHECK(t != NULL, "open");
+    if (t == NULL) {
+        tsr_image_close(img);
+        return;
+    }
+    CHECK(tsr_image_kernel(img, "graph") == 0 && tsr_image_kernel(img, "selftest") == 1 && tsr_image_kernel(img, "replay") == 2 &&
+          tsr_image_kernel(img, "nosuch") == -1, "base kernels at 0 / 1 / 2 (EX §4.6)");
+    CHECK(tsr_image_id(img) != 0 && strstr(tsr_image_path(img), "tsr-fw.elf") != NULL, "image id and path");
+    tsr_record r;
+    tsr_result res;
+    const tsr_launch ping = mk_launch(TSR_DESC_TYPE_PING, 0, 0x600D, 0, 0);
+    CHECK(tsr_transport_call(t, &ping, TSR_TIMEOUT_DEFAULT, &r) == TSR_TE_STATE, "launch before boot refused");
+    CHECK(tsr_transport_boot(t, img) == 0, "cold boot");
+    CHECK(tsr_transport_image(t) == img, "booted image");
+    CHECK(tsr_transport_boot(t, img) == 0, "warm boot");
+    CHECK(tsr_transport_call(t, &ping, TSR_TIMEOUT_DEFAULT, &r) == 0, "PING");
+    tsr_record_decode(&r, &res);
+    CHECK(res.type == TSR_LCQ_R0_TYPE_PONG && res.status == 0 && r.w[2] == 0x600Du, "PONG echoes ARG0 (%s)", tsr_status_name(res.status));
+    // An empty replay (no records): DONE OK, RET 0.
+    const tsr_launch empty = mk_launch(TSR_DESC_TYPE_LAUNCH, 2, 0, 0, 0);
+    CHECK(tsr_transport_call(t, &empty, TSR_TIMEOUT_DEFAULT, &r) == 0, "empty replay");
+    tsr_record_decode(&r, &res);
+    CHECK(res.type == TSR_LCQ_R0_TYPE_DONE && res.status == 0 && res.ret == 0 && res.err_ticket == TSR_TICKET_NONE,
+          "DONE OK RET 0 (%s)", tsr_status_name(res.status));
+    // 12 launches pipelined (blocks only at LQ_DEPTH outstanding), waited in order.
+    uint32_t seq[12];
+    for (int i = 0; i < 12; ++i) {
+        const tsr_launch l = mk_launch(TSR_DESC_TYPE_PING, 0, 100u + (uint32_t)i, 0, 0);
+        CHECK(tsr_transport_launch(t, &l, &seq[i]) == 0 && (i == 0 || seq[i] == seq[i - 1] + 1), "launch %d", i);
+    }
+    for (int i = 0; i < 12; ++i)
+        CHECK(tsr_transport_wait(t, seq[i], TSR_TIMEOUT_DEFAULT, &r) == 0 && r.w[1] == seq[i] && r.w[2] == 100u + (uint32_t)i,
+              "answer %d", i);
+    CHECK(tsr_transport_wait(t, seq[0], TSR_TIMEOUT_DEFAULT, &r) == TSR_TE_INVAL, "a second wait is refused");
+    // A bad descriptor: KERNEL beyond the table.
+    const tsr_launch bad = mk_launch(TSR_DESC_TYPE_LAUNCH, 999, 0, 0, 0);
+    CHECK(tsr_transport_call(t, &bad, TSR_TIMEOUT_DEFAULT, &r) == 0 && TSR_GET(r.w[0], TSR_LCQ_R0_STATUS) == TSR_LCQ_R0_STATUS_BAD_DESC,
+          "BAD_DESC");
+    // Soft reset with launches in flight (EX §8.5): each is answered or lost, the rings flushed.
+    for (int i = 0; i < 4; ++i) CHECK(tsr_transport_launch(t, &ping, &seq[i]) == 0, "launch before the reset");
+    CHECK(tsr_transport_soft_reset(t) == 0, "soft reset");
+    int lost = 0;
+    for (int i = 0; i < 4; ++i) {
+        const int rc = tsr_transport_wait(t, seq[i], TSR_TIMEOUT_DEFAULT, &r);
+        CHECK(rc == 0 || rc == TSR_TE_LOST, "answered or lost (%d: %s)", rc, tsr_transport_strerror(rc));
+        lost += rc == TSR_TE_LOST;
+    }
+    CHECK(lost >= 1, "launches lost in the reset (%d)", lost);
+    CHECK(tsr_transport_csr_read(t, TSR_CSR_LQ_TAKEN) == tsr_transport_csr_read(t, TSR_CSR_LQ_SEQ) &&
+          tsr_transport_csr_read(t, TSR_CSR_LCQ_RD) == tsr_transport_csr_read(t, TSR_CSR_LCQ_WR) &&
+          !(tsr_transport_csr_read(t, TSR_CSR_STATUS) & TSR_STATUS_RV_RUNNING), "rings flushed, the RISC-V in reset");
+    CHECK(tsr_transport_image(t) == NULL && tsr_transport_call(t, &ping, TSR_TIMEOUT_DEFAULT, &r) == TSR_TE_STATE,
+          "not booted after the soft reset");
+    CHECK(tsr_transport_boot(t, img) == 0 && tsr_transport_call(t, &ping, TSR_TIMEOUT_DEFAULT, &r) == 0, "boot again, PING");
+    tsr_transport_stats st;
+    tsr_transport_get_stats(t, &st);
+    CHECK(st.launches == 20 && st.csr_reads > 0 && st.csr_writes > st.launches, "stats: %llu launches",
+          (unsigned long long)st.launches);
+    uint32_t words[64];
+    size_t n = 99;
+    CHECK(tsr_transport_log_drain(t, words, 64, &n) == 0 && n <= 64, "log drain");
+    tsr_image_close(img);   // the transport keeps its reference
+    CHECK(tsr_transport_call(t, &ping, TSR_TIMEOUT_DEFAULT, &r) == 0 && tsr_transport_image(t) != NULL, "image kept by the transport");
+    tsr_transport_close(t);
+    // TSR_IMAGE overrides the default; a missing file is refused.
+    setenv("TSR_IMAGE", "/nonexistent/tsr-fw.elf", 1);
+    img = NULL;
+    CHECK(tsr_image_open_default(&img) != 0 && img == NULL, "TSR_IMAGE=/nonexistent refused");
+    unsetenv("TSR_IMAGE");
+}
+
 int main(int argc, char ** argv) {
     g_base = make_scratch(argc > 1 ? argv[1] : ".", "sim_transport");
     test_open_and_config();
     test_file_dram();
+    test_boot_launch();
     const int rc = test_finish("sim_transport");
     if (rc == 0) rm_rf(g_base);
     return rc;

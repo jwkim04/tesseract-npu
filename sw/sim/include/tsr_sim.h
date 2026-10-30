@@ -116,6 +116,11 @@ uint64_t  tsr_sim_dram_limit_beats(const tsr_sim * sim);
 uint32_t tsr_sim_csr_read(tsr_sim * sim, uint32_t off);
 void     tsr_sim_csr_write(tsr_sim * sim, uint32_t off, uint32_t val);
 
+// P3.1 (transport, additive): the platform's error input plat_err_i (EX §9.3), a level; STATUS.PLAT_ERR
+// (EX §5.3) and the RISC-V's LQ_FLAGS.PLAT_ERR (EX §4.5, read by the runtime's R7) follow it. 0 after
+// create; the mock adapter model (sw/transport/tsr_kdev_mock.cpp) drives it from ADAPTER_STATUS.
+void     tsr_sim_set_plat_err(tsr_sim * sim, int level);
+
 // ---------------------------------------------------------------------------
 // Time base (SW §4.4, §4.8)
 // ---------------------------------------------------------------------------

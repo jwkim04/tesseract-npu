@@ -44,11 +44,9 @@ set_target_properties(tsr_rt_shared PROPERTIES OUTPUT_NAME tsr_rt
 
 # ---------------------------------------------------------------------------
 # Tests (prefix rt_): device vs an independent model (ggml conversion + libtsr_ref) bit for bit,
-# linear_ref, read_blocks, N / K / T / IO splits, counters, threads. Every case runs linear(),
-# whose device execution is deleted in X0, so rt_sim, rt_sim_tmax8, rt_mock, rt_mock_tmax8 and
-# the opt-in rt_vkernel_k4t1 are removed until the op-list path (P3.2, P5.3 for vkernel;
-# docs/v2/06-software-verification.md §10.2). The executable is still built so that it keeps
-# compiling against the unchanged API.
+# linear_ref, read_blocks, N / K / T / IO splits, op-list cache, counters, threads (v1's
+# assertions, run on v2: docs/v2/06-software-verification.md §10.2 "Kept, run on v2"; the simulator's
+# race detector fatal, SW §4.6).
 # ---------------------------------------------------------------------------
 add_executable(test-tsr-rt tests/test_tsr_rt.cpp)
 set_target_properties(test-tsr-rt PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
@@ -56,3 +54,30 @@ set_target_properties(test-tsr-rt PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIR
 target_compile_options(test-tsr-rt PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra)
 target_include_directories(test-tsr-rt PRIVATE ${TESSERACT_ROOT}/third_party/llama.cpp/ggml/src)
 target_link_libraries(test-tsr-rt PRIVATE tsr_rt tsr_ref ggml-base Threads::Threads)
+
+add_test(NAME rt_sim COMMAND test-tsr-rt)
+set_tests_properties(rt_sim PROPERTIES ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal")
+# T_MAX 8: T tiles inside one record, and a natural N split (an N = 130000 output head does not
+# fit 8 tokens in the SPM unsplit)
+add_test(NAME rt_sim_tmax8 COMMAND test-tsr-rt --big)
+set_tests_properties(rt_sim_tmax8 PROPERTIES ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_TMAX=8;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal")
+# the kernel protocol layer on the mock kdev, DMA rules that force bounce / read-modify-write
+add_test(NAME rt_mock COMMAND test-tsr-rt)
+set_tests_properties(rt_mock PROPERTIES ENVIRONMENT
+    "TSR_DEVICE=mock;TSR_MOCK_DMA_ALIGN=64;TSR_MOCK_DMA_CHUNK_KIB=64;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal")
+add_test(NAME rt_mock_tmax8 COMMAND test-tsr-rt)
+set_tests_properties(rt_mock_tmax8 PROPERTIES ENVIRONMENT
+    "TSR_DEVICE=mock;TSR_MOCK_TMAX=8;TSR_MOCK_NUM_CH=3;TSR_MOCK_DMA_ALIGN=4096;TSR_MOCK_DMA_CHUNK_KIB=12;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal")
+
+# Verilated U200 kernel (RTL) through the vkernel kdev: a few shapes on k4t1. Opt-in; until the
+# two-clock v2 vkernel server exists (P5.3, docs/v2/06-software-verification.md §11) the v2
+# transport has no vkernel device to run on, so the test is reported as skipped (exit 77) when the
+# server is absent.
+option(TSR_RT_VKERNEL_TEST "Add the rt_vkernel_k4t1 ctest (needs the v2 k4t1 vkernel server, P5.3)" OFF)
+if (TSR_RT_VKERNEL_TEST)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(_tsr_vk ${TESSERACT_ROOT}/tb/platform/vkernel/vkernel.py)
+    add_test(NAME rt_vkernel_k4t1
+             COMMAND sh -c "if [ ! -f '${_tsr_vk}' ]; then echo 'rt_vkernel_k4t1: no v2 vkernel server yet (P5.3): skipped'; exit 77; fi; exec '${Python3_EXECUTABLE}' '${_tsr_vk}' run --config k4t1 -- '$<TARGET_FILE:test-tsr-rt>' --quick")
+    set_tests_properties(rt_vkernel_k4t1 PROPERTIES SKIP_RETURN_CODE 77)
+endif()

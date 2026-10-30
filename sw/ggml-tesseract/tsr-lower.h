@@ -43,3 +43,22 @@ bool tsr_mm_shape_ok(const tsr_config & cfg, uint32_t fmt, uint64_t N, uint64_t 
 // Compute the tiling for T tokens. Returns false if the shape is not lowerable.
 bool tsr_mm_plan_tiling(const tsr_config & cfg, uint32_t fmt, uint32_t N, uint32_t K, uint32_t T,
                         tsr_mm_tiling * out);
+
+// Staging of one MUL_MAT through the IO stage (spec "v1 lowering 제약"; SW §9.3 step 2): whether
+// src1 / dst must pass through the stage, and the stage tiles. A MUL_MAT is staged when src1 or
+// dst is not in an IO window (host memory), or when its dst rows do not start on a line
+// (N*4 % 64 != 0) with T > 1. Each stage tile of <= tc_max tokens holds the staged x rows
+// (x_row bytes each) at x_off and the staged, line-padded y rows (y_stride bytes each) at y_off.
+struct tsr_stage_plan {
+    bool     stage_x, stage_y;
+    uint64_t per_token;   // stage bytes one token needs
+    uint64_t tc_max;      // tokens per stage tile: min(T, stage_size / per_token)
+    uint64_t x_off;       // stage offsets (byte offsets of the channel)
+    uint64_t y_off;
+    uint64_t n_tiles;     // ceil(T / tc_max)
+};
+// x_in_io / y_in_io: src1 / dst live in IO windows. Returns false if nothing is staged (*out then
+// has stage_x = stage_y = false) or if one token does not fit the stage (tc_max = 0).
+bool tsr_plan_stage(uint64_t stage_off, uint64_t stage_size, uint32_t N, uint32_t T, uint64_t x_row, uint64_t y_stride,
+                    bool x_in_io, bool y_in_io, tsr_stage_plan * out);
+

@@ -1265,7 +1265,8 @@ typedef struct tsr_result {
     uint32_t seq;                          // r1
     int32_t  ret;                          // r2 (DONE)
     uint32_t err_ticket, err_info, err_w0, err_pidx;   // r3-r6 (DONE, first error)
-    uint32_t duration;                     // r7, core cycles
+    uint32_t duration;                     // r7, core cycles (0 for an OK DONE / PONG: EX §4.8's
+                                           // minimal reads skip r7, W3a)
 } tsr_result;
 void tsr_record_decode(const tsr_record * rec, tsr_result * out);
 const char * tsr_status_name(uint8_t status);   // "OK", "TILE_ERR", … (EX §4.4)
@@ -1284,8 +1285,15 @@ EX §2.1, §3, §4.8 and §10.2:
   1. Read and check `ID` (0x5453_5231), the `VERSION` major (2), `CFG*`, `CAPS`, `CFG3`,
      `CTL_ID` ≠ 0, `RV_CFG`, `Q_DEPTH` and `RV_FREQ` ≠ 0 (else "no `clk_rv`").
   2. Clear `ADAPTER_STATUS`.
-  3. Unless `TSR_ATTACH=1`: `SOFT_RESET` and wait `SR_BUSY` = 0 (`TSR_RESET_MS`), which stops a
-     control core left running by an earlier process; then bind (channel bases, `MEM_EN`, EX §9.2).
+  3. Read the host counters (`LQ_SEQ`, `LCQ_RD`, `LOG_RD`) and the `LQ_W` shadow from the device:
+     the rings count on across processes, only a card reset zeroes them.
+  4. Unless `TSR_ATTACH=1`: `SOFT_RESET` and wait `SR_BUSY` = 0 (`TSR_RESET_MS`), which stops a
+     control core left running by an earlier process and discards the records and log words it
+     left unread (counted in one message, not decoded); then bind (channel bases, `MEM_EN`, EX §9.2).
+  5. If DB's configuration is armed (`SERIAL`, `ERR_STOP`, `HUNG_STOP`, `HALT_ON_BOOT`, an enabled
+     TBP, a stop: DB keeps them across `SOFT_RESET`, DB §7.3), report it; every wait then reads
+     `DBG_STATUS` / `DBG_CFG` at its backoff polls, as with `TSR_TILE_SERIAL=1` or a debugger's
+     CSR write.
 - **Boot:** per EX §3.3–§3.5: warm restart when VERIFY of every ITCM segment matches, else a cold
   load (`LOAD_ADDR`, `LOAD_DATA` words, receive CRC, VERIFY CRC); `RV_BOOT` = 0; `RV_RUN` = 1; wait
   for HELLO (`TSR_BOOT_MS`) and check the image id, SDK ABI and kernel count.
@@ -1294,9 +1302,12 @@ EX §2.1, §3, §4.8 and §10.2:
 - **Wait:**
   - Consume the LCQ (EX §4.8): read `LCQ_WR`, read r0 of each new record (r2–r6 only when needed),
     deliver events to the callback, write `LCQ_RD`.
-  - Poll policy: busy-poll while the elapsed time is below the last DURATION of the same kernel,
-    then poll every max(10 µs, 1 % of that duration) with sleeps; between polls call
+  - Poll policy: busy-poll while the elapsed time is below the last service time of the same
+    kernel (W3a: measured by the host from the push or the previous answer, since the minimal reads
+    skip r7 DURATION), then poll every max(10 µs, 1 % of that time) with sleeps; between polls call
     `kdev::idle()` and **release the transport mutex** (DB's in-process debug service needs it).
+    The simulated kinds (`sim`, `mock`, `vkernel`) count timeouts and the poll policy in device
+    time (MTIME at the nominal 276.3 MHz), `xrt` in host time.
   - Drain the log every poll if `TSR_LOG` is set, else every 10 ms.
   - **Timeout** (`TSR_LAUNCH_TIMEOUT_MS`, default 60,000; 0 = none): time counts only while
     `STATUS.RV_HALTED` = 0 and `DBG_STATUS.STOP_ACTIVE` = 0 (read once per backoff poll); with
@@ -1307,13 +1318,23 @@ EX §2.1, §3, §4.8 and §10.2:
     with "card reset needed" (EX §8.6).
 - **TRAP record:** drain the log, report the decoded trap (cause, `mepc` → function and line);
   attach GDB if `TSR_GDB_WAIT` asks for it, else `SOFT_RESET` + warm restart.
+- **PLAT_ERR** (EX §8.6): one report per episode (`STATUS.PLAT_ERR` at a backoff poll or a DONE
+  PLAT_ERR answer). The episode covers the launches pushed before it was seen; `ADAPTER_STATUS`
+  (W1C, which drives `plat_err_i`) is cleared once all of them have answered, so they answer
+  PLAT_ERR and later launches answer normally even when launches are pipelined. An adapter error
+  raised during the episode extends it to the launches pushed so far.
+- **Watermarks** (EX §4.9): a watermark written since the last `SOFT_RESET` is rewritten just
+  below the oldest unanswered launch 2^30 launches after its write, so it never wraps onto new
+  launches (it would after 2^31).
 
 **kdev v2** (EX §10.2).
 
 - Keeps: `reg_read`, `reg_write`, `mem_read`, `mem_write`, `num_ch`, `ch_bytes`, `ch_addr`,
   `describe`.
 - Drops: `start`, `wait`, `settle`, `kargs`, `regs_*`, `kds_*`.
-- Adds `KREG_ADAPTER_CTRL` and `virtual void idle(uint32_t poll_iter)` (EX's `advance` hint):
+- Adds `KREG_ADAPTER_CTRL` and `virtual void idle(uint32_t poll_iter, uint64_t interval_ns)` (EX's
+  `advance` hint), with `now_ns()` (the time base), `simulated()`, `has_adapter()` and `sim()`
+  (as implemented in W3a, `sw/transport/tsr_kdev.h`):
 
 | kdev | `idle()` and specifics |
 |---|---|
@@ -1406,10 +1427,10 @@ EX §2.1, §3, §4.8 and §10.2:
 
 ### 9.4 `sw/rt` and `sw/torch`
 
-`tsr_rt::linear` emits a one-op OPL (MUL_MAT; K parts as further records with ACC_DST) instead of
-a cached program. The OPL cache replaces the CMD-slot cache. The public API and the numerics
-(`sw/rt/tsr_rt.h:1-49`) are unchanged, so `sw/torch` needs only a rebuild. The PyTorch move onto
-the M7 kernels is M8.
+`tsr_rt::linear` emits one `graph` launch per IO tile, with one MUL_MAT record per N part × K part
+(K parts after the first with ACC_DST), instead of a cached program. The OPL cache replaces the
+CMD-slot cache. The public API and the numerics (`sw/rt/tsr_rt.h:1-49`) are unchanged, so
+`sw/torch` needs only a rebuild. The PyTorch move onto the M7 kernels is M8.
 
 ### 9.5 Tools
 
@@ -1467,8 +1488,8 @@ The 42 existing project ctests:
 | Fate | Tests |
 |---|---|
 | **Kept unchanged** (7) | `ref_layout`, `ref_fp`, `ref_ggml_fp16`, `ref_ggml_qact`, `ref_ggml_dequant`, `ref_dot`, `ref_ctypes` |
-| **Kept, run on v2** (same assertions, new transport underneath) (15) | `ggml_tesseract_e2e`, `_tmax8`, `_hosted`, `_hosted_tmax8`, `ggml_tesseract_scalar_nmse`, `ggml_tesseract_backend_ops`, `rt_sim`, `rt_sim_tmax8`, `rt_mock`, `rt_mock_tmax8`, `rt_vkernel_k4t1`, `torch_pytest`, `torch_pytest_tmax8`, `transport_ggml_e2e_mock`, `_tmax8` |
-| **Rewritten** for v2 semantics (13) | `sim_basic` (EX §15 item 2 on the simulator: CSRs, load with VERIFY, LQ / LCQ launch flow, HELLO, PING, BAD_DESC, cancel and stop, `SOFT_RESET`, errors, holds), `sim_mvm` (MVM through the queue), `sim_trace`, `sim_trace_ubsan` (trace v2), `sim_transport` (boot / launch / wait / soft reset), `transport_kdev` (protocol on mock: timeouts, stale core at open, adapter faults), `transport_xrt_noop` (xrt kdev against the no-op shim), `ggml_tesseract_units` (OPL builder: hazards, fusion, encoding), `tools_trace_gen_replay` (v2), `tools_xrt_selftest_mock`, `_tmax8`, `_1ch`, `_faults` → `tools_selftest_mock*` |
+| **Kept, run on v2** (same assertions, new transport underneath) (15) | `ggml_tesseract_e2e`, `_tmax8`, `_hosted`, `_hosted_tmax8`, `ggml_tesseract_scalar_nmse`, `ggml_tesseract_backend_ops` (W3a: without the one 2.1 M-token case, which runs as `ggml_tesseract_backend_ops_bigt`, `slow`), `rt_sim`, `rt_sim_tmax8`, `rt_mock`, `rt_mock_tmax8`, `rt_vkernel_k4t1` (opt-in, skipped until P5.3), `torch_pytest`, `torch_pytest_tmax8` (`TSR_WITH_TORCH`), `transport_ggml_e2e_mock`, `_tmax8` (W3a: defined in `sw/ggml-tesseract/CMakeLists.txt`) |
+| **Rewritten** for v2 semantics (13) | `sim_basic` (EX §15 item 2 on the simulator: CSRs, load with VERIFY, LQ / LCQ launch flow, HELLO, PING, BAD_DESC, cancel and stop, `SOFT_RESET`, errors, holds), `sim_mvm` (MVM through the queue), `sim_trace`, `sim_trace_ubsan` (trace v2), `sim_transport` (boot / launch / wait / soft reset), `transport_kdev` (protocol on mock: timeouts, stale core at open, adapter faults), `transport_xrt_noop` (xrt kdev against the no-op shim; `TSR_WITH_XRT`), `ggml_tesseract_units` (OPL builder: hazards, JOINs, encoding, OPL cache, staging plan; fusion is M7), `tools_trace_gen_replay` (v2), `tools_xrt_selftest_mock`, `_tmax8`, `_1ch`, `_faults` → `tools_selftest_mock*` |
 | **Rewritten settings** (FA on, q8_0 KV, rotation off) (5) | `tools_klcheck_selftest`, `tools_klcheck_qwen05b`, `tools_numcheck_selftest`, `tools_numcheck_dump_selftest`, `tools_numcheck_dump_qwen05b` |
 | **Deleted** (2) | `tools_xrt_selftest_mock_m3`, `_m3_tmax8` (v1 m3 replays over the adapter), replaced by `tools_selftest_mock_traces` over the regenerated v2 m3 set |
 
@@ -1511,7 +1532,15 @@ New ctests:
 - `trace_v2_roundtrip`, `trace_conv_model` (sample of 10 converted model traces);
 - `transport_protocol` (EX §15 item 2, one binary for every kind: cold and warm boot, image-id
   mismatch, VERIFY with an injected TCM fault on vkernel, 0–7 args, credit rule, forced
-  `LQ_OVERFLOW` and `RING_RD_BAD`, events while waiting, the debug-aware timeout);
+  `LQ_OVERFLOW` and `RING_RD_BAD`, events while waiting, the debug-aware timeout; W3a runs it on
+  `sim` and `mock`, `vkernel` only with `TSR_VKERNEL_SERVER` / `TSR_VKERNEL_SOCKET` set, and adds
+  the EX §4.11 numbers, TRAP decoding against `addr2line` and the log paths);
+- W3a's further tests: `ggml_tesseract_opl_launch`, `_mock` (OPL builder lists with JOIN and
+  ACC_DST records launched through the transport), `ggml_tesseract_backend_ops_bigt` (`slow`),
+  `tools_selftest_mock_traces_tmax8`, `tools_log_selftest` (`tsr-log` on saved words),
+  `tools_trace_replay_device` (`tsr-trace-replay --device` and replays of `TSR_TRACE` captures),
+  `tools_klcheck_identity_qwen05b` (label `model`: generate on `sim`, replay the tokens on `sim`
+  and `mock`, `compare --expect-identical`);
 - `ggml_tesseract_attn` (SET_ROWS + FLASH_ATTN with a KV buffer vs CPU, NMSE);
 - `ggml_tesseract_graph_qwen_tiny` and `ggml_tesseract_graph_gemma_tiny`: exactly one Tesseract
   split (asserted with `GGML_SCHED_DEBUG=2`) and one launch per decode token, KL vs CPU on

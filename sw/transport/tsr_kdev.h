@@ -1,19 +1,23 @@
 // tsr_kdev.h — the device-access layer (kdev) and the protocol layer on top of it
-// (docs/xrt-host.md; v2: docs/v2/01-execution-model.md §9-§10).
+// (docs/v2/01-execution-model.md "EX" §10.2; docs/v2/06-software-verification.md "SW" §9.1;
+// docs/v2/05-debug.md "DB" §4.1, §7.3, §9.2).
 //
-// Every hardware-like transport has two layers:
-//   kdev      raw access to one Tesseract kernel: 32-bit s_axi_control registers and
-//             per-channel device memory. Implementations: "xrt" (Alveo through XRT,
-//             tsr_transport_xrt.cpp), "mock" (adapter register model around the ISA simulator,
-//             tsr_kdev_mock.cpp), "vkernel" (the Verilated kernel of tb/platform in a server
-//             process, tsr_kdev_vkernel.cpp), and kinds registered at run time (register_kdev).
-//   protocol  the contract on top of any kdev (tsr_kdev.cpp): identity and configuration from
-//             the CSR window, ADAPTER_STATUS left at open (adapter_log), range checks, transfers.
-//             It is an ordinary tsr_transport, so the backend and the tools use it unchanged.
-// v1's run protocol (ap_ctrl_hs start / wait / settle, the argument registers, exec with a
-// timeout and CTRL.ABORT) is deleted (X0, EX §10.2); the v2 protocol layer (bind, load and
-// VERIFY, boot, launch, wait, cancel, stop, reset, log over every kdev) arrives with P3.1.
-// Not thread-safe: one caller at a time (the backend serialises on its device mutex).
+// Every kind has two layers:
+//   kdev      raw access to one Tesseract kernel: 32-bit s_axi_control registers (the adapter's
+//             and the core CSR window at 0x1000 + off), per-channel device memory, and the time
+//             base the protocol counts in. Implementations: "sim" (the simulator in-process, core
+//             CSR port only, no adapter; tsr_kdev_sim.cpp), "mock" (the sim kdev inside the
+//             ap_ctrl_none adapter register model, with fault injection; tsr_kdev_mock.cpp),
+//             "vkernel" (the Verilated kernel in a server process; tsr_kdev_vkernel.cpp), "xrt"
+//             (xrt::ip plus per-channel buffers; tsr_transport_xrt.cpp), and kinds registered at
+//             run time (register_kdev).
+//   protocol  one implementation for every kind (tsr_kdev.cpp, V2-SW-18): open (identity,
+//             ADAPTER_STATUS, SOFT_RESET, bind), boot (EX §3.3-§3.5: requirements, VERIFY, cold or
+//             warm load, HELLO), launch (credit, shadowed LQ_W writes, LQ_PUSH), wait (LCQ
+//             consumption, events, the poll policy, the log, the debug-aware timeout and DB's
+//             recovery ladder, TRAP handling), cancel, stop, soft reset, log drain.
+// v1's run interface (start / wait / settle / kargs, regs_* / kds_*, KREG_AP_CTRL .. KREG_ARG0) is
+// deleted (X0, EX §10.2).
 #pragma once
 
 #include <cstddef>
@@ -25,34 +29,46 @@
 
 #include "tsr_transport.h"
 
+struct tsr_sim;
+
 namespace tsr {
 
 // ---------------------------------------------------------------------------
-// Kernel contract: s_axi_control map (byte offsets, 32-bit registers, 13-bit address space).
-// 0x000-0x03C (v1's AP_CTRL, GIE, IER, ISR, cmd_addr, cmd_count, arg0-7) are deleted (EX §9.2).
+// Kernel contract: s_axi_control map (EX §9.2; byte offsets, 32-bit registers, 13-bit space).
+// 0x000-0x03C are reserved and read 0 (v1's AP_CTRL, GIE, IER, ISR, cmd_addr, cmd_count, arg0-7).
 // ---------------------------------------------------------------------------
 enum : uint32_t {
-    KREG_CH_BASE0        = 0x040,  // ch c base (u64, 4 KiB aligned): lo at 0x040 + 8 c, hi at +4
-    KREG_ADAPTER_STATUS  = 0x0F0,  // R / W1C sticky
-    KREG_ADAPTER_VERSION = 0x0F4,
-    KREG_CSR_WINDOW      = 0x1000, // core CSR off at 0x1000 + off, off < 0x1000
-    KREG_SPACE           = 0x2000, // s_axi_control range the kernel must declare (kernel.xml)
+    KREG_CH_BASE0        = TSR_SAXI_CH_BASE_LO_BASE,   // ch c base (u64, 4 KiB aligned): lo at 0x040 + 8c, hi at +4
+    KREG_ADAPTER_CTRL    = TSR_SAXI_ADAPTER_CTRL,      // bit0 MEM_EN
+    KREG_ADAPTER_STATUS  = TSR_SAXI_ADAPTER_STATUS,    // R / W1C sticky
+    KREG_ADAPTER_VERSION = TSR_SAXI_ADAPTER_VERSION,   // {16'h0002, 8'h00, NUM_CH}
+    KREG_CSR_WINDOW      = TSR_SAXI_CORE_BASE,         // core CSR off at 0x1000 + off, off < 0x1000
+    KREG_SPACE           = 0x2000,                     // s_axi_control range the kernel declares (kernel.xml)
 };
 
-// ADAPTER_STATUS: sticky error bits + bits[31:16] saturating count of error responses.
+// ADAPTER_STATUS (EX §9.2): sticky error bits 0-5 + bits [31:16] saturating count of error responses.
 enum : uint32_t {
-    AST_RRESP      = 1u << 0,  // a read response with RRESP != OKAY
-    AST_BRESP      = 1u << 1,  // a write response with BRESP != OKAY
-    AST_ORPHAN     = 1u << 2,  // a response with no outstanding request for its id
-    AST_BASE_ALIGN = 1u << 3,  // a ch<c>_base not 4 KiB aligned when the bases were latched
+    AST_RRESP       = TSR_ADAPTER_STATUS_RRESP_ERR,
+    AST_BRESP       = TSR_ADAPTER_STATUS_BRESP_ERR,
+    AST_ORPHAN      = TSR_ADAPTER_STATUS_ORPHAN_RESP,
+    AST_BASE_ALIGN  = TSR_ADAPTER_STATUS_BASE_MISALIGNED,   // a base not 4 KiB aligned at the MEM_EN edge
+    AST_REQ_HELD    = TSR_ADAPTER_STATUS_REQ_HELD,          // a core memory request held while MEM_EN = 0
+    AST_BASE_LOCKED = TSR_ADAPTER_STATUS_BASE_LOCKED,       // a base write while MEM_EN = 1 (ignored)
+    AST_PLAT_ERR    = AST_RRESP | AST_BRESP | AST_ORPHAN,   // these and a count != 0 drive plat_err_i (EX §9.3)
 };
 inline uint32_t adapter_status_count(uint32_t v) { return v >> 16; }
+inline bool adapter_plat_err(uint32_t v) { return (v & AST_PLAT_ERR) != 0 || adapter_status_count(v) != 0; }
 std::string adapter_status_str(uint32_t v);   // "RRESP error, 3 error responses" etc.; "ok" for 0
 
 // Kernel CH_BYTES of the U200 kernels (contract): the core range-checks DRAM operands against
 // this, independent of the size of the buffer bound to the channel.
 constexpr uint64_t KERNEL_CH_BYTES = 16ull << 30;
-constexpr uint32_t KERNEL_MAX_CH   = (KREG_ADAPTER_STATUS - KREG_CH_BASE0) / 8;   // 22 >= TSR_NUM_CH_MAX
+constexpr uint32_t KERNEL_MAX_CH   = TSR_SAXI_CH_BASE_LO_N;   // 16 channel-base slots (0x040..0x0BC)
+
+// Nominal kernel clock (U200 k4, docs/platform-u200.md): converts core cycles (DURATION, the
+// simulator's MTIME) into the transport's time base. Only the poll policy and the simulator kinds'
+// timeouts use it; no result depends on it.
+constexpr double CORE_HZ_NOMINAL = 276.3e6;
 
 // ---------------------------------------------------------------------------
 // kdev: one kernel instance
@@ -63,19 +79,36 @@ public:
     virtual const char * name() const = 0;               // transport name ("xrt", "mock", ...)
     virtual uint32_t num_ch() const = 0;                 // m_axi_ch<c> ports with a buffer bound
     virtual uint64_t ch_bytes(uint32_t ch) const = 0;    // usable bytes of the buffer of channel ch
-    virtual uint64_t ch_addr(uint32_t ch) const = 0;     // its device address (what ch<c>_base holds)
+    virtual uint64_t ch_addr(uint32_t ch) const = 0;     // its device address (what ch<c>_base gets)
     virtual std::string describe() const { return std::string(); }   // one line per item, for tools
+    // false: the core CSR port only, no adapter registers (the "sim" kind, EX §10.2): the protocol
+    // skips ADAPTER_STATUS and the bind; reg_* outside the CSR window fail.
+    virtual bool has_adapter() const { return true; }
 
-    // s_axi_control access: off a multiple of 4 below KREG_SPACE. 0 on success (message on
-    // stderr otherwise). The protocol layer uses ADAPTER_STATUS / ADAPTER_VERSION and the CSR
-    // window.
+    // s_axi_control access: off a multiple of 4 below KREG_SPACE. 0 on success (message on stderr
+    // otherwise).
     virtual int reg_read(uint32_t off, uint32_t * val) = 0;
     virtual int reg_write(uint32_t off, uint32_t val) = 0;
 
-    // Channel memory, byte offsets inside the channel buffer, any alignment and size; the
-    // caller has checked off + n <= ch_bytes(ch). 0 on success.
+    // Channel memory, byte offsets inside the channel buffer, any alignment and size; the caller
+    // has checked off + n <= ch_bytes(ch). 0 on success.
     virtual int mem_write(uint32_t ch, uint64_t off, const void * src, size_t n) = 0;
     virtual int mem_read(uint32_t ch, uint64_t off, void * dst, size_t n) = 0;
+
+    // The time base of the protocol's timeouts and poll policy, in ns (monotonic). Default: the
+    // host clock. The simulator kinds count device time (MTIME at CORE_HZ_NOMINAL).
+    virtual uint64_t now_ns();
+    // SW §9.1 idle(), EX §10.2's advance hint: called by the wait loops between polls (with the
+    // transport mutex released) for about interval_ns of the time base. Default: sleep. sim:
+    // tsr_sim_advance; vkernel: run the server's clocks. poll_iter counts the polls of this wait.
+    virtual void idle(uint32_t poll_iter, uint64_t interval_ns);
+    // The in-process simulator behind the kind (sim, mock), else nullptr: tests, the selftest's
+    // shadow, the DMI helpers of DB §9.2.
+    virtual tsr_sim * sim() { return nullptr; }
+    // true for the simulated kinds (sim, mock, vkernel): now_ns() is device time and idle() drives
+    // the model, so the protocol calls it with its mutex held; false (xrt): host time, and idle()
+    // sleeps with the mutex released.
+    virtual bool simulated() const { return false; }
 };
 
 // ---------------------------------------------------------------------------
@@ -126,36 +159,81 @@ std::string dma_rules_check(const dma_rules & r);
 // ---------------------------------------------------------------------------
 // The protocol layer as a transport
 // ---------------------------------------------------------------------------
-// Wrap a kdev into a tsr_transport (takes ownership). Reads the configuration through the CSR
-// window and fails (NULL, message on stderr) if ID is not "TSR1", the ISA major differs (a v1
-// bitstream reports major 1), CFG0.NUM_CH differs from dev->num_ch(), or a channel buffer is not
-// 4 KiB aligned.
+// Opens the protocol layer on dev (takes ownership): identity, ADAPTER_STATUS, SOFT_RESET and bind
+// (unless TSR_ATTACH=1), exactly as tsr_transport_open. NULL on failure (message on stderr).
 tsr_transport * transport_open_kdev(std::unique_ptr<kdev> dev);
+// Closes the protocol layer without any device access (no log drain, no reset) and returns its
+// kdev: what a crashed process leaves behind (tests of the stale core at open, warm restarts
+// across "processes").
+std::unique_ptr<kdev> transport_detach_kdev(tsr_transport * t);
 
-// The kdev behind a transport opened from one (xrt, mock, registered kinds); nullptr for "sim".
+// The kdev behind a transport (every kind).
 kdev * transport_kdev(tsr_transport * t);
+// The in-process simulator behind a transport (sim, mock), else nullptr.
+tsr_sim * transport_sim(tsr_transport * t);
 
 // ADAPTER_STATUS as the protocol layer saw it. It reads the register at open and clears it (W1C)
 // when it is not 0, so reading the register afterwards shows only what happened since; tools
-// check this record instead (all zero for "sim"). The per-launch record returns with the v2
-// launch path (P3.1).
+// check this record instead (all zero without an adapter). last_* are from the last time a launch
+// answered PLAT_ERR or STATUS.PLAT_ERR was seen (read, reported and cleared then, EX §8.6).
 struct adapter_log {
-    uint32_t at_open  = 0;   // found at open: left by an earlier process (cleared then)
+    uint32_t at_open   = 0;   // found at open: left by an earlier process (cleared then)
+    uint32_t plat_errs = 0;   // PLAT_ERR events handled since open
+    uint32_t last      = 0;   // ADAPTER_STATUS at the last one
 };
 adapter_log transport_adapter_log(tsr_transport * t);
 
 // Read one 64-bit PERF_* counter through the window (LO first: the core snapshots on LO).
 uint64_t transport_perf(tsr_transport * t, uint32_t idx);
 
+// What the protocol layer did, for tests and tools (tsr-selftest).
+struct boot_info {
+    bool     warm = false;          // no ITCM segment had to be written (EX §3.5)
+    uint32_t itcm_loaded = 0;       // ITCM segments cold-loaded (VERIFY mismatch)
+    uint32_t dtcm_loaded = 0;       // DTCM segments (always reloaded)
+    uint32_t words_written = 0;     // LOAD_DATA writes
+    uint64_t time_ns = 0;           // the transport's time base: from the start of boot to HELLO
+    uint64_t wall_ns = 0;           // host time, the same span
+    uint32_t hello_cycles = 0;      // HELLO r7: core cycles from crt0's entry to the post
+};
+boot_info transport_boot_info(tsr_transport * t);
+
+// Recovery and diagnosis counters (DB §7.3), since open.
+struct recovery_log {
+    uint32_t timeouts = 0;          // waits that timed out (ladder entered)
+    uint32_t level2 = 0;            // LQ_CANCEL issued by the ladder
+    uint32_t level2_ok = 0;         // ... and every outstanding launch answered within TSR_ABORT_MS
+    uint32_t level3 = 0;            // SOFT_RESET + warm restart by the ladder
+    uint32_t traps = 0;             // TRAP records handled
+    uint32_t restarts = 0;          // warm restarts after traps and level 3
+    uint32_t dumps = 0;             // hang dumps written (TSR_DUMP_DIR)
+    uint32_t lost = 0;              // launches flushed without an answer
+    bool     failed = false;        // the device is FAILED (card reset needed, no clk_rv, ...)
+    std::string last_trap;          // decoded report of the last TRAP record
+    std::string last_dump_dir;      // directory of the last hang dump
+};
+recovery_log transport_recovery_log(tsr_transport * t);
+
+// Test hooks. full_records: read all 8 words of every LCQ record instead of EX §4.8's minimal
+// reads (an OK DONE / PONG answering the oldest launch: r0, plus r2 unless the kernel's RET is 0 on
+// success; r7 DURATION is not read); the protocol tests compare both. timeouts override the
+// environment's TSR_*_MS for this transport (ms; 0 keeps the value). wm_refresh: launches after
+// which a valid LQ_CANCEL / LQ_STOP watermark is rewritten below the oldest unanswered launch
+// (default 2^30, EX §4.9: it would cover new launches 2^31 on), so tests see the rewrite.
+void transport_set_full_records(tsr_transport * t, bool on);
+void transport_set_timeouts(tsr_transport * t, uint64_t launch_ms, uint64_t abort_ms, uint64_t boot_ms, uint64_t reset_ms);
+void transport_set_wm_refresh(tsr_transport * t, uint32_t launches);
+
 // Extra kdev kinds for TSR_DEVICE / tsr_transport_open. The factory returns nullptr on failure
 // after printing why. Registering a built-in kind ("sim", "xrt", "mock", "vkernel") is refused.
 using kdev_factory = std::function<std::unique_ptr<kdev>()>;
 bool register_kdev(const std::string & kind, kdev_factory f);
 
-// Built-in kdevs (each reads its own environment, see the .cpp files and docs/xrt-host.md).
-std::unique_ptr<kdev> open_mock_kdev();
-std::unique_ptr<kdev> open_vkernel_kdev();   // Verilated kernel server (tsr_kdev_vkernel.cpp)
-std::unique_ptr<kdev> open_xrt_kdev();   // nullptr + message when built without XRT
+// Built-in kdevs (each reads its own environment, see the .cpp files).
+std::unique_ptr<kdev> open_sim_kdev();       // tsr_kdev_sim.cpp
+std::unique_ptr<kdev> open_mock_kdev();      // tsr_kdev_mock.cpp
+std::unique_ptr<kdev> open_vkernel_kdev();   // tsr_kdev_vkernel.cpp
+std::unique_ptr<kdev> open_xrt_kdev();       // nullptr + message when built without XRT
 
 // Defaults of the xrt kdev's environment that depend on XRT's emulation mode (docs/xrt-host.md
 // §9). With XCL_EMULATION_MODE=hw_emu: TSR_XRT_CH_GIB=3, TSR_XRT_DMA=staged and
@@ -169,5 +247,9 @@ struct env_default {
     const char * value;
 };
 std::vector<env_default> xrt_env_defaults(const std::function<const char *(const char *)> & env = {});
+
+// Environment helpers shared by the kdevs: unsigned decimal value in [lo, hi]. 0 if unset or
+// empty, 1 if set and valid (*out), -1 if malformed (message "tsr_transport(<who>): ..." printed).
+int env_u64(const char * who, const char * name, uint64_t lo, uint64_t hi, uint64_t * out);
 
 } // namespace tsr

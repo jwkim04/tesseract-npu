@@ -70,17 +70,20 @@ through later layers, which is why the floor is not tiny.
 attention on, a q8_0 K and V cache and llama.cpp's Hadamard KV rotation off (D17, V2-SW-22,
 `docs/v2/06-software-verification.md` §10.4, `docs/v2/03-attention-kv.md` §14). The KV cache and
 attention stay on the host in M6 (`offload_kqv` = false) and move to the device in M7
-(`offload_kqv` = true). The tool takes these settings in W3 (P3.3); until then it has the v1 values
-(the "v1" parts of the rows below), and every result in this document was measured with them. The
-v1 baselines are not comparable with v2 ones; new baselines are taken with the v2 settings.
+(`offload_kqv` = true). The tool has these settings since W3 (P3.3): they are the defaults of every
+phase (`--phase m6`; `--phase m7` turns `offload_kqv` on), `klcheck all` passes them to every child,
+and each file records them (header version 2, below); `compare` warns when two files differ in them.
+`--fa`, `-ctk` / `-ctv`, `--offload-kqv` and `--attn-rot on` exist for experiments only. The results
+of "Results: Qwen2.5-0.5B-Instruct Q8_0" below were measured with the v1 values (the "v1" parts of
+the rows) and are not comparable with v2 ones; "v2 baseline (M6, sim)" has the first v2 numbers.
 
 | Setting | Value | Why |
 | --- | --- | --- |
-| Flash attention | **v2: on** (`-fa on`), recorded in the file. v1: off (`--fa off`) | v2: the pinned llama.cpp refuses a quantized V cache without FA (`src/llama-context.cpp:566-569`), and the device's attention is `FLASH_ATTN_EXT` only (D17); the device, CPU and floor runs use the same FA setting. v1: `auto` resolves to *off* on the device run (layer on Tesseract0, FA on CPU) and *on* on a CPU-only run, which would compare two attention kernels |
+| Flash attention | **v2: on** (the default; `--fa off` only for experiments), recorded in the file. v1: off (`--fa off`) | v2: the pinned llama.cpp refuses a quantized V cache without FA (`src/llama-context.cpp:566-569`), and the device's attention is `FLASH_ATTN_EXT` only (D17); the device, CPU and floor runs use the same FA setting. v1: `auto` resolves to *off* on the device run (layer on Tesseract0, FA on CPU) and *on* on a CPU-only run, which would compare two attention kernels |
 | KV cache | **v2: q8_0 for K and V** (`-ctk q8_0 -ctv q8_0`) in every run; on the host in M6 (`offload_kqv=false`), on the device in M7 (`offload_kqv=true`). v1: f16, on the host (`offload_kqv=false`) | v2: D17; fixing the KV type already in M6 keeps the baselines constant from M6 to M7, so the M7 delta measures the device attention only. v1: v1 constraint (`docs/llama-pin.md`) |
-| Hadamard KV rotation | **v2: off** (`LLAMA_ATTN_ROT_DISABLE=1`, set by the tool for every phase). v1: not applicable (f16 cache) | With a quantized cache llama.cpp rotates Q, K and V by an F32 graph-input matrix that the MVM cannot use, which would split attention into CPU islands (V2-SW-16, V2-AT-17); the CPU reference uses the same setting, so the comparison stays fair |
+| Hadamard KV rotation | **v2: off** (`LLAMA_ATTN_ROT_DISABLE=1`, set by the tool for every phase and recorded in the file; `--attn-rot on` unsets it). v1: not applicable (f16 cache) | With a quantized cache llama.cpp rotates Q, K and V by an F32 graph-input matrix that the MVM cannot use, which would split attention into CPU islands (V2-SW-16, V2-AT-17); the CPU reference uses the same setting, so the comparison stays fair |
 | CPU weight repack (`use_extra_bufts`) | off (`--repack` turns it on) | repacking copies the weights into anonymous memory; 32B Q4_K_M (19 GB) does not fit in 14 GB RAM, while mmap'd weights can be evicted |
-| Device selection | `--device sim\|xrt`: `TSR_DEVICE` = that value, `devices = {Tesseract0}`, `n_gpu_layers = 999`. `--device cpu`: `TSR_DEVICE=none`, `devices = {}` | the device phase checks that a Tesseract device is registered; a CPU phase never opens a transport |
+| Device selection | `--device sim\|mock\|vkernel\|xrt`: `TSR_DEVICE` = that value, `devices = {Tesseract0}`, `n_gpu_layers = 999`. `--device cpu`: `TSR_DEVICE=none`, `devices = {}` | the device phase checks that a Tesseract device is registered; a CPU phase never opens a transport |
 | Threads | `-t` (default: online CPUs / 2) | the simulator uses `TSR_SIM_THREADS` (default min(CPUs, 8)) |
 | Context | `n_ctx` = longest sequence rounded up to 256, `n_outputs_max` = rows actually needed | keeps the KV cache, compute buffers and the device IO region small |
 
@@ -88,9 +91,10 @@ v1 baselines are not comparable with v2 ones; new baselines are taken with the v
 
 ```
 klcheck all -m MODEL [-o DIR] [--device sim] [--seed 1] [-n 64] [--n-prompts N] [--prompts FILE]
-            [--prompt-tail 1] [--chat] [--replay batch|step] [-t N] [--fa off] [--resume]
+            [--prompt-tail 1] [--chat] [--replay batch|step] [-t N] [--phase m6|m7] [--resume]
             [--kl-ratio 3] [--min-top1 0.8] [--min-kl 0] [--no-embd-check]
-klcheck run -m MODEL --device sim|xrt|cpu --out FILE [--tokens FILE] [--perturb-ulp SEED] [...]
+            [--fa on|off] [-ctk TYPE] [-ctv TYPE] [--offload-kqv on|off] [--attn-rot on|off]   # experiments
+klcheck run -m MODEL --device sim|mock|vkernel|xrt|cpu --out FILE [--tokens FILE] [--perturb-ulp SEED] [...]
 klcheck compare --ref CPU.klc --dev DEV.klc [--floor FLOOR.klc] [--json FILE] [--expect-identical]
 klcheck info FILE [-m MODEL]          # header, timings, per-sequence text
 klcheck embd MODEL TOKEN... [--perturb-ulp S --seq Q --pos P]
@@ -118,6 +122,11 @@ entry per position (KL device, KL floor, the three argmaxes, |Δlogit|, cosine).
   line (`\n`, `\t`, `\\` escapes; blank lines and `#` lines are skipped). `--chat` wraps each prompt in
   the model's chat template. Generation does not stop at end-of-generation tokens, and the count of
   such tokens is recorded.
+- **`--replay`:** a CPU replay defaults to `batch` (openTPU's golden run); a device replay
+  (`--device sim|mock|vkernel|xrt --tokens FILE`) defaults to `step`, which repeats the generating
+  run's prefill and single-token graphs, so that `compare --expect-identical` can require every row
+  bit-identical across devices (the M6 gate's item 2, SW §10.4: generate on `xrt`, replay the tokens
+  on `sim`).
 - **`--resume`:** a phase keeps the complete records of an existing output file and continues after
   them. A finished phase is skipped before its model is loaded. `klcheck all --resume` therefore
   restarts a long 32B run where it stopped. A killed and resumed device run was bit-identical to an
@@ -125,15 +134,61 @@ entry per position (KL device, KL floor, the three argmaxes, |Δlogit|, cosine).
 
 ### Logits file (`.klc`)
 
-The file is little-endian. A 512-byte `klc_header` (magic `TSRKLC01`, version 1) is followed by
+The file is little-endian. A 512-byte `klc_header` (magic `TSRKLC01`, version 2) is followed by
 `n_seq` records. Each record is a 48-byte `klc_seq` (`KSEQ`, index, n_prompt, n_gen, row0,
 n_rows, timings, EOG count), then `int32 tokens[n_prompt + n_gen]`, then
 `f32 logits[n_rows][n_vocab]`, with `row0 + n_rows = n_prompt + n_gen − 1`. The header records the
 model (description, parameter count, size, file), the device, the mode (generate / replay
 batch|step), the input path (tokens / embd / embd+1ulp and seed), flash attention, threads, repack,
-chat and timings. `n_seq` counts complete records and is rewritten after each one. A phase streams
+chat and timings, and since version 2 (P3.3) the v2 settings in five words of the former reserved
+area: `type_k`, `type_v` (ggml types), `offload_kqv`, `attn_rot_disable` (LLAMA_ATTN_ROT_DISABLE was 1
+for the run) and `phase` (6 / 7). Version 1 files are still read; they show as the v1 settings
+(phase "v1", f16 / f16 on the host, rotation not disabled), and `--resume` refuses to continue one with
+v2 options. `klcheck info` prints the settings line. `n_seq` counts complete records and is rewritten after each one. A phase streams
 one sequence at a time (G = 64: 39 MB per sequence for a 152k vocabulary), and `compare` streams
 rows, so neither depends on the model size.
+
+## v2 baseline (M6, sim)
+
+Measured 2026-10-30 (W3a, P3.3) on the v2 software stack: the backend's MUL_MATs as op lists of the
+`graph` kernel on the simulator kind (`TSR_DEVICE=sim`: the RISC-V interpreter and the queue model
+behind the core CSR port; T_MAX 1, 4 simulator threads), attention and KV on the host, the M6 settings
+(FA on, q8_0 / q8_0 KV, rotation off). Command: the ctest `tools_klcheck_qwen05b`,
+`klcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf --device sim --phase m6 --n-prompts 4 -n 32`
+(128 generated positions):
+
+| | mean KL (nats) | median | max | top-1 vs CPU | bit-identical rows |
+| --- | --- | --- | --- | --- | --- |
+| device (sim) vs CPU | **2.089e-3** | 1.19e-3 | 2.82e-2 | **96.88 %** | 0/128 |
+| floor (CPU + 1 ulp, seed 1) vs CPU | **2.912e-3** | 1.26e-3 | 1.08e-1 | 98.44 % | 7/128 |
+
+**Ratio 0.717 (limit 3), top-1 96.88 % (limit 80 %): PASS.** Max |Δlogit| 0.84 (floor 1.36), min
+cosine 0.99741. Device decode 140–147 ms/token on the simulator; the whole `klcheck all` 25 s wall
+(peak RSS 1.26 GB). The device run's tokens replayed with `klcheck run --device sim --tokens` and
+`--device mock --tokens` (step replay) gave 128/128 rows bit-identical to the generating run with
+`compare --expect-identical`: the M6 gate's identity check (item 2) works end to end on the simulator
+kinds, and `sim` and `mock` (the adapter model) agree bit for bit (the `tools_klcheck_identity_qwen05b`
+ctest repeats it on 2 prompts × 8 tokens).
+
+**P3.4 (M6 on sim, 2026-10-30, W3a integration).** `build/dev`, `TSR_DEVICE=sim` (T_MAX 1, 8
+simulator threads, fixed schedule), the M6 settings, all 8 built-in prompts × 64 tokens (512
+positions):
+
+| Check | Result |
+| --- | --- |
+| generate on sim, replay the tokens on sim (`--tokens`, step), `compare --expect-identical` | **512/512 rows bit-identical** |
+| v1 vs v2, same M6 settings: this tree's `klcheck` binary on `build/v1/bin`'s libraries (v1 backend, transport and simulator; `LD_LIBRARY_PATH=build/v1/bin`) against the v2 run | **512/512 bit-identical**, same generated tokens |
+| v1's own `build/v1/bin/klcheck` (`--fa on`; it has no `-ctk` / `-ctv`, so its KV cache is f16) against v2 with `--fa on -ctk f16 -ctv f16` | **512/512 bit-identical**, same generated tokens |
+| KL vs CPU (CPU, floor and embd runs on the v2 device tokens) | mean KL 2.595e-3 vs floor 2.530e-3, **ratio 1.03**, top-1 97.07 %: PASS; embd path bit-identical |
+
+Decode 90–95 ms/token on the simulator (gen 47.1 s for 512 tokens, prefill 6.0 s; v1 on the same
+host: 86–88 ms/token); 145.00 launches per token (one per split, v1's 145 execs), 1.17 MUL_MAT records
+per launch, 0 staged chunks (`llama-completion` with its default host output buffer: 1 per token);
+OPL cache 73,385 hits / 855 misses (98.9 %; every decode pass after the first hits). Qwen2.5-32B
+Q4_K_M (file-backed simulator DRAM), 1 prompt × 2 tokens: model load 27.9 s, prefill 19.9 s for 7
+tokens, decode 7.72 s/token, 385.00 launches per token; the full `klcheck all` (8 × 64) would take
+about 70 min for the device run (98 prompt tokens, 504 decode steps) plus about 4 min for the three
+CPU runs.
 
 ## Results: Qwen2.5-0.5B-Instruct Q8_0
 
@@ -196,9 +251,13 @@ Each logits file is 311 MB (8 × 64 rows × 151936 × 4 B).
   directions); writing, reading and resuming files, including a torn record; KL against an
   independent long-double evaluation (1e-9 relative); the verdict as the ratio limit crosses the
   measured value; incomplete files fail.
+- `tools_klcheck_selftest` also checks the version 2 header: the settings survive a write / read, a
+  version 1 file reads with the v1 settings, version 3 is refused.
 - `tools_klcheck_qwen05b` (registered only if `models/qwen2.5-0.5b-instruct-q8_0.gguf` exists,
-  label `model`, ~15–30 s): `klcheck all --n-prompts 4 -n 32` with the default criteria and the
-  embd identity check.
+  label `model`, ~25 s): `klcheck all --device sim --phase m6 --n-prompts 4 -n 32` with the default
+  criteria and the embd identity check.
+- `tools_klcheck_identity_qwen05b` (same condition, label `model`, ~10 s): generate 2 prompts × 8
+  tokens on `sim`, replay the tokens on `mock` (step), `compare --expect-identical`.
 
 ## Qwen2.5-32B Q4_K_M (M1): usage and runtime estimate
 

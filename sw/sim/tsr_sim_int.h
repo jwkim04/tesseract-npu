@@ -724,6 +724,7 @@ struct tsr_sim {
     // host CSR state (EX §5)
     uint32_t   ctrl;            // CTRL level bits
     uint32_t   sticky;          // STATUS sticky bits
+    int        plat_err;        // P3.1 (transport, additive): plat_err_i level (tsr_sim_set_plat_err)
     int        sr_busy;
     uint32_t   rv_boot;
     uint64_t   rv_boot_gen;

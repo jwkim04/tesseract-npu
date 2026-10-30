@@ -1,4 +1,5 @@
-// ggml-tesseract.cpp — ggml backend for the Tesseract overlay core (spec "ggml 백엔드 통합").
+// ggml-tesseract.cpp — ggml backend for the Tesseract NPU core (spec "ggml 백엔드 통합"; v2:
+// docs/v2/06-software-verification.md "SW" §9.3, M6 = P3.2).
 //
 //   reg "Tesseract" -> one device "Tesseract0" (GGML_BACKEND_DEVICE_TYPE_GPU, so -ngl offloads to it)
 //   buffer type     -> a virtual address space; each buffer's storage is fixed at its first data
@@ -10,29 +11,41 @@
 //       ANY / COMPUTE buffers: raw bytes, byte-for-byte like any GPU buffer (activations,
 //           test-backend-ops tensors), either
 //           "LINEAR": the whole buffer is one window in the ch0 IO region, read and written by
-//               the device in place; or
+//               the device ops in place; or
 //           "HOSTED": host memory, when the buffer does not fit the free IO windows (e.g. the
 //               worst-case logits of the output head that llama.cpp reserves for n_ubatch
 //               outputs) or holds only leaf tensors (data such as LoRA adapters, which no
-//               device op addresses directly). Device ops on such buffers are staged through
-//               the IO staging area (top of IO), which open reserves.
-//   graph_compute   -> nothing to execute: see "Between X0 and the op-list path" below.
+//               device op addresses directly). graph_compute stages the src1/dst rows of a
+//               MUL_MAT through the IO staging area (top of IO) in T tiles.
+//           A MUL_MAT src0 found in such a buffer is converted lazily at graph_compute into the
+//           WEIGHT heap and cached by (buffer, offset, type, shape, write generation).
+//   graph_compute   -> M6 (SW §9.3 steps 1-5): every MUL_MAT node becomes one OPL v1 MUL_MAT record
+//                      (tsr-opl.h: dependencies from a hazard analysis over DRAM byte ranges, JOINs
+//                      above two predecessors); the split's list goes into the OPL cache (an LRU in
+//                      the ch0 OPL region keyed by content) and runs as one launch of the firmware's
+//                      `graph` kernel, which tiles each record with plan.hpp and pushes LD / QACT /
+//                      MVM / ST (v1's lowering, so the numerics are v1's bit for bit, SW §7.4). A
+//                      MUL_MAT whose src1 or dst is in host memory (or whose dst rows do not start on
+//                      a line, N*4 % 64 != 0 with T > 1) is staged as v1 did: it runs on its own, one
+//                      one-record launch per IO stage tile. A TILE_ERR answer is mapped back to the
+//                      ggml node (RET - 1 = the failing op) and aborts with its name, the error code
+//                      and ERR_INFO.
 //
-// Between X0 and the op-list path (docs/v2/06-software-verification.md §9.3, P3.2): v1's MUL_MAT
-// execution (host-emitted LD/QACT/MVM/ST command buffers run from the CMD region, the program
-// cache, the staged and lazily converted MUL_MATs) is deleted with the command-buffer path (X0,
-// D14). The device and its buffer type stay registered, so weights still upload, convert and read
-// back exactly as before; supports_op accepts only the no-op ops (leaves and views, which the
-// scheduler needs a backend to claim for Tesseract-resident tensors) and graph_compute skips
-// them, so every compute op runs on another backend and no deleted path can be reached. P3.2
-// brings MUL_MAT back as OPL records for the `graph` kernel.
+// The device: the transport selected by TSR_DEVICE (default sim; "none" registers no device) is
+// opened (SOFT_RESET + bind, EX §10.1) and booted with TSR_IMAGE or the build's firmware image
+// (tsr_image_open_default) at the first use.
 //
-// Environment: TSR_DEVICE (transport kind; "none" registers no device), TSR_DEBUG=1|2 (placement
-// log on stderr). Test knobs: TSR_FORCE_HOST=1 keeps every non-WEIGHTS buffer in host memory,
-// TSR_STAGE_KIB=<n> sets the IO staging area size. TSR_LOAD_THREADS=<n> sets the workers that
-// convert and repack weights while they are uploaded (default: online CPUs, at most 16).
-// TSR_STATS=1 prints the upload statistics when the backend is freed. The sim transport handles
-// TSR_SIM_* itself.
+// Environment: TSR_DEBUG=1|2 (lowering and placement log on stderr; 2 adds every launched op
+// list's records). Test knobs: TSR_FORCE_HOST=1 keeps every non-WEIGHTS buffer in host memory
+// (exercises the staged path), TSR_STAGE_KIB=<n> sets the IO staging area size, TSR_OPL_CRC=1 sets
+// the `graph` launch flag VERIFY_CRC (the executor checks each list's CRC, SW §7.3).
+// TSR_LOAD_THREADS=<n> sets the workers that convert and repack weights while they are uploaded
+// (default: online CPUs, at most 16). TSR_STATS=1 prints, when the backend is freed, the upload
+// statistics and (SW §9.2, TSR_STATS v2) graph_compute calls, launches, op records per launch,
+// launches per scheduler pass (≈ per token), staged chunks, OPL cache hits / misses, the wall time
+// spent in graph_compute and in launches and the device's PERF counters over the same span (host
+// overhead = launch wall - PERF_CYCLES / f_kernel). The transport handles TSR_SIM_*, TSR_TRACE,
+// TSR_LOG and the timeouts itself.
 #include "ggml-tesseract.h"
 
 #include <algorithm>
@@ -45,6 +58,7 @@
 #include <iterator>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -59,11 +73,12 @@
 
 #include "tsr-alloc.h"
 #include "tsr-lower.h"
+#include "tsr-opl.h"
 #include "tsr-weights.h"
 #include "tsr-wlayout.h"
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
-#error "ggml-tesseract writes tensors in host byte order; only little-endian hosts are supported"
+#error "ggml-tesseract writes op lists and tensors in host byte order; only little-endian hosts are supported"
 #endif
 
 #define TSR_REG_NAME  "Tesseract"
@@ -75,9 +90,8 @@ static constexpr uint64_t TSR_VADDR_GUARD    = 1ull << 30;
 static constexpr uint64_t TSR_HEAP_ALIGN     = 4096;
 static constexpr size_t   TSR_XFER_CHUNK     = 8u << 20;                 // host-side staging granularity
 // IO staging area (top of the ch0 IO region, reserved at open): activations of HOSTED buffers
-// and line-padded output rows pass through it (P3.2 stages chunks "as v1 does", SW §9.3). At
-// least 2 x SPM so that one token of any lowerable MUL_MAT (whose x + QA + y fit the SPM) always
-// fits. Reserving it keeps the IO window capacity, and with it get_max_size, as it was.
+// and line-padded output rows pass through it (staged as v1 does, SW §9.3 step 2). At least
+// 2 x SPM so that one token of any lowerable MUL_MAT (whose x + QA + y fit the SPM) always fits.
 static constexpr uint64_t TSR_STAGE_DEFAULT  = 16ull << 20;
 
 static int tsr_debug_level() {
@@ -221,6 +235,30 @@ struct tsr_buffer_ctx {
     uint8_t * host  = nullptr;    // HOSTED: the buffer's bytes in host memory (base <-> host)
     uint8_t  clear_value = 0;     // PLACED: value read back for never-written tensors
     std::map<uint64_t, tsr_tensor_rec> recs;   // PLACED (and UNDECIDED non-COMPUTE): by vaddr
+    uint64_t gen = 1;             // bumped on every host or device write
+};
+
+struct tsr_lazy_key {
+    uint64_t buf_id;
+    uint64_t src_off;             // ch0 byte offset of the raw source bytes
+    int      type;
+    uint32_t N;
+    uint32_t K;
+
+    bool operator<(const tsr_lazy_key & o) const {
+        if (buf_id != o.buf_id)   return buf_id < o.buf_id;
+        if (src_off != o.src_off) return src_off < o.src_off;
+        if (type != o.type)       return type < o.type;
+        if (N != o.N)             return N < o.N;
+        return K < o.K;
+    }
+};
+
+struct tsr_lazy_entry {
+    uint64_t gen = 0;             // source buffer generation the conversion was made from
+    uint32_t fmt = 0;
+    uint64_t w_off = 0;
+    uint64_t ch_bytes = 0;
 };
 
 struct tsr_device {
@@ -228,7 +266,7 @@ struct tsr_device {
     bool         tried_open = false;
     tsr_transport * tp = nullptr;
     tsr_config   cfg = {};
-    std::string  description = "Tesseract overlay core (not opened)";
+    std::string  description = "Tesseract NPU core (not opened)";
 
     tsr_range_alloc io;           // ch0 IO region below the stage: LINEAR buffer windows
     tsr_range_alloc aux;          // ch0 AUX region: RAW tensors of weight buffers
@@ -241,7 +279,22 @@ struct tsr_device {
     uint64_t next_vaddr  = TSR_VADDR_BASE;
     uint64_t next_buf_id = 1;
 
+    std::map<tsr_lazy_key, tsr_lazy_entry> lazy;
+
+    tsr_opl_dev odev;             // the `graph` kernel: boot, OPL cache, launches (tsr-opl.h)
+    uint32_t    launch_flags = 0; // `graph` a2 (TSR_OPL_CRC=1: VERIFY_CRC)
+
     // TSR_STATS=1
+    uint64_t st_graphs = 0;        // graph_compute calls
+    uint64_t st_compute_ns = 0;    // their wall time
+    uint64_t st_mm = 0;            // MUL_MAT nodes run
+    uint64_t st_mm_records = 0;    // MUL_MAT records launched (staged ones included)
+    uint64_t st_joins = 0;         // JOIN records launched
+    uint64_t st_staged_mm = 0;     // MUL_MATs that took the staged path ("staged chunks", SW §8 R6)
+    uint64_t st_staged_launches = 0;
+    uint64_t st_passes = 0;        // scheduler passes (≈ tokens): a split seen again starts a new pass
+    std::set<const ggml_cgraph *> st_pass_splits;
+    std::vector<uint64_t> st_perf0;   // every PERF_* counter at the first launch
     uint64_t st_write_ns = 0;      // tsr_transport_write
     uint64_t st_write_bytes = 0;
     uint64_t st_set_ns = 0;        // set_tensor (conversion + repack + writes)
@@ -307,6 +360,14 @@ static bool tsr_dev_open_locked(tsr_device * d) {
         tsr_transport_close(tp);
         return false;
     }
+    // Boot the firmware (warm if the image is already loaded, EX §3.5) and find `graph`.
+    std::string err;
+    if (!d->odev.open(tp, &err)) {
+        GGML_LOG_ERROR("%s: Tesseract on %s: %s\n", __func__, tsr_transport_name(tp), err.c_str());
+        tsr_transport_close(tp);
+        return false;
+    }
+    d->launch_flags = getenv("TSR_OPL_CRC") != nullptr && atoi(getenv("TSR_OPL_CRC")) != 0 ? tsr::opl::LF_VERIFY_CRC : 0u;
     d->tp  = tp;
     d->cfg = *c;
     d->stage_size = stage;
@@ -317,12 +378,14 @@ static bool tsr_dev_open_locked(tsr_device * d) {
     d->force_host = getenv("TSR_FORCE_HOST") != nullptr && atoi(getenv("TSR_FORCE_HOST")) != 0;
 
     char desc[256];
-    snprintf(desc, sizeof(desc), "Tesseract overlay core (%s, C=%u, LANES=%u, T_MAX=%u, K_MAX=%u, SPM=%u KiB, %.0f GiB/ch)",
+    snprintf(desc, sizeof(desc), "Tesseract NPU core (%s, C=%u, LANES=%u, T_MAX=%u, K_MAX=%u, SPM=%u KiB, %.0f GiB/ch, "
+             "firmware %016" PRIx64 ")",
              tsr_transport_name(tp), c->num_ch, c->lanes, c->t_max, c->k_max, c->spm_bytes / 1024,
-             (double) c->ch_bytes / (1024.0 * 1024.0 * 1024.0));
+             (double) c->ch_bytes / (1024.0 * 1024.0 * 1024.0), d->odev.image_id());
     d->description = desc;
-    TSR_DBG(1, "opened %s; IO windows %.2f MiB, IO stage %.2f MiB at ch0+0x%09" PRIx64 "%s\n", desc,
-            tsr_mib(d->io.total()), tsr_mib(stage), d->stage_off, d->force_host ? ", TSR_FORCE_HOST" : "");
+    TSR_DBG(1, "opened %s; image %s (graph = kernel %d); IO windows %.2f MiB, IO stage %.2f MiB at ch0+0x%09" PRIx64 "%s\n",
+            desc, d->odev.image_path(), d->odev.graph_kernel(), tsr_mib(d->io.total()), tsr_mib(stage), d->stage_off,
+            d->force_host ? ", TSR_FORCE_HOST" : "");
     return true;
 }
 
@@ -441,6 +504,39 @@ static void tsr_rec_release(tsr_device * d, tsr_tensor_rec & r) {
     r.have = tsr_intervals();
 }
 
+// Free every lazily converted weight (their heap space). Callers must have flushed any
+// pending op list that references them.
+static void tsr_lazy_evict_all(tsr_device * d) {
+    for (auto & kv : d->lazy) {
+        d->heap.release(kv.second.w_off);
+    }
+    if (!d->lazy.empty()) {
+        TSR_DBG(1, "evicted %zu lazily converted weights\n", d->lazy.size());
+    }
+    d->lazy.clear();
+}
+
+static void tsr_lazy_evict_buffer(tsr_device * d, uint64_t buf_id) {
+    for (auto it = d->lazy.begin(); it != d->lazy.end();) {
+        if (it->first.buf_id == buf_id) {
+            d->heap.release(it->second.w_off);
+            it = d->lazy.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+static bool tsr_heap_alloc(tsr_device * d, uint64_t size, uint64_t * off) {
+    if (d->heap.alloc(size, off)) {
+        return true;
+    }
+    // lazily converted weights are a cache: drop them and retry (only called with no
+    // pending op list, see tsr_place / tsr_lazy_weight)
+    tsr_lazy_evict_all(d);
+    return d->heap.alloc(size, off);
+}
+
 // Is this tensor stored as a device weight (vs raw)? Mirrors what MUL_MAT can use directly.
 static bool tsr_rec_is_devweight_shape(const tsr_device * d, const tsr_tensor_rec & r) {
     if (r.ne[2] != 1 || r.ne[3] != 1) {
@@ -465,7 +561,7 @@ static void tsr_place(tsr_device * d, tsr_tensor_rec & r) {
         r.N   = (uint32_t) r.ne[1];
         r.K   = (uint32_t) r.ne[0];
         r.ch_bytes = tsr_tensor_ch_beats(r.fmt, r.N, r.K, d->cfg.num_ch) * TSR_BEAT_BYTES;
-        if (!d->heap.alloc(r.ch_bytes, &r.w_off)) {
+        if (!tsr_heap_alloc(d, r.ch_bytes, &r.w_off)) {
             GGML_ABORT("tesseract: WEIGHT heap full: weight '%s' needs %.1f MiB per channel, %.1f MiB free (largest %.1f MiB)",
                        r.name.c_str(), tsr_mib(r.ch_bytes), tsr_mib(d->heap.free_bytes()), tsr_mib(d->heap.largest_free()));
         }
@@ -479,7 +575,7 @@ static void tsr_place(tsr_device * d, tsr_tensor_rec & r) {
     const uint64_t size = tsr_pad(std::max<size_t>(r.nbytes, 1), TSR_TENSOR_ALIGN);
     if (d->aux.alloc(size, &r.raw_off)) {
         r.raw_region = tsr_raw_region::AUX;
-    } else if (d->heap.alloc(size, &r.raw_off)) {
+    } else if (tsr_heap_alloc(d, size, &r.raw_off)) {
         r.raw_region = tsr_raw_region::HEAP;
     } else {
         GGML_ABORT("tesseract: no device memory for tensor '%s' (%.1f MiB)", r.name.c_str(), tsr_mib(size));
@@ -685,10 +781,11 @@ static const char * tsr_usage_name(enum ggml_backend_buffer_usage u) {
 // after allocating a weight buffer and before uploading; compute buffers get COMPUTE usage
 // right after allocation; init_tensor runs while usage is still ANY).
 //   WEIGHTS                       -> PLACED (per tensor)
-//   ANY holding only leaf tensors -> HOSTED: data that no device op reads or writes in place
-//                                    (LoRA adapters, control vectors, a KV cache without -nkvo)
+//   ANY holding only leaf tensors -> HOSTED: data that no op list reads or writes in place
+//                                    (LoRA adapters, control vectors, a KV cache without -nkvo);
+//                                    a MUL_MAT src0 among them is converted into the heap
 //   otherwise (ANY, COMPUTE)      -> LINEAR if a window of the IO region is free, else HOSTED
-//                                    (device ops stage its rows through IO)
+//                                    (graph_compute stages its MUL_MAT rows through IO)
 static void tsr_buf_decide(tsr_buffer_ctx * b, ggml_backend_buffer_t gbuf) {
     if (b->mode != tsr_bmode::UNDECIDED) {
         return;
@@ -723,9 +820,9 @@ static void tsr_buf_decide(tsr_buffer_ctx * b, ggml_backend_buffer_t gbuf) {
             tsr_usage_name(gbuf->usage),
             leaves_only ? "leaf tensors only" : d->force_host ? "TSR_FORCE_HOST" : "no free IO window, staged");
     if (!leaves_only && !d->force_host) {
-        // not an error: device ops on it are staged through IO
+        // not an error: the MUL_MATs that use it are staged through IO in T tiles
         GGML_LOG_INFO("tesseract: %s buffer #%" PRIu64 " of %.2f MiB does not fit the IO region (largest free window "
-                      "%.2f MiB of %.2f MiB): kept in host memory, device activations in it pass through the "
+                      "%.2f MiB of %.2f MiB): kept in host memory, MUL_MAT activations in it pass through the "
                       "%.0f MiB IO stage\n", tsr_usage_name(gbuf->usage), b->id, tsr_mib(b->size),
                       tsr_mib(d->io.largest_free()), tsr_mib(d->io.total()), tsr_mib(d->stage_size));
     }
@@ -768,6 +865,7 @@ static void tsr_buffer_free(ggml_backend_buffer_t buffer) {
         for (auto & kv : b->recs) {
             tsr_rec_release(d, kv.second);
         }
+        tsr_lazy_evict_buffer(d, b->id);
         TSR_DBG(2, "buffer #%" PRIu64 " freed\n", b->id);
     }
     free(b->host);
@@ -831,6 +929,7 @@ static void tsr_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * te
     tsr_buf_decide(b, buffer);
     const uint64_t addr = tsr_vaddr(tensor->data) + offset;
     tsr_check_range(b, addr, size);
+    b->gen++;
     const uint64_t t0 = tsr_stats_on() ? tsr_now_ns() : 0;
     if (b->mode == tsr_bmode::LINEAR) {
         tsr_write(d, 0, b->io_off + (addr - b->base), data, size);
@@ -868,6 +967,7 @@ static void tsr_buffer_memset_tensor(ggml_backend_buffer_t buffer, ggml_tensor *
     tsr_buf_decide(b, buffer);
     const uint64_t addr = tsr_vaddr(tensor->data) + offset;
     tsr_check_range(b, addr, size);
+    b->gen++;
     if (b->mode == tsr_bmode::LINEAR) {
         tsr_fill(d, 0, b->io_off + (addr - b->base), value, size);
     } else if (b->mode == tsr_bmode::HOSTED) {
@@ -882,6 +982,7 @@ static void tsr_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
     tsr_device * d = b->dev;
     std::lock_guard<std::mutex> lock(d->mtx);
     tsr_buf_decide(b, buffer);
+    b->gen++;
     if (b->mode == tsr_bmode::LINEAR) {
         tsr_fill(d, 0, b->io_off, value, b->size);
         return;
@@ -967,8 +1068,7 @@ static size_t tsr_buft_get_max_size(ggml_backend_buffer_type_t buft) {
     return (size_t) d->io.total();
 }
 
-// Pad to whole lines: a line-granular ST of the last row lands in this padding (device layout
-// of compute tensors, kept for the op-list path).
+// Pad to whole lines: a line-granular ST of the last row lands in this padding.
 static size_t tsr_buft_get_alloc_size(ggml_backend_buffer_type_t buft, const ggml_tensor * tensor) {
     GGML_UNUSED(buft);
     return (size_t) tsr_pad(ggml_nbytes(tensor), TSR_TENSOR_ALIGN);
@@ -991,6 +1091,390 @@ static const ggml_backend_buffer_type_i tsr_buft_iface = {
 };
 
 // ---------------------------------------------------------------------------
+// Lowering and execution (SW §9.3 M6: MUL_MAT records in one op list per split)
+// ---------------------------------------------------------------------------
+
+// A segment: MUL_MATs whose operands the device addresses in place (src1 and dst in LINEAR IO
+// windows), built into one op list and run as one `graph` launch.
+struct tsr_segment {
+    explicit tsr_segment(uint32_t num_ch) : ops(num_ch, tsr::opl::F_STOP_ON_ERROR) {}
+
+    tsr_opl_builder               ops;        // records, hazards, JOINs (tsr-opl.h)
+    std::vector<std::string>      names;      // node name per record tag
+    std::set<tsr_buffer_ctx *>    written;    // buffers the pending list writes
+    std::vector<uint64_t>         w_offs;     // W_OFF (bytes) of the pending MUL_MATs
+
+    void clear() {
+        ops.reset();
+        names.clear();
+        written.clear();
+        w_offs.clear();
+    }
+};
+
+// Every PERF_* counter: CYCLES, RETIRED, MVM, VU, (reserved), CH_RD_BEATS[c], CH_WAIT[c].
+static std::vector<uint64_t> tsr_perf_all(tsr_device * d) {
+    const uint32_t n = 5 + 2 * tsr_transport_config(d->tp)->num_ch;
+    std::vector<uint64_t> v(n);
+    for (uint32_t i = 0; i < n; i++) {
+        const uint32_t lo = tsr_transport_csr_read(d->tp, TSR_CSR_PERF_BASE + 8 * i);   // LO snapshots
+        const uint32_t hi = tsr_transport_csr_read(d->tp, TSR_CSR_PERF_BASE + 8 * i + 4);
+        v[i] = ((uint64_t) hi << 32) | lo;
+    }
+    return v;
+}
+
+// TSR_DEBUG=2: the records of a launched list.
+static void tsr_dump_opl(const std::vector<uint8_t> & blob, const tsr_segment & seg) {
+    tsr::opl::reader rd;
+    if (rd.open(blob.data(), (uint32_t) blob.size(), false) != tsr::opl::RET_OK) {
+        return;
+    }
+    tsr::opl::record r;
+    while (rd.next(r) == tsr::opl::RET_OK) {
+        const int32_t tag = seg.ops.tag_of(r.idx);
+        fprintf(stderr, "[tesseract]   %4u %-7s deps %5d %5d", r.idx, r.kind == tsr::opl::K_JOIN ? "JOIN" : "MUL_MAT",
+                r.dep0 == tsr::opl::DEP_NONE ? -1 : (int) r.dep0, r.dep1 == tsr::opl::DEP_NONE ? -1 : (int) r.dep1);
+        for (uint32_t i = 0; i < r.n_args; ++i) {
+            fprintf(stderr, " %08x", r.arg(i));
+        }
+        fprintf(stderr, "%s%s\n", tag >= 0 ? "  " : "", tag >= 0 ? seg.names[tag].c_str() : "");
+    }
+}
+
+// Run the pending list: OPL cache, `graph` launch, wait; abort on any error with the failing node.
+static void tsr_flush(tsr_device * d, tsr_segment & seg) {
+    if (seg.ops.empty()) {
+        return;
+    }
+    const std::vector<uint8_t> blob = seg.ops.finish();
+    if (blob.empty()) {
+        GGML_ABORT("tesseract: op list build failed: %s", seg.ops.error());
+    }
+    const bool stats = tsr_stats_on();
+    if (stats && d->st_perf0.empty()) {
+        d->st_perf0 = tsr_perf_all(d);
+    }
+    const tsr_opl_run_result r = d->odev.run(blob, d->launch_flags,
+        [d](uint32_t ch, uint64_t off, const void * p, size_t n) { tsr_write(d, ch, off, p, n); });
+    const uint32_t n_ops = seg.ops.n_ops(), n_joins = seg.ops.n_joins();
+    TSR_DBG(1, "launch #%" PRIu64 ": %u MUL_MAT + %u JOIN records (%u deps, %u implied), %zu B at OPL ch0+0x%07" PRIx64 "%s, "
+               "%.3f ms\n", d->odev.launches, n_ops - n_joins, n_joins, seg.ops.n_deps(), seg.ops.n_dropped(), blob.size(),
+            r.opl_off, r.cache_hit ? " (cached)" : "", r.wall_ns * 1e-6);
+    if (tsr_debug_level() >= 2) {
+        tsr_dump_opl(blob, seg);
+    }
+    const bool ok = r.rc == 0 && r.res.type == TSR_LCQ_R0_TYPE_DONE && r.res.status == TSR_LCQ_R0_STATUS_OK && r.res.ret == 0;
+    if (!ok) {
+        const char * name = nullptr;
+        if (tsr_opl_failed_op(r, seg.ops.n_ops()) >= 0) {     // SW §9.3 step 5: TILE_ERR -> the node
+            const int32_t tag = tsr_opl_failed_tag(seg.ops, r);
+            name = tag >= 0 && (size_t) tag < seg.names.size() ? seg.names[tag].c_str() : "(JOIN)";
+        }
+        GGML_ABORT("tesseract: device execution failed%s%s: %s (op list of %u records, %zu B at OPL ch0+0x%" PRIx64 ", graph_id 0x%08x)",
+                   name ? " in node " : "", name ? name : "", tsr_opl_describe(r, name).c_str(), n_ops, blob.size(), r.opl_off,
+                   tsr::opl::rd32(blob.data() + 4u * tsr::opl::hw::GRAPH_ID));
+    }
+    if (stats) {
+        d->st_mm_records += n_ops - n_joins;
+        d->st_joins += n_joins;
+    }
+    for (tsr_buffer_ctx * b : seg.written) {
+        b->gen++;
+    }
+    seg.clear();
+}
+
+// Append one MUL_MAT record (args: tsr::opl::mm words) for node `name`; a full list is run first.
+static void tsr_seg_add_mm(tsr_device * d, tsr_segment & seg, const uint32_t * args, const char * name, tsr_buffer_ctx * dst_buf) {
+    uint32_t idx = seg.ops.mul_mat(args, (int32_t) seg.names.size());
+    if (idx == tsr_opl_builder::NO_ROOM) {
+        tsr_flush(d, seg);                    // 4096 records per list (V2-SW-29): run what is pending
+        idx = seg.ops.mul_mat(args, (int32_t) seg.names.size());
+    }
+    if (idx == tsr_opl_builder::NO_ROOM || idx == tsr_opl_builder::FAILED) {
+        GGML_ABORT("tesseract: cannot add MUL_MAT '%s' to the op list: %s", name, seg.ops.error());
+    }
+    seg.names.push_back(name);
+    seg.w_offs.push_back((uint64_t) args[tsr::opl::mm::W_OFF] * TSR_BEAT_BYTES);
+    if (dst_buf != nullptr) {
+        seg.written.insert(dst_buf);
+    }
+}
+
+struct tsr_wref {
+    uint32_t fmt;
+    uint64_t w_off;
+};
+
+// Convert a MUL_MAT src0 stored as raw ggml bytes into the WEIGHT heap (cached). The bytes are
+// at ch0 byte offset `src_off` (LINEAR window, RAW tensor of a weight buffer), or at `host` for
+// a HOSTED buffer (src_off is then the offset inside the buffer and only keys the cache).
+static tsr_wref tsr_lazy_weight(tsr_device * d, tsr_segment & seg, tsr_buffer_ctx * b, uint64_t src_off,
+                                const uint8_t * host, enum ggml_type type, uint32_t N, uint32_t K, const char * name) {
+    if (seg.written.count(b)) {
+        tsr_flush(d, seg);      // src0 may be produced by the pending list
+    }
+    const tsr_lazy_key key = { b->id, src_off, (int) type, N, K };
+    const uint32_t fmt = tsr_dev_fmt_for_type(type);
+    auto it = d->lazy.find(key);
+    if (it != d->lazy.end() && it->second.gen == b->gen) {
+        return { it->second.fmt, it->second.w_off };
+    }
+    if (it == d->lazy.end()) {
+        tsr_lazy_entry e;
+        e.fmt = fmt;
+        e.ch_bytes = tsr_tensor_ch_beats(fmt, N, K, d->cfg.num_ch) * TSR_BEAT_BYTES;
+        if (!d->heap.alloc(e.ch_bytes, &e.w_off)) {
+            // evicting cached conversions is only safe with nothing pending
+            tsr_flush(d, seg);
+            tsr_lazy_evict_all(d);
+            if (!d->heap.alloc(e.ch_bytes, &e.w_off)) {
+                GGML_ABORT("tesseract: WEIGHT heap full converting '%s' (%.1f MiB per channel needed)", name, tsr_mib(e.ch_bytes));
+            }
+        }
+        it = d->lazy.emplace(key, e).first;
+    } else if (!seg.ops.empty()) {
+        // re-converting in place: the pending list may still read the old contents
+        for (uint64_t w_off : seg.w_offs) {
+            if (w_off == it->second.w_off) {
+                tsr_flush(d, seg);
+                break;
+            }
+        }
+    }
+    const size_t src_rb = ggml_row_size(type, K);
+    if (host != nullptr) {
+        tsr_store_weight_rows(d, type, fmt, N, K, it->second.w_off, host, 0, N);
+    } else {
+        const uint32_t batch = (uint32_t) std::max<size_t>(1, TSR_XFER_CHUNK / src_rb);
+        std::vector<uint8_t> rows;
+        for (uint32_t r = 0; r < N; r += batch) {
+            const uint32_t n = std::min(batch, N - r);
+            rows.resize((size_t) n * src_rb);
+            tsr_read(d, 0, src_off + (uint64_t) r * src_rb, rows.data(), rows.size());
+            tsr_store_weight_rows(d, type, fmt, N, K, it->second.w_off, rows.data(), r, r + n);
+        }
+    }
+    it->second.gen = b->gen;
+    TSR_DBG(1, "lazy   %-28s %-6s [%6u x %6u] -> %s W_OFF=0x%09" PRIx64 " (from %s+0x%09" PRIx64 ", gen %" PRIu64 ")\n",
+            name, ggml_type_name(type), N, K, fmt == TSR_FMT_Q8_0 ? "Q8_0" : "Q4_K", it->second.w_off,
+            host != nullptr ? "host" : "ch0", src_off, b->gen);
+    return { it->second.fmt, it->second.w_off };
+}
+
+static tsr_buffer_ctx * tsr_tensor_buf(tsr_device * d, const ggml_tensor * t, const char * what) {
+    ggml_backend_buffer_t gb = t->view_src ? t->view_src->buffer : t->buffer;
+    if (gb == nullptr || gb->buft != &d->buft || gb->context == nullptr) {
+        GGML_ABORT("tesseract: %s '%s' is not in a Tesseract buffer", what, t->name);
+    }
+    tsr_buffer_ctx * b = tsr_buf(gb);
+    tsr_buf_decide(b, gb);
+    return b;
+}
+
+// Where the bytes of a MUL_MAT activation (src1 or dst) live: in a LINEAR window of the IO
+// region (the device reads / writes them in place) or in a HOSTED buffer (staged).
+struct tsr_act {
+    tsr_buffer_ctx * b;
+    uint64_t rel;                 // byte offset inside the buffer
+    bool     io;                  // LINEAR
+    uint64_t  io_off() const { return b->io_off + rel; }
+    uint8_t * host()   const { return b->host + rel; }
+};
+
+static tsr_act tsr_act_loc(tsr_device * d, const ggml_tensor * t, const char * what) {
+    tsr_buffer_ctx * b = tsr_tensor_buf(d, t, what);
+    if (b->mode == tsr_bmode::PLACED) {
+        GGML_ABORT("tesseract: %s '%s' is in a weight buffer; MUL_MAT activations must be in compute buffers", what, t->name);
+    }
+    const uint64_t a = tsr_vaddr(t->data);
+    tsr_check_range(b, a, ggml_nbytes(t));
+    return { b, a - b->base, b->mode == tsr_bmode::LINEAR };
+}
+
+static tsr_wref tsr_resolve_weight(tsr_device * d, tsr_segment & seg, const ggml_tensor * src0) {
+    tsr_buffer_ctx * b = tsr_tensor_buf(d, src0, "src0");
+    const uint32_t K = (uint32_t) src0->ne[0];
+    const uint32_t N = (uint32_t) src0->ne[1];
+    const uint64_t a = tsr_vaddr(src0->data);
+    if (b->mode == tsr_bmode::LINEAR) {
+        tsr_check_range(b, a, ggml_nbytes(src0));
+        return tsr_lazy_weight(d, seg, b, b->io_off + (a - b->base), nullptr, src0->type, N, K, src0->name);
+    }
+    if (b->mode == tsr_bmode::HOSTED) {
+        tsr_check_range(b, a, ggml_nbytes(src0));
+        return tsr_lazy_weight(d, seg, b, a - b->base, b->host + (a - b->base), src0->type, N, K, src0->name);
+    }
+    tsr_tensor_rec * r = tsr_find_rec(b, a);
+    if (r == nullptr) {
+        GGML_ABORT("tesseract: weight '%s' was never initialized in its buffer", src0->name);
+    }
+    if (r->kind == tsr_kind::UNPLACED) {
+        GGML_ABORT("tesseract: weight '%s' was never uploaded", src0->name);
+    }
+    if (r->kind == tsr_kind::DEVWEIGHT) {
+        if (r->vaddr != a || r->type != src0->type || r->K != K || r->N != N) {
+            GGML_ABORT("tesseract: MUL_MAT uses a view of device weight '%s'; views of placed weights are not supported", r->name.c_str());
+        }
+        if (!r->complete) {
+            GGML_ABORT("tesseract: weight '%s' is only partially uploaded", r->name.c_str());
+        }
+        return { r->fmt, r->w_off };
+    }
+    // RAW in a weight buffer (e.g. a 1D f32 tensor used as a 1 x K matrix)
+    return tsr_lazy_weight(d, seg, b, r->raw_off + (a - r->vaddr), nullptr, src0->type, N, K, src0->name);
+}
+
+// The MUL_MAT record (SW §7.2 kind 0x10) of T tokens: x rows x_lines apart at byte x_off, y rows
+// y_lines apart at byte y_off (ch0), no addend, no ACC_DST.
+static void tsr_mm_args(uint32_t * a, uint64_t x_off, uint64_t y_off, const tsr_wref & w, uint32_t N, uint32_t K, uint32_t T,
+                        const tsr_mm_tiling & tl) {
+    namespace mm = tsr::opl::mm;
+    a[mm::X]          = tsr_dram_handle(0, x_off);
+    a[mm::X_STRIDE]   = tl.x_lines;
+    a[mm::Y]          = tsr_dram_handle(0, y_off);
+    a[mm::Y_STRIDE]   = tl.y_lines;
+    a[mm::W_OFF]      = (uint32_t) (w.w_off / TSR_BEAT_BYTES);
+    a[mm::FMT]        = w.fmt;
+    a[mm::N]          = N;
+    a[mm::K]          = K;
+    a[mm::T]          = T;
+    a[mm::ADD]        = tsr::opl::HANDLE_NONE;
+    a[mm::ADD_STRIDE] = 0;
+    a[mm::FLAGS]      = 0;
+}
+
+// A MUL_MAT whose operands the device cannot address in place: src1 or dst in host memory
+// (HOSTED buffer), or dst rows that do not start on a line (N*4 % 64 != 0 with T > 1). It runs
+// on its own (after everything pending), one single-record launch per T tile that fits the IO
+// stage (SW §9.3 step 2, as v1 ran one program per stage tile):
+//   src1 rows host -> stage (unless src1 is in a LINEAR window: LD reads it in place),
+//   LD / QACT / MVM / ST (dst rows to the stage, line-padded, or straight into a LINEAR dst),
+//   stage -> dst rows (compacted to N*4 bytes each; host memory or the LINEAR window).
+// So only one tile of the activations has to be resident in IO at a time, whatever T is.
+static void tsr_lower_staged(tsr_device * d, tsr_segment & seg, const ggml_tensor * node, const tsr_act & ax,
+                             const tsr_act & ay, const tsr_stage_plan & sp, uint32_t fmt, uint32_t N, uint32_t K,
+                             uint32_t T, const tsr_mm_tiling & tl) {
+    tsr_flush(d, seg);          // program order: what is pending may produce src1 / src0
+    const ggml_tensor * src0 = node->src[0];
+    const tsr_wref w = tsr_resolve_weight(d, seg, src0);
+    GGML_ASSERT(w.fmt == fmt && w.w_off % TSR_BEAT_BYTES == 0 && seg.ops.empty());
+
+    const bool     stage_x   = sp.stage_x, stage_y = sp.stage_y;
+    const uint64_t x_row     = (uint64_t) tl.x_lines * TSR_LINE_BYTES;   // K*4 (K % 32 == 0)
+    const uint64_t row_bytes = (uint64_t) N * 4;
+    const uint64_t y_stride  = (uint64_t) tl.y_lines * TSR_LINE_BYTES;   // line-padded row
+    const uint64_t tc_max    = sp.tc_max;
+    if (tc_max == 0) {
+        GGML_ABORT("tesseract: MUL_MAT '%s' (N=%u K=%u): one token needs %.2f MiB of IO stage, the stage has %.2f MiB",
+                   node->name, N, K, tsr_mib(sp.per_token), tsr_mib(d->stage_size));
+    }
+    const uint64_t xs = sp.x_off;
+    const uint64_t ys = sp.y_off;
+    std::vector<uint8_t> yb;
+    std::vector<uint8_t> packed;
+    uint32_t n_tiles = 0;
+    for (uint64_t t0 = 0; t0 < T; t0 += tc_max, ++n_tiles) {
+        const uint32_t tc = (uint32_t) std::min<uint64_t>(tc_max, T - t0);
+        if (stage_x) {
+            tsr_write(d, 0, xs, ax.host() + t0 * x_row, (size_t) (tc * x_row));
+        }
+        uint32_t args[tsr::opl::mm::NARGS];
+        tsr_mm_args(args, stage_x ? xs : ax.io_off() + t0 * x_row, stage_y ? ys : ay.io_off() + t0 * y_stride, w, N, K, tc, tl);
+        tsr_segment one(d->cfg.num_ch);
+        tsr_seg_add_mm(d, one, args, node->name, stage_y ? nullptr : ay.b);
+        tsr_flush(d, one);
+        if (stage_y) {
+            yb.resize((size_t) (tc * y_stride));
+            tsr_read(d, 0, ys, yb.data(), yb.size());
+            if (ay.io) {
+                packed.resize((size_t) (tc * row_bytes));
+                for (uint32_t t = 0; t < tc; ++t) {
+                    memcpy(packed.data() + t * row_bytes, yb.data() + t * y_stride, (size_t) row_bytes);
+                }
+                tsr_write(d, 0, ay.io_off() + t0 * row_bytes, packed.data(), packed.size());
+            } else {
+                for (uint32_t t = 0; t < tc; ++t) {
+                    memcpy(ay.host() + (t0 + t) * row_bytes, yb.data() + t * y_stride, (size_t) row_bytes);
+                }
+            }
+        }
+    }
+    ay.b->gen++;
+    if (tsr_stats_on()) {
+        d->st_staged_mm++;
+        d->st_staged_launches += n_tiles;
+    }
+
+    TSR_DBG(1, "MUL_MAT %-24s %-6s N=%u K=%u T=%u W_OFF=0x%09" PRIx64 " staged: src1 %s, dst %s, "
+               "%u stage tile(s) of <= %" PRIu64 " tokens, one launch each\n",
+            node->name, ggml_type_name(src0->type), N, K, T, w.w_off,
+            stage_x ? "host->stage" : "in IO", stage_y ? (ay.io ? "stage->IO (compacted)" : "stage->host") : "in IO",
+            n_tiles, tc_max);
+}
+
+static void tsr_lower_mul_mat(tsr_device * d, tsr_segment & seg, const ggml_tensor * node) {
+    const ggml_tensor * src0 = node->src[0];
+    const ggml_tensor * src1 = node->src[1];
+    if (src1->type != GGML_TYPE_F32 || node->type != GGML_TYPE_F32 || src0->ne[2] != 1 || src0->ne[3] != 1 ||
+        !ggml_is_contiguous(src0) || !ggml_is_contiguous(src1) || !ggml_is_contiguous(node)) {
+        GGML_ABORT("tesseract: MUL_MAT '%s' reached graph_compute in an unsupported form", node->name);
+    }
+    const uint32_t K = (uint32_t) src0->ne[0];
+    const uint32_t N = (uint32_t) src0->ne[1];
+    const int64_t  T64 = ggml_nrows(src1);
+    if (N == 0 || T64 == 0) {
+        return;
+    }
+    GGML_ASSERT(node->ne[0] == (int64_t) N && ggml_nrows(node) == T64);
+    if (T64 > (int64_t) UINT32_MAX) {
+        GGML_ABORT("tesseract: MUL_MAT '%s' has too many tokens", node->name);
+    }
+    const uint32_t T = (uint32_t) T64;
+    const uint32_t fmt = tsr_dev_fmt_for_type(src0->type);
+    tsr_mm_tiling tl;
+    if (!tsr_mm_plan_tiling(d->cfg, fmt, N, K, T, &tl) ||
+        !tsr::plan::mm_supported(tsr_plan_cfg(d->cfg), fmt, N, K)) {
+        GGML_ABORT("tesseract: MUL_MAT '%s' (N=%u K=%u) cannot be lowered", node->name, N, K);
+    }
+
+    const tsr_act ax = tsr_act_loc(d, src1, "src1");
+    const tsr_act ay = tsr_act_loc(d, node, "dst");
+    const uint64_t y_stride  = (uint64_t) tl.y_lines * TSR_LINE_BYTES;
+    tsr_stage_plan sp;
+    tsr_plan_stage(d->stage_off, d->stage_size, N, T, (uint64_t) tl.x_lines * TSR_LINE_BYTES, y_stride, ax.io, ay.io, &sp);
+    const bool stage_x = sp.stage_x;
+    const bool stage_y = sp.stage_y;
+    if ((ax.io && ax.io_off() % TSR_BEAT_BYTES != 0) || (ay.io && ay.io_off() % TSR_BEAT_BYTES != 0)) {
+        GGML_ABORT("tesseract: MUL_MAT '%s': src1/dst not 64-byte aligned in IO", node->name);
+    }
+    if (!stage_y) {
+        // the ST writes whole lines: T*N*4 bytes exactly (N % 16 == 0), or the single row plus
+        // its tail, which lands in the 64-byte padding of get_alloc_size
+        const uint64_t st_end = ay.io_off() + (uint64_t) T * y_stride;
+        if (st_end > ay.b->io_off + tsr_pad(ay.b->size, TSR_TENSOR_ALIGN) ||
+            st_end > ay.io_off() + tsr_pad(ggml_nbytes(node), TSR_TENSOR_ALIGN)) {
+            GGML_ABORT("tesseract: MUL_MAT '%s': output store would exceed the tensor allocation", node->name);
+        }
+    }
+    if (stage_x || stage_y) {
+        tsr_lower_staged(d, seg, node, ax, ay, sp, fmt, N, K, T, tl);
+        return;
+    }
+
+    const tsr_wref w = tsr_resolve_weight(d, seg, src0);
+    GGML_ASSERT(w.fmt == fmt && w.w_off % TSR_BEAT_BYTES == 0);
+
+    uint32_t args[tsr::opl::mm::NARGS];
+    tsr_mm_args(args, ax.io_off(), ay.io_off(), w, N, K, T, tl);
+    tsr_seg_add_mm(d, seg, args, node->name, ay.b);
+
+    TSR_DBG(1, "MUL_MAT %-24s %-6s N=%u K=%u T=%u W_OFF=0x%09" PRIx64 " x=ch0+0x%09" PRIx64 " y=ch0+0x%09" PRIx64 "\n",
+            node->name, ggml_type_name(src0->type), N, K, T, w.w_off, ax.io_off(), ay.io_off());
+}
+
+// ---------------------------------------------------------------------------
 // ggml backend interface
 // ---------------------------------------------------------------------------
 
@@ -1005,6 +1489,31 @@ static const char * tsr_backend_get_name(ggml_backend_t backend) {
 
 static void tsr_backend_free(ggml_backend_t backend) {
     tsr_device * d = ((tsr_backend_ctx *) backend->context)->dev;
+    if (tsr_stats_on() && !d->st_perf0.empty()) {
+        std::lock_guard<std::mutex> lock(d->mtx);
+        std::vector<uint64_t> p = tsr_perf_all(d);
+        for (size_t i = 0; i < p.size(); i++) {
+            p[i] -= d->st_perf0[i];
+        }
+        const uint64_t passes = d->st_passes + (d->st_pass_splits.empty() ? 0 : 1);
+        const uint64_t launches = d->odev.launches;
+        const tsr_opl_cache::stats & cs = d->odev.cache().get_stats();
+        fprintf(stderr, "[tesseract] stats: graph_compute %" PRIu64 " calls, %.3f s; launches %" PRIu64 " (%.3f s wall), "
+                "%.2f per scheduler pass (%" PRIu64 " passes, ~tokens), %.2f op records per launch\n",
+                d->st_graphs, d->st_compute_ns * 1e-9, launches, d->odev.launch_ns * 1e-9,
+                passes ? (double) launches / passes : 0.0, passes, launches ? (double) d->odev.ops / launches : 0.0);
+        fprintf(stderr, "[tesseract] stats: MUL_MAT nodes %" PRIu64 ", MUL_MAT records %" PRIu64 ", JOIN records %" PRIu64
+                ", staged chunks %" PRIu64 " (%" PRIu64 " launches); OPL cache %" PRIu64 " hits, %" PRIu64 " misses, %" PRIu64
+                " evictions, %zu lists / %.2f MiB resident\n",
+                d->st_mm, d->st_mm_records, d->st_joins, d->st_staged_mm, d->st_staged_launches, cs.hits, cs.misses,
+                cs.evictions, d->odev.cache().entries(), tsr_mib(d->odev.cache().used_bytes()));
+        fprintf(stderr, "[tesseract] stats: PERF_CYCLES %" PRIu64 ", MVM %" PRIu64 ", RETIRED %" PRIu64 "\n",
+                p[TSR_PERF_CYCLES], p[TSR_PERF_MVM_CYCLES], p[TSR_PERF_RETIRED]);
+        const size_t nch = (p.size() - 5) / 2;
+        for (size_t c = 0; c < nch; c++) {
+            fprintf(stderr, "[tesseract] stats: ch%zu rd_beats %" PRIu64 ", wait %" PRIu64 "\n", c, p[5 + c], p[5 + nch + c]);
+        }
+    }
     if (tsr_stats_on()) {
         std::lock_guard<std::mutex> lock(d->mtx);
         fprintf(stderr, "[tesseract] stats: set_tensor %.3f s for %.3f GB, of which transport writes %.3f s for %.3f GB (%.2f GB/s)\n",
@@ -1017,9 +1526,12 @@ static void tsr_backend_free(ggml_backend_t backend) {
     delete backend;
 }
 
-// Only no-op nodes are ever assigned to this backend (supports_op), so there is nothing to run.
+// SW §9.3 M6: the split's MUL_MATs as one op list (plus staged ones on their own), one launch.
 static enum ggml_status tsr_backend_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
-    GGML_UNUSED(backend);
+    tsr_device * d = ((tsr_backend_ctx *) backend->context)->dev;
+    std::lock_guard<std::mutex> lock(d->mtx);
+    const uint64_t t_start = tsr_stats_on() ? tsr_now_ns() : 0;
+    tsr_segment seg(d->cfg.num_ch);
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
         if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
@@ -1032,11 +1544,29 @@ static enum ggml_status tsr_backend_graph_compute(ggml_backend_t backend, ggml_c
             case GGML_OP_PERMUTE:
             case GGML_OP_TRANSPOSE:
                 continue;
+            case GGML_OP_MUL_MAT:
+                if (!ggml_is_empty(node)) {
+                    tsr_lower_mul_mat(d, seg, node);
+                    if (tsr_stats_on()) {
+                        d->st_mm++;
+                    }
+                }
+                continue;
             default:
-                GGML_ABORT("tesseract: op %s ('%s') reached graph_compute, but this build executes no op on the device "
-                           "(the v1 command-buffer path is deleted; MUL_MAT returns with the op-list path)",
-                           ggml_op_desc(node), node->name);
+                GGML_ABORT("tesseract: op %s ('%s') reached graph_compute but is not supported", ggml_op_desc(node), node->name);
         }
+    }
+    tsr_flush(d, seg);
+    if (tsr_stats_on()) {
+        d->st_graphs++;
+        d->st_compute_ns += tsr_now_ns() - t_start;
+        // a scheduler pass (one llama_decode, ~ one token) calls each split once: a split seen
+        // again starts the next pass
+        if (d->st_pass_splits.count(cgraph) != 0) {
+            d->st_passes++;
+            d->st_pass_splits.clear();
+        }
+        d->st_pass_splits.insert(cgraph);
     }
     return GGML_STATUS_SUCCESS;
 }
@@ -1123,11 +1653,6 @@ static ggml_backend_t tsr_dev_init_backend(ggml_backend_dev_t dev, const char * 
             return nullptr;
         }
     }
-    static std::once_flag warned;
-    std::call_once(warned, [] {
-        GGML_LOG_WARN("tesseract: this build runs no op on the device (v1 MUL_MAT execution deleted, the op-list path "
-                      "is not implemented yet): every compute op runs on another backend; weights still upload\n");
-    });
     return new ggml_backend {
         /* .guid    = */ tsr_backend_guid(),
         /* .iface   = */ tsr_backend_iface,
@@ -1140,13 +1665,19 @@ static ggml_backend_buffer_type_t tsr_dev_get_buffer_type(ggml_backend_dev_t dev
     return &((tsr_device *) dev->context)->buft;
 }
 
-// No compute op is supported until the op-list path (P3.2): MUL_MAT's v1 execution is deleted (X0).
-// The no-op ops (leaves and views) stay "supported" as on every GPU backend: they cost nothing in
-// graph_compute, test-backend-ops asks for every tensor of a test graph, and the scheduler aborts
-// on a leaf or view of a Tesseract-resident tensor that no backend claims. Under llama.cpp this
-// keeps the weights on the CPU (its placement probe asks for the weight's MUL_MAT).
+static bool tsr_is_our_buffer(const tsr_device * d, const ggml_backend_buffer * buf) {
+    return buf != nullptr && buf->buft == &d->buft;
+}
+
+// spec "supports_op (v1)", unchanged in M6 (SW §9.3, so the splits are v1's): MUL_MAT only, with a
+// 2D weight src0 that the device can hold (Q8_0 / Q4_K natively, anything else with to_float
+// converted to Q8_0) and F32 activations; the shape must also be one the firmware can plan
+// (plan.hpp mm_supported on the device's CFG values, V2-SW-20: the host rejects exactly what the
+// `graph` kernel would refuse). The no-op ops (leaves and views) are "supported" as on every GPU
+// backend: they cost nothing in graph_compute, test-backend-ops asks for every tensor of a test
+// graph, and the scheduler aborts on a view of a Tesseract-resident tensor that no backend claims.
 static bool tsr_dev_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
-    GGML_UNUSED(dev);
+    tsr_device * d = (tsr_device *) dev->context;
     switch (op->op) {
         case GGML_OP_NONE:
         case GGML_OP_RESHAPE:
@@ -1154,9 +1685,107 @@ static bool tsr_dev_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) 
         case GGML_OP_PERMUTE:
         case GGML_OP_TRANSPOSE:
             return true;
+        case GGML_OP_MUL_MAT:
+            break;
         default:
             return false;
     }
+    const ggml_tensor * src0 = op->src[0];
+    const ggml_tensor * src1 = op->src[1];
+    if (src0 == nullptr || src1 == nullptr) {
+        return false;
+    }
+    if (op->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_F32) {
+        return false;
+    }
+    if (src0->ne[2] != 1 || src0->ne[3] != 1) {
+        return false;
+    }
+    if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(src1) || !ggml_is_contiguous(op)) {
+        return false;
+    }
+    if (!tsr_type_loadable(src0->type)) {
+        return false;
+    }
+    tsr_config cfg;
+    {
+        std::lock_guard<std::mutex> lock(d->mtx);
+        if (!tsr_dev_open_locked(d)) {
+            return false;
+        }
+        cfg = d->cfg;
+    }
+    const uint32_t fmt = tsr_dev_fmt_for_type(src0->type);
+    if (!tsr_mm_shape_ok(cfg, fmt, (uint64_t) src0->ne[1], (uint64_t) src0->ne[0])) {
+        return false;                         // K > K_MAX, K % 32 != 0, or one token exceeds SPM
+    }
+    if (src0->ne[1] > (int64_t) UINT32_MAX ||
+        !tsr::plan::mm_supported(tsr_plan_cfg(cfg), fmt, (uint32_t) src0->ne[1], (uint32_t) src0->ne[0])) {
+        return false;                         // the firmware cannot plan one token in its ring budget
+    }
+    if (ggml_nrows(src1) > (int64_t) UINT32_MAX) {
+        return false;
+    }
+    // No limit on the token count: the size of src1 / dst grows with T, but the activations are
+    // never all resident at once. Compute buffers that do not fit the IO region live in host
+    // memory and graph_compute stages them through IO in T tiles (spec v1 lowering 제약). A
+    // T-dependent rejection here would also misplace weights: llama.cpp decides where a weight
+    // lives with a fixed 512-token probe (weight_buft_supported), so the output head of any
+    // large-vocabulary model would silently stay on the CPU, and a resident weight rejected at
+    // run time is copied back from the device for the CPU on every graph.
+    //
+    // src0 must be a weight. It is judged by the tensor it views (if a view):
+    //   - in a Tesseract buffer that is not a compute buffer: WEIGHTS (device format) or ANY
+    //     (raw bytes, converted lazily; includes llama.cpp's size-0 placement-probe buffer);
+    //   - unallocated: only a leaf that is not a graph input. test-backend-ops asks before it
+    //     allocates; in llama.cpp scheduling every weight is allocated, so an unallocated src0
+    //     there is a graph input or an activation (e.g. attn_inp_k_rot, the Hadamard rotation
+    //     that a quantized KV cache applies to Q) and stays on the CPU.
+    const ggml_tensor * base0 = src0->view_src ? src0->view_src : src0;
+    if (strncmp(base0->name, "attn_inp_k_rot", 14) == 0 || strncmp(base0->name, "attn_inp_v_rot", 14) == 0) {
+        // SW §8 R4: a graph input, not a weight (rejected either way); device runs and their
+        // baselines turn llama.cpp's Hadamard KV rotation off. (In M6 the scheduler assigns these
+        // MUL_MATs to the CPU by their input's buffer without asking, so this fires only when a
+        // caller offers one.)
+        static std::once_flag warned;
+        std::call_once(warned, [] {
+            GGML_LOG_WARN("tesseract: the graph rotates Q/K/V with a Hadamard matrix (attn_inp_k_rot / attn_inp_v_rot, "
+                          "quantized KV cache): those MUL_MATs stay on the CPU; set LLAMA_ATTN_ROT_DISABLE=1 for "
+                          "device runs and their baselines (docs/v2/06-software-verification.md §8 R4)\n");
+        });
+        return false;
+    }
+    const ggml_backend_buffer * buf0 = base0->buffer;
+    if (buf0 == nullptr) {
+        if (base0->op != GGML_OP_NONE || (base0->flags & GGML_TENSOR_FLAG_INPUT) != 0) {
+            return false;
+        }
+    } else {
+        if (!tsr_is_our_buffer(d, buf0) || buf0->usage == GGML_BACKEND_BUFFER_USAGE_COMPUTE) {
+            return false;
+        }
+        if (buf0->usage == GGML_BACKEND_BUFFER_USAGE_WEIGHTS && src0->view_src != nullptr) {
+            const ggml_tensor * v = src0->view_src;
+            if (src0->view_offs != 0 || v->type != src0->type || v->ne[0] != src0->ne[0] || v->ne[1] != src0->ne[1] ||
+                v->ne[2] != 1 || v->ne[3] != 1) {
+                return false;                 // a slice of a repacked weight cannot be addressed
+            }
+        }
+    }
+    // src1: activations; must be 64-byte aligned on the device (LD is line/beat granular)
+    const ggml_backend_buffer * buf1 = src1->view_src ? src1->view_src->buffer : src1->buffer;
+    if (buf1 != nullptr && tsr_is_our_buffer(d, buf1)) {
+        if (buf1->usage == GGML_BACKEND_BUFFER_USAGE_WEIGHTS) {
+            return false;
+        }
+        if (src1->data != nullptr && tsr_vaddr(src1->data) % TSR_TENSOR_ALIGN != 0) {
+            return false;
+        }
+    }
+    if (src1->view_src != nullptr && src1->view_offs % TSR_TENSOR_ALIGN != 0) {
+        return false;
+    }
+    return true;
 }
 
 static bool tsr_dev_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {

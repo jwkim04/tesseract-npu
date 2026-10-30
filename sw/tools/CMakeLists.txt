@@ -1,55 +1,140 @@
-# sw/tools — tools (spec 검증 전략):
-#   klcheck           model-level KL check vs the ggml CPU backend (spec 검증 전략, 모델 단위 KL 기준;
-#                     docs/klcheck.md). Links llama, so it is only built when the llama targets exist.
+# sw/tools — tools (docs/v2/06-software-verification.md "SW" §9.5, §10.2):
+#   tsr-selftest      card bring-up checklist over any transport v2 (tsr_selftest.cpp; was tsr_xrt_selftest):
+#                     identity, memory, boot, PING latency / rate, the `selftest` kernel with the in-process
+#                     shadow simulator, trace v2 replays through the device, DMI smoke, log and status
+#   tsr-log           decode raw device log words with a firmware ELF (tsr_log.cpp, DB §6.1)
+#   tsr_devrun        launch targets (a transport or the shadow simulator) and trace v2 replays through
+#                     them (tsr_devrun.h): tsr-selftest and tsr-trace-replay --device
+#   tsr-trace-gen / -replay / -conv   trace v2 tools (trace_gen.cmake, trace_tools.cmake; P1.10)
+#   klcheck           model-level KL check vs the ggml CPU backend (docs/klcheck.md). Links llama, so it is
+#                     only built when the llama targets exist
 #   tsr-numcheck      per-node numeric dump (docs/numcheck.md); links llama as well
-#   tsr_xrt_selftest  card bring-up checklist over any transport (docs/xrt-host.md)
 #   tsr_bw            M0 bandwidth tool (XRT builds, once tsr_bw.cpp exists)
-# X0 deleted the v1 trace tools tsr-trace-gen / tsr-trace-replay (cmd.bin programs), their
-# tools_trace_gen_replay ctest and the tsr-traces target; tsr-trace-gen / -replay / -conv return
-# for trace v2 in P1.10 (docs/v2/06-software-verification.md §5, §9.5), the generator from
-# v1-m4:sw/tools/tsr_trace_gen.c and the converter's v1 reader from v1-m4:sw/sim/tsr_trace.c
-# (EX §12 "X0 as done"). The v1 binaries are in build/v1 (traces/v1_tools.sh).
+# klcheck and numcheck run with the v2 settings (V2-SW-22, SW §10.4): FA on, q8_0 / q8_0 KV,
+# LLAMA_ATTN_ROT_DISABLE=1, offload_kqv false in M6 (--phase m6, the default) and true in M7.
 
 if (NOT DEFINED TSR_FP_FLAGS)
     set(TSR_FP_FLAGS -ffp-contract=off -fno-fast-math)
 endif()
+find_program(TSR_BASH_TOOLS bash)
+
+# The trace v2 library is part of tsr_sim only with sw/sim/trace.cmake (TSR_SIM_SKIP_SNIPPETS may
+# leave it out); the tools below that read traces or run the shadow need it.
+set(_tsr_have_trace FALSE)
+if (EXISTS ${TESSERACT_ROOT}/sw/sim/trace.cmake AND NOT "trace" IN_LIST TSR_SIM_SKIP_SNIPPETS)
+    set(_tsr_have_trace TRUE)
+endif()
+
+# ---------------------------------------------------------------------------
+# tsr_devrun (P3.3): launch targets and trace replays through a transport (tsr_devrun.h). C11 with
+# one C++ file (the inner simulator of the sim / mock kinds is reached through tsr_kdev.h).
+# Internal headers: sw/sim/tsr_sim_int.h (the checker classes: trace fit test, the replay
+# kernel's SPM buffer) and sw/ctrl/ref/fw_sim_host.hpp (the shadow's host loader).
+# ---------------------------------------------------------------------------
+if (_tsr_have_trace)
+    add_library(tsr_devrun STATIC tsr_devrun.c tsr_devrun_cfg.cpp)
+    set_target_properties(tsr_devrun PROPERTIES
+        C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_compile_options(tsr_devrun PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra -Wshadow
+        $<$<COMPILE_LANGUAGE:C>:-Wstrict-prototypes -Wmissing-prototypes>)
+    target_include_directories(tsr_devrun PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+        PRIVATE ${TESSERACT_ROOT}/sw/sim ${TESSERACT_ROOT}/sw/ctrl/ref)
+    target_link_libraries(tsr_devrun PUBLIC tsr_transport tsr_sim tsr_ref)
+endif()
 
 # P1.10 trace v2 tools, each snippet owned by its package: trace_tools.cmake (tsr-trace-replay,
-# tsr-trace-conv) and trace_gen.cmake (tsr-trace-gen v2). Both link the trace v2 library, which is
-# part of tsr_sim only with sw/sim/trace.cmake: they are left out when that snippet is absent or
-# skipped (TSR_SIM_SKIP_SNIPPETS contains "trace"), and each one by its own name in that list.
-if (EXISTS ${TESSERACT_ROOT}/sw/sim/trace.cmake AND NOT "trace" IN_LIST TSR_SIM_SKIP_SNIPPETS)
+# tsr-trace-conv) and trace_gen.cmake (tsr-trace-gen v2). Both link the trace v2 library and are left
+# out without it, and each one by its own name in TSR_SIM_SKIP_SNIPPETS.
+if (_tsr_have_trace)
     foreach(_snip trace_tools trace_gen)
         if (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${_snip}.cmake AND NOT _snip IN_LIST TSR_SIM_SKIP_SNIPPETS)
             include(${CMAKE_CURRENT_SOURCE_DIR}/${_snip}.cmake)
         endif()
     endforeach()
 endif()
+# P3.3: tsr-trace-replay --device KIND (replays through a transport, tsr_devrun.h).
+if (TARGET tsr-trace-replay AND TARGET tsr_devrun)
+    target_link_libraries(tsr-trace-replay PRIVATE tsr_devrun)
+    set_target_properties(tsr-trace-replay PROPERTIES LINKER_LANGUAGE CXX)
+endif()
 
-# tsr_xrt_selftest (docs/xrt-host.md): card bring-up checklist on any transport (xrt on the card;
-# mock here, without hardware). Built in every configuration so the mock checks always run.
-# X0 reduced it to identity and memory (no host-written programs, D15); it becomes tsr-selftest
-# with the `selftest` kernel in P3.3.
-add_executable(tsr_xrt_selftest tsr_xrt_selftest.cpp)
-set_target_properties(tsr_xrt_selftest PROPERTIES
+# ---------------------------------------------------------------------------
+# tsr-log (SW §9.5, DB §6.1): the transport's decoder (sw/transport/tsr_logdec.h) over saved words.
+# ---------------------------------------------------------------------------
+add_executable(tsr-log tsr_log.cpp)
+set_target_properties(tsr-log PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-target_compile_options(tsr_xrt_selftest PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra -Wshadow)
-target_link_libraries(tsr_xrt_selftest PRIVATE tsr_transport)
-# The checklist on the adapter register model: 4 channels T_MAX 1 with DMA rules that force the
-# bounce / read-modify-write path; T_MAX 8 (the tsr_u200_k4 configuration) with 64-byte DMA
-# alignment; 1 channel (tsr_u200_k1). The trace replays (traces/m2, traces/gen), the run-fault
-# test (tools_xrt_selftest_mock_faults) and the M3 replays (tools_xrt_selftest_mock_m3, _m3_tmax8)
-# are removed in X0 (SW §10.2): the first two return as tools_selftest_mock* in P3.3, the M3 replays
-# as tools_selftest_mock_traces over the regenerated v2 m3 set.
-add_test(NAME tools_xrt_selftest_mock COMMAND tsr_xrt_selftest --device mock --mem-mib 8)
-set_tests_properties(tools_xrt_selftest_mock PROPERTIES
-    ENVIRONMENT "TSR_MOCK_DMA_ALIGN=4096;TSR_MOCK_DMA_CHUNK_KIB=1024;TSR_SIM_THREADS=4" TIMEOUT 600)
-add_test(NAME tools_xrt_selftest_mock_tmax8 COMMAND tsr_xrt_selftest --device mock --mem-mib 8)
-set_tests_properties(tools_xrt_selftest_mock_tmax8 PROPERTIES
-    ENVIRONMENT "TSR_MOCK_TMAX=8;TSR_MOCK_DMA_ALIGN=64;TSR_SIM_THREADS=4" TIMEOUT 600)
-add_test(NAME tools_xrt_selftest_mock_1ch COMMAND tsr_xrt_selftest --device mock --mem-mib 0)
-set_tests_properties(tools_xrt_selftest_mock_1ch PROPERTIES ENVIRONMENT "TSR_MOCK_NUM_CH=1;TSR_SIM_THREADS=4")
+target_compile_options(tsr-log PRIVATE -Wall -Wextra -Wshadow)
+target_link_libraries(tsr-log PRIVATE tsr_transport tsr_elf tsr_fw_paths)
+
+# ---------------------------------------------------------------------------
+# tsr-selftest (SW §9.5, §7.6, V2-SW-28): the card checklist; mock / sim here, xrt on the card.
+# ---------------------------------------------------------------------------
+if (TARGET tsr_devrun)
+    add_executable(tsr-selftest tsr_selftest.cpp)
+    set_target_properties(tsr-selftest PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    target_compile_options(tsr-selftest PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra -Wshadow)
+    target_include_directories(tsr-selftest PRIVATE ${TESSERACT_ROOT}/sw/ctrl/ref)   # selftest_abi.hpp
+    target_link_libraries(tsr-selftest PRIVATE tsr_devrun tsr_transport tsr_elf tsr_sim tsr_ref)
+
+    # The checklist on the adapter register model (SW §10.2: was tools_xrt_selftest_mock*), each with
+    # the shadow, the DMI smoke and the log written for tsr-log: 4 channels T_MAX 1 with DMA rules that
+    # force the bounce / read-modify-write path; T_MAX 8 (the tsr_u200_k4 configuration) with 64-byte
+    # DMA alignment; 1 channel (tsr_u200_k1).
+    set(_st_common --device mock --image ${TSR_FW_ELF} --debug --rate-n 200)
+    add_test(NAME tools_selftest_mock
+             COMMAND tsr-selftest ${_st_common} --mem-mib 8 --log-out ${CMAKE_CURRENT_BINARY_DIR}/selftest_mock.log)
+    set_tests_properties(tools_selftest_mock PROPERTIES
+        ENVIRONMENT "TSR_MOCK_DMA_ALIGN=4096;TSR_MOCK_DMA_CHUNK_KIB=1024;TSR_SIM_THREADS=4" TIMEOUT 600)
+    add_test(NAME tools_selftest_mock_tmax8 COMMAND tsr-selftest ${_st_common} --mem-mib 8)
+    set_tests_properties(tools_selftest_mock_tmax8 PROPERTIES
+        ENVIRONMENT "TSR_MOCK_TMAX=8;TSR_MOCK_DMA_ALIGN=64;TSR_SIM_THREADS=4" TIMEOUT 600)
+    add_test(NAME tools_selftest_mock_1ch COMMAND tsr-selftest ${_st_common} --mem-mib 0)
+    set_tests_properties(tools_selftest_mock_1ch PROPERTIES ENVIRONMENT "TSR_MOCK_NUM_CH=1;TSR_SIM_THREADS=4" TIMEOUT 600)
+    if (TSR_BASH_TOOLS)
+        # The selftest must fail on what the protocol reports (test_selftest_faults.sh): an AXI error
+        # during a launch (PLAT_ERR), ADAPTER_STATUS left by an earlier process, a TCM write fault
+        # (VERIFY), a hung unit (recovery ladder, "card reset needed"); and pass without them.
+        add_test(NAME tools_selftest_mock_faults
+                 COMMAND ${TSR_BASH_TOOLS} ${CMAKE_CURRENT_SOURCE_DIR}/test_selftest_faults.sh
+                         $<TARGET_FILE:tsr-selftest> ${TSR_FW_ELF} ${CMAKE_CURRENT_BINARY_DIR}/selftest_faults)
+        set_tests_properties(tools_selftest_mock_faults PROPERTIES TIMEOUT 600 ENVIRONMENT "TSR_SIM_THREADS=2")
+        # Replays of the v2 trace sets through mock with the shadow (test_selftest_traces.sh; replaces
+        # tools_xrt_selftest_mock_m3*): every trace of traces/m3, vu, at, ctrl and model-v1conv (SERIAL)
+        # that fits the device, at T_MAX 1 (the U200 v1 core) and T_MAX 8 (k4). The sets are not in
+        # git (traces/*/regen.sh): skipped (77) when none is on disk. 690 traces in about 2 s.
+        add_test(NAME tools_selftest_mock_traces
+                 COMMAND ${TSR_BASH_TOOLS} ${CMAKE_CURRENT_SOURCE_DIR}/test_selftest_traces.sh
+                         $<TARGET_FILE:tsr-selftest> ${TSR_FW_ELF} ${TESSERACT_ROOT}/traces)
+        set_tests_properties(tools_selftest_mock_traces PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900
+                             ENVIRONMENT "TSR_SIM_THREADS=4")
+        add_test(NAME tools_selftest_mock_traces_tmax8
+                 COMMAND ${TSR_BASH_TOOLS} ${CMAKE_CURRENT_SOURCE_DIR}/test_selftest_traces.sh
+                         $<TARGET_FILE:tsr-selftest> ${TSR_FW_ELF} ${TESSERACT_ROOT}/traces)
+        set_tests_properties(tools_selftest_mock_traces_tmax8 PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900
+                             ENVIRONMENT "TSR_MOCK_TMAX=8;TSR_MOCK_DMA_ALIGN=64;TSR_SIM_THREADS=4")
+        # tsr-log end to end: the selftest kernel's id 9 on sim, its log words saved and decoded with
+        # the ELF; then the decoder's own checks (every record type, malformed records, resync).
+        add_test(NAME tools_log_selftest
+                 COMMAND ${TSR_BASH_TOOLS} ${CMAKE_CURRENT_SOURCE_DIR}/test_log.sh
+                         $<TARGET_FILE:tsr-log> $<TARGET_FILE:tsr-selftest> ${TSR_FW_ELF} ${CMAKE_CURRENT_BINARY_DIR}/log_test)
+        set_tests_properties(tools_log_selftest PROPERTIES TIMEOUT 300 ENVIRONMENT "TSR_SIM_THREADS=2")
+        # tsr-trace-replay --device: a small generated set (m3, vu, at, ctrl; errors on) through sim with
+        # the shadow and through mock; a corrupted expect byte must fail; kind launch traces captured on
+        # sim (TSR_TRACE) while tsr-selftest runs, replayed as full launches through mock.
+        if (TARGET tsr-trace-gen AND TARGET tsr-trace-replay)
+            add_test(NAME tools_trace_replay_device
+                     COMMAND ${TSR_BASH_TOOLS} ${CMAKE_CURRENT_SOURCE_DIR}/test_trace_replay_device.sh
+                             $<TARGET_FILE:tsr-trace-gen> $<TARGET_FILE:tsr-trace-replay> ${TSR_FW_ELF}
+                             ${CMAKE_CURRENT_BINARY_DIR}/trace_replay_device $<TARGET_FILE:tsr-selftest>)
+            set_tests_properties(tools_trace_replay_device PROPERTIES TIMEOUT 600 ENVIRONMENT "TSR_SIM_THREADS=2")
+        endif()
+    endif()
+endif()
 
 # tsr_bw: M0 host <-> card and kernel bandwidth tool (XRT only; the source is added by the M0
 # work, so the target exists only once the file does).
@@ -79,12 +164,28 @@ function(tsr_add_klcheck)
     if (TARGET ggml-base)
         target_link_libraries(klcheck PRIVATE ggml-base)          # gguf_*, ggml_get_type_traits
     endif()
-    # No model needed: file format, resume, the 1-ulp perturbation and the KL arithmetic.
+    # No model needed: file format (v2 header with the settings, v1 files still read), resume, the
+    # 1-ulp perturbation and the KL arithmetic.
     add_test(NAME tools_klcheck_selftest
              COMMAND klcheck selftest ${CMAKE_BINARY_DIR}/sw/tools/klcheck_selftest)
-    # tools_klcheck_qwen05b (the criterion on Qwen2.5-0.5B Q8_0, device = sim) is removed in X0:
-    # no op runs on the device until the op-list path, so its "device" run would be a CPU run. It
-    # returns with the v2 settings (FA on, q8_0 KV, rotation off) at P3.4 (SW §10.2, §10.4).
+    # The criterion on Qwen2.5-0.5B Q8_0 with the M6 settings (SW §10.4: FA on, q8_0 KV on the host,
+    # rotation off; the MUL_MATs on the device through the graph kernel): device (sim) vs CPU vs the
+    # 1-ulp floor, 4 built-in prompts x 32 tokens, plus the embd-path identity check. ~25 s. Registered
+    # only if the model is present (models/ is not in git).
+    set(_tsr_model ${TESSERACT_ROOT}/models/qwen2.5-0.5b-instruct-q8_0.gguf)
+    if (EXISTS ${_tsr_model})
+        add_test(NAME tools_klcheck_qwen05b
+                 COMMAND klcheck all -m ${_tsr_model} --device sim --phase m6 --n-prompts 4 -n 32)
+        set_tests_properties(tools_klcheck_qwen05b PROPERTIES TIMEOUT 900 LABELS model ENVIRONMENT "TSR_SIM_THREADS=4")
+        # The M6 gate's identity check (SW §10.4 item 2) across two transports: generate on sim,
+        # replay the tokens on mock, every logits row bit-identical (test_klcheck_identity.sh, ~10 s).
+        if (TSR_BASH_TOOLS)
+            add_test(NAME tools_klcheck_identity_qwen05b
+                     COMMAND ${TSR_BASH_TOOLS} ${TESSERACT_ROOT}/sw/tools/test_klcheck_identity.sh $<TARGET_FILE:klcheck>
+                             ${_tsr_model} ${CMAKE_BINARY_DIR}/sw/tools/klcheck_identity)
+            set_tests_properties(tools_klcheck_identity_qwen05b PROPERTIES TIMEOUT 900 LABELS model ENVIRONMENT "TSR_SIM_THREADS=4")
+        endif()
+    endif()
 endfunction()
 cmake_language(DEFER DIRECTORY ${TESSERACT_ROOT} CALL tsr_add_klcheck)
 
@@ -108,9 +209,16 @@ function(tsr_add_numcheck)
     endif()
     # No model: gather of views / F16 / BF16 / Q8_0 / I32 against ggml's CPU CONT, name and option parsing.
     add_test(NAME tools_numcheck_dump_selftest COMMAND tsr-numcheck selftest)
-    # tools_numcheck_dump_qwen05b (Qwen2.5-0.5B Q8_0: cpu, floor, dev (sim) runs and a selfcheck that
-    # requires the weight MUL_MATs on Tesseract) is removed in X0 until the op-list path; it returns
-    # with the v2 settings at P3.4 (SW §10.2).
+    # Qwen2.5-0.5B Q8_0 with the M6 settings: cpu, floor, dev (sim), cpu-tok and dev-noobs runs, then
+    # selfcheck (identical node lists, the same settings in every run, observation invariance, embd ==
+    # token path, weight MUL_MATs on Tesseract). On v2 the per-node observation makes every observed
+    # node its own launch (V2-SW-27). ~10 s.
+    set(_tsr_model ${TESSERACT_ROOT}/models/qwen2.5-0.5b-instruct-q8_0.gguf)
+    if (EXISTS ${_tsr_model})
+        add_test(NAME tools_numcheck_dump_qwen05b
+                 COMMAND tsr-numcheck all -m ${_tsr_model} -T 32 --phase m6 --checks full)
+        set_tests_properties(tools_numcheck_dump_qwen05b PROPERTIES TIMEOUT 600 LABELS model ENVIRONMENT TSR_SIM_THREADS=4)
+    endif()
 endfunction()
 cmake_language(DEFER DIRECTORY ${TESSERACT_ROOT} CALL tsr_add_numcheck)
 

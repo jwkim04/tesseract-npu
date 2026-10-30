@@ -1,17 +1,17 @@
-# sw/transport — tsr_transport: host <-> device transport (spec "ggml 백엔드 통합", 전송 계층;
-# docs/xrt-host.md).
+# sw/transport — tsr_transport v2: host <-> device transport (docs/v2/01-execution-model.md "EX" §10;
+# docs/v2/06-software-verification.md "SW" §9.1-§9.2; docs/v2/05-debug.md "DB" §4.1, §7.3, §9.2).
 #
-#   tsr_transport   static, PIC (linked into libggml-tesseract.so): dispatcher, the "sim" transport
-#                   (the ISA simulator in-process), the protocol layer over a kdev (tsr_kdev.cpp)
-#                   with the "mock" kdev (adapter register model around the simulator), the
-#                   "vkernel" kdev (client of the Verilated kernel server; v1's server in
-#                   tb/platform/vkernel is deleted, the two-clock v2 server is P5.3) and, with
-#                   -DTSR_WITH_XRT=ON, the "xrt" kdev (Alveo through XRT).
-#                   X0: open, configuration, CSR reads and transfers; the v2 launch API arrives with P3.1.
-#                   Until P3.1 / Y5, TSR_DEVICE=xrt has no usable xclbin: v1 xclbins are refused (v1
-#                   arguments), and the ap_ctrl_none kernels this tree packages are refused because
-#                   the kdev still opens them through xrt::kernel (xrt::ip is P3.1). The card path
-#                   meanwhile is build/v1 (README "Run a model on the card (v1)").
+#   tsr_transport   static, PIC (linked into libggml-tesseract.so, tsr_rt, the tools): the C API
+#                   (tsr_transport.h), one protocol layer for every kind (tsr_kdev.cpp: open, bind,
+#                   boot with VERIFY and warm restart, launch, wait with the debug-aware timeout and
+#                   DB's recovery ladder, TRAP handling, cancel, stop, soft reset, log), firmware
+#                   images (tsr_image.cpp: segments, CRC, .note.tsr, symbols and DWARF lines), the log
+#                   decoder (tsr_logdec.cpp), and the kdevs: "sim" (the simulator in-process behind the
+#                   core CSR port, tsr_kdev_sim.cpp), "mock" (the sim kdev in the ap_ctrl_none adapter
+#                   model with fault injection, tsr_kdev_mock.cpp), "vkernel" (client of the Verilated
+#                   kernel server; the two-clock v2 server is P5.3, until then the open says so) and,
+#                   with -DTSR_WITH_XRT=ON, "xrt" (xrt::ip with exclusive access + one device-only buffer
+#                   per channel, tsr_transport_xrt.cpp; on the card from P6).
 #
 # XRT: -DTSR_WITH_XRT=ON -DTSR_XRT_ROOT=<dir with include/ and lib/> (default /opt/xilinx/xrt).
 # Without an installed XRT, the 2.18.179 deb can be unpacked into build/xrt-local (docs/xrt-host.md
@@ -24,10 +24,12 @@ endif()
 
 add_library(tsr_transport STATIC
     tsr_transport.c
-    tsr_transport_sim.c
     tsr_kdev.cpp
+    tsr_kdev_sim.cpp
     tsr_kdev_mock.cpp
-    tsr_kdev_vkernel.cpp)
+    tsr_kdev_vkernel.cpp
+    tsr_image.cpp
+    tsr_logdec.cpp)
 set_target_properties(tsr_transport PROPERTIES
     C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
@@ -35,8 +37,12 @@ set_target_properties(tsr_transport PROPERTIES
 target_compile_options(tsr_transport PRIVATE ${TSR_FP_FLAGS}
     $<$<COMPILE_LANGUAGE:C>:-Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes>
     $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wshadow>)
-target_include_directories(tsr_transport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(tsr_transport PUBLIC tsr_sim tsr_ref)
+target_include_directories(tsr_transport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+    PRIVATE ${TESSERACT_ROOT}/sw/sim)   # tsr_sim_int.h: the sim kdev's "nothing pending" test, the TCMs
+find_package(Threads REQUIRED)
+# tsr_elf (sw/ctrl/host): image parsing, id, kernel table, .tsr_logfmt; tsr_fw_paths: the build's
+# default image (TSR_FW_DEFAULT_IMAGE, tsr_image_open_default).
+target_link_libraries(tsr_transport PUBLIC tsr_sim tsr_ref PRIVATE tsr_elf tsr_fw_paths Threads::Threads)
 
 if (TSR_WITH_XRT)
     set(TSR_XRT_ROOT "/opt/xilinx/xrt" CACHE PATH "XRT installation root (include/, lib/)")
@@ -44,9 +50,10 @@ if (TSR_WITH_XRT)
     set(_tsr_xrt_inc ${_tsr_xrt_root}/include)
     set(_tsr_xrt_lib ${_tsr_xrt_root}/lib/libxrt_coreutil.so)
     if (NOT EXISTS ${_tsr_xrt_inc}/xrt/xrt_kernel.h OR NOT EXISTS ${_tsr_xrt_inc}/experimental/xrt_xclbin.h
-        OR NOT EXISTS ${_tsr_xrt_lib})
+        OR NOT EXISTS ${_tsr_xrt_inc}/experimental/xrt_ip.h OR NOT EXISTS ${_tsr_xrt_lib})
         message(FATAL_ERROR "TSR_WITH_XRT: no XRT under TSR_XRT_ROOT=${_tsr_xrt_root} "
-                            "(needs include/xrt/xrt_kernel.h and lib/libxrt_coreutil.so; see docs/xrt-host.md)")
+                            "(needs include/xrt/xrt_kernel.h, include/experimental/xrt_ip.h and lib/libxrt_coreutil.so; "
+                            "see docs/xrt-host.md)")
     endif()
     # The XRT headers include <uuid/uuid.h> and call libuuid inline (uuid-dev is a dependency of
     # the XRT package). Without uuid-dev, xrt-compat/uuid/uuid.h declares the few functions they
@@ -73,20 +80,54 @@ if (TSR_WITH_XRT)
 endif()
 
 # ---------------------------------------------------------------------------
-# Tests (prefix transport_). No hardware: the protocol layer runs on the mock kdev.
+# Tests (prefix transport_; SW §10.2). No hardware. Firmware: the production image tsr-fw.elf and
+# the fw_rt test image (sw/ctrl/tests/runtime.cmake: the runtime's test kernels rt_args0-7, rt_nop,
+# rt_ret, rt_copy, rt_tile_err, rt_stop, rt_cancel, rt_log, rt_trap), both from tsr_fw_paths.h.
 # ---------------------------------------------------------------------------
-add_executable(test-tsr-kdev tests/test_kdev.cpp)
-set_target_properties(test-tsr-kdev PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-target_compile_options(test-tsr-kdev PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra -Wshadow)
-target_link_libraries(test-tsr-kdev PRIVATE tsr_transport)
-# Window offsets, identity checks at open, ADAPTER_STATUS at open, the mock's registers, chunked
-# transfers at odd offsets / sizes under several DMA rules, offsets beyond 4 GiB.
-add_test(NAME transport_kdev COMMAND test-tsr-kdev)
+function(tsr_transport_test tgt src)
+    add_executable(${tgt} ${src})
+    set_target_properties(${tgt} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    target_compile_options(${tgt} PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra -Wshadow)
+    target_include_directories(${tgt} PRIVATE ${TESSERACT_ROOT}/sw/sim)
+    target_link_libraries(${tgt} PRIVATE tsr_transport tsr_elf tsr_fw_paths Threads::Threads)
+    if (TARGET tsr_fw)
+        add_dependencies(${tgt} tsr_fw)
+    endif()
+endfunction()
 
-# The xrt kdev against XRT's userspace with its no-op shim (no card, no driver): xclbin load,
-# kernel / argument / memory-group discovery, device-only buffers, and refusal of xclbins that
-# break the kernel contract (v1 run arguments included).
+# transport_kdev: the protocol layer on the mock kdev (SW §10.2): identity checks and adapter
+# faults at open (ID, ISA major, ADAPTER_VERSION, NUM_CH, RV_FREQ = 0, ADAPTER_STATUS left by an
+# earlier process), bind (MEM_EN, misaligned base, BASE_LOCKED, held requests), timeouts (SOFT_RESET
+# stuck, no HELLO), the stale core at open (a booted device with a launch running left by a "dead
+# process", with and without TSR_ATTACH), adapter errors during a launch (PLAT_ERR), a hung unit
+# ("card reset needed"), the registry and TSR_MOCK_* parsing, and the chunked / aligned transfer
+# engine (byte-granular transfers under DMA rules from align 1 to 4096, across 4 GiB).
+tsr_transport_test(test-tsr-kdev tests/test_kdev.cpp)
+add_test(NAME transport_kdev COMMAND test-tsr-kdev)
+set_tests_properties(transport_kdev PROPERTIES TIMEOUT 120)
+
+# transport_protocol: EX §15 item 2, one binary for every kind it can run (sim, mock; vkernel when
+# TSR_VKERNEL_SERVER / _SOCKET name a v2 server, P5.3): cold / warm boot, image-id mismatch,
+# .note.tsr refusal, VERIFY with an injected TCM fault (mock), PING, 0-7 args, BAD_DESC, 8
+# outstanding and the credit rule, forced LQ_OVERFLOW and RING_RD_BAD, events while waiting, the
+# log (FMT / TEXT / EVENT / BLOB decode, drop), cancel and stop, SOFT_RESET mid-launch, the
+# debug-aware timeout with a hart halted through the DM model, the recovery ladder (levels 2 and
+# 3), TRAP handling (decode with mepc -> function / line against addr2line, warm restart), the
+# minimal record reads against full reads; records r0-r6 and DRAM identical across the kinds;
+# the EX §4.11 numbers on sim (boot, empty-launch round trip, pipelined rate).
+tsr_transport_test(test-tsr-protocol tests/test_protocol.cpp)
+get_property(_tsr_pfx GLOBAL PROPERTY TSR_RISCV_PREFIX_EFFECTIVE)   # sw/sim: the pinned RISC-V tools
+set(_tsr_addr2line "${_tsr_pfx}addr2line")
+add_test(NAME transport_protocol COMMAND test-tsr-protocol --addr2line ${_tsr_addr2line}
+         --scratch ${CMAKE_CURRENT_BINARY_DIR}/protocol)
+set_tests_properties(transport_protocol PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
+
+# transport_xrt_noop: the xrt kdev against XRT's userspace with its no-op shim (no card, no driver):
+# xclbin load, kernel / argument / memory discovery from the xclbin, xrt::ip with exclusive access
+# for the ap_ctrl_none kernel of the v2 contract (and the EX §9.1 fallback ap_ctrl_hs without an
+# interrupt), device-only buffers, and refusal of xclbins that break the kernel contract (v1 run
+# arguments included).
 if (TSR_WITH_XRT AND EXISTS ${_tsr_xrt_root}/lib/libxrt_noop.so)
     add_executable(test-tsr-xrt-noop tests/test_xrt_noop.cpp)
     set_target_properties(test-tsr-xrt-noop PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
@@ -98,5 +139,4 @@ if (TSR_WITH_XRT AND EXISTS ${_tsr_xrt_root}/lib/libxrt_noop.so)
 endif()
 
 # transport_ggml_e2e_mock and transport_ggml_e2e_mock_tmax8 (the ggml backend end to end on the
-# mock kdev) are removed in X0 with the backend's MUL_MAT execution; they return with the OPL
-# path (P3.2, docs/v2/06-software-verification.md §10.2).
+# mock kdev) return with the backend's OPL path (P3.2, SW §10.2; sw/ggml-tesseract).

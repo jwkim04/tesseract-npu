@@ -2,8 +2,9 @@
 //
 // Method (after openTPU tools/validate.py, https://github.com/FeSens/openTPU):
 //   1. device run   greedy-generate G tokens per prompt on the Tesseract device (all layers and the
-//                   output head offloaded, KV cache on the host) and record the full logits at the
-//                   last `prompt-tail` prompt positions and at every generated position but the last;
+//                   output head offloaded; KV cache and attention on the host in M6, on the device in
+//                   M7) and record the full logits at the last `prompt-tail` prompt positions and at
+//                   every generated position but the last;
 //   2. CPU run      feed the same token sequence (prompt + device tokens) to the ggml CPU backend
 //                   alone and record the logits at the same positions (same context per position);
 //   3. floor        the CPU run again with its input embeddings nudged by one f32 ulp each
@@ -19,6 +20,10 @@
 //   row r holds the logits computed at token index row0 + r, i.e. the prediction of token
 //   row0 + r + 1; row0 + n_rows = n_prompt + n_gen - 1. Generate mode: row0 = n_prompt - tail.
 // The header's n_seq counts complete records only and is rewritten after each one (--resume).
+// Settings (v2, V2-SW-22, docs/v2/06-software-verification.md §9.5, §10.4): every phase runs with
+// flash attention on, a q8_0 K and V cache and LLAMA_ATTN_ROT_DISABLE=1 (set by the tool);
+// offload_kqv is false in M6 (--phase m6, the default) and true in M7 (--phase m7); all of it is
+// recorded in the file header (version 2), and compare warns when two files differ.
 
 #include "ggml-backend.h"
 #include "ggml.h"
@@ -103,6 +108,18 @@ static double parse_double(const char * opt, const char * v) {
     return r;
 }
 
+static int parse_on_off(const char * opt, const std::string & v) {
+    if (v == "on" || v == "1") return 1;
+    if (v == "off" || v == "0") return 0;
+    die("%s: on or off", opt);
+}
+
+static int parse_phase(const std::string & v) {
+    if (v == "m6" || v == "M6") return 6;           // KLC_PHASE_M6
+    if (v == "m7" || v == "M7") return 7;           // KLC_PHASE_M7
+    die("--phase: m6 or m7");
+}
+
 static bool file_exists(const std::string & p) {
     struct stat st;
     return stat(p.c_str(), &st) == 0;
@@ -157,7 +174,12 @@ enum { KLC_INPUT_TOKENS = 0, KLC_INPUT_EMBD = 1, KLC_INPUT_EMBD_ULP = 2 };
 enum { KLC_FLAG_REPACK = 1u << 0, KLC_FLAG_CHAT = 1u << 1 };
 
 static const char KLC_MAGIC[8] = {'T', 'S', 'R', 'K', 'L', 'C', '0', '1'};
-static const uint32_t KLC_VERSION = 1;
+// Version 2 (P3.3, 2026-10-30) records the v2 baseline settings (V2-SW-22, SW §9.5, §10.4) in five
+// words of the former reserved area: K / V cache types, offload_kqv, LLAMA_ATTN_ROT_DISABLE and the
+// phase. Version 1 files (v1 settings: f16 KV on the host, no rotation setting) are still read; their
+// fields read as KLC_PHASE_V1 with f16 / f16.
+static const uint32_t KLC_VERSION = 2;
+enum { KLC_PHASE_V1 = 0, KLC_PHASE_M6 = 6, KLC_PHASE_M7 = 7 };
 
 struct klc_header {
     char     magic[8];
@@ -186,11 +208,17 @@ struct klc_header {
     uint64_t n_prefill_tok;    // tokens decoded in multi-token batches
     uint64_t n_gen_tok;        // single-token decodes
     uint64_t created_unix;
-    char     device[16];       // "cpu", "sim", "xrt"
+    char     device[16];       // "cpu", "sim", "mock", "vkernel", "xrt"
     char     model_desc[128];
     char     model_file[128];
     char     tokens_from[64];  // replay: basename of the tokens file
-    uint8_t  reserved[32];
+    // version 2 (the v2 settings, V2-SW-22); a version 1 file reads as f16 / f16, 0, 0, KLC_PHASE_V1
+    int32_t  type_k;           // ggml_type of the K cache (v2: GGML_TYPE_Q8_0)
+    int32_t  type_v;           // ggml_type of the V cache (v2: GGML_TYPE_Q8_0)
+    uint32_t offload_kqv;      // 1: KV cache and attention on the device (M7); 0: on the host (M6, v1)
+    uint32_t attn_rot_disable; // 1: the run had LLAMA_ATTN_ROT_DISABLE=1 (llama.cpp's Hadamard KV rotation off)
+    uint32_t phase;            // KLC_PHASE_M6 / _M7: which phase's settings; KLC_PHASE_V1 for a version 1 file
+    uint8_t  reserved[12];
 };
 static_assert(sizeof(klc_header) == 512, "klc_header layout");
 
@@ -219,6 +247,29 @@ static const char * replay_name(uint32_t r) { return r == KLC_REPLAY_BATCH ? "ba
 static const char * input_name(uint32_t i) {
     return i == KLC_INPUT_TOKENS ? "tokens" : i == KLC_INPUT_EMBD ? "embd" : "embd+1ulp";
 }
+static const char * type_name_or(int32_t t) {
+    return t >= 0 && t < GGML_TYPE_COUNT && ggml_type_name((ggml_type) t) ? ggml_type_name((ggml_type) t) : "?";
+}
+static const char * phase_name(uint32_t p) { return p == KLC_PHASE_M6 ? "M6" : p == KLC_PHASE_M7 ? "M7" : p == KLC_PHASE_V1 ? "v1" : "?"; }
+// The settings a file was written with (V2-SW-22), one line.
+static std::string settings_str(const klc_header & h) {
+    char b[256];
+    snprintf(b, sizeof(b), "%s settings: flash attn %s, KV %s/%s on the %s (offload_kqv %u), KV rotation %s",
+             phase_name(h.phase), h.flash_attn ? "on" : "off", type_name_or(h.type_k), type_name_or(h.type_v),
+             h.offload_kqv ? "device" : "host", h.offload_kqv, h.attn_rot_disable ? "off (LLAMA_ATTN_ROT_DISABLE=1)" : "not disabled");
+    return b;
+}
+// The device kinds a run accepts (SW §9.2 TSR_DEVICE values with a device, and cpu).
+static bool device_kind_ok(const std::string & d) {
+    return d == "cpu" || d == "sim" || d == "mock" || d == "vkernel" || d == "xrt";
+}
+static ggml_type parse_cache_type(const char * opt, const std::string & v) {
+    for (int t = 0; t < GGML_TYPE_COUNT; ++t) {
+        const char * n = ggml_type_name((ggml_type) t);
+        if (n && v == n && ggml_get_type_traits((ggml_type) t)->blck_size > 0) return (ggml_type) t;
+    }
+    die("%s: unknown ggml type \"%s\" (e.g. q8_0, f16, f32)", opt, v.c_str());
+}
 
 static bool klc_read_header(FILE * f, const std::string & path, klc_header * h, std::string * err) {
     if (fseeko(f, 0, SEEK_SET) != 0 || fread(h, sizeof(*h), 1, f) != 1) {
@@ -229,9 +280,16 @@ static bool klc_read_header(FILE * f, const std::string & path, klc_header * h, 
         *err = path + ": not a klcheck logits file";
         return false;
     }
-    if (h->version != KLC_VERSION || h->header_bytes != sizeof(klc_header) || h->seq_bytes != sizeof(klc_seq)) {
+    if ((h->version != 1 && h->version != KLC_VERSION) || h->header_bytes != sizeof(klc_header) ||
+        h->seq_bytes != sizeof(klc_seq)) {
         *err = path + ": unsupported klcheck file version";
         return false;
+    }
+    if (h->version == 1) {      // v1 settings (docs/klcheck.md "Settings fixed in every phase")
+        h->type_k = h->type_v = GGML_TYPE_F16;
+        h->offload_kqv = 0;
+        h->attn_rot_disable = 0;
+        h->phase = KLC_PHASE_V1;
     }
     if (h->n_vocab == 0 || h->n_vocab > (1u << 24)) {
         *err = path + ": bad n_vocab";
@@ -498,9 +556,16 @@ struct run_opts {
     bool        chat = false, perturb = false, resume = false, repack = false;
     uint64_t    seed = 0;
     int         input = KLC_INPUT_TOKENS;
-    int         replay = KLC_REPLAY_BATCH;
+    int         replay = -1;                      // -1: step on a device (identity), batch on the CPU
     int         threads = default_threads(), n_ctx = 0, n_batch = 2048, n_ubatch = 512;
-    int         fa = 0;
+    // v2 baseline settings (V2-SW-22, SW §10.4): FA on, q8_0 / q8_0 KV, LLAMA_ATTN_ROT_DISABLE=1 in
+    // every phase; KV cache and attention on the host in M6 (offload_kqv false), on the device in M7.
+    int         fa = 1;
+    int         phase = KLC_PHASE_M6;
+    int         offload_kqv = -1;                 // -1: the phase's value; 0 / 1: --offload-kqv
+    ggml_type   type_k = GGML_TYPE_Q8_0, type_v = GGML_TYPE_Q8_0;
+    int         attn_rot_disable = 1;             // --attn-rot on: 0 (experiments only; recorded)
+    bool        offload() const { return offload_kqv >= 0 ? offload_kqv != 0 : phase == KLC_PHASE_M7; }
 };
 
 struct session {
@@ -563,7 +628,9 @@ static void create_context(session & s, const run_opts & o, int n_ctx_needed, in
     cp.n_threads       = o.threads;
     cp.n_threads_batch = o.threads;
     cp.flash_attn_type = o.fa ? LLAMA_FLASH_ATTN_TYPE_ENABLED : LLAMA_FLASH_ATTN_TYPE_DISABLED;
-    cp.offload_kqv     = false;              // -nkvo: KV cache and attention on the host (v1)
+    cp.type_k          = o.type_k;           // -ctk q8_0 (V2-SW-22)
+    cp.type_v          = o.type_v;           // -ctv q8_0 (needs FA: src/llama-context.cpp refuses a quantized V without it)
+    cp.offload_kqv     = o.offload();        // M6: false (-nkvo, attention on the host); M7: true
     cp.no_perf         = false;
     s.ctx = llama_init_from_model(s.model, cp);
     if (!s.ctx) die("failed to create the llama context");
@@ -672,7 +739,7 @@ static void decode_span(session & s, uint32_t seq_index, const std::vector<int32
 
 static void usage_run() {
     fprintf(stderr,
-        "usage: klcheck run -m MODEL --device sim|xrt|cpu --out FILE [options]\n"
+        "usage: klcheck run -m MODEL --device sim|mock|vkernel|xrt|cpu --out FILE [options]\n"
         "  generate mode (no --tokens): greedy-generate -n G tokens per prompt, record logits\n"
         "  replay mode (--tokens FILE): feed the token sequences of FILE (any klcheck file),\n"
         "                               record logits at the same positions\n"
@@ -683,9 +750,17 @@ static void usage_run() {
         "  --chat              wrap prompts in the model's chat template\n"
         "  --perturb-ulp SEED  input = token_embd rows, every element nudged by 1 ulp (floor run)\n"
         "  --input tokens|embd input path without perturbation (embd: must equal tokens bit-exactly)\n"
-        "  --replay batch|step replay: one decode per sequence (default) or prompt + 1-token steps\n"
+        "  --replay batch|step replay: one decode per sequence or prompt + 1-token steps (default: batch on the\n"
+        "                      CPU, step on a device, whose replay must repeat the generating run's graphs for\n"
+        "                      compare --expect-identical, SW §10.4 M6 gate item 2)\n"
         "  --repack            CPU: allow repacked weight buffers (anonymous memory; off by default)\n"
-        "  -t N  -c N  -b N  -ub N  --fa on|off  --resume  -v\n");
+        "  -t N  -c N  -b N  -ub N  --resume  -v\n"
+        "  v2 settings (V2-SW-22; every phase of a comparison must use the same, all are recorded in the file):\n"
+        "  --phase m6|m7       M6 (default): KV cache and attention on the host; M7: on the device (offload_kqv)\n"
+        "  --offload-kqv on|off  override the phase's offload_kqv\n"
+        "  --fa on|off         flash attention (default on)\n"
+        "  -ctk TYPE -ctv TYPE K / V cache types (default q8_0 / q8_0)\n"
+        "  --attn-rot on|off   llama.cpp's Hadamard KV rotation (default off: LLAMA_ATTN_ROT_DISABLE=1)\n");
 }
 
 static void parse_run(int argc, char ** argv, run_opts & o) {
@@ -722,18 +797,20 @@ static void parse_run(int argc, char ** argv, run_opts & o) {
         else if (a == "-c" || a == "--ctx-size") o.n_ctx = (int) parse_int("-c", val(), 1, 1 << 24);
         else if (a == "-b" || a == "--batch-size") o.n_batch = (int) parse_int("-b", val(), 1, 1 << 20);
         else if (a == "-ub" || a == "--ubatch-size") o.n_ubatch = (int) parse_int("-ub", val(), 1, 1 << 20);
-        else if (a == "--fa") {
-            const std::string v = val();
-            if (v == "on" || v == "1") o.fa = 1;
-            else if (v == "off" || v == "0") o.fa = 0;
-            else die("--fa: on or off");
-        }
+        else if (a == "--fa")                  o.fa = parse_on_off("--fa", val());
+        else if (a == "--offload-kqv")         o.offload_kqv = parse_on_off("--offload-kqv", val());
+        else if (a == "--attn-rot")            o.attn_rot_disable = !parse_on_off("--attn-rot", val());
+        else if (a == "--phase")               o.phase = parse_phase(val());
+        else if (a == "-ctk" || a == "--cache-type-k") o.type_k = parse_cache_type("-ctk", val());
+        else if (a == "-ctv" || a == "--cache-type-v") o.type_v = parse_cache_type("-ctv", val());
         else if (a == "--resume")              o.resume = true;
         else if (a == "-v" || a == "--verbose") g_verbose = 1;
         else if (a == "-h" || a == "--help")   { usage_run(); exit(0); }
         else { usage_run(); die("run: unknown option %s", a.c_str()); }
     }
     if (o.model.empty() || o.out.empty()) { usage_run(); die("run: -m and --out are required"); }
+    if (!device_kind_ok(o.device)) die("--device %s: sim, mock, vkernel, xrt or cpu", o.device.c_str());
+    if (o.replay < 0) o.replay = o.device == "cpu" ? KLC_REPLAY_BATCH : KLC_REPLAY_STEP;
     if (o.perturb) o.input = KLC_INPUT_EMBD_ULP;
 }
 
@@ -751,6 +828,10 @@ static int cmd_run(int argc, char ** argv) {
     // The device is chosen through the environment before ggml's backend registry is created.
     if (o.device == "cpu") setenv("TSR_DEVICE", "none", 1);
     else                   setenv("TSR_DEVICE", o.device.c_str(), 1);
+    // llama.cpp's Hadamard KV rotation (src/llama-kv-cache.cpp reads the variable when a context is
+    // created): off for every phase, device and CPU alike (V2-SW-16, V2-SW-22).
+    if (o.attn_rot_disable) setenv("LLAMA_ATTN_ROT_DISABLE", "1", 1);
+    else                    unsetenv("LLAMA_ATTN_ROT_DISABLE");
 
     const bool replay = !o.tokens.empty();
     std::vector<plan_seq> plan;
@@ -794,8 +875,10 @@ static int cmd_run(int argc, char ** argv) {
         fclose(f);
         if (h.mode != (replay ? KLC_MODE_REPLAY : KLC_MODE_GENERATE) || h.input != (uint32_t) o.input ||
             h.perturb_seed != (o.perturb ? o.seed : 0) || fixed_str(h.device, sizeof(h.device)) != o.device ||
-            h.flash_attn != (uint32_t) o.fa || (!replay && (h.n_gen != (uint32_t) o.n_gen || h.prompt_tail != (uint32_t) o.prompt_tail))) {
-            die("--resume: %s was written with different options", o.out.c_str());
+            h.flash_attn != (uint32_t) o.fa || (!replay && (h.n_gen != (uint32_t) o.n_gen || h.prompt_tail != (uint32_t) o.prompt_tail)) ||
+            h.type_k != (int32_t) o.type_k || h.type_v != (int32_t) o.type_v || h.offload_kqv != (uint32_t) o.offload() ||
+            h.attn_rot_disable != (uint32_t) o.attn_rot_disable || h.phase != (uint32_t) o.phase) {
+            die("--resume: %s was written with different options (%s)", o.out.c_str(), settings_str(h).c_str());
         }
         if (h.n_seq >= plan.size()) {
             fprintf(stderr, "klcheck %s: %s already has %u sequences, nothing to do\n", tag.c_str(), o.out.c_str(), h.n_seq);
@@ -868,6 +951,14 @@ static int cmd_run(int argc, char ** argv) {
     copy_str(h.model_desc, sizeof(h.model_desc), desc);
     copy_str(h.model_file, sizeof(h.model_file), basename_of(o.model));
     if (replay) copy_str(h.tokens_from, sizeof(h.tokens_from), basename_of(o.tokens));
+    h.type_k           = (int32_t) o.type_k;
+    h.type_v           = (int32_t) o.type_v;
+    h.offload_kqv      = o.offload() ? 1u : 0u;
+    h.phase            = (uint32_t) o.phase;
+    {   // what the context saw (set above, before llama_init_from_model)
+        const char * e = getenv("LLAMA_ATTN_ROT_DISABLE");
+        h.attn_rot_disable = e != nullptr && atoi(e) != 0 ? 1u : 0u;
+    }
 
     klc_writer w;
     if (o.resume && file_exists(o.out)) {
@@ -885,6 +976,7 @@ static int cmd_run(int argc, char ** argv) {
     fprintf(stderr, "klcheck %s: %s (%s), n_vocab %d, %s mode, input %s, %zu sequences, model load %.2f s\n",
             tag.c_str(), desc, basename_of(o.model).c_str(), s.n_vocab, mode_name(h.mode), input_name(h.input),
             plan.size(), t_load);
+    fprintf(stderr, "klcheck %s: %s\n", tag.c_str(), settings_str(w.h).c_str());
 
     llama_memory_t mem = llama_get_memory(s.ctx);
     std::vector<float> rows;
@@ -1059,6 +1151,13 @@ static void check_pair(const klc_header & a, const std::string & pa, const klc_h
     if (a.flash_attn != b.flash_attn) {
         fprintf(stderr, "klcheck: WARNING: %s and %s differ in flash attention\n", pa.c_str(), pb.c_str());
     }
+    // V2-SW-22: the device, CPU and floor runs of one comparison use the same KV type, FA and
+    // rotation settings (offload_kqv differs legitimately between a device run and a CPU run only
+    // in what it moves; it is reported, not checked).
+    if (a.type_k != b.type_k || a.type_v != b.type_v || a.attn_rot_disable != b.attn_rot_disable || a.phase != b.phase) {
+        fprintf(stderr, "klcheck: WARNING: %s and %s were written with different settings:\n  %s\n  %s\n", pa.c_str(),
+                pb.c_str(), settings_str(a).c_str(), settings_str(b).c_str());
+    }
 }
 
 static void check_seq(const klc_reader & a, const klc_reader & b) {
@@ -1166,6 +1265,7 @@ static int compare_files(const cmp_opts & o, cmp_result & R) {
         }
         printf("model: %s, n_vocab %u, %u sequences, %zu positions (%" PRIu64 " prompt-tail, %" PRIu64 " generated)\n",
                fixed_str(dev.h.model_desc, 128).c_str(), n_vocab, n_seq, R.rows.size(), R.dev_prompt.n, R.dev_gen.n);
+        printf("dev %s\n", settings_str(dev.h).c_str());
         printf("\n%-4s %6s %5s  %-11s %-11s %7s  %8s %8s  %s\n", "seq", "prompt", "rows", "KL(ref|dev)", "KL(floor)", "ratio",
                "top1 dev", "top1 flr", "first top-1 miss (row)");
         size_t k = 0;
@@ -1240,6 +1340,11 @@ static int compare_files(const cmp_opts & o, cmp_result & R) {
                 json_str(o.floor).c_str());
         fprintf(f, "  \"model\": %s, \"n_vocab\": %u, \"n_seq\": %u, \"n_rows\": %zu,\n",
                 json_str(fixed_str(dev.h.model_desc, 128)).c_str(), n_vocab, n_seq, R.rows.size());
+        fprintf(f, "  \"settings\": {\"phase\": %s, \"flash_attn\": %s, \"type_k\": %s, \"type_v\": %s, \"offload_kqv\": %s, "
+                   "\"attn_rot_disable\": %s},\n",
+                json_str(phase_name(dev.h.phase)).c_str(), dev.h.flash_attn ? "true" : "false", json_str(type_name_or(dev.h.type_k)).c_str(),
+                json_str(type_name_or(dev.h.type_v)).c_str(), dev.h.offload_kqv ? "true" : "false",
+                dev.h.attn_rot_disable ? "true" : "false");
         fprintf(f, "  \"kl_ratio_limit\": %g, \"min_top1\": %g, \"min_kl\": %g, \"ratio\": %.6f, \"cap\": %.9e,\n", o.kl_ratio,
                 o.min_top1, o.min_kl, R.ratio, R.cap);
         fprintf(f, "  \"complete\": %s, \"nonfinite\": %" PRIu64 ", \"pass\": %s,\n", R.complete ? "true" : "false", R.nonfinite,
@@ -1337,8 +1442,10 @@ static int cmd_all(int argc, char ** argv, const char * self) {
             gen_only.push_back(a); gen_only.push_back(val());
         }
         else if (a == "--chat")                 gen_only.push_back(a);
-        else if (a == "-t" || a == "-c" || a == "-b" || a == "-ub" || a == "--fa" || a == "--replay") {
-            common.push_back(a); common.push_back(val());
+        else if (a == "-t" || a == "-c" || a == "-b" || a == "-ub" || a == "--fa" || a == "--replay" || a == "--phase" ||
+                 a == "--offload-kqv" || a == "-ctk" || a == "--cache-type-k" || a == "-ctv" || a == "--cache-type-v" ||
+                 a == "--attn-rot") {
+            common.push_back(a); common.push_back(val());   // the v2 settings go to every phase (V2-SW-22)
         }
         else if (a == "--repack" || a == "--resume" || a == "-v") common.push_back(a);
         else if (a == "--kl-ratio" || a == "--min-top1" || a == "--min-kl") { cmp.push_back(a); cmp.push_back(val()); }
@@ -1346,6 +1453,7 @@ static int cmd_all(int argc, char ** argv, const char * self) {
                  "[run options] [--kl-ratio R] [--min-top1 P] [--min-kl K]", a.c_str());
     }
     if (model.empty()) die("all: -m is required");
+    if (!device_kind_ok(device)) die("all: --device %s: sim, mock, vkernel, xrt or cpu", device.c_str());
     // without -o: a private temporary directory, removed afterwards (concurrent ctest runs)
     const bool tmp_dir = dir.empty();
     if (tmp_dir) {
@@ -1441,6 +1549,7 @@ static int cmd_info(int argc, char ** argv) {
     printf("  %u/%u sequences, G %u, prompt tail %u, flash attn %s, threads %u, repack %s, chat %s\n", h.n_seq, h.n_seq_planned,
            h.n_gen, h.prompt_tail, h.flash_attn ? "on" : "off", h.n_threads, (h.flags & KLC_FLAG_REPACK) ? "on" : "off",
            (h.flags & KLC_FLAG_CHAT) ? "on" : "off");
+    printf("  file version %u, %s\n", h.version, settings_str(h).c_str());
     printf("  load %.2f s, prefill %.2f s (%" PRIu64 " tok in batches), gen %.2f s (%" PRIu64 " single-token decodes%s)\n", h.t_load_s,
            h.t_prefill_s, h.n_prefill_tok, h.t_gen_s, h.n_gen_tok,
            h.n_gen_tok && h.t_gen_s > 0 ? (", " + std::to_string((int) (1e3 * h.t_gen_s / h.n_gen_tok)) + " ms each").c_str() : "");
@@ -1518,6 +1627,10 @@ static klc_header st_header(uint32_t n_vocab, uint32_t planned, const char * dev
     h.mode = mode;
     copy_str(h.device, sizeof(h.device), dev);
     copy_str(h.model_desc, sizeof(h.model_desc), "selftest");
+    h.flash_attn = 1;
+    h.type_k = h.type_v = GGML_TYPE_Q8_0;
+    h.attn_rot_disable = 1;
+    h.phase = KLC_PHASE_M6;
     return h;
 }
 
@@ -1687,6 +1800,58 @@ static int cmd_selftest(int argc, char ** argv) {
         cmp_result R;
         ST_CHECK(compare_files(o, R) == 1 && !R.complete, "incomplete reference must fail");
     }
+    // 7. header versions: the v2 settings survive a write / read; a version 1 file (reserved bytes
+    //    zero) reads with the v1 settings, and a resume check against v2 options sees the difference
+    {
+        klc_header h = st_header(V, NS, "sim", KLC_MODE_GENERATE);
+        h.phase = KLC_PHASE_M7;
+        h.offload_kqv = 1;
+        h.type_v = GGML_TYPE_F16;
+        {
+            klc_writer w;
+            w.create(fi, h);
+        }
+        FILE * f = fopen(fi.c_str(), "rb");
+        klc_header g;
+        std::string err;
+        ST_CHECK(f && klc_read_header(f, fi, &g, &err), "v2 header read: %s", err.c_str());
+        if (f) fclose(f);
+        ST_CHECK(g.version == 2 && g.phase == KLC_PHASE_M7 && g.offload_kqv == 1 && g.type_k == GGML_TYPE_Q8_0 &&
+                 g.type_v == GGML_TYPE_F16 && g.attn_rot_disable == 1 && g.flash_attn == 1, "v2 settings round trip: %s",
+                 settings_str(g).c_str());
+        ST_CHECK(settings_str(g) == "M7 settings: flash attn on, KV q8_0/f16 on the device (offload_kqv 1), KV rotation off "
+                                    "(LLAMA_ATTN_ROT_DISABLE=1)", "settings string: %s", settings_str(g).c_str());
+        klc_header v1 = st_header(V, NS, "sim", KLC_MODE_GENERATE);
+        v1.version = 1;
+        v1.flash_attn = 0;
+        v1.type_k = v1.type_v = 0;
+        v1.attn_rot_disable = v1.phase = 0;
+        {
+            klc_writer w;
+            w.create(fi, v1);
+            w.write_seq(seqs[0], toks[0], lref[0].data());
+        }
+        f = fopen(fi.c_str(), "rb");
+        ST_CHECK(f && klc_read_header(f, fi, &g, &err), "v1 header read: %s", err.c_str());
+        if (f) fclose(f);
+        ST_CHECK(g.version == 1 && g.phase == KLC_PHASE_V1 && g.type_k == GGML_TYPE_F16 && g.type_v == GGML_TYPE_F16 &&
+                 g.offload_kqv == 0 && g.attn_rot_disable == 0, "v1 file reads with the v1 settings: %s", settings_str(g).c_str());
+        klc_reader r;
+        r.open(fi);
+        ST_CHECK(r.next() && r.toks == toks[0], "v1 file: record readable");
+        klc_header v3 = v1;
+        v3.version = 3;
+        {
+            klc_writer w;
+            w.create(fi, v3);
+        }
+        f = fopen(fi.c_str(), "rb");
+        ST_CHECK(f && !klc_read_header(f, fi, &g, &err), "version 3 refused");
+        if (f) fclose(f);
+        ST_CHECK(parse_cache_type("-ctk", "q8_0") == GGML_TYPE_Q8_0 && parse_cache_type("-ctv", "f16") == GGML_TYPE_F16,
+                 "cache type names");
+        ST_CHECK(device_kind_ok("mock") && device_kind_ok("vkernel") && !device_kind_ok("none"), "device kinds");
+    }
     for (const std::string & p : {fr, fd, ff, fi, dir + "/report.json"}) unlink(p.c_str());
     rmdir(dir.c_str());
     printf("klcheck selftest: %s (%d failures)\n", g_fail ? "FAIL" : "ok", g_fail);
@@ -1698,9 +1863,9 @@ static int cmd_selftest(int argc, char ** argv) {
 static void usage() {
     fprintf(stderr,
         "klcheck — model-level KL check against the ggml CPU backend (docs/klcheck.md)\n"
-        "  klcheck run -m MODEL --device sim|cpu [--tokens FILE] [--perturb-ulp SEED] --out FILE [...]\n"
+        "  klcheck run -m MODEL --device sim|mock|vkernel|xrt|cpu [--tokens FILE] [--perturb-ulp SEED] --out FILE [...]\n"
         "  klcheck compare --ref CPU.klc --dev DEV.klc --floor FLOOR.klc [--json FILE] [...]\n"
-        "  klcheck all -m MODEL [-o DIR] [--device sim] [-n G] [--n-prompts N] [--prompts FILE] [...]\n"
+        "  klcheck all -m MODEL [-o DIR] [--device sim] [-n G] [--n-prompts N] [--prompts FILE] [--phase m6|m7] [...]\n"
         "  klcheck info FILE [-m MODEL]\n"
         "  klcheck selftest [DIR]\n"
         "  klcheck embd MODEL TOKEN... [--perturb-ulp SEED --seq S --pos P]   (diagnostic)\n"

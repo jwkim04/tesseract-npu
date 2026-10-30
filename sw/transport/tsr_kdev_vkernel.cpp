@@ -4,7 +4,10 @@
 // window, ADAPTER_STATUS, transfers — against the RTL without linking Verilator.
 // docs/platform-u200.md §13. X0 deleted the v1 server (tb/platform/vkernel) and the v1 run
 // control of this client (environment switches for the start sequence and polling, VK_WAIT);
-// the two-clock v2 server comes with P5.3 (docs/v2/06-software-verification.md §11).
+// the two-clock v2 server comes with P5.3 (docs/v2/06-software-verification.md §11). P3.1 ported
+// the client to the v2 kdev interface (EX §10.2): idle() lets device time pass (VK_ADVANCE, the
+// "advance" hint) and now_ns() is the server's device time at the nominal kernel clock (VK_TIME),
+// so the protocol's timeouts count simulated time, as on the simulator kinds.
 // TSR_DEVICE=vkernel opens it with:
 //   TSR_VKERNEL_SERVER   server command line (words separated by blanks, no quoting): the client
 //                        spawns it with one end of a socketpair (appends --fd N); it exits when
@@ -128,13 +131,13 @@ public:
         } else if (srv != nullptr && srv[0] != '\0') {
             if (!spawn(srv)) return false;
         } else {
-            return fail("set TSR_VKERNEL_SERVER (server command line) or TSR_VKERNEL_SOCKET "
-                        "(no in-tree server until the two-clock v2 vkernel, P5.3)");
+            return fail("not available until P5.3: set TSR_VKERNEL_SERVER (server command line) or TSR_VKERNEL_SOCKET "
+                        "to a two-clock v2 vkernel server (protocol version 3); there is no in-tree server yet");
         }
         tsr_vk_rsp r{};
         std::vector<uint8_t> pl;
         if (!call(VK_HELLO, TSR_VK_PROTO_VERSION, 0, 0, nullptr, 0, &r, &pl) || r.rc != 0) {
-            return fail("the server refused the connection (protocol version or start-up check)");
+            return fail("the server refused the connection (protocol version 3 of the v2 server, P5.3, or a start-up check)");
         }
         nch_ = r.val;
         chb_ = r.x;
@@ -187,6 +190,7 @@ public:
     uint64_t ch_bytes(uint32_t) const override { return chb_; }
     uint64_t ch_addr(uint32_t ch) const override { return base_[ch]; }
     std::string describe() const override { return "Verilated kernel server: " + desc_ + "\n"; }
+    bool simulated() const override { return true; }
 
     int reg_read(uint32_t off, uint32_t * val) override {
         tsr_vk_rsp r{};
@@ -209,6 +213,18 @@ public:
         }
         return 0;
     }
+    // EX §10.2: the server's clocks run only here (VK_ADVANCE); device time for the timeouts.
+    void idle(uint32_t, uint64_t interval_ns) override {
+        tsr_vk_rsp r{};
+        const uint64_t cyc = (uint64_t) ((double) interval_ns * CORE_HZ_NOMINAL / 1e9) + 1;
+        if (call(VK_ADVANCE, 0, cyc, 0, nullptr, 0, &r, nullptr) && r.rc == 0) dev_cycles_ = r.x;
+    }
+    uint64_t now_ns() override {
+        tsr_vk_rsp r{};
+        if (call(VK_TIME, 0, 0, 0, nullptr, 0, &r, nullptr) && r.rc == 0) dev_cycles_ = r.x;
+        return (uint64_t) ((double) dev_cycles_ * 1e9 / CORE_HZ_NOMINAL);
+    }
+
     int mem_read(uint32_t ch, uint64_t off, void * dst, size_t n) override {
         uint8_t * d = (uint8_t *) dst;
         for (size_t done = 0; done < n;) {
@@ -229,6 +245,7 @@ private:
     std::string desc_;
     uint32_t viol_seen_ = 0;
     bool     dead_ = false;
+    uint64_t dev_cycles_ = 0;   // last device time the server reported (core cycles)
 
     bool fail(const char * msg) {
         fprintf(stderr, "tsr_transport(vkernel): %s\n", msg);

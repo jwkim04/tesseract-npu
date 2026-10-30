@@ -10,6 +10,11 @@
 // split uploads, the program cache, chained MUL_MATs, an F32 src0 produced on the device,
 // supports_op rejections and acceptances (llama.cpp's 512-token placement probe for output
 // heads), host-memory buffers with staged MUL_MATs, and a resident weight with T > IO.
+//
+// TSR_TEST_DUMP=<file> appends every device output the test reads back (tagged records: u32 tag
+// length, tag, u64 byte count, bytes) to <file>, so that two backends can be compared byte for byte
+// on the same inputs (the inputs come from a fixed-seed generator): e.g. this binary against the v1
+// libraries of build/v1 (LD_LIBRARY_PATH=build/v1/bin TSR_DEVICE=sim) and against this build's.
 #include <algorithm>
 #include <cinttypes>
 #include <cmath>
@@ -45,6 +50,21 @@ static int g_cases = 0;
 static ggml_backend_t g_tsr = nullptr;
 static ggml_backend_t g_cpu = nullptr;
 static std::mt19937 g_rng(42);
+
+static void dump(const char * tag, const std::vector<float> & v) {
+    static FILE * f = [] {
+        const char * p = getenv("TSR_TEST_DUMP");
+        return p && *p ? fopen(p, "ab") : nullptr;
+    }();
+    if (f == nullptr) return;
+    const uint32_t n = (uint32_t) strlen(tag);
+    const uint64_t b = v.size() * 4;
+    fwrite(&n, 4, 1, f);
+    fwrite(tag, 1, n, f);
+    fwrite(&b, 8, 1, f);
+    fwrite(v.data(), 1, (size_t) b, f);
+    fflush(f);
+}
 
 static std::vector<float> rand_f32(size_t n, float lo = -1.0f, float hi = 1.0f) {
     std::uniform_real_distribution<float> u(lo, hi);
@@ -228,6 +248,7 @@ static void run_case(const mm_case & c) {
 
     std::vector<float> yd(c.N * T);
     ggml_backend_tensor_get(y, yd.data(), 0, yd.size() * 4);
+    dump(c.name, yd);
 
     const std::vector<float> yr = ref_mm(c.type, ab.data(), c.N, c.K, xf.data(), T);
     size_t first = 0;
@@ -271,6 +292,7 @@ static void run_case(const mm_case & c) {
     ggml_backend_tensor_set(x, xf2.data(), 0, xf2.size() * 4);
     ggml_backend_graph_compute(g_tsr, graph);
     ggml_backend_tensor_get(y, yd2.data(), 0, yd2.size() * 4);
+    dump(c.name, yd2);
     const std::vector<float> yr2 = ref_mm(c.type, ab.data(), c.N, c.K, xf2.data(), T);
     CHECK(count_bit_mismatch(yd2, yr2, &first) == 0, "%s: run with new src1 differs from the oracle", c.name);
 
@@ -281,6 +303,7 @@ static void run_case(const mm_case & c) {
         ggml_backend_tensor_set(a, ab3.data(), 0, ab3.size());
         ggml_backend_graph_compute(g_tsr, graph);
         ggml_backend_tensor_get(y, yd2.data(), 0, yd2.size() * 4);
+        dump(c.name, yd2);
         const std::vector<float> yr3 = ref_mm(c.type, ab3.data(), c.N, c.K, xf2.data(), T);
         CHECK(count_bit_mismatch(yd2, yr3, &first) == 0, "%s: run after src0 re-upload differs (stale conversion?)", c.name);
     }
@@ -323,6 +346,8 @@ static void run_chain(int64_t K, int64_t N1, int64_t T, int64_t K2, int64_t N2, 
     std::vector<float> hd(N1 * T), yd(N2 * T2);
     ggml_backend_tensor_get(h, hd.data(), 0, hd.size() * 4);
     ggml_backend_tensor_get(y, yd.data(), 0, yd.size() * 4);
+    dump("chain h", hd);
+    dump("chain y", yd);
     const auto href = ref_mm(GGML_TYPE_Q8_0, ab1.data(), N1, K, xf.data(), T);
     const auto yref = ref_mm(t2, ab2.data(), N2, K2, href.data(), T2);
     size_t first;
@@ -363,6 +388,7 @@ static void run_src0_from_device(int64_t K, int64_t N1, int64_t T, int64_t K2, i
         ggml_backend_graph_compute(g_tsr, g);
         std::vector<float> yd(N2 * T2);
         ggml_backend_tensor_get(y, yd.data(), 0, yd.size() * 4);
+        dump("src0 from device y", yd);
         const auto href = ref_mm(GGML_TYPE_Q8_0, ab1.data(), N1, K, xf.data(), T);
         std::vector<uint8_t> hb(href.size() * 4);
         memcpy(hb.data(), href.data(), hb.size());
@@ -428,6 +454,7 @@ static void run_memset_clear() {
     ggml_backend_graph_compute(g_tsr, g);
     std::vector<float> yd(N * T);
     ggml_backend_tensor_get(y, yd.data(), 0, yd.size() * 4);
+    dump("memset/clear y", yd);
     const auto yr = ref_mm(GGML_TYPE_Q8_0, wbytes.data(), N, K, xe.data(), T);
     size_t first;
     CHECK(count_bit_mismatch(yd, yr, &first) == 0, "MUL_MAT after partial weight updates");
@@ -621,6 +648,7 @@ static void run_sched_large_T() {
         const int64_t nt = 7;
         std::vector<float> yd(N * nt);
         ggml_backend_tensor_get(y, yd.data(), (size_t) (t0 * N * 4), yd.size() * 4);
+        dump("large T y", yd);
         const auto yr = ref_mm(GGML_TYPE_Q8_0, wb.data(), N, K, xf.data() + t0 * K, nt);
         size_t first;
         CHECK(count_bit_mismatch(yd, yr, &first) == 0, "large T: tokens [%" PRId64 ", +7) differ", t0);
@@ -695,6 +723,8 @@ static void run_hosted_buffers() {
         std::vector<float> hd(R * T), yd(N * T);
         ggml_backend_tensor_get(h, hd.data(), 0, hd.size() * 4);
         ggml_backend_tensor_get(y, yd.data(), 0, yd.size() * 4);
+        dump("hosted h", hd);
+        dump("hosted y", yd);
         const auto href = ref_mm(GGML_TYPE_F16, lab.data(), R, K, xf.data(), T);
         const auto yref = ref_mm(GGML_TYPE_F32, lbb.data(), N, R, href.data(), T);
         size_t first;

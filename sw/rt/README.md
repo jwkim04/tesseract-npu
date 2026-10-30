@@ -6,25 +6,25 @@ backend="tesseract")`: the weight matmuls go to the device, everything else stay
 `sw/torch`, whose extension `_tesseract_rt` binds this API). It runs on `tsr_transport`, so
 `TSR_DEVICE=sim | mock | vkernel | xrt` select the device as for the ggml backend.
 
-> **State after X0 (v2, `docs/v2/01-execution-model.md` §12).** v1's per-call programs (emitted
-> on the host, cached in the CMD region, run through the transport's run interface) are deleted.
-> `upload`, `read_blocks`, `linear_ref`, `info` and `memory` work unchanged; `linear` throws
-> `tsr::rt::error` until a linear becomes a one-op OPL launch of the `graph` kernel
-> (`docs/v2/06-software-verification.md` §9.4, P3.2). The public API is unchanged; the program
-> counters stay 0. The `rt_*` ctests are not registered until then. Sections below that describe
-> programs and their cache describe v1 (tag `v1-m4`).
+> **v2 (`docs/v2/06-software-verification.md` §9.4, P3.2).** A `linear` call is one launch of
+> the firmware's `graph` kernel per IO tile: an op list with one MUL_MAT record per weight part
+> (K parts as further records with ACC_DST), cached by content in the OPL region (an LRU that
+> replaces v1's CMD-slot program cache). The kernel runs v1's LD / QACT / MVM / ST sequence, so the
+> results are v1's bit for bit; the public API and the counters are v1's (`execs` = launches,
+> `prog_*` = op-list cache hits / misses).
 
 ## Files
 
 | File | Content |
 | --- | --- |
 | `tsr_rt.h` | the public C++ API (`tsr::rt::device`), the one the torch extension binds |
-| `tsr_rt.cpp` | device, weight parts, lowering of one call, program cache, counters, reference path |
+| `tsr_rt.cpp` | device (transport + firmware boot), weight parts, the op list of one call, counters, reference path |
 | `tests/test_tsr_rt.cpp` | `test-tsr-rt`: device vs an independent model, bit for bit |
 | `CMakeLists.txt` | `tsr_rt` (static, PIC), `tsr_rt_shared` (`libtsr_rt.so`), `test-tsr-rt`, ctests `rt_*` |
 
-Shared with the ggml backend: `tsr_lower` (`sw/ggml-tesseract/lower.cmake`: `tsr-lower` tiling,
-emission, disassembly; `tsr-alloc`; `tsr-wlayout` row repack and symmetric scatter / gather) and
+Shared with the ggml backend: `tsr_lower` (`sw/ggml-tesseract/lower.cmake`: `tsr-lower` shape
+checks; `tsr-opl` OPL builder, OPL cache and `graph` launcher; `tsr-alloc`; `tsr-wlayout` row repack
+and symmetric scatter / gather) and
 the load-time conversion `tsr_row_to_dev_blocks` (`sw/ggml-tesseract/tsr-weights.cpp`, compiled into
 `tsr_rt`). ggml-base of the pinned llama.cpp provides `quantize_row_q8_0_ref` and the f16 / bf16
 `to_float`.
@@ -72,39 +72,44 @@ amax (DAZ / FTZ of spec 구현 명확화), and it emits a QA image (f32 scale), 
 
 ## Lowering
 
-- **Device memory**: CMD (ch0, 64 MiB) holds the cached programs, one slot each; IO (ch0, 256 MiB)
-  the x rows (K·4 B each) and, per N part, the y rows (⌈4n/64⌉ lines each) of one program; WEIGHT
-  (every channel, from 512 MiB) the weights, symmetric allocation, 4 KiB aligned. AUX is unused.
-- **One program per call** (per IO-sized chunk of T): for every N part, `tsr_mm_emit` (the ggml
-  backend's emitter) with T tiles of min(T_MAX, SPM capacity) tokens: `LD / QACT / MVM / ST`.
+- **Device memory**: OPL (ch0, 64 MiB) holds the cached op lists (LRU); IO (ch0, 256 MiB) the x
+  rows (K·4 B each) and, per N part, the y rows (⌈4n/64⌉ lines each) of one launch; WEIGHT (every
+  channel, from 512 MiB) the weights, symmetric allocation, 4 KiB aligned. AUX is unused.
+- **The firmware**: the device constructor boots `$TSR_IMAGE` or the build's `tsr-fw.elf` (warm if
+  it is already loaded) and finds `graph`.
+- **One launch per call** (per IO-sized chunk of T): an op list with, for every N part i and K part
+  j, one MUL_MAT record (SW §7.2): x = the IO x rows from column k₀ (stride K/16 lines), y = part
+  i's IO rows (stride ⌈4n/64⌉ lines), W_OFF of part (i, j), N = n_i, K = k_j and the chunk's T; the
+  firmware tiles T by min(T_MAX, its scratch ring) with `plan.hpp`. Records of one N part are
+  ordered by the builder's hazard analysis (each reads and writes the part's y rows); N parts are
+  independent. A list above 4096 records would run in pieces.
 - **N parts**: a weight is cut into row ranges when x + QA + y of T_MAX tokens (or of one token, if
-  T_MAX tokens can never fit) would exceed the SPM. Each part is its own allocation and MVM; rows
-  are independent, so results equal an unsplit weight bit for bit. Example: N = 130000, K = 896 at
-  T_MAX 8 → 2 parts of 65000 (unsplit, x + QA + y of 7 tokens fit the 65536-line SPM; split, 15, so a
-  T = 8 tile streams each row once).
+  T_MAX tokens can never fit) would exceed the SPM, and (v2) one token of a part must fit the
+  firmware's scratch-ring budget (`plan.hpp` `ring_budget`: the SPM minus the executor's argument,
+  OPL and preload areas). With T_MAX ≥ 2 the SPM / T_MAX bound is the smaller one, so the parts are
+  v1's. Each part is its own allocation and record; rows are independent, so results equal an
+  unsplit weight bit for bit. Example: N = 130000, K = 896 at T_MAX 8 → 2 parts of 65000.
 - **K parts**: when K > K_MAX (32768), the columns are cut into equal parts (block multiples). The
-  program LDs the x tile once and, per part, runs QACT on its columns (`src_stride` = the full row)
-  and MVM, with `ACC` after the first: y = ((y₀ + y₁) + y₂)… with one f32 add each (spec ACC). This
-  is not the unsplit dot product; `linear_ref` and `weight_info.k_part` describe it exactly.
-- **Program cache**: key = format, K, T, x and y beats, and every part's (n, k₀, k, W_OFF). A hit
-  writes nothing to CMD; a decode call writes x, runs, reads y. Programs are at most 4 MiB
-  (131071 instructions; T is chunked to stay below), at most 65536 are kept, LRU eviction when the
-  CMD region is full.
+  first record of an N part writes y, the others have ACC_DST (the kernel loads the old y rows and
+  runs MVM with ACC): y = ((y₀ + y₁) + y₂)… with one f32 add each (spec ACC), as v1's in-SPM ACC
+  chain. This is not the unsplit dot product; `linear_ref` and `weight_info.k_part` describe it
+  exactly.
+- **Op-list cache**: keyed by the list's bytes (formats, shapes, T, x / y handles, W_OFFs). A hit
+  writes nothing to the OPL region; a decode call writes x, launches, reads y.
 
 ## Counters
 
-`execs` (programs run), `prog_hits` / `prog_misses`, `perf_cycles` / `perf_mvm_cycles` (sums of
-the PERF_CYCLES / PERF_MVM_CYCLES deltas of every run; PERF does not change between runs), and
-`dev_read_bytes` (Σ_c PERF_CH_RD_BEATS deltas × 64: weight stream, LD, instruction fetch), `h2d_bytes`
-(of which `h2d_weight_bytes`) and `d2h_bytes`. `open_options.read_perf = false` skips the
-2 × (2 + NUM_CH) CSR reads per run.
+`execs` (`graph` launches), `prog_hits` / `prog_misses` (op lists found in / written to the OPL
+cache), `perf_cycles` / `perf_mvm_cycles` (sums of the PERF_CYCLES / PERF_MVM_CYCLES deltas of every
+launch; PERF does not change while the device is idle), and `dev_read_bytes` (Σ_c PERF_CH_RD_BEATS
+deltas × 64: weight stream, LD), `h2d_bytes` (of which `h2d_weight_bytes`; op lists count on a miss)
+and `d2h_bytes`. `open_options.read_perf = false` skips the 2 × (2 + NUM_CH) CSR reads per launch.
 
 ## Environment
 
-`TSR_DEVICE` (transport, default sim) and the transport's own variables (`TSR_SIM_*`, `TSR_MOCK_*`,
-`TSR_VKERNEL_*`, `TSR_XRT_*`; v1's per-exec `TSR_TRACE` dump for sim is deleted in X0).
-`TSR_RT_DEBUG=1` logs uploads and emitted programs, `2` adds a disassembly of every new program
-(v1).
+`TSR_DEVICE` (transport, default sim), `TSR_IMAGE` (firmware image) and the transport's own
+variables (`TSR_SIM_*`, `TSR_MOCK_*`, `TSR_VKERNEL_*`, `TSR_XRT_*`, `TSR_TRACE`, `TSR_LOG`, the
+timeouts; SW §9.2). `TSR_RT_DEBUG=1` logs uploads, calls and launches.
 
 ## Build and test
 
@@ -112,8 +117,9 @@ the PERF_CYCLES / PERF_MVM_CYCLES deltas of every run; PERF does not change betw
 cmake -S . -B build/rt -DCMAKE_BUILD_TYPE=Release
 cmake --build build/rt -j4 --target tsr_rt tsr_rt_shared test-tsr-rt
 cd build/rt && ctest -R '^rt_'
-# v1 (tag v1-m4; X0 deleted the v1 vkernel server, the v2 one is P5.3):
-tb/platform/vkernel/vkernel.py run --config k4t1 -- build/rt/bin/test-tsr-rt --quick    # RTL smoke
+# RTL smoke (v1, tag v1-m4; X0 deleted the v1 vkernel server, the two-clock v2 one is P5.3, until
+# then the opt-in rt_vkernel_k4t1 ctest reports "skipped"):
+tb/platform/vkernel/vkernel.py run --config k4t1 -- build/rt/bin/test-tsr-rt --quick
 ```
 
 ctests: `rt_sim`, `rt_sim_tmax8` (`--big`: the N = 130000 head), `rt_mock` (DMA align 64, chunk
@@ -122,11 +128,11 @@ ctests: `rt_sim`, `rt_sim_tmax8` (`--big`: the N = 130000 head), `rt_mock` (DMA 
 K 32 … 4864 and 33024 / 33280 (> K_MAX); N 1 … 4864 (130000 with `--big`); T 1 … 20; forced N
 and K parts; strided x / y; padded and misaligned weight rows): `read_blocks` equals ggml's blocks
 byte for byte, `linear` and `linear_ref` equal the model bit for bit, y padding untouched, NMSE
-against an f64 product of the dequantized weight < 1e-3 (measured 0 … 7.9e-5). Plus program cache
-and exact host traffic, free / re-upload, unsupported shapes, two threads, an IO area of 64 KiB
-(T = 40 → 3 programs).
+against an f64 product of the dequantized weight < 1e-3 (measured 0 … 7.9e-5). Plus the op-list
+cache and exact host traffic, free / re-upload, unsupported shapes, two threads, an IO area of
+64 KiB (T = 40 → 3 launches).
 
-Results 2026-10-24 (`build/rt`, Release): all 43 cases OK on `rt_sim`, `rt_mock`, `rt_mock_tmax8`,
+Results of v1, 2026-10-24 (`build/rt`, Release): all 43 cases OK on `rt_sim`, `rt_mock`, `rt_mock_tmax8`,
 44 on `rt_sim_tmax8` (with the N = 130000 head: 2 N parts, T = 9). On the Verilated kernel
 (`TSR_DEVICE=vkernel`, servers built from the M3 RTL at 04:37 the same day, regime fast): k4t1
 (4 ch, T_MAX 1) all 43 cases, 67 runs, 0 findings, 0 reads of unwritten memory, 9 s wall; k4 (4 ch,

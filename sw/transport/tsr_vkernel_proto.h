@@ -11,13 +11,17 @@
 // operation as soon as the count grows, so a protocol bug cannot pass silently.
 //
 // Version 2 (X0, docs/v2/01-execution-model.md §12): VK_WAIT (6), the scheduler's side of an
-// ap_ctrl_hs run, is deleted with the run protocol; a version-1 server refuses the HELLO. The
-// two-clock v2 server and its device-time hint (EX §10.2 advance) come with P5.3.
+// ap_ctrl_hs run, is deleted with the run protocol; a version-1 server refuses the HELLO.
+// Version 3 (P3.1, EX §10.2): the kernel is ap_ctrl_none and its clocks run only when the client
+// lets device time pass: VK_ADVANCE (10), the "advance" hint of the kdev layer (kdev::idle), and
+// VK_TIME (11), the device time the protocol's timeouts count. The two-clock v2 server that
+// implements them is P5.3 (docs/v2/06-software-verification.md §11); until then no server exists
+// and TSR_DEVICE=vkernel stops at the open with a message naming P5.3.
 #pragma once
 
 #include <stdint.h>
 
-#define TSR_VK_PROTO_VERSION 2u
+#define TSR_VK_PROTO_VERSION 3u
 
 enum tsr_vk_op {
     VK_HELLO  = 1,   // a = protocol version -> val = NUM_CH, x = channel bytes; payload =
@@ -31,6 +35,10 @@ enum tsr_vk_op {
     VK_STATS  = 7,   // -> payload: JSON summary of the session so far (NUL-terminated)
     VK_MSGS   = 8,   // -> payload: findings not fetched yet, one per line (NUL-terminated)
     VK_BYE    = 9,   // the server prints its summary and exits
+    VK_ADVANCE = 10, // b = core cycles (kernel clock): run both clocks for at most that long, ending
+                     //   early when LCQ_WR, LOG_WR or STATUS.SR_BUSY / RV_HALTED change -> val = 1 if
+                     //   it ended early, x = device time in core cycles after the step
+    VK_TIME   = 11,  // -> x = device time in core cycles (kernel clock) since the server started
 };
 
 typedef struct tsr_vk_req {
