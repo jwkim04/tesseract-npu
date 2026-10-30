@@ -103,6 +103,39 @@ owners, are used only to name those projects and do not mean that the projects e
 The GDB archer fish is by Jamie Guinan (vector version by Andreas Arnez), CC BY-SA 3.0 US. Sources
 and licences: [`docs/fig/logos/SOURCES.md`](docs/fig/logos/SOURCES.md).
 
+## Custom kernels in C++
+
+Every operation the core runs is a kernel on its RISC-V control core, and you can write your own in
+plain C++20. The SDK's header library turns tile ops (DMA loads and stores, activation
+quantization, matrix-vector products, vector-unit math, attention steps) into hardware commands that
+the units execute asynchronously; tickets and `after()` express the dependencies, and the hardware
+checks every op before it runs. The same source builds for the host too, and runs bit-exactly on
+the simulator before it ever touches the card.
+
+```cpp
+#include "tsr/kernel.hpp"
+#include "tsr/rt.hpp"
+
+using namespace tsr;
+
+// y = a + b over n floats. Args: a0 a, a1 b, a2 y (DRAM handles), a3 n (a multiple of 16).
+TSR_KERNEL(vadd, 4, 0, 0);
+extern "C" int32_t vadd(const tsr_args * args) {
+    const uint32_t n = args->a[3], lines = n / 16;            // 16 floats per 64-byte SPM line
+    const spm A{0}, B{lines};                                 // two buffers in the scratchpad
+    const ticket la = issue(LD(A, from_handle(args->a[0]), lines));            // DMA
+    const ticket lb = issue(LD(B, from_handle(args->a[1]), lines));            // DMA
+    const ticket ad = issue(VOP({.func = VOP_FUNC_ADD, .d = A.line, .a = A.line,
+                                 .b = B.line, .m = n, .rows = 1}), after(la, lb));  // vector unit
+    issue(ST(A, from_handle(args->a[2]), lines), after(ad));                    // DMA
+    return 0;                                                 // the runtime joins every op
+}
+```
+
+The host launches it by name through the transport (`tsr_image_kernel(img, "vadd")`, then
+`tsr_transport_call`). SDK guide, the header library and the rules a kernel follows:
+[`sw/ctrl/README.md`](sw/ctrl/README.md).
+
 ## Supported models
 
 | Model | Weights | Runs today |
