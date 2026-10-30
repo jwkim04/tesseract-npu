@@ -136,8 +136,9 @@ const char * make_plan(const tsr_config & cfg, dtype t, uint32_t N, uint32_t K, 
 
     // SPM per token: the x row (all of K, K * 4 / 64 lines), the QA of the largest K part, y (v1's
     // rule). v2: a part must also plan in the firmware's per-op ring budget (plan.hpp ring_budget,
-    // SPM minus the executor's argument, OPL and preload areas; V2-SW-20), which caps the lines of
-    // one token. With T_MAX >= 2 the SPM / T_MAX cap is the smaller one, so the parts are v1's.
+    // SPM minus the executor's argument, OPL and preload areas and its one-tile block; V2-SW-20,
+    // V2-SW-36), which caps the lines of one token. With T_MAX >= 2 the SPM / T_MAX cap is the smaller
+    // one, so the parts are v1's.
     const uint64_t spm_lines = cfg.spm_bytes / TSR_LINE_BYTES;
     const uint64_t budget = tsr::plan::ring_budget(tsr_plan_cfg(cfg));
     const uint64_t base = (uint64_t) K / 16 + tsr_qa_lines(p->kind, p->k_part);

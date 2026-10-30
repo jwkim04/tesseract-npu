@@ -35,7 +35,10 @@
 //      (then pidx[i] is read again: the op's first push follows it); d = after(ticket[dep0],
 //      ticket[dep1]); the handler pushes the op's tile ops and returns its ticket T_i (NOP: none;
 //      JOIN: a SYNC NOP over d; MUL_MAT: the decode fast path mmk::mulmat_t1_fast first,
-//      k_mulmat.hpp, else kind_mulmat); ticket[i] = T_i. SERIAL joins T_i. Every 16 ops and
+//      k_mulmat.hpp, else kind_mulmat; the short M7 kinds (W2b): the table's fast entry
+//      kind_<name>_fast first, else the handler out of line (call_m7_ool); FLASH_ATTN and test
+//      kinds: the table's handler; kflags and d from the loop's registers); ticket[i] = T_i.
+//      SERIAL joins T_i. Every 16 ops and
 //      before every software join (SERIAL, a streamed chunk), with STOP_ON_ERROR, QSTATUS error
 //      bits stop the pushing: timing-dependent, but it only decides which later ops are skipped
 //      (SW §7.3 2.6). After SERIAL's join the error records (ERR_CODE) decide instead: exact once
@@ -90,25 +93,62 @@ namespace tsr {
 namespace {
 // The kind table (exec.hpp): handler and exact argument count per kind 0x00-0x3F, in .rodata (one
 // DTCM load per record instead of a switch and a call). NOP and JOIN have no handler (built into
-// the loop) and 0 arguments; kinds without a handler in this image have NARGS_UNDEF (BAD_RECORD).
-// TODO(W2b, P2.6 / P2.7): the M7 kinds' handlers.
+// the loop) and 0 arguments; MUL_MAT and the M7 kinds 0x11-0x1B (W2b) have theirs (an M7 kind
+// whose source is not in the image has its weak stub, zz_kind_stubs.cpp: BAD_RECORD from the
+// handler); other kinds have NARGS_UNDEF (BAD_RECORD from the record check).
 // w0x / min_ns fold opl::check_record_n's record checks into two compares: (w0 & W0_CHECK_MASK)
 // must equal w0x (n_args = the kind's, word0 [15:12] = 0; W0X_NONE, which has a bit outside the
 // mask, never matches: no such kind here) and the record must have at least min_ns slots (its
 // arguments fit).
 constexpr uint32_t W0_CHECK_MASK = 0xFF00F000u, W0X_NONE = 1u;
+// fast: the kind's decode fast path (exec.hpp kind_<name>_fast; W2b integration), called before fn;
+// nullptr for kinds without one (MUL_MAT's is mulmat_t1_fast, called directly; FLASH_ATTN's records
+// are long; test kinds).
 struct kind_slot {
     kind_fn fn;
+    kind_fast_fn fast;
     uint32_t w0x;
     uint32_t min_ns;
 };
-constexpr kind_slot slot_for(kind_fn fn, uint32_t nargs) {
-    return kind_slot{fn, nargs << 24, opl::slots_for_nargs(nargs)};
+constexpr kind_slot slot_for(kind_fn fn, uint32_t nargs, kind_fast_fn fast = nullptr) {
+    return kind_slot{fn, fast, nargs << 24, opl::slots_for_nargs(nargs)};
+}
+constexpr kind_fn m7_handler(uint32_t kind) {
+    switch (kind) {
+        case opl::K_ADD:         return &kind_add;
+        case opl::K_MUL:         return &kind_mul;
+        case opl::K_SCALE:       return &kind_scale;
+        case opl::K_RMS_NORM:    return &kind_rms_norm;
+        case opl::K_GLU:         return &kind_glu;
+        case opl::K_ROPE:        return &kind_rope;
+        case opl::K_GET_ROWS:    return &kind_get_rows;
+        case opl::K_SET_ROWS_KV: return &kind_set_rows_kv;
+        case opl::K_FLASH_ATTN:  return &kind_flash_attn;
+        case opl::K_CPY:         return &kind_cpy;
+        case opl::K_UNARY:       return &kind_unary;
+        default:                 return nullptr;
+    }
+}
+constexpr kind_fast_fn m7_fast(uint32_t kind) {
+    switch (kind) {
+        case opl::K_ADD:         return &kind_add_fast;
+        case opl::K_MUL:         return &kind_mul_fast;
+        case opl::K_SCALE:       return &kind_scale_fast;
+        case opl::K_RMS_NORM:    return &kind_rms_norm_fast;
+        case opl::K_GLU:         return &kind_glu_fast;
+        case opl::K_ROPE:        return &kind_rope_fast;
+        case opl::K_GET_ROWS:    return &kind_get_rows_fast;
+        case opl::K_SET_ROWS_KV: return &kind_set_rows_kv_fast;
+        case opl::K_CPY:         return &kind_cpy_fast;
+        case opl::K_UNARY:       return &kind_unary_fast;
+        default:                 return nullptr;   // FLASH_ATTN: no fast path
+    }
 }
 constexpr kind_slot make_slot(uint32_t kind) {
     if (kind == opl::K_NOP || kind == opl::K_JOIN) return slot_for(nullptr, 0u);
     if (kind == opl::K_MUL_MAT) return slot_for(&kind_mulmat, opl::kind_nargs(kind));
-    return kind_slot{nullptr, W0X_NONE, 1u};
+    if (kind >= opl::K_ADD && kind <= opl::K_UNARY) return slot_for(m7_handler(kind), opl::kind_nargs(kind), m7_fast(kind));
+    return kind_slot{nullptr, nullptr, W0X_NONE, 1u};
 }
 struct kind_table {
     kind_slot s[opl::N_KINDS];
@@ -159,8 +199,11 @@ struct run_state {
 };
 constinit run_state g{};        // constant-initialised: no static constructor (crt0: the SDK has none)
 uint32_t rec[REC_WORDS];        // the record being executed (DTCM copy)
-plan::dev_cfg dev;
-spm_ring ring;
+// constinit (W2b integration): dev_cfg's M7 fields have default member initializers, which made a
+// default-initialised `dev` a dynamic initialisation (a static constructor in .init_array, which the
+// SDK's crt0 does not run and fw_elf_image rejects); value-initialised it is constant again.
+constinit plan::dev_cfg dev{};
+constinit spm_ring ring{};
 
 
 // Copies n words of SPM line `line`, from word w, to dst.
@@ -288,8 +331,18 @@ TSR_HOT ticket call_handler(kind_fn fn, const volatile uint32_t * args, kind_ctx
     ++__tsr_exec_state.mm_fallback;
     return call_handler(fn, args, ctx);
 }
+// An M7 record its fast path did not take (nothing was pushed): the kind's handler (its general
+// path), out of line, with the record's fields re-read (word0 / word1 in place or the DTCM copy; d
+// recomputed from the ticket table), so that nothing but args and ctx stays live across the fast
+// call in op_loop.
+[[gnu::noinline, gnu::cold]] ticket call_m7_ool(const volatile uint32_t * args, kind_ctx & ctx) {
+    return call_handler(k_kinds.s[opl::w0_kind(args[-2])].fn, args, ctx);
+}
 
-template <bool STREAMED>
+// PLAIN (W2b fix): the list has neither MARK nor SERIAL (every production list unless profiled): the
+// two per-record flag tests fold away (about 6 RV cycles per record); instantiated for lists read in
+// place only (a streamed list, > 4,096 lines, pays them).
+template <bool STREAMED, bool PLAIN = false>
 [[gnu::noinline]] uint32_t op_loop(const loop_in & in, kind_ctx & ctx, uint32_t * n_done) {
     const uint32_t n_ops = in.n_ops, n_slots = in.n_slots, ops_line = in.ops_line, flags = in.flags;
     const uint32_t push_flags = in.push_flags;
@@ -310,7 +363,7 @@ template <bool STREAMED>
         // The op's control-window accesses come first: they invalidate the SPM line buffer, so
         // the record's words below are one line fill. MARK's NODE_BEGIN i is pushed here, before
         // the record is read (a record found malformed below has its marker but no pushes).
-        if (flags & opl::F_MARK) trace_mark((MARK_CLASS_NODE_BEGIN << MARK_CLASS_LSB) | i);
+        if (!PLAIN && (flags & opl::F_MARK)) trace_mark((MARK_CLASS_NODE_BEGIN << MARK_CLASS_LSB) | i);
         pidx[i] = pidx_now();                                       // before the op's first push (exact)
         set_info(i);                                                // RT_INFO: the op being read / pushed
         const uint32_t w0 = p[0], w1 = p[1];
@@ -318,12 +371,12 @@ template <bool STREAMED>
 
         // The kind's handler and record checks (exec.hpp: the table, then the test hook; MUL_MAT,
         // the decode list's kind, without the table load).
-        kind_slot ks{nullptr, W0X_NONE, 1u};
+        kind_slot ks{nullptr, nullptr, W0X_NONE, 1u};
         if (kind == opl::K_MUL_MAT) ks = slot_for(&kind_mulmat, opl::mm::NARGS);
         else if (kind < opl::N_KINDS) ks = k_kinds.s[kind];
         if (ks.w0x == W0X_NONE && tsr_exec_test_kind != nullptr) {
             kind_entry ke{};
-            if (tsr_exec_test_kind(kind, &ke)) ks = ke.nargs <= 0xFFu ? slot_for(ke.fn, ke.nargs) : kind_slot{nullptr, W0X_NONE, 1u};
+            if (tsr_exec_test_kind(kind, &ke)) ks = ke.nargs <= 0xFFu ? slot_for(ke.fn, ke.nargs) : kind_slot{nullptr, nullptr, W0X_NONE, 1u};
         }
         // opl::check_record_n's checks and codes: BAD_RECORD (word0 [15:12], n_args not the kind's,
         // slot overflow, arguments that do not fit the slots), then BAD_DEP (dep >= own index;
@@ -378,8 +431,14 @@ template <bool STREAMED>
             if (kind == opl::K_MUL_MAT) {                           // deps after(t0, t1)
                 t = ticket{mmk::mulmat_t1_fast(args, opl::w0_kflags(w0), ticket{tick1[d0]}, ticket{tick1[d1]}, ctx)};
                 if (t.v == mmk::NOT_FAST) t = call_handler_ool(ks.fn, args, ctx);
-            } else {
-                t = call_handler(ks.fn, args, ctx);
+            } else if (ks.fast != nullptr) {                         // the short M7 kinds: the decode fast
+                // path first (a leaf, exec.hpp kind_<name>_fast; W2b integration), else the handler,
+                // out of line; the record's fields from the loop's registers (w0; d0 / d1 already
+                // offset for the sentinel table), not re-read through args.
+                const uint32_t v = ks.fast(args, opl::w0_kflags(w0), after(ticket{tick1[d0]}, ticket{tick1[d1]}), ctx);
+                t = v != KIND_NOT_FAST ? ticket{v} : call_m7_ool(args, ctx);
+            } else {                                                // FLASH_ATTN, test kinds
+                t = ks.fn(args, opl::w0_nargs(w0), opl::w0_kflags(w0), after(ticket{tick1[d0]}, ticket{tick1[d1]}), ctx);
             }
             if (ctx.ret != 0u) {
                 ++i;                                                // its pushes started
@@ -391,7 +450,7 @@ template <bool STREAMED>
         }
         tick1[i + 1u] = t.v;
 
-        if (flags & opl::F_SERIAL) {
+        if (!PLAIN && (flags & opl::F_SERIAL)) {
             // Before the join (SW §7.3 2.6) and after it: once T_i is done its error record is
             // visible (I2), so SERIAL + STOP_ON_ERROR stops exactly after the failing op, whatever
             // the schedule (the post-join check reads the records, not QSTATUS).
@@ -510,9 +569,18 @@ uint32_t run(const tsr_args * a, uint32_t * n_done) {
     }
 
     // --- 2. the ops -----------------------------------------------------------------------------
-    dev.spm_lines = L;
-    dev.t_max = field_get(core_csr(CSR_CFG0), CFG0_T_MAX, CFG0_T_MAX_LSB);
-    dev.k_max = field_get(core_csr(CSR_CFG2), CFG2_K_MAX_256, CFG2_K_MAX_256_LSB) * 256u;
+    // Device parameters (plan.hpp dev_cfg), once per launch: CFG0 / CFG2 / CFG3 / CAPS through the
+    // core window (hardware constants: not timing-dependent).
+    {
+        const uint32_t cfg0 = core_csr(CSR_CFG0), cfg2 = core_csr(CSR_CFG2);
+        dev.spm_lines = L;
+        dev.t_max = field_get(cfg0, CFG0_T_MAX, CFG0_T_MAX_LSB);
+        dev.k_max = field_get(cfg2, CFG2_K_MAX_256, CFG2_K_MAX_256_LSB) * 256u;
+        dev.num_ch = field_get(cfg0, CFG0_NUM_CH, CFG0_NUM_CH_LSB);
+        dev.vl = field_get(cfg2, CFG2_VL, CFG2_VL_LSB);
+        dev.pcap = field_get(core_csr(CSR_CFG3), CFG3_PCAP16, CFG3_PCAP16_LSB) * 16u;
+        dev.caps = core_csr(CSR_CAPS);
+    }
     ring.init(lay.ring_line, lay.ring_lines);
     g.ring_used = true;
     kind_ctx ctx{};
@@ -522,6 +590,9 @@ uint32_t run(const tsr_args * a, uint32_t * n_done) {
     ctx.pre = spm{lay.pre_line};
     ctx.cfg = &dev;
     ctx.mml = plan::mm_limits_of(dev);
+    ctx.pl = plan::plan_limits_of(dev);
+    ctx.one = spm{lay.one_line};
+    ctx.one_lines = lay.one_lines;
     ctx.push_flags = g.push_flags;
 
     loop_in in;
@@ -530,7 +601,9 @@ uint32_t run(const tsr_args * a, uint32_t * n_done) {
     in.ops_line = h.ops_off / opl::SLOT_BYTES;
     in.flags = g.flags;
     in.push_flags = g.push_flags;
-    return g.n_chunks != 0u ? op_loop<true>(in, ctx, n_done) : op_loop<false>(in, ctx, n_done);
+    if (g.n_chunks != 0u) return op_loop<true>(in, ctx, n_done);
+    return (g.flags & (opl::F_MARK | opl::F_SERIAL)) == 0u ? op_loop<false, true>(in, ctx, n_done)
+                                                           : op_loop<false>(in, ctx, n_done);
 }
 
 }  // namespace

@@ -23,7 +23,8 @@
 //     chunk, AMASK, one ASMAX, all ATTPV, one AMERGE), so every VU op covers all R rows with
 //     valid data; AT §6.6 lists the passes outermost, which AMERGE / ANORM (no row selection) cannot
 //     express for G > T_MAX. Every op is row-independent, so each row gets the per-pass result.
-//   - Chunk planner (AT §6.6 step 3, §7.3): see the "Chunk planner" section below.
+//   - Chunk planner (AT §6.6 step 3, §7.3): include/tsr_fa_plan.h (W2b: shared with the firmware;
+//     the "Chunk planner" section below wraps it).
 //   - The f32 mask copy (AT §7.3) holds fdiv(m, scale): AMASK adds the mask before ASMAX applies
 //     the scale, so a finite m must be pre-divided to give the CPU's scale·s + m (AT §5.5 as written
 //     would give scale·(s + m)); see tsr_msum_mask_f32.
@@ -31,6 +32,7 @@
 #include "tsr_ref_at.h"
 
 #include "tsr_ref_math.h"
+#include "tsr_fa_plan.h"   // W2b kvfa: the chunk planner shared with the firmware
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -716,269 +718,55 @@ void tsr_msum_mask_f32(const uint16_t * mask, size_t row_stride, uint32_t n_kv, 
 // ---------------------------------------------------------------------------
 // Chunk planner (AT §6.6 step 3, §7.3, V2-AT-19)
 //
-// Per query tile [q0, q0 + T) the planner forms sub-ranges of groups, cuts them into chunks of at
-// most NCG groups and orders the chunks. Rules (the parts AT leaves open are decisions):
-//   1. MSUM GENERAL: one GENERAL sub-range over all n_kv cells, groups [0, ceil(n_kv/16)).
-//   2. T = 1 (one query row: decode, or a prefill tile of one token): each of its 0..2 runs is a
-//      FAST sub-range over the groups it intersects, with c_lo / c_hi from the run and no flags
-//      (AT §7.3 "two FAST sub-ranges"). Two runs may share a group; it is then streamed twice,
-//      with disjoint bounds.
-//   3. T > 1: if every row has exactly one run and the runs are [max(0, lo - SLIDE·d_q),
-//      hi - CAUSAL·d_q) with d_q = T - 1 - q for some lo, hi, CAUSAL, SLIDE (each flag set only
-//      when the bounds actually differ between rows), one FAST sub-range over the groups of the
-//      union [min L_q, max H_q). Otherwise one GENERAL sub-range over the groups of the hull of
-//      all runs (needs the f32 mask copy; tsr_ref_fa reports TSR_FA_E_MASK without it).
-//   4. NCG = tsr_fa_ncg(n_total) with n_total = the sum of the sub-ranges' groups. A sub-range
-//      [Ulo, Uhi) is cut at Ulo + k·NCG.
-//   5. FAST T > 1 only: a cut strictly inside the spread (min, max) of the rows' upper bounds
-//      (CAUSAL) or lower bounds (SLIDE) cannot be encoded (c_lo / c_hi would exceed 16·n_groups),
-//      so it is replaced by the cuts at the group boundaries just below and above the spread
-//      (repeated until no cut is inside a spread). Chunks only shrink, so NCG and PCAP hold.
-//   6. Per chunk [A, A') in cells: lower bound c_lo = 0 and no SLIDE if lo <= A, else lo - A and
-//      SLIDE as the tile; upper bound c_hi = 16·n_groups and no CAUSAL if every row's upper bound
-//      is >= A', else hi - A and CAUSAL as the tile. The planner verifies that the encoded bounds
-//      give every row exactly its run inside the chunk.
-//   7. Order: chunks by (u0, c_lo) (generation order); then every chunk whose groups contain a
-//      cell written in this launch moves to the end, keeping its order (AT §6.6 "newest last").
-//   8. No visible cell for any row: one chunk, group 0, c_lo = c_hi = 0 (all -inf: m = M_FLOOR,
-//      p = 0, l = 0), so ANORM writes 0 as the CPU does (AT §7.3).
+// W2b kvfa (P2.7): the planner's rules and code live in include/tsr_fa_plan.h, shared with the
+// firmware's FLASH_ATTN kernel (sw/ctrl/kernels/k_fattn.cpp), so the two chunk lists are the same
+// by construction. Rules 1-8 (W1a decisions) are stated there; these are the library's wrappers
+// with W1a's signatures and return codes. sw/ctrl/tests/test_fw_kvfa_plan.cpp compares the shared
+// planner with W1a's code (kept there as the oracle).
 // ---------------------------------------------------------------------------
 void tsr_fa_pass_rule(const tsr_att_cfg * cfg, uint32_t G, uint32_t * GS, uint32_t * T_q) {
-    const uint32_t gs = G < cfg->t_max ? G : cfg->t_max;
-    *GS = gs;
-    *T_q = gs ? cfg->t_max / gs : 0u;
+    tsr_fap_pass_rule(cfg->t_max, G, GS, T_q);
 }
 
 uint32_t tsr_fa_ncg(const tsr_att_cfg * cfg, uint32_t E, uint32_t D, uint32_t n_total) {
-    if (D == 0 || E % D != 0 || cfg->C == 0) return 0;
-    const uint64_t C4 = 4u * (uint64_t)cfg->C;
-    const uint64_t pc = (uint64_t)cfg->C * (cfg->pcap / (16u * (E / D)));
-    const uint64_t half = ((uint64_t)n_total + 1u) / 2u;
-    const uint64_t ru = (half + C4 - 1u) / C4 * C4;
-    const uint64_t m = ru > C4 ? ru : C4;
-    uint64_t ncg = 128u;
-    if (pc < ncg) ncg = pc;
-    if (m < ncg) ncg = m;
-    return (uint32_t)ncg;
+    return tsr_fap_ncg(cfg->C, cfg->pcap, E, D, n_total);
 }
 
-typedef struct plan_sub {
-    uint32_t ulo, uhi;          // groups [ulo, uhi)
-    int general;
-    int multi;                  // FAST with T > 1 (bounds from lo_abs / hi_abs / flags)
-    int64_t lo, hi;             // FAST: T = 1 the run; T > 1 lo_abs, hi_abs
-    uint32_t flags;             // FAST T > 1: CAUSAL | SLIDE of the tile
-} plan_sub;
-
-typedef struct plan_emit {
-    tsr_fa_chunk * out;
-    size_t cap, count;
-    int pass;                   // 0: chunks without new cells, 1: with
+typedef struct plan_new {
     const uint32_t (*new_runs)[2];
     uint32_t n_new;
-} plan_emit;
+} plan_new;
 
-static int chunk_has_new(const plan_emit * pe, const tsr_fa_chunk * c) {
-    const uint64_t a = 16u * (uint64_t)c->u0, b = 16u * ((uint64_t)c->u0 + c->n_groups);
-    for (uint32_t i = 0; i < pe->n_new; ++i) {
-        if ((uint64_t)pe->new_runs[i][0] < b && (uint64_t)pe->new_runs[i][1] > a && pe->new_runs[i][1] > pe->new_runs[i][0]) return 1;
+// Rule 7: the chunk's groups hold a cell of one of the runs written in this launch.
+static int chunk_has_new(void * ctx, uint32_t u0, uint32_t n_groups) {
+    const plan_new * pn = (const plan_new *)ctx;
+    const uint64_t a = 16u * (uint64_t)u0, b = 16u * ((uint64_t)u0 + n_groups);
+    for (uint32_t i = 0; i < pn->n_new; ++i) {
+        if ((uint64_t)pn->new_runs[i][0] < b && (uint64_t)pn->new_runs[i][1] > a && pn->new_runs[i][1] > pn->new_runs[i][0]) return 1;
     }
     return 0;
-}
-
-static void plan_put(plan_emit * pe, const tsr_fa_chunk * c) {
-    if (chunk_has_new(pe, c) != pe->pass) return;
-    if (pe->count < pe->cap) pe->out[pe->count] = *c;
-    pe->count += 1u;
-}
-
-// Cuts of a sub-range (rule 4-5) into cuts[] (sorted, strictly inside (ulo, uhi)); returns count.
-// cap >= (uhi - ulo) / ncg + 4: each of the <= 2 spreads adds at most one cut.
-static uint32_t plan_cuts(const plan_sub * s, uint32_t ncg, uint32_t T, uint32_t * cuts, uint32_t cap) {
-    uint32_t n = 0;
-    for (uint64_t x = (uint64_t)s->ulo + ncg; x < s->uhi && n < cap; x += ncg) cuts[n++] = (uint32_t)x;
-    if (!s->multi || s->flags == 0u) return n;
-    int64_t sp[2][2];
-    uint32_t nsp = 0;
-    if (s->flags & TSR_ATT_CAUSAL) { sp[nsp][0] = s->hi - (int64_t)(T - 1u); sp[nsp][1] = s->hi; ++nsp; }
-    if (s->flags & TSR_ATT_SLIDE)  { sp[nsp][0] = i64max(0, s->lo - (int64_t)(T - 1u)); sp[nsp][1] = s->lo; ++nsp; }
-    for (int iter = 0; iter < 8; ++iter) {
-        int changed = 0;
-        for (uint32_t k = 0; k < n; ++k) {
-            const int64_t X = 16 * (int64_t)cuts[k];
-            for (uint32_t t = 0; t < nsp; ++t) {
-                if (sp[t][0] < X && X < sp[t][1]) {
-                    // replace X by the group boundaries just below and above the spread
-                    const uint32_t lo = (uint32_t)(sp[t][0] / 16), hi = (uint32_t)((sp[t][1] + 15) / 16);
-                    cuts[k] = lo;
-                    if (n < cap) cuts[n++] = hi;
-                    changed = 1;
-                    break;
-                }
-            }
-        }
-        // sort, drop duplicates and cuts outside (ulo, uhi)
-        for (uint32_t i = 1; i < n; ++i) {
-            const uint32_t v = cuts[i];
-            uint32_t j = i;
-            while (j > 0 && cuts[j - 1] > v) { cuts[j] = cuts[j - 1]; --j; }
-            cuts[j] = v;
-        }
-        uint32_t m = 0;
-        for (uint32_t i = 0; i < n; ++i) {
-            if (cuts[i] <= s->ulo || cuts[i] >= s->uhi) continue;
-            if (m > 0 && cuts[m - 1] == cuts[i]) continue;
-            cuts[m++] = cuts[i];
-        }
-        n = m;
-        if (!changed) return n;
-    }
-    return n;   // not reached for spreads < 16 cells (T <= 8)
-}
-
-// Encodes and emits the chunks of one sub-range. Returns 0, or -3 if an encoding does not
-// reproduce the runs (an internal error).
-static int plan_sub_emit(plan_emit * pe, const plan_sub * s, uint32_t ncg, uint32_t T,
-                         const int64_t * L, const int64_t * H) {
-    const uint32_t cap = (s->uhi - s->ulo) / ncg + 8u;
-    uint32_t * cuts = (uint32_t *)xmalloc((size_t)cap * sizeof(uint32_t));
-    const uint32_t ncut = plan_cuts(s, ncg, T, cuts, cap);
-    int rc = 0;
-    uint32_t a = s->ulo;
-    for (uint32_t k = 0; k <= ncut; ++k) {
-        const uint32_t b = k < ncut ? cuts[k] : s->uhi;
-        tsr_fa_chunk c;
-        c.u0 = a;
-        c.n_groups = b - a;
-        c.flags = 0;
-        c.general = 0;
-        const int64_t A = 16 * (int64_t)a, A2 = 16 * (int64_t)b, n16 = A2 - A;
-        if (s->general) {
-            c.general = 1;
-            c.c_lo = 0;
-            c.c_hi = (uint32_t)n16;
-        } else if (!s->multi) {
-            c.c_lo = (uint32_t)i64max(s->lo - A, 0);
-            c.c_hi = (uint32_t)i64min(s->hi - A, n16);
-        } else {
-            const int causal = (s->flags & TSR_ATT_CAUSAL) != 0, slide = (s->flags & TSR_ATT_SLIDE) != 0;
-            int64_t clo, chi;
-            uint32_t fl = 0;
-            if (s->lo <= A) clo = 0;
-            else { clo = s->lo - A; if (slide) fl |= TSR_ATT_SLIDE; }
-            if (s->hi - (causal ? (int64_t)(T - 1u) : 0) >= A2) chi = n16;
-            else { chi = s->hi - A; if (causal) fl |= TSR_ATT_CAUSAL; }
-            if (clo < 0 || clo > chi || chi > n16) { rc = -3; break; }
-            for (uint32_t q = 0; q < T; ++q) {   // the encoding must give each row its run in the chunk
-                const int64_t dq = (int64_t)T - 1 - q;
-                const int64_t lo_q = i64max(0, clo - ((fl & TSR_ATT_SLIDE) ? dq : 0));
-                const int64_t hi_q = i64min(chi - ((fl & TSR_ATT_CAUSAL) ? dq : 0), n16);
-                const int64_t elo = i64max(L[q] - A, 0), ehi = i64min(H[q] - A, n16);
-                const int empty_a = hi_q <= lo_q, empty_b = ehi <= elo;
-                if (empty_a != empty_b || (!empty_a && (lo_q != elo || hi_q != ehi))) rc = -3;
-            }
-            if (rc != 0) break;
-            c.c_lo = (uint32_t)clo;
-            c.c_hi = (uint32_t)chi;
-            c.flags = fl;
-        }
-        plan_put(pe, &c);
-        a = b;
-    }
-    free(cuts);
-    return rc;
-}
-
-static int run_ok(const tsr_msum_row * w, uint32_t n_kv) {
-    if (w->lo0 > w->hi0 || w->lo1 > w->hi1 || w->hi0 > n_kv || w->hi1 > n_kv) return 0;
-    if (w->hi0 > w->lo0 && w->hi1 > w->lo1 && !(w->hi0 <= w->lo1 || w->hi1 <= w->lo0)) return 0;   // overlapping runs
-    return 1;
-}
-
-// Nonempty runs of an MSUM row, ascending.
-static uint32_t row_runs(const tsr_msum_row * w, int64_t lo[2], int64_t hi[2]) {
-    uint32_t n = 0;
-    if (w->hi0 > w->lo0) { lo[n] = w->lo0; hi[n] = w->hi0; ++n; }
-    if (w->hi1 > w->lo1) { lo[n] = w->lo1; hi[n] = w->hi1; ++n; }
-    if (n == 2 && lo[1] < lo[0]) {
-        const int64_t a = lo[0], b = hi[0];
-        lo[0] = lo[1]; hi[0] = hi[1]; lo[1] = a; hi[1] = b;
-    }
-    return n;
 }
 
 long tsr_fa_plan(const tsr_att_cfg * cfg, uint32_t E, uint32_t D, const tsr_msum * ms, uint32_t q0, uint32_t T_q,
                  const uint32_t (*new_runs)[2], uint32_t n_new, tsr_fa_chunk * out, size_t cap) {
     if (T_q == 0 || T_q > TSR_T_MAX_ARCH || (uint64_t)q0 + T_q > ms->n_q) return -2;
-    const uint32_t n_kv = ms->n_kv;
-    plan_sub sub[2];
-    uint32_t nsub = 0;
-    int64_t L[TSR_T_MAX_ARCH] = { 0 }, H[TSR_T_MAX_ARCH] = { 0 };
-    if (ms->flags & TSR_MSUM_GENERAL) {
-        if (n_kv > 0) {
-            sub[0] = (plan_sub){ 0, ceil16(n_kv), 1, 0, 0, 0, 0 };
-            nsub = 1;
-        }
-    } else {
-        int64_t rlo[TSR_T_MAX_ARCH][2], rhi[TSR_T_MAX_ARCH][2];
-        uint32_t nr[TSR_T_MAX_ARCH];
-        int all_one = 1;
-        int64_t hlo = INT64_MAX, hhi = -1;
-        for (uint32_t q = 0; q < T_q; ++q) {
-            const tsr_msum_row * w = &ms->rows[q0 + q];
-            if (!run_ok(w, n_kv)) return -2;
-            nr[q] = row_runs(w, rlo[q], rhi[q]);
-            if (nr[q] != 1u) all_one = 0;
-            for (uint32_t k = 0; k < nr[q]; ++k) { hlo = i64min(hlo, rlo[q][k]); hhi = i64max(hhi, rhi[q][k]); }
-        }
-        if (T_q == 1u) {
-            for (uint32_t k = 0; k < nr[0]; ++k) {
-                sub[nsub++] = (plan_sub){ (uint32_t)(rlo[0][k] / 16), (uint32_t)((rhi[0][k] + 15) / 16), 0, 0,
-                                          rlo[0][k], rhi[0][k], 0 };
-            }
-        } else if (hhi >= 0) {
-            int fit = all_one;
-            uint32_t fl = 0;
-            int64_t lo_abs = 0, hi_abs = 0;
-            if (fit) {
-                for (uint32_t q = 0; q < T_q; ++q) { L[q] = rlo[q][0]; H[q] = rhi[q][0]; }
-                hi_abs = H[T_q - 1];
-                lo_abs = L[T_q - 1];
-                int heq = 1, leq = 1, hca = 1, lsl = lo_abs > 0;
-                for (uint32_t q = 0; q < T_q; ++q) {
-                    const int64_t dq = (int64_t)T_q - 1 - q;
-                    heq &= H[q] == hi_abs;
-                    leq &= L[q] == lo_abs;
-                    hca &= H[q] == hi_abs - dq;
-                    lsl &= L[q] == i64max(0, lo_abs - dq);
-                }
-                if (!heq) { if (hca) fl |= TSR_ATT_CAUSAL; else fit = 0; }
-                if (!leq) { if (lsl) fl |= TSR_ATT_SLIDE; else fit = 0; }
-            }
-            if (fit) {
-                int64_t mnL = INT64_MAX, mxH = -1;
-                for (uint32_t q = 0; q < T_q; ++q) { mnL = i64min(mnL, L[q]); mxH = i64max(mxH, H[q]); }
-                sub[nsub++] = (plan_sub){ (uint32_t)(mnL / 16), (uint32_t)((mxH + 15) / 16), 0, 1, lo_abs, hi_abs, fl };
-            } else {
-                sub[nsub++] = (plan_sub){ (uint32_t)(hlo / 16), (uint32_t)((hhi + 15) / 16), 1, 0, 0, 0, 0 };
-            }
-        }
+    tsr_fap_tile t;
+    const int rc = tsr_fap_tile_init(&t, cfg->C, cfg->pcap, E, D, ms->n_kv, ms->flags,
+                                     (ms->flags & TSR_MSUM_GENERAL) ? NULL : &ms->rows[q0].lo0, T_q);
+    if (rc != 0) return rc;
+    plan_new pn = { new_runs, new_runs ? n_new : 0u };
+    tsr_fap_iter it;
+    tsr_fap_iter_init(&it);
+    size_t count = 0;
+    for (;;) {
+        tsr_fap_chunk c;
+        const int r = tsr_fap_next(&t, &it, chunk_has_new, &pn, &c);
+        if (r < 0) return -3;
+        if (r == 0) break;
+        if (count < cap) out[count] = (tsr_fa_chunk){ c.u0, c.n_groups, c.c_lo, c.c_hi, c.flags, c.general };
+        count += 1u;
     }
-    if (nsub == 0) {   // rule 8: no visible cell
-        if (cap > 0) out[0] = (tsr_fa_chunk){ 0, 1, 0, 0, 0, 0 };
-        return 1;
-    }
-    uint64_t n_total = 0;
-    for (uint32_t k = 0; k < nsub; ++k) n_total += sub[k].uhi - sub[k].ulo;
-    const uint32_t ncg = tsr_fa_ncg(cfg, E, D, (uint32_t)n_total);
-    if (ncg == 0) return -1;
-    plan_emit pe = { out, cap, 0, 0, new_runs, new_runs ? n_new : 0u };
-    for (pe.pass = 0; pe.pass < 2; ++pe.pass) {
-        for (uint32_t k = 0; k < nsub; ++k) {
-            if (plan_sub_emit(&pe, &sub[k], ncg, T_q, L, H) != 0) return -3;
-        }
-    }
-    return (long)pe.count;
+    return (long)count;
 }
 
 // ---------------------------------------------------------------------------

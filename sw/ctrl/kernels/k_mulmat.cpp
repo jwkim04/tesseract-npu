@@ -82,8 +82,8 @@ using mmk::first_deps;
 // The general path's pushes and ring allocations, out of line (code size: issue() and
 // spm_ring::alloc are forced inline for the decode path, which this path is not). Same calls, so
 // the same pushes.
-[[gnu::noinline]] ticket push_g(const op & o, deps d, uint32_t pf) { return issue(o, d, pf); }
-[[gnu::noinline]] spm alloc_g(spm_ring & ring, uint32_t lines, deps * must_wait) { return ring.alloc(lines, 2u, must_wait); }
+using kf::alloc_g;   // the general path's out-of-line push and allocation (k_fast.hpp: one copy per image)
+using kf::push_g;
 [[gnu::noinline]] ticket qact_g(qa kind, spm q, spm x, uint32_t K, uint32_t tt, uint32_t x_lines, ticket ld_x, uint32_t pf) {
     return mmk::push_qact<true>(kind, q, x, K, tt, x_lines, ld_x, pf);
 }
@@ -279,12 +279,7 @@ ticket mulmat_general(const volatile uint32_t * a, uint32_t n_args, uint32_t kfl
 
 namespace mmk {
 // Both the op's deps and ring deps (without DMA tickets): fold to <= 2 with group (SYNC NOPs).
-[[gnu::noinline]] deps first_deps_slow(deps dd, deps rr) {
-    group g;
-    g.add(dd);
-    g.add(rr);
-    return g.as_deps();
-}
+deps first_deps_slow(deps dd, deps rr) { return kf::fold_deps(dd, rr); }
 }  // namespace mmk
 
 }  // namespace tsr

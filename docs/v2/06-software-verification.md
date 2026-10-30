@@ -895,6 +895,60 @@ rows: `rows` = ne1·ne2·ne3, and every row of a tensor starts on a line (ensure
 | 0x1B | UNARY | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 n, 5 rows, 6 func (0 TANH, 1 GELU16 (llama.cpp GELU), 2 SILU, 3 EXP, 4 GELU exact tanh form) | UNARY ops the VU has |
 | 0x20–0x3F | reserved for M8 | MUL_MAT_ID, TOPK/ARGMAX, SOFT_MAX | |
 
+**M7 argument rules (W2b infra, 2026-10-30; `tsr/opl.hpp`).** The words of each kind are a struct in
+word order (`opl::ew_args` for ADD / MUL, `scale_args`, `rms_norm_args`, `glu_args`, `rope_args`,
+`get_rows_args`, `set_rows_kv_args`, `flash_attn_args`, `cpy_args`, `unary_args`; indices in the
+namespaces `opl::ew`, `scl`, `rms`, `glu`, `rope`, `getrows`, `setrows`, `fa`, `cpy`, `unary`), written by
+`writer::add_<kind>` and read by `record::args_as`. Structural rules that hold on every device, checked
+by `opl::check_args` (the host reader) and by the kinds (BAD_RECORD):
+
+- ADD / MUL: flags bit0 (b is one f32 scalar) only; the b row period is ≥ 1 in every record (1 with a
+  scalar b). RMS_NORM: a weight's row period is ≥ 1; without a weight the word is ignored.
+- GLU variant ≤ 2, UNARY func ≤ 4, ROPE mode bits 0–1 only, SET_ROWS_KV which ≤ 1; FLASH_ATTN's softcap
+  word is 0 (the bits: −0.0 is refused too).
+- Every preload reference lies inside the list's preload area (`pre_lines` lines): ROPE 4·n_tokens
+  bytes at a line-aligned offset (the VU reads the positions as an SPM operand), GET_ROWS 4·n_ids at a
+  multiple of 4, SET_ROWS_KV 8·n_rows at a multiple of 8, FLASH_ATTN the MSUM image of n_tokens rows
+  (32 + 16·n_tokens bytes) at a line-aligned offset. The writer's entries (`pre_positions`, `pre_ids`,
+  `pre_kv_idx`, `pre_msum`) are 64-aligned, so every alignment holds for a reference to an entry's start.
+
+**M7 word semantics the kernels fixed (W2b, 2026-10-30; the backend's contract in W3b).** Where the
+table above leaves a choice, the kernels, their planners and the references implement:
+
+- Every M7 kind: kind flags (word0 [23:16]) 0 (none is defined). Empty ops (n, rows, n_ids or
+  n_tokens 0) are BAD_RECORD, except SET_ROWS_KV with n_rows 0, which pushes nothing (ticket none).
+- ADD / MUL with FLAG_B_SCALAR: b is an f32 vector of per-row scalars and row r uses word r mod p
+  (p = b row period): p = 1 one scalar for every row, p ≥ rows one scalar per row (Gemma's
+  `inp_scale_rows` [1, T]: the c-vector form of VU §5.2), 1 < p < rows period blocks; the b stride
+  word is unused with the flag. Without the flag a b stride of 0 broadcasts b row 0.
+- SCALE: y = FA(FM(x, s), b): VOP.MULC by s12 = s, then VOP.ADDC by s13 = b only when b's bits are not
+  0 (−0.0 adds), the bits VOP.MULCADD would give with a b row of copies of b (SW §7.5).
+- RMS_NORM: the weight rows are dense, L(n) = ⌈n/16⌉ lines apart (no stride word); the period word
+  is ignored without a weight.
+- ROPE: dst / src strides are lines between tokens; a token's heads are contiguous (H = n_heads ·
+  head_dim / 16 lines; ggml's [head_dim, n_head, T] views, also a fused-qkv view whose token stride is
+  the qkv row); n_dims ≤ head_dim (the unrotated tail is copied); mode bit1 (ATAB) needs a table (else
+  BAD_RECORD) and makes the TS and freq_scale words unused; a table without ATAB is the freq-factor
+  table (ROPE FF); freq_scale 1.0 sets no FS (FM(1.0, φ) = φ for every VU angle).
+- GET_ROWS: an id that is negative or puts the row beyond 2^32 beats gets the LD beat 0xFFFF_FFFF, so
+  the op fails with DRAM_RANGE (TILE_ERR on the op, never a panic); an id beyond its channel fails the
+  same way at the DMA unit. The ids must lie inside the list's preload area (else BAD_RECORD).
+- SET_ROWS_KV: word 10 (plane kind) is the KV format and must be 0 (q8_0); words 0, 1 and 11 (cache
+  handle, row stride, stream) are informational, the plane base (word 8) is authoritative; row elements
+  = E ≤ K_MAX; every index must have hi word 0 and a cell < 16·C·LG, else BAD_RECORD before any push.
+  A cell written twice keeps the later row (DMA queue order).
+- FLASH_ATTN: q head stride = D/16 (heads contiguous per token); dst token stride ≥ n_head·D/16 when T
+  > 1; n_kv ≤ 2^20; E/64 in 1–511 (the 9-bit field); head_dim, n_head and n_head_kv agree with D, G and
+  E; a GENERAL tile needs word 13 (the f32 mask copy) also when the MSUM is not GENERAL (AT §7.3); the
+  flags word (word 21): bit0 FA_NEW, bits [7:1] 0, bits [15:8] the preload line of the I64 new-cell
+  indices, bits [31:16] their count (0 without FA_NEW): the backend points it at the layer's
+  SET_ROWS_KV index entry (AT §6.6 rule 7, §12).
+
+Shapes and device limits are the kinds' planners' (`tsr/plan.hpp` "M7 planning": `tsr::plan_<kind>`,
+shared by the firmware and the backend's supports_op, V2-SW-20). `plan::dev_cfg` carries C (CFG0
+NUM_CH), PCAP (CFG3), VL and CAPS besides the M6 fields; 0 means unknown, and a kind that needs the
+value plans nothing (BAD_RECORD), so a host that fills only the M6 fields keeps rejecting M7 kinds.
+
 ### 7.3 Executor (`graph` kernel)
 
 **SPM layout** (U200 defaults; `L` = `SPM_BYTES`/64 = 65,536 lines):
@@ -935,7 +989,8 @@ index), 32 KiB in total. The ticket table has one sentinel word in front (`TICKE
       line buffer). It allocates scratch (its writes also wait for the ring's release deps), pushes
       its tile ops, and returns one ticket T_i whose completion implies every tile op of op i is
       done. The last tile op depends on the others, or a `join2` provides that (I1,
-      `docs/ctrl-riscv.md:544-550`). A MUL_MAT record first goes to the decode fast path (below).
+      `docs/ctrl-riscv.md:544-550`). A MUL_MAT record first goes to the decode fast path, a short M7
+      record to its kind's fast entry (both below).
    5. `ticket[i]` = T_i. The handler releases its scratch blocks with `after` = T_i.
    6. Every 16 ops, and before every software join, read `QSTATUS` error bits. If an error is
       seen and STOP_ON_ERROR is set, stop pushing. This decision is timing-dependent but changes
@@ -1022,6 +1077,101 @@ instructions of a ≈ 280-instruction record, and plan fields carried in the rec
 have to be checked against QA_LINES and ⌈N/16⌉ for the block's safety, which is the same
 arithmetic.
 
+**M7 kinds in the executor (W2b infra, integration and fix, 2026-10-30 / 31; V2-SW-36, V2-SW-37,
+V2-SW-39).**
+
+- *Kind table.* Kinds 0x11–0x1B have their handlers (`tsr::kind_add` … `kind_unary`, exec.hpp), their
+  argument counts and, for the ten short kinds (all but FLASH_ATTN), a fast entry `kind_<name>_fast`
+  in the table (16 bytes per kind). `sw/ctrl/kernels/zz_kind_stubs.cpp` defines each handler weakly
+  as BAD_RECORD ("not in this image") and each fast entry weakly as "not taken"; a kernel source's
+  strong definitions replace them (RISC-V images link every kernel object; the host archive
+  `tsr_fw_host` extracts the first member that defines the symbol, and the stub file sorts after every
+  kernel source). A wrong n_args is the record check's BAD_RECORD, before any handler (`fw_exec` sc_m7).
+- *Dispatch (V2-SW-37, integration).* An M7 record goes to its fast entry first, with the record's
+  argument words in place, its kind flags and d = after(ticket[dep0], ticket[dep1]) from the loop's
+  registers: a leaf in its common path (no call: nothing of the executor's state is saved around it),
+  which takes the record and returns its ticket, or returns KIND_NOT_FAST having pushed and changed
+  nothing; the executor then calls the kind's handler out of line (`call_m7_ool`, which re-reads word0
+  / word1 so that nothing else stays live across the fast call). The handler begins with the same fast
+  entry, so both push the same ops (host tests call the handlers). FLASH_ATTN and the test kinds keep
+  the direct handler call. The fast paths' refusal tests carry `[[unlikely]]` hints (GCC otherwise laid
+  them out as the fall-through: up to 30 RISC-V cycles per record of taken branches). MUL_MAT keeps
+  `mulmat_t1_fast` before the table (unchanged instruction for instruction). `op_loop` has a variant
+  for lists without MARK and SERIAL read in place (every production list unless profiled; W2b fix):
+  the two per-record flag tests fold away (5–10 RISC-V cycles per record). `fw_m6_perf` gives 389 /
+  403 / 377 cycles of work per MUL_MAT-list record (deep queues / U200 depths / no MARK; W2a-opt 387
+  / 402 / 383), a JOIN record 135 (140).
+- *The one-tile block (V2-SW-36, integration; size W2b fix).* Every single-tile record of a
+  DMA-bracketed kind uses one fixed SPM block below the preload area (`plan.hpp` `one_block_lines`:
+  1,024 lines on the U200,
+  `kind_ctx::one` / `one_lines`) instead of a ring block: ADD, MUL, SCALE, RMS_NORM, GLU, ROPE and UNARY
+  (their only tile), GET_ROWS / CPY (every copy tile) and SET_ROWS_KV (every run). A tile is
+  DMA-bracketed when its first write to the block is an LD, its last read a DMA op (ST, KVST) and
+  every other op on it lies between them by deps; the DMA unit runs its queue one op after another
+  (a dep on the op's own unit is implied by queue order, CC §8.3), so the next such tile's first LD starts after this
+  tile's last DMA op, which followed every op of this tile: the lines need no dep, no ring record and
+  no release, and no concurrency is lost (consecutive DMA-bracketed tiles are serialised by the DMA
+  queue whatever their lines). Both the fast and the general path take it for the same records (so
+  they still push the same ops, which `fw_kernels_elem_host` / `fw_kernels_normrope_host` compare).
+  MUL_MAT (whose blocks the M6 trace digests pin) and FLASH_ATTN keep the ring, which shrinks by the
+  block: the planning budget `ring_budget` is 60,144 lines on the U200 (61,168 before W2b). The M6
+  digests of `fw_m6_e2e` and `fw_exec_rv` are unchanged (no M6 list wraps the ring). It saved 60–80
+  RISC-V cycles per short record (the ring's record table was full of short blocks in steady state,
+  so every allocation also joined and dropped its oldest record). The size is a trade (W2b fix): the
+  budget sets MUL_MAT's prefill T-tile (two tiles in the budget, §7.4), and the integration's 4,096
+  lines made the T-tile of every Qwen2.5 output head 2 instead of 3 (an all-logits prefill, as
+  perplexity / KL runs do, streamed the largest weight matrix 256 times per 512 tokens instead of
+  171: +50 % of its traffic). 1,024 lines keep 3 for Qwen2.5 0.5B–32B (Qwen2.5-72B's head, lines per
+  token 10,160, needs a block ≤ 208 lines: 2) and hold every decode tile of Qwen2.5 0.5B / 32B and
+  Gemma 4 12B but GLU's rows from Qwen2.5 1.5B up (1,120–3,456 lines) and Gemma 4 12B's GEGLU16
+  (1,920): GLU's fast path takes a ring block for them (`spm_ring::alloc_dma_first`, as
+  `mulmat_t1_fast`; 461 RISC-V cycles of work at 12B's n = 15,360, unit-bound, against 1,589 through
+  the general path). `plan.hpp` pins the T-tiles of the 0.5B / 32B / 12B shapes by static_assert.
+- *kind_ctx* adds `pl` (`plan::plan_limits_of(cfg)`, once per launch), the preload helpers `pre_ok`
+  (the same rule as `opl::check_args`), `pre_line` (a line-aligned reference as an SPM operand) and
+  `pre_lb` (RISC-V reads through the line-buffered alias; the preload loads were joined before op 0),
+  `fail(code)`, the s-register shadow and `one` / `one_lines` (all after the M6 fields, which keep their
+  offsets).
+- *s-register shadow.* `kind_ctx::sreg_valid` / `sreg_val` record, per launch, the s registers whose
+  last writing push was an `SOP.MOVI` and its value; `k_fast.hpp` `sreg_movi` pushes a MOVI only when
+  the shadow does not already hold the value (RMS_NORM's 1/n and eps, ROPE's TS / M, SCALE's s / b
+  repeat across records). VU ops run in VU queue order, so every later VU op reads that value. Rule: a
+  push that writes s[i] otherwise (RED with TO_S, SOP other than STS) clears bit i (`sreg_clobber`) in
+  the same record. The shadow starts empty at every launch (V2-SW-4) and depends only on the pushes
+  (§4.7). Registers: RMS_NORM s1 (RED TO_S result), s2 = 1/n, s3 = eps; ROPE s4 = M, s5 = TS, s6 =
+  freq_scale; SCALE / scalar-b ADD and MUL s12, s13.
+- *Shared planning rules* (`plan.hpp`): `plan_rows` (one tile when all rows fit the budget, no divide;
+  else tiles of ⌊budget/2/lines-per-row⌋ rows, at least 1, at most 65,535) and `for_period_segments`
+  (a row period p > 1 smaller than the op's rows splits the rows where r mod p wraps; p ≤ 1 is b stride 0).
+- *Fast-path toolkit* (`sw/ctrl/kernels/k_fast.hpp`): `alloc_fast` (the one-tile block), `first_deps`,
+  `push_batch` (one ISSUE_CREDIT read for the record's pushes), `push_s` (below), `vop_fast` /
+  `red_fast` / `sop_movi` (VU words without the generated builders' run-time range checks, for planned
+  fields; equal words by static_assert), `load_rows` / `store_rows`, and the general paths' out-of-line
+  `push_g` / `alloc_g` / `fold_deps` (one copy per image). `k_mulmat.hpp` takes `drop_dma` and
+  `NOT_FAST` from it.
+- *Staged-word reuse and hot entries (V2-SW-39, W2b fix).* `kf::push_s<SKIP, TICKET>` is the
+  no-credit-check push without the `ISSUE_W` stores of the words in SKIP and without the
+  `ISSUE_TICKET` read unless TICKET: CC §5.1 keeps the staged words after a push and sends word i of
+  WMASK from `ISSUE_Wi`, so a word the previous push of the same record staged with the same value
+  need not be stored again (3 RISC-V cycles each). SKIP is the call site's static claim from the
+  sequence (a VOP's a line, m and rows word after a RED on the same rows; an ST's SPM line after the
+  VOP whose d it is; SCALE's ADDC after its MULC differs only in w0); WMASK stays the op's, so the
+  pushed words are exactly the op's, and host builds store every word and check each claim against
+  the words staged since the sequence's `stage_reset` (panic otherwise), so the host twin tests run
+  every claim. RMS_NORM and ROPE have a straight-line hot entry for their common decode record (one
+  row with a weight; one token without a table or freq_scale) while the s-register shadow holds their
+  parameters, which tail-calls the general fast form otherwise (no call in either path); a single
+  entry for every shape measured about 60 RISC-V cycles more (register pressure). ADD, MUL and GLU
+  wait until one ISSUE_CREDIT read covers their four pushes (as RMS_NORM), then push with `push_s`.
+- *Measured* (`fw_exec_perf_m7`: decode records at n = 896 in chains, spin-free work, maxperf, deep
+  queues; §7.8 has the other harnesses and the layer; W2b fix, 2026-10-31): ADD 335, MUL 336, SCALE
+  305, SCALE with a bias 336, RMS_NORM 324, GLU 330, ROPE 325, UNARY 308, GET_ROWS 254, CPY 223
+  RISC-V cycles of work per record: ≤ 350 met by every kind (`--strict` asserts 350 for each, no
+  exemption); at the integration 341 / 342 / 322 / 380 / 395 / 341 / 420 / 315 / 264 / 230, before it
+  428 / 429 / 406 / – / 474 / 423 / 466 / 406 / 349 / 317. Decode records outside these shapes that
+  still miss 350 (§7.8): Gemma 4's per-head norms (rows > 1, 405–455), ROPE with a freq-factor table
+  or freq_scale ≠ 1 (439–475), and records whose s-register values change (each MOVI is one push more).
+
 **DTCM state** is rebuilt at every launch (V2-SW-4).
 
 ### 7.4 MUL_MAT kernel
@@ -1045,17 +1195,24 @@ double-buffered in the ring: the LD of tile t+1 waits only for the QACT that rea
 
 ### 7.5 M7 kernels
 
+Kernel sources: `sw/ctrl/kernels/k_elem.cpp` (ADD, MUL, SCALE, UNARY and the element-wise tile engine),
+`k_glu.cpp`, `k_rows.cpp` (GET_ROWS, CPY), `k_norm.cpp` (RMS_NORM), `k_rope.cpp`, `k_kv.cpp`
+(SET_ROWS_KV), `k_fattn.cpp` (FLASH_ATTN); planners `tsr/plan_elem.hpp`, `plan_norm.hpp`,
+`plan_attn.hpp`; references `sw/ctrl/ref/elem_ref.cpp`, `rmsnorm_ref.cpp`, `rope_ref.cpp`,
+`kv_ref.cpp`, `fattn_ref.cpp`. Each kernel's header comment states its tile-op sequence; the table
+summarises them (W2b, as built).
+
 | Kind | Tile composition (primitives from VU/AT) | Scratch (lines, per tile) | Numerics reference |
 |---|---|---|---|
-| ADD/MUL/SCALE | LD a (+ LD b), VOP ADD / MUL (b stride 0 for a broadcast row; one op per period block for row periods > 1, VU §9), MULC / ADDC with `cmode` 1 (scalar) or 2 (per-row c vector, e.g. Gemma's `inp_scale_rows`), MULCADD for SCALE with a bias; ST; rows batched to the VL stream | 2–3 × row lines | `tsr_ref` per element |
-| RMS_NORM (+weight) | LD x, `RED.SUMSQ` (post RMS, sk = 1/n, se = eps, set by `SOP.MOVI`) → per-row vector (or s register for one row); `VOP.MULCB` (`cmode` 2, b = weight with stride 0), or `VOP.MULC` without weight; ST. Per-head norms (Gemma q / k / v norms) are the same two ops with rows = n_head·T and m = head_dim (VU §8.1) | 2 × row lines | `sw/ctrl/ref/rmsnorm_ref.cpp` (same order); bit-identical to the spec's 7-op lowering `docs/spec.md:311-321` (VU §6.2) |
-| GLU | LD gate, LD up, VOP SWIGLU or GEGLU16, ST | 2 × row lines | `tsr_m_silu` / `tsr_m_gelu16` |
-| ROPE | LD x, LD the freq-factor (or A) table once per op, `SOP.MOVI` of TS, M and freq_scale, ROPE over all tokens (positions from the preload area), ST | 2 × head_dim × n_heads / 16 | VU §6.7 (`tsr_ref_vu.c` ROPE) |
-| GET_ROWS | per id (RISC-V reads it from the preload area): LD row → ST row | 2 × row lines | copy |
-| SET_ROWS_KV | per run of consecutive cells (indices from the preload area): LD src rows, QACT A32 (K = E), KVST (AT §5.1) | per AT | `tsr_ref_kvst` |
-| FLASH_ATTN | the sequence of AT §6.6 (normative): QACT of Q; per pass and per chunk (chunk list from the preloaded MSUM) ATTQK (FAST) or ATTQK + AMASK (GENERAL), ASMAX, ATTPV (LSUM), AMERGE; ANORM; ST | per AT (§7.4 there) | `tsr_ref_fa` (AT §13.1) |
-| CPY | LD rows, ST rows | 2 × block | copy |
-| UNARY | LD, VOP func (TANH, GELU16, SILU, EXP, GELU), ST | 2 × row lines | `tsr_ref_math` |
+| ADD/MUL/SCALE | per row tile (one at decode shapes; else MUL_MAT's double-buffered tiles, §7.4): LD the a rows, LD the b part (b rows, b row 0 for a broadcast, the p rows of a period, or the scalars' line(s)); VOP ADD / MUL in place (b stride L, or 0 for a broadcast; one VOP per period block, VU §9); with FLAG_B_SCALAR VOP ADDC / MULC with `cmode` 2 (the scalars as a c vector: one row, per-row scalars such as Gemma's `inp_scale_rows`) or `cmode` 1 (one scalar for several rows: SOP.LDS s12 from the loaded line); SCALE: SOP.MOVI s12 = s (s13 = b when b ≠ 0) through the s-register shadow, VOP.MULC c = s12, then VOP.ADDC c = s13 (the bits of MULCADD with a b row of copies of b); ST | rows·L + the b part (the VOPs are in place); a single tile in the one-tile block (§7.3) | `elem_ref.cpp` (`tsr_ref_vop` per row) |
+| RMS_NORM (+weight) | per row tile, block [x rows \| w \| per-row vector]: LD x, LD w (one row for period 1, the tile's rows for p > 1; tiles never cross a period block), `SOP.MOVI` s2 = 1/n and s3 = eps through the shadow, `RED.SUMSQ` (post RMS, sk = s2, se = s3; after the tile's last LD) → s1 (one row) or the per-row vector, `VOP.MULCB` in place (`cmode` 1 / 2, b = w with stride 0 for period 1), or `VOP.MULC` without weight; ST. Per-head norms (Gemma q / k / v norms) are the same ops with rows = n_head·T and n = head_dim (VU §8.1; one record per tensor: VU §8.1's fused q / k / v form has one weight and no OPL record) | rows·L + w + ⌈rows/16⌉ | `rmsnorm_ref.cpp` (same order); bit-identical to the spec's 7-op lowering `docs/spec.md:311-321` (VU §6.2) |
+| GLU | LD gate rows, LD up rows, VOP SWIGLU / GEGLU16 / GEGLU in place on the gate rows, ST | 2·rows·L | `elem_ref.cpp` (`tsr_m_silu`, `tsr_m_gelu16`, `tsr_m_gelu_tanh`) |
+| ROPE | per token tile (one at decode; else multiples of 16 tokens so the positions start on a preload line): LD x (H = n_heads·head_dim/16 lines per token), LD the freq-factor (or A) table (per tile), `SOP.MOVI` TS, M and freq_scale through the shadow (freq_scale only when ≠ 1.0), ROPE over the tile's tokens in place (positions: the I32 words in the preload area, read by the VU as an SPM operand), ST | tokens·H + table | `rope_ref.cpp` (`tsr_ref_vu` ROPE, VU §6.7) |
+| GET_ROWS | per tile: one LD per run of consecutive ids when the source rows are dense, else per id (the RISC-V reads the ids from the preload area), one ST for dense dst rows; a row beyond half the budget moves in chunks | tile rows·row lines; the one-tile block when it fits | copy (`elem_ref.cpp`) |
+| SET_ROWS_KV | per run of consecutive cells (index order, at most 64 rows): LD the source rows, QACT A32 (K = E, at most T_MAX rows per QACT), KVST of the run (AT §5.1) | run·(E/16 + QA_LINES(A32, E)); the one-tile block when it fits | `kv_ref.cpp` (`tsr_qact` + `tsr_ref_kvst` per row) |
+| FLASH_ATTN | AT §6.6 (normative; at the W2b integration reconciled with `tsr_ref_fa`: query tiles, the head subsets inside each chunk, the shared chunk planner `sw/sim/include/tsr_fa_plan.h`): per query tile LD Q, QACT per token; per chunk ATTQK per head subset (FAST) or ATTQK + AMASK (GENERAL), ASMAX, ATTPV per head subset (LSUM), AMERGE, with ATTPV / AMERGE issued one chunk behind ATTQK / ASMAX; ANORM; ST. Buffers S[3], P[2], MK[4] and, for GENERAL chunks, the mask rows M[2] (AT §7.1; the mask LD into M[k mod 2] waits for the AMASK of chunk k − 2), every op ≤ 2 deps | one ring block per op (`plan_attn.hpp` `fa_plan`: 18,948 lines for Qwen2.5-32B decode) | `fattn_ref.cpp` (`tsr_ref_fa`, AT §13.1) |
+| CPY | LD rows, ST rows (one run when dense on both sides); rows beyond half the budget in chunks | block; the one-tile block when it fits | copy (`elem_ref.cpp`) |
+| UNARY | LD, VOP func in place (TANH, GELU16, SILU, EXP, GELU), ST | rows·L | `elem_ref.cpp` (`tsr_ref_math`) |
 
 The numerics of a composite kernel are defined by its tile-op sequence. Each kernel's header
 comment states the sequence. A host C++ reference in `sw/ctrl/ref/` composes the same `tsr_ref`
@@ -1157,6 +1314,49 @@ inputs and args. It compares DONE, every output byte and the per-unit completion
   leaf handler, arguments read in place, `alloc_dma_first`, one credit read per record; *estimate*
   ≈ 140 + 25–30 cycles per push, ≈ 260 per such record = 1.6 µs, below the ≈ 2.0 µs it adds on the
   device); a deeper DMA queue is the hardware alternative.
+- **M7 kinds** (*measured*, W2b integration and fix, 2026-10-31; simulator, fixed schedule, Ibex maxperf,
+  F_RV / F_CORE = 166.7 / 276.3 MHz unless noted; "work" = fw_prof.h's spin-free RISC-V cycles; the
+  backend's list flags, no MARK). Short records at the 0.5B decode shapes (`fw_exec_perf_m7`, n = 896,
+  deep / U200 queues): ADD 335, MUL 336, SCALE 305, SCALE with a bias 336, RMS_NORM 324 / 326, GLU 330,
+  ROPE 325, UNARY 308, GET_ROWS 254, CPY 223: **≤ 350 met by every kind** (W2b fix: staged-word reuse,
+  hot entries and the `op_loop` variant, V2-SW-39; at the integration RMS_NORM 395, ROPE 420 and SCALE
+  with a bias 380 missed it). The packages' harnesses at the larger decode shapes (deep / U200 queues;
+  the units, not the RISC-V, set the pace there, so the figures include first tests of credit waits):
+  `fw_kernels_elem_perf` ADD 32B residual 351 / 356, MUL 12B norm weight 350 / 357, per-head weight
+  348 / 354, GLU 0.5B 351 / 355, GLU 12B (n 15,360, a ring block, V2-SW-36) 461 / 470;
+  `fw_kernels_normrope_perf` RMS_NORM 32B 347, ROPE 32B 325 / 331. **Not met** at decode shapes:
+  Gemma 4's per-head RMS_NORMs (q_norm 16 × 256 with weight 443 / 455, v_norm 8 × 256 without 405 /
+  408: the general fast form, about 120 cycles above the hot entry), ROPE with Gemma 4's rope_freqs
+  table 465 / 475 and with freq_scale ≠ 1 439 / 440 (the general fast form), and every record whose
+  s-register values change (one SOP.MOVI push more each; e.g. Gemma 4's ROPEs alternate TS between
+  SWA and global layers). Those records are a few per layer of models whose layers take milliseconds
+  on the device, so they do not move the issue loss below. SET_ROWS_KV decode record 345 (351 at the
+  integration, 383 before); a Qwen2.5-32B decode FLASH_ATTN at 4,096 cells 3,378 cycles = 20.3 µs of
+  RISC-V work against 140.0 µs on the units (the MVM never waits for a push; `fw_kvfa_perf`, AT §7.4).
+  On Ibex small every figure is ≈ 1.25×.
+  *One Qwen2.5-0.5B decode layer* (`fw_m7_layer_perf`: layer 0 with its GGUF weights; RMS_NORM, Q / K /
+  V with bias addends, ROPE ×2, SET_ROWS_KV ×2, FLASH_ATTN at n_kv 256, wo + residual, RMS_NORM, gate,
+  up, GLU, down + residual: 15 records + 1 JOIN; 3 vs 1 layers; W2b fix figures, the integration's in
+  brackets): the RISC-V works 50.7 µs per layer (53.1) against 270.6 µs of device time; one layer's
+  launch takes 286.5 µs push → DONE (287.1); per record (executor included, attributed between the
+  executor's RT_INFO writes, averaged over the list's records of the kind, so the first of a list,
+  which pushes its MOVIs, is in it) MUL_MAT 451 (455), RMS_NORM 350 (409), GLU 360 (402), ROPE 358
+  (426), SET_ROWS_KV 362 (357), FLASH_ATTN 2,679 (2,686), JOIN 132 (138), with the U200 depths. Against
+  a near-ideal issuer (F_RV = 4·F_CORE, 787.4 µs for 3 layers) the RISC-V's speed costs **5.1 %** (5.4)
+  of the launch with the U200 queue depths, **2.1 %** (2.2) with deep queues and **2.1 %** with only the
+  DMA queue 31 deep, **2.5 %** at F_RV 250 MHz with the U200 depths; on Ibex small 8.2 / 3.8 / 4.0 %
+  (8.6 / 3.9 / 4.2). The executor-optimisation projection (25 generic short records, 656 cycles each)
+  was 6.2 % (`fw_m6_perf`'s projection with its test kind still gives 6.1 %). The loss is not the short
+  records': before the integration's per-record savings (≈ 60–90 cycles per short record) it was 5.5 /
+  2.2 / 2.5 %, and the fix's further 40–90 cycles on RMS_NORM / ROPE took 0.3 points. It is
+  (a) the DMA queue depth: 8 entries fill with the decode chain's LD / ST ops waiting behind an ST that
+  waits for its MVM, so the RISC-V blocks on credits and reaches FLASH_ATTN late (a 31-deep DMA queue
+  alone removes 3.0 points), and (b) FLASH_ATTN's own RISC-V time (2,679 cycles = 16 µs per record at
+  n_kv 256, mostly its planning before the first ATTQK), on the critical path between V and wo: the
+  MVM's issue-idle time (5.6 % of its span; near-ideal 0.9 %) is 42.1 of 45.6 µs FLASH_ATTN's over 3
+  layers with the U200 depths (9.1 of 10.3 µs with deep queues). Both are open items of W2b (a deeper
+  DMA queue in the CC RTL; planning the next
+  FLASH_ATTN during credit waits, or pushing its first ops before the rest is planned).
 - **Launch:** EX §4.11 (empty-launch round trip ≤ 10 µs target; descriptor push → kernel entry
   ≤ 5 µs; answer record → host ≤ one poll interval). The v1 exec cost was 35 µs per exec
   (`docs/platform-u200.md:1049`). *Measured at W2a* (`tsr-fw.elf`, fixed schedule, F_RV / F_CORE =
@@ -1166,12 +1366,20 @@ inputs and args. It compares DONE, every output byte and the per-unit completion
   unchanged; Ibex maxperf, the default / small): descriptor push → kernel entry 1.68 / 2.19 µs,
   empty launch 4.23 / 5.50 µs, 8 outstanding launches 4.34 / 5.64 µs each (230 K / 177 K
   launches/s); at 250 MHz 1.12 / 1.46 µs and 2.82 / 3.67 µs.
-- **Image size:** ITCM ≤ 48 KiB of 128 KiB; DTCM ≤ 56 KiB of 64 KiB including the 8 KiB stack,
+- **Image size:** ITCM ≤ 80 KiB of 128 KiB (W2b integration, V2-SW-38; was 48 KiB before the M7 kinds);
+  DTCM ≤ 56 KiB of 64 KiB including the 8 KiB stack,
   the 512 B trap stack and the 32 KiB executor tables. *Measured at W2a* (`tsr-elf size`): ITCM
   25,720 B, DTCM 46,312 B. After the executor optimisation (hot path `-O2`, §6.1): ITCM 32,808 B
   (32,896 B after the review fix's streamed-order code),
   DTCM 47,968 B (the ring's table +1 KiB, the ticket table's sentinel); the whole image at `-Os`
-  would take ITCM 30,628 B.
+  would take ITCM 30,628 B. *With the M7 kinds* (W2b integration): ITCM 69,732 B (the packages landed
+  at 75,196 B; the one-tile block and the shared out-of-line helpers took 5.5 KB off), DTCM 49,448 B;
+  after the W2b fix (hot entries, GLU's ring block, the `op_loop` variant) ITCM 71,588 B, DTCM 49,448 B.
+  Of the ITCM, the M7 kinds take ≈ 36 KB (FLASH_ATTN ≈ 12 KB with its planner, the element-wise and row
+  kinds ≈ 14 KB, RMS_NORM / ROPE ≈ 9 KB, SET_ROWS_KV ≈ 3 KB): each short kind keeps its fast path as its
+  own leaf (a shared body measured +22–29 RISC-V cycles per record) and the general paths are cold
+  (compiled for size). The budget applies to the production image (`tsr-fw.elf`; `fw_elf_image`,
+  `fw_elf_test_image`); test images (production plus test kernels) are stamped against the whole ITCM.
 
 ---
 
@@ -1529,6 +1737,29 @@ New ctests:
   `TSR_TRACE` capture, identical observables, every captured launch replayed on fresh simulators,
   the graph launches' trace digests pinned to W2a's, PERF PUSH_STALL = 0) and `fw_m6_perf` (§7.8 /
   EX §4.11 numbers; with the `fw_exec` image also §7.8's M7 projection; PUSH_STALL = 0);
+- W2b's package tests (P2.6–P2.7; the M7 kinds): `fw_kernels_elem_host` (ASan/UBSan: planner
+  invariants, fast vs general path push for push on twin simulators, handler lists against
+  `elem_ref`), `fw_kernels_elem_rv` / `_rv_errors` / `_perf` and the `slow` `_rv_shapes`,
+  `fw_kernels_elem_ggml` (LLAMA builds); `fw_kernels_normrope_host` / `_rv` / `_rv_prefill` /
+  `_rv_refuse` / `_rv_mutant_race` / `_perf` (and `_ggml` in LLAMA builds); `fw_kvfa_plan` (the shared
+  chunk planner against W1a's: with `fw_kvfa_kl` the only checks of the planner, which the bit-exact
+  references share), `fw_kvfa_rv_<group>` (`slow`: 16K cells; `general` includes GENERAL tiles of
+  four chunks, the mask-buffer rotation), `fw_kvfa_host` (incl. the MSUM n_kv and preload-extent
+  refusals), `fw_kvfa_kl` (LLAMA builds; NMSE ≤ 10⁻⁹ and row-softmax KL ≤ 10⁻¹² against ggml-cpu, W2b
+  fix: near the measured floor so that a one-cell planner error fails), `fw_kvfa_perf`; `fw_opl_m7`,
+  `fw_plan_cxx17`, `fw_exec_perf_m7` (the ≤ 350 gate for every short kind and SCALE with a bias,
+  §7.8), `fw_exec_perf_ref`. The elem host and RV decode lists include the s-register shadow's clobber
+  rule (a SCALE after an SOP.LDS of s12 pushes its MOVI again). Every RV test runs the fixed and 7
+  random schedules with the race detector fatal and compares the outputs bit for bit with the kind's
+  reference;
+- `fw_m7_layer_qwen05b`, `fw_m7_layer_gemma12b` (W2b integration: one whole decoder layer per OPL list —
+  Qwen2.5-0.5B layer 0 with its GGUF weights, decode and an 8-token prefill tile; a Gemma 4 12B SWA
+  layer shape with random weights — 8 schedules, race `fatal`, every record's output and both KV planes
+  bit-exact against the per-kind references composed in op order, no write outside them, identical
+  observables), `fw_m7_layer_ggml` (LLAMA builds: the same layers on ggml-cpu, NMSE and row-softmax KL,
+  with the CPU's own new K / V cells and with the device's cache; gates from the measurements, W2b fix)
+  and `fw_m7_layer_perf` (§7.8: per-kind RISC-V cycles inside the layer, issue loss against a
+  near-ideal issuer, U200 / deep / deep-DMA queues, 166.7 / 250 MHz);
 - `trace_v2_roundtrip`, `trace_conv_model` (sample of 10 converted model traces);
 - `transport_protocol` (EX §15 item 2, one binary for every kind: cold and warm boot, image-id
   mismatch, VERIFY with an injected TCM fault on vkernel, 0–7 args, credit rule, forced
@@ -1713,6 +1944,10 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
 | V2-SW-33 | Unselected graph branches | `GGML_OP_DUP`, non-KV SET_ROWS and nodes without `GGML_TENSOR_FLAG_COMPUTE` are unsupported; `graph_compute` skips flagless nodes and makes no launch for an empty split | rely on "everything else false" | `ggml_build_forward_select` leaves unselected embedding branches in every decode graph, and the scheduler ignores the flag when it assigns backends; a supported DUP would add a second split and launch per token. |
 | V2-SW-34 | Firmware optimisation flags (2026-10-30, executor optimisation; amends V2-SW-8) | `-Os` for the image; the executor and kind sources (`kernels/graph.cpp`, `kernels/k_*.cpp`) add `-O2` (§6.1) | `-Os` everywhere; `-O2` everywhere; `-O3` / `-O2 -fpeel-loops` on the hot files | Measured (§6.1): −1 % per MUL_MAT record, −5 to −7 % per JOIN / NOP record (the cheap records that bound M7) and −23 % RISC-V time per 0.5B layer (the launch's fixed part) for +2.2 KiB of ITCM; the whole image at `-O2` adds 5.8 KiB for nothing per record, `-O3` / peeling cost more ITCM for no gain on the optimised executor. Keeps the ITCM headroom for M7's kinds, which join the hot set by file name. |
 | V2-SW-35 | Executor hot path (2026-10-30, executor optimisation; §7.3 "Hot path", §7.8) | records read in place through the line-buffered alias after the op's control-window accesses (MARK before the record is read: in PROF launches a malformed record has its marker and a streamed list's chunk LD follows the marker of the record before which it is pushed; otherwise the executor's own pushes are W2a's, and every launch trace of `fw_m6_e2e`, `fw_exec_rv` and `fw_kernels_rv` is byte-identical to W2a's); a streamed list's chunk LD where W2a pushed it (after the record's check, before its handler); a decode fast path for T = 1 MUL_MAT records (leaf function, one credit read per op when it covers the pushes, `spm_ring::alloc_dma_first`); planning stays in the firmware (`plan.hpp`, shifts, limits per launch); `spm_ring` O(1) with a 128-block table; the MUL_MAT push stream unchanged, pinned by trace digests (§7.3) | move MUL_MAT planning into the OPL record (host-planned words); hand-written assembly; a per-push credit cache; inlining the fast path into the loop; the chunk LD after the handler (the first version: one record later than W2a, which changed later deps and a failing chunk load's outcome) | Measured (§7.8), as spin-free executor work with deep queues: 1,518 → 387 RISC-V cycles per 0.5B decode record on Ibex maxperf (1,966 → 485 on small); with U200 queue depths 401, by W2a's method 437 (both above 400). The M6 outcome: the MVM no longer idles on issue. Host planning would save ≈ 35 of ≈ 280 instructions and the firmware would still check the block geometry; the credit cache and inlining measured slower (more live registers); assembly is not maintainable. |
+| V2-SW-36 | The one-tile block (2026-10-31, W2b integration; size W2b fix; §7.3, `plan.hpp`) | one fixed SPM block below the preload area (1,024 lines on the U200; `one_block_lines`) for every single-tile record of a DMA-bracketed kind (ADD, MUL, SCALE, RMS_NORM, GLU, ROPE, UNARY; every tile of GET_ROWS / CPY; every SET_ROWS_KV run), in the fast and the general path alike; MUL_MAT and FLASH_ATTN keep the ring, whose budget shrinks by the block (60,144 lines); GLU's decode rows larger than the block take a ring block in the fast path (`alloc_dma_first`); `plan.hpp` pins MUL_MAT's prefill T-tiles of the model shapes by static_assert | `spm_ring::alloc_dma_first` per record (the packages' form); merging consecutive DMA-first blocks into one ring record; the block at the ring's bottom; 4,096 lines (the integration's: every decode tile of Qwen2.5 0.5B–72B and Gemma 4, but MUL_MAT's prefill T-tile of every Qwen2.5 output head drops from 3 to 2, +50 % head weight traffic in an all-logits prefill); 1,536 lines (also Qwen2.5 1.5B / 3B GLU, a 68-line margin on 32B's head) | The DMA queue runs one op after another, so DMA-bracketed tiles are serialised whatever their SPM lines: the fixed block needs no dep, no record and no release and costs no concurrency; it saved 60–80 RISC-V cycles per short record (the ring's table was full of short blocks, so every allocation joined and dropped its oldest) and the ring code left every fast path; at the top the M6 lists' ring blocks keep their lines (the M6 trace digests are unchanged). 1,024 lines keep MUL_MAT's tiling of Qwen2.5 0.5B–32B as before W2b (72B's head: 2) at the cost of GLU's ring block on larger models (about 130 RISC-V cycles once per layer whose device time is milliseconds; the general path would cost 1,250) |
+| V2-SW-37 | M7 dispatch (2026-10-31, W2b integration; §7.3) | the kind table holds a fast entry per short kind (`kind_<name>_fast`, a leaf in its common path, KIND_NOT_FAST when it does not take the record, weak "not taken" stubs); the executor calls it with (args, kflags, d) and falls back to the handler out of line, re-reading word0 / word1; `[[unlikely]]` on the fast paths' refusal tests | the handler with the fast path inlined (the packages' form); inlining the fast paths into `op_loop` | −10 to −25 RISC-V cycles per short record (the handler's prologue saved up to 12 registers, the refusal tests were laid out as fall-through); `op_loop` keeps nothing live across the call, so MUL_MAT's path is unchanged within ±2 cycles; inlining would grow `op_loop`'s register pressure for every kind |
+| V2-SW-38 | ITCM budget (2026-10-31, W2b integration; amends §7.8's 48 KiB) | 80 KiB for the production image (69,732 B with the M7 kinds; M8 / M9 keep 48 KiB of the 128 KiB ITCM, V2-CC-3); test images are stamped against the whole ITCM | keep 48 KiB (would need ≈ 22 KB out of the M7 kinds: shared fast-path bodies cost 22–29 RISC-V cycles per record, `-Os` fast paths more); 96 KiB | The per-kind leaf fast paths are what meets the issue-rate requirement; V2-CC-3 sized the ITCM for "M7's graph executor, two model families, M8 MoE, sampling and debug formatting" |
+| V2-SW-39 | Staged-word reuse and hot entries (2026-10-31, W2b fix; §7.3, `k_fast.hpp`) | `kf::push_s<SKIP, TICKET>`: a fast path's push without the `ISSUE_W` stores of words the previous push of its record staged with the same value (CC §5.1 keeps staged words; WMASK unchanged, so the pushed words are the op's) and without unused `ISSUE_TICKET` reads; host builds check every SKIP claim; RMS_NORM / ROPE straight-line hot entries for their common decode record that tail-call the general fast form; ADD / MUL / GLU wait for one credit read covering their pushes; `op_loop` without MARK / SERIAL tests for plain in-place lists; the `fw_exec_perf_m7 --strict` gate holds every short kind (and SCALE with a bias) to 350 | regression ceilings for RMS_NORM / ROPE (the integration's I6); precomputed ROPE words in the record (an OPL change); a software shadow of the staged words across records; one fast entry for every RMS_NORM shape (+60 cycles: register pressure) | W2b's issue-rate requirement (≤ 350 RISC-V cycles of work per short decode record) without an OPL change: RMS_NORM 395 → 324, ROPE 420 → 325, SCALE with a bias 380 → 336; the SKIP claims are static per call site and checked on the host, the RISC-V tests check the results bit for bit |
 
 ---
 

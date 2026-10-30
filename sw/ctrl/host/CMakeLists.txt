@@ -28,6 +28,9 @@
 #   sw/ctrl/tests/runtime.cmake  fw_runtime (P2.2)      sw/ctrl/tests/exec.cmake    (P2.4)
 #   sw/ctrl/tests/kernels.cmake  fw_kernels_*, fw_selftest_sim, fw_replay_sim (P2.5)
 #   sw/ctrl/tests/e2e.cmake      fw_m6_e2e, fw_m6_perf (W2a integration)
+# and, required (W2b): sw/ctrl/tests/elem.cmake (fw_kernels_elem_*, P2.6), kvfa.cmake (fw_kvfa_*,
+# P2.7), normrope.cmake (fw_kernels_normrope_*, P2.6), m7layer.cmake (fw_m7_layer_*, which links the
+# other three's references).
 #
 # The RISC-V toolchain is required (SW §6.1): configure fails with the install hint of SW §9.6
 # when the compiler is absent. The prefix is sw/sim/CMakeLists.txt's (cache TSR_RISCV_PREFIX, else
@@ -161,6 +164,10 @@ foreach(_snip build hdr runtime exec kernels e2e)   # e2e: W2a integration (fw_m
     if (EXISTS ${TSR_CTRL_DIR}/tests/${_snip}.cmake)
         include(${TSR_CTRL_DIR}/tests/${_snip}.cmake)
     endif()
+endforeach()
+# W2b: the M7 kinds' tests, required (m7layer links the other three snippets' reference libraries).
+foreach(_snip elem kvfa normrope m7layer)
+    include(${TSR_CTRL_DIR}/tests/${_snip}.cmake)
 endforeach()
 # W2a: every firmware test carries the label fw (ctest -L fw), whichever snippet added it.
 get_property(_fw_tests DIRECTORY PROPERTY TESTS)

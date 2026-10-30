@@ -101,6 +101,7 @@ static tsr_config test_cfg() {
     c.num_ch = NCH;
     c.ch_bytes = CH_BYTES;
     c.t_max = 8;
+    c.caps = TSR_CAPS_VU | TSR_CAPS_ATT;       // the M6 CAPS (as fw_m6_e2e; W2b: VU test kinds and M7 kinds)
     return c;
 }
 static plan::dev_cfg dev_of(const tsr_config & c) {
@@ -617,6 +618,104 @@ static void sc_codes(env & e) {
         w.add_raw(0x21, nullptr, 0, opl::DEP_NONE, opl::DEP_NONE);
         expect_fail(e, run_list(e, w.finish()), 2, "FAIL at op 1, bad record at op 3");
     }
+}
+
+// --- the M7 kinds at the executor (W2b infra; SW §7.2, §7.3) ------------------------------------
+static const uint32_t TK_SREG = 0x3A;
+static void sc_m7(env & e) {
+    const char * T = e.tag.c_str();
+    static const uint32_t kinds[] = {opl::K_ADD, opl::K_MUL, opl::K_SCALE, opl::K_RMS_NORM, opl::K_GLU, opl::K_ROPE,
+                                     opl::K_GET_ROWS, opl::K_SET_ROWS_KV, opl::K_FLASH_ATTN, opl::K_CPY, opl::K_UNARY};
+    // 1. A wrong argument count of every M7 kind is the record check's BAD_RECORD (the kind table's
+    //    n_args, before any handler); the op before it ran.
+    std::vector<uint8_t> src = dram_get(e, 1, SRC_BEAT, 128);
+    for (uint32_t k : kinds) {
+        for (int delta = -1; delta <= 1; delta += 2) {
+            fill(e, 0, OUT_BEAT, 128, 0xEE);
+            const uint32_t n = uint32_t(int(opl::kind_nargs(k)) + delta);
+            const std::vector<uint32_t> z(n + 1u, 0u);
+            writer w;
+            add_copy(w, h1(SRC_BEAT), h0(OUT_BEAT), 2);
+            w.add_raw(k, z.data(), n, opl::DEP_NONE, opl::DEP_NONE);
+            char what[64];
+            snprintf(what, sizeof(what), "kind 0x%02x with %u arguments", k, n);
+            expect_kerr(e, run_list(e, w.finish()), opl::RET_BAD_RECORD, what);
+            CHECK(dram_get(e, 0, OUT_BEAT, 128) == src, "%s: %s: the op before the bad record ran", T, what);
+        }
+    }
+    {   // FLASH_ATTN's 22 words in one slot: BAD_RECORD (arguments that do not fit the slots)
+        const std::vector<uint32_t> z(opl::fa::NARGS, 0u);
+        writer w;
+        w.add_raw(opl::K_FLASH_ATTN, z.data(), opl::fa::NARGS, opl::DEP_NONE, opl::DEP_NONE, 0, 1);
+        expect_kerr(e, run_list(e, w.finish()), opl::RET_BAD_RECORD, "FLASH_ATTN in one slot");
+    }
+    // 2. The s-register shadow (kind_ctx::sreg_*, k_fast.hpp sreg_movi; test kind 0x3A): y = x * s[i]
+    //    exact, SOP.MOVI only where the launch's pushes do not already leave the value in s[i], again
+    //    after a RED TO_S overwrote it, and again in the next launch (the shadow is per launch).
+    {
+        const uint32_t m = 40u, L = 3u;                               // one row, three lines
+        std::vector<float> x(16u * L, 0.0f);
+        for (uint32_t j = 0; j < m; ++j) x[j] = 1.0f + float(j) / 64.0f;
+        dram_put(e, 1, SRC_BEAT + 0x200, x.data(), 4u * x.size());
+        struct rec { uint32_t si; float v; uint32_t fl; };
+        const rec rs[7] = {{2, 0.5f, 0}, {2, 0.5f, 0}, {2, 3.0f, 0}, {2, 3.0f, 1}, {2, 3.0f, 0}, {5, 0.5f, 0}, {2, 3.0f, 0}};
+        for (int launch = 0; launch < 2; ++launch) {
+            fill(e, 0, OUT_BEAT, 64u * L * 7u, 0xEE);
+            writer w;
+            uint32_t prev = opl::DEP_NONE;
+            for (uint32_t r = 0; r < 7u; ++r) {
+                const uint32_t a[6] = {h1(SRC_BEAT + 0x200), h0(OUT_BEAT + L * r), m, rs[r].si,
+                                       writer::f32_bits(rs[r].v), rs[r].fl};
+                const uint32_t dd[1] = {prev};
+                prev = w.add(TK_SREG, a, 6, dd, prev == opl::DEP_NONE ? 0u : 1u);
+            }
+            g_watch.reset();
+            const done_t d = run_list(e, w.finish());
+            g_watch.on = false;
+            expect_ok(e, d, "s-register shadow list");
+            uint32_t movi = 0, sop = 0;
+            for (uint32_t w0 : g_watch.push_w0)
+                if ((w0 & 0xFFu) == TSR_OP_SOP) {
+                    ++sop;
+                    movi += ((w0 >> 8) & 0xFu) == TSR_SOP_SUB_MOVI ? 1u : 0u;
+                }
+            CHECK(sop == 4u && movi == 4u, "%s: s-register shadow launch %d: %u SOP pushes (%u MOVI), want 4 MOVI "
+                  "(records 0, 2, 4 after the clobber, 5 on s5)", T, launch, sop, movi);
+            for (uint32_t r = 0; r < 7u; ++r) {
+                const std::vector<uint8_t> got = dram_get(e, 0, OUT_BEAT + L * r, 64u * L);
+                bool ok = true;
+                for (uint32_t j = 0; j < 16u * L; ++j) {
+                    const float want = j < m ? x[j] * rs[r].v : 0.0f;   // exact products; the tail rule zeroes the rest
+                    uint32_t gw, ww;
+                    memcpy(&gw, &got[4u * j], 4);
+                    memcpy(&ww, &want, 4);
+                    ok = ok && gw == ww;
+                }
+                CHECK(ok, "%s: s-register shadow launch %d record %u: y = x * %g", T, launch, r, (double)rs[r].v);
+            }
+        }
+    }
+#ifdef TSR_EXEC_TEST_HOST
+    // 3. kind_ctx::pre_ok = opl::pre_range_ok (the host reader's rule), over offsets, counts, element
+    //    sizes and alignments around the area's end.
+    {
+        tsr::kind_ctx c{};
+        bool same = true;
+        for (uint32_t pl : {0u, 1u, 3u, 256u})
+            for (uint32_t esz = 0; esz <= 3u && same; ++esz)
+                for (uint32_t al : {1u, 4u, 8u, 64u})
+                    for (uint32_t off = 0; off <= 64u * pl + 130u && same; off += (off < 200u ? 1u : 61u))
+                        for (uint32_t n : {0u, 1u, 2u, 15u, 16u, 17u, 4096u, 0x40000000u, 0xFFFFFFFFu}) {
+                            c.pre_lines = pl;
+                            const bool a = c.pre_ok(off, n, esz, al - 1u);
+                            const bool b = opl::pre_range_ok(off, uint64_t(n) << esz, al, pl);
+                            same = same && a == b;
+                            if (!same)
+                                fprintf(stderr, "pre_ok(%u, %u, %u, %u) pre_lines %u: %d vs %d\n", off, n, esz, al, pl, a, b);
+                        }
+        CHECK(same, "%s: kind_ctx::pre_ok = opl::pre_range_ok", T);
+    }
+#endif
 }
 
 // --- chains and JOINs ------------------------------------------------------------------------
@@ -1178,9 +1277,10 @@ static void plan_host_checks() {
         }
     CHECK(bad == 0, "plan.hpp qa_lines / row_beats = tsr_ref for every K: %u differences", bad);
     // dev_cfg U200 and the budget: L - 16 - 4096 - 256.
-    CHECK(plan::ring_budget(plan::U200_K4) == 65536u - 16u - 4096u - 256u, "ring budget");
+    CHECK(plan::ring_budget(plan::U200_K4) == 65536u - 16u - 4096u - 256u - 1024u, "ring budget (the one-tile block: W2b)");
     plan::exec_layout l{};
-    CHECK(plan::layout(65536, 9, &l) && l.arg_line == 65520 && l.opl_line == 61424 && l.pre_line == 61415 && l.ring_lines == 61415,
+    CHECK(plan::layout(65536, 9, &l) && l.arg_line == 65520 && l.opl_line == 61424 && l.pre_line == 61415 && l.one_lines == 1024 &&
+              l.one_line == 60391 && l.ring_lines == 60391,
           "exec layout");
 #ifdef TSR_EXEC_HAVE_LOWER
     // v1 (sw/ggml-tesseract tsr-lower): same per-token line counts; v1's SPM-based shape check
@@ -1363,6 +1463,7 @@ static void one_run(const char * image, const char * sched, uint32_t race, uint3
         sc_mulmat_long(*e, 48);
         sc_stream(*e, (suites & SUITE_BIG) != 0);
         if (suites & SUITE_BIG) sc_sizes(*e);
+        sc_m7(*e);                                  // last: the pinned launches above keep their state
     }
     if (suites & SUITE_STOP) sc_stop(*e, strcmp(tsr_sim_opt_sched(sim), "fixed") == 0);
     obs_finish(&out->o, sim);
@@ -1524,7 +1625,141 @@ static void report_target(const env & e, const char * what, double c) {
            c <= 400.0 ? "met" : "NOT met");
     CHECK(c <= 6000.0, "%s: %s: regression ceiling 6000 RV cycles per op (%.1f)", e.tag.c_str(), what, c);
 }
-static void perf(const char * image) {
+// --- short VU records (W2b infra; SW §7.3 "Hot path", §7.8) -----------------------------------------
+// One decode-shaped record per kind (Qwen2.5-0.5B, T = 1; rows of n = 896 = the hidden size for the
+// row kinds, GLU and UNARY included: the FFN width 4,864 takes the same one-tile path, but its LD / VOP
+// / ST keep the units busier than the issuer, the queues fill and the credit waits' first reads would
+// count as work), in a chain (record i reads record i - 1's output and depends on it, as in a layer):
+// the reference FASTVU (test kind 0x39: LD, one VOP, ST in k_fast.hpp's form; tests/fw/exec_fast.cpp)
+// and every M7 short kind of the image. Work per record =
+// the spin-free RISC-V cycles (fw_prof.h) of a 384-record list minus a 16-record one, divided by the
+// record difference (perf_case), with deep queues (the RISC-V's own cost; SW §7.8's metric); the
+// same with the U200 queue depths for information. W2b's requirement: <= 350 RV cycles of work per
+// short record. A kind whose handler is still zz_kind_stubs.cpp's weak stub is reported as not in
+// the image; one whose first record is refused, as refused (with a limit that fails). Each kind
+// package measures its own kind with
+//     test_fw_exec_rv <fw_exec.elf> --perf-m7 [--kind 0x14] [--strict]     (TSR_FW_PROF=1: profile)
+// fw_exec_perf prints them and asserts FASTVU's regression ceiling; fw_exec_perf_m7 (--strict) asserts
+// every kind present <= 350; fw_exec_perf_ref (--ceiling) the reference kind of the fw_exec_ref image
+// (tests/fw/exec_ref_unary.cpp: FASTVU's code as a production table kind, no test-kind lookup).
+// Measured at W2b infra (maxperf, deep queues): the reference 3-push record (LD, VOP, ST) costs 365
+// RV cycles of work, 112 of them the executor's (record read and checks, tables, RT_INFO, pidx, the
+// handler call) and 73 the pushes' 24 control-window accesses; FASTVU 408 (+ the lookup).
+static const uint32_t ACT_BEAT = OUT_BEAT + 0x40000;      // ch0: activation buffers, 1,024 lines apart
+static const uint32_t PAR_BEAT = SRC_BEAT + 0x40000;      // ch1: weight / bias / table rows (56 lines apart)
+static const uint32_t SHORT_POS_BEAT = PRE_BEAT + 0x100;  // ch0: preload source: position 7 (I32)
+static const uint32_t SHORT_IDS_BEAT = PRE_BEAT + 0x101;  // ch0: preload source: id 3 (I32)
+static const uint32_t TK_FASTVU = 0x39;
+static uint32_t act(uint32_t k) { return h0(ACT_BEAT + 1024u * k); }
+static uint32_t f32b(float f) { return writer::f32_bits(f); }
+
+struct short_kind {
+    uint32_t kind;
+    const char * name;
+    const char * handler;   // demangled-name prefix of its handler (symbol binding: stub or not)
+    uint32_t variant = 0;   // SCALE: 1 = with a bias (W2b fix: the review's SCALE + b record)
+};
+static const short_kind SHORT_KINDS[] = {
+    {TK_FASTVU, "FASTVU reference 896 (LD, VOP, ST)", "tsr::exec_test_fastvu("},
+    {opl::K_ADD, "ADD 896 (residual)", "tsr::kind_add("},
+    {opl::K_MUL, "MUL 896 (norm weight)", "tsr::kind_mul("},
+    {opl::K_SCALE, "SCALE 896", "tsr::kind_scale("},
+    {opl::K_SCALE, "SCALE 896 with bias", "tsr::kind_scale(", 1u},
+    {opl::K_RMS_NORM, "RMS_NORM 896 + weight", "tsr::kind_rms_norm("},
+    {opl::K_GLU, "GLU SWIGLU 896", "tsr::kind_glu("},
+    {opl::K_ROPE, "ROPE NEOX 16 heads x 64 (q + k)", "tsr::kind_rope("},
+    {opl::K_GET_ROWS, "GET_ROWS 1 x 56 lines", "tsr::kind_get_rows("},
+    {opl::K_CPY, "CPY 56 lines", "tsr::kind_cpy("},
+    {opl::K_UNARY, "UNARY SILU 896", "tsr::kind_unary("},
+};
+
+// Record i of a chain of `kind` (deps: prev). pos / ids: the list's preload byte offsets.
+static uint32_t add_short(writer & w, uint32_t kind, uint32_t i, uint32_t prev, uint32_t pos, uint32_t ids,
+                          uint32_t variant = 0) {
+    const uint32_t in = act(i & 1u), out = act((i + 1u) & 1u), par = h1(PAR_BEAT);
+    const uint32_t dep[1] = {prev};
+    const uint32_t nd = prev == opl::DEP_NONE ? 0u : 1u;
+    switch (kind) {
+        case opl::K_ADD:
+        case opl::K_MUL: {
+            const opl::ew_args a{out, 56, in, 56, par, 56, 896, 1, 1, 0};
+            return kind == opl::K_ADD ? w.add_add(a, dep, nd) : w.add_mul(a, dep, nd);
+        }
+        case opl::K_SCALE:
+            return w.add_scale(opl::scale_args{out, 56, in, 56, 896, 1, f32b(0.5f), variant == 1u ? f32b(1.0f) : 0u}, dep, nd);
+        case opl::K_RMS_NORM:
+            return w.add_rms_norm(opl::rms_norm_args{out, 56, in, 56, 896, 1, f32b(1e-6f), f32b(1.0f / 896.0f), par, 1},
+                                  dep, nd);
+        case opl::K_GLU: return w.add_glu(opl::glu_args{out, 56, in, 56, act(2), 56, 896, 1, opl::glu::SWIGLU}, dep, nd);
+        case opl::K_ROPE:
+            return w.add_rope(opl::rope_args{out, 64, in, 64, pos, opl::HANDLE_NONE, 0x3F2B5A7Bu, f32b(1.0f), f32b(1.0f), 64,
+                                             64, 16, 1, opl::rope::MODE_NEOX},
+                              dep, nd);
+        case opl::K_GET_ROWS: return w.add_get_rows(opl::get_rows_args{out, 56, par, 56, ids, 1, 56}, dep, nd);
+        case opl::K_CPY: return w.add_cpy(opl::cpy_args{out, 56, in, 56, 56, 1}, dep, nd);
+        case opl::K_UNARY: return w.add_unary(opl::unary_args{out, 56, in, 56, 896, 1, opl::unary::SILU}, dep, nd);
+        default: {
+            const uint32_t a[4] = {in, out, 896, 0};
+            return w.add(TK_FASTVU, a, 4, dep, nd);
+        }
+    }
+}
+static void build_short(writer & w, uint32_t kind, uint32_t n_rec, uint32_t variant = 0) {
+    const uint32_t pos = w.pre_positions(h0(SHORT_POS_BEAT), 1), ids = w.pre_ids(h0(SHORT_IDS_BEAT), 1);
+    uint32_t prev = opl::DEP_NONE;
+    for (uint32_t i = 0; i < n_rec; ++i) prev = add_short(w, kind, i, prev, pos, ids, variant);
+}
+
+// The scenarios on one environment (deep: assert, else print). only: one kind (~0u: all). limit: the
+// work per record every kind of the image must meet (0: print only; --strict 350, --ceiling N);
+// FASTVU, whose record also pays the test-kind lookup (tsr_exec_test_kind, ~40 RV cycles), always
+// has the regression ceiling FASTVU_CEILING.
+static const double FASTVU_CEILING = 450.0;
+// --strict holds every short kind to 350 (W2b fix: the integration's regression ceilings for RMS_NORM
+// and ROPE are gone; their hot entries and the staged-word reuse, k_fast.hpp push_s, meet it).
+static void perf_short(rv_env & e, busy_ctx & b, bool deep, double limit, uint32_t only) {
+    const bool strict = limit > 0.0;
+    const uint32_t pos[16] = {7u}, ids[16] = {3u};
+    dram_put(e, 0, SHORT_POS_BEAT, pos, sizeof(pos));
+    dram_put(e, 0, SHORT_IDS_BEAT, ids, sizeof(ids));
+    fwprof::prof syms;
+    const bool have_syms = syms.load_symbols(g_perf_image);
+    for (const short_kind & k : SHORT_KINDS) {
+        if (only != ~0u && k.kind != only) continue;
+        if (have_syms && syms.binding_of(k.handler) == 2) {
+            printf("%s: short record %-40s kind 0x%02x: not in the image (zz_kind_stubs.cpp's weak stub)\n", e.tag.c_str(),
+                   k.name, k.kind);
+            continue;
+        }
+        writer w1;
+        build_short(w1, k.kind, 1, k.variant);
+        const done_t d = run_list(e, w1.finish());
+        if (d.status() != TSR_LCQ_R0_STATUS_OK || d.ret() != 0u) {
+            printf("%s: short record %-40s kind 0x%02x: refused (DONE status %u ret 0x%08x err %u)\n", e.tag.c_str(),
+                   k.name, k.kind, d.status(), d.ret(), d.err());
+            CHECK(!strict || !deep, "%s: %s: the kind refuses its decode record (ret 0x%08x)", e.tag.c_str(), k.name,
+                  d.ret());
+            continue;
+        }
+        double work = 0, ins = 0;
+        char what[96];
+        snprintf(what, sizeof(what), "short %s", k.name);
+        perf_case(e, b, what, 24, [&](writer & w, uint32_t n) { build_short(w, k.kind, 16u * n, k.variant); }, &ins, &work);
+        const bool met = work <= 350.0;
+        printf("%s: short record %-40s kind 0x%02x: %.1f RV cycles of work per record; W2b requirement <= 350: %s\n",
+               e.tag.c_str(), k.name, k.kind, work, met ? "met" : "NOT met");
+        if (!deep) continue;
+        if (k.kind == TK_FASTVU)
+            CHECK(work <= FASTVU_CEILING, "%s: the k_fast.hpp reference record (test-kind path): regression ceiling %.0f "
+                  "RV cycles of work (%.1f)", e.tag.c_str(), FASTVU_CEILING, work);
+        else if (strict)
+            CHECK(work <= limit, "%s: %s: <= %.0f RV cycles of work per short record (%.1f)", e.tag.c_str(), k.name, limit,
+                  work);
+    }
+}
+
+// mode 0: the M6 scenarios and the short records (fw_exec_perf); 1: the short records only (--perf-m7).
+static void perf(const char * image, int mode = 0, double limit = 0.0, uint32_t only = ~0u) {
     g_perf_image = image;
     const tsr_config cfg = test_cfg();
     for (int real = 0; real < 2; ++real) {
@@ -1545,7 +1780,9 @@ static void perf(const char * image) {
         b.rv = tsr_rv_agent_rv(tsr_sim_rv_agent(sim));
         b.last = tsr_rv_cycles(b.rv);
         tsr_rv_agent_set_retire_hook(tsr_sim_rv_agent(sim), busy_hook, &b);
-        if (!real) {
+        perf_short(e, b, !real, limit, only);
+        if (mode == 1) {
+        } else if (!real) {
             double w0 = 0, w1 = 0;
             perf_case(e, b, "NOP records (no pushes)", 192, [](writer & w, uint32_t n) {
                 for (uint32_t i = 0; i < 8 * n; ++i) w.add(opl::K_NOP, {}, {i ? i - 1 : opl::DEP_NONE});
@@ -1584,15 +1821,21 @@ static void perf(const char * image) {
 
 int main(int argc, char ** argv) {
     const char * image = nullptr;
-    bool full = false, quick = false, do_perf = false;
+    bool full = false, quick = false, do_perf = false, perf_m7 = false;
+    double limit = 0.0;
+    uint32_t only = ~0u;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--full")) full = true;
         else if (!strcmp(argv[i], "--quick")) quick = true;
         else if (!strcmp(argv[i], "--perf")) do_perf = true;
+        else if (!strcmp(argv[i], "--perf-m7")) perf_m7 = true;
+        else if (!strcmp(argv[i], "--strict")) limit = 350.0;                       // W2b's requirement
+        else if (!strcmp(argv[i], "--ceiling") && i + 1 < argc) limit = strtod(argv[++i], nullptr);
+        else if (!strcmp(argv[i], "--kind") && i + 1 < argc) only = (uint32_t)strtoul(argv[++i], nullptr, 0);
         else image = argv[i];
     }
 #ifdef TSR_EXEC_TEST_HOST
-    (void)quick; (void)do_perf; (void)full; (void)image;
+    (void)quick; (void)do_perf; (void)full; (void)image; (void)perf_m7; (void)limit; (void)only;
     plan_host_checks();
     run_result a, b;
     one_run(nullptr, "fixed", 2, SUITE_DET | SUITE_BIG, &a);
@@ -1602,12 +1845,13 @@ int main(int argc, char ** argv) {
     return test_finish("fw_exec_host");
 #else
     if (image == nullptr) {
-        fprintf(stderr, "usage: %s <fw_exec image.elf> [--quick|--full|--perf]\n", argv[0]);
+        fprintf(stderr, "usage: %s <fw_exec image.elf> [--quick|--full|--perf|--perf-m7 [--strict|--ceiling <c>] [--kind <k>]]\n",
+                argv[0]);
         return 2;
     }
-    if (do_perf) {
-        perf(image);
-        return test_finish("fw_exec_perf");
+    if (do_perf || perf_m7) {
+        perf(image, perf_m7 ? 1 : 0, limit, only);
+        return test_finish(perf_m7 ? "fw_exec short-record perf" : "fw_exec_perf");
     }
     plan_host_checks();
     race_probe(image);

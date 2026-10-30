@@ -33,7 +33,7 @@ extern "C" {
 #define TSR_ELF_NOTE_DESC_BYTES  32u
 #define TSR_ELF_SDK_ABI          1u
 #define TSR_ELF_RESET_OFFSET     0x80u         // reset entry at RV_BOOT + 0x80 (RV_BOOT = 0)
-#define TSR_ELF_BUDGET_ITCM      (48u * 1024u) // SW §7.8 image-size targets
+#define TSR_ELF_BUDGET_ITCM      (80u * 1024u) // SW §7.8 image-size targets (ITCM 48 -> 80 KiB: W2b integration, M7 kinds)
 #define TSR_ELF_BUDGET_DTCM      (56u * 1024u)
 
 typedef struct tsr_elf tsr_elf;

@@ -284,7 +284,7 @@ Shape fields shared by `ATTQK` and `ATTPV`, and the derived values used througho
 
 | Symbol | Encoding | Meaning |
 |---|---|---|
-| E | w4[8:0] = E/64 (1–512) | row values per cell |
+| E | w4[8:0] = E/64 (1–511: the 9-bit field; E ≤ 32,704) | row values per cell |
 | D | w4[10:9] = dcode, D = 64·2^dcode | head dimension (64, 128, 256, 512) |
 | T_q | w4[13:11] + 1 | query tokens in the pass |
 | GS | w4[16:14] + 1 | heads per KV head in the pass |
@@ -574,29 +574,56 @@ The same segments of U_c, once per row (not per slice):
 
 Per SW's rule, the tile-op sequence of a composite kernel is part of the numerical contract
 (`docs/v2/06-software-verification.md` §7.5, which points here). ATTQK and ATTPV run on the MVM
-queue, ASMAX, AMASK, AMERGE and ANORM on the VU queue (VU §5.11). The FA kernel (`k_fattn.cpp`) is
-defined as:
+queue, ASMAX, AMASK, AMERGE and ANORM on the VU queue (VU §5.11). The FA kernel (`k_fattn.cpp`) and
+its reference `tsr_ref_fa` (§13.1) are defined as:
 
-1. **Q.** The kernel runs QACT A32 over each query token's Q row (K = n_head·D). The scale is not
-   applied to Q (ASMAX and AMERGE apply it).
-2. **Passes.** The kernel picks GS = min(G, T_MAX) and T_q = ⌊T_MAX/GS⌋. It iterates
-   query tiles (T_q tokens) × head subsets hg0 = 0, GS, … (< G).
-3. **Chunks.** From the mask summary (§7.3) the kernel forms the pass's chunk list: group ranges
-   with cell bounds and a path (FAST or GENERAL), ordered by u0, with the chunk that holds cells
-   written in this launch last. Chunk size: NCG = min(128, C·⌊PCAP/(16·E/D)⌋, max(4C,
-   roundup_{4C}(⌈n_groups_total/2⌉))) groups. That gives at least two chunks when there are ≥ 8C
-   groups (overlap, §7.4), and chunk boundaries on segment boundaries.
-4. **Per chunk k:**
-   - FAST: `ATTQK`(MAXOUT, bounds and CAUSAL/SLIDE from the summary) → mk;
-   - GENERAL: `ATTQK`(c_lo = 0, c_hi = 16·n_groups, no MAXOUT), then `AMASK`(f32 mask) → mk;
-   - then `ASMAX`(in place, mk, scale) → p;
-   - `ATTPV`(LSUM) → parts;
+1. **Query tiles and head subsets.** The pass rule (V2-AT-15) gives GS = min(G, T_MAX) and T_q =
+   ⌊T_MAX/GS⌋. The kernel iterates query tiles [q0, q0 + T_q′) of T_q tokens (the last one may be
+   shorter); a tile has R = T_q′·n_head rows. The head subsets hg0 = 0, GS, … (< G; the last one
+   has GS′ = G − hg0 heads) run **inside each chunk** of the tile (step 4), not as outer passes:
+   AMERGE and ANORM have no row selection, so for G > T_MAX (Gemma 4 global layers, G = 16) a
+   pass-outermost order cannot be expressed; every op is row-independent, so each row gets the
+   per-pass result (W1a decision, reconciled here at the W2b integration).
+2. **Q.** QACT A32 over each of the tile's tokens' Q rows (K = n_head·D), one QA vector per token.
+   The scale is not applied to Q (ASMAX and AMERGE apply it).
+3. **Chunks.** The tile's chunk list comes from the mask summary (§7.3) by the chunk planner
+   `sw/sim/include/tsr_fa_plan.h`, which the reference and the firmware compile (one source, so one
+   chunk list; its header states the rules, which are normative):
+   1. a GENERAL MSUM: one GENERAL sub-range over all n_kv cells;
+   2. T_q′ = 1: each of the row's 0–2 runs is a FAST sub-range over the groups it intersects, with
+      c_lo / c_hi from the run and no flags (a wrapped SWA ring: two sub-ranges; they may share a
+      group, streamed twice with disjoint bounds);
+   3. T_q′ > 1: one FAST sub-range when every row has one run and the runs are [max(0, lo −
+      SLIDE·d_q), hi − CAUSAL·d_q) with d_q = T_q′ − 1 − q for some lo, hi, CAUSAL, SLIDE (each flag
+      only when the bounds differ between rows); otherwise one GENERAL sub-range over the hull of
+      the runs (it needs the f32 mask copy, §7.3, even when the MSUM itself is not GENERAL);
+   4. NCG = min(128, C·⌊PCAP/(16·E/D)⌋, max(4C, roundup_4C(⌈n_total/2⌉))) groups, n_total = the
+      sub-ranges' groups; a sub-range [U_lo, U_hi) is cut at U_lo + k·NCG (at least two chunks when
+      there are ≥ 8C groups, §7.4);
+   5. FAST with T_q′ > 1: a cut strictly inside the spread of the rows' upper (CAUSAL) or lower
+      (SLIDE) bounds is replaced by the group boundaries just below and above it (at most 8
+      rounds); a tile that still cannot be encoded is refused (the record is BAD_RECORD; data-
+      dependent, so `supports_op` cannot see it: tiny windows next to a causal edge);
+   6. per chunk: c_lo = 0 and no SLIDE when the lower bound is at or below the chunk's first cell,
+      else the bound and SLIDE; c_hi = 16·n_groups and no CAUSAL when every row's upper bound is at
+      or past its end, else the bound and CAUSAL; verified against every row's run;
+   7. order: by (u0, c_lo); then every chunk holding a cell written in this launch moves to the
+      end, keeping its order ("newest last"); the record's FA_NEW flags word (§12) names those
+      cells (the layer's SET_ROWS_KV indices);
+   8. a tile with no visible cell: one chunk, group 0, c_lo = c_hi = 0 (output 0, as the CPU).
+4. **Per chunk k** (every op covers the tile's R rows):
+   - for each head subset: FAST `ATTQK`(MAXOUT, c_lo, c_hi, CAUSAL/SLIDE) → S, MK; GENERAL
+     `ATTQK`(c_lo = 0, c_hi = 16·n_groups, no MAXOUT) → S;
+   - GENERAL: `AMASK`(f32 mask copy) → S, MK;
+   - `ASMAX`(in place, MK, scale) → p;
+   - for each head subset: `ATTPV`(LSUM) → parts;
    - `AMERGE`(INIT if k = 0).
-5. **End.** `ANORM` writes the FA output rows of the pass. Then ST.
+5. **End.** `ANORM` writes the tile's output rows; then ST.
 
-`scale` is ggml's op_params[0] f32, unchanged. This sequence, NCG and the pass rule are the
-numerical contract. Changing any of them changes logits and requires a firmware ABI bump and new
-klcheck baselines (SW §7.5).
+`scale` is ggml's op_params[0] f32, unchanged. This sequence, the planner's rules and the pass rule
+are the numerical contract; changing any of them changes logits and requires a firmware ABI bump and
+new klcheck baselines (SW §7.5). The issue order across chunks is not part of it: the firmware runs
+ATTPV and AMERGE one chunk behind ATTQK / ASMAX (§7.1), which changes no op's operands.
 
 ### 6.7 Agreement with the CPU (requirement: KL level)
 
@@ -625,21 +652,24 @@ Sketch in the SDK style of `docs/ctrl-riscv.md` §8:
 
 ```cpp
 // SPM: QA (Q row as QA A32), kq/vq (QA A32 of the new token's K and V rows), S[3] score/p buffers,
-// P[2] ATTPV outputs, Orun + ST (running state), OUT. Planes kp/vp from the SET_ROWS/FLASH_ATTN records.
+// P[2] ATTPV outputs, MK[4] row maxima, Orun + ST (running state), OUT; a GENERAL chunk also LDs its
+// f32 mask rows (§7.3) into M[k%2], after the AMASK of chunk k-2 (k_fattn.cpp). Planes kp/vp from the
+// SET_ROWS/FLASH_ATTN records. One head subset (G <= T_MAX); with more, each ATTQK / ATTPV is one per
+// head subset (§6.6 step 4).
 ticket ks = issue(KVST(KPLANE, kq, kp.base, E, 1, cell, LG));             // DMA
 ticket vs = issue(KVST(VPLANE, vq, vp.base, E, 1, cell, LG));             // DMA
 ticket qa = issue(QACT(qa::a32, QA, q, n_head * D, 1));                    // QACT
 ticket qk[NC], sm[NC], pv[NC], mg = {};
 for (k = 0; k < NC; ++k) {                                                 // newest cells in chunk NC-1
-  qk[k] = issue(ATTQK(S[k%3], QA, kp.base, shp, ch[k], MAXOUT, MK[k%3]), after(qa, k == NC-1 ? ks : none));
-  sm[k] = issue(ASMAX(S[k%3], S[k%3], MK[k%3], ch[k].lines, R, scale), after(qk[k]));          // VU
+  qk[k] = issue(ATTQK(S[k%3], QA, kp.base, shp, ch[k], MAXOUT, MK[k%4]), after(qa, k == NC-1 ? ks : none));
+  sm[k] = issue(ASMAX(S[k%3], S[k%3], MK[k%4], ch[k].lines, R, scale), after(qk[k]));          // VU
   if (k >= 1) {                                                            // ATTPV one chunk behind
     pv[k-1] = issue(ATTPV(P[(k-1)%2], S[(k-1)%3], vp.base, shp, ch[k-1], LSUM), after(sm[k-1], k-1 == NC-1 ? vs : none));
-    mg = issue(AMERGE(Orun, P[(k-1)%2], MK[(k-1)%3], ST, R, D, scale, k-1 == 0), after(pv[k-1]));
+    mg = issue(AMERGE(Orun, P[(k-1)%2], MK[(k-1)%4], ST, R, D, scale, k-1 == 0), after(pv[k-1]));
   }
 }
 pv[NC-1] = issue(ATTPV(P[(NC-1)%2], S[(NC-1)%3], vp.base, shp, ch[NC-1], LSUM), after(sm[NC-1], vs));
-mg = issue(AMERGE(Orun, P[(NC-1)%2], MK[(NC-1)%3], ST, R, D, scale, NC == 1), after(pv[NC-1]));
+mg = issue(AMERGE(Orun, P[(NC-1)%2], MK[(NC-1)%4], ST, R, D, scale, NC == 1), after(pv[NC-1]));
 ticket no = issue(ANORM(OUT, Orun, ST_l, R, D), after(mg));               // → QACT for wo
 ```
 
@@ -649,7 +679,12 @@ Queue orders on each unit:
 - **DMA:** KVST(K), KVST(V).
 
 Buffer reuse is ordered by queue order: ATTQK k writes S[k mod 3], which ATTPV k−3 read earlier
-in the MVM queue. P and MK are covered the same way. Every op has at most two dependencies.
+in the MVM queue; P[2] likewise. MK needs four buffers (W2b kvfa; the earlier sketch had MK[3]):
+with three, ATTQK k (MVM, MAXOUT) writes the buffer AMERGE k−3 (VU) reads, and nothing orders that
+MVM op after that VU op. With four, ATTQK k writes MK[k mod 4], last read by AMERGE k−4; ATTQK k
+follows ATTPV k−2 on the MVM queue, ATTPV k−2 depends on ASMAX k−2, and ASMAX k−2 follows AMERGE k−4
+on the VU queue (AMERGE runs one chunk behind), so the reuse is ordered. Every op has at most two
+dependencies.
 
 ### 7.2 Prefill
 
@@ -674,7 +709,11 @@ row q: lo0, hi0, lo1, hi1     — at most two runs of cells with mask == +0/−0
 ```
 
 **GENERAL** is set when some row has a finite nonzero value or more than two runs. The backend then
-also writes an f32 copy of the mask, with row stride ⌈n_kv/16⌉ lines. AMASK reads that copy. Its
+also writes an f32 copy of the mask, with row stride ⌈n_kv/16⌉ lines. It writes the copy too when a
+multi-row query tile of a FLASH_ATTN that reads the mask takes the GENERAL path although the MSUM is
+not GENERAL (§6.6 rule 3: rows with two runs, holes, a wrapped SWA ring in prefill; W2b kvfa); without
+it that record is BAD_RECORD (`tsr_ref_fa`: TSR_FA_E_MASK). The producer can tell by running the
+planner (`tsr_fa_plan`) on the MSUM's tiles. AMASK reads that copy. Its
 values are fdiv(m, scale) with the reading FA op's scale (§5.5), so a mask read by FA ops with
 different scales needs one copy per scale.
 
@@ -703,6 +742,14 @@ layer:
 
 The exposed parts are the first ATTQK's fill, ASMAX of the last chunk while ATTPV of the previous
 chunk still runs, and the tail: the last AMERGE, ANORM, then QACT for wo.
+
+As built (W2b, OPL executor): FLASH_ATTN loads Q from DRAM (LD Q, then QACT), and that LD follows the
+layer's SET_ROWS_KV KVSTs on the DMA queue, so no chunk overlaps the KVSTs (about 100 core cycles per
+decode KVST). The newest-last order stays, because it is part of the numerics (§6.6 rule 7). Measured
+(SW §7.8, `fw_kvfa_perf`): the RISC-V's work for a Qwen2.5-32B decode FLASH_ATTN at 4,096 cells is
+20.3 µs against 140.0 µs on the units, the MVM never waits for a push, and the span equals a near-ideal
+issuer's; inside a whole 0.5B decode layer at n_kv 256 the record's 16 µs of RISC-V work does reach the
+critical path (between V and wo) once the 8-entry DMA queue has held the RISC-V back (SW §7.8).
 
 SPM traffic per chunk of n cells and R rows (*estimate*):
 
@@ -894,6 +941,7 @@ include the planes' beats (the simulator's cycle model reports both).
 | V2-AT-19 | Chunk policy | NCG = min(128, PCAP limit, ≥ 2 chunks for ≥ 8C groups), segment-aligned; newest cells last | fixed chunk size; per-model tuning | It overlaps VU and MVM work for every context of 8C groups or more. The newest-last order lets KVST overlap earlier chunks. It is deterministic, which makes it part of the numeric contract. |
 | V2-AT-20 | DQROW | DQROW per VU §5.6 (SPM → f32 on the VU, RTL in M8); the M8 embedding lookup is LD (ROW_BEATS) + DQROW; an f32 `tok_embd` copy remains the exact alternative for other GGUF types; attention never uses it | the spec's DRAM-row → f32 on the DMA unit with a dequant stage (the draft); drop | VU owns the encoding (EX §7.2) and already has the fp datapath; the embedding lookup is on the CPU until M8. The f32 table is decided in M8 when `tok_embd` is not Q8_0 or Q4_K. |
 | V2-AT-21 | KV region | Symmetric planes, top-down from each channel's end; one plane per (layer, stream, K/V); LG from kv_size | interleave KV in the weight heap; ch0-only | Symmetric planes keep every channel's share equal. Top-down keeps the KV growth away from weight uploads. |
+| V2-AT-22 | FA head subsets and chunk planner (W1a / W2b; reconciled at the W2b integration) | The head subsets of a query tile run inside each chunk (all ATTQK of the chunk per subset, AMASK, one ASMAX, all ATTPV per subset, one AMERGE over all R rows); the chunk planner is one source, `sw/sim/include/tsr_fa_plan.h`, compiled by `tsr_ref_fa` and the firmware; its rules 1–8 (§6.6) are normative; FA_NEW in the flags word names the newest cells; MK[4] | passes outermost (the original §6.6); separate planners in the reference and the firmware; MK[3] | AMERGE / ANORM have no row selection, so G > T_MAX (Gemma 4 global, G = 16) cannot run as outer passes; one planner gives one chunk list, hence bit-identical outputs, by construction (`fw_kvfa_plan` checks it against W1a's code); MK[3] races ATTQK k against AMERGE k−3 |
 
 ---
 
@@ -905,7 +953,7 @@ include the planes' beats (the simulator's cycle model reports both).
 | **VU** | The semantics of ASMAX, AMASK, AMERGE and ANORM, which execute on the VU (unit 3; VU §5.11, §7.4); their use profile (§7, §9); Appendix A (FWHT) for a later function | Confirmed by VU: EXP = EXPK(·, P1) with EXP(−inf) = +0, EXP(±0) = 1 exactly, +0 below its underflow threshold, canonical NaN for NaN, ≤ 0.53 ulp (*model*, exhaustive measurement pending); RECIP = `tsr_frecip`; the multi-pass AMERGE at ≈ 4–5 cycles per output line; per-head RMSNorm for Gemma QK-norm (VU §8.1); VOP for the K/V bias and ROPE before QACT |
 | **CC** | Ops per layer (4 + 4·NC) and queue use: MVM ≤ 3 AT entries in flight, VU ≤ 4, DMA 2 per layer; checker classes with up to four tagged extents (AMASK and AMERGE use four SPM extents) | Queue depths MVM 4, VU 16, DMA 8 (`04-control-core.md` §7.4); two dependencies per op; SPM round robin with the MVM client carrying ATT broadcast and gather traffic; client 5 (AT) tied off; the four-extent checker slot (CC §8.2) |
 | **DB** | ATT ops are ordinary queue entries with no state across ops (every intermediate is in SPM: scores, p, partials, running state), so tile stops and QSTEP need nothing AT-specific; PERF counters (§10) | Completion records carry w0, so profiles separate ATTQK and ATTPV; the watchdog covers the MVM unit (the longest ATT op is about 0.1 ms) |
-| **SW** | Plane layout and address functions (§4); KV tensor identification and lossless `get/set_tensor` (§4.6); the `supports_op` table (§2.6); MSUM format (§7.3); the normative FA algorithm (§6.6); C references (§13.1); AT trace generator requirements | Adopted in SW §7.2, §7.5, §9.3: the backend allocates planes from kv_size and E at `init_tensor`, zeroes them on clear, and builds MSUM (and the f32 mask copy when GENERAL) in `set_tensor` of tensors named `kq_mask`; the MSUM is a preload entry. OPL **SET_ROWS_KV** args 8–11 = {plane base, E/64 \| LG<<16, plane kind, stream}. OPL **FLASH_ATTN** args 12–13 = {MSUM (preload byte offset), f32-mask handle} and args 16–21 = {K base, V base, E/64 \| LG<<16, D, G, flags}; softcap must be 0. The `k_fattn` and `k_kv` kernels implement §6.6 and §7. klcheck and numcheck run with `-fa on -ctk q8_0 -ctv q8_0` and `LLAMA_ATTN_ROT_DISABLE=1` on both CPU and device |
+| **SW** | Plane layout and address functions (§4); KV tensor identification and lossless `get/set_tensor` (§4.6); the `supports_op` table (§2.6); MSUM format (§7.3); the normative FA algorithm (§6.6); C references (§13.1); AT trace generator requirements | Adopted in SW §7.2, §7.5, §9.3: the backend allocates planes from kv_size and E at `init_tensor`, zeroes them on clear, and builds MSUM (and the f32 mask copy when GENERAL) in `set_tensor` of tensors named `kq_mask`; the MSUM is a preload entry. OPL **SET_ROWS_KV** args 8–11 = {plane base, E/64 \| LG<<16, plane kind, stream}. OPL **FLASH_ATTN** args 12–13 = {MSUM (preload byte offset), f32-mask handle} and args 16–21 = {K base, V base, E/64 \| LG<<16, D, G, flags}; softcap must be 0. The flags word (W2b): bit0 FA_NEW, bits [7:1] 0, bits [15:8] the preload line of the I64 new-cell indices (byte offset / 64), bits [31:16] their count (0 without FA_NEW); the backend points it at the layer's SET_ROWS_KV index entry, whose cells §6.6 rule 7 moves last (AMERGE order is part of the numerics: without the word the chunk order, hence the output bits, differ from the reference run with those new cells). The `k_fattn` and `k_kv` kernels implement §6.6 and §7. klcheck and numcheck run with `-fa on -ctk q8_0 -ctv q8_0` and `LLAMA_ATTN_ROT_DISABLE=1` on both CPU and device |
 
 ---
 

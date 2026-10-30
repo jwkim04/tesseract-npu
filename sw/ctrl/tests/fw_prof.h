@@ -116,6 +116,7 @@ inline int classify(const tsr_rv_retire * r) {
 struct sym {
     uint32_t lo, hi;
     std::string name;
+    uint32_t bind;   // STB_GLOBAL 1, STB_WEAK 2, STB_LOCAL 0
 };
 
 struct stat2 {
@@ -156,7 +157,7 @@ public:
                 char * dm = abi::__cxa_demangle(nm, nullptr, nullptr, &st);
                 std::string s = (st == 0 && dm) ? dm : nm;
                 free(dm);
-                syms_.push_back(sym{value & ~1u, (value & ~1u) + sz, s});
+                syms_.push_back(sym{value & ~1u, (value & ~1u) + sz, s, info >> 4});
             }
         }
         std::sort(syms_.begin(), syms_.end(), [](const sym & a, const sym & b2) { return a.lo < b2.lo; });
@@ -192,6 +193,16 @@ public:
             o.cls_[c].n = big.cls_[c].n - small.cls_[c].n;
         }
         return o;
+    }
+
+    // The binding of the function whose demangled name starts with `prefix` (STB_GLOBAL 1, STB_WEAK
+    // 2, ...), or -1 if there is none: a W2b kind handler that is still zz_kind_stubs.cpp's weak stub
+    // reads 2 (the harnesses report such a kind as not in the image).
+    int binding_of(const char * prefix) const {
+        const size_t n = strlen(prefix);
+        for (const auto & s : syms_)
+            if (s.name.compare(0, n, prefix) == 0) return int(s.bind);
+        return -1;
     }
 
     const char * func_of(uint32_t pc) const {

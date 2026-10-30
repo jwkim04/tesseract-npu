@@ -203,10 +203,18 @@ function(tsr_fw_image name)
         -Wl,--defsym=__tsr_ctl_id_min=${_ctl}
         -Wl,--orphan-handling=warn
         -Wl,-Map=${_out}/${name}.map)
+    # SW §7.8's budget is the production image's (tsr-fw; fw_elf_image / fw_elf_test_image check it on
+    # tsr-fw and on fw_elf_probe = production + one probe kernel); a test image (production code plus
+    # test kernels, never shipped) is bound by the ITCM only (W2b integration: with the M7 kinds the
+    # images with the executor's / header library's test kernels exceed the production budget).
+    set(_budget "")
+    if (NOT name STREQUAL "tsr-fw")
+        set(_budget --budget-itcm ${TSR_FW_ITCM_BYTES})
+    endif()
     add_custom_command(
         OUTPUT ${_out}/${name}.elf ${_out}/${name}.size.txt ${_out}/${name}.logfmt.txt
         COMMAND ${TSR_ELF} stamp $<TARGET_FILE:${_link}> -o ${_out}/${name}.elf
-                --itcm ${TSR_FW_ITCM_BYTES} --dtcm ${TSR_FW_DTCM_BYTES}
+                --itcm ${TSR_FW_ITCM_BYTES} --dtcm ${TSR_FW_DTCM_BYTES} ${_budget}
                 --report ${_out}/${name}.size.txt --logfmt ${_out}/${name}.logfmt.txt
         DEPENDS ${_link} ${TSR_ELF}
         COMMENT "tsr-elf stamp ${name}.elf (image id, kernel table, note, size budget)"

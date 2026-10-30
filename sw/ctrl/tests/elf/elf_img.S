@@ -5,7 +5,7 @@
  * see real linker output (sorted kernel table, the note's link-time values, .tsr_logfmt outside
  * every PT_LOAD) that does not change when the runtime or the kernels change. Variants (-D):
  *   NO_BASE     only the kernels k_alpha and k_beta (no graph / selftest / replay)
- *   BIG_TEXT    50 KiB more code: over SW §7.8's 48 KiB ITCM budget
+ *   BIG_TEXT    82 KiB more code: over SW §7.8's 80 KiB ITCM budget
  *   BAD_START   _start at +0x84                 -> link.ld ASSERT (reset entry)
  *   BAD_KT      a 4-byte .tsr_kernels fragment  -> link.ld ASSERT (whole entries)
  *   BAD_DBG     a 32-byte .tsr_dbg              -> link.ld ASSERT (DB §6.3 size)
@@ -54,7 +54,7 @@ k_alpha:    li a0, 3
 k_beta:     li a0, 4
             ret
 #ifdef BIG_TEXT
-    .zero   50 * 1024
+    .zero   82 * 1024
 #endif
 
 /* Kernel table entries (SW §6.2): name_hash, entry, nargs, flags, argblk_lines, name[24]; each in

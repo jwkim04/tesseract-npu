@@ -373,7 +373,7 @@ suite suite_a() {
 suite suite_b() {
     suite s{};
     s.name = "suite_b";
-    s.cfg = base_cfg(512u << 10, 1ull << 30);                                      // 8,192 lines: budget 3,824
+    s.cfg = base_cfg(512u << 10, 1ull << 30);                                      // 8,192 lines: budget 3,376
     s.seed = 0xB0B;
     alloc al;
     const uint32_t Q8 = TSR_FMT_Q8_0, Q4 = TSR_FMT_Q4_K;

@@ -34,6 +34,10 @@
 //               residual: W2b's kinds do not exist yet) in fw_m6_perf's M7 projection (2026-10-30,
 //               executor-optimisation integration); it goes through the generic handler call, as
 //               W2b's kinds will
+//   0x39 FASTVU a0 src, a1 dst, a2 m, a3 0               LD, VOP ADD, ST in the k_fast.hpp fast-path form
+//               (W2b infra; tests/fw/exec_fast.cpp, -O2): fw_exec_perf's reference short VU record
+//   0x3A SREG   a0 src, a1 dst, a2 m, a3 s, a4 v, a5 fl   y = x * s[i] with s[i] = v through the launch's
+//               s-register shadow (k_fast.hpp sreg_movi; exec_fast.cpp)
 #include "tsr/exec.hpp"
 #include "tsr/kernel.hpp"
 #include "tsr/plan.hpp"
@@ -43,7 +47,8 @@ namespace {
 using namespace tsr;
 
 constexpr uint32_t TK_COPY = 0x30u, TK_STUB5 = 0x31u, TK_FAIL = 0x32u, TK_PRE = 0x33u, TK_PREST = 0x34u,
-                   TK_RET = 0x35u, TK_PLAN = 0x36u, TK_RACE = 0x37u, TK_VU = 0x38u;
+                   TK_RET = 0x35u, TK_PLAN = 0x36u, TK_RACE = 0x37u, TK_VU = 0x38u, TK_FASTVU = 0x39u,
+                   TK_SREG = 0x3Au;
 
 // d and the ring's deps for a write to a fresh block, folded to <= 2 (group: join2 NOPs).
 deps fold(deps a, deps b) {
@@ -227,6 +232,11 @@ ticket k_vu(const volatile uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & 
 
 }  // namespace
 
+namespace tsr {
+ticket exec_test_fastvu(const volatile uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & ctx);   // exec_fast.cpp
+ticket exec_test_sreg(const volatile uint32_t * a, uint32_t, uint32_t, deps d, kind_ctx & ctx);     // exec_fast.cpp
+}  // namespace tsr
+
 extern "C" bool tsr_exec_test_kind(uint32_t kind, tsr::kind_entry * out) {
     switch (kind) {
         case TK_COPY:  *out = tsr::kind_entry{&k_copy, 3u};  return true;
@@ -238,6 +248,8 @@ extern "C" bool tsr_exec_test_kind(uint32_t kind, tsr::kind_entry * out) {
         case TK_PLAN:  *out = tsr::kind_entry{&k_plan, 3u};  return true;
         case TK_RACE:  *out = tsr::kind_entry{&k_race, 2u};  return true;
         case TK_VU:    *out = tsr::kind_entry{&k_vu, 4u};    return true;
+        case TK_FASTVU: *out = tsr::kind_entry{&tsr::exec_test_fastvu, 4u}; return true;
+        case TK_SREG:  *out = tsr::kind_entry{&tsr::exec_test_sreg, 6u}; return true;
         default:       return false;
     }
 }

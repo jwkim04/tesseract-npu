@@ -15,7 +15,7 @@
 //   tsr-elf segments IMAGE          PT_LOAD segments as loaded: paddr, filesz, padded, memsz, CRC-32
 //                                   (zlib, of the padded bytes: the LOAD_CRC the host expects, EX §3.3)
 // limits: --itcm BYTES --dtcm BYTES (default: tsr_tables.h, U200), --budget-itcm / --budget-dtcm
-// BYTES (default SW §7.8: 48 KiB / 56 KiB). Numbers take 0x and K suffixes.
+// BYTES (default SW §7.8: 80 KiB / 56 KiB). Numbers take 0x and K suffixes.
 // --strict-budget turns a budget overrun into a failure (exit 1).
 #include "tsr_elf.h"
 

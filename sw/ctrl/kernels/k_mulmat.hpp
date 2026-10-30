@@ -15,6 +15,7 @@
 // (kernel.hpp credits_cover: per-unit fields and the issue-FIFO bound; the same pushes either way).
 #pragma once
 
+#include "k_fast.hpp"
 #include "tsr/exec.hpp"
 
 namespace tsr {
@@ -22,14 +23,10 @@ namespace mmk {
 
 namespace mm = opl::mm;
 
-constexpr uint32_t NOT_FAST = 0xE000'0001u;   // unit 14: never a ticket (CC §7.4)
-
-// d without its DMA tickets (for a DMA op: queue order implies them).
-TSR_HOT deps drop_dma(deps d) {
-    const ticket a = d.a.unit() == UNIT_DMA ? ticket{} : d.a;
-    const ticket b = d.b.unit() == UNIT_DMA ? ticket{} : d.b;
-    return after(a, b);
-}
+// The fast-path pieces the M7 kinds share (k_fast.hpp, W2b): the same definitions as before the
+// move, so the pushes and the instruction stream of this path are unchanged.
+constexpr uint32_t NOT_FAST = kf::NOT_FAST;   // unit 14: never a ticket (CC §7.4)
+using kf::drop_dma;                           // d without its DMA tickets (a DMA op: queue order implies them)
 
 // Both present (rare: the ring's release tickets are STs, i.e. DMA): group folds them (k_mulmat.cpp).
 deps first_deps_slow(deps dd, deps rr);
