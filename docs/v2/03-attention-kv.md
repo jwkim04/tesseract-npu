@@ -268,7 +268,8 @@ use about 40 % of a 16 GiB channel; 128K contexts also fit (*estimate*).
   functions of §4.3 and §4.4. This is a pure byte permutation, so state files are bit-identical to
   the CPU's.
 - **Shared references.** `tsr_kv_addr_k`, `tsr_kv_addr_v` and `tsr_kv_{pack,unpack}_row` live in
-  `sw/sim/tsr_ref.c` and are shared by the simulator, the backend and the RTL package.
+  `sw/sim/tsr_ref_at.c` (`include/tsr_ref_at.h`, part of `libtsr_ref`) and are shared by the
+  simulator, the backend and the RTL package.
 
 ---
 
@@ -408,8 +409,11 @@ dst[r][k] = (bits(m) == 0xFF800000) ? −inf : fadd(src[r][k], m)
 mdst[r]   = max_tot(M_FLOOR, max_k dst[r][k])
 ```
 
-The −inf test reproduces the CPU's skip of masked cells (§2.3). A finite mask value is added, as
-the CPU does.
+The −inf test reproduces the CPU's skip of masked cells (§2.3). A finite mask value is added to
+the raw score, and ASMAX / AMERGE scale the sum (V2-AT-9): the device computes EXP(scale·(s + m)),
+where the CPU computes exp(scale·s + m). The two agree when m = ±0 or scale = 1. So the backend's
+f32 copy holds fdiv(m, scale) (§7.3; `tsr_msum_mask_f32`), which gives the CPU's form up to f32
+rounding for every finite m (W1a decision; NMSE ≈ 10^-13 against ggml-cpu in `ref_at_ggml`).
 
 ### 5.6 `AMERGE` — channel tree and online merge (0x36, unit 3 VU)
 
@@ -670,7 +674,9 @@ row q: lo0, hi0, lo1, hi1     — at most two runs of cells with mask == +0/−0
 ```
 
 **GENERAL** is set when some row has a finite nonzero value or more than two runs. The backend then
-also writes an f32 copy of the mask, with row stride ⌈n_kv/16⌉ lines. AMASK reads that copy.
+also writes an f32 copy of the mask, with row stride ⌈n_kv/16⌉ lines. AMASK reads that copy. Its
+values are fdiv(m, scale) with the reading FA op's scale (§5.5), so a mask read by FA ops with
+different scales needs one copy per scale.
 
 **Kernel use, per pass:**
 - every row has one run, and the runs fit lo_q, hi_q of §5.2 for some c_lo, c_hi, CAUSAL, SLIDE
@@ -905,7 +911,7 @@ include the planes' beats (the simulator's cycle model reports both).
 
 ## 13. Verification
 
-### 13.1 References (`sw/sim/tsr_ref.c`, AT section)
+### 13.1 References (`sw/sim/tsr_ref_at.c`, `sw/sim/include/tsr_ref_at.h`, in `libtsr_ref`)
 
 | Function | What it defines |
 |---|---|
@@ -919,7 +925,7 @@ include the planes' beats (the simulator's cycle model reports both).
 The simulator's units call these functions, and the host C++ reference in `sw/ctrl/ref/` composes
 them in kernel order (SW §7.5).
 
-### 13.2 Reference self-tests (`sw/sim/tests/test_ref_attn.c`)
+### 13.2 Reference self-tests (`sw/sim/tests/test_ref_at.c`: ctests `ref_at`, `ref_at_ggml`)
 
 - **Layout.** ggml rows → planes → rows round trip for random E (64–4096, multiples of 64),
   kv_size and C ∈ {1, 2, 3, 4, 16}. Every byte is placed once.

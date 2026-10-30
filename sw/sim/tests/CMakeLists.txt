@@ -43,18 +43,20 @@ if (Python3_Interpreter_FOUND)
 endif()
 
 # ---------------------------------------------------------------------------
-# Simulator / capture / transport tests (owner: M1 step 3/4). Prefix sim_.
+# Simulator / capture / transport tests (owner: M1 step 3/4; v2 core: P1.2 / P1.6). Prefix sim_.
 # Run: ctest --test-dir <build> -R '^sim_' --output-on-failure
-# X0 (docs/v2/06-software-verification.md §10.2): these test the op-level core through
-# tsr_sim_op; the v1 trace round trip (sim_trace, sim_trace_ubsan) is deleted and returns with
-# trace v2 (P1.10); sim_basic / sim_mvm / sim_transport are rewritten for the queues and the
-# launch path in W1 / P3.1.
+# sim_basic / sim_mvm / sim_capture test the units through the tsr_sim_op test hook (op-level,
+# outside the queues); sim_csr tests the host CSR port (EX §5) and the RISC-V side of the rings;
+# sim_queue tests the queue model (dispatcher, checker order, tickets, deps, SYNC, errors) through
+# the control window. The v1 trace round trip returns with trace v2 (P1.10); sim_transport is
+# rewritten for the launch path in P3.1.
 # ---------------------------------------------------------------------------
 find_package(Threads REQUIRED)
 
 function(tsr_sim_test name src)
     add_executable(${name} ${src})
     tsr_c_target(${name})
+    target_include_directories(${name} PRIVATE ${TSR_SIM_INT_DIR})   # tsr_sim_int.h
     target_link_libraries(${name} PRIVATE ${ARGN} Threads::Threads m)
 endfunction()
 
@@ -69,12 +71,18 @@ add_test(NAME sim_mvm COMMAND sim_mvm 150)
 tsr_sim_test(sim_capture test_sim_capture.c tsr_sim tsr_ref)    # access capture (init / expect regions)
 add_test(NAME sim_capture COMMAND sim_capture)
 
+tsr_sim_test(sim_csr test_sim_csr.c tsr_sim tsr_ref)            # host CSR port, loader, LQ / LCQ / log, SOFT_RESET, PERF
+add_test(NAME sim_csr COMMAND sim_csr)
+
+tsr_sim_test(sim_queue test_sim_queue.c tsr_sim tsr_ref)        # issue port, checker order, deps, SYNC, errors, credits
+add_test(NAME sim_queue COMMAND sim_queue)
+
 # The transport target is defined in sw/transport (added after sw/sim); names resolve at generate time.
 tsr_sim_test(sim_transport test_sim_transport.c tsr_transport tsr_sim tsr_ref)   # sim transport + TSR_* env
 add_test(NAME sim_transport COMMAND sim_transport ${TSR_SIM_TEST_SCRATCH})
 
-# UBSan build of the capture test (sources compiled in, -fno-sanitize-recover): keeps the
-# simulator free of undefined behaviour such as qsort(NULL, 0) on a channel without captured
+# UBSan builds of the capture and queue tests (sources compiled in, -fno-sanitize-recover): keep
+# the simulator free of undefined behaviour such as qsort(NULL, 0) on a channel without captured
 # reads. Skipped when the toolchain cannot link -fsanitize=undefined.
 include(CheckCSourceCompiles)
 set(CMAKE_REQUIRED_FLAGS "-fsanitize=undefined -fno-sanitize-recover=all")
@@ -83,11 +91,16 @@ check_c_source_compiles("int main(void) { return 0; }" TSR_HAVE_UBSAN)
 unset(CMAKE_REQUIRED_FLAGS)
 unset(CMAKE_REQUIRED_LINK_OPTIONS)
 if (TSR_HAVE_UBSAN)
-    add_executable(sim_capture_ubsan test_sim_capture.c ${TSR_REF_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/../tsr_sim.c)
-    tsr_c_target(sim_capture_ubsan)
-    target_include_directories(sim_capture_ubsan PRIVATE ${TSR_SIM_INCLUDE_DIR})
-    target_compile_options(sim_capture_ubsan PRIVATE -fsanitize=undefined -fno-sanitize-recover=all)
-    target_link_options(sim_capture_ubsan PRIVATE -fsanitize=undefined)
-    target_link_libraries(sim_capture_ubsan PRIVATE Threads::Threads m)
-    add_test(NAME sim_capture_ubsan COMMAND sim_capture_ubsan)
+    foreach(_t capture queue)
+        add_executable(sim_${_t}_ubsan test_sim_${_t}.c ${TSR_REF_SOURCES} ${TSR_SIM_SOURCES})
+        tsr_c_target(sim_${_t}_ubsan)
+        target_include_directories(sim_${_t}_ubsan PRIVATE ${TSR_SIM_INCLUDE_DIR} ${TSR_SIM_INT_DIR})
+        if (TSR_SIM_DEFS)
+            target_compile_definitions(sim_${_t}_ubsan PRIVATE ${TSR_SIM_DEFS})
+        endif()
+        target_compile_options(sim_${_t}_ubsan PRIVATE -fsanitize=undefined -fno-sanitize-recover=all)
+        target_link_options(sim_${_t}_ubsan PRIVATE -fsanitize=undefined)
+        target_link_libraries(sim_${_t}_ubsan PRIVATE Threads::Threads m)
+        add_test(NAME sim_${_t}_ubsan COMMAND sim_${_t}_ubsan)
+    endforeach()
 endif()

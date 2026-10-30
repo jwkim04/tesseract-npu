@@ -1,43 +1,56 @@
-// tsr_sim.c — Tesseract ISA simulator, op-level core: NOP LD ST QACT MVM FENCE (EX §7.2).
+// tsr_sim.c — Tesseract simulator, core: memories, the host CSR port (EX §5), the firmware loader
+// (EX §3), the launch queue / completion ring / log ring (EX §4), SOFT_RESET (EX §8.5), PERF v2
+// (EX §6), the op handler table and the tile units NOP LD ST QACT MVM FENCE (EX §7.2).
 //
-// Normative sources: docs/spec.md "ISA", "MVM 의미", "구현 명확화 (v0.2.1)" and the v2 ISA
-// (docs/v2/01-execution-model.md §7.1, §8.1). All numerics come from tsr_ref.c (spec rule 3);
-// this file only decodes, checks and moves bytes. The v1 command path (run registers, command
-// fetch, R0..R15, LI / ADDI / END, ABORT) is deleted (X0, EX §12); ops enter through
-// tsr_sim_op(), which W1's queue model replaces as the unit entry ("the queue head starts entry e",
-// docs/v2/06-software-verification.md §4.3).
+// Normative sources: docs/spec.md "ISA", "MVM 의미", "구현 명확화 (v0.2.1)", docs/v2/01-execution-
+// model.md (EX), 04-control-core.md (CC) and 06-software-verification.md (SW) §4. All numerics
+// come from tsr_ref.c (spec rule 3); this file only decodes, checks and moves bytes. The queue
+// model (dispatcher, checker order, unit queues, SYNC, errors, the RISC-V side control window and
+// the time base) is tsr_q.c; the interface between the two and towards the other sim files is
+// tsr_sim_int.h.
 //
 // Decisions pinned in spec 구현 명확화 (v0.2.1, simulator section) and EX §7.1, implemented here:
 //   - Reserved fields: every word, flag bit and sub value an op does not use, and x16
 //     (w0[31:16], v1's register fields), must be zero, else ILLEGAL_OP. LD/ST sub = channel
 //     >= NUM_CH -> ILLEGAL_OP. QACT sub (QA kind) >= 2 -> ILLEGAL_OP. MVM sub (fmt) >= 2 -> BAD_FMT.
-//   - Check order ILLEGAL_OP -> BAD_FMT -> K_RANGE -> T_RANGE -> SPM_RANGE -> DRAM_RANGE;
-//     inside SPM_RANGE / DRAM_RANGE the operands are checked in field order A1, A2, A3.
+//   - Check order ILLEGAL_OP -> BAD_FMT -> K_RANGE -> T_RANGE -> SPM_RANGE -> DRAM_RANGE (BAD_DEP
+//     and OPERAND are the queue model's / the VU and AT ops'); inside SPM_RANGE / DRAM_RANGE the
+//     operands are checked in field order A1, A2, A3.
 //   - Range check: an operand with start address a (the 32-bit immediate) and extent e
 //     (lines/beats, 64-bit, for T strided segments e = (T-1)*stride + len) is in range iff
-//     a + e <= limit, computed without wrap. ERR_INFO = a (the operand's start address).
+//     a + e <= limit, computed without wrap. ERR_INFO = a (the operand's start address). The
+//     checker reports [a, a + e) as the operand's tagged extent (tsr_sim_int.h).
 //     SPM limit = SPM_BYTES/64 lines; DRAM limit = min(CH_BYTES/64, 2^ADDR_BEAT_W) beats.
 //
-// Cycle model (PERF_*; deterministic, informational — not part of the bit-exact contract):
-//   every op                1 issue cycle
-//   LD / ST                 + 64 (DMA latency) + n_lines
-//   QACT                    + T * (ceil(K / VL) + QA_LINES(kind, K))
-//   MVM                     + 64 (pipeline fill/drain) + T * QA_LINES (activation broadcast)
+// Cycle model (unit busy time, the handlers' cycles(); deterministic, informational — not part of
+// the bit-exact contract):
+//   LD / ST                 64 (DMA latency) + n_lines
+//   QACT                    T * (ceil(K / VL) + QA_LINES(kind, K))
+//   MVM                     64 (pipeline fill/drain) + T * QA_LINES (activation broadcast)
 //                           + max over channels of rows_c * ROW_BEATS (1 weight beat/cycle)
-//   PERF_RETIRED            every op, with any outcome (EX §6); a failing op adds no cycles
-//   PERF_MVM_CYCLES         the MVM part above (without the issue cycle)
+//   NOP, FENCE              none (SYNC entries complete without running: 1 cycle in the queue model)
+// The queue model (tsr_q.c) runs ops for these times and integrates PERF over time (EX §6:
+// time counters gated by ACTIVE and not QHALT, event counters by ACTIVE). The tsr_sim_op test
+// hook keeps the v1 op-level counting instead: 1 issue cycle + cycles() per passing op in
+// PERF_CYCLES, cycles() in MVM_CYCLES / VU_CYCLES (and ATT_QK / ATT_PV_CYCLES for ATTQK / ATTPV),
+// RETIRED for every op, nothing gated.
 //   PERF_CH_RD_BEATS[c]     LD beats and MVM weight beats (no command fetch: ch0 is exact)
-//   PERF_CH_WAIT, VU        0 (no DRAM stalls modelled; no VU ops yet)
-// Counters are cleared by tsr_sim_create only; they accumulate over ops.
+//   PERF_CH_WAIT            0 (no DRAM stalls modelled)
 
 #define _GNU_SOURCE
+#define TSR_SIM_CORE_INTERNAL
 
 #include "tsr_sim.h"
+#include "tsr_sim_int.h"
 #include "tsr_ref.h"
+#if defined(TSR_SIM_HAVE_RV) && TSR_SIM_HAVE_RV
+#include "tsr_bus.h"      // the built-in RISC-V agent (tsr_bus.c, tsr_rv.c; P1.7)
+#endif
 
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,9 +58,11 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#define CYC_ISSUE    1u
+#define CYC_ISSUE    1u      // tsr_sim_op only: the v1 issue cycle
 #define CYC_DMA_LAT  64u
 #define CYC_MVM_FILL 64u
+
+#define RV_RATIO_DEFAULT (166.7 / 276.3)   // k4 clocks (SW §4.2)
 
 // MVMs with fewer weight beats x tokens than this run on the calling thread only.
 #define MT_MIN_WORK_BEATS 4096u
@@ -125,18 +140,17 @@ static void iset_add(iset * s, uint64_t lo, uint64_t hi) {
 // Access capture state
 // ---------------------------------------------------------------------------
 typedef struct { uint64_t lo, hi; uint8_t * data; } cap_chunk;
-typedef struct {
+struct tsr_cap_ch {
     iset seen;         // init chunks + written beats
     iset written;
     cap_chunk * c; size_t n, cap;
-} cap_ch;
+};
+typedef struct tsr_cap_ch cap_ch;
 
 // ---------------------------------------------------------------------------
 // Worker pool for MVM rows
 // ---------------------------------------------------------------------------
-typedef void (*row_fn)(void * ctx, uint32_t lo, uint32_t hi);
-
-typedef struct pool {
+struct tsr_pool {
     unsigned        n;           // worker threads (the caller works too)
     pthread_t *     th;
     pthread_mutex_t mu;
@@ -144,11 +158,12 @@ typedef struct pool {
     uint64_t        gen;
     unsigned        busy;
     int             quit;
-    row_fn          fn;
+    tsr_row_fn      fn;
     void *          ctx;
     uint32_t        total, chunk;
     atomic_uint     next;
-} pool;
+};
+typedef struct tsr_pool pool;
 
 static void pool_work(pool * p) {
     for (;;) {
@@ -207,7 +222,7 @@ static void pool_destroy(pool * p) {
     free(p);
 }
 
-static void pool_run(pool * p, row_fn fn, void * ctx, uint32_t total, uint32_t chunk) {
+static void pool_run(pool * p, tsr_row_fn fn, void * ctx, uint32_t total, uint32_t chunk) {
     pthread_mutex_lock(&p->mu);
     p->fn = fn;
     p->ctx = ctx;
@@ -225,48 +240,85 @@ static void pool_run(pool * p, row_fn fn, void * ctx, uint32_t total, uint32_t c
 }
 
 // ---------------------------------------------------------------------------
-// Simulator state
+// Op handler table (tsr_sim_int.h §2). Per process; the defaults register once, before the first
+// simulator or the first explicit registration, so a test's own registration always wins.
 // ---------------------------------------------------------------------------
-struct tsr_sim {
-    tsr_config cfg;
-    uint32_t   num_ch;
-    uint64_t   ch_bytes;
-    uint64_t   limit_beats;     // min(ch_bytes/64, 2^addr_beat_w)
-    uint32_t   spm_lines;
-    uint8_t ** dram;
-    int *      dram_fd;
-    uint8_t *  spm;
+static tsr_op_handler  g_ops[256];
+static uint8_t         g_have[256];
+static pthread_mutex_t g_ops_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_once_t  g_ops_once = PTHREAD_ONCE_INIT;
+static _Thread_local int g_in_defaults;
 
-    float      S[16];
+static void register_defaults(void) {
+    g_in_defaults = 1;
+    tsr_core_register();
+#if defined(TSR_SIM_HAVE_VU) && TSR_SIM_HAVE_VU
+    tsr_vu_register();
+#endif
+#if defined(TSR_SIM_HAVE_AT) && TSR_SIM_HAVE_AT
+    tsr_at_register();
+#endif
+    g_in_defaults = 0;
+}
+static void ensure_defaults(void) {
+    if (!g_in_defaults) pthread_once(&g_ops_once, register_defaults);
+}
 
-    uint64_t * perf;
-    uint32_t   n_perf;
+void tsr_sim_register_op(uint8_t opcode, const tsr_op_handler * h) {
+    ensure_defaults();
+    pthread_mutex_lock(&g_ops_mu);
+    if (h != NULL) {
+        g_ops[opcode] = *h;
+        g_have[opcode] = 1;
+    } else {
+        memset(&g_ops[opcode], 0, sizeof(g_ops[opcode]));
+        g_have[opcode] = 0;
+    }
+    pthread_mutex_unlock(&g_ops_mu);
+}
 
-    FILE *     log;
-    uint64_t   n_ops;           // ops executed (log line numbers)
+const tsr_op_handler * tsr_sim_op_handler(uint8_t opcode) {
+    ensure_defaults();
+    return g_have[opcode] ? &g_ops[opcode] : NULL;
+}
 
-    // capture
-    int        capturing;
-    cap_ch *   cap;
-    ival *     gaps;
-    size_t     gaps_cap;
+uint32_t tsr_sim_caps_implemented(void) {
+    ensure_defaults();
+    static const uint8_t vu[] = { TSR_OP_VOP, TSR_OP_RED, TSR_OP_ROPE, TSR_OP_SOP };
+    static const uint8_t at[] = { TSR_OP_KVST, TSR_OP_ATTQK, TSR_OP_ATTPV, TSR_OP_ASMAX, TSR_OP_AMASK,
+                                  TSR_OP_AMERGE, TSR_OP_ANORM };
+    uint32_t caps = 0, all = 1;
+    for (size_t i = 0; i < sizeof(vu); ++i) all &= g_have[vu[i]];
+    if (all) caps |= TSR_CAPS_VU;
+    all = 1;
+    for (size_t i = 0; i < sizeof(at); ++i) all &= g_have[at[i]];
+    if (all) caps |= TSR_CAPS_ATT;
+    if (g_have[TSR_OP_TOPK])  caps |= TSR_CAPS_TOPK;
+    if (g_have[TSR_OP_DQROW]) caps |= TSR_CAPS_DQROW;
+    if (g_have[TSR_OP_VMASK]) caps |= TSR_CAPS_VMASK;
+    return caps;
+}
 
-    // scratch
-    float *    xbuf;            // k_max floats (QACT source vector)
-    float *    ybuf;            // T*N MVM results
-    size_t     ybuf_cap;
-
-    unsigned   threads;
-    pool *     pool;
-};
+const tsr_op_handler * tsr_sim_accept_op(const tsr_sim * sim, uint32_t opcode) {
+    opcode &= 0xFFu;
+    if (!tsr_op_legal(opcode)) return NULL;
+    const uint32_t need = tsr_op_caps(opcode);
+    if ((sim->cfg.caps & need) != need) return NULL;
+    const uint32_t u = tsr_op_unit(opcode);
+    if (u >= TSR_NUM_UNITS || sim->u[u].depth == 0) return NULL;
+    const tsr_op_handler * h = tsr_sim_op_handler((uint8_t)opcode);
+    if (h == NULL || h->check == NULL || h->unit != u) return NULL;
+    return h;
+}
 
 // ---------------------------------------------------------------------------
 // Capture
 // ---------------------------------------------------------------------------
-static void cap_read(tsr_sim * sim, uint32_t ch, uint64_t lo, uint64_t n) {
-    if (!sim->capturing || n == 0) return;
+void tsr_sim_cap_read(tsr_sim * sim, uint32_t ch, uint64_t lo, uint64_t n) {
+    if (!sim->capturing || n == 0 || ch >= sim->num_ch) return;
     cap_ch * cc = &sim->cap[ch];
     const uint64_t hi = lo + n;
+    ival * gaps = (ival *)sim->gaps;
     // Collect the parts of [lo, hi) not yet seen (neither captured nor written in this run).
     size_t ng = 0;
     uint64_t cur = lo;
@@ -274,10 +326,10 @@ static void cap_read(tsr_sim * sim, uint32_t ch, uint64_t lo, uint64_t n) {
         if (cc->seen.v[k].lo > cur) {
             if (ng == sim->gaps_cap) {
                 sim->gaps_cap = sim->gaps_cap ? 2 * sim->gaps_cap : 16;
-                sim->gaps = (ival *)xrealloc(sim->gaps, sim->gaps_cap * sizeof(ival));
+                sim->gaps = gaps = (ival *)xrealloc(gaps, sim->gaps_cap * sizeof(ival));
             }
-            sim->gaps[ng].lo = cur;
-            sim->gaps[ng].hi = cc->seen.v[k].lo;
+            gaps[ng].lo = cur;
+            gaps[ng].hi = cc->seen.v[k].lo;
             ++ng;
         }
         if (cc->seen.v[k].hi > cur) cur = cc->seen.v[k].hi;
@@ -285,14 +337,14 @@ static void cap_read(tsr_sim * sim, uint32_t ch, uint64_t lo, uint64_t n) {
     if (cur < hi) {
         if (ng == sim->gaps_cap) {
             sim->gaps_cap = sim->gaps_cap ? 2 * sim->gaps_cap : 16;
-            sim->gaps = (ival *)xrealloc(sim->gaps, sim->gaps_cap * sizeof(ival));
+            sim->gaps = gaps = (ival *)xrealloc(gaps, sim->gaps_cap * sizeof(ival));
         }
-        sim->gaps[ng].lo = cur;
-        sim->gaps[ng].hi = hi;
+        gaps[ng].lo = cur;
+        gaps[ng].hi = hi;
         ++ng;
     }
     for (size_t g = 0; g < ng; ++g) {
-        const uint64_t glo = sim->gaps[g].lo, ghi = sim->gaps[g].hi;
+        const uint64_t glo = gaps[g].lo, ghi = gaps[g].hi;
         const size_t bytes = (size_t)(ghi - glo) * TSR_BEAT_BYTES;
         uint8_t * data = (uint8_t *)xrealloc(NULL, bytes);
         memcpy(data, sim->dram[ch] + glo * TSR_BEAT_BYTES, bytes);
@@ -308,8 +360,8 @@ static void cap_read(tsr_sim * sim, uint32_t ch, uint64_t lo, uint64_t n) {
     }
 }
 
-static void cap_write(tsr_sim * sim, uint32_t ch, uint64_t lo, uint64_t n) {
-    if (!sim->capturing || n == 0) return;
+void tsr_sim_cap_write(tsr_sim * sim, uint32_t ch, uint64_t lo, uint64_t n) {
+    if (!sim->capturing || n == 0 || ch >= sim->num_ch) return;
     iset_add(&sim->cap[ch].written, lo, lo + n);
     iset_add(&sim->cap[ch].seen, lo, lo + n);
 }
@@ -422,7 +474,24 @@ static const char * cfg_problem(const tsr_config * c) {
         return "ch_bytes must be a positive multiple of 64";
     if ((uint64_t)(size_t)c->ch_bytes != c->ch_bytes) return "ch_bytes does not fit in size_t";
     if (c->addr_beat_w < 1 || c->addr_beat_w > 40) return "addr_beat_w must be in [1, 40]";
-    if (c->caps & ~TSR_SIM_CAPS_IMPLEMENTED) return "caps requests features this simulator does not implement";
+    if (c->caps & ~tsr_sim_caps_implemented()) return "caps requests features this simulator does not implement";
+    return NULL;
+}
+
+static const char * opts_problem(const tsr_sim_opts * o) {
+    if (o->sched != NULL && strcmp(o->sched, "fixed") != 0)
+        return "sched: only \"fixed\" is implemented (random schedules come with the P1.8 scheduler)";
+    if (o->race != 0) return "race: the race detector (P1.9) is not implemented yet";
+    if (o->rv_ratio < 0.0 || (o->rv_ratio != 0.0 && (o->rv_ratio < 0.05 || o->rv_ratio > 4.0)))
+        return "rv_ratio must be in [0.05, 4] (SW §4.9)";
+    if (o->q_depth != NULL) {
+        for (uint32_t u = 0; u < TSR_NUM_UNITS; ++u)
+            if (o->q_depth[u] > TSR_QDEPTH_MAX) return "q_depth: a depth is above 31 (5-bit Q_DEPTH field)";
+        if (o->q_depth[TSR_UNIT_SYNC] == 0) return "q_depth: the SYNC unit must be built";
+    }
+    const uint32_t tcm[2] = { o->itcm_bytes, o->dtcm_bytes };
+    for (int i = 0; i < 2; ++i)
+        if (tcm[i] % 1024u != 0 || tcm[i] > (1u << 20)) return "itcm_bytes / dtcm_bytes: a multiple of 1 KiB up to 1 MiB";
     return NULL;
 }
 
@@ -467,14 +536,23 @@ static uint8_t * map_channel(uint64_t bytes, const char * dir, uint32_t ch, int 
     return (uint8_t *)p;
 }
 
-tsr_sim * tsr_sim_create(const tsr_config * cfg, const char * dram_dir) {
+tsr_sim * tsr_sim_create_opts(const tsr_config * cfg, const tsr_sim_opts * opts) {
     if (cfg == NULL) {
         fprintf(stderr, "tsr_sim_create: NULL config\n");
         return NULL;
     }
+    ensure_defaults();
     const char * why = cfg_problem(cfg);
     if (why != NULL) {
         fprintf(stderr, "tsr_sim_create: unsupported config: %s\n", why);
+        return NULL;
+    }
+    tsr_sim_opts o;
+    memset(&o, 0, sizeof(o));
+    if (opts != NULL) o = *opts;
+    why = opts_problem(&o);
+    if (why != NULL) {
+        fprintf(stderr, "tsr_sim_create: unsupported options: %s\n", why);
         return NULL;
     }
     tsr_sim * sim = (tsr_sim *)xcalloc(1, sizeof(tsr_sim));
@@ -488,7 +566,7 @@ tsr_sim * tsr_sim_create(const tsr_config * cfg, const char * dram_dir) {
     sim->dram_fd = (int *)xcalloc(sim->num_ch, sizeof(int));
     for (uint32_t c = 0; c < sim->num_ch; ++c) sim->dram_fd[c] = -1;
     for (uint32_t c = 0; c < sim->num_ch; ++c) {
-        sim->dram[c] = map_channel(sim->ch_bytes, dram_dir, c, &sim->dram_fd[c]);
+        sim->dram[c] = map_channel(sim->ch_bytes, o.dram_dir, c, &sim->dram_fd[c]);
         if (sim->dram[c] == NULL) {
             tsr_sim_destroy(sim);
             return NULL;
@@ -496,15 +574,47 @@ tsr_sim * tsr_sim_create(const tsr_config * cfg, const char * dram_dir) {
     }
     sim->spm = (uint8_t *)xrealloc(NULL, cfg->spm_bytes);
     memset(sim->spm, 0xA5, cfg->spm_bytes);
-    sim->n_perf = tsr_perf_count(sim->num_ch);
-    sim->perf = (uint64_t *)xcalloc(sim->n_perf, sizeof(uint64_t));
+    sim->itcm_bytes = o.itcm_bytes ? o.itcm_bytes : TSR_ITCM_BYTES;
+    sim->dtcm_bytes = o.dtcm_bytes ? o.dtcm_bytes : TSR_DTCM_BYTES;
+    sim->itcm = (uint8_t *)xcalloc(sim->itcm_bytes, 1);
+    sim->dtcm = (uint8_t *)xcalloc(sim->dtcm_bytes, 1);
+    sim->rv_ratio = o.rv_ratio != 0.0 ? o.rv_ratio : RV_RATIO_DEFAULT;
     sim->xbuf = (float *)xcalloc(cfg->k_max, sizeof(float));
     sim->threads = 1;
+    sim->log = (FILE *)o.log;
+
+    // Hardware-reset values (EX §5.1).
+    sim->wdog_cfg = TSR_CSR_WDOG_CFG_RESET;
+    sim->log_cfg = TSR_CSR_LOG_CFG_RESET;
+    sim->load_crc_state = 0xFFFFFFFFu;
+    tsr_q_init(sim, o.q_depth);
+    if (o.threads > 1) tsr_sim_set_threads(sim, o.threads);
+#if defined(TSR_SIM_HAVE_RV) && TSR_SIM_HAVE_RV
+    // The control core (SW §4.1): the hart and its firmware-profile bus, registered as the time
+    // base's agent. It stays in reset until the host sets CTRL.RV_RUN (EX §3.4).
+    sim->rv_agent = tsr_rv_agent_create(sim);
+    if (sim->rv_agent == NULL) {
+        fprintf(stderr, "tsr_sim_create: RISC-V agent creation failed\n");
+        tsr_sim_destroy(sim);
+        return NULL;
+    }
+#endif
     return sim;
+}
+
+tsr_sim * tsr_sim_create(const tsr_config * cfg, const char * dram_dir) {
+    tsr_sim_opts o;
+    memset(&o, 0, sizeof(o));
+    o.dram_dir = dram_dir;
+    return tsr_sim_create_opts(cfg, &o);
 }
 
 void tsr_sim_destroy(tsr_sim * sim) {
     if (sim == NULL) return;
+#if defined(TSR_SIM_HAVE_RV) && TSR_SIM_HAVE_RV
+    tsr_rv_agent_destroy(sim->rv_agent);
+    sim->rv_agent = NULL;
+#endif
     pool_destroy(sim->pool);
     cap_state_free(sim);
     if (sim->dram != NULL) {
@@ -513,23 +623,59 @@ void tsr_sim_destroy(tsr_sim * sim) {
             if (sim->dram_fd[c] >= 0) close(sim->dram_fd[c]);
         }
     }
+    tsr_q_free(sim);
     free(sim->dram);
     free(sim->dram_fd);
     free(sim->spm);
-    free(sim->perf);
+    free(sim->itcm);
+    free(sim->dtcm);
     free(sim->xbuf);
     free(sim->ybuf);
     free(sim->gaps);
+    free(sim->scratch);
     free(sim);
 }
 
+// ---------------------------------------------------------------------------
+// Accessors
+// ---------------------------------------------------------------------------
 const tsr_config * tsr_sim_config(const tsr_sim * sim) { return &sim->cfg; }
 
 uint8_t * tsr_sim_dram(tsr_sim * sim, uint32_t ch) { return ch < sim->num_ch ? sim->dram[ch] : NULL; }
 uint8_t * tsr_sim_spm(tsr_sim * sim) { return sim->spm; }
 uint64_t  tsr_sim_dram_limit_beats(const tsr_sim * sim) { return sim->limit_beats; }
+uint32_t  tsr_sim_spm_lines(const tsr_sim * sim) { return sim->spm_lines; }
+uint32_t  tsr_sim_num_ch(const tsr_sim * sim) { return sim->num_ch; }
+float *   tsr_sim_sreg(tsr_sim * sim) { return sim->sreg; }
+
+// The built-in RISC-V agent and the RISC-V debug view (SW §4.8).
+struct tsr_rv_agent * tsr_sim_rv_agent(tsr_sim * sim) { return sim->rv_agent; }
+#if defined(TSR_SIM_HAVE_RV) && TSR_SIM_HAVE_RV
+uint32_t tsr_sim_rv_reg(const tsr_sim * sim, unsigned i) {
+    return sim->rv_agent != NULL && i < 32u ? tsr_rv_reg(tsr_rv_agent_rv(sim->rv_agent), i) : 0u;
+}
+uint32_t tsr_sim_rv_pc(const tsr_sim * sim) {
+    return sim->rv_agent != NULL ? tsr_rv_pc(tsr_rv_agent_rv(sim->rv_agent)) : 0u;
+}
+uint64_t tsr_sim_rv_instret(const tsr_sim * sim) {
+    return sim->rv_agent != NULL ? tsr_rv_retired(tsr_rv_agent_rv(sim->rv_agent)) : 0u;
+}
+#else
+uint32_t tsr_sim_rv_reg(const tsr_sim * sim, unsigned i) { (void)sim; (void)i; return 0u; }
+uint32_t tsr_sim_rv_pc(const tsr_sim * sim) { (void)sim; return 0u; }
+uint64_t tsr_sim_rv_instret(const tsr_sim * sim) { (void)sim; return 0u; }
+#endif
 
 void tsr_sim_set_log(tsr_sim * sim, void * file) { sim->log = (FILE *)file; }
+
+void tsr_sim_log_line(tsr_sim * sim, const char * fmt, ...) {
+    if (sim->log == NULL) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(sim->log, fmt, ap);
+    va_end(ap);
+    fputc('\n', sim->log);
+}
 
 void tsr_sim_set_threads(tsr_sim * sim, unsigned n) {
     if (n < 1) n = 1;
@@ -541,43 +687,404 @@ void tsr_sim_set_threads(tsr_sim * sim, unsigned n) {
     if (n > 1) sim->pool = pool_create(n - 1);
 }
 
-float   tsr_sim_sreg(const tsr_sim * sim, uint32_t i) { return i < 16 ? sim->S[i] : 0.0f; }
-uint64_t tsr_sim_perf(const tsr_sim * sim, uint32_t idx) { return idx < sim->n_perf ? sim->perf[idx] : 0; }
+uint64_t tsr_sim_perf(const tsr_sim * sim, uint32_t idx) { return idx < TSR_PERF_SLOTS ? sim->perf[idx] : 0; }
+
+int tsr_sim_active(const tsr_sim * sim) { return sim->taken != sim->answered; }
+
+void tsr_sim_perf_add(tsr_sim * sim, uint32_t idx, uint64_t n) {
+    if (idx >= TSR_PERF_SLOTS) return;
+    if (sim->perf_force || tsr_sim_active(sim)) sim->perf[idx] += n;
+}
+
+void * tsr_sim_scratch(tsr_sim * sim, size_t n) {
+    if (n > sim->scratch_cap) {
+        free(sim->scratch);
+        const size_t cap = (n + 63u) & ~(size_t)63u;
+        sim->scratch = aligned_alloc(64, cap);
+        if (sim->scratch == NULL) {
+            fprintf(stderr, "tsr_sim: out of memory (%zu bytes of scratch)\n", cap);
+            abort();
+        }
+        sim->scratch_cap = cap;
+    }
+    return sim->scratch;
+}
+
+void tsr_sim_parallel_rows(tsr_sim * sim, void (*fn)(void * ctx, uint32_t lo, uint32_t hi),
+                           void * ctx, uint32_t total, uint32_t chunk) {
+    if (total == 0) return;
+    if (sim->pool != NULL && total > 1) pool_run(sim->pool, fn, ctx, total, chunk);
+    else fn(ctx, 0, total);
+}
+
+uint32_t  tsr_sim_rv_run(const tsr_sim * sim) { return (sim->ctrl & TSR_CTRL_RV_RUN) ? 1u : 0u; }
+uint32_t  tsr_sim_rv_boot(const tsr_sim * sim) { return sim->rv_boot; }
+uint64_t  tsr_sim_rv_boot_gen(const tsr_sim * sim) { return sim->rv_boot_gen; }
+double    tsr_sim_rv_ratio(const tsr_sim * sim) { return sim->rv_ratio; }
+void      tsr_sim_rv_set_state(tsr_sim * sim, uint32_t bits) {
+    sim->rv_state = bits & (TSR_STATUS_RV_HALTED | TSR_STATUS_RV_SLEEP);
+}
+uint8_t * tsr_sim_itcm(tsr_sim * sim, uint32_t * bytes) { if (bytes) *bytes = sim->itcm_bytes; return sim->itcm; }
+uint8_t * tsr_sim_dtcm(tsr_sim * sim, uint32_t * bytes) { if (bytes) *bytes = sim->dtcm_bytes; return sim->dtcm; }
 
 // ---------------------------------------------------------------------------
-// CSR port
+// Firmware loader (EX §3.3): LOAD_* CSRs, receive CRC, VERIFY
 // ---------------------------------------------------------------------------
-uint32_t tsr_sim_csr_read(tsr_sim * sim, uint32_t off) {
+// The TCM word at RISC-V byte address a (word aligned), or NULL if no TCM is there (writes are
+// lost, reads return 0: VERIFY then shows the address-decode fault the receive CRC cannot see).
+static uint8_t * tcm_word(tsr_sim * sim, uint32_t a) {
+    if (a - TSR_RV_ITCM_BASE < sim->itcm_bytes) return sim->itcm + (a - TSR_RV_ITCM_BASE);   // ITCM base 0
+    if (a >= TSR_RV_DTCM_BASE && a - TSR_RV_DTCM_BASE < sim->dtcm_bytes) return sim->dtcm + (a - TSR_RV_DTCM_BASE);
+    return NULL;
+}
+
+// zlib crc32 (reflected 0xEDB88320, init / final XOR 0xFFFFFFFF) over the 4 bytes of a word in
+// address order; st is the running pre-final state.
+static uint32_t crc32_word(uint32_t st, uint32_t w) {
+    for (int b = 0; b < 4; ++b) {
+        st ^= (w >> (8 * b)) & 0xFFu;
+        for (int k = 0; k < 8; ++k) st = (st >> 1) ^ (TSR_CRC32_POLY & (0u - (st & 1u)));
+    }
+    return st;
+}
+
+static int load_refused(const tsr_sim * sim) { return (sim->ctrl & TSR_CTRL_RV_RUN) || sim->sr_busy; }
+
+static void load_verify(tsr_sim * sim) {
+    if (load_refused(sim)) {
+        sim->sticky |= TSR_STATUS_LOAD_REFUSED;
+        return;
+    }
+    // The sequencer reads LOAD_COUNT words from LOAD_ADDR (completes at once in this model;
+    // LOAD_ADDR itself is not moved).
+    uint32_t st = 0xFFFFFFFFu;
+    for (uint32_t i = 0; i < sim->load_count; ++i) {
+        const uint8_t * p = tcm_word(sim, sim->load_addr + 4u * i);
+        st = crc32_word(st, p ? rd32le(p) : 0u);
+    }
+    sim->load_crc_state = st;
+}
+
+// ---------------------------------------------------------------------------
+// Resets (EX §8.5, CC §12.2)
+// ---------------------------------------------------------------------------
+// RISC-V reset sequence (RV_RUN 1 -> 0, SOFT_RESET step 1): the core applies QABORT and sets
+// ANSWERED := TAKEN (the running launch gets no record); the clk_rv side resets staging, deps,
+// WAIT_*, the RISC-V hold source, LCQ_W*, RT_*. Completes at once (RV_RESET_DONE = !RV_RUN).
+static void rv_reset_seq(tsr_sim * sim) {
+    sim->ctrl &= ~TSR_CTRL_RV_RUN;
+    tsr_q_abort(sim);
+    sim->answered = sim->taken;
+    tsr_q_rv_reset(sim);
+    memset(sim->lcq_w, 0, sizeof(sim->lcq_w));
+    sim->rt_state = 0;
+    sim->rt_info = 0;
+    sim->rv_state = 0;
+}
+
+static void soft_reset_start(tsr_sim * sim) {
+    if (sim->sr_busy) return;
+    sim->sr_busy = 1;
+    rv_reset_seq(sim);                                    // step 1 (QABORT even if RV_RUN was 0)
+    if (sim->have_dbg && sim->dbg.soft_reset) sim->dbg.soft_reset(sim->dbg.ctx);
+    tsr_sim_sr_poll(sim);                                 // steps 2-4 at once if already drained
+}
+
+void tsr_sim_sr_poll(tsr_sim * sim) {
+    if (!sim->sr_busy || !tsr_q_idle(sim)) return;       // step 2: QIDLE, no unit holds an op
+    // step 3
+    sim->taken = sim->pushed;
+    sim->answered = sim->taken;
+    sim->lcq_rd = sim->lcq_wr;
+    sim->log_rd = sim->log_wr;
+    sim->cancel_valid = 0;
+    sim->stop_valid = 0;
+    tsr_q_clear_all(sim, NULL);                           // host QCLEAR effects
+    memset(sim->perf, 0, sizeof(sim->perf));
+    sim->snap_valid = 0;
+    sim->sticky = 0;
+    sim->log_dropped = 0;
+    sim->sr_busy = 0;                                     // step 4
+}
+
+// ---------------------------------------------------------------------------
+// Host CSR port (EX §5)
+// ---------------------------------------------------------------------------
+static int covered(uint32_t wm, uint32_t q) { return (uint32_t)(wm - q) < TSR_SEQ_HALF; }
+
+static uint32_t status_read(const tsr_sim * sim) {
+    uint32_t st = sim->sticky | TSR_STATUS_RV_CLK_OK | tsr_q_status(sim);
+    if (sim->ctrl & TSR_CTRL_RV_RUN) st |= TSR_STATUS_RV_RUNNING | sim->rv_state;
+    else st |= TSR_STATUS_RV_RESET_DONE;
+    if (tsr_sim_active(sim)) st |= TSR_STATUS_ACTIVE;
+    if (sim->sr_busy) st |= TSR_STATUS_SR_BUSY;
+    if (sim->lcq_wr != sim->lcq_rd) st |= TSR_STATUS_LCQ_PENDING;
+    if (sim->log_wr != sim->log_rd) st |= TSR_STATUS_LOG_PENDING;
+    return st;
+}
+
+static uint32_t cfg3_read(const tsr_sim * sim) {
+    uint32_t v = 0;
+    if (sim->cfg.caps & TSR_CAPS_VU)
+        v |= TSR_PUT(TSR_CFG3_VU_FRONT, TSR_VU_FRONT_LANES) | TSR_PUT(TSR_CFG3_VU_BACK, TSR_VU_BACK_LANES);
+    if (sim->cfg.caps & TSR_CAPS_ATT) v |= TSR_PUT(TSR_CFG3_PCAP16, tsr_qa_lines(TSR_QA_A256, sim->cfg.k_max));
+    return v;
+}
+
+// host = 1: the host port (PERF LO snapshot, LOAD_DATA, DMI); 0: the core window (CC §5.3).
+static uint32_t csr_read(tsr_sim * sim, uint32_t off, int host) {
     const tsr_config * c = &sim->cfg;
+    if (off % 4 != 0 || off >= 0x1000u) return 0;
     switch (off) {
-    case TSR_CSR_ID:          return TSR_ID_MAGIC;
-    case TSR_CSR_VERSION:     return (TSR_ISA_MAJOR << 8) | TSR_ISA_MINOR;
-    case TSR_CSR_CFG0:        return (c->num_ch & 0xFFu) | ((c->lanes & 0xFFFu) << 8) | ((c->t_max & 0xFu) << 20);
-    case TSR_CSR_CFG1:        return c->spm_bytes / TSR_LINE_BYTES;
-    case TSR_CSR_CFG2:        return (c->vl & 0xFFu) | ((c->nsreg & 0xFFu) << 8) | (((c->k_max / 256u) & 0xFFFFu) << 16);
-    case TSR_CSR_CAPS:        return c->caps;
+    case TSR_CSR_ID:           return TSR_ID_MAGIC;
+    case TSR_CSR_VERSION:      return TSR_VERSION_VALUE;
+    case TSR_CSR_CFG0:         return (c->num_ch & 0xFFu) | ((c->lanes & 0xFFFu) << 8) | ((c->t_max & 0xFu) << 20);
+    case TSR_CSR_CFG1:         return c->spm_bytes / TSR_LINE_BYTES;
+    case TSR_CSR_CFG2:         return (c->vl & 0xFFu) | ((c->nsreg & 0xFFu) << 8) | (((c->k_max / 256u) & 0xFFFFu) << 16);
+    case TSR_CSR_CAPS:         return c->caps;
+    case TSR_CSR_CFG3:         return cfg3_read(sim);
+    case TSR_CSR_CTL_ID:       return TSR_PUT(TSR_CTL_ID_VERSION, TSR_CTL_VERSION) | TSR_CTL_ID_BRIDGE | TSR_CTL_ID_LOG |
+                                      TSR_CTL_ID_WDOG | TSR_CTL_ID_SPM_LB |
+                                      ((sim->have_dbg && sim->dbg.csr_read) ? TSR_CTL_ID_DM : 0u);
+    case TSR_CSR_CTRL:         return sim->ctrl & (TSR_CTRL_RV_RUN | TSR_CTRL_HOST_HOLD | TSR_CTRL_HOLD_ON_HALT | TSR_CTRL_IRQ_EN);
+    case TSR_CSR_STATUS:       return status_read(sim);
+    case TSR_CSR_RV_BOOT:      return sim->rv_boot;
+    case TSR_CSR_RV_FREQ:      return (uint32_t)(sim->rv_ratio * 65536.0 + 0.5);
+    case TSR_CSR_RV_CFG:       return TSR_PUT(TSR_RV_CFG_ITCM_KIB, sim->itcm_bytes / 1024u) |
+                                      TSR_PUT(TSR_RV_CFG_DTCM_KIB, sim->dtcm_bytes / 1024u);
+    case TSR_CSR_WDOG_CFG:     return sim->wdog_cfg;
+    case TSR_CSR_RT_STATE:     return sim->rt_state;
+    case TSR_CSR_RT_INFO:      return sim->rt_info;
+    case TSR_CSR_LQ_SEQ:       return sim->pushed;
+    case TSR_CSR_LQ_TAKEN:     return sim->taken;
+    case TSR_CSR_LQ_CANCEL:    return sim->cancel_wm;
+    case TSR_CSR_LQ_STOP:      return sim->stop_wm;
+    case TSR_CSR_LCQ_WR:       return sim->lcq_wr;
+    case TSR_CSR_LCQ_RD:       return sim->lcq_rd;
+    case TSR_CSR_LQ_CFG:       return TSR_PUT(TSR_LQ_CFG_LQ_DEPTH, TSR_LQ_DEPTH) | TSR_PUT(TSR_LQ_CFG_LCQ_DEPTH, TSR_LCQ_DEPTH) |
+                                      TSR_PUT(TSR_LQ_CFG_LOG_DEPTH, TSR_LOG_DEPTH) |
+                                      (sim->stop_valid ? TSR_LQ_CFG_STOP_VALID : 0u) |
+                                      (sim->cancel_valid ? TSR_LQ_CFG_CANCEL_VALID : 0u);
+    case TSR_CSR_PERF_INFO:    return TSR_PUT(TSR_PERF_INFO_COUNT, TSR_PERF_SLOTS) | TSR_PUT(TSR_PERF_INFO_X, TSR_PERF_X(sim->num_ch));
+    case TSR_CSR_LCQ_ANSWERED: return sim->answered;
+    case TSR_CSR_Q_DEPTH:      return tsr_q_depth_reg(sim);
+    case TSR_CSR_LOG_WR:       return sim->log_wr;
+    case TSR_CSR_LOG_RD:       return sim->log_rd;
+    case TSR_CSR_LOG_CFG:      return sim->log_cfg;
+    case TSR_CSR_LOG_DROPPED:  return sim->log_dropped;
+    case TSR_CSR_LOAD_ADDR:    return sim->load_addr;
+    case TSR_CSR_LOAD_DATA: {
+        if (!host || load_refused(sim)) return 0;
+        const uint8_t * p = tcm_word(sim, sim->load_addr);
+        return p ? rd32le(p) : 0u;
+    }
+    case TSR_CSR_LOAD_CRC:     return sim->load_crc_state ^ 0xFFFFFFFFu;
+    case TSR_CSR_LOAD_COUNT:   return sim->load_count;
+    case TSR_CSR_LOAD_STATUS:  return 0;                  // VERIFY completes at once
     default: break;
     }
-    if (off % 4 != 0) return 0;
-    if (off >= TSR_CSR_PERF_BASE) {
-        const uint32_t idx = (off - TSR_CSR_PERF_BASE) / 8;
-        if (idx < sim->n_perf) {
-            const uint64_t v = sim->perf[idx];
-            return ((off - TSR_CSR_PERF_BASE) % 8) ? (uint32_t)(v >> 32) : (uint32_t)v;
+    if (off >= TSR_CSR_LQ_W(0) && off < TSR_CSR_LQ_W(8)) return sim->lq_w[(off - TSR_CSR_LQ_W(0)) / 4];
+    if (off >= TSR_CSR_PERF_LO_BASE && off < TSR_CSR_PERF_LO_BASE + 8u * TSR_PERF_SLOTS) {
+        const uint32_t idx = (off - TSR_CSR_PERF_LO_BASE) / 8;
+        const uint64_t v = sim->perf[idx];
+        if ((off - TSR_CSR_PERF_LO_BASE) % 8 == 0) {
+            if (host) {                                   // LO: snapshot for the next HI read
+                sim->snap_valid = 1;
+                sim->snap_idx = idx;
+                sim->snap_val = v;
+            }
+            return (uint32_t)v;
         }
+        if (host && sim->snap_valid && sim->snap_idx == idx) return (uint32_t)(sim->snap_val >> 32);
+        return (uint32_t)(v >> 32);
     }
+    if (off >= TSR_CSR_LCQ_REC_BASE && off < TSR_CSR_LCQ_REC_BASE + TSR_LCQ_REC_BYTES * TSR_LCQ_DEPTH) {
+        const uint32_t k = (off - TSR_CSR_LCQ_REC_BASE) / TSR_LCQ_REC_BYTES;
+        return sim->lcq_ring[k][(off - TSR_CSR_LCQ_REC_BASE) % TSR_LCQ_REC_BYTES / 4];
+    }
+    if (off >= TSR_CSR_LOG_RING_BASE && off < TSR_CSR_LOG_RING_BASE + 4u * TSR_LOG_DEPTH)
+        return sim->log_ring[(off - TSR_CSR_LOG_RING_BASE) / 4];
+    if (off >= TSR_CSR_SREG(0) && off < TSR_CSR_SREG(16)) {
+        uint32_t u;
+        memcpy(&u, &sim->sreg[(off - TSR_CSR_SREG(0)) / 4], 4);
+        return u;
+    }
+    const int dbg_range = off >= TSR_CSR_DBG_BASE && off < TSR_CSR_DBG_BASE + TSR_CSR_DBG_BYTES;
+    const int dmi_range = off >= TSR_CSR_DMI_BASE && off < TSR_CSR_DMI(TSR_CSR_DMI_N);
+    if (dbg_range || dmi_range) {
+        if (dmi_range && !host) return 0;                 // core window: DMI reads 0 (CC §5.3)
+        uint32_t v = 0;
+        if (sim->have_dbg && sim->dbg.csr_read && sim->dbg.csr_read(sim->dbg.ctx, off, &v, host)) return v;
+        return 0;                                         // DBG_ID = 0: block absent
+    }
+    if (off >= TSR_CSR_Q_DONE(0) && off < TSR_CSR_Q_ERR_PIDX(TSR_UNIT_SLOTS)) return tsr_q_csr_read(sim, off);
     return 0;
 }
 
+uint32_t tsr_sim_csr_read(tsr_sim * sim, uint32_t off) { return csr_read(sim, off, 1); }
+uint32_t tsr_sim_corewin_read(tsr_sim * sim, uint32_t csr_off) { return csr_read(sim, csr_off, 0); }
+
+static void ctrl_write(tsr_sim * sim, uint32_t val) {
+    // Level bits first (EX §5.2), then the pulses in bit order.
+    const uint32_t old = sim->ctrl;
+    uint32_t lv = val & (TSR_CTRL_HOST_HOLD | TSR_CTRL_HOLD_ON_HALT | TSR_CTRL_IRQ_EN);
+    uint32_t run = old & TSR_CTRL_RV_RUN;
+    if ((val & TSR_CTRL_RV_RUN) != run) {
+        if (sim->sr_busy) sim->sticky |= TSR_STATUS_RV_RUN_REFUSED;   // a change while SR_BUSY
+        else run = val & TSR_CTRL_RV_RUN;
+    }
+    sim->ctrl = lv | run;
+    if (!(old & TSR_CTRL_RV_RUN) && run) {                // boot: the hart leaves reset at RV_BOOT + 0x80
+        sim->rv_boot_gen++;
+        sim->rv_state = 0;
+        sim->agent_next = sim->now;
+    } else if ((old & TSR_CTRL_RV_RUN) && !run) {
+        sim->ctrl |= TSR_CTRL_RV_RUN;                     // rv_reset_seq clears it
+        rv_reset_seq(sim);
+    }
+    if (val & TSR_CTRL_QABORT) tsr_q_abort(sim);
+    if (val & TSR_CTRL_QCLEAR) {
+        if (tsr_q_host_clear(sim) != 0) sim->sticky |= TSR_STATUS_QCLEAR_REFUSED;
+    }
+    if (val & TSR_CTRL_SOFT_RESET) soft_reset_start(sim);
+}
+
+// Ring read pointer write rule (EX §4.2): v accepted iff (v - RD) <= (WR - RD), mod 2^32.
+static void ring_rd_write(tsr_sim * sim, uint32_t * rd, uint32_t wr, uint32_t v) {
+    if ((uint32_t)(v - *rd) <= (uint32_t)(wr - *rd)) *rd = v;
+    else sim->sticky |= TSR_STATUS_RING_RD_BAD;
+}
+
 void tsr_sim_csr_write(tsr_sim * sim, uint32_t off, uint32_t val) {
-    // Read-only or unmapped: ignored (the writable v2 registers come with the v2 CSR model).
-    (void)sim;
-    (void)off;
-    (void)val;
+    if (off % 4 != 0 || off >= 0x1000u) return;
+    sim->agent_kick = 1;
+    switch (off) {
+    case TSR_CSR_CTRL:      ctrl_write(sim, val); return;
+    case TSR_CSR_STATUS:    sim->sticky &= ~(val & 0x0FFF0000u); return;   // W1C, sticky bits 16..27
+    case TSR_CSR_RV_BOOT:   sim->rv_boot = val & TSR_RV_BOOT_ADDR; return;
+    case TSR_CSR_WDOG_CFG:  sim->wdog_cfg = val & TSR_WDOG_CFG_L; return;
+    case TSR_CSR_LQ_PUSH:
+        if ((uint32_t)(sim->pushed - sim->taken) >= TSR_LQ_DEPTH) {
+            sim->sticky |= TSR_STATUS_LQ_OVERFLOW;        // dropped
+        } else {
+            memcpy(sim->lq_ring[sim->pushed % TSR_LQ_DEPTH], sim->lq_w, sizeof(sim->lq_w));
+            sim->pushed++;
+        }
+        return;
+    case TSR_CSR_LQ_CANCEL:
+        sim->cancel_wm = val;
+        sim->cancel_valid = 1;
+        // Hard cancel (EX §4.9): the running launch (sequence ANSWERED) covered -> host QABORT now.
+        if (tsr_sim_active(sim) && covered(val, sim->answered)) tsr_q_abort(sim);
+        return;
+    case TSR_CSR_LQ_STOP:
+        sim->stop_wm = val;
+        sim->stop_valid = 1;
+        return;
+    case TSR_CSR_LCQ_RD:    ring_rd_write(sim, &sim->lcq_rd, sim->lcq_wr, val); return;
+    case TSR_CSR_LOG_RD:    ring_rd_write(sim, &sim->log_rd, sim->log_wr, val); return;
+    case TSR_CSR_LOG_CFG:   sim->log_cfg = val & (TSR_LOG_CFG_ENABLE | TSR_LOG_CFG_BLOCK | TSR_LOG_CFG_LEVEL); return;
+    case TSR_CSR_LOAD_ADDR:
+        sim->load_addr = val & ~3u;                       // word aligned; restarts LOAD_CRC
+        sim->load_crc_state = 0xFFFFFFFFu;
+        return;
+    case TSR_CSR_LOAD_DATA:
+        if (load_refused(sim)) {
+            sim->sticky |= TSR_STATUS_LOAD_REFUSED;
+        } else {
+            uint8_t * p = tcm_word(sim, sim->load_addr);
+            if (p != NULL) wr32le(p, val);
+            sim->load_crc_state = crc32_word(sim->load_crc_state, val);
+            sim->load_addr += 4;
+        }
+        return;
+    case TSR_CSR_LOAD_COUNT: sim->load_count = val; return;
+    case TSR_CSR_LOAD_CTRL:
+        if (val & TSR_LOAD_CTRL_VERIFY) load_verify(sim);
+        return;
+    default: break;
+    }
+    if (off >= TSR_CSR_LQ_W(0) && off < TSR_CSR_LQ_W(8)) {
+        sim->lq_w[(off - TSR_CSR_LQ_W(0)) / 4] = val;
+        return;
+    }
+    const int dbg_range = off >= TSR_CSR_DBG_BASE && off < TSR_CSR_DBG_BASE + TSR_CSR_DBG_BYTES &&
+                          !(off >= TSR_CSR_SREG(0) && off < TSR_CSR_SREG(16));
+    const int dmi_range = off >= TSR_CSR_DMI_BASE && off < TSR_CSR_DMI(TSR_CSR_DMI_N);
+    if ((dbg_range || dmi_range) && sim->have_dbg && sim->dbg.csr_write) sim->dbg.csr_write(sim->dbg.ctx, off, val);
 }
 
 // ---------------------------------------------------------------------------
-// Ops
+// RISC-V side of the rings (EX §4.5, control window 0x200-0x2FC)
+// ---------------------------------------------------------------------------
+int tsr_sim_lq_cw_access(tsr_sim * sim, int is_write, uint32_t off, uint32_t * val) {
+    const uint32_t avail = sim->pushed - sim->taken;
+    const uint32_t lcq_free = TSR_LCQ_DEPTH - (sim->lcq_wr - sim->lcq_rd);
+    if (!is_write) {
+        uint32_t v = 0;
+        if (off >= TSR_CW_LQ_HEAD_W(0) && off < TSR_CW_LQ_HEAD_W(8)) {
+            if (avail != 0) v = sim->lq_ring[sim->taken % TSR_LQ_DEPTH][(off - TSR_CW_LQ_HEAD_W(0)) / 4];
+        } else if (off >= TSR_CW_LCQ_W(0) && off < TSR_CW_LCQ_W(8)) {
+            v = sim->lcq_w[(off - TSR_CW_LCQ_W(0)) / 4];
+        } else {
+            switch (off) {
+            case TSR_CW_LQ_AVAIL:    v = avail; break;
+            case TSR_CW_LQ_HEAD_SEQ: v = sim->taken; break;
+            case TSR_CW_LQ_CANCEL:   v = sim->cancel_wm; break;
+            case TSR_CW_LQ_STOP:     v = sim->stop_wm; break;
+            case TSR_CW_LQ_FLAGS:
+                v = (sim->cancel_valid ? TSR_LQ_FLAGS_CANCEL_VALID : 0u) | (sim->stop_valid ? TSR_LQ_FLAGS_STOP_VALID : 0u) |
+                    (tsr_sim_active(sim) ? TSR_LQ_FLAGS_ACTIVE : 0u);
+                break;
+            case TSR_CW_LCQ_FREE:    v = lcq_free; break;
+            case TSR_CW_LOG_FREE:    v = TSR_LOG_DEPTH - (sim->log_wr - sim->log_rd); break;
+            case TSR_CW_LOG_CFG:     v = sim->log_cfg; break;
+            case TSR_CW_RT_STATE:    v = sim->rt_state; break;
+            case TSR_CW_RT_INFO:     v = sim->rt_info; break;
+            default: break;
+            }
+        }
+        *val = v;
+        return TSR_CW_OK;
+    }
+    const uint32_t v = *val;
+    if (off >= TSR_CW_LCQ_W(0) && off < TSR_CW_LCQ_W(8)) {
+        sim->lcq_w[(off - TSR_CW_LCQ_W(0)) / 4] = v;
+        return TSR_CW_OK;
+    }
+    switch (off) {
+    case TSR_CW_LQ_POP:
+        if (avail == 0 || tsr_sim_active(sim)) return TSR_CW_FAULT;
+        sim->taken++;                                     // ACTIVE := 1
+        return TSR_CW_OK;
+    case TSR_CW_LCQ_POST: {
+        const int answer = (v & TSR_LCQ_POST_ANSWER) != 0;
+        if (lcq_free == 0 || (answer && !tsr_sim_active(sim))) return TSR_CW_FAULT;
+        memcpy(sim->lcq_ring[sim->lcq_wr % TSR_LCQ_DEPTH], sim->lcq_w, sizeof(sim->lcq_w));
+        sim->lcq_wr++;
+        if (answer) {
+            tsr_sim_perf_add(sim, TSR_PERF_LAUNCHES(sim->num_ch), 1);   // counted while still ACTIVE
+            sim->answered++;
+        }
+        return TSR_CW_OK;
+    }
+    case TSR_CW_LOG_PUSH:
+        if ((uint32_t)(sim->log_wr - sim->log_rd) < TSR_LOG_DEPTH) {
+            sim->log_ring[sim->log_wr % TSR_LOG_DEPTH] = v;
+            sim->log_wr++;
+        } else {                                          // full: dropped and counted, never faults
+            if (sim->log_dropped != 0xFFFFFFFFu) sim->log_dropped++;
+            sim->sticky |= TSR_STATUS_LOG_DROP;
+        }
+        return TSR_CW_OK;
+    case TSR_CW_RT_STATE: sim->rt_state = v; return TSR_CW_OK;
+    case TSR_CW_RT_INFO:  sim->rt_info = v; return TSR_CW_OK;
+    default: return TSR_CW_OK;                            // read-only / reserved: ignored
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tile units: NOP, FENCE (SYNC), LD, ST (DMA), QACT, MVM. Checks, extents, execution, cycles.
 // ---------------------------------------------------------------------------
 static inline int words_zero_from(const uint32_t * w, unsigned from) {
     for (unsigned i = from; i < TSR_INSN_WORDS; ++i) {
@@ -593,8 +1100,15 @@ static inline int dram_ok(const tsr_sim * sim, uint32_t a, uint64_t extent) {
     return (uint64_t)a + extent <= sim->limit_beats;
 }
 
-static uint32_t ex_ldst(tsr_sim * sim, const uint32_t * w, int is_st, uint32_t * info, uint64_t * cyc) {
-    // used: sub = ch, w1 (A1 SPM), w2 (A2 DRAM), w3
+// NOP / FENCE use no words: w1-w7 and every bit of w0 above the opcode must be 0 (EX §7.1).
+static uint32_t chk_sync(tsr_sim * sim, const uint32_t w[8], tsr_extents * ext, uint32_t * info) {
+    (void)sim; (void)ext; (void)info;
+    if ((w[0] & ~0xFFu) != 0 || !words_zero_from(w, 1)) return TSR_ERR_ILLEGAL_OP;
+    return TSR_ERR_NONE;
+}
+
+// LD / ST: sub = ch, w1 (A1 SPM line), w2 (A2 DRAM beat), w3 (lines).
+static uint32_t chk_ldst(tsr_sim * sim, const uint32_t * w, tsr_extents * ext, uint32_t * info, int is_st) {
     if ((w[0] & 0xFFFFF000u) != 0 || !words_zero_from(w, 4)) return TSR_ERR_ILLEGAL_OP;
     const uint32_t ch = tsr_w0_sub(w[0]);
     if (ch >= sim->num_ch) return TSR_ERR_ILLEGAL_OP;
@@ -603,23 +1117,33 @@ static uint32_t ex_ldst(tsr_sim * sim, const uint32_t * w, int is_st, uint32_t *
     const uint32_t n    = w[3];
     if (!spm_ok(sim, spm, n))   { *info = spm;  return TSR_ERR_SPM_RANGE; }
     if (!dram_ok(sim, dram, n)) { *info = dram; return TSR_ERR_DRAM_RANGE; }
-    uint8_t * s = sim->spm + (size_t)spm * TSR_LINE_BYTES;
-    uint8_t * d = sim->dram[ch] + (uint64_t)dram * TSR_BEAT_BYTES;
-    const size_t bytes = (size_t)n * TSR_LINE_BYTES;
-    if (!is_st) {
-        cap_read(sim, ch, dram, n);
-        sim->perf[tsr_perf_ch_rd_beats(ch)] += n;
-        memcpy(s, d, bytes);
-    } else {
-        memcpy(d, s, bytes);
-        cap_write(sim, ch, dram, n);
-    }
-    *cyc = CYC_ISSUE + CYC_DMA_LAT + n;
+    tsr_ext_add(ext, TSR_EXT_SPM, is_st ? TSR_EXT_READ : TSR_EXT_WRITE, 0, spm, (uint64_t)spm + n);
+    tsr_ext_add(ext, TSR_EXT_DRAM, is_st ? TSR_EXT_WRITE : TSR_EXT_READ, (uint8_t)ch, dram, (uint64_t)dram + n);
     return TSR_ERR_NONE;
 }
+static uint32_t chk_ld(tsr_sim * sim, const uint32_t w[8], tsr_extents * ext, uint32_t * info) { return chk_ldst(sim, w, ext, info, 0); }
+static uint32_t chk_st(tsr_sim * sim, const uint32_t w[8], tsr_extents * ext, uint32_t * info) { return chk_ldst(sim, w, ext, info, 1); }
 
-static uint32_t ex_qact(tsr_sim * sim, const uint32_t * w, uint32_t * info, uint64_t * cyc) {
-    // used: sub = kind, w1 (A1 QA dst), w2 (A2 f32 src), w3..w5
+static void ex_ld(tsr_sim * sim, const uint32_t w[8]) {
+    const uint32_t ch = tsr_w0_sub(w[0]), spm = w[1], dram = w[2], n = w[3];
+    tsr_sim_cap_read(sim, ch, dram, n);
+    tsr_sim_perf_add(sim, tsr_perf_ch_rd_beats(ch), n);
+    memcpy(sim->spm + (size_t)spm * TSR_LINE_BYTES, sim->dram[ch] + (uint64_t)dram * TSR_BEAT_BYTES,
+           (size_t)n * TSR_LINE_BYTES);
+}
+static void ex_st(tsr_sim * sim, const uint32_t w[8]) {
+    const uint32_t ch = tsr_w0_sub(w[0]), spm = w[1], dram = w[2], n = w[3];
+    memcpy(sim->dram[ch] + (uint64_t)dram * TSR_BEAT_BYTES, sim->spm + (size_t)spm * TSR_LINE_BYTES,
+           (size_t)n * TSR_LINE_BYTES);
+    tsr_sim_cap_write(sim, ch, dram, n);
+}
+static uint64_t cyc_ldst(const tsr_sim * sim, const uint32_t w[8]) {
+    (void)sim;
+    return CYC_DMA_LAT + (uint64_t)w[3];
+}
+
+// QACT: sub = kind, w1 (A1 QA dst), w2 (A2 f32 src), w3 K, w4 T, w5 src stride (0 = dense).
+static uint32_t chk_qact(tsr_sim * sim, const uint32_t w[8], tsr_extents * ext, uint32_t * info) {
     if ((w[0] & 0xFFFFF000u) != 0 || !words_zero_from(w, 6)) return TSR_ERR_ILLEGAL_OP;
     const uint32_t kind = tsr_w0_sub(w[0]);
     if (kind != TSR_QA_A32 && kind != TSR_QA_A256) return TSR_ERR_ILLEGAL_OP;
@@ -632,8 +1156,20 @@ static uint32_t ex_qact(tsr_sim * sim, const uint32_t * w, uint32_t * info, uint
     const uint32_t qa_lines = tsr_qa_lines(kind, K);
     const uint32_t dst = w[1];
     const uint32_t src = w[2];
-    if (!spm_ok(sim, dst, (uint64_t)T * qa_lines))                 { *info = dst; return TSR_ERR_SPM_RANGE; }
-    if (!spm_ok(sim, src, (uint64_t)(T - 1) * sstride + x_lines)) { *info = src; return TSR_ERR_SPM_RANGE; }
+    const uint64_t e_dst = (uint64_t)T * qa_lines, e_src = (uint64_t)(T - 1) * sstride + x_lines;
+    if (!spm_ok(sim, dst, e_dst)) { *info = dst; return TSR_ERR_SPM_RANGE; }
+    if (!spm_ok(sim, src, e_src)) { *info = src; return TSR_ERR_SPM_RANGE; }
+    tsr_ext_add(ext, TSR_EXT_SPM, TSR_EXT_WRITE, 0, dst, dst + e_dst);
+    tsr_ext_add(ext, TSR_EXT_SPM, TSR_EXT_READ, 0, src, src + e_src);
+    return TSR_ERR_NONE;
+}
+static void ex_qact(tsr_sim * sim, const uint32_t w[8]) {
+    const uint32_t kind = tsr_w0_sub(w[0]);
+    const uint32_t K = w[3], T = w[4];
+    const uint32_t x_lines  = K * 4u / TSR_LINE_BYTES;
+    const uint64_t sstride  = w[5] ? w[5] : x_lines;
+    const uint32_t qa_lines = tsr_qa_lines(kind, K);
+    const uint32_t dst = w[1], src = w[2];
     for (uint32_t t = 0; t < T; ++t) {
         const uint8_t * s = sim->spm + ((uint64_t)src + (uint64_t)t * sstride) * TSR_LINE_BYTES;
         for (uint32_t k = 0; k < K; ++k) {
@@ -642,8 +1178,64 @@ static uint32_t ex_qact(tsr_sim * sim, const uint32_t * w, uint32_t * info, uint
         }
         tsr_qact(kind, sim->xbuf, K, sim->spm + ((uint64_t)dst + (uint64_t)t * qa_lines) * TSR_LINE_BYTES);
     }
-    *cyc = CYC_ISSUE + (uint64_t)T * (tsr_ceil_div_u32(K, sim->cfg.vl) + qa_lines);
+}
+static uint64_t cyc_qact(const tsr_sim * sim, const uint32_t w[8]) {
+    const uint32_t kind = tsr_w0_sub(w[0]), K = w[3], T = w[4];
+    return (uint64_t)T * (tsr_ceil_div_u32(K, sim->cfg.vl) + tsr_qa_lines(kind, K));
+}
+
+// MVM: sub = fmt, flags bit0 ACC, w1 (A1 dst), w2 (A2 x), w3 (A3 W_OFF), w4 N, w5 K | T << 16,
+// w6 dst stride (0 = dense).
+typedef struct {
+    uint32_t fmt, acc, N, K, T, qa_lines, row_beats;
+    uint64_t y_lines, dstride, R;
+    uint32_t dst, x, woff;
+} mvm_dec;
+
+static void mvm_decode(const tsr_sim * sim, const uint32_t * w, mvm_dec * d) {
+    d->fmt = tsr_w0_sub(w[0]);
+    d->acc = (tsr_w0_flags(w[0]) & TSR_MVM_FLAG_ACC) != 0;
+    d->N = w[4];
+    d->K = w[5] & 0xFFFFu;
+    d->T = (w[5] >> 16) & 0xFu;
+    d->qa_lines = tsr_qa_lines(tsr_qa_kind_for_fmt(d->fmt), d->K);
+    d->y_lines = tsr_ceil_div_u64(4ull * d->N, TSR_LINE_BYTES);
+    d->dstride = w[6] ? w[6] : d->y_lines;
+    d->dst = w[1];
+    d->x = w[2];
+    d->woff = w[3];
+    d->R = tsr_ceil_div_u64(d->N, sim->num_ch);
+    d->row_beats = tsr_row_beats(d->fmt, d->K);
+}
+
+static uint32_t chk_mvm(tsr_sim * sim, const uint32_t w[8], tsr_extents * ext, uint32_t * info) {
+    if ((w[0] & 0xFFFFE000u) != 0 || (w[5] & 0xFFF00000u) != 0 || w[7] != 0) return TSR_ERR_ILLEGAL_OP;
+    const uint32_t fmt = tsr_w0_sub(w[0]);
+    if (!tsr_fmt_valid(fmt)) return TSR_ERR_BAD_FMT;
+    const uint32_t K = w[5] & 0xFFFFu;
+    const uint32_t T = (w[5] >> 16) & 0xFu;
+    if (!tsr_fmt_k_valid(fmt, K, sim->cfg.k_max)) return TSR_ERR_K_RANGE;
+    if (T == 0 || T > sim->cfg.t_max) return TSR_ERR_T_RANGE;
+    mvm_dec d;
+    mvm_decode(sim, w, &d);
+    const uint64_t e_dst = (uint64_t)(T - 1) * d.dstride + d.y_lines, e_x = (uint64_t)T * d.qa_lines;
+    if (!spm_ok(sim, d.dst, e_dst)) { *info = d.dst; return TSR_ERR_SPM_RANGE; }
+    if (!spm_ok(sim, d.x, e_x))     { *info = d.x;   return TSR_ERR_SPM_RANGE; }
+    // N <= 16 * spm_lines < 2^31 here (the dst check bounds it), so 32-bit row math is safe.
+    const uint64_t e_w = d.R * d.row_beats;
+    if (!dram_ok(sim, d.woff, e_w)) { *info = d.woff; return TSR_ERR_DRAM_RANGE; }
+    tsr_ext_add(ext, TSR_EXT_SPM, TSR_EXT_WRITE, 0, d.dst, d.dst + e_dst);
+    tsr_ext_add(ext, TSR_EXT_SPM, TSR_EXT_READ, 0, d.x, d.x + e_x);
+    tsr_ext_add(ext, TSR_EXT_DRAM, TSR_EXT_READ, TSR_EXT_CH_ALL, d.woff, d.woff + e_w);
+    if (d.acc) tsr_ext_add(ext, TSR_EXT_SPM, TSR_EXT_READ, 0, d.dst, d.dst + e_dst);
     return TSR_ERR_NONE;
+}
+
+// Weight beats channel c streams: its rows [cR, min((c+1)R, N)) times ROW_BEATS.
+static uint64_t mvm_ch_beats(const mvm_dec * d, uint32_t c) {
+    const uint64_t first = (uint64_t)c * d->R;
+    const uint64_t rows = (d->N > first) ? ((d->N - first < d->R) ? d->N - first : d->R) : 0;
+    return rows * d->row_beats;
 }
 
 typedef struct {
@@ -669,67 +1261,38 @@ static void mvm_rows(void * vctx, uint32_t lo, uint32_t hi) {
     }
 }
 
-static uint32_t ex_mvm(tsr_sim * sim, const uint32_t * w, uint32_t * info, uint64_t * cyc) {
-    // used: sub = fmt, flags bit0 ACC, w1 (A1 dst), w2 (A2 x), w3 (A3 W_OFF), w4..w6 (w5[19:0])
-    if ((w[0] & 0xFFFFE000u) != 0 || (w[5] & 0xFFF00000u) != 0 || w[7] != 0) return TSR_ERR_ILLEGAL_OP;
-    const uint32_t fmt = tsr_w0_sub(w[0]);
-    if (!tsr_fmt_valid(fmt)) return TSR_ERR_BAD_FMT;
-    const int acc = (tsr_w0_flags(w[0]) & TSR_MVM_FLAG_ACC) != 0;
-    const uint32_t N = w[4];
-    const uint32_t K = w[5] & 0xFFFFu;
-    const uint32_t T = (w[5] >> 16) & 0xFu;
-    if (!tsr_fmt_k_valid(fmt, K, sim->cfg.k_max)) return TSR_ERR_K_RANGE;
-    if (T == 0 || T > sim->cfg.t_max) return TSR_ERR_T_RANGE;
-    const uint32_t kind     = tsr_qa_kind_for_fmt(fmt);
-    const uint32_t qa_lines = tsr_qa_lines(kind, K);
-    const uint64_t y_lines  = tsr_ceil_div_u64(4ull * N, TSR_LINE_BYTES);
-    const uint64_t dstride  = w[6] ? w[6] : y_lines;
-    const uint32_t dst  = w[1];
-    const uint32_t x    = w[2];
-    const uint32_t woff = w[3];
-    if (!spm_ok(sim, dst, (uint64_t)(T - 1) * dstride + y_lines)) { *info = dst; return TSR_ERR_SPM_RANGE; }
-    if (!spm_ok(sim, x, (uint64_t)T * qa_lines))                  { *info = x;   return TSR_ERR_SPM_RANGE; }
-    // N <= 16 * spm_lines < 2^31 here (the dst check bounds it), so 32-bit row math is safe.
-    const uint64_t R = tsr_ceil_div_u64(N, sim->num_ch);
-    const uint32_t row_beats = tsr_row_beats(fmt, K);
-    if (!dram_ok(sim, woff, R * row_beats)) { *info = woff; return TSR_ERR_DRAM_RANGE; }
-
-    // Weight stream: channel c reads its rows [cR, min((c+1)R, N)) = rows_c * ROW_BEATS beats.
-    uint64_t max_beats = 0;
+static void ex_mvm(tsr_sim * sim, const uint32_t w[8]) {
+    mvm_dec d;
+    mvm_decode(sim, w, &d);
     for (uint32_t c = 0; c < sim->num_ch; ++c) {
-        const uint64_t first = (uint64_t)c * R;
-        const uint64_t rows = (N > first) ? ((N - first < R) ? N - first : R) : 0;
-        const uint64_t beats = rows * row_beats;
+        const uint64_t beats = mvm_ch_beats(&d, c);
         if (beats == 0) continue;
-        cap_read(sim, c, woff, beats);
-        sim->perf[tsr_perf_ch_rd_beats(c)] += beats;
-        if (beats > max_beats) max_beats = beats;
+        tsr_sim_cap_read(sim, c, d.woff, beats);
+        tsr_sim_perf_add(sim, tsr_perf_ch_rd_beats(c), beats);
     }
-
     // Compute every y first (x is read-only here; dst/x overlap is undefined per spec).
-    const size_t ny = (size_t)T * N;
+    const size_t ny = (size_t)d.T * d.N;
     if (ny > sim->ybuf_cap) {
         sim->ybuf = (float *)xrealloc(sim->ybuf, ny * sizeof(float));
         sim->ybuf_cap = ny;
     }
-    mvm_job job = { sim, fmt, N, K, T, woff, x, qa_lines };
-    const uint64_t work = (uint64_t)N * row_beats * T;
-    if (sim->pool != NULL && N > 1 && work >= MT_MIN_WORK_BEATS) {
-        uint32_t chunk = N / (8u * sim->threads);
+    mvm_job job = { sim, d.fmt, d.N, d.K, d.T, d.woff, d.x, d.qa_lines };
+    const uint64_t work = (uint64_t)d.N * d.row_beats * d.T;
+    if (sim->pool != NULL && d.N > 1 && work >= MT_MIN_WORK_BEATS) {
+        uint32_t chunk = d.N / (8u * sim->threads);
         if (chunk < 1) chunk = 1;
         if (chunk > 64) chunk = 64;
-        pool_run(sim->pool, mvm_rows, &job, N, chunk);
+        pool_run(sim->pool, mvm_rows, &job, d.N, chunk);
     } else {
-        mvm_rows(&job, 0, N);
+        mvm_rows(&job, 0, d.N);
     }
-
     // Write: token t -> dst + t*stride, element n; ACC adds the old value; tail bytes zero.
-    for (uint32_t t = 0; t < T; ++t) {
-        uint8_t * base = sim->spm + ((uint64_t)dst + (uint64_t)t * dstride) * TSR_LINE_BYTES;
-        const float * y = sim->ybuf + (size_t)t * N;
-        for (uint32_t n = 0; n < N; ++n) {
+    for (uint32_t t = 0; t < d.T; ++t) {
+        uint8_t * base = sim->spm + ((uint64_t)d.dst + (uint64_t)t * d.dstride) * TSR_LINE_BYTES;
+        const float * y = sim->ybuf + (size_t)t * d.N;
+        for (uint32_t n = 0; n < d.N; ++n) {
             float v = y[n];
-            if (acc) {
+            if (d.acc) {
                 const uint32_t ou = rd32le(base + 4u * n);
                 float old;
                 memcpy(&old, &ou, 4);
@@ -737,40 +1300,47 @@ static uint32_t ex_mvm(tsr_sim * sim, const uint32_t * w, uint32_t * info, uint6
             }
             wr32le(base + 4u * n, tsr_f32_bits(v));
         }
-        memset(base + 4ull * N, 0, (size_t)(y_lines * TSR_LINE_BYTES - 4ull * N));
-    }
-    const uint64_t mvm_cyc = CYC_MVM_FILL + (uint64_t)T * qa_lines + max_beats;
-    sim->perf[TSR_PERF_MVM_CYCLES] += mvm_cyc;
-    *cyc = CYC_ISSUE + mvm_cyc;
-    return TSR_ERR_NONE;
-}
-
-// Executes one op. Returns 0 or an error code (then *info is ERR_INFO and no state has changed).
-static uint32_t exec_op(tsr_sim * sim, const uint32_t * w, uint32_t * info, uint64_t * cyc) {
-    const uint32_t w0 = w[0];
-    switch (tsr_w0_opcode(w0)) {
-    case TSR_OP_NOP:
-    case TSR_OP_FENCE:   // no queues in this model: both complete at once
-        if ((w0 & ~0xFFu) != 0 || !words_zero_from(w, 1)) return TSR_ERR_ILLEGAL_OP;
-        *cyc = CYC_ISSUE;
-        return TSR_ERR_NONE;
-    case TSR_OP_LD:   return ex_ldst(sim, w, 0, info, cyc);
-    case TSR_OP_ST:   return ex_ldst(sim, w, 1, info, cyc);
-    case TSR_OP_QACT: return ex_qact(sim, w, info, cyc);
-    case TSR_OP_MVM:  return ex_mvm(sim, w, info, cyc);
-    default:
-        // END / LI / ADDI (reserved), the retired 0x04-0x09, VOP/RED/ROPE/SOP (CAPS bit0), TOPK
-        // (bit3), DQROW and every undefined opcode: not implemented by this simulator.
-        return TSR_ERR_ILLEGAL_OP;
+        memset(base + 4ull * d.N, 0, (size_t)(d.y_lines * TSR_LINE_BYTES - 4ull * d.N));
     }
 }
 
+static uint64_t cyc_mvm(const tsr_sim * sim, const uint32_t w[8]) {
+    mvm_dec d;
+    mvm_decode(sim, w, &d);
+    uint64_t max_beats = 0;
+    for (uint32_t c = 0; c < sim->num_ch; ++c) {
+        const uint64_t b = mvm_ch_beats(&d, c);
+        if (b > max_beats) max_beats = b;
+    }
+    return CYC_MVM_FILL + (uint64_t)d.T * d.qa_lines + max_beats;
+}
+
+void tsr_core_register(void) {
+    const tsr_op_handler nop   = { TSR_UNIT_SYNC, chk_sync, NULL, NULL };
+    const tsr_op_handler ld    = { TSR_UNIT_DMA, chk_ld, ex_ld, cyc_ldst };
+    const tsr_op_handler st    = { TSR_UNIT_DMA, chk_st, ex_st, cyc_ldst };
+    const tsr_op_handler qact  = { TSR_UNIT_QACT, chk_qact, ex_qact, cyc_qact };
+    const tsr_op_handler mvm   = { TSR_UNIT_MVM, chk_mvm, ex_mvm, cyc_mvm };
+    tsr_sim_register_op(TSR_OP_NOP, &nop);
+    tsr_sim_register_op(TSR_OP_FENCE, &nop);
+    tsr_sim_register_op(TSR_OP_LD, &ld);
+    tsr_sim_register_op(TSR_OP_ST, &st);
+    tsr_sim_register_op(TSR_OP_QACT, &qact);
+    tsr_sim_register_op(TSR_OP_MVM, &mvm);
+}
+
+// ---------------------------------------------------------------------------
+// tsr_sim_op: the op-level test hook (outside the queues)
+// ---------------------------------------------------------------------------
 static const char * op_name(uint32_t op) {
     switch (op) {
     case TSR_OP_NOP: return "NOP";     case TSR_OP_LD: return "LD";       case TSR_OP_ST: return "ST";
-    case TSR_OP_DQROW: return "DQROW"; case TSR_OP_QACT: return "QACT";   case TSR_OP_MVM: return "MVM";
+    case TSR_OP_DQROW: return "DQROW"; case TSR_OP_KVST: return "KVST";   case TSR_OP_QACT: return "QACT";
+    case TSR_OP_MVM: return "MVM";     case TSR_OP_ATTQK: return "ATTQK"; case TSR_OP_ATTPV: return "ATTPV";
     case TSR_OP_VOP: return "VOP";     case TSR_OP_RED: return "RED";     case TSR_OP_ROPE: return "ROPE";
-    case TSR_OP_TOPK: return "TOPK";   case TSR_OP_SOP: return "SOP";     case TSR_OP_FENCE: return "FENCE";
+    case TSR_OP_TOPK: return "TOPK";   case TSR_OP_ASMAX: return "ASMAX"; case TSR_OP_AMASK: return "AMASK";
+    case TSR_OP_AMERGE: return "AMERGE"; case TSR_OP_ANORM: return "ANORM"; case TSR_OP_VMASK: return "VMASK";
+    case TSR_OP_SOP: return "SOP";     case TSR_OP_FENCE: return "FENCE";
     default: return "?";
     }
 }
@@ -786,12 +1356,24 @@ static void log_op(tsr_sim * sim, const uint32_t * w, uint32_t err, uint32_t inf
 
 uint32_t tsr_sim_op(tsr_sim * sim, const uint32_t w[8], uint32_t * err_info) {
     uint32_t info = 0;
-    uint64_t cyc = 0;
-    const uint32_t err = exec_op(sim, w, &info, &cyc);
+    uint32_t err = TSR_ERR_ILLEGAL_OP;
+    const tsr_op_handler * h = tsr_sim_accept_op(sim, tsr_w0_opcode(w[0]));
+    if (h != NULL) err = h->check(sim, w, NULL, &info);
+    if (err == TSR_ERR_NONE) {
+        sim->perf_force = 1;
+        if (h->exec != NULL) h->exec(sim, w);
+        sim->perf_force = 0;
+        const uint64_t cyc = h->cycles != NULL ? h->cycles(sim, w) : 0;
+        sim->perf[TSR_PERF_CYCLES] += CYC_ISSUE + cyc;
+        if (h->unit == TSR_UNIT_MVM) sim->perf[TSR_PERF_MVM_CYCLES] += cyc;
+        if (h->unit == TSR_UNIT_VU) sim->perf[TSR_PERF_VU_CYCLES] += cyc;
+        const uint32_t op = tsr_w0_opcode(w[0]);         // as the queue path (tsr_q.c q_integrate)
+        if (op == TSR_OP_ATTQK) sim->perf[TSR_PERF_ATT_QK_CYCLES(sim->num_ch)] += cyc;
+        if (op == TSR_OP_ATTPV) sim->perf[TSR_PERF_ATT_PV_CYCLES(sim->num_ch)] += cyc;
+    }
     if (sim->log) log_op(sim, w, err, info);
     sim->n_ops++;
     sim->perf[TSR_PERF_RETIRED] += 1;
-    sim->perf[TSR_PERF_CYCLES] += cyc;
     if (err_info) *err_info = err != TSR_ERR_NONE ? info : 0;
     return err;
 }

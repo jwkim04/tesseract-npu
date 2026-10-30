@@ -1,0 +1,91 @@
+# docs/v2/toolchain.lock - pinned RISC-V tools for Tesseract v2 (SW §9.6, V2-SW-7, README risk 14).
+#
+# Format: one "key = value" per line; '#' starts a comment; keys are <tool>.<field>. The file is
+# data, never sourced: sw/ctrl/tools/install-toolchain.sh parses it, installs exactly these
+# versions (no sudo) under <prefix> (default build/tools/riscv/), verifies every pin and writes the
+# observed facts to <prefix>/installed.lock. Changing a pin here and re-running the script is the
+# only supported way to move a tool.
+#
+# Integrity: the xPack archive is checked against the sha256 below (equal to the release's
+# published .sha file, checked 2026-10-30) before it is unpacked. Git sources are fetched by commit
+# id and checked against commit and tree ids after checkout.
+#
+# SW §15 "toolchain" items. Checked on the build host by installing and running (2026-10-30):
+#   - the xPack release 14.2.0-3 exists; it ships riscv-none-elf-gdb (GDB 15.1, D18), which runs;
+#   - multilib rv32imc/ilp32 exists and is what -march=rv32imc_zicsr_zifencei -mabi=ilp32 selects
+#     (-print-libgcc-file-name -> lib/gcc/riscv-none-elf/14.2.0/rv32imc/ilp32/libgcc.a, built with C);
+#     the rv32im/ilp32 fallback of SW §6.1 is present but not needed; the firmware flags below
+#     compile and link a freestanding C++20 probe; libstdc++'s freestanding headers are present;
+#   - riscv-tests are built by the harness (sw/sim/rvtests.cmake), not by their own Makefile,
+#     so no RISCV_PREFIX / XLEN make variables are involved.
+# Read from the pinned sources (dtc and Spike not yet built on the host):
+#   - Spike needs dtc at build time (configure.ac fails without it) and at run time (riscv/dts.cc
+#     execlp()s "dtc" from PATH to compile its generated DTS) unless run with --disable-dtb or
+#     --dtb=FILE; the rvtests harness passes --disable-dtb except in its "upstream" profile;
+#   - Spike does not need Boost: AX_BOOST_* are optional and only the -s socket interface
+#     (HAVE_BOOST_ASIO) uses Boost.Asio; the host has no Boost headers anyway.
+
+lock.version = 1
+lock.date = 2026-10-30
+
+# --- xPack GNU RISC-V Embedded GCC (compiler, binutils, newlib, GDB) -------------------------------
+xpack_gcc.version = 14.2.0-3
+xpack_gcc.url = https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v14.2.0-3/xpack-riscv-none-elf-gcc-14.2.0-3-linux-x64.tar.gz
+xpack_gcc.sha_url = https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v14.2.0-3/xpack-riscv-none-elf-gcc-14.2.0-3-linux-x64.tar.gz.sha
+xpack_gcc.sha256 = f574415b63f12b09bdd3475223ab492a465d23810646c90c13a4c3b676c83503
+xpack_gcc.size = 344375405
+xpack_gcc.release_date = 2024-12-06
+xpack_gcc.dir = xpack-riscv-none-elf-gcc-14.2.0-3
+xpack_gcc.prefix = riscv-none-elf-
+xpack_gcc.gcc_version = 14.2.0
+xpack_gcc.gdb_version = 15.1
+xpack_gcc.multilib = rv32imc/ilp32
+xpack_gcc.multilib_fallback = rv32im/ilp32
+
+# --- dtc (device-tree compiler; Spike build dependency) --------------------------------------------
+dtc.repo = https://github.com/dgibson/dtc.git
+dtc.tag = v1.8.1
+dtc.commit = 8f48565e5cfedc74d3f7512f1e0188e9d85dc1de
+dtc.tree = bf074fb822c6c54a969f93dfdcd2abc4c8910ebc
+dtc.date = 2026-05-28
+# Make variables (v1.8.1's Makefile has no NO_PYTHON any more: pylibfdt is built by meson only).
+# Only the binaries are installed (install-bin): Spike uses its own fdt/ copy, not libfdt.
+dtc.make_flags = NO_YAML=1 NO_VALGRIND=1
+dtc.make_target = install-bin
+
+# --- Spike (riscv-isa-sim) ------------------------------------------------------------------------
+# The only release tags are v1.0.0 (2019) and v1.1.0 (2021), so a master merge commit is pinned:
+# 2026-10-15, after PR #2472 (--disable-dtb starts at the ELF entry, which the harness relies on)
+# and before PR #2480 (2026-10-20: SoftFloat moved to a git submodule, followed by a week of
+# SoftFloat PRs).
+spike.repo = https://github.com/riscv-software-src/riscv-isa-sim.git
+spike.commit = 5a760667bf0d0ab893173b9eeff9c109c8d7dd9a
+spike.tree = a3d940d46c0491e97e328a7019e2cd17e6b6a297
+spike.date = 2026-10-15
+spike.version_string = 1.1.1-dev
+spike.configure_flags = --without-boost --without-boost-asio --without-boost-regex
+
+# --- riscv-tests (+ riscv-test-env submodule) -----------------------------------------------------
+riscv_tests.repo = https://github.com/riscv-software-src/riscv-tests.git
+riscv_tests.commit = 3df703cd52d5f0d8224e3c50bf03c6cb70efff98
+riscv_tests.tree = 3b2bf9a1de51d0349ef7400a4acd8a819b523a48
+riscv_tests.date = 2026-10-19
+riscv_tests.env_repo = https://github.com/riscv/riscv-test-env.git
+riscv_tests.env_commit = 6de71edb142be36319e380ce782c3d1830c65d68
+riscv_tests.env_tree = a28a845f0c738a33db0a90215d5705c65d134411
+
+# --- riscv-arch-test --------------------------------------------------------------------------------
+# 3.10.0 is the last release of the riscof-era layout (riscv-test-suite/rv32i_m/<ext>/src, a
+# DUT-supplied model_test.h, signatures). 4.x generates self-checking tests through its own
+# Python/UDB framework and is not used yet. Only the paths below are checked out (sparse,
+# blobless; the full tree is 822 MB).
+arch_test.repo = https://github.com/riscv-non-isa/riscv-arch-test.git
+arch_test.tag = 3.10.0
+arch_test.commit = fc32e41d49480fd99ba0a192dfff9c3319b44873
+arch_test.tree = 06899ddd8bd2ccc96b070c53b6b970f57ad8d259
+arch_test.date = 2024-11-04
+arch_test.paths = riscv-test-suite/env riscv-test-suite/rv32i_m/I riscv-test-suite/rv32i_m/M riscv-test-suite/rv32i_m/C riscv-test-suite/rv32i_m/Zifencei riscv-test-suite/rv32i_m/privilege COPYING.APACHE COPYING.BSD
+
+# --- Firmware compile flags (SW §6.1; checked by the script's "check" step) ------------------------
+firmware.cxxflags = -march=rv32imc_zicsr_zifencei -mabi=ilp32 -Os -ffreestanding -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit -ffp-contract=off -nostdlib -nostartfiles -g -std=c++20
+firmware.libs = libgcc.a from -print-libgcc-file-name with -march=rv32imc_zicsr_zifencei -mabi=ilp32

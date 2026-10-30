@@ -81,13 +81,18 @@ sw/
 │                            # gen_tables.py: generator (SV package, C header, mmio/vu/at.hpp, tb Python)
 ├── sim/                     # libtsr_sim, libtsr_ref (C, host only)
 │   ├── include/             # tsr_isa.h (+ generated tsr_tables.h), tsr_ref.h, tsr_ref_math.h, tsr_sim.h, tsr_trace.h
-│   ├── tsr_ref.c            # existing references (+ VU/AT references)
+│   ├── tsr_ref.c            # existing references (fp helpers, layouts, QACT, dot products, dequant)
+│   ├── tsr_ref_vu.c         # VU op references: VOP, RED, ROPE, TOPK, SOP, DQROW (VU §5-§6)
+│   ├── tsr_ref_at.c         # AT references: KV planes, KVST, ATTQK, ATTPV, vector ops, FA (AT §13.1)
 │   ├── tsr_ref_math.c       # EXPK, SIGMOID, SILU, GELU (tanh, fp16 form), TANH, SIN, COS (algorithms: VU §6)
-│   ├── tsr_sim.c            # core state, host CSR port (EX §5), units (DMA, QACT, MVM, VU incl. AT vector ops)
-│   ├── tsr_q.c              # dispatcher, checker, unit queues, tickets, deps, errors, LQ/LCQ/log rings, SOFT_RESET
+│   ├── tsr_sim.c            # core state, host CSR port (EX §5), loader, LQ/LCQ/log rings, SOFT_RESET, PERF,
+│   │                        # op handler table, tile units (LD, ST, QACT, MVM)
+│   ├── tsr_vu.c, tsr_at.c   # VU and AT unit semantics: checks, extents, execution, cycle models
+│   ├── tsr_q.c              # issue port, dispatcher, checker order, unit queues, tickets, deps, SYNC, errors, time base
+│   ├── tsr_sim_int.h        # internal interface between the sim's files (handler table, accessors, hooks)
 │   ├── tsr_rv.c, tsr_bus.c  # RV32IMC+Zicsr interpreter; RISC-V address map and MMIO
 │   ├── tsr_dm.c             # debug module model (area DB's contract)
-│   ├── tsr_sched.c          # time base, schedules, fast-forward
+│   ├── tsr_sched.c          # random schedules and fast-forward (P1.8; the fixed time base is in tsr_q.c)
 │   ├── tsr_race.c           # race detector
 │   ├── tsr_trace.c          # trace v2 read / write / capture / replay
 │   └── tests/
@@ -150,12 +155,13 @@ invisible (`docs/ctrl-riscv.md:1326-1333`).
   (§4.8). The register semantics are CC's and EX's (issue port, credits, `ISSUE_PIDX`,
   `DONE_SEQ`, error records, `QCTRL`, `QSTATUS`, `WAIT_*`, the LQ / LCQ / log registers of EX
   §4.5, `MTIME`), including the core-window rules (CC §5.3) and the SBA refusals (CC §4.3).
-- **Test bus profile** (used only by `rv_isa`, `rv_random` and riscv-arch-test, never by
-  firmware): RAM at 0x8000_0000 (size from the ELF), HTIF `tohost` / `fromhost`, signature dump.
+- **Test bus profile** (used only by `rv_isa`, `rv_arch`, `rv_random` and riscv-arch-test, never
+  by firmware): RAM at 0x8000_0000 (size from the ELF), HTIF `tohost` / `fromhost`, signature dump.
   riscv-tests `-p` and riscv-arch-test link at 0x8000_0000 and end through HTIF, and Spike puts its
   debug module at 0x0 and its boot ROM at 0x1000, which overlaps CC's ITCM; the firmware profile
   is CC §4.1. Random lockstep programs are placed at 0x8000_0000 in both Spike and `tsr_rv`.
-- **Timing** (schedule only, never architectural; *estimate*, a table in `tsr_sched.c`): ALU and
+- **Timing** (schedule only, never architectural; *estimate*: `TSR_RV_CPI_DEFAULT` in `tsr_rv.h`
+  and the window latencies in `tsr_bus.h`; P1.8's `tsr_sched.c` varies them): ALU and
   CSR 1 cycle; load/store to ITCM/DTCM 2; taken branch or jump 3; `mul` 3; `div`/`rem` 37;
   control-window access 4 RV cycles plus the modelled crossing (2–3 core cycles); SPM-window
   access 10–14 RV cycles. The RV-to-core clock ratio comes from `TSR_SIM_RV_RATIO`, default
@@ -208,8 +214,8 @@ Reads have no side effects except EX's PERF LO snapshot (`docs/spec.md:693`).
 | Ops | Semantics source | Reference code | Status |
 |---|---|---|---|
 | LD, ST, QACT, MVM, NOP, FENCE | `docs/spec.md:394-473`, `:1021-1076` | `tsr_ref.c` (unchanged) | kept; register fields must be 0; END/LI/ADDI/CALL and opcodes 0x04–0x09 are ILLEGAL_OP |
-| VOP (incl. GELU-tanh, GELU16, GEGLU16, TANH), RED (segmented, post RCP / RMS), ROPE (angle recurrence), TOPK, SOP, DQROW | VU §5–§6 (base: `docs/spec.md:288-321`, `:437-472`) | `tsr_ref.c` (element ops), `tsr_ref_math.c` (approximations) | new in sim (TOPK and DQROW from M6 in the simulator; their RTL is M8); `sw/sim/tsr_sim.c:839-842` returns ILLEGAL_OP today. VMASK is M9 |
-| KVST, ATTQK, ATTPV, ASMAX, AMASK, AMERGE, ANORM | AT §5–§6 (vector ops executed by the VU, VU §5.11) | `tsr_ref.c` (AT section, AT §13.1) | new |
+| VOP (incl. GELU-tanh, GELU16, GEGLU16, TANH), RED (segmented, post RCP / RMS), ROPE (angle recurrence), TOPK, SOP, DQROW | VU §5–§6 (base: `docs/spec.md:288-321`, `:437-472`) | `tsr_ref_vu.c` (ops), `tsr_ref_math.c` (approximations) | in the simulator: `tsr_vu.c` (P1.4; TOPK and DQROW from M6 in the simulator, their RTL is M8). VMASK is M9 |
+| KVST, ATTQK, ATTPV, ASMAX, AMASK, AMERGE, ANORM | AT §5–§6 (vector ops executed by the VU, VU §5.11) | `tsr_ref_at.c` (AT §13.1) | in the simulator: `tsr_at.c` (P1.5) |
 | QCLEAR, QABORT, hold control entries | area EX | `tsr_q.c` | new |
 
 **`tsr_ref_math.c`.** Area VU fixes each algorithm: range reduction, polynomial or table, the
@@ -889,7 +895,7 @@ double-buffered in the ring: the LD of tile t+1 waits only for the QACT that rea
 | ADD/MUL/SCALE | LD a (+ LD b), VOP ADD / MUL (b stride 0 for a broadcast row; one op per period block for row periods > 1, VU §9), MULC / ADDC with `cmode` 1 (scalar) or 2 (per-row c vector, e.g. Gemma's `inp_scale_rows`), MULCADD for SCALE with a bias; ST; rows batched to the VL stream | 2–3 × row lines | `tsr_ref` per element |
 | RMS_NORM (+weight) | LD x, `RED.SUMSQ` (post RMS, sk = 1/n, se = eps, set by `SOP.MOVI`) → per-row vector (or s register for one row); `VOP.MULCB` (`cmode` 2, b = weight with stride 0), or `VOP.MULC` without weight; ST. Per-head norms (Gemma q / k / v norms) are the same two ops with rows = n_head·T and m = head_dim (VU §8.1) | 2 × row lines | `sw/ctrl/ref/rmsnorm_ref.cpp` (same order); bit-identical to the spec's 7-op lowering `docs/spec.md:311-321` (VU §6.2) |
 | GLU | LD gate, LD up, VOP SWIGLU or GEGLU16, ST | 2 × row lines | `tsr_m_silu` / `tsr_m_gelu16` |
-| ROPE | LD x, LD the freq-factor (or A) table once per op, `SOP.MOVI` of TS, M and freq_scale, ROPE over all tokens (positions from the preload area), ST | 2 × head_dim × n_heads / 16 | VU §6.7 (`tsr_ref.c` ROPE) |
+| ROPE | LD x, LD the freq-factor (or A) table once per op, `SOP.MOVI` of TS, M and freq_scale, ROPE over all tokens (positions from the preload area), ST | 2 × head_dim × n_heads / 16 | VU §6.7 (`tsr_ref_vu.c` ROPE) |
 | GET_ROWS | per id (RISC-V reads it from the preload area): LD row → ST row | 2 × row lines | copy |
 | SET_ROWS_KV | per run of consecutive cells (indices from the preload area): LD src rows, QACT A32 (K = E), KVST (AT §5.1) | per AT | `tsr_ref_kvst` |
 | FLASH_ATTN | the sequence of AT §6.6 (normative): QACT of Q; per pass and per chunk (chunk list from the preloaded MSUM) ATTQK (FAST) or ATTQK + AMASK (GENERAL), ASMAX, ATTPV (LSUM), AMERGE; ANORM; ST | per AT (§7.4 there) | `tsr_ref_fa` (AT §13.1) |
@@ -1222,7 +1228,7 @@ the tools through `TSR_RISCV_PREFIX`, `TSR_SPIKE` and `PATH`.
 |---|---|---|
 | `tsr_ref_math.c` | (a) an independent numpy bit model in `sw/sim/tests/ref_math_np.py`, written from the VU document; (b) double-precision libm for accuracy | (a) bit-exact over all 2^32 inputs per unary function (opt-in `slow`; default: 2^24 strided + specials); (b) max ulp error ≤ VU's bound, reported; (c) RTL: VU blocks against the C function, exhaustively on a Verilator C++ bench (opt-in), 10^6 random + specials by default |
 | `tsr_m_gelu16` | the pinned ggml CPU table `ggml_table_gelu_f16` (built by `ggml_gelu_f32` with libm `tanhf`) | all 65,536 fp16 inputs enumerated; mismatches reported; target (VU §6.5): < 1 % of the entries, no sign-of-zero mismatch, > 1 fp16 ulp only where GELU16 is correctly rounded and the table entry is not. Measured 0.415 % (265 at 1 ulp, 7 at 2 ulp; GELU16 correctly rounded in all) — the residual is the table's own f32 error (`tanhf`, cancellation for x ≪ 0), which the VU does not reproduce |
-| VU/AT references in `tsr_ref.c` | numpy spec models (as numcheck B1b, `docs/spec.md:813`) | bit-exact on generated vectors; directed RED cases where a subtree sums to −0 (e.g. 0x80C00000 + 0x00800000) at m = 8k + r (VU §6.2) |
+| VU/AT references in `tsr_ref_vu.c` / `tsr_ref_at.c` | numpy spec models (as numcheck B1b, `docs/spec.md:813`) | bit-exact on generated vectors; directed RED cases where a subtree sums to −0 (e.g. 0x80C00000 + 0x00800000) at m = 8k + r (VU §6.2) |
 | `tsr_rv` | Spike | on the test bus profile (§4.2: RAM at 0x8000_0000, HTIF): riscv-tests rv32ui/um/uc/mi `-p` and riscv-arch-test RV32IMC/Zicsr signatures; random programs (in-house Python generator, placed at 0x8000_0000 on both) compared retire by retire with `spike --log-commits`; `test_ref_fp.c` built for RV32 and run on both (`docs/ctrl-riscv.md:1318-1325`) |
 | Queue model | EX §7–§8 and CC §7–§9 | directed tests through `tsr_sim_push`; invariants I1–I3 asserted inside the model on every run |
 | Race detector | — | positive and negative cases; mutated executors (a dropped WAR dep, a dropped ring release) must be reported |
@@ -1248,7 +1254,10 @@ New ctests:
 - `ref_math_<fn>`, including `ref_math_gelu16` (the 65,536 fp16 inputs against the pinned
   `ggml_table_gelu_f16`);
 - `ref_vu`, `ref_at`;
-- `rv_isa` and `rv_random` (skipped with a message if Spike is absent);
+- `rv_isa` (the self-checking riscv-tests on `tsr_rv`, and on Spike when it is installed; without
+  Spike the Spike runs are reported as not run), `rv_arch` (riscv-arch-test signatures of
+  `tsr_rv` equal to Spike's), `rv_lockstep` (the riscv-tests on both, commit logs compared retire
+  by retire) and `rv_random` (the last three skipped with a message if Spike is absent);
 - `sim_queue`, `sim_race`, `sim_sched_determinism`, `sim_vu`, `sim_at`, `sim_dm`;
 - `fw_runtime` (R1–R10: boot, HELLO id, PING, BAD_DESC, argument block, 8 outstanding launches,
   cancel and stop watermarks, TRAP record, panic as a TRAP with `mcause` 24, log drop and BLOCK);

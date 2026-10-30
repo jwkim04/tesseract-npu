@@ -72,16 +72,16 @@ static void test_csr(void) {
     CHECK(tsr_sim_csr_read(s, TSR_CSR_CFG1) == 65536u, "CFG1");
     CHECK(tsr_sim_csr_read(s, TSR_CSR_CFG2) == (16u | (16u << 8) | (128u << 16)), "CFG2 0x%x", tsr_sim_csr_read(s, TSR_CSR_CFG2));
     CHECK(tsr_sim_csr_read(s, TSR_CSR_CAPS) == 0, "CAPS");
-    // The v1 run registers are gone (EX §5.1): their offsets read 0 like every unmapped one.
-    for (uint32_t off = 0x18; off < TSR_CSR_PERF_BASE; off += 4) {
-        CHECK(tsr_sim_csr_read(s, off) == 0, "offset 0x%03x reads 0", off);
+    // The rest of the v2 map (EX §5) is sim_csr's. Gaps of the map read 0, unaligned offsets too.
+    for (uint32_t off = 0x08C; off < TSR_CSR_PERF_BASE; off += 4) {
+        if (off == 0x08C || (off >= 0x0A0 && off < TSR_CSR_LOAD_ADDR) || off > TSR_CSR_LOAD_STATUS)
+            CHECK(tsr_sim_csr_read(s, off) == 0, "offset 0x%03x reads 0", off);
     }
     CHECK(tsr_sim_csr_read(s, 0x26) == 0, "unaligned reads 0");
-    // Writes are ignored everywhere.
-    for (uint32_t off = 0; off < 0x200; off += 4) tsr_sim_csr_write(s, off, 0xFFFFFFFFu);
+    // Writes to the identity and configuration registers are ignored.
+    for (uint32_t off = 0; off < TSR_CSR_CTRL; off += 4) tsr_sim_csr_write(s, off, 0xFFFFFFFFu);
     CHECK(tsr_sim_csr_read(s, TSR_CSR_ID) == TSR_ID_MAGIC && tsr_sim_csr_read(s, TSR_CSR_CFG0) == (4u | (128u << 8) | (1u << 20)) &&
-          tsr_sim_csr_read(s, 0x020) == 0 && tsr_sim_csr_read(s, 0x060) == 0 &&
-          tsr_sim_csr_read(s, TSR_CSR_PERF_BASE) == 0, "writes ignored");
+          tsr_sim_csr_read(s, TSR_CSR_CAPS) == 0 && tsr_sim_csr_read(s, TSR_CSR_PERF_BASE) == 0, "writes ignored");
 
     // LD 3 lines from ch1, NOP, FENCE: perf exact (no command fetch beats on ch0).
     expect_ok(s, tsr_enc_ld(1, 10, IO_BEAT, 3), "LD");
@@ -98,7 +98,8 @@ static void test_csr(void) {
     CHECK(tsr_sim_csr_read(s, TSR_CSR_PERF_BASE + 8 * TSR_PERF_RETIRED) == 3 &&
           tsr_sim_csr_read(s, TSR_CSR_PERF_BASE + 8 * TSR_PERF_RETIRED + 4) == 0, "PERF CSR");
     CHECK(tsr_sim_csr_read(s, TSR_CSR_PERF_BASE + 8 * tsr_perf_ch_rd_beats(1)) == 3, "PERF ch1 CSR");
-    CHECK(tsr_sim_csr_read(s, TSR_CSR_PERF_BASE + 8 * tsr_perf_count(4)) == 0, "PERF past end reads 0");
+    // tsr_sim_op counts the v1 op-level set only: no unit busy time in the extension slots.
+    CHECK(tsr_sim_csr_read(s, TSR_CSR_PERF_BASE + 8 * TSR_PERF_DMA_CYCLES(4)) == 0, "DMA_CYCLES not counted by tsr_sim_op");
     // A failing op counts as retired (EX §6: any outcome) and adds no cycles.
     uint32_t info = 1;
     CHECK(tsr_sim_op(s, insn_raw(0xEEu, 0, 0, 0, 0, 0, 0, 0).w, &info) == TSR_ERR_ILLEGAL_OP && info == 0, "illegal opcode");
@@ -118,7 +119,7 @@ static void test_csr(void) {
     int all_a5 = 1;
     for (uint32_t i = 0; i < c2.spm_bytes; ++i) all_a5 &= tsr_sim_spm(s)[i] == 0xA5;
     CHECK(all_a5, "SPM initial 0xA5");
-    for (uint32_t i = 0; i < 16; ++i) CHECK(f2u(tsr_sim_sreg(s, i)) == 0, "s%u = +0.0", i);
+    for (uint32_t i = 0; i < 16; ++i) CHECK(f2u(tsr_sim_sreg(s)[i]) == 0, "s%u = +0.0", i);
     tsr_sim_destroy(s);
 
     // Unsupported configs are rejected.
@@ -129,7 +130,14 @@ static void test_csr(void) {
     bad = c; bad.num_ch = 0;       CHECK(tsr_sim_create(&bad, NULL) == NULL, "num_ch 0");
     bad = c; bad.k_max = 1000;     CHECK(tsr_sim_create(&bad, NULL) == NULL, "k_max");
     bad = c; bad.spm_bytes = 100;  CHECK(tsr_sim_create(&bad, NULL) == NULL, "spm_bytes");
-    bad = c; bad.caps = TSR_CAPS_VU; CHECK(tsr_sim_create(&bad, NULL) == NULL, "caps VU");
+    // CAPS beyond the registered handlers: VMASK has none before M9 (VU and ATT do once
+    // tsr_vu.c / tsr_at.c are linked, P1.4 / P1.5).
+    CHECK(!(tsr_sim_caps_implemented() & TSR_CAPS_VMASK), "VMASK not implemented");
+    bad = c; bad.caps = TSR_CAPS_VMASK; CHECK(tsr_sim_create(&bad, NULL) == NULL, "caps VMASK");
+    bad = c; bad.caps = tsr_sim_caps_implemented();
+    s = tsr_sim_create(&bad, NULL);
+    CHECK(s != NULL, "caps = tsr_sim_caps_implemented() 0x%x accepted", bad.caps);
+    tsr_sim_destroy(s);
     bad = c; bad.nsreg = 17;       CHECK(tsr_sim_create(&bad, NULL) == NULL, "nsreg");
     // NUM_CH <= 16: LD/ST name the channel in the 4-bit w0 sub field (spec 구성 파라미터).
     bad = c; bad.num_ch = TSR_NUM_CH_MAX + 1; CHECK(tsr_sim_create(&bad, NULL) == NULL, "num_ch 17");

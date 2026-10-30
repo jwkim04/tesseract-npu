@@ -548,7 +548,9 @@ Datapath mapping and rates: §7.4. These ops never fail at run time; their opera
     `tsr_m_gelu_tanh`, `tsr_m_gelu16`, `tsr_m_tanh`, `tsr_m_sincos`, `tsr_m_sin`, `tsr_m_cos`; the
     binary16 helpers `tsr_f32_to_f16_rne` (gradual underflow) and `tsr_f16_to_f32` used by GELU16.
   - `tsr_m_recip_approx` is dropped; RC is `tsr_frecip`.
-  - Reductions, ROPE, TOPK, the AT vector ops (AT §13.1) and, from M9, VMASK go into `tsr_ref.c`.
+  - VOP, reductions, ROPE, TOPK, SOP, DQROW and, from M9, VMASK go into `tsr_ref_vu.c`
+    (`include/tsr_ref_vu.h`); the AT vector ops into `tsr_ref_at.c` (AT §13.1). Both are part of
+    `libtsr_ref`.
 
 ### 6.2 Reductions (RED)
 
@@ -1115,9 +1117,9 @@ These times sit on the decode critical path. MVMs wait for them.
 The simulator is the oracle; every VU op has a C reference, and the RTL must match it bit for bit.
 
 1. **References.**
-   - `tsr_ref_math.c`: EXPK, the composites (incl. GELU16), SIN/COS. `tsr_ref.c`: reductions,
-     ROPE (both angle forms), TOPK, AT's vector ops (AT §13.1); DQROW reuses `tsr_dequant_row`;
-     VMASK from M9.
+   - `tsr_ref_math.c`: EXPK, the composites (incl. GELU16), SIN/COS. `tsr_ref_vu.c`: VOP,
+     reductions, ROPE (both angle forms), TOPK, SOP; DQROW reuses `tsr_dequant_row`; VMASK from
+     M9. `tsr_ref_at.c`: AT's vector ops (AT §13.1).
    - An independent numpy model is written from this text alone (SW V2-SW-23). It is compared bit
      for bit over all 2³² inputs for each unary function: EXPK × 4 κ, SIG, SILU, GELU, TANH, SIN,
      COS. Opt-in `slow`; the default runs 2²⁴ strided points plus specials.

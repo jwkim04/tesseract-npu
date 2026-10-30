@@ -545,8 +545,8 @@ numbers P* refer to SW §11 (sizes and dependencies there).
 3. P1.7 `tsr_rv` with the firmware and test bus profiles; P1.11 toolchain and Spike harness; P1.8
    scheduler; P1.9 race detector; P1.10 trace v2, `tsr-trace-gen` v2, `tsr-trace-conv` and the set
    regeneration / conversion; P1.12 the DM model; P1.13 DB's simulator models.
-   Exit: `sim_basic`, `sim_queue`, `sim_vu`, `sim_at`, `rv_isa`, `rv_random`, `sim_race`,
-   `sim_sched_determinism`, `trace_v2_roundtrip` green.
+   Exit: `sim_basic`, `sim_queue`, `sim_vu`, `sim_at`, `rv_isa`, `rv_arch`, `rv_random`,
+   `sim_race`, `sim_sched_determinism`, `trace_v2_roundtrip` green.
 
 **W2 — firmware SDK and kernels on the simulator (P2.1–P2.7).** Build (`ExternalProject`,
 `tsr-elf`), crt0 and the runtime R1–R10 with DB's trap and log contract, the header library and
