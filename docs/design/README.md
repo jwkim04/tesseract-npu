@@ -71,7 +71,10 @@ Gemma, plus the CPU-compatible GELU16 for llama.cpp graphs (VU-26).
 | **M9** | resident decode loop (optional; VMASK) | defined at M9 start |
 
 **Performance priority** (spec "performance goal"): keep DDR bandwidth busy (no idle time)
-before reducing bytes per token. Speculative decoding is dropped from the plan.
+before reducing bytes per token. Speculative decoding is planned after the M7 card gate. llama.cpp
+proposes draft tokens on the host (n-gram or prompt lookup, a draft model, or a model's MTP head),
+and the device verifies the k + 1 positions as one small ubatch (up to T_MAX tokens), which the MVM
+clusters stream once per weight pass.
 
 ---
 

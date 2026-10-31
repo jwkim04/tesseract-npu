@@ -1307,8 +1307,8 @@ priority is to remove the time during which the DDR is idle. Bring the decode sp
 possible to the theoretical limit, that is, the 4-channel concurrent read bandwidth B_M0 measured in
 M0 divided by the bytes that must be read per token (weights, and from M7 the KV cache). Techniques
 that reduce the bytes per token themselves (lower-bit formats, sparsity) come after that. Speculative
-decoding was dropped from the plan (decision, 2026-10-30). No performance optimisation is done on a
-path that has not been verified on the card.
+decoding is planned after the M7 card gate (decision, 2026-10-31). No performance optimisation is done
+on a path that has not been verified on the card.
 
 **Metric**: DDR utilisation U = (bytes read per token × tokens per second) / B_M0. It is measured in
 wall-clock time, so host time counts. By cause, U is split as follows (the product is an
@@ -1893,15 +1893,16 @@ section 11 from the start.
   token, so the 4 MiB SPM holds only 6 tokens, and with T = 7 to 8 the head weights are read twice
   (+0.83 GB per pass on 32B, +4 %). If the backend splits the head along N, 12 to 13 tokens fit.
   Ordinary prefill computes only the logits of the last token, so it is not affected; the item
-  matters only for work that needs the logits of every position (speculative decoding, which was
-  dropped).
-- [x] Speculative decoding: dropped from the plan (decision, 2026-10-30). Observation kept from before:
-  the output identity of speculative decoding. Device MUL_MAT is bit-identical per token whatever T
-  is, but the llama.cpp CPU attention uses different kernels for T = 1 (vec_dot) and T ≥ 2 (tinyBLAS),
-  so greedy output can differ at near-ties (seen at the 37th token of 0.5B). With a device, auto FA is
-  off; with `-fa on` the output is identical for n_kv < 512 and T ≤ 63. FA on differs from the M1
-  verification setting (FA off), so adopting it requires rerunning klcheck and numcheck (done for the
-  current baseline, D17).
+  matters only for work that needs the logits of every position (speculative decoding, planned after
+  the M7 card gate).
+- [x] Speculative decoding: planned after the M7 card gate (decision, 2026-10-31). llama.cpp proposes
+  draft tokens on the host (n-gram or prompt lookup, a draft model, or a model's MTP head) and the
+  device verifies the k + 1 positions as one small ubatch (up to T_MAX tokens). Output identity:
+  device MUL_MAT is bit-identical per token whatever T is, but the llama.cpp CPU attention uses
+  different kernels for T = 1 (vec_dot) and T ≥ 2 (tinyBLAS), so greedy output can differ at
+  near-ties (seen at the 37th token of 0.5B). With a device, auto FA is off; with `-fa on` the output
+  is identical for n_kv < 512 and T ≤ 63. FA on differs from the M1 verification setting (FA off), so
+  adopting it requires rerunning klcheck and numcheck (done for the current baseline, D17).
 - [x] KV cache layout (decided in D17 and [AT](design/03-attention-kv.md) §4): K and V in q8_0
   (`-ctk q8_0 -ctv q8_0`, FA on), groups u of 16 cells interleaved over channel u mod C, K plane
   token-major, V plane slice-major, symmetric allocation downward from the end of the channel. (The

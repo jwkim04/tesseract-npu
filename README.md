@@ -125,6 +125,7 @@ See [Getting started](docs/getting-started.md) for requirements, tests, PyTorch 
 ## Roadmap
 
 - Control core, vector unit and attention on the card.
+- Speculative decoding: n-gram lookup, draft models and MTP heads, verified in one T_MAX 8 pass.
 - Mixture of experts (Gemma 4 26B-A4B) and PyTorch on Basis kernels.
 - New layer types: Gated DeltaNet linear attention for Qwen3.8-27B.
 - Multi-chip: Tesseract Cores linked in a mesh over QSFP, with the weights split across the chips.
