@@ -448,7 +448,7 @@ static void test_io_split(const char * kind) {
 }
 
 // libtsr_ref's QACT A32 as a weight quantizer? Measured against quantize_row_q8_0_ref: equal on
-// ordinary blocks, different on blocks with subnormals or a tiny amax (DAZ / FTZ, spec 구현 명확화).
+// ordinary blocks, different on blocks with subnormals or a tiny amax (DAZ / FTZ, spec §21).
 // The runtime therefore converts weights with ggml's function, like the ggml backend.
 static void test_qact_vs_ggml() {
     g_cases++;

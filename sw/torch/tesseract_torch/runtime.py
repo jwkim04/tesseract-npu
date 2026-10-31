@@ -1,6 +1,6 @@
 """Device singleton, weight cache, eager linear and counters of tesseract_torch.
 
-Numerics are the llama.cpp path's (docs/spec.md "수치 규칙", "로드 시 변환"): a float32 / float16 /
+Numerics are the llama.cpp path's (docs/spec.md "Numeric rules", "Load-time conversion"): a float32 / float16 /
 bfloat16 weight becomes Q8_0 when it is uploaded (ggml's ``quantize_row_q8_0_ref``, f16 / bf16 widened
 exactly first), the activations are quantized on the device by QACT (A32), results are float32.
 """

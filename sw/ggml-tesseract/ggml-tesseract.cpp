@@ -1,11 +1,11 @@
-// ggml-tesseract.cpp — ggml backend for the Tesseract NPU core (spec "ggml 백엔드 통합";
+// ggml-tesseract.cpp — ggml backend for the Tesseract NPU core (spec "ggml backend integration";
 // docs/design/06-software-verification.md "SW" §9.3, M6 = P3.2, M7 = P3.5 (W3b)).
 //
 //   reg "Tesseract" -> one device "Tesseract0" (GGML_BACKEND_DEVICE_TYPE_GPU, so -ngl offloads to it)
 //   buffer type     -> a virtual address space; each buffer's storage is fixed at its first data
 //                      access, by usage (llama.cpp sets it only after init_tensor):
 //       WEIGHTS-usage buffers ("PLACED"): per tensor. MUL_MAT weights (2D, loadable type) are
-//           converted to the device format (Q8_0 / Q4_K, spec 로드 시 변환), repacked
+//           converted to the device format (Q8_0 / Q4_K, spec "Load-time conversion"), repacked
 //           (tsr_repack_row) and stored with symmetric allocation in the WEIGHT heap of every
 //           channel. Anything else (1D norms, odd shapes) is stored raw in AUX (ch0).
 //       KV buffers (W3b kv, tsr-kvbuf.h): an ANY buffer whose tensors are all llama.cpp KV-cache
@@ -763,7 +763,7 @@ static void tsr_rec_write(tsr_device * d, tsr_tensor_rec & r, uint64_t rel, cons
             tsr_rec_store_all(d, r, data);   // the common case: one set_tensor for the whole tensor
             return;
         }
-        // split upload (spec 주의할 점: 분할 업로드): stage until every byte has arrived
+        // split upload (spec "Split upload"): stage until every byte has arrived
         if (r.staging.empty()) {
             r.staging.assign(r.nbytes, 0);
         }

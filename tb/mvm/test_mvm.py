@@ -1124,7 +1124,7 @@ async def mvm_b2b(dut):
 
 @cocotb.test()
 async def mvm_overlap(dut):
-    """Undefined operand overlaps (spec 구현 명확화 "겹치는 피연산자"): dst inside x, token ranges
+    """Undefined operand overlaps (spec Implementation clarifications, "Overlapping operands"): dst inside x, token ranges
     overlapping (T > 1, dst_stride < y_lines). The unit must finish normally (done, quiescent) and
     write only inside the union of the token ranges; values are logged, not required (our order
     reads all of x before the first write, so dst-vs-x overlaps still match the oracle)."""

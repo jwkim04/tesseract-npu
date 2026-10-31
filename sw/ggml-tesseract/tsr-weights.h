@@ -1,5 +1,5 @@
-// tsr-weights.h — ggml type <-> device weight format (spec "디바이스 가중치 레이아웃",
-// "로드 시 변환").
+// tsr-weights.h — ggml type <-> device weight format (spec "Device weight layout",
+// "Load-time conversion").
 //
 // The hardware stores Q8_0 and Q4_K only. Q8_0 and Q4_K tensors keep their ggml blocks
 // (bit-identical, only repacked by tsr_repack_row). Every other type that ggml can convert

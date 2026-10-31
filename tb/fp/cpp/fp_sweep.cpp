@@ -780,7 +780,7 @@ int main(int argc, char** argv) {
     const uint64_t p1 = std::strtoull(argv[2], nullptr, 0);
     const uint64_t p2 = std::strtoull(argv[3], nullptr, 0);
     H h(argc, argv);
-    // Mandatory vectors (spec 구현 명확화 "FTZ 판정 시점") also go through the RTL multiplier /
+    // Mandatory vectors (spec Implementation clarifications, "FTZ decision point") also go through the RTL multiplier /
     // divider in every mul / div run (they are part of the G_FTZ_WINDOW class as well).
     if (mode == "funcs") return h.run_funcs(p1, p2);
     if (mode == "funcs_rand") return h.run_funcs_rand(p1, p2);

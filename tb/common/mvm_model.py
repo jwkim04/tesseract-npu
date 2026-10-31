@@ -487,7 +487,7 @@ def mvm_reference(spm: bytearray, read_beats, *, fmt: int, acc: bool, dst: int, 
 
 def layout_channels(fmt: int, K: int, rows, num_ch: int) -> list:
     """Per channel: the bytes to place at W_OFF (rows c*R .. of channel c, ROW_BEATS apart;
-    spec 대칭 할당). Channels without rows get b''."""
+    spec Symmetric allocation). Channels without rows get b''."""
     N, rb = len(rows), row_beats(fmt, K)
     out = []
     for c in range(num_ch):
@@ -572,7 +572,7 @@ def rand_qa(kind: int, K: int, rnd: random.Random, mode: str = "qact", special: 
 
 def ftz_window_dx(d: int, rnd: random.Random | None = None, tries: int = 64) -> int | None:
     """An f32 Dx (bits) such that the exact product d * Dx lies in the FTZ boundary window
-    [2^-126 - 2^-150, 2^-126) (spec 구현 명확화 "FTZ 판정 시점": fmul gives +-2^-126 there), or None.
+    [2^-126 - 2^-150, 2^-126) (spec Implementation clarifications, "FTZ decision point": fmul gives +-2^-126 there), or None.
     d: f32 bits of a normal, positive or negative value."""
     def val(u):
         e, m = (u >> 23) & 0xFF, u & 0x7FFFFF

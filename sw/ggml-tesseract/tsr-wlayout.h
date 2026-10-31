@@ -1,5 +1,5 @@
-// tsr-wlayout.h — device weight layout helpers without ggml (spec "디바이스 가중치 레이아웃",
-// "대칭 할당"): bytes of a row of device-format blocks, and the row scatter / gather between
+// tsr-wlayout.h — device weight layout helpers without ggml (spec "Device weight layout",
+// "Symmetric allocation"): bytes of a row of device-format blocks, and the row scatter / gather between
 // ggml-layout blocks and the repacked rows of a symmetrically allocated tensor on the channels.
 //
 // Shared by the ggml backend (tsr_store_weight_rows / tsr_load_weight_rows in ggml-tesseract.cpp)

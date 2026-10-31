@@ -1,4 +1,4 @@
-// test_ref_fp.c — f32 helper edge cases (spec "fp 공통 규칙" + 구현 명확화 "FTZ 판정 시점").
+// test_ref_fp.c — f32 helper edge cases (spec "Common fp rules" + §21 "FTZ decision point").
 // DAZ/FTZ/signed zero/Inf/NaN canonicalisation, int32 -> f32 rounding (exhaustive against
 // the double path), fp16 <-> f32 corner values, QACT rounding helpers.
 
@@ -135,7 +135,7 @@ static void test_arith(void) {
     EQ("tree inf", tsr_tree16(p), 0x7F800000);
 }
 
-// FTZ rule (spec 구현 명확화 "FTZ 판정 시점"), checked against its documented equivalent form
+// FTZ rule (spec §21 (FTZ decision point)), checked against its documented equivalent form
 // on products (exact in double): |exact| < 2^-126 - 2^-150 -> signed zero, else RNE(exact).
 // The operand pairs are chosen around lo/b so that many exact products fall into
 // [2^-126 - 2^-150, 2^-126 - 2^-151), where an IEEE tininess-after-rounding FTZ (x86

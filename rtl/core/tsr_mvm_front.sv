@@ -1,4 +1,4 @@
-// tsr_mvm_front.sv — MVM cluster front end (spec MVM 클러스터 stages 1-4): weight streamer
+// tsr_mvm_front.sv — MVM cluster front end (spec MVM cluster microarchitecture stages 1-4): weight streamer
 // (tsr_mvm_ws), chunk parser, meta register with the Q4_K 6-bit scale unpack, weight unpack;
 // produces the tagged beat stream tsr_mvm_beat_t for the back end.
 //

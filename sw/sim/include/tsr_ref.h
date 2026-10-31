@@ -6,7 +6,7 @@
 // ggml-layout blocks are described by the plain structs below (byte-identical to ggml's).
 //
 // Build with -ffp-contract=off and without -ffast-math: every f32 operation below is a
-// separately rounded IEEE binary32 operation (spec 수치 규칙, "FMA 융합 금지").
+// separately rounded IEEE binary32 operation (spec "Numeric rules", no FMA fusion).
 //
 // Error policy (callers — the simulator, the backend, tests — validate fmt/kind/K first and
 // raise the ISA error codes; tsr_fmt_valid / tsr_fmt_k_valid are the checks to use):
@@ -69,14 +69,14 @@ uint16_t tsr_f32_to_fp16(float f);             // RNE, same as ggml's GGML_FP32_
 uint32_t tsr_f32_bits(float f);
 float    tsr_bits_f32(uint32_t u);
 
-// QACT f32 -> int8 conversions (spec 구현 명확화 "QACT 특수값"): NaN -> 0, the rounded value
+// QACT f32 -> int8 conversions (spec §21 (QACT special values)): NaN -> 0, the rounded value
 // saturates to [-128, 127]. round_away = roundf (A32), round_even = ggml nearest_int (A256).
 // Exposed so the RTL QACT unit can be checked against them directly.
 int8_t   tsr_q8_round_away(float x);
 int8_t   tsr_q8_round_even(float x);
 
 // ---------------------------------------------------------------------------
-// Weight formats and device layout (spec "디바이스 가중치 레이아웃")
+// Weight formats and device layout (spec "Device weight layout")
 // ---------------------------------------------------------------------------
 uint32_t tsr_fmt_block_size(uint32_t fmt);      // weights per block: Q8_0 32, Q4_K 256
 uint32_t tsr_fmt_chunk_blocks(uint32_t fmt);    // S: Q8_0 32, Q4_K 4
@@ -94,7 +94,7 @@ void tsr_repack_row(uint32_t fmt, const void * ggml_blocks, uint32_t K, uint8_t 
 // Inverse of tsr_repack_row (debug get_tensor, tests).
 void tsr_unrepack_row(uint32_t fmt, const uint8_t * src, uint32_t K, void * ggml_blocks);
 
-// Symmetric allocation (spec "대칭 할당"): R = ceil(N/C), channel c owns rows [cR, min((c+1)R,N)).
+// Symmetric allocation (spec "Symmetric allocation"): R = ceil(N/C), channel c owns rows [cR, min((c+1)R,N)).
 uint32_t tsr_rows_per_ch(uint32_t N, uint32_t num_ch);
 // Row r -> channel and beat offset relative to W_OFF.
 void     tsr_row_location(uint32_t fmt, uint32_t N, uint32_t K, uint32_t num_ch, uint32_t r,
@@ -110,7 +110,7 @@ void tsr_get_scale_min_k4(int j, const uint8_t * scales, uint8_t * sc, uint8_t *
 void tsr_dequant_row(uint32_t fmt, const uint8_t * row, uint32_t K, float * dst);
 
 // ---------------------------------------------------------------------------
-// Quantized activations (spec "양자화 활성값(QA) 레이아웃")
+// Quantized activations (spec "Quantized activation (QA) layout")
 // ---------------------------------------------------------------------------
 uint32_t tsr_qa_block_size(uint32_t kind);      // A32 32, A256 256
 uint32_t tsr_qa_kind_for_fmt(uint32_t fmt);     // Q8_0 -> A32, Q4_K -> A256
@@ -133,7 +133,7 @@ const float   * tsr_qa_d(uint32_t kind, uint32_t K, const uint8_t * qa);
 const int16_t * tsr_qa_bs(uint32_t kind, uint32_t K, const uint8_t * qa);
 
 // ---------------------------------------------------------------------------
-// Dot products (spec "수치 규칙")
+// Dot products (spec "Numeric rules")
 // ---------------------------------------------------------------------------
 // Term of one Q8_0 block b of a repacked row against an A32 QA image.
 float tsr_term_q8_0(const uint8_t * row, uint32_t K, uint32_t b, const uint8_t * qa);

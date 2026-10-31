@@ -4,8 +4,9 @@
 (Verification strategy) and its *Model-level KL criterion*: the Tesseract device is compared with
 the ggml CPU backend on whole-model logits, against a floor given by the CPU compared with itself
 under a 1-ulp input perturbation. Pass (the specification's values): **mean KL(CPU ‖ device) ≤ 3 ×
-floor and top-1 agreement ≥ 80 %**. The check is part of the M1 and M4 gates (done) and of the M6 gate
-(32B on the simulator done; on the card it follows the bitstream with the control core).
+floor and top-1 agreement ≥ 80 %**, where the floor is the mean over three floor runs with different
+seeds (`--floor-seeds`, below). The check is part of the M1 and M4 gates (done) and of the M6 and M7
+gates (measured on the simulator; on the card it follows the bitstream with the control core).
 
 > **Scope.** User documentation and measurement record of `klcheck`. Status words: *on the
 > simulator* means a run through the software stack with `TSR_DEVICE=sim` or `mock`; *on the card*
@@ -21,9 +22,9 @@ This follows openTPU `tools/validate.py` (https://github.com/FeSens/openTPU; its
 validation and the script itself were read for this):
 
 1. **Device run.** Greedy-generate G tokens per prompt with all layers and the output head on the
-   Tesseract device (`-ngl 99`, `TSR_DEVICE=sim`), KV cache and attention on the host
-   (`offload_kqv = false`, i.e. `-nkvo`; M6. From M7 the KV cache and attention are on the
-   device, see the settings below). The prompt is decoded in one batch (prefill), then one
+   Tesseract device (`-ngl 99`, `TSR_DEVICE=sim`). The KV cache and attention are on the host in M6
+   (`offload_kqv = false`, i.e. `-nkvo`) and on the device in M7 (`--phase m7`: the whole decode
+   token is one launch; see the settings below). The prompt is decoded in one batch (prefill), then one
    token per decode. The full logits are recorded at the last `--prompt-tail` prompt positions and
    at every generated position except the last. Row r is the output at token index `row0 + r` and
    predicts token `row0 + r + 1`. With the default `--prompt-tail 1` that gives G rows per prompt,
@@ -34,16 +35,33 @@ validation and the script itself were read for this):
    runs its golden model over the whole sequence. `--replay step` mirrors the device's call pattern
    (prefill + one token per decode).
 3. **Floor.** Repeat the CPU run with its input perturbed by one f32 ulp (`--perturb-ulp SEED`).
+   `klcheck all` makes N such runs (`--floor-seeds N`, default 3) with the seeds S, S+1, ...,
+   S+N−1, where S is `--seed` (default 1).
 4. **Compare.** For each position, compute in double precision `KL(P_cpu ‖ P_x) = Σ p_cpu (log p_cpu − log p_x)`
    (nats) for x = device and x = floor. Report mean, median and max KL, top-1 agreement
    (`argmax x == argmax cpu`), the largest |Δlogit|, the smallest cosine similarity and the number
    of bit-identical rows. Each statistic is reported for all positions, for the prompt-tail rows and
    for the generated rows.
 
-**Pass:** `mean KL(cpu ‖ dev) ≤ max(--min-kl, --kl-ratio × mean KL(cpu ‖ floor))` and
-`top-1 ≥ --min-top1`. The defaults (`3`, `0.8`, `--min-kl 0`) are the spec values. openTPU also
+**Pass:** `mean KL(cpu ‖ dev) ≤ max(--min-kl, --kl-ratio × F)` and `top-1 ≥ --min-top1`, where F is
+the floor: the mean over the floor runs of each run's `mean KL(cpu ‖ floor)`. With one floor run F is
+that run's mean KL. The defaults (`3`, `0.8`, `--min-kl 0`) are the spec values. openTPU also
 lets any mean KL ≤ 1e-3 nats pass (`MAX_KL`); `--min-kl 1e-3` reproduces that. The check also
 fails if a file holds non-finite logits or if the files do not contain the same sequences.
+
+The text output has one line per floor run (mean, median, max, top-1 and the device ratio against
+that run alone), and the criterion line gives the ratio against the mean floor and against each
+seed.
+
+### Floor seeds
+
+One seed's floor is a random draw: the direction of every nudge comes from the seed, and the mean
+KL can be set by a few ill-conditioned positions. On Gemma 4 12B Q4_K_M (M7, below) the same device
+run gives a ratio of 2.19 against seed 1 and 1.39, 1.69 and 1.51 against seeds 2, 3 and 4. The
+criterion therefore uses the mean of N floor runs, three by default (three CPU replays cost about
+0.5 s on 0.5B). `--floor-seeds 1` gives the single floor of the earlier runs, with identical
+numbers. Floors use the seeds S to S+N−1, so `--seed 5` alone now makes floors 5, 6 and 7. The
+results below use the single seed 1 unless a row says otherwise.
 
 ### The 1-ulp perturbation (floor)
 
@@ -93,18 +111,19 @@ host, and are not comparable with the M6 ones; the table in "Results" names the 
 | Hadamard KV rotation | **off** (`LLAMA_ATTN_ROT_DISABLE=1`, set by the tool for every phase and recorded in the file; `--attn-rot on` unsets it) | With a quantized cache llama.cpp rotates Q, K and V by an F32 graph-input matrix that the MVM cannot use, which would split attention into CPU islands (SW-16, AT-17); the CPU reference uses the same setting, so the comparison stays fair |
 | CPU weight repack (`use_extra_bufts`) | off (`--repack` turns it on) | repacking copies the weights into anonymous memory; 32B Q4_K_M (19 GB) does not fit in 14 GB RAM, while mmap'd weights can be evicted |
 | Device selection | `--device sim\|mock\|vkernel\|xrt`: `TSR_DEVICE` = that value, `devices = {Tesseract0}`, `n_gpu_layers = 999`. `--device cpu`: `TSR_DEVICE=none`, `devices = {}` | the device phase checks that a Tesseract device is registered; a CPU phase never opens a transport. `sim` and `mock` run on the simulator; `vkernel` is not available until the two-clock server exists (P5.3); `xrt` needs a build with `-DTSR_WITH_XRT=ON` and an xclbin (the card path is work package W6, [`docs/xrt-host.md`](xrt-host.md)) |
+| Device kinds | `--phase m6` sets `TSR_KINDS=m6` (the device takes MUL_MAT only). `--phase m7` passes the caller's `TSR_KINDS` on to the backend: unset means every kind of the booted image, and a list such as `all,-RMS_NORM` is read by the backend ([`sw/ggml-tesseract/README.md`](../sw/ggml-tesseract/README.md)). `tsr-numcheck run` does the same | an M7 run can move single kinds back to the CPU to find the kind behind a difference. The value is not in the `.klc` header (it has no free bytes): `klcheck run` prints a `TSR_KINDS` line on device runs, `report.json` has `tsr_kinds` (below) and `tsr-numcheck` writes it to `meta.json` (`info.TSR_KINDS`) |
 | Threads | `-t` (default: online CPUs / 2) | the simulator uses `TSR_SIM_THREADS` (default min(CPUs, 8)) |
 | Context | `n_ctx` = longest sequence rounded up to 256, `n_outputs_max` = rows actually needed | keeps the KV cache, compute buffers and the device IO region small |
 
 ## Usage
 
 ```
-klcheck all -m MODEL [-o DIR] [--device sim] [--seed 1] [-n 64] [--n-prompts N] [--prompts FILE]
+klcheck all -m MODEL [-o DIR] [--device sim] [--seed 1] [--floor-seeds 3] [-n 64] [--n-prompts N] [--prompts FILE]
             [--prompt-tail 1] [--chat] [--replay batch|step] [-t N] [--phase m6|m7] [--resume]
             [--kl-ratio 3] [--min-top1 0.8] [--min-kl 0] [--no-embd-check]
             [--fa on|off] [-ctk TYPE] [-ctv TYPE] [--offload-kqv on|off] [--attn-rot on|off]   # experiments
 klcheck run -m MODEL --device sim|mock|vkernel|xrt|cpu --out FILE [--tokens FILE] [--perturb-ulp SEED] [...]
-klcheck compare --ref CPU.klc --dev DEV.klc [--floor FLOOR.klc] [--json FILE] [--expect-identical]
+klcheck compare --ref CPU.klc --dev DEV.klc [--floor FLOOR.klc]... [--json FILE] [--tsr-kinds LIST] [--expect-identical]
 klcheck info FILE [-m MODEL]          # header, timings, per-sequence text
 klcheck embd MODEL TOKEN... [--perturb-ulp S --seq Q --pos P]
 klcheck selftest [DIR]
@@ -116,15 +135,34 @@ never loaded at once. Each phase prints its exact command line:
 ```
 klcheck run --device sim --out DIR/dev.klc -m MODEL [-n G ...]                      # generate
 klcheck run --device cpu --tokens DIR/dev.klc --out DIR/cpu.klc -m MODEL            # reference
-klcheck run --device cpu --tokens DIR/dev.klc --perturb-ulp 1 --out DIR/floor.klc -m MODEL
+klcheck run --device cpu --tokens DIR/dev.klc --perturb-ulp 1 --out DIR/floor-seed1.klc -m MODEL   # also seeds 2, 3
 klcheck run --device cpu --tokens DIR/dev.klc --input embd --out DIR/cpu-embd.klc -m MODEL
 klcheck compare --ref DIR/cpu.klc --dev DIR/cpu-embd.klc --expect-identical -q  # embd identity
-klcheck compare --ref DIR/cpu.klc --dev DIR/dev.klc --floor DIR/floor.klc --json DIR/report.json
+klcheck compare --ref DIR/cpu.klc --dev DIR/dev.klc --floor DIR/floor-seed1.klc --floor DIR/floor-seed2.klc \
+        --floor DIR/floor-seed3.klc --tsr-kinds m6 --json DIR/report.json
 ```
+
+The floor files are `floor-seed<S>.klc` for N > 1 and `floor.klc` for `--floor-seeds 1`.
+`compare --floor` can be given once per floor run; two floor files with the same seed are an
+error (exit 2), since one floor would count twice. `--tsr-kinds` only records the device run's
+`TSR_KINDS` in the report; `klcheck all` passes it.
 
 The exit code is 0 for PASS, 1 for FAIL and 2 for an error. Without `-o`, the files go to a
 private temporary directory that is removed at the end. `report.json` has the summary plus one
-entry per position (KL device, KL floor, the three argmaxes, |Δlogit|, cosine).
+entry per position (KL device, KL floor, the three argmaxes, |Δlogit|, cosine). The floor fields:
+
+- `floors`: one entry per run (`file`, `seed`, `n`, `kl_mean`, `kl_median`, `kl_max`, `top1`,
+  `bit_identical`, `ratio` = the device's mean KL over that run's); `floor` is still the first file.
+- `n_floor`, `floor_kl` (the floor F of the criterion) and `tsr_kinds` (`"m6"`, the caller's list,
+  `"unset"`, or `null` when there is no device run to record: `compare` run by hand, `--device cpu`).
+- Per position, `kl_floor` is the mean over the runs and `kl_floors` lists each run's value (only
+  with more than one run). `summary.floor*` pool the rows of every run, so its `n` is N times the
+  number of positions.
+- `ratio` is `null` when the floor KL is 0 and the device KL is not (it was written as `inf`, which
+  is not valid JSON). With both at 0 it is 0.
+- `argmax_floor` of a position is the first run's.
+
+The fields are additions: the `.klc` format and the earlier `report.json` fields are unchanged.
 
 - **Prompts:** 8 built-in prompts (English prose, Python, a question, Korean, arithmetic Q&A, a list,
   a story, JSON; 7–25 tokens with the Qwen2.5 tokenizer), or `--prompts FILE` with one prompt per
@@ -139,7 +177,8 @@ entry per position (KL device, KL floor, the three argmaxes, |Δlogit|, cosine).
 - **`--resume`:** a phase keeps the complete records of an existing output file and continues after
   them. A finished phase is skipped before its model is loaded. `klcheck all --resume` therefore
   restarts a long 32B run where it stopped. A killed and resumed device run was bit-identical to an
-  uninterrupted one (256/256 rows).
+  uninterrupted one (256/256 rows). A directory made with `--floor-seeds 1` has `floor.klc`; with the
+  default of three seeds `--resume` runs the seed-1 floor again as `floor-seed1.klc`.
 
 ### Logits file (`.klc`)
 
@@ -160,8 +199,10 @@ rows, so neither depends on the model size.
 
 Every row names its device, its settings and its provenance. "FA-off settings" are flash attention off
 and an f16 KV cache on the host; "M6 settings" are flash attention on, a q8_0 K and V cache, rotation
-off and `offload_kqv` false (`--phase m6`). The limits are ratio ≤ 3 and top-1 ≥ 80 %; every row
-passes.
+off and `offload_kqv` false (`--phase m6`); "M7 settings" are the same with `offload_kqv` true, so the
+KV cache and attention are on the device and a decode token is one launch (`--phase m7`). The limits
+are ratio ≤ 3 and top-1 ≥ 80 %; every row passes. Every ratio is against the single floor seed 1; the
+runs against several seeds are described in the text.
 
 | Model | Device | Settings | Positions | Mean KL device / floor | Ratio | Top-1 | Provenance |
 | --- | --- | --- | ---: | --- | ---: | ---: | --- |
@@ -173,6 +214,11 @@ passes.
 | Qwen2.5-32B Q4_K_M | sim | FA off | 256 (4 × 64) | 2.550e-3 / 1.876e-3 | 1.360 | 98.83 % | measured on the simulator (M1) |
 | Qwen2.5-32B Q4_K_M | xrt, k4 | FA off | 512 (8 × 64) | 2.4113e-3 / 1.8487e-3 | 1.304 | 99.02 % | measured on the card (M4) |
 | Qwen2.5-32B Q4_K_M | sim | M6 | 512 (8 × 64) | 2.886e-3 / 2.246e-3 | 1.285 | 98.44 % | measured on the simulator (`83ac601`) |
+| Qwen2.5-0.5B Q8_0 | sim | M7 | 512 (8 × 64) | 2.22e-3 / 2.43e-3 | 0.914 | 98.05 % | measured on the simulator (M7) |
+| Qwen2.5-0.5B Q8_0 | sim | M7 | 34 (2 × 17) | not recorded | 0.765 | not recorded | measured on the simulator (M7) |
+| Qwen2.5-32B Q4_K_M | sim | M7 | 512 (8 × 64) | 3.113e-3 / 2.549e-3 | 1.221 | 98.63 % | measured on the simulator (M7) |
+| Gemma 4 12B Q4_K_M | sim | M6 | 512 (8 × 64) | 9.504e-2 / 7.023e-2 | 1.353 | 96.48 % | measured on the simulator |
+| Gemma 4 12B Q4_K_M | sim | M7 | 512 (8 × 64) | 1.281e-1 / 5.849e-2 | 2.190 | 95.12 % | measured on the simulator (M7) |
 
 On the card the 0.5B run gives the simulator's mean KL to seven digits (1.095007e-3), and the small
 identity check (`klcheck compare --expect-identical`, sim against xrt, 8 of 8 rows bit-identical on k1
@@ -254,7 +300,9 @@ positions):
 | device (sim) vs CPU | **2.089e-3** | 1.19e-3 | 2.82e-2 | **96.88 %** | 0/128 |
 | floor (CPU + 1 ulp, seed 1) vs CPU | **2.912e-3** | 1.26e-3 | 1.08e-1 | 98.44 % | 7/128 |
 
-**Ratio 0.717 (limit 3), top-1 96.88 % (limit 80 %): PASS.** Max |Δlogit| 0.84 (floor 1.36), min
+**Ratio 0.717 (limit 3), top-1 96.88 % (limit 80 %): PASS.** This is against floor seed 1. The ctest
+now makes three floors: against their mean the ratio is 0.899 (0.717 / 1.055 / 1.005 per seed).
+Max |Δlogit| 0.84 (floor 1.36), min
 cosine 0.99741. Device decode 140–147 ms/token on the simulator; the whole `klcheck all` 25 s wall
 (peak RSS 1.26 GB). The device run's tokens replayed with `klcheck run --device sim --tokens` and
 `--device mock --tokens` (step replay) gave 128/128 rows bit-identical to the generating run with
@@ -320,6 +368,33 @@ against 1.8487e-3 (ratio 1.304, top-1 99.02 %).
 a run) with bit-identical results (566/566 rows on 0.5B). The default `T_MAX` of the simulated core
 is 1 (the k1 value; the k4 bitstream has 8), and the gate runs keep it.
 
+### M7 settings (on the simulator)
+
+The M7 backend runs the whole decode token as one launch with the KV cache on the device
+(`TSR_DEVICE=sim`, T_MAX 1, `TSR_KINDS` unset: the device takes every kind of the booted image).
+Command, as used for the 8 built-in prompts × 64 tokens of the rows above:
+
+```sh
+build/dev/bin/klcheck all -m MODEL --device sim --phase m7 -n 64 -o DIR
+```
+
+The 32B run takes the first split and `TSR_SIM_DRAM_DIR` as in the M6 command above. Gemma 4 uses the
+sliding-window ring cache of llama-cli (`--swa-full off`, the default). The rows of the table were
+made with the single floor seed 1, before the default became three seeds.
+
+- Qwen2.5: 32B ratio 1.221, top-1 98.63 % (M6: 1.285 and 98.44 %). 0.5B: 0.914 on 8 × 64 and
+  0.765 on 2 × 17. A run with three floors (0.5B, 2 prompts × 16 tokens, seeds 1 to 3) gave mean KL
+  4.13e-3 against a mean floor of 4.03e-3: ratio 1.026 against the mean, 0.813 / 1.321 / 1.067 per
+  seed, top-1 100 %, embd path bit-identical.
+- Gemma 4 12B Q4_K_M: M7 ratio 2.190 against seed 1, 1.39 / 1.69 / 1.51 against seeds 2 / 3 / 4,
+  1.65 against the mean of seeds 1 to 4, top-1 95.12 %. M6: 1.353 against seed 1, 1.06 against the
+  mean, top-1 96.48 %. All pass (limit 3), but the ratio is higher than for Qwen2.5 and depends on the
+  seed. The excess sits in one prompt. In the M7 run sequence 7 has mean KL 0.72 against a seed-1
+  floor of 0.133, and over seeds 1 to 4 that floor ranges from 0.133 to 0.423: these are
+  ill-conditioned positions where the CPU floor is itself unstable. The device's RMS_NORM is
+  bit-exact to its rule and differs from ggml-cpu's double sum at rounding level
+  ([VU](design/02-vector-unit.md) §6.9).
+
 ## Tests
 
 - `tools_klcheck_selftest` (no model): the 1-ulp nudge (exactly one ulp, deterministic, balanced
@@ -328,8 +403,16 @@ is 1 (the k1 value; the k4 bitstream has 8), and the gate runs keep it.
   measured value; incomplete files fail.
 - `tools_klcheck_selftest` also checks the version 2 header: the settings survive a write / read, a
   version 1 file reads as f16 / f16 on the host, version 3 is refused.
+- `tools_klcheck_selftest` also covers several floor runs: three floors with different noise, each
+  run's numbers equal a `compare` against that run alone, the floor is the mean, the verdict follows
+  the mean, `--floor` works more than once on the command line, the `report.json` fields for one and
+  three floors, the floor file names, and a floor of KL 0 (the ratio is written as `null`).
 - `tools_klcheck_qwen05b` (registered only if `models/qwen2.5-0.5b-instruct-q8_0.gguf` exists,
   label `model`, ~25 s): `klcheck all --device sim --phase m6 --n-prompts 4 -n 32` with the default
-  criteria and the embd identity check.
+  criteria (three floor runs; a repeated floor seed would exit 2) and the embd identity check.
+- `tools_klcheck_kinds_qwen05b` (same condition, label `model`, ~3 s): `test_tsr_kinds.sh` runs
+  `klcheck run` with `TSR_DEBUG=1`: `--phase m7` with `TSR_KINDS=all,-RMS_NORM` must show that list in the
+  backend and in klcheck's `TSR_KINDS` line, `--phase m6` with `TSR_KINDS=all` must show `m6`, and
+  `--phase m7` without the variable must show `unset`.
 - `tools_klcheck_identity_qwen05b` (same condition, label `model`, ~10 s): generate 2 prompts × 8
   tokens on `sim`, replay the tokens on `mock` (step), `compare --expect-identical`.

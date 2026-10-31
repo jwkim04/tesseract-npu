@@ -203,9 +203,10 @@ class Native:
 
 
 # =============================================================================================
-# independent numpy model of the spec's f32 rules and of QACT (spec 양자화 규칙, fp 공통 규칙,
-# 구현 명확화 v0.2.1). Native IEEE binary32 numpy ops (RNE, gradual underflow) + explicit DAZ on
-# inputs, FTZ and canonical NaN on results. Integer conversion via exact float64.
+# independent numpy model of the spec's f32 rules and of QACT (spec quantization rules, common fp
+# rules, implementation clarifications v0.2.1). Native IEEE binary32 numpy ops (RNE, gradual
+# underflow) + explicit DAZ on inputs, FTZ and canonical NaN on results. Integer conversion via
+# exact float64.
 # =============================================================================================
 _SIGN = np.uint32(0x80000000)
 _EXP = np.uint32(0x7F800000)
@@ -384,7 +385,8 @@ def parse_weights(fmt: int, blocks: np.ndarray, N: int, K: int):
 
 
 # =============================================================================================
-# B1b: independent numpy model of the spec's fp32 arithmetic (수치 규칙: 블록 항, 행 누적, fp 공통 규칙).
+# B1b: independent numpy model of the spec's fp32 arithmetic (numeric rules: block terms, row
+# accumulation, common fp rules).
 # No libtsr_ref code: numpy QACT (np_qact), numpy weight parsing, numpy binary32 ops with DAZ / FTZ.
 # =============================================================================================
 def _pos0(a: np.ndarray) -> np.ndarray:
@@ -392,7 +394,7 @@ def _pos0(a: np.ndarray) -> np.ndarray:
 
 
 def spec_terms(fmt: int, wp, qa, T: int) -> np.ndarray:
-    """Block terms t[i][N][T] in f32, each multiply / subtract rounded separately (spec 블록 항)."""
+    """Block terms t[i][N][T] in f32, each multiply / subtract rounded separately (spec block terms)."""
     qx, Dx, bsum = qa
     D = np.asarray(Dx, dtype=F32).T[:, None, :]                                         # (nt, 1, T)
     if fmt == FMT_Q8_0:

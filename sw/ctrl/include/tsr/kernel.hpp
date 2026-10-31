@@ -70,7 +70,7 @@ namespace tsr {
 // Types (docs/ctrl-riscv.md §8.2)
 // -----------------------------------------------------------------------------------------------
 constexpr uint32_t LINE_BYTES = 64u;          // SPM line = DRAM beat (spec BEAT_BITS 512)
-constexpr uint32_t T_MAX_ARCH = 8u;           // spec 구성 파라미터: T_MAX upper bound
+constexpr uint32_t T_MAX_ARCH = 8u;           // spec "Configuration parameters": T_MAX upper bound
 constexpr uint32_t SPM_NONE = 0xFFFF'FFFFu;   // spm.line of "no block" (spm_ring::alloc failure)
 
 struct spm {                                  // SPM line address
@@ -85,7 +85,7 @@ struct dram {                                 // DRAM channel + beat (64-byte un
     uint32_t beat;
 };
 constexpr dram operator+(dram d, uint32_t beats) { return dram{d.ch, d.beat + beats}; }
-// ABI form of a DRAM address: {ch[31:28], beat[27:0]} (SW §6.5, docs/ctrl-riscv.md:1094-1097).
+// ABI form of a DRAM address: {ch[31:28], beat[27:0]} (SW §6.5, docs/ctrl-riscv.md §8.2).
 TSR_HOT constexpr uint32_t handle(dram d) { return (uint32_t(d.ch) << 28) | (d.beat & 0x0FFF'FFFFu); }
 TSR_HOT constexpr dram from_handle(uint32_t h) { return dram{uint8_t(h >> 28), h & 0x0FFF'FFFFu}; }
 

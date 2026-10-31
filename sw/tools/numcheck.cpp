@@ -11,10 +11,12 @@
 // All three use the embd input path, so the three graphs are identical node for node. Settings
 // (SW-22, docs/design/06-software-verification.md §9.5, §10.4), the same in every run: flash
 // attention on, q8_0 K and V cache, LLAMA_ATTN_ROT_DISABLE=1 (set by the tool), offload_kqv by
-// phase; recorded in meta.json "info" and checked equal across the runs by selfcheck. The
-// per-node observation below makes the scheduler compute one node per graph_compute, i.e. one
-// device launch per observed node: numcheck needs no device mode of its own (SW-27). Each run
-// observes the graph through llama_context_params.cb_eval and writes a run directory:
+// phase; recorded in meta.json "info" and checked equal across the runs by selfcheck. The device's
+// kinds follow the phase: --phase m6 sets TSR_KINDS=m6, --phase m7 keeps the caller's TSR_KINDS
+// (meta.json info "TSR_KINDS"). The per-node observation below makes the scheduler compute one
+// node per graph_compute, i.e. one device launch per observed node: numcheck needs no device mode
+// of its own (SW-27). Each run observes the graph through llama_context_params.cb_eval and writes
+// a run directory:
 //
 //   <run_dir>/meta.json     format "tsr-numcheck" version 2 (fields below; version 1 = the
 //                           FA-off settings, still read), written last
@@ -596,6 +598,7 @@ static void usage_run() {
         "  -v                  llama.cpp log\n"
         "  settings (SW-22, every run of a set must use the same; recorded in meta.json):\n"
         "  --phase m6|m7       M6 (default): KV cache and attention on the host; M7: on the device\n"
+        "                      (m6 sets TSR_KINDS=m6; m7 keeps the caller's TSR_KINDS, unset: every kind)\n"
         "  --offload-kqv on|off  override the phase's offload_kqv\n"
         "  --fa on|off  -ctk TYPE  -ctv TYPE  --attn-rot on|off   (defaults: on, q8_0, q8_0, off)\n");
 }
@@ -685,9 +688,10 @@ static int cmd_run(int argc, char ** argv) {
     // llama.cpp's Hadamard KV rotation off in every run (SW-16, SW-22; read at context creation)
     if (o.attn_rot_disable) setenv("LLAMA_ATTN_ROT_DISABLE", "1", 1);
     else                    unsetenv("LLAMA_ATTN_ROT_DISABLE");
-    // the phase's device kinds, as klcheck: M6 MUL_MAT only (SW-14), M7 every kind (SW-49)
+    // the phase's device kinds, as klcheck: M6 MUL_MAT only (SW-14); M7 keeps the caller's TSR_KINDS
+    // (a kind list such as all,-RMS_NORM, sw/ggml-tesseract/README.md; unset: every kind, SW-49).
+    // The value the run used is recorded in meta.json info "TSR_KINDS".
     if (o.phase == "m6") setenv("TSR_KINDS", "m6", 1);
-    else                 unsetenv("TSR_KINDS");
 
     llama_log_set(log_cb, nullptr);
     llama_backend_init();
@@ -892,6 +896,7 @@ static int cmd_run(int argc, char ** argv) {
     info["t_load_s"]        = t_load;
     info["t_decode_s"]      = t_decode;
     info["TSR_DEVICE"]      = envs("TSR_DEVICE");
+    info["TSR_KINDS"]       = envs("TSR_KINDS");      // m6, the caller's list (m7), or null: every kind
     info["LLAMA_ATTN_ROT_DISABLE"] = envs("LLAMA_ATTN_ROT_DISABLE");
     info["TSR_SIM_THREADS"] = envs("TSR_SIM_THREADS");
     info["TSR_SIM_TMAX"]    = envs("TSR_SIM_TMAX");

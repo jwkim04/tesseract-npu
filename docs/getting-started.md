@@ -93,36 +93,50 @@ ctest --test-dir build/dev -LE slow
 ## Run a model on the simulator
 
 Model files are not part of the repository: put GGUF files in `models/` (ignored by git). The
-settings below are the M6 settings of the software path: the weight `MUL_MAT`s run on the
-Tesseract device as op lists through the firmware's `graph` kernel, and attention and the KV cache
-stay on the CPU.
+first command runs the M7 settings of the software path: the whole decode token is one launch of the
+firmware's `graph` kernel on the Tesseract device, with the KV cache and attention on the device.
 
 ```sh
 LLAMA_ATTN_ROT_DISABLE=1 build/dev/bin/llama-completion -m models/qwen2.5-0.5b-instruct-q8_0.gguf \
+    -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -no-cnv -p "The capital of France is" -n 16
+build/dev/bin/klcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf -o build/klcheck-05b --phase m7 -n 64
+```
+
+The M6 settings run the weight `MUL_MAT`s only on the device, with attention and the KV cache on the
+CPU:
+
+```sh
+LLAMA_ATTN_ROT_DISABLE=1 TSR_KINDS=m6 build/dev/bin/llama-completion -m models/qwen2.5-0.5b-instruct-q8_0.gguf \
     -ngl 99 -nkvo -fa on -ctk q8_0 -ctv q8_0 -no-cnv -p "The capital of France is" -n 16
 build/dev/bin/klcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf -o build/klcheck-05b -n 64
 ```
 
-- `-ngl 99` offloads every layer's weight matmuls to `Tesseract0`.
-- `-nkvo` is required in M6. Without it llama.cpp puts the KV cache into a Tesseract buffer and the
-  scheduler aborts (`pre-allocated tensor (cache_k_l0 (view)) in a buffer (Tesseract0) that cannot
-  run the operation (SET_ROWS)`). The device KV cache arrives with M7.
-- `-fa on -ctk q8_0 -ctv q8_0` and `LLAMA_ATTN_ROT_DISABLE=1` (no Hadamard KV rotation) are the
-  baseline settings: flash attention, a q8_0 KV cache, no rotation. `klcheck` and `tsr-numcheck`
-  set them themselves. Without them the run also works (flash attention off, f16 KV), but its
-  results are not comparable with the baselines.
+- `-ngl 99` offloads every layer to `Tesseract0`. In M7 that is the whole decode graph, one launch
+  per token; in M6 only the weight matmuls.
+- M7 is the default of the backend (`TSR_KINDS` unset: the device takes every op kind it supports) and
+  needs no `-nkvo`. The KV cache lives in Tesseract buffers and the device writes and reads it.
+  M6 needs `TSR_KINDS=m6` and `-nkvo`: the KV cache and attention stay on the CPU.
+  A kind list such as `TSR_KINDS=all,-RMS_NORM` moves single kinds back to the CPU; how a list is
+  read is in [`sw/ggml-tesseract/README.md`](../sw/ggml-tesseract/README.md).
+- `-fa on -ctk q8_0 -ctv q8_0` are required with the KV cache on the device: an f16 cache cannot live
+  in device memory. With `-nkvo` they are the baseline settings. `LLAMA_ATTN_ROT_DISABLE=1` (no
+  Hadamard KV rotation) keeps a decode token to one launch; without it the run works with more
+  launches. `klcheck` and `tsr-numcheck` set it themselves. Results with other settings are not
+  comparable with the baselines.
 - `-no-cnv` turns off the chat mode that `llama-completion` starts by itself for models with a chat
   template.
-- `klcheck all` runs the device, the CPU, the 1-ulp floor and the embedding-path check, and prints
-  the verdict (`docs/klcheck.md`). Its defaults are the M6 settings, 8 built-in prompts and
-  `-n` generated tokens each.
-- The simulator is slow. On the 16-core development host, 0.5B decodes at about 92 ms per token
-  (measured on the simulator, `83ac601`: 145 launches per token) and 32B at about 8 s per token.
-  `TSR_SIM_THREADS` sets the number of MVM threads (default min(CPUs, 8)). A 32B model needs
-  file-backed simulator DRAM, `TSR_SIM_DRAM_DIR=<dir>` with about 20 GiB free.
-- Models checked on the simulator: Qwen2.5-0.5B-Instruct Q8_0 and Qwen2.5-32B-Instruct Q4_K_M
-  ([`docs/klcheck.md`](klcheck.md), [`docs/numcheck.md`](numcheck.md)). The Gemma 4 runs of
-  [`docs/performance.md`](performance.md) were made on the card.
+- `klcheck all` runs the device, the CPU, the 1-ulp floors and the embedding-path check, and prints
+  the verdict (`docs/klcheck.md`). `--phase m6` (the default) and `--phase m7` select the settings
+  above; it uses 8 built-in prompts, `-n` generated tokens each and three floor seeds.
+- The simulator is slow. On the 16-core development host, 0.5B decodes at about 90 ms per token with
+  M7 (one launch per token) and at about 92 ms with M6 (145 launches per token; measured on the
+  simulator, `83ac601`), and 32B at 7 to 8 s per token. `TSR_SIM_THREADS` sets the number of MVM
+  threads (default min(CPUs, 8)). A 32B model needs file-backed simulator DRAM,
+  `TSR_SIM_DRAM_DIR=<dir>` with about 20 GiB free.
+- Models checked on the simulator with klcheck: Qwen2.5-0.5B-Instruct Q8_0, Qwen2.5-32B-Instruct
+  Q4_K_M and Gemma 4 12B Q4_K_M ([`docs/klcheck.md`](klcheck.md); Qwen2.5 also with
+  [`docs/numcheck.md`](numcheck.md)). The Gemma 4 runs of [`docs/performance.md`](performance.md)
+  were made on the card.
 - Without a GGUF file, `build/dev/bin/tsr-selftest --device sim` still boots the firmware on the
   simulator and runs its self-checks (see [Verify](#verify)).
 

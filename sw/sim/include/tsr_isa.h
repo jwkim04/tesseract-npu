@@ -1,6 +1,6 @@
 // tsr_isa.h — Tesseract ISA encoding, CSR offsets, error codes, config parameters.
 //
-// This header is the C mirror of docs/spec.md ("ISA", "구성 파라미터", "메모리 모델") as amended by
+// This header is the C mirror of docs/spec.md ("ISA", "Configuration parameters", "Memory model") as amended by
 // the execution model (docs/design/01-execution-model.md, "EX": ISA §7, CSR map §5, error codes
 // §8, DRAM map §11). If they disagree, fix the documents first, then this file. Shared by the ISA
 // simulator, the reference library, the ggml backend, the runtime and the tools.
@@ -29,7 +29,7 @@ extern "C" {
 // (VERSION = 0x0200, EX §7.5: a tool built for another major version fails the check), TSR_NUM_CH_MAX.
 #define TSR_BEAT_BYTES      64u      // DRAM beat (U200 BEAT_BITS = 512)
 #define TSR_LINE_BYTES      64u      // SPM line
-#define TSR_ROW_PARTIALS    16u      // MVM row accumulation partial sums (spec 수치 규칙)
+#define TSR_ROW_PARTIALS    16u      // MVM row accumulation partial sums (spec "Numeric rules")
 #define TSR_RED_PARTIALS    128u     // VU reduction partial sums
 #define TSR_MAX_BURST_BEATS 64u      // no burst crosses a 4 KiB boundary
 #define TSR_CANON_NAN_BITS  0x7FC00000u
@@ -38,12 +38,12 @@ extern "C" {
 // and TSR_REGION_WEIGHT_OFF come from tsr_tables.h. OPL (was CMD), IO and AUX are on ch0. The
 // core fetches nothing from DRAM: OPL holds op lists, replay push streams and argument blocks
 // that RISC-V kernels read. The backend splits IO into compute-buffer windows (bottom) and a
-// staging area (top, max(16 MiB, 2 x SPM)) for activations kept in host memory (spec "lowering
-// 제약"); that split is a software convention, the hardware sees one region.
+// staging area (top, max(16 MiB, 2 x SPM)) for activations kept in host memory (spec "Lowering
+// constraints"); that split is a software convention, the hardware sees one region.
 #define TSR_MiB             (1024ull * 1024ull)
 
 // ---------------------------------------------------------------------------
-// Elaboration parameters (spec "구성 파라미터"); software reads them from CFG* CSRs.
+// Elaboration parameters (spec "Configuration parameters"); software reads them from CFG* CSRs.
 // ---------------------------------------------------------------------------
 typedef struct tsr_config {
     uint32_t num_ch;          // NUM_CH (C)
@@ -67,7 +67,7 @@ typedef struct tsr_config {
     /*rd_outstanding*/ 16, /*ch_bytes*/ 16ull << 30, /*addr_beat_w*/ 28, /*caps*/ 0 }
 
 #define TSR_T_MAX_ARCH 8u
-// TSR_NUM_CH_MAX (tsr_tables.h, 16; spec 구성 파라미터, v0.2.1): LD/ST name the channel in the
+// TSR_NUM_CH_MAX (tsr_tables.h, 16; spec "Configuration parameters"): LD/ST name the channel in the
 // 4-bit w0 sub field, so channels >= 16 would be unreachable. CFG0 NUM_CH[7:0] is wider than needed.
 
 // ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@
 //   destination QA image at dst_line + t*qa_lines: QS (ceil(K/64) lines, int8), then D
 //   (ceil(4*nblk/64) lines, f32 per block), then BS (A256 only, ceil(2*K/16/64) lines, int16 per
 //   16 q). Every line of the image is written exactly once, in full; bytes after the last valid
-//   element of each region are written as 0 (spec 구현 명확화 "꼬리 바이트").
+//   element of each region are written as 0 (spec, Implementation clarifications, "Tail bytes").
 //   A32 per 32-block : amax = max |DAZ(x)| over non-NaN x (0 if none); d = fdiv(amax, 127);
 //                      id = (d != +-0) ? fdiv(1, d) : +0; q = q8_round_away(fmul(x, id));
 //                      D = fp16_to_f32(f32_to_fp16(d)).

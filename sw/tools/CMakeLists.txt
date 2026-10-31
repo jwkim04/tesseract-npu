@@ -193,6 +193,12 @@ function(tsr_add_klcheck)
                      COMMAND ${TSR_BASH_TOOLS} ${TESSERACT_ROOT}/sw/tools/test_klcheck_identity.sh $<TARGET_FILE:klcheck>
                              ${_tsr_model} ${CMAKE_BINARY_DIR}/sw/tools/klcheck_identity)
             set_tests_properties(tools_klcheck_identity_qwen05b PROPERTIES TIMEOUT 900 LABELS model ENVIRONMENT "TSR_SIM_THREADS=4")
+            # TSR_KINDS per phase (SW-49): --phase m6 sets m6 over the caller's value, --phase m7 keeps the
+            # caller's list (or none: every kind); the backend's kinds and klcheck's record agree (~3 s).
+            add_test(NAME tools_klcheck_kinds_qwen05b
+                     COMMAND ${TSR_BASH_TOOLS} ${TESSERACT_ROOT}/sw/tools/test_tsr_kinds.sh klcheck $<TARGET_FILE:klcheck>
+                             ${_tsr_model} ${CMAKE_BINARY_DIR}/sw/tools/klcheck_kinds)
+            set_tests_properties(tools_klcheck_kinds_qwen05b PROPERTIES TIMEOUT 300 LABELS model ENVIRONMENT "TSR_SIM_THREADS=4")
         endif()
     endif()
 endfunction()
@@ -230,6 +236,13 @@ function(tsr_add_numcheck)
         add_test(NAME tools_numcheck_dump_qwen05b
                  COMMAND tsr-numcheck all -m ${_tsr_model} -T 32 --phase m6 --checks full)
         set_tests_properties(tools_numcheck_dump_qwen05b PROPERTIES TIMEOUT 600 LABELS model ENVIRONMENT TSR_SIM_THREADS=4)
+        # TSR_KINDS per phase as for klcheck (test_tsr_kinds.sh); meta.json info.TSR_KINDS records it (~3 s).
+        if (TSR_BASH_TOOLS)
+            add_test(NAME tools_numcheck_kinds_qwen05b
+                     COMMAND ${TSR_BASH_TOOLS} ${TESSERACT_ROOT}/sw/tools/test_tsr_kinds.sh numcheck $<TARGET_FILE:tsr-numcheck>
+                             ${_tsr_model} ${CMAKE_BINARY_DIR}/sw/tools/numcheck_kinds)
+            set_tests_properties(tools_numcheck_kinds_qwen05b PROPERTIES TIMEOUT 300 LABELS model ENVIRONMENT "TSR_SIM_THREADS=4")
+        endif()
     endif()
 endfunction()
 cmake_language(DEFER DIRECTORY ${TESSERACT_ROOT} CALL tsr_add_numcheck)

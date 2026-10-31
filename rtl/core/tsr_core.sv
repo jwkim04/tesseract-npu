@@ -11,7 +11,7 @@
 // every configuration but does no work: no unit is ever offered a command, so no memory request
 // leaves it.
 //
-// Core boundary (spec 코어 경계 인터페이스, without `done`; EX §9.3):
+// Core boundary (spec Core boundary interface, without `done`; EX §9.3):
 //   - CSR port: csr_valid/csr_ready/csr_we/csr_addr/csr_wdata/csr_rdata (tsr_csr contract).
 //   - memory port per channel c (packed [NUM_CH], index c): read request {addr_beat, len_beats, id},
 //     read response {data, id, last}, write request {addr_beat, len_beats, id}, write data

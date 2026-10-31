@@ -91,7 +91,7 @@ static int rsv_bad(const uint32_t w[8], const uint32_t rsv[8]) {
     return 0;
 }
 
-// Spec range-check rule (docs/spec.md:1053): [a, a + e) must end at or below the limit.
+// Spec range-check rule (docs/spec.md §21, Range check): [a, a + e) must end at or below the limit.
 static int spm_bad(const tsr_sim * sim, uint32_t a, uint64_t e, uint32_t * info) {
     if ((uint64_t)a + e <= tsr_sim_spm_lines(sim)) return 0;
     *info = a;

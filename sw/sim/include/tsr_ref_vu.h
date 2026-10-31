@@ -19,7 +19,7 @@
 //   - s registers are passed as their 32-bit values (the caller reads s[si], s[sk], ... when the op
 //     starts, VU §4.4).
 //   - Each function writes exactly the destination extent of VU §5.9 and applies the tail rule
-//     (VU §4.2, docs/spec.md "꼬리 바이트"): a destination row of n words occupies L(n) = ceil(n/16)
+//     (VU §4.2, docs/spec.md "Tail bytes"): a destination row of n words occupies L(n) = ceil(n/16)
 //     lines and words [n, 16·L(n)) are written 0. With m = 0 or rows = 0 nothing is read or written
 //     (VU §4.2); the one exception, RED to an s register, is tsr_ref_red_row (it never writes SPM).
 //   - In place: a source may be the destination exactly (same pointer and stride; for ROPE the same
@@ -82,7 +82,7 @@ void tsr_ref_vop(uint32_t func, uint32_t cmode, uint32_t rows, uint32_t m,
 // p_(i mod 128) <- FA(p_(i mod 128), x_i) (SUMSQ: FM(x_i, x_i) in place of x_i).
 void     tsr_ref_red_partials(uint32_t kind, const uint32_t * x, uint32_t m, uint32_t p[TSR_RED_PARTIALS]);
 // The complete binary tree over p_0 .. p_127: level 1 FA(p_2k, p_2k+1), adjacent pairs left to
-// right, 7 levels (docs/spec.md:296). This is the definition.
+// right, 7 levels (docs/spec.md §9). This is the definition.
 uint32_t tsr_ref_red_tree128(const uint32_t p[TSR_RED_PARTIALS]);
 // The skip implementation that VU §6.2 allows (VU-2), as a model for the RTL: only partials
 // below n_present = min(128, group·ceil(n_written/group)) exist; a node whose subtree holds none is

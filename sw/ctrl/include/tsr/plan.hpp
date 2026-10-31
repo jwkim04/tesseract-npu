@@ -43,7 +43,7 @@ namespace plan {
 #endif
 
 constexpr uint32_t LINE_BYTES  = 64u;
-constexpr uint32_t T_MAX_ARCH  = 8u;        // spec 구성 파라미터: architecture bound of T_MAX
+constexpr uint32_t T_MAX_ARCH  = 8u;        // spec "Configuration parameters": architecture bound of T_MAX
 constexpr uint32_t K_FIELD_MAX = 0xFFFFu;   // MVM w5 K[15:0]
 constexpr uint32_t T_FIELD_MAX = 15u;       // MVM w5 T[19:16]
 constexpr uint32_t FMT_Q8_0 = 0u, FMT_Q4_K = 1u;   // spec ISA weight formats (mmio.hpp FMT_*)
@@ -147,7 +147,7 @@ static_assert(one_block_lines(65536u) == 1024u && one_block_lines(8192u) == 448u
               "plan.hpp: the one-tile block on the U200 and on a 512 KiB test SPM; the U200 planning budget");
 
 // ---------------------------------------------------------------------------------------------
-// Format geometry (spec "양자화 활성값(QA) 레이아웃", "가중치 레이아웃"; tsr_ref.c is the reference)
+// Format geometry (spec "Quantized activation (QA) layout", "Device weight layout"; tsr_ref.c is the reference)
 // ---------------------------------------------------------------------------------------------
 // Divides on the control core cost 38 cycles (Ibex, CC §3.2; SW §4.2), so everything a kind handler
 // evaluates per op uses shifts: every block size here is a power of two (Q8_0 / A32 32 = 2^5,
@@ -173,7 +173,7 @@ TSR_PLAN_HOT constexpr uint32_t qa_lines(uint32_t kind, uint32_t K) {
     const uint32_t bs = kind == QA_A256 ? ceil_shr((K >> 4) << 1, 6u) : 0u;
     return qs + d + bs;
 }
-// The plain formulas (spec "양자화 활성값(QA) 레이아웃"), for the static_asserts.
+// The plain formulas (spec "Quantized activation (QA) layout"), for the static_asserts.
 constexpr uint32_t qa_lines_div(uint32_t kind, uint32_t K) {
     const uint32_t b = qa_block(kind);
     if (b == 0u || K % b != 0u) return 0u;

@@ -1,5 +1,5 @@
 // tsr_mac_lane.sv — generic (vendor-neutral) MAC lane group: N signed 8-bit products summed,
-// for T tokens that share the weights. Technology wrapper (spec 시스템 구조: tsr_mac_lane).
+// for T tokens that share the weights. Technology wrapper (spec System structure: tsr_mac_lane).
 //
 // Owner: back agent (docs/rtl-m3.md §2 block (back), contract §7.2).
 //
@@ -7,7 +7,7 @@
 //   y[t] = sum_{i < N} sext(w[i]) * sext(x[t][i])   (exact, two's complement, SUM_W bits)
 //   for every token t < T. w and x are signed 8-bit (the full range -128..127; Q4_K weights are
 //   0..15 in a signed lane). SUM_W = 16 + clog2(N) holds the extreme N * (-128) * (-128)
-//   (N = 32: 21 bits, spec 정수 폭 "Q8_0 isum 부호 21비트").
+//   (N = 32: 21 bits, spec Numeric rules, integer widths: "Q8_0 isum signed 21 bits").
 // Timing: fixed latency LAT >= 1 with ce, exactly like tsr_fp_mul: every register (valid and data)
 //   updates only at edges with ce = 1; in_valid/w/x are sampled only at such edges; out_valid/y
 //   are registers available LAT advancing edges after the operands were taken (operands present
@@ -15,8 +15,8 @@
 //   n + LAT - 1). Reset clears the valid pipeline only. Fully pipelined (one beat per cycle), no
 //   combinational input -> output path. The MVM back end instantiates TSR_MVM_GROUPS = 4 of these
 //   per cluster (N = 32 lanes each, 128 lanes per beat) with T = T_MAX.
-// Implementation freedom (this is the reason it is a tech wrapper, spec MVM 클러스터
-//   마이크로아키텍처 "DSP 패킹"): generic = products + pipelined adder tree, LAT chosen so that
+// Implementation freedom (this is the reason it is a tech wrapper, spec MVM cluster
+//   microarchitecture "DSP packing"): generic = products + pipelined adder tree, LAT chosen so that
 //   each stage is <= ~6 LUT levels at 300 MHz (product register, then about two adder levels per
 //   stage). rtl/tech/xilinx (M4) may use DSP48E2 cascades (one DSP per product at T = 1) and pack
 //   two tokens per DSP for T >= 2 (same weight, two activations); the ports and the latency

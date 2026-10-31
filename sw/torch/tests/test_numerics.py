@@ -1,5 +1,5 @@
 """NMSE of the device against torch's own float32 matmul on random data (test-backend-ops' metric and
-limit, 5e-4), and the known single-output exception (docs/spec.md 검증 전략, "연산 단위 NMSE의 예외").
+limit, 5e-4), and the known single-output exception (docs/spec.md "Verification strategy", "Exception to op-level NMSE").
 
 Run with ``-s`` to see the measured distribution."""
 from __future__ import annotations

@@ -1,4 +1,4 @@
-// tsr_mvm_actbuf.sv — MVM cluster activation buffer (spec MVM 클러스터 "클러스터당 활성값 버퍼"):
+// tsr_mvm_actbuf.sv — MVM cluster activation buffer (spec MVM cluster microarchitecture "Activation buffer per cluster"):
 // holds the T_MAX QA images of the current MVM (QS + D + BS per token), written by the activation
 // broadcast, read by the back end (spec stage 5).
 //
@@ -10,7 +10,7 @@
 //   DBS: DBS_LINES = tsr_actbuf_dbs_lines(K_MAX) lines of 512 bits: the QA image's lines from
 //        ceil(K/64) on (D lines at 0 .. d_lines-1, then the A256 BS lines).
 //   All T_MAX tokens are read together (one address, T_MAX x the width): the tokens share the
-//   weight beat (spec 자원 추정 "1024비트 x 292 per token").
+//   weight beat (spec Resource estimate "1024 bits x 292 per token").
 // Contract:
 //   write: wr_valid with wr_line (tsr_mvm_bcline_t; `last` is ignored here): token wr_line.tok,
 //          QS line (dbs = 0) wr_line.addr -> bank addr[0], word addr >> 1; D/BS line (dbs = 1)

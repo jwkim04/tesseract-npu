@@ -1,6 +1,6 @@
 """Shared pieces of the tsr_qact testbenches (tb/qact/test_qact.py).
 
-  - activation vectors: per-block generators for every special case of spec 구현 명확화 (zeros,
+  - activation vectors: per-block generators for every special case of spec Implementation clarifications (zeros,
     subnormals, NaN, Inf, rounding ties, first-largest ties placed across lines and merge-tree
     branches, tiny max -> iscale overflow / saturation, d FTZ, fp16(d) overflow / subnormal,
     divider FTZ / overflow boundaries, raw random bit patterns, ...) and random mixes of them;
@@ -229,7 +229,7 @@ def blk_boundary(r, bs, kind):
 
 
 def blk_daz(r, bs, kind):
-    """spec 구현 명확화 DAZ vectors: a small normal max next to the largest subnormals (products
+    """spec Implementation clarifications DAZ vectors: a small normal max next to the largest subnormals (products
     of ~0.99 without DAZ), as in sw/sim/tests/test_ref_ggml.c."""
     x = [0] * bs
     x[r.randrange(bs)] = 0x04000000 | (0x80000000 if (kind == QA_A256 and r.random() < 0.7) else 0)

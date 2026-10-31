@@ -1,4 +1,5 @@
-// klcheck — model-level KL check (spec 검증 전략, "모델 단위 KL 기준"). Usage: docs/klcheck.md.
+// klcheck — model-level KL check (spec "Verification strategy", "Model-level KL criterion").
+// Usage: docs/klcheck.md.
 //
 // Method (after openTPU tools/validate.py, https://github.com/FeSens/openTPU):
 //   1. device run   greedy-generate G tokens per prompt on the Tesseract device (all layers and the
@@ -8,9 +9,13 @@
 //   2. CPU run      feed the same token sequence (prompt + device tokens) to the ggml CPU backend
 //                   alone and record the logits at the same positions (same context per position);
 //   3. floor        the CPU run again with its input embeddings nudged by one f32 ulp each
-//                   (nextafterf in a seeded random direction, see embd_nudge());
+//                   (nextafterf in a seeded random direction, see embd_nudge()); `klcheck all`
+//                   makes --floor-seeds N such runs (default 3) with seeds S..S+N-1 (--seed S,
+//                   default 1), since one seed's floor can differ a lot from another's;
 //   4. compare      KL(CPU || device) and KL(CPU || CPU-perturbed) per position, top-1 agreement.
 //                   PASS: mean KL(CPU || device) <= kl-ratio x mean floor KL (3) and top-1 >= 80%.
+//                   With several floor runs the floor KL is the mean over the runs of each run's
+//                   mean KL; the report gives the ratio against each run and against that mean.
 // Every run is its own process that writes a logits file (f32, small header), so the device model
 // and the CPU model are never loaded at the same time (32B on a 14 GB machine). `klcheck all` runs
 // the three phases as child processes and then compares.
@@ -23,11 +28,13 @@
 // Settings (SW-22, docs/design/06-software-verification.md §9.5, §10.4): every phase runs with
 // flash attention on, a q8_0 K and V cache and LLAMA_ATTN_ROT_DISABLE=1 (set by the tool);
 // offload_kqv is false in M6 (--phase m6, the default) and true in M7 (--phase m7); all of it is
-// recorded in the file header (version 2), and compare warns when two files differ. The phase also
-// sets TSR_KINDS (m6: the device takes MUL_MAT only; m7: every M7 kind). A device run records the
-// versions it ran with (SW §6.9: the Tesseract Core capability, the Tesseract Basis version and the
-// kind table signature of the booted image) in the header; compare prints them and report.json
-// carries them ("versions", null when not recorded).
+// recorded in the file header (version 2), and compare warns when two files differ. --phase m6 also
+// sets TSR_KINDS=m6 (the device takes MUL_MAT only); --phase m7 keeps the caller's TSR_KINDS (unset:
+// every kind of the booted image; a kind list such as all,-RMS_NORM, sw/ggml-tesseract/README.md).
+// The header has no room for it; `klcheck all` records it in report.json ("tsr_kinds"). A device
+// run records the versions it ran with (SW §6.9: the Tesseract Core capability, the Tesseract Basis
+// version and the kind table signature of the booted image) in the header; compare prints them and
+// report.json carries them ("versions", null when not recorded).
 
 #include "ggml-backend.h"
 #include "ggml.h"
@@ -287,6 +294,14 @@ static std::string versions_str(const klc_header & h) {
     snprintf(b, sizeof(b), "Tesseract Core %u.%u, Tesseract Basis %u.%u.%u (kind table 0x%04x)", (h.core >> 8) & 0xFFu, h.core & 0xFFu,
              (h.basis >> 16) & 0xFFu, (h.basis >> 8) & 0xFFu, h.basis & 0xFFu, h.kinds_sig);
     return b;
+}
+// The TSR_KINDS a device run of the phase uses (cmd_run): "m6" for --phase m6, else the caller's
+// value, or "unset" without one (the device takes every kind of the booted image; an empty value
+// is the same as none).
+static std::string tsr_kinds_of(int phase) {
+    if (phase == KLC_PHASE_M6) return "m6";
+    const char * e = getenv("TSR_KINDS");
+    return e && *e ? e : "unset";
 }
 // The device kinds a run accepts (SW §9.2 TSR_DEVICE values with a device, and cpu).
 static bool device_kind_ok(const std::string & d) {
@@ -899,9 +914,9 @@ static int cmd_run(int argc, char ** argv) {
     if (o.attn_rot_disable) setenv("LLAMA_ATTN_ROT_DISABLE", "1", 1);
     else                    unsetenv("LLAMA_ATTN_ROT_DISABLE");
     // The phase also picks the device's kinds (read by the backend's supports_op): M6 runs MUL_MAT
-    // only (SW-14); M7 every kind of SW §9.3 (W3b integration, SW-49).
+    // only (SW-14). M7 keeps the caller's TSR_KINDS, so a kind list (all,-RMS_NORM) reaches the
+    // backend; unset, the device takes every kind of SW §9.3 (W3b integration, SW-49).
     if (o.phase == KLC_PHASE_M6) setenv("TSR_KINDS", "m6", 1);
-    else                         unsetenv("TSR_KINDS");
 
     const bool replay = !o.tokens.empty();
     std::vector<plan_seq> plan;
@@ -1039,6 +1054,9 @@ static int cmd_run(int argc, char ** argv) {
             h.kinds_sig = (uint16_t) v.kinds_sig;
         }
         fprintf(stderr, "klcheck [%s]: %s\n", o.device.c_str(), versions_str(h).c_str());
+        const std::string kinds = tsr_kinds_of(o.phase);
+        fprintf(stderr, "klcheck [%s]: TSR_KINDS %s\n", o.device.c_str(),
+                kinds == "unset" ? "unset (every kind of the booted image)" : kinds.c_str());
     }
     {   // what the context saw (set above, before llama_init_from_model)
         const char * e = getenv("LLAMA_ATTN_ROT_DISABLE");
@@ -1135,7 +1153,9 @@ static int cmd_run(int argc, char ** argv) {
 // klcheck compare
 
 struct cmp_opts {
-    std::string ref, dev, floor, json;
+    std::string ref, dev, json;
+    std::vector<std::string> floors;   // --floor, once per floor run (seed); the floor KL is the mean over them
+    std::string tsr_kinds;             // --tsr-kinds: the device run's TSR_KINDS, for the report (klcheck all)
     double      kl_ratio = 3.0, min_top1 = 0.8, min_kl = 0.0;
     bool        expect_identical = false;
     bool        quiet = false;
@@ -1144,10 +1164,12 @@ struct cmp_opts {
 struct row_stat {
     uint32_t seq, row;
     bool     gen;            // the row predicts a generated token (else a prompt token)
-    double   kl_dev, kl_floor;
-    int      am_ref, am_dev, am_floor;
+    double   kl_dev, kl_floor;            // kl_floor: the mean over the floor runs
+    int      am_ref, am_dev, am_floor;    // am_floor: the first floor run's argmax
+    int      top1_floor;                  // floor runs whose argmax equals the reference's
     double   maxdiff_dev, cos_dev;
-    bool     ident_dev, ident_floor;
+    bool     ident_dev, ident_floor;      // ident_floor: the first floor run's
+    std::vector<double> kl_floors;        // KL per floor run
 };
 
 struct agg {
@@ -1176,12 +1198,16 @@ struct agg {
 };
 
 struct cmp_result {
-    agg      dev, floor, dev_gen, floor_gen, dev_prompt, floor_prompt;
+    agg      dev, floor, dev_gen, floor_gen, dev_prompt, floor_prompt;   // floor*: the rows of every floor run
+    std::vector<agg>      floor_run;      // per floor run, all rows
+    std::vector<uint64_t> floor_seed;     // per floor run: the perturbation seed in its header
+    std::vector<double>   floor_ratio;    // per floor run: mean KL(dev) / the run's mean KL
     std::vector<row_stat> rows;
     uint32_t n_seq = 0;
     bool     have_floor = false, complete = true, pass = false;
     uint64_t nonfinite = 0, gen_token_mismatch = 0;
-    double   ratio = 0, cap = 0;
+    double   floor_kl = 0;                // the criterion's floor: the mean over the runs of each run's mean KL
+    double   ratio = 0, cap = 0;          // ratio: mean KL(dev) / floor_kl
 };
 
 // log-softmax in double
@@ -1264,20 +1290,44 @@ static std::string json_str(const std::string & s) {
     return o + "\"";
 }
 
+// a JSON number; null for inf / nan (a ratio against a floor of 0)
+static std::string json_num(double v, const char * fmt) {
+    if (!std::isfinite(v)) return "null";
+    char b[64];
+    snprintf(b, sizeof(b), fmt, v);
+    return b;
+}
+
 static int compare_files(const cmp_opts & o, cmp_result & R) {
-    klc_reader ref, dev, flr;
+    klc_reader ref, dev;
     ref.open(o.ref);
     dev.open(o.dev);
     check_pair(ref.h, o.ref, dev.h, o.dev);
-    R.have_floor = !o.floor.empty();
-    if (R.have_floor) {
-        flr.open(o.floor);
-        check_pair(ref.h, o.ref, flr.h, o.floor);
+    const size_t nf = o.floors.size();
+    std::vector<klc_reader> flr(nf);
+    R.have_floor = nf > 0;
+    R.floor_run.assign(nf, agg());
+    R.floor_seed.assign(nf, 0);
+    R.floor_ratio.assign(nf, 0.0);
+    for (size_t i = 0; i < nf; ++i) {
+        flr[i].open(o.floors[i]);
+        check_pair(ref.h, o.ref, flr[i].h, o.floors[i]);
+        R.floor_seed[i] = flr[i].h.perturb_seed;
+        for (size_t j = 0; j < i; ++j) {
+            if (flr[j].h.input == flr[i].h.input && flr[j].h.perturb_seed == flr[i].h.perturb_seed) {
+                // averaging one floor twice is never intended
+                die("floor runs %s and %s have the same seed %" PRIu64 " (the same floor twice)",
+                    o.floors[j].c_str(), o.floors[i].c_str(), flr[i].h.perturb_seed);
+            }
+        }
     }
     const uint32_t n_vocab = ref.h.n_vocab;
     uint32_t n_seq = std::min(ref.h.n_seq, dev.h.n_seq);
-    if (R.have_floor) n_seq = std::min(n_seq, flr.h.n_seq);
-    const uint32_t want = std::max({ref.h.n_seq, dev.h.n_seq, R.have_floor ? flr.h.n_seq : 0u, dev.h.n_seq_planned});
+    uint32_t want  = std::max({ref.h.n_seq, dev.h.n_seq, dev.h.n_seq_planned});
+    for (const klc_reader & f : flr) {
+        n_seq = std::min(n_seq, f.h.n_seq);
+        want  = std::max(want, f.h.n_seq);
+    }
     R.complete = n_seq == want;
     if (!R.complete) {
         fprintf(stderr, "klcheck: WARNING: only %u of %u sequences are present in all files; comparing those\n", n_seq, want);
@@ -1290,13 +1340,12 @@ static int compare_files(const cmp_opts & o, cmp_result & R) {
         ref.next();
         dev.next();
         check_seq(dev, ref);
-        if (R.have_floor) { flr.next(); check_seq(dev, flr); }
+        for (klc_reader & f : flr) { f.next(); check_seq(dev, f); }
         const klc_seq & sq = dev.seq;
         seq_prompt.push_back(sq.n_prompt);
         for (uint32_t r = 0; r < sq.n_rows; ++r) {
             ref.read_row(xr.data());
             dev.read_row(xd.data());
-            if (R.have_floor) flr.read_row(xf.data());
             row_stat st{};
             st.seq = si;
             st.row = r;
@@ -1313,24 +1362,43 @@ static int compare_files(const cmp_opts & o, cmp_result & R) {
             const size_t at = R.rows.size();
             R.dev.add(st.kl_dev, st.am_ref == st.am_dev, st.ident_dev, st.maxdiff_dev, st.cos_dev, at);
             (st.gen ? R.dev_gen : R.dev_prompt).add(st.kl_dev, st.am_ref == st.am_dev, st.ident_dev, st.maxdiff_dev, st.cos_dev, at);
-            if (R.have_floor) {
+            st.kl_floors.resize(nf);
+            double sum_floor = 0;
+            for (size_t i = 0; i < nf; ++i) {
                 double md, cs;
+                flr[i].read_row(xf.data());
                 log_softmax(xf.data(), n_vocab, lf, &R.nonfinite);
-                st.kl_floor    = kl_div(lr, lf);
-                st.am_floor    = argmax_d(lf);
-                st.ident_floor = memcmp(xr.data(), xf.data(), sizeof(float) * n_vocab) == 0;
+                const double kl = kl_div(lr, lf);
+                const int    am = argmax_d(lf);
+                const bool   id = memcmp(xr.data(), xf.data(), sizeof(float) * n_vocab) == 0;
                 diff_stats(xr.data(), xf.data(), n_vocab, &md, &cs);
-                R.floor.add(st.kl_floor, st.am_ref == st.am_floor, st.ident_floor, md, cs, at);
-                (st.gen ? R.floor_gen : R.floor_prompt).add(st.kl_floor, st.am_ref == st.am_floor, st.ident_floor, md, cs, at);
+                st.kl_floors[i] = kl;
+                sum_floor += kl;
+                st.top1_floor += am == st.am_ref;
+                if (i == 0) {
+                    st.am_floor    = am;
+                    st.ident_floor = id;
+                }
+                R.floor.add(kl, am == st.am_ref, id, md, cs, at);
+                (st.gen ? R.floor_gen : R.floor_prompt).add(kl, am == st.am_ref, id, md, cs, at);
+                R.floor_run[i].add(kl, am == st.am_ref, id, md, cs, at);
             }
-            R.rows.push_back(st);
+            if (nf) st.kl_floor = sum_floor / nf;
+            R.rows.push_back(std::move(st));
         }
     }
     R.n_seq = n_seq;
 
-    const double fl = R.floor.mean();
+    // The floor KL: the mean over the floor runs of each run's mean KL (one run: its mean KL). One
+    // run's floor depends on its seed, so `klcheck all` makes several (--floor-seeds, cmd_all).
+    double fl = 0;
+    for (const agg & a : R.floor_run) fl += a.mean();
+    if (nf) fl /= nf;
+    auto ratio_to = [&](double f) { return f > 0 ? R.dev.mean() / f : (R.dev.mean() == 0 ? 0 : INFINITY); };
+    for (size_t i = 0; i < nf; ++i) R.floor_ratio[i] = ratio_to(R.floor_run[i].mean());
+    R.floor_kl = fl;
     R.cap   = std::max(o.min_kl, o.kl_ratio * fl);
-    R.ratio = fl > 0 ? R.dev.mean() / fl : (R.dev.mean() == 0 ? 0 : INFINITY);
+    R.ratio = ratio_to(fl);
     bool pass = R.complete && R.nonfinite == 0 && R.dev.n > 0;
     if (o.expect_identical) {
         pass = pass && R.dev.ident == R.dev.n;
@@ -1345,14 +1413,15 @@ static int compare_files(const cmp_opts & o, cmp_result & R) {
                mode_name(ref.h.mode), input_name(ref.h.input));
         printf("                 dev %s (%s, %s, input %s)\n", o.dev.c_str(), fixed_str(dev.h.device, 16).c_str(),
                mode_name(dev.h.mode), input_name(dev.h.input));
-        if (R.have_floor) {
-            printf("               floor %s (%s, input %s, seed %" PRIu64 ")\n", o.floor.c_str(),
-                   fixed_str(flr.h.device, 16).c_str(), input_name(flr.h.input), flr.h.perturb_seed);
+        for (size_t i = 0; i < nf; ++i) {
+            printf("               floor %s (%s, input %s, seed %" PRIu64 ")\n", o.floors[i].c_str(),
+                   fixed_str(flr[i].h.device, 16).c_str(), input_name(flr[i].h.input), flr[i].h.perturb_seed);
         }
         printf("model: %s, n_vocab %u, %u sequences, %zu positions (%" PRIu64 " prompt-tail, %" PRIu64 " generated)\n",
                fixed_str(dev.h.model_desc, 128).c_str(), n_vocab, n_seq, R.rows.size(), R.dev_prompt.n, R.dev_gen.n);
         printf("dev %s\n", settings_str(dev.h).c_str());
-        printf("dev: %s, %s\n", fixed_str(dev.h.device, 16).c_str(), versions_str(dev.h).c_str());
+        printf("dev: %s, %s%s%s\n", fixed_str(dev.h.device, 16).c_str(), versions_str(dev.h).c_str(),
+               o.tsr_kinds.empty() ? "" : ", TSR_KINDS ", o.tsr_kinds.c_str());
         printf("\n%-4s %6s %5s  %-11s %-11s %7s  %8s %8s  %s\n", "seq", "prompt", "rows", "KL(ref|dev)", "KL(floor)", "ratio",
                "top1 dev", "top1 flr", "first top-1 miss (row)");
         size_t k = 0;
@@ -1365,7 +1434,7 @@ static int compare_files(const cmp_opts & o, cmp_result & R) {
                 sd += rs.kl_dev;
                 sf += rs.kl_floor;
                 td += rs.am_ref == rs.am_dev;
-                tf += rs.am_ref == rs.am_floor;
+                tf += rs.top1_floor;
                 if (rs.am_ref != rs.am_dev && first_miss < 0) first_miss = (int) rs.row;
             }
             const double md = n ? sd / n : 0, mf = n ? sf / n : 0;
@@ -1373,7 +1442,7 @@ static int compare_files(const cmp_opts & o, cmp_result & R) {
             if (R.have_floor) {
                 snprintf(cf, sizeof(cf), "%.4e", mf);
                 snprintf(cr, sizeof(cr), "%.2f", mf > 0 ? md / mf : 0.0);
-                snprintf(ctf, sizeof(ctf), "%.1f%%", n ? 100.0 * tf / n : 0.0);
+                snprintf(ctf, sizeof(ctf), "%.1f%%", n ? 100.0 * tf / ((double) n * nf) : 0.0);
             }
             if (first_miss >= 0) snprintf(cm, sizeof(cm), "%d", first_miss);
             printf("%-4u %6u %5u  %-11.4e %-11s %7s  %7.1f%% %8s  %s\n", si, seq_prompt[si], n, md, cf, cr,
@@ -1395,6 +1464,14 @@ static int compare_files(const cmp_opts & o, cmp_result & R) {
             line("floor (prompt tail)", R.floor_prompt);
             line("floor (generated)", R.floor_gen);
         }
+        if (nf > 1) {   // the floor lines above pool the rows of every floor run
+            printf("  floor runs: %zu, floor KL = the mean of their mean KL = %.4e\n", nf, fl);
+            for (size_t i = 0; i < nf; ++i) {
+                const agg & a = R.floor_run[i];
+                printf("    seed %-6" PRIu64 " mean %.4e  median %.4e  max %.4e  top-1 %6.2f%%  dev ratio %.3f  %s\n", R.floor_seed[i],
+                       a.mean(), a.median(), a.max_kl, 100.0 * a.t1(), R.floor_ratio[i], o.floors[i].c_str());
+            }
+        }
         if (R.nonfinite) printf("ERROR: %" PRIu64 " non-finite logits\n", R.nonfinite);
         if (R.gen_token_mismatch) {
             printf("WARNING: %" PRIu64 " generated tokens differ from the argmax of the device's own logits\n", R.gen_token_mismatch);
@@ -1404,8 +1481,18 @@ static int compare_files(const cmp_opts & o, cmp_result & R) {
             printf("criterion: every row bit-identical: %" PRIu64 "/%" PRIu64 "\n", R.dev.ident, R.dev.n);
         } else {
             if (R.have_floor) {
-                printf("criterion: mean KL %.4e <= %.4e (%.2f x floor %.4e%s): %s   [ratio %.3f]\n", R.dev.mean(), R.cap,
-                       o.kl_ratio, fl, o.min_kl > 0 ? ", or the --min-kl cap" : "", R.dev.mean() <= R.cap ? "ok" : "FAIL", R.ratio);
+                std::string runs, per;   // several floor runs: the floor is their mean; the ratio against each
+                if (nf > 1) {
+                    runs = ", the mean of " + std::to_string(nf) + " floor runs";
+                    for (size_t i = 0; i < nf; ++i) {
+                        char b[64];
+                        snprintf(b, sizeof(b), "%s seed %" PRIu64 " %.3f", i ? "," : "; against", R.floor_seed[i], R.floor_ratio[i]);
+                        per += b;
+                    }
+                }
+                printf("criterion: mean KL %.4e <= %.4e (%.2f x floor %.4e%s%s): %s   [ratio %.3f%s]\n", R.dev.mean(), R.cap,
+                       o.kl_ratio, fl, runs.c_str(), o.min_kl > 0 ? ", or the --min-kl cap" : "",
+                       R.dev.mean() <= R.cap ? "ok" : "FAIL", R.ratio, per.c_str());
             }
             printf("criterion: top-1 agreement %.2f%% >= %.2f%%: %s\n", 100.0 * R.dev.t1(), 100.0 * o.min_top1,
                    R.dev.t1() >= o.min_top1 ? "ok" : "FAIL");
@@ -1423,8 +1510,18 @@ static int compare_files(const cmp_opts & o, cmp_result & R) {
                     json_str(name).c_str(), a.n, a.mean(), a.median(), a.max_kl, a.t1(), a.ident, a.max_absdiff, a.min_cos,
                     last ? "" : ",");
         };
+        // "floor": the first floor file, as before several floors; "floors": every floor run
         fprintf(f, "{\n  \"ref\": %s, \"dev\": %s, \"floor\": %s,\n", json_str(o.ref).c_str(), json_str(o.dev).c_str(),
-                json_str(o.floor).c_str());
+                json_str(nf ? o.floors[0] : std::string()).c_str());
+        fprintf(f, "  \"floors\": [");
+        for (size_t i = 0; i < nf; ++i) {
+            const agg & a = R.floor_run[i];
+            fprintf(f, "%s\n    {\"file\": %s, \"seed\": %" PRIu64 ", \"n\": %" PRIu64 ", \"kl_mean\": %.9e, \"kl_median\": %.9e, "
+                       "\"kl_max\": %.9e, \"top1\": %.6f, \"bit_identical\": %" PRIu64 ", \"ratio\": %s}",
+                    i ? "," : "", json_str(o.floors[i]).c_str(), R.floor_seed[i], a.n, a.mean(), a.median(), a.max_kl, a.t1(), a.ident,
+                    json_num(R.floor_ratio[i], "%.6f").c_str());
+        }
+        fprintf(f, "%s],\n", nf ? "\n  " : "");
         fprintf(f, "  \"model\": %s, \"n_vocab\": %u, \"n_seq\": %u, \"n_rows\": %zu,\n",
                 json_str(fixed_str(dev.h.model_desc, 128)).c_str(), n_vocab, n_seq, R.rows.size());
         fprintf(f, "  \"settings\": {\"phase\": %s, \"flash_attn\": %s, \"type_k\": %s, \"type_v\": %s, \"offload_kqv\": %s, "
@@ -1432,6 +1529,7 @@ static int compare_files(const cmp_opts & o, cmp_result & R) {
                 json_str(phase_name(dev.h.phase)).c_str(), dev.h.flash_attn ? "true" : "false", json_str(type_name_or(dev.h.type_k)).c_str(),
                 json_str(type_name_or(dev.h.type_v)).c_str(), dev.h.offload_kqv ? "true" : "false",
                 dev.h.attn_rot_disable ? "true" : "false", json_str(swa_cache_of(dev.h) == KLC_SWA_RING ? "ring" : "full").c_str());
+        fprintf(f, "  \"tsr_kinds\": %s,\n", o.tsr_kinds.empty() ? "null" : json_str(o.tsr_kinds).c_str());
         if (dev.h.basis == 0 && dev.h.core == 0) {
             fprintf(f, "  \"versions\": null,\n");
         } else {
@@ -1439,8 +1537,8 @@ static int compare_files(const cmp_opts & o, cmp_result & R) {
                     (dev.h.core >> 8) & 0xFFu, dev.h.core & 0xFFu, (dev.h.basis >> 16) & 0xFFu, (dev.h.basis >> 8) & 0xFFu,
                     dev.h.basis & 0xFFu, dev.h.kinds_sig);
         }
-        fprintf(f, "  \"kl_ratio_limit\": %g, \"min_top1\": %g, \"min_kl\": %g, \"ratio\": %.6f, \"cap\": %.9e,\n", o.kl_ratio,
-                o.min_top1, o.min_kl, R.ratio, R.cap);
+        fprintf(f, "  \"kl_ratio_limit\": %g, \"min_top1\": %g, \"min_kl\": %g, \"n_floor\": %zu, \"floor_kl\": %.9e, "
+                   "\"ratio\": %s, \"cap\": %.9e,\n", o.kl_ratio, o.min_top1, o.min_kl, nf, fl, json_num(R.ratio, "%.6f").c_str(), R.cap);
         fprintf(f, "  \"complete\": %s, \"nonfinite\": %" PRIu64 ", \"pass\": %s,\n", R.complete ? "true" : "false", R.nonfinite,
                 R.pass ? "true" : "false");
         fprintf(f, "  \"summary\": {\n");
@@ -1453,10 +1551,20 @@ static int compare_files(const cmp_opts & o, cmp_result & R) {
         fprintf(f, "  },\n  \"rows\": [\n");
         for (size_t i = 0; i < R.rows.size(); ++i) {
             const row_stat & r = R.rows[i];
-            fprintf(f, "    {\"seq\": %u, \"row\": %u, \"gen\": %d, \"kl_dev\": %.6e, \"kl_floor\": %.6e, \"argmax_ref\": %d, "
+            std::string kls;     // several floor runs: kl_floor is their mean, kl_floors has each
+            if (nf > 1) {
+                kls = ", \"kl_floors\": [";
+                for (size_t k = 0; k < nf; ++k) {
+                    char b[32];
+                    snprintf(b, sizeof(b), "%s%.6e", k ? ", " : "", r.kl_floors[k]);
+                    kls += b;
+                }
+                kls += "]";
+            }
+            fprintf(f, "    {\"seq\": %u, \"row\": %u, \"gen\": %d, \"kl_dev\": %.6e, \"kl_floor\": %.6e%s, \"argmax_ref\": %d, "
                        "\"argmax_dev\": %d, \"argmax_floor\": %d, \"max_abs_dlogit\": %.5g, \"cos\": %.9f}%s\n",
-                    r.seq, r.row, r.gen ? 1 : 0, r.kl_dev, r.kl_floor, r.am_ref, r.am_dev, r.am_floor, r.maxdiff_dev, r.cos_dev,
-                    i + 1 < R.rows.size() ? "," : "");
+                    r.seq, r.row, r.gen ? 1 : 0, r.kl_dev, r.kl_floor, kls.c_str(), r.am_ref, r.am_dev, r.am_floor, r.maxdiff_dev,
+                    r.cos_dev, i + 1 < R.rows.size() ? "," : "");
         }
         fprintf(f, "  ]\n}\n");
         fclose(f);
@@ -1474,18 +1582,19 @@ static int cmd_compare(int argc, char ** argv) {
         };
         if      (a == "--ref")              o.ref = val();
         else if (a == "--dev")              o.dev = val();
-        else if (a == "--floor")            o.floor = val();
+        else if (a == "--floor")            o.floors.push_back(val());   // several: one per floor run
+        else if (a == "--tsr-kinds")        o.tsr_kinds = val();
         else if (a == "--json")             o.json = val();
         else if (a == "--kl-ratio")         o.kl_ratio = parse_double("--kl-ratio", val());
         else if (a == "--min-top1")         o.min_top1 = parse_double("--min-top1", val());
         else if (a == "--min-kl")           o.min_kl = parse_double("--min-kl", val());
         else if (a == "--expect-identical") o.expect_identical = true;
         else if (a == "-q" || a == "--quiet") o.quiet = true;
-        else die("compare: unknown option %s\nusage: klcheck compare --ref CPU --dev DEV [--floor FLOOR] [--kl-ratio 3] "
-                 "[--min-top1 0.8] [--min-kl 0] [--json FILE] [--expect-identical] [-q]", a.c_str());
+        else die("compare: unknown option %s\nusage: klcheck compare --ref CPU --dev DEV [--floor FLOOR]... [--kl-ratio 3] "
+                 "[--min-top1 0.8] [--min-kl 0] [--json FILE] [--tsr-kinds LIST] [--expect-identical] [-q]", a.c_str());
     }
     if (o.ref.empty() || o.dev.empty()) die("compare: --ref and --dev are required");
-    if (o.floor.empty() && !o.expect_identical) {
+    if (o.floors.empty() && !o.expect_identical) {
         fprintf(stderr, "klcheck: no --floor: only the top-1 criterion is checked\n");
     }
     cmp_result R;
@@ -1516,9 +1625,24 @@ static int run_child(const std::vector<std::string> & args) {
     return 128 + (WIFSIGNALED(st) ? WTERMSIG(st) : 0);
 }
 
+// The floor files of `klcheck all`: one run per seed, seed0 .. seed0 + n - 1. A single run keeps the
+// name floor.klc.
+static std::vector<std::string> all_floor_files(const std::string & dir, uint64_t seed0, int n) {
+    if (n == 1) return {dir + "/floor.klc"};
+    std::vector<std::string> v;
+    for (int i = 0; i < n; ++i) v.push_back(dir + "/floor-seed" + std::to_string(seed0 + (uint64_t) i) + ".klc");
+    return v;
+}
+
 static int cmd_all(int argc, char ** argv, const char * self) {
     std::string dir, device = "sim", model;
-    uint64_t seed = 1;
+    uint64_t seed = 1;          // the first floor run's seed
+    // --floor-seeds N: N floor runs with the seeds seed .. seed + N - 1; the floor KL is the mean over
+    // them. Default 3 (decision, 2026-10-31): one run's floor depends on its seed. On Gemma 4 12B
+    // Q4_K_M (8 prompts) the M7 ratio was 2.19, 1.39, 1.69 and 1.51 against seeds 1 to 4, and the
+    // floor of one sequence ranged from 0.133 to 0.423. Each run is one more CPU replay.
+    int n_floor = 3;
+    int phase = KLC_PHASE_M6;   // --phase, for the report's TSR_KINDS (cmd_run's default)
     bool embd_check = true;
     std::vector<std::string> common, gen_only, cmp;
     for (int i = 0; i < argc; ++i) {
@@ -1530,6 +1654,7 @@ static int cmd_all(int argc, char ** argv, const char * self) {
         if (a == "-o" || a == "--out-dir")      dir = val();
         else if (a == "--device")               device = val();
         else if (a == "--seed")                 seed = parse_u64("--seed", val().c_str());
+        else if (a == "--floor-seeds")          n_floor = (int) parse_int("--floor-seeds", val().c_str(), 1, 64);
         else if (a == "--no-embd-check")        embd_check = false;
         else if (a == "-m" || a == "--model")   { model = val(); common.insert(common.end(), {"-m", model}); }
         else if (a == "--prompts" || a == "--n-prompts" || a == "-n" || a == "--prompt-tail") {
@@ -1539,12 +1664,14 @@ static int cmd_all(int argc, char ** argv, const char * self) {
         else if (a == "-t" || a == "-c" || a == "-b" || a == "-ub" || a == "--fa" || a == "--replay" || a == "--phase" ||
                  a == "--offload-kqv" || a == "-ctk" || a == "--cache-type-k" || a == "-ctv" || a == "--cache-type-v" ||
                  a == "--attn-rot" || a == "--swa-full") {
-            common.push_back(a); common.push_back(val());   // the baseline settings go to every phase (SW-22)
+            const std::string v = val();
+            if (a == "--phase") phase = parse_phase(v);
+            common.push_back(a); common.push_back(v);       // the baseline settings go to every phase (SW-22)
         }
         else if (a == "--repack" || a == "--resume" || a == "-v") common.push_back(a);
         else if (a == "--kl-ratio" || a == "--min-top1" || a == "--min-kl") { cmp.push_back(a); cmp.push_back(val()); }
-        else die("all: unknown option %s\nusage: klcheck all -m MODEL [-o DIR] [--device sim] [--seed S] [--no-embd-check] "
-                 "[run options] [--kl-ratio R] [--min-top1 P] [--min-kl K]", a.c_str());
+        else die("all: unknown option %s\nusage: klcheck all -m MODEL [-o DIR] [--device sim] [--seed S] [--floor-seeds N] "
+                 "[--no-embd-check] [run options] [--kl-ratio R] [--min-top1 P] [--min-kl K]", a.c_str());
     }
     if (model.empty()) die("all: -m is required");
     if (!device_kind_ok(device)) die("all: --device %s: sim, mock, vkernel, xrt or cpu", device.c_str());
@@ -1559,7 +1686,8 @@ static int cmd_all(int argc, char ** argv, const char * self) {
         dir = buf.data();
     }
     mkdir_p(dir);
-    const std::string fdev = dir + "/dev.klc", fcpu = dir + "/cpu.klc", ffloor = dir + "/floor.klc";
+    const std::string fdev = dir + "/dev.klc", fcpu = dir + "/cpu.klc";
+    const std::vector<std::string> ffloors = all_floor_files(dir, seed, n_floor);
     const std::string fembd = dir + "/cpu-embd.klc", fjson = dir + "/report.json";
     const double t0 = now_s();
 
@@ -1582,11 +1710,14 @@ static int cmd_all(int argc, char ** argv, const char * self) {
     if (rc) die("CPU run failed (exit %d)", rc);
     const double t2 = now_s();
 
-    std::vector<std::string> a3 = {self, "run", "--device", "cpu", "--tokens", fdev, "--perturb-ulp", std::to_string(seed),
-                                   "--out", ffloor};
-    a3.insert(a3.end(), common.begin(), common.end());
-    rc = run_child(a3);
-    if (rc) die("CPU floor run failed (exit %d)", rc);
+    for (int i = 0; i < n_floor; ++i) {
+        const uint64_t s = seed + (uint64_t) i;
+        std::vector<std::string> a3 = {self, "run", "--device", "cpu", "--tokens", fdev, "--perturb-ulp", std::to_string(s),
+                                       "--out", ffloors[i]};
+        a3.insert(a3.end(), common.begin(), common.end());
+        rc = run_child(a3);
+        if (rc) die("CPU floor run (seed %" PRIu64 ") failed (exit %d)", s, rc);
+    }
     const double t3 = now_s();
 
     // The floor run feeds token_embd rows instead of token ids. Without the nudge that path must
@@ -1603,13 +1734,17 @@ static int cmd_all(int argc, char ** argv, const char * self) {
     }
     const double t4 = now_s();
 
-    std::vector<std::string> a4 = {self, "compare", "--ref", fcpu, "--dev", fdev, "--floor", ffloor, "--json", fjson};
+    std::vector<std::string> a4 = {self, "compare", "--ref", fcpu, "--dev", fdev, "--json", fjson};
+    for (const std::string & f : ffloors) a4.insert(a4.end(), {"--floor", f});
+    // the device run's kinds (cmd_run inherits this environment), recorded in report.json
+    if (device != "cpu") a4.insert(a4.end(), {"--tsr-kinds", tsr_kinds_of(phase)});
     a4.insert(a4.end(), cmp.begin(), cmp.end());
     rc = run_child(a4);
-    fprintf(stderr, "klcheck all: wall time device %.1f s, cpu %.1f s, floor %.1f s, embd check %.1f s, compare %.1f s\n",
-            t1 - t0, t2 - t1, t3 - t2, t4 - t3, now_s() - t4);
+    fprintf(stderr, "klcheck all: wall time device %.1f s, cpu %.1f s, floor %.1f s (%d run%s), embd check %.1f s, compare %.1f s\n",
+            t1 - t0, t2 - t1, t3 - t2, n_floor, n_floor == 1 ? "" : "s", t4 - t3, now_s() - t4);
     if (tmp_dir) {
-        for (const std::string & p : {fdev, fcpu, ffloor, fembd, fjson}) unlink(p.c_str());
+        for (const std::string & p : ffloors) unlink(p.c_str());
+        for (const std::string & p : {fdev, fcpu, fembd, fjson}) unlink(p.c_str());
         rmdir(dir.c_str());
     } else {
         fprintf(stderr, "klcheck all: files in %s (report.json has every position)\n", dir.c_str());
@@ -1785,15 +1920,35 @@ static int cmd_selftest(int argc, char ** argv) {
             lflr[s].push_back(x + (float) (urand() - 0.5) * 0.02f);
         }
     }
+    // two more floor runs for the several-floor compare (5b): seed 2 with less noise than floor.klc
+    // (seed 1), seed 3 with more
+    const std::string ff2 = dir + "/floor-seed2.klc", ff3 = dir + "/floor-seed3.klc";
+    std::vector<std::vector<float>> lflr2(NS), lflr3(NS);
+    for (uint32_t s = 0; s < NS; ++s) {
+        for (size_t i = 0; i < lref[s].size(); ++i) {
+            lflr2[s].push_back(lref[s][i] + (float) (urand() - 0.5) * 0.005f);
+            lflr3[s].push_back(lref[s][i] + (float) (urand() - 0.5) * 0.06f);
+        }
+    }
+    auto floor_header = [&](uint64_t seed) {
+        klc_header h = st_header(V, NS, "cpu", KLC_MODE_REPLAY);
+        h.input = KLC_INPUT_EMBD_ULP;
+        h.perturb_seed = seed;
+        return h;
+    };
     {
-        klc_writer a, b, c;
+        klc_writer a, b, c, c2, c3;
         a.create(fr, st_header(V, NS, "cpu", KLC_MODE_REPLAY));
         b.create(fd, st_header(V, NS, "sim", KLC_MODE_REPLAY));   // replay: no greedy-token consistency check
-        c.create(ff, st_header(V, NS, "cpu", KLC_MODE_REPLAY));
+        c.create(ff, floor_header(1));
+        c2.create(ff2, floor_header(2));
+        c3.create(ff3, floor_header(3));
         for (uint32_t s = 0; s < NS; ++s) {
             a.write_seq(seqs[s], toks[s], lref[s].data());
             b.write_seq(seqs[s], toks[s], ldev[s].data());
             c.write_seq(seqs[s], toks[s], lflr[s].data());
+            c2.write_seq(seqs[s], toks[s], lflr2[s].data());
+            c3.write_seq(seqs[s], toks[s], lflr3[s].data());
         }
     }
     // 3. resume: two records, then a torn third record; resume keeps two and appends the third
@@ -1839,7 +1994,7 @@ static int cmd_selftest(int argc, char ** argv) {
     // 5. compare: KL against an independent long-double evaluation, per-row and aggregated
     {
         cmp_opts o;
-        o.ref = fr; o.dev = fd; o.floor = ff; o.quiet = true; o.json = dir + "/report.json";
+        o.ref = fr; o.dev = fd; o.floors = {ff}; o.quiet = true; o.json = dir + "/report.json";
         cmp_result R;
         compare_files(o, R);
         ST_CHECK(R.rows.size() == (size_t) NS * seqs[0].n_rows, "rows %zu", R.rows.size());
@@ -1884,6 +2039,112 @@ static int cmd_selftest(int argc, char ** argv) {
         ST_CHECK(compare_files(o2, R3) == 1, "ratio just below the measured one must fail");
         ST_CHECK(file_exists(o.json), "no json report");
     }
+    // 5b. several floor runs (klcheck all --floor-seeds): each run's mean KL and ratio equal a compare
+    //     against that run alone, the floor KL is the mean of the runs' mean KL, the verdict follows
+    //     that mean, and the report lists every run; a single floor's report keeps its fields
+    {
+        const std::vector<std::string> fls = {ff, ff2, ff3};
+        std::vector<cmp_result> one(fls.size());
+        for (size_t i = 0; i < fls.size(); ++i) {
+            cmp_opts o;
+            o.ref = fr; o.dev = fd; o.floors = {fls[i]}; o.quiet = true;
+            compare_files(o, one[i]);
+        }
+        cmp_opts o;
+        o.ref = fr; o.dev = fd; o.floors = fls; o.quiet = true; o.json = dir + "/report3.json"; o.tsr_kinds = "all,-RMS_NORM";
+        cmp_result R;
+        compare_files(o, R);
+        double sum = 0;
+        for (size_t i = 0; i < fls.size(); ++i) {
+            ST_CHECK(R.floor_seed[i] == i + 1, "floor run %zu: seed %" PRIu64, i, R.floor_seed[i]);
+            ST_CHECK(R.floor_run[i].n == one[i].floor.n && R.floor_run[i].mean() == one[i].floor.mean(),
+                     "floor run %zu: mean KL %.12g, alone %.12g", i, R.floor_run[i].mean(), one[i].floor.mean());
+            ST_CHECK(R.floor_ratio[i] == one[i].ratio, "floor run %zu: ratio %.12g, alone %.12g", i, R.floor_ratio[i], one[i].ratio);
+            sum += one[i].floor.mean();
+        }
+        const double mean = sum / fls.size();
+        ST_CHECK(one[1].floor.mean() < one[0].floor.mean() && one[0].floor.mean() < one[2].floor.mean(), "floor noise order");
+        ST_CHECK(R.floor_kl == mean && R.ratio == R.dev.mean() / mean, "floor KL %.12g (mean of the runs %.12g), ratio %.12g",
+                 R.floor_kl, mean, R.ratio);
+        ST_CHECK(R.floor.n == fls.size() * R.dev.n && fabs(R.floor.mean() - mean) <= 1e-12 * mean, "pooled floor rows: n %" PRIu64,
+                 R.floor.n);
+        bool rows_ok = R.rows.size() == one[0].rows.size();
+        for (size_t k = 0; rows_ok && k < R.rows.size(); ++k) {
+            const row_stat & r = R.rows[k];
+            double s = 0;
+            int t1 = 0;
+            rows_ok = r.kl_floors.size() == fls.size() && r.am_floor == one[0].rows[k].am_floor;
+            for (size_t i = 0; rows_ok && i < fls.size(); ++i) {
+                rows_ok = r.kl_floors[i] == one[i].rows[k].kl_floor;
+                s += r.kl_floors[i];
+                t1 += one[i].rows[k].top1_floor;
+            }
+            rows_ok = rows_ok && r.kl_floor == s / fls.size() && r.top1_floor == t1;
+            ST_CHECK(rows_ok, "row %zu: per-run floor KL", k);
+        }
+        // the verdict follows the mean: a limit just above the ratio to the mean passes, although it is
+        // far below the ratio to the smallest floor (seed 2)
+        ST_CHECK(R.floor_ratio[1] > 2 * R.ratio, "ratio to seed 2 %.4g vs to the mean %.4g", R.floor_ratio[1], R.ratio);
+        cmp_opts o2 = o;
+        o2.json.clear();
+        o2.min_top1 = 0;
+        o2.kl_ratio = R.ratio * 1.01;
+        cmp_result R2;
+        ST_CHECK(compare_files(o2, R2) == 0, "several floors: ratio just above the measured one must pass");
+        o2.kl_ratio = R.ratio * 0.99;
+        cmp_result R3;
+        ST_CHECK(compare_files(o2, R3) == 1, "several floors: ratio just below the measured one must fail");
+        // the command line takes --floor once per run
+        char kr_pass[32], kr_fail[32];
+        snprintf(kr_pass, sizeof(kr_pass), "%.17g", R.ratio * 1.01);
+        snprintf(kr_fail, sizeof(kr_fail), "%.17g", R.ratio * 0.99);
+        for (const char * kr : {kr_pass, kr_fail}) {
+            std::vector<std::string> args = {"--ref", fr, "--dev", fd, "--floor", ff, "--floor", ff2, "--floor", ff3,
+                                             "--kl-ratio", kr, "--min-top1", "0", "-q"};
+            std::vector<char *> av;
+            for (std::string & a : args) av.push_back(&a[0]);
+            ST_CHECK(cmd_compare((int) av.size(), av.data()) == (kr == kr_pass ? 0 : 1), "compare --floor x3 --kl-ratio %s", kr);
+        }
+        // the reports: the several-floor one lists the runs and the kinds; the single-floor one of 5
+        // has the same fields, no per-row kl_floors
+        auto slurp = [](const std::string & p) {
+            std::string t;
+            FILE * f = fopen(p.c_str(), "rb");
+            if (!f) return t;
+            char b[4096];
+            size_t n;
+            while ((n = fread(b, 1, sizeof(b), f)) > 0) t.append(b, n);
+            fclose(f);
+            return t;
+        };
+        auto count = [](const std::string & t, const std::string & k) {
+            size_t n = 0;
+            for (size_t p = t.find(k); p != std::string::npos; p = t.find(k, p + 1)) n++;
+            return n;
+        };
+        const std::string j3 = slurp(o.json), j1 = slurp(dir + "/report.json");
+        ST_CHECK(count(j3, "\"floors\": [") == 1 && count(j3, "\"seed\": ") == 3 && count(j3, "\"n_floor\": 3,") == 1 &&
+                 count(j3, "\"tsr_kinds\": \"all,-RMS_NORM\"") == 1 && count(j3, "\"kl_floors\": [") == R.rows.size() &&
+                 count(j3, "\"floor\": " + json_str(ff)) == 1, "several-floor report.json fields");
+        ST_CHECK(count(j1, "\"seed\": 1,") == 1 && count(j1, "\"n_floor\": 1,") == 1 && count(j1, "\"tsr_kinds\": null") == 1 &&
+                 count(j1, "kl_floors") == 0 && count(j1, "\"kl_floor\": ") == R.rows.size(), "single-floor report.json fields");
+        // a floor of KL 0 (the CPU run itself) against a device with KL > 0: the ratio is infinite and
+        // is written as null, at the top level and in floors[] (JSON has no inf)
+        {
+            cmp_opts o0;
+            o0.ref = fr; o0.dev = fd; o0.floors = {fr}; o0.quiet = true; o0.json = dir + "/report0.json";
+            cmp_result R0;
+            ST_CHECK(compare_files(o0, R0) == 1, "a floor of KL 0 must fail");
+            ST_CHECK(R0.floor_kl == 0 && std::isinf(R0.ratio) && std::isinf(R0.floor_ratio[0]), "floor KL %g, ratio %g", R0.floor_kl, R0.ratio);
+            const std::string j0 = slurp(o0.json);
+            ST_CHECK(count(j0, "\"ratio\": null") == 2 && count(j0, "\"ratio\": inf") == 0 && count(j0, "\"ratio\": nan") == 0,
+                     "infinite ratio in report.json");
+        }
+        // klcheck all's floor files
+        ST_CHECK(all_floor_files("d", 1, 1) == std::vector<std::string>{"d/floor.klc"} &&
+                 all_floor_files("d", 5, 3) == (std::vector<std::string>{"d/floor-seed5.klc", "d/floor-seed6.klc", "d/floor-seed7.klc"}),
+                 "klcheck all floor file names");
+    }
     // 6. incomplete files fail
     {
         klc_writer w;
@@ -1892,7 +2153,7 @@ static int cmd_selftest(int argc, char ** argv) {
     }
     {
         cmp_opts o;
-        o.ref = fi; o.dev = fd; o.floor = ff; o.quiet = true; o.kl_ratio = 1e9; o.min_top1 = 0;
+        o.ref = fi; o.dev = fd; o.floors = {ff}; o.quiet = true; o.kl_ratio = 1e9; o.min_top1 = 0;
         cmp_result R;
         ST_CHECK(compare_files(o, R) == 1 && !R.complete, "incomplete reference must fail");
     }
@@ -1968,7 +2229,7 @@ static int cmd_selftest(int argc, char ** argv) {
                  "cache type names");
         ST_CHECK(device_kind_ok("mock") && device_kind_ok("vkernel") && !device_kind_ok("none"), "device kinds");
     }
-    for (const std::string & p : {fr, fd, ff, fi, dir + "/report.json"}) unlink(p.c_str());
+    for (const std::string & p : {fr, fd, ff, ff2, ff3, fi, dir + "/report.json", dir + "/report3.json", dir + "/report0.json"}) unlink(p.c_str());
     rmdir(dir.c_str());
     printf("klcheck selftest: %s (%d failures)\n", g_fail ? "FAIL" : "ok", g_fail);
     return g_fail ? 1 : 0;
@@ -1980,8 +2241,9 @@ static void usage() {
     fprintf(stderr,
         "klcheck — model-level KL check against the ggml CPU backend (docs/klcheck.md)\n"
         "  klcheck run -m MODEL --device sim|mock|vkernel|xrt|cpu [--tokens FILE] [--perturb-ulp SEED] --out FILE [...]\n"
-        "  klcheck compare --ref CPU.klc --dev DEV.klc --floor FLOOR.klc [--json FILE] [...]\n"
-        "  klcheck all -m MODEL [-o DIR] [--device sim] [-n G] [--n-prompts N] [--prompts FILE] [--phase m6|m7] [...]\n"
+        "  klcheck compare --ref CPU.klc --dev DEV.klc --floor FLOOR.klc [--floor FLOOR2.klc ...] [--json FILE] [...]\n"
+        "  klcheck all -m MODEL [-o DIR] [--device sim] [-n G] [--n-prompts N] [--prompts FILE] [--phase m6|m7]\n"
+        "              [--seed S] [--floor-seeds N (default 3)] [...]\n"
         "  klcheck info FILE [-m MODEL]\n"
         "  klcheck selftest [DIR]\n"
         "  klcheck embd MODEL TOKEN... [--perturb-ulp SEED --seq S --pos P]   (diagnostic)\n"

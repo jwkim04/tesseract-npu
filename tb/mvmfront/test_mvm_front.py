@@ -951,7 +951,7 @@ async def front_reset(dut):
 
 
 # Largest N of a legal MVM: the dst operand check (T - 1) * stride + ceil(N / 16) <= SPM lines
-# (spec 구현 명확화 "범위 검사", checked before DRAM_RANGE) with SPM_BYTES < 2^32 (tsr_core
+# (spec Implementation clarifications, "Range check", checked before DRAM_RANGE) with SPM_BYTES < 2^32 (tsr_core
 # `int unsigned`, tsr_config.spm_bytes uint32_t), i.e. at most 2^26 - 1 SPM lines.
 N_MAX = 16 * (((1 << 32) - isa.LINE_BYTES) // isa.LINE_BYTES)      # 2^30 - 16
 

@@ -237,7 +237,7 @@ class TsrRef:
         return out.raw
 
     def row_location(self, fmt: int, N: int, K: int, num_ch: int, r: int):
-        """Row r -> (channel, beat offset relative to W_OFF) (spec 대칭 할당)."""
+        """Row r -> (channel, beat offset relative to W_OFF) (spec Symmetric allocation)."""
         ch, off = C.c_uint32(), C.c_uint64()
         self.lib.tsr_row_location(fmt, N, K, num_ch, r, C.byref(ch), C.byref(off))
         return int(ch.value), int(off.value)
@@ -260,7 +260,7 @@ class TsrRef:
         self.lib.tsr_dequant_row(fmt, C.create_string_buffer(bytes(row), len(row)), K, out)
         return [int(v) for v in out]
 
-    # ---- M3 helpers: dot products (spec 수치 규칙) ----
+    # ---- M3 helpers: dot products (spec Numeric rules) ----
     def term_q8_0(self, row: bytes, K: int, b: int, qa: bytes) -> int:
         """Term of Q8_0 block b of a repacked row against an A32 QA image (f32 bits)."""
         return _bits(self.lib.tsr_term_q8_0(C.create_string_buffer(bytes(row), len(row)), K, b,

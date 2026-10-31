@@ -234,7 +234,7 @@ are ≥ 70 ns apart at the CSR port, so TCM blocks run back to back and SPM writ
 
 PCIe MMIO read latency on this host is not measured (EX §4.11);
 planning value 1–2 µs per read; posted writes cost the host 0.05–0.3 µs. On chip a DMI access is
-the window's 10 core cycles (`docs/platform-u200.md:83-85`) plus the handshake, ≈ 70–110 ns.
+the window's 10 core cycles (`docs/platform-u200.md` §2) plus the handshake, ≈ 70–110 ns.
 
 | Operation | DMI accesses | Time (*estimate*) |
 |---|---|---|
@@ -795,7 +795,7 @@ stalls: EX's `PUSH_STALL`; WFI time: EX's `RV_WFI`.
   wall − device time; `DBG_STOP_CYCLES` (must be 0); `MVM_CYCLES`, `MVM_WAIT`, `MVM_EMPTY` as % of
   `CYCLES`; per channel read GB/s and idle %; `RV_WFI` %; `PUSH_STALL`; `LOG_DROPPED`. Cost: ≈ 16
   counter LO reads per launch ≈ 16–32 µs (*estimate*), ≈ 0.1–0.2 % of a 0.5B token (18.3 ms,
-  `docs/platform-u200.md:1036`).
+  `docs/platform-u200.md` §14.1).
 
 ### 8.7 Self-checks (`tsr-prof check`, every profiled launch)
 

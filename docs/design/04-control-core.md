@@ -3,9 +3,9 @@
 Status: **design contract for M6, not implemented** (2026-10-30). Area CC of the design set
 (`docs/design/`): EX execution model, VU vector unit, AT attention / KV, CC control core (this file),
 DB debug, SW software and verification. It is the contract for the RTL parts of `docs/ctrl-riscv.md`
-(§2–§7, §9.3, §11–§12), following the user decisions of 2026-10-30 (`docs/ctrl-riscv.md:38-56`): the
+(§2–§7, §9.3, §11–§12), following the user decisions of 2026-10-30 (`docs/ctrl-riscv.md`, D14–D18): the
 host does not issue tile ops (D14), the host has no debug access to the issue port (D15), the
-design has full debug (D18). It is also designed around D1–D6 and D12 (`docs/ctrl-riscv.md:15-35`).
+design has full debug (D18). It is also designed around D1–D6 and D12 (`docs/ctrl-riscv.md`, user decisions of 2026-10-24).
 Source-of-truth order: `docs/spec.md` > `docs/design/*` > `docs/ctrl-riscv.md`. Where this file and
 `docs/ctrl-riscv.md` disagree, this file wins for M6. Every number marked *estimate* is not
 measured; every Ibex, riscv-dbg or Vitis fact marked *confirm* is recalled from their documentation
@@ -125,7 +125,7 @@ implements in RTL what EX and DB specify for the core.
 | `boot_addr_i` | `RV_BOOT` (EX §5.1, 256-byte aligned) | first fetch at `RV_BOOT` + 0x80, vectored `mtvec` there (*confirm*) |
 | `fetch_enable_i` | constant on | the run / stop control is the reset (§12) |
 
-ISA: **RV32IMC + Zicsr + Zifencei**, machine mode only, no A, no F/D (`docs/ctrl-riscv.md:217-249`
+ISA: **RV32IMC + Zicsr + Zifencei**, machine mode only, no A, no F/D (`docs/ctrl-riscv.md` §2.4
 keeps its argument: spec-fp scalars go through the `tsr_ref` helpers in soft-float).
 
 **Pipeline (CC-34).** The pipeline is Ibex's "maxperf" one (Ibex `README.md` configuration
@@ -213,7 +213,7 @@ riscv-dbg runs anything outside that range, the fallback reads `dmstatus` over t
 - Throughput need (*estimate*): a Qwen2.5-0.5B decode token in one launch is ≈ 1.5 K tile ops
   (24 layers × ≈ 60), 32B ≈ 4 K; issue cost per op 15–40 RISC-V cycles (§7.6) → 0.5B ≈
   0.15–0.36 ms of RISC-V time per token against ≈ 8.25 ms of device time at 276 MHz
-  (`docs/platform-u200.md:1036`). *Measured* (SW §7.8, maxperf, 166.7 MHz): M6's 0.5B decode layer
+  (`docs/platform-u200.md` §14.1). *Measured* (SW §7.8, maxperf, 166.7 MHz): M6's 0.5B decode layer
   is 9 op records and ≈ 35 tile ops; the executor works 3,636 RISC-V cycles = 21.8 µs per layer
   (≈ 100 cycles per pushed op including the executor and MUL_MAT's planning) against 239.6 µs of
   device time, ≈ 0.52 ms per 24-layer token, all of it overlapped (the MVM never idles on issue).
@@ -255,7 +255,7 @@ reserved up to 0x000F_FFFF and the DTCM up to 0x001F_FFFF, so larger TCMs keep t
 
 ### 4.3 Bus rules
 
-- Instruction port: decode ITCM / DM; `instr_gnt` from a register (`docs/ctrl-riscv.md:201-209`
+- Instruction port: decode ITCM / DM; `instr_gnt` from a register (`docs/ctrl-riscv.md` §2.3
   rule: never from the address decode).
 - Data port: one access outstanding; `data_gnt` = ¬`outstanding_q`; every wait (credit, bridge,
   core window, DM arbitration) is a late `rvalid`. Errors return `data_err` (load / store access
@@ -350,7 +350,7 @@ control subsystem:
 | 0xC00–0xDFC | DMI | tagged 2-phase handshake to the DM, gated by `DBG_CFG.DMI_EN` (DB §3.2) |
 | 0xE00–0xF1C | `Q_*` | core-domain originals of `DONE_SEQ`, `ISSUED_SEQ` (synchronised copy), head state, error records and push indices |
 
-Rules of `docs/ctrl-riscv.md:353-362`: no read has a side effect (except the PERF
+Rules of `docs/ctrl-riscv.md` §3.3: no read has a side effect (except the PERF
 LO snapshot, and EX's `LOAD_DATA` and DMI rules); every host access completes without
 clk_rv (core-domain copies; accesses that must reach clk_rv end after 4,096 core cycles with a
 sticky bit); unmapped offsets read 0.
@@ -387,7 +387,7 @@ EX §4.10 is normative: a 256-word core-domain ring, drop-new when full (words c
 `LOG_DROPPED`), host reads at 0x400 + 4 × (k mod 256) and writes `LOG_RD`; records use DB's header
 (DB §6.1) and are never torn because the SDK checks `LOG_FREE`. CC's hardware: `LOG_PUSH` (control
 window 0x280) → 16 × 32-bit CDC FIFO → the ring; the RISC-V-side `LOG_FREE` of EX §4.1. The ring
-works when the queues wedge (the DRAM log of `docs/ctrl-riscv.md:1190` does not).
+works when the queues wedge.
 
 ### 6.6 `tsr_csr` read requesters
 
@@ -427,7 +427,7 @@ SPM-window store sees it.
 - A queue slot belongs to an entry from its push until its unit accepts it (or it completes
   without running). Credit of u = min(`Q_DEPTH[u]` − (`ISSUED_SEQ[u]` − S_sync[u]), FIFO free
   entries, 15), where S[u] counts accepts and non-running completions in the core domain.
-- **Software checks the credit before pushing** (`docs/ctrl-riscv.md:471-480`); the hardware wait is
+- **Software checks the credit before pushing** (`docs/ctrl-riscv.md` §4.1); the hardware wait is
   a safety net: at most `ISSUE_WAIT_MAX` = 65,536 clk_rv cycles, then a store access fault and
   PUSH_TIMEOUT. The count does not advance while DB's `dbg_stop` level is 1 (DB §3.9), so a debug
   stop never turns a waiting push into a fault. While a push waits, Ibex takes neither interrupts
@@ -458,7 +458,7 @@ parameters; `Q_DEPTH` (EX §5.1, 0x088) reports them.
 Ticket = {unit[31:28], seq[27:0]}, seq from 0 per unit after a hardware reset, never reset
 otherwise. Ticket (u, s) is done iff (D[u] − s) mod 2^28 ∈ [1, 2^27). Push index: 32-bit count of
 ticketed entries (ops and QCLEAR) in push order (error ordering, `ERR_PIDX`); the RISC-V reads the
-next one as `ISSUE_PIDX`, as in `docs/ctrl-riscv.md:507-523`.
+next one as `ISSUE_PIDX`, as in `docs/ctrl-riscv.md` §4.3.
 
 ### 7.6 Issue cost (*estimate*)
 
@@ -492,10 +492,10 @@ MVM DSP stage 1 → C4 extents (48 bit), MVM DSP stage 2 → C5 end addresses �
 C7 priority, command build, queue write. **8 core cycles per op** (MVM too for power-of-two
 `NUM_CH`; ≈ 46 otherwise): ≈ 34 M ops/s at 276 MHz, ≥ 3× the RISC-V's best issue rate.
 
-Error priority (EX §8.1, spec order `docs/spec.md:1034` with the issue-path rules):
+Error priority (EX §8.1, spec order `docs/spec.md` §21 (Error check order) with the issue-path rules):
 `ILLEGAL_OP` → `BAD_DEP` → `BAD_FMT` → `K_RANGE` → `T_RANGE` → `OPERAND` (13, `ERR_INFO` = the
 offending value) → `SPM_RANGE` → `DRAM_RANGE`, range operands in field order, `ERR_INFO` = the
-overflowing start address (spec range-check rule, `docs/spec.md:1053`). Opcodes from VU / AT plug
+overflowing start address (spec range-check rule, `docs/spec.md` §21). Opcodes from VU / AT plug
 in as classes: each supplies its reserved-field masks, used words, sub legality, `OPERAND`
 conditions in their order, **up to four operand extents, each tagged SPM or DRAM and read or
 write** (at most one DRAM extent, checked on every channel as for MVM weights), as formulas computable in C2–C4, and its
@@ -531,7 +531,7 @@ the op's own unit are legal (implied by queue order). FENCE / NOP with w1–w7 �
 LUTRAM queue → **head register** (prefetched as soon as the previous head leaves) → evaluation
 flops (`dep_ok_q`, `snap_ok_q`, `failed_q`, `hold_q`) → **command register** `cmd_q` / `cmd_v_q`
 driving the unit's `cmd_valid / cmd` (the unit-side clock enables are one flop away, 0 LUT levels,
-the k4t1 worst-path structure of `docs/rtl-m3.md:1082-1083`).
+the k4t1 worst-path structure of `docs/rtl-m3.md` §14.3).
 
 ### 9.2 Evaluation (registered, every cycle)
 
@@ -577,7 +577,7 @@ start of the next entry of the same unit ≤ 2 cycles.
 
 ### 9.4 Invariants (asserted in every simulation)
 
-- **I1 completion rule** (`docs/ctrl-riscv.md:544-550`): every entry completes only at its head and
+- **I1 completion rule** (`docs/ctrl-riscv.md` §4.4): every entry completes only at its head and
   only after both deps are done (a BAD_DEP dep ignored); FENCE / QCLEAR also after their snapshot.
   Hence done(t) implies every op t depends on, transitively, is done.
 - **I2 errors visible before completion**: D[u] does not pass ERR_SEQ[u] until the clk_rv side
@@ -590,7 +590,7 @@ start of the next entry of the same unit ≤ 2 cycles.
 ### 9.5 Errors, QABORT, QCLEAR
 
 - Error state, ERR_* capture, propagation, first error by smallest push index: as
-  `docs/ctrl-riscv.md:556-603`. Codes (EX §8.1): 1–8 as spec; **11 DEP_FAILED**, **12 BAD_DEP**,
+  `docs/ctrl-riscv.md` §4.5. Codes (EX §8.1): 1–8 as spec; **11 DEP_FAILED**, **12 BAD_DEP**,
   **13 OPERAND**; 9, 10, 14, 15 reserved. ERR_INFO: range errors the overflowing address, OPERAND
   the offending value, else 0. ERR_W0: the entry's w0.
 - **QABORT** (RISC-V `QCTRL` when the dispatcher pops it; host `CTRL.QABORT`, `LQ_CANCEL` covering
@@ -611,7 +611,7 @@ heads from starting; non-running completions (poisoned, ABORTED, DEP_FAILED, SYN
 except under DB's hard hold (§9.2). `QQUIESCENT` = no op held by a datapath unit, dispatcher and
 FIFO idle, every non-empty queue held, no non-running entry left to drain; a head held by
 `hard_hold` counts as held whether or not it would run. With the RISC-V halted it is the quiescent
-state of `docs/ctrl-riscv.md:622-630`.
+state of `docs/ctrl-riscv.md` §4.6.
 
 ---
 
@@ -620,10 +620,10 @@ state of `docs/ctrl-riscv.md:622-630`.
 ### 10.1 Organisation
 
 The 4 MiB SPM is two **line-interleaved banks**: bank E holds even lines, bank O odd lines,
-each 1R1W, so the SPM has **2 read and 2 write ports** (CC-12; the technical default of
-`docs/ctrl-riscv.md:51-55`). Each bank is 32 K lines = 2 depth banks × 8 column slices of
+each 1R1W, so the SPM has **2 read and 2 write ports** (CC-12; the technical default of D14–D18,
+`docs/design/README.md` §2). Each bank is 32 K lines = 2 depth banks × 8 column slices of
 16 K × 64 (4 cascaded URAM288): **128 URAM**. The r3 per-slice kept input registers
-(`docs/rtl-m3.md:1346-1355`) are kept per (parity, depth bank, slice).
+(`docs/rtl-m3.md` §14.9) are kept per (parity, depth bank, slice).
 
 ### 10.2 Client port contract
 
@@ -669,7 +669,7 @@ reservation (§10.4) no memory-response path ever waits on the SPM.
 grows to 512 beats (8 RAMB36 in 512 × 72 columns); `rd_rsp_ready` becomes **constant 1**
 (asserted). Effect: SPM contention (VU streaming writes, bridge, QACT) can no longer stall a
 channel's head-of-line response path, so MVM weight beats never wait behind a DMA beat
-(`docs/ctrl-riscv.md:742-750`). 512 beats in flight cover 1.7–1.9 µs of DRAM latency at one beat
+(`docs/ctrl-riscv.md` §5.3). 512 beats in flight cover 1.7–1.9 µs of DRAM latency at one beat
 per cycle (276–300 MHz; *estimate*: enough for the measured 17.2–17.4 GB/s per channel).
 
 ### 10.5 RISC-V SPM bridge and line buffer
@@ -678,7 +678,7 @@ per cycle (276–300 MHz; *estimate*: enough for the measured 17.2–17.4 GB/s p
   a line-buffer fill); write = the word placed at its offset with `wr_be` = byte enables shifted by
   4 × word. Answers a store only after `tsr_spm` accepted it.
 - RISC-V side bound 4,096 clk_rv cycles → access fault + `BRIDGE_TIMEOUT`; late answers discarded
-  by tag (`docs/ctrl-riscv.md:401-404`).
+  by tag (`docs/ctrl-riscv.md` §3.5).
 - **Line buffer** (`tsr_spm_lb`, one 512-bit line + tag in clk_rv): loads from the 0x5000_0000
   alias hit it when the tag matches (next-cycle `rvalid`), else fill it with one bridge read.
   Invalidated by: any store to either SPM alias, any control-window or core-window access, any
@@ -694,7 +694,7 @@ per cycle (276–300 MHz; *estimate*: enough for the measured 17.2–17.4 GB/s p
 
 ### 11.1 Clocks
 
-- Core clock = `ap_clk` (k4: 276.3 MHz after v++ scaling, `docs/platform-u200.md:1036`).
+- Core clock = `ap_clk` (k4: 276.3 MHz after v++ scaling, `docs/platform-u200.md` §14.1).
 - `clk_rv` from `ap_clk_2` (platform KERNEL clock, 500 MHz): first try a v++ frequency request for
   `ap_clk_2` (`--clock.freqHz 166666666:tsr_k4.ap_clk_2` or the legacy `--kernel_frequency
   "0:300|1:166.7"`, *confirm*); otherwise `tsr_clk_div` in `rtl/tech/xilinx` (BUFGCE_DIV ÷ 3 of
@@ -723,7 +723,7 @@ per cycle (276–300 MHz; *estimate*: enough for the measured 17.2–17.4 GB/s p
 | Sticky events (PUSH_TIMEOUT, BRIDGE_TIMEOUT) | RV → core | toggle synchronisers | |
 | Levels (RV_RUN, holds, RV_HALTED, RV_SLEEP, RV_RESET_DONE, "clk_rv out of reset", ACTIVE, `irq_fast[2]` = LQ_AVAIL ≠ 0 ∧ ¬ACTIVE, `irq_fast[3]` = LCQ_FREE ≠ 0, `dbg_stop`) | both | 2-flop `tsr_sync`; RV_RESET_DONE two stages behind the FIFO write pointer | |
 
-Rules (`docs/ctrl-riscv.md:953-965`): gray counters step ≤ 1 per source cycle; a counter that
+Rules (`docs/ctrl-riscv.md` §7.1): gray counters step ≤ 1 per source cycle; a counter that
 can move by more than one step at a time (the host-written `LCQ_RD` and `LOG_RD`, and everything
 `SOFT_RESET` flushes) never crosses as a gray code: the RISC-V sees it only through a handshake
 (EX §4.1); nothing crosses into a domain in reset (requests answered locally within the bound);
@@ -757,7 +757,7 @@ safe; zero unconstrained `ap_clk` ↔ `ap_clk_2` paths in the linked design.
 There is no partial datapath reset and no cancel of a running op (CC-22); a wedged unit is
 recovered by a card reset (EX §8.6).
 
-### 12.2 Reset sequencing (from `docs/ctrl-riscv.md:986-1017`)
+### 12.2 Reset sequencing (from `docs/ctrl-riscv.md` §7.3)
 
 - Hardware reset: `ap_rst_n` resets the core domain (with `RST_PIPE`); the clk_rv domain's reset is
   `ap_rst_n` through `tsr_rst_sync` (asynchronous assert, synchronous deassert). `ap_rst_n_2`
@@ -865,12 +865,12 @@ ids, queue depths, the issue-FIFO entry layout and the `UNIT_OF` map. The genera
 
 ## 14. Floorplan, timing and cost on the U200
 
-### 14.1 SLR1 budget (pblock `pblock_dynamic_SLR1`: 199,680 LUT sites, 420 RAMB36, 160 URAM, 1,320 DSP; `docs/platform-u200.md:341-345`)
+### 14.1 SLR1 budget (pblock `pblock_dynamic_SLR1`: 199,680 LUT sites, 420 RAMB36, 160 URAM, 1,320 DSP; `docs/platform-u200.md` §8.1)
 
 | Content | LUT | RAMB36 | URAM | DSP | Source |
 |---|---|---|---|---|---|
-| Core part in SLR1 before the control core (C') | 25.5 K | 8 | 128 | 32 | measured, `docs/platform-u200.md:344` |
-| DDR[2] controller + memory subsystem | 30.5 K | 61 | 0 | 3 | measured (M0 link), `docs/rtl-m3.md:1171-1173` |
+| Core part in SLR1 before the control core (C') | 25.5 K | 8 | 128 | 32 | measured, `docs/platform-u200.md` §8.1 |
+| DDR[2] controller + memory subsystem | 30.5 K | 61 | 0 | 3 | measured (M0 link), `docs/rtl-m3.md` §14.5 |
 | less: logic of the measured core part that the control core replaces | −2 to −3 K | 0 | 0 | 0 | *estimate* |
 | control core + issue path + CSR block (§14.5, before the row above; Ibex maxperf, CC-34) | 14.5–25 K | 49 | 0 | 4–6 | *estimate* |
 | SPM 2R2W muxes, `tsr_spm_cport`s, DMA reservation | 3–5 K | 8 | 0 | 0 | *estimate* |
@@ -912,12 +912,12 @@ the VU.
 | Gate | Run | Criterion |
 |---|---|---|
 | T1 | out-of-context `tsr_ctrl_rv` on xcu200-2 | 6.0 ns met with ≥ 0.3 ns margin; Fmax measured (250 / 166.7 / 125 MHz choice, D12) |
-| T2 | out-of-context k4 core with control core, VU, AT modes, DB, floorplan C''; preceded by the out-of-context `tsr_vu` run whose utilisation fixes the VU configuration against the §14.1 gate | WNS ≥ 0 at 3.333 ns (the core without the control core: +0.022 ns, `docs/rtl-m3.md:1067`); SLR1 ≤ 65 % LUT |
+| T2 | out-of-context k4 core with control core, VU, AT modes, DB, floorplan C''; preceded by the out-of-context `tsr_vu` run whose utilisation fixes the VU configuration against the §14.1 gate | WNS ≥ 0 at 3.333 ns (the core without the control core: +0.022 ns, `docs/rtl-m3.md` §14.3); SLR1 ≤ 65 % LUT |
 | T3 | k4 v++ link (all M6 hardware) | **kernel clock ≥ 276.3 MHz** (as measured without the control core); target 300 MHz with §14.4; zero unconstrained `ap_clk` ↔ `ap_clk_2` paths; `report_cdc` clean |
 | T4 | k1 v++ link | 300 MHz (bring-up) |
 
 The control-core RTL is frozen after T1–T3. Links run on the build host (14 GB + swap; the k4
-link took 3 h 51 min, `docs/platform-u200.md:1036`); T2 before every T3.
+link took 3 h 51 min, `docs/platform-u200.md` §8.2); T2 before every T3.
 
 ### 14.4 The gather job-pipe paths (cheap fix, part of T3)
 
@@ -936,12 +936,12 @@ The k4 link missed 300 MHz by 0.285 ns in the job pipes' central slice
    pipe whose `m_ready` is a wide take (result pipes, arbiter response slices where measured
    worst). Cost: one 2:1 mux level on `m_data`, no flops added.
 2. Pin the job-pipe stage-0 registers to their assembler's pblock (1,288 drifted into SLR1 in the
-   r3 k4 run, `docs/rtl-m3.md:1324-1325`).
+   r3 k4 run, `docs/rtl-m3.md` §14.8).
 3. Only if still short: `JOB_PIPE` 3 (one more cycle per MVM; results identical).
 
 Expected (*estimate*): the −0.285 ns group disappears; the next limiters (arbiter / result slices
 at +0.06 ns out of context) bring the link to 290–300 MHz, worth up to +4–5 % decode
-(`docs/platform-u200.md:1070-1075`).
+(`docs/platform-u200.md` §14.2).
 
 ### 14.5 Cost of this area (U200, *estimate*)
 
@@ -974,7 +974,7 @@ a 34-bit add in one cycle); T1 measures both configurations and §3.2's fallback
 ## 15. Verification
 
 The oracle chain stays: Spike → the ISA simulator's RV32 model (`tsr_rv`, SW) and queue model → RTL
-→ card. Bit-exactness of concurrent programs is defined as in `docs/ctrl-riscv.md:1419-1437`
+→ card. Bit-exactness of concurrent programs is defined as in `docs/ctrl-riscv.md` §9.5
 (valid = race-free and schedule-independent; final DRAM / SPM / LCQ record stream / ticket error
 records must equal the simulator's, SW §4.7).
 
@@ -1075,7 +1075,7 @@ T1–T4 of §14.3; `report_cdc` on every out-of-context run; `report_timing` bet
 
 | Area | CC provides | CC assumes from the area |
 |---|---|---|
-| **EX** (execution model) | issue port, credits, tickets, `ISSUE_PIDX`, ≤ 2 hardware deps, SYNC NOP / FENCE / QCLEAR, I1 / I2, error states and records, holds, QIDLE / QQUIESCENT; unit ids 0–5, queue depths (`Q_DEPTH`), latencies of §7.6 / §9.3; the RTL of EX's LQ / LCQ / log rings with handshake CDC, the SR sequencer, the loader with VERIFY; MTIME; line-buffered SPM alias | the opcode table and the static `UNIT_OF` mapping (EX §7.2–§7.3); the host CSR map (EX §5); the memory model as an architectural rule (this file implements rules 2(a)–(e), 3, 4 of `docs/ctrl-riscv.md:770-803`); error-code list (1–8, 11–13) and check order; CAPS bits; the launch protocol (EX §4) and `SOFT_RESET` semantics (EX §8.5) |
+| **EX** (execution model) | issue port, credits, tickets, `ISSUE_PIDX`, ≤ 2 hardware deps, SYNC NOP / FENCE / QCLEAR, I1 / I2, error states and records, holds, QIDLE / QQUIESCENT; unit ids 0–5, queue depths (`Q_DEPTH`), latencies of §7.6 / §9.3; the RTL of EX's LQ / LCQ / log rings with handshake CDC, the SR sequencer, the loader with VERIFY; MTIME; line-buffered SPM alias | the opcode table and the static `UNIT_OF` mapping (EX §7.2–§7.3); the host CSR map (EX §5); the memory model as an architectural rule (this file implements rules 2(a)–(e), 3, 4 of `docs/ctrl-riscv.md` §5.5); error-code list (1–8, 11–13) and check order; CAPS bits; the launch protocol (EX §4) and `SOFT_RESET` semantics (EX §8.5) |
 | **VU** | queue 3 (depth 16), dispatch `cmd_valid / cmd_ready / cmd / done` with accept-ahead (I3 ≤ 2), SPM client 4 with both bank ports (read pairs, one write per cycle), checker class slot with four tagged extents, placement next to `tsr_spm` in SLR1, `SREG` read path (0x9C0) into `tsr_csr` | per opcode (including AT's 0x34–0x37): reserved masks, used words, sub legality, `OPERAND` conditions, ≤ 4 extent formulas, the command struct; the s-register bank (16 × 32 b flops) exported; no run-time errors; resource estimate for §14.1 (VU §7.10) |
 | **AT** | KVST on the DMA queue, ATTQK / ATTPV on the MVM queue (depth 4), their checker classes; SPM client 5 and unit 4 tied off in M6 (`HAS_AT` = 0); memory source 0 (`TSR_SRC_AUX`) tied off; PERF X + 16 … X + 19 wiring | its ops' check rules and command structs (AT §5.8), its cluster-mode RTL (AT §8) and SLR placement (SLR0 / SLR2 with the clusters) |
 | **DB** | DM instance (Debug Spec 0.13.2) with DMI at CSR 0xC00–0xDFC gated by `DMI_EN`, SBA master on the RISC-V bus (all control-window writes refused), `RV_HALTED`, `ndmreset` → reset sequence, HOLD_ON_HALT, per-unit `dbg_hold[u]` / `dbg_step[u]` inputs with the hard-hold rule of §9.2, head info (`head_valid`, `head_pidx`, `head_w0`, head state, hold sources) one cycle before a possible start, per-unit start / completion strobes {seq, pidx, code, ran} with MTIME (non-running completions included), the enqueue tap {pidx, ticket, unit, code, w0–w7, deps, REC, push PC, four tagged extents}, the push PC in the issue FIFO, TRACE_MARK entries, the REC push flag, `ISSUE_WAIT_MAX` suspension under `dbg_stop`, the second write source on `TRW_CH` = 0, per-channel outstanding counts, the `SREG` wiring; reserved windows (control window 0x160–0x17C and 0x400–0x7FC; CSR 0x800–0xAFC; `irq_fast[4]`, `[6]`; PERF 61–63) | the GDB RSP server on DMI (and that it never writes the issue staging or `QCTRL` through the program buffer: handlers and debugger code do not issue), record / trace formats, tile-level debug semantics, the log record format |

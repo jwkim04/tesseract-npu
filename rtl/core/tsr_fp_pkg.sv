@@ -26,7 +26,7 @@
 // i32_to_f32 (32-bit CLZ + shift + 24-bit increment) and round_pack are ~7-9 levels (round_pack
 // is the last stage of tsr_fp_div).
 //
-// FTZ rule (spec 구현 명확화 "FTZ 판정 시점"): the result is RNE in the binary32 exponent range
+// FTZ rule (spec, Implementation clarifications, "FTZ decision point"): the result is RNE in the binary32 exponent range
 // (gradual underflow) and becomes a signed zero iff that rounded result is subnormal, i.e. iff
 // |exact| < 2^-126 - 2^-150. No subnormal is ever produced, so no denormalisation shifter is
 // needed: for a truncated significand s (1.xxx, 24 bits) with biased exponent e,
@@ -108,7 +108,7 @@ package tsr_fp_pkg;
 
   // -------------------------------------------------------------------------------------------
   // fp16 <-> f32 (conversions, not f32 operations: no DAZ/FTZ/canonical-NaN rule; spec
-  // 구현 명확화 "fp16 변환의 NaN")
+  // Implementation clarifications, "NaN in fp16 conversion")
   // -------------------------------------------------------------------------------------------
 
   // Exact fp16 -> f32 (tsr_fp16_to_f32). Subnormal halves m * 2^-24 become normal f32;

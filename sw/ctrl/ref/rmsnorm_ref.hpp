@@ -15,7 +15,7 @@
 // Row tiles do not change any value (every row is reduced and scaled on its own), so the reference
 // runs one RED over all rows and one VOP per weight-period block (one VOP when p = 1 or p >= rows).
 //
-// rmsnorm_ref_7op is the spec's lowering (docs/spec.md:311-321: RED.SUMSQ, SOP.MULI inv_n,
+// rmsnorm_ref_7op is the spec's lowering (docs/spec.md §9: RED.SUMSQ, SOP.MULI inv_n,
 // SOP.ADDI eps, SOP.SQRT, SOP.RECIP, VOP.MULS, VOP.MUL) on the same rows; VU §6.2 states the two are
 // bit-identical when s[sk] holds the MULI immediate, and the kernel tests check it.
 #pragma once
@@ -40,7 +40,7 @@ constexpr int NR_RANGE = -2;        // a row outside the DRAM view (the device w
 void rmsnorm_ref_rows(uint32_t n, uint32_t rows, const uint32_t * x, size_t x_stride, uint32_t * y, size_t y_stride,
                       uint32_t eps, uint32_t inv_n, const uint32_t * w, size_t w_stride, uint32_t w_period);
 
-// The 7-op lowering of docs/spec.md:311-321 (RED.SUMSQ post NONE, then SOP MULI / ADDI / SQRT / RECIP
+// The 7-op lowering of docs/spec.md §9 (RED.SUMSQ post NONE, then SOP MULI / ADDI / SQRT / RECIP
 // on the row result, VOP.MULC by it, VOP.MUL by the weight row), same arguments and layout.
 void rmsnorm_ref_7op(uint32_t n, uint32_t rows, const uint32_t * x, size_t x_stride, uint32_t * y, size_t y_stride,
                      uint32_t eps, uint32_t inv_n, const uint32_t * w, size_t w_stride, uint32_t w_period);

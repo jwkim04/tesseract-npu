@@ -148,7 +148,7 @@ if (TARGET ggml AND TARGET ggml-tesseract)
     add_test(NAME ggml_tesseract_attn_split1 COMMAND test-tsr-attn)
     set_tests_properties(ggml_tesseract_attn_split1 PROPERTIES ENVIRONMENT "TSR_OPL_SPLIT=1;TSR_SIM_RACE=fatal")
 
-    # test-backend-ops: Tesseract0 vs the CPU backend (spec 검증 전략, 연산 단위), every MUL_MAT
+    # test-backend-ops: Tesseract0 vs the CPU backend (spec "Verification strategy", op level), every MUL_MAT
     # case, tolerances untouched. One case is left out here and covered by
     # ggml_tesseract_scalar_nmse instead: MUL_MAT(type_a=f32,type_b=f32,m=1,n=1,k=2048) has a
     # single output element, so its NMSE is the squared relative error of one dot product of

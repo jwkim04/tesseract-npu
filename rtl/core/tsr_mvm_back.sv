@@ -1,4 +1,4 @@
-// tsr_mvm_back.sv — MVM cluster back end (spec MVM 클러스터 stages 5-9): activation reads, MAC
+// tsr_mvm_back.sv — MVM cluster back end (spec MVM cluster microarchitecture stages 5-9): activation reads, MAC
 // lanes (tsr_mac_lane), integer scale stage, fp term stage, 16-partial accumulators with a
 // background streaming tree; produces one row result (T_MAX f32) per row.
 //
@@ -21,7 +21,7 @@
 //       row (a partial that gets no term stays +0.0; the first add is a real fadd(+0, t));
 //       at row_last: y_t = tsr_tree16(p) = ((p0+p1)+(p2+p3))+((p4+p5)+(p6+p7)) + ... (4 levels).
 //     Integer sums are exact (any order); every fp op is a separately rounded tsr_fp_* op in
-//     exactly this order (spec 수치 규칙: no FMA, the parenthesisation above).
+//     exactly this order (spec Numeric rules: no FMA, the parenthesisation above).
 //   - activation buffer: qs_re/qs_addr and dbs_re/dbs_addr, data exactly ACT_RD_LAT cycles later
 //     (tsr_mvm_actbuf). QS word for a beat: Q8_0 line b/2 = bank (b/2)%2 of word b/4 (64 lanes);
 //     Q4_K word 2s + half (128 lanes). D line: (Q8_0 b, Q4_K s) >> 4, element & 15; BS line

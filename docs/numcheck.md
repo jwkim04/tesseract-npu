@@ -56,7 +56,10 @@ attention off and the KV cache f16 on the host.) Further: CPU weight
 repack off (`use_extra_bufts = false`), threads `-t` (default online CPUs / 2), `n_ctx` = T rounded up
 to 256, `n_batch = n_ubatch = 256` (T must fit one ubatch), every position an output. The prompt is
 truncated to T tokens; T defaults to 16 for models above 8 B parameters and 32 otherwise.
-`TSR_SIM_THREADS` defaults to 4 when unset.
+`TSR_SIM_THREADS` defaults to 4 when unset. The device kinds follow the phase, as in klcheck:
+`--phase m6` sets `TSR_KINDS=m6` (MUL_MAT only), and `--phase m7` keeps the caller's `TSR_KINDS`
+(unset: every kind; a list such as `all,-RMS_NORM` reaches the backend). `meta.json` `info`
+`TSR_KINDS` records the value the run used (`null` when unset).
 
 Observation uses `llama_context_params.cb_eval`: the callback asks for every computed non-view
 node, so the scheduler computes the graph one node at a time (one device launch per observed
@@ -389,7 +392,8 @@ python3 sw/tools/numcheck.py --build build/dev compare --cpu R/cpu --floor R/flo
 ctest: `tools_numcheck_selftest` (comparer, no model; also: the settings in the report, a set
 with different settings refused, version 1 dumps read as FA off / f16), `tools_numcheck_dump_selftest`
 (dumper, no model), `tools_numcheck_dump_qwen05b` (label `model`: `all --phase m6 --checks full` on
-0.5B Q8_0, ~9 s).
+0.5B Q8_0, ~9 s), `tools_numcheck_kinds_qwen05b` (label `model`, ~3 s: `meta.json` `info.TSR_KINDS` and the
+backend's kinds for `--phase m6` with `TSR_KINDS=all`, and for `--phase m7` with a list and without one).
 
 **M6 check.** Measured on the simulator (`83ac601`): `tsr-numcheck all -m
 models/qwen2.5-0.5b-instruct-q8_0.gguf -T 32 --phase m6 --checks full`: selfcheck PASS, 533 nodes per run, 169/169 weight MUL_MATs computed by

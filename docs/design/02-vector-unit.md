@@ -60,10 +60,10 @@ them.
 
 ### 2.1 Facts relied on
 
-- **Spec VU:** `docs/spec.md:288-321` (structure, scalar unit, approximate functions, RoPE,
-  RMSNorm recipe) and the ISA rows `:434`, `:437-441`. VOP and SOP codes: `:448-450`. ROPE and
-  DQROW semantics: `:471-472`. fp rules: `:243-250`. FTZ: `:1025`. Tail bytes: `:1030`. Check
-  order: `:1034`. Range check: `:1053`. Length 0: `:1054`.
+- **Spec VU:** `docs/spec.md` §9 (structure, scalar unit, approximate functions, RoPE,
+  RMSNorm example) and §11 (the ISA rows, VOP and SOP codes, ROPE and DQROW semantics). fp rules:
+  §7. FTZ, tail bytes, check order, range check and length 0: §21 (FTZ decision point, Tail bytes,
+  Error check order, Range check, Zero length).
 - **Simulator:** VOP/RED/ROPE/TOPK/SOP/DQROW return `ILLEGAL_OP` (`sw/sim/tsr_sim.c:839-842`). The
   fp primitives are `tsr_fadd`…`tsr_frecip` (`sw/sim/tsr_ref.c:99-104`), and `tsr_dequant_row` is
   at `sw/sim/tsr_ref.c:369`. `sw/sim/tsr_ref_math.c` does not exist.
@@ -165,8 +165,8 @@ Gemma 4 has no attention-logit softcap. `attn_soft_cap` is not set for gemma4, a
 
 - **Elements:** VU elements are 32-bit words.
 - **fp rules:** every function marked "fp" follows the spec's rules: IEEE binary32,
-  round-to-nearest-even, DAZ + FTZ as fixed in `docs/spec.md:1025`, and canonical NaN 0x7FC00000
-  (`docs/spec.md:243-250`). It is built only from the primitives of §6.1 and integer operations.
+  round-to-nearest-even, DAZ + FTZ as fixed in `docs/spec.md` §21 (FTZ decision point), and canonical NaN 0x7FC00000
+  (`docs/spec.md` §7). It is built only from the primitives of §6.1 and integer operations.
 - **Raw functions:** functions marked "raw" copy bits (COPY, SETC, SOP.MOVI / LDS / STS, the
   unmasked elements of VMASK, ROPE's unrotated tail). They also move integer data such as positions
   or indices.
@@ -187,9 +187,9 @@ Gemma 4 has no attention-logit softcap. `attn_soft_cap` is not set for gemma4, a
 - **Empty ops (n = 0 rule):**
   - m = 0 or rows = 0: the op reads and writes nothing in the SPM.
   - Exception: a RED with rows = 1 and an s destination writes the empty-row result (§6.2).
-  - Range checks still apply, with extent 0 (`docs/spec.md:1053-1054`).
+  - Range checks still apply, with extent 0 (`docs/spec.md` §21, Range check and Zero length).
 - **Tail rule per row:** when m mod 16 ≠ 0, words [m mod 16, 16) of each destination row's last
-  line are written 0. This is `docs/spec.md:1030` applied row by row.
+  line are written 0. This is `docs/spec.md` §21 (Tail bytes) applied row by row.
 
 ### 4.3 The per-row scalar operand c
 
@@ -243,7 +243,7 @@ lines). RED writes such vectors (§5.3), so reductions feed the next op without 
   - rows, strides, head counts and T: 16 bits.
   - Bigger SPMs (> 2^24 lines) are outside these encodings.
 - **Unit:** every op here runs on unit 3 (VU), queue depth 16 (CC §7.4).
-- **Range checks:** `docs/spec.md:1053`, with the extents of §5.9.
+- **Range checks:** `docs/spec.md` §21 (Range check), with the extents of §5.9.
 
 ### 5.2 VOP (0x30)
 
@@ -374,7 +374,7 @@ w3 and w4 are 0.
 |---|---|---|
 | fmt | w0[11:8] | 0 Q8_0, 1 Q4_K; 2–15 `BAD_FMT` |
 | d | w1[23:0] | f32 output line of row 0 |
-| src | w2[23:0] | SPM line of row 0's repacked bytes (as stored in DRAM, `docs/spec.md:148-182`; loaded by LD) |
+| src | w2[23:0] | SPM line of row 0's repacked bytes (as stored in DRAM, `docs/spec.md` §5; loaded by LD) |
 | K | w5 | elements per row; `K_RANGE` if K = 0, K > K_MAX, or K not a multiple of the block size |
 | rows | w6[15:0] | rows (w6[31:16] = 0) |
 | src_stride | w7[15:0] | lines; 0 = ROW_BEATS(fmt, K) |
@@ -561,7 +561,7 @@ Each row is reduced on its own.
 - **SUMSQ:** the same with FM(x_i, x_i) in place of x_i (the square is rounded first).
 - **Tree:** the result is the complete binary tree over p_0 … p_127. Level 1 is FA(p_{2k},
   p_{2k+1}). Each level pairs adjacent results left to right; there are 7 levels. This is the
-  spec's rule, `docs/spec.md:296`.
+  spec's rule, `docs/spec.md` §9.
 - **MAX:** the maximum of the DAZ'd elements under the total order of §6.8. Any NaN gives
   0x7FC00000.
 - **Empty rows** (m = 0): SUM and SUMSQ give +0.0; MAX gives −∞ (0xFF800000).
@@ -569,7 +569,7 @@ Each row is reduced on its own.
   - NONE: y.
   - RCP: RC(y).
   - RMS: RC(SQ(FA(FM(y, s[sk]), s[se]))).
-  - RMS is bit-identical to the spec recipe SOP.MULI → ADDI → SQRT → RECIP (`docs/spec.md:311-321`)
+  - RMS is bit-identical to the spec recipe SOP.MULI → ADDI → SQRT → RECIP (`docs/spec.md` §9, RMSNorm example)
     when s[sk] equals the MULI immediate.
 
 **Implementation freedom (exact).** A partial is initialised as FA(+0, x) (the first update of a
@@ -760,7 +760,7 @@ The rotation is ggml's `rotate_pairs` (`ops.cpp:6375-6391`) without FMA contract
   attn_factor, freq_scale (FS only if ≠ 1), and the freq-factor table as given by the GGUF (Gemma 4
   global layers: `rope_freqs` [256] with 1e30 entries);
 - A-table form (YaRN only): A_i and M in double with one rounding (`ops.cpp:6270-6285`;
-  `docs/spec.md:309`).
+  `docs/spec.md` §9).
 - On Gemma 4 global layers, ff_i = 10³⁰ gives φ_i ≈ 10⁻³⁰·θ_i (a normal f32). φ_i < 2⁻¹² then
   takes the identity path of §6.6, and those pairs change only by the x0 − x1·φ rounding, as on
   the CPU.
@@ -771,7 +771,7 @@ The rotation is ggml's `rotate_pairs` (`ops.cpp:6375-6391`) without FMA contract
 
 ### 6.8 Order, raw ops, VMASK, TOPK, DQROW
 
-- **Total order** (`docs/spec.md:298`):
+- **Total order** (`docs/spec.md` §9):
   - Non-NaN values are compared after DAZ by key = sign ? ~bits : bits | 2³¹, so −∞ < … < −0 < +0
     < … < +∞. NaN is above everything.
   - MAXT(a, b): if either is NaN, 0x7FC00000; else the larger DAZ'd value.
@@ -790,7 +790,7 @@ The rotation is ggml's `rotate_pairs` (`ops.cpp:6375-6391`) without FMA contract
   - Pair i < k goes to words 2i (j as u32) and 2i + 1 (x̂). If m < k, the missing pairs are
     (0xFFFFFFFF, 0xFF800000). Tails follow §4.2.
 - **DQROW:** row r = `tsr_dequant_row`(fmt, the bytes at line src + r·src_stride′, K)
-  (`sw/sim/tsr_ref.c:369`; ggml-exact for finite scales, `docs/spec.md:472`, `:1028`). Tails
+  (`sw/sim/tsr_ref.c:369`; ggml-exact for finite scales, `docs/spec.md` §11 and §21, Agreement with ggml). Tails
   follow §4.2.
 
 ### 6.9 Accuracy and differences from the ggml CPU backend
@@ -876,7 +876,7 @@ sources:
   - Rounding.
   - Latency ≈ 18 cycles (*estimate*), ≤ 6 LUT levels per stage.
 - **RED accumulation:** each lane's FA updates phase (line index mod 8) of its partials. A partial
-  is updated every 8 cycles, so LAT 5 suffices (`docs/spec.md:296`).
+  is updated every 8 cycles, so LAT 5 suffices (`docs/spec.md` §9).
 
 ### 7.3 Back lane (× 8)
 
@@ -968,7 +968,7 @@ its elements.
   - Single-source ops use half the read slots, which leaves the rest to other clients.
 - **Writes:** one line per cycle to the bank of the line.
 - **Flow control:** reads are issued only against free output-FIFO credits (rule R4,
-  `docs/rtl-m2.md:33-35`). A stalled write therefore never needs a clock enable in the lanes; the
+  `docs/rtl-m2.md` §1). A stalled write therefore never needs a clock enable in the lanes; the
   pipeline simply stops issuing reads.
 - **Buffers:** the output FIFO holds 64 lines (8 RAMB36, or LUTRAM); the input reorder buffers
   hold 2 lines per operand.
@@ -1038,7 +1038,7 @@ about 1.6 K SLLs (2 × 512 read + 512 write + control) and adds 8–12 cycles of
 are unchanged.
 
 **Timing:**
-- ≤ 6 LUT levels per stage (`docs/rtl-m2.md:41`).
+- ≤ 6 LUT levels per stage (`docs/rtl-m2.md` §1).
 - DSPs fully registered.
 - No global clock enable: credits replace back-pressure.
 - 512-bit buses registered once at the bank boundary and once per lane group.
@@ -1142,7 +1142,7 @@ The simulator is the oracle; every VU op has a C reference, and the RTL must mat
      - every `ILLEGAL_OP` / `OPERAND` / `SPM_RANGE` case, with `ERR_INFO`;
      - m = 0 and rows = 0;
      - in-place aliasing; tails;
-     - NaN, ±∞, ±0, subnormals and the FTZ boundary vectors of `docs/spec.md:1025`.
+     - NaN, ±∞, ±0, subnormals and the FTZ boundary vectors of `docs/spec.md` §21 (FTZ decision point).
    - Random op streams (shapes, strides including 0, cmodes, functions) against a second,
      straightforward Python implementation of §4–§6.
    - The race detector gets the access sets of §5.9 and the aliasing rule of §4.5.
@@ -1191,7 +1191,7 @@ The simulator is the oracle; every VU op has a C reference, and the RTL must mat
   - *Choice:* keep the spec's 128 partials (i mod 128) and the complete tree, per row. Allow the
     skip of unwritten subtrees, passing z(q) (−0 → +0) for a skipped pairing, which is exact.
   - *Alternatives:* a line tree first, then 8 phases; 16 partials with interleaved rows.
-  - *Rationale:* it is already the contract (`docs/spec.md:296`), it is independent of lane counts,
+  - *Rationale:* it is already the contract (`docs/spec.md` §9), it is independent of lane counts,
     and the skip makes short rows cheap without changing bits. The draft's claim that a tree value
     is never −0 was wrong (FTZ keeps the sign); z() restores exactness (§6.2).
 - **VU-3 Segmented RED output and fused post-ops.**
@@ -1327,7 +1327,7 @@ The simulator is the oracle; every VU op has a C reference, and the RTL must mat
 - **VU-22 MAX / MIN.**
   - *Choice:* the spec's total order; MAX propagates NaN, MIN returns the non-NaN operand.
   - *Alternatives:* IEEE-2019 minimum / maximum.
-  - *Rationale:* one comparator implements both and TOPK, consistent with `docs/spec.md:298`.
+  - *Rationale:* one comparator implements both and TOPK, consistent with `docs/spec.md` §9.
 - **VU-23 Raw ops.**
   - *Choice:* COPY, SETC, MOVI / LDS / STS, VMASK pass-through and the ROPE tail copy bits.
   - *Alternatives:* canonicalise as fp.

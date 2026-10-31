@@ -187,7 +187,7 @@ with a 1-ulp change of every input element. `ratio` is the mean KL over the floo
 On the card, `klcheck compare --expect-identical` between `sim` and `xrt` gives 8 of 8 rows
 bit-identical (k1 and k4). The M6 run and its replay on `sim` and on `mock` give 512 of 512 logit
 rows bit-identical with the same generated tokens. The ctest `tools_klcheck_qwen05b` (4 prompts x
-32 tokens) gives ratio 0.717 and top-1 96.88 %.
+32 tokens) gives ratio 0.899 against the mean of floor seeds 1 to 3 (0.717 against seed 1) and top-1 96.88 %.
 
 **Qwen2.5-32B Q4_K_M.** The three ratios use different settings or prompt counts and are not
 comparable.

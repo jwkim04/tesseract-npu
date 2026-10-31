@@ -1,6 +1,6 @@
 # ggml-tesseract
 
-ggml backend for the Tesseract NPU core (spec "ggml 백엔드 통합"). One registry
+ggml backend for the Tesseract NPU core (spec "ggml backend integration"). One registry
 `"Tesseract"` with one device `"Tesseract0"` of type `GGML_BACKEND_DEVICE_TYPE_GPU`. M7 (W3b) runs a
 whole decode token of Qwen2.5 / Gemma 4 as one launch with the KV cache on the device; M6 (`TSR_KINDS=m6`)
 runs `MUL_MAT` only. Pin and verified llama.cpp API: `docs/llama-pin.md`.
@@ -177,7 +177,7 @@ Public C API (`third_party/llama.cpp/ggml/include/ggml-tesseract.h`, from the pa
 | `TSR_DEVICE` | transport kind (`sim` default, `xrt`); `none` registers no device |
 | `TSR_IMAGE` | firmware image (default: the build's `tsr-fw.elf`) |
 | `TSR_DEBUG=1` | placement, lowering and launch log on stderr; `2` adds buffer events, the records and preload entries of every launched op list and supports_op's reasons |
-| `TSR_KINDS` | the kinds the device takes, a comma-separated list read from left to right: `m6` (MUL_MAT only, M6 runs), `all`, `NAME` / `+NAME` adds a kind, `-NAME` removes one (`all,-FLASH_ATTN,-RMS_NORM`; a list that starts with a removal starts from every kind). The removed kinds' ops run on the CPU; a SET_ROWS into a device KV cache cannot, so SET_ROWS_KV leaves the device only with `-nkvo` (which keeps FLASH_ATTN on the CPU too). Unset: every kind of the booted image |
+| `TSR_KINDS` | the kinds the device takes, a comma-separated list read from left to right: `m6` (MUL_MAT only, M6 runs), `all`, `NAME` / `+NAME` adds a kind, `-NAME` removes one (`all,-FLASH_ATTN,-RMS_NORM`). What a list starts from: a list whose first word is a removal starts from every kind; any other list starts from NOP and JOIN only, which cannot be removed. So `TSR_KINDS=+FLASH_ATTN` alone turns MUL_MAT off; write `m6,+FLASH_ATTN` or `all,...` to keep it. The removed kinds' ops run on the CPU; a SET_ROWS into a device KV cache cannot, so SET_ROWS_KV leaves the device only with `-nkvo` (which keeps FLASH_ATTN on the CPU too). Unset: every kind of the booted image |
 | `TSR_COMPUTE_WINDOWS=io` | test knob: compute windows in ch0 IO only (M6 placement; larger buffers in host memory, their MUL_MATs staged) |
 | `TSR_OPL_SPLIT=<n>` | test knob: cut every op list after n records (a split's results do not depend on the cuts: Qwen2.5-0.5B with n = 7, 53 launches per token, gives logits bit-identical to one launch per token) |
 | `TSR_FORCE_HOST=1` | test knob: every non-WEIGHTS buffer in host memory, so every MUL_MAT takes the staged path and the other kinds stay on the CPU (with M7 settings add `-nkvo`: a KV cache on the device needs its SET_ROWS on the device) |
@@ -224,7 +224,10 @@ TSR_STAGE_KIB=64`, with and without `TSR_SIM_TMAX=8`), `transport_ggml_e2e_mock`
 tests are M6's and run with `TSR_KINDS=m6 TSR_COMPUTE_WINDOWS=io`),
 `ggml_tesseract_scalar_nmse`, `ggml_tesseract_backend_ops` and `ggml_tesseract_backend_ops_bigt`
 (label `slow`: the one case `MUL_MAT(f16, m=16, n=2105344, k=32)`, 8.4 M single-token tile ops
-through the interpreted firmware at the sim's T_MAX 1, ~50 s; the two together run the whole case set).
+through the interpreted firmware at the sim's T_MAX 1, ~50 s; the two together run the whole case set),
+and `ggml_tesseract_server_tiny` (`tests/server_smoke.py`, no model file needed: `llama-server` on the
+tiny Qwen2 model, the device and the CPU side by side with 2 slots; every device text must equal the
+CPU's, both servers must exit 0, and the device runs one launch per `graph_compute`; about 2 s).
 The device ctests run with the simulator's race detector fatal (`TSR_SIM_RACE=fatal`, SW §4.6),
 except `_bigt` (over 15 minutes with it). `TSR_TEST_DUMP=<file>` makes
 `test-ggml-tesseract` append every device output it reads, so two builds can be compared byte for
@@ -243,8 +246,26 @@ The unfiltered `test-backend-ops test -o MUL_MAT -b Tesseract0` above therefore 
 M6 runs llama.cpp with `-nkvo` (KV cache on the CPU) and `TSR_KINDS=m6`; M7 without `-nkvo` (the
 KV cache in KV buffers), with `-fa on -ctk q8_0 -ctv q8_0` and `LLAMA_ATTN_ROT_DISABLE=1`, always with
 an explicit `-ngl`; see `docs/llama-pin.md` for how compute buffers, the output head and LoRA adapters
-are placed. `klcheck run` and `tsr-numcheck run` set `TSR_KINDS` from `--phase` (m6: MUL_MAT only;
-m7: every kind; SW-49), so they drop a `TSR_KINDS` list set by the caller.
+are placed. `klcheck run` and `tsr-numcheck run` set `TSR_KINDS=m6` for `--phase m6`; for `--phase m7`
+they keep the caller's `TSR_KINDS` (unset: every kind), so a list such as `all,-RMS_NORM` reaches the
+backend (SW-49). The value is recorded in klcheck's `report.json` and in numcheck's `meta.json`.
+
+## llama-server
+
+`llama-server` runs on the Tesseract backend from the same build, with the M7 settings:
+
+```
+LLAMA_ATTN_ROT_DISABLE=1 TSR_DEVICE=sim build/dev/bin/llama-server -m MODEL -ngl 99 -fa on \
+    -ctk q8_0 -ctv q8_0 -np 4 -kvu -c 4096
+```
+
+- `-ngl 99 -fa on -ctk q8_0 -ctv q8_0` are required: an f16 KV cache cannot live in device memory.
+- `-kvu` (`--kv-unified`) is needed for `-np` above 1: the device holds one KV stream.
+- Do not use `--context-shift`: llama.cpp crashes in `build_rope_shift` with a quantized K cache
+  and no rotation, on the CPU backend too.
+- The endpoints, the request example and the measured speed are in
+  [`docs/getting-started.md`](../../docs/getting-started.md#serving). The ctest is
+  `ggml_tesseract_server_tiny` (above).
 
 ## M7 on the simulator (W3b integration, 2026-10-31)
 
@@ -334,8 +355,9 @@ bound and the W3b measurements are in its header.
   decode graph, one launch per single-token decode (64 for the tiny models, 128 for 0.5B), one launch
   per ubatch in prefill (`-ub 16`: 3-22 ubatches per prompt; the long prompts cross the 256-cell KV
   bucket in decode and in prefill and wrap Gemma 4's SWA ring), no launch outside a decode, the launch
-  count of TSR_STATS, the embd-path identity, and klcheck's KL criterion against the CPU (Gemma 4 with
-  `--min-kl 3e-3`, see the header). `ggml_tesseract_graph_qwen_tiny_ub1024` runs one 692-token prompt
+  count of TSR_STATS, the embd-path identity, and klcheck's KL criterion against the CPU with the mean
+  of the floor seeds 1 to 3 (Gemma 4 with `--min-kl 3e-3`, see the header). The tests ignore the shell's
+  `TSR_KINDS`: they check the full kind set. `ggml_tesseract_graph_qwen_tiny_ub1024` runs one 692-token prompt
   (`--join-prompts 4`) at `-ub 1024`: its prefill FLASH_ATTN (T > 680) stays on the CPU, so prefill
   launches are only reported (`--prefill any`), with `--min-prefill-tokens 681`. Files of a run: `build/<tree>/sw/ggml-tesseract/<test>/`
   (`dev.log`, `graph.json`, `report.json`). By hand:

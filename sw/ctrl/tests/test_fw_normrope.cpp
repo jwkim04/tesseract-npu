@@ -35,7 +35,7 @@
 //       (kind_ctx by hand, the preload area loaded and joined) against the references; the decode
 //       fast path against the general path on twin simulators (every push, deps, push value, ticket
 //       and ring state equal; deps on every unit); refused records push nothing; the 2-op RMS form
-//       against the spec's 7-op lowering (docs/spec.md:311-321, VU §6.2) on edge and random rows.
+//       against the spec's 7-op lowering (docs/spec.md §9, VU §6.2) on edge and random rows.
 // Exit 0 when everything passed, 1 on a failure, 77 (skipped) when the image is missing.
 #undef _GNU_SOURCE
 #include "test_sim_obs.h"
@@ -1031,7 +1031,7 @@ void host_refusals() {
     printf("host refuse: %zu refused records pushed nothing\n", sizeof(bads) / sizeof(bads[0]));
 }
 
-// 4. The 2-op RMS form against the spec's 7-op lowering (VU §6.2, docs/spec.md:311-321).
+// 4. The 2-op RMS form against the spec's 7-op lowering (VU §6.2, docs/spec.md §9).
 void host_seven_op() {
     rng_t r = { 0x7091ull };
     const uint32_t ns[] = { 1, 7, 16, 64, 100, 128, 129, 256, 512, 896, 3840, 5120 };
@@ -1065,7 +1065,7 @@ void host_seven_op() {
             }
         }
     }
-    printf("host 7-op: %ld of %ld rows bit-identical (2-op RED.SUMSQ post RMS + VOP.MULCB vs docs/spec.md:311-321)\n", rows_same,
+    printf("host 7-op: %ld of %ld rows bit-identical (2-op RED.SUMSQ post RMS + VOP.MULCB vs docs/spec.md §9)\n", rows_same,
            rows_total);
 }
 #endif  // TSR_FW_HOST

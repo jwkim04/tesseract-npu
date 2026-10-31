@@ -11,14 +11,14 @@
 //
 //     LD x tile -> QACT (A32 / A256) -> MVM (Q8_0 / Q4_K) -> ST y tile
 //
-// Numerics are the llama.cpp path's (docs/spec.md "수치 규칙", "로드 시 변환"):
+// Numerics are the llama.cpp path's (docs/spec.md "Numeric rules", "Load-time conversion"):
 //   - weights given as f32 / f16 / bf16 become Q8_0 at upload with ggml's quantize_row_q8_0_ref
 //     (f16 / bf16 widened exactly with ggml's to_float first), the function the ggml backend uses
 //     (sw/ggml-tesseract/tsr-weights.cpp, compiled into this library; ggml-base provides it);
 //   - Q8_0 and Q4_K blocks (GGUF / ggml layout) are stored as they are;
 //   - activations are quantized on the device by QACT; results are f32.
 //
-// Device memory (spec 채널별 DRAM 맵, EX §11): OPL (ch0) holds the cached op lists, IO (ch0) the x / y
+// Device memory (spec "Per-channel DRAM map", EX §11): OPL (ch0) holds the cached op lists, IO (ch0) the x / y
 // tiles of one linear call, WEIGHT (every channel) the weights with symmetric allocation (one W_OFF
 // for all channels). AUX is not used.
 //

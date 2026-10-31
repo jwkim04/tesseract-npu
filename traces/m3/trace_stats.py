@@ -9,7 +9,7 @@ meta.json). Traces are grouped into sets by their parent directory. Only execute
 count: the prefix before ERR_PC when the trace ends in an error, else everything before the END
 that stopped it (those programs have no jumps). Per set it prints the number of traces, size on disk,
 error endings, the executed MVMs by format, K, N, T, ACC and dst_stride, and the MVM weight
-traffic: channel c reads rows_c x ROW_BEATS beats per MVM (spec 구현 명확화, PERF), so channel 0
+traffic: channel c reads rows_c x ROW_BEATS beats per MVM (spec Implementation clarifications, PERF), so channel 0
 (R = ceil(N/C) rows) is the busiest; "weight beats" below are channel-0 beats summed over a
 trace's MVMs, i.e. the cycles a cluster needs at one weight beat per cycle.
 
@@ -38,7 +38,7 @@ def ceil_div(a: int, b: int) -> int:
 
 
 def row_beats(fmt: int, k: int) -> int:
-    """ROW_BEATS(fmt, K) (spec 디바이스 가중치 레이아웃, 행 크기)."""
+    """ROW_BEATS(fmt, K) (spec Device weight layout, Row size)."""
     bs, s, qb = (32, 32, 32) if fmt == 0 else (256, 4, 128)
     nb = k // bs
     full, rem = divmod(nb, s)

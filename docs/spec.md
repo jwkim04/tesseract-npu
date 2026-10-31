@@ -1546,7 +1546,7 @@ Solid blocks exist in this tree. Dashed blocks are planned.
 | Stage | Reference (oracle) | Pass condition | Tool | Status |
 | --- | --- | --- | --- | --- |
 | Op level (simulator) | ggml CPU backend | NMSE within tolerance | `test-backend-ops` | On the simulator; on the card |
-| Whole model (simulator) | ggml CPU backend, and the CPU itself with a 1-ulp input change (the floor) | Mean KL ≤ floor KL × 3 and top-1 agreement ≥ 80 % (initial values, the adjustment is open) | `klcheck` (own tool), `llama-perplexity` | On the simulator; on the card |
+| Whole model (simulator) | ggml CPU backend, and the CPU itself with a 1-ulp input change (the floor) | Mean KL ≤ floor KL × 3 and top-1 agreement ≥ 80 %, the floor KL being the mean over three floor seeds (initial values, the adjustment is open) | `klcheck` (own tool), `llama-perplexity` | On the simulator; on the card |
 | Whole-model numerics (simulator) | `libtsr_ref`, a numpy spec model that shares no code with it, the fp64 exact value | Every output element of every weight MUL_MAT bit-identical to both models; zero violations of the fp32 error bound | `numcheck` (own tool) | On the simulator |
 | Control core (simulator) | Spike | riscv-tests and riscv-arch-test signatures match; random programs match instruction by instruction in lockstep | RV32 interpreter `tsr_rv` of the simulator | On the simulator (the lockstep tests use the Spike of the toolchain install) |
 | Concurrency and issue path (simulator) | Race-free programs: the fixed schedule | Eight or more schedules (fixed and random) give the same per-unit op streams, final state and answer records; the race detector finds no race | Scheduler, queue model and race detector of the simulator; ctest labels `fw`, `rv` | On the simulator |
@@ -1562,9 +1562,13 @@ of the device differs from the CPU's, and one int8 value that is rounded differe
 later layers. The floor is therefore "how far the CPU itself moves when its input is shaken by 1 ulp",
 and the question is whether the device is near that floor. The tokens that the device produced for a
 prompt are fed to the CPU again, so every position is compared in the same context. The method and the
-initial pass lines follow [openTPU's verification method](https://github.com/FeSens/openTPU). The
-baseline settings are FA on, q8_0 KV cache, rotation off and `offload_kqv` false in M6 (true in
-M7; D17); method, settings and results are in [`docs/klcheck.md`](klcheck.md).
+initial pass lines follow [openTPU's verification method](https://github.com/FeSens/openTPU).
+The floor of one seed is a random draw and can differ a lot from another seed's (on Gemma 4 12B Q4_K_M the
+same device run gives a ratio of 2.19 against seed 1 and 1.39 to 1.69 against seeds 2 to 4), so the
+floor KL is the mean over N = 3 floor runs with the seeds 1, 2 and 3: the mean of each run's mean KL.
+The pass line is mean KL(CPU ‖ device) ≤ 3 × that floor KL and top-1 agreement ≥ 80 %. With N = 1 it is
+the single-seed line. The baseline settings are FA on, q8_0 KV cache, rotation off and `offload_kqv`
+false in M6 (true in M7; D17); method, settings and results are in [`docs/klcheck.md`](klcheck.md).
 
 **Model-level numeric check (numcheck)**: KL only measures the distance to the CPU, so a short prompt
 separately checks that the device performs the specified arithmetic exactly. Method, derivation of the

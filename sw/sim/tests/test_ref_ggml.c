@@ -141,7 +141,7 @@ static void qact_compare(uint32_t kind, const float * x, uint32_t K) {
     const float * D = tsr_qa_d(kind, K, qa);
     memset(qa, 0xA5, (size_t)tsr_qa_lines(kind, K) * 64);   // like the simulator's initial SPM
     tsr_qact(kind, x, K, qa);
-    // Tail bytes of every region (QS, D and, for A256, BS) must be zero (구현 명확화 꼬리 바이트).
+    // Tail bytes of every region (QS, D and, for A256, BS) must be zero (spec §21, Tail bytes).
     const size_t qs_end = K, d_end = (size_t)tsr_qa_qs_lines(kind, K) * 64 + 4 * (K / tsr_qa_block_size(kind));
     for (size_t o = qs_end; o < (size_t)tsr_qa_qs_lines(kind, K) * 64; ++o) CHECK(qa[o] == 0, "qs tail");
     for (size_t o = d_end; o < (size_t)(tsr_qa_qs_lines(kind, K) + tsr_qa_d_lines(kind, K)) * 64; ++o) CHECK(qa[o] == 0, "d tail");
@@ -251,7 +251,7 @@ static void test_qact(void) {
         qact_compare(TSR_QA_A256, x, 256);
     }
 
-    // Outside the ggml-identical domain: spec-defined behaviour (구현 명확화).
+    // Outside the ggml-identical domain: spec-defined behaviour (spec §21).
     {
         float x[256];
         uint8_t qa[64 * 6];
@@ -262,7 +262,7 @@ static void test_qact(void) {
         for (int j = 0; j < 32; ++j) CHECK(tsr_qa_qs(TSR_QA_A32, 32, qa)[j] == 0, "A32 subnormal q");
         // (The all-subnormal block above passes even without DAZ, because d = amax/127 is
         // flushed anyway. The cases below fail if QACT skips DAZ in the amax/max search or
-        // in x*id / iscale*x — spec 구현 명확화 "QACT 입력".)
+        // in x*id / iscale*x — spec §21 (QACT input).)
         // A32, normal amax 2^-119 next to subnormals: d = 2^-119/127 stays normal, id ~ 2^126,
         // and 0x007FFFFF * id ~ 0.99 would round to +-1 without DAZ; with DAZ it is +-0 -> 0.
         for (int j = 0; j < 32; ++j) x[j] = 0.0f;

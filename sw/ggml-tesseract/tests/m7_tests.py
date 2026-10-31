@@ -14,10 +14,12 @@ graph   one tiny-model graph test (ggml_tesseract_graph_qwen_tiny, _gemma_tiny, 
            lines agree with TSR_STATS; with --prefill any the prefill launches are only reported
            (ggml_tesseract_graph_qwen_tiny_ub1024: one 700-token ubatch, whose FLASH_ATTN of more than
            680 tokens stays on the CPU, SW-43), and --min-prefill-tokens requires such a ubatch;
-        3. KL against the CPU backend with klcheck's criterion: CPU replay, 1-ulp floor, the embd
-           identity check (as `klcheck all`), then `klcheck compare` with --min-kl / --min-top1
-           (the criterion is mean KL <= max(min-kl, 3 x floor) and top-1 >= min-top1;
-           docs/klcheck.md "Pass"; why the tiny models need --min-kl: tiny.cmake).
+        3. KL against the CPU backend with klcheck's criterion: CPU replay, the 1-ulp floors of the
+           seeds 1 to --floor-seeds (default 3), the embd identity check (as `klcheck all`), then
+           `klcheck compare` with --min-kl / --min-top1 (the criterion is mean KL <= max(min-kl,
+           3 x the mean floor KL) and top-1 >= min-top1; docs/klcheck.md "Pass"; why the tiny
+           models need --min-kl: tiny.cmake).
+        The device run takes no TSR_KINDS from the caller: the tests check the full kind set.
 ops     test-backend-ops on the device for one op filter: every supported case must pass, at least
         --min-run cases must be supported (so that a supports_op regression cannot pass as "all
         unsupported"), and the unsupported cases are counted and listed (the full list in --list).
@@ -235,7 +237,11 @@ def cmd_graph(a: argparse.Namespace) -> int:
     common = ["-m", a.model, "--phase", "m7", "-ub", str(a.ub), "-t", str(a.threads)]
     env = dict(os.environ)
     env.update({"TSR_DEBUG": "1", "GGML_SCHED_DEBUG": "2", "TSR_STATS": "1"})
-    dev, cpu, floor, embd = (str(out / f) for f in ("dev.klc", "cpu.klc", "floor.klc", "cpu-embd.klc"))
+    # klcheck run --phase m7 keeps the caller's TSR_KINDS; these tests check the full kind set (a list
+    # without SET_ROWS_KV aborts inside llama.cpp with the KV cache on the device)
+    env.pop("TSR_KINDS", None)
+    dev, cpu, embd = (str(out / f) for f in ("dev.klc", "cpu.klc", "cpu-embd.klc"))
+    floors = [str(out / f"floor-seed{i}.klc") for i in range(1, a.floor_seeds + 1)]
     log = out / "dev.log"
     prompts = ["--prompts", a.prompts] if a.prompts else []          # none: klcheck's built-in prompts
     if a.join_prompts:
@@ -274,7 +280,10 @@ def cmd_graph(a: argparse.Namespace) -> int:
 
     # KL against the CPU backend (klcheck all's phases 2-5 on the device tokens)
     rc_cpu = run([kl, "run", "--device", "cpu", "--tokens", dev, "--out", cpu] + common, quiet=True)
-    rc_floor = run([kl, "run", "--device", "cpu", "--tokens", dev, "--perturb-ulp", "1", "--out", floor] + common, quiet=True)
+    rc_floor = 0
+    for i, fl in enumerate(floors, 1):
+        rc_floor |= run([kl, "run", "--device", "cpu", "--tokens", dev, "--perturb-ulp", str(i), "--out", fl] + common,
+                        quiet=True)
     rc_embd = run([kl, "run", "--device", "cpu", "--tokens", dev, "--input", "embd", "--out", embd] + common, quiet=True)
     if rc_cpu or rc_floor or rc_embd:
         print(f"m7_tests: FAIL: a CPU run failed (cpu {rc_cpu}, floor {rc_floor}, embd {rc_embd})")
@@ -282,8 +291,10 @@ def cmd_graph(a: argparse.Namespace) -> int:
     rc_id = run([kl, "compare", "--ref", cpu, "--dev", embd, "--expect-identical", "-q"])
     if rc_id != 0:
         print("m7_tests: FAIL: the embd input path is not the token path bit for bit (the floor would not measure the nudge)")
-    cmp = [kl, "compare", "--ref", cpu, "--dev", dev, "--floor", floor, "--json", str(out / "report.json"),
+    cmp = [kl, "compare", "--ref", cpu, "--dev", dev, "--json", str(out / "report.json"),
            "--min-kl", str(a.min_kl), "--min-top1", str(a.min_top1)]
+    for fl in floors:
+        cmp += ["--floor", fl]
     rc_cmp = run(cmp)
     ok = structure_ok and rc_id == 0 and rc_cmp == 0
     print(f"m7_tests: {'PASS' if ok else 'FAIL'}: structure {'ok' if structure_ok else 'FAIL'}, "
@@ -371,6 +382,7 @@ def main() -> int:
     g.add_argument("-t", "--threads", type=int, default=4)
     g.add_argument("--min-decodes", type=int, default=16)
     g.add_argument("--min-kl", type=float, default=0.0)
+    g.add_argument("--floor-seeds", type=int, default=3, help="floor runs with the seeds 1 to N (klcheck all's default)")
     g.add_argument("--min-top1", type=float, default=0.8)
     g.add_argument("--launch-re", default=r"^\[tesseract\] launch #\d+")
     g.add_argument("--join-prompts", type=int, default=0, metavar="N",

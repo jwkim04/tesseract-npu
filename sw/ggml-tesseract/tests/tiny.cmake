@@ -13,14 +13,18 @@
 # and one launch per ubatch in prefill (-ub 16: prompts of 48-60 and 251-343 tokens, 3-22 ubatches;
 # the long ones cross the 256-cell KV bucket in decode and in prefill and wrap Gemma 4's 256-cell SWA
 # ring, gen_tiny_models.py PROMPTS); then the KL against the CPU backend with klcheck's criterion,
-# mean KL <= max(--min-kl, 3 x floor) and top-1 >= --min-top1 (docs/klcheck.md "Pass").
+# mean KL <= max(--min-kl, 3 x floor) and top-1 >= --min-top1 (docs/klcheck.md "Pass"). The floor is
+# the mean over the 1-ulp floor runs of the seeds 1 to 3 (m7_tests.py --floor-seeds, as klcheck all),
+# and the device run takes no TSR_KINDS from the environment (the tests check the full kind set).
 #
 # The bounds (W3b measurements, these prompts, 96 positions per model: 8 prompt-tail rows + 16
-# generated rows of 4 prompts; deterministic, the same every run):
-#   model            M6 mean KL (ratio to the 1-ulp floor)   M7 mean KL (ratio)   floor     top-1
-#   qwen2 q8_0       1.42e-4 (0.65)                         1.03e-4 (0.47)       2.20e-4   100 %
-#   qwen2 q4_k       1.17e-4 (0.79)                         1.47e-4 (0.99)       1.48e-4   100 %
-#   gemma4 q8_0      6.05e-4 (4.2)                          6.89e-4 (4.8)        1.44e-4   100 %
+# generated rows of 4 prompts; deterministic, the same every run). The M6 ratios and the first M7
+# ratio are against the floor of seed 1 alone (the single-floor line the tests used first); the second
+# M7 ratio is against the mean floor of the seeds 1 to 3, which the tests use now:
+#   model        M6 mean KL (ratio, seed 1)  M7 mean KL (ratio seed 1 / mean)  floor seed 1 / mean  top-1
+#   qwen2 q8_0   1.42e-4 (0.65)              1.03e-4 (0.47 / 0.60)             2.20e-4 / 1.71e-4    100 %
+#   qwen2 q4_k   1.17e-4 (0.79)              1.47e-4 (0.99 / 1.47)             1.48e-4 / 1.00e-4    100 %
+#   gemma4 q8_0  6.05e-4 (4.2)               6.89e-4 (4.8 / 1.69)              1.44e-4 / 4.07e-4    100 %
 # The Qwen2 tests use klcheck's criterion as it is (3 x floor). Gemma 4 adds --min-kl 3e-3
 # (openTPU's absolute MAX_KL form, docs/klcheck.md): the 1-ulp floor of a 4-layer random model
 # underestimates its sensitivity, which M6 (the MUL_MATs on the device, bit-exact with the spec model
@@ -30,7 +34,8 @@
 # activations. Injected errors, the CPU on the device's tokens with an edited GGUF: Gemma 4 sliding
 # window 16 -> 15: mean KL 0.41, top-1 90.6 %; freq_base_swa x 1.001: 6.4e-3; RMS eps 1e-6 -> 1e-3:
 # 8.1e-3; Qwen2 freq_base x 1.001: 4.2e-4; eps 1e-6 -> 1e-3: 4.4e-4. --min-top1 0.95 (the spec's
-# 0.8 would pass the sliding-window error).
+# 0.8 would pass the sliding-window error). Against the mean of three floors the Gemma 4 M7 ratio is
+# 1.7 (0.79 to 4.8 per seed); --min-kl stays.
 #
 # test-backend-ops (m7_tests.py ops): one ctest per op filter, Tesseract0 vs CPU on the sim with the
 # race detector fatal: every supported case must pass, at least MIN_RUN cases must be supported, the

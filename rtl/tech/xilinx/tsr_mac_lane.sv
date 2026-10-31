@@ -1,6 +1,6 @@
 // tsr_mac_lane.sv — Xilinx UltraScale+ (U200) variant of the MAC lane group: N signed 8-bit
 // products summed, for T tokens that share the weights, with the products on DSP48E2 slices and
-// two tokens packed per DSP (spec MVM 클러스터 마이크로아키텍처 "DSP 패킹").
+// two tokens packed per DSP (spec MVM cluster microarchitecture, "DSP packing").
 //
 // Owner: xtech agent (M3 part C; docs/rtl-m3.md §7.2, §9.2 item 4, §9.3). Selected by
 // rtl/filelist_xilinx.f in place of rtl/tech/generic.

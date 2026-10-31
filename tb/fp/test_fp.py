@@ -122,7 +122,7 @@ def mk(s: int, e: int, m: int) -> int:
     return ((s & 1) << 31) | ((e & 0xFF) << 23) | (m & 0x7FFFFF)
 
 
-# (a, b, expected) — expected from the spec (구현 명확화) / sw/sim/tests/test_ref_fp.c; every one
+# (a, b, expected) — expected from the spec (Implementation clarifications) / sw/sim/tests/test_ref_fp.c; every one
 # is also checked against libtsr_ref (test_fp_directed_vectors_match_ref).
 MUL_DIRECTED = [
     (0x3F7FFFFF, 0x00800000, 0x00800000),   # spec mandatory: window edge rounds up to 2^-126
@@ -187,7 +187,7 @@ DIV_DIRECTED = [
 # (a, b, sub, expected): y = a + b (sub = 0) / a - b (sub = 1); expectations derived by hand from
 # the spec rules (docs/rtl-m3.md §8.1 mandatory vectors) and checked against libtsr_ref below.
 ADD_DIRECTED = [
-    # exact subnormal results are flushed with their sign (spec 구현 명확화 "FTZ 판정 시점")
+    # exact subnormal results are flushed with their sign (spec Implementation clarifications, "FTZ decision point")
     (0x00C00000, 0x00800000, 1, 0x00000000),   # mandatory: 1.5 * 2^-126 - 2^-126 -> +0
     (0x80C00000, 0x80800000, 1, 0x80000000),   # mandatory: its negation -> -0
     (0x00800000, 0x00C00000, 1, 0x80000000),

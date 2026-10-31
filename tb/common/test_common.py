@@ -52,7 +52,7 @@ M32 = 0xFFFFFFFF
 
 def test_ref_fp_vectors():
     r = ref()
-    # FTZ window (spec 구현 명확화 "FTZ 판정 시점") — also required in the RTL fp block tests.
+    # FTZ window (spec, Implementation clarifications, "FTZ decision point") — also required in the RTL fp block tests.
     assert r.fmul(0x3F7FFFFF, 0x00800000) == 0x00800000
     assert r.fmul(0x3F1FA0BA, 0x00CD4708) == 0x00800000
     assert r.fdiv(0x00FFFFFF, f32_bits(2.0)) == 0x00800000
@@ -474,7 +474,7 @@ def test_ref_m3_wrappers():
             if fmt == 0:   # Q8_0: y = fmul(d, f32(q)) for the first block
                 d = r.fp16_to_f32(blocks[0] | (blocks[1] << 8))
                 assert deq[:32] == [r.fmul(d, r.i32_to_f32(mvm_model.s8(q))) for q in blocks[2:34]]
-    # spec examples (행 크기) and the symmetric allocation (대칭 할당)
+    # spec examples (Row size) and the symmetric allocation (Symmetric allocation)
     assert r.row_beats(1, 27648) == 243 and r.row_beats(0, 5120) == 85 and r.row_beats(0, 896) == 15
     for N, C in ((40, 4), (5, 4), (1, 16), (17, 3), (100, 7)):
         R = r.rows_per_ch(N, C)

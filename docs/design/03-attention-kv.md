@@ -2,7 +2,7 @@
 
 Status: **design contract for M6, proposal** (2026-10-30). One of the six area documents in
 `docs/design/` (EX execution model, VU vector unit, AT attention and KV (this file), CC control core,
-DB debug, SW software and verification). It implements user decision D17 (`docs/ctrl-riscv.md:45`):
+DB debug, SW software and verification). It implements user decision D17 (`docs/ctrl-riscv.md`, user decisions of 2026-10-30):
 the KV cache lives on the device in q8_0, and attention arrives as llama.cpp `FLASH_ATTN_EXT`.
 Source-of-truth order is the project's: `docs/spec.md` > ISA simulator (`sw/sim`) > this document.
 The spec changes this document needs are listed in §14; they are applied in W0
@@ -159,7 +159,7 @@ documented as unsupported (run with `-nkvo`).
 ## 3. Why the clusters, not the VU
 
 - **SPM bandwidth.** The core's SPM port moves 64 B per cycle; the four channels together deliver
-  256 B per cycle at 97–98 % beat efficiency (`docs/platform-u200.md:1036`). Any scheme that loads
+  256 B per cycle at 97–98 % beat efficiency (`docs/platform-u200.md` §14.1). Any scheme that loads
   K/V tiles into SPM and computes from there reaches at most 25 % of the DDR rate.
 - **VU arithmetic.** The VU processes 16 f32 per cycle. A q8_0 beat holds about 60 values.
 - **Clusters.** Each cluster consumes its own channel at one beat per cycle and has 512 DSPs
@@ -192,7 +192,7 @@ O(rows × cells) softmax pass and the O(rows × D) merges.
 ### 4.2 Channel interleave
 
 Group u lives in **channel c = u mod C** at local index **ℓ = ⌊u / C⌋**. Each plane occupies the
-same beat range [B, B + LG·GB) in every channel (symmetric allocation, `docs/spec.md:122-126`).
+same beat range [B, B + LG·GB) in every channel (symmetric allocation, `docs/spec.md` §4).
 A run of n groups is therefore split over the channels to within one group. A 16-cell group gives
 exactly one 64-byte line of f32 scores per head row (§5.2), so every score line comes from one
 cluster.
@@ -201,7 +201,7 @@ cluster.
 
 Within a group, the 16 cell rows are concatenated in cell order as a sequence of 16·E/32 q8_0
 blocks. That sequence is cut into Q8_0 chunks of 32 blocks (spec weight layout,
-`docs/spec.md:152-160`: one meta beat with 32 fp16 scales, then 16 quant beats). For cell
+`docs/spec.md` §5: one meta beat with 32 fp16 scales, then 16 quant beats). For cell
 r = j mod 16 and block b of its row (0 ≤ b < E/32):
 
 ```
@@ -233,7 +233,7 @@ beats, the same as K.
   §11). They are allocated symmetrically, top-down from the end of each channel. Weights grow
   bottom-up from 512 MiB. The allocator places one plane per (layer, stream, K/V).
 - **Alignment.** B is beat-aligned. 64-beat (4 KiB) alignment is recommended, not required; the
-  requester splits bursts at 4 KiB anyway (`docs/spec.md:80`).
+  requester splits bursts at 4 KiB anyway (`docs/spec.md` §2, Core boundary interface).
 - **Capacity:** per cell, Σ over layers of 2·E·34/32 bytes.
 
 | Model (D, n_head_kv, layers) | Bytes per cell | 4K cells | 32K cells | Per channel at 32K |
@@ -252,7 +252,7 @@ layers have E = n_head_kv·D = 512 < 1024, so two cells share a K chunk and ever
 KVST touches is read-modify-written (§5.1). They have no `attn_v`: V is the K projection,
 normalized without weight, and is stored in its own V plane like any other V.
 
-32B Q4_K_M weights take about 5.2 GB per channel (`docs/spec.md:140`). Weights plus a 32K cache
+32B Q4_K_M weights take about 5.2 GB per channel (`docs/spec.md` §4). Weights plus a 32K cache
 use about 40 % of a 16 GiB channel; 128K contexts also fit (*estimate*).
 
 ### 4.6 Correspondence with ggml, identification, clearing
@@ -319,13 +319,13 @@ src + i·stride. Its q bytes are QS[0..E) and its scales are fp16(D[b]) with `ts
 this conversion is exact for QACT output. Bytes are placed per §4.3 or §4.4.
 
 - The software sequence for `SET_ROWS` is `QACT A32 (K = E, T rows)` followed by `KVST`. QACT A32
-  is `quantize_row_q8_0_ref` (`docs/spec.md:203`), so the stored values equal llama.cpp's except
+  is `quantize_row_q8_0_ref` (`docs/spec.md` §6), so the stored values equal llama.cpp's except
   where x86 `quantize_row_q8_0` rounds a tie differently (about 1 value in 3–4·10^5,
-  `docs/spec.md:186`).
+  `docs/spec.md` §6).
 - **Partial meta beats** (K with E % 1024 ≠ 0; every V cell) are written by read-modify-write
   inside the DMA unit: read the beat, merge the bytes, write it. This is safe because DMA ops run
   one at a time in queue order, and readers in other units are ordered by dependencies (memory
-  model, `docs/ctrl-riscv.md:770-803`). A meta beat that the op fully covers is written without a
+  model, `docs/ctrl-riscv.md` §5.5). A meta beat that the op fully covers is written without a
   read. No core-boundary change (write strobes) is needed. A later revision may switch to byte
   enables with an identical architectural result.
 - Cells c0..c0+n_rows−1 must be consecutive. The kernel splits non-consecutive `SET_ROWS` indices
@@ -356,10 +356,10 @@ SPM f32 at line dst + r·rstride + ⌊j_rel/16⌋, word j_rel mod 16
 MAXOUT: f32 word r of the vector at mdst = max_tot(M_FLOOR, s[r][0 .. 16·n_groups))
 ```
 
-- **SEG** is the spec's Q8_0 row dot product (`docs/spec.md:215-239`, `tsr_dot_row`) applied to
+- **SEG** is the spec's Q8_0 row dot product (`docs/spec.md` §7, `tsr_dot_row`) applied to
   the D-element segment [g·D, (g+1)·D) of the cell's K row, with the QA blocks of head h of query
   vector q (§6.2).
-- **max_tot** uses the spec's total order (−inf < … < +inf < NaN, `docs/spec.md:298`).
+- **max_tot** uses the spec's total order (−inf < … < +inf < NaN, `docs/spec.md` §9).
 - **M_FLOOR** = −2^100 (0xF1800000, §6.3).
 - **CAUSAL and SLIDE** describe a prefill tile whose T_q query tokens occupy consecutive cells:
   row q sees [lo_q, hi_q). With c_hi = (cell of the last query) + 1, CAUSAL gives each query its
@@ -481,7 +481,7 @@ of the repacked row (VU §5.6), simulator from M6, RTL in M8.
   (`src/llama-model.cpp:1688-1689`; SW R2); the f32 row arrives as an input of the device split.
 - **M8** (device decode step, spec stage B): the embedding lookup is LD (ROW_BEATS beats of the
   row) + DQROW, bit-identical to `dequantize_row_*` for Q8_0 and Q4_K tensors
-  (`docs/spec.md:1028`).
+  (`docs/spec.md` §21, Agreement with ggml).
 - **The f32 alternative.** When the GGUF `tok_embd` type is neither Q8_0 nor Q4_K, a DQROW of the
   load-time Q8_0 conversion differs from the CPU's `GET_ROWS` in every element. The exact
   alternative is an f32 copy of `tok_embd` (3.1 GB for Qwen2.5-32B, *estimate*) and an `LD` of the
@@ -502,7 +502,7 @@ of the repacked row (VU §5.6), simulator from M6, RTL in M8.
 
 ## 6. Numerics (bit-exact definitions)
 
-The fp rules are the spec's: DAZ and FTZ, RNE, canonical NaN (`docs/spec.md:243-250`, `:1025`).
+The fp rules are the spec's: DAZ and FTZ, RNE, canonical NaN (`docs/spec.md` §7 and §21, FTZ decision point).
 fadd, fsub, fmul and frecip are `tsr_fadd` etc. (`sw/sim/tsr_ref.c:99-104`).
 
 ### 6.1 KV quantization
@@ -521,7 +521,7 @@ SEG = tsr_tree16(p) with p_k = fadd(+0.0, t_k) for k < D/32, p_k = +0.0 otherwis
 ```
 
 This is exactly `tsr_dot_row(Q8_0, segment-as-row, K = D, head-h QA)`, the spec row rule with
-16 partials (`docs/spec.md:239`). For D/32 = 2^m ≤ 16 it equals z(pairwise tree of t_0..t_(D/32−1)),
+16 partials (`docs/spec.md` §7). For D/32 = 2^m ≤ 16 it equals z(pairwise tree of t_0..t_(D/32−1)),
 where z maps −0 to +0; the hardware may use that short tree. The reference test proves the
 equality (§12).
 
@@ -853,12 +853,12 @@ and read-modify-writes partial meta beats (§5.1). One token's K or V goes to on
 | ATTPV: w-unit (16 fmul), exponent max, 16 aligners | 3–4 K | 3 K | 16–32 | 0 |
 | ATTPV: delay FIFO, capture bank, 8 convert/add pipes, O/l storage | 5–7 K | 22 K | 0 | 2–4 |
 | **Per cluster** | **19–27 K** | **29 K** | **16–32** | **4–6** |
-| **Four clusters** (SLR0/SLR2: about +40–55 K LUT each, from ≈ 40 % with the DDR controller, `docs/platform-u200.md:469-470`, to ≈ 50–54 %) | 76–108 K | 116 K | 64–128 | 16–24 |
+| **Four clusters** (SLR0/SLR2: about +40–55 K LUT each, from ≈ 40 % with the DDR controller, `docs/platform-u200.md` §8.2, to ≈ 50–54 %) | 76–108 K | 116 K | 64–128 | 16–24 |
 | KVST in the DMA (SLR1) | 1–2 K | 1 K | 0 | 0 |
 | AT vector ops in the VU (EXP reuse; AMERGE / ANORM sequencing, row-scalar buffers; VU §7.10) | ≈ 2 K | 1.5 K | 0 | 2 |
 | SLR1 share (KVST + central-gather ATT path; CC §14.1) | 2–5 K | | 0 | 0 |
 
-SLR0 and SLR2 use 1,348 of 2,280 DSPs each (59 %, `docs/rtl-m3.md:1183-1185`), so about 930
+SLR0 and SLR2 use 1,348 of 2,280 DSPs each (59 %, `docs/rtl-m3.md` §14.5), so about 930
 are free in each. The DSP and RAM budgets are not the issue; LUT and timing are (§15).
 
 ---
@@ -896,7 +896,7 @@ delay, and the gather drain.
 
 | Model | Weights per token | Attention at 4K | Share | Attention at 32K | Share |
 |---|---|---|---|---|---|
-| Qwen2.5-0.5B Q8_0 | ≈ 8.25 ms (`docs/platform-u200.md:1036`) | ≈ 0.8 ms | ≈ 9 % | ≈ 6.0 ms | ≈ 42 % |
+| Qwen2.5-0.5B Q8_0 | ≈ 8.25 ms (`docs/platform-u200.md` §14.1) | ≈ 0.8 ms | ≈ 9 % | ≈ 6.0 ms | ≈ 42 % |
 | Qwen2.5-32B Q4_K_M | ≈ 300 ms | ≈ 9.2 ms | ≈ 3.0 % | ≈ 70 ms | ≈ 19 % |
 | Gemma 4 12B Q4_K_M (7.1 GB file) | ≈ 100 ms | ≈ 3.6 ms (SWA ≤ 1,024 visible cells; full layers streamed twice) | ≈ 3.5 % | ≈ 11 ms | ≈ 10 % |
 | Gemma 4 31B Q4_K_M *confirm* | ≈ 275 ms | ≈ 9.7 ms | ≈ 3.4 % | ≈ 28 ms | ≈ 9 % |
@@ -988,7 +988,7 @@ them in kernel order (SW §7.5).
 - **KVST** equals `quantize_row_q8_0_ref` + layout, byte for byte.
 - **ATTQK SEG** equals `tsr_dot_row` on the segment repacked as a standalone Q8_0 row. It also
   equals the short tree z(pairwise) (§6.2), over random and directed terms (−0, NaN, Inf, FTZ
-  boundary values of `docs/spec.md:1025`).
+  boundary values of `docs/spec.md` §21, FTZ decision point).
 - **ATTPV:**
   - A_L is checked against an independent 128-bit model;
   - c_L against an exact rational model rounded once (F);
@@ -1004,7 +1004,7 @@ them in kernel order (SW §7.5).
 
 `sw/tools/numcheck.py` gains a numpy model of the seven ops and the composite. It is written from
 this document only, does not share code with `tsr_ref`, and must agree bit for bit
-(`docs/spec.md` 검증 전략, numcheck B1b).
+(`docs/spec.md` Verification strategy, numcheck B1b).
 
 ### 13.4 Simulator and traces
 
@@ -1065,11 +1065,11 @@ The integration of `docs/design` edits no file outside `docs/design`; these edit
 
 | Document | Change |
 |---|---|
-| `docs/spec.md:138` | DRAM map KV row: "symmetric planes, top-down; layout `docs/design/03-attention-kv.md` §4" |
-| `docs/spec.md:984` | Open item "KV cache layout" closed by §4 and D17 |
-| `docs/spec.md:420-442` | ISA table: KVST 0x14, ATTQK 0x21, ATTPV 0x22, ASMAX–ANORM 0x34–0x37 (M6) |
-| `docs/spec.md:493-498`, `:523` | Attention no longer stays on the CPU; `-nkvo` is no longer required; supports_op per §2.6 |
-| `docs/spec.md:599` | Stage-A ops: `FLASH_ATTN_EXT` only (no `SOFT_MAX`, no attention `MUL_MAT`) |
+| `docs/spec.md` §4 | DRAM map KV row: "symmetric planes, top-down; layout `docs/design/03-attention-kv.md` §4" |
+| `docs/spec.md` §20 | Open item "KV cache layout" closed by §4 and D17 |
+| `docs/spec.md` §11 | ISA table: KVST 0x14, ATTQK 0x21, ATTPV 0x22, ASMAX–ANORM 0x34–0x37 (M6) |
+| `docs/spec.md` §12 | Attention no longer stays on the CPU; `-nkvo` is no longer required; supports_op per §2.6 |
+| `docs/spec.md` §15 | Stage-A ops: `FLASH_ATTN_EXT` only (no `SOFT_MAX`, no attention `MUL_MAT`) |
 | `docs/klcheck.md` "Settings" table | FA on, KV q8_0, rotation off; `offload_kqv` = false in M6 and true (KV on the device) in M7 |
 | `docs/rtl-m3.md` | MVM cluster gains ATTQK and ATTPV modes (§8); RB_MIN unchanged for weight MVMs |
 
@@ -1101,7 +1101,7 @@ The integration of `docs/design` edits no file outside `docs/design`; these edit
   the k4 link (≥ 276 MHz); fallback: a half-rate ATTPV, bit-exact (§15).
 - Whether M8 wants the Hadamard rotation back (Appendix A) and the f32 embedding table (§5.9).
 - Card measurement of the DDR cost of KVST's scattered single-beat writes and RMW reads during
-  ATTQK / ATTPV streams (`docs/ctrl-riscv.md:754-768` item).
+  ATTQK / ATTPV streams (`docs/ctrl-riscv.md` §5.4).
 
 ---
 

@@ -2,7 +2,7 @@
 """Independent numpy bit model of the VU's approximate and composite math (SW-23).
 
 Written from the text of docs/design/02-vector-unit.md §6 alone (with the fp rules it cites: VU §4.1,
-docs/spec.md "fp 공통 규칙" and "구현 명확화 (v0.2.1)"). It deliberately shares no code with
+docs/spec.md "Common fp rules" and "Implementation clarifications"). It deliberately shares no code with
 sw/sim/tsr_ref_math.c: the ref_math_* ctests compare the two bit for bit, so a coding error in
 either one shows up as a mismatch.
 
@@ -273,7 +273,7 @@ def tanh(u):
 
 def f32_to_f16_rne(u):
     """F16: DAZ, then RNE to binary16 with gradual underflow; overflow gives ±inf. NaN gives
-    sign | 0x7E00 (docs/spec.md "fp16 변환의 NaN"). Returns the 16-bit pattern in a uint32."""
+    sign | 0x7E00 (docs/spec.md "NaN in fp16 conversion"). Returns the 16-bit pattern in a uint32."""
     x = daz(u)
     sign = (x >> 16) & 0x8000
     e = ((x >> 23) & 0xFF).astype(I64)
@@ -292,7 +292,7 @@ def f32_to_f16_rne(u):
 
 def f16_to_f32(h):
     """F32: exact widening of the binary16 pattern in the low 16 bits (subnormals included; NaN
-    keeps sign and payload and gets the quiet bit, docs/spec.md "fp16 변환의 NaN")."""
+    keeps sign and payload and gets the quiet bit, docs/spec.md "NaN in fp16 conversion")."""
     h = (u32(h) & 0xFFFF).astype(I64)
     sign = (h & 0x8000) << 16
     e = (h >> 10) & 0x1F
@@ -687,7 +687,7 @@ def _self_test_constants(ck):
 def _self_test_specials(ck):
     NINF, PZ, NZ, NAN, SNAN, NNAN = 0xFF800000, 0, SIGN, CANON_NAN, 0x7F800001, 0xFFC12345
     DEN, NDEN = 0x00000001, 0x807FFFFF
-    # spec fp boundary vectors (구현 명확화) and the §6.2 FTZ examples
+    # spec fp boundary vectors (§21) and the §6.2 FTZ examples
     ck.eq("FM(0x3F7FFFFF, 0x00800000)", _ev1("fmul", 0x3F7FFFFF, 0x00800000), 0x00800000)
     ck.eq("FM(0x3F1FA0BA, 0x00CD4708)", _ev1("fmul", 0x3F1FA0BA, 0x00CD4708), 0x00800000)
     ck.eq("FD(0x00FFFFFF, 2)", _ev1("fdiv", 0x00FFFFFF, 0x40000000), 0x00800000)

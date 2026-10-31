@@ -140,7 +140,7 @@ static void test_csr(void) {
     CHECK(s != NULL, "caps = tsr_sim_caps_implemented() 0x%x accepted", bad.caps);
     tsr_sim_destroy(s);
     bad = c; bad.nsreg = 17;       CHECK(tsr_sim_create(&bad, NULL) == NULL, "nsreg");
-    // NUM_CH <= 16: LD/ST name the channel in the 4-bit w0 sub field (spec 구성 파라미터).
+    // NUM_CH <= 16: LD/ST name the channel in the 4-bit w0 sub field (spec "Configuration parameters").
     bad = c; bad.num_ch = TSR_NUM_CH_MAX + 1; CHECK(tsr_sim_create(&bad, NULL) == NULL, "num_ch 17");
     bad = c; bad.num_ch = 32;      CHECK(tsr_sim_create(&bad, NULL) == NULL, "num_ch 32");
     bad = c; bad.num_ch = 255;     CHECK(tsr_sim_create(&bad, NULL) == NULL, "num_ch 255");

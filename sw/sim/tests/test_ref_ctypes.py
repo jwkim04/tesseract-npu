@@ -72,7 +72,7 @@ def main():
     check(lib.tsr_f32_to_fp16(65520.0) == 0x7C00, "fp16 overflow")
     check(lib.tsr_f32_bits(lib.tsr_fmul(float("inf"), 0.0)) == 0x7FC00000, "canonical NaN")
     check(lib.tsr_f32_bits(lib.tsr_fadd(2.0 ** -126 * 1.5, -(2.0 ** -126))) == 0, "FTZ")
-    # FTZ window (spec 구현 명확화 "FTZ 판정 시점"): exact 2^-126 - 2^-150 rounds to 2^-126 and is
+    # FTZ window (spec §21 (FTZ decision point)): exact 2^-126 - 2^-150 rounds to 2^-126 and is
     # kept (an IEEE tininess-after-rounding / x86 FTZ datapath gives 0); 2^-126 - 2^-149 -> 0.
     check(lib.tsr_f32_bits(lib.tsr_fmul(1.0 - 2.0 ** -24, 2.0 ** -126)) == 0x00800000, "FTZ window edge")
     check(lib.tsr_f32_bits(lib.tsr_fmul(1.0 - 2.0 ** -23, 2.0 ** -126)) == 0, "FTZ below window")

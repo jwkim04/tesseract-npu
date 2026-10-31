@@ -1,7 +1,7 @@
 // tsr_ref.c — the single reference implementation of Tesseract numerics and layouts.
 //
-// Normative sources: docs/spec.md sections "디바이스 가중치 레이아웃", "양자화 활성값(QA)
-// 레이아웃", "수치 규칙" and "구현 명확화 (v0.2.1)". The ISA simulator, the ggml backend and
+// Normative sources: docs/spec.md sections "Device weight layout", "Quantized
+// activation (QA) layout", "Numeric rules" and "Implementation clarifications". The ISA simulator, the ggml backend and
 // the RTL testbenches (ctypes on libtsr_ref.so) all use these functions; the RTL must match
 // them bit for bit.
 //
@@ -58,7 +58,7 @@ static inline float daz(float x) { return tsr_bits_f32(daz_bits(tsr_f32_bits(x))
 
 // Result post-processing: NaN -> canonical NaN, subnormal -> signed zero. r is the native
 // (gradual-underflow, bounded-exponent) RNE result, so this flushes iff |exact| < 2^-126 -
-// 2^-150; not IEEE "tininess after rounding" (see tsr_ref.h and spec 구현 명확화).
+// 2^-150; not IEEE "tininess after rounding" (see tsr_ref.h and spec §21).
 static inline float fin(float r) {
     const uint32_t u = tsr_f32_bits(r);
     if ((u & F32_EXP) == F32_EXP) {

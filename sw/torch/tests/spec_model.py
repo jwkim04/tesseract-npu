@@ -2,7 +2,7 @@
 
 - ``q8_0_ref_blocks``: ggml's ``quantize_row_q8_0_ref`` written from its definition (amax / 127,
   id = 1 / d, q = roundf(x * id) half away from zero, d stored as fp16 RNE) -> ggml block_q8_0 bytes.
-- ``spec_y``: the spec's arithmetic for a Q8_0 weight (docs/spec.md 수치 규칙: QACT A32, block terms,
+- ``spec_y``: the spec's arithmetic for a Q8_0 weight (docs/spec.md "Numeric rules": QACT A32, block terms,
   16 partial sums + fixed tree, DAZ / FTZ) from sw/tools/numcheck.py's numpy model (B1b), which was
   written from the spec text only.
 - ``exact_y``: the float64 value of the quantized product (dequantized weight blocks x dequantized

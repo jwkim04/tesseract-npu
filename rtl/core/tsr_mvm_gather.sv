@@ -1,4 +1,4 @@
-// tsr_mvm_gather.sv — MVM result gather (spec MVM 클러스터 stage 10 "출력"): row results of the
+// tsr_mvm_gather.sv — MVM result gather (spec MVM cluster microarchitecture stage 10 "Output"): row results of the
 // NUM_CH clusters -> y lines in the SPM (partial lines with byte enables), ACC read-modify-write,
 // zero tails.
 //
@@ -8,7 +8,7 @@
 //   - start (pulse) with the MVM fields (stable from start until done): acc, t (tokens), n (N >= 1),
 //     dst_line, dst_stride (resolved, never 0), expect_ch[c] = channel c has rows. dst_stride <
 //     ceil(N/16) with t > 1 makes token ranges overlap: undefined result, but the gather must still
-//     finish normally (no hang; spec 구현 명확화 "겹치는 피연산자").
+//     finish normally (no hang; spec, Implementation clarifications, "Overlapping operands").
 //   - res_* per cluster (R1/R2): rows res_row = n_row in increasing order, res_last on the
 //     cluster's final row. Element n_row of token tk (tk < t) goes to SPM line
 //     dst_line + tk*dst_stride + n_row/16, f32 lane n_row % 16; with acc it is

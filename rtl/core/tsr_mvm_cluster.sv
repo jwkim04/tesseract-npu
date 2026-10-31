@@ -1,4 +1,4 @@
-// tsr_mvm_cluster.sv — one MVM cluster (spec 클러스터: the MVM engine of one channel): front end,
+// tsr_mvm_cluster.sv — one MVM cluster (spec MVM cluster microarchitecture: the MVM engine of one channel): front end,
 // activation buffer, back end, and the glue between them and the broadcast / result pipes.
 //
 // Owner: top agent (docs/rtl-m3.md §2 block (top); contract §3.1, §3.2, §3.5, §6.2).
@@ -22,7 +22,7 @@
 //     end's T_MAX results.
 //   - memory: the front end's WS read source port, unchanged (docs/rtl-m3.md §4).
 //   - idle: no MVM in progress in this cluster (setup done or not started, front and back idle).
-// Placement: one cluster per channel, in the SLR of that channel's DDR controller (spec 배치);
+// Placement: one cluster per channel, in the SLR of that channel's DDR controller (spec Placement);
 //   only the broadcast pipe, the result pipe and the memory port leave it.
 //
 // Interface addition (additive, top agent): parameter WS_RD_LAT (weight FIFO RAM read latency,

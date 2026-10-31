@@ -1,4 +1,4 @@
-// tsr_mvm.sv — the MVM unit (spec MVM 클러스터 마이크로아키텍처, ISA MVM; M3): dispatch from
+// tsr_mvm.sv — the MVM unit (spec MVM cluster microarchitecture, ISA MVM; M3): dispatch from
 // the dispatcher, activation broadcast to the NUM_CH clusters, cluster command, result gather and
 // ACC into the SPM, done, perf_mvm_busy.
 //

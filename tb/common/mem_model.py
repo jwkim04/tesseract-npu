@@ -1,4 +1,4 @@
-"""cocotb model of the core's per-channel memory ports (spec 코어 경계 인터페이스; docs/rtl-m2.md §4).
+"""cocotb model of the core's per-channel memory ports (spec Core boundary interface; docs/rtl-m2.md §4).
 
 One MemModel serves all NUM_CH channels of a DUT whose memory ports follow the tsr_core naming
 (packed per-channel vectors, channel c at slice [c]):

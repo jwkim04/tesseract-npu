@@ -5,7 +5,7 @@
 // Why this test exists: test-backend-ops judges MUL_MAT by NMSE <= 5e-4 against the CPU
 // (sum (a-b)^2 / sum a^2). With one output element that is the squared relative error of a
 // single dot product of U(-1,1) data. The spec's device path quantizes the F32 weight to Q8_0
-// at load (spec 로드 시 변환) and the activation to A32 int8 (spec QA 레이아웃), which leaves an
+// at load (spec "Load-time conversion") and the activation to A32 int8 (spec "Quantized activation (QA) layout"), which leaves an
 // absolute error of about 0.08 on a dot product whose value is ~N(0, 15^2); whenever the true
 // value happens to be small (|y| < ~3.6) the relative error exceeds the tolerance. Because
 // test-backend-ops draws fresh random data every run (std::random_device), that one case fails

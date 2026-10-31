@@ -2,14 +2,14 @@
 // (EX §3), the launch queue / completion ring / log ring (EX §4), SOFT_RESET (EX §8.5), PERF
 // (EX §6), the op handler table and the tile units NOP LD ST QACT MVM FENCE (EX §7.2).
 //
-// Normative sources: docs/spec.md "ISA", "MVM 의미", "구현 명확화 (v0.2.1)", docs/design/01-execution-
+// Normative sources: docs/spec.md "ISA", "MVM semantics", "Implementation clarifications", docs/design/01-execution-
 // model.md (EX), 04-control-core.md (CC) and 06-software-verification.md (SW) §4. All numerics
 // come from tsr_ref.c (spec rule 3); this file only decodes, checks and moves bytes. The queue
 // model (dispatcher, checker order, unit queues, SYNC, errors, the RISC-V side control window and
 // the time base) is tsr_q.c; the interface between the two and towards the other sim files is
 // tsr_sim_int.h.
 //
-// Decisions pinned in spec 구현 명확화 (v0.2.1, simulator section) and EX §7.1, implemented here:
+// Decisions pinned in spec §21 (Implementation clarifications, simulator section) and EX §7.1, implemented here:
 //   - Reserved fields: every word, flag bit and sub value an op does not use, and x16
 //     (w0[31:16], the former register fields), must be zero, else ILLEGAL_OP. LD/ST sub = channel
 //     >= NUM_CH -> ILLEGAL_OP. QACT sub (QA kind) >= 2 -> ILLEGAL_OP. MVM sub (fmt) >= 2 -> BAD_FMT.
@@ -1383,7 +1383,7 @@ static uint32_t chk_qact(tsr_sim * sim, const uint32_t w[8], tsr_extents * ext, 
     if (K == 0 || K % bs != 0 || K > sim->cfg.k_max) return TSR_ERR_K_RANGE;
     if (T == 0 || T > sim->cfg.t_max) return TSR_ERR_T_RANGE;
     const uint32_t x_lines  = K * 4u / TSR_LINE_BYTES;          // exact: K % 32 == 0
-    const uint64_t sstride  = w[5] ? w[5] : x_lines;             // 구현 명확화: stride 0
+    const uint64_t sstride  = w[5] ? w[5] : x_lines;             // spec §21 (Stride 0)
     const uint32_t qa_lines = tsr_qa_lines(kind, K);
     const uint32_t dst = w[1];
     const uint32_t src = w[2];

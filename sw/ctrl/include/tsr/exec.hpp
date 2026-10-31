@@ -9,7 +9,7 @@
 //     functions, SW-20), and pushes its tile ops with issue(op, deps, ctx.push_flags | ...);
 //     every op it pushes depends (directly or through others of the op) on `d`;
 //   - returns ONE ticket T whose completion implies that every tile op of the op is done (the last
-//     op depends on the others, or a join2 provides that; I1, docs/ctrl-riscv.md:544-550), and
+//     op depends on the others, or a join2 provides that; I1, docs/ctrl-riscv.md §4.4), and
 //     releases its scratch blocks with release(block, T) before returning;
 //   - never joins itself (no software wait inside the op stream: SW §7.3 "Overlap"; the ring's
 //     own software joins, chosen by count, are the exception), never reads a timing-dependent

@@ -1,9 +1,9 @@
-// tsr-lower.h — SPM tiling of one MUL_MAT (spec "ggml 백엔드 통합", lowering).
+// tsr-lower.h — SPM tiling of one MUL_MAT (spec "ggml backend integration", lowering).
 //
 // The plan a MUL_MAT of N x K weights and T f32 tokens follows on the device, per T tile:
 // LD the x tile, QACT it, MVM against W_OFF, ST the y tile. The SPM is partitioned
 // [x tile | QA tile | y tile]; every operand starts on a line and no two operands share a line
-// (spec SPM 규칙). The backend's supports_op and weight placement and the runtime's weight split
+// (spec "SPM rules"). The backend's supports_op and weight placement and the runtime's weight split
 // use the shape check. No ggml dependency.
 //
 // The firmware MUL_MAT kind emits the ops with the shared, freestanding plan.hpp (P2.4,

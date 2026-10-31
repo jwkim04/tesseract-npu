@@ -1,4 +1,4 @@
-// tsr_sim.h — Tesseract simulator (the oracle, spec 검증 전략; docs/design/06-software-verification.md
+// tsr_sim.h — Tesseract simulator (the oracle, spec "Verification strategy"; docs/design/06-software-verification.md
 // "SW" §4).
 //
 // The core model: SPM, per-channel DRAM, the s bank, the host CSR port (EX §5: identity, CTRL /
@@ -11,8 +11,8 @@
 // (tsr_sim_int.h); VU and AT ops plug in through the per-opcode handler table.
 //
 // Ops: NOP, LD, ST, QACT, MVM, FENCE (EX §7.2) here; VU / AT opcodes when their handlers are linked.
-// Every other opcode is ILLEGAL_OP (END, LI and ADDI are reserved). Checks follow spec "구현
-// 명확화" and EX §7.1 / §8.1: x16 (w0[31:16]) and every other field an op does not use must be zero
+// Every other opcode is ILLEGAL_OP (END, LI and ADDI are reserved). Checks follow spec "Implementation
+// clarifications" and EX §7.1 / §8.1: x16 (w0[31:16]) and every other field an op does not use must be zero
 // (ILLEGAL_OP); check order ILLEGAL_OP -> BAD_DEP -> BAD_FMT -> K_RANGE -> T_RANGE -> OPERAND ->
 // SPM_RANGE -> DRAM_RANGE; a failing op changes no state (it completes poisoned at its head).
 //
@@ -100,7 +100,7 @@ int       tsr_sim_dram_read(tsr_sim * sim, uint32_t ch, uint64_t off, void * dst
 void      tsr_sim_dram_note_write(tsr_sim * sim, uint32_t ch, uint64_t off, uint64_t len);
 uint8_t * tsr_sim_spm(tsr_sim * sim);            // debug view, spm_bytes long
 // Addressable beats per channel: min(ch_bytes / 64, 2^ADDR_BEAT_W). A DRAM operand
-// [a, a + n) is in range iff a + n <= this value (spec 구현 명확화, 범위 검사).
+// [a, a + n) is in range iff a + n <= this value (spec §21, Range check).
 uint64_t  tsr_sim_dram_limit_beats(const tsr_sim * sim);
 
 // Host CSR port (EX §5, the only host map): identity and configuration, CTRL / STATUS, RV_BOOT,
@@ -186,7 +186,7 @@ void tsr_sim_set_log(tsr_sim * sim, void * file /* FILE* */);
 void tsr_sim_set_threads(tsr_sim * sim, unsigned n);
 
 // ---------------------------------------------------------------------------
-// Access capture for trace dumps (spec 트레이스 형식; the trace format builds on it, SW §5.5)
+// Access capture for trace dumps (spec "Trace format"; the trace format builds on it, SW §5.5)
 // While capture is on, the simulator records, in beat granularity per channel:
 //   - init: every DRAM range the ops READ (LD sources, MVM weight rows) whose bytes were not
 //           written earlier during the capture; the bytes are copied at first read, i.e. the

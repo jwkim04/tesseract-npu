@@ -194,7 +194,7 @@ def qa_lines(kind, K):
 
 
 def row_beats(fmt, K):
-    """ROW_BEATS(fmt, K) (spec 행 크기; tsr_ref.c tsr_row_beats): full chunks of 1 meta + 16 (Q8_0)
+    """ROW_BEATS(fmt, K) (spec Row size; tsr_ref.c tsr_row_beats): full chunks of 1 meta + 16 (Q8_0)
     or 1 + 8 (Q4_K) quant beats, then a partial chunk of 1 + ceil(rem / 2) or 1 + 2 rem beats."""
     if fmt == FMT_Q4_K:
         nb = K // 256

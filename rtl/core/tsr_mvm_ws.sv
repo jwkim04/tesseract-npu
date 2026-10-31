@@ -1,4 +1,4 @@
-// tsr_mvm_ws.sv — MVM weight streamer of one cluster (spec MVM 클러스터 stage 1 "스트림 요청기")
+// tsr_mvm_ws.sv — MVM weight streamer of one cluster (spec MVM cluster microarchitecture stage 1 "Stream requester")
 // plus its weight FIFO: the WS read source of one channel's tsr_mem_arb.
 //
 // Owner: front agent (docs/rtl-m3.md §2 block (front), protocol §4).
@@ -6,7 +6,7 @@
 // Contract:
 //   - cmd_valid/cmd_ready (R1/R2): one command per MVM with rows_c >= 1: request exactly
 //     cmd_beats beats starting at beat cmd_w_off of this channel (the channel's rows are one
-//     contiguous range: W_OFF + r * ROW_BEATS for r < rows_c, spec 대칭 할당). cmd_ready is a
+//     contiguous range: W_OFF + r * ROW_BEATS for r < rows_c, spec Symmetric allocation). cmd_ready is a
 //     register: 1 only while idle (no beat requested-but-not-delivered, FIFO empty).
 //     cmd_beats = rows_c * ROW_BEATS is in [2, 2^40 - 1] for every legal MVM, so TSR_MVM_BEATS_W
 //     = 40 bits hold it: rows_c <= N <= 16 * (2^26 - 1) = 2^30 - 16 (dst SPM range check, SPM_BYTES
@@ -17,7 +17,7 @@
 //     (memory-side id {TSR_SRC_WS, 0} = 8: one id, so the data return in request order); bursts
 //     in address order, len = min(64 - addr % 64, beats left): <= 64 beats and never across a
 //     4 KiB (64-beat) block; the sum of all lens is exactly cmd_beats (no over-fetch:
-//     PERF_CH_RD_BEATS must equal rows_c * ROW_BEATS, spec 구현 명확화 "성능 카운터").
+//     PERF_CH_RD_BEATS must equal rows_c * ROW_BEATS, spec, Implementation clarifications, "Performance counters").
 //   - reserve before request (R4/M6): a burst is offered only when FIFO_BEATS minus (beats
 //     buffered + beats requested and not yet received) >= its len; space is taken when the burst
 //     is loaded into the request register (valid may not be withdrawn, R2). Hence rd_rsp_ready is

@@ -1,4 +1,4 @@
-// test_ref_dot.c — tsr_dot_row / tsr_term_* (spec "수치 규칙").
+// test_ref_dot.c — tsr_dot_row / tsr_term_* (spec "Numeric rules").
 //
 // 1. Bit-exact against an independent, straightforward re-implementation of the spec formula
 //    written here. It shares no code with tsr_ref.c: it reads the original ggml blocks (not

@@ -1,4 +1,4 @@
-// tsr_bw.cpp — M0 DMA bandwidth tool for the Alveo U200 (spec 마일스톤 M0; docs/m0-bw.md §6): drives
+// tsr_bw.cpp — M0 DMA bandwidth tool for the Alveo U200 (spec milestone M0; docs/m0-bw.md §6): drives
 // the bandwidth kernel tsr_bw_k4 (rtl/platform/alveo_xrt/bw) through the XRT native API and measures
 // per-channel and 4-channel concurrent DDR4 bandwidth (read, write, read + write) over transfer
 // sizes and burst lengths, checking every byte it can: the read checksum of every read run

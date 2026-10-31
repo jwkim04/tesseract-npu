@@ -53,7 +53,7 @@ package tsr_pkg;
   localparam longint unsigned TSR_REGION_WEIGHT_OFF = 512 * TSR_MIB;
 
   // -------------------------------------------------------------------------------------------
-  // Elaboration parameter defaults: U200 (spec 구성 파라미터, TSR_CONFIG_U200).
+  // Elaboration parameter defaults: U200 (spec Configuration parameters, TSR_CONFIG_U200).
   // tsr_core takes each of these as a parameter; these are only the defaults.
   // -------------------------------------------------------------------------------------------
   localparam int unsigned     TSR_DEF_NUM_CH         = 4;
@@ -185,7 +185,7 @@ package tsr_pkg;
   // -------------------------------------------------------------------------------------------
   // Configuration helpers (elaboration-time)
   // -------------------------------------------------------------------------------------------
-  // Addressable beats per channel: min(CH_BYTES / 64, 2^ADDR_BEAT_W) (spec 구현 명확화, 범위 검사).
+  // Addressable beats per channel: min(CH_BYTES / 64, 2^ADDR_BEAT_W) (spec Implementation clarifications, Range check).
   function automatic longint unsigned tsr_dram_limit(longint unsigned ch_bytes, int unsigned addr_beat_w);
     longint unsigned by_bytes, by_width;
     by_bytes = ch_bytes / 64;
@@ -203,7 +203,7 @@ package tsr_pkg;
   endfunction
 
   // -------------------------------------------------------------------------------------------
-  // QA layout (spec 양자화 활성값 레이아웃; tsr_ref.c tsr_qa_*). kind: 0 = A32, 1 = A256.
+  // QA layout (spec Quantized activation (QA) layout; tsr_ref.c tsr_qa_*). kind: 0 = A32, 1 = A256.
   // K must be a multiple of the block size (the dispatch checks K_RANGE first); K <= 65280.
   // -------------------------------------------------------------------------------------------
   function automatic logic [31:0] tsr_qa_block_size(logic kind);
@@ -228,7 +228,7 @@ package tsr_pkg;
     return (k + 32'd15) >> 4;
   endfunction
 
-  // ROW_BEATS(fmt, K) (spec 행 크기; tsr_ref.c tsr_row_beats). fmt: 0 = Q8_0, 1 = Q4_K. M3.
+  // ROW_BEATS(fmt, K) (spec Row size; tsr_ref.c tsr_row_beats). fmt: 0 = Q8_0, 1 = Q4_K. M3.
   function automatic logic [31:0] tsr_row_beats(logic fmt, logic [31:0] k);
     logic [31:0] nb, full, rem;
     if (!fmt) begin               // Q8_0: S = 32 blocks, chunk = 1 + 16 beats; partial 1 + ceil(rem/2)
@@ -292,7 +292,7 @@ package tsr_pkg;
   // M3: MVM unit (docs/rtl-m3.md). Everything below is additive; M2 users are unaffected.
   // ===========================================================================================
 
-  // ---- architecture constants of the MVM datapath (spec 디바이스 가중치 레이아웃, 수치 규칙) ----
+  // ---- architecture constants of the MVM datapath (spec Device weight layout, Numeric rules) ----
   localparam int unsigned TSR_MVM_LANES       = 128;  // weight lanes per beat (= LANES, U200)
   localparam int unsigned TSR_MVM_GROUPS      = 4;    // 32-lane groups per beat (one sum each)
   localparam int unsigned TSR_MVM_GROUP_LANES = 32;   // lanes summed per group (block / sub-block)

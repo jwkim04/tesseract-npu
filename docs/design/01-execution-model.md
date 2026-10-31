@@ -3,7 +3,7 @@
 Status: **design, not implemented** (2026-10-30). Area EX of the M6 design set in `docs/design/`. It
 owns the host-visible model and the global tables the other areas use: the launch protocol, the core
 CSR map, the opcode and unit tables, the error codes, the PERF counters, the XRT adapter and the
-transport API. It applies the user decisions D14–D18 (`docs/ctrl-riscv.md:38-56`) and keeps D1–D6
+transport API. It applies the user decisions D14–D18 (`docs/ctrl-riscv.md`, user decisions of 2026-10-30) and keeps D1–D6
 and D12. `docs/spec.md` summarises it and `docs/ctrl-riscv.md` records the decisions. Every
 unmeasured number is marked *estimate*. Every third-party behaviour that must be checked when a
 dependency is pinned is marked *confirm*. Area names: EX (this document), VU (vector unit), AT
@@ -21,7 +21,7 @@ dependency is pinned is marked *confirm*. Area names: EX (this document), VU (ve
   core-domain **completion ring** (LCQ, depth 8) that the host reads through the CSR window. The
   host needs no PCIe DMA per launch and two PCIe reads per completion. The empty-launch round
   trip target is ≤ 10 µs (*estimate* 4–8 µs). A host-issued exec measured 35 µs on the card, before
-  the control core was added (`docs/platform-u200.md:1049`).
+  the control core was added (`docs/platform-u200.md` §14.2).
 - A 256-word **log ring** in CSR space carries the RISC-V's log records (header format: DB §6.1)
   to the host. It still works when every tile queue is wedged.
 - The kernel uses **`ap_ctrl_none`**. The host uses `xrt::ip` register access and polls. No
@@ -94,7 +94,7 @@ Units of host work are launches. Nothing the host does starts a tile op directly
   would need an explicit declaration that the detector and the trace capture know about (a later
   optimisation, decided in W1b).
 - **H5.** Descriptor words are ordered by PCIe posted-write order and by the AXI4-Lite write
-  channel. The adapter handles writes in arrival order (`docs/platform-u200.md:83-85`), so
+  channel. The adapter handles writes in arrival order (`docs/platform-u200.md` §2), so
   `LQ_PUSH` always sees the staging words written before it.
 
 ### 2.4 Ownership
@@ -111,14 +111,14 @@ XRT adds its own (`.../core/pcie/linux/shim.cpp:2343`).
 
 ### 3.1 Format
 
-A static RV32 ELF (no relocations), built by the SDK of SW / CC (`docs/ctrl-riscv.md:1068-1088`).
+A static RV32 ELF (no relocations), built by the SDK of SW / CC (`docs/ctrl-riscv.md` §8.1).
 
 - `PT_LOAD` segments lie inside ITCM [0x0000_0000, `ITCM_BYTES`) or DTCM [0x0010_0000,
-  0x0010_0000 + `DTCM_BYTES`) of the RISC-V map (`docs/ctrl-riscv.md:260-267`). Their physical
+  0x0010_0000 + `DTCM_BYTES`) of the RISC-V map (`docs/ctrl-riscv.md` §3.1). Their physical
   addresses are word aligned and they do not overlap. The host pads `p_filesz` with zeros up to a
   whole word. The `.bss` part (`p_memsz` − `p_filesz`) is not loaded: crt0 zeroes it.
 - `.tsr_kernels`: the kernel table. The **kernel index** in a descriptor is the position in this
-  table (0-based). SW defines the entry format (`docs/ctrl-riscv.md:1165-1167`: name hash, entry,
+  table (0-based). SW defines the entry format (`docs/ctrl-riscv.md` §8.3: name hash, entry,
   nargs, flags with bit0 = argument block, name).
 - `.note.tsr`: Basis ABI, the Tesseract Core capability the image needs (`cap_min`, §7.5), minimum
   ITCM and DTCM sizes, required `CAPS` bits, the Tesseract Basis version (SW §6.2, §6.9). The host
@@ -138,7 +138,7 @@ The image id is a 64-bit value defined as follows:
 
 `tsr-elf` (SW) writes the id into `.tsr_id` after linking. The runtime echoes it in HELLO (r2 =
 bits [31:0], r3 = bits [63:32]), and the host compares it with its own computation. The id
-replaces ctrl-riscv's full SHA-256 echo (`docs/ctrl-riscv.md:1168-1169`). 64 bits are enough to
+is the 64-bit `.tsr_id` of `docs/ctrl-riscv.md` §8.3. 64 bits are enough to
 tell builds apart, and the integrity check is the CRC (§3.3).
 
 ### 3.3 Cold load
@@ -168,7 +168,7 @@ RV_BOOT := vector table base (256-byte aligned, normally 0)
   cycles. On a timeout, `LOAD_TIMEOUT` is set and the sequencer stops with `VERIFY_BUSY` = 0, so
   the CRC is then wrong. VERIFY catches broken TCM writes and address decode faults that the
   receive CRC cannot see, without any PCIe reads.
-- `LOAD_DATA` writes keep the CDC rule of ctrl-riscv (`docs/ctrl-riscv.md:340`): each write goes
+- `LOAD_DATA` writes keep the CDC rule of ctrl-riscv (`docs/ctrl-riscv.md` §3.3): each write goes
   into a core-side holding register, and a write that cannot complete within 4,096 core cycles is
   dropped with `LOAD_TIMEOUT` set. So the CSR port never hangs.
 - **Time** (*estimate*): 128 KiB is 32 K posted writes. The AXI4-Lite slave accepts about one word
@@ -178,7 +178,7 @@ RV_BOOT := vector table base (256-byte aligned, normally 0)
 ### 3.4 Boot
 
 `CTRL.RV_RUN` := 1. The RISC-V leaves reset and fetches at `RV_BOOT` + 0x80
-(`docs/ctrl-riscv.md:1014-1015`). crt0 and the runtime boot (§4.7 R1) end with a HELLO event. The
+(`docs/ctrl-riscv.md` §7.3). crt0 and the runtime boot (§4.7 R1) end with a HELLO event. The
 host consumes it within `TSR_BOOT_MS` (default 2,000 ms) and checks: the image id, the Basis ABI,
 the kind table signature, the kernel count, the Tesseract Basis version (SW §6.9), and that no other
 record came first.
@@ -264,11 +264,11 @@ All counters are 32-bit, modulo 2^32, and are zeroed only by a hardware reset.
 | w0 | [8] | PROF: a profiled launch. The runtime sets `REC_CFG.ALL` for the launch (completion records for firmware self-profiling, DB §8.2) and kernels emit NODE markers (the graph executor behaves as if the op-list flag MARK were set, SW §7.2). The host timeline itself comes from DB's hardware trace writer (DB §8.3), which the host enables separately |
 | w0 | [15:9] | reserved, must be 0 |
 | w0 | [31:16] | KERNEL: index into `.tsr_kernels` (LAUNCH); must be 0 for PING |
-| w1–w7 | [31:0] | ARG0–ARG6: integers, SPM line numbers, or DRAM handles {ch[31:28], beat[27:0]} (`docs/ctrl-riscv.md:1096`) |
+| w1–w7 | [31:0] | ARG0–ARG6: integers, SPM line numbers, or DRAM handles {ch[31:28], beat[27:0]} (`docs/ctrl-riscv.md` §8.2) |
 
 A kernel whose table entry has the argument-block flag gets ARG0 = the DRAM handle of a block of
 at most 1 KiB. The runtime stages that block into the SPM argument range before the call
-(`docs/ctrl-riscv.md:1171-1176`). The descriptor is answered with BAD_DESC when any of these
+(`docs/ctrl-riscv.md` §8.3). The descriptor is answered with BAD_DESC when any of these
 holds: an unknown TYPE, reserved bits set, KERNEL beyond the table, or an argument-block handle
 with ch ≥ `NUM_CH` or a block that does not fit inside `CH_BYTES`.
 
@@ -310,7 +310,7 @@ undefined.
 
 ### 4.5 RISC-V side (control window offsets 0x200–0x2FC, owned by EX)
 
-These replace the H2R / R2H mailbox of ctrl-riscv (`docs/ctrl-riscv.md:304-309`). CC owns the rest
+CC owns the rest
 of the control window. Every access is 32-bit; reads have no side effects.
 
 | Offset | Name | Access | Content |
@@ -355,7 +355,7 @@ verification depend on them (contracts in SW §7):
 
 ### 4.7 Runtime dispatcher contract (normative for the SDK runtime)
 
-- **R1 Boot.** crt0 (`docs/ctrl-riscv.md:1177-1181`, without the mailbox steps), then `qclear()`
+- **R1 Boot.** crt0 (`docs/ctrl-riscv.md` §8.3), then `qclear()`
   and a join on it, then `RT_STATE` := IDLE, then post HELLO as an event. Descriptors pushed before
   HELLO stay queued and are served after it.
 - **R2 Take.** Wait for `LQ_AVAIL` ≠ 0 (WFI on `irq_fast[2]`). Copy `LQ_HEAD_W*` and
@@ -373,7 +373,7 @@ verification depend on them (contracts in SW §7):
 - **R6 Join.** `join_all()` (FENCE, then join): every op pushed during the launch has completed,
   including aborted ones (I1).
 - **R7 Result.** Find the first error by the smallest `ERR_PIDX` over the units in error state
-  (`docs/ctrl-riscv.md:577-579`). Read PLAT_ERR from `LQ_FLAGS`. Fill r0–r7 by the precedence of
+  (`docs/ctrl-riscv.md` §4.5). Read PLAT_ERR from `LQ_FLAGS`. Fill r0–r7 by the precedence of
   §4.4.
 - **R8 Answer.** Wait until `LCQ_FREE` ≠ 0 (WFI on `irq_fast[3]`), then post with ANSWER = 1.
 - **R9 Clear.** If any unit is in error state, push `qclear()` and join it before R2.
@@ -464,19 +464,19 @@ Launch q is **covered** by a watermark s iff (s − q) mod 2^32 < 2^31.
 | Step | Cost (*estimate*) | Basis |
 |---|---|---|
 | Host: 2–9 posted MMIO writes (changed words + `LQ_PUSH`) | 0.2–1 µs | XRT register access is a store to an mmap'ed BAR (`.../core/pcie/linux/shim.cpp:2341-2405`) |
-| PCIe, adapter, CSR port | 0.5–1 µs | a window write takes 10 kernel cycles (`docs/platform-u200.md:84`) |
+| PCIe, adapter, CSR port | 0.5–1 µs | a window write takes 10 kernel cycles (`docs/platform-u200.md` §2) |
 | LQ CDC, WFI wake-up, 8 head words, pop | 0.4–1.2 µs (70–200 `clk_rv` cycles at 166.7 MHz) | ctrl-riscv §4.8 costs per MMIO access |
 | Dispatch, empty kernel, FENCE join, result, post | 0.6–1.5 µs | as above |
-| Host detection: 1–2 poll reads plus the r0 read; `LCQ_RD` write | 2–5 µs | PCIe read latency is not measured (`docs/spec.md:994`); 1–2 µs per read assumed |
-| **Round trip of an empty launch** | **≈ 4–8 µs; target ≤ 10 µs** | a host-issued exec took 35–36 µs on the card, before the control core was added (`docs/platform-u200.md:1049`) |
+| Host detection: 1–2 poll reads plus the r0 read; `LCQ_RD` write | 2–5 µs | PCIe read latency is not measured (`docs/spec.md` §20); 1–2 µs per read assumed |
+| **Round trip of an empty launch** | **≈ 4–8 µs; target ≤ 10 µs** | a host-issued exec took 35–36 µs on the card, before the control core was added (`docs/platform-u200.md` §14.2) |
 | **Pipelined rate** (≥ 2 launches outstanding) | ≥ 300 K launches/s (device side 1–3 µs each); **target ≥ 100 K/s** | |
 
 Per decode token: M6 still makes one launch per graph split (281 for Gemma 4 12B, 385 for
-Qwen2.5-32B, `docs/platform-u200.md:1053`). At 5–10 µs each instead of 35 µs, that saves about
+Qwen2.5-32B, `docs/platform-u200.md` §14.2). At 5–10 µs each instead of 35 µs, that saves about
 7–12 ms per token (*estimate*) of the 10.1 / 13.6 ms exec overhead measured on the card before the
 control core was added. M7 makes one launch per token, so the launch costs ≤ 10 µs per token. Between two
 launches the device idles for only the dispatch and answer time (≈ 1–3 µs, *estimate*). That is
-negligible for the "DDR always busy" goal (`docs/spec.md:565-587`).
+negligible for the "DDR always busy" goal (`docs/spec.md` §14).
 
 ---
 
@@ -488,8 +488,8 @@ Core CSR offsets are 12-bit; on the U200 the window is `s_axi_control` 0x1000 + 
 has no side effects except the PERF LO snapshot (host port only). A `LOAD_DATA` read while
 `RV_RUN` = 1 or `SR_BUSY` returns 0 and sets nothing. The DMI window (0xC00–0xDFC) acts only while
 `DBG_CFG.DMI_EN` = 1 (DB §3.2), because debug-module reads can have side effects. Undefined offsets
-read 0 and ignore writes (`docs/spec.md:1058`). Every access completes without `clk_rv`, within a
-bound (`docs/ctrl-riscv.md:355-362`). This is the only host CSR map; CC, DB, VU and AT place
+read 0 and ignore writes (`docs/spec.md` §10). Every access completes without `clk_rv`, within a
+bound (`docs/ctrl-riscv.md` §3.3). This is the only host CSR map; CC, DB, VU and AT place
 their registers inside it, and the RISC-V reads it through CC's core window (CC §5.3).
 
 | Offset | Name | Access | Content | Owner |
@@ -532,13 +532,13 @@ their registers inside it, and the RISC-V reads it through CC's core window (CC 
 | 0x0CC | `LOAD_COUNT` | RW | word count for VERIFY | EX |
 | 0x0D0 | `LOAD_CTRL` | W | bit0 VERIFY | EX |
 | 0x0D4 | `LOAD_STATUS` | R | bit0 VERIFY_BUSY | EX |
-| 0x100–0x2FC | `PERF_0`–`PERF_63` | R | 64-bit counters (§6): LO at 0x100 + 8i, HI at +4; a LO read snapshots the counter for the next HI read (`docs/spec.md:1067`) | EX |
+| 0x100–0x2FC | `PERF_0`–`PERF_63` | R | 64-bit counters (§6): LO at 0x100 + 8i, HI at +4; a LO read snapshots the counter for the next HI read (`docs/spec.md` §21, `PERF_*` hardware meaning) | EX |
 | 0x300–0x3FC | `LCQ_REC` | R | completion ring: record k at 0x300 + 32 × (k mod `LCQ_DEPTH`), word i at +4i | EX |
 | 0x400–0x7FC | `LOG_RING` | R | log word k at 0x400 + 4 × (k mod `LOG_DEPTH`) | EX |
 | 0x800–0xAFC | `DBG_*` | DB-defined | tile-level debug block (768 B, DB §10.1); undefined offsets read 0 | DB |
 | 0x9C0–0x9FC | `SREG0`–`SREG15` | R | the VU's s0–s15 (f32 bits), inside the DBG range but present whenever the VU is built, independent of `HAS_DBG` (VU §4.4, DB §10.1). The one read location of the s bank for the host and for the RISC-V (core window 0x2000_1000 + 0x9C0 + 4i) | VU, DB |
 | 0xB00–0xBFC | — | | reserved | — |
-| 0xC00–0xDFC | `DMI` | R / W | debug module register r at 0xC00 + 4r; bounded by 4,096 core cycles, `DMI_TIMEOUT` (`docs/ctrl-riscv.md:351`) | DB, CC |
+| 0xC00–0xDFC | `DMI` | R / W | debug module register r at 0xC00 + 4r; bounded by 4,096 core cycles, `DMI_TIMEOUT` (`docs/ctrl-riscv.md` §3.3) | DB, CC |
 | 0xE00–0xF1C | `Q_*` | R | queue status (§5.4) | EX |
 | 0xF20–0xFFC, and every gap above | — | | reserved | — |
 
@@ -547,7 +547,7 @@ their registers inside it, and the RISC-V reads it through CC's core window (CC 
 | Bit | Name | Kind | Meaning |
 |---|---|---|---|
 | 0 | `RV_RUN` | RW level | 1 releases the RISC-V from reset. 1 → 0 starts the RISC-V reset sequence (§8.5). Writes are ignored, with `RV_RUN_REFUSED` set, while `SR_BUSY` |
-| 1 | `HOST_HOLD` | RW level | the host's hold source for the queue heads (`docs/ctrl-riscv.md:321-324`) |
+| 1 | `HOST_HOLD` | RW level | the host's hold source for the queue heads (`docs/ctrl-riscv.md` §3.2) |
 | 2 | `HOLD_ON_HALT` | RW level | a debug halt holds the queue heads |
 | 3 | `IRQ_EN` | RW level | `host_irq_o` = `IRQ_EN` ∧ (LCQ_WR ≠ LCQ_RD); the U200 leaves the output unconnected |
 | 8 | `QABORT` | W1 pulse | host QABORT, applied at once (§8.5) |
@@ -566,10 +566,10 @@ has exactly one owner, the host. Level bits are updated before the pulses of the
 | 1 | `RV_HALTED` | level | debug halt |
 | 2 | `RV_SLEEP` | level | WFI |
 | 3 | `RV_CLK_OK` | level | `clk_rv` runs and its domain is out of reset |
-| 4 | `RV_RESET_DONE` | level | the RISC-V reset sequence has completed (`docs/ctrl-riscv.md:1000-1008`) |
+| 4 | `RV_RESET_DONE` | level | the RISC-V reset sequence has completed (`docs/ctrl-riscv.md` §7.3) |
 | 5 | `ACTIVE` | level | TAKEN ≠ ANSWERED |
 | 6 | `QIDLE` | level | no entry queued or running, issue FIFO empty |
-| 7 | `QQUIESCENT` | level | `docs/ctrl-riscv.md:622-630` |
+| 7 | `QQUIESCENT` | level | `docs/ctrl-riscv.md` §4.6 (quiescent state) |
 | 8 | `QERR` | level | some unit is in error state |
 | 9 | `SR_BUSY` | level | `SOFT_RESET` in progress |
 | 10 | `LCQ_PENDING` | level | LCQ_WR ≠ LCQ_RD |
@@ -580,7 +580,7 @@ has exactly one owner, the host. Level bits are updated before the pulses of the
 | 17 | `LOAD_TIMEOUT` | sticky | a load or VERIFY word timed out |
 | 18 | `DMI_TIMEOUT` | sticky | |
 | 19 | `QCLEAR_REFUSED` | sticky | |
-| 20 | `PUSH_TIMEOUT` | sticky | the RISC-V's issue safety net fired (`docs/ctrl-riscv.md:471-480`) |
+| 20 | `PUSH_TIMEOUT` | sticky | the RISC-V's issue safety net fired (`docs/ctrl-riscv.md` §4.1) |
 | 21 | `BRIDGE_TIMEOUT` | sticky | |
 | 22 | `LQ_OVERFLOW` | sticky | a push while the LQ was full (descriptor dropped) |
 | 23 | `RING_RD_BAD` | sticky | an `LCQ_RD` or `LOG_RD` write was refused |
@@ -663,7 +663,7 @@ every counter and drops the snapshot. With C = `NUM_CH` and X = 5 + 2C (k4: X = 
 The remainder `CYCLES` − `MVM_CYCLES` − `MVM_WAIT` − `MVM_EMPTY` counts the cycles in which the MVM
 unit is idle while its head could start: the accept latency, and entries that complete without
 running. The RTL asserts that this remainder is at most 3 cycles per MVM-queue entry. The three
-counters split the spec's G (`docs/spec.md:572`) into an issue-bound share and a
+counters split the spec's G (`docs/spec.md` §14) into an issue-bound share and a
 dependency-bound share, which is the measurement the "DDR always busy" priority needs. The host is the only PERF reader. The runtime times launches with MTIME (record
 r7).
 
@@ -681,7 +681,7 @@ opcode[7:0]}.
   (`ILLEGAL_OP` otherwise) for every opcode whose definition does not assign it. That includes LD,
   ST, QACT, MVM, NOP and FENCE. VU and AT may assign x16 in the ops they define.
 - **Address fields** A1, A2 and A3 are the immediate words themselves: A = imm. There is no base
-  register. Range checks follow `docs/spec.md:1053`, with a = imm.
+  register. Range checks follow `docs/spec.md` §21 (Range check), with a = imm.
 - NOP and FENCE use no words: w1–w7 and x16 must be 0.
 
 ### 7.2 Global opcode table
@@ -721,13 +721,13 @@ opcode[7:0]}.
 | 0x80–0xFF | — | reserved | | — |
 
 - Every reserved, retired or absent opcode is still accepted by the issue port. It gets a ticket on
-  the SYNC unit and completes `ILLEGAL_OP` (`docs/ctrl-riscv.md:481-482`), so every push has a
+  the SYNC unit and completes `ILLEGAL_OP` (`docs/ctrl-riscv.md` §4.1), so every push has a
   completion.
 - QCLEAR, QABORT, QHOLD and TRACE_MARK are control-window entries, not opcodes. They stay with CC.
 - VU and AT fix the encodings, the units and the dispatch checks of their ops within these numbers.
   Any further number they need is requested from EX and recorded here.
 - **No op may fail after it has started.** Every error is found by the dispatch checks
-  (`docs/ctrl-riscv.md:556-561`). Data-dependent conditions, such as NaN or a KV length read from
+  (`docs/ctrl-riscv.md` §4.5). Data-dependent conditions, such as NaN or a KV length read from
   SPM, must be defined behaviour (clamping, numeric rules), not run-time errors. VU and AT design
   their ops under this rule.
 
@@ -753,7 +753,7 @@ A dependency on unit 6–14, or on a unit that is absent in the bitstream, is `B
 ### 7.4 Scalar registers
 
 There is one s0–s15 bank (D14). It is written only by VU-queue ops and read by the RISC-V through
-the core window after a join (`docs/ctrl-riscv.md:641-653`, bank 1). The one read location is
+the core window after a join (`docs/ctrl-riscv.md` §4.7). The one read location is
 `SREG0`–`SREG15` at core CSR 0x9C0–0x9FC (§5.1): host offset 0x9C0 + 4i, RISC-V address
 0x2000_1000 + 0x9C0 + 4i. Its initial value and its behaviour across `SOFT_RESET` are VU's. EX's
 requirement: `SOFT_RESET` does not change it, and a hardware reset sets it to +0.0.
@@ -797,7 +797,7 @@ The CSR fields are 8 bits wide. Only 0–15 are used, so the internal width stay
 | 1 | `ILLEGAL_OP` | reserved, retired or absent opcode; undefined sub, flags or function code; nonzero reserved field or bit, including x16 where the op does not define it | 0 |
 | 2 | `BAD_FMT` | unsupported weight format | 0 |
 | 3 | `QA_MISMATCH` | reserved, never raised (`rtl/core/tsr_pkg.sv:144`) | |
-| 4 | `SPM_RANGE` | `docs/spec.md:1053` | start address of the failing operand |
+| 4 | `SPM_RANGE` | `docs/spec.md` §21 (Range check) | start address of the failing operand |
 | 5 | `DRAM_RANGE` | as above | start address |
 | 6 | `K_RANGE` | K > K_MAX or not a multiple of the block size | 0 |
 | 7 | `T_RANGE` | T = 0 or T > T_MAX | 0 |
@@ -813,7 +813,7 @@ The CSR fields are 8 bits wide. Only 0–15 are used, so the internal width stay
 
 ### 8.2 Op lifecycle, records and propagation
 
-As in ctrl-riscv §4.4–§4.5 (`docs/ctrl-riscv.md:527-602`):
+As in ctrl-riscv §4.4–§4.5 (`docs/ctrl-riscv.md`):
 
 - **Poisoning.** An op that fails a dispatch check is poisoned: it enters its queue, changes no
   state, and completes with its code at the head.
@@ -846,11 +846,11 @@ into an error of the open, boot, launch or wait call with a decoded message (§1
 
 | Action | Queued entries | Running op | RISC-V | LQ / LCQ / LOG | PERF, error state | TCM, SPM, DRAM |
 |---|---|---|---|---|---|---|
-| Host QABORT (`CTRL` bit 8, or `LQ_CANCEL` covering the running launch) | complete `ABORTED` in order, after their deps; every unit in error state until a QCLEAR (`docs/ctrl-riscv.md:580-586`) | runs to completion (no cancel) | continues; its join returns, R7 reports ABORTED, R9 clears | unchanged | error state set | unchanged |
+| Host QABORT (`CTRL` bit 8, or `LQ_CANCEL` covering the running launch) | complete `ABORTED` in order, after their deps; every unit in error state until a QCLEAR (`docs/ctrl-riscv.md` §4.5) | runs to completion (no cancel) | continues; its join returns, R7 reports ABORTED, R9 clears | unchanged | error state set | unchanged |
 | RISC-V QABORT (`QCTRL`) | the same, in push order | the same | continues | unchanged | | unchanged |
 | RISC-V QCLEAR | applied after every earlier entry has completed | — | continues | unchanged | errors cleared, clear points set | unchanged |
 | Host QCLEAR | refused unless QIDLE holds and the RISC-V is quiet | | | | | |
-| RISC-V reset (`RV_RUN` 1 → 0, or the DM's ndmreset) | host QABORT at once | completes | reset sequence (`docs/ctrl-riscv.md:1000-1013`) | ANSWERED := TAKEN (the running launch gets no record); queued descriptors stay and are served after the next boot | error state set (cleared by the next boot's R1) | unchanged |
+| RISC-V reset (`RV_RUN` 1 → 0, or the DM's ndmreset) | host QABORT at once | completes | reset sequence (`docs/ctrl-riscv.md` §7.3) | ANSWERED := TAKEN (the running launch gets no record); queued descriptors stay and are served after the next boot | error state set (cleared by the next boot's R1) | unchanged |
 | **`SOFT_RESET`** (`CTRL` bit 10) | sequence below | completes | reset and left in reset (`RV_RUN` = 0) | flushed: TAKEN := PUSHED, ANSWERED := TAKEN, LCQ_RD := LCQ_WR, LOG_RD := LOG_WR; watermarks invalid | PERF zeroed, error states and records cleared, clear points set, sticky bits cleared | unchanged |
 | Debug halt | continue, unless `HOLD_ON_HALT` | completes | halted | unchanged | time counters stop at QHALT | unchanged |
 | Hardware reset (xclbin load, card reset) | all state reset | | in reset | counters 0 | 0 | TCM and SPM undefined; DRAM kept unless the platform clears it |
@@ -865,7 +865,7 @@ into an error of the open, boot, launch or wait call with a decoded message (§1
    `SR_RV_TIMEOUT`.
 2. Wait until no datapath unit holds an op and every queue and the issue FIFO have drained. Aborted
    entries drain at one per cycle per unit. This step is bounded by the longest running op (≈ 10.8
-   ms for the 32B output head, `docs/ctrl-riscv.md:881-882`). A stuck unit never finishes it (§8.6).
+   ms for the 32B output head). A stuck unit never finishes it (§8.6).
 3. Apply the host QCLEAR effects and every flush and clear listed in the table above.
 4. `SR_BUSY` := 0.
 
@@ -885,9 +885,9 @@ module follows the hardware reset only, so a debugger stays attached.
 
 - **No forced unit reset.** An AXI transaction cannot be cancelled. A unit reset with bursts
   outstanding would let stale read responses reach a reused id, and leave write bursts that the
-  interconnect still expects (`docs/platform-u200.md:201-212`). Recovering from a truly stuck unit
+  interconnect still expects (`docs/platform-u200.md` §5). Recovering from a truly stuck unit
   therefore needs a hardware reset (xclbin reload or `xrt-smi reset`). This closes the open item
-  at `docs/spec.md:996`.
+  of `docs/spec.md` §20 (forced release of a stuck unit).
 - **Progress watchdog** (diagnosis only; it changes no execution). For each datapath unit (DMA,
   QACT, MVM, VU, ATT) a counter runs while the unit holds an op and resets on progress. Progress
   is any SPM request handshake of the unit, any memory request, read beat or write beat of the
@@ -1012,7 +1012,7 @@ image, statistics), not a second protocol.
 
 ---
 
-## 11. DRAM map (per channel; `docs/spec.md:130-138`)
+## 11. DRAM map (per channel; `docs/spec.md` §4)
 
 | Region | Range | Use |
 |---|---|---|
@@ -1021,7 +1021,7 @@ image, statistics), not a second protocol.
 | TRW ring (profiling only) | inside IO, ch0 | DB's trace-writer ring (`TSR_PROF_TRW_MIB`, default 64 MiB), allocated by the transport only while profiling; `TRW_CH` = 0 (DB §8.3) |
 | AUX | 320–512 MiB, ch0 | small f32 tensors (norm weights, RoPE frequency-factor tables) |
 | WEIGHT / heap | 512 MiB to the end, every channel | weights (symmetric allocation, bottom-up from 512 MiB), KV planes (symmetric, top-down from the channel end, AT §4.5), and between them the per-channel compute heap (SW R6, SW-26), sized from the reserve graph |
-| low 512 MiB of ch1–3 | | compute chunks and other activations (SW R6); software may spread IO over the channels (`docs/ctrl-riscv.md:765-768`) |
+| low 512 MiB of ch1–3 | | compute chunks and other activations (SW R6); software may spread IO over the channels |
 
 The region constants are `TSR_REGION_OPL_*` (`rtl/core/tsr_pkg.sv`). The core does not fetch from
 DRAM: memory source 0 (`TSR_SRC_AUX`) is tied off, and the source ids are not renumbered.
@@ -1207,7 +1207,7 @@ the user's delegation (2026-10-30).
     recovery.
   - *Alternatives:* a per-unit kill.
   - *Rationale:* AXI has no cancel, so a unit kill corrupts later transactions
-    (`docs/platform-u200.md:201-212`). No stuck unit has been seen on the card in M3 or M4.
+    (`docs/platform-u200.md` §5). No stuck unit has been seen on the card in M3 or M4.
 - **EX-24 Log.**
   - *Choice:* a 256-word core-domain ring read through the CSR window. It drops and counts when
     full, with an optional BLOCK mode. Records use DB's header (DB §6.1); the runtime filter is
@@ -1256,7 +1256,7 @@ the user's delegation (2026-10-30).
   - *Alternatives:* hand-kept copies; a YAML table under `sw/sim/regs` (SW's draft); a generator
     under `rtl/core/ctrl` (CC's draft).
   - *Rationale:* the tables are too large to keep `tsr_pkg.sv` and `tsr_isa.h` in step by hand.
-    ctrl-riscv already asked for a generated table (`docs/ctrl-riscv.md:313-315`). Plain Python
+    ctrl-riscv already asked for a generated table (`docs/ctrl-riscv.md` §3.1). Plain Python
     needs no PyYAML in the RTL, firmware or bench builds, and a neutral directory reflects that the
     RTL, the simulator, the firmware and the benches all consume it.
 
@@ -1347,7 +1347,7 @@ Only measurements and third-party checks remain. Every design choice above is de
   smoke link), else apply the §9.1 fallback.
 - Measure on the card: MMIO posted-write and read latency, the empty-launch round trip, the
   pipelined launch rate, cold and warm load times. These replace the estimates of §3.3, §3.5 and
-  §4.11. The spec open item on PCIe CSR latency (`docs/spec.md:994`) closes with them.
+  §4.11. The spec open item on PCIe CSR latency (`docs/spec.md` §20) closes with them.
 - Re-check `LQ_DEPTH` (8) against M7's launch pattern and M8's JIT launch rates; the parameter can
   change without a format change, up to the 8 slots of the CSR ring.
 - Possible CC follow-up: an "issue from SPM line" path, if the `graph` executor's per-op cost

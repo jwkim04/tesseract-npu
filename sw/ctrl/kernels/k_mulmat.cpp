@@ -2,7 +2,7 @@
 // 06-software-verification.md "SW" §7.2, §7.4; handler interface tsr/exec.hpp, SW §7.3).
 //
 // y = W x for T tokens, optionally y = addend + W x (a fused bias or residual, ggml's MUL_MAT + ADD)
-// or y += W x (ACC_DST). The tile-op sequence is the spec's lowering (docs/spec.md:502-512),
+// or y += W x (ACC_DST). The tile-op sequence is the spec's lowering (docs/spec.md §12),
 // so the numerics match the converted traces bit for bit
 // (traces/model-v1conv checks it, sw/ctrl/tests/test_fw_kernels*); per T tile (plan.hpp mm_plan:
 // t_tile tokens, the last tile shorter):

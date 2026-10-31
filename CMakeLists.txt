@@ -10,7 +10,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(TESSERACT_ROOT ${CMAKE_CURRENT_SOURCE_DIR} CACHE INTERNAL "")
 
-# Spec 수치 규칙: separately rounded f32 ops, no fused multiply-add, no fast-math.
+# Spec "Numeric rules": separately rounded f32 ops, no fused multiply-add, no fast-math.
 set(TSR_FP_FLAGS -ffp-contract=off -fno-fast-math)
 
 option(TSR_WITH_LLAMA "Build pinned llama.cpp with the ggml-tesseract backend" ON)

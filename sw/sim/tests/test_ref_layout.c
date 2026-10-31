@@ -1,5 +1,5 @@
 // test_ref_layout.c — ROW_BEATS, repack/unrepack, symmetric allocation, QA line counts.
-// Spec: "디바이스 가중치 레이아웃", "메모리 모델 / 대칭 할당", "양자화 활성값(QA) 레이아웃".
+// Spec: "Device weight layout", "Memory model", "Symmetric allocation", "Quantized activation (QA) layout".
 // Independent of ggml: every expectation is recomputed here from the spec text, not from
 // tsr_ref internals.
 
@@ -229,7 +229,7 @@ static void test_qa_lines(void) {
             CHECK(tsr_qa_lines(TSR_QA_A256, K) == e2, "A256 K=%u", K);
         }
     }
-    // Spec 구성 파라미터: the cluster activation buffer holds a whole QA vector per token,
+    // Spec "Configuration parameters": the cluster activation buffer holds a whole QA vector per token,
     // QA_LINES(A256, K_MAX) x 64 x T_MAX bytes (QS + D + BS), not K_MAX x T_MAX.
     CHECK(tsr_qa_lines(TSR_QA_A256, 32768) == 584, "A256 K_MAX: 512 + 8 + 64 lines");
     CHECK(tsr_qa_lines(TSR_QA_A32, 32768) == 576, "A32 K_MAX: 512 + 64 lines");

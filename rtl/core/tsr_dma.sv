@@ -60,7 +60,7 @@
 //     SLRs. wr_rsp_ready is constant 1 (a response only decrements a counter).
 //   - Widths: line/beat counters NW = SPM_AW + 1 bits (n_lines <= SPM lines); the DRAM address
 //     counter is ADDR_BEAT_W bits (dram_beat + n_lines may exceed 2^32 when ADDR_BEAT_W > 32:
-//     the operand is a 32-bit start, the range check is 64-bit, see spec 범위 검사).
+//     the operand is a 32-bit start, the range check is 64-bit, see spec Range check).
 //   - Simulation-only checks (`ifndef SYNTHESIS): command legality, read id/last consistency
 //     with the D1 split, responses only on the active channel, queue overflow, write responses.
 

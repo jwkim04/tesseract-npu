@@ -19,7 +19,7 @@
 //      L for p > 1) with a weight, MULC (y = FM(x, c_r)) without; c = s1 (cmode 1) when R = 1, else v
 //      (cmode 2); the tail words of each row's last line become 0 (VU §4.2);
 //   6. ST x: the rows to dst (one ST when dense, dst stride = L or R = 1, else one per row).
-// The 2-op form (4-5) is bit-identical to the spec's 7-op lowering docs/spec.md:311-321 (VU §6.2,
+// The 2-op form (4-5) is bit-identical to the spec's 7-op lowering docs/spec.md §9 (VU §6.2,
 // §8.1; fw_kernels_normrope_host checks it).
 //
 // Deps (exec.hpp contract). The op's predecessors d go on the first LD (DMA tickets dropped: queue
