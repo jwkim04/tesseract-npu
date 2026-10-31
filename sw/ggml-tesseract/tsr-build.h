@@ -85,7 +85,7 @@ struct tsr_build_env {
     tsr::plan::plan_limits pl = {};      // plan_limits_of(cfg): what the firmware plans against
     uint32_t num_ch = 1;
     // The op list kinds the booted image provides (SW §6.9: bit k set iff its .tsr_kinds has kind k;
-    // TSR_KINDS=m6 keeps NOP, JOIN and MUL_MAT) and the image named in the reason of a refusal
+    // TSR_KINDS narrows it, tsr_kinds_parse) and the image named in the reason of a refusal
     // ("Tesseract Basis 0.1.0, image <id>"). A record of another kind (or any record when JOIN is
     // missing) is refused while lowering, in probe and build mode.
     uint64_t kinds = ~0ull;
@@ -188,3 +188,11 @@ const char * tsr_kind_name(uint32_t kind);
 inline bool tsr_kind_in_image(uint64_t kinds, uint32_t kind) {
     return kind < tsr::opl::N_KINDS && ((kinds >> kind) & 1u) != 0 && ((kinds >> tsr::opl::K_JOIN) & 1u) != 0;
 }
+
+// TSR_KINDS (SW-14, SW-49): the kinds supports_op may route, as a mask the backend intersects with the
+// booted image's. A comma-separated list read from left to right: "all" (every kind), "m6" (NOP, JOIN and
+// MUL_MAT), "NAME" or "+NAME" adds a kind, "-NAME" removes one (names as tsr/opl.hpp kind_name, any
+// case). The list starts from every kind if its first word removes one, else from NOP and JOIN, which
+// cannot be removed. Unset or empty: every kind. Examples: "m6", "-FLASH_ATTN,-SET_ROWS_KV",
+// "all,-RMS_NORM", "m6,+RMS_NORM". False with *why on an unknown word.
+bool tsr_kinds_parse(const char * spec, uint64_t * mask, std::string * why);

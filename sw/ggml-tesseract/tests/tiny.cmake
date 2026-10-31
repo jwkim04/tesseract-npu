@@ -148,6 +148,23 @@ if (TARGET llama)
     endif()
 endif()
 
+# ---- llama-server on the device (tests/server_smoke.py) ---------------------------------------------
+# Two llama-server processes on the tiny Qwen2 model, the device (sim) and the CPU, with the M7 settings
+# and 2 slots (--kv-unified, one KV stream: SW §8 R10): /health, /v1/models, a chat completion, the same
+# chat streamed (SSE), a completion, 2 concurrent chats at temperature 0 and the first chat again, which
+# the server restores from its RAM prompt cache (the KV state read back from and written to the device).
+# Every text must equal the CPU's, both servers must exit 0 on SIGINT, and the device's TSR_STATS must
+# show one launch per graph_compute. About 2 s; Python standard library only. The script's own time
+# limits add up to 105 s, below the ctest TIMEOUT, so a hang ends in a FAIL line, not in a ctest kill.
+if (TARGET llama-server)
+    add_test(NAME ggml_tesseract_server_tiny
+             COMMAND ${_tiny_py} ${CMAKE_CURRENT_LIST_DIR}/server_smoke.py --server $<TARGET_FILE:llama-server>
+                     --model ${TSR_TINY_MODEL_DIR}/qwen2-tiny-q8_0.gguf
+                     --out-dir ${CMAKE_BINARY_DIR}/sw/ggml-tesseract/ggml_tesseract_server_tiny)
+    set_tests_properties(ggml_tesseract_server_tiny PROPERTIES TIMEOUT 120
+                         ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal")
+endif()
+
 # ---- test-backend-ops, one ctest per M7 op filter -------------------------------------------------
 if (TARGET test-backend-ops)
     set(_tbo_dir ${CMAKE_BINARY_DIR}/sw/ggml-tesseract/backend_ops)

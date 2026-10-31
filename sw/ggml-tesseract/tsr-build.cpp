@@ -7,6 +7,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <strings.h>
 
 // ggml_node_has_n_uses (use counts of the whole graph), struct ggml_cgraph; its static helpers are
 // not all used here
@@ -229,6 +230,46 @@ static bool tsr_plan_ok(const tsr_build_env & env, const tsr_rec & r, std::strin
 }
 
 const char * tsr_kind_name(uint32_t kind) { return opl::kind_name(kind); }
+
+bool tsr_kinds_parse(const char * spec, uint64_t * mask, std::string * why) {
+    const uint64_t keep = 1ull << opl::K_NOP | 1ull << opl::K_JOIN;   // every list may need them
+    if (spec == nullptr || *spec == '\0') {
+        *mask = ~0ull;
+        return true;
+    }
+    uint64_t m = spec[0] == '-' ? ~0ull : keep;
+    const std::string s(spec);
+    for (size_t i = 0; i <= s.size();) {
+        size_t j = s.find(',', i);
+        j = j == std::string::npos ? s.size() : j;
+        const std::string w = s.substr(i, j - i);
+        i = j + 1;
+        if (w == "all") {
+            m = ~0ull;
+            continue;
+        }
+        if (w == "m6") {
+            m = keep | 1ull << opl::K_MUL_MAT;
+            continue;
+        }
+        const bool del = !w.empty() && w[0] == '-';
+        const std::string name = !w.empty() && (w[0] == '-' || w[0] == '+') ? w.substr(1) : w;
+        uint32_t k = 0;
+        while (k < opl::N_KINDS && (opl::kind_nargs(k) == opl::NARGS_UNDEF || strcasecmp(name.c_str(), opl::kind_name(k)) != 0)) {
+            ++k;
+        }
+        if (k == opl::N_KINDS) {
+            return tsr_fail(why, "TSR_KINDS='%s': '%s' is not all, m6 or [+|-] a kind name (MUL_MAT, ADD, RMS_NORM, "
+                            "FLASH_ATTN, ...)", spec, w.c_str());
+        }
+        if (del && ((keep >> k) & 1u) != 0) {
+            return tsr_fail(why, "TSR_KINDS='%s': %s cannot be removed", spec, opl::kind_name(k));
+        }
+        m = del ? m & ~(1ull << k) : m | 1ull << k;
+    }
+    *mask = m;
+    return true;
+}
 
 // ---------------------------------------------------------------------------------------------
 // Lowering, one function per kind (SW §7.2 argument words; the ggml semantics they implement)

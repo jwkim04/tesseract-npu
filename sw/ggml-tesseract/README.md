@@ -177,7 +177,7 @@ Public C API (`third_party/llama.cpp/ggml/include/ggml-tesseract.h`, from the pa
 | `TSR_DEVICE` | transport kind (`sim` default, `xrt`); `none` registers no device |
 | `TSR_IMAGE` | firmware image (default: the build's `tsr-fw.elf`) |
 | `TSR_DEBUG=1` | placement, lowering and launch log on stderr; `2` adds buffer events, the records and preload entries of every launched op list and supports_op's reasons |
-| `TSR_KINDS=m6` | the device takes MUL_MAT only (M6 runs); default: every M7 kind |
+| `TSR_KINDS` | the kinds the device takes, a comma-separated list read from left to right: `m6` (MUL_MAT only, M6 runs), `all`, `NAME` / `+NAME` adds a kind, `-NAME` removes one (`all,-FLASH_ATTN,-RMS_NORM`; a list that starts with a removal starts from every kind). The removed kinds' ops run on the CPU; a SET_ROWS into a device KV cache cannot, so SET_ROWS_KV leaves the device only with `-nkvo` (which keeps FLASH_ATTN on the CPU too). Unset: every kind of the booted image |
 | `TSR_COMPUTE_WINDOWS=io` | test knob: compute windows in ch0 IO only (M6 placement; larger buffers in host memory, their MUL_MATs staged) |
 | `TSR_OPL_SPLIT=<n>` | test knob: cut every op list after n records (a split's results do not depend on the cuts: Qwen2.5-0.5B with n = 7, 53 launches per token, gives logits bit-identical to one launch per token) |
 | `TSR_FORCE_HOST=1` | test knob: every non-WEIGHTS buffer in host memory, so every MUL_MAT takes the staged path and the other kinds stay on the CPU (with M7 settings add `-nkvo`: a KV cache on the device needs its SET_ROWS on the device) |
@@ -244,7 +244,7 @@ M6 runs llama.cpp with `-nkvo` (KV cache on the CPU) and `TSR_KINDS=m6`; M7 with
 KV cache in KV buffers), with `-fa on -ctk q8_0 -ctv q8_0` and `LLAMA_ATTN_ROT_DISABLE=1`, always with
 an explicit `-ngl`; see `docs/llama-pin.md` for how compute buffers, the output head and LoRA adapters
 are placed. `klcheck run` and `tsr-numcheck run` set `TSR_KINDS` from `--phase` (m6: MUL_MAT only;
-m7: every kind; SW-49).
+m7: every kind; SW-49), so they drop a `TSR_KINDS` list set by the caller.
 
 ## M7 on the simulator (W3b integration, 2026-10-31)
 

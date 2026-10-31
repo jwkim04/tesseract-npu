@@ -1,7 +1,8 @@
 # Getting started
 
-How to build Tesseract, run a model on the simulator and on PyTorch, verify the result, and find
-your way around the repository. Every command names a target, tool or script of the current tree.
+How to build Tesseract, run a model on the simulator and on PyTorch, serve it over HTTP, verify the
+result, and find your way around the repository. Every command names a target, tool or script of
+the current tree.
 
 > **Scope.** User and developer documentation. Status words: *on the card* means it ran on the
 > Alveo U200; *on the simulator* means this tree runs it against the simulator
@@ -124,6 +125,45 @@ build/dev/bin/klcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf -o build/klc
   [`docs/performance.md`](performance.md) were made on the card.
 - Without a GGUF file, `build/dev/bin/tsr-selftest --device sim` still boots the firmware on the
   simulator and runs its self-checks (see [Verify](#verify)).
+
+## Serving
+
+`llama-server` runs on the Tesseract backend from the same build: one device launch per decode
+step, the KV cache on the device. It runs on the simulator today; no card has this design yet.
+
+```sh
+LLAMA_ATTN_ROT_DISABLE=1 TSR_DEVICE=sim build/dev/bin/llama-server \
+    -m models/qwen2.5-0.5b-instruct-q8_0.gguf -ngl 99 -fa on -ctk q8_0 -ctv q8_0 \
+    -np 4 -kvu -c 4096 -t 4 --host 127.0.0.1 --port 8080
+```
+
+- `-ngl 99 -fa on -ctk q8_0 -ctv q8_0` are required. An f16 KV cache cannot live in device memory:
+  the server stops at startup and the backend's message names these flags (or `-nkvo`).
+- `LLAMA_ATTN_ROT_DISABLE=1` gives one launch per token. Without it the server works, with more
+  launches per token (9 on the tiny test model).
+- `-np N` with N above 1 needs `-kvu` (`--kv-unified`): the device holds one KV stream. With `-np`
+  left out the server picks 4 slots with a unified cache.
+- Do not pass `--context-shift`: llama.cpp crashes in `build_rope_shift` with a quantized K cache
+  and no rotation, on the CPU backend too. Without it a full context ends the request with
+  `finish_reason` `length` and a too-long prompt gets HTTP 400.
+- `TSR_DEVICE` picks the transport (default `sim`). `TSR_STATS=1` prints the launches and device
+  cycles at exit.
+
+The endpoints are `/health`, `/v1/models`, `/v1/chat/completions` (also with `"stream": true`) and
+`/v1/completions`. One request:
+
+```sh
+curl -s http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/json' \
+    -d '{"messages": [{"role": "user", "content": "Name the capital of France."}], "max_tokens": 16, "temperature": 0}'
+```
+
+On the simulator, Qwen2.5-0.5B Q8_0 decodes at 90 to 130 ms per token depending on host load; the
+device needs 2.5 M cycles (9 ms at 276.3 MHz). Four concurrent requests at `-np 4` get about
+1.7 tokens/s each: at the default `TSR_SIM_TMAX=1` the device gains nothing from batching. The text
+is not bit-identical to the CPU backend (the model-level check is `klcheck`,
+[`docs/klcheck.md`](klcheck.md)): greedy output leaves the CPU's at high-entropy tokens, and with
+several slots it can also differ from a single-slot run at near-ties, because the rounding in flash
+attention depends on how the slots' cells interleave in the shared cache.
 
 ## Run a PyTorch model
 

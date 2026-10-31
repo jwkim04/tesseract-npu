@@ -21,7 +21,7 @@
 // own); the graph key (addresses, shapes and parameters, not values); supports_op in probe mode
 // against the planners on independently built argument words with the 64-byte rule, over sweeps of
 // shapes of every kind (ADD / MUL / SCALE / UNARY / RMS_NORM / GLU / CONT / GET_ROWS / ROPE /
-// SET_ROWS / FLASH_ATTN_EXT).
+// SET_ROWS / FLASH_ATTN_EXT); TSR_KINDS parsing (tsr_kinds_parse).
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -1436,6 +1436,35 @@ static void test_supports_rules() {
         }
     }
 }
+
+// TSR_KINDS (tsr_kinds_parse): m6, all, additions and removals from left to right, NOP and JOIN always
+// kept, and the words it refuses.
+static void test_kinds_parse() {
+    const uint64_t NOP = 1ull << opl::K_NOP, JOIN = 1ull << opl::K_JOIN, MM = 1ull << opl::K_MUL_MAT;
+    const uint64_t FA = 1ull << opl::K_FLASH_ATTN, RMS = 1ull << opl::K_RMS_NORM, KV = 1ull << opl::K_SET_ROWS_KV;
+    uint64_t m = 0;
+    std::string why;
+    CHECK(tsr_kinds_parse(nullptr, &m, &why) && m == ~0ull);
+    CHECK(tsr_kinds_parse("", &m, &why) && m == ~0ull);
+    CHECK(tsr_kinds_parse("all", &m, &why) && m == ~0ull);
+    CHECK(tsr_kinds_parse("m6", &m, &why) && m == (NOP | JOIN | MM));
+    CHECK(tsr_kinds_parse("all,-FLASH_ATTN,-RMS_NORM", &m, &why) && m == (~0ull & ~FA & ~RMS));
+    CHECK(tsr_kinds_parse("-FLASH_ATTN,-set_rows_kv", &m, &why) && m == (~0ull & ~FA & ~KV));   // starts from all
+    CHECK(tsr_kinds_parse("m6,+RMS_NORM", &m, &why) && m == (NOP | JOIN | MM | RMS));
+    CHECK(tsr_kinds_parse("MUL_MAT,FLASH_ATTN", &m, &why) && m == (NOP | JOIN | MM | FA));      // starts from NOP, JOIN
+    CHECK(tsr_kinds_parse("MUL_MAT,-ROPE", &m, &why) && m == (NOP | JOIN | MM));                // a later removal alone does not start from all
+    CHECK(tsr_kinds_parse("+RMS_NORM", &m, &why) && m == (NOP | JOIN | RMS));
+    CHECK(tsr_kinds_parse("-RMS_NORM,+RMS_NORM", &m, &why) && m == ~0ull);
+    CHECK(tsr_kinds_parse("m6,-MUL_MAT", &m, &why) && m == (NOP | JOIN));
+    m = 7;
+    CHECK(!tsr_kinds_parse("m7", &m, &why) && m == 7 && why.find("'m7'") != std::string::npos);
+    CHECK(!tsr_kinds_parse("all,-FLASHATTN", &m, &why) && why.find("FLASHATTN") != std::string::npos);
+    CHECK(!tsr_kinds_parse("all,", &m, &why));
+    CHECK(!tsr_kinds_parse("all,-JOIN", &m, &why) && why.find("cannot be removed") != std::string::npos);
+    CHECK(!tsr_kinds_parse("-NOP", &m, &why));
+    CHECK(!tsr_kinds_parse("?", &m, &why));          // kind_name of an undefined kind
+    CHECK(!tsr_kinds_parse("all, -ROPE", &m, &why));  // no spaces
+}
 #endif   // TSR_UNITS_BUILD
 
 int main() {
@@ -1461,6 +1490,7 @@ int main() {
     test_build_key();
     test_supports_sweep();
     test_supports_rules();
+    test_kinds_parse();
 #else
     printf("test-tsr-backend-units: built without ggml: the M7 builder's ggml tests are skipped\n");
 #endif

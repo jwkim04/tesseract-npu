@@ -50,8 +50,9 @@
 // capability and the Tesseract Basis version (get_proc_address "ggml_backend_tesseract_versions").
 //
 // Environment: TSR_DEBUG=1|2 (lowering and placement log on stderr; 2 adds every launched op
-// list's records and preload entries, and supports_op's reasons). TSR_KINDS=m6 restricts the device
-// to M6's MUL_MAT (M6 runs, SW-14: the booted image's kinds intersected with NOP, JOIN and MUL_MAT).
+// list's records and preload entries, and supports_op's reasons). TSR_KINDS narrows the booted image's
+// kinds (tsr_kinds_parse): m6 keeps M6's MUL_MAT (M6 runs, SW-14: NOP, JOIN and MUL_MAT); a list such
+// as all,-FLASH_ATTN,-RMS_NORM leaves those kinds' ops on the CPU (finding which kind moves a result).
 // Test knobs: TSR_FORCE_HOST=1 keeps every
 // non-WEIGHTS buffer in host memory (exercises the staged path), TSR_COMPUTE_WINDOWS=io limits
 // compute windows to ch0 IO (M6 placement), TSR_OPL_SPLIT=<n> cuts every op list after n records,
@@ -322,7 +323,7 @@ struct tsr_device {
     tsr_config   cfg = {};
     std::string  description = "Tesseract Core (not opened)";
     uint64_t     kind_mask = 0;   // the op list kinds supports_op may route (SW §6.9: the booted image's,
-                                  // TSR_KINDS=m6: those of them in {NOP, JOIN, MUL_MAT})
+                                  // narrowed by TSR_KINDS, tsr_kinds_parse)
     std::string  image_desc;      // "Tesseract Basis 0.1.0, image <id>" (supports_op's reasons)
 
     tsr_range_alloc io;           // ch0 IO region below the stage: LINEAR buffer windows
@@ -402,15 +403,6 @@ static tsr_buffer_ctx * tsr_buf(ggml_backend_buffer_t buffer) {
 // Transport access (callers hold dev->mtx)
 // ---------------------------------------------------------------------------
 
-// TSR_KINDS=m6 (SW-14): the device takes MUL_MAT only (supports_op's kind mask keeps NOP, JOIN and MUL_MAT).
-static bool tsr_m6_only() {
-    static const bool on = [] {
-        const char * e = getenv("TSR_KINDS");
-        return e != nullptr && strcmp(e, "m6") == 0;
-    }();
-    return on;
-}
-
 static bool tsr_dev_open_locked(tsr_device * d) {
     if (d->tp != nullptr) {
         return true;
@@ -447,6 +439,12 @@ static bool tsr_dev_open_locked(tsr_device * d) {
         }
     }
     stage = tsr_pad(std::min<uint64_t>(stage, TSR_REGION_IO_SIZE / 2), TSR_TENSOR_ALIGN);
+    // TSR_KINDS (SW-14: m6 for M6 runs; a list such as all,-FLASH_ATTN leaves those kinds on the CPU)
+    uint64_t kinds_env = ~0ull;
+    std::string kinds_why;
+    if (bad == nullptr && !tsr_kinds_parse(getenv("TSR_KINDS"), &kinds_env, &kinds_why)) {
+        bad = kinds_why.c_str();
+    }
     if (bad != nullptr) {
         GGML_LOG_ERROR("%s: unusable Tesseract configuration: %s\n", __func__, bad);
         tsr_transport_close(tp);
@@ -477,8 +475,13 @@ static bool tsr_dev_open_locked(tsr_device * d) {
     for (uint32_t k = 0; k < tsr::opl::N_KINDS; ++k) {
         d->kind_mask |= v.kind_rev[k] != 0 ? 1ull << k : 0ull;
     }
-    if (tsr_m6_only()) {                  // SW-14: M6 runs take MUL_MAT only
-        d->kind_mask &= 1ull << tsr::opl::K_NOP | 1ull << tsr::opl::K_JOIN | 1ull << tsr::opl::K_MUL_MAT;
+    d->kind_mask &= kinds_env;            // TSR_KINDS (SW-14: m6 keeps NOP, JOIN and MUL_MAT)
+    if (getenv("TSR_KINDS") != nullptr) {
+        std::string names;
+        for (uint32_t k = 0; k < tsr::opl::N_KINDS; ++k) {
+            names += ((d->kind_mask >> k) & 1u) != 0 ? std::string(names.empty() ? "" : " ") + tsr_kind_name(k) : "";
+        }
+        TSR_DBG(1, "TSR_KINDS=%s: the device takes %s\n", getenv("TSR_KINDS"), names.c_str());
     }
     {
         char idb[96];
@@ -2288,7 +2291,7 @@ static tsr_build_env tsr_env_of(tsr_device * d) {
     e.cfg = d->m7cfg;
     e.pl = tsr::plan::plan_limits_of(e.cfg);
     e.num_ch = d->cfg.num_ch;
-    e.kinds = d->kind_mask;              // SW §6.9: the booted image's kinds (TSR_KINDS=m6: MUL_MAT only)
+    e.kinds = d->kind_mask;              // SW §6.9: the booted image's kinds, narrowed by TSR_KINDS
     e.image = d->image_desc;
     e.loc = [d](const ggml_tensor * t, tsr_tloc * l) { return tsr_tensor_loc(d, t, l); };
     e.kv_view = [d](const ggml_tensor * t, tsr_kv_view * v) { return tsr_kv_view_of(d, t, v); };
@@ -2684,7 +2687,7 @@ static bool tsr_is_our_buffer(const tsr_device * d, const ggml_backend_buffer * 
 // builder encodes with) and the kind's planner (plan.hpp plan_kind on the device's CFG values) must
 // accept it, so the host refuses exactly what the firmware cannot plan or the builder cannot encode.
 // SW §6.9: only the kinds the booted image declares are routed (the device's kind mask, which
-// TSR_KINDS=m6 restricts to M6's MUL_MAT, SW-14): a subset image leaves the others on the CPU.
+// TSR_KINDS narrows, e.g. m6 to M6's MUL_MAT, SW-14): a subset image leaves the others on the CPU.
 static bool tsr_dev_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
     tsr_device * d = (tsr_device *) dev->context;
     switch (op->op) {
@@ -2740,6 +2743,17 @@ static bool tsr_dev_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) 
                                            force_host ? ": TSR_FORCE_HOST keeps the compute buffers in host memory" : "",
                                            many ? "use -ub <= 2048 (the device writes at most 2048 cells per ubatch) or " : "");
                         }
+                    });
+                } else if (op->op == GGML_OP_SET_ROWS && base != op && base->type != GGML_TYPE_Q8_0 &&
+                           tsr_is_our_buffer(d, base->buffer) && tsr_kv_parse_name(base->name, nullptr, nullptr)) {
+                    // llama.cpp's default KV cache type is f16 (llama-server, llama-cli without
+                    // -ctk / -ctv): a cache of another type in device memory makes the scheduler stop on the
+                    // pre-allocated tensor with no hint; name the flags first
+                    static std::once_flag warned_kv_type;
+                    std::call_once(warned_kv_type, [op, base] {
+                        GGML_LOG_ERROR("tesseract: SET_ROWS '%s' writes a %s KV cache in device memory: the device "
+                                       "holds q8_0 K and V only (AT §2.6); use -ctk q8_0 -ctv q8_0 (with -fa on) or keep "
+                                       "the cache on the CPU (-nkvo)\n", op->name, ggml_type_name(base->type));
                     });
                 }
             }
