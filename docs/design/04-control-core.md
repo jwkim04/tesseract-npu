@@ -692,6 +692,10 @@ per cycle (276–300 MHz; *estimate*: enough for the measured 17.2–17.4 GB/s p
 
 ## 11. Clock domains and CDC
 
+<p align="center"><img src="../fig/clocks.svg" alt="The XRT shell (one box) gives the kernel the clocks ap_clk and ap_clk_2 and carries the CSR port and the memory ports into tsr_core. The core clock domain (ap_clk, 276.3 MHz in the k4 build) holds tsr_csr, the issue path with tsr_chk and the unit queues, the DMA, QACT, the MVM clusters, tsr_spm and one memory arbiter per channel. The clk_rv domain (ap_clk_2, 166.7 MHz planning value) holds Ibex, the debug module, ITCM, DTCM, the RISC-V bus and the control window. Between them tsr_ctrl_cdc carries every crossing, each drawn as an arrow toward the receiving domain with its primitive and width: from clk_rv to the core clock the issue FIFO (gray pointers, 32 x 387 b), the log FIFO, the gray counters, the RT_STATE and RT_INFO handshake and the sticky-event toggles; from the core clock to clk_rv the S, D and MTIME gray counters, the error records, the LOAD handshake and the reset synchronisers; both ways the SPM bridge and core window, the LQ and LCQ registers, the debug interface and the level synchronisers. A legend lists the constraints: ASYNC_REG, a maximum delay equal to the smaller clock period, and a bus skew limit on the gray buses." width="100%"></p>
+
+The figure shows the two clock domains, the crossings between them and the constraints that §11.1-§11.3 describe.
+
 ### 11.1 Clocks
 
 - Core clock = `ap_clk` (k4: 276.3 MHz after v++ scaling, `docs/platform-u200.md` §14.1).
@@ -710,18 +714,20 @@ per cycle (276–300 MHz; *estimate*: enough for the measured 17.2–17.4 GB/s p
 | `ISSUED_SEQ[u]` | RV → core | `tsr_cdc_gray` 28-bit × 6 | 168 b |
 | S[u], D[u] | core → RV | `tsr_cdc_gray` 28-bit × 12, ≤ 1 step per core cycle (asserted) | 336 b |
 | Error records + clear | core → RV | tagged `tsr_cdc_hs` per unit; I2 acknowledge | 6 × 128 b |
-| SPM bridge | RV ↔ core | tagged 4-phase `tsr_cdc_hs`, one access, data held stable | 64 b req / 513 b rsp |
-| Core window | RV ↔ core | same structure, shared with the bridge's handshake slot | 32 b |
-| LQ / LCQ registers (EX §4.5) | RV ↔ core | tagged 4-phase `tsr_cdc_hs` (own slot): reads return the core-domain value; `LQ_POP` and `LCQ_POST` (with the 8 staged words) commit and fault in the core domain (CC-30) | 288 b req / 34 b rsp |
-| `LOG_RD` snapshot for `LOG_FREE` | core → RV | part of the LQ / LCQ handshake | 32 b |
+| SPM bridge | RV ↔ core | tagged 2-phase `tsr_cdc_hs`, one access, data held stable | 64 b req / 513 b rsp |
+| Core window | RV ↔ core | same structure, shared with the bridge's handshake slot; the read data is `line[31:0]` | 64 b req / 513 b rsp (32 b of data) |
+| LQ / LCQ registers (EX §4.5) | RV ↔ core | tagged 2-phase `tsr_cdc_hs` (own slot): reads return the core-domain value; `LQ_POP` and `LCQ_POST` (with the 8 staged words) commit and fault in the core domain (CC-30) | 301 b req / 33 b rsp |
+| `LOG_RD` snapshot for `LOG_FREE` | core → RV | part of the LQ / LCQ handshake (the `rdata` of its response) | 32 b |
 | Log words | RV → core | `tsr_cdc_fifo` 16 × 32 b | 32 b |
 | `RT_STATE`, `RT_INFO` mirrors | RV → core | tagged handshake on each write | 64 b |
-| `LOAD_*` | core → RV | holding register + tagged handshake into the TCM write port; VERIFY / `LOAD_DATA` reads through the read port | 64 b / 32 b |
+| `LOAD_*` | core → RV | holding register + tagged handshake into the TCM write port; VERIFY / `LOAD_DATA` reads through the read port | 65 b req / 33 b rsp |
 | DMI | core ↔ RV | tagged 2-phase handshake; 4,096-core-cycle CSR bound; late answers discarded | 41 b / 34 b |
 | MTIME | core → RV | 64-bit gray counter | 64 b |
 | clk_rv cycle count, clk_rv PERF counters | RV → core | 16-bit / 32-bit gray counters | 112 b |
 | Sticky events (PUSH_TIMEOUT, BRIDGE_TIMEOUT) | RV → core | toggle synchronisers | |
 | Levels (RV_RUN, holds, RV_HALTED, RV_SLEEP, RV_RESET_DONE, "clk_rv out of reset", ACTIVE, `irq_fast[2]` = LQ_AVAIL ≠ 0 ∧ ¬ACTIVE, `irq_fast[3]` = LCQ_FREE ≠ 0, `dbg_stop`) | both | 2-flop `tsr_sync`; RV_RESET_DONE two stages behind the FIFO write pointer | |
+
+The widths are the exact ones of `rtl/ctrl/tsr_ctrl_pkg.sv` and the instances in `tsr_ctrl_cdc.sv`. The LQ / LCQ request is {`lcq_w[7:0]` 8 × 32 b, `wdata` 32 b, `we` 1 b, `off` 12 b} = 301 b and its response {`fault`, `rdata`} = 33 b; the LOAD request is {`we`, `addr` 32 b, `wdata` 32 b} = 65 b and its response {`err`, `rdata`} = 33 b; the bridge / core-window response is {`err`, `line[511:0]`} = 513 b; a request of the bridge and the core window is {`kind`, `be`, `addr`, `wdata`} = 64 b.
 
 Rules (`docs/ctrl-riscv.md` §7.1): gray counters step ≤ 1 per source cycle; a counter that
 can move by more than one step at a time (the host-written `LCQ_RD` and `LOG_RD`, and everything
