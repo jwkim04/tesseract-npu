@@ -20,14 +20,14 @@
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-. "$ROOT/traces/v2_tools.sh"
-v2_tools "${1:-$ROOT/build/dev}"
-GEN=$V2_GEN
+. "$ROOT/traces/trace_tools.sh"
+trace_tools "${1:-$ROOT/build/dev}"
+GEN=$TT_GEN
 rm -rf "$HERE"/m8 "$HERE"/m6 "$HERE"/errors "$HERE"/small1ch
 "$GEN" -q --ops vu --prefix vu -o "$HERE/m8"       -n 96 -s 41 --t-max 8 --caps m8 --errors 25
 "$GEN" -q --ops vu --prefix vu -o "$HERE/m6"       -n 32 -s 42 --t-max 8 --caps m6 --errors 25
 "$GEN" -q --ops vu --prefix vu -o "$HERE/errors"   -n 88 -s 43 --t-max 8 --caps m8 --errors 100 --max-groups 2
 "$GEN" -q --ops vu --prefix vu -o "$HERE/small1ch" -n 24 -s 44 --t-max 1 --caps m8 --errors 20 --num-ch 1 \
        --spm-kib 64 --ch-gib 1 --addr-beat-w 22
-v2_replay "$HERE"
-v2_replay_kernel "$HERE"
+trace_replay "$HERE"
+trace_replay_kernel "$HERE"

@@ -4,8 +4,7 @@
 # QACT / copy groups), with fixed seeds and configurations, then
 # every trace replayed under the fixed and two random schedules (race detector fatal),
 # tile-only and through the replay kernel (one launch per trace: SPM_STALE is fatal, SW §4.6). The
-# generator prints the MVM count and weight traffic per set (trace_stats.py reads the
-# cmd.bin traces of traces/model only).
+# generator prints the MVM count and weight traffic per set.
 #
 #   tmax1/    64 traces, U200 config (4 ch, T_MAX 1, 4 MiB SPM, 16 GiB/ch, CAPS 0), ~10% error
 #             injections, traces 0, 25, 50 "big" (one long weight stream, 4x the per-trace weight budget)
@@ -27,9 +26,9 @@
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-. "$ROOT/traces/v2_tools.sh"
-v2_tools "${1:-$ROOT/build/dev}"
-GEN=$V2_GEN
+. "$ROOT/traces/trace_tools.sh"
+trace_tools "${1:-$ROOT/build/dev}"
+GEN=$TT_GEN
 rm -rf "$HERE"/tmax1 "$HERE"/tmax8 "$HERE"/small1ch "$HERE"/ch3 "$HERE"/ch16 "$HERE"/errors "$HERE"/errors8
 for s in "tmax1    -n 64 -s 31 --errors 10 --big-pct 4" \
          "tmax8    -n 32 -s 32 --errors 10 --big-pct 4 --t-max 8" \
@@ -45,5 +44,5 @@ for s in "tmax1    -n 64 -s 31 --errors 10 --big-pct 4" \
     sed -n "s|^tsr-trace-gen: \([0-9]* MVMs\)|$name: \1|p" "$HERE/$name.log"
     rm -f "$HERE/$name.log"
 done
-v2_replay "$HERE"
-v2_replay_kernel "$HERE"
+trace_replay "$HERE"
+trace_replay_kernel "$HERE"

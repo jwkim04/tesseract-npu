@@ -10,13 +10,14 @@
 # written earlier in its trace; 41 traces changed: m2 13, gen 5, m3 23); vu, at, ctrl byte-identical.
 # 2026-10-31: CTL_ID[7:0] 1 (version reset, docs/design/06-software-verification.md §6.9): every set's
 # meta.json config.ctl_id 23810 -> 23809 (1326 files); every other byte identical (each set's digest
-# with that one field normalized equals the old set's). m3's digest also covers trace_stats.py as
-# changed in 1bf3052 (comments only).
+# with that one field normalized equals the old set's).
+# 2026-10-31: trace_stats.py removed from traces/m3: m3 is 5104 files with a new digest (no trace byte
+# changed; its old digest covered trace_stats.py).
 # set           files  digest
 m2              1211   a1a4fa60eee1b9aed01908a4e608d95f99856c550ab416ad4abc7fbda523d7cb
 gen             557    04b1cae61cef8cac19806c560ce35b01c4f4e2cf649e7b94dd5cc32e9a66704f
 vu              1757   27fe7775a5dc7773e6874756eb8080290b15ea76eaaa2d119cfd642800e39ca3
 at              4066   b8964f172df4c4bc6b9affe5375545c6f4bddb24a3ff816a56a1579912caa7a5
 ctrl            5811   dc1e307d27ab5f636138739eee3d63cb1e95d2bef62481879846b34af0e0a71c
-m3              5105   6626c8f85cbe78ad51279cda1ea635be5ea325f5c474bce3b8572c5ba464f256
+m3              5104   8bc7ae77bb740880826433a0a7b91218bc3080d4e60e1a39fa917756d00e57a7
 model-v1conv    3140   b294781e83e56be8f2d9a84f325d718f7b9482126b1fffc6f33d3832ac99d6c6

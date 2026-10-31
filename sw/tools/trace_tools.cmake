@@ -14,7 +14,7 @@
 #                          two-MVM splits) converted into the build tree and replayed under the
 #                          fixed schedule and a random one: the units' results equal the traces'
 #                          expected results bit for bit. Skipped (77) when traces/model is not on disk
-#                          (traces/model/regen.sh)
+#                          (a recorded set this tree cannot regenerate)
 #   trace_conv_model_full  (LABELS slow) all 290 traces converted into the build tree and replayed
 # The converted set itself is traces/model-v1conv (traces/model-v1conv/regen.sh).
 
@@ -24,7 +24,7 @@
 # ---------------------------------------------------------------------------
 if (TSR_TRACE_CONV_TEST)
     if (NOT EXISTS "${IN}")
-        message("trace_conv_model: ${IN} not on disk (traces/model/regen.sh); skipped")
+        message("trace_conv_model: ${IN} not on disk (a recorded set this tree cannot regenerate); skipped")
         cmake_language(EXIT 77)
     endif()
     file(REMOVE_RECURSE "${OUT}")

@@ -7,9 +7,9 @@ today and the stimulus of the RTL later.
 
 > **Scope.** User and developer documentation of the trace sets and their tools. Normative:
 > [SW](../docs/design/06-software-verification.md) §5 (trace format) and §10.2 (ctest plan). The trace data
-> is **not in git**: git holds only the `regen.sh` scripts, the two tool wrappers
-> (`v2_tools.sh`, `v1_tools.sh`), `m3/trace_stats.py` and `MANIFEST.sha256`. Every set except `model`
-> regenerates byte-identically from fixed seeds.
+> is **not in git**: git holds only the `regen.sh` scripts, the tool wrapper
+> `trace_tools.sh` and `MANIFEST.sha256`. Every set except `model` regenerates byte-identically from
+> fixed seeds.
 
 ## The format in one page
 
@@ -65,7 +65,7 @@ traces/model-v1conv/regen.sh build/dev
 ```
 
 Each `regen.sh` needs `bin/tsr-trace-gen` and `bin/tsr-trace-replay` of the build directory (targets
-`tsr-trace-gen`, `tsr-trace-replay`, `tsr-trace-conv`; `traces/v2_tools.sh` checks the tools before anything is deleted). It
+`tsr-trace-gen`, `tsr-trace-replay`, `tsr-trace-conv`; `traces/trace_tools.sh` checks the tools before anything is deleted). It
 deletes the set, runs the generator with the seeds and options written in its header, then replays
 every trace under the fixed schedule and two random ones (`random:1`, `random:2`) with the race
 detector fatal, tile-only and through the `replay` kernel of the build's production image
@@ -91,7 +91,7 @@ cd traces && find <set> -type f ! -name regen.sh -print0 | LC_ALL=C sort -z | xa
 | `vu` | 1,757 |
 | `at` | 4,066 |
 | `ctrl` | 5,811 |
-| `m3` | 5,105 |
+| `m3` | 5,104 |
 | `model-v1conv` | 3,140 |
 
 The digests are those of the dev host (the sets on disk match them). The generator draws some random

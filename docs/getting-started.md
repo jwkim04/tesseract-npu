@@ -244,7 +244,7 @@ Notes:
   `TSR_PLATFORM_SLOW=1` (the mutant test of the M0 kernel), `TSR_RV_RANDOM_LONG=1` (2000 random
   RV32 programs). `ctest -L slow` runs the slow tests that need no switch.
 - **Trace sets.** The trace data is not in git: only the generators (`traces/<set>/regen.sh`),
-  `traces/m3/trace_stats.py` and `traces/MANIFEST.sha256` are. Regenerate a set and compare its
+  the helper `traces/trace_tools.sh` and `traces/MANIFEST.sha256` are. Regenerate a set and compare its
   digest with the manifest:
 
   ```sh

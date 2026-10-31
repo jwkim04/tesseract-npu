@@ -6,12 +6,11 @@ __pycache__/
 sim_build/
 results.xml
 # Large regenerable trace sets: keep only their generator scripts in git
-# (traces/m3/regen.sh and traces/model/regen.sh reproduce them byte for byte).
+# (each regen.sh reproduces its set byte for byte). traces/model is a recorded set kept on disk;
+# this tree cannot regenerate it.
 /traces/m3/*
 !/traces/m3/regen.sh
-!/traces/m3/trace_stats.py
 /traces/model/*
-!/traces/model/regen.sh
 /traces/model-v1conv/*
 !/traces/model-v1conv/regen.sh
 /traces/m2/*

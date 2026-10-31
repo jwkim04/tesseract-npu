@@ -1774,7 +1774,7 @@ tesseract/
 │   ├── tech/xilinx/         # URAM/BRAM, DSP48E2 packing
 │   └── platform/alveo_xrt/  # control bridge, AXI4 memory bridge, kernel tops, kernel XML, bw/ (M0 bandwidth kernel)
 ├── tb/                      # cocotb tests (block tests, tech/ equivalence, platform/ and platform/bw)
-├── traces/                  # regression trace sets: regen.sh scripts, trace_stats.py, MANIFEST.sha256 (data not in git)
+├── traces/                  # regression trace sets: regen.sh scripts, trace_tools.sh, MANIFEST.sha256 (data not in git)
 ├── third_party/llama.cpp/   # pinned llama.cpp (submodule), patches/ and apply-patches.sh
 ├── third_party/ibex/, riscv-dbg/   # pinned, unmodified (control core; planned, W4)
 ├── hw/u200/                 # v++ configuration (k1, k4, bw), floorplan, build_xclbin.sh
