@@ -475,13 +475,13 @@ lanes' fabric per cluster is 2,130 LUT / 2,212 FF at T_MAX 1 and 17,040 LUT / 17
 
 The tree reduces each snapshot in the fixed order of §7.1 (`tsr_tree16`: 8 + 4 + 2 + 1 adds).
 Throughput, not latency, must bound it: rows in the M3 gate model are short (Qwen2.5-0.5B K = 896
-Q8_0: 15 beats incl. META; its 152 K-row output head dominates the token) and M5 MoE expert rows
-are shorter still (Qwen3-30B-A3B `ffn_down` K = 768: Q8_0 13 beats, Q4_K 7 beats). Suggested
-structure: one pipelined `tsr_fp_add` per tree level and token (level 1 issues the 8 pairs of a
-snapshot on 8 consecutive cycles, level 2 its 4 pairs as level-1 results arrive, …), with a ring of
-snapshot / intermediate registers deep enough for every row in flight (latency ≈ 4·ADD_LAT + 15),
-so a new snapshot can enter level 1 every 8 cycles. Other structures are fine if they meet §7.5
-and keep the exact pair order. Each result goes to a result FIFO whose space was reserved before
+Q8_0: 15 beats incl. META; its 152 K-row output head dominates the token) and M8 MoE expert rows
+are shorter still (Gemma 4 26B-A4B `ffn_down_exps` K = 704: Q8_0 12 beats; Q4_K does not apply, as
+704 is not a multiple of 256). Suggested structure: one pipelined `tsr_fp_add` per tree level and
+token (level 1 issues the 8 pairs of a snapshot on 8 consecutive cycles, level 2 its 4 pairs as
+level-1 results arrive, …), with a ring of snapshot / intermediate registers deep enough for every
+row in flight (latency ≈ 4·ADD_LAT + 15), so a new snapshot can enter level 1 every 8 cycles. Other
+structures are fine if they meet §7.5 and keep the exact pair order. Each result goes to a result FIFO whose space was reserved before
 the row's first beat was accepted.
 
 ### 7.5 Throughput, RB_MIN, stalls

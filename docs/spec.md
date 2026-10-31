@@ -667,9 +667,10 @@ share a DSP).
 may overlap the tail of the previous MVM with the weight requests of the next one. The result equals
 sequential execution, so this is an allowed as-if optimisation (the memory model of section 16 allows
 it). Its purpose is to hide the fill cost of 1–2 µs (estimate) that every MVM pays with the short
-expert matrices of MoE: a gate or up matrix of Qwen3-30B-A3B streams only 192 rows × 18 beats = 3,456
-beats per channel (section 5, ROW_BEATS). It has no milestone of its own since M5 was merged into M8;
-the work follows the card measurements (section 14).
+expert matrices of MoE: a down matrix of Gemma 4 26B-A4B (K = 704, 2,816 rows, Q8_0 on the card)
+streams 704 rows × 12 beats = 8,448 beats per channel (section 5, ROW_BEATS), so the fill is a few
+percent of its time. It has no milestone of its own since M5 was merged into M8; the work follows the
+card measurements (section 14).
 
 ### Attention and the KV cache
 
@@ -1225,14 +1226,34 @@ at the 16 positions where the floor moved (measured on the simulator,
 ## 13. MoE support
 
 MoE is the workload that fits the U200 best. All the parameters fit into 64 GB while the bytes read
-per token are small, so on the same card Qwen3-30B-A3B (about 2 GB per token, a file of about
-18.6 GB) can be nearly ten times faster than a dense 32B (about 20 GB per token).
+per token are small, so on the same card Gemma 4 26B-A4B (25.2 B parameters, 3.8 B active per token;
+about 3.3 GB per token on the card, a Q4_K_M file of about 17 GB) can be about six times faster than a
+dense 32B (about 20 GB per token).
 
 **The shape that ggml emits**: router `MUL_MAT` (F32 in the GGUF, converted to Q8_0 at load) →
 softmax → top-k → `MUL_MAT_ID` × 3 (gate, up, down) → multiplication by the router probabilities →
 sum. `MUL_MAT_ID` takes a 3D expert tensor and an I32 tensor of expert numbers per token (ids). src1
 is one per token for gate and up (broadcast), and differs per expert for down. The expert tensor
 layout is `EXP_STRIDE` of section 4.
+
+The M8 target Gemma 4 26B-A4B (llama.cpp architecture `gemma4`, `src/models/gemma4.cpp`) has 30
+layers with hidden size 2816. Each layer has a dense GELU FFN (2816 → 2112 → 2816) and 128 experts of
+width 704, 8 of them used per token; the two branches have their own norms and their outputs are
+added. It differs from the shape above in four points.
+
+- The router input is the attention output after an rms_norm, a scale of 1/√2816 and a multiplication
+  by a vector (`ffn_gate_inp.scale`). The router matrix is 2816 → 128.
+- The 8 weights are the softmax probabilities divided by their sum.
+- A vector of 128 per-expert scales (`ffn_down_exps.scale`) multiplies the down output.
+- In the Q4_K_M GGUF that was sized, gate and up are one tensor (`ffn_gate_up_exps`, K = 2816,
+  N = 1408), so a layer has two `MUL_MAT_ID` and not three; the pinned loader accepts both forms.
+
+The gate-up rows are Q4_K with 25 beats, 352 rows per channel and expert (8,800 beats). The down
+experts have K = 704, which is not a multiple of 256: the GGUF stores them as Q5_0 or Q8_0 and the
+card holds Q8_0, 12 beats per row, 704 rows per channel and expert (8,448 beats). The model
+dimensions are those of the official `config.json`, and the 3.3 GB per token (8 of the 128 experts
+per layer, the tied embedding and output matrix once, every weight as Q4_K or Q8_0) and the 17 GB
+are estimates from the tensor list of that one GGUF.
 
 | Stage | Method | Needs | Milestone |
 | --- | --- | --- | --- |
@@ -1242,36 +1263,39 @@ layout is `EXP_STRIDE` of section 4.
 Milestone M5 was merged into M8 (D14). The router and the expert tensors are placed as sections 4
 and 5 say.
 
-**Device-only example** (a C++ kernel of the control core, one token, 8 experts, expert matrices
-2048 ↔ 768, the router probability multiplied into h beforehand and summed by the ACC of the down
-MVM). The example is illustrative: the builder names are simplified, and the as-built builders take
-field structs (`sw/ctrl/include/tsr/kernel.hpp`, `vu.hpp`); the MoE kernel is not written yet (M8).
+**Device-only example** (a C++ kernel of the control core, one token, Gemma 4 26B-A4B: 8 experts, a
+gate-up matrix 2816 → 1408 in Q4_K and a down matrix 704 → 2816 in Q8_0, the router weight
+multiplied into h beforehand and summed by the ACC of the down MVM). The example is illustrative: the
+builder names are simplified, and the as-built builders take field structs
+(`sw/ctrl/include/tsr/kernel.hpp`, `vu.hpp`); the MoE kernel is not written yet (M8).
 
 ```cpp
 join(issue(TOPK(sel, probs, 128, 8)));                    // sel = (idx, val) × 8. Join before reading the numbers
 for (uint32_t e = 0; e < 8; ++e) {
-  const uint32_t ex = spm_ptr<uint32_t>(sel)[2 * e] * EXP_STRIDE;   // expert number × EXP_STRIDE (SPM window)
-  ticket g = issue(MVM(G, xq, {W_gate + ex, Q4_K}, 768, 2048, 1));
-  ticket u = issue(MVM(U, xq, {W_up + ex, Q4_K}, 768, 2048, 1));
-  issue(VOP_SWIGLU(H, G, U, 768), after(g, u));
-  issue(SOP_LDS(1, spm_word(sel, 2 * e + 1)));             // s1 = router probability (VU queue order)
-  ticket m = issue(VOP_MULS(H, H, 1, 768));
-  ticket q = issue(QACT(qa::a256, HQ, H, 768, 1), after(m));
-  issue(MVM(Y, HQ, {W_down + ex, Q4_K}, 2048, 768, 1, 0, /*acc=*/true), after(q));
+  const uint32_t id = spm_ptr<uint32_t>(sel)[2 * e];               // expert number (SPM window)
+  ticket gu = issue(MVM(GU, xq, {W_gate_up + id * EXP_STRIDE_GU, Q4_K}, 1408, 2816, 1));  // gate = GU[0, 704), up = GU[704, 1408)
+  issue(VOP_GEGLU16(H, GU, GU + 704, 704), after(gu));
+  issue(SOP_LDS(1, spm_word(sel, 2 * e + 1)));             // s1 = router weight (VU queue order)
+  ticket m = issue(VOP_MULS(H, H, 1, 704));
+  ticket q = issue(QACT(qa::a32, HQ, H, 704, 1), after(m));
+  issue(MVM(Y, HQ, {W_down + id * EXP_STRIDE_DN, Q8_0}, 2816, 704, 1, 0, /*acc=*/true), after(q));
 }
 join_all();
 ```
 
 The control core issues the tile ops of all 8 experts without waiting (if a queue has no free slot,
-`issue` waits for one). The queue order protects the reuse order of G, U, H and HQ: the gate MVM of
+`issue` waits for one). The queue order protects the reuse order of GU, H and HQ: the gate-up MVM of
 the next expert is behind the previous down MVM in the MVM queue, and that down MVM starts after the
 QACT and VU ops. s1 is written and read in VU queue order, so no op of another kernel can come in
 between (there is one s register bank). The `VOP_MULS` of this example is the VOP MULC with
 `cmode` 1.
 
-y is initialised with the residual (or 0) before the loop. Because the probability is multiplied
-before the down MVM, the accumulation order differs from ggml (which multiplies after down), so the
-model-level KL criterion verifies it.
+y is initialised with 0 before the loop: Gemma 4 applies an RMS norm to the sum of the experts, so
+the residual cannot go into the ACC. The router weight is the softmax probability divided by the sum
+of the 8 selected probabilities, times `ffn_down_exps.scale[id]`; the sketch assumes that the kernel
+has already put this product into `sel`. Because the factor is multiplied before the down MVM, the
+accumulation order differs from ggml (which multiplies after down), so the model-level KL criterion
+verifies it.
 
 **Limits**: gpt-oss-120b and GLM-4.5-Air class models do not fit into 64 GB. gpt-oss-20b fits but
 needs the MXFP4 format (a reserved fmt code).
@@ -1799,7 +1823,7 @@ the goal of section 1, M5 was merged into M8, and M7 to M9 are the host-independ
 | M5 · (merged into M8) | Merged into M8 (D14) | – | – |
 | M6 · Control core hardware | RISC-V control core (Ibex) with asynchronous issue queues; vector unit; attention and KV on the device (q8_0 KV, flash attention); second SPM read path; debug including GDB over PCIe | Qwen2.5-0.5B Q8_0 logits bit-identical to the simulator and the 32B Q4_K_M KL criterion met (MVMs issued by RISC-V kernels; attention on the CPU: `offload_kqv` = false); GDB smoke on the card | In development. On the simulator: simulator and references, firmware SDK with the M6 kernels, transport, M6 backend and tools (W0 to W3a). Planned: RTL (W4), integration (W5), card (W6) |
 | M7 · RISC-V kernel library, graph execution | Kernels for RMSNorm, RoPE, SwiGLU, GELU, residual, flash attention, activation quantization; a ggml split is written as an op list and launched once | Qwen2.5 and Gemma 4 (dense) with one launch per token (KV cache and attention on the device), logits bit-identical to the simulator, KL criterion met; DDR utilisation measured | Planned. On the simulator: the kernels, verified per layer (W2b). Planned: the M7 backend and M7 on the simulator (W3b) |
-| M8 · Device MoE, PyTorch on the kernels | MUL_MAT_ID with TOPK and expert placement; stage B decode step; PyTorch on the same kernels; device embedding lookup (DQROW RTL), TOPK RTL | Defined at the start of M8 (working target: Qwen3-30B-A3B on the card) | Planned |
+| M8 · Device MoE, PyTorch on the kernels | MUL_MAT_ID with TOPK and expert placement; stage B decode step; PyTorch on the same kernels; device embedding lookup (DQROW RTL), TOPK RTL | Defined at the start of M8 (working target: Gemma 4 26B-A4B on the card) | Planned |
 | M9 · Resident decode loop (optional) | Stage C: a decode loop resident in the control core, token ring buffer, device sampling, `sw/runner`; VMASK | The host only polls the ring buffer | Planned |
 
 The host only launches kernels that were loaded onto the RISC-V control core (decision,
@@ -1853,7 +1877,8 @@ section 11 from the start.
   use small buffers and cannot see it); the check writes a pattern over the lower half and a different
   one over the upper half and reads back (`docs/m0-bw.md`, `docs/platform-u200.md` §14). Had the card
   held 8 GB per channel, `CH_BYTES` and the transport channel size would have been set to 8 GiB, which
-  fits 32B Q4_K_M (about 20.7 GB of weights, about 5.2 GB per channel) and 30B-A3B but not 70B.
+  fits 32B Q4_K_M (about 20.7 GB of weights, about 5.2 GB per channel) and Gemma 4 26B-A4B Q4_K_M
+  (about 19 GB, about 4.8 GB per channel) but not 70B.
 - [x] Approximation algorithms and coefficients of exp, reciprocal, sin and cos
   (`tsr_ref_math.c`, before M6). Decided: [VU](design/02-vector-unit.md) §6 and Appendix A define
   EXPK, the correctly rounded reciprocal (no RECIP_APPROX), SIN and COS with an exact 2/π integer

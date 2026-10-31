@@ -121,8 +121,8 @@ The facts below describe the datapath that the control core is designed around.
   0.5B token and 0.2 M per 32B token. CC §3.3 restates this at 1.5 K and 4 K tile ops
   (*estimate*, CC §3.3) and adds the measured executor cost: see §12.4.
 - **Decision latency.** The latency-critical points are device decisions: TOPK result, expert ids,
-  expert MVMs (MoE, M8) and sampling. With 1-2 µs per decision and 48 MoE layers that is under 0.1 ms
-  per token against about 26 ms of weight streaming for Qwen3-30B-A3B (about 2 GB per token at
+  expert MVMs (MoE, M8) and sampling. With 1-2 µs per decision and 30 MoE layers that is under 0.1 ms
+  per token against about 43 ms of weight streaming for Gemma 4 26B-A4B (about 3.3 GB per token at
   76.8 GB/s; *estimate*).
 - So 50 MIPS sustained is plenty (100 MHz at CPI 1.2-1.6 leaves margin). Fmax and IPC do not decide
   the choice. What does: verification maturity (the core becomes part of every device-resident

@@ -63,7 +63,7 @@ ROWS = [
      "Qwen2.5 and Gemma 4 dense: one launch\nper token; DDR utilisation measured"),
     ("M8", "Device MoE, PyTorch", "", PLAN,
      "MUL_MAT_ID, TOPK, expert placement;\nPyTorch calls the same kernels",
-     "Qwen3-30B-A3B on hardware"),
+     "Gemma 4 26B-A4B on hardware"),
     ("M9", "Resident decode loop", "optional", PLAN,
      "On-device sampling and an\noutput-token ring buffer",
      "The host only polls the\nring buffer"),
