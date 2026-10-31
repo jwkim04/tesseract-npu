@@ -1025,6 +1025,18 @@ For TOPK with m = 262,144: about 59 µs typical, 0.95 ms worst case.
 All figures are *estimates* (± 30 %; FM ≈ 140 LUT assumed). CC's SLR1 budget carries this total
 (CC §14.1). DSP is not scarce in SLR1: about 1,285 are free.
 
+**Measured (W4-B, 2026-11-01; `tb/vu/viv/vu_ooc.sh`, out of context after routing, xcu200-2, 3.333 ns; the estimates
+above are about 40 % low).** M6 configuration, 16 EXP / 8 back lanes: 84.0 K LUT (72.6 K logic, 4.8 K LUTRAM, 6.5 K SRL),
+101.7 K FF, 433 DSP, 16 RAMB36 + 25 RAMB18 (the RAMB18s are the lanes' EXPK and RC ROMs), WNS +0.003 ns / WHS +0.019 ns.
+Per block (LUT): 16 lanes 49.6 K (368 DSP), angle unit 8.2 K (48 DSP), reduction and post 9.4 K, injector 6.1 K, generator 3.6 K,
+writer 3.2 K, reader 2.1 K, top 1.8 K. Knobs 8 / 4: 75.3 K LUT, 89.0 K FF, 297 DSP (lanes 39.5 K / 232 DSP; the non-lane part
+is 34.4 K at 16 / 8 and 35.8 K at 8 / 4). M8 options (`HAS_TOPK`, `HAS_DQROW`), synthesis: +6.3 K LUT (TOPK 5.6 K, DQROW
+table 1.2 K), WNS +0.25 ns. Fixes the runs forced: the reciprocal seed is a ROM (a run-time divider: 63 logic levels), the
+angle buffers are LUTRAM (73 K FF), delay lines up to 6 stages in flip-flops (−5.8 K LUT), the credit counters, the partial
+write, the hazard comparison and the slot-FIFO head registered. The timing margin is thin (the worst path moves between runs;
+hot spots: the lanes' micro-op pipeline merged by synthesis and fanned out 16 ways, the f32-to-fp16 rounding at lane stage S1,
+the AMERGE batch control).
+
 **Shrink knobs**, as elaboration parameters (results unchanged):
 - `VU_EXP_LANES` 8: −4.4 K LUT, −88 DSP; EXP and EXPSUB go to half rate.
 - `VU_BACK_LANES` 4: −4.3 K LUT, −36 DSP; SILU, GELU and the others go to quarter rate.

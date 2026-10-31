@@ -232,7 +232,10 @@ module tsr_csr
 
   // ---- platform (EX §9.3) ----
   input  logic                       plat_err_i,
-  output logic                       host_irq_o
+  output logic                       host_irq_o,
+
+  // STATUS.UNIT_HUNG (the sticky bit, EX §8.6) for the DB block: HUNG_STOP and the history freeze (DB §5.4)
+  output logic                       unit_hung
 );
 
   // -------------------------------------------------------------------------------------------
@@ -1033,6 +1036,7 @@ module tsr_csr
   assign host_clear     = host_clear_q;
   assign sr_db_clear    = sr_db_clear_q;
   assign host_irq_o     = ctrl_q[C_IRQ_EN] && (lcq_wr_q != lcq_rd_q);
+  assign unit_hung      = sticky_q[S_UNIT_HUNG];
 
   wire unused_ok = &{1'b0, dmi_rsp_resp, perf_busy[5], unit_progress[5], hung_q[5], lq_req_off[1:0],
                      lq_req_wdata[31:1]};

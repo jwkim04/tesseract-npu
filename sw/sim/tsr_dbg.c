@@ -398,7 +398,7 @@ static void trw_drop(tsr_dbg * d, uint32_t n) {
 }
 
 // One record into the ring at WPTR; 0 if it could not be written (ring full with TRW_STOP_FULL,
-// no ring, or a ring outside the channel).
+// no ring, a ring on another channel than TSR_TRW_CH, or a ring outside the channel).
 static int trw_put(tsr_dbg * d, const uint32_t w[8]) {
     const uint64_t cap = trw_cap(d);
     if (cap == 0) return 0;
@@ -406,7 +406,9 @@ static int trw_put(tsr_dbg * d, const uint32_t w[8]) {
     const uint32_t ch = TSR_GET(d->trw_base, TSR_HANDLE_CH);
     const uint64_t beat = TSR_GET(d->trw_base, TSR_HANDLE_BEAT) & ~0xFull;
     const uint64_t off = beat * TSR_LINE_BYTES + (uint64_t)(d->trw_wptr % cap) * TSR_TRW_RECORD_BYTES;
-    if (ch >= d->num_ch || off + TSR_TRW_RECORD_BYTES > d->ch_bytes) return 0;
+    // the ring is on the trace writer's channel (TSR_TRW_CH, DB §8.3: the write source sits on that channel's
+    // arbiter); a ring field naming another channel is no ring, as in the RTL
+    if (ch != TSR_TRW_CH || ch >= d->num_ch || off + TSR_TRW_RECORD_BYTES > d->ch_bytes) return 0;
     uint8_t * p = tsr_sim_dram(d->sim, ch) + off;
     for (uint32_t i = 0; i < 8; ++i) {
         p[4 * i] = (uint8_t)w[i]; p[4 * i + 1] = (uint8_t)(w[i] >> 8);
@@ -636,8 +638,14 @@ static int tbp_match(const tsr_dbg * d, uint32_t i, const tsr_q_event * ev) {
         if (ev->code != 0 || ev->ext == NULL) return 0;  // never a poisoned entry
         const int spm = TSR_GET(ctl, TSR_DBG_TBP_CTL_KIND) == TSR_DBG_TBP_CTL_KIND_SPM;
         const uint32_t chm = TSR_GET(ctl, TSR_DBG_TBP_CTL_CHMASK);
-        for (uint32_t k = 0; k < ev->ext->n; ++k) {
+        // CC §8.2: the checker class slot, and so the matcher, holds TSR_EXT_MAX = 4 SPM / DRAM extents per op
+        // (s registers are not extents of this matcher). AMERGE lists six (Orun W and R, parts, mk, st W and R):
+        // the last two, st, are not matched in the simulator, as in the RTL (DB §5.3).
+        uint32_t seen = 0;
+        for (uint32_t k = 0; k < ev->ext->n && seen < TSR_EXT_MAX; ++k) {
             const tsr_extent * e = &ev->ext->e[k];
+            if (e->kind != TSR_EXT_SPM && e->kind != TSR_EXT_DRAM) continue;
+            ++seen;
             if (e->kind != (spm ? TSR_EXT_SPM : TSR_EXT_DRAM)) continue;
             if (!(e->write ? (ctl & TSR_DBG_TBP_CTL_W) : (ctl & TSR_DBG_TBP_CTL_R))) continue;
             if (!spm) {
@@ -988,9 +996,12 @@ static uint32_t reg_read(tsr_dbg * d, uint32_t off) {
         default: return q->n ? sat32(now_of(d) - q->t_oldest) : 0u;
         }
     }
-    if (off >= TSR_CSR_DBG_HIST_W(0) && off < TSR_CSR_DBG_HIST_W(8))
-        return d->hist[d->hist_idx % TSR_HIST_DEPTH].w[(off - TSR_CSR_DBG_HIST_W(0)) / 4];
+    // DB §5.6: a slot that is not PRESENT (never written since HIST_CLEAR, or holding another push
+    // index) reads 0 in every field, INFO included.
     const hist_ent * h = &d->hist[d->hist_idx % TSR_HIST_DEPTH];
+    const int hpres = h->valid && h->pidx == d->hist_idx;
+    if (off >= TSR_CSR_DBG_HIST_W(0) && off < TSR_CSR_DBG_HIST_W(8))
+        return hpres ? h->w[(off - TSR_CSR_DBG_HIST_W(0)) / 4] : 0u;
     const uint64_t now = now_of(d);
     uint32_t T = 0;
     switch (off) {
@@ -1030,14 +1041,13 @@ static uint32_t reg_read(tsr_dbg * d, uint32_t off) {
     case TSR_CSR_DBG_TRW_MASK:  return d->trw_mask;
     case TSR_CSR_DBG_HIST_HEAD: return d->hist_head;
     case TSR_CSR_DBG_HIST_IDX:  return d->hist_idx;
-    case TSR_CSR_DBG_HIST_INFO:
-        return (h->valid && h->pidx == d->hist_idx) ? h->info : (h->info & ~TSR_DBG_HIST_INFO_PRESENT);
-    case TSR_CSR_DBG_HIST_PIDX:   return h->pidx;
-    case TSR_CSR_DBG_HIST_TICKET: return h->ticket;
-    case TSR_CSR_DBG_HIST_DEP0:   return h->dep[0];
-    case TSR_CSR_DBG_HIST_DEP1:   return h->dep[1];
-    case TSR_CSR_DBG_HIST_TIME:   return h->time;
-    case TSR_CSR_DBG_HIST_PC:     return h->pc;
+    case TSR_CSR_DBG_HIST_INFO:   return hpres ? h->info : 0u;
+    case TSR_CSR_DBG_HIST_PIDX:   return hpres ? h->pidx : 0u;
+    case TSR_CSR_DBG_HIST_TICKET: return hpres ? h->ticket : 0u;
+    case TSR_CSR_DBG_HIST_DEP0:   return hpres ? h->dep[0] : 0u;
+    case TSR_CSR_DBG_HIST_DEP1:   return hpres ? h->dep[1] : 0u;
+    case TSR_CSR_DBG_HIST_TIME:   return hpres ? h->time : 0u;
+    case TSR_CSR_DBG_HIST_PC:     return hpres ? h->pc : 0u;
     default: return 0;                                   // unlisted offsets read 0
     }
 }

@@ -9,12 +9,13 @@
 #                                      an extra output register), every module that instantiates
 #                                      them, tsr_core with the xilinx filelist (U200, T_MAX 8,
 #                                      the U200 bitstream implementation parameters, reduced
-#                                      configurations), an XSim elaboration of the core and the
-#                                      MVM unit (xvlog / xelab of Vivado, skipped without it; a
+#                                      configurations), an XSim elaboration of the core (static
+#                                      elaboration of several configurations) and the MVM unit
+#                                      (xvlog / xelab of Vivado, skipped without it; a
 #                                      variable with more than one procedural driver fails it), a
-#                                      Vivado synthesis of tsr_issue and tsr_csr (synth_check.sh:
-#                                      fails on a multi-driven net), and the tb/tech HDL with both
-#                                      targets
+#                                      Vivado synthesis of tsr_issue, tsr_csr and the W4-B blocks
+#                                      (synth_check.sh: fails on a multi-driven net), and the tb/tech
+#                                      HDL with both targets
 #   rtl/tech/xilinx/lint.sh MODULE...  lint only these modules (default parameters)
 #
 # No blanket waivers (as rtl/lint.sh). Exit status: number of failing lint runs (0 = clean).
@@ -64,6 +65,12 @@ lint tsr_sram_1r1w -GDEPTH=1 -GWIDTH=72 -GRD_LAT=2
 for t in 1 2 3 8; do
     for l in 1 2 3 4 5 6 7 8 9 10 11; do lint tsr_mac_lane -GT=$t -GLAT=$l; done
 done
+# PV mode (ATTPV, AT §8.2; needs LAT >= 3)
+for t in 1 2 8; do
+    for l in 3 4 5 6 7 8 9 10 11; do lint tsr_mac_lane -GT=$t -GLAT=$l -GPV=1; done
+done
+lint tsr_mac_lane -GN=5 -GT=3 -GLAT=4 -GPV=1
+lint tsr_mac_lane -GN=1 -GT=2 -GLAT=5 -GPV=1
 lint tsr_mac_lane -GN=5 -GT=3 -GLAT=4
 lint tsr_mac_lane -GN=2 -GT=2 -GLAT=5
 lint tsr_mac_lane -GN=1 -GT=1 -GLAT=2
@@ -90,23 +97,31 @@ lint tsr_mvm_cluster -GCH=15 -GK_MAX=4096 -GT_MAX=3 -GADDR_BEAT_W=40 -GADD_LAT=8
 # ---- whole core on the xilinx target ----
 lint tsr_core
 lint tsr_core -GHAS_MVM=0
+lint tsr_core -GHAS_DB=0
+lint tsr_core -GHAS_ATT=0
+lint tsr_core -GHAS_VU=0 -GHAS_ATT=0 -GHAS_DB=0
+lint tsr_core -GNUM_CH=1 -GT_MAX=1 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9 -GVU_EXP_LANES=8 -GVU_BACK_LANES=4
+lint tsr_core -GNUM_CH=4 -GT_MAX=8 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9
+lint tsr_core -GHAS_TOPK=1 -GHAS_DQROW=1
 lint tsr_core -GHAS_MVM=1 -GT_MAX=8
 lint tsr_core -GHAS_MVM=1 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=5
 lint tsr_core -GHAS_MVM=1 -GT_MAX=8 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=5
 lint tsr_core -GHAS_MVM=1 -GNUM_CH=1 -GT_MAX=2 -GSPM_BYTES=65536 -GCH_BYTES="64'd1073741824" -GK_MAX=4096 -GADDR_BEAT_W=22
 lint tsr_core -GHAS_MVM=1 -GNUM_CH=2 -GT_MAX=4 -GK_MAX=256 -GSPM_BYTES=4096 -GCH_BYTES="64'd4096" -GADDR_BEAT_W=5
 lint tsr_core -GHAS_MVM=1 -GMVM_BC_PIPE=0 -GMVM_RES_PIPE=0 -GMVM_WS_FIFO=64 -GSPM_RD_LAT=1 -GRD_OUTSTANDING=1
-lint tsr_core -GHAS_MVM=1 -GT_MAX=3 -GMVM_ACT_RD_LAT=1 -GMVM_MAC_LAT=1 -GMVM_MUL_LAT=1 -GMVM_ADD_LAT=1 -GMVM_WS_RD_LAT=1
+lint tsr_core -GHAS_MVM=1 -GHAS_ATT=0 -GT_MAX=3 -GMVM_ACT_RD_LAT=1 -GMVM_MAC_LAT=1 -GMVM_MUL_LAT=1 -GMVM_ADD_LAT=1 -GMVM_WS_RD_LAT=1
 
 # ---- XSim (the Vivado simulator, used by hw_emu): elaboration of the core at the U200 bitstream
 # parameters. Verilator and Vivado synthesis accept constructs XSim rejects (e.g. an initial block
 # writing an always_ff variable, IEEE 1800 9.2.2.4). Needs Vivado (TSR_VIVADO_SETTINGS, default
-# /tool/Xilinx/Vivado/2024.2/settings64.sh); skipped without it. flock $TSR_VIVADO_LOCK when set.
+# /tool/Xilinx/Vivado/2024.2/settings64.sh); skipped without it. Every Vivado call runs under TSR_VIVADO_WRAP (a command prefix, e.g. a slot
+# script that limits the Vivado processes of a shared host) or, when that is unset, flock $TSR_VIVADO_LOCK.
 VSET=${TSR_VIVADO_SETTINGS:-/tool/Xilinx/Vivado/2024.2/settings64.sh}
 if [ -r "$VSET" ]; then
     xdir=$(mktemp -d)
     vlock=()
-    [ -n "${TSR_VIVADO_LOCK:-}" ] && vlock=(flock "$TSR_VIVADO_LOCK")
+    if [ -n "${TSR_VIVADO_WRAP:-}" ]; then read -r -a vlock <<< "$TSR_VIVADO_WRAP"
+    elif [ -n "${TSR_VIVADO_LOCK:-}" ]; then vlock=(flock "$TSR_VIVADO_LOCK"); fi
     # xvlog -f list: the filelist with its nested lists expanded, +incdir+ / +define+ as -i / -d,
     # Verilator configuration files (.vlt) left out (W4-A: rtl/ctrl/filelist.f)
     fl_expand() {   # fl_expand LIST
@@ -156,12 +171,43 @@ if [ -r "$VSET" ]; then
             fails=$((fails + 1))
         fi
     }
+    # The whole core: static elaboration only (xelab prints "Completed static elaboration" within seconds with --O0;
+    # the code generation behind it takes over 20 minutes for the core with the VU, attention and the DB block
+    # and checks nothing more here), then xelab is stopped.
+    xsim_static() {   # xsim_static TOP NAME=VALUE...
+        local top=$1; shift
+        local g=() kv log pid t=0 st=1
+        for kv in "$@"; do g+=(-generic_top "$kv"); done
+        log="$xdir/static_$RANDOM.log"
+        setsid bash -c 'cd "$1" && shift && set +u && source "$1" > /dev/null 2>&1 && shift && exec "$@"' _ "$xdir" "$VSET" \
+            "${vlock[@]}" xelab "$top" -s "x$RANDOM" --O0 "${g[@]}" > "$log" 2>&1 &
+        pid=$!
+        while kill -0 "$pid" 2>/dev/null && [ $t -lt 3600 ]; do
+            if grep -q 'Completed static elaboration' "$log"; then st=0; break; fi
+            grep -qE '^(ERROR|CRITICAL)' "$log" && break
+            sleep 1; t=$((t + 1))
+        done
+        kill -- "-$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        if [ $st -eq 0 ] && ! grep -qE "$xsim_bad" "$log"; then
+            echo "xsim ok   $top $* (static elaboration)"
+        else
+            echo "xsim FAIL $top $*"
+            grep -E "^(ERROR|CRITICAL)|$xsim_bad" "$log" | head -10 | sed 's/^/    /'
+            [ $st -ne 0 ] && [ $t -ge 3600 ] && echo "    static elaboration did not finish in an hour"
+            fails=$((fails + 1))
+        fi
+    }
     if out=$(cd "$xdir" && set +u && source "$VSET" > /dev/null 2>&1 && \
              "${vlock[@]}" xvlog -sv -f vendor.txt 2>&1 && "${vlock[@]}" xvlog -sv -f files.txt 2>&1); then
         u200=(HAS_MVM=1 SPM_RD_LAT=4 MVM_BC_PIPE=2 MVM_RES_PIPE=2 MVM_MAC_LAT=9 RST_PIPE=3)
-        xsim_elab tsr_core "${u200[@]}" NUM_CH=1 T_MAX=1
-        xsim_elab tsr_core "${u200[@]}" NUM_CH=2 T_MAX=2 K_MAX=4096 SPM_BYTES=65536 ADDR_BEAT_W=22 CH_BYTES=1073741824
-        xsim_elab tsr_core HAS_MVM=0 RST_PIPE=1
+        xsim_static tsr_core "${u200[@]}" NUM_CH=1 T_MAX=1 VU_EXP_LANES=8 VU_BACK_LANES=4
+        xsim_static tsr_core "${u200[@]}" NUM_CH=4 T_MAX=8
+        xsim_static tsr_core "${u200[@]}" NUM_CH=2 T_MAX=2 K_MAX=4096 SPM_BYTES=65536 ADDR_BEAT_W=22 CH_BYTES=1073741824
+        xsim_static tsr_core HAS_MVM=0 RST_PIPE=1
+        xsim_static tsr_core "${u200[@]}" NUM_CH=1 T_MAX=1 HAS_DB=0
+        xsim_static tsr_core "${u200[@]}" NUM_CH=1 T_MAX=1 HAS_ATT=0
+        xsim_static tsr_core "${u200[@]}" NUM_CH=1 T_MAX=1 HAS_VU=0 HAS_ATT=0 HAS_DB=0
+        xsim_static tsr_core "${u200[@]}" NUM_CH=2 T_MAX=2 HAS_TOPK=1 HAS_DQROW=1
         xsim_elab tsr_mvm NUM_CH=2 T_MAX=2 RST_LOCAL=2
     else
         echo "xsim FAIL xvlog rtl/filelist_xilinx.f"
@@ -173,9 +219,13 @@ else
     echo "xsim skip (no Vivado at $VSET)"
 fi
 
-# ---- Vivado synthesis of the issue path and the CSR block: no multi-driven net (synth_check.sh; skipped
+# ---- Vivado synthesis of the issue path, the CSR block and the W4-B blocks: no multi-driven net (synth_check.sh; skipped
 # without Vivado). Verilator and XSim accept a variable written by two blocks, Vivado keeps one driver.
-"$ROOT/rtl/tech/xilinx/synth_check.sh" tsr_issue tsr_csr
+# W4-B: the DB block, the VU / AT checker classes and KVST as well
+# (found by the first whole-core synthesis, tb/core/viv/core_ooc.sh k1: tsr_dma_kvst wrote five registers from two
+# blocks)
+"$ROOT/rtl/tech/xilinx/synth_check.sh" tsr_issue tsr_csr tsr_dbg tsr_chk_at tsr_vu_chk "tsr_dma:HAS_KVST=1" \
+    "tsr_vu:HAS_TOPK=1,HAS_DQROW=1" "tsr_mvm:HAS_ATT=1,NUM_CH=2,T_MAX=2"
 fails=$((fails + $?))
 
 # ---- tb/tech HDL with both targets (each toplevel with the tech files of one target only) ----

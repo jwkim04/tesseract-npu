@@ -26,6 +26,12 @@
 //          is accepted in cycle c + 1 at the earliest and its reads are presented in cycle c + 2.
 //   no reset of the arrays (contents undefined until written; tokens >= T of an MVM keep stale
 //   data, whose results the gather ignores).
+// Attention (W4-B at, AT §8.1 / §8.2): a line is written into every token t with wr_tmask[t] = 1
+//   (the cluster decodes it: the MVM 1 << tok, ATTQK the GS slot columns of the line's query, ATTPV
+//   the slot of the p row); each token has its own read address (qs_addr[t] / dbs_addr[t]: the
+//   heads of an ATTQK pass sit at different QA blocks). The weight MVM drives all tokens with the
+//   same address. The address registers stay in the back end (no logic between them and the
+//   RAMs).
 // Implementation: one write input register (docs/rtl-m3.md §9.2 item 1: the 3 * T_MAX RAMs share
 //   the 512 write-data bits; the per-RAM write enables are decoded before the register, so each
 //   RAM's WE pin is a flop), then tsr_sram_1r1w (rtl/tech) per (token, bank) and per token for
@@ -50,14 +56,15 @@ module tsr_mvm_actbuf
 
   // ---- write side (activation broadcast) ----
   input  logic                          wr_valid,
+  input  logic [T_MAX-1:0]              wr_tmask,    // tokens written (cluster decode)
   input  tsr_mvm_bcline_t               wr_line,
 
   // ---- read side (back end) ----
   input  logic                          qs_re,
-  input  logic [QS_AW-1:0]              qs_addr,
+  input  logic [T_MAX-1:0][QS_AW-1:0]   qs_addr,     // per token
   output logic [T_MAX-1:0][1023:0]      qs_data,     // [t][511:0] = line 2w, [1023:512] = line 2w+1
   input  logic                          dbs_re,
-  input  logic [DBS_AW-1:0]             dbs_addr,
+  input  logic [T_MAX-1:0][DBS_AW-1:0]  dbs_addr,
   output logic [T_MAX-1:0][511:0]       dbs_data
 );
 
@@ -81,9 +88,9 @@ module tsr_mvm_actbuf
       dbs_we_q <= '0;
     end else begin
       for (int we_t = 0; we_t < int'(T_MAX); we_t++) begin
-        qs_we_q[we_t][0] <= wr_valid & (32'(wr_line.tok) == 32'(we_t)) & ~wr_line.dbs & ~wr_line.addr[0];
-        qs_we_q[we_t][1] <= wr_valid & (32'(wr_line.tok) == 32'(we_t)) & ~wr_line.dbs &  wr_line.addr[0];
-        dbs_we_q[we_t]   <= wr_valid & (32'(wr_line.tok) == 32'(we_t)) &  wr_line.dbs;
+        qs_we_q[we_t][0] <= wr_valid & wr_tmask[we_t] & ~wr_line.dbs & ~wr_line.addr[0];
+        qs_we_q[we_t][1] <= wr_valid & wr_tmask[we_t] & ~wr_line.dbs &  wr_line.addr[0];
+        dbs_we_q[we_t]   <= wr_valid & wr_tmask[we_t] &  wr_line.dbs;
       end
     end
   end
@@ -102,18 +109,19 @@ module tsr_mvm_actbuf
       tsr_sram_1r1w #(.DEPTH(QS_WORDS), .WIDTH(512), .RD_LAT(RD_LAT)) u_qs (
         .clk,
         .we(qs_we_q[t][b]), .waddr(qs_wa_q), .wdata(wd_q), .wbe({64{1'b1}}),
-        .re(qs_re), .raddr(qs_addr), .rdata(qs_data[t][512*b +: 512])
+        .re(qs_re), .raddr(qs_addr[t]), .rdata(qs_data[t][512*b +: 512])
       );
     end
     tsr_sram_1r1w #(.DEPTH(DBS_LINES), .WIDTH(512), .RD_LAT(RD_LAT)) u_dbs (
       .clk,
       .we(dbs_we_q[t]), .waddr(dbs_wa_q), .wdata(wd_q), .wbe({64{1'b1}}),
-      .re(dbs_re), .raddr(dbs_addr), .rdata(dbs_data[t])
+      .re(dbs_re), .raddr(dbs_addr[t]), .rdata(dbs_data[t])
     );
   end
 
-  // `last` is the cluster's (activation gating); addr bits above the RAM depth are always 0.
-  wire unused_ok = &{1'b0, wr_line.last};
+  // `last` is the cluster's (activation gating); addr bits above the RAM depth are always 0;
+  // tok is decoded by the cluster into wr_tmask.
+  wire unused_ok = &{1'b0, wr_line.last, wr_line.tok};
 
   // ---- simulation checks (armed by the first reset edge) ----
 `ifndef SYNTHESIS
@@ -124,12 +132,13 @@ module tsr_mvm_actbuf
   always_ff @(posedge clk) begin
     if (rst_n && a_on_q) begin
       if (wr_valid) begin
-        assert (32'(wr_line.tok) < T_MAX) else $error("%m: broadcast line for token %0d >= T_MAX", wr_line.tok);
         assert (wr_line.dbs ? (32'(wr_line.addr) < DBS_LINES) : (32'(wr_line.addr) < 2 * QS_WORDS))
           else $error("%m: broadcast line address %0d out of range (dbs %0d)", wr_line.addr, wr_line.dbs);
       end
-      if (qs_re)  assert (32'(qs_addr)  < QS_WORDS)  else $error("%m: QS read address %0d out of range", qs_addr);
-      if (dbs_re) assert (32'(dbs_addr) < DBS_LINES) else $error("%m: DBS read address %0d out of range", dbs_addr);
+      for (int t = 0; t < int'(T_MAX); t++) begin
+        if (qs_re)  assert (32'(qs_addr[t])  < QS_WORDS)  else $error("%m: QS read address %0d out of range", qs_addr[t]);
+        if (dbs_re) assert (32'(dbs_addr[t]) < DBS_LINES) else $error("%m: DBS read address %0d out of range", dbs_addr[t]);
+      end
     end
   end
 `endif

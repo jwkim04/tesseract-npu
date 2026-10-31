@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # tb/core/viv/core_ooc.sh — whole-core out-of-context Vivado runs of the U200 configurations
 # (tb/core/viv/core_ooc.tcl; results: docs/rtl-m3.md §14). Opt-in, needs Vivado 2024.2.
-# tsr_core has no command source until Y4 (rtl/core/tsr_core.sv header), so
-# synthesis removes its units; meaningful again with the dispatcher (tsr_core_dp, Y4).
+# tsr_core has its command source since W4-A (the control core and the issue path), and the VU, the
+# attention modes and the DB block since W4-B: synthesis keeps every unit. The VU's lane knobs are
+# NAME=VALUE arguments (VU_EXP_LANES=8 VU_BACK_LANES=4 for the k1 bitstream; the defaults are k4's 16 / 8).
+# A synthesis of the whole core also checks what the block-level runs cannot: a register written from two
+# blocks anywhere in the integration (Synth 8-6858 / 8-6859, found in tsr_dma_kvst this way, W4-B).
 #
 # usage: tb/core/viv/core_ooc.sh <config> <outdir> [core_ooc.tcl args ...]
 #   config  k1    NUM_CH 1, T_MAX 1   (bring-up kernel tsr_u200_k1)

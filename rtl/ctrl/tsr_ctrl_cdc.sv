@@ -22,7 +22,7 @@
 //   sticky events       RV -> core  toggles (PUSH_TIMEOUT, BRIDGE_TIMEOUT)
 //   levels              both        tsr_sync (RV_RUN, holds, error / non-empty bits, ACTIVE-derived
 //                                   PERF gates, irq_fast[2] / [3] levels, dbg_stop, HALT_ON_BOOT;
-//                                   RV_HALTED, RV_SLEEP, RV_RUNNING, ndmreset, DB's pend,
+//                                   RV_HALTED, RV_SLEEP, RV_RUNNING, ndmreset, dmactive, DB's pend,
 //                                   RV_RESET_DONE two stages behind the FIFO write pointer,
 //                                   "clk_rv out of reset"); toggles for DB's halt request / cancel
 //   RV_BOOT             core -> RV  quasi-static bus (written while the hart is held in reset)
@@ -145,6 +145,7 @@ module tsr_ctrl_cdc
   output logic                      rv_reset_done_o,
   output logic                      rv_clk_ok_o,
   output logic                      rv_ndmreset_o,
+  output logic                      rv_dmactive_o,
   output logic                      rv_halt_pend_o,
 
   // ================================================================ clk_rv domain (tsr_ctrl_rv)
@@ -208,6 +209,7 @@ module tsr_ctrl_cdc
   input  logic                      r_rv_running,
   input  logic                      r_rv_reset_done,
   input  logic                      r_rv_ndmreset,
+  input  logic                      r_rv_dmactive,
   input  logic                      r_rv_halt_pend
 );
 
@@ -422,11 +424,17 @@ module tsr_ctrl_cdc
   // ---------------------------------------------------------------- levels core -> RV
   localparam int unsigned LV_W = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 4 + 6 + 6 + 2;
   logic [LV_W-1:0] lv_s;
+  (* dont_touch = "true" *) logic [LV_W-1:0] lv_q;   // not merged with tsr_dbg_rv's copy of rv_run / dbg_stop (CDC-11)
+  // The core's level outputs are combinational functions of several registers (holds, queue states,
+  // DB sources): a glitch of one could be sampled by the synchroniser. Every bit therefore enters
+  // it from a flop that drives nothing else (report_cdc CDC-10), one core cycle later.
+  always_ff @(posedge clk) begin
+    if (!rst_n) lv_q <= '0;
+    else        lv_q <= {dbg_cancel_tgl_i, dbg_halt_tgl_i, q_nonempty_i, q_err_i, q_hold_i, perf_evt_en_i,
+                         perf_time_en_i, irq_lcq_i, irq_lq_i, dbg_halt_on_boot_i, dbg_stop_i, rv_run_i};
+  end
   tsr_sync #(.W(LV_W), .STAGES(ST), .PER_BIT(1'b1)) u_sync_lv (
-    .clk(clk_rv), .rst_n(rst_rv_n),
-    .d({dbg_cancel_tgl_i, dbg_halt_tgl_i, q_nonempty_i, q_err_i, q_hold_i, perf_evt_en_i,
-        perf_time_en_i, irq_lcq_i, irq_lq_i, dbg_halt_on_boot_i, dbg_stop_i, rv_run_i}),
-    .q(lv_s)
+    .clk(clk_rv), .rst_n(rst_rv_n), .d(lv_q), .q(lv_s)
   );
   assign {r_q_nonempty, r_q_err, r_q_hold, r_perf_evt_en, r_perf_time_en, r_irq_lcq, r_irq_lq,
           r_dbg_halt_on_boot, r_dbg_stop, r_rv_run} = lv_s[LV_W-3:0];
@@ -460,13 +468,14 @@ module tsr_ctrl_cdc
       rdone_dly_q <= {rdone_dly_q[0], r_rv_reset_done};
     end
   end
-  logic [6:0] rl_s;
-  tsr_sync #(.W(7), .STAGES(ST), .RST_VAL(7'b0001000), .PER_BIT(1'b1)) u_sync_rl (
+  logic [7:0] rl_s;
+  tsr_sync #(.W(8), .STAGES(ST), .RST_VAL(8'b0_0_001000), .PER_BIT(1'b1)) u_sync_rl (
     .clk(clk), .rst_n(rst_n),
-    .d({rv_up_q, r_rv_halt_pend, r_rv_ndmreset, rdone_dly_q[1], r_rv_running, r_rv_sleep, r_rv_halted}),
+    .d({r_rv_dmactive, rv_up_q, r_rv_halt_pend, r_rv_ndmreset, rdone_dly_q[1], r_rv_running, r_rv_sleep, r_rv_halted}),
     .q(rl_s)
   );
   assign {rv_halt_pend_o, rv_ndmreset_o, rv_reset_done_o, rv_running_o, rv_sleep_o, rv_halted_o} = rl_s[5:0];
+  assign rv_dmactive_o = rl_s[7];
 
   // RV_CLK_OK: out of reset and the clk_rv cycle count moved recently.
   logic [15:0] cyc_prev_q;

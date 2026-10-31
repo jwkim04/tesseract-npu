@@ -26,7 +26,9 @@
 /* verilator lint_off WIDTHEXPAND */
 module tsr_mvm_back
   import tsr_pkg::*;
+  import tsr_att_pkg::*;
 #(
+  parameter  bit          HAS_ATT    = 1'b0,          // W4-B at: the double models the MVM only
   parameter  int unsigned K_MAX      = TSR_DEF_K_MAX,
   parameter  int unsigned T_MAX      = TSR_DEF_T_MAX,
   parameter  int unsigned ACT_RD_LAT = TSR_DEF_ACT_RD_LAT,
@@ -36,20 +38,33 @@ module tsr_mvm_back
   localparam int unsigned QS_WORDS   = tsr_actbuf_qs_words(K_MAX),
   localparam int unsigned DBS_LINES  = tsr_actbuf_dbs_lines(K_MAX),
   localparam int unsigned QS_AW      = (QS_WORDS > 1) ? $clog2(QS_WORDS) : 1,
-  localparam int unsigned DBS_AW     = (DBS_LINES > 1) ? $clog2(DBS_LINES) : 1
+  localparam int unsigned DBS_AW     = (DBS_LINES > 1) ? $clog2(DBS_LINES) : 1,
+  localparam int unsigned NS         = (T_MAX + 1) / 2
 ) (
   input  logic                          clk,
   input  logic                          rst_n,
   input  logic                          cfg_fmt,
   input  logic [7:0]                    cfg_d_lines,
+  // W4-B at: attention ports (ignored / 0 in the double)
+  input  tsr_att_bcfg_t                 att_cfg,
+  input  logic [T_MAX-1:0][10:0]        att_tbase,
+  input  logic                          att_start,
+  output logic                          seg_valid,
+  output logic [T_MAX-1:0][31:0]        seg_y,
+  input  tsr_att_rd_t                   pv_rd,
+  input  logic                          pv_mac_v,
+  input  logic                          pv_mac_first,
+  input  logic [63:0][7:0]              pv_mac_q,
+  input  logic [TSR_MVM_GROUPS-1:0][NS-1:0][24:0] pv_mac_a,
+  output logic [TSR_MVM_GROUPS-1:0][NS-1:0][31:0][37:0] pv_acc,
   input  logic                          beat_valid,
   output logic                          beat_ready,
   input  tsr_mvm_beat_t                 beat,
   output logic                          qs_re,
-  output logic [QS_AW-1:0]              qs_addr,
+  output logic [T_MAX-1:0][QS_AW-1:0]   qs_addr,
   input  logic [T_MAX-1:0][1023:0]      qs_data,
   output logic                          dbs_re,
-  output logic [DBS_AW-1:0]             dbs_addr,
+  output logic [T_MAX-1:0][DBS_AW-1:0]  dbs_addr,
   input  logic [T_MAX-1:0][511:0]       dbs_data,
   output logic                          res_valid,
   input  logic                          res_ready,
@@ -76,20 +91,32 @@ module tsr_mvm_back
 
   wire acc = beat_valid & rdy_q;
 
+  logic [QS_AW-1:0]  qa1;
+  logic [DBS_AW-1:0] da1;
   always_comb begin
     qs_re    = s0_v;
     dbs_re   = s0_v;
-    qs_addr  = '0;
-    dbs_addr = '0;
+    qa1      = '0;
+    da1      = '0;
     if (!cfg_fmt) begin
-      qs_addr  = QS_AW'(s0_b.blk >> 2);                          // word b/4 (lines b/2 .. )
-      dbs_addr = DBS_AW'(s0_b.blk >> 4);                         // D line of block b (and b+1)
+      qa1 = QS_AW'(s0_b.blk >> 2);                          // word b/4 (lines b/2 .. )
+      da1 = DBS_AW'(s0_b.blk >> 4);                         // D line of block b (and b+1)
     end else begin
-      qs_addr  = QS_AW'({s0_b.blk, s0_b.half});                  // word 2s + half
-      dbs_addr = s0_b.half ? DBS_AW'(32'(cfg_d_lines) + 32'(s0_b.blk >> 1))   // BS line
-                           : DBS_AW'(s0_b.blk >> 4);             // D line of s
+      qa1 = QS_AW'({s0_b.blk, s0_b.half});                  // word 2s + half
+      da1 = s0_b.half ? DBS_AW'(32'(cfg_d_lines) + 32'(s0_b.blk >> 1))   // BS line
+                      : DBS_AW'(s0_b.blk >> 4);             // D line of s
     end
+    qs_addr  = {T_MAX{qa1}};
+    dbs_addr = {T_MAX{da1}};
   end
+  assign seg_valid = 1'b0;
+  assign seg_y     = '0;
+  always_comb begin                     // (per lane: one '0 fill would exceed the replication limit)
+    for (int g = 0; g < TSR_MVM_GROUPS; g++)
+      for (int s = 0; s < int'(NS); s++)
+        for (int k = 0; k < 32; k++) pv_acc[g][s][k] = '0;
+  end
+  wire unused_att = &{1'b0, att_cfg, att_tbase, att_start, pv_rd, pv_mac_v, pv_mac_first, pv_mac_q, pv_mac_a};
 
   // ---- per-token row state and result queue ----
   int unsigned p    [T_MAX][16];      // partials (f32 bits)

@@ -86,6 +86,7 @@ module tsr_ctrl_rv
   output logic                      rv_reset_done,
   output logic                      rv_running,
   output logic                      rv_ndmreset,
+  output logic                      rv_dmactive,    // dmcontrol.dmactive of the debug module (DBG_RV_STATE.DMACTIVE)
   output logic                      rv_halt_pend,
   output logic                      push_timeout_ev,
   output logic                      bridge_timeout_ev,
@@ -132,7 +133,23 @@ module tsr_ctrl_rv
   output logic [31:0]               db_wdata,
   input  logic [31:0]               db_rdata,
   input  logic                      db_irq4,
-  input  logic                      db_irq6
+  input  logic                      db_irq6,
+  // Ibex taps for the DB block (clk_rv; tsr_dbg_rv with HAS_RV_TAPS, DB §3.7, §6.2, §10.2; W4-B integrate):
+  // the data port, ibex_core's crash_dump, the sleep / reset levels and the double-fault pulse
+  output logic                      tap_data_req,
+  output logic                      tap_data_gnt,
+  output logic [31:0]               tap_data_addr,
+  output logic                      tap_data_we,
+  output logic [3:0]                tap_data_be,
+  output logic [31:0]               tap_cd_pc,
+  output logic [31:0]               tap_cd_npc,
+  output logic [31:0]               tap_cd_daddr,
+  output logic [31:0]               tap_cd_epc,
+  output logic [31:0]               tap_cd_eaddr,
+  output logic                      tap_sleep,
+  output logic                      tap_halted,
+  output logic                      tap_in_reset,
+  output logic                      tap_dfault
 );
 
   localparam int unsigned IAW = $clog2(ITCM_BYTES / 4);
@@ -146,6 +163,7 @@ module tsr_ctrl_rv
   logic        ibex_run, ibex_busy, rv_kill, hart_clr, load_mode, ndmreset_ack;
   logic [31:0] boot_q;
   logic        ndmreset;
+  logic        dm_active;      // dmcontrol.dmactive: exported to the core (DBG_RV_STATE.DMACTIVE, DB §10.1)
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
@@ -199,6 +217,7 @@ module tsr_ctrl_rv
   assign rv_reset_done = sq_q == SQ_HELD;
   assign rv_running    = hart_rst_n_q;
   assign rv_ndmreset   = ndmreset;
+  assign rv_dmactive   = dm_active;
 
   logic hart_rst_n, dm_rst_n;
   assign hart_rst_n = hart_rst_n_q && rst_n && rst_ext_n;
@@ -323,7 +342,7 @@ module tsr_ctrl_rv
     .scramble_req_o          (),
     .debug_req_i             (debug_req),
     .crash_dump_o            (crash_dump),
-    .double_fault_seen_o     (),
+    .double_fault_seen_o     (tap_dfault),
 `ifdef RVFI
     .rvfi_valid              (rvfi_valid),
     .rvfi_order              (rvfi_order),
@@ -409,8 +428,6 @@ module tsr_ctrl_rv
   assign hartinfo = '{zero1: '0, nscratch: 4'd2, zero0: '0, dataaccess: 1'b1,
                       datasize: dm::DataCount, dataaddr: dm::DataAddr};
 
-  logic dm_active;   // dmcontrol.dmactive: not used by this subsystem
-  wire  unused_dm_active = &{1'b0, dm_active};
   dm_top #(
     .NrHarts         (1),
     .BusWidth        (32),
@@ -639,7 +656,19 @@ module tsr_ctrl_rv
     .irq_fast          (irq_fast)
   );
 
-  wire unused_ok = &{1'b0, crash_dump.next_pc, crash_dump.last_data_addr, crash_dump.exception_pc,
-                     crash_dump.exception_addr};
+  // Ibex taps (DB): combinational copies of the hart's signals, sampled by tsr_dbg_rv in clk_rv
+  assign tap_data_req   = data_req;
+  assign tap_data_gnt   = data_gnt;
+  assign tap_data_addr  = data_addr;
+  assign tap_data_we    = data_we;
+  assign tap_data_be    = data_be;
+  assign tap_cd_pc      = crash_dump.current_pc;
+  assign tap_cd_npc     = crash_dump.next_pc;
+  assign tap_cd_daddr   = crash_dump.last_data_addr;
+  assign tap_cd_epc     = crash_dump.exception_pc;
+  assign tap_cd_eaddr   = crash_dump.exception_addr;
+  assign tap_sleep      = core_sleep && hart_rst_n_q;
+  assign tap_halted     = rv_halted;
+  assign tap_in_reset   = !hart_rst_n_q;
 
 endmodule

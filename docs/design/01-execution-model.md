@@ -941,8 +941,10 @@ module follows the hardware reset only, so a debugger stays attached.
 | 0x0F4 | `ADAPTER_VERSION` | R | {16'h0001, 8'h00, NUM_CH}: adapter major 1 (the host requires it) |
 | 0x1000 + off | core CSR window | | off < 0x1000, any time, writes need WSTRB = 0xF |
 
-The transport clears `MEM_EN` only when the core is idle (after `SOFT_RESET`). Outstanding
-transactions complete normally either way. The memory bridges and the reset scheme are in
+The transport clears `MEM_EN` only when the core is idle (after `SOFT_RESET`). Responses of
+transactions already issued pass either way; the data beats of a write burst whose request was
+accepted are held, like a request, if `MEM_EN` falls before the burst is complete (which the idle
+rule excludes). The memory bridges and the reset scheme are in
 `docs/platform-u200.md` §4 and §5.
 
 ### 9.3 Core boundary (`docs/spec.md`, "Core boundary interface")

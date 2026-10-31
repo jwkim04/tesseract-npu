@@ -6,7 +6,8 @@
 #   rtl/ctrl/lint.sh   every rtl/ctrl module as its own top, tsr_ctrl with and without RVFI, in the
 #                      Ibex "small" and RV32MSingleCycle configurations, with the flop register file,
 #                      CTRL_SYNC = 1, small TCMs and SPM, and with the Xilinx SRAM wrapper; then
-#                      the bench tops tb/ctrl/sv/tb_ctrl.sv and tb_ctrl_core.sv
+#                      the bench tops tb/ctrl/sv/tb_ctrl.sv and tb_ctrl_core.sv; then the instance-name
+#                      conventions of the CDC constraints (rtl/ctrl/viv/check_cdc_names.py)
 # Waivers: rtl/ctrl/waivers/vendor.vlt only (file-scoped to third_party/); Ibex's own waiver file is
 # not read, because its global PINCONNECTEMPTY waiver would apply to the whole core (W4-A
 # integrate: tsr_ctrl_rv carries a targeted inline waiver for the ibex_top instance instead).
@@ -53,4 +54,12 @@ lint tsr_sync "$SRAM" -GSTAGES=1 -DTSR_CDC_JITTER
 for f in tb_ctrl_core tb_ctrl; do
     lint "$f" "$SRAM" -DRVFI "$ROOT/tb/ctrl/sv/tb_ctrl_core.sv" "$ROOT/tb/ctrl/sv/tb_ctrl.sv"
 done
+# the instance names tsr_ctrl_cdc.xdc selects its cells by (u_sync*, u_rst*, u_hs*)
+if out=$(python3 "$ROOT/rtl/ctrl/viv/check_cdc_names.py" "$ROOT/rtl" 2>&1); then
+    echo "cdc ok    rtl/ctrl/viv/check_cdc_names.py ($(echo "$out" | tail -1))"
+else
+    echo "cdc FAIL  rtl/ctrl/viv/check_cdc_names.py"
+    echo "$out" | sed 's/^/    /'
+    fails=$((fails + 1))
+fi
 exit $fails

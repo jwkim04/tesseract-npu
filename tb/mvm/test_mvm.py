@@ -54,6 +54,13 @@ cocotb tests (each configuration runs all of them):
   mvm_overlap     undefined overlaps (dst inside x, overlapping token ranges): must finish
                   normally, quiescent, writes only inside the y ranges (values only logged)
   mvm_reset       synchronous reset in the middle of MVMs, then fully checked MVMs
+  mvm_cycles      cycle exactness (CC-25: "cycle-identical, so every replay stays exact"): a fixed MVM list
+                  under a fixed memory model (the channels' random generators re-seeded, so $TSR_SEED does not
+                  matter), in the fast and the random regime; the digest of every MVM's {accept -> done,
+                  busy, first / last write relative to the accept, SPM writes} must equal the pinned
+                  CYCLE_DIGEST of the configuration (a timing change of the weight path, however small, fails
+                  here; re-pin with the change understood). The same digests hold with HAS_ATT = 1 (the
+                  attention modes add no cycle to the weight path): test_mvm_real_att
 Configurations (CFGS): NUM_CH 1 / 3 / 4 / 16, T_MAX 1 / 2 / 3 / 8, BC_PIPE and RES_PIPE 0 / 1 / 3,
 SPM_RD_LAT 1 / 2 / 3 / 4, ADD_LAT 1 / 3 / 5 / 8, WS FIFO 64..512, RD_OUTSTANDING 2..16.
 Environment: TSR_MVM_TESTS=a,b (subset), TSR_MVM_SCALE (random test size factor, default 1.0),
@@ -106,8 +113,10 @@ CFGS = {
                   RD_OUTSTANDING=8),
 }
 REAL_CFGS = tuple(CFGS)          # the same tests with the real tsr_mvm_back / tsr_mvm_actbuf
+ATT_CFGS = ("c4", "c3t3")        # ... and with HAS_ATT = 1 (non-power-of-two NUM_CH and T_MAX 3 among them)
 
-TESTS = ["mvm_directed", "mvm_random", "mvm_golden", "mvm_b2b", "mvm_overlap", "mvm_perf", "mvm_reset"]
+TESTS = ["mvm_directed", "mvm_random", "mvm_golden", "mvm_b2b", "mvm_overlap", "mvm_perf", "mvm_reset", "mvm_cycles"]
+ATT_TESTS = ["mvm_directed", "mvm_b2b", "mvm_perf", "mvm_cycles"]   # HAS_ATT = 1: the weight path unchanged
 
 W_LO = 1 << 21             # lowest weight beat (every channel, same W_OFF; was above the simulator's staging area)
 
@@ -151,15 +160,18 @@ def is_skeleton(path: Path) -> bool:
     return "SKELETON" in path.read_text()
 
 
-def _run(cfg: str, real: bool):
+def _run(cfg: str, real: bool, att: bool = False):
     p = CFGS[cfg]
     sel = os.environ.get("TSR_MVM_TESTS")
-    tests = [t for t in TESTS if not sel or t in sel.split(",")]
+    tests = [t for t in (ATT_TESTS if att else TESTS) if not sel or t in sel.split(",")]
+    if not real:
+        tests = [t for t in tests if t != "mvm_cycles"]   # the double back end is not the weight path's timing
     srcs, bargs = build_spec(real)
     extra = os.environ.get("TSR_MVM_BUILD_ARGS", "").split()   # e.g. -DSYNTHESIS (no RTL assertions)
-    run("tsr_tb_mvm", __name__, parameters=p, sources=srcs, build_args=bargs + extra, testcase=tests,
-        name="tsr_tb_mvm_%s%s%s" % ("real_" if real else "", cfg, "_x" if extra else ""),
-        extra_env={"TSR_MVM_CFG": json.dumps(dict(p, name=cfg, real=real))})
+    run("tsr_tb_mvm", __name__, parameters=dict(p, HAS_ATT=1) if att else p, sources=srcs,
+        build_args=bargs + extra, testcase=tests,
+        name="tsr_tb_mvm_%s%s%s%s" % ("real_" if real else "", cfg, "_att" if att else "", "_x" if extra else ""),
+        extra_env={"TSR_MVM_CFG": json.dumps(dict(p, name=cfg, real=real, att=att))})
 
 
 @pytest.mark.parametrize("cfg", list(CFGS))
@@ -173,6 +185,12 @@ def test_mvm_real(cfg):
     if is_skeleton(core / "tsr_mvm_back.sv") or is_skeleton(core / "tsr_mvm_actbuf.sv"):
         pytest.skip("rtl/core tsr_mvm_back / tsr_mvm_actbuf are still skeletons")
     _run(cfg, real=True)
+
+
+@pytest.mark.parametrize("cfg", ATT_CFGS)
+def test_mvm_real_att(cfg):
+    """The same weight-path checks and the same cycle digests with the attention modes built in."""
+    _run(cfg, real=True, att=True)
 
 
 # =============================================================================================
@@ -896,6 +914,68 @@ async def mvm_golden(dut):
 
 GOLDEN_DIGEST = "5e28386055f9e494"   # y bytes of golden_list (pinned from the ISA simulator = the
                                      # mvm_reference oracle = every DUT configuration)
+
+
+def cycles_list(p: dict) -> list:
+    """Fixed MVM shapes of mvm_cycles, legal in every configuration: both formats, N = 0 / 1 / around
+    NUM_CH / 16 NUM_CH, T = 1 and T_MAX, ACC, long rows."""
+    nch, TM = p["NUM_CH"], p["T_MAX"]
+    return [
+        dict(fmt=0, K=32, N=1, T=1, acc=False),
+        dict(fmt=1, K=256, N=nch + 1, T=TM, acc=True),
+        dict(fmt=0, K=1056, N=17 * nch + 2, T=min(2, TM), acc=False),
+        dict(fmt=1, K=768, N=70, T=TM, acc=True),
+        dict(fmt=0, K=2048, N=2 * nch, T=1, acc=False),
+        dict(fmt=1, K=1280, N=16 * nch, T=min(2, TM), acc=False),
+        dict(fmt=0, K=32, N=0, T=TM, acc=False),
+        dict(fmt=0, K=96, N=3 * nch + 1, T=TM, acc=True),
+    ]
+
+
+@cocotb.test()
+async def mvm_cycles(dut):
+    """Cycle exactness of the weight path: per MVM {accept -> done, busy, first / last SPM write relative
+    to the accept, number of SPM writes} under a fixed memory model, hashed and compared with the pinned
+    CYCLE_DIGEST of the configuration. The memory model's channel generators are re-seeded and the
+    back-end double's knobs fixed, so the cycles do not depend on $TSR_SEED. Two phases: the fast regime
+    (ideal memory, no back-pressure) and the random one (variable latency, back-pressure and stalls)."""
+    tb = await new_tb(dut)
+    p = tb.p
+    rec = []
+    for phase, knobs in (("fast", dict(stall=0, lat=0, cap=16)), ("rand", dict(stall=10, lat=2, cap=4))):
+        rnd = random.Random(0xC7C1E5 + len(rec))
+        tb.regime(phase)
+        tb.knobs(None, **knobs)
+        for c, ch in enumerate(tb.mem.ch):
+            ch.rng = random.Random(0x5EED00 + 97 * c + (phase == "rand"))
+        for c in cycles_list(p):
+            m = make_mvm(rnd, p, **c)
+            st = await tb.mvm(m)
+            a = st["accept"]
+            fw = -1 if st["first_wr"] is None else st["first_wr"] - a
+            lw = -1 if st["last_wr"] is None else st["last_wr"] - a
+            rec.append((phase, st["cycles"], st["busy"], fw, lw, st["n_wr"]))
+    key = p["name"]
+    dig = hashlib.sha256(repr(rec).encode()).hexdigest()[:16]
+    dut._log.info("mvm_cycles %s: digest %s (%d MVMs), pinned %s", key, dig, len(rec), CYCLE_DIGEST.get(key, "-"))
+    for i, r in enumerate(rec):
+        dut._log.info("mvm_cycles %s #%d: %s", key, i, r)
+    assert key in CYCLE_DIGEST, "no pinned cycle digest for %s (measured %s)" % (key, dig)
+    assert dig == CYCLE_DIGEST[key], (
+        "cycle digest %s != pinned %s for %s: the weight path's timing changed (accept -> done, busy, write "
+        "span); the per-MVM tuples are in the log above. Re-pin CYCLE_DIGEST only once the change is "
+        "understood" % (dig, CYCLE_DIGEST[key], key))
+
+
+# Pinned with the real back end (the back-end double's cycles depend on its own random state), equal on the
+# tree at W4-A (HEAD 4149614), on the W4-B tree, for $TSR_SEED 1 and 7, and with HAS_ATT = 1.
+CYCLE_DIGEST = {
+    "c4":    "6a215afa9d4a2fff",
+    "c3t3":  "3df890a39be82a6a",
+    "c1t8":  "816d9a4a60303627",
+    "c16t2": "de23fbf976a873df",
+    "c4t8":  "129b3691537eca8a",
+}
 
 
 # ---- mvm_perf bounds (docs/rtl-m3.md M3 scope, §4 FIFO sizing, §7.5 RB_MIN, §9.1 overhead) ----

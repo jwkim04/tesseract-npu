@@ -146,7 +146,7 @@ module tsr_tb_dma
     .SPM_RD_LAT(SPM_RD_LAT), .LDQ_BEATS(LDQ_BEATS)
   ) u_dma (
     .clk, .rst_n,
-    .cmd_valid, .cmd_ready, .cmd, .done,
+    .cmd_valid, .cmd_ready, .cmd, .cmd_xc(1'b0), .xcmd('0), .done,   // W4-B at: no KVST here (tb/at)
     .rd_req_valid(d_rd_req_valid), .rd_req_ready(d_rd_req_ready), .rd_req_addr(d_rd_req_addr),
     .rd_req_len(d_rd_req_len), .rd_req_id(d_rd_req_id),
     .rd_rsp_valid(d_rd_rsp_valid), .rd_rsp_ready(d_rd_rsp_ready), .rd_rsp_data(s_rd_rsp_data),
@@ -160,8 +160,11 @@ module tsr_tb_dma
     .spm_rd_req_line(i_rd_req_line), .spm_rd_rsp_valid(i_rd_rsp_valid),
     .spm_rd_rsp_data(i_rd_rsp_data),
     .spm_wr_valid(i_wr_valid), .spm_wr_ready(i_wr_ready), .spm_wr_line(i_wr_line),
-    .spm_wr_data(i_wr_data), .spm_wr_be(i_wr_be)
+    .spm_wr_data(i_wr_data), .spm_wr_be(i_wr_be),
+    .perf_kvst_rmw(d_perf_kvst_rmw)                                 // W4-B at
   );
+  logic d_perf_kvst_rmw;                                            // W4-B at
+  wire  unused_kvst = &{1'b0, d_perf_kvst_rmw};                     // W4-B at
 
   assign spm_rd_req_valid = i_rd_req_valid;
   assign spm_rd_req_line  = i_rd_req_line;

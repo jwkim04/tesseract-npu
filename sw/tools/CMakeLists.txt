@@ -10,6 +10,8 @@
 #                     only built when the llama targets exist
 #   tsr-numcheck      per-node numeric dump (docs/numcheck.md); links llama as well
 #   tsr_bw            M0 bandwidth tool (XRT builds, once tsr_bw.cpp exists)
+#   tsr_dbg, tsr-dbg, tsr-prof   libtsr_dbg (GDB RSP server over the DMI window, tile-level debug, the
+#                     trace writer) and its tools (dbg/dbg.cmake; P3.7, P3.8)
 # klcheck and numcheck run with the SW-22 settings (SW-22, SW §10.4): FA on, q8_0 / q8_0 KV,
 # LLAMA_ATTN_ROT_DISABLE=1, offload_kqv false in M6 (--phase m6, the default) and true in M7.
 
@@ -249,3 +251,6 @@ cmake_language(DEFER DIRECTORY ${TESSERACT_ROOT} CALL tsr_add_numcheck)
 
 # numcheck_helper (numcheck.py: ggml conversions + libtsr_ref B1 loop), see numcheck_helper.cmake.
 include(${CMAKE_CURRENT_SOURCE_DIR}/numcheck_helper.cmake)
+
+# P3.7 / P3.8: libtsr_dbg, tsr-dbg, tsr-prof and their tests (dbg/dbg.cmake).
+include(${CMAKE_CURRENT_SOURCE_DIR}/dbg/dbg.cmake)

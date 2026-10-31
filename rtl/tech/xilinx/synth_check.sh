@@ -16,7 +16,8 @@
 # found by the W4-A review in tsr_chk's e_q, which made the synthesised range checks wrong). The
 # netlist-versus-simulator regression for the checker is tb/chk/viv/net_chk.sh.
 # Environment: TSR_VIVADO_SETTINGS (default /tool/Xilinx/Vivado/2024.2/settings64.sh);
-# TSR_VIVADO_LOCK = a flock file that serialises Vivado runs on a shared host; TSR_SYNTH_FILELIST =
+# TSR_VIVADO_WRAP = a command prefix for every Vivado call (e.g. a slot script limiting the Vivado
+# processes of a shared host), else TSR_VIVADO_LOCK = a flock file that serialises Vivado runs; TSR_SYNTH_FILELIST =
 # another filelist than rtl/filelist_xilinx.f (to see that a mutated source fails this gate).
 # Larger runs, opt-in: tsr_core (the whole core, U200 parameters; 8 min, 12 GB) through
 # tb/core/viv/core_ooc.sh k4 OUT synth_only, whose log is checked the same way.
@@ -38,7 +39,8 @@ set +u
 source "$VSET" > /dev/null 2>&1
 set -u
 lock=()
-[ -n "${TSR_VIVADO_LOCK:-}" ] && lock=(flock "$TSR_VIVADO_LOCK")
+if [ -n "${TSR_VIVADO_WRAP:-}" ]; then read -r -a lock <<< "$TSR_VIVADO_WRAP"
+elif [ -n "${TSR_VIVADO_LOCK:-}" ]; then lock=(flock "$TSR_VIVADO_LOCK"); fi
 
 bad='(CRITICAL WARNING|ERROR): .*(\[Synth 8-(6858|6859|3352)\]|multi-driven)'
 fails=0

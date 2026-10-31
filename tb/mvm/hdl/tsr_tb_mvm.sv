@@ -29,6 +29,7 @@ module tsr_tb_mvm
   parameter  int unsigned ADD_LAT        = 5,
   parameter  int unsigned WS_RD_LAT      = 2,
   parameter  int unsigned RD_OUTSTANDING = 16,
+  parameter  bit          HAS_ATT        = 1'b0,   // attention modes built in (tb/mvm mvm_cycles: same cycles)
   localparam int unsigned BB             = 512,
   localparam int unsigned AW             = tsr_spm_aw(SPM_BYTES / TSR_LINE_BYTES)
 ) (
@@ -107,13 +108,13 @@ module tsr_tb_mvm
   logic [NUM_CH-1:0][BB-1:0]           ws_rsp_data;
 
   tsr_mvm #(
-    .NUM_CH(NUM_CH), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT),
+    .HAS_ATT(HAS_ATT), .NUM_CH(NUM_CH), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT),
     .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BB), .WS_FIFO_BEATS(WS_FIFO_BEATS), .BC_PIPE(BC_PIPE),
     .RES_PIPE(RES_PIPE), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT), .MUL_LAT(MUL_LAT),
     .ADD_LAT(ADD_LAT), .WS_RD_LAT(WS_RD_LAT)
   ) u_mvm (
     .clk, .rst_n,
-    .cmd_valid, .cmd_ready, .cmd, .done,
+    .cmd_valid, .cmd_ready, .cmd, .cmd_xc(1'b0), .xcmd('0), .done,     // W4-B at: no attention here (tb/at)
     .spm_rd_req_valid(mv_rd_req_valid), .spm_rd_req_ready(mv_rd_req_ready),
     .spm_rd_req_line(mv_rd_req_line), .spm_rd_rsp_valid(mv_rd_rsp_valid),
     .spm_rd_rsp_data(spm_rd_data),
@@ -123,8 +124,10 @@ module tsr_tb_mvm
     .ws_rd_req_len(ws_req_len), .ws_rd_req_id(ws_req_id),
     .ws_rd_rsp_valid(ws_rsp_valid), .ws_rd_rsp_ready(ws_rsp_ready), .ws_rd_rsp_data(ws_rsp_data),
     .ws_rd_rsp_last(ws_rsp_last), .ws_rd_rsp_id(ws_rsp_id),
-    .perf_mvm_busy
+    .perf_mvm_busy, .perf_att_qk(p_att_qk), .perf_att_pv(p_att_pv), .perf_att_stall(p_att_st)   // W4-B at
   );
+  logic p_att_qk, p_att_pv, p_att_st;                                      // W4-B at
+  wire  unused_att = &{1'b0, p_att_qk, p_att_pv, p_att_st};
 
   // ---- SPM: client 0 = host, 1 = tied off, 2 = MVM, 3 = tied off (single-port clients through
   //      tsr_spm_cport), 4 / 5 = tied off (dual-bank); W4-A spm ----

@@ -51,12 +51,22 @@
 //   CE pins, RST tied off).
 // Cost per instance (N = 32): 32 x ceil(T / 2) DSP48E2, T adder trees of 31 adders (as generic),
 //   tree-cut registers T x (8 x 18) bits at one cut, output T x 21 bits, LAT valid flops.
+//
+// PV mode (parameter PV = 1; W4-B at, AT §8.2): the contract of the generic lane (pv_acc[s][i] =
+//   (pv_first ? 0 : pv_acc) + sext(pv_a[s]) * sext(w[i]) per pv_valid, PV_LAT = IN + AD + M + P
+//   registers). Each slot's DSP48E2 serves both modes: an A / D input mux in front of the IN
+//   registers (MVM: A = x[2s] 2^18, D = x[2s+1]; PV: A = pv_a[s], D = 0; the pre-adder is A + D in
+//   both), B = w[i] in both, and a dynamic OPMODE on the post-adder: MVM P = M + C (the packing
+//   constant, W mux), PV P = M + (pv_first ? 0 : P) (Z mux: the accumulator), with CEP = the PV valid
+//   at P. The P register is 48 bits; PV uses 38. LAT >= 3. PV = 0 is the lane above, unchanged.
 
 module tsr_mac_lane #(
   parameter  int unsigned N     = 32,   // products summed (lanes of one group)
   parameter  int unsigned T     = 1,    // tokens sharing the weights
   parameter  int unsigned LAT   = 3,    // fixed latency, >= 1
-  localparam int unsigned SUM_W = 16 + $clog2(N)
+  parameter  bit          PV    = 1'b0, // PV accumulate mode (ATTPV, AT §8.2)
+  localparam int unsigned SUM_W = 16 + $clog2(N),
+  localparam int unsigned NSP   = (T + 1) / 2
 ) (
   input  logic                          clk,
   input  logic                          rst_n,
@@ -65,7 +75,14 @@ module tsr_mac_lane #(
   input  logic [N-1:0][7:0]             w,      // signed 8-bit weights
   input  logic [T-1:0][N-1:0][7:0]      x,      // signed 8-bit activations, per token
   output logic                          out_valid,
-  output logic [T-1:0][SUM_W-1:0]       y       // signed sums, per token
+  output logic [T-1:0][SUM_W-1:0]       y,      // signed sums, per token
+
+  // ---- PV mode (PV = 1) ----
+  input  logic                          pv_en,
+  input  logic                          pv_valid,
+  input  logic                          pv_first,
+  input  logic [NSP-1:0][24:0]          pv_a,
+  output logic [NSP-1:0][N-1:0][37:0]   pv_acc
 );
 
   if (N < 1 || T < 1 || LAT < 1) begin : g_chk
@@ -99,26 +116,69 @@ module tsr_mac_lane #(
     return 1'b0;
   endfunction
 
+  if (PV && LAT < 3) begin : g_chk_pv
+    $fatal(1, "tsr_mac_lane: PV mode needs LAT >= 3 (M and P registers)");
+  end
+
+  // ---- PV valid / first pipeline to the P stage (IN, AD, M registers as the product side) ----
+  logic pv_v0, pv_f0, pv_vi, pv_fi, pv_va, pv_fa, pv_vp, pv_fp;
+  assign pv_v0 = PV & pv_en & pv_valid;
+  assign pv_f0 = pv_first;
+  if (R_IN) begin : g_pv_in
+    always_ff @(posedge clk) begin
+      if (!rst_n)  pv_vi <= 1'b0;
+      else if (ce) pv_vi <= pv_v0;
+    end
+    always_ff @(posedge clk) if (ce) pv_fi <= pv_f0;
+  end else begin : g_pv_no_in
+    assign pv_vi = pv_v0;
+    assign pv_fi = pv_f0;
+  end
+  if (R_AD) begin : g_pv_ad
+    always_ff @(posedge clk) begin
+      if (!rst_n)  pv_va <= 1'b0;
+      else if (ce) pv_va <= pv_vi;
+    end
+    always_ff @(posedge clk) if (ce) pv_fa <= pv_fi;
+  end else begin : g_pv_no_ad
+    assign pv_va = pv_vi;
+    assign pv_fa = pv_fi;
+  end
+  if (R_M) begin : g_pv_m
+    always_ff @(posedge clk) begin
+      if (!rst_n)  pv_vp <= 1'b0;
+      else if (ce) pv_vp <= pv_va;
+    end
+    always_ff @(posedge clk) if (ce) pv_fp <= pv_fa;
+  end else begin : g_pv_no_m
+    assign pv_vp = pv_va;
+    assign pv_fp = pv_fa;
+  end
+  wire pv_on = PV & pv_en;
+
   // ---- products (layer 0): exact 16-bit two's complement, zero for the padding lanes ----
   logic [T-1:0][NP-1:0][15:0] prod;
 
   for (genvar s = 0; s < NS; s++) begin : g_s
     localparam bit PAIR = (2 * s + 1 < T);    // tokens 2s (high) and 2s + 1 (low) share the DSP
     for (genvar k = 0; k < N; k++) begin : g_k
-      // operands
-      logic signed [7:0]  a_d, d_d, b_d, a_i, d_i, b_i, b_a;
+      // operands: the A / D input mux (MVM: A = x[2s] 2^18 for a pair, else x[2s]; D = x[2s+1];
+      // PV: A = pv_a[s], D = 0), B = the weight / V byte in both modes
+      logic signed [26:0] a_d, a_i;
+      logic signed [7:0]  d_d, b_d, d_i, b_i, b_a;
       logic signed [26:0] ad_d, ad_q;
       // use_dsp on the product only: on P it would also pull the tree adders it feeds into DSPs
       (* use_dsp = "yes" *) logic signed [34:0] m_d, m_q;
-      logic signed [35:0] p_d, p_q;
+      logic signed [47:0] p_d, p_q;
 
-      assign a_d = x[2*s][k];
-      assign b_d = w[k];
       if (PAIR) begin : g_pair
-        assign d_d = x[2*s+1][k];
+        assign a_d = pv_on ? 27'($signed(pv_a[s])) : $signed({x[2*s][k][7], x[2*s][k], 18'd0});
+        assign d_d = pv_on ? 8'sd0 : $signed(x[2*s+1][k]);
       end else begin : g_one
+        assign a_d = pv_on ? 27'($signed(pv_a[s])) : 27'($signed(x[2*s][k]));
         assign d_d = '0;
       end
+      assign b_d = w[k];
 
       // IN: A1 / D / B1 registers
       if (R_IN) begin : g_in
@@ -135,12 +195,8 @@ module tsr_mac_lane #(
         assign b_i = b_d;
       end
 
-      // AD: pre-adder (pair) or the A operand alone (single), ADREG and B's second register
-      if (PAIR) begin : g_ad_pair
-        assign ad_d = $signed({{1{a_i[7]}}, a_i, 18'd0}) + $signed({{19{d_i[7]}}, d_i});
-      end else begin : g_ad_one
-        assign ad_d = $signed({{19{a_i[7]}}, a_i});
-      end
+      // AD: pre-adder A + D (both modes), ADREG and B's second register
+      assign ad_d = a_i + 27'($signed(d_i));
       if (R_AD) begin : g_ad
         always_ff @(posedge clk) begin
           if (ce) begin
@@ -163,28 +219,29 @@ module tsr_mac_lane #(
         assign m_q = m_d;
       end
 
-      // P: post-adder with the packing constant
-      if (PAIR) begin : g_p_pair
-        assign p_d = 36'(m_q) + 36'sd131072;
-      end else begin : g_p_one
-        assign p_d = 36'(m_q);
-      end
+      // P: post-adder; W mux = the packing constant (MVM pair), Z mux = P (PV accumulate)
+      wire signed [47:0] p_w = (!pv_on && PAIR) ? 48'sd131072 : 48'sd0;
+      wire signed [47:0] p_z = (pv_on && !pv_fp) ? p_q : 48'sd0;
+      assign p_d = p_w + p_z + 48'(m_q);
       if (R_P) begin : g_p
         always_ff @(posedge clk) begin
-          if (ce) p_q <= p_d;
+          if (ce && (!pv_on || pv_vp)) p_q <= p_d;
         end
       end else begin : g_no_p
         assign p_q = p_d;
+      end
+      if (PV) begin : g_pv_out
+        assign pv_acc[s][k] = p_q[37:0];
       end
 
       // extraction (wiring only)
       if (PAIR) begin : g_x_pair
         assign prod[2*s][k]   = p_q[33:18];
         assign prod[2*s+1][k] = p_q[15:0];
-        wire unused_p = &{1'b0, p_q[35:34], p_q[17:16]};
+        wire unused_p = &{1'b0, p_q[47:34], p_q[17:16]};
       end else begin : g_x_one
         assign prod[2*s][k] = p_q[15:0];
-        wire unused_p = &{1'b0, p_q[35:16], d_i};
+        wire unused_p = &{1'b0, p_q[47:16], d_i};
       end
     end
   end
@@ -244,5 +301,10 @@ module tsr_mac_lane #(
 
   assign out_valid = v_q[LAT-1];
   assign y         = o_y[NXTRA];
+
+  if (!PV) begin : g_nopv
+    assign pv_acc = '0;
+    wire unused_pv = &{1'b0, pv_en, pv_valid, pv_first, pv_a, pv_fp, pv_vp};
+  end
 
 endmodule

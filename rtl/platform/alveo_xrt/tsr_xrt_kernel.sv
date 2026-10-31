@@ -4,14 +4,26 @@
 // (m_axi_ch<c>_*); simulation (tb/platform, tb/fastreplay --top kernel) uses it directly.
 //
 // Owner: adapter agent (docs/platform-u200.md; docs/design EX §9). The host uses register
-// access only (`ap_ctrl_none`, EX §9.1); there is no start sequencer or interrupt. Y5 adds
-// `ap_clk_2` / `ap_rst_n_2` for the control core, MEM_EN and `plat_err_i` (EX §9.2-§9.3). The core inside does no work until Y4 (tsr_core header).
+// access only (`ap_ctrl_none`, EX §9.1); there is no start sequencer or interrupt.
 //
 // Kernel interface (the lead's kernel contract, docs/platform-u200.md §1, without `interrupt`):
-//   ap_clk, ap_rst_n (active low, synchronous); s_axi_control (AXI4-Lite, 32-bit data,
+//   ap_clk, ap_rst_n (active low, synchronous): the core clock and the adapter's reset;
+//   ap_clk_2, ap_rst_n_2: the control core's clock and reset (tsr_core clk_rv / rst_rv_n, CC §11.1,
+//   §13.3; the link requests 166.7 MHz, hw/u200/k*.cfg); s_axi_control (AXI4-Lite, 32-bit data,
 //   13-bit address; tsr_xrt_ctrl has the register map); m_axi_*[c], c < NUM_CH (AXI4, 512-bit
 //   data, 64-bit address, 4-bit ID; tsr_xrt_axi_bridge has the mapping of the core's channel c
 //   memory port).
+// Memory gate (EX §9.2 MEM_EN): while ADAPTER_CTRL.MEM_EN = 0 the core's read / write requests
+//   and write data beats are held at the bridge inputs (valid not forwarded, ready 0: nothing is
+//   dropped) and an offered request sets ADAPTER_STATUS.REQ_HELD; responses of transactions
+//   already issued always pass. A registered copy of MEM_EN per channel drives the gate (it opens
+//   one cycle after the bases are latched, so a bridge never sees a request with a stale base).
+//   Limit (W4-B review): MEM_EN falling in the middle of a write burst whose request already passed
+//   also holds that burst's remaining data beats until MEM_EN is set again. The host clears MEM_EN
+//   only with the core idle (EX §9.2), so no burst is in flight; letting the data of accepted requests
+//   through needs a count of accepted requests against data bursts (data may lead its request) and a
+//   kernel bench with firmware traffic (W5), neither of which exists yet.
+// plat_err_i (EX §9.3) = ADAPTER_STATUS bits 0..2 or the error count != 0 (tsr_xrt_ctrl).
 // Parameters: the tsr_core parameters (same names and defaults, passed through; RST_PIPE = the
 // core's own reset register stages, replicated per block inside the core), AXI_SLICES (register
 // slices per AXI channel of every bridge, >= 1) and RST_STAGES (the adapter's core reset pipeline,
@@ -24,9 +36,9 @@
 // then sees its rst_n low for L + RST_STAGES - 2 >= RST_PIPE + 1 cycles. Checked in simulation.
 //
 //   ap_rst_n -> tsr_xrt_reset -+-> tsr_xrt_ctrl  <-> s_axi_control
-//                              |       |  CSR port, bases, events
-//                              +-> tsr_core
-//                              |       |  memory port c
+//                              |       |  CSR port, latched bases, MEM_EN, events, plat_err
+//                              +-> tsr_core  <- ap_clk_2 / ap_rst_n_2 (clk_rv / rst_rv_n)
+//                              |       |  memory port c -> MEM_EN gate
 //                              +-> tsr_xrt_axi_bridge[c] <-> m_axi_*[c]
 
 module tsr_xrt_kernel
@@ -54,12 +66,17 @@ module tsr_xrt_kernel
   parameter int unsigned     MVM_ADD_LAT    = TSR_DEF_FADD_LAT,
   parameter int unsigned     MVM_WS_RD_LAT  = TSR_DEF_WS_RD_LAT,
   parameter int unsigned     RST_PIPE       = 0,
+  // the vector unit's lane knobs (VU §7.10: 16 / 8 on k4, 8 / 4 on k1; results unchanged)
+  parameter int unsigned     VU_EXP_LANES   = tsr_tables_pkg::TSR_VU_FRONT_LANES,
+  parameter int unsigned     VU_BACK_LANES  = tsr_tables_pkg::TSR_VU_BACK_LANES,
   // adapter
   parameter int unsigned     AXI_SLICES     = 2,
   parameter int unsigned     RST_STAGES     = 3
 ) (
   input  logic                                 ap_clk,
   input  logic                                 ap_rst_n,
+  input  logic                                 ap_clk_2,
+  input  logic                                 ap_rst_n_2,
 
   // ---- s_axi_control ----
   input  logic                                 s_axi_control_awvalid,
@@ -161,6 +178,7 @@ module tsr_xrt_kernel
   logic [31:0]             csr_wdata, csr_rdata;
   logic [NUM_CH-1:0][63:0] ch_base;
   logic [NUM_CH-1:0]       ev_rresp_err, ev_bresp_err, ev_unexpected;
+  logic                    mem_en, req_held, plat_err;
 
   tsr_xrt_ctrl #(.NUM_CH(NUM_CH)) u_ctrl (
     .clk(ap_clk), .rst_n(rst_ctrl_n),
@@ -172,7 +190,7 @@ module tsr_xrt_kernel
     .s_rvalid(s_axi_control_rvalid), .s_rready(s_axi_control_rready), .s_rdata(s_axi_control_rdata),
     .s_rresp(s_axi_control_rresp),
     .csr_valid, .csr_ready, .csr_we, .csr_addr, .csr_wdata, .csr_rdata,
-    .ch_base, .ev_rresp_err, .ev_bresp_err, .ev_unexpected
+    .ch_base, .mem_en, .ev_req_held(req_held), .plat_err, .ev_rresp_err, .ev_bresp_err, .ev_unexpected
   );
 
   // -------------------------------------------------------------------------------------------
@@ -185,6 +203,26 @@ module tsr_xrt_kernel
   logic [NUM_CH-1:0][BEAT_BITS-1:0]    rd_rsp_data, wr_dat_data;
   logic [NUM_CH-1:0]                   wr_req_valid, wr_req_ready, wr_dat_valid, wr_dat_ready, wr_dat_last;
   logic [NUM_CH-1:0]                   wr_rsp_valid, wr_rsp_ready;
+  // the bridges' side of the MEM_EN gate
+  logic [NUM_CH-1:0]                   g_rd_req_valid, g_rd_req_ready, g_wr_req_valid, g_wr_req_ready;
+  logic [NUM_CH-1:0]                   g_wr_dat_valid, g_wr_dat_ready;
+  logic [NUM_CH-1:0]                   mem_en_q;
+  logic [NUM_CH-1:0]                   held_c;
+
+  for (genvar c = 0; c < NUM_CH; c++) begin : g_gate
+    always_ff @(posedge ap_clk) begin
+      if (!rst_ch_n[c][0]) mem_en_q[c] <= 1'b0;
+      else                 mem_en_q[c] <= mem_en;
+    end
+    assign g_rd_req_valid[c] = rd_req_valid[c] && mem_en_q[c];
+    assign rd_req_ready[c]   = g_rd_req_ready[c] && mem_en_q[c];
+    assign g_wr_req_valid[c] = wr_req_valid[c] && mem_en_q[c];
+    assign wr_req_ready[c]   = g_wr_req_ready[c] && mem_en_q[c];
+    assign g_wr_dat_valid[c] = wr_dat_valid[c] && mem_en_q[c];
+    assign wr_dat_ready[c]   = g_wr_dat_ready[c] && mem_en_q[c];
+    assign held_c[c] = !mem_en_q[c] && (rd_req_valid[c] || wr_req_valid[c] || wr_dat_valid[c]);
+  end
+  assign req_held = |held_c;
 
   logic host_irq;                         // EX §9.3: not connected on the U200
   wire  unused_host_irq = &{1'b0, host_irq};
@@ -196,14 +234,13 @@ module tsr_xrt_kernel
     .HAS_MVM(HAS_MVM), .SPM_RD_LAT(SPM_RD_LAT),
     .MVM_WS_FIFO(MVM_WS_FIFO), .MVM_BC_PIPE(MVM_BC_PIPE), .MVM_RES_PIPE(MVM_RES_PIPE),
     .MVM_ACT_RD_LAT(MVM_ACT_RD_LAT), .MVM_MAC_LAT(MVM_MAC_LAT), .MVM_MUL_LAT(MVM_MUL_LAT),
-    .MVM_ADD_LAT(MVM_ADD_LAT), .MVM_WS_RD_LAT(MVM_WS_RD_LAT), .RST_PIPE(RST_PIPE)
+    .MVM_ADD_LAT(MVM_ADD_LAT), .MVM_WS_RD_LAT(MVM_WS_RD_LAT), .RST_PIPE(RST_PIPE),
+    .VU_EXP_LANES(VU_EXP_LANES), .VU_BACK_LANES(VU_BACK_LANES)
   ) u_core (
-    // W4-A integrate: until the adapter gets ap_clk_2 / ap_rst_n_2 and ADAPTER_STATUS (EX §9.2-§9.3,
-    // CC §13.3; W4-B), the control core runs on ap_clk (its crossings stay asynchronous), rst_rv_n
-    // is inactive (the clk_rv domain still resets from rst_n through tsr_ctrl's synchroniser),
-    // plat_err_i is 0 and host_irq_o is open (unconnected on the U200).
-    .clk(ap_clk), .rst_n(rst_core_n), .clk_rv(ap_clk), .rst_rv_n(1'b1),
-    .plat_err_i(1'b0), .host_irq_o(host_irq),
+    // the control core on ap_clk_2 / ap_rst_n_2 (CC §13.3); the clk_rv domain's own reset is
+    // rst_core_n through tsr_ctrl's synchroniser, ap_rst_n_2 is AND-ed into the Ibex / DM resets
+    .clk(ap_clk), .rst_n(rst_core_n), .clk_rv(ap_clk_2), .rst_rv_n(ap_rst_n_2),
+    .plat_err_i(plat_err), .host_irq_o(host_irq),
     .csr_valid, .csr_ready, .csr_we, .csr_addr, .csr_wdata, .csr_rdata,
     .m_rd_req_valid(rd_req_valid), .m_rd_req_ready(rd_req_ready), .m_rd_req_addr(rd_req_addr),
     .m_rd_req_len(rd_req_len), .m_rd_req_id(rd_req_id),
@@ -226,13 +263,13 @@ module tsr_xrt_kernel
       .clk(ap_clk), .rst_n(rst_ch_n[c][0]), .rst_axi_n(rst_ch_n[c][1]), .rst_rd_n(rst_ch_n[c][2]),
       .rst_wr_n(rst_ch_n[c][3]), .rst_rdc_n(rst_ch_n[c][4 +: CNT_RST]),
       .rst_wrc_n(rst_ch_n[c][4 + CNT_RST +: CNT_RST]), .base(ch_base[c]),
-      .c_rd_req_valid(rd_req_valid[c]), .c_rd_req_ready(rd_req_ready[c]), .c_rd_req_addr(rd_req_addr[c]),
+      .c_rd_req_valid(g_rd_req_valid[c]), .c_rd_req_ready(g_rd_req_ready[c]), .c_rd_req_addr(rd_req_addr[c]),
       .c_rd_req_len(rd_req_len[c]), .c_rd_req_id(rd_req_id[c]),
       .c_rd_rsp_valid(rd_rsp_valid[c]), .c_rd_rsp_ready(rd_rsp_ready[c]), .c_rd_rsp_data(rd_rsp_data[c]),
       .c_rd_rsp_id(rd_rsp_id[c]), .c_rd_rsp_last(rd_rsp_last[c]),
-      .c_wr_req_valid(wr_req_valid[c]), .c_wr_req_ready(wr_req_ready[c]), .c_wr_req_addr(wr_req_addr[c]),
+      .c_wr_req_valid(g_wr_req_valid[c]), .c_wr_req_ready(g_wr_req_ready[c]), .c_wr_req_addr(wr_req_addr[c]),
       .c_wr_req_len(wr_req_len[c]), .c_wr_req_id(wr_req_id[c]),
-      .c_wr_dat_valid(wr_dat_valid[c]), .c_wr_dat_ready(wr_dat_ready[c]), .c_wr_dat_data(wr_dat_data[c]),
+      .c_wr_dat_valid(g_wr_dat_valid[c]), .c_wr_dat_ready(g_wr_dat_ready[c]), .c_wr_dat_data(wr_dat_data[c]),
       .c_wr_dat_last(wr_dat_last[c]),
       .c_wr_rsp_valid(wr_rsp_valid[c]), .c_wr_rsp_ready(wr_rsp_ready[c]), .c_wr_rsp_id(wr_rsp_id[c]),
       .m_axi_awvalid(m_axi_awvalid[c]), .m_axi_awready(m_axi_awready[c]), .m_axi_awaddr(m_axi_awaddr[c]),

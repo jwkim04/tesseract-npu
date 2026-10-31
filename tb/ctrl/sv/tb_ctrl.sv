@@ -84,6 +84,7 @@ module tb_ctrl
   output logic          rv_reset_done,
   output logic          rv_clk_ok,
   output logic          rv_ndmreset,
+  output logic          rv_dmactive,
   output logic          rv_halt_pend,
   output logic          if_valid,
   output logic [31:0]   stub_errors,
@@ -115,6 +116,13 @@ module tb_ctrl
   logic [11:0]               db_off;
   logic [31:0]               db_wdata;
   wire unused_db = &{1'b0, db_req, db_we, db_off, db_wdata};
+  // Ibex taps for the DB block (W4-B integrate): not used by this bench
+  logic                      tap_data_req, tap_data_gnt, tap_data_we, tap_sleep, tap_halted, tap_in_reset, tap_dfault;
+  logic [31:0]               tap_data_addr, tap_cd_pc, tap_cd_npc, tap_cd_daddr, tap_cd_epc, tap_cd_eaddr;
+  logic [3:0]                tap_data_be;
+  wire unused_taps = &{1'b0, tap_data_req, tap_data_gnt, tap_data_we, tap_sleep, tap_halted, tap_in_reset,
+                       tap_dfault, tap_data_addr, tap_cd_pc, tap_cd_npc, tap_cd_daddr, tap_cd_epc, tap_cd_eaddr,
+                       tap_data_be};
 
   assign issued_seq = issued_q;
   assign s_seq      = s_q;
@@ -205,6 +213,7 @@ module tb_ctrl
     .rv_reset_done_o    (rv_reset_done),
     .rv_clk_ok_o        (rv_clk_ok),
     .rv_ndmreset_o      (rv_ndmreset),
+    .rv_dmactive_o      (rv_dmactive),
     .rv_halt_pend_o     (rv_halt_pend),
     .db_req_o           (db_req),
     .db_we_o            (db_we),
@@ -212,7 +221,21 @@ module tb_ctrl
     .db_wdata_o         (db_wdata),
     .db_rdata_i         (32'h0),
     .db_irq4_i          (1'b0),
-    .db_irq6_i          (1'b0)
+    .db_irq6_i          (1'b0),
+    .tap_data_req_o     (tap_data_req),
+    .tap_data_gnt_o     (tap_data_gnt),
+    .tap_data_addr_o    (tap_data_addr),
+    .tap_data_we_o      (tap_data_we),
+    .tap_data_be_o      (tap_data_be),
+    .tap_cd_pc_o        (tap_cd_pc),
+    .tap_cd_npc_o       (tap_cd_npc),
+    .tap_cd_daddr_o     (tap_cd_daddr),
+    .tap_cd_epc_o       (tap_cd_epc),
+    .tap_cd_eaddr_o     (tap_cd_eaddr),
+    .tap_sleep_o        (tap_sleep),
+    .tap_halted_o       (tap_halted),
+    .tap_in_reset_o     (tap_in_reset),
+    .tap_dfault_o       (tap_dfault)
   );
 
   tb_ctrl_core u_core (

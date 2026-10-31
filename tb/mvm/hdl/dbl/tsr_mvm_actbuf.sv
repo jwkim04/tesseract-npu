@@ -29,12 +29,13 @@ module tsr_mvm_actbuf
   input  logic                          clk,
   input  logic                          rst_n,
   input  logic                          wr_valid,
+  input  logic [T_MAX-1:0]              wr_tmask,    // W4-B at: tokens written
   input  tsr_mvm_bcline_t               wr_line,
   input  logic                          qs_re,
-  input  logic [QS_AW-1:0]              qs_addr,
+  input  logic [T_MAX-1:0][QS_AW-1:0]   qs_addr,     // W4-B at: per token
   output logic [T_MAX-1:0][1023:0]      qs_data,
   input  logic                          dbs_re,
-  input  logic [DBS_AW-1:0]             dbs_addr,
+  input  logic [T_MAX-1:0][DBS_AW-1:0]  dbs_addr,
   output logic [T_MAX-1:0][511:0]       dbs_data
 );
 
@@ -44,17 +45,19 @@ module tsr_mvm_actbuf
   logic [T_MAX-1:0][511:0]  dp [RD_LAT];
 
   always_ff @(posedge clk) begin
-    if (wr_valid) begin
-      if (!wr_line.dbs) begin
-        if (wr_line.addr[0]) qs_mem[wr_line.tok][wr_line.addr >> 1][1023:512] <= wr_line.data;
-        else                 qs_mem[wr_line.tok][wr_line.addr >> 1][511:0]    <= wr_line.data;
-      end else begin
-        dbs_mem[wr_line.tok][wr_line.addr] <= wr_line.data;
+    for (int unsigned t = 0; t < T_MAX; t++) begin
+      if (wr_valid && wr_tmask[t]) begin
+        if (!wr_line.dbs) begin
+          if (wr_line.addr[0]) qs_mem[t][wr_line.addr >> 1][1023:512] <= wr_line.data;
+          else                 qs_mem[t][wr_line.addr >> 1][511:0]    <= wr_line.data;
+        end else begin
+          dbs_mem[t][wr_line.addr] <= wr_line.data;
+        end
       end
     end
     for (int unsigned t = 0; t < T_MAX; t++) begin
-      if (qs_re)  qp[0][t] <= qs_mem[t][qs_addr];
-      if (dbs_re) dp[0][t] <= dbs_mem[t][dbs_addr];
+      if (qs_re)  qp[0][t] <= qs_mem[t][qs_addr[t]];
+      if (dbs_re) dp[0][t] <= dbs_mem[t][dbs_addr[t]];
     end
     for (int unsigned i = 1; i < RD_LAT; i++) begin
       qp[i] <= qp[i-1];
@@ -71,7 +74,8 @@ module tsr_mvm_actbuf
   always_ff @(posedge clk) begin
     if (rst_n && on_q) begin
       if (wr_valid) begin
-        assert (32'(wr_line.tok) < T_MAX) else $error("%m: write of token %0d >= T_MAX", wr_line.tok);
+        assert (32'(wr_line.tok) < T_MAX && wr_tmask == (T_MAX'(1) << wr_line.tok))
+          else $error("%m: write of token %0d >= T_MAX or token mask %b", wr_line.tok, wr_tmask);
         if (!wr_line.dbs) begin
           assert (32'(wr_line.addr) < 2 * QS_WORDS) else $error("%m: QS line %0d out of range", wr_line.addr);
         end else begin
@@ -79,8 +83,10 @@ module tsr_mvm_actbuf
         end
         assert (!qs_re && !dbs_re) else $error("%m: read in a cycle with a broadcast write");
       end
-      if (qs_re)  assert (32'(qs_addr) < QS_WORDS) else $error("%m: QS read address %0d", qs_addr);
-      if (dbs_re) assert (32'(dbs_addr) < DBS_LINES) else $error("%m: DBS read address %0d", dbs_addr);
+      if (qs_re)  assert (32'(qs_addr[0]) < QS_WORDS && qs_addr == {T_MAX{qs_addr[0]}})
+        else $error("%m: QS read address %0d", qs_addr[0]);
+      if (dbs_re) assert (32'(dbs_addr[0]) < DBS_LINES && dbs_addr == {T_MAX{dbs_addr[0]}})
+        else $error("%m: DBS read address %0d", dbs_addr[0]);
     end
   end
 

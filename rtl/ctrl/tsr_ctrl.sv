@@ -58,7 +58,8 @@
 //     with RV_RUN, 4, 3), rv_ndmreset_o (the core applies QABORT at its rise, like RV_RUN 1 -> 0),
 //     rv_halt_pend_o (DBG_STATUS.RV_HALT_PEND).
 // Implementation (Vivado; gate T1 flow rtl/ctrl/viv/ctrl_ooc.tcl): rtl/ctrl/viv/tsr_ctrl_cdc.xdc
-//   scoped to this module (ASYNC_REG, max delay / bus skew between the clocks, report_cdc waivers
+//   (plain XDC for every crossing of the design, tsr_dbg_rv's too: ASYNC_REG, max delay / bus skew between
+//   the clocks; packaged into the kernel IP) and rtl/ctrl/viv/tsr_cdc_waivers.tcl (the report_cdc waivers
 //   of the handshake data, FIFO LUTRAM and gray buses); rtl/ctrl/viv/tsr_ctrl_tcm.xdc at synthesis
 //   (TCMs in block RAM 32K x 1 columns: RAM_STYLE BLOCK, CASCADE_HEIGHT 1; the U200
 //   rtl/tech/xilinx/tsr_sram_1r1w.sv would map them to URAM) and set_power_opt -exclude_cells on
@@ -183,6 +184,7 @@ module tsr_ctrl
   output logic                      rv_reset_done_o,
   output logic                      rv_clk_ok_o,
   output logic                      rv_ndmreset_o,
+  output logic                      rv_dmactive_o,
   output logic                      rv_halt_pend_o,
   // DB window of the control window (clk_rv; W4-B): 0x160-0x17C except 0x178, 0x400-0x7FC.
   // db_rdata_i is sampled in the cycle after db_req_o.
@@ -192,14 +194,33 @@ module tsr_ctrl
   output logic [31:0]               db_wdata_o,
   input  logic [31:0]               db_rdata_i,
   input  logic                      db_irq4_i,
-  input  logic                      db_irq6_i
+  input  logic                      db_irq6_i,
+  // Ibex taps for the DB block (clk_rv; tsr_dbg_rv, W4-B integrate): see tsr_ctrl_rv
+  output logic                      tap_data_req_o,
+  output logic                      tap_data_gnt_o,
+  output logic [31:0]               tap_data_addr_o,
+  output logic                      tap_data_we_o,
+  output logic [3:0]                tap_data_be_o,
+  output logic [31:0]               tap_cd_pc_o,
+  output logic [31:0]               tap_cd_npc_o,
+  output logic [31:0]               tap_cd_daddr_o,
+  output logic [31:0]               tap_cd_epc_o,
+  output logic [31:0]               tap_cd_eaddr_o,
+  output logic                      tap_sleep_o,
+  output logic                      tap_halted_o,
+  output logic                      tap_in_reset_o,
+  output logic                      tap_dfault_o
 );
 
   localparam int unsigned FAW = $clog2(FIFO_DEPTH);
   localparam int unsigned LAW = $clog2(16);
 
   logic rst_rvd_n, rst_ext_n;
-  tsr_rst_sync #(.STAGES(2)) u_rst_rv  (.clk(clk_rv), .rst_ni(rst_n),    .rst_no(rst_rvd_n));
+  // u_rst_rv starts from a reset flop of its own: a launch flop that also drove core-domain logic
+  // would be a fan-out to the destination clock (report_cdc CDC-11). One core cycle later.
+  (* keep = "true" *) logic rst_rvsrc_q;
+  always_ff @(posedge clk) rst_rvsrc_q <= rst_n;
+  tsr_rst_sync #(.STAGES(2)) u_rst_rv  (.clk(clk_rv), .rst_ni(rst_rvsrc_q), .rst_no(rst_rvd_n));
   tsr_rst_sync #(.STAGES(2)) u_rst_ext (.clk(clk_rv), .rst_ni(rst_rv_n), .rst_no(rst_ext_n));
 
   // clk_rv side wires
@@ -226,7 +247,7 @@ module tsr_ctrl
   logic [31:0]               rv_boot;
   logic [3:0]                q_hold;
   logic [5:0]                q_err, q_nonempty;
-  logic                      rv_halted, rv_sleep, rv_running, rv_reset_done, rv_ndmreset, rv_halt_pend;
+  logic                      rv_halted, rv_sleep, rv_running, rv_reset_done, rv_ndmreset, rv_halt_pend, rv_dmactive;
 
   tsr_ctrl_rv #(
     .ITCM_BYTES(ITCM_BYTES), .DTCM_BYTES(DTCM_BYTES), .SPM_BYTES(SPM_BYTES), .CAPS(CAPS),
@@ -260,6 +281,7 @@ module tsr_ctrl
     .rv_reset_done     (rv_reset_done),
     .rv_running        (rv_running),
     .rv_ndmreset       (rv_ndmreset),
+    .rv_dmactive       (rv_dmactive),
     .rv_halt_pend      (rv_halt_pend),
     .push_timeout_ev   (push_ev),
     .bridge_timeout_ev (bridge_ev),
@@ -302,7 +324,21 @@ module tsr_ctrl
     .db_wdata          (db_wdata_o),
     .db_rdata          (db_rdata_i),
     .db_irq4           (db_irq4_i),
-    .db_irq6           (db_irq6_i)
+    .db_irq6           (db_irq6_i),
+    .tap_data_req      (tap_data_req_o),
+    .tap_data_gnt      (tap_data_gnt_o),
+    .tap_data_addr     (tap_data_addr_o),
+    .tap_data_we       (tap_data_we_o),
+    .tap_data_be       (tap_data_be_o),
+    .tap_cd_pc         (tap_cd_pc_o),
+    .tap_cd_npc        (tap_cd_npc_o),
+    .tap_cd_daddr      (tap_cd_daddr_o),
+    .tap_cd_epc        (tap_cd_epc_o),
+    .tap_cd_eaddr      (tap_cd_eaddr_o),
+    .tap_sleep         (tap_sleep_o),
+    .tap_halted        (tap_halted_o),
+    .tap_in_reset      (tap_in_reset_o),
+    .tap_dfault        (tap_dfault_o)
   );
 
   tsr_ctrl_cdc #(
@@ -390,6 +426,7 @@ module tsr_ctrl
     .rv_reset_done_o     (rv_reset_done_o),
     .rv_clk_ok_o         (rv_clk_ok_o),
     .rv_ndmreset_o       (rv_ndmreset_o),
+    .rv_dmactive_o       (rv_dmactive_o),
     .rv_halt_pend_o      (rv_halt_pend_o),
     .clk_rv              (clk_rv),
     .rst_rv_n            (rst_rvd_n),
@@ -451,6 +488,7 @@ module tsr_ctrl
     .r_rv_running        (rv_running),
     .r_rv_reset_done     (rv_reset_done),
     .r_rv_ndmreset       (rv_ndmreset),
+    .r_rv_dmactive       (rv_dmactive),
     .r_rv_halt_pend      (rv_halt_pend)
   );
 

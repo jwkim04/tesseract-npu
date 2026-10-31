@@ -209,12 +209,18 @@ const model QWEN05B = {"qwen2.5-0.5b", 896, 14, 2, 64, 4864, 1e-6f, 1e6f, 0.125f
 // rope base swa 1e4, NEOX, window 1,024, attention scale 1.0, layer_output_scale)
 const model GEMMA12B = {"gemma4-12b-swa", 3840, 16, 8, 256, 15360, 1e-6f, 1e4f, 1.0f, false, true, opl::glu::GEGLU16, 1024};
 
+// W4-B integrate: a decoder layer in the smallest shapes that still use every M7 kind (Qwen2 structure: bias
+// addends, SWIGLU; 128 / 2 heads of 64 / 1 KV head, n_ff 256). The RTL core bench (tb/core, test_core_m7)
+// runs it on a 2-channel core with T_MAX 2 and 1 MiB of SPM (`dump` mode below).
+const model TINY = {"tiny", 128, 2, 1, 64, 256, 1e-6f, 1e6f, 0.125f, true, false, opl::glu::SWIGLU, 0};
+
 struct lcase {
     const char * name;
     const char * group;
     const model * m;
     uint32_t T, n_kv, pos0;
     bool gguf;        // Qwen: weights / inputs from the GGUF file when present
+    bool tiny = false;   // the RTL bench's reduced device (2 channels, T_MAX 2, 1 MiB SPM, CAPS VU | ATT)
 };
 const std::vector<lcase> & cases() {
     static const std::vector<lcase> v = {
@@ -222,6 +228,8 @@ const std::vector<lcase> & cases() {
         {"qwen05b-prefill", "qwen05b", &QWEN05B, 8, 256, 120, true},
         {"gemma12b-swa-decode", "gemma12b", &GEMMA12B, 1, 2048, 1500, false},
         {"gemma12b-swa-prefill", "gemma12b", &GEMMA12B, 8, 2048, 1100, false},
+        {"tiny-decode", "tiny", &TINY, 1, 64, 40, false, true},
+        {"tiny-prefill", "tiny", &TINY, 2, 64, 30, false, true},
     };
     return v;
 }
@@ -409,6 +417,14 @@ void build(const lcase & c, layer_data & L, uint32_t n_layers = 1, bool mark = f
     L.cfg.t_max = 8;
     L.cfg.ch_bytes = 512ull << 20;
     L.cfg.caps = TSR_SIM_CAPS_IMPLEMENTED;
+    if (c.tiny) {   // the device of the RTL bench (tb/core/core_tb.py M7_CFG): CAPS VU | ATT as the RTL builds them
+        L.cfg.num_ch = 2;
+        L.cfg.t_max = 2;
+        L.cfg.k_max = 4096;
+        L.cfg.spm_bytes = 1024u * 1024u;   // the graph kernel's OPL area alone is 256 KiB + 16 argument lines
+        L.cfg.addr_beat_w = 24;
+        L.cfg.caps = TSR_CAPS_VU | TSR_CAPS_ATT;
+    }
     L.C = L.cfg.num_ch;
     L.E = m.n_kv_head * m.D;
     L.G = m.n_head / m.n_kv_head;
@@ -880,6 +896,141 @@ void run_scheds(const lcase & c, uint32_t n_sched) {
         }
     }
     for (auto & x : runs) obs_free(&x.o);
+}
+
+// =================================================================================================
+// dump: a case as a scenario for the RTL core bench (tb/core/test_core.py test_core_m7). The case is run
+// once on the simulator (fixed schedule, checked as in `suite`); the directory gets
+//   meta.txt     cfg NUM_CH T_MAX K_MAX SPM_BYTES CH_BYTES ADDR_BEAT_W CAPS | launch KERNEL A0 A1 A2 | in CH BEAT
+//                BYTES OFFSET (a DRAM region before the launch, in data.bin) | out CH BEAT ROWS STRIDE LINES OFFSET
+//                (a record's output rows, the simulator's bytes in expect.bin) | plane CH BEAT BYTES OFFSET (a KV
+//                plane after the launch) | csr OFFSET VALUE (a host register after the launch) | id OFFSET VALUE (an
+//                identification register) | done W0..W6
+//                dbg HEAD WPTR DROPS PERF61 PERF62 | hist P V0..V13 (DB §5.6 history entry P, the DBG_HIST_* registers) |
+//                trw BEAT LINES (the trace ring, DB §8.3: 32-byte records, in trw.bin)
+//   data.bin     the regions the host writes before the launch (inputs, weights, KV history, the list)
+//   trw.bin      the trace records the launch wrote (history and the trace writer are on during it)
+//   expect.bin   the simulator's bytes of every output and plane after the launch
+// =================================================================================================
+int dump_case(const lcase & c, const char * dir) {
+    layer_data L;
+    build(c, L);
+    tsr_sim_opts so;
+    memset(&so, 0, sizeof(so));
+    so.sched = "fixed";
+    so.race = 2;
+    so.threads = g_threads;
+    tsr_sim * sim = tsr_sim_create_opts(&L.cfg, &so);
+    CHECK(sim != nullptr, "%s: simulator", c.name);
+    if (sim == nullptr) return 1;
+    fill(sim, L);
+    fwh h;
+    bool ok = fwh_open(&h, sim, g_image) == 0;
+    const int gi = ok ? fwh_kernel(&h, "graph") : -1;
+    CHECK(ok && gi >= 0, "%s: boot / graph kernel", c.name);
+    uint32_t a[7] = {L.opl_h, uint32_t(L.blob.size()), opl::LF_VERIFY_CRC, 0, 0, 0, 0};
+    // DB: the dispatch history is on by default; the trace writer writes a 64-line ring in the ch0 IO region below the
+    // list during the launch (the RTL bench configures the same: the DB block changes no result)
+    const uint32_t trw_beat = 0x6000u, trw_lines = 64u;
+    tsr_sim_csr_write(sim, TSR_CSR_DBG_CFG, tsr_sim_csr_read(sim, TSR_CSR_DBG_CFG) | TSR_DBG_CFG_TRW_EN);
+    tsr_sim_csr_write(sim, TSR_CSR_DBG_TRW_BASE, trw_beat);
+    tsr_sim_csr_write(sim, TSR_CSR_DBG_TRW_LINES, trw_lines);
+    if (ok && gi >= 0) ok = fwh_launch(&h, uint32_t(gi), a, 0) == 0;
+    CHECK(ok, "%s: launch", c.name);
+    CHECK(ok && check_outputs(sim, L, "dump", nullptr), "%s: outputs", c.name);
+    if (!ok || gi < 0) return 1;
+    tsr_sim_csr_write(sim, TSR_CSR_DBG_CTRL, TSR_DBG_CTRL_TRW_FLUSH);
+    tsr_sim_advance(sim, 5000);
+    const std::string d = dir;
+    FILE * fm = fopen((d + "/meta.txt").c_str(), "w");
+    FILE * fd = fopen((d + "/data.bin").c_str(), "wb");
+    FILE * fe = fopen((d + "/expect.bin").c_str(), "wb");
+    CHECK(fm && fd && fe, "dump: cannot write into %s", dir);
+    if (!fm || !fd || !fe) return 1;
+    fprintf(fm, "cfg %u %u %u %u %llu %u %u\n", L.cfg.num_ch, L.cfg.t_max, L.cfg.k_max, L.cfg.spm_bytes,
+            (unsigned long long)L.cfg.ch_bytes, L.cfg.addr_beat_w, L.cfg.caps);
+    fprintf(fm, "launch %d %u %u %u\n", gi, a[0], a[1], a[2]);
+    size_t off = 0;
+    for (const region & rg : L.in) {
+        fprintf(fm, "in %u %llu %zu %zu\n", rg.ch, (unsigned long long)rg.beat, rg.data.size(), off);
+        fwrite(rg.data.data(), 1, rg.data.size(), fd);
+        off += rg.data.size();
+    }
+    fprintf(fm, "in %u %llu %zu %zu\n", h_ch(L.opl_h), (unsigned long long)h_beat(L.opl_h), L.blob.size(), off);
+    fwrite(L.blob.data(), 1, L.blob.size(), fd);
+    size_t eo = 0;
+    for (const out_rows & x : L.outs) {
+        fprintf(fm, "out %u %llu %u %u %u %zu\n", h_ch(x.h), (unsigned long long)h_beat(x.h), x.rows, x.stride, x.lines, eo);
+        for (uint32_t row = 0; row < x.rows; ++row) {
+            const uint8_t * p = tsr_sim_dram(sim, h_ch(x.h)) + (h_beat(x.h) + uint64_t(row) * x.stride) * LINE;
+            fwrite(p, 1, size_t(x.lines) * LINE, fe);
+            eo += size_t(x.lines) * LINE;
+        }
+    }
+    for (const layer_io & x : L.lio)
+        for (uint32_t kv = 0; kv < 2u; ++kv)
+            for (uint32_t ch = 0; ch < L.C; ++ch) {
+                const uint64_t beat = kv ? x.vB : x.kB;
+                fprintf(fm, "plane %u %llu %llu %zu\n", ch, (unsigned long long)beat, (unsigned long long)(L.plane_beats * LINE), eo);
+                fwrite(tsr_sim_dram(sim, ch) + beat * LINE, 1, size_t(L.plane_beats * LINE), fe);
+                eo += size_t(L.plane_beats * LINE);
+            }
+    // host registers after the launch: per-unit Q_DONE / Q_ISSUED / Q_ERR_CODE (the VU's and the AT ops' unit
+    // routing), Q_PIDX
+    for (uint32_t u = 0; u < 6u; ++u) {
+        for (uint32_t o : {uint32_t(TSR_CSR_Q_DONE_BASE) + 4u * u, uint32_t(TSR_CSR_Q_ISSUED_BASE) + 4u * u,
+                           uint32_t(TSR_CSR_Q_ERR_CODE_BASE) + 16u * u})
+            fprintf(fm, "csr %u %u\n", o, tsr_sim_csr_read(sim, o));
+    }
+    fprintf(fm, "csr %u %u\n", uint32_t(TSR_CSR_Q_PIDX), tsr_sim_csr_read(sim, TSR_CSR_Q_PIDX));
+    // the s-register bank (SREG0-15, VU §5.10): what the layer's RED / SOP ops left in it
+    for (uint32_t i = 0; i < 16u; ++i) fprintf(fm, "csr %u %u\n", uint32_t(TSR_CSR_SREG_BASE) + 4u * i, tsr_sim_csr_read(sim, TSR_CSR_SREG_BASE + 4u * i));
+    // PERF event counters (EX §6; the time counters depend on the schedule): RETIRED, PUSHES, LAUNCHES, VU_LINES,
+    // KVST_RMW, as the host reads them (LO half)
+    for (uint32_t i : {uint32_t(TSR_PERF_RETIRED), uint32_t(TSR_PERF_EXT(L.cfg.num_ch, TSR_PERF_XOFF_PUSHES)),
+                       uint32_t(TSR_PERF_EXT(L.cfg.num_ch, TSR_PERF_XOFF_LAUNCHES)),
+                       uint32_t(TSR_PERF_EXT(L.cfg.num_ch, TSR_PERF_XOFF_VU_LINES)),
+                       uint32_t(TSR_PERF_EXT(L.cfg.num_ch, TSR_PERF_XOFF_KVST_RMW))})
+        fprintf(fm, "csr %u %u\n", uint32_t(TSR_CSR_PERF_LO_BASE) + 8u * i, tsr_sim_csr_read(sim, TSR_CSR_PERF_LO_BASE + 8u * i));
+    for (uint32_t o : {uint32_t(TSR_CSR_ID), uint32_t(TSR_CSR_VERSION), uint32_t(TSR_CSR_CFG0), uint32_t(TSR_CSR_CFG1),
+                       uint32_t(TSR_CSR_CFG2), uint32_t(TSR_CSR_CAPS), uint32_t(TSR_CSR_CFG3), uint32_t(TSR_CSR_CTL_ID),
+                       uint32_t(TSR_CSR_RV_CFG), uint32_t(TSR_CSR_Q_DEPTH), uint32_t(TSR_CSR_LQ_CFG),
+                       uint32_t(TSR_CSR_PERF_INFO)})
+        fprintf(fm, "id %u %u\n", o, tsr_sim_csr_read(sim, o));
+    const uint32_t hist_head = tsr_sim_csr_read(sim, TSR_CSR_DBG_HIST_HEAD);
+    const uint32_t wptr = tsr_sim_csr_read(sim, TSR_CSR_DBG_TRW_WPTR);
+    fprintf(fm, "dbg %u %u %u %llu %llu\n", hist_head, wptr, tsr_sim_csr_read(sim, TSR_CSR_DBG_TRW_DROPS),
+            (unsigned long long)tsr_sim_perf(sim, TSR_PERF_TRW_RECORDS), (unsigned long long)tsr_sim_perf(sim, TSR_PERF_TRW_DROPS));
+    for (uint32_t p = 0; p < hist_head; ++p) {
+        tsr_sim_csr_write(sim, TSR_CSR_DBG_HIST_IDX, p);
+        fprintf(fm, "hist %u", p);
+        for (uint32_t o : {uint32_t(TSR_CSR_DBG_HIST_INFO), uint32_t(TSR_CSR_DBG_HIST_PIDX), uint32_t(TSR_CSR_DBG_HIST_TICKET),
+                           uint32_t(TSR_CSR_DBG_HIST_DEP0), uint32_t(TSR_CSR_DBG_HIST_DEP1), uint32_t(TSR_CSR_DBG_HIST_PC)})
+            fprintf(fm, " %u", tsr_sim_csr_read(sim, o));
+        for (uint32_t k = 0; k < 8u; ++k) fprintf(fm, " %u", tsr_sim_csr_read(sim, TSR_CSR_DBG_HIST_W_BASE + 4u * k));
+        fprintf(fm, "\n");
+    }
+    CHECK(wptr > 0 && wptr <= 2u * trw_lines, "dump: %u trace records (a wrapped ring is not compared)", wptr);
+    fprintf(fm, "trw %u %u\n", trw_beat, trw_lines);
+    {
+        FILE * ft = fopen((d + "/trw.bin").c_str(), "wb");
+        CHECK(ft != nullptr, "dump: cannot write trw.bin");
+        if (ft) {
+            fwrite(tsr_sim_dram(sim, 0) + uint64_t(trw_beat) * LINE, 32u, wptr, ft);
+            fclose(ft);
+        }
+    }
+    fprintf(fm, "done");
+    for (int i = 0; i < 7; ++i) fprintf(fm, " %u", h.done[i]);
+    fprintf(fm, "\n");
+    fclose(fm);
+    fclose(fd);
+    fclose(fe);
+    printf("%s: scenario in %s: %zu input bytes, %zu expected bytes, list %zu B, %zu records, push -> DONE %llu core cycles\n",
+           c.name, dir, off + L.blob.size(), eo, L.blob.size(), L.recs.size(), (unsigned long long)h.cycles);
+    fwh_close(&h);
+    tsr_sim_destroy(sim);
+    return 0;
 }
 
 // =================================================================================================
@@ -1385,7 +1536,7 @@ void run_perf() {
 
 int main(int argc, char ** argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: %s IMAGE suite GROUP|ggml|perf [--scheds N] [--threads N] [--only NAME]\n", argv[0]);
+        fprintf(stderr, "usage: %s IMAGE suite GROUP|ggml|perf|dump CASE DIR [--scheds N] [--threads N] [--only NAME]\n", argv[0]);
         return 2;
     }
     g_image = argv[1];
@@ -1422,6 +1573,13 @@ int main(int argc, char ** argv) {
 #endif
     } else if (mode == "perf") {
         run_perf();
+    } else if (mode == "dump") {
+        // test_fw_m7_layer IMAGE dump CASE DIR
+        if (argc < 5) {
+            fprintf(stderr, "usage: %s IMAGE dump CASE DIR\n", argv[0]);
+            return 2;
+        }
+        return dump_case(find_case(argv[3]), argv[4]) | test_finish("fw_m7_layer dump");
     } else {
         fprintf(stderr, "unknown mode %s\n", mode.c_str());
         return 2;

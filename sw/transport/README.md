@@ -59,6 +59,12 @@ answer) is the protocol layer, so a behaviour tested on `sim` is the behaviour o
 | `tsr_transport_log_drain` | the raw log words (oldest first) that the transport drained earlier and kept, then the device ring |
 | `tsr_record_decode`, `tsr_status_name` | decoded view of an answer record |
 | `tsr_transport_get_stats` | launches, wall time, CSR accesses, DRAM bytes, log words |
+| `tsr_transport_dmi_enable`, `_dmi_read`, `_dmi_write` | DB §9.2: the DMI window (`DBG_CFG.DMI_EN`, debug-module register r at `0xC00 + 4r`) for `libtsr_dbg` |
+| `tsr_transport_now_ns`, `_idle` | the time base, and a pause in it (the simulated kinds advance the model) for a debugger polling a running hart |
+| `tsr_transport_poll` | the non-blocking form of `_wait` (no timeout, no recovery ladder) |
+| `tsr_transport_set_debugger` | a debugger is attached: debug-aware waits, a TRAP leaves the device trapped |
+| `tsr_transport_set_debug_service` | registers the embedded debug service that `TSR_GDB` / `TSR_DEBUGGER` start at open (`libtsr_dbg`) |
+| `tsr_transport_perf_summary`, `tsr_perf_summary_str` | DB §8.6: PERF accumulated over the session (folded in before each `SOFT_RESET`) and its `TSR_STATS` text |
 
 A minimal use (the same shape as `tsr_rt`, `tsr-selftest` and the tests):
 
@@ -149,9 +155,9 @@ Read at open; a malformed value makes the open fail with a message and is never 
 | `TSR_LOG` | off | `stderr` or a file: decode the device log there |
 | `TSR_LOG_LEVEL` | 3 | `LOG_CFG.LEVEL`, 0 (fatal) to 5 (trace) |
 | `TSR_ATTACH` | 0 | `1`: open without `SOFT_RESET` and bind, for diagnosis of a running device |
-| `TSR_STATS` | 0 | `1`: transport statistics on stderr at close |
+| `TSR_STATS` | 0 | `1`: transport statistics and the DB §8.6 PERF summary on stderr at close |
 | `TSR_DUMP_DIR` | off | directory for hang dumps (`hang-<pid>-<n>/state.json` with every EX, Q, PERF and DBG register and the completion ring) |
-| `TSR_GDB_WAIT` | off | `boot` or `launch`: after a trap leave the device in the trapped state instead of restarting it |
+| `TSR_GDB_WAIT` | off | `boot` or `launch`: after a trap leave the device in the trapped state instead of restarting it; with the embedded debug service also halt at boot or at the first launch for GDB |
 | `TSR_TILE_SERIAL`, `TSR_TILE_HIST` | unset | `0` or `1`: set or clear serial mode and the dispatch history in `DBG_CFG` at open |
 | `TSR_SIM_TMAX`, `TSR_SIM_CH_GIB`, `TSR_SIM_THREADS`, `TSR_SIM_DRAM_DIR` | 1, 16, `min(CPUs, 8)`, off | `sim` and `mock`: `T_MAX` of the simulated core, channel size in GiB, MVM worker threads, file-backed DRAM (see [`sw/sim/README.md`](../sim/README.md) for the simulator's own `TSR_SIM_*` and `TSR_TRACE`) |
 | `TSR_MOCK_NUM_CH`, `TSR_MOCK_TMAX`, `TSR_MOCK_CH_GIB` | 4, 1, 16 | `mock`: channels, `T_MAX`, channel size |
@@ -162,10 +168,11 @@ Read at open; a malformed value makes the open fail with a message and is never 
 | `TSR_XRT_DEVICE`, `TSR_XRT_KERNEL` | 0, `tsr_u200_k4` or `tsr_u200_k1` | `xrt`: device index or PCIe address; kernel name |
 | `TSR_XRT_CH_GIB`, `TSR_XRT_DMA`, `TSR_XRT_DMA_CHUNK_MIB`, `TSR_XRT_DMA_ALIGN` | bank size up to 16, `direct`, 64, 1 (64 for `staged` and `m2m`) | `xrt`: channel buffer size; DMA mode `direct`, `staged` (aligned bounce buffer) or `m2m`; largest DMA in MiB; DMA alignment. With `XCL_EMULATION_MODE=hw_emu` the defaults are 3, `staged` and 4096 (two Vitis 2024.2 emulation defects) |
 
-`TSR_GDB`, `TSR_DEBUGGER` and `TSR_PROF`, `TSR_PROF_TRW_MIB`, `TSR_PROF_EVERY`,
-`TSR_PROF_RV_SAMPLE_US` are reserved for the embedded debug service (`libtsr_dbg`, P3.7) and the
-trace-writer profiler (`tsr-prof`, P3.8); the transport prints one note when one is set and
-ignores it. The ggml backend adds its own variables (`TSR_STATS` for its host-time split, `TSR_STAGE_KIB`,
+`TSR_GDB` and `TSR_DEBUGGER` start the embedded debug service when the program links it
+(`libtsr_dbg`'s `tsr_dbg_embed`, `sw/tools/dbg`; otherwise one note, ignored). `TSR_PROF`,
+`TSR_PROF_TRW_MIB`, `TSR_PROF_EVERY`, `TSR_PROF_RV_SAMPLE_US` are not wired into the owning
+processes yet (one note, ignored); `tsr-prof trw` runs its own launches. Boot waits (HELLO) count no
+time while the hart is halted (halt-on-boot). The ggml backend adds its own variables (`TSR_STATS` for its host-time split, `TSR_STAGE_KIB`,
 `TSR_LOAD_THREADS`, `TSR_OPL_CRC`, `TSR_FORCE_HOST`, `TSR_DEBUG`; see
 [`sw/ggml-tesseract/README.md`](../ggml-tesseract/README.md)).
 

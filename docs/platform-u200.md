@@ -233,8 +233,29 @@ properties (`sdx_kernel` rtl, no user parameters, ap_clk associated with `s_axi_
 NUM_READ_OUTSTANDING 16 / NUM_WRITE_OUTSTANDING 32, the register map with the args) →
 `ipx::check_integrity -kernel` and `-xrt` → `package_xo` with `kernel_<k>.xml`.
 
+The IP also carries the clock-domain-crossing constraints of the control core (CC §11.3, gate T3):
+`rtl/ctrl/viv/tsr_ctrl_cdc.xdc`, copied to `xdc/tsr_ctrl_cdc.xdc` with `set tsr_cdc_core_port ap_clk` and
+`set tsr_cdc_rv_port ap_clk_2` in front, in the IP's synthesis file group (used in synthesis, implementation and
+out of context, processed late). It is plain XDC: Vivado's constraint reader accepts no `if`, `foreach`,
+`proc` or `dict` (the first version with them was refused when the IP was read, "Command 'if' is not supported
+in the xdc constraint file", and left every crossing unconstrained). It sets `ASYNC_REG` on the synchroniser
+stages, `set_max_delay -datapath_only` (the smaller period) in both directions between `ap_clk` and `ap_clk_2`
+and `set_bus_skew` on the gray registers; the `report_cdc` waivers (`rtl/ctrl/viv/tsr_cdc_waivers.tcl`) are
+not constraints and stay out of the IP. Include files one directory below an include directory
+(`common_cells/assertions.svh`, which `fifo_v3.sv` includes) are added to the IP under that relative path as
+well: without them the packaged sources did not synthesise on their own ("cannot open include file").
+`tb/platform/viv/xo_cdc.tcl` checks a packaged `.xo` (opt-in, Vivado): `create_ip` and `synth_ip` of the
+kernel IP out of context, then `report_cdc` and `report_clock_interaction` of the two kernel clocks. For
+`tsr_u200_k1` (2026-11-01, W4-B review): the IP's synthesis applies `xdc/tsr_ctrl_cdc.xdc` (1,464
+`ASYNC_REG` cells), `report_cdc` lists 44 Info endpoints and nothing else, and both directions
+`ap_clk` → `ap_clk_2` and back are "Max Delay Datapath Only"; without the constraints the two clocks
+are "Timed (unsafe)" in both directions (whole-core out-of-context run: WNS -0.59 / -0.25 ns on the false
+crossing paths), which is what a link of the earlier package would have had. The link repeats
+the check on the routed design: `hw/u200/cdc_check.tcl` is the post-route hook of `k1.cfg` and `k4.cfg` and
+fails the implementation run on an unconstrained or unsafe crossing (§8).
+
 Each packaging writes `build/u200/xo/<kernel>.sources.sha256` next to the `.xo`: the sha256 of
-both filelists, every source, `kernel_<k>.xml` and `package_xo.tcl`, with repository paths.
+both filelists, every source, `kernel_<k>.xml`, `rtl/ctrl/viv/tsr_ctrl_cdc.xdc` and `package_xo.tcl`, with repository paths.
 `cd <repo> && sha256sum -c build/u200/xo/<kernel>.sources.sha256` tells whether an `.xo` still
 matches the working tree; `hw/u200/build_xclbin.sh` repackages when it does not (or the manifest
 is missing), so a later core change can no longer slip into a link through a stale `.xo`

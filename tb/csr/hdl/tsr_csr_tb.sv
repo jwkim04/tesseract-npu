@@ -143,7 +143,8 @@ module tsr_csr_tb
   input  logic [63:0][3:0]            perf_ext,
   input  logic [5:0]                  unit_progress,
   input  logic                        plat_err_i,
-  output logic                        host_irq_o
+  output logic                        host_irq_o,
+  output logic                        unit_hung
 );
 
   // nets between tsr_csr and tsr_issue (tsr_issue's port names)
@@ -197,7 +198,7 @@ module tsr_csr_tb
     .qidle, .qquiescent, .err_any, .hold_src, .q_state, .seq_d, .err_rec, .q_pidx,
     .perf_retired, .perf_push, .perf_busy, .perf_mvm_wait, .perf_mvm_empty, .perf_hold,
     .perf_ch_rd_beat, .perf_ch_wait, .perf_ext, .unit_progress,
-    .plat_err_i, .host_irq_o
+    .plat_err_i, .host_irq_o, .unit_hung
   );
 
   tsr_issue #(

@@ -285,7 +285,8 @@ DETACHED --connect--> ATTACH: DBG_CFG.DMI_EN=1, RV_HALT_EN=1; dmcontrol=dmactive
 HALTED   --g G p P m M X Z z qRcmd--> HALTED
          --c / vCont;c--> (fence.i if ITCM was written) resumereq --> RUNNING
          --s / vCont;s--> dcsr.step=1, resumereq --> STEPPING
-         --D--> DETACH ;  --k--> KILL
+         --D--> DETACH ;  --k--> KILL ;  --0x03 (Ctrl-C)--> ignored (as gdbserver in all-stop mode)
+         --the connection ends or a write fails (EOF, EPIPE, ECONNRESET)--> DETACH
 RUNNING  poll DBG_STATUS every 100 µs, backing off to 10 ms; drain the log into O packets
          --0x03 (Ctrl-C)--> haltreq --> HALTED (SIGINT)
          --RV_HALTED--> classify (§4.7) --> HALTED
@@ -296,7 +297,9 @@ DETACH   remove software breakpoints, triggers, RV watchpoints, tile breakpoints
          dcsr.ebreakm=0; __tsr_dbg.attached=0; RV_HALT_EN=0; HOLD_ON_HALT restored; resume unless
          --detach-halted; DMI_EN=0 --> DETACHED
 KILL     standalone: RV reset without HALT_ON_BOOT; embedded: as DETACH (the owner keeps running)
-any      --STATUS.DMI_TIMEOUT--> DEGRADED: core-domain reads only (status, history, log, probes);
+any      writes never raise SIGPIPE (the process that owns an embedded service is the application: a GDB
+         that vanishes ends the session, not that process); a failed write is the end of the session
+         --STATUS.DMI_TIMEOUT--> DEGRADED: core-domain reads only (status, history, log, probes);
          monitor commands served; DMI retried on every command
 ```
 
@@ -451,8 +454,10 @@ and pulses the internal net `dbg_stop_evt`, the ILA trigger of debug builds
 Four breakpoints `TBP0`–`TBP3` are evaluated on the dispatcher's enqueue tap (§13): push index,
 ticket, w0, checker result, and the operand extents the checker computes for its range checks
 (up to four extents per op, each tagged SPM or DRAM, CC §8.2), each {start, end
-exclusive, read / write}. Strided operands are their bounding interval (false hits in the gaps are
-possible). The match is computed beside checker stages C6–C7 and registered with the queue write:
+exclusive, read / write}. An op with more extents is matched on its first four in the checker's
+field order, in the simulator and the RTL alike: a merging AMERGE lists Orun (written, read),
+parts, mk, st (written, read), so its `st` vector cannot be watched. Strided operands are their
+bounding interval (false hits in the gaps are possible). The match is computed beside checker stages C6–C7 and registered with the queue write:
 no extra dispatch cycle.
 
 | `KIND` | Matches when | A / B |
@@ -505,7 +510,8 @@ unit u (CC ids 0 DMA, 1 QACT, 2 MVM, 3 VU, 4 AT, 5 SYNC; 6–7 read 0):
   time MTIME[31:0], INFO}. `HIST_DEPTH` = 512 on the U200 (7 RAMB36 at 72 bits).
 - Slot = push index mod depth. `DBG_HIST_HEAD` = next push index to be recorded. Reading: write
   `DBG_HIST_IDX` = push index, read the fields; `INFO.PRESENT` = 1 iff that slot holds that push
-  index and it was recorded after the last `HIST_CLEAR`.
+  index and it was recorded after the last `HIST_CLEAR`. A slot that is not `PRESENT` reads 0 in
+  every field (`INFO` included), so a stale or power-up slot content is never taken for an entry.
 - `HIST_FREEZE_ERR` (on after reset): recording stops `HIST_DEPTH` / 2 = 256 entries after the
   first entry that completes with an error, so the ring keeps 256 entries on each side of it.
   `UNIT_HUNG` freezes at once; `HIST_FREEZE` by hand; `HIST_CLEAR` empties and unfreezes.
@@ -744,11 +750,14 @@ DRAM ring (DB-16):
 - **Ring**: `DBG_TRW_BASE` {ch[31:28], beat[27:0], 16-beat aligned}, `DBG_TRW_LINES` (power of
   two ≥ 16), `DBG_TRW_WPTR` (records whose write response returned), `DBG_TRW_RPTR` (host),
   `DBG_TRW_DROPS`, `DBG_TRW_MASK`. `TRW_STOP_FULL` = 0 overwrites (flight recorder); 1 drops when
-  WPTR − RPTR = capacity.
-- **Write path**: 32-record LUTRAM staging (two 1 KiB bursts); a 16-beat burst when 32 records are
+  WPTR − RPTR = capacity. The channel field must name the writer's channel `TRW_CH` (0): a ring on
+  another channel is no ring, and its records are dropped (counted in `DROPS`) in the simulator and
+  the RTL alike.
+- **Write path**: 64-record LUTRAM staging (two 1 KiB bursts: one in flight while the next fills; the
+  simulator writes at once and stages 32); a 16-beat burst when 32 records are
   ready; a partial burst on `TRW_FLUSH`, after 65,536 idle cycles, or after a LAUNCH_END marker. It
   is a second write source of `tsr_mem_arb` on channel `TRW_CH` = 0 (in floorplan C' all four
-  arbiters sit in SLR1, so any channel works; ch0 holds the IO region), arbitrated per burst with
+  arbiters sit in SLR1, so any channel could carry it; ch0 holds the IO region), arbitrated per burst with
   the DMA (CC §13.2). It never stalls a unit: full staging → drop + DROP record.
 - **Cost** (*estimate*): 32B decode ≈ 4–20 K entries per token (CC §3.3)
   → 0.13–0.64 MB per token, ≤ 1.9 MB/s at 2.93 tok/s, ≤ 10 K write beats per 82.6 M-cycle token

@@ -20,9 +20,11 @@
 // TSR_LAUNCH_TIMEOUT_MS (60000; 0 = none), TSR_ABORT_MS (10000), TSR_BOOT_MS (2000),
 // TSR_RESET_MS (15000); TSR_LOG (stderr | <file>: decode the device log there) and TSR_LOG_LEVEL
 // (LOG_CFG.LEVEL, 0 FATAL .. 5 TRACE, default 3); TSR_ATTACH=1 (open without SOFT_RESET or bind,
-// for diagnosis); TSR_STATS=1 (transport statistics on stderr at close); DB §9.5: TSR_DUMP_DIR
-// (hang dumps, recovery ladder level 0), TSR_GDB_WAIT (leave a trapped device for the debugger),
-// TSR_TILE_SERIAL / TSR_TILE_HIST (DBG_CFG at open). Kind-specific variables: tsr_kdev_*.cpp
+// for diagnosis); TSR_STATS=1 (transport statistics and DB §8.6's PERF summary on stderr at
+// close); DB §9.5: TSR_DUMP_DIR (hang dumps, recovery ladder level 0), TSR_GDB_WAIT (leave a
+// trapped device for the debugger; with the embedded service also halt at boot or at the first
+// launch), TSR_GDB / TSR_DEBUGGER (the embedded debug service, when one is registered:
+// tsr_transport_set_debug_service), TSR_TILE_SERIAL / TSR_TILE_HIST (DBG_CFG at open). Kind-specific variables: tsr_kdev_*.cpp
 // (TSR_SIM_*, TSR_MOCK_*, TSR_VKERNEL_*, TSR_XCLBIN / TSR_XRT_*). A malformed value makes the open
 // fail with a message (never silently ignored).
 //
@@ -180,6 +182,74 @@ typedef struct tsr_transport_stats {
              log_words, log_records_dropped, staged_chunks;
 } tsr_transport_stats;
 void tsr_transport_get_stats(const tsr_transport * t, tsr_transport_stats * s);
+
+// ---------------------------------------------------------------------------------------------
+// DB §9.2 debug additions (P3.7 libtsr_dbg / tsr-dbg, P3.8 tsr-prof). Nothing above needs them.
+// ---------------------------------------------------------------------------------------------
+// DMI window (DB §3.2): debug-module register addr7 (0..127) at core CSR 0xC00 + 4 addr7, the same
+// path on every kind (the sim kind's DBG model forwards it to tsr_dm). The window acts only while
+// DBG_CFG.DMI_EN = 1 (tsr_transport_dmi_enable: read-modify-write of DBG_CFG); a DMI read may have
+// side effects in the DM (sbdata0 with sbreadondata, cmderr on a busy access), unlike every other
+// CSR read. No STATUS read is added per access: callers check STATUS.DMI_TIMEOUT (E01, DB §4.9)
+// when a poll does not complete. 0, TSR_TE_INVAL or TSR_TE_IO.
+int tsr_transport_dmi_enable(tsr_transport * t, int on);
+int tsr_transport_dmi_read(tsr_transport * t, uint32_t addr7, uint32_t * val);
+int tsr_transport_dmi_write(tsr_transport * t, uint32_t addr7, uint32_t val);
+
+// The transport's time base (device time on sim, mock and vkernel; host time on xrt) and a pause
+// of about ns in it (DB §9.1 "Stepping"): the simulated kinds advance the model by that much (it
+// stops early at a host-visible event: a record, a log word, a halt), xrt sleeps. The mutex is
+// released for the pause. For a debugger that polls while the hart runs and no launch waits.
+uint64_t tsr_transport_now_ns(tsr_transport * t);
+void     tsr_transport_idle(tsr_transport * t, uint64_t ns);
+
+// Non-blocking form of tsr_transport_wait: consumes the records posted so far (events to the
+// callback, the log drained when due, a TRAP handled as by a wait) and returns 1 with *rec when
+// launch seq has been answered (it then counts as waited), 0 while it has not, TSR_TE_LOST when it
+// was flushed, TSR_TE_INVAL for a seq that is not outstanding. No timeout, no recovery ladder: for
+// a debugger that launches while it controls the hart (tsr-dbg's monitor launch).
+int tsr_transport_poll(tsr_transport * t, uint32_t seq, tsr_record * rec);
+
+// A debugger is attached (DB §4.1, §6.3): every wait reads DBG_STATUS / DBG_CFG at its backoff
+// polls (no timeout while the hart is halted, a tile stop is active or SERIAL is on), and a TRAP
+// record leaves the device TRAPPED for the debugger instead of the warm restart (as TSR_GDB_WAIT).
+// 0 restores the environment's behaviour. Boot waits (HELLO, TSR_BOOT_MS) never count time while
+// STATUS.RV_HALTED = 1 (halt-on-boot, DB §3.8), with or without this call.
+int tsr_transport_set_debugger(tsr_transport * t, int attached);
+
+// The embedded debug service (DB-17, §4.1, §9.5: TSR_GDB, TSR_GDB_WAIT, TSR_DEBUGGER). A library
+// registers it once per process (libtsr_dbg: tsr_dbg_embed_install, or by linking tsr_dbg_embed);
+// then every tsr_transport_open with TSR_GDB or TSR_DEBUGGER set calls start(t) after the open
+// (NULL: not started), every boot calls boot(h, t, 0) before the image load and boot(h, t, 1)
+// after HELLO (on the booting thread, with the transport usable), and tsr_transport_close calls
+// stop(h) first. NULL unregisters. Without a registered service the variables are reported and
+// ignored.
+typedef struct tsr_debug_service {
+    void * (*start)(tsr_transport * t);
+    void   (*boot)(void * h, tsr_transport * t, int phase);
+    void   (*stop)(void * h);
+} tsr_debug_service;
+void tsr_transport_set_debug_service(const tsr_debug_service * s);
+
+// PERF over the session (DB §8.6, TSR_STATS; EX §6): the counters accumulated since open, folded
+// in before every SOFT_RESET that zeroes them (EX §8.5), plus the host's launch wall time. PERF
+// does not move between launches, so the values cover exactly the launches answered since open.
+// core_hz: nominal (276.3 MHz, the U200 k4 clock) on the simulated kinds; on xrt fitted from
+// DBG_MTIME against host time when at least 0.5 s passed (core_hz_fitted = 1).
+typedef struct tsr_perf_summary {
+    uint64_t perf[64];          // PERF_0..PERF_63 (EX §6 indices; TSR_PERF_*)
+    uint32_t num_ch, perf_x;    // NUM_CH and X = 5 + 2 NUM_CH
+    double   core_hz;
+    int      core_hz_fitted;
+    uint64_t launches, launch_wall_ns, session_wall_ns;
+    uint64_t log_dropped_words; // LOG_DROPPED, accumulated the same way
+} tsr_perf_summary;
+int tsr_transport_perf_summary(tsr_transport * t, tsr_perf_summary * s);
+// The DB §8.6 TSR_STATS text (lines without a prefix, '\n'-separated): device time, launch wall
+// and host overhead, DBG_STOP_CYCLES (must be 0), MVM busy / wait / empty and RV_WFI as % of
+// CYCLES, PUSH_STALL, LOG_DROPPED, TRW records / drops, per channel read GB/s and idle %. Returns
+// the length (as snprintf).
+int tsr_perf_summary_str(const tsr_perf_summary * s, char * buf, size_t n);
 
 // Error codes of the int-returning calls, and wait timeouts.
 #define TSR_TE_INVAL   (-1)   // bad argument or API misuse (unknown or already waited sequence, no image)

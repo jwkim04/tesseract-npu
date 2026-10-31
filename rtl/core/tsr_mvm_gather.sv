@@ -81,6 +81,22 @@
 //     rows at one per cycle + 3); ACC 23 / 27 / 28 / 33 cycles at (SPM_RD_LAT, ADD_LAT) = (1,1) /
 //     (3,3) / (2,5) / (4,8). Fixed-priority arbitration instead of the round robin halves the
 //     rate (0.50).
+// Job pipe last stage (W4-B at; CC §14.4, CC-25): the slice whose m_ready is the central take is a
+//   tsr_rslice FORM 1 (two slots with pointers: the take reaches ~5 control flops instead of the
+//   ~577-bit payload enable; cycle-identical at the ports, so every latency above is unchanged).
+// Attention (W4-B at, AT §8.1 "gather ATT path"; parameter HAS_ATT): with `att` at start the job
+//   pipe of cluster c carries the cluster's attention jobs (aj_*: score lines, ATTPV partials and
+//   row sums, already complete lines or byte-enabled words) instead of its assembler's; the central
+//   part writes them with be = own (tail is a tag: bit 15 = an ATTQK score line, [6:0] its pass row
+//   e). Score lines also feed the row-maximum tracker (a 16-way MAXT tree over 4 register stages,
+//   then the read-modify-write of the row's key in a 128-entry table, forwarded when the previous
+//   update hit the same row; MAXT on keys, tsr_att_pkg). With MAXOUT, once every expected
+//   cluster's last job is taken and the tracker is drained, tsr_mvm_rvec writes the row maxima
+//   (max(M_FLOOR, the row's scores), word r of mdst + r/16, byte enables) before `done`.
+//   Cost (attention): the tracker ~1 K LUT (15 key compares), its 128 x 33 table (LUTRAM), the
+//   emitter ~0.5 K LUT, the job-pipe input mux (561 bits per cluster). Vivado OOC synthesis
+//   (xcu200, 4 channels, T_MAX 8, JOB_PIPE 2): HAS_ATT 1 adds 4.5 K LUT, 2.5 K FF, 0.2 K LUTRAM
+//   (27.4 K -> 31.9 K LUT); post-synthesis WNS +0.377 ns (HAS_ATT 0: +1.562).
 //   Cost: assembly buffers NUM_CH x 2 x T_MAX x 512 FF (+ masks / lines 2 x 48 FF per cluster),
 //     job pipes JOB_PIPE x 2 x (49 + SPM_AW + 512) FF per cluster, start pipes JOB_PIPE x (68 +
 //     2 SPM_AW) FF per cluster, ACC issue slice 1.1 K FF, ACC read pipe 2.8 K FF (no reset,
@@ -262,7 +278,9 @@ endmodule
 // ================================================================================================
 module tsr_mvm_gather
   import tsr_pkg::*;
+  import tsr_att_pkg::*;
 #(
+  parameter  bit          HAS_ATT    = 1'b0,  // the attention path (header)
   parameter  int unsigned NUM_CH     = TSR_DEF_NUM_CH,
   parameter  int unsigned T_MAX      = TSR_DEF_T_MAX,
   parameter  int unsigned SPM_BYTES  = TSR_DEF_SPM_BYTES,
@@ -270,7 +288,8 @@ module tsr_mvm_gather
   parameter  int unsigned ADD_LAT    = TSR_DEF_FADD_LAT,
   parameter  int unsigned JOB_PIPE   = 0,     // register slices assembler c -> central (implementation)
   localparam int unsigned SPM_LINES  = SPM_BYTES / TSR_LINE_BYTES,
-  localparam int unsigned SPM_AW     = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1
+  localparam int unsigned SPM_AW     = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1,
+  localparam int unsigned AJW        = 1 + SPM_AW + 16 + 16 + TSR_LINE_BITS
 ) (
   input  logic                                   clk,
   input  logic                                   rst_n,
@@ -284,6 +303,21 @@ module tsr_mvm_gather
   input  logic [31:0]                            dst_stride,
   input  logic [NUM_CH-1:0]                      expect_ch,
   output logic                                   done,
+
+  // ---- attention (HAS_ATT; stable from start until done) ----
+  input  logic                                   att,
+  input  logic                                   att_maxout,
+  input  logic [3:0]                             att_tq,
+  input  logic [3:0]                             att_gs,
+  input  logic [3:0]                             att_tact,
+  input  logic [8:0]                             att_nseg,
+  input  logic [6:0]                             att_g,
+  input  logic [5:0]                             att_hg0,
+  input  logic [14:0]                            att_nhead,
+  input  logic [SPM_AW-1:0]                      att_mdst,
+  input  logic [NUM_CH-1:0]                      aj_valid,
+  output logic [NUM_CH-1:0]                      aj_ready,
+  input  logic [NUM_CH-1:0][AJW-1:0]             aj,
 
   // ---- row results per cluster (after the result pipes) ----
   input  logic [NUM_CH-1:0]                      res_valid,
@@ -324,7 +358,7 @@ module tsr_mvm_gather
   localparam int unsigned IS_W  = SPM_AW + 16 + 16 + TSR_LINE_BITS;        // {line, own, tail, y}
   localparam int unsigned MT_W  = SPM_AW + 16 + 16;                        // {line, own, tail}
   localparam int unsigned JW    = 1 + IS_W;                                // {last, line, own, tail, y}
-  localparam int unsigned SW    = 1 + TKW + 32 + 2 * SPM_AW;               // {active, tm1, nm1, dst, stride}
+  localparam int unsigned SW    = 2 + TKW + 32 + 2 * SPM_AW;               // {att, active, tm1, nm1, dst, stride}
 
   typedef logic [15:0][31:0] line_t;    // 16 f32 lanes (lane l = bits [32l +: 32])
 
@@ -359,30 +393,68 @@ module tsr_mvm_gather
   wire [31:0]       s_nm1    = n - 32'd1;
   wire [SPM_AW-1:0] s_stride = dst_stride[SPM_AW-1:0];   // dst + tk * stride < SPM lines for tk < t
 
+  wire g_att = HAS_ATT & att;            // without HAS_ATT the attention inputs are ignored
+
   for (genvar c = 0; c < NUM_CH; c++) begin : g_asm
     logic              a_start;
     logic [SW-1:0]     a_f;
     logic              a_jv, a_jr;
     logic [JW-1:0]     a_jd;
+    logic              p_v, p_r;             // job pipe input: the assembler's or the ATT job
+    logic [JW-1:0]     p_d;
+    logic              a_att_q;
     // Identical across the clusters but for the active bit: kept separate (each next to its
-    // assembler, which may sit in another SLR than the central part).
+    // assembler, which may sit in another SLR than the central part). The ATT op's start keeps
+    // the assembler inactive (active = 0).
     tsr_vpipe #(.VW(1), .W(SW), .DEPTH(JOB_PIPE), .KEEP_REGS(1'b1)) u_sp (
-      .clk, .rst_n, .in_valid(start), .in_data({expect_ch[c], s_tm1, s_nm1, dst_line, s_stride}),
+      .clk, .rst_n, .in_valid(start),
+      .in_data({g_att, expect_ch[c] & ~g_att, s_tm1, s_nm1, dst_line, s_stride}),
       .out_valid(a_start), .out_data(a_f)
     );
     tsr_mvm_gasm #(.T_MAX(T_MAX), .SPM_AW(SPM_AW)) u_asm (
       .clk, .rst_n,
-      .start(a_start), .active(a_f[SW-1]), .tm1(a_f[SW-2 -: TKW]), .nm1(a_f[2*SPM_AW +: 32]),
+      .start(a_start), .active(a_f[SW-2]), .tm1(a_f[SW-3 -: TKW]), .nm1(a_f[2*SPM_AW +: 32]),
       .dst(a_f[SPM_AW +: SPM_AW]), .stride(a_f[0 +: SPM_AW]),
       .res_valid(res_valid[c]), .res_ready(res_ready[c]), .res_row(res_row[c]),
       .res_last(res_last[c]), .res_y(res_y[c]),
       .job_valid(a_jv), .job_ready(a_jr), .job(a_jd)
     );
-    tsr_rpipe #(.W(JW), .DEPTH(JOB_PIPE)) u_jp (
-      .clk, .rst_n, .s_valid(a_jv), .s_ready(a_jr), .s_data(a_jd),
-      .m_valid(jv[c]), .m_ready(jr[c]), .m_data(jd[c])
-    );
+    if (HAS_ATT) begin : g_aj
+      always_ff @(posedge clk) begin
+        if (!rst_n)       a_att_q <= 1'b0;
+        else if (a_start) a_att_q <= a_f[SW-1];
+      end
+      assign p_v         = a_att_q ? aj_valid[c] : a_jv;
+      assign p_d         = a_att_q ? aj[c] : a_jd;
+      assign a_jr        = p_r & ~a_att_q;
+      assign aj_ready[c] = p_r & a_att_q;
+    end else begin : g_noaj
+      assign a_att_q     = 1'b0;
+      assign p_v         = a_jv;
+      assign p_d         = a_jd;
+      assign a_jr        = p_r;
+      assign aj_ready[c] = 1'b0;
+      wire unused_att_c = &{1'b0, a_att_q, a_f[SW-1]};
+    end
+    // JOB_PIPE slices; the last one (the central take's m_ready) in FORM 1 (CC-25, header)
+    if (JOB_PIPE == 0) begin : g_jp0
+      assign jv[c] = p_v;
+      assign jd[c] = p_d;
+      assign p_r   = jr[c];
+    end else begin : g_jp
+      logic          i_v, i_r;
+      logic [JW-1:0] i_d;
+      tsr_rpipe #(.W(JW), .DEPTH(JOB_PIPE - 1)) u_jp (
+        .clk, .rst_n, .s_valid(p_v), .s_ready(p_r), .s_data(p_d),
+        .m_valid(i_v), .m_ready(i_r), .m_data(i_d)
+      );
+      tsr_rslice #(.W(JW), .FORM(1)) u_jl (
+        .clk, .rst_n, .s_valid(i_v), .s_ready(i_r), .s_data(i_d),
+        .m_valid(jv[c]), .m_ready(jr[c]), .m_data(jd[c])
+      );
+    end
   end
+  wire unused_aj = &{1'b0, aj_valid, aj};
 
   // -------------------------------------------------------------------------------------------
   // Arbiter, job, credits
@@ -427,9 +499,11 @@ module tsr_mvm_gather
     end
   end
 
-  // all written: every expected cluster's last job taken, every taken job written
+  // all written: every expected cluster's last job taken, every taken job written (and, with
+  // MAXOUT, the row maxima written)
   wire all_last = &(got_last_q | ~exp_q);
-  wire fin      = act_q & all_last & (cnt_q == '0);
+  logic att_q, mxo_q, mx_done_q;
+  wire fin      = act_q & all_last & (cnt_q == '0) & (~mxo_q | mx_done_q);
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
@@ -448,7 +522,7 @@ module tsr_mvm_gather
       ptr_q   <= ptr_n;
       if (start) begin
         act_q      <= 1'b1;
-        acc_q      <= acc;
+        acc_q      <= acc & ~g_att;
         exp_q      <= expect_ch;
         got_last_q <= '0;
       end else begin
@@ -456,6 +530,116 @@ module tsr_mvm_gather
         if (take && j_last) got_last_q[sel_q] <= 1'b1;
       end
     end
+  end
+
+  // -------------------------------------------------------------------------------------------
+  // Attention: row-maximum tracker and the MAXOUT emitter (header)
+  // -------------------------------------------------------------------------------------------
+  logic              mx_jv, mx_jr;
+  logic [JW-1:0]     mx_j;
+  if (HAS_ATT) begin : g_mx
+    localparam logic [32:0] FLOOR_K = tsr_att_maxkey(32'(tsr_tables_pkg::TSR_M_FLOOR));
+    logic [3:0]  atq_q, ags_q, atact_q;
+    logic [8:0]  anseg_q;
+    logic [6:0]  ag_q;
+    logic [5:0]  ahg0_q;
+    logic [14:0] anh_q;
+    logic [SPM_AW-1:0] amd_q;
+    // tree: stage 0 the 16 keys of the taken line, stages 1..4 pairwise max
+    logic        tv_q [5];
+    logic [6:0]  te_q [5];
+    logic [15:0][32:0] k0_q;
+    logic [7:0][32:0]  k1_q;
+    logic [3:0][32:0]  k2_q;
+    logic [1:0][32:0]  k3_q;
+    logic [32:0]       k4_q;
+    logic [32:0] tk_mem [128];
+    logic [127:0] fresh_q;
+    logic        pw_v_q;                   // update written in the previous cycle
+    logic [6:0]  pw_e_q;
+    logic [32:0] pw_k_q;
+    logic [2:0]  tr_n_q;                   // updates in the tree / RMW
+    logic        mx_start_q, mx_run_q;
+    logic        rv_done;
+    logic [6:0]  rv_a;
+    wire         t_in = take & att_q & j_tail[15];
+    function automatic logic [32:0] kmax(logic [32:0] a, logic [32:0] b);
+      return (a >= b) ? a : b;
+    endfunction
+    always_ff @(posedge clk) begin
+      if (!rst_n) begin
+        for (int i = 0; i < 5; i++) tv_q[i] <= 1'b0;
+        pw_v_q    <= 1'b0;
+        tr_n_q    <= '0;
+        att_q     <= 1'b0;
+        mxo_q     <= 1'b0;
+        mx_done_q <= 1'b0;
+        mx_start_q <= 1'b0;
+        mx_run_q  <= 1'b0;
+        fresh_q   <= '1;
+      end else begin
+        tv_q[0] <= t_in;
+        for (int i = 1; i < 5; i++) tv_q[i] <= tv_q[i-1];
+        pw_v_q  <= tv_q[4];
+        tr_n_q  <= tr_n_q + 3'(t_in) - 3'(tv_q[4]);
+        mx_start_q <= 1'b0;
+        if (start) begin
+          att_q     <= g_att;
+          mxo_q     <= g_att & att_maxout;
+          mx_done_q <= 1'b0;
+          fresh_q   <= '1;
+          mx_run_q  <= 1'b0;
+        end else begin
+          if (tv_q[4]) fresh_q[te_q[4]] <= 1'b0;
+          if (mxo_q && !mx_run_q && !mx_done_q && act_q && all_last && tr_n_q == '0 && !tv_q[4] && !pw_v_q) begin
+            mx_start_q <= 1'b1;
+            mx_run_q   <= 1'b1;
+          end
+          if (rv_done) begin
+            mx_run_q  <= 1'b0;
+            mx_done_q <= 1'b1;
+          end
+        end
+      end
+    end
+    always_ff @(posedge clk) begin
+      if (start) begin
+        atq_q <= att_tq; ags_q <= att_gs; atact_q <= att_tact; anseg_q <= att_nseg; ag_q <= att_g;
+        ahg0_q <= att_hg0; anh_q <= att_nhead; amd_q <= att_mdst;
+      end
+      te_q[0] <= j_tail[6:0];
+      for (int i = 1; i < 5; i++) te_q[i] <= te_q[i-1];
+      for (int l = 0; l < 16; l++) k0_q[l] <= tsr_att_maxkey(j_y[l]);
+      for (int l = 0; l < 8; l++)  k1_q[l] <= kmax(k0_q[2*l], k0_q[2*l+1]);
+      for (int l = 0; l < 4; l++)  k2_q[l] <= kmax(k1_q[2*l], k1_q[2*l+1]);
+      for (int l = 0; l < 2; l++)  k3_q[l] <= kmax(k2_q[2*l], k2_q[2*l+1]);
+      k4_q <= kmax(k3_q[0], k3_q[1]);
+      // RMW of the row's key (stage 4 -> table), forwarded from the previous cycle's update
+      if (tv_q[4]) begin
+        pw_e_q <= te_q[4];
+        pw_k_q <= kmax(k4_q, (pw_v_q && pw_e_q == te_q[4]) ? pw_k_q
+                                 : (fresh_q[te_q[4]] ? FLOOR_K : tk_mem[te_q[4]]));
+      end
+      if (pw_v_q) tk_mem[pw_e_q] <= pw_k_q;
+    end
+    // a row's max: MAXT(M_FLOOR, scores): untouched rows give M_FLOOR
+    wire [32:0] rv_k = fresh_q[rv_a] ? FLOOR_K : tk_mem[rv_a];
+    tsr_mvm_rvec #(.SPM_AW(SPM_AW)) u_rv (
+      .clk, .rst_n,
+      .start(mx_start_q), .tq(atq_q), .gs(ags_q), .tact(atact_q), .nseg(anseg_q), .g_heads(ag_q),
+      .hg0(ahg0_q), .n_head(anh_q), .base(amd_q), .last_en(1'b0),
+      .val_addr(rv_a), .val_data(tsr_att_keyval(rv_k)),
+      .job_valid(mx_jv), .job_ready(mx_jr), .job(mx_j), .done(rv_done)
+    );
+    assign mx_jr = space_q & mx_run_q;
+  end else begin : g_nomx
+    assign att_q     = 1'b0;
+    assign mxo_q     = 1'b0;
+    assign mx_done_q = 1'b0;
+    assign mx_jv     = 1'b0;
+    assign mx_jr     = 1'b0;
+    assign mx_j      = '0;
+    wire unused_mx = &{1'b0, att_maxout, att_tq, att_gs, att_tact, att_nseg, att_g, att_hg0, att_nhead, att_mdst};
   end
 
   // -------------------------------------------------------------------------------------------
@@ -511,9 +695,12 @@ module tsr_mvm_gather
     if (acc_q) begin
       push   = ap_v;
       push_d = {ap_line, lane_be(ap_own | ap_tail), lane_mask(sum_y, ap_own)};
+    end else if (mx_jv && mx_jr) begin           // MAXOUT lines (after every take)
+      push   = 1'b1;
+      push_d = {mx_j[JW-2 -: SPM_AW], lane_be(mx_j[TSR_LINE_BITS + 16 +: 16]), mx_j[TSR_LINE_BITS-1:0]};
     end else begin
       push   = take;
-      push_d = {j_line, lane_be(j_own | j_tail), j_y};
+      push_d = {j_line, lane_be(j_own | (att_q ? 16'd0 : j_tail)), j_y};
     end
   end
 
@@ -526,7 +713,7 @@ module tsr_mvm_gather
   wire wq_ne    = (wq_wp_q != wq_rp_q);
   wire out_free = ~out_v_q | pop;         // output register free after this edge
   wire out_ld   = wq_ne & out_free;
-  wire [CNT_W-1:0] cnt_n = cnt_q + CNT_W'(take) - CNT_W'(pop);
+  wire [CNT_W-1:0] cnt_n = cnt_q + CNT_W'(take) + CNT_W'(mx_jv & mx_jr) - CNT_W'(pop);
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
@@ -559,7 +746,7 @@ module tsr_mvm_gather
 
   assign done = done_q;
 
-  wire unused_ok = &{1'b0, dst_stride[31:SPM_AW], sum_v};
+  wire unused_ok = &{1'b0, dst_stride[31:SPM_AW], sum_v, mx_j[JW-1], mx_j[TSR_LINE_BITS +: 16]};
 
   // -------------------------------------------------------------------------------------------
   // Simulation-only checks (row order / range per cluster: tsr_mvm_gasm)
@@ -575,9 +762,13 @@ module tsr_mvm_gather
     if (rst_n && a_on_q) begin
       if (start) begin
         assert (!act_q) else $error("%m: start while an MVM is held");
-        assert (t >= 4'd1 && 32'(t) <= T_MAX) else $error("%m: t = %0d out of [1, T_MAX]", t);
-        assert (n != 32'd0) else $error("%m: start with N = 0");
-        assert (expect_ch[0]) else $error("%m: channel 0 must have rows");
+        if (!g_att) begin
+          assert (t >= 4'd1 && 32'(t) <= T_MAX) else $error("%m: t = %0d out of [1, T_MAX]", t);
+          assert (n != 32'd0) else $error("%m: start with N = 0");
+          assert (expect_ch[0]) else $error("%m: channel 0 must have rows");
+        end else begin
+          assert (expect_ch != '0) else $error("%m: attention op without a cluster with jobs");
+        end
       end
       for (int unsigned c = 0; c < NUM_CH; c++) begin
         if (jv[c]) begin

@@ -27,6 +27,12 @@
 //     allow (META beats cost a cycle of the weight stream but produce no output).
 //   - idle: no command in progress, nothing buffered, no read outstanding.
 // The front end never looks at activations; it does not know T.
+// Attention streams (W4-B at, AT §8.1 / §8.2): with cmd_att = 1 the command is a KV plane stream in
+//   "rows" of K = 1024 (one full Q8_0 chunk: a K plane group is E/64 chunks, a V plane slice of a
+//   group is one chunk), so the tags above hold unchanged (blk = 2j, row_last at quant beat 15);
+//   the back end / PV unit count cells, segments and slices themselves. cmd_rbeats / cmd_stride
+//   pass to tsr_mvm_ws (ranges: the V plane's slices); the weight MVM sends cmd_rbeats = cmd.beats.
+//   K = 1024 may exceed K_MAX in small configurations (attention needs only G E <= K_MAX).
 //
 // Microarchitecture (one weight beat per cycle; no combinational path from any input to any
 // output; beat_ready only reaches the two output-side register stages):
@@ -79,6 +85,9 @@ module tsr_mvm_front
   input  logic                        cmd_valid,
   output logic                        cmd_ready,
   input  tsr_mvm_fcmd_t               cmd,
+  input  logic                        cmd_att,       // KV plane stream (K = 1024 rows)
+  input  logic [TSR_MVM_BEATS_W-1:0]  cmd_rbeats,    // tsr_mvm_ws ranges (>= beats: one range)
+  input  logic [31:0]                 cmd_stride,
 
   // ---- read source port (tsr_mem_arb source TSR_SRC_WS of this channel) ----
   output logic                        rd_req_valid,
@@ -126,6 +135,7 @@ module tsr_mvm_front
   ) u_ws (
     .clk, .rst_n,
     .cmd_valid(cmd_fire), .cmd_ready(ws_cmd_ready), .cmd_w_off(cmd.w_off), .cmd_beats(cmd.beats),
+    .cmd_rbeats, .cmd_stride,
     .rd_req_valid, .rd_req_ready, .rd_req_addr, .rd_req_len, .rd_req_id,
     .rd_rsp_valid, .rd_rsp_ready, .rd_rsp_data, .rd_rsp_last, .rd_rsp_id,
     .out_valid(ws_out_valid), .out_ready(ws_out_ready), .out_data(ws_out_data),
@@ -387,7 +397,8 @@ module tsr_mvm_front
     if (rst_n && a_on_q) begin
       if (cmd_fire) begin
         assert (ws_cmd_ready) else $error("%m: command accepted while the weight streamer is busy");
-        assert (cmd.k != 16'd0 && 32'(cmd.k) <= K_MAX && (cmd.fmt ? cmd.k[7:0] == 8'd0 : cmd.k[4:0] == 5'd0))
+        assert (cmd.k != 16'd0 && (32'(cmd.k) <= K_MAX || (cmd_att && cmd.k == 16'd1024 && !cmd.fmt))
+                && (cmd.fmt ? cmd.k[7:0] == 8'd0 : cmd.k[4:0] == 5'd0))
           else $error("%m: K = %0d is not a legal multiple of the block size <= K_MAX", cmd.k);
         assert (cmd.rows != 32'd0) else $error("%m: command with rows = 0");
         assert (32'(cmd.row_beats) == tsr_row_beats(cmd.fmt, 32'(cmd.k)))

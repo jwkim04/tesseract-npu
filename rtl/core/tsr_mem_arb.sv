@@ -65,12 +65,22 @@
 // Transfers, their order and every valid / ready flop are unchanged (cycle for cycle); m_data
 // differs only while m_valid = 0 (it then follows s_data one cycle late instead of holding the
 // last item).
+// FORM (W4-B at, CC §14.4 / CC-25): 0 = main + skid (above); 1 = two slots s0 / s1 with a write
+//   pointer, a read pointer and an occupancy flop per slot: slot i loads s_data whenever it is free
+//   (its enable is its own occupancy flop), m_data = slot[rp] (one 2:1 mux level after flops), and
+//   m_ready / s_valid reach only the five control flops (rp, wp, the two occupancies, rdy_q), not the
+//   W payload enables. Both forms are 2-entry FIFOs with registered s_ready = (count < 2) and
+//   m_valid = (count > 0), so FORM 1 is cycle-identical at the ports: same transfers in the same
+//   cycles, same data order; m_data differs only while m_valid = 0. FORM 1 is for slices whose
+//   m_ready is a wide take (the gather's job-pipe heads, docs/rtl-m3.md §14.8: the k4 link's -0.285 ns
+//   paths were m_ready -> the 577-bit main_q enable of g_s[1]).
 // Waiver: this generic helper lives in tsr_mem_arb.sv only because rtl/filelist.f is owned by the
 // lead (docs/rtl-m2.md §1 "Files"); proposal: move it to rtl/core/tsr_rslice.sv (filelist entry
 // before tsr_mem_arb.sv) and drop the DECLFILENAME waiver.
 /* verilator lint_off DECLFILENAME */
 module tsr_rslice #(
-  parameter int unsigned W = 8
+  parameter int unsigned W    = 8,
+  parameter int unsigned FORM = 0      // 0 main + skid, 1 two slots with pointers (cycle-identical)
 ) (
   input  logic         clk,
   input  logic         rst_n,
@@ -82,34 +92,83 @@ module tsr_rslice #(
   output logic [W-1:0] m_data
 );
 
-  logic         main_v_q;      // main entry valid (= m_valid)
-  logic         rdy_q;         // skid entry empty (= s_ready)
-  logic [W-1:0] main_q, skid_q;
+  if (FORM > 1) begin : g_chk_form
+    $fatal(1, "tsr_rslice: FORM must be 0 or 1");
+  end
 
-  wire m_free = ~main_v_q | m_ready;   // main entry free or handed over at this edge
-  wire s_fire = s_valid & rdy_q;
+  if (FORM == 0) begin : g_f0
+    logic         main_v_q;      // main entry valid (= m_valid)
+    logic         rdy_q;         // skid entry empty (= s_ready)
+    logic [W-1:0] main_q, skid_q;
 
-  always_ff @(posedge clk) begin
-    if (!rst_n) begin
-      main_v_q <= 1'b0;
-      rdy_q    <= 1'b1;
-    end else if (m_free) begin
-      main_v_q <= ~rdy_q | s_fire;     // skid entry first, else the incoming item
-      rdy_q    <= 1'b1;
-    end else if (s_fire) begin
-      rdy_q    <= 1'b0;                // main stalled: incoming item parks in the skid entry
+    wire m_free = ~main_v_q | m_ready;   // main entry free or handed over at this edge
+    wire s_fire = s_valid & rdy_q;
+
+    always_ff @(posedge clk) begin
+      if (!rst_n) begin
+        main_v_q <= 1'b0;
+        rdy_q    <= 1'b1;
+      end else if (m_free) begin
+        main_v_q <= ~rdy_q | s_fire;     // skid entry first, else the incoming item
+        rdy_q    <= 1'b1;
+      end else if (s_fire) begin
+        rdy_q    <= 1'b0;                // main stalled: incoming item parks in the skid entry
+      end
     end
-  end
 
-  // Datapath: no reset (qualified by the valid flags); enables from this slice's flops (header).
-  always_ff @(posedge clk) begin
-    if (m_free) main_q <= rdy_q ? s_data : skid_q;
-    if (rdy_q)  skid_q <= s_data;
-  end
+    // Datapath: no reset (qualified by the valid flags); enables from this slice's flops (header).
+    always_ff @(posedge clk) begin
+      if (m_free) main_q <= rdy_q ? s_data : skid_q;
+      if (rdy_q)  skid_q <= s_data;
+    end
 
-  assign s_ready = rdy_q;
-  assign m_valid = main_v_q;
-  assign m_data  = main_q;
+    assign s_ready = rdy_q;
+    assign m_valid = main_v_q;
+    assign m_data  = main_q;
+  end else begin : g_f1
+    logic         wp_q, rp_q;    // write / read slot
+    logic [1:0]   occ_q;         // slot i holds an item
+    logic         rdy_q;         // count < 2 (= s_ready)
+    logic         mv_q;          // count > 0 (= m_valid)
+    logic [W-1:0] slot_q [2];
+
+    wire s_fire = s_valid & rdy_q;
+    wire m_fire = mv_q & m_ready;
+
+    logic [1:0] occ_n;
+    always_comb begin
+      occ_n = occ_q;
+      if (m_fire) occ_n[rp_q] = 1'b0;
+      if (s_fire) occ_n[wp_q] = 1'b1;
+    end
+
+    always_ff @(posedge clk) begin
+      if (!rst_n) begin
+        wp_q  <= 1'b0;
+        rp_q  <= 1'b0;
+        occ_q <= 2'b00;
+        rdy_q <= 1'b1;
+        mv_q  <= 1'b0;
+      end else begin
+        if (s_fire) wp_q <= ~wp_q;
+        if (m_fire) rp_q <= ~rp_q;
+        occ_q <= occ_n;
+        rdy_q <= ~&occ_n;
+        mv_q  <= |occ_n;
+      end
+    end
+
+    // A free slot loads every cycle (enable = its occupancy flop); the edge that fills it (s_fire
+    // with wp_q at it) leaves exactly that item in it, held while occupied.
+    always_ff @(posedge clk) begin
+      if (!occ_q[0]) slot_q[0] <= s_data;
+      if (!occ_q[1]) slot_q[1] <= s_data;
+    end
+
+    assign s_ready = rdy_q;
+    assign m_valid = mv_q;
+    assign m_data  = slot_q[rp_q];
+  end
 
 endmodule
 /* verilator lint_on DECLFILENAME */

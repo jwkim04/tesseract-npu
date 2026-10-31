@@ -34,6 +34,29 @@
 // Datapath per token replicated T_MAX times (docs/rtl-m3.md §9.3). Q8_0 delivers 2 terms per quant
 // beat: two accumulate lanes (even / odd partials); Q4_K 1 term per 2 quant beats (lane s % 2).
 //
+// Attention modes (W4-B at; AT §8.1, §8.2; parameter HAS_ATT, configuration att_cfg, stable while
+// an op's beats flow, att_start pulses before them):
+//   ATTQK (att_cfg.att): the beats are K plane chunks (front end "rows" of K = 1024). Every beat holds
+//     blocks 2j, 2j + 1 of one D-element head segment of one cell (E/32 and D/32 are even); the back
+//     end counts the block b inside the cell row (row end every E/32 blocks, segment end every D/32).
+//     Token t reads head h(t, g) = g G + hg0 + i(t) of its query's QA vector: block address
+//     base_t + (b mod D/32), base_t = att_tbase[t] at a cell start, + att_cfg.hstep (G D/32) at every
+//     segment end (AT §8.1 per-slot read addresses; per-token address registers, the QS half and the
+//     Dx pair per token). The weights go to both lane halves, each token sums its own half.
+//     Terms as Q8_0 (t_2j, t_2j+1); SEG = z(pairwise tree of the D/32 terms) (AT §6.2: equal to
+//     tsr_dot_row on the segment, proven by tsr_ref_at's self-test): level 1 = the Q4_K subtract
+//     adder as fadd(t_2j, t_2j+1), levels 2..4 = the tree adders fed by those results (a level is fed
+//     only if D needs it, so every fed level sees an even count per segment and its pairing toggle
+//     returns to 0), the result taken at level log2(D/32), z() maps -0 to +0. seg_valid / seg_y: one
+//     item per segment in stream order, from registers, no backpressure (the cluster reserves the
+//     assembler's line buffer before it lets a group's beats in). beat_ready is 1 in this mode; the
+//     accumulators and the result FIFO are idle.
+//   ATTPV (att_cfg.pv): no beats; the PV unit (tsr_mvm_pv) reads the activation buffer through
+//     pv_rd (all tokens one address, into the same per-token address registers) and drives the MAC
+//     lanes in their PV mode (pv_mac_*: registered here together with the V bytes on both lane
+//     halves, so the MAC operands come from flops as in the MVM); pv_acc are the lanes' accumulators.
+//   HAS_ATT = 0: att_* / pv_* are ignored, seg_valid and pv_acc are 0, the back end above.
+
 // ================================================================================================
 // Microarchitecture (all registers advance every cycle: no stage ever stalls; beat_ready, a flop,
 // is the only flow control). Cycle numbers below are relative to the cycle in which a beat is
@@ -254,7 +277,9 @@ endmodule
 // ------------------------------------------------------------------------------------------------
 module tsr_mvm_back
   import tsr_pkg::*;
+  import tsr_att_pkg::*;
 #(
+  parameter  bit          HAS_ATT    = 1'b0,
   parameter  int unsigned K_MAX      = TSR_DEF_K_MAX,
   parameter  int unsigned T_MAX      = TSR_DEF_T_MAX,
   parameter  int unsigned ACT_RD_LAT = TSR_DEF_ACT_RD_LAT,
@@ -264,7 +289,8 @@ module tsr_mvm_back
   localparam int unsigned QS_WORDS   = tsr_actbuf_qs_words(K_MAX),
   localparam int unsigned DBS_LINES  = tsr_actbuf_dbs_lines(K_MAX),
   localparam int unsigned QS_AW      = (QS_WORDS > 1) ? $clog2(QS_WORDS) : 1,
-  localparam int unsigned DBS_AW     = (DBS_LINES > 1) ? $clog2(DBS_LINES) : 1
+  localparam int unsigned DBS_AW     = (DBS_LINES > 1) ? $clog2(DBS_LINES) : 1,
+  localparam int unsigned NS         = (T_MAX + 1) / 2
 ) (
   input  logic                          clk,
   input  logic                          rst_n,
@@ -273,6 +299,19 @@ module tsr_mvm_back
   input  logic                          cfg_fmt,        // 0: Q8_0, 1: Q4_K
   input  logic [7:0]                    cfg_d_lines,    // QA D lines (BS lines follow them)
 
+  // ---- attention (HAS_ATT; header) ----
+  input  tsr_att_bcfg_t                 att_cfg,
+  input  logic [T_MAX-1:0][10:0]        att_tbase,      // ATTQK: (hg0 + i(t)) D/32
+  input  logic                          att_start,      // pulse before an attention op's beats
+  output logic                          seg_valid,      // ATTQK: one SEG per segment, all tokens
+  output logic [T_MAX-1:0][31:0]        seg_y,
+  input  tsr_att_rd_t                   pv_rd,          // ATTPV: activation read (all tokens)
+  input  logic                          pv_mac_v,       // ATTPV: MAC operands (registered here)
+  input  logic                          pv_mac_first,
+  input  logic [63:0][7:0]              pv_mac_q,       // the cell's 64 V bytes (both lane halves)
+  input  logic [TSR_MVM_GROUPS-1:0][NS-1:0][24:0] pv_mac_a,   // per lane group and DSP slot
+  output logic [TSR_MVM_GROUPS-1:0][NS-1:0][31:0][37:0] pv_acc,
+
   // ---- tagged beats from the front end ----
   input  logic                          beat_valid,
   output logic                          beat_ready,
@@ -280,10 +319,10 @@ module tsr_mvm_back
 
   // ---- activation buffer reads ----
   output logic                          qs_re,
-  output logic [QS_AW-1:0]              qs_addr,
+  output logic [T_MAX-1:0][QS_AW-1:0]   qs_addr,        // per token (MVM: all equal)
   input  logic [T_MAX-1:0][1023:0]      qs_data,
   output logic                          dbs_re,
-  output logic [DBS_AW-1:0]             dbs_addr,
+  output logic [T_MAX-1:0][DBS_AW-1:0]  dbs_addr,
   input  logic [T_MAX-1:0][511:0]       dbs_data,
 
   // ---- row results ----
@@ -300,6 +339,13 @@ module tsr_mvm_back
   if (ACT_RD_LAT < 1 || MAC_LAT < 1 || MUL_LAT < 1 || ADD_LAT < 1 || ADD_LAT > 8) begin : g_chk_lat
     $fatal(1, "tsr_mvm_back: latencies >= 1 and ADD_LAT <= 8 required");
   end
+  if (HAS_ATT && MAC_LAT < 3) begin : g_chk_att
+    $fatal(1, "tsr_mvm_back: the attention modes need MAC_LAT >= 3 (the PV accumulators)");
+  end
+
+  // attention mode bits (constant 0 without HAS_ATT)
+  wire c_att = HAS_ATT & att_cfg.att;
+  wire c_pv  = HAS_ATT & att_cfg.pv;
 
   // ---------------------------------------------------------------------------------------------
   // Schedule (see the header)
@@ -342,7 +388,7 @@ module tsr_mvm_back
   logic                res_valid_q;
 
   wire acc      = beat_valid & ready_q;
-  wire acc_last = acc & beat.row_last;
+  wire acc_last = acc & beat.row_last & ~c_att;      // ATTQK: chunk ends are no rows
   wire pop      = res_valid_q & res_ready;
 
   logic [RES_AW:0] resv_n;
@@ -363,7 +409,8 @@ module tsr_mvm_back
       resv_q     <= '0;
       idle_q     <= 1'b1;
     end else begin
-      ready_q    <= (resv_n < (RES_AW+1)'(RES_DEPTH)) & ~(at_start_n & (since_n < 4'(ROW_GAP)));
+      ready_q    <= c_att ? 1'b1 : c_pv ? 1'b0
+                  : (resv_n < (RES_AW+1)'(RES_DEPTH)) & ~(at_start_n & (since_n < 4'(ROW_GAP)));
       at_start_q <= at_start_n;
       since_q    <= since_n;
       rset_q     <= rset_q ^ acc_last;
@@ -373,29 +420,64 @@ module tsr_mvm_back
   end
 
   assign beat_ready = ready_q;
-  assign idle       = idle_q;
+  logic att_quiet;                                    // no ATTQK segment in flight (below)
+  assign idle       = idle_q & att_quiet;
 
-  // ---- activation buffer read addresses (registered outputs) ----
-  logic              qs_re_q, dbs_re_q;
-  logic [QS_AW-1:0]  qs_addr_q;
-  logic [DBS_AW-1:0] dbs_addr_q;
+  // ---- activation buffer read addresses (registered outputs, one copy per token) ----
+  // MVM: every token the beat's address. ATTQK: token t's head block base_t + (b mod D/32) (header).
+  // ATTPV: the PV unit's read (pv_rd).
+  logic [TSR_MVM_BLK_W-1:0] dmask;                    // D/32 - 1
+  logic [9:0]               ab_q;                     // ATTQK: block b of the cell row (even)
+  logic [T_MAX-1:0][10:0]   abase_q;                  // ATTQK: head block base per token
+  wire  [9:0]  ak      = ab_q & 10'(dmask);
+  wire         a_seg_e = (ak + 10'd2) == 10'(dmask + 1'b1);      // segment end
+  wire         a_cel_e = (ab_q + 10'd2) == att_cfg.nb;           // cell end
+  assign dmask = TSR_MVM_BLK_W'((2 << att_cfg.dcode) - 1);
+
+  logic [T_MAX-1:0][10:0] a_addr;                     // ATTQK block address per token
+  always_comb begin
+    for (int at = 0; at < int'(T_MAX); at++) a_addr[at] = abase_q[at] | 11'(ak);
+  end
+
+  always_ff @(posedge clk) begin
+    if (!rst_n || att_start) begin
+      ab_q <= '0;
+    end else if (acc && c_att) begin
+      ab_q <= a_cel_e ? 10'd0 : ab_q + 10'd2;
+    end
+  end
+  always_ff @(posedge clk) begin
+    if (att_start || (acc && c_att && a_cel_e)) begin
+      abase_q <= att_tbase;
+    end else if (acc && c_att && a_seg_e) begin
+      for (int at = 0; at < int'(T_MAX); at++) abase_q[at] <= abase_q[at] + att_cfg.hstep;
+    end
+  end
+
+  logic                         qs_re_q, dbs_re_q;
+  logic [T_MAX-1:0][QS_AW-1:0]  qs_addr_q;
+  logic [T_MAX-1:0][DBS_AW-1:0] dbs_addr_q;
+  // MVM next addresses: Q4_K QS word 2s + half, Q8_0 word b/4 (lines b/2 = {2w, 2w+1}); Q4_K half 1:
+  // BS line d_lines + s/2, otherwise the D line of block / superblock blk >> 4
+  wire [QS_AW-1:0]  m_qs  = cfg_fmt ? QS_AW'({beat.blk, beat.half}) : QS_AW'(beat.blk[TSR_MVM_BLK_W-1:2]);
+  wire [DBS_AW-1:0] m_dbs = (cfg_fmt & beat.half) ? DBS_AW'(11'(cfg_d_lines) + 11'(beat.blk[TSR_MVM_BLK_W-1:1]))
+                                                  : DBS_AW'(beat.blk[TSR_MVM_BLK_W-1:4]);
+  wire rd_go = acc | (c_pv & pv_rd.v);
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       qs_re_q  <= 1'b0;
       dbs_re_q <= 1'b0;
     end else begin
-      qs_re_q  <= acc;
-      dbs_re_q <= acc;
+      qs_re_q  <= rd_go;
+      dbs_re_q <= rd_go;
     end
   end
   always_ff @(posedge clk) begin
-    if (acc) begin
-      // Q4_K: QS word 2s + half; Q8_0: QS word b/4 (lines b/2 = {2w, 2w+1})
-      qs_addr_q  <= cfg_fmt ? QS_AW'({beat.blk, beat.half}) : QS_AW'(beat.blk[TSR_MVM_BLK_W-1:2]);
-      // Q4_K half 1: BS line d_lines + s/2; otherwise the D line of block / superblock blk >> 4
-      dbs_addr_q <= (cfg_fmt & beat.half)
-                    ? DBS_AW'(11'(cfg_d_lines) + 11'(beat.blk[TSR_MVM_BLK_W-1:1]))
-                    : DBS_AW'(beat.blk[TSR_MVM_BLK_W-1:4]);
+    if (rd_go) begin
+      for (int at = 0; at < int'(T_MAX); at++) begin
+        qs_addr_q[at]  <= c_pv ? QS_AW'(pv_rd.word) : c_att ? QS_AW'(a_addr[at] >> 2) : m_qs;
+        dbs_addr_q[at] <= c_pv ? DBS_AW'(pv_rd.line) : c_att ? DBS_AW'(a_addr[at] >> 4) : m_dbs;
+      end
     end
   end
   assign qs_re    = qs_re_q;
@@ -403,8 +485,19 @@ module tsr_mvm_back
   assign dbs_re   = dbs_re_q;
   assign dbs_addr = dbs_addr_q;
 
+  // ATTQK per-token tags in cycle 1: the QS half (block address bit 1) and the Dx pair (bits 3:1)
+  logic [T_MAX-1:0]      a_par1_q;
+  logic [T_MAX-1:0][2:0] a_ep1_q;
+  always_ff @(posedge clk) begin
+    for (int at = 0; at < int'(T_MAX); at++) begin
+      a_par1_q[at] <= a_addr[at][1];
+      a_ep1_q[at]  <= a_addr[at][3:1];
+    end
+  end
+
   // ---- tag pipeline (cycles 1 .. NCTL) ----
   typedef struct packed {
+    logic       se;      // ATTQK: the beat ends a head segment
     logic       rl;      // row_last
     logic       set;     // partial set of the row
     logic       first;   // term index < 16: the first term of its partial in the row
@@ -421,7 +514,7 @@ module tsr_mvm_back
     else        cv <= {cv[NCTL-1:1], acc};
   end
   always_ff @(posedge clk) begin
-    cd[1] <= '{rl: beat.row_last, set: rset_q, first: (beat.blk[TSR_MVM_BLK_W-1:4] == '0),
+    cd[1] <= '{se: c_att & a_seg_e, rl: beat.row_last, set: rset_q, first: (beat.blk[TSR_MVM_BLK_W-1:4] == '0),
                two: beat.two, half: beat.half, b4: beat.blk[3:0]};
     for (int ctl_c = 2; ctl_c <= int'(NCTL); ctl_c++) cd[ctl_c] <= cd[ctl_c-1];
   end
@@ -456,13 +549,28 @@ module tsr_mvm_back
   // activation buffer's RAM output register). hs: Q8_0 beat on an odd QS line (b/2 odd): its 64
   // weights go to lanes 64..127, which see bytes 0..63 of that line in the 1024-bit QS word.
   // Q4_K: nibbles, upper nibbles forced 0.
+  // ATTQK: the weights on both halves (each token sums the half its own QS line sits in);
+  // ATTPV: the PV unit's V bytes on both halves (lanes 64..127 serve the slots NS..2NS-1).
   wire hs_p = ~cfg_fmt & cd[C_M0 - 1].b4[1];
   logic [127:0][7:0] wm_q;    // MAC weights in cycle M0 (no reset: datapath)
   always_ff @(posedge clk) begin
     for (int wp_l = 0; wp_l < 64; wp_l++) begin
-      wm_q[wp_l]      <= hs_p ? 8'd0 : {wlo_p[wp_l][7:4] & {4{~cfg_fmt}}, wlo_p[wp_l][3:0]};
-      wm_q[64 + wp_l] <= hs_p ? wlo_p[wp_l] : (cfg_fmt ? {4'd0, whi_p[wp_l]} : 8'd0);
+      wm_q[wp_l]      <= c_pv ? pv_mac_q[wp_l] : c_att ? wlo_p[wp_l]
+                       : hs_p ? 8'd0 : {wlo_p[wp_l][7:4] & {4{~cfg_fmt}}, wlo_p[wp_l][3:0]};
+      wm_q[64 + wp_l] <= c_pv ? pv_mac_q[wp_l] : c_att ? wlo_p[wp_l]
+                       : hs_p ? wlo_p[wp_l] : (cfg_fmt ? {4'd0, whi_p[wp_l]} : 8'd0);
     end
+  end
+  // ATTPV MAC operands (with wm_q: from flops into the lanes)
+  logic                                    pv_v_q, pv_f_q;
+  logic [TSR_MVM_GROUPS-1:0][NS-1:0][24:0] pv_a_q;
+  always_ff @(posedge clk) begin
+    if (!rst_n) pv_v_q <= 1'b0;
+    else        pv_v_q <= c_pv & pv_mac_v;
+  end
+  always_ff @(posedge clk) begin
+    pv_f_q <= pv_mac_first;
+    pv_a_q <= pv_mac_a;
   end
 
   logic [TSR_MVM_GROUPS-1:0][T_MAX-1:0][TSR_MVM_SUM_W-1:0] gs;    // [group][token] at G
@@ -472,9 +580,10 @@ module tsr_mvm_back
       assign xg[t] = qs_data[t][256*g +: 256];
     end
     logic mac_ov;
-    tsr_mac_lane #(.N(TSR_MVM_GROUP_LANES), .T(T_MAX), .LAT(MAC_LAT)) u_mac (
+    tsr_mac_lane #(.N(TSR_MVM_GROUP_LANES), .T(T_MAX), .LAT(MAC_LAT), .PV(HAS_ATT)) u_mac (
       .clk, .rst_n, .ce(1'b1), .in_valid(cv[C_M0]),
-      .w(wm_q[32*g +: 32]), .x(xg), .out_valid(mac_ov), .y(gs[g])
+      .w(wm_q[32*g +: 32]), .x(xg), .out_valid(mac_ov), .y(gs[g]),
+      .pv_en(c_pv), .pv_valid(pv_v_q), .pv_first(pv_f_q), .pv_a(pv_a_q[g]), .pv_acc(pv_acc[g])
     );
     wire unused_mac = &{1'b0, mac_ov};
   end
@@ -494,12 +603,12 @@ module tsr_mvm_back
       ifirst = cd[C_A4].first;
       irl    = cv[C_A4] & cd[C_A4].half & cd[C_A4].rl;
     end else begin
-      iv[0]  = cv[C_A8];
-      iv[1]  = cv[C_A8] & cd[C_A8].two;
+      iv[0]  = cv[C_A8] & ~c_att;
+      iv[1]  = cv[C_A8] & cd[C_A8].two & ~c_att;
       iset   = cd[C_A8].set;
       islot  = cd[C_A8].b4[3:1];
       ifirst = cd[C_A8].first;
-      irl    = cv[C_A8] & cd[C_A8].rl;
+      irl    = cv[C_A8] & cd[C_A8].rl & ~c_att;
     end
   end
 
@@ -557,9 +666,15 @@ module tsr_mvm_back
   logic t1v, t2v, t3v, t4v;
   logic t1p, t2p, t3p;
   logic tg1_q, tg2_q, tg3_q;
+  // ATTQK: level 1 = the subtract adder's fadd(t_2j, t_2j+1) at C_A4 (every beat); the tree levels
+  // 2..4 are fed only up to log2(D/32) (header): fed2 / fed3 / fed4
+  wire  fed2 = ~c_att | (att_cfg.dcode >= 2'd1);
+  wire  fed3 = ~c_att | (att_cfg.dcode >= 2'd2);
+  wire  fed4 = ~c_att | (att_cfg.dcode == 2'd3);
+  wire  t1pe = c_att ? (cv[C_A4 - 1] & fed2) : t1p;   // next-cycle t1v
   wire  i2v = t1v & tg1_q;
-  wire  i3v = t2v & tg2_q;
-  wire  i4v = t3v & tg3_q;
+  wire  i3v = t2v & tg2_q & fed3;
+  wire  i4v = t3v & tg3_q & fed4;
   tsr_mvm_dly #(.W(1), .N(ADD_LAT - 1), .RST(1'b1)) u_dly_t1 (.clk, .rst_n, .d(l1_act_q), .q(t1p));
   tsr_mvm_dly #(.W(1), .N(ADD_LAT - 1), .RST(1'b1)) u_dly_t2 (.clk, .rst_n, .d(i2v), .q(t2p));
   tsr_mvm_dly #(.W(1), .N(ADD_LAT - 1), .RST(1'b1)) u_dly_t3 (.clk, .rst_n, .d(i3v), .q(t3p));
@@ -574,12 +689,12 @@ module tsr_mvm_back
       tg2_q <= 1'b0;
       tg3_q <= 1'b0;
     end else begin
-      t1v   <= t1p;
+      t1v   <= t1pe;
       t2v   <= t2p;
       t3v   <= t3p;
       tg1_q <= tg1_q ^ t1v;
-      tg2_q <= tg2_q ^ t2v;
-      tg3_q <= tg3_q ^ t3v;
+      tg2_q <= tg2_q ^ (t2v & fed3);
+      tg3_q <= tg3_q ^ (t3v & fed4);
     end
   end
 
@@ -620,9 +735,9 @@ module tsr_mvm_back
         clr_n[cn_s][cn_k] = l1_act_n & ({l1_set_n, l1_k_n} == {1'(cn_s), 3'(cn_k)});
       end
     end
-    hen_n[0] = t1p & ~(tg1_q ^ t1v);
-    hen_n[1] = t2p & ~(tg2_q ^ t2v);
-    hen_n[2] = t3p & ~(tg3_q ^ t3v);
+    hen_n[0] = t1pe & ~(tg1_q ^ t1v);
+    hen_n[1] = t2p & ~(tg2_q ^ (t2v & fed3)) & fed3;
+    hen_n[2] = t3p & ~(tg3_q ^ (t3v & fed4)) & fed4;
   end
   // issue tags copied per token and lane: {set, slot, first} of stages A4 / A8
   wire  [4:0]           ta4_n = {a4_n, cd[C_A4 - 1].first};
@@ -643,7 +758,12 @@ module tsr_mvm_back
 
     // (1) Q4_K products sc_g * S_g (S_g fits 17 bits: |S| <= 32 * 15 * 128); Q8_0 block sums
     logic signed [22:0] is1_q [4];
-    wire hs_g = ~cfg_fmt & cd[C_G].b4[1];
+    // ATTQK per-token tags: the QS half at C_G, the Dx pair at C_M0
+    logic       a_par_g;
+    logic [2:0] a_ep_m0;
+    tsr_mvm_dly #(.W(1), .N(C_G - 1)) u_dly_apar (.clk, .rst_n, .d(a_par1_q[t]), .q(a_par_g));
+    tsr_mvm_dly #(.W(3), .N(C_M0 - 1)) u_dly_aep (.clk, .rst_n, .d(a_ep1_q[t]), .q(a_ep_m0));
+    wire hs_g = c_att ? a_par_g : (~cfg_fmt & cd[C_G].b4[1]);
     always_ff @(posedge clk) begin
       if (cfg_fmt) begin
         is1_q[0] <= 23'($signed({1'b0, sc_g[0]}) * $signed(s0[16:0]));
@@ -706,8 +826,9 @@ module tsr_mvm_back
     // ---------------- d * Dx (M0 .. FD) ----------------
     logic [511:0] dline;
     assign dline = dbs_data[t];
-    wire [31:0] dx_even = dline[64*cd[C_M0].b4[3:1] +: 32];        // element (b & 15) & ~1
-    wire [31:0] dx_odd  = dline[64*cd[C_M0].b4[3:1] + 32 +: 32];   // element (b & 15) | 1
+    wire [2:0]  dx_p    = c_att ? a_ep_m0 : cd[C_M0].b4[3:1];
+    wire [31:0] dx_even = dline[64*dx_p +: 32];        // element (b & 15) & ~1
+    wire [31:0] dx_odd  = dline[64*dx_p + 32 +: 32];   // element (b & 15) | 1
     logic [31:0] dxh_q;    // Q4_K: Dx_t[s] from the half-0 beat's D read
     always_ff @(posedge clk) begin
       if (cv[C_M0] && cfg_fmt && !cd[C_M0].half) dxh_q <= cd[C_M0].b4[0] ? dx_odd : dx_even;
@@ -734,8 +855,8 @@ module tsr_mvm_back
     tsr_fp_mul #(.LAT(MUL_LAT)) u_mul_b1 (
       .clk, .rst_n, .ce(1'b1), .in_valid(cv[C_F]), .a(dd1_f), .b(f1_f), .out_valid(pb1_v), .y(pb1)
     );
-    tsr_fp_add #(.LAT(ADD_LAT)) u_sub (
-      .clk, .rst_n, .ce(1'b1), .in_valid(cv[C_P]), .a(pb0), .b(pb1), .sub(1'b1),
+    tsr_fp_add #(.LAT(ADD_LAT)) u_sub (           // ATTQK: fadd(t_2j, t_2j+1), SEG level 1
+      .clk, .rst_n, .ce(1'b1), .in_valid(cv[C_P]), .a(pb0), .b(pb1), .sub(~c_att),
       .out_valid(qd_v), .y(qd)
     );
 
@@ -805,6 +926,7 @@ module tsr_mvm_back
     // ---------------- tree: level 1 (pairs of the pending set), levels 2..4 streaming ----------------
     logic [31:0] y1, y2, y3, h1_q, h2_q, h3_q;
     logic [3:0]  tv;
+    wire  [31:0] y1e = c_att ? qd : y1;             // level-2 operand: ATTQK the level-1 sum
     tsr_fp_add #(.LAT(ADD_LAT)) u_l1 (
       .clk, .rst_n, .ce(1'b1), .in_valid(l1_act_q),
       .a(pr_q[0][tc_l1_q[0][3]][tc_l1_q[0][2:0]]), .b(pr_q[1][tc_l1_q[1][3]][tc_l1_q[1][2:0]]),
@@ -812,7 +934,7 @@ module tsr_mvm_back
       .out_valid(tv[0]), .y(y1)
     );
     tsr_fp_add #(.LAT(ADD_LAT)) u_l2 (
-      .clk, .rst_n, .ce(1'b1), .in_valid(i2v), .a(h1_q), .b(y1), .sub(1'b0), .out_valid(tv[1]), .y(y2)
+      .clk, .rst_n, .ce(1'b1), .in_valid(i2v), .a(h1_q), .b(y1e), .sub(1'b0), .out_valid(tv[1]), .y(y2)
     );
     tsr_fp_add #(.LAT(ADD_LAT)) u_l3 (
       .clk, .rst_n, .ce(1'b1), .in_valid(i3v), .a(h2_q), .b(y2), .sub(1'b0), .out_valid(tv[2]), .y(y3)
@@ -821,14 +943,52 @@ module tsr_mvm_back
       .clk, .rst_n, .ce(1'b1), .in_valid(i4v), .a(h3_q), .b(y3), .sub(1'b0), .out_valid(tv[3]), .y(y4[t])
     );
     always_ff @(posedge clk) begin
-      if (tc_hen_q[0]) h1_q <= y1;       // left operand of the next pair (t1v & ~tg1_q)
+      if (tc_hen_q[0]) h1_q <= y1e;      // left operand of the next pair (t1v & ~tg1_q)
       if (tc_hen_q[1]) h2_q <= y2;
       if (tc_hen_q[2]) h3_q <= y3;
     end
+    // ATTQK: the segment's sum at level log2(D/32), z() (-0 -> +0) (AT §6.2)
+    logic [31:0] sg;
+    always_comb begin
+      unique case (att_cfg.dcode)
+        2'd0:    sg = qd;
+        2'd1:    sg = y2;
+        2'd2:    sg = y3;
+        default: sg = y4[t];
+      endcase
+    end
+    always_ff @(posedge clk) seg_y[t] <= (sg == 32'h8000_0000) ? 32'd0 : sg;
 
     // fp units' own valid outputs: the shared tag pipelines above carry the control
     wire unused_tok = &{1'b0, dd0_v, dd1_v, pb0_v, pb1_v, qd_v, acc_v, tv};
   end
+
+  // ---------------------------------------------------------------------------------------------
+  // ATTQK SEG output (header): the valid of the level the segment's sum is taken from
+  // ---------------------------------------------------------------------------------------------
+  logic       seg_v_q;
+  logic [7:0] seg_cnt_q;                 // segments accepted, result not yet out
+  logic       sg_v;
+  always_comb begin
+    unique case (att_cfg.dcode)
+      2'd0:    sg_v = cv[C_A4];
+      2'd1:    sg_v = t2v;
+      2'd2:    sg_v = t3v;
+      default: sg_v = t4v;
+    endcase
+    sg_v = sg_v & c_att;
+  end
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      seg_v_q   <= 1'b0;
+      seg_cnt_q <= '0;
+    end else begin
+      seg_v_q   <= sg_v;
+      seg_cnt_q <= seg_cnt_q + 8'(acc && c_att && a_seg_e) - 8'(seg_v_q);
+    end
+  end
+  assign seg_valid = seg_v_q;
+  assign att_quiet = (seg_cnt_q == '0);
 
   // ---------------------------------------------------------------------------------------------
   // Result FIFO
@@ -836,7 +996,8 @@ module tsr_mvm_back
   logic [T_MAX-1:0][31:0] rf_q [RES_DEPTH];
   logic [RES_AW-1:0]      rf_wp_q, rf_rp_q;
   logic [RES_AW:0]        rf_cnt_q;
-  wire  [RES_AW:0]        rf_cnt_n = rf_cnt_q + (RES_AW+1)'(t4v) - (RES_AW+1)'(pop);
+  wire                    rf_push  = t4v & ~c_att;           // ATTQK D 512: level 4 is the SEG tap
+  wire  [RES_AW:0]        rf_cnt_n = rf_cnt_q + (RES_AW+1)'(rf_push) - (RES_AW+1)'(pop);
 
   function automatic logic [RES_AW-1:0] rf_inc(logic [RES_AW-1:0] p);
     return (32'(p) == RES_DEPTH - 1) ? '0 : p + 1'b1;
@@ -849,14 +1010,14 @@ module tsr_mvm_back
       rf_cnt_q    <= '0;
       res_valid_q <= 1'b0;
     end else begin
-      if (t4v) rf_wp_q <= rf_inc(rf_wp_q);
+      if (rf_push) rf_wp_q <= rf_inc(rf_wp_q);
       if (pop) rf_rp_q <= rf_inc(rf_rp_q);
       rf_cnt_q    <= rf_cnt_n;
       res_valid_q <= (rf_cnt_n != '0);
     end
   end
   always_ff @(posedge clk) begin
-    if (t4v) rf_q[rf_wp_q] <= y4;
+    if (rf_push) rf_q[rf_wp_q] <= y4;
   end
 
   assign res_valid = res_valid_q;
@@ -867,7 +1028,7 @@ module tsr_mvm_back
   for (genvar l = 0; l < 64; l++) begin : g_unused_w
     assign w_hi_top[l] = w_in[64 + l][7:4];
   end
-  wire unused_ok = &{1'b0, beat.last, w_hi_top};
+  wire unused_ok = &{1'b0, beat.last, w_hi_top, cd[NCTL].se, pv_rd.dbs};   // dbs: the PV unit's data select
 
   // ---------------------------------------------------------------------------------------------
   // Simulation checks (armed by the first reset edge)
@@ -899,11 +1060,13 @@ module tsr_mvm_back
         assert (!(cfg_fmt && beat.row_last && !beat.half)) else $error("%m: Q4_K row ends on a half-0 beat");
       end
       if (ocmp) assert (!pend_q[oset]) else $error("%m: partial set %0d completed while still pending", oset);
-      if (t4v) assert (rf_cnt_q < (RES_AW+1)'(RES_DEPTH) || pop) else $error("%m: result FIFO overflow");
+      if (rf_push) assert (rf_cnt_q < (RES_AW+1)'(RES_DEPTH) || pop) else $error("%m: result FIFO overflow");
       if (pop) assert (resv_q != '0) else $error("%m: result popped without a reservation");
       assert (rf_cnt_q <= resv_q) else $error("%m: more results than reservations");
       // a row start is accepted >= ROW_GAP cycles after the previous one (flow-control rule (b))
-      if (acc && at_start_q) assert (since_q >= 4'(ROW_GAP)) else $error("%m: row start spacing violated");
+      if (acc && at_start_q && !c_att) assert (since_q >= 4'(ROW_GAP)) else $error("%m: row start spacing violated");
+      if (c_pv) assert (!acc) else $error("%m: a beat in ATTPV mode");
+      if (seg_v_q) assert (seg_cnt_q != '0) else $error("%m: SEG without a segment in flight");
       // no clear and accumulate write of the same slot in one cycle (proof in the header)
       if (l1_act_q && (ov != 2'b00)) begin
         assert (!(oset == l1_set_q && oslot == l1_k_q)) else $error("%m: accumulate write into a slot being cleared");
@@ -933,7 +1096,7 @@ module tsr_mvm_back
     always_ff @(posedge clk) begin
       if (a_on_q) begin
         assert (g_tok[t].tc_wen_q == wen_ref && g_tok[t].tc_clr_q == clr_ref
-                && g_tok[t].tc_hen_q == {t3v & ~tg3_q, t2v & ~tg2_q, t1v & ~tg1_q}
+                && g_tok[t].tc_hen_q == {t3v & ~tg3_q & fed4, t2v & ~tg2_q & fed3, t1v & ~tg1_q}
                 && g_tok[t].tc_l1_q == {2{l1_set_q, l1_k_q}})
           else $error("%m: token %0d slot / tree control copy differs from the shared control", t);
       end

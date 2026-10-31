@@ -97,7 +97,10 @@ if {$top eq "tsr_ctrl_rv"} {
   set_output_delay -clock clk 1.6 [get_ports -filter {DIRECTION == OUT && NAME !~ db_*}]
   set_input_delay  -clock clk_rv [expr {0.4 * $rv}] [get_ports db_*_i]
   set_output_delay -clock clk_rv [expr {0.4 * $rv}] [get_ports -filter {DIRECTION == OUT && NAME =~ db_*}]
+  set tsr_cdc_core_port clk
+  set tsr_cdc_rv_port   clk_rv
   source $repo/rtl/ctrl/viv/tsr_ctrl_cdc.xdc
+  source $repo/rtl/ctrl/viv/tsr_cdc_waivers.tcl
 }
 report_utilization -file $out/util_synth.rpt
 report_utilization -hierarchical -hierarchical_depth 4 -file $out/util_hier_synth.rpt

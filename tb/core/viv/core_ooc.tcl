@@ -27,8 +27,10 @@
 # SLRs it needs, the SLR crossings of the real U200 floorplan (clusters next to their DDR4
 # controller) are not imposed.
 # Prints (grep "COOC"; procs in core_rpt.tcl): util / dev (totals), hier (per hierarchy key),
-# wns / whs / tns, r2r, the worst path per (start group, end group), io_in / io_out, and after
-# placement slr / sll (cells per SLR, SLR-crossing nets by driver).
+# wns / whs / tns, r2r, the worst path per (start group, end group), io_in / io_out, the clock-domain-crossing
+# gate (cdc(<stage>) rows of report_cdc, clkint(<stage>) rows of report_clock_interaction and
+# cdc_gate(<stage>) PASS|FAIL: gate T2 / T3 of CC §14.3, constraints in rtl/ctrl/viv/tsr_ctrl_cdc.xdc and
+# tsr_cdc_waivers.tcl), and after placement slr / sll (cells per SLR, SLR-crossing nets by driver).
 set repo [lindex $argv 0]
 set out  [lindex $argv 1]
 set synth_only 0
@@ -82,14 +84,18 @@ if {$from eq ""} {
   read_verilog -sv [dict get $fld srcs]
   synth_design -mode out_of_context -part xcu200-fsgd2104-2-e -top tsr_core {*}[tsr_synth_opts $fld] {*}$genargs
   create_clock -name clk -period 3.333 [get_ports clk]
-  # the control core's clock (CC §11.1, 166.7 MHz) and its crossings (rtl/ctrl/viv/tsr_ctrl_cdc.xdc
-  # takes both clocks from the ports clk / clk_rv, which tsr_core has too)
+  # the control core's clock (CC §11.1, 166.7 MHz) and its crossings (rtl/ctrl/viv/tsr_ctrl_cdc.xdc takes
+  # both clocks from the ports named below; the report_cdc waivers are tsr_cdc_waivers.tcl)
   create_clock -name clk_rv -period 6.000 [get_ports clk_rv]
   set_input_delay  -clock clk 1.6 [get_ports -filter {DIRECTION == IN && NAME != clk && NAME != clk_rv}]
   set_output_delay -clock clk 1.6 [get_ports -filter {DIRECTION == OUT}]
+  set tsr_cdc_core_port clk
+  set tsr_cdc_rv_port   clk_rv
   source $repo/rtl/ctrl/viv/tsr_ctrl_cdc.xdc
+  source $repo/rtl/ctrl/viv/tsr_cdc_waivers.tcl
   if {$unc ne ""} { set_clock_uncertainty -setup $unc [get_clocks clk] }
   if {$dcp} { write_checkpoint -force $out/post_synth.dcp }
+  cooc_cdc synth $out
   report_utilization -file $out/util_synth.rpt
   report_utilization -hierarchical -hierarchical_depth 6 -file $out/util_hier.rpt
   cooc_util synth
@@ -114,6 +120,7 @@ report_utilization -file $out/util.rpt
 report_utilization -hierarchical -hierarchical_depth 6 -file $out/util_hier_routed.rpt
 report_design_analysis -logic_level_distribution -file $out/levels.rpt
 report_drc -file $out/drc.rpt
+cooc_cdc routed $out
 cooc_util routed
 cooc_hier routed
 cooc_paths routed 30

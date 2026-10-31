@@ -1,26 +1,36 @@
 // tsr_xrt_ctrl.sv — control bridge of the Alveo XRT platform adapter: the kernel's s_axi_control
-// (AXI4-Lite slave, 32-bit data, 13-bit address) with the channel bases, ADAPTER_STATUS and the
-// window onto the tsr_core CSR port.
+// (AXI4-Lite slave, 32-bit data, 13-bit address) with the channel bases, ADAPTER_CTRL.MEM_EN,
+// ADAPTER_STATUS, ADAPTER_VERSION and the window onto the tsr_core CSR port.
 //
 // Owner: adapter agent (docs/platform-u200.md §2, §3; docs/design EX §9). The host only uses register
 // access (EX §9.1, `ap_ctrl_none`); there is no start sequencer, interrupt or kernel argument
-// register. The adapter gains ADAPTER_CTRL.MEM_EN in Y5 (bases latched and
-// locked, core memory requests held while 0); ADAPTER_VERSION stays major 1 (EX §9.2).
+// register. Oracle of the register map: the mock adapter model (sw/transport/tsr_kdev_mock.cpp,
+// TSR_DEVICE=mock), compared in tb/platform (test_adapter_regs).
 //
-// Register map (byte offsets; reads of unmapped offsets return 0, writes to them are ignored;
-// offsets are decoded on bits [12:2]; every response is OKAY):
+// Register map (EX §9.2; byte offsets; reads of unmapped offsets return 0, writes to them are
+// ignored; offsets are decoded on bits [12:2]; every response is OKAY):
 //   0x000..0x03C    reserved, read 0 (no AP_CTRL, GIE, IER, ISR or kernel arguments)
 //   0x040 + 8c      ch<c>_base lo / hi, c < NUM_CH: device byte address of the buffer bound to
-//                   m_axi_ch<c> (4 KiB aligned by the host); passed to the bridges as written
-//                   (no latch until MEM_EN, Y5)
+//                   m_axi_ch<c> (4 KiB aligned by the host). Written while MEM_EN = 0; a write while
+//                   MEM_EN = 1 is ignored and sets BASE_LOCKED. Reads return the register.
+//   0x0E0           ADAPTER_CTRL (RW): bit0 MEM_EN. A write of 1 while MEM_EN = 0: if every base is
+//                   4 KiB aligned (lo[11:0] = 0), the bases are latched into the bridges (ch_base)
+//                   and MEM_EN := 1; otherwise MEM_EN stays 0 and BASE_MISALIGNED is set. A write
+//                   of 0 clears MEM_EN (the host does so only with the core idle; outstanding
+//                   transactions complete either way). While MEM_EN = 0 the kernel holds the core's
+//                   memory requests (tsr_xrt_kernel) and reports them (ev_req_held -> REQ_HELD).
 //   0x0F0           ADAPTER_STATUS (R / W1C, sticky): bit0 RRESP error, bit1 BRESP error, bit2
-//                   response with no outstanding request for its id, bit3 0 (base misaligned
-//                   at MEM_EN, Y5); bits [31:16] saturating count of error responses (R beats and B
-//                   with RRESP / BRESP != OKAY). W1C: a 1 in bit k (k < 3) clears bit k, a 1 in
-//                   any of bits [31:16] clears the count. A new event in the same cycle wins.
-//   0x0F4           ADAPTER_VERSION (R) = {16'h0001, 8'h00, NUM_CH} (EX §9.2: major 1)
+//                   response with no outstanding request for its id, bit3 BASE_MISALIGNED (a base
+//                   not 4 KiB aligned at a MEM_EN write), bit4 REQ_HELD (a core memory request held
+//                   while MEM_EN = 0), bit5 BASE_LOCKED (a base write while MEM_EN = 1, ignored);
+//                   bits [31:16] saturating count of error responses (R beats and B with RRESP /
+//                   BRESP != OKAY). W1C: a 1 in bit k (k < 6) clears bit k, a 1 in any of bits
+//                   [31:16] clears the count. A new event in the same cycle wins.
+//   0x0F4           ADAPTER_VERSION (R) = {16'(TSR_ADAPTER_MAJOR), 8'h00, NUM_CH} (EX §9.2: major 1)
 //   0x1000 + off    tsr_core CSR port, off < 0x1000 (EX §5), at any time. Writes need WSTRB = 4'hF
 //                   (others are dropped: the CSR port has no byte enables).
+// plat_err (EX §9.3) = ADAPTER_STATUS bits 0..2 or a count != 0, registered: tsr_core's plat_err_i
+//   (STATUS.PLAT_ERR, LQ_FLAGS).
 // Writes use the byte strobes (RW registers); ADAPTER_STATUS acts on the bytes whose strobe is set.
 // The AXI4-Lite slave handles one transaction at a time (reads and writes alternate when both are
 // pending); AWREADY / WREADY are raised together once both AWVALID and WVALID are seen. A window
@@ -64,8 +74,11 @@ module tsr_xrt_ctrl
   output logic [31:0]                csr_wdata,
   input  logic [31:0]                csr_rdata,
 
-  // ---- channel bridges ----
-  output logic [NUM_CH-1:0][63:0]    ch_base,
+  // ---- channel bridges, memory-request gate, platform error ----
+  output logic [NUM_CH-1:0][63:0]    ch_base,        // latched at MEM_EN
+  output logic                       mem_en,
+  input  logic                       ev_req_held,    // a core memory request offered while MEM_EN = 0
+  output logic                       plat_err,
   input  logic [NUM_CH-1:0]          ev_rresp_err,
   input  logic [NUM_CH-1:0]          ev_bresp_err,
   input  logic [NUM_CH-1:0]          ev_unexpected
@@ -83,6 +96,7 @@ module tsr_xrt_ctrl
 
   // Register offsets (byte address bits [11:0] of the adapter half, bit 12 = 0)
   localparam logic [11:0] A_BASE0    = 12'h040;
+  localparam logic [11:0] A_ACTRL    = 12'h0E0;
   localparam logic [11:0] A_ASTATUS  = 12'h0F0;
   localparam logic [11:0] A_AVERSION = 12'h0F4;
 
@@ -236,16 +250,37 @@ module tsr_xrt_ctrl
   // =============================================================================================
   // Channel bases, ADAPTER_STATUS
   // =============================================================================================
-  logic [NUM_CH-1:0][63:0]    base_reg_q;
-  logic [2:0]                 ast_q;           // ADAPTER_STATUS sticky bits 0..2
+  logic [NUM_CH-1:0][63:0]    base_reg_q;      // the registers as written
+  logic [NUM_CH-1:0][63:0]    base_lat_q;      // latched at MEM_EN (the bridges' bases)
+  logic                       mem_en_q;
+  logic [5:0]                 ast_q;           // ADAPTER_STATUS sticky bits 0..5
   logic [15:0]                acnt_q;          // ADAPTER_STATUS error count
+  logic                       plat_err_q;
+  logic                       held_q;          // ev_req_held, registered
 
   // Bridge events: registered here (they come from other SLRs), counted one cycle later.
   logic [NUM_CH-1:0]          evr_q, evb_q, evu_q;
   logic [5:0]                 nerr_q;          // error responses in the cycle before
   logic                       anyr_q, anyb_q, anyu_q;
-  logic [2:0]                 ast_d;
+  logic [5:0]                 ast_d;
   logic [15:0]                acnt_d;
+
+  // writes of this access: a base, ADAPTER_CTRL
+  logic base_hit;
+  always_comb begin
+    base_hit = 1'b0;
+    for (int unsigned c = 0; c < 2 * NUM_CH; c++)
+      if (ax_off == A_BASE0 + 12'(4 * c)) base_hit = 1'b1;
+  end
+  wire base_wr  = reg_wr && base_hit;
+  wire actrl_wr = reg_wr && ax_off == A_ACTRL && ax_wstrb_q[0];
+  logic all_aligned;
+  always_comb begin
+    all_aligned = 1'b1;
+    for (int unsigned c = 0; c < NUM_CH; c++)
+      if (base_reg_q[c][11:0] != 12'd0) all_aligned = 1'b0;
+  end
+  wire en_rise = actrl_wr && ax_wdata_q[0] && !mem_en_q;
 
   // ADAPTER_STATUS next value: W1C first, then this cycle's events (an event wins)
   always_comb begin
@@ -254,11 +289,11 @@ module tsr_xrt_ctrl
     ast_d = ast_q;
     n     = acnt_q;
     if (reg_wr && ax_off == A_ASTATUS) begin
-      if (ax_wstrb_q[0]) ast_d = ast_d & ~ax_wdata_q[2:0];
+      if (ax_wstrb_q[0]) ast_d = ast_d & ~ax_wdata_q[5:0];
       if ((ax_wstrb_q[2] && ax_wdata_q[23:16] != 8'd0) || (ax_wstrb_q[3] && ax_wdata_q[31:24] != 8'd0))
         n = '0;
     end
-    ast_d  = ast_d | {anyu_q, anyb_q, anyr_q};
+    ast_d  = ast_d | {base_wr && mem_en_q, held_q, en_rise && !all_aligned, anyu_q, anyb_q, anyr_q};
     sum    = 17'(n) + 17'(nerr_q);
     acnt_d = sum[16] ? 16'hFFFF : sum[15:0];
   end
@@ -266,6 +301,10 @@ module tsr_xrt_ctrl
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       base_reg_q  <= '0;
+      base_lat_q  <= '0;
+      mem_en_q    <= 1'b0;
+      plat_err_q  <= 1'b0;
+      held_q      <= 1'b0;
       ast_q       <= '0;
       acnt_q      <= '0;
       evr_q       <= '0;
@@ -283,7 +322,16 @@ module tsr_xrt_ctrl
       anyb_q <= |evb_q;
       anyu_q <= |evu_q;
       nerr_q <= 6'($countones(evr_q)) + 6'($countones(evb_q));
-      if (reg_wr) begin
+      held_q <= ev_req_held;
+      if (actrl_wr) begin
+        if (!ax_wdata_q[0]) begin
+          mem_en_q <= 1'b0;
+        end else if (en_rise && all_aligned) begin
+          mem_en_q   <= 1'b1;
+          base_lat_q <= base_reg_q;
+        end
+      end
+      if (reg_wr && !mem_en_q) begin
         for (int unsigned c = 0; c < NUM_CH; c++) begin
           if (ax_off == A_BASE0 + 12'(8 * c))
             base_reg_q[c][31:0] <= bmask(base_reg_q[c][31:0], ax_wdata_q, ax_wstrb_q);
@@ -293,10 +341,13 @@ module tsr_xrt_ctrl
       end
       ast_q  <= ast_d;
       acnt_q <= acnt_d;
+      plat_err_q <= (ast_d[2:0] != 3'd0) || (acnt_d != 16'd0);
     end
   end
 
-  assign ch_base = base_reg_q;
+  assign ch_base  = base_lat_q;
+  assign mem_en   = mem_en_q;
+  assign plat_err = plat_err_q;
 
   // =============================================================================================
   // Adapter register read mux
@@ -304,7 +355,8 @@ module tsr_xrt_ctrl
   always_comb begin
     reg_rdata = '0;
     unique case (ax_off)
-      A_ASTATUS:  reg_rdata = {acnt_q, 13'd0, ast_q};
+      A_ACTRL:    reg_rdata = {31'd0, mem_en_q};
+      A_ASTATUS:  reg_rdata = {acnt_q, 10'd0, ast_q};
       A_AVERSION: reg_rdata = ADAPTER_VERSION;
       default: ;
     endcase

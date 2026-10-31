@@ -505,7 +505,9 @@ in as classes: each supplies its reserved-field masks, used words, sub legality,
 conditions in their order, **up to four operand extents, each tagged SPM or DRAM and read or
 write** (at most one DRAM extent, checked on every channel as for MVM weights), as formulas computable in C2–C4, and its
 command struct (§16). Four SPM extents are needed by VOP and ROPE (VU §5.9) and by AMASK and
-AMERGE (AT §5.8). The same four tagged extents feed DB's tile-breakpoint matcher (DB §5.3).
+AMERGE (AT §5.8). The same four tagged extents feed DB's tile-breakpoint matcher (DB §5.3). A
+merging AMERGE lists six (Orun and st each as a read and a write entry): the checker class keeps the
+first four, and the simulator's matcher takes the same four, so a watch on `st` never hits.
 
 ### 8.3 Dispatcher state machine (`tsr_issue`)
 
@@ -546,6 +548,10 @@ the k4t1 worst-path structure of `docs/rtl-m3.md` §14.3).
 - `hold` = host hold ∨ RISC-V hold ∨ (debug halt ∧ HOLD_ON_HALT) ∨ `dbg_hold[u]` (DB, §16).
 - `hard_hold` = `dbg_hold[u]` ∧ ¬`abort_active` ∧ ¬`SR_BUSY`, where `abort_active` is set by any
   QABORT (host, RISC-V, `LQ_CANCEL`, RISC-V reset, `SOFT_RESET`) and cleared by the next QCLEAR.
+  `SR_BUSY` enters this term delayed by the latency of a QABORT (two cycles: the dispatcher
+  registers the pulse and applies it a cycle later), so a held NOP / FENCE / error-coded head is
+  never decided with its own code between `SOFT_RESET` and the abort: it completes ABORTED, as
+  in the simulator, whose step 1 aborts first.
   DB's hold blocks non-running completions too (DB-9), except after a QABORT: aborted entries
   change nothing but counters, so they drain, and `SOFT_RESET` and the RISC-V reset always reach
   QIDLE.
@@ -731,7 +737,7 @@ The figure shows the two clock domains, the crossings between them and the const
 | MTIME | core → RV | 64-bit gray counter | 64 b |
 | clk_rv cycle count, clk_rv PERF counters | RV → core | 16-bit / 32-bit gray counters | 112 b |
 | Sticky events (PUSH_TIMEOUT, BRIDGE_TIMEOUT) | RV → core | toggle synchronisers | |
-| Levels (RV_RUN, holds, RV_HALTED, RV_SLEEP, RV_RESET_DONE, "clk_rv out of reset", ACTIVE, `irq_fast[2]` = LQ_AVAIL ≠ 0 ∧ ¬ACTIVE, `irq_fast[3]` = LCQ_FREE ≠ 0, `dbg_stop`) | both | 2-flop `tsr_sync`; RV_RESET_DONE two stages behind the FIFO write pointer | |
+| Levels (RV_RUN, holds, RV_HALTED, RV_SLEEP, RV_RESET_DONE, "clk_rv out of reset", ACTIVE, `irq_fast[2]` = LQ_AVAIL ≠ 0 ∧ ¬ACTIVE, `irq_fast[3]` = LCQ_FREE ≠ 0, `dbg_stop`, `dmcontrol.dmactive`) | both | 2-flop `tsr_sync`; RV_RESET_DONE two stages behind the FIFO write pointer; the core → RV bundle is registered once in the core domain before the synchroniser (its bits are combinational functions of several registers: `report_cdc` CDC-10) | |
 | `RV_BOOT` | core → RV | 2-flop `tsr_sync` on the 32-bit bus; quasi-static: `tsr_csr` ignores `RV_BOOT` writes while `CTRL.RV_RUN` = 1, so the bus only changes while the hart is held, and the sequencer samples it at the reset release (also after a debug ndmreset) two cycles behind the synchronised RV_RUN; `report_cdc` waiver in `tsr_ctrl_cdc.xdc` | 32 b |
 
 The widths are the exact ones of `rtl/ctrl/tsr_ctrl_pkg.sv` and the instances in `tsr_ctrl_cdc.sv`. The LQ / LCQ request is {`lcq_w[7:0]` 8 × 32 b, `wdata` 32 b, `we` 1 b, `off` 12 b} = 301 b and its response {`fault`, `rdata`} = 33 b; the LOAD request is {`we`, `addr` 32 b, `wdata` 32 b} = 65 b and its response {`err`, `rdata`} = 33 b; the bridge / core-window response is {`err`, `line[511:0]`} = 513 b; a request of the bridge and the core window is {`kind`, `be`, `addr`, `wdata`} = 64 b.
@@ -749,6 +755,25 @@ no CSR access waits on clk_rv without a bound.
 override the max delays; the platform clocks come from one clocking block and may be timed as
 related). Gates: `report_cdc` on the out-of-context run lists only the intended crossings, all
 safe; zero unconstrained `ap_clk` ↔ `ap_clk_2` paths in the linked design.
+
+The constraints cover every crossing of the design, `tsr_dbg_rv`'s included, not only `tsr_ctrl`'s:
+`rtl/ctrl/viv/tsr_ctrl_cdc.xdc` selects the cells by the instance names `u_sync*` (`tsr_sync`), `u_rst*`
+(`tsr_rst_sync`), `u_hs*` (`tsr_cdc_hs`) and by the register names of the gray pointers, a convention
+`rtl/ctrl/viv/check_cdc_names.py` checks in the lint. It is plain XDC, because Vivado's constraint
+reader accepts no `if`, `foreach`, `proc` or `dict` (a first version with them was refused when the IP was
+read: "Command 'if' is not supported in the xdc constraint file"). `package_xo.tcl` copies it into the
+kernel IP with `ap_clk` / `ap_clk_2` as the two clock ports, in the IP's synthesis file group (used in
+synthesis, implementation and out of context, processed late). The `report_cdc` waivers are not
+constraints (`rtl/ctrl/viv/tsr_cdc_waivers.tcl`, Tcl): the out-of-context scripts source them, and so does
+the post-route hook `hw/u200/cdc_check.tcl` of the k1 / k4 links, which then runs the gate
+(`rtl/ctrl/viv/cdc_gate.tcl`: no Critical or Warning `report_cdc` row between the two clocks, and
+`report_clock_interaction` showing "Max Delay Datapath Only" in both directions) and fails the
+implementation run when it does not hold. `report_cdc` on the whole core (`tb/core/viv/core_ooc.sh`) and on
+the packaged IP (`tb/platform/viv/xo_cdc.tcl`) are part of T2 / T3. Every signal enters a synchroniser
+straight from a flop that drives nothing else (CDC-10: no combinational logic before it; CDC-11: no other
+fan-out): the level bundle of `tsr_ctrl_cdc`, `tsr_dbg_rv`'s levels and the reset sources of the clk_rv
+synchronisers have a register of their own (`dont_touch`, so that equal registers of two blocks are not
+merged into one with two synchronisers behind it).
 
 ---
 
@@ -892,7 +917,21 @@ ids, queue depths, the issue-FIFO entry layout and the `UNIT_OF` map. The genera
 | AT in SLR1: KVST in the DMA, central-gather ATT path (AT §8.4) | 2–5 K | 0 | 0 | 0 | *estimate* |
 | **Total** | **≈ 125–143 K (62–72 %; ≈ 158 K = 79 % with VU + 30 %)** | **148 (35 %)** | **128** | **405–407 (31 %)** | |
 
-AT's cluster modes (ATTQK / ATTPV, ≈ 19–27 K LUT per cluster) are in SLR0 / SLR2 with the clusters
+**Measured in W4-B (2026-11-01; out of context, xcu200-2, 3.333 ns; `tb/vu/viv/vu_ooc.sh`, `tb/core/viv/core_ooc.sh`)**:
+the estimates above for the VU, DB and AT are low. VU, M6 configuration (16 EXP / 8 back lanes), placed and routed: 84.0 K LUT,
+101.7 K FF, 433 DSP, 16 RAMB36 + 25 RAMB18 (WNS +0.003 ns); with the shrink knobs (8 / 4): 75.3 K LUT, 297 DSP
+(the 16 lanes alone are 49.6 K / 39.5 K LUT). DB: 11.3 K LUT, 7.1 K FF, 7 RAMB36 + 2 RAMB18 (WNS +0.28 ns at 276.3 MHz).
+AT cluster modes (`HAS_ATT`, T_MAX 8, synthesis): +35 K LUT, +27 K FF, +39 DSP, +20 RAMB36 per cluster; KVST +3.9 K LUT in
+the DMA, the gather ATT path +4.5 K LUT. With the whole VU in SLR1 the total is 152–179 K LUT (76–90 %), above the gate
+for either knob setting (the knobs save 8.7 K LUT against an excess of 31–50 K); with the VU lanes in SLR0 (remedy 3,
+not implemented in the RTL: the registered SLR-crossing pipes and the +8–12 cycles of latency are a T2 item) 111–130 K
+LUT (56–65 %). The integration builds k4 with 16 / 8 lanes and k1 with 8 / 4 (`rtl/platform/alveo_xrt/gen_tops.py`);
+the k4 setting is final only with remedy 3 (fall back to 8 / 4 if SLR0 cannot take the lanes' 49.6 K LUT and 368 DSP).
+Whole-core synthesis of k1 (`core_ooc.sh k1 ... VU_EXP_LANES=8 VU_BACK_LANES=4`, W4-B): 167 K LUT, 190.6 K FF, 535 DSP,
+80 RAMB36 + 33 RAMB18 + 140 URAM; post-synthesis WNS -0.73 ns at 3.333 ns (Ibex instruction path to the ITCM URAM
+cascade; the DB stop logic and trace writer paths are within -0.46 ns).
+
+AT's cluster modes (ATTQK / ATTPV, ≈ 19–27 K LUT per cluster *estimated*) are in SLR0 / SLR2 with the clusters
 and do not count here. **Budget gate (CC-24)**: SLR1 ≤ 65 % of the pblock's LUT sites
 (≈ 130 K) after synthesis. The estimate straddles it, so the out-of-context VU run is a
 precondition of T2 (§14.3), and above the gate the remedies apply in this order, none of which
@@ -940,6 +979,18 @@ rule the RTL default is maxperf with `RV32MFast` (`tsr_ctrl.RV32M`). Core clock 
 into the issue FIFO's LUTRAM read. Cost: 8.5–8.7 K LUT, 13.5–13.6 K FF, 284 LUTRAM, 48 RAMB36,
 4 DSP (1 with `RV32MFast`). `report_cdc`: 22 + 64 endpoints, all safe once the waivers of
 `tsr_ctrl_cdc.xdc` (handshake data, FIFO LUTRAM, gray and level buses, the quasi-static `RV_BOOT` bus) are applied.
+
+**CDC gate measured** (W4-B review, 2026-11-01; `tb/core/viv/core_ooc.sh k1 .. synth_only`, whole `tsr_core`
+with the VU, the attention modes and the DB block, `clk` 3.333 ns and `clk_rv` 6.0 ns): on the integrated tree
+`report_cdc` was not clean — 16 × CDC-10 (combinational logic before a synchroniser: the level bundle of
+`tsr_ctrl_cdc` and `tsr_dbg_rv`'s `{rv_run, flags}`), 2 × CDC-11 (the core reset copy that feeds both core logic
+and the reset synchronisers of the clk_rv domain), 1 × CDC-6 (the event toggles) and 161 × CDC-26 (the LUTRAM of
+`tsr_dbg_rv`'s two FIFOs, outside the waiver by instance name) — because the first constraint file was scoped
+to `tsr_ctrl`, named instances of `tsr_ctrl` only, and had never run on a whole core (the block-level runs see
+the crossings' sources as ports). After the changes of §11.3: 45 Info endpoints (CDC-3 42, CDC-9 3), waivers
+CDC-6 687, CDC-15 2,045 and CDC-26 548 endpoints, 1,464 `ASYNC_REG` cells, `set_bus_skew` on 630 endpoints
+(slack +3.19 ns), both directions "Max Delay Datapath Only": gate PASS. The packaged kernel IP gives the same
+result on its own clocks (`docs/platform-u200.md` §7).
 
 The control-core RTL is frozen after T1–T3. Links run on the build host (14 GB + swap; the k4
 link took 3 h 51 min, `docs/platform-u200.md` §8.2); T2 before every T3.

@@ -11,8 +11,12 @@
 #                          address) and edge implementation parameters (SPM_RD_LAT 1 / 4,
 #                          RD_OUTSTANDING 1 / 2, MVM pipes 0 / 3, WS FIFO 64 / 1024, MVM
 #                          latencies 1 / 8, reset register stages RST_PIPE 1 / 3 / 8; W4-A: queue
-#                          depths 0 / 1 / 31, CTRL_SYNC 1, small TCMs), then the
-#                          M3 blocks with edge parameters (tsr_mvm also RST_LOCAL 1 / 2), then the
+#                          depths 0 / 1 / 31, CTRL_SYNC 1, small TCMs; W4-B: the VU, attention
+#                          and DB parameters of tsr_core / tsr_core_dp each off, the lane knobs, the M8
+#                          options, the DB sizes, the k1 / k4 / bench shapes), then the
+#                          M3 blocks with edge parameters (tsr_mvm also RST_LOCAL 1 / 2), the W4-B blocks
+#                          (tsr_vu and its checker, KVST on the DMA, the attention modes of the MVM unit and
+#                          the MAC lane, tsr_chk_at, the DB modules) with edge parameters, then the
 #                          testbench-only HDL under tb/*/hdl (each file as top, with the other
 #                          files of its directory), then the generated tables (EX-30, CC
 #                          §13.4: sw/tables/gen_tables.py --check and a lint of
@@ -78,7 +82,8 @@ lint tsr_core -GHAS_MVM=1 -GNUM_CH=16 -GT_MAX=8 -GK_MAX=65280 -GADDR_BEAT_W=36 -
 lint tsr_core -GHAS_MVM=1 -GNUM_CH=2 -GT_MAX=4 -GK_MAX=256 -GSPM_BYTES=4096 -GCH_BYTES="64'd4096" -GADDR_BEAT_W=5
 lint tsr_core -GHAS_MVM=1 -GMVM_BC_PIPE=0 -GMVM_RES_PIPE=0 -GMVM_WS_FIFO=64 -GSPM_RD_LAT=1 -GRD_OUTSTANDING=1
 lint tsr_core -GHAS_MVM=1 -GMVM_BC_PIPE=3 -GMVM_RES_PIPE=3 -GMVM_WS_FIFO=1024 -GSPM_RD_LAT=4
-lint tsr_core -GHAS_MVM=1 -GT_MAX=3 -GMVM_ACT_RD_LAT=1 -GMVM_MAC_LAT=1 -GMVM_MUL_LAT=1 -GMVM_ADD_LAT=1 -GMVM_WS_RD_LAT=1
+# (attention needs MVM_MAC_LAT >= 3: the exact PV accumulation of tsr_mac_lane)
+lint tsr_core -GHAS_MVM=1 -GHAS_ATT=0 -GT_MAX=3 -GMVM_ACT_RD_LAT=1 -GMVM_MAC_LAT=1 -GMVM_MUL_LAT=1 -GMVM_ADD_LAT=1 -GMVM_WS_RD_LAT=1
 lint tsr_core -GHAS_MVM=1 -GNUM_CH=3 -GMVM_ACT_RD_LAT=4 -GMVM_MAC_LAT=8 -GMVM_MUL_LAT=8 -GMVM_ADD_LAT=8 -GMVM_WS_RD_LAT=4 -GRD_OUTSTANDING=2
 # Reset register stages (RST_PIPE >= 1, docs/rtl-m3.md §14.4): HAS_MVM = 0, the U200 bitstream
 # parameters of §14.2 (RST_PIPE 3), and the maximum depth on a reduced configuration.
@@ -92,6 +97,70 @@ lint tsr_core -GQD_DMA=31 -GQD_QACT=31 -GQD_MVM=31 -GQD_SYNC=31 -GRST_PIPE=3
 lint tsr_core -GHAS_MVM=1 -GQD_MVM=0 -GQD_QACT=0
 lint tsr_core -GCTRL_SYNC=1 -GITCM_BYTES=16384 -GDTCM_BYTES=8192 -GNUM_CH=2 -GSPM_BYTES=65536 -GCH_BYTES="64'd1073741824" -GADDR_BEAT_W=24 -GK_MAX=4096 -GT_MAX=2
 lint tsr_core_dp -GHAS_MVM=0 -GNUM_CH=1 -GSPM_BYTES=4096 -GRST_PIPE=2
+# VU, attention and the DB block (W4-B, tsr_core_dp parameters): each off, the knobs, the M8 options, the DB
+# sizes at their limits, the k1 / k4 bitstream shapes, the queue depth of the VU
+lint tsr_core -GHAS_DB=0
+lint tsr_core -GHAS_VU=0 -GHAS_ATT=0
+lint tsr_core -GHAS_ATT=0
+lint tsr_core -GHAS_VU=0 -GHAS_ATT=0 -GHAS_DB=0
+lint tsr_core -GHAS_TOPK=1 -GHAS_DQROW=1
+lint tsr_core -GVU_EXP_LANES=8 -GVU_BACK_LANES=4
+lint tsr_core -GHAS_TRW=0 -GHAS_REC=0 -GNTBP=0 -GNRVWP=0 -GHIST_DEPTH=2
+lint tsr_core -GHAS_TRW=0 -GNTBP=2 -GNRVWP=1 -GHIST_DEPTH=64 -GREC_DEPTH=4 -GCTRL_SYNC=1
+lint tsr_core -GQD_VU=1
+lint tsr_core -GQD_VU=31 -GQD_DMA=31 -GQD_QACT=31 -GQD_MVM=31 -GQD_SYNC=31 -GRST_PIPE=3
+lint tsr_core -GNUM_CH=1 -GT_MAX=1 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9 -GVU_EXP_LANES=8 -GVU_BACK_LANES=4
+lint tsr_core -GNUM_CH=4 -GT_MAX=8 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9
+lint tsr_core -GNUM_CH=16 -GT_MAX=8 -GK_MAX=65280 -GADDR_BEAT_W=36 -GCH_BYTES="64'd17179869184" -GHAS_TOPK=1 -GHAS_DQROW=1
+lint tsr_core -GNUM_CH=2 -GT_MAX=2 -GK_MAX=4096 -GSPM_BYTES=1048576 -GCH_BYTES="64'd536870912" -GADDR_BEAT_W=24
+lint tsr_core_dp -GHAS_DB=0 -GHAS_VU=0 -GHAS_ATT=0 -GNUM_CH=1 -GSPM_BYTES=4096 -GRST_PIPE=2
+lint tsr_core_dp -GHAS_TRW=0 -GNUM_CH=3 -GT_MAX=3 -GRST_PIPE=1
+
+# VU (docs/design/02-vector-unit.md "VU" §7): lanes, channels, SPM sizes and latencies, the M8 options, the
+# checker class and the xc routing
+lint tsr_vu -GNUM_CH=1
+lint tsr_vu -GNUM_CH=16 -GHAS_TOPK=1 -GHAS_DQROW=1
+lint tsr_vu -GEXP_LANES=8 -GBACK_LANES=4
+lint tsr_vu -GEXP_LANES=8 -GBACK_LANES=4 -GHAS_TOPK=1 -GHAS_DQROW=1
+lint tsr_vu -GSPM_BYTES=65536 -GSPM_RD_LAT=1
+lint tsr_vu -GNUM_CH=3 -GSPM_RD_LAT=4
+lint tsr_vu_chk -GNUM_CH=1 -GSPM_BYTES=65536 -GK_MAX=4096
+lint tsr_vu_chk -GNUM_CH=16 -GK_MAX=65280
+lint tsr_vu_xc -GNUM_CH=3 -GSPM_BYTES=262144 -GK_MAX=4096
+
+# AT (docs/design/03-attention-kv.md "AT" §8): KVST on the DMA, the attention cluster / gather / unit modes, the
+# PV mode of the MAC lane, the checker class
+lint tsr_dma -GHAS_KVST=1
+lint tsr_dma -GHAS_KVST=1 -GNUM_CH=1 -GSPM_BYTES=65536 -GSPM_RD_LAT=1
+lint tsr_dma -GHAS_KVST=1 -GNUM_CH=16 -GADDR_BEAT_W=36 -GSPM_RD_LAT=4
+lint tsr_mac_lane -GN=32 -GT=2 -GLAT=3 -GPV=1
+lint tsr_mac_lane -GN=32 -GT=8 -GLAT=9 -GPV=1
+lint tsr_mac_lane -GN=5 -GT=1 -GLAT=4 -GPV=1
+lint tsr_mvm_back -GHAS_ATT=1 -GK_MAX=256 -GT_MAX=8 -GACT_RD_LAT=1 -GMAC_LAT=3 -GMUL_LAT=1 -GADD_LAT=1
+lint tsr_mvm_back -GHAS_ATT=1 -GK_MAX=65280 -GT_MAX=2 -GACT_RD_LAT=3 -GMAC_LAT=9 -GMUL_LAT=5 -GADD_LAT=8
+lint tsr_mvm_cluster -GHAS_ATT=1 -GCH=0 -GNUM_CH=1 -GK_MAX=256 -GT_MAX=1 -GADDR_BEAT_W=5 -GWS_FIFO_BEATS=64 -GMAC_LAT=3
+lint tsr_mvm_cluster -GHAS_ATT=1 -GCH=3 -GNUM_CH=4 -GK_MAX=4096 -GT_MAX=8 -GMAC_LAT=9
+lint tsr_mvm_cluster -GHAS_ATT=1 -GCH=15 -GNUM_CH=16 -GK_MAX=4096 -GT_MAX=3 -GADDR_BEAT_W=40 -GADD_LAT=8 -GMAC_LAT=4
+lint tsr_mvm_gather -GHAS_ATT=1 -GNUM_CH=1 -GT_MAX=8 -GSPM_BYTES=4096 -GSPM_RD_LAT=1 -GADD_LAT=1
+lint tsr_mvm_gather -GHAS_ATT=1 -GNUM_CH=3 -GT_MAX=3 -GSPM_BYTES=262144 -GSPM_RD_LAT=4 -GADD_LAT=8
+lint tsr_mvm_gather -GHAS_ATT=1 -GNUM_CH=16 -GT_MAX=8 -GSPM_BYTES=4194304
+lint tsr_mvm -GHAS_ATT=1 -GNUM_CH=1 -GT_MAX=1 -GK_MAX=256 -GSPM_BYTES=4096 -GADDR_BEAT_W=5 -GBC_PIPE=0 -GRES_PIPE=0 -GMAC_LAT=3
+lint tsr_mvm -GHAS_ATT=1 -GNUM_CH=3 -GT_MAX=3 -GK_MAX=4096 -GSPM_BYTES=262144 -GADDR_BEAT_W=22 -GBC_PIPE=3 -GRES_PIPE=3 -GSPM_RD_LAT=4 -GMAC_LAT=9
+lint tsr_mvm -GHAS_ATT=1 -GNUM_CH=16 -GT_MAX=8 -GK_MAX=65280 -GADDR_BEAT_W=36 -GWS_FIFO_BEATS=1024 -GMAC_LAT=5
+lint tsr_chk_at -GNUM_CH=3 -GT_MAX=3 -GK_MAX=4096 -GSPM_BYTES=262144 -GADDR_BEAT_W=22 -GCH_BYTES="64'd4294967296"
+lint tsr_chk_at -GNUM_CH=16 -GT_MAX=8 -GK_MAX=65280 -GADDR_BEAT_W=36 -GCH_BYTES="64'd17179869184"
+lint tsr_chk_at -GNUM_CH=1 -GT_MAX=1 -GK_MAX=1024 -GSPM_BYTES=65536 -GCH_BYTES="64'd1048576" -GADDR_BEAT_W=40
+
+# DB (docs/design/05-debug.md "DB" §10): the sizes at their limits (also tb/dbg's lint test)
+lint tsr_dbg -GNUM_CH=1 -GHIST_DEPTH=0 -GHAS_TRW=0 -GNTBP=0 -GNRVWP=0 -GHAS_REC=0
+lint tsr_dbg -GNUM_CH=16 -GADDR_BEAT_W=36 -GQD_ATT=4 -GQD_VU=31 -GNTBP=2 -GNRVWP=1 -GHIST_DEPTH=64
+lint tsr_dbg_stop -GNTBP=0 -GNUM_CH=1
+lint tsr_dbg_shq -GQD_DMA=31 -GQD_VU=0 -GQD_MVM=1
+lint tsr_dbg_hist -GDEPTH=2
+lint tsr_dbg_trw -GADDR_BEAT_W=22 -GCH_BYTES="64'd268435456"
+lint tsr_dbg_rv -GHAS_RV_TAPS=1
+lint tsr_dbg_rv -GHAS_RV_TAPS=1 -GCTRL_SYNC=1 -GREC_DEPTH=4
+lint tsr_dbg_wrmux -GADDR_BEAT_W=5
 
 # M3 MVM unit (docs/rtl-m3.md §1): every new module as its own top with edge parameters
 # (NUM_CH 1 / 3 / 16, T_MAX 1 / 8, small and maximal K_MAX, latency / pipe depth extremes).

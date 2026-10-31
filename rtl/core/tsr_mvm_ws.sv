@@ -42,6 +42,10 @@
 //                       with out_ready = 1 (issue -> head RD_LAT + 1 cycles, credit return 1).
 //   accounting          space = FIFO_BEATS - (reserved and not received + held in the RAM);
 //                       a slot is returned when its beat is read from the RAM into the OQ path.
+// Ranges (W4-B at, AT §8.2: the V plane is streamed slice by slice): the command's beats are
+//   cmd_beats / cmd_rbeats ranges of cmd_rbeats beats each, range k starting at cmd_w_off + k x
+//   cmd_stride (bursts never cross a range end). cmd_rbeats >= cmd_beats is one contiguous range:
+//   the MVM's and ATTQK's streams, identical to the behaviour without ranges.
 // No combinational path from any input to any output: rd_req_*, out_valid, cmd_ready, idle are
 //   flops; out_data is a mux of flops selected by a flop; rd_rsp_ready is constant.
 // Throughput: sustains 1 beat/cycle if the memory round trip (request handshake at this port ->
@@ -65,6 +69,8 @@ module tsr_mvm_ws
   output logic                        cmd_ready,
   input  logic [31:0]                 cmd_w_off,     // first beat (range-checked: fits ADDR_BEAT_W)
   input  logic [TSR_MVM_BEATS_W-1:0]  cmd_beats,     // 2 .. 2^40 - 1 (contract above)
+  input  logic [TSR_MVM_BEATS_W-1:0]  cmd_rbeats,    // beats per range (>= cmd_beats: one range)
+  input  logic [31:0]                 cmd_stride,    // beats from one range start to the next
 
   // ---- read source port (tsr_mem_arb source TSR_SRC_WS of this channel) ----
   output logic                        rd_req_valid,
@@ -115,6 +121,10 @@ module tsr_mvm_ws
   logic                   cmd_ready_q;   // idle
   logic [AQ_W-1:0]        rq_addr_q;     // next beat to request
   logic [BW-1:0]          rq_left_q;     // beats still to request
+  logic [BW-1:0]          rq_rleft_q;    // beats still to request in the current range
+  logic [AQ_W-1:0]        rq_rbase_q;    // start of the current range
+  logic [BW-1:0]          rbeats_q;
+  logic [31:0]            stride_q;
   logic                   rq_lv_q;       // rq_len_q is valid for rq_addr_q / rq_left_q
   logic [TSR_LEN_W-1:0]   rq_len_q;      // length of the next burst
   logic                   req_v_q;       // request register (rd_req_*)
@@ -127,8 +137,9 @@ module tsr_mvm_ws
 
   // len = min(64 - addr % 64, left): the distance to the next 4 KiB block is 1..64.
   wire [6:0]           to_blk  = 7'd64 - {1'b0, rq_addr_q[5:0]};
-  wire                 left_lt = ~|rq_left_q[BW-1:7] & (rq_left_q[6:0] < to_blk);
-  wire [TSR_LEN_W-1:0] len_c   = left_lt ? rq_left_q[6:0] : to_blk;
+  wire                 left_lt = ~|rq_rleft_q[BW-1:7] & (rq_rleft_q[6:0] < to_blk);
+  wire [TSR_LEN_W-1:0] len_c   = left_lt ? rq_rleft_q[6:0] : to_blk;
+  wire                 rng_end = (rq_rleft_q == BW'(rq_len_q));     // the loaded burst ends its range
 
   wire req_free = ~req_v_q | rd_req_ready;
   wire load     = rq_lv_q & req_free & (space_q >= FC_W'(rq_len_q));
@@ -209,8 +220,22 @@ module tsr_mvm_ws
 
   // Datapath registers (qualified by the control flops above; no reset).
   always_ff @(posedge clk) begin
-    if (cmd_fire)  rq_addr_q <= AQ_W'(cmd_w_off);
-    else if (load) rq_addr_q <= rq_addr_q + AQ_W'(rq_len_q);
+    if (cmd_fire) begin
+      rq_addr_q  <= AQ_W'(cmd_w_off);
+      rq_rbase_q <= AQ_W'(cmd_w_off);
+      rq_rleft_q <= (cmd_rbeats < cmd_beats) ? cmd_rbeats : cmd_beats;
+      rbeats_q   <= cmd_rbeats;
+      stride_q   <= cmd_stride;
+    end else if (load) begin
+      if (rng_end) begin                     // next range (if any) at rbase + stride
+        rq_addr_q  <= rq_rbase_q + AQ_W'(stride_q);
+        rq_rbase_q <= rq_rbase_q + AQ_W'(stride_q);
+        rq_rleft_q <= rbeats_q;
+      end else begin
+        rq_addr_q  <= rq_addr_q + AQ_W'(rq_len_q);
+        rq_rleft_q <= rq_rleft_q - BW'(rq_len_q);
+      end
+    end
     if (!rq_lv_q)  rq_len_q  <= len_c;
     if (load) begin
       req_addr_q <= ADDR_BEAT_W'(rq_addr_q);
@@ -230,7 +255,7 @@ module tsr_mvm_ws
   assign out_data     = oq_mem[oq_rp_q];
 
   // rd_rsp_last: bursts are counted by beats (the FIFO accounting); rd_rsp_id: checked below.
-  wire unused_ok = &{1'b0, rd_rsp_last, rd_rsp_id};
+  wire unused_ok = &{1'b0, rd_rsp_last, rd_rsp_id, stride_q};
 
   // -------------------------------------------------------------------------------------------
   // Simulation checks

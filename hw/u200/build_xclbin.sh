@@ -17,7 +17,11 @@
 # 2. v++ --link -t <target> --platform <xpfm> --config <OUT>/<k>.link.cfg
 #    -> <OUT>/tsr_u200_<k>.xclbin (+ .link_summary, logs, reports); <k>.link.cfg is hw/u200/<k>.cfg
 #    with its hook paths made absolute (the configs give them relative to build/u200/<k>, where v++
-#    resolves them: against its working directory)
+#    resolves them: against its working directory). The configs set two implementation hooks: the k4
+#    floorplan (pre place_design) and hw/u200/cdc_check.tcl (post route_design: the clock-domain-crossing
+#    gate of CC §14.3 T3, report_cdc and report_clock_interaction of ap_clk <-> ap_clk_2 on the routed
+#    kernel, whose constraints are the .xo's own; it fails the implementation run on an unconstrained or
+#    unsafe crossing, TSR_CDC_GATE=warn only reports)
 #
 # Environment:
 #   TSR_U200_PLATFORM   platform name or .xpfm path (default xilinx_u200_gen3x16_xdma_2_202110_1),

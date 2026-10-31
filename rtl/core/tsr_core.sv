@@ -18,9 +18,10 @@
 //     driven from a register inside tsr_mem_arb.
 //   - plat_err_i (the platform's error level, STATUS.PLAT_ERR) and host_irq_o = CTRL.IRQ_EN ∧
 //     (LCQ_WR ≠ LCQ_RD) (EX §5.2; not connected on the U200).
-// Units: DMA (LD / ST), QACT and, with HAS_MVM = 1 (default: the U200 configuration), MVM; VU, AT
-//   and the DB block come with W4-B (tsr_core_dp header: their queues have depth 0, CAPS = 0, DB's
-//   inputs of tsr_ctrl are tied to their idle values here).
+// Units: DMA (LD / ST; KVST with HAS_ATT), QACT and, with HAS_MVM = 1 (default: the U200 configuration),
+//   MVM (ATTQK / ATTPV with HAS_ATT) and, with HAS_VU, the vector unit (tsr_core_dp header). The DB block
+//   (HAS_DB): tsr_dbg and the trace writer in tsr_core_dp, tsr_dbg_rv here (both clocks: the completion
+//   records, RV_SAMPLE, the RV watchpoints on Ibex's data port, DBG_FLAGS and tsr_ctrl's DB window).
 // Parameters: the datapath's (tsr_core_dp; results identical for every legal implementation value,
 //   tests vary them: SPM_RD_LAT, MVM_* (docs/rtl-m3.md §1), RST_PIPE (reset register stages,
 //   docs/rtl-m3.md §14; the control subsystem's core-domain reset is one of its copies)), the queue
@@ -67,7 +68,23 @@ module tsr_core
   parameter int unsigned     QD_SYNC        = tsr_tables_pkg::TSR_QDEPTH_U200_SYNC,
   parameter int unsigned     ITCM_BYTES     = tsr_tables_pkg::TSR_ITCM_BYTES,
   parameter int unsigned     DTCM_BYTES     = tsr_tables_pkg::TSR_DTCM_BYTES,
-  parameter bit              CTRL_SYNC      = 1'b0
+  parameter bit              CTRL_SYNC      = 1'b0,
+  // W4-B (tsr_core_dp): vector unit (queue depth QD_VU; lane knobs VU_EXP_LANES / VU_BACK_LANES, VU §7.10),
+  // attention, TOPK / DQROW (M8 RTL, off in the U200 M7 build), the DB block and its sizes (DB §10.3)
+  parameter bit              HAS_VU         = 1'b1,
+  parameter bit              HAS_ATT        = HAS_MVM,           // needs HAS_VU, HAS_MVM and MVM_MAC_LAT >= 3
+  parameter bit              HAS_TOPK       = 1'b0,
+  parameter bit              HAS_DQROW      = 1'b0,
+  parameter bit              HAS_DB         = 1'b1,
+  parameter int unsigned     QD_VU          = tsr_tables_pkg::TSR_QDEPTH_U200_VU,
+  parameter int unsigned     VU_EXP_LANES   = tsr_tables_pkg::TSR_VU_FRONT_LANES,
+  parameter int unsigned     VU_BACK_LANES  = tsr_tables_pkg::TSR_VU_BACK_LANES,
+  parameter int unsigned     HIST_DEPTH     = tsr_tables_pkg::TSR_HIST_DEPTH,
+  parameter bit              HAS_TRW        = 1'b1,
+  parameter int unsigned     NTBP           = tsr_tables_pkg::TSR_DBG_NTBP,
+  parameter int unsigned     NRVWP          = tsr_tables_pkg::TSR_DBG_NRVWP,
+  parameter bit              HAS_REC        = 1'b1,
+  parameter int unsigned     REC_DEPTH      = tsr_tables_pkg::TSR_REC_DEPTH
 ) (
   input  logic                                   clk,
   // rst_n: synchronous in the core domain, and (RST_PIPE = 0) also the asynchronous input of the
@@ -115,11 +132,16 @@ module tsr_core
   output logic                                   host_irq_o
 );
 
-  // The issue path's unit map (tsr_core_dp): VU and AT absent (depth 0, no CAPS bit); the MVM
-  // queue only with the unit. tsr_ctrl gets the same depths and CAPS (its UNIT_OF, CC §7.5).
-  localparam logic [31:0] CAPS     = 32'd0;
+  // The issue path's unit map (tsr_core_dp): the MVM queue only with the unit, the VU queue only with
+  // the VU, unit 4 (AT) reserved (its ops run on the DMA, MVM and VU queues). tsr_ctrl gets the same depths
+  // and CAPS (its UNIT_OF, CC §7.5); the formulas are tsr_core_dp's.
+  localparam logic [31:0] CAPS     = (HAS_VU    ? tsr_tables_pkg::TSR_CAPS_VU    : 32'd0) |
+                                     (HAS_ATT   ? tsr_tables_pkg::TSR_CAPS_ATT   : 32'd0) |
+                                     (HAS_TOPK  ? tsr_tables_pkg::TSR_CAPS_TOPK  : 32'd0) |
+                                     (HAS_DQROW ? tsr_tables_pkg::TSR_CAPS_DQROW : 32'd0);
   localparam int unsigned QD_MVM_E = HAS_MVM ? QD_MVM : 0;
-  localparam logic [5:0][4:0] Q_DEPTH = {5'(QD_SYNC), 5'd0, 5'd0, 5'(QD_MVM_E), 5'(QD_QACT), 5'(QD_DMA)};
+  localparam int unsigned QD_VU_E  = HAS_VU ? QD_VU : 0;
+  localparam logic [5:0][4:0] Q_DEPTH = {5'(QD_SYNC), 5'd0, 5'(QD_VU_E), 5'(QD_MVM_E), 5'(QD_QACT), 5'(QD_DMA)};
 
   // ---- core-domain side of tsr_ctrl (CC §11.2) ----
   logic                                    rst_ctrl_n;
@@ -157,11 +179,27 @@ module tsr_core
   logic [31:0]                             perf_push_stall, perf_bridge_acc, perf_bridge_wait, rv_boot;
   logic                                    push_timeout, bridge_timeout, rv_run, irq_lq, irq_lcq,
                                            perf_time_en, perf_evt_en, rv_halted, rv_sleep, rv_running,
-                                           rv_reset_done, rv_clk_ok, rv_ndmreset, rv_halt_pend;
-  // DB window of the control window (clk_rv; W4-B): no consumer yet, reads 0
-  logic                                    db_req, db_we;
+                                           rv_reset_done, rv_clk_ok, rv_ndmreset, rv_dmactive, rv_halt_pend;
+  // DB window of the control window (clk_rv) and the DB block's crossings (tsr_dbg_rv <-> tsr_core_dp)
+  logic                                    db_req, db_we, db_irq4;
   logic [11:0]                             db_off;
-  logic [31:0]                             db_wdata;
+  logic [31:0]                             db_wdata, db_rdata;
+  logic                                    dbg_stop, dbg_halt_tgl, dbg_cancel_tgl, dbg_halt_on_boot;
+  logic                                    rec_wr, rec_room, rec_all, smp_ready, smp_req, smp_local, smp_done,
+                                           smp_timeout, wpa_ready, wpa_req, wpa_local, wpa_done, wpa_timeout,
+                                           wph_v, wph_halt, dfault;
+  logic [127:0]                            rec_wdata;
+  logic [163:0]                            smp_data;
+  logic [135:0]                            wpa_data;
+  logic [1:0]                              wph_mask;
+  logic [31:0]                             wph_addr;
+  logic [4:0]                              dbg_flags;
+  // Ibex taps (clk_rv) for tsr_dbg_rv
+  logic                                    tap_data_req, tap_data_gnt, tap_data_we, tap_sleep, tap_halted,
+                                           tap_in_reset, tap_dfault;
+  logic [31:0]                             tap_data_addr, tap_cd_pc, tap_cd_npc, tap_cd_daddr, tap_cd_epc,
+                                           tap_cd_eaddr;
+  logic [3:0]                              tap_data_be;
 
   // -------------------------------------------------------------------------------------------
   // Control subsystem (rtl/ctrl/tsr_ctrl.sv; CC §2-§5, §11-§12)
@@ -195,17 +233,65 @@ module tsr_core
     .perf_bridge_acc_o(perf_bridge_acc), .perf_bridge_wait_o(perf_bridge_wait),
     .push_timeout_o(push_timeout), .bridge_timeout_o(bridge_timeout),
     .rv_run_i(rv_run), .rv_boot_i(rv_boot),
-    // DB (W4-B): no stop, no halt request / cancel toggles, no halt-on-boot
-    .dbg_stop_i(1'b0), .dbg_halt_tgl_i(1'b0), .dbg_cancel_tgl_i(1'b0), .dbg_halt_on_boot_i(1'b0),
+    // DB: the stop level, the halt request / cancel toggles, halt-on-boot (tsr_dbg through tsr_core_dp)
+    .dbg_stop_i(dbg_stop), .dbg_halt_tgl_i(dbg_halt_tgl), .dbg_cancel_tgl_i(dbg_cancel_tgl),
+    .dbg_halt_on_boot_i(dbg_halt_on_boot),
     .irq_lq_i(irq_lq), .irq_lcq_i(irq_lcq), .perf_time_en_i(perf_time_en), .perf_evt_en_i(perf_evt_en),
     .q_hold_i(q_hold), .q_err_i(q_err), .q_nonempty_i(q_nonempty),
     .rv_halted_o(rv_halted), .rv_sleep_o(rv_sleep), .rv_running_o(rv_running),
     .rv_reset_done_o(rv_reset_done), .rv_clk_ok_o(rv_clk_ok), .rv_ndmreset_o(rv_ndmreset),
+    .rv_dmactive_o(rv_dmactive),
     .rv_halt_pend_o(rv_halt_pend),
-    .db_req_o(db_req), .db_we_o(db_we), .db_off_o(db_off), .db_wdata_o(db_wdata), .db_rdata_i(32'h0),
-    .db_irq4_i(1'b0), .db_irq6_i(1'b0)
+    .db_req_o(db_req), .db_we_o(db_we), .db_off_o(db_off), .db_wdata_o(db_wdata), .db_rdata_i(db_rdata),
+    .db_irq4_i(db_irq4), .db_irq6_i(1'b0),
+    .tap_data_req_o(tap_data_req), .tap_data_gnt_o(tap_data_gnt), .tap_data_addr_o(tap_data_addr),
+    .tap_data_we_o(tap_data_we), .tap_data_be_o(tap_data_be), .tap_cd_pc_o(tap_cd_pc),
+    .tap_cd_npc_o(tap_cd_npc), .tap_cd_daddr_o(tap_cd_daddr), .tap_cd_epc_o(tap_cd_epc),
+    .tap_cd_eaddr_o(tap_cd_eaddr), .tap_sleep_o(tap_sleep), .tap_halted_o(tap_halted),
+    .tap_in_reset_o(tap_in_reset), .tap_dfault_o(tap_dfault)
   );
-  wire unused_db = &{1'b0, rv_halt_pend, db_req, db_we, db_off, db_wdata};
+
+  // -------------------------------------------------------------------------------------------
+  // DB block, both-clock part (tsr_dbg_rv: DB window registers, completion-record FIFO, RV_SAMPLE and
+  // RVWP_APPLY handshakes, RV watchpoints, DBG_FLAGS; DB §10.2). Its core-domain side is tsr_dbg in
+  // tsr_core_dp; its reset is tsr_ctrl's core-domain copy (also the input of its clk_rv synchroniser).
+  // -------------------------------------------------------------------------------------------
+  if (HAS_DB) begin : g_db
+    tsr_dbg_rv #(.REC_DEPTH(REC_DEPTH), .HAS_RV_TAPS(1'b1), .CTRL_SYNC(CTRL_SYNC)) u_dbg_rv (
+      .clk, .rst_n(rst_ctrl_n),
+      .rec_wr, .rec_wdata, .rec_room, .rec_all, .smp_ready, .smp_req, .smp_local, .smp_done, .smp_timeout,
+      .smp_data, .wpa_ready, .wpa_req, .wpa_local, .wpa_data, .wpa_done, .wpa_timeout,
+      .wph_v, .wph_mask, .wph_addr, .wph_halt, .dfault, .flags(dbg_flags), .rv_run,
+      .clk_rv, .db_req, .db_we, .db_off, .db_wdata, .db_rdata, .db_irq4,
+      .ib_data_req(tap_data_req), .ib_data_gnt(tap_data_gnt), .ib_data_addr(tap_data_addr),
+      .ib_data_we(tap_data_we), .ib_data_be(tap_data_be),
+      .ib_cd_pc(tap_cd_pc), .ib_cd_npc(tap_cd_npc), .ib_cd_daddr(tap_cd_daddr), .ib_cd_epc(tap_cd_epc),
+      .ib_cd_eaddr(tap_cd_eaddr),
+      .ib_sleep(tap_sleep), .ib_halted(tap_halted), .ib_in_reset(tap_in_reset), .ib_dfault(tap_dfault)
+    );
+  end else begin : g_nodb
+    // HAS_DB = 0: no records, no samples, no watchpoints; the DB window reads 0
+    assign db_rdata  = 32'h0;
+    assign db_irq4   = 1'b0;
+    assign rec_room  = 1'b0;
+    assign rec_all   = 1'b0;
+    assign smp_ready = 1'b0;
+    assign smp_done  = 1'b0;
+    assign smp_timeout = 1'b0;
+    assign smp_data  = '0;
+    assign wpa_ready = 1'b0;
+    assign wpa_done  = 1'b0;
+    assign wpa_timeout = 1'b0;
+    assign wph_v     = 1'b0;
+    assign wph_mask  = '0;
+    assign wph_addr  = '0;
+    assign wph_halt  = 1'b0;
+    assign dfault    = 1'b0;
+    wire unused_nodb = &{1'b0, db_req, db_we, db_off, db_wdata, rec_wr, rec_wdata, smp_req, smp_local, wpa_req,
+                         wpa_local, wpa_data, dbg_flags, tap_data_req, tap_data_gnt, tap_data_addr, tap_data_we,
+                         tap_data_be, tap_cd_pc, tap_cd_npc, tap_cd_daddr, tap_cd_epc, tap_cd_eaddr, tap_sleep,
+                         tap_halted, tap_in_reset, tap_dfault};
+  end
 
   // -------------------------------------------------------------------------------------------
   // Core-clock datapath (CC §13.2)
@@ -218,7 +304,10 @@ module tsr_core
     .MVM_ACT_RD_LAT(MVM_ACT_RD_LAT), .MVM_MAC_LAT(MVM_MAC_LAT), .MVM_MUL_LAT(MVM_MUL_LAT),
     .MVM_ADD_LAT(MVM_ADD_LAT), .MVM_WS_RD_LAT(MVM_WS_RD_LAT), .RST_PIPE(RST_PIPE),
     .QD_DMA(QD_DMA), .QD_QACT(QD_QACT), .QD_MVM(QD_MVM), .QD_SYNC(QD_SYNC),
-    .ITCM_BYTES(ITCM_BYTES), .DTCM_BYTES(DTCM_BYTES)
+    .ITCM_BYTES(ITCM_BYTES), .DTCM_BYTES(DTCM_BYTES),
+    .HAS_VU(HAS_VU), .HAS_ATT(HAS_ATT), .HAS_TOPK(HAS_TOPK), .HAS_DQROW(HAS_DQROW), .HAS_DB(HAS_DB),
+    .QD_VU(QD_VU), .VU_EXP_LANES(VU_EXP_LANES), .VU_BACK_LANES(VU_BACK_LANES), .HIST_DEPTH(HIST_DEPTH),
+    .HAS_TRW(HAS_TRW), .NTBP(NTBP), .NRVWP(NRVWP), .HAS_REC(HAS_REC)
   ) u_dp (
     .clk, .rst_n,
     .csr_valid, .csr_ready, .csr_we, .csr_addr, .csr_wdata, .csr_rdata,
@@ -241,8 +330,12 @@ module tsr_core
     .dmi_rsp_timeout,
     .mtime, .rv_cyc, .perf_push_stall, .perf_bridge_acc, .perf_bridge_wait, .push_timeout, .bridge_timeout,
     .rv_run, .rv_boot, .irq_lq, .irq_lcq, .perf_time_en, .perf_evt_en,
-    .rv_halted, .rv_sleep, .rv_running, .rv_reset_done, .rv_clk_ok, .rv_ndmreset,
-    .plat_err_i, .host_irq_o
+    .rv_halted, .rv_sleep, .rv_running, .rv_reset_done, .rv_clk_ok, .rv_ndmreset, .rv_dmactive,
+    .plat_err_i, .host_irq_o,
+    .rv_halt_pend, .dbg_stop, .dbg_halt_tgl, .dbg_cancel_tgl, .dbg_halt_on_boot,
+    .rec_wr, .rec_wdata, .rec_room, .rec_all, .smp_ready, .smp_req, .smp_local, .smp_done, .smp_timeout,
+    .smp_data, .wpa_ready, .wpa_req, .wpa_local, .wpa_data, .wpa_done, .wpa_timeout,
+    .wph_v, .wph_mask, .wph_addr, .wph_halt, .dfault, .flags(dbg_flags)
   );
 
 endmodule

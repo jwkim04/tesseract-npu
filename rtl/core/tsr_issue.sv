@@ -22,7 +22,8 @@
 //     HOLD_ON_HALT), qabort (pulse: host QABORT, LQ_CANCEL covering the running launch, the
 //     RISC-V reset, SOFT_RESET; CC §9.5), rv_reset (pulse: the RISC-V reset sequence clears the
 //     RISC-V hold source, CC §12.2), host_clear (pulse: the effects of an accepted host QCLEAR
-//     and of SOFT_RESET step 3), sr_busy (SOFT_RESET in progress: the hard hold is off).
+//     and of SOFT_RESET step 3), sr_busy (SOFT_RESET in progress: the hard hold is off, from the cycle
+//     the SOFT_RESET step 1 QABORT applies: sr_off_q below).
 //   DB (W4-B): dbg_hold[u] / dbg_step[u] levels (CC §9.2-§9.3), head info, and the taps:
 //     enqueue {unit, seq, pidx, code, info, kind, deps as dispatched, w, REC, push PC, extents},
 //     per-unit start and completion strobes, TRACE_MARK.
@@ -622,6 +623,20 @@ module tsr_issue
   wire hold_any   = host_hold || hold_rv_q || halt_hold;
   wire no_dec     = abort_rq_q;          // the abort applies this cycle: no head decides
 
+  // SOFT_RESET raises sr_busy and its QABORT in the same cycle, but a QABORT is registered here
+  // (abort_rq_q) and applies one cycle later (abort_act_q, the unit error records): two cycles
+  // after sr_busy rises. The hard hold must stay on until then, or a held NOP / FENCE / error-coded
+  // head would complete with its own code in those two cycles while the simulator, which aborts
+  // first (EX §8.5 step 1), gives ABORTED. sr_off_q is sr_busy delayed by that latency; the
+  // reset still finishes because abort_act_q takes over from the cycle it applies and DB forces
+  // dbg_hold to 0 from SR_BUSY's third cycle on (tsr_dbg).
+  logic [1:0] sr_dly_q;
+  wire        sr_off_q = sr_dly_q[1];
+  always_ff @(posedge clk) begin
+    if (!rst_n) sr_dly_q <= 2'b00;
+    else        sr_dly_q <= {sr_dly_q[0], sr_busy};
+  end
+
   for (genvar gu = 0; gu < 6; gu++) begin : g_u
     localparam int unsigned NW = nat_w(gu);
     localparam bit          HX = has_xc(gu);
@@ -697,7 +712,7 @@ module tsr_issue
       wire  [27:0] d_next = d_q[gu] + 28'(u_done[gu]);
       wire  drained = (s_q[gu] == d_next) && (run_q == 2'(u_done[gu]));
       wire  room    = (32'(run_q) - 32'(u_done[gu])) < AMAX[gu];
-      wire  hard    = dbg_hold[gu] && !abort_act_q && !sr_busy && !dbg_step[gu];
+      wire  hard    = dbg_hold[gu] && !abort_act_q && !sr_off_q && !dbg_step[gu];
       wire  hold_s  = (hold_q || dbg_hold[gu]) && !dbg_step[gu];
       wire  can     = hd_v_q && ev_v_q && !cmd_v_q && !nr_q && !no_dec;
 

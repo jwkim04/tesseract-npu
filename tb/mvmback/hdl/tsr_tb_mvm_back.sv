@@ -58,6 +58,13 @@ module tsr_tb_mvm_back
   logic              qs_re, dbs_re;
   logic [QS_AW-1:0]  qs_addr;
   logic [DBS_AW-1:0] dbs_addr;
+  // W4-B at: per-token read addresses and the token write mask (the MVM: every token the same
+  // address, the line's own token)
+  logic [T_MAX-1:0][QS_AW-1:0]  be_qs_addr_t;
+  logic [T_MAX-1:0][DBS_AW-1:0] be_dbs_addr_t;
+  assign be_qs_addr  = be_qs_addr_t[0];
+  assign be_dbs_addr = be_dbs_addr_t[0];
+  wire   unused_tok  = &{1'b0, be_qs_addr_t, be_dbs_addr_t};   // W4-B at: the MVM gives every token the same
 
   assign qs_re    = tb_rd ? tb_qs_re    : be_qs_re;
   assign qs_addr  = tb_rd ? tb_qs_addr  : be_qs_addr;
@@ -66,10 +73,15 @@ module tsr_tb_mvm_back
 
   tsr_mvm_actbuf #(.K_MAX(K_MAX), .T_MAX(T_MAX), .RD_LAT(ACT_RD_LAT)) u_act (
     .clk, .rst_n,
-    .wr_valid, .wr_line,
-    .qs_re, .qs_addr, .qs_data,
-    .dbs_re, .dbs_addr, .dbs_data
+    .wr_valid, .wr_tmask(T_MAX'(1) << wr_line.tok), .wr_line,
+    .qs_re, .qs_addr({T_MAX{qs_addr}}), .qs_data,
+    .dbs_re, .dbs_addr({T_MAX{dbs_addr}}), .dbs_data
   );
+  // W4-B at: the attention ports of the back end, tied off (tb/at tests them)
+  logic                     seg_valid_u;
+  logic [T_MAX-1:0][31:0]   seg_y_u;
+  logic [3:0][(T_MAX+1)/2-1:0][31:0][37:0] pv_acc_u;
+  wire unused_att = &{1'b0, seg_valid_u, seg_y_u, pv_acc_u};
 
   tsr_mvm_back #(
     .K_MAX(K_MAX), .T_MAX(T_MAX), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT), .MUL_LAT(MUL_LAT),
@@ -77,9 +89,11 @@ module tsr_tb_mvm_back
   ) u_back (
     .clk, .rst_n,
     .cfg_fmt, .cfg_d_lines,
+    .att_cfg('0), .att_tbase('0), .att_start(1'b0), .seg_valid(seg_valid_u), .seg_y(seg_y_u),
+    .pv_rd('0), .pv_mac_v(1'b0), .pv_mac_first(1'b0), .pv_mac_q('0), .pv_mac_a('0), .pv_acc(pv_acc_u),
     .beat_valid, .beat_ready, .beat,
-    .qs_re(be_qs_re), .qs_addr(be_qs_addr), .qs_data,
-    .dbs_re(be_dbs_re), .dbs_addr(be_dbs_addr), .dbs_data,
+    .qs_re(be_qs_re), .qs_addr(be_qs_addr_t), .qs_data,
+    .dbs_re(be_dbs_re), .dbs_addr(be_dbs_addr_t), .dbs_data,
     .res_valid, .res_ready, .res_y,
     .idle
   );

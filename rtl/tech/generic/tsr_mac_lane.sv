@@ -40,12 +40,26 @@
 // Generic cost per instance: N x T 8 x 8 multipliers, T trees of N - 1 adders (no DSP inference
 // is forced; Vivado may map the products to DSP48E2 on its own: the product register is then
 // MREG), registers at LAT 3: T x (N x 16 products + 8 x 18 level-2 sums + SUM_W) bits + valids.
+//
+// PV mode (parameter PV = 1; W4-B at, AT §8.2 ATTPV): with pv_en = 1 each of the NS = ceil(T / 2)
+// slots s of lane i accumulates exact products of a 25-bit signed weight pv_a[s] (shared by the N
+// lanes) and the lane's signed byte w[i]:
+//   pv_acc[s][i] = (pv_first ? 0 : pv_acc[s][i]) + sext(pv_a[s]) * sext(w[i])   for every pv_valid
+// (38-bit two's complement; |sum| < 2^37 for 64 products of |a| < 2^24, AT §6.4); it holds when no
+// pv_valid reaches it. Latency: operands in cycle Y are in pv_acc from cycle Y + PV_LAT, PV_LAT =
+// tsr_att_pkg::tsr_mac_pv_lat(LAT, N): the Xilinx lane's register allocation (IN, AD, M, then the
+// DSP's P register as the accumulator; the generic copy has the same registers), so the two
+// variants agree in every cycle (tb/tech). LAT >= 3 (M and P). x and the MVM outputs are unused
+// in PV mode; pv_en changes only while the lane is empty. PV = 0: the PV ports are ignored and
+// pv_acc is 0.
 
 module tsr_mac_lane #(
   parameter  int unsigned N     = 32,   // products summed (lanes of one group)
   parameter  int unsigned T     = 1,    // tokens sharing the weights
   parameter  int unsigned LAT   = 3,    // fixed latency, >= 1
-  localparam int unsigned SUM_W = 16 + $clog2(N)
+  parameter  bit          PV    = 1'b0, // PV accumulate mode (ATTPV, AT §8.2)
+  localparam int unsigned SUM_W = 16 + $clog2(N),
+  localparam int unsigned NS    = (T + 1) / 2
 ) (
   input  logic                          clk,
   input  logic                          rst_n,
@@ -54,7 +68,14 @@ module tsr_mac_lane #(
   input  logic [N-1:0][7:0]             w,      // signed 8-bit weights
   input  logic [T-1:0][N-1:0][7:0]      x,      // signed 8-bit activations, per token
   output logic                          out_valid,
-  output logic [T-1:0][SUM_W-1:0]       y       // signed sums, per token
+  output logic [T-1:0][SUM_W-1:0]       y,      // signed sums, per token
+
+  // ---- PV mode (PV = 1) ----
+  input  logic                          pv_en,
+  input  logic                          pv_valid,
+  input  logic                          pv_first,
+  input  logic [NS-1:0][24:0]           pv_a,
+  output logic [NS-1:0][N-1:0][37:0]    pv_acc
 );
 
   if (N < 1 || T < 1 || LAT < 1) begin : g_chk
@@ -146,5 +167,91 @@ module tsr_mac_lane #(
 
   assign out_valid = o_v[NXTRA];
   assign y         = o_y[NXTRA];
+
+  // ---- PV mode: the Xilinx lane's registers IN (R_IN), AD (R_AD), M, P (accumulator) ----
+  if (PV) begin : g_pv
+    if (LAT < 3) begin : g_chk_pv
+      $fatal(1, "tsr_mac_lane: PV mode needs LAT >= 3 (M and P registers)");
+    end
+    localparam int unsigned XLV  = LV;
+    localparam int unsigned TCMX = (XLV > 1) ? XLV - 1 : 0;
+    localparam int unsigned NREG = LAT - 1;
+    localparam int unsigned RA0  = (NREG > 2) ? NREG - 2 : 0;
+    localparam int unsigned TC1  = (RA0 >= 1 && TCMX >= 1) ? 1 : 0;
+    localparam int unsigned RA1  = RA0 - TC1;
+    localparam bit          R_AD = RA1 >= 1;
+    localparam int unsigned RA2  = R_AD ? RA1 - 1 : RA1;
+    localparam bit          R_IN = RA2 >= 1;
+
+    logic [NS-1:0][24:0] a_i, a_a;
+    logic [N-1:0][7:0]   w_i, w_a;
+    logic                v_i, v_a, f_i, f_a, v_m, f_m;
+    logic [NS-1:0][N-1:0][32:0] m_q;
+    logic [NS-1:0][N-1:0][37:0] acc_q;
+
+    if (R_IN) begin : g_in
+      always_ff @(posedge clk) begin
+        if (!rst_n)  v_i <= 1'b0;
+        else if (ce) v_i <= pv_valid & pv_en;
+      end
+      always_ff @(posedge clk) begin
+        if (ce) begin
+          a_i <= pv_a;
+          w_i <= w;
+          f_i <= pv_first;
+        end
+      end
+    end else begin : g_no_in
+      assign v_i = pv_valid & pv_en;
+      assign f_i = pv_first;
+      assign a_i = pv_a;
+      assign w_i = w;
+    end
+    if (R_AD) begin : g_ad
+      always_ff @(posedge clk) begin
+        if (!rst_n)  v_a <= 1'b0;
+        else if (ce) v_a <= v_i;
+      end
+      always_ff @(posedge clk) begin
+        if (ce) begin
+          a_a <= a_i;
+          w_a <= w_i;
+          f_a <= f_i;
+        end
+      end
+    end else begin : g_no_ad
+      assign v_a = v_i;
+      assign f_a = f_i;
+      assign a_a = a_i;
+      assign w_a = w_i;
+    end
+    always_ff @(posedge clk) begin                    // M
+      if (!rst_n)  v_m <= 1'b0;
+      else if (ce) v_m <= v_a;
+    end
+    always_ff @(posedge clk) begin
+      if (ce) begin
+        f_m <= f_a;
+        for (int pv_s = 0; pv_s < int'(NS); pv_s++) begin
+          for (int pv_k = 0; pv_k < int'(N); pv_k++) begin
+            m_q[pv_s][pv_k] <= 33'($signed(a_a[pv_s]) * $signed(w_a[pv_k]));
+          end
+        end
+      end
+    end
+    always_ff @(posedge clk) begin                    // P: the accumulator (no reset: datapath)
+      if (ce && v_m) begin
+        for (int pv_s = 0; pv_s < int'(NS); pv_s++) begin
+          for (int pv_k = 0; pv_k < int'(N); pv_k++) begin
+            acc_q[pv_s][pv_k] <= (f_m ? 38'd0 : acc_q[pv_s][pv_k]) + 38'($signed(m_q[pv_s][pv_k]));
+          end
+        end
+      end
+    end
+    assign pv_acc = acc_q;
+  end else begin : g_nopv
+    assign pv_acc = '0;
+    wire unused_pv = &{1'b0, pv_en, pv_valid, pv_first, pv_a};
+  end
 
 endmodule

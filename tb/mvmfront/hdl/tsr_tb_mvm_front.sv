@@ -105,6 +105,7 @@ module tsr_tb_mvm_front
   ) u_front (
     .clk, .rst_n,
     .cmd_valid, .cmd_ready, .cmd,
+    .cmd_att(1'b0), .cmd_rbeats(cmd.beats), .cmd_stride(32'd0),   // W4-B at: one range (MVM)
     .rd_req_valid(w_req_valid), .rd_req_ready(w_req_ready), .rd_req_addr(w_req_addr),
     .rd_req_len(w_req_len), .rd_req_id(w_req_id),
     .rd_rsp_valid(s_rd_rsp_valid[TSR_SRC_WS]), .rd_rsp_ready(w_rsp_ready),

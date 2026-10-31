@@ -32,6 +32,19 @@ function(tsr_rt_target tgt)
         PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}
         PRIVATE ${TESSERACT_ROOT}/third_party/llama.cpp/ggml/src)   # ggml-quants.h (quantize_row_q8_0_ref)
     target_link_libraries(${tgt} PUBLIC tsr_ref PRIVATE tsr_lower tsr_transport ggml-base Threads::Threads)
+    # P3.7 (DB §4.1, §9.5): tsr_rt is an owning process's library: TSR_GDB / TSR_DEBUGGER start libtsr_dbg's embedded
+    # service (the OBJECT library registers it before main)
+    # (a static library hands the object file to its consumers' link lines: an archive member with only a
+    # static initialiser would not be pulled in otherwise)
+    if (TARGET tsr_dbg_embed)
+        get_target_property(_type ${tgt} TYPE)
+        if (_type STREQUAL "STATIC_LIBRARY")
+            target_link_libraries(${tgt} PUBLIC $<TARGET_OBJECTS:tsr_dbg_embed> tsr_dbg)
+        else()
+            target_sources(${tgt} PRIVATE $<TARGET_OBJECTS:tsr_dbg_embed>)
+            target_link_libraries(${tgt} PRIVATE tsr_dbg)
+        endif()
+    endif()
 endfunction()
 
 add_library(tsr_rt STATIC ${TSR_RT_SOURCES})
@@ -61,6 +74,12 @@ set_tests_properties(rt_sim PROPERTIES ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_THREA
 add_test(NAME rt_sim_tmax8 COMMAND test-tsr-rt --big)
 set_tests_properties(rt_sim_tmax8 PROPERTIES ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_TMAX=8;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal")
 # the kernel protocol layer on the mock kdev, DMA rules that force bounce / read-modify-write
+# TSR_GDB in an owning process (tsr_rt links libtsr_dbg's embedded service): the service starts (no "no embedded debug
+# service" note), the run is unchanged
+add_test(NAME rt_sim_gdb_embed COMMAND test-tsr-rt --quick)
+set_tests_properties(rt_sim_gdb_embed PROPERTIES
+    ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_THREADS=4;TSR_GDB=tcp:0;TSR_GDB_PORT_FILE=${CMAKE_CURRENT_BINARY_DIR}/rt_gdb_port.txt"
+    FAIL_REGULAR_EXPRESSION "no embedded debug service")
 add_test(NAME rt_mock COMMAND test-tsr-rt)
 set_tests_properties(rt_mock PROPERTIES ENVIRONMENT
     "TSR_DEVICE=mock;TSR_MOCK_DMA_ALIGN=64;TSR_MOCK_DMA_CHUNK_KIB=64;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal")

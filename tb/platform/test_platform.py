@@ -11,9 +11,10 @@
                                   finds the extracted development platform (build/platforms/...) and
                                   its platforminfo shows the DDR bank SLRs of hw/u200/k1.cfg / k4.cfg
                                   (skipped without the extracted platform or Vitis 2024.2)
-The kernel bench for the `ap_ctrl_none` adapter (register map, window, errors, misaligned
-bases, reset, trace replay, adapter mutants) and tb/platform/vkernel come in Y5
-(docs/design SW §10.3). tb/platform/bw (the M0 bandwidth kernel) is independent of the core and stays.
+The adapter bench is tb/platform/test_adapter.py (tsr_xrt_ctrl against the mock adapter model: register
+map, MEM_EN, ADAPTER_STATUS, window; tsr_xrt_kernel: ap_clk_2, MEM_EN). The kernel-level trace replay,
+reset tests, adapter mutants and tb/platform/vkernel come in Y5 (docs/design SW §10.3).
+tb/platform/bw (the M0 bandwidth kernel) is independent of the core and stays.
 """
 from __future__ import annotations
 

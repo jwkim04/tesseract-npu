@@ -390,6 +390,18 @@ struct tsr_transport {
     recovery_log rlog;
     uint32_t dumps = 0;
 
+    // DB §9.2 debug additions (P3.7, P3.8)
+    bool debugger = false;              // tsr_transport_set_debugger: TRAPs stay for the debugger
+    void * dbg_service = nullptr;       // handle of the embedded debug service (TSR_GDB)
+    tsr_debug_service dbg_svc{};        // its entry points (a copy: the registry may change)
+    // DB §8.6: PERF folded in before every SOFT_RESET after open (EX §8.5 zeroes it); with
+    // TSR_ATTACH the values found at open are the baseline (not this process's launches).
+    bool     opened = false;
+    uint64_t perf_acc[TSR_PERF_SLOTS] = {};
+    uint64_t perf_base[TSR_PERF_SLOTS] = {};
+    uint64_t log_drop_acc = 0, log_drop_base = 0;
+    uint64_t wall_open = 0, mtime_open = 0;   // host time and DBG_MTIME at open (core_hz on xrt)
+
     rmutex mu;
 
     ~tsr_transport() {
@@ -831,6 +843,7 @@ struct tsr_transport {
             }
             drain_log();
         }
+        if (opened) perf_fold();   // DB §8.6: SOFT_RESET zeroes PERF and LOG_DROPPED (EX §8.5)
         uint32_t ctrl = 0;
         rd(TSR_CSR_CTRL, &ctrl);
         const uint32_t levels = ctrl & (TSR_CTRL_HOST_HOLD | TSR_CTRL_HOLD_ON_HALT | TSR_CTRL_IRQ_EN);
@@ -977,6 +990,7 @@ struct tsr_transport {
             const uint8_t * b = tsr_elf_bytes(image_elf(im), &n);
             tsr_sim_capture_set_image(sm, b, n);
         }
+        if (dbg_service && dbg_svc.boot) dbg_svc.boot(dbg_service, this, 0);   // DB §9.5 TSR_GDB_WAIT=boot
         const uint64_t t0 = now(), w0 = wall_ns();
         if (!wr(TSR_CSR_STATUS, TSR_STATUS_LOAD_REFUSED | TSR_STATUS_LOAD_TIMEOUT)) return TSR_TE_IO;
         // EX §3.5: VERIFY every ITCM segment; write only those that do not match (warm restart
@@ -1016,10 +1030,15 @@ struct tsr_transport {
         }
         dec.set_image(img);
         state = dstate::ready;
+        if (dbg_service && dbg_svc.boot) dbg_svc.boot(dbg_service, this, 1);   // DB §9.5 TSR_GDB_WAIT=launch
         return 0;
     }
 
+    // HELLO (EX §3.4). DB §3.8 / §4.1: TSR_BOOT_MS counts only while the hart is not halted
+    // (STATUS.RV_HALTED, read once per poll), so a halt-on-boot or a breakpoint in crt0 waits for
+    // the debugger, whose thread uses the device between the polls.
     int wait_hello(const tsr_image * im, uint64_t t0) {
+        uint64_t prev = t0, counted = 0;
         for (uint32_t iter = 0;; ++iter) {
             uint32_t v = 0;
             if (!rd(TSR_CSR_LCQ_WR, &v)) return TSR_TE_IO;
@@ -1084,16 +1103,21 @@ struct tsr_transport {
                 return 0;
             }
             maybe_drain_log();
-            const uint64_t el = now() - t0;
-            if (el >= boot_ms * MS) {
+            const uint64_t tn = now(), el = tn - t0;
+            uint32_t s = 0;
+            if (!status(&s)) return state == dstate::failed ? TSR_TE_DEVICE : TSR_TE_IO;
+            const bool halted = (s & TSR_STATUS_RV_HALTED) != 0;
+            if (!halted) counted += tn - prev;
+            prev = tn;
+            if (counted >= boot_ms * MS) {
                 const uint32_t rt = rdv(TSR_CSR_RT_STATE);
                 msg("no HELLO within TSR_BOOT_MS (%" PRIu64 " ms, %s time): STATUS 0x%08x, RT_STATE %s, RT_INFO 0x%08x", boot_ms,
-                    tbase(), rdv(TSR_CSR_STATUS), rt_phase_name(TSR_GET(rt, TSR_RT_STATE_PHASE)), rdv(TSR_CSR_RT_INFO));
+                    tbase(), s, rt_phase_name(TSR_GET(rt, TSR_RT_STATE_PHASE)), rdv(TSR_CSR_RT_INFO));
                 drain_log();
                 print_log_tail(16, "during boot", 0);
                 return TSR_TE_TIMEOUT;
             }
-            between_polls(iter, std::max(POLL_MIN_NS, std::min<uint64_t>(el / 100, POLL_MAX_NS)));
+            between_polls(iter, std::max(POLL_MIN_NS, std::min<uint64_t>(el / 100, POLL_MAX_NS)), halted);
         }
     }
 
@@ -1107,13 +1131,63 @@ struct tsr_transport {
         if (trap_is_answer) msg("launch seq %u: %s", trap_rec.w[TSR_LCQ_TRAP_SEQ_WORD], rep.c_str());
         else msg("%s (between launches)", rep.c_str());
         print_log_tail(16, "before the trap", trap_rec.w[TSR_LCQ_TRAP_SEQ_WORD]);
-        if (gdb_wait) {
+        if (gdb_wait || debugger) {
             state = dstate::trapped;
-            msg("TSR_GDB_WAIT is set: the device stays TRAPPED for the debugger (RT_STATE TRAPPED; the GDB service is P3.7); "
-                "tsr_transport_soft_reset + tsr_transport_boot restart it");
+            msg("%s: the device stays TRAPPED for the debugger (RT_STATE TRAPPED; monitor crash / crash-view, DB §6.3); "
+                "tsr_transport_soft_reset + tsr_transport_boot restart it",
+                debugger ? "a debugger is attached" : "TSR_GDB_WAIT is set");
             return 0;
         }
         return restart("trap");
+    }
+
+    // ---- PERF over the session (DB §8.6) ----
+    uint64_t perf64(uint32_t i) {
+        const uint32_t lo = rdv(TSR_CSR_PERF_LO(i));   // the LO read snapshots the counter for HI
+        const uint32_t hi = rdv(TSR_CSR_PERF_HI(i));
+        return (uint64_t) hi << 32 | lo;
+    }
+    // The implemented counters (PERF_INFO.COUNT: 0..COUNT-1 plus DB's slots 61-63 when the DBG
+    // block exists); unimplemented slots read 0 and are skipped.
+    template <class F> void perf_each(F f) {
+        const uint32_t n = std::min<uint32_t>(TSR_GET(r_perf_info, TSR_PERF_INFO_COUNT), TSR_PERF_SLOTS);
+        for (uint32_t i = 0; i < TSR_PERF_SLOTS; ++i)
+            if (i < n || (has_dbg && i >= TSR_PERF_TRW_RECORDS)) f(i);
+    }
+    void perf_fold() {
+        perf_each([this](uint32_t i) { perf_acc[i] += perf64(i) - perf_base[i]; perf_base[i] = 0; });
+        log_drop_acc += rdv(TSR_CSR_LOG_DROPPED) - log_drop_base;
+        log_drop_base = 0;
+    }
+    uint64_t mtime_now() {
+        if (!has_dbg) return 0;
+        uint32_t hi = rdv(TSR_CSR_DBG_MTIME_HI), lo = rdv(TSR_CSR_DBG_MTIME_LO), hi2 = rdv(TSR_CSR_DBG_MTIME_HI);
+        if (hi2 != hi) lo = rdv(TSR_CSR_DBG_MTIME_LO);   // DB §10.1: HI, LO, HI
+        return (uint64_t) hi2 << 32 | lo;
+    }
+    void perf_summary(tsr_perf_summary * s) {
+        memset(s, 0, sizeof(*s));
+        for (uint32_t i = 0; i < TSR_PERF_SLOTS; ++i) s->perf[i] = perf_acc[i];
+        if (state != dstate::failed) {
+            perf_each([&](uint32_t i) { s->perf[i] += perf64(i) - perf_base[i]; });
+            s->log_dropped_words = log_drop_acc + rdv(TSR_CSR_LOG_DROPPED) - log_drop_base;
+        } else {
+            s->log_dropped_words = log_drop_acc;
+        }
+        s->num_ch = cfg.num_ch;
+        s->perf_x = TSR_PERF_X(cfg.num_ch);
+        s->core_hz = CORE_HZ_NOMINAL;
+        const uint64_t w = wall_ns();
+        s->session_wall_ns = w - wall_open;
+        if (!dev->simulated() && has_dbg && state != dstate::failed && s->session_wall_ns >= 500 * MS) {
+            const uint64_t mt = mtime_now();
+            if (mt > mtime_open) {
+                s->core_hz = (double) (mt - mtime_open) * 1e9 / (double) s->session_wall_ns;
+                s->core_hz_fitted = 1;
+            }
+        }
+        s->launches = st.launches;
+        s->launch_wall_ns = st.launch_wall_ns;
     }
 
     int restart(const char * why) {
@@ -1579,12 +1653,10 @@ struct tsr_transport {
         }
         static std::once_flag noted;
         std::call_once(noted, [this] {
-            for (const char * n : { "TSR_GDB", "TSR_DEBUGGER" })
-                if (const char * e = getenv(n); e != nullptr && e[0] != '\0')
-                    msg("%s is set: the embedded debug service arrives with libtsr_dbg (P3.7); ignored", n);
             for (const char * n : { "TSR_PROF", "TSR_PROF_TRW_MIB", "TSR_PROF_EVERY", "TSR_PROF_RV_SAMPLE_US" })
                 if (const char * e = getenv(n); e != nullptr && e[0] != '\0')
-                    msg("%s is set: the trace-writer profiler arrives with tsr-prof trw (P3.8); ignored", n);
+                    msg("%s is set: in-process trace-writer profiling is not wired into this program (tsr-prof trw runs its own "
+                        "launches, P3.8); ignored", n);
             // EX §10.2: renamed and removed variables.
             static const char * const renamed[][2] = { { "TSR_XRT_TIMEOUT_MS", "TSR_LAUNCH_TIMEOUT_MS" }, { "TSR_XRT_ABORT_MS", "TSR_ABORT_MS" } };
             for (const auto & rn : renamed)
@@ -1664,9 +1736,15 @@ struct tsr_transport {
             state = dstate::reset;
         } else {
             state = dstate::attached;
+            // DB §8.6: the counters an earlier process left are not this session's.
+            perf_each([this](uint32_t i) { perf_base[i] = perf64(i); });
+            log_drop_base = rdv(TSR_CSR_LOG_DROPPED);
         }
         debug_config_check();
         log_last = now();
+        wall_open = wall_ns();
+        if (!dev->simulated()) mtime_open = mtime_now();
+        opened = true;
         return 0;
     }
 
@@ -1679,6 +1757,18 @@ struct tsr_transport {
             (double) st.bytes_written / 1e6, (double) st.bytes_read / 1e6, st.log_words, dec.dropped_reported,
             binfo.warm ? "warm" : "cold", binfo.itcm_loaded, binfo.dtcm_loaded, binfo.words_written, (double) binfo.time_ns / 1e6,
             tbase(), rlog.timeouts, rlog.traps, rlog.restarts);
+        if (state == dstate::failed) return;
+        // DB §8.6: the PERF summary of the session (P3.8).
+        tsr_perf_summary ps;
+        perf_summary(&ps);
+        char b[4096];
+        tsr_perf_summary_str(&ps, b, sizeof(b));
+        for (char * line = b; line && *line;) {
+            char * nl = strchr(line, '\n');
+            if (nl) *nl = '\0';
+            msg("stats: %s", line);
+            line = nl ? nl + 1 : nullptr;
+        }
     }
 };
 
@@ -1699,14 +1789,49 @@ std::map<std::string, kdev_factory> & registry() {
     return r;
 }
 
+// The embedded debug service (DB-17), registered by libtsr_dbg (tsr_transport_set_debug_service).
+std::mutex & dbg_service_mutex() {
+    static std::mutex m;
+    return m;
+}
+tsr_debug_service & dbg_service_reg() {
+    static tsr_debug_service s{};
+    return s;
+}
+
 tsr_transport * open_on(std::unique_ptr<kdev> dev) {
     if (!dev) return nullptr;
     std::unique_ptr<tsr_transport> t(new tsr_transport);
     t->kind = dev->name();
     t->dev = std::move(dev);
     if (t->settings_from_env() != 0) return nullptr;
-    guard g(t.get());
-    if (t->open_device() != 0) return nullptr;
+    {
+        guard g(t.get());
+        if (t->open_device() != 0) return nullptr;
+    }
+    // DB §9.5: TSR_GDB / TSR_DEBUGGER start the registered service once the transport is usable
+    // (its thread takes the transport's mutex like any caller).
+    const char * gdb = getenv("TSR_GDB");
+    const char * cli = getenv("TSR_DEBUGGER");
+    if ((gdb && gdb[0]) || (cli && cli[0])) {
+        tsr_debug_service s;
+        {
+            std::lock_guard<std::mutex> lk(dbg_service_mutex());
+            s = dbg_service_reg();
+        }
+        if (s.start == nullptr) {
+            static std::once_flag noted;
+            std::call_once(noted, [&] {
+                t->msg("%s is set, but this program has no embedded debug service (link libtsr_dbg's tsr_dbg_embed, DB §4.1); ignored",
+                       gdb && gdb[0] ? "TSR_GDB" : "TSR_DEBUGGER");
+            });
+        } else {
+            t->dbg_svc = s;
+            void * h = s.start(t.get());
+            guard g(t.get());
+            t->dbg_service = h;
+        }
+    }
     return t.release();
 }
 
@@ -1817,6 +1942,13 @@ extern "C" tsr_transport * tsr_transport_kdev_open(const char * kind) {
 
 extern "C" void tsr_transport_close(tsr_transport * t) {
     if (t == nullptr) return;
+    void * svc = nullptr;
+    {
+        guard g(t);
+        svc = t->dbg_service;
+        t->dbg_service = nullptr;
+    }
+    if (svc && t->dbg_svc.stop) t->dbg_svc.stop(svc);   // DB §4.2 DETACH first; its thread uses the transport
     {
         guard g(t);
         if (t->state != dstate::failed) t->drain_log();
@@ -1975,4 +2107,134 @@ extern "C" void tsr_transport_get_stats(const tsr_transport * t, tsr_transport_s
     *s = m->st;
     s->log_records_dropped = m->dec.dropped_reported;
     s->staged_chunks = 0;
+}
+
+// ===========================================================================
+// DB §9.2 debug additions (P3.7, P3.8)
+// ===========================================================================
+extern "C" int tsr_transport_dmi_enable(tsr_transport * t, int on) {
+    if (t == nullptr) return TSR_TE_INVAL;
+    guard g(t);
+    if (!t->has_dbg) {
+        t->msg("DMI window: the device has no DBG block (DBG_ID = 0), so no DMI_EN gate (DB §3.2)");
+        return TSR_TE_STATE;
+    }
+    uint32_t c = 0;
+    if (!t->rd(TSR_CSR_DBG_CFG, &c)) return TSR_TE_IO;
+    c = on ? (c | TSR_DBG_CFG_DMI_EN) : (c & ~TSR_DBG_CFG_DMI_EN);
+    if (!t->wr(TSR_CSR_DBG_CFG, c)) return TSR_TE_IO;
+    t->dbg_active = true;
+    return 0;
+}
+
+extern "C" int tsr_transport_dmi_read(tsr_transport * t, uint32_t addr7, uint32_t * val) {
+    if (t == nullptr || val == nullptr || addr7 >= TSR_CSR_DMI_N) return TSR_TE_INVAL;
+    guard g(t);
+    t->dbg_active = t->has_dbg;
+    return t->rd(TSR_CSR_DMI(addr7), val) ? 0 : TSR_TE_IO;
+}
+
+extern "C" int tsr_transport_dmi_write(tsr_transport * t, uint32_t addr7, uint32_t val) {
+    if (t == nullptr || addr7 >= TSR_CSR_DMI_N) return TSR_TE_INVAL;
+    guard g(t);
+    t->dbg_active = t->has_dbg;
+    return t->wr(TSR_CSR_DMI(addr7), val) ? 0 : TSR_TE_IO;
+}
+
+extern "C" uint64_t tsr_transport_now_ns(tsr_transport * t) {
+    if (t == nullptr) return 0;
+    guard g(t);
+    return t->now();
+}
+
+extern "C" void tsr_transport_idle(tsr_transport * t, uint64_t ns) {
+    if (t == nullptr) return;
+    guard g(t);
+    t->between_polls(0, ns ? ns : POLL_MIN_NS);
+}
+
+extern "C" int tsr_transport_poll(tsr_transport * t, uint32_t seq, tsr_record * rec) {
+    if (t == nullptr) return TSR_TE_INVAL;
+    guard g(t);
+    auto take = [&]() -> int {
+        auto it = t->answered.find(seq);
+        if (it != t->answered.end()) {
+            if (rec) *rec = it->second;
+            t->answered.erase(it);
+            return 1;
+        }
+        if (t->lost.erase(seq)) return TSR_TE_LOST;
+        return 0;
+    };
+    int r = take();
+    if (r != 0) return r;
+    if (!t->is_outstanding(seq)) {
+        t->msg("poll: seq %u is not a launch of this transport, or it was waited for already", seq);
+        return TSR_TE_INVAL;
+    }
+    if (t->state == dstate::failed) return TSR_TE_DEVICE;
+    const int rc = t->consume_and_handle();
+    if (rc < 0) return rc;
+    t->maybe_drain_log();
+    return take();
+}
+
+extern "C" int tsr_transport_set_debugger(tsr_transport * t, int attached) {
+    if (t == nullptr) return TSR_TE_INVAL;
+    guard g(t);
+    t->debugger = attached != 0;
+    if (attached) t->dbg_active = t->has_dbg;
+    return 0;
+}
+
+extern "C" void tsr_transport_set_debug_service(const tsr_debug_service * s) {
+    std::lock_guard<std::mutex> lk(dbg_service_mutex());
+    dbg_service_reg() = s ? *s : tsr_debug_service{};
+}
+
+extern "C" int tsr_transport_perf_summary(tsr_transport * t, tsr_perf_summary * s) {
+    if (t == nullptr || s == nullptr) return TSR_TE_INVAL;
+    guard g(t);
+    t->perf_summary(s);
+    return 0;
+}
+
+extern "C" int tsr_perf_summary_str(const tsr_perf_summary * s, char * buf, size_t n) {
+    if (s == nullptr) return TSR_TE_INVAL;
+    std::string o;
+    char b[512];
+    const uint64_t * p = s->perf;
+    const uint32_t C = s->num_ch, X = s->perf_x;
+    const double cyc = (double) p[TSR_PERF_CYCLES];
+    const double hz = s->core_hz > 0 ? s->core_hz : CORE_HZ_NOMINAL;
+    const double dev_ns = cyc * 1e9 / hz;
+    auto pct = [&](uint64_t v) { return cyc > 0 ? 100.0 * (double) v / cyc : 0.0; };
+    const double wall = (double) s->launch_wall_ns;
+    snprintf(b, sizeof(b),
+             "PERF (DB §8.6): %" PRIu64 " launches; device time %.3f ms (%" PRIu64 " core cycles at %.1f MHz, %s); launch wall %.3f ms; "
+             "host overhead %.3f ms (%.1f %% of the launch wall); session %.3f s\n",
+             s->launches, dev_ns / 1e6, p[TSR_PERF_CYCLES], hz / 1e6, s->core_hz_fitted ? "fitted from DBG_MTIME" : "nominal",
+             wall / 1e6, (wall - dev_ns) / 1e6, wall > 0 ? 100.0 * (wall - dev_ns) / wall : 0.0, (double) s->session_wall_ns / 1e9);
+    o += b;
+    const uint64_t stop = p[TSR_PERF_DBG_STOP_CYCLES];
+    snprintf(b, sizeof(b),
+             "DBG_STOP_CYCLES %" PRIu64 "%s; MVM busy %.2f %%, wait %.2f %%, empty %.2f %%; RV_WFI %.2f %%; PUSH_STALL %" PRIu64
+             " clk_rv cycles; LOG_DROPPED %" PRIu64 " words; TRW %" PRIu64 " records, %" PRIu64 " drops; RETIRED %" PRIu64
+             ", PUSHES %" PRIu64 "\n",
+             stop, stop ? " (not 0: a debugger stopped the device, the times are not a measurement)" : "", pct(p[TSR_PERF_MVM_CYCLES]),
+             pct(p[TSR_PERF_MVM_WAIT(C)]), pct(p[TSR_PERF_MVM_EMPTY(C)]), pct(p[TSR_PERF_RV_WFI(C)]), p[TSR_PERF_PUSH_STALL(C)],
+             s->log_dropped_words, p[TSR_PERF_TRW_RECORDS], p[TSR_PERF_TRW_DROPS], p[TSR_PERF_RETIRED], p[TSR_PERF_PUSHES(C)]);
+    o += b;
+    o += "read GB/s and idle % per channel:";
+    for (uint32_t c = 0; c < C && c < TSR_NUM_CH_MAX; ++c) {
+        const uint64_t beats = p[TSR_PERF_CH_RD_BEATS(c)], wait = p[TSR_PERF_CH_WAIT(C, c)];
+        const double gbs = dev_ns > 0 ? (double) beats * 64.0 / dev_ns : 0.0;
+        const double idle = cyc > 0 ? 100.0 * (cyc - (double) beats - (double) wait) / cyc : 0.0;
+        snprintf(b, sizeof(b), " ch%u %.2f (%.1f %%)", c, gbs, idle);
+        o += b;
+    }
+    (void) X;
+    o += "\n";
+    if (buf && n) snprintf(buf, n, "%s", o.c_str());
+    return (int) o.size();
 }

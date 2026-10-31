@@ -15,6 +15,12 @@
 #   cooc_paths <tag> <n>    COOC <tag> wns .. whs .. tns .. fail_ep .. | r2r_wns .. | then the worst
 #                           register-to-register path of the <n> worst (start group, end group)
 #                           pairs: COOC <tag> path <slack> levels <n> <start pin> -> <end pin>
+#   cooc_cdc <tag> <outdir> the clock-domain-crossing gate (CC §11.3, §14.3 T3): report_cdc -details to
+#                           <outdir>/cdc_<tag>.rpt and report_clock_interaction to <outdir>/clkint_<tag>.rpt;
+#                           COOC cdc(<tag>) <report_cdc summary lines>, COOC clkint(<tag>) <the clk <-> clk_rv
+#                           rows>, and COOC cdc_gate(<tag>) PASS|FAIL <n unsafe> <n unconstrained>: PASS = no
+#                           Critical / Warning CDC endpoint and both directions timed by a max delay;
+#                           returns 1 for PASS, 0 for FAIL
 #   cooc_slr <tag> <outdir> placed designs: report_utilization -slr, cells per SLR per top-level
 #                           hierarchy key (COOC slr(<tag>) <key> SLR0 .. SLR1 .. SLR2 ..), and the
 #                           nets that cross SLRs grouped by driver (COOC sll(<tag>) <n> <group>)
@@ -223,4 +229,14 @@ if {![info exists ::cooc_flow] && [llength $argv] >= 2 && [string match "*.dcp" 
       [llength [get_cells -quiet -hierarchical -filter {IS_PRIMITIVE && IS_FIXED}]] > 0} {
     cooc_slr $tag $out
   }
+}
+
+# The CDC gate of CC §11.3 / §14.3 T3 on the open design (rtl/ctrl/viv/cdc_gate.tcl: tsr_cdc_gate): every
+# crossing between the two clocks is one of the intended, constrained structures (report_cdc: only Info rows
+# once the waivers of rtl/ctrl/viv/tsr_ctrl_cdc.xdc are applied) and report_clock_interaction shows both
+# directions as "Max Delay Datapath Only". The clock names are the ones the flow created: clk / clk_rv here,
+# ap_clk / ap_clk_2 in the kernel run (tb/platform/viv).
+source [file join [file dirname [file normalize [info script]]] .. .. .. rtl ctrl viv cdc_gate.tcl]
+proc cooc_cdc {tag out {c0 clk} {c1 clk_rv}} {
+  return [tsr_cdc_gate COOC $tag $out $c0 $c1]
 }
