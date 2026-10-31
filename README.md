@@ -2,6 +2,12 @@
   <img alt="Tesseract" src="docs/logo/tesseract-lockup-universal.png" width="440">
 </p>
 
+<p align="center">
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat"></a>
+  <a href="CHANGELOG.md"><img alt="Release: basis-v0.1.0" src="https://img.shields.io/badge/release-basis--v0.1.0-green?style=flat"></a>
+  <a href="docs/platform-u200.md"><img alt="Platform: AMD Alveo U200" src="https://img.shields.io/badge/platform-AMD%20Alveo%20U200-lightgrey?style=flat"></a>
+</p>
+
 # Tesseract
 
 **A full-stack, open-source NPU for LLM inference.**

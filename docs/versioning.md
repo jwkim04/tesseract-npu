@@ -274,8 +274,9 @@ Each release has a Basis version, a section in `CHANGELOG.md` and an annotated g
 
 1. Set `TSR_BASIS_VERSION_MAJOR`, `_MINOR` and `_PATCH` in `sw/ctrl/include/tsr/version.h`.
 2. In `CHANGELOG.md`, replace "(unreleased)" in the heading of the section by the date.
-3. Build, run `ctest -LE slow`, and run `tsr-selftest --device sim`.
-4. Commit, then `git tag -a basis-vX.Y.Z -m "Tesseract Basis X.Y.Z"` and push the tag.
+3. In `README.md`, update the release badge to the new tag.
+4. Build, run `ctest -LE slow`, and run `tsr-selftest --device sim`.
+5. Commit, then `git tag -a basis-vX.Y.Z -m "Tesseract Basis X.Y.Z"` and push the tag.
 
 Changes made after a release go into a new section headed "Basis X.Y.Z (unreleased)", where X.Y.Z
 is the next version. The ABI and the kind revisions are not part of this step. Their authors change
