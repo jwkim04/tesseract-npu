@@ -14,6 +14,11 @@
 #    Project, so its files are not annotated here (its own LICENSE: MIT, "The ggml authors";
 #    its vendored code keeps its own notices). The patch to it that lives in this repository is
 #    annotated below.
+#  - third_party/ibex, third_party/riscv-dbg and third_party/common_cells are Git submodules too
+#    (the RISC-V control subsystem's vendored IP, CC §3.1, unmodified). Unlike llama.cpp their
+#    RTL is built into the bitstream, so the licenses of the parts the build uses are stated below
+#    as well (`reuse lint` skips submodules unless --include-submodules; their files' own SPDX
+#    headers win, precedence "closest").
 #  - Header sweep (later): add the Apache-2.0 header to files under the default only. Do not add
 #    it to the exception files below, and remove the "GPL-2.0" tag line of the three scripts.
 #
@@ -271,3 +276,59 @@ SPDX-FileCopyrightText = [
   "Hugging Face, Inc. (Hugging Face logo)",
 ]
 SPDX-License-Identifier = "Apache-2.0 AND OFL-1.1 AND MIT AND LicenseRef-Trademark-PyTorch AND LicenseRef-Trademark-HuggingFace"
+
+# ---------------------------------------------------------------------------------------------
+# Vendored RTL IP of the RISC-V control subsystem (Git submodules, unmodified; pinned commits and
+# the selection rule: rtl/ctrl/VENDOR.md, CC §3.1). Only the parts rtl/ctrl/filelist.f uses.
+# ---------------------------------------------------------------------------------------------
+
+# Ibex (lowRISC/ibex 7a4697f5) and the lowRISC primitives it vendors.
+[[annotations]]
+path = [
+  "third_party/ibex/rtl/**",
+  "third_party/ibex/lint/**",
+  "third_party/ibex/vendor/lowrisc_ip/**",
+]
+precedence = "closest"
+SPDX-FileCopyrightText = [
+  "lowRISC contributors",
+  "2018 ETH Zurich and University of Bologna",
+]
+SPDX-License-Identifier = "Apache-2.0"
+
+# pulp common_cells files vendored inside Ibex (stream_fork, stream_join_dynamic).
+[[annotations]]
+path = "third_party/ibex/vendor/pulp_common_cells/**"
+precedence = "closest"
+SPDX-FileCopyrightText = "2018 ETH Zurich and University of Bologna"
+SPDX-License-Identifier = "SHL-0.51"
+
+# riscv-dbg (pulp-platform/riscv-dbg v0.10.1): the debug module. The debug ROM source is SiFive's
+# (Apache-2.0, LICENSE.SiFive); the generated ROM modules carry ETH's SHL-0.51 header.
+[[annotations]]
+path = [
+  "third_party/riscv-dbg/src/**",
+  "third_party/riscv-dbg/debug_rom/*.sv",
+]
+precedence = "closest"
+SPDX-FileCopyrightText = "2018-2021 ETH Zurich and University of Bologna"
+SPDX-License-Identifier = "SHL-0.51"
+
+[[annotations]]
+path = [
+  "third_party/riscv-dbg/debug_rom/*.S",
+  "third_party/riscv-dbg/debug_rom/*.h",
+]
+precedence = "closest"
+SPDX-FileCopyrightText = "SiFive, Inc."
+SPDX-License-Identifier = "Apache-2.0"
+
+# pulp common_cells (pulp-platform/common_cells v1.40.0): fifo_v3 for riscv-dbg.
+[[annotations]]
+path = [
+  "third_party/common_cells/src/**",
+  "third_party/common_cells/include/**",
+]
+precedence = "closest"
+SPDX-FileCopyrightText = "2018 ETH Zurich and University of Bologna"
+SPDX-License-Identifier = "SHL-0.51"

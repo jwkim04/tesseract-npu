@@ -126,13 +126,22 @@ module tsr_tb_mvm
     .perf_mvm_busy
   );
 
-  // ---- SPM: client 0 = host, 1 = tied off, 2 = MVM ----
-  logic [TSR_SPM_NCL-1:0]                     s_rd_req_valid, s_rd_req_ready, s_rd_rsp_valid;
-  logic [TSR_SPM_NCL-1:0][AW-1:0]             s_rd_req_line;
-  logic [TSR_SPM_NCL-1:0]                     s_wr_valid, s_wr_ready;
-  logic [TSR_SPM_NCL-1:0][AW-1:0]             s_wr_line;
-  logic [TSR_SPM_NCL-1:0][TSR_LINE_BITS-1:0]  s_wr_data;
-  logic [TSR_SPM_NCL-1:0][TSR_SPM_BE_W-1:0]   s_wr_be;
+  // ---- SPM: client 0 = host, 1 = tied off, 2 = MVM, 3 = tied off (single-port clients through
+  //      tsr_spm_cport), 4 / 5 = tied off (dual-bank); W4-A spm ----
+  logic [TSR_SPM_NSP-1:0]                     s_rd_req_valid, s_rd_req_ready, s_rd_rsp_valid;
+  logic [TSR_SPM_NSP-1:0][AW-1:0]             s_rd_req_line;
+  logic [TSR_SPM_NSP-1:0][TSR_LINE_BITS-1:0]  s_rd_rsp_data;
+  logic [TSR_SPM_NSP-1:0]                     s_wr_valid, s_wr_ready;
+  logic [TSR_SPM_NSP-1:0][AW-1:0]             s_wr_line;
+  logic [TSR_SPM_NSP-1:0][TSR_LINE_BITS-1:0]  s_wr_data;
+  logic [TSR_SPM_NSP-1:0][TSR_SPM_BE_W-1:0]   s_wr_be;
+  logic [TSR_SPM_NCL-1:0][1:0]                    b_rd_req_valid, b_rd_req_ready, b_rd_rsp_valid;
+  logic [TSR_SPM_NCL-1:0][1:0][AW-1:0]            b_rd_req_line;
+  logic [1:0][TSR_LINE_BITS-1:0]                  b_rd_rsp_data;
+  logic [TSR_SPM_NCL-1:0][1:0]                    b_wr_valid, b_wr_ready;
+  logic [TSR_SPM_NCL-1:0][1:0][AW-1:0]            b_wr_line;
+  logic [TSR_SPM_NCL-1:0][1:0][TSR_LINE_BITS-1:0] b_wr_data;
+  logic [TSR_SPM_NCL-1:0][1:0][TSR_SPM_BE_W-1:0]  b_wr_be;
 
   always_comb begin
     s_rd_req_valid = '0;
@@ -155,17 +164,41 @@ module tsr_tb_mvm
     s_wr_be[TSR_SPM_CL_MVM]        = mv_wr_be;
   end
 
+  for (genvar c = 0; c < TSR_SPM_NCL; c++) begin : g_cl
+    if (c < TSR_SPM_NSP) begin : g_cport
+      tsr_spm_cport #(.SPM_BYTES(SPM_BYTES)) u_cport (
+        .rd_req_valid(s_rd_req_valid[c]), .rd_req_ready(s_rd_req_ready[c]), .rd_req_line(s_rd_req_line[c]),
+        .rd_rsp_valid(s_rd_rsp_valid[c]), .rd_rsp_data(s_rd_rsp_data[c]),
+        .wr_valid(s_wr_valid[c]), .wr_ready(s_wr_ready[c]), .wr_line(s_wr_line[c]),
+        .wr_data(s_wr_data[c]), .wr_be(s_wr_be[c]),
+        .s_rd_req_valid(b_rd_req_valid[c]), .s_rd_req_ready(b_rd_req_ready[c]),
+        .s_rd_req_line(b_rd_req_line[c]), .s_rd_rsp_valid(b_rd_rsp_valid[c]), .s_rd_rsp_data(b_rd_rsp_data),
+        .s_wr_valid(b_wr_valid[c]), .s_wr_ready(b_wr_ready[c]), .s_wr_line(b_wr_line[c]),
+        .s_wr_data(b_wr_data[c]), .s_wr_be(b_wr_be[c])
+      );
+    end else begin : g_tie
+      assign b_rd_req_valid[c] = '0;
+      assign b_rd_req_line[c]  = '0;
+      assign b_wr_valid[c]     = '0;
+      assign b_wr_line[c]      = '0;
+      assign b_wr_data[c]      = '0;
+      assign b_wr_be[c]        = '0;
+      wire unused_cl = &{1'b0, b_rd_req_ready[c], b_rd_rsp_valid[c], b_wr_ready[c]};
+    end
+  end
+
   tsr_spm #(.SPM_BYTES(SPM_BYTES), .NCL(TSR_SPM_NCL), .RD_LAT(SPM_RD_LAT)) u_spm (
     .clk, .rst_n,
-    .rd_req_valid(s_rd_req_valid), .rd_req_ready(s_rd_req_ready), .rd_req_line(s_rd_req_line),
-    .rd_rsp_valid(s_rd_rsp_valid), .rd_rsp_data(spm_rd_data),
-    .wr_valid(s_wr_valid), .wr_ready(s_wr_ready), .wr_line(s_wr_line), .wr_data(s_wr_data),
-    .wr_be(s_wr_be)
+    .rd_req_valid(b_rd_req_valid), .rd_req_ready(b_rd_req_ready), .rd_req_line(b_rd_req_line),
+    .rd_rsp_valid(b_rd_rsp_valid), .rd_rsp_data(b_rd_rsp_data),
+    .wr_valid(b_wr_valid), .wr_ready(b_wr_ready), .wr_line(b_wr_line), .wr_data(b_wr_data),
+    .wr_be(b_wr_be)
   );
+  assign spm_rd_data = s_rd_rsp_data[TSR_SPM_CL_MVM];
 
   assign h_rd_req_ready  = s_rd_req_ready[TSR_SPM_CL_DMA];
   assign h_rd_rsp_valid  = s_rd_rsp_valid[TSR_SPM_CL_DMA];
-  assign h_rd_rsp_data   = spm_rd_data;
+  assign h_rd_rsp_data   = s_rd_rsp_data[TSR_SPM_CL_DMA];
   assign h_wr_ready      = s_wr_ready[TSR_SPM_CL_DMA];
   assign mv_rd_req_ready = s_rd_req_ready[TSR_SPM_CL_MVM];
   assign mv_rd_rsp_valid = s_rd_rsp_valid[TSR_SPM_CL_MVM];
@@ -246,6 +279,8 @@ module tsr_tb_mvm
   assign o_ws_rsp_ready = ws_rsp_ready;
 
   wire unused_ok = &{1'b0, s_rd_rsp_valid[TSR_SPM_CL_QACT], s_rd_req_ready[TSR_SPM_CL_QACT],
-                     s_wr_ready[TSR_SPM_CL_QACT]};
+                     s_wr_ready[TSR_SPM_CL_QACT], s_rd_rsp_data[TSR_SPM_CL_QACT],
+                     s_rd_rsp_valid[TSR_SPM_CL_BRIDGE], s_rd_req_ready[TSR_SPM_CL_BRIDGE],
+                     s_wr_ready[TSR_SPM_CL_BRIDGE], s_rd_rsp_data[TSR_SPM_CL_BRIDGE]};
 
 endmodule

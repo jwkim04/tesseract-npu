@@ -81,13 +81,18 @@ package tsr_pkg;
   localparam int unsigned TSR_SRC_WS    = 2;  // M3 MVM weight stream (tied off in M2)
 
   // -------------------------------------------------------------------------------------------
-  // SPM client ports of tsr_spm (docs/rtl-m2.md §5)
+  // SPM client ports of tsr_spm (docs/rtl-m2.md §5; CC §10.2: per-bank ports, NCL = 6, absent
+  // clients tied off; W4-A spm)
   // -------------------------------------------------------------------------------------------
-  localparam int unsigned TSR_SPM_NCL     = 3;
-  localparam int unsigned TSR_SPM_CL_DMA  = 0;
-  localparam int unsigned TSR_SPM_CL_QACT = 1;
-  localparam int unsigned TSR_SPM_CL_MVM  = 2;  // M3 (tied off in M2)
-  localparam int unsigned TSR_SPM_BE_W    = TSR_LINE_BYTES;
+  localparam int unsigned TSR_SPM_NCL       = 6;
+  localparam int unsigned TSR_SPM_CL_DMA    = 0;
+  localparam int unsigned TSR_SPM_CL_QACT   = 1;
+  localparam int unsigned TSR_SPM_CL_MVM    = 2;
+  localparam int unsigned TSR_SPM_CL_BRIDGE = 3;  // RISC-V SPM bridge (tsr_spm_bridge, CC §10.5)
+  localparam int unsigned TSR_SPM_CL_VU     = 4;  // both bank ports (area VU)
+  localparam int unsigned TSR_SPM_CL_AT     = 5;  // absent in M6 (tied off)
+  localparam int unsigned TSR_SPM_NSP       = 4;  // clients 0..3: single port through tsr_spm_cport
+  localparam int unsigned TSR_SPM_BE_W      = TSR_LINE_BYTES;
 
   // -------------------------------------------------------------------------------------------
   // CSR map (32-bit registers, byte offsets; tsr_isa.h enum tsr_csr). Offsets: docs/design
@@ -393,6 +398,65 @@ package tsr_pkg;
                                //   Q8_0: 32b + L (L < 64; lanes 32..63 = 0 if !two; 64..127 = 0)
                                //   Q4_K: 256s + 128*half + L (values 0..15)
   } tsr_mvm_beat_t;            // 1175 bits
+
+  // ===========================================================================================
+  // Issue path (W4 item 1: tsr_chk, tsr_issue, tsr_csr; docs/design CC §7-§9, EX §4-§8).
+  // Everything below is additive. Offsets, opcodes, units and the issue-FIFO layout are the
+  // generated tsr_tables_pkg's (EX-30); these are the structs the issue-path blocks exchange.
+  // ===========================================================================================
+  localparam int unsigned TSR_SEQ_W     = 28;  // per-unit sequence (CC §7.5)
+  localparam int unsigned TSR_NUNITS    = 6;   // unit ids 0..5 (CC §7.4)
+  localparam int unsigned TSR_QD_MAX    = 31;  // Q_DEPTH field limit (5 bits, EX §5.1)
+  localparam int unsigned TSR_EXT_N     = 4;   // tagged operand extents per op (CC §8.2)
+  localparam int unsigned TSR_EXT_AW    = 48;  // extent bounds (lines / beats), CC §8.2 C4
+  localparam logic [7:0]  TSR_EXT_CH_ALL = 8'hFF;   // DRAM extent on every channel (MVM weights)
+
+  // Error codes of the issue path (EX §8.1; tsr_tables_pkg TSR_ERR_*): 9 and 10 retired.
+  localparam logic [TSR_ERR_W-1:0] TSR_ERR_DEP_FAILED = 4'd11;
+  localparam logic [TSR_ERR_W-1:0] TSR_ERR_BAD_DEP    = 4'd12;
+  localparam logic [TSR_ERR_W-1:0] TSR_ERR_OPERAND    = 4'd13;
+
+  // Queue-entry kinds (CC §8.3): an op (runs on its unit, or poisoned), and the SYNC kinds.
+  localparam logic [1:0] TSR_QK_OP     = 2'd0;
+  localparam logic [1:0] TSR_QK_NOP    = 2'd1;
+  localparam logic [1:0] TSR_QK_FENCE  = 2'd2;
+  localparam logic [1:0] TSR_QK_QCLEAR = 2'd3;
+
+  // Issue-FIFO entry (CC §7.2, 387 bits; tsr_tables_pkg TSR_IFIFO_*: kind [1:0], w0..w7 [257:2]
+  // with w0 at [33:2], DEP0 [289:258], DEP1 [321:290], REC [322], ticket [354:323], push PC
+  // [386:355]). Packed: the first member is the MSB. The CDC FIFO (tsr_cdc_fifo, clk_rv -> core)
+  // carries exactly this vector.
+  typedef struct packed {
+    logic [31:0] pc;           // push PC (OP and TRACE_MARK)
+    logic [31:0] ticket;       // {unit[31:28], seq[27:0]} (OP and QCLEAR)
+    logic        rec;          // ISSUE_PUSH.REC (OP)
+    logic [31:0] dep1;         // OP; unit 15 = none
+    logic [31:0] dep0;
+    tsr_insn_t   w;            // OP: w0..w7 masked by WMASK; CTRL: w0 = code, w1 = TRACE_MARK value
+    logic [1:0]  kind;         // TSR_IFIFO_KIND_OP / _CTRL
+  } tsr_ifent_t;               // 387 bits
+
+  // One tagged operand extent (CC §8.2; the simulator's tsr_extent, tsr_sim_int.h §1): [lo, hi)
+  // in SPM lines or DRAM beats, hi > lo; v = 0 for an unused slot. Listed in operand field order;
+  // a read-modify-write operand (MVM ACC) is listed once as a write and once as a read.
+  typedef struct packed {
+    logic                  v;
+    logic                  dram;   // 0: SPM (lines), 1: DRAM (beats)
+    logic                  wr;     // 0: read, 1: write
+    logic [7:0]            ch;     // DRAM: channel, TSR_EXT_CH_ALL = every channel; SPM: 0
+    logic [TSR_EXT_AW-1:0] lo;
+    logic [TSR_EXT_AW-1:0] hi;
+  } tsr_ext_t;                     // 107 bits
+
+  // Error record of one unit (CC §9.5; EX §8.2): the first error since the last clear.
+  typedef struct packed {
+    logic                 err;     // the unit is in error state
+    logic [TSR_SEQ_W-1:0] seq;     // ERR_SEQ
+    logic [3:0]           code;    // ERR_CODE (CSR fields zero-extend it to 8 bits)
+    logic [31:0]          info;    // ERR_INFO
+    logic [31:0]          w0;      // ERR_W0
+    logic [31:0]          pidx;    // ERR_PIDX
+  } tsr_err_rec_t;                 // 129 bits
 
   /* verilator lint_on UNUSEDPARAM */
 

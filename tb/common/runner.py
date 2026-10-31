@@ -5,7 +5,9 @@
         run("tsr_dma", __name__, parameters={"NUM_CH": 2, "SPM_BYTES": 65536})
 
 Defaults:
-  - sources: every file of rtl/filelist.f (packages, generic tech, core) plus `extra_sources`
+  - sources: every file of rtl/filelist.f (packages, generic tech, the control subsystem through
+    its nested rtl/ctrl/filelist.f, core) plus `extra_sources`; the filelist's +incdir / +define
+    options and waiver files (.vlt) go into every build's arguments (rtl_args)
   - build directory: $TSR_SIM_BUILD_ROOT (else <repo>/build/cocotb) / <name>_<hash of
     toplevel, parameters, sources, args>; reused across runs (Verilator rebuilds what changed)
   - make -j$TSR_BUILD_JOBS (default 4), --assert, X randomisation (--x-assign/--x-initial unique,
@@ -30,15 +32,48 @@ if str(TB) not in sys.path:          # the simulator's Python inherits sys.path 
     sys.path.insert(0, str(TB))
 
 
-def rtl_sources(filelist: Path | str = RTL / "filelist.f") -> list:
-    """Source files of a filelist (paths relative to the filelist's directory; // comments)."""
+def parse_filelist(filelist: Path | str = RTL / "filelist.f"):
+    """(sources, args) of a Verilator filelist (// comments; paths relative to the directory of the
+    list that names them). Nested lists (-F / -f) are expanded in place. sources: the HDL files in
+    order; args: the options to pass before them, in order: +incdir+<abs> and +define+ lines and the
+    Verilator configuration files (*.vlt, e.g. rtl/ctrl/waivers/vendor.vlt, which must precede every
+    source; cocotb_tools does not classify .vlt sources). rtl/filelist.f includes rtl/ctrl/filelist.f
+    this way (W4-A)."""
     filelist = Path(filelist)
-    out = []
+    srcs, args = [], []
     for line in filelist.read_text().splitlines():
         line = line.split("//", 1)[0].strip()
-        if line:
-            out.append((filelist.parent / line).resolve())
-    return out
+        if not line:
+            continue
+        if line.startswith(("-F ", "-f ")):
+            s2, a2 = parse_filelist((filelist.parent / line[3:].strip()).resolve())
+            srcs += s2
+            args += [a for a in a2 if a not in args]
+        elif line.startswith("+incdir+"):
+            a = "+incdir+" + str((filelist.parent / line[len("+incdir+"):]).resolve())
+            if a not in args:
+                args.append(a)
+        elif line.startswith("+define+"):
+            if line not in args:
+                args.append(line)
+        elif line.endswith(".vlt"):
+            a = str((filelist.parent / line).resolve())
+            if a not in args:
+                args.append(a)
+        else:
+            srcs.append((filelist.parent / line).resolve())
+    return srcs, args
+
+
+def rtl_sources(filelist: Path | str = RTL / "filelist.f") -> list:
+    """HDL source files of a filelist, nested lists expanded (parse_filelist)."""
+    return parse_filelist(filelist)[0]
+
+
+def rtl_args(filelist: Path | str = RTL / "filelist.f") -> list:
+    """Verilator options of a filelist: include directories, defines, configuration files
+    (parse_filelist); run() passes those of rtl/filelist.f to every build."""
+    return parse_filelist(filelist)[1]
 
 
 def build_root() -> Path:
@@ -61,7 +96,9 @@ def run(toplevel: str, test_module: str, *, parameters: dict | None = None, extr
     seed = seed_from_env() if seed is None else seed
     if waves is None:
         waves = bool(int(os.environ.get("WAVES", "0")))
-    args = ["--assert"] + (["--x-assign", "unique", "--x-initial", "unique"] if x_random else [])
+    # the filelist's include directories, defines and waiver files first (the vendored IP of
+    # rtl/ctrl needs them; they change nothing for a build that does not use it)
+    args = rtl_args() + ["--assert"] + (["--x-assign", "unique", "--x-initial", "unique"] if x_random else [])
     if waves:
         args += ["--trace-structs"]
     args += list(build_args)

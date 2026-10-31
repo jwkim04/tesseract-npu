@@ -76,21 +76,18 @@ set cooc_flow 1
 source [file join [file dirname [file normalize [info script]]] core_rpt.tcl]
 
 if {$from eq ""} {
-  set fl [open $flist r]
-  set srcs [list]
-  set fdir [file dirname [file normalize $flist]]
-  foreach line [split [read $fl] "\n"] {
-    regsub {//.*$} $line "" line
-    set line [string trim $line]
-    if {$line eq ""} { continue }
-    lappend srcs $fdir/$line
-  }
-  close $fl
-  read_verilog -sv $srcs
-  synth_design -mode out_of_context -part xcu200-fsgd2104-2-e -top tsr_core {*}$genargs
+  # the filelist with its nested lists, include directories and defines (rtl/filelist.tcl, W4-A)
+  source $repo/rtl/filelist.tcl
+  set fld [tsr_read_filelist $flist]
+  read_verilog -sv [dict get $fld srcs]
+  synth_design -mode out_of_context -part xcu200-fsgd2104-2-e -top tsr_core {*}[tsr_synth_opts $fld] {*}$genargs
   create_clock -name clk -period 3.333 [get_ports clk]
-  set_input_delay  -clock clk 1.6 [get_ports -filter {DIRECTION == IN && NAME != clk}]
+  # the control core's clock (CC §11.1, 166.7 MHz) and its crossings (rtl/ctrl/viv/tsr_ctrl_cdc.xdc
+  # takes both clocks from the ports clk / clk_rv, which tsr_core has too)
+  create_clock -name clk_rv -period 6.000 [get_ports clk_rv]
+  set_input_delay  -clock clk 1.6 [get_ports -filter {DIRECTION == IN && NAME != clk && NAME != clk_rv}]
   set_output_delay -clock clk 1.6 [get_ports -filter {DIRECTION == OUT}]
+  source $repo/rtl/ctrl/viv/tsr_ctrl_cdc.xdc
   if {$unc ne ""} { set_clock_uncertainty -setup $unc [get_clocks clk] }
   if {$dcp} { write_checkpoint -force $out/post_synth.dcp }
   report_utilization -file $out/util_synth.rpt

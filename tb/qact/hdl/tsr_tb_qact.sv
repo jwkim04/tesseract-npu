@@ -1,8 +1,9 @@
 // tsr_tb_qact.sv — test wrapper (tb/qact/test_qact.py test_qact_rtl_spm): tsr_qact on client
 // TSR_SPM_CL_QACT of the real tsr_spm, the testbench on client TSR_SPM_CL_DMA (preload, contention
 // traffic, readback), client TSR_SPM_CL_MVM tied off — the same SPM port plan as tsr_core.
-// Client 0 has priority in tsr_spm, so testbench traffic takes the read / write grants away from
-// QACT in the middle of an instruction (ready low, grant handovers).
+// Testbench traffic takes the read / write grants away from QACT in the middle of an instruction
+// (ready low, grant handovers; tsr_spm arbitrates round robin per bank port, CC §10.2). Both
+// clients reach their bank ports through tsr_spm_cport, as in tsr_core (W4-A spm).
 
 module tsr_tb_qact
   import tsr_pkg::*;
@@ -34,20 +35,54 @@ module tsr_tb_qact
   input  logic [TSR_LINE_BITS-1:0] x_wr_data
 );
 
-  logic [TSR_SPM_NCL-1:0]                    rd_req_valid, rd_req_ready, rd_rsp_valid;
-  logic [TSR_SPM_NCL-1:0][SPM_AW-1:0]        rd_req_line;
-  logic [TSR_LINE_BITS-1:0]                  rd_rsp_data;
-  logic [TSR_SPM_NCL-1:0]                    wr_valid, wr_ready;
-  logic [TSR_SPM_NCL-1:0][SPM_AW-1:0]        wr_line;
-  logic [TSR_SPM_NCL-1:0][TSR_LINE_BITS-1:0] wr_data;
-  logic [TSR_SPM_NCL-1:0][TSR_SPM_BE_W-1:0]  wr_be;
+  // single-port client side [TSR_SPM_NSP] (clients 2 and 3 tied off)
+  logic [TSR_SPM_NSP-1:0]                    rd_req_valid, rd_req_ready, rd_rsp_valid;
+  logic [TSR_SPM_NSP-1:0][SPM_AW-1:0]        rd_req_line;
+  logic [TSR_SPM_NSP-1:0][TSR_LINE_BITS-1:0] rd_rsp_data;
+  logic [TSR_SPM_NSP-1:0]                    wr_valid, wr_ready;
+  logic [TSR_SPM_NSP-1:0][SPM_AW-1:0]        wr_line;
+  logic [TSR_SPM_NSP-1:0][TSR_LINE_BITS-1:0] wr_data;
+  logic [TSR_SPM_NSP-1:0][TSR_SPM_BE_W-1:0]  wr_be;
+  // bank ports [client][bank] (dual-bank clients 4 and 5 tied off)
+  logic [TSR_SPM_NCL-1:0][1:0]                    b_rd_req_valid, b_rd_req_ready, b_rd_rsp_valid;
+  logic [TSR_SPM_NCL-1:0][1:0][SPM_AW-1:0]        b_rd_req_line;
+  logic [1:0][TSR_LINE_BITS-1:0]                  b_rd_rsp_data;
+  logic [TSR_SPM_NCL-1:0][1:0]                    b_wr_valid, b_wr_ready;
+  logic [TSR_SPM_NCL-1:0][1:0][SPM_AW-1:0]        b_wr_line;
+  logic [TSR_SPM_NCL-1:0][1:0][TSR_LINE_BITS-1:0] b_wr_data;
+  logic [TSR_SPM_NCL-1:0][1:0][TSR_SPM_BE_W-1:0]  b_wr_be;
+
+  for (genvar c = 0; c < TSR_SPM_NCL; c++) begin : g_cl
+    if (c < TSR_SPM_NSP) begin : g_cport
+      tsr_spm_cport #(.SPM_BYTES(SPM_BYTES)) u_cport (
+        .rd_req_valid(rd_req_valid[c]), .rd_req_ready(rd_req_ready[c]), .rd_req_line(rd_req_line[c]),
+        .rd_rsp_valid(rd_rsp_valid[c]), .rd_rsp_data(rd_rsp_data[c]),
+        .wr_valid(wr_valid[c]), .wr_ready(wr_ready[c]), .wr_line(wr_line[c]), .wr_data(wr_data[c]),
+        .wr_be(wr_be[c]),
+        .s_rd_req_valid(b_rd_req_valid[c]), .s_rd_req_ready(b_rd_req_ready[c]),
+        .s_rd_req_line(b_rd_req_line[c]), .s_rd_rsp_valid(b_rd_rsp_valid[c]), .s_rd_rsp_data(b_rd_rsp_data),
+        .s_wr_valid(b_wr_valid[c]), .s_wr_ready(b_wr_ready[c]), .s_wr_line(b_wr_line[c]),
+        .s_wr_data(b_wr_data[c]), .s_wr_be(b_wr_be[c])
+      );
+    end else begin : g_tie
+      assign b_rd_req_valid[c] = '0;
+      assign b_rd_req_line[c]  = '0;
+      assign b_wr_valid[c]     = '0;
+      assign b_wr_line[c]      = '0;
+      assign b_wr_data[c]      = '0;
+      assign b_wr_be[c]        = '0;
+      wire unused_cl = &{1'b0, b_rd_req_ready[c], b_rd_rsp_valid[c], b_wr_ready[c]};
+    end
+  end
 
   tsr_spm #(
     .SPM_BYTES(SPM_BYTES), .NCL(TSR_SPM_NCL), .RD_LAT(SPM_RD_LAT), .BANK_LINES(BANK_LINES)
   ) u_spm (
     .clk, .rst_n,
-    .rd_req_valid, .rd_req_ready, .rd_req_line, .rd_rsp_valid, .rd_rsp_data,
-    .wr_valid, .wr_ready, .wr_line, .wr_data, .wr_be
+    .rd_req_valid(b_rd_req_valid), .rd_req_ready(b_rd_req_ready), .rd_req_line(b_rd_req_line),
+    .rd_rsp_valid(b_rd_rsp_valid), .rd_rsp_data(b_rd_rsp_data),
+    .wr_valid(b_wr_valid), .wr_ready(b_wr_ready), .wr_line(b_wr_line), .wr_data(b_wr_data),
+    .wr_be(b_wr_be)
   );
 
   // Client 0: testbench.
@@ -55,7 +90,7 @@ module tsr_tb_qact
   assign rd_req_line[TSR_SPM_CL_DMA]  = x_rd_req_line;
   assign x_rd_req_ready               = rd_req_ready[TSR_SPM_CL_DMA];
   assign x_rd_rsp_valid               = rd_rsp_valid[TSR_SPM_CL_DMA];
-  assign x_rd_rsp_data                = rd_rsp_data;
+  assign x_rd_rsp_data                = rd_rsp_data[TSR_SPM_CL_DMA];
   assign wr_valid[TSR_SPM_CL_DMA]     = x_wr_valid;
   assign wr_line[TSR_SPM_CL_DMA]      = x_wr_line;
   assign wr_data[TSR_SPM_CL_DMA]      = x_wr_data;
@@ -70,21 +105,21 @@ module tsr_tb_qact
     .cmd_valid, .cmd_ready, .cmd, .done,
     .spm_rd_req_valid(rd_req_valid[TSR_SPM_CL_QACT]), .spm_rd_req_ready(rd_req_ready[TSR_SPM_CL_QACT]),
     .spm_rd_req_line(rd_req_line[TSR_SPM_CL_QACT]), .spm_rd_rsp_valid(rd_rsp_valid[TSR_SPM_CL_QACT]),
-    .spm_rd_rsp_data(rd_rsp_data),
+    .spm_rd_rsp_data(rd_rsp_data[TSR_SPM_CL_QACT]),
     .spm_wr_valid(wr_valid[TSR_SPM_CL_QACT]), .spm_wr_ready(wr_ready[TSR_SPM_CL_QACT]),
     .spm_wr_line(wr_line[TSR_SPM_CL_QACT]), .spm_wr_data(wr_data[TSR_SPM_CL_QACT]),
     .spm_wr_be(wr_be[TSR_SPM_CL_QACT])
   );
 
-  // Client 2 (M3 MVM): tied off as in tsr_core.
-  assign rd_req_valid[TSR_SPM_CL_MVM] = 1'b0;
-  assign rd_req_line[TSR_SPM_CL_MVM]  = '0;
-  assign wr_valid[TSR_SPM_CL_MVM]     = 1'b0;
-  assign wr_line[TSR_SPM_CL_MVM]      = '0;
-  assign wr_data[TSR_SPM_CL_MVM]      = '0;
-  assign wr_be[TSR_SPM_CL_MVM]        = '0;
-
-  wire unused_ok = &{1'b0, rd_req_ready[TSR_SPM_CL_MVM], rd_rsp_valid[TSR_SPM_CL_MVM],
-                     wr_ready[TSR_SPM_CL_MVM]};
+  // Clients 2 (MVM) and 3 (bridge): tied off.
+  for (genvar c = TSR_SPM_CL_MVM; c < TSR_SPM_NSP; c++) begin : g_off
+    assign rd_req_valid[c] = 1'b0;
+    assign rd_req_line[c]  = '0;
+    assign wr_valid[c]     = 1'b0;
+    assign wr_line[c]      = '0;
+    assign wr_data[c]      = '0;
+    assign wr_be[c]        = '0;
+    wire unused_ok = &{1'b0, rd_req_ready[c], rd_rsp_valid[c], rd_rsp_data[c], wr_ready[c]};
+  end
 
 endmodule

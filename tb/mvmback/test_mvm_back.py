@@ -81,7 +81,7 @@ from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge, Timer
 
 from common import isa
 from common import mvm_model as mm
-from common.runner import REPO, build_root, rtl_sources, run
+from common.runner import REPO, build_root, rtl_args, rtl_sources, run
 from common.tsr_ref import ref
 
 TB_SV = REPO / "tb" / "mvmback" / "hdl" / "tsr_tb_mvm_back.sv"
@@ -175,7 +175,7 @@ def test_mvm_back_i2f_sweep():
            "-CFLAGS", "-O2 -I%s" % (REPO / "sw" / "sim" / "include"),
            "-LDFLAGS", "-L%s -ltsr_ref -Wl,-rpath,%s" % (lib.parent, lib.parent),
            "--Mdir", str(bdir), "-o", "i2f_sweep"]
-    cmd += [str(s) for s in srcs] + [str(I2F_SV), str(I2F_CPP)]
+    cmd += rtl_args() + [str(s) for s in srcs] + [str(I2F_SV), str(I2F_CPP)]   # rtl_args: rtl/ctrl's (W4-A)
     p = subprocess.run(cmd, capture_output=True, text=True)
     assert p.returncode == 0, "i2f_sweep build failed:\n%s\n%s" % (p.stdout[-4000:], p.stderr[-4000:])
     exe = bdir / "i2f_sweep"

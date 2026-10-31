@@ -10,8 +10,11 @@
 #                                      them, tsr_core with the xilinx filelist (U200, T_MAX 8,
 #                                      the U200 bitstream implementation parameters, reduced
 #                                      configurations), an XSim elaboration of the core and the
-#                                      MVM unit (xvlog / xelab of Vivado, skipped without it), and
-#                                      the tb/tech HDL with both targets
+#                                      MVM unit (xvlog / xelab of Vivado, skipped without it; a
+#                                      variable with more than one procedural driver fails it), a
+#                                      Vivado synthesis of tsr_issue and tsr_csr (synth_check.sh:
+#                                      fails on a multi-driven net), and the tb/tech HDL with both
+#                                      targets
 #   rtl/tech/xilinx/lint.sh MODULE...  lint only these modules (default parameters)
 #
 # No blanket waivers (as rtl/lint.sh). Exit status: number of failing lint runs (0 = clean).
@@ -104,14 +107,49 @@ if [ -r "$VSET" ]; then
     xdir=$(mktemp -d)
     vlock=()
     [ -n "${TSR_VIVADO_LOCK:-}" ] && vlock=(flock "$TSR_VIVADO_LOCK")
-    grep -v '^\s*//' "$FL" | grep -v '^\s*$' | sed "s#^#$ROOT/rtl/#" > "$xdir/files.txt"
+    # xvlog -f list: the filelist with its nested lists expanded, +incdir+ / +define+ as -i / -d,
+    # Verilator configuration files (.vlt) left out (W4-A: rtl/ctrl/filelist.f)
+    fl_expand() {   # fl_expand LIST
+        local fl=$1 dir line
+        dir=$(cd "$(dirname "$fl")" && pwd)
+        while IFS= read -r line || [ -n "$line" ]; do
+            line=${line%%//*}
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+            [ -z "$line" ] && continue
+            case "$line" in
+                "-F "*|"-f "*) fl_expand "$dir/${line:3}" ;;
+                +incdir+*) echo "-i $(cd "$dir/${line#+incdir+}" && pwd)" ;;
+                +define+*) echo "-d ${line#+define+}" ;;
+                *.vlt) ;;
+                *) echo "$dir/$line" ;;
+            esac
+        done < "$fl"
+    }
+    # Two xvlog passes into one library: the vendored IP (third_party/) with SYNTHESIS defined
+    # (XSim 2024.2 cannot compile Ibex's simulation-only DPI exports inside a generate block,
+    # ibex_if_stage.sv, nor does it need the vendor assertions), then Tesseract's own sources.
+    fl_expand "$FL" > "$xdir/all.txt"
+    { grep '^-' "$xdir/all.txt"; echo "-d SYNTHESIS"; grep -v '^-' "$xdir/all.txt" | grep '/third_party/'; } \
+        > "$xdir/vendor.txt"
+    { grep '^-' "$xdir/all.txt"; grep -v '^-' "$xdir/all.txt" | grep -v '/third_party/'; } > "$xdir/files.txt"
+    # Warnings that are functional bugs in the synthesised netlist, not style: a variable written by
+    # more than one procedural block (VRFC 10-9892 / 10-9941 / 10-10006). Verilator accepts it, but
+    # Vivado keeps one driver and ignores the other (Synth 8-6858): W4-A review, tsr_chk e_q.
+    xsim_bad='WARNING: \[VRFC 10-(9892|9941|10006)\]'
     xsim_elab() {   # xsim_elab TOP NAME=VALUE...
         local top=$1; shift
         local g=() kv out
         for kv in "$@"; do g+=(-generic_top "$kv"); done
         if out=$(cd "$xdir" && set +u && source "$VSET" > /dev/null 2>&1 && \
                  "${vlock[@]}" xelab "$top" -s "x$RANDOM" "${g[@]}" 2>&1); then
-            echo "xsim ok   $top $*"
+            if echo "$out" | grep -qE "$xsim_bad"; then
+                echo "xsim FAIL $top $* (a variable with more than one procedural driver)"
+                echo "$out" | grep -E "$xsim_bad" | sed 's/^/    /'
+                fails=$((fails + 1))
+            else
+                echo "xsim ok   $top $*"
+            fi
         else
             echo "xsim FAIL $top $*"
             echo "$out" | grep -E '^(ERROR|CRITICAL)' | sed 's/^/    /'
@@ -119,7 +157,7 @@ if [ -r "$VSET" ]; then
         fi
     }
     if out=$(cd "$xdir" && set +u && source "$VSET" > /dev/null 2>&1 && \
-             "${vlock[@]}" xvlog -sv -f files.txt 2>&1); then
+             "${vlock[@]}" xvlog -sv -f vendor.txt 2>&1 && "${vlock[@]}" xvlog -sv -f files.txt 2>&1); then
         u200=(HAS_MVM=1 SPM_RD_LAT=4 MVM_BC_PIPE=2 MVM_RES_PIPE=2 MVM_MAC_LAT=9 RST_PIPE=3)
         xsim_elab tsr_core "${u200[@]}" NUM_CH=1 T_MAX=1
         xsim_elab tsr_core "${u200[@]}" NUM_CH=2 T_MAX=2 K_MAX=4096 SPM_BYTES=65536 ADDR_BEAT_W=22 CH_BYTES=1073741824
@@ -134,6 +172,11 @@ if [ -r "$VSET" ]; then
 else
     echo "xsim skip (no Vivado at $VSET)"
 fi
+
+# ---- Vivado synthesis of the issue path and the CSR block: no multi-driven net (synth_check.sh; skipped
+# without Vivado). Verilator and XSim accept a variable written by two blocks, Vivado keeps one driver.
+"$ROOT/rtl/tech/xilinx/synth_check.sh" tsr_issue tsr_csr
+fails=$((fails + $?))
 
 # ---- tb/tech HDL with both targets (each toplevel with the tech files of one target only) ----
 for t in generic xilinx; do

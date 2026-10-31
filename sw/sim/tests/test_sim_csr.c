@@ -501,6 +501,23 @@ static void test_status_ctrl(void) {
     wr(s, TSR_CSR_CTRL, 0);
     wr(s, TSR_CSR_CTRL, TSR_CTRL_QCLEAR);
     CHECK(!(rd(s, TSR_CSR_STATUS) & TSR_STATUS_QERR), "QCLEAR accepted: idle, RISC-V in reset");
+    // A QCLEAR in a write that changes RV_RUN is judged on the state before the change (EX §5.2 bit 9):
+    // RV_RUN 1 -> 0 starts a reset that has not completed, so the QCLEAR is refused (the reset's own
+    // abort keeps the errors); RV_RUN 0 -> 1 with the hart in reset is accepted.
+    wr(s, TSR_CSR_STATUS, 0xFFFFFFFFu);
+    wr(s, TSR_CSR_CTRL, TSR_CTRL_QABORT);
+    wr(s, TSR_CSR_CTRL, TSR_CTRL_RV_RUN);
+    wr(s, TSR_CSR_CTRL, TSR_CTRL_QCLEAR);               // RV_RUN 1 -> 0 and QCLEAR
+    CHECK((rd(s, TSR_CSR_STATUS) & (TSR_STATUS_QCLEAR_REFUSED | TSR_STATUS_QERR)) == (TSR_STATUS_QCLEAR_REFUSED | TSR_STATUS_QERR),
+          "QCLEAR refused in the write that drops RV_RUN");
+    wr(s, TSR_CSR_STATUS, 0xFFFFFFFFu);
+    wr(s, TSR_CSR_CTRL, TSR_CTRL_RV_RUN | TSR_CTRL_QCLEAR);   // RV_RUN 0 -> 1 and QCLEAR
+    CHECK((rd(s, TSR_CSR_STATUS) & (TSR_STATUS_QCLEAR_REFUSED | TSR_STATUS_QERR)) == 0 && tsr_sim_rv_run(s) == 1,
+          "QCLEAR accepted in the write that releases the RISC-V from reset");
+    wr(s, TSR_CSR_CTRL, 0);
+    wr(s, TSR_CSR_CTRL, TSR_CTRL_QCLEAR);
+    CHECK(!(rd(s, TSR_CSR_STATUS) & TSR_STATUS_QERR), "QCLEAR accepted again with the RISC-V in reset");
+    wr(s, TSR_CSR_STATUS, 0xFFFFFFFFu);
     // Not idle: refused
     wr(s, TSR_CSR_STATUS, 0xFFFFFFFFu);
     tsr_sim_push(s, tsr_enc_ld(0, 0, 0, 1000).w, TSR_TICKET_NONE, TSR_TICKET_NONE, PUSH_ALL);

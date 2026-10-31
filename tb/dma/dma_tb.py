@@ -13,13 +13,14 @@ WriteSource     random write bursts on a write-source port (request and data off
                 independently with random gaps); checks write responses; keeps a shadow
 BurstMonitor    log of request handshakes on a memory-style port (packed per channel)
 PerfMonitor     counts perf_rd_beat / perf_rd_wait pulses per channel
-SpmContender    wrapper with RTL_SPM = 1: a second tsr_spm write client (x_wr_*, client QACT, lower
-                priority than the DMA) that rewrites lines with their current content, in bursts,
-                outside an excluded line range, to force write-grant handovers during DMA ops
-LdReadyMonitor  wrapper with RTL_SPM = 1: while an LD runs, the DMA's rd_rsp_ready must stay 1
-                (D2 with tsr_spm: the DMA is SPM write client 0, so its SPM write stalls are short
-                enough never to fill its beat queue); counts the DMA's SPM write stalls and the
-                contender's writes during LDs
+SpmContender    wrapper with RTL_SPM = 1: the other SPM write clients (x_wr_* lanes: clients 1..3
+                through tsr_spm_cport, client 4 on both banks) rewriting lines with their current
+                content, in bursts or saturating, outside an excluded line range, to force
+                write-grant handovers and round-robin waits during DMA ops
+SpmReader       wrapper with RTL_SPM = 1: the other SPM read clients (y_rd_* lanes), random lines
+ReserveMonitor  the LD burst reservation (CC §10.4): the DMA's rd_rsp_ready constant 1, LD beats
+                requested and not yet written to the SPM <= queue + 3; counts SPM write stalls
+                and contending writes during LDs
 DmaDriver       dispatch of tsr_dma_cmd_t commands with cmd_ready/done protocol checks
 split()         the D1 burst split: len = min(left, 64 - addr % 64)
 
@@ -575,28 +576,35 @@ class PerfMonitor:
 # =============================================================================================
 # Real-SPM integration helpers (wrapper with RTL_SPM = 1)
 # =============================================================================================
-class SpmContender:
-    """Writes on the wrapper's x_wr_* port (tsr_spm client TSR_SPM_CL_QACT). Every write stores
-    content(line), which must be the line's current content (None: line unknown, skipped), so the
-    SPM contents never change; lines in .excl (a range being written by an LD) are never written.
-    Valid comes in on/off phases of random length (many grant handovers). R2: a write stays valid
-    with an unchanged payload until accepted. Use window() to change .excl: it stops issuing and
-    waits until the pending write (if any) has been accepted, so no write chosen under the old
-    window can land later."""
+NX = 5                       # contending lanes of the wrapper (x_wr_* / y_rd_*)
+LANE_PARITY = [None, None, None, 0, 1]     # lanes 3 / 4: the dual-bank client 4 on bank E / O
 
-    def __init__(self, dut, *, lines: int, rnd: random.Random, content, on_len=(1, 12), off_len=(0, 8)):
+
+class SpmContender:
+    """Writes on the wrapper's x_wr_* lanes (tsr_spm clients 1..3 through tsr_spm_cport and client 4
+    on both banks). Every write stores content(line), which must be the line's current content
+    (None: line unknown, skipped), so the SPM contents never change; lines in .excl (a range being
+    written by an LD) are never written. Each lane's valid comes in on/off phases of random length
+    (many grant handovers), or always on with .saturate. R2: a write stays valid with an unchanged
+    payload until accepted. Use window() to change .excl: it stops issuing and waits until no lane
+    has a pending write, so no write chosen under the old window can land later."""
+
+    def __init__(self, dut, *, lines: int, rnd: random.Random, content, on_len=(1, 12), off_len=(0, 8),
+                 lanes: int = NX):
         self.dut, self.lines, self.rnd, self.content = dut, lines, rnd, content
-        self.on_len, self.off_len = on_len, off_len
-        self.v, self.r, self.l, self.d = dut.x_wr_valid, dut.x_wr_ready, dut.x_wr_line, dut.x_wr_data
+        self.on_len, self.off_len, self.n = on_len, off_len, lanes
+        self.aw = len(dut.x_wr_line) // NX
         self.enabled = False
+        self.saturate = False
+        self.lane_on = [True] * lanes            # lanes allowed to write
         self.excl = range(0)
-        self.pending = None
+        self.pending = [None] * lanes            # (line, data) per lane
         self.fires = 0
-        self._phase = 0                          # > 0: on cycles left, < 0: off cycles left
+        self.lane_fires = [0] * lanes
+        self._phase = [0] * lanes                # > 0: on cycles left, < 0: off cycles left
         self._task = None
-        self.v.value = 0
-        self.l.value = 0
-        self.d.value = 0
+        self._o = _Out()
+        self._drive()
 
     def start(self):
         if self._task is None:
@@ -611,85 +619,185 @@ class SpmContender:
     async def window(self, excl, enabled: bool = True, timeout: int = 1000):
         self.enabled = False
         for _ in range(timeout):
-            if self.pending is None:
+            if all(p is None for p in self.pending):
                 break
             await RisingEdge(self.dut.clk)
         else:
-            raise TimeoutError("SPM contender: pending write to line %d never accepted" % self.pending)
+            raise TimeoutError("SPM contender: pending writes %s never accepted" % self.pending)
         self.excl = excl
         self.enabled = enabled
 
-    def _pick(self):
+    def _pick(self, lane):
+        par = LANE_PARITY[lane]
+        if par == 1 and self.lines < 2:
+            return None
         for _ in range(8):
             ln = self.rnd.randrange(self.lines)
+            if par is not None:
+                ln = (ln & ~1) | par
+                if ln >= self.lines:
+                    ln -= 2
+                if ln < 0:
+                    continue
             if ln not in self.excl:
                 c = self.content(ln)
                 if c is not None:
                     return ln, c
         return None
 
+    def _drive(self):
+        v = l = d = 0
+        for k, p in enumerate(self.pending):
+            if p is not None:
+                v |= 1 << k
+                l |= p[0] << (k * self.aw)
+                d |= p[1] << (k * 512)
+        self._o.put(self.dut.x_wr_valid, v)
+        self._o.put(self.dut.x_wr_line, l)
+        self._o.put(self.dut.x_wr_data, d)
+
     async def _run(self):
         clk, rst = self.dut.clk, self.dut.rst_n
         while True:
             await FallingEdge(clk)
             in_rst = int(rst.value) == 0
-            acc = self.pending is not None and int(self.r.value) == 1
+            rdy = int(self.dut.x_wr_ready.value)
             await RisingEdge(clk)
-            if in_rst:
-                self.pending = None
-                self.v.value = 0
-                continue
-            if acc:
-                self.fires += 1
-                self.pending = None
-            if self.pending is not None:
-                continue                         # R2: hold
-            if self._phase == 0:
-                self._phase = self.rnd.randint(*self.on_len) if self.rnd.random() < 0.5 \
-                    else -self.rnd.randint(*self.off_len)
-            on = self._phase > 0
-            self._phase += -1 if self._phase > 0 else 1
-            w = self._pick() if (self.enabled and on) else None
-            if w is None:
-                self.v.value = 0
-                continue
-            self.pending = w[0]
-            self.l.value = w[0]
-            self.d.value = w[1]
-            self.v.value = 1
+            for k in range(self.n):
+                if in_rst:
+                    self.pending[k] = None
+                    continue
+                if self.pending[k] is not None and (rdy >> k) & 1:
+                    self.fires += 1
+                    self.lane_fires[k] += 1
+                    self.pending[k] = None
+                if self.pending[k] is not None:
+                    continue                     # R2: hold
+                if self._phase[k] == 0:
+                    self._phase[k] = self.rnd.randint(*self.on_len) if self.rnd.random() < 0.5 \
+                        else -self.rnd.randint(*self.off_len)
+                on = self._phase[k] > 0 or self.saturate
+                self._phase[k] += -1 if self._phase[k] > 0 else 1
+                if self.enabled and on and self.lane_on[k]:
+                    self.pending[k] = self._pick(k)
+            self._drive()
 
 
-class LdReadyMonitor:
-    """While .ld_active (set by the test around an LD): the DMA's rd_rsp_ready (u_dma port) must
-    be all ones. Counts LD cycles, the DMA's SPM write stalls (spm_wr_valid && !spm_wr_ready) and
-    the contender's accepted writes during LDs, and records the highest beat-queue occupancy
-    (u_dma.q_cnt_q, information only)."""
+class SpmReader:
+    """Reads on the wrapper's y_rd_* lanes (clients 1..3 and client 4 on both banks): random lines
+    (each lane's parity), always valid with .saturate, else with probability .p per cycle; the
+    responses are discarded (tsr_spm's own checks and the DMA's data cover them). R2 held."""
 
-    def __init__(self, dut, num_ch: int):
-        self.dut, self.full = dut, (1 << num_ch) - 1
+    def __init__(self, dut, *, lines: int, rnd: random.Random, lanes: int = NX):
+        self.dut, self.lines, self.rnd, self.n = dut, lines, rnd, lanes
+        self.aw = len(dut.y_rd_req_line) // NX
+        self.enabled = False
+        self.saturate = False
+        self.p = 0.3
+        self.pending = [None] * lanes
+        self.fires = 0
+        self._task = None
+        self._o = _Out()
+        self._drive()
+
+    def start(self):
+        if self._task is None:
+            self._task = cocotb.start_soon(self._run())
+        return self
+
+    def stop(self):
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+
+    def _drive(self):
+        v = l = 0
+        for k, p in enumerate(self.pending):
+            if p is not None:
+                v |= 1 << k
+                l |= p << (k * self.aw)
+        self._o.put(self.dut.y_rd_req_valid, v)
+        self._o.put(self.dut.y_rd_req_line, l)
+
+    async def _run(self):
+        clk, rst = self.dut.clk, self.dut.rst_n
+        while True:
+            await FallingEdge(clk)
+            in_rst = int(rst.value) == 0
+            rdy = int(self.dut.y_rd_req_ready.value)
+            await RisingEdge(clk)
+            for k in range(self.n):
+                if in_rst:
+                    self.pending[k] = None
+                    continue
+                if self.pending[k] is not None and (rdy >> k) & 1:
+                    self.fires += 1
+                    self.pending[k] = None
+                if self.pending[k] is not None:
+                    continue
+                par = LANE_PARITY[k]
+                if not self.enabled or (par == 1 and self.lines < 2):
+                    continue
+                if self.saturate or self.rnd.random() < self.p:
+                    ln = self.rnd.randrange(self.lines)
+                    if par is not None:
+                        ln = (ln & ~1) | par
+                        if ln >= self.lines:
+                            ln -= 2
+                    self.pending[k] = ln
+            self._drive()
+
+
+class ReserveMonitor:
+    """The LD burst reservation (CC §10.4, CC-13) at the DMA's own ports (u = the tsr_dma instance
+    or the toplevel tsr_dma): rd_rsp_ready is all ones in every cycle (reset included); the LD
+    beats requested (accepted read bursts) and not yet written to the SPM never exceed the beat
+    queue plus the read-out behind it (QD + 3: the queue RAM's two read stages / the skid and the
+    output register, tsr_dma "Read-out"); records the highest such claim and queue occupancy.
+    While .ld_active (set by the tests around an LD), counts LD cycles, the DMA's SPM write stalls
+    and the contending lanes' accepted writes."""
+
+    def __init__(self, dut, u, num_ch: int, qd: int, contend: bool = False):
+        self.dut, self.u, self.full, self.qd = dut, u, (1 << num_ch) - 1, qd
+        self.n = num_ch
+        self.contend = contend
         self.ld_active = False
         self.cycles = self.dma_wr_stalls = self.x_writes = 0
-        self.q_max = 0                           # highest beat-queue occupancy seen during LDs (info)
+        self.claim = 0
+        self.claim_max = 0
+        self.q_max = 0
+        self.ready_cycles = 0
         self._task = cocotb.start_soon(self._run())
 
     def stop(self):
         self._task.cancel()
 
     async def _run(self):
-        d, u = self.dut, self.dut.u_dma
+        d, u = self.dut, self.u
+        lw = isa.LEN_W
         while True:
             await FallingEdge(d.clk)
-            if not self.ld_active or int(d.rst_n.value) == 0:
-                continue
-            self.cycles += 1
             rr = int(u.rd_rsp_ready.value)
-            assert rr == self.full, "LD in progress: DMA rd_rsp_ready = 0x%x (beat queue full: the SPM " \
-                "write port stalled the DMA too long)" % rr
-            if int(u.spm_wr_valid.value) and not int(u.spm_wr_ready.value):
-                self.dma_wr_stalls += 1
+            assert rr == self.full, "DMA rd_rsp_ready = 0x%x: must be constant 1 (LD burst reservation)" % rr
+            self.ready_cycles += 1
+            if int(d.rst_n.value) == 0:
+                self.claim = 0
+                continue
+            rv, rq = int(u.rd_req_valid.value), int(u.rd_req_ready.value)
+            if rv & rq:
+                ch = (rv & rq).bit_length() - 1
+                self.claim += fld(int(u.rd_req_len.value), ch, lw)
+            if int(u.spm_wr_valid.value) and int(u.spm_wr_ready.value):
+                self.claim -= 1
+            assert 0 <= self.claim <= self.qd + 3, "LD beats in flight + queued = %d > %d + 3" % (self.claim, self.qd)
+            self.claim_max = max(self.claim_max, self.claim)
             self.q_max = max(self.q_max, int(u.q_cnt_q.value))
-            if int(d.x_wr_valid.value) and int(d.x_wr_ready.value):
-                self.x_writes += 1
+            if self.ld_active:
+                self.cycles += 1
+                if int(u.spm_wr_valid.value) and not int(u.spm_wr_ready.value):
+                    self.dma_wr_stalls += 1
+                if self.contend:
+                    self.x_writes += bin(int(d.x_wr_valid.value) & int(d.x_wr_ready.value)).count("1")
 
 
 # =============================================================================================
@@ -722,6 +830,11 @@ class DmaDriver:
         while True:
             await FallingEdge(self.dut.clk)
             dn = int(self.dut.done.value)
+            if int(self.dut.rst_n.value) == 0:
+                # a done latched at the edge before a synchronous reset took effect belongs to the
+                # op being reset (dma_reset cancels ops at random cycles, possibly the last one)
+                prev = 0
+                continue
             if dn:
                 assert prev == 0, "done held for more than one cycle"
                 assert self.busy, "done without a command in flight"

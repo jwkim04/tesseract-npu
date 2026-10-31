@@ -7,11 +7,15 @@
 //   w_*  : source TSR_SRC_WS of every channel (packed [NUM_CH]; the M3 weight-stream port)
 //   m_*  : the channel memory ports (tsr_core naming, for common.mem_model.MemModel)
 //   spm_*: the DMA's SPM client port. RTL_SPM = 0: driven by a Python SPM model. RTL_SPM = 1:
-//          the DMA talks to a real tsr_spm (client TSR_SPM_CL_DMA; MVM client tied off);
-//          spm_* outputs then only mirror the DMA's requests and the spm_* inputs are unused.
-//   x_wr_*: RTL_SPM = 1 only: write port of tsr_spm client TSR_SPM_CL_QACT (lower fixed priority
-//          than the DMA), driven by Python to contend with the DMA for the SPM write port (grant
-//          handovers in both directions). RTL_SPM = 0: inputs unused, x_wr_ready = 0.
+//          the DMA talks to the real even / odd tsr_spm (client TSR_SPM_CL_DMA through
+//          tsr_spm_cport, as in tsr_core); spm_* outputs then only mirror the DMA's requests and
+//          the spm_* inputs are unused.
+//   x_wr_* / y_rd_*: RTL_SPM = 1 only: NX = 5 contending SPM write / read lanes driven by Python
+//          (CC §15.1 sys_rtl_spm_contend: the other clients saturating the SPM ports): lanes 0..2
+//          = the single-port clients 1..3 (QACT, MVM gather, bridge slots) through tsr_spm_cport,
+//          lanes 3 / 4 = the dual-bank client 4 (VU slot) on bank E / O (line[0] must match);
+//          client 5 tied off. Writes are full lines; read responses are discarded. RTL_SPM = 0:
+//          inputs unused, readies 0.
 //   perf_rd_beat / perf_rd_wait: the arbiters' perf events per channel.
 
 module tsr_tb_dma
@@ -23,6 +27,8 @@ module tsr_tb_dma
   parameter  int unsigned SPM_RD_LAT     = 2,
   parameter  int unsigned RD_OUTSTANDING = 16,
   parameter  bit          RTL_SPM        = 1'b0,
+  parameter  int unsigned LDQ_BEATS      = 512,
+  localparam int unsigned NX             = 5,
   localparam int unsigned BB             = 512,
   localparam int unsigned SPM_LINES      = SPM_BYTES / TSR_LINE_BYTES,
   localparam int unsigned SPM_AW         = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1
@@ -48,11 +54,14 @@ module tsr_tb_dma
   output logic [TSR_LINE_BITS-1:0]               spm_wr_data,
   output logic [TSR_SPM_BE_W-1:0]                spm_wr_be,
 
-  // ---- RTL_SPM = 1: contending SPM writer (tsr_spm client TSR_SPM_CL_QACT, wr_be all ones) ----
-  input  logic                                   x_wr_valid,
-  output logic                                   x_wr_ready,
-  input  logic [SPM_AW-1:0]                      x_wr_line,
-  input  logic [TSR_LINE_BITS-1:0]               x_wr_data,
+  // ---- RTL_SPM = 1: contending SPM write and read lanes (wr_be all ones) ----
+  input  logic [NX-1:0]                          x_wr_valid,
+  output logic [NX-1:0]                          x_wr_ready,
+  input  logic [NX-1:0][SPM_AW-1:0]              x_wr_line,
+  input  logic [NX-1:0][TSR_LINE_BITS-1:0]       x_wr_data,
+  input  logic [NX-1:0]                          y_rd_req_valid,
+  output logic [NX-1:0]                          y_rd_req_ready,
+  input  logic [NX-1:0][SPM_AW-1:0]              y_rd_req_line,
 
   // ---- background source AUX (channel 0) ----
   input  logic                                   f_rd_req_valid,
@@ -134,7 +143,7 @@ module tsr_tb_dma
 
   tsr_dma #(
     .NUM_CH(NUM_CH), .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BB), .SPM_BYTES(SPM_BYTES),
-    .SPM_RD_LAT(SPM_RD_LAT)
+    .SPM_RD_LAT(SPM_RD_LAT), .LDQ_BEATS(LDQ_BEATS)
   ) u_dma (
     .clk, .rst_n,
     .cmd_valid, .cmd_ready, .cmd, .done,
@@ -162,42 +171,86 @@ module tsr_tb_dma
   assign spm_wr_be        = i_wr_be;
 
   if (RTL_SPM) begin : g_rtl_spm
-    logic [TSR_SPM_NCL-1:0]                    rq_v, rq_r, rs_v, wr_v, wr_r;
-    logic [TSR_SPM_NCL-1:0][SPM_AW-1:0]        rq_l, wr_l;
-    logic [TSR_SPM_NCL-1:0][TSR_LINE_BITS-1:0] wr_d;
-    logic [TSR_SPM_NCL-1:0][TSR_SPM_BE_W-1:0]  wr_b;
+    // single-port side of clients 0..3 (0 = the DMA, 1..3 = lanes 0..2)
+    logic [TSR_SPM_NSP-1:0]                    sp_rq_v, sp_rq_r, sp_rs_v, sp_wr_v, sp_wr_r;
+    logic [TSR_SPM_NSP-1:0][SPM_AW-1:0]        sp_rq_l, sp_wr_l;
+    logic [TSR_SPM_NSP-1:0][TSR_LINE_BITS-1:0] sp_rs_d, sp_wr_d;
+    logic [TSR_SPM_NSP-1:0][TSR_SPM_BE_W-1:0]  sp_wr_b;
+    // bank ports [client][bank]
+    logic [TSR_SPM_NCL-1:0][1:0]                    rq_v, rq_r, rs_v, wr_v, wr_r;
+    logic [TSR_SPM_NCL-1:0][1:0][SPM_AW-1:0]        rq_l, wr_l;
+    logic [1:0][TSR_LINE_BITS-1:0]                  rs_d;
+    logic [TSR_SPM_NCL-1:0][1:0][TSR_LINE_BITS-1:0] wr_d;
+    logic [TSR_SPM_NCL-1:0][1:0][TSR_SPM_BE_W-1:0]  wr_b;
+
     always_comb begin
-      rq_v = '0; rq_l = '0; wr_v = '0; wr_l = '0; wr_d = '0; wr_b = '0;
-      rq_v[TSR_SPM_CL_DMA] = i_rd_req_valid;
-      rq_l[TSR_SPM_CL_DMA] = i_rd_req_line;
-      wr_v[TSR_SPM_CL_DMA] = i_wr_valid;
-      wr_l[TSR_SPM_CL_DMA] = i_wr_line;
-      wr_d[TSR_SPM_CL_DMA] = i_wr_data;
-      wr_b[TSR_SPM_CL_DMA] = i_wr_be;
-      wr_v[TSR_SPM_CL_QACT] = x_wr_valid;
-      wr_l[TSR_SPM_CL_QACT] = x_wr_line;
-      wr_d[TSR_SPM_CL_QACT] = x_wr_data;
-      wr_b[TSR_SPM_CL_QACT] = '1;
+      sp_rq_v = '0; sp_rq_l = '0; sp_wr_v = '0; sp_wr_l = '0; sp_wr_d = '0; sp_wr_b = '0;
+      sp_rq_v[TSR_SPM_CL_DMA] = i_rd_req_valid;
+      sp_rq_l[TSR_SPM_CL_DMA] = i_rd_req_line;
+      sp_wr_v[TSR_SPM_CL_DMA] = i_wr_valid;
+      sp_wr_l[TSR_SPM_CL_DMA] = i_wr_line;
+      sp_wr_d[TSR_SPM_CL_DMA] = i_wr_data;
+      sp_wr_b[TSR_SPM_CL_DMA] = i_wr_be;
+      for (int unsigned k = 0; k < 3; k++) begin
+        sp_rq_v[k+1] = y_rd_req_valid[k];
+        sp_rq_l[k+1] = y_rd_req_line[k];
+        sp_wr_v[k+1] = x_wr_valid[k];
+        sp_wr_l[k+1] = x_wr_line[k];
+        sp_wr_d[k+1] = x_wr_data[k];
+        sp_wr_b[k+1] = '1;
+      end
     end
+
+    for (genvar c = 0; c < TSR_SPM_NSP; c++) begin : g_cport
+      tsr_spm_cport #(.SPM_BYTES(SPM_BYTES)) u_cport (
+        .rd_req_valid(sp_rq_v[c]), .rd_req_ready(sp_rq_r[c]), .rd_req_line(sp_rq_l[c]),
+        .rd_rsp_valid(sp_rs_v[c]), .rd_rsp_data(sp_rs_d[c]),
+        .wr_valid(sp_wr_v[c]), .wr_ready(sp_wr_r[c]), .wr_line(sp_wr_l[c]), .wr_data(sp_wr_d[c]),
+        .wr_be(sp_wr_b[c]),
+        .s_rd_req_valid(rq_v[c]), .s_rd_req_ready(rq_r[c]), .s_rd_req_line(rq_l[c]),
+        .s_rd_rsp_valid(rs_v[c]), .s_rd_rsp_data(rs_d),
+        .s_wr_valid(wr_v[c]), .s_wr_ready(wr_r[c]), .s_wr_line(wr_l[c]), .s_wr_data(wr_d[c]),
+        .s_wr_be(wr_b[c])
+      );
+    end
+    // client 4 (dual-bank): lanes 3 / 4 = bank E / O; client 5 tied off
+    for (genvar b = 0; b < 2; b++) begin : g_vu
+      assign rq_v[TSR_SPM_CL_VU][b] = y_rd_req_valid[3 + b];
+      assign rq_l[TSR_SPM_CL_VU][b] = y_rd_req_line[3 + b];
+      assign wr_v[TSR_SPM_CL_VU][b] = x_wr_valid[3 + b];
+      assign wr_l[TSR_SPM_CL_VU][b] = x_wr_line[3 + b];
+      assign wr_d[TSR_SPM_CL_VU][b] = x_wr_data[3 + b];
+      assign wr_b[TSR_SPM_CL_VU][b] = '1;
+    end
+    assign rq_v[TSR_SPM_CL_AT] = '0;
+    assign rq_l[TSR_SPM_CL_AT] = '0;
+    assign wr_v[TSR_SPM_CL_AT] = '0;
+    assign wr_l[TSR_SPM_CL_AT] = '0;
+    assign wr_d[TSR_SPM_CL_AT] = '0;
+    assign wr_b[TSR_SPM_CL_AT] = '0;
+
     tsr_spm #(.SPM_BYTES(SPM_BYTES), .NCL(TSR_SPM_NCL), .RD_LAT(SPM_RD_LAT)) u_spm (
       .clk, .rst_n,
       .rd_req_valid(rq_v), .rd_req_ready(rq_r), .rd_req_line(rq_l),
-      .rd_rsp_valid(rs_v), .rd_rsp_data(i_rd_rsp_data),
+      .rd_rsp_valid(rs_v), .rd_rsp_data(rs_d),
       .wr_valid(wr_v), .wr_ready(wr_r), .wr_line(wr_l), .wr_data(wr_d), .wr_be(wr_b)
     );
-    assign i_rd_req_ready = rq_r[TSR_SPM_CL_DMA];
-    assign i_rd_rsp_valid = rs_v[TSR_SPM_CL_DMA];
-    assign i_wr_ready     = wr_r[TSR_SPM_CL_DMA];
-    assign x_wr_ready     = wr_r[TSR_SPM_CL_QACT];
-    wire unused_spm = &{1'b0, rq_r, rs_v, wr_r, spm_rd_req_ready, spm_rd_rsp_valid, spm_rd_rsp_data,
-                        spm_wr_ready};
+    assign i_rd_req_ready = sp_rq_r[TSR_SPM_CL_DMA];
+    assign i_rd_rsp_valid = sp_rs_v[TSR_SPM_CL_DMA];
+    assign i_rd_rsp_data  = sp_rs_d[TSR_SPM_CL_DMA];
+    assign i_wr_ready     = sp_wr_r[TSR_SPM_CL_DMA];
+    assign x_wr_ready     = {wr_r[TSR_SPM_CL_VU], sp_wr_r[3:1]};
+    assign y_rd_req_ready = {rq_r[TSR_SPM_CL_VU], sp_rq_r[3:1]};
+    wire unused_spm = &{1'b0, sp_rs_v, sp_rs_d[3:1], rs_v[TSR_SPM_CL_VU], rq_r[TSR_SPM_CL_AT], rs_v[TSR_SPM_CL_AT],
+                        wr_r[TSR_SPM_CL_AT], spm_rd_req_ready, spm_rd_rsp_valid, spm_rd_rsp_data, spm_wr_ready};
   end else begin : g_py_spm
     assign i_rd_req_ready = spm_rd_req_ready;
     assign i_rd_rsp_valid = spm_rd_rsp_valid;
     assign i_rd_rsp_data  = spm_rd_rsp_data;
     assign i_wr_ready     = spm_wr_ready;
-    assign x_wr_ready     = 1'b0;
-    wire unused_x = &{1'b0, x_wr_valid, x_wr_line, x_wr_data};
+    assign x_wr_ready     = '0;
+    assign y_rd_req_ready = '0;
+    wire unused_x = &{1'b0, x_wr_valid, x_wr_line, x_wr_data, y_rd_req_valid, y_rd_req_line};
   end
 
   for (genvar c = 0; c < NUM_CH; c++) begin : g_ch

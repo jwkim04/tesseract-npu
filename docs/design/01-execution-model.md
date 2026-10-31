@@ -504,7 +504,7 @@ their registers inside it, and the RISC-V reads it through CC's core window (CC 
 | 0x01C | `CTL_ID` | R | [7:0] control-core revision (1; 0 = no control core: the host refuses the device), bit8 debug module, bit9 completion records, bit10 SPM bridge, bit11 log ring, bit12 watchdog, bit13 SBA connected, bit14 SPM line-buffered alias | EX, CC |
 | 0x020 | `CTRL` | RW / W1 | §5.2 | EX |
 | 0x024 | `STATUS` | R / W1C | §5.3 | EX |
-| 0x028 | `RV_BOOT` | RW | boot vector, 256-byte aligned ([7:0] read 0); taken when `RV_RUN` rises (was `CTL_BOOT`) | CC |
+| 0x028 | `RV_BOOT` | RW | boot vector, 256-byte aligned ([7:0] read 0); taken when `RV_RUN` rises (was `CTL_BOOT`). A write while `RV_RUN` = 1 is ignored, so the bus that crosses to `clk_rv` is stable whenever the RISC-V samples it (reset release, and the restart after a debug ndmreset) | CC |
 | 0x02C | `RV_FREQ` | R | `clk_rv` cycles in the last 2^16 core cycles; 0 = no `clk_rv` (was `CTL_RV_FREQ`) | CC |
 | 0x030 | `RV_CFG` | R | [15:0] ITCM KiB, [31:16] DTCM KiB (was `CTL_CFG`) | CC |
 | 0x034 | `WDOG_CFG` | RW | [4:0] L: unit watchdog limit of 2^L core cycles without progress; 0 = off; reset value 24 (§8.6) | EX |
@@ -526,7 +526,7 @@ their registers inside it, and the RISC-V reads it through CC's core window (CC 
 | 0x094 | `LOG_RD` | RW | log words consumed by the host | EX |
 | 0x098 | `LOG_CFG` | RW | bit0 ENABLE, bit1 BLOCK, [7:4] LEVEL; reset value 0x0000_00F1 | EX |
 | 0x09C | `LOG_DROPPED` | R | words dropped, saturating; cleared by `SOFT_RESET` | EX |
-| 0x0C0 | `LOAD_ADDR` | RW | TCM byte address (word aligned); a write restarts `LOAD_CRC` | EX |
+| 0x0C0 | `LOAD_ADDR` | RW | TCM byte address (word aligned); a write restarts `LOAD_CRC`. Refused while `VERIFY_BUSY` = 1 (the write is dropped and sets `LOAD_REFUSED`: it would restart the CRC that VERIFY is folding) | EX |
 | 0x0C4 | `LOAD_DATA` | RW | write: store the word, address += 4; read: the word at the address (no increment). Only while `RV_RUN` = 0 and not `SR_BUSY`: otherwise a write is dropped and sets `LOAD_REFUSED`, and a read returns 0 and sets nothing | EX |
 | 0x0C8 | `LOAD_CRC` | R | CRC-32 of the words accepted, or of the words read by VERIFY | EX |
 | 0x0CC | `LOAD_COUNT` | RW | word count for VERIFY | EX |
@@ -551,7 +551,7 @@ their registers inside it, and the RISC-V reads it through CC's core window (CC 
 | 2 | `HOLD_ON_HALT` | RW level | a debug halt holds the queue heads |
 | 3 | `IRQ_EN` | RW level | `host_irq_o` = `IRQ_EN` ∧ (LCQ_WR ≠ LCQ_RD); the U200 leaves the output unconnected |
 | 8 | `QABORT` | W1 pulse | host QABORT, applied at once (§8.5) |
-| 9 | `QCLEAR` | W1 pulse | host QCLEAR: accepted only when QIDLE holds and the RISC-V is quiet (reset done, or halted with no push in flight); otherwise `QCLEAR_REFUSED` |
+| 9 | `QCLEAR` | W1 pulse | host QCLEAR: accepted only when QIDLE holds and the RISC-V is quiet (reset done, or halted with no push in flight); otherwise `QCLEAR_REFUSED`. "Quiet" is judged on the state before this write's own `RV_RUN` change: a QCLEAR in the same write as `RV_RUN` 1 → 0 is refused (unless the hart is halted), because the reset has not completed; one in the same write as `RV_RUN` 0 → 1 is accepted if the reset had completed |
 | 10 | `SOFT_RESET` | W1 pulse | §8.5 |
 | others | — | | 0 |
 
@@ -576,7 +576,7 @@ has exactly one owner, the host. Level bits are updated before the pulses of the
 | 11 | `LOG_PENDING` | level | LOG_WR ≠ LOG_RD |
 | 12 | `PLAT_ERR` | level | the platform's error input `plat_err_i` (§9.3) |
 | 15:13 | `HOLD_SRC` | level | hold sources: host, RISC-V, debug halt |
-| 16 | `LOAD_REFUSED` | sticky | a `LOAD_DATA` write or a VERIFY command while `RV_RUN` = 1 or `SR_BUSY` (reads never set it) |
+| 16 | `LOAD_REFUSED` | sticky | a `LOAD_DATA` write or a VERIFY command while `RV_RUN` = 1 or `SR_BUSY`; a `LOAD_DATA` write, a VERIFY command or a `LOAD_ADDR` write while `VERIFY_BUSY` = 1 (reads never set it) |
 | 17 | `LOAD_TIMEOUT` | sticky | a load or VERIFY word timed out |
 | 18 | `DMI_TIMEOUT` | sticky | |
 | 19 | `QCLEAR_REFUSED` | sticky | |

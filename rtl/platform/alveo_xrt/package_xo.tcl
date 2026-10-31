@@ -39,26 +39,20 @@ file mkdir $work
 file delete -force $outdir/$kernel.xo $outdir/$kernel.sources.sha256
 
 # ---- sources: core filelist (paths relative to its directory), then the platform filelist ----
-proc read_fl {fl} {
-  set dir [file dirname $fl]
-  set out [list]
-  set f [open $fl r]
-  foreach line [split [read $f] "\n"] {
-    regsub {//.*$} $line "" line
-    set line [string trim $line]
-    if {$line ne ""} { lappend out [file normalize $dir/$line] }
-  }
-  close $f
-  return $out
-}
+# (nested lists, include directories, defines: rtl/filelist.tcl, W4-A)
+source $repo/rtl/filelist.tcl
 if {![file exists $corefl]} {
   puts "PKG error: core filelist $corefl not found"
   exit 2
 }
-set srcs [concat [read_fl $corefl] [read_fl $pdir/filelist.f]]
+set fld [tsr_read_filelist $corefl]
+set fld [tsr_read_filelist $pdir/filelist.f $fld]
+set srcs [dict get $fld srcs]
 
 create_project -force kpack $work/proj -part xcu200-fsgd2104-2-e
 add_files -norecurse $srcs
+if {[llength [dict get $fld incdirs]]} { set_property include_dirs [dict get $fld incdirs] [current_fileset] }
+set_property verilog_define [dict get $fld defines] [current_fileset]
 set_property file_type SystemVerilog [get_files *.sv]
 set_property top $kernel [current_fileset]
 update_compile_order -fileset sources_1

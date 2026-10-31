@@ -1146,6 +1146,10 @@ uint32_t tsr_sim_corewin_read(tsr_sim * sim, uint32_t csr_off) { return csr_read
 static void ctrl_write(tsr_sim * sim, uint32_t val) {
     // Level bits first (EX §5.2), then the pulses in bit order.
     const uint32_t old = sim->ctrl;
+    // "The RISC-V is quiet" for a QCLEAR in this write (EX §5.2 bit 9) is judged before the write's own
+    // RV_RUN change: a reset started by this write has not completed, so RV_RUN 1 -> 0 plus QCLEAR is
+    // refused unless the hart was halted (the core samples its inputs in the cycle of the write).
+    const int rv_quiet = !(old & TSR_CTRL_RV_RUN) || (sim->rv_state & TSR_STATUS_RV_HALTED);
     uint32_t lv = val & (TSR_CTRL_HOST_HOLD | TSR_CTRL_HOLD_ON_HALT | TSR_CTRL_IRQ_EN);
     uint32_t run = old & TSR_CTRL_RV_RUN;
     if ((val & TSR_CTRL_RV_RUN) != run) {
@@ -1164,7 +1168,7 @@ static void ctrl_write(tsr_sim * sim, uint32_t val) {
     }
     if (val & TSR_CTRL_QABORT) tsr_q_abort(sim);
     if (val & TSR_CTRL_QCLEAR) {
-        if (tsr_q_host_clear(sim) != 0) sim->sticky |= TSR_STATUS_QCLEAR_REFUSED;
+        if (tsr_q_host_clear(sim, rv_quiet) != 0) sim->sticky |= TSR_STATUS_QCLEAR_REFUSED;
     }
     if (val & TSR_CTRL_SOFT_RESET) soft_reset_start(sim);
 }
@@ -1191,7 +1195,9 @@ static void csr_write(tsr_sim * sim, uint32_t off, uint32_t val) {
     switch (off) {
     case TSR_CSR_CTRL:      ctrl_write(sim, val); return;
     case TSR_CSR_STATUS:    sim->sticky &= ~(val & 0x0FFF0000u); return;   // W1C, sticky bits 16..27
-    case TSR_CSR_RV_BOOT:   sim->rv_boot = val & TSR_RV_BOOT_ADDR; return;
+    case TSR_CSR_RV_BOOT:                                  // taken when RV_RUN rises (EX §5.1): ignored while RV_RUN = 1
+        if (!(sim->ctrl & TSR_CTRL_RV_RUN)) sim->rv_boot = val & TSR_RV_BOOT_ADDR;
+        return;
     case TSR_CSR_WDOG_CFG:  sim->wdog_cfg = val & TSR_WDOG_CFG_L; return;
     case TSR_CSR_LQ_PUSH:
         if ((uint32_t)(sim->pushed - sim->taken) >= TSR_LQ_DEPTH) {

@@ -69,6 +69,44 @@ https://github.com/notofonts/latin-greek-cyrillic
 
 
 
+Ibex (Apache-2.0)
+Copyright lowRISC contributors.
+Copyright 2018 ETH Zurich and University of Bologna.
+https://github.com/lowRISC/ibex
+
+  third_party/ibex is a Git submodule (pinned commit 7a4697f578c67c550fcad5e5e3078415e1f088d7, the
+  commit OpenTitan's hw/vendor/lowrisc_ibex.lock.hjson records), used unmodified as the RISC-V
+  control core (rtl/ctrl, docs/design/04-control-core.md §3). Its own NOTICE: "This product
+  includes hardware and/or software developed as part of the Ibex(R)
+  (https://github.com/lowRISC/ibex) and OpenTitan(R) projects. Ibex was originally developed by the
+  PULP team at ETH Zurich and University of Bologna under the name zero-riscy." The lowRISC
+  primitives in its vendor/lowrisc_ip are Apache-2.0; the two pulp common_cells files in its
+  vendor/pulp_common_cells are SHL-0.51 (below). rtl/ctrl/prim/prim_clock_gating.sv is the
+  author's binding of Ibex's clock-gate interface (Apache-2.0).
+  License text: LICENSES/Apache-2.0.txt.
+
+
+riscv-dbg (Solderpad Hardware License v0.51; debug ROM source Apache-2.0)
+Copyright 2018-2021 ETH Zurich and University of Bologna.
+Copyright SiFive, Inc. (debug_rom/debug_rom.S, see its LICENSE.SiFive)
+https://github.com/pulp-platform/riscv-dbg
+
+  third_party/riscv-dbg is a Git submodule (release v0.10.1, commit
+  deed17e18c0d61ce8dc554300bb4dd5c39be2a13), used unmodified as the debug module of the control
+  core. License texts: LICENSES/SHL-0.51.txt (the Solderpad license allows the work to be treated
+  as Apache-2.0 at the licensee's option) and LICENSES/Apache-2.0.txt.
+
+
+common_cells (Solderpad Hardware License v0.51)
+Copyright 2018 ETH Zurich and University of Bologna.
+https://github.com/pulp-platform/common_cells
+
+  third_party/common_cells is a Git submodule (release v1.40.0, commit
+  1281545696eb3fcba50ec5b4275993476a3c710e); only src/fifo_v3.sv is built (riscv-dbg's response
+  FIFO), unmodified. License text: LICENSES/SHL-0.51.txt.
+
+
+
 The PyTorch and Hugging Face logos in docs/fig/logos are trademarks of their owners. No license is
 granted for them (LICENSES/LicenseRef-Trademark-PyTorch.txt, LicenseRef-Trademark-HuggingFace.txt;
 source and checksums in docs/fig/logos/SOURCES.md). The Apache License 2.0 grants no rights to any

@@ -932,7 +932,10 @@ def perf_fixed_max(p: dict) -> int:
     # act_ready fail there, +8 mostly passes); with a 64-entry FIFO the rate is ~1.10 and
     # jitters, which makes the fixed-part estimate noisier (+8).
     fifo_bound = p["WS_FIFO_BEATS"] < FAST_RT + 64
-    return DBL_FIXED + p["BC_PIPE"] + p["RES_PIPE"] + p["SPM_RD_LAT"] + p["ACT_RD_LAT"] + 8 * fifo_bound
+    # W4-A spm: + 2 for the even / odd SPM (CC §10.2): the broadcast's second QA line and the
+    # gather's second y line are on the other bank, whose read / write grant another client
+    # (the host port) may own: one grant hand-over cycle per bank port instead of one per port.
+    return DBL_FIXED + p["BC_PIPE"] + p["RES_PIPE"] + p["SPM_RD_LAT"] + p["ACT_RD_LAT"] + 8 * fifo_bound + 2
 
 
 @cocotb.test()

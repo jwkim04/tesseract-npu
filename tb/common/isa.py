@@ -47,8 +47,10 @@ SRC_ID_W = 2
 MEM_ID_W = 4
 SRC_AUX, SRC_DMA, SRC_WS = 0, 1, 2     # AUX: freed by the fetch removal, tied off (CC-26)
 
-SPM_CL_DMA, SPM_CL_QACT, SPM_CL_MVM = 0, 1, 2
-SPM_NCL = 3
+# SPM clients (tsr_pkg TSR_SPM_CL_*, CC §10.2; W4-A spm): 0-3 single port through tsr_spm_cport
+SPM_CL_DMA, SPM_CL_QACT, SPM_CL_MVM, SPM_CL_BRIDGE, SPM_CL_VU, SPM_CL_AT = 0, 1, 2, 3, 4, 5
+SPM_NCL = 6
+SPM_NSP = 4
 
 # ---------------------------------------------------------------------------------------------
 # CSR map (the map: EX §5, generated tables)

@@ -74,15 +74,15 @@ implements in RTL what EX and DB specify for the core.
 | Module (new = N, changed = C) | File | Domain | SLR (U200 k4) |
 |---|---|---|---|
 | `tsr_core` (C: new boundary, §13.1) | `rtl/core/tsr_core.sv` | both | — |
-| `tsr_ctrl_rv` (N): Ibex, `dm_top`, TCMs, `tsr_rv_bus`, `tsr_ctl_win`, `tsr_spm_lb` | `rtl/core/ctrl/` | clk_rv | SLR1, pblock `ctrl_rv` |
-| `tsr_ctrl_cdc` (N): every crossing of §11 | `rtl/core/ctrl/tsr_ctrl_cdc.sv` | both | SLR1 |
+| `tsr_ctrl_rv` (N): Ibex, `dm_top`, TCMs, `tsr_rv_bus`, `tsr_ctl_win` (with the line buffer) | `rtl/ctrl/` (W4: not `rtl/core/ctrl/`) | clk_rv | SLR1, pblock `ctrl_rv` |
+| `tsr_ctrl_cdc` (N): every crossing of §11; `tsr_ctrl` = `tsr_ctrl_rv` + `tsr_ctrl_cdc` + reset synchronisers, the instance `tsr_core` takes | `rtl/ctrl/tsr_ctrl_cdc.sv`, `rtl/ctrl/tsr_ctrl.sv` | both | SLR1 |
 | `tsr_core_dp` (N): the whole core-clock datapath; the op-list replay bench instantiates it alone (§15.3) | `rtl/core/tsr_core_dp.sv` | core | — |
 | `tsr_issue` (N): dispatcher, queues, heads, SYNC, counters, error states | `rtl/core/tsr_issue.sv` | core | SLR1 |
 | `tsr_chk` (N) | `rtl/core/tsr_chk.sv` | core | SLR1 |
 | `tsr_spm_bridge` (N): RISC-V SPM client | `rtl/core/tsr_spm_bridge.sv` | core | SLR1, next to `tsr_spm` |
 | `tsr_csr` (C, rewritten) | `rtl/core/tsr_csr.sv` | core | SLR1 |
 | `tsr_spm` (C: 2R2W), `tsr_dma` (C), `tsr_qact` (C: port adapter), `tsr_mvm` (C: port adapter, gather slices) | `rtl/core/` | core | SLR1 (clusters SLR0 / SLR2) |
-| `tsr_cdc_fifo`, `tsr_cdc_gray`, `tsr_cdc_hs` (N) | `rtl/core/cdc/` | both | — |
+| `tsr_cdc_fifo`, `tsr_cdc_gray`, `tsr_cdc_hs` (N); `tsr_sync`, `tsr_rst_sync` until `rtl/tech` takes them | `rtl/ctrl/cdc/` (W4: not `rtl/core/cdc/`) | both | — |
 | `tsr_sync`, `tsr_rst_sync`, `tsr_clk_div` (N) | `rtl/tech/<target>/` | — | — |
 | VU (`tsr_vu`, including AT's vector ops 0x34–0x37); AT's cluster modes (ATTQK / ATTPV) and KVST in the DMA | areas VU / AT | core | VU and KVST in SLR1; cluster modes in SLR0 / SLR2 (§14) |
 
@@ -97,10 +97,12 @@ implements in RTL what EX and DB specify for the core.
   OpenTitan's sign-off flow has run), together with the `vendor/lowrisc_ip` `prim_*` files that
   Ibex itself vendors. If that commit is older than 6 months, the newest `master` commit with green
   Ibex CI instead. Hash, date, the Verilator 5.046 build check and the configuration's verification
-  grade (Ibex README table) go to `third_party/ibex/VENDOR.md`.
+  grade (Ibex README table) go to `rtl/ctrl/VENDOR.md` (W4: a file in the submodule would modify
+  it; pinned: Ibex `7a4697f5`, 2026-10-16).
 - **Debug module**: `pulp-platform/riscv-dbg` (Debug Spec 0.13.2), latest release tag on the
-  vendoring day (v0.8.x at the time of writing, *confirm*), unmodified, in `third_party/riscv-dbg`,
-  with only the `common_cells` files `dm_top` needs. The JTAG DTM (`dmi_jtag`) is not used: our DMI
+  vendoring day (v0.10.1, `deed17e1`, on 2026-10-31), unmodified, in `third_party/riscv-dbg`,
+  with only the `common_cells` file `dm_top` needs (`fifo_v3`, from the `third_party/common_cells`
+  submodule at v1.40.0). The JTAG DTM (`dmi_jtag`) is not used: our DMI
   arrives from the CSR window (§11).
 - Both keep their own style (asynchronous active-low resets, `prim_*`), with one Verilator waiver
   file per tree; `prim_clock_gating` binds to `rtl/tech/<target>/tsr_clk_gate.sv` (pass-through on
@@ -111,7 +113,7 @@ implements in RTL what EX and DB specify for the core.
 | Parameter | Value | Why |
 |---|---|---|
 | `RV32E` | 0 | 16 registers would cost code size |
-| `RV32M` | `RV32MSingleCycle` (fallback `RV32MFast`, below) | MUL 1 cycle, MULH* 2, DIV / REM 38 (2 by zero) (CC-34) |
+| `RV32M` | `RV32MFast` (T1, 2026-10-31, §14.3: maxperf with `RV32MSingleCycle` had +0.20 ns at 6.0 ns, under the 0.3 ns rule) | MUL 3 cycles, MULH* 4, DIV / REM 38 (2 by zero) (CC-34). `tsr_rv`'s cycle table still models the single-cycle multiplier (MUL 1, MULH* 2): ≤ +1.3 % RISC-V cycles on the W2a firmware, 0 on the optimised executor (below), so the simulator's SW §7.8 projections stay within that bound |
 | `RV32B` | `RV32BNone` | code-size gain unmeasured; Zba/Zbb stays an SDK-measured option |
 | `RegFile` | `RegFileFPGA` (LUTRAM); flops on an ASIC (tech layer) | |
 | `WritebackStage`, `BranchTargetALU` | 1 / 1 | Ibex's "maxperf" pipeline (CC-34): loads and stores leave ID/EX after the request, taken branches 2 cycles instead of 3; still in order, no prediction, no cache (D1) |
@@ -231,7 +233,7 @@ riscv-dbg runs anything outside that range, the fallback reads `dmstatus` over t
 |---|---|---|---|---|
 | 0x0000_0000–0x0001_FFFF | ITCM, `ITCM_BYTES` = 128 KiB | yes | byte / half / word | data reads steal the fetch port for one cycle (`instr_gnt` = 0); stores then `fence.i` |
 | 0x0010_0000–0x0010_FFFF | DTCM, `DTCM_BYTES` = 64 KiB | no | byte / half / word | .rodata, .data, .bss, stack |
-| 0x1000_0000–0x1000_0FFF | debug module memory | yes | word | riscv-dbg layout |
+| 0x1000_0000–0x1000_0FFF | debug module memory | yes | word (byte / half too in debug mode) | riscv-dbg layout; its debug ROM reads its flags with `lbu` (W4 correction) |
 | 0x2000_0000–0x2000_0FFF | control window (§5) | no | word only | clk_rv registers |
 | 0x2000_1000–0x2000_1FFF | core window (§5.3) | no | word loads only (store = fault) | read-only view of the core CSR space |
 | 0x4000_0000–0x403F_FFFF | SPM window, exact (`SPM_BYTES`) | no | byte / half / word | 0x4000_0000 + 64 × line + offset, little-endian |
@@ -249,7 +251,10 @@ reserved up to 0x000F_FFFF and the DTCM up to 0x001F_FFFF, so larger TCMs keep t
   both. Read latency 1, no output register (Ibex wants the word the cycle after `gnt`). The
   Xilinx mapping target is RAMB36 in 32K × 1 columns (no output mux): ITCM 32 RAMB36, DTCM 16
   RAMB36 (*confirm* the inference in the first out-of-context run; the wrapper may instantiate
-  `RAMB36E2` only inside `rtl/tech/xilinx`).
+  `RAMB36E2` only inside `rtl/tech/xilinx`). W4 T1 runs: Vivado's default inference builds 8-high /
+  4-high cascades (fetch address on the BRAM enables, cascade mux) and `rtl/tech/xilinx`'s
+  wrapper maps both TCMs to URAM; `RAM_STYLE BLOCK` + `CASCADE_HEIGHT 1`
+  (`rtl/ctrl/viv/tsr_ctrl_tcm.xdc`) gives the 32K × 1 columns, 48 RAMB36.
 - Contents are undefined after a hardware reset; the host loads and verifies the image (EX §3.3,
   §6.4 here).
 
@@ -583,9 +588,10 @@ start of the next entry of the same unit ≤ 2 cycles.
 - **I2 errors visible before completion**: D[u] does not pass ERR_SEQ[u] until the clk_rv side
   acknowledged unit u's record (≈ 5–8 core + 3–4 clk_rv cycles, *estimate*, once per error state).
 - **I3**: a unit holds at most the ops it accepted, completes them in accept order; S[u] − D[u] ≤ 2
-  for MVM (2, overlap) and VU (3, accept-ahead), ≤ 1 for every other unit.
-- **I4**: no SPM or memory traffic from a unit that holds no op (the integration checks I2 / I3 of
-  `rtl/core/tsr_core.sv:479-502`, per unit).
+  for MVM (overlap) and VU (accept-ahead, VU §7.8; tables `ACCEPT_MAX`), ≤ 1 for every other unit.
+  (Corrected 2026-10-31, W4-A: the VU's limit is 2 as in §15.2, §16 and the table source, not 3.)
+- **I4**: no SPM or memory traffic from a unit that holds no op (the integration check U2 of
+  `rtl/core/tsr_core_dp.sv`, per unit; W4-A: moved there from `tsr_core.sv`).
 
 ### 9.5 Errors, QABORT, QCLEAR
 
@@ -713,7 +719,7 @@ The figure shows the two clock domains, the crossings between them and the const
 | Issue FIFO (ops, QCTRL and TRACE_MARK entries) | RV → core | `tsr_cdc_fifo`, gray pointers, 32 entries LUTRAM | 387 b |
 | `ISSUED_SEQ[u]` | RV → core | `tsr_cdc_gray` 28-bit × 6 | 168 b |
 | S[u], D[u] | core → RV | `tsr_cdc_gray` 28-bit × 12, ≤ 1 step per core cycle (asserted) | 336 b |
-| Error records + clear | core → RV | tagged `tsr_cdc_hs` per unit; I2 acknowledge | 6 × 128 b |
+| Error records + clear | core → RV | tagged `tsr_cdc_hs` per unit; I2 acknowledge. While clk_rv is not OK a handshake is answered locally, so when it is OK again `tsr_ctrl_cdc` pulses `rec_resync_o` and `tsr_issue` sends all six records once more | 6 × 128 b |
 | SPM bridge | RV ↔ core | tagged 2-phase `tsr_cdc_hs`, one access, data held stable | 64 b req / 513 b rsp |
 | Core window | RV ↔ core | same structure, shared with the bridge's handshake slot; the read data is `line[31:0]` | 64 b req / 513 b rsp (32 b of data) |
 | LQ / LCQ registers (EX §4.5) | RV ↔ core | tagged 2-phase `tsr_cdc_hs` (own slot): reads return the core-domain value; `LQ_POP` and `LCQ_POST` (with the 8 staged words) commit and fault in the core domain (CC-30) | 301 b req / 33 b rsp |
@@ -726,6 +732,7 @@ The figure shows the two clock domains, the crossings between them and the const
 | clk_rv cycle count, clk_rv PERF counters | RV → core | 16-bit / 32-bit gray counters | 112 b |
 | Sticky events (PUSH_TIMEOUT, BRIDGE_TIMEOUT) | RV → core | toggle synchronisers | |
 | Levels (RV_RUN, holds, RV_HALTED, RV_SLEEP, RV_RESET_DONE, "clk_rv out of reset", ACTIVE, `irq_fast[2]` = LQ_AVAIL ≠ 0 ∧ ¬ACTIVE, `irq_fast[3]` = LCQ_FREE ≠ 0, `dbg_stop`) | both | 2-flop `tsr_sync`; RV_RESET_DONE two stages behind the FIFO write pointer | |
+| `RV_BOOT` | core → RV | 2-flop `tsr_sync` on the 32-bit bus; quasi-static: `tsr_csr` ignores `RV_BOOT` writes while `CTRL.RV_RUN` = 1, so the bus only changes while the hart is held, and the sequencer samples it at the reset release (also after a debug ndmreset) two cycles behind the synchronised RV_RUN; `report_cdc` waiver in `tsr_ctrl_cdc.xdc` | 32 b |
 
 The widths are the exact ones of `rtl/ctrl/tsr_ctrl_pkg.sv` and the instances in `tsr_ctrl_cdc.sv`. The LQ / LCQ request is {`lcq_w[7:0]` 8 × 32 b, `wdata` 32 b, `we` 1 b, `off` 12 b} = 301 b and its response {`fault`, `rdata`} = 33 b; the LOAD request is {`we`, `addr` 32 b, `wdata` 32 b} = 65 b and its response {`err`, `rdata`} = 33 b; the bridge / core-window response is {`err`, `line[511:0]`} = 513 b; a request of the bridge and the core window is {`kind`, `be`, `addr`, `wdata`} = 64 b.
 
@@ -922,6 +929,18 @@ the VU.
 | T3 | k4 v++ link (all M6 hardware) | **kernel clock ≥ 276.3 MHz** (as measured without the control core); target 300 MHz with §14.4; zero unconstrained `ap_clk` ↔ `ap_clk_2` paths; `report_cdc` clean |
 | T4 | k1 v++ link | 300 MHz (bring-up) |
 
+**T1 measured** (W4, 2026-10-31; `rtl/ctrl/viv/ctrl_ooc.sh`, `tsr_ctrl` = `tsr_ctrl_rv` + CDC out of
+context, xcu200-2, TCMs in 32K × 1 RAMB36 columns, default directives): clk_rv WNS at 6.0 ns: maxperf
++0.20 ns (an earlier run of the same flow +0.30 ns), limited by the single-cycle multiplier
+(Ibex ID → `mult1_res` DSPs → WB register); maxperf with `RV32MFast` +0.31 ns (limited by Ibex's
+taken-branch fetch address into the ITCM BRAM address); small +0.39 ns. At 4.0 ns maxperf misses by
+1.74 ns, so 250 MHz is out of reach and the planning value 166.7 MHz stays. By §3.2's fallback
+rule the RTL default is maxperf with `RV32MFast` (`tsr_ctrl.RV32M`). Core clock side of the CDC at
+3.62 ns: +0.09 to +0.26 ns, the worst path from the dispatcher's `if_ready_i` (1.6 ns input budget)
+into the issue FIFO's LUTRAM read. Cost: 8.5–8.7 K LUT, 13.5–13.6 K FF, 284 LUTRAM, 48 RAMB36,
+4 DSP (1 with `RV32MFast`). `report_cdc`: 22 + 64 endpoints, all safe once the waivers of
+`tsr_ctrl_cdc.xdc` (handshake data, FIFO LUTRAM, gray and level buses, the quasi-static `RV_BOOT` bus) are applied.
+
 The control-core RTL is frozen after T1–T3. Links run on the build host (14 GB + swap; the k4
 link took 3 h 51 min, `docs/platform-u200.md` §8.2); T2 before every T3.
 
@@ -1093,7 +1112,7 @@ T1–T4 of §14.3; `report_cdc` on every out-of-context run; `report_timing` bet
 
 | Id | Topic | Choice | Alternatives | Rationale |
 |---|---|---|---|---|
-| CC-1 | Ibex pin | OpenTitan's locked Ibex commit at vendoring, unmodified; RV32IMC, `RV32MFast`, FPGA register file, no PMP / cache / predictor / WB stage, 2 triggers (pipeline amended by CC-34: WB stage, branch target ALU, `RV32MSingleCycle`) | Ibex master tip; VexRiscv; CV32E40P | The OpenTitan lock is a state that a silicon sign-off flow ran on, which matters more than features; the configuration is the verified "small" one plus two documented deviations (register file variant, triggers). VexRiscv's Scala source and CV32E40P's FPU are not needed (D1, no F). |
+| CC-1 | Ibex pin | OpenTitan's locked Ibex commit at vendoring, unmodified; RV32IMC, `RV32MFast`, FPGA register file, no PMP / cache / predictor / WB stage, 2 triggers (pipeline amended by CC-34: WB stage, branch target ALU; the multiplier stays `RV32MFast` after T1) | Ibex master tip; VexRiscv; CV32E40P | The OpenTitan lock is a state that a silicon sign-off flow ran on, which matters more than features; the configuration is the verified "small" one plus two documented deviations (register file variant, triggers). VexRiscv's Scala source and CV32E40P's FPU are not needed (D1, no F). |
 | CC-2 | Debug module | upstream riscv-dbg release, `dm_top` without its JTAG DTM, DMI from the CSR window, SBA connected | OpenTitan's patched `rv_dm`; own DM | D18 needs a standard DM; GDB-over-PCIe (DB) speaks DMI directly, so the JTAG DTM is dead weight; upstream avoids OpenTitan's TL-UL wrapper. |
 | CC-3 | TCMs | ITCM 128 KiB, DTCM 64 KiB, RAMB36 32K × 1 columns, read latency 1 | 64 + 64 KiB; URAM | M7's graph executor, two model families, M8 MoE, sampling and debug formatting must fit without overlays; 16 more RAMB36 of ≈ 351 free is cheap. URAM is kept for the SPM (32 free). Columns avoid an output mux at read latency 1. |
 | CC-4 | Address map | ctrl-riscv map + 0x5000_0000 line-buffered SPM alias | only the exact window | Op lists and argument blocks are read word by word; the alias makes that ≈ 7× faster with an invalidation rule that keeps the memory model. |
@@ -1126,7 +1145,7 @@ T1–T4 of §14.3; `report_cdc` on every out-of-context run; `report_timing` bet
 | CC-31 | SR sequencer | a core-domain sequencer for EX §8.5 (RISC-V reset with a 2^16-cycle bound, drain, clear list, `SR_BUSY`), independent of `clk_rv` | a host-scripted sequence; reset of the clk_rv domain only | The host needs one atomic "known state" operation that cannot be raced by the RISC-V and completes when `clk_rv` is absent. |
 | CC-32 | `ISSUE_PIDX` | a `clk_rv` counter of ticketed pushes at control-window 0x03C, equal to the dispatcher's pidx | a software push counter initialised from `Q_PIDX`; reading `Q_PIDX` | Exact and timing-independent like `ISSUED_SEQ` (only the RISC-V's own pushes move it), costs ≈ 40 FF, and survives firmware that pushes outside the SDK's counter; `Q_PIDX` lags by the issue FIFO. |
 | CC-33 | SBA write refusal | every SBA write to the control and core windows is refused in hardware, and SBA TCM writes while `RV_RUN` = 0 | refuse only issue staging, push and `QCTRL` | `LQ_POP`, `LCQ_POST`, `LOG_PUSH` and `TRACE_MARK` have protocol effects; a whole-window rule is simpler to verify than a list and matches the debug server's policy. |
-| CC-34 | Ibex pipeline (2026-10-30, executor optimisation; amends CC-1) | Ibex "maxperf" pipeline: `WritebackStage` 1, `BranchTargetALU` 1, `RV32MSingleCycle`; the TCMs take one data access per cycle (§4.3); `tsr_rv` models it and is the simulator default. Fallback by T1: `RV32MFast`, then the configuration with the lower time per op record (§3.2) | "small" (CC-1); maxperf with `RV32MFast`; a Rocket core (rejected by the user, 2026-10-30) | Measured on the simulator (§3.2): −21.8 % RISC-V cycles per op record with the W2a firmware (1,977 → 1,547) and −16 % with the optimised executor (520 → 437), launch entry 2.19 → 1.68 µs; ≈ +0.5–1 K LUT, +2 DSP (+0.3–0.5 points of SLR1, §14.5). The single-cycle multiplier is worth ≤ 1.3 % (0 on the optimised executor) but is the verified maxperf / OpenTitan form; it goes first if T1 shows it on the critical path. |
+| CC-34 | Ibex pipeline (2026-10-30, executor optimisation; amends CC-1) | Ibex "maxperf" pipeline: `WritebackStage` 1, `BranchTargetALU` 1, `RV32MSingleCycle` (T1 took the fallback `RV32MFast`, 2026-10-31, §14.3); the TCMs take one data access per cycle (§4.3); `tsr_rv` models the pipeline with the single-cycle multiplier and is the simulator default. Fallback by T1: `RV32MFast`, then the configuration with the lower time per op record (§3.2) | "small" (CC-1); maxperf with `RV32MFast`; a Rocket core (rejected by the user, 2026-10-30) | Measured on the simulator (§3.2): −21.8 % RISC-V cycles per op record with the W2a firmware (1,977 → 1,547) and −16 % with the optimised executor (520 → 437), launch entry 2.19 → 1.68 µs; ≈ +0.5–1 K LUT, +2 DSP (+0.3–0.5 points of SLR1, §14.5). The single-cycle multiplier is worth ≤ 1.3 % (0 on the optimised executor) but is the verified maxperf / OpenTitan form; it goes first if T1 shows it on the critical path. |
 
 ---
 

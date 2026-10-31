@@ -16,38 +16,44 @@
 //   the others stay idle. Reads use local id 0; responses of one id return in order. Writes: offer
 //   wr_req and wr_dat independently (never wait for wr_req_ready before driving wr_dat_valid, nor
 //   the reverse); data beats in request order; wr_dat_last on the last beat of each burst.
-// SPM side: client TSR_SPM_CL_DMA of tsr_spm (read responses arrive SPM_RD_LAT cycles after the
-//   request is accepted, no backpressure).
+// SPM side: single-port client TSR_SPM_CL_DMA of tsr_spm through tsr_spm_cport (read responses
+//   arrive SPM_RD_LAT cycles after the request is accepted, no backpressure).
 //
 // Microarchitecture
-//   One engine, one command at a time. Three decoupled pipelines share a beat queue (QD entries,
-//   LUTRAM-style array with a registered output stage):
+//   One engine, one command at a time. Three decoupled pipelines share a beat queue (QD =
+//   LDQ_BEATS entries, default 512: a tsr_sram_1r1w of QD x 512, i.e. 8 RAMB36 in 512 x 72
+//   columns on the U200, CC §10.4):
 //
 //     burst generator --rq--> rd_req[ch] (LD)  or  wr_req[ch] (ST)        (independent of data)
-//     LD: rd_rsp[ch] --push--> queue --pop--> output reg --> spm_wr        (line = spm_line + i)
-//     ST: spm_rd_req --SPM--> spm_rd_rsp --push--> queue --pop--> output reg --> wr_dat[ch]
+//     LD: rd_rsp[ch] --push--> queue --pop--> read-out --> output reg --> spm_wr  (line = spm_line + i)
+//     ST: spm_rd_req --SPM--> spm_rd_rsp --push--> queue --pop--> read-out --> output reg --> wr_dat[ch]
 //
+//   - Read-out: the queue RAM has read latency QRL = 2 (the BRAM read latch and its output
+//     register DOB_REG), so the output register (a fabric flop: wr_dat_data goes to the channel
+//     arbiters in other SLRs, rtl-m2 §1, and must not leave a BRAM latch) is fed from the RAM
+//     output or from a 2-entry skid buffer. A pop (RAM read) is issued while the beats behind the
+//     RAM (reads in flight + skid + output register) leave room after this cycle's output
+//     transfer: QRL + 1 = 3 places, so a stream still moves one beat per cycle.
 //   - Read id scheme: every LD burst uses local id 0 (memory id {DMA, 0}). The memory returns
 //     the beats of one id in request order, so the response stream IS the SPM line order: no
 //     reorder buffer, no tags; up to RD_OUTSTANDING bursts in flight (limit enforced by
 //     tsr_mem_arb, shared with the other sources of the channel). The burst generator issues
 //     back-to-back bursts as fast as the arbiter accepts them.
-//   - LD flow control (D2/R4/M6): rd_rsp_ready is a flop = "queue not full after this edge".
-//     Read bursts are NOT gated on reserved queue space (full reservation would need
-//     RD_OUTSTANDING x 64 beats of buffer); rd_rsp_ready depends only on the DMA's own SPM write
-//     port, into which the queue drains. tsr_spm grants write client 0 (the DMA, highest fixed
-//     priority) the cycle after spm_wr_valid rises and keeps the grant while it stays high, so a
-//     DMA SPM write stalls at most one cycle, and only after the queue ran empty: the queue holds
-//     <= 2 beats (QD >= 8) and rd_rsp_ready stays 1 for the whole LD, even with another SPM
-//     writer active. The SPM write port never waits for memory traffic, so the M6 no-deadlock
-//     argument holds. This is narrower than the letter of docs/rtl-m2.md D2 ("reserve
-//     SPM-write/FIFO room"); the D2 amendment is proposed in the M2 DMA report. Tested with the
-//     real tsr_spm and a contending writer (tb/dma sys_rtl_spm_contend). Against an SPM that
-//     stalls longer (the unit tests' SPM model) the queue fills and rd_rsp_ready drops: plain
-//     backpressure, no data loss. In steady state (SPM ready) the LD streams one beat per cycle.
+//   - LD flow control: burst reservation (CC §10.4, CC-13; R4 / M6). An LD read burst is
+//     requested only when the beat queue has room for the whole burst: ld_free_q counts the queue
+//     entries neither holding a beat nor claimed by a beat requested and not yet received
+//     (QD - queue entries - beats in flight); a burst of blen beats needs blen <= ld_free_q and
+//     takes them at its request, each pop gives one back. So every response beat finds a free
+//     entry and rd_rsp_ready is constant 1: SPM contention (round-robin write ports shared with
+//     QACT, the MVM gather, the VU, AT and the bridge) can never stall the channel's head-of-line
+//     response path, so the MVM weight beats behind a DMA beat never wait (CC §10.4). QD beats
+//     in flight cover 1.7-1.9 us of DRAM latency at one beat per cycle (*estimate*, CC §10.4),
+//     below RD_OUTSTANDING x 64 beats: the DMA alone keeps at most QD / 64 full bursts in flight.
+//     The queue drains into the SPM write port, which never waits for memory (CC §10.3 (i)). In
+//     steady state (SPM ready) the LD streams one beat per cycle.
 //   - ST flow control: an SPM read is requested only while queue entries + reads in flight
 //     (requested, response not yet returned) < QD, so the responses (no backpressure) always
-//     fit. QD = 2^ceil(log2(SPM_RD_LAT + 4)) covers the SPM read latency at one line per cycle.
+//     fit. QD >= SPM_RD_LAT + 4 covers the SPM read latency at one line per cycle.
 //   - ST write requests are generated from the address/length alone and data beats are offered
 //     as soon as they are in the output register (rule M5: neither waits for the other's
 //     handshake). wr_dat_last is computed when a beat enters the output register: last beat of
@@ -57,12 +63,14 @@
 //     registered (>= 1 cycle after the accepting edge), cmd_ready returns with it.
 //   - Every output is a flop (or a constant): per-channel valid flops, shared payload flops.
 //     No combinational path from any input to any output (R5); the arbiters can sit in other
-//     SLRs. wr_rsp_ready is constant 1 (a response only decrements a counter).
+//     SLRs. rd_rsp_ready (reservation) and wr_rsp_ready (a response only decrements a counter) are
+//     constant 1.
 //   - Widths: line/beat counters NW = SPM_AW + 1 bits (n_lines <= SPM lines); the DRAM address
 //     counter is ADDR_BEAT_W bits (dram_beat + n_lines may exceed 2^32 when ADDR_BEAT_W > 32:
 //     the operand is a 32-bit start, the range check is 64-bit, see spec Range check).
 //   - Simulation-only checks (`ifndef SYNTHESIS): command legality, read id/last consistency
-//     with the D1 split, responses only on the active channel, queue overflow, write responses.
+//     with the D1 split, responses only on the active channel, queue overflow, the reservation
+//     (queue entries + LD beats in flight <= QD), write responses.
 
 module tsr_dma
   import tsr_pkg::*;
@@ -72,6 +80,7 @@ module tsr_dma
   parameter  int unsigned BEAT_BITS   = TSR_DEF_BEAT_BITS,
   parameter  int unsigned SPM_BYTES   = TSR_DEF_SPM_BYTES,
   parameter  int unsigned SPM_RD_LAT  = TSR_DEF_SPM_RD_LAT,
+  parameter  int unsigned LDQ_BEATS   = 512,     // beat queue entries (power of two >= 64, CC-13)
   localparam int unsigned SPM_LINES   = SPM_BYTES / TSR_LINE_BYTES,
   localparam int unsigned SPM_AW      = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1
 ) (
@@ -130,11 +139,15 @@ module tsr_dma
   if (SPM_LINES < 1 || SPM_RD_LAT < 1) begin : g_chk_spm
     $fatal(1, "tsr_dma: SPM_BYTES must be >= 64 and SPM_RD_LAT >= 1");
   end
+  if (LDQ_BEATS < 64 || (LDQ_BEATS & (LDQ_BEATS - 1)) != 0 || LDQ_BEATS < SPM_RD_LAT + 4) begin : g_chk_q
+    $fatal(1, "tsr_dma: LDQ_BEATS must be a power of two >= max(64, SPM_RD_LAT + 4)");
+  end
 
   localparam int unsigned NW  = SPM_AW + 1;                       // counts 0 .. SPM_LINES
   localparam int unsigned CW  = (NW > TSR_LEN_W) ? NW : TSR_LEN_W;
-  localparam int unsigned QAW = $clog2(SPM_RD_LAT + 4);
-  localparam int unsigned QD  = 1 << QAW;                         // queue entries
+  localparam int unsigned QAW = $clog2(LDQ_BEATS);
+  localparam int unsigned QD  = LDQ_BEATS;                        // queue entries
+  localparam int unsigned QRL = 2;                                // queue RAM read latency
   localparam int unsigned LB  = TSR_LINE_BITS;
 
   // -------------------------------------------------------------------------------------------
@@ -161,10 +174,15 @@ module tsr_dma
   logic [QAW:0]            sr_rsv_q;        // reads requested (incl. sr_v_q), response not in yet
 
   // beat queue
-  logic [LB-1:0]           q_mem [QD];
   logic [QAW-1:0]          q_wp_q, q_rp_q;
   logic [QAW:0]            q_cnt_q;
-  logic                    q_rdy_q;         // = rd_rsp_ready (queue not full)
+  logic [QAW:0]            ld_free_q;       // LD: entries neither filled nor claimed by beats in flight
+  // read-out: RAM reads in flight, skid buffer
+  logic [QRL-1:0]          rv_q;            // rv_q[i]: a RAM read issued i + 1 cycles ago
+  logic [LB-1:0]           q_rdata;         // RAM output (valid in the cycle rv_q[QRL-1] = 1)
+  logic [LB-1:0]           sk_data_q [2];
+  logic                    sk_rp_q, sk_wp_q;
+  logic [1:0]              sk_cnt_q;
 
   // output register: LD -> SPM write, ST -> DRAM write data
   logic                    o_spm_v_q;       // = spm_wr_valid
@@ -198,7 +216,9 @@ module tsr_dma
                                                                        : to_blk_end;
   wire rq_busy = (|rq_rd_v_q) | (|rq_wr_v_q);
   wire rq_fire = (|(rq_rd_v_q & rd_req_ready)) | (|(rq_wr_v_q & wr_req_ready));
-  wire rq_load = ~idle_q & (~rq_busy | rq_fire) & (g_left_q != '0);
+  // LD: the whole burst must fit into the unclaimed queue entries (reservation, CC §10.4).
+  wire ld_room = (QAW+1)'(blen) <= ld_free_q;
+  wire rq_load = ~idle_q & (~rq_busy | rq_fire) & (g_left_q != '0) & (st_q | ld_room);
 
   // -------------------------------------------------------------------------------------------
   // Queue input: LD read data of the active channel or ST SPM read data
@@ -208,7 +228,7 @@ module tsr_dma
     rsp_data = '0;
     for (int unsigned c = 0; c < NUM_CH; c++) rsp_data |= rd_rsp_data[c] & {LB{ch_oh_q[c]}};
   end
-  wire           ld_push = ~idle_q & ~st_q & q_rdy_q & (|(rd_rsp_valid & ch_oh_q));
+  wire           ld_push = ~idle_q & ~st_q & (|(rd_rsp_valid & ch_oh_q));   // rd_rsp_ready = 1
   wire           st_push = ~idle_q & st_q & spm_rd_rsp_valid;
   wire           q_push  = ld_push | st_push;
   wire [LB-1:0]  q_wdata = st_q ? spm_rd_rsp_data : rsp_data;
@@ -219,10 +239,16 @@ module tsr_dma
   wire           sr_load = ~idle_q & st_q & (~sr_v_q | sr_fire) & (sr_left_q != '0)
                          & (q_occ < (QAW+2)'(QD));
 
-  // Output register.
-  wire o_valid = o_spm_v_q | (|o_dat_v_q);
-  wire o_fire  = (o_spm_v_q & spm_wr_ready) | (|(o_dat_v_q & wr_dat_ready));
-  wire q_pop   = (q_cnt_q != '0) & (~o_valid | o_fire);
+  // Output register, fed by the read-out (RAM output or skid).
+  wire o_valid  = o_spm_v_q | (|o_dat_v_q);
+  wire o_fire   = (o_spm_v_q & spm_wr_ready) | (|(o_dat_v_q & wr_dat_ready));
+  wire q_arrive = rv_q[QRL-1];                                     // RAM data this cycle
+  wire o_load   = (~o_valid | o_fire) & ((sk_cnt_q != '0) | q_arrive);
+  wire sk_push  = q_arrive & ~(o_load & (sk_cnt_q == '0));         // not taken by o_* directly
+  wire sk_pop   = o_load & (sk_cnt_q != '0);
+  // Beats behind the RAM after this cycle: reads in flight + skid + output register - o_fire.
+  wire [2:0] ro_occ = 3'(rv_q[0]) + 3'(rv_q[1]) + 3'(sk_cnt_q) + 3'(o_valid) - 3'(o_fire);
+  wire q_pop    = (q_cnt_q != '0) & (ro_occ < 3'(QRL + 1));
 
   // ST write responses (wr_rsp_ready = 1).
   wire wr_rsp_fire = ~idle_q & st_q & (|(wr_rsp_valid & ch_oh_q));
@@ -255,7 +281,11 @@ module tsr_dma
       q_wp_q    <= '0;
       q_rp_q    <= '0;
       q_cnt_q   <= '0;
-      q_rdy_q   <= 1'b1;
+      ld_free_q <= (QAW+1)'(QD);
+      rv_q      <= '0;
+      sk_rp_q   <= 1'b0;
+      sk_wp_q   <= 1'b0;
+      sk_cnt_q  <= '0;
       o_spm_v_q <= 1'b0;
       o_dat_v_q <= '0;
       o_last_q  <= 1'b0;
@@ -316,10 +346,18 @@ module tsr_dma
       if (q_push) q_wp_q <= q_wp_q + QAW'(1);
       if (q_pop)  q_rp_q <= q_rp_q + QAW'(1);
       q_cnt_q <= q_cnt_d;
-      q_rdy_q <= (q_cnt_d != (QAW+1)'(QD));
+      if (!st_q) begin
+        ld_free_q <= ld_free_q - ((rq_load) ? (QAW+1)'(blen) : '0) + (QAW+1)'(q_pop);
+      end
+
+      // read-out
+      rv_q <= {rv_q[QRL-2:0], q_pop};
+      if (sk_push) sk_wp_q <= ~sk_wp_q;
+      if (sk_pop)  sk_rp_q <= ~sk_rp_q;
+      sk_cnt_q <= sk_cnt_q + 2'(sk_push) - 2'(sk_pop);
 
       // output register
-      if (q_pop) begin
+      if (o_load) begin
         o_spm_v_q <= ~st_q;
         o_dat_v_q <= st_q ? ch_oh_q : '0;
         o_line_q  <= p_line_q;
@@ -335,10 +373,27 @@ module tsr_dma
     end
   end
 
-  // Datapath registers (no reset; qualified by the valid flags above).
+  // Beat queue RAM: written at q_push, read at q_pop, the data QRL cycles later (the second
+  // stage is free running: the read-out takes it in its arrival cycle). A read and a write never
+  // meet at one address: a pop needs a beat in the queue and a push a free entry, so wp == rp in
+  // a cycle with both means empty and full at once.
+  tsr_sram_1r1w #(
+    .DEPTH(QD), .WIDTH(LB), .RD_LAT(QRL)
+  ) u_q (
+    .clk   (clk),
+    .we    (q_push),
+    .waddr (q_wp_q),
+    .wdata (q_wdata),
+    .wbe   ({(LB/8){1'b1}}),
+    .re    (q_pop),
+    .raddr (q_rp_q),
+    .rdata (q_rdata)
+  );
+
+  // Datapath registers of the read-out (no reset; qualified by sk_cnt_q / the valid flags).
   always_ff @(posedge clk) begin
-    if (q_push) q_mem[q_wp_q] <= q_wdata;
-    if (q_pop)  o_data_q      <= q_mem[q_rp_q];
+    if (sk_push) sk_data_q[sk_wp_q] <= q_rdata;
+    if (o_load)  o_data_q <= (sk_cnt_q != '0) ? sk_data_q[sk_rp_q] : q_rdata;
   end
 
   // -------------------------------------------------------------------------------------------
@@ -348,7 +403,7 @@ module tsr_dma
   assign done         = done_q;
   assign rd_req_valid = rq_rd_v_q;
   assign wr_req_valid = rq_wr_v_q;
-  assign rd_rsp_ready = {NUM_CH{q_rdy_q}};
+  assign rd_rsp_ready = '1;                       // burst reservation (CC §10.4)
   assign wr_dat_valid = o_dat_v_q;
   assign wr_rsp_ready = '1;
   for (genvar c = 0; c < NUM_CH; c++) begin : g_ch
@@ -421,6 +476,14 @@ module tsr_dma
       end
       assert (!(q_push && !q_pop && q_cnt_q == (QAW+1)'(QD)))
         else $error("%m: beat queue overflow");
+      assert (!(sk_push && !sk_pop && sk_cnt_q == 2'd2)) else $error("%m: read-out skid overflow");
+      // Reservation: queue entries + LD beats in flight never exceed the queue (CC §10.4).
+      assert (ld_free_q <= (QAW+1)'(QD) && (st_q || idle_q || (QAW+2)'(q_cnt_q) + (QAW+2)'(ld_free_q) <= (QAW+2)'(QD)))
+        else $error("%m: LD burst reservation broken (free %0d, queue %0d)", ld_free_q, q_cnt_q);
+      if (idle_q) begin
+        assert (ld_free_q == (QAW+1)'(QD) && q_cnt_q == '0)
+          else $error("%m: beat queue not empty while idle (free %0d, queue %0d)", ld_free_q, q_cnt_q);
+      end
       assert (!(|(wr_rsp_valid & ~ch_oh_q)) && !(|wr_rsp_valid && (idle_q || !st_q)))
         else $error("%m: write response on a channel without an ST in progress");
       if (wr_rsp_fire) begin
@@ -430,7 +493,8 @@ module tsr_dma
         end
       end
       if (fin) begin
-        assert (q_cnt_q == '0 && sr_rsv_q == '0 && !sr_v_q && !rq_busy && g_left_q == '0)
+        assert (q_cnt_q == '0 && sr_rsv_q == '0 && !sr_v_q && !rq_busy && g_left_q == '0 && rv_q == '0
+                && sk_cnt_q == '0)
           else $error("%m: command finished with traffic pending");
       end
     end

@@ -32,23 +32,15 @@ foreach a [lrange $argv 2 end] {
 set_param general.maxThreads 4
 file mkdir $out
 
-proc read_fl {fl} {
-  set dir [file dirname $fl]
-  set srcs [list]
-  set f [open $fl r]
-  foreach line [split [read $f] "\n"] {
-    regsub {//.*$} $line "" line
-    set line [string trim $line]
-    if {$line ne ""} { lappend srcs [file normalize $dir/$line] }
-  }
-  close $f
-  return $srcs
-}
-set srcs [concat [read_fl $corefl] [read_fl $repo/rtl/platform/alveo_xrt/filelist.f]]
-foreach s $srcs {
+# core filelist (nested lists, include directories, defines: rtl/filelist.tcl, W4-A), then the
+# platform filelist
+source $repo/rtl/filelist.tcl
+set fld [tsr_read_filelist $corefl]
+set fld [tsr_read_filelist $repo/rtl/platform/alveo_xrt/filelist.f $fld]
+foreach s [dict get $fld srcs] {
   if {[string match *.sv $s]} { read_verilog -sv $s } else { read_verilog $s }
 }
-synth_design -mode out_of_context -part xcu200-fsgd2104-2-e -top $top
+synth_design -mode out_of_context -part xcu200-fsgd2104-2-e -top $top {*}[tsr_synth_opts $fld]
 create_clock -name ap_clk -period 3.333 [get_ports ap_clk]
 set_input_delay  -clock ap_clk 1.6 [get_ports -filter {DIRECTION == IN && NAME != ap_clk}]
 set_output_delay -clock ap_clk 1.6 [get_ports -filter {DIRECTION == OUT}]

@@ -1,21 +1,25 @@
 #!/usr/bin/env bash
 # rtl/lint.sh — Verilator lint (-Wall, warnings are errors) of the RTL in rtl/filelist.f.
 #
-#   rtl/lint.sh            lint every module as its own top with default parameters (tsr_core:
-#                          the U200 configuration with the MVM unit; the core datapath
-#                          without a command source, rtl/core/tsr_core.sv header), then tsr_core
+#   rtl/lint.sh            lint every module of rtl/filelist.f's own sources as its own top with
+#                          default parameters (tsr_core: the U200 configuration with the MVM unit
+#                          and the control subsystem, rtl/core/tsr_core.sv header; tsr_core_dp: its
+#                          core-clock datapath; the nested rtl/ctrl/filelist.f is linted by
+#                          rtl/ctrl/lint.sh), then tsr_core
 #                          with HAS_MVM = 0 and HAS_MVM = 1 in reduced configurations
 #                          (1 / 2 / 3 / 16 channels, small SPM, T_MAX 8, small K_MAX, narrow DRAM
 #                          address) and edge implementation parameters (SPM_RD_LAT 1 / 4,
 #                          RD_OUTSTANDING 1 / 2, MVM pipes 0 / 3, WS FIFO 64 / 1024, MVM
-#                          latencies 1 / 8, reset register stages RST_PIPE 1 / 3 / 8), then the
+#                          latencies 1 / 8, reset register stages RST_PIPE 1 / 3 / 8; W4-A: queue
+#                          depths 0 / 1 / 31, CTRL_SYNC 1, small TCMs), then the
 #                          M3 blocks with edge parameters (tsr_mvm also RST_LOCAL 1 / 2), then the
 #                          testbench-only HDL under tb/*/hdl (each file as top, with the other
 #                          files of its directory), then the generated tables (EX-30, CC
 #                          §13.4: sw/tables/gen_tables.py --check and a lint of
 #                          rtl/core/tsr_tables_pkg.sv on its own, when the generator exists), then
-#                          the target and platform lint scripts (M3 part C):
-#                          rtl/tech/xilinx/lint.sh (Xilinx technology wrappers, the core
+#                          the target, control-subsystem and platform lint scripts (M3 part C,
+#                          W4-A): rtl/ctrl/lint.sh (the RISC-V control subsystem and the tb/ctrl
+#                          bench HDL), rtl/tech/xilinx/lint.sh (Xilinx technology wrappers, the core
 #                          on rtl/filelist_xilinx.f), rtl/platform/alveo_xrt/lint.sh (XRT adapter,
 #                          kernel tops, gen_tops.py --check) and rtl/platform/alveo_xrt/bw/lint.sh
 #                          (M0 bandwidth kernel, gen_bw.py --check)
@@ -41,8 +45,9 @@ lint() {   # lint TOP [extra verilator args...]
     fi
 }
 
-modules() {   # module names declared in the filelist's sources (packages excluded)
-    grep -v '^\s*//' "$FL" | grep -v '^\s*$' | while read -r f; do
+modules() {   # module names declared in the filelist's own sources (packages excluded; nested
+              # -F lists, +incdir / +define options and .vlt configuration files skipped)
+    grep -v '^\s*//' "$FL" | grep -v '^\s*$' | grep -v '^\s*[-+]' | grep -v '\.vlt\s*$' | while read -r f; do
         sed -n 's/^\s*module\s\+\([A-Za-z_][A-Za-z0-9_]*\).*/\1/p' "$ROOT/rtl/$f"
     done
 }
@@ -80,6 +85,13 @@ lint tsr_core -GHAS_MVM=1 -GNUM_CH=3 -GMVM_ACT_RD_LAT=4 -GMVM_MAC_LAT=8 -GMVM_MU
 lint tsr_core -GHAS_MVM=0 -GRST_PIPE=1
 lint tsr_core -GHAS_MVM=1 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9
 lint tsr_core -GHAS_MVM=1 -GNUM_CH=3 -GT_MAX=3 -GSPM_BYTES=262144 -GADDR_BEAT_W=22 -GCH_BYTES="64'd4294967296" -GRST_PIPE=8
+# Issue path and control subsystem (W4-A, CC §7.4, §13.1): queue depths at their limits (0 = unit
+# absent, 1, 31; SYNC >= 1), CTRL_SYNC = 1, small TCMs with a small SPM.
+lint tsr_core -GQD_DMA=1 -GQD_QACT=1 -GQD_MVM=1 -GQD_SYNC=1
+lint tsr_core -GQD_DMA=31 -GQD_QACT=31 -GQD_MVM=31 -GQD_SYNC=31 -GRST_PIPE=3
+lint tsr_core -GHAS_MVM=1 -GQD_MVM=0 -GQD_QACT=0
+lint tsr_core -GCTRL_SYNC=1 -GITCM_BYTES=16384 -GDTCM_BYTES=8192 -GNUM_CH=2 -GSPM_BYTES=65536 -GCH_BYTES="64'd1073741824" -GADDR_BEAT_W=24 -GK_MAX=4096 -GT_MAX=2
+lint tsr_core_dp -GHAS_MVM=0 -GNUM_CH=1 -GSPM_BYTES=4096 -GRST_PIPE=2
 
 # M3 MVM unit (docs/rtl-m3.md §1): every new module as its own top with edge parameters
 # (NUM_CH 1 / 3 / 16, T_MAX 1 / 8, small and maximal K_MAX, latency / pipe depth extremes).
@@ -130,7 +142,7 @@ for d in "$ROOT"/tb/*/hdl; do
 done
 
 # Generated tables (EX-30, CC §13.4): the generated files are current, and the SV package
-# lints on its own (no core module imports it before Y4).
+# lints on its own.
 if [ -f "$ROOT/sw/tables/gen_tables.py" ]; then
     if out=$(python3 "$ROOT/sw/tables/gen_tables.py" --check 2>&1); then
         echo "gen ok    sw/tables/gen_tables.py --check"
@@ -150,7 +162,7 @@ fi
 
 # Target and platform lint (M3 part C). Each script prints its own runs and exits with its
 # number of failing runs; a missing script counts as a failure.
-for sub in rtl/tech/xilinx/lint.sh rtl/platform/alveo_xrt/lint.sh rtl/platform/alveo_xrt/bw/lint.sh; do
+for sub in rtl/ctrl/lint.sh rtl/tech/xilinx/lint.sh rtl/platform/alveo_xrt/lint.sh rtl/platform/alveo_xrt/bw/lint.sh; do
     if [ -x "$ROOT/$sub" ]; then
         "$ROOT/$sub"
         fails=$((fails + $?))

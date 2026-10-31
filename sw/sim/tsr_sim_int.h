@@ -806,7 +806,7 @@ uint32_t tsr_q_status(const tsr_sim * sim);                   // STATUS QIDLE, Q
 uint32_t tsr_q_depth_reg(const tsr_sim * sim);                // Q_DEPTH register
 int      tsr_q_idle(const tsr_sim * sim);                     // QIDLE: nothing queued, running or in the FIFO
 void     tsr_q_abort(tsr_sim * sim);                          // QABORT (any source), at once
-int      tsr_q_host_clear(tsr_sim * sim);                     // host QCLEAR: 0 done, 1 refused
+int      tsr_q_host_clear(tsr_sim * sim, int rv_quiet);       // host QCLEAR: 0 done, 1 refused
 void     tsr_q_clear_all(tsr_sim * sim, const uint32_t * clear_pt);   // QCLEAR effects (NULL: current counts)
 void     tsr_q_rv_reset(tsr_sim * sim);                       // clk_rv-side resets of the RISC-V reset sequence
 // The RISC-V-side view (random schedule, §5b): note = record the core state if it changed (after

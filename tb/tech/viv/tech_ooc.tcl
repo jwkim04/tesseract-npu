@@ -43,18 +43,11 @@ foreach a [lrange $argv 3 end] {
 set_param general.maxThreads 4
 file mkdir $out
 
-set fl [open $flist r]
-set srcs [list]
-set fdir [file dirname [file normalize $flist]]
-foreach line [split [read $fl] "\n"] {
-  regsub {//.*$} $line "" line
-  set line [string trim $line]
-  if {$line eq ""} { continue }
-  lappend srcs $fdir/$line
-}
-close $fl
-read_verilog -sv [concat $srcs $extra]
-synth_design -mode out_of_context -part xcu200-fsgd2104-2-e -top $top {*}$gens
+# the filelist with its nested lists, include directories and defines (rtl/filelist.tcl, W4-A)
+source $repo/rtl/filelist.tcl
+set fld [tsr_read_filelist $flist]
+read_verilog -sv [concat [dict get $fld srcs] $extra]
+synth_design -mode out_of_context -part xcu200-fsgd2104-2-e -top $top {*}[tsr_synth_opts $fld] {*}$gens
 create_clock -name clk -period 3.333 [get_ports clk]
 set_input_delay  -clock clk 1.6 [get_ports -filter {DIRECTION == IN && NAME != clk}]
 set_output_delay -clock clk 1.6 [get_ports -filter {DIRECTION == OUT}]

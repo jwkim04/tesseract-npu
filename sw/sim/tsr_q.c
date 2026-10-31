@@ -344,8 +344,9 @@ int tsr_q_idle(const tsr_sim * sim) {
     return 1;
 }
 
-int tsr_q_host_clear(tsr_sim * sim) {
-    const int rv_quiet = !(sim->ctrl & TSR_CTRL_RV_RUN) || (sim->rv_state & TSR_STATUS_RV_HALTED);
+// rv_quiet: the RISC-V is in reset (reset done) or halted, as of the host write that carries the
+// QCLEAR (EX §5.2 bit 9; the caller judges it before that write's own RV_RUN change).
+int tsr_q_host_clear(tsr_sim * sim, int rv_quiet) {
     if (!tsr_q_idle(sim) || !rv_quiet) return 1;
     tsr_q_clear_all(sim, NULL);
     return 0;

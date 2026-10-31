@@ -1,0 +1,15 @@
+// rtl/ctrl/waivers/vendor.vlt — Verilator 5.046 waivers for the vendored, unmodified IP of the
+// control subsystem (CC §3.1). The only waiver file read: Ibex's own (the lint directory of
+// third_party/ibex) is not, because its global PINCONNECTEMPTY waiver would apply to Tesseract's
+// RTL too; tsr_ctrl_rv.sv waives that rule inline around the ibex_top instance. Targeted by file;
+// nothing here applies to Tesseract's own RTL (rtl/ctrl/*.sv lints clean with -Wall).
+`verilator_config
+// --- riscv-dbg (third_party/riscv-dbg) ---
+lint_off -file "*/third_party/riscv-dbg/*"
+// --- pulp common_cells (third_party/common_cells): fifo_v3 and its assertion macros ---
+lint_off -file "*/third_party/common_cells/*"
+// --- Ibex: the RTL, the lowRISC prims and the vendored pulp cells ---
+lint_off -file "*/third_party/ibex/vendor/*"
+lint_off -file "*/third_party/ibex/rtl/*"
+// Ibex's ID-stage / controller loop (combinational, broken by state)
+lint_off -rule UNOPTFLAT -file "*/third_party/ibex/rtl/*"

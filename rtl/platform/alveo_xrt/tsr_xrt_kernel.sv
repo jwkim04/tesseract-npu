@@ -186,6 +186,9 @@ module tsr_xrt_kernel
   logic [NUM_CH-1:0]                   wr_req_valid, wr_req_ready, wr_dat_valid, wr_dat_ready, wr_dat_last;
   logic [NUM_CH-1:0]                   wr_rsp_valid, wr_rsp_ready;
 
+  logic host_irq;                         // EX §9.3: not connected on the U200
+  wire  unused_host_irq = &{1'b0, host_irq};
+
   tsr_core #(
     .NUM_CH(NUM_CH), .BEAT_BITS(BEAT_BITS), .LANES(LANES), .T_MAX(T_MAX), .K_MAX(K_MAX),
     .SPM_BYTES(SPM_BYTES), .VL(VL), .NSREG(NSREG),
@@ -195,7 +198,12 @@ module tsr_xrt_kernel
     .MVM_ACT_RD_LAT(MVM_ACT_RD_LAT), .MVM_MAC_LAT(MVM_MAC_LAT), .MVM_MUL_LAT(MVM_MUL_LAT),
     .MVM_ADD_LAT(MVM_ADD_LAT), .MVM_WS_RD_LAT(MVM_WS_RD_LAT), .RST_PIPE(RST_PIPE)
   ) u_core (
-    .clk(ap_clk), .rst_n(rst_core_n),
+    // W4-A integrate: until the adapter gets ap_clk_2 / ap_rst_n_2 and ADAPTER_STATUS (EX §9.2-§9.3,
+    // CC §13.3; W4-B), the control core runs on ap_clk (its crossings stay asynchronous), rst_rv_n
+    // is inactive (the clk_rv domain still resets from rst_n through tsr_ctrl's synchroniser),
+    // plat_err_i is 0 and host_irq_o is open (unconnected on the U200).
+    .clk(ap_clk), .rst_n(rst_core_n), .clk_rv(ap_clk), .rst_rv_n(1'b1),
+    .plat_err_i(1'b0), .host_irq_o(host_irq),
     .csr_valid, .csr_ready, .csr_we, .csr_addr, .csr_wdata, .csr_rdata,
     .m_rd_req_valid(rd_req_valid), .m_rd_req_ready(rd_req_ready), .m_rd_req_addr(rd_req_addr),
     .m_rd_req_len(rd_req_len), .m_rd_req_id(rd_req_id),

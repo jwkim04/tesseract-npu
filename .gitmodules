@@ -1,3 +1,12 @@
 [submodule "third_party/llama.cpp"]
 	path = third_party/llama.cpp
 	url = https://github.com/ggml-org/llama.cpp
+[submodule "third_party/ibex"]
+	path = third_party/ibex
+	url = https://github.com/lowRISC/ibex.git
+[submodule "third_party/riscv-dbg"]
+	path = third_party/riscv-dbg
+	url = https://github.com/pulp-platform/riscv-dbg.git
+[submodule "third_party/common_cells"]
+	path = third_party/common_cells
+	url = https://github.com/pulp-platform/common_cells.git

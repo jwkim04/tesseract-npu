@@ -17,16 +17,33 @@ pytest functions:
                       RD_OUT 3, SPM_RD_LAT 1), tiny (1 ch, 3-line SPM, ADDR_BEAT_W 5: 32-beat
                       channel, RD_OUT 1, SPM_RD_LAT 4), aw33 (2 ch, 128-line SPM, ADDR_BEAT_W 33:
                       2^32 crossings with a small SPM, RD_OUT 64, SPM_RD_LAT 8: 16-entry queue)
-  test_dma_unit       cocotb on tsr_dma alone (MemModel on its source ports, SPM model with
-                      variable in-order latency): dma_unit random ops + combinational-path probes;
-                      dma_reset synchronous reset in the middle of LD/ST, reset state of every
-                      output, then fully checked ops
-  test_dma_rtl_spm    the wrapper with the real tsr_spm (RTL_SPM = 1), random initial state:
+  test_dma_unit[q]    cocotb on tsr_dma alone (MemModel on its source ports, SPM model with
+                      variable in-order latency), beat queue LDQ_BEATS 512 (default) and 64:
+                      dma_unit random ops + combinational-path probes; dma_reset synchronous reset
+                      in the middle of LD/ST, reset state of every output, then fully checked
+                      ops; dma_reserve LDs into an SPM whose write port stalls for long periods
+                      (fast memory): the reservation reaches the queue limit, rd_rsp_ready stays 1
+  test_dma_rtl_spm[q] the wrapper with the real even / odd tsr_spm (RTL_SPM = 1; the DMA and the
+                      contending clients through tsr_spm_cport), random initial state, beat queue
+                      512 and 64 (the minimum: the saturated SPM fills it):
                         sys_rtl_spm          LD/ST round trips (checked through DRAM)
-                        sys_rtl_spm_contend  the same with a second SPM writer (client QACT,
-                                             SpmContender) forcing write-grant handovers during
-                                             LDs; D2 with tsr_spm: the DMA's rd_rsp_ready never
-                                             drops during an LD (LdReadyMonitor, both tests)
+                        sys_rtl_spm_contend  the same with the other SPM clients writing in bursts
+                                             (SpmContender: clients 1..3 single port, client 4 on
+                                             both banks) and reading (SpmReader), forcing
+                                             round-robin waits of the DMA's SPM writes during LDs
+                        sys_rtl_spm_saturate the deadlock case of CC §15.1: LD / ST and the weight
+                                             streams on every channel while every other SPM client
+                                             saturates both write ports and both read ports: every
+                                             op completes, and each channel's response path is
+                                             never stalled (m_rd_rsp_ready stays 1: the MVM weight
+                                             beats never wait behind a DMA beat, CC §10.4)
+
+LD burst reservation (CC §10.4, CC-13; ReserveMonitor in every test): the DMA's rd_rsp_ready is 1
+in every cycle, and the LD beats requested and not yet written to the SPM never exceed the beat
+queue (LDQ_BEATS) plus the 3 places of its read-out (RAM read stages / skid, output register). Simulator cross-check (spm_sim.SimOps, every test):
+each op also runs through tsr_sim_op on a simulator with the same DRAM contents (and, for an ST,
+the same SPM source lines); the result code is 0 and the simulator's SPM lines (LD) / DRAM beats
+(ST) equal the RTL's.
 
 Every op is checked for: data (SPM lines / DRAM beats), the exact burst list (D1 split, read id
 {DMA, 0}, only channel ch), the set of DRAM beats written (== the ST range), the SPM lines read /
@@ -45,12 +62,16 @@ from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge
 
 from common import isa
 from common.mem_model import MemModel
-from common.runner import REPO, run
+from common.runner import REPO, rtl_sources, run
 from common.tbutil import seed as tb_seed
 
 import dma_tb
-from dma_tb import (BurstMonitor, DmaDriver, LdReadyMonitor, PerfMonitor, ReadSources, SpmContender,
-                    SpmModel, clock_reset, comb_probe, split)
+from dma_tb import (NX, BurstMonitor, DmaDriver, PerfMonitor, ReadSources, ReserveMonitor, SpmContender,
+                    SpmModel, SpmReader, clock_reset, comb_probe, split)
+
+import sys
+sys.path.insert(0, str(REPO / "tb" / "spm"))
+from spm_sim import SimOps, mut_sources  # noqa: E402 (tb/spm: the simulator's SPM / op-level API)
 
 TB_SV = REPO / "tb" / "dma" / "hdl" / "tsr_tb_dma.sv"
 MIB = 1024 * 1024
@@ -61,8 +82,16 @@ CFGS = {
     "tiny":    dict(NUM_CH=1, ADDR_BEAT_W=5, SPM_BYTES=192, SPM_RD_LAT=4, RD_OUTSTANDING=1),
     "aw33":    dict(NUM_CH=2, ADDR_BEAT_W=33, SPM_BYTES=8192, SPM_RD_LAT=8, RD_OUTSTANDING=64),
 }
-UNIT_CFG = dict(NUM_CH=2, ADDR_BEAT_W=20, SPM_BYTES=65536, SPM_RD_LAT=3)
-RTL_SPM_CFG = dict(NUM_CH=2, ADDR_BEAT_W=20, SPM_BYTES=16384, SPM_RD_LAT=2, RD_OUTSTANDING=8, RTL_SPM=1)
+UNIT_CFGS = {
+    "q512": dict(NUM_CH=2, ADDR_BEAT_W=20, SPM_BYTES=65536, SPM_RD_LAT=3),
+    "q64": dict(NUM_CH=2, ADDR_BEAT_W=20, SPM_BYTES=65536, SPM_RD_LAT=3, LDQ_BEATS=64),
+}
+RTL_SPM_CFGS = {
+    "q512": dict(NUM_CH=2, ADDR_BEAT_W=20, SPM_BYTES=16384, SPM_RD_LAT=2, RD_OUTSTANDING=8, RTL_SPM=1),
+    # the minimum queue: one burst in flight per 64 beats, so the saturated SPM fills it
+    "q64": dict(NUM_CH=2, ADDR_BEAT_W=20, SPM_BYTES=16384, SPM_RD_LAT=4, RD_OUTSTANDING=8, RTL_SPM=1,
+                LDQ_BEATS=64),
+}
 
 SYS_TESTS = ["sys_directed", "sys_random", "sys_outstanding", "sys_throughput", "sys_wr_modes"]
 
@@ -78,8 +107,11 @@ SYS_OUTPUTS = ["cmd_ready", "done", "spm_rd_req_valid", "spm_rd_req_line", "spm_
                "m_rd_req_id", "m_rd_rsp_ready", "m_wr_req_valid", "m_wr_req_addr", "m_wr_req_len",
                "m_wr_req_id", "m_wr_dat_valid", "m_wr_dat_data", "m_wr_dat_last", "m_wr_rsp_ready",
                "perf_rd_beat", "perf_rd_wait"]
-X_INPUTS = ["x_wr_valid", "x_wr_line", "x_wr_data"]       # wrapper, RTL_SPM = 1
-X_OUTPUTS = ["x_wr_ready"]
+X_INPUTS = ["x_wr_valid", "x_wr_line", "x_wr_data", "y_rd_req_valid", "y_rd_req_line"]   # RTL_SPM = 1
+# The contending lanes 0..2 are tsr_spm_cport client sides: their ready depends on their own request
+# line by design (CC §10.2, the adapter's one LUT inside the client), so x_wr_ready / y_rd_req_ready
+# are not probed; every other output is probed against the lanes' inputs.
+X_OUTPUTS = []
 DMA_INPUTS = ["rst_n", "cmd_valid", "cmd", "rd_req_ready", "rd_rsp_valid", "rd_rsp_data", "rd_rsp_last",
               "rd_rsp_id", "wr_req_ready", "wr_dat_ready", "wr_rsp_valid", "wr_rsp_id", "spm_rd_req_ready",
               "spm_rd_rsp_valid", "spm_rd_rsp_data", "spm_wr_ready"]
@@ -95,20 +127,27 @@ DMA_OUTPUTS = ["cmd_ready", "done", "rd_req_valid", "rd_req_addr", "rd_req_len",
 @pytest.mark.parametrize("cfg", list(CFGS))
 def test_dma_sys(cfg):
     p = CFGS[cfg]
-    run("tsr_tb_dma", __name__, parameters=p, extra_sources=[TB_SV], testcase=SYS_TESTS,
+    run("tsr_tb_dma", __name__, parameters=p, sources=mut_sources(rtl_sources()), extra_sources=[TB_SV],
+        testcase=SYS_TESTS,
         extra_env={"TSR_DMA_CFG": json.dumps(dict(p, name=cfg))})
 
 
-def test_dma_unit():
-    run("tsr_dma", __name__, parameters=UNIT_CFG, testcase=["dma_unit", "dma_reset"],
-        extra_env={"TSR_DMA_CFG": json.dumps(dict(UNIT_CFG, name="unit"))})
+@pytest.mark.parametrize("q", list(UNIT_CFGS))
+def test_dma_unit(q):
+    p = UNIT_CFGS[q]
+    run("tsr_dma", __name__, parameters=p, sources=mut_sources(rtl_sources()),
+        testcase=["dma_unit", "dma_reset", "dma_reserve"],
+        name="tsr_dma_" + q, extra_env={"TSR_DMA_CFG": json.dumps(dict(p, name="unit_" + q))})
 
 
-def test_dma_rtl_spm():
+@pytest.mark.parametrize("q", list(RTL_SPM_CFGS))
+def test_dma_rtl_spm(q):
     # Random initial state like every other build (tsr_spm arms its checks at the first reset).
-    run("tsr_tb_dma", __name__, parameters=RTL_SPM_CFG, extra_sources=[TB_SV],
-        testcase=["sys_rtl_spm", "sys_rtl_spm_contend"],
-        extra_env={"TSR_DMA_CFG": json.dumps(dict(RTL_SPM_CFG, name="rtl_spm"))})
+    p = RTL_SPM_CFGS[q]
+    run("tsr_tb_dma", __name__, parameters=p, sources=mut_sources(rtl_sources()), extra_sources=[TB_SV],
+        name="tsr_tb_dma_rtl_" + q,
+        testcase=["sys_rtl_spm", "sys_rtl_spm_contend", "sys_rtl_spm_saturate"],
+        extra_env={"TSR_DMA_CFG": json.dumps(dict(p, name="rtl_spm_" + q))})
 
 
 # =============================================================================================
@@ -140,8 +179,14 @@ class Env:
                                 rd_outstanding=1 << 30, limit_beats=self.limit, seed=rnd.getrandbits(31),
                                 **mem_kw)
             self.dma_id = 0
+        # the simulator executing the same ops (same DRAM contents; ST sources synced)
+        self.sim = SimOps(num_ch=self.n, spm_bytes=cfg["SPM_BYTES"], ch_bytes=64 << self.aw,
+                          addr_beat_w=self.aw, rd_outstanding=min(self.rdo, 1 << 16))
+        self.sim_ops = 0
         for c in range(self.n):
-            self.mem.load(c, 0, rnd.getrandbits(512 * self.bg_hi).to_bytes(64 * self.bg_hi, "little"))
+            init = rnd.getrandbits(512 * self.bg_hi).to_bytes(64 * self.bg_hi, "little")
+            self.mem.load(c, 0, init)
+            self.sim.dram_write(c, 0, init)
         self.touched = [set(range(self.bg_hi)) for _ in range(self.n)]
         self.spm = None if rtl_spm else SpmModel(dut, lines=self.lines, rd_lat=cfg["SPM_RD_LAT"], rnd=rnd,
                                                  **(spm_kw or {}))
@@ -149,7 +194,9 @@ class Env:
         # real SPM: second SPM writer (only with contend) and the LD rd_rsp_ready check
         self.contend = contend
         self.xw = SpmContender(dut, lines=self.lines, rnd=rnd, content=self.spm_shadow.get) if rtl_spm else None
-        self.ldmon = LdReadyMonitor(dut, self.n) if rtl_spm else None
+        self.yr = SpmReader(dut, lines=self.lines, rnd=rnd) if rtl_spm else None
+        self.qd = cfg.get("LDQ_BEATS", 512)
+        self.ldmon = ReserveMonitor(dut, dut.u_dma if system else dut, self.n, self.qd, contend=rtl_spm)
         self.bm = BurstMonitor(dut, prefix="m_" if system else "", num_ch=self.n, aw=self.aw,
                                id_w=isa.MEM_ID_W if system else isa.SRC_ID_W)
         self.drv = DmaDriver(dut, rnd)
@@ -173,15 +220,17 @@ class Env:
             self.spm.start()
         if self.xw is not None:
             self.xw.start()
+            self.yr.start()
         if self.bgf is not None:
             self.bgf.start()
             self.bgw.start()
         return self
 
     def stop(self):
-        for x in (self.mem, self.spm, self.bgf, self.bgw, self.bm, self.drv, self.perf, self.xw, self.ldmon):
+        for x in (self.mem, self.spm, self.bgf, self.bgw, self.bm, self.drv, self.perf, self.xw, self.yr, self.ldmon):
             if x is not None:
                 x.stop()
+        self.sim.close()
 
     async def quiesce(self, cycles: int = 10):
         if self.bgf is not None:
@@ -201,7 +250,9 @@ class Env:
         t = self.touched[ch]
         for b in range(dram, dram + n):
             if b not in t:
-                self.mem.load(ch, 64 * b, self.rnd.getrandbits(512).to_bytes(64, "little"))
+                data = self.rnd.getrandbits(512).to_bytes(64, "little")
+                self.mem.load(ch, 64 * b, data)
+                self.sim.dram_write(ch, 64 * b, data)
                 t.add(b)
 
     async def op(self, is_st, ch, spm, dram, n, gap=0):
@@ -234,19 +285,33 @@ class Env:
         if self.xw is not None:
             # the contender never writes the lines an LD is writing (it rewrites current contents)
             await self.xw.window(range(0) if is_st else range(spm, spm + n), enabled=self.contend)
-            self.ldmon.ld_active = not is_st
+            self.yr.enabled = self.contend
+        self.ldmon.ld_active = not is_st
         await self.drv.op(is_st, ch, spm, dram, n, gap=gap, on_done=at_done)
-        if self.ldmon is not None:
-            self.ldmon.ld_active = False
-        what = "%s ch%d spm %d dram 0x%x n %d" % ("ST" if is_st else "LD", ch, spm, dram, n)
-        # data
+        self.ldmon.ld_active = False
+        # the simulator: the same op on the same DRAM (and, for an ST, the same SPM source lines)
         if is_st:
+            self.sim.spm_write(64 * spm, b"".join(x.to_bytes(64, "little") for x in exp))
+        enc = isa.enc_st if is_st else isa.enc_ld
+        err = self.sim.op(enc(ch, spm, dram, n))
+        assert err == 0, "simulator refused %s ch%d spm %d dram 0x%x n %d: error %d" % (
+            "ST" if is_st else "LD", ch, spm, dram, n, err)
+        self.sim_ops += 1
+        what = "%s ch%d spm %d dram 0x%x n %d" % ("ST" if is_st else "LD", ch, spm, dram, n)
+        # data (the RTL against the expectation and against the simulator)
+        if is_st:
+            sim_d = self.sim.dram_read(ch, 64 * dram, 64 * n)
             for i in range(n):
                 got = mem.beat(ch, dram + i)
                 assert got == exp[i], "%s: DRAM beat 0x%x differs from SPM line %d" % (what, dram + i, spm + i)
+                assert got == int.from_bytes(sim_d[64 * i:64 * i + 64], "little"), \
+                    "%s: DRAM beat 0x%x differs from the simulator's ST" % (what, dram + i)
             self.touched[ch].update(range(dram, dram + n))
         else:
+            sim_s = self.sim.spm_read(64 * spm, 64 * n)
             for i in range(n):
+                assert int.from_bytes(sim_s[64 * i:64 * i + 64], "little") == exp[i], \
+                    "%s: SPM line %d differs from the simulator's LD" % (what, spm + i)
                 self.spm_shadow[spm + i] = exp[i]
                 if self.spm is not None:
                     assert self.spm.mem.get(spm + i) == exp[i], "%s: SPM line %d differs from DRAM beat 0x%x" % (
@@ -427,8 +492,11 @@ async def sys_outstanding(dut):
         await env.op(0, ch, 0, dram, n)
         nb = len(split(dram, n))
         mo = env.mem.stats()[ch]["max_outstanding"]
-        assert mo == min(env.rdo, nb), "ch%d: max outstanding %d, expected %d (%d bursts)" % (
-            ch, mo, min(env.rdo, nb), nb)
+        # LD burst reservation (CC §10.4): the DMA alone keeps at most LDQ_BEATS / 64 bursts of
+        # 64 beats in flight (dram is 64-aligned), below RD_OUTSTANDING in the u200 configuration
+        want = min(env.rdo, nb, max(1, env.qd // 64))
+        assert mo == want, "ch%d: max outstanding %d, expected %d (%d bursts, queue %d)" % (
+            ch, mo, want, nb, env.qd)
     w0 = list(env.perf.wait)
     assert all(w > 0 for w in w0), "perf_rd_wait never counted: %s" % w0
     # shared budget: background readers on every channel while the DMA streams
@@ -519,11 +587,10 @@ async def sys_rtl_spm(dut):
 
 @cocotb.test()
 async def sys_rtl_spm_contend(dut):
-    """Real tsr_spm with a second, lower-priority SPM writer (client QACT) active during the ops:
-    the DMA loses the write grant whenever its queue runs empty and waits one cycle to get it back.
-    D2 as implemented: the DMA's rd_rsp_ready may depend on its SPM write port, which tsr_spm
-    (DMA = write client 0, fixed priority) never holds off long enough to fill the beat queue, so
-    rd_rsp_ready stays 1 during every LD (LdReadyMonitor). Data checked through DRAM as above."""
+    """Real tsr_spm with the other SPM clients writing in bursts (clients 1..3 through their cports,
+    client 4 on both banks) and reading at random during the ops: the DMA's SPM writes wait for
+    their round-robin turn. The LD burst reservation keeps rd_rsp_ready at 1 whatever the SPM does
+    (ReserveMonitor). Data checked through DRAM and against the simulator as above."""
     cfg, rnd = _cfg_rnd(9)
     dut.x_wr_valid.value = 0
     clock = await clock_reset(dut)
@@ -545,6 +612,93 @@ async def sys_rtl_spm_contend(dut):
     env.stop()
 
 
+class HolMonitor:
+    """Head-of-line check of CC §10.4 on the memory side: with every read source of a channel ready
+    (the DMA by its reservation, the WS and AUX background readers forced ready), the arbiter's
+    response path never stalls, i.e. m_rd_rsp_ready stays 1 in every cycle after the reset. Counts
+    the response beats delivered while an LD of the channel was running."""
+
+    def __init__(self, dut, n):
+        self.dut, self.full = dut, (1 << n) - 1
+        self.on = False
+        self.ld_ch = None
+        self.beats_during_ld = 0
+        self.cycles = 0
+        self._task = cocotb.start_soon(self._run())
+
+    def stop(self):
+        self._task.cancel()
+
+    async def _run(self):
+        d = self.dut
+        while True:
+            await FallingEdge(d.clk)
+            if not self.on or int(d.rst_n.value) == 0:
+                continue
+            self.cycles += 1
+            r = int(d.m_rd_rsp_ready.value)
+            assert r == self.full, "memory response path stalled (m_rd_rsp_ready = 0x%x): a weight beat " \
+                "would wait behind a DMA beat" % r
+            if self.ld_ch is not None and (int(d.m_rd_rsp_valid.value) >> self.ld_ch) & 1:
+                self.beats_during_ld += 1
+
+
+@cocotb.test()
+async def sys_rtl_spm_saturate(dut):
+    """The deadlock case of CC §15.1: LD and ST on every channel, the weight-stream (and AUX)
+    readers on the same channels always requesting and always ready, while every other SPM client
+    saturates both bank write ports and both bank read ports (SpmContender / SpmReader with every
+    lane valid in every cycle; their writes rewrite current contents). Every op completes within
+    the driver's bound; the DMA's rd_rsp_ready stays 1 and its claim never exceeds the queue
+    (ReserveMonitor); every channel's memory response path never stalls (HolMonitor: the weight
+    beats never wait behind a DMA beat); the DMA's SPM writes do wait (round robin under load) and
+    tsr_spm's own round-robin bound holds (its simulation assertion). Data against DRAM and the
+    simulator."""
+    cfg, rnd = _cfg_rnd(10)
+    dut.x_wr_valid.value = 0
+    dut.y_rd_req_valid.value = 0
+    await clock_reset(dut)
+    # fast memory (short latency, no stalls): it outruns the saturated SPM
+    env = Env(dut, cfg, rnd, rtl_spm=True, bg=True, contend=True,
+              mem_kw=dict(rd_lat=(4, 16), p_rd_req_ready=1.0, p_rd_rsp_valid=1.0, p_stall=0.0)).start()
+    await env.op(0, 0, 0, env.bg_hi + 5, env.lines)          # every line known
+    env.xw.saturate = env.yr.saturate = True
+    # weight / AUX streams always ready and sparse enough that the DMA gets most of each channel:
+    # memory then delivers faster than the saturated SPM takes the DMA's writes, so its beat queue
+    # backs up (with the old flow control rd_rsp_ready would drop and stall the weight beats)
+    env.bgf.p_rsp_ready = env.bgw.p_rsp_ready = 1.0
+    env.bgf.p_req = env.bgw.p_req = 0.01
+    hol = HolMonitor(dut, env.n)
+    await ClockCycles(dut.clk, 40)                            # background responses settle
+    hol.on = True
+    m = env.ldmon
+    w0, x0 = m.dma_wr_stalls, m.x_writes
+    for k in range(40):
+        is_st, ch, spm, dram, n = env.rand_op(nmax_cap=max(1, env.lines // 2))
+        hol.ld_ch = None if is_st else ch
+        await env.op(is_st, ch, spm, dram, n, gap=rnd.choice([0, 0, 2]))
+    hol.ld_ch = None
+    hol.on = False
+    await env.xw.window(range(0), enabled=False)
+    env.yr.enabled = False
+    await env.quiesce()
+    dut._log.info("sys_rtl_spm_saturate: %d ops, %d lines, %d DMA cycles, DMA SPM write stalls %d, "
+                  "contending writes during LDs %d (lanes %s), contending reads %d, response beats "
+                  "during LDs %d, %d cycles head-of-line checked, claim max %d, queue max %d, %d sim ops",
+                  env.ops, env.beats, env.drv.cycles, m.dma_wr_stalls - w0, m.x_writes - x0,
+                  env.xw.lane_fires, env.yr.fires, hol.beats_during_ld, hol.cycles, m.claim_max, m.q_max,
+                  env.sim_ops)
+    assert m.dma_wr_stalls - w0 > 0 and m.x_writes - x0 > 0 and env.yr.fires > 0
+    assert all(f > 0 for f in env.xw.lane_fires), "a contending lane never wrote: %s" % env.xw.lane_fires
+    assert hol.beats_during_ld > 0 and hol.cycles > 0
+    if env.qd <= 128:
+        # the queue is smaller than the LDs: it backs up (a 64-beat burst is admitted only into a
+        # queue with room for all of it, so the peak is the queue minus what drains meanwhile)
+        assert m.q_max >= env.qd // 2, "beat queue never backed up (max %d of %d)" % (m.q_max, env.qd)
+    hol.stop()
+    env.stop()
+
+
 # =============================================================================================
 # cocotb test (tsr_dma alone)
 # =============================================================================================
@@ -560,6 +714,32 @@ async def dma_unit(dut):
     await env.quiesce()
     dut._log.info("dma_unit: %d ops, %d lines, %d DMA cycles, %s", env.ops, env.beats, env.drv.cycles, PROBES)
     assert PROBES["probes"] > 0
+    env.stop()
+
+
+@cocotb.test()
+async def dma_reserve(dut):
+    """LD burst reservation at the unit (CC §10.4): fast memory (always ready, short latency) and an
+    SPM write port that stalls for long periods: the DMA keeps requesting bursts until the queue is
+    claimed, then waits; the claim (beats requested, not yet written) reaches the queue size minus
+    one burst and never exceeds it plus the read-out; rd_rsp_ready stays 1 (ReserveMonitor);
+    every LD's data checked."""
+    cfg, rnd = _cfg_rnd(11)
+    await clock_reset(dut)
+    env = Env(dut, cfg, rnd, system=False,
+              mem_kw=dict(rd_lat=(2, 6), p_rd_req_ready=1.0, p_rd_rsp_valid=1.0, p_stall=0.0),
+              spm_kw=dict(p_rd_ready=1.0, p_wr_ready=0.4, p_stall=0.04, stall_len=(60, 400))).start()
+    qd = env.qd
+    for k in range(10):
+        n = min(env.lines, rnd.randint(qd + 64, qd + 300), env.limit - 64)
+        dram = rnd.randrange(0, env.limit - n)
+        await env.op(0, rnd.randrange(env.n), rnd.randint(0, env.lines - n), dram, n)
+    await env.quiesce()
+    m = env.ldmon
+    dut._log.info("dma_reserve: %d LDs, %d lines, claim max %d, queue max %d (queue %d), %d cycles with "
+                  "rd_rsp_ready checked", env.ops, env.beats, m.claim_max, m.q_max, qd, m.ready_cycles)
+    assert m.claim_max >= qd - 63, "the reservation never reached the queue limit (%d of %d)" % (m.claim_max, qd)
+    assert m.q_max >= qd - 64, "the beat queue never filled (%d of %d)" % (m.q_max, qd)
     env.stop()
 
 
