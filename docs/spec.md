@@ -1705,10 +1705,12 @@ wrong or stuck. Neither changes the datapath, the numeric rules, the ISA encodin
 semantics, and with the debugger on, the bytes that the device writes are the same as with it off
 unless the debugger itself modifies registers, SPM or DRAM.
 
-Status: the simulator models of the debug module (`sw/sim/tsr_dm.c`) and of the DBG block
-(`sw/sim/tsr_dbg.c`), the trap and log contract of the firmware, and `tsr-log` exist (on the
-simulator). The GDB server (`libtsr_dbg`) and `tsr-dbg` (P3.7), `tsr-prof` and the extended `TSR_STATS` output (P3.8)
-are planned; so are the debug RTL (W4) and everything on the card (W6).
+Status (2026-11-02): the simulator debug models, firmware trap/log contract, `tsr-log`, GDB server
+(`libtsr_dbg`), `tsr-dbg`, `tsr-prof trw` / `stats` and extended `TSR_STATS` output are implemented.
+The real RISC-V GDB smoke on the C simulator passed. Debug RTL exists with module-level tests;
+GDB on the integrated RTL system and the card remains unverified. RTL sample/apply completion and
+the `SBA_REFUSED` diagnostic remain incomplete; `tsr-dbg diverge`, `tsr-prof report` and periodic
+firmware PC sampling are deferred. See `prof-dbg.md` §1 for the verification boundaries.
 
 **Control-core debug.** The control core halts and single-steps through the RISC-V debug module
 (riscv-dbg, Debug Spec 0.13.2) and its DMI window in the CSR space (0xC00–0xDFC, active only while `DBG_CFG.DMI_EN` is
@@ -1789,7 +1791,7 @@ tesseract/
 │   ├── transport/           # tsr_transport: protocol layer and the kdevs sim, mock, vkernel, xrt
 │   ├── rt/                  # tsr_rt: runtime without ggml (weight upload, linear), shares tsr_lower
 │   ├── torch/               # PyTorch backend: torch.compile backend "tesseract", extension module, tests, hf_check
-│   ├── tools/               # klcheck, numcheck, tsr-selftest, tsr-log, trace tools (gen, replay), tsr_bw; tsr-dbg and tsr-prof are planned (P3.7, P3.8)
+│   ├── tools/               # klcheck, numcheck, tsr-selftest, tsr-log, trace tools (gen, replay), tsr_bw, tsr-dbg and tsr-prof
 │   ├── xrt-driver/          # patches that build the XRT 2.18.179 drivers for Linux 6.8 to 7.0
 │   └── runner/              # host side of stage C: ring-buffer polling (M9, planned; no content yet)
 ├── rtl/

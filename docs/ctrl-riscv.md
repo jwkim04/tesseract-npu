@@ -37,7 +37,7 @@ Section numbers are cited by code and other documents and stay stable.
 | D15 | No host debug access to the issue port. Bring-up, the card selftest and trace replay run as RISC-V kernels. | on the simulator: no host path to the issue port; `tsr_sim_push` is a simulator test hook, never reachable through `tsr_transport` (SW-19) |
 | D16 | One execution path in the tree: the software path runs end to end on the simulator before the RTL and the card. | on the simulator (W3) |
 | D17 | Device KV cache in q8_0; attention arrives as llama.cpp `FLASH_ATTN_EXT` (a quantized V cache requires Flash Attention). The klcheck / numcheck baselines move to FA on. | on the simulator: AT references and units (`tsr_ref_at.c`, `tsr_at.c`); the device-KV backend is W3b |
-| D18 | The design has full debug: RISC-V Debug Spec module, halt / resume / step, breakpoints and GDB source-level debugging over PCIe (a GDB RSP server on the DMI window), plus tile-level debug. | on the simulator: debug module and DBG block models (`tsr_dm.c`, `tsr_dbg.c`); the GDB server is P3.7, the RTL W4 (see [`prof-dbg.md`](prof-dbg.md)) |
+| D18 | The design has full debug: RISC-V Debug Spec module, halt / resume / step, breakpoints and GDB source-level debugging over PCIe (a GDB RSP server on the DMI window), plus tile-level debug. | simulator models and GDB tools implemented; real GDB smoke on sim passed. W4 RTL has module tests; integrated RTL/card GDB and sample/apply completion remain unverified or incomplete (see [`prof-dbg.md`](prof-dbg.md) §1) |
 
 The numbers D7 and D9 are not used.
 

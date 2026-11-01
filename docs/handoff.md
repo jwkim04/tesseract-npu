@@ -102,6 +102,14 @@ Known current debug-interface gaps remain: RV_SAMPLE/RVWP_APPLY writes acknowled
 their CDC work completes, and DBG_STATUS.SBA_REFUSED has no RTL setter. These are separate
 from the deferred profiler/report work and were outside this correction.
 
+GDB on the C simulator is implemented and verified. The full CTest run's `tools_dbg_gdb`
+used the pinned `riscv-none-elf-gdb` through `tsr-dbg gdb --stdio --device sim` and passed
+boot/symbol stops, step, memory/CSR reads, a launched kernel hardware breakpoint, backtrace,
+`finish`, tile history and detach. The RSP, embedded-service and dropped-connection tests
+also passed. This is separate from the RTL module tests; integrated RTL/card GDB remains
+unverified. `prof-dbg.md` §1 and the user-facing environment-variable docs now reflect this
+status instead of the old P3.7-planned wording.
+
 ### Next steps
 
 1. Check the active run's `status.json` and logs before starting another link. A zero exit status

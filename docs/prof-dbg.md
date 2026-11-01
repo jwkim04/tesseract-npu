@@ -7,8 +7,8 @@ be reached for debugging. It is the working summary; the normative design is [DB
 > **Scope.** Implementation status and design summary, not the contract; the contract is
 > [DB](design/05-debug.md) with [EX](design/01-execution-model.md) §5-§6 (CSR map, PERF) and
 > [CC](design/04-control-core.md) §3 and §9. Status words: *on the simulator* (implemented here and tested),
-> *designed* (specified in `docs/design`, no implementation), *planned* (P3.7 GDB server and `tsr-dbg`, P3.8
-> `tsr-prof` and the extended `TSR_STATS` report, W4 RTL, W6 card). Measured numbers carry their
+> *designed* (specified in `docs/design`, no implementation), *planned* (work not yet completed).
+> The debug tools and W4 RTL exist; the integrated card gate is W6. Measured numbers carry their
 > provenance; *estimate* means not measured. Card measurements were taken before the control core was
 > added, with the host issuing the ops.
 
@@ -16,7 +16,9 @@ be reached for debugging. It is the working summary; the normative design is [DB
 
 ## 1. What exists today
 
-**On the simulator** (`TSR_DEVICE=sim` or `mock`; the control-core RTL and a bitstream with it do not exist yet):
+**Implemented and tested on the simulator** (`TSR_DEVICE=sim` or `mock`; status checked 2026-11-02).
+The control-core and debug RTL also exist, with module-level tests. The corrected K4 image is still
+being built; GDB on the integrated RTL system and on the card has not been verified.
 
 | Capability | Where | Tests (`ctest -R`) |
 |---|---|---|
@@ -26,6 +28,9 @@ be reached for debugging. It is the working summary; the normative design is [DB
 | Firmware trap, panic and log contract: `__tsr_crash` and `__tsr_dbg` records, the trap handler (TRAP log record and TRAP answer record, `RT_STATE` = TRAPPED), binary log records through the log ring | `sw/ctrl/rt/trap.cpp`, `rt/log.cpp`, `include/tsr/log.hpp` (`TSR_LOG`, `tsr::panic`) | `fw_runtime` |
 | Transport: log drain and decoding with symbols and DWARF lines (`function+0x1c (file.cpp:123)`), the TRAP report, hang dumps, the recovery ladder (dump, `LQ_CANCEL`, `SOFT_RESET` and warm restart), debug-aware waits that do not count time while the hart is halted or a tile stop or serial mode is active | `sw/transport/tsr_kdev.cpp`, `tsr_logdec.cpp`, `tsr_image.cpp` | `transport_kdev`, `transport_protocol` |
 | `tsr-log`: decodes saved log words with the firmware ELF; `tsr-selftest --debug`: a DMI smoke (halt, read `dpc` / `dcsr`, single step, resume, then a PING) | `sw/tools/tsr_log.cpp`, `tsr_selftest.cpp` | `tools_log_selftest`, `tools_selftest_mock` (the mock run uses `--debug`) |
+| `libtsr_dbg`, standalone `tsr-dbg gdb`, and the embedded GDB service: registers, memory, software/hardware breakpoints, watchpoints, step, launch stops, tile commands, history, dumps and recovery | `sw/tools/dbg/`, `sw/tools/tsr_dbg.cpp` | `tools_dbg_lib`, `tools_dbg_rsp`, `tools_dbg_embed`, `tools_dbg_rsp_drop`, `tools_dbg_embed_drop`, `rt_sim_gdb_embed` |
+| Real RISC-V GDB through `tsr-dbg gdb --stdio --device sim`: boot stop, symbol breakpoints, `stepi`, memory/CSR reads, kernel launch, backtrace, `finish`, history and detach | `sw/tools/dbg/tests/gdb_smoke.sh` | `tools_dbg_gdb`; passed with the pinned `riscv-none-elf-gdb`, not skipped |
+| `tsr-prof trw` timeline export and checks, `tsr-prof stats`, extended `TSR_STATS` counters | `sw/tools/tsr_prof.cpp`, `sw/tools/dbg/trw.cpp`, `sw/transport/tsr_kdev.cpp` | `tools_prof_trw`, `tools_dbg_lib` |
 | Trace capture: one trace directory per launch (`TSR_TRACE`), replay and conversion tools | `sw/sim/tsr_trace.c`, `sw/tools` | `sim_trace`, `trace_v2_roundtrip`, `tools_trace_gen_replay` |
 
 Environment variables, as implemented (`grep` of `"TSR_..."` in `sw/transport` and `sw/sim`):
@@ -35,7 +40,9 @@ Environment variables, as implemented (`grep` of `"TSR_..."` in `sw/transport` a
 | `TSR_LOG=stderr\|<file>`, `TSR_LOG_LEVEL=0..5` | decode the device log there, drained at every poll (otherwise every 10 ms); the level written to `LOG_CFG.LEVEL` (0 FATAL ... 5 TRACE, default 3) |
 | `TSR_STATS=1` | transport statistics at close (launches, launch wall time, CSR reads / writes, DRAM bytes, log words and drops, boot, timeouts, traps, restarts) and, in the ggml backend, the backend report at free: graph_compute calls, launches, op records per launch, OPL cache hits and misses, wall time in graph_compute and in launches, and the device's PERF counters over the same span |
 | `TSR_DUMP_DIR=<dir>` | hang and post-mortem dumps (recovery ladder level 0) |
-| `TSR_GDB_WAIT=boot\|launch` | after a trap, leave the device in the TRAPPED state instead of restarting it. The GDB service that would use it is P3.7 |
+| `TSR_GDB=tcp:<port>\|unix:<path>` | start the embedded RSP service when the owning executable links `tsr_dbg_embed` |
+| `TSR_DEBUGGER=sock:<path>` | start the embedded monitor-command socket |
+| `TSR_GDB_WAIT=boot\|launch` | with the embedded service, halt at boot or kernel entry for GDB; also retain a trapped device instead of restarting it |
 | `TSR_TILE_SERIAL=0\|1`, `TSR_TILE_HIST=0\|1` | write `DBG_CFG.SERIAL` / `HIST_EN` at open (needs the DBG block, present on the simulator) |
 | `TSR_ATTACH=1` | open without `SOFT_RESET` or bind, for diagnosis |
 | `TSR_SIM_LOG=stderr\|<file>` (optional prefix `rv,`) | simulator event log: pushes, starts, completions and RISC-V retire lines |
@@ -43,23 +50,28 @@ Environment variables, as implemented (`grep` of `"TSR_..."` in `sw/transport` a
 | `TSR_SIM_RACE=off\|report\|fatal`, `TSR_SIM_SCHED=fixed\|random:<seed>[,min,max]` | race detector, schedules |
 | `TSR_DEBUG=1\|2` | the ggml backend's lowering and placement log (not the device) |
 
-`TSR_GDB` and `TSR_DEBUGGER` are recognised and ignored with a message ("arrives with libtsr_dbg (P3.7)");
-the same holds for `TSR_PROF`, `TSR_PROF_TRW_MIB`, `TSR_PROF_EVERY` and `TSR_PROF_RV_SAMPLE_US`
-("arrives with tsr-prof trw (P3.8)").
+An executable without the embedded-service registration reports that `TSR_GDB` / `TSR_DEBUGGER`
+are unavailable. Automatic transport profiling via `TSR_PROF`, `TSR_PROF_TRW_MIB`, `TSR_PROF_EVERY`
+and `TSR_PROF_RV_SAMPLE_US` remains inactive; use `tsr-prof trw` / `stats` explicitly. The `trw`
+command itself reads `TSR_PROF_TRW_MIB` as its default ring size.
 
 Model limits of the simulator's DBG block (`tsr_dbg.h`): the unit probes and the RISC-V snapshot are model
 values; `DMI_RESP_ERR` and `RV_DFAULT` are never set; the apply of an RV watchpoint completes at once; and
 the core has no progress watchdog, so `STATUS.UNIT_HUNG` never rises and `HUNG_STOP` has no trigger.
 
-**Planned.**
+**Remaining verification and implementation.**
 
 | Item | Work package | Notes |
 |---|---|---|
-| GDB RSP server in the device-owning process (`libtsr_dbg`) and the standalone `tsr-dbg` CLI (`gdb`, `status`, `rv`, `tile`, `hist`, `dump`, `recover`, `diverge`, ...) | P3.7 | DB §4, §9.3, §9.4; the embedded service is started by `TSR_GDB`; GDB is `riscv-none-elf-gdb` from the pinned toolchain |
-| `tsr-prof` with the trace-writer source, per-channel read rates and idle shares in the `TSR_STATS` report, the self-checks of DB §8.7 | P3.8 | DB §8.6 |
-| DBG block and debug module RTL (Ibex, riscv-dbg, stop logic, history, trace writer, probes, DMI gating) | W4 | CC §3, DB §11 |
-| Tile-only and lockstep RTL co-simulation of the debug logic | W5 | DB §14 |
+| Two-clock vkernel and full-system debug/replay integration | W5 | Module-level `tb/dbg` and `tb/ctrl` tests exist; integrated RTL GDB remains unverified |
 | GDB smoke on the card, hang triage on the card, card measurements of the DMI cost | W6 | M6 gate (`docs/design/README.md` §2) |
+| `tsr-dbg diverge`, `tsr-prof report` and periodic firmware PC sampling | deferred | The CLI reports `diverge` as unimplemented; trace export and stats are available |
+
+RTL limitations remain in the current interface: `RV_SAMPLE` / `RVWP_APPLY` writes acknowledge
+before their CDC work completes, so callers can see a stale sample or unfinished apply. The
+simulator completes these operations synchronously and does not establish RTL completion safety.
+`DBG_STATUS.SBA_REFUSED` has no RTL setter, although bus refusals and DM `sberror` work.
+See [handoff.md](handoff.md) for the active link and the remaining card gates.
 
 ---
 
@@ -67,10 +79,10 @@ the core has no progress watchdog, so `STATUS.UNIT_HUNG` never rises and `HUNG_S
 
 The design in one page; DB has the registers, the state machines and the decisions (DB-1 to DB-23).
 
-<p align="center"><img src="fig/debug.svg" alt="On the host, GDB talks the remote serial protocol to a debug service in the process that owns the device, or to the standalone tsr-dbg; the service and the profiling and log tools use tsr_transport, which reaches the core CSR window over PCIe. In the window: the DMI at 0xC00 leads to the RISC-V debug module, the Ibex control core (halt, step, breakpoints) and the system bus access to the TCMs and the SPM; the DBG block at 0x800 to 0xAFC holds the stop logic for the queue heads, the 512-entry dispatch history and the unit probes; the log ring, the performance counters and the trace writer to a DRAM ring serve observation. All of it is planned." width="100%"></p>
+<p align="center"><img src="fig/debug.svg" alt="On the host, GDB talks the remote serial protocol to a debug service in the process that owns the device, or to the standalone tsr-dbg; the service and the profiling and log tools use tsr_transport, which reaches the core CSR window over PCIe. In the window: the DMI at 0xC00 leads to the RISC-V debug module, the Ibex control core (halt, step, breakpoints) and the system bus access to the TCMs and the SPM; the DBG block at 0x800 to 0xAFC holds the stop logic for the queue heads, the 512-entry dispatch history and the unit probes; the log ring, the performance counters and the trace writer to a DRAM ring serve observation. Simulator tools and module RTL exist; integrated card verification remains." width="100%"></p>
 
-The figure is the same design as the diagram below, drawn as the host and the device see it; everything in it
-is planned (§1 lists what exists).
+The figure is the same design as the diagram below, drawn as the host and the device see it;
+§1 separates the implemented tools and RTL from the remaining integration gates.
 
 ```
  GDB (RSP over TCP / Unix socket / stdio)
@@ -312,6 +324,8 @@ planned, and §2 summarises the design.
 - Whether a new process can open a compute unit left by a dead one without disturbing it (hang dumps of a
   hung process; `TSR_ATTACH`): to be checked on the card.
 - The U200 debug build (`k4_dbg.cfg`): which nets survive synthesis and the exact hook step.
-- The GDB server, `tsr-dbg` and `tsr-prof` (P3.7, P3.8), and their card smoke tests.
+- GDB and profiling smoke tests on the card; the tools themselves are implemented and tested on sim.
+- Complete the RTL sample/apply handshake and the `SBA_REFUSED` diagnostic described in §1.
+- `tsr-dbg diverge`, `tsr-prof report` and periodic firmware PC sampling.
 - Confirmations of third-party facts: riscv-dbg and Ibex behaviours marked *confirm* in CC §3 and DB §3.
 - Per-master PERF snapshot slots for targets with two CSR masters (§4.4).

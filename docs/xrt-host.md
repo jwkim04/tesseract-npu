@@ -242,7 +242,9 @@ column.
 | `TSR_LOG`, `TSR_LOG_LEVEL` | off, 3 | decode the device log to `stderr` or a file (appended); `LOG_CFG.LEVEL` 0 FATAL to 5 TRACE |
 | `TSR_STATS` | 0 | 1: transport statistics on stderr at close |
 | `TSR_DUMP_DIR` | none | directory for hang dumps (recovery ladder level 0) |
-| `TSR_GDB_WAIT` | none | `boot` or `launch`: leave a trapped device for the debugger instead of restarting it |
+| `TSR_GDB` | none | `tcp:<port>` or `unix:<path>`: start the embedded GDB service in an executable linked with `tsr_dbg_embed` |
+| `TSR_DEBUGGER` | none | `sock:<path>`: start the embedded monitor-command socket |
+| `TSR_GDB_WAIT` | none | `boot` or `launch`: with the embedded service, halt at boot or kernel entry; retain a trapped device instead of restarting it |
 | `TSR_TILE_SERIAL`, `TSR_TILE_HIST` | unset | 0 or 1: set `DBG_CFG` bits at open (serial tile mode, dispatch history) |
 | `TSR_XCLBIN` | required (`xrt`) | xclbin to load; loading the one already on the card is cheap |
 | `TSR_XRT_DEVICE` | `0` | device index or PCIe BDF |
@@ -255,9 +257,11 @@ column.
 | `TSR_MOCK_INJECT`, `TSR_MOCK_TCM_FAULT`, `TSR_MOCK_HANG` | none | tests: `N:V[,N:V...]` ORs V into `ADAPTER_STATUS` at the N-th `LQ_PUSH` (N = 0: left by an earlier process, before the open); `ADDR:XOR` corrupts one word-aligned TCM word after every `LOAD_DATA` write (VERIFY must catch it); n makes the MVM unit hang at the n-th `LQ_PUSH` |
 | `TSR_VKERNEL_SERVER`, `TSR_VKERNEL_SOCKET` | none | `vkernel`: server command line (the client appends `--fd N`), or the path of a Unix socket a server listens on; the two-clock server is P5.3 (`platform-u200.md` §13) |
 
-Accepted and ignored with one message until their tools exist: `TSR_GDB`, `TSR_DEBUGGER` (the embedded
-debug service, P3.7) and `TSR_PROF`, `TSR_PROF_TRW_MIB`, `TSR_PROF_EVERY`, `TSR_PROF_RV_SAMPLE_US` (the
-trace-writer profiler, P3.8).
+The embedded debug service is implemented and tested on sim; see `prof-dbg.md` §1 for its tests
+and the remaining RTL/card limits. Without the embedded-service registration, the transport reports
+that `TSR_GDB` / `TSR_DEBUGGER` are unavailable. Automatic transport profiling via `TSR_PROF`,
+`TSR_PROF_TRW_MIB`, `TSR_PROF_EVERY` and `TSR_PROF_RV_SAMPLE_US` remains inactive; the standalone
+`tsr-prof trw` / `stats` commands work. `trw` itself uses `TSR_PROF_TRW_MIB` for its default ring size.
 
 With `TSR_XRT_CH_GIB` below 16 the core still range-checks against its `CH_BYTES` = 16 GiB: a faulty
 launch could address memory past the buffer (other BOs, or a DECERR that shows up in

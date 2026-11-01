@@ -290,7 +290,9 @@ is never silently ignored. Component documents hold the complete lists for their
 | `TSR_SIM_RV_CORE`, `TSR_SIM_RV_RATIO` | Ibex cycle table `small` or `maxperf` (default); `clk_rv` over core clock, 0.05 to 4 (default 166.7 / 276.3) | `sw/sim/tsr_sim.c` |
 | `TSR_TRACE` | Directory: dump every launch as a trace directory; several processes never overwrite each other's launches | `sw/sim/tsr_sim.c` |
 | `TSR_DUMP_DIR` | Directory for hang dumps (recovery ladder level 0) | `sw/transport/tsr_kdev.cpp` |
-| `TSR_GDB_WAIT` | `boot` or `launch`: leave a trapped device for a debugger instead of restarting it. The GDB service itself is planned (P3.7) | `sw/transport/tsr_kdev.cpp` |
+| `TSR_GDB` | `tcp:<port>` or `unix:<path>`: start the embedded GDB service in an executable linked with `tsr_dbg_embed` | `sw/tools/dbg/embed.cpp` |
+| `TSR_DEBUGGER` | `sock:<path>`: start the embedded monitor-command socket | `sw/tools/dbg/embed.cpp` |
+| `TSR_GDB_WAIT` | `boot` or `launch`: with the embedded service, halt at boot or kernel entry; retain a trapped device instead of restarting it | `sw/transport/tsr_kdev.cpp`, `sw/tools/dbg/embed.cpp` |
 | `TSR_TILE_SERIAL`, `TSR_TILE_HIST` | `1` sets and `0` clears tile-level serial mode and the dispatch history in `DBG_CFG` at open | `sw/transport/tsr_kdev.cpp` |
 | `TSR_STATS=1` | Backend timing and device counters (`PERF_*`) on stderr; the transport's statistics at close | `sw/ggml-tesseract/ggml-tesseract.cpp`, `sw/transport/tsr_kdev.cpp` |
 | `TSR_DEBUG` | Backend log: `1` placement, op lists and launches; `2` also buffer events and every launched record | `sw/ggml-tesseract/ggml-tesseract.cpp` |
@@ -305,8 +307,10 @@ is never silently ignored. Component documents hold the complete lists for their
 | `LLAMA_ATTN_ROT_DISABLE=1` | llama.cpp: no Hadamard rotation of the KV cache (a baseline setting) | llama.cpp; read by `klcheck` and `tsr-numcheck` |
 | `GGML_SCHED_DEBUG=1` or `2` | llama.cpp's scheduler log (use with `-v`) | llama.cpp |
 
-`TSR_GDB`, `TSR_DEBUGGER` and `TSR_PROF*` are accepted and ignored with a note until the GDB
-service and `tsr-prof` land (P3.7 and P3.8). `TSR_DEBUG` and `TSR_FORCE_HOST` are read as
+GDB on the C simulator is implemented and verified with the pinned RISC-V GDB; see
+[`prof-dbg.md`](prof-dbg.md) §1. `TSR_GDB` / `TSR_DEBUGGER` require the owning executable's
+embedded-service registration. Automatic transport profiling through `TSR_PROF*` remains
+inactive; use the implemented `tsr-prof trw` / `stats` commands explicitly. `TSR_DEBUG` and `TSR_FORCE_HOST` are read as
 integers, so a non-numeric value counts as 0. Test-only variables (`TSR_FW_PROF`,
 `TSR_FW_E2E_KEEP`, `TSR_M7L_MUTATE`, `TSR_SELFTEST_MUTATE_SHADOW`, `TSR_BW_MOCK_FAULT`) and the
 build knobs of the testbenches (`TSR_BUILD_JOBS`, `TSR_SEED`, `TSR_SIM_BUILD_ROOT`, `TSR_VIVADO`)
