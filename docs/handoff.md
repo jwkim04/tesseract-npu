@@ -88,11 +88,24 @@ uses its corresponding reset generator. Vitis truncates the RV request to 166 MH
 parameter is not the implementation request; scalable clocks use the generated constraints
 and later runtime programming. All 176 block-level synthesis jobs completed and the corrected
 kernel OOC checkpoint was written. At 01:25 KST, top-level synthesis completed and implementation
-started. Placement and routing have not completed. The linked-net clock and floorplan/locality checks
-are still pending. No corrected placed/routed result or
-xclbin exists yet. The old checkpoint remains evidence of the baseline failure.
+started. At 01:39 KST, the pre-opt clock gate stopped the run: RV period was 9.999 ns, outside
+5.99–6.32 ns. Vitis's native clock-calculator helper passed `Project` where the installed Vivado
+API expects a part name, reported `Invalid part string Project`, then emitted a 1:1 generated
+clock. Clock/reset BD wiring had passed; this failure is in implementation clock constraints.
+No corrected placed/routed result or xclbin exists yet. The old checkpoint remains evidence of
+the baseline routing failure.
 
-The detached supervisor is PID 741389. `status.json`, `build.log`, `memory.jsonl`, source
+The repository `clock_vitis_compat.tcl` hook adapts the calculator API for Vivado 2024.2 and the
+pinned U200 part. It supplies PART and the input period, checks the solve result/effective ratio,
+and cleans up on errors. The native generated-XDC flow is preserved. The focused fixtures now
+pass 66 tests, and the real calculator/shim probes pass at 166 MHz. These are local workaround
+checks, not a routed result or an AMD-published fix. The failed logs/XDC/status are preserved in
+`attempts/20261102_015229_pre_compat/` under the run directory. Configuration-only resume
+completed at 01:53 KST with exit 0; `.user_init_pre.dat` and `_full_init_pre.tcl` both contain
+the compatibility hook. Implementation can resume from `vpl.impl` with synthesis kept.
+The current attempt, PID and source commit are recorded in `status.json`.
+
+The original detached supervisor was PID 741389 and exited with status 1. `status.json`, `build.log`, `memory.jsonl`, source
 snapshot/hash manifest and the eventual `exit_code` are in that run directory. The pointer
 `build/analysis/overnight_route_latest.txt` identifies it. The run uses eight jobs, the Vivado
 slot wrapper and the existing 72 GiB swap. It stops at `vpl.impl.route_design`, preserving

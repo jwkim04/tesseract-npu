@@ -716,6 +716,9 @@ The figure shows the two clock domains, the crossings between them and the const
   The link configs use `kernel_frequency=0:300|1:166.666667` for these two scalable clocks.
   Vitis 2024.2 truncates the RV request to 166 MHz in its metadata and timing constraints.
   `[clock] id` selects fixed reference clocks and rejects scalable IDs 0/1 on this platform.
+  The pinned U200 flow also has an `INIT_DESIGN.PRE` compatibility hook for the installed
+  Vitis/Vivado clock-calculator API mismatch (`docs/platform-u200.md` §8). It validates the
+  native calculation before the implementation clock override is applied.
   The BD hook checks the actual clock and reset nets;
   the implementation hook checks the synthesized clocks, RV FFs and reset sources. The final
   pre-bitstream hook checks the scaled frequencies in `_new_clk_freq` (the clock `PERIOD`

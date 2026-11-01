@@ -229,9 +229,159 @@ def test_link_config_clock_requests_and_hooks(kernel):
     # fixed references: a real CFGEN run rejects IDs 0/1 with CFGEN83-2244.
     assert "kernel_frequency=0:300|1:166.666667\n" in text
     assert not any(line.startswith("id=") for line in text.splitlines())
-    for hook in ("clock_bd_check.tcl", "impl_pre.tcl", "cdc_check.tcl", "clock_final_check.tcl"):
+    for hook in ("clock_bd_check.tcl", "clock_vitis_compat.tcl", "impl_pre.tcl", "cdc_check.tcl", "clock_final_check.tcl"):
         assert f"=../../../hw/u200/{hook}\n" in text
+    assert ("prop=run.impl_1.STEPS.INIT_DESIGN.TCL.PRE="
+            "../../../hw/u200/clock_vitis_compat.tcl\n") in text
     if kernel == "k4":
         for step in ("PLACE_DESIGN", "PHYS_OPT_DESIGN", "POST_ROUTE_PHYS_OPT_DESIGN"):
             assert (f"prop=run.impl_1.STEPS.{step}.TCL.POST="
                     "../../../hw/u200/k4_locality_check.tcl\n") in text
+
+
+# Model the 2024.2 part-keyed APIs, including the new period argument. The
+# legacy helpers below reproduce the installed Vitis caller's Project key and
+# missing argument; the fixture rejects those before a default 1:1 can escape.
+CLKAPI_MOCK = r'''
+set mode normal
+set project_ready 0
+set api_live 0
+set api_cleanups 0
+set tool_version 2024.2
+set part xcu200-fsgd2104-2-e
+array set chosen {ChosenM 83.000 ChosenD 10 ChosenDiv0 5.000}
+proc version {args} {return $::tool_version}
+proc current_project {} {
+    if {!$::project_ready} {error "PART lookup before project exists"}
+    return Project
+}
+proc get_property {prop obj} {
+    if {$prop ne "PART" || $obj ne "Project"} {error "unexpected property lookup"}
+    return $::part
+}
+proc api_key {key inst} {
+    if {$key ne $::part || $key eq "Project"} {error "API expected Part key, got $key"}
+    if {$inst eq ""} {error "API instance missing"}
+}
+proc Init_Clkwiz {key inst part} {
+    api_key $key $inst
+    if {$part ne $key || $::api_live} {error "bad init or leaked instance"}
+    set ::api_live 1
+}
+proc SetClkwizProperty {key inst prop val} {
+    api_key $key $inst
+    if {!$::api_live || $prop ne "UseFinePS" || $val ne "true"} {error "bad property setter"}
+}
+proc GetClosestSolution {args} {
+    if {[llength $args] != 15} {error "API requires 15 args including timePeriod"}
+    lassign $args key inst req phase duty input second count minj nond pll dbg period phy phyfreq
+    api_key $key $inst
+    if {!$::api_live || abs($period - 1000.0/$input) > 1e-9 ||
+        $phase != 0 || $duty != 50 || $second != 0 || $count != 1 ||
+        $minj ne "false" || $nond ne "false" || $pll ne "false" ||
+        $dbg ne "false" || $phy ne "false" || $phyfreq != 0} {error "bad calculation arguments"}
+    if {$::mode eq "return_zero"} {return 0}
+    if {$::mode eq "api_error"} {error "calculation raised an error"}
+    return 1
+}
+proc GetClkwizProperty {key inst prop} {
+    api_key $key $inst
+    if {!$::api_live} {error "property without instance"}
+    return $::chosen($prop)
+}
+proc UnInit_Clkwiz {key inst} {
+    api_key $key $inst
+    if {!$::api_live} {error "duplicate cleanup"}
+    set ::api_live 0
+    incr ::api_cleanups
+}
+namespace eval ocl_util {
+    namespace export write_user_impl_clock_constraint
+    proc initialize_clkwiz_debug {is_versal part} {Init_Clkwiz [current_project] test1 $part}
+    proc uninitialize_clkwiz_debug {is_versal part} {UnInit_Clkwiz [current_project] test1}
+    proc set_clkwiz_prop {input req} {
+        GetClosestSolution [current_project] test1 $req 0 50 $input 0 1 false false false false false false
+    }
+    proc get_clkwiz_prop {prop} {GetClkwizProperty [current_project] test1 $prop}
+    proc write_user_impl_clock_constraint {inst freqs log out versal} {
+        set part [get_property PART [current_project]]
+        initialize_clkwiz_debug $versal $part
+        set_clkwiz_prop 100 $freqs
+        foreach p {ChosenM ChosenD ChosenDiv0} {get_clkwiz_prop $p}
+        if {$::mode eq "writer_error"} {error "native XDC application failed"}
+        uninitialize_clkwiz_debug $versal $part
+        return native_writer_result
+    }
+}
+namespace import ocl_util::*
+'''
+
+
+def test_clock_api_legacy_caller_is_rejected(tmp_path):
+    r = run_tcl(tmp_path, CLKAPI_MOCK + r'''
+set project_ready 1
+ocl_util::initialize_clkwiz_debug false $part
+''')
+    assert r.returncode != 0
+    assert "API expected Part key, got Project" in r.stderr
+
+
+@pytest.mark.parametrize("mutation,diagnostic", [
+    ("", "CLKAPI"),
+    ("return_zero", "calculation failed"),
+    ("api_error", "calculation raised"),
+    ("writer_error", "native XDC application failed"),
+    ("default", "default 1:1"),
+    ("empty", "ChosenM"),
+    ("nan_result", "ChosenM"),
+    ("floor_error", "effective"),
+    ("zero", "requested"),
+    ("nan", "requested"),
+    ("inf", "requested"),
+    ("zero_input", "input"),
+    ("bad_part", "U200"),
+    ("versal", "U200"),
+])
+def test_vitis_clock_api_compatibility(tmp_path, mutation, diagnostic):
+    changes = {
+        "": "", "return_zero": "set mode return_zero", "api_error": "set mode api_error",
+        "writer_error": "set mode writer_error",
+        "default": "array set chosen {ChosenM 1 ChosenD 1 ChosenDiv0 1}",
+        "empty": 'set chosen(ChosenM) ""', "nan_result": "set chosen(ChosenM) NaN",
+        "floor_error": "set chosen(ChosenM) 8.375; set chosen(ChosenD) 1",
+        "zero": "set req 0", "nan": "set req NaN", "inf": "set req Inf",
+        "zero_input": "set input 0", "bad_part": "set part xcvu9p-flga2104-2L-e",
+        "versal": "set versal true",
+    }
+    body = CLKAPI_MOCK + f"\nsource {{{REPO / 'hw/u200/clock_vitis_compat.tcl'}}}\n"
+    body += "set project_ready 1\nset req 166\nset input 100\nset versal false\n" + changes[mutation]
+    body += r'''
+set rc [catch {
+    if {$input != 100} {
+        ocl_util::initialize_clkwiz_debug $versal $part
+        ocl_util::set_clkwiz_prop $input $req
+    } else {
+        set result [write_user_impl_clock_constraint unused $req {} unused $versal]
+        if {$result ne "native_writer_result"} {error "native writer result changed"}
+    }
+} reason options]
+if {$api_live} {error "compatibility helper leaked clock instance"}
+if {$rc} {puts stderr $reason; exit 1}
+if {$api_cleanups != 1} {error "expected exactly one instance cleanup"}
+puts "CLKAPI fixture PASS"
+'''
+    r = run_tcl(tmp_path, body)
+    assert (r.returncode == 0) == (mutation == ""), (r.stdout, r.stderr)
+    assert diagnostic in r.stdout + r.stderr, (r.stdout, r.stderr)
+    assert "leaked clock instance" not in r.stderr
+
+
+@pytest.mark.parametrize("guard", ["version", "namespace", "helper"])
+def test_vitis_clock_api_guard(tmp_path, guard):
+    changes = {"version": "set tool_version 2025.1",
+               "namespace": "namespace delete ocl_util",
+               "helper": "rename ocl_util::get_clkwiz_prop {}"}
+    r = run_tcl(tmp_path, CLKAPI_MOCK + "\n" + changes[guard] +
+                f"\nsource {{{REPO / 'hw/u200/clock_vitis_compat.tcl'}}}\n")
+    assert r.returncode != 0
+    assert "CLKAPI" in r.stdout + r.stderr

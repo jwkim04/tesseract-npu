@@ -261,6 +261,21 @@ request to 166 MHz in `clk_info` and the generated timing constraints (6.024096 
 The generated BD connects `ap_clk` to `ss_ucs/aclk_kernel_00` and `ap_clk_2` to
 `ss_ucs/aclk_kernel_01`, with separate reset generators. `[clock] id` accepts only fixed
 reference clocks on this platform (IDs 2/3/4); using it for scalable IDs 0/1 fails CFGEN.
+This matches the PCIe `kernel_frequency` setting in AMD's
+[two-clock RTL example](https://xilinx.github.io/Vitis_Accel_Examples/2024.1/html/rtl_vadd_2clks.html)
+and the scalable-clock option in
+[UG1702 2024.2](https://docs.amd.com/r/2024.2-English/ug1702-vitis-accelerated-reference/v-General-Options).
+All external AXI interfaces remain on `ap_clk`; the secondary clock drives internal RV logic.
+
+The installed Vitis 2024.2 helper has a separate compatibility problem: it passes the project
+name to Vivado's part-keyed clock calculator and omits its input-period argument. The actual
+retry reported `Invalid part string Project`, emitted a 1:1 generated clock and was stopped by
+the pre-opt check at 9.999 ns. `clock_vitis_compat.tcl`, an `INIT_DESIGN.PRE` hook, adapts those
+calculator calls for the pinned U200 part and tool version. It checks calculation success and
+the effective ratio after the native writer's integer conversion, and cleans up on failure.
+The native XDC creation/application remains in use. This is a repository workaround, not an
+AMD-published patch. The real API probe calculates 166 MHz; the corrected full-link check is
+still required. No installed or generated tool files are edited.
 `hw/u200/clock_bd_check.tcl` checks the connected BD nets and each reset generator's clock.
 `impl_pre.tcl` checks the synthesized domain clocks, every RV FF and reset sources before
 `opt_design`, then applies the TCM power-optimisation exclusion. The final pre-bitstream hook
