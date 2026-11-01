@@ -106,9 +106,11 @@ the compatibility hook. The implementation resume started at 01:56 KST from `abc
 supervisor PID 804838. It reused the 176 block-level synthesis results and regenerated only
 the top-level synthesis. The actual pre-opt `CLKNET` check passed: core 3.333 ns, RV 6.023 ns,
 all 4,225 RV FFs on the RV clock, and separate reset sources in their respective domains.
-The calculator selected M=83, D=10, O=5 from 100 MHz, giving 166 MHz. The run is in `opt_design`;
-placement, routing and post-route checks are still pending. The current attempt, PID and
-source commit are recorded in `status.json`.
+The calculator selected M=83, D=10, O=5 from 100 MHz, giving 166 MHz. At 02:29 KST,
+`opt_design` and its checkpoint write completed. The revised floorplan passed its initial
+membership check (`K4FP locality PASS (placed=0)`); placement started after two pre-place
+DRC passes with zero errors. The physical locality, routing and post-route checks are still
+pending. The current attempt, PID and source commit are recorded in `status.json`.
 
 The original detached supervisor was PID 741389 and exited with status 1. `status.json`, `build.log`, `memory.jsonl`, source
 snapshot/hash manifest and the eventual `exit_code` are in that run directory. The pointer
