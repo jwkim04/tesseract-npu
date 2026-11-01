@@ -13,15 +13,16 @@ Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README
 | W4-B RTL: VU, attention modes, DB block, two-clock XRT adapter; tsr-dbg (GDB), tsr-prof | done; ctest 297/297, lint clean, all benches green | `6435e8a` |
 | W5 preparation: VU lane pipes (`tsr_vu_lanes.sv`, `VU_LANE_PIPE`), floorplan C'' (`hw/u200/k4_floorplan.tcl`), TCM RAMB36 constraint in every flow (`tsr_ctrl_tcm.xdc`, `hw/u200/tcm_opt.tcl`), `build_xclbin.sh` enabled for k1/k4 | checkpoint; first K4 route failed | `58bf76d` |
 
-## Current blocker: the k4 link does not route
+## Current: the k4 route is in progress
 
 The corrected attempt completed placement and physical optimisation, with actual SLR locality
 checks passing. It was intentionally stopped at 05:25 KST on 2026-11-02: the new timing report
 shows kernel FIFO crossings timed against a 0.040 ns clock-edge separation instead of the
 required datapath-only maximum delay. Restoring those constraints and moving the five ATT
 stall reduction LUTs pass real-DCP checks, with no new DRC violations. The corrected analysis
-checkpoint is saved. A native physopt/route restart began at 07:34 KST from the preserved
-placed checkpoint. No new routed result exists yet.
+checkpoint is saved. A native restart from the preserved placement completed physical
+optimisation and its locality check. The route-pre clock/reset and CDC gates passed;
+`route_design` entered `Phase 1 Build RT Design` at 08:24 KST. No new routed result exists yet.
 
 `hw/u200/build_xclbin.sh k4` (4 channels, T_MAX 8, the final image) synthesised and placed, then
 `route_design` failed: "The router is unable to resolve localized SLL routing demand"
@@ -188,6 +189,16 @@ records, run/part and matching filenames instead. The actual project API, hook s
 step reset and launch passed. Child PID 1151638 opened `level0_wrapper_placed.dcp`.
 The attempt is `attempts/20261102_073426_cdc_eco_native_resume/`; its source snapshot includes
 the validated working-tree hooks. `status.json` points to its `native_resume.log`.
+The 25 implementation source snapshots match pushed commit `c2055f6`; the mapping is in
+`committed_hook_source.json` in that attempt. On the native placed input, the five-LUT ECO
+preserved all 2,131,648 other primitive placements. Physical optimisation and its P1 check
+then passed. Setup estimates are core -1.606 ns, RV -0.230 ns and fixed DMA -0.821 ns;
+hold remains -0.324/-0.127/-0.201 ns. The remaining core worst path is the local `qk_gate`
+feedback (8 levels, 87 % estimated wire delay). These are still pre-route results.
+The new physopt DCP was written at 08:19 KST. Route-pre checks passed with core/RV periods
+3.333/6.023 ns, all 4,234 hart FFs on RV and both CDC directions bounded at 3.333 ns.
+The router started at 08:24 KST. Its entry evidence and checkpoint hash are in
+`route_entry_milestone.json`; the completed physopt DCP is 595,717,524 bytes.
 The fresh commit gates pass the software build, CTest (297 executed), both generated checks,
 full RTL lint (including nine XSim and eight Vivado checks), and the full RTL pytest run
 (355 passed, 115 opt-in skips, exit 0). Focused link checks pass 73 tests; floorplan checks pass 32, including
@@ -236,8 +247,8 @@ No runtime/RTL changes or extra build/test/Vivado/DCP/link runs were made for th
 
 1. Check the active run's `status.json` and logs before starting another link. A zero exit status
    and a routed checkpoint are required before calling the route successful.
-2. Confirm the clock/reset, CDC restoration, guarded ECO and locality hooks on the native
-   restart's placed input. Their analysis-DCP checks have passed. Compare the router's
+2. Monitor routing; the native clock/reset, CDC restoration, guarded ECO and locality checks
+   have passed. Compare the router's
    per-column SLL demand and per-clock timing against the placed reports. The combined
    changes reduced placed SLL counts by 11,301; that does not establish routing success or
    isolate the contribution of the attention change.
