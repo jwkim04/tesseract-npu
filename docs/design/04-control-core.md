@@ -710,12 +710,16 @@ The figure shows the two clock domains, the crossings between them and the const
 
 ### 11.1 Clocks
 
-- Core clock = `ap_clk` (k4: 276.3 MHz after v++ scaling, `docs/platform-u200.md` §14.1).
-- `clk_rv` from `ap_clk_2` (platform KERNEL clock, 500 MHz): first try a v++ frequency request for
-  `ap_clk_2` (`--clock.freqHz 166666666:tsr_k4.ap_clk_2` or the legacy `--kernel_frequency
-  "0:300|1:166.7"`, *confirm*); otherwise `tsr_clk_div` in `rtl/tech/xilinx` (BUFGCE_DIV ÷ 3 of
-  500 MHz). Software never assumes F_RV (`RV_FREQ`). If v++ scales either clock, nothing breaks
-  (fully asynchronous CDC).
+- Core clock = `ap_clk`, requested at 300 MHz. The earlier k4 image without the control core
+  ran at 276.3 MHz after v++ scaling (`docs/platform-u200.md` §14.1).
+- `clk_rv` comes from `ap_clk_2`, using U200 platform clock ID 1. `ap_clk` uses ID 0.
+  The link configs use `kernel_frequency=0:300|1:166.666667` for these two scalable clocks.
+  Vitis 2024.2 truncates the RV request to 166 MHz in its metadata and timing constraints.
+  `[clock] id` selects fixed reference clocks and rejects scalable IDs 0/1 on this platform.
+  The BD hook checks the actual clock and reset nets;
+  the implementation hook checks the synthesized clocks, RV FFs and reset sources. The final
+  pre-bitstream hook checks the scaled frequencies in `_new_clk_freq` (the clock `PERIOD`
+  properties do not reflect that scaling). Software reads `RV_FREQ` rather than assuming F_RV.
 - `CTRL_SYNC` = 1 (targets with clk_rv = clk): every CDC structure becomes plain register stages.
 
 ### 11.2 Crossings
@@ -968,6 +972,10 @@ the VU.
   The control core's sub-pblock `pblock_tsr_ctrl_rv` is `CLOCKREGION_X0Y6:CLOCKREGION_X0Y8` (108 RAMB36, no URAM:
   SLR1's URAM columns are X1 and X2). The TCMs are RAMB36 in every flow: `rtl/ctrl/viv/tsr_ctrl_tcm.xdc` (§4.2) is read
   by `core_ooc.tcl`, `kernel_ooc.tcl` and the kernel IP (`package_xo.tcl`).
+- Keep the entire per-cluster attention job pipe `g_ajp.u_ajp` and the ATT/MVM selector beside
+  its cluster. The selected job crosses through `g_jp` once. Reparented broadcast decode LUTs
+  and carry cells belong beside the destination cluster; the lane wrapper's writer/reduction
+  helpers belong in SLR1. Keep the stages on either end of the crossing pipes separate.
 
 ### 14.3 Timing gates (D13)
 

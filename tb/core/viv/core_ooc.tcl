@@ -103,7 +103,7 @@ if {$from eq ""} {
   source $repo/rtl/ctrl/viv/tsr_cdc_waivers.tcl
   if {$unc ne ""} { set_clock_uncertainty -setup $unc [get_clocks clk] }
   if {$dcp} { write_checkpoint -force $out/post_synth.dcp }
-  cooc_cdc synth $out
+  if {![cooc_cdc synth $out]} { error "COOC synthesis CDC gate failed" }
   report_utilization -file $out/util_synth.rpt
   report_utilization -hierarchical -hierarchical_depth 6 -file $out/util_hier.rpt
   cooc_util synth
@@ -138,7 +138,7 @@ report_utilization -file $out/util.rpt
 report_utilization -hierarchical -hierarchical_depth 6 -file $out/util_hier_routed.rpt
 report_design_analysis -logic_level_distribution -file $out/levels.rpt
 report_drc -file $out/drc.rpt
-cooc_cdc routed $out
+if {![cooc_cdc routed $out]} { error "COOC routed CDC gate failed" }
 cooc_util routed
 cooc_hier routed
 cooc_paths routed 30

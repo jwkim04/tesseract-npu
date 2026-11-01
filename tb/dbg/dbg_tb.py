@@ -26,7 +26,7 @@ from collections import deque
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, RisingEdge
+from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
 from common import isa, tables as T
 
@@ -624,10 +624,12 @@ class Bench:
             d.d_wr_dat_data.value = cur[2][cur[4]]
             d.d_wr_dat_last.value = int(cur[4] == cur[1] - 1)
 
-    async def start(self):
+    async def start(self, core_ps=10000, rv_ps=16000, rv_phase_ps=0):
         d = self.dut
-        cocotb.start_soon(Clock(d.clk, 10, unit="ns").start())
-        cocotb.start_soon(Clock(d.clk_rv, 16, unit="ns").start())
+        # Initialise both clock inputs, reset and traffic before either clock
+        # runs, including the core cycles used to offset the RV clock's phase.
+        d.clk.value = 0
+        d.clk_rv.value = 0
         d.rst_n.value = 0
         zero = ["csr_valid", "csr_we", "csr_addr", "csr_wdata", "cwin_req_valid", "cwin_req_off", "lq_req_valid",
                 "lq_req_off", "lq_req_we", "lq_req_wdata", "lq_req_lcq_w", "log_valid", "log_data", "rt_state",
@@ -646,6 +648,10 @@ class Bench:
                 "s_wr_dat_ready", "s_wr_rsp_valid", "s_wr_rsp_id"]
         for nm in zero:
             getattr(d, nm).value = 0
+        cocotb.start_soon(Clock(d.clk, core_ps, unit="ps").start())
+        if rv_phase_ps:
+            await Timer(rv_phase_ps, unit="ps")
+        cocotb.start_soon(Clock(d.clk_rv, rv_ps, unit="ps").start())
         for _ in range(8):
             await RisingEdge(d.clk)
         d.rst_n.value = 1

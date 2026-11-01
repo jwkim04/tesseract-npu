@@ -20,6 +20,8 @@ Tests (one simulator process each, so each starts from a hardware reset):
               fetch address (CC-29) cross-checked against dmstatus.allhalted; then (RTL only) DB's
               halt request toggle (one halt, cause haltreq, pend cleared, no re-halt) and
               halt-on-boot (dpc = RV_BOOT + 0x80).
+  halt_reset_pending  normal reset release discards an old DB halt request, a fresh request still
+              halts once, and cancel while booting clears pending state (DB §3.3, §3.8).
   push_wait   the push safety net (CC §7.3): with the dispatcher stopped a push waits, faults after
               ISSUE_WAIT_MAX clk_rv cycles with ISSUE_STATUS.PUSH_TIMEOUT and the core's sticky
               pulse, and the count is suspended while dbg_stop = 1.
@@ -272,6 +274,58 @@ if cocotb is not None:
         dpc = await p.rd(ctrl_tb.DMI_DATA0)
         dut.dbg_halt_on_boot.value = 0
         assert dpc == 0x80, "halt-on-boot dpc %08x" % dpc
+        assert not p.timeouts, p.timeouts
+
+    @cocotb.test()
+    async def halt_reset_pending(dut):
+        """DB §§3.3,3.8: reset release discards old requests; cancel and new requests still work."""
+        rv_ps, core_ps = periods()
+        await ctrl_tb.start(dut, rv_ps, core_ps, seed=seed())
+        _, err, timeout = await ctrl_tb.ld_access(dut, 1, 0x80, 0x0000006F)  # jal x0, 0
+        assert not err and not timeout
+        p = ctrl_tb.DmiPort(dut=dut)
+        await p.wr(ctrl_tb.DMI_DMCONTROL, 1)  # keep the DM active before the first halt
+
+        async def pending_request():
+            dut.dbg_halt_tgl.value = 1 - int(dut.dbg_halt_tgl.value)
+            await ClockCycles(dut.clk_rv, 20)
+            assert int(dut.rv_halt_pend.value), "halt request did not become pending while held"
+
+        async def boot_running():
+            dut.rv_run.value = 1
+            await ClockCycles(dut.clk_rv, 100)
+            assert int(dut.rv_running.value), "hart did not leave reset"
+            assert not int(dut.rv_halt_pend.value), "reset release retained a stale halt request"
+            assert not int(dut.rv_halted.value), "old request halted HALT_ON_BOOT=0 boot"
+
+        # The simulator has the same regression: an unconsumed request predating RESET is
+        # discarded even if no RV_HALTED or RV_HALT_CANCEL ever acknowledged it.
+        await pending_request()
+        await boot_running()
+        # A genuinely new request after reset release still halts, and resume stays running.
+        dut.dbg_halt_tgl.value = 1 - int(dut.dbg_halt_tgl.value)
+        for _ in range(1000):
+            await RisingEdge(dut.clk_rv)
+            if int(dut.rv_halted.value):
+                break
+        else:
+            raise AssertionError("new post-reset halt request was lost")
+        await ClockCycles(dut.clk_rv, 10)
+        assert not int(dut.rv_halt_pend.value)
+        await p.wr(ctrl_tb.DMI_DMCONTROL, 0x40000001)
+        await p.poll(ctrl_tb.DMI_DMSTATUS, 0x800, 0x800)
+        await p.wr(ctrl_tb.DMI_DMCONTROL, 1)
+        await ClockCycles(dut.clk_rv, 100)
+        assert not int(dut.rv_halted.value), "new request was not one-shot"
+
+        dut.rv_run.value = 0
+        while not int(dut.rv_reset_done.value):
+            await RisingEdge(dut.clk)
+        await pending_request()
+        # The cancel and boot level cross together; cancel must take precedence over the old
+        # request and must not interfere with the normal reset release.
+        dut.dbg_cancel_tgl.value = 1
+        await boot_running()
         assert not p.timeouts, p.timeouts
 
     @cocotb.test()
@@ -591,6 +645,10 @@ def test_ctrl_dmi():
     _run("dmi")
 
 
+def test_ctrl_halt_reset_pending():
+    _run("halt_reset_pending")
+
+
 def test_ctrl_push_wait():
     _run("push_wait")
 
@@ -631,13 +689,13 @@ if pytest is not None:
         _run("lockstep", seed=seed, env={"TSR_SEED": str(seed)})
 
     # CDC jitter mode (CC-27): every synchroniser bit takes 2 or 3 stages at random.
-    @pytest.mark.parametrize("case", ["lockstep", "dmi", "lb", "fifo_full", "err_rec"])
+    @pytest.mark.parametrize("case", ["lockstep", "dmi", "halt_reset_pending", "lb", "fifo_full", "err_rec"])
     def test_ctrl_jitter(case):
         _run(case, name="tb_ctrl_jitter", defines=["TSR_CDC_JITTER"])
 
 
     # CTRL_SYNC = 1 (CC §11.1: clk_rv = clk, every synchroniser one register stage)
-    @pytest.mark.parametrize("case", ["lockstep", "dmi", "bridge"])
+    @pytest.mark.parametrize("case", ["lockstep", "dmi", "halt_reset_pending", "bridge"])
     def test_ctrl_sync(case):
         _run(case, parameters={"CTRL_SYNC": 1}, name="tb_ctrl_sync",
              env={"TB_CTRL_SYNC": "1", "TB_CTRL_RV_PS": "3620"})

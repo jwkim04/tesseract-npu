@@ -254,6 +254,20 @@ crossing paths), which is what a link of the earlier package would have had. The
 the check on the routed design: `hw/u200/cdc_check.tcl` is the post-route hook of `k1.cfg` and `k4.cfg` and
 fails the implementation run on an unconstrained or unsafe crossing (§8).
 
+Clock/reset integration is checked before routing too. The configs request the two U200
+scalable clocks with `kernel_frequency=0:300|1:166.666667`. Vitis 2024.2 truncates the second
+request to 166 MHz in `clk_info` and the generated timing constraints (6.024096 ns).
+The generated BD connects `ap_clk` to `ss_ucs/aclk_kernel_00` and `ap_clk_2` to
+`ss_ucs/aclk_kernel_01`, with separate reset generators. `[clock] id` accepts only fixed
+reference clocks on this platform (IDs 2/3/4); using it for scalable IDs 0/1 fails CFGEN.
+`hw/u200/clock_bd_check.tcl` checks the connected BD nets and each reset generator's clock.
+`impl_pre.tcl` checks the synthesized domain clocks, every RV FF and reset sources before
+`opt_design`, then applies the TCM power-optimisation exclusion. The final pre-bitstream hook
+checks `_new_clk_freq` after Vitis scaling: core at least 276.3 MHz, RV within the current
+request's tolerance. These clock checks always fail the run on an error. `TSR_CDC_GATE=warn`
+only relaxes the final CDC report gate. A 125 MHz RV fallback needs an explicit request and
+frequency-window change.
+
 Each packaging writes `build/u200/xo/<kernel>.sources.sha256` next to the `.xo`: the sha256 of
 both filelists, every source, `kernel_<k>.xml`, `rtl/ctrl/viv/tsr_ctrl_cdc.xdc` and `package_xo.tcl`, with repository paths.
 `cd <repo> && sha256sum -c build/u200/xo/<kernel>.sources.sha256` tells whether an `.xo` still
@@ -316,8 +330,8 @@ dev host (14 GB RAM, swap) the k1 link peaked at 15.3 GB and the M0 link at 18.3
 
 | Config | Connectivity | Implementation |
 |---|---|---|
-| `k1.cfg` | `nk=tsr_u200_k1:1:tsr_k1`, `sp=tsr_k1.m_axi_ch0:DDR[1]`, `slr=tsr_k1:SLR1` | `kernel_frequency=300`; synth / impl jobs 4; phys_opt and post-route phys_opt on |
-| `k4.cfg` | `nk=tsr_u200_k4:1:tsr_k4`, `sp=tsr_k4.m_axi_ch<c>:DDR[c]`; no `slr=` (one compute unit spanning three SLRs) | the same, plus placer directive `AltSpreadLogic_high` and floorplan C' (`k4_floorplan.tcl` as the place_design pre-hook, §8.1) — as in the out-of-context runs that met 300 MHz (rtl-m3 §14.1, §14.3) |
+| `k1.cfg` | `nk=tsr_u200_k1:1:tsr_k1`, `sp=tsr_k1.m_axi_ch0:DDR[1]`, `slr=tsr_k1:SLR1` | `kernel_frequency=0:300\|1:166.666667`; synth / impl jobs 8; placer `AltSpreadLogic_high`; phys_opt and post-route phys_opt on |
+| `k4.cfg` | `nk=tsr_u200_k4:1:tsr_k4`, `sp=tsr_k4.m_axi_ch<c>:DDR[c]`; no `slr=` (one compute unit spanning three SLRs) | the same, plus floorplan C'' (`k4_floorplan.tcl` as the place_design pre-hook, CC §14.2) and locality checks after placement and physical optimisation |
 
 Platform facts (the recorded `platforminfo`, `build/platforms/vpp-smoke/platforminfo.txt`, and the
 platform's `hw/hw.xsa`, `tcl_hooks/impl.xdc` / `preopt.tcl`): DDR bank0 SLR0, bank1 SLR1, bank2
@@ -812,12 +826,9 @@ passes; `rtl/platform/alveo_xrt/bw/lint.sh` is clean too (both run for this docu
 
 ## 12. Open items
 
-- **No xclbin with the control core.** The k1 and k4 builds stop until Y5 (§8). The first smoke link confirms that
-  `v++` 2024.2 accepts an `ap_ctrl_none` kernel with `s_axi_control` and `m_axi` arguments and
-  honours its `sp=` connectivity, else EX §9.1's fallback applies. It also settles the source of
-  `clk_rv`: a `v++` frequency request for `ap_clk_2` (`--clock.freqHz 166666666:tsr_k4.ap_clk_2`
-  or the legacy `--kernel_frequency "0:300|1:166.7"`, to be confirmed) or a divide-by-3 buffer
-  (`tsr_clk_div`, BUFGCE_DIV) on the 500 MHz clock (CC §11.1).
+- **No routed xclbin with the control core.** The first K4 link placed but failed on localized
+  SLL demand. Its two kernel clocks also aliased clock ID 0. The corrected source selection,
+  early connection checks and floorplan changes have not been linked. See `docs/handoff.md`.
 - **k4 clock.** The k4 link of §8.2 missed 300 MHz by 0.285 ns and ran at 276.3 MHz (§8.2). Gate T3 asks
   for at least 276.3 MHz with the control core and targets 300 MHz with the job-pipe fix (§8.4).
   If two `keep` reset copies of the core merge (rtl-m3 §14.8), they want `DONT_TOUCH`.

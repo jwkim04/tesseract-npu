@@ -349,9 +349,15 @@ struct tsr_transport {
 
     // protocol state
     dstate state = dstate::reset;
+    bool reset_pending = false;          // reset was attempted; ring counters are not resynchronised
     std::string fail_reason;
     const tsr_image * img = nullptr;      // booted image (a reference is held)
     uint32_t pushed = 0, lcq_rd = 0, log_rd = 0;
+    struct lcq_entry {
+        tsr_record rec;
+        uint32_t answered;             // LCQ_ANSWERED sampled for a TRAP before acknowledging it
+    } lcq_batch[TSR_LCQ_DEPTH_MAX];
+    uint32_t lcq_batch_n = 0, lcq_batch_end = 0;   // complete batch kept across an ack failure
     uint32_t lq_shadow[8] = {};
     std::deque<launch_rec> outstanding;   // pushed, not answered, in push order
     std::map<uint32_t, tsr_record> answered;
@@ -612,25 +618,27 @@ struct tsr_transport {
     }
 
     // ---- LCQ consumption (EX §4.8) ----
-    void read_record(uint32_t k, tsr_record * r) {
+    bool read_record(uint32_t k, tsr_record * r, const launch_rec * oldest) {
         const uint32_t slot = k % lcq_depth;
         memset(r, 0, sizeof(*r));
-        rd(TSR_CSR_LCQ_REC(slot, 0), &r->w[0]);
+        if (!rd(TSR_CSR_LCQ_REC(slot, 0), &r->w[0])) return false;
         const uint32_t type = TSR_GET(r->w[0], TSR_LCQ_R0_TYPE), stt = TSR_GET(r->w[0], TSR_LCQ_R0_STATUS),
                        err = TSR_GET(r->w[0], TSR_LCQ_R0_ERR_CODE), s8 = TSR_GET(r->w[0], TSR_LCQ_R0_SEQ);
         const bool minimal = !full_records && (type == TSR_LCQ_R0_TYPE_DONE || type == TSR_LCQ_R0_TYPE_PONG) &&
-                             stt == TSR_LCQ_R0_STATUS_OK && err == 0 && !outstanding.empty() && s8 == (outstanding.front().seq & 0xFFu);
+                             stt == TSR_LCQ_R0_STATUS_OK && err == 0 && oldest != nullptr && s8 == (oldest->seq & 0xFFu);
         if (minimal) {
             // EX §4.8: an OK answer to the oldest launch is r0 alone; r1 = its SEQ, DONE r3 =
             // TICKET_NONE and r4-r6 = 0 by EX §4.4; r2 (RET, the PONG's ARG0 echo) is read unless
             // the kernel's RET is 0 on success (graph, replay: SW §6.4); r7 (DURATION) is not read
             // (0 here: the poll policy measures the service time itself).
-            r->w[1] = outstanding.front().seq;
-            if (type == TSR_LCQ_R0_TYPE_PONG || !outstanding.front().ret0) rd(TSR_CSR_LCQ_REC(slot, 2), &r->w[2]);
+            r->w[1] = oldest->seq;
+            if ((type == TSR_LCQ_R0_TYPE_PONG || !oldest->ret0) && !rd(TSR_CSR_LCQ_REC(slot, 2), &r->w[2])) return false;
             r->w[3] = type == TSR_LCQ_R0_TYPE_DONE ? TSR_TICKET_NONE : 0u;
         } else {
-            for (uint32_t j = 1; j < 8; ++j) rd(TSR_CSR_LCQ_REC(slot, j), &r->w[j]);
+            for (uint32_t j = 1; j < 8; ++j)
+                if (!rd(TSR_CSR_LCQ_REC(slot, j), &r->w[j])) return false;
         }
+        return true;
     }
 
     void answer(const tsr_record & rec) {
@@ -677,24 +685,54 @@ struct tsr_transport {
 
     // Consumes [LCQ_RD, LCQ_WR): answers, events (queued for the callback), TRAP (flagged).
     int consume() {
-        uint32_t v = 0;
-        if (!rd(TSR_CSR_LCQ_WR, &v)) return TSR_TE_IO;
-        uint32_t n = v - lcq_rd;
-        if (n == 0) return 0;
-        if (n > lcq_depth) {
-            uint32_t r = 0;
-            rd(TSR_CSR_LCQ_RD, &r);
-            msg("LCQ_WR - LCQ_RD = %u exceeds LCQ_DEPTH %u (host LCQ_RD %u, device %u): resynchronising", n, lcq_depth, lcq_rd, r);
-            lcq_rd = r;
-            n = v - r;
+        if (reset_pending) return TSR_TE_STATE;
+        if (lcq_batch_n == 0u) {
+            uint32_t v = 0;
+            if (!rd(TSR_CSR_LCQ_WR, &v)) return TSR_TE_IO;
+            uint32_t n = v - lcq_rd;
+            if (n == 0) return 0;
             if (n > lcq_depth) {
-                fail("the LCQ counters are inconsistent (LCQ_WR " + std::to_string(v) + ", LCQ_RD " + std::to_string(r) + ")");
-                return TSR_TE_DEVICE;
+                uint32_t r = 0;
+                if (!rd(TSR_CSR_LCQ_RD, &r)) return TSR_TE_IO;
+                msg("LCQ_WR - LCQ_RD = %u exceeds LCQ_DEPTH %u (host LCQ_RD %u, device %u): resynchronising", n, lcq_depth, lcq_rd, r);
+                lcq_rd = r;
+                n = v - r;
+                if (n > lcq_depth) {
+                    fail("the LCQ counters are inconsistent (LCQ_WR " + std::to_string(v) + ", LCQ_RD " + std::to_string(r) + ")");
+                    return TSR_TE_DEVICE;
+                }
             }
+            // Read the whole batch before acknowledging or publishing anything. Track the next
+            // expected launch locally so every in-order OK answer still uses minimal reads. An
+            // out-of-order answer, HELLO or TRAP falls back to full reads for the rest of the batch;
+            // their effects on outstanding are applied only after the acknowledgement succeeds.
+            size_t next = 0;
+            bool ordered = true;
+            for (uint32_t i = 0; i < n; ++i) {
+                lcq_entry & e = lcq_batch[i];
+                const launch_rec * oldest = ordered && next < outstanding.size() ? &outstanding[next] : nullptr;
+                if (!read_record(lcq_rd + i, &e.rec, oldest)) return TSR_TE_IO;
+                const uint32_t type = TSR_GET(e.rec.w[0], TSR_LCQ_R0_TYPE);
+                e.answered = 0;
+                if (type == TSR_LCQ_R0_TYPE_TRAP && !outstanding.empty() && !rd(TSR_CSR_LCQ_ANSWERED, &e.answered)) return TSR_TE_IO;
+                if (type == TSR_LCQ_R0_TYPE_DONE || type == TSR_LCQ_R0_TYPE_PONG) {
+                    if (oldest != nullptr && e.rec.w[1] == oldest->seq && TSR_GET(e.rec.w[0], TSR_LCQ_R0_SEQ) == (oldest->seq & 0xFFu))
+                        ++next;
+                    else ordered = false;
+                } else if (type == TSR_LCQ_R0_TYPE_HELLO || type == TSR_LCQ_R0_TYPE_TRAP) ordered = false;
+            }
+            lcq_batch_n = n;
+            lcq_batch_end = v;
         }
-        for (uint32_t k = lcq_rd; k != v; ++k) {
-            tsr_record rec;
-            read_record(k, &rec);
+        // A failed write may already have reached the device, freeing slots it can overwrite.
+        // Keep these complete records and retry the same ack, rather than rereading those slots.
+        if (!wr(TSR_CSR_LCQ_RD, lcq_batch_end)) return TSR_TE_IO;
+        lcq_rd = lcq_batch_end;
+        const uint32_t n = lcq_batch_n;
+        lcq_batch_n = 0;
+        for (uint32_t i = 0; i < n; ++i) {
+            const lcq_entry & e = lcq_batch[i];
+            const tsr_record & rec = e.rec;
             const uint32_t type = TSR_GET(rec.w[0], TSR_LCQ_R0_TYPE);
             if (type == TSR_LCQ_R0_TYPE_DONE || type == TSR_LCQ_R0_TYPE_PONG) {
                 answer(rec);
@@ -703,9 +741,7 @@ struct tsr_transport {
                 // outstanding launch (r1 = SEQ = TAKEN either way; the runtime parks after a trap).
                 bool is_answer = false;
                 if (!outstanding.empty()) {
-                    uint32_t ans = 0;
-                    rd(TSR_CSR_LCQ_ANSWERED, &ans);
-                    is_answer = (int32_t) (ans - outstanding.front().seq) > 0 && rec.w[1] == outstanding.front().seq;
+                    is_answer = (int32_t) (e.answered - outstanding.front().seq) > 0 && rec.w[1] == outstanding.front().seq;
                 }
                 if (is_answer) answer(rec);
                 trap_pending = true;
@@ -720,8 +756,6 @@ struct tsr_transport {
                 ev_pending.push_back(rec);
             }
         }
-        if (!wr(TSR_CSR_LCQ_RD, v)) return TSR_TE_IO;
-        lcq_rd = v;
         plat_err_try_clear();
         return (int) n;
     }
@@ -832,7 +866,7 @@ struct tsr_transport {
     // LCQ_WR, LOG_RD := LOG_WR); false at open, where they are an earlier process's.
     int soft_reset_hw(const char * why, bool keep_posted = true) {
         if (state == dstate::failed) return TSR_TE_DEVICE;
-        if (keep_posted) {
+        if (keep_posted && !reset_pending) {
             consume();
             deliver_events();
             if (trap_pending) {
@@ -845,8 +879,13 @@ struct tsr_transport {
         }
         if (opened) perf_fold();   // DB §8.6: SOFT_RESET zeroes PERF and LOG_DROPPED (EX §8.5)
         uint32_t ctrl = 0;
-        rd(TSR_CSR_CTRL, &ctrl);
+        if (!rd(TSR_CSR_CTRL, &ctrl)) return TSR_TE_IO;
         const uint32_t levels = ctrl & (TSR_CTRL_HOST_HOLD | TSR_CTRL_HOLD_ON_HALT | TSR_CTRL_IRQ_EN);
+        // A failed write can already have started the reset. Until a reset and counter resync
+        // succeed, neither a saved batch nor the old ring payload may be consumed or launched on.
+        reset_pending = true;
+        lcq_batch_n = 0;
+        if (state != dstate::attached) state = dstate::reset;
         if (!wr(TSR_CSR_CTRL, levels | TSR_CTRL_SOFT_RESET)) return TSR_TE_IO;
         uint32_t s = 0;
         const uint64_t t0 = now();
@@ -875,6 +914,7 @@ struct tsr_transport {
         wm_cancel.valid = wm_stop.valid = false;   // EX §4.9: SOFT_RESET clears both VALID bits
         // The flushed counters (EX §8.5): PUSHED is kept, LCQ_RD := LCQ_WR, LOG_RD := LOG_WR.
         if (!rd(TSR_CSR_LQ_SEQ, &pushed) || !rd(TSR_CSR_LCQ_RD, &lcq_rd) || !rd(TSR_CSR_LOG_RD, &log_rd)) return TSR_TE_IO;
+        reset_pending = false;
         dec.reset();
         if (state != dstate::attached) state = dstate::reset;
         return 0;
@@ -975,7 +1015,7 @@ struct tsr_transport {
         if (rc) return rc;
         uint32_t s = 0;
         if (!status(&s)) return state == dstate::failed ? TSR_TE_DEVICE : TSR_TE_IO;
-        if (state != dstate::reset || (s & (TSR_STATUS_RV_RUNNING | TSR_STATUS_SR_BUSY))) {
+        if (reset_pending || state != dstate::reset || (s & (TSR_STATUS_RV_RUNNING | TSR_STATUS_SR_BUSY))) {
             rc = soft_reset_hw("boot");
             if (rc) return rc;
             state = dstate::reset;
@@ -1044,10 +1084,7 @@ struct tsr_transport {
             if (!rd(TSR_CSR_LCQ_WR, &v)) return TSR_TE_IO;
             if (v != lcq_rd) {
                 tsr_record h;
-                const bool save = full_records;
-                full_records = true;
-                read_record(lcq_rd, &h);
-                full_records = save;
+                if (!read_record(lcq_rd, &h, nullptr)) return TSR_TE_IO;
                 if (!wr(TSR_CSR_LCQ_RD, lcq_rd + 1)) return TSR_TE_IO;
                 lcq_rd++;
                 const uint32_t type = TSR_GET(h.w[0], TSR_LCQ_R0_TYPE);

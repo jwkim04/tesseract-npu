@@ -35,6 +35,7 @@ cmake --build build/dev -j8
 ctest --test-dir build/dev -LE slow -j8
 /home/limagin-dev/miniconda3/bin/python sw/tables/gen_tables.py --check
 /home/limagin-dev/miniconda3/bin/python rtl/platform/alveo_xrt/gen_tops.py --check
-TSR_VIVADO_WRAP=hw/u200/vivado_slot.sh rtl/lint.sh          # Verilator, XSim, Vivado multi-driven check
-TSR_BUILD_JOBS=8 tb/run_all.sh --no-lint                    # all cocotb benches (about 25 min)
+TSR_VIVADO_WRAP="$PWD/hw/u200/vivado_slot.sh" rtl/lint.sh   # Verilator, XSim, Vivado multi-driven check
+TSR_BUILD_JOBS=8 TSR_PYTHON=/home/limagin-dev/miniconda3/bin/python \
+  TSR_VIVADO_WRAP="$PWD/hw/u200/vivado_slot.sh" tb/run_all.sh --no-lint
 ```

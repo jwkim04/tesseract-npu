@@ -15,11 +15,11 @@
 #    -> <OUT>/tsr_u200_<k>.xclbin (+ .link_summary, logs, reports); <k>.link.cfg is hw/u200/<k>.cfg
 #    with its hook paths made absolute (the configs give them relative to a directory three levels below
 #    the repository, where v++ resolves them: against its working directory; TSR_U200_OUT may point to
-#    another one at that depth, e.g. build/link/<k>). The configs set two implementation hooks: the k4
-#    floorplan C'' (pre place_design) and hw/u200/cdc_check.tcl (post route_design: the clock-domain-crossing
-#    gate of CC §14.3 T3, report_cdc and report_clock_interaction of ap_clk <-> ap_clk_2 on the routed
-#    kernel, whose constraints are the .xo's own; it fails the implementation run on an unconstrained or
-#    unsafe crossing, TSR_CDC_GATE=warn only reports)
+#    another one at that depth, e.g. build/link/<k>). The configs check clock/reset wiring after BD
+#    creation and before opt_design (with the TCM power-optimisation exclusion), apply the k4 floorplan
+#    before placement, and run the physical CDC gate after routing. A final pre-bitstream hook checks
+#    Vitis's scaled frequencies in _new_clk_freq. Clock identity/reset/frequency failures are fatal;
+#    TSR_CDC_GATE=warn only relaxes the final CDC report gate.
 #
 # Environment:
 #   TSR_U200_PLATFORM   platform name or .xpfm path (default xilinx_u200_gen3x16_xdma_2_202110_1),
@@ -30,8 +30,8 @@
 #   TSR_VIVADO_LOCK     if set: every Vivado / v++ call runs under `flock $TSR_VIVADO_LOCK`
 #   TSR_U200_FLOORPLAN  k4: 1 (default) = floorplan C'' hw/u200/k4_floorplan.tcl (place_design
 #                       pre-hook of hw/u200/k4.cfg); 0 = link without it
-#   TSR_U200_OUT        output directory (default build/u200/<k>, build/u200/<k>_hw_emu); must be three
-#                       directory levels below the repository (the configs' hook paths are relative to that)
+#   TSR_U200_OUT        output directory (default build/u200/<k>, build/u200/<k>_hw_emu);
+#                       config hook paths are made absolute before v++ reads them
 #   TSR_VPP_TO_STEP     stop v++ after this link step (v++ --to_step, e.g. vpl.config_hw_runs: the
 #                       implementation runs and their hooks are set up, nothing is synthesized)
 #   TSR_VPP_FROM_STEP   resume a link in TSR_U200_OUT from this step (v++ --from_step, e.g. vpl.impl after a
@@ -138,7 +138,7 @@ if [ -n "${TSR_BUILD_JOBS:-}" ]; then
   sed -i -e "s|^\(synth\|impl\)\.jobs=.*|\1.jobs=$TSR_BUILD_JOBS|" -e "s|^param=general\.maxThreads=.*|param=general.maxThreads=$TSR_BUILD_JOBS|" "$CFG"
 fi
 if [ "$K" = k4 ] && [ "${TSR_U200_FLOORPLAN:-1}" = 0 ]; then
-  sed -i -e '/k4_floorplan\.tcl/d' "$CFG"
+  sed -i -e '/k4_floorplan\.tcl\|k4_locality_check\.tcl/d' "$CFG"
   echo "== TSR_U200_FLOORPLAN=0: linking without hw/u200/k4_floorplan.tcl"
 fi
 extra=()

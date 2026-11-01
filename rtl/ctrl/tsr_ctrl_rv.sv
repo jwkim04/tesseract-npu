@@ -33,7 +33,8 @@
 //   hardware reset the hart is held (RV_RESET_DONE = 1). While held the load port owns the TCM write
 //   port (load_mode, CC §4.2).
 // DB's halt request (DB §3.3): pend is set by dbg_halt_req (a pulse from the core's toggle), and at
-//   the reset release with dbg_halt_on_boot; cleared by RV_HALTED or dbg_halt_cancel;
+//   reset release the old request is replaced with dbg_halt_on_boot (or a simultaneous new request);
+//   cleared by RV_HALTED or dbg_halt_cancel, which take precedence;
 //   dbg_req_rv = pend AND NOT RV_HALTED.
 // Resets: rst_n = the clk_rv domain reset (ap_rst_n through tsr_rst_sync, synchronous use here);
 // rst_ext_n = ap_rst_n_2 synchronised (AND-ed into the Ibex / DM resets only).
@@ -164,6 +165,7 @@ module tsr_ctrl_rv
   logic [31:0] boot_q;
   logic        ndmreset;
   logic        dm_active;      // dmcontrol.dmactive: exported to the core (DBG_RV_STATE.DMACTIVE, DB §10.1)
+  wire hart_release = sq_q == SQ_REL && rv_run && !ndmreset && sq_cnt_q == 2'd1;
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
@@ -230,7 +232,11 @@ module tsr_ctrl_rv
       pend_q <= 1'b0;
     end else if (dbg_halt_cancel || rv_halted) begin
       pend_q <= 1'b0;
-    end else if (dbg_halt_req || (ndmreset_ack && dbg_halt_on_boot)) begin
+    end else if (hart_release) begin
+      // Drop requests from before this reset, as the simulator does on RESET (DB §3.8).
+      // Update on the same edge as hart_rst_n_q, before Ibex can observe a stale debug_req.
+      pend_q <= dbg_halt_on_boot || dbg_halt_req;
+    end else if (dbg_halt_req) begin
       pend_q <= 1'b1;
     end
   end

@@ -18,12 +18,14 @@
 // needed", FAILED), the kdev registry and TSR_MOCK_* parsing, byte-granular transfers at odd
 // offsets / sizes / host addresses, across and beyond 4 GiB, under DMA rules from align 1 to 4096
 // with small chunks (shadow-memory compare, guard bytes untouched, every raw transfer checked
-// against the rules), and the xrt kdev's hw_emu environment defaults (xrt_env_defaults).
+// against the rules), raw LCQ read / acknowledgement failures (retry without losing answers,
+// duplicating events or returning launch credit), and the xrt kdev's hw_emu defaults (xrt_env_defaults).
 
 #include "tsr_fw_paths.h"
 #include "tsr_kdev.h"
 #include "tsr_kdev_mock.h"
 #include "tsr_sim_int.h"
+#include "tsr/opl.hpp"
 
 #include <chrono>
 #include <cinttypes>
@@ -276,24 +278,58 @@ static void test_protocol_basic() {
     tsr_transport_close(t);
 }
 
-// A kdev that forwards to a mock, with hooks (fewer channels, a frozen LCQ).
+// A kdev that forwards to a mock, with hooks (fewer channels, a frozen LCQ, one failed core access).
 struct wrap_kdev final : kdev {
     std::unique_ptr<mock_kdev> in;
     uint32_t ch_less = 0;
     bool     freeze_lcq = false;
     uint32_t lcq_seen = 0;
+    uint32_t fail_read = UINT32_MAX, fail_write = UINT32_MAX;
+    uint32_t read_failures = 0, write_failures = 0;
+    bool write_then_fail = false;
+    bool fail_reset_status = false;
+    bool fail_reset_write = false;
+    std::map<uint32_t, uint32_t> reads;
     explicit wrap_kdev(const mock_options & mo) : in(new mock_kdev(mo)) {}
     const char * name() const override { return "wrap"; }
     uint32_t num_ch() const override { return in->num_ch() - ch_less; }
     uint64_t ch_bytes(uint32_t ch) const override { return in->ch_bytes(ch); }
     uint64_t ch_addr(uint32_t ch) const override { return in->ch_addr(ch); }
     int reg_read(uint32_t off, uint32_t * val) override {
+        if (off >= KREG_CSR_WINDOW) {
+            const uint32_t core = off - KREG_CSR_WINDOW;
+            reads[core]++;
+            if (core == fail_read) {
+                fail_read = UINT32_MAX;
+                read_failures++;
+                return -1;
+            }
+        }
         const int rc = in->reg_read(off, val);
         if (freeze_lcq && off == KREG_CSR_WINDOW + TSR_CSR_LCQ_WR) *val = lcq_seen;   // records never appear
         else if (off == KREG_CSR_WINDOW + TSR_CSR_LCQ_WR) lcq_seen = *val;
         return rc;
     }
-    int reg_write(uint32_t off, uint32_t val) override { return in->reg_write(off, val); }
+    int reg_write(uint32_t off, uint32_t val) override {
+        if (fail_reset_write && off == KREG_CSR_WINDOW + TSR_CSR_CTRL && (val & TSR_CTRL_SOFT_RESET)) {
+            fail_reset_write = false;
+            write_failures++;
+            if (write_then_fail) (void) in->reg_write(off, val);
+            return -1;
+        }
+        if (off >= KREG_CSR_WINDOW && off - KREG_CSR_WINDOW == fail_write) {
+            fail_write = UINT32_MAX;
+            write_failures++;
+            if (write_then_fail) (void) in->reg_write(off, val);
+            return -1;
+        }
+        const int rc = in->reg_write(off, val);
+        if (rc == 0 && fail_reset_status && off == KREG_CSR_WINDOW + TSR_CSR_CTRL && (val & TSR_CTRL_SOFT_RESET)) {
+            fail_read = TSR_CSR_STATUS;
+            fail_reset_status = false;
+        }
+        return rc;
+    }
     int mem_write(uint32_t ch, uint64_t off, const void * src, size_t n) override { return in->mem_write(ch, off, src, n); }
     int mem_read(uint32_t ch, uint64_t off, void * dst, size_t n) override { return in->mem_read(ch, off, dst, n); }
     uint64_t now_ns() override { return in->now_ns(); }
@@ -680,6 +716,265 @@ static void test_boot_timeout() {
     tsr_image_close(img);
 }
 
+// Raw I/O failures must leave the entire LCQ batch retryable, including a prefix read before the
+// failed word. Publishing an answer before LCQ_RD succeeds would also return launch credit early.
+static void test_lcq_io_failures() {
+    printf("protocol: LCQ read and acknowledgement failures\n");
+    tsr_image * img = nullptr;
+    if (tsr_image_open(TSR_FW_TEST_IMAGE_fw_rt, &img) != 0) {
+        CHECK(0, "fw_rt image");
+        return;
+    }
+    auto open = [](wrap_kdev ** out) {
+        std::unique_ptr<wrap_kdev> w(new wrap_kdev(small_mock()));
+        *out = w.get();
+        return transport_open_kdev(std::move(w));
+    };
+    auto ready = [](tsr_transport * t, wrap_kdev * w, uint32_t count) {
+        const uint32_t rd = tsr_transport_csr_read(t, TSR_CSR_LCQ_RD);
+        uint32_t wr = rd;
+        for (uint32_t i = 0; i < 1000 && wr - rd < count; ++i) {
+            w->in->reg_read(KREG_CSR_WINDOW + TSR_CSR_LCQ_WR, &wr);
+            if (wr - rd < count) w->idle(i, 100000);
+        }
+        CHECK(wr - rd == count, "%u LCQ records ready (%u)", count, wr - rd);
+        return rd;
+    };
+    auto collect = [](void * p, const tsr_record * r) { ((std::vector<tsr_record> *) p)->push_back(*r); };
+    auto word_reads = [](wrap_kdev * w, uint32_t word) {
+        uint32_t n = 0;
+        for (uint32_t slot = 0; slot < TSR_LCQ_DEPTH; ++slot) n += w->reads[TSR_CSR_LCQ_REC(slot, word)];
+        return n;
+    };
+    for (uint32_t word : { 0u, 2u, 4u }) {
+        for (uint32_t bad : { 0u, 1u }) {
+            wrap_kdev * w = nullptr;
+            tsr_transport * t = open(&w);
+            CHECK(t != nullptr, "LCQ I/O open");
+            if (!t) continue;
+            if (tsr_transport_boot(t, img) != 0) {
+                CHECK(0, "LCQ I/O boot");
+                tsr_transport_close(t);
+                continue;
+            }
+            std::vector<tsr_record> events;
+            tsr_transport_set_event_cb(t, collect, &events);
+            uint32_t seq[TSR_LQ_DEPTH] = {};
+            for (uint32_t i = 0; i < TSR_LQ_DEPTH; ++i) {
+                const tsr_launch l = L(word == 4 && i == bad ? 0xff : TSR_DESC_TYPE_PING, 0, { 0x1200u + i });
+                CHECK(tsr_transport_launch(t, &l, &seq[i]) == 0, "fill launch credit %u", i);
+            }
+            const uint32_t rd = ready(t, w, TSR_LQ_DEPTH);
+            const uint32_t off = TSR_CSR_LCQ_REC((rd + bad) % TSR_LCQ_DEPTH, word);
+            tsr_record r{};
+            for (uint32_t attempt = 0; attempt < 2; ++attempt) {
+                w->fail_read = off;
+                CHECK(tsr_transport_poll(t, seq[0], &r) == TSR_TE_IO,
+                      "word %u, record %u, attempt %u: I/O error, no published prefix", word, bad, attempt);
+                CHECK(tsr_transport_csr_read(t, TSR_CSR_LCQ_RD) == rd && events.empty(), "failed batch is not acknowledged or delivered");
+            }
+            CHECK(w->read_failures == 2, "the same unread record is retried (%u failures)", w->read_failures);
+            const uint32_t pushed = tsr_transport_csr_read(t, TSR_CSR_LQ_SEQ);
+            w->fail_read = off;
+            const tsr_launch extra = L(TSR_DESC_TYPE_PING, 0, { 99u });
+            uint32_t extra_seq = 0;
+            CHECK(tsr_transport_launch(t, &extra, &extra_seq) == TSR_TE_IO && tsr_transport_csr_read(t, TSR_CSR_LQ_SEQ) == pushed,
+                  "a failed full batch returns no launch credit");
+            w->fail_read = UINT32_MAX;
+            w->reads.clear();
+            bool recovered = true;
+            for (uint32_t i = 0; i < TSR_LQ_DEPTH; ++i) {
+                const int rc = tsr_transport_poll(t, seq[i], &r);
+                const bool good = rc == 1 && r.w[1] == seq[i] &&
+                    (word == 4 && i == bad ? st_of(r) == TSR_LCQ_R0_STATUS_BAD_DESC && r.w[4] == 0u
+                                          : st_of(r) == 0 && r.w[2] == 0x1200u + i);
+                CHECK(good, "retry recovers exact answer %u (rc %d, r0 %x, r2 %x, r4 %x)", i, rc, r.w[0], r.w[2], r.w[4]);
+                recovered = recovered && good;
+            }
+            CHECK(word_reads(w, 0) == TSR_LQ_DEPTH && word_reads(w, 2) == TSR_LQ_DEPTH,
+                  "all in-order PONGs retain minimal reads across a batch");
+            for (uint32_t j : { 1u, 3u, 4u, 5u, 6u, 7u })
+                CHECK(word_reads(w, j) == (word == 4 ? 1u : 0u), "word %u read only for the full error record", j);
+            CHECK(events.empty(), "no failed read becomes an event");
+            if (recovered) {   // keep a broken implementation's test bounded: never wait for a lost completion
+                const uint64_t reads0 = w->in->window_reads;
+                for (uint32_t i = 0; i < TSR_LQ_DEPTH; ++i) {
+                    const tsr_launch l = L(TSR_DESC_TYPE_PING, 0, { i });
+                    CHECK(tsr_transport_launch(t, &l, &seq[i]) == 0, "all launch credits returned after retry (%u)", i);
+                }
+                CHECK(w->in->window_reads == reads0, "launching a full ring needs no credit read after recovery");
+                ready(t, w, TSR_LQ_DEPTH);
+                for (uint32_t i = 0; i < TSR_LQ_DEPTH; ++i)
+                    CHECK(tsr_transport_poll(t, seq[i], &r) == 1 && r.w[2] == i, "next batch has no stale answer (%u)", i);
+                CHECK(events.empty(), "no duplicate event in the next batch");
+            }
+            tsr_transport_close(t);
+        }
+    }
+    // A real event between answers: neither a later payload failure nor a failed batch ack may
+    // publish it, and retry delivers it once. The second failed poll also checks cached answers.
+    for (uint32_t mode : { 0u, 1u, 2u }) {
+        const bool ack = mode != 0u;
+        wrap_kdev * w = nullptr;
+        tsr_transport * t = open(&w);
+        if (t && tsr_transport_boot(t, img) == 0) {
+            std::vector<tsr_record> events;
+            tsr_transport_set_event_cb(t, collect, &events);
+            const tsr_launch ping = L(TSR_DESC_TYPE_PING, 0, { 17u });
+            const tsr_launch prof = L(TSR_DESC_TYPE_LAUNCH, (uint16_t) tsr_image_kernel(img, "rt_prof"));
+            uint32_t sp = 0, se = 0;
+            CHECK(tsr_transport_launch(t, &ping, &sp) == 0 && tsr_transport_launch(t, &prof, &se) == 0, "PING and event launch");
+            const uint32_t rd = ready(t, w, 3);
+            w->write_then_fail = mode == 2u;
+            std::vector<uint32_t> later;
+            tsr_record r{};
+            for (uint32_t attempt = 0; attempt < 2; ++attempt) {
+                if (ack) w->fail_write = TSR_CSR_LCQ_RD;
+                else w->fail_read = TSR_CSR_LCQ_REC((rd + 1u) % TSR_LCQ_DEPTH, 4);
+                const int rc = ack && attempt == 0u ? tsr_transport_wait(t, sp, TSR_TIMEOUT_DEFAULT, &r)
+                                                   : tsr_transport_poll(t, sp, &r);
+                CHECK(rc == TSR_TE_IO, "event batch: retry the whole failed %s", ack ? "ack" : "read");
+                CHECK(events.empty() && tsr_transport_csr_read(t, TSR_CSR_LCQ_RD) == rd + (mode == 2u ? 3u : 0u),
+                      "no event/answer published before ack succeeds");
+                CHECK(transport_recovery_log(t).timeouts == 0, "an I/O failure does not become a timeout recovery");
+                CHECK(tsr_transport_stop(t, se) == 0, "stop watermark while a batch awaits acknowledgement");
+                if (mode == 2u && attempt == 0u) {
+                    // A failed write can already have reached the device. More answers overwrite
+                    // a freed slot, so ack retry must use its saved batch, not reread that slot.
+                    for (uint32_t i = 0; i < TSR_LQ_DEPTH - 2u; ++i) {
+                        const tsr_launch next = L(TSR_DESC_TYPE_PING, 0, { 100u + i });
+                        uint32_t seq = 0;
+                        CHECK(tsr_transport_launch(t, &next, &seq) == 0, "launch behind a failed applied ack");
+                        later.push_back(seq);
+                    }
+                    ready(t, w, (uint32_t) later.size());
+                }
+            }
+            w->fail_read = w->fail_write = UINT32_MAX;
+            CHECK(tsr_transport_poll(t, sp, &r) == 1 && r.w[2] == 17u, "event batch: exact PONG after retry");
+            CHECK(tsr_transport_poll(t, se, &r) == 1 && st_of(r) == 0, "event batch: exact DONE after retry");
+            CHECK(events.size() == 1 && events[0].w[1] == se, "one event after retry (%zu)", events.size());
+            for (uint32_t i = 0; i < later.size(); ++i)
+                CHECK(tsr_transport_poll(t, later[i], &r) == 1 && r.w[2] == 100u + i, "new answer does not overwrite saved batch (%u)", i);
+            CHECK(tsr_transport_call(t, &ping, TSR_TIMEOUT_DEFAULT, &r) == 0 && r.w[2] == 17u && events.size() == 1,
+                  "the next launch delivers no duplicate PONG/event");
+        } else CHECK(0, "event batch open + boot");
+        tsr_transport_close(t);
+    }
+    // Failed HELLO reads/ack are transport errors, not an image mismatch or a consumed greeting.
+    for (uint32_t word : { 0u, 4u, 8u, 9u }) {
+        wrap_kdev * w = nullptr;
+        tsr_transport * t = open(&w);
+        if (t) {
+            const uint32_t rd = tsr_transport_csr_read(t, TSR_CSR_LCQ_RD);
+            w->write_then_fail = word == 9u;
+            if (word >= 8) w->fail_write = TSR_CSR_LCQ_RD;
+            else w->fail_read = TSR_CSR_LCQ_REC(rd % TSR_LCQ_DEPTH, word);
+            CHECK(tsr_transport_boot(t, img) == TSR_TE_IO, "HELLO %s failure is I/O", word >= 8 ? "ack" : "read");
+            CHECK(tsr_transport_csr_read(t, TSR_CSR_LCQ_RD) == rd + (word == 9 ? 1u : 0u) && tsr_transport_image(t) == nullptr,
+                  "HELLO failure does not publish a booted image, even if the ack reached the device");
+            CHECK(tsr_transport_boot(t, img) == 0, "boot retries after a failed HELLO access");
+            const tsr_launch ping = L(TSR_DESC_TYPE_PING, 0, { 29u });
+            tsr_record r{};
+            CHECK(tsr_transport_call(t, &ping, TSR_TIMEOUT_DEFAULT, &r) == 0 && r.w[2] == 29u, "PING after HELLO retry");
+        } else CHECK(0, "HELLO I/O open");
+        tsr_transport_close(t);
+    }
+    // TRAP classification needs LCQ_ANSWERED in addition to its payload. A failed classification
+    // read must not consume the earlier PONG or lose the launch's TRAP answer.
+    {
+        wrap_kdev * w = nullptr;
+        tsr_transport * t = open(&w);
+        if (t && tsr_transport_boot(t, img) == 0) {
+            tsr_transport_set_debugger(t, 1);   // keep the TRAP rather than restarting automatically
+            const tsr_launch ping = L(TSR_DESC_TYPE_PING, 0, { 31u });
+            const tsr_launch trap = L(TSR_DESC_TYPE_LAUNCH, (uint16_t) tsr_image_kernel(img, "rt_trap"), { 0u });
+            uint32_t sp = 0, st = 0;
+            CHECK(tsr_transport_launch(t, &ping, &sp) == 0 && tsr_transport_launch(t, &trap, &st) == 0, "PING and TRAP launch");
+            const uint32_t rd = ready(t, w, 2);
+            tsr_record r{};
+            for (uint32_t attempt = 0; attempt < 2; ++attempt) {
+                w->fail_read = TSR_CSR_LCQ_ANSWERED;
+                CHECK(tsr_transport_poll(t, sp, &r) == TSR_TE_IO && tsr_transport_csr_read(t, TSR_CSR_LCQ_RD) == rd,
+                      "TRAP classification failure keeps the batch retryable");
+            }
+            CHECK(tsr_transport_poll(t, sp, &r) == 1 && r.w[2] == 31u, "PONG before TRAP recovered");
+            CHECK(tsr_transport_poll(t, st, &r) == 1 && TSR_GET(r.w[0], TSR_LCQ_R0_TYPE) == TSR_LCQ_R0_TYPE_TRAP,
+                  "TRAP still answers its launch after retry");
+            CHECK(tsr_transport_soft_reset(t) == 0 && tsr_transport_boot(t, img) == 0, "reset and boot after TRAP");
+        } else CHECK(0, "TRAP I/O open + boot");
+        tsr_transport_close(t);
+    }
+    // A reset deliberately discards an unacknowledged batch and reports its launches LOST. Close
+    // also discards it without delivering events or dereferencing it after device destruction.
+    for (uint32_t mode : { 0u, 1u, 2u, 3u, 4u, 5u }) {
+        wrap_kdev * w = nullptr;
+        tsr_transport * t = open(&w);
+        if (t && tsr_transport_boot(t, img) == 0) {
+            std::vector<tsr_record> events;
+            tsr_transport_set_event_cb(t, collect, &events);
+            const tsr_launch prof = L(TSR_DESC_TYPE_LAUNCH, (uint16_t) tsr_image_kernel(img, "rt_prof"));
+            uint32_t seq = 0;
+            CHECK(tsr_transport_launch(t, &prof, &seq) == 0, "launch before pending-batch reset/close");
+            ready(t, w, 2);
+            w->write_then_fail = mode == 1u;
+            w->fail_write = TSR_CSR_LCQ_RD;
+            tsr_record r{};
+            CHECK(tsr_transport_poll(t, seq, &r) == TSR_TE_IO && events.empty(), "keep pending batch before reset/close");
+            if (mode == 2u) {
+                tsr_transport_close(t);
+                t = nullptr;
+                CHECK(events.empty(), "close does not deliver the pending event");
+            } else {
+                w->fail_write = TSR_CSR_LCQ_RD;   // the reset's consume cannot finish this batch
+                w->fail_reset_status = mode == 3u;
+                w->fail_reset_write = mode >= 4u;
+                w->write_then_fail = mode == 1u || mode == 5u;
+                CHECK(tsr_transport_soft_reset(t) == (mode >= 3u ? TSR_TE_IO : 0), "reset flushes pending batch after another ack failure");
+                if (mode >= 3u) {
+                    CHECK(tsr_transport_poll(t, seq, &r) == TSR_TE_STATE && events.empty(), "an uncertain reset blocks old LCQ consumption");
+                    uint32_t next = 0;
+                    CHECK(tsr_transport_launch(t, &prof, &next) == TSR_TE_STATE, "an uncertain reset blocks new launches");
+                }
+                CHECK(tsr_transport_boot(t, img) == 0, "boot after pending-batch reset");
+                CHECK(tsr_transport_poll(t, seq, &r) == TSR_TE_LOST && events.empty(), "discarded batch returns LOST without an event");
+                const tsr_launch ping = L(TSR_DESC_TYPE_PING, 0, { 37u });
+                CHECK(tsr_transport_call(t, &ping, TSR_TIMEOUT_DEFAULT, &r) == 0 && r.w[2] == 37u && events.empty(),
+                      "reset leaves no saved batch to replay after boot");
+            }
+        } else CHECK(0, "pending-batch reset/close open + boot");
+        tsr_transport_close(t);
+    }
+    tsr_image_close(img);
+
+    // graph's successful RET is defined as zero: do not add an r2 read while fixing failed reads.
+    if (access(TSR_FW_DEFAULT_IMAGE, R_OK) == 0 && tsr_image_open(TSR_FW_DEFAULT_IMAGE, &img) == 0) {
+        wrap_kdev * w = nullptr;
+        tsr_transport * t = open(&w);
+        if (t && tsr_transport_boot(t, img) == 0) {
+            opl::writer b;
+            b.add(opl::K_NOP, nullptr, 0);
+            const std::vector<uint8_t> blob = b.finish();
+            const uint64_t off = 64ull << 20;
+            CHECK(tsr_transport_write(t, 0, off, blob.data(), blob.size()) == 0, "write NOP graph");
+            const tsr_launch graph = L(TSR_DESC_TYPE_LAUNCH, (uint16_t) tsr_image_kernel(img, "graph"),
+                                       { (uint32_t) (off / TSR_LINE_BYTES), (uint32_t) blob.size() });
+            uint32_t seq = 0;
+            CHECK(tsr_transport_launch(t, &graph, &seq) == 0, "launch NOP graph");
+            const uint32_t rd = ready(t, w, 1);
+            w->reads.clear();
+            w->fail_read = TSR_CSR_LCQ_REC(rd % TSR_LCQ_DEPTH, 2);
+            tsr_record r{};
+            CHECK(tsr_transport_poll(t, seq, &r) == 1 && st_of(r) == 0 && r.w[2] == 0u && w->read_failures == 0,
+                  "successful graph synthesizes zero RET without reading r2");
+            CHECK(word_reads(w, 0) == 1, "graph reads r0 once");
+            for (uint32_t j = 1; j < 8; ++j) CHECK(word_reads(w, j) == 0, "graph skips word %u", j);
+        } else CHECK(0, "graph minimal read open + boot");
+        tsr_transport_close(t);
+        tsr_image_close(img);
+    }
+}
+
 // Adapter errors during a launch: plat_err_i -> DONE PLAT_ERR -> ADAPTER_STATUS read, reported,
 // cleared (EX §8.6); a hung unit: "card reset needed".
 static void test_launch_faults() {
@@ -939,6 +1234,7 @@ int main() {
         test_stale_reopen();
         test_watermark_refresh();
         test_boot_timeout();
+        test_lcq_io_failures();
         test_launch_faults();
     } else {
         printf("firmware image %s not built: stale-core, boot-timeout and launch-fault tests not run\n", TSR_FW_TEST_IMAGE_fw_rt);

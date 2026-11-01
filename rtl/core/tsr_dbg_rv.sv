@@ -13,9 +13,9 @@
 //   can take a record in the next cycle as well; rec_all = REC_CFG.ALL (synchronised). smp_* and
 //   wpa_* are tsr_cdc_hs A sides (TIMEOUT 4,096 core cycles; *_local answers at once when clk_rv
 //   is not running). wph_v / wph_mask / wph_addr / wph_halt: one RV-watchpoint event per watched
-//   access (a 4-entry crossing FIFO; the core side drains one per cycle, faster than Ibex can
-//   access). dfault: a pulse per double fault. flags (DBG_FLAGS) and rv_run (CTRL.RV_RUN) cross
-//   as levels.
+//   access (a 16-entry crossing FIFO, including synchroniser credit-return latency; the core
+//   side drains one per cycle). dfault: a pulse per double fault. flags (DBG_FLAGS) and
+//   rv_run (CTRL.RV_RUN) cross as levels.
 // clk_rv side: db_req / db_we / db_off / db_wdata from tsr_ctl_win (0x160-0x17C except 0x178,
 //   0x400-0x7FC), db_rdata valid in the cycle after db_req; db_irq4 = REC_CFG.IRQ_HALF and
 //   REC_COUNT >= 32 (irq_fast[4]). The REC FIFO and REC_CFG are clk_rv state that restarts empty
@@ -213,11 +213,19 @@ module tsr_dbg_rv #(
   // ---------------------------------------------------------------------------------------------
   // Watchpoint hits (clk_rv -> core) and the double-fault event
   // ---------------------------------------------------------------------------------------------
+  // Ibex can access once per clk_rv cycle (CC-34). Even when clk is faster, slots remain occupied
+  // until read-pointer credits cross back. Allow 3 stages in each direction (CDC jitter), FWFT
+  // presentation + consumption, and phase: <= 5 core + 4 RV periods for a returned credit.
+  // At F_CORE >= F_RV this is <= 9 RV periods; 16 slots cover a sustained stream without drops.
+  // A sustained source faster than the sink cannot be made lossless by any finite FIFO; flag
+  // overflow below rather than silently concealing a clock/rate assumption violation in tests.
+  localparam int unsigned HIT_DEPTH = 16;
+  localparam int unsigned HAW = $clog2(HIT_DEPTH);
   logic [35:0] hf_wdata, hf_rdata;
   logic        hf_wr, hf_rvalid;
-  logic [2:0]  hf_free, hf_count;
+  logic [HAW:0] hf_free, hf_count;
   logic        hf_empty;
-  tsr_cdc_fifo #(.W(36), .DEPTH(4), .STAGES(ST)) u_hit (
+  tsr_cdc_fifo #(.W(36), .DEPTH(HIT_DEPTH), .STAGES(ST)) u_hit (
     .wclk(clk_rv), .wrst_n(rst_rv_n), .wr_en(hf_wr), .wr_data(hf_wdata), .wr_free(hf_free), .wr_empty(hf_empty),
     .rclk(clk), .rrst_n(rst_n), .rd_valid(hf_rvalid), .rd_data(hf_rdata), .rd_ready(hf_rvalid), .rd_count(hf_count)
   );
@@ -258,9 +266,16 @@ module tsr_dbg_rv #(
         hlt[j] = hit[j] && wctl_q[j][3] && !ib_halted;
       end
     end
-    assign hf_wr    = (hit != 2'd0) && (hf_free != 3'd0);   // a full FIFO drops the event
+    assign hf_wr    = (hit != 2'd0) && (hf_free != '0);
     assign hf_wdata = {1'b0, |hlt, hit, a};
     wire unused_a = &{1'b0, ib_data_addr[1:0]};
+
+`ifndef SYNTHESIS
+    always_ff @(posedge clk_rv) begin
+      if (rst_rv_n && hit != 2'd0 && hf_free == '0)
+        $error("tsr_dbg_rv: watchpoint event FIFO overflow (count/HALT would be lost)");
+    end
+`endif
 
     logic [163:0] smp_q;
     always_ff @(posedge clk_rv) begin

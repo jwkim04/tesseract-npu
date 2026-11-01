@@ -8,9 +8,10 @@
 # runs rtl/ctrl/viv/cdc_gate.tcl: report_cdc without Critical / Warning rows between the clocks,
 # report_clock_interaction showing "Max Delay Datapath Only" in both directions. The reports go to the
 # implementation run directory (cdc_link.rpt, clkint_link.rpt); lines "CDCCHK ..." are in its log.
-# A failing gate stops the implementation run (error), so a link that leaves the crossings unconstrained
+# Clock/reset wiring is rechecked first and is always fatal. A failing CDC gate stops the implementation run (error), so a link that leaves the crossings unconstrained
 # does not produce an xclbin. TSR_CDC_GATE=warn in the environment reports the failure without stopping it.
 set tsr_cdc_dir [file dirname [file normalize [info script]]]
+source $tsr_cdc_dir/clock_net_check.tcl
 source $tsr_cdc_dir/../../rtl/ctrl/viv/cdc_gate.tcl
 # the report_cdc waivers are not part of the IP's constraints
 source $tsr_cdc_dir/../../rtl/ctrl/viv/tsr_cdc_waivers.tcl

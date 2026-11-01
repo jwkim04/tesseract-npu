@@ -49,3 +49,4 @@ if {$ar == 0} { set ok 0 }
 if {[llength [get_clocks -quiet ap_clk_2]] == 0} { set ok 0 }
 set gate [cooc_cdc ip $out ap_clk ap_clk_2]
 puts "XCDC gate [expr {$ok && $gate ? {PASS} : {FAIL}}]"
+if {!$ok || !$gate} { error "XCDC packaged kernel CDC gate failed" }

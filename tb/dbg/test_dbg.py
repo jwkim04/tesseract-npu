@@ -57,7 +57,7 @@ from pathlib import Path
 
 import cocotb
 import pytest
-from cocotb.triggers import RisingEdge
+from cocotb.triggers import FallingEdge, RisingEdge
 
 HERE = Path(__file__).resolve().parent
 for p in (HERE, HERE.parent / "issue"):
@@ -1024,6 +1024,49 @@ async def dbg_rvtaps(dut):
     fail(dut, bad + b.errors, "dbg_rvtaps")
 
 
+@cocotb.test()
+async def dbg_rvwp_dense(dut):
+    """DB §3.7: sustained legal one-access/RV-cycle hits keep both counts and a single HALT."""
+    if not int(os.environ.get("TSR_DBG_TAPS", "0")):
+        return
+    cfg, qd, _ = env_cfg()
+    b = D.Bench(dut, cfg, qd, seed=seed())
+    core_ps, rv_ps, phase_ps = map(int, os.environ.get("TSR_DBG_CLOCKS", "3334,6000,0").split(","))
+    await b.start(core_ps=core_ps, rv_ps=rv_ps, rv_phase_ps=phase_ps)
+    base, n = 0x100000, 4096
+    await b.wr(T.CSR_DBG_CFG, T.CSR_DBG_CFG_RESET | T.DBG_CFG_RV_HALT_EN)
+    # WP0 counts the whole burst. WP1 counts and halts only its seventh access: losing that
+    # event must fail even if most of a long burst still makes it through the crossing.
+    for j, lo, hi, halt in ((0, base, base + 4 * n, 0), (1, base + 24, base + 28, 1)):
+        await b.wr(T.CSR_DBG_RVWP_LO(j), lo)
+        await b.wr(T.CSR_DBG_RVWP_HI(j), hi)
+        await b.wr(T.CSR_DBG_RVWP_CTL(j), T.DBG_RVWP_CTL_EN | T.DBG_RVWP_CTL_STORE |
+                   (T.DBG_RVWP_CTL_HALT if halt else 0))
+    await b.wr(T.CSR_DBG_CTRL, T.DBG_CTRL_RVWP_APPLY)
+    await b.cycles(100)
+    assert not await b.rd(T.CSR_DBG_STATUS) & (T.DBG_STATUS_RVWP_BUSY | T.DBG_STATUS_RVWP_TIMEOUT)
+    n0 = b.halt_reqs
+    for i in range(n):
+        await FallingEdge(dut.clk_rv)
+        dut.ib_data_req.value = 1
+        dut.ib_data_gnt.value = 1
+        dut.ib_data_we.value = 1
+        dut.ib_data_be.value = 15
+        dut.ib_data_addr.value = base + 4 * i
+    await FallingEdge(dut.clk_rv)
+    dut.ib_data_req.value = 0
+    dut.ib_data_gnt.value = 0
+    await b.cycles(100)
+    hits = [await b.rd(T.CSR_DBG_RVWP_HITS(j)) for j in range(2)]
+    addr = await b.rd(T.CSR_DBG_RV_WPADDR)
+    dut._log.info("dense RVWP clocks=%s: hits=%s halt_requests=%d last_addr=%#x",
+                  (core_ps, rv_ps, phase_ps), hits, b.halt_reqs - n0, addr)
+    assert hits == [n, 1], "lost dense watchpoint events: %s" % hits
+    assert b.halt_reqs == n0 + 1, "lost the sole HALT-bearing event"
+    assert addr == base + 4 * (n - 1), "last watchpoint address lost"
+    assert not b.errors, b.errors
+
+
 # =================================================================================================
 # pytest launchers
 # =================================================================================================
@@ -1035,7 +1078,7 @@ def _params(cfg, qd, extra=None):
     return p
 
 
-def _run(name, cfg, qd, extra_cfg=None, extra_params=None, tests=None):
+def _run(name, cfg, qd, extra_cfg=None, extra_params=None, tests=None, extra_env=None, build_args=()):
     """Builds the wrapper and runs the cocotb tests (all, `tests`, or $TSR_DBG_TESTS: a comma list)."""
     if os.environ.get("TSR_DBG_TESTS") and not os.environ.get("TSR_DBG_MUT_TEST"):
         sel = os.environ["TSR_DBG_TESTS"].split(",")
@@ -1043,8 +1086,9 @@ def _run(name, cfg, qd, extra_cfg=None, extra_params=None, tests=None):
     c = dict(num_ch=cfg["num_ch"], t_max=cfg["t_max"], qd=list(qd))
     c.update(extra_cfg or {})
     env = {"TSR_DBG_CFG": json.dumps(c), "TSR_DBG_TAPS": str((extra_params or {}).get("HAS_RV_TAPS", 0))}
+    env.update(extra_env or {})
     run("tsr_dbg_tb", __name__, parameters=_params(cfg, qd, extra_params), sources=sources(),
-        name="dbg_" + name, extra_env=env, testcase=tests)
+        name="dbg_" + name, extra_env=env, testcase=tests, build_args=build_args)
 
 
 U200 = S.config(num_ch=4, t_max=8)
@@ -1083,6 +1127,20 @@ def test_dbg_u200():
 def test_dbg_rvtaps():
     """tsr_dbg_rv with the Ibex taps (HAS_RV_TAPS = 1): RV watchpoints, RV_SAMPLE, double fault."""
     _run("rvtaps", U200, S.U200_QD, dict(), extra_params=dict(HAS_RV_TAPS=1), tests=["dbg_rvtaps"])
+
+
+@pytest.mark.parametrize("clocks", [(3334, 6000, 0), (3334, 6000, 1777), (3620, 6000, 3599),
+                                    (3620, 8000, 7999), (3620, 4000, 3999),
+                                    (6000, 6000, 0), (6000, 6000, 1), (6000, 6000, 5999)])
+def test_dbg_rvwp_dense(clocks):
+    _run("rvtaps", U200, S.U200_QD, extra_params=dict(HAS_RV_TAPS=1), tests=["dbg_rvwp_dense"],
+         extra_env={"TSR_DBG_CLOCKS": ",".join(map(str, clocks))})
+
+
+@pytest.mark.parametrize("clocks", [(3334, 6000, 1777), (6000, 6000, 0), (6000, 6000, 5999)])
+def test_dbg_rvwp_dense_jitter(clocks):
+    _run("rvtaps", U200, S.U200_QD, extra_params=dict(HAS_RV_TAPS=1), tests=["dbg_rvwp_dense"],
+         extra_env={"TSR_DBG_CLOCKS": ",".join(map(str, clocks))}, build_args=["+define+TSR_CDC_JITTER"])
 
 
 def test_dbg_small():

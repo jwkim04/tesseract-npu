@@ -34,10 +34,15 @@
 #         SPM-facing part of the vector unit (reader, injector, writer, reduction, angle unit),
 #         central gather, MVM dispatch; the control bridge (u_ctrl of the adapter), the reset block
 #         (u_rst), the bridges of channels 1 and 2 and the core side of the bridges of channels 0 and 3
-#   Pipes between a cluster (with its assembler) and the centre (g_cl[c].u_bcp / u_wrp / u_wqp / g_ajp.u_ajp,
+#   Pipes between a cluster (with its assembler) and the centre (g_cl[c].u_bcp / u_wrp / u_wqp,
 #   u_gather/g_asm[c].u_sp / g_jp.u_jp + u_jl): the first stage on the source side, the last on the
 #   destination side, so every crossing is one register-to-register hop; the result pipe
-#   g_cl[c].u_rp stays with its cluster (both ends). The core's reset copies stay free.
+#   g_cl[c].u_rp and the attention job pipe g_ajp.u_ajp stay with their cluster (both ends).
+#   Attention and MVM jobs are selected there before the shared job pipe crosses to the centre.
+#   Direct broadcast decode leaves stay with the destination cluster; the lane wrapper's direct
+#   writer/reduction helpers stay in SLR1. Synthesis can rebuild these cones under the pipe wrappers,
+#   outside the original consumer hierarchy. The split pipe parents are never assigned wholesale.
+#   The core's reset copies stay free.
 #   Bridges 0 and 3 cross in their AXI register slices (AXI_SLICES >= 2): the AXI-side stage of
 #   every slice chain (the last stage of AR / AW / W, the first of R / B) and the registered AR / AW
 #   handshake (g_hs_q) go to the SLR of DDR[0] (SLR0) / DDR[3] (SLR2), the rest of the bridge
@@ -52,6 +57,8 @@
 #   TSR_K4_FP_CTRL  clock-region range of pblock_tsr_ctrl_rv (default CLOCKREGION_X0Y6:CLOCKREGION_X0Y8)
 # Prints (grep K4FP): the cells of every group and pblock, the pinned pipe stages (56 at NUM_CH 4, plus the
 # lane pipes' ends) and the bridge cells per side.
+# k4fp_check_locality ?placed? is a read-only check of these scopes; with placed=1 it also checks
+# their sites' SLRs. It can be repeated after placement / phys_opt to catch new, unowned replicas.
 
 set k4fp_map  {0 0 1 2 2 0 3 2}       ;# cluster -> SLR (C')
 set k4fp_rest 1                       ;# SLR of the rest of the core and of the adapter
@@ -213,6 +220,135 @@ proc k4fp_jp_ends {inst first_s last_s} {
   add_cells_to_pblock $k4fp_pb($last_s) [k4fp_cell "$inst.u_jl"]
   return 2
 }
+
+# Direct primitive leaves exclude submodules (in particular the lanes and FIFO slices). Constants
+# have no placement. Use literal prefixes below: generated indices contain square brackets.
+proc k4fp_direct_leaves {inst} {
+  set result {}
+  foreach cell [get_cells -quiet "$inst/*" -filter {IS_PRIMITIVE}] {
+    if {[get_property REF_NAME $cell] ni {GND VCC}} { lappend result $cell }
+  }
+  return $result
+}
+proc k4fp_broadcast_parts {inst first_s last_s} {
+  set parts [dict create]
+  set stages [dict create]
+  set plen [string length "$inst/"]
+  foreach cell [k4fp_direct_leaves $inst] {
+    set rel [string range [get_property NAME $cell] $plen end]
+    if {[regexp {^(?:g_keep|g_regs)\.[vd]_q_reg\[([0-9]+)\]} $rel -> st]} {
+      dict set stages $st 1
+      set s [expr {$st == 0 ? $first_s : $last_s}]
+    } else {
+      # tsr_vpipe itself contains only stage registers. Rebuilt combinational decode belongs
+      # to its consumer, even when Vivado puts e.g. g_att.lo_q or fmt_q_rep under u_bcp.
+      set ref [get_property REF_NAME $cell]
+      if {![string match LUT* $ref] && ![string match CARRY* $ref]} {
+        error "k4_floorplan: unknown broadcast leaf $cell ($ref)"
+      }
+      set s $last_s
+    }
+    dict lappend parts $s $cell
+  }
+  set indices [lsort -integer [dict keys $stages]]
+  if {[llength $indices] < 2} { error "k4_floorplan: broadcast $inst has fewer than 2 register stages" }
+  for {set i 0} {$i <= [lindex $indices end]} {incr i} {
+    if {![dict exists $stages $i]} { error "k4_floorplan: broadcast $inst is missing stage $i" }
+  }
+  return $parts
+}
+proc k4fp_gather_helpers {inst} {
+  set result {}
+  set nselector 0
+  set parent [file dirname $inst]
+  set plen [string length "$inst."]
+  foreach cell [k4fp_direct_leaves $parent] {
+    set name [get_property NAME $cell]
+    if {[string first "$inst." $name] != 0} continue
+    lappend result $cell
+    if {[string first "g_aj.a_att_q_reg" [string range $name $plen end]] == 0} { incr nselector }
+  }
+  if {$nselector == 0} { error "k4_floorplan: attention selector missing under $inst" }
+  return $result
+}
+proc k4fp_lane_parts {inst} {
+  global k4fp_rest k4fp_lane
+  set parts [dict create]
+  set stages [dict create]
+  set pend {}
+  set plen [string length "$inst/"]
+  foreach cell [k4fp_direct_leaves $inst] {
+    set rel [string range [get_property NAME $cell] $plen end]
+    if {[regexp {^g_pipe\.(ip|rp|op)_q_reg\[([0-9]+)\]} $rel -> kind st]} {
+      dict set stages $kind $st 1
+      lappend pend [list $cell $kind $st]
+    } elseif {[regexp {^(g_q|lb_q)\[} $rel]} {
+      # The reduction drain mux and line assembler are consumers of the final output stage.
+      dict lappend parts $k4fp_rest $cell
+    } else {
+      error "k4_floorplan: unknown lane-wrapper leaf $cell"
+    }
+  }
+  set last -1
+  foreach kind {ip rp op} {
+    if {![dict exists $stages $kind]} { error "k4_floorplan: lane pipe $kind missing under $inst" }
+    set indices [lsort -integer [dict keys [dict get $stages $kind]]]
+    if {[llength $indices] < 2} { error "k4_floorplan: lane pipe $kind has fewer than 2 stages" }
+    if {$last < 0} { set last [lindex $indices end] }
+    if {[lindex $indices end] != $last} { error "k4_floorplan: lane pipe depths differ under $inst" }
+    for {set st 0} {$st <= $last} {incr st} {
+      if {![dict exists $stages $kind $st]} { error "k4_floorplan: lane pipe $kind missing stage $st" }
+    }
+  }
+  foreach row $pend {
+    lassign $row cell kind st
+    set near [expr {$kind eq "op" ? $st == $last : $st == 0}]
+    dict lappend parts [expr {$near ? $k4fp_rest : $k4fp_lane}] $cell
+  }
+  return $parts
+}
+proc k4fp_assign_parts {parts what} {
+  dict for {s cells} $parts { k4fp_add $s $cells $what }
+}
+proc k4fp_check_cells {s cells placed} {
+  global k4fp_pb
+  if {[llength $cells] == 0} { error "k4_floorplan: empty locality check for SLR$s" }
+  foreach cell $cells {
+    # Membership includes a leaf covered by an assigned hierarchy. This is the
+    # same query used by the failed-checkpoint census; do not require a leaf
+    # PBLOCK property or assume it lists only one enclosing pblock.
+    set blocks [get_pblocks -quiet -of_objects $cell]
+    if {[lsearch -exact [get_property NAME $blocks] $k4fp_pb($s)] < 0} {
+      error "k4_floorplan: $cell is not assigned to $k4fp_pb($s)"
+    }
+    if {$placed} {
+      set sites [get_sites -quiet -of_objects $cell]
+      set slrs [get_slrs -quiet -of_objects $sites]
+      if {[llength $sites] == 0 || [get_property NAME $slrs] ne "SLR$s"} {
+        error "k4_floorplan: $cell is not placed in SLR$s"
+      }
+    }
+  }
+}
+proc k4fp_check_locality {{placed 0}} {
+  global k4fp_scope
+  if {![info exists k4fp_scope]} { error "k4_floorplan: locality scope was not captured" }
+  set mvm [dict get $k4fp_scope mvm]
+  set vu [dict get $k4fp_scope vu]
+  foreach {c s} [dict get $k4fp_scope map] {
+    if {$c >= [dict get $k4fp_scope nch]} continue
+    set p "$mvm/g_cl\[$c\]"
+    set g "$mvm/u_gather/g_asm\[$c\]"
+    set inst "$p.g_ajp.u_ajp"
+    set leaves [get_cells -quiet -hierarchical -filter "IS_PRIMITIVE && NAME =~ $inst/* && REF_NAME != GND && REF_NAME != VCC"]
+    k4fp_check_cells $s $leaves $placed
+    k4fp_check_cells $s [k4fp_gather_helpers $g] $placed
+    dict for {side cells} [k4fp_broadcast_parts "$p.u_bcp" 1 $s] { k4fp_check_cells $side $cells $placed }
+  }
+  dict for {s cells} [k4fp_lane_parts "$vu/u_lanes"] { k4fp_check_cells $s $cells $placed }
+  puts "K4FP locality PASS (placed=$placed)"
+}
+
 set npin 0
 foreach {c s} $k4fp_map {
   if {$c >= $nch} { continue }
@@ -222,9 +358,12 @@ foreach {c s} $k4fp_map {
   incr npin [k4fp_pipe_ends "$p.u_wrp" $k4fp_rest $s]
   incr npin [k4fp_pipe_ends "$p.u_wqp" $s $k4fp_rest]
   incr npin [k4fp_pipe_ends "$p.u_rp"  $s $s]
-  incr npin [k4fp_pipe_ends "$p.g_ajp.u_ajp" $s $k4fp_rest]
+  incr npin [k4fp_pipe_ends "$p.g_ajp.u_ajp" $s $s]
+  k4fp_add $s [k4fp_cell "$p.g_ajp.u_ajp"] "g_cl\[$c\] attention job pipe (local)"
   incr npin [k4fp_pipe_ends "$g.u_sp"  $k4fp_rest $s]
   incr npin [k4fp_jp_ends   "$g.g_jp"  $s $k4fp_rest]
+  k4fp_assign_parts [k4fp_broadcast_parts "$p.u_bcp" $k4fp_rest $s] "g_cl\[$c\] broadcast stages and decode"
+  k4fp_add $s [k4fp_gather_helpers $g] "g_asm\[$c\] attention selector and mux"
 }
 puts "K4FP pipes pinned: $npin stages (first / last stage of the 7 pipes of each of $nch clusters)"
 
@@ -247,6 +386,7 @@ foreach {lp_k lp_first lp_last} [list ip $k4fp_rest $k4fp_lane  rp $k4fp_rest $k
   incr nlp [expr {[llength $lps($lp_k,0)] + [llength $lps($lp_k,$lmax)]}]
 }
 puts "K4FP lane pipes pinned: $nlp flip-flops (stages 0 and $lmax of the input, reset and output pipes)"
+k4fp_assign_parts [k4fp_lane_parts "$vu/u_lanes"] "u_vu lane stages and SPM-facing helpers"
 
 # ---- adapter: control bridge, reset block, bridges ---------------------------------------------
 if {$k4fp_mode eq "kernel"} {
@@ -298,4 +438,8 @@ if {$k4fp_mode eq "kernel"} {
 foreach s {0 1 2} {
   puts "K4FP pblock_dynamic_SLR$s: $k4fp_count($s) cells assigned (excl. pinned pipe stages): [join $k4fp_names($s) {, }]"
 }
+# Later implementation hooks may overwrite generic Tcl globals such as nch,
+# mvm and vu. Retain this floorplan's scope for read-only post-step checks.
+set k4fp_scope [dict create map $k4fp_map nch $nch mvm $mvm vu $vu]
+k4fp_check_locality
 current_instance -quiet
