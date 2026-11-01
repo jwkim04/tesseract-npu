@@ -271,6 +271,8 @@ if {[string match post_* $fixture_case]} {
   set nch 0
   set mvm unrelated_mvm
   set vu unrelated_vu
+  proc report_timing_summary {args} {}
+  proc report_design_analysis {args} {}
   source [file join [file dirname $fp_script] k4_locality_check.tcl]
 } elseif {$fixture_case in {placed misplaced}} {
   dict for {n pb} $owners {

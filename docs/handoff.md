@@ -109,8 +109,28 @@ all 4,225 RV FFs on the RV clock, and separate reset sources in their respective
 The calculator selected M=83, D=10, O=5 from 100 MHz, giving 166 MHz. At 02:29 KST,
 `opt_design` and its checkpoint write completed. The revised floorplan passed its initial
 membership check (`K4FP locality PASS (placed=0)`); placement started after two pre-place
-DRC passes with zero errors. The physical locality, routing and post-route checks are still
-pending. The current attempt, PID and source commit are recorded in `status.json`.
+DRC passes with zero errors. By 04:45 KST, `place_design` completed with zero errors and the
+actual SLR check passed (`K4FP locality PASS (placed=1)`). The placed reports show:
+
+| `report_utilization -slr`, placed | Previous failed build | Corrected build |
+|---|---:|---:|
+| SLR0-SLR1 SLLs used | 13,325 | 9,830 |
+| SLR1-SLR2 SLLs used | 15,181 | 7,375 |
+| Total SLLs used | 28,506 | 17,205 |
+| SLR1 occupied CLB sites | 99.58 % | 99.84 % |
+| SLR1 LUT utilisation | 76.46 % | 77.09 % |
+
+These are matching placed-report counts, not the router's per-column estimated SLL demand
+above. The combined changes reduce placed crossings, but central packing pressure remains:
+the placer reports high congestion. Its global WNS is -3.139 ns; a clock/path breakdown is
+still needed before judging 250 MHz. Routing, post-route CDC and frequency signoff remain
+pending. The reports are `slr_util_placed.rpt` and `kernel_util_placed.rpt` in the active
+implementation run directory. The current attempt, PID and source commit are in `status.json`.
+After locality passes, the hook now writes `k4_<step>_timing_summary.rpt` and
+`k4_<step>_congestion.rpt` in that directory. These only query the open design. The first
+place hook had already finished when diagnostics were added, so the current attempt will
+first produce them after `phys_opt_design`. Its runtime hook snapshot/hash is preserved
+beside `placement_milestone.json` under the attempt directory. The placed DCP is complete.
 
 The original detached supervisor was PID 741389 and exited with status 1. `status.json`, `build.log`, `memory.jsonl`, source
 snapshot/hash manifest and the eventual `exit_code` are in that run directory. The pointer
@@ -152,9 +172,10 @@ No runtime/RTL changes or extra build/test/Vivado/DCP/link runs were made for th
 
 1. Check the active run's `status.json` and logs before starting another link. A zero exit status
    and a routed checkpoint are required before calling the route successful.
-2. Check the corrected constraints on the new synthesized design before measuring crossing counts,
-   column demand and per-clock timing again. The old DCP suggests about 2,220 fewer ATT payload
-   crossings per boundary from removing the extra round trip; this is not a routed result.
+2. The corrected clock/reset and placed-locality checks have passed. Compare the router's
+   per-column SLL demand and per-clock timing against the new placed reports. The combined
+   changes reduced placed SLL counts by 11,301; that does not establish routing success or
+   isolate the contribution of the attention change.
 3. An implementation-only resume of the old failed run cannot repair its clock wiring. The active
    run rebuilds from the corrected RTL and clock selection. Constraint-only changes on a
    matching synthesized design can use `TSR_VPP_FROM_STEP=vpl.impl`. A full link takes 7-10 h on

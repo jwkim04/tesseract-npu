@@ -278,8 +278,10 @@ the effective ratio after the native writer's integer conversion, and cleans up 
 The native XDC creation/application remains in use. This is a repository workaround, not an
 AMD-published patch. The real API probe calculates 166 MHz. The resumed link's pre-opt check
 also passed with core/RV periods of 3.333/6.023 ns, all 4,225 RV FFs on the RV clock and the
-reset sources in separate domains. Placement and routing are still pending. No installed
-or generated tool files are edited.
+reset sources in separate domains. The corrected build has also completed placement with
+zero errors and passed its actual SLR locality check. Routing and frequency signoff are
+pending; the placed comparison and remaining central congestion are in `docs/handoff.md`.
+No installed or generated tool files are edited.
 `hw/u200/clock_bd_check.tcl` checks the connected BD nets and each reset generator's clock.
 `impl_pre.tcl` checks the synthesized domain clocks, every RV FF and reset sources before
 `opt_design`, then applies the TCM power-optimisation exclusion. The final pre-bitstream hook
@@ -290,6 +292,10 @@ frequency-window change. The early netlist check validates the current clock req
 the minimum accepted performance. For a route-only run, check timing at an accepted core
 frequency of at least 250 MHz before claiming success; retain RV, hold and CDC checks.
 Do not repeat implementation solely for 300 MHz after that criterion passes.
+The K4 locality post-hook also writes timing and congestion reports from the open design:
+`k4_<step>_timing_summary.rpt` covers setup, hold and unconstrained paths, and
+`k4_<step>_congestion.rpt` records congestion. The reports use separate placement, physical
+optimisation and post-route physical-optimisation names. They do not change constraints.
 
 Each packaging writes `build/u200/xo/<kernel>.sources.sha256` next to the `.xo`: the sha256 of
 both filelists, every source, `kernel_<k>.xml`, `rtl/ctrl/viv/tsr_ctrl_cdc.xdc` and `package_xo.tcl`, with repository paths.
@@ -851,7 +857,9 @@ passes; `rtl/platform/alveo_xrt/bw/lint.sh` is clean too (both run for this docu
 - **No routed xclbin with the control core.** The first K4 link placed but failed on localized
   SLL demand. Its two kernel clocks also aliased clock ID 0. The corrected source selection,
   early connection checks and floorplan changes are in the resumed link. The actual pre-opt
-  clock/reset check passed; placement and routing are pending. See `docs/handoff.md`.
+  clock/reset and actual placed-locality checks passed. Placed SLL use fell from 28,506 to
+  17,205 in matching reports, while SLR1 CLB site occupancy remains 99.84 %. Routing and
+  final timing are pending. See `docs/handoff.md`.
 - **k4 clock.** The k4 link of §8.2 missed 300 MHz by 0.285 ns and ran at 276.3 MHz (§8.2). Gate T3 now
   accepts at least 250 MHz with the control core (user decision, 2026-11-02). Do not repeat a
   successful implementation just to reach the current 300 MHz request (§8.4).
