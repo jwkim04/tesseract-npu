@@ -15,6 +15,14 @@ Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README
 
 ## Current blocker: the k4 link does not route
 
+The corrected attempt completed placement and physical optimisation, with actual SLR locality
+checks passing. It was intentionally stopped at 05:25 KST on 2026-11-02: the new timing report
+shows kernel FIFO crossings timed against a 0.040 ns clock-edge separation instead of the
+required datapath-only maximum delay. Restoring those constraints and moving the five ATT
+stall reduction LUTs pass real-DCP checks, with no new DRC violations. The corrected analysis
+checkpoint is saved. A native physopt/route restart began at 07:34 KST from the preserved
+placed checkpoint. No new routed result exists yet.
+
 `hw/u200/build_xclbin.sh k4` (4 channels, T_MAX 8, the final image) synthesised and placed, then
 `route_design` failed: "The router is unable to resolve localized SLL routing demand"
 (Route 35-3339), 5.4 M unrouted pins.
@@ -122,15 +130,71 @@ actual SLR check passed (`K4FP locality PASS (placed=1)`). The placed reports sh
 
 These are matching placed-report counts, not the router's per-column estimated SLL demand
 above. The combined changes reduce placed crossings, but central packing pressure remains:
-the placer reports high congestion. Its global WNS is -3.139 ns; a clock/path breakdown is
-still needed before judging 250 MHz. Routing, post-route CDC and frequency signoff remain
-pending. The reports are `slr_util_placed.rpt` and `kernel_util_placed.rpt` in the active
+the placer reports high congestion. Physical optimisation also completed with zero errors
+and another `placed=1` locality PASS. Its timing report has global WNS -2.960 ns. The worst
+core path is the ATT stall aggregation, routed in the placement estimate through
+SLR0 -> SLR2 -> SLR1; 97.1 % of its data delay is wiring. RV setup is -0.367 ns, fixed DMA
+clock setup is -0.821 ns, and core/RV/platform hold violations remain in this pre-route
+estimate. A lower core clock alone is not yet evidence of timing closure.
+The reports are `slr_util_placed.rpt` and `kernel_util_placed.rpt` in the active
 implementation run directory. The current attempt, PID and source commit are in `status.json`.
 After locality passes, the hook now writes `k4_<step>_timing_summary.rpt` and
 `k4_<step>_congestion.rpt` in that directory. These only query the open design. The first
-place hook had already finished when diagnostics were added, so the current attempt will
-first produce them after `phys_opt_design`. Its runtime hook snapshot/hash is preserved
-beside `placement_milestone.json` under the attempt directory. The placed DCP is complete.
+place hook had already finished when diagnostics were added. The first reports were produced
+after `phys_opt_design`, and the placed and physopt DCPs are complete. Its runtime hook
+snapshot/hash is preserved beside `placement_milestone.json` under the attempt directory.
+
+The reports expose a confirmed constraint gap: sampled FIFO paths in both core/RV directions
+have a 0.040 ns natural-edge requirement and no max-delay exception; clock interaction calls
+both directions `Clean Timed`, not `Max Delay Datapath Only`. The clocks themselves remain
+3.333/6.023 ns. A later real-DCP experiment restored the exceptions, then reread the native
+RV clock XDC: the bounds and full CDC gate still passed. Clock redefinition did not reproduce
+the loss. The stage that loses the packaged constraints during integration remains unproven.
+At 05:24:56 KST, the implementation worker
+was stopped after its physopt DCP was complete. The supervisor exited at 05:25:10 with code 1.
+Logs, reports, generated scripts and all three implementation checkpoints are archived under
+`attempts/20261102_052510_cdc_unbound_stop/`, with hashes. The intended correction restores
+the original CDC XDC on the actual clocks and checks its effect before routing. A separate
+cycle-identical floorplan correction keeps the exclusive ATT stall aggregation beside its
+central consumer. Neither changes RTL behaviour or pipeline depth.
+
+The archived physopt DCP now passes the restored constraint gate: both directions have a
+3.333 ns datapath-only requirement and zero unsafe/unconstrained CDC paths. A kernel Gray-bus
+skew constraint is present, with a reported bound of 3.333 ns and skew of 0.073 ns. The
+`cdc_restore.tcl` hook generates a scoped run-local copy of the original CDC XDC and validates
+the linked clocks, timing requirement, CDC structure and kernel skew coverage. `impl_pre.tcl`
+uses it before optimisation; `cdc_pre_route.tcl` rechecks before routing and fails on loss.
+No false paths, clock groups or new CDC waivers are added.
+
+The remaining floorplan correction selects all exclusive ATT stall reduction LUTs from the
+actual endpoint cone. It keeps their source FFs in the original cluster SLRs. A saved-placement
+hook moves only the reduction LUTs, preserves their REF/INIT and every other primitive's
+LOC/BEL, and checks locality. At 07:02 KST the real-DCP ECO passed: five LUTs moved, all REF/INIT
+values matched, and every other primitive's LOC/BEL was unchanged (2,131,692 cells). Actual
+SLR locality and the following clock/reset and fresh CDC checks passed. Post-ECO DRC has zero
+errors; all 4,368 violation detail records match the baseline, including the three existing
+unrouted-state critical warnings. ATT stall slack improves from -2.960 to -1.048 ns. Global
+WNS is -2.557 ns, WHS is -0.324 ns, and RV setup is still -0.367 ns. These are pre-route
+estimates, not a 250 MHz pass. The remaining worst core path is c0's local ATT QK gate
+(10 levels, 84.1 % wire delay); the next two are DB queue/control paths within SLR1.
+The corrected DCP, the CDC-only DCP and the immutable source have recorded hashes in
+`build/analysis/cdc_restore_20261102/checkpoint_hashes.json`. Vivado exited with code 0.
+
+The native restart began at 07:34:26 KST under supervisor PID 1151282, using
+`resume_impl.tcl` on the existing project from `phys_opt_design` through `route_design`.
+It preserves the native route-post hook and original placement and does not repeat synthesis.
+The GateLvl fileset has no TOP; the driver validates the native `gen_run.xml` checkpoint
+records, run/part and matching filenames instead. The actual project API, hook settings,
+step reset and launch passed. Child PID 1151638 opened `level0_wrapper_placed.dcp`.
+The attempt is `attempts/20261102_073426_cdc_eco_native_resume/`; its source snapshot includes
+the validated working-tree hooks. `status.json` points to its `native_resume.log`.
+The fresh commit gates pass the software build, CTest (297 executed), both generated checks,
+full RTL lint (including nine XSim and eight Vivado checks), and the full RTL pytest run
+(355 passed, 115 opt-in skips, exit 0). Focused link checks pass 73 tests; floorplan checks pass 32, including
+two repeated-application regressions added after the full pytest run collected its cases.
+Actual BEL probes cover occupied, free and physical-only resources. Actual floorplan source
+applied twice preserves all four pblock ownership sets. No 250 MHz timing result is claimed.
+Fresh gate logs and their hashes are in `build/analysis/implementation_fix/cdc_floorplan_gates/`.
 
 The original detached supervisor was PID 741389 and exited with status 1. `status.json`, `build.log`, `memory.jsonl`, source
 snapshot/hash manifest and the eventual `exit_code` are in that run directory. The pointer
@@ -172,13 +236,16 @@ No runtime/RTL changes or extra build/test/Vivado/DCP/link runs were made for th
 
 1. Check the active run's `status.json` and logs before starting another link. A zero exit status
    and a routed checkpoint are required before calling the route successful.
-2. The corrected clock/reset and placed-locality checks have passed. Compare the router's
-   per-column SLL demand and per-clock timing against the new placed reports. The combined
+2. Confirm the clock/reset, CDC restoration, guarded ECO and locality hooks on the native
+   restart's placed input. Their analysis-DCP checks have passed. Compare the router's
+   per-column SLL demand and per-clock timing against the placed reports. The combined
    changes reduced placed SLL counts by 11,301; that does not establish routing success or
    isolate the contribution of the attention change.
 3. An implementation-only resume of the old failed run cannot repair its clock wiring. The active
-   run rebuilds from the corrected RTL and clock selection. Constraint-only changes on a
-   matching synthesized design can use `TSR_VPP_FROM_STEP=vpl.impl`. A full link takes 7-10 h on
+   run rebuilt from the corrected RTL and clock selection. Its preserved placed/physopt DCPs
+   have the correct clocks. Native `vpl.impl.phys_opt_design` restart is supported, but needs
+   the new PRE hook to restore constraints, K4FP Tcl state and legal LUT placement. A
+   `config_hw_runs` reset can invalidate those saved run results; back them up first. A full link takes 7-10 h on
    this host because of swap. A machine with
    64 GB RAM or more (Linux, or WSL2 with Linux Vivado/Vitis 2024.2: the Alveo `v++` flow is Linux
    only) runs it much faster and allows two variants at once.

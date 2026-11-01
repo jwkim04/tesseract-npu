@@ -284,7 +284,9 @@ pending; the placed comparison and remaining central congestion are in `docs/han
 No installed or generated tool files are edited.
 `hw/u200/clock_bd_check.tcl` checks the connected BD nets and each reset generator's clock.
 `impl_pre.tcl` checks the synthesized domain clocks, every RV FF and reset sources before
-`opt_design`, then applies the TCM power-optimisation exclusion. The final pre-bitstream hook
+`opt_design`, restores the scoped CDC XDC on the effective clocks, then applies the TCM
+power-optimisation exclusion. `cdc_pre_route.tcl` repeats the clock/reset and effective CDC
+checks before routing. The final pre-bitstream hook
 checks `_new_clk_freq` after Vitis scaling: core at least 250 MHz, RV within the current
 request's tolerance. These clock checks always fail the run on an error. `TSR_CDC_GATE=warn`
 only relaxes the final CDC report gate. A 125 MHz RV fallback needs an explicit request and
@@ -296,6 +298,15 @@ The K4 locality post-hook also writes timing and congestion reports from the ope
 `k4_<step>_timing_summary.rpt` covers setup, hold and unconstrained paths, and
 `k4_<step>_congestion.rpt` records congestion. The reports use separate placement, physical
 optimisation and post-route physical-optimisation names. They do not change constraints.
+
+The corrected linked physopt checkpoint exposed a separate constraint loss. Both clocks and
+resets were correct, but FIFO crossings had a 0.040 ns related-clock requirement and no
+datapath-only exception. Restoring the original `tsr_ctrl_cdc.xdc` at the kernel instance
+restores the 3.333 ns requirement and kernel Gray-bus skew coverage. Reapplying the native
+RV clock XDC afterwards did not reproduce the loss. The integration stage responsible remains
+unproven. `cdc_restore.tcl` generates a run-local scoped XDC from the original source and
+requires nonempty crossing paths, the intended bound, the CDC gate and kernel skew coverage.
+It adds no false paths or new waivers. The route-pre hook fails if that coverage is lost.
 
 Each packaging writes `build/u200/xo/<kernel>.sources.sha256` next to the `.xo`: the sha256 of
 both filelists, every source, `kernel_<k>.xml`, `rtl/ctrl/viv/tsr_ctrl_cdc.xdc` and `package_xo.tcl`, with repository paths.
@@ -356,6 +367,20 @@ dev host (14 GB RAM, swap) the k1 link peaked at 15.3 GB and the M0 link at 18.3
 (Vivado-reported, write_bitstream) and both completed, using swap; the k4 link peaked at 29.6 GB
 (§8.2) and completed with swap in 3 h 51 min. The script warns below 30 GiB of RAM.
 `hw/u200/bw/build_bw_xclbin.sh` has the same platform default.
+
+For a preserved K4 placement, `hw/u200/resume_impl.tcl` accepts the saved project path,
+`k4_resume_pre.tcl` and `cdc_pre_route.tcl` as its three Tcl arguments. Run it through the
+Vivado slot wrapper with 2024.2. Archive the existing run first: resetting from
+`phys_opt_design` replaces later reports and checkpoints. A GateLvl fileset can have no TOP;
+the driver validates the typed checkpoint records in the run's `gen_run.xml`, including run,
+part and matching filenames. The helper restores the CDC and
+floorplan state, moves only exclusive ATT stall reduction LUTs beside their SLR1 endpoint,
+and preserves every other primitive's LOC/BEL. Their source FFs stay in their original
+clusters. Each LUT half must report zero for `IS_USED`, `IS_RESERVED` and `PROHIBIT`, and
+contain no logical cell. `IS_USED` also catches physical route-throughs that a logical-cell
+query misses. It then launches through `route_design` with eight jobs, preserving native
+ROUTE.POST processing. It requires successful run status, a new routed DCP and completion
+markers. This path stops before bitstream generation and frequency acceptance.
 
 | Config | Connectivity | Implementation |
 |---|---|---|
@@ -858,8 +883,12 @@ passes; `rtl/platform/alveo_xrt/bw/lint.sh` is clean too (both run for this docu
   SLL demand. Its two kernel clocks also aliased clock ID 0. The corrected source selection,
   early connection checks and floorplan changes are in the resumed link. The actual pre-opt
   clock/reset and actual placed-locality checks passed. Placed SLL use fell from 28,506 to
-  17,205 in matching reports, while SLR1 CLB site occupancy remains 99.84 %. Routing and
-  final timing are pending. See `docs/handoff.md`.
+  17,205 in matching reports, while SLR1 CLB site occupancy remains 99.84 %. That attempt was
+  stopped after physopt to restore missing CDC exceptions and correct the ATT stall
+  aggregation placement. Both original checkpoints are archived. The real-DCP repair passes
+  clock/reset, CDC and locality checks with no DRC changes. A native physopt/route restart
+  from the saved placement began at 07:34 KST on 2026-11-02. Routing and final timing are
+  pending. See `docs/handoff.md`.
 - **k4 clock.** The k4 link of §8.2 missed 300 MHz by 0.285 ns and ran at 276.3 MHz (§8.2). Gate T3 now
   accepts at least 250 MHz with the control core (user decision, 2026-11-02). Do not repeat a
   successful implementation just to reach the current 300 MHz request (§8.4).

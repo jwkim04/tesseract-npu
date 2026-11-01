@@ -138,7 +138,7 @@ if [ -n "${TSR_BUILD_JOBS:-}" ]; then
   sed -i -e "s|^\(synth\|impl\)\.jobs=.*|\1.jobs=$TSR_BUILD_JOBS|" -e "s|^param=general\.maxThreads=.*|param=general.maxThreads=$TSR_BUILD_JOBS|" "$CFG"
 fi
 if [ "$K" = k4 ] && [ "${TSR_U200_FLOORPLAN:-1}" = 0 ]; then
-  sed -i -e '/k4_floorplan\.tcl\|k4_locality_check\.tcl/d' "$CFG"
+  sed -i -e '/k4_floorplan\.tcl\|k4_locality_check\.tcl\|k4_resume_pre\.tcl/d' "$CFG"
   echo "== TSR_U200_FLOORPLAN=0: linking without hw/u200/k4_floorplan.tcl"
 fi
 extra=()

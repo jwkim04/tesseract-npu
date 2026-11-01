@@ -20,7 +20,8 @@ def run_fixture(mode, case):
 
 
 @pytest.mark.parametrize("mode", ["core", "kernel"])
-@pytest.mark.parametrize("case", ["normal", "placed", "membership", "post_normal"])
+@pytest.mark.parametrize("case", ["normal", "placed", "membership", "post_normal",
+                                  "stall_reparented", "stall_existing_parent", "repeat"])
 def test_k4_floorplan_locality(mode, case):
     result = run_fixture(mode, case)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -36,6 +37,16 @@ def test_k4_floorplan_locality(mode, case):
     ("post_late_selector", "a_att_q_reg_replica_99"),
     ("post_misplaced", "is not placed in SLR1"),
     ("post_missing_proc", "locality check unavailable"),
+    ("stall_shared", "stall aggregation"),
+    ("stall_orphan", "stall aggregation"),
+    ("stall_unknown", "stall aggregation"),
+    ("stall_missing", "att_stall_q_reg"),
+    ("stall_unknown_name", "unknown stall aggregation"),
+    ("stall_outside_scope", "unknown stall aggregation"),
+    ("post_stall_misplaced", "is not placed in SLR1"),
+    ("post_stall_replica", "is not assigned"),
+    ("post_stall_source_misplaced", "is not placed in SLR0"),
+    ("post_stall_source_replica", "is not assigned"),
 ])
 def test_k4_floorplan_rejects_missing_or_unowned_cells(case, diagnostic):
     result = run_fixture("core", case)

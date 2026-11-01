@@ -392,3 +392,177 @@ def test_vitis_clock_api_guard(tmp_path, guard):
                 f"\nsource {{{REPO / 'hw/u200/clock_vitis_compat.tcl'}}}\n")
     assert r.returncode != 0
     assert "CLKAPI" in r.stdout + r.stderr
+
+
+CDC_LINK_MOCK = NET_MOCK + r'''
+# Model the confirmed post-override failure: clocks exist, but the clock-pair
+# max-delay exceptions do not. The actual source XDC must restore them.
+set read_calls 0
+set max_delays {}
+set bus_skews {}
+set cdc_unsafe 0
+set drop_constraints 0
+set read_scope {}
+set no_paths 0
+set wrong_requirement 0
+set no_gray 0
+set no_sync 0
+set wrong_interaction 0
+set missing_skew_report 0
+set loose_skew 0
+array set clock_for {kernel/ap_clk core kernel/ap_clk_2 rv}
+rename get_cells net_get_cells
+proc get_cells {args} {
+    set f [lindex $args end]
+    if {[string match *u_sync_lv* $f]} {return [net_get_cells {*}$args]}
+    if {[string match *gray_q_reg* $f]} {
+        if {$::no_gray} {return {}}
+        return kernel/gray_q_reg
+    }
+    if {[string match *u_sync*/s_q_reg* $f]} {
+        if {$::no_sync} {return {}}
+        return kernel/u_sync/s_q_reg
+    }
+    if {[string match *u_rst*/g_s*.s_q_reg* $f]} {return kernel/u_rst/g_s.s_q_reg}
+    return [net_get_cells {*}$args]
+}
+rename get_pins net_get_pins
+proc get_pins {args} {
+    if {[lindex $args end] in {kernel/ap_clk kernel/ap_clk_2}} {
+        return [lindex $args end]
+    }
+    return [net_get_pins {*}$args]
+}
+proc get_ports {name} {
+    if {$::read_scope ne "kernel" || $name ni {ap_clk ap_clk_2}} {
+        error "unscoped CDC port $name"
+    }
+    return kernel/$name
+}
+proc set_property {args} {}
+proc set_max_delay {args} {
+    if {!$::drop_constraints} {lappend ::max_delays $args}
+}
+proc set_bus_skew {args} {
+    if {!$::drop_constraints} {lappend ::bus_skews $args}
+}
+proc read_xdc {args} {
+    incr ::read_calls
+    set i [lsearch $args -cells]
+    if {$i < 0 || [lindex $args [expr {$i+1}]] ne "kernel"} {
+        error "CDC XDC must be scoped to actual kernel"
+    }
+    set ::read_scope kernel
+    try {uplevel #0 [list source [lindex $args end]]} finally {set ::read_scope {}}
+}
+proc create_waiver {args} {}
+rename get_property net_get_property
+proc get_property {prop obj} {
+    if {$prop eq "REQUIREMENT"} {
+        if {$::wrong_requirement || [llength $::max_delays] != 2} {return 0.040}
+        return [lindex [lindex $::max_delays 0] end]
+    }
+    return [net_get_property $prop $obj]
+}
+proc get_timing_paths {args} {
+    if {$::no_paths} {return {}}
+    return crossing_path
+}
+proc report_cdc {args} {
+    if {$::cdc_unsafe} {return "Critical core rv unsafe"}
+    return "Info core rv safe\nInfo rv core safe"
+}
+proc report_clock_interaction {args} {
+    if {$::wrong_interaction || [llength $::max_delays] != 2} {return "core rv Timed\nrv core Timed"}
+    return "core rv Max Delay Datapath Only\nrv core Max Delay Datapath Only"
+}
+proc report_bus_skew {args} {
+    set i [lsearch $args -file]
+    set f [open [lindex $args [expr {$i+1}]] w]
+    if {!$::missing_skew_report && [llength $::bus_skews] > 0} {
+        puts $f {1 17 kernel/gray_q_reg}
+        puts $f {        kernel/u_sync/s_q_reg}
+        set bound [lindex [lindex $::bus_skews 0] end]
+        if {$::loose_skew} {set bound 99}
+        puts $f "        Slow $bound 0.073 3.260"
+    } else {
+        puts $f "platform/src_gray_ff platform/dest_gray_ff"
+    }
+    puts $f {2. Bus Skew Report Per Constraint}
+    close $f
+}
+'''
+
+
+def test_impl_pre_restores_cdc_after_clock_override(tmp_path):
+    body = CDC_LINK_MOCK + f"\ncd {{{tmp_path}}}\nsource {{{REPO / 'hw/u200/impl_pre.tcl'}}}\n"
+    body += r'''
+if {$read_calls != 1} {error "missing post-override CDC XDC restore"}
+if {[llength $max_delays] != 2 || [llength $bus_skews] != 1} {
+    error "missing max-delay or bus-skew constraints"
+}
+foreach args $max_delays {
+    if {[lsearch $args -datapath_only] < 0 || [lindex $args end] != 3.333} {
+        error "CDC restore changed datapath-only min-period contract"
+    }
+}
+puts "CDC restore fixture PASS"
+'''
+    r = run_tcl(tmp_path, body)
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    assert "CDC restore fixture PASS" in r.stdout
+    assert (tmp_path / "tsr_ctrl_cdc_link.xdc").read_text().endswith(
+        (REPO / "rtl/ctrl/viv/tsr_ctrl_cdc.xdc").read_text())
+
+
+@pytest.mark.parametrize("mutation", ["drop_constraints", "no_paths", "wrong_requirement",
+                                       "cdc_unsafe", "wrong_interaction", "no_gray", "no_sync",
+                                       "missing_skew_report", "loose_skew"])
+def test_impl_pre_cdc_restore_fails_closed(tmp_path, mutation):
+    body = CDC_LINK_MOCK + f"\nset {mutation} 1\nset ::env(TSR_CDC_GATE) warn\n"
+    body += f"cd {{{tmp_path}}}\nsource {{{REPO / 'hw/u200/impl_pre.tcl'}}}\n"
+    r = run_tcl(tmp_path, body)
+    assert r.returncode != 0, (r.stdout, r.stderr)
+    assert "CDCBIND" in r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_pre_route_checks_without_restoring(tmp_path, missing):
+    body = CDC_LINK_MOCK + "\n"
+    if not missing:
+        body += "set max_delays {{-datapath_only 3.333} {-datapath_only 3.333}}\n"
+        body += "set bus_skews {{3.333}}\n"
+    body += f"cd {{{tmp_path}}}\nsource {{{REPO / 'hw/u200/cdc_pre_route.tcl'}}}\n"
+    body += 'if {$read_calls != 0} {error "pre-route gate unexpectedly repaired constraints"}\n'
+    r = run_tcl(tmp_path, body)
+    assert (r.returncode == 0) == (not missing), (r.stdout, r.stderr)
+    assert "CDCBIND" in r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("mutation", ["alias", "missing", "zero", "nan", "inf"])
+def test_cdc_restore_rejects_invalid_clock_pair(tmp_path, mutation):
+    changes = {"alias": "set clock_for(kernel/ap_clk_2) core",
+               "missing": "unset clock_for(kernel/ap_clk_2)",
+               "zero": "set periods(rv) 0", "nan": "set periods(rv) NaN",
+               "inf": "set periods(rv) Inf"}
+    body = CDC_LINK_MOCK + f"\n{changes[mutation]}\n"
+    body += f"source {{{REPO / 'hw/u200/cdc_restore.tcl'}}}\n"
+    body += f"tsr_cdc_link::restore invalid {{{tmp_path}}}\n"
+    r = run_tcl(tmp_path, body)
+    assert r.returncode != 0, (r.stdout, r.stderr)
+    assert "CDCBIND" in r.stdout + r.stderr or "CLKCHK" in r.stderr
+    assert not (tmp_path / "tsr_ctrl_cdc_link.xdc").exists()
+
+
+def test_cdc_restore_uses_actual_period_minimum(tmp_path):
+    body = CDC_LINK_MOCK + "\nset periods(core) 4.0\nset periods(rv) 6.023\n"
+    body += f"source {{{REPO / 'hw/u200/cdc_restore.tcl'}}}\n"
+    body += f"tsr_cdc_link::restore actual_periods {{{tmp_path}}}\n"
+    body += r'''
+foreach args $max_delays {
+    if {[lindex $args end] != 4.0} {error "CDC bound is not actual min(PERIOD)"}
+}
+if {[lindex [lindex $bus_skews 0] end] != 4.0} {error "bus skew did not use actual period"}
+'''
+    r = run_tcl(tmp_path, body)
+    assert r.returncode == 0, (r.stdout, r.stderr)

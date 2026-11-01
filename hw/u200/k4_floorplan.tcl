@@ -42,6 +42,8 @@
 #   Direct broadcast decode leaves stay with the destination cluster; the lane wrapper's direct
 #   writer/reduction helpers stay in SLR1. Synthesis can rebuild these cones under the pipe wrappers,
 #   outside the original consumer hierarchy. The split pipe parents are never assigned wholesale.
+#   The ATT_PATH_STALL reduction LUTs stay beside att_stall_q in SLR1 even when synthesis puts
+#   them under a cluster. Their source registers and shared functional decode stay with the cluster.
 #   The core's reset copies stay free.
 #   Bridges 0 and 3 cross in their AXI register slices (AXI_SLICES >= 2): the AXI-side stage of
 #   every slice chain (the last stage of AR / AW / W, the first of R / B) and the registered AR / AW
@@ -125,19 +127,97 @@ proc k4fp_cell {name} {
   return $c
 }
 
+# Select by the actual PERF endpoint cone, not by the cluster that inherited a LUT during
+# synthesis. The name/type guard excludes unrelated functional decode in its transitive fan-in;
+# exclusive fanout proves that moving these LUTs cannot drag a functional consumer with them.
+proc k4fp_att_stall_cone {mvm} {
+  set endpoint [k4fp_cell "$mvm/att_stall_q_reg"]
+  if {[get_property REF_NAME $endpoint] ne "FDRE"} {
+    error "k4_floorplan: unknown stall aggregation endpoint $endpoint"
+  }
+  set pin [get_pins -quiet "$mvm/att_stall_q_reg/D"]
+  if {[llength $pin] != 1} { error "k4_floorplan: missing stall aggregation D pin" }
+  set cone [all_fanin -flat -only_cells -trace_arcs all -to $pin]
+  set result {}
+  foreach cell $cone {
+    if {$cell eq $endpoint} continue
+    set name [get_property NAME $cell]
+    set ref [get_property REF_NAME $cell]
+    if {![get_property IS_PRIMITIVE $cell]} { error "k4_floorplan: unknown stall aggregation object $cell" }
+    if {[get_property IS_SEQUENTIAL $cell] || $ref in {GND VCC}} continue
+    set outputs [get_pins -quiet -of_objects $cell -filter {DIRECTION == OUT}]
+    if {[llength $outputs] == 0} { error "k4_floorplan: stall aggregation leaf $cell has no output" }
+    set sinks [lsort -unique [get_property NAME [all_fanout -flat -endpoints_only -trace_arcs all -from $outputs]]]
+    if {[lsearch -exact $sinks [get_property NAME $pin]] < 0} {
+      error "k4_floorplan: stall aggregation leaf $cell does not reach $pin"
+    }
+    # Shared functional decode is a boundary, not part of this PERF-only cone.
+    if {$sinks ne [list [get_property NAME $pin]]} continue
+    if {[llength $outputs] != 1 || [string first "$mvm/" $name] != 0 ||
+        ![regexp {^att_stall_q_i_[0-9]+(_comp)?(_replica.*|_rep__.*)?$} [file tail $name]] ||
+        ![regexp {^LUT[1-6]$} $ref]} {
+      error "k4_floorplan: unknown stall aggregation leaf $cell ($ref)"
+    }
+    lappend result $cell
+  }
+  if {[llength $result] == 0} { error "k4_floorplan: empty stall aggregation cone at $pin" }
+  set selected [get_property NAME $result]
+  foreach cell [get_cells -quiet -hierarchical -filter "IS_PRIMITIVE && NAME =~ $mvm/*att_stall_q*"] {
+    if {$cell ne $endpoint && [lsearch -exact $selected [get_property NAME $cell]] < 0} {
+      error "k4_floorplan: disconnected or shared stall aggregation leaf $cell"
+    }
+  }
+  return [linsert $result 0 $endpoint]
+}
+
+# Keep maximal cluster subtrees intact, descending only along a branch that contains an excluded
+# PERF LUT. Assigning its u_cl ancestor would otherwise conflict with the LUT's central pblock.
+proc k4fp_cluster_without {inst excluded} {
+  set result {}
+  foreach cell [get_cells -quiet "$inst/*"] {
+    set name [get_property NAME $cell]
+    if {[lsearch -exact $excluded $name] >= 0} continue
+    set split 0
+    foreach target $excluded {
+      if {[string first "$name/" $target] == 0} { set split 1; break }
+    }
+    if {$split} {
+      if {[get_property IS_PRIMITIVE $cell]} { error "k4_floorplan: cannot partition cluster leaf $cell" }
+      lappend result {*}[k4fp_cluster_without $name $excluded]
+    } else { lappend result $cell }
+  }
+  return $result
+}
+
 # ---- core: clusters, assemblers and VU lanes away from SLR1, the control core in its sub-pblock ----
 set dp  [k4fp_path $k4fp_core u_dp]
 set mvm [k4fp_path $dp g_mvm.u_mvm]
 set vu  [k4fp_path $dp g_vu.u_vu]
+set k4fp_stall [k4fp_att_stall_cone $mvm]
+set k4fp_stall_names [get_property NAME $k4fp_stall]
 set nch 0
 foreach {c s} $k4fp_map {
   set cl [get_cells -quiet "$mvm/g_cl\[$c\].u_cl"]
   if {[llength $cl] == 0} { continue }        ;# NUM_CH < 4: no such cluster
   incr nch
-  k4fp_add $s $cl "g_cl\[$c\].u_cl"
+  set k4fp_cl_name [get_property NAME $cl]
+  set k4fp_excluded {}
+  foreach k4fp_target $k4fp_stall_names {
+    if {[string first "$k4fp_cl_name/" $k4fp_target] == 0} { lappend k4fp_excluded $k4fp_target }
+  }
+  if {[llength $k4fp_excluded]} {
+    # Also supports reapplying this floorplan to a checkpoint with the old parent assignment.
+    set k4fp_old_blocks [get_pblocks -quiet -of_objects $cl]
+    if {[llength $k4fp_old_blocks] > 0 &&
+        [lsearch -exact [get_property NAME $k4fp_old_blocks] $k4fp_pb($s)] >= 0} {
+      remove_cells_from_pblock $k4fp_pb($s) $cl
+    }
+    k4fp_add $s [k4fp_cluster_without $k4fp_cl_name $k4fp_excluded] "g_cl\[$c\].u_cl (outside stall aggregation)"
+  } else { k4fp_add $s $cl "g_cl\[$c\].u_cl" }
   k4fp_add $s [k4fp_cell "$mvm/u_gather/g_asm\[$c\].u_asm"] "g_asm\[$c\].u_asm"
 }
 if {$nch == 0} { error "k4_floorplan: no MVM cluster under $mvm" }
+k4fp_add $k4fp_rest $k4fp_stall "ATT_PATH_STALL aggregation and endpoint"
 
 # the VU lanes (tsr_vu_lanes; the pipe stages are pinned below)
 set lanes {}
@@ -318,7 +398,8 @@ proc k4fp_check_cells {s cells placed} {
     # same query used by the failed-checkpoint census; do not require a leaf
     # PBLOCK property or assume it lists only one enclosing pblock.
     set blocks [get_pblocks -quiet -of_objects $cell]
-    if {[lsearch -exact [get_property NAME $blocks] $k4fp_pb($s)] < 0} {
+    if {[llength $blocks] == 0 ||
+        [lsearch -exact [get_property NAME $blocks] $k4fp_pb($s)] < 0} {
       error "k4_floorplan: $cell is not assigned to $k4fp_pb($s)"
     }
     if {$placed} {
@@ -335,6 +416,23 @@ proc k4fp_check_locality {{placed 0}} {
   if {![info exists k4fp_scope]} { error "k4_floorplan: locality scope was not captured" }
   set mvm [dict get $k4fp_scope mvm]
   set vu [dict get $k4fp_scope vu]
+  set stall [k4fp_att_stall_cone $mvm]
+  k4fp_check_cells 1 $stall $placed
+  # The reduction's source FFs remain in their original clusters, including
+  # replicas added by phys_opt after the hierarchy was partitioned.
+  set endpoint [lindex $stall 0]
+  set pin [get_pins -quiet "[get_property NAME $endpoint]/D"]
+  foreach cell [all_fanin -flat -only_cells -trace_arcs all -to $pin] {
+    if {$cell eq $endpoint || ![get_property IS_SEQUENTIAL $cell]} continue
+    set found 0
+    foreach {c s} [dict get $k4fp_scope map] {
+      if {[string first "$mvm/g_cl\[$c\].u_cl/" [get_property NAME $cell]] != 0} continue
+      k4fp_check_cells $s [list $cell] $placed
+      set found 1
+      break
+    }
+    if {!$found} { error "k4_floorplan: stall source $cell is outside the cluster scope" }
+  }
   foreach {c s} [dict get $k4fp_scope map] {
     if {$c >= [dict get $k4fp_scope nch]} continue
     set p "$mvm/g_cl\[$c\]"
