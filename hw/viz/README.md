@@ -5,8 +5,9 @@ without the GUI. Every used site is drawn at its real position in the colour of 
 most of its cells. A third script turns a terminal recording into a video.
 
 > **Scope.** Tool documentation. The images in `docs/fig/floorplan/` show the core
-> before the control core was added, as routed by Vivado 2024.2; the control core has no RTL yet, so
-> there is no floorplan of it. Its placement is a design item, not an image: [CC](../../docs/design/04-control-core.md)
+> before the control core was added, as routed by Vivado 2024.2. The control-core RTL and placement
+> constraints now exist, but those images have not been regenerated for the corrected K4 design:
+> [CC](../../docs/design/04-control-core.md)
 > §14.2. The scripts need Vivado only for `fp_dump.tcl`; `fp_render.py` and `term2mp4.py` run in the
 > figure environment `build/tools/svgvenv`.
 

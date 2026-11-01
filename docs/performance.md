@@ -38,7 +38,7 @@ Gemma 4 runs and for the `TSR_STATS` runs, and the model default for the Qwen2.5
 **Clocks.** The design target is 300 MHz (`F_CORE`). The 4-channel bitstream `tsr_u200_k4` closed
 at 276.3 MHz, so every k4 number below is at 276.3 MHz; `tsr_u200_k1` and the M0 kernel
 `tsr_bw_k4` ran at 300 MHz. The control core's clock `clk_rv` (planning value 166.7 MHz) exists
-only in the design and the simulator.
+in RTL and in the simulator; the integrated card measurement is still pending.
 
 **Host.** All card runs were made on the development host that holds the card: AMD Ryzen 7 9700X
 (8 cores, 16 threads), 14 GB RAM, Ubuntu 24.04, kernel 7.0.0-38, XRT 2.18.179 with the 19 driver

@@ -65,7 +65,7 @@ ggml-tesseract, tsr_rt, tools         tsr_transport.h: open, close, config, writ
 ## 2. Kernel contract (software view)
 
 The kernels `tsr_u200_k1` (NUM_CH 1, T_MAX 1) and `tsr_u200_k4` (NUM_CH 4, T_MAX 8) are `ap_ctrl_none`
-RTL kernels with one clock `ap_clk` (the control core adds `ap_clk_2`, Y5), `ap_rst_n`,
+RTL kernels with `ap_clk` / `ap_rst_n` and the control-core pair `ap_clk_2` / `ap_rst_n_2`,
 `s_axi_control` (AXI4-Lite, 13-bit address space) and `m_axi_ch<c>` (AXI4, 512-bit) for c < NUM_CH. The full map is
 [`platform-u200.md`](platform-u200.md) §2 and EX §9.2. What the software uses (byte offsets):
 

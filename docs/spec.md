@@ -57,10 +57,12 @@ which stream weights from DDR4 and compute. This configuration (four MVM cluster
 that runs on the control core is named Tesseract Basis ("Basis"). Decoding a dense model reads every weight once per
 token, so the design is built around an unbroken weight stream and not around raw compute.
 
-The design is in `docs/design`. The DMA, QACT, MVM clusters, SPM and the CSR skeleton are RTL and ran
-on the card up to milestone M4. The control core, vector unit, on-device attention and KV cache,
-firmware SDK and kernels, transport, M6 backend and tools are implemented on the simulator, and
-their RTL is planned (section 19).
+The design is in `docs/design`. The DMA, QACT, MVM clusters, SPM and the CSR skeleton ran on the
+card up to milestone M4. The control core, vector unit, on-device attention and KV cache now also
+exist in RTL, with module and small-system integration tests. The firmware SDK and kernels,
+transport, M6/M7 backend and tools run on the C simulator. The full corrected K4 design is being
+built; its routing, timing and card gates remain pending. Current status:
+[handoff.md](handoff.md), [design/README.md](design/README.md) §12.
 
 ### Goals
 

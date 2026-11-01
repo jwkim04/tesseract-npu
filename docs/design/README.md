@@ -1,7 +1,10 @@
 # Tesseract design set (M6–M9)
 
-Status: **integrated design, not implemented** (2026-10-30). Six area documents, reviewed by two
-reviewers and integrated into one consistent set. Every number marked *estimate* is unmeasured;
+Status (2026-11-02): **implemented on the C simulator; RTL integrated; card validation pending**.
+The original design integration was on 2026-10-30. Six area documents, reviewed by two
+reviewers and integrated into one consistent set. The current implementation map is §12;
+the active build and remaining defects are in [../handoff.md](../handoff.md).
+Every number marked *estimate* is unmeasured;
 every third-party fact marked *confirm* is checked when the dependency is pinned or at the first
 smoke link. Source-of-truth order: `docs/spec.md` (§11) > ISA simulator
 (`sw/sim`) > `docs/design/*` > `docs/ctrl-riscv.md` > `docs/prof-dbg.md`.
@@ -97,8 +100,9 @@ and `selftest`.
 stride per operand (0 = broadcast) and a per-row scalar from an s register or an SPM vector, so
 one op covers all heads and tokens. Ops: VOP (25 functions, including the CPU-compatible GELU16 /
 GEGLU16), segmented RED with fused RCP / RMS post-ops (RMSNorm in two ops), ROPE over T tokens
-with ggml-cpu's own angle recurrence (bit-identical angles), SOP, TOPK and DQROW (simulator in M6,
-RTL in M8) and VMASK (M9). All numerics are bit-exact algorithms: an integer EXPK (≤ 0.53 ulp,
+with ggml-cpu's own angle recurrence (bit-identical angles), SOP, optional TOPK and DQROW
+(conditional RTL exists; disabled in the U200 configuration), and VMASK (M9). All numerics are
+bit-exact algorithms: an integer EXPK (≤ 0.53 ulp,
 *model*), correctly rounded reciprocals, an exact 2/π reduction for SIN/COS, the spec's 128-partial
 reduction tree with an exact skip rule. The microarchitecture has 16 front lanes, 8 half-rate back
 lanes, a reduction unit and an angle unit, reads operand pairs from the even / odd SPM, uses
@@ -646,3 +650,116 @@ launch costs).
 
 W0 (2026-10-30) edited `docs/spec.md` and the other documents outside this directory to follow
 the design set; AT §14 and SW §15 list the edits.
+
+---
+
+## 12. Implementation map and verification status
+
+Checked on 2026-11-02 against `2dcdadb`, the source corrections in `47832fc`, the earlier
+architecture audit and the saved verification logs. Status corrections made during this review
+change documentation only. This section maps the repository; it does not change the area contracts.
+The active build and its eventual result belong in [handoff](../handoff.md).
+
+### 12.1 Code, contracts and boundaries
+
+| Area | Implementation entry points | Contract and boundary |
+|---|---|---|
+| Encodings and versions | `sw/tables/tsr_tables.py`, `gen_tables.py`; `sw/ctrl/include/tsr/version.h`, `opl.hpp` | EX §5–§8, SW §6.9. Generated SV/C/C++/Python tables share encodings; Core capability, Basis release, ABI and kind numerics revisions are separate identifiers. |
+| Numerical oracle and simulator | `sw/sim/tsr_ref*.c`, `tsr_sim.c`, `tsr_q.c`, `tsr_rv.c`, `tsr_bus.c`, `tsr_sched.c`, `tsr_race.c`, `tsr_trace.c` | SW §4–§5, VU and AT numerics. Runs firmware and architectural unit semantics. Operation cycle estimates do not model every RTL pipeline handshake. |
+| llama.cpp integration | `third_party/patches/0001-ggml-tesseract.patch`, `sw/ggml-tesseract/ggml-tesseract.cpp`, `tsr-build`, `tsr-opl`, `tsr-opl-dev`, `tsr-kvbuf`, `tsr-msum` | SW §8–§9.3. The patch registers the backend; implementation stays in `sw/`. Shared shape/planner checks drive both support decisions and lowering. Cached lists, dependencies, weight/KV layout and masks are host responsibilities. |
+| PyTorch and direct runtime | `sw/torch/tesseract_torch/`, `sw/torch/csrc/tsr_torch.cpp`, `sw/rt/tsr_rt.cpp` | SW §9.4 and `torch-backend.md` §3–§8. Current partitioning offloads weight matmuls; it does not fuse the whole M7 device graph. CPU fallbacks and weight-cache mutation limits remain. |
+| Device lifecycle and protocol | `sw/transport/tsr_transport.c`, `tsr_kdev.cpp`, `tsr_image.cpp`; sim/mock/vkernel/XRT implementations | EX §2–§4, §9–§10; SW §9.1. One protocol handles bind, load, VERIFY, HELLO, launch, LCQ, logging and recovery over raw device access. The host does not push tile instructions. |
+| Basis runtime and kernels | `sw/ctrl/rt/`, `kernels/graph.cpp`, `k_*.cpp`, `replay.cpp`, `selftest.cpp`, `include/tsr/plan*.hpp`, `exec.hpp`, `backend_dev.hpp` | SW §6–§7. Freestanding RV32 firmware owns tile issue; shared planners keep host acceptance and device execution aligned. Image kind declarations and revisions describe the handlers actually linked. |
+| Control core and crossings | `rtl/ctrl/tsr_ctrl*.sv`, `tsr_ctl_win.sv`, `tsr_rv_bus.sv`, `cdc/`, `VENDOR.md` | CC §3–§6, §11. Real Ibex and riscv-dbg, TCMs, loader, control windows, tagged handshakes, gray counters/FIFOs and reset sequencing. Vendor internals are separate pinned projects. |
+| Issue, CSR and memory | `rtl/core/tsr_core*.sv`, `tsr_chk*.sv`, `tsr_issue.sv`, `tsr_csr.sv`, `tsr_spm*.sv`, `tsr_mem_arb.sv` | CC §7–§10; EX §4–§8. Per-unit in-order queues run concurrently when dependencies permit. Software supplies memory dependencies; range checking does not infer them. SPM response space must be reserved before reads. |
+| Compute | `tsr_dma*.sv`, `tsr_qact.sv`, `tsr_mvm*.sv`, `tsr_vu*.sv`, `tsr_fp*.sv`, `rtl/tech/` | VU, AT, CC §10. DMA moves activation/result/KV data; each MVM cluster streams its weights directly from its own DDR channel. Attention reuses DMA, MVM and VU queues; queue 4 is absent. |
+| Debug and observation | `rtl/core/tsr_dbg*.sv`, `sw/tools/dbg/`, `tsr_dbg.cpp`, `tsr_prof.cpp`, `tsr_log.cpp` | DB §3–§10; `prof-dbg.md` §1. GDB/RSP, embedded service, tile stops/history, traces and stats exist. Sample/apply completion and one diagnostic bit remain incomplete in RTL. |
+| Platform and build | `rtl/platform/alveo_xrt/`, `hw/u200/`, `sw/xrt-driver/` | EX §9, CC §13–§14; `platform-u200.md`, `xrt-host.md`. Two clocks, `MEM_EN`, AXI bridges, source-hashed XO packaging, link hooks and floorplan checks. Driver patches and old card measurements do not prove the new firmware design works on the card. |
+| Verification and support | `tb/`, CMake tests, `traces/`, `sw/tools/klcheck*`, `numcheck*`; `hw/viz/`, `docs/fig/src/`, `docs/logo/src/` | SW §10. Tests use different real/model boundaries. Trace generators and manifest preserve fixture provenance; visualisation scripts produce explanatory assets, not timing or locality signoff. |
+
+### 12.2 Normal execution and failure
+
+For a supported M7 decode graph, `tsr_backend_graph_compute` uses the plan cache and shared
+lowering. `tsr_build_and_run` / `tsr_flush` eventually reach `tsr_run_list`, `tsr_opl_dev::run`
+and `tsr_transport_call`. The transport loads and checks the image when needed, writes inputs
+and the op list, then posts a launch. Basis dispatches the `graph` kernel, whose handlers use
+the shared planners and issue tile operations with dependency tickets. Tested common decode
+graphs use one launch per token; unsupported operations, prefill cuts and other shapes can
+change that count. PyTorch's current path still launches each weight matmul separately.
+
+A concrete RTL smoke is `tb/core/fw/fw_core.c`: LD activation data, QACT, MVM, ST and FENCE.
+QACT waits for LD's completion ticket before reading SPM. MVM broadcasts quantized activations
+from SPM to the clusters, while each cluster's `tsr_mvm_ws` reads its own weight rows directly
+through the channel arbiter. Weights are not copied through SPM by DMA. The gather assembles
+results with byte enables; MVM completes after its required reads, results and writes drain.
+ST then waits for all write responses before its ticket completes. The firmware joins work
+before posting the LCQ result, and the host reads output bytes after that completion.
+
+Failure recovery is not graph replay. LCQ reads and acknowledgement must succeed before host
+answers/events/credits change; the corrected transport preserves a batch across an ambiguous
+ack failure. An uncertain reset blocks stale consumption until reset and counter resynchronisation
+complete. A warm restart can reuse the image and device allocation, but the failed graph still
+returns failure to its caller. Already-written tensor bytes are not rolled back, and the caller
+must decide how to rebuild or retry its work.
+
+### 12.3 What the verification establishes
+
+The C simulator applies a unit's operation atomically at its completion time. RTL instead streams
+memory requests and data; the VU can overlap two accepted operations. Oracle agreement establishes
+architectural bytes and ordering for the tested inputs. Ready/valid, credits, bank arbitration,
+CDC and physical timing need their own RTL and implementation evidence.
+
+| Evidence | Established scope | Limit |
+|---|---|---|
+| Latest `build/dev` CTest | 341 registered; 43 labelled slow; 297 executed and passed, one disabled in the recorded non-slow run | LLAMA on, TORCH and XRT off. This is not a fresh PyTorch or real XRT run. Model-dependent registration and opt-in tests have separate prerequisites. |
+| Latest RTL pytest and lint | 290 passed, 115 opt-in skips; the technology-lint node passed separately after its wrapper environment was corrected; 48 current clock/floorplan fixtures pass | The original suite had that one execution failure. Small synthesis and fixture checks are not full-K4 routing signoff. |
+| `tb/core` / `core_m7` | Real Ibex, production firmware, issue path and VU/attention/KVST integration against the simulator at small shapes | Does not establish final four-channel K4 placement, DDR performance or every model shape. |
+| `tb/at` composite flash-attention test | Real MVM attention modes compared with the composed oracle | Some QACT/KVST/VU operations run on the simulator with mirrored memory; that test alone does not exercise the entire RTL chain. |
+| GDB on `sim` | Real pinned RISC-V GDB smoke via stdio: boot/symbol stops, registers, memory, step, hardware breakpoint, launch, backtrace, `finish`, history, detach. RSP/embedded/drop tests also pass. | Integrated current RTL/vkernel/card GDB is unverified. RTL DMI and DBG module tests are separate evidence. |
+| Corrected K4 link | New XO and generated BD clock/reset split have passed the early checks | Linked-net clock checks, actual placed locality, routing, final frequencies and card results remain pending until their stages run. |
+| Historical PyTorch, XRT, bandwidth and card records | Evidence for the exact older image/configuration named by each record | Does not transfer to the control-core K4 image. The current two-clock vkernel server is not in the tree. |
+
+### 12.4 Progress and remaining plan
+
+| Work | Current state | Next required evidence |
+|---|---|---|
+| W0–W2: tables, oracle, Basis runtime/planners/kernels | Implemented on the simulator, including kind revision gates | Preserve numerical/ABI contracts when changing acceptance or output bits. |
+| W3: host, backend and tools | M6/M7 simulator paths and GDB tools implemented; trace export/stats implemented | Long prompts and later frontend coverage remain separate from the recorded short model gates. |
+| P3.8 and deferred tools | `tsr-prof trw` / `stats` exist | Automatic profiling, `report`, periodic firmware PC sampling and `tsr-dbg diverge` remain inactive or unimplemented. |
+| W4: control/VU/AT/DB RTL | Integrated with module and small-system tests | Complete the known sample/apply handshake and diagnostic gap; retain dense-hit/reset regressions. |
+| W5: integration and physical implementation | Current K4 route attempt active; earlier route failed | Finish integration/replay coverage, the two-clock vkernel server, current full-system GDB and model checks; inspect actual placement/routing and gates T2–T4. |
+| W6: current image on card | Pending a usable image | Identity/bind, LOAD/VERIFY/HELLO, selftest, launch costs, GDB, M6/M7 logits/KL and launch-count gates, then DDR utilisation and performance. |
+| M8/M9 and later | Future product integration | MoE, broader PyTorch fusion, resident decode, speculation, new layer types and multi-card work follow the card gate. |
+
+T1 measured the RV32MFast control core at 6 ns with the required margin. That is not T2–T4:
+the earlier whole-core placed WNS was negative, the old K4 route failed, and k1 did not close.
+The current route-only experiment deliberately defers bitstream generation and final frequency
+signoff. A routed checkpoint with negative setup slack can answer routability without passing T3.
+
+Optional TOPK and DQROW have conditional RTL modules and tests, but are disabled in the U200
+configuration. Their M8 rollout is not the same as missing source modules. VMASK remains a
+reserved future capability with no registered current simulator handler. The `tb/fastreplay`
+directory currently contains a memory-model selftest, not a full-system firmware replay server.
+
+Known current defects and future features must stay separate. `RV_SAMPLE` / `RVWP_APPLY` can
+acknowledge before CDC completion; `DBG_STATUS.SBA_REFUSED` lacks its RTL setter. The depth-16
+watchpoint FIFO covers the supported core-at-least-as-fast-as-RV case, not arbitrary sustained
+RV-faster-than-core traffic. These limits are not hidden by passing simulator tests.
+
+### 12.5 Review coverage and reuse
+
+The review classified all 759 tracked entries and reused the earlier architecture audit and
+implementation regressions. File-level records distinguish actual body/call-path review,
+specific earlier review evidence, interface inspection, generated files, assets and unreviewed
+internals. Classification is not a claim that every line was deeply audited or every input tested.
+The combined record has 63 body/call-path reviews, 144 reused reviews, 468 interface inspections,
+18 generated files, 55 assets, four vendor boundaries and seven test fixtures without body review.
+Vendor submodules were checked at their pinned integration boundary; their full internals were
+not re-audited. Figure assets were inventoried, not visually revalidated or regenerated.
+
+Local detailed records are under `build/analysis/repository_map_20261102/`: `software.txt`,
+`datapath.txt`, `platform.txt`, file-level coverage and the registered CTest inventory. Earlier
+reproduction and fix evidence remains in `build/analysis/architecture_audit/` and
+`build/analysis/implementation_fix/`. These generated analysis records are ignored by git; this
+implementation map and the handoff preserve the durable summary. No additional tests, synthesis,
+DCP loads or links were run for this mapping.

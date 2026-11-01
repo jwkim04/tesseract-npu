@@ -86,9 +86,10 @@ generated design: core uses `ss_ucs/aclk_kernel_00`, RV uses `ss_ucs/aclk_kernel
 uses its corresponding reset generator. Vitis truncates the RV request to 166 MHz in
 `ipirun.tcl` and the generated `ulp_ooc_copy.xdc` (6.024096 ns). The UCS IP's default 500 MHz
 parameter is not the implementation request; scalable clocks use the generated constraints
-and later runtime programming. At 00:47 KST, block-level synthesis had completed 45 of
-176 jobs; eight were running. Placement and routing have not started. The linked-net clock
-check and floorplan/locality checks are still pending. No corrected placed/routed result or
+and later runtime programming. All 176 block-level synthesis jobs completed and the corrected
+kernel OOC checkpoint was written. At 01:25 KST, top-level synthesis completed and implementation
+started. Placement and routing have not completed. The linked-net clock and floorplan/locality checks
+are still pending. No corrected placed/routed result or
 xclbin exists yet. The old checkpoint remains evidence of the baseline failure.
 
 The detached supervisor is PID 741389. `status.json`, `build.log`, `memory.jsonl`, source
@@ -109,6 +110,15 @@ boot/symbol stops, step, memory/CSR reads, a launched kernel hardware breakpoint
 also passed. This is separate from the RTL module tests; integrated RTL/card GDB remains
 unverified. `prof-dbg.md` §1 and the user-facing environment-variable docs now reflect this
 status instead of the old P3.7-planned wording.
+
+The broader repository map is [design/README.md](design/README.md) §12: code/contract boundaries,
+normal decode and failure/recovery paths, simulator/RTL/card evidence and W0–W6/deferred work.
+It reuses the earlier audit and covers all 759 tracked entries by role. Review depth is explicit:
+63 body/call-path reviews, 144 specific prior reviews reused, 468 interface inspections,
+18 generated files, 55 assets, four vendor boundaries and seven test fixtures without body review.
+This is not a claim of exhaustive line/input coverage. The detailed local reports and file-level
+records are in `build/analysis/repository_map_20261102/`, referenced from that implementation map.
+No runtime/RTL changes or extra build/test/Vivado/DCP/link runs were made for this mapping.
 
 ### Next steps
 

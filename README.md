@@ -46,9 +46,15 @@ The control core runs in its own clock domain; every crossing goes through a syn
 
 <p align="center"><img src="docs/fig/stack.png" alt="The Tesseract software stack as layered bands from the applications down: llama.cpp (llama-cli and llama-server) and PyTorch with Hugging Face models, each shown with its logo; the ggml-tesseract backend and the tsr_rt runtime; tsr_transport with the kinds sim, mock, vkernel (planned) and xrt (planned: it has not run on the card with the control core yet); firmware on the control core (runtime, executor, kernels, selftest and replay); the NPU core with control core, issue path, DMA, QACT, MVM clusters, vector unit and SPM; and the FPGA card with the U200, the XRT shell and four DDR4 channels. A column of developer tools lists klcheck and numcheck, the trace tools, tsr-selftest, tsr-log and the simulator, with GDB debugging and tsr-prof planned. Tags mark what runs on the simulator, what ran on the card and what is planned." width="100%"></p>
 
-<p align="center"><img src="docs/fig/dataflow.png" alt="Data and control flow for one decode token in seven numbered steps over three bands. Host: llama.cpp builds the ggml graph, ggml-tesseract turns it into a cached op list, tsr_transport writes the token inputs to card DDR and pushes one launch descriptor over PCIe. Firmware on the RISC-V control core: the runtime takes the launch and the Basis graph kernel walks the op list. Hardware: the issue path with its unit queues feeds DMA, four MVM clusters of 128 MAC lanes and the vector unit; DMA streams weights from four DDR4 channels, attention ops work in the 4 MiB scratchpad and the KV cache stays in DDR; results return to DDR, the runtime posts an answer record and the host reads the answer and the logits." width="100%"></p>
+<p align="center"><img src="docs/fig/dataflow.png" alt="Data and control flow for one decode token in seven numbered steps over three bands. Host: llama.cpp builds the ggml graph, ggml-tesseract turns it into a cached op list, tsr_transport writes the token inputs to card DDR and pushes one launch descriptor over PCIe. Firmware on the RISC-V control core: the runtime takes the launch and the Basis graph kernel walks the op list. Hardware: the issue path with its unit queues feeds DMA, four MVM clusters of 128 MAC lanes and the vector unit; the MVM clusters stream weights directly from their DDR4 channels, attention ops work in the 4 MiB scratchpad and the KV cache stays in DDR; results return to DDR, the runtime posts an answer record and the host reads the answer and the logits." width="100%"></p>
 
 Logos belong to their owners ([sources and licences](docs/fig/logos/SOURCES.md)).
+
+The control core, VU, attention and debug RTL are implemented and have module/integration tests.
+The GDB server and debug tools run on the C simulator, including a real RISC-V GDB smoke test.
+Some figure badges retain earlier planning labels. The current implementation and verification
+map is [design §12](docs/design/README.md#12-implementation-map-and-verification-status);
+[handoff](docs/handoff.md) records the active K4 build and the pending card gates.
 
 ## Custom kernels
 

@@ -9,14 +9,15 @@ System structure): the core sees only its CSR port and one memory port per chann
 
 > **Scope.** As-built record and measurement record; every number carries its provenance. Status
 > words: *on the card* = ran on an Alveo U200 (§14); *in the tree* = the adapter as simulated and
-> linted: `ap_ctrl_none`, no k1 / k4 xclbin build until Y5; *designed* = in `docs/design` without RTL
-> (`MEM_EN`, `ap_clk_2`, `plat_err_i`). Card measurements, link results and RTL simulation results
-> were taken before the control core was added, with the host issuing the ops. Normative for the
-> designed adapter: [EX](design/01-execution-model.md) §9 and [CC](design/04-control-core.md) §13.3, §14.
+> linted: `ap_ctrl_none`, `MEM_EN`, two kernel clocks and platform error reporting are implemented;
+> k1 / k4 builds are enabled. The corrected K4 link is in progress; its card gate remains pending.
+> Historical card and link measurements below predate the control core unless a row names W4/W5.
+> Current status: [handoff.md](handoff.md). Normative for the adapter:
+> [EX](design/01-execution-model.md) §9 and [CC](design/04-control-core.md) §13.3, §14.
 
-| | In the tree | Designed (Y5) |
+| | Before the control core (historical) | Current RTL (W4; card pending) |
 |---|---|---|
-| Control protocol | `ap_ctrl_none`, `interrupt="false"`; the host reads and writes registers | same; fallback `ap_ctrl_hs` with `interrupt="false"`, never started (EX §9.1) |
+| Control protocol | `ap_ctrl_none`, `interrupt="false"`; the host reads and writes registers | same; `ap_ctrl_hs` remains an unused design fallback (EX §9.1) |
 | Kernel arguments | `ch<c>` at 0x040 + 8c | same |
 | Channel bases | used live from the registers | latched at the rising edge of `ADAPTER_CTRL.MEM_EN`, locked while set |
 | `ADAPTER_VERSION` | `{16'h0001, 8'h00, NUM_CH}` | unchanged |
@@ -45,11 +46,11 @@ Vitis RTL kernels, module name = kernel name. The control protocol is **`ap_ctrl
 (`hwControlProtocol="ap_ctrl_none"`, `interrupt="false"` in `kernel_k*.xml`): there is no
 `ap_start` / `ap_done` and no interrupt; the host opens the compute unit with `xrt::ip`, reads and
 writes registers and polls (EX §9.1; `docs/xrt-host.md` §2). The only kernel arguments are the
-channel buffers `ch<c>`. Clocks: `ap_clk` (the core clock: 300 MHz requested, 276.3 MHz achieved in
-the k4 link, §8.2), `ap_rst_n` (active low, synchronous). The designed adapter adds `ap_clk_2` /
-`ap_rst_n_2` for the control core (designed: the platform's KERNEL clock of 500 MHz; `clk_rv`
-planning value 166.7 MHz, from a `v++` frequency request or a divide-by-3 clock buffer,
-CC §11.1).
+channel buffers `ch<c>`. Clocks: `ap_clk` / `ap_rst_n` for the core and `ap_clk_2` /
+`ap_rst_n_2` for the control core. The link requests 300 / 166.7 MHz; Vitis 2024.2 records the
+second request as 166 MHz (§8). The earlier k4 image without the control core achieved
+276.3 MHz (§8.2); that is not a result for the corrected design. Clock source and reset checks
+are described in CC §11.1.
 
 | Kernel | `NUM_CH` | `T_MAX` | Role |
 |---|---|---|---|
@@ -72,18 +73,18 @@ Kernel arguments (`kernel_k*.xml`): `ch<c>` at 0x040 + 8c, 8 bytes, `void*` on `
 buffer bound to channel c); the argument ids are 0 to NUM_CH - 1. The core CSR window at 0x1000 has no
 arguments.
 
-The designed core boundary (EX §9.3): the core has no `done` and has `clk_rv` / `rst_rv_n` (from
+The current core boundary (EX §9.3): the core has no `done` and has `clk_rv` / `rst_rv_n` (from
 `ap_clk_2` / `ap_rst_n_2`), `plat_err_i` (a level from the platform: on the U200 `ADAPTER_STATUS` bits
 0-2 or the error count not 0; it shows in `STATUS.PLAT_ERR`) and `host_irq_o` (not connected on the
-U200). The tree has no `done` and none of the other signals.
+U200).
 
 ## 2. `s_axi_control` register map
 
 Byte offsets, decoded on bits [12:2]; unmapped offsets read 0 and ignore writes; every response is
-OKAY. RW registers honour WSTRB. The tree column is `tsr_xrt_ctrl.sv`; the last column is EX §9.2
-(designed, Y5).
+OKAY. RW registers honour WSTRB. The historical column records the pre-control-core adapter;
+the current column is implemented in `tsr_xrt_ctrl.sv` and follows EX §9.2.
 
-| Offset | Name | Access | In the tree | Designed (Y5) |
+| Offset | Name | Access | Before the control core (historical) | Current RTL (W4; card pending) |
 |---|---|---|---|---|
 | 0x000-0x03C | reserved | R | reads 0 | unchanged |
 | 0x040 + 8c | `ch<c>_base` lo / hi | RW (c < NUM_CH) | device byte address of beat 0 of channel c; the host writes a 4 KiB-aligned address; the bridge uses the register value as written (no latch, no refusal of a misaligned base; the bridge only asserts the alignment in simulation) | written while `MEM_EN` = 0; a write while `MEM_EN` = 1 is ignored and sets `BASE_LOCKED` |
@@ -138,8 +139,8 @@ ring, EX §2-§4; `docs/xrt-host.md` §3). The launch costs are EX §4.11 and §
 - **Errors**: R beats / B responses with RRESP / BRESP ≠ OKAY are forwarded like OKAY ones (the core
   has no error path for memory: its data may be wrong) and counted (ADAPTER_STATUS bits 0 / 1 and
   the count). The host reads ADAPTER_STATUS (§11) and treats a set bit as a failed launch.
-- The bases are registered next to the adders (64-bit add per request). In the tree the adders read the
-  `ch<c>_base` registers as written; in the designed adapter they read the copy latched at the `MEM_EN` edge (§2).
+- The bases are registered next to the adders (64-bit add per request). The current adapter reads
+  the copy latched at the `MEM_EN` edge (§2); the pre-control-core adapter read the live registers.
 
 ## 5. Reset behaviour
 
@@ -713,21 +714,20 @@ control bridge in the tree is smaller than the one measured here; not re-measure
 What exists in the tree today (all without hardware):
 - `rtl/platform/alveo_xrt/lint.sh`: `gen_tops.py --check` and 27 Verilator `-Wall` runs, clean (§10.4).
   The M0 kernel has its own (`rtl/platform/alveo_xrt/bw/lint.sh`, clean).
-- `tb/platform/test_platform.py`: the adapter lint, the exit-4 refusal of `build_xclbin.sh k1|k4`,
-  and the two platform-lookup checks (§8). `tb/platform/bw/test_bw.py`: the M0 bench (`docs/m0-bw.md`
-  §5). Both are part of `tb/run_all.sh`.
-- The register-level behaviour of the adapter has no bench until Y5. The adapter bench of Y5 has
-  directed tests of the reset values and read-back with strobes, `ADAPTER_VERSION`, the CSR window,
-  SLVERR / DECERR with `ADAPTER_STATUS` W1C and count saturation, misaligned accesses and reset, and
-  adds `MEM_EN` and the bases ([SW](design/06-software-verification.md) §10.3). Until then the adapter is
-  covered by lint and by the `mock` kdev's register model on the host side (`docs/xrt-host.md` §6).
+- `tb/platform/test_platform.py`: adapter lint, build-script argument errors (exit 2), platform
+  lookup and missing-platform errors (exit 3). k1/k4 are enabled; exit 4 is historical.
+- `tb/platform/test_adapter.py`: register behaviour against the mock adapter model, including
+  `MEM_EN`, base latching/alignment/locking, status and reset, plus a reduced two-clock kernel smoke.
+  The host-side `mock` kdev tests cover protocol and DMA alignment separately (`docs/xrt-host.md` §6).
+- `tb/platform/bw/test_bw.py`: the separate M0 bench (`docs/m0-bw.md` §5). These tests are part
+  of `tb/run_all.sh`.
 
 §10.1-§10.3 record what was measured in RTL simulation (Verilator 5.046) for the memory bridges, the
 reset scheme and the register slices, which the tree keeps.
 
 ### 10.1 Adapter bench
 
-The adapter bench is planned in Y5 (SW §10.3). Until then the M0 bench (`docs/m0-bw.md` §5) drives
+The current adapter bench is `test_adapter.py`. The historical M0 bench (`docs/m0-bw.md` §5) drives
 the same bridge, register slices and reset block against an AXI4 checker and a randomised memory
 model.
 

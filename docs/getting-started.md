@@ -7,8 +7,9 @@ the current tree.
 > **Scope.** User and developer documentation. Status words: *on the card* means it ran on the
 > Alveo U200; *on the simulator* means this tree runs it against the simulator
 > (`TSR_DEVICE=sim`); *designed* and *planned* are as in
-> [`docs/design/README.md`](design/README.md) §10. The control core has no RTL and no bitstream yet, so
-> everything in this tree runs on the simulator. Normative for the host stack:
+> [`docs/design/README.md`](design/README.md) §10. The control-core RTL and its module/integration
+> tests exist. The corrected full K4 image has not reached card validation; older card results
+> predate the control core. Current status is in [handoff.md](handoff.md). Normative for the host stack:
 > [SW](design/06-software-verification.md) §6, §9, §10 and [EX](design/01-execution-model.md) §10.
 
 ## Requirements
@@ -38,8 +39,8 @@ the current tree.
   if it exists, else the `python3` CMake finds; configure warns if it has no numpy).
 - **For the RTL tests** (optional): Verilator 5, cocotb and pytest. The development host runs
   Verilator 5.046, cocotb 2.0.1 and pytest 9.0.2.
-- **For bitstream builds** (optional; `hw/u200/build_xclbin.sh` is disabled until the control core
-  has RTL, the M0 bandwidth kernel still builds): Vivado and Vitis 2024.2 with the U200
+- **For bitstream builds** (optional; k1/k4 and the separate M0 bandwidth build are enabled):
+  Vivado and Vitis 2024.2 with the U200
   development platform `xilinx_u200_gen3x16_xdma_2_202110_1` for `v++` links.
 - **For the card** (optional): XRT 2.18.179 and, on kernels newer than 6.8, the patched drivers of
   [`sw/xrt-driver`](../sw/xrt-driver/README.md).
