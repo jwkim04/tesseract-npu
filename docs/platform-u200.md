@@ -48,7 +48,9 @@ Vitis RTL kernels, module name = kernel name. The control protocol is **`ap_ctrl
 writes registers and polls (EX §9.1; `docs/xrt-host.md` §2). The only kernel arguments are the
 channel buffers `ch<c>`. Clocks: `ap_clk` / `ap_rst_n` for the core and `ap_clk_2` /
 `ap_rst_n_2` for the control core. The link requests 300 / 166.7 MHz; Vitis 2024.2 records the
-second request as 166 MHz (§8). The earlier k4 image without the control core achieved
+second request as 166 MHz (§8). K4 acceptance is a core clock of at least 250 MHz, per the
+user's 2026-11-02 decision; 300 MHz is the current implementation request, not a hard gate.
+The earlier k4 image without the control core achieved
 276.3 MHz (§8.2); that is not a result for the corrected design. Clock source and reset checks
 are described in CC §11.1.
 
@@ -274,15 +276,20 @@ the pre-opt check at 9.999 ns. `clock_vitis_compat.tcl`, an `INIT_DESIGN.PRE` ho
 calculator calls for the pinned U200 part and tool version. It checks calculation success and
 the effective ratio after the native writer's integer conversion, and cleans up on failure.
 The native XDC creation/application remains in use. This is a repository workaround, not an
-AMD-published patch. The real API probe calculates 166 MHz; the corrected full-link check is
-still required. No installed or generated tool files are edited.
+AMD-published patch. The real API probe calculates 166 MHz. The resumed link's pre-opt check
+also passed with core/RV periods of 3.333/6.023 ns, all 4,225 RV FFs on the RV clock and the
+reset sources in separate domains. Placement and routing are still pending. No installed
+or generated tool files are edited.
 `hw/u200/clock_bd_check.tcl` checks the connected BD nets and each reset generator's clock.
 `impl_pre.tcl` checks the synthesized domain clocks, every RV FF and reset sources before
 `opt_design`, then applies the TCM power-optimisation exclusion. The final pre-bitstream hook
-checks `_new_clk_freq` after Vitis scaling: core at least 276.3 MHz, RV within the current
+checks `_new_clk_freq` after Vitis scaling: core at least 250 MHz, RV within the current
 request's tolerance. These clock checks always fail the run on an error. `TSR_CDC_GATE=warn`
 only relaxes the final CDC report gate. A 125 MHz RV fallback needs an explicit request and
-frequency-window change.
+frequency-window change. The early netlist check validates the current clock request, not
+the minimum accepted performance. For a route-only run, check timing at an accepted core
+frequency of at least 250 MHz before claiming success; retain RV, hold and CDC checks.
+Do not repeat implementation solely for 300 MHz after that criterion passes.
 
 Each packaging writes `build/u200/xo/<kernel>.sources.sha256` next to the `.xo`: the sha256 of
 both filelists, every source, `kernel_<k>.xml`, `rtl/ctrl/viv/tsr_ctrl_cdc.xdc` and `package_xo.tcl`, with repository paths.
@@ -665,7 +672,7 @@ designed in [CC](design/04-control-core.md) §14; the floorplan C'' below is `hw
   least 0.3 ns margin); T2, the k4 core with control core, VU, attention modes, DB and floorplan C''
   out of context at 3.333 ns (WNS not below 0, SLR1 at most 65 %), preceded by the out-of-context
   VU run that fixes the VU configuration; T3, the k4 `v++` link with a kernel clock of at least
-  276.3 MHz (the result of §8.2; target 300 MHz), zero unconstrained `ap_clk` / `ap_clk_2` paths
+  250 MHz (user decision, 2026-11-02), zero unconstrained `ap_clk` / `ap_clk_2` paths
   and a clean `report_cdc`; T4, the k1 link at 300 MHz. The fix of the gather job-pipe paths that
   limited the k4 link of §8.2 (`tsr_rslice` FORM 1, CC §14.4) is part of T3.
 
@@ -843,9 +850,11 @@ passes; `rtl/platform/alveo_xrt/bw/lint.sh` is clean too (both run for this docu
 
 - **No routed xclbin with the control core.** The first K4 link placed but failed on localized
   SLL demand. Its two kernel clocks also aliased clock ID 0. The corrected source selection,
-  early connection checks and floorplan changes have not been linked. See `docs/handoff.md`.
-- **k4 clock.** The k4 link of §8.2 missed 300 MHz by 0.285 ns and ran at 276.3 MHz (§8.2). Gate T3 asks
-  for at least 276.3 MHz with the control core and targets 300 MHz with the job-pipe fix (§8.4).
+  early connection checks and floorplan changes are in the resumed link. The actual pre-opt
+  clock/reset check passed; placement and routing are pending. See `docs/handoff.md`.
+- **k4 clock.** The k4 link of §8.2 missed 300 MHz by 0.285 ns and ran at 276.3 MHz (§8.2). Gate T3 now
+  accepts at least 250 MHz with the control core (user decision, 2026-11-02). Do not repeat a
+  successful implementation just to reach the current 300 MHz request (§8.4).
   If two `keep` reset copies of the core merge (rtl-m3 §14.8), they want `DONT_TOUCH`.
 - **k4 compute-unit placement.** k4 has no `slr=`, so `v++` takes SLR0 as its affinity (reset and
   control from SLR0, §8.2). The link of §8.2 worked that way. If those inputs limit timing,

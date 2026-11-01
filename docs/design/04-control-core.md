@@ -36,7 +36,7 @@ clock changes, the U200 floorplan and timing plan, and the RTL verification of a
 | Host debug SPM window | **none**; the debugger reaches the SPM through the DM's system bus (CC-16) |
 | Platform control | **`ap_ctrl_none`** (no KDS start / done), `xrt::ip` and polling (EX §9, CC-19) |
 | TCMs | **128 KiB ITCM + 64 KiB DTCM** (CC-3) |
-| Timing gate (D13) | k4 link kernel clock **≥ 276.3 MHz** with all M6 hardware; target 300 MHz with the gather fix (§14.4) |
+| Timing gate (D13) | k4 link kernel clock **≥ 250 MHz** with all M6 hardware (user decision, 2026-11-02); current request 300 MHz (§14.3) |
 | Core boundary | `host_irq_o` and `plat_err_i` (EX §9.3; §13.1 here) |
 
 Not in this area: the meaning of each tile op (EX, VU, AT), the memory model as an architectural
@@ -986,8 +986,17 @@ the VU.
 |---|---|---|
 | T1 | out-of-context `tsr_ctrl_rv` on xcu200-2 | 6.0 ns met with ≥ 0.3 ns margin; Fmax measured (250 / 166.7 / 125 MHz choice, D12) |
 | T2 | out-of-context k4 core with control core, VU, AT modes, DB, floorplan C''; preceded by the out-of-context `tsr_vu` run whose utilisation fixes the VU configuration against the §14.1 gate | WNS ≥ 0 at 3.333 ns (the core without the control core: +0.022 ns, `docs/rtl-m3.md` §14.3); SLR1 ≤ 65 % LUT |
-| T3 | k4 v++ link (all M6 hardware) | **kernel clock ≥ 276.3 MHz** (as measured without the control core); target 300 MHz with §14.4; zero unconstrained `ap_clk` ↔ `ap_clk_2` paths; `report_cdc` clean |
+| T3 | k4 v++ link (all M6 hardware) | **kernel clock ≥ 250 MHz** (user decision, 2026-11-02); setup and hold met at the accepted clocks; zero unconstrained `ap_clk` ↔ `ap_clk_2` paths; `report_cdc` clean |
 | T4 | k1 v++ link | 300 MHz (bring-up) |
+
+The user lowered the K4 acceptance floor from 276.3 MHz to 250 MHz on 2026-11-02. The running
+attempt still requests 300 MHz and RV 166.7 MHz (Vitis records 166 MHz). Do not repeat an
+implementation that meets the 250 MHz floor just to reach 300 MHz. The early clock/reset
+gate verifies the requested clock constraints; the final gate checks the accepted scaled
+frequencies. A route-only stop needs routed timing at an accepted core frequency, with RV,
+hold and CDC checks, before timing success is claimed. This decision changes neither the
+RV clock choice nor the T1, T2 and T4 criteria. The older 276.3 MHz card results remain
+historical measurements.
 
 **T1 measured** (W4, 2026-10-31; `rtl/ctrl/viv/ctrl_ooc.sh`, `tsr_ctrl` = `tsr_ctrl_rv` + CDC out of
 context, xcu200-2, TCMs in 32K × 1 RAMB36 columns, default directives): clk_rv WNS at 6.0 ns: maxperf
@@ -1206,7 +1215,7 @@ T1–T4 of §14.3; `report_cdc` on every out-of-context run; `report_timing` bet
 | CC-20 | ID / VERSION | `ID` is 0x5453_5231 "TSR1", `VERSION` 0x0000_0100: Tesseract Core capability 1.0 (EX-12, SW §6.9) | "TSR2" (the draft) | Host open code refuses a different capability major, so a tool built for another major fails cleanly without a new magic. |
 | CC-21 | PERF | EX §6 (ACTIVE / QHALT gating, zeroed by `SOFT_RESET`, X = 5 + 2C); CC adds X + 20 / X + 21 SPM wait counters | 64 free-running fixed slots with `PERF_CLEAR` (the draft) | ACTIVE gives the property "PERF does not change between executions" per launch with no software bit; one counter space for the whole device. |
 | CC-22 | Recovery | no partial datapath reset and no op cancel; `SOFT_RESET` is EX's device-level sequence (SR sequencer, CC-31); a wedged unit needs a card reset | a datapath soft reset; per-unit kill | Resetting units with outstanding memory transactions breaks the "no pre-reset response" contract of the arbiters; the log ring, `Q_*` and DB's evidence give the post-mortem first. |
-| CC-23 | Timing gate | k4 link ≥ 276.3 MHz with all M6 hardware, target 300 MHz | 300 MHz hard gate | D13 (technical default); 300 MHz is pursued by the cycle-identical gather fix rather than gating M6 on it. |
+| CC-23 | Timing gate | k4 link ≥ 250 MHz with all M6 hardware | Requiring 276.3 or 300 MHz for K4 acceptance | D13 amended by the user's 2026-11-02 decision. Keep the current 300 MHz request; do not repeat a qualifying implementation only to reach it. |
 | CC-24 | Floorplan | C'': control core, issue path, VU and DB next to the SPM in SLR1; SLR1 ≤ 65 % LUT after synthesis, else in order: VU shrink knobs, DB `HAS_TRW` / `HIST_DEPTH` off, VU lanes to SLR0 behind pipes | VU in SLR0 / SLR2 from the start; "AT moves out" (the draft; AT has no SLR1 unit) | The VU needs 1.5 Kb per cycle to and from the SPM; the recomputed budget (§14.1, ≈ 62–71 %) straddles the gate, and every remedy keeps results unchanged. |
 | CC-25 | Gather fix | `tsr_rslice` FORM 1 (cycle-identical) + pinning stage 0 | `JOB_PIPE` 3 first; registered take | Removes the measured worst paths without changing any cycle, so all replays stay exact; deeper pipes only if needed. |
 | CC-26 | Memory source 0 | `TSR_SRC_AUX`, tied off in M6 | delete the source | Keeps the arbiter shape; AT streams KV through the clusters' weight path, so nothing claims it yet. |

@@ -102,15 +102,28 @@ pass 66 tests, and the real calculator/shim probes pass at 166 MHz. These are lo
 checks, not a routed result or an AMD-published fix. The failed logs/XDC/status are preserved in
 `attempts/20261102_015229_pre_compat/` under the run directory. Configuration-only resume
 completed at 01:53 KST with exit 0; `.user_init_pre.dat` and `_full_init_pre.tcl` both contain
-the compatibility hook. Implementation can resume from `vpl.impl` with synthesis kept.
-The current attempt, PID and source commit are recorded in `status.json`.
+the compatibility hook. The implementation resume started at 01:56 KST from `abc4afe`,
+supervisor PID 804838. It reused the 176 block-level synthesis results and regenerated only
+the top-level synthesis. The actual pre-opt `CLKNET` check passed: core 3.333 ns, RV 6.023 ns,
+all 4,225 RV FFs on the RV clock, and separate reset sources in their respective domains.
+The calculator selected M=83, D=10, O=5 from 100 MHz, giving 166 MHz. The run is in `opt_design`;
+placement, routing and post-route checks are still pending. The current attempt, PID and
+source commit are recorded in `status.json`.
 
 The original detached supervisor was PID 741389 and exited with status 1. `status.json`, `build.log`, `memory.jsonl`, source
 snapshot/hash manifest and the eventual `exit_code` are in that run directory. The pointer
 `build/analysis/overnight_route_latest.txt` identifies it. The run uses eight jobs, the Vivado
 slot wrapper and the existing 72 GiB swap. It stops at `vpl.impl.route_design`, preserving
 the clock/reset, floorplan/locality and post-route CDC gates. Bitstream generation and the
-final frequency gate are deferred; negative setup slack is not by itself a routing failure.
+final frequency gate are deferred. The user revised K4 acceptance on 2026-11-02 to a core
+clock of at least 250 MHz. Keep the current 300 MHz request for this running attempt, but
+do not repeat implementation just to reach 300 MHz once 250 MHz or more is valid. A route
+with negative setup slack at 300 MHz is useful evidence; it is successful timing only after
+checking an accepted frequency of at least 250 MHz, with RV, hold and CDC checks intact.
+The old 276.3 MHz floor is superseded for K4; historical card measurements are unchanged.
+The final-frequency hook now accepts 250.0 MHz and rejects 249.99 MHz. The early netlist
+check still rejects a 4 ns core period for the active 300 MHz request. The clock/floorplan
+fixtures pass 71 tests after this change; the build and both generated-file checks pass too.
 
 Known current debug-interface gaps remain: RV_SAMPLE/RVWP_APPLY writes acknowledge before
 their CDC work completes, and DBG_STATUS.SBA_REFUSED has no RTL setter. These are separate
@@ -146,8 +159,10 @@ No runtime/RTL changes or extra build/test/Vivado/DCP/link runs were made for th
    this host because of swap. A machine with
    64 GB RAM or more (Linux, or WSL2 with Linux Vivado/Vitis 2024.2: the Alveo `v++` flow is Linux
    only) runs it much faster and allows two variants at once.
-4. Gate T3: kernel clock at least 276.3 MHz (`grep 'compiler selected the following frequencies'
-   build/link/k4/v++_link.log`). Known tight paths from the out-of-context placement (WNS -0.614 ns
+4. Gate T3: K4 kernel clock at least 250 MHz, per the user's 2026-11-02 decision. A route-only
+   stop precedes Vitis's final frequency selection. Check routed timing at the accepted core
+   frequency and retain the RV, hold and CDC gates. Do not retry merely for 300 MHz if this
+   passes. Known tight paths from the out-of-context placement (WNS -0.614 ns
    placed): DB logic 9-16 levels, `att_stall` crossing an SLR unregistered, an MVM reset copy into
    SLR2.
 

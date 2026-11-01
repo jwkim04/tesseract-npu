@@ -61,8 +61,16 @@ Zifencei.
 **Technical defaults chosen under the user's delegation** (kept by this design): even / odd
 line-interleaved SPM banks for the second read path (CC-12); XRT `ap_ctrl_none` with polling
 (EX-6); a host-readable log ring in the core domain (EX-24); D13 restated as "with the
-control core the k4 link stays at or above 276.3 MHz" (CC-23); GELU (tanh form) in the VU for
+control core the k4 link stays at or above 250 MHz" (CC-23, amended by the user on
+2026-11-02); GELU (tanh form) in the VU for
 Gemma, plus the CPU-compatible GELU16 for llama.cpp graphs (VU-26).
+
+The current K4 run still requests a 300 MHz core and a 166.7 MHz RISC-V clock. The initial
+clock checks verify that request and the separate clock/reset connections. Final T3 acceptance
+requires at least 250 MHz with setup, hold, RISC-V timing and CDC checks passing at the selected
+frequencies. Do not repeat a successful run only to reach 300 MHz. T1, T2, T4 and D12's rule
+for selecting a 250 MHz RISC-V clock are unchanged. Historical 276.3 MHz measurements and
+performance calculations retain their original frequencies.
 
 **Milestones:**
 
@@ -374,7 +382,7 @@ the alternatives and the full rationale.
 | CC-20 | ID and VERSION | Withdrawn: ID 'TSR1' and VERSION 0x0000_0100 (Tesseract Core capability 1.0) per EX-12 | The host open code already refuses a different capability major |
 | CC-21 | PERF counters | Withdrawn: EX §6's counter space; CC adds X+20 SPM_RD_WAIT and X+21 SPM_WR_WAIT | One counter space with protocol-defined gating |
 | CC-22 | Recovery and reset | No partial datapath reset and no op cancel; SOFT_RESET per EX via the SR sequencer; a wedged unit needs a card reset | Unit resets with outstanding AXI bursts break the arbiter contracts |
-| CC-23 | Timing gate (D13 restated) | T1 control core OOC at 166.7 MHz; T2 k4 core OOC at 3.333 ns after the OOC VU run; T3 k4 link ≥ 276.3 MHz, target 300 MHz; T4 k1 link 300 MHz | Restated D13; 300 MHz is pursued by the cycle-identical gather fix |
+| CC-23 | Timing gate (D13 restated) | T1 control core OOC at 166.7 MHz; T2 k4 core OOC at 3.333 ns after the OOC VU run; T3 k4 link ≥ 250 MHz with setup/hold, RISC-V timing and CDC checks passing; current request 300 MHz; T4 k1 link 300 MHz | User amendment of 2026-11-02 changes only T3's lower bound; no repeat solely to reach 300 MHz |
 | CC-24 | Floorplan | C'': control core, issue path, VU and DB next to the SPM in SLR1; SLR1 ≤ 65 % LUT, else VU shrink knobs, then DB optional blocks off, then VU lanes to SLR0 | The recomputed budget (62-71 %) straddles the gate; every remedy keeps results unchanged |
 | CC-25 | Gather job-pipe fix | tsr_rslice FORM 1 (cycle-identical) for the central job-pipe stages plus pinning stage 0; JOB_PIPE 3 only if still short | Removes the measured worst paths without changing any cycle |
 | CC-26 | Memory source 0 | TSR_SRC_AUX, tied off in M6 | Keeps the arbiter shape; nothing claims it yet |
@@ -501,8 +509,8 @@ incompatible fix of the same problem; the others below were applied with a delib
 
 | # | Risk | Effect | Mitigation |
 |---|---|---|---|
-| 1 | SLR1 LUT ≈ 62–72 % (up to 79 % with the VU at + 30 %) against the 65 % gate | k4 link below 276.3 MHz | out-of-context VU run before T2; ordered remedies: VU shrink knobs (−8.7 K), DB `HAS_TRW` / `HIST_DEPTH` off, VU lanes to SLR0 (CC §14.1) |
-| 2 | k4 link timing with the control core, VU, AT cluster modes (DSP input mux, capture bank, gather ATT path) and DB | core clock below 276.3 MHz (D13 restated) | OOC runs per block, the cycle-identical gather fix, registered boundaries, half-rate ATTPV fallback (bit-exact) |
+| 1 | SLR1 LUT ≈ 62–72 % (up to 79 % with the VU at + 30 %) against the 65 % gate | k4 link below 250 MHz | out-of-context VU run before T2; ordered remedies: VU shrink knobs (−8.7 K), DB `HAS_TRW` / `HIST_DEPTH` off, VU lanes to SLR0 (CC §14.1) |
+| 2 | k4 link timing with the control core, VU, AT cluster modes (DSP input mux, capture bank, gather ATT path) and DB | core clock below 250 MHz (D13 restated) | OOC runs per block, the cycle-identical gather fix, registered boundaries, half-rate ATTPV fallback (bit-exact) |
 | 3 | AT cluster modes add ≈ 19–27 K LUT per cluster in SLR0 / SLR2 (≈ 50–54 % each) | congestion in the cluster SLRs | per-mode floorplan check in the first OOC run; trim the capture bank (numeric contract change before freeze only) |
 | 4 | v++ 2024.2 refuses `ap_ctrl_none` with `m_axi` args or the `ap_clk_2` frequency request | no xclbin with the control core | EX §9.1 fallback (`ap_ctrl_hs`, never run); BUFGCE_DIV clock; checked in the first smoke link |
 | 5 | CDC or flush bugs in the rings, the SR sequencer or the issue FIFO | hangs that need a card reset | handshakes instead of multi-step gray counters, two-clock benches at every ratio with jitter mode, mutation campaigns, `report_cdc` |
@@ -637,7 +645,7 @@ full 32B klcheck and the long-prompt runs, P3.7, P3.8.
 **W5 — integration on Verilator and Vivado (P5.1–P5.6).** Tile-only replay of every trace set
 into the issue FIFO; the full-system bench with Ibex RVFI lockstep against `tsr_rv` at every clock
 ratio; the vkernel; riscv-tests on RTL; 0.5B on vkernel bit-identical to sim; Vivado T2 (after the
-VU OOC run), T4 (k1 link), T3 (k4 link ≥ 276.3 MHz).
+VU OOC run), T4 (k1 link), T3 (k4 link ≥ 250 MHz with the final timing and CDC checks).
 
 **W6 — card (P6.1–P6.6).** Bring-up (identity, bind, load and VERIFY, HELLO, PING, launch round
 trip and rate), `tsr-selftest` with the simulator shadow and the trace sets, the GDB smoke, **the
@@ -716,7 +724,7 @@ CDC and physical timing need their own RTL and implementation evidence.
 | `tb/core` / `core_m7` | Real Ibex, production firmware, issue path and VU/attention/KVST integration against the simulator at small shapes | Does not establish final four-channel K4 placement, DDR performance or every model shape. |
 | `tb/at` composite flash-attention test | Real MVM attention modes compared with the composed oracle | Some QACT/KVST/VU operations run on the simulator with mirrored memory; that test alone does not exercise the entire RTL chain. |
 | GDB on `sim` | Real pinned RISC-V GDB smoke via stdio: boot/symbol stops, registers, memory, step, hardware breakpoint, launch, backtrace, `finish`, history, detach. RSP/embedded/drop tests also pass. | Integrated current RTL/vkernel/card GDB is unverified. RTL DMI and DBG module tests are separate evidence. |
-| Corrected K4 link | New XO and generated BD clock/reset split have passed the early checks | Linked-net clock checks, actual placed locality, routing, final frequencies and card results remain pending until their stages run. |
+| Corrected K4 link | New XO, BD clock/reset split and linked-net CLKNET check passed: core 3.333 ns, RV 6.023 ns, 4,225 RV FFs on the separate RV clock, separate resets; implementation reached `opt_design` | Actual placed locality, routing, final setup/hold and frequency signoff, CDC and card results remain pending until their stages run. The initial 300/166.7 MHz request check is separate from final T3 acceptance at core ≥ 250 MHz. |
 | Historical PyTorch, XRT, bandwidth and card records | Evidence for the exact older image/configuration named by each record | Does not transfer to the control-core K4 image. The current two-clock vkernel server is not in the tree. |
 
 ### 12.4 Progress and remaining plan
@@ -735,6 +743,9 @@ T1 measured the RV32MFast control core at 6 ns with the required margin. That is
 the earlier whole-core placed WNS was negative, the old K4 route failed, and k1 did not close.
 The current route-only experiment deliberately defers bitstream generation and final frequency
 signoff. A routed checkpoint with negative setup slack can answer routability without passing T3.
+Final T3 requires core ≥ 250 MHz and passing setup, hold, RISC-V timing and CDC checks at the
+selected frequencies. The 300 MHz request remains in place; missing 300 MHz alone is not a
+reason to repeat a run that passes those checks at 250 MHz or higher.
 
 Optional TOPK and DQROW have conditional RTL modules and tests, but are disabled in the U200
 configuration. Their M8 rollout is not the same as missing source modules. VMASK remains a

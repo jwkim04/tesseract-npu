@@ -27,7 +27,7 @@ Section numbers are cited by code and other documents and stay stable.
 | D10 | M8 / M9 decode steps are C++ kernels that issue tile ops directly; position-dependent addresses are computed in C++. | the `graph` kernel issues tile ops directly |
 | D11 | One checker, `tsr_chk`, in front of the dispatcher. | designed (CC-9) |
 | D12 | U200 RISC-V clock: planning value 166.7 MHz; 250 MHz only if the Ibex out-of-context run closes there; 125 MHz fallback. | designed (CC §3.3, §11.1); the T1 gate is planned |
-| D13 | Timing gate: freeze the control-core RTL only after the k1, k4t1 and k4 out-of-context runs meet timing and the k4 link kernel clock stays at or above 276.3 MHz with `HAS_CTRL = 1`. | CC-23; gates T1-T4 (CC §14.3); planned |
+| D13 | Timing gate: freeze the control-core RTL only after the k1, k4t1 and k4 out-of-context runs meet timing and the k4 link kernel clock stays at or above 250 MHz with `HAS_CTRL = 1`, with setup/hold, RISC-V timing and CDC checks passing. | CC-23; user amended the T3 lower bound on 2026-11-02; T1, T2, T4 and D12 are unchanged; final K4 signoff pending |
 
 **User decisions (2026-10-30, D14-D18)**
 
@@ -46,8 +46,10 @@ KV ops, second SPM read path, debug), M7 the RISC-V kernel library and graph exe
 token), M8 device MoE and PyTorch on the kernels, M9 the resident decode loop (optional). The
 technical defaults chosen with D14-D18 are decisions of `docs/design` ([README](design/README.md) §2): even /
 odd SPM banks for the second read path (CC-12), `ap_ctrl_none` with polling (EX-6), a
-host-readable log ring in the core domain (EX-24), and a k4 link that stays at or above 276.3 MHz
-with the control core (CC-23). The M8 and M9 pass criteria are that the host writes only 2
+host-readable log ring in the core domain (EX-24), and a k4 link that stays at or above 250 MHz
+with the control core (CC-23, user amendment of 2026-11-02). The current request remains
+300 MHz core / 166.7 MHz RISC-V; a result passing the final checks at 250 MHz or higher does
+not need another run only to reach 300 MHz. The M8 and M9 pass criteria are that the host writes only 2
 arguments per token and that the host only polls a ring buffer.
 
 | Question | Answer |
@@ -721,12 +723,13 @@ CC §12.2 is normative. The decisions recorded here:
 
 ### 7.4 U200 clock, placement and timing
 
-- **Ports**: `ap_clk_2` / `ap_rst_n_2` on the kernel tops (designed, EX §9, CC §13.3; the tree's adapter
-  is the X0 register-only adapter without them). The platform's two kernel clocks (DATA 300 MHz, KERNEL
-  500 MHz) are clock-wizard outputs that XRT programs from the xclbin's clock topology (*confirm*), so a
-  direct frequency request for `ap_clk_2` is probably supported (`--kernel_frequency "0:300|1:166.7"` or
-  `--clock.freqHz`, *confirm* the option form). Only if that fails, divide 500 MHz inside the kernel with
-  BUFGCE_DIV in `rtl/tech/xilinx/tsr_clk_div.sv` (CC §11.1).
+- **Ports**: the adapter implements `ap_clk` / `ap_rst_n` and `ap_clk_2` / `ap_rst_n_2`
+  (EX §9, CC §13.3). The current U200 run requests the two scalable clocks with
+  `kernel_frequency=0:300|1:166.666667`. The generated BD and linked-net CLKNET checks pass:
+  core period 3.333 ns, RV period 6.023 ns, all 4,225 RV FFs on the separate RV clock, and
+  separate reset generators. Implementation has reached `opt_design`; placement and routing
+  results remain pending. These initial checks validate the request and connections, not final
+  timing. The internal BUFGCE_DIV path remains the fallback design (CC §11.1).
 - **F_RV** (D12): the requirement is at least 100 MHz (*estimate*, §2.1). Planning value 166.7 MHz
   (500 / 3); 250 MHz (500 / 2) only if the out-of-context run of `tsr_ctrl_rv` closes there with at
   least 0.3 ns margin; 125 MHz (500 / 4) as the fallback. Measured on the simulator (`41eb0da`, Ibex
@@ -747,10 +750,14 @@ CC §12.2 is normative. The decisions recorded here:
   command register the *only* source (CC §9.1: `cmd_q` / `cmd_v_q`), so the unit-side clock enables
   stay one flop away.
 - **Timing gate** (D13, CC-23): T1 `tsr_ctrl_rv` out of context at 6.0 ns with at least 0.3 ns
-  margin; T2 the k4 core out of context with floorplan C''; T3 the k4 link at or above **276.3 MHz**
-  (the measured result without the control core), target 300 MHz after the gather job-pipe fix
-  (CC §14.4); T4 the k1 link at 300 MHz. All four are planned (W5). A link needs a host with 14 GB RAM
-  and swap: the k4 link took 3 h 51 min (measured).
+  margin; T2 the k4 core out of context with floorplan C''; T3 the k4 link at or above **250 MHz**
+  with setup, hold, RISC-V timing and CDC checks passing at the selected frequencies; T4 the k1
+  link at 300 MHz. The user changed only T3's lower bound on 2026-11-02. The historical
+  276.3 MHz result without the control core remains a measurement, not the current lower bound.
+  The current K4 request stays at 300 MHz core / 166.7 MHz RISC-V; do not repeat a result that
+  passes at 250 MHz or higher solely to reach 300 MHz. T1 passed at 166.7 MHz with RV32MFast;
+  final K4 routing and timing signoff remain pending. A link needs a host with 14 GB RAM
+  and swap: the earlier k4 link took 3 h 51 min (measured).
 
 ---
 
@@ -1286,8 +1293,8 @@ findings in total, [`docs/design/README.md`](design/README.md) §5 and §7). Ver
 | s-register bank (D8) | one bank in the VU (CC §1, EX §5.1) |
 | Execution of layer programs (D10) | the `graph` kernel executes op lists and issues tile ops directly (SW §7) |
 | RISC-V clock on the U200 (D12) | planning value 166.7 MHz; the T1 gate decides 250 / 166.7 / 125 MHz (CC §3.3, §14.3) |
-| Timing gate (D13) | CC-23; gates T1-T4 (CC §14.3) |
-| `ap_clk_2` generation | CC §11.1: a `v++` frequency request first, `tsr_clk_div` in `rtl/tech/xilinx` as the fallback; confirmed at the first smoke link (planned) |
+| Timing gate (D13) | CC-23; T3 core ≥ 250 MHz with setup/hold, RISC-V timing and CDC passing; current request 300/166.7 MHz, no rerun solely for 300 MHz. T1/T2/T4 and D12 are unchanged (CC §14.3). |
+| `ap_clk_2` generation | CC §11.1: U200 scalable-clock request; BD and linked-net clock/reset checks passed at 3.333/6.023 ns. Routing and final timing are pending; `tsr_clk_div` remains the fallback. |
 | Stuck units | no unit reset; hang triage and the recovery ladder end in a card reset (EX §8.6, DB §7) |
 | Launch path: a DRAM ring with a doorbell; an interrupt to the host; `ap_ctrl_hs` | the LQ / LCQ rings with posted writes (EX §4); `ap_ctrl_none` with polling (EX-6); `host_irq_o` is a boundary output for later targets (EX §9.3) |
 | XRT window during `xrt::run` | `ap_ctrl_none`, `xrt::ip` register access only (EX §9) |

@@ -181,11 +181,14 @@ proc get_property {prop obj} {
 '''
 
 
-@pytest.mark.parametrize("mutation", ["", "alias", "rv500", "swapped", "reset", "reset_clock", "missing", "unclocked_hart", "async_reset", "nan"])
+@pytest.mark.parametrize("mutation", ["", "alias", "core250", "rv500", "swapped", "reset", "reset_clock", "missing", "unclocked_hart", "async_reset", "nan"])
 def test_synth_clock_reset_binding(tmp_path, mutation):
     changes = {
         "": "",
         "alias": "set clock_for(rv_c) core",
+        # Final acceptance may scale to 250 MHz; this pre-implementation gate
+        # must still validate the active 300 MHz request, not its final floor.
+        "core250": "set periods(core) 4.0",
         "rv500": "set periods(rv) 2.0",
         "swapped": "set clock_for(core_c) rv; set clock_for(rv_c) core",
         "reset": "set reset_net(kernel/ap_rst_n_2) reset0",
@@ -204,7 +207,11 @@ def test_synth_clock_reset_binding(tmp_path, mutation):
 @pytest.mark.parametrize("records,valid", [
     (["kernel:0:ss_ucs/aclk_kernel_00:300.0", "kernel:1:ss_ucs/aclk_kernel_01:166.666667"], True),
     (["kernel:0:ss_ucs/aclk_kernel_00:276.3", "kernel:1:ss_ucs/aclk_kernel_01:166.6"], True),
-    (["kernel:0:ss_ucs/aclk_kernel_00:276.29", "kernel:1:ss_ucs/aclk_kernel_01:166.6"], False),
+    (["kernel:0:ss_ucs/aclk_kernel_00:276.29", "kernel:1:ss_ucs/aclk_kernel_01:166.6"], True),
+    (["kernel:0:ss_ucs/aclk_kernel_00:250.0", "kernel:1:ss_ucs/aclk_kernel_01:166.0"], True),
+    (["kernel:0:ss_ucs/aclk_kernel_00:249.99", "kernel:1:ss_ucs/aclk_kernel_01:166.0"], False),
+    (["kernel:0:ss_ucs/aclk_kernel_00:250.0", "kernel:1:ss_ucs/aclk_kernel_01:158.33"], True),
+    (["kernel:0:ss_ucs/aclk_kernel_00:250.0", "kernel:1:ss_ucs/aclk_kernel_01:158.32"], False),
     (["kernel:0:ss_ucs/aclk_kernel_00:276.3", "kernel:1:ss_ucs/aclk_kernel_01:500.0"], False),
     (["kernel:0:ss_ucs/aclk_kernel_00:276.3"], False),
     (["kernel:0:ss_ucs/aclk_kernel_00:300", "kernel:0:ss_ucs/aclk_kernel_00:300"], False),

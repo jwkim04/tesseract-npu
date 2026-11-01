@@ -1,6 +1,8 @@
 # opt_design pre-hook: inspect the synthesized linked design before placement.
 # CC §11.1 and §14.3. The source identities are checked earlier in the BD hook.
-# Accept core scaling down to the T3 floor, and the RV request's 5% tolerance.
+# Check the active 300 / 166.7 MHz request windows before final frequency scaling.
+# These PERIOD properties retain the request after routing; final acceptance
+# (core >= 250 MHz) uses Vitis's _new_clk_freq in clock_final_check.tcl instead.
 # A 125 MHz fallback requires an explicit clock-request/check-window change.
 source [file join [file dirname [file normalize [info script]]] clock_common.tcl]
 proc tsr_clock_check_net {} {
