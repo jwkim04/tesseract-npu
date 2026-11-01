@@ -45,7 +45,8 @@ VU_SOURCES = [CORE / s for s in (
     "tsr_tables_pkg.sv", "tsr_pkg.sv", "tsr_fp_pkg.sv", "tsr_xc_pkg.sv", "tsr_vu_pkg.sv")] + \
     [REPO / "rtl/tech/generic/tsr_sram_1r1w.sv"] + [CORE / s for s in (
         "tsr_fp_mul.sv", "tsr_fp_add.sv", "tsr_fp_div.sv", "tsr_spm.sv", "tsr_spm_cport.sv", "tsr_vu_dly.sv",
-        "tsr_vu_exp.sv", "tsr_vu_rcp.sv", "tsr_vu_sqrt.sv", "tsr_vu_sincos.sv", "tsr_vu_lane.sv", "tsr_vu_gen.sv",
+        "tsr_vu_exp.sv", "tsr_vu_rcp.sv", "tsr_vu_sqrt.sv", "tsr_vu_sincos.sv", "tsr_vu_lane.sv", "tsr_vu_lanes.sv",
+        "tsr_vu_gen.sv",
         "tsr_vu_rd.sv", "tsr_vu_dq.sv", "tsr_vu_inj.sv", "tsr_vu_wr.sv", "tsr_vu_red.sv", "tsr_vu_angle.sv",
         "tsr_vu_topk.sv", "tsr_vu.sv")] + \
     [HERE / "hdl" / "tsr_vu_tb.sv"]
@@ -715,12 +716,12 @@ async def vu_decode(dut):
 # pytest
 # ---------------------------------------------------------------------------------------------
 def _run(name, spm_bytes=262144, rd_lat=4, exp_lanes=16, back_lanes=8, num_ch=4, n=1.0, testcase=None, topk=1,
-         dqrow=1):
+         dqrow=1, lane_pipe=0):
     c = dict(spm_bytes=spm_bytes, num_ch=num_ch, n=n, topk=topk, dqrow=dqrow)
     run("tsr_vu_tb", __name__, sources=vu_sources(), name="vu_unit_" + name, testcase=testcase,
         extra_env={"TSR_VU_UNIT_CFG": json.dumps(c)},
         parameters=dict(SPM_BYTES=spm_bytes, SPM_RD_LAT=rd_lat, NUM_CH=num_ch, EXP_LANES=exp_lanes,
-                        BACK_LANES=back_lanes, HAS_TOPK=topk, HAS_DQROW=dqrow))
+                        BACK_LANES=back_lanes, LANE_PIPE=lane_pipe, HAS_TOPK=topk, HAS_DQROW=dqrow))
 
 
 def test_vu_unit_u200():
@@ -731,6 +732,14 @@ def test_vu_unit_u200():
 def test_vu_unit_knobs():
     """The shrink knobs VU_EXP_LANES 8 and VU_BACK_LANES 4 (VU §7.10): same results, SPM_RD_LAT 2."""
     _run("knobs", rd_lat=2, exp_lanes=8, back_lanes=4, n=0.5)
+
+
+def test_vu_unit_lane_pipe():
+    """The lane array behind VU_LANE_PIPE register stages on each side (CC §14.1 remedy 3, the k4 bitstream's 2):
+    exits and partial drain reads 2p cycles later, results unchanged (U200 lanes, SPM_RD_LAT 4; and the shrink knobs
+    with 3 stages, SPM_RD_LAT 2: every test of the unit)."""
+    _run("pipe2", lane_pipe=2)
+    _run("pipe3_knobs", rd_lat=2, exp_lanes=8, back_lanes=4, n=0.5, lane_pipe=3)
 
 
 def test_vu_unit_ch16():

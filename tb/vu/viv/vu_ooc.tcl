@@ -25,7 +25,7 @@ set_param general.maxThreads 4
 set c $repo/rtl/core
 read_verilog -sv [list $c/tsr_tables_pkg.sv $c/tsr_pkg.sv $c/tsr_fp_pkg.sv $c/tsr_xc_pkg.sv $c/tsr_vu_pkg.sv \
   $repo/rtl/tech/xilinx/tsr_sram_1r1w.sv $c/tsr_fp_mul.sv $c/tsr_fp_add.sv $c/tsr_fp_div.sv $c/tsr_vu_dly.sv \
-  $c/tsr_vu_exp.sv $c/tsr_vu_rcp.sv $c/tsr_vu_sqrt.sv $c/tsr_vu_sincos.sv $c/tsr_vu_lane.sv $c/tsr_vu_gen.sv \
+  $c/tsr_vu_exp.sv $c/tsr_vu_rcp.sv $c/tsr_vu_sqrt.sv $c/tsr_vu_sincos.sv $c/tsr_vu_lane.sv $c/tsr_vu_lanes.sv $c/tsr_vu_gen.sv \
   $c/tsr_vu_rd.sv $c/tsr_vu_dq.sv $c/tsr_vu_inj.sv $c/tsr_vu_wr.sv $c/tsr_vu_red.sv $c/tsr_vu_angle.sv $c/tsr_vu_topk.sv $c/tsr_vu.sv]
 set gopt [list]
 foreach g $gens { lappend gopt -generic $g }

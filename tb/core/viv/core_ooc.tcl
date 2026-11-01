@@ -4,12 +4,14 @@
 #
 # usage: vivado -mode batch -nojournal -nolog -source tb/core/viv/core_ooc.tcl \
 #          -tclargs <repo> <outdir> [synth_only] [dcp] [from=<dcp>] [filelist=<f>] [floorplan=<tcl>]
-#                   [place=<directive>] [phys=<directive>] [route=<directive>] [prphys] [unc=<ns>]
+#                   [place=<directive>] [phys=<directive>] [route=<directive>] [prphys] [unc=<ns>] [place_only]
 #                   [NAME=VALUE ...]
 #   NAME=VALUE    tsr_core parameters passed as synth_design -generic (e.g. NUM_CH=4 T_MAX=8
 #                 SPM_RD_LAT=4 MVM_MAC_LAT=9); omitted ones keep the tsr_pkg defaults; a later
 #                 NAME=VALUE overrides an earlier one (core_ooc.sh puts its defaults first).
 #   synth_only    stop after synthesis (utilisation per hierarchy, latches, logic depth estimate).
+#   place_only    stop after place_design (with the floorplan sourced before it): the placed timing, the
+#                 pblock capacities and, with dcp, <outdir>/post_place.dcp.
 #   dcp           write <outdir>/post_synth.dcp (with the constraints) and post_route.dcp.
 #   from=<dcp>    skip synthesis: implement a post_synth.dcp of an earlier run (same constraints).
 #   filelist=<f>  sources (default rtl/filelist_xilinx.f: the U200 target with the rtl/tech/xilinx
@@ -40,6 +42,7 @@ set flist $repo/rtl/filelist_xilinx.f
 set fplan ""
 set pdir ""; set odir ""; set rdir ""
 set prphys 0
+set place_only 0
 set unc ""
 set gens [dict create]
 foreach a [lrange $argv 2 end] {
@@ -49,6 +52,8 @@ foreach a [lrange $argv 2 end] {
     set dcp 1
   } elseif {$a eq "prphys"} {
     set prphys 1
+  } elseif {$a eq "place_only"} {
+    set place_only 1
   } elseif {[regexp {^from=(.*)$} $a -> v]} {
     set from $v
   } elseif {[regexp {^filelist=(.*)$} $a -> v]} {
@@ -82,6 +87,9 @@ if {$from eq ""} {
   source $repo/rtl/filelist.tcl
   set fld [tsr_read_filelist $flist]
   read_verilog -sv [dict get $fld srcs]
+  # the control core's TCMs in RAMB36 (32K x 1 columns), never URAM (CC §4.2, CC-3): the XDC overrides the
+  # size rule of rtl/tech/xilinx/tsr_sram_1r1w.sv (synth WNS -1.257 ns with the ITCM in a URAM cascade)
+  read_xdc $repo/rtl/ctrl/viv/tsr_ctrl_tcm.xdc
   synth_design -mode out_of_context -part xcu200-fsgd2104-2-e -top tsr_core {*}[tsr_synth_opts $fld] {*}$genargs
   create_clock -name clk -period 3.333 [get_ports clk]
   # the control core's clock (CC §11.1, 166.7 MHz) and its crossings (rtl/ctrl/viv/tsr_ctrl_cdc.xdc takes
@@ -107,10 +115,20 @@ if {$from eq ""} {
   if {$unc ne ""} { set_clock_uncertainty -setup $unc [get_clocks clk] }
 }
 
+# BRAM power optimisation off for the TCMs (as rtl/ctrl/viv/ctrl_ooc.tcl): its enable gating puts the fetch
+# address back on the BRAM enables
+set_power_opt -exclude_cells [get_cells -hier -filter {REF_NAME =~ RAMB36* && (NAME =~ *u_itcm/* || NAME =~ *u_dtcm/*)}]
 opt_design
 if {$fplan ne ""} { source $fplan }
 if {$pdir ne ""} { place_design -directive $pdir } else { place_design }
 cooc_paths placed 10
+if {$place_only} {
+  if {$dcp} { write_checkpoint -force $out/post_place.dcp }
+  report_utilization -hierarchical -hierarchical_depth 6 -file $out/util_hier_placed.rpt
+  report_timing_summary -max_paths 50 -file $out/timing_placed.rpt
+  cooc_slr placed $out
+  exit
+}
 if {$odir ne ""} { phys_opt_design -directive $odir } else { phys_opt_design }
 if {$rdir ne ""} { route_design -directive $rdir } else { route_design }
 if {$prphys} { phys_opt_design }

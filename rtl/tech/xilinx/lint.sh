@@ -101,7 +101,7 @@ lint tsr_core -GHAS_DB=0
 lint tsr_core -GHAS_ATT=0
 lint tsr_core -GHAS_VU=0 -GHAS_ATT=0 -GHAS_DB=0
 lint tsr_core -GNUM_CH=1 -GT_MAX=1 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9 -GVU_EXP_LANES=8 -GVU_BACK_LANES=4
-lint tsr_core -GNUM_CH=4 -GT_MAX=8 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9
+lint tsr_core -GNUM_CH=4 -GT_MAX=8 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9 -GVU_LANE_PIPE=2
 lint tsr_core -GHAS_TOPK=1 -GHAS_DQROW=1
 lint tsr_core -GHAS_MVM=1 -GT_MAX=8
 lint tsr_core -GHAS_MVM=1 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=5
@@ -201,7 +201,7 @@ if [ -r "$VSET" ]; then
              "${vlock[@]}" xvlog -sv -f vendor.txt 2>&1 && "${vlock[@]}" xvlog -sv -f files.txt 2>&1); then
         u200=(HAS_MVM=1 SPM_RD_LAT=4 MVM_BC_PIPE=2 MVM_RES_PIPE=2 MVM_MAC_LAT=9 RST_PIPE=3)
         xsim_static tsr_core "${u200[@]}" NUM_CH=1 T_MAX=1 VU_EXP_LANES=8 VU_BACK_LANES=4
-        xsim_static tsr_core "${u200[@]}" NUM_CH=4 T_MAX=8
+        xsim_static tsr_core "${u200[@]}" NUM_CH=4 T_MAX=8 VU_LANE_PIPE=2
         xsim_static tsr_core "${u200[@]}" NUM_CH=2 T_MAX=2 K_MAX=4096 SPM_BYTES=65536 ADDR_BEAT_W=22 CH_BYTES=1073741824
         xsim_static tsr_core HAS_MVM=0 RST_PIPE=1
         xsim_static tsr_core "${u200[@]}" NUM_CH=1 T_MAX=1 HAS_DB=0

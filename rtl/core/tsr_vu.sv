@@ -20,6 +20,9 @@
 //   tsr_vu_angle (ROPE); the local memory (512 lines x 512 bits, 1024 with NUM_CH > 8; two read ports) for
 //   AT's multi-pass ops (ANORM 1/l; AMERGE a, b, m' vectors and the channel-tree scratch).
 // Knobs (VU §7.10, results unchanged): EXP_LANES 16 / 8, BACK_LANES 8 / 4.
+// LANE_PIPE (CC §14.1 remedy 3, results unchanged): register stages on each side of the lane array
+//   (tsr_vu_lanes), 0 = none. With p stages the lanes can sit in another SLR than the SPM-facing part:
+//   every lane exit, and a partial drain read, takes 2p cycles longer (LANE_X below).
 
 module tsr_vu
   import tsr_pkg::*;
@@ -31,6 +34,7 @@ module tsr_vu
   parameter  int unsigned NUM_CH     = TSR_DEF_NUM_CH,
   parameter  int unsigned EXP_LANES  = 16,
   parameter  int unsigned BACK_LANES = 8,
+  parameter  int unsigned LANE_PIPE  = 0,             // registered pipe stages on each side of the lanes
   parameter  bit          HAS_TOPK   = 1'b0,          // TOPK (CAPS bit3, VU §5.10: RTL from M8)
   parameter  bit          HAS_DQROW  = 1'b0,          // DQROW (CAPS bit6, VU §5.6: RTL from M8)
   parameter  int unsigned OFD        = 64,
@@ -69,6 +73,7 @@ module tsr_vu
 );
   import tsr_tables_pkg::*;
 
+  localparam int unsigned LANE_X   = 2 * LANE_PIPE;   // cycles the lane pipes add to an exit / a drain read
   localparam int unsigned LM_X     = (NUM_CH > 8) ? 2 : 1;   // AMERGE scratch for up to 16 channels
   localparam int unsigned LM_LINES = 512 * LM_X;
   localparam int unsigned LMAW     = $clog2(LM_LINES);
@@ -542,14 +547,14 @@ module tsr_vu
     if (!rst_n) ring_free_q <= 5'd16;
     else        ring_free_q <= ring_free_q - 5'(ring_take) + ring_rel;
   end
-  tsr_vu_red u_red (
+  tsr_vu_red #(.DRL(LANE_X)) u_red (
     .clk, .rst_n, .opk, .row_v, .row_tok, .dr_addr, .dr_data, .ring_rel, .sopx_v, .sopx_tag, .sopx_idle,
     .r_v, .r_tag, .r_line, .r_data, .r_be, .s_we(s2_we), .s_wi(s2_wi), .s_wd(s2_wd), .s_wtag(s2_wtag),
     .idle(red_idle)
   );
 
   // injector
-  tsr_vu_inj #(.LMAW(LMAW), .HAS_DQROW(HAS_DQROW)) u_inj (
+  tsr_vu_inj #(.LMAW(LMAW), .HAS_DQROW(HAS_DQROW), .LANE_X(LANE_X)) u_inj (
     .clk, .rst_n, .q_valid, .q_slot, .q_pop, .f_valid, .f_data, .f_pop, .opk,
     .lm_re_a, .lm_ra_a, .lm_rd_a, .lm_re_b, .lm_ra_b, .lm_rd_b,
     .ang_ready, .ang_rel, .ang_rel_h, .ang_rh, .ang_re, .ang_cs, .tbl_we, .tbl_line, .pos_we, .pos_idx, .pa_data,
@@ -578,17 +583,14 @@ module tsr_vu
     wire unused_topk = &{1'b0, topk_v, topk_slot, tk_ready};
   end
 
-  // lanes
-  for (genvar l = 0; l < 16; l++) begin : g_lane
-    tsr_vu_lane #(.HAS_EXP(l < EXP_LANES), .HAS_BACK(l < BACK_LANES)) u_lane (
-      .clk, .rst_n, .in_v(l_v[l]), .in_uop(l_uop), .in_a(l_a[l]), .in_b(l_b[l]), .in_c1(l_c1[l]), .in_c2(l_c2[l]),
-      .in_neg(l_neg[l]), .acc_lv(l_lv[l]), .acc_fresh(l_fresh), .acc_pa(l_pa), .dr_addr, .dr_data(dr_data[l]),
-      .f_y(f_y[l]), .b_y(b_y[l])
-    );
-  end
+  // lanes (behind LANE_PIPE register stages on each side)
+  tsr_vu_lanes #(.EXP_LANES(EXP_LANES), .BACK_LANES(BACK_LANES), .PIPE(LANE_PIPE)) u_lanes (
+    .clk, .rst_n, .l_v, .l_uop, .l_a, .l_b, .l_c1, .l_c2, .l_neg, .l_lv, .l_fresh, .l_pa,
+    .dr_addr, .dr_data, .f_y, .b_y
+  );
 
   // write side
-  tsr_vu_wr #(.SPM_BYTES(SPM_BYTES), .OFD(OFD), .LMAW(LMAW)) u_wr (
+  tsr_vu_wr #(.SPM_BYTES(SPM_BYTES), .OFD(OFD), .LMAW(LMAW), .LANE_X(LANE_X)) u_wr (
     .clk, .rst_n, .d_v, .d_back, .d_desc, .f_y, .b_y,
     .oc_take(slot_take ? slot_oc : 2'd0), .oc_free, .rc_take(slot_take && slot_rc), .rc_free,
     .r_v, .r_tag, .r_line, .r_data, .r_be,

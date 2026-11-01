@@ -3,14 +3,15 @@
 # (tb/core/viv/core_ooc.tcl; results: docs/rtl-m3.md §14). Opt-in, needs Vivado 2024.2.
 # tsr_core has its command source since W4-A (the control core and the issue path), and the VU, the
 # attention modes and the DB block since W4-B: synthesis keeps every unit. The VU's lane knobs are
-# NAME=VALUE arguments (VU_EXP_LANES=8 VU_BACK_LANES=4 for the k1 bitstream; the defaults are k4's 16 / 8).
+# NAME=VALUE arguments (k1: VU_EXP_LANES=8 VU_BACK_LANES=4, the shrink knobs of its bitstream; k4 / k4t1: 16 / 8 with
+# VU_LANE_PIPE=2, the lanes in SLR0 behind two register stages on each side: floorplan C'', core_slr.tcl).
 # A synthesis of the whole core also checks what the block-level runs cannot: a register written from two
 # blocks anywhere in the integration (Synth 8-6858 / 8-6859, found in tsr_dma_kvst this way, W4-B).
 #
 # usage: tb/core/viv/core_ooc.sh <config> <outdir> [core_ooc.tcl args ...]
-#   config  k1    NUM_CH 1, T_MAX 1   (bring-up kernel tsr_u200_k1)
-#           k4t1  NUM_CH 4, T_MAX 1
-#           k4    NUM_CH 4, T_MAX 8   (target kernel tsr_u200_k4)
+#   config  k1    NUM_CH 1, T_MAX 1, VU 8 / 4 lanes, no lane pipe   (bring-up kernel tsr_u200_k1)
+#           k4t1  NUM_CH 4, T_MAX 1, VU 16 / 8 lanes, VU_LANE_PIPE 2
+#           k4    NUM_CH 4, T_MAX 8, VU 16 / 8 lanes, VU_LANE_PIPE 2   (target kernel tsr_u200_k4)
 #   Every config: rtl/filelist_xilinx.f, SPM 4 MiB with SPM_RD_LAT 4, MVM_BC_PIPE 2,
 #   MVM_RES_PIPE 2, MVM_MAC_LAT 9 (a register after every adder level of the DSP-packed MAC
 #   lane), RST_PIPE 3 (reset copies per block), CH_BYTES 16 GiB, the other parameters at the
@@ -31,9 +32,9 @@ if [ $# -lt 2 ]; then
 fi
 cfg="$1"; out="$2"; shift 2
 case "$cfg" in
-  k1)   p=(NUM_CH=1 T_MAX=1) ;;
-  k4t1) p=(NUM_CH=4 T_MAX=1) ;;
-  k4)   p=(NUM_CH=4 T_MAX=8) ;;
+  k1)   p=(NUM_CH=1 T_MAX=1 VU_EXP_LANES=8 VU_BACK_LANES=4 VU_LANE_PIPE=0) ;;
+  k4t1) p=(NUM_CH=4 T_MAX=1 VU_EXP_LANES=16 VU_BACK_LANES=8 VU_LANE_PIPE=2) ;;
+  k4)   p=(NUM_CH=4 T_MAX=8 VU_EXP_LANES=16 VU_BACK_LANES=8 VU_LANE_PIPE=2) ;;
   *) echo "core_ooc.sh: unknown config '$cfg' (k1, k4t1, k4)" >&2; exit 2 ;;
 esac
 p+=(SPM_RD_LAT=4 MVM_BC_PIPE=2 MVM_RES_PIPE=2 MVM_MAC_LAT=9 RST_PIPE=3)

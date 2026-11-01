@@ -24,7 +24,9 @@
 #   cooc_slr <tag> <outdir> placed designs: report_utilization -slr, cells per SLR per top-level
 #                           hierarchy key (COOC slr(<tag>) <key> SLR0 .. SLR1 .. SLR2 ..), and the
 #                           nets that cross SLRs grouped by driver (COOC sll(<tag>) <n> <group>)
-# Hierarchy keys (cooc_hkey): csr dma qact spm arb<c> core_top, mvm/top
+# Hierarchy keys (cooc_hkey; the names are relative to tsr_core_dp, u_dp/ is dropped): csr dma qact spm issue
+# arb<c> core_top, ctrl/{rv,other} (the control subsystem: tsr_ctrl_rv, the rest), vu/{lanes,lanepipes,top}
+# (the 16 lanes, tsr_vu_lanes' pipe registers, the SPM-facing part), mvm/top
 # (dispatch, broadcast source, SPM client mux, reset copies), mvm/pipes (per cluster: broadcast
 # vpipe, result rpipe, weight-stream request rpipe / response vpipe), mvm/gather/{asm (the
 # per-cluster assemblers), pipes (their start / job pipes), central},
@@ -34,6 +36,12 @@
 # tree), back/shared = beat decode, delay lines, control.
 
 proc cooc_hkey {n} {
+  regsub {^u_dp/} $n {} n                      ;# the datapath wrapper tsr_core_dp
+  if {[regexp {^g_vu\.u_vu/u_lanes/g_lane} $n]} { return "vu/lanes" }
+  if {[regexp {^g_vu\.u_vu/u_lanes/g_pipe} $n]} { return "vu/lanepipes" }
+  if {[regexp {^g_vu\.u_vu/} $n]} { return "vu/top" }
+  if {[regexp {^u_ctrl/u_rv/} $n]} { return "ctrl/rv" }
+  if {[regexp {^u_ctrl/} $n]} { return "ctrl/other" }
   if {[regexp {^g_mvm\.u_mvm/(.*)$} $n -> r]} {
     if {[regexp {^g_cl\[([0-9]+)\]\.u_cl/(.*)$} $r -> c r2]} {
       if {[regexp {^u_back/(.*)$} $r2 -> r3]} {

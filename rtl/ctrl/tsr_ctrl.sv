@@ -62,7 +62,8 @@
 //   the clocks; packaged into the kernel IP) and rtl/ctrl/viv/tsr_cdc_waivers.tcl (the report_cdc waivers
 //   of the handshake data, FIFO LUTRAM and gray buses); rtl/ctrl/viv/tsr_ctrl_tcm.xdc at synthesis
 //   (TCMs in block RAM 32K x 1 columns: RAM_STYLE BLOCK, CASCADE_HEIGHT 1; the U200
-//   rtl/tech/xilinx/tsr_sram_1r1w.sv would map them to URAM) and set_power_opt -exclude_cells on
+//   rtl/tech/xilinx/tsr_sram_1r1w.sv alone would map them to URAM; every core / kernel flow reads it) and
+//   set_power_opt -exclude_cells on
 //   the TCM BRAMs before opt_design (BRAM power optimisation gates the BRAM enables with the
 //   fetch address).
 

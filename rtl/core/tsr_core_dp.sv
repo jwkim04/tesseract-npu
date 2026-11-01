@@ -86,6 +86,7 @@ module tsr_core_dp
   parameter int unsigned     QD_VU          = tsr_tables_pkg::TSR_QDEPTH_U200_VU,
   parameter int unsigned     VU_EXP_LANES   = tsr_tables_pkg::TSR_VU_FRONT_LANES,
   parameter int unsigned     VU_BACK_LANES  = tsr_tables_pkg::TSR_VU_BACK_LANES,
+  parameter int unsigned     VU_LANE_PIPE   = 0,
   // DB block sizes (DB §10.3): history depth, trace writer, tile breakpoints, RV watchpoints, REC
   parameter int unsigned     HIST_DEPTH     = tsr_tables_pkg::TSR_HIST_DEPTH,
   parameter bit              HAS_TRW        = 1'b1,
@@ -815,7 +816,7 @@ module tsr_core_dp
     logic [2:0]  vu_dbg_flags;
     tsr_vu #(
       .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT), .NUM_CH(NUM_CH), .EXP_LANES(VU_EXP_LANES),
-      .BACK_LANES(VU_BACK_LANES), .HAS_TOPK(HAS_TOPK), .HAS_DQROW(HAS_DQROW)
+      .BACK_LANES(VU_BACK_LANES), .LANE_PIPE(VU_LANE_PIPE), .HAS_TOPK(HAS_TOPK), .HAS_DQROW(HAS_DQROW)
     ) u_vu (
       .clk, .rst_n(rst_b_n[RB_VU]),
       .cmd_valid(vu_cmd_valid), .cmd_ready(vu_cmd_ready), .cmd(vu_cmd), .done(vu_done),

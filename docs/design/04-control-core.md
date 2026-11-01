@@ -923,10 +923,13 @@ the estimates above for the VU, DB and AT are low. VU, M6 configuration (16 EXP 
 (the 16 lanes alone are 49.6 K / 39.5 K LUT). DB: 11.3 K LUT, 7.1 K FF, 7 RAMB36 + 2 RAMB18 (WNS +0.28 ns at 276.3 MHz).
 AT cluster modes (`HAS_ATT`, T_MAX 8, synthesis): +35 K LUT, +27 K FF, +39 DSP, +20 RAMB36 per cluster; KVST +3.9 K LUT in
 the DMA, the gather ATT path +4.5 K LUT. With the whole VU in SLR1 the total is 152–179 K LUT (76–90 %), above the gate
-for either knob setting (the knobs save 8.7 K LUT against an excess of 31–50 K); with the VU lanes in SLR0 (remedy 3,
-not implemented in the RTL: the registered SLR-crossing pipes and the +8–12 cycles of latency are a T2 item) 111–130 K
-LUT (56–65 %). The integration builds k4 with 16 / 8 lanes and k1 with 8 / 4 (`rtl/platform/alveo_xrt/gen_tops.py`);
-the k4 setting is final only with remedy 3 (fall back to 8 / 4 if SLR0 cannot take the lanes' 49.6 K LUT and 368 DSP).
+for either knob setting (the knobs save 8.7 K LUT against an excess of 31–50 K); with the VU lanes in SLR0 (remedy 3: implemented
+2026-11-01 as the parameter `VU_LANE_PIPE`, `rtl/core/tsr_vu_lanes.sv`: that many register stages on each side of the
+lane array, so every lane exit and every partial drain read takes 2 × `VU_LANE_PIPE` cycles longer — +4 at the 2 stages
+of k4 — and the results are bit-exact; the lanes in SLR0 by `hw/u200/k4_floorplan.tcl`) 111–130 K
+LUT (56–65 %). The integration builds k4 with 16 / 8 lanes and `VU_LANE_PIPE` 2 and k1 with 8 / 4 and no pipe
+(`rtl/platform/alveo_xrt/gen_tops.py`); the k4 setting is final only if SLR0 takes the lanes' 49.6 K LUT and 368 DSP
+(fall back to 8 / 4 if not).
 Whole-core synthesis of k1 (`core_ooc.sh k1 ... VU_EXP_LANES=8 VU_BACK_LANES=4`, W4-B): 167 K LUT, 190.6 K FF, 535 DSP,
 80 RAMB36 + 33 RAMB18 + 140 URAM; post-synthesis WNS -0.73 ns at 3.333 ns (Ibex instruction path to the ITCM URAM
 cascade; the DB stop logic and trace writer paths are within -0.46 ns).
@@ -957,7 +960,14 @@ the VU.
   **C''** (`hw/u200/k4_floorplan.tcl` extended; `tb/core/viv/core_slr.tcl` likewise).
 - k1 (NUM_CH 1, T_MAX 1) stays entirely in SLR1 with the control core, the VU at its minimum
   configuration and the cluster's AT modes (*estimate*: fits with the VU shrink knobs) and remains
-  the fast bring-up link (≈ 1 h).
+  the fast bring-up link (≈ 1 h). *Against the measured whole-core synthesis of k1 (167 K LUT, §14.1), with the
+  DDR[1] subsystem (≈ 30 K LUT, M0 link) and the adapter (≈ 4 K) that is ≈ 201 K LUT in `pblock_dynamic_SLR1`'s
+  199,680 sites: the T4 link is where this is decided; the remedies are the lanes (or the cluster) in SLR0 behind
+  `VU_LANE_PIPE` as in k4.*
+- C'' is `hw/u200/k4_floorplan.tcl` (the v++ link) and, through `tb/core/viv/core_slr.tcl`, the out-of-context runs.
+  The control core's sub-pblock `pblock_tsr_ctrl_rv` is `CLOCKREGION_X0Y6:CLOCKREGION_X0Y8` (108 RAMB36, no URAM:
+  SLR1's URAM columns are X1 and X2). The TCMs are RAMB36 in every flow: `rtl/ctrl/viv/tsr_ctrl_tcm.xdc` (§4.2) is read
+  by `core_ooc.tcl`, `kernel_ooc.tcl` and the kernel IP (`package_xo.tcl`).
 
 ### 14.3 Timing gates (D13)
 

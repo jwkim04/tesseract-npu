@@ -16,9 +16,10 @@
 # the clock-domain-crossing constraints (rtl/ctrl/viv/tsr_ctrl_cdc.xdc; CC §11.3) as the IP's
 # synthesis + implementation constraints (processed last, scoped to the kernel), so that a v++ link applies
 # the ASYNC_REG properties, the max delays between ap_clk and ap_clk_2, the bus skews and the report_cdc waivers ->
+# the TCM block RAM constraints (rtl/ctrl/viv/tsr_ctrl_tcm.xdc, synthesis only) ->
 # ipx::check_integrity -kernel / -xrt -> package_xo with kernel_<k>.xml -> the source manifest
 # <outdir>/<kernel>.sources.sha256 (sha256sum format, paths relative to <repo>: both filelists, every
-# source, kernel_<k>.xml, the CDC constraints and this script), so `sha256sum -c` in <repo> tells whether the .xo still
+# source, kernel_<k>.xml, the CDC and TCM constraints and this script), so `sha256sum -c` in <repo> tells whether the .xo still
 # matches the working tree (hw/u200/build_xclbin.sh repackages when it does not).
 # Prints "PKG <kernel> xo <path>" on success.
 set script [file normalize [info script]]
@@ -176,6 +177,17 @@ set_property type xdc $xf_
 set_property used_in {synthesis implementation out_of_context} $xf_
 set_property processing_order LATE $xf_
 
+# ---- control core TCMs in block RAM (CC §4.2, CC-3) ----
+# rtl/ctrl/viv/tsr_ctrl_tcm.xdc: RAM_STYLE BLOCK and CASCADE_HEIGHT 1 on the ITCM / DTCM arrays, which
+# overrides the size rule of rtl/tech/xilinx/tsr_sram_1r1w.sv (32K x 32 would be a URAM cascade: the worst
+# path of the first whole-core synthesis, Ibex fetch -> ITCM, -1.257 ns). Synthesis only: the cells are
+# the inferred arrays (the implementation sees RAMB36 primitives); scoped by cell names, so it needs no ports.
+set tcmx $repo/rtl/ctrl/viv/tsr_ctrl_tcm.xdc
+file copy -force $tcmx $ipdir/xdc/tsr_ctrl_tcm.xdc
+set xf_ [ipx::add_file xdc/tsr_ctrl_tcm.xdc $xg]
+set_property type xdc $xf_
+set_property used_in {synthesis out_of_context} $xf_
+
 ipx::create_xgui_files $core
 ipx::update_checksums $core
 set ok_kernel [ipx::check_integrity -kernel $core]
@@ -191,7 +203,7 @@ if {![file exists $outdir/$kernel.xo]} {
 }
 # ---- source manifest ----
 set mfiles [list]
-foreach f [concat [list $corefl $pdir/filelist.f] $srcs [list $kxml $xdc $script]] {
+foreach f [concat [list $corefl $pdir/filelist.f] $srcs [list $kxml $xdc $tcmx $script]] {
   lappend mfiles [expr {[string first "$repo/" $f] == 0 ? [string range $f [string length "$repo/"] end] : $f}]
 }
 set mf [open $outdir/$kernel.sources.sha256 w]
@@ -199,6 +211,6 @@ puts -nonewline $mf [exec sh -c {cd "$1" && shift && sha256sum -- "$@"} sh $repo
 puts $mf ""
 close $mf
 puts "PKG $kernel integrity kernel=$ok_kernel xrt=$ok_xrt"
-puts "PKG $kernel cdc constraints xdc/tsr_ctrl_cdc.xdc in the IP"
+puts "PKG $kernel cdc constraints xdc/tsr_ctrl_cdc.xdc, TCM block RAM constraints xdc/tsr_ctrl_tcm.xdc in the IP"
 puts "PKG $kernel sources [llength $mfiles] files, manifest $outdir/$kernel.sources.sha256"
 puts "PKG $kernel xo $outdir/$kernel.xo"

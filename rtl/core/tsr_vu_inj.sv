@@ -31,7 +31,8 @@ module tsr_vu_inj
   import tsr_vu_pkg::*;
 #(
   parameter int unsigned LMAW      = 9,
-  parameter bit          HAS_DQROW = 1'b0
+  parameter bit          HAS_DQROW = 1'b0,
+  parameter int unsigned LANE_X    = 0       // cycles the lane pipes add to every exit (tsr_vu_lanes: 2 x stages)
 ) (
   input  logic                           clk,
   input  logic                           rst_n,
@@ -106,7 +107,7 @@ module tsr_vu_inj
   wire dq_meta   = (s.kind == SK_CL2) && s.dq[5];
   logic [5:0] dq_prod;
   wire has_exit  = lane_slot && !s.red || (lane_slot && s.uop == U_AMASK);
-  wire [7:0] lat = s.exitb ? 8'(TSR_VU_LB) : 8'(TSR_VU_LF);
+  wire [7:0] lat = s.exitb ? 8'(TSR_VU_LB + LANE_X) : 8'(TSR_VU_LF + LANE_X);
   wire [3:0] np  = 4'((5'(s.r_ng) + 5'd2) >> 1);         // min(L, 8) partial entries
 
   logic [7:0] ex_rem_q;

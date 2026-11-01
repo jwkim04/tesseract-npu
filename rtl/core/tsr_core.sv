@@ -79,6 +79,7 @@ module tsr_core
   parameter int unsigned     QD_VU          = tsr_tables_pkg::TSR_QDEPTH_U200_VU,
   parameter int unsigned     VU_EXP_LANES   = tsr_tables_pkg::TSR_VU_FRONT_LANES,
   parameter int unsigned     VU_BACK_LANES  = tsr_tables_pkg::TSR_VU_BACK_LANES,
+  parameter int unsigned     VU_LANE_PIPE   = 0,                 // register stages on each side of the VU lanes (SLR crossing)
   parameter int unsigned     HIST_DEPTH     = tsr_tables_pkg::TSR_HIST_DEPTH,
   parameter bit              HAS_TRW        = 1'b1,
   parameter int unsigned     NTBP           = tsr_tables_pkg::TSR_DBG_NTBP,
@@ -306,7 +307,8 @@ module tsr_core
     .QD_DMA(QD_DMA), .QD_QACT(QD_QACT), .QD_MVM(QD_MVM), .QD_SYNC(QD_SYNC),
     .ITCM_BYTES(ITCM_BYTES), .DTCM_BYTES(DTCM_BYTES),
     .HAS_VU(HAS_VU), .HAS_ATT(HAS_ATT), .HAS_TOPK(HAS_TOPK), .HAS_DQROW(HAS_DQROW), .HAS_DB(HAS_DB),
-    .QD_VU(QD_VU), .VU_EXP_LANES(VU_EXP_LANES), .VU_BACK_LANES(VU_BACK_LANES), .HIST_DEPTH(HIST_DEPTH),
+    .QD_VU(QD_VU), .VU_EXP_LANES(VU_EXP_LANES), .VU_BACK_LANES(VU_BACK_LANES), .VU_LANE_PIPE(VU_LANE_PIPE),
+    .HIST_DEPTH(HIST_DEPTH),
     .HAS_TRW(HAS_TRW), .NTBP(NTBP), .NRVWP(NRVWP), .HAS_REC(HAS_REC)
   ) u_dp (
     .clk, .rst_n,

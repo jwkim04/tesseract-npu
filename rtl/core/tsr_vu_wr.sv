@@ -5,7 +5,8 @@
 // Owner: VU (docs/design/02-vector-unit.md "VU" §7.1 output FIFO, §7.7 writes and flow control, §4.2 tail
 // rule).
 // Exits: the injector's descriptors are delayed to their lanes' exits (front TSR_VU_LF + 1, back TSR_VU_LB + 1
-// cycles: the lanes register the injector's outputs once more). The injector's exit-order rule makes
+// cycles: the lanes register the injector's outputs once more; LANE_X more behind the lane pipes of
+// tsr_vu_lanes). The injector's exit-order rule makes
 // the exits strictly ordered, so one assembler serves both: a descriptor with nparts n and part k
 // places lanes 0 .. 16/n - 1 at words 16k/n ..; the last part emits the line with the tail rule (words
 // >= tail written 0, VU §4.2) to its destination: the output FIFO (SPM), the local memory, or the s
@@ -26,6 +27,7 @@ module tsr_vu_wr
   parameter  int unsigned RFD       = 4,      // RED result lines
   parameter  int unsigned TFD       = 4,      // TOPK result lines
   parameter  int unsigned LMAW      = 9,
+  parameter  int unsigned LANE_X    = 0,      // cycles the lane pipes add to every exit (tsr_vu_lanes: 2 x stages)
   localparam int unsigned LINES     = SPM_BYTES / TSR_LINE_BYTES,
   localparam int unsigned AW        = (LINES > 1) ? $clog2(LINES) : 1
 ) (
@@ -75,8 +77,8 @@ module tsr_vu_wr
   output logic                           idle
 );
 
-  localparam int unsigned DF = TSR_VU_LF + 1;
-  localparam int unsigned DB = TSR_VU_LB + 1;
+  localparam int unsigned DF = TSR_VU_LF + LANE_X + 1;
+  localparam int unsigned DB = TSR_VU_LB + LANE_X + 1;
 
   // -------------------------------------------------------------------------------------------
   // Descriptor delay lines to the exits

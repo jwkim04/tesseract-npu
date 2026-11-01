@@ -14,6 +14,7 @@ module tsr_vu_tb
   parameter  int unsigned NUM_CH     = 4,
   parameter  int unsigned EXP_LANES  = 16,
   parameter  int unsigned BACK_LANES = 8,
+  parameter  int unsigned LANE_PIPE  = 0,
   parameter  bit          HAS_TOPK   = 1'b1,
   parameter  bit          HAS_DQROW  = 1'b1,
   localparam int unsigned LINES      = SPM_BYTES / TSR_LINE_BYTES,
@@ -103,7 +104,7 @@ module tsr_vu_tb
   logic [31:0] dbg_w0;
   logic [2:0] dbg_flags;
   tsr_vu #(.SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT), .NUM_CH(NUM_CH), .EXP_LANES(EXP_LANES),
-           .BACK_LANES(BACK_LANES), .HAS_TOPK(HAS_TOPK), .HAS_DQROW(HAS_DQROW)) u_vu (
+           .BACK_LANES(BACK_LANES), .LANE_PIPE(LANE_PIPE), .HAS_TOPK(HAS_TOPK), .HAS_DQROW(HAS_DQROW)) u_vu (
     .clk, .rst_n, .cmd_valid, .cmd_ready, .cmd, .done,
     .rd_req_valid(rd_req_valid[2]), .rd_req_ready(rd_req_ready[2]), .rd_req_line(rd_req_line[2]),
     .rd_rsp_valid(rd_rsp_valid[2]), .rd_rsp_data,

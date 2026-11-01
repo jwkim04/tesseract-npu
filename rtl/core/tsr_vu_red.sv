@@ -22,7 +22,8 @@ module tsr_vu_red
   import tsr_pkg::*;
   import tsr_vu_pkg::*;
 #(
-  parameter int unsigned TQD = 128          // row tokens between the drain and the post output
+  parameter int unsigned TQD = 128,         // row tokens between the drain and the post output
+  parameter int unsigned DRL = 0            // cycles from dr_addr to its dr_data (0: combinational; tsr_vu_lanes' pipes)
 ) (
   input  logic                           clk,
   input  logic                           rst_n,
@@ -30,7 +31,7 @@ module tsr_vu_red
   // row tokens (tsr_vu_inj)
   input  logic                           row_v,
   input  tsr_vu_row_t                    row_tok,
-  // partial drain (all lanes, combinational read)
+  // partial drain (all lanes, a combinational read DRL cycles behind the address)
   output logic [3:0]                     dr_addr,
   input  logic [15:0][31:0]              dr_data,
   output logic [4:0]                     ring_rel,   // entries freed this cycle
@@ -100,6 +101,26 @@ module tsr_vu_red
   assign dr_addr = dh.ring + {1'b0, q_q[3:1]};
   assign ring_rel = (dlast && !dh.empty) ? 5'(dh.np) + 5'd1 : 5'd0;
 
+  // the drain step whose partials dr_data carries: the step's controls, DRL cycles after dr_addr
+  logic dv_c, dl_c, mx_c, sel_c, em_c, dr_busy;
+  if (DRL == 0) begin : g_dr0
+    assign dr_busy = 1'b0;
+    assign dv_c  = dq_v;
+    assign dl_c  = dlast;
+    assign mx_c  = mx;
+    assign sel_c = q_q[0];
+    assign em_c  = dh.empty;
+  end else begin : g_drn
+    logic [DRL-1:0] drv_sr;
+    always_ff @(posedge clk) begin
+      if (!rst_n) drv_sr <= '0;
+      else        drv_sr <= DRL'({drv_sr, dq_v});
+    end
+    assign dv_c    = drv_sr[DRL-1];
+    assign dr_busy = |drv_sr;
+    tsr_vu_dly #(.W(4), .D(DRL)) u_drd (.clk, .d({dlast, mx, q_q[0], dh.empty}), .q({dl_c, mx_c, sel_c, em_c}));
+  end
+
   logic        g_v_q, g_last_q, g_mx_q;
   logic [7:0][31:0] g_q;
   always_ff @(posedge clk) begin
@@ -107,14 +128,14 @@ module tsr_vu_red
       q_q   <= '0;
       g_v_q <= 1'b0;
     end else begin
-      g_v_q <= dq_v;
+      g_v_q <= dv_c;
       if (dq_v) q_q <= dlast ? 4'd0 : q_q + 4'd1;
     end
-    g_last_q <= dlast;
-    g_mx_q   <= mx;
+    g_last_q <= dl_c;
+    g_mx_q   <= mx_c;
     for (int i = 0; i < 8; i++) begin
-      if (dh.empty) g_q[i] <= mx ? TSR_VU_NINF : 32'd0;   // empty row: SUM +0, MAX -inf (VU §6.2)
-      else          g_q[i] <= dr_data[(q_q[0] ? 8 : 0) + i];
+      if (em_c) g_q[i] <= mx_c ? TSR_VU_NINF : 32'd0;   // empty row: SUM +0, MAX -inf (VU §6.2)
+      else      g_q[i] <= dr_data[(sel_c ? 8 : 0) + i];
     end
   end
 
@@ -309,7 +330,7 @@ module tsr_vu_red
   end
 
   assign sopx_idle = !dv_busy_q && !sx_div;
-  assign idle = !dq_v && (rdv_sr == '0) && !tq_v && (tv == '0) && (pv_sr == '0) && !g_v_q &&
+  assign idle = !dq_v && (rdv_sr == '0) && !tq_v && (tv == '0) && (pv_sr == '0) && !g_v_q && !dr_busy &&
                 (sv_sr == '0) && !dv_busy_q;
 
   wire unused_ok = &{1'b0, ov, dv_in_ready, dq_n, tq_n, tl[4], tm[4], m4[3:1], pt.ring, pt.np, pt.ng, pt.empty};

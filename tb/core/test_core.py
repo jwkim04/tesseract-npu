@@ -562,8 +562,9 @@ def test_core(cfg):
     _run(seed=seed + int(os.environ.get("TSR_SEED", "1"), 0) - 1, rv_ps=rv_ps)   # --tsr-seed shifts all
 
 
-def _run_m7(case, seed=1, rv_ps=6000, mut=None):
-    """core_m7 of one case: the scenario from the simulator, the RTL core built with its configuration."""
+def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0):
+    """core_m7 of one case: the scenario from the simulator, the RTL core built with its configuration
+    (lane_pipe: VU_LANE_PIPE, the k4 bitstream's register stages around the VU lanes)."""
     from common.runner import run
     if not C.M7_BIN.exists() or not C.M7_ELF.exists():
         pytest.skip("build the simulator-side test and the image first: cmake --build build/dev --target "
@@ -572,11 +573,20 @@ def _run_m7(case, seed=1, rv_ps=6000, mut=None):
     cfg = C.parse_m7(d)["cfg"]
     params = dict(NUM_CH=cfg["num_ch"], T_MAX=cfg["t_max"], K_MAX=cfg["k_max"], SPM_BYTES=cfg["spm_bytes"],
                   CH_BYTES="64'd%d" % cfg["ch_bytes"], ADDR_BEAT_W=cfg["addr_beat_w"])
+    if lane_pipe:
+        params["VU_LANE_PIPE"] = lane_pipe
     env = {"TB_M7_ELF": str(C.M7_ELF), "TB_M7_DIR": str(d), "TB_CORE_RV_PS": str(rv_ps)}
     if mut:
         env["TB_M7_LIMIT"] = "300000"                 # core cycles to wait for the answer (the decode case needs ~60 K)
-    run("tsr_core", __name__, parameters=params, sources=_sources(mut), name="core_m7" if not mut else "core_m7_mut_" + mut,
+    run("tsr_core", __name__, parameters=params, sources=_sources(mut),
+        name=("core_m7" if not lane_pipe else "core_m7_pipe%d" % lane_pipe) if not mut else "core_m7_mut_" + mut,
         seed=seed, testcase=["core_m7"], extra_env=env, timescale=("1ps", "1ps"))
+
+
+def test_core_m7_lane_pipe(m7case):
+    """core_m7 with the VU lanes behind VU_LANE_PIPE 2 (the k4 bitstream, CC §14.1 remedy 3): every comparison of
+    core_m7 unchanged, the VU ops 4 cycles slower per exit."""
+    _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0), lane_pipe=2)
 
 
 def _run_db(seed=1, rv_ps=6000, mut=None):
@@ -658,4 +668,5 @@ if pytest is not None:
     test_core = pytest.mark.parametrize("cfg", list(RUNS))(test_core)
     test_core_w4b_mutants = pytest.mark.slow(test_core_w4b_mutants)
     test_core_m7 = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7)
+    test_core_m7_lane_pipe = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_lane_pipe)
     test_core_mutants = pytest.mark.slow(test_core_mutants)

@@ -2,9 +2,8 @@
 
   test_platform_lint              rtl/platform/alveo_xrt/lint.sh: gen_tops.py --check and the lint
                                   runs of the adapter modules, kernel configurations and tops
-  test_build_xclbin_disabled      hw/u200/build_xclbin.sh k1 / k4 stop (exit 4) with the "disabled
-                                  until Y5" message: no core kernel is built before the control
-                                  core (Y4) and the adapter (Y5) exist
+  test_build_xclbin_args          hw/u200/build_xclbin.sh: an unknown kernel or target stops (exit 2) before any
+                                  tool call
   test_build_xclbin_no_platform   TSR_U200_PLATFORMINFO=1: the script stops (exit 3) without the
                                   platform
   test_build_xclbin_platform      TSR_U200_PLATFORMINFO=1 with PLATFORM_REPO_PATHS unset: the script
@@ -37,15 +36,15 @@ def test_platform_lint():
     assert r.returncode == 0, r.stdout[-3000:]
 
 
-@pytest.mark.parametrize("k", ["k1", "k4"])
-def test_build_xclbin_disabled(k):
+@pytest.mark.parametrize("args", [[], ["k2"], ["k1", "sim"]])
+def test_build_xclbin_args(args):
     env = dict(os.environ)
     env.pop("TSR_U200_PLATFORMINFO", None)
-    r = subprocess.run([str(BUILD_XCLBIN), k], capture_output=True, text=True, env=env, timeout=60)
+    r = subprocess.run([str(BUILD_XCLBIN), *args], capture_output=True, text=True, env=env, timeout=60)
     print(r.stderr)
-    assert r.returncode == 4, (r.returncode, r.stderr)
-    assert "tsr_u200_%s) is disabled until Y5" % k in r.stderr
-    assert r.stdout == ""                       # stopped before the platform lookup and any tool call
+    assert r.returncode == 2, (r.returncode, r.stderr)
+    assert "usage:" in r.stderr or "target must be" in r.stderr
+    assert r.stdout == ""
 
 
 def test_build_xclbin_no_platform(tmp_path):

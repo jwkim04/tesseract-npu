@@ -40,6 +40,7 @@ set fld [tsr_read_filelist $repo/rtl/platform/alveo_xrt/filelist.f $fld]
 foreach s [dict get $fld srcs] {
   if {[string match *.sv $s]} { read_verilog -sv $s } else { read_verilog $s }
 }
+read_xdc $repo/rtl/ctrl/viv/tsr_ctrl_tcm.xdc     ;# the control core's TCMs in RAMB36, not URAM (CC §4.2)
 synth_design -mode out_of_context -part xcu200-fsgd2104-2-e -top $top {*}[tsr_synth_opts $fld]
 create_clock -name ap_clk -period 3.333 [get_ports ap_clk]
 set_input_delay  -clock ap_clk 1.6 [get_ports -filter {DIRECTION == IN && NAME != ap_clk}]

@@ -3,22 +3,20 @@
 #
 #   hw/u200/build_xclbin.sh k1|k4 [hw|hw_emu]        (default target: hw)
 #
-# DISABLED until Y5 (docs/design EX §12): the kernels have no
-# working core until the control core lands (Y4) and the adapter (ap_ctrl_none, MEM_EN,
-# ap_clk_2; EX §9) is in place (Y5). The script stops with exit status 4 after the argument check;
-# only TSR_U200_PLATFORMINFO=1 (platform lookup and platforminfo, below) still runs. The M0
-# bandwidth kernel builds as before (hw/u200/bw/build_bw_xclbin.sh). Y5 removes the stop and keeps
-# the steps below.
+# The M0 bandwidth kernel builds separately (hw/u200/bw/build_bw_xclbin.sh).
 #
 # 1. the kernel object build/u200/xo/tsr_u200_<k>.xo: packaged now by
 #    rtl/platform/alveo_xrt/package_xo.tcl (Vivado batch) unless it exists and its source manifest
 #    build/u200/xo/tsr_u200_<k>.sources.sha256 (written by package_xo.tcl: filelists, every RTL
-#    source, kernel_<k>.xml, package_xo.tcl) still matches the working tree (TSR_REPACKAGE=1 forces it)
+#    source, kernel_<k>.xml, the CDC and TCM constraints, package_xo.tcl) still matches the working tree
+#    (TSR_REPACKAGE=1 forces it). The IP carries rtl/ctrl/viv/tsr_ctrl_cdc.xdc (the clock-domain crossings of the
+#    control core) and rtl/ctrl/viv/tsr_ctrl_tcm.xdc (its TCMs in RAMB36, never URAM)
 # 2. v++ --link -t <target> --platform <xpfm> --config <OUT>/<k>.link.cfg
 #    -> <OUT>/tsr_u200_<k>.xclbin (+ .link_summary, logs, reports); <k>.link.cfg is hw/u200/<k>.cfg
-#    with its hook paths made absolute (the configs give them relative to build/u200/<k>, where v++
-#    resolves them: against its working directory). The configs set two implementation hooks: the k4
-#    floorplan (pre place_design) and hw/u200/cdc_check.tcl (post route_design: the clock-domain-crossing
+#    with its hook paths made absolute (the configs give them relative to a directory three levels below
+#    the repository, where v++ resolves them: against its working directory; TSR_U200_OUT may point to
+#    another one at that depth, e.g. build/link/<k>). The configs set two implementation hooks: the k4
+#    floorplan C'' (pre place_design) and hw/u200/cdc_check.tcl (post route_design: the clock-domain-crossing
 #    gate of CC §14.3 T3, report_cdc and report_clock_interaction of ap_clk <-> ap_clk_2 on the routed
 #    kernel, whose constraints are the .xo's own; it fails the implementation run on an unconstrained or
 #    unsafe crossing, TSR_CDC_GATE=warn only reports)
@@ -30,15 +28,17 @@
 #                       development platform extracted on the dev server) when that directory exists
 #   TSR_XILINX          Xilinx install root (default /tool/Xilinx); version 2024.2
 #   TSR_VIVADO_LOCK     if set: every Vivado / v++ call runs under `flock $TSR_VIVADO_LOCK`
-#   TSR_U200_FLOORPLAN  k4: 1 (default) = floorplan C' hw/u200/k4_floorplan.tcl (place_design
+#   TSR_U200_FLOORPLAN  k4: 1 (default) = floorplan C'' hw/u200/k4_floorplan.tcl (place_design
 #                       pre-hook of hw/u200/k4.cfg); 0 = link without it
-#   TSR_U200_OUT        output directory (default build/u200/<k>, build/u200/<k>_hw_emu)
+#   TSR_U200_OUT        output directory (default build/u200/<k>, build/u200/<k>_hw_emu); must be three
+#                       directory levels below the repository (the configs' hook paths are relative to that)
 #   TSR_VPP_TO_STEP     stop v++ after this link step (v++ --to_step, e.g. vpl.config_hw_runs: the
 #                       implementation runs and their hooks are set up, nothing is synthesized)
+#   TSR_VPP_FROM_STEP   resume a link in TSR_U200_OUT from this step (v++ --from_step, e.g. vpl.impl after a
+#                       failed implementation run: the synthesis is kept)
 #   TSR_U200_PLATFORMINFO  1 = resolve the platform, print its platforminfo and stop (exit 0)
-#   TSR_BUILD_JOBS      parallel jobs hint (the configs pin synth / impl jobs to 4)
-# Stops with exit status 3 and a message when the platform (or the Xilinx tools) are missing, and
-# with exit status 4 (disabled until Y5, above) when anything but TSR_U200_PLATFORMINFO=1 is asked.
+#   TSR_BUILD_JOBS      if set: the link's synth / impl jobs and Vivado's general.maxThreads (the configs: 8)
+# Stops with exit status 3 and a message when the platform (or the Xilinx tools) are missing.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 K=${1:-}
@@ -51,15 +51,6 @@ case "$TARGET" in
   hw|hw_emu) ;;
   *) echo "build_xclbin.sh: target must be hw or hw_emu" >&2; exit 2 ;;
 esac
-if [ "${TSR_U200_PLATFORMINFO:-0}" != 1 ]; then
-  cat >&2 <<EOM
-build_xclbin.sh: the U200 core kernel build (tsr_u200_$K) is disabled until Y5 (docs/design EX §12).
-  The kernels get a working core with the control core (Y4) and the adapter
-  (ap_ctrl_none, MEM_EN, ap_clk_2; docs/design EX §9) in Y5. The M0 bandwidth kernel still builds:
-  hw/u200/bw/build_bw_xclbin.sh. TSR_U200_PLATFORMINFO=1 still resolves the platform.
-EOM
-  exit 4
-fi
 KERNEL=tsr_u200_$K
 PLATFORM=${TSR_U200_PLATFORM:-xilinx_u200_gen3x16_xdma_2_202110_1}
 XILINX=${TSR_XILINX:-/tool/Xilinx}
@@ -143,6 +134,9 @@ fi
 mkdir -p "$OUT"
 # the hook paths of the config are relative to build/u200/<k> (three levels below the repository)
 sed -e "s|=\.\./\.\./\.\./|=$ROOT/|" "$CFG_SRC" > "$CFG"
+if [ -n "${TSR_BUILD_JOBS:-}" ]; then
+  sed -i -e "s|^\(synth\|impl\)\.jobs=.*|\1.jobs=$TSR_BUILD_JOBS|" -e "s|^param=general\.maxThreads=.*|param=general.maxThreads=$TSR_BUILD_JOBS|" "$CFG"
+fi
 if [ "$K" = k4 ] && [ "${TSR_U200_FLOORPLAN:-1}" = 0 ]; then
   sed -i -e '/k4_floorplan\.tcl/d' "$CFG"
   echo "== TSR_U200_FLOORPLAN=0: linking without hw/u200/k4_floorplan.tcl"
@@ -150,6 +144,9 @@ fi
 extra=()
 if [ -n "${TSR_VPP_TO_STEP:-}" ]; then
   extra+=(--to_step "$TSR_VPP_TO_STEP")
+fi
+if [ -n "${TSR_VPP_FROM_STEP:-}" ]; then
+  extra+=(--from_step "$TSR_VPP_FROM_STEP")
 fi
 echo "== v++ link $KERNEL ($TARGET, $XPFM, $CFG) -> $OUT"
 locked bash -c "set +u; source '$VITIS_SETTINGS' >/dev/null && cd '$OUT' && v++ --link -t '$TARGET' --platform '$XPFM' \

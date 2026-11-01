@@ -69,6 +69,8 @@ module tsr_xrt_kernel
   // the vector unit's lane knobs (VU §7.10: 16 / 8 on k4, 8 / 4 on k1; results unchanged)
   parameter int unsigned     VU_EXP_LANES   = tsr_tables_pkg::TSR_VU_FRONT_LANES,
   parameter int unsigned     VU_BACK_LANES  = tsr_tables_pkg::TSR_VU_BACK_LANES,
+  // register stages on each side of the VU lanes (k4: 2, the lanes sit in SLR0; k1: 0)
+  parameter int unsigned     VU_LANE_PIPE   = 0,
   // adapter
   parameter int unsigned     AXI_SLICES     = 2,
   parameter int unsigned     RST_STAGES     = 3
@@ -235,7 +237,7 @@ module tsr_xrt_kernel
     .MVM_WS_FIFO(MVM_WS_FIFO), .MVM_BC_PIPE(MVM_BC_PIPE), .MVM_RES_PIPE(MVM_RES_PIPE),
     .MVM_ACT_RD_LAT(MVM_ACT_RD_LAT), .MVM_MAC_LAT(MVM_MAC_LAT), .MVM_MUL_LAT(MVM_MUL_LAT),
     .MVM_ADD_LAT(MVM_ADD_LAT), .MVM_WS_RD_LAT(MVM_WS_RD_LAT), .RST_PIPE(RST_PIPE),
-    .VU_EXP_LANES(VU_EXP_LANES), .VU_BACK_LANES(VU_BACK_LANES)
+    .VU_EXP_LANES(VU_EXP_LANES), .VU_BACK_LANES(VU_BACK_LANES), .VU_LANE_PIPE(VU_LANE_PIPE)
   ) u_core (
     // the control core on ap_clk_2 / ap_rst_n_2 (CC §13.3); the clk_rv domain's own reset is
     // rst_core_n through tsr_ctrl's synchroniser, ap_rst_n_2 is AND-ed into the Ibex / DM resets
