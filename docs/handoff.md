@@ -25,6 +25,11 @@ optimisation and its locality check. The route-pre clock/reset and CDC gates pas
 `route_design` entered `Phase 1 Build RT Design` at 08:24 KST. No new routed result exists yet.
 By 09:57 KST it passed SLL assignment and five initial net-routing passes and entered
 `Phase 5.3 Global Iteration 2`. General routing congestion remains; this is not a timing pass.
+That iteration and the Phase 5 footer were printed at 10:46 KST, with 2,572,256 overlapping
+routing nodes, up from 2,311,139. At 12:51 KST the log was unchanged and the router had not
+returned. Two workers each used nearly a full CPU throughout a seven-minute sample, with
+little I/O and no measured memory pressure. This shows continued computation, not convergence.
+There is no routed checkpoint or 250 MHz timing result.
 
 `hw/u200/build_xclbin.sh k4` (4 channels, T_MAX 8, the final image) synthesised and placed, then
 `route_design` failed: "The router is unable to resolve localized SLL routing demand"
@@ -47,6 +52,19 @@ all SLL or general wire congestion is resolved. Initial routing reports 1,317,85
 nets and global/short congestion level 7 (128x128); it continues with rip-up and reroute.
 The first global iteration's WNS is -8.246 ns with hold unavailable, an intermediate
 incomplete-route result. Keep the original net/pin units separate when comparing failures.
+
+The congestion windows overlap c2 PV/MAC and VU lane 0 in the lower region, c1/c3 ATT and
+assembler 3 in the upper region, and central gather/QACT/SPM/issue plus platform DDR logic.
+These are hierarchy correlations, not identified drivers of the remaining failed nets.
+The README hero is a logical diagram: c0/c2 and all VU lanes are in SLR0, c1/c3 and their
+assemblers in SLR2, and the VU reader/writer/reduction and central gather in SLR1. The
+shell's fixed-DMA timing path must not be attributed to the hero's LD/ST DMA block.
+The local evidence is `build/analysis/repository_map_20261102/`:
+`current_router_congestion_triage.txt`, `readme_bottleneck_mapping.txt` and
+`route_silence_assessment.txt`. AMD's [Router Messaging, UG904 2024.2](https://docs.amd.com/r/2024.2-English/ug904-vivado-implementation/Router-Messaging)
+describes iterations lasting hours under difficult congestion/hold fixing. That profile
+matches the symptoms; it does not establish progress or exclude a tool defect. The job is
+being retained. Any eventual result still needs fully-routed/no-route-error checks.
 
 - For comparison, the core before the control core (floorplan C') used 7,010 SLLs in total
   (`docs/rtl-m3.md` §14). The failed checkpoint confirms extra ATT job round trips, misplaced

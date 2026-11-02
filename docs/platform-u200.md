@@ -890,7 +890,9 @@ passes; `rtl/platform/alveo_xrt/bw/lint.sh` is clean too (both run for this docu
   from the saved placement completed physopt and entered routing at 08:24 KST on 2026-11-02,
   with actual route-pre clock/reset and CDC gates passing. Route completion and final timing
   are pending. It passed the previous SLL failure stage, but localized SLL warnings and
-  general wire congestion remain; global rip-up and reroute is active. See `docs/handoff.md`.
+  general wire congestion remain. The Phase 5 footer was printed at 10:46 KST; at 12:51 the
+  log was unchanged while two workers remained CPU-active. Convergence and route completion
+  are unconfirmed. See `docs/handoff.md` for the measurements and interpretation.
 - **k4 clock.** The k4 link of §8.2 missed 300 MHz by 0.285 ns and ran at 276.3 MHz (§8.2). Gate T3 now
   accepts at least 250 MHz with the control core (user decision, 2026-11-02). Do not repeat a
   successful implementation just to reach the current 300 MHz request (§8.4).
