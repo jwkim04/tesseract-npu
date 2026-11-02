@@ -20,7 +20,9 @@ Read [docs/handoff.md](docs/handoff.md) first: it says where the work stands and
   (numpy, cocotb); `build/tools/svgvenv` (figures); `build/tools/torchvenv`. `python3` on PATH is an
   unrelated venv.
 - Build with `-j8` (`TSR_BUILD_JOBS=8`). Run Vivado through `hw/u200/vivado_slot.sh <cmd>` (at most two
-  Vivado processes; the host has 14 GB RAM and 72 GB swap, a k4 link peaks at about 33 GB).
+  top-level executions; internal synthesis workers are allowed, per the user's 2026-11-02 clarification).
+  Use `TSR_U200_SYNTH_JOBS=1` for K4. The host has 14 GB RAM and 72 GB swap; use the existing swap.
+  A K4 link peaks at about 33 GB.
 - Vivado/Vitis 2024.2 under `/tool/Xilinx` (not on PATH; source the settings script in a subshell),
   XRT under `/opt/xilinx/xrt`. Read and use only.
 - Do not commit build outputs (`build/` is ignored), model files (`models/`) or trace data (`traces/*/`

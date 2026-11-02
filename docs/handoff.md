@@ -120,9 +120,11 @@ Source-level options and conditional performance models are
 The query session exited normally with code 0, returned both tool slots and left the input
 hash unchanged. No CAD process from the route or this investigation remains.
 
-The next bounded native run is prepared but has not started. There is a process-limit
-ambiguity to resolve before launch. `vivado_slot.sh` limits top-level invocations, while
-Vivado also launches internal synthesis workers. A small production-DBG probe with
+The user clarified the process limit on 2026-11-02: at most two top-level executions,
+internal Vivado workers allowed, one synthesis job and the existing swap. The next bounded
+native run uses both host slots with `TSR_U200_SYNTH_JOBS=1` and `TSR_BUILD_JOBS=8`.
+`vivado_slot.sh` limits top-level invocations, while Vivado also launches internal synthesis
+workers. A small production-DBG probe with
 `general.maxThreads=8` and `synth.maxThreads=1` still launched a second actual Vivado process.
 The valid `synth.enableParallelHelperSpawn=none` setting removed the early helper but still
 launched a direct worker. Adding Vitis's parent would exceed a literal two-process limit.
@@ -131,8 +133,8 @@ completed synthesis results. No such tool parameters are applied to the producti
 An earlier launcher-classification error and an invalid `false` enum trial are preserved
 separately and excluded from that conclusion. Logs and `/proc` samples are under
 `build/analysis/k4_synth_process_probe_20261102/`. No probe process remains.
-Clarify whether the two-slot limit includes internal workers before starting the prepared
-250 MHz run. It stops after physical optimisation, then preserves the checkpoint and runs
+No further process-limit clarification is needed. The 250 MHz run stops after physical
+optimisation, then preserves the checkpoint and runs
 a read-only connectivity/utilisation/timing census. It never starts routing automatically.
 
 The VU alternatives need more than a narrower wire declaration. Front/back result sharing
@@ -394,7 +396,7 @@ No runtime/RTL changes or extra build/test/Vivado/DCP/link runs were made for th
    No CAD process from this attempt remains. A future zero exit status and a checkpoint still
    need full-route/no-route-error validation before calling the route successful.
 2. Functional gates for the shared broadcast head and VU return pass as recorded above.
-   Resolve the internal-worker process limit above. Check the new K4 netlist, then placement/physical optimisation at
+   Apply the clarified top-level execution limit above. Check the new K4 netlist, then placement/physical optimisation at
    core 250 MHz before deciding whether to route. Actual SLL savings, local fanout and new
    ownership on the full placed design remain unverified. Keep all four 512-bit weight streams.
    The shared head could remove about 1,058 duplicated logical boundary-net incidences from
