@@ -13,7 +13,7 @@ Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README
 | W4-B RTL: VU, attention modes, DB block, two-clock XRT adapter; tsr-dbg (GDB), tsr-prof | done; ctest 297/297, lint clean, all benches green | `6435e8a` |
 | W5 preparation: VU lane pipes (`tsr_vu_lanes.sv`, `VU_LANE_PIPE`), floorplan C'' (`hw/u200/k4_floorplan.tcl`), TCM RAMB36 constraint in every flow (`tsr_ctrl_tcm.xdc`, `hw/u200/tcm_opt.tcl`), `build_xclbin.sh` enabled for k1/k4 | checkpoint; first K4 route failed | `58bf76d` |
 
-## Current: the k4 route is in progress
+## Current: K4 stopped; interconnect alternatives under review
 
 The corrected attempt completed placement and physical optimisation, with actual SLR locality
 checks passing. It was intentionally stopped at 05:25 KST on 2026-11-02: the new timing report
@@ -29,7 +29,20 @@ That iteration and the Phase 5 footer were printed at 10:46 KST, with 2,572,256 
 routing nodes, up from 2,311,139. At 12:51 KST the log was unchanged and the router had not
 returned. Two workers each used nearly a full CPU throughout a seven-minute sample, with
 little I/O and no measured memory pressure. This shows continued computation, not convergence.
-There is no routed checkpoint or 250 MHz timing result.
+The user requested a stop and investigation of the next attempt. SIGTERM was sent to the
+implementation worker at 14:00:55 KST; the native supervisor finished at 14:01:01 with code 1.
+The worker, parent Vivado and supervisor have all exited. This is an intentional stop, not a
+new confirmed router error or tool hang. There is no routed checkpoint or 250 MHz timing result.
+The 25 preserved files (1,242,547,736 bytes), including the placed and corrected physopt DCPs,
+are under `attempts/20261102_140055_route_congestion_stop/`. Its `archive_manifest.json`
+records hashes; both checkpoint hashes match their earlier identities. `status.json` retains
+the native failure code and records the user-requested stop classification. No new build is
+running. The current investigation is SLR interconnect reduction and its performance cost,
+before choosing another long implementation attempt.
+The prior four-cluster image ran at 276.3 MHz before RV/VU/attention integration. Preserve
+that weight-stream throughput while investigating the added paths. Historical whole-core
+synthesis records show 275,657 CLB LUTs before integration and 533,573 in the W4-B OOC run;
+this is not an isolated measurement of each added feature's cost.
 
 `hw/u200/build_xclbin.sh k4` (4 channels, T_MAX 8, the final image) synthesised and placed, then
 `route_design` failed: "The router is unable to resolve localized SLL routing demand"
@@ -63,8 +76,8 @@ The local evidence is `build/analysis/repository_map_20261102/`:
 `current_router_congestion_triage.txt`, `readme_bottleneck_mapping.txt` and
 `route_silence_assessment.txt`. AMD's [Router Messaging, UG904 2024.2](https://docs.amd.com/r/2024.2-English/ug904-vivado-implementation/Router-Messaging)
 describes iterations lasting hours under difficult congestion/hold fixing. That profile
-matches the symptoms; it does not establish progress or exclude a tool defect. The job is
-being retained. Any eventual result still needs fully-routed/no-route-error checks.
+matches the symptoms; it does not establish progress or exclude a tool defect. The later
+user-requested stop is recorded above. Any eventual result still needs fully-routed/no-route-error checks.
 
 - For comparison, the core before the control core (floorplan C') used 7,010 SLLs in total
   (`docs/rtl-m3.md` §14). The failed checkpoint confirms extra ATT job round trips, misplaced
@@ -242,8 +255,8 @@ snapshot/hash manifest and the eventual `exit_code` are in that run directory. T
 slot wrapper and the existing 72 GiB swap. It stops at `vpl.impl.route_design`, preserving
 the clock/reset, floorplan/locality and post-route CDC gates. Bitstream generation and the
 final frequency gate are deferred. The user revised K4 acceptance on 2026-11-02 to a core
-clock of at least 250 MHz. Keep the current 300 MHz request for this running attempt, but
-do not repeat implementation just to reach 300 MHz once 250 MHz or more is valid. A route
+clock of at least 250 MHz. The stopped attempt retained its 300 MHz request. Do not repeat
+implementation just to reach 300 MHz once 250 MHz or more is valid. A route
 with negative setup slack at 300 MHz is useful evidence; it is successful timing only after
 checking an accepted frequency of at least 250 MHz, with RV, hold and CDC checks intact.
 The old 276.3 MHz floor is superseded for K4; historical card measurements are unchanged.
@@ -274,17 +287,26 @@ No runtime/RTL changes or extra build/test/Vivado/DCP/link runs were made for th
 
 ### Next steps
 
-1. Check the active run's `status.json` and logs before starting another link. A zero exit status
-   and a routed checkpoint are required before calling the route successful.
-2. Monitor routing; the native clock/reset, CDC restoration, guarded ECO and locality checks
-   have passed. Compare the router's
-   per-column SLL demand and per-clock timing against the placed reports. The combined
-   changes reduced placed SLL counts by 11,301; that does not establish routing success or
-   isolate the contribution of the attention change.
-3. An implementation-only resume of the old failed run cannot repair its clock wiring. The active
+1. Check `status.json`, the stop record and archive hashes before reusing the stopped run.
+   No CAD process from this attempt remains. A future zero exit status and a checkpoint still
+   need full-route/no-route-error validation before calling the route successful.
+2. Investigate SLR interconnect reduction first, per the user's latest direction. Preserve the
+   weight streams' throughput where possible. Per-SLR sharing of the identical 530-bit cluster
+   broadcast is a candidate: one crossing for c0/c2 and one for c1/c3, followed by local fanout,
+   removes about 1,060 duplicated logical boundary signals without serializing the payload.
+   Actual SLL savings, reset/latency equivalence, local fanout and new ownership rules remain
+   unverified. Also inspect the added VU/ATT paths and the DDR0/3 central weight-response detour.
+   Reducing register depth alone does not reduce a bus's crossing width. Narrowing a weight
+   link from 512 to 256 bits at 250 MHz lowers its ideal payload rate from 16 to 8 GB/s;
+   an active slow channel can limit the whole equal-row MVM. These are analysis candidates,
+   not selected RTL changes or a new build. The earlier combined floorplan changes reduced
+   placed SLL counts by 11,301, but did not establish routing success or isolate their causes.
+3. An implementation-only resume of the old failed run cannot repair its clock wiring. The corrected
    run rebuilt from the corrected RTL and clock selection. Its preserved placed/physopt DCPs
    have the correct clocks. Native `vpl.impl.phys_opt_design` restart is supported, but needs
    the new PRE hook to restore constraints, K4FP Tcl state and legal LUT placement. A
+   changed RTL topology needs a new kernel XO/netlist; the old synthesis cannot be reused
+   as if it contained that change. The existing DCPs remain analysis references. A
    `config_hw_runs` reset can invalidate those saved run results; back them up first. A full link takes 7-10 h on
    this host because of swap. A machine with
    64 GB RAM or more (Linux, or WSL2 with Linux Vivado/Vitis 2024.2: the Alveo `v++` flow is Linux
