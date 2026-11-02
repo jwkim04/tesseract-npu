@@ -21,7 +21,10 @@ Read [docs/handoff.md](docs/handoff.md) first: it says where the work stands and
   unrelated venv.
 - Build with `-j8` (`TSR_BUILD_JOBS=8`). Run Vivado through `hw/u200/vivado_slot.sh <cmd>` (at most two
   top-level executions; internal synthesis workers are allowed, per the user's 2026-11-02 clarification).
-  Use `TSR_U200_SYNTH_JOBS=1` for K4. The host has 14 GB RAM and 72 GB swap; use the existing swap.
+  Use available logical CPUs for concurrent K4 IP synthesis jobs (currently 16), per the user's
+  later 2026-11-02 instruction. `TSR_U200_SYNTH_JOBS` controls that concurrency independently;
+  `TSR_BUILD_JOBS=8` still sets build jobs and implementation threads. Internal workers are allowed.
+  The host has 14 GB RAM and 72 GB swap; use the existing swap.
   A K4 link peaks at about 33 GB.
 - Vivado/Vitis 2024.2 under `/tool/Xilinx` (not on PATH; source the settings script in a subshell),
   XRT under `/opt/xilinx/xrt`. Read and use only.

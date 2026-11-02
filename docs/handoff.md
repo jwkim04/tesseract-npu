@@ -13,7 +13,7 @@ Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README
 | W4-B RTL: VU, attention modes, DB block, two-clock XRT adapter; tsr-dbg (GDB), tsr-prof | done; ctest 297/297, lint clean, all benches green | `6435e8a` |
 | W5 preparation: VU lane pipes (`tsr_vu_lanes.sv`, `VU_LANE_PIPE`), floorplan C'' (`hw/u200/k4_floorplan.tcl`), TCM RAMB36 constraint in every flow (`tsr_ctrl_tcm.xdc`, `hw/u200/tcm_opt.tcl`), `build_xclbin.sh` enabled for k1/k4 | checkpoint; first K4 route failed | `58bf76d` |
 
-## Current: K4 interconnect optimization; native 250 MHz build running
+## Current: K4 interconnect optimization; 16 synthesis jobs running
 
 The user resumed work after the intentional route stop. Use the earlier four-cluster
 276.3 MHz image as the baseline and reduce the added interconnect before another long route.
@@ -62,10 +62,10 @@ placement, routing or 250 MHz timing result is claimed. Logs are under
 `build/analysis/k4_bc_shared_20261102/`. Gather arbitration and the DDR0/3 response detour
 remain candidates; they are not part of these two RTL changes.
 
-The bounded native build started at 16:49:56 KST on 2026-11-02, from `acb76ca`
+The initial bounded native build started at 16:49:56 KST on 2026-11-02, from `acb76ca`
 (the RTL changes are in `b145c5b`). Its directory is
-`build/link/k4_20261102_164956_shared_core250_rv166/`; supervisor PID 1326951 records
-live state and process/memory samples there. `build/analysis/k4_interconnect_latest.txt`
+`build/link/k4_20261102_164956_shared_core250_rv166/`; supervisor PID 1326951 recorded
+state and process/memory samples there. `build/analysis/k4_interconnect_latest.txt`
 points to it. Forced XO repackaging completed, and all 138 packaged source hashes match
 the starting snapshot. The rendered config requests 250/166.666667 MHz with synthesis
 jobs 1, implementation jobs 8 and a general thread limit of 8. Native Vitis lowers the
@@ -80,6 +80,37 @@ census. It does not route automatically. Package identity is recorded in
 critical warnings match the prior run (excluded debug address space and narrow-burst
 metadata on the shell C2H interface). Synthesis started at 16:52:06 KST with `-jobs 1`.
 The synthesized clock/reset gate, placement and timing results are still pending.
+
+The user requested concurrent synthesis jobs equal to the available logical CPUs (16;
+the host has eight physical cores) at 17:45 KST. This supersedes the earlier one-job
+setting. The serial native process group was intentionally stopped at 17:48:18 KST.
+Its supervisor exited, all CAD processes exited, and the source snapshot was unchanged.
+Completed synthesis includes the K4 kernel, which finished at 17:29:33 KST. All 44 completed
+DCPs (158,299,286 bytes) and 591 files (170,139,375 bytes) are preserved with verified hashes
+under `attempts/20261102_174818_serial_synth_stop/`. Only the 133 incomplete queued/running
+runs were reset. Reopening the project confirms their `Not started` status and all 44
+completed runs' unchanged status and checkpoint hashes.
+`TSR_U200_SYNTH_JOBS=16` now sets IP concurrency independently of `TSR_BUILD_JOBS=8`.
+All 14 build-script/platform checks pass, including nine isolated fixtures for 16/8/8
+rendering and invalid-value rejection before tools start. No arithmetic, RTL, clock,
+floorplan or CDC change is made for this scheduling correction.
+
+A native `v++ --from_step vpl.synth` attempt at 18:02 KST was stopped during project loading.
+The generated restart Tcl opens the existing project but then resets every synthesis run,
+including completed runs. It had not reached that reset: the project, all 44 completed DCPs
+and their archived copies remain unchanged.
+
+The existing Vivado project resumed at 18:08:35 KST under supervisor PID 1357676.
+Its attempt is `attempts/20261102_180835_preserved_parallel16/` within the same build directory.
+Guarded `launch_runs my_rm_synth_1 -jobs 16` retains all generated platform hooks and the
+configured clock/reset, CDC and floorplan checks. At 18:09 KST, 16 synthesis workers were
+running concurrently, plus the supervising Vivado process. All 44 retained checkpoint
+hashes still match. The runtime source snapshot records `d0d12ee` plus the scheduling patch.
+The detached supervisor is `build/analysis/k4_interconnect_preserved.py`; root `status.json`
+is authoritative. After synthesis it runs `impl_1` through `phys_opt_design`, verifies the
+checkpoint and preserved inputs, and runs the read-only census after releasing the native
+slots. Routing remains excluded from this attempt. The native Vitis restart attempt and
+the direct Vivado project resume have separate logs; neither is a completed placement result.
 
 ### Preserved attempt and baseline measurements
 
@@ -140,8 +171,8 @@ The query session exited normally with code 0, returned both tool slots and left
 hash unchanged. No CAD process from that route or read-only query remains.
 
 The user clarified the process limit on 2026-11-02: at most two top-level executions,
-internal Vivado workers allowed, one synthesis job and the existing swap. The next bounded
-native run uses both host slots with `TSR_U200_SYNTH_JOBS=1` and `TSR_BUILD_JOBS=8`.
+internal Vivado workers allowed and the existing swap. The later request sets concurrent
+IP synthesis jobs to 16. The native run reserves both host slots and keeps `TSR_BUILD_JOBS=8`.
 `vivado_slot.sh` limits top-level invocations, while Vivado also launches internal synthesis
 workers. A small production-DBG probe with
 `general.maxThreads=8` and `synth.maxThreads=1` still launched a second actual Vivado process.

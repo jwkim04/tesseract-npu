@@ -347,10 +347,10 @@ adapter in the kernels (2026-11-01; `test_build_xclbin_args` checks the argument
 resolves the platform and prints its `platforminfo` (`test_build_xclbin_platform`, `test_build_xclbin_no_platform`).
 The M0 kernel builds as before: `hw/u200/bw/build_bw_xclbin.sh [hw|hw_emu]` (`docs/m0-bw.md` §4).
 `TSR_BUILD_JOBS` sets the link's synthesis / implementation jobs and Vivado's `general.maxThreads` (the configs: 8).
-`TSR_U200_SYNTH_JOBS` can lower only the number of concurrent IP synthesis workers. The bounded
-K4 validation uses 1 with `TSR_BUILD_JOBS=8`, reserving both host slots for the native parent
-and one synthesis job. The two-execution limit applies to top-level runs; internal Vivado
-workers are allowed, per the user's 2026-11-02 clarification. The general thread limit and
+`TSR_U200_SYNTH_JOBS` independently sets concurrent IP synthesis jobs. The user changed the
+K4 setting from 1 to the available logical CPU count (16) on 2026-11-02. `TSR_BUILD_JOBS`
+remains 8, and the native flow reserves both host slots. The two-execution limit applies to
+top-level runs; internal Vivado workers and the requested IP jobs are allowed. The general thread limit and
 implementation jobs are requested as 8. Native Vitis lowers `general.maxThreads` to 1 for
 synthesis runs; the generated synthesis script records that override. Invalid limits stop before
 packaging. The isolated build-script regression checks the rendered jobs, clock request and hooks.

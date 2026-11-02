@@ -38,9 +38,9 @@
 #                       failed implementation run: the synthesis is kept)
 #   TSR_U200_PLATFORMINFO  1 = resolve the platform, print its platforminfo and stop (exit 0)
 #   TSR_BUILD_JOBS      if set: the link's synth / impl jobs and Vivado's general.maxThreads (the configs: 8)
-#   TSR_U200_SYNTH_JOBS optional lower limit on concurrent IP synthesis jobs. Use 1 when the
-#                       native parent plus one worker must fit the host's two Vivado slots;
-#                       TSR_BUILD_JOBS still controls each tool's threads and implementation jobs.
+#   TSR_U200_SYNTH_JOBS optional independent positive integer count of concurrent IP synthesis jobs;
+#                       overrides synth.jobs only. TSR_BUILD_JOBS still controls each tool's threads
+#                       and implementation jobs.
 # Stops with exit status 3 and a message when the platform (or the Xilinx tools) are missing.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -55,9 +55,8 @@ case "$TARGET" in
   *) echo "build_xclbin.sh: target must be hw or hw_emu" >&2; exit 2 ;;
 esac
 if [ -n "${TSR_U200_SYNTH_JOBS:-}" ]; then
-  if ! [[ "$TSR_U200_SYNTH_JOBS" =~ ^[1-9][0-9]*$ ]] ||
-      [ "$TSR_U200_SYNTH_JOBS" -gt "${TSR_BUILD_JOBS:-8}" ]; then
-    echo "build_xclbin.sh: TSR_U200_SYNTH_JOBS must be 1..${TSR_BUILD_JOBS:-8}" >&2
+  if ! [[ "$TSR_U200_SYNTH_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "build_xclbin.sh: TSR_U200_SYNTH_JOBS must be a positive integer" >&2
     exit 2
   fi
 fi

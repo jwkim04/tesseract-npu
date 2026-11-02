@@ -17,10 +17,12 @@ REPO = Path(__file__).resolve().parents[2]
     (None, None, (8, 8, 8)),
     ("8", "1", (1, 8, 8)),
     ("4", "1", (1, 4, 4)),
+    ("8", "16", (16, 8, 8)),
     ("8", "0", None),
-    ("8", "9", None),
+    ("8", "9", (9, 8, 8)),
     ("8", "text", None),
-    ("4", "5", None),
+    ("4", "5", (5, 4, 4)),
+    ("8", "-1", None),
 ])
 def test_link_job_rendering(tmp_path, build_jobs, synth_jobs, expected):
     root = tmp_path / "repo"
@@ -87,7 +89,7 @@ Path(args[args.index("-o") + 1]).write_text("fake xclbin; no CAD executed\\n")
     rendered = out / "k4.link.cfg"
     if expected is None:
         assert result.returncode == 2, (result.stdout, result.stderr)
-        assert "TSR_U200_SYNTH_JOBS must be 1.." in result.stderr
+        assert "TSR_U200_SYNTH_JOBS must be a positive integer" in result.stderr
         assert not calls
         assert not rendered.exists()
         assert not xo.parent.exists()
