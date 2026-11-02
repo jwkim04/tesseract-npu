@@ -889,7 +889,8 @@ passes; `rtl/platform/alveo_xrt/bw/lint.sh` is clean too (both run for this docu
   clock/reset, CDC and locality checks with no DRC changes. A native physopt/route restart
   from the saved placement completed physopt and entered routing at 08:24 KST on 2026-11-02,
   with actual route-pre clock/reset and CDC gates passing. Route completion and final timing
-  are pending. See `docs/handoff.md`.
+  are pending. It passed the previous SLL failure stage, but localized SLL warnings and
+  general wire congestion remain; global rip-up and reroute is active. See `docs/handoff.md`.
 - **k4 clock.** The k4 link of §8.2 missed 300 MHz by 0.285 ns and ran at 276.3 MHz (§8.2). Gate T3 now
   accepts at least 250 MHz with the control core (user decision, 2026-11-02). Do not repeat a
   successful implementation just to reach the current 300 MHz request (§8.4).

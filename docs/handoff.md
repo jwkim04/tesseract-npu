@@ -23,6 +23,8 @@ stall reduction LUTs pass real-DCP checks, with no new DRC violations. The corre
 checkpoint is saved. A native restart from the preserved placement completed physical
 optimisation and its locality check. The route-pre clock/reset and CDC gates passed;
 `route_design` entered `Phase 1 Build RT Design` at 08:24 KST. No new routed result exists yet.
+By 09:57 KST it passed SLL assignment and five initial net-routing passes and entered
+`Phase 5.3 Global Iteration 2`. General routing congestion remains; this is not a timing pass.
 
 `hw/u200/build_xclbin.sh k4` (4 channels, T_MAX 8, the final image) synthesised and placed, then
 `route_design` failed: "The router is unable to resolve localized SLL routing demand"
@@ -36,6 +38,15 @@ optimisation and its locality check. The route-pre clock/reset and CDC gates pas
 |---|---|---|
 | SLR1-SLR2 | 17,479 | 7 of 12 (up to 180 %) |
 | SLR0-SLR1 | 14,261 | 6 of 12 (up to 158 %) |
+
+The corrected router estimates 8,872 SLLs at SLR1-SLR2 (51.34 % of total capacity) and
+10,052 at SLR0-SLR1 (58.17 %). One column per boundary still exceeds capacity: 121 % and
+175 %, respectively. `Route 35-3311` warns of localized demand, but assignment completes;
+the previous `Route 35-3339` failure was at `Phase 3.1.2`. Passing that stage does not prove
+all SLL or general wire congestion is resolved. Initial routing reports 1,317,850 unrouted
+nets and global/short congestion level 7 (128x128); it continues with rip-up and reroute.
+The first global iteration's WNS is -8.246 ns with hold unavailable, an intermediate
+incomplete-route result. Keep the original net/pin units separate when comparing failures.
 
 - For comparison, the core before the control core (floorplan C') used 7,010 SLLs in total
   (`docs/rtl-m3.md` §14). The failed checkpoint confirms extra ATT job round trips, misplaced
