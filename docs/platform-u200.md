@@ -350,8 +350,9 @@ The M0 kernel builds as before: `hw/u200/bw/build_bw_xclbin.sh [hw|hw_emu]` (`do
 `TSR_U200_SYNTH_JOBS` can lower only the number of concurrent IP synthesis workers. The bounded
 K4 validation uses 1 with `TSR_BUILD_JOBS=8`, reserving both host slots for the native parent
 and one synthesis job. The two-execution limit applies to top-level runs; internal Vivado
-workers are allowed, per the user's 2026-11-02 clarification. Tool threads and implementation
-jobs remain 8. Invalid limits stop before
+workers are allowed, per the user's 2026-11-02 clarification. The general thread limit and
+implementation jobs are requested as 8. Native Vitis lowers `general.maxThreads` to 1 for
+synthesis runs; the generated synthesis script records that override. Invalid limits stop before
 packaging. The isolated build-script regression checks the rendered jobs, clock request and hooks.
 
 `<k>.link.cfg` is `hw/u200/<k>.cfg` with its hook paths made absolute: the configs give them relative

@@ -13,7 +13,7 @@ Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README
 | W4-B RTL: VU, attention modes, DB block, two-clock XRT adapter; tsr-dbg (GDB), tsr-prof | done; ctest 297/297, lint clean, all benches green | `6435e8a` |
 | W5 preparation: VU lane pipes (`tsr_vu_lanes.sv`, `VU_LANE_PIPE`), floorplan C'' (`hw/u200/k4_floorplan.tcl`), TCM RAMB36 constraint in every flow (`tsr_ctrl_tcm.xdc`, `hw/u200/tcm_opt.tcl`), `build_xclbin.sh` enabled for k1/k4 | checkpoint; first K4 route failed | `58bf76d` |
 
-## Current: K4 interconnect optimization; physical validation pending
+## Current: K4 interconnect optimization; native 250 MHz build running
 
 The user resumed work after the intentional route stop. Use the earlier four-cluster
 276.3 MHz image as the baseline and reduce the added interconnect before another long route.
@@ -62,6 +62,25 @@ placement, routing or 250 MHz timing result is claimed. Logs are under
 `build/analysis/k4_bc_shared_20261102/`. Gather arbitration and the DDR0/3 response detour
 remain candidates; they are not part of these two RTL changes.
 
+The bounded native build started at 16:49:56 KST on 2026-11-02, from `acb76ca`
+(the RTL changes are in `b145c5b`). Its directory is
+`build/link/k4_20261102_164956_shared_core250_rv166/`; supervisor PID 1326951 records
+live state and process/memory samples there. `build/analysis/k4_interconnect_latest.txt`
+points to it. Forced XO repackaging completed, and all 138 packaged source hashes match
+the starting snapshot. The rendered config requests 250/166.666667 MHz with synthesis
+jobs 1, implementation jobs 8 and a general thread limit of 8. Native Vitis lowers the
+synthesis-run thread limit to 1; its generated kernel synthesis script confirms that setting.
+The two host slots are reserved for
+this native flow; internal workers are allowed under the clarified limit below.
+The flow stops at `vpl.impl.phys_opt_design`. After native completion it preserves the
+checkpoint/XO/manifests and runs the read-only BC/VU and utilisation/timing/congestion
+census. It does not route automatically. Package identity is recorded in
+`package_entry_milestone.json`. The BD clock/reset gate passes: core and RV ports use
+`aclk_kernel_00` and `aclk_kernel_01`, with separate reset generators. The two platform BD
+critical warnings match the prior run (excluded debug address space and narrow-burst
+metadata on the shell C2H interface). Synthesis started at 16:52:06 KST with `-jobs 1`.
+The synthesized clock/reset gate, placement and timing results are still pending.
+
 ### Preserved attempt and baseline measurements
 
 The corrected attempt completed placement and physical optimisation, with actual SLR locality
@@ -84,10 +103,10 @@ The worker, parent Vivado and supervisor have all exited. This is an intentional
 new confirmed router error or tool hang. There is no routed checkpoint or 250 MHz timing result.
 The 25 preserved files (1,242,547,736 bytes), including the placed and corrected physopt DCPs,
 are under `attempts/20261102_140055_route_congestion_stop/`. Its `archive_manifest.json`
-records hashes; both checkpoint hashes match their earlier identities. `status.json` retains
-the native failure code and records the user-requested stop classification. No new build is
-running. The current investigation is SLR interconnect reduction and its performance cost,
-before choosing another long implementation attempt.
+records hashes; both checkpoint hashes match their earlier identities. That run's `status.json`
+retains the native failure code and records the user-requested stop classification. The
+replacement build is recorded above. The investigation targets SLR interconnect reduction
+and its performance cost before choosing another long routing attempt.
 The prior four-cluster image ran at 276.3 MHz before RV/VU/attention integration. Preserve
 that weight-stream throughput while investigating the added paths. Historical whole-core
 synthesis records show 275,657 CLB LUTs before integration and 533,573 in the W4-B OOC run;
@@ -118,7 +137,7 @@ Source-level options and conditional performance models are
 `build/analysis/repository_map_20261102/slr_pipe_bandwidth_options.txt` and
 `slr_width_performance_tradeoff.txt`. These measurements predate the two changes above.
 The query session exited normally with code 0, returned both tool slots and left the input
-hash unchanged. No CAD process from the route or this investigation remains.
+hash unchanged. No CAD process from that route or read-only query remains.
 
 The user clarified the process limit on 2026-11-02: at most two top-level executions,
 internal Vivado workers allowed, one synthesis job and the existing swap. The next bounded
@@ -392,9 +411,10 @@ No runtime/RTL changes or extra build/test/Vivado/DCP/link runs were made for th
 
 ### Next steps
 
-1. Check `status.json`, the stop record and archive hashes before reusing the stopped run.
-   No CAD process from this attempt remains. A future zero exit status and a checkpoint still
-   need full-route/no-route-error validation before calling the route successful.
+1. Check the new build's `status.json` and logs under the current run directory above.
+   Its zero exit status would mean bounded physical optimisation and census, not routing.
+   Keep the stopped run and archive hashes as the comparison reference. A future routed
+   checkpoint still needs full-route/no-route-error validation before calling routing successful.
 2. Functional gates for the shared broadcast head and VU return pass as recorded above.
    Apply the clarified top-level execution limit above. Check the new K4 netlist, then placement/physical optimisation at
    core 250 MHz before deciding whether to route. Actual SLL savings, local fanout and new
