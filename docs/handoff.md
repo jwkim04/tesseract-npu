@@ -44,6 +44,43 @@ that weight-stream throughput while investigating the added paths. Historical wh
 synthesis records show 275,657 CLB LUTs before integration and 533,573 in the W4-B OOC run;
 this is not an isolated measurement of each added feature's cost.
 
+A read-only query of the preserved corrected physopt DCP gives the following same-checkpoint
+counts. Kernel/core totals are 534,801/529,186 LUTs. These are physical-optimisation counts,
+not a new synthesis, route or card result. Cross-hierarchy LUT combining limits exact sums.
+
+| Scope | LUTs | Note |
+|---|---:|---|
+| RV subsystem | 6,206 | 4,234 FFs, 48 RAMB36; subset of control |
+| VU | 83,398 | 433 DSP; includes lanes |
+| VU lane array and pipes | 49,128 | 368 DSP; subset of VU, reported LUT difference 34,270 |
+| Four ATT PV modules | 86,829 | excludes shared MAC-mode and other attention logic |
+
+The scoped crossing census finds 529 surviving broadcast nets per cluster: 1,058 SLR1->0
+and 1,058 SLR1->2. The candidate shared broadcast could remove about 1,058 duplicated
+logical boundary-net incidences in total, rather than the raw-width estimate of 1,060.
+VU input is 2,084 surviving nets (four 512-bit operand vectors plus 36 control nets); return
+is 1,280 (512 drain + 512 front + 256 back), with one reset crossing. This totals 3,365
+stage-to-stage VU boundary connections. These are logical-net incidences; they do not count
+physical SLLs or prove a column reduction. No sampled source net was excluded from these
+selected BC/VU scopes. Other weight/gather/AXI scopes were not enumerated.
+The reports, clock metadata and input-hash record are under
+`build/analysis/k4_current_interconnect_20261102/`. Core/RV clocks remain 3.333/6.023 ns.
+Source-level options and conditional performance models are
+`build/analysis/repository_map_20261102/slr_pipe_bandwidth_options.txt` and
+`slr_width_performance_tradeoff.txt`. No RTL topology or bandwidth change is selected yet.
+The query session exited normally with code 0, returned both tool slots and left the input
+hash unchanged. No CAD process from the route or this investigation remains.
+
+The VU alternatives need more than a narrower wire declaration. Front/back result sharing
+is a candidate for 256 fewer surviving return nets; the independent reduction drain must
+remain separate unless buffering/admission is proved. Moving the boundary to the SPM client
+retains two read lines and one write line per cycle, but also carries 512 SREG bits, a
+256-bit command and control/address/byte-enable signals: roughly 2.5 K declared boundary
+bits, not 1.5 K. It also moves logic into already busy outer SLRs. Moving only angle/coefficient
+selection is insufficient: AMERGE's AM_L mode needs two lane-varying coefficient vectors.
+Keeping a full-width fallback preserves the original wires. These are source-level options,
+not selected changes, equivalence proofs, timing passes or measured SLL reductions.
+
 `hw/u200/build_xclbin.sh k4` (4 channels, T_MAX 8, the final image) synthesised and placed, then
 `route_design` failed: "The router is unable to resolve localized SLL routing demand"
 (Route 35-3339), 5.4 M unrouted pins.
@@ -293,7 +330,8 @@ No runtime/RTL changes or extra build/test/Vivado/DCP/link runs were made for th
 2. Investigate SLR interconnect reduction first, per the user's latest direction. Preserve the
    weight streams' throughput where possible. Per-SLR sharing of the identical 530-bit cluster
    broadcast is a candidate: one crossing for c0/c2 and one for c1/c3, followed by local fanout,
-   removes about 1,060 duplicated logical boundary signals without serializing the payload.
+   could remove about 1,058 duplicated logical boundary-net incidences in the measured scopes
+   without serializing the payload.
    Actual SLL savings, reset/latency equivalence, local fanout and new ownership rules remain
    unverified. Also inspect the added VU/ATT paths and the DDR0/3 central weight-response detour.
    Reducing register depth alone does not reduce a bus's crossing width. Narrowing a weight
