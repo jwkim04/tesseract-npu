@@ -48,6 +48,7 @@ core/tsr_vu_rcp.sv
 core/tsr_vu_sqrt.sv
 core/tsr_vu_sincos.sv
 core/tsr_vu_lane.sv
+core/tsr_vu_lane_share.sv
 core/tsr_vu_lanes.sv
 core/tsr_vu_gen.sv
 core/tsr_vu_rd.sv

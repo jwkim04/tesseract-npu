@@ -34,7 +34,10 @@
 #         SPM-facing part of the vector unit (reader, injector, writer, reduction, angle unit),
 #         central gather, MVM dispatch; the control bridge (u_ctrl of the adapter), the reset block
 #         (u_rst), the bridges of channels 1 and 2 and the core side of the bridges of channels 0 and 3
-#   Pipes between a cluster (with its assembler) and the centre (g_cl[c].u_bcp / u_wrp / u_wqp,
+#   Broadcast: u_bc_head is the shared first stage in SLR1; every stage of g_cl[c].u_bcp
+#   and its rebuilt decode stays with its cluster. Older checkpoints without u_bc_head keep
+#   the first per-cluster broadcast stage in SLR1 and the remaining stages local.
+#   Other pipes between a cluster (with its assembler) and the centre (g_cl[c].u_wrp / u_wqp,
 #   u_gather/g_asm[c].u_sp / g_jp.u_jp + u_jl): the first stage on the source side, the last on the
 #   destination side, so every crossing is one register-to-register hop; the result pipe
 #   g_cl[c].u_rp and the attention job pipe g_ajp.u_ajp stay with their cluster (both ends).
@@ -42,6 +45,7 @@
 #   Direct broadcast decode leaves stay with the destination cluster; the lane wrapper's direct
 #   writer/reduction helpers stay in SLR1. Synthesis can rebuild these cones under the pipe wrappers,
 #   outside the original consumer hierarchy. The split pipe parents are never assigned wholesale.
+#   The optional u_lanes/u_share result mux and its selection delay stay with the lanes in SLR0.
 #   The ATT_PATH_STALL reduction LUTs stay beside att_stall_q in SLR1 even when synthesis puts
 #   them under a cluster. Their source registers and shared functional decode stay with the cluster.
 #   The core's reset copies stay free.
@@ -223,6 +227,10 @@ k4fp_add $k4fp_rest $k4fp_stall "ATT_PATH_STALL aggregation and endpoint"
 set lanes {}
 for {set l 0} {$l < 16} {incr l} { lappend lanes [k4fp_cell "$vu/u_lanes/g_lane\[$l\].u_lane"] }
 k4fp_add $k4fp_lane $lanes "u_vu/u_lanes (16 lanes)"
+set k4fp_shared_vu [expr {[llength [get_cells -quiet "$vu/u_lanes/u_share"]] == 1}]
+if {$k4fp_shared_vu} {
+  k4fp_add $k4fp_lane [k4fp_cell "$vu/u_lanes/u_share"] "u_vu shared lane result mux"
+}
 
 # the control core's sub-pblock of SLR1: tsr_ctrl_rv (Ibex, debug module, TCMs, bus, control window)
 set k4fp_ctrl_cr "CLOCKREGION_X0Y6:CLOCKREGION_X0Y8"
@@ -310,7 +318,7 @@ proc k4fp_direct_leaves {inst} {
   }
   return $result
 }
-proc k4fp_broadcast_parts {inst first_s last_s} {
+proc k4fp_broadcast_parts {inst first_s last_s {min_stages 2}} {
   set parts [dict create]
   set stages [dict create]
   set plen [string length "$inst/"]
@@ -331,11 +339,27 @@ proc k4fp_broadcast_parts {inst first_s last_s} {
     dict lappend parts $s $cell
   }
   set indices [lsort -integer [dict keys $stages]]
-  if {[llength $indices] < 2} { error "k4_floorplan: broadcast $inst has fewer than 2 register stages" }
+  if {[llength $indices] < $min_stages} { error "k4_floorplan: broadcast $inst has fewer than $min_stages register stages" }
   for {set i 0} {$i <= [lindex $indices end]} {incr i} {
     if {![dict exists $stages $i]} { error "k4_floorplan: broadcast $inst is missing stage $i" }
   }
   return $parts
+}
+# The shared head may be replicated by physical optimisation, but all copies
+# must stay central. A reconstructed consumer cone here needs an explicit
+# ownership decision; do not silently assign arbitrary decode to SLR1.
+proc k4fp_broadcast_head {mvm} {
+  set inst "$mvm/u_bc_head"
+  set cells [k4fp_direct_leaves $inst]
+  if {[llength $cells] == 0} { error "k4_floorplan: shared broadcast head is empty" }
+  set plen [string length "$inst/"]
+  foreach cell $cells {
+    set rel [string range [get_property NAME $cell] $plen end]
+    if {![regexp {^g_keep\.[vd]_q_reg\[0\]} $rel] || [get_property REF_NAME $cell] ne "FDRE"} {
+      error "k4_floorplan: unknown shared broadcast head leaf $cell"
+    }
+  }
+  return $cells
 }
 proc k4fp_gather_helpers {inst} {
   set result {}
@@ -416,6 +440,13 @@ proc k4fp_check_locality {{placed 0}} {
   if {![info exists k4fp_scope]} { error "k4_floorplan: locality scope was not captured" }
   set mvm [dict get $k4fp_scope mvm]
   set vu [dict get $k4fp_scope vu]
+  set shared_bc [dict get $k4fp_scope shared_bc]
+  if {$shared_bc} { k4fp_check_cells 1 [k4fp_broadcast_head $mvm] $placed }
+  if {[dict get $k4fp_scope shared_vu]} {
+    set share "$vu/u_lanes/u_share"
+    set leaves [get_cells -quiet -hierarchical -filter "IS_PRIMITIVE && NAME =~ $share/* && REF_NAME != GND && REF_NAME != VCC"]
+    k4fp_check_cells 0 $leaves $placed
+  }
   set stall [k4fp_att_stall_cone $mvm]
   k4fp_check_cells 1 $stall $placed
   # The reduction's source FFs remain in their original clusters, including
@@ -441,18 +472,26 @@ proc k4fp_check_locality {{placed 0}} {
     set leaves [get_cells -quiet -hierarchical -filter "IS_PRIMITIVE && NAME =~ $inst/* && REF_NAME != GND && REF_NAME != VCC"]
     k4fp_check_cells $s $leaves $placed
     k4fp_check_cells $s [k4fp_gather_helpers $g] $placed
-    dict for {side cells} [k4fp_broadcast_parts "$p.u_bcp" 1 $s] { k4fp_check_cells $side $cells $placed }
+    if {$shared_bc} {
+      set bc_parts [k4fp_broadcast_parts "$p.u_bcp" $s $s 1]
+    } else { set bc_parts [k4fp_broadcast_parts "$p.u_bcp" 1 $s] }
+    dict for {side cells} $bc_parts { k4fp_check_cells $side $cells $placed }
   }
   dict for {s cells} [k4fp_lane_parts "$vu/u_lanes"] { k4fp_check_cells $s $cells $placed }
   puts "K4FP locality PASS (placed=$placed)"
 }
 
 set npin 0
+set k4fp_shared_bc [expr {[llength [get_cells -quiet "$mvm/u_bc_head"]] == 1}]
+if {$k4fp_shared_bc} {
+  k4fp_add $k4fp_rest [k4fp_broadcast_head $mvm] "shared broadcast head"
+  puts "K4FP broadcast: shared source stage in SLR1, separate local cluster tails"
+}
 foreach {c s} $k4fp_map {
   if {$c >= $nch} { continue }
   set p "$mvm/g_cl\[$c\]"
   set g "$mvm/u_gather/g_asm\[$c\]"
-  incr npin [k4fp_pipe_ends "$p.u_bcp" $k4fp_rest $s]
+  if {!$k4fp_shared_bc} { incr npin [k4fp_pipe_ends "$p.u_bcp" $k4fp_rest $s] }
   incr npin [k4fp_pipe_ends "$p.u_wrp" $k4fp_rest $s]
   incr npin [k4fp_pipe_ends "$p.u_wqp" $s $k4fp_rest]
   incr npin [k4fp_pipe_ends "$p.u_rp"  $s $s]
@@ -460,10 +499,13 @@ foreach {c s} $k4fp_map {
   k4fp_add $s [k4fp_cell "$p.g_ajp.u_ajp"] "g_cl\[$c\] attention job pipe (local)"
   incr npin [k4fp_pipe_ends "$g.u_sp"  $k4fp_rest $s]
   incr npin [k4fp_jp_ends   "$g.g_jp"  $s $k4fp_rest]
-  k4fp_assign_parts [k4fp_broadcast_parts "$p.u_bcp" $k4fp_rest $s] "g_cl\[$c\] broadcast stages and decode"
+  if {$k4fp_shared_bc} {
+    set k4fp_bc_parts [k4fp_broadcast_parts "$p.u_bcp" $s $s 1]
+  } else { set k4fp_bc_parts [k4fp_broadcast_parts "$p.u_bcp" $k4fp_rest $s] }
+  k4fp_assign_parts $k4fp_bc_parts "g_cl\[$c\] broadcast stages and decode"
   k4fp_add $s [k4fp_gather_helpers $g] "g_asm\[$c\] attention selector and mux"
 }
-puts "K4FP pipes pinned: $npin stages (first / last stage of the 7 pipes of each of $nch clusters)"
+puts "K4FP pipes pinned: $npin stages (shared broadcast head/tails assigned separately when present)"
 
 # the lane pipes of tsr_vu_lanes (g_pipe.ip_q: injector -> lanes, rp_q: the lanes' reset, op_q: lanes -> writer):
 # stage 0 / last stage by the direction (rest = the SPM-facing side)
@@ -538,6 +580,7 @@ foreach s {0 1 2} {
 }
 # Later implementation hooks may overwrite generic Tcl globals such as nch,
 # mvm and vu. Retain this floorplan's scope for read-only post-step checks.
-set k4fp_scope [dict create map $k4fp_map nch $nch mvm $mvm vu $vu]
+set k4fp_scope [dict create map $k4fp_map nch $nch mvm $mvm vu $vu \
+  shared_bc $k4fp_shared_bc shared_vu $k4fp_shared_vu]
 k4fp_check_locality
 current_instance -quiet

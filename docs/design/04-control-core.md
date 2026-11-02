@@ -757,11 +757,14 @@ no CSR access waits on clk_rv without a bound.
 
 ### 11.3 Constraints (kernel XDC packaged in the `.xo`)
 
-`set_max_delay -datapath_only` = min(period) on every gray bus and handshake data path,
+`set_max_delay -datapath_only` ≤ min(period) on every gray bus and handshake data path,
 `set_bus_skew` on gray buses, `ASYNC_REG` on synchroniser flops; no `set_clock_groups` (it would
 override the max delays; the platform clocks come from one clocking block and may be timed as
 related). Gates: `report_cdc` on the out-of-context run lists only the intended crossings, all
 safe; zero unconstrained `ap_clk` ↔ `ap_clk_2` paths in the linked design.
+The XDC caps both the datapath and gray-bus skew bounds at 3.333 ns. Lowering the K4 core
+request to 250 MHz therefore preserves the original crossing budget. A faster clock still
+requires its smaller period; the cap never relaxes that requirement.
 
 The constraints cover every crossing of the design, `tsr_dbg_rv`'s included, not only `tsr_ctrl`'s:
 `rtl/ctrl/viv/tsr_ctrl_cdc.xdc` selects the cells by the instance names `u_sync*` (`tsr_sync`), `u_rst*`

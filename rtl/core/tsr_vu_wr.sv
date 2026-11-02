@@ -37,8 +37,7 @@ module tsr_vu_wr
   input  logic                           d_v,
   input  logic                           d_back,
   input  tsr_vu_desc_t                   d_desc,
-  input  logic [15:0][31:0]              f_y,
-  input  logic [15:0][31:0]              b_y,
+  input  logic [15:0][31:0]              lane_y,   // selected before the lane return pipe
   // credits
   input  logic [1:0]                     oc_take,
   output logic [7:0]                     oc_free,
@@ -111,7 +110,7 @@ module tsr_vu_wr
   // P (the cycle before the exit, registered): the exiting part's descriptor, which words it fills,
   // which words are zero (tail rule, applied on the last part), whether the line is complete
   tsr_vu_desc_t      xd;                                 // the exiting part's descriptor
-  logic              bsel_q, emit_q;
+  logic              emit_q;
   logic [15:0]       plc_q, zr_q;
   logic [1:0]        wsel_q;                             // part width: 0 16 words, 1 8, 2 4
   always_ff @(posedge clk) begin
@@ -120,7 +119,6 @@ module tsr_vu_wr
     d = bv1 ? bd1 : fd1;
     w = (d.nparts == 3'd4) ? 4 : (d.nparts == 3'd2) ? 8 : 16;
     xd     <= d;
-    bsel_q <= bv1;
     emit_q <= (fv1 || bv1) && (32'(d.part) == 32'(d.nparts) - 1);
     wsel_q <= (w == 4) ? 2'd2 : (w == 8) ? 2'd1 : 2'd0;
     for (int i = 0; i < 16; i++) begin
@@ -133,7 +131,17 @@ module tsr_vu_wr
   wire unused_xd = &{1'b0, xd.part, xd.nparts};        // decoded into plc_q / wsel_q / emit_q
 
   logic [15:0][31:0] xy;
-  assign xy = bsel_q ? b_y : f_y;
+  assign xy = lane_y;
+
+`ifndef SYNTHESIS
+  logic chk_on_q;
+  initial chk_on_q = 1'b0;
+  always @(posedge clk) if (!rst_n) chk_on_q <= 1'b1;
+  always_ff @(posedge clk) begin
+    if (rst_n && chk_on_q) assert (!(fv && bv))
+      else $error("%m: front/back exits overlap on the shared return");
+  end
+`endif
 
   logic [15:0][31:0] lb_q;                               // the line being assembled
   logic [15:0][31:0] ln;                                 // the line with this part placed

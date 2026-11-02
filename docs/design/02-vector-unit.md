@@ -1045,9 +1045,14 @@ the AMERGE batch control).
 **Placement:** SLR1 next to `tsr_spm`. The SPM-facing stage (pair-read registers, output FIFO)
 sits beside the URAM columns, with the lanes in adjacent clock regions. Fallback, the third remedy
 of CC's 65 % gate (CC-24, after the shrink knobs and DB's optional blocks): the lanes move to
-SLR0 behind registered pipes. That takes
-about 3.4 K SLLs (the injector's lane operands, 16 × 4 × 32 bits, the partial drain address and the reset in; 16 front exits,
-8 back exits and 16 partial drain words of 32 bits out) and adds 2 × `VU_LANE_PIPE` cycles of latency to every lane exit
+SLR0 behind registered pipes. The original separate-return design used about 3.4 K boundary
+connections. The injector orders front and back exits so that only one is consumed per cycle.
+`tsr_vu_lane_share` now selects that exit beside the lanes, before the output pipe: one 512-bit
+result replaces separate 512-bit front and 256-bit live back results at BACK_LANES=8. The
+512-bit reduction drain remains independent. A back-valid token travels with the inputs and
+is delayed by S0 plus LB cycles, reset with the lanes. The change removes 256 data wires and
+adds at most one selection wire; physical SLL savings still need measurement. The input
+operands remain four 512-bit vectors. The pipes add 2 × `VU_LANE_PIPE` cycles of latency to every lane exit
 and to a partial drain read (`rtl/core/tsr_vu_lanes.sv`: `VU_LANE_PIPE` stages on each side of the 16 lanes; 0 = none,
 2 on k4; `tsr_vu_inj` and `tsr_vu_wr` take the exit delay as `LANE_X`, `tsr_vu_red` the drain delay as `DRL`); results
 are unchanged (the unit bench with 2 and 3 stages, `core_m7` with 2).

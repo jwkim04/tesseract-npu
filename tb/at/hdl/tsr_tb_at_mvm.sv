@@ -27,6 +27,7 @@ module tsr_tb_at_mvm
   parameter  int unsigned     MUL_LAT        = 4,
   parameter  int unsigned     ADD_LAT        = 5,
   parameter  int unsigned     WS_FIFO_BEATS  = 512,
+  parameter  int unsigned     RST_LOCAL      = 0,
   localparam int unsigned     BB             = 512,
   localparam int unsigned     AW             = tsr_spm_aw(SPM_BYTES / TSR_LINE_BYTES)
 ) (
@@ -53,6 +54,7 @@ module tsr_tb_at_mvm
   output logic                                perf_att_qk,
   output logic                                perf_att_pv,
   output logic                                perf_att_stall,
+  output logic [2:0]                          o_bc_seen,
 
   // ---- SPM client (Python model) ----
   output logic                                spm_rd_req_valid,
@@ -113,7 +115,7 @@ module tsr_tb_at_mvm
     .HAS_ATT(1'b1), .XC_CMD_W(256), .NUM_CH(NUM_CH), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES),
     .SPM_RD_LAT(SPM_RD_LAT), .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BB), .WS_FIFO_BEATS(WS_FIFO_BEATS),
     .BC_PIPE(BC_PIPE), .RES_PIPE(RES_PIPE), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT), .MUL_LAT(MUL_LAT),
-    .ADD_LAT(ADD_LAT)
+    .ADD_LAT(ADD_LAT), .RST_LOCAL(RST_LOCAL)
   ) u_mvm (
     .clk, .rst_n,
     .cmd_valid, .cmd_ready, .cmd, .cmd_xc, .xcmd, .done,
@@ -124,6 +126,33 @@ module tsr_tb_at_mvm
     .ws_rd_rsp_valid(ws_rsp_valid), .ws_rd_rsp_ready(ws_rsp_ready), .ws_rd_rsp_data(s_rd_rsp_data),
     .ws_rd_rsp_last(s_rd_rsp_last), .ws_rd_rsp_id(s_rd_rsp_id),
     .perf_mvm_busy, .perf_att_qk, .perf_att_pv, .perf_att_stall
+  );
+
+  // The same independent original-pipe model checks actual ATT command / line mappings.
+  localparam int unsigned BCW = $bits(tsr_mvm_bcline_t);
+  logic [NUM_CH-1:0][2:0] bc_valid;
+  logic [NUM_CH-1:0][BCW-1:0] bc_data;
+  wire [NUM_CH-1:0][2:0] unused_bc_reset_discarded;
+  initial o_bc_seen = '0;
+  always @(posedge clk) if (u_mvm.rst_t_n) o_bc_seen <= o_bc_seen | u_mvm.bc_v_q;
+  for (genvar c = 0; c < NUM_CH; c++) begin : g_bc_observe
+    assign bc_valid[c] = {u_mvm.g_cl[c].u_cl.bc_acmd_valid,
+                          u_mvm.g_cl[c].u_cl.bc_cmd_valid,
+                          u_mvm.g_cl[c].u_cl.bc_line_valid};
+    assign bc_data[c] = u_mvm.g_cl[c].u_cl.bc_line;
+    always @(posedge clk) if (u_mvm.rst_t_n) begin
+      if (bc_valid[c][1])
+        assert (u_mvm.g_cl[c].u_cl.bc_cmd == bc_data[c][$bits(tsr_mvm_ccmd_t)-1:0])
+          else $fatal(1, "%m: MVM command overlay differs");
+      if (bc_valid[c][2])
+        assert (u_mvm.g_cl[c].u_cl.bc_acmd == bc_data[c][$bits(tsr_att_pkg::tsr_att_ccmd_t)-1:0])
+          else $fatal(1, "%m: ATT command overlay differs");
+    end
+  end
+  tsr_mvm_bc_observer #(.NUM_CH(NUM_CH), .DEPTH(BC_PIPE), .RST_LOCAL(RST_LOCAL), .W(BCW)) u_bc_observer (
+    .clk, .rst_n, .top_rst_n(u_mvm.rst_t_n), .cluster_rst_n(u_mvm.rst_c_n),
+    .source_valid(u_mvm.bc_v_q), .source_data(u_mvm.bc_d_q),
+    .cluster_valid(bc_valid), .cluster_data(bc_data), .reset_discarded(unused_bc_reset_discarded)
   );
 
   // ---- one arbiter per channel: source WS live, AUX / DMA and the writes tied off ----

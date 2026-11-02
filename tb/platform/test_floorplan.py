@@ -21,7 +21,9 @@ def run_fixture(mode, case):
 
 @pytest.mark.parametrize("mode", ["core", "kernel"])
 @pytest.mark.parametrize("case", ["normal", "placed", "membership", "post_normal",
-                                  "stall_reparented", "stall_existing_parent", "repeat"])
+                                  "stall_reparented", "stall_existing_parent", "repeat",
+                                  "shared_bc", "shared_bc_deep", "shared_bc_repeat",
+                                  "post_shared_bc", "shared_vu", "post_shared_vu"])
 def test_k4_floorplan_locality(mode, case):
     result = run_fixture(mode, case)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -47,6 +49,14 @@ def test_k4_floorplan_locality(mode, case):
     ("post_stall_replica", "is not assigned"),
     ("post_stall_source_misplaced", "is not placed in SLR0"),
     ("post_stall_source_replica", "is not assigned"),
+    ("shared_bc_empty_head", "shared broadcast head is empty"),
+    ("shared_bc_unknown_head", "unknown shared broadcast head leaf"),
+    ("shared_bc_missing_tail", "fewer than 1 register stages"),
+    ("post_shared_bc_head_misplaced", "is not placed in SLR1"),
+    ("post_shared_bc_tail_misplaced", "is not placed in SLR0"),
+    ("post_shared_bc_replica", "is not assigned"),
+    ("post_shared_vu_misplaced", "is not placed in SLR0"),
+    ("post_shared_vu_missing", "empty locality check"),
 ])
 def test_k4_floorplan_rejects_missing_or_unowned_cells(case, diagnostic):
     result = run_fixture("core", case)

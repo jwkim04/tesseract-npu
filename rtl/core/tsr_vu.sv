@@ -127,7 +127,7 @@ module tsr_vu
   tsr_vu_desc_t      d_desc;
   logic              topk_v;
   tsr_vu_slot_t      topk_slot;
-  logic [15:0][31:0] f_y, b_y;
+  logic [15:0][31:0] lane_y;
   logic [1:0] ev_w;
   logic       ev_line, wr_idle;
   logic        s_we, s2_we, s_wtag, s2_wtag;
@@ -586,12 +586,12 @@ module tsr_vu
   // lanes (behind LANE_PIPE register stages on each side)
   tsr_vu_lanes #(.EXP_LANES(EXP_LANES), .BACK_LANES(BACK_LANES), .PIPE(LANE_PIPE)) u_lanes (
     .clk, .rst_n, .l_v, .l_uop, .l_a, .l_b, .l_c1, .l_c2, .l_neg, .l_lv, .l_fresh, .l_pa,
-    .dr_addr, .dr_data, .f_y, .b_y
+    .back_valid(d_v && d_back), .dr_addr, .dr_data, .lane_y
   );
 
   // write side
   tsr_vu_wr #(.SPM_BYTES(SPM_BYTES), .OFD(OFD), .LMAW(LMAW), .LANE_X(LANE_X)) u_wr (
-    .clk, .rst_n, .d_v, .d_back, .d_desc, .f_y, .b_y,
+    .clk, .rst_n, .d_v, .d_back, .d_desc, .lane_y,
     .oc_take(slot_take ? slot_oc : 2'd0), .oc_free, .rc_take(slot_take && slot_rc), .rc_free,
     .r_v, .r_tag, .r_line, .r_data, .r_be,
     .t_v(tk_v), .t_ready(tk_ready), .t_tag(tk_tag), .t_line(tk_line), .t_data(tk_data),

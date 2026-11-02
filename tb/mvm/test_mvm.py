@@ -54,6 +54,8 @@ cocotb tests (each configuration runs all of them):
   mvm_overlap     undefined overlaps (dst inside x, overlapping token ranges): must finish
                   normally, quiescent, writes only inside the y ranges (values only logged)
   mvm_reset       synchronous reset in the middle of MVMs, then fully checked MVMs
+  mvm_bc_flush    one-cycle reset while a command / line occupies each broadcast stage; every
+                  production cluster port is checked against independent old per-cluster pipes
   mvm_cycles      cycle exactness (CC-25: "cycle-identical, so every replay stays exact"): a fixed MVM list
                   under a fixed memory model (the channels' random generators re-seeded, so $TSR_SEED does not
                   matter), in the fast and the random regime; the digest of every MVM's {accept -> done,
@@ -115,7 +117,7 @@ CFGS = {
 REAL_CFGS = tuple(CFGS)          # the same tests with the real tsr_mvm_back / tsr_mvm_actbuf
 ATT_CFGS = ("c4", "c3t3")        # ... and with HAS_ATT = 1 (non-power-of-two NUM_CH and T_MAX 3 among them)
 
-TESTS = ["mvm_directed", "mvm_random", "mvm_golden", "mvm_b2b", "mvm_overlap", "mvm_perf", "mvm_reset", "mvm_cycles"]
+TESTS = ["mvm_directed", "mvm_random", "mvm_golden", "mvm_b2b", "mvm_overlap", "mvm_perf", "mvm_reset", "mvm_cycles", "mvm_bc_flush"]
 ATT_TESTS = ["mvm_directed", "mvm_b2b", "mvm_perf", "mvm_cycles"]   # HAS_ATT = 1: the weight path unchanged
 
 W_LO = 1 << 21             # lowest weight beat (every channel, same W_OFF; was above the simulator's staging area)
@@ -149,7 +151,7 @@ def build_spec(real: bool):
         if not real and s.name in ("tsr_mvm_back.sv", "tsr_mvm_actbuf.sv"):
             s = DBL / s.name
         srcs.append(s)
-    srcs.append(TB_SV)
+    srcs += [HDL / "tsr_mvm_bc_observer.sv", TB_SV]
     if real:
         return srcs, []
     return srcs, [str(DBL / "tsr_mvm_dbl.cpp"), str(_ref_archive()),
@@ -160,17 +162,17 @@ def is_skeleton(path: Path) -> bool:
     return "SKELETON" in path.read_text()
 
 
-def _run(cfg: str, real: bool, att: bool = False):
-    p = CFGS[cfg]
+def _run(cfg: str, real: bool, att: bool = False, *, overrides=None, only=None, suffix=""):
+    p = dict(CFGS[cfg], **(overrides or {}))
     sel = os.environ.get("TSR_MVM_TESTS")
-    tests = [t for t in (ATT_TESTS if att else TESTS) if not sel or t in sel.split(",")]
+    tests = [t for t in (only or (ATT_TESTS if att else TESTS)) if not sel or t in sel.split(",")]
     if not real:
         tests = [t for t in tests if t != "mvm_cycles"]   # the double back end is not the weight path's timing
     srcs, bargs = build_spec(real)
     extra = os.environ.get("TSR_MVM_BUILD_ARGS", "").split()   # e.g. -DSYNTHESIS (no RTL assertions)
     run("tsr_tb_mvm", __name__, parameters=dict(p, HAS_ATT=1) if att else p, sources=srcs,
         build_args=bargs + extra, testcase=tests,
-        name="tsr_tb_mvm_%s%s%s%s" % ("real_" if real else "", cfg, "_att" if att else "", "_x" if extra else ""),
+        name="tsr_tb_mvm_%s%s%s%s%s" % ("real_" if real else "", cfg, "_att" if att else "", "_x" if extra else "", suffix),
         extra_env={"TSR_MVM_CFG": json.dumps(dict(p, name=cfg, real=real, att=att))})
 
 
@@ -191,6 +193,18 @@ def test_mvm_real(cfg):
 def test_mvm_real_att(cfg):
     """The same weight-path checks and the same cycle digests with the attention modes built in."""
     _run(cfg, real=True, att=True)
+
+
+def test_mvm_bc_reset_cycles():
+    """Adding local reset copies keeps the existing c3t3 cycle digest, including BC_PIPE 3."""
+    _run("c3t3", real=True, att=True, overrides=dict(RST_LOCAL=2),
+         only=["mvm_cycles", "mvm_bc_flush"], suffix="_rst2")
+
+
+def test_mvm_bc_u200():
+    """Four channels with BC_PIPE 2, RST_LOCAL 2 and HAS_ATT; compare all cluster ports each cycle."""
+    _run("c4", real=True, att=True, overrides=dict(BC_PIPE=2, RST_LOCAL=2),
+         only=["mvm_directed", "mvm_bc_flush", "mvm_perf"], suffix="_bc2_rst2")
 
 
 # =============================================================================================
@@ -395,7 +409,7 @@ class Monitor:
         while True:
             await FallingEdge(d.clk)
             self.cyc += 1
-            if int(d.rst_n.value) == 0:
+            if int(d.o_mvm_rst_n.value) == 0:
                 self.hold = self.pend = False
                 continue
             acc = int(d.cmd_valid.value) & int(d.cmd_ready.value)
@@ -458,7 +472,7 @@ class BcMon:
     def __init__(self, dut, nch: int):
         self.dut = dut
         self.cl = [dut.u_mvm.g_cl[c].u_cl for c in range(nch)]
-        self.watch = sorted({0, nch - 1})
+        self.watch = list(range(nch))
         self.clear()
 
     def clear(self):
@@ -469,7 +483,7 @@ class BcMon:
         d = self.dut
         while True:
             await FallingEdge(d.clk)
-            if int(d.rst_n.value) == 0:
+            if int(d.o_mvm_rst_n.value) == 0:
                 continue
             for c in self.watch:
                 cl = self.cl[c]
@@ -542,7 +556,7 @@ class Tb:
         await Timer(1, "ns")
         self.clock = Clock(d.clk, 10, unit="ns")
         self.clock.start(start_high=True)
-        self.mem = MemModel(d, num_ch=self.nch, addr_w=self.p["ADDR_BEAT_W"],
+        self.mem = MemModel(d, num_ch=self.nch, addr_w=self.p["ADDR_BEAT_W"], rst_n=d.o_mvm_rst_n,
                             rd_outstanding=self.p["RD_OUTSTANDING"], limit_beats=self.limit,
                             seed=tb_seed(), wr_order="any")
         self.mem.start()
@@ -553,19 +567,20 @@ class Tb:
         await ClockCycles(d.clk, 5)
         await RisingEdge(d.clk)
         d.rst_n.value = 1
-        await ClockCycles(d.clk, 2)
+        await ClockCycles(d.clk, self.p.get("RST_LOCAL", 0) + 2)
 
-    async def reset(self, cycles: int = 4):
+    async def reset(self, cycles: int = 4, *, start_now: bool = False):
         d = self.dut
-        await RisingEdge(d.clk)
+        if not start_now:
+            await FallingEdge(d.clk)
         d.rst_n.value = 0
         d.cmd_valid.value = 0
         d.h_rd_req_valid.value = 0
         d.h_wr_valid.value = 0
         await ClockCycles(d.clk, cycles)
-        await RisingEdge(d.clk)
+        await FallingEdge(d.clk)
         d.rst_n.value = 1
-        await ClockCycles(d.clk, 2)
+        await ClockCycles(d.clk, self.p.get("RST_LOCAL", 0) + 2)
 
     def regime(self, name: str):
         for k, v in MEM_REGIMES[name].items():
@@ -1298,3 +1313,80 @@ async def mvm_reset(dut):
         for _ in range(2):
             await tb.mvm(make_mvm(rnd, p, kmax_eff=1024))
     dut._log.info("mvm_reset: ok")
+
+
+@cocotb.test()
+async def mvm_bc_flush(dut):
+    """Exercise each occupied stage across a one-cycle reset, then run complete oracle checks.
+
+    The HDL observer checks the actual production source and every cluster every cycle, including
+    bubbles and reset flushes. No DUT signal is forced and no expected digest is re-pinned.
+    """
+    tb = await new_tb(dut)
+    p = tb.p
+    rnd = random.Random(tb_seed() * 11 + 0xBC2)
+    tb.regime("fast")
+    stages = max(1, p["BC_PIPE"])
+    local_reset = p.get("RST_LOCAL", 0)
+    for kind in (2, 1):                    # source valid mapping: MVM command, broadcast line
+        for offset in range(stages):
+            m = make_mvm(rnd, p, fmt=0, K=min(2048, p["K_MAX"]), N=17 * tb.nch, T=1, acc=False)
+            tb.load_weights(m)
+            await tb.spm_write(m["x"], b"".join(m["qas"]))
+            await tb.issue(m)
+            # A command's su_q or a line's bc_rsp becomes bc_v_q on the next edge,
+            # then enters reference stage 0 on the edge after that. A two-stage
+            # local reset must therefore start at that earlier producer, while
+            # reset 0/1 can start from the actual broadcast source. Observe these
+            # events at falling edges; do not infer them from issue()'s return.
+            for _ in range(1000):
+                await FallingEdge(dut.clk)
+                if local_reset == 2:
+                    producer = dut.u_mvm.su_q if kind == 2 else dut.u_mvm.bc_rsp
+                    present = int(producer.value)
+                else:
+                    present = int(dut.o_bc_source_valid.value) & kind
+                if present:
+                    break
+            else:
+                raise AssertionError("broadcast producer valid %d not observed" % kind)
+            delay = offset + max(0, 1 - local_reset)
+            if delay:
+                await ClockCycles(dut.clk, delay)
+                await FallingEdge(dut.clk)
+            pulse = cocotb.start_soon(tb.reset(cycles=1, start_now=True))
+            # Inspect the first local-low half-cycle, before its next edge clears
+            # the histories. This proves each individual injection hits the
+            # requested stage, even if an earlier test already set coverage bits.
+            await Timer(1, "ps")
+            for _ in range(local_reset + 1):
+                if not int(dut.o_mvm_rst_n.value):
+                    break
+                await FallingEdge(dut.clk)
+                await Timer(1, "ps")
+            else:
+                raise AssertionError("local broadcast reset did not arrive")
+            if p["BC_PIPE"]:
+                for c in range(tb.nch):
+                    hist = dut.u_bc_observer.g_reference[c].g_history.valid_history
+                    assert ((int(hist.value) >> (3 * offset)) & kind), (
+                        "cluster %d: local reset missed kind %d at stage %d (history %#x)" %
+                        (c, kind, offset, int(hist.value)))
+                dut._log.info("BC flush phase: raw/local reset %d cycles, depth %d, kind %d, stage %d occupied",
+                              local_reset, p["BC_PIPE"], kind, offset)
+            await pulse
+            await FallingEdge(dut.clk)
+            assert int(dut.o_bc_cluster_valid.value) == 0, "broadcast valid survived reset"
+            assert int(dut.cmd_ready.value) == 1 and int(dut.perf_mvm_busy.value) == 0
+            await tb.mvm(make_mvm(rnd, p, fmt=offset % 2, K=512, N=tb.nch + 1, T=p["T_MAX"], acc=True))
+    for i in range(4):
+        tb.regime("fast" if i % 2 == 0 else "rand")
+        await tb.mvm(make_mvm(rnd, p, K=min(2048, p["K_MAX"]), N=17 * tb.nch, T=p["T_MAX"]))
+    if p["BC_PIPE"]:
+        discarded = int(dut.o_bc_reset_discarded.value)
+        for c in range(tb.nch):
+            assert ((discarded >> (3 * c)) & 3) == 3, "cluster %d: command/line reset flush not exercised" % c
+        dut._log.info("mvm_bc_flush: command/line resets in %d stages, all %d cluster ports checked", stages, tb.nch)
+    else:
+        dut._log.info("mvm_bc_flush: BC_PIPE0 has no buffered item to discard; reset/recovery and %d wire ports checked",
+                      tb.nch)

@@ -456,6 +456,8 @@ async def mvm_run(dut):
     b.port.start()
     b.mem.start()
     await B.clock_reset(dut)
+    for _ in range(cfg.get("rst_local", 0)):
+        await RisingEdge(dut.clk)
     cocotb.start_soon(b.perf_mon())
     for d in json.loads(os.environ.get("TSR_ATMVM_DIRECTED", "[]")) + cfg.get("directed", []):
         await b.att(tag="directed", **d)
@@ -465,6 +467,9 @@ async def mvm_run(dut):
         await b.random_op()
         if b.r.random() < 0.1:
             await b.plain_mvm()
+    if cfg.get("bc_all_valids"):
+        await b.plain_mvm()
+        assert int(dut.o_bc_seen.value) == 7, "line / MVM command / ATT command broadcast coverage missing"
     b.port.stop()
     b.mem.stop()
     b.sim.close()
@@ -745,9 +750,11 @@ def _run(name, cfg, testcase="at_mvm"):
                   CH_BYTES="64'd%d" % cfg["ch_bytes"], SPM_RD_LAT=cfg["spm_rd_lat"], ADDR_BEAT_W=cfg["addr_beat_w"],
                   RD_OUTSTANDING=cfg["rd_out"], BC_PIPE=cfg.get("bc_pipe", 1), RES_PIPE=cfg.get("res_pipe", 1),
                   ACT_RD_LAT=cfg.get("act_rd_lat", 2), MAC_LAT=cfg.get("mac_lat", 3), MUL_LAT=cfg.get("mul_lat", 4),
-                  ADD_LAT=cfg.get("add_lat", 5), WS_FIFO_BEATS=cfg.get("ws_fifo", 512))
+                  ADD_LAT=cfg.get("add_lat", 5), WS_FIFO_BEATS=cfg.get("ws_fifo", 512),
+                  RST_LOCAL=cfg.get("rst_local", 0))
     run("tsr_tb_at_mvm", __name__, parameters=params, name="at_mvm_" + name, testcase=testcase,
-        sources=rtl_sources() + [HERE / "hdl" / "tsr_tb_at_mvm.sv"],
+        sources=rtl_sources() + [HERE.parent / "mvm" / "hdl" / "tsr_mvm_bc_observer.sv",
+                                 HERE / "hdl" / "tsr_tb_at_mvm.sv"],
         extra_env={"TSR_ATMVM_CFG": json.dumps(cfg), "TSR_ATMVM_DIRECTED": os.environ.get("TSR_ATMVM_DIRECTED", "[]")})
 
 
@@ -755,6 +762,15 @@ def test_at_mvm_u200():
     """U200-like: 4 channels, T_MAX 8, K_MAX 32768, SPM_RD_LAT 4, pipes 2, MAC_LAT 9 (the bitstream's)."""
     _run("u200", dict(num_ch=4, t_max=8, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30, spm_rd_lat=4,
                       addr_beat_w=28, rd_out=16, bc_pipe=2, res_pipe=2, mac_lat=9, n_ops=40))
+
+
+def test_at_mvm_bc_reset():
+    """Production BC_PIPE 2 / local reset 2: all three broadcast kinds against old-pipe histories."""
+    _run("bc_rst2", dict(num_ch=4, t_max=8, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30,
+                         spm_rd_lat=4, addr_beat_w=28, rd_out=16, bc_pipe=2, res_pipe=2,
+                         mac_lat=9, rst_local=2, models=False, n_ops=0, bc_all_valids=True,
+                         directed=[dict(pv=False, E=128, D=64, G=2, GS=2, tq=1, hg0=0, u0=0, n=3),
+                                   dict(pv=True, E=128, D=64, G=2, GS=2, tq=1, hg0=0, u0=0, n=3)]))
 
 
 def test_at_mvm_odd():

@@ -208,8 +208,8 @@ proc fixture_rpipe {root n} {
     fixture_cell "$slice/g_f0.main_v_q_reg" FDRE
   }
 }
-proc fixture_vpipe {root} {
-  foreach s {0 1} {
+proc fixture_vpipe {root {depth 2}} {
+  for {set s 0} {$s < $depth} {incr s} {
     fixture_cell "$root/g_keep.d_q_reg\[$s\]\[0\]" FDRE
     fixture_cell "$root/g_keep.v_q_reg\[$s\]\[0\]" FDRE
   }
@@ -226,6 +226,10 @@ if {$fixture_mode eq "core"} {
 set dp [expr {$core eq "" ? "u_dp" : "$core/u_dp"}]
 set mvm "$dp/g_mvm.u_mvm"
 set vu "$dp/g_vu.u_vu"
+set shared_bc [string match *shared_bc* $fixture_case]
+set shared_vu [string match *shared_vu* $fixture_case]
+set bc_tail_depth [expr {$shared_bc && $fixture_case ne "shared_bc_deep" ? 1 : 2}]
+if {$shared_bc} { fixture_vpipe "$mvm/u_bc_head" 1 }
 set ctrl [expr {$core eq "" ? "u_ctrl" : "$core/u_ctrl"}]
 fixture_cell "$ctrl/u_rv/rv_q" FDRE
 fixture_cell "$ctrl/u_cdc/cdc_q" FDRE
@@ -270,7 +274,7 @@ foreach {c s} {0 0 1 2 2 0 3 2} {
   set g "$mvm/u_gather/g_asm\[$c\]"
   fixture_cell "$p.u_cl/acc_q" FDRE
   fixture_cell "$g.u_asm/mux_i_1" LUT3
-  fixture_vpipe "$p.u_bcp"
+  fixture_vpipe "$p.u_bcp" $bc_tail_depth
   fixture_cell "$p.u_bcp/g_att.lo_q\[0\]\[17\]_i_1" LUT6
   fixture_cell "$p.u_bcp/g_att.lo_q_carry" CARRY8
   fixture_cell "$p.u_bcp/fmt_q_rep_i_1" LUT2
@@ -291,6 +295,10 @@ foreach kind {ip rp op} {
 }
 fixture_cell "$vu/u_lanes/g_q\[0\]\[0\]_i_1" LUT4
 fixture_cell "$vu/u_lanes/lb_q\[0\]\[0\]_i_2" LUT6
+if {$shared_vu} {
+  fixture_cell "$vu/u_lanes/u_share/back_q_reg\[0\]" FDRE
+  fixture_cell "$vu/u_lanes/u_share/y_i_1" LUT3
+}
 if {$fixture_mode eq "kernel"} {
   fixture_cell top/u_kernel/u_ctrl/control_q FDRE
   fixture_cell top/u_kernel/u_rst/reset_q FDRE
@@ -321,6 +329,17 @@ if {$fixture_case eq "stall_orphan"} {
 }
 if {$fixture_case eq "stall_unknown"} { dict set cells $stall_a CARRY8 }
 if {$fixture_case eq "stall_missing"} { dict unset cells $stall_q }
+if {$fixture_case eq "shared_bc_empty_head"} {
+  foreach n [dict keys $cells] {
+    if {[string first "$mvm/u_bc_head/" $n] == 0} { dict unset cells $n }
+  }
+}
+if {$fixture_case eq "shared_bc_unknown_head"} { fixture_cell "$mvm/u_bc_head/decode_i_1" LUT2 }
+if {$fixture_case eq "shared_bc_missing_tail"} {
+  foreach n [dict keys $cells] {
+    if {[string first "$mvm/g_cl\[2\].u_bcp/g_keep." $n] == 0} { dict unset cells $n }
+  }
+}
 if {$fixture_case in {stall_existing_parent repeat}} {
   foreach {c s} {0 0 1 2 2 0 3 2} {
     add_cells_to_pblock pblock_dynamic_SLR$s [list "$mvm/g_cl\[$c\].u_cl"]
@@ -328,7 +347,7 @@ if {$fixture_case in {stall_existing_parent repeat}} {
 }
 
 source $fp_script
-if {$fixture_case eq "repeat"} {
+if {$fixture_case in {repeat shared_bc_repeat}} {
   set previous_owners $owners
   source $fp_script
   if {[dict size $owners] != [dict size $previous_owners]} { error "reapply changed ownership coverage" }
@@ -346,6 +365,10 @@ foreach term $stall_other { fixture_assert_owner $term 1 }
 fixture_assert_owner $stall_source 0
 fixture_assert_owner $shared_decode 0
 fixture_assert_owner $functional_sink 0
+if {$shared_bc} {
+  fixture_assert_owner "$mvm/u_bc_head/g_keep.d_q_reg\[0\]\[0\]" 1
+  fixture_assert_owner "$mvm/u_bc_head/g_keep.v_q_reg\[0\]\[0\]" 1
+}
 
 foreach {c s} {0 0 1 2 2 0 3 2} {
   set p "$mvm/g_cl\[$c\]"
@@ -355,8 +378,10 @@ foreach {c s} {0 0 1 2 2 0 3 2} {
                  "$p.u_bcp/g_att.lo_q\[0\]\[17\]_i_1" "$p.u_bcp/g_att.lo_q_carry" "$p.u_bcp/fmt_q_rep_i_1"] {
     fixture_assert_owner $n $s
   }
-  fixture_assert_owner "$p.u_bcp/g_keep.d_q_reg\[0\]\[0\]" 1
-  fixture_assert_owner "$p.u_bcp/g_keep.d_q_reg\[1\]\[0\]" $s
+  for {set st 0} {$st < $bc_tail_depth} {incr st} {
+    fixture_assert_owner "$p.u_bcp/g_keep.d_q_reg\[$st\]\[0\]" [expr {$shared_bc || $st > 0 ? $s : 1}]
+    fixture_assert_owner "$p.u_bcp/g_keep.v_q_reg\[$st\]\[0\]" [expr {$shared_bc || $st > 0 ? $s : 1}]
+  }
   fixture_assert_owner "$g.u_sp/g_keep.d_q_reg\[0\]\[0\]" 1
   fixture_assert_owner "$g.u_sp/g_keep.d_q_reg\[1\]\[0\]" $s
   fixture_assert_owner "$g.g_jp.u_jp/g_slices.g_s\[0\].u_slice/g_f0.main_q_reg\[0\]" $s
@@ -369,6 +394,10 @@ foreach {c s} {0 0 1 2 2 0 3 2} {
 fixture_assert_owner "$vu/u_lanes/g_q\[0\]\[0\]_i_1" 1
 fixture_assert_owner "$vu/u_lanes/lb_q\[0\]\[0\]_i_2" 1
 fixture_assert_owner "$vu/u_lanes/g_lane\[0\].u_lane/data_q" 0
+if {$shared_vu} {
+  fixture_assert_owner "$vu/u_lanes/u_share/back_q_reg\[0\]" 0
+  fixture_assert_owner "$vu/u_lanes/u_share/y_i_1" 0
+}
 foreach row $added { if {[lindex $row 1] eq "$vu/u_lanes"} { error "split lane parent was pinned" } }
 foreach {kind first fp_last_slr} {ip 1 0 rp 1 0 op 0 1} {
   fixture_assert_owner "$vu/u_lanes/g_pipe.${kind}_q_reg\[0\]\[0\]" $first
@@ -403,6 +432,23 @@ if {[string match post_* $fixture_case]} {
     dict set fanin $stall_q [list $replica]
   }
   if {$fixture_case eq "post_missing_proc"} { rename k4fp_check_locality {} }
+  if {$fixture_case eq "post_shared_bc_head_misplaced"} {
+    dict set placements "$mvm/u_bc_head/g_keep.d_q_reg\[0\]\[0\]" SLR0
+  }
+  if {$fixture_case eq "post_shared_bc_tail_misplaced"} {
+    dict set placements "$mvm/g_cl\[2\].u_bcp/g_keep.d_q_reg\[0\]\[0\]" SLR1
+  }
+  if {$fixture_case eq "post_shared_bc_replica"} {
+    fixture_cell "$mvm/u_bc_head/g_keep.d_q_reg\[0\]\[0\]_replica_99" FDRE
+  }
+  if {$fixture_case eq "post_shared_vu_misplaced"} {
+    dict set placements "$vu/u_lanes/u_share/y_i_1" SLR1
+  }
+  if {$fixture_case eq "post_shared_vu_missing"} {
+    foreach n [dict keys $cells] {
+      if {[string first "$vu/u_lanes/u_share/" $n] == 0} { dict unset cells $n }
+    }
+  }
   # Other tool hooks use generic globals. The post-hook must retain the scope
   # captured when the floorplan was applied rather than trust these values.
   set nch 0

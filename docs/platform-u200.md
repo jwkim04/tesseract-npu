@@ -47,9 +47,9 @@ Vitis RTL kernels, module name = kernel name. The control protocol is **`ap_ctrl
 `ap_start` / `ap_done` and no interrupt; the host opens the compute unit with `xrt::ip`, reads and
 writes registers and polls (EX §9.1; `docs/xrt-host.md` §2). The only kernel arguments are the
 channel buffers `ch<c>`. Clocks: `ap_clk` / `ap_rst_n` for the core and `ap_clk_2` /
-`ap_rst_n_2` for the control core. The link requests 300 / 166.7 MHz; Vitis 2024.2 records the
+`ap_rst_n_2` for the control core. K4 requests 250 / 166.7 MHz; Vitis 2024.2 records the
 second request as 166 MHz (§8). K4 acceptance is a core clock of at least 250 MHz, per the
-user's 2026-11-02 decision; 300 MHz is the current implementation request, not a hard gate.
+user's 2026-11-02 decision. K1 retains its 300 MHz core request.
 The earlier k4 image without the control core achieved
 276.3 MHz (§8.2); that is not a result for the corrected design. Clock source and reset checks
 are described in CC §11.1.
@@ -258,7 +258,7 @@ the check on the routed design: `hw/u200/cdc_check.tcl` is the post-route hook o
 fails the implementation run on an unconstrained or unsafe crossing (§8).
 
 Clock/reset integration is checked before routing too. The configs request the two U200
-scalable clocks with `kernel_frequency=0:300|1:166.666667`. Vitis 2024.2 truncates the second
+scalable clocks with `kernel_frequency=0:250|1:166.666667` for K4 (core 300 for K1). Vitis 2024.2 truncates the second
 request to 166 MHz in `clk_info` and the generated timing constraints (6.024096 ns).
 The generated BD connects `ap_clk` to `ss_ucs/aclk_kernel_00` and `ap_clk_2` to
 `ss_ucs/aclk_kernel_01`, with separate reset generators. `[clock] id` accepts only fixed
@@ -347,6 +347,10 @@ adapter in the kernels (2026-11-01; `test_build_xclbin_args` checks the argument
 resolves the platform and prints its `platforminfo` (`test_build_xclbin_platform`, `test_build_xclbin_no_platform`).
 The M0 kernel builds as before: `hw/u200/bw/build_bw_xclbin.sh [hw|hw_emu]` (`docs/m0-bw.md` §4).
 `TSR_BUILD_JOBS` sets the link's synthesis / implementation jobs and Vivado's `general.maxThreads` (the configs: 8).
+`TSR_U200_SYNTH_JOBS` can lower only the number of concurrent IP synthesis workers. The bounded
+K4 validation uses 1 with `TSR_BUILD_JOBS=8`, reserving both host slots for the native parent
+and one worker. Tool threads and implementation jobs remain 8. Invalid limits stop before
+packaging. The isolated build-script regression checks the rendered jobs, clock request and hooks.
 
 `<k>.link.cfg` is `hw/u200/<k>.cfg` with its hook paths made absolute: the configs give them relative
 to `build/u200/<k>`, because v++ resolves a `TCL.PRE` path against its working directory (measured: a
@@ -385,7 +389,7 @@ markers. This path stops before bitstream generation and frequency acceptance.
 | Config | Connectivity | Implementation |
 |---|---|---|
 | `k1.cfg` | `nk=tsr_u200_k1:1:tsr_k1`, `sp=tsr_k1.m_axi_ch0:DDR[1]`, `slr=tsr_k1:SLR1` | `kernel_frequency=0:300\|1:166.666667`; synth / impl jobs 8; placer `AltSpreadLogic_high`; phys_opt and post-route phys_opt on |
-| `k4.cfg` | `nk=tsr_u200_k4:1:tsr_k4`, `sp=tsr_k4.m_axi_ch<c>:DDR[c]`; no `slr=` (one compute unit spanning three SLRs) | the same, plus floorplan C'' (`k4_floorplan.tcl` as the place_design pre-hook, CC §14.2) and locality checks after placement and physical optimisation |
+| `k4.cfg` | `nk=tsr_u200_k4:1:tsr_k4`, `sp=tsr_k4.m_axi_ch<c>:DDR[c]`; no `slr=` (one compute unit spanning three SLRs) | `kernel_frequency=0:250\|1:166.666667`; the same implementation options, plus floorplan C'' (`k4_floorplan.tcl` as the place_design pre-hook, CC §14.2) and locality checks after placement and physical optimisation |
 
 Platform facts (the recorded `platforminfo`, `build/platforms/vpp-smoke/platforminfo.txt`, and the
 platform's `hw/hw.xsa`, `tcl_hooks/impl.xdc` / `preopt.tcl`): DDR bank0 SLR0, bank1 SLR1, bank2
@@ -418,8 +422,12 @@ platform's pblocks, which the script never creates (it stops with an error when 
 | `pblock_dynamic_SLR2` | clusters 1 and 3 with their assemblers; the AXI side of bridge 3 |
 | `pblock_dynamic_SLR1` | the four memory arbiters, SPM, central gather, MVM dispatch, DMA, QACT, CSR; the control bridge `u_ctrl`, the reset block `u_rst`, bridges 1 and 2, the core side of bridges 0 and 3 |
 
-As in core_slr.tcl, the pipes between a cluster (with its assembler) and the centre
-(`g_cl[c].u_bcp` / `u_wrp` / `u_wqp`, `g_asm[c].u_sp` / `u_jp`) get their first stage in the source
+The broadcast shares its first stage, `u_bc_head`, in SLR1. Each cluster retains its own
+`g_cl[c].u_bcp` tail and decode in its destination SLR. With BC_PIPE=2 this keeps the original
+two-cycle delay and one line per cycle while avoiding four independent source registers for
+identical traffic. The floorplan also accepts archived checkpoints with the original split pipes.
+The other pipes between a cluster (with its assembler) and the centre
+(`g_cl[c].u_wrp` / `u_wqp`, `g_asm[c].u_sp` / `u_jp`) get their first stage in the source
 SLR and their last in the destination SLR (one register-to-register hop per crossing), the result
 pipe `u_rp` stays with its cluster, the core's reset copies stay free. Bridges 0 and 3 cross in
 their AXI slices: the last stage of the AR / AW / W slice chains, the first stage of R / B and the
@@ -429,6 +437,13 @@ name, so no cell is in two pblocks. The script runs as the place_design pre-hook
 opt_design like core_slr.tcl in the out-of-context flow; v++ sources it after its own hook and the
 platform's hooks of that step (`scripts/impl_1/_full_place_pre.tcl` of the partial links, §8.2).
 `TSR_K4_FP_BODY` / `TSR_K4_FP_CORE` point it at another hierarchy (validation only).
+The VU's `u_lanes/u_share` result selector and its delay registers stay with the lanes in SLR0.
+Front/back results share one return bus; the independent reduction drain keeps its own bus.
+Both changes retain the four 512-bit weight streams and every numerical pipeline.
+
+The current K4 request is core 250 MHz and RV 166.666667 MHz (Vitis truncates RV to 166).
+The early clock gate reads the matching kernel config and rejects a stale 300 MHz core model.
+The K1 request remains 300 MHz. Both flows retain a CDC bound no larger than 3.333 ns.
 
 Validation without a link (Vivado 2024.2; stand-in pblocks copied verbatim from the platform's
 `impl.xdc`; the script sourced after opt_design):
@@ -737,6 +752,35 @@ congestion level 7, intermediate WNS -2.6 ns in routing; it was stopped for the 
 whole core in SLR1 (§8.4): the measured whole-core synthesis (167 K LUT) plus the DDR subsystem and the adapter is
 about the pblock's 199,680 LUT sites.
 
+### 8.6 Interconnect changes after the route stop (2026-11-02)
+
+The earlier four-cluster image reached 276.3 MHz (§8.2). Its weight-stream capacity is the
+baseline to preserve. The integrated design adds substantial VU/attention logic and wide
+connections around it; the RV subsystem alone is not the dominant resource increment.
+The stopped corrected physopt checkpoint has RV 6,206 LUT, VU 83,398 LUT and 86,829 LUT
+in the four PV modules. The PV count excludes shared attention logic. These hierarchy counts
+are not additive partitions because synthesis combines LUTs across hierarchy boundaries.
+
+| Path | Required concurrency | Change and current evidence |
+|---|---|---|
+| Cluster broadcast | All clusters receive the same line each cycle | Share the central first stage; keep separate local tails. The old DCP has 529 live nets per cluster. Intended boundary incidences fall from 2,116 to 1,058; physical savings are pending. Cycle/reset regressions use the original independent-pipe model. |
+| VU front/back results | The injector schedules at most one consumed exit each cycle | Select before crossing. BACK8 data width falls from 512+256 to 512; add one input selection token. Reduction drain stays independent. Latency and oracle tests cover PIPE 0/2/3. |
+| Gather jobs | The central consumer accepts one job per cycle | Candidate only: pair clusters within each SLR, arbitrate locally and send a tagged job. Declared connections fall from 4×563 to 2×564. Preserve burst storage, ordering and completion at the central take; no implementation yet. |
+| DDR0/3 weight response | Local WS and central DMA are distinct consumers | Candidate only: localize the bridge receive tail and arbiter together. A DMA trunk still crosses. Potential saving is about 512 data connections per boundary; moving only the arbiter leaves the original detour. |
+| VU coefficient inputs | Some modes use row scalars, but AMERGE AM_L uses lane-varying vectors | Scalar encoding alone is insufficient. Local coefficient storage and setup ordering would be a larger change. No width reduction is applied. |
+
+Counts above are logical connections or declared bits, not measured physical SLL use. A shared
+net may still be replicated or consume different columns after placement. Verify its actual
+source and destination SLRs, local decode, per-boundary usage and congestion before routing.
+The changed design uses a new XO/netlist; the preserved checkpoint is a comparison reference.
+
+The implemented changes retain 512 bits per cycle on each weight channel: an ideal payload
+ceiling of 16 GB/s per channel at 250 MHz. Halving a weight link can nearly double the time of
+an equal-row, weight-bound MVM because completion waits for every active cluster. Broadcast
+serialization is also unsafe to dismiss as cheap: normal MVM broadcasts are short, while
+ATTPV can be limited by the one-line-per-cycle broadcast. The selected changes share existing
+traffic without serializing it. No new card throughput or fully routed result exists yet.
+
 ## 9. Timing and resources (Vivado OOC synthesis of `tsr_u200_k1`)
 
 *Measured in Vivado 2024.2 (out of context).* `tb/platform/viv/kernel_ooc.tcl` (synth only, 3.333 ns `ap_clk`, every I/O budgeted 1.6 ns outside,
@@ -897,7 +941,7 @@ passes; `rtl/platform/alveo_xrt/bw/lint.sh` is clean too (both run for this docu
   and bandwidth costs are under review; no replacement build is running. See `docs/handoff.md`.
 - **k4 clock.** The k4 link of §8.2 missed 300 MHz by 0.285 ns and ran at 276.3 MHz (§8.2). Gate T3 now
   accepts at least 250 MHz with the control core (user decision, 2026-11-02). Do not repeat a
-  successful implementation just to reach the current 300 MHz request (§8.4).
+  successful implementation just to reach 300 MHz. The new K4 request is 250 MHz (§8.4).
   If two `keep` reset copies of the core merge (rtl-m3 §14.8), they want `DONT_TOUCH`.
 - **k4 compute-unit placement.** k4 has no `slr=`, so `v++` takes SLR0 as its affinity (reset and
   control from SLR0, §8.2). The link of §8.2 worked that way. If those inputs limit timing,

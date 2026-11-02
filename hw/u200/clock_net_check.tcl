@@ -1,12 +1,16 @@
 # opt_design pre-hook: inspect the synthesized linked design before placement.
 # CC §11.1 and §14.3. The source identities are checked earlier in the BD hook.
-# Check the active 300 / 166.7 MHz request windows before final frequency scaling.
+# Check the active kernel config's request before final frequency scaling.
 # These PERIOD properties retain the request after routing; final acceptance
 # (core >= 250 MHz) uses Vitis's _new_clk_freq in clock_final_check.tcl instead.
 # A 125 MHz fallback requires an explicit clock-request/check-window change.
 source [file join [file dirname [file normalize [info script]]] clock_common.tcl]
 proc tsr_clock_check_net {} {
   puts "CLKNET checking synthesized kernel clocks and reset sources"
+  set tsr_clock_kernel [tsr_clock_one [get_cells -quiet -hierarchical -filter {
+    REF_NAME =~ tsr_u200_k* || ORIG_REF_NAME =~ tsr_u200_k*
+  }] {Tesseract kernel instance}]
+  set requested [tsr_clock_request $tsr_clock_kernel]
   set tsr_clock_core_regs [get_cells -quiet -hierarchical -filter {NAME =~ *u_cdc/lv_q_reg* && IS_SEQUENTIAL}]
   set tsr_clock_rv_regs [get_cells -quiet -hierarchical -filter {NAME =~ *u_cdc/u_sync_lv/s_q_reg* && IS_SEQUENTIAL}]
   if {[llength $tsr_clock_core_regs] == 0 || [llength $tsr_clock_rv_regs] == 0} {
@@ -17,7 +21,9 @@ proc tsr_clock_check_net {} {
   set tsr_clock_core [tsr_clock_one [lsort -unique [get_clocks -quiet -of_objects $tsr_clock_core_pins]] {core clock}]
   set tsr_clock_rv [tsr_clock_one [lsort -unique [get_clocks -quiet -of_objects $tsr_clock_rv_pins]] {RV clock}]
   if {$tsr_clock_core eq $tsr_clock_rv} { error "CLKNET core and RV clocks alias: $tsr_clock_core" }
-  foreach {clock low high} [list $tsr_clock_core 3.32 3.62 $tsr_clock_rv 5.99 6.32] {
+  foreach clock [list $tsr_clock_core $tsr_clock_rv] expected $requested {
+    set low [expr {$expected * 0.995}]
+    set high [expr {$expected * 1.005}]
     set period [get_property PERIOD [get_clocks $clock]]
     if {![string is double -strict $period] || !($period >= $low && $period <= $high)} {
       error "CLKNET $clock period '$period' ns is outside $low..$high ns"
@@ -39,9 +45,6 @@ proc tsr_clock_check_net {} {
     }
   }
   puts "CLKNET RV hart clock checked on [llength $tsr_clock_hart_regs] registers"
-  set tsr_clock_kernel [tsr_clock_one [get_cells -quiet -hierarchical -filter {
-    REF_NAME =~ tsr_u200_k* || ORIG_REF_NAME =~ tsr_u200_k*
-  }] {Tesseract kernel instance}]
   set tsr_clock_kernel [get_property NAME $tsr_clock_kernel]
   set tsr_reset_seen {}
   foreach {reset clock} [list ap_rst_n $tsr_clock_core ap_rst_n_2 $tsr_clock_rv] {

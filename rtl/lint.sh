@@ -204,10 +204,16 @@ lint tsr_mvm -GNUM_CH=1 -GT_MAX=8 -GK_MAX=256 -GSPM_BYTES=4096 -GADDR_BEAT_W=5 -
 # together with the other files of its directory (wrappers may instantiate each other).
 for d in "$ROOT"/tb/*/hdl; do
     [ -d "$d" ] || continue
+    tb_extra=()
+    # The attention bench checks the same production broadcast with the MVM
+    # bench's independent cycle-history observer.
+    if [ "$d" = "$ROOT/tb/at/hdl" ]; then
+        tb_extra+=("$ROOT/tb/mvm/hdl/tsr_mvm_bc_observer.sv")
+    fi
     for f in "$d"/*.sv; do
         [ -e "$f" ] || continue
         top=$(sed -n 's/^\s*module\s\+\([A-Za-z_][A-Za-z0-9_]*\).*/\1/p' "$f" | head -n 1)
-        if out=$("$VERILATOR" --lint-only -Wall --top-module "$top" -F "$FL" "$d"/*.sv 2>&1); then
+        if out=$("$VERILATOR" --lint-only -Wall --top-module "$top" -F "$FL" "$d"/*.sv "${tb_extra[@]}" 2>&1); then
             echo "lint ok   $top (tb)"
         else
             echo "lint FAIL $top (tb)"

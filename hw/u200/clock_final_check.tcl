@@ -21,8 +21,8 @@ proc tsr_clock_check_final {} {
     if {$pin ne $expected || ![string is double -strict $mhz]} {
       error "CLKFINAL invalid clock source/frequency: $line"
     }
-    # Final core acceptance floor is 250 MHz; implementation still requests
-    # 300 MHz. RV stays within the current request's 5% tolerance.
+    # Final core acceptance floor is 250 MHz (K4 requests 250; K1 requests
+    # 300 MHz). RV stays within the current request's 5% tolerance.
     # Faster RV clocks or the 125 MHz fallback require an explicit request
     # and gate change after the corresponding timing choice has been validated.
     lassign [expr {$id == 0 ? {250.0 300.1} : {158.33 166.8}}] low high

@@ -1022,6 +1022,11 @@ SLR0), so congestion inflated every route. Causes and fixes:
    `shreg_extract = "no"` on the stage registers), used for the broadcast and weight-response
    pipes (`tsr_mvm`) and the gather's start pipes;
    measured: 4 separate broadcast pipes after the fix (pipes 8.9 K FF instead of 5.7 K).
+   The 2026-11-02 interconnect change shares only the central first stage when BC_PIPE ≥ 2.
+   Each cluster retains a kept tail of BC_PIPE − 1 stages beside its own decode. All reset
+   copies have identical INIT and shift recurrence, so total latency and reset flush match
+   the original pipes. BC_PIPE 0 and 1 retain the original path. This avoids repeating the
+   earlier failure: a destination cluster's registers must never drive another SLR's cluster.
 2. **Gather job select.** The job data was one NUM_CH × 2 × T_MAX : 1 (64:1 at k4) select of the
    assembly buffers whose select lines fanned out to every buffer flop: −0.88 ns, and in
    floorplan B the router's congested nets were exactly these (`buf_q`, the select). First fix

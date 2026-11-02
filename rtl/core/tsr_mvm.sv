@@ -25,7 +25,7 @@
 //   - perf_mvm_busy: registered, 1 in every cycle from the cycle after the accepting edge up to
 //     and including the cycle of done (cycles the unit holds an instruction; PERF_MVM_CYCLES).
 // Implementation parameters (results identical for every value): WS_FIFO_BEATS (per-cluster
-// weight FIFO), BC_PIPE (broadcast pipe stages per cluster, tsr_vpipe), RES_PIPE (result pipe
+// weight FIFO), BC_PIPE (total broadcast delay, tsr_vpipe), RES_PIPE (result pipe
 // stages per cluster, tsr_rpipe), ACT_RD_LAT, MAC_LAT, MUL_LAT, ADD_LAT, WS_RD_LAT
 // (docs/rtl-m3.md §1).
 //
@@ -42,10 +42,10 @@
 //
 //   cmd ─► c_q ─► su (1 cycle) ─► bc_cmd ──────────────┐   one source register bc_d_q (527 b):
 //                 │                                      ├─► holds the ccmd (low 137 bits) or a
-//                 └─► broadcast reader: SPM reads x_line │   line; per cluster tsr_vpipe(BC_PIPE)
-//                     .. + T*qa_lines - 1, one per cycle │   carries {cmd_valid, line_valid} and
-//                     response -> {last, tok, dbs, addr, ┘   the shared payload (the two valids are
-//                     data} (counters on the response side)   never 1 together, docs §3.1)
+//                 └─► broadcast reader: SPM reads x_line │   line. With BC_PIPE >= 2, one central
+//                     .. + T*qa_lines - 1, one per cycle │   stage feeds separate local tails of
+//                     response -> {last, tok, dbs, addr, ┘   BC_PIPE-1 stages. The three valids
+//                     data} (counters on the response side)   {acmd, cmd, line} are exclusive.
 //                 └─► expect_ch: c * R < N, one channel per cycle (NUM_CH cycles), then the
 //                     gather's start pulse (results cannot come earlier; if they did they would
 //                     wait in the result pipes, res_ready = 0 while the gather is idle)
@@ -90,8 +90,9 @@
 //   attention stream waits for its line buffer or p line (ATT_PATH_STALL, registered OR). HAS_ATT = 0:
 //   cmd_xc / xcmd are ignored, the unit above.
 //   Cost (RTL structure, no synthesis run here): command 294 FF + broadcast register 527 FF +
-//   ~140 FF control; per cluster BC_PIPE x 529 FF (tsr_vpipe; the ccmd is overlaid on the
-//   line payload, saving 137 FF per stage and cluster) and RES_PIPE x 2 x (33 + 32 T_MAX) FF;
+//   ~140 FF control; broadcast 530 FF per stage (527 payload + 3 valid), with one shared
+//   first stage when BC_PIPE >= 2 and all remaining stages per cluster. Commands overlay
+//   the line payload. Per cluster RES_PIPE x 2 x (33 + 32 T_MAX) FF;
 //   weight-stream pipes per cluster BC_PIPE x 516 FF + RES_PIPE x 2 x 38 FF; with RST_LOCAL
 //   RST_LOCAL x (NUM_CH + 2) reset flops. Measured sizes: docs/rtl-m3.md §14.
 
@@ -576,6 +577,20 @@ module tsr_mvm
   logic [NUM_CH-1:0]                g_aj_v, g_aj_r, cl_stall;
   logic [NUM_CH-1:0][AJW-1:0]       g_aj;
 
+  // Share only the source-side stage. Each destination keeps its own registers so
+  // synthesis cannot turn a local cluster's activation/decode registers into a
+  // driver for clusters in another SLR (docs/rtl-m3.md §14.4). The tail is local
+  // to its cluster; a common source net can cross once into each destination SLR.
+  // rt_q and every rc_q have the same INIT and shift recurrence, so this stage's
+  // reset is cycle-identical to the original per-cluster stage, including flush.
+  localparam int unsigned BC_HEAD = (BC_PIPE >= 2) ? 1 : 0;
+  logic [2:0]     bc_head_v;
+  logic [BCW-1:0] bc_head_d;
+  tsr_vpipe #(.VW(3), .W(BCW), .DEPTH(BC_HEAD), .KEEP_REGS(1'b1)) u_bc_head (
+    .clk, .rst_n(rst_t_n), .in_valid(bc_v_q), .in_data(bc_d_q),
+    .out_valid(bc_head_v), .out_data(bc_head_d)
+  );
+
   for (genvar c = 0; c < NUM_CH; c++) begin : g_cl
     logic [2:0]          pv;
     logic [BCW-1:0]      pd;
@@ -593,8 +608,8 @@ module tsr_mvm
     logic                ca_v, ca_r;
     logic [AJW-1:0]      ca_j;
 
-    tsr_vpipe #(.VW(3), .W(BCW), .DEPTH(BC_PIPE), .KEEP_REGS(1'b1)) u_bcp (
-      .clk, .rst_n(rst_c_n[c]), .in_valid(bc_v_q), .in_data(bc_d_q), .out_valid(pv), .out_data(pd)
+    tsr_vpipe #(.VW(3), .W(BCW), .DEPTH(BC_PIPE-BC_HEAD), .KEEP_REGS(1'b1)) u_bcp (
+      .clk, .rst_n(rst_c_n[c]), .in_valid(bc_head_v), .in_data(bc_head_d), .out_valid(pv), .out_data(pd)
     );
     assign p_cmd  = pd[CCW-1:0];
     assign p_acmd = pd[ACW-1:0];

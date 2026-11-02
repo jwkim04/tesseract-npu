@@ -122,7 +122,8 @@ def test_bd_clock_reset_binding(tmp_path, mutation):
 
 
 NET_MOCK = r'''
-array set periods {core 3.333 rv 6.000}
+array set periods {core 4.000 rv 6.000}
+set kernel_ref tsr_u200_k4
 set hart_regs {rv_hart}
 array set clock_for {core_c core rv_c rv rv_hart rv core_reset_q core rv_reset_q rv}
 array set reset_net {kernel/ap_rst_n reset0 kernel/ap_rst_n_2 reset1}
@@ -175,20 +176,21 @@ proc get_property {prop obj} {
     switch -- $prop {
         NAME {return $obj}
         PERIOD {return $::periods($obj)}
+        REF_NAME - ORIG_REF_NAME {return $::kernel_ref}
         default {error "unexpected property $prop on $obj"}
     }
 }
 '''
 
 
-@pytest.mark.parametrize("mutation", ["", "alias", "core250", "rv500", "swapped", "reset", "reset_clock", "missing", "unclocked_hart", "async_reset", "nan"])
+@pytest.mark.parametrize("mutation", ["", "alias", "core300", "core240", "rv500", "swapped", "reset", "reset_clock", "missing", "unclocked_hart", "async_reset", "nan", "unknown_kernel"])
 def test_synth_clock_reset_binding(tmp_path, mutation):
     changes = {
         "": "",
         "alias": "set clock_for(rv_c) core",
-        # Final acceptance may scale to 250 MHz; this pre-implementation gate
-        # must still validate the active 300 MHz request, not its final floor.
-        "core250": "set periods(core) 4.0",
+        # A stale 300 MHz checkpoint is not a valid native 250 MHz request.
+        "core300": "set periods(core) 3.333",
+        "core240": "set periods(core) 4.166667",
         "rv500": "set periods(rv) 2.0",
         "swapped": "set clock_for(core_c) rv; set clock_for(rv_c) core",
         "reset": "set reset_net(kernel/ap_rst_n_2) reset0",
@@ -197,11 +199,19 @@ def test_synth_clock_reset_binding(tmp_path, mutation):
         "unclocked_hart": "lappend hart_regs unclocked_ff",
         "async_reset": "lappend roots(kernel/ap_rst_n_2) raw_async",
         "nan": "set periods(rv) NaN",
+        "unknown_kernel": "set kernel_ref tsr_unknown",
     }
     r = run_tcl(tmp_path, NET_MOCK + "\n" + changes[mutation] +
                 f"\nsource {{{REPO / 'hw/u200/clock_net_check.tcl'}}}\n")
     assert (r.returncode == 0) == (mutation == ""), (r.stdout, r.stderr)
     assert "CLKNET" in r.stdout + r.stderr, (r.stdout, r.stderr)
+
+
+@pytest.mark.parametrize("period,valid", [(3.333, True), (4.0, False)])
+def test_k1_keeps_its_300_mhz_request(tmp_path, period, valid):
+    r = run_tcl(tmp_path, NET_MOCK + f"\nset kernel_ref tsr_u200_k1\nset periods(core) {period}\n" +
+                f"source {{{REPO / 'hw/u200/clock_net_check.tcl'}}}\n")
+    assert (r.returncode == 0) == valid, (r.stdout, r.stderr)
 
 
 @pytest.mark.parametrize("records,valid", [
@@ -234,7 +244,8 @@ def test_link_config_clock_requests_and_hooks(kernel):
     assert "freqHz=" not in text
     # U200's scalable clocks use kernel_frequency. clock.id is restricted to
     # fixed references: a real CFGEN run rejects IDs 0/1 with CFGEN83-2244.
-    assert "kernel_frequency=0:300|1:166.666667\n" in text
+    core = 250 if kernel == "k4" else 300
+    assert f"kernel_frequency=0:{core}|1:166.666667\n" in text
     assert not any(line.startswith("id=") for line in text.splitlines())
     for hook in ("clock_bd_check.tcl", "clock_vitis_compat.tcl", "impl_pre.tcl", "cdc_check.tcl", "clock_final_check.tcl"):
         assert f"=../../../hw/u200/{hook}\n" in text
@@ -554,15 +565,17 @@ def test_cdc_restore_rejects_invalid_clock_pair(tmp_path, mutation):
     assert not (tmp_path / "tsr_ctrl_cdc_link.xdc").exists()
 
 
-def test_cdc_restore_uses_actual_period_minimum(tmp_path):
-    body = CDC_LINK_MOCK + "\nset periods(core) 4.0\nset periods(rv) 6.023\n"
+@pytest.mark.parametrize("core,rv,bound", [(4.0, 6.023, 3.333), (3.333, 6.023, 3.333),
+                                         (3.0, 6.023, 3.0), (4.0, 2.5, 2.5)])
+def test_cdc_restore_preserves_cap_and_faster_clock_bounds(tmp_path, core, rv, bound):
+    body = CDC_LINK_MOCK + f"\nset periods(core) {core}\nset periods(rv) {rv}\n"
     body += f"source {{{REPO / 'hw/u200/cdc_restore.tcl'}}}\n"
     body += f"tsr_cdc_link::restore actual_periods {{{tmp_path}}}\n"
-    body += r'''
+    body += f"set expected_bound {bound}\n" + r'''
 foreach args $max_delays {
-    if {[lindex $args end] != 4.0} {error "CDC bound is not actual min(PERIOD)"}
+    if {[lindex $args end] != $expected_bound} {error "CDC bound lost the cap or the faster clock"}
 }
-if {[lindex [lindex $bus_skews 0] end] != 4.0} {error "bus skew did not use actual period"}
+if {[lindex [lindex $bus_skews 0] end] != $expected_bound} {error "bus skew lost the bound"}
 '''
     r = run_tcl(tmp_path, body)
     assert r.returncode == 0, (r.stdout, r.stderr)

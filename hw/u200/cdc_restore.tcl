@@ -26,7 +26,8 @@ namespace eval tsr_cdc_link {
       }
       lappend periods $p
     }
-    return [list $kernel $core $rv [expr {min([lindex $periods 0], [lindex $periods 1])}]]
+    # Match the packaged XDC's conservative cap when the core runs below 300 MHz.
+    return [list $kernel $core $rv [expr {min(3.333, [lindex $periods 0], [lindex $periods 1])}]]
   }
 
   proc check {tag {out .}} {

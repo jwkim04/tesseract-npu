@@ -38,6 +38,9 @@
 #                       failed implementation run: the synthesis is kept)
 #   TSR_U200_PLATFORMINFO  1 = resolve the platform, print its platforminfo and stop (exit 0)
 #   TSR_BUILD_JOBS      if set: the link's synth / impl jobs and Vivado's general.maxThreads (the configs: 8)
+#   TSR_U200_SYNTH_JOBS optional lower limit on concurrent IP synthesis jobs. Use 1 when the
+#                       native parent plus one worker must fit the host's two Vivado slots;
+#                       TSR_BUILD_JOBS still controls each tool's threads and implementation jobs.
 # Stops with exit status 3 and a message when the platform (or the Xilinx tools) are missing.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -51,6 +54,13 @@ case "$TARGET" in
   hw|hw_emu) ;;
   *) echo "build_xclbin.sh: target must be hw or hw_emu" >&2; exit 2 ;;
 esac
+if [ -n "${TSR_U200_SYNTH_JOBS:-}" ]; then
+  if ! [[ "$TSR_U200_SYNTH_JOBS" =~ ^[1-9][0-9]*$ ]] ||
+      [ "$TSR_U200_SYNTH_JOBS" -gt "${TSR_BUILD_JOBS:-8}" ]; then
+    echo "build_xclbin.sh: TSR_U200_SYNTH_JOBS must be 1..${TSR_BUILD_JOBS:-8}" >&2
+    exit 2
+  fi
+fi
 KERNEL=tsr_u200_$K
 PLATFORM=${TSR_U200_PLATFORM:-xilinx_u200_gen3x16_xdma_2_202110_1}
 XILINX=${TSR_XILINX:-/tool/Xilinx}
@@ -135,7 +145,12 @@ mkdir -p "$OUT"
 # the hook paths of the config are relative to build/u200/<k> (three levels below the repository)
 sed -e "s|=\.\./\.\./\.\./|=$ROOT/|" "$CFG_SRC" > "$CFG"
 if [ -n "${TSR_BUILD_JOBS:-}" ]; then
-  sed -i -e "s|^\(synth\|impl\)\.jobs=.*|\1.jobs=$TSR_BUILD_JOBS|" -e "s|^param=general\.maxThreads=.*|param=general.maxThreads=$TSR_BUILD_JOBS|" "$CFG"
+  sed -i -e "s|^synth\.jobs=.*|synth.jobs=$TSR_BUILD_JOBS|" \
+    -e "s|^impl\.jobs=.*|impl.jobs=$TSR_BUILD_JOBS|" \
+    -e "s|^param=general\.maxThreads=.*|param=general.maxThreads=$TSR_BUILD_JOBS|" "$CFG"
+fi
+if [ -n "${TSR_U200_SYNTH_JOBS:-}" ]; then
+  sed -i "s|^synth.jobs=.*|synth.jobs=$TSR_U200_SYNTH_JOBS|" "$CFG"
 fi
 if [ "$K" = k4 ] && [ "${TSR_U200_FLOORPLAN:-1}" = 0 ]; then
   sed -i -e '/k4_floorplan\.tcl\|k4_locality_check\.tcl\|k4_resume_pre\.tcl/d' "$CFG"

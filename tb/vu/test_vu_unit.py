@@ -45,7 +45,8 @@ VU_SOURCES = [CORE / s for s in (
     "tsr_tables_pkg.sv", "tsr_pkg.sv", "tsr_fp_pkg.sv", "tsr_xc_pkg.sv", "tsr_vu_pkg.sv")] + \
     [REPO / "rtl/tech/generic/tsr_sram_1r1w.sv"] + [CORE / s for s in (
         "tsr_fp_mul.sv", "tsr_fp_add.sv", "tsr_fp_div.sv", "tsr_spm.sv", "tsr_spm_cport.sv", "tsr_vu_dly.sv",
-        "tsr_vu_exp.sv", "tsr_vu_rcp.sv", "tsr_vu_sqrt.sv", "tsr_vu_sincos.sv", "tsr_vu_lane.sv", "tsr_vu_lanes.sv",
+        "tsr_vu_exp.sv", "tsr_vu_rcp.sv", "tsr_vu_sqrt.sv", "tsr_vu_sincos.sv", "tsr_vu_lane.sv",
+        "tsr_vu_lane_share.sv", "tsr_vu_lanes.sv",
         "tsr_vu_gen.sv",
         "tsr_vu_rd.sv", "tsr_vu_dq.sv", "tsr_vu_inj.sv", "tsr_vu_wr.sv", "tsr_vu_red.sv", "tsr_vu_angle.sv",
         "tsr_vu_topk.sv", "tsr_vu.sv")] + \

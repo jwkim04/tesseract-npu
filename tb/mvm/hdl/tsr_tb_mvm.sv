@@ -29,6 +29,7 @@ module tsr_tb_mvm
   parameter  int unsigned ADD_LAT        = 5,
   parameter  int unsigned WS_RD_LAT      = 2,
   parameter  int unsigned RD_OUTSTANDING = 16,
+  parameter  int unsigned RST_LOCAL      = 0,
   parameter  bit          HAS_ATT        = 1'b0,   // attention modes built in (tb/mvm mvm_cycles: same cycles)
   localparam int unsigned BB             = 512,
   localparam int unsigned AW             = tsr_spm_aw(SPM_BYTES / TSR_LINE_BYTES)
@@ -68,6 +69,10 @@ module tsr_tb_mvm
   output logic [NUM_CH-1:0]                   o_ws_req_ready,
   output logic [NUM_CH-1:0]                   o_ws_rsp_valid,
   output logic [NUM_CH-1:0]                   o_ws_rsp_ready,
+  output logic                                o_mvm_rst_n,
+  output logic [2:0]                          o_bc_source_valid,
+  output logic [NUM_CH-1:0][2:0]              o_bc_cluster_valid,
+  output logic [NUM_CH-1:0][2:0]              o_bc_reset_discarded,
 
   // ---- memory ports ----
   output logic [NUM_CH-1:0]                   m_rd_req_valid,
@@ -111,7 +116,7 @@ module tsr_tb_mvm
     .HAS_ATT(HAS_ATT), .NUM_CH(NUM_CH), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT),
     .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BB), .WS_FIFO_BEATS(WS_FIFO_BEATS), .BC_PIPE(BC_PIPE),
     .RES_PIPE(RES_PIPE), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT), .MUL_LAT(MUL_LAT),
-    .ADD_LAT(ADD_LAT), .WS_RD_LAT(WS_RD_LAT)
+    .ADD_LAT(ADD_LAT), .WS_RD_LAT(WS_RD_LAT), .RST_LOCAL(RST_LOCAL)
   ) u_mvm (
     .clk, .rst_n,
     .cmd_valid, .cmd_ready, .cmd, .cmd_xc(1'b0), .xcmd('0), .done,     // W4-B at: no attention here (tb/at)
@@ -128,6 +133,31 @@ module tsr_tb_mvm
   );
   logic p_att_qk, p_att_pv, p_att_st;                                      // W4-B at
   wire  unused_att = &{1'b0, p_att_qk, p_att_pv, p_att_st};
+
+  // Observe the production source and cluster ports against independent old pipes.
+  localparam int unsigned BCW = $bits(tsr_mvm_bcline_t);
+  logic [NUM_CH-1:0][BCW-1:0] bc_observed;
+  assign o_mvm_rst_n = u_mvm.rst_t_n;
+  assign o_bc_source_valid = u_mvm.bc_v_q;
+  for (genvar c = 0; c < NUM_CH; c++) begin : g_bc_observe
+    assign o_bc_cluster_valid[c] = {u_mvm.g_cl[c].u_cl.bc_acmd_valid,
+                                   u_mvm.g_cl[c].u_cl.bc_cmd_valid,
+                                   u_mvm.g_cl[c].u_cl.bc_line_valid};
+    assign bc_observed[c] = u_mvm.g_cl[c].u_cl.bc_line;
+    always @(posedge clk) if (o_mvm_rst_n) begin
+      if (o_bc_cluster_valid[c][1])
+        assert (u_mvm.g_cl[c].u_cl.bc_cmd == bc_observed[c][$bits(tsr_mvm_ccmd_t)-1:0])
+          else $fatal(1, "%m: MVM command overlay differs");
+      if (o_bc_cluster_valid[c][2])
+        assert (u_mvm.g_cl[c].u_cl.bc_acmd == bc_observed[c][$bits(tsr_att_pkg::tsr_att_ccmd_t)-1:0])
+          else $fatal(1, "%m: ATT command overlay differs");
+    end
+  end
+  tsr_mvm_bc_observer #(.NUM_CH(NUM_CH), .DEPTH(BC_PIPE), .RST_LOCAL(RST_LOCAL), .W(BCW)) u_bc_observer (
+    .clk, .rst_n, .top_rst_n(o_mvm_rst_n), .cluster_rst_n(u_mvm.rst_c_n),
+    .source_valid(o_bc_source_valid), .source_data(u_mvm.bc_d_q),
+    .cluster_valid(o_bc_cluster_valid), .cluster_data(bc_observed), .reset_discarded(o_bc_reset_discarded)
+  );
 
   // ---- SPM: client 0 = host, 1 = tied off, 2 = MVM, 3 = tied off (single-port clients through
   //      tsr_spm_cport), 4 / 5 = tied off (dual-bank); W4-A spm ----
@@ -191,7 +221,7 @@ module tsr_tb_mvm
   end
 
   tsr_spm #(.SPM_BYTES(SPM_BYTES), .NCL(TSR_SPM_NCL), .RD_LAT(SPM_RD_LAT)) u_spm (
-    .clk, .rst_n,
+    .clk, .rst_n(o_mvm_rst_n),
     .rd_req_valid(b_rd_req_valid), .rd_req_ready(b_rd_req_ready), .rd_req_line(b_rd_req_line),
     .rd_rsp_valid(b_rd_rsp_valid), .rd_rsp_data(b_rd_rsp_data),
     .wr_valid(b_wr_valid), .wr_ready(b_wr_ready), .wr_line(b_wr_line), .wr_data(b_wr_data),
@@ -233,7 +263,7 @@ module tsr_tb_mvm
     tsr_mem_arb #(
       .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BB), .RD_OUTSTANDING(RD_OUTSTANDING)
     ) u_arb (
-      .clk, .rst_n,
+      .clk, .rst_n(o_mvm_rst_n),
       .s_rd_req_valid(a_req_valid), .s_rd_req_ready(a_req_ready), .s_rd_req_addr(a_req_addr),
       .s_rd_req_len(a_req_len), .s_rd_req_id(a_req_id),
       .s_rd_rsp_valid(a_rsp_valid), .s_rd_rsp_ready(a_rsp_ready), .s_rd_rsp_data(ws_rsp_data[c]),

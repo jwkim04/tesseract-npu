@@ -20,15 +20,16 @@
 # levels and the reset sources of the clk_rv synchronisers have a register of their own for it).
 #
 # - ASYNC_REG on every synchroniser stage (tsr_sync's s_q registers, tsr_rst_sync's s_q).
-# - set_max_delay -datapath_only = min(period) on every path between the two clocks (the gray pointers and
+# - set_max_delay -datapath_only <= min(period) on every path between the two clocks (the gray pointers and
 #   counters, the handshake request / response registers, the FIFO LUTRAM -> output register paths and the
 #   level synchronisers' first stage). No set_clock_groups: it would override the max delays (CC §11.3).
 # - set_bus_skew on the gray-coded buses (the gray registers to the synchroniser stages they drive), to the
-#   smaller period, so that a sample sees at most one step.
+#   smaller period, so that a sample sees at most one step. Cap both bounds at 3.333 ns to retain
+#   the original 300 MHz crossing budget when the K4 core request is lowered to 250 MHz.
 # Gate (CC §14.3 T2 / T3): rtl/ctrl/viv/cdc_gate.tcl.
 set clk_core [get_clocks -of_objects [get_ports $tsr_cdc_core_port]]
 set clk_rv   [get_clocks -of_objects [get_ports $tsr_cdc_rv_port]]
-set p_min    [expr {min([get_property PERIOD $clk_core], [get_property PERIOD $clk_rv])}]
+set p_min    [expr {min(3.333, [get_property PERIOD $clk_core], [get_property PERIOD $clk_rv])}]
 
 set_property ASYNC_REG TRUE [get_cells -hier -filter {NAME =~ *u_sync*/s_q_reg*}]
 set_property ASYNC_REG TRUE [get_cells -hier -filter {NAME =~ *u_rst*/g_s*.s_q_reg*}]

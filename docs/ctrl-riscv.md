@@ -688,7 +688,8 @@ Rules:
   `tsr_cdc_hs` (handshake; one variant with a 1-bit request tag, used by every request path that can time
   out). They use `tsr_sync` and `tsr_rst_sync` from `rtl/tech` (Xilinx: `ASYNC_REG`).
 - Constraints (U200: a kernel XDC packaged in the `.xo`): `set_max_delay -datapath_only` of the smaller
-  period on gray buses and handshake data, `set_bus_skew` on gray buses, `ASYNC_REG` on synchroniser
+  period, capped at 3.333 ns, on gray buses and handshake data; `set_bus_skew` has the same cap
+  on gray buses, with `ASYNC_REG` on synchroniser
   flops. Do not use `set_clock_groups` (it would override the max delays), and do not rely on platform
   clock groups: the platform's clocks come from one clocking block, Vivado may time them as related, and
   300 MHz against 500 or 166.7 MHz has a worst-case edge separation of about 0.67 ns, so one inter-clock

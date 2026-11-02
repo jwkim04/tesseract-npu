@@ -3,13 +3,15 @@
 //
 // Owner: VU (docs/design/02-vector-unit.md "VU" §7.10 placement, remedy 3 of CC §14.1; floorplan C'' of
 // hw/u200/k4_floorplan.tcl).
-// Contract: with PIPE = 0 the lanes are wired straight to the ports, exactly as tsr_vu used to instantiate them.
+// Contract: with PIPE = 0 the inputs and selected exit are wired straight to the ports.
 // With PIPE = p >= 1, the injector's lane inputs (l_*), the partial drain address (dr_addr) and the reset
-// pass p register stages on the way in, and the lane exits f_y / b_y and the drain read data dr_data p
+// pass p register stages on the way in, and the selected lane exit and drain read data dr_data p
 // stages on the way out: every lane result leaves 2p cycles later than the lane's own latency
 // (TSR_VU_LF / TSR_VU_LB), a drain read returns 2p cycles after its address, and nothing else changes.
 // The consumers allow for it (tsr_vu_inj and tsr_vu_wr: LANE_X = 2p, tsr_vu_red: DRL = 2p); the lanes
 // have no back-pressure, so no handshake needs to cross.
+// A semantic back_valid token follows the inputs; u_share selects f_y/b_y beside the lanes before
+// the return pipe. The writer keeps its descriptor timing, and the reduction drain stays independent.
 // Why the reset is piped like the inputs: a lane leaves reset p cycles after the injector does, which is
 // exactly when the first element of a later op can arrive, so the reset stays in step with the data.
 // Placement (hw/u200/k4_floorplan.tcl, PIPE >= 2): the first stage of the input pipes and the last stage
@@ -37,12 +39,12 @@ module tsr_vu_lanes
   input  logic [15:0]       l_lv,
   input  logic              l_fresh,
   input  logic [3:0]        l_pa,
+  input  logic              back_valid,   // injector d_v && d_back, aligned with l_*
   // partial drain (tsr_vu_red): address in, data PIPE + PIPE cycles later
   input  logic [3:0]        dr_addr,
   output logic [15:0][31:0] dr_data,
-  // lane exits
-  output logic [15:0][31:0] f_y,
-  output logic [15:0][31:0] b_y
+  // exactly one scheduled front/back exit; the reduction drain stays separate
+  output logic [15:0][31:0] lane_y
 );
 
   // everything that goes into the lane array, and everything that comes out of it
@@ -54,9 +56,10 @@ module tsr_vu_lanes
     logic              fresh;
     logic [3:0]        pa;
     logic [3:0]        dr_addr;
+    logic              back_valid;
   } lin_t;
   typedef struct packed {
-    logic [15:0][31:0] dr_data, f_y, b_y;
+    logic [15:0][31:0] dr_data, lane_y;
   } lout_t;
 
   localparam int unsigned IW = $bits(lin_t);
@@ -77,6 +80,7 @@ module tsr_vu_lanes
   assign li.fresh   = l_fresh;
   assign li.pa      = l_pa;
   assign li.dr_addr = dr_addr;
+  assign li.back_valid = back_valid;
 
   if (PIPE == 0) begin : g_wire
     assign lo_in      = li;
@@ -106,17 +110,24 @@ module tsr_vu_lanes
     assign lp = lout_t'(op_q[PIPE-1]);
   end
 
+  logic [15:0][31:0] front_y, back_y;
+  // Selection stays beside the lanes, before the return stages. The delayed
+  // semantic token includes S0, just as the writer's descriptor delay does.
+  (* keep_hierarchy = "yes" *) tsr_vu_lane_share u_share (
+    .clk, .rst_n(lane_rst_n), .back_valid(lo_in.back_valid),
+    .front_y, .back_y, .y(lq.lane_y)
+  );
+
   for (genvar l = 0; l < 16; l++) begin : g_lane
     tsr_vu_lane #(.HAS_EXP(l < EXP_LANES), .HAS_BACK(l < BACK_LANES)) u_lane (
       .clk, .rst_n(lane_rst_n), .in_v(lo_in.v[l]), .in_uop(tsr_vu_uop_e'(lo_in.uop)), .in_a(lo_in.a[l]),
       .in_b(lo_in.b[l]), .in_c1(lo_in.c1[l]), .in_c2(lo_in.c2[l]), .in_neg(lo_in.neg[l]), .acc_lv(lo_in.lv[l]),
       .acc_fresh(lo_in.fresh), .acc_pa(lo_in.pa), .dr_addr(lo_in.dr_addr), .dr_data(lq.dr_data[l]),
-      .f_y(lq.f_y[l]), .b_y(lq.b_y[l])
+      .f_y(front_y[l]), .b_y(back_y[l])
     );
   end
 
   assign dr_data = lp.dr_data;
-  assign f_y     = lp.f_y;
-  assign b_y     = lp.b_y;
+  assign lane_y  = lp.lane_y;
 
 endmodule

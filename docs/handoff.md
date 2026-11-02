@@ -13,7 +13,56 @@ Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README
 | W4-B RTL: VU, attention modes, DB block, two-clock XRT adapter; tsr-dbg (GDB), tsr-prof | done; ctest 297/297, lint clean, all benches green | `6435e8a` |
 | W5 preparation: VU lane pipes (`tsr_vu_lanes.sv`, `VU_LANE_PIPE`), floorplan C'' (`hw/u200/k4_floorplan.tcl`), TCM RAMB36 constraint in every flow (`tsr_ctrl_tcm.xdc`, `hw/u200/tcm_opt.tcl`), `build_xclbin.sh` enabled for k1/k4 | checkpoint; first K4 route failed | `58bf76d` |
 
-## Current: K4 stopped; interconnect alternatives under review
+## Current: K4 interconnect optimization; physical validation pending
+
+The user resumed work after the intentional route stop. Use the earlier four-cluster
+276.3 MHz image as the baseline and reduce the added interconnect before another long route.
+Two changes are implemented and pass the functional checks below:
+
+- Broadcast shares only its central first stage (`u_bc_head`) for BC_PIPE >= 2. Every
+  cluster retains its own kept local tail. Total latency, reset flush and one line per
+  cycle are unchanged. BC_PIPE 0/1 retain the original path. The floorplan distinguishes
+  this topology from archived checkpoints with two per-cluster stages.
+- VU front/back exits share one 512-bit return after selection beside the lanes. The
+  injector already orders these exits. A resettable S0+LB token delay selects the result;
+  the separate 512-bit reduction drain is unchanged. BACK8 saves 256 data connections
+  and adds one input token before synthesis; actual SLL savings are pending.
+
+The four independent weight streams retain 512 bits per cycle each. The new K4 config
+requests core 250 MHz / RV 166.666667 MHz. The early clock gate reads the kernel's config
+and rejects a stale 300 MHz model. CDC datapath/skew bounds are capped at 3.333 ns, so the
+lower core request cannot loosen the previous crossing budget. K1 retains its 300 MHz request.
+Focused MVM/ATT oracle and cycle checks, VU oracle tests and 132 clock/floorplan fixtures pass.
+The software build and CTest pass (297 executed, one disabled). Full RTL lint passes,
+including nine XSim elaborations and eight Vivado synthesis checks. The full default RTL
+run finished with 386 passes, 115 opt-in skips and four failures in the new broadcast reset
+test. It initially injected reset too late in four
+BC_PIPE=1/RST_LOCAL=0 configurations. The Python stimulus now observes the producer and
+asserts the intended occupied stage at each reset. The complete MVM test module passes
+all 14 configurations after that fix, with the original assertions and golden/cycle digests.
+The four failed nodes also pass in the default build directory (`--lf`, exit 0).
+All 390 executed nodes are therefore covered by passing results across the full run and
+reruns. Seven new isolated build-script tests pass separately; they were added after the
+full run collected its cases. The original failures remain in the first full-run log.
+
+The default RTL suite includes block tests and integrated RTL-Ibex firmware tests.
+`core_m7` covers a two-channel tiny decode/prefill layer, including the VU lane-pipe variant,
+against the C simulator. It is not a full-size K4 simulation. Added checks cover the
+four-channel broadcast/reset configuration, attention traffic and the VU shared-return
+latency/reset behavior. Long opt-in mutation/sweep campaigns and card tests are separate.
+A small actual-MVM synthesis comparison replaces only the four clusters and gather with
+black boxes. Its 530-bit broadcast banks fall from eight to five (4,240 to 2,650 FF); every
+source/head/tail bit and the four independent tail outputs check correctly. These black boxes
+retain all 530 bits, unlike the 529 surviving bits in the integrated baseline below. This
+proves the shared synthesized topology, not actual K4 placement or SLL savings. The native
+U200 calculator also passes at 250 MHz (input 100, M=25, D=2, O=5, effective period 4 ns).
+Both small CAD jobs exited with code 0 and returned their slots. No new
+placement, routing or 250 MHz timing result is claimed. Logs are under
+`build/analysis/k4_interconnect_gates_20261102/` and
+`build/analysis/k4_bc_shared_20261102/`. Gather arbitration and the DDR0/3 response detour
+remain candidates; they are not part of these two RTL changes.
+
+### Preserved attempt and baseline measurements
 
 The corrected attempt completed placement and physical optimisation, with actual SLR locality
 checks passing. It was intentionally stopped at 05:25 KST on 2026-11-02: the new timing report
@@ -67,7 +116,7 @@ The reports, clock metadata and input-hash record are under
 `build/analysis/k4_current_interconnect_20261102/`. Core/RV clocks remain 3.333/6.023 ns.
 Source-level options and conditional performance models are
 `build/analysis/repository_map_20261102/slr_pipe_bandwidth_options.txt` and
-`slr_width_performance_tradeoff.txt`. No RTL topology or bandwidth change is selected yet.
+`slr_width_performance_tradeoff.txt`. These measurements predate the two changes above.
 The query session exited normally with code 0, returned both tool slots and left the input
 hash unchanged. No CAD process from the route or this investigation remains.
 
@@ -78,8 +127,9 @@ retains two read lines and one write line per cycle, but also carries 512 SREG b
 256-bit command and control/address/byte-enable signals: roughly 2.5 K declared boundary
 bits, not 1.5 K. It also moves logic into already busy outer SLRs. Moving only angle/coefficient
 selection is insufficient: AMERGE's AM_L mode needs two lane-varying coefficient vectors.
-Keeping a full-width fallback preserves the original wires. These are source-level options,
-not selected changes, equivalence proofs, timing passes or measured SLL reductions.
+Keeping a full-width fallback preserves the original wires. Front/back sharing is now
+implemented as described above. The other options remain source-level proposals, without
+equivalence proofs, timing passes or measured SLL reductions.
 
 `hw/u200/build_xclbin.sh k4` (4 channels, T_MAX 8, the final image) synthesised and placed, then
 `route_design` failed: "The router is unable to resolve localized SLL routing demand"
@@ -297,8 +347,9 @@ implementation just to reach 300 MHz once 250 MHz or more is valid. A route
 with negative setup slack at 300 MHz is useful evidence; it is successful timing only after
 checking an accepted frequency of at least 250 MHz, with RV, hold and CDC checks intact.
 The old 276.3 MHz floor is superseded for K4; historical card measurements are unchanged.
-The final-frequency hook now accepts 250.0 MHz and rejects 249.99 MHz. The early netlist
-check still rejects a 4 ns core period for the active 300 MHz request. The clock/floorplan
+The final-frequency hook accepts 250.0 MHz and rejects 249.99 MHz. At that point the early netlist
+check rejected a 4 ns core period for the then-active 300 MHz request; the new 250 MHz request
+and matching gate above supersede it. The clock/floorplan
 fixtures pass 71 tests after this change; the build and both generated-file checks pass too.
 
 Known current debug-interface gaps remain: RV_SAMPLE/RVWP_APPLY writes acknowledge before
@@ -327,17 +378,17 @@ No runtime/RTL changes or extra build/test/Vivado/DCP/link runs were made for th
 1. Check `status.json`, the stop record and archive hashes before reusing the stopped run.
    No CAD process from this attempt remains. A future zero exit status and a checkpoint still
    need full-route/no-route-error validation before calling the route successful.
-2. Investigate SLR interconnect reduction first, per the user's latest direction. Preserve the
-   weight streams' throughput where possible. Per-SLR sharing of the identical 530-bit cluster
-   broadcast is a candidate: one crossing for c0/c2 and one for c1/c3, followed by local fanout,
-   could remove about 1,058 duplicated logical boundary-net incidences in the measured scopes
-   without serializing the payload.
-   Actual SLL savings, reset/latency equivalence, local fanout and new ownership rules remain
-   unverified. Also inspect the added VU/ATT paths and the DDR0/3 central weight-response detour.
+2. Functional gates for the shared broadcast head and VU return pass as recorded above.
+   Check the new K4 netlist, then placement/physical optimisation at
+   core 250 MHz before deciding whether to route. Actual SLL savings, local fanout and new
+   ownership on the full placed design remain unverified. Keep all four 512-bit weight streams.
+   The shared head could remove about 1,058 duplicated logical boundary-net incidences from
+   the measured BC scope; VU sharing removes 256 data connections and adds one token before
+   synthesis. Subsequent candidates are per-SLR gather arbitration and the DDR0/3 central
+   weight-response detour (`docs/platform-u200.md` §8.6).
    Reducing register depth alone does not reduce a bus's crossing width. Narrowing a weight
    link from 512 to 256 bits at 250 MHz lowers its ideal payload rate from 16 to 8 GB/s;
-   an active slow channel can limit the whole equal-row MVM. These are analysis candidates,
-   not selected RTL changes or a new build. The earlier combined floorplan changes reduced
+   an active slow channel can limit the whole equal-row MVM. The earlier combined floorplan changes reduced
    placed SLL counts by 11,301, but did not establish routing success or isolate their causes.
 3. An implementation-only resume of the old failed run cannot repair its clock wiring. The corrected
    run rebuilt from the corrected RTL and clock selection. Its preserved placed/physopt DCPs
