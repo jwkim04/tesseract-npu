@@ -282,6 +282,7 @@ is never silently ignored. Component documents hold the complete lists for their
 | `TSR_LOG` | `stderr` or a file: decode the device log there (appended) | `sw/transport/tsr_kdev.cpp` |
 | `TSR_LOG_LEVEL` | Device log level 0 (FATAL) to 5 (TRACE); default 3 | `sw/transport/tsr_kdev.cpp` |
 | `TSR_SIM_TMAX` | Simulated `T_MAX`, 1 to 8 (default 1) | `sw/transport/tsr_kdev_sim.cpp` |
+| `TSR_SIM_VU` | `0` models the first card image `tsr_u200_k4`: no vector unit, no attention, CAPS 0, MUL_MAT on the device and everything else on the CPU (default 1) | `sw/transport/tsr_kdev_sim.cpp` |
 | `TSR_SIM_CH_GIB` | Simulated GiB per channel, 1 to 16 (default 16) | `sw/transport/tsr_kdev_sim.cpp` |
 | `TSR_SIM_THREADS` | Simulator MVM threads, 1 to 64 (default min(CPUs, 8)); results do not depend on it | `sw/transport/tsr_kdev_sim.cpp` |
 | `TSR_SIM_DRAM_DIR` | Back the simulator's DRAM with sparse temporary files in this directory (needed for 32B models) | `sw/transport/tsr_kdev_sim.cpp` |

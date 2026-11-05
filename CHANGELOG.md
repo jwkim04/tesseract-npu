@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ## Unreleased
 
+- Added `TSR_SIM_VU=0` to the `sim` and `mock` transport kinds: the core of the reduced first card image
+  `tsr_u200_k4` (no vector unit, no attention; CAPS 0 and no VU queue). The host then runs MUL_MAT on the
+  device and every other op on the CPU, as in M6. Behaviour without the variable is unchanged.
 - Added capability-gated FAST attention score and probability slots. FLASH_ATTN
   keeps its record format and numerical order.
 - Added the optional MUL_MAT_SCALE kind at numerical revision 1. The kind

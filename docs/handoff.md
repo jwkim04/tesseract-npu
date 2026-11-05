@@ -2,7 +2,28 @@
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
 
-## Resume here: Claude checkpoint
+## Resume here: reduced first card image (branch `k4-min`, November 6)
+
+The branch `k4-min` (worktree `/home/limagin-dev/tesseract-k4min`, from `codex/local-intermediates` at `aadf92c`)
+makes `tsr_u200_k4` the reduced first card image: four MVM clusters at T_MAX 8, the RISC-V control core, issue path, CSR
+block, 2R2W SPM, DMA without KVST, QACT and the DB block without trace writer and history. The elaboration has no vector
+unit and no attention; `CAPS` reads 0, so the host runs MUL_MAT on the device and the rest on the CPU (M6). Read
+[platform-u200.md](platform-u200.md) §8.7 first: configuration, tests, the placement gate with numbers, risks and the
+launch command. Short form:
+
+- Placement gate: out-of-context placement with the major-block map. Issue, CSR and DB beside the SPM in SLR1 give an
+  estimated SLR1 occupancy of 94.7 % to 100.2 % with the shell (fail); the same blocks in SLR0 beside the RV give 88 %
+  to 92 % (target 93 %; the routed October image had 92.1 %). `hw/u200/k4_major_blocks.tcl` has the passing map.
+- Open risk: placed `clk_rv` slack -0.208 ns at 6.0 ns inside Ibex with that map (+0.276 ns with the other); placement
+  numbers are before routing, and the DDR controllers of the platform are not in the out-of-context run.
+- The link was not launched. The simulator baseline for the card is `build/k4min/klcheck/qwen05b-q8-m6/dev.klc`
+  (`TSR_SIM_VU=0 TSR_SIM_TMAX=8`, Qwen2.5-0.5B Q8_0, M6, 2 prompts x 16 tokens).
+- The full elaboration is `core_ooc.sh k4` and `hw/u200/k4_major_blocks_full.tcl`; the simulator still models the DB trace
+  writer and history, which the card image does not have.
+
+The earlier checkpoint follows.
+
+## Earlier: Claude checkpoint
 
 The user requested a cumulative source and documentation checkpoint on November 6.
 Start with [checkpoint-2026-11-06.md](checkpoint-2026-11-06.md): it identifies the

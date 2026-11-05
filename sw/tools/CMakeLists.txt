@@ -103,6 +103,12 @@ if (TARGET tsr_devrun)
     add_test(NAME tools_selftest_mock_1ch COMMAND tsr-selftest ${_st_common} --mem-mib 0)
     set_tests_properties(tools_selftest_mock_1ch PROPERTIES ENVIRONMENT "TSR_MOCK_NUM_CH=1;TSR_SIM_THREADS=4" TIMEOUT 600)
     if (TSR_BASH_TOOLS)
+        # The checklist on the core of the reduced first card image tsr_u200_k4 (no VU, no attention: CAPS 0,
+        # no VU queue, T_MAX 8; docs/platform-u200.md §8.7), on sim and mock (test_selftest_k4min.sh).
+        add_test(NAME tools_selftest_sim_k4min
+                 COMMAND ${TSR_BASH_TOOLS} ${CMAKE_CURRENT_SOURCE_DIR}/test_selftest_k4min.sh
+                         $<TARGET_FILE:tsr-selftest> ${TSR_FW_ELF} ${CMAKE_CURRENT_BINARY_DIR}/selftest_k4min)
+        set_tests_properties(tools_selftest_sim_k4min PROPERTIES TIMEOUT 600)
         # The selftest must fail on what the protocol reports (test_selftest_faults.sh): an AXI error
         # during a launch (PLAT_ERR), ADAPTER_STATUS left by an earlier process, a TCM write fault
         # (VERIFY), a hung unit (recovery ladder, "card reset needed"); and pass without them.

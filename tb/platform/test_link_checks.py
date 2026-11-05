@@ -252,9 +252,10 @@ def test_link_config_clock_requests_and_hooks(kernel):
     assert ("prop=run.impl_1.STEPS.INIT_DESIGN.TCL.PRE="
             "../../../hw/u200/clock_vitis_compat.tcl\n") in text
     if kernel == "k4":
-        for step in ("PLACE_DESIGN", "PHYS_OPT_DESIGN", "POST_ROUTE_PHYS_OPT_DESIGN"):
-            assert (f"prop=run.impl_1.STEPS.{step}.TCL.POST="
-                    "../../../hw/u200/k4_locality_check.tcl\n") in text
+        # Placement constraints are the Pblocks of whole major blocks (AGENTS.md); the earlier per-cell
+        # ownership audit (k4_locality_check.tcl) is not part of the link.
+        assert "prop=run.impl_1.STEPS.PLACE_DESIGN.TCL.PRE=../../../hw/u200/k4_major_blocks.tcl\n" in text
+        assert "k4_locality_check" not in text
 
 
 # Model the 2024.2 part-keyed APIs, including the new period argument. The

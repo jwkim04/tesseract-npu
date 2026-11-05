@@ -101,7 +101,10 @@ Path(args[args.index("-o") + 1]).write_text("fake xclbin; no CAD executed\\n")
         assert [line for line in lines if line.startswith(key + "=")] == [f"{key}={value}"]
     assert "kernel_frequency=0:250|1:166.666667" in lines
     assert hook_paths
-    assert f"prop=run.impl_1.STEPS.OPT_DESIGN.TCL.POST={hw / 'k4_post_opt.tcl'}" in lines
+    # k4.cfg carries no OPT_DESIGN.TCL.POST hook (hw/u200/k4_post_opt.tcl stays available for a diagnostic
+    # link); the placement hook is the major-block map.
+    assert f"prop=run.impl_1.STEPS.PLACE_DESIGN.TCL.PRE={hw / 'k4_major_blocks.tcl'}" in lines
+    assert not any("OPT_DESIGN.TCL.POST" in line for line in lines if not line.startswith("#"))
     assert [line.rsplit("=", 1)[1] for line in lines
             if line.startswith(("param=", "prop=")) and line.endswith(".tcl")] == hook_paths
     assert [call["tool"] for call in calls] == ["settings", "v++"]

@@ -15,7 +15,8 @@
 #   pblock_dynamic_SLR1  CLOCKREGION_X0Y5:CLOCKREGION_X2Y9, the columns that match the U200 platform's dynamic
 #                        region (UG1120: 205 K LUT / 1,320 DSP / 160 URAM), the rest of SLR1 being the shell
 #   pblock_dynamic_SLR2  the whole SLR2
-# Environment: TSR_SLR_CR  per-SLR clock-region ranges replacing the whole SLR, "SLR:range[,range] ...";
+# Environment: TSR_SLR_SCRIPT  the floorplan script, relative to the repository (default hw/u200/k4_floorplan.tcl);
+#   TSR_SLR_CR  per-SLR clock-region ranges replacing the whole SLR, "SLR:range[,range] ...";
 #   default "1:CLOCKREGION_X0Y5:CLOCKREGION_X2Y9"; "none" = whole SLRs everywhere. TSR_K4_FP_CTRL: the
 #   control core's clock-region range (hw/u200/k4_floorplan.tcl).
 # Example (k4, the T2 run): tb/core/viv/core_ooc.sh k4 OUT from=SYNTH/post_synth.dcp dcp \
@@ -39,7 +40,10 @@ foreach s {0 1 2} {
   }
 }
 set ::env(TSR_K4_FP_CORE) ""
-source [file join $::repo hw u200 k4_floorplan.tcl]
+# TSR_SLR_SCRIPT names the floorplan to apply (default: hw/u200/k4_floorplan.tcl, floorplan C''). The reduced first
+# card image (core_ooc.sh k4min) uses hw/u200/k4_major_blocks.tcl, the Pblocks of whole major blocks.
+set tsr_slr_script [expr {[info exists ::env(TSR_SLR_SCRIPT)] ? $::env(TSR_SLR_SCRIPT) : "hw/u200/k4_floorplan.tcl"}]
+source [file join $::repo $tsr_slr_script]
 foreach pb [get_pblocks] {
   # Capacity of the pblock (sites): LUT = 8 per SLICE, FF = 16 per SLICE
   set sl [llength [get_sites -quiet -of_objects $pb -filter {SITE_TYPE =~ SLICE*}]]

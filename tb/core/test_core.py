@@ -399,10 +399,13 @@ if cocotb is not None:
 
         # DB: history (on by default) and the trace writer on during the launch, a 64-line ring below the list
         # (the same configuration as the simulator's run; the DB block changes no result)
-        trw_beat, trw_lines = sc["trw_cfg"]
-        await host.wr(TT.CSR_DBG_CFG, (await host.rd(TT.CSR_DBG_CFG)) | TT.DBG_CFG_TRW_EN)
-        await host.wr(TT.CSR_DBG_TRW_BASE, trw_beat)
-        await host.wr(TT.CSR_DBG_TRW_LINES, trw_lines)
+        # (no trw line in the scenario: the core has neither trace writer nor history, the M6 case of tsr_u200_k4)
+        with_db = sc["trw_cfg"] is not None
+        trw_beat, trw_lines = sc["trw_cfg"] if with_db else (0, 0)
+        if with_db:
+            await host.wr(TT.CSR_DBG_CFG, (await host.rd(TT.CSR_DBG_CFG)) | TT.DBG_CFG_TRW_EN)
+            await host.wr(TT.CSR_DBG_TRW_BASE, trw_beat)
+            await host.wr(TT.CSR_DBG_TRW_LINES, trw_lines)
         kidx, a0, a1, a2 = sc["launch"]
         seq = await host.rd(TT.CSR_LQ_SEQ)
         await host.wr(TT.CSR_LQ_W(0), TT.DESC_TYPE_LAUNCH | (kidx << TT.DESC_KERNEL_LSB))
@@ -429,31 +432,32 @@ if cocotb is not None:
             if got != want:
                 errs.append("CSR %#05x after the launch: RTL %#010x / simulator %#010x" % (o, got, want))
         # DB: history entries, trace records (without their times) and counters against the simulator
-        await host.wr(TT.CSR_DBG_CTRL, TT.DBG_CTRL_TRW_FLUSH)
-        await ClockCycles(dut.clk, 4000)
-        head = await host.rd(TT.CSR_DBG_HIST_HEAD)
-        wptr = await host.rd(TT.CSR_DBG_TRW_WPTR)
-        drops = await host.rd(TT.CSR_DBG_TRW_DROPS)
-        p61, p62 = await host.rd(TT.CSR_PERF_LO(61)), await host.rd(TT.CSR_PERF_LO(62))
-        s_head, s_wptr, s_drops, s_p61, s_p62 = sc["dbg"]
-        if (head, wptr, drops, p62) != (s_head, s_wptr, s_drops, s_p62):
-            errs.append("DB: HIST_HEAD / TRW_WPTR / TRW_DROPS / PERF TRW_DROPS RTL %s / simulator %s" % (
-                (head, wptr, drops, p62), (s_head, s_wptr, s_drops, s_p62)))
-        for who, v, w in (("RTL", p61, wptr), ("simulator", s_p61, s_wptr)):
-            if not 0 < v <= w or w - v > 3:          # TRW_RECORDS counts while ACTIVE: the last flush may be after it
-                errs.append("DB: %s PERF TRW_RECORDS %d with %d records written" % (who, v, w))
-        for p in range(min(head, len(sc["hist"]))):
-            await host.wr(TT.CSR_DBG_HIST_IDX, p)
-            got = [await host.rd(x) for x in C.HIST_OFFS]
-            if got != sc["hist"][p]:
-                errs.append("DB: history %d: RTL %s / simulator %s" % (p, [hex(x) for x in got], [hex(x) for x in sc["hist"][p]]))
-        if wptr == s_wptr and 0 < wptr <= 2 * trw_lines:
-            raw = mem.read_bytes(0, trw_beat * 64, (wptr * 32 + 63) // 64 * 64)
-            recs = [[int.from_bytes(raw[32 * k + 4 * i:32 * k + 4 * i + 4], "little") for i in range(8)] for k in range(wptr)]
-            a, b = C.trw_view(recs), C.trw_view(sc["trw"])
-            for k in a:
-                if a[k] != b[k]:
-                    errs.append("DB: trace records (%s) differ: RTL %s / simulator %s" % (k, a[k], b[k]))
+        if with_db:
+            await host.wr(TT.CSR_DBG_CTRL, TT.DBG_CTRL_TRW_FLUSH)
+            await ClockCycles(dut.clk, 4000)
+            head = await host.rd(TT.CSR_DBG_HIST_HEAD)
+            wptr = await host.rd(TT.CSR_DBG_TRW_WPTR)
+            drops = await host.rd(TT.CSR_DBG_TRW_DROPS)
+            p61, p62 = await host.rd(TT.CSR_PERF_LO(61)), await host.rd(TT.CSR_PERF_LO(62))
+            s_head, s_wptr, s_drops, s_p61, s_p62 = sc["dbg"]
+            if (head, wptr, drops, p62) != (s_head, s_wptr, s_drops, s_p62):
+                errs.append("DB: HIST_HEAD / TRW_WPTR / TRW_DROPS / PERF TRW_DROPS RTL %s / simulator %s" % (
+                    (head, wptr, drops, p62), (s_head, s_wptr, s_drops, s_p62)))
+            for who, v, w in (("RTL", p61, wptr), ("simulator", s_p61, s_wptr)):
+                if not 0 < v <= w or w - v > 3:          # TRW_RECORDS counts while ACTIVE: the last flush may be after it
+                    errs.append("DB: %s PERF TRW_RECORDS %d with %d records written" % (who, v, w))
+            for p in range(min(head, len(sc["hist"]))):
+                await host.wr(TT.CSR_DBG_HIST_IDX, p)
+                got = [await host.rd(x) for x in C.HIST_OFFS]
+                if got != sc["hist"][p]:
+                    errs.append("DB: history %d: RTL %s / simulator %s" % (p, [hex(x) for x in got], [hex(x) for x in sc["hist"][p]]))
+            if wptr == s_wptr and 0 < wptr <= 2 * trw_lines:
+                raw = mem.read_bytes(0, trw_beat * 64, (wptr * 32 + 63) // 64 * 64)
+                recs = [[int.from_bytes(raw[32 * k + 4 * i:32 * k + 4 * i + 4], "little") for i in range(8)] for k in range(wptr)]
+                a, b = C.trw_view(recs), C.trw_view(sc["trw"])
+                for k in a:
+                    if a[k] != b[k]:
+                        errs.append("DB: trace records (%s) differ: RTL %s / simulator %s" % (k, a[k], b[k]))
         # outputs and KV planes, bit for bit
         allowed = {0: set(range(trw_beat, trw_beat + trw_lines))}
         for ch, beat, rows, stride, lines, off in sc["outs"]:
@@ -644,6 +648,32 @@ def test_core_m7_ddr_local(m7case):
     _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0), lane_pipe=2, ddr_pipe=1)
 
 
+def _run_m6_k4min(case, seed=1, rv_ps=6000):
+    """The production image on the RTL core of the reduced first card image (tsr_u200_k4 / core_ooc.sh k4min): an op
+    list of MUL_MAT records through the graph kernel on four clusters with T_MAX 8, CAPS 0, no VU queue, no trace
+    writer or history. Compared with the simulator's run of the same launch as in core_m7 (the DONE record, every
+    output row bit for bit, the identification registers, Q_DONE / Q_ISSUED / Q_ERR_CODE per unit, the PERF event
+    counters, no DRAM write outside the outputs)."""
+    from common.runner import run
+    if not C.M7_BIN.exists() or not C.M7_ELF.exists():
+        pytest.skip("build the simulator-side test and the image first: cmake --build build/dev --target "
+                    "test_fw_m7_layer tsr_fw")
+    d = C.m7_scenario(case)
+    cfg = C.parse_m7(d)["cfg"]
+    assert cfg["caps"] == 0 and cfg["num_ch"] == 4 and cfg["t_max"] == 8, cfg
+    params = dict(NUM_CH=cfg["num_ch"], T_MAX=cfg["t_max"], K_MAX=cfg["k_max"], SPM_BYTES=cfg["spm_bytes"],
+                  CH_BYTES="64'd%d" % cfg["ch_bytes"], ADDR_BEAT_W=cfg["addr_beat_w"], RV_LOCAL_TRANSPORT=1, HAS_VU=0,
+                  HAS_ATT=0, HAS_TRW=0, HIST_DEPTH=0, MVM_BC_PIPE=2, MVM_RES_PIPE=2, RST_PIPE=3, SPM_RD_LAT=4,
+                  MVM_MAC_LAT=9)
+    env = {"TB_M7_ELF": str(C.M7_ELF), "TB_M7_DIR": str(d), "TB_CORE_RV_PS": str(rv_ps), "TB_CORE_PS": "4000"}
+    run("tsr_core", __name__, parameters=params, sources=_sources(), name="core_m6_k4min", seed=seed,
+        testcase=["core_m7"], extra_env=env, timescale=("1ps", "1ps"))
+
+
+def test_core_m6_k4min(m6case):
+    _run_m6_k4min(m6case, seed=int(os.environ.get("TSR_SEED", "1"), 0))
+
+
 def _run_db(seed=1, rv_ps=6000, mut=None):
     from common.runner import run
     elf = C.build_fw(FW_OUT)
@@ -722,6 +752,7 @@ def test_core_w4b_mutants(request):
 if pytest is not None:
     test_core = pytest.mark.parametrize("cfg", list(RUNS))(test_core)
     test_core_w4b_mutants = pytest.mark.slow(test_core_w4b_mutants)
+    test_core_m6_k4min = pytest.mark.parametrize("m6case", list(C.M6_CASES))(test_core_m6_k4min)
     test_core_m7 = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7)
     test_core_m7_lane_pipe = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_lane_pipe)
     test_core_m7_half_vu = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_half_vu)
@@ -745,3 +776,22 @@ def test_core_k4_locality():
         extra_env={"TB_CORE_ELF": str(elf), "TB_CORE_RV_PS": "6000", "TB_CORE_PS": "4000",
                    "TB_CORE_NCH": "4", "TB_CORE_TMAX": "4",
                    "TB_CORE_VU_FRONT": "8", "TB_CORE_VU_BACK": "4"}, timescale=("1ps", "1ps"))
+
+
+def test_core_k4min():
+    """The reduced first card image (tsr_u200_k4, tb/core/viv/core_ooc.sh k4min): four clusters with T_MAX 8, the
+    control core behind the RV transport, no vector unit, no attention (no KVST, ATTQK, ATTPV), no DB trace writer or
+    history, CAPS 0 and no VU queue. core_smoke runs the firmware's MUL_MAT-shaped stream (LD, QACT A32 and A256,
+    MVM Q8_0 and Q4_K on all four weight channels, ST, FENCE) on the RTL Ibex; the simulator, configured with CAPS 0
+    and the VU queue absent (TB_CORE_NOVU), must agree on every DRAM region, the identification registers (CAPS 0,
+    CFG3 0, Q_DEPTH with VU 0) and the final CSR state. Core / RV periods are 250 / 166.7 MHz; random memory stalls
+    cover every channel.
+    """
+    from common.runner import run
+    elf = C.build_fw(FW_OUT)
+    params = dict(C.PARAMS, NUM_CH=4, T_MAX=8, RV_LOCAL_TRANSPORT=1, HAS_VU=0, HAS_ATT=0, HAS_TRW=0, HIST_DEPTH=0,
+                  MVM_BC_PIPE=2, MVM_RES_PIPE=2, RST_PIPE=3, SPM_RD_LAT=4, MVM_MAC_LAT=9)
+    run("tsr_core", __name__, parameters=params, sources=_sources(), name="core_k4min",
+        seed=int(os.environ.get("TSR_SEED", "1"), 0), testcase=["core_smoke"],
+        extra_env={"TB_CORE_ELF": str(elf), "TB_CORE_RV_PS": "6000", "TB_CORE_PS": "4000",
+                   "TB_CORE_NCH": "4", "TB_CORE_TMAX": "8", "TB_CORE_NOVU": "1"}, timescale=("1ps", "1ps"))

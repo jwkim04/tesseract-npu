@@ -148,7 +148,7 @@ void clear_env() {
     for (const char * v : { "TSR_DEVICE", "TSR_IMAGE", "TSR_LAUNCH_TIMEOUT_MS", "TSR_ABORT_MS", "TSR_BOOT_MS", "TSR_RESET_MS", "TSR_LOG",
                             "TSR_LOG_LEVEL", "TSR_ATTACH", "TSR_STATS", "TSR_DUMP_DIR", "TSR_GDB_WAIT", "TSR_TILE_SERIAL",
                             "TSR_TILE_HIST", "TSR_GDB", "TSR_DEBUGGER", "TSR_TRACE", "TSR_SIM_SCHED", "TSR_SIM_RACE", "TSR_SIM_LOG",
-                            "TSR_MOCK_INJECT", "TSR_MOCK_TCM_FAULT", "TSR_MOCK_HANG", "TSR_SIM_TMAX", "TSR_MOCK_TMAX" })
+                            "TSR_MOCK_INJECT", "TSR_MOCK_TCM_FAULT", "TSR_MOCK_HANG", "TSR_SIM_TMAX", "TSR_MOCK_TMAX", "TSR_SIM_VU" })
         unsetenv(v);
     setenv("TSR_SIM_THREADS", "2", 1);
 }

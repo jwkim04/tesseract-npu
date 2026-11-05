@@ -45,7 +45,8 @@ constexpr uint32_t AST_W1C_BITS = 0x3Fu;   // bits 0-5 (EX §9.2)
 mock_kdev::mock_kdev(const mock_options & o) : o_(o), dma_(*this, o.dma) {
     sim_options so;
     so.cfg = TSR_CONFIG_U200;
-    so.cfg.caps = tsr_sim_caps_implemented();
+    so.cfg.caps = o.no_vu ? 0u : tsr_sim_caps_implemented();
+    so.no_vu = o.no_vu;
     so.cfg.num_ch = o.num_ch;
     so.cfg.t_max = o.t_max;
     so.cfg.ch_bytes = o.ch_bytes;
@@ -270,6 +271,8 @@ std::unique_ptr<kdev> open_mock_kdev() {
     o.threads = ncpu < 1 ? 1u : (ncpu > 8 ? 8u : (unsigned) ncpu);
     if ((r = env_u64("mock", "TSR_SIM_THREADS", 1, 64, &v)) < 0) return nullptr;
     if (r) o.threads = (unsigned) v;
+    if ((r = env_u64("mock", "TSR_SIM_VU", 0, 1, &v)) < 0) return nullptr;
+    if (r) o.no_vu = v == 0;
     if ((r = env_u64("mock", "TSR_MOCK_HANG", 1, UINT32_MAX, &v)) < 0) return nullptr;
     if (r) o.hang_at_push = (uint32_t) v;
     const std::string bad = dma_rules_check(o.dma);

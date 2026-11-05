@@ -39,12 +39,14 @@ RT_DONE = 0xD0E
 # The bench configuration: a reduced core (2 channels, 256 KiB SPM) with the MVM, the VU and attention
 # (W4-B): CAPS VU | ATT (TOPK and DQROW are M8 RTL and stay off), the U200 queue depths (VU 16, unit 4
 # reserved).
-CAPS_U200 = 0x21
+# TB_CORE_NOVU=1: the core of the reduced first card image (HAS_VU 0, HAS_ATT 0): CAPS 0, no VU queue.
+NOVU = os.environ.get("TB_CORE_NOVU", "0") == "1"
+CAPS_U200 = 0x00 if NOVU else 0x21
 NCH = int(os.environ.get("TB_CORE_NCH", "2"))
 TMAX = int(os.environ.get("TB_CORE_TMAX", "2"))
 CFG = S.config(num_ch=NCH, t_max=TMAX, k_max=4096, spm_bytes=256 * 1024, ch_bytes=1 << 30, addr_beat_w=24,
                caps=CAPS_U200)
-QD = (8, 4, 4, 16, 0, 4)
+QD = (8, 4, 4, 0 if NOVU else 16, 0, 4)
 PARAMS = {"NUM_CH": NCH, "T_MAX": TMAX, "K_MAX": 4096, "SPM_BYTES": 256 * 1024, "CH_BYTES": "64'd1073741824",
           "ADDR_BEAT_W": 24}
 
@@ -258,6 +260,10 @@ def run_sim(sc: dict, elf: Path, max_cycles: int = 50_000_000) -> dict:
 # device with T_MAX 2 and 1 MiB of SPM, CAPS VU | ATT).
 # ---------------------------------------------------------------------------------------------
 M7_CASES = ("tiny-decode", "tiny-prefill")
+# M6 scenario of the reduced first card image (tsr_u200_k4): the same image and launch path, an op list of MUL_MAT
+# records only (the layer's seven projections) on a 4-channel T_MAX 8 core with CAPS 0 and no VU queue, no trace writer
+# and no history, so the scenario has no DB lines (build_mm in test_fw_m7_layer.cpp).
+M6_CASES = ("k4min-mm-decode", "k4min-mm-prefill")
 M7_BIN = REPO / "build" / "dev" / "sw" / "ctrl" / "host" / "test_fw_m7_layer"
 M7_ELF = REPO / "build" / "dev" / "fw" / "tsr-fw.elf"
 M7_OUT = REPO / "build" / "cocotb" / "core_m7"

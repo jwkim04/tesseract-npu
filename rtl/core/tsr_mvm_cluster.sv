@@ -654,6 +654,7 @@ module tsr_mvm_cluster
       .groups_done(gdone), .busy(q_busy)
     );
 
+    logic [12:0] rcv_g, rcv_l;   // declared before u_pv uses them (XSim rejects an implicit net)
     // ---- ATTPV unit ----
     logic        p_jv, p_jr, p_done, p_stall, p_busy;
     logic [JW-1:0] p_j;
@@ -677,7 +678,6 @@ module tsr_mvm_cluster
 
     logic [JW-1:0] score_job;
     logic score_valid, score_ready;
-    logic [12:0] rcv_g, rcv_l;
     if (LOCAL_INTERMEDIATES) begin : g_local_score
       typedef logic [TSR_LOCAL_SCORE_AW-1:0] score_addr_t;
       logic [2:0][TSR_LINE_BITS-1:0] data_by_slot;

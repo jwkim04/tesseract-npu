@@ -2349,6 +2349,120 @@ and distinguishes traffic savings from removal of shared physical paths. It
 includes llama.cpp and PyTorch integration and validation. It is proposed work;
 the active native attempt is unchanged.
 
+### 8.7 The reduced first card image (`tsr_u200_k4`, 2026-11-06)
+
+Every link since the control core and the vector unit joined the kernel failed because SLR1, which the
+XRT shell already half fills, was over-full (§8.6.7: the routed 2026-10-25 image had 92.1 % occupied CLB
+sites in SLR1 with 227 K LUTs; every later placement had 97.8 to 99.9 %; the SLLs were not the cause). The
+first image for the card therefore drops what the M6 gate does not need, and keeps what it does: the RISC-V
+control core, the issue path and the CSR block. The elaboration is selected by parameters, not by
+deleting code; every other configuration of the RTL is unchanged.
+
+| | `tsr_u200_k4` (this image) | what the elaboration removes |
+|---|---|---|
+| Channels, clusters | `NUM_CH` 4, four MVM clusters, `T_MAX` 8 (the cluster configuration of the routed 2026-10-25 image, 261,306 LUTs) | |
+| Control | Ibex in SLR0 behind the narrow RV transport (`RV_LOCAL_TRANSPORT` 1), issue path, `tsr_csr`, 2R2W SPM, DMA without KVST, QACT, DB block (DBG registers and DMI gate: GDB works) | |
+| Vector unit | absent: `HAS_VU` 0 | the VU, its lanes, SPM client and queue |
+| Attention | absent: `HAS_ATT` 0 | ATTQK / ATTPV in the clusters, the attention path of the gather, KVST in the DMA, the AT checker class |
+| Local intermediates | absent (`LOCAL_*` 0) | local FAST attention, local scale / softcap epilogues |
+| DB | `HAS_TRW` 0, `HIST_DEPTH` 0 | the trace writer with its write mux, the dispatch history |
+| Clocks | core 250 MHz (accept >= 250), `clk_rv` 166.666667 MHz on `ap_clk_2` | |
+| `CAPS` | 0; `CFG3` 0; `Q_DEPTH` VU 0 | |
+
+`gen_tops.py` carries the parameters (`HAS_VU`, `HAS_ATT`, `HAS_TRW` and `HIST_DEPTH` are new
+pass-through parameters of `tsr_xrt_kernel`; their defaults are the earlier behaviour, so `tsr_u200_k1` is
+byte for byte as before). `tsr_u200_k4` is this image on this branch; the full elaboration
+(the earlier `tsr_u200_k4`) is `core_ooc.sh k4` and `hw/u200/k4_major_blocks_full.tcl`.
+
+**Software.** `CAPS` 0 is the M6 convention. `tsr_build_supports` refuses every non-trivial op but MUL_MAT when the device's
+`CAPS` is 0, the planners refuse a VU kind without `CAPS.VU` (`BAD_RECORD`), and the checker refuses the AT and
+VU opcodes (`ILLEGAL_OP`), so llama.cpp runs MUL_MAT on the device and everything else on the CPU. The simulator models the
+device with `TSR_SIM_VU=0 TSR_SIM_TMAX=8` (CAPS 0, `Q_DEPTH` VU 0, T_MAX 8; `sim` and `mock`). It still
+models the DB trace writer and the dispatch history: `DBG_ID` reads HIST and TRW set, the card will read them clear.
+The M6 logits are independent of both knobs (bit-identical at `TSR_SIM_TMAX` 1 and 8, with and without VU).
+
+**Tests (2026-11-06, simulator, RTL and tools).** `tsr-selftest --device sim` and `--device mock` with
+`TSR_SIM_VU=0 TSR_SIM_TMAX=8` pass (195 checks on sim; `tools_selftest_sim_k4min` also checks CAPS 0, T_MAX 8 and no VU queue).
+Qwen2.5-0.5B Q8_0 in M6 (`klcheck all --phase m6 --n-prompts 2 -n 16`, 32 rows) on that device: mean KL 2.59e-3 against
+3 x floor 4.03e-3 (ratio 0.64), top-1 100 %, a repeat is bit identical. With `TSR_KINDS=all` the device still takes
+MUL_MAT only (1,183 records, no other kind), because `CAPS` is 0. The device logits, `dev.klc`, are the identity baseline
+for the card (`build/k4min/IDENTITY_BASELINE.txt`). RTL: Verilator lint of `tsr_core` and `tsr_u200_k4` is clean, and so is
+`rtl/tech/xilinx/lint.sh` (Verilator on the Xilinx filelist, XSim static elaboration of the k4 core, the Vivado multi-driver
+check); XSim first rejected `rcv_g` / `rcv_l` in `tsr_mvm_cluster.sv`, used in the attention branch before their
+declaration (not elaborated here, netlist unchanged), and the declaration moved. The full `rtl/lint.sh` still has the
+checkpoint's failures, none from this change: the C16 `WIDTHCONCAT` in `tsr_vu.sv` (6 runs) and 12 testbench-HDL lint
+runs (unconnected pins of the local-intermediate ports);
+`core_smoke` on the Verilated k4 core (`test_core_k4min`: four channels, T_MAX 8, `RV_LOCAL_TRANSPORT` 1, no VU / AT /
+trace / history) matches the simulator on every DRAM region, the identity registers and the final CSR state;
+`test_core_m6_k4min` runs the production image's graph kernel on that core with an op list of the layer's seven
+MUL_MAT records (decode and a T = 8 tile) and compares every output row bit for bit.
+
+**Placement gate (out of context, Vivado 2024.2, xcu200, `core_ooc.sh k4min`).** Synthesis of the core: 299,245 CLB
+LUTs (the routed 2026-10-25 kernel had 280,331), 377,259 FFs, 2,737 DSP, 864 RAMB36, 128 URAM; the four clusters are
+261,306 LUTs, as in October; `report_cdc` gate PASS. Placement with the major-block map
+(`core_slr.tcl` with `TSR_SLR_SCRIPT=hw/u200/k4_major_blocks.tcl`, default `place_design`, 3.333 ns core clock and 6.0 ns
+`clk_rv` as in every out-of-context run):
+
+| Placed core, SLR0 / SLR1 / SLR2 | A: issue, CSR, DB in SLR1 | B: issue, CSR, DB beside the RV in SLR0 |
+|---|---:|---:|
+| CLB sites (whole-SLR %) | 27,943 (56.7) / 9,292 (18.9) / 26,279 (53.4) | 31,935 (64.8) / 6,122 (12.4) / 26,426 (53.7) |
+| CLB LUTs (whole-SLR %) | 133,111 (33.8) / 38,938 (9.9) / 123,844 (31.4) | 148,659 (37.7) / 23,529 (6.0) / 123,713 (31.4) |
+| LUT cells in SLR1 | 45,675 | 29,504 |
+| Placed SLLs (SLR0-1 / SLR1-2) | 9,348 (5,902 / 3,446) | 8,007 (3,824 / 4,183) |
+| Placed WNS, `clk` at 3.333 ns | -0.327 ns (CSR load CRC, 6 levels) | -0.332 ns (issue to DB stop, 11 levels) |
+| Placed WNS, `clk_rv` at 6.0 ns | +0.276 ns | -0.208 ns (inside Ibex, 18 levels, 80 % routing) |
+| Placed WHS | 0.000 | -0.016 ns |
+| Estimated congestion, largest window | 16x16 (SLR1 north, south) | 16x16 (SLR1 north, south) |
+| SLR1 occupancy with the shell (estimate) | 94.7 % to 100.2 % | 88.2 % to 91.6 % |
+
+The placed numbers are before `phys_opt_design` and routing. The core clock is constrained at 300 MHz, so the
+paths have 0.67 ns more at the 250 MHz target. The previous failed links had 64x64 north / south windows and the
+routed October image 32x32; no window above level 5 is reported for A or B. The placed SLLs are 9.3 K and 8.0 K; the routed
+October image used 13.8 K.
+
+*SLR1 estimate with the shell.* The out-of-context core has no shell, so the shell share comes from the routed
+2026-10-25 image (`build/u200/k4/.../level0_wrapper_routed.dcp`, counted with `tb/core/viv/slr_clb.tcl` and
+`slr_clb.py`): 45,378 occupied CLBs in SLR1 (92.12 %), of which the October core is 8,035 (30,517 LUT cells), the
+adapter and bridges 2,577, the platform's dynamic region (DDR controllers, interconnect) 14,019 and the static shell
+22,795; sites shared by two of these groups make the groups add up to 2,792 more. The estimate keeps everything but the
+core: SLR1 = 45,378 - 8,035 + the placed core. Method 1 takes the placed CLB count as it is (A 46,635, B 43,465). Method 2
+packs the core's LUT cells at the October link's density (0.263 CLBs per LUT cell, against about 0.20 out of context:
+A 49,369, B 45,111), which is the pessimistic bound. A's SLR1 is therefore above the 93 % target and the map the first
+plan named (SPM, DMA, QACT, issue, CSR, DB and arbiters in SLR1) does not pass. B keeps the data path in SLR1 and puts
+the control plane beside the RV: its SLR1 core is 29,504 LUT cells, about the size of October's (30,517), and its estimate is
+88 % to 92 %. SLR0 rises from 72.7 % to 78 % to 84 % and SLR2 stays between 68 % and 75 % (October: 75.0 %). B is the map of
+`k4_major_blocks.tcl` (`docs/fig/floorplan/k4min-pblock-plan.png`). The two cheap reductions of the survey were not
+applied, because the map change alone clears the target. Their upper bounds from A's per-block counts: every LUT-as-memory
+cell of SLR1 (5,074, including the gather's write queue) moved to BRAM would free at most 630 CLBs (1.3 points) and cost
+about 16 more RAMB36; the SPM's two tied-off clients (VU, AT) are constant-folded by synthesis already (at most a few hundred LUTs of its 3,783).
+
+*Risks the placement shows.* B's `clk_rv` placed slack is -0.208 ns at 166.7 MHz on paths inside Ibex (A: +0.276 ns for the
+same RTL), so the 6.0 ns RV target is not safe before routing; the link's frequency scaling and the clock gates decide.
+B's worst core paths are the done and record strobes from DMA and MVM (SLR1) into the issue path (SLR0), 10 to 11
+logic levels with a crossing; they have 0.34 to 0.42 ns left at 4.0 ns. The out-of-context run does not model the platform's DDR controllers, which
+take 14,019 of SLR1's CLBs in October, so legal routing is not proven by this gate.
+
+**Launch (not started).** From `/home/limagin-dev/tesseract-k4min`:
+
+```sh
+mkdir -p build/link/k4min
+TSR_BUILD_JOBS=8 TSR_U200_SYNTH_JOBS=16 TSR_U200_OUT=$PWD/build/link/k4min \
+  nohup hw/u200/vivado_slot.sh hw/u200/build_xclbin.sh k4 > build/link/k4min/launch.log 2>&1 &
+```
+
+`build/platforms` links to the development platform of the main checkout. The link config is `hw/u200/k4.cfg` (core
+250 MHz, `clk_rv` 166.666667 MHz on `ap_clk_2`, Vitis clock-calculator fix, linked CDC constraints, the major-block hook).
+It is finished when the wrapper exits: status 0, the last line of `launch.log` is `== .../build/link/k4min/tsr_u200_k4.xclbin`
+and the file exists. Then read: the hooks' `CLKBD PASS` (ap_clk_2 on `aclk_kernel_01`, not `aclk_kernel_00`), `CLKNET PASS`,
+`CDCCHK`, `CLKFINAL PASS` (`grep -r` in `build/link/k4min/tmp/link/vivado/vpl/`: the Vivado log and the `runme.log` of the
+implementation run; each check stops the link on failure); the routed
+`reports/link/imp/impl_1_slr_util_routed.rpt` (SLR1 CLB against 93 %), `impl_1_hw_bb_locked_timing_summary_postroute_physopted.rpt`
+(setup, hold, both clocks) and the scaled clocks in `_new_clk_freq`. A zero exit is not sign-off.
+
+**Card check.** `TSR_DEVICE=xrt` build, `tsr-selftest`, then `klcheck run --device xrt --phase m6 --tokens
+build/k4min/klcheck/qwen05b-q8-m6/dev.klc` and `klcheck compare --ref dev.klc --dev card.klc --expect-identical`.
+
+
 ## 9. Timing and resources (Vivado OOC synthesis of `tsr_u200_k1`)
 
 *Measured in Vivado 2024.2 (out of context).* `tb/platform/viv/kernel_ooc.tcl` (synth only, 3.333 ns `ap_clk`, every I/O budgeted 1.6 ns outside,

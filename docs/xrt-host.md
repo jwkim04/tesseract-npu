@@ -251,6 +251,7 @@ column.
 | `TSR_XRT_KERNEL` | `tsr_u200_k4`, else `tsr_u200_k1` | kernel name |
 | `TSR_XRT_CH_GIB` | bank size (16); 3 under `XCL_EMULATION_MODE=hw_emu` (§9) | channel buffer size in GiB |
 | `TSR_XRT_DMA`, `TSR_XRT_DMA_CHUNK_MIB`, `TSR_XRT_DMA_ALIGN` | `direct`, 64, 1; `staged`, 64, 4096 under `XCL_EMULATION_MODE=hw_emu` (§9) | §4.2 |
+| `TSR_SIM_VU` | 1 | `sim` and `mock`: 0 models `tsr_u200_k4` (no vector unit, no attention): CAPS 0, no VU queue |
 | `TSR_SIM_TMAX`, `TSR_SIM_CH_GIB`, `TSR_SIM_THREADS`, `TSR_SIM_DRAM_DIR` | 1, 16, min(online CPUs, 8), none | `sim`: T_MAX (1-8), channel size in GiB (lazily mapped), MVM worker threads, directory for file-backed DRAM; the simulator itself also reads `TSR_SIM_SCHED`, `TSR_SIM_RV_RATIO`, `TSR_SIM_RV_CORE`, `TSR_SIM_RACE`, `TSR_SIM_LOG` and `TSR_TRACE` (`sw/sim/README.md`) |
 | `TSR_MOCK_NUM_CH`, `TSR_MOCK_TMAX`, `TSR_MOCK_CH_GIB` | 4, 1, 16 | `mock` core configuration; `TSR_SIM_THREADS` applies too |
 | `TSR_MOCK_DMA_ALIGN`, `TSR_MOCK_DMA_CHUNK_KIB`, `TSR_MOCK_DMA_BOUNCE` | 1, 65536, 0 | DMA rules the mock enforces |

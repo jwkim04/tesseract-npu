@@ -19,6 +19,9 @@
 //       4 12B: random weights and inputs in the shapes of its SWA layers (n_embd 3840, 16 / 8 heads
 //       of 256, n_ff 15,360, window 1,024). KV history: random rows in every cell before the new
 //       tokens' cells (QACT A32 + KVST, the device image); the new tokens' cells are SET_ROWS_KV's.
+//       k4min: the device of the reduced first card image tsr_u200_k4 (4 channels, T_MAX 8, CAPS 0): the seven MUL_MAT
+//       records of a layer only (M6; build_mm), decode and a T = 8 prefill tile, against mulmat_ref; `dump` writes
+//       them as RTL scenarios (tb/core/test_core.py test_core_m6_k4min).
 //   test_fw_m7_layer IMAGE ggml
 //       (TSR_WITH_LLAMA) each case's device output (fixed schedule) against ggml-cpu computing the
 //       same layer as llama.cpp's graph does (qwen2: src/models/qwen2.cpp; gemma4: src/models/
@@ -221,6 +224,7 @@ struct lcase {
     uint32_t T, n_kv, pos0;
     bool gguf;        // Qwen: weights / inputs from the GGUF file when present
     bool tiny = false;   // the RTL bench's reduced device (2 channels, T_MAX 2, 1 MiB SPM, CAPS VU | ATT)
+    bool mm = false;     // M6: MUL_MAT records only, on the device of the reduced first card image (build_mm)
 };
 const std::vector<lcase> & cases() {
     static const std::vector<lcase> v = {
@@ -230,6 +234,9 @@ const std::vector<lcase> & cases() {
         {"gemma12b-swa-prefill", "gemma12b", &GEMMA12B, 8, 2048, 1100, false},
         {"tiny-decode", "tiny", &TINY, 1, 64, 40, false, true},
         {"tiny-prefill", "tiny", &TINY, 2, 64, 30, false, true},
+        // tsr_u200_k4 (docs/platform-u200.md §8.7): 4 channels, T_MAX 8, CAPS 0, MUL_MAT records only (M6)
+        {"k4min-mm-decode", "k4min", &TINY, 1, 64, 40, false, false, true},
+        {"k4min-mm-prefill", "k4min", &TINY, 8, 64, 30, false, false, true},
     };
     return v;
 }
@@ -405,11 +412,17 @@ void random_weights(const model & m, rng_t * r, weights_t & w, std::vector<float
     x = f32_vec(r, size_t(T) * m.n_embd, 0.0, m.gemma ? 4.0 : 0.05);
 }
 
+void build_mm(const lcase & c, layer_data & L, bool want_ref);
+
 // Builds the case: data on a shadow simulator's DRAM (inputs captured as regions), the list
 // (n_layers layers: the same weights, a KV plane pair per layer, layer l + 1 reads layer l's
 // output), the preload area's image, then the expected outputs (the references in op order).
 // want_ref = false: no reference (perf lists).
 void build(const lcase & c, layer_data & L, uint32_t n_layers = 1, bool mark = false, bool want_ref = true) {
+    if (c.mm) {
+        build_mm(c, L, want_ref);
+        return;
+    }
     const model & m = *c.m;
     L.c = &c;
     L.m = &m;
@@ -758,6 +771,125 @@ void build(const lcase & c, layer_data & L, uint32_t n_layers = 1, bool mark = f
     tsr_sim_destroy(sh);
 }
 
+// The M6 list on the device of the reduced first card image (tsr_u200_k4: 4 channels, T_MAX 8, CAPS 0, 1 MiB of SPM
+// for the graph kernel's list area): the seven MUL_MAT records of a decoder layer (Q / K / V with their bias addends,
+// the attention output projection with the residual add, gate, up and down with the residual add) on random Q8_0
+// weights, with the same shapes and dependencies as the layer, and nothing else. No KV planes, no preload area, no
+// norm, RoPE, attention or GLU: the host keeps those on the CPU when CAPS is 0. The references are mulmat_ref in op
+// order on the shadow DRAM, as in build().
+void build_mm(const lcase & c, layer_data & L, bool want_ref) {
+    const model & m = *c.m;
+    L.c = &c;
+    L.m = &m;
+    L.cfg = TSR_CONFIG_U200;
+    L.cfg.num_ch = 4;
+    L.cfg.t_max = 8;
+    L.cfg.k_max = 4096;
+    L.cfg.spm_bytes = 1024u * 1024u;
+    L.cfg.ch_bytes = 512ull << 20;
+    L.cfg.addr_beat_w = 24;
+    L.cfg.caps = 0;
+    L.C = L.cfg.num_ch;
+    L.E = m.n_kv_head * m.D;
+    L.G = m.n_head / m.n_kv_head;
+    const uint32_t T = c.T, D = m.D, Qd = m.n_head * D, C = L.C;
+    uint64_t seed = 0x6d366d6du;
+    for (const char * p = c.name; *p; ++p) seed = seed * 131u + uint8_t(*p);
+    rng_t r = {seed};
+    random_weights(m, &r, L.w, L.x, T);
+    tsr_sim * sh = tsr_sim_create(&L.cfg, nullptr);
+    CHECK(sh != nullptr, "shadow simulator");
+    if (sh == nullptr) return;
+    uint64_t io[4] = {0x10000u, 0x10000u, 0x10000u, 0x10000u};
+    uint64_t sym = 0x100000u;
+    uint32_t rr_ch = 0;
+    auto keep = [&](uint32_t ch, uint64_t beat, uint64_t beats) {
+        region rg{ch, beat, std::vector<uint8_t>(size_t(beats * LINE))};
+        memcpy(rg.data.data(), tsr_sim_dram(sh, ch) + beat * LINE, rg.data.size());
+        L.in.push_back(std::move(rg));
+    };
+    auto rows = [&](uint32_t n_rows, uint32_t stride, const float * vals = nullptr, uint32_t n = 0) -> uint32_t {
+        const uint32_t ch = rr_ch++ % C;
+        const uint64_t beat = io[ch];
+        io[ch] += (uint64_t(n_rows) * stride + 63u) & ~63ull;
+        if (vals) {
+            for (uint32_t t = 0; t < n_rows; ++t)
+                memcpy(tsr_sim_dram(sh, ch) + (beat + uint64_t(t) * stride) * LINE, vals + size_t(t) * n, size_t(n) * 4u);
+            keep(ch, beat, uint64_t(n_rows) * stride);
+        }
+        return H(ch, beat);
+    };
+    auto weights = [&](const std::vector<uint8_t> & blocks, uint32_t N, uint32_t K) -> uint32_t {
+        const uint64_t w_off = sym;
+        const size_t rb = size_t(K / 32u) * 34u;
+        for (uint32_t n = 0; n < N; ++n) {
+            uint32_t ch;
+            uint64_t off;
+            tsr_row_location(TSR_FMT_Q8_0, N, K, C, n, &ch, &off);
+            tsr_repack_row(TSR_FMT_Q8_0, blocks.data() + size_t(n) * rb, K, tsr_sim_dram(sh, ch) + (w_off + off) * LINE);
+        }
+        const uint64_t beats = tsr_tensor_ch_beats(TSR_FMT_Q8_0, N, K, C);
+        for (uint32_t ch = 0; ch < C; ++ch) keep(ch, w_off, beats);
+        sym += (beats + 63u) & ~63ull;
+        return uint32_t(w_off);
+    };
+    auto vec = [&](const std::vector<float> & v) -> uint32_t { return rows(1, lines_of(uint32_t(v.size())), v.data(), uint32_t(v.size())); };
+    const uint32_t wq = weights(L.w.wq, Qd, m.n_embd), wk = weights(L.w.wk, L.E, m.n_embd), wv = weights(L.w.wv, L.E, m.n_embd);
+    const uint32_t wo = weights(L.w.wo, m.n_embd, Qd), wg = weights(L.w.wg, m.n_ff, m.n_embd), wu = weights(L.w.wu, m.n_ff, m.n_embd);
+    const uint32_t wd = weights(L.w.wd, m.n_embd, m.n_ff);
+    const uint32_t h_bq = vec(L.w.bq), h_bk = vec(L.w.bk), h_bv = vec(L.w.bv);
+
+    opl::writer w(opl::F_STOP_ON_ERROR, 0x4d364d00u);
+    auto mmul = [&](const char * what, uint32_t x, uint32_t xs, uint32_t y, uint32_t ys, uint32_t woff, uint32_t N, uint32_t K,
+                    uint32_t add, uint32_t add_s, std::initializer_list<uint32_t> deps) {
+        const uint32_t a[12] = {x, xs, y, ys, woff, TSR_FMT_Q8_0, N, K, T, add, add_s, 0u};
+        std::vector<uint32_t> d;
+        for (uint32_t v : deps)
+            if (v != opl::DEP_NONE) d.push_back(v);
+        const uint32_t op = w.add(opl::K_MUL_MAT, a, 12, d.data(), uint32_t(d.size()));
+        L.recs.push_back(rec{opl::K_MUL_MAT, std::vector<uint32_t>(a, a + 12), op, what});
+        L.outs.push_back(out_rows{what, y, T, ys, lines_of(N)});
+        return op;
+    };
+    const uint32_t xs = lines_of(m.n_embd), qs = lines_of(Qd), ks = lines_of(L.E), fs = lines_of(m.n_ff);
+    const uint32_t X = rows(T, xs, L.x.data(), m.n_embd);
+    const uint32_t Q = rows(T, qs), K = rows(T, ks), V = rows(T, ks), Hh = rows(T, xs), G = rows(T, fs), U = rows(T, fs),
+                   Y = rows(T, xs);
+    const uint32_t q = mmul("Qcur", X, xs, Q, qs, wq, Qd, m.n_embd, h_bq, 0, {});
+    mmul("Kcur", X, xs, K, ks, wk, L.E, m.n_embd, h_bk, 0, {});
+    mmul("Vcur", X, xs, V, ks, wv, L.E, m.n_embd, h_bv, 0, {});
+    const uint32_t o = mmul("attn_out + inpSA", Q, qs, Hh, xs, wo, m.n_embd, Qd, X, xs, {q});
+    const uint32_t g = mmul("ffn_gate", Hh, xs, G, fs, wg, m.n_ff, m.n_embd, opl::HANDLE_NONE, 0, {o});
+    const uint32_t u = mmul("ffn_up", Hh, xs, U, fs, wu, m.n_ff, m.n_embd, opl::HANDLE_NONE, 0, {o});
+    mmul("ffn_out + ffn_inp", G, fs, Y, xs, wd, m.n_embd, m.n_ff, Hh, xs, {g, u});
+    L.opl_h = H(0, 0x8000u);
+    L.blob = w.finish();
+    CHECK(w.ok() && !L.blob.empty(), "%s: OPL writer: %s", c.name, w.error());
+    CHECK(L.blob.size() <= 0x8000u * LINE, "%s: the list overlaps the activations", c.name);
+    for (const rec & x : L.recs) {
+        const uint32_t e = opl::check_args(x.kind, x.a.data(), uint32_t(x.a.size()), w.pre_lines());
+        CHECK(e == opl::RET_OK, "%s: %s: check_args %u", c.name, x.what.c_str(), e);
+    }
+    L.pre.assign(size_t(w.pre_lines()) * LINE, 0);
+    if (want_ref) {
+        std::vector<uint8_t *> chp(C);
+        for (uint32_t i = 0; i < C; ++i) chp[i] = tsr_sim_dram(sh, i);
+        const tsr::ref::dram_view view{chp.data(), C, L.cfg.ch_bytes};
+        for (const rec & x : L.recs) {
+            const int rc = tsr::ref::mulmat_ref(view, x.a.data(), 8);
+            CHECK(rc == 0, "%s: reference of %s (op %u): %d", c.name, x.what.c_str(), x.op, rc);
+        }
+        for (const out_rows & o_ : L.outs) {
+            std::vector<uint8_t> b(size_t(o_.rows) * o_.lines * LINE);
+            for (uint32_t i = 0; i < o_.rows; ++i)
+                memcpy(b.data() + size_t(i) * o_.lines * LINE,
+                       tsr_sim_dram(sh, h_ch(o_.h)) + (h_beat(o_.h) + uint64_t(i) * o_.stride) * LINE, size_t(o_.lines) * LINE);
+            L.want.push_back(std::move(b));
+        }
+    }
+    tsr_sim_destroy(sh);
+}
+
 void fill(tsr_sim * sim, const layer_data & L, const std::vector<uint8_t> * blob = nullptr) {
     for (const region & rg : L.in) tsr_sim_dram_write(sim, rg.ch, rg.beat * LINE, rg.data.data(), rg.data.size());
     const std::vector<uint8_t> & b = blob ? *blob : L.blob;
@@ -920,6 +1052,10 @@ int dump_case(const lcase & c, const char * dir) {
     so.sched = "fixed";
     so.race = 2;
     so.threads = g_threads;
+    // tsr_u200_k4 has no VU queue (QD_VU 0 without the vector unit); every other device keeps the U200 depths
+    const uint8_t depth_novu[TSR_NUM_UNITS] = {TSR_QDEPTH_U200_DMA, TSR_QDEPTH_U200_QACT, TSR_QDEPTH_U200_MVM, 0,
+                                               TSR_QDEPTH_U200_ATT, TSR_QDEPTH_U200_SYNC};
+    if (c.mm) so.q_depth = depth_novu;
     tsr_sim * sim = tsr_sim_create_opts(&L.cfg, &so);
     CHECK(sim != nullptr, "%s: simulator", c.name);
     if (sim == nullptr) return 1;
@@ -932,14 +1068,17 @@ int dump_case(const lcase & c, const char * dir) {
     // DB: the dispatch history is on by default; the trace writer writes a 64-line ring in the ch0 IO region below the
     // list during the launch (the RTL bench configures the same: the DB block changes no result)
     const uint32_t trw_beat = 0x6000u, trw_lines = 64u;
-    tsr_sim_csr_write(sim, TSR_CSR_DBG_CFG, tsr_sim_csr_read(sim, TSR_CSR_DBG_CFG) | TSR_DBG_CFG_TRW_EN);
-    tsr_sim_csr_write(sim, TSR_CSR_DBG_TRW_BASE, trw_beat);
-    tsr_sim_csr_write(sim, TSR_CSR_DBG_TRW_LINES, trw_lines);
+    // (the reduced image has neither trace writer nor history: its scenario has no dbg / hist / trw lines)
+    if (!c.mm) {
+        tsr_sim_csr_write(sim, TSR_CSR_DBG_CFG, tsr_sim_csr_read(sim, TSR_CSR_DBG_CFG) | TSR_DBG_CFG_TRW_EN);
+        tsr_sim_csr_write(sim, TSR_CSR_DBG_TRW_BASE, trw_beat);
+        tsr_sim_csr_write(sim, TSR_CSR_DBG_TRW_LINES, trw_lines);
+    }
     if (ok && gi >= 0) ok = fwh_launch(&h, uint32_t(gi), a, 0) == 0;
     CHECK(ok, "%s: launch", c.name);
     CHECK(ok && check_outputs(sim, L, "dump", nullptr), "%s: outputs", c.name);
     if (!ok || gi < 0) return 1;
-    tsr_sim_csr_write(sim, TSR_CSR_DBG_CTRL, TSR_DBG_CTRL_TRW_FLUSH);
+    if (!c.mm) tsr_sim_csr_write(sim, TSR_CSR_DBG_CTRL, TSR_DBG_CTRL_TRW_FLUSH);
     tsr_sim_advance(sim, 5000);
     const std::string d = dir;
     FILE * fm = fopen((d + "/meta.txt").c_str(), "w");
@@ -997,10 +1136,11 @@ int dump_case(const lcase & c, const char * dir) {
                        uint32_t(TSR_CSR_RV_CFG), uint32_t(TSR_CSR_Q_DEPTH), uint32_t(TSR_CSR_LQ_CFG),
                        uint32_t(TSR_CSR_PERF_INFO)})
         fprintf(fm, "id %u %u\n", o, tsr_sim_csr_read(sim, o));
-    const uint32_t hist_head = tsr_sim_csr_read(sim, TSR_CSR_DBG_HIST_HEAD);
-    const uint32_t wptr = tsr_sim_csr_read(sim, TSR_CSR_DBG_TRW_WPTR);
-    fprintf(fm, "dbg %u %u %u %llu %llu\n", hist_head, wptr, tsr_sim_csr_read(sim, TSR_CSR_DBG_TRW_DROPS),
-            (unsigned long long)tsr_sim_perf(sim, TSR_PERF_TRW_RECORDS), (unsigned long long)tsr_sim_perf(sim, TSR_PERF_TRW_DROPS));
+    const uint32_t hist_head = c.mm ? 0u : tsr_sim_csr_read(sim, TSR_CSR_DBG_HIST_HEAD);
+    const uint32_t wptr = c.mm ? 0u : tsr_sim_csr_read(sim, TSR_CSR_DBG_TRW_WPTR);
+    if (!c.mm)
+        fprintf(fm, "dbg %u %u %u %llu %llu\n", hist_head, wptr, tsr_sim_csr_read(sim, TSR_CSR_DBG_TRW_DROPS),
+                (unsigned long long)tsr_sim_perf(sim, TSR_PERF_TRW_RECORDS), (unsigned long long)tsr_sim_perf(sim, TSR_PERF_TRW_DROPS));
     for (uint32_t p = 0; p < hist_head; ++p) {
         tsr_sim_csr_write(sim, TSR_CSR_DBG_HIST_IDX, p);
         fprintf(fm, "hist %u", p);
@@ -1010,8 +1150,8 @@ int dump_case(const lcase & c, const char * dir) {
         for (uint32_t k = 0; k < 8u; ++k) fprintf(fm, " %u", tsr_sim_csr_read(sim, TSR_CSR_DBG_HIST_W_BASE + 4u * k));
         fprintf(fm, "\n");
     }
-    CHECK(wptr > 0 && wptr <= 2u * trw_lines, "dump: %u trace records (a wrapped ring is not compared)", wptr);
-    fprintf(fm, "trw %u %u\n", trw_beat, trw_lines);
+    CHECK(c.mm || (wptr > 0 && wptr <= 2u * trw_lines), "dump: %u trace records (a wrapped ring is not compared)", wptr);
+    if (!c.mm) fprintf(fm, "trw %u %u\n", trw_beat, trw_lines);
     {
         FILE * ft = fopen((d + "/trw.bin").c_str(), "wb");
         CHECK(ft != nullptr, "dump: cannot write trw.bin");
@@ -1215,6 +1355,7 @@ void run_ggml() {
     printf("  %-22s %-9s %10s %10s %10s   %10s %10s %10s\n", "case", "weights", "out NMSE", "max|d|", "KL_max", "attn NMSE", "max|d|",
            "KL_max");
     for (const lcase & c : cases()) {
+        if (c.mm) continue;   // MUL_MAT-only M6 lists have no layer to compare with ggml (their reference is mulmat_ref)
         layer_data L;
         build(c, L);
         run_obs ro;

@@ -12,7 +12,9 @@
 //
 // TSR_DEVICE=sim reads (a malformed value makes the open fail): TSR_SIM_TMAX (1..8, default 1),
 // TSR_SIM_CH_GIB (1..16, default 16; lazily mapped), TSR_SIM_THREADS (MVM worker threads, default
-// min(online CPUs, 8)), TSR_SIM_DRAM_DIR (file-backed DRAM); the simulator itself reads
+// min(online CPUs, 8)), TSR_SIM_DRAM_DIR (file-backed DRAM), TSR_SIM_VU (0: the device of the reduced
+// first card image tsr_u200_k4, built without the vector unit and attention: CAPS 0 and no VU queue,
+// as tsr_core reads with HAS_VU = 0 and HAS_ATT = 0; default 1); the simulator itself reads
 // TSR_SIM_SCHED, TSR_SIM_RV_RATIO, TSR_SIM_RV_CORE, TSR_SIM_RACE, TSR_SIM_LOG and TSR_TRACE (SW §4.9;
 // tsr_sim.h). Configuration: 4 channels, the U200 tile core, CAPS = what this simulator implements
 // (EX §7.5), the U200 M6 queue depths and TCM sizes.
@@ -29,6 +31,7 @@ struct sim_options {
     tsr_config   cfg;                       // as tsr_sim_create takes it
     const char * dram_dir = nullptr;
     unsigned     threads = 1;
+    bool         no_vu = false;             // a core built without the VU and AT (HAS_VU = 0): the VU queue depth is 0
     uint64_t     run_ahead = 1ull << 20;    // core cycles one run-ahead read may simulate
 };
 

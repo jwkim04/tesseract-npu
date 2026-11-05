@@ -64,6 +64,12 @@ module tsr_xrt_kernel
   parameter bit              LOCAL_SOFTCAP = 1'b0,
   parameter bit              LOCAL_SCALE = 1'b0,
   parameter bit              RV_LOCAL_TRANSPORT = 1'b0,
+  // Optional blocks (tsr_core): the vector unit, attention (KVST on the DMA, ATTQK / ATTPV in the clusters and
+  // the gather) and the DB block's trace writer and dispatch history. tsr_u200_k4 builds none of them.
+  parameter bit              HAS_VU         = 1'b1,
+  parameter bit              HAS_ATT        = HAS_MVM,
+  parameter bit              HAS_TRW        = 1'b1,
+  parameter int unsigned     HIST_DEPTH     = tsr_tables_pkg::TSR_HIST_DEPTH,
   parameter bit              MVM_GATHER_PAIR = 1'b0,
   parameter int unsigned     MVM_GATHER_FLITS = 1,
   parameter int unsigned     MVM_RES_PIPE   = TSR_DEF_MVM_RES_PIPE,
@@ -243,6 +249,7 @@ module tsr_xrt_kernel
     .SPM_BYTES(SPM_BYTES), .VL(VL), .NSREG(NSREG),
     .RD_OUTSTANDING(RD_OUTSTANDING), .CH_BYTES(CH_BYTES), .ADDR_BEAT_W(ADDR_BEAT_W),
     .HAS_MVM(HAS_MVM), .SPM_RD_LAT(SPM_RD_LAT),
+    .HAS_VU(HAS_VU), .HAS_ATT(HAS_ATT), .HAS_TRW(HAS_TRW), .HIST_DEPTH(HIST_DEPTH),
     .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .LOCAL_SCALE(LOCAL_SCALE), .LOCAL_SOFTCAP(LOCAL_SOFTCAP), .RV_LOCAL_TRANSPORT(RV_LOCAL_TRANSPORT),
     .MVM_WS_FIFO(MVM_WS_FIFO), .MVM_BC_PIPE(MVM_BC_PIPE), .MVM_RES_PIPE(MVM_RES_PIPE), .MVM_GATHER_PAIR(MVM_GATHER_PAIR), .MVM_GATHER_FLITS(MVM_GATHER_FLITS), .DDR_LOCAL_PIPE(DDR_LOCAL_PIPE),
     .MVM_ACT_RD_LAT(MVM_ACT_RD_LAT), .MVM_MAC_LAT(MVM_MAC_LAT), .MVM_MUL_LAT(MVM_MUL_LAT),

@@ -34,6 +34,7 @@ struct mock_options {
     uint32_t  t_max    = 1;
     uint64_t  ch_bytes = 16ull << 30;
     unsigned  threads  = 1;
+    bool      no_vu    = false;          // TSR_SIM_VU=0: the core of tsr_u200_k4 (no VU, no AT, CAPS 0)
     dma_rules dma;                       // rules the mock's raw DMA enforces (violations fail the transfer)
     uint32_t  adapter_version = 0;       // 0: {16'h0001, 8'h00, NUM_CH} (ADAPTER_MAJOR)
     // Faults (0 = none):

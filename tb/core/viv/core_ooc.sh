@@ -13,7 +13,11 @@
 # usage: tb/core/viv/core_ooc.sh <config> <outdir> [core_ooc.tcl args ...]
 #   config  k1    NUM_CH 1, T_MAX 1, VU 8 / 4 lanes, no lane pipe   (bring-up kernel tsr_u200_k1)
 #           k4t1  NUM_CH 4, T_MAX 1, VU 8 / 8 / 4 lanes, VU_LANE_PIPE 2
-#           k4    NUM_CH 4, T_MAX 4, VU 8 / 8 / 4 lanes, VU_LANE_PIPE 2   (target kernel tsr_u200_k4)
+#           k4    NUM_CH 4, T_MAX 4, VU 8 / 8 / 4 lanes, VU_LANE_PIPE 2   (the full kernel; tsr_u200_k4
+#                 before the reduced first card image)
+#           k4min NUM_CH 4, T_MAX 8, no vector unit, no attention (HAS_VU 0, HAS_ATT 0: no KVST, ATTQK, ATTPV),
+#                 no DB trace writer or history (HAS_TRW 0, HIST_DEPTH 0), RV_LOCAL_TRANSPORT 1: the
+#                 kernel tsr_u200_k4 of rtl/platform/alveo_xrt/gen_tops.py (docs/platform-u200.md §8.7)
 #   Every config: rtl/filelist_xilinx.f, SPM 4 MiB with SPM_RD_LAT 4, MVM_BC_PIPE 2,
 #   MVM_RES_PIPE 2, MVM_MAC_LAT 9 (a register after every adder level of the DSP-packed MAC
 #   lane), RST_PIPE 3 (reset copies per block), CH_BYTES 16 GiB, the other parameters at the
@@ -30,14 +34,15 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/../../.." && pwd)"
 if [ $# -lt 2 ]; then
-  sed -n '2,22p' "$0"; exit 2
+  sed -n '2,26p' "$0"; exit 2
 fi
 cfg="$1"; out="$2"; shift 2
 case "$cfg" in
   k1)   p=(NUM_CH=1 T_MAX=1 VU_EXP_LANES=8 VU_BACK_LANES=4 VU_LANE_PIPE=0) ;;
   k4t1) p=(NUM_CH=4 T_MAX=1 VU_FRONT_LANES=8 VU_EXP_LANES=8 VU_BACK_LANES=4 VU_LANE_PIPE=2 DDR_LOCAL_PIPE=1 MVM_GATHER_PAIR=1) ;;
   k4)   p=(NUM_CH=4 T_MAX=4 VU_FRONT_LANES=8 VU_EXP_LANES=8 VU_BACK_LANES=4 VU_LANE_PIPE=2 DDR_LOCAL_PIPE=1 MVM_GATHER_PAIR=1) ;;
-  *) echo "core_ooc.sh: unknown config '$cfg' (k1, k4t1, k4)" >&2; exit 2 ;;
+  k4min) p=(NUM_CH=4 T_MAX=8 RV_LOCAL_TRANSPORT=1 HAS_VU=0 HAS_ATT=0 HAS_TRW=0 HIST_DEPTH=0) ;;
+  *) echo "core_ooc.sh: unknown config '$cfg' (k1, k4t1, k4, k4min)" >&2; exit 2 ;;
 esac
 p+=(SPM_RD_LAT=4 MVM_BC_PIPE=2 MVM_RES_PIPE=2 MVM_MAC_LAT=9 RST_PIPE=3)
 mkdir -p "$out"

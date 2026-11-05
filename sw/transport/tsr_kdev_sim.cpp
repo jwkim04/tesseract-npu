@@ -24,6 +24,11 @@ bool sim_options_from_env(const char * who, sim_options * o) {
     if (r && v == 0) cfg.caps &= ~TSR_CAPS_MVM_LOCAL_SCALE;
     if ((r = env_u64(who, "TSR_SIM_MVM_LOCAL_SOFTCAP", 0, 1, &v)) < 0) return false;
     if (r && v == 0) cfg.caps &= ~TSR_CAPS_MVM_LOCAL_SOFTCAP;
+    if ((r = env_u64(who, "TSR_SIM_VU", 0, 1, &v)) < 0) return false;
+    if (r && v == 0) {   // tsr_u200_k4: HAS_VU = 0 and HAS_ATT = 0 leave CAPS = 0 and the VU queue absent
+        cfg.caps = 0;
+        o->no_vu = true;
+    }
     if ((r = env_u64(who, "TSR_SIM_TMAX", 1, TSR_T_MAX_ARCH, &v)) < 0) return false;
     if (r) cfg.t_max = (uint32_t) v;
     if ((r = env_u64(who, "TSR_SIM_CH_GIB", 1, 16, &v)) < 0) return false;
@@ -44,6 +49,12 @@ sim_kdev::sim_kdev(const sim_options & o) : cfg_(o.cfg), run_ahead_(o.run_ahead 
     memset(&so, 0, sizeof(so));
     so.dram_dir = o.dram_dir;
     so.threads = o.threads;
+    uint8_t depth[TSR_NUM_UNITS] = { TSR_QDEPTH_U200_DMA, TSR_QDEPTH_U200_QACT, TSR_QDEPTH_U200_MVM,
+                                     TSR_QDEPTH_U200_VU,  TSR_QDEPTH_U200_ATT,  TSR_QDEPTH_U200_SYNC };
+    if (o.no_vu) {
+        depth[TSR_UNIT_VU] = 0;   // tsr_core: Q_DEPTH reads QD_VU_E = 0 without the vector unit
+        so.q_depth = depth;
+    }
     sim_ = tsr_sim_create_opts(&cfg_, &so);
     if (sim_ == nullptr) return;
     tsr_sim_set_threads(sim_, o.threads);

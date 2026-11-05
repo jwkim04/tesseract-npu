@@ -126,6 +126,8 @@ if {$place_only} {
   if {$dcp} { write_checkpoint -force $out/post_place.dcp }
   report_utilization -hierarchical -hierarchical_depth 6 -file $out/util_hier_placed.rpt
   report_timing_summary -max_paths 50 -file $out/timing_placed.rpt
+  report_design_analysis -congestion -file $out/congestion_placed.rpt
+  report_clock_utilization -file $out/clock_util_placed.rpt
   cooc_slr placed $out
   exit
 }

@@ -7,7 +7,10 @@ the testbench wrappers from one table (docs/platform-u200.md §6).
 
 Kernels (the lead's kernel contract): module name = kernel name.
     tsr_u200_k1   NUM_CH 1, T_MAX 1   1-channel bring-up bitstream (m_axi_ch0)
-    tsr_u200_k4   NUM_CH 4, T_MAX 4   the target (m_axi_ch0 .. m_axi_ch3)
+    tsr_u200_k4   NUM_CH 4, T_MAX 8   the first card image (m_axi_ch0 .. m_axi_ch3): four MVM clusters, the
+                                      control core, the issue path, 2R2W SPM, DMA (no KVST) and QACT;
+                                      no vector unit, no attention, no trace writer or dispatch history
+                                      (docs/platform-u200.md §8.7)
 Both: the U200 bitstream parameters of docs/rtl-m3.md §14.2 (SPM 4 MiB with SPM_RD_LAT 4,
 MVM_BC_PIPE 2, MVM_RES_PIPE 2, MVM_MAC_LAT 9, RST_PIPE 3: the core's reset stages with per-block
 copies), CH_BYTES 16 GiB, the other tsr_core parameters at the U200 defaults (tsr_pkg TSR_DEF_*),
@@ -40,13 +43,23 @@ REPO = HERE.parents[2]
 TBSV = REPO / "tb" / "platform" / "sv"
 
 KERNELS = {
-    # Physical front / EXP / back lanes: k4 8 / 8 / 4; k1 retains 16 / 8 / 4.
-    # VU_LANE_PIPE (CC §14.1 remedy 3): K4 has two lane banks behind two register stages.
-    # Each bank shares its outer SLR with the local consumers in k4_major_blocks.tcl.
+    # k1 retains the vector unit and attention (physical front / EXP / back lanes 16 / 8 / 4).
+    # k4 is the reduced first card image (docs/platform-u200.md §8.7): the elaboration removes the vector
+    # unit (HAS_VU 0), attention (HAS_ATT 0: ATTQK / ATTPV in the clusters and the gather, KVST on the DMA),
+    # the local-intermediate paths (LOCAL_* default 0) and the DB block's trace writer and dispatch
+    # history (HAS_TRW 0, HIST_DEPTH 0; the DBG registers and the DMI gate stay, so GDB works). CAPS reads
+    # 0: the host and the firmware leave every kind but MUL_MAT to the CPU (M6). The control core sits in
+    # SLR0 behind the narrow RV transport (RV_LOCAL_TRANSPORT 1). T_MAX 8 is the cluster configuration of
+    # the routed 2026-10-25 image. Lane knobs are absent: there are no lanes.
+    # The full elaboration (VU 8 / 8 / 4 lanes, attention, local intermediates, trace writer and history), the
+    # earlier tsr_u200_k4, as a kernel entry:
+    #   dict(short="k4", NUM_CH=4, T_MAX=4, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2, DDR_LOCAL_PIPE=1,
+    #        RV_LOCAL_TRANSPORT=1, VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, VU_LANE_PIPE=2,
+    #        LOCAL_INTERMEDIATES=1, LOCAL_SCALE=1, LOCAL_SOFTCAP=1)
+    # with hw/u200/k4_major_blocks_full.tcl as the place_design hook in hw/u200/k4.cfg.
     "tsr_u200_k1": dict(short="k1", NUM_CH=1, T_MAX=1, VU_FRONT_LANES=16, VU_EXP_LANES=8, VU_BACK_LANES=4, VU_LANE_PIPE=0),
-    "tsr_u200_k4": dict(short="k4", NUM_CH=4, T_MAX=4, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
-                       DDR_LOCAL_PIPE=1, RV_LOCAL_TRANSPORT=1, VU_FRONT_LANES=8, VU_EXP_LANES=8,
-                       VU_BACK_LANES=4, VU_LANE_PIPE=2, LOCAL_INTERMEDIATES=1, LOCAL_SCALE=1, LOCAL_SOFTCAP=1),
+    "tsr_u200_k4": dict(short="k4", NUM_CH=4, T_MAX=8, RV_LOCAL_TRANSPORT=1, HAS_VU=0, HAS_ATT=0,
+                       HAS_TRW=0, HIST_DEPTH=0),
 }
 # The U200 bitstream parameters (docs/rtl-m3.md §14.2; tb/fastreplay/run.py PACKAGED carries the same)
 COMMON = dict(SPM_RD_LAT=4, MVM_BC_PIPE=2, MVM_RES_PIPE=2, MVM_MAC_LAT=9, RST_PIPE=3, AXI_SLICES=2, RST_STAGES=3)
@@ -94,9 +107,14 @@ def _vw(n: int) -> str:
 def gen_top(name: str, k: dict) -> str:
     """Verilog-2001 top (like the RTL Kernel Wizard's): named ports, tsr_xrt_kernel inside."""
     C = k["NUM_CH"]
-    params = dict(NUM_CH=C, T_MAX=k["T_MAX"], VU_FRONT_LANES=k["VU_FRONT_LANES"], VU_EXP_LANES=k["VU_EXP_LANES"], VU_BACK_LANES=k["VU_BACK_LANES"],
-                  VU_LANE_PIPE=k["VU_LANE_PIPE"], **COMMON)
-    for knob in ("MVM_GATHER_PAIR", "MVM_GATHER_FLITS", "DDR_LOCAL_PIPE", "RV_LOCAL_TRANSPORT", "LOCAL_INTERMEDIATES", "LOCAL_SCALE", "LOCAL_SOFTCAP"):
+    params = dict(NUM_CH=C, T_MAX=k["T_MAX"])
+    for knob in ("VU_FRONT_LANES", "VU_EXP_LANES", "VU_BACK_LANES", "VU_LANE_PIPE"):
+        if knob in k:
+            params[knob] = k[knob]
+    params.update(COMMON)
+    for knob in ("HAS_VU", "HAS_ATT", "HAS_TRW", "HIST_DEPTH",
+                 "MVM_GATHER_PAIR", "MVM_GATHER_FLITS", "DDR_LOCAL_PIPE", "RV_LOCAL_TRANSPORT",
+                 "LOCAL_INTERMEDIATES", "LOCAL_SCALE", "LOCAL_SOFTCAP"):
         if knob in k:
             params[knob] = k[knob]
     L = []
@@ -104,8 +122,11 @@ def gen_top(name: str, k: dict) -> str:
     L.append("//")
     L.append("// Vitis RTL kernel `%s` (module name = kernel name): tsr_xrt_kernel with NUM_CH %d, T_MAX %d," % (
         name, C, k["T_MAX"]))
-    L.append("// VU lanes %d / %d / %d (physical front / EXP / back lanes, VU §7.10) behind %d pipe stages on each side," % (
-        k["VU_FRONT_LANES"], k["VU_EXP_LANES"], k["VU_BACK_LANES"], k["VU_LANE_PIPE"]))
+    if k.get("HAS_VU", 1):
+        L.append("// VU lanes %d / %d / %d (physical front / EXP / back lanes, VU §7.10) behind %d pipe stages on each side," % (
+            k["VU_FRONT_LANES"], k["VU_EXP_LANES"], k["VU_BACK_LANES"], k["VU_LANE_PIPE"]))
+    else:
+        L.append("// no vector unit, no attention (KVST, ATTQK, ATTPV), no DB trace writer or dispatch history (CAPS 0),")
     L.append("// %s." % FIXED_DOC)
     L.append("// Ports: ap_clk, ap_rst_n (active low, synchronous: the core and the adapter), ap_clk_2,")
     L.append("// ap_rst_n_2 (the control core's clock and reset), s_axi_control (AXI4-Lite, 32-bit")

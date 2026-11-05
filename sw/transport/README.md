@@ -159,6 +159,7 @@ Read at open; a malformed value makes the open fail with a message and is never 
 | `TSR_DUMP_DIR` | off | directory for hang dumps (`hang-<pid>-<n>/state.json` with every EX, Q, PERF and DBG register and the completion ring) |
 | `TSR_GDB_WAIT` | off | `boot` or `launch`: after a trap leave the device in the trapped state instead of restarting it; with the embedded debug service also halt at boot or at the first launch for GDB |
 | `TSR_TILE_SERIAL`, `TSR_TILE_HIST` | unset | `0` or `1`: set or clear serial mode and the dispatch history in `DBG_CFG` at open |
+| `TSR_SIM_VU` | 1 | `sim` and `mock`: 0 = the core of `tsr_u200_k4` (no vector unit, no attention): CAPS 0 and no VU queue (`docs/platform-u200.md` §8.7) |
 | `TSR_SIM_TMAX`, `TSR_SIM_CH_GIB`, `TSR_SIM_THREADS`, `TSR_SIM_DRAM_DIR` | 1, 16, `min(CPUs, 8)`, off | `sim` and `mock`: `T_MAX` of the simulated core, channel size in GiB, MVM worker threads, file-backed DRAM (see [`sw/sim/README.md`](../sim/README.md) for the simulator's own `TSR_SIM_*` and `TSR_TRACE`) |
 | `TSR_MOCK_NUM_CH`, `TSR_MOCK_TMAX`, `TSR_MOCK_CH_GIB` | 4, 1, 16 | `mock`: channels, `T_MAX`, channel size |
 | `TSR_MOCK_DMA_ALIGN`, `TSR_MOCK_DMA_CHUNK_KIB`, `TSR_MOCK_DMA_BOUNCE` | 1, 65536, 0 | `mock`: DMA alignment (power of two up to 4096), largest raw transfer in KiB, bounce every transfer |

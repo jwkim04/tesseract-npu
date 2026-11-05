@@ -44,7 +44,7 @@ if {[catch {source $::env(PBLOCK_PREVIEW_HOOK)} err]} {
     return groups
 
 
-def labels(paths):
+def labels(paths, reduced=False):
     classes = defaultdict(list)
     for path in paths:
         tail = path.rsplit("/", 1)[-1]
@@ -73,7 +73,11 @@ def labels(paths):
              ("u_br", "DDR 브리지"), ("u_arb", "DDR 중재기"), ("u_spm", "SPM"),
              ("u_bridge", "RV↔SPM 접속부"),
              ("u_ctrl", "RV·TCM·CDC"), ("g_db.u_dbg_rv", "RV 디버그"),
-             ("rv_link", "제어 전송 RV측"), ("core_link", "제어 전송 중앙측"), ("u_dma", "DMA·KVST"),
+             ("rv_link", "제어 전송 RV측"), ("core_link", "제어 전송 중앙측"),
+             ("u_dma", "DMA" if reduced else "DMA·KVST"), ("u_qact", "QACT"),
+             ("g_rv_local.u_spm_tx", "SPM 링크 끝"), ("g_rv_local.u_issue_rx", "issue 링크 끝"),
+             ("g_rv_local.u_lq_rx", "LCQ 링크 끝"),
+             ("u_issue", "issue 경로"), ("u_csr", "CSR"), ("g_db.u_dbg", "DB 코어측"),
              ("vu_frontend", "VU 입력·각도 생성·LM"))
     return [label + (" " + "·".join(classes[key]) if any(classes[key]) else "")
             for key, label in names if key in classes] + [k for k in classes if k not in dict(names)]
@@ -96,6 +100,8 @@ def slice_ranges(report):
 def render(hook, report, output):
     groups, shapes = assignments(hook), slice_ranges(report)
     has_vu_banks = any(path.endswith(".u_bank") for paths in groups.values() for path in paths)
+    # The reduced first card image has no VU and no KVST; its hook also places QACT, issue and CSR.
+    reduced = not has_vu_banks and any(path.endswith("/u_qact") for paths in groups.values() for path in paths)
     img = Image.new("RGB", (1120 * SCALE, 820 * SCALE), "#ffffff")
     draw = ImageDraw.Draw(img)
     fontdir = Path("/usr/share/fonts/opentype/noto")
@@ -130,8 +136,9 @@ def render(hook, report, output):
         for i, line in enumerate(lines):
             word(x, y + i * 22, line, 16, INK)
 
-    word(44, 30, "ALVEO U200   /   K4   /   PRE-BUILD", 15, GRAY, True)
-    title = "다음 빌드의 Pblock 계획" if has_vu_banks else "VU 제외 진단 빌드의 Pblock 계획"
+    word(44, 30, "ALVEO U200   /   K4-MIN   /   PRE-BUILD" if reduced else "ALVEO U200   /   K4   /   PRE-BUILD", 15, GRAY, True)
+    title = ("첫 카드 이미지(VU·어텐션 제외)의 Pblock 계획" if reduced else
+             "다음 빌드의 Pblock 계획" if has_vu_banks else "VU 제외 진단 빌드의 Pblock 계획")
     word(42, 60, title, 36, INK, True)
     word(44, 119, "색은 큰 블록을 배치할 수 있는 범위입니다. 개별 유닛의 실제 위치는 배치 후 결정됩니다.", 17, GRAY)
     word(44, 167, "플랫폼 동적 영역", 17, INK, True)
@@ -152,7 +159,7 @@ def render(hook, report, output):
         word(79, y+52, f"SLR{s}", 21, "#122d3c", True)
         rect(517, y+9, 523, y+125, COLORS[s])
         word(550, y+9, f"SLR{s}", 21, INK, True)
-        items = labels(groups[s])
+        items = labels(groups[s], reduced)
         wrapped_items(550, y+39, items or ["커널 블록 별도 지정 없음"])
     word(60, 631, "실제 SLICE 범위 기준 · 회색은 해당 Pblock 밖", 14, GRAY)
     rect(42, 709, 1078, 780, "#eff4f7")
@@ -162,8 +169,13 @@ def render(hook, report, output):
     free += ("VU 출력·중앙 축약, " if placed_dma else "VU 중앙 제어·축약, ") if has_vu_banks else ""
     if not groups[1] and has_vu_banks:
         free = "SPM, RV·제어, DDR 브리지·중재기, DMA·KVST, gather, VU 중앙부, "
-    word(61, 748, free + "issue·중앙 debug, 기타 연결 로직 등", 16, GRAY)
-    word(44, 795, "K4 major-block floorplan   ·   단위 셀 / 개별 배선 지정 없음", 12, GRAY)
+    placed_issue = any(path.endswith("/u_issue") for paths in groups.values() for path in paths)
+    if reduced:
+        free = "중앙 gather, DDR1·2 브리지, 어댑터 제어, " + ("" if placed_issue else "issue·CSR·중앙 debug, ")
+        word(61, 748, free + "기타 연결 로직 등", 16, GRAY)
+    else:
+        word(61, 748, free + "issue·중앙 debug, 기타 연결 로직 등", 16, GRAY)
+    word(44, 795, ("K4-MIN" if reduced else "K4") + " major-block floorplan   ·   단위 셀 / 개별 배선 지정 없음", 12, GRAY)
     output.parent.mkdir(parents=True, exist_ok=True)
     img.save(output)
 
