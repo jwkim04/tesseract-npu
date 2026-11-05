@@ -23,6 +23,7 @@ module tsr_vu_red
   import tsr_vu_pkg::*;
 #(
   parameter int unsigned TQD = 128,         // row tokens between the drain and the post output
+  parameter bit LOCAL_L1 = 1'b0,           // first subtree level resides in the half-width lane banks
   parameter int unsigned DRL = 0            // cycles from dr_addr to its dr_data (0: combinational; tsr_vu_lanes' pipes)
 ) (
   input  logic                           clk,
@@ -33,7 +34,9 @@ module tsr_vu_red
   input  tsr_vu_row_t                    row_tok,
   // partial drain (all lanes, a combinational read DRL cycles behind the address)
   output logic [3:0]                     dr_addr,
+  output logic                           dr_sel, dr_empty, dr_mx,
   input  logic [15:0][31:0]              dr_data,
+  input  logic [3:0][31:0]               dr_l1,
   output logic [4:0]                     ring_rel,   // entries freed this cycle
   // scalar path (SOP SQRT / RSQRT / DIV; operands in opk[tag].k1, k2, mode in opk[tag].post)
   input  logic                           sopx_v,
@@ -98,6 +101,9 @@ module tsr_vu_red
   wire        mx   = opk[dh.tag].rkind[1];  // MAX or AMASK
   wire        dlast = dq_v && (dh.empty || q_q == dh.ng);
   assign dq_pop  = dlast;
+  assign dr_sel = q_q[0];
+  assign dr_empty = dh.empty;
+  assign dr_mx = mx;
   assign dr_addr = dh.ring + {1'b0, q_q[3:1]};
   assign ring_rel = (dlast && !dh.empty) ? 5'(dh.np) + 5'd1 : 5'd0;
 
@@ -133,7 +139,7 @@ module tsr_vu_red
     end
     g_last_q <= dl_c;
     g_mx_q   <= mx_c;
-    for (int i = 0; i < 8; i++) begin
+    if (!LOCAL_L1) for (int i = 0; i < 8; i++) begin
       if (em_c) g_q[i] <= mx_c ? TSR_VU_NINF : 32'd0;   // empty row: SUM +0, MAX -inf (VU §6.2)
       else      g_q[i] <= dr_data[(sel_c ? 8 : 0) + i];
     end
@@ -159,7 +165,11 @@ module tsr_vu_red
   logic [31:0]      l3;
   logic [3*FAL-1:0] sv_sr, sl_sr, sm_sr;
   for (genvar i = 0; i < 4; i++) begin : g_l1
-    tsr_vu_rnode u_n (.clk, .rst_n, .mx(g_mx_q), .a(g_q[2*i]), .b(g_q[2*i+1]), .y(l1[i]));
+    if (LOCAL_L1) begin : g_remote
+      assign l1[i] = dr_l1[i];
+    end else begin : g_local
+      tsr_vu_rnode u_n (.clk, .rst_n, .mx(g_mx_q), .a(g_q[2*i]), .b(g_q[2*i+1]), .y(l1[i]));
+    end
   end
   logic mx1, mx2;
   tsr_vu_dly #(.W(1), .D(FAL)) d_mx1 (.clk, .d(g_mx_q), .q(mx1));
@@ -333,7 +343,7 @@ module tsr_vu_red
   assign idle = !dq_v && (rdv_sr == '0) && !tq_v && (tv == '0) && (pv_sr == '0) && !g_v_q && !dr_busy &&
                 (sv_sr == '0) && !dv_busy_q;
 
-  wire unused_ok = &{1'b0, ov, dv_in_ready, dq_n, tq_n, tl[4], tm[4], m4[3:1], pt.ring, pt.np, pt.ng, pt.empty};
+  wire unused_ok = &{1'b0, dr_l1, g_q, ov, dv_in_ready, dq_n, tq_n, tl[4], tm[4], m4[3:1], pt.ring, pt.np, pt.ng, pt.empty};
 
 endmodule
 

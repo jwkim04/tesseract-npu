@@ -54,6 +54,10 @@
 // The op list kinds this source handles (SW §6.9: .tsr_kinds entries at tsr/opl.hpp kind_rev).
 #if !defined(TSR_TEST_NO_KIND_MUL_MAT)   // the test image fw_no_mulmat (kindrevs.cmake): an image without the kind
 TSR_KIND(MUL_MAT);
+#if !defined(TSR_TEST_NO_KIND_MUL_MAT_EPILOGUE)
+TSR_KIND(MUL_MAT_SCALE);
+TSR_KIND(MUL_MAT_SOFTCAP);
+#endif
 #endif
 
 namespace tsr {
@@ -61,6 +65,10 @@ namespace tsr {
 namespace {
 
 namespace mm = opl::mm;
+static_assert(CAPS_MVM_LOCAL_SCALE == plan::CAPS_MVM_LOCAL_SCALE);
+static_assert(CAPS_MVM_LOCAL_SOFTCAP == plan::CAPS_MVM_LOCAL_SOFTCAP);
+
+enum class epilogue { none, scale, softcap };
 
 struct mm_op {
     // arguments
@@ -69,6 +77,8 @@ struct mm_op {
     wref w;
     uint32_t N, K, T;
     bool has_add, acc_dst;
+    epilogue post;
+    uint32_t scale, post_scale;
     // plan
     plan::mm_tiling tl;
     uint32_t push_flags;
@@ -127,11 +137,28 @@ spm y_of(const mm_op & m, const tile & t) { return t.blk + t.tt * (m.tl.x_lines 
 }
 
 // Steps 3-4.
+op mvm_epilogue(spm y, spm q, wref w, uint32_t n, uint32_t k, uint32_t t, uint32_t stride,
+                bool acc, epilogue post, uint32_t scale, uint32_t post_scale) {
+    op m = MVM(y, q, w, n, k, t, stride, acc);
+    if (post == epilogue::scale) {
+        m.w[0] |= MVM_LOCAL_SCALE;
+        m.w[7] = scale;
+        m.used |= uint8_t(1u << MVM_SCALE_WORD);
+    } else if (post == epilogue::softcap) {
+        m.w[0] |= MVM_LOCAL_SOFTCAP;
+        m.w[6] = scale;                 // softcap's destination is always dense in SPM
+        m.w[7] = post_scale;
+        m.used |= uint8_t(1u << MVM_SCALE_WORD);
+    }
+    return m;
+}
+
 [[gnu::cold]] void compute_tile(const mm_op & m, tile & t) {
     const ticket q = qact_g(qa_for(m.w), q_of(m, t), x_of(m, t), m.K, t.tt, m.tl.x_lines, t.ld_x,
                                           m.push_flags);
     const bool acc = m.has_add || m.acc_dst;
-    t.mvm = push_g(MVM(y_of(m, t), q_of(m, t), m.w, m.N, m.K, t.tt, m.tl.y_lines, acc), after(q, t.ld_add),
+    t.mvm = push_g(mvm_epilogue(y_of(m, t), q_of(m, t), m.w, m.N, m.K, t.tt, m.tl.y_lines, acc,
+                                m.post, m.scale, m.post_scale), after(q, t.ld_add),
                   m.push_flags);
 }
 
@@ -203,16 +230,25 @@ spm y_of(const mm_op & m, const tile & t) { return t.blk + t.tt * (m.tl.x_lines 
 
 // Any T (kind_mulmat's T != 1 case).
 [[gnu::noinline, gnu::cold]] ticket mulmat_any(const volatile uint32_t * a, uint32_t n_args, uint32_t kflags, deps d,
-                                    kind_ctx & ctx) {
+                                    kind_ctx & ctx, epilogue post = epilogue::none) {
     // Every argument word first (one line-buffer fill; any push would invalidate the buffer).
     const uint32_t ax = a[mm::X], axs = a[mm::X_STRIDE], ay = a[mm::Y], ays = a[mm::Y_STRIDE], woff = a[mm::W_OFF];
     const uint32_t fmt = a[mm::FMT], N = a[mm::N], K = a[mm::K], T = a[mm::T];
     const uint32_t aadd = a[mm::ADD], aadds = a[mm::ADD_STRIDE], fl = a[mm::FLAGS];
     const bool has_add = aadd != opl::HANDLE_NONE, acc_dst = (fl & mm::FLAG_ACC_DST) != 0u;
-    if (n_args != mm::NARGS || kflags != 0u || (fl & ~mm::FLAG_ACC_DST) != 0u || (has_add && acc_dst)) {
+    const uint32_t want = post == epilogue::softcap ? opl::mm_scale::SOFTCAP_NARGS :
+                          post == epilogue::scale ? opl::mm_scale::NARGS : mm::NARGS;
+    if (n_args != want || kflags != 0u || (fl & ~mm::FLAG_ACC_DST) != 0u || (has_add && acc_dst)) {
         ctx.ret = opl::RET_BAD_RECORD;
         return ticket{};
     }
+    if (post != epilogue::none) {
+        const uint32_t cap = post == epilogue::scale ? CAPS_MVM_LOCAL_SCALE : CAPS_MVM_LOCAL_SOFTCAP;
+        if (!(ctx.cfg->caps & cap) || ctx.cfg->num_ch != 4u || !opl::mm_scale::operands_ok(aadd, aadds, fl))
+            return ctx.fail(opl::RET_BAD_RECORD);
+    }
+    const uint32_t scale = post != epilogue::none ? a[opl::mm_scale::SCALE] : 0u;
+    const uint32_t post_scale = post == epilogue::softcap ? a[opl::mm_scale::POST_SCALE] : 0u;
     plan::mm_tiling tl;
     const uint32_t pr = plan::mm_plan(*ctx.cfg, fmt, N, K, T, &tl);
     if (pr != opl::RET_OK) {
@@ -235,6 +271,9 @@ spm y_of(const mm_op & m, const tile & t) { return t.blk + t.tt * (m.tl.x_lines 
         m.add = from_handle(aadd);
         m.add_stride = aadds;
         m.acc_dst = acc_dst;
+        m.post = post;
+        m.scale = scale;
+        m.post_scale = post_scale;
         m.tl = tl;
         m.push_flags = pf;
         return mulmat_tiles(m, d, ctx);
@@ -256,7 +295,8 @@ spm y_of(const mm_op & m, const tile & t) { return t.blk + t.tt * (m.tl.x_lines 
     if (has_add) ld_add = load_rows(yb, from_handle(aadd), aadds, tl.y_lines, 0u, T, deps{}, pf);
     else if (acc_dst) ld_add = load_rows(yb, y, ays, tl.y_lines, 0u, T, deps{}, pf);
     const ticket qt = qact_g(qa_for(w), q, blk, K, T, tl.x_lines, ld_x, pf);
-    const ticket mv = push_g(MVM(yb, q, w, N, K, T, tl.y_lines, has_add || acc_dst), after(qt, ld_add), pf);
+    const op compute = mvm_epilogue(yb, q, w, N, K, T, tl.y_lines, has_add || acc_dst, post, scale, post_scale);
+    const ticket mv = push_g(compute, after(qt, ld_add), pf);
     const ticket st = store_rows(yb, y, ays, tl.y_lines, 0u, T, deps{mv}, pf);
     ring.release(blk, st);
     return st;
@@ -270,6 +310,14 @@ ticket kind_mulmat(const volatile uint32_t * a, uint32_t n_args, uint32_t kflags
         if (t != mmk::NOT_FAST) return ticket{t};
     }
     return mulmat_any(a, n_args, kflags, d, ctx);
+}
+
+ticket kind_mulmat_scale(const volatile uint32_t * a, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx) {
+    return mulmat_any(a, n_args, kflags, d, ctx, epilogue::scale);
+}
+
+ticket kind_mulmat_softcap(const volatile uint32_t * a, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx) {
+    return mulmat_any(a, n_args, kflags, d, ctx, epilogue::softcap);
 }
 
 #if defined(TSR_FW_HOST)

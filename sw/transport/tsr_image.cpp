@@ -565,7 +565,7 @@ extern "C" int tsr_versions_str(const tsr_versions * v, int verbose, char * buf,
         s += b;
         static const struct { uint32_t bit; const char * name; } caps[] = {
             { TSR_CAPS_VU, "VU" }, { TSR_CAPS_TOPK, "TOPK" }, { TSR_CAPS_ATT, "ATT" }, { TSR_CAPS_DQROW, "DQROW" },
-            { TSR_CAPS_VMASK, "VMASK" } };
+            { TSR_CAPS_VMASK, "VMASK" }, { TSR_CAPS_ATT_LOCAL, "ATT_LOCAL" }, { TSR_CAPS_MVM_LOCAL_SCALE, "MVM_LOCAL_SCALE" }, { TSR_CAPS_MVM_LOCAL_SOFTCAP, "MVM_LOCAL_SOFTCAP" } };
         std::string c;
         for (const auto & x : caps)
             if (v->caps & x.bit) c += (c.empty() ? "" : " ") + std::string(x.name);

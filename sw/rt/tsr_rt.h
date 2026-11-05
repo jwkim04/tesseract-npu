@@ -159,6 +159,12 @@ public:
     // (0 = K), y row t at y + t * y_stride floats (0 = N). Only y[t, 0..N) is written. T = 0: no-op.
     void linear(weight_handle w, const float * x, uint32_t T, float * y, size_t x_stride = 0, size_t y_stride = 0);
 
+    // Optional scaled result. False means no input or output was transferred.
+    // The original linear and host scale remain available to the caller.
+    bool has_local_scale() const;
+    bool try_linear_scale(weight_handle w, const float * x, uint32_t T, float * y, float scale,
+                          size_t x_stride = 0, size_t y_stride = 0);
+
     // The same y computed on the host with libtsr_ref (the spec's oracle) from the weight rows read
     // back from the device: tsr_qact per token and K part, tsr_dot_row per row and K part, K parts
     // added in order with tsr_fadd. Bit-identical to linear() on a correct device.
@@ -170,6 +176,8 @@ public:
 
     struct impl;
 private:
+    bool linear_impl(weight_handle w, const float * x, uint32_t T, float * y,
+                     size_t x_stride, size_t y_stride, const float * scale);
     std::unique_ptr<impl> p_;
 };
 

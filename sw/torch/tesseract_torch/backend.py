@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import itertools
 import re
+import math
 import threading
 from dataclasses import dataclass, field
 
@@ -174,25 +175,26 @@ def _orient(s: MMSpec, a: torch.Tensor, b: torch.Tensor):
     return w, b.t(), (lambda y: y.t().contiguous())
 
 
-def _on_cpu(s: MMSpec, a, b, bias):
+def _on_cpu(s: MMSpec, a, b, bias, scale):
     s.cpu_calls += 1
     _rt._bump("cpu_fallback_calls")
-    return s.cpu(a, b, bias)
+    y = s.cpu(a, b, bias)
+    return y if scale is None else y.mul(scale)
 
 
 def device_mm(spec_id: int, a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor | None = None,
-              root: torch.Tensor | None = None) -> torch.Tensor:
+              root: torch.Tensor | None = None, scale: float | None = None) -> torch.Tensor:
     """The device form of one partitioned matmul node (its original operands; for addmm bias is
     `input`, for linear the bias; root: the parameter / buffer the weight operand is a view of)."""
     s = _SPECS[spec_id]
     w, x2, finish = _orient(s, a, b)
     if w.dtype not in SUPPORTED_DTYPES or tuple(w.shape) != (s.N, s.K) or w.device.type != "cpu":
-        return _on_cpu(s, a, b, bias)
+        return _on_cpu(s, a, b, bias, scale)
     with _rt._lock:
         st = s.weight_state(root if isinstance(root, torch.Tensor) else w)
         off = st.disabled is not None
     if off:
-        return _on_cpu(s, a, b, bias)
+        return _on_cpu(s, a, b, bias, scale)
     try:
         dev, h, uploaded = _rt._cache.acquire(w, s.weight)
     except (_rt.TesseractError, ValueError) as err:
@@ -202,7 +204,7 @@ def device_mm(spec_id: int, a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor
         with _rt._lock:
             st.disabled = str(err)
         _rt._warn_once(f"upload:{s.id}:{st.id}", f"tesseract: {s.weight} [{s.N} x {s.K}] stays on the CPU: {err}")
-        return _on_cpu(s, a, b, bias)
+        return _on_cpu(s, a, b, bias, scale)
     with _rt._lock:
         st.uploads_in_a_row = st.uploads_in_a_row + 1 if uploaded else 0
         churn = st.uploads_in_a_row >= _CHURN_LIMIT
@@ -212,7 +214,16 @@ def device_mm(spec_id: int, a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor
     if churn:
         _rt._warn_once(f"churn:{s.id}:{st.id}",
                        f"tesseract: {s.weight} [{s.N} x {s.K}] runs on the CPU from now on: {st.disabled}")
-    y = _rt.device_linear_2d(h, x2, name=s.weight, dev=dev)
+    y = None
+    if scale is not None and x2.dtype == torch.float32 and x2.numel() and not _rt.verify_enabled():
+        try_scale = getattr(dev, "_try_linear_scale", None)
+        if try_scale is not None:
+            y = try_scale(h, x2, scale)
+    if y is None:
+        y = _rt.device_linear_2d(h, x2, name=s.weight, dev=dev)
+    else:
+        _rt._bump("local_scale_calls")
+        scale = None
     T = y.shape[0]
     s.calls += 1
     s.tokens += T
@@ -232,7 +243,7 @@ def device_mm(spec_id: int, a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor
         out.add_(bias.to(torch.float32))
     if s.out_dtype != torch.float32:
         out = out.to(s.out_dtype)
-    return out
+    return out if scale is None else out.mul(scale)
 
 
 # ------------------------------------------------------------------------------------------
@@ -504,6 +515,27 @@ def _collect(gm: fx.GraphModule, weights: dict, opts: Options, gid: int, where: 
         _collect(body, bw, opts, gid, sub, out, None, depth + 1)
 
 
+def _local_scale_user(d: _Decision, bias):
+    """Select an FP32 scalar multiply with the same rounding as its CPU form."""
+    node = d.node
+    if (bias is not None or d.op not in ("mm", "matmul", "linear") or
+            d.spec.side != "right" or d.spec.out_dtype != torch.float32 or len(node.users) != 1):
+        return None, None
+    user = next(iter(node.users))
+    if user.op != "call_function" or user.target not in (aten.mul.Tensor, aten.mul.Scalar) or user.kwargs:
+        return None, None
+    if len(user.args) != 2 or user.args[0] is not node:
+        return None, None
+    value = user.args[1]
+    # MVM's FP32 result already uses FTZ. Scaling it up by a positive power
+    # of two cannot create a subnormal that CPU multiplication would retain.
+    if type(value) not in (int, float) or not 1.0 <= value <= 2.0 ** 127:
+        return None, None
+    if math.frexp(value)[0] != 0.5:
+        return None, None
+    return user, float(value)
+
+
 def partition(aot_gm: fx.GraphModule, weights: dict, opts: Options, gid: int) -> list[_Decision]:
     """Rewrite aot_gm (and the bodies of its higher-order ops) in place: device matmuls become
     device_mm calls. Returns the decisions. All decisions are made before a graph is touched, so a
@@ -518,6 +550,7 @@ def partition(aot_gm: fx.GraphModule, weights: dict, opts: Options, gid: int) ->
         with _specs_lock:
             d.spec.id = len(_SPECS)
             _SPECS.append(d.spec)
+        bias = None
         if d.op == "addmm":
             call_args = (d.spec.id, node.args[1], node.args[2], node.args[0], d.root)
         elif d.op == "linear":
@@ -525,10 +558,14 @@ def partition(aot_gm: fx.GraphModule, weights: dict, opts: Options, gid: int) ->
             call_args = (d.spec.id, node.args[0], node.args[1], bias, d.root)
         else:
             call_args = (d.spec.id, node.args[0], node.args[1], None, d.root)
+        scale_user, scale = _local_scale_user(d, bias)
         with g.graph.inserting_before(node):
-            new = g.graph.call_function(device_mm, call_args)
-        new.meta = dict(node.meta)
-        node.replace_all_uses_with(new)
+            new = g.graph.call_function(device_mm, call_args if scale_user is None else (*call_args, scale))
+        output = node if scale_user is None else scale_user
+        new.meta = dict(output.meta)
+        output.replace_all_uses_with(new)
+        if scale_user is not None:
+            g.graph.erase_node(scale_user)
         g.graph.erase_node(node)
         d.node = new
         d.spec.node = d.where + node.name

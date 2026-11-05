@@ -181,6 +181,7 @@ module tsr_dbg_tb
   input  logic                        d_wr_dat_valid,
   output logic                        d_wr_dat_ready,
   input  logic [511:0]                d_wr_dat_data,
+  input  logic [15:0]                 d_wr_dat_mask,
   input  logic                        d_wr_dat_last,
   output logic                        d_wr_rsp_valid,
   output logic                        s_wr_req_valid,
@@ -191,6 +192,7 @@ module tsr_dbg_tb
   output logic                        s_wr_dat_valid,
   input  logic                        s_wr_dat_ready,
   output logic [511:0]                s_wr_dat_data,
+  output logic [15:0]                 s_wr_dat_mask,
   output logic                        s_wr_dat_last,
   input  logic                        s_wr_rsp_valid,
   output logic                        s_wr_rsp_ready,
@@ -336,12 +338,12 @@ module tsr_dbg_tb
   tsr_dbg_wrmux #(.ADDR_BEAT_W(ADDR_BEAT_W)) u_wrmux (
     .clk, .rst_n,
     .d_wr_req_valid, .d_wr_req_ready, .d_wr_req_addr, .d_wr_req_len, .d_wr_req_id('0),
-    .d_wr_dat_valid, .d_wr_dat_ready, .d_wr_dat_data, .d_wr_dat_last,
+    .d_wr_dat_valid, .d_wr_dat_ready, .d_wr_dat_data, .d_wr_dat_mask, .d_wr_dat_last,
     .d_wr_rsp_valid, .d_wr_rsp_ready(1'b1), .d_wr_rsp_id,
     .t_wr_req_valid, .t_wr_req_ready, .t_wr_req_addr, .t_wr_req_len,
     .t_wr_dat_valid, .t_wr_dat_ready, .t_wr_dat_data, .t_wr_dat_last, .t_wr_rsp_valid,
     .s_wr_req_valid, .s_wr_req_ready, .s_wr_req_addr, .s_wr_req_len, .s_wr_req_id,
-    .s_wr_dat_valid, .s_wr_dat_ready, .s_wr_dat_data, .s_wr_dat_last,
+    .s_wr_dat_valid, .s_wr_dat_ready, .s_wr_dat_data, .s_wr_dat_mask, .s_wr_dat_last,
     .s_wr_rsp_valid, .s_wr_rsp_ready, .s_wr_rsp_id
   );
 

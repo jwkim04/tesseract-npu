@@ -209,6 +209,52 @@ static void test_sreg(void) {
 }
 
 // Host DRAM against ops in harness mode (RV_RUN = 0: the test is the RISC-V and the host).
+// Masked KVST preserves replay preimages without a physical metadata read. Both capture modes
+// must visit only the QA source lines and two written DRAM beats in the race model.
+static void test_kvst_capture_accesses(void) {
+    for (int capturing = 0; capturing < 2; ++capturing) {
+        tsr_config c = cfg_u200(1);
+        c.num_ch = 2;
+        c.ch_bytes = 1ull << 28;
+        c.caps = TSR_CAPS_VU | TSR_CAPS_ATT;
+        tsr_sim_opts o = {0};
+        o.race = 1;
+        tsr_sim * s = tsr_sim_create_opts(&c, &o);
+        CHECK(s != NULL, "masked KVST race simulator");
+        if (s == NULL) continue;
+        // Direct initialization creates no host access or shadow segmentation.
+        memset(tsr_sim_dram(s, 0) + 1000u * 64u, 0xA5, 128u);
+        if (capturing) tsr_sim_capture_begin(s);
+        tsr_race_stats before, after;
+        CHECK(tsr_sim_race_stats(s, &before) == 0, "KVST race stats before");
+        tsr_insn i = {{0}};
+        i.w[0] = TSR_OP_KVST;
+        TSR_INSN_SET(i.w, TSR_KVST_KV, TSR_KVST_KV_V);
+        TSR_INSN_SET(i.w, TSR_KVST_SRC, 100u);
+        TSR_INSN_SET(i.w, TSR_KVST_BASE, 1000u);
+        TSR_INSN_SET(i.w, TSR_KVST_E64, 1u);
+        TSR_INSN_SET(i.w, TSR_KVST_LG, 1u);
+        push(s, i, NONE, NONE);
+        idle(s);
+        CHECK(tsr_sim_csr_read(s, TSR_CSR_Q_ERR_CODE(TSR_UNIT_DMA)) == 0u, "KVST ran");
+        CHECK(tsr_sim_race_stats(s, &after) == 0, "KVST race stats after");
+        CHECK(after.op_lines - before.op_lines == tsr_qa_lines(TSR_QA_A32, 64u) + 2u,
+              "KVST capture %d: QA reads and two DRAM writes only, got %llu visits", capturing,
+              (unsigned long long)(after.op_lines - before.op_lines));
+        CHECK(n_rep(s) == 0, "KVST has no race");
+        if (capturing) {
+            tsr_capture cap;
+            tsr_sim_capture_end(s, &cap);
+            CHECK(cap.n_init == 1 && cap.init[0].ch == 0 && cap.init[0].byte_off == 64000u &&
+                  cap.init[0].size == 64u, "partial META preimage remains captured");
+            CHECK(cap.n_expect == 1 && cap.expect[0].ch == 0 && cap.expect[0].byte_off == 64000u &&
+                  cap.expect[0].size == 128u, "META and quant output beats remain captured");
+            tsr_capture_free(&cap);
+        }
+        tsr_sim_destroy(s);
+    }
+}
+
 static void test_host_harness(void) {
     uint8_t buf[256];
     memset(buf, 0x3C, sizeof(buf));
@@ -764,6 +810,7 @@ int main(int argc, char ** argv) {
         test_tile_pairs();
         test_sreg();
         test_host_harness();
+        test_kvst_capture_accesses();
         test_pc_sentinel();
         test_ranges();
         test_random();

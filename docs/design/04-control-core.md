@@ -84,7 +84,7 @@ implements in RTL what EX and DB specify for the core.
 | `tsr_spm` (C: 2R2W), `tsr_dma` (C), `tsr_qact` (C: port adapter), `tsr_mvm` (C: port adapter, gather slices) | `rtl/core/` | core | SLR1 (clusters SLR0 / SLR2) |
 | `tsr_cdc_fifo`, `tsr_cdc_gray`, `tsr_cdc_hs` (N); `tsr_sync`, `tsr_rst_sync` until `rtl/tech` takes them | `rtl/ctrl/cdc/` (W4: not `rtl/core/cdc/`) | both | — |
 | `tsr_sync`, `tsr_rst_sync`, `tsr_clk_div` (N) | `rtl/tech/<target>/` | — | — |
-| VU (`tsr_vu`, including AT's vector ops 0x34–0x37); AT's cluster modes (ATTQK / ATTPV) and KVST in the DMA | areas VU / AT | core | VU and KVST in SLR1; cluster modes in SLR0 / SLR2 (§14) |
+| VU (`tsr_vu`, including AT's vector ops 0x34–0x37); AT's cluster modes (ATTQK / ATTPV) and KVST in the DMA | areas VU / AT | core | VU control/reduction and KVST in SLR1; K4 VU lane banks and cluster modes in SLR0 / SLR2 (§14) |
 
 ---
 
@@ -787,6 +787,48 @@ merged into one with two synchronisers behind it).
 
 ---
 
+### 11.4 Narrow physical transport to the RV region
+
+`RV_LOCAL_TRANSPORT` is an implementation option on `tsr_core` and
+`tsr_xrt_kernel`. The K4 candidate enables it; K1 and generic instances default
+to the direct connections. The complete control subsystem, its TCMs and the
+RV debug block can then share an outer SLR. The CDC structures and widths in
+§11.2 remain unchanged inside that region. The new links use the core clock
+and the existing hardware reset at both ends. They introduce no clock domain.
+
+| Physical link | Transfer | Completion |
+|---|---|---|
+| Central SPM bridge to RV region | Four 128-bit segments, valid and error | Assemble all 64 bytes before answering the existing CDC handshake |
+| RV region to central issue dispatcher | Three 129-bit segments, valid and accepted return | Retain the source FIFO head until the dispatcher accepts the complete 387-bit entry |
+| RV region to central LQ/LCQ port | 128-bit data, 12-bit offset, write, END and valid | Ordinary access uses one segment; LCQ_POST uses two, then commits once |
+
+SPM uses the existing bridge's held response register. The bridge releases it
+only after the fourth segment is sent. The transport forwards each held CDC
+request once and rearms after the request drops. RV timeouts still drain late
+responses through the existing tagged handshake. The RV's 64-byte line buffer,
+its invalidation rules and next-cycle hits are unchanged (§10.5).
+
+The issue link adds no queue credit. A partially transferred entry remains in
+the source FIFO, and the dispatcher sees valid only after full assembly.
+`Q_FIFO` includes that reserved head until the acceptance acknowledgement
+returns, one core cycle after dispatch. Idle and quiescent status also require
+this count to be zero, so QCLEAR and reset draining cannot pass an entry while
+it is in transit. Soft RV reset does not reset either transport endpoint.
+
+An LCQ_POST exposes neither half of its record to the CSR port. The assembled
+request commits through the existing CSR logic and returns its existing
+fault/data response. The ordinary accesses preserve their 32-bit write data;
+POST preserves its END bit and all eight record words. Other POST write-data
+bits are ignored by the existing CSR contract.
+
+These links reduce declared signal width, not arithmetic precision. They add
+control latency and storage. The source registers and complete receive buffers
+belong to their respective functional endpoints. Only those endpoint modules
+receive Pblock assignments; no leaf placement is prescribed. Sequence counters,
+error records and other control/debug connections remain direct and must be
+included when assessing total SLR traffic. See `docs/platform-u200.md` §8.6.18
+for the candidate's validation and physical signoff limits.
+
 ## 12. Resets, aborts, interrupts, timer
 
 ### 12.1 Events
@@ -937,7 +979,7 @@ for either knob setting (the knobs save 8.7 K LUT against an excess of 31–50 K
 2026-11-01 as the parameter `VU_LANE_PIPE`, `rtl/core/tsr_vu_lanes.sv`: that many register stages on each side of the
 lane array, so every lane exit and every partial drain read takes 2 × `VU_LANE_PIPE` cycles longer — +4 at the 2 stages
 of k4 — and the results are bit-exact; the lanes in SLR0 by `hw/u200/k4_floorplan.tcl`) 111–130 K
-LUT (56–65 %). The integration builds k4 with 16 / 8 lanes and `VU_LANE_PIPE` 2 and k1 with 8 / 4 and no pipe
+LUT (56–65 %). The initial integration used k4 with 16 EXP / 8 back lanes and `VU_LANE_PIPE` 2 and k1 with 8 / 4 and no pipe
 (`rtl/platform/alveo_xrt/gen_tops.py`); the k4 setting is final only if SLR0 takes the lanes' 49.6 K LUT and 368 DSP
 (fall back to 8 / 4 if not).
 Whole-core synthesis of k1 (`core_ooc.sh k1 ... VU_EXP_LANES=8 VU_BACK_LANES=4`, W4-B): 167 K LUT, 190.6 K FF, 535 DSP,
@@ -979,9 +1021,26 @@ the VU.
   SLR1's URAM columns are X1 and X2). The TCMs are RAMB36 in every flow: `rtl/ctrl/viv/tsr_ctrl_tcm.xdc` (§4.2) is read
   by `core_ooc.tcl`, `kernel_ooc.tcl` and the kernel IP (`package_xo.tcl`).
 - Keep the entire per-cluster attention job pipe `g_ajp.u_ajp` and the ATT/MVM selector beside
-  its cluster. The selected job crosses through `g_jp` once. Reparented broadcast decode LUTs
+  its cluster. In K4, `MVM_GATHER_PAIR=1` joins selected jobs locally for pairs {0,2}/{1,3}.
+  Each cluster has two source slots, followed by two local and two central shared slots per
+  pair: eight slots per pair, one tagged job/cycle per link. Central take owns completion.
+  Compared with the original `g_jp` path, startup adds one cycle; numerical results are unchanged.
+  Reparented broadcast decode LUTs
   and carry cells belong beside the destination cluster; the lane wrapper's writer/reduction
   helpers belong in SLR1. Keep the stages on either end of the crossing pipes separate.
+- With 16 physical VU lanes, bank 0 contains lanes 0–3/8–11 in SLR0 and bank 1 contains
+  4–7/12–15 in SLR2. The K4 routing fallback selects `VU_FRONT_LANES=8`, EXP8 and BACK4:
+  bank 0 contains physical lanes {0,1,4,5}, bank 1 {2,3,6,7}, each with two back-equipped
+  and two front-only lanes. Physical lane l retains separate logical contexts l and l+8.
+  Keep local input/output pipe ends and front/back selection, with distinct bank control,
+  reset and selection-token registers. Logical lane order and arithmetic are unchanged.
+  `VU_LANE_PIPE=2` still adds four cycles; serializing line parts adds operation cycles.
+- K4 DDR0/3 bridges and arbiters stay in SLR0/2 beside their controllers. Their weight-stream
+  endpoints follow their cluster. `DDR_LOCAL_PIPE=1` adds five central DMA boundary slices
+  per outer channel: read request/response, write request/data/response. The write slices
+  follow the central trace mux; only DMA responses return to SLR1. DDR1/2 remain central.
+  All streams retain their width and full-rate handshakes. The new floorplan rejects a netlist
+  missing these boundary endpoints; archived netlists require their archived hook version.
 
 ### 14.3 Timing gates (D13)
 
@@ -992,8 +1051,8 @@ the VU.
 | T3 | k4 v++ link (all M6 hardware) | **kernel clock ≥ 250 MHz** (user decision, 2026-11-02); setup and hold met at the accepted clocks; zero unconstrained `ap_clk` ↔ `ap_clk_2` paths; `report_cdc` clean |
 | T4 | k1 v++ link | 300 MHz (bring-up) |
 
-The user lowered the K4 acceptance floor from 276.3 MHz to 250 MHz on 2026-11-02. The running
-attempt still requests 300 MHz and RV 166.7 MHz (Vitis records 166 MHz). Do not repeat an
+The user lowered the K4 acceptance floor from 276.3 MHz to 250 MHz on 2026-11-02. K4 now
+requests 250 MHz and RV 166.7 MHz (Vitis records 166 MHz). Do not repeat an
 implementation that meets the 250 MHz floor just to reach 300 MHz. The early clock/reset
 gate verifies the requested clock constraints; the final gate checks the accepted scaled
 frequencies. A route-only stop needs routed timing at an accepted core frequency, with RV,

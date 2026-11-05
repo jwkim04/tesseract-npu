@@ -2,9 +2,13 @@
 # (tb/core/viv/core_ooc.tcl floorplan=tb/core/viv/core_slr.tcl, sourced after opt_design).
 #
 # The floorplan itself is hw/u200/k4_floorplan.tcl, the one the v++ link applies (docs/platform-u200.md §8.1,
-# docs/design/04-control-core.md §14.2): clusters 0 / 2 and the 16 VU lanes in SLR0, clusters 1 / 3 in SLR2,
-# the control core (tsr_ctrl_rv in its own sub-pblock of SLR1, >= 64 RAMB36, no URAM column), the issue path
-# and everything else of the core in SLR1, the first / last stage of every crossing pipe pinned to its side.
+# docs/design/04-control-core.md §14.2): clusters 0 / 2 in SLR0, clusters 1 / 3 in SLR2.
+# VU banks put four lanes in each outer SLR, with two back-equipped lanes per bank.
+# DDR0 / 3 arbiters and weight-pipe ends stay local; five DMA boundary slices per outer
+# channel stay in SLR1. Paired gather keeps source slots and the first shared stage local,
+# with the final shared stage central. The control core has its own SLR1 sub-pblock
+# (>= 64 RAMB36, no URAM column); issue, SPM and the other central units stay in SLR1.
+# Every crossing pipe retains registered endpoints on the corresponding sides.
 # This file only makes the stand-ins of the platform's pblocks the script expects and sources it for a bare
 # tsr_core (TSR_K4_FP_CORE = ""): the ports are unplaced, the AXI bridges / DDR4 controllers are not modelled.
 #   pblock_dynamic_SLR0  the whole SLR0

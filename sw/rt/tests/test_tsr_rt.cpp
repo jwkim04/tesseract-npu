@@ -427,6 +427,26 @@ static void test_threads(device & dev) {
     printf("  two threads x 12 calls  %s\n", bad == 0 ? "ok" : "FAIL");
 }
 
+static void test_local_scale(device & dev) {
+    constexpr uint32_t N = 69, K = 256, T = 5;
+    const auto w = make_w_f32(N, K);
+    const auto x = make_x(T, K, K);
+    const weight_handle h = dev.upload(dtype::f32, w.data(), N, K, 0, weight_options{31u, 0u});
+    std::vector<float> expected(T * N), actual(T * N);
+    dev.linear_ref(h, x.data(), T, expected.data());
+    dev.reset_counters();
+    const bool scaled = dev.try_linear_scale(h, x.data(), T, actual.data(), -0.25f);
+    if (scaled) {
+        for (size_t i = 0; i < expected.size(); ++i)
+            CHECK(f32_bits(actual[i]) == f32_bits(tsr_fmul(expected[i], -0.25f)), "local scale mismatch at %zu", i);
+        CHECK(dev.get_counters().execs == 1, "local scale should use one launch");
+    } else {
+        const auto count = dev.get_counters();
+        CHECK(count.execs == 0 && count.h2d_bytes == 0 && count.d2h_bytes == 0, "local scale refusal had side effects");
+    }
+    dev.free_weight(h);
+}
+
 // A device whose IO area holds 17 tokens of this shape: one call runs as several programs.
 static void test_io_split(const char * kind) {
     g_cases++;
@@ -570,6 +590,7 @@ int main(int argc, char ** argv) {
     }
     printf("cases (T_MAX %u):\n", tmax);
     for (const tcase & c : cases) run_case(dev, c);
+    if (!quick) test_local_scale(dev);
     if (!quick) {
         test_cache_counters(dev);
         test_free_reupload(dev);

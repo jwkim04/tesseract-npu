@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import random
+from pathlib import Path
 
 import cocotb
 import pytest
@@ -38,17 +39,23 @@ from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge, Timer
 
 from common import mvm_model as mm
-from common.runner import run
+from common.runner import RTL, run
 from common.tbutil import seed as tb_seed
 from common.tsr_ref import ref
 
 CFGS = {
+    "g4t8_old": dict(NUM_CH=4, T_MAX=8, SPM_BYTES=262144, SPM_RD_LAT=4, ADD_LAT=8, JOB_PIPE=2, HAS_ATT=1),
+    "g4t8_pair": dict(NUM_CH=4, T_MAX=8, SPM_BYTES=262144, SPM_RD_LAT=4, ADD_LAT=8, JOB_PIPE=2, HAS_ATT=1, GATHER_PAIR=1),
+    "g4t8_narrow": dict(NUM_CH=4, T_MAX=8, SPM_BYTES=262144, SPM_RD_LAT=4, ADD_LAT=8, JOB_PIPE=2, HAS_ATT=1, GATHER_PAIR=1, GATHER_FLITS=2),
+    "g4t4_narrow": dict(NUM_CH=4, T_MAX=4, SPM_BYTES=4194304, SPM_RD_LAT=4, ADD_LAT=8, JOB_PIPE=2, HAS_ATT=1, GATHER_PAIR=1, GATHER_FLITS=2),
+    "g4t4_pair": dict(NUM_CH=4, T_MAX=4, SPM_BYTES=4194304, SPM_RD_LAT=4, ADD_LAT=8, JOB_PIPE=2, HAS_ATT=1, GATHER_PAIR=1),
+    "g4t4_narrow_odd": dict(NUM_CH=4, T_MAX=4, SPM_BYTES=524288, SPM_RD_LAT=4, ADD_LAT=8, JOB_PIPE=2, HAS_ATT=1, GATHER_PAIR=1, GATHER_FLITS=2),
     "g4t1":  dict(NUM_CH=4, T_MAX=1, SPM_BYTES=262144, SPM_RD_LAT=2, ADD_LAT=5),
     "g1t3":  dict(NUM_CH=1, T_MAX=3, SPM_BYTES=65536, SPM_RD_LAT=1, ADD_LAT=1),
     "g3t2":  dict(NUM_CH=3, T_MAX=2, SPM_BYTES=131072, SPM_RD_LAT=3, ADD_LAT=3),
     "g16t8": dict(NUM_CH=16, T_MAX=8, SPM_BYTES=262144, SPM_RD_LAT=4, ADD_LAT=8),
 }
-TESTS = ["gather_random", "gather_special", "gather_perf", "gather_comb"]
+TESTS = ["gather_random", "gather_special", "gather_perf", "gather_comb", "gather_pair_jobs"]
 
 INPUTS = ["start", "acc", "t", "n", "dst_line", "dst_stride", "expect_ch", "res_valid", "res_row",
           "res_last", "res_y", "spm_rd_req_ready", "spm_rd_rsp_valid", "spm_rd_rsp_data",
@@ -64,12 +71,25 @@ def test_mvm_gather(cfg):
     tests = [t for t in TESTS if not sel or t in sel.split(",")]
     extra = os.environ.get("TSR_MVM_BUILD_ARGS", "").split()   # e.g. -DSYNTHESIS (no RTL assertions)
     run("tsr_mvm_gather", __name__, parameters=p, testcase=tests, build_args=extra,
+        sources=[RTL / name for name in (
+            "core/tsr_tables_pkg.sv", "core/tsr_pkg.sv", "core/tsr_fp_pkg.sv",
+            "core/tsr_att_pkg.sv", "core/tsr_vu_pkg.sv", "../third_party/common_cells/src/fifo_v3.sv",
+            "tech/generic/tsr_sram_1r1w.sv", "core/tsr_mem_arb.sv",
+            "core/tsr_vpipe.sv", "core/tsr_rpipe.sv", "core/tsr_fp_add.sv",
+            "core/tsr_mvm_att.sv", "core/tsr_mvm_local_scale.sv", "core/tsr_mvm_gather.sv")],
         name="tsr_mvm_gather_%s%s" % (cfg, "_x" if extra else ""),
         extra_env={"TSR_GATHER_CFG": json.dumps(dict(p, name=cfg))})
 
 
 def scale() -> float:
     return float(os.environ.get("TSR_MVM_SCALE", "1.0"))
+
+
+def save_metrics(kind, measurements):
+    Path("gather_%s_metrics.json" % kind).write_text(json.dumps({
+        "configuration": json.loads(os.environ["TSR_GATHER_CFG"]),
+        "measurements": measurements,
+    }, indent=2) + "\n")
 
 
 SPECIAL = (0x7FC00000, 0xFFC00001, 0x7F800001, 0x7FBFFFFF, 0x7F800000, 0xFF800000, 0x00000000,
@@ -102,7 +122,9 @@ class Gtb:
         d.rst_n.value = 0
         for n in ("start", "acc", "t", "n", "dst_line", "dst_stride", "expect_ch", "res_valid",
                   "res_row", "res_last", "res_y", "spm_rd_req_ready", "spm_rd_rsp_valid",
-                  "spm_rd_rsp_data", "spm_wr_ready"):
+                  "spm_rd_rsp_data", "spm_wr_ready", "att", "att_maxout", "att_tq", "att_gs", "att_tact", "att_nseg",
+                  "att_g", "att_hg0", "att_nhead", "att_mdst", "aj_valid", "aj",
+                  "scale_en", "scale", "scale_rsp"):
             getattr(d, n).value = 0
         await Timer(1, "ns")
         self.clock = Clock(d.clk, 10, unit="ns")
@@ -379,6 +401,7 @@ async def gather_perf(dut):
     nch, TM, L = g.nch, g.tmax, g.L
     g.p_rd = g.p_wr = 1.0
     out = []
+    metrics = []
     for acc in (False, True):
         for T in sorted({1, TM}):
             N = min(16 * 64 * max(1, 16 // nch) * nch // max(1, T), 16 * (L // (2 * T)))
@@ -395,6 +418,10 @@ async def gather_perf(dut):
             src = min(1.0, nch * T / 16)
             lat = wr[0][0] - st["first_res"]
             tail = st["done"] - st["last_res"]
+            metrics.append(dict(acc=acc, tokens=T, rows=N, writes=len(wr), span=span,
+                                first_write_latency=lat, completion_tail=tail,
+                                issue_to_done=st["done"] - st["start"],
+                                lines_per_cycle=len(wr) / span))
             out.append("%s T %d N %d: %d writes in %d cycles = %.3f / cycle (source bound %.3f); first "
                        "write %d cycles after the first result, done %d cycles after the last result" % (
                            "ACC  " if acc else "plain", T, N, len(wr), span, len(wr) / span, src, lat, tail))
@@ -409,6 +436,7 @@ async def gather_perf(dut):
                 assert spread < 0.2, "unfair job arbitration: cluster completion spread %.3f" % spread
     for ln in out:
         dut._log.info("gather_perf: %s", ln)
+    save_metrics("dense", metrics)
 
 
 @cocotb.test()
@@ -461,3 +489,110 @@ async def gather_comb(dut):
     d.rst_n.value = 1
     await ClockCycles(d.clk, 2)
     dut._log.info("gather_comb: %d input pokes, no combinational path", pokes)
+
+
+@cocotb.test()
+async def gather_pair_jobs(dut):
+    """Complete ATT records isolate pair bandwidth, origin completion and reset flush.
+
+    Both old/new configurations execute identical records and compare every byte. The
+    integrated AT bench separately checks real score/MAXOUT/PV arithmetic against C.
+    """
+    p = json.loads(os.environ["TSR_GATHER_CFG"])
+    if not p.get("HAS_ATT") or p["NUM_CH"] != 4:
+        return
+    g = await new_gtb(dut)
+    d = dut
+    for name in ("att", "att_maxout", "att_tq", "att_gs", "att_tact", "att_nseg", "att_g",
+                 "att_hg0", "att_nhead", "att_mdst", "aj_valid", "aj"):
+        getattr(d, name).value = 0
+    aw = (g.L - 1).bit_length()
+    jw = 1 + aw + 32 + 512
+    metrics = []
+
+    async def jobs(active, count=128, stall=False, abort=False, abort_after=80):
+        g.p_wr = 0.0 if abort else 1.0
+        before = bytes(g.spm)
+        expected = bytearray(before)
+        await RisingEdge(d.clk)
+        d.att.value = 1
+        d.expect_ch.value = sum(1 << c for c in active)
+        d.start.value = 1
+        await RisingEdge(d.clk)
+        d.start.value = 0
+        heads = [0] * 4
+        accepted = 0
+        wr0, done0, e0 = len(g.wr_log), len(g.done_edges), g.edge
+        while len(g.done_edges) == done0:
+            v, records = 0, 0
+            for c in active:
+                k = heads[c]
+                if k < count:
+                    ln = 128 + c * count + k
+                    payload = int.from_bytes(bytes([(c * 41 + k) % 256]) * 64, "little")
+                    record = (((int(k == count - 1) << aw) | ln) << 32 | 0xffff0000) << 512 | payload
+                    records |= record << (c * jw)
+                    v |= 1 << c
+                    expected[64 * ln:64 * (ln + 1)] = payload.to_bytes(64, "little")
+            d.aj_valid.value, d.aj.value = v, records
+            await FallingEdge(d.clk)
+            ready = int(d.aj_ready.value)
+            for c in active:
+                if v & ready & (1 << c):
+                    heads[c] += 1
+                    accepted += 1
+            if len(active) > 1 and not stall and not abort:
+                assert max(heads[c] for c in active) - min(heads[c] for c in active) <= 16, "unfair source arbitration"
+            await RisingEdge(d.clk)
+            elapsed = g.edge - e0
+            if abort and elapsed == abort_after:
+                if abort_after >= 80:
+                    wqd = 1 << (p["SPM_RD_LAT"] + p["ADD_LAT"] + 5).bit_length()
+                    assert accepted == wqd + 16, "must retain eight transport slots per pair under a full stall"
+                    assert int(d.spm_wr_valid.value), "stalled output must be occupied at reset"
+                d.aj_valid.value = 0
+                d.rst_n.value = 0
+                await ClockCycles(d.clk, 4)
+                d.rst_n.value = 1
+                g.p_wr = 1.0
+                await ClockCycles(d.clk, 12)
+                assert len(g.done_edges) == done0, "aborted operation completed after reset"
+                assert len(g.wr_log) == wr0, "pre-reset jobs escaped after reset"
+                return
+            if stall:
+                g.p_wr = 0.0 if 30 <= elapsed % 100 < 65 else 1.0
+            assert elapsed < 10000, "tagged jobs failed to complete"
+        d.aj_valid.value = 0
+        assert all(heads[c] == count for c in active), "done before all source finals accepted"
+        assert bytes(g.spm) == expected, "tag/data lost, duplicated or reordered within source"
+        writes = g.wr_log[wr0:]
+        assert len(writes) == len(active) * count
+        assert len({ln for _, ln, _ in writes}) == len(writes), "duplicate write"
+        for c in active:
+            first = 128 + c * count
+            assert [ln for _, ln, _ in writes if first <= ln < first + count] == list(range(first, first + count)), "source job order changed"
+        span = writes[-1][0] - writes[0][0] + 1
+        rate = len(writes) / span
+        metrics.append(dict(active=list(active), stall=stall, writes=len(writes),
+                            span=span, cycles=g.edge-e0, lines_per_cycle=rate))
+        d._log.info("pair_jobs active=%s stall=%s writes=%d span=%d rate=%.4f cycles=%d",
+                    active, stall, len(writes), span, rate, g.edge - e0)
+        if not stall:
+            # Two flits halve a single pair's peak. Both physical pairs together
+            # still feed the one-line/cycle central writer. This is a bus-rate
+            # assertion, not an end-to-end performance claim for skewed work.
+            pairs = len({c % 2 for c in active})
+            bound = min(1.0, pairs / p.get("GATHER_FLITS", 1))
+            assert rate > 0.97 * bound, "pair link missed its service-rate bound"
+        await ClockCycles(d.clk, 4)
+        assert len(g.wr_log) == wr0 + len(writes), "writes after done"
+
+    for active in ((0,), (1,), (2,), (3,), (0, 2), (1, 3), (0, 1, 2, 3)):
+        await jobs(active)
+    await jobs((0, 1, 2, 3), stall=True)
+    # Reset across successive early transport phases as well as a fully blocked
+    # queue. In a two-flit link this includes partially assembled packets.
+    for edge in (5, 6, 7, 8, 9, 80):
+        await jobs((0, 1, 2, 3), abort=True, abort_after=edge)
+    await jobs((3,), count=19)
+    save_metrics("jobs", metrics)

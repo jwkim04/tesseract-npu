@@ -39,6 +39,7 @@ core/tsr_mvm_back.sv
 core/tsr_mvm_att.sv
 core/tsr_mvm_pv.sv
 core/tsr_mvm_cluster.sv
+core/tsr_mvm_local_scale.sv
 core/tsr_mvm_gather.sv
 core/tsr_mvm.sv
 // W4-B vu: the vector unit (unit 3, VU §7) and its blocks
@@ -50,6 +51,7 @@ core/tsr_vu_sincos.sv
 core/tsr_vu_lane.sv
 core/tsr_vu_lane_share.sv
 core/tsr_vu_lanes.sv
+core/tsr_local_asmax.sv
 core/tsr_vu_gen.sv
 core/tsr_vu_rd.sv
 core/tsr_vu_dq.sv
@@ -80,4 +82,5 @@ core/tsr_dbg_rv.sv
 core/tsr_dbg_wrmux.sv
 // the core-clock datapath and the core (CC §13.2)
 core/tsr_core_dp.sv
+core/tsr_rv_local_transport.sv
 core/tsr_core.sv

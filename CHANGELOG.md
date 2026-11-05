@@ -4,6 +4,16 @@ Changes to Tesseract Basis, the firmware SDK in `sw/ctrl` and the host side that
 The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning is described in
 [docs/versioning.md](docs/versioning.md).
 
+## Unreleased
+
+- Added capability-gated FAST attention score and probability slots. FLASH_ATTN
+  keeps its record format and numerical order.
+- Added the optional MUL_MAT_SCALE kind at numerical revision 1. The kind
+  scales completed FP32 results before their final export. Legacy MUL_MAT and
+  Basis ABI 1 retain their existing contracts.
+- Added the optional MUL_MAT_SOFTCAP kind at numerical revision 1. The two
+  scale coefficients are the original FP32 graph constants.
+
 ## Basis 0.1.0 (2026-10-31)
 
 Basis ABI 1. Targets Tesseract Core capability 1.0. Runs on the simulator; there is no card with this

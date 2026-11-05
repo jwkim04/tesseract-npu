@@ -156,6 +156,11 @@ bool tsr_lower_m7(const tsr_build_env & env, bool probe, const ggml_tensor * nod
 bool tsr_fuse_mm_add(const tsr_build_env & env, const ggml_tensor * mm, const ggml_tensor * add, uint32_t * mm_args,
                      std::string * why);
 
+bool tsr_fuse_mm_scale(const tsr_build_env & env, const ggml_tensor * mm, const ggml_tensor * scale,
+                       uint32_t * mm_args);
+bool tsr_fuse_mm_softcap(const tsr_build_env & env, const ggml_tensor * mm, const ggml_tensor * first,
+                         const ggml_tensor * last, uint32_t * mm_args);
+
 // supports_op for every op but MUL_MAT (SW §9.3 table; AT §2.6): lowers in probe mode and asks the
 // kind's planner (plan_kind with env.pl), then the 64-byte rule (every operand's base offset and row
 // stride a multiple of 64 bytes, and a result that is a view has rows of whole lines; checked while
@@ -165,7 +170,7 @@ bool tsr_build_supports(const tsr_build_env & env, const ggml_tensor * op, std::
 // Pass 3: fusion pairs of a graph (decisions above). with[i] = k: node i's record absorbs node k
 // (MUL_MAT + ADD or RMS_NORM + MUL); into[k] = i. Pairs need build-mode locations (env.loc).
 struct tsr_fusion {
-    std::vector<int32_t> with, into;
+    std::vector<int32_t> with, into, softcap_mid, softcap_tail;
     uint32_t n_pairs = 0;
 };
 tsr_fusion tsr_build_fusion(const tsr_build_env & env, const ggml_cgraph * cg);

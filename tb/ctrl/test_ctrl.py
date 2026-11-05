@@ -88,7 +88,8 @@ def sources(ctrl_dir=None):
             if (REPO / "rtl" / "ctrl") in p.parents:
                 p = ctrl_dir / p.relative_to(REPO / "rtl" / "ctrl")
             srcs.append(p)
-    srcs += [HERE / "sv" / "tb_ctrl_core.sv", HERE / "sv" / "tb_ctrl.sv"]
+    srcs += [REPO / "rtl/core/tsr_rv_local_transport.sv",
+             HERE / "sv" / "tb_ctrl_core.sv", HERE / "sv" / "tb_ctrl.sv"]
     return srcs, args
 
 
@@ -635,6 +636,13 @@ def _run(testcase, parameters=None, name="tb_ctrl", env=None, defines=(), seed=N
     e.update(env or {})
     return run("tb_ctrl", "test_ctrl", sources=srcs, parameters=parameters or {}, build_args=args,
                testcase=testcase, name=name, extra_env=e, seed=seed)
+
+
+def test_ctrl_rv_local_transport():
+    _run(["lockstep", "bridge", "rv_reset", "rv_reset_bridge", "lb", "fifo_full",
+          "push_wait", "halt_reset_pending"],
+         parameters={"RV_LOCAL_TRANSPORT": 1}, name="tb_ctrl_rv_local",
+         env={"TB_CTRL_CORE_PS": "4000", "TB_CTRL_RV_PS": "6000"})
 
 
 def test_ctrl_lockstep():

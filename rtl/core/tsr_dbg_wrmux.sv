@@ -6,7 +6,7 @@
 // Owner: DB (W4-B item 6). tsr_core_dp places it between u_dma's channel-TRW_CH write port and
 // u_arb's s_wr_* port of that channel (tsr_mem_arb itself stays unchanged).
 //
-// Protocol (docs/rtl-m2.md §4): request {addr, len, id}, data {data, last} and response {id}
+// Protocol (docs/rtl-m2.md §4): request {addr, len, id}, data {data, word mask, last} and response {id}
 // are independent valid / ready streams; the data beats of the bursts follow the request order
 // without interleaving. A source may offer data before its request is taken (the DMA does).
 // DMA mode (default): every DMA stream passes straight through, so with the trace writer idle
@@ -41,6 +41,7 @@ module tsr_dbg_wrmux
   input  logic                    d_wr_dat_valid,
   output logic                    d_wr_dat_ready,
   input  logic [BEAT_BITS-1:0]    d_wr_dat_data,
+  input  logic [BEAT_BITS/32-1:0] d_wr_dat_mask,
   input  logic                    d_wr_dat_last,
   output logic                    d_wr_rsp_valid,
   input  logic                    d_wr_rsp_ready,
@@ -66,6 +67,7 @@ module tsr_dbg_wrmux
   output logic                    s_wr_dat_valid,
   input  logic                    s_wr_dat_ready,
   output logic [BEAT_BITS-1:0]    s_wr_dat_data,
+  output logic [BEAT_BITS/32-1:0]    s_wr_dat_mask,
   output logic                    s_wr_dat_last,
   input  logic                    s_wr_rsp_valid,
   output logic                    s_wr_rsp_ready,
@@ -89,6 +91,7 @@ module tsr_dbg_wrmux
       s_wr_req_id    = d_wr_req_id;
       s_wr_dat_valid = d_wr_dat_valid && d_dat_ok;
       s_wr_dat_data  = d_wr_dat_data;
+      s_wr_dat_mask  = d_wr_dat_mask;
       s_wr_dat_last  = d_wr_dat_last;
       d_wr_req_ready = s_wr_req_ready && d_req_ok;
       d_wr_dat_ready = s_wr_dat_ready && d_dat_ok;
@@ -101,6 +104,7 @@ module tsr_dbg_wrmux
       s_wr_req_id    = TRW_ID;
       s_wr_dat_valid = t_wr_dat_valid;
       s_wr_dat_data  = t_wr_dat_data;
+      s_wr_dat_mask  = '1;
       s_wr_dat_last  = t_wr_dat_last;
       d_wr_req_ready = 1'b0;
       d_wr_dat_ready = 1'b0;

@@ -1820,21 +1820,21 @@ static void tsr_seg_maybe_cut(tsr_device * d, tsr_segment & seg);
 
 // Append one MUL_MAT record (args: tsr::opl::mm words) for node `name`; a full list is run first.
 static void tsr_seg_add_mm(tsr_device * d, tsr_segment & seg, const uint32_t * args, const char * name, tsr_buffer_ctx * dst_buf,
-                           bool fused) {
+                           bool fused, uint32_t kind = tsr::opl::K_MUL_MAT) {
     tsr_seg_maybe_cut(d, seg);
-    uint32_t idx = seg.ops.mul_mat(args, (int32_t) seg.names.size());
+    uint32_t idx = seg.ops.mul_mat(args, (int32_t) seg.names.size(), kind);
     if (idx == tsr_opl_builder::NO_ROOM) {
         tsr_flush(d, seg);                    // 4096 records per list (SW-29): run what is pending
         d->st_cut_lists++;
-        idx = seg.ops.mul_mat(args, (int32_t) seg.names.size());
+        idx = seg.ops.mul_mat(args, (int32_t) seg.names.size(), kind);
     }
     if (idx == tsr_opl_builder::NO_ROOM || idx == tsr_opl_builder::FAILED) {
         GGML_ABORT("tesseract: cannot add MUL_MAT '%s' to the op list: %s", name, seg.ops.error());
     }
     seg.names.push_back(name);
     seg.w_offs.push_back((uint64_t) args[tsr::opl::mm::W_OFF] * TSR_BEAT_BYTES);
-    seg.n_kind[tsr::opl::K_MUL_MAT]++;
-    seg.n_fused += fused ? 1u : 0u;
+    seg.n_kind[kind]++;
+    seg.n_fused += kind == tsr::opl::K_MUL_MAT_SOFTCAP ? 3u : (fused ? 1u : 0u);
     if (dst_buf != nullptr) {
         seg.written.insert(dst_buf);
     }
@@ -2091,10 +2091,11 @@ static void tsr_lower_staged(tsr_device * d, tsr_segment & seg, const ggml_tenso
             n_tiles, tc_max);
 }
 
-// One MUL_MAT node; `add`: the ADD that tsr_build_fusion folded into it (a bias or the residual
-// through the MUL_MAT addend, SW §7.4). Returns whether the ADD was fused (it is then not lowered
-// on its own; a staged MUL_MAT or an addend the record cannot address leaves it to its own record).
-static bool tsr_lower_mul_mat(tsr_device * d, tsr_segment & seg, const ggml_tensor * node, const ggml_tensor * add) {
+// One MUL_MAT and its candidate fusion. Bias and residual ADD use the existing addend.
+// A pointwise epilogue exports only the final result. A staged MUL_MAT or an
+// ineligible epilogue leaves the graph's original consumers to be lowered separately.
+static bool tsr_lower_mul_mat(tsr_device * d, tsr_segment & seg, const ggml_tensor * node, const ggml_tensor * after,
+                              const ggml_tensor * softcap_tail) {
     const ggml_tensor * src0 = node->src[0];
     const ggml_tensor * src1 = node->src[1];
     if (src1->type != GGML_TYPE_F32 || node->type != GGML_TYPE_F32 || src0->ne[2] != 1 || src0->ne[3] != 1 ||
@@ -2146,26 +2147,36 @@ static bool tsr_lower_mul_mat(tsr_device * d, tsr_segment & seg, const ggml_tens
     const tsr_wref w = tsr_resolve_weight(d, seg, src0);
     GGML_ASSERT(w.fmt == fmt && w.w_off % TSR_BEAT_BYTES == 0);
 
-    uint32_t args[tsr::opl::mm::NARGS];
+    uint32_t args[tsr::opl::mm_scale::SOFTCAP_NARGS];
     tsr_mm_args(args, ax.handle(), ay.handle(), w, N, K, T, tl);
     bool fused = false;
+    uint32_t kind = tsr::opl::K_MUL_MAT;
     std::string name = node->name;
     tsr_buffer_ctx * dst_buf = ay.b;
-    if (add != nullptr && seg.gctx != nullptr) {
+    const ggml_tensor * fused_out = softcap_tail ? softcap_tail : after;
+    if (after && seg.gctx) {
         std::string why;
-        fused = tsr_fuse_mm_add(seg.gctx->env, node, add, args, &why);
-        if (fused) {
-            name = std::string(node->name) + " + " + add->name;
-            dst_buf = tsr_tensor_buf(d, add, "ADD result");
+        if (softcap_tail) {
+            fused = tsr_fuse_mm_softcap(seg.gctx->env, node, after, softcap_tail, args);
+            if (fused) kind = tsr::opl::K_MUL_MAT_SOFTCAP;
+        } else if (after->op == GGML_OP_SCALE) {
+            fused = tsr_fuse_mm_scale(seg.gctx->env, node, after, args);
+            if (fused) kind = tsr::opl::K_MUL_MAT_SCALE;
         } else {
-            TSR_DBG(1, "MUL_MAT %s + ADD %s not fused: %s\n", node->name, add->name, why.c_str());
+            fused = tsr_fuse_mm_add(seg.gctx->env, node, after, args, &why);
+        }
+        if (fused) {
+            name = std::string(node->name) + " + " + fused_out->name;
+            dst_buf = tsr_tensor_buf(d, fused_out, "fused result");
+        } else {
+            TSR_DBG(1, "MUL_MAT %s + %s not fused: %s\n", node->name, fused_out->name, why.c_str());
         }
     }
-    tsr_seg_add_mm(d, seg, args, name.c_str(), dst_buf, fused);
+    tsr_seg_add_mm(d, seg, args, name.c_str(), dst_buf, fused, kind);
 
-    TSR_DBG(1, "MUL_MAT %-24s %-6s N=%u K=%u T=%u W_OFF=0x%09" PRIx64 " x=ch%u+0x%09" PRIx64 " y=ch%u+0x%09" PRIx64 "%s%s\n",
-            node->name, ggml_type_name(src0->type), N, K, T, w.w_off, ax.b->ch, ax.io_off(), tsr_handle_ch(args[tsr::opl::mm::Y]),
-            tsr_handle_byte(args[tsr::opl::mm::Y]), fused ? " + addend of " : "", fused ? add->name : "");
+    TSR_DBG(1, "%s %-24s %-6s N=%u K=%u T=%u W_OFF=0x%09" PRIx64 " x=ch%u+0x%09" PRIx64 " y=ch%u+0x%09" PRIx64 "%s%s\n",
+            tsr_kind_name(kind), node->name, ggml_type_name(src0->type), N, K, T, w.w_off, ax.b->ch, ax.io_off(), tsr_handle_ch(args[tsr::opl::mm::Y]),
+            tsr_handle_byte(args[tsr::opl::mm::Y]), fused ? " + " : "", fused ? fused_out->name : "");
     return fused;
 }
 
@@ -2396,8 +2407,14 @@ static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key
         }
         const int32_t k = g.fusion.with[i];
         if (node->op == GGML_OP_MUL_MAT) {
-            if (tsr_lower_mul_mat(d, seg, node, k >= 0 ? cgraph->nodes[k] : nullptr) && k >= 0) {
+            const int32_t tail = g.fusion.softcap_tail[i];
+            if (tsr_lower_mul_mat(d, seg, node, k >= 0 ? cgraph->nodes[k] : nullptr,
+                                  tail >= 0 ? cgraph->nodes[tail] : nullptr) && k >= 0) {
                 absorbed[k] = 1;
+                if (tail >= 0) {
+                    absorbed[g.fusion.softcap_mid[i]] = 1;
+                    absorbed[tail] = 1;
+                }
             }
             if (tsr_stats_on()) {
                 d->st_mm++;

@@ -21,38 +21,24 @@
 #                        the X1 / X2 columns), ~5,100 slices, 360 DSP; holds tsr_ctrl_rv (Ibex, debug
 #                        module, TCMs, bus, control window)
 #
-# Placement (C''):
-#   SLR0  MVM clusters 0 and 2 with their result assemblers (u_gather/g_asm[c].u_asm); the 16 lanes of the
-#         vector unit (g_vu.u_vu/u_lanes/g_lane[l].u_lane: CC §14.1 remedy 3, VU §7.10), behind
-#         VU_LANE_PIPE register stages on each side (rtl/core/tsr_vu_lanes.sv): of the input pipes the first
-#         stage (injector side) is pinned to SLR1 and the last to SLR0, of the output pipes the first to SLR0
-#         and the last to SLR1, so each crossing is one register-to-register hop
-#   SLR2  MVM clusters 1 and 3 with their assemblers
-#   SLR1  everything else of the core: the control subsystem (u_ctrl; tsr_ctrl_rv in pblock_tsr_ctrl_rv,
-#         the CDC and reset synchronisers beside it), the issue path and CSR block (u_issue, u_csr: between
-#         the CSR bridge and the units), the DB block, the four memory arbiters, SPM, DMA, QACT, the
-#         SPM-facing part of the vector unit (reader, injector, writer, reduction, angle unit),
-#         central gather, MVM dispatch; the control bridge (u_ctrl of the adapter), the reset block
-#         (u_rst), the bridges of channels 1 and 2 and the core side of the bridges of channels 0 and 3
-#   Broadcast: u_bc_head is the shared first stage in SLR1; every stage of g_cl[c].u_bcp
-#   and its rebuilt decode stays with its cluster. Older checkpoints without u_bc_head keep
-#   the first per-cluster broadcast stage in SLR1 and the remaining stages local.
-#   Other pipes between a cluster (with its assembler) and the centre (g_cl[c].u_wrp / u_wqp,
-#   u_gather/g_asm[c].u_sp / g_jp.u_jp + u_jl): the first stage on the source side, the last on the
-#   destination side, so every crossing is one register-to-register hop; the result pipe
-#   g_cl[c].u_rp and the attention job pipe g_ajp.u_ajp stay with their cluster (both ends).
-#   Attention and MVM jobs are selected there before the shared job pipe crosses to the centre.
-#   Direct broadcast decode leaves stay with the destination cluster; the lane wrapper's direct
-#   writer/reduction helpers stay in SLR1. Synthesis can rebuild these cones under the pipe wrappers,
-#   outside the original consumer hierarchy. The split pipe parents are never assigned wholesale.
-#   The optional u_lanes/u_share result mux and its selection delay stay with the lanes in SLR0.
-#   The ATT_PATH_STALL reduction LUTs stay beside att_stall_q in SLR1 even when synthesis puts
-#   them under a cluster. Their source registers and shared functional decode stay with the cluster.
-#   The core's reset copies stay free.
-#   Bridges 0 and 3 cross in their AXI register slices (AXI_SLICES >= 2): the AXI-side stage of
-#   every slice chain (the last stage of AR / AW / W, the first of R / B) and the registered AR / AW
-#   handshake (g_hs_q) go to the SLR of DDR[0] (SLR0) / DDR[3] (SLR2), the rest of the bridge
-#   (ID filter, counters, output slices, base adders) to SLR1.
+# Placement:
+#   SLR0: MVM clusters/assemblers 0,2; complete DDR0 bridge and arbiter;
+#         VU bank 0 (half width physical lanes 0,1,4,5; full width 0..3,8..11).
+#   SLR2: MVM clusters/assemblers 1,3; complete DDR3 bridge and arbiter;
+#         VU bank 1 (half width physical lanes 2,3,6,7; full width 4..7,12..15).
+#   SLR1: control subsystem, issue/CSR, DB, SPM, DMA/KVST/trace boundary
+#         stages, VU reader/injector/writer/reduction and central gather.
+# Each VU bank retains its own input/reset pipes and result selector. Its
+# input/reset stage 0 and final output stage are central; remaining stages
+# stay beside that bank's lanes. No lane-side bank signal visits the other SLR.
+# DDR0/3 weight request/response pipes stay entirely local. Other cluster
+# pipes retain registered source/destination ends. Paired gather source slots,
+# fair selector and first shared stage are local; the final shared stage is
+# central. Archived independent gather and VU transport remain recognizable.
+# Broadcast has a central shared head and local tails, or historical per-cluster
+# first stages. PERF-only ATT stall aggregation stays central; its source FFs
+# and shared functional decode stay with their clusters. Core reset copies
+# remain free except the explicit VU transport endpoints.
 #
 # Environment (validation outside the link only; docs/platform-u200.md §8):
 #   TSR_K4_FP_BODY  hierarchical name of the tsr_xrt_kernel instance ("" = the top cell). Default:
@@ -68,7 +54,7 @@
 
 set k4fp_map  {0 0 1 2 2 0 3 2}       ;# cluster -> SLR (C')
 set k4fp_rest 1                       ;# SLR of the rest of the core and of the adapter
-set k4fp_lane 0                       ;# SLR of the VU lanes (CC §14.1 remedy 3)
+set k4fp_lane 0                       ;# historical single-bank VU ownership
 set k4fp_ddr  {0 0 3 2}               ;# bridges that cross: channel -> SLR of DDR[channel]
 
 proc k4fp_path {base rel} {
@@ -157,8 +143,9 @@ proc k4fp_att_stall_cone {mvm} {
     }
     # Shared functional decode is a boundary, not part of this PERF-only cone.
     if {$sinks ne [list [get_property NAME $pin]]} continue
+    # phys_opt may number a rebuilt comparator, e.g. att_stall_q_i_3_comp_1.
     if {[llength $outputs] != 1 || [string first "$mvm/" $name] != 0 ||
-        ![regexp {^att_stall_q_i_[0-9]+(_comp)?(_replica.*|_rep__.*)?$} [file tail $name]] ||
+        ![regexp {^att_stall_q_i_[0-9]+(_comp(_[0-9]+)?)?(_replica.*|_rep__.*)?$} [file tail $name]] ||
         ![regexp {^LUT[1-6]$} $ref]} {
       error "k4_floorplan: unknown stall aggregation leaf $cell ($ref)"
     }
@@ -223,13 +210,50 @@ foreach {c s} $k4fp_map {
 if {$nch == 0} { error "k4_floorplan: no MVM cluster under $mvm" }
 k4fp_add $k4fp_rest $k4fp_stall "ATT_PATH_STALL aggregation and endpoint"
 
-# the VU lanes (tsr_vu_lanes; the pipe stages are pinned below)
-set lanes {}
-for {set l 0} {$l < 16} {incr l} { lappend lanes [k4fp_cell "$vu/u_lanes/g_lane\[$l\].u_lane"] }
-k4fp_add $k4fp_lane $lanes "u_vu/u_lanes (16 lanes)"
-set k4fp_shared_vu [expr {[llength [get_cells -quiet "$vu/u_lanes/u_share"]] == 1}]
-if {$k4fp_shared_vu} {
-  k4fp_add $k4fp_lane [k4fp_cell "$vu/u_lanes/u_share"] "u_vu shared lane result mux"
+# The banked wrapper has one independent input/reset/output transport and
+# result selector per outer SLR. Archived single-bank checkpoints keep their
+# original ownership; detecting either bank requires the complete new topology.
+proc k4fp_bank_lanes {inst} {
+  set indices {}
+  set prefix "$inst/"
+  foreach name [get_property NAME [get_cells -quiet "$inst/g_lane*.u_lane"]] {
+    set rel [string range $name [string length $prefix] end]
+    if {![regexp {^g_lane\[([0-7])\]\.u_lane$} $rel -> lane]} {
+      error "k4_floorplan: unsupported VU bank lane shape under $inst"
+    }
+    lappend indices $lane
+  }
+  set indices [lsort -integer -unique $indices]
+  set count [llength $indices]
+  if {$count ni {4 8}} { error "k4_floorplan: unsupported VU bank lane count $count under $inst" }
+  for {set lane 0} {$lane < $count} {incr lane} {
+    if {[lindex $indices $lane] != $lane} { error "k4_floorplan: noncontiguous VU bank lanes under $inst" }
+  }
+  return $indices
+}
+set k4fp_banked_vu [expr {[llength [get_cells -quiet "$vu/u_lanes/g_bank*"]] > 0}]
+set k4fp_bank_width 0
+if {$k4fp_banked_vu} {
+  foreach {bank side} {0 0 1 2} {
+    set inst "$vu/u_lanes/g_bank\[$bank\].u_bank"
+    k4fp_cell $inst
+    set lanes [k4fp_bank_lanes $inst]
+    if {$k4fp_bank_width && $k4fp_bank_width != [llength $lanes]} { error "k4_floorplan: VU bank widths differ" }
+    set k4fp_bank_width [llength $lanes]
+    foreach l $lanes {
+      k4fp_add $side [k4fp_cell "$inst/g_lane\[$l\].u_lane"] "VU bank $bank lane $l"
+    }
+    k4fp_add $side [k4fp_cell "$inst/u_share"] "VU bank $bank local result selector"
+  }
+  set k4fp_shared_vu 0
+} else {
+  set lanes {}
+  for {set l 0} {$l < 16} {incr l} { lappend lanes [k4fp_cell "$vu/u_lanes/g_lane\[$l\].u_lane"] }
+  k4fp_add $k4fp_lane $lanes "u_vu/u_lanes (16 historical lanes)"
+  set k4fp_shared_vu [expr {[llength [get_cells -quiet "$vu/u_lanes/u_share"]] == 1}]
+  if {$k4fp_shared_vu} {
+    k4fp_add $k4fp_lane [k4fp_cell "$vu/u_lanes/u_share"] "u_vu shared lane result mux"
+  }
 }
 
 # the control core's sub-pblock of SLR1: tsr_ctrl_rv (Ibex, debug module, TCMs, bus, control window)
@@ -249,6 +273,7 @@ puts "K4FP pblock_tsr_ctrl_rv $k4fp_ctrl_cr: u_ctrl/u_rv, [llength [get_sites -q
 
 # the rest of the control subsystem, the DB block's clk_rv part and every other block of the core: SLR1, whole
 # hierarchical cells (the reset stage registers of u_dp are leaf cells there and stay free)
+set k4fp_paired_gather [expr {[llength [get_cells -quiet "$mvm/u_gather/g_pairs.g_pair*"]] > 0}]
 set k4fp_rest_cells {}
 foreach c [get_cells -quiet "[k4fp_path $k4fp_core *]" -filter {!IS_PRIMITIVE}] {
   set n [get_property NAME $c]
@@ -264,14 +289,17 @@ foreach c [get_cells -quiet "[k4fp_path $k4fp_core *]" -filter {!IS_PRIMITIVE}] 
 foreach c [get_cells -quiet "$dp/*" -filter {!IS_PRIMITIVE}] {
   set n [get_property NAME $c]
   if {$n eq $mvm || $n eq $vu} continue          ;# partitioned below
-  lappend k4fp_rest_cells $c
+  if {[regexp {/g_ch\[([03])\]\.u_arb$} $n -> channel]} {
+    set side [expr {$channel == 0 ? 0 : 2}]
+    k4fp_add $side $c "DDR$channel local memory arbiter"
+  } else { lappend k4fp_rest_cells $c }
 }
 k4fp_add $k4fp_rest $k4fp_rest_cells "core blocks (u_ctrl, u_dp: issue, CSR, SPM, DMA, QACT, arbiters, DB, ...; [llength $k4fp_rest_cells] cells)"
 # MVM top-level logic (dispatch, broadcast source, SPM client mux): the leaf cells directly in
 # g_mvm.u_mvm outside the clusters, pipes, gather and reset copies; central part of the gather: every leaf
 # cell outside the per-cluster assemblers and their pipes
 k4fp_add $k4fp_rest [get_cells -quiet -hierarchical -filter "IS_PRIMITIVE && NAME =~ $mvm/u_gather/* && \
-  NAME !~ $mvm/u_gather/g_asm*"] "u_gather (centre)"
+  NAME !~ $mvm/u_gather/g_asm* && NAME !~ $mvm/u_gather/g_pairs*"] "u_gather (centre)"
 k4fp_add $k4fp_rest [get_cells -quiet -hierarchical -filter "IS_PRIMITIVE && NAME =~ $mvm/* && \
   NAME !~ $mvm/g_cl* && NAME !~ $mvm/u_gather/* && NAME !~ $mvm/g_rst*"] "u_mvm (top)"
 # the vector unit outside its lanes: injector, reader, writer, reduction, angle unit, sequencer, local memory
@@ -361,6 +389,25 @@ proc k4fp_broadcast_head {mvm} {
   }
   return $cells
 }
+proc k4fp_pair_helpers {inst} {
+  set cells {}
+  foreach cell [k4fp_direct_leaves [file dirname $inst]] {
+    if {[string first "$inst." [get_property NAME $cell]] == 0} { lappend cells $cell }
+  }
+  set controls [dict create]
+  foreach cell $cells {
+    set tail [string range [get_property NAME $cell] [string length "$inst."] end]
+    set ref [get_property REF_NAME $cell]
+    if {[regexp {^(ptr_q|lock_q|held_q)_reg} $tail -> control]} { dict set controls $control 1 }
+    if {![string match FD* $ref] && ![string match LUT* $ref] && ![string match CARRY* $ref]} {
+      error "k4_floorplan: unknown gather pair leaf $cell ($ref)"
+    }
+  }
+  foreach control {ptr_q lock_q held_q} {
+    if {![dict exists $controls $control]} { error "k4_floorplan: missing gather pair control $control under $inst" }
+  }
+  return $cells
+}
 proc k4fp_gather_helpers {inst} {
   set result {}
   set nselector 0
@@ -375,11 +422,157 @@ proc k4fp_gather_helpers {inst} {
   if {$nselector == 0} { error "k4_floorplan: attention selector missing under $inst" }
   return $result
 }
-proc k4fp_lane_parts {inst} {
-  global k4fp_rest k4fp_lane
+# Synthesis flattens some arithmetic carry chains and DSP fabric-register
+# shims into the kept bank (their names may still contain a slash). Resolve
+# each helper to one real lane through both sequential boundaries. Constants
+# and candidate-to-candidate edges do not establish ownership by themselves.
+proc k4fp_bank_endpoint {inst endpoint candidates lanes} {
+  set owner [get_cells -quiet -of_objects $endpoint]
+  if {[llength $owner] != 1} { error "k4_floorplan: bank arithmetic has external port endpoint $endpoint" }
+  set ref [get_property REF_NAME $owner]
+  if {$ref in {GND VCC}} { return {constant} }
+  set name [get_property NAME $owner]
+  if {[dict exists $candidates $name]} { return [list helper $name] }
+  set prefix "$inst/"
+  if {[string first $prefix $name] == 0} {
+    set rel [string range $name [string length $prefix] end]
+    if {[regexp {^g_lane\[([0-7])\]\.u_lane/} $rel -> lane] &&
+        $lane in $lanes &&
+        ([get_property IS_SEQUENTIAL $owner] || [string match DSP48* $ref])} {
+      return [list lane $lane]
+    }
+  }
+  error "k4_floorplan: bank arithmetic has nonlocal or unknown endpoint $endpoint"
+}
+proc k4fp_bank_arithmetic {inst cells last} {
+  # Historical unbanked wrappers have no reparented bank helpers.
+  if {[llength $cells] == 0} { return {} }
+  set lanes_in_bank [k4fp_bank_lanes $inst]
+  set candidates [dict create]
+  foreach cell $cells { dict set candidates [get_property NAME $cell] 1 }
+  set owners [dict create]
+  set edges {}
+  foreach cell $cells {
+    set name [get_property NAME $cell]
+    set ref [get_property REF_NAME $cell]
+    if {![regexp {^(LUT[1-6]|CARRY[48]|FDRE)$} $ref]} {
+      error "k4_floorplan: unknown lane-wrapper arithmetic primitive $cell ($ref)"
+    }
+    # Clocks are checked by the independent kernel clock/CDC gates. CE/reset
+    # remain in this query: a control source in the other bank is forbidden.
+    set inputs [get_pins -quiet -of_objects $cell -filter {DIRECTION == IN && REF_PIN_NAME != C && REF_PIN_NAME != CLK}]
+    set outputs [get_pins -quiet -of_objects $cell -filter {DIRECTION == OUT}]
+    if {[llength $inputs] == 0 || [llength $outputs] == 0} {
+      error "k4_floorplan: bank arithmetic has no connected boundary: $cell"
+    }
+    set starts [all_fanin -flat -startpoints_only -trace_arcs all -to $inputs]
+    set ends [all_fanout -flat -endpoints_only -trace_arcs all -from $outputs]
+    set lanes [dict create]
+    foreach boundary [list $starts $ends] {
+      set anchored 0
+      foreach endpoint $boundary {
+        lassign [k4fp_bank_endpoint $inst $endpoint $candidates $lanes_in_bank] kind target
+        if {$kind eq "lane"} {
+          dict set lanes $target 1
+          set anchored 1
+        } elseif {$kind eq "helper" && $target ne $name} { lappend edges [list $name $target] }
+      }
+      if {!$anchored} { error "k4_floorplan: bank arithmetic has no local lane anchor in both directions: $cell" }
+    }
+    if {[dict size $lanes] != 1} { error "k4_floorplan: bank arithmetic spans multiple lanes: $cell" }
+    dict set owners $name [lindex [dict keys $lanes] 0]
+  }
+  foreach edge $edges {
+    lassign $edge source sink
+    if {[dict get $owners $source] != [dict get $owners $sink]} {
+      error "k4_floorplan: bank arithmetic helper edge crosses lanes: $source -> $sink"
+    }
+  }
+  return $cells
+}
+# Opt can place the reduction's input mux under the lane wrapper. It consumes
+# the final central drain-return registers, never a lane-side pipe stage. The
+# exact output element/bit and its two input elements prove its consumer role.
+proc k4fp_vu_drain_helpers {vu {placed 0}} {
+  set inst "$vu/u_lanes"
+  set cells [k4fp_direct_leaves $inst]
+  if {[llength $cells] == 0} { return {} }
+  foreach bank {0 1} {
+    set last($bank) -1
+    foreach name [get_property NAME [get_cells -quiet "$inst/g_bank\[$bank\].u_bank/g_pipe.op_q_reg*"]] {
+      if {[regexp {/g_pipe\.op_q_reg\[([0-9]+)\]} $name -> stage] && $stage > $last($bank)} { set last($bank) $stage }
+    }
+    if {$last($bank) < 1} { error "k4_floorplan: missing central drain-return stage in bank $bank" }
+  }
+  if {$last(0) != $last(1)} { error "k4_floorplan: drain-return bank depths differ" }
+  set control_last [expr {2*($last(0)+1)-1}]
+  foreach cell $cells {
+    set name [get_property NAME $cell]
+    set rel [string range $name [string length "$inst/"] end]
+    set ref [get_property REF_NAME $cell]
+    if {![regexp {^g_q\[([0-7])\]\[([0-9]+)\]_i_[0-9]+(__[0-9]+)?(_rep.*)?$} $rel -> element bit] ||
+        $bit > 31 || ![regexp {^LUT[1-6]$} $ref]} {
+      error "k4_floorplan: unknown central drain helper $cell ($ref)"
+    }
+    set nl [llength [k4fp_bank_lanes "$inst/g_bank\[0\].u_bank"]]
+    set front [expr {2*$nl}]
+    set quarter [expr {$nl/2}]
+    set physical [expr {$element % $front}]
+    set expected_bank [expr {($physical/$quarter)%2}]
+    set local_lane [expr {$physical%$quarter + ($physical >= $front/2 ? $quarter : 0)}]
+    set context [expr {$element/$front}]
+    # Eight drain words remain above NL lane_y words in both bank shapes.
+    set low [expr {32*$nl + 32*($context*$nl+$local_lane) + $bit}]
+    set high [expr {$low + 128}]
+    set returns [dict create]
+    set controls [dict create]
+    set inputs [get_pins -quiet -of_objects $cell -filter {DIRECTION == IN}]
+    foreach endpoint [all_fanin -flat -startpoints_only -trace_arcs all -to $inputs] {
+      set owner [get_cells -quiet -of_objects $endpoint]
+      if {[llength $owner] != 1} { error "k4_floorplan: drain helper has external input $endpoint" }
+      if {[get_property REF_NAME $owner] in {GND VCC}} continue
+      set source [get_property NAME $owner]
+      set source_rel [string range $source [string length "$inst/"] end]
+      if {[string first "$inst/" $source] == 0 &&
+          [regexp {^g_bank\[([01])\]\.u_bank/g_pipe\.op_q_reg\[([0-9]+)\]\[([0-9]+)\](_rep.*)?$} $source_rel -> bank stage data]} {
+        if {$bank != $expected_bank || $stage != $last($bank) || $data ni [list $low $high] ||
+            [get_property REF_NAME $owner] ne "FDRE"} {
+          error "k4_floorplan: drain helper has noncentral or mismapped return $endpoint"
+        }
+        dict set returns $data 1
+      } elseif {[string first "$vu/u_red/" $source] == 0 &&
+          [regexp {^g_drn\.u_drd/g_ff\.sr_reg\[([0-9]+)\]\[([01])\](_rep.*)?$} [string range $source [string length "$vu/u_red/"] end] -> control_stage control_bit] &&
+          $control_stage == $control_last && [get_property REF_NAME $owner] eq "FDRE"} {
+        dict set controls $control_bit 1
+      } else { error "k4_floorplan: drain helper has unknown input ownership $endpoint" }
+      k4fp_check_cells 1 $owner $placed
+    }
+    if {[lsort -integer [dict keys $returns]] ne [list $low $high] || ![dict exists $controls 1]} {
+      error "k4_floorplan: drain helper missing return/control provenance: $cell"
+    }
+    set outputs [get_pins -quiet -of_objects $cell -filter {DIRECTION == OUT}]
+    set ends [all_fanout -flat -endpoints_only -trace_arcs all -from $outputs]
+    if {[llength $ends] == 0} { error "k4_floorplan: drain helper has no reduction consumer: $cell" }
+    set expected "$vu/u_red/g_q_reg\[$element\]\[$bit\]"
+    foreach endpoint $ends {
+      set owner [get_cells -quiet -of_objects $endpoint]
+      if {[llength $owner] != 1} { error "k4_floorplan: drain helper has external consumer $endpoint" }
+      set sink [get_property NAME $owner]
+      if {($sink ne $expected && [string first "${expected}_rep" $sink] != 0) ||
+          [get_property REF_NAME $owner] ne "FDRE" || [file tail $endpoint] ne "D"} {
+        error "k4_floorplan: drain helper has wrong reduction consumer $endpoint"
+      }
+      k4fp_check_cells 1 $owner $placed
+    }
+  }
+  return $cells
+}
+proc k4fp_lane_parts {inst {lane_side 0}} {
+  global k4fp_rest
   set parts [dict create]
   set stages [dict create]
   set pend {}
+  set arithmetic {}
   set plen [string length "$inst/"]
   foreach cell [k4fp_direct_leaves $inst] {
     set rel [string range [get_property NAME $cell] $plen end]
@@ -389,6 +582,8 @@ proc k4fp_lane_parts {inst} {
     } elseif {[regexp {^(g_q|lb_q)\[} $rel]} {
       # The reduction drain mux and line assembler are consumers of the final output stage.
       dict lappend parts $k4fp_rest $cell
+    } elseif {[regexp {/g_bank\[[01]\]\.u_bank$} $inst]} {
+      lappend arithmetic $cell
     } else {
       error "k4_floorplan: unknown lane-wrapper leaf $cell"
     }
@@ -404,10 +599,32 @@ proc k4fp_lane_parts {inst} {
       if {![dict exists $stages $kind $st]} { error "k4_floorplan: lane pipe $kind missing stage $st" }
     }
   }
+  if {[regexp {/g_bank\[[01]\]\.u_bank$} $inst]} {
+    # lin_t packs NL lanes, plus a fifth partial-address bit for the half-width
+    # logical context. Assert every control copy at its exact packed position.
+    set nl [llength [k4fp_bank_lanes $inst]]
+    set paw [expr {$nl == 4 ? 5 : 4}]
+    set uop_low [expr {6+$paw+130*$nl}]
+    set control_bits {}
+    for {set bit 0} {$bit <= 5+$paw} {incr bit} { lappend control_bits $bit }
+    for {set bit $uop_low} {$bit < $uop_low+6} {incr bit} { lappend control_bits $bit }
+    for {set st 0} {$st <= $last} {incr st} {
+      foreach bit $control_bits {
+        k4fp_cell "$inst/g_pipe.ip_q_reg\[$st\]\[$bit\]"
+      }
+      # rp_q is one-dimensional in synthesized Vivado names.
+      set resets [get_cells -quiet "$inst/g_pipe.rp_q_reg\[$st\]*"]
+      if {[llength $resets] == 0} { error "k4_floorplan: missing bank reset endpoint $inst stage $st" }
+    }
+    for {set token 0} {$token <= 78} {incr token} {
+      k4fp_cell "$inst/u_share/back_q_reg\[$token\]"
+    }
+  }
+  foreach cell [k4fp_bank_arithmetic $inst $arithmetic $last] { dict lappend parts $lane_side $cell }
   foreach row $pend {
     lassign $row cell kind st
     set near [expr {$kind eq "op" ? $st == $last : $st == 0}]
-    dict lappend parts [expr {$near ? $k4fp_rest : $k4fp_lane}] $cell
+    dict lappend parts [expr {$near ? $k4fp_rest : $lane_side}] $cell
   }
   return $parts
 }
@@ -477,7 +694,88 @@ proc k4fp_check_locality {{placed 0}} {
     } else { set bc_parts [k4fp_broadcast_parts "$p.u_bcp" 1 $s] }
     dict for {side cells} $bc_parts { k4fp_check_cells $side $cells $placed }
   }
-  dict for {s cells} [k4fp_lane_parts "$vu/u_lanes"] { k4fp_check_cells $s $cells $placed }
+  if {[dict get $k4fp_scope paired_gather]} {
+    foreach {pair side} {0 0 1 2} {
+      set inst "$mvm/u_gather/g_pairs.g_pair\[$pair\]"
+      k4fp_check_cells $side [k4fp_pair_helpers $inst] $placed
+      foreach {tail target} [list u_local $side u_remote 1] {
+        k4fp_cell "$inst.$tail"
+        k4fp_check_cells $target [get_cells -quiet -hierarchical -filter "IS_PRIMITIVE && NAME =~ $inst.$tail/* && REF_NAME != GND && REF_NAME != VCC"] $placed
+      }
+    }
+    foreach cell [get_cells -quiet -hierarchical -filter "IS_PRIMITIVE && NAME =~ $mvm/u_gather/g_pairs* && REF_NAME != GND && REF_NAME != VCC"] {
+      set rel [string range [get_property NAME $cell] [string length "$mvm/u_gather/"] end]
+      if {![regexp {^g_pairs\.g_pair\[[01]\]\.(u_local/|u_remote/|[^/]+$)} $rel]} {
+        error "k4_floorplan: unknown paired gather ownership for $cell"
+      }
+    }
+    foreach {c side} [dict get $k4fp_scope map] {
+      set inst "$mvm/u_gather/g_asm\[$c\].g_pair_src.u_js"
+      k4fp_cell $inst
+      k4fp_check_cells $side [get_cells -quiet -hierarchical -filter "IS_PRIMITIVE && NAME =~ $inst/* && REF_NAME != GND && REF_NAME != VCC"] $placed
+    }
+  }
+  if {[dict get $k4fp_scope banked_vu]} {
+    set bank_direct_names {}
+    foreach {bank side} {0 0 1 2} {
+      set inst "$vu/u_lanes/g_bank\[$bank\].u_bank"
+      set checked_bank_lanes($bank) [k4fp_bank_lanes $inst]
+      if {[llength $checked_bank_lanes($bank)] != [dict get $k4fp_scope bank_width]} {
+        error "k4_floorplan: VU bank widths differ from captured shape"
+      }
+      dict for {s cells} [k4fp_lane_parts $inst $side] {
+        k4fp_check_cells $s $cells $placed
+        lappend bank_direct_names {*}[get_property NAME $cells]
+      }
+      foreach tail [concat {u_share} [lmap l $checked_bank_lanes($bank) {format {g_lane[%d].u_lane} $l}]] {
+        k4fp_cell "$inst/$tail"
+        set leaves [get_cells -quiet -hierarchical -filter "IS_PRIMITIVE && NAME =~ $inst/$tail/* && REF_NAME != GND && REF_NAME != VCC"]
+        k4fp_check_cells $side $leaves $placed
+      }
+    }
+    set drain_helpers [k4fp_vu_drain_helpers $vu $placed]
+    if {[llength $drain_helpers]} {
+      k4fp_check_cells 1 $drain_helpers $placed
+      lappend bank_direct_names {*}[get_property NAME $drain_helpers]
+    }
+    foreach cell [get_cells -quiet -hierarchical -filter "IS_PRIMITIVE && NAME =~ $vu/u_lanes/* && REF_NAME != GND && REF_NAME != VCC"] {
+      set rel [string range [get_property NAME $cell] [string length "$vu/u_lanes/"] end]
+      if {[regexp {^g_bank\[([01])\]\.u_bank/g_lane\[([0-7])\]\.u_lane/} $rel -> bank lane] &&
+          $lane ni $checked_bank_lanes($bank)} {
+        error "k4_floorplan: unknown banked VU lane ownership for $cell"
+      }
+      if {![regexp {^g_bank\[[01]\]\.u_bank/(g_pipe\.|u_share/|g_lane\[[0-7]\]\.u_lane/)} $rel] &&
+          [lsearch -exact $bank_direct_names [get_property NAME $cell]] < 0} {
+        error "k4_floorplan: unknown banked VU ownership for $cell"
+      }
+    }
+  } else {
+    dict for {s cells} [k4fp_lane_parts "$vu/u_lanes"] { k4fp_check_cells $s $cells $placed }
+  }
+  foreach {channel side} {0 0 3 2} {
+    if {$channel >= [dict get $k4fp_scope nch]} continue
+    foreach tail {u_rq u_rsp u_wq u_wd u_ws} {
+      set boundary "[dict get $k4fp_scope dp]/g_ch\[$channel\].g_dma_pipe.$tail"
+      k4fp_cell $boundary
+      k4fp_check_cells 1 [get_cells -quiet -hierarchical -filter "IS_PRIMITIVE && NAME =~ $boundary/* && REF_NAME != GND && REF_NAME != VCC"] $placed
+    }
+    set dma_prefix "[dict get $k4fp_scope dp]/g_ch\[$channel\].g_dma_pipe."
+    foreach cell [get_cells -quiet -hierarchical -filter "IS_PRIMITIVE && NAME =~ $dma_prefix* && REF_NAME != GND && REF_NAME != VCC"] {
+      set rel [string range [get_property NAME $cell] [string length $dma_prefix] end]
+      if {![regexp {^u_(rq|rsp|wq|wd|ws)/} $rel]} {
+        error "k4_floorplan: unknown DMA boundary ownership for $cell"
+      }
+    }
+    set arb "[dict get $k4fp_scope dp]/g_ch\[$channel\].u_arb"
+    k4fp_check_cells $side [get_cells -quiet -hierarchical -filter "IS_PRIMITIVE && NAME =~ $arb/* && REF_NAME != GND && REF_NAME != VCC"] $placed
+    foreach pipe {u_wrp u_wqp} {
+      k4fp_check_cells $side [get_cells -quiet -hierarchical -filter "IS_PRIMITIVE && NAME =~ $mvm/g_cl\[$channel\].$pipe/* && REF_NAME != GND && REF_NAME != VCC"] $placed
+    }
+    if {[dict get $k4fp_scope mode] eq "kernel"} {
+      set br "[dict get $k4fp_scope body]/g_ch\[$channel\].u_br"
+      k4fp_check_cells $side [get_cells -quiet -hierarchical -filter "IS_PRIMITIVE && NAME =~ $br/* && REF_NAME != GND && REF_NAME != VCC"] $placed
+    }
+  }
   puts "K4FP locality PASS (placed=$placed)"
 }
 
@@ -492,41 +790,43 @@ foreach {c s} $k4fp_map {
   set p "$mvm/g_cl\[$c\]"
   set g "$mvm/u_gather/g_asm\[$c\]"
   if {!$k4fp_shared_bc} { incr npin [k4fp_pipe_ends "$p.u_bcp" $k4fp_rest $s] }
-  incr npin [k4fp_pipe_ends "$p.u_wrp" $k4fp_rest $s]
-  incr npin [k4fp_pipe_ends "$p.u_wqp" $s $k4fp_rest]
+  set ws_side [expr {$c in {0 3} ? $s : $k4fp_rest}]
+  incr npin [k4fp_pipe_ends "$p.u_wrp" $ws_side $s]
+  incr npin [k4fp_pipe_ends "$p.u_wqp" $s $ws_side]
   incr npin [k4fp_pipe_ends "$p.u_rp"  $s $s]
   incr npin [k4fp_pipe_ends "$p.g_ajp.u_ajp" $s $s]
   k4fp_add $s [k4fp_cell "$p.g_ajp.u_ajp"] "g_cl\[$c\] attention job pipe (local)"
   incr npin [k4fp_pipe_ends "$g.u_sp"  $k4fp_rest $s]
-  incr npin [k4fp_jp_ends   "$g.g_jp"  $s $k4fp_rest]
+  if {$k4fp_paired_gather} {
+    k4fp_add $s [k4fp_cell "$g.g_pair_src.u_js"] "paired gather source $c (local two-slot slice)"
+  } else { incr npin [k4fp_jp_ends "$g.g_jp" $s $k4fp_rest] }
   if {$k4fp_shared_bc} {
     set k4fp_bc_parts [k4fp_broadcast_parts "$p.u_bcp" $s $s 1]
   } else { set k4fp_bc_parts [k4fp_broadcast_parts "$p.u_bcp" $k4fp_rest $s] }
   k4fp_assign_parts $k4fp_bc_parts "g_cl\[$c\] broadcast stages and decode"
   k4fp_add $s [k4fp_gather_helpers $g] "g_asm\[$c\] attention selector and mux"
 }
-puts "K4FP pipes pinned: $npin stages (shared broadcast head/tails assigned separately when present)"
-
-# the lane pipes of tsr_vu_lanes (g_pipe.ip_q: injector -> lanes, rp_q: the lanes' reset, op_q: lanes -> writer):
-# stage 0 / last stage by the direction (rest = the SPM-facing side)
-set nlp 0
-array set lps {}
-set lmax 0
-foreach n [get_property -quiet NAME [get_cells -quiet "$vu/u_lanes/*"]] {
-  if {[regexp {/g_pipe\.(ip|rp|op)_q_reg\[([0-9]+)\]} $n -> lp_k lp_st]} {
-    lappend lps($lp_k,$lp_st) $n
-    if {$lp_st > $lmax} { set lmax $lp_st }
+if {$k4fp_paired_gather} {
+  foreach {pair side} {0 0 1 2} {
+    set inst "$mvm/u_gather/g_pairs.g_pair\[$pair\]"
+    k4fp_add $side [k4fp_cell "$inst.u_local"] "gather pair $pair local link stage"
+    k4fp_add $k4fp_rest [k4fp_cell "$inst.u_remote"] "gather pair $pair central link stage"
+    k4fp_add $side [k4fp_pair_helpers $inst] "gather pair $pair local arbitration"
   }
 }
-if {$lmax < 1} { error "k4_floorplan: the lane pipes of $vu/u_lanes have fewer than 2 stages (VU_LANE_PIPE >= 2)" }
-foreach {lp_k lp_first lp_last} [list ip $k4fp_rest $k4fp_lane  rp $k4fp_rest $k4fp_lane  op $k4fp_lane $k4fp_rest] {
-  if {![info exists lps($lp_k,0)] || ![info exists lps($lp_k,$lmax)]} { error "k4_floorplan: lane pipe ${lp_k}_q has no stage $lmax / 0" }
-  add_cells_to_pblock $k4fp_pb($lp_first) [get_cells -quiet $lps($lp_k,0)]
-  add_cells_to_pblock $k4fp_pb($lp_last)  [get_cells -quiet $lps($lp_k,$lmax)]
-  incr nlp [expr {[llength $lps($lp_k,0)] + [llength $lps($lp_k,$lmax)]}]
+puts "K4FP pipes pinned: $npin stages (shared broadcast head/tails assigned separately when present)"
+
+# Every bank keeps only its injector-side input/reset and writer-side output
+# stage central. All other stages and their replicated control remain local.
+if {$k4fp_banked_vu} {
+  foreach {bank side} {0 0 1 2} {
+    k4fp_assign_parts [k4fp_lane_parts "$vu/u_lanes/g_bank\[$bank\].u_bank" $side] "VU bank $bank transport"
+  }
+  set k4fp_drain_helpers [k4fp_vu_drain_helpers $vu]
+  if {[llength $k4fp_drain_helpers]} { k4fp_add $k4fp_rest $k4fp_drain_helpers "VU central reduction drain mux" }
+} else {
+  k4fp_assign_parts [k4fp_lane_parts "$vu/u_lanes"] "historical VU transport"
 }
-puts "K4FP lane pipes pinned: $nlp flip-flops (stages 0 and $lmax of the input, reset and output pipes)"
-k4fp_assign_parts [k4fp_lane_parts "$vu/u_lanes"] "u_vu lane stages and SPM-facing helpers"
 
 # ---- adapter: control bridge, reset block, bridges ---------------------------------------------
 if {$k4fp_mode eq "kernel"} {
@@ -540,38 +840,10 @@ if {$k4fp_mode eq "kernel"} {
       k4fp_add $k4fp_rest $br "g_ch\[$c\].u_br"
       continue
     }
-    # Crossing bridge: partition its leaf cells by name (no nested pblock assignment). Stage k of
-    # the slice chain u_<ch> is g_st[k].u_s; the AXI side is the last stage of AR / AW / W and the
-    # first of R / B.
-    set brn [get_property NAME $br]
-    set leaves [get_property -quiet NAME [get_cells -quiet -hierarchical -filter "IS_PRIMITIVE && NAME =~ $brn/*"]]
-    set re {^u_(ar|aw|w|r|b)/g_st\[([0-9]+)\]\.u_s/}
-    set plen [string length "$brn/"]
-    array unset last
-    foreach n $leaves {
-      if {[regexp $re [string range $n $plen end] -> ch st] && (![info exists last($ch)] || $st > $last($ch))} {
-        set last($ch) $st
-      }
-    }
-    foreach ch {ar aw w r b} {
-      if {![info exists last($ch)] || $last($ch) < 1} {
-        error "k4_floorplan: slice chain u_$ch of $brn has fewer than 2 stages (AXI_SLICES >= 2)"
-      }
-    }
-    set far {}
-    set near {}
-    foreach n $leaves {
-      set rel [string range $n $plen end]
-      if {[regexp $re $rel -> ch st]} {
-        set axi [expr {$ch in {ar aw w} ? $st == $last($ch) : $st == 0}]
-      } else {
-        set axi [string match {g_hs_q.*} $rel]
-      }
-      if {$axi} { lappend far $n } else { lappend near $n }
-    }
-    k4fp_add $ddr($c) [get_cells -quiet $far] "g_ch\[$c\].u_br (AXI side)"
-    k4fp_add $k4fp_rest [get_cells -quiet $near] "g_ch\[$c\].u_br (core side)"
-    puts "K4FP bridge $c: [llength $far] cells in SLR$ddr($c) (AXI-side slice stages, AR / AW handshake), [llength $near] in SLR$k4fp_rest"
+    # The entire bridge (ID validation, counters and all AXI slices) is local.
+    # DMA/trace boundaries remain separate central core_dp children.
+    k4fp_add $ddr($c) $br "DDR$c complete local bridge"
+
   }
 }
 
@@ -580,7 +852,7 @@ foreach s {0 1 2} {
 }
 # Later implementation hooks may overwrite generic Tcl globals such as nch,
 # mvm and vu. Retain this floorplan's scope for read-only post-step checks.
-set k4fp_scope [dict create map $k4fp_map nch $nch mvm $mvm vu $vu \
+set k4fp_scope [dict create paired_gather $k4fp_paired_gather dp $dp mode $k4fp_mode body $k4fp_body banked_vu $k4fp_banked_vu bank_width $k4fp_bank_width map $k4fp_map nch $nch mvm $mvm vu $vu \
   shared_bc $k4fp_shared_bc shared_vu $k4fp_shared_vu]
 k4fp_check_locality
 current_instance -quiet

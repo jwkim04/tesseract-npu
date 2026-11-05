@@ -4,6 +4,8 @@ Status (2026-11-02): **implemented on the C simulator; RTL integrated; card vali
 The original design integration was on 2026-10-30. Six area documents, reviewed by two
 reviewers and integrated into one consistent set. The current implementation map is §12;
 the active build and remaining defects are in [../handoff.md](../handoff.md).
+The locality candidate status and software compatibility plan are in
+[../intermediate-locality-plan.md](../intermediate-locality-plan.md).
 Every number marked *estimate* is unmeasured;
 every third-party fact marked *confirm* is checked when the dependency is pinned or at the first
 smoke link. Source-of-truth order: `docs/spec.md` (§11) > ISA simulator
@@ -712,6 +714,10 @@ must decide how to rebuild or retry its work.
 
 ### 12.3 What the verification establishes
 
+This table records the earlier architecture-audit evidence. The November 6
+candidate checks and their limits are in `docs/checkpoint-2026-11-06.md` and
+`docs/handoff.md`; older card or timing results do not qualify that candidate.
+
 The C simulator applies a unit's operation atomically at its completion time. RTL instead streams
 memory requests and data; the VU can overlap two accepted operations. Oracle agreement establishes
 architectural bytes and ordering for the tested inputs. Ready/valid, credits, bank arbitration,
@@ -719,8 +725,8 @@ CDC and physical timing need their own RTL and implementation evidence.
 
 | Evidence | Established scope | Limit |
 |---|---|---|
-| Latest `build/dev` CTest | 341 registered; 43 labelled slow; 297 executed and passed, one disabled in the recorded non-slow run | LLAMA on, TORCH and XRT off. This is not a fresh PyTorch or real XRT run. Model-dependent registration and opt-in tests have separate prerequisites. |
-| Latest RTL pytest and lint | 290 passed, 115 opt-in skips; the technology-lint node passed separately after its wrapper environment was corrected; 71 clock/floorplan fixtures pass after the clock-calculator and 250 MHz acceptance changes | The original suite had that one execution failure. Small synthesis and fixture checks are not full-K4 routing signoff. |
+| November 2 `build/dev` CTest | 341 registered; 43 labelled slow; 297 executed and passed, one disabled in the recorded non-slow run | LLAMA on, TORCH and XRT off. This is not a fresh PyTorch or real XRT run. Model-dependent registration and opt-in tests have separate prerequisites. |
+| November 2 RTL pytest and lint | 290 passed, 115 opt-in skips; the technology-lint node passed separately after its wrapper environment was corrected; 71 clock/floorplan fixtures pass after the clock-calculator and 250 MHz acceptance changes | The original suite had that one execution failure. Small synthesis and fixture checks are not full-K4 routing signoff. |
 | `tb/core` / `core_m7` | Real Ibex, production firmware, issue path and VU/attention/KVST integration against the simulator at small shapes | Does not establish final four-channel K4 placement, DDR performance or every model shape. |
 | `tb/at` composite flash-attention test | Real MVM attention modes compared with the composed oracle | Some QACT/KVST/VU operations run on the simulator with mirrored memory; that test alone does not exercise the entire RTL chain. |
 | GDB on `sim` | Real pinned RISC-V GDB smoke via stdio: boot/symbol stops, registers, memory, step, hardware breakpoint, launch, backtrace, `finish`, history, detach. RSP/embedded/drop tests also pass. | Integrated current RTL/vkernel/card GDB is unverified. RTL DMI and DBG module tests are separate evidence. |
@@ -735,16 +741,21 @@ CDC and physical timing need their own RTL and implementation evidence.
 | W3: host, backend and tools | M6/M7 simulator paths and GDB tools implemented; trace export/stats implemented | Long prompts and later frontend coverage remain separate from the recorded short model gates. |
 | P3.8 and deferred tools | `tsr-prof trw` / `stats` exist | Automatic profiling, `report`, periodic firmware PC sampling and `tsr-dbg diverge` remain inactive or unimplemented. |
 | W4: control/VU/AT/DB RTL | Integrated with module and small-system tests | Complete the known sample/apply handshake and diagnostic gap; retain dense-hit/reset regressions. |
-| W5: integration and physical implementation | Current K4 route attempt active; earlier route failed | Finish integration/replay coverage, the two-clock vkernel server, current full-system GDB and model checks; inspect actual placement/routing and gates T2–T4. |
+| W5: integration and physical implementation | The November 6 T4 / VU 8/8/4 local-intermediate + masked-KVST candidate passed placement and pre-route clock/CDC checks; routing is active at the handoff checkpoint | Qualify legal route, setup/hold and >=250 MHz. See `docs/handoff.md` for the actual checkout and latest state. Two-clock vkernel, current full-system GDB/card model checks and T2–T4 remain incomplete. |
 | W6: current image on card | Pending a usable image | Identity/bind, LOAD/VERIFY/HELLO, selftest, launch costs, GDB, M6/M7 logits/KL and launch-count gates, then DDR utilisation and performance. |
 | M8/M9 and later | Future product integration | MoE, broader PyTorch fusion, resident decode, speculation, new layer types and multi-card work follow the card gate. |
 
 T1 measured the RV32MFast control core at 6 ns with the required margin. That is not T2–T4:
 the earlier whole-core placed WNS was negative, the old K4 route failed, and k1 did not close.
-The current route-only experiment deliberately defers bitstream generation and final frequency
-signoff. A routed checkpoint with negative setup slack can answer routability without passing T3.
+The route-only experiment failed on 2026-11-03. The localized DDR0/3, paired-gather and
+balanced full-size VU attempt also failed routing on 2026-11-04, with far fewer overlaps.
+Both error checkpoints are preserved. Later T4 and placement experiments are recorded in
+`docs/handoff.md`. The November 6 candidate retains eight front/EXP and four back VU lanes,
+adds local intermediate paths and masked KVST, and is undergoing native routing. Its placed
+SLL count fell, but central congestion persisted and same-stage estimated timing worsened.
+A routed checkpoint with negative setup slack can answer routability without passing T3.
 Final T3 requires core ≥ 250 MHz and passing setup, hold, RISC-V timing and CDC checks at the
-selected frequencies. The 300 MHz request remains in place; missing 300 MHz alone is not a
+selected frequencies. K4 requests 250 MHz; missing 300 MHz alone is not a
 reason to repeat a run that passes those checks at 250 MHz or higher.
 
 Optional TOPK and DQROW have conditional RTL modules and tests, but are disabled in the U200
@@ -774,3 +785,65 @@ reproduction and fix evidence remains in `build/analysis/architecture_audit/` an
 `build/analysis/implementation_fix/`. These generated analysis records are ignored by git; this
 implementation map and the handoff preserve the durable summary. No additional tests, synthesis,
 DCP loads or links were run for this mapping.
+
+### 12.6 MoE and GDN extension checkpoints
+
+The local-intermediate candidate's checked shared window helper now represents
+expert base/stride and input/output token origins while preserving original N
+and owner packing. The executing dense commands still use expert zero and
+identity token order. Explicit token IDs, 3D expert packing, MUL_MAT_ID,
+grouped expert execution and combine remain unimplemented. See
+`docs/intermediate-locality-plan.md` §0 for the verified scope.
+
+Priority update (November 5): after the active K4 build, MoE is the first model
+extension. Local intermediate work is implemented with expert-dependent weight
+bases/strides and token-to-output mapping in mind. Preserve independent MVM and
+VU arithmetic and common llama.cpp/PyTorch execution semantics. Do not equate a
+local-memory capability or fused dense epilogue with implemented MoE support.
+
+Planning decisions retained on 2026-11-02 for work after the M7 card gate. Keep the MVM
+clusters and VU as independent arithmetic units, and preserve the four 512-bit weight
+streams. A new Basis op-list kind is a firmware handler that issues tile operations;
+it does not by itself require a new RTL opcode or a RISC-V ISA extension.
+
+- **MoE:** use the existing MVM clusters with expert-dependent weight addresses. Add
+  three-dimensional expert packing and per-channel expert strides to the backend, then
+  `MUL_MAT_ID`, router selection and expert-combine handlers/lowering. The current weight
+  loader accepts only two-dimensional device weights (`ggml-tesseract.cpp`), and these
+  MoE kinds are absent from `tsr/opl.hpp`. Token grouping by expert is needed to recover
+  weight reuse in prefill and speculative verification; T_MAX alone does not guarantee it.
+- **MoE hardware:** the planned device selection path enables the existing conditional
+  `tsr_vu_topk` RTL through the platform configuration and capability reporting. TOPK is
+  disabled in the current K4 wrapper, so this needs a new hardware image and integration
+  checks. Expert MVMs can retain the existing weight and result paths. DQROW is a separate
+  M8 device-embedding feature, not a prerequisite for expert matrix multiplication.
+  VU §7.10 records about 5.6 K LUT for TOPK in the earlier VU synthesis. This is not a
+  measured K4 placement increment; check local SLR capacity before enabling it.
+- **GDN baseline:** retain the proposed FP32 recurrent state in DDR and compose VOP,
+  RED, LD and ST in new firmware kinds for the recurrence and SSM convolution. Define
+  head/row tiling, scratch use and dependencies before claiming a complete mapping.
+  For the planned 48-layer, 48-head, 128-by-128 state, one head is 64 KiB, one layer is
+  3 MiB and one sequence is 144 MiB, excluding convolution history and snapshots.
+  Start with head-sized SPM tiles. Local URAM buffers or fused state-update RTL remain
+  performance options after measuring this baseline, not prerequisites already selected.
+- **GDN surrounding operations:** add lowering for the required norms, gates and rotary
+  variants. SILU, SIGMOID and EXP already have VU functions; SOFTPLUS/log does not.
+  Decide its stable numerical algorithm and cost before choosing a composition of existing
+  operations or a new VU function. Full model support is not established by the recurrence
+  mapping alone. No new wide SLR interface is assumed by the baseline.
+- **Numerics and cost:** specify rounding, reduction order and state-update order in the
+  C oracle, with kind revisions under `docs/versioning.md`. Check long-sequence state and
+  logits against llama.cpp, as well as oracle/RTL agreement. The earlier 8 ms GDN estimate
+  counts roughly one pass over 37,748,736 state elements at 16 lanes and 300 MHz. Decay,
+  prediction, update, output reduction, DMA/SPM contention and command costs must all be
+  budgeted. Neither negligible GDN overhead nor a fixed CPU-fallback penalty is established.
+  For MoE, also check router precision, ties and the probability-scaling/accumulation order
+  of the illustrative kernel in `docs/spec.md` §13.
+- **llama.cpp state contract:** use its graph/backend and recurrent-memory interfaces.
+  Specify buffer ownership, layout, initialisation, sequence isolation, save/load and
+  reset, including convolution history. CPU fallback must respect those buffers rather
+  than assuming every unsupported stateful node can move freely. Connect MTP rejection
+  to accepted-prefix state restoration; truncating an attention KV index is insufficient.
+  The pinned `llama-memory-recurrent.cpp` already has bounded snapshot rollback. Test
+  zero, partial and full draft acceptance before claiming speculative support. Decode and
+  prefill schedules, snapshot traffic and expert divergence need separate cost checks.

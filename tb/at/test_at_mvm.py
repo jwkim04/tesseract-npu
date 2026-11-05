@@ -131,7 +131,7 @@ class Bench:
                            ch_bytes=cfg["ch_bytes"], addr_beat_w=cfg["addr_beat_w"], caps=T.CAPS_VU | T.CAPS_ATT)
         self.spm = bytearray(self.r.randbytes(self.spm_bytes))
         self.sim.spm_write(0, self.spm)
-        self.port = B.SpmPort(dut, self.spm, prefix="spm_", rd_lat=cfg["spm_rd_lat"], rnd=self.r,
+        self.port = B.SpmPort(dut, self.spm, prefix="spm_", rd_lat=cfg["spm_rd_lat"], rnd=random.Random(seed ^ 0x50414952) if cfg.get("isolate_spm_rng") else self.r,
                               p_rd=cfg.get("p_rd", 0.85), p_wr=cfg.get("p_wr", 0.85))
         self.mem = MemModel(dut, num_ch=self.C, addr_w=cfg["addr_beat_w"], rd_outstanding=cfg["rd_out"],
                             limit_beats=self.limit, seed=seed, rd_lat=tuple(cfg.get("rd_lat", (1, 40))),
@@ -437,7 +437,9 @@ class Bench:
                                  y_lines=yl, rows_per_ch=R, row_beats=rb, qa_lines=qa)
         if os.environ.get("TSR_ATMVM_VERBOSE"):
             self.dut._log.info("MVM K %d N %d t %d", K, N, t)
-        await self.mvm_cmd(0, cmd=cmd)
+        cycles = await self.mvm_cmd(0, cmd=cmd)
+        if os.environ.get("TSR_ATMVM_VERBOSE"):
+            self.dut._log.info("MVM K %d N %d t %d: %d cycles", K, N, t, cycles)
         for _ in range(4):
             await RisingEdge(self.dut.clk)
         assert bytes(self.spm) == self.sim.spm_read(0, self.spm_bytes), "plain MVM differs from the simulator"
@@ -683,6 +685,19 @@ class FaBench(Bench):
         assert rc == 0, "%s: tsr_ref_fa %d" % (name, rc)
         assert st.chunks == nch, "%s: tsr_ref_fa %d chunks, plan %d" % (name, st.chunks, nch)
         ref = bytes(obuf)
+        if self.tmax == 4:
+            # Slot capacity changes head/query partitioning, not the KV format
+            # or arithmetic. Check the same planes/Q/bounds against T8 as well.
+            peer_cfg = _AttCfg(C, 8, acfg.pcap, self.kmax)
+            peer_out = (ctypes.c_float * (R * D))()
+            peer_stats = _FaStats()
+            peer = _FaArgs.from_buffer_copy(bytes(fa))
+            peer.out = ctypes.cast(peer_out, ctypes.c_void_p)
+            peer.stats = ctypes.cast(ctypes.pointer(peer_stats), ctypes.c_void_p)
+            assert L.tsr_ref_fa(ctypes.byref(peer_cfg), ctypes.byref(peer)) == 0, name
+            assert bytes(peer_out) == ref, "%s: T4/T8 oracle output differs" % name
+            self.dut._log.info("%s: T4/T8 oracle bit-identical (%d words; passes %d/%d)",
+                               name, R * D, st.passes, peer_stats.passes)
         got = bytes(self.spm[64 * OUT:64 * OUT + 4 * R * D])
         bad = sum(1 for i in range(R * D) if got[4 * i:4 * i + 4] != ref[4 * i:4 * i + 4])
         fin = all(math.isfinite(v) for v in struct.unpack("<%df" % (R * D), got))
@@ -710,6 +725,10 @@ FA_CASES = {
              runs=[(696 + q - 511, 697 + q) for q in range(4)], scale=0x3D800000),
     ],
     4: [
+        dict(name="prefill T4 causal", E=128, D=64, G=1, T=4, n_kv=100, new0=96,
+             runs=[(0, 97 + q) for q in range(4)], scale=0x3E000000),
+        dict(name="prefill T2 heads", E=256, D=128, G=2, T=2, n_kv=130, new0=128,
+             runs=[(0, 129), (0, 130)], scale=0x3DB504F3),
         # G = 8 > T_MAX = 4: two head subsets; wrapped SWA ring: two runs, two FAST chunks with bounds
         dict(name="decode 2 passes, SWA ring", E=128, D=128, G=8, T=1, n_kv=400, new0=149, runs=[(0, 150, 300, 400)],
              scale=0x3DB504F3),
@@ -751,7 +770,7 @@ def _run(name, cfg, testcase="at_mvm"):
                   RD_OUTSTANDING=cfg["rd_out"], BC_PIPE=cfg.get("bc_pipe", 1), RES_PIPE=cfg.get("res_pipe", 1),
                   ACT_RD_LAT=cfg.get("act_rd_lat", 2), MAC_LAT=cfg.get("mac_lat", 3), MUL_LAT=cfg.get("mul_lat", 4),
                   ADD_LAT=cfg.get("add_lat", 5), WS_FIFO_BEATS=cfg.get("ws_fifo", 512),
-                  RST_LOCAL=cfg.get("rst_local", 0))
+                  RST_LOCAL=cfg.get("rst_local", 0), GATHER_PAIR=cfg.get("gather_pair", 0))
     run("tsr_tb_at_mvm", __name__, parameters=params, name="at_mvm_" + name, testcase=testcase,
         sources=rtl_sources() + [HERE.parent / "mvm" / "hdl" / "tsr_mvm_bc_observer.sv",
                                  HERE / "hdl" / "tsr_tb_at_mvm.sv"],
@@ -759,14 +778,15 @@ def _run(name, cfg, testcase="at_mvm"):
 
 
 def test_at_mvm_u200():
-    """U200-like: 4 channels, T_MAX 8, K_MAX 32768, SPM_RD_LAT 4, pipes 2, MAC_LAT 9 (the bitstream's)."""
-    _run("u200", dict(num_ch=4, t_max=8, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30, spm_rd_lat=4,
-                      addr_beat_w=28, rd_out=16, bc_pipe=2, res_pipe=2, mac_lat=9, n_ops=40))
+    """U200-like: 4 channels, T_MAX 4, K_MAX 32768, SPM_RD_LAT 4, pipes 2, MAC_LAT 9 (the bitstream's)."""
+    _run("u200", dict(num_ch=4, t_max=4, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30, spm_rd_lat=4,
+                      addr_beat_w=28, rd_out=16, bc_pipe=2, res_pipe=2, mac_lat=9,
+                      rst_local=2, gather_pair=1, n_ops=40))
 
 
 def test_at_mvm_bc_reset():
     """Production BC_PIPE 2 / local reset 2: all three broadcast kinds against old-pipe histories."""
-    _run("bc_rst2", dict(num_ch=4, t_max=8, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30,
+    _run("bc_rst2", dict(num_ch=4, t_max=4, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30,
                          spm_rd_lat=4, addr_beat_w=28, rd_out=16, bc_pipe=2, res_pipe=2,
                          mac_lat=9, rst_local=2, models=False, n_ops=0, bc_all_valids=True,
                          directed=[dict(pv=False, E=128, D=64, G=2, GS=2, tq=1, hg0=0, u0=0, n=3),
@@ -795,4 +815,25 @@ def test_at_fa_t8():
 def test_at_fa_t4():
     """AT §6.6 at T_MAX 4: G 8 in two head subsets over a wrapped SWA ring (two FAST chunks with bounds)."""
     _run("fa4", dict(num_ch=4, t_max=4, k_max=32768, spm_bytes=4 << 20, ch_bytes=16 << 30, spm_rd_lat=4,
-                     addr_beat_w=28, rd_out=16, bc_pipe=2, res_pipe=2, mac_lat=9), testcase="at_fa")
+                     addr_beat_w=28, rd_out=16, bc_pipe=2, res_pipe=2, mac_lat=9,
+                     rst_local=2, gather_pair=1), testcase="at_fa")
+
+
+def test_at_mvm_pair_old():
+    _pair_run(0)
+
+
+def test_at_mvm_pair_new():
+    _pair_run(1)
+
+
+def _pair_run(enabled):
+    """Same seeded real MVM/QK/PV/MAXOUT/LSUM streams, random SPM stalls."""
+    _run("pair_%d" % enabled,
+         dict(num_ch=4, t_max=8, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30,
+              spm_rd_lat=4, addr_beat_w=28, rd_out=16, bc_pipe=2, res_pipe=2,
+              mac_lat=9, rst_local=2, gather_pair=enabled, isolate_spm_rng=True, models=False, n_ops=16,
+              directed=[dict(pv=False, E=128, D=64, G=4, GS=4, tq=2, hg0=0, u0=0, n=8),
+                        dict(pv=True, E=128, D=64, G=4, GS=4, tq=2, hg0=0, u0=0, n=8),
+                        dict(pv=False, E=128, D=64, G=1, GS=1, tq=1, hg0=0, u0=0, n=1),
+                        dict(pv=True, E=128, D=64, G=1, GS=1, tq=1, hg0=0, u0=0, n=1)]))

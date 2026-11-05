@@ -328,6 +328,30 @@ void corpus_mulmat(launch_ctx & c) {
     }
 }
 
+void corpus_mulmat_epilogue(launch_ctx & c, uint32_t kind) {
+    constexpr uint32_t N = 69u, K = 256u, T = 3u, yl = (N + 15u) / 16u;
+    for (const uint32_t fmt : {TSR_FMT_Q8_0, TSR_FMT_Q4_K}) {
+        const size_t row_bytes = size_t(K / tsr_fmt_block_size(fmt)) * tsr_fmt_ggml_block_bytes(fmt);
+        std::vector<uint8_t> blk(row_bytes);
+        for (uint32_t n = 0; n < N; ++n) {
+            gen_row_blocks(&c.r, fmt, K, blk.data());
+            uint32_t ch;
+            uint64_t off;
+            tsr_row_location(fmt, N, K, tsr_sim_num_ch(c.sim), n, &ch, &off);
+            tsr_repack_row(fmt, blk.data(), K, tsr_sim_dram(c.sim, ch) + (W_BEAT + off) * LINE);
+        }
+        const uint32_t x = c.take(T * (K / 16u)), y = c.take(T * yl);
+        put_f32_rows(c.sim, &c.r, x, T, K / 16u, K, 1.0f);
+        std::vector<region> out;
+        rows_region(out, y, T, yl, yl);
+        opl::writer w(opl::F_STOP_ON_ERROR, 0x5343u);
+        const uint32_t a[] = {x, K / 16u, y, yl, uint32_t(W_BEAT), fmt, N, K, T,
+                              opl::HANDLE_NONE, 0u, 0u, 0xBE800000u, 0x40400000u};   // -0.25f and +3.0f
+        w.add(kind, a, opl::kind_nargs(kind));
+        run(c, kind, opl::kind_name(kind), w, out);
+    }
+}
+
 // ADD / MUL: a rows x n, b by period p (scalar: max(p, 1) f32 words; else min(p, rows) rows, one for p = 1).
 // dense: a and dst rows at stride L (a decode record the fast entry takes; else a stride L + 1 for rows > 1: the general path).
 void ew_case(launch_ctx & c, uint32_t kind, const char * what, uint32_t n, uint32_t rows, uint32_t p, bool scalar, bool dense) {
@@ -991,6 +1015,8 @@ int main(int argc, char ** argv) {
         corpus_set_rows(c);
         corpus_fa(c);
         corpus_unary(c);
+        corpus_mulmat_epilogue(c, opl::K_MUL_MAT_SCALE);
+        corpus_mulmat_epilogue(c, opl::K_MUL_MAT_SOFTCAP);
     }
     tsr_rv_agent_set_retire_hook(tsr_sim_rv_agent(sim), nullptr, nullptr);
     fwh_close(&h);

@@ -814,7 +814,7 @@ Four public numbers, in CUDA's terms: the **Tesseract Core capability** (compute
 | Tesseract Core capability MAJOR.MINOR | 1.0 | `sw/tables/tsr_tables.py` `ISA_MAJOR` / `ISA_MINOR` | `VERSION` (EX §7.5), `.note.tsr` `cap_min` (the image's need) |
 | Tesseract Basis MAJOR.MINOR.PATCH (SemVer) | 0.1.0 | `sw/ctrl/include/tsr/version.h` | `.note.tsr` word 6 and HELLO r6, both from the link's `__tsr_basis_version` (major << 16 \| minor << 8 \| patch); `tsr_fw_image(... BASIS_VERSION <code>)` links a test image as another version |
 | Basis ABI | 1 | `version.h` `TSR_SDK_ABI` (the only source) | `.note.tsr` word 0, HELLO r4[15:0] |
-| Kind revision (u8, 0 = absent) | 1 for the 14 kinds of §7.2 | `tsr/opl.hpp` `kind_rev` | `.tsr_kinds`; HELLO r4[31:16] = the kind table signature |
+| Kind revision (u8, 0 = absent) | 1 for the kinds present in the image (§7.2) | `tsr/opl.hpp` `kind_rev` | `.tsr_kinds`; HELLO r4[31:16] = the kind table signature |
 
 - **Capability.** Bumped by the hardware owner (EX §7.5): major for an incompatible hardware-contract
   change (any tile op's result bits included), minor for an addition present in every configuration
@@ -950,7 +950,48 @@ rows: `rows` = ne1·ne2·ne3, and every row of a tensor starts on a line (ensure
 | 0x19 | FLASH_ATTN | 1 | 0 dst, 1 dst token stride, 2 q, 3 q head stride, 4 q token stride, 5 K cache base, 6 V cache base, 7 n_kv, 8 head_dim, 9 n_head, 10 n_head_kv, 11 n_tokens, 12 MSUM preload byte offset, 13 f32-mask handle (with a mask: always the copy for this record's scale, written only when needed, because the cached list outlives per-token mask changes and a rule-3 GENERAL tile reads it also when the MSUM is not GENERAL; 0xFFFF_FFFF only without a mask; W3b, SW-48), 14 scale (f32), 15 softcap (must be 0), 16 K plane base, 17 V plane base, 18 E/64 \| LG << 16, 19 D, 20 G, 21 flags (AT §12; two slots) | FLASH_ATTN_EXT with K/V in KV buffers; the device never reads the F16 mask |
 | 0x1A | CPY | 1 | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 row lines, 5 rows | CPY/CONT f32 → f32 with contiguous rows |
 | 0x1B | UNARY | 1 | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 n, 5 rows, 6 func (0 TANH, 1 GELU16 (llama.cpp GELU), 2 SILU, 3 EXP, 4 GELU exact tanh form) | UNARY ops the VU has |
+| 0x1C | MUL_MAT_SCALE | 1 | MUL_MAT words 0–11, requiring no addend, addend stride 0 and flags 0; word 12 FP32 scale | single-consumer MUL_MAT → SCALE |
+| 0x1D | MUL_MAT_SOFTCAP | 1 | same restricted MUL_MAT words 0–11; words 12/13 exact FP32 pre/post scales | MUL_MAT → SCALE → TANH → SCALE |
 | 0x20–0x3F | reserved for M8 | — | MUL_MAT_ID, TOPK/ARGMAX, SOFT_MAX | |
+
+**Optional local epilogues (November 2026).** The two new kinds above require
+both the booted image's kind entry and `CAPS.MVM_LOCAL_SCALE` (bit 13) or
+`CAPS.MVM_LOCAL_SOFTCAP` (bit 14). Firmware refuses an unsupported explicit record before that record issues
+tiles; it does not roll back earlier records. Their
+DDRx handles, full-N weight layout, input/output strides and graph dependencies
+retain MUL_MAT semantics. No intermediate DDR tensor is published. An older
+image or core uses the original materialized sequence, selected before launch.
+Existing kind revisions, Basis ABI 1 and Core capability 1.0 remain unchanged;
+the new optional kinds start at revision 1.
+
+The ggml builder fuses only addressable FP32, sole-consumer chains whose
+intermediates are not observed, views or separate graph outputs, and whose
+memory accesses do not conflict. Safe reuse of absorbed intermediate storage
+is allowed. It
+retains hoisting/dependency checks and refuses overlapping input/final output.
+SCALE's additive constant must be positive-zero bits. SOFTCAP keeps both exact
+graph coefficients; the host never recomputes a reciprocal. Its initial host
+coverage requires `row_beats >= 32*Ttile`. That conservative service-rate guard
+is not a latency proof. Nonqualifying output heads retain the existing sequence, possibly with an
+independently qualified local SCALE prefix.
+
+PyTorch has a separate bounded FX path: bias-free, right-weight FP32
+mm/matmul/linear followed by a sole positive power-of-two scalar multiply in
+[1, 2^127]. It preserves FP16/BF16 casts by leaving those cases on the existing
+path. Missing kind/capability, verification mode or multiple K partitions keep
+ordinary linear followed by the CPU multiply. No CPU TANH is silently replaced
+by the device approximation. This change does not add PyTorch device attention.
+The real `torch.compile` path, escaping intermediates and old firmware images
+are regression cases, rather than only tests of the runtime API.
+
+MoE remains the next model feature. The shared dense-window metadata preserves
+original global N, per-channel row ownership, expert base/stride and input/output
+token origins. Current dense opcodes use expert zero and identity token order;
+the helper is not an indexed-expert opcode. MoE still needs expert-bank packing,
+MUL_MAT_ID/selection/combine lowering, explicit token-ID gather/scatter and
+matching ggml/PyTorch regions. Final DDR materialization provides a compatible
+boundary until those consumers are qualified. TOPK hardware remains a separate
+optional configuration; locality does not enable it implicitly.
 
 **M7 argument rules (W2b infra, 2026-10-30; `tsr/opl.hpp`).** The words of each kind are a struct in
 word order (`opl::ew_args` for ADD / MUL, `scale_args`, `rms_norm_args`, `glu_args`, `rope_args`,

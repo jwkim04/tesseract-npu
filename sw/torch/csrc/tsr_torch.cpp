@@ -151,9 +151,11 @@ public:
 
     py::dict config() const {
         tsr_config c;
+        bool local_scale;
         {
             lease l(*this);
             c = l->config();
+            local_scale = l->has_local_scale();
         }
         py::dict r;
         r["num_ch"] = c.num_ch;
@@ -165,6 +167,7 @@ public:
         r["vl"] = c.vl;
         r["ch_bytes"] = c.ch_bytes;
         r["caps"] = c.caps;
+        r["local_scale"] = local_scale;
         return r;
     }
 
@@ -268,7 +271,8 @@ public:
         return out;
     }
 
-    at::Tensor linear(uint64_t h, const at::Tensor & x, const std::optional<at::Tensor> & out, bool ref) {
+    at::Tensor linear(uint64_t h, const at::Tensor & x, const std::optional<at::Tensor> & out, bool ref,
+                      std::optional<float> scale = std::nullopt) {
         const rt::weight_info wi = info_of(h);
         check_cpu(x, "x");
         if (x.dim() != 2) throw std::invalid_argument("tesseract: x must be 2D [T, K]");
@@ -300,6 +304,9 @@ public:
             py::gil_scoped_release nogil;
             if (ref) {
                 l->linear_ref(h, xp, (uint32_t) T, yp, xs, ys);
+            } else if (scale) {
+                if (!l->try_linear_scale(h, xp, (uint32_t) T, yp, *scale, xs, ys))
+                    return {};
             } else {
                 l->linear(h, xp, (uint32_t) T, yp, xs, ys);
             }
@@ -427,6 +434,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                  return d.linear(h, x, out, false);
              }, py::arg("handle"), py::arg("x"), py::arg("out") = py::none(),
              "y [T, N] float32 = x [T, K] float32 @ W^T on the device")
+        .def("_try_linear_scale", [](Device & d, uint64_t h, const at::Tensor & x, float scale) -> py::object {
+            const auto y = d.linear(h, x, std::nullopt, false, scale);
+            if (!y.defined()) return py::none();
+            return py::cast(y);
+        }, py::arg("h"), py::arg("x"), py::arg("scale"))
         .def("linear_ref", [](Device & d, uint64_t h, const at::Tensor & x, const std::optional<at::Tensor> & out) {
                  return d.linear(h, x, out, true);
              }, py::arg("handle"), py::arg("x"), py::arg("out") = py::none(),

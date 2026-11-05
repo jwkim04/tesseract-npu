@@ -278,6 +278,8 @@ package tsr_pkg;
 
   // dispatch -> MVM unit (M3; HAS_MVM = 0 builds have no MVM unit).
   typedef struct packed {
+    logic        local_scale, local_softcap;
+    logic [31:0] scale, post_scale;
     logic        fmt;         // 0: Q8_0 (A32 QA), 1: Q4_K (A256 QA)
     logic        acc;         // flags.ACC
     logic [31:0] dst_line;    // A1
@@ -291,7 +293,7 @@ package tsr_pkg;
     logic [31:0] rows_per_ch; // R = ceil(N / NUM_CH)
     logic [31:0] row_beats;   // ROW_BEATS(fmt, K)
     logic [15:0] qa_lines;    // QA_LINES(kind(fmt), K): x stride between tokens
-  } tsr_mvm_cmd_t;            // 294 bits
+  } tsr_mvm_cmd_t;            // 360 bits
 
   // ===========================================================================================
   // M3: MVM unit (docs/rtl-m3.md). Everything below is additive; M2 users are unaffected.

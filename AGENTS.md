@@ -28,6 +28,12 @@ Read [docs/handoff.md](docs/handoff.md) first: it says where the work stands and
   A K4 link peaks at about 33 GB.
 - Vivado/Vitis 2024.2 under `/tool/Xilinx` (not on PATH; source the settings script in a subshell),
   XRT under `/opt/xilinx/xrt`. Read and use only.
+- For new K4 builds, limit placement constraints to Pblocks for major functional blocks.
+  Show the planned Pblocks to the user before launching each build. Regenerate the map if
+  the block assignments or platform change. The map shows allowed regions, not placed cells.
+  Let Vivado place the logic and route the nets within those regions. Do not assign individual
+  LUTs, registers, pipeline stages, sites or BELs, or run helper ownership audits or placement ECOs.
+  Use the normal implementation reports and the required clock, CDC and final timing checks.
 - Do not commit build outputs (`build/` is ignored), model files (`models/`) or trace data (`traces/*/`
   except scripts and `MANIFEST.sha256`).
 - Docs style: plain short sentences, like a long-maintained large repository; no "v1"/"v2" labels for

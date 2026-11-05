@@ -28,8 +28,8 @@
 #                       development platform extracted on the dev server) when that directory exists
 #   TSR_XILINX          Xilinx install root (default /tool/Xilinx); version 2024.2
 #   TSR_VIVADO_LOCK     if set: every Vivado / v++ call runs under `flock $TSR_VIVADO_LOCK`
-#   TSR_U200_FLOORPLAN  k4: 1 (default) = floorplan C'' hw/u200/k4_floorplan.tcl (place_design
-#                       pre-hook of hw/u200/k4.cfg); 0 = link without it
+#   TSR_U200_FLOORPLAN  k4: 1 (default) = whole-block SLR pblocks from
+#                       hw/u200/k4_major_blocks.tcl; 0 = no placement hook (CDC hooks remain)
 #   TSR_U200_OUT        output directory (default build/u200/<k>, build/u200/<k>_hw_emu);
 #                       config hook paths are made absolute before v++ reads them
 #   TSR_VPP_TO_STEP     stop v++ after this link step (v++ --to_step, e.g. vpl.config_hw_runs: the
@@ -152,8 +152,8 @@ if [ -n "${TSR_U200_SYNTH_JOBS:-}" ]; then
   sed -i "s|^synth.jobs=.*|synth.jobs=$TSR_U200_SYNTH_JOBS|" "$CFG"
 fi
 if [ "$K" = k4 ] && [ "${TSR_U200_FLOORPLAN:-1}" = 0 ]; then
-  sed -i -e '/k4_floorplan\.tcl\|k4_locality_check\.tcl\|k4_resume_pre\.tcl/d' "$CFG"
-  echo "== TSR_U200_FLOORPLAN=0: linking without hw/u200/k4_floorplan.tcl"
+  sed -i -e '/k4_major_blocks\.tcl/d' "$CFG"
+  echo "== TSR_U200_FLOORPLAN=0: linking without hw/u200/k4_major_blocks.tcl"
 fi
 extra=()
 if [ -n "${TSR_VPP_TO_STEP:-}" ]; then

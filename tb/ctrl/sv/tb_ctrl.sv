@@ -15,7 +15,8 @@ module tb_ctrl
 #(
   parameter int unsigned ISSUE_WAIT_MAX = TSR_ISSUE_WAIT_MAX,
   parameter int unsigned HS_TIMEOUT     = 4096,
-  parameter bit          CTRL_SYNC      = 1'b0
+  parameter bit          CTRL_SYNC      = 1'b0,
+  parameter bit          RV_LOCAL_TRANSPORT = 1'b0
 ) (
   input  logic          clk,
   input  logic          rst_n,
@@ -238,19 +239,78 @@ module tb_ctrl
     .tap_dfault_o       (tap_dfault)
   );
 
+  logic issue_valid, issue_ready;
+  logic [TSR_IFIFO_BITS-1:0] issue_entry;
+  logic spm_bridge_req_valid, spm_bridge_rsp_valid, spm_bridge_rsp_ready;
+  logic [511:0] spm_bridge_rsp_line;
+  logic lq_csr_req_valid, lq_csr_req_we;
+  logic [11:0] lq_csr_req_off;
+  logic [31:0] lq_csr_req_wdata;
+  logic [7:0][31:0] lq_csr_req_lcq_w;
+
+  if (RV_LOCAL_TRANSPORT) begin : g_rv_local
+    logic         spm_v, spm_err, issue_v, issue_ack, lq_v, lq_we, lq_end;
+    logic [127:0] spm_data, lq_data;
+    logic [128:0] issue_data;
+    logic [11:0]  lq_off;
+    logic         unused_spm_rsp_err;
+
+    tsr_rv_spm_tx u_spm_tx (
+      .clk, .rst_n(rst_n), .req_valid(spm_req_valid), .bridge_req_valid(spm_bridge_req_valid),
+      .bridge_rsp_valid(spm_bridge_rsp_valid), .bridge_rsp_ready(spm_bridge_rsp_ready),
+      .bridge_rsp_line(spm_bridge_rsp_line), .bridge_rsp_err(1'b0),
+      .link_valid(spm_v), .link_data(spm_data), .link_err(spm_err)
+    );
+    tsr_rv_spm_rx u_spm_rx (
+      .clk, .rst_n(rst_n), .link_valid(spm_v), .link_data(spm_data), .link_err(spm_err),
+      .rsp_valid(spm_rsp_valid), .rsp_line(spm_rsp_line), .rsp_err(unused_spm_rsp_err)
+    );
+    tsr_rv_issue_tx u_issue_tx (
+      .clk, .rst_n(rst_n), .fifo_valid(if_valid), .fifo_entry(if_data), .fifo_ready(if_ready),
+      .link_valid(issue_v), .link_data(issue_data), .link_accepted(issue_ack)
+    );
+    tsr_rv_issue_rx u_issue_rx (
+      .clk, .rst_n(rst_n), .link_valid(issue_v), .link_data(issue_data), .link_accepted(issue_ack),
+      .issue_valid, .issue_entry, .issue_ready
+    );
+    tsr_rv_lq_tx u_lq_tx (
+      .clk, .rst_n(rst_n), .req_valid(lq_req_valid), .req_off(lq_req_off), .req_we(lq_req_we),
+      .req_wdata(lq_req_wdata), .req_lcq_w(lq_req_lcq_w), .link_valid(lq_v), .link_data(lq_data),
+      .link_off(lq_off), .link_we(lq_we), .link_end(lq_end)
+    );
+    tsr_rv_lq_rx u_lq_rx (
+      .clk, .rst_n(rst_n), .link_valid(lq_v), .link_data(lq_data), .link_off(lq_off),
+      .link_we(lq_we), .link_end(lq_end), .req_valid(lq_csr_req_valid), .req_off(lq_csr_req_off),
+      .req_we(lq_csr_req_we), .req_wdata(lq_csr_req_wdata), .req_lcq_w(lq_csr_req_lcq_w)
+    );
+  end else begin : g_rv_direct
+    assign spm_bridge_req_valid = spm_req_valid;
+    assign spm_bridge_rsp_ready = 1'b1;
+    assign spm_rsp_valid        = spm_bridge_rsp_valid;
+    assign spm_rsp_line         = spm_bridge_rsp_line;
+    assign issue_valid          = if_valid;
+    assign issue_entry          = if_data;
+    assign if_ready             = issue_ready;
+    assign lq_csr_req_valid     = lq_req_valid;
+    assign lq_csr_req_off       = lq_req_off;
+    assign lq_csr_req_we        = lq_req_we;
+    assign lq_csr_req_wdata     = lq_req_wdata;
+    assign lq_csr_req_lcq_w     = lq_req_lcq_w;
+  end
+
   tb_ctrl_core u_core (
     .clk(clk), .rst_n(rst_n), .cfg_seed(cfg_seed), .cfg_lat(cfg_lat), .cfg_pop_mute(cfg_pop_mute),
     .cfg_acc_mute(cfg_acc_mute), .cfg_spm_mute(cfg_spm_mute), .cfg_cwin_mute(cfg_cwin_mute),
     .cfg_lq_mute(cfg_lq_mute),
-    .if_valid(if_valid), .if_ready(if_ready), .if_data(if_data), .issued_seq(issued_q),
+    .if_valid(issue_valid), .if_ready(issue_ready), .if_data(issue_entry), .issued_seq(issued_q),
     .s_seq(s_q), .d_seq(d_q),
-    .spm_req_valid(spm_req_valid), .spm_req_we(spm_req_we), .spm_req_addr(spm_req_addr),
-    .spm_req_be(spm_req_be), .spm_req_wdata(spm_req_wdata), .spm_rsp_valid(spm_rsp_valid),
-    .spm_rsp_line(spm_rsp_line),
+    .spm_req_valid(spm_bridge_req_valid), .spm_req_we(spm_req_we), .spm_req_addr(spm_req_addr),
+    .spm_req_be(spm_req_be), .spm_req_wdata(spm_req_wdata), .spm_rsp_valid(spm_bridge_rsp_valid), .spm_rsp_ready(spm_bridge_rsp_ready),
+    .spm_rsp_line(spm_bridge_rsp_line),
     .cwin_req_valid(cwin_req_valid), .cwin_req_off(cwin_req_off), .cwin_rsp_valid(cwin_rsp_valid),
     .cwin_rsp_rdata(cwin_rsp_rdata),
-    .lq_req_valid(lq_req_valid), .lq_req_off(lq_req_off), .lq_req_we(lq_req_we),
-    .lq_req_wdata(lq_req_wdata), .lq_req_lcq_w(lq_req_lcq_w), .lq_rsp_valid(lq_rsp_valid),
+    .lq_req_valid(lq_csr_req_valid), .lq_req_off(lq_csr_req_off), .lq_req_we(lq_csr_req_we),
+    .lq_req_wdata(lq_csr_req_wdata), .lq_req_lcq_w(lq_csr_req_lcq_w), .lq_rsp_valid(lq_rsp_valid),
     .lq_rsp_rdata(lq_rsp_rdata), .lq_rsp_fault(lq_rsp_fault),
     .log_valid(log_valid), .log_data(log_data), .log_ready(log_ready),
     .mtime(mtime), .stub_errors(stub_errors), .stub_pops(stub_pops)

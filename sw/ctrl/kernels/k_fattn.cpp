@@ -70,6 +70,7 @@
 #include "k_fast.hpp"
 #include "k_mulmat.hpp"
 #include "tsr/plan_attn.hpp"
+#include "../../sim/include/tsr_local_tile.h"
 
 // The op list kinds this source handles (SW §6.9: .tsr_kinds entries at tsr/opl.hpp kind_rev).
 TSR_KIND(FLASH_ATTN);
@@ -150,7 +151,7 @@ struct fa_op {
     uint64_t pc;                      // the planner's per-op NCG term (tsr_fap_pc)
     const volatile uint32_t * msum;   // the MSUM image (preload area)
     new_cells nc;
-    bool use_new;
+    bool use_new, local;
     spm blk;
     uint32_t pf;
 };
@@ -162,6 +163,7 @@ constexpr uint32_t LIST_CAP = 32u;
 struct tile_plan_t {
     tsr_fap_tile t;
     long n;                           // chunks (> LIST_CAP: not stored)
+    const tsr_fap_chunk * cached;     // points into the bounded record preflight cache
     tsr_fap_chunk list[LIST_CAP];
 };
 
@@ -192,6 +194,7 @@ bool walk_ok(const fa_op & o, const tsr_fap_tile & t) {
         for (uint32_t i = 0; i < opl::MSUM_ROW_WORDS * Tq; ++i) rows[i] = r[i];
     }
     if (tsr_fap_tile_init_pc(&p.t, o.C, o.pc, o.n_kv, o.msum_flags, rows, Tq) != 0) return false;
+    p.cached = nullptr;
     p.n = tsr_fap_list(&p.t, o.use_new ? has_new : nullptr, const_cast<new_cells *>(&o.nc), p.list, LIST_CAP);
     if (p.n < 0) return false;
     if (p.n > long(LIST_CAP)) return walk_ok(o, p.t);
@@ -210,12 +213,79 @@ struct chunk_src {
     TSR_HOT bool next(tsr_fap_chunk & c) {
         if (p.n <= long(LIST_CAP)) {
             if (i >= p.n) return false;
-            c = p.list[i++];
+            c = (p.cached ? p.cached : p.list)[i++];
             return true;
         }
         return tsr_fap_next(&p.t, &it, o.use_new ? has_new : nullptr, const_cast<new_cells *>(&o.nc), &c) > 0;
     }
 };
+
+// Reuse the checked chunk lists for short prefills. A long record can exceed
+// this stack budget and falls back to its original deterministic planner walk.
+struct preflight_cache {
+    static constexpr uint32_t TILES = 8u;
+    uint32_t tiles = 0u;
+    uint8_t end[TILES + 1u] = {};
+    tsr_fap_chunk list[LIST_CAP];
+
+    void remember(uint32_t tile, const tile_plan_t & p) {
+        if (tile != tiles || tiles == TILES || p.n > long(LIST_CAP - end[tiles])) return;
+        const uint32_t start = end[tiles];
+        for (uint32_t i = 0; i < uint32_t(p.n); ++i) list[start + i] = p.list[i];
+        end[++tiles] = uint8_t(start + p.n);
+    }
+
+    bool get(uint32_t tile, tile_plan_t & p) const {
+        if (tile >= tiles) return false;
+        p.cached = list + end[tile];
+        p.n = end[tile + 1u] - end[tile];
+        return true;
+    }
+};
+
+// Select the path for the whole record before allocating its ring block or issuing LD.
+static bool select_local_plan(fa_op & o, const tile_plan_t & first, preflight_cache & cache) {
+    o.local = o.C == TSR_LOCAL_AT_OWNERS && (o.msum_flags & TSR_FAP_GENERAL) == 0u;
+    if (!o.local) return true;
+    // The existing first-tile validation suffices for a FAST decode record
+    // if even its largest possible planner chunk fits.
+    if (o.T == 1u && tsr_local_at_fits(o.C, o.f.R, o.f.ncg)) return true;
+    if (first.n <= long(LIST_CAP)) {
+        uint32_t groups = 0u;
+        for (long i = 0; i < first.n; ++i) {
+            if (first.list[i].general) {
+                o.local = false;
+                return true;
+            }
+            groups += first.list[i].n_groups;
+        }
+        // A short multi-tile prefill gets little overlap after moving its
+        // later-tile planning before the first issue. Keep the existing path
+        // when the first tile spans at most one minimum planner chunk.
+        if (o.T > o.f.Tq && groups <= 4u * o.C) {
+            o.local = false;
+            return true;
+        }
+    }
+    tile_plan_t p;
+    for (uint32_t q0 = 0u, tile = 0u; q0 < o.T; q0 += o.f.Tq, ++tile) {
+        if (q0 != 0u) {
+            if (!plan_tile(o, q0, p)) return false;
+            cache.remember(tile - 1u, p);
+        }
+        if (!o.local) continue;   // still validate every tile for the legacy path
+        chunk_src src(q0 == 0u ? first : p, o);
+        tsr_fap_chunk c;
+        const uint32_t rows = tile_tokens(o, q0) * o.f.n_head;
+        while (src.next(c)) {
+            if (c.general || !tsr_local_at_fits(o.C, rows, c.n_groups)) {
+                o.local = false;
+                break;
+            }
+        }
+    }
+    return true;
+}
 
 // The ops of a tile, built once per tile with the generated builders (at.hpp) and patched per
 // chunk / head subset in the words that change (the same encodings: the fields are the builders',
@@ -226,30 +296,39 @@ struct tile_ops {
     uint32_t Tq, R;
 };
 
-TSR_HOT op qk_op(const tile_ops & to, uint32_t hg0, uint32_t gs, const tsr_fap_chunk & c, spm S, spm MK) {
+TSR_HOT op qk_op(const tile_ops & to, uint32_t hg0, uint32_t gs, const tsr_fap_chunk & c, spm S, spm MK, uint32_t slot) {
     op o = to.qk;
     if (!c.general)
         o.w[0] |= ATTQK_MAXOUT | ((c.flags & TSR_FAP_CAUSAL) ? ATTQK_CAUSAL : 0u) | ((c.flags & TSR_FAP_SLIDE) ? ATTQK_SLIDE : 0u);
     o.w[0] |= hg0 << ATTQK_HG0_LSB;
     o.w[4] = (o.w[4] & ~ATTQK_GS_M1) | (gs - 1u) << ATTQK_GS_M1_LSB;
+    if (slot != 0u) {
+        o.w[0] |= slot << ATTQK_LOCAL_SLOT_LSB;
+        o.w[4] |= tsr_local_at_stride(c.n_groups) << ATTQK_RSTRIDE_LSB;
+    }
     o.w[1] = S.line;
     o.w[5] = c.u0 | c.n_groups << ATTQK_N_GROUPS_LSB;
     o.w[6] = c.c_lo | c.c_hi << ATTQK_C_HI_LSB;
     o.w[7] = c.general ? 0u : MK.line;
     return o;
 }
-TSR_HOT op sm_op(const tile_ops & to, spm S, spm MK, uint32_t n) {
+TSR_HOT op sm_op(const tile_ops & to, spm S, spm MK, const tsr_fap_chunk & c, uint32_t slot) {
     op o = to.sm;
     o.w[1] = S.line;
     o.w[2] = S.line;
     o.w[3] = MK.line;
-    o.w[4] = n;                       // n_lines, stride 0
+    o.w[4] = c.n_groups;
+    if (slot != 0u) {
+        o.w[4] |= tsr_local_at_stride(c.n_groups) << ASMAX_STRIDE_LSB;
+        o.w[7] = slot | (c.u0 << ASMAX_LOCAL_U0_LSB);
+        o.used |= uint8_t(1u << ASMAX_LOCAL_SLOT_WORD);
+    }
     return o;
 }
 
 // The ops of one chunk that run one chunk behind (AT §7.1): ATTPV (LSUM) per head subset, AMERGE.
 struct chunk_ref {
-    uint32_t u0, n, k;
+    uint32_t u0, n, k, slot;
     ticket sm;                        // its ASMAX
 };
 
@@ -264,6 +343,10 @@ ticket push_pv(const fa_op & o, const tile_ops & to, const chunk_ref & c) {
         op x = to.pv;
         x.w[0] |= hg0 << ATTPV_HG0_LSB;
         x.w[4] = (x.w[4] & ~ATTPV_GS_M1) | (gs - 1u) << ATTPV_GS_M1_LSB;
+        if (c.slot != 0u) {
+            x.w[0] |= c.slot << ATTPV_LOCAL_SLOT_LSB;
+            x.w[4] |= tsr_local_at_stride(c.n) << ATTPV_PSTRIDE_LSB;
+        }
         x.w[1] = P.line;
         x.w[2] = S.line;
         x.w[5] = c.u0 | c.n << ATTPV_N_GROUPS_LSB;
@@ -306,10 +389,11 @@ ticket push_tile(fa_op & o, uint32_t q0, const tile_plan_t & p, deps first) {
     for (; more; more = src.next(c)) {
         const spm S = o.blk + f.s + (k % 3u) * f.s_lines;
         const spm MK = o.blk + f.mk + (k & 3u) * f.rl;
+        const uint32_t slot = o.local ? 1u + k % TSR_LOCAL_AT_SLOTS : 0u;
         ticket qk{};
         for (uint32_t hg0 = 0; hg0 < f.G; hg0 += f.GS) {
             const uint32_t gs = f.G - hg0 < f.GS ? f.G - hg0 : f.GS;
-            qk = issue(qk_op(to, hg0, gs, c, S, MK), (k == 0u && hg0 == 0u) ? deps{qa} : deps{}, pf);
+            qk = issue(qk_op(to, hg0, gs, c, S, MK, slot), (k == 0u && hg0 == 0u) ? deps{qa} : deps{}, pf);
         }
         ticket sm{};
         if (c.general) {
@@ -321,12 +405,12 @@ ticket push_tile(fa_op & o, uint32_t q0, const tile_plan_t & p, deps first) {
             am[k & 1u] = issue(AMASK({.dst = S.line, .src = S.line, .mask = M.line, .n_lines = c.n_groups, .stride = 0u,
                                       .r = R, .rpq = f.n_head, .mstride = c.n_groups, .mdst = MK.line}),
                                deps{qk, ml}, pf);
-            sm = issue(sm_op(to, S, MK, c.n_groups), deps{}, pf);
+            sm = issue(sm_op(to, S, MK, c, slot), deps{}, pf);
         } else {
-            sm = issue(sm_op(to, S, MK, c.n_groups), deps{qk}, pf);
+            sm = issue(sm_op(to, S, MK, c, slot), deps{qk}, pf);
         }
         if (k != 0u) push_pv(o, to, prev);
-        prev = chunk_ref{c.u0, c.n_groups, k, sm};
+        prev = chunk_ref{c.u0, c.n_groups, k, slot, sm};
         ++k;
     }
     push_pv(o, to, prev);             // the last chunk (every tile has one)
@@ -370,13 +454,17 @@ ticket push_tile(fa_op & o, uint32_t q0, const tile_plan_t & p, deps first) {
     // refusal there ends the record with the earlier tiles pushed (exec.hpp: they stay joinable).
     tile_plan_t p;
     if (!plan_tile(o, 0u, p)) return ctx.fail(opl::RET_BAD_RECORD);
+    o.local = false;
+    preflight_cache cache;
+    if ((l.caps & CAPS_ATT_LOCAL) != 0u && !select_local_plan(o, p, cache))
+        return ctx.fail(opl::RET_BAD_RECORD);
     // The block, then the tiles one after another in it.
     deps rd;
     o.blk = ctx.ring->alloc(o.f.total, 2u, &rd);
     if (!valid(o.blk)) return ctx.fail(opl::RET_SCRATCH);
     ticket last = push_tile(o, 0u, p, mmk::first_deps(d, rd));
-    for (uint32_t q0 = o.f.Tq; q0 < o.T; q0 += o.f.Tq) {
-        if (!plan_tile(o, q0, p)) {
+    for (uint32_t q0 = o.f.Tq, tile = 0u; q0 < o.T; q0 += o.f.Tq, ++tile) {
+        if (!cache.get(tile, p) && !plan_tile(o, q0, p)) {
             ctx.ret = opl::RET_BAD_RECORD;
             break;
         }

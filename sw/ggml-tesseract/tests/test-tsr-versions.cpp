@@ -198,9 +198,60 @@ static void add_graph(ggml_backend_t tsr, bool on_device, std::string * err) {
     ggml_backend_free(cpu);
 }
 
+static void scale_graph(ggml_backend_t tsr, bool local_cap, bool softcap = false, bool enough_work = true) {
+    const uint32_t K = softcap && enough_work ? 8192u : 256u;
+    constexpr uint32_t N = 80u, T = 5u;
+    std::vector<float> w(size_t(K) * N), x(size_t(K) * T);
+    std::vector<uint8_t> packed(ggml_row_size(GGML_TYPE_Q8_0, K) * N);
+    for (size_t i = 0; i < w.size(); ++i) w[i] = float(int(i % 251u) - 125) * 0.015625f;
+    for (size_t i = 0; i < x.size(); ++i) x[i] = float(int(i % 59u) - 29) * 0.125f;
+    ggml_quantize_chunk(GGML_TYPE_Q8_0, w.data(), packed.data(), 0, N, K, nullptr);
+    std::vector<float> result(N * T), observed(N * T);
+    const int last_case = softcap ? 2 : 1;
+    for (int escape = 0; escape <= last_case; ++escape) {
+        ggml_context * ctx = ggml_init({16 * 1024 * 1024, nullptr, true});
+        ggml_tensor * W = ggml_new_tensor_2d(ctx, GGML_TYPE_Q8_0, K, N);
+        ggml_tensor * X = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, K, T);
+        ggml_tensor * mm = ggml_mul_mat(ctx, W, X);
+        ggml_tensor * y = ggml_scale(ctx, mm, softcap ? 1.0f / 30.0f : -0.25f);
+        if (softcap) {
+            y = ggml_tanh(ctx, y);
+            if (escape == 2) ggml_set_output(y);
+            y = ggml_scale(ctx, y, 30.0f);
+        }
+        if (escape == 1) ggml_set_output(mm);
+        ggml_set_output(y);
+        ggml_cgraph * gf = ggml_new_graph(ctx);
+        ggml_build_forward_expand(gf, y);
+        ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, tsr);
+        CHECK(buf != nullptr, "scale graph buffer");
+        if (buf == nullptr) {
+            ggml_free(ctx);
+            return;
+        }
+        ggml_backend_tensor_set(W, packed.data(), 0, packed.size());
+        ggml_backend_tensor_set(X, x.data(), 0, x.size() * sizeof(float));
+        const std::string log = stderr_of([&] {
+            CHECK(ggml_backend_graph_compute(tsr, gf) == GGML_STATUS_SUCCESS, "scale graph compute");
+        });
+        const char * marker = softcap ? "MUL_MAT_SOFTCAP " : "MUL_MAT_SCALE ";
+        const bool fused = log.find(marker) != std::string::npos;
+        CHECK(fused == (local_cap && escape == 0), "scale graph mode, cap=%d escape=%d softcap=%d:\n%s",
+              int(local_cap), escape, int(softcap), log.c_str());
+        ggml_backend_tensor_get(y, (escape ? observed : result).data(), 0, result.size() * sizeof(float));
+        if (escape)
+            CHECK(memcmp(result.data(), observed.data(), result.size() * sizeof(float)) == 0,
+                  "local and observed/legacy scale graph differ");
+        ggml_backend_buffer_free(buf);
+        ggml_free(ctx);
+    }
+}
+
 int main(int argc, char ** argv) {
     const std::string mode = argc > 1 ? argv[1] : "full";
-    if (mode == "subset" && argc > 2) {
+    const bool legacy_scale = mode == "legacy-scale";
+    const bool m7 = mode == "full" || legacy_scale;
+    if ((mode == "subset" || legacy_scale) && argc > 2) {
         setenv("TSR_IMAGE", argv[2], 1);
     } else if (mode == "m6") {
         setenv("TSR_KINDS", "m6", 1);
@@ -232,7 +283,12 @@ int main(int argc, char ** argv) {
         const std::string core = "Tesseract Core " + core_str() + " (";
         CHECK(strncmp(desc, core.c_str(), core.size()) == 0, "description: %s", desc);
         const bool full_image = mode != "subset";
-        const kind_table kt = full_image ? all_kinds() : table_of({ tsr::opl::K_NOP, tsr::opl::K_JOIN, tsr::opl::K_MUL_MAT });
+        kind_table kt = full_image ? all_kinds() : table_of({ tsr::opl::K_NOP, tsr::opl::K_JOIN, tsr::opl::K_MUL_MAT });
+        if (legacy_scale) {
+            kt.rev[tsr::opl::K_MUL_MAT_SCALE] = 0;
+            kt.rev[tsr::opl::K_MUL_MAT_SOFTCAP] = 0;
+            kt.n -= 2;
+        }
         const std::string want = "), Tesseract Basis " + basis_str() + " (ABI " + std::to_string(TSR_SDK_ABI) + ", " +
                                  std::to_string(kt.n) + " kinds, image ";
         CHECK(strstr(desc, want.c_str()) != nullptr, "description: %s", desc);
@@ -242,7 +298,7 @@ int main(int argc, char ** argv) {
               "versions: core 0x%04x basis 0x%06x abi %u kinds %u sig 0x%04x", v.core, v.basis, v.abi, v.n_kinds, v.kinds_sig);
         answers r;
         const std::string err = stderr_of([&] { r = ask(dev); });
-        if (mode == "full") {
+        if (m7) {
             CHECK(r.add && r.rms && r.rope && r.mm, "full image: ADD %d RMS_NORM %d ROPE %d MUL_MAT %d", r.add, r.rms, r.rope, r.mm);
         } else {
             CHECK(!r.add && !r.rms && !r.rope && r.mm, "%s: ADD %d RMS_NORM %d ROPE %d MUL_MAT %d", mode.c_str(), r.add, r.rms,
@@ -255,10 +311,17 @@ int main(int argc, char ** argv) {
         CHECK(tsr != nullptr, "backend");
         if (tsr != nullptr) {
             std::string why;
-            add_graph(tsr, mode == "full", &why);
-            if (mode != "full")   // the scheduler asked supports_op about the allocated ADD, and was told why not
+            add_graph(tsr, m7, &why);
+            if (!m7)   // the scheduler asked supports_op about the allocated ADD, and was told why not
                 CHECK(why.find("kind ADD is not in the booted image") != std::string::npos, "the ADD's reason at TSR_DEBUG=2:\n%s",
                       why.c_str());
+            if (m7) {
+                scale_graph(tsr, (v.caps & TSR_CAPS_MVM_LOCAL_SCALE) != 0u &&
+                                 v.kind_rev[tsr::opl::K_MUL_MAT_SCALE] != 0u);
+                scale_graph(tsr, (v.caps & TSR_CAPS_MVM_LOCAL_SOFTCAP) != 0u &&
+                                 v.kind_rev[tsr::opl::K_MUL_MAT_SOFTCAP] != 0u, true);
+                scale_graph(tsr, false, true, false);
+            }
             ggml_backend_free(tsr);
         }
     }

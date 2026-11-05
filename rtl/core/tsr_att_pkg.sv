@@ -19,6 +19,29 @@ package tsr_att_pkg;
   // Dispatch payloads (tsr_chk_at -> tsr_issue -> unit; low bits of the 256-bit payload)
   // -------------------------------------------------------------------------------------------
 
+  localparam int unsigned TSR_LOCAL_SCORE_LINES = 4480;
+  localparam int unsigned TSR_LOCAL_SCORE_AW = $clog2(TSR_LOCAL_SCORE_LINES);
+  localparam int unsigned TSR_LOCAL_MAX_ROWS = 224;
+
+  typedef struct packed {
+    logic [1:0] slot;
+    logic rd;
+    logic wr;
+    logic [TSR_LOCAL_SCORE_AW-1:0] ra;
+    logic [TSR_LOCAL_SCORE_AW-1:0] wa;
+    logic [TSR_LINE_BITS-1:0] data;
+  } tsr_local_score_req_t;
+
+  typedef struct packed {
+    logic        start;
+    logic [1:0]  slot;
+    logic [1:0]  first_owner;
+    logic [7:0]  groups;
+    logic        max_valid;
+    logic [7:0]  row;        // START: row count; MAX: row index
+    logic [31:0] value;      // START: scale; MAX: row maximum
+  } tsr_local_asmax_cmd_t;
+
   // KVST 0x14 (AT §5.1) -> tsr_dma (dma_cmd_xc = 1).
   typedef struct packed {
     logic        kv;        // 0: K plane (token-major, AT §4.3), 1: V plane (slice-major, AT §4.4)
@@ -33,6 +56,7 @@ package tsr_att_pkg;
 
   // ATTQK 0x21 / ATTPV 0x22 (AT §5.2, §5.3) -> tsr_mvm (mvm_cmd_xc = 1).
   typedef struct packed {
+    logic [1:0]  local_slot;
     logic        pv;        // 0: ATTQK, 1: ATTPV
     logic [2:0]  flags;     // ATTQK {MAXOUT, SLIDE, CAUSAL}; ATTPV {0, 0, LSUM} (w0[14:12])
     logic [8:0]  e64;       // w4[8:0]: E / 64 (E % D == 0)
@@ -50,7 +74,7 @@ package tsr_att_pkg;
     logic [15:0] aux0;      // w6[15:0]: ATTQK c_lo, ATTPV LG
     logic [15:0] aux1;      // w6[31:16]: ATTQK c_hi, ATTPV 0
     logic [31:0] w7;        // ATTQK mdst (MAXOUT), ATTPV cstride resolved (0 -> R D / 16)
-  } tsr_att_cmd_t;          // 236 bits
+  } tsr_att_cmd_t;          // 238 bits
 
   localparam int unsigned TSR_ATT_FL_CAUSAL = 0;   // flags bit (ATTQK)
   localparam int unsigned TSR_ATT_FL_SLIDE  = 1;
@@ -74,7 +98,7 @@ package tsr_att_pkg;
     logic [16:0]  qn;       // (u0 + n) / C
     logic [3:0]   mn;       // (u0 + n) mod C
     logic [13:0]  rl;       // ceil(R / 16) (ATTPV LSUM vector lines per channel)
-  } tsr_att_ccmd_t;         // 236 + 109 = 345 bits
+  } tsr_att_ccmd_t;         // 238 + 109 = 347 bits
 
   // -------------------------------------------------------------------------------------------
   // MVM unit internal: the cluster -> back end configuration of an attention op (stable while its

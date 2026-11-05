@@ -245,7 +245,7 @@ DMA_CMD_T = StructDef("tsr_dma_cmd_t", (("is_st", 1), ("ch", 4), ("spm_line", 32
 QACT_CMD_T = StructDef("tsr_qact_cmd_t", (("kind", 1), ("dst_line", 32), ("src_line", 32),
                                           ("k", 16), ("t", 4), ("src_stride", 32),
                                           ("qa_lines", 16)))
-MVM_CMD_T = StructDef("tsr_mvm_cmd_t", (("fmt", 1), ("acc", 1), ("dst_line", 32), ("x_line", 32),
+MVM_CMD_T = StructDef("tsr_mvm_cmd_t", (("local_scale", 1), ("local_softcap", 1), ("scale", 32), ("post_scale", 32), ("fmt", 1), ("acc", 1), ("dst_line", 32), ("x_line", 32),
                                         ("w_off", 32), ("n", 32), ("k", 16), ("t", 4),
                                         ("dst_stride", 32), ("y_lines", 32), ("rows_per_ch", 32),
                                         ("row_beats", 32), ("qa_lines", 16)))

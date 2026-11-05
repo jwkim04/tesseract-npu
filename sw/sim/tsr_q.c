@@ -716,7 +716,8 @@ static void ext_valid(const tsr_sim * sim, const tsr_extents * x) {
     for (uint32_t i = 0; i < x->n; ++i) {
         const tsr_extent * e = &x->e[i];
         if (e->kind == TSR_EXT_SREG) { ++n_sreg; continue; }
-        if (e->kind != TSR_EXT_SPM && e->kind != TSR_EXT_DRAM) q_fatal(sim, "checker listed an extent of no kind");
+        if (e->kind != TSR_EXT_SPM && e->kind != TSR_EXT_DRAM && e->kind != TSR_EXT_ATT_LOCAL)
+            q_fatal(sim, "checker listed an extent of no kind");
         if (e->kind == TSR_EXT_DRAM) ++n_dram;
         int rmw = 0;
         for (uint32_t k = 0; k < i && !rmw; ++k) {

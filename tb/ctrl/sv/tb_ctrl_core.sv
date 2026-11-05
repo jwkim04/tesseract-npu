@@ -39,6 +39,7 @@ module tb_ctrl_core
   input  logic [3:0]                spm_req_be,
   input  logic [31:0]               spm_req_wdata,
   output logic                      spm_rsp_valid,
+  input logic spm_rsp_ready,
   output logic [511:0]              spm_rsp_line,
   input  logic                      cwin_req_valid,
   input  logic [11:0]               cwin_req_off,
@@ -161,7 +162,7 @@ module tb_ctrl_core
       spm_busy_q <= 1'b0; cw_busy_q <= 1'b0; lq_busy_q <= 1'b0;
       spm_rsp_valid <= 1'b0; cwin_rsp_valid <= 1'b0; lq_rsp_valid <= 1'b0;
     end else begin
-      spm_rsp_valid  <= 1'b0;
+      spm_rsp_valid  <= spm_rsp_valid && !spm_rsp_ready;
       cwin_rsp_valid <= 1'b0;
       lq_rsp_valid   <= 1'b0;
       // SPM bridge

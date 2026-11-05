@@ -221,6 +221,12 @@ if cocotb is not None:
             stray = sorted(set(mem.written[c]) - allowed.get(c, set()))
             if stray:
                 errs.append("DRAM ch%d: %d beats written outside the store targets (first %s)" % (c, len(stray), stray[:8]))
+        if os.environ.get("TB_CORE_NCH") == "4":
+            beats = mem.src_beats
+            assert all(beats[c][2] > 0 for c in range(4)), "all four weight channels must execute"
+            assert beats[0][1] > 0 and beats[3][1] > 0, "DMA must read both outer DDR channels"
+            assert mem.written[0] and mem.written[3], "DMA must write both outer DDR channels"
+            dut._log.info("K4 locality read beats per channel/source: %s", beats)
         mem.check(idle=True)
         dut._log.info("RTL: firmware DONE %.1f us after RV_RUN (~%d core cycles); simulator: %d instructions, "
                       "%d core cycles to DONE + idle; RT_INFO %#x, LCQ_WR %d, LOG_WR %d, Q_DONE %s",
@@ -271,6 +277,12 @@ if cocotb is not None:
             stray = sorted(set(mem.written[c]) - allowed.get(c, set()))
             if stray:
                 errs.append("DRAM ch%d: %d beats written outside the store targets and the trace ring (first %s)" % (c, len(stray), stray[:8]))
+        if os.environ.get("TB_CORE_NCH") == "4":
+            beats = mem.src_beats
+            assert all(beats[c][2] > 0 for c in range(4)), "all four weight channels must execute"
+            assert beats[0][1] > 0 and beats[3][1] > 0, "DMA must read both outer DDR channels"
+            assert mem.written[0] and mem.written[3], "DMA must write both outer DDR channels"
+            dut._log.info("K4 locality read beats per channel/source: %s", beats)
         mem.check(idle=True)
         dut._log.info("DB: %d history entries, %d trace records, stops at pidx %s, TBP hits %s",
                       len(rtl["hist"]), len(rtl["trw"]), [x[TT.CSR_DBG_STOP_PIDX] for x in rtl["stops"]],
@@ -303,6 +315,21 @@ if cocotb is not None:
             mem.load(ch, beat * 64, data[off:off + n])
         mem.clear_tracking()
         mem.start()
+        check_masked = os.environ.get("TB_M7_CHECK_MASKED_KVST") == "1"
+        saw_kvst = False
+        if check_masked:
+            assert mem.s_wr_dat_mask is not None
+            dma = dut.u_dp.u_dma
+
+            async def watch_kvst():
+                nonlocal saw_kvst
+                while True:
+                    await FallingEdge(dut.clk)
+                    if int(dut.rst_n.value) and int(dma.kv_act_q.value):
+                        saw_kvst = True
+                        assert not int(dma.rd_req_valid.value), "active KVST issued a DDR read"
+
+            cocotb.start_soon(watch_kvst())
         await ClockCycles(dut.clk, 30)
         dut.rst_rv_n.value = 1
         dut.rst_n.value = 1
@@ -311,6 +338,7 @@ if cocotb is not None:
         errs = []
 
         for o, want in sc["ids"]:
+            want = C.expected_id(o, want)
             got = await host.rd(o)
             if got != want:
                 errs.append("CSR %#05x: RTL %#010x / simulator %#010x" % (o, got, want))
@@ -447,6 +475,10 @@ if cocotb is not None:
             if stray:
                 errs.append("DRAM ch%d: %d beats written outside the outputs and planes (first %s)" % (c, len(stray), stray[:8]))
         mem.check(idle=True)
+        if check_masked:
+            partial = sum(mask != 0xFFFF for channel in mem.write_masks for _, mask in channel)
+            assert saw_kvst and partial, "KVST must commit a partial mask through the core"
+            dut._log.info("KVST committed %d partial writes with no core DDR reads", partial)
         dut._log.info("units: Q_DONE %s", [await host.rd(TT.CSR_Q_DONE_BASE + 4 * u) for u in range(6)])
         assert not errs, "\n".join(errs[:40])
 
@@ -562,7 +594,7 @@ def test_core(cfg):
     _run(seed=seed + int(os.environ.get("TSR_SEED", "1"), 0) - 1, rv_ps=rv_ps)   # --tsr-seed shifts all
 
 
-def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0):
+def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu=False):
     """core_m7 of one case: the scenario from the simulator, the RTL core built with its configuration
     (lane_pipe: VU_LANE_PIPE, the k4 bitstream's register stages around the VU lanes)."""
     from common.runner import run
@@ -575,11 +607,16 @@ def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0):
                   CH_BYTES="64'd%d" % cfg["ch_bytes"], ADDR_BEAT_W=cfg["addr_beat_w"])
     if lane_pipe:
         params["VU_LANE_PIPE"] = lane_pipe
+    if ddr_pipe:
+        params["DDR_LOCAL_PIPE"] = ddr_pipe
     env = {"TB_M7_ELF": str(C.M7_ELF), "TB_M7_DIR": str(d), "TB_CORE_RV_PS": str(rv_ps)}
+    if half_vu:
+        params.update(VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4)
+        env.update(TB_CORE_VU_FRONT="8", TB_CORE_VU_BACK="4")
     if mut:
         env["TB_M7_LIMIT"] = "300000"                 # core cycles to wait for the answer (the decode case needs ~60 K)
     run("tsr_core", __name__, parameters=params, sources=_sources(mut),
-        name=("core_m7" if not lane_pipe else "core_m7_pipe%d" % lane_pipe) if not mut else "core_m7_mut_" + mut,
+        name=("core_m7_half_vu" if half_vu else ("core_m7" if not lane_pipe else "core_m7_pipe%d" % lane_pipe)) if not mut else "core_m7_mut_" + mut,
         seed=seed, testcase=["core_m7"], extra_env=env, timescale=("1ps", "1ps"))
 
 
@@ -587,6 +624,24 @@ def test_core_m7_lane_pipe(m7case):
     """core_m7 with the VU lanes behind VU_LANE_PIPE 2 (the k4 bitstream, CC §14.1 remedy 3): every comparison of
     core_m7 unchanged, the VU ops 4 cycles slower per exit."""
     _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0), lane_pipe=2)
+
+
+def test_core_m7_half_vu(m7case):
+    """Production decode/prefill with eight physical front lanes and four back lanes.
+
+    Retains every numerical, firmware, trace and queue comparison to the C oracle.
+    Only the documented hardware lane-count identity fields differ.
+    """
+    _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0), lane_pipe=2, ddr_pipe=1, half_vu=True)
+
+
+def test_core_m7_ddr_local(m7case):
+    """DMA/KVST and trace through the new ch0 boundary, with ch1 bypass and banked VU lanes.
+
+    The production firmware and C-oracle comparisons are unchanged. The memory model stalls and
+    interleaves responses; completion must include every buffered read/write response.
+    """
+    _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0), lane_pipe=2, ddr_pipe=1)
 
 
 def _run_db(seed=1, rv_ps=6000, mut=None):
@@ -669,4 +724,24 @@ if pytest is not None:
     test_core_w4b_mutants = pytest.mark.slow(test_core_w4b_mutants)
     test_core_m7 = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7)
     test_core_m7_lane_pipe = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_lane_pipe)
+    test_core_m7_half_vu = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_half_vu)
+    test_core_m7_ddr_local = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_ddr_local)
     test_core_mutants = pytest.mark.slow(test_core_mutants)
+
+
+def test_core_k4_locality():
+    """Four clusters, paired gather and local DDR boundaries on the real firmware/DB paths.
+
+    Reduced K/SPM sizes keep this a smoke test. Core/RV periods match 250/166.7MHz;
+    random memory stalls cover ch0 and ch3 DMA while weights use every channel.
+    """
+    from common.runner import run
+    elf = C.build_fw(FW_OUT)
+    params = dict(C.PARAMS, NUM_CH=4, T_MAX=4, DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1,
+                  MVM_BC_PIPE=2, MVM_RES_PIPE=2, VU_LANE_PIPE=2,
+                  VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, RST_PIPE=3, SPM_RD_LAT=4, MVM_MAC_LAT=9)
+    run("tsr_core", __name__, parameters=params, sources=_sources(), name="core_k4_locality",
+        seed=int(os.environ.get("TSR_SEED", "1"), 0), testcase=["core_smoke", "core_db"],
+        extra_env={"TB_CORE_ELF": str(elf), "TB_CORE_RV_PS": "6000", "TB_CORE_PS": "4000",
+                   "TB_CORE_NCH": "4", "TB_CORE_TMAX": "4",
+                   "TB_CORE_VU_FRONT": "8", "TB_CORE_VU_BACK": "4"}, timescale=("1ps", "1ps"))

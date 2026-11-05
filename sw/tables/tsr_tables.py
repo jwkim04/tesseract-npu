@@ -171,7 +171,10 @@ LAYOUTS = {
         ("6",     "DQROW",   "DQROW in the SPM form (RTL from M8; the simulator from M6)"),
         ("7",     "VMASK",   "VMASK (M9)"),
         ("11:8",  "VU_RSVD", "reserved for VU extensions, 0"),
-        ("15:12", "AT_RSVD", "reserved for AT, 0"),
+        ("12",    "ATT_LOCAL", "four-owner local FAST attention score and probability slots"),
+        ("13",    "MVM_LOCAL_SCALE", "scale MVM output through the owner-local VU before export"),
+        ("14",    "MVM_LOCAL_SOFTCAP", "owner-local FP32 scale, TANH, scale after MVM"),
+        ("15",    "AT_RSVD", "reserved for AT, 0"),
     ], retired=[
         (2, "RLD_LOOP",   "RLD / MULI / LOOP"),
         (4, "WAITM_JUMP", "WAITM / JUMP"),
@@ -964,9 +967,13 @@ ENCODINGS = {
         ("w3", "K", ""), ("w4", "T", ""), ("w5", "SRC_STRIDE", "lines; 0 = ceil(4K/64)"),
     ], values={"KIND": "QA"}),
     "MVM": dict(src="spec ISA, EX §7.2", owner="spec", fields=[
-        ("w0[11:8]", "FMT", "weight format"), ("w0[12]", "ACC", "y += W.x"), ("w1", "DST", "destination line"),
+        ("w0[11:8]", "FMT", "weight format"), ("w0[12]", "ACC", "y += W.x"),
+        ("w0[13]", "LOCAL_SCALE", "scale completed FP32 rows before export"),
+        ("w0[14]", "LOCAL_SOFTCAP", "scale, TANH, scale before export; dense destination stride"),
+        ("w1", "DST", "destination line"),
         ("w2", "X", "QA activation line"), ("w3", "W_OFF", "weight offset (beats)"), ("w4", "N", "rows"),
-        ("w5[15:0]", "K", ""), ("w5[19:16]", "T", ""), ("w6", "DST_STRIDE", "lines; 0 = ceil(4N/64)"),
+        ("w5[15:0]", "K", ""), ("w5[19:16]", "T", ""), ("w6", "DST_STRIDE", "lines; 0 = ceil(4N/64); with LOCAL_SOFTCAP, first FP32 coefficient"),
+        ("w7", "SCALE", "FP32 coefficient with LOCAL_SCALE; final FP32 coefficient with LOCAL_SOFTCAP"),
     ], values={"FMT": "FMT"}),
     # ---- VU (VU §5) ---------------------------------------------------------------------------
     "VOP": dict(src="VU §5.2", owner="VU", fields=[
@@ -1072,6 +1079,7 @@ ENCODINGS = {
         ("w0[14]",    "MAXOUT",   "write row maxima at MDST"),
         ("x16[5:0]",  "G_M1",     "G - 1 (heads per KV head)"),
         ("x16[11:6]", "HG0",      "first head of the pass within each KV-head group"),
+        ("w0[29:28]", "LOCAL_SLOT", "0 = SPM, 1..3 = local FAST attention slot"),
         ("w1",        "DST",      "score rows, row r at DST + r x RSTRIDE"),
         ("w2",        "X",        "T_q QA(A32, n_head x D) vectors"),
         ("w3",        "BASE",     "K plane base B"),
@@ -1091,6 +1099,7 @@ ENCODINGS = {
         ("w0[12]",    "LSUM",     "also row sums"),
         ("x16[5:0]",  "G_M1",     "G - 1"),
         ("x16[11:6]", "HG0",      "first head of the pass"),
+        ("w0[29:28]", "LOCAL_SLOT", "0 = SPM, 1..3 = local FAST attention slot"),
         ("w1",        "DST",      "channel partials"),
         ("w2",        "P",        "weight rows, row r at P + r x PSTRIDE"),
         ("w3",        "BASE",     "V plane base B"),
@@ -1112,6 +1121,8 @@ ENCODINGS = {
         ("w4[31:16]", "STRIDE",  "0 = n_lines"),
         ("w5",        "R",       "1..1024"),
         ("w6",        "SCALE",   "f32, finite, normal, > 0"),
+        ("w7[1:0]",  "LOCAL_SLOT", "0 = SPM, 1..3 = local FAST attention slot"),
+        ("w7[17:2]", "LOCAL_U0",   "first group when LOCAL_SLOT is set"),
     ]),
     "AMASK": dict(src="AT §5.5, VU §5.11", owner="AT", fields=[
         ("w1",        "DST",     ""),

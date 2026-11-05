@@ -15,7 +15,7 @@
 //   register the second reads or writes, the second is an SOP SQRT / RSQRT / DIV (scalar path) or the
 //   first one is, or both are ROPE (one angle unit). Write-after-read needs no check: the injector takes
 //   slots in order, so every read of the first op has returned before the second op's first slot runs.
-// Blocks: tsr_vu_gen (slots) -> tsr_vu_rd (SPM reads) -> tsr_vu_inj (operands) -> 16 x tsr_vu_lane ->
+// Blocks: tsr_vu_gen (slots) -> tsr_vu_rd (SPM reads) -> tsr_vu_inj (operands) -> FRONT_LANES x tsr_vu_lane ->
 //   tsr_vu_wr (assembler, output FIFO, SPM writes); tsr_vu_red (partial drain, trees, post, scalar path);
 //   tsr_vu_angle (ROPE); the local memory (512 lines x 512 bits, 1024 with NUM_CH > 8; two read ports) for
 //   AT's multi-pass ops (ANORM 1/l; AMERGE a, b, m' vectors and the channel-tree scratch).
@@ -28,13 +28,17 @@ module tsr_vu
   import tsr_pkg::*;
   import tsr_vu_pkg::*;
   import tsr_xc_pkg::*;
+  import tsr_att_pkg::*;
 #(
   parameter  int unsigned SPM_BYTES  = TSR_DEF_SPM_BYTES,
   parameter  int unsigned SPM_RD_LAT = TSR_DEF_SPM_RD_LAT,
   parameter  int unsigned NUM_CH     = TSR_DEF_NUM_CH,
+  parameter  int unsigned FRONT_LANES = 16,
   parameter  int unsigned EXP_LANES  = 16,
   parameter  int unsigned BACK_LANES = 8,
   parameter  int unsigned LANE_PIPE  = 0,             // registered pipe stages on each side of the lanes
+  parameter  bit          LOCAL_SCALE = 1'b0,
+  parameter  bit          LOCAL_INTERMEDIATES = 1'b0,
   parameter  bit          HAS_TOPK   = 1'b0,          // TOPK (CAPS bit3, VU §5.10: RTL from M8)
   parameter  bit          HAS_DQROW  = 1'b0,          // DQROW (CAPS bit6, VU §5.6: RTL from M8)
   parameter  int unsigned OFD        = 64,
@@ -48,6 +52,13 @@ module tsr_vu
   output logic                           cmd_ready,
   input  logic [TSR_XC_CMD_W-1:0]        cmd,
   output logic                           done,
+  input logic                             scale_request,
+  output logic                            scale_grant,
+  input logic                             scale_done,
+  input tsr_vu_local_req_t [1:0]           scale_req,
+  output tsr_vu_local_rsp_t [1:0]          scale_rsp,
+  output tsr_local_score_req_t [NUM_CH-1:0] local_score_req,
+  input  logic [NUM_CH-1:0][TSR_LINE_BITS-1:0] local_score_data,
   // SPM client 4 (both bank ports)
   output logic [1:0]                     rd_req_valid,
   input  logic [1:0]                     rd_req_ready,
@@ -114,13 +125,19 @@ module tsr_vu
   tsr_vu_row_t row_tok;
   logic [3:0]  dr_addr;
   logic [15:0][31:0] dr_data;
+  logic [3:0][31:0] dr_l1;
+  logic dr_sel, dr_empty, dr_mx;
+  localparam bit LOCAL_L1 = (FRONT_LANES == 8);
   logic        r_v, r_tag;
   logic [TSR_VU_LW-1:0] r_line;
   logic [TSR_LINE_BITS-1:0] r_data;
   logic [TSR_SPM_BE_W-1:0]  r_be;
   logic [15:0]       l_v, l_neg, l_lv;
   tsr_vu_uop_e       l_uop;
-  logic [15:0][31:0] l_a, l_b, l_c1, l_c2;
+  logic [15:0][31:0] l_a, l_b;
+  logic [(FRONT_LANES == 8 ? 1 : 16)-1:0][31:0] l_c1, l_c2;
+  tsr_vu_bank_coeff_t l_coeff;
+  tsr_vu_bank_angle_t [1:0] bank_angle;
   logic              l_fresh;
   logic [3:0]        l_pa;
   logic              d_v, d_back, inj_busy;
@@ -160,8 +177,133 @@ module tsr_vu
   logic             ct_v_q, ct_tag_q;    // the previous cycle's slot load: its write count, tag
   logic [1:0]       ct_cnt_q;
 
-  assign cmd_ready = !(ov_q[0] && ov_q[1]);
-  wire   acc = cmd_valid && cmd_ready;
+  tsr_insn_t incoming;
+  tsr_vu_local_req_t [1:0] local_req, bank_req;
+  tsr_vu_local_rsp_t [1:0] bank_rsp;
+  tsr_vu_local_rsp_t [1:0] local_rsp;
+  logic [1:0] generic_rd_valid;
+  logic [1:0][AW-1:0] generic_rd_line;
+  logic generic_done, local_busy, local_done;
+  assign incoming = tsr_insn_t'(cmd);
+  wire unused_incoming = &{1'b0, incoming[1], incoming[2]};
+  wire local_cmd = LOCAL_INTERMEDIATES && incoming[0][7:0] == TSR_OP_ASMAX && incoming[7][1:0] != 0;
+  logic scale_locked;
+  if (LOCAL_SCALE) begin : g_scale_lock
+    logic held_q;
+    assign scale_locked = held_q;
+    // A request reserves both banks before MVM issue. Earlier VU work retires
+    // first; newly offered VU commands wait while the reservation is pending.
+    assign scale_grant = scale_request && !held_q && !local_busy && ov_q == 0;
+    always_ff @(posedge clk) begin
+      if (!rst_n) held_q <= 1'b0;
+      else if (scale_grant) held_q <= 1'b1;
+      else if (scale_done) held_q <= 1'b0;
+    end
+  end else begin : g_no_scale_lock
+    assign scale_locked = 1'b0;
+    assign scale_grant = 1'b0;
+    wire unused_scale_lock = &{1'b0, scale_done};
+  end
+  assign bank_req = scale_locked ? scale_req : local_req;
+  assign scale_rsp = scale_locked ? bank_rsp : '0;
+  assign local_rsp = scale_locked ? '0 : bank_rsp;
+  assign cmd_ready = !local_busy && !scale_locked && !(LOCAL_SCALE && scale_request) &&
+                     (local_cmd ? ov_q == 0 : !(ov_q[0] && ov_q[1]));
+  wire acc = cmd_valid && cmd_ready && !local_cmd;
+  assign done = generic_done || local_done;
+
+  if (LOCAL_INTERMEDIATES) begin : g_local_att
+    if (NUM_CH != 4 || FRONT_LANES != 8 || EXP_LANES != 8 || BACK_LANES != 4) begin : g_chk
+      $fatal(1, "tsr_vu: local attention needs K4 VU 8/8/4");
+    end
+    typedef enum logic [2:0] {IDLE, REQUEST, RESPONSE, MAXIMA, START, DRAIN} state_t;
+    state_t state_q;
+    logic [1:0] finished_q, pair_done;
+    logic [7:0] row_q;
+    logic [AW-1:0] mk_addr_q;
+    logic [TSR_LINE_BITS-1:0] mk_line_q;
+    tsr_local_asmax_cmd_t local_asmax;
+    logic [1:0] slot_q, first_owner_q;
+    logic [7:0] groups_q, rows_q;
+    logic [31:0] scale_q;
+    wire bank = mk_addr_q[0];
+
+    assign local_busy = state_q != IDLE;
+    always_comb begin
+      local_asmax = '{start: state_q == START, slot: slot_q, first_owner: first_owner_q,
+                      groups: groups_q, max_valid: state_q == MAXIMA,
+                      row: state_q == START ? rows_q : row_q,
+                      value: state_q == START ? scale_q : mk_line_q[32*row_q[3:0] +: 32]};
+      rd_req_valid = generic_rd_valid;
+      rd_req_line = generic_rd_line;
+      if (local_busy) begin
+        rd_req_valid = '0;
+        rd_req_valid[bank] = state_q == REQUEST;
+        rd_req_line = {2{mk_addr_q}};
+      end
+    end
+    always_ff @(posedge clk) begin
+      if (!rst_n) begin
+        state_q <= IDLE;
+        local_done <= 1'b0;
+      end else begin
+        local_done <= 1'b0;
+        case (state_q)
+          IDLE: if (cmd_valid && cmd_ready && local_cmd) begin
+            slot_q <= incoming[7][1:0];
+            first_owner_q <= incoming[7][3:2];
+            groups_q <= incoming[4][7:0];
+            rows_q <= incoming[5][7:0];
+            scale_q <= incoming[6];
+            mk_addr_q <= AW'(incoming[3]);
+            row_q <= '0;
+            state_q <= REQUEST;
+          end
+          REQUEST: if (rd_req_ready[bank]) state_q <= RESPONSE;
+          RESPONSE: if (rd_rsp_valid[bank]) begin
+            mk_line_q <= rd_rsp_data[bank];
+            state_q <= MAXIMA;
+          end
+          MAXIMA: begin
+            row_q <= row_q + 8'd1;
+            if (row_q + 8'd1 == rows_q) state_q <= START;
+            else if (row_q[3:0] == 4'hf) begin
+              mk_addr_q <= mk_addr_q + 1'b1;
+              state_q <= REQUEST;
+            end
+          end
+          START: begin
+            finished_q <= '0;
+            state_q <= DRAIN;
+          end
+          DRAIN: begin
+            finished_q <= finished_q | pair_done;
+            if (&(finished_q | pair_done)) begin
+              local_done <= 1'b1;
+              state_q <= IDLE;
+            end
+          end
+          default: state_q <= IDLE;
+        endcase
+      end
+    end
+    for (genvar pair = 0; pair < 2; pair++) begin : g_pair
+      (* keep_hierarchy = "yes" *) tsr_local_asmax #(.PAIR(pair)) u_local_asmax (
+        .clk, .rst_n, .cmd(local_asmax), .done(pair_done[pair]),
+        .mem_req({local_score_req[pair+2], local_score_req[pair]}),
+        .mem_data({local_score_data[pair+2], local_score_data[pair]}),
+        .lane_req(local_req[pair]), .lane_rsp(local_rsp[pair])
+      );
+    end
+  end else begin : g_no_local_att
+    assign local_busy = 1'b0;
+    assign local_done = 1'b0;
+    assign local_req = '0;
+    assign local_score_req = '0;
+    assign rd_req_valid = generic_rd_valid;
+    assign rd_req_line = generic_rd_line;
+    wire unused_local = &{1'b0, local_score_data, local_rsp, incoming[6:3]};
+  end
 
   // extent decode (4 stages after accept: the words are registered first, dc0)
   logic       dc0_v, dc1_v, dc2_v;
@@ -421,13 +563,13 @@ module tsr_vu
       odec_q  <= '0;
       wtag_q  <= 1'b0;
       old_q   <= 1'b0;
-      done    <= 1'b0;
+      generic_done    <= 1'b0;
       start_q <= 1'b0;
       hz_ok_q <= 1'b0;
       ct_v_q  <= 1'b0;
       for (int t = 0; t < 2; t++) ocnt_q[t] <= '0;
     end else begin
-      done    <= 1'b0;
+      generic_done    <= 1'b0;
       start_q <= can_start;
       hz_ok_q <= odec_q[0] && odec_q[1] && !(acc || dc2_v);
       if (acc) begin
@@ -458,8 +600,8 @@ module tsr_vu
       // done: the oldest op, generated, all writes complete
       // (og_q: no slot of the op is still to come; ct_v_q: the last one's count is being added)
       if (ov_q[old_q] && og_q[old_q] && ocnt_q[old_q] == 16'd0 && !(ct_v_q && ct_tag_q == old_q) &&
-          !done) begin
-        done        <= 1'b1;
+          !generic_done) begin
+        generic_done        <= 1'b1;
         ov_q[old_q] <= 1'b0;
         os_q[old_q] <= 1'b0;
         og_q[old_q] <= 1'b0;
@@ -492,7 +634,7 @@ module tsr_vu
   // -------------------------------------------------------------------------------------------
   assign slot_tag = slot_take_tag;                     // the slot being loaded (its writes, its LM line)
 
-  tsr_vu_gen #(.EXP_LANES(EXP_LANES), .BACK_LANES(BACK_LANES), .NUM_CH(NUM_CH), .LM_X(LM_X), .HAS_TOPK(HAS_TOPK),
+  tsr_vu_gen #(.FRONT_LANES(FRONT_LANES), .EXP_LANES(EXP_LANES), .BACK_LANES(BACK_LANES), .NUM_CH(NUM_CH), .LM_X(LM_X), .HAS_TOPK(HAS_TOPK),
                .HAS_DQROW(HAS_DQROW)) u_gen (
     .clk, .rst_n, .start(start_q), .start_tag(c_tag_q), .start_w(ow_q[c_tag_q]), .sreg,
     .busy(gen_busy), .gen_done, .gen_done_tag, .opk,
@@ -504,7 +646,8 @@ module tsr_vu
 
   tsr_vu_rd #(.SPM_BYTES(SPM_BYTES), .RD_LAT(SPM_RD_LAT)) u_rd (
     .clk, .rst_n, .s_valid(slot_valid), .s_ready(slot_ready), .s_slot(slot),
-    .rd_req_valid, .rd_req_ready, .rd_req_line, .rd_rsp_valid, .rd_rsp_data,
+    .rd_req_valid(generic_rd_valid), .rd_req_ready(rd_req_ready & {2{!local_busy}}),
+    .rd_req_line(generic_rd_line), .rd_rsp_valid(rd_rsp_valid & {2{!local_busy}}), .rd_rsp_data,
     .q_valid, .q_slot, .q_pop, .f_valid, .f_data, .f_pop, .rd_wait
   );
 
@@ -534,33 +677,48 @@ module tsr_vu
   assign lm_idle = lm_z_q && !lm_inc_q;
 
   // angle unit
-  tsr_vu_angle u_ang (
-    .clk, .rst_n, .cfg_start(rope_start), .cfg_ff(rope_ff), .cfg_fs(rope_fs), .cfg_atab(rope_atab),
+  logic angle_release, angle_release_half;
+  if (FRONT_LANES == 8 && LANE_PIPE > 0) begin : g_angle_release
+    // The last read has moved through the input pipe into the lane bank.
+    logic [LANE_PIPE-1:0][1:0] rel_q;
+    always_ff @(posedge clk) begin
+      if (!rst_n) rel_q <= '0;
+      else begin
+        rel_q[0] <= {ang_rel, ang_rel_h};
+        for (int i = 1; i < LANE_PIPE; i++) rel_q[i] <= rel_q[i-1];
+      end
+    end
+    assign {angle_release, angle_release_half} = rel_q[LANE_PIPE-1];
+  end else begin : g_angle_release_direct
+    assign {angle_release, angle_release_half} = {ang_rel, ang_rel_h};
+  end
+  tsr_vu_angle #(.LOCAL_ANGLE(FRONT_LANES == 8)) u_ang (
+    .clk, .rst_n, .cfg_start(rope_start), .cfg_neox(rope_neox), .cfg_ff(rope_ff), .cfg_fs(rope_fs), .cfg_atab(rope_atab),
     .cfg_m(rope_m), .cfg_ts(rope_ts), .cfg_fsv(rope_fsv), .cfg_na(rope_na), .cfg_t(rope_t),
-    .tbl_we, .tbl_line, .pos_we, .pos_idx, .pa_data, .ang_ready, .ang_rel, .ang_rel_h,
-    .rd_h(ang_rh), .rd_e(ang_re), .rd_cs(ang_cs), .idle(ang_idle)
+    .tbl_we, .tbl_line, .pos_we, .pos_idx, .pa_data, .ang_ready, .ang_rel(angle_release), .ang_rel_h(angle_release_half),
+    .rd_h(ang_rh), .rd_e(ang_re), .rd_cs(ang_cs), .bank_angle, .idle(ang_idle)
   );
-  wire unused_rope = &{1'b0, rope_neox};
 
   // reduction unit
   always_ff @(posedge clk) begin
     if (!rst_n) ring_free_q <= 5'd16;
     else        ring_free_q <= ring_free_q - 5'(ring_take) + ring_rel;
   end
-  tsr_vu_red #(.DRL(LANE_X)) u_red (
-    .clk, .rst_n, .opk, .row_v, .row_tok, .dr_addr, .dr_data, .ring_rel, .sopx_v, .sopx_tag, .sopx_idle,
+  tsr_vu_red #(.DRL(LANE_X), .LOCAL_L1(LOCAL_L1)) u_red (
+    .clk, .rst_n, .opk, .row_v, .row_tok, .dr_addr, .dr_sel, .dr_empty, .dr_mx, .dr_data, .dr_l1, .ring_rel, .sopx_v, .sopx_tag, .sopx_idle,
     .r_v, .r_tag, .r_line, .r_data, .r_be, .s_we(s2_we), .s_wi(s2_wi), .s_wd(s2_wd), .s_wtag(s2_wtag),
     .idle(red_idle)
   );
 
   // injector
-  tsr_vu_inj #(.LMAW(LMAW), .HAS_DQROW(HAS_DQROW), .LANE_X(LANE_X)) u_inj (
+  logic l_ctx;
+  tsr_vu_inj #(.FRONT_LANES(FRONT_LANES), .LMAW(LMAW), .HAS_DQROW(HAS_DQROW), .LANE_X(LANE_X)) u_inj (
     .clk, .rst_n, .q_valid, .q_slot, .q_pop, .f_valid, .f_data, .f_pop, .opk,
     .lm_re_a, .lm_ra_a, .lm_rd_a, .lm_re_b, .lm_ra_b, .lm_rd_b,
     .ang_ready, .ang_rel, .ang_rel_h, .ang_rh, .ang_re, .ang_cs, .tbl_we, .tbl_line, .pos_we, .pos_idx, .pa_data,
     .ring_free(ring_free_q), .ring_take, .row_v, .row_tok, .red_idle, .sopx_v, .sopx_tag, .sopx_idle,
     .topk_ready, .topk_v, .topk_slot,
-    .l_v, .l_uop, .l_a, .l_b, .l_c1, .l_c2, .l_neg, .l_lv, .l_fresh, .l_pa, .d_v, .d_back, .d_desc,
+    .l_v, .l_uop, .l_a, .l_b, .l_c1, .l_c2, .l_coeff, .l_neg, .l_lv, .l_fresh, .l_pa, .l_ctx, .d_v, .d_back, .d_desc,
     .busy(inj_busy)
   );
   // TOPK (HAS_TOPK)
@@ -584,9 +742,9 @@ module tsr_vu
   end
 
   // lanes (behind LANE_PIPE register stages on each side)
-  tsr_vu_lanes #(.EXP_LANES(EXP_LANES), .BACK_LANES(BACK_LANES), .PIPE(LANE_PIPE)) u_lanes (
-    .clk, .rst_n, .l_v, .l_uop, .l_a, .l_b, .l_c1, .l_c2, .l_neg, .l_lv, .l_fresh, .l_pa,
-    .back_valid(d_v && d_back), .dr_addr, .dr_data, .lane_y
+  tsr_vu_lanes #(.FRONT_LANES(FRONT_LANES), .EXP_LANES(EXP_LANES), .BACK_LANES(BACK_LANES), .PIPE(LANE_PIPE), .HAS_LOCAL(LOCAL_INTERMEDIATES || LOCAL_SCALE)) u_lanes (
+    .clk, .rst_n, .l_v, .l_uop, .l_a, .l_b, .l_c1, .l_c2, .l_coeff, .l_neg, .l_lv, .l_fresh, .l_pa, .l_ctx, .bank_angle,
+    .back_valid(d_v && d_back), .dr_addr, .dr_sel, .dr_empty, .dr_mx, .dr_data, .dr_l1, .lane_y, .local_req(bank_req), .local_rsp(bank_rsp)
   );
 
   // write side
@@ -616,7 +774,7 @@ module tsr_vu
       perf_spm_wait <= wt_c;
       perf_hazard   <= hz_c;
       perf_line     <= ev_line;
-      progress      <= done || slot_take || ev_line || (|(rd_req_valid & rd_req_ready)) || d_v;
+      progress      <= done || slot_take || ev_line || (|(rd_req_valid & rd_req_ready)) || d_v || (|local_rsp[0].valid) || (|local_rsp[1].valid);
     end
     dbg_held  <= 2'(ov_q[0]) + 2'(ov_q[1]);
     dbg_w0    <= ow_q[old_q][0];

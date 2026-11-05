@@ -74,6 +74,7 @@ module tsr_tb_mvm_front
   output logic                          m_wr_dat_valid,
   input  logic                          m_wr_dat_ready,
   output logic [BB-1:0]                 m_wr_dat_data,
+  output logic [BB/32-1:0]                 m_wr_dat_mask,
   output logic                          m_wr_dat_last,
   input  logic                          m_wr_rsp_valid,
   output logic                          m_wr_rsp_ready,
@@ -141,12 +142,12 @@ module tsr_tb_mvm_front
     .s_rd_req_valid, .s_rd_req_ready, .s_rd_req_addr, .s_rd_req_len, .s_rd_req_id,
     .s_rd_rsp_valid, .s_rd_rsp_ready, .s_rd_rsp_data, .s_rd_rsp_last, .s_rd_rsp_id,
     .s_wr_req_valid(1'b0), .s_wr_req_ready, .s_wr_req_addr('0), .s_wr_req_len('0), .s_wr_req_id('0),
-    .s_wr_dat_valid(1'b0), .s_wr_dat_ready, .s_wr_dat_data('0), .s_wr_dat_last(1'b0),
+    .s_wr_dat_valid(1'b0), .s_wr_dat_ready, .s_wr_dat_data('0), .s_wr_dat_mask('1), .s_wr_dat_last(1'b0),
     .s_wr_rsp_valid, .s_wr_rsp_ready(1'b1), .s_wr_rsp_id,
     .m_rd_req_valid, .m_rd_req_ready, .m_rd_req_addr, .m_rd_req_len, .m_rd_req_id,
     .m_rd_rsp_valid, .m_rd_rsp_ready, .m_rd_rsp_data, .m_rd_rsp_id, .m_rd_rsp_last,
     .m_wr_req_valid, .m_wr_req_ready, .m_wr_req_addr, .m_wr_req_len, .m_wr_req_id,
-    .m_wr_dat_valid, .m_wr_dat_ready, .m_wr_dat_data, .m_wr_dat_last,
+    .m_wr_dat_valid, .m_wr_dat_ready, .m_wr_dat_data, .m_wr_dat_mask, .m_wr_dat_last,
     .m_wr_rsp_valid, .m_wr_rsp_ready, .m_wr_rsp_id,
     .perf_rd_beat, .perf_rd_wait
   );

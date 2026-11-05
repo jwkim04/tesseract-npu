@@ -56,8 +56,8 @@
 //   its DRAM set is the beats its exec reported through the capture hooks (tsr_sim_cap_read /
 //   _write, which every handler's exec calls for each DRAM range it touches, tsr_sim_int.h §2),
 //   clipped to its DRAM extent — exact where the checker's extent is a range-check span (AT
-//   §5.8: a KVST's extent is its whole plane but it writes only the new rows and reads the meta
-//   beats it updates; ATTQK / ATTPV extents start at the plane base; an MVM's weight extent is
+//   §5.8: a KVST's extent is its whole plane but it writes only the new rows, without reading
+//   metadata; ATTQK / ATTPV extents start at the plane base; an MVM's weight extent is
 //   the largest channel's), and the DRAM extent itself for an exec that reports nothing; the
 //   RISC-V's SPM window bytes (a line-buffer fill reads its whole line), control-window and
 //   core-window registers that carry the edges above, and the s registers through the core
@@ -100,6 +100,7 @@
 #define _GNU_SOURCE
 
 #include "tsr_race.h"
+#include "tsr_local_tile.h"
 #include "tsr_sim_int.h"
 
 #if defined(TSR_SIM_HAVE_RV) && TSR_SIM_HAVE_RV
@@ -187,7 +188,7 @@ typedef struct race {
     tsr_sim *  sim;
     uint32_t   mode;              // 1 report, 2 fatal
     int        lis_id, acc_id;
-    uint32_t   spm_lines, num_ch;
+    uint32_t   spm_lines, extent_lines, num_ch;
 
     vc         rv, host;
     vc         ulast[TSR_NUM_UNITS];
@@ -648,7 +649,7 @@ static void spm_mark(race * R, uint32_t line, uint64_t mask) {
 
 // An op's SPM extent [l0, l1) (lines). gen: the op's launch generation (0: not in a launch).
 static void spm_op(race * R, uint64_t l0, uint64_t l1, const actx * a, uint32_t gen) {
-    if (l1 > R->spm_lines) l1 = R->spm_lines;
+    if (l1 > R->extent_lines) l1 = R->extent_lines;
     for (uint64_t l = l0; l < l1; ++l) {
         R->st.op_lines++;
         if (!a->write && gen != 0 && R->sgen[l] < gen) stale(R, a, l * TSR_LINE_BYTES, (l + 1u) * TSR_LINE_BYTES);
@@ -867,6 +868,11 @@ static void op_accesses(race * R, uint32_t u, const infl * f, const vc * v, uint
                 a.space = TSR_RACE_SPACE_SPM;
                 a.ch = 0;
                 spm_op(R, e->lo, e->hi, &a, f->gen);
+                break;
+            case TSR_EXT_ATT_LOCAL:
+                a.space = TSR_RACE_SPACE_ATT_LOCAL;
+                a.ch = 0;
+                spm_op(R, e->lo + R->spm_lines, e->hi + R->spm_lines, &a, f->gen);
                 break;
             case TSR_EXT_DRAM:
                 a.space = TSR_RACE_SPACE_DRAM;
@@ -1211,9 +1217,12 @@ void tsr_race_attach(tsr_sim * sim) {
     R->mode = mode;
     R->spm_lines = tsr_sim_spm_lines(sim);
     R->num_ch = tsr_sim_num_ch(sim);
-    R->spm = (cell *)xcalloc(R->spm_lines, sizeof(cell));
-    R->sgen = (uint32_t *)xcalloc(R->spm_lines, sizeof(uint32_t));
-    R->smask = (uint64_t *)xcalloc(R->spm_lines, sizeof(uint64_t));
+    R->extent_lines = R->spm_lines;
+    if (tsr_sim_config(sim)->caps & TSR_CAPS_ATT_LOCAL)
+        R->extent_lines += TSR_LOCAL_AT_SLOTS * TSR_LOCAL_AT_SLOT_LINES;
+    R->spm = (cell *)xcalloc(R->extent_lines, sizeof(cell));
+    R->sgen = (uint32_t *)xcalloc(R->extent_lines, sizeof(uint32_t));
+    R->smask = (uint64_t *)xcalloc(R->extent_lines, sizeof(uint64_t));
     R->dram = (segmap *)xcalloc(R->num_ch, sizeof(segmap));
     R->rv.c[A_RV] = 1;
     R->host.c[A_HOST] = 1;
@@ -1321,6 +1330,10 @@ int tsr_race_format(const tsr_race_report * r, char * buf, size_t n) {
     switch (r->space) {
     case TSR_RACE_SPACE_SPM:
         snprintf(where, sizeof(where), "SPM bytes [0x%llx, 0x%llx)", (unsigned long long)r->lo, (unsigned long long)r->hi);
+        break;
+    case TSR_RACE_SPACE_ATT_LOCAL:
+        snprintf(where, sizeof(where), "local attention [%llx, %llx)", (unsigned long long)r->lo,
+                 (unsigned long long)r->hi);
         break;
     case TSR_RACE_SPACE_DRAM:
         snprintf(where, sizeof(where), "DRAM ch%u beats [0x%llx, 0x%llx)", r->ch, (unsigned long long)r->lo,

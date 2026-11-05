@@ -46,8 +46,9 @@ them.
     its input and output to binary16 and clamps at ±10, as the ggml CPU does.
   - Reductions keep the spec's 128 partial sums.
 - **Microarchitecture:**
-  - 16 front lanes stream one line per cycle. Each has 3 fp multipliers, 1 fp adder and an EXP
-    core.
+  - The default 16 front lanes stream one line per cycle. Each has 3 fp multipliers, 1 fp
+    adder and an EXP core. `VU_FRONT_LANES=8` processes a line in two parts while retaining
+    all 16 logical lane histories; the K4 routing fallback uses 8 front / 8 EXP / 4 back lanes.
   - 8 back lanes have 1 ± e units, an exact reciprocal and 2 multipliers. SILU, GELU, SIGMOID,
     TANH and RECIP run at half rate through them.
   - A 9-adder reduction unit and an angle unit for RoPE.
@@ -1038,33 +1039,124 @@ hot spots: the lanes' micro-op pipeline merged by synthesis and fanned out 16 wa
 the AMERGE batch control).
 
 **Shrink knobs**, as elaboration parameters (results unchanged):
+- `VU_FRONT_LANES` 8: halve physical front arithmetic and process each architectural line in
+  two parts. Use `VU_EXP_LANES=8` and `VU_BACK_LANES=4` for the K4 fallback. Each physical
+  lane l retains separate partial histories for logical lanes l and l+8, including their
+  original line-index-mod-8 phases. The partial address carries the context through every
+  pipeline stage. Two drain read ports reconstruct the original 16 logical words and leave
+  the reduction tree/order unchanged. NEOX uses four subslots with independent output-line
+  and half-line indices. Architectural lines remain 512 bits; ISA and numerical revisions
+  are unchanged. The resource saving needs synthesis measurement.
 - `VU_EXP_LANES` 8: −4.4 K LUT, −88 DSP; EXP and EXPSUB go to half rate.
 - `VU_BACK_LANES` 4: −4.3 K LUT, −36 DSP; SILU, GELU and the others go to quarter rate.
-- Minimum configuration: about 38 K LUT.
+- The earlier estimate for 16 front / 8 EXP / 4 back lanes was about 38 K LUT; measured
+  full-width synthesis above exceeded those early estimates. Do not use it as the area
+  prediction for the eight-front-lane fallback.
 
-**Placement:** SLR1 next to `tsr_spm`. The SPM-facing stage (pair-read registers, output FIFO)
-sits beside the URAM columns, with the lanes in adjacent clock regions. Fallback, the third remedy
-of CC's 65 % gate (CC-24, after the shrink knobs and DB's optional blocks): the lanes move to
-SLR0 behind registered pipes. The original separate-return design used about 3.4 K boundary
+**Placement:** the SPM is in SLR1. Vivado places the SPM-facing pair-read registers and
+output FIFO. K4 distributes physical lane banks across SLR0/2 behind registered pipes
+(CC §14.2). The half-width banks each have two back-equipped and two front-only lanes.
+The original separate-return design used about 3.4 K boundary
 connections. The injector orders front and back exits so that only one is consumed per cycle.
-`tsr_vu_lane_share` now selects that exit beside the lanes, before the output pipe: one 512-bit
+`tsr_vu_lane_share` selects that exit beside the lanes, before the output pipe. With 16 front lanes, one 512-bit
 result replaces separate 512-bit front and 256-bit live back results at BACK_LANES=8. The
 512-bit reduction drain remains independent. A back-valid token travels with the inputs and
 is delayed by S0 plus LB cycles, reset with the lanes. The change removes 256 data wires and
-adds at most one selection wire; physical SLL savings still need measurement. The input
-operands remain four 512-bit vectors. The pipes add 2 × `VU_LANE_PIPE` cycles of latency to every lane exit
-and to a partial drain read (`rtl/core/tsr_vu_lanes.sv`: `VU_LANE_PIPE` stages on each side of the 16 lanes; 0 = none,
-2 on k4; `tsr_vu_inj` and `tsr_vu_wr` take the exit delay as `LANE_X`, `tsr_vu_red` the drain delay as `DRL`); results
-are unchanged (the unit bench with 2 and 3 stages, `core_m7` with 2).
+adds at most one selection wire. With eight front lanes each bank holds eight logical
+partial histories and computes two pairs of the first reduction level. Its output pipe
+carries 128 bits of ordinary results and 64 bits of reduction results per cycle.
+The former raw drain needed 256 reduction bits per bank. The local pair selection,
+staging register and FP operation use the same SUM/MAX order and pipeline depth as the
+previous central first level. The central unit consumes these results on the same cycle.
+The 16-front-lane configuration still returns its raw partials.
+Both configurations add `2 × VU_LANE_PIPE` cycles of transport per round trip.
+The K4 value is 2. The reducer and the ordinary exit path remain independent.
+
+With eight front lanes, the input pipe carries selected A/B words and scalar
+C1/C2 values. Each bank expands elementwise C values and RoPE angles beside its
+lanes. The packet is 366 bits: 256 operand bits, 64 scalar coefficient bits,
+32 existing control bits and 14 coefficient metadata bits. A separate 74-bit
+channel writes bank-local angles. Including reset, the declared input is 441 bits
+per bank, down from 545. These widths are not measured SLL counts.
+
+Each bank stores two contexts of four C1 and four C2 words, 512 bits in total.
+Existing CL1/CL2 load slots preload them over the operand payload. Arbitrary-word
+scalar selection stays at the injector; elementwise expansion moves to the bank.
+An explicit upper-quad bit preserves back-four subslot addressing. The single
+angle generator writes each sine/cosine pair to its consuming bank. Across both
+banks, angle storage remains 65,536 bits. NORM and NEOX use different ownership
+and local address mappings. The full sixteen-front-lane configuration retains
+its central coefficient path.
+
+Angle writes currently go directly from the registered generator output to local
+LUTRAM; they do not pass through the operand pipe. This path needs native timing
+signoff. Angle-half release is delayed by `VU_LANE_PIPE` so that reuse cannot
+overwrite a final bank read. No arithmetic or operand-pipe stages were added.
+Directed baseline comparisons at pipe depths 0/2/3 matched output bits, order and
+cycles. This is evidence for those workloads, not a guarantee that delayed angle
+reuse can never stall another workload. See `docs/platform-u200.md` §8.6.12.
 
 **Timing:**
 - ≤ 6 LUT levels per stage (`docs/rtl-m2.md` §1).
 - DSPs fully registered.
 - No global clock enable: credits replace back-pressure.
 - 512-bit buses registered once at the bank boundary and once per lane group.
-- Gate: CC's T2 (out-of-context core at 3.333 ns), and the k4 link ≥ 276.3 MHz.
+- Historical reference: the earlier four-cluster link achieved 276.3 MHz. The current full
+  K4 acceptance floor is 250 MHz, with legal routing and passing setup, hold and CDC checks.
 
 ---
+
+### 7.11 Local attention and MVM epilogue consumers
+
+The optional local-intermediate configuration reuses eight front/EXP and four
+back lanes as two banks of four front/EXP and two back lanes. A bank serves
+the two owners in its SLR (0/2 or 1/3). It does not add an EXP or TANH datapath.
+Normal VU work drains before local ownership changes. Local work reserves
+return capacity before injection; ASMAX and MVM epilogues arbitrate for the
+same lanes and may not both consume a return.
+
+The local ASMAX sequencer reads/writes its owner's score/P bank and receives
+the global row maximum (AT §5.5a). Its compact command is 54 bits per bank.
+QK sends scalar maxima through a balanced registered tree with bounded
+credits. Local scalar reduction preserves the existing MAXT special-value
+and tie behavior. Generic VU input/reduction paths remain for old operations.
+
+A completed dense MVM job can instead enter a 16-slot ordered local epilogue
+queue per pair before its final gather transfer. SCALE uses the existing FP32 multiply
+and its specified rounding. SOFTCAP uses FP32 multiply, the existing TANH,
+then FP32 multiply with the two original graph coefficients. It preserves
+all three rounding boundaries; it is not a fused multiply/tanh approximation.
+Four front lanes take four issue cycles per 16-value line for each scale;
+two back lanes take eight for TANH. These are issue-rate bounds, not measured
+end-to-end latency. Tail masks remain attached to the job and inactive output
+words stay zero.
+
+Raw MVM `w0[13]` selects local SCALE, with normal `w6` destination stride and
+`w7` FP32 scale. `w0[14]` selects SOFTCAP, with `w6` first scale, `w7` final
+scale and implicit dense SPM destination stride. The bits are mutually
+exclusive and incompatible with ACC; they require capability bits 13 and 14
+respectively. Legacy MVM encodings retain their meaning. Firmware still
+honors the public output tensor stride when storing the final result to DDR.
+No whole-N local allocation is required: queue backpressure bounds resident
+completed output, while the ordinary MVM command and final completion remain.
+
+K4 transports each paired gather job as two 281-bit flits instead of one
+562-bit packet. The queue, pair arbitration and epilogue endpoint form a whole
+functional source block next to its consumers. A central receiver reassembles
+complete jobs and exposes none after only the first flit. Source acceptance
+reserves full-job storage until the second flit transfers. Both pairs together
+still deliver at most one result line per cycle; one pair alone delivers at
+most one line per two cycles. Reset discards partial packets. This physically
+narrows the shared result interface, including legacy clients. It is not a
+claim that routed SLL counts halve. QA broadcast and generic VU interfaces
+remain because their dense and fallback clients still need them.
+
+The candidate Pblocks group whole collectors, local attention engines and VU
+banks with clusters 0/2 in SLR0 and 1/3 in SLR2. The receiver and remaining
+shared logic remain free to place. This is major-block floorplanning only;
+ordinary synthesis/implementation must establish memory mapping, timing and
+routing. No cell/stage placement or optimizer ownership constraint is used.
+
 
 ## 8. Usage (informative; SW builds the kernels)
 

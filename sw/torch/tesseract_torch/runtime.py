@@ -76,6 +76,7 @@ _STAT_KEYS = (
     "nodes_device",      # matmul nodes put on Tesseract
     "nodes_cpu",         # matmul nodes left on the CPU (unsupported)
     "device_calls",      # weight matmuls executed on Tesseract
+    "local_scale_calls",  # completed fused device epilogues
     "device_tokens",     # their total T (rows of x)
     "cpu_fallback_calls",  # device nodes that ran on the CPU at run time (weight could not be uploaded)
     "uploads",           # weights uploaded (including re-uploads)

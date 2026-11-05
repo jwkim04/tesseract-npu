@@ -91,6 +91,7 @@ module tsr_mvm_cluster
   import tsr_pkg::*;
   import tsr_att_pkg::*;
 #(
+  parameter  bit          LOCAL_INTERMEDIATES = 1'b0,
   parameter  int unsigned CH            = 0,     // channel index c of this cluster
   parameter  int unsigned NUM_CH        = TSR_DEF_NUM_CH,
   parameter  bit          HAS_ATT       = 1'b0,
@@ -142,6 +143,8 @@ module tsr_mvm_cluster
   input  logic                          aj_ready,
   output logic [JW-1:0]                 aj,
   output logic                          att_stall,
+  input  tsr_local_score_req_t           local_score_req,
+  output logic [TSR_LINE_BITS-1:0]       local_score_data,
 
   output logic                          idle
 );
@@ -169,13 +172,17 @@ module tsr_mvm_cluster
   logic            att_own;           // ATTPV: the incoming line belongs to this cluster
   tsr_mvm_bcline_t att_line;          // the incoming line with the attention address (ATTPV)
   logic            at_qk_q, at_pv_q;  // the current op is ATTQK / ATTPV
+  logic                 pv_local, pv_write;
+  tsr_mvm_bcline_t      pv_line;
+  logic [T_MAX-1:0]     pv_tm;
+
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       aw_v_q      <= 1'b0;
       act_ready_q <= 1'b0;
     end else begin
-      aw_v_q <= bc_line_valid & (~at_pv_q | att_own);
+      aw_v_q <= pv_local ? pv_write : bc_line_valid & (~at_pv_q | att_own);
       if (bc_cmd_valid || bc_acmd_valid) act_ready_q <= 1'b0;
       else if (aw_v_q && aw_q.last)      act_ready_q <= 1'b1;
     end
@@ -183,8 +190,8 @@ module tsr_mvm_cluster
   // aw_q loads every cycle (no clock enable on 527 flops, M3 part C timing): every use is
   // qualified by aw_v_q (actbuf write enables, `last`), so only lines with valid matter.
   always_ff @(posedge clk) begin
-    aw_q    <= at_pv_q ? att_line : bc_line;
-    aw_tm_q <= (at_qk_q | at_pv_q) ? att_tm : (T_MAX'(1) << bc_line.tok);
+    aw_q    <= pv_local ? pv_line : at_pv_q ? att_line : bc_line;
+    aw_tm_q <= pv_local ? pv_tm : (at_qk_q | at_pv_q) ? att_tm : (T_MAX'(1) << bc_line.tok);
   end
 
   // -------------------------------------------------------------------------------------------
@@ -660,7 +667,7 @@ module tsr_mvm_cluster
       .start(att_start_q & at_pv_q), .tact(tact_q), .tq(tq_q), .gs(gs_q), .e64(ac_q.c.e64),
       .dcode(ac_q.c.dcode), .nseg(ac_q.nseg), .ng(ng_q), .ngl(ng_q), .lsum(ac_q.c.flags[TSR_ATT_FL_LSUM]),
       .g_heads(g_q), .hg0(ac_q.c.hg0), .n_head(ac_q.n_head), .ob0(ob0_q), .og(og_q), .lbase(lbase_q),
-      .p_g(rg2_q), .p_l(rl2_q), .done(p_done),
+      .p_g(rcv_g), .p_l(rcv_l), .done(p_done),
       .beat_valid(f_beat_valid & at_pv_q), .beat_ready(pv_ready), .beat(pv_beat),
       .rd(pv_rd), .qs_data, .dbs_data,
       .mac_v(pv_mac_v), .mac_first(pv_mac_first), .mac_q(pv_mac_q), .mac_a(pv_mac_a), .pv_acc,
@@ -668,9 +675,151 @@ module tsr_mvm_cluster
       .stall(p_stall), .busy(p_busy)
     );
 
-    assign aj_valid = at_pv_q ? p_jv : q_jv;
-    assign aj       = at_pv_q ? p_j : q_j;
-    assign q_jr     = aj_ready & ~at_pv_q;
+    logic [JW-1:0] score_job;
+    logic score_valid, score_ready;
+    logic [12:0] rcv_g, rcv_l;
+    if (LOCAL_INTERMEDIATES) begin : g_local_score
+      typedef logic [TSR_LOCAL_SCORE_AW-1:0] score_addr_t;
+      logic [2:0][TSR_LINE_BITS-1:0] data_by_slot;
+      logic [TSR_LINE_BITS-1:0] pv_data, vu_data;
+      tsr_mvm_bcline_t pv_line_q;
+      logic [12:0] rg3_q, rl3_q;
+
+      wire [1:0] slot = ac_q.c.local_slot;
+      wire score_write = at_qk_q && slot != 0 && q_jv && q_jr;
+      wire [SPM_AW-1:0] score_offset = q_j[JW-2 -: SPM_AW] - SPM_AW'(ac_q.c.dst);
+      wire pv_read = pv_local && bc_line_valid && own;
+      assign pv_local = at_pv_q && slot != 0;
+      for (genvar bank = 0; bank < 3; bank++) begin : g_epoch
+        wire sel = slot == 2'(bank + 1);
+        wire vu_sel = local_score_req.slot == 2'(bank + 1);
+        tsr_sram_1r1w #(.DEPTH(TSR_LOCAL_SCORE_LINES), .WIDTH(TSR_LINE_BITS)) u_ram (
+          .clk,
+          .we((score_write && sel) || (local_score_req.wr && vu_sel)),
+          .waddr(score_write && sel ? score_addr_t'(score_offset >> 2) : local_score_req.wa),
+          .wdata(score_write && sel ? q_j[TSR_LINE_BITS-1:0] : local_score_req.data), .wbe('1),
+          .re((pv_read && sel) || (local_score_req.rd && vu_sel)),
+          .raddr(pv_read && sel ? score_addr_t'(bc_line.data[SPM_AW-1:2]) : local_score_req.ra),
+          .rdata(data_by_slot[bank])
+        );
+`ifndef SYNTHESIS
+        logic checks_on_q;
+        initial checks_on_q = 1'b0;
+        always_ff @(posedge clk) if (!rst_n) checks_on_q <= 1'b1;
+        else if (checks_on_q) begin
+          assert (!(score_write && sel && local_score_req.wr && vu_sel));
+          assert (!(pv_read && sel && local_score_req.rd && vu_sel));
+        end
+`endif
+      end
+      always_comb begin
+        pv_data = '0;
+        vu_data = '0;
+        for (int bank = 0; bank < 3; bank++) begin
+          if (slot == 2'(bank + 1)) pv_data = data_by_slot[bank];
+          if (local_score_req.slot == 2'(bank + 1)) vu_data = data_by_slot[bank];
+        end
+        pv_line = pv_line_q;
+        pv_line.data = pv_data;
+      end
+      assign local_score_data = vu_data;
+      always_ff @(posedge clk) begin
+        if (!rst_n) begin
+          pv_write <= 1'b0;
+          rg3_q <= '0;
+          rl3_q <= '0;
+        end else begin
+          pv_write <= pv_read;
+          rg3_q <= rg2_q;
+          rl3_q <= rl2_q;
+        end
+        pv_line_q <= att_line;
+        pv_tm <= att_tm;
+      end
+      assign rcv_g = pv_local ? rg3_q : rg2_q;
+      assign rcv_l = pv_local ? rl3_q : rl2_q;
+      // A line reserves one compact statistics entry before accepting a
+      // score write. The balanced tree runs freely into that reserved space,
+      // while the gather may apply backpressure at the head.
+      localparam int unsigned META_W = JW - TSR_LINE_BITS;
+      localparam int unsigned STAT_DEPTH = 8;
+      logic [3:0] stat_count_q, stat_wr_q, stat_rd_q;
+      logic [4:0] stat_valid_q;
+      logic [4:0][META_W-1:0] stat_tag_q;
+      logic [15:0][32:0] k0_q;
+      logic [7:0][32:0] k1_q;
+      logic [3:0][32:0] k2_q;
+      logic [1:0][32:0] k3_q;
+      logic [32:0] k4_q;
+      logic [META_W+31:0] stats [STAT_DEPTH];
+      wire stats_valid = stat_wr_q != stat_rd_q;
+      wire stats_take = stats_valid && aj_ready;
+      wire [META_W+31:0] stats_head = stats[stat_rd_q[2:0]];
+
+      function automatic logic [32:0] larger(logic [32:0] lhs, logic [32:0] rhs);
+        return lhs >= rhs ? lhs : rhs;
+      endfunction
+
+      assign score_valid = slot == 0 ? q_jv : stats_valid;
+      assign score_ready = slot == 0 ? aj_ready : stat_count_q < 4'(STAT_DEPTH);
+      always_comb begin
+        score_job = q_j;
+        if (slot != 0) begin
+          score_job = {stats_head[META_W+31:32], TSR_LINE_BITS'(stats_head[31:0])};
+          score_job[TSR_LINE_BITS+14] = 1'b1;
+        end
+      end
+      always_ff @(posedge clk) begin
+        if (!rst_n) begin
+          stat_count_q <= '0;
+          stat_wr_q <= '0;
+          stat_rd_q <= '0;
+          stat_valid_q <= '0;
+        end else begin
+          stat_count_q <= stat_count_q + 4'(score_write) - 4'(stats_take);
+          if (stats_take) stat_rd_q <= stat_rd_q + 1'b1;
+          if (stat_valid_q[4]) stat_wr_q <= stat_wr_q + 1'b1;
+          stat_valid_q <= {stat_valid_q[3:0], score_write};
+        end
+        stat_tag_q[0] <= q_j[JW-1:TSR_LINE_BITS];
+        for (int k = 1; k < 5; k++) stat_tag_q[k] <= stat_tag_q[k-1];
+        for (int w = 0; w < 16; w++) k0_q[w] <= tsr_att_maxkey(q_j[32*w +: 32]);
+        for (int w = 0; w < 8; w++) k1_q[w] <= larger(k0_q[2*w], k0_q[2*w+1]);
+        for (int w = 0; w < 4; w++) k2_q[w] <= larger(k1_q[2*w], k1_q[2*w+1]);
+        for (int w = 0; w < 2; w++) k3_q[w] <= larger(k2_q[2*w], k2_q[2*w+1]);
+        k4_q <= larger(k3_q[0], k3_q[1]);
+        if (stat_valid_q[4]) stats[stat_wr_q[2:0]] <= {stat_tag_q[4], tsr_att_keyval(k4_q)};
+      end
+`ifndef SYNTHESIS
+      logic stats_checks_q;
+      initial stats_checks_q = 1'b0;
+      always_ff @(posedge clk) begin
+        if (!rst_n) stats_checks_q <= 1'b1;
+        else if (stats_checks_q) begin
+          assert (stat_count_q <= 4'(STAT_DEPTH));
+          // Gather retirement, including the last statistics packet, must
+          // precede a new command's broadcast to this cluster.
+          if (bc_cmd_valid || bc_acmd_valid)
+            assert (stat_count_q == 0 && stat_valid_q == 0 && !stats_valid);
+        end
+      end
+`endif
+    end else begin : g_shared_score
+      assign pv_local = 1'b0;
+      assign pv_write = 1'b0;
+      assign pv_line = '0;
+      assign pv_tm = '0;
+      assign local_score_data = '0;
+      assign rcv_g = rg2_q;
+      assign rcv_l = rl2_q;
+      assign score_job = q_j;
+      assign score_valid = q_jv;
+      assign score_ready = aj_ready;
+      wire unused_local = &{1'b0, local_score_req};
+    end
+    assign aj_valid = at_pv_q ? p_jv : score_valid;
+    assign aj       = at_pv_q ? p_j : score_job;
+    assign q_jr     = score_ready & ~at_pv_q;
     assign p_jr     = aj_ready & at_pv_q;
     assign att_stall = (at_qk_q & f_beat_valid & act_ready_q & ~qk_gate_q) | (at_pv_q & p_stall);
 
@@ -683,6 +832,12 @@ module tsr_mvm_cluster
   end else begin : g_noatt
     assign at_qk_q     = 1'b0;
     assign at_pv_q     = 1'b0;
+    assign pv_local = 1'b0;
+    assign pv_write = 1'b0;
+    assign pv_line = '0;
+    assign pv_tm = '0;
+    assign local_score_data = '0;
+    wire unused_local = &{1'b0, local_score_req};
     assign att_act_q   = 1'b0;
     assign att_start_q = 1'b0;
     assign acfg_q      = '0;

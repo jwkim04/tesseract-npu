@@ -207,6 +207,13 @@ def test_mvm_bc_u200():
          only=["mvm_directed", "mvm_bc_flush", "mvm_perf"], suffix="_bc2_rst2")
 
 
+def test_mvm_u200_t4():
+    """Four-cluster T4 arithmetic and overlapping commands against the C oracle."""
+    _run("c4", real=True, att=True,
+         overrides=dict(T_MAX=4, SPM_RD_LAT=4, BC_PIPE=2, RES_PIPE=2, MAC_LAT=9, RST_LOCAL=2),
+         only=["mvm_directed", "mvm_b2b"], suffix="_u200_t4")
+
+
 # =============================================================================================
 # Configuration helpers
 # =============================================================================================

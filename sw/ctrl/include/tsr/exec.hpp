@@ -117,6 +117,8 @@ using kind_fn = ticket (*)(const volatile uint32_t * args, uint32_t n_args, uint
 
 // MUL_MAT (kind 0x10, SW §7.4): sw/ctrl/kernels/k_mulmat.cpp.
 ticket kind_mulmat(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
+ticket kind_mulmat_scale(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
+ticket kind_mulmat_softcap(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
 
 // The M7 kinds (SW §7.2, §7.5; argument words opl.hpp ew / scl / rms / glu / rope / getrows /
 // setrows / fa / cpy / unary). Defined by the W2b kernel sources; weak BAD_RECORD stubs in

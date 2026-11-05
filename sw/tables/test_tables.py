@@ -247,6 +247,7 @@ def test_layouts():
     caps = M.layouts["CAPS"]
     assert {b for b, *_ in caps.retired} == {2, 4}, "CAPS retired bits"
     assert caps.field("ATT").lsb == 5 and caps.field("DQROW").lsb == 6 and caps.field("VMASK").lsb == 7
+    assert [caps.field(f).lsb for f in ("ATT_LOCAL", "MVM_LOCAL_SCALE", "MVM_LOCAL_SOFTCAP")] == [12, 13, 14]
     # Hold-source bit order shared by STATUS, QSTATUS and DBG_U_STATE
     hs = M.layouts["HOLD_SRC"]
     assert [f.name for f in sorted(hs.fields, key=lambda f: f.lsb)] == ["HOST", "RV", "HALT", "DB"]
@@ -285,10 +286,14 @@ def test_encodings():
     assert legal == set(M.encs), "legal opcodes without an encoding: %s" % (legal - set(M.encs))
     # base encodings bit-identical with ra..rd = 0 (EX §7.1): reserved masks plus the old register fields
     assert M.encs["LD"].rsv[0] == 0xFFFFF000 and M.encs["ST"].rsv[0] == 0xFFFFF000
-    assert M.encs["QACT"].rsv[0] == 0xFFFFF000 and M.encs["MVM"].rsv[0] == 0xFFFFE000
-    assert M.encs["MVM"].rsv[5] == 0xFFF00000 and M.encs["MVM"].rsv[7] == 0xFFFFFFFF
+    assert M.encs["QACT"].rsv[0] == 0xFFFFF000
+    assert M.encs["MVM"].rsv[0] == 0xFFFF8000
+    assert M.encs["MVM"].rsv[5] == 0xFFF00000 and M.encs["MVM"].rsv[7] == 0
+    mvm = {x.name: (x.word, x.lsb, x.width) for x in M.encs["MVM"].fields}
+    assert mvm["LOCAL_SCALE"] == (0, 13, 1) and mvm["LOCAL_SOFTCAP"] == (0, 14, 1)
+    assert mvm["DST_STRIDE"] == (6, 0, 32) and mvm["SCALE"] == (7, 0, 32)
     assert M.encs["NOP"].rsv == [0xFFFFFF00] + [0xFFFFFFFF] * 7 == M.encs["FENCE"].rsv
-    assert M.encs["LD"].words_mask == 0x0F and M.encs["QACT"].words_mask == 0x3F and M.encs["MVM"].words_mask == 0x7F
+    assert M.encs["LD"].words_mask == 0x0F and M.encs["QACT"].words_mask == 0x3F and M.encs["MVM"].words_mask == 0xFF
     # VU §5.1: line addresses and m are w[23:0]; rows / strides / head counts / T are 16 bits
     for op in ("VOP", "RED", "ROPE", "TOPK", "DQROW", "VMASK"):
         for f in M.encs[op].fields:
@@ -311,6 +316,9 @@ def test_encodings():
         f = {x.name: (x.word, x.lsb, x.width) for x in M.encs[op].fields}
         assert f["E64"] == (4, 0, 9) and f["DCODE"] == (4, 9, 2) and f["TQ_M1"] == (4, 11, 3) and f["GS_M1"] == (4, 14, 3)
         assert f["G_M1"] == (0, 16, 6) and f["HG0"] == (0, 22, 6), "%s: x16 G-1 / hg0" % op
+        assert f["LOCAL_SLOT"] == (0, 28, 2)
+    asmax = {x.name: (x.word, x.lsb, x.width) for x in M.encs["ASMAX"].fields}
+    assert asmax["LOCAL_SLOT"] == (7, 0, 2) and asmax["LOCAL_U0"] == (7, 2, 16)
 
 
 def test_opcodes():

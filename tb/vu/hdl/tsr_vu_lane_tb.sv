@@ -26,10 +26,11 @@ module tsr_vu_lane_tb #(
   import tsr_vu_pkg::*;
 
   for (genvar i = 0; i < N; i++) begin : g_l
+    logic [31:0] unused_drain_hi;
     tsr_vu_lane #(.HAS_EXP(1'b1), .HAS_BACK(1'b1)) u_lane (
       .clk, .rst_n, .in_v(in_v[i]), .in_uop(tsr_vu_uop_e'(in_uop[i])), .in_a(in_a[i]), .in_b(in_b[i]),
       .in_c1(in_c1[i]), .in_c2(in_c2[i]), .in_neg(in_neg[i]), .acc_lv(acc_lv[i]), .acc_fresh(acc_fresh[i]),
-      .acc_pa(acc_pa[i]), .dr_addr, .dr_data(dr_data[i]), .f_y(f_y[i]), .b_y(b_y[i])
+      .acc_pa(acc_pa[i]), .dr_addr, .dr_data_hi(unused_drain_hi), .dr_data(dr_data[i]), .f_y(f_y[i]), .b_y(b_y[i])
     );
   end
   assign lat_f = 8'(TSR_VU_LF);

@@ -1,8 +1,173 @@
-# Handoff: where the work stands (2026-11-02)
+# Handoff: where the work stands (2026-11-06)
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
 
-## Done
+## Resume here: Claude checkpoint
+
+The user requested a cumulative source and documentation checkpoint on November 6.
+Start with [checkpoint-2026-11-06.md](checkpoint-2026-11-06.md): it identifies the
+active checkout, retained previous source, implementation history, evidence and
+next decisions. The checkpoint belongs to `codex/local-intermediates` in
+`/home/limagin-dev/tesseract-local-intermediates-20261105`. The original checkout
+keeps its previous uncommitted implementation for comparison.
+
+Keep the existing native build running. No rollback, new goal or automatic retry
+is requested. Use T4 and VU 8/8/4, core >=250 MHz, existing swap and major-block
+Pblocks only. No Luna/LLM polling. MoE is the first model extension after the build;
+GDN and speculation remain later work. Read newer entries before historical ones.
+
+### WIP checkpoint validation, November 6, 03:19 KST
+
+The user explicitly selected an immediate WIP commit with failed/incomplete
+checks recorded and the remaining checkpoint checks stopped. This is an
+exception to the normal complete pre-commit gate for this handoff only. It is
+not release validation or a claim that the full gates passed.
+
+Fresh `cmake --build build/dev -j8`, generated tables and generated U200 top
+checks passed. Non-slow CTest: 295 passed, one fixture skip (`trace_conv_model`),
+one disabled (`test-tokenizers-ggml-vocabs`), zero failures.
+
+Full lint was stopped by request after 102 Verilator cases passed and three
+C16 variants failed. All three report WIDTHCONCAT at `rtl/core/tsr_vu.sv:302`,
+`assign local_score_req = '0`: the packed request array is 8,672 bits, above
+Verilator's 8,192-bit warning threshold. `-Wall` makes it fatal. XSim and Vivado
+multi-driver stages were not reached. This is outside the active K4 C4 shape,
+but remains a supported-configuration lint regression. A per-owner generated
+zero assignment is a candidate fix; preserve the native inputs before changing
+it. The 650-item RTL suite was also stopped before completion; its partial log
+is not a suite pass. Receipts are under `build/analysis/checkpoint_20261106/`.
+
+The candidate's ignored `build/dev` symlink points to its existing `local_sw`
+build. The original pinned RISC-V toolchain was reused read-only. No runtime
+source was changed for these gates; all 142 frozen native input hashes still
+match. FPGA routing and the Telegram notifier remain active. At 03:18 the
+router was in phase 2.5.1 Update Timing, not a terminal result.
+
+## Active local-intermediate / masked-KVST build (November 6, 00:07 KST)
+
+The user authorized replacing the previous RV-SLR0/VU-SLR2 attempt with the
+improved candidate, including DDR partial writes. At 00:04:39 the old attempt
+`k4_20261105_195907_t4_rvlocal_vuslr2_core250_rv166` and its notifier/event logger
+were stopped. All owned CAD processes exited. The last native log reached
+route phase 4.2 Update Timing; this is an interrupted attempt, not a completed
+routing failure. Logs and checkpoints remain in the main checkout.
+
+The new full native attempt runs from the isolated source checkout
+`/home/limagin-dev/tesseract-local-intermediates-20261105`, branch
+`codex/local-intermediates`. Its output is
+`build/link/k4_20261106_000734_t4_local_masked_core250_rv166/` under that checkout.
+Start time is 00:07:34 KST. Supervisor PID is 1111688, native wrapper 1111699,
+event logger 1111691 and Telegram notifier 1111692. No automatic retry or
+LLM polling is scheduled. This supersedes the older active-build entries below.
+
+The packaged design retains T4, four 512-bit DDR channels, VU 8/8/4 and
+core 250 MHz / RV 166.666667 MHz. All three local-intermediate features and
+2-flit gather are enabled. Masked KVST is included through AXI WSTRB; it is
+not merely a status flag. VU bank 0, its local attention/collector and clusters
+0/2 use SLR0; bank 1 and owners 1/3 use SLR2. RV stays in SLR0. SPM, DMA and
+the SPM-facing frontend remain central. The regenerated whole-block Pblock map
+was shown before launch. The whole collector keeps its hierarchy for the
+Pblock; no individual cell, stage, site or BEL placement is selected.
+
+At 00:07:57 fresh XO packaging and payload verification passed: 141 manifest
+entries, 142 verified HDL/XDC files and the expected kernel XML. The private
+cache contains only 100 reusable Xilinx platform entries; the previous custom
+kernel entry was excluded. At 00:08:30 VPL entered generate_target after BD
+creation/update. Native source and hook inputs are frozen. Use 16 concurrent
+IP synthesis jobs, 8 implementation/build threads, one global Vivado slot and
+the existing swap. Required clock/reset, CDC and final timing gates remain.
+
+The model-free Telegram watcher checks every 60 seconds. After both placement
+and complete congestion/utilization reports exist, it sends one comparison of
+SLR1 CLB/LUT, per-boundary SLL, same-stage placement WNS and SLR0/1/2 directional
+congestion against the stopped 19:59 build. The reference placed WNS is
+−1.793 ns; do not compare it with that build's later −1.344 ns physopt WNS.
+Errors, interruption and terminal state retain existing notifications. Unchanged
+polls send nothing. No credential was copied into the repository or logs.
+
+Launch, fixed source hashes, frozen comparison baseline, 44 passing offline
+runner/notifier tests and delivery state are under the candidate's
+`build/analysis/k4_local_build_20261106/`. The original stop receipt is under
+that directory name in the main checkout. Astra's launch review passed.
+Native exit zero still requires final route, setup/hold, >=250 MHz and CDC
+report review before declaring build success. No commit or push was made.
+
+### Placement result, November 6, 02:55 KST
+
+Placement completed at 02:37:23 and physical optimization at 02:51:23.
+The route step has started; its pre-route clock/reset and CDC checks passed
+(unsafe 0, unconstrained 0). No router congestion/demand or final route result
+is available yet. The native process remains alive.
+
+| Same-stage metric | Stopped 19:59 attempt | Local/masked candidate |
+|---|---:|---:|
+| SLR1 occupied CLBs | 49,168 / 99.81% | 48,942 / 99.35% |
+| SLR1 LUTs | 282,026 | 284,877 |
+| Placed SLLs | 14,240 | 12,947 |
+| Placed estimated WNS | -1.793 ns | -2.790 ns |
+| Post-physopt estimated WNS | -1.344 ns | -2.124 ns |
+| SLR1 north/south global congestion region | 64x64 / 64x64 | 64x64 / 64x64 |
+| SLR1 west global congestion region | 16x16 | 32x32 |
+
+Placed crossings fell 9.1%, but central CLB occupancy remains near full.
+The largest central congestion regions did not shrink, westward congestion
+grew, and estimated timing worsened. This is not evidence that central routing
+is solved, nor a completed route failure. Full-platform reports include shell
+logic. Router per-column SLL demand must be compared at the same routing stage.
+
+The Telegram notifier records successful placement-comparison and route-step
+notifications, with zero delivery failures. The route-step notification marks
+the implementation step, including its pre-route hooks, not completed routing.
+Reports are in the active attempt's `tmp/link/vivado/vpl/prj/prj.runs/impl_1/`
+(`runme.log` and `slr_util_placed.rpt`). No build inputs were changed.
+
+
+## Candidate whole-model decode checks (November 6)
+
+The active native build was left running. The same candidate firmware image
+`f7bb1fc039d7ee0c` ran real GGUF models through llama.cpp's M7 backend on the
+C simulator, with T4 and all three local capabilities enabled. Flash attention
+and Q8_0 KV cache stayed on the device. CPU matched-token replays, three-seed
+1-ulp floors and CPU token/embedding identity checks passed.
+
+| Model | Sample | KL / floor | CPU top-1 match | Local-on/off exact logit rows |
+|---|---|---:|---:|---:|
+| Qwen2.5-0.5B Q8_0 | 4 prompts × 32 generated tokens | 1.105141 | 124/128 | 128/128 |
+| Qwen2.5-0.5B Q4_K_M requant | 4 prompts × 32 generated tokens | 1.376901 | 124/128 | 128/128 |
+| Gemma 4 12B Q4_K_M | 1 prompt × 8 generated tokens, prompt-tail 2 | 0.355755 | 9/9 | 9/9 |
+
+The sampled acceptance criterion is KL/floor <=3 and CPU top-1 match >=80%.
+Local-off replays keep the same candidate gather and masked-KVST implementation;
+they isolate local-capability behavior, not every change from the previous RTL.
+Queue logs confirm local QK/PV in both model families and nine completed local
+MVM softcap instructions in Gemma. Some attention records still use the shared
+path. No erroneous queue completion was seen; code-zero SYNC NOPs are normal.
+
+Each Qwen run had 4 prefill and 124 decode graph calls, with 128 device launches.
+Gemma had 8 graph calls and 8 launches. M7 already removed host intervention
+between supported operations within a token. The host still submits each token
+graph, receives final logits and selects the next token. Local intermediates
+reduce traffic inside the FPGA; they do not implement autonomous multi-token
+generation. Graph preparation and model loading also remain host work.
+
+These are functional full-model runs on the C simulator, not full-model RTL or
+card throughput measurements. Primary Qwen runs used the simulator's default
+RV/core ratio; separate eight-position queue samples and Gemma used
+166.666667/250. The cycle model does not qualify the native VU 8/8/4 configuration.
+No long-context, SWA-wrap, MoE or broad language-quality claim follows from these
+samples. Astra independently reviewed the results and passed this bounded scope.
+
+The candidate's `build/analysis/model_decode_local_20261106/model_decode_report.json`
+contains model/firmware hashes, generated tokens, numerical results, queue counts
+and replay hashes. Raw commands and logs are in the same directory. Review is in
+`build/analysis/local_intermediates/review.md`. No runtime source was changed for
+these experiments and the native build's frozen inputs were preserved.
+
+## Milestones and dated experiment history
+
+The sections below preserve prior checkpoints and decisions. Their statements
+about an active build, paused goal or not-yet-launched candidate apply to the
+date in that section. They do not override the November 6 status above.
 
 | Package | State | Commit |
 |---|---|---|
@@ -13,7 +178,1100 @@ Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README
 | W4-B RTL: VU, attention modes, DB block, two-clock XRT adapter; tsr-dbg (GDB), tsr-prof | done; ctest 297/297, lint clean, all benches green | `6435e8a` |
 | W5 preparation: VU lane pipes (`tsr_vu_lanes.sv`, `VU_LANE_PIPE`), floorplan C'' (`hw/u200/k4_floorplan.tcl`), TCM RAMB36 constraint in every flow (`tsr_ctrl_tcm.xdc`, `hw/u200/tcm_opt.tcl`), `build_xclbin.sh` enabled for k1/k4 | checkpoint; first K4 route failed | `58bf76d` |
 
-## Current: K4 interconnect optimization; 16 synthesis jobs running
+## Historical local candidate qualification before launch (November 5)
+
+This isolated `codex/local-intermediates` checkout implements the authorized
+local FAST attention, MVM SCALE/softcap epilogues and required gather narrowing.
+It includes masked KVST. The active native build belongs to
+`/home/limagin-dev/tesseract`; none of its runtime source or hooks were changed.
+No new native build, commit or push was made.
+
+See [intermediate-locality-plan.md](intermediate-locality-plan.md) §0 for the
+implemented scope, Pblock map, exact compatibility rules and test results.
+Full software build and non-slow CTest pass (288 passed, 8 skipped, 1 disabled).
+Integrated real-core graph replays, abort/drain/restart, focused local queues
+and legacy RTL regression pass. Astra's functional review passed. Measured
+small RTL graphs range from +1.98% to −10.92% cycles, with exact DDR outputs.
+This does not establish whole-model performance or native routing/timing.
+
+Candidate K4 enables all three local capabilities and two-flit gather; K1 and
+module defaults retain legacy. The Pblock plan moves one VU bank back to SLR0
+beside its local producers. Show the saved map before any future native build.
+Use ordinary reports to qualify RAM inference, timing and actual SLR crossings.
+The full RTL/technology commit gate remains required before a commit.
+
+MoE is the first model feature after the active build. Original weight ownership,
+expert bases/strides and token origins are represented in the shared window
+helper; expert packing, MUL_MAT_ID, token grouping and combine remain future.
+Keep llama.cpp and PyTorch compatibility, and measure the user's permitted
+single-digit throughput tradeoff rather than infer it from lane count. Current
+changes retain numerical bits despite permission for validated roundoff changes.
+
+## Historical RV SLR0 / VU SLR2 native build (November 5, 19:59 KST)
+
+Next-run requirement from the user (November 5): integrate the validated KVST
+masked-write candidate from `/home/limagin-dev/tesseract-kvst-masked-20261105`
+before the next verification/build run. Test it together with the RV-local/VU-SLR2
+configuration and include it in the next native build. This requires merging the
+candidate source changes, not merely toggling the status metadata. Preserve the
+current running attempt. Check the combined regressions and record actual masked
+write inclusion in the next build manifest. Do not launch a new build solely
+because of this reminder.
+
+The user requested stopping the compact-VU build and launching the validated
+RV relocation candidate. The previous attempt
+`build/link/k4_20261105_164800_t4_vu_compact_core250_rv166/` was stopped by request
+during route phase 5.2, Global Iteration 1. Its last reported overlap count was
+215,571. This is an interrupted run, not a completed native routing failure.
+All of its owned CAD processes and its event logger are gone. Logs and
+checkpoints remain. Stop receipts are in `build/analysis/rv_local_20261105/`.
+
+The candidate source patch is now applied to the main checkout. The K4 wrapper
+was regenerated, and all 18 changed source/test/build files match the validated
+candidate byte for byte. CC §11.4 is now present in the main design document.
+T4, VU 8/8/4, the four 512-bit DDR channels, DDR locality, paired gather and compact
+VU inputs remain. Whole RV/TCM/CDC and RV debug use SLR0; both VU lane/coefficient
+banks use SLR2. The SPM-facing VU frontend, SPM, RV-SPM bridge and DMA use SLR1.
+SPM/issue/LCQ segmented control transport is enabled. The isolated masked-KVST
+candidate and 500 MHz TDM are not included. The Pblock preview was shown before
+launch; only whole functional blocks are assigned.
+
+The new full native attempt started at 19:59:07 KST in
+`build/link/k4_20261105_195907_t4_rvlocal_vuslr2_core250_rv166/`.
+Supervisor PID is 689148; the local event logger is 689151. Target clocks remain
+core 250 MHz and RV 166.666667 MHz. It holds one top-level Vivado slot, permits
+16 concurrent IP synthesis jobs and uses 8 implementation threads and the
+existing swap. No LLM polling monitor or automatic retry is scheduled. The user
+cleared the long-running goal; this is the separately authorized single build.
+
+Fresh XO packaging passed at 19:59:28: 139 source-manifest entries, 140 verified
+HDL/XDC payload files and the expected kernel XML. The old custom-kernel cache
+entry is excluded; 100 platform IP cache entries were copied privately.
+Vitis entered native VPL at 19:59:36. Clock/reset, CDC and final frequency gates
+remain enabled. No placement, routing or final timing result exists yet.
+
+Launch, runner tests and events are in
+`build/analysis/k4_rvlocal_vuslr2_build_20261105/`; live state is the attempt's
+`status.json`. Astra's source/runner review passed, as did 25 runner checks.
+Do not mutate the running attempt's RTL or hook inputs. Native exit zero still
+requires report review before declaring a 250 MHz routing success.
+
+### Telegram notifications
+
+The user confirmed receiving the test message from `@codex6974_bot` on November 5.
+A separate notifier, PID 695363, now watches this attempt every 60 seconds.
+It reads the status, event log and ordinary implementation reports. It sends
+placement and congestion results, routing milestones, errors, interruptions and
+the final state. Unchanged polls send nothing and use no model tokens. Native
+completion is reported as awaiting final report review, not as timing signoff.
+
+The notifier and its launch receipt are under
+`build/analysis/telegram_notify_20261105/`. Eleven offline checks pass and Astra's
+review passed. Configuration and the token are stored outside the repository in
+`~/.config/tesseract/telegram.json` and `telegram.token`, both mode 600. Do not print
+their contents. Delivery state and a process lock prevent routine duplicate
+alerts; an ambiguous network response can still cause a repeated message.
+
+This process does not modify build inputs, restart CAD or wake an LLM agent.
+It exits after delivering the terminal state. A later build needs its own
+notifier invocation with that attempt's paths. At attachment, the native build
+was still running with no recorded native error or placement result.
+
+## Distributed SPM and local output tiles assessed (November 5)
+
+The requested three-priority implementation plan is now in
+[intermediate-locality-plan.md](intermediate-locality-plan.md): local attention
+scores/P, bounded MVM output epilogues, then explicit sharing/import/export.
+The common ownership, lifetime and transport contract comes first. The plan
+covers llama.cpp M7 and a separate bounded PyTorch FX/runtime extension, with
+legacy compatibility and physical-path removal gates. This is planning only;
+no implementation, native input change or new build was made for this request.
+
+Improvement direction agreed with the user: reduce central round trips of
+intermediate data between the added engines. First assess the active build;
+this direction does not authorize implementation or another native run.
+Prioritize attention score/P producer-consumer locality, then local vector
+epilogues on completed MVM output tiles. Preserve arithmetic capacity and
+precision, explicit overflow to DDR, and required reductions/redistribution.
+Evaluate removed or narrowed physical interfaces as well as transferred bytes,
+whole-workload cycles, and placed congestion. Moving buffers while retaining
+all existing wide remote paths is not sufficient. Full SPM distribution remains
+a later option rather than the immediate scope. The next verification/build
+must still include the separately validated masked-KVST change.
+
+The user asked to preserve the active build and assess cluster-local SPM and
+GPU-style local output-tile accumulation. The assessment is in
+`docs/platform-u200.md` §8.6.20, with analytical payload calculations under
+`build/analysis/spm_locality_20261105/`. No implementation or native run was
+started. Current dense MVM already partitions output rows, replicates inputs
+in local activation buffers and accumulates K locally. The missing locality
+is resident output/intermediate tiles and their consumers. Current firmware
+also stores MUL_MAT output to DDR; cross-record residency needs software work.
+
+The candidate is two outer-SLR memory/compute groups with four logical owners,
+retaining eight VU front/EXP lanes in total and four weight channels. Local
+attention score/P storage with local ASMAX/PV consumers is the first case to
+model. Global maxima and final partial reductions remain. Merely moving RAM
+while preserving all wide remote paths does not establish wire savings.
+Capacity is plausible from prior URAM reports; timing, net area, routability
+and end-to-end performance are unmeasured. Keep the separately recorded
+masked-KVST integration requirement for the next verification/build.
+
+The follow-up software/overflow audit is in platform §8.6.21. Firmware MUL_MAT
+tiles T only, and llama.cpp rejects shapes whose full-N one-token scratch or K
+cannot fit. PyTorch's separate `sw/rt` already splits N/K into independently
+repacked parts and assembles output through DDR/host. Do not conflate those
+paths. Current PyTorch only offloads weight matmuls; its full-model card evidence
+predates the control-core build. New local tile residency is not implemented.
+The actual T4 planner probe gives FFN/head tile sizes 4/3/1 for the recorded
+Qwen32 FFN, Qwen32 head and Gemma12 head shapes. Output tiles can spill to DDR,
+but preserving original weight row ownership and defining tile completion are
+required. Merely reducing N or the global SPM size is not a valid implementation.
+Source/probe evidence is under `build/analysis/spm_stack_20261105/`.
+
+## RV transport and placement candidate completed (November 5)
+
+The user authorized narrowing RV communication and moving the control subsystem,
+then asked to put RV in SLR0 and the VU in SLR2. The isolated candidate is
+`/home/limagin-dev/tesseract-rv-local-20261105`, branch
+`codex/rv-local-transport`, based on the complete dirty compact-VU checkout.
+Sol implemented and tested; Astra reviewed. The main checkout's runtime sources
+and the running compact-VU native build are unchanged. The broader goal remains
+paused. No new native K4 link, card operation, commit or push was performed.
+
+K4 enables same-core-clock packet links: SPM returns four 128-bit segments,
+issue sends three 129-bit segments, and LCQ_POST sends two 128-bit segments.
+The complete 64-byte RV line buffer and original CDC remain local to `u_ctrl`.
+Selected interface width falls from 1,205 to 404 signals relative to moving
+those interfaces without segmentation. This is not a measured whole-K4 SLL
+saving; sequence, error and other debug/control links remain wide.
+
+The Pblock plan places whole RV/TCM/CDC, RV debug and their endpoints in SLR0.
+Both VU lane/coefficient banks go to SLR2. The SPM-facing frontend remains in
+SLR1, avoiding new 512-bit SPM read/write crossings. SPM, its RV bridge, the
+central endpoints and DMA remain in SLR1. Cluster and DDR0/3 bindings are
+unchanged. The updated `k4-rv-local-pblock-plan.png` shows allowed regions,
+not placed cells. Only whole functional blocks are constrained.
+
+Validation passes the randomized packet/reset and actual CSR drain regressions,
+eight transport-enabled controller cases, 25 stock control pytest entries and
+four integrated cases. Matched tiny M7 decode takes 52,968 to 53,181 core cycles
+(+0.402%); prefill 68,703 to 68,993 (+0.422%), with all oracle results unchanged.
+These are small RTL workloads, not whole-model/card throughput measurements.
+The T4 four-channel smoke/debug tests pass. Separate endpoint synthesis adds
+422 LUTs and 1,620 FFs gross, no BRAM/DSP; multi-driver checks, XSim static
+elaboration, focused Verilator lint and generated-file checks pass.
+
+The review found a premature idle/drain indication during partial issue
+transfer; the final implementation gates it with retained FIFO occupancy.
+A regression confirms QCLEAR is refused and SOFT_RESET waits until it drains.
+No functional/source-Pblock blocker remains. Full integration area, SLR2 fit,
+250 MHz timing and congestion relief are still unmeasured. Concentrating both
+VU banks increases upper-boundary traffic, so it is a candidate placement,
+not a proven routing improvement. No further build is scheduled by this work.
+
+Evidence is under the candidate's `build/analysis/rv_local/`; the main checkout's
+`build/analysis/rv_local_20261105/` holds the baseline, candidate location and
+baseline-relative source patch. See the candidate's CC §11.4 and
+`docs/platform-u200.md` §8.6.18. The isolated masked-KVST change remains separate.
+
+## Standalone SLR TDM validation completed (November 5)
+
+The user authorized a separate measurement of SLR wire reduction and 500 MHz
+timing, while preserving the running compact-VU K4 build. Sol implements and
+measures; Astra reviews. Work stays under `build/analysis/slr_tdm_20261105/`.
+Production RTL and native build inputs are snapshotted and remain unchanged.
+This authorization does not resume the paused full-K4 retry goal.
+
+The experiment compares native AXI Register Slice W modes 10 (ordinary SLR)
+and 11 (TDM) on `xcu200-fsgd2104-2-e`. Both use two simultaneous W links from
+SLR1 to SLR0 and SLR2, with 512 data bits, word-derived byte strobes and LAST.
+The W-only scope is not full AXI or NoC qualification. One MMCM supplies related
+250/500 MHz clocks in the TDM experiment. The current platform's two existing
+kernel clocks do not already provide this aligned pair.
+
+The same functional source and destination endpoint Pblocks are used in both
+variants. The preview `pblock-plan.png` was shown before launch. No individual
+cell, stage, site or BEL placement is assigned. Functional stalls/reset and
+full-rate transfer checks, routed boundary counts, setup/hold timing and added
+resources are required. A sparse standalone result cannot establish timing or
+routing closure inside the congested K4 design.
+
+The isolated experiments routed legally and demonstrated 529 to 273 live payload
+nets per boundary: 512 fewer across the two links (48.39%). Whole-probe SLLs fell
+from 1,093 to 594, or 590 with a common-output divider clock pair. The latter
+passed generated-IP simulation with 964 transfers per boundary, stalls, in-flight
+reset and orderly MMCM restart/edge-alignment checks. No card was programmed.
+
+Full 500 MHz transport timing did not pass. The original clock pair passed both
+fast payload crossings, but failed 500-to-250 conversion (-0.098 ns) and a READY
+return path (-0.293 ns). One normal post-route optimization did not close it.
+The common-output BUFGCE_DIV variant fixed conversion (+0.166 ns), but its lower
+500 MHz payload crossing failed (-0.100 ns) and READY still failed (-0.225 ns).
+Hold checks pass. Source, reset and synthetic external I/O setup failures are
+reported separately. No false paths, weaker timing margins or manual placements
+were added to make these numbers pass.
+
+The wire saving has a resource cost: probe SLR1 CLB sites rose from 146 to 311
+in the divider variant, despite total LUTs falling from 2,589 to 1,239. Total FF
+primitives rose from 4,349 to 5,920; baseline CLB FFs alone exclude 2,124 dedicated
+SLR registers. This is a native-slice comparison, not a measured K4 integration
+delta. Clock throttling/DRP recovery and all other NoC/protocol work remain open.
+Further experiments have stopped. See `docs/platform-u200.md` §8.6.17 and the
+experiment's `sandbox/`, `transport/` and `review/` receipts. The broader goal
+remains paused. At the last check the original K4 build continued global routing.
+
+## Native-feature audit and trace defect (November 5)
+
+The user requested a search for other custom logic duplicating native platform
+features. Sol audited memory/transport implementations and the current shell;
+Astra reviewed. No implementation source, native build or card state was changed.
+
+A standalone Verilator test reproduced trace corruption: fill a 32-record ring,
+consume one record (RPTR = 1), then flush one new record with STOP_FULL enabled.
+The full-mask `{PAD, new_record}` write destroys the unread neighboring record.
+WPTR advances and DROPS remains zero. The C simulator's 32-byte writes preserve
+that neighbor. This behavior predates the KVST candidate and is not fixed yet.
+The reproduction is in `build/analysis/k4_native_capabilities_20261105/`.
+
+Recommended next work is trace half-beat masks (also removing the 256-bit carry),
+then a measured BRAM mapping of the central gather write queue and, separately,
+the KVST output queue. SPM already uses byte enables; arithmetic RMW, ownership
+arbitration and SLR timing stages cannot be delegated blindly to the controller.
+See `docs/platform-u200.md` §8.6.15 for evidence, resource tradeoffs and lower
+priority candidates. This audit starts no further implementation or native link.
+
+The build-impact assessment is in §8.6.16. Compact-VU native synthesis reduced
+kernel LUTs by 5,165 (1.36%), but its placed congestion is still pending. Earlier
+T4 floorplans demonstrate that fewer central LUTs can accompany more route
+overlaps. Root routing pressure is not proven resolved. Shared debug formatting,
+selected BRAM queues, narrower DDR0/3 write crossings and producer-consumer-local
+attention storage remain candidates; none is implemented by this audit.
+
+## KVST masked-write candidate, isolated from the running build (November 5)
+
+The user authorized U200 partial-write verification, then removal and validation
+of KVST's central RMW. The ongoing compact-VU native build remains untouched.
+The candidate lives in `/home/limagin-dev/tesseract-kvst-masked-20261105`, branch
+`codex/kvst-masked-writes`, based on the complete dirty compact-VU checkout.
+No new native link, commit or push is part of this task. The broader goal remains
+paused. Sol owns implementation and regression; Astra reviews.
+
+U200 support is established enough to implement: the native platform connects
+64-bit WSTRB on all four channels, and 1,088 partial/overlapping XRT BO updates
+passed on the installed card with all surrounding bytes preserved. That probe
+used the host DMA path without loading an image, resetting the card or launching
+a CU. The modified kernel itself has not run on the card. ECC can retain RMW
+inside the DDR controller. Support evidence is in the main checkout's
+`build/analysis/k4_masked_write_20261105/support/`.
+
+KVST now queues a 16-bit word mask with each write beat and expands it to AXI
+byte strobes at the bridge. Its 16×512-bit metadata preimage FIFO, read-ahead
+walker/credits and 512-bit merge are removed. LD remains unchanged. Full-beat
+ST, quant data and trace writes use all-one masks. Completion still waits for
+write responses. `KVST_RMW` and KVST's explicit channel reads are zero; the C
+simulator and cycle estimates match. Capture retains preimages for preserved-byte
+replay checks, not as physical traffic. Numerical conversion is unchanged; the
+user waived mandatory numerical bit-for-bit equality for this work.
+
+Matched DMA OOC synthesis reduced CLB LUTs from 5,694 to 4,781 (−913, 16.0%) and
+registers from 2,654 to 2,560 (−94); RAMB36 remains 8 and DSP remains 4. This
+excludes new masks in other blocks, and is not a full-K4 area or routing result.
+Production review found no RTL blocker. The reviewer found that simulator
+capture hooks also informed the race detector; KVST now uses a capture-only
+preimage helper. A regression checks both capture modes and rejects a false
+metadata read. The firmware's numerical revision is unchanged.
+
+Validation passed 18 pytest entries / 49 selected cocotb simulations: KVST at
+4/3/1 channels, DMA, memory arbitration, competing trace writes, the actual AXI
+bridge, K4 locality, and tiny M7 decode. The firmware test committed two partial
+writes through the core's DDR locality pipes and observed zero KVST read requests.
+The AXI test covers sparse mask 0x8421, independent AW/W handshakes, stalled
+payloads and reversed B response IDs. The trace test covers 40 competing masked
+DMA bursts and full masks for trace. Active-KVST reset was not separately tested;
+existing DMA/arbiter reset tests pass. The broad debug sweep was stopped in favor
+of the targeted trace regression. No whole-model performance run was started.
+
+Unit/platform/BW Verilator lint and changed-module Vivado multi-driver checks
+pass. XSim compilation and static elaboration pass for DMA, packaged K1/K4 and
+BW K4. Generated tables and tops are fresh. The isolated CMake build uses
+`TSR_WITH_LLAMA=OFF`; its final non-slow CTest run has 165 passes, one missing-model
+conversion skip and zero failures. The first replay checks lacked ignored trace
+fixtures in the new worktree; private fixture copies resolved that setup issue.
+The final capture/race/AT/replay subset also passes 8/8. The candidate's validation
+receipts are `build/analysis/kvst_masked/` and
+`build/analysis/masked_validation/completion.json`. It has no new native route,
+250 MHz timing signoff, full-K4 resource measurement or modified-kernel card run.
+The original compact-VU build continues; none of this task's RTL is in that build.
+The main checkout's `build/analysis/k4_masked_write_20261105/` holds
+`completion.json`, `candidate_changes.json` and baseline-relative patches.
+`source.patch` excludes documentation, build outputs and the candidate's
+read-only vendor symlinks (worktree setup only, do not stage them). Its dry-run
+application to the unchanged main sources passes. Keep the source patch unapplied
+while the current native build uses that checkout; no later link is scheduled.
+See `docs/platform-u200.md` §8.6.14 and AT §5.1, §8.3, §10, §13.4.
+
+## Authorized VU compact-transport attempt (November 5)
+
+After the paused failure and investigation, the user authorized only VU input
+compression and bank-local coefficient storage, followed by one new native build.
+Sol owns the implementation and regression, with Astra review. DMA, debug and
+other proposed optimizations are outside this attempt. The broader goal remains
+paused; this authorization does not schedule automatic retries.
+
+The implementation and Astra review are complete. Each FRONT8 bank receives a
+366-bit operand/control packet, 74-bit angle-write channel and reset: 441 input
+bits, down from 545 (19.1%). C1/C2 and angle stores reside beside their consuming
+lanes. Return width stays 192 bits. This is a logical interface reduction, not a
+measured SLL saving. Numerical formats and arithmetic parallelism are unchanged.
+
+The pre-change RTL, VU/core/attention benches
+and U200 build files are frozen under
+`build/analysis/k4_vu_compact_20261105/baseline/`, with a SHA256 manifest and the
+pre-existing dirty-worktree diff preserved. The fresh-packaging supervisor is in
+`build/analysis/k4_vu_compact_build_20261105/`. Its fifteen existing runner checks
+pass. The native build started at 16:48 KST in
+`build/link/k4_20261105_164800_t4_vu_compact_core250_rv166/`.
+Supervisor PID is 314905; the local event logger is PID 315127. Fresh kernel
+packaging passed source/payload checks, and native Vitis entered IP generation.
+Platform IP cache entries were copied
+privately; the old custom-kernel cache entry was excluded. Launch evidence is
+`build/analysis/k4_vu_compact_build_20261105/launch.json`; live native state is
+the attempt's `status.json`. No automatic retry is scheduled.
+
+Standalone validation passed 52 existing C-oracle case executions and the ordered
+local-reduction regression. At input pipe depths 0/2/3, focused baseline/candidate
+pairs matched all 764 SPM/SREG writes in data, order and cycle, and all nine batch
+cycle counts. Cases include both coefficient contexts, back-four subslots, both
+RoPE modes, half reuse, reset, both DQROW formats and SPM contention. Receipts are
+`vu_validation_completion.json` and `comparison.json` in the analysis directory.
+The direct registered angle-write path needs native timing signoff. Delayed
+angle-half release protects the final bank read; cycle equivalence is established
+for the tested cases, not every possible workload. See VU §7.10 and
+`docs/platform-u200.md` §8.6.12. The three integrated pytest targets also passed:
+the T4 four-channel locality smoke and M7 half-VU decode/prefill. Generated tops
+and tables pass their freshness checks. Full `rtl/lint.sh` has also passed,
+including Verilator, XSim and the common-module synthesis checks. Its result is recorded in
+`build/analysis/k4_vu_compact_20261105/full_lint.log`.
+
+The layout keeps SPM-facing VU selection in SLR1 and the two lane banks,
+including coefficient storage and local operand expansion, in SLR0 and SLR2.
+Other major-block assignments remain those of the final T4 attempt. The regenerated
+Pblock map was shown before launch. The build target remains T_MAX4, VU8/8/4,
+core 250 MHz and RV 166.666667 MHz, with independent MVM/VU and four 512-bit DDR
+channels. Only local Python processes supervise the build and log milestone/error
+events; no Luna or periodic LLM monitor is running. Placement congestion, legal
+routing and final timing are not yet known.
+
+While this build runs, the user requested central-memory architecture and paper
+research. `docs/platform-u200.md` §8.6.13 records the findings. SPM arbitration is
+already bank-local. The strongest new bounded candidate is propagating AXI write
+masks to remove KVST's core-side partial-META RMW FIFO and merge; actual shell
+support was then verified and the masked candidate was separately authorized, as
+recorded above. PASTA-style buffer ownership remains an unimplemented alternative.
+The research itself did not start an additional native build.
+
+## Paused for Claude handoff after the November 5 route failure
+
+At the user's request this goal stops after the last link failure. The final attempt
+`build/link/k4_20261105_113412_t4_dma_center_core250_rv166/` exited at 15:20:02 KST,
+code 1. There are no remaining native build or monitor processes. No further retry
+or optimization is scheduled. The workspace contains uncommitted implementation and
+documentation changes.
+
+The final router reported 31,192 conflicted signals and 35,335 physical node overlaps.
+Unrouted and partly routed nets were both zero. The route is illegal. The last
+intermediate timing was WNS −6.823 ns and TNS −40,520.634 ns. Neither clock nor final
+setup/hold is signed off. Pre-route clock/reset and CDC checks passed. The 547 MiB
+error checkpoint is `tmp/link/vivado/vpl/prj/prj.runs/impl_1/level0_wrapper_routed_error.dcp`
+under the attempt directory. The original log, source snapshot, kernel XO and manifests
+are preserved. Source/package integrity checks passed.
+
+### What changed and what the comparisons established
+
+| T4 attempt | Kernel Pblocks | Placed SLR1 CLB / LUT | SLLs | Final outcome |
+|---|---|---|---:|---|
+| 02:00 `020015_t4_vu` | Original 16 major blocks | 99.86% / 296,178 | 12,213 | Route failed, 8,054 overlaps |
+| 06:15 `061530_t4_six` | Four clusters + two VU banks only | Placement incomplete | — | Native platform auto-pipeline reset register left unplaced |
+| 07:50 `075018_t4_front_dma` | Original 16 + VU frontend SLR0 + DMA SLR2 | 97.80% / 259,620 | 16,917 | Route failed, 60,788 overlaps |
+| 11:34 `113412_t4_dma_center` | Same, DMA returned to SLR1 | 98.51% / 265,510 | 14,120 | Route failed, 35,335 overlaps |
+
+The final failed checkout had the last row's 23 whole-block assignments. The named Pblocks
+place clusters 0/2 and VU bank 0 in SLR0, clusters 1/3 and bank 1 in SLR2. VU
+`u_gen/u_rd/u_ang/u_inj/u_lma/u_lmb` are in SLR0. DMA/KVST, SPM and control are in
+SLR1. Cluster assemblers and DDR0/3 bridges/arbiters use their original local regions.
+The first T4 placement remains the best completed T4 route among these trials.
+Reverting to it means restoring the original hook from that run's source snapshot,
+not reverting the T4 or VU RTL.
+
+All four trials use the same kernel XO, SHA256
+`5db5e219757a1962ce57c3d8c0f3bf7f5a80eefcb42d564448fce775fe9a52a1`.
+The T4 functional checks and C-oracle evidence are in
+`build/analysis/k4_t4_vu_20261105/completion.json`.
+The first T4 conflict signal hierarchy counts are in
+`build/analysis/k4_t4_route_failure_20261105/hierarchy_counts.json`.
+A read-only `report_route_status` query on the final error DCP now lists 31,191
+unique conflicted net names, one fewer than the native log. The first T4 query also
+returned one fewer name than its log. The final evidence is in
+`build/analysis/k4_t4_final_failure_20261105/`, including `comparison.json`,
+`hierarchy_counts.json`, the exported names and the query log. This is a complete
+returned net-name list, not a physical collision-location census. No such census
+was run on the last two failures. Their top-ten node examples do not establish
+where all physical conflicts lie.
+
+### Final failure analysis
+
+The user requested this analysis after pausing the goal. The goal remains paused.
+The only new CAD command opened the saved error checkpoint and read route status.
+No synthesis, placement, routing, RTL or constraint change was made.
+
+The native error is `Route 35-2`: 35,335 node overlaps remain. Zero unrouted and
+partly routed nets means paths were connected, not that the routes are legal.
+Pre-route clock/reset and CDC checks passed. This was a native routing failure,
+not an inspection hook stopping an otherwise successful route. The negative
+intermediate timing is not a final frequency result from a legal route.
+
+SLR1 remained the principal reported congestion area. It held 265,510 LUTs (67.37%)
+and 48,524 occupied CLB sites (98.51%), versus 78.42% and 75.94% occupied sites in
+SLR0 and SLR2. A used CLB site need not have all its LUTs or registers filled;
+98.51% is not LUT utilization or a proof that no further packing is possible.
+The final south-going global hotspot covered 64x64 tiles at
+`INT_X0Y388` to `INT_X63Y451` in SLR1. Nine of the ten ranked physical examples
+were central; one was inside cluster 3 in SLR2.
+
+Moving DMA back from SLR2 to SLR1 helped compared with the 07:50 placement.
+Overlaps fell from 60,788 to 35,335 (41.9%), and placed SLR1-2 connections fell
+from 9,536 to 6,691. Peak estimated SLR1-2 column demand fell from 164% to 101%.
+This supports the earlier DMA relocation as an aggravating factor, although each
+Pblock change also changes the global placement.
+
+The final placement still performed worse than the first T4 attempt. It had
+30,668 fewer SLR1 LUTs but 4.39 times as many overlaps. SLR0-1 connections grew
+from 5,388 to 7,429 (37.9%). Peak estimated demand in one lower-boundary column
+grew from 87% to 110%. The upper-boundary peak was 104% originally and 101% finally.
+These are router estimates per physical column, not measured directional SLL
+occupancies. Device-wide vertical/horizontal routing utilization was only
+27.88%/24.94%; the failing resource is concentrated locally.
+
+The retained VU frontend placement is the leading explanation for this added
+lower-boundary traffic. Its reader and injector sit in SLR0 while SPM remains
+in SLR1 and the other lane bank is in SLR2. The source-level bank interface still
+carries 544 input bits and 192 output bits per bank. Those are logical interface
+widths, not measured SLL counts. Moving logic out of the middle did not remove
+its communication with the middle or the opposite bank. More crossings and
+central long-wire conflicts are consistent with that mechanism. The experiments
+do not isolate a single net or block as the exclusive cause.
+
+The full returned conflict-name list shows the effects across shared interfaces:
+
+| Net-name hierarchy | First T4 | Final T4 |
+|---|---:|---:|
+| DMA, including KVST | 2,263 | 5,051 |
+| KVST subset of DMA | 1,698 | 3,670 |
+| Platform DDR1 controller and interconnect | 2,870 | 5,045 |
+| Debug and trace | 196 | 4,042 |
+| SPM | 836 | 2,798 |
+| Instruction issue | 199 | 2,063 |
+| All VU hierarchies | 875 | 1,355 |
+| MVM gather | 542 | 535 |
+
+The debug count includes 2,577 shadow-queue signals and 916 trace-writer signals.
+These figures count affected signal names. They do not assign blame or physical
+node counts to a block; congestion created elsewhere can obstruct these nets.
+In particular, neither the top-ten examples nor the full name count supports
+calling this a VU-only failure or proving that removing the RV core fixes it.
+
+T_MAX=4 substantially reduced the cluster arithmetic, but did not proportionally
+shrink the central DMA/KVST, 512-bit SPM interfaces, issue/debug transport or
+platform DDR interconnect. The DMA and SPM instances in `tsr_core_dp.sv` do not
+receive T_MAX. The first T4 placement still used 296,178 central LUTs, close to
+299,410 in the preceding T8 major-Pblock placement. This explains why halving
+compute capacity did not by itself clear the central bottleneck.
+
+For the next worker, the original sixteen-Pblock T4 placement is the best T4
+reference so far, but it also failed. The evidence favors reducing or localizing
+shared central traffic before moving more whole blocks away from their data.
+Use matched feature/transport comparisons to distinguish DMA/KVST, debug/issue,
+SPM and VU costs. No follow-up implementation or retry has been started.
+
+### Follow-up investigation while paused
+
+At the user's request, Sol investigated central communication and consumer locality,
+and Astra reviewed the proposals. `platform-u200.md` §8.6.11 records the current
+interface rates, candidate boundaries and limitations. Priority is a narrower VU
+operand packet with local coefficient storage, reduced central debug formatting
+and queue read logic, then channel-local KV metadata merge. The review rejects
+counting lower runtime activity as fewer wires or counting TRW relocation as an
+automatic 512-to-256-bit crossing reduction. No RTL or constraints were changed,
+and no tests, synthesis or implementation were run. The goal remains paused.
+
+### Goal and implementation history
+
+The paused goal targets four clusters with T_MAX=4 and eight physical VU front/EXP lanes.
+Each outer SLR has four lanes, two with BACK support. The design retains independent
+MVM/VU issue, four 512-bit weight streams, DDR0/3 locality, paired gather, full
+attention and the existing numerical precision. Use only major-block Pblocks.
+Signoff requires a legally routed xclbin, core at least 250 MHz, RV near 166.7 MHz,
+passing setup/hold and the existing clock/reset and CDC checks.
+
+The preceding run started at 07:50:18 KST in
+`build/link/k4_20261105_075018_t4_front_dma_core250_rv166/` (supervisor 4026345).
+The [shown Pblock plan](fig/floorplan/k4-pblock-plan.png) retains the original 16
+major assignments and adds the six complete VU frontend submodules in SLR0 and DMA,
+including KVST, in SLR2. It uses the same kernel XO. Individual cells and stages
+remain under native placement and optimization. The source and launch evidence is in
+`build/analysis/k4_t4_front_dma_pblocks_20261105/`.
+
+Placement finished at 09:15 KST. SLR1 LUTs fell from 296,178 to 259,620 against
+the first T4 run. Occupied CLBs fell from 99.86% to 97.80%, leaving 1,084 empty.
+SLR0/2 occupied 80.55%/75.86%. SLL use grew from 12,213 to 16,917, and the final
+in-placer WNS estimate changed from −0.975 to −2.205 ns (TNS −7,678.399 ns).
+SLR1 north/south global congestion remained 64×64, while east/west fell from
+32×32 to 16×16. At 11:27 KST route verification reported 58,757 conflicted
+signals and 60,788 node overlaps. Northbound SLL demand reached 164% in one column.
+Several top-ranked nodes involve DDR0 response signals crossing from SLR0 to the
+relocated DMA in SLR2. Other examples include VU operands and bank returns.
+The next comparison restores the whole DMA block to SLR1 and keeps the VU frontend
+in SLR0, changing one hierarchy assignment. The native run exited at 11:33:26 KST and preserved its error DCP with unchanged
+source and packaged inputs.
+
+The new link started at 11:34:12 KST in
+`build/link/k4_20261105_113412_t4_dma_center_core250_rv166/` (supervisor 62883).
+It returns only `u_dma` to SLR1, keeping VU frontend in SLR0 and the other 22
+hierarchy assignments fixed. The input XO is identical. The per-run Pblock map,
+patch and launch record are in `build/analysis/k4_t4_dma_center_20261105/`.
+The 07:50 run's pre-build map is preserved under
+`build/analysis/k4_t4_front_dma_pblocks_20261105/pblock-plan.png`.
+
+This run completed placement at 12:59 KST. SLL use fell from 16,917 to 14,120
+against DMA in SLR2; the upper boundary fell from 9,536 to 6,691 connections.
+SLR1 has 265,510 LUTs and 98.51% occupied CLBs, versus 259,620 and 97.80% in the
+preceding placement. Final in-placer WNS improved from −2.205 to −1.645 ns.
+SLR1 north/south congestion was still 64×64. The final route failure is recorded above.
+
+### Earlier T4 attempts
+
+The [initial T4 Pblock map](fig/floorplan/k4-major-pblocks-nov4.png) was shown before launch. The
+normal K4 generator selects T_MAX=4. The new hardware link started at 02:00:15 KST
+in `build/link/k4_20261105_020015_t4_vu_core250_rv166/` (supervisor 3590967).
+It packaged a fresh kernel from the main checkout. The focused test and launch
+receipts are under `build/analysis/k4_t4_vu_20261105/` and
+`build/analysis/k4_t4_vu_build_20261105/` respectively.
+
+T4 integrated core smoke/debug, MVM back-to-back and QK/PV tests passed. In three
+attention fixtures (causal prefill, grouped heads, split-head sliding-window decode),
+all 2,560 output words matched both the C oracle and the T8 reference bit for bit.
+
+Synthesis finished at 02:23 KST. Against the same bank-local VU on the T8 build,
+kernel LUTs fell from 526,163 to 378,867, FFs from 605,139 to 435,139, DSPs from
+3,176 to 1,768 and BRAM tiles from 1,007 to 599. Both used 128 URAM. The kernel
+netlist contains four clusters, four PV blocks, two VU lane banks with local reduction,
+DMA/KVST, the RV subsystem and debug.
+
+Placement finished at 03:48 KST. SLR0/1/2 occupied 76.07%, 99.86% and 76.31% of
+CLB sites. SLR1 used 296,178 LUTs (75.16%) and had 71 empty CLBs. Against the completed
+T8 VU-on placement with central first-level reduction, SLL use changed from 12,233
+to 12,213. The maximum SLR1 global congestion regions remained 64×64 north and south.
+The final in-placer WNS was −0.975 ns and TNS −621.591 ns. The native link exited
+with code 1 at 06:12:47 KST. Route verification counted 9,938 conflicted signals and
+8,054 node overlaps, with zero unrouted or partly routed nets. Nine of the ten listed
+physical conflict nodes were SLR2 long wires used by the upper paired gather link;
+the tenth was in the SLR1 platform DDR1 PHY. The final north/south congestion windows
+lay in SLR1. The samples do not describe the distribution of all conflicts. The failed
+run retains its 550 MiB routed error checkpoint, logs and the verified source package.
+
+The saved error DCP lists 9,937 distinct conflicted net names, one fewer than the
+router message. The DMA hierarchy owns 2,263 (including 1,698 in KVST), the DDR1
+controller and its interconnect own 1,865 and 1,005 respectively, SPM owns 836,
+and MVM gather owns 542. These are signals, not counts of physical nodes. See
+`build/analysis/k4_t4_route_failure_20261105/hierarchy_counts.json`.
+
+The next comparison releases the gather assemblers, DDR bridge/arbiter hierarchy, SPM
+and RV/control to Vivado. Only four clusters and two VU lane banks have kernel Pblock
+assignments. The six-block Pblock plan in `build/analysis/k4_t4_relaxed_pblocks_20261105/pblock-plan.png` was shown
+before this retry. The prior input XO is reused unchanged.
+
+The six-block link started at 06:15:30 KST in
+`build/link/k4_20261105_061530_t4_six_core250_rv166/` (supervisor 3818127).
+It uses a private copy of the 02:00 run's IP cache. The kernel XO and source manifest
+match the 02:00 run byte for byte.
+
+The link ended at 07:45:20 KST with `Place 30-433`, unplaced instances.
+Vivado printed one example, a generated reset-forward register in the platform C2H
+AXI auto-pipeline. Its default report gives no total unplaced count. No failed
+placement DCP or route result was saved. Source/package checks passed. Available
+device-wide resources did not establish a global resource overflow, and the earlier
+SLR1 partition warning also occurred in the previous build that completed placement.
+
+
+### Stopped VU-absent routing experiment
+
+The T_MAX=8 diagnostic stopped at the user's request at 01:57:53 KST on November 5
+in initial routing phase 4.4. Its source and package integrity checks passed, and all
+owned processes exited. The comparison kept four clusters,
+T_MAX=8, ATTQK/ATTPV, DMA/KVST, the RISC-V core and debug, four 512-bit DDR ports,
+the major-block Pblocks and the 250/166.7 MHz clock request. The vector-backed
+attention operations cannot run without the VU. Disabling both existing `HAS_VU`
+and `HAS_ATT` would also remove the cluster and DMA attention hardware.
+The design priority is to preserve numerical accuracy when reducing area. Retain the
+q8_0 KV layout and the existing PV arithmetic.
+The diagnostic uses an isolated source checkout and XO cache. Its
+[pre-build Pblock plan](fig/floorplan/k4-no-vu-pblock-plan.png) omits the two VU banks.
+The link started at 22:45:56 KST. Its directory is
+`build/link/k4_20261104_224556_no_vu_core250_rv166/` (supervisor 3349470). Its
+source is `/home/limagin-dev/tesseract-k4-novu-20261104`. A directed integrated RTL
+test boots the RV, issues KVST, ATTQK and ATTPV, and checks the DMA/MVM retirement
+tickets. It also verifies rejection of vector instructions and absence of the public
+VU and full ATT capabilities. A second run checked 64 nonzero QK scores, 256 nonzero
+PV output words and both KV planes in every DDR channel against the C oracle.
+Synthesis finished at 23:09 KST. The synthesized EDIF contains four cluster instances,
+four PV instances, Ibex, the debug block and DMA/KVST. The VU instance is absent.
+Kernel LUTs fell from 526,163 to 455,448, FFs from 605,139 to 531,428 and DSPs from
+3,176 to 2,917 against the stopped bank-local VU trial. Physical fit and both clocks
+await the link result.
+
+Placement finished at 01:06 KST on November 5. Against the last VU-on major-Pblock
+placement, SLR1 CLB occupancy fell from 99.78% to 98.06% (851 fewer occupied sites).
+SLR1 LUTs fell from 299,410 to 259,041. The north and south SLR1 global congestion
+windows both fell from 64×64 to 32×32. SLR2 south still reached 64×64, and short-wire
+congestion in SLR1 reached 64×64 in all four directions. SLL use fell from 12,233
+to 10,702. The final in-placer WNS estimate improved from −1.134 to −0.790 ns.
+Vivado still warned of high congestion and entered post-place physical optimization.
+
+### Stopped bank-local VU trial
+
+The 21:22 KST link was stopped at 22:38:34 in global placement, phase 2.1. Its
+directory is `build/link/k4_20261104_212230_bank_l1_core250_rv166/`.
+Its source, packaged inputs, synthesis checkpoints and logs are preserved.
+It repackaged the three changed VU sources, used the same major-block
+Pblocks shown before launch, and requests core 250 MHz and RV 166.7 MHz. The previous
+run's custom kernel IP cache entry is excluded. The 384-bit return from each bank is now
+192 bits. The three promoted RTL files and regression match the functionally tested
+candidate under `build/analysis/k4_slr1_relief_20261104/`. It did not reach routing.
+
+### Previous major-block Pblock link
+
+At the user's request the 11:34 DMA-selector build stopped at 15:34:26 KST on November 4.
+Placement had finished and `phys_opt_design` was running. Routing had not started. Its
+owned processes exited and its source and package integrity checks passed. The original
+directory retains the placement reports, post-opt checkpoint and `user_stop_complete.json`.
+Use its level-6 placement results as the comparison baseline, not as a route failure.
+
+The user saw the [pre-build Pblock map](fig/floorplan/k4-major-pblocks-nov4.png) before the next
+native link started at 15:36:14 KST. Its directory is
+`build/link/k4_20261104_153614_pblocks_core250_rv166/`, supervisor 3091196. The new link
+uses the identical packaged kernel XO and a private copy of the previous Vitis IP cache.
+The ordinary placer now receives `k4_major_blocks.tcl` only. Individual pipeline-stage
+and helper constraints, the placement ECO, legacy post-placement ownership checks, and
+the forced placer directive are absent. Clock/reset and CDC hooks remain. The watcher reads
+native reports for placement and terminal events.
+
+Placement finished at 18:05 KST. The 11:34 and 15:36 runs used the same kernel XO.
+In `impl_1/slr_util_placed.rpt`, SLR1 used 299,410 LUTs, down from 300,620.
+Occupied CLBs fell by 17, from 99.82% to 99.78%. SLL crossings increased from
+11,850 to 12,233. In the placer's final congestion table, the SLR1 east global region
+shrank from 32×32 to 16×16. North and south stayed at 64×64. Across the device,
+east and west long-wire regions grew from 16×16 to 32×32. The final in-placer WNS
+estimate improved from −2.077 to −1.134 ns. After physical optimization it was
+−1.074 ns. Routing started at 18:35 KST. The pre-route clock/reset and CDC checks
+passed (zero unsafe or unconstrained CDC paths). The global router estimated SLL
+demand at 34.91% across SLR0–1, peaking at 97% in one column, and 47.89% across
+SLR1–2, peaking at 88%. Initial routing reported global/short congestion level 6 and
+timing congestion level 7. At 21:12 KST route verification reported 24,587 conflicted
+signals and 19,799 node overlaps. The counts for unrouted and partially routed nets were
+both zero. The earlier half-width build had 71 overlaps. Nine of the ten physical nodes
+listed in the new log were in SLR1. The examples include platform DDR, channel 0 DMA
+write data and VU/SPM paths. This list does not rank blocks by total conflicts.
+The supervisor exited at 21:21:52 with code 1 and unchanged source and package hashes.
+The original run retains its 692 MiB `impl_1/level0_wrapper_routed_error.dcp`.
+
+For the next trial keep these Pblocks and move the first VU reduction level into the
+two existing outer banks. The half-width bank's registered return narrows from 384 to
+192 bits per stage. Isolated functional tests and ordered writes passed. The physical
+benefit needs a new route. See `platform-u200.md` §8.6.10.
+
+### Previous DMA-selector build and placement-policy change
+
+The user limited future placement work to major-block Pblocks on November 4. The 11:34
+link keeps its original configuration. Subsequent links should use hierarchical block
+assignments and Vivado placement/routing within those regions. Omit the old leaf ownership
+walks, stage pinning and individual-cell placement ECO. The bank-local reduction RTL was
+promoted after the 15:36 build finished. The optional whole-VU audit was
+stopped, and further queued probes were withdrawn. Keep functional clock/reset and CDC
+constraints and final route/timing signoff.
+
+The configuration applied at 15:36 is preserved in
+`build/analysis/k4_major_blocks_20261104/major_blocks.patch`. It assigns whole clusters,
+assemblers, VU banks, outer DDR bridges/arbiters, SPM and control to platform Pblocks.
+It removes the old placement checker/ECO and forced placer directive. No extra CAD was
+started to prepare it. The four files were applied after the prior run's source freeze ended.
+The new launcher accepts `k4_major_blocks.tcl` and the CDC-only pre-physopt hook.
+Show the user [the pre-build Pblock map](fig/floorplan/k4-pblock-plan.png) before each
+new K4 build. It uses the prepared hook and the U200 platform's retained SLICE ranges.
+`hw/viz/k4_pblock_preview.py` renders the plan offline. Update the map when assignments change.
+
+The first half-width link failed route verification at 11:22 KST on November 4. Vivado
+reported **104 conflicted signals and 71 node overlaps**, down from 16,100 and 13,267 on
+the full-width run. It wrote its error DCP and exited naturally at 11:32:48, code 1.
+Both source and package integrity checks passed. Its `preserved_half_route_failure/manifest.json`
+verifies 1,200 copied files (1,470,206,871 bytes), including 179 checkpoints. The printed
+examples included MVM broadcast and channel 3 DMA write wires. The subsequent census
+covered all 104 signals and all 71 physical nodes. SLR1 has 67 nodes and SLR0 has four.
+Channel 3 DMA write-data participates in 49, including 33 conflicts between its own
+bits. Each of its 53 affected payload signals runs from SLR1 to SLR2. The previous
+full-width KVST hotspot did not dominate this netlist. Evidence and endpoint coordinates
+are in `build/analysis/k4_half_error_20261104/session/` and `platform-u200.md` §8.6.9.
+
+The reviewed DMA/KVST selector is now in the main checkout. Its two RTL files are the only
+runtime differences from the previous source snapshot. The new fresh link started at
+11:34:09 KST, supervisor 2794845, in `build/link/k4_20261104_113409_central_rsp_core250_rv166/`.
+`build/analysis/k4_active_attempt.txt` points to this run. It uses the same 8/8/4 VU,
+four clusters, floorplan and directives, 250 MHz core and 166.7 MHz RV. This comparison
+isolates the selector change at the design-input level. The v++ build forces a fresh XO
+and targets a complete image. Root monitors errors and placed reports via background cell
+`g8:294`. Final legal routing, timing, clock checks and the xclbin are pending.
+Placement completed on November 4. At 15:17 KST its reports showed 300,620 SLR1 LUTs
+(895 fewer than the preceding half-width run), 99.82% occupied SLR1 CLB sites and 11,850
+SLLs (33 more). Maximum global congestion stayed at level 6, with 64x64 north/south
+windows. The east/west long-wire windows shrank from 32x32 to 16x16. Placed WNS was
+-2.077 ns, TNS -134.216 ns and WHS -0.299 ns. Physical optimisation followed. The matched
+reports are in `build/analysis/k4_central_delta_20261104/placed_comparison.json`.
+
+### Evidence from the preceding half-width attempt
+
+The full-size locality attempt failed actual routing and exited naturally at 03:22:24 KST
+on 2026-11-04, native code 1, with source integrity unchanged. Verification rejected 16,100
+signals with routing conflicts and 13,267 node overlaps. The router's preceding summary had
+zero unrouted or partially routed nets: paths existed but illegally shared resources.
+The corresponding earlier failure reported 286,682 failed signals and
+352,035 overlaps. The reduction is substantial, but neither run is legally routed.
+This is a physical failure, not another launcher or floorplan-checker failure.
+
+The user's conditional fallback is now active: Sol implements FRONT8/EXP8/BACK4 while keeping
+four clusters, T_MAX=8, four independent 512-bit weight streams and independent MVM/VU issue.
+Retain 16 logical reduction histories, the original accumulation/tree order and 512-bit
+architectural SPM lines. Half-width banks have four physical lanes each and two back units
+each: bank 0 physical lanes {0,1,4,5}, bank 1 {2,3,6,7}. Physical lane l retains logical
+contexts l and l+8. NEOX needs separate line/half subslots. No numerical change is approved.
+Astra approved the final source after implementation and focused functional validation.
+Sol locality owns VU RTL/tests; Sol resume owns parameter plumbing, K4/OOC configuration,
+floorplan and integration checks. Root owns documentation and the next native launch.
+The goal remains active at core >=250 MHz and RV about 166.7 MHz; its older role/width wording is
+superseded by the user's later instructions. Luna remains terminated.
+
+The VU RTL and integration sources are now frozen. All 78 VU oracle case executions pass
+across six full/half-width pipeline configurations. Directed context, cancellation, tail,
+mixed-exit, NEOX and active-reset cases pass. Elaboration confirms actual 8/8/4 arithmetic,
+balanced banks and all 16 logical histories. M7 half-width decode/prefill and four-channel
+K4 smoke/DB pass. Software build, CTest, table and top checks pass. The final complete
+floorplan suite passes all 157 fixtures after correcting an eager bank census on legacy
+empty-helper paths; the original 63-failure log is preserved in `build/k4_half_floorplan_all.log`.
+Final passing evidence is `build/analysis/k4_half_vu_20261104/floorplan_all_final.log`.
+Full RTL lint passed all RTL, nine XSim elaborations and eight Vivado synthesis checks.
+Four TB targets initially failed on an unconnected optional drain output. An explicit unused
+TB wire fixes the warning; all four strict reruns pass without waivers or RTL changes.
+Evidence is `build/analysis/k4_vu_half_20261104/tb_connection_lint_completion.json`.
+The default bench suite passes: 518 passed, 115 opt-in skipped, no failures, 5,906.37 seconds.
+Evidence is `build/k4_half_default_tb.log`. Background cells `g8:192` and `g8:181` are finished.
+The original failed floorplan result is superseded by the explicit `floorplan_final` result.
+
+The next fresh driver is `build/analysis/k4_half_vu_build_20261104/supervise.py NEW_OUT`.
+It uses one top-level slot, 16 internal synthesis jobs and eight implementation threads,
+forces a new XO, preserves source/package hashes and runs through image generation.
+The production `hw/u200/k4_post_opt.tcl` hook saves `k4_post_opt.dcp` before the floorplan
+gate and propagates write failures. Hook/config/supervisor checks pass (35 combined cases).
+Astra approved the driver and final compatibility fix. All required pre-launch gates pass;
+31 frozen source/driver hashes and the corrected TB lint evidence have been verified.
+The broad bench suite completed while the native build ran.
+The fresh half-width attempt started at 04:16:21 KST on 2026-11-04, supervisor PID 2457599:
+`build/link/k4_20261104_041621_half_vu_core250_rv166/`.
+The fresh XO was packaged. Placement completed in 1 h 47 min 39 s, and the actual placed-locality
+gate passed. By 07:48 KST the placement reports were complete and physical optimisation began.
+Against the full-width locality run, SLL falls 13,141 to 11,817 (-10.1%), LUT use falls 3.1%
+and FF use falls 4.0%. Central CLB site occupancy remains 99.84%. Maximum global congestion
+remains level 6; north/south stay 64x64, east grows 16x16 to 32x32. WNS is -1.944 ns versus
+-1.874 ns previously. No physical success is established. See `platform-u200.md` §8.6.5.
+At 09:03 KST the half-width build was in initial routing.
+Initial SLL demand is lower overall, but the SLR1-2 peak column grows from 85% to 108%;
+the SLR0-1 peak changes from 97% to 94%. A total crossing reduction does not establish
+relief at each physical column. The native router has emitted its congestion warning.
+The read-only census of the previous full-width error DCP is complete. Of 13,263 unique
+physical conflict nodes, 12,893 (97.2%) are in SLR1; SLR0 has 102 and SLR2 has 268.
+Four triple-owner nodes reconcile the router's 13,267 overlaps. All 16,100 failed signals
+are covered, with no unknown tile SLR. The strongest cross-hierarchy pair is kernel DMA
+versus platform DDR1 (853 nodes), including 716 involving DMA's KV block. See
+`platform-u200.md` §8.6.6 and `build/analysis/k4_route_census_20261104/node_worker/session_objects_20261104/`.
+At 10:28 KST the half-width route was in rip-up/reroute Phase 5.2; intermediate overlap
+counts are not a terminal result. The native run remains untouched.
+`platform-u200.md` §8.6.7 compares the October card image and both integrated runs at
+the same placement stage. The October design used more SLLs than the failed locality
+run (13,724 versus 13,141), but left 3,889 empty SLR1 CLB sites versus 60. Its host
+still handled attention, normalization and RoPE. The half-width run leaves 79 sites.
+The central wiring change was developed in the isolated worktree
+`/home/limagin-dev/tesseract-k4-central-20261104`. Sol changed the DMA and KVST response
+input to use one four-channel data selector and added a mixed LD/ST/KVST regression.
+Astra approved the saved candidate. The original placed/routing run used the previous
+RTL and finished before promotion to the main checkout. The candidate patch,
+hashes, cycle counts and synthesis reports are in
+`build/analysis/k4_central_delta_20261104/dma_selector/completion.json` and its directory.
+The K4 DMA OOC comparison saves 736 LUTs and 2,048 direct response-bus loads. All 72 tested
+command latencies match. See `platform-u200.md` §8.6.8 for source and hierarchy comparisons.
+The candidate also passes all three core integration cases: M7 half-VU decode, prefill,
+and the four-channel locality smoke. The log is `dma_selector/candidate_core.log` in the
+same evidence directory. SLR1 reduction options and their costs are compared in
+`platform-u200.md` §8.6.9.
+Root's error watcher for that attempt used session 15336 and background cell `g8:195`.
+A separate read-only placement milestone watcher used session 20519 and cell `g8:199`;
+it notified root after the reports finished, following 6,742 seconds of model-free sleep.
+That watcher and cell are now finished. Astra independently reviewed the placed comparison.
+These loops run without periodic model invocations. Cycle evidence and its limits are
+in `platform-u200.md` §8.6.4.
+
+Root preserved 100 files (1,316,113,151 bytes), including the routed-error checkpoint
+(744,673,765 bytes), opt checkpoint, reports/logs, XPR, configuration, XO and working-tree
+patch, in the failed attempt's `preserved_route_failure_20261104/manifest.json`.
+All 177 synthesis DCPs were reverified against their preserved copies. Retain this evidence;
+changed RTL requires a fresh XO and build directory, not a resume from these checkpoints.
+
+### Last full-size locality attempt
+
+The latest native attempt started at 21:21:25 KST on 2026-11-03, supervisor PID 2150171:
+`build/link/k4_20261103_182205_locality_core250_rv166/attempts/20261103_212125_guarded_impl_drain_proven/`.
+Its `status.json` records the terminal routing failure. It reused all 177 synthesis DCPs and
+ran native init/opt, placement and routing. Core was 250 MHz, RV about 166.7 MHz, and the VU
+was full size. Root monitored the attempt directly.
+
+By 00:07 KST on 2026-11-04, placement completed successfully (2:00:10 elapsed), and the
+actual placed-locality gate passed (`K4FP locality PASS (placed=1)`). Compared with the previous full-system run at
+the same Fully Placed stage, SLL count fell 17,205 to 13,141 (-23.6%) and the outer SLRs are
+balanced. Central occupied CLB sites remain 99.88%, and the high-congestion warning remains.
+WNS is -1.874 ns. The comparison is qualified in `platform-u200.md` §8.6.3; the previous run
+used a 300 MHz core target and different CDC constraints. This is not timing closure.
+Clock/reset and pre-implementation CDC pass.
+The complete native pre-place gate passed at 21:57; `actual_pre_place_gate.txt` records it.
+The current attempt also saved its own post-opt DCP (456,667,721 bytes). Pre-implementation
+CDC passed with unsafe 0 and unconstrained 0. Routing later failed as recorded above.
+
+Monitoring changed on 2026-11-04 after the user raised token cost. Luna's tool waits had
+resumed its model about once a minute despite quiet output. At the user's explicit request,
+root interrupted Luna and retired only its read-only watcher PID 2150434 at 00:37:39.
+CAD was untouched. Do not restart Luna. Root's replacement watcher used exec session 82891
+and background code cell `g8:164`, with tool polling inside the background cell and `notify`
+only for an event or watcher failure. The notification woke root at 03:22 after 9,681 seconds
+of uninterrupted clock sleep, with no periodic model log reads. That watcher and cell are
+now finished; start a new pair only for the next native attempt. A local probe also verified
+that notifications wake `clock.sleep`.
+Use interruptible clock sleep while a background cell runs; do not poll `functions.wait`
+or CAD logs every minute. On an event, collect the yielded cell's completion and investigate.
+Python still checks errors/liveness every 10 seconds and writes samples every 15 minutes;
+those loops do not invoke a model. Root also stopped duplicate 15-minute model log reads.
+Keep ordinary progress quiet. Report errors, stoppage, completion and requested milestones.
+The placement comparison has already been completed by Astra.
+
+The complete production floorplan passes on the previous attempt's actual post-opt DCP.
+All 184 optimized wrapper helpers are LUT3/4 reduction-drain muxes: their exact bank output
+bits and delayed reduction selectors feed the matching central reduction register. The guard
+proves those connections and SLR1 ownership; it does not accept arbitrary wrapper names.
+All 128 floorplan fixtures pass. Astra approved. Evidence is in
+`build/analysis/k4_wrapper_provenance_20261103/`; the DCP hash is unchanged.
+
+The native scratch-project probe rejected a place-only restart because this run has no
+registered opt input checkpoint. Enabling intermediate checkpoint generation afterward did
+not supply one. Both scripts-only probes preserved all 402 protected live files. Use the
+proven full-init/opt restart. Its driver now unwraps only verified previous recovery hooks,
+sources the archive-verified native hooks directly, and protects old checkpoints/receipts
+from being overwritten. All 49 driver regressions pass and Astra approved the repair.
+No RTL changed for these guard and recovery fixes. Physical implementation remains unqualified.
+
+### Third guarded resume: optimized VU wrapper ownership
+
+The 20:29 attempt failed before placement at 21:04:31 KST; native exited naturally at
+21:05:22, code 1, with source integrity unchanged. The complete post-opt floorplan gate
+rejected `g_vu.u_vu/u_lanes/g_q[0][0]_i_1` as unknown banked VU ownership. The earlier bank
+arithmetic-helper proof passed. Sol resolved the optimized wrapper ownership and the complete
+actual-DCP floorplan check passed as described above. No placement or route result exists
+from this attempt, so the half-width fallback was not triggered.
+
+This attempt saved `post_opt.dcp` (456,670,630 bytes) before the failing hook. Root preserved
+71 files (489,844,071 bytes), including the DCP, project, generated hooks and diagnostics,
+with verified hashes in `preserved_pre_place_failure/manifest.json` under the attempt below.
+The custom checkpoint is not automatically a native opt checkpoint. Luna reported the failure
+and now monitors the newer attempt. The VPL failure summary re-echoes the old 176-run error; the fresh implementation
+session identifies only the new `g_q` floorplan failure as its primary cause.
+
+The corrected native run started at 20:29:12 KST on 2026-11-03, supervisor PID 2144510.
+That historical attempt is
+`build/link/k4_20261103_182205_locality_core250_rv166/attempts/20261103_202912_guarded_impl_verified_inventory/`.
+Its `status.json` records its failure. At 20:29:36 Vivado
+verified the existing synthesis inventory and launched `impl_1` through `write_bitstream`
+with eight jobs. All 177 synthesis DCPs are reused. Placement and routing are still pending;
+this launch receipt is not a physical success result. This attempt is now terminal as above.
+
+The final recovery driver passes 36 regressions and Astra review. A read-only Vivado probe
+confirms 98 completed and 79 cached synthesis runs, all at 100%. The guard checks their exact
+names, directories, source sets and preserved DCP mapping. Native hook paths also match.
+Only `hw/u200/k4_floorplan.tcl` changed from the original runtime source snapshot; the design
+RTL and packaged inputs are unchanged. The full pre-place floorplan check still runs after
+opt, and the recovery saves a post-opt checkpoint before it.
+
+### Second guarded resume: synthesis inventory check
+
+The 20:22 attempt exited at 20:22:56 before implementation launch: the resume guard expected
+176 synthesis runs, while the actual project and archived DCP inventory both contain 177.
+Cleanup was natural and source integrity unchanged. Sol replaced that assumed count with
+the verified run identity set; Astra approved it. The old Complete-only test also needed to
+accept verified cached synthesis results at 100%.
+
+The repaired launcher started at 20:22:19 KST on 2026-11-03, supervisor PID 2143400.
+That historical attempt is
+`build/link/k4_20261103_182205_locality_core250_rv166/attempts/20261103_202219_guarded_impl_isolated_python/`.
+Its `status.json` records the failure. At 20:22:35 the actual
+Vivado process 2143799 had entered the guarded Tcl and was opening the existing project.
+This is confirmed by `guard_entry_started.txt` and `vivado_invocations.jsonl`; a live VPL
+process alone does not prove implementation progress. Placement and routing have not yet
+been observed in this attempt. All 177 synthesis DCPs are reused.
+
+The launcher repair passes 24 regressions, including the archived Xilinx Python/library
+environment. Isolated Python startup retains the CAD environment for Vivado. Fresh startup
+failures are recorded as the primary cause before cleanup; old log errors are excluded.
+Astra approved. The full archive, package and synthesis integrity checks pass. Luna monitors
+this active attempt and reports only actionable events. No RTL changed for either recovery.
+
+### First guarded resume: Python startup failure
+
+At 20:17:41 KST the first guarded resume was stopped after a launcher failure. The new
+suffix of native `vpl/runme.log` records `Fatal Python error: Failed to import encodings
+module`; the guarded Python entry exited before starting Vivado. VPL remained alive waiting
+for that failed child. No placement or routing ran. Root preserved the logs and process
+evidence under that attempt's `bootstrap_failure_evidence/`, then stopped its supervisor.
+Owned processes exited and source integrity remained unchanged. Sol is correcting Python
+startup isolation and failure propagation; Astra reviews the fix. Reuse the 177 synthesis
+DCPs. This failed attempt is preserved separately from the active attempt above.
+
+The first corrected implementation resume started at 20:09:32 KST on 2026-11-03,
+supervisor PID 2142245. That attempt is
+`build/link/k4_20261103_182205_locality_core250_rv166/attempts/20261103_200932_guarded_full_impl_resume/`.
+Its `status.json` records the terminated attempt.
+The original build-root `status.json` deliberately retains the first attempt's failure; do not
+read it as the resumed run's status. Native VPL accepted `--from_step vpl.impl` for the existing
+failed run. The guarded entry rejects project recreation or synthesis and retains all 177
+checked synthesis DCPs. It saves a post-opt DCP and requires the complete native pre-place
+floorplan gate before placement. Final routing and timing remain unqualified.
+
+The corrected guard passes 107 fixtures and an actual synthesized-netlist probe of both VU
+banks, DDR0/3 bridges/arbiters/WS and all five central DMA slices, plus both gather pairs.
+All 424 reparented arithmetic helpers have known-lane connections on both sides and exactly
+one lane owner. Cross-bank, central, unanchored, unsupported and misplaced cases are rejected.
+Astra approved this proof and the recovery driver; its 17 regressions pass. No RTL changed
+for this correction. The whole floorplan still needs its actual post-opt native check: the
+pre-opt DCP has an existing BC-head shape that opt removes, so it is not that gate's input.
+Luna `/root/luna_watch` reported its termination and now monitors the repaired launch above.
+
+### First locality attempt: pre-place guard failure
+
+The fresh native attempt below failed before placement on 2026-11-03. At 19:47:20 the
+floorplan guard rejected a synthesized VU bank helper:
+`u_lanes/g_bank[0].u_bank/g_back.u_rcp/p1b_q_reg_i_1` (under the kernel's `g_vu.u_vu`).
+Synthesis reparented the helper into the bank. Sol corrected the guard using actual netlist
+connectivity; Astra approved the proof and negative fixtures. No placement or
+route ran, so this does not trigger the conditional half-width VU fallback. The goal is active.
+
+Native returned 1. At 19:48:10 the supervisor also found remaining native control processes
+and cleaned up its owned tree; its top-level error records that secondary cleanup condition.
+The implementation log contains the primary floorplan failure. Runtime source and package
+integrity were unchanged through the attempt. Verified copies of 259 files (222,892,315 bytes),
+including all 177 synthesis DCPs, the project, generated hooks, implementation reports/logs and
+status, are under `attempts/20261103_194810_pre_place_name_failure/preserved/` in this run.
+This full native flow did not write an opt DCP before the failed pre-place hook. Reuse synthesis
+and rerun init/opt with native hooks; there is no opt checkpoint to resume. Luna reported the
+failure and ended this monitor assignment. Reassign it to the next attempt.
+
+A fresh full native build started at 18:22:05 KST on 2026-11-03 in
+`build/link/k4_20261103_182205_locality_core250_rv166/`, supervisor PID 2056316.
+`build/analysis/k4_locality_latest.txt` and `k4_interconnect_latest.txt` point to it.
+It requests core 250 MHz / RV 166.666667 MHz, synthesis jobs 16, implementation jobs/threads 8.
+XO repackaging completed: all 138 packaged source entries match the 953-file execution
+snapshot. Native synthesis started at 18:24:21 with 16 concurrent jobs; all 176 finished at
+19:10:56 and top-level synthesis completed at 19:11:53. The implementation worker is confirmed
+live at 19:28, when it entered `opt_design` DRC before the later pre-place failure. The synthesized clock/reset
+gate passes at core 4.000 ns / RV 6.023 ns; pre-implementation CDC passes with unsafe 0,
+unconstrained 0 and the 3.333 ns crossing bound. Its BD clock/reset gate also passes:
+`ap_clk` uses `aclk_kernel_00`, `ap_clk_2` uses `aclk_kernel_01`, with separate reset generators.
+Physical locality, routed CDC and timing checks remain pending. `status.json` in this directory is authoritative; the supervisor
+snapshots execution inputs and package hashes. Luna `/root/luna_watch` monitors this attempt
+only and reported its failure to root. Ordinary samples were quiet.
+
+The current source implements DDR0/3 bridge and arbiter localization, gather consolidation for
+cluster pairs {0,2}/{1,3}, and balanced VU banks across SLR0/2. Sol implements, Astra reviews,
+and Luna is reserved for build monitoring only. The user corrected the original goal's role
+text; do not use Luna for implementation or review. The goal is active: a legal full route and
+timing-qualified xclbin at core >=250 MHz, RV about 166.7 MHz. Use 16 concurrent IP synthesis
+jobs, eight implementation/build threads and the existing swap.
+
+The user authorized a fallback on 2026-11-03: if this full-size attempt still fails, prioritize
+a working build and halve VU processing width/throughput. Keep the four clusters and their
+four independent 512-bit weight streams. This is conditional; the first attempt retains the
+current 16 front/EXP and eight back lanes. EXP/BACK parameter reductions alone do not halve
+all front arithmetic, so document the exact reduced configuration if that fallback is needed.
+
+Source integration and verification are complete; guarded native implementation is running.
+The paired gather retains eight buffered jobs per pair and one job/cycle under sustained
+traffic, with one added startup cycle. Its old registered central picker can still incur a
+transient bubble when the selected link drains as another arrives. VU banks contain four
+back-equipped and four front-only lanes each; arithmetic and lane order are unchanged.
+Five central DMA boundary slices per localized channel preserve registered crossings for
+DMA, KVST and trace. Weight responses stay local. Astra's source review found no remaining
+correctness blocker after generated-hierarchy naming fixes. Actual synthesis and placement
+ownership must still pass the native gates. The new floorplan requires these boundary slices;
+use archived hook snapshots when inspecting older checkpoints.
+
+Pre-build evidence for this source integration: the software build and all 297 enabled
+non-slow CTests pass (one disabled). Tables and generated tops match. Gather passes six
+configurations, VU passes PIPE 0/2/3 oracle cases, and all 91 floorplan fixtures pass. Four-channel
+`core_smoke` and `core_db` pass with the K4 pipeline depths (`RST_PIPE=3`, `SPM_RD_LAT=4`,
+`MVM_MAC_LAT=9`, BC/RES/VU pipes 2), reduced K/SPM sizes and both locality knobs enabled.
+They exercise all four weight channels plus DMA reads/writes on channels 0/3 and trace/stop
+behavior. Two-channel M7 decode/prefill cases also pass with the new DMA boundary and banked
+VU, including KVST and vector/attention operations. This is not a full-size model-on-card test.
+Logs: `build/pair_core_k4_final_depths.log`, `build/core_ddr_local.log`,
+`build/pair_att_deterministic.log`, `build/k4_locality_ctest.log`.
+Full RTL lint passes, including nine XSim elaborations and eight Vivado synthesis checks
+(`build/k4_locality_lint.log`). The complete default bench run also passes:
+445 passed, 115 opt-in skips, 7,611.83 s (`build/k4_locality_tb_all.log`, exit 0).
+Its elapsed time includes waiting for the native flow's slots at the duplicate technology lint.
+The final-depth K4 smoke/DB case was run separately after the full suite collected its earlier
+variant. The corrected 107 floorplan fixtures were likewise run after the native guard fix.
+The remaining VU simulation suite also passed separately in
+`build/k4_locality_vu_remaining.log`: 11 passed, 37 opt-in skips, 433.31 s.
+
+The new full-native supervisor is
+`build/analysis/k4_locality_build_20261103/supervise.py`. Sol implemented it, Astra reviewed it,
+and 20 isolated failure/completion checks pass. It uses a fresh directory, snapshots runtime
+sources and package hashes, preserves the old XO, forces repackaging and runs through image
+generation. It lets a native failure finish writing diagnostics. Exit 0 plus a nonempty xclbin
+is recorded as `native_completed_pending_signoff`; root still must review routed timing,
+clock/reset, CDC and locality before declaring T3 or the goal complete.
+
+The previous routing failure is preserved below. Its error DCP, clean native session log,
+status and resume audit have verified copies and SHA-256 records under
+`attempts/20261103_142123_route_from_preserved_physopt/preserved_failure/` in that run.
+
+### Previous attempt: routing congestion
+
+Latest status, checked at 17:25 KST on 2026-11-03: the route-only attempt below exited at
+16:56:55 with code 1. No Vivado process remains and no new attempt has started. This is an
+actual native routing failure: the clean current-session `native_step.log` reports 286,682
+signals failing to route because of congestion (`Route 35-162`), 352,035 overlapping nodes
+(`Route 35-2`) and partially conflicted nets (`Constraints 18-1000`). The router reached its
+final verification phases but did not produce a legal route. Its command took about 2 h 20 min;
+reported peak memory was 30,237.754 MB. The clock/reset and CDC gates had passed before routing.
+There is no timing-qualified 250 MHz image. The failure checkpoint
+`tmp/link/vivado/vpl/prj/prj.runs/impl_1/level0_wrapper_routed_error.dcp` exists in the current
+run (736,841,992 bytes); it is an analysis input, not a successful routed checkpoint.
+Root `status.json` records `state=failed`, `failure_stage=route_validation` and unchanged
+source integrity. Preserve this attempt and diagnose the failed nets before another run.
+The DDR/gather and VU repartition proposals in `platform-u200.md` §8.6 are now in source
+integration as described above; the old failure does not measure those changes.
 
 The user resumed work after the intentional route stop. Use the earlier four-cluster
 276.3 MHz image as the baseline and reduce the added interconnect before another long route.
@@ -111,6 +1369,124 @@ is authoritative. After synthesis it runs `impl_1` through `phys_opt_design`, ve
 checkpoint and preserved inputs, and runs the read-only census after releasing the native
 slots. Routing remains excluded from this attempt. The native Vitis restart attempt and
 the direct Vivado project resume have separate logs; neither is a completed placement result.
+
+At 21:06 KST on 2026-11-02, the resumed attempt is in detailed placement. Synthesis finished
+at 18:21:06: all 167 checked runs are complete (98 synthesized, 69 cached), with no run-log
+errors and all 44 retained checkpoints checked. Implementation started at 18:21:08.
+The synthesized clock/reset gate passes at core 4.000 ns and RV 6.023 ns; the pre-implementation
+CDC gate passes with unsafe 0, unconstrained 0 and the 3.333 ns bound. Global placement has
+finished. The latest implementation log, updated at 21:01:52, records Phase 3.2 Commit Most
+Macros & LUTRAMs. No `ERROR:` is present in that log. A five-second sample at 21:06 shows
+the implementation worker using about 4.1 CPU cores with active swap I/O. Host swap use is
+about 34 GiB of 72 GiB; the reported Vivado peak is 32,969 MB. Placement completion,
+post-placement physical optimisation, the census and final timing remain pending.
+
+The 2026-11-02 attempt stopped at 22:33:05. Placement completed and saved
+`level0_wrapper_placed.dcp` at 22:03:46. Physical optimisation then completed its computation
+with global WNS -0.809 ns and TNS -155.747 ns. Its POST locality hook rejected the new
+`att_stall_q_i_3_comp_1` LUT3 name, so the native step failed before writing a physopt DCP.
+This was a checker error; no route ran. The pre-physopt clock/CDC checks passed.
+
+The new placed report has 8,447 SLR0-1 and 6,880 SLR1-2 logical connections: 15,327 total,
+down from 17,205 in the earlier 300 MHz placed report. SLR1 CLB site occupancy remains
+99.77% (previously 99.84%); SLR0/2 are 97.08%/91.82%. Kernel LUT/FF counts are
+532,817/632,943, down by 1,927/2,108. Shared BC/VU placement and locality pass. These
+results include the clock-request change and full replacement placement; they do not
+isolate each interconnect change's contribution or measure routed physical SLL demand.
+The placer still reports high congestion. Placed global WNS -0.860 ns is on platform AXI
+control; core WNS -0.523 ns is on cluster 3 assembler reset distribution. RV setup/hold
+slack is +0.032/-0.080 ns. These are pre-route estimates, not 250 MHz timing signoff.
+
+On 2026-11-03 the floorplan guard was extended only to accept a numeric suffix after
+`_comp`. Actual cone connectivity, exclusive fanout, pblock ownership and physical SLR
+checks remain enforced. The exact failed name reproduces the old rejection; 60 floorplan
+fixtures and all 149 related platform fixtures pass after the fix. No arithmetic RTL changed.
+The recovery driver under `build/analysis/k4_resume_physopt_20261103/` archives all 167
+completed synthesis DCPs, the placed/opt DCPs, native hooks, project and reports before a
+physopt-only reset. It preserves native hooks and verifies checkpoint and XO/source hashes.
+The first recovery at 11:42:32 was intentionally stopped at 11:45 while loading the placed
+checkpoint: the resume verifier scanned old steps in Vivado's appended `runme.log`.
+Its attempt `20261103_114117_physopt_name_guard_resume` retains 217 archived files
+(1,298,694,645 bytes), package copies and the stop record. The supervisor returned failure
+with unchanged execution sources. The log verifier now preserves the old binary prefix and
+checks only the appended suffix; 10 plain Tcl regressions pass, including rejection of new
+out-of-scope steps and prefix changes. On completion, `native_step.log` contains only the new
+child session. The full native/runme logs include old sessions and old error messages.
+
+The corrected recovery started at 11:52:14 KST on 2026-11-03 under supervisor PID 1890583,
+attempt `20261103_115137_physopt_name_guard_resume`. Its archive holds 218 files
+(1,296,106,834 bytes), plus verified package copies. All 167 completed synthesis DCPs and
+the placed checkpoint are checked before and after the physopt-only reset. It runs physical
+optimisation and its native clock/CDC/locality hooks, then preserves the successful DCP and
+runs the read-only BC/VU/utilisation/timing/congestion census. Routing is excluded. Root
+`status.json` remains the live execution record; no successful recovered physopt result is
+claimed until the exact completion marker and checkpoint checks pass.
+
+That recovery saved `level0_wrapper_physopt.dcp` at 12:27:31 on 2026-11-03. The native
+clock/reset, CDC and post-physopt locality checks passed. Its wrapper then failed at
+12:28:14: the bounded native run reported `Not started route_design / 66.67%`, while
+the wrapper required `phys_opt_design Complete! / 100%`. This was a whole-run status
+check error. The native child completed successfully and wrote its checkpoint; no route ran.
+
+At 14:02 KST, attempt `20261103_140219_completed_physopt_recovery` resumed the pending
+read-only census under supervisor PID 1929627. It reuses the 594,304,775-byte physopt DCP,
+SHA256 `b506339df428e9d6d05f599ff79fdd8201327a82051a40f2e2e2f0cfb443f061`.
+The recovery validates the exact appended child log, fresh typed checkpoint and completion
+markers, absence of error/route markers, clock/reset/CDC/locality passes, all 167 preserved
+synthesis checkpoints, the placed checkpoint, package identity and execution sources.
+The old failed attempt and drivers remain unchanged. A corrected driver and 29 passing
+recovery regressions are under `build/analysis/k4_completion_recovery_20261103/`.
+Synthesis, placement and physopt were not repeated. Census completed at 14:21:03 with
+exit code 0 and checkpoint, baseline, source and driver hashes unchanged. Shared BC has
+five banks of 529 live bits (2,645 FF), 529 unique crossing nets and 1,058 logical boundary
+incidences. The VU selected stage-0 scope has 3,111 directed boundary incidences; its shared
+lane return and separate reduction return are each 512 bits. The 79 selector registers
+remain local. Four stage-1 drain-address replicas stay in SLR0, each driven alongside its
+original by the corresponding SLR1 stage-0 source. No unknown sequential cell was found.
+Full-shell logical connectivity is 8,446 on SLR0-1 and 6,879 on SLR1-2. SLR1 CLB site
+occupancy remains 99.77%. These counts are not routed physical SLL allocation.
+Core setup WNS is -0.148 ns; RV setup is +0.032 ns. Global setup WNS -0.809 ns is on the
+fixed platform DMA clock. Core/RV hold slack is -0.313/-0.080 ns. The worst core setup
+sample is cluster 0 QK gate to central ATT stall aggregation. Congestion level 6 remains.
+Both core/RV crossing directions retain the 3.333 ns datapath-only bounds. Timing is not
+qualified; routed setup, hold and congestion still need verification.
+
+Attempt `20261103_142123_route_from_preserved_physopt` starts the native route-only
+continuation under supervisor PID 1935097. Its scripts and reviewed report hashes are
+under `build/analysis/k4_route_from_physopt_20261103/`; 18 focused Tcl regressions pass.
+It preserves the 167 synthesis DCPs, placed and physopt inputs, and all native platform
+hooks. Only the route step is reset/launched, with eight implementation threads and the
+existing swap. Completion requires the new typed routed DCP, fresh step markers and a
+clean current child log. Whole-run progress alone is not a completion criterion. This
+attempt stops before bitstream generation; routed timing must be reviewed afterward.
+At 14:33 KST, the new child session has passed the pre-route clock/reset and CDC gates
+(unsafe 0, unconstrained 0, bound 3.333 ns) and entered `Phase 1 Build RT Design`.
+The child opened the preserved physopt checkpoint; no synthesis, placement or physopt
+was repeated. There is no routed checkpoint or routed timing result yet.
+
+The user clarified that monitoring must accompany active build work. Continue with routing
+after reviewing the census, and repair/restart failures without another permission request.
+Core acceptance remains at least 250 MHz; do not chase 300 MHz. The Sol monitor only reports.
+It checks new state/failure changes within ten seconds and detailed progress every fifteen
+minutes. Root owns diagnosis, fixes and continuation. Its records are under
+`build/analysis/k4_build_watch_20261103/`; monitoring alone is not build progress.
+
+The DDR0/3 localization review is in `platform-u200.md` §8.6.1. It uses the existing recovered
+physopt census; no new CAD run or runtime-input change was made. Moving the central bridge,
+arbiter and weight pipe ends needs roughly 1.7 K LUT / 4.0 K FF in SLR0 and 1.4 K LUT /
+3.9 K FF in SLR2. Whole-SLR CLB occupancy is 97.08% / 91.82%, so SLR2 has more margin but
+neither pblock fit is proven. Keep full-width weight streams and explicitly check the DMA
+handshake timing problem that originally motivated central arbiters (`rtl-m3.md` §14.4).
+
+The combined DDR/gather sufficiency review is in `platform-u200.md` §8.6.2. The nominal
+2,148-connection saving is not a physical SLL or routing-success forecast. Current congestion
+also includes central issue/CSR/debug queues and an outer PV/MAC window. If further relief
+is needed, compare a balanced VU eight/eight lane split with central metadata/control cleanup
+before reducing arithmetic. Moving four back-equipped and four front-only lanes represents
+about 23 K LUT / 37 K FF / 184 DSP before boundary helpers. BACK8 -> BACK4 is a later area
+tradeoff with workload-dependent latency. Keep EXP16, T_MAX8, four weight512 streams and
+independent MVM/VU execution first. Analysis artifacts are under
+`build/analysis/k4_followup_capacity_20261103/`; no RTL, floorplan or CAD change was made.
 
 ### Preserved attempt and baseline measurements
 
@@ -487,6 +1863,9 @@ The k1 link (one channel, all in SLR1) was stopped: 170 K LUT in a 199,680-site 
 - Roadmap after the card gate: speculative decoding (n-gram, draft model, MTP) verified in one T_MAX 8
   pass; M8 MoE with Gemma 4 26B-A4B as the target; Gated DeltaNet kinds for Qwen3.8-27B; multi-card
   QSFP mesh; DeepSeek-V4-Flash and Qwen3.8-Flash-Next (multi-card).
+- MoE/GDN planning decisions retained on 2026-11-02: see [design/README.md](design/README.md)
+  §12.6 for the firmware/RTL boundary, TOPK enablement, independent MVM/VU paths, head-sized
+  state tiles, numerical and performance checks, and llama.cpp state/MTP rollback integration.
 - Optimisation levers kept for after the card gate: SPM banks as true dual-port URAM; about 812 free
   URAM (per-cluster attention buffers, larger preload area, T_MAX 16 buffers); the 256-line preload
   area (FLASH_ATTN above 680 tokens runs on the CPU today).

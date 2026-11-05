@@ -289,13 +289,13 @@ struct device::impl {
     // with ACC_DST (y += W x: one f32 add per part, in order, as MVM.ACC does). The builder orders
     // the K parts of an N part (each reads and writes its y rows); the N parts are independent. A
     // list that would exceed 4096 records runs in pieces.
-    void run_linear(const weight & w, uint32_t tc) {
+    void run_linear(const weight & w, uint32_t tc, const float * scale) {
         namespace mm = tsr::opl::mm;
         tsr_opl_builder b(cfg.num_ch, tsr::opl::F_STOP_ON_ERROR);
         for (uint32_t i = 0; i < w.pl.n_parts; ++i) {
             for (uint32_t j = 0; j < w.pl.k_parts; ++j) {
                 const part & p = w.at(i, j);
-                uint32_t a[mm::NARGS];
+                uint32_t a[tsr::opl::mm_scale::NARGS];
                 a[mm::X]          = tsr_dram_handle(0, io_off + (uint64_t) p.k0 * 4);
                 a[mm::X_STRIDE]   = w.K / 16;
                 a[mm::Y]          = tsr_dram_handle(0, y_off(w, tc, i));
@@ -308,12 +308,13 @@ struct device::impl {
                 a[mm::ADD]        = tsr::opl::HANDLE_NONE;
                 a[mm::ADD_STRIDE] = 0;
                 a[mm::FLAGS]      = j == 0 ? 0u : mm::FLAG_ACC_DST;
+                if (scale) a[tsr::opl::mm_scale::SCALE] = tsr_f32_bits(*scale);
                 const int32_t tag = (int32_t) ((i << 16) | j);
-                uint32_t idx = b.mul_mat(a, tag);
+                uint32_t idx = b.mul_mat(a, tag, scale ? tsr::opl::K_MUL_MAT_SCALE : tsr::opl::K_MUL_MAT);
                 if (idx == tsr_opl_builder::NO_ROOM) {
                     run(b);
                     b.reset();
-                    idx = b.mul_mat(a, tag);
+                    idx = b.mul_mat(a, tag, scale ? tsr::opl::K_MUL_MAT_SCALE : tsr::opl::K_MUL_MAT);
                 }
                 if (idx == tsr_opl_builder::NO_ROOM || idx == tsr_opl_builder::FAILED) {
                     throw error(strf("tsr_rt: internal error: op list: %s", b.error()));
@@ -529,10 +530,27 @@ void device::read_blocks(weight_handle h, uint32_t r0, uint32_t r1, void * dst) 
 }
 
 void device::linear(weight_handle h, const float * x, uint32_t T, float * y, size_t x_stride, size_t y_stride) {
+    linear_impl(h, x, T, y, x_stride, y_stride, nullptr);
+}
+
+bool device::has_local_scale() const {
+    const impl & d = *p_;
+    return d.cfg.num_ch == 4u && (d.cfg.caps & TSR_CAPS_MVM_LOCAL_SCALE) &&
+           d.odev.versions().kind_rev[tsr::opl::K_MUL_MAT_SCALE] != 0u;
+}
+
+bool device::try_linear_scale(weight_handle h, const float * x, uint32_t T, float * y, float scale,
+                              size_t x_stride, size_t y_stride) {
+    return linear_impl(h, x, T, y, x_stride, y_stride, &scale);
+}
+
+bool device::linear_impl(weight_handle h, const float * x, uint32_t T, float * y, size_t x_stride,
+                         size_t y_stride, const float * scale) {
     std::lock_guard<std::mutex> lk(p_->mtx);
     impl & d = *p_;
     const weight & w = d.get(h);
-    if (T == 0) return;
+    if (scale && (!has_local_scale() || w.pl.k_parts != 1u)) return false;
+    if (T == 0) return true;
     const size_t xs = x_stride != 0 ? x_stride : w.K;
     const size_t ys = y_stride != 0 ? y_stride : w.N;
     if (xs < w.K || ys < w.N) throw std::invalid_argument("tsr_rt: linear: x_stride < K or y_stride < N");
@@ -561,7 +579,7 @@ void device::linear(weight_handle h, const float * x, uint32_t T, float * y, siz
             }
             d.write(0, d.io_off, d.hbuf.data(), d.hbuf.size());
         }
-        d.run_linear(w, tc);
+        d.run_linear(w, tc, scale);
         if (direct_y) {
             d.read(0, d.y_off(w, tc, 0), y + (size_t) t0 * w.N, (size_t) tc * w.N * 4);
         } else {
@@ -578,6 +596,7 @@ void device::linear(weight_handle h, const float * x, uint32_t T, float * y, siz
     }
     d.cnt.linears++;
     d.cnt.tokens += T;
+    return true;
 }
 
 void device::linear_ref(weight_handle h, const float * x, uint32_t T, float * y, size_t x_stride, size_t y_stride) const {

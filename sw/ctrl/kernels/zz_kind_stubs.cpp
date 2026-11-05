@@ -25,6 +25,8 @@ namespace {
     [[gnu::weak]] ticket name(const volatile uint32_t *, uint32_t, uint32_t, deps, kind_ctx & ctx) {        \
         return kind_missing(ctx);                                                                           \
     }
+TSR_KIND_STUB(kind_mulmat_scale)
+TSR_KIND_STUB(kind_mulmat_softcap)
 TSR_KIND_STUB(kind_add)
 TSR_KIND_STUB(kind_mul)
 TSR_KIND_STUB(kind_scale)

@@ -13,6 +13,7 @@ module tsr_vu_xc
   import tsr_pkg::*;
   import tsr_xc_pkg::*;
 #(
+  parameter bit          LOCAL_INTERMEDIATES = 1'b0,
   parameter int unsigned SPM_BYTES = TSR_DEF_SPM_BYTES,
   parameter int unsigned K_MAX     = TSR_DEF_K_MAX,
   parameter int unsigned NUM_CH    = TSR_DEF_NUM_CH
@@ -43,7 +44,7 @@ module tsr_vu_xc
   logic [31:0]              vu_rsp_info;
   tsr_ext_t [TSR_EXT_N-1:0] vu_rsp_ext;
   logic [TSR_XC_CMD_W-1:0]  vu_rsp_cmd;
-  tsr_vu_chk #(.SPM_BYTES(SPM_BYTES), .K_MAX(K_MAX), .NUM_CH(NUM_CH)) u_vu (
+  tsr_vu_chk #(.LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .SPM_BYTES(SPM_BYTES), .K_MAX(K_MAX), .NUM_CH(NUM_CH)) u_vu (
     .clk, .rst_n, .req_valid(xc_req_valid && cls == TSR_XC_VU), .req_insn(xc_req_insn),
     .rsp_valid(vu_rsp_valid), .rsp_code(vu_rsp_code), .rsp_info(vu_rsp_info), .rsp_ext(vu_rsp_ext),
     .rsp_cmd(vu_rsp_cmd)

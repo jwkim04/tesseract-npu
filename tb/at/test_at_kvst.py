@@ -7,8 +7,8 @@ the SPM port on a Python model (at_tb.SpmPort, random ready), the memory ports o
 For every op: the instruction goes through tsr_chk_at (its code / info must equal tsr_sim_op's); a passing op
 then runs on the DMA with the checker's payload (cmd_xc = 1). After `done`:
   - every byte of the plane (B .. B + LG GB on every channel, random before the op) equals the simulator's;
-  - the beats written are exactly the op's meta and quant beats (AT §4.3 / §4.4), the beats read exactly the
-    partially covered meta beats (read-modify-write), and perf_kvst_rmw pulsed once per such beat (KVST_RMW);
+  - the beats and word masks match the op's meta and quant coverage (AT §4.3 / §4.4);
+    there are no DDR reads or perf_kvst_rmw pulses;
   - the SPM is unchanged and was only read inside the source vectors;
   - LD / ST still work between KVSTs (a few plain LD / ST ops through the same DMA, checked against the
     simulator), and the memory protocol checks of MemModel hold (bursts, 4 KiB rule, M5 orderings).
@@ -47,7 +47,7 @@ def cfg_env():
 
 
 def plane_sets(kv, E, C, LG, B0, c0, n):
-    """(written beats per channel, rmw meta beats per channel) of a KVST (AT §4.3 / §4.4)."""
+    """Written beats and 32-bit word masks by channel (AT §4.3 / §4.4)."""
     nb, e64, GB = E // 32, E // 64, 17 * (E // 64)
     wr = [set() for _ in range(C)]
     cov = {}                                     # (ch, meta beat) -> covered block slots
@@ -68,11 +68,11 @@ def plane_sets(kv, E, C, LG, B0, c0, n):
                 wr[ch].add(chunk)
                 wr[ch].add(chunk + 1 + r)
                 cov.setdefault((ch, chunk), set()).update((2 * r, 2 * r + 1))
-    rmw = [set() for _ in range(C)]
+    masks = [{beat: 0xFFFF for beat in beats} for beats in wr]
     for (ch, meta), slots in cov.items():
-        if len(slots) != 32:
-            rmw[ch].add(meta)
-    return wr, rmw
+        assert all((slot ^ 1) in slots for slot in slots)
+        masks[ch][meta] = sum(1 << word for word in {slot // 2 for slot in slots})
+    return wr, masks
 
 
 class Bench:
@@ -92,7 +92,7 @@ class Bench:
         self.mem = MemModel(dut, num_ch=self.C, addr_w=cfg["addr_beat_w"], rd_outstanding=cfg["rd_out"],
                             limit_beats=self.limit, seed=seed, rd_lat=tuple(cfg.get("rd_lat", (1, 60))))
         self.rmw_pulses = 0
-        self.stats = dict(ops=0, passed=0, rmw=0, beats=0)
+        self.stats = dict(ops=0, passed=0, partial=0, beats=0)
 
     async def perf_mon(self):
         while True:
@@ -193,20 +193,20 @@ class Bench:
                         raise AssertionError("KVST %s: channel %d beat %d (plane +%d) differs:\n RTL %s\n sim %s" % (
                             [hex(x) for x in w], c, B0 + k, k, got[64 * k:64 * k + 64].hex(),
                             exp[64 * k:64 * k + 64].hex()))
-        wr, rmw = plane_sets(kv, E, self.C, LG, B0, c0, n)
+        wr, masks = plane_sets(kv, E, self.C, LG, B0, c0, n)
         for c in range(self.C):
             assert set(self.mem.written[c]) == wr[c], "KVST %s: channel %d wrote %s, expected %s" % (
                 [hex(x) for x in w], c, sorted(set(self.mem.written[c]) ^ wr[c])[:8], sorted(wr[c])[:8])
-            assert set(self.mem.read[c]) == rmw[c], "KVST %s: channel %d read %s, expected the RMW beats %s" % (
-                [hex(x) for x in w], c, sorted(self.mem.read[c])[:8], sorted(rmw[c])[:8])
-        nrmw = sum(len(x) for x in rmw)
-        assert self.rmw_pulses - p0 == nrmw, "perf_kvst_rmw %d, expected %d" % (self.rmw_pulses - p0, nrmw)
+            assert not self.mem.read[c], ("KVST issued a DDR read", c, self.mem.read[c])
+            assert len(self.mem.write_masks[c]) == len(masks[c])
+            assert dict(self.mem.write_masks[c]) == masks[c]
+        assert self.rmw_pulses == p0, "KVST performed core RMW"
         assert not self.port.writes, "KVST wrote the SPM"
         lo, hi = src, src + ext
         bad = [x for x in self.port.reads if not lo <= x < hi]
         assert not bad, "SPM reads outside the sources: %s" % bad[:4]
         assert bytes(self.spm) == self.sim.spm_read(0, self.spm_bytes)
-        self.stats["rmw"] += nrmw
+        self.stats["partial"] += sum(mask != 0xFFFF for channel in masks for mask in channel.values())
         self.stats["beats"] += sum(len(x) for x in wr)
 
     async def ldst(self):
@@ -227,10 +227,12 @@ class Bench:
         w = [(isa.OP_ST if st else isa.OP_LD) | (ch << 8), line, beat, n, 0, 0, 0, 0]
         assert self.sim.op(w)[0] == 0
         cmd = isa.DMA_CMD_T.pack(is_st=st, ch=ch, spm_line=line, dram_beat=beat, n_lines=n)
+        self.mem.clear_tracking()
         await self.dma(cmd=cmd)
         for _ in range(4):
             await RisingEdge(self.dut.clk)
         if st:
+            assert self.mem.write_masks[ch] == [(beat + i, 0xFFFF) for i in range(n)]
             assert self.mem.read_bytes(ch, 64 * beat, 64 * n) == self.sim.dram_read(ch, 64 * beat, 64 * n)
         else:
             assert bytes(self.spm[64 * line:64 * (line + n)]) == self.sim.spm_read(64 * line, 64 * n)

@@ -658,7 +658,9 @@ async def dbg_trw(dut):
                 bad.append("trw wrap: %d of 40 DMA bursts sent" % len(b.dma_sent))
             for (a, n, data) in b.dma_sent:
                 for i in range(n):
-                    if b.mem.get(a + i) != data[i]:
+                    mask = D.dma_write_mask(i)
+                    bits = sum(0xFFFFFFFF << (32 * word) for word in range(16) if mask & (1 << word))
+                    if b.mem.get(a + i) != (data[i] & bits):
                         bad.append("trw wrap: DMA beat %#x lost or wrong" % (a + i))
                         break
             if b.dma_rsp != 40:

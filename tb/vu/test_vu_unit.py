@@ -21,6 +21,7 @@ Tests (cocotb, one build per parameter set):
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import random
@@ -42,14 +43,14 @@ from vu_env import Oracle, Rtl, rnd_f32, rnd_line, M32   # noqa: E402
 
 CORE = REPO / "rtl" / "core"
 VU_SOURCES = [CORE / s for s in (
-    "tsr_tables_pkg.sv", "tsr_pkg.sv", "tsr_fp_pkg.sv", "tsr_xc_pkg.sv", "tsr_vu_pkg.sv")] + \
+    "tsr_tables_pkg.sv", "tsr_pkg.sv", "tsr_fp_pkg.sv", "tsr_att_pkg.sv", "tsr_xc_pkg.sv", "tsr_vu_pkg.sv")] + \
     [REPO / "rtl/tech/generic/tsr_sram_1r1w.sv"] + [CORE / s for s in (
         "tsr_fp_mul.sv", "tsr_fp_add.sv", "tsr_fp_div.sv", "tsr_spm.sv", "tsr_spm_cport.sv", "tsr_vu_dly.sv",
         "tsr_vu_exp.sv", "tsr_vu_rcp.sv", "tsr_vu_sqrt.sv", "tsr_vu_sincos.sv", "tsr_vu_lane.sv",
         "tsr_vu_lane_share.sv", "tsr_vu_lanes.sv",
         "tsr_vu_gen.sv",
         "tsr_vu_rd.sv", "tsr_vu_dq.sv", "tsr_vu_inj.sv", "tsr_vu_wr.sv", "tsr_vu_red.sv", "tsr_vu_angle.sv",
-        "tsr_vu_topk.sv", "tsr_vu.sv")] + \
+        "tsr_vu_topk.sv", "tsr_local_asmax.sv", "tsr_vu.sv")] + \
     [HERE / "hdl" / "tsr_vu_tb.sv"]
 
 
@@ -66,7 +67,9 @@ def f2u(x):
 def cfg():
     c = json.loads(os.environ.get("TSR_VU_UNIT_CFG", "{}"))
     return dict(spm_bytes=c.get("spm_bytes", 262144), num_ch=c.get("num_ch", 4), n=c.get("n", 1.0),
-                topk=c.get("topk", 1), dqrow=c.get("dqrow", 1))
+                topk=c.get("topk", 1), dqrow=c.get("dqrow", 1),
+                front_lanes=c.get("front_lanes", 16), exp_lanes=c.get("exp_lanes", 16),
+                back_lanes=c.get("back_lanes", 8), lane_pipe=c.get("lane_pipe", 0))
 
 
 # ---------------------------------------------------------------------------------------------
@@ -85,6 +88,7 @@ class Bench:
         self.noise = noise
         self.bad = []
         self.n_ops = 0
+        self.cycle_records = []
 
     async def start(self):
         cocotb.start_soon(Clock(self.dut.clk, 10, unit="ns").start())
@@ -121,6 +125,7 @@ class Bench:
         for w in accepted:
             await self.rtl.push(w)
         await self.rtl.wait_done(self.rtl.pushed)
+        self.cycle_records.append(dict(workload=what, cycles=self.rtl.cycles-c0, ops=accepted))
         for _ in range(4):
             await cocotb.triggers.RisingEdge(self.dut.clk)
         assert self.rtl.done == self.rtl.pushed, "done %d, pushed %d" % (self.rtl.done, self.rtl.pushed)
@@ -147,6 +152,11 @@ class Bench:
         return nbad
 
     def finish(self, name):
+        report = os.environ.get("TSR_VU_CYCLE_REPORT")
+        if report:
+            digest = hashlib.sha256(bytes(self.o.spm)+struct.pack("<16I", *list(self.o.sreg))).hexdigest()
+            Path(report).write_text(json.dumps(dict(config=cfg(), records=self.cycle_records,
+                                                   output_digest=digest), indent=2)+"\n")
         self.o.close()
         log = self.dut._log
         log.info("%s: %d ops, %d cycles, hazard-wait cycles %d, SPM-wait cycles %d", name, self.n_ops,
@@ -714,14 +724,106 @@ async def vu_decode(dut):
 
 
 # ---------------------------------------------------------------------------------------------
+@cocotb.test()
+async def vu_width_contexts(dut):
+    """Distinct upper/lower histories, ring wrap, tails and ordered mixed exits."""
+    b = Bench(dut, 0x1684, noise=True)
+    await b.start()
+    for m in (16*9+1, 16*17+9, 16*33+15, 16*65+7):
+        lines = V.L(m)
+        src = 100
+        values = [f2u((-1.0 if (j//16+j%8)%2 else 1.0) *
+                       2.0**((24 if j%16 < 8 else -10) + (j//128)%3))
+                  for j in range(lines*16)]
+        await b.prewrite([(src+i, struct.pack("<16I", *values[16*i:16*i+16])) for i in range(lines)])
+        await b.batch([V.enc_red(kind, 10+kind, src, m) for kind in (0, 1, 2)], "logical contexts %d" % m)
+    # First touch must initialize both contexts, even when tail masks one half.
+    for m in (1, 7, 8, 9, 15, 16, 17, 129):
+        await b.batch([V.enc_red(0, 12, 100, m), V.enc_red(2, 13, 100, m)], "fresh/tail %d" % m)
+    for _ in range(4):
+        w = gen_amask(b)
+        await b.prewrite(mask_prewrite(b, w))
+        await b.batch([w], "AMASK contexts/freshness")
+    # Earliest scheduling must preserve back->front and front->back exit order.
+    await b.batch([V.enc_vop(f, 700+i*64, 100, 200 if "b" in V.VOP_FUNCS[f][1] else 0, 0, 513, 1)
+                   for i, f in enumerate((0x06, 0x00, 0x13, 0x18, 0x09, 0x06))], "mixed 2/4-part exits")
+    for mode in (0, 1):
+        pre, ops = gen_rope(b, mode, 128, 64, 3, 33, "rec")
+        await b.prewrite(pre)
+        await b.batch(ops, "ROPE four subslots, partial rotation, angle reuse %d" % mode)
+    b.finish("vu_width_contexts")
+
+
+@cocotb.test()
+async def vu_width_reset(dut):
+    """Reset while a NEOX pair or reduction row token is in flight."""
+    from cocotb.triggers import FallingEdge
+    b = Bench(dut, 0x8451, noise=False)
+    await b.start()
+
+    async def clean_reset():
+        await b.rtl.reset(noise=False)
+        b.rtl.done = b.rtl.pushed = 0
+        for _ in range(160):
+            await FallingEdge(dut.clk)
+            assert not int(dut.probe_write_pending.value), "stale write after reset"
+        assert b.rtl.done == 0, "stale completion after reset"
+        b.o.close()
+        b.o = Oracle(b.spm_bytes, cfg()["num_ch"], caps=0x21 | 0x8 | 0x40)
+        await b.prewrite([(i, rnd_line(b.r)) for i in range(b.L)])
+
+    pre, ops = gen_rope(b, 1, 64, 64, 2, 3, "rec")
+    await b.prewrite(pre)
+    await b.batch(ops[:-1], "rope setup before abort")
+    await b.rtl.push(ops[-1])
+    target = 2 if cfg().get("front_lanes", 16) == 8 else 1
+    for _ in range(20000):
+        await FallingEdge(dut.clk)
+        if int(dut.probe_i_valid.value) and int(dut.probe_i_rope.value)==1 and int(dut.probe_i_part.value)==target:
+            break
+    else:
+        assert False, "did not reach occupied NEOX subslot"
+    await clean_reset()
+    pre, ops = gen_rope(b, 1, 64, 64, 2, 3, "rec")
+    await b.prewrite(pre)
+    await b.batch(ops, "NEOX after active reset")
+    await b.rtl.push(V.enc_red(0, 8, 100, 16*25+9))
+    for _ in range(20000):
+        await FallingEdge(dut.clk)
+        if int(dut.probe_row_token.value):
+            break
+    else:
+        assert False, "did not reach queued reduction row token"
+    await clean_reset()
+    await b.batch([V.enc_red(0, 8, 100, 16*25+9), V.enc_red(2, 9, 100, 129)], "RED after queued-token reset")
+    b.finish("vu_width_reset")
+
+
+@cocotb.test()
+async def vu_width_cycles(dut):
+    """Matched no-contention operation latency; excludes readback and setup."""
+    b = Bench(dut, 0xC1C1, noise=False)
+    await b.start()
+    for name, f, n in (("ADD896", 0x00, 896), ("COPY4096", 0x09, 4096),
+                       ("EXPK1024", 0x08, 1024), ("SILU4864", 0x06, 4864)):
+        await b.batch([V.enc_vop(f, 1000, 100, 500 if "b" in V.VOP_FUNCS[f][1] else 0, 0, n, 1)], name)
+    await b.batch([V.enc_red(1, 10, 100, 5120)], "SUMSQ5120")
+    for mode in (0, 1):
+        pre, ops = gen_rope(b, mode, 128, 64, 2, 2, "rec")
+        await b.prewrite(pre)
+        await b.batch(ops[:-1], "rope setup %d" % mode)
+        await b.batch(ops[-1:], "NORM128" if mode==0 else "NEOX128")
+    b.finish("vu_width_cycles")
+
+
 # pytest
 # ---------------------------------------------------------------------------------------------
 def _run(name, spm_bytes=262144, rd_lat=4, exp_lanes=16, back_lanes=8, num_ch=4, n=1.0, testcase=None, topk=1,
-         dqrow=1, lane_pipe=0):
-    c = dict(spm_bytes=spm_bytes, num_ch=num_ch, n=n, topk=topk, dqrow=dqrow)
+         dqrow=1, lane_pipe=0, front_lanes=16, cycle_report=None):
+    c = dict(spm_bytes=spm_bytes, num_ch=num_ch, n=n, topk=topk, dqrow=dqrow, front_lanes=front_lanes, exp_lanes=exp_lanes, back_lanes=back_lanes, lane_pipe=lane_pipe)
     run("tsr_vu_tb", __name__, sources=vu_sources(), name="vu_unit_" + name, testcase=testcase,
-        extra_env={"TSR_VU_UNIT_CFG": json.dumps(c)},
-        parameters=dict(SPM_BYTES=spm_bytes, SPM_RD_LAT=rd_lat, NUM_CH=num_ch, EXP_LANES=exp_lanes,
+        extra_env={"TSR_VU_UNIT_CFG": json.dumps(c), **({"TSR_VU_CYCLE_REPORT": str(cycle_report)} if cycle_report else {})},
+        parameters=dict(SPM_BYTES=spm_bytes, SPM_RD_LAT=rd_lat, NUM_CH=num_ch, FRONT_LANES=front_lanes, EXP_LANES=exp_lanes,
                         BACK_LANES=back_lanes, LANE_PIPE=lane_pipe, HAS_TOPK=topk, HAS_DQROW=dqrow))
 
 
@@ -748,3 +850,31 @@ def test_vu_unit_ch16():
     units without TOPK / DQROW (HAS_TOPK = HAS_DQROW = 0: the M6 bitstream; those tests skip), SPM_RD_LAT 1."""
     _run("ch16", spm_bytes=1 << 20, num_ch=16, rd_lat=1, n=0.5, testcase="vu_smoke|vu_at|vu_stream")
     _run("ch3", num_ch=3, n=0.5, testcase="vu_smoke|vu_at|vu_topk|vu_dqrow", topk=0, dqrow=0)
+
+
+def test_vu_unit_half_width():
+    """Eight physical fronts retain all sixteen logical reduction histories."""
+    _run("half8_pipe2", front_lanes=8, exp_lanes=8, back_lanes=4, lane_pipe=2)
+
+
+def test_vu_half_cycle_comparison():
+    out = REPO / "build/analysis/k4_vu_half_20261104"
+    out.mkdir(parents=True, exist_ok=True)
+    full, half = out/"cycles_front16.json", out/"cycles_front8.json"
+    _run("cycles_full16", lane_pipe=2, testcase="vu_width_cycles", cycle_report=full)
+    _run("cycles_half8", lane_pipe=2, front_lanes=8, exp_lanes=8, back_lanes=4,
+         testcase="vu_width_cycles", cycle_report=half)
+    a, b = json.loads(full.read_text()), json.loads(half.read_text())
+    assert a["output_digest"] == b["output_digest"]
+    records = []
+    for x, y in zip(a["records"], b["records"]):
+        assert x["workload"] == y["workload"] and x["ops"] == y["ops"]
+        records.append(dict(workload=x["workload"], front16_cycles=x["cycles"],
+                            front8_cycles=y["cycles"], ratio=y["cycles"]/x["cycles"]))
+    (out/"cycles.json").write_text(json.dumps(records, indent=2)+"\n")
+
+
+def test_vu_unit_half_transport():
+    """The same eight physical lanes and two contexts with zero/three pipe stages."""
+    _run("half8_wire", front_lanes=8, exp_lanes=8, back_lanes=4, lane_pipe=0)
+    _run("half8_pipe3", front_lanes=8, exp_lanes=8, back_lanes=4, lane_pipe=3)

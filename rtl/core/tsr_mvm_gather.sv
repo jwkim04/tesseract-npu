@@ -81,6 +81,10 @@
 //     rows at one per cycle + 3); ACC 23 / 27 / 28 / 33 cycles at (SPM_RD_LAT, ADD_LAT) = (1,1) /
 //     (3,3) / (2,5) / (4,8). Fixed-priority arbitration instead of the round robin halves the
 //     rate (0.50).
+// K4 GATHER_PAIR (NUM_CH4, JOB_PIPE2 only): {0,2} and {1,3} each arbitrate locally
+// into a full-width member-tagged link. A two-slot source slice per cluster plus local
+// and central two-slot shared slices preserve eight slots/pair. Minimum job latency is
+// three cycles; generic GATHER_PAIR0 keeps the original transport and arbitration.
 // Job pipe last stage (W4-B at; CC §14.4, CC-25): the slice whose m_ready is the central take is a
 //   tsr_rslice FORM 1 (two slots with pointers: the take reaches ~5 control flops instead of the
 //   ~577-bit payload enable; cycle-identical at the ports, so every latency above is unchanged).
@@ -273,19 +277,201 @@ module tsr_mvm_gasm
 `endif
 
 endmodule
+
+// Two-flit pair transport. Only the FLIT_W payload, valid and ready connect
+// the endpoints. Each endpoint retains two complete-job slots, so this replaces
+// the old two wide slices without adding a second wide fallback link.
+module tsr_mvm_pair_tx #(
+  parameter int unsigned W = 562,
+  localparam int unsigned FLIT_W = (W + 1) / 2
+) (
+  input logic clk, rst_n,
+  input logic s_valid,
+  output logic s_ready,
+  input logic [W-1:0] s_data,
+  output logic m_valid,
+  input logic m_ready,
+  output logic [FLIT_W-1:0] m_data
+);
+  logic q_valid, q_ready, high_q;
+  logic [W-1:0] q_data;
+  wire [2*FLIT_W-1:0] padded = {{(2*FLIT_W-W){1'b0}}, q_data};
+  tsr_rslice #(.W(W)) u_queue (
+    .clk, .rst_n, .s_valid, .s_ready, .s_data,
+    .m_valid(q_valid), .m_ready(q_ready), .m_data(q_data)
+  );
+  assign m_valid = q_valid;
+  assign m_data = high_q ? padded[FLIT_W +: FLIT_W] : padded[0 +: FLIT_W];
+  assign q_ready = m_ready & high_q;
+  always_ff @(posedge clk) begin
+    if (!rst_n) high_q <= 1'b0;
+    else if (m_valid && m_ready) high_q <= ~high_q;
+  end
+endmodule
+
+module tsr_mvm_pair_rx #(
+  parameter int unsigned W = 562,
+  localparam int unsigned FLIT_W = (W + 1) / 2
+) (
+  input logic clk, rst_n,
+  input logic s_valid,
+  output logic s_ready,
+  input logic [FLIT_W-1:0] s_data,
+  output logic m_valid,
+  input logic m_ready,
+  output logic [W-1:0] m_data
+);
+  logic wp_q, rp_q, high_q, ready_q;
+  logic [1:0] occupied_q, occupied_n;
+  logic [W-1:0] slot_q [2];
+  wire push = s_valid & ready_q;
+  wire finish = push & high_q;
+  wire pop = m_valid & m_ready;
+  wire wp_n = wp_q ^ finish;
+  always_comb begin
+    occupied_n = occupied_q;
+    if (pop) occupied_n[rp_q] = 1'b0;
+    if (finish) occupied_n[wp_q] = 1'b1;
+  end
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      wp_q <= 1'b0;
+      rp_q <= 1'b0;
+      high_q <= 1'b0;
+      occupied_q <= 2'b00;
+      ready_q <= 1'b1;
+    end else begin
+      wp_q <= wp_n;
+      if (pop) rp_q <= ~rp_q;
+      if (push) high_q <= ~high_q;
+      occupied_q <= occupied_n;
+      ready_q <= ~occupied_n[wp_n];
+    end
+    // The first flit reserves the current free write slot. It cannot become
+    // visible until the second flit commits the entire tagged job.
+    if (push) begin
+      if (high_q) slot_q[wp_q][FLIT_W +: W-FLIT_W] <= s_data[0 +: W-FLIT_W];
+      else slot_q[wp_q][0 +: FLIT_W] <= s_data;
+    end
+  end
+  assign s_ready = ready_q;
+  assign m_valid = occupied_q[rp_q];
+  assign m_data = slot_q[rp_q];
+  wire unused_padding = &{1'b0, s_data};
+endmodule
+// A complete owner-pair result collector. Its two source queues, arbiter,
+// optional VU epilogue and transmitter belong together in the outer SLR.
+// The receiving endpoint and central gather are deliberately outside it.
+module tsr_mvm_pair_source
+  import tsr_vu_pkg::*;
+#(
+  parameter int unsigned JW = 561,
+  parameter int unsigned FLITS = 1,
+  parameter bit LOCAL_SCALE = 1'b0,
+  localparam int unsigned LINK_W = (JW + FLITS) / FLITS
+) (
+  input logic clk, rst_n,
+  input logic [1:0] s_valid,
+  output logic [1:0] s_ready,
+  input logic [1:0][JW-1:0] s_data,
+  input logic scale_en, softcap,
+  input logic [31:0] scale, post_scale,
+  output tsr_vu_local_req_t scale_req,
+  input tsr_vu_local_rsp_t scale_rsp,
+  output logic m_valid,
+  input logic m_ready,
+  output logic [LINK_W-1:0] m_data
+);
+  logic [1:0] sv, sr;
+  logic [1:0][JW-1:0] sd;
+  for (genvar c = 0; c < 2; c++) begin : g_source
+    tsr_rslice #(.W(JW)) u_queue (
+      .clk, .rst_n, .s_valid(s_valid[c]), .s_ready(s_ready[c]), .s_data(s_data[c]),
+      .m_valid(sv[c]), .m_ready(sr[c]), .m_data(sd[c])
+    );
+  end
+  logic ptr_q, lock_q, held_q;
+  wire member = lock_q ? held_q : (sv[0] && sv[1] ? ~ptr_q : sv[1]);
+  wire valid = |sv;
+  logic ready, scaled_v, scaled_r;
+  logic [JW:0] scaled_d;
+  wire [JW:0] selected = {member, sd[member]};
+  assign sr[0] = ready & valid & ~member;
+  assign sr[1] = ready & valid & member;
+
+  if (LOCAL_SCALE) begin : g_scale
+    logic epi_s_r, epi_m_v;
+    logic [JW:0] epi_d;
+    tsr_mvm_local_scale #(.W(JW+1)) u_scale (
+      .clk, .rst_n, .scale, .post_scale, .softcap, .s_valid(valid && scale_en), .s_ready(epi_s_r), .s_data(selected),
+      .m_valid(epi_m_v), .m_ready(scaled_r), .m_data(epi_d),
+      .lane_req(scale_req), .lane_rsp(scale_rsp)
+    );
+    assign ready = scale_en ? epi_s_r : scaled_r;
+    assign scaled_v = scale_en ? epi_m_v : valid;
+    assign scaled_d = scale_en ? epi_d : selected;
+  end else begin : g_no_scale
+    assign ready = scaled_r;
+    assign scaled_v = valid;
+    assign scaled_d = selected;
+    assign scale_req = '0;
+    wire unused_scale = &{1'b0, scale, post_scale, softcap, scale_en, scale_rsp};
+  end
+  if (FLITS == 2) begin : g_narrow
+    tsr_mvm_pair_tx #(.W(JW+1)) u_tx (
+      .clk, .rst_n, .s_valid(scaled_v), .s_ready(scaled_r), .s_data(scaled_d),
+      .m_valid, .m_ready, .m_data
+    );
+  end else begin : g_wide
+    tsr_rslice #(.W(JW+1)) u_tx (
+      .clk, .rst_n, .s_valid(scaled_v), .s_ready(scaled_r), .s_data(scaled_d),
+      .m_valid, .m_ready, .m_data
+    );
+  end
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      ptr_q <= 1'b1;
+      lock_q <= 1'b0;
+      held_q <= 1'b0;
+    end else if (valid && ready) begin
+      ptr_q <= member;
+      lock_q <= 1'b0;
+    end else if (valid && !lock_q) begin
+      held_q <= member;
+      lock_q <= 1'b1;
+    end
+  end
+`ifndef SYNTHESIS
+  logic stalled_q;
+  logic [JW:0] held_d_q;
+  always_ff @(posedge clk) begin
+    if (!rst_n) stalled_q <= 1'b0;
+    else begin
+      if (stalled_q) assert (valid && selected == held_d_q)
+        else $error("%m: local tagged job changed under backpressure");
+      stalled_q <= valid && !ready;
+    end
+    held_d_q <= selected;
+  end
+`endif
+endmodule
 /* verilator lint_on DECLFILENAME */
 
 // ================================================================================================
 module tsr_mvm_gather
   import tsr_pkg::*;
   import tsr_att_pkg::*;
+  import tsr_vu_pkg::*;
 #(
+  parameter  bit          LOCAL_SCALE = 1'b0,
   parameter  bit          HAS_ATT    = 1'b0,  // the attention path (header)
   parameter  int unsigned NUM_CH     = TSR_DEF_NUM_CH,
   parameter  int unsigned T_MAX      = TSR_DEF_T_MAX,
   parameter  int unsigned SPM_BYTES  = TSR_DEF_SPM_BYTES,
   parameter  int unsigned SPM_RD_LAT = TSR_DEF_SPM_RD_LAT,
   parameter  int unsigned ADD_LAT    = TSR_DEF_FADD_LAT,
+  parameter  bit          GATHER_PAIR = 1'b0, // K4: source-local queues, pairs {0,2}/{1,3}
+  parameter  int unsigned GATHER_FLITS = 1,   // 2: half-width serialized pair links
   parameter  int unsigned JOB_PIPE   = 0,     // register slices assembler c -> central (implementation)
   localparam int unsigned SPM_LINES  = SPM_BYTES / TSR_LINE_BYTES,
   localparam int unsigned SPM_AW     = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1,
@@ -303,6 +489,10 @@ module tsr_mvm_gather
   input  logic [31:0]                            dst_stride,
   input  logic [NUM_CH-1:0]                      expect_ch,
   output logic                                   done,
+  input  logic                                   scale_en, softcap,
+  input  logic [31:0]                            scale, post_scale,
+  output tsr_vu_local_req_t [1:0]                 scale_req,
+  input  tsr_vu_local_rsp_t [1:0]                 scale_rsp,
 
   // ---- attention (HAS_ATT; stable from start until done) ----
   input  logic                                   att,
@@ -386,8 +576,19 @@ module tsr_mvm_gather
   // -------------------------------------------------------------------------------------------
   // Per cluster: start pipe -> assembler -> job pipe
   // -------------------------------------------------------------------------------------------
-  logic [NUM_CH-1:0]          jv, jr;       // job pipe heads: valid, ready (= take of that cluster)
-  logic [NUM_CH-1:0][JW-1:0]  jd;
+  localparam int unsigned JCH = GATHER_PAIR ? 2 : NUM_CH;
+  localparam int unsigned PW = (JCH > 1) ? $clog2(JCH) : 1;
+  logic [NUM_CH-1:0]          sv, sr;
+  logic [NUM_CH-1:0][JW-1:0]  sd;
+  logic [JCH-1:0]            jv, jr;       // job pipe heads: valid, ready (= take of that cluster)
+  logic [JCH-1:0][JW-1:0]     jd;
+  logic [JCH-1:0][CW-1:0]    origin;
+  if (GATHER_PAIR && (NUM_CH != 4 || JOB_PIPE != 2)) begin : g_pair_chk
+    $fatal(1, "tsr_mvm_gather: paired gather requires NUM_CH4 JOB_PIPE2");
+  end
+  if ((GATHER_FLITS != 1 && GATHER_FLITS != 2) || (!GATHER_PAIR && GATHER_FLITS != 1)) begin : g_flit_chk
+    $fatal(1, "tsr_mvm_gather: GATHER_FLITS is 1, or 2 with paired gather");
+  end
 
   wire [TKW-1:0]    s_tm1    = TKW'(t - 4'd1);
   wire [31:0]       s_nm1    = n - 32'd1;
@@ -437,10 +638,15 @@ module tsr_mvm_gather
       wire unused_att_c = &{1'b0, a_att_q, a_f[SW-1]};
     end
     // JOB_PIPE slices; the last one (the central take's m_ready) in FORM 1 (CC-25, header)
-    if (JOB_PIPE == 0) begin : g_jp0
-      assign jv[c] = p_v;
-      assign jd[c] = p_d;
-      assign p_r   = jr[c];
+    if (GATHER_PAIR) begin : g_pair_src
+      // Source queues are inside the complete pair collector, beside its arbiter.
+      assign sv[c] = p_v;
+      assign sd[c] = p_d;
+      assign p_r = sr[c];
+    end else if (JOB_PIPE == 0) begin : g_jp0
+      assign sv[c] = p_v;
+      assign sd[c] = p_d;
+      assign p_r   = sr[c];
     end else begin : g_jp
       logic          i_v, i_r;
       logic [JW-1:0] i_d;
@@ -450,16 +656,60 @@ module tsr_mvm_gather
       );
       tsr_rslice #(.W(JW), .FORM(1)) u_jl (
         .clk, .rst_n, .s_valid(i_v), .s_ready(i_r), .s_data(i_d),
-        .m_valid(jv[c]), .m_ready(jr[c]), .m_data(jd[c])
+        .m_valid(sv[c]), .m_ready(sr[c]), .m_data(sd[c])
       );
     end
   end
   wire unused_aj = &{1'b0, aj_valid, aj};
 
+  // Each source retains two slots. Local arbitration feeds a two-slot local slice and
+  // a two-slot central slice: eight slots per pair, three cycles minimum latency.
+  // The member tag travels independently of ATT tail tags. Both members have identical
+  // central eligibility (credits / ACC issue), so a shared head cannot block an eligible
+  // member behind an ineligible member. Source ordering and backpressure are retained.
+  if (GATHER_PAIR) begin : g_pairs
+    for (genvar p = 0; p < 2; p++) begin : g_pair
+      localparam int unsigned LINK_W = (JW + GATHER_FLITS) / GATHER_FLITS;
+      logic link_v, link_r;
+      logic [LINK_W-1:0] packet;
+      logic [JW:0] link_d;
+      // Keep the complete collector addressable by its major-block Pblock.
+      (* keep_hierarchy = "yes" *)
+      tsr_mvm_pair_source #(.JW(JW), .FLITS(GATHER_FLITS), .LOCAL_SCALE(LOCAL_SCALE)) u_source (
+        .clk, .rst_n, .s_valid({sv[p+2], sv[p]}), .s_ready({sr[p+2], sr[p]}),
+        .s_data({sd[p+2], sd[p]}), .scale_en, .scale, .post_scale, .softcap,
+        .scale_req(scale_req[p]), .scale_rsp(scale_rsp[p]),
+        .m_valid(link_v), .m_ready(link_r), .m_data(packet)
+      );
+      if (GATHER_FLITS == 2) begin : g_narrow
+        tsr_mvm_pair_rx #(.W(JW+1)) u_remote (
+          .clk, .rst_n, .s_valid(link_v), .s_ready(link_r), .s_data(packet),
+          .m_valid(jv[p]), .m_ready(jr[p]), .m_data(link_d)
+        );
+      end else begin : g_wide
+        tsr_rslice #(.W(JW+1), .FORM(1)) u_remote (
+          .clk, .rst_n, .s_valid(link_v), .s_ready(link_r), .s_data(packet),
+          .m_valid(jv[p]), .m_ready(jr[p]), .m_data(link_d)
+        );
+      end
+      assign jd[p] = link_d[JW-1:0];
+      assign origin[p] = {link_d[JW], 1'(p)};
+    end
+  end else begin : g_unpaired
+    assign scale_req = '0;
+    wire unused_scale = &{1'b0, scale, post_scale, softcap, scale_en, scale_rsp};
+    assign jv = sv;
+    assign jd = sd;
+    assign sr = jr;
+    for (genvar c = 0; c < NUM_CH; c++) begin : g_origin
+      assign origin[c] = CW'(c);
+    end
+  end
+
   // -------------------------------------------------------------------------------------------
   // Arbiter, job, credits
   // -------------------------------------------------------------------------------------------
-  logic [CW-1:0]     sel_q, ptr_q;   // picked cluster / last taken cluster
+  logic [PW-1:0]     sel_q, ptr_q;   // picked link / last taken link
   logic              sel_v_q;
   logic [CNT_W-1:0]  cnt_q;          // jobs taken and not yet written (accepted by the SPM)
   logic              space_q;        // cnt_q < WQ_D
@@ -467,7 +717,7 @@ module tsr_mvm_gather
 
   wire take = sel_v_q & jv[sel_q] & space_q & (~acc_q | iss_s_ready);
 
-  // job of the picked cluster: the head of its job pipe
+  // Job of the picked link; origin is decoded separately from its member tag.
   logic              j_last;
   logic [SPM_AW-1:0] j_line;
   logic [15:0]       j_own, j_tail;
@@ -475,23 +725,23 @@ module tsr_mvm_gather
   assign {j_last, j_line, j_own, j_tail, j_y} = jd[sel_q];
 
   always_comb begin
-    for (int unsigned c = 0; c < NUM_CH; c++) jr[c] = take & (sel_q == CW'(c));
+    for (int unsigned c = 0; c < JCH; c++) jr[c] = take & (sel_q == PW'(c));
   end
 
-  // round robin over the job heads; the cluster taken in this cycle gets the lowest priority
-  logic [CW-1:0] ptr_n, pick;
+  // Round robin over the link heads; the link taken this cycle gets the lowest priority.
+  logic [PW-1:0] ptr_n, pick;
   logic          pick_v;
-  logic [CW:0]   rr_sum;             // ptr_n + i < 2 * NUM_CH
-  logic [CW-1:0] rr_idx;             // (ptr_n + i) mod NUM_CH
+  logic [PW:0]   rr_sum;             // ptr_n + i < 2 * JCH
+  logic [PW-1:0] rr_idx;             // (ptr_n + i) mod JCH
   always_comb begin
     ptr_n  = take ? sel_q : ptr_q;
     pick   = '0;
     pick_v = 1'b0;
     rr_sum = '0;
     rr_idx = '0;
-    for (int unsigned i = NUM_CH; i >= 1; i--) begin    // i = 1 (after ptr_n) has priority
-      rr_sum = {1'b0, ptr_n} + (CW+1)'(i);
-      rr_idx = CW'((rr_sum >= (CW+1)'(NUM_CH)) ? rr_sum - (CW+1)'(NUM_CH) : rr_sum);
+    for (int unsigned i = JCH; i >= 1; i--) begin    // i = 1 (after ptr_n) has priority
+      rr_sum = {1'b0, ptr_n} + (PW+1)'(i);
+      rr_idx = PW'((rr_sum >= (PW+1)'(JCH)) ? rr_sum - (PW+1)'(JCH) : rr_sum);
       if (jv[rr_idx]) begin
         pick   = rr_idx;
         pick_v = 1'b1;
@@ -503,6 +753,7 @@ module tsr_mvm_gather
   // MAXOUT, the row maxima written)
   wire all_last = &(got_last_q | ~exp_q);
   logic att_q, mxo_q, mx_done_q;
+  wire store_take = take && !(att_q && j_tail[15:14] == 2'b11);
   wire fin      = act_q & all_last & (cnt_q == '0) & (~mxo_q | mx_done_q);
 
   always_ff @(posedge clk) begin
@@ -527,7 +778,7 @@ module tsr_mvm_gather
         got_last_q <= '0;
       end else begin
         if (fin) act_q <= 1'b0;
-        if (take && j_last) got_last_q[sel_q] <= 1'b1;
+        if (take && j_last) got_last_q[origin[sel_q]] <= 1'b1;
       end
     end
   end
@@ -609,7 +860,7 @@ module tsr_mvm_gather
       end
       te_q[0] <= j_tail[6:0];
       for (int i = 1; i < 5; i++) te_q[i] <= te_q[i-1];
-      for (int l = 0; l < 16; l++) k0_q[l] <= tsr_att_maxkey(j_y[l]);
+      for (int l = 0; l < 16; l++) k0_q[l] <= tsr_att_maxkey(j_y[j_tail[14] ? 0 : l]);
       for (int l = 0; l < 8; l++)  k1_q[l] <= kmax(k0_q[2*l], k0_q[2*l+1]);
       for (int l = 0; l < 4; l++)  k2_q[l] <= kmax(k1_q[2*l], k1_q[2*l+1]);
       for (int l = 0; l < 2; l++)  k3_q[l] <= kmax(k2_q[2*l], k2_q[2*l+1]);
@@ -699,7 +950,7 @@ module tsr_mvm_gather
       push   = 1'b1;
       push_d = {mx_j[JW-2 -: SPM_AW], lane_be(mx_j[TSR_LINE_BITS + 16 +: 16]), mx_j[TSR_LINE_BITS-1:0]};
     end else begin
-      push   = take;
+      push   = store_take;
       push_d = {j_line, lane_be(j_own | (att_q ? 16'd0 : j_tail)), j_y};
     end
   end
@@ -713,7 +964,7 @@ module tsr_mvm_gather
   wire wq_ne    = (wq_wp_q != wq_rp_q);
   wire out_free = ~out_v_q | pop;         // output register free after this edge
   wire out_ld   = wq_ne & out_free;
-  wire [CNT_W-1:0] cnt_n = cnt_q + CNT_W'(take) + CNT_W'(mx_jv & mx_jr) - CNT_W'(pop);
+  wire [CNT_W-1:0] cnt_n = cnt_q + CNT_W'(store_take) + CNT_W'(mx_jv & mx_jr) - CNT_W'(pop);
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
@@ -771,7 +1022,7 @@ module tsr_mvm_gather
         end
       end
       for (int unsigned c = 0; c < NUM_CH; c++) begin
-        if (jv[c]) begin
+        if (sv[c]) begin
           assert (act_q && exp_q[c] && !got_last_q[c])
             else $error("%m: job of cluster %0d outside its MVM (act %0b expected %0b last taken %0b)", c,
                         act_q, exp_q[c], got_last_q[c]);

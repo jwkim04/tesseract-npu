@@ -43,7 +43,9 @@ module tsr_vu_lane
   import tsr_vu_pkg::*;
 #(
   parameter bit HAS_EXP  = 1'b1,
-  parameter bit HAS_BACK = 1'b1
+  parameter bit HAS_BACK = 1'b1,
+  parameter int unsigned PART_CTX = 1,
+  localparam int unsigned PAW = 4 + $clog2(PART_CTX)
 ) (
   input  logic        clk,
   input  logic        rst_n,
@@ -58,10 +60,11 @@ module tsr_vu_lane
   // reduction controls
   input  logic        acc_lv,             // the lane holds an element of the row
   input  logic        acc_fresh,          // first touch of this partial in the row
-  input  logic [3:0]  acc_pa,             // {buffer, phase}
+  input  logic [PAW-1:0] acc_pa,             // {optional logical context, buffer, phase}
   // partial drain read (combinational)
   input  logic [3:0]  dr_addr,
   output logic [31:0] dr_data,
+  output logic [31:0] dr_data_hi,
   // exits
   output logic [31:0] f_y,
   output logic [31:0] b_y
@@ -108,7 +111,7 @@ module tsr_vu_lane
   logic        v0_q, neg0_q, lv0_q, fr0_q;
   tsr_vu_uop_e u0_q;
   logic [31:0] a0_q, b0_q, c10_q, c20_q;
-  logic [3:0]  pa0_q;
+  logic [PAW-1:0]  pa0_q;
   always_ff @(posedge clk) begin
     if (!rst_n) v0_q <= 1'b0;
     else        v0_q <= in_v;
@@ -141,7 +144,7 @@ module tsr_vu_lane
   logic [31:0] a1_q, ad1_q, b1_q, c11_q, c21_q, maxab1_q, minab1_q, maxlf1_q;
   logic [15:0] h16_1_q;
   flags_t      fl1_q;
-  logic [3:0]  pa1_q;
+  logic [PAW-1:0]  pa1_q;
   always_ff @(posedge clk) begin
     logic [31:0] ad;
     ad = tsr_f32_daz(a0_q);
@@ -178,7 +181,7 @@ module tsr_vu_lane
   logic [31:0] a2_q, b2_q, c12_q, c22_q, x2_q, r2_q;
   logic [31:0] fma_x_q, fma_y_q, fmb_x_q, fmb_y_q;
   flags_t      fl2_q;
-  logic [3:0]  pa2_q;
+  logic [PAW-1:0]  pa2_q;
   always_ff @(posedge clk) begin
     logic [31:0] h, ax;
     h  = tsr_fp16_to_f32(h16_1_q);
@@ -253,13 +256,13 @@ module tsr_vu_lane
   assign u6 = tsr_vu_uop_e'(u6_d);
   logic [31:0] a6, b6, c16, r6d;
   logic        neg6, lv6, fr6, v6;
-  logic [3:0]  pa6;
+  logic [PAW-1:0]  pa6;
   tsr_vu_dly #(.W(6),  .D(T_FM - 2)) d_u6  (.clk, .d(u2_q), .q(u6_d));
   tsr_vu_dly #(.W(32), .D(T_FM - 2)) d_a6  (.clk, .d(a2_q), .q(a6));
   tsr_vu_dly #(.W(32), .D(T_FM - 2)) d_b6  (.clk, .d(b2_q), .q(b6));
   tsr_vu_dly #(.W(32), .D(T_FM - 2)) d_c16 (.clk, .d(c12_q), .q(c16));
   tsr_vu_dly #(.W(32), .D(T_FM - 2)) d_r6  (.clk, .d(r2_q), .q(r6d));
-  tsr_vu_dly #(.W(8),  .D(T_FM - 2)) d_k6  (.clk, .d({neg2_q, lv2_q, fr2_q, v2_q, pa2_q}),
+  tsr_vu_dly #(.W(PAW+4), .D(T_FM - 2)) d_k6  (.clk, .d({neg2_q, lv2_q, fr2_q, v2_q, pa2_q}),
                                             .q({neg6, lv6, fr6, v6, pa6}));
 
   logic [31:0] r6;
@@ -271,12 +274,19 @@ module tsr_vu_lane
   end
 
   // -------------------------------------------------------------------------------------------
-  // Partials (VU §6.2, §7.5): 2 buffers x 8 phases; SUM read at cycle 6, MAX read at 10, writes at the end of 13
+  // Partials (VU §6.2, §7.5): PART_CTX contexts x 2 buffers x 8 phases; SUM read at cycle 6, MAX read at 10, writes at the end of 13
   // -------------------------------------------------------------------------------------------
-  logic [31:0] prf [16];
+  // FRONT8 maps logical lanes l and l+8 to separate histories. Both drain
+  // ports preserve the original sixteen-lane reduction tree and rounding.
+  logic [31:0] prf [16*PART_CTX];
   logic [31:0] p_sum;                      // SUM-type p' at cycle 6
   assign p_sum = fr6 ? 32'd0 : prf[pa6];
-  assign dr_data = prf[dr_addr];
+  assign dr_data = prf[PAW'(dr_addr)];
+  if (PART_CTX == 2) begin : g_context_hi
+    assign dr_data_hi = prf[{1'b1, dr_addr}];
+  end else begin : g_no_context_hi
+    assign dr_data_hi = 32'd0;
+  end
 
   // -------------------------------------------------------------------------------------------
   // FA (cycle 6 -> 11)
@@ -313,7 +323,7 @@ module tsr_vu_lane
   assign u11 = tsr_vu_uop_e'(u11_d);
   logic [31:0] b11, c111, c211, x11, r11d;
   logic        lv11, fr11, v11;
-  logic [3:0]  pa11;
+  logic [PAW-1:0]  pa11;
   flags_t      fl11;
   tsr_vu_dly #(.W(6),  .D(T_FA - T_FM)) d_u11  (.clk, .d(u6), .q(u11_d));
   tsr_vu_dly #(.W(32), .D(T_FA - T_FM)) d_b11  (.clk, .d(b6), .q(b11));
@@ -321,11 +331,11 @@ module tsr_vu_lane
   tsr_vu_dly #(.W(32), .D(T_FA - 2))    d_c211 (.clk, .d(c22_q), .q(c211));
   tsr_vu_dly #(.W(32), .D(T_FA - 2))    d_x11  (.clk, .d(x2_q), .q(x11));
   tsr_vu_dly #(.W(32), .D(T_FA - T_FM)) d_r11  (.clk, .d(r6), .q(r11d));
-  logic [3:0]  pa10;
-  logic [6:0]  k10;
-  tsr_vu_dly #(.W(7),  .D(T_FA - T_FM - 1)) d_k10 (.clk, .d({lv6, fr6, v6, pa6}), .q(k10));
-  tsr_vu_dly #(.W(7),  .D(1))           d_k11  (.clk, .d(k10), .q({lv11, fr11, v11, pa11}));
-  assign pa10 = k10[3:0];
+  logic [PAW-1:0]  pa10;
+  logic [PAW+2:0] k10;
+  tsr_vu_dly #(.W(PAW+3), .D(T_FA - T_FM - 1)) d_k10 (.clk, .d({lv6, fr6, v6, pa6}), .q(k10));
+  tsr_vu_dly #(.W(PAW+3), .D(1)) d_k11  (.clk, .d(k10), .q({lv11, fr11, v11, pa11}));
+  assign pa10 = k10[PAW-1:0];
   // MAX-type partial read one cycle ahead of its write (the same entry is touched at most every 8
   // cycles, VU §7.5), so the compare starts from a register
   logic [31:0] prd_q;
@@ -345,7 +355,7 @@ module tsr_vu_lane
   // partial writes: the operands at cycle 11 (registered: NaN flags, DAZ), MAXT and the new value at 12
   // (registered), written at the end of cycle 13
   logic        p1_v_q, p1_sum_q, p1_lv_q, p1_na_q, p1_nb_q;
-  logic [3:0]  p1_a_q;
+  logic [PAW-1:0]  p1_a_q;
   logic [31:0] p1_init_q, p1_fa_q, p1_pm_q, p1_mv_q;
   always_ff @(posedge clk) begin
     logic        sumk, maxk;
@@ -368,7 +378,7 @@ module tsr_vu_lane
     p1_mv_q   <= tsr_f32_daz(mv);
   end
   logic        pw_v_q;
-  logic [3:0]  pw_a_q;
+  logic [PAW-1:0]  pw_a_q;
   logic [31:0] pw_d_q;
   always_ff @(posedge clk) begin
     logic [31:0] mx;                                   // MAXT (VU §6.8) of the registered operands

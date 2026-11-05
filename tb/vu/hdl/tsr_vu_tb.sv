@@ -12,6 +12,7 @@ module tsr_vu_tb
   parameter  int unsigned SPM_BYTES  = 262144,
   parameter  int unsigned SPM_RD_LAT = 4,
   parameter  int unsigned NUM_CH     = 4,
+  parameter  int unsigned FRONT_LANES = 16,
   parameter  int unsigned EXP_LANES  = 16,
   parameter  int unsigned BACK_LANES = 8,
   parameter  int unsigned LANE_PIPE  = 0,
@@ -43,7 +44,12 @@ module tsr_vu_tb
   input  logic [511:0]              t_wr_data,
   // contender (client 1)
   input  logic                      noise_en,
-  input  logic [31:0]               noise_seed
+  input  logic [31:0]               noise_seed,
+  output logic                      probe_i_valid,
+  output logic [1:0]                probe_i_rope,
+  output logic [2:0]                probe_i_part,
+  output logic                      probe_row_token,
+  output logic                      probe_write_pending
 );
   localparam int unsigned NCL = 3;
 
@@ -98,14 +104,22 @@ module tsr_vu_tb
     .s_wr_be(wr_be[1])
   );
 
+  assign probe_i_valid = u_vu.u_inj.i_v;
+  assign probe_i_rope = u_vu.u_inj.i_s.rope;
+  assign probe_i_part = u_vu.u_inj.k_q;
+  assign probe_row_token = u_vu.row_v;
+  assign probe_write_pending = |wr_valid[2];
+
   // client 2: the VU
   logic       dbg_x;
   logic [1:0] dbg_held;
   logic [31:0] dbg_w0;
   logic [2:0] dbg_flags;
-  tsr_vu #(.SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT), .NUM_CH(NUM_CH), .EXP_LANES(EXP_LANES),
+  tsr_vu #(.SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT), .NUM_CH(NUM_CH), .FRONT_LANES(FRONT_LANES), .EXP_LANES(EXP_LANES),
            .BACK_LANES(BACK_LANES), .LANE_PIPE(LANE_PIPE), .HAS_TOPK(HAS_TOPK), .HAS_DQROW(HAS_DQROW)) u_vu (
     .clk, .rst_n, .cmd_valid, .cmd_ready, .cmd, .done,
+    .scale_request(1'b0), .scale_grant(), .scale_done(1'b0), .scale_req('0), .scale_rsp(),
+    .local_score_req(), .local_score_data('0),
     .rd_req_valid(rd_req_valid[2]), .rd_req_ready(rd_req_ready[2]), .rd_req_line(rd_req_line[2]),
     .rd_rsp_valid(rd_rsp_valid[2]), .rd_rsp_data,
     .wr_valid(wr_valid[2]), .wr_ready(wr_ready[2]), .wr_line(wr_line[2]), .wr_data(wr_data[2]), .wr_be(wr_be[2]),

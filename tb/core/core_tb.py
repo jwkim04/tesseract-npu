@@ -40,10 +40,12 @@ RT_DONE = 0xD0E
 # (W4-B): CAPS VU | ATT (TOPK and DQROW are M8 RTL and stay off), the U200 queue depths (VU 16, unit 4
 # reserved).
 CAPS_U200 = 0x21
-CFG = S.config(num_ch=2, t_max=2, k_max=4096, spm_bytes=256 * 1024, ch_bytes=1 << 30, addr_beat_w=24,
+NCH = int(os.environ.get("TB_CORE_NCH", "2"))
+TMAX = int(os.environ.get("TB_CORE_TMAX", "2"))
+CFG = S.config(num_ch=NCH, t_max=TMAX, k_max=4096, spm_bytes=256 * 1024, ch_bytes=1 << 30, addr_beat_w=24,
                caps=CAPS_U200)
 QD = (8, 4, 4, 16, 0, 4)
-PARAMS = {"NUM_CH": 2, "T_MAX": 2, "K_MAX": 4096, "SPM_BYTES": 256 * 1024, "CH_BYTES": "64'd1073741824",
+PARAMS = {"NUM_CH": NCH, "T_MAX": TMAX, "K_MAX": 4096, "SPM_BYTES": 256 * 1024, "CH_BYTES": "64'd1073741824",
           "ADDR_BEAT_W": 24}
 
 ARG_NAMES = ("K", "T", "N1", "N2", "X_BEAT", "W1_OFF", "W2_OFF", "X_LINE", "QA1_LINE", "QA2_LINE", "Y1_LINE",
@@ -73,6 +75,7 @@ def scenario(seed: int, K: int = 512, T: int = 2, N1: int = 40, N2: int = 24) ->
     """DRAM writes [(ch, byte_off, bytes)], the firmware arguments, the regions to compare."""
     rnd = random.Random(seed)
     nch = CFG["num_ch"]
+    outer = nch - 1  # channel 3 in the four-channel locality bench; channel 1 otherwise
     fq8, fq4 = isa.FMT_Q8_0, isa.FMT_Q4_K
     xl = T * K * 4 // 64
     ql1, ql2 = isa.qa_lines(isa.QA_A32, K), isa.qa_lines(isa.QA_A256, K)
@@ -94,7 +97,7 @@ def scenario(seed: int, K: int = 512, T: int = 2, N1: int = 40, N2: int = 24) ->
     x = struct.pack("<%df" % (T * K), *[rnd.gauss(0.0, 1.5) for _ in range(T * K)])
     rows1 = [mvm_model.rand_row(fq8, K, rnd) for _ in range(N1)]
     rows2 = [mvm_model.rand_row(fq4, K, rnd) for _ in range(N2)]
-    writes = [(0, x_beat * 64, x), (1, bg_beat * 64, rnd.randbytes(64 * dump))]
+    writes = [(0, x_beat * 64, x), (outer, bg_beat * 64, rnd.randbytes(64 * dump))]
     for c, d in enumerate(mvm_model.layout_channels(fq8, K, rows1, nch)):
         if d:
             writes.append((c, w1_off * 64, d))
@@ -102,15 +105,15 @@ def scenario(seed: int, K: int = 512, T: int = 2, N1: int = 40, N2: int = 24) ->
         if d:
             writes.append((c, w2_off * 64, d))
     # old contents of the store targets (the stores must overwrite exactly their lines)
-    writes += [(1, y1_beat * 64, rnd.randbytes(64 * (T * yl1 + 2))), (0, y2_beat * 64, rnd.randbytes(64 * (T * yl2 + 2))),
-               (1, dump_beat * 64, rnd.randbytes(64 * (dump + 2)))]
+    writes += [(outer, y1_beat * 64, rnd.randbytes(64 * (T * yl1 + 2))), (0, y2_beat * 64, rnd.randbytes(64 * (T * yl2 + 2))),
+               (outer, dump_beat * 64, rnd.randbytes(64 * (dump + 2)))]
     a = dict(K=K, T=T, N1=N1, N2=N2, X_BEAT=x_beat, W1_OFF=w1_off, W2_OFF=w2_off, X_LINE=X, QA1_LINE=QA1,
              QA2_LINE=QA2, Y1_LINE=Y1, Y2_LINE=Y2, X_LINES=xl, Y1_LINES=T * yl1, Y2_LINES=T * yl2,
-             Y1_DST=(1 << 28) | y1_beat, Y2_DST=(0 << 28) | y2_beat, DUMP_DST=(1 << 28) | dump_beat,
-             DUMP_LINES=dump, SCRATCH_LINE=SCR, BG_SRC=(1 << 28) | bg_beat,
+             Y1_DST=(outer << 28) | y1_beat, Y2_DST=(0 << 28) | y2_beat, DUMP_DST=(outer << 28) | dump_beat,
+             DUMP_LINES=dump, SCRATCH_LINE=SCR, BG_SRC=(outer << 28) | bg_beat,
              SPM_LINES=CFG["spm_bytes"] // 64)          # the failing LD's line (SPM_RANGE)
-    regions = [(1, y1_beat * 64, 64 * (T * yl1 + 2)), (0, y2_beat * 64, 64 * (T * yl2 + 2)),
-               (1, dump_beat * 64, 64 * (dump + 2)), (0, x_beat * 64, len(x))]
+    regions = [(outer, y1_beat * 64, 64 * (T * yl1 + 2)), (0, y2_beat * 64, 64 * (T * yl2 + 2)),
+               (outer, dump_beat * 64, 64 * (dump + 2)), (0, x_beat * 64, len(x))]
     return dict(writes=writes, args=[a[n] for n in ARG_NAMES], regions=regions, spm_lines=dump)
 
 
@@ -146,10 +149,21 @@ def final_regs():
     return offs
 
 
+def expected_id(off: int, simulator_value: int) -> int:
+    # The simulator keeps the default timing model. Hardware lane-count fields
+    # describe the selected implementation; all other identity bits still match.
+    if off == TT.CSR_CFG3 and "TB_CORE_VU_FRONT" in os.environ:
+        front = int(os.environ["TB_CORE_VU_FRONT"])
+        back = int(os.environ["TB_CORE_VU_BACK"])
+        return (simulator_value & ~0x3FF) | front | (back << 5)
+    return simulator_value
+
+
 def check_ids(vals: dict, sim_vals: dict, errs: list):
     for o in ID_REGS:
-        if vals[o] != sim_vals[o]:
-            errs.append("CSR %#05x: RTL %#010x / simulator %#010x" % (o, vals[o], sim_vals[o]))
+        want = expected_id(o, sim_vals[o])
+        if vals[o] != want:
+            errs.append("CSR %#05x: RTL %#010x / expected %#010x" % (o, vals[o], want))
 
 
 def compare_final(rtl: dict, sim: dict, errs: list):

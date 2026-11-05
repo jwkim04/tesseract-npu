@@ -768,8 +768,8 @@ are not additive partitions because synthesis combines LUTs across hierarchy bou
 |---|---|---|
 | Cluster broadcast | All clusters receive the same line each cycle | Share the central first stage; keep separate local tails. The old DCP has 529 live nets per cluster. Intended boundary incidences fall from 2,116 to 1,058; physical savings are pending. Cycle/reset regressions use the original independent-pipe model. |
 | VU front/back results | The injector schedules at most one consumed exit each cycle | Select before crossing. BACK8 data width falls from 512+256 to 512; add one input selection token. Reduction drain stays independent. Latency and oracle tests cover PIPE 0/2/3. |
-| Gather jobs | The central consumer accepts one job per cycle | Candidate only: pair clusters within each SLR, arbitrate locally and send a tagged job. Declared connections fall from 4×563 to 2×564. Preserve burst storage, ordering and completion at the central take; no implementation yet. |
-| DDR0/3 weight response | Local WS and central DMA are distinct consumers | Candidate only: localize the bridge receive tail and arbiter together. A DMA trunk still crosses. Potential saving is about 512 data connections per boundary; moving only the arbiter leaves the original detour. |
+| Gather jobs | The central consumer accepts one job per cycle | Implemented for K4: pair clusters {0,2}/{1,3}, arbitrate locally and send a tagged job. Declared connections fall from 4×563 to 2×564. Eight buffered jobs per pair, origin order and central completion are preserved. Saturated traffic remains one job/cycle; startup adds one cycle. Physical savings are pending. |
+| DDR0/3 weight response | Local WS and central DMA are distinct consumers | Implemented for K4: move each complete bridge and arbiter beside its DDR controller. Five additional central slices register DMA requests/data/responses. A full-width DMA trunk still crosses. Potential saving is about 512 data connections per boundary; actual synthesis/placement is pending. |
 | VU coefficient inputs | Some modes use row scalars, but AMERGE AM_L uses lane-varying vectors | Scalar encoding alone is insufficient. Local coefficient storage and setup ordering would be a larger change. No width reduction is applied. |
 
 Counts above are logical connections or declared bits, not measured physical SLL use. A shared
@@ -783,6 +783,1571 @@ an equal-row, weight-bound MVM because completion waits for every active cluster
 serialization is also unsafe to dismiss as cheap: normal MVM broadcasts are short, while
 ATTPV can be limited by the one-line-per-cycle broadcast. The selected changes share existing
 traffic without serializing it. No new card throughput or fully routed result exists yet.
+
+#### 8.6.1 DDR0/3 localization feasibility (2026-11-03)
+
+This feasibility estimate predates implementation. The old route failed on 2026-11-03;
+the new RTL/floorplan is in integration checks, with no placement result yet. The source is
+the recovered shared-BC/VU, core-250 MHz physopt census in
+`build/analysis/k4_bc_shared_20261102/k4_20261102_164956_shared_core250_rv166_recovered_20261103_140219/`:
+`kernel_util.rpt`, `full_shell_slr_util.rpt` and `native_metadata.txt`. The checkpoint SHA-256 is
+`b506339df428e9d6d05f599ff79fdd8201327a82051a40f2e2e2f0cfb443f061`.
+
+| Whole-device resource | SLR0 | SLR1 | SLR2 |
+|---|---:|---:|---:|
+| Occupied CLB sites | 47,821 / 49,260 (97.08%) | 49,146 / 49,260 (99.77%) | 45,230 / 49,260 (91.82%) |
+| Unoccupied CLB sites | 1,439 | 114 | 4,030 |
+| LUT use | 68.57% | 77.01% | 56.39% |
+| FF use | 43.27% | 50.11% | 33.76% |
+| CLBM site use | 98.30% | 99.79% | 93.18% |
+
+These counts include the static shell. Unoccupied whole-SLR sites are not a count of usable
+sites inside the dynamic pblock, nor do partially occupied sites accept arbitrary extra logic.
+Control sets, SRL eligibility, local routing and the columns beside the boundary matter.
+SLR2 has substantially more margin; SLR0 is already dense despite its unused LUT/FF capacity.
+
+| Current scope | LUT | FF | BRAM / URAM / DSP |
+|---|---:|---:|---:|
+| Channel 0 complete bridge + arbiter | 2,009 | 5,151 | 0 / 0 / 0 |
+| Channel 3 complete bridge + arbiter | 1,689 | 5,102 | 0 / 0 / 0 |
+| Estimated central logic to move to SLR0, including weight pipe ends | about 1,700 | about 4,000 | 0 / 0 / 0 |
+| Estimated central logic to move to SLR2, including weight pipe ends | about 1,400 | about 3,900 | 0 / 0 / 0 |
+
+Each bridge includes 256 LUTs used as SRLs. The incremental estimates subtract the already
+local AR/AW/W last stages and R/B first stages, then include the central weight-response
+stage (513 FF) and weight-request stage (20 LUT, 72 FF). The few already-local handshake
+FFs are conservatively retained in the estimate. Cross-hierarchy LUT combining prevents
+exact additive accounting; new packing and timing repair can change these counts. This is
+relocation of existing logic, not an equivalent increase in total device resources. There is
+no measured incremental occupied-CLB count or proof of fit in either target pblock.
+
+The complete path to localize is bridge receive tail, ID validation/counters/output, arbiter
+and the central ends of `g_cl[c].u_wrp` / `u_wqp`. Otherwise the weight path still visits SLR1.
+For channel 0 the intended response is DDR0 -> local bridge/arbiter -> local cluster 0,
+with a separate consumer branch to the central DMA; channel 3 is analogous in SLR2.
+DMA still requires a 512-bit read branch and 512-bit write path across each outer boundary.
+The nominal read-data saving is therefore 512 connections per boundary, 1,024 total,
+before sideband/control changes. It is not measured physical SLL demand. The shared arbiter
+response bus can still toggle on WS beats at the DMA branch even when DMA valid is low.
+
+At the same clock, moving unchanged registers preserves cycle behavior and the ideal
+512-bit/cycle rate: 16 GB/s per weight channel at 250 MHz, 64 GB/s across four channels.
+It does not double DDR bandwidth or establish application throughput. Retain the pipeline
+depths, FIFO capacity, arbitration, reservations and reset phase in the first experiment.
+
+There is a known timing tradeoff: `rtl-m3.md` §14.4 records that outer arbiters previously
+gave DMA handshake crossings with 6–8 DMA-side logic levels. C' moved them into SLR1 to
+remove those paths. Current DMA ports also include the KVST selection mux; channel 0 writes
+pass through the debug trace mux. A whole-arbiter move must inspect these paths, DMA read
+capture, ready/credit feedback, reset distribution and status returns. Preserve suitable
+central boundary registers or add a registered boundary if timing requires it. One or two
+extra stages would add 4–8 ns at 250 MHz on that path; this is a scenario, not a measured
+penalty. Full-rate buffering can preserve steady-state throughput, while short transfers
+and credit-limited traffic need separate checks. Never allow a DMA beat to block WS responses
+by dropping the existing whole-burst reservation guarantee.
+
+The lower-risk first placement comparison is channel 3 only; it cannot by itself fix the
+more congested SLR0–1 boundary. Channel 0 is plausible by resource count but needs stronger
+packing/timing evidence. After the active build, compare usable pblock sites, occupied CLBs,
+control sets, per-column SLL demand and DMA/WS/reset timing at 4 ns before another route.
+If boundary registers change, test DMA LD/ST, KVST, concurrent WS traffic, trace writes,
+backpressure and reset/error handling against the existing oracle and protocol checks.
+
+#### 8.6.2 Combined benefit and fallbacks (2026-11-03)
+
+DDR localization and paired gather are implemented with the balanced VU partition below,
+but their sufficiency is unproven. The failed route and its inputs are archived. This review uses the
+same recovered physopt census as §8.6.1, the RTL and the earlier gather traffic analysis in
+`build/analysis/repository_map_20261102/bc_sharing_and_gather_review.txt` §3.
+
+| Candidate | Nominal logical connections removed | Throughput condition |
+|---|---:|---|
+| DDR0/3 localization | 1,024 data bits across both boundaries | Keep four 512-bit/cycle WS streams and full-rate DMA boundaries |
+| Per-SLR gather, four links to two | 1,124 payload/control connections | Each pair sends one full job/cycle; central take remains one job/cycle |
+| Combined | 2,148, or 1,074 per boundary | New control, replicas and packing are not included |
+
+For scale only, the current full-shell placed connectivity is 15,325 boundary incidences;
+2,148 is about 14% of that number. Declared interface connections and mapped incidences are
+different measures. Do not subtract these counts to predict physical SLL use, column demand,
+congestion level or timing. Removing a few buses can unlock routing, but it can also leave
+the limiting hotspot unchanged. The DDR move redistributes about 3.1 K LUT and 7.9 K FF out
+of SLR1; it does not remove them. Gather needs local arbitration and storage and cannot be
+budgeted as pure area removal.
+
+Gather has a strong aggregate-rate argument, with qualifications. At T_MAX <= 8 the ordinary
+full MVM group rate of a cluster pair is at most one job/cycle. The ATTQK average bound is
+also below one per pair for the supported D >= 64 shapes. Concurrent bursts, partial groups,
+ATTPV, ACC, SPM stalls and changed arbitration still need cycle comparisons. Preserve the
+existing storage budget and origin tags. Equal slot counts alone do not prevent a shared
+queue head from delaying the other source. Completion remains at the central take and final
+accepted SPM write, never at local enqueue.
+
+The implemented paired gather passes the same C-oracle whole-SPM checks on four-channel
+ATT/MVM traffic. With identical operands, no stalls, fixed memory latency and deterministic
+response order, 20 ATT cases total 26,928 -> 26,940 cycles (+0.045%; individual deltas -8..+6).
+Three partial/small MVM cases take 169 -> 170, 111 -> 119 and 350 -> 366 cycles (+0.59%,
++7.21%, +4.57%). Sustained gather traffic remains one job/cycle, but these operation-level
+penalties are real. They are not a measured model-level slowdown. Evidence is in
+`build/pair_cycle_deterministic.json` and `build/pair_att_deterministic.log`.
+
+The current census gives a separate reason to retain a fallback: its largest level-6 central
+windows include `u_issue` (16-17%), debug `u_shq` (11-12%) and `u_csr` (11%). Other central
+windows include DMA/KVST and platform DDR logic. The outer SLR2 long-wire window includes
+cluster 3 PV/MAC logic with local DSP use at 100%. These are hierarchy correlations in the
+placer congestion report, not proven causes of specific failed routed nets. DDR/gather do
+not directly remove these blocks; a smaller SLL count alone is insufficient evidence.
+
+Fallbacks should follow the remaining hotspot:
+
+| Remaining pressure | Candidate | Performance and implementation limits |
+|---|---|---|
+| SLR0 density and SLR0-1 traffic | Split VU lanes across SLR0/2, eight each | Keep all 16 front/EXP and eight back lanes. Split local input/output pipe ends and result selection too; preserve lane order, reduction tree, reset phase and latency. This balances traffic rather than removing all boundary wires. |
+| Central issue/CSR/debug windows | Reduce queue/readback mux and control-net pressure; separate cold record storage from hot dependency/stop state | Current scopes: issue 8,085 LUT, CSR 5,114, debug shadow queue 3,205. They are investigation targets, not predicted savings. Preserve queue depth, issue rate, completion semantics and debug stop behavior. Multiple write sources prevent a blind conversion to one BRAM. |
+| Central debug area, if feature reduction becomes acceptable | Optional trace writer or history reduction | Trace writer scope is 1,796 LUT; history is already mainly BRAM. Disabling tracing does not automatically remove the shadow queue, which also serves completion records and stop state. Preserve RV/GDB and required recovery interfaces. |
+| VU input wires remain dominant | Local coefficient storage/expansion and ROPE generation | Current C1/C2 crossing is 1,024 bits. Scalar modes alone are insufficient: AM_L and ROPE need lane-varying values. Preserve setup/use ordering and full-rate operands; net area and wire savings remain unmeasured. |
+| Local PV/MAC congestion | Rework PV capture/read selection and FIFO implementation while retaining eight converters | Four PV scopes total 86,533 LUT / 98,436 FF. A capture takes 512 values at once; ordinary BRAM cannot replace it without a port/schedule redesign. Moving the whole block away from its MAC creates a very wide new crossing. No saving is established yet. |
+| Area still too high after these changes | BACK_LANES 8 -> 4 before reducing EXP lanes | Back-class arithmetic throughput halves relative to the present design. MVM and front/EXP rates remain intact; SILU/GELU/RECIP and ANORM preparation can slow. Measure exposed cycles for each workload. |
+
+A balanced VU partition must account for unequal lane types. Lanes 0-7 contain back units;
+lanes 8-15 do not. Moving lanes 4-7 and 12-15 is one example with four back-equipped lanes
+on each SLR. Their current hierarchy scopes contain 23,148 LUT, 36,787 FF, 184 DSP and
+12 RAMB18. Boundary stages, shared selector/control/reset replicas and new LUT packing are
+excluded. Resource arithmetic alone changes outer LUT use from 68.57% / 56.39% to about
+62.69% / 62.27%, and DSP counts from 1,797 / 1,429 to 1,613 / 1,613. This is not a new
+placement result or a prediction of occupied CLBs. About 1,536 lane data connections would
+change from the lower boundary to the upper one; shared control can add crossings. Prevent
+accidental SLR0-to-SLR2 result or selector detours through SLR1. The upper PV/MAC hotspot and
+destination pblock fit still require checks. A four-lane intermediate move is also possible.
+
+For BACK_LANES 8 -> 4, the current four removable lanes' back child scopes contain 5,802
+reported LUT and 48 DSP before cross-hierarchy combining and remapping. Treat this as a
+few-thousand-LUT candidate, not a measured net saving. The older §7.10 VU shrink figures are
+estimates; only the combined EXP8/BACK4 OOC alternative has a recorded area comparison.
+If affected operations contribute fraction p of exposed device time and their time doubles,
+total time grows by approximately p; the current full-size K4 value of p is not measured.
+Do not transfer the old short-context activation estimate to long-context attention, MoE or
+GDN. Keep EXP16, T_MAX8, the four clusters and weight512 first: reducing these can directly
+hurt softmax, GQA/prefill/MTP or sustained matrix throughput. TOPK/DQROW are already disabled
+in this K4 configuration, so removing them provides no current saving. MVM/VU arithmetic
+and their independent execution remain separate.
+
+The user subsequently selected DDR localization, paired gather and balanced VU 8+8 for the
+next full native build. If that attempt still fails, the user authorizes halving VU processing
+width/throughput to prioritize a working image, while retaining the four clusters and weight
+streams. That fallback is not applied to the first attempt. Existing EXP8/BACK4 knobs only
+reduce those arithmetic classes; a true half-width VU also needs front-lane scheduling and
+result assembly changes. Preserve bit-exact numerics and ISA behavior, then compare exposed
+cycles on the same firmware/oracle workloads. No fallback performance penalty is measured yet.
+
+The initial source review of that fallback proposes FRONT8/EXP8/BACK4 with two logical lane
+contexts per physical front lane. Keep 512-bit architectural SPM lines; serialize their two
+halves and assemble the original result order. Reduction must retain all 16 logical partial
+accumulators and the original tree/order: combining two lane histories into one accumulator
+would change floating-point rounding. NEOX's existing two subslots describe two output lines,
+so a half-width implementation needs four subslots with separate line and part indices.
+Audit NORM/ROPE coefficient indices, tails, row tokens, drain credits and final angle release.
+This fallback is now implemented and under full regression after the full-size route failure.
+Physical area savings remain unmeasured; halving arithmetic does not imply halving VU area.
+
+The kernel itself has 532,818 LUT, 632,820 FF, 3,360 DSP, 1,013 BRAM tiles and 128 URAM.
+This is a large multi-SLR integration with a fixed shell and two clock domains. Its earlier
+four-cluster success remains useful evidence, but the new logic needs a revised physical
+budget: the VU was estimated at about 48 K LUT and now measures 82,918; the PV subtotal
+alone is 86,533. Total arithmetic capacity is not a guarantee of routability. AMD UG949
+2024.2 likewise calls for per-SLR balance and deliberate pipelining of wide crossings.
+
+After the active build, assess each variant after placement: usable dynamic-pblock capacity,
+per-column demand, local congestion, central control paths and core250/RV/hold/CDC timing.
+Use operation-cycle and byte-trace comparisons for changes to buffering or scheduling.
+Level 4 or below is a useful congestion objective, not a sufficient or necessary pass rule;
+only legal completed routing and timing checks establish success. Retain separate results
+for DDR/gather and any lane split so their benefits and regressions can be attributed.
+
+#### 8.6.3 Placed result of the combined changes (2026-11-04)
+
+Placement and the actual placed-locality gate pass for the combined DDR/gather/VU changes.
+The comparison below uses the Fully Placed reports in the `impl_1` directories of
+`build/link/k4_20261102_003908_core300_rv166/` and
+`build/link/k4_20261103_182205_locality_core250_rv166/`, respectively. The files are
+`tmp/link/vivado/vpl/prj/prj.runs/impl_1/slr_util_placed.rpt`; timing and estimated congestion
+are in each run's `runme.log`. Values separated by slashes are SLR0 / SLR1 / SLR2.
+
+| Metric | Previous full system | Combined locality changes |
+|---|---:|---:|
+| LUT | 271,588 / 303,813 / 222,771 | 249,145 / 301,413 / 249,908 |
+| FF | 341,212 / 396,760 / 266,236 | 311,351 / 389,339 / 313,874 |
+| BRAM tiles | 530.5 / 394 / 518.5 | 524.5 / 394 / 524.5 |
+| URAM | 0 / 148 / 0 | 0 / 148 / 0 |
+| DSP | 1,797 / 150 / 1,429 | 1,613 / 150 / 1,613 |
+| Occupied CLB sites | 94.97% / 99.84% / 89.56% | 95.73% / 99.88% / 96.57% |
+| Lower-boundary SLL | 9,830 | 5,785 (-41.1%) |
+| Upper-boundary SLL | 7,375 | 7,356 (-0.3%) |
+| Total SLL | 17,205 | 13,141 (-23.6%) |
+
+The locality gate verifies DDR0/3 bridges, arbiters and weight streams, the paired gather
+stages, both eight-lane VU banks and their transport. DSP and BRAM distribution corroborate
+the intended balance. Central LUT usage falls slightly, 77.09% to 76.49%, while occupied
+central CLB sites remain almost full. Occupied CLB percentage is not LUT percentage.
+
+Post-placement estimated global congestion improves east from 64x64 to 16x16 and west
+from 64x64 to 32x32. North and south remain 64x64. Both runs carry the high-congestion warning.
+These are reported congestion-window sizes, not percentages or router per-column demand.
+Current router demand and legal routed results are not available at this comparison.
+
+Placement-estimated WNS improves from -3.139 to -1.874 ns but remains negative. The core
+target also changed from 300 to 250 MHz, and the previous placement predates restored CDC
+constraints. Both runs use Vivado 2024.2. These results show lower crossing count and better
+balance, but do not isolate each RTL change or prove routing and timing success.
+
+The combined full-size attempt later failed actual routing at 03:22 KST on 2026-11-04.
+Verification rejected 16,100 signals with routing conflicts and 13,267 overlapping nodes;
+the previous route failure reported 286,682 failed signals and 352,035 overlaps. The router's
+preceding summary had zero unrouted or partially routed nets. Paths existed but illegally
+shared routing resources; calling all 16,100 signals "unrouted" is inaccurate.
+The new route ran about 2 h 30 min and saved
+`level0_wrapper_routed_error.dcp` (744,673,765 bytes). This is an error checkpoint, not a
+legal routed result. Failed-net examples include DDR1 response-interconnect logic and
+cluster 1/3 activation, PV and backend paths; the first ten examples are not a complete
+distribution or proof of one root cause. Placement/locality, clock/reset and pre-route CDC
+had passed. The user-authorized FRONT8/EXP8/BACK4 fallback is now in implementation as
+described in §8.6.2. Four clusters and four independent 512-bit weight streams remain.
+
+#### 8.6.4 Half-width fallback validation (2026-11-04)
+
+K4 selects FRONT8/EXP8/BACK4. Structural Verilator elaboration confirms eight physical front
+and EXP lanes and four back lanes, with four front and two back lanes in each outer bank.
+All 16 logical reduction histories and 256 double-buffered partial words remain. Two drain
+read ports reconstruct the original logical order. K1 and default 16-front behavior remain.
+
+The VU oracle suites pass for half width at PIPE0/2/3, full16/EXP16/BACK8 at PIPE0/2, and
+full16/EXP8/BACK4 at PIPE3: 78 cocotb case executions. Directed cases exercise separate
+contexts, long cancellation reductions, partial tails, AMASK freshness, mixed two/four-part
+exits, NEOX angle reuse and reset during NEOX/queued reduction. M7 tiny decode/prefill and
+four-channel K4 smoke/DB also pass at half width, including the unchanged C-oracle outputs.
+Evidence is in `build/analysis/k4_vu_half_20261104/functional_completion.json` and
+`build/analysis/k4_half_vu_20261104/integration_frozen.json`.
+
+The following deterministic command-to-done cycle comparison uses full16/EXP16/BACK8 versus
+half8/EXP8/BACK4, PIPE2, identical operation/data streams and no SPM contention. Readback and
+separate RoPE setup are excluded. Whole-SPM and scalar-register digests match.
+
+| Operation / elements | Full-width cycles | Half-width cycles | Ratio |
+|---|---:|---:|---:|
+| ADD / 896 | 128 | 182 | 1.42 |
+| COPY / 4096 | 325 | 581 | 1.79 |
+| EXPK / 1024 | 133 | 197 | 1.48 |
+| SILU / 4864 | 713 | 1321 | 1.85 |
+| RED.SUMSQ / 5120 | 471 | 791 | 1.68 |
+| ROPE NORM / 128 | 472 | 488 | 1.03 |
+| ROPE NEOX / 128 | 473 | 489 | 1.03 |
+
+These are per-operation measurements (`build/analysis/k4_vu_half_20261104/cycles.json`),
+not whole-model throughput estimates. The four MVM clusters and independent weight paths
+are unchanged. The default bench suite passes 518 tests with 115 opt-in skips; CTest passes
+297 tests with one disabled. Physical qualification remains separate.
+
+#### 8.6.5 Half-width placed result (2026-11-04)
+
+The fresh half-width attempt is `build/link/k4_20261104_041621_half_vu_core250_rv166/`.
+Placement completed in 1 h 47 min 39 s. The actual placed-locality gate passed, and the
+placement reports completed at about 07:48 KST. Native physical optimisation continues.
+The comparison uses Fully Placed reports against the full-width locality attempt in §8.6.3;
+both target core 250 MHz and RV about 166.7 MHz with restored CDC constraints.
+Values separated by slashes are SLR0 / SLR1 / SLR2.
+
+| Metric | Full-width locality | Half-width locality |
+|---|---:|---:|
+| LUT | 249,145 / 301,413 / 249,908 | 236,866 / 301,515 / 237,356 |
+| FF | 311,351 / 389,339 / 313,874 | 292,291 / 387,060 / 294,982 |
+| Occupied CLB sites | 95.73% / 99.88% / 96.57% | 94.54% / 99.84% / 94.98% |
+| BRAM tiles | 524.5 / 394 / 524.5 | 521.5 / 394 / 521.5 |
+| URAM | 0 / 148 / 0 | 0 / 148 / 0 |
+| DSP | 1,613 / 150 / 1,613 | 1,521 / 150 / 1,521 |
+| Lower-boundary SLL | 5,785 | 5,135 |
+| Upper-boundary SLL | 7,356 | 6,682 |
+| Total SLL | 13,141 | 11,817 (-10.1%) |
+| Placed WNS / TNS | -1.874 / -40.671 ns | -1.944 / -135.079 ns |
+| Placed WHS / THS | -0.345 / -1266.273 ns | -0.319 / -1162.877 ns |
+
+Whole-device LUT use falls 3.1% and FF use falls 4.0%. The reduction is mostly in the outer
+SLRs; central LUT use is nearly unchanged, and occupied central CLB sites remain at 99.84%.
+This site occupancy is distinct from central LUT utilisation, which is 76.51%.
+
+Maximum global congestion remains level 6. North and south remain 64x64, west remains
+32x32, and east grows from 16x16 to 32x32. Both runs carry the high-congestion warning.
+The half-width report identifies central VU injection, DMA KV and SPM neighbourhoods,
+and cluster 1/3 attention-PV and MAC neighbourhoods among the congested windows. These
+hierarchy percentages describe cells in a window; they do not attribute individual failed
+routes to one block. The Router Initial Congestion table is still empty at this stage.
+
+The measurements establish reduced resource and crossing counts, not reduced peak congestion
+or timing closure. Placed setup slack is slightly worse. Let the native route finish before
+judging routability. Source reports are `slr_util_placed.rpt`,
+`k4_place_design_congestion.rpt` and `k4_place_design_timing_summary.rpt` under each attempt's
+`tmp/link/vivado/vpl/prj/prj.runs/impl_1/`. Extracted values and report hashes are retained in
+`build/analysis/k4_half_vu_20261104/placed_comparison.json`.
+
+At the router's initial SLL-demand estimate, full-width versus half-width totals are
+9,104 to 8,516 on SLR1-2 and 6,789 to 6,190 on SLR0-1. Each boundary has 17,280 SLLs,
+with 1,440 per column. Peak column demand changes from 1,222 (85%) to 1,553 (108%) on
+SLR1-2, and 1,390 (97%) to 1,352 (94%) on SLR0-1. Thus the lower aggregate demand still
+includes a local capacity excess. These are estimates before detailed routing, not final
+legal use or proof that this one column causes every conflict. The half-width run is still
+in initial routing and has emitted the congestion warning. Evidence is
+`build/analysis/k4_half_vu_20261104/router_initial_sll_comparison.json`.
+
+The previous full-width failed checkpoint has 16,100 parent nets with resource conflicts.
+The complete parent-name list matches the 16,099 nets returned by Vivado's CONFLICTS API
+plus `GLOBAL_LOGIC0`; no API-only name remains. Names under the platform DDR1 controller
+account for 3,282 and the DDR1 interconnect for 877 (including one inserted tie at the
+wrapper). Kernel DMA accounts for 1,939, SPM for 1,122 and issue for 829. Of 1,805 VU
+names, just 88 are under the distributed lane banks. The VU writer, reduction and injector
+account for 507, 347 and 324 respectively. These last three are subsets of the 1,805.
+The complete list differs materially from the ten selected node examples in the router log.
+It supports investigating shared central datapaths before removing more lane arithmetic.
+It does not by itself locate physical conflict nodes or attribute the failure to one block.
+The full report and classification are recorded in
+`build/analysis/k4_route_census_20261104/report_first/full_net_name_counts.json`.
+
+#### 8.6.6 Where the previous full-width route actually failed
+
+An exhaustive read-only query of the failed checkpoint retrieved the explicit conflicting
+routing nodes for all 16,100 parent nets. Each physical tile was mapped to its device SLR;
+no tile is unknown. The numbers below describe the failed full-width attempt, not the still
+running half-width route. Only explicit conflict-node lists are counted, not route trees.
+
+| Physical SLR | Unique conflicted nodes | Excess owners on those nodes |
+|---|---:|---:|
+| SLR0 | 102 | 102 |
+| SLR1 | 12,893 (97.2%) | 12,894 |
+| SLR2 | 268 | 271 |
+| Total | 13,263 | 13,267 |
+
+There are 13,259 nodes shared by two nets and four by three nets. Counting owners beyond
+the first on each node gives exactly the router's 13,267 overlaps. The four triple-owner
+nodes were separately checked in Vivado. The terminal count is not the number of distinct
+physical nodes. This distinction also explains the unequal raw unique-count flag in the
+first summary. Full per-node/per-net evidence and the original reports are under
+`build/analysis/k4_route_census_20261104/node_worker/session_objects_20261104/`.
+
+The most frequent pair from different hierarchies is kernel DMA versus the platform DDR1
+controller: 853 unique SLR1 conflict nodes, including 716 involving `u_dma/g_kv.u_kv`.
+SPM versus DDR1 accounts for 286, and DMA versus SPM for 284. There are also 1,927 nodes
+shared by two DDR1-controller nets. Do not add pair counts to estimate the benefit of moving
+one block; removing a block can change placement and both sides' routes. The largest 16x30
+tile bin (X32-47, Y450-479) contains 3,029 unique nodes. These measurements locate the
+dominant failure in central SLR1. They supersede guesses from ten printed examples, which
+mostly describe outer-cluster paths. Next investigate the kernel's KV/DMA placement and
+SPM-facing buses against the DDR1 footprint; the platform DDR1 controller is not a movable
+kernel block. Reducing outer VU lanes can indirectly help but does not directly address this
+hotspot. Use the ongoing half-width route to test sufficiency before another RTL change.
+
+#### 8.6.7 Why the earlier four-cluster K4 routed
+
+The October 25 card image ran four MVM clusters at T_MAX=8 and 276.3 MHz (§8.2).
+The host still ran attention, normalization and RoPE. The old central SPM served DMA,
+QACT and MVM through one read and one write port. SLR1 already contained the DDR1
+platform logic, DMA, the central gather and SPM. The integrated design adds the KV
+store engine to DMA, the VU's SPM-facing read/write and reduction paths, two-bank
+2R2W SPM arbitration, the RV subsystem and debug logic. Attention also adds PV logic
+in the outer clusters. The wider central connections must be physically routed even
+when a workload uses them in different cycles.
+
+All resource counts below use the native Fully Placed reports with Vivado 2024.2 on the
+same U200 platform. The kernel LUT row excludes the platform. SLR1 rows cover the whole
+SLR, including the shell. The three output roots are `build/u200/k4/`, the full-width
+attempt in §8.6.3 and the half-width attempt in §8.6.5. Sources are `slr_util_placed.rpt`,
+`kernel_util_placed.json` and the per-column router estimates in `runme.log` under each
+`tmp/link/vivado/vpl/prj/prj.runs/impl_1/` directory.
+
+| Measure | October card image | Full-width failed route | Half-width attempt |
+|---|---:|---:|---:|
+| Kernel LUTs, whole device | 280,325 | 537,415 | 512,797 |
+| SLR1 CLB LUTs | 227,182 (57.65%) | 301,413 (76.49%) | 301,515 (76.51%) |
+| SLR1 occupied CLB sites, out of 49,260 | 45,371 (92.11%) | 49,200 (99.88%) | 49,181 (99.84%) |
+| SLR1 empty CLB sites | 3,889 | 60 | 79 |
+| SLR1 BRAM tiles / URAM | 313 / 148 | 394 / 148 | 394 / 148 |
+| Placed SLLs, both boundaries | 13,724 | 13,141 | 11,817 |
+| Peak estimated SLL column demand, SLR0–1 / SLR1–2 | 103% / 122% | 97% / 85% | 94% / 108% |
+| North / south global placement congestion window | 32x32 / 32x32 | 64x64 / 64x64 | 64x64 / 64x64 |
+
+The successful router could resolve its provisional column overloads and ended with zero
+node overlaps. The integrated full-width run had fewer crossings, but added 74,231 LUTs
+in SLR1 and doubled the north/south congestion window dimensions. The failure census in
+§8.6.6 locates 97.2% of its distinct collisions in SLR1 and identifies actual competition
+between the new KVST datapath and the platform DDR1 controller. Site and LUT use measure
+different things. A partially used CLB can still accept compatible logic, and an empty
+site elsewhere in the SLR gives no guarantee of a free wire through the congested region.
+This comparison identifies the physical failure mechanism. Several features and floorplan
+constraints changed together, so it cannot isolate a resource cost or benefit for each.
+
+Cluster attention increases both outer logic and central traffic. ATTQK reuses the MVM
+MAC lanes and adds score assembly and buffering. ATTPV reuses MAC and activation ports
+and adds alignment, capture, conversion and partial-result storage. The earlier physical
+optimisation measurements in §8.6 put the four PV blocks at about 87 K LUTs. In the
+full-width failed DCP, 101 conflicted signals named under `g_att.u_pv` touch 30 distinct
+nodes in SLR0 and 45 in SLR2. The shared MAC, activation and gather paths also serve MVM,
+so hierarchy names alone cannot measure the marginal cost of enabling attention.
+
+Scores and PV partials pass through gather to SPM, while KVST uses the DMA memory ports
+to store K/V. Counting a physical node once per group with a contending signal, the same
+DCP has 1,711 SLR1 nodes involving the shared MVM/attention gather and 2,028 involving
+KVST. The latter include the 716 also used by DDR1-controller signals. Counts from
+different groups can overlap. This links outer cluster attention to both the visible
+PV/MAC congestion and the shared central datapath where routing failed.
+
+#### 8.6.8 Direct source comparison and the DMA response selector
+
+All 30 HDL sources extracted by the October link in `tmp/link/int/xo/ip_repo/` match
+Git `3df6443` byte for byte. Each link also retained its synthesized kernel IP checkpoint.
+The following LUT counts come from `report_utilization -hierarchical` on those three
+checkpoints before shell integration. The rows include child instances, so MVM includes
+the clusters and gather, each cluster includes its PV block, and DMA includes KVST.
+
+| Synthesized kernel hierarchy | October K4 | Full integrated K4 | Half-VU K4 |
+|---|---:|---:|---:|
+| Whole kernel | 285,449 | 548,415 | 528,063 |
+| MVM unit | 261,301 | 396,237 | 396,241 |
+| Four cluster instances | 234,824 | 363,079 | 363,085 |
+| Four attention PV blocks | absent | 88,389 | 88,395 |
+| Gather | 24,756 | 28,106 | 28,106 |
+| VU | absent | 87,271 | 66,361 |
+| RV subsystem (`u_rv`) | absent | 6,229 | 6,229 |
+| DMA | 1,589 | 7,264 | 7,265 |
+| KVST inside DMA | absent | 5,086 | 5,087 |
+| SPM | 1,179 | 4,658 | 4,656 |
+
+The old DMA selected one 512-bit return from four DDR channels for LD. The integrated
+DMA kept this choice and passed all four buses into KVST for a second selection when
+filling the metadata read-modify-write FIFO. The engines take turns on the DMA command
+port. This makes the duplicate response tree a target inside the measured SLR1 hotspot.
+The separate weight channels and the two-bank SPM have independent simultaneous consumers.
+
+An isolated candidate selects the active engine's channel first, then selects the DDR
+response data once for both FIFOs. Their valid bits, credit tracking and write channel
+tags stay separate. At the K4 parameters the paired out-of-context DMA syntheses report
+6,430 to 5,694 LUTs (736 fewer), 2,661 to 2,654 FFs, eight RAMB36s and four DSPs in each.
+Each of the 2,048 DDR response input bits now drives one direct load instead of two.
+The estimated setup slack at a 4 ns period is +0.798 ns before and +0.793 ns after. The
+post-synthesis hold estimate is -0.135 ns for both. These measurements precede placement.
+The hardware link started at 04:16 KST uses the original two selectors.
+
+With the same stall schedule, all 72 tested command latencies matched. Together the 12 LD,
+12 ST and 48 KVST commands took 16,919 cycles in each design. Tests checked memory against
+the C oracle on channel changes, partial K/V metadata updates and full groups. The census,
+archived-source hashes and paired synthesis reports are under
+`build/analysis/k4_central_delta_20261104/`. Integrated route impact remains to be measured.
+
+#### 8.6.9 Options for reducing SLR1 use
+
+The busiest bin in the full-width error DCP contains 3,029 unique conflict nodes. Of
+these, 1,086 carry a KVST signal and 457 carry an SPM signal. A node can count in both
+groups. Shrinking central logic elsewhere can free placement sites, while changes around
+this bin can also reduce demand on the particular wires where routing failed.
+
+| Candidate | Evidence and expected effect | Performance constraint |
+|---|---|---|
+| Shared LD/KVST response selector | Implemented and measured in §8.6.8. All four DDR response buses now feed one selector. | One accepted beat per cycle. The 72 measured command latencies match. |
+| KVST output FIFO mapping | Its 8×512-bit data queue is associated with 426 unique full-width conflict nodes, including 109 shared with DDR1. A synchronous BRAM implementation would trade distributed storage and read muxes for about eight RAMB36s to provide the required width. Area benefit is unmeasured. | Preserve eight credits including prefetched beats, a sustained beat per cycle, simultaneous push/pop and stable payload, channel and last under a write stall. Measure first-beat latency separately. |
+| First reduction level in the two outer VU banks | On the half-width mapping each first-stage input pair is local to a bank in both logical contexts. Four pair nodes use 2,322 LUTs and 2,024 FFs in native kernel synthesis. Returning four 32-bit results would reduce the declared drain payload from 512 to 128 bits, excluding control. | Retain the exact FP pairing, NaN/empty handling, drain credits and one group per cycle. Verify controls align across the transport and measure SLL columns and local packing. |
+| Move only the RoPE sin/cos pipeline | `u_ang/u_sc` has 4,784 LUTs, 4,592 FFs and 40 DSPs, with a 32-bit input and two 32-bit outputs. Its table stays in SLR1. Only one central conflict node names this pipeline, outside the busiest bin. | Check the input and return paths at 4 ns, including token alignment. The outer SLRs each use 1,521 of 2,280 DSPs, but fit depends on the actual DSP columns and dynamic pblock. |
+
+Relocating the RV and TCM together could transfer 6,229 LUTs and 48 RAMB36s. Their
+interface also carries a 387-bit instruction FIFO input, per-unit error/sequence fields
+and debug signals, and needs a legal RV clock/reset and CDC boundary. The full-width
+census found 518 nodes involving RV signals in SLR1, none in the busiest bin. Moving
+the entire DMA/KVST would add wide links to the central SPM and the DDR1/2 ports. The
+2R2W SPM uses both banks for concurrent clients. Dropping a bank would change throughput.
+These are larger changes than sharing an existing response or computing a reduction
+pair beside its inputs. Resource footprints above describe synthesized units. Their effect
+on occupied sites and conflicted nodes needs an integrated physical run.
+
+The first half-width run (§8.6.5) subsequently failed route verification with 104
+conflicted signals and 71 overlaps. The intermediate global-iteration WNS was -7.002 ns.
+The router wrote `level0_wrapper_routed_error.dcp`; no timing-qualified image was produced.
+The shared selector was then promoted and a fresh native build began at 11:34 KST in
+`build/link/k4_20261104_113409_central_rsp_core250_rv166/`, with the same floorplan and
+clock targets. The 71 overlaps belong to the earlier netlist with separate selectors.
+
+The half-width error checkpoint has 71 unique conflict nodes, each with two owners.
+67 are in SLR1 and four in SLR0. Endpoints were recovered for all 104 affected nets.
+61 have endpoints in SLR1/2, eight in SLR0/1, seven span all three, and 28 stay in
+SLR1. Thus a conflict on a central routing tile may involve a signal travelling to
+an outer SLR. The channel 3 DMA write-data slice participates in 49 conflict nodes.
+33 involve two of its own signals, eight are shared with the MVM broadcast head, six
+with the channel 3 request slice and two with the VU injector. All 53 affected channel
+3 write-data payload nets have a driver in SLR1 and loads in SLR2. There are no KVST
+queue or SPM net names in this 104-net set. For a future placement experiment, inspect
+the distribution of the channel 3 write-data source registers and their receivers across
+northbound wiring columns, separating them laterally from the upper broadcast tails.
+Compare this against the current selector run at identical clocks and payload width.
+Counts, placed endpoint sites and clock regions are in
+`build/analysis/k4_half_error_20261104/session/physical_conflict_nodes.tsv`,
+`endpoints.tsv` and `footprint_summary.tsv` in that directory.
+
+The final failed DCP reports WNS -7.000 ns and TNS -79,264.719 ns with 123,153 failing
+setup endpoints. Among the 100 worst distinct core endpoints, 93 start at CSR address
+bit 0 and end in debug or trace logic. Five start at a RoPE angle address bit. The
+worst single path has 10.408 ns of routing in 10.866 ns of data delay. Its address net
+drives 128 loads and detours through three SLR1 clock-region columns. The worst RV path
+has -2.650 ns slack. None of the data nets on the 100 core and ten RV paths is one of the
+104 conflicted nets, including their hierarchical aliases. This sample describes the
+worst paths only. The failed DCP clock/reset checks passed at 4.000 and 6.023 ns, as did
+the checked CDC and kernel bus-skew constraints. Keep timing signoff open for a legal route.
+
+#### 8.6.10 Next implementation comparison
+
+The 15:36 link used the shared DMA selector and the major-block Pblocks in the pre-build
+map. It removed the prescribed placement of individual pipeline stages and the placement
+ECO. It also used the default placer directive. The kernel XO and clocks matched the
+11:34 build. AMD describes how flexibility at SLR boundaries lets placement and physical
+optimisation move or replicate interconnect logic. Its soft SLR assignment is distinct from
+the platform's existing hard Pblocks used here. [UG949, SLR floorplanning](https://docs.amd.com/r/2024.2-English/ug949-vivado-design-methodology/Using-Soft-SLR-Floorplan-Constraints)
+
+Placement improved the estimated WNS from −2.077 to −1.134 ns. SLR1 still used
+49,153 CLBs (99.78%). The 11:34 comparison ended before routing. Against the earlier
+completed half-width route, the maximum estimated SLL column demand fell from 108% to
+88% on SLR1–2 and rose from 94% to 97% on SLR0–1. Detailed routing ended with
+24,587 conflicted signals and 19,799 node overlaps. The earlier half-width run had
+104 conflicted signals and 71 node overlaps. Both runs had zero wholly or partly
+unrouted nets. None of these failed routes qualifies the core clock.
+
+The 15:36 router's final north congestion window spans 64×64 tiles in SLR1. The
+largest south windows span 32×32 tiles in SLR2. Nine of its ten listed physical
+conflict nodes lie in SLR1. Three involve the platform DDR subsystem and two involve
+channel 0 DMA write bits. Others include the VU injector and SPM. A paired MVM gather
+appears in SLR2. These ranked examples cover only ten nodes.
+
+A single `report_route_status -return_nets -route_type CONFLICTS` on the saved error
+checkpoint returned 24,586 distinct names, one fewer than the router message. Of those,
+7,778 belong to the platform memory subsystem. Kernel hierarchy names include MVM gather
+(2,001), VU injector (1,994), cluster 1 (1,515), SPM (1,336), DMA (1,133), VU angle
+(967) and VU reducer (549). The channel 0 DMA write-data slice has 208 names and the
+channel 3 slice has 47. This failure spans several blocks. A signal count by hierarchy
+does not assign physical conflicts to a single cause. The names and counts are in
+`build/analysis/k4_pblocks_failure_20261104/`.
+
+The next trial puts the first reduction level inside each existing outer VU bank.
+In isolated synthesis the registered return per bank per stage goes from 384 to
+192 bits and the input grows from 541 to 544 bits. The complete reduction still
+uses the same logical histories and floating-point operation order.
+
+The previous half-width DCP provides a specific follow-up if the same DDR3 conflict
+recurs. For all 53 affected write-data nets, the two loads per bit were in clock region
+X1Y10 of SLR2, at the arbiter's main/skid write slice. The 53 drivers were in SLR1 at
+X1Y8 (36), X1Y7 (14), X2Y7 (2) and X2Y8 (1). The source `g_dma_pipe.u_wd` uses
+`tsr_rslice` FORM 1, whose two storage slots feed an output mux. FORM 0 launches the
+payload from its main register, moving selection and enable logic to the source side.
+Trying FORM 0 on channel 3's write-data slice alone would keep its two-entry capacity,
+512-bit payload and ready/valid transfer schedule. It could introduce a new wide enable
+path and the receiver would still have two loads. Its physical benefit is unmeasured.
+If another elastic stage is required, measure the added latency and maintain one accepted
+beat per cycle under sustained traffic. AMD's wide-bus guidance explicitly qualifies its
+three-stage recommendation by clock frequency (above 250 MHz). [UG949, wide SLR buses](https://docs.amd.com/r/2024.2-English/ug949-vivado-design-methodology/SLR-Crossing-for-Wide-Buses)
+
+The timing comparison has a separate control candidate. In the half-width failed DCP,
+93 of the 100 worst distinct core endpoints were reached from the CSR low address bit.
+The integrated CSR qualifies aligned debug requests before forwarding them. A prepared
+word-address binding on that internal port removes the redundant debug alignment dependency.
+It preserved data, effects and latency in 59 integrated CSR transactions, including
+39 debug accesses. Use it if that timing family recurs. Check the single worst RoPE path
+separately. Synthesis timing estimates and timing on an illegal route do not establish
+the operating clock. [UG949, timing closure](https://docs.amd.com/r/2024.2-English/ug949-vivado-design-methodology/Timing-Closure)
+
+#### 8.6.11 Central communication and consumer locality investigation (2026-11-05)
+
+This is an investigation after the final T4 failure, not an implementation plan
+in progress. The goal remains paused. Sol reviewed the DMA/SPM and VU paths;
+Astra reviewed the proposed changes. No RTL, constraints, tests or CAD runs were
+changed or started for this investigation. The final failure and retained evidence
+are in `handoff.md` under "Final failure analysis".
+
+Runtime traffic, declared bus width and physical routing demand are different
+quantities. Sending fewer beats over an unchanged bus does not remove its wires.
+A change must remove or narrow a physical interface, reduce its fanout or shorten
+its route to support a congestion claim. Synthesis may already merge identical
+payloads and constant fields. All bit counts below describe RTL interfaces;
+none is a measured SLL saving.
+
+AMD recommends keeping tightly connected modules in the same SLR and avoiding
+repeated SLR crossings. Its congestion example also shows that low device-wide
+utilization can coexist with a congested wide mux in one SLR.
+[UG949, SLR utilization example](https://docs.amd.com/r/2024.2-English/ug949-vivado-design-methodology/SLR-Utilization-Example?contentId=s3H0Ea_V91Z0uT2BGkL33w),
+[UG949, SLR balance](https://docs.amd.com/r/2024.2-English/ug949-vivado-design-methodology/Balance-SLR-Utilization-for-SSI-Devices).
+The user's major-block-Pblock-only policy remains in force.
+
+Current transport limits:
+
+| Path | Current RTL behavior | Consequence |
+|---|---|---|
+| DMA LD/ST | One command active; at most one 512-bit payload beat per cycle across channels. LD and KVST already share the response selector. Write payload is broadcast with one-hot channel validity. | 16 GB/s at 250 MHz is a supported stream rate. A 256-bit same-clock path would halve peak payload capacity. Four declared channel values are not four independent DMA streams or necessarily four duplicated physical buses. |
+| SPM | Two parity banks, each with one 512-bit read and one 512-bit write per cycle. Accepted reads return after four cycles without response backpressure in K4. | VU can use both read banks. Moving a parity bank does not establish consumer ownership; all clients address both. |
+| VU lane bank | Four lanes per bank: 512 operand bits plus 32 control bits enter; 128 ordinary result bits and 64 local-reduction bits return. | Current 544-bit input and 192-bit return already include the implemented bank-local first reduction. |
+| KVST metadata | Converts one 64-bit FP32 scale pair to 32 FP16 bits per active conversion cycle, with separate load/phase cycles. QRUN still drains full 512-bit beats. | A narrow metadata patch is plausible; narrowing the complete KVST/DMA datapath is not equivalent. |
+| Trace | Serializer supplies at most one 256-bit record per cycle. Writer assembles up to two records into one DDR beat. | The present DDR0 write mux already shares DMA's 512-bit path. A new record link is not automatically a net saving. |
+
+Contracts: `docs/design/04-control-core.md` §10 and §13.2,
+`docs/design/02-vector-unit.md` §7.5–§7.8,
+`docs/design/03-attention-kv.md` §8.3, and
+`docs/design/05-debug.md` §5.5 and §8.2–§8.3.
+
+**First candidate: select VU operands centrally and expand beside each lane bank.**
+Keep SPM-facing selection close to SPM. Transmit four A/B pairs per bank (256 bits)
+and, when needed, two common C values (64 bits). Including the existing 32 control
+bits gives a 352-bit subtotal, versus 544 today. Additional packet selectors,
+preload/context control and coefficient delivery are not included in that subtotal.
+The gross 35.3% reduction is not an estimate for the whole VU interface or SLLs.
+
+AMERGE needs elementwise C values. Its existing `SK_CL1` and `SK_CL2` slots offer
+an opportunity to preload local C storage before use. Each bank serves eight
+logical elements across two contexts, so C1 and C2 each need 256 bits per bank.
+`C_CLW` must still select an arbitrary logical word; `C_CLE` follows the element.
+A defined delivery and lifetime protocol must prevent premature reuse. Existing
+load slots alone do not prove unchanged throughput after adding transport latency.
+
+ROPE can keep one angle generator and partition the angle storage beside the
+consumers. The generator produces one coefficient pair write at a time. A write
+uses 64 data bits, nine effective index bits, half and valid: 75 bits, before any
+new link controls. The declared index is ten bits, but bit 9 is unused by the
+current buffer. NORM and NEOX require different bank mapping. Preserve the total
+65,536-bit angle storage and both halves. Local ready/release must account for
+writes still in flight. A separate coefficient link adds wires; sharing the packet
+link instead requires a schedule that preserves simultaneous production and use.
+The current 1,024-bit angle read interface is local where its producer and consumer
+are colocated, so it must not be counted as 1,024 removed SLLs.
+
+The change belongs in `tsr_vu_inj.sv`, `tsr_vu_lanes.sv`, `tsr_vu_angle.sv` and the
+corresponding slot/transport logic. It keeps MVM and VU arithmetic independent,
+retains the existing FP operations and reduction order, and targets one subslot
+per cycle. Required cases include AMERGE, scalar C selection, both ROPE layouts,
+DQROW, tails, reset, context reuse, result descriptors and simultaneous angle writes.
+
+**Second candidate: reduce central debug formatting and queue read logic.**
+`tsr_dbg_shq.sv` formats a 256-bit TRW record and a 128-bit REC record in each
+active unit branch, then selects one source per cycle. K4 has five active unit
+queues. Each branch performs timestamp reconstruction and duration subtraction.
+Selecting captured raw fields before a shared formatter could remove duplicated
+formatting arithmetic and wide selection logic. The stored fields total 212 bits
+before any extra timestamp/context capture. Do not treat 384-to-212 as a measured
+wire saving: TRW and REC share fields which synthesis may already merge.
+
+This is debug formatting, not sharing MVM/VU arithmetic. The live outstanding-head
+probes and stop logic must remain timely. Preserve `fresh_q`, timestamp rollover,
+marker/STOP priority, queue advancement, independent REC/TRW enables and drop
+behavior under backpressure. Additional formatter latency can change observability
+and record loss even when numerical model results are identical.
+
+The shallow wide LUTRAM queues are a separate area/fanout candidate. KVST's 8x512
+output queue and trace's 64x256 staging queue have asynchronous read paths. A
+synchronous BRAM implementation with prefetch can reduce those local mux networks.
+It must retain credits and stable stalled output. Trace needs two records per
+cycle, including odd starts, carry/PAD rewrites and concurrent staging writes;
+even/odd banking is a possible implementation, not a validated replacement.
+
+**Third candidate: keep partial KV metadata updates beside their DDR channel.**
+In `tsr_dma_kvst.sv`, partial META updates read an old 512-bit beat, queue it centrally,
+merge the new slot pairs and send the beat back. A DDR0/3-local endpoint could retain
+the old metadata and merge it with a stream of 32-bit converted slot pairs plus
+address, pair index and control. Keep QRUN payloads full width. This can remove
+central old-metadata storage and merge fanout while avoiding that transaction's
+round trip. It does not eliminate the full-width ordinary LD or quant-data buses
+which are already shared with KVST.
+
+Preserve the current conversion bits, untouched slots, repeated updates, ordering
+with ordinary writes, channel-0 trace arbitration, response ownership and completion
+only after all writes commit. Local buffering must cover outstanding reads; a slow
+metadata converter alone does not justify reducing queue credits. This is a larger
+protocol change than packetizing the VU lane interface.
+
+Lower-priority alternatives:
+
+- Moving the whole VU and SPM to an outer SLR is plausible by aggregate resources,
+  but moves DMA, QACT, MVM and RV memory traffic too. Current parity banking is not
+  a per-consumer memory partition. Physical fit and net benefit are unproven.
+- Moving TRW assembly and its write mux to DDR0 leaves the DMA 512-bit crossing and
+  can add a 256-bit record crossing. It may relieve central logic, but cannot be
+  advertised as halving the existing boundary bus.
+- A tagged shared DMA trunk must replace physical duplication to help. Broadcast
+  values already share logic, and both outer SLR destinations still need a route.
+- Another bank-local first reduction or another shared LD/KVST selector is not new
+  work: both changes are already implemented.
+
+The recommended investigation order is VU packet width, debug formatting/queue
+logic, then local KV metadata handling. Keep the original sixteen-Pblock T4 attempt
+as the matched failed reference. Before any later integrated build, verify C-oracle
+bits, handshake/credit corner cases and sustained transfer rates; then measure
+synthesized interface and fanout changes. Declared width, resource estimates and
+failed-route signal names do not establish a routing success or a model-throughput
+percentage. No implementation or retry had started at the end of this investigation.
+The subsequently authorized VU work is recorded below.
+
+#### 8.6.12 Compact VU inputs and bank-local coefficients (2026-11-05)
+
+The user authorized this candidate alone, followed by one native K4 build. DMA,
+debug formatting, queue changes and local KV metadata remain proposals. The
+earlier long-running build goal remains paused; no automatic retry is scheduled.
+
+For FRONT8, selected A/B operands cross in a 366-bit packet with scalar C1/C2 and
+coefficient metadata. Each outer lane bank caches its elementwise coefficients
+and RoPE angles. CL1/CL2 use existing operand load slots; angle writes use a
+separate 74-bit channel. Including reset, each bank has 441 declared input bits
+instead of 545, a 19.1% reduction. The return remains 192 bits per bank. This is
+an elaborated interface measurement, not a measured reduction in physical SLLs.
+Numerical formats, ISA, reduction order and arithmetic parallelism are unchanged.
+The full-width configuration retains its existing path. VU §7.10 gives the storage
+and lifetime details.
+
+The six SPM-facing VU modules (`u_gen/u_rd/u_ang/u_inj/u_lma/u_lmb`) return to SLR1
+beside SPM. The two whole lane banks include their coefficient stores in SLR0/2.
+The other assignments from the 11:34 attempt remain: clusters and assemblers 0/2
+in SLR0 and 1/3 in SLR2, local DDR0/3 endpoints, and SPM/control/DMA in SLR1.
+Writer, reducer, gather transport and individual stages remain free to place.
+Only the existing SLR Pblocks constrain placement; no leaf ownership gate or
+placer directive is added. The map is `docs/fig/floorplan/k4-pblock-plan.png`.
+
+The pre-change sources and benches are frozen under
+`build/analysis/k4_vu_compact_20261105/baseline/`. Standalone validation passed:
+
+- 52 existing C-oracle case executions across half-width pipe depths 0/2/3 and
+  full-width pipe depth 0, plus the existing ordered local-reduction regression.
+- Three focused baseline/candidate pairs. At each pipe depth, all 764 accepted
+  SPM/SREG writes matched in payload, order and cycle, as did all nine batch cycle
+  counts. Cases include CLW/CLE, both contexts, back-four addressing, NORM/NEOX,
+  partial heads, angle-half reuse, reset, both DQROW formats and SPM contention.
+- All 16 angle releases retained their half ordering. The generator sees the
+  intended 0/2/3-cycle release delay. The tested workloads had no extra cycles;
+  whole-model throughput and all possible reuse schedules are not measured.
+- Strict VU lint at the same pipe depths and default full width. Astra review
+  found no blocker. The separate angle-write path still needs 250 MHz timing
+  signoff in the native implementation.
+
+Receipts are `vu_validation_completion.json`, `vu_validation_inputs.json` and
+`comparison.json` in that analysis directory. Integrated verification and native
+launch status are recorded in `docs/handoff.md`. The fresh-packaging driver is
+`build/analysis/k4_vu_compact_build_20261105/`; its fifteen runner checks pass.
+It preserves the baseline package and copies the previous platform IP cache
+privately, excluding the old kernel cache so the changed RTL is synthesized.
+The target is T_MAX4, VU8/8/4, core250/RV166.666667 MHz, synth16/impl8, using the
+existing swap. Placement congestion, legal routing and final timing remain open.
+
+#### 8.6.13 Central memory access and accuracy-preserving research (2026-11-05)
+
+This investigation leaves the compact-VU native build unchanged. Sol inspected
+SPM and DMA/KVST RTL and firmware; Astra reviewed the candidate boundaries. No
+candidate below was implemented during that investigation. The later masked-write
+implementation and support evidence are in §8.6.14. Arithmetic, rounding points, reduction
+order, four weight streams and independent MVM/VU execution remain requirements.
+
+**Existing structure.** SPM already has registered one-hot round-robin arbitration
+at each physical parity bank. Each bank accepts one read and one write per cycle.
+DMA, QACT, MVM and the RV bridge each have a parity-steered single port. VU can
+read both banks, but writes at most one line per cycle. AT has no separate live
+SPM client: its operations use DMA and MVM. Accepted reads return after four
+cycles without response backpressure. See CC §10. Simply adding bank arbiters,
+changing module hierarchy or splitting parity banks across SLRs is not a new
+solution to the existing connectivity.
+
+**First candidate: masked META writes instead of core-side RMW.** The current
+`tsr_xrt_axi_bridge.sv` drives `m_axi_wstrb` to all ones. Partial KVST metadata
+updates therefore read an old beat into the central KQ, merge and write it back.
+AT §5.1 explicitly permits future byte enables with identical architectural data.
+Propagating write masks could remove KQ's 16x512 logical storage bits, its
+read-ahead walker/credits and the 512-bit merge. It does not remove ordinary LD's
+512-bit return trunk or reduce all central traffic by the META traffic fraction.
+
+Supported consecutive K/V updates produce contiguous 32-bit slot-pair masks.
+An 8-bit inclusive first/last-word range can represent a partial write; 0..15
+represents a full beat. Expand the range to 64 byte strobes at the AXI bridge.
+The outer write payload would grow from 513 to 521 bits rather than to 577 with
+raw strobes. Prove pair alignment and contiguity for every supported layout/tail;
+use a general mask if that invariant does not hold. The range must accompany
+each queued beat through KVST, DMA, the trace mux, memory arbiter, DDR slices,
+core/kernel wiring and bridge W slices. ST, quant data and trace use a full mask.
+The existing shared LD/KVST response selector is already optimized; its LD
+channel selection remains necessary after removing KVST reads.
+
+AMD documents partial writes, including controller-internal RMW for ECC:
+[PG150 ECC](https://docs.amd.com/r/en-US/pg150-ultrascale-memory-ip/ECC).
+This does not prove the installed U200 shell's end-to-end behavior. Verify all
+four channels with initialized nonzero sentinel data, partial and overlapping
+writes, and untouched-byte readback. ECC may still cause physical DDR reads.
+Preserve independent AW/W progress, response ownership and completion after B.
+The current `KVST_RMW` event means explicit core RMW work; a masked path must
+document its counter behavior, rather than silently retaining an obsolete meaning.
+If the platform cannot support masks, a DDR-local RMW endpoint is the fallback;
+it retains machinery that the masked-write candidate can eliminate.
+
+**Conditional interface cleanup.** Each single-port SPM adapter already selects
+between the two 512-bit parity returns. If a client is physically remote, keeping
+that select beside SPM can expose one return bus to that client. Do not count a
+saving when the native placement already does so. A regional shared return must
+still support two simultaneous bank responses when different clients can win
+both banks. VU's two-read capability must remain. RV's narrow stores can expand
+near the bank, but repeated 32-bit data may already share wires after synthesis.
+Any new partial write mux must replace existing branches, not just add buffering.
+
+**Larger candidate: producer/consumer-owned tile buffers.** Private buffer sections
+with free/ready ownership tokens can make selected intermediates local and avoid
+central materialization. MVM already has local activation storage, and the FA
+firmware already tiles and overlaps work. A new buffer must remove a real shared
+SPM path to improve routing. Transparent distribution of the whole SPM requires
+address ownership, remote access, DMA visibility and RV/debug coherence rules.
+Start with one producer/consumer edge; preserve the existing operation/chunk order
+and rounded intermediate values. Adding a cache or buffer without removing an
+interface is not evidence of fewer wires.
+
+Relevant primary research, with applicability limits:
+
+- [AutoBridge, FPGA 2021](https://about.blaok.me/publication/autobridge/) and
+  [TAPA, TRETS 2023](https://arxiv.org/abs/2209.02663) combine coarse partitioning
+  with pipelined communication and throughput-aware buffering. Apply the
+  interface principles to RTL; the current native flow and whole-block Pblock
+  policy remain. Registers alone do not reduce wiring and can consume more CLBs.
+- [PASTA, FCCM 2023](https://about.blaok.me/publication/fccm23-pasta/) supports
+  latency-insensitive buffer channels, partitioning and ping-pong storage.
+  Its buffer ownership model is a closer reference for local SPM intermediates
+  than a FIFO-only conversion. [Reference implementation](https://github.com/SFU-HiAccel/pasta).
+- [RapidStream IR, ICCAD 2024](https://arxiv.org/abs/2410.13079) represents
+  communication protocols across mixed handwritten RTL, HLS and vendor IP.
+  This supports investigating explicit endpoints without rewriting arithmetic
+  in HLS; it is not an adopted tool or a measured improvement for K4.
+- [LaForest et al., multiported memory work](https://fpgacpu.ca/multiport/index.html)
+  explores banking, replication, LVT and XOR tradeoffs. SPM already uses parity
+  banking and 128 URAMs. Replicating it to add ports is not a free area reduction.
+- [FlashAttention](https://arxiv.org/abs/2205.14135) demonstrates IO-aware tiling,
+  but its [official tests](https://github.com/Dao-AILab/flash-attention#tests)
+  permit numerical tolerance. AT §6.6 already specifies chunking, online merges
+  and exact operation order. Changing chunks, accumulation order or rounding
+  cannot be called a bit-preserving replacement merely because a paper says exact.
+
+Paper frequency and compile-time gains are not K4 routing predictions. A candidate
+must first preserve C-oracle data and memory ordering under contention, byte writes,
+reset and independent channel stalls. Measure sustained service capacity, not just
+average traffic. Then compare synthesized central storage/muxes and native placed
+congestion against the same baseline before claiming a physical benefit. No new
+whole-model performance benchmark or additional build is scheduled by this research.
+
+#### 8.6.14 KVST masked-write implementation and U200 support (2026-11-05)
+
+The user authorized U200 partial-write verification and removal of the central
+KVST RMW while the compact-VU build continues unchanged. The candidate is isolated
+in `/home/limagin-dev/tesseract-kvst-masked-20261105`, branch
+`codex/kvst-masked-writes`. It includes the frozen compact-VU changes. It has not
+been merged into the running build's checkout or packaged for a new native link.
+The user waived numerical bit-for-bit equivalence for this work. No arithmetic
+change was needed; exact mask, preserved-byte and ordering checks remain required.
+
+**Platform evidence.** The installed `xilinx_u200_gen3x16_xdma_2_202110_1`
+platform and retained native HWH connect all four kernel ports' 64-bit WSTRB
+through the memory subsystem. Dynamic DDR0/2/3 controllers expose 512-bit AXI,
+WSTRB and enabled ECC. DDR1 reaches the locked static boundary with all 64 strobes;
+its controller internals are not available in the readable metadata.
+[AMD PG150 ECC](https://docs.amd.com/r/en-US/pg150-ultrascale-memory-ip/ECC)
+documents partial-write support and controller-internal RMW. Initialize memory
+before masked writes; internal ECC work can still incur DDR latency.
+
+An XRT probe allocated its own 4,096-byte BO in each of the four physical banks.
+It initialized the full buffer, poisoned the host copy outside each update, and
+checked the entire device buffer after every partial and overlapping write.
+All 136 contiguous 32-bit-word intervals in a 64-byte beat were exercised per
+bank, each followed by an overlapping word write: 1,088 updates passed.
+The loaded image UUID and CU usage count stayed unchanged; no image was loaded,
+CU launched or device reset. This verifies the host XDMA/controller route, not
+sparse masks or bursts from the modified kernel. The new kernel still needs card
+qualification after a successful link. Support source, log and platform reports
+are in `build/analysis/k4_masked_write_20261105/support/` in the main checkout.
+
+**Implementation.** Keep the existing 16-bit word mask instead of the proposed
+8-bit interval encoding in §8.6.13. This avoids a new contiguity invariant and
+preserves arbitrary masks in the generic transport. Each bit enables four bytes
+at the final AXI W endpoint. Data plus LAST plus mask is 529 bits, previously 513.
+The mask accompanies every queue entry and elastic slice through KVST, DMA,
+trace arbitration, channel arbitration, DDR locality pipes and the AXI bridge.
+ST, quant data, full metadata, trace and the bandwidth kernel use all-one masks.
+Read requests, burst IDs, AW/W independence and write response ownership retain
+their existing protocols. Completion waits for every accepted write response.
+
+The core no longer reads metadata before a partial KVST write. KQ's 16×512 logical
+storage bits, read-ahead walker/credits and 512-bit merge are removed. Ordinary
+LD's 512-bit return path remains. `KVST_RMW` counts actual core RMW events and is
+zero; it does not report hidden DDR ECC RMW. The simulator estimates KVST as
+40 + written beats, with no controller/stall model. Its legacy
+`tsr_kvst_stats.meta_rmw` field still counts partial metadata coverage for ABI
+compatibility. Capture retains partial metadata preimages so whole-beat replay
+checks preserve untouched bytes; capture dependencies are not memory traffic.
+
+Matched Vivado OOC synthesis of `tsr_dma` on XCU200, NUM_CH4, HAS_KVST1 and
+SPM_RD_LAT4 gives 5,694 → 4,781 CLB LUTs (−913, 16.0%) and 2,654 → 2,560
+registers (−94, 3.5%). The LUT reduction comprises 629 logic LUTs and 284 memory
+LUTs. RAMB36 remains 8 and DSP remains 4. These are DMA-block measurements;
+additional masks in the outer queues/pipes are outside this total. They do not
+establish a net whole-K4 saving or placement improvement.
+
+Sol implements and verifies; Astra reviews. Validation receipts and synthesis
+reports are in the candidate's handoff and `build/analysis/kvst_masked/`. The candidate has no placed congestion, routing,
+250 MHz timing or modified-kernel card result. Do not infer build success from
+logical FIFO removal or standalone synthesis.
+
+#### 8.6.15 Audit of native platform and memory features (2026-11-05)
+
+Sol audited the masked-write candidate and the retained native shell; Astra
+reviewed the contracts. The compact-VU build and both checkouts' implementation
+sources remain unchanged. Only an ignored standalone Verilator harness was added.
+This investigation authorizes no implementation change or further native build.
+
+**Confirmed trace corruption and unused write strobes.** `tsr_dbg_trw` still
+saves a 256-bit `carry_q`, fills an unused half with PAD, and replays the saved
+half on the next odd-position write. `tsr_dbg_wrmux` supplies an all-one trace
+mask even in the masked-KVST candidate. DB §8.3 defines record-granular WPTR/RPTR;
+the CSR and host reader accept odd RPTR values. The C simulator stores individual
+32-byte records and preserves their neighbors.
+
+A focused simulation of the actual writer and mux reproduced a boundary defect:
+
+1. Enable STOP_FULL and fill a 16-beat ring: 32 records, acknowledged WPTR = 32.
+2. The host consumes one record: RPTR = 1, leaving one free record slot.
+3. Flush record 32. The writer sends one full-mask beat at the wrapped address,
+   containing `{PAD, record32}`, then publishes WPTR = 33 with zero drops.
+4. The upper half held unread record 1. It is now PAD. The preservation assertion
+   fails. This is conditional trace corruption, not a numerical datapath failure.
+
+The writer is byte-identical in the active checkout and masked candidate; the
+full-mask trace behavior predates KVST masking. Reproduction logs, harness and
+source-integrity receipt are in
+`build/analysis/k4_native_capabilities_20261105/` in the main checkout. The
+simulation exits 1 at the intended unread-record assertion. No card was written.
+The previously passing trace regression did not advance RPTR to this odd wrapped
+position. This defect is recorded, not fixed by the investigation.
+
+The next bounded change is to propagate trace masks `0x00ff`, `0xff00`, or
+`0xffff` for lower, upper or paired records. It can remove the preservation carry
+and its selectors. Keep staging, two-record packing, burst/ring boundaries, drops,
+same-ID ordering and B-acknowledged WPTR publication. Verify odd flush followed
+by an upper-half write, odd RPTR at wrap, STOP_FULL, overwrite mode, reset/stalls
+and concurrent masked KVST. Two separately arriving halves can still require two
+512-bit beats. Do not claim a general AXI-beat or physical DDR-traffic reduction;
+ECC may add controller work. Area benefit is unmeasured and likely modest.
+
+**Central storage candidates.** These use dedicated FPGA memories more directly;
+they do not replace application queues with a DDR-controller queue.
+
+| Order | Candidate | Source evidence and tradeoff |
+|---|---|---|
+| 1 | MVM gather write queue in BRAM | `tsr_mvm_gather.wq_mem` is a 1W/1R queue with an existing registered read. Current U200 depth is 16; nominal width is 592 bits, with 544 independent data/address/word-enable bits. Approximately 8–9 RAMB36 slices can hold it, depending on parity-bit packing. Preserve full-rate acceptance, read latency, empty/full and stall behavior. Measure LUT and output-register absorption before linking. |
+| 2 | KVST data/response queues in BRAM | Masked DMA synthesis maps `dq_mem` 8×512 and `rb_mem` 4×512 to distributed RAM. The complete KVST module has 610 LUTs used as memory, not 610 per queue. Synchronous RAM needs prefetch/credits; the current shallow asynchronous interfaces are not drop-in BRAM ports. Start with the output queue only. |
+| 3 | SPM depth selection through native UltraRAM cascade | Two depth groups currently feed two 512-bit fabric muxes and a 1,024-bit output register. Eight-deep URAM columns could keep both parity banks and 128 URAMs while replacing some fabric selection/registers. Earlier address-cascade timing was critical (rtl-m3 §14.9); fixed latency, read-first ordering and 250 MHz timing are gates. |
+| 4 | Outer cluster assembler in asymmetric BRAM | T4's four `tsr_mvm_gasm` buffers declare 16,384 payload register bits. A lane-banked 64-bit-write/32-bit-read mapping is approximately 32 RAMB36 per cluster, with prefetch and some muxing retained. It targets SLR0/2 rather than the central hotspot. Logical register bits are not a measured net saving. |
+
+The failed 11:34 T4 placement used 377.5 of 720 BRAM tiles in SLR1 (52.43%),
+while occupying 98.51% of its CLB sites. This supports testing selected BRAM
+mappings, but does not guarantee free sites within each Pblock or accessible
+routing columns. Counts are from that archived placement, not the ongoing build.
+AMD documents [independent BRAM port widths](https://docs.amd.com/r/en-US/ug573-ultrascale-memory-resources/Independent-Read-and-Write-Port-Width)
+and [UltraRAM cascade attributes](https://docs.amd.com/r/en-US/ug573-ultrascale-memory-resources/Cascade-User-Attributes).
+No new synthesis or placement result exists for these candidates.
+
+**Existing functionality to retain.**
+
+- SPM and TCM already use native byte enables. SPM uses URAM and output registers;
+  TCMs use BRAM. DTCM forwarding resolves a cross-port store/load collision.
+  Native WRITE_FIRST on the writing port does not guarantee a valid opposite-port
+  read on collision; see [AMD UG573](https://docs.amd.com/r/en-US/ug573-ultrascale-memory-resources/Address-Collision).
+- MVM ACC, attention row maxima and O/l updates read old values to add or compare.
+  Write strobes cannot perform those operations. The Xilinx MAC already uses
+  DSP48 multiplication and post-adder/accumulator feedback.
+- The actual shell sees one host master and one K4 master per DDR bank. It does
+  not see separate DMA, weight-stream and trace clients. Core ownership arbitration
+  and reserved capacity for fixed-latency SPM responses remain necessary. Shell
+  packet buffering is beyond those boundaries. AXI's 4 KiB rule still limits a
+  512-bit burst to 64 beats despite a configured 256-beat interconnect limit.
+- Bridge unexpected-response filters are additional functionality. SmartConnect
+  explicitly does not detect a response ID without an outstanding command:
+  [AMD PG247](https://docs.amd.com/r/en-US/pg247-smartconnect/Error-Signaling).
+  Some unused counters/skid storage already disappear in integrated synthesis.
+  Counter narrowing or merging co-located R stages is a separate measured timing
+  experiment, not a reason to remove SLR boundary stages. The separate DDR1
+  register-slice IP is configured to bypass; the active host C2H slice is not a
+  duplicate K4 DDR pipeline.
+- Real-card XRT direct mode already uses alignment 1. Host edge RMW belongs to
+  aligned staged/M2M/fallback paths and emulation workarounds. It saves no FPGA
+  LUTs to remove it. Staging previously improved model-load throughput (§14.3).
+  Separating host-pointer alignment from device-range alignment is a host-only
+  experiment, with explicit fallback retained.
+
+#### 8.6.16 Expected build impact and remaining structural options (2026-11-05)
+
+KVST masking and trace masking do not establish routing closure. Matched DMA OOC
+synthesis saved 913 LUTs; this is 0.34% of the last placed SLR1 LUT count only as
+a scale comparison, not a measured central saving. Trace masking fixes the
+reproduced unread-record corruption and can remove 256 carry bits. Its physical
+saving is unmeasured. Selected BRAM queues could ease memory-capable CLB pressure;
+the route effect needs an integrated placement.
+
+Native synthesis provides one measured result for the running compact-VU build:
+
+| Kernel resource | Previous T4 DMA-central build | Compact VU build | Change |
+|---|---:|---:|---:|
+| LUT | 378,867 | 373,702 | -5,165 (-1.36%) |
+| Registers | 435,139 | 433,991 | -1,148 (-0.26%) |
+
+LUT-as-memory, BRAM, URAM and DSP counts are unchanged. Source reports are
+`kernel_util_synthed.rpt` under the 11:34 and 16:48 native builds. The latter has
+entered detail placement; no completed placement or route result is available at
+this assessment. It includes compact VU transport and local coefficients, but
+not the isolated KVST candidate.
+
+The original T4 placement had 296,178 central LUTs and 8,054 route node overlaps.
+The last failed T4 placement had 265,510 central LUTs and 35,335 overlaps: 30,668
+fewer LUTs, but 4.39 times the overlaps. SLR0-1 connections increased from 5,388
+to 7,429. SLR1 still occupied 98.51% of CLB sites and 98.62% of memory-capable
+CLB sites. These are occupied sites, not LUT percentages. The evidence points to
+local packing and communication topology around the fixed DDR1 footprint. Total
+logic reduction alone does not establish progress toward a legal route.
+
+Remaining options, not implemented or physically measured:
+
+| Candidate | Intended effect | Constraint or cost |
+|---|---|---|
+| Shared debug formatter after source selection | Remove replicated timestamp reconstruction and wide formatting/selection logic across five active queues | Preserve event capture, live head/stop probes, ordering and drop behavior. It does not share MVM/VU arithmetic. See §8.6.11. |
+| Central gather queue in BRAM, then selected KVST/debug payload queues | Move shallow wide storage and some read selection out of memory-capable CLBs | Preserve full-rate service, latency and credits. SLR1 aggregate BRAM occupancy was 52.43%; useful nearby placement is not established. See §8.6.15. |
+| Narrow only DDR0/3 central write payloads from 512 to 256 bits | Remove 256 declared payload lanes at each boundary; reconstruct the 512-bit AXI beat locally | At 250 MHz the affected write ceiling falls from 16 to 8 GB/s. Fully exposed transfer time adds 65.536 us per MiB. Four 512-bit weight reads and ordinary LD remain wide. Model impact is unmeasured. |
+| Native SLR TDM register slice | Halve crossing payload wires while retaining interface throughput | Requires an edge-aligned 2x clock: 500 MHz for a 250 MHz interface. It adds pipeline latency and a new timing/clock integration obligation. |
+| Native SPM URAM depth cascade | Replace two 512-bit fabric depth muxes and potentially absorb output registers | Preserve 128 URAMs, two reads/two writes and four-cycle reads; earlier address-cascade timing was critical. |
+| Give one attention score/P intermediate local producer-consumer ownership | Remove central SPM materialization and a physical interface or mux from ATTQK-ASMAX-ATTPV | Larger protocol/firmware scope. Preserve overlapping work and full-rate broadcast; merely adding a local buffer while retaining all old paths is not a routing reduction. |
+
+The write serializer must retain independent AW/W progress, word masks, WLAST,
+B ownership and trace arbitration. Bound AW lead when serialized W stalls:
+the trace mux has a seven-bit signed address/data balance. Do not serialize the
+four weight streams as part of this option. A slower write path can delay later
+DMA operations even when MVM bandwidth is unchanged.
+
+AMD documents the
+[SLR TDM mode](https://docs.amd.com/r/en-US/pg373-axi-register-slice/SLR-TDM-Crossing)
+and its [clock requirements](https://docs.amd.com/r/en-US/pg373-axi-register-slice/Clocking).
+The installed Vivado 2024.2 register-slice IP contains this mode. Its availability
+does not establish that a suitable platform clock exists or that the resulting
+link will meet 500 MHz. Any placement constraint would remain at Pblock scope.
+
+Use the running build's local congestion and boundary demand to choose the next
+physical change. Trace masking is independently justified for correctness.
+Shared debug formatting and selected BRAM storage are bounded candidates when
+central packing remains dominant. Narrow write crossings directly address wire
+count if boundary demand remains high. A success probability cannot be derived
+from the present area deltas. Closure still requires legal routing with zero
+overlaps and timing at an accepted core frequency of at least 250 MHz, together
+with RV, hold and CDC checks. The ongoing build remains unchanged; no additional
+native link or implementation is started by this investigation.
+
+#### 8.6.17 Standalone SLR TDM measurements (2026-11-05)
+
+The user authorized isolated wire-count and 500 MHz feasibility tests while the
+compact-VU native build continued. Sol implemented and measured; Astra reviewed.
+No production RTL, platform input or running build was changed. The runtime
+source hash comparison covers 141 files. All experiments and original reports
+are retained under `build/analysis/slr_tdm_20261105/`.
+
+**Scope and method.** The part is `xcu200-fsgd2104-2-e`, using Vivado 2024.2.
+Two native AXI Register Slice W links run simultaneously from SLR1 to SLR0 and
+SLR2. Each carries 512 data bits, 16 independent word masks expanded to 64 byte
+strobes, and LAST. The baseline is native SLR mode 10; TDM is mode 11.
+This compares two vendor W-channel implementations, not the current K4 custom
+`tsr_rslice` path against a complete replacement. AW/B are idle; this is not
+full AXI, DDR-controller or NoC qualification.
+
+Both variants use the same functional endpoint Pblocks. Sources and complete
+master endpoints use CLOCKREGION_X0Y5:X2Y9; lower destinations and complete slave
+endpoints use X0Y0:X5Y4; upper equivalents use X0Y10:X5Y14. The Pblock preview was
+shown before launch. No cell/stage LOC, BEL, clock-root assignment or placement
+ECO was used. Clocks and other harness logic remain free to place.
+
+The initial clock pair uses two outputs of one physical MMCM: 250 and 500 MHz
+from a 250 MHz reference and 1 GHz VCO. Generated clocks are derived through the
+real primitives. Both variants retain 50 ps input jitter, 50 ps system jitter,
+100 ps setup uncertainty and 50 ps hold uncertainty on internal clock pairs.
+Vendor XDCs are loaded. There are no false-path or multicycle exceptions hiding
+transport paths. Timing checks cover fast payload, READY, phase/sample controls,
+rate conversion and source/sink interfaces; a worst clock-pair path alone can
+hide a second failure under a worse harness reset path.
+
+After the first comparison, one standard post-route physical optimization and
+reroute was run on copies of both checkpoints. It did not close TDM timing.
+One separate clock-topology experiment then used a single MMCM 500 MHz output
+feeding parallel BUFGCE_DIV buffers with divide factors 1 and 2, common CE and
+common CLR. This removes inter-output phase error as recommended by
+[AMD UG949](https://docs.amd.com/r/2020.2-English/ug949-vivado-design-methodology/Using-BUFGCE_DIV-to-Reduce-Clock-Uncertainty).
+Data logic, Pblocks and timing margins stayed unchanged. CLOCK_DELAY_GROUP was
+not added. No frequency or placement search followed.
+
+**Measured routing and resources.** Every design routed legally with zero
+routing errors. The counts below are post-route, not estimates.
+
+| Measurement | Ordinary SLR slice | TDM, separate MMCM outputs | TDM, common output/dividers |
+|---|---:|---:|---:|
+| Live payload nets crossing each boundary | 529 | 273 | 273 |
+| Whole-probe SLL incidences | 1,093 | 594 | 590 |
+| Whole-probe LUTs | 2,589 | 1,242 | 1,239 |
+| Whole-probe CLB FFs | 2,225 | 5,920 | 5,920 |
+| All FF primitives, including dedicated SLR registers | 4,349 | 5,920 | 5,920 |
+| LUTs used as shift registers | 1,059 | 1 | 1 |
+| Occupied SLR1 CLB sites | 146 | 321 | 311 |
+
+The measured payload saving is 256 nets per boundary, 512 across the two:
+48.39%. The divider probe's whole-design SLL saving is 503 incidences (46.02%).
+That second count includes probe I/O, reset and handshake routing; it is not
+just the payload. Neither percentage is a whole-K4 saving. The current native
+placement reports 11,750 SLLs; 512 is about 4.4% of that count only as a scale
+comparison, not an integrated result.
+
+The ordinary slice uses 2,124 dedicated SLR flip-flops which are excluded from
+its CLB-register count. TDM maps these paths into fabric registers. Comparing
+2,225 against 5,920 as total FFs would overstate growth. Even with this distinction,
+the TDM implementation increases central CLB use in the probe. Its large total
+LUT reduction mostly removes SRL-based storage outside the central source.
+It is not evidence that TDM frees SLR1 capacity. The divider variant uses one
+MMCM, one BUFGCE and two BUFGCE_DIVs; the ordinary baseline uses one MMCM and two
+BUFGCEs.
+
+**Timing result: no complete 500 MHz transport closure.** Slack is in ns.
+The initial pair's physical crossing paths pass, but its 500-to-250 receiver
+conversion fails at -0.098. The bounded post-route pass also reveals a -0.293
+READY return path, which has a half-cycle 250 MHz requirement. A fast payload
+pass alone is insufficient.
+
+| Setup path | Initial TDM / bounded post-route evidence | Common-output divider TDM |
+|---|---:|---:|
+| SLR1 to SLR0 payload at 500 MHz | +0.163 | -0.100 |
+| SLR1 to SLR2 payload at 500 MHz | +0.090 | +0.074 |
+| 250 to 500 MHz conversion, worst pair | +0.005 initially; +0.015 after optimization | +0.129 |
+| 500 to 250 MHz conversion, worst pair | -0.098 | +0.166 |
+| Native READY return, worst path | -0.293 after optimization | -0.225 |
+
+The divider variant eliminates the reported 0.120 ns inter-output phase error.
+All 2,116 reported 500-to-250 endpoints then pass setup; that pair's hold margin
+is +0.016 ns. But seven lower-boundary 500 MHz endpoints still fail setup, and
+READY fails on both boundaries (-0.225 lower, -0.195 upper). All reported hold
+checks are nonnegative. Do not combine passing paths from different variants
+to claim closure.
+
+The source and harness also have setup failures. The divider run has a source
+backpressure/CE path at -0.536 ns, a reset-distribution path at -0.724 ns and a
+synthetic external stall-input path at -1.872 ns. The ordinary probe likewise
+does not meet its entire harness timing. These limitations are recorded rather
+than hidden with exceptions. They do not invalidate the routed wire counts,
+and the native READY/payload violations independently prevent a 500 MHz pass.
+
+**Functional checks.** Actual generated-IP XSim models pass 400 consecutive
+transfers, 300 with source gaps and destination stalls, an in-flight reset, and
+200 further consecutive transfers on each boundary. Data, all byte strobes,
+LAST, order and stable stalled outputs are checked. Consecutive phases have no
+output bubbles after startup. The divider variant uses actual MMCM/BUFGCE_DIV
+simulation models, verifies 250/500 periods and rising-edge alignment after
+lock and orderly restart, and checks 64 more transfers per boundary after
+relocking. This is 964 checked transfers per boundary for that variant. Abrupt
+UCS throttling/DRP recovery and on-card operation are not tested.
+
+**Integration limits and disposition.** The current K4 boundary is a custom
+ready/valid link before its local memory arbiter; the AXI W channel is created
+later by the bridge. An AXI IP insertion needs a protocol/location decision.
+The real shell exports core and RV clocks from separate single-output MMCM
+paths, with independent adaptation/throttling. It does not expose a ready-made
+aligned 250/500 pair. A local MMCM derived from the existing core clock is a
+candidate, not a validated production clock tree. Exact edge relationship,
+clock loss/relock, shell interfaces and legal resources in the dynamic partition
+remain unresolved. The divider test's controlled restart is not transparent
+recovery through arbitrary clock interruption.
+
+The transport census also projects data-only reductions for DMA R, multicast,
+paired gather and VU input/return: 2,624 of 5,518 declared boundary incidences
+over those paths plus W. This is arithmetic, not a routed implementation.
+It must preserve four independent weight streams, broadcast/gather service,
+VU alignment and accepted SPM response timing. Merging streams can reduce
+throughput even if each individual TDM link sustains its original rate.
+
+Wire reduction is demonstrated. Full 500 MHz timing, full-K4 congestion relief,
+complete AXI behavior and clock integration are not demonstrated. Further CAD
+experiments stopped after the bounded optimization and one clock-topology
+variant; no production TDM change or full-K4 retry is scheduled.
+
+Reproduction and review:
+
+- `sandbox/final_receipt.json` and `review/final_review.json`: consolidated
+  measurements, explicit failed timing verdicts and independent review.
+- `sandbox/run_variant.sh baseline|tdm`, `sandbox/completion.json` and
+  `sandbox/comparison.json`: first routed comparison and bounded post-route pass.
+- `sandbox/clock_divider/run_variant.sh tdm`: common-output experiment; its
+  routed directory is `sandbox/clock_divider/tdm.dsNI74dr/`.
+- Each run keeps simulation logs, routed DCP, clock/exception/CDC reports,
+  payload nets and timing paths. Supplementary native-IP and negative-endpoint
+  reports separate real transport failures from synthetic I/O.
+- `transport/report.md` and `transport/census.json`: current K4 connections,
+  projected wire counts and platform clock evidence.
+- `review/` holds Astra's independent source and result review.
+  `production_integrity.json` records unchanged production runtime sources.
+
+#### 8.6.18 RV transport and outer placement candidate (November 5)
+
+The user authorized reducing RV communication width and moving the control
+subsystem out of central SLR1. The candidate is in
+`/home/limagin-dev/tesseract-rv-local-20261105`, branch
+`codex/rv-local-transport`, based on the complete dirty compact-VU checkout.
+It does not include the separate masked-KVST candidate. The running
+`k4_20261105_164800_t4_vu_compact_core250_rv166` build remains unchanged.
+No new full K4 link or card operation is part of this validation.
+
+`RV_LOCAL_TRANSPORT=1` enables three same-core-clock links in the generated
+K4 top. Both clocks remain at their 250/166.7 MHz targets. RV control traffic
+uses complete packets over several cycles; the RV's 64-byte line buffer and
+all existing CDC primitives remain local to the relocated `u_ctrl`.
+
+| Selected interface | Direct signal bits | Segmented signal bits | Payload cycles |
+|---|---:|---:|---:|
+| SPM response, including valid/error | 514 | 130 | 4 |
+| Issue entry, including valid/accept | 389 | 131 | 3 |
+| LQ/LCQ request, including valid | 302 | 143 | 1 ordinary / 2 POST |
+| Total of these selected interfaces | 1,205 | 404 | |
+
+This is a declared-interface saving of 801 signals (66.5%) against moving
+those same interfaces without narrowing. It is not a measured reduction
+against the currently central control subsystem, nor a whole-K4 SLL count.
+Sequence counters, error records and other control/debug buses still cross.
+The serializers add register and logic cost at both ends. Functional and
+latency validation passes below; no routing or frequency result is claimed.
+
+The Pblock plan moves whole `u_ctrl`, including Ibex, DM, ITCM/DTCM and CDC,
+and `g_db.u_dbg_rv` to SLR0. The three RV-side endpoint modules follow them.
+SPM, its RV bridge and the central endpoint modules remain in SLR1, together
+with DMA and the SPM-facing VU frontend. At the user's further request, both
+VU lane banks and their coefficient stores move to SLR2: all eight front/EXP
+lanes and four back lanes. Cluster and DDR0/3 assignments stay the same.
+Other logic remains under normal Vivado placement. The active hook is
+`hw/u200/k4_major_blocks.tcl`; the older `k4_floorplan.tcl` is not sourced.
+
+![RV candidate major-block Pblocks](fig/floorplan/k4-rv-local-pblock-plan.png)
+
+The preview was shown before the candidate's synthesis checks. It depicts
+allowed regions, not placed cells. Earlier native hierarchy measurements put
+`u_ctrl` at about 9.1 K LUTs, 12.8 K FFs and 48 RAMB36 blocks. Those are not
+new candidate area measurements. The current compact-VU placement used
+99.83% of SLR1 CLB sites, versus 76.03% in SLR0 and 76.94% in SLR2. Each outer
+SLR had 402.5 unused BRAM tiles device-wide. These counts motivate SLR0 as
+an initial destination; they do not prove fit in its dynamic Pblock or
+routability after relocation. Moving both VU banks to SLR2 also concentrates
+their input and return traffic on the upper boundary, whose earlier peak
+estimated demand was 130%, versus 104% on the lower boundary. This tradeoff
+requires a new physical run; it is not an established congestion improvement.
+
+Moving all of `u_vu`, including its SPM frontend, is a different proposal.
+That exports two 512-bit SPM read-data buses and two 512-bit write-data buses,
+plus enables, addresses and control, across the upper boundary. The chosen
+plan retains the existing pipelined compact bank links instead. No VU RTL,
+arithmetic capacity or pipeline depth changes for this placement proposal.
+
+Validation passed the maintained protocol/drain tests, eight narrowed-link
+controller cases, 25 stock control pytest entries and the four integrated
+Cocotb cases in three pytest entries. The directed tests cover randomized
+complete packets, eight continuously queued FIFO heads, six reset phases,
+SPM timeout and late responses, line-buffer reuse, FIFO pressure and RV reset.
+The actual datapath/CSR test rejects QCLEAR and keeps SOFT_RESET busy while
+an incomplete issue entry remains reserved. A review found and corrected the
+premature idle indication before these final runs.
+
+Matched production-firmware tests use identical ELF, inputs, reference results,
+seed and 4 ns core / 6 ns RV clocks. `DONE.r7` measures the firmware duration
+from launch pop to completion post; host polling is not the timing source.
+
+| Tiny M7 case | Direct core cycles | Segmented core cycles | Increase |
+|---|---:|---:|---:|
+| Decode | 52,968 | 53,181 | 213 / 0.402% |
+| Prefill | 68,703 | 68,993 | 290 / 0.422% |
+
+All numerical outputs remain bit-identical to the C oracle. Neither case
+observed issue-credit or SPM bank-arbitration waits. These are small synthetic
+layer tests, not whole-model throughput measurements. The T4 four-channel
+smoke and debug runs also pass: per-channel weight/DMA traffic, history,
+trace, breakpoints and final architectural state match the baseline.
+
+The local endpoint tests measure five extra core cycles for SPM responses,
+four before an issue entry can be consumed, two for ordinary LQ accesses and
+three for LCQ_POST. An unstalled issue link services a head every six core
+cycles. The retained FIFO count stays conservative through the return ACK.
+
+Separate Vivado synthesis/optimization of the six endpoint modules totals
+422 LUTs and 1,620 FFs, with no BRAM or DSP. The planned central endpoints
+account for 148 LUTs/827 FFs; outer endpoints for 274 LUTs/793 FFs. This is
+gross isolated logic, not a measured integrated area delta or occupied CLB
+count. All six multi-driver checks and XSim static elaboration pass. The
+actual generated K4, default core and composed control bench pass Verilator
+lint. Tables and generated tops pass freshness checks. Astra's final review
+found no remaining functional or source-Pblock blocker.
+
+Receipts in the candidate are `build/analysis/rv_local/rtl-check/completion.json`,
+`validation/comparison.json`, `synthesis/receipt.json` and `review.json`.
+The new packet and drain tests are maintained in `tb/core/test_rv_local_transport.py`;
+`tb/ctrl/test_ctrl.py` also has an opt-in narrowed-link composition test.
+
+The main checkout's `build/analysis/rv_local_20261105/` holds the baseline
+hashes and candidate location. Candidate test and synthesis evidence is under
+`build/analysis/rv_local/`. See the candidate's CC §11.4 for transaction, reset and FIFO-count
+semantics. Physical benefit still requires an integrated placement and route.
+
+#### 8.6.19 Native RV-local/VU-SLR2 attempt (November 5, 19:59 KST)
+
+The user stopped the previous compact-VU native build during route phase 5.2
+and authorized one fresh full build of §8.6.18. All previous owned processes
+were terminated; the logs and checkpoints were preserved. The validated source
+patch is now applied in the main checkout and its generated K4 top was rebuilt.
+The 18 changed source/test/build files match the isolated candidate exactly.
+
+The new output is
+`build/link/k4_20261105_195907_t4_rvlocal_vuslr2_core250_rv166/`.
+It uses T4, VU FRONT/EXP/BACK 8/8/4, RV_LOCAL_TRANSPORT, core 250 MHz and RV
+166.666667 MHz. The layout is the preview in §8.6.18: RV in SLR0, both VU banks
+in SLR2, SPM and its frontend/bridge in SLR1. This does not include masked KVST
+or TDM. No fine-grained placement constraints were added.
+
+Fresh XO validation passed before native VPL entry: 139 manifest sources and
+140 HDL/XDC payload files. The old kernel synthesis cache is excluded; only
+privately copied platform IP cache entries are reused. One top-level wrapper
+slot covers packaging and link, with synthesis concurrency 16, implementation
+jobs/threads 8 and existing swap. Strict clock/reset, CDC and final-frequency
+hooks remain enabled. Native completion requires a separate report signoff.
+
+The source/runner review and 25 runner tests pass. At launch, placement,
+routing, timing and integrated resource benefit remain unknown. The local
+supervisor and event logger run without a periodic LLM monitor. The user
+cleared the broader goal, and this attempt does not schedule automatic retries.
+See `build/analysis/k4_rvlocal_vuslr2_build_20261105/launch.json` and the live
+attempt's `status.json` for ownership and state.
+
+#### 8.6.20 Distributed SPM and local output tiles: feasibility (November 5)
+
+The user requested an analysis while preserving the current native build, then
+proposed cluster-local storage and accumulation of output matrix tiles. No RTL,
+firmware or native build input was changed. The payload calculations are in
+`build/analysis/spm_locality_20261105/estimate.json`; these are analytical bounds,
+not simulated performance or measured routing savings.
+
+**Current matrix partition.** For W[N,K] and X[K,T], each cluster owns a
+contiguous output-row range of ceil(N/4) rows and reads only its DDR channel.
+Each owns the entire K reduction for those rows. Its activation buffer already
+holds a replicated quantized X, loaded once per MVM tile. Its local accumulators
+and reduction tree finish the dot products; ordinary MVM gather assembles disjoint
+output rows, not a cross-cluster sum. ACC optionally adds an old destination in
+the gather. See `docs/spec.md` §4 and §8 and `docs/rtl-m3.md` §5–§7.
+
+The current firmware tiles the token dimension at at most T_MAX=4, possibly
+less to fit scratch. It does not implement general K tiling: K above K_MAX is
+rejected. `sw/ctrl/kernels/k_mulmat.cpp` loads FP32 X from DDR, quantizes it,
+issues MVM and stores Y back to DDR. Consequently, retaining outputs between
+graph records also requires firmware/host residency and layout changes; moving
+SPM alone does not eliminate those transfers. The next dense row-partitioned
+layer needs the complete preceding activation vector, so some redistribution
+remains even when outputs stay on-chip.
+
+For N=K=8192, Q4_K and T=4, each cluster owns 2048 output rows. The tile reads
+36 MiB of weights across four channels, broadcasts 36.5 KiB of unique QA data
+(four receiving copies), and produces 128 KiB of FP32 output. At an ideal one
+512-bit beat per channel per cycle and 250 MHz, weight streaming alone takes
+589.824 us. Average aggregate output is only 0.889 bytes per core cycle. A
+128-bit output path could serialize that payload in 32.768 us if entirely
+exposed, or 5.56% of the weight time. This is not an end-to-end slowdown
+prediction; buffering and overlap matter, and small shapes differ.
+
+**Local accumulation proposal.** Preserve the existing fast local accumulator
+pipeline. Put completed row/tile results in a local bank and consume them there
+with local vector operations. Do not send every MAC update through a general
+SPM port. Local K-panel accumulation would be a further arithmetic/scheduling
+change, not a free consequence of moving memory. The established GPU analogy
+is tiled operand reuse and local accumulator storage, followed by an epilogue;
+the conventional CUTLASS path accumulates in registers. See
+[NVIDIA's GEMM description](https://docs.nvidia.com/cutlass/latest/media/docs/cpp/efficient_gemm.html).
+
+**Placement candidate.** Four logical owners can share two physical memory
+groups: clusters 0/2 in SLR0 and 1/3 in SLR2. Place the consumers beside their
+banks, with a small control/shared region and explicit transfers. Repartitioning
+the existing eight VU front/EXP lanes as 4+4 would retain arithmetic capacity,
+but requires scheduling and port checks. This differs from the active build,
+which places all VU arithmetic in SLR2. Four independent copies of the full SPM
+or unrestricted remote access from every client would add storage, arbitration
+and wide remote paths; neither is the intended candidate.
+
+Capacity alone is plausible. The previous compact-VU placement used zero URAM
+in either outer SLR and 148 in SLR1, including the shell; SPM itself uses 128.
+Four 1 MiB banks need 32 URAM each under the existing 64-bit data mapping, or
+64 per outer SLR. This excludes a retained central region, port replication and
+extra buffers. Dynamic-region sites and access bandwidth remain to be checked.
+URAM's dedicated depth cascade stays within an SLR; cross-SLR access still
+uses fabric. See [AMD UG573](https://docs.amd.com/r/en-US/ug573-ultrascale-memory-resources/UltraRAM-Resources).
+
+**Attention is the stronger locality case.** KV groups already belong to
+channel u mod 4. Keep each group's scores and P values in its owner's bank,
+run ASMAX beside them, then feed the local PV unit. Common row maxima must
+still be exchanged before ASMAX; independently normalizing each channel would
+be wrong. Final PV vectors and sums still need AMERGE. Preserve PV segment
+scaling and the existing channel tree ((0+1)+(2+3)); physical pairs 0/2 and 1/3
+are not that numerical tree. A different reduction order requires an explicit
+numerics revision and accuracy validation.
+
+For a valid T4 pass with R=32 rows, GS=4, T_q=1, D=128 and n=2048 cells,
+scores and P each occupy 256 KiB total, or 64 KiB per cluster. The score write,
+ASMAX read/write and PV read account for 1 MiB of central SPM accesses. Score
+collection plus P distribution carry 512 KiB of unique logical payload.
+Three in-place score/P buffers need 768 KiB total. Local processing could
+remove those central accesses and transfers, while four PV output vectors
+still total 64 KiB and four sets of row maxima total 512 bytes. These counts
+exclude Q, masks, other metadata and final output. Existing quantization and
+arithmetic can be retained; no lower precision is required for this locality.
+
+Simply narrowing the current attention transport is a different tradeoff.
+AT §8.1 requires 64*C*GS*T_q/(17*D) gather lines per cycle. The example needs
+7.53 GB/s at 250 MHz, above a single 128-bit link's 4 GB/s. Local score/P
+processing avoids that link bottleneck; dense MVM's low output rate does not
+justify applying the same narrow path to attention.
+
+Traffic reduction is not automatically wire reduction. If every legacy
+512-bit gather/broadcast/remote-SPM route remains, local buffers alone leave
+the physical burden. A useful implementation must replace those paths with
+local access and a bounded transfer path, while maintaining service rates.
+Current SPM clients also assume a fixed response latency. Remote access needs
+explicit completion/backpressure or sufficiently provisioned fixed-latency
+links. Arbitrary aliases, partial lines, RV/debug visibility and DMA completion
+cannot be dropped. Row owners vary with N and quantization/RoPE block boundaries
+need explicit handling.
+
+The first candidate to model is local attention score/P buffers plus their
+VU consumers, followed by resident MVM output tiles and local epilogues. Keep
+four weight streams and current arithmetic capacity. Validate dense T1/T4,
+small shapes, attention D64/128/256/512 and GQA passes, with port conflicts,
+triple/double buffering, stalls, masks and final reduction order. Compare
+whole decode/prefill cycles as well as line traffic before selecting bank
+sizes or claiming a performance benefit. Full placement and routing remain
+necessary to establish central congestion relief. No candidate is implemented
+or new native run authorized by this analysis.
+
+#### 8.6.21 Local memory overflow and software-stack coverage (November 5)
+
+The user asked whether large outputs fit local SPM and which parts of the
+llama.cpp/PyTorch stack support tiling. Sol audited the two host paths separately;
+Astra reviewed the architecture. The active build and its inputs remain unchanged.
+A small host probe called the existing `plan.hpp` with the active T_MAX=4 and
+4 MiB SPM. Its source, executable and CSV are under
+`build/analysis/spm_stack_20261105/`. No model, RTL or CAD run was started.
+
+**Capacity and overflow.** Model weights stay in DDR. Only live input, output
+and intermediate tiles need local memory. For Y[N,T] in FP32, an owner's output
+is at most 4*ceil(N/4)*T bytes before padding. This is not its complete working
+set: input/QA, epilogue operands, queues and multiple buffers also consume space.
+
+| Shape | Owner output at T=1 | Owner output at T=4 | Current firmware T tile for a large batch |
+|---|---:|---:|---:|
+| Qwen2.5-32B FFN up, N=27648 K=5120 Q4_K | 27 KiB | 108 KiB | 4 |
+| Qwen2.5-32B head, N=152064 K=5120 Q8_0 | 148.5 KiB | 594 KiB | 3 |
+| Gemma 4 12B head, N=262144 K=3840 Q8_0 | 256 KiB | 1 MiB | 1 |
+
+The T4 column is a hypothetical output-only capacity comparison. The current
+head kernels actually use the smaller T tile in the last column. For 512
+all-logits tokens the Gemma head is a 512 MiB result in backing memory; it is
+not a 512 MiB SPM allocation. The firmware streams token tiles to DDR.
+Changing the existing global SPM configuration to 1 MiB rejects this head
+with RET_SCRATCH. That probe is not a model of four distributed 1 MiB banks.
+
+When an owner's full output does not fit, use bounded row tiles, consume them
+locally when possible and write completed tiles to their final DDR destination
+otherwise. A 1024-row, four-token FP32 tile is 16 KiB per owner; double buffering
+the output alone needs 32 KiB. Retain the full K reduction locally before that
+write. N tiling does not change each dot product; shrinking T from four to one
+can instead require four weight passes where one previously sufficed. N tiling
+adds repeated input delivery, setup and possibly QACT work, so maintaining the
+arithmetic count does not establish equal end-to-end performance.
+
+**The host paths differ.**
+
+| Layer | Implemented behavior | Missing for local output residency |
+|---|---|---|
+| Firmware `plan.hpp`, `k_mulmat.cpp` | Full N and K per MUL_MAT record; T tiling; LD/QACT/MVM/ST; scratch released after ST | Per-owner budgets, row windows, tile completion, local consumers and explicit overflow destinations |
+| llama.cpp `ggml-tesseract.cpp` | Uses the shared T=1 planner to accept shapes; emits full-N/K records; large tensor/host staging can split T | General N/K partition metadata and lowering, or a new device row-window path; resident tensor layout/lifetimes |
+| PyTorch-facing `sw/rt` | Already splits N/K into independently packed weight parts, emits records, chunks T for IO, assembles CPU output | Local bank-aware planning and storage; several operations in one resident graph |
+| Python/FX backend | Offloads eligible constant-weight matmuls; keeps weights in DDR; returns each matmul to CPU | Device execution of surrounding ops and multi-op graph partition/fusion |
+
+The llama.cpp acceptance check rejects a full-N one-token scratch overflow or
+K>K_MAX. Its existing T staging is not N/K tiling. Unsupported-op placement is
+handled by ggml scheduling; this is not automatic FPGA out-of-core execution.
+The firmware probe confirms N=2,000,000/K=32 gets RET_SCRATCH and K=65536 is
+rejected as a direct record. These conclusions concern that path, not `sw/rt`.
+
+`sw/rt/tsr_rt.cpp::make_plan` already partitions large N and K>K_MAX. Each part
+is repacked and scattered across channels independently. `run_linear` emits
+MUL_MAT records; later K parts use ACC_DST, which reloads the prior DDR result,
+adds and stores it again. Its sequential FP32 sums differ from an unsplit dot
+product and have their own matching reference. N-only tiling keeps each row's
+arithmetic unchanged. The runtime retains a conservative full-X-row capacity
+check. Its default 256 MiB DDR IO window must also fit one token's X plus all
+padded Y parts; T is split across launches, but a single-token IO overflow
+throws. DDR weight exhaustion can trigger per-weight CPU fallback in Python;
+there is no general live-weight paging engine.
+
+**Do not reinterpret the existing weight layout.** For original N=8192,
+R=2048 rows per channel. Issuing N=1024 with the same W_OFF requests 256 rows
+from each original channel, not the first contiguous 1024 rows. Options are
+to reuse `sw/rt`'s independently repacked N parts, or retain the original
+partition and add per-owner row windows and global output offsets. Bounded
+buffers under an unchanged full-N command alone do not solve this: existing
+MVM completion promises that all output is visible in logical SPM. Reusing
+the buffer early needs explicit tile/consumer/spill semantics, or must keep
+draining into the old central SPM, which retains its capacity and traffic.
+Initially align interior output tiles to 16 rows: gather tail-zeroing and
+full-line stores must not overwrite an adjacent tile. Reuse a tile only after
+all consumers and transfers finish. Whole-operation completion, errors and
+abort must still drain every owned tile and DDR response. Local DDR writes
+share the channel with weight reads, so queue reservation and service rates
+remain part of the performance and deadlock checks.
+
+Keeping current final DDR tensor layouts, host-visible results and call
+boundaries allows llama.cpp/Python application code and the XRT transport to
+remain compatible. Internal RTL, firmware, shared planners and simulator still
+change. If the existing weight format is retained, a row-window mode can avoid
+host repacking changes. If independently packed parts are chosen, ggml needs
+part metadata, upload/readback handling and lowering similar to `sw/rt`, with
+correct ties, views, alignment and hazards. Spilling to each cluster's own DDR
+instead of the existing tensor destination is itself a layout change; it cannot
+be hidden from existing consumers without a transfer or mapping mechanism.
+
+Retaining results across graph records is larger work. Current OPL handles name
+DDR channel/beat addresses, and its dependency builder tracks DDR RAW/WAR/WAW
+ranges. A resident path needs bank/region ownership, lifetimes, aliases, transfers
+and spill tracking. Keep old handle meanings; expose new semantics through a
+negotiated capability/record or internal firmware commands. Update versioning
+when contracts or numerical behavior change. Next-layer dense input still
+requires redistribution; RMS/global reductions require shared statistics; a
+pointwise consumer can remain local. FLASH_ATTN already chunks KV context and
+keeps online state instead of storing an entire attention matrix, but its
+buffers/planner still assume the shared SPM and need local-bank accounting.
+
+**Verified scope.** Existing C++ runtime regressions cover forced N/K splits,
+K>K_MAX, automatic N=130000/K=896 splitting at T_MAX=8, and IO-sized multi-launch
+T splits. Python tests include a 151936-row head and K>K_MAX. Full HF evidence
+is Qwen2.5-0.5B on sim and historical pre-control-core k1 XRT, including the
+archived FP32 and BF16 logs under `build/card/`. It does not qualify current
+control-core K4, larger full HF models or distributed SPM. Current PyTorch
+attention, norms, RoPE, KV and activations remain CPU operations; the llama M7
+device kernels are not yet wired into that FX path. Existing software tests
+were inspected, not rerun by this audit. Only the small planner probe ran.
+
+Recommended scope is full-K, bounded N output tiles with explicit completion
+and a DDR fallback while preserving external tensor contracts. Reuse existing
+partitioning, staging and reference code where possible. Local attention
+score/P consumers remain the first locality candidate from §8.6.20. Cross-op
+residency and full PyTorch device graphs are later work, not prerequisites for
+returning a large output correctly. Validate per-bank overflow, backpressure,
+uneven/tail rows, aliased tensors, partial DDR writes, and decode/prefill traffic
+before claiming the same model throughput.
+
+The follow-up [implementation plan](intermediate-locality-plan.md) orders local
+attention score/P processing, bounded dense output epilogues, and explicit
+sharing/materialization. It defines the common tile lifetime contract first
+and distinguishes traffic savings from removal of shared physical paths. It
+includes llama.cpp and PyTorch integration and validation. It is proposed work;
+the active native attempt is unchanged.
 
 ## 9. Timing and resources (Vivado OOC synthesis of `tsr_u200_k1`)
 

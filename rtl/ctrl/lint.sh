@@ -52,7 +52,8 @@ lint tsr_sync "$SRAM" -GSTAGES=1 -DTSR_CDC_JITTER
 
 # bench HDL (tb/ctrl/sv: not under tb/*/hdl, whose rtl/lint.sh loop has no rtl/ctrl sources)
 for f in tb_ctrl_core tb_ctrl; do
-    lint "$f" "$SRAM" -DRVFI "$ROOT/tb/ctrl/sv/tb_ctrl_core.sv" "$ROOT/tb/ctrl/sv/tb_ctrl.sv"
+    lint "$f" "$SRAM" -DRVFI "$ROOT/rtl/core/tsr_rv_local_transport.sv" \
+        "$ROOT/tb/ctrl/sv/tb_ctrl_core.sv" "$ROOT/tb/ctrl/sv/tb_ctrl.sv"
 done
 # the instance names tsr_ctrl_cdc.xdc selects its cells by (u_sync*, u_rst*, u_hs*)
 if out=$(python3 "$ROOT/rtl/ctrl/viv/check_cdc_names.py" "$ROOT/rtl" 2>&1); then

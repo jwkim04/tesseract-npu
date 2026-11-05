@@ -1,4 +1,4 @@
-// tsr_vu_inj.sv — the VU injector: takes slots in order once their operands are in, forms the 16 lanes'
+// tsr_vu_inj.sv — the VU injector: takes slots in order once their operands are in, forms the physical lanes'
 // operands for each sub-slot, and hands the exit descriptors, the reduction row tokens and the
 // pseudo-slot actions (c-line loads, ROPE table / positions, TOPK lines, scalar path) on.
 //
@@ -14,8 +14,10 @@
 //     LB - LF cycles). Reduction slots have no exit.
 //   - Split rate (VU §7.3): sub-slot k of an n-way slot carries elements [16k/n, 16(k+1)/n) in lanes
 //     0 .. 16/n - 1 (the back lanes, or the EXPK lanes with VU_EXP_LANES 8).
-//   - ROPE (VU §6.7, §7.6): NEOX pair slot: sub-slot 0 is output line j = FS(FM(x0, c), FM(x1, s)), sub-slot 1
-//     line j + n_dims/32 = FA(FM(x0, s), FM(x1, c)), x0 = A[l], x1 = B[l], angle i = 16j + l. NORM: lane l
+//   - FRONT8 presents each architectural line in two halves. NEOX uses four sub-slots:
+//     line = k / 2, part = k % 2. Other operations retain their logical element index.
+//   - ROPE (VU §6.7, §7.6): NEOX pair slot: its first line is output line j = FS(FM(x0, c), FM(x1, s)), sub-slot 1
+//     the second line j + n_dims/32 = FA(FM(x0, s), FM(x1, c)), x0 = A[l], x1 = B[l], angle i = 16j + l. NORM: lane l
 //     pairs elements l & ~1 and l | 1 with angle 8o + l/2: even lanes FS, odd lanes FA. Both lines of
 //     a pair are read before either is written (in-place safe, VU §4.5).
 //   - Partials: a row's first line allocates P = min(L, 8) entries of the 16-entry ring (L = the row's
@@ -30,6 +32,7 @@ module tsr_vu_inj
   import tsr_pkg::*;
   import tsr_vu_pkg::*;
 #(
+  parameter int unsigned FRONT_LANES = 16,
   parameter int unsigned LMAW      = 9,
   parameter bit          HAS_DQROW = 1'b0,
   parameter int unsigned LANE_X    = 0       // cycles the lane pipes add to every exit (tsr_vu_lanes: 2 x stages)
@@ -82,12 +85,14 @@ module tsr_vu_inj
   output tsr_vu_uop_e                    l_uop,
   output logic [15:0][31:0]              l_a,
   output logic [15:0][31:0]              l_b,
-  output logic [15:0][31:0]              l_c1,
-  output logic [15:0][31:0]              l_c2,
+  output logic [(FRONT_LANES == 8 ? 1 : 16)-1:0][31:0] l_c1,
+  output logic [(FRONT_LANES == 8 ? 1 : 16)-1:0][31:0] l_c2,
+  output tsr_vu_bank_coeff_t            l_coeff,
   output logic [15:0]                    l_neg,
   output logic [15:0]                    l_lv,
   output logic                           l_fresh,
   output logic [3:0]                     l_pa,
+  output logic                           l_ctx,
   // exit descriptor of the sub-slot on the lane outputs
   output logic                           d_v,
   output logic                           d_back,
@@ -98,6 +103,7 @@ module tsr_vu_inj
   // -------------------------------------------------------------------------------------------
   // D: decide
   // -------------------------------------------------------------------------------------------
+  localparam int unsigned RF = 16 / FRONT_LANES;
   tsr_vu_slot_t s;
   assign s = q_slot;
   wire na = (s.asrc == SRC_SPM), nb = (s.bsrc == SRC_SPM);
@@ -219,6 +225,25 @@ module tsr_vu_inj
 
   logic [15:0][31:0] o_a, o_b, o_c1, o_c2;
   logic [15:0]       o_neg, o_v, o_lv;
+  logic o_ctx;
+  tsr_vu_bank_coeff_t coeff;
+  wire load_c1 = i_v && i_s.kind == SK_CL1;
+  wire load_c2 = i_v && i_s.kind == SK_CL2 && !i_s.dq[5];
+  always_comb begin
+    coeff = '0;
+    if (FRONT_LANES == 8) begin
+      coeff.load = {load_c2, load_c1};
+      coeff.elem = {i_s.c2sel == C_CLE, i_s.c1sel == C_CLE};
+      coeff.rope = i_s.rope;
+      coeff.upper_quad = i_s.rope != 2'd1 && i_s.nsub == 3'd4 && k_q[0];
+      coeff.angle_addr = {i_s.ang_h, i_s.ang_e};
+      coeff.angle_hi = i_s.ang_hi;
+      if (HAS_DQROW && i_s.dq[5]) begin
+        coeff.elem = '0;
+        coeff.rope = '0;
+      end
+    end
+  end
   always_comb begin
     int unsigned w, e;
     logic [31:0] k1, k2, ac, as, c1v, c2v;
@@ -226,9 +251,10 @@ module tsr_vu_inj
     qb = '0;
     k1 = opk[i_s.tag].k1;
     k2 = opk[i_s.tag].k2;
-    w  = (i_s.nsub == 3'd4) ? 4 : (i_s.nsub == 3'd2 && i_s.rope != 2'd1) ? 8 : 16;   // lanes in use
+    w  = (i_s.rope == 2'd1) ? FRONT_LANES : (i_s.nsub == 3'd4) ? 4 : (i_s.nsub == 3'd2) ? 8 : 16;
+    o_ctx = (FRONT_LANES == 8) && (((i_s.rope == 2'd1 ? 32'(k_q) % RF : 32'(k_q)) * w) >= 8);
     for (int l = 0; l < 16; l++) begin
-      e = (w == 16) ? l : (32'(k_q) * w + l) % 16;
+      e = ((i_s.rope == 2'd1 ? 32'(k_q) % RF : 32'(k_q)) * w + l) % 16;
       o_v[l]  = i_v && (i_s.kind == SK_LANE) && (l < w);
       o_lv[l] = (32'(e) < 32'(i_s.tail));
       // a, b
@@ -244,13 +270,13 @@ module tsr_vu_inj
       case (i_s.c1sel)
         C_K:     c1v = k1;
         C_CLW:   c1v = wd(cl1_q, 32'(i_s.cword));
-        C_CLE:   c1v = wd(cl1_q, e);
+        C_CLE:   c1v = (FRONT_LANES == 8) ? 32'd0 : wd(cl1_q, e);
         default: c1v = 32'd0;
       endcase
       case (i_s.c2sel)
         C_K:     c2v = k2;
         C_CLW:   c2v = wd(cl2_q, 32'(i_s.cword));
-        C_CLE:   c2v = wd(cl2_q, e);
+        C_CLE:   c2v = (FRONT_LANES == 8) ? 32'd0 : wd(cl2_q, e);
         default: c2v = 32'd0;
       endcase
       o_c1[l]  = c1v;
@@ -258,23 +284,23 @@ module tsr_vu_inj
       o_neg[l] = 1'b0;
       // ROPE rotation operands
       if (i_s.rope == 2'd1) begin                       // NEOX pair: x0 = A, x1 = B, angle bank l
-        ac = ang_cs[l][63:32];
-        as = ang_cs[l][31:0];
-        o_c1[l]  = (k_q == 3'd0) ? ac : as;
-        o_c2[l]  = (k_q == 3'd0) ? as : ac;
-        o_neg[l] = (k_q == 3'd0);
+        ac = (FRONT_LANES == 8) ? 32'd0 : ang_cs[e][63:32];
+        as = (FRONT_LANES == 8) ? 32'd0 : ang_cs[e][31:0];
+        o_c1[l]  = (32'(k_q) / RF == 0) ? ac : as;
+        o_c2[l]  = (32'(k_q) / RF == 0) ? as : ac;
+        o_neg[l] = (32'(k_q) / RF == 0);
       end else if (i_s.rope == 2'd2) begin              // NORM: elements 2p, 2p + 1, angle 8·hi + p
-        ac = ang_cs[(i_s.ang_hi ? 8 : 0) + l / 2][63:32];
-        as = ang_cs[(i_s.ang_hi ? 8 : 0) + l / 2][31:0];
-        o_a[l]   = wd(A, l & 14);
-        o_b[l]   = wd(A, l | 1);
-        o_c1[l]  = (l % 2 == 0) ? ac : as;
-        o_c2[l]  = (l % 2 == 0) ? as : ac;
-        o_neg[l] = (l % 2 == 0);
+        ac = (FRONT_LANES == 8) ? 32'd0 : ang_cs[(i_s.ang_hi ? 8 : 0) + e / 2][63:32];
+        as = (FRONT_LANES == 8) ? 32'd0 : ang_cs[(i_s.ang_hi ? 8 : 0) + e / 2][31:0];
+        o_a[l]   = wd(A, e & 14);
+        o_b[l]   = wd(A, e | 1);
+        o_c1[l]  = (e % 2 == 0) ? ac : as;
+        o_c2[l]  = (e % 2 == 0) ? as : ac;
+        o_neg[l] = (e % 2 == 0);
       end
       // DQROW: byte 16p + l of the quant line
       if (HAS_DQROW && i_s.dq[5]) begin
-        qb = A[8 * (16 * 32'(i_s.dq[3:2]) + l) +: 8];
+        qb = A[8 * (16 * 32'(i_s.dq[3:2]) + e) +: 8];
         if (!i_s.dq[4]) begin                           // Q8_0: FM(FA(2^23 + q + 128, -(2^23 + 128)), d)
           o_a[l]   = {16'h4B00, 8'h00, qb ^ 8'h80};
           o_b[l]   = 32'hCB00_0080;
@@ -289,33 +315,45 @@ module tsr_vu_inj
           o_neg[l] = 1'b1;
         end
       end
+      if (FRONT_LANES == 8 && (load_c1 || load_c2)) begin
+        // A/B carry the two logical contexts in the existing non-lane slot.
+        o_a[l] = wd(A, l % 8);
+        o_b[l] = wd(A, (l % 8) + 8);
+      end
     end
+  end
+
+  if (FRONT_LANES == 8) begin : g_scalar_coeff
+    wire unused_coeff = &{1'b0, o_c1[15:1], o_c2[15:1]};
   end
 
   // registered outputs
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       l_v  <= '0;
+      l_coeff <= '0;
       d_v  <= 1'b0;
     end else begin
       l_v <= o_v;
+      l_coeff <= coeff;
       d_v <= i_v && (i_s.kind == SK_LANE) && (!i_s.red || i_s.uop == U_AMASK);
     end
     l_uop   <= i_s.uop;
     l_a     <= o_a;
     l_b     <= o_b;
-    l_c1    <= o_c1;
-    l_c2    <= o_c2;
+    l_c1    <= o_c1[$bits(l_c1)/32-1:0];
+    l_c2    <= o_c2[$bits(l_c2)/32-1:0];
     l_neg   <= o_neg;
     l_lv    <= o_lv;
     l_fresh <= i_s.r_fresh;
+    l_ctx   <= o_ctx;
     l_pa    <= i_base_q + 4'(i_s.r_li);
     d_back  <= i_s.exitb;
     d_desc.tag    <= i_s.tag;
     d_desc.dst    <= i_s.dst;
-    d_desc.line   <= (i_s.rope == 2'd1 && k_q != 3'd0) ? i_s.d1 : i_s.d0;
-    d_desc.part   <= (i_s.rope == 2'd1) ? 2'd0 : k_q[1:0];
-    d_desc.nparts <= (i_s.rope == 2'd1) ? 3'd1 : i_s.nsub;
+    d_desc.line   <= (i_s.rope == 2'd1 && 32'(k_q) / RF != 0) ? i_s.d1 : i_s.d0;
+    d_desc.part   <= (i_s.rope == 2'd1) ? 2'(32'(k_q) % RF) : k_q[1:0];
+    d_desc.nparts <= (i_s.rope == 2'd1) ? 3'(RF) : i_s.nsub;
     d_desc.tail   <= i_s.tail;
     d_desc.dword  <= i_s.dword;
     d_desc.sts    <= i_s.sts;
@@ -352,8 +390,8 @@ module tsr_vu_inj
     row_tok.empty <= (i_s.kind == SK_REDE);
     row_tok.row   <= i_s.r_row;
     row_tok.lrow  <= i_s.r_lrow;
-    if (i_v && i_s.kind == SK_CL1) cl1_q <= A;
-    if (i_v && i_s.kind == SK_CL2 && !i_s.dq[5]) cl2_q <= A;
+    if (load_c1) cl1_q <= A;
+    if (load_c2) cl2_q <= A;
   end
 
   assign busy = i_v || q_valid || (ex_rem_q != 8'd0);

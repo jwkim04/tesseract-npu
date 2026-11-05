@@ -13,7 +13,7 @@
 //   - the core-domain side of tsr_ctrl (tsr_ctrl.sv header, CC §11.2), with tsr_ctrl's port names
 //     minus the _i / _o suffix: issue FIFO (ifq_valid / ifq_ready / ifq_entry, ifq_count),
 //     ISSUED_SEQ, S[u] / D[u], the per-unit error-record handshake (err_valid / err_rec / err_ack,
-//     tsr_ctrl_pkg::err_rec_t layout; rec_resync: send every record once more), the SPM bridge (spm_req_* level, spm_rsp_* one pulse), the
+//     tsr_ctrl_pkg::err_rec_t layout; rec_resync: send every record once more), the SPM bridge (spm_req_* and spm_rsp_*), the
 //     core window, the LQ / LCQ port, log words, RT mirrors, loader, DMI, MTIME, the clk_rv
 //     counters and pulses, and the levels both ways (q_hold = {debug-halt, RISC-V, host, any}).
 //   - the DB block's crossings to the clk_rv side (tsr_core's tsr_dbg_rv): rec_*, smp_*, wpa_*, wph_*,
@@ -60,6 +60,13 @@ module tsr_core_dp
   parameter int unsigned     SPM_RD_LAT     = TSR_DEF_SPM_RD_LAT,
   parameter int unsigned     MVM_WS_FIFO    = TSR_DEF_WS_FIFO_BEATS,
   parameter int unsigned     MVM_BC_PIPE    = TSR_DEF_MVM_BC_PIPE,
+  parameter bit              DDR_LOCAL_PIPE = 1'b0,
+  parameter bit              RV_LOCAL_TRANSPORT = 1'b0,
+  parameter bit              LOCAL_SOFTCAP = 1'b0,
+  parameter bit              LOCAL_SCALE = 1'b0,
+  parameter bit              LOCAL_INTERMEDIATES = 1'b0,
+  parameter bit              MVM_GATHER_PAIR = 1'b0,
+  parameter int unsigned     MVM_GATHER_FLITS = 1,
   parameter int unsigned     MVM_RES_PIPE   = TSR_DEF_MVM_RES_PIPE,
   parameter int unsigned     MVM_ACT_RD_LAT = TSR_DEF_ACT_RD_LAT,
   parameter int unsigned     MVM_MAC_LAT    = TSR_DEF_MAC_LAT,
@@ -84,6 +91,7 @@ module tsr_core_dp
   parameter bit              HAS_DQROW      = 1'b0,
   parameter bit              HAS_DB         = 1'b1,
   parameter int unsigned     QD_VU          = tsr_tables_pkg::TSR_QDEPTH_U200_VU,
+  parameter int unsigned     VU_FRONT_LANES = tsr_tables_pkg::TSR_VU_FRONT_LANES,
   parameter int unsigned     VU_EXP_LANES   = tsr_tables_pkg::TSR_VU_FRONT_LANES,
   parameter int unsigned     VU_BACK_LANES  = tsr_tables_pkg::TSR_VU_BACK_LANES,
   parameter int unsigned     VU_LANE_PIPE   = 0,
@@ -124,6 +132,7 @@ module tsr_core_dp
   output logic [NUM_CH-1:0]                      m_wr_dat_valid,
   input  logic [NUM_CH-1:0]                      m_wr_dat_ready,
   output logic [NUM_CH-1:0][BEAT_BITS-1:0]       m_wr_dat_data,
+  output logic [NUM_CH-1:0][BEAT_BITS/32-1:0]       m_wr_dat_mask,
   output logic [NUM_CH-1:0]                      m_wr_dat_last,
   input  logic [NUM_CH-1:0]                      m_wr_rsp_valid,
   output logic [NUM_CH-1:0]                      m_wr_rsp_ready,
@@ -153,6 +162,7 @@ module tsr_core_dp
   input  logic [3:0]                             spm_req_be,
   input  logic [31:0]                            spm_req_wdata,
   output logic                                   spm_rsp_valid,
+  input  logic                                   spm_rsp_ready,
   output logic [TSR_LINE_BITS-1:0]               spm_rsp_line,
   output logic                                   spm_rsp_err,
   // core window, LQ / LCQ, log, RT mirrors
@@ -296,6 +306,15 @@ module tsr_core_dp
   if (HAS_ATT && (!HAS_VU || !HAS_MVM)) begin : g_chk_att
     $fatal(1, "tsr_core_dp: HAS_ATT needs HAS_VU (AT's vector ops 0x34-0x37) and HAS_MVM (ATTQK / ATTPV)");
   end
+  if (LOCAL_INTERMEDIATES && !HAS_ATT) begin : g_chk_local_att
+    $fatal(1, "tsr_core_dp: local attention needs HAS_ATT");
+  end
+  if (LOCAL_SOFTCAP && !LOCAL_SCALE) begin : g_chk_local_softcap
+    $fatal(1, "tsr_core_dp: local softcap needs the local SCALE execution path");
+  end
+  if (LOCAL_SCALE && (!HAS_VU || !HAS_MVM || !MVM_GATHER_PAIR)) begin : g_chk_local_scale
+    $fatal(1, "tsr_core_dp: local SCALE needs both compute units and paired gather");
+  end
   if (HAS_ATT && MVM_MAC_LAT < 3) begin : g_chk_attlat
     $fatal(1, "tsr_core_dp: HAS_ATT needs MVM_MAC_LAT >= 3 (the exact PV accumulation of tsr_mvm_back)");
   end
@@ -311,7 +330,10 @@ module tsr_core_dp
   localparam logic [31:0] CAPS      = (HAS_VU    ? tsr_tables_pkg::TSR_CAPS_VU    : 32'd0) |
                                       (HAS_ATT   ? tsr_tables_pkg::TSR_CAPS_ATT   : 32'd0) |
                                       (HAS_TOPK  ? tsr_tables_pkg::TSR_CAPS_TOPK  : 32'd0) |
-                                      (HAS_DQROW ? tsr_tables_pkg::TSR_CAPS_DQROW : 32'd0);
+                                      (HAS_DQROW ? tsr_tables_pkg::TSR_CAPS_DQROW : 32'd0) |
+                                      (LOCAL_INTERMEDIATES ? tsr_tables_pkg::TSR_CAPS_ATT_LOCAL : 32'd0) |
+                                      (LOCAL_SCALE ? tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SCALE : 32'd0) |
+                                     (LOCAL_SOFTCAP ? tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SOFTCAP : 32'd0);
   // CFG3 (EX §7.5, VU §5.10, AT §5.10): the VU's lane counts (information), PCAP / 16 with attention
   localparam logic [31:0] CFG3      = (HAS_VU  ? ((32'(VU_EXP_LANES) & 32'h1F) | ((32'(VU_BACK_LANES) & 32'h1F) << 5)) : 32'd0) |
                                       (HAS_ATT ? (tsr_qa_lines(1'b1, 32'(K_MAX)) << 16) : 32'd0);
@@ -388,6 +410,10 @@ module tsr_core_dp
   logic [31:0]                q_pidx;
   logic [5:0][8:0]            q_state;
   logic                       err_any, abort_active, qidle, qquiescent;
+  // A FIFO head remains pending while its issue segments are in flight.
+  // The retained FIFO count also covers the gap between queued entries.
+  wire ifq_drained = !RV_LOCAL_TRANSPORT || ifq_count == 6'd0;
+
   logic [2:0]                 hold_src;
   logic [2:0]                 perf_retired;
   logic                       perf_push, perf_mvm_wait, perf_mvm_empty, perf_hold;
@@ -480,7 +506,8 @@ module tsr_core_dp
     .rv_halted, .rv_sleep, .rv_running, .rv_reset_done, .rv_clk_ok,
     .rv_ndmreset, .issued_seq, .ifq_count,
     .host_hold, .halt_hold, .qabort, .rv_reset, .host_clear, .sr_busy,
-    .qidle, .qquiescent, .err_any, .hold_src, .q_state, .seq_d(d_seq), .err_rec(q_err_rec), .q_pidx,
+    .qidle(qidle && ifq_drained), .qquiescent(qquiescent && ifq_drained),
+    .err_any, .hold_src, .q_state, .seq_d(d_seq), .err_rec(q_err_rec), .q_pidx,
     .perf_retired, .perf_push, .perf_busy, .perf_mvm_wait, .perf_mvm_empty, .perf_hold,
     .perf_ch_rd_beat, .perf_ch_wait, .perf_ext, .unit_progress,
     .plat_err_i, .host_irq_o, .unit_hung
@@ -501,7 +528,7 @@ module tsr_core_dp
     tsr_ext_t [TSR_EXT_N-1:0] at_rsp_ext;
     logic [XC_CMD_W-1:0]      at_rsp_cmd;
 
-    tsr_vu_xc #(.SPM_BYTES(SPM_BYTES), .K_MAX(K_MAX), .NUM_CH(NUM_CH)) u_xc (
+    tsr_vu_xc #(.LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .SPM_BYTES(SPM_BYTES), .K_MAX(K_MAX), .NUM_CH(NUM_CH)) u_xc (
       .clk, .rst_n(rst_b_n[RB_ISSUE]),
       .xc_req_valid, .xc_req_insn, .xc_rsp_valid, .xc_rsp_code, .xc_rsp_info, .xc_rsp_ext, .xc_rsp_cmd,
       .at_req_valid, .at_req_insn, .at_rsp_valid, .at_rsp_code, .at_rsp_info, .at_rsp_ext, .at_rsp_cmd
@@ -509,7 +536,7 @@ module tsr_core_dp
     if (HAS_ATT) begin : g_at
       tsr_chk_at #(
         .NUM_CH(NUM_CH), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES), .CH_BYTES(CH_BYTES),
-        .ADDR_BEAT_W(ADDR_BEAT_W), .XC_CMD_W(XC_CMD_W)
+        .ADDR_BEAT_W(ADDR_BEAT_W), .XC_CMD_W(XC_CMD_W), .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES)
       ) u_chk_at (
         .clk, .rst_n(rst_b_n[RB_ISSUE]),
         .req_valid(at_req_valid), .req_insn(at_req_insn),
@@ -557,12 +584,16 @@ module tsr_core_dp
   logic [NUM_CH-1:0][TSR_LEN_W-1:0]    d_rd_req_len;
   logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0] d_rd_req_id;
   logic [NUM_CH-1:0]                   d_rd_req_ready, d_rd_rsp_valid;
+  logic [NUM_CH-1:0][BEAT_BITS-1:0]    d_rd_rsp_data;
+  logic [NUM_CH-1:0]                   d_rd_rsp_last;
+  logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0] d_rd_rsp_id;
   logic [NUM_CH-1:0]                   d_wr_req_valid, d_wr_req_ready;
   logic [NUM_CH-1:0][ADDR_BEAT_W-1:0]  d_wr_req_addr;
   logic [NUM_CH-1:0][TSR_LEN_W-1:0]    d_wr_req_len;
   logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0] d_wr_req_id;
   logic [NUM_CH-1:0]                   d_wr_dat_valid, d_wr_dat_ready, d_wr_dat_last;
   logic [NUM_CH-1:0][BEAT_BITS-1:0]    d_wr_dat_data;
+  logic [NUM_CH-1:0][BEAT_BITS/32-1:0] d_wr_dat_mask;
   logic [NUM_CH-1:0]                   d_wr_rsp_valid, d_wr_rsp_ready;
   logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0] d_wr_rsp_id;
 
@@ -574,8 +605,20 @@ module tsr_core_dp
   logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0] a_wr_req_id;
   logic [NUM_CH-1:0]                   a_wr_dat_valid, a_wr_dat_ready, a_wr_dat_last;
   logic [NUM_CH-1:0][BEAT_BITS-1:0]    a_wr_dat_data;
+  logic [NUM_CH-1:0][BEAT_BITS/32-1:0] a_wr_dat_mask;
   logic [NUM_CH-1:0]                   a_wr_rsp_valid, a_wr_rsp_ready;
   logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0] a_wr_rsp_id;
+
+  // Arbiter-facing writes after the optional central DDR boundary slices.
+  logic [NUM_CH-1:0]                   b_wr_req_valid, b_wr_req_ready;
+  logic [NUM_CH-1:0][ADDR_BEAT_W-1:0]  b_wr_req_addr;
+  logic [NUM_CH-1:0][TSR_LEN_W-1:0]    b_wr_req_len;
+  logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0] b_wr_req_id;
+  logic [NUM_CH-1:0]                   b_wr_dat_valid, b_wr_dat_ready, b_wr_dat_last;
+  logic [NUM_CH-1:0][BEAT_BITS-1:0]    b_wr_dat_data;
+  logic [NUM_CH-1:0][BEAT_BITS/32-1:0] b_wr_dat_mask;
+  logic [NUM_CH-1:0]                   b_wr_rsp_valid, b_wr_rsp_ready;
+  logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0] b_wr_rsp_id;
 
   // -------------------------------------------------------------------------------------------
   // DB block (DB §13, W4-B item 6): tsr_dbg (DBG registers, stop logic, shadow queues, history, trace
@@ -687,11 +730,11 @@ module tsr_core_dp
     .xcmd(dma_xcmd), .done(dma_done),
     .rd_req_valid(d_rd_req_valid), .rd_req_ready(d_rd_req_ready), .rd_req_addr(d_rd_req_addr),
     .rd_req_len(d_rd_req_len), .rd_req_id(d_rd_req_id),
-    .rd_rsp_valid(d_rd_rsp_valid), .rd_rsp_ready(d_rd_rsp_ready), .rd_rsp_data(s_rd_rsp_data),
-    .rd_rsp_last(s_rd_rsp_last), .rd_rsp_id(s_rd_rsp_id),
+    .rd_rsp_valid(d_rd_rsp_valid), .rd_rsp_ready(d_rd_rsp_ready), .rd_rsp_data(d_rd_rsp_data),
+    .rd_rsp_last(d_rd_rsp_last), .rd_rsp_id(d_rd_rsp_id),
     .wr_req_valid(d_wr_req_valid), .wr_req_ready(d_wr_req_ready), .wr_req_addr(d_wr_req_addr),
     .wr_req_len(d_wr_req_len), .wr_req_id(d_wr_req_id),
-    .wr_dat_valid(d_wr_dat_valid), .wr_dat_ready(d_wr_dat_ready), .wr_dat_data(d_wr_dat_data),
+    .wr_dat_valid(d_wr_dat_valid), .wr_dat_ready(d_wr_dat_ready), .wr_dat_data(d_wr_dat_data), .wr_dat_mask(d_wr_dat_mask),
     .wr_dat_last(d_wr_dat_last),
     .wr_rsp_valid(d_wr_rsp_valid), .wr_rsp_ready(d_wr_rsp_ready), .wr_rsp_id(d_wr_rsp_id),
     .spm_rd_req_valid(spm_rd_req_valid[TSR_SPM_CL_DMA]), .spm_rd_req_ready(spm_rd_req_ready[TSR_SPM_CL_DMA]),
@@ -725,19 +768,30 @@ module tsr_core_dp
   logic [NUM_CH-1:0][TSR_LEN_W-1:0]    w_rd_req_len;
   logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0] w_rd_req_id;
 
+  logic scale_request, scale_grant;
+  tsr_vu_pkg::tsr_vu_local_req_t [1:0] scale_req;
+  tsr_vu_pkg::tsr_vu_local_rsp_t [1:0] scale_rsp;
+  tsr_att_pkg::tsr_local_score_req_t [NUM_CH-1:0] local_score_req;
+  logic [NUM_CH-1:0][TSR_LINE_BITS-1:0] local_score_data;
+
   // ATTQK / ATTPV on the MVM unit when CAPS has ATT (the external payload of tsr_issue)
   if (HAS_MVM) begin : g_mvm
+    logic inner_ready;
+    wire needs_scale = LOCAL_SCALE && !mvm_cmd_xc && (mvm_cmd.local_scale || mvm_cmd.local_softcap);
+    assign scale_request = needs_scale && mvm_cmd_valid && inner_ready;
+    assign mvm_cmd_ready = inner_ready && (!mvm_cmd_valid || !needs_scale || scale_grant);
     tsr_mvm #(
-      .HAS_ATT(HAS_ATT), .XC_CMD_W(XC_CMD_W),
+      .HAS_ATT(HAS_ATT), .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .LOCAL_SCALE(LOCAL_SCALE), .XC_CMD_W(XC_CMD_W),
       .NUM_CH(NUM_CH), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT),
       .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BEAT_BITS), .WS_FIFO_BEATS(MVM_WS_FIFO),
-      .BC_PIPE(MVM_BC_PIPE), .RES_PIPE(MVM_RES_PIPE), .ACT_RD_LAT(MVM_ACT_RD_LAT),
+      .BC_PIPE(MVM_BC_PIPE), .RES_PIPE(MVM_RES_PIPE), .GATHER_PAIR(MVM_GATHER_PAIR), .GATHER_FLITS(MVM_GATHER_FLITS), .ACT_RD_LAT(MVM_ACT_RD_LAT),
       .MAC_LAT(MVM_MAC_LAT), .MUL_LAT(MVM_MUL_LAT), .ADD_LAT(MVM_ADD_LAT), .WS_RD_LAT(MVM_WS_RD_LAT),
       .RST_LOCAL(RST_BLK)
     ) u_mvm (
       .clk, .rst_n(rst_pre_n),
-      .cmd_valid(mvm_cmd_valid), .cmd_ready(mvm_cmd_ready), .cmd(mvm_cmd), .cmd_xc(mvm_cmd_xc),
+      .cmd_valid(mvm_cmd_valid && (!needs_scale || scale_grant)), .cmd_ready(inner_ready), .cmd(mvm_cmd), .cmd_xc(mvm_cmd_xc),
       .xcmd(mvm_xcmd), .done(mvm_done),
+      .local_score_req, .local_score_data, .scale_req, .scale_rsp,
       .spm_rd_req_valid(spm_rd_req_valid[TSR_SPM_CL_MVM]), .spm_rd_req_ready(spm_rd_req_ready[TSR_SPM_CL_MVM]),
       .spm_rd_req_line(spm_rd_req_line[TSR_SPM_CL_MVM]), .spm_rd_rsp_valid(spm_rd_rsp_valid[TSR_SPM_CL_MVM]),
       .spm_rd_rsp_data(spm_rd_rsp_data[TSR_SPM_CL_MVM]),
@@ -751,6 +805,11 @@ module tsr_core_dp
       .perf_mvm_busy, .perf_att_qk, .perf_att_pv, .perf_att_stall   // PERF ATT_QK / PV / PATH_STALL
     );
   end else begin : g_nomvm
+    assign scale_request = 1'b0;
+    assign scale_req = '0;
+    wire unused_scale = &{1'b0, scale_grant, scale_rsp};
+    assign local_score_data = '0;
+    wire unused_local_score = &{1'b0, local_score_req};
     assign perf_att_qk    = 1'b0;
     assign perf_att_pv    = 1'b0;
     assign perf_att_stall = 1'b0;
@@ -776,10 +835,10 @@ module tsr_core_dp
   end
 
   // -------------------------------------------------------------------------------------------
-  // RISC-V SPM bridge (client 3, CC §10.5): tsr_ctrl's level request (fields stable while
-  // spm_req_valid, which falls in the cycle after the answer); the bridge is busy (req_ready = 0)
-  // until then, so a request is taken once. spm_req_addr is the SPM byte offset; the bus of the
-  // control subsystem has already range-checked it against SPM_BYTES (tsr_rv_bus).
+  // RISC-V SPM bridge (client 3, CC §10.5). The direct path holds its
+  // request through the response. The segmented path offers it once and
+  // holds the response at the bridge until the last segment is sent.
+  // The RISC-V bus has already range-checked spm_req_addr.
   // -------------------------------------------------------------------------------------------
   logic bridge_req_ready;
 
@@ -787,7 +846,7 @@ module tsr_core_dp
     .clk, .rst_n(rst_b_n[RB_BRIDGE]),
     .req_valid(spm_req_valid), .req_ready(bridge_req_ready), .req_we(spm_req_we),
     .req_waddr(spm_req_addr[SPM_WAW+1:2]), .req_be(spm_req_be), .req_wdata(spm_req_wdata),
-    .rsp_valid(spm_rsp_valid), .rsp_ready(1'b1), .rsp_err(spm_rsp_err), .rsp_line(spm_rsp_line),
+    .rsp_valid(spm_rsp_valid), .rsp_ready(spm_rsp_ready), .rsp_err(spm_rsp_err), .rsp_line(spm_rsp_line),
     .spm_rd_req_valid(spm_rd_req_valid[TSR_SPM_CL_BRIDGE]), .spm_rd_req_ready(spm_rd_req_ready[TSR_SPM_CL_BRIDGE]),
     .spm_rd_req_line(spm_rd_req_line[TSR_SPM_CL_BRIDGE]), .spm_rd_rsp_valid(spm_rd_rsp_valid[TSR_SPM_CL_BRIDGE]),
     .spm_rd_rsp_data(spm_rd_rsp_data[TSR_SPM_CL_BRIDGE]),
@@ -815,11 +874,12 @@ module tsr_core_dp
     logic [31:0] vu_dbg_w0;
     logic [2:0]  vu_dbg_flags;
     tsr_vu #(
-      .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT), .NUM_CH(NUM_CH), .EXP_LANES(VU_EXP_LANES),
-      .BACK_LANES(VU_BACK_LANES), .LANE_PIPE(VU_LANE_PIPE), .HAS_TOPK(HAS_TOPK), .HAS_DQROW(HAS_DQROW)
+      .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT), .NUM_CH(NUM_CH), .FRONT_LANES(VU_FRONT_LANES), .EXP_LANES(VU_EXP_LANES),
+      .BACK_LANES(VU_BACK_LANES), .LANE_PIPE(VU_LANE_PIPE), .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .LOCAL_SCALE(LOCAL_SCALE), .HAS_TOPK(HAS_TOPK), .HAS_DQROW(HAS_DQROW)
     ) u_vu (
       .clk, .rst_n(rst_b_n[RB_VU]),
       .cmd_valid(vu_cmd_valid), .cmd_ready(vu_cmd_ready), .cmd(vu_cmd), .done(vu_done),
+      .local_score_req, .local_score_data, .scale_request, .scale_grant, .scale_done(mvm_done), .scale_req, .scale_rsp,
       .rd_req_valid(vu_rd_req_valid), .rd_req_ready(vu_rd_req_ready), .rd_req_line(vu_rd_req_line),
       .rd_rsp_valid(vu_rd_rsp_valid), .rd_rsp_data(vu_rd_rsp_data),
       .wr_valid(vu_wr_valid), .wr_ready(vu_wr_ready), .wr_line(vu_wr_line), .wr_data(vu_wr_data),
@@ -833,6 +893,11 @@ module tsr_core_dp
     // dispatcher's strobes (DB §9.1, model values).
     wire unused_vu_dbg = &{1'b0, vu_dbg_held, vu_dbg_w0, vu_dbg_flags};
   end else begin : g_novu
+    assign scale_grant = 1'b0;
+    assign scale_rsp = '0;
+    wire unused_scale = &{1'b0, scale_request, scale_req};
+    assign local_score_req = '0;
+    wire unused_local_score = &{1'b0, local_score_data};
     assign vu_cmd_ready      = 1'b0;
     assign vu_done           = 1'b0;
     assign vu_rd_req_valid   = '0;
@@ -929,14 +994,69 @@ module tsr_core_dp
     assign s_rd_req_len[c][TSR_SRC_AUX]   = '0;
     assign s_rd_req_id[c][TSR_SRC_AUX]    = '0;
     assign s_rd_rsp_ready[c][TSR_SRC_AUX] = 1'b1;
-    // Source DMA.
-    assign s_rd_req_valid[c][TSR_SRC_DMA] = d_rd_req_valid[c];
-    assign s_rd_req_addr[c][TSR_SRC_DMA]  = d_rd_req_addr[c];
-    assign s_rd_req_len[c][TSR_SRC_DMA]   = d_rd_req_len[c];
-    assign s_rd_req_id[c][TSR_SRC_DMA]    = d_rd_req_id[c];
-    assign s_rd_rsp_ready[c][TSR_SRC_DMA] = d_rd_rsp_ready[c];
-    assign d_rd_req_ready[c]              = s_rd_req_ready[c][TSR_SRC_DMA];
-    assign d_rd_rsp_valid[c]              = s_rd_rsp_valid[c][TSR_SRC_DMA];
+    // DDR0/3 arbiters move beside their controllers. These kept slices stay in SLR1,
+    // so DMA, KVST and trace cross to the local arbiter's registered endpoints. The
+    // 512-bit weight response remains entirely local; only DMA responses return here.
+    if (DDR_LOCAL_PIPE && (c == 0 || c == 3)) begin : g_dma_pipe
+      localparam int unsigned RQ_W = ADDR_BEAT_W + TSR_LEN_W + TSR_SRC_ID_W;
+      (* keep_hierarchy = "yes" *) tsr_rslice #(.W(RQ_W), .FORM(1)) u_rq (
+        .clk, .rst_n(rst_b_n[RB_ARB + c]),
+        .s_valid(d_rd_req_valid[c]), .s_ready(d_rd_req_ready[c]),
+        .s_data({d_rd_req_addr[c], d_rd_req_len[c], d_rd_req_id[c]}),
+        .m_valid(s_rd_req_valid[c][TSR_SRC_DMA]), .m_ready(s_rd_req_ready[c][TSR_SRC_DMA]),
+        .m_data({s_rd_req_addr[c][TSR_SRC_DMA], s_rd_req_len[c][TSR_SRC_DMA], s_rd_req_id[c][TSR_SRC_DMA]})
+      );
+      (* keep_hierarchy = "yes" *) tsr_rslice #(.W(BEAT_BITS + 1 + TSR_SRC_ID_W)) u_rsp (
+        .clk, .rst_n(rst_b_n[RB_ARB + c]),
+        .s_valid(s_rd_rsp_valid[c][TSR_SRC_DMA]), .s_ready(s_rd_rsp_ready[c][TSR_SRC_DMA]),
+        .s_data({s_rd_rsp_data[c], s_rd_rsp_last[c], s_rd_rsp_id[c]}),
+        .m_valid(d_rd_rsp_valid[c]), .m_ready(d_rd_rsp_ready[c]),
+        .m_data({d_rd_rsp_data[c], d_rd_rsp_last[c], d_rd_rsp_id[c]})
+      );
+      (* keep_hierarchy = "yes" *) tsr_rslice #(.W(RQ_W), .FORM(1)) u_wq (
+        .clk, .rst_n(rst_b_n[RB_ARB + c]),
+        .s_valid(a_wr_req_valid[c]), .s_ready(a_wr_req_ready[c]),
+        .s_data({a_wr_req_addr[c], a_wr_req_len[c], a_wr_req_id[c]}),
+        .m_valid(b_wr_req_valid[c]), .m_ready(b_wr_req_ready[c]),
+        .m_data({b_wr_req_addr[c], b_wr_req_len[c], b_wr_req_id[c]})
+      );
+      (* keep_hierarchy = "yes" *) tsr_rslice #(.W(BEAT_BITS + BEAT_BITS/32 + 1), .FORM(1)) u_wd (
+        .clk, .rst_n(rst_b_n[RB_ARB + c]),
+        .s_valid(a_wr_dat_valid[c]), .s_ready(a_wr_dat_ready[c]),
+        .s_data({a_wr_dat_data[c], a_wr_dat_mask[c], a_wr_dat_last[c]}),
+        .m_valid(b_wr_dat_valid[c]), .m_ready(b_wr_dat_ready[c]),
+        .m_data({b_wr_dat_data[c], b_wr_dat_mask[c], b_wr_dat_last[c]})
+      );
+      (* keep_hierarchy = "yes" *) tsr_rslice #(.W(TSR_SRC_ID_W)) u_ws (
+        .clk, .rst_n(rst_b_n[RB_ARB + c]),
+        .s_valid(b_wr_rsp_valid[c]), .s_ready(b_wr_rsp_ready[c]), .s_data(b_wr_rsp_id[c]),
+        .m_valid(a_wr_rsp_valid[c]), .m_ready(a_wr_rsp_ready[c]), .m_data(a_wr_rsp_id[c])
+      );
+    end else begin : g_dma_direct
+      assign s_rd_req_valid[c][TSR_SRC_DMA] = d_rd_req_valid[c];
+      assign s_rd_req_addr[c][TSR_SRC_DMA]  = d_rd_req_addr[c];
+      assign s_rd_req_len[c][TSR_SRC_DMA]   = d_rd_req_len[c];
+      assign s_rd_req_id[c][TSR_SRC_DMA]    = d_rd_req_id[c];
+      assign s_rd_rsp_ready[c][TSR_SRC_DMA] = d_rd_rsp_ready[c];
+      assign d_rd_req_ready[c]              = s_rd_req_ready[c][TSR_SRC_DMA];
+      assign d_rd_rsp_valid[c]              = s_rd_rsp_valid[c][TSR_SRC_DMA];
+      assign d_rd_rsp_data[c]               = s_rd_rsp_data[c];
+      assign d_rd_rsp_last[c]               = s_rd_rsp_last[c];
+      assign d_rd_rsp_id[c]                 = s_rd_rsp_id[c];
+      assign b_wr_req_valid[c] = a_wr_req_valid[c];
+      assign a_wr_req_ready[c] = b_wr_req_ready[c];
+      assign b_wr_req_addr[c]  = a_wr_req_addr[c];
+      assign b_wr_req_len[c]   = a_wr_req_len[c];
+      assign b_wr_req_id[c]    = a_wr_req_id[c];
+      assign b_wr_dat_valid[c] = a_wr_dat_valid[c];
+      assign a_wr_dat_ready[c] = b_wr_dat_ready[c];
+      assign b_wr_dat_data[c]  = a_wr_dat_data[c];
+      assign b_wr_dat_mask[c]  = a_wr_dat_mask[c];
+      assign b_wr_dat_last[c]  = a_wr_dat_last[c];
+      assign a_wr_rsp_valid[c] = b_wr_rsp_valid[c];
+      assign b_wr_rsp_ready[c] = a_wr_rsp_ready[c];
+      assign a_wr_rsp_id[c]    = b_wr_rsp_id[c];
+    end
     // Source WS (M3 weight stream of cluster c; tied off when HAS_MVM = 0).
     assign s_rd_req_valid[c][TSR_SRC_WS]  = w_rd_req_valid[c];
     assign s_rd_req_addr[c][TSR_SRC_WS]   = w_rd_req_addr[c];
@@ -953,14 +1073,14 @@ module tsr_core_dp
         .d_wr_req_valid(d_wr_req_valid[c]), .d_wr_req_ready(d_wr_req_ready[c]),
         .d_wr_req_addr(d_wr_req_addr[c]), .d_wr_req_len(d_wr_req_len[c]), .d_wr_req_id(d_wr_req_id[c]),
         .d_wr_dat_valid(d_wr_dat_valid[c]), .d_wr_dat_ready(d_wr_dat_ready[c]),
-        .d_wr_dat_data(d_wr_dat_data[c]), .d_wr_dat_last(d_wr_dat_last[c]),
+        .d_wr_dat_data(d_wr_dat_data[c]), .d_wr_dat_mask(d_wr_dat_mask[c]), .d_wr_dat_last(d_wr_dat_last[c]),
         .d_wr_rsp_valid(d_wr_rsp_valid[c]), .d_wr_rsp_ready(d_wr_rsp_ready[c]), .d_wr_rsp_id(d_wr_rsp_id[c]),
         .t_wr_req_valid, .t_wr_req_ready, .t_wr_req_addr, .t_wr_req_len,
         .t_wr_dat_valid, .t_wr_dat_ready, .t_wr_dat_data, .t_wr_dat_last, .t_wr_rsp_valid,
         .s_wr_req_valid(a_wr_req_valid[c]), .s_wr_req_ready(a_wr_req_ready[c]),
         .s_wr_req_addr(a_wr_req_addr[c]), .s_wr_req_len(a_wr_req_len[c]), .s_wr_req_id(a_wr_req_id[c]),
         .s_wr_dat_valid(a_wr_dat_valid[c]), .s_wr_dat_ready(a_wr_dat_ready[c]),
-        .s_wr_dat_data(a_wr_dat_data[c]), .s_wr_dat_last(a_wr_dat_last[c]),
+        .s_wr_dat_data(a_wr_dat_data[c]), .s_wr_dat_mask(a_wr_dat_mask[c]), .s_wr_dat_last(a_wr_dat_last[c]),
         .s_wr_rsp_valid(a_wr_rsp_valid[c]), .s_wr_rsp_ready(a_wr_rsp_ready[c]), .s_wr_rsp_id(a_wr_rsp_id[c])
       );
     end else begin : g_wrdirect
@@ -972,6 +1092,7 @@ module tsr_core_dp
       assign a_wr_dat_valid[c] = d_wr_dat_valid[c];
       assign d_wr_dat_ready[c] = a_wr_dat_ready[c];
       assign a_wr_dat_data[c]  = d_wr_dat_data[c];
+      assign a_wr_dat_mask[c]  = d_wr_dat_mask[c];
       assign a_wr_dat_last[c]  = d_wr_dat_last[c];
       assign d_wr_rsp_valid[c] = a_wr_rsp_valid[c];
       assign a_wr_rsp_ready[c] = d_wr_rsp_ready[c];
@@ -986,11 +1107,11 @@ module tsr_core_dp
       .s_rd_req_addr(s_rd_req_addr[c]), .s_rd_req_len(s_rd_req_len[c]), .s_rd_req_id(s_rd_req_id[c]),
       .s_rd_rsp_valid(s_rd_rsp_valid[c]), .s_rd_rsp_ready(s_rd_rsp_ready[c]),
       .s_rd_rsp_data(s_rd_rsp_data[c]), .s_rd_rsp_last(s_rd_rsp_last[c]), .s_rd_rsp_id(s_rd_rsp_id[c]),
-      .s_wr_req_valid(a_wr_req_valid[c]), .s_wr_req_ready(a_wr_req_ready[c]),
-      .s_wr_req_addr(a_wr_req_addr[c]), .s_wr_req_len(a_wr_req_len[c]), .s_wr_req_id(a_wr_req_id[c]),
-      .s_wr_dat_valid(a_wr_dat_valid[c]), .s_wr_dat_ready(a_wr_dat_ready[c]),
-      .s_wr_dat_data(a_wr_dat_data[c]), .s_wr_dat_last(a_wr_dat_last[c]),
-      .s_wr_rsp_valid(a_wr_rsp_valid[c]), .s_wr_rsp_ready(a_wr_rsp_ready[c]), .s_wr_rsp_id(a_wr_rsp_id[c]),
+      .s_wr_req_valid(b_wr_req_valid[c]), .s_wr_req_ready(b_wr_req_ready[c]),
+      .s_wr_req_addr(b_wr_req_addr[c]), .s_wr_req_len(b_wr_req_len[c]), .s_wr_req_id(b_wr_req_id[c]),
+      .s_wr_dat_valid(b_wr_dat_valid[c]), .s_wr_dat_ready(b_wr_dat_ready[c]),
+      .s_wr_dat_data(b_wr_dat_data[c]), .s_wr_dat_mask(b_wr_dat_mask[c]), .s_wr_dat_last(b_wr_dat_last[c]),
+      .s_wr_rsp_valid(b_wr_rsp_valid[c]), .s_wr_rsp_ready(b_wr_rsp_ready[c]), .s_wr_rsp_id(b_wr_rsp_id[c]),
       .m_rd_req_valid(m_rd_req_valid[c]), .m_rd_req_ready(m_rd_req_ready[c]),
       .m_rd_req_addr(m_rd_req_addr[c]), .m_rd_req_len(m_rd_req_len[c]), .m_rd_req_id(m_rd_req_id[c]),
       .m_rd_rsp_valid(m_rd_rsp_valid[c]), .m_rd_rsp_ready(m_rd_rsp_ready[c]),
@@ -998,7 +1119,7 @@ module tsr_core_dp
       .m_wr_req_valid(m_wr_req_valid[c]), .m_wr_req_ready(m_wr_req_ready[c]),
       .m_wr_req_addr(m_wr_req_addr[c]), .m_wr_req_len(m_wr_req_len[c]), .m_wr_req_id(m_wr_req_id[c]),
       .m_wr_dat_valid(m_wr_dat_valid[c]), .m_wr_dat_ready(m_wr_dat_ready[c]),
-      .m_wr_dat_data(m_wr_dat_data[c]), .m_wr_dat_last(m_wr_dat_last[c]),
+      .m_wr_dat_data(m_wr_dat_data[c]), .m_wr_dat_mask(m_wr_dat_mask[c]), .m_wr_dat_last(m_wr_dat_last[c]),
       .m_wr_rsp_valid(m_wr_rsp_valid[c]), .m_wr_rsp_ready(m_wr_rsp_ready[c]), .m_wr_rsp_id(m_wr_rsp_id[c]),
       .perf_rd_beat(perf_ch_rd_beat[c]), .perf_rd_wait(perf_ch_wait[c])
     );

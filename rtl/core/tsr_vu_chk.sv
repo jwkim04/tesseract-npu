@@ -59,6 +59,7 @@ module tsr_vu_chk
   import tsr_pkg::*;
   import tsr_xc_pkg::*;
 #(
+  parameter bit          LOCAL_INTERMEDIATES = 1'b0,
   parameter int unsigned SPM_BYTES = TSR_DEF_SPM_BYTES,
   parameter int unsigned K_MAX     = TSR_DEF_K_MAX,
   parameter int unsigned NUM_CH    = TSR_DEF_NUM_CH
@@ -180,6 +181,13 @@ module tsr_vu_chk
       default:     d_cls[C_DQ]   = 1'b1;
     endcase
     d_ill      = rsv_any(w_q, rsv_of(op));
+    if (op == TSR_OP_ASMAX) begin
+      tsr_insn_t w_std;
+      w_std = w_q;
+      w_std[7] = '0;
+      d_ill = rsv_any(w_std, rsv_of(op)) ||
+              (w_q[7] != 0 && (!LOCAL_INTERMEDIATES || w_q[7][1:0] == 0 || w_q[7][31:18] != 0));
+    end
     d_fmt      = 1'b0;
     d_krng     = 1'b0;
     d_reads    = tsr_vop_func_reads(x16[7:0]);
@@ -426,6 +434,11 @@ module tsr_vu_chk
         c2_opd = 1'b1; c2_opd_info = rr;
       end else if (cls_q[C_ASM] && scale_bad(w_q[6][31:23])) begin
         c2_opd = 1'b1; c2_opd_info = w_q[6];
+      end else if (cls_q[C_ASM] && LOCAL_INTERMEDIATES && w_q[7][1:0] != 0 &&
+                   (rr > 32'(tsr_att_pkg::TSR_LOCAL_MAX_ROWS) || nl > 16'd128 ||
+                    w_q[4][31:16] != ((nl + 16'd3) & 16'hfffc) || w_q[1] != w_q[2] ||
+                    rr * 32'(st >> 2) > 32'(tsr_att_pkg::TSR_LOCAL_SCORE_LINES))) begin
+        c2_opd = 1'b1; c2_opd_info = rr;
       end else if (cls_q[C_AMK] && rpq == 16'd0) begin
         c2_opd = 1'b1; c2_opd_info = 32'd0;
       end

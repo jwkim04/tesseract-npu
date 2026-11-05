@@ -150,6 +150,10 @@ constexpr kind_fast_fn m7_fast(uint32_t kind) {
 constexpr kind_slot make_slot(uint32_t kind) {
     if (kind == opl::K_NOP || kind == opl::K_JOIN) return slot_for(nullptr, 0u);
     if (kind == opl::K_MUL_MAT) return slot_for(&kind_mulmat, opl::kind_nargs(kind));
+#if !defined(TSR_TEST_NO_KIND_MUL_MAT_EPILOGUE) && !defined(TSR_TEST_NO_KIND_MUL_MAT)
+    if (kind == opl::K_MUL_MAT_SCALE) return slot_for(&kind_mulmat_scale, opl::kind_nargs(kind));
+    if (kind == opl::K_MUL_MAT_SOFTCAP) return slot_for(&kind_mulmat_softcap, opl::kind_nargs(kind));
+#endif
     if (kind >= opl::K_ADD && kind <= opl::K_UNARY) return slot_for(m7_handler(kind), opl::kind_nargs(kind), m7_fast(kind));
     return kind_slot{nullptr, nullptr, W0X_NONE, 1u};
 }

@@ -550,27 +550,36 @@ extern "C" {
 #define TSR_CFG2_K_MAX_256_LSB 16u
 #define TSR_CFG2_K_MAX_256_W   16u
 // CAPS (EX §7.5): capability bits; retired bits are never set and never reused
-#define TSR_CAPS_VU          0x00000001u  // [0] VOP, RED, ROPE and SOP present (VU §5.10)
-#define TSR_CAPS_VU_LSB      0u
-#define TSR_CAPS_VU_W        1u
-#define TSR_CAPS_TOPK        0x00000008u  // [3] TOPK present (RTL from M8; the simulator from M6)
-#define TSR_CAPS_TOPK_LSB    3u
-#define TSR_CAPS_TOPK_W      1u
-#define TSR_CAPS_ATT         0x00000020u  // [5] the seven AT ops present (KVST, ATTQK, ATTPV, ASMAX, AMASK, AMERGE, ANORM)
-#define TSR_CAPS_ATT_LSB     5u
-#define TSR_CAPS_ATT_W       1u
-#define TSR_CAPS_DQROW       0x00000040u  // [6] DQROW in the SPM form (RTL from M8; the simulator from M6)
-#define TSR_CAPS_DQROW_LSB   6u
-#define TSR_CAPS_DQROW_W     1u
-#define TSR_CAPS_VMASK       0x00000080u  // [7] VMASK (M9)
-#define TSR_CAPS_VMASK_LSB   7u
-#define TSR_CAPS_VMASK_W     1u
-#define TSR_CAPS_VU_RSVD     0x00000F00u  // [11:8] reserved for VU extensions, 0
-#define TSR_CAPS_VU_RSVD_LSB 8u
-#define TSR_CAPS_VU_RSVD_W   4u
-#define TSR_CAPS_AT_RSVD     0x0000F000u  // [15:12] reserved for AT, 0
-#define TSR_CAPS_AT_RSVD_LSB 12u
-#define TSR_CAPS_AT_RSVD_W   4u
+#define TSR_CAPS_VU                    0x00000001u  // [0] VOP, RED, ROPE and SOP present (VU §5.10)
+#define TSR_CAPS_VU_LSB                0u
+#define TSR_CAPS_VU_W                  1u
+#define TSR_CAPS_TOPK                  0x00000008u  // [3] TOPK present (RTL from M8; the simulator from M6)
+#define TSR_CAPS_TOPK_LSB              3u
+#define TSR_CAPS_TOPK_W                1u
+#define TSR_CAPS_ATT                   0x00000020u  // [5] the seven AT ops present (KVST, ATTQK, ATTPV, ASMAX, AMASK, AMERGE, ANORM)
+#define TSR_CAPS_ATT_LSB               5u
+#define TSR_CAPS_ATT_W                 1u
+#define TSR_CAPS_DQROW                 0x00000040u  // [6] DQROW in the SPM form (RTL from M8; the simulator from M6)
+#define TSR_CAPS_DQROW_LSB             6u
+#define TSR_CAPS_DQROW_W               1u
+#define TSR_CAPS_VMASK                 0x00000080u  // [7] VMASK (M9)
+#define TSR_CAPS_VMASK_LSB             7u
+#define TSR_CAPS_VMASK_W               1u
+#define TSR_CAPS_VU_RSVD               0x00000F00u  // [11:8] reserved for VU extensions, 0
+#define TSR_CAPS_VU_RSVD_LSB           8u
+#define TSR_CAPS_VU_RSVD_W             4u
+#define TSR_CAPS_ATT_LOCAL             0x00001000u  // [12] four-owner local FAST attention score and probability slots
+#define TSR_CAPS_ATT_LOCAL_LSB         12u
+#define TSR_CAPS_ATT_LOCAL_W           1u
+#define TSR_CAPS_MVM_LOCAL_SCALE       0x00002000u  // [13] scale MVM output through the owner-local VU before export
+#define TSR_CAPS_MVM_LOCAL_SCALE_LSB   13u
+#define TSR_CAPS_MVM_LOCAL_SCALE_W     1u
+#define TSR_CAPS_MVM_LOCAL_SOFTCAP     0x00004000u  // [14] owner-local FP32 scale, TANH, scale after MVM
+#define TSR_CAPS_MVM_LOCAL_SOFTCAP_LSB 14u
+#define TSR_CAPS_MVM_LOCAL_SOFTCAP_W   1u
+#define TSR_CAPS_AT_RSVD               0x00008000u  // [15] reserved for AT, 0
+#define TSR_CAPS_AT_RSVD_LSB           15u
+#define TSR_CAPS_AT_RSVD_W             1u
 // bit 2 retired (RLD / MULI / LOOP), never set, never reused
 // bit 4 retired (WAITM / JUMP), never set, never reused
 // CFG3 (EX §7.5, VU §5.10, AT §5.10): [15:0] VU, [31:16] AT
@@ -1995,61 +2004,76 @@ static inline uint32_t tsr_lcq_status_rank(uint32_t status) {
 #define TSR_QACT_RSV_W7 0xFFFFFFFFu
 #define TSR_QACT_WORDS  0x3Fu        // words holding a field (w0 always)
 // MVM 0x20 (spec ISA, EX §7.2, owner spec)
-#define TSR_MVM_FMT             0x00000F00u  // w0[11:8] weight format
-#define TSR_MVM_FMT_LSB         8u
-#define TSR_MVM_FMT_W           4u
-#define TSR_MVM_FMT_WORD        0u
-#define TSR_MVM_FMT_BIT         8u
-#define TSR_MVM_ACC             0x00001000u  // w0[12] y += W.x
-#define TSR_MVM_ACC_LSB         12u
-#define TSR_MVM_ACC_W           1u
-#define TSR_MVM_ACC_WORD        0u
-#define TSR_MVM_ACC_BIT         12u
-#define TSR_MVM_DST             0xFFFFFFFFu  // w1 destination line
-#define TSR_MVM_DST_LSB         0u
-#define TSR_MVM_DST_W           32u
-#define TSR_MVM_DST_WORD        1u
-#define TSR_MVM_DST_BIT         32u
-#define TSR_MVM_X               0xFFFFFFFFu  // w2 QA activation line
-#define TSR_MVM_X_LSB           0u
-#define TSR_MVM_X_W             32u
-#define TSR_MVM_X_WORD          2u
-#define TSR_MVM_X_BIT           64u
-#define TSR_MVM_W_OFF           0xFFFFFFFFu  // w3 weight offset (beats)
-#define TSR_MVM_W_OFF_LSB       0u
-#define TSR_MVM_W_OFF_W         32u
-#define TSR_MVM_W_OFF_WORD      3u
-#define TSR_MVM_W_OFF_BIT       96u
-#define TSR_MVM_N               0xFFFFFFFFu  // w4 rows
-#define TSR_MVM_N_LSB           0u
-#define TSR_MVM_N_W             32u
-#define TSR_MVM_N_WORD          4u
-#define TSR_MVM_N_BIT           128u
-#define TSR_MVM_K               0x0000FFFFu  // w5[15:0]
-#define TSR_MVM_K_LSB           0u
-#define TSR_MVM_K_W             16u
-#define TSR_MVM_K_WORD          5u
-#define TSR_MVM_K_BIT           160u
-#define TSR_MVM_T               0x000F0000u  // w5[19:16]
-#define TSR_MVM_T_LSB           16u
-#define TSR_MVM_T_W             4u
-#define TSR_MVM_T_WORD          5u
-#define TSR_MVM_T_BIT           176u
-#define TSR_MVM_DST_STRIDE      0xFFFFFFFFu  // w6 lines; 0 = ceil(4N/64)
-#define TSR_MVM_DST_STRIDE_LSB  0u
-#define TSR_MVM_DST_STRIDE_W    32u
-#define TSR_MVM_DST_STRIDE_WORD 6u
-#define TSR_MVM_DST_STRIDE_BIT  192u
+#define TSR_MVM_FMT                0x00000F00u  // w0[11:8] weight format
+#define TSR_MVM_FMT_LSB            8u
+#define TSR_MVM_FMT_W              4u
+#define TSR_MVM_FMT_WORD           0u
+#define TSR_MVM_FMT_BIT            8u
+#define TSR_MVM_ACC                0x00001000u  // w0[12] y += W.x
+#define TSR_MVM_ACC_LSB            12u
+#define TSR_MVM_ACC_W              1u
+#define TSR_MVM_ACC_WORD           0u
+#define TSR_MVM_ACC_BIT            12u
+#define TSR_MVM_LOCAL_SCALE        0x00002000u  // w0[13] scale completed FP32 rows before export
+#define TSR_MVM_LOCAL_SCALE_LSB    13u
+#define TSR_MVM_LOCAL_SCALE_W      1u
+#define TSR_MVM_LOCAL_SCALE_WORD   0u
+#define TSR_MVM_LOCAL_SCALE_BIT    13u
+#define TSR_MVM_LOCAL_SOFTCAP      0x00004000u  // w0[14] scale, TANH, scale before export; dense destination stride
+#define TSR_MVM_LOCAL_SOFTCAP_LSB  14u
+#define TSR_MVM_LOCAL_SOFTCAP_W    1u
+#define TSR_MVM_LOCAL_SOFTCAP_WORD 0u
+#define TSR_MVM_LOCAL_SOFTCAP_BIT  14u
+#define TSR_MVM_DST                0xFFFFFFFFu  // w1 destination line
+#define TSR_MVM_DST_LSB            0u
+#define TSR_MVM_DST_W              32u
+#define TSR_MVM_DST_WORD           1u
+#define TSR_MVM_DST_BIT            32u
+#define TSR_MVM_X                  0xFFFFFFFFu  // w2 QA activation line
+#define TSR_MVM_X_LSB              0u
+#define TSR_MVM_X_W                32u
+#define TSR_MVM_X_WORD             2u
+#define TSR_MVM_X_BIT              64u
+#define TSR_MVM_W_OFF              0xFFFFFFFFu  // w3 weight offset (beats)
+#define TSR_MVM_W_OFF_LSB          0u
+#define TSR_MVM_W_OFF_W            32u
+#define TSR_MVM_W_OFF_WORD         3u
+#define TSR_MVM_W_OFF_BIT          96u
+#define TSR_MVM_N                  0xFFFFFFFFu  // w4 rows
+#define TSR_MVM_N_LSB              0u
+#define TSR_MVM_N_W                32u
+#define TSR_MVM_N_WORD             4u
+#define TSR_MVM_N_BIT              128u
+#define TSR_MVM_K                  0x0000FFFFu  // w5[15:0]
+#define TSR_MVM_K_LSB              0u
+#define TSR_MVM_K_W                16u
+#define TSR_MVM_K_WORD             5u
+#define TSR_MVM_K_BIT              160u
+#define TSR_MVM_T                  0x000F0000u  // w5[19:16]
+#define TSR_MVM_T_LSB              16u
+#define TSR_MVM_T_W                4u
+#define TSR_MVM_T_WORD             5u
+#define TSR_MVM_T_BIT              176u
+#define TSR_MVM_DST_STRIDE         0xFFFFFFFFu  // w6 lines; 0 = ceil(4N/64); with LOCAL_SOFTCAP, first FP32 coefficient
+#define TSR_MVM_DST_STRIDE_LSB     0u
+#define TSR_MVM_DST_STRIDE_W       32u
+#define TSR_MVM_DST_STRIDE_WORD    6u
+#define TSR_MVM_DST_STRIDE_BIT     192u
+#define TSR_MVM_SCALE              0xFFFFFFFFu  // w7 FP32 coefficient with LOCAL_SCALE; final FP32 coefficient with LOCAL_SOFTCAP
+#define TSR_MVM_SCALE_LSB          0u
+#define TSR_MVM_SCALE_W            32u
+#define TSR_MVM_SCALE_WORD         7u
+#define TSR_MVM_SCALE_BIT          224u
 // MVM_FMT takes the FMT_* values
-#define TSR_MVM_RSV_W0 0xFFFFE000u  // must be 0 (ILLEGAL_OP)
+#define TSR_MVM_RSV_W0 0xFFFF8000u  // must be 0 (ILLEGAL_OP)
 #define TSR_MVM_RSV_W1 0x00000000u
 #define TSR_MVM_RSV_W2 0x00000000u
 #define TSR_MVM_RSV_W3 0x00000000u
 #define TSR_MVM_RSV_W4 0x00000000u
 #define TSR_MVM_RSV_W5 0xFFF00000u
 #define TSR_MVM_RSV_W6 0x00000000u
-#define TSR_MVM_RSV_W7 0xFFFFFFFFu
-#define TSR_MVM_WORDS  0x7Fu        // words holding a field (w0 always)
+#define TSR_MVM_RSV_W7 0x00000000u
+#define TSR_MVM_WORDS  0xFFu        // words holding a field (w0 always)
 
 // -----------------------------------------------------------------------------------------------
 // VU encodings (VU §5)
@@ -2628,104 +2652,109 @@ static inline uint32_t tsr_sop_uses(uint32_t sub) {
 #define TSR_KVST_RSV_W7          0xFFFFFFFFu
 #define TSR_KVST_WORDS           0x3Fu        // words holding a field (w0 always)
 // ATTQK 0x21 (AT §5.2, owner AT)
-#define TSR_ATTQK_FMT           0x00000F00u  // w0[11:8] KV format
-#define TSR_ATTQK_FMT_LSB       8u
-#define TSR_ATTQK_FMT_W         4u
-#define TSR_ATTQK_FMT_WORD      0u
-#define TSR_ATTQK_FMT_BIT       8u
-#define TSR_ATTQK_CAUSAL        0x00001000u  // w0[12]
-#define TSR_ATTQK_CAUSAL_LSB    12u
-#define TSR_ATTQK_CAUSAL_W      1u
-#define TSR_ATTQK_CAUSAL_WORD   0u
-#define TSR_ATTQK_CAUSAL_BIT    12u
-#define TSR_ATTQK_SLIDE         0x00002000u  // w0[13]
-#define TSR_ATTQK_SLIDE_LSB     13u
-#define TSR_ATTQK_SLIDE_W       1u
-#define TSR_ATTQK_SLIDE_WORD    0u
-#define TSR_ATTQK_SLIDE_BIT     13u
-#define TSR_ATTQK_MAXOUT        0x00004000u  // w0[14] write row maxima at MDST
-#define TSR_ATTQK_MAXOUT_LSB    14u
-#define TSR_ATTQK_MAXOUT_W      1u
-#define TSR_ATTQK_MAXOUT_WORD   0u
-#define TSR_ATTQK_MAXOUT_BIT    14u
-#define TSR_ATTQK_G_M1          0x003F0000u  // x16[5:0] G - 1 (heads per KV head)
-#define TSR_ATTQK_G_M1_LSB      16u
-#define TSR_ATTQK_G_M1_W        6u
-#define TSR_ATTQK_G_M1_WORD     0u
-#define TSR_ATTQK_G_M1_BIT      16u
-#define TSR_ATTQK_HG0           0x0FC00000u  // x16[11:6] first head of the pass within each KV-head group
-#define TSR_ATTQK_HG0_LSB       22u
-#define TSR_ATTQK_HG0_W         6u
-#define TSR_ATTQK_HG0_WORD      0u
-#define TSR_ATTQK_HG0_BIT       22u
-#define TSR_ATTQK_DST           0xFFFFFFFFu  // w1 score rows, row r at DST + r x RSTRIDE
-#define TSR_ATTQK_DST_LSB       0u
-#define TSR_ATTQK_DST_W         32u
-#define TSR_ATTQK_DST_WORD      1u
-#define TSR_ATTQK_DST_BIT       32u
-#define TSR_ATTQK_X             0xFFFFFFFFu  // w2 T_q QA(A32, n_head x D) vectors
-#define TSR_ATTQK_X_LSB         0u
-#define TSR_ATTQK_X_W           32u
-#define TSR_ATTQK_X_WORD        2u
-#define TSR_ATTQK_X_BIT         64u
-#define TSR_ATTQK_BASE          0xFFFFFFFFu  // w3 K plane base B
-#define TSR_ATTQK_BASE_LSB      0u
-#define TSR_ATTQK_BASE_W        32u
-#define TSR_ATTQK_BASE_WORD     3u
-#define TSR_ATTQK_BASE_BIT      96u
-#define TSR_ATTQK_E64           0x000001FFu  // w4[8:0] E / 64 (1..512)
-#define TSR_ATTQK_E64_LSB       0u
-#define TSR_ATTQK_E64_W         9u
-#define TSR_ATTQK_E64_WORD      4u
-#define TSR_ATTQK_E64_BIT       128u
-#define TSR_ATTQK_DCODE         0x00000600u  // w4[10:9] D = 64 x 2^dcode
-#define TSR_ATTQK_DCODE_LSB     9u
-#define TSR_ATTQK_DCODE_W       2u
-#define TSR_ATTQK_DCODE_WORD    4u
-#define TSR_ATTQK_DCODE_BIT     137u
-#define TSR_ATTQK_TQ_M1         0x00003800u  // w4[13:11] T_q - 1
-#define TSR_ATTQK_TQ_M1_LSB     11u
-#define TSR_ATTQK_TQ_M1_W       3u
-#define TSR_ATTQK_TQ_M1_WORD    4u
-#define TSR_ATTQK_TQ_M1_BIT     139u
-#define TSR_ATTQK_GS_M1         0x0001C000u  // w4[16:14] GS - 1
-#define TSR_ATTQK_GS_M1_LSB     14u
-#define TSR_ATTQK_GS_M1_W       3u
-#define TSR_ATTQK_GS_M1_WORD    4u
-#define TSR_ATTQK_GS_M1_BIT     142u
-#define TSR_ATTQK_RSTRIDE       0xFFFE0000u  // w4[31:17] lines; 0 = n_groups
-#define TSR_ATTQK_RSTRIDE_LSB   17u
-#define TSR_ATTQK_RSTRIDE_W     15u
-#define TSR_ATTQK_RSTRIDE_WORD  4u
-#define TSR_ATTQK_RSTRIDE_BIT   145u
-#define TSR_ATTQK_U0            0x0000FFFFu  // w5[15:0] first group
-#define TSR_ATTQK_U0_LSB        0u
-#define TSR_ATTQK_U0_W          16u
-#define TSR_ATTQK_U0_WORD       5u
-#define TSR_ATTQK_U0_BIT        160u
-#define TSR_ATTQK_N_GROUPS      0xFFFF0000u  // w5[31:16] 1..4095
-#define TSR_ATTQK_N_GROUPS_LSB  16u
-#define TSR_ATTQK_N_GROUPS_W    16u
-#define TSR_ATTQK_N_GROUPS_WORD 5u
-#define TSR_ATTQK_N_GROUPS_BIT  176u
-#define TSR_ATTQK_C_LO          0x0000FFFFu  // w6[15:0] cell bound relative to 16 u0
-#define TSR_ATTQK_C_LO_LSB      0u
-#define TSR_ATTQK_C_LO_W        16u
-#define TSR_ATTQK_C_LO_WORD     6u
-#define TSR_ATTQK_C_LO_BIT      192u
-#define TSR_ATTQK_C_HI          0xFFFF0000u  // w6[31:16] cell bound relative to 16 u0
-#define TSR_ATTQK_C_HI_LSB      16u
-#define TSR_ATTQK_C_HI_W        16u
-#define TSR_ATTQK_C_HI_WORD     6u
-#define TSR_ATTQK_C_HI_BIT      208u
-#define TSR_ATTQK_MDST          0xFFFFFFFFu  // w7 row-maximum vector line; 0 unless MAXOUT
-#define TSR_ATTQK_MDST_LSB      0u
-#define TSR_ATTQK_MDST_W        32u
-#define TSR_ATTQK_MDST_WORD     7u
-#define TSR_ATTQK_MDST_BIT      224u
+#define TSR_ATTQK_FMT             0x00000F00u  // w0[11:8] KV format
+#define TSR_ATTQK_FMT_LSB         8u
+#define TSR_ATTQK_FMT_W           4u
+#define TSR_ATTQK_FMT_WORD        0u
+#define TSR_ATTQK_FMT_BIT         8u
+#define TSR_ATTQK_CAUSAL          0x00001000u  // w0[12]
+#define TSR_ATTQK_CAUSAL_LSB      12u
+#define TSR_ATTQK_CAUSAL_W        1u
+#define TSR_ATTQK_CAUSAL_WORD     0u
+#define TSR_ATTQK_CAUSAL_BIT      12u
+#define TSR_ATTQK_SLIDE           0x00002000u  // w0[13]
+#define TSR_ATTQK_SLIDE_LSB       13u
+#define TSR_ATTQK_SLIDE_W         1u
+#define TSR_ATTQK_SLIDE_WORD      0u
+#define TSR_ATTQK_SLIDE_BIT       13u
+#define TSR_ATTQK_MAXOUT          0x00004000u  // w0[14] write row maxima at MDST
+#define TSR_ATTQK_MAXOUT_LSB      14u
+#define TSR_ATTQK_MAXOUT_W        1u
+#define TSR_ATTQK_MAXOUT_WORD     0u
+#define TSR_ATTQK_MAXOUT_BIT      14u
+#define TSR_ATTQK_G_M1            0x003F0000u  // x16[5:0] G - 1 (heads per KV head)
+#define TSR_ATTQK_G_M1_LSB        16u
+#define TSR_ATTQK_G_M1_W          6u
+#define TSR_ATTQK_G_M1_WORD       0u
+#define TSR_ATTQK_G_M1_BIT        16u
+#define TSR_ATTQK_HG0             0x0FC00000u  // x16[11:6] first head of the pass within each KV-head group
+#define TSR_ATTQK_HG0_LSB         22u
+#define TSR_ATTQK_HG0_W           6u
+#define TSR_ATTQK_HG0_WORD        0u
+#define TSR_ATTQK_HG0_BIT         22u
+#define TSR_ATTQK_LOCAL_SLOT      0x30000000u  // w0[29:28] 0 = SPM, 1..3 = local FAST attention slot
+#define TSR_ATTQK_LOCAL_SLOT_LSB  28u
+#define TSR_ATTQK_LOCAL_SLOT_W    2u
+#define TSR_ATTQK_LOCAL_SLOT_WORD 0u
+#define TSR_ATTQK_LOCAL_SLOT_BIT  28u
+#define TSR_ATTQK_DST             0xFFFFFFFFu  // w1 score rows, row r at DST + r x RSTRIDE
+#define TSR_ATTQK_DST_LSB         0u
+#define TSR_ATTQK_DST_W           32u
+#define TSR_ATTQK_DST_WORD        1u
+#define TSR_ATTQK_DST_BIT         32u
+#define TSR_ATTQK_X               0xFFFFFFFFu  // w2 T_q QA(A32, n_head x D) vectors
+#define TSR_ATTQK_X_LSB           0u
+#define TSR_ATTQK_X_W             32u
+#define TSR_ATTQK_X_WORD          2u
+#define TSR_ATTQK_X_BIT           64u
+#define TSR_ATTQK_BASE            0xFFFFFFFFu  // w3 K plane base B
+#define TSR_ATTQK_BASE_LSB        0u
+#define TSR_ATTQK_BASE_W          32u
+#define TSR_ATTQK_BASE_WORD       3u
+#define TSR_ATTQK_BASE_BIT        96u
+#define TSR_ATTQK_E64             0x000001FFu  // w4[8:0] E / 64 (1..512)
+#define TSR_ATTQK_E64_LSB         0u
+#define TSR_ATTQK_E64_W           9u
+#define TSR_ATTQK_E64_WORD        4u
+#define TSR_ATTQK_E64_BIT         128u
+#define TSR_ATTQK_DCODE           0x00000600u  // w4[10:9] D = 64 x 2^dcode
+#define TSR_ATTQK_DCODE_LSB       9u
+#define TSR_ATTQK_DCODE_W         2u
+#define TSR_ATTQK_DCODE_WORD      4u
+#define TSR_ATTQK_DCODE_BIT       137u
+#define TSR_ATTQK_TQ_M1           0x00003800u  // w4[13:11] T_q - 1
+#define TSR_ATTQK_TQ_M1_LSB       11u
+#define TSR_ATTQK_TQ_M1_W         3u
+#define TSR_ATTQK_TQ_M1_WORD      4u
+#define TSR_ATTQK_TQ_M1_BIT       139u
+#define TSR_ATTQK_GS_M1           0x0001C000u  // w4[16:14] GS - 1
+#define TSR_ATTQK_GS_M1_LSB       14u
+#define TSR_ATTQK_GS_M1_W         3u
+#define TSR_ATTQK_GS_M1_WORD      4u
+#define TSR_ATTQK_GS_M1_BIT       142u
+#define TSR_ATTQK_RSTRIDE         0xFFFE0000u  // w4[31:17] lines; 0 = n_groups
+#define TSR_ATTQK_RSTRIDE_LSB     17u
+#define TSR_ATTQK_RSTRIDE_W       15u
+#define TSR_ATTQK_RSTRIDE_WORD    4u
+#define TSR_ATTQK_RSTRIDE_BIT     145u
+#define TSR_ATTQK_U0              0x0000FFFFu  // w5[15:0] first group
+#define TSR_ATTQK_U0_LSB          0u
+#define TSR_ATTQK_U0_W            16u
+#define TSR_ATTQK_U0_WORD         5u
+#define TSR_ATTQK_U0_BIT          160u
+#define TSR_ATTQK_N_GROUPS        0xFFFF0000u  // w5[31:16] 1..4095
+#define TSR_ATTQK_N_GROUPS_LSB    16u
+#define TSR_ATTQK_N_GROUPS_W      16u
+#define TSR_ATTQK_N_GROUPS_WORD   5u
+#define TSR_ATTQK_N_GROUPS_BIT    176u
+#define TSR_ATTQK_C_LO            0x0000FFFFu  // w6[15:0] cell bound relative to 16 u0
+#define TSR_ATTQK_C_LO_LSB        0u
+#define TSR_ATTQK_C_LO_W          16u
+#define TSR_ATTQK_C_LO_WORD       6u
+#define TSR_ATTQK_C_LO_BIT        192u
+#define TSR_ATTQK_C_HI            0xFFFF0000u  // w6[31:16] cell bound relative to 16 u0
+#define TSR_ATTQK_C_HI_LSB        16u
+#define TSR_ATTQK_C_HI_W          16u
+#define TSR_ATTQK_C_HI_WORD       6u
+#define TSR_ATTQK_C_HI_BIT        208u
+#define TSR_ATTQK_MDST            0xFFFFFFFFu  // w7 row-maximum vector line; 0 unless MAXOUT
+#define TSR_ATTQK_MDST_LSB        0u
+#define TSR_ATTQK_MDST_W          32u
+#define TSR_ATTQK_MDST_WORD       7u
+#define TSR_ATTQK_MDST_BIT        224u
 // ATTQK_FMT takes the KVFMT_* values
 // ATTQK_DCODE takes the DCODE_* values
-#define TSR_ATTQK_RSV_W0 0xF0008000u  // must be 0 (ILLEGAL_OP)
+#define TSR_ATTQK_RSV_W0 0xC0008000u  // must be 0 (ILLEGAL_OP)
 #define TSR_ATTQK_RSV_W1 0x00000000u
 #define TSR_ATTQK_RSV_W2 0x00000000u
 #define TSR_ATTQK_RSV_W3 0x00000000u
@@ -2735,89 +2764,94 @@ static inline uint32_t tsr_sop_uses(uint32_t sub) {
 #define TSR_ATTQK_RSV_W7 0x00000000u
 #define TSR_ATTQK_WORDS  0xFFu        // words holding a field (w0 always)
 // ATTPV 0x22 (AT §5.3, owner AT)
-#define TSR_ATTPV_FMT           0x00000F00u  // w0[11:8] KV format
-#define TSR_ATTPV_FMT_LSB       8u
-#define TSR_ATTPV_FMT_W         4u
-#define TSR_ATTPV_FMT_WORD      0u
-#define TSR_ATTPV_FMT_BIT       8u
-#define TSR_ATTPV_LSUM          0x00001000u  // w0[12] also row sums
-#define TSR_ATTPV_LSUM_LSB      12u
-#define TSR_ATTPV_LSUM_W        1u
-#define TSR_ATTPV_LSUM_WORD     0u
-#define TSR_ATTPV_LSUM_BIT      12u
-#define TSR_ATTPV_G_M1          0x003F0000u  // x16[5:0] G - 1
-#define TSR_ATTPV_G_M1_LSB      16u
-#define TSR_ATTPV_G_M1_W        6u
-#define TSR_ATTPV_G_M1_WORD     0u
-#define TSR_ATTPV_G_M1_BIT      16u
-#define TSR_ATTPV_HG0           0x0FC00000u  // x16[11:6] first head of the pass
-#define TSR_ATTPV_HG0_LSB       22u
-#define TSR_ATTPV_HG0_W         6u
-#define TSR_ATTPV_HG0_WORD      0u
-#define TSR_ATTPV_HG0_BIT       22u
-#define TSR_ATTPV_DST           0xFFFFFFFFu  // w1 channel partials
-#define TSR_ATTPV_DST_LSB       0u
-#define TSR_ATTPV_DST_W         32u
-#define TSR_ATTPV_DST_WORD      1u
-#define TSR_ATTPV_DST_BIT       32u
-#define TSR_ATTPV_P             0xFFFFFFFFu  // w2 weight rows, row r at P + r x PSTRIDE
-#define TSR_ATTPV_P_LSB         0u
-#define TSR_ATTPV_P_W           32u
-#define TSR_ATTPV_P_WORD        2u
-#define TSR_ATTPV_P_BIT         64u
-#define TSR_ATTPV_BASE          0xFFFFFFFFu  // w3 V plane base B
-#define TSR_ATTPV_BASE_LSB      0u
-#define TSR_ATTPV_BASE_W        32u
-#define TSR_ATTPV_BASE_WORD     3u
-#define TSR_ATTPV_BASE_BIT      96u
-#define TSR_ATTPV_E64           0x000001FFu  // w4[8:0] E / 64
-#define TSR_ATTPV_E64_LSB       0u
-#define TSR_ATTPV_E64_W         9u
-#define TSR_ATTPV_E64_WORD      4u
-#define TSR_ATTPV_E64_BIT       128u
-#define TSR_ATTPV_DCODE         0x00000600u  // w4[10:9]
-#define TSR_ATTPV_DCODE_LSB     9u
-#define TSR_ATTPV_DCODE_W       2u
-#define TSR_ATTPV_DCODE_WORD    4u
-#define TSR_ATTPV_DCODE_BIT     137u
-#define TSR_ATTPV_TQ_M1         0x00003800u  // w4[13:11] T_q - 1
-#define TSR_ATTPV_TQ_M1_LSB     11u
-#define TSR_ATTPV_TQ_M1_W       3u
-#define TSR_ATTPV_TQ_M1_WORD    4u
-#define TSR_ATTPV_TQ_M1_BIT     139u
-#define TSR_ATTPV_GS_M1         0x0001C000u  // w4[16:14] GS - 1
-#define TSR_ATTPV_GS_M1_LSB     14u
-#define TSR_ATTPV_GS_M1_W       3u
-#define TSR_ATTPV_GS_M1_WORD    4u
-#define TSR_ATTPV_GS_M1_BIT     142u
-#define TSR_ATTPV_PSTRIDE       0xFFFE0000u  // w4[31:17] lines; 0 = n_groups
-#define TSR_ATTPV_PSTRIDE_LSB   17u
-#define TSR_ATTPV_PSTRIDE_W     15u
-#define TSR_ATTPV_PSTRIDE_WORD  4u
-#define TSR_ATTPV_PSTRIDE_BIT   145u
-#define TSR_ATTPV_U0            0x0000FFFFu  // w5[15:0] first group
-#define TSR_ATTPV_U0_LSB        0u
-#define TSR_ATTPV_U0_W          16u
-#define TSR_ATTPV_U0_WORD       5u
-#define TSR_ATTPV_U0_BIT        160u
-#define TSR_ATTPV_N_GROUPS      0xFFFF0000u  // w5[31:16]
-#define TSR_ATTPV_N_GROUPS_LSB  16u
-#define TSR_ATTPV_N_GROUPS_W    16u
-#define TSR_ATTPV_N_GROUPS_WORD 5u
-#define TSR_ATTPV_N_GROUPS_BIT  176u
-#define TSR_ATTPV_LG            0x0000FFFFu  // w6[15:0] local groups per channel
-#define TSR_ATTPV_LG_LSB        0u
-#define TSR_ATTPV_LG_W          16u
-#define TSR_ATTPV_LG_WORD       6u
-#define TSR_ATTPV_LG_BIT        192u
-#define TSR_ATTPV_CSTRIDE       0xFFFFFFFFu  // w7 lines; 0 = R x D / 16
-#define TSR_ATTPV_CSTRIDE_LSB   0u
-#define TSR_ATTPV_CSTRIDE_W     32u
-#define TSR_ATTPV_CSTRIDE_WORD  7u
-#define TSR_ATTPV_CSTRIDE_BIT   224u
+#define TSR_ATTPV_FMT             0x00000F00u  // w0[11:8] KV format
+#define TSR_ATTPV_FMT_LSB         8u
+#define TSR_ATTPV_FMT_W           4u
+#define TSR_ATTPV_FMT_WORD        0u
+#define TSR_ATTPV_FMT_BIT         8u
+#define TSR_ATTPV_LSUM            0x00001000u  // w0[12] also row sums
+#define TSR_ATTPV_LSUM_LSB        12u
+#define TSR_ATTPV_LSUM_W          1u
+#define TSR_ATTPV_LSUM_WORD       0u
+#define TSR_ATTPV_LSUM_BIT        12u
+#define TSR_ATTPV_G_M1            0x003F0000u  // x16[5:0] G - 1
+#define TSR_ATTPV_G_M1_LSB        16u
+#define TSR_ATTPV_G_M1_W          6u
+#define TSR_ATTPV_G_M1_WORD       0u
+#define TSR_ATTPV_G_M1_BIT        16u
+#define TSR_ATTPV_HG0             0x0FC00000u  // x16[11:6] first head of the pass
+#define TSR_ATTPV_HG0_LSB         22u
+#define TSR_ATTPV_HG0_W           6u
+#define TSR_ATTPV_HG0_WORD        0u
+#define TSR_ATTPV_HG0_BIT         22u
+#define TSR_ATTPV_LOCAL_SLOT      0x30000000u  // w0[29:28] 0 = SPM, 1..3 = local FAST attention slot
+#define TSR_ATTPV_LOCAL_SLOT_LSB  28u
+#define TSR_ATTPV_LOCAL_SLOT_W    2u
+#define TSR_ATTPV_LOCAL_SLOT_WORD 0u
+#define TSR_ATTPV_LOCAL_SLOT_BIT  28u
+#define TSR_ATTPV_DST             0xFFFFFFFFu  // w1 channel partials
+#define TSR_ATTPV_DST_LSB         0u
+#define TSR_ATTPV_DST_W           32u
+#define TSR_ATTPV_DST_WORD        1u
+#define TSR_ATTPV_DST_BIT         32u
+#define TSR_ATTPV_P               0xFFFFFFFFu  // w2 weight rows, row r at P + r x PSTRIDE
+#define TSR_ATTPV_P_LSB           0u
+#define TSR_ATTPV_P_W             32u
+#define TSR_ATTPV_P_WORD          2u
+#define TSR_ATTPV_P_BIT           64u
+#define TSR_ATTPV_BASE            0xFFFFFFFFu  // w3 V plane base B
+#define TSR_ATTPV_BASE_LSB        0u
+#define TSR_ATTPV_BASE_W          32u
+#define TSR_ATTPV_BASE_WORD       3u
+#define TSR_ATTPV_BASE_BIT        96u
+#define TSR_ATTPV_E64             0x000001FFu  // w4[8:0] E / 64
+#define TSR_ATTPV_E64_LSB         0u
+#define TSR_ATTPV_E64_W           9u
+#define TSR_ATTPV_E64_WORD        4u
+#define TSR_ATTPV_E64_BIT         128u
+#define TSR_ATTPV_DCODE           0x00000600u  // w4[10:9]
+#define TSR_ATTPV_DCODE_LSB       9u
+#define TSR_ATTPV_DCODE_W         2u
+#define TSR_ATTPV_DCODE_WORD      4u
+#define TSR_ATTPV_DCODE_BIT       137u
+#define TSR_ATTPV_TQ_M1           0x00003800u  // w4[13:11] T_q - 1
+#define TSR_ATTPV_TQ_M1_LSB       11u
+#define TSR_ATTPV_TQ_M1_W         3u
+#define TSR_ATTPV_TQ_M1_WORD      4u
+#define TSR_ATTPV_TQ_M1_BIT       139u
+#define TSR_ATTPV_GS_M1           0x0001C000u  // w4[16:14] GS - 1
+#define TSR_ATTPV_GS_M1_LSB       14u
+#define TSR_ATTPV_GS_M1_W         3u
+#define TSR_ATTPV_GS_M1_WORD      4u
+#define TSR_ATTPV_GS_M1_BIT       142u
+#define TSR_ATTPV_PSTRIDE         0xFFFE0000u  // w4[31:17] lines; 0 = n_groups
+#define TSR_ATTPV_PSTRIDE_LSB     17u
+#define TSR_ATTPV_PSTRIDE_W       15u
+#define TSR_ATTPV_PSTRIDE_WORD    4u
+#define TSR_ATTPV_PSTRIDE_BIT     145u
+#define TSR_ATTPV_U0              0x0000FFFFu  // w5[15:0] first group
+#define TSR_ATTPV_U0_LSB          0u
+#define TSR_ATTPV_U0_W            16u
+#define TSR_ATTPV_U0_WORD         5u
+#define TSR_ATTPV_U0_BIT          160u
+#define TSR_ATTPV_N_GROUPS        0xFFFF0000u  // w5[31:16]
+#define TSR_ATTPV_N_GROUPS_LSB    16u
+#define TSR_ATTPV_N_GROUPS_W      16u
+#define TSR_ATTPV_N_GROUPS_WORD   5u
+#define TSR_ATTPV_N_GROUPS_BIT    176u
+#define TSR_ATTPV_LG              0x0000FFFFu  // w6[15:0] local groups per channel
+#define TSR_ATTPV_LG_LSB          0u
+#define TSR_ATTPV_LG_W            16u
+#define TSR_ATTPV_LG_WORD         6u
+#define TSR_ATTPV_LG_BIT          192u
+#define TSR_ATTPV_CSTRIDE         0xFFFFFFFFu  // w7 lines; 0 = R x D / 16
+#define TSR_ATTPV_CSTRIDE_LSB     0u
+#define TSR_ATTPV_CSTRIDE_W       32u
+#define TSR_ATTPV_CSTRIDE_WORD    7u
+#define TSR_ATTPV_CSTRIDE_BIT     224u
 // ATTPV_FMT takes the KVFMT_* values
 // ATTPV_DCODE takes the DCODE_* values
-#define TSR_ATTPV_RSV_W0 0xF000E000u  // must be 0 (ILLEGAL_OP)
+#define TSR_ATTPV_RSV_W0 0xC000E000u  // must be 0 (ILLEGAL_OP)
 #define TSR_ATTPV_RSV_W1 0x00000000u
 #define TSR_ATTPV_RSV_W2 0x00000000u
 #define TSR_ATTPV_RSV_W3 0x00000000u
@@ -2827,50 +2861,60 @@ static inline uint32_t tsr_sop_uses(uint32_t sub) {
 #define TSR_ATTPV_RSV_W7 0x00000000u
 #define TSR_ATTPV_WORDS  0xFFu        // words holding a field (w0 always)
 // ASMAX 0x34 (AT §5.4, VU §5.11, owner AT)
-#define TSR_ASMAX_DST          0xFFFFFFFFu  // w1
-#define TSR_ASMAX_DST_LSB      0u
-#define TSR_ASMAX_DST_W        32u
-#define TSR_ASMAX_DST_WORD     1u
-#define TSR_ASMAX_DST_BIT      32u
-#define TSR_ASMAX_SRC          0xFFFFFFFFu  // w2 may equal DST
-#define TSR_ASMAX_SRC_LSB      0u
-#define TSR_ASMAX_SRC_W        32u
-#define TSR_ASMAX_SRC_WORD     2u
-#define TSR_ASMAX_SRC_BIT      64u
-#define TSR_ASMAX_MVEC         0xFFFFFFFFu  // w3 row maxima, word r
-#define TSR_ASMAX_MVEC_LSB     0u
-#define TSR_ASMAX_MVEC_W       32u
-#define TSR_ASMAX_MVEC_WORD    3u
-#define TSR_ASMAX_MVEC_BIT     96u
-#define TSR_ASMAX_N_LINES      0x0000FFFFu  // w4[15:0] 1..4095
-#define TSR_ASMAX_N_LINES_LSB  0u
-#define TSR_ASMAX_N_LINES_W    16u
-#define TSR_ASMAX_N_LINES_WORD 4u
-#define TSR_ASMAX_N_LINES_BIT  128u
-#define TSR_ASMAX_STRIDE       0xFFFF0000u  // w4[31:16] 0 = n_lines
-#define TSR_ASMAX_STRIDE_LSB   16u
-#define TSR_ASMAX_STRIDE_W     16u
-#define TSR_ASMAX_STRIDE_WORD  4u
-#define TSR_ASMAX_STRIDE_BIT   144u
-#define TSR_ASMAX_R            0xFFFFFFFFu  // w5 1..1024
-#define TSR_ASMAX_R_LSB        0u
-#define TSR_ASMAX_R_W          32u
-#define TSR_ASMAX_R_WORD       5u
-#define TSR_ASMAX_R_BIT        160u
-#define TSR_ASMAX_SCALE        0xFFFFFFFFu  // w6 f32, finite, normal, > 0
-#define TSR_ASMAX_SCALE_LSB    0u
-#define TSR_ASMAX_SCALE_W      32u
-#define TSR_ASMAX_SCALE_WORD   6u
-#define TSR_ASMAX_SCALE_BIT    192u
-#define TSR_ASMAX_RSV_W0       0xFFFFFF00u  // must be 0 (ILLEGAL_OP)
-#define TSR_ASMAX_RSV_W1       0x00000000u
-#define TSR_ASMAX_RSV_W2       0x00000000u
-#define TSR_ASMAX_RSV_W3       0x00000000u
-#define TSR_ASMAX_RSV_W4       0x00000000u
-#define TSR_ASMAX_RSV_W5       0x00000000u
-#define TSR_ASMAX_RSV_W6       0x00000000u
-#define TSR_ASMAX_RSV_W7       0xFFFFFFFFu
-#define TSR_ASMAX_WORDS        0x7Fu        // words holding a field (w0 always)
+#define TSR_ASMAX_DST             0xFFFFFFFFu  // w1
+#define TSR_ASMAX_DST_LSB         0u
+#define TSR_ASMAX_DST_W           32u
+#define TSR_ASMAX_DST_WORD        1u
+#define TSR_ASMAX_DST_BIT         32u
+#define TSR_ASMAX_SRC             0xFFFFFFFFu  // w2 may equal DST
+#define TSR_ASMAX_SRC_LSB         0u
+#define TSR_ASMAX_SRC_W           32u
+#define TSR_ASMAX_SRC_WORD        2u
+#define TSR_ASMAX_SRC_BIT         64u
+#define TSR_ASMAX_MVEC            0xFFFFFFFFu  // w3 row maxima, word r
+#define TSR_ASMAX_MVEC_LSB        0u
+#define TSR_ASMAX_MVEC_W          32u
+#define TSR_ASMAX_MVEC_WORD       3u
+#define TSR_ASMAX_MVEC_BIT        96u
+#define TSR_ASMAX_N_LINES         0x0000FFFFu  // w4[15:0] 1..4095
+#define TSR_ASMAX_N_LINES_LSB     0u
+#define TSR_ASMAX_N_LINES_W       16u
+#define TSR_ASMAX_N_LINES_WORD    4u
+#define TSR_ASMAX_N_LINES_BIT     128u
+#define TSR_ASMAX_STRIDE          0xFFFF0000u  // w4[31:16] 0 = n_lines
+#define TSR_ASMAX_STRIDE_LSB      16u
+#define TSR_ASMAX_STRIDE_W        16u
+#define TSR_ASMAX_STRIDE_WORD     4u
+#define TSR_ASMAX_STRIDE_BIT      144u
+#define TSR_ASMAX_R               0xFFFFFFFFu  // w5 1..1024
+#define TSR_ASMAX_R_LSB           0u
+#define TSR_ASMAX_R_W             32u
+#define TSR_ASMAX_R_WORD          5u
+#define TSR_ASMAX_R_BIT           160u
+#define TSR_ASMAX_SCALE           0xFFFFFFFFu  // w6 f32, finite, normal, > 0
+#define TSR_ASMAX_SCALE_LSB       0u
+#define TSR_ASMAX_SCALE_W         32u
+#define TSR_ASMAX_SCALE_WORD      6u
+#define TSR_ASMAX_SCALE_BIT       192u
+#define TSR_ASMAX_LOCAL_SLOT      0x00000003u  // w7[1:0] 0 = SPM, 1..3 = local FAST attention slot
+#define TSR_ASMAX_LOCAL_SLOT_LSB  0u
+#define TSR_ASMAX_LOCAL_SLOT_W    2u
+#define TSR_ASMAX_LOCAL_SLOT_WORD 7u
+#define TSR_ASMAX_LOCAL_SLOT_BIT  224u
+#define TSR_ASMAX_LOCAL_U0        0x0003FFFCu  // w7[17:2] first group when LOCAL_SLOT is set
+#define TSR_ASMAX_LOCAL_U0_LSB    2u
+#define TSR_ASMAX_LOCAL_U0_W      16u
+#define TSR_ASMAX_LOCAL_U0_WORD   7u
+#define TSR_ASMAX_LOCAL_U0_BIT    226u
+#define TSR_ASMAX_RSV_W0          0xFFFFFF00u  // must be 0 (ILLEGAL_OP)
+#define TSR_ASMAX_RSV_W1          0x00000000u
+#define TSR_ASMAX_RSV_W2          0x00000000u
+#define TSR_ASMAX_RSV_W3          0x00000000u
+#define TSR_ASMAX_RSV_W4          0x00000000u
+#define TSR_ASMAX_RSV_W5          0x00000000u
+#define TSR_ASMAX_RSV_W6          0x00000000u
+#define TSR_ASMAX_RSV_W7          0xFFFC0000u
+#define TSR_ASMAX_WORDS           0xFFu        // words holding a field (w0 always)
 // AMASK 0x35 (AT §5.5, VU §5.11, owner AT)
 #define TSR_AMASK_DST          0xFFFFFFFFu  // w1
 #define TSR_AMASK_DST_LSB      0u

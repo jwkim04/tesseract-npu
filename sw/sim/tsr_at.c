@@ -35,21 +35,22 @@
 //               checked on every channel (CC §8.2) and listed with TSR_EXT_CH_ALL.
 //
 // Extents (tsr_sim_int.h §1): the range-check extents in field order. KVST lists its plane as one
-// DRAM write (its read-modify-write of partial meta beats only re-writes bytes it read, so the
-// write extent already covers every conflict); a merging AMERGE lists Orun and the running state
+// DRAM write (masked partial meta beats preserve all other bytes, so the write extent covers
+// every conflict); a merging AMERGE lists Orun and the running state
 // as WRITE and READ (INIT only writes them). Rows of other passes inside an ATTQK / ATTPV extent
 // are left unchanged by the op (tsr_ref_at.c) but lie inside the listed extent.
 //
 // Execution: at completion (SW §4.1), on the simulator's SPM (f32 words / QA bytes) and the KV
 // planes in channel DRAM (plane[c] = channel c byte 64·B). Capture (SW §5.5): ATTQK / ATTPV report
-// the beats each channel streams (whole local groups); KVST reports the partial meta beats it
-// reads (read-modify-write) and every beat it writes.
+// the beats each channel streams (whole local groups). KVST captures initial partial meta beats
+// so whole-beat replay expectations include preserved bytes; these are capture dependencies,
+// not core memory reads. It also reports every beat it writes.
 //
 // Cycle model (unit busy time, deterministic; AT §13.4 and VU §7.9 *estimates*, not part of the
 // bit-exact contract). beats_c = the groups of channel c times GB = 17·E/64 (one beat per cycle
 // per channel), lines = pass rows · n_groups (the gather writes / the p broadcast reads one SPM
 // line per cycle, AT §8.1–§8.2):
-//   KVST    40 + the beats written (meta + quant, all channels) + the meta beats read (RMW)
+//   KVST    40 + the beats written (meta + quant, all channels); controller ECC latency unmodeled
 //   ATTQK   350 + max(max_c beats_c, lines)               (fill ≈ 300–400, AT §9.1–§9.2)
 //   ATTPV   350 + 68 + max(max_c beats_c, lines)          (+ the 64-beat segment delay, AT §13.4)
 //   ASMAX   R·n_lines + 64                                (VU §7.9)
@@ -59,8 +60,8 @@
 //   ANORM   4·ceil(R/16) + 64 + R·D/16
 // PERF (EX §6, AT §10): MVM_CYCLES, ATT_QK_CYCLES, ATT_PV_CYCLES, DMA_CYCLES and VU_CYCLES are the
 // queue model's busy time. Counted here at completion (events, gated by ACTIVE): CH_RD_BEATS[c]
-// += beats_c (ATTQK, ATTPV) or the RMW reads of channel c (KVST); KVST_RMW += the meta beats
-// read-modify-written; VU_LINES += the lines the vector ops write (ASMAX R·n_lines, AMASK
+// += beats_c (ATTQK, ATTPV). KVST performs no core reads and leaves KVST_RMW at zero;
+// VU_LINES += the lines the vector ops write (ASMAX R·n_lines, AMASK
 // R·n_lines + ceil(R/16), AMERGE R·D/16 + 2·ceil(R/16), ANORM R·D/16); ATT_PATH_STALL (a time
 // counter) += max(0, lines - max_c beats_c), the gather / broadcast-bound share of the op, added at
 // completion.
@@ -69,6 +70,7 @@
 #include "tsr_sim_int.h"
 #include "tsr_ref.h"
 #include "tsr_ref_at.h"
+#include "tsr_local_tile.h"
 
 #include <string.h>
 
@@ -180,7 +182,8 @@ static uint32_t chk_kvst(tsr_sim * sim, const uint32_t w[8], tsr_extents * ext, 
 }
 
 // Capture of a KVST's beats (AT §4.3 / §4.4, the beat walk of tsr_kvst_count): phase 0 reports the
-// partial meta beats it reads before writing (RMW), phase 1 every beat it wrote.
+// initial partial meta beats needed for whole-beat replay checks, phase 1 every beat it wrote.
+// Phase 0 is a capture dependency only; it does not count as a core memory read.
 static void kvst_capture(tsr_sim * sim, const kvst_dec * k, int phase) {
     const uint32_t C = tsr_sim_num_ch(sim), nb = k->E / 32u, slices = k->E64, GB = tsr_kv_group_beats(k->E);
     const uint32_t end = k->c0 + k->n_rows;
@@ -191,7 +194,7 @@ static void kvst_capture(tsr_sim * sim, const kvst_dec * k, int phase) {
             for (uint32_t s = 0; s < slices; ++s) {
                 const uint64_t chunk = (uint64_t)k->B + ((uint64_t)s * k->LG + l) * 17u;
                 if (phase == 0) {
-                    if (r_hi - r_lo < 16u) tsr_sim_cap_read(sim, ch, chunk, 1u);
+                    if (r_hi - r_lo < 16u) tsr_sim_cap_preserve(sim, ch, chunk, 1u);
                 } else {
                     tsr_sim_cap_write(sim, ch, chunk, 1u);
                     tsr_sim_cap_write(sim, ch, chunk + 1u + r_lo, r_hi - r_lo);
@@ -202,7 +205,7 @@ static void kvst_capture(tsr_sim * sim, const kvst_dec * k, int phase) {
             for (uint64_t kap = b_lo >> 5; kap <= (b_hi - 1u) >> 5; ++kap) {
                 const uint64_t base = (uint64_t)k->B + (uint64_t)l * GB + 17u * kap;
                 if (phase == 0) {
-                    if (32u * kap < b_lo || 32u * kap + 32u > b_hi) tsr_sim_cap_read(sim, ch, base, 1u);
+                    if (32u * kap < b_lo || 32u * kap + 32u > b_hi) tsr_sim_cap_preserve(sim, ch, base, 1u);
                 } else {
                     const uint64_t o_lo = (b_lo > 32u * kap ? b_lo : 32u * kap) - 32u * kap;
                     const uint64_t o_hi = (b_hi < 32u * kap + 32u ? b_hi : 32u * kap + 32u) - 32u * kap;
@@ -223,15 +226,8 @@ static void ex_kvst(tsr_sim * sim, const uint32_t w[8]) {
     uint8_t * plane[TSR_NUM_CH_MAX];
     plane_ptrs(sim, k.B, plane);
     kvst_capture(sim, &k, 0);
-    tsr_kvst_stats st;
-    tsr_ref_kvst(k.kv, &g, plane, k.c0, k.n_rows, spm_bytes(sim, k.src), k.ss, &st);
+    tsr_ref_kvst(k.kv, &g, plane, k.c0, k.n_rows, spm_bytes(sim, k.src), k.ss, NULL);
     kvst_capture(sim, &k, 1);
-    uint64_t rmw = 0;
-    for (uint32_t c = 0; c < C; ++c) {
-        rmw += st.meta_rmw[c];
-        if (st.meta_rmw[c]) tsr_sim_perf_add(sim, TSR_PERF_CH_RD_BEATS(c), st.meta_rmw[c]);
-    }
-    if (rmw) tsr_sim_perf_add(sim, TSR_PERF_KVST_RMW(C), rmw);
 }
 
 static uint64_t cyc_kvst(const tsr_sim * sim, const uint32_t w[8]) {
@@ -242,7 +238,7 @@ static uint64_t cyc_kvst(const tsr_sim * sim, const uint32_t w[8]) {
     tsr_kvst_stats st;
     tsr_kvst_count(k.kv, &g, k.c0, k.n_rows, &st);
     uint64_t n = AT_KVST_LAT;
-    for (uint32_t c = 0; c < C; ++c) n += (uint64_t)st.meta_beats[c] + st.quant_beats[c] + st.meta_rmw[c];
+    for (uint32_t c = 0; c < C; ++c) n += (uint64_t)st.meta_beats[c] + st.quant_beats[c];
     return n;
 }
 
@@ -259,7 +255,7 @@ typedef struct att_dec {
     tsr_att_shape sh;                 // E, D, G, hg0, GS, T_q
     uint32_t E64, rs;                 // rs: ATTQK rstride / ATTPV pstride field
     uint32_t dst, x, B, u0, n, w6, w7;
-    uint32_t n_head, R, pass_rows, max_row;
+    uint32_t n_head, R, pass_rows, max_row, slot;
 } att_dec;
 
 // The two ops share w0's x16, w4's shape, w5's group range; field constants are ATTQK's and ATTPV's
@@ -282,12 +278,50 @@ static void att_decode(const uint32_t w[8], att_dec * a) {
     a->n       = TSR_INSN_GET(w, TSR_ATTQK_N_GROUPS);
     a->w6      = w[6];
     a->w7      = w[7];
+    a->slot    = TSR_INSN_GET(w, TSR_ATTQK_LOCAL_SLOT);
     const uint32_t nseg = a->sh.E / a->sh.D;                 // 0 when E < D (OPERAND before use)
     a->n_head    = a->sh.G * nseg;
     a->R         = a->sh.T_q * a->n_head;
     a->pass_rows = nseg * a->sh.GS * a->sh.T_q;
     // r(T_q - 1, E/D - 1, GS - 1): the last pass row (only meaningful when nseg >= 1).
     a->max_row = (a->sh.T_q - 1u) * a->n_head + (nseg ? nseg - 1u : 0u) * a->sh.G + a->sh.hg0 + a->sh.GS - 1u;
+}
+
+// Logical extents describe the same owner banks in a compact race-checker
+// address space. Each slot has its own lifetime and never aliases host SPM.
+static void ext_local(tsr_extents * ext, uint8_t write, uint32_t slot, uint64_t lines) {
+    const uint64_t lo = (uint64_t)(slot - 1u) * TSR_LOCAL_AT_SLOT_LINES;
+    tsr_ext_add(ext, TSR_EXT_ATT_LOCAL, write, 0, lo, lo + lines);
+}
+
+static int local_ok(const tsr_sim * sim, uint32_t rows, uint32_t groups, uint32_t stride) {
+    return tsr_local_at_fits(tsr_sim_num_ch(sim), rows, groups) && stride == tsr_local_at_stride(groups);
+}
+
+static float * local_line(tsr_sim * sim, uint32_t slot, uint32_t u0, uint32_t group, uint32_t row, uint32_t stride) {
+    const uint32_t owner = (u0 + group) & (TSR_LOCAL_AT_OWNERS - 1u);
+    const uint32_t line = (slot - 1u) * TSR_LOCAL_AT_SLOT_LINES + owner * TSR_LOCAL_AT_OWNER_LINES
+                          + row * (stride >> 2u) + (group >> 2u);
+    return tsr_sim_att_local(sim) + (size_t)line * 16u;
+}
+
+// The reference ATT kernels use contiguous logical score rows. Pack or unpack
+// only the active pass rows at their boundary, leaving the model's persistent
+// storage in distinct owner banks.
+static void local_pass_copy(tsr_sim * sim, const att_dec * a, float * logical, int to_bank) {
+    for (uint32_t q = 0; q < a->sh.T_q; ++q) {
+        for (uint32_t g = 0; g < a->sh.E / a->sh.D; ++g) {
+            for (uint32_t i = 0; i < a->sh.GS; ++i) {
+                const uint32_t row = tsr_att_row(&a->sh, q, g, i);
+                for (uint32_t group = 0; group < a->n; ++group) {
+                    float * bank = local_line(sim, a->slot, a->u0, group, row, a->rs);
+                    float * line = logical + ((size_t)row * a->rs + group) * 16u;
+                    if (to_bank) memcpy(bank, line, TSR_LINE_BYTES);
+                    else memcpy(line, bank, TSR_LINE_BYTES);
+                }
+            }
+        }
+    }
 }
 
 // Checks shared up to the first op-specific OPERAND condition (AT §5.8: K_RANGE, T_RANGE, then E,
@@ -349,12 +383,15 @@ static uint32_t chk_attqk(tsr_sim * sim, const uint32_t w[8], tsr_extents * ext,
     att_decode(w, &a);
     const int maxout = (a.flags & TSR_ATT_MAXOUT) != 0;
     if (!maxout && a.w7 != 0u) return TSR_ERR_ILLEGAL_OP;
+    if (a.slot && (!(tsr_sim_config(sim)->caps & TSR_CAPS_ATT_LOCAL) || !maxout))
+        return TSR_ERR_ILLEGAL_OP;
     uint32_t rc = att_chk_common(sim, &a, info);
     if (rc) return rc;
     const uint32_t c_lo = TSR_INSN_GET(w, TSR_ATTQK_C_LO), c_hi = TSR_INSN_GET(w, TSR_ATTQK_C_HI);
     if (c_lo > c_hi || c_hi > 16u * a.n) { *info = c_hi; return TSR_ERR_OPERAND; }
     if (a.pass_rows > TSR_ATT_MAX_PASS_ROWS) { *info = a.pass_rows; return TSR_ERR_OPERAND; }
     if (a.rs != 0u && a.rs < a.n) { *info = a.rs; return TSR_ERR_OPERAND; }
+    if (a.slot && !local_ok(sim, a.R, a.n, a.rs)) { *info = a.rs; return TSR_ERR_OPERAND; }
     const uint64_t rsp = a.rs ? a.rs : a.n;
     const uint64_t ed = (uint64_t)a.max_row * rsp + a.n;
     const uint64_t ex = (uint64_t)a.sh.T_q * tsr_qa_lines(TSR_QA_A32, a.sh.G * a.sh.E);
@@ -365,7 +402,8 @@ static uint32_t chk_attqk(tsr_sim * sim, const uint32_t w[8], tsr_extents * ext,
     if (spm_bad(sim, a.x, ex, info)) return TSR_ERR_SPM_RANGE;
     if (maxout && spm_bad(sim, a.w7, em, info)) return TSR_ERR_SPM_RANGE;
     if (dram_bad(sim, a.B, ep, info)) return TSR_ERR_DRAM_RANGE;
-    ext_spm(ext, TSR_EXT_WRITE, a.dst, ed);
+    if (a.slot) ext_local(ext, TSR_EXT_WRITE, a.slot, ed);
+    else ext_spm(ext, TSR_EXT_WRITE, a.dst, ed);
     ext_spm(ext, TSR_EXT_READ, a.x, ex);
     ext_dram(ext, TSR_EXT_READ, a.B, ep);
     if (maxout) ext_spm(ext, TSR_EXT_WRITE, a.w7, em);
@@ -379,9 +417,11 @@ static void ex_attqk(tsr_sim * sim, const uint32_t w[8]) {
     plane_ptrs(sim, a.B, plane);
     att_stream(sim, &a, 0, 0);
     const int maxout = (a.flags & TSR_ATT_MAXOUT) != 0;
+    float * score = a.slot ? (float *)tsr_sim_scratch(sim, (size_t)a.R * a.rs * TSR_LINE_BYTES) : spm_f32(sim, a.dst);
     tsr_ref_attqk(&a.sh, tsr_sim_num_ch(sim), (const uint8_t * const *)plane, a.u0, a.n,
                   TSR_INSN_GET(w, TSR_ATTQK_C_LO), TSR_INSN_GET(w, TSR_ATTQK_C_HI), a.flags,
-                  spm_bytes(sim, a.x), spm_f32(sim, a.dst), a.rs, maxout ? spm_f32(sim, a.w7) : NULL);
+                  spm_bytes(sim, a.x), score, a.rs, maxout ? spm_f32(sim, a.w7) : NULL);
+    if (a.slot) local_pass_copy(sim, &a, score, 1);
 }
 
 static uint64_t cyc_attqk(const tsr_sim * sim, const uint32_t w[8]) {
@@ -397,6 +437,7 @@ static uint32_t chk_attpv(tsr_sim * sim, const uint32_t w[8], tsr_extents * ext,
     if (rsv_bad(w, k_attpv_rsv)) return TSR_ERR_ILLEGAL_OP;
     att_dec a;
     att_decode(w, &a);
+    if (a.slot && !(tsr_sim_config(sim)->caps & TSR_CAPS_ATT_LOCAL)) return TSR_ERR_ILLEGAL_OP;
     uint32_t rc = att_chk_common(sim, &a, info);
     if (rc) return rc;
     const uint32_t C = tsr_sim_num_ch(sim), LG = TSR_INSN_GET(w, TSR_ATTPV_LG);
@@ -405,6 +446,7 @@ static uint32_t chk_attpv(tsr_sim * sim, const uint32_t w[8], tsr_extents * ext,
     if (l_max >= LG) { *info = a.u0 + a.n - 1u; return TSR_ERR_OPERAND; }
     if ((uint64_t)(a.sh.E / a.sh.D) * 16u * ((a.n + C - 1u) / C) > pcap_of(sim)) { *info = a.n; return TSR_ERR_OPERAND; }
     if (a.rs != 0u && a.rs < a.n) { *info = a.rs; return TSR_ERR_OPERAND; }
+    if (a.slot && !local_ok(sim, a.R, a.n, a.rs)) { *info = a.rs; return TSR_ERR_OPERAND; }
     const int lsum = (a.flags & TSR_ATT_LSUM) != 0;
     const uint64_t rl = (uint64_t)a.R * a.sh.D / 16u, cs = a.w7 ? a.w7 : rl;
     uint64_t ed = (uint64_t)(C - 1u) * cs + rl;
@@ -415,7 +457,8 @@ static uint32_t chk_attpv(tsr_sim * sim, const uint32_t w[8], tsr_extents * ext,
     if (spm_bad(sim, a.x, ep, info)) return TSR_ERR_SPM_RANGE;
     if (dram_bad(sim, a.B, ev, info)) return TSR_ERR_DRAM_RANGE;
     ext_spm(ext, TSR_EXT_WRITE, a.dst, ed);
-    ext_spm(ext, TSR_EXT_READ, a.x, ep);
+    if (a.slot) ext_local(ext, TSR_EXT_READ, a.slot, ep);
+    else ext_spm(ext, TSR_EXT_READ, a.x, ep);
     ext_dram(ext, TSR_EXT_READ, a.B, ev);
     return TSR_ERR_NONE;
 }
@@ -427,8 +470,10 @@ static void ex_attpv(tsr_sim * sim, const uint32_t w[8]) {
     uint8_t * plane[TSR_NUM_CH_MAX];
     plane_ptrs(sim, a.B, plane);
     att_stream(sim, &a, 1, LG);
+    float * probs = a.slot ? (float *)tsr_sim_scratch(sim, (size_t)a.R * a.rs * TSR_LINE_BYTES) : spm_f32(sim, a.x);
+    if (a.slot) local_pass_copy(sim, &a, probs, 0);
     tsr_ref_attpv(&a.sh, tsr_sim_num_ch(sim), LG, (const uint8_t * const *)plane, a.u0, a.n, a.flags,
-                  spm_f32(sim, a.x), a.rs, spm_f32(sim, a.dst), a.w7);
+                  probs, a.rs, spm_f32(sim, a.dst), a.w7);
 }
 
 static uint64_t cyc_attpv(const tsr_sim * sim, const uint32_t w[8]) {
@@ -445,24 +490,45 @@ static const uint32_t k_asmax_rsv[8] = { TSR_ASMAX_RSV_W0, TSR_ASMAX_RSV_W1, TSR
 
 static uint32_t chk_asmax(tsr_sim * sim, const uint32_t w[8], tsr_extents * ext, uint32_t * info) {
     if (rsv_bad(w, k_asmax_rsv)) return TSR_ERR_ILLEGAL_OP;
+    const uint32_t slot = TSR_INSN_GET(w, TSR_ASMAX_LOCAL_SLOT);
+    if ((slot && !(tsr_sim_config(sim)->caps & TSR_CAPS_ATT_LOCAL)) || (!slot && w[7]))
+        return TSR_ERR_ILLEGAL_OP;
     const uint32_t nl = TSR_INSN_GET(w, TSR_ASMAX_N_LINES), st = TSR_INSN_GET(w, TSR_ASMAX_STRIDE);
     const uint32_t R = TSR_INSN_GET(w, TSR_ASMAX_R), sc = TSR_INSN_GET(w, TSR_ASMAX_SCALE);
     if (nl == 0u || nl > TSR_ATT_MAX_LINES) { *info = nl; return TSR_ERR_OPERAND; }
     if (R == 0u || R > TSR_ATT_MAX_R) { *info = R; return TSR_ERR_OPERAND; }
     if (scale_bad(sc)) { *info = sc; return TSR_ERR_OPERAND; }
+    if (slot && (w[1] != w[2] || !local_ok(sim, R, nl, st))) { *info = st; return TSR_ERR_OPERAND; }
     const uint64_t e = (uint64_t)(R - 1u) * (st ? st : nl) + nl, em = ceil16(R);
     if (spm_bad(sim, w[1], e, info) || spm_bad(sim, w[2], e, info) || spm_bad(sim, w[3], em, info))
         return TSR_ERR_SPM_RANGE;
-    ext_spm(ext, TSR_EXT_WRITE, w[1], e);
-    ext_spm(ext, TSR_EXT_READ, w[2], e);
+    if (slot) {
+        ext_local(ext, TSR_EXT_WRITE, slot, e);
+        ext_local(ext, TSR_EXT_READ, slot, e);
+    } else {
+        ext_spm(ext, TSR_EXT_WRITE, w[1], e);
+        ext_spm(ext, TSR_EXT_READ, w[2], e);
+    }
     ext_spm(ext, TSR_EXT_READ, w[3], em);
     return TSR_ERR_NONE;
 }
 
 static void ex_asmax(tsr_sim * sim, const uint32_t w[8]) {
     const uint32_t nl = TSR_INSN_GET(w, TSR_ASMAX_N_LINES), R = TSR_INSN_GET(w, TSR_ASMAX_R);
-    tsr_ref_asmax(spm_f32(sim, w[1]), spm_f32(sim, w[2]), spm_f32(sim, w[3]), nl,
-                  TSR_INSN_GET(w, TSR_ASMAX_STRIDE), R, tsr_bits_f32(TSR_INSN_GET(w, TSR_ASMAX_SCALE)));
+    const uint32_t slot = TSR_INSN_GET(w, TSR_ASMAX_LOCAL_SLOT), stride = TSR_INSN_GET(w, TSR_ASMAX_STRIDE);
+    const float scale = tsr_bits_f32(TSR_INSN_GET(w, TSR_ASMAX_SCALE));
+    const float * mvec = spm_f32(sim, w[3]);
+    if (slot) {
+        const uint32_t u0 = TSR_INSN_GET(w, TSR_ASMAX_LOCAL_U0);
+        for (uint32_t r = 0; r < R; ++r) {
+            for (uint32_t group = 0; group < nl; ++group) {
+                float * line = local_line(sim, slot, u0, group, r, stride);
+                tsr_ref_asmax(line, line, mvec + r, 1u, 0u, 1u, scale);
+            }
+        }
+    } else {
+        tsr_ref_asmax(spm_f32(sim, w[1]), spm_f32(sim, w[2]), mvec, nl, stride, R, scale);
+    }
     vu_lines(sim, (uint64_t)R * nl);
 }
 

@@ -1049,7 +1049,11 @@ def gen_cpp_builder(e: Enc) -> list[str]:
             raise ValueError("%s: a builder with narrow fields needs a reserved w0 bit (poison)" % e.name)
         poison = e.rsv[0] & -e.rsv[0]
         lines.append("    op_poison_if(o, bad, 0x%Xu);   // the lowest reserved w0 bit" % poison)
-    lines.append("    o.used = uint8_t(%s_WORDS);" % e.name)
+    if e.name == "ASMAX":
+        # The legacy form does not send word 7. The local slot/origin use it.
+        lines.append("    o.used = uint8_t(o.w[7] ? ASMAX_WORDS : (ASMAX_WORDS & ~(1u << ASMAX_LOCAL_SLOT_WORD)));")
+    else:
+        lines.append("    o.used = uint8_t(%s_WORDS);" % e.name)
     lines.append("    return o;")
     lines.append("}")
     return lines

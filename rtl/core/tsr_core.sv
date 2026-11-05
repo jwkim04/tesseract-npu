@@ -14,7 +14,7 @@
 //   - CSR port: csr_valid/csr_ready/csr_we/csr_addr/csr_wdata/csr_rdata (tsr_csr contract, EX §5).
 //   - memory port per channel c (packed [NUM_CH], index c): read request {addr_beat, len_beats, id},
 //     read response {data, id, last}, write request {addr_beat, len_beats, id}, write data
-//     {data, last}, write response {id}; all valid/ready (docs/rtl-m2.md §4). Every output is
+//     {data, word mask, last}, write response {id}; all valid/ready (docs/rtl-m2.md §4). Every output is
 //     driven from a register inside tsr_mem_arb.
 //   - plat_err_i (the platform's error level, STATUS.PLAT_ERR) and host_irq_o = CTRL.IRQ_EN ∧
 //     (LCQ_WR ≠ LCQ_RD) (EX §5.2; not connected on the U200).
@@ -52,6 +52,12 @@ module tsr_core
   // MVM unit implementation parameters (HAS_MVM = 1; docs/rtl-m3.md §1)
   parameter int unsigned     MVM_WS_FIFO    = TSR_DEF_WS_FIFO_BEATS,
   parameter int unsigned     MVM_BC_PIPE    = TSR_DEF_MVM_BC_PIPE,
+  parameter bit              DDR_LOCAL_PIPE = 1'b0,
+  parameter bit              LOCAL_SOFTCAP = 1'b0,
+  parameter bit              LOCAL_SCALE = 1'b0,
+  parameter bit              LOCAL_INTERMEDIATES = 1'b0,
+  parameter bit              MVM_GATHER_PAIR = 1'b0,
+  parameter int unsigned     MVM_GATHER_FLITS = 1,
   parameter int unsigned     MVM_RES_PIPE   = TSR_DEF_MVM_RES_PIPE,
   parameter int unsigned     MVM_ACT_RD_LAT = TSR_DEF_ACT_RD_LAT,
   parameter int unsigned     MVM_MAC_LAT    = TSR_DEF_MAC_LAT,
@@ -69,6 +75,7 @@ module tsr_core
   parameter int unsigned     ITCM_BYTES     = tsr_tables_pkg::TSR_ITCM_BYTES,
   parameter int unsigned     DTCM_BYTES     = tsr_tables_pkg::TSR_DTCM_BYTES,
   parameter bit              CTRL_SYNC      = 1'b0,
+  parameter bit              RV_LOCAL_TRANSPORT = 1'b0,   // narrow links to a relocated control subsystem
   // W4-B (tsr_core_dp): vector unit (queue depth QD_VU; lane knobs VU_EXP_LANES / VU_BACK_LANES, VU §7.10),
   // attention, TOPK / DQROW (M8 RTL, off in the U200 M7 build), the DB block and its sizes (DB §10.3)
   parameter bit              HAS_VU         = 1'b1,
@@ -77,6 +84,7 @@ module tsr_core
   parameter bit              HAS_DQROW      = 1'b0,
   parameter bit              HAS_DB         = 1'b1,
   parameter int unsigned     QD_VU          = tsr_tables_pkg::TSR_QDEPTH_U200_VU,
+  parameter int unsigned     VU_FRONT_LANES = tsr_tables_pkg::TSR_VU_FRONT_LANES,
   parameter int unsigned     VU_EXP_LANES   = tsr_tables_pkg::TSR_VU_FRONT_LANES,
   parameter int unsigned     VU_BACK_LANES  = tsr_tables_pkg::TSR_VU_BACK_LANES,
   parameter int unsigned     VU_LANE_PIPE   = 0,                 // register stages on each side of the VU lanes (SLR crossing)
@@ -123,6 +131,7 @@ module tsr_core
   output logic [NUM_CH-1:0]                      m_wr_dat_valid,
   input  logic [NUM_CH-1:0]                      m_wr_dat_ready,
   output logic [NUM_CH-1:0][BEAT_BITS-1:0]       m_wr_dat_data,
+  output logic [NUM_CH-1:0][BEAT_BITS/32-1:0]       m_wr_dat_mask,
   output logic [NUM_CH-1:0]                      m_wr_dat_last,
   input  logic [NUM_CH-1:0]                      m_wr_rsp_valid,
   output logic [NUM_CH-1:0]                      m_wr_rsp_ready,
@@ -139,15 +148,18 @@ module tsr_core
   localparam logic [31:0] CAPS     = (HAS_VU    ? tsr_tables_pkg::TSR_CAPS_VU    : 32'd0) |
                                      (HAS_ATT   ? tsr_tables_pkg::TSR_CAPS_ATT   : 32'd0) |
                                      (HAS_TOPK  ? tsr_tables_pkg::TSR_CAPS_TOPK  : 32'd0) |
-                                     (HAS_DQROW ? tsr_tables_pkg::TSR_CAPS_DQROW : 32'd0);
+                                     (HAS_DQROW ? tsr_tables_pkg::TSR_CAPS_DQROW : 32'd0) |
+                                     (LOCAL_INTERMEDIATES ? tsr_tables_pkg::TSR_CAPS_ATT_LOCAL : 32'd0) |
+                                     (LOCAL_SCALE ? tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SCALE : 32'd0) |
+                                     (LOCAL_SOFTCAP ? tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SOFTCAP : 32'd0);
   localparam int unsigned QD_MVM_E = HAS_MVM ? QD_MVM : 0;
   localparam int unsigned QD_VU_E  = HAS_VU ? QD_VU : 0;
   localparam logic [5:0][4:0] Q_DEPTH = {5'(QD_SYNC), 5'd0, 5'(QD_VU_E), 5'(QD_MVM_E), 5'(QD_QACT), 5'(QD_DMA)};
 
   // ---- core-domain side of tsr_ctrl (CC §11.2) ----
   logic                                    rst_ctrl_n;
-  logic                                    if_valid, if_ready;
-  logic [tsr_tables_pkg::TSR_IFIFO_BITS-1:0] if_data;
+  logic                                    if_valid, if_ready, issue_valid, issue_ready;
+  logic [tsr_tables_pkg::TSR_IFIFO_BITS-1:0] if_data, issue_entry;
   logic [5:0]                              if_count;
   logic [5:0][TSR_SEQ_W-1:0]               issued_seq, s_seq, d_seq;
   logic [5:0]                              err_valid, err_ack;
@@ -156,10 +168,12 @@ module tsr_core
   logic [3:0]                              q_hold;
   logic [5:0]                              q_err, q_nonempty;
   logic                                    spm_req_valid, spm_req_we, spm_rsp_valid, spm_rsp_err;
+  logic                                    spm_bridge_req_valid, spm_bridge_rsp_valid;
+  logic                                    spm_bridge_rsp_ready, spm_bridge_rsp_err;
   logic [25:0]                             spm_req_addr;
   logic [3:0]                              spm_req_be;
   logic [31:0]                             spm_req_wdata;
-  logic [TSR_LINE_BITS-1:0]                spm_rsp_line;
+  logic [TSR_LINE_BITS-1:0]                spm_rsp_line, spm_bridge_rsp_line;
   logic                                    cwin_req_valid, cwin_rsp_valid;
   logic [11:0]                             cwin_req_off;
   logic [31:0]                             cwin_rsp_rdata;
@@ -167,6 +181,10 @@ module tsr_core
   logic [11:0]                             lq_req_off;
   logic [31:0]                             lq_req_wdata, lq_rsp_rdata;
   logic [7:0][31:0]                        lq_req_lcq_w;
+  logic                                    lq_csr_req_valid, lq_csr_req_we;
+  logic [11:0]                             lq_csr_req_off;
+  logic [31:0]                             lq_csr_req_wdata;
+  logic [7:0][31:0]                        lq_csr_req_lcq_w;
   logic                                    log_valid, log_ready;
   logic [31:0]                             log_data, rt_state, rt_info;
   logic                                    ld_ready, ld_req, ld_we, ld_rsp_valid, ld_rsp_err, ld_rsp_timeout;
@@ -294,6 +312,58 @@ module tsr_core
                          tap_halted, tap_in_reset, tap_dfault};
   end
 
+  // The CDC stays local to u_ctrl. The segmented links run on clk, with
+  // the same reset on both ends. Each endpoint is a placement unit.
+  if (RV_LOCAL_TRANSPORT) begin : g_rv_local
+    logic         spm_v, spm_err, issue_v, issue_ack, lq_v, lq_we, lq_end;
+    logic [127:0] spm_data, lq_data;
+    logic [128:0] issue_data;
+    logic [11:0]  lq_off;
+
+    (* keep_hierarchy = "yes" *) tsr_rv_spm_tx u_spm_tx (
+      .clk, .rst_n(rst_ctrl_n), .req_valid(spm_req_valid), .bridge_req_valid(spm_bridge_req_valid),
+      .bridge_rsp_valid(spm_bridge_rsp_valid), .bridge_rsp_ready(spm_bridge_rsp_ready),
+      .bridge_rsp_line(spm_bridge_rsp_line), .bridge_rsp_err(spm_bridge_rsp_err),
+      .link_valid(spm_v), .link_data(spm_data), .link_err(spm_err)
+    );
+    (* keep_hierarchy = "yes" *) tsr_rv_spm_rx u_spm_rx (
+      .clk, .rst_n(rst_ctrl_n), .link_valid(spm_v), .link_data(spm_data), .link_err(spm_err),
+      .rsp_valid(spm_rsp_valid), .rsp_line(spm_rsp_line), .rsp_err(spm_rsp_err)
+    );
+    (* keep_hierarchy = "yes" *) tsr_rv_issue_tx u_issue_tx (
+      .clk, .rst_n(rst_ctrl_n), .fifo_valid(if_valid), .fifo_entry(if_data), .fifo_ready(if_ready),
+      .link_valid(issue_v), .link_data(issue_data), .link_accepted(issue_ack)
+    );
+    (* keep_hierarchy = "yes" *) tsr_rv_issue_rx u_issue_rx (
+      .clk, .rst_n(rst_ctrl_n), .link_valid(issue_v), .link_data(issue_data), .link_accepted(issue_ack),
+      .issue_valid, .issue_entry, .issue_ready
+    );
+    (* keep_hierarchy = "yes" *) tsr_rv_lq_tx u_lq_tx (
+      .clk, .rst_n(rst_ctrl_n), .req_valid(lq_req_valid), .req_off(lq_req_off), .req_we(lq_req_we),
+      .req_wdata(lq_req_wdata), .req_lcq_w(lq_req_lcq_w), .link_valid(lq_v), .link_data(lq_data),
+      .link_off(lq_off), .link_we(lq_we), .link_end(lq_end)
+    );
+    (* keep_hierarchy = "yes" *) tsr_rv_lq_rx u_lq_rx (
+      .clk, .rst_n(rst_ctrl_n), .link_valid(lq_v), .link_data(lq_data), .link_off(lq_off),
+      .link_we(lq_we), .link_end(lq_end), .req_valid(lq_csr_req_valid), .req_off(lq_csr_req_off),
+      .req_we(lq_csr_req_we), .req_wdata(lq_csr_req_wdata), .req_lcq_w(lq_csr_req_lcq_w)
+    );
+  end else begin : g_rv_direct
+    assign spm_bridge_req_valid = spm_req_valid;
+    assign spm_bridge_rsp_ready = 1'b1;
+    assign spm_rsp_valid        = spm_bridge_rsp_valid;
+    assign spm_rsp_line         = spm_bridge_rsp_line;
+    assign spm_rsp_err          = spm_bridge_rsp_err;
+    assign issue_valid          = if_valid;
+    assign issue_entry          = if_data;
+    assign if_ready             = issue_ready;
+    assign lq_csr_req_valid     = lq_req_valid;
+    assign lq_csr_req_off       = lq_req_off;
+    assign lq_csr_req_we        = lq_req_we;
+    assign lq_csr_req_wdata     = lq_req_wdata;
+    assign lq_csr_req_lcq_w     = lq_req_lcq_w;
+  end
+
   // -------------------------------------------------------------------------------------------
   // Core-clock datapath (CC §13.2)
   // -------------------------------------------------------------------------------------------
@@ -301,13 +371,15 @@ module tsr_core
     .NUM_CH(NUM_CH), .BEAT_BITS(BEAT_BITS), .LANES(LANES), .T_MAX(T_MAX), .K_MAX(K_MAX),
     .SPM_BYTES(SPM_BYTES), .VL(VL), .NSREG(NSREG), .RD_OUTSTANDING(RD_OUTSTANDING),
     .CH_BYTES(CH_BYTES), .ADDR_BEAT_W(ADDR_BEAT_W), .HAS_MVM(HAS_MVM), .SPM_RD_LAT(SPM_RD_LAT),
-    .MVM_WS_FIFO(MVM_WS_FIFO), .MVM_BC_PIPE(MVM_BC_PIPE), .MVM_RES_PIPE(MVM_RES_PIPE),
+    .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .LOCAL_SCALE(LOCAL_SCALE), .LOCAL_SOFTCAP(LOCAL_SOFTCAP),
+    .MVM_WS_FIFO(MVM_WS_FIFO), .MVM_BC_PIPE(MVM_BC_PIPE), .MVM_RES_PIPE(MVM_RES_PIPE), .MVM_GATHER_PAIR(MVM_GATHER_PAIR), .MVM_GATHER_FLITS(MVM_GATHER_FLITS), .DDR_LOCAL_PIPE(DDR_LOCAL_PIPE),
     .MVM_ACT_RD_LAT(MVM_ACT_RD_LAT), .MVM_MAC_LAT(MVM_MAC_LAT), .MVM_MUL_LAT(MVM_MUL_LAT),
     .MVM_ADD_LAT(MVM_ADD_LAT), .MVM_WS_RD_LAT(MVM_WS_RD_LAT), .RST_PIPE(RST_PIPE),
+    .RV_LOCAL_TRANSPORT(RV_LOCAL_TRANSPORT),
     .QD_DMA(QD_DMA), .QD_QACT(QD_QACT), .QD_MVM(QD_MVM), .QD_SYNC(QD_SYNC),
     .ITCM_BYTES(ITCM_BYTES), .DTCM_BYTES(DTCM_BYTES),
     .HAS_VU(HAS_VU), .HAS_ATT(HAS_ATT), .HAS_TOPK(HAS_TOPK), .HAS_DQROW(HAS_DQROW), .HAS_DB(HAS_DB),
-    .QD_VU(QD_VU), .VU_EXP_LANES(VU_EXP_LANES), .VU_BACK_LANES(VU_BACK_LANES), .VU_LANE_PIPE(VU_LANE_PIPE),
+    .QD_VU(QD_VU), .VU_FRONT_LANES(VU_FRONT_LANES), .VU_EXP_LANES(VU_EXP_LANES), .VU_BACK_LANES(VU_BACK_LANES), .VU_LANE_PIPE(VU_LANE_PIPE),
     .HIST_DEPTH(HIST_DEPTH),
     .HAS_TRW(HAS_TRW), .NTBP(NTBP), .NRVWP(NRVWP), .HAS_REC(HAS_REC)
   ) u_dp (
@@ -316,15 +388,17 @@ module tsr_core
     .m_rd_req_valid, .m_rd_req_ready, .m_rd_req_addr, .m_rd_req_len, .m_rd_req_id,
     .m_rd_rsp_valid, .m_rd_rsp_ready, .m_rd_rsp_data, .m_rd_rsp_id, .m_rd_rsp_last,
     .m_wr_req_valid, .m_wr_req_ready, .m_wr_req_addr, .m_wr_req_len, .m_wr_req_id,
-    .m_wr_dat_valid, .m_wr_dat_ready, .m_wr_dat_data, .m_wr_dat_last,
+    .m_wr_dat_valid, .m_wr_dat_ready, .m_wr_dat_data, .m_wr_dat_mask, .m_wr_dat_last,
     .m_wr_rsp_valid, .m_wr_rsp_ready, .m_wr_rsp_id,
     .rst_ctrl_n,
-    .ifq_valid(if_valid), .ifq_ready(if_ready), .ifq_entry(if_data), .ifq_count(if_count),
+    .ifq_valid(issue_valid), .ifq_ready(issue_ready), .ifq_entry(issue_entry), .ifq_count(if_count),
     .issued_seq, .s_seq, .d_seq, .err_valid, .err_rec, .err_ack, .rec_resync, .q_hold, .q_err, .q_nonempty,
-    .spm_req_valid, .spm_req_we, .spm_req_addr, .spm_req_be, .spm_req_wdata,
-    .spm_rsp_valid, .spm_rsp_line, .spm_rsp_err,
+    .spm_req_valid(spm_bridge_req_valid), .spm_req_we, .spm_req_addr, .spm_req_be, .spm_req_wdata,
+    .spm_rsp_valid(spm_bridge_rsp_valid), .spm_rsp_ready(spm_bridge_rsp_ready),
+    .spm_rsp_line(spm_bridge_rsp_line), .spm_rsp_err(spm_bridge_rsp_err),
     .cwin_req_valid, .cwin_req_off, .cwin_rsp_valid, .cwin_rsp_rdata,
-    .lq_req_valid, .lq_req_off, .lq_req_we, .lq_req_wdata, .lq_req_lcq_w,
+    .lq_req_valid(lq_csr_req_valid), .lq_req_off(lq_csr_req_off), .lq_req_we(lq_csr_req_we),
+    .lq_req_wdata(lq_csr_req_wdata), .lq_req_lcq_w(lq_csr_req_lcq_w),
     .lq_rsp_valid, .lq_rsp_rdata, .lq_rsp_fault,
     .log_valid, .log_data, .log_ready, .rt_state, .rt_info,
     .ld_ready, .ld_req, .ld_we, .ld_addr, .ld_wdata, .ld_rsp_valid, .ld_rsp_rdata, .ld_rsp_err, .ld_rsp_timeout,

@@ -414,8 +414,13 @@ class WriteSource:
     channels are driven independently with random gaps. shadow: beat -> last written data."""
 
     def __init__(self, dut, *, prefix: str, aw: int, rnd: random.Random, region, p_req: float = 0.5,
-                 p_dat: float = 0.7, p_rsp_ready: float = 0.7, name: str = "wr"):
+                 p_dat: float = 0.7, p_rsp_ready: float = 0.7, name: str = "wr", masked: bool = False):
         self.dut, self.aw, self.rnd, self.region = dut, aw, rnd, region
+        self.masked = masked
+        self.wd_mask = getattr(dut, prefix + "wr_dat_mask", None)
+        assert not masked or self.wd_mask is not None
+        if self.wd_mask is not None:
+            self.wd_mask.value = 0
         self.p_req, self.p_dat, self.p_rsp_ready, self.name = p_req, p_dat, p_rsp_ready, name
         g = lambda n: getattr(dut, prefix + n)  # noqa: E731
         self.wq_v, self.wq_r = g("wr_req_valid"), g("wr_req_ready")
@@ -454,8 +459,10 @@ class WriteSource:
         beats = [self.rnd.getrandbits(512) for _ in range(ln)]
         self.reqs.append((addr, ln, id_))
         for k, b in enumerate(beats):
-            self.dats.append((b, int(k == ln - 1)))
-            self.shadow[addr + k] = b
+            mask = self.rnd.randint(1, 0xFFFF) if self.masked else 0xFFFF
+            self.dats.append((b, int(k == ln - 1), mask))
+            bits = sum(0xFFFFFFFF << (32 * word) for word in range(16) if mask & (1 << word))
+            self.shadow[addr + k] = (self.shadow.get(addr + k, 0) & ~bits) | (b & bits)
 
     def busy(self) -> bool:
         return bool(self.reqs or self.dats or self.n_pend)
@@ -494,6 +501,8 @@ class WriteSource:
             if cur_d is not None:
                 self._o.put(self.wd_d, cur_d[0])
                 self._o.put(self.wd_l, cur_d[1])
+                if self.wd_mask is not None:
+                    self._o.put(self.wd_mask, cur_d[2])
             rr = int(self.rnd.random() < self.p_rsp_ready)
             self._o.put(self.ws_r, rr)
             await FallingEdge(d.clk)

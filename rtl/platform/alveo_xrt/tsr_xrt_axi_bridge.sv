@@ -7,7 +7,7 @@
 //   read / write request {addr, len, id}  ->  AR / AW: AxADDR = base + addr * 64, AxLEN = len - 1,
 //                                             AxSIZE 6 (64 B), AxBURST INCR, AxID = id,
 //                                             AxCACHE 4'b0011, AxPROT 0, AxLOCK 0, AxQOS 0
-//   write data {data, last}               ->  W: WDATA, WLAST, WSTRB all ones
+//   write data {data, word mask, last}    ->  W: WDATA, WSTRB, WLAST
 //   R {RDATA, RID, RLAST, RRESP}          ->  read response {data, id, last}
 //   B {BID, BRESP}                        ->  write response {id}
 // The core already keeps every burst inside one 64-beat block of its channel (rtl-m2 §4 M1), so
@@ -92,6 +92,7 @@ module tsr_xrt_axi_bridge
   input  logic                         c_wr_dat_valid,
   output logic                         c_wr_dat_ready,
   input  logic [BEAT_BITS-1:0]         c_wr_dat_data,
+  input  logic [BEAT_BITS/32-1:0]      c_wr_dat_mask,
   input  logic                         c_wr_dat_last,
   output logic                         c_wr_rsp_valid,
   input  logic                         c_wr_rsp_ready,
@@ -158,7 +159,7 @@ module tsr_xrt_axi_bridge
   end
   localparam int unsigned AQ_W = 64 + 8 + IDW;                 // {addr, len - 1, id}
   localparam int unsigned R_W  = BEAT_BITS + IDW + 1 + 2;      // {data, id, last, resp}
-  localparam int unsigned W_W  = BEAT_BITS + 1;                // {data, last}
+  localparam int unsigned W_W  = BEAT_BITS + BEAT_BITS/32 + 1;   // {data, word mask, last}
   localparam int unsigned B_W  = IDW + 2;                      // {id, resp}
 
   logic [63:0] base_r;
@@ -195,10 +196,11 @@ module tsr_xrt_axi_bridge
     .s_data(areq(base_r, c_wr_req_addr, c_wr_req_len, c_wr_req_id)),
     .m_valid(m_axi_awvalid), .m_ready(m_axi_awready), .m_data({m_axi_awaddr, m_axi_awlen, m_axi_awid})
   );
+  logic [BEAT_BITS/32-1:0] w_word_mask;
   tsr_xrt_slices #(.W(W_W), .N(SLICES)) u_w (
     .clk, .rst_n(rst_rq_st),
-    .s_valid(c_wr_dat_valid), .s_ready(c_wr_dat_ready), .s_data({c_wr_dat_data, c_wr_dat_last}),
-    .m_valid(m_axi_wvalid), .m_ready(m_axi_wready), .m_data({m_axi_wdata, m_axi_wlast})
+    .s_valid(c_wr_dat_valid), .s_ready(c_wr_dat_ready), .s_data({c_wr_dat_data, c_wr_dat_mask, c_wr_dat_last}),
+    .m_valid(m_axi_wvalid), .m_ready(m_axi_wready), .m_data({m_axi_wdata, w_word_mask, m_axi_wlast})
   );
 
   assign m_axi_arsize  = 3'd6;          // 64 bytes per beat
@@ -213,7 +215,9 @@ module tsr_xrt_axi_bridge
   assign m_axi_awcache = 4'b0011;
   assign m_axi_awprot  = 3'b000;
   assign m_axi_awqos   = 4'd0;
-  assign m_axi_wstrb   = '1;            // full-beat writes only (rtl-m2 §4 M4)
+  for (genvar w = 0; w < BEAT_BITS/32; w++) begin : g_wstrb
+    assign m_axi_wstrb[4*w +: 4] = {4{w_word_mask[w]}};
+  end
 
   // -------------------------------------------------------------------------------------------
   // Read responses: input slices, ID filter, output slice

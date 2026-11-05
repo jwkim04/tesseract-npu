@@ -47,6 +47,7 @@ extern "C" {
 // Location spaces of a report's [lo, hi).
 #define TSR_RACE_SPACE_SPM  1u   // SPM byte addresses (an op's line l covers [64 l, 64 l + 64))
 #define TSR_RACE_SPACE_DRAM 2u   // DRAM beats of channel ch
+#define TSR_RACE_SPACE_ATT_LOCAL 4u // private FAST score/probability scratch
 #define TSR_RACE_SPACE_SREG 3u   // issue-bank s-register indices 0..15
 
 typedef struct tsr_race_side {

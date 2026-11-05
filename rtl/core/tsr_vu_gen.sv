@@ -43,6 +43,7 @@ module tsr_vu_gen
   import tsr_pkg::*;
   import tsr_vu_pkg::*;
 #(
+  parameter int unsigned FRONT_LANES = 16,
   parameter int unsigned EXP_LANES  = 16,
   parameter int unsigned BACK_LANES = 8,
   parameter int unsigned NUM_CH     = 4,
@@ -88,6 +89,7 @@ module tsr_vu_gen
 );
   import tsr_tables_pkg::*;
 
+  localparam int unsigned RF = 16 / FRONT_LANES;
   localparam int unsigned RB = 16 / BACK_LANES;   // sub-slots of a back-lane function
   localparam int unsigned RE = 16 / EXP_LANES;    // sub-slots of an EXPK front function
   localparam logic [TSR_VU_LW-1:0] LM_RINV = '0;  // ANORM: 1/l vector at local-memory line 0
@@ -148,14 +150,15 @@ module tsr_vu_gen
   localparam int unsigned CTF_I = 0;                     // the tree's result: scratch slot 0 (NUM_CH >= 2)
 
   if (!((EXP_LANES == 16 || EXP_LANES == 8) && (BACK_LANES == 8 || BACK_LANES == 4) &&
-        BACK_LANES <= EXP_LANES)) begin : g_chk_lanes
+        BACK_LANES <= EXP_LANES && EXP_LANES <= FRONT_LANES &&
+        (FRONT_LANES == 16 || FRONT_LANES == 8))) begin : g_chk_lanes
     $fatal(1, "tsr_vu_gen: EXP_LANES 16 or 8, BACK_LANES 8 or 4 (VU §7.10 knobs)");
   end
 
   function automatic logic [2:0] nsub_of(input tsr_vu_uop_e u);
     if (tsr_vu_uop_back(u)) return 3'(RB);
     if (tsr_vu_uop_exp(u))  return 3'(RE);
-    return 3'd1;
+    return 3'(RF);
   endfunction
 
   // -------------------------------------------------------------------------------------------
@@ -292,7 +295,7 @@ module tsr_vu_gen
           // DQROW output line j of row r (VU §6.8, tsr_vu_dq)
           nxt.kind  = SK_LANE;
           nxt.uop   = uop_q;
-          nxt.nsub  = 3'd1;
+          nxt.nsub  = 3'(RF);
           nxt.asrc  = SRC_SPM;
           nxt.aline = cb_q + TSR_VU_LW'(1) + (dqf_q ? TSR_VU_LW'(j_q[5:3]) : TSR_VU_LW'(j_q[5:2]));
           nxt.dst   = DS_SPM;
@@ -372,7 +375,7 @@ module tsr_vu_gen
         nxt_last = 1'b1;
         nxt_cnt  = 2'd1;
         nxt.kind  = SK_LANE;
-        nxt.nsub  = 3'd1;
+        nxt.nsub  = 3'(RF);
         nxt.asrc  = SRC_K;
         nxt.bsrc  = SRC_K;
         nxt.dst   = DS_SREG;
@@ -439,7 +442,7 @@ module tsr_vu_gen
         if (rot && neox) begin
           nxt.uop   = U_ROT;
           nxt.rope  = 2'd1;
-          nxt.nsub  = 3'd2;
+          nxt.nsub  = 3'(2*RF);
           nxt.aline = sbh_q + TSR_VU_LW'(o_q);
           nxt.bsrc  = SRC_SPM;
           nxt.bline = sbh_q + TSR_VU_LW'(o_q) + TSR_VU_LW'(nd_q[15:5]);
@@ -451,7 +454,7 @@ module tsr_vu_gen
         end else if (rot) begin
           nxt.uop    = U_ROT;
           nxt.rope   = 2'd2;
-          nxt.nsub   = 3'd1;
+          nxt.nsub   = 3'(RF);
           nxt.aline  = sbh_q + TSR_VU_LW'(o_q);
           nxt.d0     = dbh_q + TSR_VU_LW'(o_q);
           nxt.ang_e  = o_q[5:1];
@@ -460,7 +463,7 @@ module tsr_vu_gen
           nxt_cnt    = 2'd1;
         end else begin                   // raw copy of a line past n_dims (VU-23)
           nxt.uop   = U_COPY;
-          nxt.nsub  = 3'd1;
+          nxt.nsub  = 3'(RF);
           nxt.c1sel = C_ZERO;
           nxt.c2sel = C_ZERO;
           nxt.aline = sbh_q + TSR_VU_LW'(o_q) + (neox ? TSR_VU_LW'(nd_q[15:5]) : TSR_VU_LW'(0));
@@ -485,7 +488,7 @@ module tsr_vu_gen
         ok = (NUM_CH == 1) ? am_parts + TSR_VU_LW'(ami_q)
                            : LM_SCR + TSR_VU_LW'(CTF_I) * TSR_VU_LW'(NB) + TSR_VU_LW'(i_in_b);
         nxt.kind  = SK_LANE;
-        nxt.nsub  = 3'd1;
+        nxt.nsub  = 3'(RF);
         nxt.tail  = 5'd16;
         nxt.dst   = DS_SPM;
         case (am_q)
@@ -721,7 +724,7 @@ module tsr_vu_gen
               db_q   <= '0;
               ds_q   <= '0;
               uop_q  <= (sub == TSR_RED_KIND_SUM) ? U_RSUM : (sub == TSR_RED_KIND_SUMSQ) ? U_RSUMSQ : U_RMAX;
-              nsub_q <= 3'd1;
+              nsub_q <= 3'(RF);
               ra_q   <= 1'b1;
               dst_q  <= DS_NONE;
               ng_q   <= (g >= 24'd16) ? 4'd15 : 4'(g - 24'd1);
@@ -751,7 +754,7 @@ module tsr_vu_gen
                 cl_q   <= 1'b1;
               end else begin
                 uop_q  <= U_AMASK;
-                nsub_q <= 3'd1;
+                nsub_q <= 3'(RF);
                 rbq_q  <= 1'b1;
                 ng_q   <= (nl >= 16'd8) ? 4'd15 : 4'(2 * nl - 16'd1);
               end
@@ -797,7 +800,7 @@ module tsr_vu_gen
               as_q   <= (w_q[7][15:0] != 16'd0) ? w_q[7][15:0] : rb;
               dqf_q  <= sub[0];
               uop_q  <= sub[0] ? U_ROT : U_ADDMULC;
-              nsub_q <= 3'd1;
+              nsub_q <= 3'(RF);
               ra_q   <= 1'b1;
               dst_q  <= DS_SPM;
             end
@@ -916,7 +919,7 @@ module tsr_vu_gen
             as_q   <= 16'(16'd4 << w_q[4][17:16]);
             ds_q   <= 16'(16'd4 << w_q[4][17:16]);
             uop_q  <= U_MULC;
-            nsub_q <= 3'd1;
+            nsub_q <= 3'(RF);
             ra_q   <= 1'b1;
             rbq_q  <= 1'b0;
             c1s_q  <= C_CLW;

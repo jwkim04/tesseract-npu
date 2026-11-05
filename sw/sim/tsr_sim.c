@@ -41,6 +41,8 @@
 #define TSR_SIM_CORE_INTERNAL
 
 #include "tsr_sim.h"
+#include "tsr_local_tile.h"
+#include "tsr_ref_math.h"
 #include "tsr_sim_int.h"
 #include "tsr_ref.h"
 #include "tsr_rv.h"       // TSR_RV_CORE_* (header only: the option is parsed with or without tsr_rv.c)
@@ -290,10 +292,10 @@ uint32_t tsr_sim_caps_implemented(void) {
                                   TSR_OP_AMERGE, TSR_OP_ANORM };
     uint32_t caps = 0, all = 1;
     for (size_t i = 0; i < sizeof(vu); ++i) all &= g_have[vu[i]];
-    if (all) caps |= TSR_CAPS_VU;
+    if (all) caps |= TSR_CAPS_VU | TSR_CAPS_MVM_LOCAL_SCALE | TSR_CAPS_MVM_LOCAL_SOFTCAP;
     all = 1;
     for (size_t i = 0; i < sizeof(at); ++i) all &= g_have[at[i]];
-    if (all) caps |= TSR_CAPS_ATT;
+    if (all) caps |= TSR_CAPS_ATT | TSR_CAPS_ATT_LOCAL;
     if (g_have[TSR_OP_TOPK])  caps |= TSR_CAPS_TOPK;
     if (g_have[TSR_OP_DQROW]) caps |= TSR_CAPS_DQROW;
     if (g_have[TSR_OP_VMASK]) caps |= TSR_CAPS_VMASK;
@@ -319,6 +321,10 @@ void tsr_sim_cap_read(tsr_sim * sim, uint32_t ch, uint64_t lo, uint64_t n) {
 #if defined(TSR_SIM_HAVE_RACE) && TSR_SIM_HAVE_RACE
     if (sim->models[TSR_MODEL_RACE] != NULL) tsr_race_cap_note(sim, ch, lo, n, 0);   // P1.9: exact DRAM access sets
 #endif
+    tsr_sim_cap_preserve(sim, ch, lo, n);
+}
+
+void tsr_sim_cap_preserve(tsr_sim * sim, uint32_t ch, uint64_t lo, uint64_t n) {
     if (!sim->capturing || n == 0 || ch >= sim->num_ch) return;
     cap_ch * cc = &sim->cap[ch];
     const uint64_t hi = lo + n;
@@ -481,6 +487,10 @@ static const char * cfg_problem(const tsr_config * c) {
         return "ch_bytes must be a positive multiple of 64";
     if ((uint64_t)(size_t)c->ch_bytes != c->ch_bytes) return "ch_bytes does not fit in size_t";
     if (c->addr_beat_w < 1 || c->addr_beat_w > 40) return "addr_beat_w must be in [1, 40]";
+    if ((c->caps & TSR_CAPS_ATT_LOCAL) && !(c->caps & TSR_CAPS_ATT))
+        return "ATT_LOCAL requires CAPS.ATT";
+    if ((c->caps & (TSR_CAPS_MVM_LOCAL_SCALE | TSR_CAPS_MVM_LOCAL_SOFTCAP)) && !(c->caps & TSR_CAPS_VU))
+        return "local MVM epilogues require CAPS.VU";
     if (c->caps & ~tsr_sim_caps_implemented()) return "caps requests features this simulator does not implement";
     return NULL;
 }
@@ -661,6 +671,10 @@ tsr_sim * tsr_sim_create_opts(const tsr_config * cfg, const tsr_sim_opts * opts)
     }
     tsr_sched_init(sim, &sched);
     sim->cfg = *cfg;
+    // Existing callers use all implemented capabilities for different channel
+    // counts. Report the optional four-owner paths only on their geometry.
+    if (cfg->num_ch != TSR_LOCAL_AT_OWNERS)
+        sim->cfg.caps &= ~(TSR_CAPS_ATT_LOCAL | TSR_CAPS_MVM_LOCAL_SCALE | TSR_CAPS_MVM_LOCAL_SOFTCAP);
     sim->num_ch = cfg->num_ch;
     sim->ch_bytes = cfg->ch_bytes;
     sim->limit_beats = cfg->ch_bytes / TSR_BEAT_BYTES;
@@ -678,6 +692,8 @@ tsr_sim * tsr_sim_create_opts(const tsr_config * cfg, const tsr_sim_opts * opts)
     }
     sim->spm = (uint8_t *)xrealloc(NULL, cfg->spm_bytes);
     memset(sim->spm, 0xA5, cfg->spm_bytes);
+    if (sim->cfg.caps & TSR_CAPS_ATT_LOCAL)
+        sim->att_local = (float *)xcalloc(TSR_LOCAL_AT_SLOTS * TSR_LOCAL_AT_SLOT_LINES, TSR_LINE_BYTES);
     sim->itcm_bytes = o.itcm_bytes ? o.itcm_bytes : TSR_ITCM_BYTES;
     sim->dtcm_bytes = o.dtcm_bytes ? o.dtcm_bytes : TSR_DTCM_BYTES;
     sim->itcm = (uint8_t *)xcalloc(sim->itcm_bytes, 1);
@@ -760,6 +776,7 @@ void tsr_sim_destroy(tsr_sim * sim) {
     free(sim->dram);
     free(sim->dram_fd);
     free(sim->spm);
+    free(sim->att_local);
     free(sim->itcm);
     free(sim->dtcm);
     free(sim->xbuf);
@@ -778,6 +795,7 @@ const tsr_config * tsr_sim_config(const tsr_sim * sim) { return &sim->cfg; }
 
 uint8_t * tsr_sim_dram(tsr_sim * sim, uint32_t ch) { return ch < sim->num_ch ? sim->dram[ch] : NULL; }
 uint8_t * tsr_sim_spm(tsr_sim * sim) { return sim->spm; }
+float * tsr_sim_att_local(tsr_sim * sim) { return sim->att_local; }
 uint64_t  tsr_sim_dram_limit_beats(const tsr_sim * sim) { return sim->limit_beats; }
 uint32_t  tsr_sim_spm_lines(const tsr_sim * sim) { return sim->spm_lines; }
 uint32_t  tsr_sim_num_ch(const tsr_sim * sim) { return sim->num_ch; }
@@ -1426,7 +1444,7 @@ static uint64_t cyc_qact(const tsr_sim * sim, const uint32_t w[8]) {
 typedef struct {
     uint32_t fmt, acc, N, K, T, qa_lines, row_beats;
     uint64_t y_lines, dstride, R;
-    uint32_t dst, x, woff;
+    uint32_t dst, x, woff, channels;
 } mvm_dec;
 
 static void mvm_decode(const tsr_sim * sim, const uint32_t * w, mvm_dec * d) {
@@ -1437,16 +1455,22 @@ static void mvm_decode(const tsr_sim * sim, const uint32_t * w, mvm_dec * d) {
     d->T = (w[5] >> 16) & 0xFu;
     d->qa_lines = tsr_qa_lines(tsr_qa_kind_for_fmt(d->fmt), d->K);
     d->y_lines = tsr_ceil_div_u64(4ull * d->N, TSR_LINE_BYTES);
-    d->dstride = w[6] ? w[6] : d->y_lines;
+    d->dstride = w[6] && !(w[0] & TSR_MVM_LOCAL_SOFTCAP) ? w[6] : d->y_lines;
     d->dst = w[1];
     d->x = w[2];
     d->woff = w[3];
+    d->channels = sim->num_ch;
     d->R = tsr_ceil_div_u64(d->N, sim->num_ch);
     d->row_beats = tsr_row_beats(d->fmt, d->K);
 }
 
 static uint32_t chk_mvm(tsr_sim * sim, const uint32_t w[8], tsr_extents * ext, uint32_t * info) {
-    if ((w[0] & 0xFFFFE000u) != 0 || (w[5] & 0xFFF00000u) != 0 || w[7] != 0) return TSR_ERR_ILLEGAL_OP;
+    const uint32_t scaled = w[0] & TSR_MVM_LOCAL_SCALE, softcap = w[0] & TSR_MVM_LOCAL_SOFTCAP;
+    if ((w[0] & TSR_MVM_RSV_W0) || (w[5] & TSR_MVM_RSV_W5) || (!scaled && !softcap && w[7]) ||
+        ((scaled || softcap) && (w[0] & TSR_MVM_ACC)) || (scaled && softcap) ||
+        (scaled && !(sim->cfg.caps & TSR_CAPS_MVM_LOCAL_SCALE)) ||
+        (softcap && !(sim->cfg.caps & TSR_CAPS_MVM_LOCAL_SOFTCAP)))
+        return TSR_ERR_ILLEGAL_OP;
     const uint32_t fmt = tsr_w0_sub(w[0]);
     if (!tsr_fmt_valid(fmt)) return TSR_ERR_BAD_FMT;
     const uint32_t K = w[5] & 0xFFFFu;
@@ -1470,9 +1494,10 @@ static uint32_t chk_mvm(tsr_sim * sim, const uint32_t w[8], tsr_extents * ext, u
 
 // Weight beats channel c streams: its rows [cR, min((c+1)R, N)) times ROW_BEATS.
 static uint64_t mvm_ch_beats(const mvm_dec * d, uint32_t c) {
-    const uint64_t first = (uint64_t)c * d->R;
-    const uint64_t rows = (d->N > first) ? ((d->N - first < d->R) ? d->N - first : d->R) : 0;
-    return rows * d->row_beats;
+    const tsr_dense_tile tile = { .weight_base = d->woff, .channels = d->channels, .rows = d->N,
+                                  .row_beats = d->row_beats, .tokens = d->T };
+    tsr_dense_window window;
+    return tsr_local_dense_window(&tile, c, 0u, UINT32_MAX, &window) ? window.weight_beats : 0u;
 }
 
 typedef struct {
@@ -1523,7 +1548,12 @@ static void ex_mvm(tsr_sim * sim, const uint32_t w[8]) {
     } else {
         mvm_rows(&job, 0, d.N);
     }
-    // Write: token t -> dst + t*stride, element n; ACC adds the old value; tail bytes zero.
+    // Scale the completed FP32 result before the final SPM write, as the local
+    // VU does. ACC is a separate legacy path.
+    const int scaled = (w[0] & TSR_MVM_LOCAL_SCALE) != 0u;
+    const int softcap = (w[0] & TSR_MVM_LOCAL_SOFTCAP) != 0u;
+    const float first_scale = tsr_bits_f32(w[6]), scale = tsr_bits_f32(w[7]);
+    // Write: token t -> dst + t*stride, element n; tail bytes zero.
     for (uint32_t t = 0; t < d.T; ++t) {
         uint8_t * base = sim->spm + ((uint64_t)d.dst + (uint64_t)t * d.dstride) * TSR_LINE_BYTES;
         const float * y = sim->ybuf + (size_t)t * d.N;
@@ -1535,6 +1565,8 @@ static void ex_mvm(tsr_sim * sim, const uint32_t w[8]) {
                 memcpy(&old, &ou, 4);
                 v = tsr_fadd(old, v);
             }
+            if (softcap) v = tsr_fmul(tsr_m_tanh(tsr_fmul(v, first_scale)), scale);
+            else if (scaled) v = tsr_fmul(v, scale);
             wr32le(base + 4u * n, tsr_f32_bits(v));
         }
         memset(base + 4ull * d.N, 0, (size_t)(d.y_lines * TSR_LINE_BYTES - 4ull * d.N));

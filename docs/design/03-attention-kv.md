@@ -418,6 +418,54 @@ where the CPU computes exp(scale·s + m). The two agree when m = ±0 or scale = 
 f32 copy holds fdiv(m, scale) (§7.3; `tsr_msum_mask_f32`), which gives the CPU's form up to f32
 rounding for every finite m (W1a decision; NMSE ≈ 10^-13 against ggml-cpu in `ref_at_ggml`).
 
+### 5.5a Optional local FAST attention
+
+`CAPS.ATT_LOCAL` (bit 12) permits three local score/probability slots on a
+four-channel core. Slot 0 keeps the existing SPM operation. ATTQK and ATTPV
+select slots 1–3 in `w0[29:28]`; ASMAX uses `w7[1:0]` for the slot and
+`w7[17:2]` for the chunk's global first group `u0`. Reserved bits remain zero.
+The feature is optional and does not change the FLASH_ATTN record.
+
+The firmware selects local sequences only for FAST masking. Raw local ATTQK
+requires MAXOUT; raw local ASMAX requires `w1 == w2`. There is no raw
+record-level FAST tag. Local geometry permits at most 224 full query rows,
+at most 128 groups per chunk, and at most 4,480 lines per owner per slot.
+Full rows include every GQA subset. Define `stride = round_up(groups, 4)`;
+`rows * stride / 4` must fit the owner depth. The shared helper is
+`sw/sim/include/tsr_local_tile.h`. The simulator and raw instruction checker
+reject unsupported geometry before execution; absence of the capability does
+not reinterpret a nonzero slot as SPM.
+
+Ownership remains global group `u mod 4`, including nonzero `u0`. The local
+address derives from the full row/relative-group position, divided by four.
+ATTQK commits score lines locally and sends compact per-line maxima to the
+existing global maximum path. ASMAX receives that common maximum and uses
+existing VU EXP lanes in the same outer group. ATTPV reads P locally into the
+existing activation buffer. The operation does not write scores/P to their
+legacy SPM destinations; those fields still satisfy SPM range/extent checks
+and retain geometry and dependency meaning.
+PV partials, LSUM, AMERGE and ANORM retain their existing shared path and
+`((c0+c1)+(c2+c3))` arithmetic order.
+
+There are three physically separate 1R1W banks per owner. One may produce QK,
+one may process ASMAX, and another may supply P to PV. A slot is not a global
+SPM alias or a DDR handle. Software owns its reuse: QK completion precedes
+ASMAX, ASMAX completion precedes PV, and PV's consumption precedes the next
+QK that reuses that slot. The supplied firmware relies on the ordered MVM
+queue and explicit VU dependencies. There is no independently tagged hardware
+generation or automatic rollback for malformed raw schedules. Completion
+follows the last required write; reset/abort follows EX's existing drain
+contract, including accepted DDR responses.
+
+The firmware selects local or legacy for the whole record before issuing
+writes. It preflights all selected query tiles/chunks and uses the legacy path
+for GENERAL, mixed or oversized records. Multi-tile records whose first tile
+has at most 16 groups also retain legacy execution to avoid planning overhead.
+This coverage rule does not reject previously accepted FLASH_ATTN records.
+It can leave later large chunks of a causal prefill on the legacy path.
+Legacy and local commands coexist on the same image. Local slots are private
+to the record; list cuts, CPU readers and final outputs still use DDR.
+
 ### 5.6 `AMERGE` — channel tree and online merge (0x36, unit 3 VU)
 
 flags w0[12] INIT. w1 Orun (R rows of D/16 lines), w2 parts (an `ATTPV` dst written with LSUM),

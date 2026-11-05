@@ -604,3 +604,39 @@ def test_weight_rewritten_every_call_goes_back_to_cpu():
     cnt = tt.counters()
     assert cnt["cpu_fallback_calls"] == 2            # calls 5 and 6
     assert cnt["uploads"] == 3 + 3                   # fc1, fc2, fc3 + fc2 on calls 2..4
+
+def test_local_scale_region_and_shared_result(dev):
+    model = torch.nn.Linear(128, 69, bias=False).eval()
+    x = _x((5, 128), seed=54)
+    with torch.no_grad(), eager_ref():
+        ref = model(x)
+    tt.reset_counters()
+    with torch.no_grad():
+        compiled = tt.compile(lambda t: model(t) * 2.0)
+        assert _same_bits(compiled(x), ref * 2.0)
+        if dev.config["local_scale"]:
+            assert tt.counters()["local_scale_calls"] == 1
+        else:
+            assert tt.counters()["local_scale_calls"] == 0
+
+        def escapes(t):
+            y = model(t)
+            return y, y * 2.0
+
+        before = tt.counters()["local_scale_calls"]
+        y, y2 = tt.compile(escapes)(x)
+        assert _same_bits(y, ref) and _same_bits(y2, ref * 2.0)
+        assert tt.counters()["local_scale_calls"] == before
+
+@pytest.mark.parametrize("dtype,bias,scale", [(torch.bfloat16, False, 2.0), (torch.float32, True, 2.0),
+                                             (torch.float32, False, 0.5)])
+def test_local_scale_region_preserves_cpu_contract(dtype, bias, scale):
+    model = torch.nn.Linear(128, 69, bias=bias, dtype=dtype).eval()
+    x = _x((5, 128), dtype=dtype, seed=66)
+    with torch.no_grad(), eager_ref():
+        ref = model(x) * scale
+    tt.reset_counters()
+    with torch.no_grad():
+        y = tt.compile(lambda t: model(t) * scale)(x)
+    assert _same_bits(y, ref) and y.dtype == dtype
+    assert tt.counters()["device_calls"] == 1 and tt.counters()["local_scale_calls"] == 0

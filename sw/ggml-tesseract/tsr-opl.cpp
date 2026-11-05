@@ -148,6 +148,8 @@ void tsr_opl_builder::kind_ranges(uint32_t kind, const uint32_t * a, uint64_t au
     wr.clear();
     switch (kind) {
         case opl::K_MUL_MAT:
+        case opl::K_MUL_MAT_SCALE:
+        case opl::K_MUL_MAT_SOFTCAP:
             mm_ranges(a, rd, wr);
             return;
         case opl::K_ADD:
@@ -379,10 +381,10 @@ uint32_t tsr_opl_builder::add(uint32_t kind, const uint32_t * args, uint32_t n_a
     return idx;
 }
 
-uint32_t tsr_opl_builder::mul_mat(const uint32_t * args, int32_t tag) {
+uint32_t tsr_opl_builder::mul_mat(const uint32_t * args, int32_t tag, uint32_t kind) {
     std::vector<tsr_dram_range> rd, wr;
     mm_ranges(args, rd, wr);
-    return add(opl::K_MUL_MAT, args, mm::NARGS, rd, wr, tag);
+    return add(kind, args, opl::kind_nargs(kind), rd, wr, tag);
 }
 
 bool tsr_opl_builder::touches(const tsr_dram_range & r, bool any_access) const {

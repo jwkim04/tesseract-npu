@@ -121,7 +121,7 @@ def test_isa_structs():
             vals = {n: rnd.getrandbits(w) for n, w in sd.fields}
             assert sd.unpack(sd.pack(**vals)) == vals
     assert isa.DMA_CMD_T.width == 101 and isa.QACT_CMD_T.width == 133
-    assert isa.MVM_CMD_T.width == 294
+    assert isa.MVM_CMD_T.width == 360
     assert isa.MVM_CCMD_T.width == 137 and isa.MVM_BCLINE_T.width == 527
     assert isa.MVM_FCMD_T.width == 137 and isa.MVM_BEAT_T.width == 1175
     assert isa.unpack_array(isa.pack_array([-1, 5, -128, 127], 8), 4, 8, signed=True) == [-1, 5, -128, 127]

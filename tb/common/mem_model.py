@@ -7,6 +7,7 @@ One MemModel serves all NUM_CH channels of a DUT whose memory ports follow the t
     <p>rd_rsp_valid/ready, <p>rd_rsp_data, <p>rd_rsp_id, <p>rd_rsp_last       (mem -> core)
     <p>wr_req_valid/ready, <p>wr_req_addr, <p>wr_req_len, <p>wr_req_id        (core -> mem)
     <p>wr_dat_valid/ready, <p>wr_dat_data, <p>wr_dat_last                     (core -> mem)
+    <p>wr_dat_mask, when present: one enable bit per 32-bit word, bit 0 low
     <p>wr_rsp_valid/ready, <p>wr_rsp_id                                       (mem -> core)
 
 Behaviour (seeded, per channel): random request acceptance (backpressure on rd_req, wr_req,
@@ -88,6 +89,7 @@ class _Chan:
         self.pend_wr_dat = None
         # tracking
         self.written = set()
+        self.write_masks = []
         self.read = set()
         self.read_unwritten = set()
         self.stall = 0
@@ -140,6 +142,7 @@ class MemModel:
         self.s_wr_req_addr, self.s_wr_req_len, self.s_wr_req_id = g("wr_req_addr"), g("wr_req_len"), g("wr_req_id")
         self.s_wr_dat_valid, self.s_wr_dat_ready = g("wr_dat_valid"), g("wr_dat_ready")
         self.s_wr_dat_data, self.s_wr_dat_last = g("wr_dat_data"), g("wr_dat_last")
+        self.s_wr_dat_mask = getattr(dut, prefix + "wr_dat_mask", None)
         self.s_wr_rsp_valid, self.s_wr_rsp_ready, self.s_wr_rsp_id = g("wr_rsp_valid"), g("wr_rsp_ready"), g("wr_rsp_id")
         self._drive_idle()
 
@@ -189,9 +192,15 @@ class MemModel:
     def read_unwritten(self):
         return [c.read_unwritten for c in self.ch]
 
+    @property
+    def write_masks(self):
+        """Ordered (beat, word mask) writes per channel since clear_tracking()."""
+        return [c.write_masks for c in self.ch]
+
     def clear_tracking(self):
         for c in self.ch:
             c.written.clear()
+            c.write_masks.clear()
             c.read.clear()
             c.read_unwritten.clear()
             c.src_beats = [0, 0, 0, 0]
@@ -277,6 +286,8 @@ class MemModel:
         if s["wdv"]:
             s["wdd"] = int(self.s_wr_dat_data.value)
             s["wdl"] = int(self.s_wr_dat_last.value)
+            if self.s_wr_dat_mask is not None:
+                s["wdm"] = int(self.s_wr_dat_mask.value)
         s["wsr"] = int(self.s_wr_rsp_ready.value)
         return s
 
@@ -352,7 +363,9 @@ class MemModel:
             ch.pend_wr_req = None
         # ---- write data ----
         if self._bit(s["wdv"], c):
-            p = (self._field(s["wdd"], c, bb), self._bit(s["wdl"], c))
+            full_mask = (1 << (bb // 32)) - 1
+            mask = self._field(s["wdm"], c, bb // 32) if "wdm" in s else full_mask
+            p = (self._field(s["wdd"], c, bb), self._bit(s["wdl"], c), mask)
             if ch.pend_wr_dat is not None and p != ch.pend_wr_dat:
                 self._fail("ch%d wr_dat payload changed before the handshake" % c)
             if ch.wr_dat_ready:
@@ -368,11 +381,16 @@ class MemModel:
         while ch.wreqs and len(ch.wdata) >= ch.wreqs[0][2]:
             id_, addr, ln = ch.wreqs.popleft()
             for i in range(ln):
-                data, last = ch.wdata.popleft()
+                data, last, mask = ch.wdata.popleft()
                 if last != (i == ln - 1):
                     self._fail("ch%d write burst at 0x%x len %d: wr_dat_last=%d on beat %d" % (c, addr, ln, last, i))
                 beat = addr + i
                 if beat < self.limit:
+                    if mask != (1 << (bb // 32)) - 1:
+                        bits = sum(0xFFFFFFFF << (32 * word)
+                                   for word in range(bb // 32) if mask & (1 << word))
+                        data = (ch.mem.get(beat, 0) & ~bits) | (data & bits)
+                    ch.write_masks.append((beat, mask))
                     if data:
                         ch.mem[beat] = data
                     else:

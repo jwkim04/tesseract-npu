@@ -105,6 +105,7 @@ Both are informational estimates until the RVFI lockstep against the RTL exists 
 | `TSR_TRACE_KR_DUMP` | any value | `tsr_trace.c`: with verbose replay through the replay kernel, prints the captured launch (debugging aid) |
 | `TSR_SIM_THREADS` | 1 to 64 | MVM worker threads of the simulator behind the `sim` and `mock` transport kinds (default `min(online CPUs, 8)`) and of the tools that create simulators themselves (`tsr-trace-replay`, `tsr-trace-conv`, the `tsr-selftest` shadow: default 1; `tsr-numcheck`: 4 when unset). The library default is 1. Results do not depend on it |
 | `TSR_SIM_TMAX`, `TSR_SIM_CH_GIB`, `TSR_SIM_DRAM_DIR` | 1 to 8 (default 1), 1 to 16 (default 16), a directory | the `sim` transport kind (configuration of the simulated core: `T_MAX`, channel size, file-backed DRAM for models that do not fit in RAM) |
+| `TSR_SIM_ATT_LOCAL`, `TSR_SIM_MVM_LOCAL_SCALE`, `TSR_SIM_MVM_LOCAL_SOFTCAP` | 0 or 1 (default 1) | `sim` transport feature controls for matched legacy comparisons. The four-owner capabilities are reported only on four-channel configurations. Local execution uses the existing functional cycle model. |
 | `TSR_REF_MATH_FULL`, `TSR_REF_MATH_THREADS` | `1`, a number | the opt-in exhaustive `ref_math_*_full` tests |
 
 A value that does not parse makes `tsr_sim_create_opts` fail with a message. The options exist as

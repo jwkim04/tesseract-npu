@@ -249,12 +249,12 @@ static void test_kvst(void) {
         uint64_t rmw = 0;
         for (uint32_t ch = 0; ch < NCH; ++ch) {
             rmw += st.meta_rmw[ch];
-            CHECK(tsr_sim_perf(s, TSR_PERF_CH_RD_BEATS(ch)) == st.meta_rmw[ch], "%s: CH_RD_BEATS[%u] = RMW reads", what, ch);
+            CHECK(tsr_sim_perf(s, TSR_PERF_CH_RD_BEATS(ch)) == 0u, "%s: masked KVST has no CH_RD_BEATS[%u]", what, ch);
         }
-        CHECK(tsr_sim_perf(s, TSR_PERF_KVST_RMW(NCH)) == rmw, "%s: KVST_RMW %llu", what, (unsigned long long)rmw);
-        if (c->kv == TSR_KV_K && c->E == 1024u) CHECK(rmw == 0u, "%s: E = 1024 rows fill whole chunks: no RMW", what);
-        if (c->kv == TSR_KV_K && c->E == 512u)              // two cells per K chunk: RMW iff a run end is odd
-            CHECK((rmw > 0u) == (((c->c0 | (c->c0 + c->n_rows)) & 1u) != 0u), "%s: E = 512 K chunks: RMW %llu", what,
+        CHECK(tsr_sim_perf(s, TSR_PERF_KVST_RMW(NCH)) == 0u, "%s: masked KVST has no core RMW", what);
+        if (c->kv == TSR_KV_K && c->E == 1024u) CHECK(rmw == 0u, "%s: E = 1024 rows fill whole chunks: no partial meta", what);
+        if (c->kv == TSR_KV_K && c->E == 512u)              // two cells per K chunk: partial meta iff a run end is odd
+            CHECK((rmw > 0u) == (((c->c0 | (c->c0 + c->n_rows)) & 1u) != 0u), "%s: E = 512 K chunks: partial meta %llu", what,
                   (unsigned long long)rmw);
         for (uint32_t ch = 0; ch < NCH; ++ch) free(exp[ch]);
         free(spm0);
@@ -262,8 +262,9 @@ static void test_kvst(void) {
     }
 }
 
-// Capture (SW §5.5): KVST reports the partial meta beats it reads (init) and every beat it writes
-// (expect); ATTQK / ATTPV report the streamed beats (init). The sets are derived here from the
+// Capture (SW §5.5): KVST saves partial meta preimages (init) for preserved-byte replay checks,
+// not physical reads, and every written beat (expect). ATTQK / ATTPV capture streamed beats
+// (init). The sets are derived here from the
 // address functions of AT §4.3 / §4.4.
 typedef struct { uint32_t ch; uint64_t beat; } cbeat;
 static int cbeat_cmp(const void * a, const void * b) {
@@ -689,6 +690,19 @@ static void test_checks(void) {
     CHECK(check_only(s, as, NULL, NULL) == 0 && op_err(s, an, NULL) == 0, "ATT without VU: the vector ops run");
     CHECK(TSR_GET(tsr_sim_csr_read(s, TSR_CSR_CFG3), TSR_CFG3_PCAP16) * 16u == TSR_PCAP_U200, "CFG3 PCAP/16");
     tsr_sim_destroy(s);
+
+    s = mk_sim(CAPS_AT | TSR_CAPS_ATT_LOCAL, 8);
+    const uint32_t local_meta = 1u | (3u << TSR_ASMAX_LOCAL_U0_LSB);
+    expect_ok(s, with(e_asmax(100, 100, 50, 13, 16, 224, sc), 7, local_meta), "local ASMAX 224 rows");
+    expect_err(s, with(e_asmax(100, 100, 50, 13, 16, 225, sc), 7, local_meta), OP, 16, "local ASMAX 225 rows");
+    expect_err(s, with(e_asmax(100, 100, 50, 1, 4, 256, sc), 7, local_meta), OP, 4, "local ASMAX 256 rows");
+    expect_err(s, with(e_asmax(100, 100, 50, 129, 132, 16, sc), 7, local_meta), OP, 132, "local ASMAX 129 groups");
+    expect_err(s, with(e_asmax(100, 100, 50, 256, 256, 16, sc), 7, local_meta), OP, 256, "local ASMAX 256 groups");
+    expect_err(s, with(e_asmax(100, 100, 50, 128, 128, 141, sc), 7, local_meta), OP, 128, "local ASMAX slot overflow");
+    expect_err(s, with(e_asmax(100, 100, 50, 13, 13, 16, sc), 7, local_meta), OP, 13, "local ASMAX needs padded stride");
+    expect_err(s, with(e_asmax(100, 100, 50, 13, 16, 16, sc), 7, 3u << TSR_ASMAX_LOCAL_U0_LSB), IL, 0,
+               "ASMAX local origin without slot");
+    tsr_sim_destroy(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -733,7 +747,7 @@ static void test_extents(void) {
 static void test_cycles(void) {
     tsr_sim * s = mk_sim(CAPS_AT, 8);
     CHECK(cyc(s, e_kvst(TSR_KV_K, 1, 100, 1000, 16, 4, 0, 0)) == 40u + 1u + 16u, "KVST K E = 1024, one row: no RMW");
-    CHECK(cyc(s, e_kvst(TSR_KV_V, 1, 100, 1000, 16, 4, 0, 0)) == 40u + 16u + 16u + 16u, "KVST V one row: 16 RMW metas");
+    CHECK(cyc(s, e_kvst(TSR_KV_V, 1, 100, 1000, 16, 4, 0, 0)) == 40u + 16u + 16u, "KVST V one row: 16 masked metas, no core reads");
     CHECK(cyc(s, e_kvst(TSR_KV_V, 16, 100, 1000, 16, 4, 16, 0)) == 40u + 16u + 256u, "KVST V full group: no RMW");
     att_f q = { 0, TSR_ATT_MAXOUT, 4, 0, 2, 0, 2, 4, 0, 100, 1000, 7000, 0, 16, lohi(0, 256), 2000 };
     CHECK(cyc(s, e_att(TSR_OP_ATTQK, &q)) == 350u + 256u, "ATTQK D 64, 16 pass rows: gather-bound");
@@ -804,13 +818,13 @@ static void test_perf(void) {
     CHECK(tsr_sim_perf(s, TSR_PERF_MVM_CYCLES) == cyc(s, qk) + cyc(s, pv), "MVM_CYCLES = ATTQK + ATTPV");
     CHECK(tsr_sim_perf(s, TSR_PERF_VU_CYCLES) == vcyc, "VU_CYCLES = the vector ops");
     CHECK(tsr_sim_perf(s, TSR_PERF_DMA_CYCLES(C)) == cyc(s, kvst), "DMA_CYCLES = the KVST");
-    CHECK(rmw > 0 && tsr_sim_perf(s, TSR_PERF_KVST_RMW(C)) == rmw, "KVST_RMW");
+    CHECK(rmw > 0 && tsr_sim_perf(s, TSR_PERF_KVST_RMW(C)) == 0u, "partial meta writes require no core KVST_RMW");
     CHECK(tsr_sim_perf(s, TSR_PERF_VU_LINES(C)) == vlines, "VU_LINES of the vector ops (%llu)",
           (unsigned long long)tsr_sim_perf(s, TSR_PERF_VU_LINES(C)));
-    // groups 3..15: channel c streams its groups twice (K and V), 34 beats each, plus KVST's RMW reads
+    // groups 3..15: channel c streams its groups twice (K and V), 34 beats each; KVST adds no reads
     for (uint32_t c = 0; c < NCH; ++c) {
         const uint64_t g_c = tsr_att_ch_groups(NCH, 3, 13, c);
-        CHECK(tsr_sim_perf(s, TSR_PERF_CH_RD_BEATS(c)) == 2u * g_c * 34u + st.meta_rmw[c], "CH_RD_BEATS[%u]", c);
+        CHECK(tsr_sim_perf(s, TSR_PERF_CH_RD_BEATS(c)) == 2u * g_c * 34u, "CH_RD_BEATS[%u]", c);
     }
     // 16 pass rows x 13 groups = 208 lines against 4 groups x 34 = 136 beats: 72 stalled cycles per op
     CHECK(tsr_sim_perf(s, TSR_PERF_ATT_PATH_STALL(C)) == 2u * (208u - 136u), "ATT_PATH_STALL");

@@ -96,20 +96,20 @@ void tsr_kv_get_bytes(uint32_t kv, const tsr_kv_geom * g, const uint8_t * const 
 // ---------------------------------------------------------------------------
 // KVST (AT §5.1): store n_rows QA(A32, E) vectors into cells c0 .. c0 + n_rows - 1
 // ---------------------------------------------------------------------------
-// Beats a KVST writes and reads, per channel (cycle model "40 + beats + RMW reads", AT §13.4;
-// PERF KVST_RMW, AT §10). A meta beat the op fully covers is written without a read; a partially
-// covered one (K with E % 1024 != 0 or a row spanning chunks, V unless the op writes all 16 cells
-// of the group) is read-modify-written (AT §5.1).
+// Beats a KVST writes, per channel (cycle model "40 + beats", AT §13.4).
+// meta_rmw retains its historical field name and ABI, but counts partially covered meta beats.
+// The masked-write implementation issues no core reads, and PERF KVST_RMW remains zero.
+// Any DDR controller ECC read-modify-write is outside this model.
 typedef struct tsr_kvst_stats {
     uint32_t meta_beats[TSR_NUM_CH_MAX];    // meta beats written
-    uint32_t meta_rmw[TSR_NUM_CH_MAX];      // of those, read-modify-written (one beat read each)
+    uint32_t meta_rmw[TSR_NUM_CH_MAX];      // of those, partially covered; not physical reads
     uint32_t quant_beats[TSR_NUM_CH_MAX];   // quant beats written (always full)
 } tsr_kvst_stats;
 void tsr_kvst_count(uint32_t kv, const tsr_kv_geom * g, uint32_t c0, uint32_t n_rows, tsr_kvst_stats * st);
 
 // src: QA vector i at src + 64·i·src_stride (src_stride 0 -> QA_LINES(A32, E)); its q bytes are
 // QS[0..E), its scales fp16(D[b]) (tsr_f32_to_fp16, exact for QACT output). Bytes are placed per
-// AT §4.3 / §4.4; every other byte of the plane is unchanged (the RMW merge). st may be NULL.
+// AT §4.3 / §4.4; every other byte of the plane is unchanged (masked writes). st may be NULL.
 // Preconditions: kv <= 1, 1 <= n_rows <= 64, c0 + n_rows <= 16·C·LG.
 void tsr_ref_kvst(uint32_t kv, const tsr_kv_geom * g, uint8_t * const plane[], uint32_t c0, uint32_t n_rows,
                   const uint8_t * src, uint32_t src_stride, tsr_kvst_stats * st);

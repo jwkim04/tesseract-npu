@@ -50,6 +50,7 @@ enum {
     TSR_EXT_SPM  = 1,
     TSR_EXT_DRAM = 2,
     TSR_EXT_SREG = 3,
+    TSR_EXT_ATT_LOCAL = 4,   // private FAST score/probability lines
 };
 #define TSR_EXT_READ     0u
 #define TSR_EXT_WRITE    1u
@@ -168,14 +169,18 @@ uint32_t tsr_sim_num_ch(const tsr_sim * sim);
 void tsr_sim_perf_add(tsr_sim * sim, uint32_t idx, uint64_t n);
 
 // Access capture hooks for exec functions (SW §5.5): a DRAM read / write of beats [lo, lo + n) on
-// channel ch. No-ops while capture is off. Call cap_read before reading (it copies the initial
-// content) and cap_write after writing.
+// channel ch. Accesses reach the race detector even while capture is off. Call cap_read before
+// reading (it copies the initial content when capturing) and cap_write after writing.
 void tsr_sim_cap_read(tsr_sim * sim, uint32_t ch, uint64_t lo, uint64_t n);
 void tsr_sim_cap_write(tsr_sim * sim, uint32_t ch, uint64_t lo, uint64_t n);
+// Save preimages for masked-write replay checks without reporting a physical read to the race
+// detector. Call before writing; a no-op when capture is off.
+void tsr_sim_cap_preserve(tsr_sim * sim, uint32_t ch, uint64_t lo, uint64_t n);
 
 // Scratch for exec functions: >= n bytes owned by the simulator, 64-byte aligned, reused by the
 // next call (not preserved between ops, not thread safe).
 void * tsr_sim_scratch(tsr_sim * sim, size_t n);
+float * tsr_sim_att_local(tsr_sim * sim);
 // MVM-style row parallelism: runs fn(ctx, lo, hi) over [0, total) on the simulator's worker
 // threads (tsr_sim_set_threads; results must not depend on the split), chunk rows at a time.
 void tsr_sim_parallel_rows(tsr_sim * sim, void (*fn)(void * ctx, uint32_t lo, uint32_t hi),
@@ -690,6 +695,7 @@ struct tsr_sim {
     uint8_t ** dram;
     int *      dram_fd;
     uint8_t *  spm;
+    float *    att_local;    // owner-banked FAST score/probability slots
     float      sreg[16];
     uint8_t *  itcm;
     uint8_t *  dtcm;

@@ -17,3 +17,5 @@
 0x19  FLASH_ATTN   1    8102aefbfe9cdb64
 0x1a  CPY          1    13765fbcaffb74ae
 0x1b  UNARY        1    96c49683d0a034dd
+0x1c  MUL_MAT_SCALE 1    5d333b36789f5115
+0x1d  MUL_MAT_SOFTCAP 1    9d454e96f9729b03

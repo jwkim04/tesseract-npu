@@ -50,7 +50,8 @@ module tsr_chk_at
   parameter int unsigned     SPM_BYTES   = TSR_DEF_SPM_BYTES,
   parameter longint unsigned CH_BYTES    = TSR_DEF_CH_BYTES,
   parameter int unsigned     ADDR_BEAT_W = TSR_DEF_ADDR_BEAT_W,
-  parameter int unsigned     XC_CMD_W    = 256
+  parameter int unsigned     XC_CMD_W    = 256,
+  parameter bit              LOCAL_INTERMEDIATES = 1'b0
 ) (
   input  logic                     clk,
   input  logic                     rst_n,
@@ -150,14 +151,23 @@ module tsr_chk_at
   logic [16:0] x2_q;             // n + C - 1
   logic        n_bad_q;          // n = 0 or n > 4095
 
+  wire [1:0] local_slot = w_q[0][29:28];
+  wire local_invalid = (local_slot != 0) && !LOCAL_INTERMEDIATES;
+  tsr_insn_t att_rsv_allow;
+  always_comb begin
+    att_rsv_allow = '0;
+    if (LOCAL_INTERMEDIATES) att_rsv_allow[0][29:28] = '1;
+  end
+
   always_ff @(posedge clk) begin
     if (st_q[0]) begin
       is_kv_q  <= (op == OP_KVST);
       is_qk_q  <= (op == OP_ATTQK);
       is_pv_q  <= (op == OP_ATTPV);
       ill_q    <= (op == OP_KVST)  ? (((w_q & RSV_KVST) != '0) || sub >= 4'd2)
-                : (op == OP_ATTQK) ? (((w_q & RSV_ATTQK) != '0) || (!flg[2] && w7 != 32'd0))
-                : (op == OP_ATTPV) ? ((w_q & RSV_ATTPV) != '0)
+                : (op == OP_ATTQK) ? (((w_q & RSV_ATTQK & ~att_rsv_allow) != '0) || local_invalid ||
+                                    (!flg[2] && (w7 != 32'd0 || local_slot != 0)))
+                : (op == OP_ATTPV) ? (((w_q & RSV_ATTPV & ~att_rsv_allow) != '0) || local_invalid)
                 : 1'b1;
       fmt_q    <= (sub != 4'd0);
       maxout_q <= flg[2];
@@ -365,7 +375,13 @@ module tsr_chk_at
       else if (emod_q)                         begin c_code = TSR_ERR_OPERAND; c_info = 32'({e64_q, 6'd0}); end
       else if (hgs_q > g_q)                    begin c_code = TSR_ERR_OPERAND; c_info = 32'(hgs_q); end
       else if (n_bad_q)                        begin c_code = TSR_ERR_OPERAND; c_info = 32'(n_q); end
-      else if (is_qk_q) begin
+      else if (LOCAL_INTERMEDIATES && local_slot != 0 &&
+               (n_q > 16'd128 || 16'(rs_q) != ((n_q + 16'd3) & 16'hfffc) ||
+                r_q > 20'(TSR_LOCAL_MAX_ROWS) ||
+                32'(r_q) * 32'(rs_q >> 2) > 32'(TSR_LOCAL_SCORE_LINES))) begin
+        c_code = TSR_ERR_OPERAND;
+        c_info = 32'(rs_q);
+      end else if (is_qk_q) begin
         if (w6[15:0] > w6[31:16] || 20'(w6[31:16]) > (20'(n_q) << 4))
                                                begin c_code = TSR_ERR_OPERAND; c_info = 32'(w6[31:16]); end
         else if (prows_q > 16'(tsr_tables_pkg::TSR_ATT_MAX_PASS_ROWS))
@@ -404,7 +420,7 @@ module tsr_chk_at
 
     kcmd = '{kv: sub[0], n_rows: nr_q, src: w1, stride: kssp_q, base: w2, e64: e64_q, lg: w3[31:16],
              c0: w4};
-    acmd = '{pv: is_pv_q, flags: is_pv_q ? {2'b00, lsum_q} : flg[2:0], e64: e64_q, dcode: dc_q,
+    acmd = '{local_slot: LOCAL_INTERMEDIATES ? local_slot : 2'd0, pv: is_pv_q, flags: is_pv_q ? {2'b00, lsum_q} : flg[2:0], e64: e64_q, dcode: dc_q,
              g_m1: 6'(g_q - 7'd1), hg0: hg0_q, gs_m1: 3'(gs_q - 4'd1), tq_m1: 3'(tq_q - 4'd1),
              dst: w1, x: w2, base: w3, rs: 15'(rsp_q2), u0: u0_q, n: n_q[11:0],
              aux0: w6[15:0], aux1: is_pv_q ? 16'd0 : w6[31:16], w7: is_pv_q ? cs_q : w7};

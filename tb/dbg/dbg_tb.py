@@ -310,6 +310,10 @@ U_STATE_MASK = T.DBG_U_STATE_ACCEPTED | T.DBG_U_STATE_HOLD | T.DBG_U_STATE_OUTST
 # =================================================================================================
 # RTL side
 # =================================================================================================
+def dma_write_mask(index):
+    return (0x000F, 0x00F0, 0xF000, 0xFFFF)[index % 4]
+
+
 class Bench:
     def __init__(self, dut, cfg, qd, seed=1, dm=None, mem_lat=(1, 10), mem_ready=0.8, env_kw=None):
         self.dut = dut
@@ -475,8 +479,11 @@ class Bench:
             # memory port (write source of channel TRW_CH)
             rq = int(d.s_wr_req_valid.value) and int(d.s_wr_req_ready.value)
             rq_v = (int(d.s_wr_req_addr.value), int(d.s_wr_req_len.value), int(d.s_wr_req_id.value)) if rq else None
-            dq = int(d.s_wr_dat_valid.value) and int(d.s_wr_dat_ready.value)
-            dq_v = (int(d.s_wr_dat_data.value), int(d.s_wr_dat_last.value)) if dq else None
+            write_valid = int(d.s_wr_dat_valid.value)
+            write_ready = int(d.s_wr_dat_ready.value)
+            write_payload = (int(d.s_wr_dat_data.value), int(d.s_wr_dat_last.value),
+                             int(d.s_wr_dat_mask.value)) if write_valid else None
+            dq_v = write_payload if write_ready else None
             rspq = int(d.s_wr_rsp_valid.value) and int(d.s_wr_rsp_ready.value)
             dreq = int(d.d_wr_req_valid.value) and int(d.d_wr_req_ready.value)
             ddat = int(d.d_wr_dat_valid.value) and int(d.d_wr_dat_ready.value)
@@ -553,8 +560,13 @@ class Bench:
                     self.data_first += 1
             while self.wreq and self.wdat:
                 w = self.wreq[0]
-                dv, last = self.wdat.popleft()
-                self.mem[w[0] + w[3]] = dv
+                dv, last, mask = self.wdat.popleft()
+                expected_mask = 0xFFFF if w[2] == 1 else dma_write_mask(w[3])
+                if mask != expected_mask:
+                    self.errors.append(f"cycle {c}: write mask {mask:#06x}, expected {expected_mask:#06x}")
+                bits = sum(0xFFFFFFFF << (32 * word) for word in range(16) if mask & (1 << word))
+                address = w[0] + w[3]
+                self.mem[address] = (self.mem.get(address, 0) & ~bits) | (dv & bits)
                 w[3] += 1
                 if last != (w[3] == w[1]):
                     self.errors.append("cycle %d: WLAST %d at beat %d of %d" % (c, last, w[3], w[1]))
@@ -623,6 +635,7 @@ class Bench:
         if can_dat:
             d.d_wr_dat_data.value = cur[2][cur[4]]
             d.d_wr_dat_last.value = int(cur[4] == cur[1] - 1)
+            d.d_wr_dat_mask.value = dma_write_mask(cur[4])
 
     async def start(self, core_ps=10000, rv_ps=16000, rv_phase_ps=0):
         d = self.dut
@@ -644,7 +657,7 @@ class Bench:
                 "unit_progress", "plat_err_i", "rv_halt_pend", "unit_hung", "db_req", "db_we", "db_off",
                 "db_wdata", "ib_data_req", "ib_data_gnt", "ib_data_addr", "ib_data_we", "ib_data_be", "ib_cd",
                 "ib_sleep", "ib_halted", "ib_in_reset", "ib_dfault", "d_wr_req_valid", "d_wr_req_addr",
-                "d_wr_req_len", "d_wr_dat_valid", "d_wr_dat_data", "d_wr_dat_last", "s_wr_req_ready",
+                "d_wr_req_len", "d_wr_dat_valid", "d_wr_dat_data", "d_wr_dat_mask", "d_wr_dat_last", "s_wr_req_ready",
                 "s_wr_dat_ready", "s_wr_rsp_valid", "s_wr_rsp_id"]
         for nm in zero:
             getattr(d, nm).value = 0

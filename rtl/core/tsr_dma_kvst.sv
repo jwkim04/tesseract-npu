@@ -13,27 +13,22 @@
 // §4.4 (V: chunk (s LG + l) 17, meta bytes [4r, 4r+4) = d of blocks 2s, 2s+1, quant beat + 1 + r).
 // Group u lives in channel u mod C at local index l = u / C. Every other plane byte is unchanged:
 // a meta beat the op covers only partly (K: a chunk shared with cells outside the op; V: unless the
-// op writes all 16 cells of the group) is read-modify-written; a fully covered meta beat and every
-// quant beat are written without a read (quant beats never mix cells: E/32 is even).
+// op writes all 16 cells of the group) uses a word mask; a fully covered meta beat and every quant beat enable all words.
 //
 // Work order (deterministic; the result does not depend on it): group segments (the op's cells in
 // one group, ascending), per segment its items in DRAM order: K per chunk kappa a META item then a
 // QRUN item (the chunk's quant beats of the op's cells, one contiguous run, <= 16 beats); V per slice
 // s a META item then a QRUN item (cells r_lo..r_hi-1 of the slice, contiguous beats).
 //
-// Microarchitecture (one walker plus a read-ahead reader; every output is a flop):
+// Microarchitecture (one walker; every output is a flop):
 //   - setup: u_lo = c0 / 16, its channel / local index (exact division by NUM_CH, tsr_att_divc),
 //     the segment bases (B + l GB for K, B + 17 l for V), advanced per segment (no multiplier in
 //     the walk).
 //   - META: the walker issues the D-line reads of the meta beat (K: one per run of blocks of one
 //     cell inside one D line, <= 16 blocks; V: one per cell), back to back while the response
 //     buffer (RB entries) has room (R4: SPM reads have no backpressure); the placer converts two
-//     words per cycle (2 x tsr_f32_to_fp16) into the 32 fp16 slots of meta_q. A partial meta beat
-//     waits for its old content from the RMW FIFO, then old & ~mask | new & mask is pushed with a
-//     1-beat write request.
-//   - RMW reader: within the walker's current segment (one channel: responses in order) it reads
-//     the partial meta beats ahead of the walker, one beat per request, while the RMW FIFO (KQ
-//     entries) has room; responses (rd_rsp_ready = 1) fill the FIFO in item order.
+//     words per cycle (2 x tsr_f32_to_fp16) into the 32 fp16 slots of meta_q. The new words and their
+//     mask enter the write queue together with a one-beat write request.
 //   - QRUN: SPM reads of the run's QS lines (K: consecutive QS lines of a cell, then the next cell;
 //     V: line s of each cell) into the data queue (credit: DQ entries), and the run's write
 //     request(s) (split at 64-beat blocks).
@@ -41,12 +36,6 @@
 //     write requests from a request register (wr_req and wr_dat independent, rule M5).
 //   - done: the walk finished, the data queue and the request register are empty and every write
 //     response is in (sequential semantics: a later op sees the plane).
-// Throughput (*estimate*): K ~ (2 SPM_RD_LAT + 40) cycles per 17-beat chunk, V ~ (SPM_RD_LAT + 2 +
-//   2 x cells) per slice; the simulator's cycle model is 40 + beats + RMW reads (AT §13.4).
-// Cost (RTL structure): meta register 512 + mask 32, RMW FIFO KQ x 512 (LUTRAM), response buffer
-//   RB x 512, data queue DQ x 517 (LUTRAM), two fp32 -> fp16 converters, walk counters (~400 FF).
-//   Vivado OOC synthesis of tsr_dma (xcu200, 4 channels, 300 MHz): HAS_KVST 1 adds 3.9 K LUT, 1.9 K
-//   FF, 1.9 K LUTRAM, 4 DSP (1.95 K -> 5.86 K LUT); post-synthesis register-to-register WNS +0.131 ns.
 
 module tsr_dma_kvst
   import tsr_pkg::*;
@@ -67,12 +56,6 @@ module tsr_dma_kvst
   output logic                         busy,
   output logic                         done,        // registered pulse
 
-  output logic [NUM_CH-1:0]            rd_req_valid,
-  input  logic [NUM_CH-1:0]            rd_req_ready,
-  output logic [ADDR_BEAT_W-1:0]       rd_req_addr,
-  input  logic [NUM_CH-1:0]            rd_rsp_valid,
-  input  logic [NUM_CH-1:0][LB-1:0]    rd_rsp_data,
-
   output logic [NUM_CH-1:0]            wr_req_valid,
   input  logic [NUM_CH-1:0]            wr_req_ready,
   output logic [ADDR_BEAT_W-1:0]       wr_req_addr,
@@ -80,6 +63,7 @@ module tsr_dma_kvst
   output logic [NUM_CH-1:0]            wr_dat_valid,
   input  logic [NUM_CH-1:0]            wr_dat_ready,
   output logic [LB-1:0]                wr_dat_data,
+  output logic [LB/32-1:0]              wr_dat_mask,
   output logic                         wr_dat_last,
   input  logic [NUM_CH-1:0]            wr_rsp_valid,
 
@@ -89,7 +73,7 @@ module tsr_dma_kvst
   input  logic                         spm_rd_rsp_valid,
   input  logic [LB-1:0]                spm_rd_rsp_data,
 
-  output logic                         perf_rmw      // one pulse per read-modify-written meta beat
+  output logic                         perf_rmw      // explicit core RMW events (zero on the masked path)
 );
 
   if (NUM_CH < 1 || NUM_CH > TSR_NUM_CH_MAX) begin : g_chk_ch
@@ -98,7 +82,6 @@ module tsr_dma_kvst
 
   localparam int unsigned CHW = (NUM_CH > 1) ? $clog2(NUM_CH) : 1;
   localparam int unsigned AW  = (ADDR_BEAT_W > 7) ? ADDR_BEAT_W : 7;   // internal address width
-  localparam int unsigned KQ  = 16;                 // RMW FIFO entries
   localparam int unsigned RB  = 4;                  // D-line response buffer entries
   localparam int unsigned DQ  = (SPM_RD_LAT + 4 > 8) ? 16 : 8;   // data queue entries
   localparam int unsigned DQW = $clog2(DQ);
@@ -125,7 +108,6 @@ module tsr_dma_kvst
   // segment geometry
   logic [3:0]  rlo_q;           // first cell of the segment in its group
   logic [4:0]  rhi_q;           // one past the last (1..16)
-  logic        seg_part_q;      // V: not all 16 cells of the group
   logic [13:0] blo_q, bhi_q;    // K: beta range [r_lo nb, r_hi nb)
 
   // walk position: K chunk / V slice
@@ -149,13 +131,10 @@ module tsr_dma_kvst
   wire [13:0] cb1 = (bhi_q < ({kap_q, 5'd0} + 14'd32)) ? bhi_q : ({kap_q, 5'd0} + 14'd32);
   wire [5:0]  olo = 6'(cb0 - {kap_q, 5'd0});
   wire [5:0]  ohi = 6'(cb1 - {kap_q, 5'd0});
-  wire        k_part = (olo != 6'd0) || (ohi != 6'd32);
   // the item's chunk bounds, registered in S_MPRE (the walk then uses no adder chain from kap_q)
   logic [5:0]  olo_q, ohi_q;
-  logic        k_part_q;
   logic [9:0]  torow_q, storow_q;   // K: blocks to the row end (nb - b), at the item start
   logic [13:0] tock_q, stock_q;     // K: blocks to the chunk end (cb1 - beta), at the item start
-  wire        m_part = is_v ? seg_part_q : k_part_q;
 
   // -------------------------------------------------------------------------------------------
   // D-line reads (META) and QRUN SPM reads share the SPM read port; responses are routed by a tag
@@ -197,6 +176,7 @@ module tsr_dma_kvst
   logic [2:0]    rb_inf_q;             // D-line reads requested, response not in
   // data queue (DQ entries): {data, ch one-hot index, last}
   logic [LB-1:0] dq_mem [DQ];
+  logic [LB/32-1:0] dq_mask [DQ];
   logic [CHW-1:0] dq_ch [DQ];
   logic          dq_last [DQ];
   logic [DQW:0]  dq_wp_q, dq_rp_q;
@@ -221,30 +201,6 @@ module tsr_dma_kvst
   wire [63:0] pl_pair = pl_line_q[64*pl_wp_q +: 64];
   wire [15:0] h0 = tsr_f32_to_fp16(pl_pair[31:0]);
   wire [15:0] h1 = tsr_f32_to_fp16(pl_pair[63:32]);
-
-  // -------------------------------------------------------------------------------------------
-  // RMW reader and FIFO
-  // -------------------------------------------------------------------------------------------
-  logic [LB-1:0] kq_mem [KQ];
-  logic [4:0]    kq_wp_q, kq_rp_q;
-  logic [4:0]    kq_inf_q;             // reads issued, response not in
-  wire  [4:0]    kq_cnt = kq_wp_q - kq_rp_q;
-  logic          rr_on_q;              // reader active in the current segment
-  logic [8:0]    rr_k_q;               // reader's item index (K chunk / V slice)
-  logic [AW-1:0] rr_addr_q;            // its meta beat
-  logic          rq_v_q;               // read request register
-  logic [AW-1:0] rq_addr_q;
-  logic          perf_q;
-  logic [8:0]    klo_q;                // K first chunk of the segment
-
-  wire rr_part = is_v ? seg_part_q
-               : ((rr_k_q == klo_q) && (blo_q[4:0] != 5'd0)) || ((rr_k_q == klast_q) && (bhi_q[4:0] != 5'd0));
-  wire rq_fire = rq_v_q & |(rd_req_ready & (NUM_CH'(1) << ch_q));
-  wire kq_room = (32'(kq_cnt) + 32'(kq_inf_q) + 32'(rq_v_q)) < KQ;
-  wire rr_load = rr_on_q & (~rq_v_q | rq_fire) & kq_room & rr_part;
-  wire rr_skip = rr_on_q & ~rr_part;
-  wire rr_adv  = rr_load | rr_skip;
-  wire kq_push = |(rd_rsp_valid & (NUM_CH'(1) << ch_q)) & busy;
 
   // -------------------------------------------------------------------------------------------
   // Write requests, write responses
@@ -291,26 +247,14 @@ module tsr_dma_kvst
   wire m_issue = (st_q == S_MREQ) & m_rd_more & d_room & sr_free;
   wire q_issue = (st_q == S_QRUN) & (qn_q != 5'd0) & q_room & sr_free;
 
-  // META ready to push: all reads placed, old beat available if partial, write request free, data
-  // queue room
+  // META ready to push: all scale reads placed, write request free, data queue room
   wire m_ready = (placed_q == dreq_q) & ~pl_act_q & (rb_cnt_q == 3'd0) & (rb_inf_q == 3'd0)
-               & (~m_part | (kq_cnt != 5'd0)) & wq_free & ((32'(dq_cnt) + 32'(dq_inf_q)) < DQ);
+               & wq_free & ((32'(dq_cnt) + 32'(dq_inf_q)) < DQ);
   wire m_push  = (st_q == S_MPUSH) & m_ready;
-
-  logic [LB-1:0] kq_head;
-  assign kq_head = kq_mem[kq_rp_q[3:0]];
-  logic [LB-1:0] mmask_b, meta_bits, m_beat;
-  always_comb begin
-    for (int p = 0; p < 16; p++) begin
-      mmask_b[32*p +: 32] = {32{mmask_q[p]}};
-      meta_bits[32*p +: 32] = meta_q[p];
-    end
-    m_beat = m_part ? ((kq_head & ~mmask_b) | (meta_bits & mmask_b)) : meta_bits;
-  end
 
   wire walk_done = (st_q == S_FIN);
   wire all_quiet = walk_done & ~wq_v_q & (dq_cnt == '0) & (dq_inf_q == '0) & (wr_pend_q == 16'd0)
-                 & ~sr_v_q & (tv_q == '0) & ~rq_v_q & (kq_inf_q == 5'd0);
+                 & ~sr_v_q & (tv_q == '0);
 
   logic done_q;
 
@@ -329,12 +273,6 @@ module tsr_dma_kvst
       pl_act_q    <= 1'b0;
       placed_q    <= '0;
       dreq_q      <= '0;
-      kq_wp_q     <= '0;
-      kq_rp_q     <= '0;
-      kq_inf_q    <= '0;
-      rr_on_q     <= 1'b0;
-      rq_v_q      <= 1'b0;
-      perf_q      <= 1'b0;
       wq_v_q      <= 1'b0;
       wr_pend_q   <= '0;
       mmask_q     <= '0;
@@ -342,7 +280,6 @@ module tsr_dma_kvst
       qreq_left_q <= '0;
     end else begin
       done_q <= 1'b0;
-      perf_q <= 1'b0;
 
       // ---- SPM read register ----
       if (m_issue || q_issue) sr_v_q <= 1'b1;
@@ -375,23 +312,6 @@ module tsr_dma_kvst
       if (m_push || (rsp_v && rsp_tag.qrun)) dq_wp_q <= dq_wp_q + 1'b1;
       if (wr_dat_valid != '0 && |(wr_dat_ready & wr_dat_valid)) dq_rp_q <= dq_rp_q + 1'b1;
 
-      // ---- RMW reader / FIFO ----
-      if (rr_load) begin
-        rq_v_q    <= 1'b1;
-        rq_addr_q <= rr_addr_q;
-        perf_q    <= 1'b1;
-      end else if (rq_fire) begin
-        rq_v_q    <= 1'b0;
-      end
-      kq_inf_q <= kq_inf_q + 5'(rq_fire) - 5'(kq_push);
-      if (kq_push) kq_wp_q <= kq_wp_q + 5'd1;
-      if (m_push && m_part) kq_rp_q <= kq_rp_q + 5'd1;
-      if (rr_adv) begin
-        rr_k_q    <= rr_k_q + 9'd1;
-        rr_addr_q <= rr_addr_q + (is_v ? AW'(lg17_q) : AW'(17));
-        if (rr_k_q == klast_q) rr_on_q <= 1'b0;
-      end
-
       // ---- write requests / responses ----
       if (wq_fire) wq_v_q <= 1'b0;
       wr_pend_q <= wr_pend_q + 16'(wq_fire) - wr_rsp_n;   // only KVST writes are in flight; several
@@ -404,10 +324,7 @@ module tsr_dma_kvst
         S_I2: st_q <= S_I3;                                     // channel, segment base
         S_I3: st_q <= S_SEG;
         S_SEG: st_q <= S_SEG2;                                  // segment geometry
-        S_SEG2: begin                                           // segment start: first item
-          st_q    <= S_MPRE;
-          rr_on_q <= 1'b1;
-        end
+        S_SEG2: st_q <= S_MPRE;                                // segment start: first item
         S_MPRE: st_q <= S_MREQ;                                 // the item's chunk bounds
         S_MREQ: if (!m_rd_more && !m_issue) st_q <= S_MPUSH;
         S_MPUSH: if (m_push) st_q <= S_QRUN;
@@ -436,12 +353,6 @@ module tsr_dma_kvst
       end
       if (q_issue) qn_q <= qn_q - 5'd1;
 
-      // ---- registers the walker datapath below loads, kept in this block (one procedural driver each:
-      // Vivado ignores all but one driver of a variable written by two blocks) ----
-      if (st_q == S_SEG2) begin                                 // segment start: the reader's first item
-        rr_k_q    <= is_v ? 9'd0 : 9'(blo_q >> 5);
-        rr_addr_q <= is_v ? sbase_q : sbase_q + AW'(blo_q >> 5) * AW'(17);
-      end
       if (st_q == S_SEG2 || st_q == S_NEXT) begin               // item / segment start: a new META
         mmask_q  <= '0;
         placed_q <= '0;
@@ -482,14 +393,12 @@ module tsr_dma_kvst
     // segment geometry (S_SEG): the segment of group u_q with r_lo = rlo_q
     if (st_q == S_SEG) begin
       rhi_q      <= (u_q == u_hi_q) ? 5'(rhi1_q) + 5'd1 : 5'd16;
-      seg_part_q <= (rlo_q != 4'd0) || (u_q == u_hi_q && rhi1_q != 4'd15);
       blo_q      <= 14'(rlo_q) * 14'(nb_q);
       bhi_q      <= ((u_q == u_hi_q) ? 14'(5'(rhi1_q) + 5'd1) : 14'd16) * 14'(nb_q);
     end
     if (st_q == S_SEG2) begin
       // first item of the segment
       kap_q    <= is_v ? 9'd0 : 9'(blo_q >> 5);
-      klo_q    <= is_v ? 9'd0 : 9'(blo_q >> 5);
       klast_q  <= is_v ? 9'(c_q.e64 - 9'd1) : 9'((bhi_q - 14'd1) >> 5);
       maddr_q  <= is_v ? sbase_q : sbase_q + AW'(blo_q >> 5) * AW'(17);
       r_q      <= 5'(rlo_q);
@@ -508,7 +417,6 @@ module tsr_dma_kvst
     if (st_q == S_MPRE) begin
       olo_q    <= olo;
       ohi_q    <= ohi;
-      k_part_q <= k_part;
       tock_q   <= cb1 - beta_q;
       stock_q  <= cb1 - beta_q;
     end
@@ -620,34 +528,34 @@ module tsr_dma_kvst
     if (pl_start) pl_line_q <= rb_mem[rb_rp_q];
     if (pl_act_q) meta_q[pl_sp_q] <= {h1, h0};
     if (m_push) begin
-      dq_mem[dq_wp_q[DQW-1:0]]  <= m_beat;
+      dq_mem[dq_wp_q[DQW-1:0]]  <= meta_q;
+      dq_mask[dq_wp_q[DQW-1:0]] <= mmask_q;
       dq_ch[dq_wp_q[DQW-1:0]]   <= ch_q;
       dq_last[dq_wp_q[DQW-1:0]] <= 1'b1;
     end else if (rsp_v && rsp_tag.qrun) begin
       dq_mem[dq_wp_q[DQW-1:0]]  <= spm_rd_rsp_data;
+      dq_mask[dq_wp_q[DQW-1:0]] <= '1;
       dq_ch[dq_wp_q[DQW-1:0]]   <= rsp_tag.ch;
       dq_last[dq_wp_q[DQW-1:0]] <= rsp_tag.last;
     end
-    if (kq_push) kq_mem[kq_wp_q[3:0]] <= rd_rsp_data[ch_q];
   end
 
   // ---- outputs ----
   wire dq_ne = (dq_cnt != '0);
   assign busy             = (st_q != S_IDLE);
   assign done             = done_q;
-  assign rd_req_valid     = rq_v_q ? (NUM_CH'(1) << ch_q) : '0;
-  assign rd_req_addr      = ADDR_BEAT_W'(rq_addr_q);
   assign wr_req_valid     = wq_v_q ? (NUM_CH'(1) << ch_q) : '0;
   assign wr_req_addr      = ADDR_BEAT_W'(wq_addr_q);
   assign wr_req_len       = wq_len_q;
   assign wr_dat_valid     = dq_ne ? (NUM_CH'(1) << dq_ch[dq_rp_q[DQW-1:0]]) : '0;
   assign wr_dat_data      = dq_mem[dq_rp_q[DQW-1:0]];
+  assign wr_dat_mask      = dq_mask[dq_rp_q[DQW-1:0]];
   assign wr_dat_last      = dq_last[dq_rp_q[DQW-1:0]];
   assign spm_rd_req_valid = sr_v_q;
   assign spm_rd_req_line  = sr_line_q;
-  assign perf_rmw         = perf_q;
+  assign perf_rmw         = 1'b0;
 
-  wire unused_ok = &{1'b0, c_q.n_rows, c_q.src, c_q.lg, c_q.c0, rb_tag[0].last, rb_tag[0].qrun, rb_tag[0].ch, ch_c, rq_addr_q, wq_addr_q, gb_q, lg17_q, llo_q};
+  wire unused_ok = &{1'b0, c_q.n_rows, c_q.src, c_q.lg, c_q.c0, rb_tag[0].last, rb_tag[0].qrun, rb_tag[0].ch, ch_c, wq_addr_q, gb_q, lg17_q, llo_q};
 
 `ifndef SYNTHESIS
   logic a_on_q;
@@ -658,12 +566,10 @@ module tsr_dma_kvst
       if (start) assert (st_q == S_IDLE) else $error("%m: start while busy");
       assert (32'(rb_cnt_q) + 32'(rb_inf_q) <= RB) else $error("%m: D-line response buffer overflow (held %0d in flight %0d st %0d)", rb_cnt_q, rb_inf_q, st_q);
       assert (32'(dq_cnt) + 32'(dq_inf_q) <= DQ) else $error("%m: data queue overflow");
-      assert (32'(kq_cnt) + 32'(kq_inf_q) <= KQ) else $error("%m: RMW FIFO overflow");
-      if (m_push && m_part) assert (kq_cnt != 5'd0) else $error("%m: partial meta beat without its old content");
+      if (m_push) assert (mmask_q != '0) else $error("%m: empty META mask");
       if (wq_fire) assert (wq_len_q != '0 && 32'(wq_addr_q[5:0]) + 32'(wq_len_q) <= 64)
         else $error("%m: write burst addr %0h len %0d breaks the 4 KiB rule", wq_addr_q, wq_len_q);
-      if (|rd_rsp_valid) assert (busy && kq_inf_q != 5'd0) else $error("%m: read response without a request");
-      if (st_q == S_IDLE) assert (!sr_v_q && !wq_v_q && !rq_v_q && dq_cnt == '0)
+      if (st_q == S_IDLE) assert (!sr_v_q && !wq_v_q && dq_cnt == '0)
         else $error("%m: traffic while idle");
     end
   end

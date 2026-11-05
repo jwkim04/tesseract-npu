@@ -65,6 +65,7 @@ struct dev_cfg {
     uint32_t caps = 0;    // CAPS (EX §5.1): bit0 VU (VOP, RED, ROPE, SOP), bit5 AT ops, bit6 DQROW
 };
 constexpr uint32_t CAPS_VU = 1u << 0, CAPS_ATT = 1u << 5, CAPS_DQROW = 1u << 6;   // = mmio.hpp CAPS_*
+constexpr uint32_t CAPS_MVM_LOCAL_SCALE = 1u << 13, CAPS_MVM_LOCAL_SOFTCAP = 1u << 14;
 constexpr dev_cfg U200_K4 = {65536u, 8u, 32768u, 4u, 9344u, 16u, CAPS_VU | CAPS_ATT};
 
 // ---------------------------------------------------------------------------------------------
@@ -505,6 +506,14 @@ constexpr op_plan plan_op(const dev_cfg & c, uint32_t kind, const uint32_t * arg
         case opl::K_NOP:
         case opl::K_JOIN:    return op_plan{opl::RET_OK, 0u};
         case opl::K_MUL_MAT: return mul_mat_plan(c, args, n_args);
+        case opl::K_MUL_MAT_SCALE:
+        case opl::K_MUL_MAT_SOFTCAP: {
+            const uint32_t cap = kind == opl::K_MUL_MAT_SCALE ? CAPS_MVM_LOCAL_SCALE : CAPS_MVM_LOCAL_SOFTCAP;
+            if (!(c.caps & cap) || c.num_ch != 4u ||
+                !opl::mm_scale::operands_ok(args[opl::mm::ADD], args[opl::mm::ADD_STRIDE], args[opl::mm::FLAGS]))
+                return op_plan{opl::RET_BAD_RECORD, SCRATCH_UNSUPPORTED};
+            return mul_mat_plan(c, args, n_args);
+        }
         default: {
             kind_plan kp{};
             return plan_kind(plan_limits_of(c), kind, args, n_args, &kp) ? op_plan{opl::RET_OK, kp.scratch_lines}

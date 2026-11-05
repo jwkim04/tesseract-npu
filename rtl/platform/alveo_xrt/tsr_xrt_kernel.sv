@@ -59,6 +59,13 @@ module tsr_xrt_kernel
   parameter int unsigned     SPM_RD_LAT     = TSR_DEF_SPM_RD_LAT,
   parameter int unsigned     MVM_WS_FIFO    = TSR_DEF_WS_FIFO_BEATS,
   parameter int unsigned     MVM_BC_PIPE    = TSR_DEF_MVM_BC_PIPE,
+  parameter bit              DDR_LOCAL_PIPE = 1'b0,
+  parameter bit              LOCAL_INTERMEDIATES = 1'b0,
+  parameter bit              LOCAL_SOFTCAP = 1'b0,
+  parameter bit              LOCAL_SCALE = 1'b0,
+  parameter bit              RV_LOCAL_TRANSPORT = 1'b0,
+  parameter bit              MVM_GATHER_PAIR = 1'b0,
+  parameter int unsigned     MVM_GATHER_FLITS = 1,
   parameter int unsigned     MVM_RES_PIPE   = TSR_DEF_MVM_RES_PIPE,
   parameter int unsigned     MVM_ACT_RD_LAT = TSR_DEF_ACT_RD_LAT,
   parameter int unsigned     MVM_MAC_LAT    = TSR_DEF_MAC_LAT,
@@ -67,6 +74,7 @@ module tsr_xrt_kernel
   parameter int unsigned     MVM_WS_RD_LAT  = TSR_DEF_WS_RD_LAT,
   parameter int unsigned     RST_PIPE       = 0,
   // the vector unit's lane knobs (VU §7.10: 16 / 8 on k4, 8 / 4 on k1; results unchanged)
+  parameter int unsigned     VU_FRONT_LANES = tsr_tables_pkg::TSR_VU_FRONT_LANES,
   parameter int unsigned     VU_EXP_LANES   = tsr_tables_pkg::TSR_VU_FRONT_LANES,
   parameter int unsigned     VU_BACK_LANES  = tsr_tables_pkg::TSR_VU_BACK_LANES,
   // register stages on each side of the VU lanes (k4: 2, the lanes sit in SLR0; k1: 0)
@@ -203,6 +211,7 @@ module tsr_xrt_kernel
   logic [NUM_CH-1:0][TSR_LEN_W-1:0]    rd_req_len, wr_req_len;
   logic [NUM_CH-1:0][TSR_MEM_ID_W-1:0] rd_req_id, rd_rsp_id, wr_req_id, wr_rsp_id;
   logic [NUM_CH-1:0][BEAT_BITS-1:0]    rd_rsp_data, wr_dat_data;
+  logic [NUM_CH-1:0][BEAT_BITS/32-1:0] wr_dat_mask;
   logic [NUM_CH-1:0]                   wr_req_valid, wr_req_ready, wr_dat_valid, wr_dat_ready, wr_dat_last;
   logic [NUM_CH-1:0]                   wr_rsp_valid, wr_rsp_ready;
   // the bridges' side of the MEM_EN gate
@@ -234,10 +243,11 @@ module tsr_xrt_kernel
     .SPM_BYTES(SPM_BYTES), .VL(VL), .NSREG(NSREG),
     .RD_OUTSTANDING(RD_OUTSTANDING), .CH_BYTES(CH_BYTES), .ADDR_BEAT_W(ADDR_BEAT_W),
     .HAS_MVM(HAS_MVM), .SPM_RD_LAT(SPM_RD_LAT),
-    .MVM_WS_FIFO(MVM_WS_FIFO), .MVM_BC_PIPE(MVM_BC_PIPE), .MVM_RES_PIPE(MVM_RES_PIPE),
+    .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .LOCAL_SCALE(LOCAL_SCALE), .LOCAL_SOFTCAP(LOCAL_SOFTCAP), .RV_LOCAL_TRANSPORT(RV_LOCAL_TRANSPORT),
+    .MVM_WS_FIFO(MVM_WS_FIFO), .MVM_BC_PIPE(MVM_BC_PIPE), .MVM_RES_PIPE(MVM_RES_PIPE), .MVM_GATHER_PAIR(MVM_GATHER_PAIR), .MVM_GATHER_FLITS(MVM_GATHER_FLITS), .DDR_LOCAL_PIPE(DDR_LOCAL_PIPE),
     .MVM_ACT_RD_LAT(MVM_ACT_RD_LAT), .MVM_MAC_LAT(MVM_MAC_LAT), .MVM_MUL_LAT(MVM_MUL_LAT),
     .MVM_ADD_LAT(MVM_ADD_LAT), .MVM_WS_RD_LAT(MVM_WS_RD_LAT), .RST_PIPE(RST_PIPE),
-    .VU_EXP_LANES(VU_EXP_LANES), .VU_BACK_LANES(VU_BACK_LANES), .VU_LANE_PIPE(VU_LANE_PIPE)
+    .VU_FRONT_LANES(VU_FRONT_LANES), .VU_EXP_LANES(VU_EXP_LANES), .VU_BACK_LANES(VU_BACK_LANES), .VU_LANE_PIPE(VU_LANE_PIPE)
   ) u_core (
     // the control core on ap_clk_2 / ap_rst_n_2 (CC §13.3); the clk_rv domain's own reset is
     // rst_core_n through tsr_ctrl's synchroniser, ap_rst_n_2 is AND-ed into the Ibex / DM resets
@@ -250,7 +260,7 @@ module tsr_xrt_kernel
     .m_rd_rsp_id(rd_rsp_id), .m_rd_rsp_last(rd_rsp_last),
     .m_wr_req_valid(wr_req_valid), .m_wr_req_ready(wr_req_ready), .m_wr_req_addr(wr_req_addr),
     .m_wr_req_len(wr_req_len), .m_wr_req_id(wr_req_id),
-    .m_wr_dat_valid(wr_dat_valid), .m_wr_dat_ready(wr_dat_ready), .m_wr_dat_data(wr_dat_data),
+    .m_wr_dat_valid(wr_dat_valid), .m_wr_dat_ready(wr_dat_ready), .m_wr_dat_data(wr_dat_data), .m_wr_dat_mask(wr_dat_mask),
     .m_wr_dat_last(wr_dat_last),
     .m_wr_rsp_valid(wr_rsp_valid), .m_wr_rsp_ready(wr_rsp_ready), .m_wr_rsp_id(wr_rsp_id)
   );
@@ -271,7 +281,7 @@ module tsr_xrt_kernel
       .c_rd_rsp_id(rd_rsp_id[c]), .c_rd_rsp_last(rd_rsp_last[c]),
       .c_wr_req_valid(g_wr_req_valid[c]), .c_wr_req_ready(g_wr_req_ready[c]), .c_wr_req_addr(wr_req_addr[c]),
       .c_wr_req_len(wr_req_len[c]), .c_wr_req_id(wr_req_id[c]),
-      .c_wr_dat_valid(g_wr_dat_valid[c]), .c_wr_dat_ready(g_wr_dat_ready[c]), .c_wr_dat_data(wr_dat_data[c]),
+      .c_wr_dat_valid(g_wr_dat_valid[c]), .c_wr_dat_ready(g_wr_dat_ready[c]), .c_wr_dat_data(wr_dat_data[c]), .c_wr_dat_mask(wr_dat_mask[c]),
       .c_wr_dat_last(wr_dat_last[c]),
       .c_wr_rsp_valid(wr_rsp_valid[c]), .c_wr_rsp_ready(wr_rsp_ready[c]), .c_wr_rsp_id(wr_rsp_id[c]),
       .m_axi_awvalid(m_axi_awvalid[c]), .m_axi_awready(m_axi_awready[c]), .m_axi_awaddr(m_axi_awaddr[c]),

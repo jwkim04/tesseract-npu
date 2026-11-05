@@ -193,7 +193,14 @@ module tsr_chk
     if (d_cls[CL_LDST] && (w_q[0][31:12] != 20'd0 || nz_q[7:4] != 4'd0 || 32'(sub) >= 32'(NUM_CH)))
       d_ill = 1'b1;
     if (d_cls[CL_QACT] && (w_q[0][31:12] != 20'd0 || nz_q[7:6] != 2'd0 || sub >= 4'd2)) d_ill = 1'b1;
-    if (d_cls[CL_MVM] && (w_q[0][31:13] != 19'd0 || w_q[5][31:20] != 12'd0 || nz_q[7])) d_ill = 1'b1;
+    if (d_cls[CL_MVM]) begin
+      if (w_q[0][31:15] != 17'd0 || w_q[5][31:20] != 12'd0) d_ill = 1'b1;
+      if (w_q[0][14]) begin
+        if ((CAPS & tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SOFTCAP) == 0 || w_q[0][13:12] != 0) d_ill = 1'b1;
+      end else if (w_q[0][13]) begin
+        if ((CAPS & tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SCALE) == 0 || w_q[0][12]) d_ill = 1'b1;
+      end else if (nz_q[7]) d_ill = 1'b1;
+    end
     if (d_cls[CL_MVM] && sub >= 4'd2) d_fmt_bad = 1'b1;
   end
 
@@ -233,7 +240,7 @@ module tsr_chk
       c2_t    = w5[19:16];
       c2_qal  = tsr_qa_lines(kind_q, {16'd0, w5[15:0]});   // QA kind = fmt (Q8_0 -> A32, Q4_K -> A256)
       c2_yl   = 32'((33'(w4) + 33'd15) >> 4);              // ceil(4N / 64)
-      c2_ds   = (w6 != 32'd0) ? w6 : c2_yl;
+      c2_ds   = (!w_q[0][14] && w6 != 32'd0) ? w6 : c2_yl;
       c2_rb   = tsr_row_beats(kind_q, {16'd0, w5[15:0]});
     end
   end
@@ -490,7 +497,8 @@ module tsr_chk
                     n_lines: w_q[3]};
       rsp_qact <= '{kind: kind_q, dst_line: w_q[1], src_line: w_q[2], k: w_q[3][15:0],
                     t: w_q[4][3:0], src_stride: ss_q, qa_lines: qal_q[15:0]};
-      rsp_mvm  <= '{fmt: kind_q, acc: acc_q, dst_line: w_q[1], x_line: w_q[2], w_off: w_q[3],
+      rsp_mvm  <= '{local_scale: w_q[0][13], local_softcap: w_q[0][14],
+                    scale: w_q[0][14] ? w_q[6] : w_q[7], post_scale: w_q[0][14] ? w_q[7] : 32'd0, fmt: kind_q, acc: acc_q, dst_line: w_q[1], x_line: w_q[2], w_off: w_q[3],
                     n: w_q[4], k: w_q[5][15:0], t: w_q[5][19:16], dst_stride: ds_q,
                     y_lines: yl_q, rows_per_ch: rr_q[31:0], row_beats: rb_q, qa_lines: qal_q[15:0]};
       rsp_xcmd <= '0;

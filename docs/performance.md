@@ -235,6 +235,12 @@ simulator's logits bit for bit (RTL simulation). On the card (k1): `hf_check.py
 
 ## Timing, clock and resources
 
+The routed/card numbers below belong to the named historical configurations,
+including the four-cluster design before the current control/VU/attention
+integration. The November 6 candidate has no routed/card throughput result yet.
+Its bounded RTL cycle comparisons, real-model simulator checks and adverse
+placement timing result are recorded in [checkpoint-2026-11-06.md](checkpoint-2026-11-06.md).
+
 Measured in Vivado 2024.2 (device `xcu200-fsgd2104-2-e`). The Xilinx technology wrappers
 and the U200 bitstream parameters (`SPM_RD_LAT` 4, `MVM_BC_PIPE` 2, `MVM_RES_PIPE` 2,
 `MVM_MAC_LAT` 9, `RST_PIPE` 3) are used. Details and the history of the fixes:
@@ -367,6 +373,24 @@ with `ctest --test-dir build/dev -R 'fw_exec_perf_m7|fw_m7_layer_perf|fw_kvfa_pe
   records.
 - **`FLASH_ATTN`**: a Qwen2.5-32B decode record at 4,096 cells takes 3,378 RISC-V cycles (20.3 µs)
   of planning against 140.0 µs on the units.
+
+**VU width on Qwen2.5-0.5B layer 0 (RTL simulation, 2026-11-04).** The FPGA model ran
+15 M7 records with production firmware, real Q8_0 GGUF layer weights, four memory channels,
+T_MAX=8 and 256 KV rows. Both runs used the same deterministic 32-cycle memory model and
+250/166.67 MHz core/RV clocks. Only the physical FRONT/EXP/BACK widths changed. Times run
+from device acceptance of the launch to acceptance of its DONE record.
+
+| Workload | 16/16/8 cycles | 8/8/4 cycles | Extra layer latency | Layer throughput loss |
+|---|---:|---:|---:|---:|
+| Decode, one token | 117,702 | 118,989 | 1.09% | 1.08% |
+| Prefill, eight tokens | 200,814 | 209,319 | 4.24% | 4.06% |
+
+The full and half outputs and K/V planes matched byte for byte. Six decode issue-PC
+records per variant used the alternate firmware push path selected by queue credits.
+The benchmark paired each with its corresponding call site in the same ELF. Prefill had
+no such differences. These measurements cover one layer; full-model board tokens/s is
+still pending. Raw timestamps, digests, configuration and reproduction details are in
+`build/analysis/k4_vu_model_perf_20261104/rtl_measurement/completion.json`.
 
 **Firmware image** (`tsr-elf size build/dev/fw/tsr-fw.elf`, measured on the production image;
 ITCM is 131,072 B, DTCM 65,536 B):

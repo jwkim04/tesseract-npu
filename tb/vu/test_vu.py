@@ -38,7 +38,9 @@ CAPS_VU, CAPS_TOPK, CAPS_DQROW, CAPS_ATT = 0x1, 0x8, 0x40, 0x20
 def chk_sources():
     d = os.environ.get("TSR_MUT_DIR")
     f = Path(d) / "tsr_vu_chk.sv" if d and (Path(d) / "tsr_vu_chk.sv").exists() else REPO / "rtl/core/tsr_vu_chk.sv"
-    return [REPO / "rtl/core/tsr_tables_pkg.sv", REPO / "rtl/core/tsr_pkg.sv", REPO / "rtl/core/tsr_xc_pkg.sv", f]
+    return [REPO / "rtl/core/tsr_tables_pkg.sv", REPO / "rtl/core/tsr_pkg.sv",
+            REPO / "rtl/core/tsr_fp_pkg.sv", REPO / "rtl/core/tsr_att_pkg.sv",
+            REPO / "rtl/core/tsr_xc_pkg.sv", f]
 
 
 def chk_cfg():

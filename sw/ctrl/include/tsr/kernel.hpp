@@ -247,7 +247,8 @@ TSR_HOT constexpr op MVM(spm dst, spm x, wref w, uint32_t n, uint32_t k, uint32_
     o.w[4] = n;
     o.w[5] = (kf << MVM_K_LSB) | (tf << MVM_T_LSB);
     o.w[6] = dst_stride;
-    o.used = uint8_t(MVM_WORDS);
+    // Word 7 belongs to optional local epilogues. Keep the legacy push mask.
+    o.used = uint8_t(MVM_WORDS & ~(1u << MVM_SCALE_WORD));
     return o;
 }
 

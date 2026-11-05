@@ -34,7 +34,7 @@ Software built for capability M.n runs on a device M.m with m at least n. It doe
 major.
 
 The `CAPS` register (0x014) lists the optional features a configuration has: `VU`, `TOPK`, `ATT`,
-`DQROW`, `VMASK`. An optional feature is a `CAPS` bit, never a minor. The sizes of a configuration
+`DQROW`, `VMASK`, `ATT_LOCAL`, `MVM_LOCAL_SCALE`, `MVM_LOCAL_SOFTCAP`. An optional feature is a `CAPS` bit, never a minor. The sizes of a configuration
 (channels, lanes, `T_MAX`, scratchpad) are in `CFG0` to `CFG3`. They are not part of the capability.
 Results are defined per configuration.
 

@@ -85,6 +85,8 @@ constexpr uint32_t K_SET_ROWS_KV = 0x18u;
 constexpr uint32_t K_FLASH_ATTN  = 0x19u;
 constexpr uint32_t K_CPY         = 0x1Au;
 constexpr uint32_t K_UNARY       = 0x1Bu;
+constexpr uint32_t K_MUL_MAT_SCALE = 0x1Cu;  // local pointwise epilogue and final DDR export
+constexpr uint32_t K_MUL_MAT_SOFTCAP = 0x1Du;  // scale, TANH, scale before export
 constexpr uint32_t N_KINDS       = 0x40u;   // kind table size (0x00-0x3F); a larger kind is BAD_RECORD
 
 // Argument count of each defined kind (the table of SW §7.2), or NARGS_UNDEF for a kind without a
@@ -106,6 +108,8 @@ constexpr uint32_t kind_nargs(uint32_t kind) {
         case K_FLASH_ATTN:  return 22u;
         case K_CPY:         return 6u;
         case K_UNARY:       return 7u;
+        case K_MUL_MAT_SCALE: return 13u;
+        case K_MUL_MAT_SOFTCAP: return 14u;
         default:            return NARGS_UNDEF;
     }
 }
@@ -136,6 +140,8 @@ constexpr uint32_t kind_rev(uint32_t kind) {
         case K_FLASH_ATTN:  return 1u;
         case K_CPY:         return 1u;
         case K_UNARY:       return 1u;
+        case K_MUL_MAT_SCALE: return 1u;
+        case K_MUL_MAT_SOFTCAP: return 1u;
         default:            return 0u;
     }
 }
@@ -156,6 +162,8 @@ constexpr const char * kind_name(uint32_t kind) {
         case K_FLASH_ATTN:  return "FLASH_ATTN";
         case K_CPY:         return "CPY";
         case K_UNARY:       return "UNARY";
+        case K_MUL_MAT_SCALE: return "MUL_MAT_SCALE";
+        case K_MUL_MAT_SOFTCAP: return "MUL_MAT_SOFTCAP";
         default:            return "?";
     }
 }
@@ -174,6 +182,16 @@ constexpr uint32_t X = 0, X_STRIDE = 1, Y = 2, Y_STRIDE = 3, W_OFF = 4, FMT = 5,
                    ADD = 9, ADD_STRIDE = 10, FLAGS = 11, NARGS = 12;
 constexpr uint32_t FLAG_ACC_DST = 1u << 0;   // y += W x (y is read and written)
 }  // namespace mm
+
+// Same input and final output layout as MUL_MAT. One f32 multiplication
+// follows the completed dot product. The initial kind has no addend or ACC.
+namespace mm_scale {
+constexpr uint32_t SCALE = mm::NARGS, NARGS = SCALE + 1u;
+constexpr uint32_t POST_SCALE = NARGS, SOFTCAP_NARGS = POST_SCALE + 1u;
+constexpr bool operands_ok(uint32_t add, uint32_t add_stride, uint32_t flags) {
+    return add == HANDLE_NONE && add_stride == 0u && flags == 0u;
+}
+}
 
 // M7 kinds 0x11-0x1B (W2b; SW §7.2 table, word for word). Shapes are flattened to rows; handles are
 // {ch[31:28], beat[27:0]} of 64-byte-aligned beats; strides are in lines; f32 parameters are bit
@@ -590,6 +608,10 @@ constexpr uint32_t check_args(uint32_t kind, const uint32_t * a, uint32_t n_args
             ok = a[fa::SOFTCAP] == 0u &&
                  pre_range_ok(a[fa::MSUM], 4ull * (MSUM_HDR_WORDS + uint64_t(MSUM_ROW_WORDS) * a[fa::N_TOKENS]),
                               PRE_MSUM_ALIGN, pre_lines);
+            break;
+        case K_MUL_MAT_SCALE:
+        case K_MUL_MAT_SOFTCAP:
+            ok = mm_scale::operands_ok(a[mm::ADD], a[mm::ADD_STRIDE], a[mm::FLAGS]);
             break;
         case K_UNARY:
             ok = a[unary::FUNC] <= unary::FUNC_MAX;

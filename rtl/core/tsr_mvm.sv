@@ -99,7 +99,10 @@
 module tsr_mvm
   import tsr_pkg::*;
   import tsr_att_pkg::*;
+  import tsr_vu_pkg::*;
 #(
+  parameter  bit          LOCAL_SCALE = 1'b0,
+  parameter  bit          LOCAL_INTERMEDIATES = 1'b0,
   parameter  bit          HAS_ATT       = 1'b0,   // ATTQK / ATTPV (W4-B at)
   parameter  int unsigned XC_CMD_W      = 256,
   parameter  int unsigned NUM_CH        = TSR_DEF_NUM_CH,
@@ -111,6 +114,8 @@ module tsr_mvm
   parameter  int unsigned BEAT_BITS     = TSR_DEF_BEAT_BITS,
   parameter  int unsigned WS_FIFO_BEATS = TSR_DEF_WS_FIFO_BEATS,
   parameter  int unsigned BC_PIPE       = TSR_DEF_MVM_BC_PIPE,
+  parameter  bit          GATHER_PAIR   = 1'b0,
+  parameter  int unsigned GATHER_FLITS  = 1,
   parameter  int unsigned RES_PIPE      = TSR_DEF_MVM_RES_PIPE,
   parameter  int unsigned ACT_RD_LAT    = TSR_DEF_ACT_RD_LAT,
   parameter  int unsigned MAC_LAT       = TSR_DEF_MAC_LAT,
@@ -160,6 +165,10 @@ module tsr_mvm
   output logic                                   perf_mvm_busy,
   output logic                                   perf_att_qk,
   output logic                                   perf_att_pv,
+  output tsr_vu_local_req_t [1:0]                scale_req,
+  input  tsr_vu_local_rsp_t [1:0]                 scale_rsp,
+  input  tsr_local_score_req_t [NUM_CH-1:0]       local_score_req,
+  output logic [NUM_CH-1:0][TSR_LINE_BITS-1:0]    local_score_data,
   output logic                                   perf_att_stall
 );
 
@@ -206,7 +215,7 @@ module tsr_mvm
 
   localparam int unsigned BCW = $bits(tsr_mvm_bcline_t);   // 527: broadcast payload
   localparam int unsigned CCW = $bits(tsr_mvm_ccmd_t);     // 137: overlaid on its low bits
-  localparam int unsigned ACW = $bits(tsr_att_ccmd_t);     // 345: the attention command, overlaid
+  localparam int unsigned ACW = $bits(tsr_att_ccmd_t);     // 347: the attention command, overlaid
   localparam int unsigned RW  = 33 + 32 * T_MAX;           // {row, last, y}
   localparam int unsigned CW  = (NUM_CH > 1) ? $clog2(NUM_CH) : 1;
   localparam int unsigned AJW = 1 + SPM_AW + 16 + 16 + TSR_LINE_BITS;
@@ -233,6 +242,7 @@ module tsr_mvm
   // attention (HAS_ATT)
   logic         at_q, apv_q;   // the op is ATTQK / ATTPV (at_q), ATTPV (apv_q)
   tsr_att_cmd_t a_q;
+  wire tsr_att_cmd_t dispatch_att = tsr_att_cmd_t'(xcmd[$bits(tsr_att_cmd_t)-1:0]);
   logic [5:0]   as_q;          // derivation steps
   logic [6:0]   a_g;
   logic [3:0]   a_gs, a_tq, a_tact;
@@ -289,10 +299,11 @@ module tsr_mvm
   logic [3:0]                           ps_t_q;
   logic [31:0]                          ps_left_q;       // p lines whose response is still to come
 
-  wire rq_fire  = rq_v_q & spm_rd_req_ready;
+  wire local_pv = LOCAL_INTERMEDIATES && apv_q && a_q.local_slot != 0;
+  wire rq_fire  = rq_v_q & (local_pv | spm_rd_req_ready);
   wire rq_l_end = (rq_l_q == qam1_q);
   wire rq_t_end = (rq_tok_q == tm1_q);
-  wire bc_rsp   = spm_rd_rsp_valid & bc_ph_q;
+  wire bc_rsp   = (spm_rd_rsp_valid & bc_ph_q) | (rq_fire & local_pv);
   wire rs_l_end = (rs_l_q == qam1_q);
   wire rs_t_end = (rs_tok_q == tm1_q);
   wire rs_q_end = (rs_l_q == qsm1_q);
@@ -363,7 +374,7 @@ module tsr_mvm
           busy_q      <= 1'b1;
           gd_q        <= 1'b0;
           at_q        <= is_att;
-          apv_q       <= is_att & xcmd[$bits(tsr_att_cmd_t)-1];
+          apv_q       <= is_att & dispatch_att.pv;
           if (n_zero) begin
             done_q <= 1'b1;
             st_q   <= S_DONE;
@@ -492,7 +503,7 @@ module tsr_mvm
   // Datapath (no reset): command, attention derivation, request line, broadcast payload.
   always_ff @(posedge clk) begin
     if (fire) c_q <= cmd;
-    if (fire && is_att) a_q <= tsr_att_cmd_t'(xcmd[$bits(tsr_att_cmd_t)-1:0]);
+    if (fire && is_att) a_q <= dispatch_att;
     // derivation steps (header)
     if (as_q[0]) begin
       a_g    <= 7'(a_q.g_m1) + 7'd1;
@@ -544,7 +555,8 @@ module tsr_mvm
       end
     end
     if (bc_rsp) begin
-      if (apv_q) bc_d_q <= {ps_end, 3'(ps_t_q), 1'b0, 10'd0, spm_rd_rsp_data};
+      if (apv_q) bc_d_q <= {ps_end, 3'(ps_t_q), 1'b0, 10'd0,
+                             local_pv ? TSR_LINE_BITS'(rq_line_q - SPM_AW'(a_q.x)) : spm_rd_rsp_data};
       else       bc_d_q <= {rs_l_end & rs_t_end, rs_tok_q, rs_dbs_q, rs_addr_q, spm_rd_rsp_data};
     end else if (su_q) begin
       bc_d_q[CCW-1:0] <= ccmd;
@@ -563,7 +575,7 @@ module tsr_mvm
 
   // ---- SPM read port: broadcast first, then the gather's ACC reads ----
   logic g_rd_ready, g_rsp_valid;
-  assign spm_rd_req_valid = rq_v_q | g_rd_v;
+  assign spm_rd_req_valid = (rq_v_q & ~local_pv) | g_rd_v;
   assign spm_rd_req_line  = bc_ph_q ? rq_line_q : g_rd_line;
   assign g_rd_ready       = spm_rd_req_ready & ~bc_ph_q;
   assign g_rsp_valid      = spm_rd_rsp_valid & ~bc_ph_q;
@@ -616,7 +628,7 @@ module tsr_mvm
     assign p_line = pd;
 
     tsr_mvm_cluster #(
-      .CH(c), .NUM_CH(NUM_CH), .HAS_ATT(HAS_ATT), .K_MAX(K_MAX), .T_MAX(T_MAX), .ADDR_BEAT_W(ADDR_BEAT_W),
+      .CH(c), .NUM_CH(NUM_CH), .HAS_ATT(HAS_ATT), .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .K_MAX(K_MAX), .T_MAX(T_MAX), .ADDR_BEAT_W(ADDR_BEAT_W),
       .BEAT_BITS(BEAT_BITS), .WS_FIFO_BEATS(WS_FIFO_BEATS), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT),
       .MUL_LAT(MUL_LAT), .ADD_LAT(ADD_LAT), .WS_RD_LAT(WS_RD_LAT), .SPM_AW(SPM_AW)
     ) u_cl (
@@ -629,6 +641,7 @@ module tsr_mvm
       .rd_rsp_id(wr_id),
       .res_valid(cr_v), .res_ready(cr_r), .res_row(cr_row), .res_last(cr_last), .res_y(cr_y),
       .aj_valid(ca_v), .aj_ready(ca_r), .aj(ca_j), .att_stall(cl_stall[c]),
+      .local_score_req(local_score_req[c]), .local_score_data(local_score_data[c]),
       .idle(cl_idle[c])
     );
 
@@ -681,13 +694,15 @@ module tsr_mvm
   end
 
   tsr_mvm_gather #(
-    .HAS_ATT(HAS_ATT), .NUM_CH(NUM_CH), .T_MAX(T_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT),
-    .ADD_LAT(ADD_LAT), .JOB_PIPE(RES_PIPE)
+    .HAS_ATT(HAS_ATT), .LOCAL_SCALE(LOCAL_SCALE), .NUM_CH(NUM_CH), .T_MAX(T_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT),
+    .ADD_LAT(ADD_LAT), .JOB_PIPE(RES_PIPE), .GATHER_PAIR(GATHER_PAIR), .GATHER_FLITS(GATHER_FLITS)
   ) u_gather (
     .clk, .rst_n(rst_g_n),
     .start(g_start_q), .acc(c_q.acc & ~at_q), .t(c_q.t), .n(at_q ? 32'd1 : c_q.n),
     .dst_line(c_q.dst_line[SPM_AW-1:0]), .dst_stride(at_q ? 32'd1 : c_q.dst_stride), .expect_ch(ex_q),
     .done(g_done),
+    .scale_en((c_q.local_scale || c_q.local_softcap) && !at_q), .scale(c_q.scale),
+    .post_scale(c_q.post_scale), .softcap(c_q.local_softcap), .scale_req, .scale_rsp,
     .att(at_q), .att_maxout(at_q & ~apv_q & a_q.flags[TSR_ATT_FL_MAXOUT]), .att_tq(a_tq), .att_gs(a_gs),
     .att_tact(a_tact), .att_nseg(a_nseg), .att_g(a_g), .att_hg0(a_q.hg0), .att_nhead(a_nh),
     .att_mdst(a_q.w7[SPM_AW-1:0]),

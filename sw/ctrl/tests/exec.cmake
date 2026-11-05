@@ -26,7 +26,8 @@ tsr_fw_image(fw_exec SOURCES ${TSR_CTRL_DIR}/tests/fw/exec_kinds.cpp ${TSR_CTRL_
 # tests/fw/exec_ref_unary.cpp; no W2b kernel package, the other M7 kinds are their stubs).
 tsr_fw_image(fw_exec_ref NO_KERNELS SOURCES ${TSR_CTRL_DIR}/kernels/graph.cpp ${TSR_CTRL_DIR}/kernels/k_mulmat.cpp
              ${TSR_CTRL_DIR}/kernels/zz_kind_stubs.cpp ${TSR_CTRL_DIR}/kernels/selftest.cpp
-             ${TSR_CTRL_DIR}/kernels/replay.cpp ${TSR_CTRL_DIR}/tests/fw/exec_ref_unary.cpp)
+             ${TSR_CTRL_DIR}/kernels/replay.cpp ${TSR_CTRL_DIR}/tests/fw/exec_ref_unary.cpp
+             DEFINES TSR_TEST_NO_KIND_MUL_MAT_EPILOGUE=1)
 
 set(_exec_src ${TSR_CTRL_DIR}/tests/test_fw_exec.cpp)
 set(_exec_inc ${TSR_CTRL_INCLUDE_DIR} ${TESSERACT_ROOT}/sw/sim ${TESSERACT_ROOT}/sw/sim/tests)

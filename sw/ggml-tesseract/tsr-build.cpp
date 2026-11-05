@@ -838,6 +838,72 @@ bool tsr_fuse_mm_add(const tsr_build_env & env, const ggml_tensor * mm, const gg
     return true;
 }
 
+static bool tsr_mm_epilogue_supported(const tsr_build_env & env, uint32_t kind) {
+    const uint32_t cap = kind == opl::K_MUL_MAT_SCALE ? tsr::plan::CAPS_MVM_LOCAL_SCALE :
+                                                      tsr::plan::CAPS_MVM_LOCAL_SOFTCAP;
+    return env.cfg.num_ch == 4u && (env.cfg.caps & cap) && tsr_kind_in_image(env.kinds, kind);
+}
+
+static bool tsr_mm_scale_rec(const tsr_build_env & env, const ggml_tensor * scale, const uint32_t * a, tsr_rec * r) {
+    namespace m = opl::mm;
+    namespace sc = opl::scl;
+    return scale->op == GGML_OP_SCALE && !scale->view_src && tsr_lower_scale(env, false, scale, r, nullptr) &&
+           r->args[sc::B] == 0u && r->args[sc::ROWS] == a[m::T] && r->args[sc::N] == a[m::N];
+}
+
+static bool tsr_mm_epilogue_dst(const tsr_rec & r, uint32_t * a) {
+    namespace m = opl::mm;
+    namespace sc = opl::scl;
+    const uint32_t y = r.args[sc::DST];
+    const auto x_range = tsr_rows_range(tsr_handle_ch(a[m::X]), tsr_handle_byte(a[m::X]), a[m::T],
+                                       uint64_t(a[m::K]) * 4u, uint64_t(a[m::X_STRIDE]) * TSR_LINE_BYTES);
+    const auto y_range = tsr_rows_range(tsr_handle_ch(y), tsr_handle_byte(y), a[m::T],
+                                       uint64_t(tsr_l16(a[m::N])) * TSR_LINE_BYTES,
+                                       uint64_t(r.args[sc::DST_STRIDE]) * TSR_LINE_BYTES);
+    if (tsr_ranges_overlap(x_range, y_range)) return false;
+    a[m::Y] = y;
+    a[m::Y_STRIDE] = r.args[sc::DST_STRIDE];
+    return true;
+}
+
+bool tsr_fuse_mm_scale(const tsr_build_env & env, const ggml_tensor * mm, const ggml_tensor * scale,
+                       uint32_t * a) {
+    tsr_rec r;
+    if (scale->src[0] != mm || !tsr_mm_epilogue_supported(env, opl::K_MUL_MAT_SCALE) ||
+        !tsr_mm_scale_rec(env, scale, a, &r) || !tsr_mm_epilogue_dst(r, a))
+        return false;
+    a[opl::mm_scale::SCALE] = r.args[opl::scl::S];
+    return true;
+}
+
+static bool tsr_is_tanh(const ggml_tensor * t) {
+    return t && t->op == GGML_OP_UNARY && ggml_get_unary_op(t) == GGML_UNARY_OP_TANH;
+}
+
+static bool tsr_softcap_weight_work(const tsr_build_env & env, const uint32_t * a) {
+    namespace m = opl::mm;
+    tsr::plan::mm_tiling tile{};
+    if (tsr::plan::mm_plan(env.cfg, a[m::FMT], a[m::N], a[m::K], a[m::T], &tile) != opl::RET_OK) return false;
+    // Three stages cost about two ideal issue cycles per owner row and
+    // token. Prefer a sufficiently long weight stream to overlap that work.
+    // This is an admission heuristic, not a timing estimate.
+    return tsr_row_beats(a[m::FMT], a[m::K]) >= 32u * tile.t_tile;
+}
+
+bool tsr_fuse_mm_softcap(const tsr_build_env & env, const ggml_tensor * mm, const ggml_tensor * first,
+                         const ggml_tensor * last, uint32_t * a) {
+    const ggml_tensor * tanh = last->src[0];
+    tsr_rec r0, r1;
+    if (first->src[0] != mm || !tsr_is_tanh(tanh) || tanh->src[0] != first ||
+        !tsr_mm_epilogue_supported(env, opl::K_MUL_MAT_SOFTCAP) || !tsr_softcap_weight_work(env, a) ||
+        !tsr_mm_scale_rec(env, first, a, &r0) || !tsr_mm_scale_rec(env, last, a, &r1) ||
+        !tsr_mm_epilogue_dst(r1, a))
+        return false;
+    a[opl::mm_scale::SCALE] = r0.args[opl::scl::S];
+    a[opl::mm_scale::POST_SCALE] = r1.args[opl::scl::S];
+    return true;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Fusion pairs (pass 3)
 // ---------------------------------------------------------------------------------------------
@@ -854,12 +920,14 @@ static bool tsr_vr_overlap(const tsr_vrange & a, const tsr_vrange & b) {
 
 // Can node k's work move to node i's position? (other: k's operand that is not i's result; out: k's
 // result.) No node in between writes `other`, or reads or writes `out`.
-static bool tsr_can_hoist(const ggml_cgraph * cg, int i, int k, const ggml_tensor * other, const ggml_tensor * out) {
-    const tsr_vrange ob = tsr_bytes_of(other), rb = tsr_bytes_of(out);
-    if (ob.lo == 0 || rb.lo == 0) {
+static bool tsr_can_hoist(const ggml_cgraph * cg, int i, int k, const ggml_tensor * other, const ggml_tensor * out,
+                           int skip0 = -1, int skip1 = -1) {
+    const tsr_vrange ob = other ? tsr_bytes_of(other) : tsr_vrange{}, rb = tsr_bytes_of(out);
+    if ((other && ob.lo == 0) || rb.lo == 0) {
         return false;
     }
     for (int j = i + 1; j < k; ++j) {
+        if (j == skip0 || j == skip1) continue;
         const ggml_tensor * n = cg->nodes[j];
         if ((n->flags & GGML_TENSOR_FLAG_COMPUTE) == 0 || tsr_node_is_noop(n)) {
             continue;
@@ -877,25 +945,28 @@ static bool tsr_can_hoist(const ggml_cgraph * cg, int i, int k, const ggml_tenso
     return true;
 }
 
+static int tsr_fusion_user(const ggml_cgraph * cg, int i) {
+    for (int j = i + 1; j < cg->n_nodes; ++j) {
+        for (const ggml_tensor * src : cg->nodes[j]->src)
+            if (src == cg->nodes[i]) return j;
+    }
+    return -1;
+}
+
 tsr_fusion tsr_build_fusion(const tsr_build_env & env, const ggml_cgraph * cg) {
     tsr_fusion f;
     const int n = cg->n_nodes;
     f.with.assign(n, -1);
     f.into.assign(n, -1);
+    f.softcap_mid.assign(n, -1);
+    f.softcap_tail.assign(n, -1);
     for (int i = 0; i < n; ++i) {
         const ggml_tensor * node = cg->nodes[i];
         if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0 || f.into[i] >= 0 ||
             (node->op != GGML_OP_MUL_MAT && node->op != GGML_OP_RMS_NORM) || !ggml_node_has_n_uses(cg, i, 1)) {
             continue;
         }
-        int k = -1;
-        for (int j = i + 1; j < n && k < 0; ++j) {
-            for (int s = 0; s < GGML_MAX_SRC; ++s) {
-                if (cg->nodes[j]->src[s] == node) {
-                    k = j;
-                }
-            }
-        }
+        const int k = tsr_fusion_user(cg, i);
         if (k < 0) {
             continue;    // its user is in another graph (another split, an observed node's next call)
         }
@@ -904,7 +975,26 @@ tsr_fusion tsr_build_fusion(const tsr_build_env & env, const ggml_cgraph * cg) {
             continue;
         }
         tsr_tloc l;
-        if (node->op == GGML_OP_MUL_MAT) {
+        if (node->op == GGML_OP_MUL_MAT && u->op == GGML_OP_SCALE) {
+            if (u->src[0] != node || !tsr_can_hoist(cg, i, k, nullptr, u)) continue;
+            if (tsr_mm_epilogue_supported(env, opl::K_MUL_MAT_SOFTCAP) && ggml_node_has_n_uses(cg, k, 1)) {
+                const int mid = tsr_fusion_user(cg, k);
+                if (mid >= 0 && tsr_is_tanh(cg->nodes[mid]) && cg->nodes[mid]->src[0] == u &&
+                    (cg->nodes[mid]->flags & GGML_TENSOR_FLAG_COMPUTE) && f.into[mid] < 0 && f.with[mid] < 0 &&
+                    ggml_node_has_n_uses(cg, mid, 1)) {
+                    const int tail = tsr_fusion_user(cg, mid);
+                    if (tail >= 0 && cg->nodes[tail]->op == GGML_OP_SCALE && cg->nodes[tail]->src[0] == cg->nodes[mid] &&
+                        (cg->nodes[tail]->flags & GGML_TENSOR_FLAG_COMPUTE) && f.into[tail] < 0 && f.with[tail] < 0 &&
+                        tsr_can_hoist(cg, i, mid, nullptr, cg->nodes[mid], k) &&
+                        tsr_can_hoist(cg, i, tail, nullptr, cg->nodes[tail], k, mid)) {
+                        f.softcap_mid[i] = mid;
+                        f.softcap_tail[i] = tail;
+                        f.into[mid] = f.into[tail] = i;
+                    }
+                }
+            }
+            if (f.softcap_tail[i] < 0 && !tsr_mm_epilogue_supported(env, opl::K_MUL_MAT_SCALE)) continue;
+        } else if (node->op == GGML_OP_MUL_MAT) {
             if (u->op != GGML_OP_ADD || (u->src[0] != node && u->src[1] != node) || u->src[0] == u->src[1]) {
                 continue;
             }

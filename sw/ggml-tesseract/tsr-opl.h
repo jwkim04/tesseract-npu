@@ -113,7 +113,7 @@ public:
                  const std::vector<tsr_dram_range> & wr, int32_t tag);
 
     // A MUL_MAT record (args: tsr::opl::mm words); its ranges come from the args (mm_ranges).
-    uint32_t mul_mat(const uint32_t * args, int32_t tag);
+    uint32_t mul_mat(const uint32_t * args, int32_t tag, uint32_t kind = tsr::opl::K_MUL_MAT);
 
     // The ranges a MUL_MAT record reads and writes: x (T rows, x_stride lines apart, K/16 lines
     // each), the addend (stride 0: one row) or, with ACC_DST, y; the weight's rows on every channel

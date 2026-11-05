@@ -74,9 +74,9 @@
 // KVST (W4-B at; AT §5.1, §8.3; parameter HAS_KVST): a command with cmd_xc = 1 carries the
 //   tsr_att_pkg::tsr_kvst_cmd_t payload in xcmd and runs on the KVST engine (tsr_dma_kvst.sv); the
 //   LD / ST engine stays idle meanwhile (one command at a time, cmd_ready = both idle). While the
-//   engine runs (kv_act_q, a flop) it drives the read / write source ports of the channels its
+//   engine runs (kv_act_q, a flop) it drives the write source ports of the channels its
 //   groups live in and the SPM read port: every such output is a 2:1 mux of two flops selected by
-//   kv_act_q. perf_kvst_rmw pulses once per read-modify-written meta beat (PERF KVST_RMW, AT §10).
+//   kv_act_q. Masked META writes do not issue explicit core RMW events (PERF KVST_RMW, AT §10).
 //   HAS_KVST = 0: cmd_xc / xcmd are ignored and the unit is the LD / ST engine above.
 
 module tsr_dma
@@ -123,6 +123,7 @@ module tsr_dma
   output logic [NUM_CH-1:0]                     wr_dat_valid,
   input  logic [NUM_CH-1:0]                     wr_dat_ready,
   output logic [NUM_CH-1:0][BEAT_BITS-1:0]      wr_dat_data,
+  output logic [NUM_CH-1:0][BEAT_BITS/32-1:0]   wr_dat_mask,
   output logic [NUM_CH-1:0]                     wr_dat_last,
   input  logic [NUM_CH-1:0]                     wr_rsp_valid,
   output logic [NUM_CH-1:0]                     wr_rsp_ready,
@@ -416,10 +417,11 @@ module tsr_dma
   // Outputs (flops or constants)
   // -------------------------------------------------------------------------------------------
   // KVST engine (HAS_KVST): its outputs replace the LD / ST engine's while kv_act_q (header)
-  logic [NUM_CH-1:0]       kv_rd_v, kv_wr_v, kv_wd_v;
-  logic [ADDR_BEAT_W-1:0]  kv_rd_addr, kv_wr_addr;
+  logic [NUM_CH-1:0]       kv_wr_v, kv_wd_v;
+  logic [ADDR_BEAT_W-1:0]  kv_wr_addr;
   logic [TSR_LEN_W-1:0]    kv_wr_len;
   logic [LB-1:0]           kv_wd_data;
+  logic [LB/32-1:0]        kv_wd_mask;
   logic                    kv_wd_last, kv_sr_v;
   logic [SPM_AW-1:0]       kv_sr_line;
   if (HAS_KVST) begin : g_kv
@@ -429,10 +431,8 @@ module tsr_dma
       .clk, .rst_n,
       .start(kv_start), .cmd(tsr_att_pkg::tsr_kvst_cmd_t'(xcmd[$bits(tsr_att_pkg::tsr_kvst_cmd_t)-1:0])),
       .busy(kv_busy), .done(kv_done),
-      .rd_req_valid(kv_rd_v), .rd_req_ready, .rd_req_addr(kv_rd_addr),
-      .rd_rsp_valid(rd_rsp_valid & {NUM_CH{kv_act_q}}), .rd_rsp_data,
       .wr_req_valid(kv_wr_v), .wr_req_ready, .wr_req_addr(kv_wr_addr), .wr_req_len(kv_wr_len),
-      .wr_dat_valid(kv_wd_v), .wr_dat_ready, .wr_dat_data(kv_wd_data), .wr_dat_last(kv_wd_last),
+      .wr_dat_valid(kv_wd_v), .wr_dat_ready, .wr_dat_data(kv_wd_data), .wr_dat_mask(kv_wd_mask), .wr_dat_last(kv_wd_last),
       .wr_rsp_valid(wr_rsp_valid & {NUM_CH{kv_act_q}}),
       .spm_rd_req_valid(kv_sr_v), .spm_rd_req_ready, .spm_rd_req_line(kv_sr_line),
       .spm_rd_rsp_valid(spm_rd_rsp_valid & kv_act_q), .spm_rd_rsp_data,
@@ -446,13 +446,12 @@ module tsr_dma
     assign kv_busy       = 1'b0;
     assign kv_done       = 1'b0;
     assign kv_act_q      = 1'b0;
-    assign kv_rd_v       = '0;
     assign kv_wr_v       = '0;
     assign kv_wd_v       = '0;
-    assign kv_rd_addr    = '0;
     assign kv_wr_addr    = '0;
     assign kv_wr_len     = '0;
     assign kv_wd_data    = '0;
+    assign kv_wd_mask    = '1;
     assign kv_wd_last    = 1'b0;
     assign kv_sr_v       = 1'b0;
     assign kv_sr_line    = '0;
@@ -462,19 +461,20 @@ module tsr_dma
 
   assign cmd_ready    = idle_q & ~kv_busy;
   assign done         = done_q;
-  assign rd_req_valid = kv_act_q ? kv_rd_v : rq_rd_v_q;
+  assign rd_req_valid = rq_rd_v_q;
   assign wr_req_valid = kv_act_q ? kv_wr_v : rq_wr_v_q;
-  assign rd_rsp_ready = '1;                       // burst reservation (CC §10.4); KVST: its FIFO credit
+  assign rd_rsp_ready = '1;                       // LD burst reservation (CC §10.4)
   assign wr_dat_valid = kv_act_q ? kv_wd_v : o_dat_v_q;
   assign wr_rsp_ready = '1;
   for (genvar c = 0; c < NUM_CH; c++) begin : g_ch
-    assign rd_req_addr[c] = kv_act_q ? kv_rd_addr : rq_addr_q;
-    assign rd_req_len[c]  = kv_act_q ? TSR_LEN_W'(1) : rq_len_q;
+    assign rd_req_addr[c] = rq_addr_q;
+    assign rd_req_len[c]  = rq_len_q;
     assign rd_req_id[c]   = '0;
     assign wr_req_addr[c] = kv_act_q ? kv_wr_addr : rq_addr_q;
     assign wr_req_len[c]  = kv_act_q ? kv_wr_len : rq_len_q;
     assign wr_req_id[c]   = '0;
     assign wr_dat_data[c] = kv_act_q ? kv_wd_data : o_data_q;
+    assign wr_dat_mask[c] = kv_act_q ? kv_wd_mask : '1;
     assign wr_dat_last[c] = kv_act_q ? kv_wd_last : o_last_q;
   end
   assign spm_rd_req_valid = kv_act_q ? kv_sr_v : sr_v_q;
@@ -529,7 +529,7 @@ module tsr_dma
         a_lo_q   <= a_lo_q + 6'd1;
         a_left_q <= a_left_q - NW'(1);
       end
-      assert (kv_act_q || (!(|(rd_rsp_valid & ~ch_oh_q)) && !(|rd_rsp_valid && (idle_q || st_q))))
+      assert (!(|(rd_rsp_valid & ~ch_oh_q)) && !(|rd_rsp_valid && (idle_q || st_q)))
         else $error("%m: read response on a channel without an LD in progress");
       if (spm_rd_rsp_valid && !kv_act_q) begin
         assert (!idle_q && st_q && sr_rsv_q != '0)

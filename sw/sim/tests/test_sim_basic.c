@@ -2,6 +2,7 @@
 // (with ERR_INFO and "no state change"), reserved-field checks including x16 (EX §7.1), the
 // reserved and retired opcodes, perf counters.
 #include "test_sim_util.h"
+#include "tsr_local_tile.h"
 
 static const uint64_t IO_BEAT = TSR_REGION_IO_OFF / TSR_BEAT_BYTES;   // 64 MiB / 64
 
@@ -391,7 +392,31 @@ static void test_errors(void) {
     tsr_sim_destroy(s);
 }
 
+static void test_local_tile_contract(void) {
+    const tsr_dense_tile tile = { .weight_base = 1024u, .expert_stride = 4096u,
+                                  .expert = 3u, .channels = 4u, .rows = 69u, .row_beats = 5u,
+                                  .input_token0 = 3u, .output_token0 = 9u, .tokens = 4u };
+    tsr_dense_window w;
+    CHECK(tsr_local_dense_window(&tile, 3u, 5u, 40u, &w), "dense tail window");
+    CHECK(w.weight_begin == 1024u + 3u * 4096u + 5u * 5u && w.weight_beats == 50u &&
+          w.output_row0 == 59u && w.rows == 10u && w.input_token0 == 3u && w.output_token0 == 9u &&
+          w.tokens == 4u, "expert stride, owner tail and token origins");
+    CHECK(!tsr_local_dense_window(&tile, 3u, 16u, 40u, &w), "reject outside original owner's tail");
+
+    tsr_config c = cfg_u200(1);
+    c.caps = tsr_sim_caps_implemented();
+    c.num_ch = 2u;
+    tsr_sim * s = tsr_sim_create(&c, NULL);
+    CHECK(s != NULL, "existing non-four-channel simulators open with all known capabilities");
+    if (s != NULL) {
+        CHECK((tsr_sim_csr_read(s, TSR_CSR_CAPS) & (TSR_CAPS_ATT_LOCAL | TSR_CAPS_MVM_LOCAL_SCALE | TSR_CAPS_MVM_LOCAL_SOFTCAP)) == 0u,
+              "the four-owner capabilities are absent");
+        tsr_sim_destroy(s);
+    }
+}
+
 int main(void) {
+    test_local_tile_contract();
     test_csr();
     test_ldst();
     test_reserved_fields();

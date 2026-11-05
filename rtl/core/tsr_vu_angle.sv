@@ -18,11 +18,12 @@
 module tsr_vu_angle
   import tsr_pkg::*;
   import tsr_vu_pkg::*;
-(
+#(parameter bit LOCAL_ANGLE = 0) (
   input  logic                       clk,
   input  logic                       rst_n,
   // configuration (tsr_vu_gen, at the op's start)
   input  logic                       cfg_start,
+  input  logic                       cfg_neox,
   input  logic                       cfg_ff,
   input  logic                       cfg_fs,
   input  logic                       cfg_atab,
@@ -44,6 +45,7 @@ module tsr_vu_angle
   input  logic                       rd_h,
   input  logic [4:0]                 rd_e,
   output logic [15:0][63:0]          rd_cs,
+  output tsr_vu_bank_angle_t [1:0]    bank_angle,
   output logic                       idle
 );
   import tsr_fp_pkg::*;
@@ -349,13 +351,31 @@ module tsr_vu_angle
   assign wr_v = w_sr[WL-1];
   tsr_vu_dly #(.W(11), .D(WL)) d_wih (.clk, .d({f_i, f_h}), .q({wr_i, wr_h}));
 
-  // angle buffer: 16 banks x 64 entries {c, s}, one LUTRAM per bank (one write, one asynchronous read)
-  for (genvar b = 0; b < 16; b++) begin : g_ab
-    logic [63:0] mem [64];
+  if (LOCAL_ANGLE) begin : g_bank_writes
+    logic neox_q;
     always_ff @(posedge clk) begin
-      if (wr_v && wr_i[3:0] == 4'(b)) mem[{wr_h, wr_i[8:4]}] <= {mc, ms};
+      if (cfg_start) neox_q <= cfg_neox;
     end
-    assign rd_cs[b] = mem[{rd_h, rd_e}];
+    wire owner = neox_q ? wr_i[1] : wr_i[0];
+    wire [2:0] idx = {wr_i[3:2], neox_q ? wr_i[0] : wr_i[1]};
+    for (genvar bank = 0; bank < 2; bank++) begin : g_packet
+      assign bank_angle[bank].valid = wr_v && owner == 1'(bank);
+      assign bank_angle[bank].addr = {wr_h, wr_i[8:4], idx};
+      assign bank_angle[bank].data = {mc, ms};
+    end
+    assign rd_cs = '0;
+    wire unused_rd = &{1'b0, rd_h, rd_e};
+  end else begin : g_central_buffer
+    assign bank_angle = '0;
+    wire unused_neox = &{1'b0, cfg_neox};
+    // One LUTRAM per angle index, with an asynchronous read.
+    for (genvar b = 0; b < 16; b++) begin : g_ab
+      logic [63:0] mem [64];
+      always_ff @(posedge clk) begin
+        if (wr_v && wr_i[3:0] == 4'(b)) mem[{wr_h, wr_i[8:4]}] <= {mc, ms};
+      end
+      assign rd_cs[b] = mem[{rd_h, rd_e}];
+    end
   end
 
   assign ang_ready = hfull_q;

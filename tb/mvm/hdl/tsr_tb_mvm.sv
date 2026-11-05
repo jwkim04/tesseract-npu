@@ -93,6 +93,7 @@ module tsr_tb_mvm
   output logic [NUM_CH-1:0]                   m_wr_dat_valid,
   input  logic [NUM_CH-1:0]                   m_wr_dat_ready,
   output logic [NUM_CH-1:0][BB-1:0]           m_wr_dat_data,
+  output logic [NUM_CH-1:0][BB/32-1:0]           m_wr_dat_mask,
   output logic [NUM_CH-1:0]                   m_wr_dat_last,
   input  logic [NUM_CH-1:0]                   m_wr_rsp_valid,
   output logic [NUM_CH-1:0]                   m_wr_rsp_ready,
@@ -118,6 +119,7 @@ module tsr_tb_mvm
     .RES_PIPE(RES_PIPE), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT), .MUL_LAT(MUL_LAT),
     .ADD_LAT(ADD_LAT), .WS_RD_LAT(WS_RD_LAT), .RST_LOCAL(RST_LOCAL)
   ) u_mvm (
+    .local_score_req('0), .local_score_data(), .scale_req(), .scale_rsp('0),
     .clk, .rst_n,
     .cmd_valid, .cmd_ready, .cmd, .cmd_xc(1'b0), .xcmd('0), .done,     // W4-B at: no attention here (tb/at)
     .spm_rd_req_valid(mv_rd_req_valid), .spm_rd_req_ready(mv_rd_req_ready),
@@ -270,7 +272,7 @@ module tsr_tb_mvm
       .s_rd_rsp_last(ws_rsp_last[c]), .s_rd_rsp_id(ws_rsp_id[c]),
       .s_wr_req_valid(1'b0), .s_wr_req_ready(a_wr_req_ready), .s_wr_req_addr('0),
       .s_wr_req_len('0), .s_wr_req_id('0),
-      .s_wr_dat_valid(1'b0), .s_wr_dat_ready(a_wr_dat_ready), .s_wr_dat_data('0),
+      .s_wr_dat_valid(1'b0), .s_wr_dat_ready(a_wr_dat_ready), .s_wr_dat_data('0), .s_wr_dat_mask('1),
       .s_wr_dat_last(1'b0),
       .s_wr_rsp_valid(a_wr_rsp_valid), .s_wr_rsp_ready(1'b1), .s_wr_rsp_id(a_wr_rsp_id),
       .m_rd_req_valid(m_rd_req_valid[c]), .m_rd_req_ready(m_rd_req_ready[c]),
@@ -283,7 +285,7 @@ module tsr_tb_mvm
       .m_wr_req_addr(m_wr_req_addr[c]), .m_wr_req_len(m_wr_req_len[c]),
       .m_wr_req_id(m_wr_req_id[c]),
       .m_wr_dat_valid(m_wr_dat_valid[c]), .m_wr_dat_ready(m_wr_dat_ready[c]),
-      .m_wr_dat_data(m_wr_dat_data[c]), .m_wr_dat_last(m_wr_dat_last[c]),
+      .m_wr_dat_data(m_wr_dat_data[c]), .m_wr_dat_mask(m_wr_dat_mask[c]), .m_wr_dat_last(m_wr_dat_last[c]),
       .m_wr_rsp_valid(m_wr_rsp_valid[c]), .m_wr_rsp_ready(m_wr_rsp_ready[c]),
       .m_wr_rsp_id(m_wr_rsp_id[c]),
       .perf_rd_beat(a_perf_beat), .perf_rd_wait(a_perf_wait)

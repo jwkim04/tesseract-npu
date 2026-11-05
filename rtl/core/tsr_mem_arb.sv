@@ -204,6 +204,7 @@ module tsr_mem_arb
   input  logic                                  s_wr_dat_valid,
   output logic                                  s_wr_dat_ready,
   input  logic [BEAT_BITS-1:0]                  s_wr_dat_data,
+  input  logic [BEAT_BITS/32-1:0]               s_wr_dat_mask,
   input  logic                                  s_wr_dat_last,
   output logic                                  s_wr_rsp_valid,
   input  logic                                  s_wr_rsp_ready,
@@ -228,6 +229,7 @@ module tsr_mem_arb
   output logic                                  m_wr_dat_valid,
   input  logic                                  m_wr_dat_ready,
   output logic [BEAT_BITS-1:0]                  m_wr_dat_data,
+  output logic [BEAT_BITS/32-1:0]                  m_wr_dat_mask,
   output logic                                  m_wr_dat_last,
   input  logic                                  m_wr_rsp_valid,
   output logic                                  m_wr_rsp_ready,
@@ -377,10 +379,10 @@ module tsr_mem_arb
   );
   assign m_wr_req_id = {SRC_DMA, wq_id};
 
-  tsr_rslice #(.W(BEAT_BITS + 1)) u_wd (
+  tsr_rslice #(.W(BEAT_BITS + BEAT_BITS/32 + 1)) u_wd (
     .clk, .rst_n,
-    .s_valid(s_wr_dat_valid), .s_ready(s_wr_dat_ready), .s_data({s_wr_dat_data, s_wr_dat_last}),
-    .m_valid(m_wr_dat_valid), .m_ready(m_wr_dat_ready), .m_data({m_wr_dat_data, m_wr_dat_last})
+    .s_valid(s_wr_dat_valid), .s_ready(s_wr_dat_ready), .s_data({s_wr_dat_data, s_wr_dat_mask, s_wr_dat_last}),
+    .m_valid(m_wr_dat_valid), .m_ready(m_wr_dat_ready), .m_data({m_wr_dat_data, m_wr_dat_mask, m_wr_dat_last})
   );
 
   tsr_rslice #(.W(TSR_MEM_ID_W)) u_ws (

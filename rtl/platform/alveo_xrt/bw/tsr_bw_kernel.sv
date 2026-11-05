@@ -191,7 +191,7 @@ module tsr_bw_kernel
       .c_rd_rsp_id(rd_rsp_id), .c_rd_rsp_last(rd_rsp_last),
       .c_wr_req_valid(wr_req_valid), .c_wr_req_ready(wr_req_ready), .c_wr_req_addr(wr_req_addr),
       .c_wr_req_len(wr_req_len), .c_wr_req_id(wr_req_id),
-      .c_wr_dat_valid(wr_dat_valid), .c_wr_dat_ready(wr_dat_ready), .c_wr_dat_data(wr_dat_data),
+      .c_wr_dat_valid(wr_dat_valid), .c_wr_dat_ready(wr_dat_ready), .c_wr_dat_data(wr_dat_data), .c_wr_dat_mask('1),
       .c_wr_dat_last(wr_dat_last),
       .c_wr_rsp_valid(wr_rsp_valid), .c_wr_rsp_ready(wr_rsp_ready), .c_wr_rsp_id(wr_rsp_id),
       .m_axi_awvalid(m_axi_awvalid[c]), .m_axi_awready(m_axi_awready[c]), .m_axi_awaddr(m_axi_awaddr[c]),

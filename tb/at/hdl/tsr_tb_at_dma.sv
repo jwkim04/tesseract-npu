@@ -75,6 +75,7 @@ module tsr_tb_at_dma
   output logic [NUM_CH-1:0]                   m_wr_dat_valid,
   input  logic [NUM_CH-1:0]                   m_wr_dat_ready,
   output logic [NUM_CH-1:0][BB-1:0]           m_wr_dat_data,
+  output logic [NUM_CH-1:0][BB/32-1:0]          m_wr_dat_mask,
   output logic [NUM_CH-1:0]                   m_wr_dat_last,
   input  logic [NUM_CH-1:0]                   m_wr_rsp_valid,
   output logic [NUM_CH-1:0]                   m_wr_rsp_ready,
@@ -92,6 +93,7 @@ module tsr_tb_at_dma
   );
 
   // ---- DMA ----
+  logic [NUM_CH-1:0][BB/32-1:0]         d_wr_dat_mask;
   logic [NUM_CH-1:0]                   d_rd_req_valid, d_rd_req_ready, d_rd_rsp_valid, d_rd_rsp_ready;
   logic [NUM_CH-1:0][ADDR_BEAT_W-1:0]  d_rd_req_addr, d_wr_req_addr;
   logic [NUM_CH-1:0][TSR_LEN_W-1:0]    d_rd_req_len, d_wr_req_len;
@@ -114,7 +116,7 @@ module tsr_tb_at_dma
     .wr_req_valid(d_wr_req_valid), .wr_req_ready(d_wr_req_ready), .wr_req_addr(d_wr_req_addr),
     .wr_req_len(d_wr_req_len), .wr_req_id(d_wr_req_id),
     .wr_dat_valid(d_wr_dat_valid), .wr_dat_ready(d_wr_dat_ready), .wr_dat_data(d_wr_dat_data),
-    .wr_dat_last(d_wr_dat_last),
+    .wr_dat_mask(d_wr_dat_mask), .wr_dat_last(d_wr_dat_last),
     .wr_rsp_valid(d_wr_rsp_valid), .wr_rsp_ready(d_wr_rsp_ready), .wr_rsp_id(d_wr_rsp_id),
     .spm_rd_req_valid, .spm_rd_req_ready, .spm_rd_req_line, .spm_rd_rsp_valid, .spm_rd_rsp_data,
     .spm_wr_valid, .spm_wr_ready, .spm_wr_line, .spm_wr_data, .spm_wr_be,
@@ -150,7 +152,7 @@ module tsr_tb_at_dma
       .s_wr_req_valid(d_wr_req_valid[c]), .s_wr_req_ready(d_wr_req_ready[c]), .s_wr_req_addr(d_wr_req_addr[c]),
       .s_wr_req_len(d_wr_req_len[c]), .s_wr_req_id(d_wr_req_id[c]),
       .s_wr_dat_valid(d_wr_dat_valid[c]), .s_wr_dat_ready(d_wr_dat_ready[c]), .s_wr_dat_data(d_wr_dat_data[c]),
-      .s_wr_dat_last(d_wr_dat_last[c]),
+      .s_wr_dat_mask(d_wr_dat_mask[c]), .s_wr_dat_last(d_wr_dat_last[c]),
       .s_wr_rsp_valid(d_wr_rsp_valid[c]), .s_wr_rsp_ready(d_wr_rsp_ready[c]), .s_wr_rsp_id(d_wr_rsp_id[c]),
       .m_rd_req_valid(m_rd_req_valid[c]), .m_rd_req_ready(m_rd_req_ready[c]), .m_rd_req_addr(m_rd_req_addr[c]),
       .m_rd_req_len(m_rd_req_len[c]), .m_rd_req_id(m_rd_req_id[c]),
@@ -159,7 +161,7 @@ module tsr_tb_at_dma
       .m_wr_req_valid(m_wr_req_valid[c]), .m_wr_req_ready(m_wr_req_ready[c]), .m_wr_req_addr(m_wr_req_addr[c]),
       .m_wr_req_len(m_wr_req_len[c]), .m_wr_req_id(m_wr_req_id[c]),
       .m_wr_dat_valid(m_wr_dat_valid[c]), .m_wr_dat_ready(m_wr_dat_ready[c]), .m_wr_dat_data(m_wr_dat_data[c]),
-      .m_wr_dat_last(m_wr_dat_last[c]),
+      .m_wr_dat_mask(m_wr_dat_mask[c]), .m_wr_dat_last(m_wr_dat_last[c]),
       .m_wr_rsp_valid(m_wr_rsp_valid[c]), .m_wr_rsp_ready(m_wr_rsp_ready[c]), .m_wr_rsp_id(m_wr_rsp_id[c]),
       .perf_rd_beat(p_rd_beat), .perf_rd_wait(p_rd_wait)
     );

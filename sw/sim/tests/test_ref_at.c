@@ -1,7 +1,7 @@
 // test_ref_at.c — the AT references (sw/sim/tsr_ref_at.c; docs/design/03-attention-kv.md §13.2).
 //
 // Usage: ref_at self | ggml [-v]
-//   self  layout round trips and placement, KVST (bytes, RMW counts; with ggml: against
+//   self  layout round trips and placement, KVST (bytes, partial-meta counts; with ggml: against
 //         quantize_row_q8_0_ref), ATTQK (SEG vs tsr_dot_row and the short tree, bounds, GQA rows,
 //         MAXOUT), ATTPV (independent __int128 / exact-rational model, directed cases, a
 //         double-precision bound), the vector ops, MSUM, the chunk planner, and tsr_ref_fa against
@@ -290,7 +290,7 @@ static void test_kvst_case(rng_t * rng, uint32_t kv, uint32_t E, uint32_t C, uin
     CHECK(planes_eq(&P, &X), "KVST kv %u E %u C %u c0 %u n %u: plane bytes", kv, E, C, c0, n_rows);
     CHECK(d_inexact == 0, "fp16(D) not exact for QACT output (%ld)", d_inexact);
     CHECK(ggml_mismatch == 0, "KVST rows differ from quantize_row_q8_0_ref (%ld rows)", ggml_mismatch);
-    // RMW counts by brute force: slots written per meta beat (each meta beat has 32 slots).
+    // partial-meta counts by brute force: slots written per meta beat (each meta beat has 32 slots).
     uint8_t * cnt[TSR_NUM_CH_MAX];
     uint8_t * qw[TSR_NUM_CH_MAX];
     const size_t beats = P.bytes / 64u;
@@ -310,7 +310,7 @@ static void test_kvst_case(rng_t * rng, uint32_t kv, uint32_t E, uint32_t C, uin
             qb += qw[c][k];
         }
         CHECK(st.meta_beats[c] == mb && st.meta_rmw[c] == rmw && st.quant_beats[c] == qb,
-              "KVST stats ch %u: meta %u/%u rmw %u/%u quant %u/%u (kv %u E %u c0 %u n %u)", c, st.meta_beats[c], mb,
+              "KVST stats ch %u: meta %u/%u partial %u/%u quant %u/%u (kv %u E %u c0 %u n %u)", c, st.meta_beats[c], mb,
               st.meta_rmw[c], rmw, st.quant_beats[c], qb, kv, E, c0, n_rows);
         free(cnt[c]); free(qw[c]);
     }
@@ -319,8 +319,8 @@ static void test_kvst_case(rng_t * rng, uint32_t kv, uint32_t E, uint32_t C, uin
 }
 
 static void test_kvst(rng_t * rng) {
-    // Directed: E = 1024 K (full meta beats, no RMW), E = 512 K (RMW unless both rows of a chunk),
-    // V aligned 16-cell groups (no RMW) and partial groups (RMW), rows spanning chunks (E = 1536).
+    // Directed: E = 1024 K (full meta beats), E = 512 K (partial unless both rows of a chunk),
+    // V aligned 16-cell groups (full meta) and partial groups, rows spanning chunks (E = 1536).
     test_kvst_case(rng, TSR_KV_K, 1024, 4, 2, 37, 9, 0);
     test_kvst_case(rng, TSR_KV_K, 512, 4, 2, 32, 2, 3);
     test_kvst_case(rng, TSR_KV_K, 512, 4, 2, 33, 1, 0);
@@ -338,7 +338,7 @@ static void test_kvst(rng_t * rng) {
         test_kvst_case(rng, rng_below(rng, 2), E, C, LG, c0, n, rng_below(rng, 3));
     }
     // Single-row counts from the formulas: one decode token writes E/64 quant beats; K E = 1024
-    // writes one full meta beat; V writes E/64 meta beats, all RMW.
+    // writes one full meta beat; V writes E/64 meta beats, all partial.
     tsr_kvst_stats st;
     const tsr_kv_geom g = { 1024, 4, 4 };
     tsr_kvst_count(TSR_KV_K, &g, 70, 1, &st);

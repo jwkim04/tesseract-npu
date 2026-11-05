@@ -101,6 +101,7 @@ Path(args[args.index("-o") + 1]).write_text("fake xclbin; no CAD executed\\n")
         assert [line for line in lines if line.startswith(key + "=")] == [f"{key}={value}"]
     assert "kernel_frequency=0:250|1:166.666667" in lines
     assert hook_paths
+    assert f"prop=run.impl_1.STEPS.OPT_DESIGN.TCL.POST={hw / 'k4_post_opt.tcl'}" in lines
     assert [line.rsplit("=", 1)[1] for line in lines
             if line.startswith(("param=", "prop=")) and line.endswith(".tcl")] == hook_paths
     assert [call["tool"] for call in calls] == ["settings", "v++"]

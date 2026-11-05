@@ -1334,7 +1334,7 @@ int main(int argc, char ** argv) {
         g_sdk_abi = note.sdk_abi;
         g_basis = note.basis_version;
         uint8_t rev[TSR_ELF_N_KINDS];
-        CHECK(tsr_elf_kinds(e, rev, nullptr, 0) == 14, "tsr-elf: the production image declares the 14 kinds");
+        CHECK(tsr_elf_kinds(e, rev, nullptr, 0) == 16, "tsr-elf: the production image declares the 16 kinds");
         g_kinds_sig = opl::kinds_sig(rev);
         g_nkern = tsr_elf_n_kernels(e);
         CHECK(g_nkern == note.n_kernels, "tsr-elf: %u kernels, .note.tsr says %u", g_nkern, note.n_kernels);

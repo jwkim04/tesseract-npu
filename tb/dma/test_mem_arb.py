@@ -39,14 +39,14 @@ CFGS = {
 
 ARB_INPUTS = ["rst_n", "s_rd_req_valid", "s_rd_req_addr", "s_rd_req_len", "s_rd_req_id", "s_rd_rsp_ready",
               "s_wr_req_valid", "s_wr_req_addr", "s_wr_req_len", "s_wr_req_id", "s_wr_dat_valid",
-              "s_wr_dat_data", "s_wr_dat_last", "s_wr_rsp_ready", "m_rd_req_ready", "m_rd_rsp_valid",
+              "s_wr_dat_data", "s_wr_dat_mask", "s_wr_dat_last", "s_wr_rsp_ready", "m_rd_req_ready", "m_rd_rsp_valid",
               "m_rd_rsp_data", "m_rd_rsp_id", "m_rd_rsp_last", "m_wr_req_ready", "m_wr_dat_ready",
               "m_wr_rsp_valid", "m_wr_rsp_id"]
 ARB_OUTPUTS = ["s_rd_req_ready", "s_rd_rsp_valid", "s_rd_rsp_data", "s_rd_rsp_last", "s_rd_rsp_id",
                "s_wr_req_ready", "s_wr_dat_ready", "s_wr_rsp_valid", "s_wr_rsp_id", "m_rd_req_valid",
                "m_rd_req_addr", "m_rd_req_len", "m_rd_req_id", "m_rd_rsp_ready", "m_wr_req_valid",
                "m_wr_req_addr", "m_wr_req_len", "m_wr_req_id", "m_wr_dat_valid", "m_wr_dat_data",
-               "m_wr_dat_last", "m_wr_rsp_ready", "perf_rd_beat", "perf_rd_wait"]
+               "m_wr_dat_mask", "m_wr_dat_last", "m_wr_rsp_ready", "perf_rd_beat", "perf_rd_wait"]
 
 NSRC = 3                       # tsr_pkg TSR_NSRC: AUX, DMA, WS
 RD_REGION = (0, 2048)          # read-only, preloaded
@@ -84,7 +84,7 @@ async def arb_random(dut):
     rnd = random.Random(tb_seed() * 7919 + 11)
     clock = await clock_reset(dut)
     cfg, aw, rdo, mem, src = _setup(dut, rnd, rd_lat=(1, 60), wr_lat=(1, 40))
-    wr = WriteSource(dut, prefix="s_", aw=aw, rnd=rnd, region=WR_REGION)
+    wr = WriteSource(dut, prefix="s_", masked=True, aw=aw, rnd=rnd, region=WR_REGION)
     bm = BurstMonitor(dut, prefix="m_", num_ch=1, aw=aw, id_w=isa.MEM_ID_W)
     perf = PerfMonitor(dut, 1)
     mem.start()

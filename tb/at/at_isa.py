@@ -15,7 +15,7 @@ M32 = 0xFFFFFFFF
 
 KVST_CMD_T = StructDef("tsr_kvst_cmd_t", (("kv", 1), ("n_rows", 7), ("src", 32), ("stride", 32), ("base", 32),
                                           ("e64", 9), ("lg", 16), ("c0", 32)))
-ATT_CMD_T = StructDef("tsr_att_cmd_t", (("pv", 1), ("flags", 3), ("e64", 9), ("dcode", 2), ("g_m1", 6), ("hg0", 6),
+ATT_CMD_T = StructDef("tsr_att_cmd_t", (("local_slot", 2), ("pv", 1), ("flags", 3), ("e64", 9), ("dcode", 2), ("g_m1", 6), ("hg0", 6),
                                         ("gs_m1", 3), ("tq_m1", 3), ("dst", 32), ("x", 32), ("base", 32),
                                         ("rs", 15), ("u0", 16), ("n", 12), ("aux0", 16), ("aux1", 16),
                                         ("w7", 32)))

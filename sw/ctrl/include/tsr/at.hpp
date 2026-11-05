@@ -101,104 +101,109 @@ struct kvst_f {
     return o;
 }
 // ATTQK 0x21 (AT §5.2, owner AT)
-constexpr uint32_t ATTQK_FMT           = 0x00000F00u;  // w0[11:8] KV format
-constexpr uint32_t ATTQK_FMT_LSB       = 8u;
-constexpr uint32_t ATTQK_FMT_W         = 4u;
-constexpr uint32_t ATTQK_FMT_WORD      = 0u;
-constexpr uint32_t ATTQK_FMT_BIT       = 8u;
-constexpr uint32_t ATTQK_CAUSAL        = 0x00001000u;  // w0[12]
-constexpr uint32_t ATTQK_CAUSAL_LSB    = 12u;
-constexpr uint32_t ATTQK_CAUSAL_W      = 1u;
-constexpr uint32_t ATTQK_CAUSAL_WORD   = 0u;
-constexpr uint32_t ATTQK_CAUSAL_BIT    = 12u;
-constexpr uint32_t ATTQK_SLIDE         = 0x00002000u;  // w0[13]
-constexpr uint32_t ATTQK_SLIDE_LSB     = 13u;
-constexpr uint32_t ATTQK_SLIDE_W       = 1u;
-constexpr uint32_t ATTQK_SLIDE_WORD    = 0u;
-constexpr uint32_t ATTQK_SLIDE_BIT     = 13u;
-constexpr uint32_t ATTQK_MAXOUT        = 0x00004000u;  // w0[14] write row maxima at MDST
-constexpr uint32_t ATTQK_MAXOUT_LSB    = 14u;
-constexpr uint32_t ATTQK_MAXOUT_W      = 1u;
-constexpr uint32_t ATTQK_MAXOUT_WORD   = 0u;
-constexpr uint32_t ATTQK_MAXOUT_BIT    = 14u;
-constexpr uint32_t ATTQK_G_M1          = 0x003F0000u;  // x16[5:0] G - 1 (heads per KV head)
-constexpr uint32_t ATTQK_G_M1_LSB      = 16u;
-constexpr uint32_t ATTQK_G_M1_W        = 6u;
-constexpr uint32_t ATTQK_G_M1_WORD     = 0u;
-constexpr uint32_t ATTQK_G_M1_BIT      = 16u;
-constexpr uint32_t ATTQK_HG0           = 0x0FC00000u;  // x16[11:6] first head of the pass within each KV-head group
-constexpr uint32_t ATTQK_HG0_LSB       = 22u;
-constexpr uint32_t ATTQK_HG0_W         = 6u;
-constexpr uint32_t ATTQK_HG0_WORD      = 0u;
-constexpr uint32_t ATTQK_HG0_BIT       = 22u;
-constexpr uint32_t ATTQK_DST           = 0xFFFFFFFFu;  // w1 score rows, row r at DST + r x RSTRIDE
-constexpr uint32_t ATTQK_DST_LSB       = 0u;
-constexpr uint32_t ATTQK_DST_W         = 32u;
-constexpr uint32_t ATTQK_DST_WORD      = 1u;
-constexpr uint32_t ATTQK_DST_BIT       = 32u;
-constexpr uint32_t ATTQK_X             = 0xFFFFFFFFu;  // w2 T_q QA(A32, n_head x D) vectors
-constexpr uint32_t ATTQK_X_LSB         = 0u;
-constexpr uint32_t ATTQK_X_W           = 32u;
-constexpr uint32_t ATTQK_X_WORD        = 2u;
-constexpr uint32_t ATTQK_X_BIT         = 64u;
-constexpr uint32_t ATTQK_BASE          = 0xFFFFFFFFu;  // w3 K plane base B
-constexpr uint32_t ATTQK_BASE_LSB      = 0u;
-constexpr uint32_t ATTQK_BASE_W        = 32u;
-constexpr uint32_t ATTQK_BASE_WORD     = 3u;
-constexpr uint32_t ATTQK_BASE_BIT      = 96u;
-constexpr uint32_t ATTQK_E64           = 0x000001FFu;  // w4[8:0] E / 64 (1..512)
-constexpr uint32_t ATTQK_E64_LSB       = 0u;
-constexpr uint32_t ATTQK_E64_W         = 9u;
-constexpr uint32_t ATTQK_E64_WORD      = 4u;
-constexpr uint32_t ATTQK_E64_BIT       = 128u;
-constexpr uint32_t ATTQK_DCODE         = 0x00000600u;  // w4[10:9] D = 64 x 2^dcode
-constexpr uint32_t ATTQK_DCODE_LSB     = 9u;
-constexpr uint32_t ATTQK_DCODE_W       = 2u;
-constexpr uint32_t ATTQK_DCODE_WORD    = 4u;
-constexpr uint32_t ATTQK_DCODE_BIT     = 137u;
-constexpr uint32_t ATTQK_TQ_M1         = 0x00003800u;  // w4[13:11] T_q - 1
-constexpr uint32_t ATTQK_TQ_M1_LSB     = 11u;
-constexpr uint32_t ATTQK_TQ_M1_W       = 3u;
-constexpr uint32_t ATTQK_TQ_M1_WORD    = 4u;
-constexpr uint32_t ATTQK_TQ_M1_BIT     = 139u;
-constexpr uint32_t ATTQK_GS_M1         = 0x0001C000u;  // w4[16:14] GS - 1
-constexpr uint32_t ATTQK_GS_M1_LSB     = 14u;
-constexpr uint32_t ATTQK_GS_M1_W       = 3u;
-constexpr uint32_t ATTQK_GS_M1_WORD    = 4u;
-constexpr uint32_t ATTQK_GS_M1_BIT     = 142u;
-constexpr uint32_t ATTQK_RSTRIDE       = 0xFFFE0000u;  // w4[31:17] lines; 0 = n_groups
-constexpr uint32_t ATTQK_RSTRIDE_LSB   = 17u;
-constexpr uint32_t ATTQK_RSTRIDE_W     = 15u;
-constexpr uint32_t ATTQK_RSTRIDE_WORD  = 4u;
-constexpr uint32_t ATTQK_RSTRIDE_BIT   = 145u;
-constexpr uint32_t ATTQK_U0            = 0x0000FFFFu;  // w5[15:0] first group
-constexpr uint32_t ATTQK_U0_LSB        = 0u;
-constexpr uint32_t ATTQK_U0_W          = 16u;
-constexpr uint32_t ATTQK_U0_WORD       = 5u;
-constexpr uint32_t ATTQK_U0_BIT        = 160u;
-constexpr uint32_t ATTQK_N_GROUPS      = 0xFFFF0000u;  // w5[31:16] 1..4095
-constexpr uint32_t ATTQK_N_GROUPS_LSB  = 16u;
-constexpr uint32_t ATTQK_N_GROUPS_W    = 16u;
-constexpr uint32_t ATTQK_N_GROUPS_WORD = 5u;
-constexpr uint32_t ATTQK_N_GROUPS_BIT  = 176u;
-constexpr uint32_t ATTQK_C_LO          = 0x0000FFFFu;  // w6[15:0] cell bound relative to 16 u0
-constexpr uint32_t ATTQK_C_LO_LSB      = 0u;
-constexpr uint32_t ATTQK_C_LO_W        = 16u;
-constexpr uint32_t ATTQK_C_LO_WORD     = 6u;
-constexpr uint32_t ATTQK_C_LO_BIT      = 192u;
-constexpr uint32_t ATTQK_C_HI          = 0xFFFF0000u;  // w6[31:16] cell bound relative to 16 u0
-constexpr uint32_t ATTQK_C_HI_LSB      = 16u;
-constexpr uint32_t ATTQK_C_HI_W        = 16u;
-constexpr uint32_t ATTQK_C_HI_WORD     = 6u;
-constexpr uint32_t ATTQK_C_HI_BIT      = 208u;
-constexpr uint32_t ATTQK_MDST          = 0xFFFFFFFFu;  // w7 row-maximum vector line; 0 unless MAXOUT
-constexpr uint32_t ATTQK_MDST_LSB      = 0u;
-constexpr uint32_t ATTQK_MDST_W        = 32u;
-constexpr uint32_t ATTQK_MDST_WORD     = 7u;
-constexpr uint32_t ATTQK_MDST_BIT      = 224u;
+constexpr uint32_t ATTQK_FMT             = 0x00000F00u;  // w0[11:8] KV format
+constexpr uint32_t ATTQK_FMT_LSB         = 8u;
+constexpr uint32_t ATTQK_FMT_W           = 4u;
+constexpr uint32_t ATTQK_FMT_WORD        = 0u;
+constexpr uint32_t ATTQK_FMT_BIT         = 8u;
+constexpr uint32_t ATTQK_CAUSAL          = 0x00001000u;  // w0[12]
+constexpr uint32_t ATTQK_CAUSAL_LSB      = 12u;
+constexpr uint32_t ATTQK_CAUSAL_W        = 1u;
+constexpr uint32_t ATTQK_CAUSAL_WORD     = 0u;
+constexpr uint32_t ATTQK_CAUSAL_BIT      = 12u;
+constexpr uint32_t ATTQK_SLIDE           = 0x00002000u;  // w0[13]
+constexpr uint32_t ATTQK_SLIDE_LSB       = 13u;
+constexpr uint32_t ATTQK_SLIDE_W         = 1u;
+constexpr uint32_t ATTQK_SLIDE_WORD      = 0u;
+constexpr uint32_t ATTQK_SLIDE_BIT       = 13u;
+constexpr uint32_t ATTQK_MAXOUT          = 0x00004000u;  // w0[14] write row maxima at MDST
+constexpr uint32_t ATTQK_MAXOUT_LSB      = 14u;
+constexpr uint32_t ATTQK_MAXOUT_W        = 1u;
+constexpr uint32_t ATTQK_MAXOUT_WORD     = 0u;
+constexpr uint32_t ATTQK_MAXOUT_BIT      = 14u;
+constexpr uint32_t ATTQK_G_M1            = 0x003F0000u;  // x16[5:0] G - 1 (heads per KV head)
+constexpr uint32_t ATTQK_G_M1_LSB        = 16u;
+constexpr uint32_t ATTQK_G_M1_W          = 6u;
+constexpr uint32_t ATTQK_G_M1_WORD       = 0u;
+constexpr uint32_t ATTQK_G_M1_BIT        = 16u;
+constexpr uint32_t ATTQK_HG0             = 0x0FC00000u;  // x16[11:6] first head of the pass within each KV-head group
+constexpr uint32_t ATTQK_HG0_LSB         = 22u;
+constexpr uint32_t ATTQK_HG0_W           = 6u;
+constexpr uint32_t ATTQK_HG0_WORD        = 0u;
+constexpr uint32_t ATTQK_HG0_BIT         = 22u;
+constexpr uint32_t ATTQK_LOCAL_SLOT      = 0x30000000u;  // w0[29:28] 0 = SPM, 1..3 = local FAST attention slot
+constexpr uint32_t ATTQK_LOCAL_SLOT_LSB  = 28u;
+constexpr uint32_t ATTQK_LOCAL_SLOT_W    = 2u;
+constexpr uint32_t ATTQK_LOCAL_SLOT_WORD = 0u;
+constexpr uint32_t ATTQK_LOCAL_SLOT_BIT  = 28u;
+constexpr uint32_t ATTQK_DST             = 0xFFFFFFFFu;  // w1 score rows, row r at DST + r x RSTRIDE
+constexpr uint32_t ATTQK_DST_LSB         = 0u;
+constexpr uint32_t ATTQK_DST_W           = 32u;
+constexpr uint32_t ATTQK_DST_WORD        = 1u;
+constexpr uint32_t ATTQK_DST_BIT         = 32u;
+constexpr uint32_t ATTQK_X               = 0xFFFFFFFFu;  // w2 T_q QA(A32, n_head x D) vectors
+constexpr uint32_t ATTQK_X_LSB           = 0u;
+constexpr uint32_t ATTQK_X_W             = 32u;
+constexpr uint32_t ATTQK_X_WORD          = 2u;
+constexpr uint32_t ATTQK_X_BIT           = 64u;
+constexpr uint32_t ATTQK_BASE            = 0xFFFFFFFFu;  // w3 K plane base B
+constexpr uint32_t ATTQK_BASE_LSB        = 0u;
+constexpr uint32_t ATTQK_BASE_W          = 32u;
+constexpr uint32_t ATTQK_BASE_WORD       = 3u;
+constexpr uint32_t ATTQK_BASE_BIT        = 96u;
+constexpr uint32_t ATTQK_E64             = 0x000001FFu;  // w4[8:0] E / 64 (1..512)
+constexpr uint32_t ATTQK_E64_LSB         = 0u;
+constexpr uint32_t ATTQK_E64_W           = 9u;
+constexpr uint32_t ATTQK_E64_WORD        = 4u;
+constexpr uint32_t ATTQK_E64_BIT         = 128u;
+constexpr uint32_t ATTQK_DCODE           = 0x00000600u;  // w4[10:9] D = 64 x 2^dcode
+constexpr uint32_t ATTQK_DCODE_LSB       = 9u;
+constexpr uint32_t ATTQK_DCODE_W         = 2u;
+constexpr uint32_t ATTQK_DCODE_WORD      = 4u;
+constexpr uint32_t ATTQK_DCODE_BIT       = 137u;
+constexpr uint32_t ATTQK_TQ_M1           = 0x00003800u;  // w4[13:11] T_q - 1
+constexpr uint32_t ATTQK_TQ_M1_LSB       = 11u;
+constexpr uint32_t ATTQK_TQ_M1_W         = 3u;
+constexpr uint32_t ATTQK_TQ_M1_WORD      = 4u;
+constexpr uint32_t ATTQK_TQ_M1_BIT       = 139u;
+constexpr uint32_t ATTQK_GS_M1           = 0x0001C000u;  // w4[16:14] GS - 1
+constexpr uint32_t ATTQK_GS_M1_LSB       = 14u;
+constexpr uint32_t ATTQK_GS_M1_W         = 3u;
+constexpr uint32_t ATTQK_GS_M1_WORD      = 4u;
+constexpr uint32_t ATTQK_GS_M1_BIT       = 142u;
+constexpr uint32_t ATTQK_RSTRIDE         = 0xFFFE0000u;  // w4[31:17] lines; 0 = n_groups
+constexpr uint32_t ATTQK_RSTRIDE_LSB     = 17u;
+constexpr uint32_t ATTQK_RSTRIDE_W       = 15u;
+constexpr uint32_t ATTQK_RSTRIDE_WORD    = 4u;
+constexpr uint32_t ATTQK_RSTRIDE_BIT     = 145u;
+constexpr uint32_t ATTQK_U0              = 0x0000FFFFu;  // w5[15:0] first group
+constexpr uint32_t ATTQK_U0_LSB          = 0u;
+constexpr uint32_t ATTQK_U0_W            = 16u;
+constexpr uint32_t ATTQK_U0_WORD         = 5u;
+constexpr uint32_t ATTQK_U0_BIT          = 160u;
+constexpr uint32_t ATTQK_N_GROUPS        = 0xFFFF0000u;  // w5[31:16] 1..4095
+constexpr uint32_t ATTQK_N_GROUPS_LSB    = 16u;
+constexpr uint32_t ATTQK_N_GROUPS_W      = 16u;
+constexpr uint32_t ATTQK_N_GROUPS_WORD   = 5u;
+constexpr uint32_t ATTQK_N_GROUPS_BIT    = 176u;
+constexpr uint32_t ATTQK_C_LO            = 0x0000FFFFu;  // w6[15:0] cell bound relative to 16 u0
+constexpr uint32_t ATTQK_C_LO_LSB        = 0u;
+constexpr uint32_t ATTQK_C_LO_W          = 16u;
+constexpr uint32_t ATTQK_C_LO_WORD       = 6u;
+constexpr uint32_t ATTQK_C_LO_BIT        = 192u;
+constexpr uint32_t ATTQK_C_HI            = 0xFFFF0000u;  // w6[31:16] cell bound relative to 16 u0
+constexpr uint32_t ATTQK_C_HI_LSB        = 16u;
+constexpr uint32_t ATTQK_C_HI_W          = 16u;
+constexpr uint32_t ATTQK_C_HI_WORD       = 6u;
+constexpr uint32_t ATTQK_C_HI_BIT        = 208u;
+constexpr uint32_t ATTQK_MDST            = 0xFFFFFFFFu;  // w7 row-maximum vector line; 0 unless MAXOUT
+constexpr uint32_t ATTQK_MDST_LSB        = 0u;
+constexpr uint32_t ATTQK_MDST_W          = 32u;
+constexpr uint32_t ATTQK_MDST_WORD       = 7u;
+constexpr uint32_t ATTQK_MDST_BIT        = 224u;
 // ATTQK_FMT takes the KVFMT_* values
 // ATTQK_DCODE takes the DCODE_* values
-constexpr uint32_t ATTQK_RSV_W0 = 0xF0008000u;  // must be 0 (ILLEGAL_OP)
+constexpr uint32_t ATTQK_RSV_W0 = 0xC0008000u;  // must be 0 (ILLEGAL_OP)
 constexpr uint32_t ATTQK_RSV_W1 = 0x00000000u;
 constexpr uint32_t ATTQK_RSV_W2 = 0x00000000u;
 constexpr uint32_t ATTQK_RSV_W3 = 0x00000000u;
@@ -208,25 +213,26 @@ constexpr uint32_t ATTQK_RSV_W6 = 0x00000000u;
 constexpr uint32_t ATTQK_RSV_W7 = 0x00000000u;
 constexpr uint32_t ATTQK_WORDS  = 0xFFu;        // words holding a field (w0 always)
 struct attqk_f {
-    uint32_t fmt = 0;       // w0[11:8] KV format
-    uint32_t causal = 0;    // w0[12]
-    uint32_t slide = 0;     // w0[13]
-    uint32_t maxout = 0;    // w0[14] write row maxima at MDST
-    uint32_t g_m1 = 0;      // x16[5:0] G - 1 (heads per KV head)
-    uint32_t hg0 = 0;       // x16[11:6] first head of the pass within each KV-head group
-    uint32_t dst = 0;       // w1 score rows, row r at DST + r x RSTRIDE
-    uint32_t x = 0;         // w2 T_q QA(A32, n_head x D) vectors
-    uint32_t base = 0;      // w3 K plane base B
-    uint32_t e64 = 0;       // w4[8:0] E / 64 (1..512)
-    uint32_t dcode = 0;     // w4[10:9] D = 64 x 2^dcode
-    uint32_t tq_m1 = 0;     // w4[13:11] T_q - 1
-    uint32_t gs_m1 = 0;     // w4[16:14] GS - 1
-    uint32_t rstride = 0;   // w4[31:17] lines; 0 = n_groups
-    uint32_t u0 = 0;        // w5[15:0] first group
-    uint32_t n_groups = 0;  // w5[31:16] 1..4095
-    uint32_t c_lo = 0;      // w6[15:0] cell bound relative to 16 u0
-    uint32_t c_hi = 0;      // w6[31:16] cell bound relative to 16 u0
-    uint32_t mdst = 0;      // w7 row-maximum vector line; 0 unless MAXOUT
+    uint32_t fmt = 0;         // w0[11:8] KV format
+    uint32_t causal = 0;      // w0[12]
+    uint32_t slide = 0;       // w0[13]
+    uint32_t maxout = 0;      // w0[14] write row maxima at MDST
+    uint32_t g_m1 = 0;        // x16[5:0] G - 1 (heads per KV head)
+    uint32_t hg0 = 0;         // x16[11:6] first head of the pass within each KV-head group
+    uint32_t local_slot = 0;  // w0[29:28] 0 = SPM, 1..3 = local FAST attention slot
+    uint32_t dst = 0;         // w1 score rows, row r at DST + r x RSTRIDE
+    uint32_t x = 0;           // w2 T_q QA(A32, n_head x D) vectors
+    uint32_t base = 0;        // w3 K plane base B
+    uint32_t e64 = 0;         // w4[8:0] E / 64 (1..512)
+    uint32_t dcode = 0;       // w4[10:9] D = 64 x 2^dcode
+    uint32_t tq_m1 = 0;       // w4[13:11] T_q - 1
+    uint32_t gs_m1 = 0;       // w4[16:14] GS - 1
+    uint32_t rstride = 0;     // w4[31:17] lines; 0 = n_groups
+    uint32_t u0 = 0;          // w5[15:0] first group
+    uint32_t n_groups = 0;    // w5[31:16] 1..4095
+    uint32_t c_lo = 0;        // w6[15:0] cell bound relative to 16 u0
+    uint32_t c_hi = 0;        // w6[31:16] cell bound relative to 16 u0
+    uint32_t mdst = 0;        // w7 row-maximum vector line; 0 unless MAXOUT
 };
 [[gnu::always_inline]] constexpr op ATTQK(const attqk_f& f) {
     op o{};
@@ -238,6 +244,7 @@ struct attqk_f {
     o.w[0] |= op_put(f.maxout, 0x1u, 14, bad);
     o.w[0] |= op_put(f.g_m1, 0x3Fu, 16, bad);
     o.w[0] |= op_put(f.hg0, 0x3Fu, 22, bad);
+    o.w[0] |= op_put(f.local_slot, 0x3u, 28, bad);
     o.w[1] |= f.dst;
     o.w[2] |= f.x;
     o.w[3] |= f.base;
@@ -256,89 +263,94 @@ struct attqk_f {
     return o;
 }
 // ATTPV 0x22 (AT §5.3, owner AT)
-constexpr uint32_t ATTPV_FMT           = 0x00000F00u;  // w0[11:8] KV format
-constexpr uint32_t ATTPV_FMT_LSB       = 8u;
-constexpr uint32_t ATTPV_FMT_W         = 4u;
-constexpr uint32_t ATTPV_FMT_WORD      = 0u;
-constexpr uint32_t ATTPV_FMT_BIT       = 8u;
-constexpr uint32_t ATTPV_LSUM          = 0x00001000u;  // w0[12] also row sums
-constexpr uint32_t ATTPV_LSUM_LSB      = 12u;
-constexpr uint32_t ATTPV_LSUM_W        = 1u;
-constexpr uint32_t ATTPV_LSUM_WORD     = 0u;
-constexpr uint32_t ATTPV_LSUM_BIT      = 12u;
-constexpr uint32_t ATTPV_G_M1          = 0x003F0000u;  // x16[5:0] G - 1
-constexpr uint32_t ATTPV_G_M1_LSB      = 16u;
-constexpr uint32_t ATTPV_G_M1_W        = 6u;
-constexpr uint32_t ATTPV_G_M1_WORD     = 0u;
-constexpr uint32_t ATTPV_G_M1_BIT      = 16u;
-constexpr uint32_t ATTPV_HG0           = 0x0FC00000u;  // x16[11:6] first head of the pass
-constexpr uint32_t ATTPV_HG0_LSB       = 22u;
-constexpr uint32_t ATTPV_HG0_W         = 6u;
-constexpr uint32_t ATTPV_HG0_WORD      = 0u;
-constexpr uint32_t ATTPV_HG0_BIT       = 22u;
-constexpr uint32_t ATTPV_DST           = 0xFFFFFFFFu;  // w1 channel partials
-constexpr uint32_t ATTPV_DST_LSB       = 0u;
-constexpr uint32_t ATTPV_DST_W         = 32u;
-constexpr uint32_t ATTPV_DST_WORD      = 1u;
-constexpr uint32_t ATTPV_DST_BIT       = 32u;
-constexpr uint32_t ATTPV_P             = 0xFFFFFFFFu;  // w2 weight rows, row r at P + r x PSTRIDE
-constexpr uint32_t ATTPV_P_LSB         = 0u;
-constexpr uint32_t ATTPV_P_W           = 32u;
-constexpr uint32_t ATTPV_P_WORD        = 2u;
-constexpr uint32_t ATTPV_P_BIT         = 64u;
-constexpr uint32_t ATTPV_BASE          = 0xFFFFFFFFu;  // w3 V plane base B
-constexpr uint32_t ATTPV_BASE_LSB      = 0u;
-constexpr uint32_t ATTPV_BASE_W        = 32u;
-constexpr uint32_t ATTPV_BASE_WORD     = 3u;
-constexpr uint32_t ATTPV_BASE_BIT      = 96u;
-constexpr uint32_t ATTPV_E64           = 0x000001FFu;  // w4[8:0] E / 64
-constexpr uint32_t ATTPV_E64_LSB       = 0u;
-constexpr uint32_t ATTPV_E64_W         = 9u;
-constexpr uint32_t ATTPV_E64_WORD      = 4u;
-constexpr uint32_t ATTPV_E64_BIT       = 128u;
-constexpr uint32_t ATTPV_DCODE         = 0x00000600u;  // w4[10:9]
-constexpr uint32_t ATTPV_DCODE_LSB     = 9u;
-constexpr uint32_t ATTPV_DCODE_W       = 2u;
-constexpr uint32_t ATTPV_DCODE_WORD    = 4u;
-constexpr uint32_t ATTPV_DCODE_BIT     = 137u;
-constexpr uint32_t ATTPV_TQ_M1         = 0x00003800u;  // w4[13:11] T_q - 1
-constexpr uint32_t ATTPV_TQ_M1_LSB     = 11u;
-constexpr uint32_t ATTPV_TQ_M1_W       = 3u;
-constexpr uint32_t ATTPV_TQ_M1_WORD    = 4u;
-constexpr uint32_t ATTPV_TQ_M1_BIT     = 139u;
-constexpr uint32_t ATTPV_GS_M1         = 0x0001C000u;  // w4[16:14] GS - 1
-constexpr uint32_t ATTPV_GS_M1_LSB     = 14u;
-constexpr uint32_t ATTPV_GS_M1_W       = 3u;
-constexpr uint32_t ATTPV_GS_M1_WORD    = 4u;
-constexpr uint32_t ATTPV_GS_M1_BIT     = 142u;
-constexpr uint32_t ATTPV_PSTRIDE       = 0xFFFE0000u;  // w4[31:17] lines; 0 = n_groups
-constexpr uint32_t ATTPV_PSTRIDE_LSB   = 17u;
-constexpr uint32_t ATTPV_PSTRIDE_W     = 15u;
-constexpr uint32_t ATTPV_PSTRIDE_WORD  = 4u;
-constexpr uint32_t ATTPV_PSTRIDE_BIT   = 145u;
-constexpr uint32_t ATTPV_U0            = 0x0000FFFFu;  // w5[15:0] first group
-constexpr uint32_t ATTPV_U0_LSB        = 0u;
-constexpr uint32_t ATTPV_U0_W          = 16u;
-constexpr uint32_t ATTPV_U0_WORD       = 5u;
-constexpr uint32_t ATTPV_U0_BIT        = 160u;
-constexpr uint32_t ATTPV_N_GROUPS      = 0xFFFF0000u;  // w5[31:16]
-constexpr uint32_t ATTPV_N_GROUPS_LSB  = 16u;
-constexpr uint32_t ATTPV_N_GROUPS_W    = 16u;
-constexpr uint32_t ATTPV_N_GROUPS_WORD = 5u;
-constexpr uint32_t ATTPV_N_GROUPS_BIT  = 176u;
-constexpr uint32_t ATTPV_LG            = 0x0000FFFFu;  // w6[15:0] local groups per channel
-constexpr uint32_t ATTPV_LG_LSB        = 0u;
-constexpr uint32_t ATTPV_LG_W          = 16u;
-constexpr uint32_t ATTPV_LG_WORD       = 6u;
-constexpr uint32_t ATTPV_LG_BIT        = 192u;
-constexpr uint32_t ATTPV_CSTRIDE       = 0xFFFFFFFFu;  // w7 lines; 0 = R x D / 16
-constexpr uint32_t ATTPV_CSTRIDE_LSB   = 0u;
-constexpr uint32_t ATTPV_CSTRIDE_W     = 32u;
-constexpr uint32_t ATTPV_CSTRIDE_WORD  = 7u;
-constexpr uint32_t ATTPV_CSTRIDE_BIT   = 224u;
+constexpr uint32_t ATTPV_FMT             = 0x00000F00u;  // w0[11:8] KV format
+constexpr uint32_t ATTPV_FMT_LSB         = 8u;
+constexpr uint32_t ATTPV_FMT_W           = 4u;
+constexpr uint32_t ATTPV_FMT_WORD        = 0u;
+constexpr uint32_t ATTPV_FMT_BIT         = 8u;
+constexpr uint32_t ATTPV_LSUM            = 0x00001000u;  // w0[12] also row sums
+constexpr uint32_t ATTPV_LSUM_LSB        = 12u;
+constexpr uint32_t ATTPV_LSUM_W          = 1u;
+constexpr uint32_t ATTPV_LSUM_WORD       = 0u;
+constexpr uint32_t ATTPV_LSUM_BIT        = 12u;
+constexpr uint32_t ATTPV_G_M1            = 0x003F0000u;  // x16[5:0] G - 1
+constexpr uint32_t ATTPV_G_M1_LSB        = 16u;
+constexpr uint32_t ATTPV_G_M1_W          = 6u;
+constexpr uint32_t ATTPV_G_M1_WORD       = 0u;
+constexpr uint32_t ATTPV_G_M1_BIT        = 16u;
+constexpr uint32_t ATTPV_HG0             = 0x0FC00000u;  // x16[11:6] first head of the pass
+constexpr uint32_t ATTPV_HG0_LSB         = 22u;
+constexpr uint32_t ATTPV_HG0_W           = 6u;
+constexpr uint32_t ATTPV_HG0_WORD        = 0u;
+constexpr uint32_t ATTPV_HG0_BIT         = 22u;
+constexpr uint32_t ATTPV_LOCAL_SLOT      = 0x30000000u;  // w0[29:28] 0 = SPM, 1..3 = local FAST attention slot
+constexpr uint32_t ATTPV_LOCAL_SLOT_LSB  = 28u;
+constexpr uint32_t ATTPV_LOCAL_SLOT_W    = 2u;
+constexpr uint32_t ATTPV_LOCAL_SLOT_WORD = 0u;
+constexpr uint32_t ATTPV_LOCAL_SLOT_BIT  = 28u;
+constexpr uint32_t ATTPV_DST             = 0xFFFFFFFFu;  // w1 channel partials
+constexpr uint32_t ATTPV_DST_LSB         = 0u;
+constexpr uint32_t ATTPV_DST_W           = 32u;
+constexpr uint32_t ATTPV_DST_WORD        = 1u;
+constexpr uint32_t ATTPV_DST_BIT         = 32u;
+constexpr uint32_t ATTPV_P               = 0xFFFFFFFFu;  // w2 weight rows, row r at P + r x PSTRIDE
+constexpr uint32_t ATTPV_P_LSB           = 0u;
+constexpr uint32_t ATTPV_P_W             = 32u;
+constexpr uint32_t ATTPV_P_WORD          = 2u;
+constexpr uint32_t ATTPV_P_BIT           = 64u;
+constexpr uint32_t ATTPV_BASE            = 0xFFFFFFFFu;  // w3 V plane base B
+constexpr uint32_t ATTPV_BASE_LSB        = 0u;
+constexpr uint32_t ATTPV_BASE_W          = 32u;
+constexpr uint32_t ATTPV_BASE_WORD       = 3u;
+constexpr uint32_t ATTPV_BASE_BIT        = 96u;
+constexpr uint32_t ATTPV_E64             = 0x000001FFu;  // w4[8:0] E / 64
+constexpr uint32_t ATTPV_E64_LSB         = 0u;
+constexpr uint32_t ATTPV_E64_W           = 9u;
+constexpr uint32_t ATTPV_E64_WORD        = 4u;
+constexpr uint32_t ATTPV_E64_BIT         = 128u;
+constexpr uint32_t ATTPV_DCODE           = 0x00000600u;  // w4[10:9]
+constexpr uint32_t ATTPV_DCODE_LSB       = 9u;
+constexpr uint32_t ATTPV_DCODE_W         = 2u;
+constexpr uint32_t ATTPV_DCODE_WORD      = 4u;
+constexpr uint32_t ATTPV_DCODE_BIT       = 137u;
+constexpr uint32_t ATTPV_TQ_M1           = 0x00003800u;  // w4[13:11] T_q - 1
+constexpr uint32_t ATTPV_TQ_M1_LSB       = 11u;
+constexpr uint32_t ATTPV_TQ_M1_W         = 3u;
+constexpr uint32_t ATTPV_TQ_M1_WORD      = 4u;
+constexpr uint32_t ATTPV_TQ_M1_BIT       = 139u;
+constexpr uint32_t ATTPV_GS_M1           = 0x0001C000u;  // w4[16:14] GS - 1
+constexpr uint32_t ATTPV_GS_M1_LSB       = 14u;
+constexpr uint32_t ATTPV_GS_M1_W         = 3u;
+constexpr uint32_t ATTPV_GS_M1_WORD      = 4u;
+constexpr uint32_t ATTPV_GS_M1_BIT       = 142u;
+constexpr uint32_t ATTPV_PSTRIDE         = 0xFFFE0000u;  // w4[31:17] lines; 0 = n_groups
+constexpr uint32_t ATTPV_PSTRIDE_LSB     = 17u;
+constexpr uint32_t ATTPV_PSTRIDE_W       = 15u;
+constexpr uint32_t ATTPV_PSTRIDE_WORD    = 4u;
+constexpr uint32_t ATTPV_PSTRIDE_BIT     = 145u;
+constexpr uint32_t ATTPV_U0              = 0x0000FFFFu;  // w5[15:0] first group
+constexpr uint32_t ATTPV_U0_LSB          = 0u;
+constexpr uint32_t ATTPV_U0_W            = 16u;
+constexpr uint32_t ATTPV_U0_WORD         = 5u;
+constexpr uint32_t ATTPV_U0_BIT          = 160u;
+constexpr uint32_t ATTPV_N_GROUPS        = 0xFFFF0000u;  // w5[31:16]
+constexpr uint32_t ATTPV_N_GROUPS_LSB    = 16u;
+constexpr uint32_t ATTPV_N_GROUPS_W      = 16u;
+constexpr uint32_t ATTPV_N_GROUPS_WORD   = 5u;
+constexpr uint32_t ATTPV_N_GROUPS_BIT    = 176u;
+constexpr uint32_t ATTPV_LG              = 0x0000FFFFu;  // w6[15:0] local groups per channel
+constexpr uint32_t ATTPV_LG_LSB          = 0u;
+constexpr uint32_t ATTPV_LG_W            = 16u;
+constexpr uint32_t ATTPV_LG_WORD         = 6u;
+constexpr uint32_t ATTPV_LG_BIT          = 192u;
+constexpr uint32_t ATTPV_CSTRIDE         = 0xFFFFFFFFu;  // w7 lines; 0 = R x D / 16
+constexpr uint32_t ATTPV_CSTRIDE_LSB     = 0u;
+constexpr uint32_t ATTPV_CSTRIDE_W       = 32u;
+constexpr uint32_t ATTPV_CSTRIDE_WORD    = 7u;
+constexpr uint32_t ATTPV_CSTRIDE_BIT     = 224u;
 // ATTPV_FMT takes the KVFMT_* values
 // ATTPV_DCODE takes the DCODE_* values
-constexpr uint32_t ATTPV_RSV_W0 = 0xF000E000u;  // must be 0 (ILLEGAL_OP)
+constexpr uint32_t ATTPV_RSV_W0 = 0xC000E000u;  // must be 0 (ILLEGAL_OP)
 constexpr uint32_t ATTPV_RSV_W1 = 0x00000000u;
 constexpr uint32_t ATTPV_RSV_W2 = 0x00000000u;
 constexpr uint32_t ATTPV_RSV_W3 = 0x00000000u;
@@ -348,22 +360,23 @@ constexpr uint32_t ATTPV_RSV_W6 = 0xFFFF0000u;
 constexpr uint32_t ATTPV_RSV_W7 = 0x00000000u;
 constexpr uint32_t ATTPV_WORDS  = 0xFFu;        // words holding a field (w0 always)
 struct attpv_f {
-    uint32_t fmt = 0;       // w0[11:8] KV format
-    uint32_t lsum = 0;      // w0[12] also row sums
-    uint32_t g_m1 = 0;      // x16[5:0] G - 1
-    uint32_t hg0 = 0;       // x16[11:6] first head of the pass
-    uint32_t dst = 0;       // w1 channel partials
-    uint32_t p = 0;         // w2 weight rows, row r at P + r x PSTRIDE
-    uint32_t base = 0;      // w3 V plane base B
-    uint32_t e64 = 0;       // w4[8:0] E / 64
-    uint32_t dcode = 0;     // w4[10:9]
-    uint32_t tq_m1 = 0;     // w4[13:11] T_q - 1
-    uint32_t gs_m1 = 0;     // w4[16:14] GS - 1
-    uint32_t pstride = 0;   // w4[31:17] lines; 0 = n_groups
-    uint32_t u0 = 0;        // w5[15:0] first group
-    uint32_t n_groups = 0;  // w5[31:16]
-    uint32_t lg = 0;        // w6[15:0] local groups per channel
-    uint32_t cstride = 0;   // w7 lines; 0 = R x D / 16
+    uint32_t fmt = 0;         // w0[11:8] KV format
+    uint32_t lsum = 0;        // w0[12] also row sums
+    uint32_t g_m1 = 0;        // x16[5:0] G - 1
+    uint32_t hg0 = 0;         // x16[11:6] first head of the pass
+    uint32_t local_slot = 0;  // w0[29:28] 0 = SPM, 1..3 = local FAST attention slot
+    uint32_t dst = 0;         // w1 channel partials
+    uint32_t p = 0;           // w2 weight rows, row r at P + r x PSTRIDE
+    uint32_t base = 0;        // w3 V plane base B
+    uint32_t e64 = 0;         // w4[8:0] E / 64
+    uint32_t dcode = 0;       // w4[10:9]
+    uint32_t tq_m1 = 0;       // w4[13:11] T_q - 1
+    uint32_t gs_m1 = 0;       // w4[16:14] GS - 1
+    uint32_t pstride = 0;     // w4[31:17] lines; 0 = n_groups
+    uint32_t u0 = 0;          // w5[15:0] first group
+    uint32_t n_groups = 0;    // w5[31:16]
+    uint32_t lg = 0;          // w6[15:0] local groups per channel
+    uint32_t cstride = 0;     // w7 lines; 0 = R x D / 16
 };
 [[gnu::always_inline]] constexpr op ATTPV(const attpv_f& f) {
     op o{};
@@ -373,6 +386,7 @@ struct attpv_f {
     o.w[0] |= op_put(f.lsum, 0x1u, 12, bad);
     o.w[0] |= op_put(f.g_m1, 0x3Fu, 16, bad);
     o.w[0] |= op_put(f.hg0, 0x3Fu, 22, bad);
+    o.w[0] |= op_put(f.local_slot, 0x3u, 28, bad);
     o.w[1] |= f.dst;
     o.w[2] |= f.p;
     o.w[3] |= f.base;
@@ -390,58 +404,70 @@ struct attpv_f {
     return o;
 }
 // ASMAX 0x34 (AT §5.4, VU §5.11, owner AT)
-constexpr uint32_t ASMAX_DST          = 0xFFFFFFFFu;  // w1
-constexpr uint32_t ASMAX_DST_LSB      = 0u;
-constexpr uint32_t ASMAX_DST_W        = 32u;
-constexpr uint32_t ASMAX_DST_WORD     = 1u;
-constexpr uint32_t ASMAX_DST_BIT      = 32u;
-constexpr uint32_t ASMAX_SRC          = 0xFFFFFFFFu;  // w2 may equal DST
-constexpr uint32_t ASMAX_SRC_LSB      = 0u;
-constexpr uint32_t ASMAX_SRC_W        = 32u;
-constexpr uint32_t ASMAX_SRC_WORD     = 2u;
-constexpr uint32_t ASMAX_SRC_BIT      = 64u;
-constexpr uint32_t ASMAX_MVEC         = 0xFFFFFFFFu;  // w3 row maxima, word r
-constexpr uint32_t ASMAX_MVEC_LSB     = 0u;
-constexpr uint32_t ASMAX_MVEC_W       = 32u;
-constexpr uint32_t ASMAX_MVEC_WORD    = 3u;
-constexpr uint32_t ASMAX_MVEC_BIT     = 96u;
-constexpr uint32_t ASMAX_N_LINES      = 0x0000FFFFu;  // w4[15:0] 1..4095
-constexpr uint32_t ASMAX_N_LINES_LSB  = 0u;
-constexpr uint32_t ASMAX_N_LINES_W    = 16u;
-constexpr uint32_t ASMAX_N_LINES_WORD = 4u;
-constexpr uint32_t ASMAX_N_LINES_BIT  = 128u;
-constexpr uint32_t ASMAX_STRIDE       = 0xFFFF0000u;  // w4[31:16] 0 = n_lines
-constexpr uint32_t ASMAX_STRIDE_LSB   = 16u;
-constexpr uint32_t ASMAX_STRIDE_W     = 16u;
-constexpr uint32_t ASMAX_STRIDE_WORD  = 4u;
-constexpr uint32_t ASMAX_STRIDE_BIT   = 144u;
-constexpr uint32_t ASMAX_R            = 0xFFFFFFFFu;  // w5 1..1024
-constexpr uint32_t ASMAX_R_LSB        = 0u;
-constexpr uint32_t ASMAX_R_W          = 32u;
-constexpr uint32_t ASMAX_R_WORD       = 5u;
-constexpr uint32_t ASMAX_R_BIT        = 160u;
-constexpr uint32_t ASMAX_SCALE        = 0xFFFFFFFFu;  // w6 f32, finite, normal, > 0
-constexpr uint32_t ASMAX_SCALE_LSB    = 0u;
-constexpr uint32_t ASMAX_SCALE_W      = 32u;
-constexpr uint32_t ASMAX_SCALE_WORD   = 6u;
-constexpr uint32_t ASMAX_SCALE_BIT    = 192u;
-constexpr uint32_t ASMAX_RSV_W0       = 0xFFFFFF00u;  // must be 0 (ILLEGAL_OP)
-constexpr uint32_t ASMAX_RSV_W1       = 0x00000000u;
-constexpr uint32_t ASMAX_RSV_W2       = 0x00000000u;
-constexpr uint32_t ASMAX_RSV_W3       = 0x00000000u;
-constexpr uint32_t ASMAX_RSV_W4       = 0x00000000u;
-constexpr uint32_t ASMAX_RSV_W5       = 0x00000000u;
-constexpr uint32_t ASMAX_RSV_W6       = 0x00000000u;
-constexpr uint32_t ASMAX_RSV_W7       = 0xFFFFFFFFu;
-constexpr uint32_t ASMAX_WORDS        = 0x7Fu;        // words holding a field (w0 always)
+constexpr uint32_t ASMAX_DST             = 0xFFFFFFFFu;  // w1
+constexpr uint32_t ASMAX_DST_LSB         = 0u;
+constexpr uint32_t ASMAX_DST_W           = 32u;
+constexpr uint32_t ASMAX_DST_WORD        = 1u;
+constexpr uint32_t ASMAX_DST_BIT         = 32u;
+constexpr uint32_t ASMAX_SRC             = 0xFFFFFFFFu;  // w2 may equal DST
+constexpr uint32_t ASMAX_SRC_LSB         = 0u;
+constexpr uint32_t ASMAX_SRC_W           = 32u;
+constexpr uint32_t ASMAX_SRC_WORD        = 2u;
+constexpr uint32_t ASMAX_SRC_BIT         = 64u;
+constexpr uint32_t ASMAX_MVEC            = 0xFFFFFFFFu;  // w3 row maxima, word r
+constexpr uint32_t ASMAX_MVEC_LSB        = 0u;
+constexpr uint32_t ASMAX_MVEC_W          = 32u;
+constexpr uint32_t ASMAX_MVEC_WORD       = 3u;
+constexpr uint32_t ASMAX_MVEC_BIT        = 96u;
+constexpr uint32_t ASMAX_N_LINES         = 0x0000FFFFu;  // w4[15:0] 1..4095
+constexpr uint32_t ASMAX_N_LINES_LSB     = 0u;
+constexpr uint32_t ASMAX_N_LINES_W       = 16u;
+constexpr uint32_t ASMAX_N_LINES_WORD    = 4u;
+constexpr uint32_t ASMAX_N_LINES_BIT     = 128u;
+constexpr uint32_t ASMAX_STRIDE          = 0xFFFF0000u;  // w4[31:16] 0 = n_lines
+constexpr uint32_t ASMAX_STRIDE_LSB      = 16u;
+constexpr uint32_t ASMAX_STRIDE_W        = 16u;
+constexpr uint32_t ASMAX_STRIDE_WORD     = 4u;
+constexpr uint32_t ASMAX_STRIDE_BIT      = 144u;
+constexpr uint32_t ASMAX_R               = 0xFFFFFFFFu;  // w5 1..1024
+constexpr uint32_t ASMAX_R_LSB           = 0u;
+constexpr uint32_t ASMAX_R_W             = 32u;
+constexpr uint32_t ASMAX_R_WORD          = 5u;
+constexpr uint32_t ASMAX_R_BIT           = 160u;
+constexpr uint32_t ASMAX_SCALE           = 0xFFFFFFFFu;  // w6 f32, finite, normal, > 0
+constexpr uint32_t ASMAX_SCALE_LSB       = 0u;
+constexpr uint32_t ASMAX_SCALE_W         = 32u;
+constexpr uint32_t ASMAX_SCALE_WORD      = 6u;
+constexpr uint32_t ASMAX_SCALE_BIT       = 192u;
+constexpr uint32_t ASMAX_LOCAL_SLOT      = 0x00000003u;  // w7[1:0] 0 = SPM, 1..3 = local FAST attention slot
+constexpr uint32_t ASMAX_LOCAL_SLOT_LSB  = 0u;
+constexpr uint32_t ASMAX_LOCAL_SLOT_W    = 2u;
+constexpr uint32_t ASMAX_LOCAL_SLOT_WORD = 7u;
+constexpr uint32_t ASMAX_LOCAL_SLOT_BIT  = 224u;
+constexpr uint32_t ASMAX_LOCAL_U0        = 0x0003FFFCu;  // w7[17:2] first group when LOCAL_SLOT is set
+constexpr uint32_t ASMAX_LOCAL_U0_LSB    = 2u;
+constexpr uint32_t ASMAX_LOCAL_U0_W      = 16u;
+constexpr uint32_t ASMAX_LOCAL_U0_WORD   = 7u;
+constexpr uint32_t ASMAX_LOCAL_U0_BIT    = 226u;
+constexpr uint32_t ASMAX_RSV_W0          = 0xFFFFFF00u;  // must be 0 (ILLEGAL_OP)
+constexpr uint32_t ASMAX_RSV_W1          = 0x00000000u;
+constexpr uint32_t ASMAX_RSV_W2          = 0x00000000u;
+constexpr uint32_t ASMAX_RSV_W3          = 0x00000000u;
+constexpr uint32_t ASMAX_RSV_W4          = 0x00000000u;
+constexpr uint32_t ASMAX_RSV_W5          = 0x00000000u;
+constexpr uint32_t ASMAX_RSV_W6          = 0x00000000u;
+constexpr uint32_t ASMAX_RSV_W7          = 0xFFFC0000u;
+constexpr uint32_t ASMAX_WORDS           = 0xFFu;        // words holding a field (w0 always)
 struct asmax_f {
-    uint32_t dst = 0;      // w1
-    uint32_t src = 0;      // w2 may equal DST
-    uint32_t mvec = 0;     // w3 row maxima, word r
-    uint32_t n_lines = 0;  // w4[15:0] 1..4095
-    uint32_t stride = 0;   // w4[31:16] 0 = n_lines
-    uint32_t r = 0;        // w5 1..1024
-    uint32_t scale = 0;    // w6 f32, finite, normal, > 0
+    uint32_t dst = 0;         // w1
+    uint32_t src = 0;         // w2 may equal DST
+    uint32_t mvec = 0;        // w3 row maxima, word r
+    uint32_t n_lines = 0;     // w4[15:0] 1..4095
+    uint32_t stride = 0;      // w4[31:16] 0 = n_lines
+    uint32_t r = 0;           // w5 1..1024
+    uint32_t scale = 0;       // w6 f32, finite, normal, > 0
+    uint32_t local_slot = 0;  // w7[1:0] 0 = SPM, 1..3 = local FAST attention slot
+    uint32_t local_u0 = 0;    // w7[17:2] first group when LOCAL_SLOT is set
 };
 [[gnu::always_inline]] constexpr op ASMAX(const asmax_f& f) {
     op o{};
@@ -454,8 +480,10 @@ struct asmax_f {
     o.w[4] |= op_put(f.stride, 0xFFFFu, 16, bad);
     o.w[5] |= f.r;
     o.w[6] |= f.scale;
+    o.w[7] |= op_put(f.local_slot, 0x3u, 0, bad);
+    o.w[7] |= op_put(f.local_u0, 0xFFFFu, 2, bad);
     op_poison_if(o, bad, 0x100u);   // the lowest reserved w0 bit
-    o.used = uint8_t(ASMAX_WORDS);
+    o.used = uint8_t(o.w[7] ? ASMAX_WORDS : (ASMAX_WORDS & ~(1u << ASMAX_LOCAL_SLOT_WORD)));
     return o;
 }
 // AMASK 0x35 (AT §5.5, VU §5.11, owner AT)

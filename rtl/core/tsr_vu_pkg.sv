@@ -36,6 +36,23 @@ package tsr_vu_pkg;
   localparam int unsigned TSR_VU_FMUL_LAT = 4;    // tsr_fp_mul in the VU (its 300 MHz default)
   localparam int unsigned TSR_VU_FADD_LAT = 5;    // tsr_fp_add in the VU
   // Lane exits, counted from the lane's input register (cycle 0, tsr_vu_lane header)
+  // One four-lane local batch. Local operations reserve the bank before injecting.
+  typedef struct packed {
+    logic [3:0] valid;
+    logic       scale_only;
+    logic       tanh_op;
+    logic [3:0][31:0] a;
+    logic [31:0] max_value;
+    logic [31:0] scale;
+  } tsr_vu_local_req_t;
+
+  typedef struct packed {
+    logic [3:0] valid;
+    logic [3:0][31:0] y;
+    logic [1:0] back_valid;
+    logic [1:0][31:0] back_y;
+  } tsr_vu_local_rsp_t;
+
   localparam int unsigned TSR_VU_LF = 42;         // front exit (full-rate functions)
   localparam int unsigned TSR_VU_LB = 78;         // back exit (back-lane functions)
 
@@ -74,6 +91,22 @@ package tsr_vu_pkg;
   endfunction
 
   // -------------------------------------------------------------------------------------------
+  // Half-width bank controls accompanying the selected operands.
+  typedef struct packed {
+    logic [1:0] load;       // load coefficient cache 1 or 2 from the A/B payload
+    logic [1:0] elem;       // select per-element cache instead of scalar C
+    logic [1:0] rope;       // zero, NEOX, NORM
+    logic [5:0] angle_addr; // buffer half and entry
+    logic       upper_quad; // four-wide subslot selects the upper four elements
+    logic       angle_hi;   // NORM angle group within the entry
+  } tsr_vu_bank_coeff_t;
+
+  typedef struct packed {
+    logic        valid;
+    logic [8:0]  addr;     // half, entry, local angle index
+    logic [63:0] data;     // {cosine, sine}, already rounded by the producer
+  } tsr_vu_bank_angle_t;
+
   // Slots (tsr_vu_gen -> tsr_vu_rd -> tsr_vu_inj): one SPM line position of an op. Line fields are 24 bits
   // (VU §5.1; AT's 32-bit addresses are range-checked below the SPM's line count).
   // -------------------------------------------------------------------------------------------

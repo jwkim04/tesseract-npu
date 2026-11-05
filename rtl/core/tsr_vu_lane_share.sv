@@ -5,16 +5,17 @@
 // No arithmetic, buffering or extra latency is added; reduction drains separately.
 module tsr_vu_lane_share
   import tsr_vu_pkg::*;
+#(parameter int unsigned LANES = 16)
 (
   input logic clk, rst_n,
   input logic back_valid,
-  input logic [15:0][31:0] front_y, back_y,
-  output logic [15:0][31:0] y
+  input logic [LANES-1:0][31:0] front_y, back_y,
+  output logic [LANES-1:0][31:0] y
 );
   // S0 registers the injector outputs once, then LB cycles reach the back exit.
   // Reset is required: stale back tokens must not mask new front results after
   // a short reset, before an unreset delay line would have drained.
-  logic [TSR_VU_LB:0] back_q;
+  (* keep = "true", dont_touch = "true" *) logic [TSR_VU_LB:0] back_q;
   always_ff @(posedge clk) begin
     if (!rst_n) back_q <= '0;
     else back_q <= {back_q[TSR_VU_LB-1:0], back_valid};
