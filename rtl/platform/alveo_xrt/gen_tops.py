@@ -7,10 +7,12 @@ the testbench wrappers from one table (docs/platform-u200.md §6).
 
 Kernels (the lead's kernel contract): module name = kernel name.
     tsr_u200_k1   NUM_CH 1, T_MAX 1   1-channel bring-up bitstream (m_axi_ch0)
-    tsr_u200_k4   NUM_CH 4, T_MAX 8   the first card image (m_axi_ch0 .. m_axi_ch3): four MVM clusters, the
-                                      control core, the issue path, 2R2W SPM, DMA (no KVST) and QACT;
-                                      no vector unit, no attention, no trace writer or dispatch history
-                                      (docs/platform-u200.md §8.7)
+    tsr_u200_k4   NUM_CH 4, T_MAX 4   the full-feature card image (m_axi_ch0 .. m_axi_ch3): four MVM clusters
+                                      with attention, the vector unit (8 / 8 / 4 lanes), KVST with masked
+                                      metadata writes, paired two-flit gather, DDR0 / DDR3 local arbitration,
+                                      the control core in SLR0 behind the narrow RV transport, the DB block
+                                      with trace writer and dispatch history; no local-intermediate banks
+                                      (docs/platform-u200.md §8.8)
 Both: the U200 bitstream parameters of docs/rtl-m3.md §14.2 (SPM 4 MiB with SPM_RD_LAT 4,
 MVM_BC_PIPE 2, MVM_RES_PIPE 2, MVM_MAC_LAT 9, RST_PIPE 3: the core's reset stages with per-block
 copies), CH_BYTES 16 GiB, the other tsr_core parameters at the U200 defaults (tsr_pkg TSR_DEF_*),
@@ -44,22 +46,26 @@ TBSV = REPO / "tb" / "platform" / "sv"
 
 KERNELS = {
     # k1 retains the vector unit and attention (physical front / EXP / back lanes 16 / 8 / 4).
-    # k4 is the reduced first card image (docs/platform-u200.md §8.7): the elaboration removes the vector
-    # unit (HAS_VU 0), attention (HAS_ATT 0: ATTQK / ATTPV in the clusters and the gather, KVST on the DMA),
-    # the local-intermediate paths (LOCAL_* default 0) and the DB block's trace writer and dispatch
-    # history (HAS_TRW 0, HIST_DEPTH 0; the DBG registers and the DMI gate stay, so GDB works). CAPS reads
-    # 0: the host and the firmware leave every kind but MUL_MAT to the CPU (M6). The control core sits in
-    # SLR0 behind the narrow RV transport (RV_LOCAL_TRANSPORT 1). T_MAX 8 is the cluster configuration of
-    # the routed 2026-10-25 image. Lane knobs are absent: there are no lanes.
-    # The full elaboration (VU 8 / 8 / 4 lanes, attention, local intermediates, trace writer and history), the
-    # earlier tsr_u200_k4, as a kernel entry:
-    #   dict(short="k4", NUM_CH=4, T_MAX=4, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2, DDR_LOCAL_PIPE=1,
-    #        RV_LOCAL_TRANSPORT=1, VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, VU_LANE_PIPE=2,
-    #        LOCAL_INTERMEDIATES=1, LOCAL_SCALE=1, LOCAL_SOFTCAP=1)
-    # with hw/u200/k4_major_blocks_full.tcl as the place_design hook in hw/u200/k4.cfg.
+    # k4 is the full-feature card image (docs/platform-u200.md §8.8): T_MAX 4, the vector unit with physical
+    # front / EXP / back lanes 8 / 8 / 4 behind two lane-pipe stages (VU_LANE_PIPE 2), attention (HAS_ATT: ATTQK /
+    # ATTPV in the clusters and the gather, KVST with masked metadata writes on the DMA), the DB block with trace
+    # writer and dispatch history (HAS_TRW 1, HIST_DEPTH at the table default), paired two-flit gather
+    # (MVM_GATHER_PAIR 1, MVM_GATHER_FLITS 2), the DDR0 / DDR3 arbitration boundaries (DDR_LOCAL_PIPE 1) and the
+    # control core in SLR0 behind the narrow RV transport (RV_LOCAL_TRANSPORT 1: the registered unit done
+    # strobes, the DB memory taps and the cluster reset copies). The local-intermediate banks and the local
+    # SCALE / softcap epilogues stay out (LOCAL_INTERMEDIATES, LOCAL_SCALE, LOCAL_SOFTCAP 0): CAPS reads 0x21 (VU, ATT),
+    # so the host keeps the legacy attention and epilogue paths. The place_design hook is hw/u200/k4_major_blocks.tcl.
+    # Two other elaborations of tsr_u200_k4, as kernel entries:
+    #  - the reduced first card image (branch k4m200, docs/platform-u200.md §8.7): no vector unit, no attention,
+    #    no trace writer, no history; hook at commit 07fbf33:
+    #      dict(short="k4", NUM_CH=4, T_MAX=8, RV_LOCAL_TRANSPORT=1, HAS_VU=0, HAS_ATT=0, HAS_TRW=0, HIST_DEPTH=0)
+    #  - the full image with the local-intermediate banks (branch codex/local-intermediates, aadf92c), which
+    #    needs the lane banks beside their owner clusters in the hook:
+    #      add LOCAL_INTERMEDIATES=1, LOCAL_SCALE=1, LOCAL_SOFTCAP=1 to the entry below
     "tsr_u200_k1": dict(short="k1", NUM_CH=1, T_MAX=1, VU_FRONT_LANES=16, VU_EXP_LANES=8, VU_BACK_LANES=4, VU_LANE_PIPE=0),
-    "tsr_u200_k4": dict(short="k4", NUM_CH=4, T_MAX=8, RV_LOCAL_TRANSPORT=1, HAS_VU=0, HAS_ATT=0,
-                       HAS_TRW=0, HIST_DEPTH=0),
+    "tsr_u200_k4": dict(short="k4", NUM_CH=4, T_MAX=4, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
+                       DDR_LOCAL_PIPE=1, RV_LOCAL_TRANSPORT=1, XSLR_REG=1, VU_FRONT_LANES=8, VU_EXP_LANES=8,
+                       VU_BACK_LANES=4, VU_LANE_PIPE=2),
 }
 # The U200 bitstream parameters (docs/rtl-m3.md §14.2; tb/fastreplay/run.py PACKAGED carries the same)
 COMMON = dict(SPM_RD_LAT=4, MVM_BC_PIPE=2, MVM_RES_PIPE=2, MVM_MAC_LAT=9, RST_PIPE=3, AXI_SLICES=2, RST_STAGES=3)
@@ -113,7 +119,7 @@ def gen_top(name: str, k: dict) -> str:
             params[knob] = k[knob]
     params.update(COMMON)
     for knob in ("HAS_VU", "HAS_ATT", "HAS_TRW", "HIST_DEPTH",
-                 "MVM_GATHER_PAIR", "MVM_GATHER_FLITS", "DDR_LOCAL_PIPE", "RV_LOCAL_TRANSPORT",
+                 "MVM_GATHER_PAIR", "MVM_GATHER_FLITS", "DDR_LOCAL_PIPE", "RV_LOCAL_TRANSPORT", "XSLR_REG",
                  "LOCAL_INTERMEDIATES", "LOCAL_SCALE", "LOCAL_SOFTCAP"):
         if knob in k:
             params[knob] = k[knob]

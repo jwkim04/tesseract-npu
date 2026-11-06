@@ -16,6 +16,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 COLORS = {0: "#40a79d", 1: "#db9958", 2: "#659ad0"}
 CTRL_COLOR = "#14544f"
+VU_COLOR = "#274d86"
 INK = "#172e44"
 GRAY = "#475b6c"
 SCALE = 2
@@ -23,6 +24,13 @@ SCALE = 2
 CR_X = ((0, 30), (31, 54), (55, 87), (88, 111), (112, 141), (142, 168))
 # The DDR0 memory controller of the platform: clock regions X2Y1 to X2Y3 of SLR0 (docs/platform-u200.md §8.7)
 MIG0 = (2, 1, 2, 3)
+# The SLR2 controller (DDR[3], "MIG 2" in docs/platform-u200.md §8.7): its logic is in X3Y10 to X3Y11 and X4Y10 to X4Y13
+MIG2 = ((3, 10, 3, 11), (4, 10, 4, 13))
+# Pblocks of the full-feature image's hook: name -> (parent SLR, color, label, DDR controller outline)
+CHILDREN = {
+    "pblock_tsr_ctrl_plane": (0, CTRL_COLOR, "제어 Pblock", (MIG0,)),
+    "pblock_tsr_vu": (2, VU_COLOR, "VU Pblock", MIG2),
+}
 
 
 def assignments(hook):
@@ -112,7 +120,9 @@ def labels(paths, reduced=False):
              ("u_dma", "DMA" if reduced else "DMA·KVST"), ("u_qact", "QACT"),
              ("g_rv_local.u_spm_tx", "SPM 링크 끝"), ("g_rv_local.u_issue_rx", "issue 링크 끝"),
              ("g_rv_local.u_lq_rx", "LCQ 링크 끝"),
-             ("u_issue", "issue 경로"), ("u_csr", "CSR"), ("g_db.u_dbg", "DB 코어측"),
+             ("u_issue", "issue 경로"), ("g_xc.u_xc", "VU 검사기"), ("g_xc.g_at.u_chk_at", "AT 검사기"),
+             ("u_csr", "CSR"), ("g_db.u_dbg", "DB 코어측"),
+             ("g_vu.u_vu", "벡터 유닛 전체(입력·두 lane bank)"),
              ("vu_frontend", "VU 입력·각도 생성·LM"))
     return [label + (" " + "·".join(classes[key]) if any(classes[key]) else "")
             for key, label in names if key in classes] + [k for k in classes if k not in dict(names)]
@@ -164,12 +174,16 @@ def cr_label(r):
 def render(hook, report, output):
     groups, children = assignments(hook)
     shapes = slice_ranges(report)
-    has_vu_banks = any(path.endswith(".u_bank") for paths in groups.values() for path in paths)
-    # The reduced first card image has no VU and no KVST; its hook also places QACT, issue and CSR.
-    reduced = not has_vu_banks and any(path.endswith("/u_qact") for paths in groups.values() for path in paths)
-    # A Pblock the hook creates inside an SLR pblock (the control Pblock of the reduced image).
-    ctrl = next((name for name in children if name in groups), None)
-    img = Image.new("RGB", (1120 * SCALE, 820 * SCALE), "#ffffff")
+    placed = [path for paths in groups.values() for path in paths]
+    has_vu_banks = any(path.endswith(".u_bank") for path in placed)
+    # The full-feature image places the whole vector unit; the reduced first card image has no VU and no KVST
+    # and its hook also places QACT, issue and CSR.
+    full = any(path.endswith("g_vu.u_vu") for path in placed)
+    reduced = not full and not has_vu_banks and any(path.endswith("/u_qact") for path in placed)
+    # Pblocks the hook creates inside an SLR pblock (the control Pblock; in the full image also the VU Pblock).
+    kids = {name: CHILDREN[name] for name in children if name in groups and name in CHILDREN}
+    ctrl = "pblock_tsr_ctrl_plane" if "pblock_tsr_ctrl_plane" in kids else None
+    img = Image.new("RGB", (1120 * SCALE, (880 if full else 820) * SCALE), "#ffffff")
     draw = ImageDraw.Draw(img)
     fontdir = Path("/usr/share/fonts/opentype/noto")
     fonts = {}
@@ -188,7 +202,7 @@ def render(hook, report, output):
         draw.rectangle(tuple(round(v*SCALE) for v in (x0, y0, x1, y1)), fill=fill, outline=outline,
                        width=width * SCALE)
 
-    def wrapped_items(x, y, items, max_width=524, max_lines=4):
+    def wrap_lines(items, max_width=524):
         # Whole labels remain together. Long region lists must not disappear
         # beyond the image edge when another functional block is assigned.
         lines, line = [], ""
@@ -201,20 +215,29 @@ def render(hook, report, output):
                 line = candidate
         if line:
             lines.append(line)
+        return lines
+
+    def wrapped_items(x, y, items, max_width=524, max_lines=4):
+        lines = wrap_lines(items, max_width)
         if len(lines) > max_lines:
             raise ValueError(f"Pblock labels need more than {max_lines} lines")
         for i, line in enumerate(lines):
             word(x, y + i * 22, line, 16, INK)
         return len(lines)
 
-    word(44, 30, ("ALVEO U200   /   K4-MIN   /   CORE 200 MHz · CLK_RV 100 MHz   /   PRE-BUILD" if ctrl else
-                  "ALVEO U200   /   K4-MIN   /   PRE-BUILD") if reduced else "ALVEO U200   /   K4   /   PRE-BUILD",
-         15, GRAY, True)
-    title = ("첫 카드 이미지(200 MHz)의 Pblock 계획" if ctrl else
+    word(44, 30, ("ALVEO U200   /   K4   /   CORE 200 MHz · CLK_RV 100 MHz   /   PRE-BUILD" if full else
+                  "ALVEO U200   /   K4-MIN   /   CORE 200 MHz · CLK_RV 100 MHz   /   PRE-BUILD" if ctrl else
+                  "ALVEO U200   /   K4-MIN   /   PRE-BUILD") if (full or reduced) else
+         "ALVEO U200   /   K4   /   PRE-BUILD", 15, GRAY, True)
+    title = ("풀 구성 카드 이미지(200 MHz)의 Pblock 계획" if full else
+             "첫 카드 이미지(200 MHz)의 Pblock 계획" if ctrl else
              "첫 카드 이미지(VU·어텐션 제외)의 Pblock 계획" if reduced else
              "다음 빌드의 Pblock 계획" if has_vu_banks else "VU 제외 진단 빌드의 Pblock 계획")
     word(42, 60, title, 36, INK, True)
-    if ctrl:
+    if full:
+        word(44, 112, "색은 큰 블록을 배치할 수 있는 범위입니다. 진한 청록은 SLR0의 제어부 Pblock, 진한 파랑은 SLR2의 VU Pblock입니다.", 17, GRAY)
+        word(44, 136, "개별 유닛의 실제 위치는 배치 후 결정됩니다.", 17, GRAY)
+    elif ctrl:
         word(44, 112, "색은 큰 블록을 배치할 수 있는 범위입니다. 진한 청록은 SLR0 Pblock 안에 둔 제어부 전용 Pblock입니다.", 17, GRAY)
         word(44, 136, "개별 유닛의 실제 위치는 배치 후 결정됩니다.", 17, GRAY)
     else:
@@ -237,18 +260,19 @@ def render(hook, report, output):
     for i in (1, 2):
         y = top + i * height/3
         rect(left, y-1, left+width, y+1, "#ffffff")
-    ctrl_boxes = []
-    if ctrl:
-        parent = children[ctrl][0]
+    for name, (_, color, _, _) in kids.items():
+        parent = children[name][0]
         # Vivado's resolved ranges when the properties file has them, else the clock regions cut by the parent
-        ctrl_boxes = (shapes[ctrl][0] if ctrl in shapes else
-                      intersect(clock_region_slices(children[ctrl][1]), shapes[parent][0]))
-        for x0, y0, x1, y1 in ctrl_boxes:
-            rect(fx(x0), fy(y1 + 1), fx(x1 + 1), fy(y0), CTRL_COLOR)
-        # the DDR0 memory controller's clock regions stay outside the control Pblock
-        mx0, my0, mx1, my1 = MIG0
-        rect(fx(CR_X[mx0][0]), fy(my1 * 60 + 60), fx(CR_X[mx1][1] + 1), fy(my0 * 60), outline=INK, width=2)
-        word(fx(CR_X[mx0][0]) + 5, fy(my1 * 60 + 60) + 5, "DDR0", 12, "#ffffff", True)
+        boxes = (shapes[name][0] if name in shapes else
+                 intersect(clock_region_slices(children[name][1]), shapes[parent][0]))
+        for x0, y0, x1, y1 in boxes:
+            rect(fx(x0), fy(y1 + 1), fx(x1 + 1), fy(y0), color)
+    for name, (slr, _, _, migs) in kids.items():
+        # the DDR controller's clock regions stay outside the Pblock of that SLR
+        for mx0, my0, mx1, my1 in migs:
+            rect(fx(CR_X[mx0][0]), fy(my1 * 60 + 60), fx(CR_X[mx1][1] + 1), fy(my0 * 60), outline=INK, width=2)
+        mx0, my0, mx1, my1 = migs[0]
+        word(fx(CR_X[mx0][0]) + 5, fy(my1 * 60 + 60) + 5, f"DDR{3 if slr == 2 else 0}", 12, "#ffffff", True)
         word(fx(CR_X[mx0][0]) + 5, fy(my1 * 60 + 60) + 20, "컨트롤러", 11, "#ffffff", True)
     # clock-region grid and labels
     for i, (x0, x1) in enumerate(CR_X):
@@ -262,40 +286,60 @@ def render(hook, report, output):
     word(left+width*0.59, top+height/2-9, "플랫폼 셸", 16, GRAY, True)
     for s in (2, 1, 0):
         y = top + (2-s)*135
-        word(79, y+52, f"SLR{s}", 21, "#ffffff" if s == 0 and ctrl else "#122d3c", True)
-        rect(517, y+9, 523, y+125, COLORS[s])
+        word(79, y+52, f"SLR{s}", 21, "#ffffff" if (s == 0 and ctrl) or (s == 2 and full) else "#122d3c", True)
+    # the Pblock list: one section per SLR, as tall as its text needs
+    section_y = top
+    for s in (2, 1, 0):
+        y = section_y
         word(550, y+9, f"SLR{s}", 21, INK, True)
         items = labels(groups[s], reduced)
-        if s == 0 and ctrl:
-            n = wrapped_items(550, y+39, items or ["커널 블록 별도 지정 없음"], max_lines=2)
+        kid = next((name for name, (slr, *_ ) in kids.items() if slr == s), None)
+        text_end = y + 39
+        if kid:
+            n = wrapped_items(550, y+39, items or ["커널 블록 별도 지정 없음"], max_lines=3)
             y2 = y + 39 + n * 22 + 8
-            word(550, y2, "제어 Pblock  " + ", ".join(cr_label(r) for r in children[ctrl][1]), 16, CTRL_COLOR, True)
-            cap = shapes[ctrl][1] if ctrl in shapes else None
+            _, color, name, _ = kids[kid]
+            word(550, y2, name + "  " + ", ".join(cr_label(r) for r in children[kid][1]), 16, color, True)
+            cap = shapes[kid][1] if kid in shapes else None
             lines = 1
             if cap:
                 word(550, y2 + 22, f"CLB {cap[0]:,} · RAMB36 {cap[1]} · DSP {cap[3]}", 15, GRAY)
                 lines = 2
-            m = wrapped_items(550, y2 + 22 * lines, labels(groups[ctrl], reduced), max_lines=3)
-            rect(517, y2 - 2, 523, y2 + 22 * (lines + m) + 2, CTRL_COLOR)
+            m = wrapped_items(550, y2 + 22 * lines, labels(groups[kid], reduced), max_lines=4)
+            rect(517, y2 - 2, 523, y2 + 22 * (lines + m) + 2, color)
+            text_end = y2 + 22 * (lines + m) + 2
         else:
-            wrapped_items(550, y+39, items or ["커널 블록 별도 지정 없음"])
+            n = wrapped_items(550, y+39, items or ["커널 블록 별도 지정 없음"], max_lines=4)
+            text_end = y + 39 + 22 * n
+        # the SLR's own color bar spans its section down to the child bar
+        bar_end = (y2 - 6) if kid else text_end + 4
+        rect(517, y+9, 523, max(bar_end, y + 60), COLORS[s])
+        section_y = max(text_end, y + 125) + 30
+    bottom = max(section_y, top + height + 80)
     word(60, 631, "실제 SLICE 범위 기준 · 회색은 해당 Pblock 밖", 14, GRAY)
-    if ctrl:
+    if full:
+        word(60, 651, "진한 청록: 제어 Pblock · 진한 파랑: VU Pblock", 14, GRAY)
+        word(60, 671, "외곽선: DDR0 / DDR3 컨트롤러 영역", 14, GRAY)
+    elif kids:
         word(60, 651, "진한 청록: 제어 Pblock · 외곽선: DDR0 컨트롤러 영역", 14, GRAY)
-    rect(42, 709, 1078, 780, "#eff4f7")
-    word(61, 719, "Vivado 자율 배치", 16, INK, True)
-    placed_dma = any(path.endswith("/u_dma") for paths in groups.values() for path in paths)
-    free = ("" if placed_dma else "DMA·KVST, ") + "중앙 gather, "
-    free += ("VU 출력·중앙 축약, " if placed_dma else "VU 중앙 제어·축약, ") if has_vu_banks else ""
-    if not groups[1] and has_vu_banks:
-        free = "SPM, RV·제어, DDR 브리지·중재기, DMA·KVST, gather, VU 중앙부, "
-    placed_issue = any(path.endswith("/u_issue") for paths in groups.values() for path in paths)
-    if reduced:
+    box_y = max(709, bottom - 8) if full else 709
+    rect(42, box_y, 1078, box_y + 71, "#eff4f7")
+    word(61, box_y + 10, "Vivado 자율 배치", 16, INK, True)
+    placed_dma = any(path.endswith("/u_dma") for path in placed)
+    placed_issue = any(path.endswith("/u_issue") for path in placed)
+    if full:
+        word(61, box_y + 39, "중앙 gather 수신부, DDR1·2 브리지, DMA 측 DDR 경계 슬라이스, 어댑터 제어, 기타 연결 로직 등", 16, GRAY)
+    elif reduced:
         free = "중앙 gather, DDR1·2 브리지, 어댑터 제어, " + ("" if placed_issue else "issue·CSR·중앙 debug, ")
-        word(61, 748, free + "기타 연결 로직 등", 16, GRAY)
+        word(61, box_y + 39, free + "기타 연결 로직 등", 16, GRAY)
     else:
-        word(61, 748, free + "issue·중앙 debug, 기타 연결 로직 등", 16, GRAY)
-    word(44, 795, ("K4-MIN" if reduced else "K4") + " major-block floorplan   ·   단위 셀 / 개별 배선 지정 없음", 12, GRAY)
+        free = ("" if placed_dma else "DMA·KVST, ") + "중앙 gather, "
+        free += ("VU 출력·중앙 축약, " if placed_dma else "VU 중앙 제어·축약, ") if has_vu_banks else ""
+        if not groups[1] and has_vu_banks:
+            free = "SPM, RV·제어, DDR 브리지·중재기, DMA·KVST, gather, VU 중앙부, "
+        word(61, box_y + 39, free + "issue·중앙 debug, 기타 연결 로직 등", 16, GRAY)
+    word(44, box_y + 86, ("K4" if full else "K4-MIN" if reduced else "K4") +
+         " major-block floorplan   ·   단위 셀 / 개별 배선 지정 없음", 12, GRAY)
     output.parent.mkdir(parents=True, exist_ok=True)
     img.save(output)
 

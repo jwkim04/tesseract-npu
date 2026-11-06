@@ -5,7 +5,7 @@ source [file join [file dirname [file normalize [info script]]] clock_common.tcl
 
 # Accepted scaled frequencies in MHz by kernel: {core_low core_high rv_low rv_high}.
 #   k1  core request 300, floor 250. RV request 166 (Vitis truncates 166.67), 5 % tolerance.
-#   k4  the reduced first card image requests core 200 and RV 100 (user decision, 2026-11-06) and accepts
+#   k4  the card images of tsr_u200_k4 (reduced and full-feature) request core 200 and RV 100 (user decision, 2026-11-06) and accept
 #       exactly those clocks: a core or RV clock that Vitis scaled down fails the run. The 0.1 MHz above
 #       the request only absorbs the decimal precision of _new_clk_freq.
 # Faster clocks or the 125 MHz fallback require an explicit request and window change after the timing

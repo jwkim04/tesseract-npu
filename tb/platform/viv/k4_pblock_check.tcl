@@ -1,19 +1,25 @@
-# tb/platform/viv/k4_pblock_check.tcl — legality check of the K4 control Pblock against the U200 platform.
+# tb/platform/viv/k4_pblock_check.tcl — legality check of the K4 child Pblocks against the U200 platform.
 #
 #   vivado -mode batch -source tb/platform/viv/k4_pblock_check.tcl -tclargs <routed.dcp> <outdir> [<repo>]
 #
 # Opens a routed (or placed) checkpoint of a K4 link, which carries the platform's own pblocks and the kernel
 # hierarchy, and sources hw/u200/k4_major_blocks.tcl on it as the link does before place_design. Nothing is
-# written back to the checkpoint. The hook creates the control Pblock as a child of pblock_dynamic_SLR0 and
-# assigns every major block; any failure of the hook stops this script with an error.
+# written back to the checkpoint. The hook creates the control Pblock as a child of pblock_dynamic_SLR0 and the
+# VU Pblock as a child of pblock_dynamic_SLR2 and assigns every major block; any failure of the hook stops this
+# script with an error. A checkpoint of an image that lacks blocks of the full-feature map (the reduced first card
+# image has no vector unit, no checker class and no pair gather) is checked with TSR_K4_SKIP_MISSING set, which the
+# script does by default: the hook reports the blocks it skips and assigns the rest. TSR_K4CHK_STRICT=1 in the
+# environment checks a checkpoint of the full-feature image: every block must exist. A child Pblock that holds no
+# cell after the hook (the VU Pblock on the reduced checkpoint) gets the DDR3 bridge assigned to it for the
+# capacity read, because Vivado fits a child to its parent when the first cell is assigned.
 #
 # Checks and prints (lines start with K4CHK):
-#   - the control Pblock is a child of pblock_dynamic_SLR0 and every site of it is also a site of the parent;
-#   - every clock-region range of the Pblock names clock regions that exist and holds SLICE, RAMB36 and DSP sites;
+#   - each child Pblock is a child of its SLR's pblock and every site of it is also a site of the parent;
+#   - every clock-region range of a child names clock regions that exist and holds SLICE, RAMB36 and DSP sites;
 #   - per clock region of SLR0 and SLR2: the sites the platform's pblocks allow (SLICE, RAMB36, DSP48E2, URAM288,
 #     LAGUNA) and the BRAM / DSP / URAM sites the checkpoint uses;
 #   - per pblock: CLB (SLICE), RAMB36, RAMB18, DSP48E2, URAM288 capacity;
-#   - the RAMB / DSP / URAM primitives of each control-plane block;
+#   - the RAMB / DSP / URAM primitives of each control-plane block and of the vector unit;
 #   - DRC checks of the PBLK category, when the install has them.
 # Writes <outdir>/pblock_properties.txt (the format hw/viz/k4_pblock_preview.py reads, with a CAPACITY line per
 # pblock and the Pblock's DERIVED_RANGES as Vivado resolved them).
@@ -63,12 +69,14 @@ foreach n {pblock_dynamic_SLR0 pblock_dynamic_SLR2} {
 }
 k4chk_lap "platform sites"
 
-# the parent's site sets, for the containment check
+# the parents' site sets, for the containment check
 set parent_sites [dict create]
-foreach type {SLICE RAMB36 DSP48E2} {
-  set d [dict create]
-  foreach s [k4chk_sites [get_pblocks pblock_dynamic_SLR0] $type] { dict set d [get_property NAME $s] 1 }
-  dict set parent_sites $type $d
+foreach n {pblock_dynamic_SLR0 pblock_dynamic_SLR2} {
+  foreach type {SLICE RAMB36 DSP48E2} {
+    set d [dict create]
+    foreach s [k4chk_sites [get_pblocks $n] $type] { dict set d [get_property NAME $s] 1 }
+    dict set parent_sites $n $type $d
+  }
 }
 
 # ---- sites the checkpoint uses, by clock region ----
@@ -86,7 +94,7 @@ set names [get_property NAME $rams]
 set refs  [get_property REF_NAME $rams]
 foreach {label rel} {
   u_ctrl u_ctrl  dbg_rv g_db.u_dbg_rv  issue u_dp/u_issue  csr u_dp/u_csr  dbg u_dp/g_db.u_dbg
-  rv_links g_rv_local.*
+  rv_links g_rv_local.*  xc u_dp/g_xc*  vu u_dp/g_vu*
 } {
   set count [dict create]
   foreach n $names r $refs {
@@ -99,14 +107,25 @@ k4chk_lap "primitives"
 
 # ---- the hook, as the link runs it ----
 set ::env(TSR_K4_CTRL) slr0
+if {![info exists ::env(TSR_K4CHK_STRICT)]} { set ::env(TSR_K4_SKIP_MISSING) 1 }
 source [file join $repo hw/u200/k4_major_blocks.tcl]
 k4chk_lap "hook"
 
-set ctrl [get_pblocks -quiet pblock_tsr_ctrl_plane]
-if {[llength $ctrl] != 1} { error "K4CHK the hook did not create pblock_tsr_ctrl_plane" }
-puts "K4CHK pblock_tsr_ctrl_plane PARENT [get_property PARENT $ctrl] SNAPPING_MODE [get_property SNAPPING_MODE $ctrl]"
-puts "K4CHK pblock_tsr_ctrl_plane GRID_RANGES [get_property GRID_RANGES $ctrl]"
-if {[get_property PARENT $ctrl] ne "pblock_dynamic_SLR0"} { error "K4CHK control Pblock parent is not pblock_dynamic_SLR0" }
+# the child Pblocks of the hook: name, parent
+set children {pblock_tsr_ctrl_plane pblock_dynamic_SLR0 pblock_tsr_vu pblock_dynamic_SLR2}
+foreach {name parent} $children {
+  set pb [get_pblocks -quiet $name]
+  if {[llength $pb] != 1} { error "K4CHK the hook did not create $name" }
+  puts "K4CHK $name PARENT [get_property PARENT $pb] SNAPPING_MODE [get_property SNAPPING_MODE $pb]"
+  puts "K4CHK $name GRID_RANGES [get_property GRID_RANGES $pb]"
+  if {[get_property PARENT $pb] ne $parent} { error "K4CHK $name parent is not $parent" }
+  if {[llength [get_cells -quiet -of_objects $pb]] == 0} {
+    set u_br [get_cells -quiet "[get_property NAME $kernel]/u_kernel/g_ch\[3\].u_br"]
+    if {[llength $u_br] != 1} { error "K4CHK $name holds no cell and the DDR3 bridge is not there to fit it to its parent" }
+    add_cells_to_pblock $pb $u_br
+    puts "K4CHK note: $name holds no cell in this netlist; [get_property NAME $u_br] assigned to it for the capacity read"
+  }
+}
 
 # ---- capacity of every pblock ----
 puts "K4CHK capacity pblock SLICE(CLB) RAMB36 RAMB18 DSP48E2 URAM288 LAGUNA"
@@ -117,41 +136,42 @@ foreach pb [get_pblocks] {
   puts "K4CHK capacity [get_property NAME $pb] [join $row { }]"
 }
 
-# ---- every site of the child is a site of the parent ----
-foreach type {SLICE RAMB36 DSP48E2} {
-  set outside 0
-  foreach s [k4chk_sites $ctrl $type] {
-    if {![dict exists [dict get $parent_sites $type] [get_property NAME $s]]} { incr outside }
-  }
-  puts "K4CHK containment $type sites of the control Pblock outside pblock_dynamic_SLR0: $outside"
-  if {$outside} { error "K4CHK the control Pblock holds $outside $type sites outside its parent" }
-}
-
-# ---- every range resolves, clock region by clock region ----
-set ctrl_cr [dict create]
-foreach type $types { dict set ctrl_cr $type [k4chk_by_cr [k4chk_sites $ctrl $type]] }
-foreach range [get_property GRID_RANGES $ctrl] {
-  if {![regexp {^CLOCKREGION_(X[0-9]+Y[0-9]+):CLOCKREGION_(X[0-9]+Y[0-9]+)$} $range -> a b]} {
-    error "K4CHK range $range is not a clock-region range"
-  }
-  regexp {X([0-9]+)Y([0-9]+)} $a -> x0 y0
-  regexp {X([0-9]+)Y([0-9]+)} $b -> x1 y1
-  set slices 0
-  for {set x $x0} {$x <= $x1} {incr x} {
-    for {set y $y0} {$y <= $y1} {incr y} {
-      set cr X${x}Y$y
-      if {[llength [get_clock_regions -quiet $cr]] != 1} { error "K4CHK clock region $cr of $range does not exist" }
-      set row {}
-      foreach type $types {
-        set d [dict get $ctrl_cr $type]
-        lappend row [expr {[dict exists $d $cr] ? [dict get $d $cr] : 0}]
-      }
-      if {[lindex $row 0] == 0 || [lindex $row 1] == 0} { error "K4CHK clock region $cr of $range has no SLICE or no RAMB36 site in the Pblock" }
-      puts "K4CHK range $range $cr SLICE [lindex $row 0] RAMB36 [lindex $row 1] RAMB18 [lindex $row 2] DSP48E2 [lindex $row 3] URAM288 [lindex $row 4] LAGUNA [lindex $row 5]"
-      incr slices [lindex $row 0]
+# ---- every site of a child is a site of its parent; every range resolves, clock region by clock region ----
+foreach {name parent} $children {
+  set pb [get_pblocks $name]
+  foreach type {SLICE RAMB36 DSP48E2} {
+    set outside 0
+    foreach s [k4chk_sites $pb $type] {
+      if {![dict exists [dict get $parent_sites $parent $type] [get_property NAME $s]]} { incr outside }
     }
+    puts "K4CHK containment $name: $type sites outside $parent: $outside"
+    if {$outside} { error "K4CHK $name holds $outside $type sites outside its parent $parent" }
   }
-  puts "K4CHK range $range resolves to $slices SLICE sites"
+  set child_cr [dict create]
+  foreach type $types { dict set child_cr $type [k4chk_by_cr [k4chk_sites $pb $type]] }
+  foreach range [get_property GRID_RANGES $pb] {
+    if {![regexp {^CLOCKREGION_(X[0-9]+Y[0-9]+):CLOCKREGION_(X[0-9]+Y[0-9]+)$} $range -> a b]} {
+      error "K4CHK range $range is not a clock-region range"
+    }
+    regexp {X([0-9]+)Y([0-9]+)} $a -> x0 y0
+    regexp {X([0-9]+)Y([0-9]+)} $b -> x1 y1
+    set slices 0
+    for {set x $x0} {$x <= $x1} {incr x} {
+      for {set y $y0} {$y <= $y1} {incr y} {
+        set cr X${x}Y$y
+        if {[llength [get_clock_regions -quiet $cr]] != 1} { error "K4CHK clock region $cr of $range does not exist" }
+        set row {}
+        foreach type $types {
+          set d [dict get $child_cr $type]
+          lappend row [expr {[dict exists $d $cr] ? [dict get $d $cr] : 0}]
+        }
+        if {[lindex $row 0] == 0 || [lindex $row 1] == 0} { error "K4CHK clock region $cr of $range has no SLICE or no RAMB36 site in $name" }
+        puts "K4CHK range $name $range $cr SLICE [lindex $row 0] RAMB36 [lindex $row 1] RAMB18 [lindex $row 2] DSP48E2 [lindex $row 3] URAM288 [lindex $row 4] LAGUNA [lindex $row 5]"
+        incr slices [lindex $row 0]
+      }
+    }
+    puts "K4CHK range $name $range resolves to $slices SLICE sites"
+  }
 }
 
 # ---- per clock region of SLR0 and SLR2: platform capacity and sites used by the routed first link ----

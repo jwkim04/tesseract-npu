@@ -17,7 +17,8 @@
 #   pblock_dynamic_SLR2  the whole SLR2
 # Environment: TSR_SLR_SCRIPT  the floorplan script, relative to the repository (default hw/u200/k4_floorplan.tcl);
 #   TSR_SLR_CR  per-SLR clock-region ranges replacing the whole SLR, "SLR:range[,range] ...";
-#   default "1:CLOCKREGION_X0Y5:CLOCKREGION_X2Y9"; "none" = whole SLRs everywhere. TSR_K4_FP_CTRL: the
+#   default "1:CLOCKREGION_X0Y5:CLOCKREGION_X2Y9"; "none" = whole SLRs everywhere. TSR_SLR_HARD: set = every Pblock
+#   hard (out-of-context Pblocks are soft by default). TSR_K4_FP_CTRL: the
 #   control core's clock-region range (hw/u200/k4_floorplan.tcl).
 # Example (k4, the T2 run): tb/core/viv/core_ooc.sh k4 OUT from=SYNTH/post_synth.dcp dcp \
 #   floorplan=tb/core/viv/core_slr.tcl place=AltSpreadLogic_high prphys
@@ -44,6 +45,12 @@ set ::env(TSR_K4_FP_CORE) ""
 # card image (core_ooc.sh k4min) uses hw/u200/k4_major_blocks.tcl, the Pblocks of whole major blocks.
 set tsr_slr_script [expr {[info exists ::env(TSR_SLR_SCRIPT)] ? $::env(TSR_SLR_SCRIPT) : "hw/u200/k4_floorplan.tcl"}]
 source [file join $::repo $tsr_slr_script]
+# An out-of-context design makes every Pblock soft (IS_SOFT 1: the placer may leave it for a small penalty), the platform's
+# Pblocks and the ones the hook makes in the link are hard. TSR_SLR_HARD set: make them all hard, as in the link. (The
+# full-feature core placed with soft Pblocks left two VU DSPs and about 500 VU cells in SLR1: -3.2 ns on one path.)
+if {[info exists ::env(TSR_SLR_HARD)]} {
+  foreach pb [get_pblocks] { set_property IS_SOFT false $pb }
+}
 foreach pb [get_pblocks] {
   # Capacity of the pblock (sites): LUT = 8 per SLICE, FF = 16 per SLICE
   set sl [llength [get_sites -quiet -of_objects $pb -filter {SITE_TYPE =~ SLICE*}]]

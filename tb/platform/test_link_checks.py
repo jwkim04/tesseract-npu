@@ -235,7 +235,7 @@ def core_rv(core, rv):
     return [f"kernel:0:ss_ucs/aclk_kernel_00:{core}", f"kernel:1:ss_ucs/aclk_kernel_01:{rv}"]
 
 
-# k4 accepts exactly the request of the reduced first card image: core 200 MHz and RV 100 MHz.
+# k4 accepts exactly the request of the card images of tsr_u200_k4 (reduced and full-feature): core 200 MHz and RV 100 MHz.
 K4_FINAL = [
     (core_rv("200.0", "100.0"), True),
     (core_rv("200", "100"), True),
@@ -633,7 +633,7 @@ def test_cdc_restore_rejects_invalid_clock_pair(tmp_path, mutation):
     assert not (tmp_path / "tsr_ctrl_cdc_link.xdc").exists()
 
 
-# (5.0, 10.0) is the reduced first card image at 200 / 100 MHz, (5.0, 6.667) its earlier 200 / 150 MHz request:
+# (5.0, 10.0) is the card images of tsr_u200_k4 at 200 / 100 MHz, (5.0, 6.667) the reduced image's earlier 200 / 150 MHz request:
 # both periods are above the cap, so the bound stays 3.333 ns.
 @pytest.mark.parametrize("core,rv,bound", [(4.0, 6.023, 3.333), (3.333, 6.023, 3.333),
                                          (3.0, 6.023, 3.0), (4.0, 2.5, 2.5), (5.0, 10.0, 3.333), (5.0, 6.667, 3.333)])
