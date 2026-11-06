@@ -6,12 +6,12 @@ the ggml CPU backend on whole-model logits, against a floor given by the CPU com
 under a 1-ulp input perturbation. Pass (the specification's values): **mean KL(CPU ‖ device) ≤ 3 ×
 floor and top-1 agreement ≥ 80 %**, where the floor is the mean over three floor runs with different
 seeds (`--floor-seeds`, below). The check is part of the M1 and M4 gates (done) and of the M6 and M7
-gates (measured on the simulator; on the card it follows the bitstream with the control core).
+gates (measured on the simulator; M6 also on the card with the reduced `k4m200` image, rows below; M7 on the card follows the full image).
 
 > **Scope.** User documentation and measurement record of `klcheck`. Status words: *on the
 > simulator* means a run through the software stack with `TSR_DEVICE=sim` or `mock`; *on the card*
 > means a run on the Alveo U200. Card measurements, and the rows with the FA-off settings (below),
-> were taken before the control core was added, with the host issuing the ops. Every result names its
+> were taken before the control core was added, with the host issuing the ops, except the `k4m200` rows. Every result names its
 > settings and provenance, and results with different settings are not comparable. Normative:
 > `docs/spec.md` §17, [SW](design/06-software-verification.md) §10.1 and §10.4 (gates), SW-22 (the
 > settings) and [AT](design/03-attention-kv.md) §13.
@@ -211,9 +211,11 @@ runs against several seeds are described in the text.
 | Qwen2.5-0.5B Q8_0 | xrt, k4 | FA off | 512 | 1.0950e-3 / 1.1357e-3 | 0.964 | 98.05 % | measured on the card (k4, 276.3 MHz) |
 | Qwen2.5-0.5B Q8_0 | sim | M6 | 512 (8 × 64) | 2.595e-3 / 2.530e-3 | 1.026 | 97.07 % | measured on the simulator (`83ac601`) |
 | Qwen2.5-0.5B Q8_0 | sim | M6 | 128 (4 × 32; ctest `tools_klcheck_qwen05b`) | 2.089e-3 / 2.912e-3 | 0.717 | 96.88 % | measured on the simulator (`83ac601`) |
+| Qwen2.5-0.5B Q8_0 | xrt, k4m200 | M6 | 512 (8 × 64) | 2.5947e-3 / 2.5301e-3 | 1.026 | 97.07 % | measured on the card (k4m200, 200 / 100 MHz); 512 of 512 rows bit-identical to `sim` |
 | Qwen2.5-32B Q4_K_M | sim | FA off | 256 (4 × 64) | 2.550e-3 / 1.876e-3 | 1.360 | 98.83 % | measured on the simulator (M1) |
 | Qwen2.5-32B Q4_K_M | xrt, k4 | FA off | 512 (8 × 64) | 2.4113e-3 / 1.8487e-3 | 1.304 | 99.02 % | measured on the card (M4) |
 | Qwen2.5-32B Q4_K_M | sim | M6 | 512 (8 × 64) | 2.886e-3 / 2.246e-3 | 1.285 | 98.44 % | measured on the simulator (`83ac601`) |
+| Qwen2.5-32B Q4_K_M | xrt, k4m200 | M6 | 32 (2 × 16) | 1.3362e-3 / 1.7817e-3 (mean of 3 floors) | 0.750 | 100 % | measured on the card (k4m200, 200 / 100 MHz); 32 of 32 rows bit-identical to `sim` |
 | Qwen2.5-0.5B Q8_0 | sim | M7 | 512 (8 × 64) | 2.22e-3 / 2.43e-3 | 0.914 | 98.05 % | measured on the simulator (M7) |
 | Qwen2.5-0.5B Q8_0 | sim | M7 | 34 (2 × 17) | not recorded | 0.765 | not recorded | measured on the simulator (M7) |
 | Qwen2.5-32B Q4_K_M | sim | M7 | 512 (8 × 64) | 3.113e-3 / 2.549e-3 | 1.221 | 98.63 % | measured on the simulator (M7) |

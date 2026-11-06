@@ -8,9 +8,9 @@ the launch protocol itself is [EX](design/01-execution-model.md) §2-§4. `sw/tr
 developer summary of the same code.
 
 > **Scope.** As-built documentation. Status words: the protocol layer and the `sim` and `mock` kdevs
-> are *implemented and tested on the simulator*; the `xrt` kdev is *written and unit-tested against
-> XRT's no-op shim only* (§6), with no run on a card or in hw_emu (no xclbin with the control core
-> before Y5); the `vkernel` client is implemented, its two-clock server *planned* (P5.3). The card and
+> are *implemented and tested on the simulator*; the `xrt` kdev is *unit-tested against XRT's no-op
+> shim* (§6) and *ran on the card with the reduced `k4m200` image on 2026-11-06* (§8, selftest and M6),
+> with no run in hw_emu (no hw_emu xclbin with the control core); the `vkernel` client is implemented, its two-clock server *planned* (P5.3). The card and
 > hw_emu results (§8, §9, `platform-u200.md` §14) were taken before the control core was added, with
 > the host issuing the ops. Normative: [EX](design/01-execution-model.md) §9-§10,
 > [SW](design/06-software-verification.md) §9.1-§9.2, [DB](design/05-debug.md) §7, §9.
@@ -351,6 +351,12 @@ the shell flash with `xbmgmt`, `xbutil validate`, the M0 bandwidth run (`tsr_bw`
 the Qwen2.5-0.5B Q8_0 gates M3 and M4. Those runs used the xclbin load, 16 GiB device-only buffers
 and unmanaged DMA in both the `direct` and the `staged` mode (`platform-u200.md` §14.3). They did not
 cover `m2m` and the behaviour after `xbutil reset`.
+
+Done on 2026-11-06 with the reduced image `k4m200` (`platform-u200.md` §8.7): steps 1 and 2 below ran as
+`TSR_XCLBIN=build/link/k4m200/tsr_u200_k4.xclbin tsr-selftest --device xrt` (205 checks passed; the xclbin loaded as an
+ordinary user in the same 6.6 s run), the M6 gate checks of step 2 (0.5B bit-identical to the simulator, 32B KL) passed,
+and the GDB smoke worked. `test-tsr-xrt-noop`, `test-tsr-kdev` and `test-tsr-protocol` of the XRT build passed before the card.
+Not run: the trace replays and the second-process refusal. Results: `performance.md`, `handoff.md`.
 
 Planned, W6 ([`docs/design/README.md`](design/README.md) §10; SW §11 P6.1-P6.6, §10.4 for the gates).
 It starts when an xclbin with the control core exists (Y5, `platform-u200.md` §8.4) and uses the card, XRT and driver

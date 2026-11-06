@@ -17,8 +17,9 @@ be reached for debugging. It is the working summary; the normative design is [DB
 ## 1. What exists today
 
 **Implemented and tested on the simulator** (`TSR_DEVICE=sim` or `mock`; status checked 2026-11-02).
-The control-core and debug RTL also exist, with module-level tests. The corrected K4 image is still
-being built; GDB on the integrated RTL system and on the card has not been verified.
+The control-core and debug RTL also exist, with module-level tests. The reduced image `k4m200`
+(no vector unit, no attention, no dispatch history) ran on the card on 2026-11-06 and a real GDB session
+worked on it (below). The full image has not been on the card.
 
 | Capability | Where | Tests (`ctest -R`) |
 |---|---|---|
@@ -64,13 +65,19 @@ the core has no progress watchdog, so `STATUS.UNIT_HUNG` never rises and `HUNG_S
 | Item | Work package | Notes |
 |---|---|---|
 | Two-clock vkernel and full-system debug/replay integration | W5 | Module-level `tb/dbg` and `tb/ctrl` tests exist; integrated RTL GDB remains unverified |
-| GDB smoke on the card, hang triage on the card, card measurements of the DMI cost | W6 | M6 gate (`docs/design/README.md` §2) |
+| Hang triage on the card, card measurements of the DMI cost | W6 | M6 gate (`docs/design/README.md` §2). The GDB smoke is done on `k4m200` (below) |
 | `tsr-dbg diverge`, `tsr-prof report` and periodic firmware PC sampling | deferred | The CLI reports `diverge` as unimplemented; trace export and stats are available |
 
 RTL limitations remain in the current interface: `RV_SAMPLE` / `RVWP_APPLY` writes acknowledge
 before their CDC work completes, so callers can see a stale sample or unfinished apply. The
 simulator completes these operations synchronously and does not establish RTL completion safety.
 `DBG_STATUS.SBA_REFUSED` has no RTL setter, although bus refusals and DM `sberror` work.
+On the card (`k4m200`, 2026-11-06): `tsr-selftest --debug` and a `riscv-none-elf-gdb` session through
+`tsr-dbg gdb --stdio --device xrt --elf build/xrt/fw/tsr-fw.elf --halt-on-boot` worked: halt at boot, software and hardware
+breakpoints (one in the `selftest` kernel, with a backtrace and `finish`), a hardware watchpoint, `stepi`, register and CSR
+reads, memory write and read back, `monitor` commands, detach, and the launch answered. A stale `RV_SAMPLE` was not seen,
+but while the hart is halted the sample is the debug ROM's park loop, so this does not prove the handshake; `SBA_REFUSED`
+was not exercised. `monitor hist` is empty in this image (`HIST_DEPTH` 0).
 See [handoff.md](handoff.md) for the active link and the remaining card gates.
 
 ---
@@ -324,7 +331,8 @@ planned, and §2 summarises the design.
 - Whether a new process can open a compute unit left by a dead one without disturbing it (hang dumps of a
   hung process; `TSR_ATTACH`): to be checked on the card.
 - The U200 debug build (`k4_dbg.cfg`): which nets survive synthesis and the exact hook step.
-- GDB and profiling smoke tests on the card; the tools themselves are implemented and tested on sim.
+- Profiling smoke tests on the card (`tsr-prof trw` needs the trace writer, which `k4m200` does not have). The GDB smoke
+  passed on `k4m200`; the full image still needs one.
 - Complete the RTL sample/apply handshake and the `SBA_REFUSED` diagnostic described in §1.
 - `tsr-dbg diverge`, `tsr-prof report` and periodic firmware PC sampling.
 - Confirmations of third-party facts: riscv-dbg and Ibex behaviours marked *confirm* in CC §3 and DB §3.

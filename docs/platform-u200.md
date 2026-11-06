@@ -2696,6 +2696,24 @@ implementation run; each check stops the link on failure); the routed
 **Card check.** `TSR_DEVICE=xrt` build, `tsr-selftest`, then `klcheck run --device xrt --phase m6 --tokens
 build/k4min/klcheck/qwen05b-q8-m6/dev.klc` and `klcheck compare --ref dev.klc --dev card.klc --expect-identical`.
 
+**Card bring-up (`k4m200`, 2026-11-06).** The 200 / 100 MHz image (sha256 `7a662c67…e556`, UUID
+`5ec6fdb4-acd5-5f50-14d7-f85cf5c74b71`) was loaded by `tsr-selftest` through `load_xclbin` as an ordinary user and ran the
+checks above. Details and numbers: [`performance.md`](performance.md) "The first card image with the control core",
+[`handoff.md`](handoff.md).
+
+- `tsr-selftest --device xrt`: 205 checks passed, 0 failed. `CAPS` 0, `T_MAX` 8, `NUM_CH` 4, `Q_DEPTH` VU 0 and ATT 0, `CTL_ID`
+  0x5d01, `RV_FREQ` 32768 (F_RV / F_CORE 0.5000), `ADAPTER_VERSION` 0x00010004, 16 GiB per channel at 0x4000000000 + 0x1000000000 x c.
+  Cold boot to HELLO 8.4 ms (19,108 `LOAD_DATA` words), warm restart 2.5 ms, `PING` 6.57 µs median.
+- Debug: `tsr-selftest --debug` (halt, `dpc` / `dcsr`, step, resume) passed, and a `riscv-none-elf-gdb` session through
+  `tsr-dbg gdb --stdio --device xrt` halted at boot, hit a software breakpoint, a hardware breakpoint in a kernel and a hardware
+  watchpoint, stepped, read and wrote memory, and detached with the launch answered. The history is empty (`HIST_DEPTH` 0).
+- 0.5B M6: the baseline `dev.klc` is reproduced bit for bit (32 of 32 rows; the sha256 over tokens and logits is
+  `58fa2a9b…ab27`), and so is a replay of 8 x 64 tokens on the simulator (512 of 512). 32B: KL ratio 0.750, top-1 100 %,
+  32 of 32 rows bit-identical to the simulator.
+- Decode 47.3 tok/s (0.5B) and 2.24 tok/s (32B) with the host loaded; `MVM_EMPTY` 22.5 % of the device time on 0.5B and
+  2.3 % on 32B.
+- Timing: no fault appeared in any run. The setup and hold figures remain arithmetic on the 200 / 150 MHz route.
+
 
 ## 9. Timing and resources (Vivado OOC synthesis of `tsr_u200_k1`)
 
@@ -3130,7 +3148,10 @@ and ~9 s outside `set_tensor` for 32B (llama loader and warmup, not analysed).
 top-1 agreement 99.02 %, PASS. Wall time: device 197 s, CPU reference 50 s, floor 48 s, embedding
 check 49 s. Decode 2.93 tok/s (§14.2), above the M4 criterion of 1 tok/s. *Measured on the card (M4).*
 
-### 14.5 Bring-up with the control core (W6, planned)
+### 14.5 Bring-up with the control core (W6)
+
+Status 2026-11-06: steps 1 to 3 ran with the reduced `k4m200` image (§8.7 "Card bring-up"), except the trace
+replays; step 4 (M7) waits for the full image. The steps below are the plan and are unchanged.
 
 The card runs with the control core follow its bitstream (W4 RTL, W5 Vivado with gates T1-T4, §8.4)
 and belong to W6 of [`docs/design/README.md`](design/README.md) §10 (P6.1-P6.6 of SW §11). Steps 1-5 of the

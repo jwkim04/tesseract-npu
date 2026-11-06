@@ -6,9 +6,10 @@ goes, memory bandwidth, model load time, accuracy against the CPU, timing and re
 simulation cycle counts, the results on the simulator and the estimates. It ends with the
 measurement history and the commands that reproduce the numbers.
 
-> **Scope.** Measurement record, not a design. Card measurements were taken before the control
-> core was added, with the host issuing the ops; the Vivado and RTL simulation results are of the
-> design that ran on the card. The other numbers are simulator measurements or estimates, and none
+> **Scope.** Measurement record, not a design. The first card measurements with the control core
+> are in "The first card image with the control core" below (2026-11-06). All other card
+> measurements were taken before the control core was added, with the host issuing the ops; the
+> Vivado and RTL simulation results are of the design that ran on the card. The other numbers are simulator measurements or estimates, and none
 > of them is a card measurement. Every number carries one of the provenance labels below. The
 > normative targets and estimates of the control core are in [`docs/design`](design/README.md):
 > [EX](design/01-execution-model.md) §4.11,
@@ -22,6 +23,7 @@ Provenance labels:
 | Label | Meaning |
 | --- | --- |
 | `measured on the card (k4, 276.3 MHz)` | Alveo U200, bitstream `tsr_u200_k4` at its achieved kernel clock. Other bitstreams are named: `k1`, `tsr_bw_k4`, or the milestone (M0, M3, M4) |
+| `measured on the card (k4m200, 200 / 100 MHz)` | Alveo U200, the first image with the control core: `tsr_u200_k4` as linked on 2026-11-06 with the core at 200 MHz and `clk_rv` at 100 MHz |
 | `measured on the simulator (<commit>)` | Software time of this tree on the development host: host work, simulator speed, accuracy results of the tools |
 | `simulator cycle model (<commit>)` | Device or RISC-V cycles from the simulator's informational cycle model. Not a card measurement |
 | `measured in RTL simulation (ideal memory)` | Verilator simulation of the RTL with an ideal memory |
@@ -37,14 +39,144 @@ Gemma 4 runs and for the `TSR_STATS` runs, and the model default for the Qwen2.5
 
 **Clocks.** The design target is 300 MHz (`F_CORE`). The 4-channel bitstream `tsr_u200_k4` closed
 at 276.3 MHz, so every k4 number below is at 276.3 MHz; `tsr_u200_k1` and the M0 kernel
-`tsr_bw_k4` ran at 300 MHz. The control core's clock `clk_rv` (planning value 166.7 MHz) exists
-in RTL and in the simulator; the integrated card measurement is still pending.
+`tsr_bw_k4` ran at 300 MHz. The image with the control core (`k4m200`, 2026-11-06) runs the core
+at 200 MHz and `clk_rv` at 100 MHz (`RV_FREQ` ratio 0.5); its numbers are in their own section and
+are not comparable with the 276.3 MHz ones without the clock ratio.
 
 **Host.** All card runs were made on the development host that holds the card: AMD Ryzen 7 9700X
 (8 cores, 16 threads), 14 GB RAM, Ubuntu 24.04, kernel 7.0.0-38, XRT 2.18.179 with the 19 driver
 patches ([`sw/xrt-driver`](../sw/xrt-driver/README.md)), shell `xilinx_u200_gen3x16_xdma_base_2`,
 SC firmware 4.6.21. The U200 has a VU9P with three SLRs and 4 x 16 GB DDR4 (DDR4-2400, 19.2 GB/s
 peak per channel). Simulator timings are from the same host.
+
+## The first card image with the control core (`k4m200`, 2026-11-06)
+
+Measured on the card (k4m200, 200 / 100 MHz), 2026-11-06. The image is
+`build/link/k4m200/tsr_u200_k4.xclbin`, sha256
+`7a662c678fb7a370059659205fce96741b0bd959690995a67e0001ebdb21e556`, UUID
+`5ec6fdb4-acd5-5f50-14d7-f85cf5c74b71`. The core runs at 200 MHz and `clk_rv` at 100 MHz (`RV_FREQ`
+32768, F_RV / F_CORE 0.5000). It is the reduced configuration of
+[`platform-u200.md`](platform-u200.md) §8.7: four channels, `T_MAX` 8, the control core, no vector unit,
+no attention, no trace writer and no dispatch history. `CAPS` reads 0, so the device runs `MUL_MAT`
+only (M6) and the CPU runs everything else. The host tools are `build/xrt` of the same branch
+(`-DTSR_WITH_XRT=ON`), the firmware image id is `f7bb1fc039d7ee0c`, and the settings are those of M6:
+flash attention on, q8_0 KV cache on the host (`-nkvo`), rotation off.
+
+**Method.** `llama-completion -ngl 99 -nkvo -fa on -ctk q8_0 -ctv q8_0 -c 4096 --temp 0 -no-cnv` with
+`TSR_KINDS=m6 LLAMA_ATTN_ROT_DISABLE=1 TSR_STATS=1`. Decode is the prompt "The history of the printing
+press begins" (7 tokens) with `-n 65` and `-n 1`; the per-token figures are the difference of the two
+runs divided by 64. Prefill is one `llama_decode` of a 157-token paragraph with `-n 1`. The PERF counters stay on the card after
+a process exits (`SOFT_RESET` at the next open zeroes them), so each run was followed by
+`tsr-dbg --attach -ex perf`. The backend's own `TSR_STATS` lines show only 13 of them, and the
+transport summary did not print at exit in these tools.
+
+**The host was not quiet.** Other jobs ran on the same 16 threads (a Vivado report run and a training
+job; load average 5 to 15). Host-side times vary with that load: five decode runs of 0.5B gave 21.2 to
+22.9 ms per token, and an exploratory run with 12 threads (more than the free cores) gave 304 ms per
+token. The
+figures below are the best run with the range beside it. The device counters do not depend on host
+load: five runs agree to 0.02 %.
+
+### Throughput
+
+| Model | Prefill, 157 tokens | Prefill, 7 tokens | Decode, best run | Decode, all runs |
+| --- | --- | --- | --- | --- |
+| Qwen2.5-0.5B Q8_0 | 592.6 tok/s (264.9 ms; 3 runs, 585.6 to 592.6) | 226 tok/s (4.42 ms per token; 5 runs, 196 to 226) | **47.3 tok/s** (21.16 ms per token) | 43.6 to 47.3 tok/s (5 runs) |
+| Qwen2.5-32B Q4_K_M | 17.4 tok/s (9.04 s; 2 runs, 17.3 to 17.4) | 13.5 tok/s (73.9 ms per token) | **2.24 tok/s** (447.2 ms per token) | 2.22 to 2.24 tok/s (2 runs) |
+
+Model load on the card (`klcheck`): 0.5B 0.6 s; 32B 30.8 s, of which the weight upload (`set_tensor`)
+took 12.8 s for 19.95 GB with 16 load threads.
+
+Prefill takes up to eight tokens per weight pass (`T_MAX` 8). For 32B a pass takes 0.42 s, and the
+157-token prompt cost 8.05 s of device time, about 19 passes.
+
+### Where the time goes
+
+Per decode token, as in the 2026-10-27 table below.
+
+| Per decode token | Qwen2.5-0.5B Q8_0 | Qwen2.5-32B Q4_K_M |
+| --- | --- | --- |
+| Wall (llama.cpp `eval time`) | 21.16 ms | 447.2 ms |
+| Device busy (`PERF_CYCLES` / 200 MHz) | 14.47 ms (68.4 %) | 420.28 ms (94.0 %) |
+| Exec start and completion wait (exec wall minus busy) | 2.45 ms (11.6 %), 16.9 µs per launch | 6.53 ms (1.5 %), 17.0 µs per launch |
+| Backend host work (lowering, IO) | 0.53 ms (2.5 %) | 2.05 ms (0.5 %) |
+| Outside the backend (CPU attention, norms, RoPE; sampling) | 3.71 ms (17.5 %) | 18.34 ms (4.1 %) |
+| Host total | 6.69 ms (31.6 %) | 26.92 ms (6.0 %) |
+| Device round trips (launches per token) | 145 | 385 |
+
+Device counters over the same tokens (per decode token):
+
+| Per decode token | Qwen2.5-0.5B Q8_0 | Qwen2.5-32B Q4_K_M |
+| --- | --- | --- |
+| `PERF_CYCLES` | 2.893 M | 84.057 M |
+| `MVM_CYCLES` | 2.095 M (72.4 %) | 81.084 M (96.5 %) |
+| `MVM_EMPTY` (the MVM unit idle, its queue empty: issue-bound) | 0.652 M (22.5 %), 3.26 ms | 1.911 M (2.3 %), 9.55 ms |
+| `MVM_WAIT` (idle, the queue holds an entry that cannot start) | 0.145 M (5.0 %), 0.73 ms | 1.060 M (1.3 %), 5.30 ms |
+| Read beats per channel (channels 0, 2, 3) | 2.065 M (71.4 % of the cycles) | 80.97 M (96.3 %) |
+| Bytes read (4 channels) | 0.530 GB | 20.744 GB |
+| Read rate while the device is busy | 36.6 GB/s | 49.4 GB/s (12.4 per channel) |
+| `PERF_CH_WAIT` per channel | 10 to 20 K cycles | 33 to 62 K cycles (0.04 to 0.07 %) |
+| `RV_WFI`, `PUSH_STALL` | 0, 0 | 0, 0 |
+| `REC_DROPPED` | 290 (2 per launch) | 770 (2 per launch) |
+
+The control-core share, from these counters:
+
+- **RISC-V busy.** `RV_WFI` is 0 in every run, so the control core never sleeps while a launch is
+  active. It spins on its queues. Its busy time cannot be separated from polling with this counter.
+- **Issue-bound gaps.** `MVM_EMPTY` is 22.5 % of the device time of a 0.5B decode token (the 145
+  launches carry one small `MUL_MAT` each, 4,500 core cycles = 22.5 µs of gap per launch) and 2.3 % of a
+  32B token. In prefill it is 2.9 % (0.5B) and 0.2 % (32B).
+- **Dependency waits.** `MVM_WAIT` is 5.0 % (0.5B decode), 13.4 % (0.5B prefill), 1.3 % and 0.6 % (32B).
+- **Launch overhead.** Each launch costs 16.9 to 17.0 µs of wall time beyond the device busy time (the
+  host posts the queue words and reads the completion over PCIe; the core pops the descriptor and posts the
+  answer). That is 11.6 % of a 0.5B token and 1.5 % of a 32B token. `PUSH_STALL` is 0, so a push never waited
+  for a credit.
+- **Records.** `REC_DROPPED` counts two per launch. The image has no dispatch history (`HIST_DEPTH` 0)
+  and DB drops a completion record that does not fit ([DB](design/05-debug.md)), so this is expected; the RTL
+  was not checked for it. `STATUS` showed no error in any run.
+
+The launch round trip of an empty `PING` is 6.57 µs median (7.27 µs p99) and 303,578 pipelined launches
+per second, from `tsr-selftest`.
+
+### The cost of `clk_rv` at 100 MHz on M6
+
+The clock is fixed in this image, so the cost is read from the counters and from the simulator model
+(`TSR_SIM_RV_RATIO`, informational until the RTL lockstep; `TSR_SIM_VU=0 TSR_SIM_TMAX=8`, 0.5B M6, cycles
+per decode token):
+
+| Run | Cycles | MVM | Other (wait and empty) |
+| --- | --- | --- | --- |
+| Card, ratio 0.5 (measured on the card) | 2.893 M | 2.095 M | 0.798 M (27.6 %) |
+| Simulator model, ratio 0.5 | 2.719 M | 2.080 M | 0.639 M |
+| Simulator model, ratio 0.603 (the earlier planning value 166.7 / 276.3) | 2.628 M | 2.080 M | 0.548 M |
+| Simulator model, ratio 1.0 (`clk_rv` 200 MHz) | 2.453 M | 2.080 M | 0.372 M |
+| Simulator model, ratio 2.0 | 2.326 M | 2.080 M | 0.245 M |
+
+The card's MVM cycles match the model to 0.7 %. Its non-MVM cycles are 25 % above the model at the same
+ratio. Going from ratio 0.5 to 1.0 removes 42 % of the model's non-MVM cycles. If the card's follow the
+model, `clk_rv` at 200 MHz would save about 0.33 M cycles per 0.5B token (1.7 ms of the 14.5 ms device
+time, 8 % of the 21.2 ms wall time) and about 1.2 M cycles per 32B token (6 ms, 1.4 % of the wall time).
+This is arithmetic on a model, not a measurement. The 32B decode is bound by the core clock instead: the
+MVM unit reads one 64-byte beat per cycle per channel, which is 12.8 GB/s per channel at 200 MHz.
+
+### Against the earlier card image (context only)
+
+The 2026-10-27 numbers below were taken at 276.3 MHz with the host issuing the ops (no control core), flash
+attention off and an f16 KV cache on the host. This image runs the core at 200 MHz (ratio 0.724) and uses the
+M6 settings, so the rows are not a like-for-like comparison.
+
+| | 2026-10-27, k4, 276.3 MHz | 2026-11-06, k4m200, 200 / 100 MHz |
+| --- | --- | --- |
+| 0.5B decode | 54.7 tok/s (18.29 ms) | 47.3 tok/s (21.16 ms) |
+| 32B decode | 2.93 tok/s (341.7 ms) | 2.24 tok/s (447.2 ms) |
+| 32B device cycles per token | 82.56 M (298.8 ms) | 84.06 M (420.3 ms) |
+| 32B host total per token | 41.8 ms | 26.9 ms |
+| 0.5B device cycles per token | 2.28 M (RTL simulation, 8.25 ms) | 2.89 M (measured, 14.47 ms) |
+
+For 32B the cycles agree within 1.8 %. The 1.41 times longer device time is the clock ratio 276.3 / 200 = 1.38
+times those 1.8 %. So the slowdown is the core clock, and the control core can account for at most 3.5 % of the cycles
+(`MVM_EMPTY` plus `MVM_WAIT`). For 0.5B the cycles went up by 27 %, which is the control core's issue path, and the
+time by 1.75 times.
 
 ## Decode throughput on the U200
 
@@ -183,11 +315,21 @@ with a 1-ulp change of every input element. `ratio` is the mean KL over the floo
 | Simulator | FA off, f16 KV | 1.095e-3 / 1.136e-3 | 0.964 | 98.05 % (502/512) | not re-measured (`docs/klcheck.md`) |
 | Card, k1 | FA off, f16 KV | 1.0950e-3 / 1.1357e-3 | 0.964 | 98.05 % | measured on the card (k1) |
 | Simulator | M6: FA on, q8_0 KV, rotation off | 2.595e-3 / 2.530e-3 | 1.026 | 97.07 % | measured on the simulator (`83ac601`) |
+| Card, k4m200 | M6: FA on, q8_0 KV, rotation off | 2.5947e-3 / 2.5301e-3 | 1.026 | 97.07 % | measured on the card (k4m200, 200 / 100 MHz), `build/card/qwen05b-m6-8x64/report.json` |
 
 On the card, `klcheck compare --expect-identical` between `sim` and `xrt` gives 8 of 8 rows
 bit-identical (k1 and k4). The M6 run and its replay on `sim` and on `mock` give 512 of 512 logit
 rows bit-identical with the same generated tokens. The ctest `tools_klcheck_qwen05b` (4 prompts x
 32 tokens) gives ratio 0.899 against the mean of floor seeds 1 to 3 (0.717 against seed 1) and top-1 96.88 %.
+
+The k4m200 card row is `klcheck all --device xrt --phase m6 -n 64` (8 prompts x 64 tokens). Its ratio is
+against floor seed 1, like the others; against the mean of seeds 1 to 3 (2.4101e-3) it is 1.077. The tokens it
+generated were replayed on the simulator with `TSR_SIM_VU=0 TSR_SIM_TMAX=8`: 512 of 512 logit rows
+bit-identical (`klcheck compare --expect-identical`). The two-prompt baseline of the simulator for this image
+(`dev.klc`, 2 prompts x 16 tokens, 32 rows) is reproduced by the card in the generating run and in the replay:
+32 of 32 rows bit-identical, and the sha256 over the tokens and logits of both sequences is the same
+(`58fa2a9b2fb84fc9ea3a4e2c91da81ee73649cd616a94a54d72252c7a857ab27`). The `.klc` files as a whole differ,
+because their headers and `KSEQ` records hold the device name and the timings.
 
 **Qwen2.5-32B Q4_K_M.** The three ratios use different settings or prompt counts and are not
 comparable.
@@ -197,10 +339,15 @@ comparable.
 | M1, simulator | FA off, f16 KV | 4 x 64 = 256 | 2.550e-3 / 1.876e-3 | 1.36 | 98.83 % | measured on the simulator, `build/klcheck-32b/report.json` |
 | M4, card | FA off, f16 KV | 8 x 64 = 512 | 2.4113e-3 / 1.8487e-3 | 1.304 | 99.02 % | measured on the card (M4) |
 | M6, simulator | FA on, q8_0 KV, rotation off, `offload_kqv` false | 8 x 64 = 512 | 2.886e-3 / 2.246e-3 | 1.285 | 98.44 % | measured on the simulator (`83ac601`), `build/klcheck-32b-sim-m6/report.json` |
+| M6, card, k4m200 | the same | 2 x 16 = 32 | 1.3362e-3 / 1.7817e-3 (mean of 3 floors) | 0.750 (0.765, 0.684, 0.813 against seeds 1 to 3) | 100 % | measured on the card (k4m200, 200 / 100 MHz), `build/card/qwen32b-m6/report.json` |
 
 The M6 run is `klcheck all -m models/qwen2.5-32b-instruct-q4_k_m-00001-of-00005.gguf -o
 build/klcheck-32b-sim-m6 -n 64` with `TSR_SIM_DRAM_DIR` set; its device phase took 4,434 s. All
-three runs pass.
+four runs pass. The k4m200 card run is the smallest set that gives a ratio: `klcheck all --device xrt
+--phase m6 --n-prompts 2 -n 16` (the first two built-in prompts, 16 tokens each; device phase 46.5 s, the
+whole run 3.5 min). 32 positions are thin for a mean KL; the margin to the limit of 3 is large. The 32
+logit rows are also bit-identical to a simulator replay of the same tokens (`TSR_SIM_VU=0 TSR_SIM_TMAX=8`,
+`klcheck compare --expect-identical`, 32 of 32; the replay took 386 s of decode).
 
 **numcheck** ([`docs/numcheck.md`](numcheck.md)): one prompt per model; every weight `MUL_MAT`
 element is compared with `libtsr_ref` (B1), with an independent numpy model of the specification
@@ -459,9 +606,10 @@ the card in W6 and in synthesis in W4/W5.
 | 2026-10-30 | W3a `83ac601` | transport, M6 backend and tools; M6 on the simulator: 0.5B ratio 1.026 | measured on the simulator (`83ac601`) |
 | 2026-10-31 | M6 on the simulator, Qwen2.5-32B Q4_K_M, full klcheck | ratio 1.285, top-1 98.44 % | measured on the simulator (`83ac601`) |
 | 2026-10-31 | W2b `a775222`, decisions `802311e`: M7 kernels including flash attention | layer-level tests against the composed references and ggml-cpu; every short kind at the 0.5B decode shapes at or under 350 RISC-V cycles; 5.1 % of a 0.5B decode layer lost to issue with the U200 queues | simulator cycle model; `docs/design/README.md` §10 |
+| 2026-11-06 | W6: the first card image with the control core (`k4m200`, core 200 MHz, `clk_rv` 100 MHz), M6 | `tsr-selftest` 205 / 205; 0.5B logits bit-identical to the simulator (512 / 512 rows), KL ratio 1.026, 47.3 tok/s decode; 32B KL ratio 0.750, top-1 100 % (32 positions), 32 / 32 rows bit-identical to the simulator, 2.24 tok/s decode; GDB session on the card | measured on the card (k4m200, 200 / 100 MHz) |
 
-Next: W3b (M7 backend, one launch per token, M7 on the simulator), W4 (RTL), W5 (Verilator and
-Vivado integration), W6 (card), [`docs/design/README.md`](design/README.md) §10.
+Next: the M7 gate on the card (one launch per decode token, the full image with the vector unit and
+attention), [`docs/design/README.md`](design/README.md) §10.
 
 ## Reproducing the numbers
 

@@ -8,8 +8,8 @@ the current tree.
 > Alveo U200; *on the simulator* means this tree runs it against the simulator
 > (`TSR_DEVICE=sim`); *designed* and *planned* are as in
 > [`docs/design/README.md`](design/README.md) §10. The control-core RTL and its module/integration
-> tests exist. The corrected full K4 image has not reached card validation; older card results
-> predate the control core. Current status is in [handoff.md](handoff.md). Normative for the host stack:
+> tests exist. The reduced `k4m200` image (M6: `MUL_MAT` on the card, the rest on the host) ran on the card
+> on 2026-11-06; the full K4 image has not reached card validation, and older card results predate the control core. Current status is in [handoff.md](handoff.md). Normative for the host stack:
 > [SW](design/06-software-verification.md) §6, §9, §10 and [EX](design/01-execution-model.md) §10.
 
 ## Requirements
@@ -206,11 +206,12 @@ pending (last results: `docs/torch-backend.md`).
 
 ## Run a model on the card
 
-The card runs again once the bitstream with the control core is built (work package W6,
-[`docs/design/README.md`](design/README.md) §10); the `xrt` transport (`-DTSR_WITH_XRT=ON`) is written and
-unit-tested against the XRT no-op shim and has not run on a card. Card measurements were taken
-before the control core was added, with the host issuing the ops, and are in
-[`docs/performance.md`](performance.md).
+The reduced image `k4m200` (core 200 MHz, `clk_rv` 100 MHz, no vector unit, no attention; `CAPS` 0) runs M6 on the
+card: `MUL_MAT` on the device, everything else on the CPU. Build with `-DTSR_WITH_XRT=ON`, then
+`TSR_DEVICE=xrt TSR_XCLBIN=<xclbin> build/<dir>/bin/tsr-selftest`, `klcheck run --device xrt --phase m6` and
+`llama-completion` with the M6 command above (`TSR_KINDS=m6`, `-nkvo`). Steps and results: [`docs/xrt-host.md`](xrt-host.md)
+§8 and [`docs/performance.md`](performance.md). Card measurements before 2026-11-06 were taken without the control core,
+with the host issuing the ops.
 
 ## Verify
 

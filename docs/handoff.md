@@ -2,7 +2,81 @@
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
 
-## Resume here: the 200 / 100 MHz image with a control Pblock (branch `k4m200`, November 6)
+## Resume here: the 200 / 100 MHz image on the card, M6 (branch `k4m200`, November 6, evening)
+
+The `k4m200` image (`build/link/k4m200/tsr_u200_k4.xclbin`, sha256
+`7a662c678fb7a370059659205fce96741b0bd959690995a67e0001ebdb21e556`, core 200 MHz, `clk_rv` 100 MHz) is the first
+image with the control core that ran on the card. It loaded through XRT as an ordinary user (no root), the first
+`tsr-selftest` passed, and the M6 checks passed. Numbers and method: [performance.md](performance.md) "The first card
+image with the control core"; the image: [platform-u200.md](platform-u200.md) §8.7 "Card bring-up".
+
+What passed:
+
+- Host tools: `build/xrt` of this worktree (`-DTSR_WITH_XRT=ON`, `-j8`). Before the card: `test-tsr-xrt-noop` 32 checks,
+  `test-tsr-kdev` 10,302 checks, `test-tsr-protocol` 2,398 checks, 0 failed.
+- `tsr-selftest --device xrt`: 205 checks, 0 failed (6.6 s with the xclbin load). Identity: `CAPS` 0, `T_MAX` 8,
+  `NUM_CH` 4, SPM 4,096 KiB, `CTL_ID` 0x5d01, `Q_DEPTH` DMA 8 / QACT 4 / MVM 4 / VU 0 / ATT 0 / SYNC 4, `RV_FREQ` 32768
+  (F_RV / F_CORE 0.5000). Cold boot to HELLO 8.4 ms, warm restart 2.5 ms, `PING` 6.57 µs median, 303,578 pipelined
+  launches per second. The `selftest` kernel ids 1 to 10 and the misuse cases equal the shadow simulator (ids 4 to 6 answer
+  the `KERNEL_ERR` that a device without VU and AT must give). No log record dropped, `STATUS` clean.
+- 0.5B M6, the baseline of `k4min` (`dev.klc`, 2 prompts x 16 tokens): the card's generating run and its replay are both
+  32 of 32 rows bit-identical to the simulator; the sha256 over tokens and logits is
+  `58fa2a9b2fb84fc9ea3a4e2c91da81ee73649cd616a94a54d72252c7a857ab27` for the baseline, the generating run, the replay and
+  the simulator's own replay. A full `klcheck all --device xrt -n 64` (8 x 64): KL ratio 1.026, top-1 97.07 % (the
+  simulator's figures); its tokens replayed on `sim` with `TSR_SIM_VU=0 TSR_SIM_TMAX=8` are 512 of 512 rows
+  bit-identical. No numeric mismatch was found, so there is no first differing op to report.
+- 32B Q4_K_M, `klcheck all --device xrt --phase m6 --n-prompts 2 -n 16`: mean KL 1.3362e-3 against 3 x floor
+  5.3450e-3 (floor 1.7817e-3, ratio 0.750), top-1 100 %, PASS. The same 32 rows replayed on `sim`: bit-identical.
+- Throughput (host loaded by other jobs; best run): 0.5B 47.3 tok/s decode (21.16 ms per token; 43.6 to 47.3 over five
+  runs) and 592.6 tok/s prefill (157 tokens); 32B 2.24 tok/s decode (447.2 ms per token) and 17.4 tok/s prefill.
+  Device counters per decode token: 0.5B 2.893 M cycles, 22.5 % `MVM_EMPTY` (issue-bound gaps) and 5.0 % `MVM_WAIT`;
+  32B 84.06 M cycles, 96.5 % `MVM_CYCLES`, 2.3 % `MVM_EMPTY` and 1.3 % `MVM_WAIT`. Each launch costs 17 µs beyond the
+  device time. `RV_WFI` and `PUSH_STALL` read 0. The 32B slowdown against 2026-10-27 (2.93 tok/s) is the core clock.
+  The cost of `clk_rv` at 100 MHz: at most about 8 % of a 0.5B token and 1.4 % of a 32B token (model arithmetic;
+  performance.md).
+- `test-backend-ops -o MUL_MAT -b Tesseract0` on the card: 1,402 of 1,403; the one failure is the known one-output case
+  `f32,f32,m=1,n=1,k=2048` (NMSE 8.2e-4, getting-started.md "Known flake").
+- Debugging, `tsr-selftest --debug` (DMI smoke) and a real `riscv-none-elf-gdb` session through
+  `tsr-dbg gdb --stdio --device xrt --elf build/xrt/fw/tsr-fw.elf --halt-on-boot`: halt at `_start` (0x80),
+  a software breakpoint at `tsr_rt_main` (hit), all registers and CSRs, `x/4xw &__tsr_dbg` (TDBG magic), `stepi`, a
+  memory write and read back through the system bus, a hardware watchpoint on `tsr_rt_launch` (fired, old 0, new
+  65537), `monitor launch selftest 11` with `hbreak selftest` (hit, backtrace to `_start`), `finish` (returned
+  0x80000201, the `KERNEL_ERR` that the launch then answered), `monitor status|units|qstatus|sreg|perf|tile|trw|log|
+  rv regs|rv sample|rv step`, and `detach`; a selftest after the session passed. Every step worked on the integrated RTL.
+
+Findings and what did not work:
+
+- `monitor hist` is empty: the image has `HIST_DEPTH` 0 (the simulator still models the history). `REC_DROPPED` counts two
+  per launch, which fits that.
+- `monitor rv sample` while the hart is halted returns pcs in the debug ROM (0x10000850 to 0x10000860, the park loop at
+  `DmHaltAddr` 0x10000800), not the program's `dpc`. A stale sample (the known early `RV_SAMPLE` acknowledgement) was not
+  seen in three sessions, but nothing here proves the handshake: the sample is always taken in the park loop. The
+  `SBA_REFUSED` setter and a refused system-bus access were not exercised.
+- `TSR_STATS` prints 13 PERF slots in the backend and the transport summary did not print at the exit of
+  `llama-completion` or `klcheck`. The whole set is readable after the run with `tsr-dbg --attach -ex perf` (the counters
+  stay until the next open).
+- My first GDB script ended with `continue` and no stop: batch GDB waits forever while the core runs idle. It was
+  killed by `timeout`; the next open reset the device and everything passed. Use `detach`, not `continue`, at the end.
+- Setup of this worktree: `third_party/llama.cpp` was an empty directory. It is a local clone of the main tree's copy at the
+  pin `e3797b18`, patched by `third_party/apply-patches.sh`; `build/tools/riscv` links to the main tree's toolchain. Neither
+  is committed. No source or RTL file was changed for the bring-up.
+- Host timing on this machine is noisy while other jobs run (a Vivado report run, a training job): 0.5B decode varied from
+  43.6 to 47.3 tok/s, and a 12-thread run gave 3.3 tok/s. Repeat tok/s runs on a quiet host before quoting them.
+
+Not done, next:
+
+- Trace replays through the card (`tsr-selftest --traces`, M6 gate item 1): the trace data is only in the main tree
+  (`traces/*/` is not committed). The vector-unit and attention sets do not apply to this image.
+- The 32B KL used 32 positions. The M6 gate lists 8 x 64; a run of that size on the card takes about 30 to 45 min
+  (the CPU reference and floor runs dominate; the device phase is about 4 min).
+- Timing sign-off of the 200 / 100 MHz image is still arithmetic on the 200 / 150 MHz route. The card showed no timing
+  fault in any run (selftest, 576 bit-exact rows, decodes of 65 tokens), but that is not a timing run.
+  A link of its own at 200 / 100 MHz (about 4.5 h) is the check.
+- The clock of the control core is the cost to watch in the next image: in the 0.5B decode `MVM_EMPTY` is 22.5 % of the device
+  time; the simulator model says 200 MHz would remove about 42 % of that.
+- The M7 gate needs the full image with the vector unit and attention.
+
+## Earlier: the 200 / 100 MHz image with a control Pblock (branch `k4m200`, November 6)
 
 The branch `k4m200` (worktree `/home/limagin-dev/tesseract-k4m200`) starts from `e7488b0` of `k4-min`, the reduced first card
 image with the three register changes made after its first link. The user decided to run this image at core 200 MHz and
@@ -38,9 +112,9 @@ summary: only `clk_rv` failed, by -0.048 ns at 6.666 ns, which is +3.286 ns at 1
 core met. `CLKBD`, `CLKNET` and `CDCCHK` are the lines of the 200 / 150 MHz run (same netlist and routing); `CLKFINAL` does not run
 in the reuse path and was applied by hand (200.0 and 100.0 are inside the k4 window).
 
-Not done: the card. No bring-up has run with this xclbin. Load it with `TSR_XCLBIN=build/link/k4m200/tsr_u200_k4.xclbin`
-and follow [platform-u200.md](platform-u200.md) §14. The setup and hold result is not a new timing run; a link of its own
-at 200 / 100 MHz (about 4.5 h) is the check if the card shows a timing fault. If a later image needs another placement, the
+The card bring-up of this xclbin is the entry above. Load it with `TSR_XCLBIN=build/link/k4m200/tsr_u200_k4.xclbin`.
+The setup and hold result is not a new timing run; a link of its own at 200 / 100 MHz (about 4.5 h) is the check if the
+card shows a timing fault (it showed none in the M6 runs). If a later image needs another placement, the
 next lever for a DDR0 clock failure is a Pblock for cluster 0 that leaves out X2Y1 to X2Y3: the control Pblock cannot keep
 cluster 0 out of them.
 
