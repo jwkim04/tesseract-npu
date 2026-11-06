@@ -36,7 +36,7 @@ clock changes, the U200 floorplan and timing plan, and the RTL verification of a
 | Host debug SPM window | **none**; the debugger reaches the SPM through the DM's system bus (CC-16) |
 | Platform control | **`ap_ctrl_none`** (no KDS start / done), `xrt::ip` and polling (EX §9, CC-19) |
 | TCMs | **128 KiB ITCM + 64 KiB DTCM** (CC-3) |
-| Timing gate (D13) | k4 link kernel clock **≥ 250 MHz** with all M6 hardware (user decision, 2026-11-02); current request 300 MHz (§14.3). The reduced first card image runs core 200 MHz and `clk_rv` 150 MHz (user decision, 2026-11-06; `docs/platform-u200.md` §8.7) |
+| Timing gate (D13) | k4 link kernel clock **≥ 250 MHz** with all M6 hardware (user decision, 2026-11-02); current request 300 MHz (§14.3). The reduced first card image runs core 200 MHz and `clk_rv` 100 MHz (user decision, 2026-11-06; `docs/platform-u200.md` §8.7) |
 | Core boundary | `host_irq_o` and `plat_err_i` (EX §9.3; §13.1 here) |
 
 Not in this area: the meaning of each tile op (EX, VU, AT), the memory model as an architectural
@@ -763,8 +763,8 @@ override the max delays; the platform clocks come from one clocking block and ma
 related). Gates: `report_cdc` on the out-of-context run lists only the intended crossings, all
 safe; zero unconstrained `ap_clk` ↔ `ap_clk_2` paths in the linked design.
 The XDC caps both the datapath and gray-bus skew bounds at 3.333 ns. Lowering the K4 core
-request to 250 MHz, and for the reduced first card image to 200 MHz with `clk_rv` at 150 MHz,
-therefore preserves the original crossing budget (both periods, 5.0 and 6.667 ns, are above the
+request to 250 MHz, and for the reduced first card image to 200 MHz with `clk_rv` at 100 MHz,
+therefore preserves the original crossing budget (both periods, 5.0 and 10.0 ns, are above the
 cap). A faster clock still requires its smaller period; the cap never relaxes that requirement.
 
 The constraints cover every crossing of the design, `tsr_dbg_rv`'s included, not only `tsr_ctrl`'s:
@@ -1069,8 +1069,10 @@ The user lowered the K4 acceptance floor from 276.3 MHz to 250 MHz on 2026-11-02
 requested 250 MHz and RV 166.7 MHz (Vitis records 166 MHz). Do not repeat an
 implementation that meets the 250 MHz floor just to reach 300 MHz.
 The reduced first card image is the exception, by the user's decision of 2026-11-06: its first
-link at 250 / 166.7 MHz routed and missed timing (core -2.557 ns, `clk_rv` -0.795 ns), so
-`hw/u200/k4.cfg` requests core 200 MHz and `clk_rv` 150 MHz, and `hw/u200/clock_final_check.tcl`
+link at 250 / 166.7 MHz routed and missed timing (core -2.557 ns, `clk_rv` -0.795 ns), and a
+second link at 200 / 150 MHz met every clock but `clk_rv` (-0.048 ns, Ibex fetch to the bus grant), so
+`hw/u200/k4.cfg` requests core 200 MHz and `clk_rv` 100 MHz (the image reuses the routed 200 / 150 MHz result, without a new
+place and route; `docs/platform-u200.md` §8.7), and `hw/u200/clock_final_check.tcl`
 accepts exactly these two clocks for `tsr_u200_k4` (a scaled-down clock fails the link). The
 window of `tsr_u200_k1` is unchanged. The 250 MHz floor above applies to the full K4 elaboration. The early clock/reset
 gate verifies the requested clock constraints; the final gate checks the accepted scaled
@@ -1296,7 +1298,7 @@ T1–T4 of §14.3; `report_cdc` on every out-of-context run; `report_timing` bet
 | CC-20 | ID / VERSION | `ID` is 0x5453_5231 "TSR1", `VERSION` 0x0000_0100: Tesseract Core capability 1.0 (EX-12, SW §6.9) | "TSR2" (the draft) | Host open code refuses a different capability major, so a tool built for another major fails cleanly without a new magic. |
 | CC-21 | PERF | EX §6 (ACTIVE / QHALT gating, zeroed by `SOFT_RESET`, X = 5 + 2C); CC adds X + 20 / X + 21 SPM wait counters | 64 free-running fixed slots with `PERF_CLEAR` (the draft) | ACTIVE gives the property "PERF does not change between executions" per launch with no software bit; one counter space for the whole device. |
 | CC-22 | Recovery | no partial datapath reset and no op cancel; `SOFT_RESET` is EX's device-level sequence (SR sequencer, CC-31); a wedged unit needs a card reset | a datapath soft reset; per-unit kill | Resetting units with outstanding memory transactions breaks the "no pre-reset response" contract of the arbiters; the log ring, `Q_*` and DB's evidence give the post-mortem first. |
-| CC-23 | Timing gate | k4 link ≥ 250 MHz with all M6 hardware | Requiring 276.3 or 300 MHz for K4 acceptance | D13 amended by the user's 2026-11-02 decision. Keep the current 300 MHz request; do not repeat a qualifying implementation only to reach it. The reduced first card image accepts 200 / 150 MHz (core / `clk_rv`) by the user's 2026-11-06 decision. |
+| CC-23 | Timing gate | k4 link ≥ 250 MHz with all M6 hardware | Requiring 276.3 or 300 MHz for K4 acceptance | D13 amended by the user's 2026-11-02 decision. Keep the current 300 MHz request; do not repeat a qualifying implementation only to reach it. The reduced first card image accepts 200 / 100 MHz (core / `clk_rv`) by the user's 2026-11-06 decision. |
 | CC-24 | Floorplan | C'': control core, issue path, VU and DB next to the SPM in SLR1; SLR1 ≤ 65 % LUT after synthesis, else in order: VU shrink knobs, DB `HAS_TRW` / `HIST_DEPTH` off, VU lanes to SLR0 behind pipes | VU in SLR0 / SLR2 from the start; "AT moves out" (the draft; AT has no SLR1 unit) | The VU needs 1.5 Kb per cycle to and from the SPM; the recomputed budget (§14.1, ≈ 62–71 %) straddles the gate, and every remedy keeps results unchanged. |
 | CC-25 | Gather fix | `tsr_rslice` FORM 1 (cycle-identical) + pinning stage 0 | `JOB_PIPE` 3 first; registered take | Removes the measured worst paths without changing any cycle, so all replays stay exact; deeper pipes only if needed. |
 | CC-26 | Memory source 0 | `TSR_SRC_AUX`, tied off in M6 | delete the source | Keeps the arbiter shape; AT streams KV through the clusters' weight path, so nothing claims it yet. |

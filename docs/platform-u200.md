@@ -288,7 +288,7 @@ No installed or generated tool files are edited.
 power-optimisation exclusion. `cdc_pre_route.tcl` repeats the clock/reset and effective CDC
 checks before routing. The final pre-bitstream hook
 checks `_new_clk_freq` after Vitis scaling against the window of the kernel it finds in the design:
-`tsr_u200_k4` accepts exactly core 200 MHz and `clk_rv` 150 MHz (§8.7), `tsr_u200_k1` core 250 to
+`tsr_u200_k4` accepts exactly core 200 MHz and `clk_rv` 100 MHz (§8.7), `tsr_u200_k1` core 250 to
 300 MHz and RV within the request's tolerance. These clock checks always fail the run on an error. `TSR_CDC_GATE=warn`
 only relaxes the final CDC report gate. A 125 MHz RV fallback needs an explicit request and
 frequency-window change. The early netlist check validates the current clock request, not
@@ -371,6 +371,8 @@ says what to install (tested: `test_build_xclbin_no_platform`; the dev-platform 
 products and the implementation runs with their hooks, nothing synthesised),
 `TSR_VPP_FROM_STEP` (`v++ --from_step`, e.g. `vpl.impl`: resume a link after a failed implementation run, the
 synthesis is kept),
+`TSR_VPP_REUSE_IMPL` (`v++ --reuse_impl <routed dcp>`: import the routed DCP of an earlier link and run only the frequency
+scaling, `write_bitstream` and the xclbin packaging; a path that is not a file stops the script),
 `TSR_U200_PLATFORMINFO=1` (resolve the platform, print its `platforminfo`, stop). Memory: on the
 dev host (14 GB RAM, swap) the k1 link peaked at 15.3 GB and the M0 link at 18.3 GB
 (Vivado-reported, write_bitstream) and both completed, using swap; the k4 link peaked at 29.6 GB
@@ -2368,7 +2370,7 @@ deleting code; every other configuration of the RTL is unchanged.
 | Attention | absent: `HAS_ATT` 0 | ATTQK / ATTPV in the clusters, the attention path of the gather, KVST in the DMA, the AT checker class |
 | Local intermediates | absent (`LOCAL_*` 0) | local FAST attention, local scale / softcap epilogues |
 | DB | `HAS_TRW` 0, `HIST_DEPTH` 0 | the trace writer with its write mux, the dispatch history |
-| Clocks | core 200 MHz (accept exactly 200), `clk_rv` 150 MHz on `ap_clk_2` (accept exactly 150); the first link ran 250 / 166.666667 MHz | |
+| Clocks | core 200 MHz (accept exactly 200), `clk_rv` 100 MHz on `ap_clk_2` (accept exactly 100); the first link ran 250 / 166.666667 MHz, the second 200 / 150 MHz | |
 | `CAPS` | 0; `CFG3` 0; `Q_DEPTH` VU 0 | |
 
 `gen_tops.py` carries the parameters (`HAS_VU`, `HAS_ATT`, `HAS_TRW` and `HIST_DEPTH` are new
@@ -2499,28 +2501,45 @@ shell clocks are not changed: the first two are deep logic inside SLR0 (no cross
 CSR / DB timing contracts), the Ibex paths are inside the vendored core and its bus. The next link is not expected to meet all
 clocks; see the handoff for what comes after it.
 
-**Second image: core 200 MHz, `clk_rv` 150 MHz and a control Pblock (branch `k4m200`, 2026-11-06).** The user decided
-to run the four-cluster image at core 200 MHz if that can work. `k4m200` starts from `e7488b0` of `k4-min`, which has
+**Second image: core 200 MHz, `clk_rv` 100 MHz and a control Pblock (branch `k4m200`, 2026-11-06).** The user decided
+to run the four-cluster image at core 200 MHz if that can work, first with `clk_rv` at 150 MHz, then at 100 MHz (below).
+The 100 MHz image reuses the routed 200 / 150 MHz result and has no new place and route. `k4m200` starts from `e7488b0` of `k4-min`, which has
 the three register changes above. Lower clocks do not fix the other two failures by themselves. The shell's DDR4 clock is
 not a kernel clock. The Ibex paths are routing-bound (17 levels, 77 % routing): the 0.667 ns of the longer `clk_rv` period
 leaves them at about -0.13 ns by arithmetic, if placement does not change. So this image also moves the control plane off
 the DDR0 controller's clock regions.
 
-Clocks. The periods go from 4.0 to 5.0 ns (core) and from 6.0 to 6.667 ns (`clk_rv`). Of the 25,491 failing core endpoints
+Clocks. The periods go from 4.0 to 5.0 ns (core) and from 6.0 to 10.0 ns (`clk_rv`; 6.667 ns in the 150 MHz attempt). Of the 25,491 failing core endpoints
 of the first link, 641 would still fail at 5.0 ns: the DB `u_stop` and `s_q` registers, the issue `rec_q`, the DMA, MVM
 and QACT done strobes into issue, the CSR `ast_q`, the CDC handshake `cap_v_q` and the adapter's `g_gate` `mem_en_q`. The
 three register changes aim at most of them.
 
-- `hw/u200/k4.cfg` requests `kernel_frequency=0:200|1:150`.
+- `hw/u200/k4.cfg` requests `kernel_frequency=0:200|1:100`.
 - `hw/u200/clock_final_check.tcl` names the kernel from the open design (`tsr_clock_kernel_kind` in `clock_common.tcl`,
   the same lookup as the request check) and takes its window from a table. `tsr_u200_k4` accepts core 200.0 to 200.1 MHz and
-  `clk_rv` 150.0 to 150.1 MHz: a clock that Vitis scaled down fails the link. `tsr_u200_k1` keeps core 250.0 to 300.1 MHz and
+  `clk_rv` 100.0 to 100.1 MHz: a clock that Vitis scaled down fails the link. `tsr_u200_k1` keeps core 250.0 to 300.1 MHz and
   RV 158.33 to 166.8 MHz. An unknown kernel stops the check.
 - `clock_net_check.tcl` reads the request from the kernel's own config and accepts a period within 0.5 % of it, so it follows
-  `k4.cfg` and needed no change (5.0 and 6.667 ns). `clock_bd_check.tcl` checks nets, not frequencies.
+  `k4.cfg` and needed no change (5.0 and 10.0 ns). `clock_bd_check.tcl` checks nets, not frequencies.
 - The CDC cap of 3.333 ns stays (`tsr_ctrl_cdc.xdc`, `cdc_restore.tcl`): both new periods are above it, so the bound that
   the cap sets is still the smaller one and the 300 MHz crossing budget is kept. `tb/platform/test_link_checks.py` has the
-  new request and window cases, and the cap case at 5.0 / 6.667 ns.
+  new request and window cases, and the cap cases at 5.0 / 10.0 ns and 5.0 / 6.667 ns.
+
+The 200 / 150 MHz link and the 100 MHz image. The link at core 200 MHz and `clk_rv` 150 MHz ran from `464bb6e`
+(output moved to `build/link/k4m200-rv150`). It routed, and the core and every shell clock met. Only `clk_rv` failed: WNS
+-0.048 ns after route, -0.008 to -0.015 ns during the post-route `phys_opt_design`, on 71 endpoints, all from the Ibex
+`if_stage` to `u_bus` `igrant_q`, 15 logic levels. The final clock hook would have stopped the link at `CLKFINAL`. The
+user decided on 2026-11-06 to stop that link and lower `clk_rv` to 100 MHz (10.0 ns); the core stays at 200 MHz. The
+Pblocks are unchanged, and the map above is the one for this link.
+
+The 100 MHz image is not placed and routed again. It reuses the routed DCP of the 200 / 150 MHz link,
+`build/link/k4m200-rv150/tmp/link/vivado/vpl/prj/prj.runs/impl_1/level0_wrapper_routed.dcp`, through
+`TSR_VPP_REUSE_IMPL` (`v++ --reuse_impl`) with `kernel_frequency=0:200|1:100`: Vitis imports the DCP and runs only the
+frequency scaling, `write_bitstream` and the xclbin packaging. The paths that missed by 0.048 ns at 6.667 ns have about
+3.3 ns of slack at 10.0 ns (arithmetic, not a new timing run). Hold and the 3.333 ns CDC caps do not depend on the period.
+The packaged `.xo` is the one of the 200 / 150 MHz link (its source manifest still matches, and `k4.cfg` is not part of
+it). The host tools read `RV_FREQ` at run time, so firmware and host need no change. What the reuse run reports
+(`_new_clk_freq`, whether `CLKFINAL` runs in this path, the xclbin clock section) is not recorded here yet.
 
 Control Pblock. In the first link the control plane (the control core with its TCMs, issue path, CSR block and the DB
 core side) took 7,584 CLBs (the CLBs touched by any block of it; counted one by one `u_ctrl` has 3,463, CSR 2,033, issue
@@ -2604,7 +2623,9 @@ TSR_BUILD_JOBS=8 TSR_U200_SYNTH_JOBS=16 TSR_U200_OUT=$PWD/build/link/k4m200 \
   nohup hw/u200/vivado_slot.sh hw/u200/build_xclbin.sh k4 > build/link/k4m200/launch.log 2>&1 &
 ```
 
-The wrapper packages the kernel first (no `build/u200/xo` exists in this worktree), then links. Read the same logs as for
+The first launch packaged the kernel. The 100 MHz image is made in `build/link/k4m200` from the routed DCP of the
+200 / 150 MHz link (output `build/link/k4m200-rv150`); it adds `TSR_VPP_REUSE_IMPL=<routed dcp>` to the command above and
+reuses the packaged `.xo` (the wrapper repackages only when the source manifest no longer matches). Read the same logs as for
 the first link, with `CLKFINAL PASS k4` for the clocks, and `K4 major blocks: pblock_tsr_ctrl_plane` in the log of the
 implementation run for the Pblock's capacity. Then check the DDR4 clocks (`mmcm_clkout0_1` to `_3`), `clk_rv` and the core
 clock in the routed timing summary, and the occupancy of X2Y1 to X2Y3.
@@ -2618,7 +2639,7 @@ TSR_BUILD_JOBS=8 TSR_U200_SYNTH_JOBS=16 TSR_U200_OUT=$PWD/build/link/k4min \
 ```
 
 `build/platforms` links to the development platform of the main checkout. The link config is `hw/u200/k4.cfg` (core
-200 MHz, `clk_rv` 150 MHz on `ap_clk_2`, Vitis clock-calculator fix, linked CDC constraints, the major-block hook).
+200 MHz, `clk_rv` 100 MHz on `ap_clk_2`, Vitis clock-calculator fix, linked CDC constraints, the major-block hook).
 It is finished when the wrapper exits: status 0, the last line of `launch.log` is `== .../build/link/k4min/tsr_u200_k4.xclbin`
 and the file exists. Then read: the hooks' `CLKBD PASS` (ap_clk_2 on `aclk_kernel_01`, not `aclk_kernel_00`), `CLKNET PASS`,
 `CDCCHK`, `CLKFINAL PASS` (`grep -r` in `build/link/k4min/tmp/link/vivado/vpl/`: the Vivado log and the `runme.log` of the

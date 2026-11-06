@@ -207,7 +207,7 @@ def render(hook, report, output):
             word(x, y + i * 22, line, 16, INK)
         return len(lines)
 
-    word(44, 30, ("ALVEO U200   /   K4-MIN   /   CORE 200 MHz · CLK_RV 150 MHz   /   PRE-BUILD" if ctrl else
+    word(44, 30, ("ALVEO U200   /   K4-MIN   /   CORE 200 MHz · CLK_RV 100 MHz   /   PRE-BUILD" if ctrl else
                   "ALVEO U200   /   K4-MIN   /   PRE-BUILD") if reduced else "ALVEO U200   /   K4   /   PRE-BUILD",
          15, GRAY, True)
     title = ("첫 카드 이미지(200 MHz)의 Pblock 계획" if ctrl else

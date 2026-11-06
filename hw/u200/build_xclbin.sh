@@ -19,7 +19,7 @@
 #    creation and before opt_design (with the TCM power-optimisation exclusion), apply the k4 floorplan
 #    before placement, and run the physical CDC gate after routing. A final pre-bitstream hook checks
 #    Vitis's scaled frequencies in _new_clk_freq against the kernel's window (k4: core 200 MHz and clk_rv
-#    150 MHz; k1: core 250 to 300 MHz). Clock identity/reset/frequency failures are fatal;
+#    100 MHz; k1: core 250 to 300 MHz). Clock identity/reset/frequency failures are fatal;
 #    TSR_CDC_GATE=warn only relaxes the final CDC report gate.
 #
 # Environment:
@@ -37,6 +37,8 @@
 #                       implementation runs and their hooks are set up, nothing is synthesized)
 #   TSR_VPP_FROM_STEP   resume a link in TSR_U200_OUT from this step (v++ --from_step, e.g. vpl.impl after a
 #                       failed implementation run: the synthesis is kept)
+#   TSR_VPP_REUSE_IMPL  a routed DCP of an earlier link (v++ --reuse_impl): imports it and runs only the
+#                       frequency scaling, write_bitstream and the xclbin packaging, no synthesis or place and route
 #   TSR_U200_PLATFORMINFO  1 = resolve the platform, print its platforminfo and stop (exit 0)
 #   TSR_BUILD_JOBS      if set: the link's synth / impl jobs and Vivado's general.maxThreads (the configs: 8)
 #   TSR_U200_SYNTH_JOBS optional independent positive integer count of concurrent IP synthesis jobs;
@@ -60,6 +62,10 @@ if [ -n "${TSR_U200_SYNTH_JOBS:-}" ]; then
     echo "build_xclbin.sh: TSR_U200_SYNTH_JOBS must be a positive integer" >&2
     exit 2
   fi
+fi
+if [ -n "${TSR_VPP_REUSE_IMPL:-}" ] && [ ! -f "$TSR_VPP_REUSE_IMPL" ]; then
+  echo "build_xclbin.sh: TSR_VPP_REUSE_IMPL is not a file: $TSR_VPP_REUSE_IMPL" >&2
+  exit 2
 fi
 KERNEL=tsr_u200_$K
 PLATFORM=${TSR_U200_PLATFORM:-xilinx_u200_gen3x16_xdma_2_202110_1}
@@ -162,6 +168,10 @@ if [ -n "${TSR_VPP_TO_STEP:-}" ]; then
 fi
 if [ -n "${TSR_VPP_FROM_STEP:-}" ]; then
   extra+=(--from_step "$TSR_VPP_FROM_STEP")
+fi
+# imports a routed DCP and only runs frequency scaling, write_bitstream and xclbin packaging (no place and route)
+if [ -n "${TSR_VPP_REUSE_IMPL:-}" ]; then
+  extra+=(--reuse_impl "$TSR_VPP_REUSE_IMPL")
 fi
 echo "== v++ link $KERNEL ($TARGET, $XPFM, $CFG) -> $OUT"
 locked bash -c "set +u; source '$VITIS_SETTINGS' >/dev/null && cd '$OUT' && v++ --link -t '$TARGET' --platform '$XPFM' \

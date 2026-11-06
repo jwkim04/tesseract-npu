@@ -2,24 +2,37 @@
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
 
-## Resume here: the 200 MHz image with a control Pblock (branch `k4m200`, November 6)
+## Resume here: the 200 / 100 MHz image with a control Pblock (branch `k4m200`, November 6)
 
 The branch `k4m200` (worktree `/home/limagin-dev/tesseract-k4m200`) starts from `e7488b0` of `k4-min`, the reduced first card
 image with the three register changes made after its first link. The user decided to run this image at core 200 MHz and
-`clk_rv` 150 MHz if that can work. Two things changed; [platform-u200.md](platform-u200.md) §8.7 "Second image" has the
-numbers and the comparison:
+first tried `clk_rv` at 150 MHz; that link missed `clk_rv` and the image now runs `clk_rv` at 100 MHz (below). Two things
+changed; [platform-u200.md](platform-u200.md) §8.7 "Second image" has the numbers and the comparison:
 
-- Clocks: `hw/u200/k4.cfg` requests `0:200|1:150`; `hw/u200/clock_final_check.tcl` takes its window from the kernel it finds
-  in the design (k4: exactly 200 and 150 MHz; k1 unchanged). The 3.333 ns CDC cap stays.
+- Clocks: `hw/u200/k4.cfg` requests `0:200|1:100`; `hw/u200/clock_final_check.tcl` takes its window from the kernel it finds
+  in the design (k4: exactly 200 and 100 MHz; k1 unchanged). The 3.333 ns CDC cap stays.
 - Placement: the control plane (control core, issue, CSR, DB core side) has its own Pblock `pblock_tsr_ctrl_plane`, a child of
   `pblock_dynamic_SLR0`: clock-region rows Y3 and Y4 of SLR0 without X2Y3 (16,300 CLBs, 252 RAMB36, 840 DSP). It leaves the
   DDR0 controller's clock regions X2Y1 to X2Y3, which were 99.5 % full and failed their clock by 0.33 ns. The map is
   `docs/fig/floorplan/k4m200-pblock-plan.png`. The legality check (`tb/platform/viv/k4_pblock_check.tcl`) passed on the routed
-  checkpoint of the first link; no placement has run with this Pblock.
+  checkpoint of the first link; the 200 / 150 MHz link placed and routed with this Pblock.
 
-Not done: the link. Launch it with the command at the end of §8.7. Read the DDR4 clocks, `clk_rv` and the core clock in the
-routed summary and the occupancy of X2Y1 to X2Y3 first. If the DDR0 clock still fails, the next lever is a Pblock for cluster
-0 that leaves out those three regions: the control Pblock cannot keep cluster 0 out of them.
+The 200 / 150 MHz link (`build/link/k4m200-rv150`) routed with only `clk_rv` failing: WNS -0.048 ns after route, -0.008 to
+-0.015 ns during the post-route `phys_opt_design`, 71 endpoints, Ibex `if_stage` to `u_bus` `igrant_q`, 15 logic levels. The
+core and the shell clocks met (the DDR4 clocks too). The user stopped it on 2026-11-06 and decided to lower `clk_rv` to 100 MHz,
+with the core at 200 MHz. The Pblocks are unchanged. The host tools read `RV_FREQ` at run time, so firmware and host need no
+change.
+
+The 100 MHz image is not placed and routed again. It reuses the routed DCP of the 200 / 150 MHz link
+(`build/link/k4m200-rv150/tmp/link/vivado/vpl/prj/prj.runs/impl_1/level0_wrapper_routed.dcp`) with `kernel_frequency=0:200|1:100`,
+through `TSR_VPP_REUSE_IMPL` (`v++ --reuse_impl`): Vitis runs only the frequency scaling, `write_bitstream` and the xclbin
+packaging, in `build/link/k4m200`. The `clk_rv` paths that missed by 0.048 ns at 6.667 ns have about 3.3 ns of slack at 10.0 ns
+by arithmetic; hold and the 3.333 ns CDC caps do not depend on the period. §8.7 has the command.
+
+Not done: the result of that run. Read `_new_clk_freq` (expect core 200.0, `clk_rv` 100.0), whether `CLKFINAL` ran in the reuse
+path (if not, check `_new_clk_freq` against the window by hand), and the clock section of the xclbin. If a later image needs
+another placement, the next lever for a DDR0 clock failure is a Pblock for cluster 0 that leaves out X2Y1 to X2Y3: the control
+Pblock cannot keep cluster 0 out of them.
 
 ## Earlier: resume point, reduced first card image (branch `k4-min`, November 6)
 

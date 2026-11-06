@@ -5,7 +5,7 @@ source [file join [file dirname [file normalize [info script]]] clock_common.tcl
 
 # Accepted scaled frequencies in MHz by kernel: {core_low core_high rv_low rv_high}.
 #   k1  core request 300, floor 250. RV request 166 (Vitis truncates 166.67), 5 % tolerance.
-#   k4  the reduced first card image requests core 200 and RV 150 (user decision, 2026-11-06) and accepts
+#   k4  the reduced first card image requests core 200 and RV 100 (user decision, 2026-11-06) and accepts
 #       exactly those clocks: a core or RV clock that Vitis scaled down fails the run. The 0.1 MHz above
 #       the request only absorbs the decimal precision of _new_clk_freq.
 # Faster clocks or the 125 MHz fallback require an explicit request and window change after the timing
@@ -13,7 +13,7 @@ source [file join [file dirname [file normalize [info script]]] clock_common.tcl
 proc tsr_clock_final_window {kind} {
   switch -- $kind {
     k1 { return {250.0 300.1 158.33 166.8} }
-    k4 { return {200.0 200.1 150.0 150.1} }
+    k4 { return {200.0 200.1 100.0 100.1} }
   }
   error "CLKFINAL no acceptance window for kernel $kind"
 }

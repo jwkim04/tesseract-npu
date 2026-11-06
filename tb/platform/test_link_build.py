@@ -24,7 +24,8 @@ REPO = Path(__file__).resolve().parents[2]
     ("4", "5", (5, 4, 4)),
     ("8", "-1", None),
 ])
-def test_link_job_rendering(tmp_path, build_jobs, synth_jobs, expected):
+@pytest.mark.parametrize("reuse", [None, "dcp", "missing"])
+def test_link_job_rendering(tmp_path, build_jobs, synth_jobs, expected, reuse):
     root = tmp_path / "repo"
     hw = root / "hw/u200"
     hw.mkdir(parents=True)
@@ -83,6 +84,12 @@ Path(args[args.index("-o") + 1]).write_text("fake xclbin; no CAD executed\\n")
         env["TSR_BUILD_JOBS"] = build_jobs
     if synth_jobs is not None:
         env["TSR_U200_SYNTH_JOBS"] = synth_jobs
+    # TSR_VPP_REUSE_IMPL imports a routed DCP (v++ --reuse_impl); a path that is not a file stops the script.
+    dcp = tmp_path / "level0_wrapper_routed.dcp"
+    if reuse == "dcp":
+        dcp.write_text("isolated fake DCP\n")
+    if reuse is not None:
+        env["TSR_VPP_REUSE_IMPL"] = str(dcp)
     result = subprocess.run([str(script), "k4"], cwd=root, env=env,
                             text=True, capture_output=True, timeout=30)
     calls = [json.loads(line) for line in trace.read_text().splitlines()] if trace.exists() else []
@@ -95,11 +102,18 @@ Path(args[args.index("-o") + 1]).write_text("fake xclbin; no CAD executed\\n")
         assert not xo.parent.exists()
         return
 
+    if reuse == "missing":
+        assert result.returncode == 2, (result.stdout, result.stderr)
+        assert "TSR_VPP_REUSE_IMPL is not a file" in result.stderr
+        assert not calls
+        assert not rendered.exists()
+        return
+
     assert result.returncode == 0, (result.stdout, result.stderr)
     lines = rendered.read_text().splitlines()
     for key, value in zip(("synth.jobs", "impl.jobs", "param=general.maxThreads"), expected):
         assert [line for line in lines if line.startswith(key + "=")] == [f"{key}={value}"]
-    assert "kernel_frequency=0:200|1:150" in lines
+    assert "kernel_frequency=0:200|1:100" in lines
     assert hook_paths
     # k4.cfg carries no OPT_DESIGN.TCL.POST hook (hw/u200/k4_post_opt.tcl stays available for a diagnostic
     # link); the placement hook is the major-block map.
@@ -110,6 +124,10 @@ Path(args[args.index("-o") + 1]).write_text("fake xclbin; no CAD executed\\n")
     assert [call["tool"] for call in calls] == ["settings", "v++"]
     args = calls[-1]["argv"]
     assert args[args.index("--config") + 1] == str(rendered)
+    if reuse == "dcp":
+        assert args[args.index("--reuse_impl") + 1] == str(dcp)
+    else:
+        assert "--reuse_impl" not in args
     assert args[-1] == str(xo)
     assert (out / "tsr_u200_k4.xclbin").is_file()
     assert not xo.with_suffix(".package.log").exists()
