@@ -2442,7 +2442,62 @@ B's worst core paths are the done and record strobes from DMA and MVM (SLR1) int
 logic levels with a crossing; they have 0.34 to 0.42 ns left at 4.0 ns. The out-of-context run does not model the platform's DDR controllers, which
 take 14,019 of SLR1's CLBs in October, so legal routing is not proven by this gate.
 
-**Launch (not started).** From `/home/limagin-dev/tesseract-k4min`:
+**First link (2026-11-06, `build/link/k4min`): routed, timing not met.** The link placed and routed legally: no overlaps,
+CLB occupancy SLR0 / SLR1 / SLR2 78.4 / 88.1 / 70.3 % (October: 72.7 / 92.1 / 75.0 %). It was stopped in the optional
+post-route `phys_opt_design`, because no xclbin could come out of it. Routed timing (`hw_bb_locked_timing_summary_routed.rpt`):
+
+| Clock | Requirement | WNS (ns) | TNS (ns) | Failing endpoints |
+|---|---|---:|---:|---:|
+| core (`clk_kernel_00`) | 4.0 | -2.557 | -7,708 | 25,491 |
+| `clk_rv` (`clk_kernel_01`) | 6.0 | -0.795 | -293 | 762 |
+| DDR4 user clocks of the shell, MIG 0 / 1 / 2 (`mmcm_clkout0_1`, `_2`, `_3`) | 3.33 | -0.329 / -0.232 / -0.065 | -45 / -25 / -1 | 441 / 282 / 40 |
+| `mmcm_clkout0` (memory interconnect to the PCIe DMA), `dma_ip_axi_aclk_1` | 3.33, 4.0 | -0.054, -0.163 | -0.3, -20 | 6, 366 |
+
+The October routed image (`build/u200/k4`, core constrained at 3.33 ns, WNS -0.285) met every shell clock, by 0.017 to 0.066 ns;
+post-route `phys_opt_design` changed none of them. The shell clocks are therefore the first thing a crowded kernel breaks.
+
+Triage of every failing endpoint of the routed checkpoint (`get_timing_paths -setup -nworst 1 -slack_lesser_than 0` per capture
+clock, binned by the block of the start and end cell). Core clock, 25,491 endpoints:
+
+| Start block to end block | Endpoints | Worst (ns) | TNS share | Levels | Route share | What it is |
+|---|---:|---:|---:|---:|---:|---|
+| `u_mvm` reset register to cluster 0..3 | 16,472 | -0.975 | 59 % | 1 | 96 % | one last-stage reset register per cluster, 708 to 720 pins over a whole SLR (nets of 2.8 ns) |
+| CSR to CSR | 2,657 | -1.277 | 10 % | 5 | 87 % | LQ ring write enable (256 loads), PERF counter enable (1,345 loads), LCQ ring |
+| unit `done` to issue (MVM 575, QACT 461, DMA 440) | 1,476 | -1.196 | 14 % | 9 to 11 | 77 % | SLR1 to SLR0 crossing of 1.4 to 1.7 ns, then the 28-bit done counter add and compare |
+| DB to DB | 428 | -2.557 | 5 % | 13 | 68 % | memory-tap counters (a LUT in SLR2 between two flops in SLR0) and the stop logic (15 levels) |
+| issue to DB | 340 | -1.825 | 3 % | 6 | 86 % | a LUT in `u_dma`'s Pblock (SLR1) inside a path between two SLR0 registers |
+| cluster to cluster | 720 | -0.809 | 1 % | 1 | 96 % | `cfg_fmt` fan-out (453 loads), activation write data to the BRAMs |
+| others (gather, QACT multipliers, shell AXI interconnect, bridges, arbiters) | 3,398 | -1.569 | 9 % | | | |
+
+By SLR: 12,864 endpoints SLR1 to SLR0 (the reset registers of clusters 0 and 2 sit in SLR1 at the boundary row), 6,067 SLR2 to
+SLR2 (the same for clusters 1 and 3), 4,342 inside SLR0. 201 of the worst 600 paths cross SLR boundaries two or three times:
+a LUT that synthesis merged across a block boundary took the Pblock of the block it was named under (`u_dma`,
+`g_ch[c].u_br`) and sits in SLR1 or SLR2 between two SLR0 flops.
+
+`clk_rv`, 762 endpoints, all in SLR0 (mostly clock regions X0Y1 to X1Y2, 91 to 95 % occupied): Ibex decode to the TCM address and
+the bus (17 to 20 levels, 420 endpoints, -0.77 ns), bus to control window (6 levels, 156), control window (78), CDC (44).
+
+Shell clocks: every failing path is inside a DDR4 controller (calibration, address decode) or the memory interconnect, 2 to 4
+levels with 86 % routing (nets of 2.4 to 3.7 ns). MIG 0 sits in clock regions X2Y1 to X2Y3 of SLR0: 98.9 to 99.9 % of the slices
+occupied, of which cluster 0 holds 414 to 831, `u_ctrl` up to 597, the CSR 255, the DDR0 bridge 332 CLBs. MIG 1: X2Y7 to X2Y9 of
+SLR1 at 97.7 to 99.4 % with the MVM broadcast stages, the SPM and the DDR bridges inside. MIG 2: X3Y10 to X4Y13 of SLR2 at 76 to
+96 %. Kernel logic placed inside the MIG regions leaves the calibration logic spread over three clock regions. The Pblocks are
+whole SLRs, so nothing keeps kernel logic out of those regions; only a sub-SLR Pblock or another SLR for a block would (not done).
+
+Changes for the next link (all with one rule: a register where the protocol allows latency; no placement or flow change):
+the cluster reset in copies inside the cluster (`tsr_mvm_cluster` `RST_COPY`), a register on every unit `done` strobe at the
+entry of `tsr_issue` (`DONE_REG`) and two register stages on the DB memory taps (`MT_PIPE`); the last two apply with
+`RV_LOCAL_TRANSPORT` (docs/design/04-control-core.md §11.4), the first with `RST_LOCAL` > 0 (docs/rtl-m3.md §14). Out-of-context
+placement with the same major-block map (3.333 ns): 1,072 failing endpoints before, 448 after; the done-to-issue paths (623
+endpoints, -0.248 ns), the memory taps and every SLR1 to SLR0 path are gone, the cluster reset registers went from -0.001 to 0.2 ns
+worst slack (largest net 882 pins) to 0.6 ns and more (largest 413 pins). What remains there is the DB stop logic, which these
+changes do not touch: 15 levels, 1.1 ns of logic and 3.0 ns of routing (post-synthesis estimate -0.262 ns at 3.333 ns in both
+runs; the placed WNS moved from -0.332 to -0.786 ns with the placer's choice). The CSR, the DB stop logic, the Ibex paths and the
+shell clocks are not changed: the first two are deep logic inside SLR0 (no crossing to register; a register there changes the
+CSR / DB timing contracts), the Ibex paths are inside the vendored core and its bus. The next link is not expected to meet all
+clocks; see the handoff for what comes after it.
+
+**Launch.** From `/home/limagin-dev/tesseract-k4min` (the first link used `build/link/k4min`; a repeat uses a new output directory):
 
 ```sh
 mkdir -p build/link/k4min

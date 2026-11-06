@@ -16,7 +16,17 @@ launch command. Short form:
   to 92 % (target 93 %; the routed October image had 92.1 %). `hw/u200/k4_major_blocks.tcl` has the passing map.
 - Open risk: placed `clk_rv` slack -0.208 ns at 6.0 ns inside Ibex with that map (+0.276 ns with the other); placement
   numbers are before routing, and the DDR controllers of the platform are not in the out-of-context run.
-- The link was not launched. The simulator baseline for the card is `build/k4min/klcheck/qwen05b-q8-m6/dev.klc`
+- First link (`build/link/k4min`, November 6): routed legally, timing not met: core -2.557 ns, `clk_rv` -0.795 ns, the
+  shell DDR4 clocks -0.05 to -0.33 ns (October's met by 0.02 to 0.07 ns). platform-u200.md §8.7 "First link" has the
+  triage of all failing endpoints and the three register changes made after it (cluster reset copies, `DONE_REG` on the
+  unit done strobes, `MT_PIPE` on the DB memory taps). They address the groups that had a crossing to register, about 76 % of the
+  core clock's TNS and its three worst path families. Not changed, and each still fails the core clock or `clk_rv` by itself:
+  the CSR enable fan-out (LQ ring write enable, PERF enable: 2,657 endpoints, -1.28 ns); the DB stop logic in
+  `tsr_dbg_stop` (15 levels, -1.57 ns; changing it changes the DB §5.1 timing contract, or build the first image with
+  `HAS_DB` 0); the Ibex decode-to-TCM-address and bus paths (17 to 20 levels, `clk_rv` -0.8 ns, inside vendored Ibex and its
+  bus); the shell clocks (kernel logic inside the clock regions of MIG 0 to 2, 76 to 100 % occupied: a sub-SLR Pblock for the
+  control plane against the clusters, or a placer spread directive, neither allowed so far).
+- The simulator baseline for the card is `build/k4min/klcheck/qwen05b-q8-m6/dev.klc`
   (`TSR_SIM_VU=0 TSR_SIM_TMAX=8`, Qwen2.5-0.5B Q8_0, M6, 2 prompts x 16 tokens).
 - The full elaboration is `core_ooc.sh k4` and `hw/u200/k4_major_blocks_full.tcl`; the simulator still models the DB trace
   writer and history, which the card image does not have.
