@@ -113,6 +113,13 @@ module tsr_tb_mvm
   logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0] ws_req_id, ws_rsp_id;
   logic [NUM_CH-1:0][BB-1:0]           ws_rsp_data;
 
+  // No local-score request: one assignment per channel (a single '0 for the whole array is an 8,672-bit replication at
+  // 16 channels, Verilator WIDTHCONCAT)
+  tsr_att_pkg::tsr_local_score_req_t [NUM_CH-1:0] no_score_req;
+  for (genvar c = 0; c < NUM_CH; c++) begin : g_no_score
+    assign no_score_req[c] = '0;
+  end
+
   tsr_mvm #(
     .HAS_ATT(HAS_ATT), .NUM_CH(NUM_CH), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT),
     .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BB), .WS_FIFO_BEATS(WS_FIFO_BEATS), .BC_PIPE(BC_PIPE),
@@ -121,7 +128,7 @@ module tsr_tb_mvm
   ) u_mvm (
     // the local-intermediate path is absent from this bench: its outputs are left open
     /* verilator lint_off PINCONNECTEMPTY */
-    .local_score_req('0), .local_score_data(), .scale_req(), .scale_rsp('0),
+    .local_score_req(no_score_req), .local_score_data(), .scale_req(), .scale_rsp('0),
     /* verilator lint_on PINCONNECTEMPTY */
     .clk, .rst_n,
     .cmd_valid, .cmd_ready, .cmd, .cmd_xc(1'b0), .xcmd('0), .done,     // W4-B at: no attention here (tb/at)
