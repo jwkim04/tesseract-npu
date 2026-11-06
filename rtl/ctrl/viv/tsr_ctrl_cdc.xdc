@@ -25,7 +25,8 @@
 #   level synchronisers' first stage). No set_clock_groups: it would override the max delays (CC §11.3).
 # - set_bus_skew on the gray-coded buses (the gray registers to the synchroniser stages they drive), to the
 #   smaller period, so that a sample sees at most one step. Cap both bounds at 3.333 ns to retain
-#   the original 300 MHz crossing budget when the K4 core request is lowered to 250 MHz.
+#   the original 300 MHz crossing budget when a kernel runs slower (K4: core 200 MHz, clk_rv 150 MHz, so the
+#   cap is below both periods, 5.0 and 6.667 ns, and stays the bound).
 # Gate (CC §14.3 T2 / T3): rtl/ctrl/viv/cdc_gate.tcl.
 set clk_core [get_clocks -of_objects [get_ports $tsr_cdc_core_port]]
 set clk_rv   [get_clocks -of_objects [get_ports $tsr_cdc_rv_port]]

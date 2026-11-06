@@ -18,7 +18,8 @@
 #    another one at that depth, e.g. build/link/<k>). The configs check clock/reset wiring after BD
 #    creation and before opt_design (with the TCM power-optimisation exclusion), apply the k4 floorplan
 #    before placement, and run the physical CDC gate after routing. A final pre-bitstream hook checks
-#    Vitis's scaled frequencies in _new_clk_freq. Clock identity/reset/frequency failures are fatal;
+#    Vitis's scaled frequencies in _new_clk_freq against the kernel's window (k4: core 200 MHz and clk_rv
+#    150 MHz; k1: core 250 to 300 MHz). Clock identity/reset/frequency failures are fatal;
 #    TSR_CDC_GATE=warn only relaxes the final CDC report gate.
 #
 # Environment:

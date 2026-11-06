@@ -122,7 +122,7 @@ def test_bd_clock_reset_binding(tmp_path, mutation):
 
 
 NET_MOCK = r'''
-array set periods {core 4.000 rv 6.000}
+array set periods {core 5.000 rv 6.667}
 set kernel_ref tsr_u200_k4
 set hart_regs {rv_hart}
 array set clock_for {core_c core rv_c rv rv_hart rv core_reset_q core rv_reset_q rv}
@@ -183,14 +183,16 @@ proc get_property {prop obj} {
 '''
 
 
-@pytest.mark.parametrize("mutation", ["", "alias", "core300", "core240", "rv500", "swapped", "reset", "reset_clock", "missing", "unclocked_hart", "async_reset", "nan", "unknown_kernel"])
+@pytest.mark.parametrize("mutation", ["", "alias", "core300", "core250", "core240", "rv166", "rv500", "swapped", "reset", "reset_clock", "missing", "unclocked_hart", "async_reset", "nan", "unknown_kernel"])
 def test_synth_clock_reset_binding(tmp_path, mutation):
     changes = {
         "": "",
         "alias": "set clock_for(rv_c) core",
-        # A stale 300 MHz checkpoint is not a valid native 250 MHz request.
+        # A stale 300 MHz or 250 MHz checkpoint is not a valid native 200 MHz request.
         "core300": "set periods(core) 3.333",
+        "core250": "set periods(core) 4.0",
         "core240": "set periods(core) 4.166667",
+        "rv166": "set periods(rv) 6.0",
         "rv500": "set periods(rv) 2.0",
         "swapped": "set clock_for(core_c) rv; set clock_for(rv_c) core",
         "reset": "set reset_net(kernel/ap_rst_n_2) reset0",
@@ -209,32 +211,95 @@ def test_synth_clock_reset_binding(tmp_path, mutation):
 
 @pytest.mark.parametrize("period,valid", [(3.333, True), (4.0, False)])
 def test_k1_keeps_its_300_mhz_request(tmp_path, period, valid):
-    r = run_tcl(tmp_path, NET_MOCK + f"\nset kernel_ref tsr_u200_k1\nset periods(core) {period}\n" +
+    # k1 keeps core 300 MHz and RV 166.7 MHz; only k4 moved to 200 / 150 MHz.
+    r = run_tcl(tmp_path, NET_MOCK + f"\nset kernel_ref tsr_u200_k1\nset periods(core) {period}\nset periods(rv) 6.0\n" +
                 f"source {{{REPO / 'hw/u200/clock_net_check.tcl'}}}\n")
     assert (r.returncode == 0) == valid, (r.stdout, r.stderr)
 
 
-@pytest.mark.parametrize("records,valid", [
-    (["kernel:0:ss_ucs/aclk_kernel_00:300.0", "kernel:1:ss_ucs/aclk_kernel_01:166.666667"], True),
-    (["kernel:0:ss_ucs/aclk_kernel_00:276.3", "kernel:1:ss_ucs/aclk_kernel_01:166.6"], True),
-    (["kernel:0:ss_ucs/aclk_kernel_00:276.29", "kernel:1:ss_ucs/aclk_kernel_01:166.6"], True),
-    (["kernel:0:ss_ucs/aclk_kernel_00:250.0", "kernel:1:ss_ucs/aclk_kernel_01:166.0"], True),
-    (["kernel:0:ss_ucs/aclk_kernel_00:249.99", "kernel:1:ss_ucs/aclk_kernel_01:166.0"], False),
-    (["kernel:0:ss_ucs/aclk_kernel_00:250.0", "kernel:1:ss_ucs/aclk_kernel_01:158.33"], True),
-    (["kernel:0:ss_ucs/aclk_kernel_00:250.0", "kernel:1:ss_ucs/aclk_kernel_01:158.32"], False),
-    (["kernel:0:ss_ucs/aclk_kernel_00:276.3", "kernel:1:ss_ucs/aclk_kernel_01:500.0"], False),
+FINAL_MOCK = r'''
+# The hook names the kernel from the open design: one tsr_u200_k* cell.
+set kernel_ref tsr_u200_k4
+proc get_cells {args} { return kernel }
+proc get_property {prop obj} {
+    switch -- $prop {
+        REF_NAME - ORIG_REF_NAME { return $::kernel_ref }
+        default { error "unexpected property $prop on $obj" }
+    }
+}
+'''
+
+
+def core_rv(core, rv):
+    return [f"kernel:0:ss_ucs/aclk_kernel_00:{core}", f"kernel:1:ss_ucs/aclk_kernel_01:{rv}"]
+
+
+# k4 accepts exactly the request of the reduced first card image: core 200 MHz and RV 150 MHz.
+K4_FINAL = [
+    (core_rv("200.0", "150.0"), True),
+    (core_rv("200", "150"), True),
+    (core_rv("200.1", "150.1"), True),
+    (core_rv("199.99", "150.0"), False),      # a core clock Vitis scaled down
+    (core_rv("200.0", "149.99"), False),      # an RV clock Vitis scaled down
+    (core_rv("200.11", "150.0"), False),
+    (core_rv("200.0", "150.11"), False),
+    (core_rv("250.0", "166.0"), False),       # the earlier 250 / 166.7 request is not accepted any more
+    (core_rv("300.0", "150.0"), False),
+    (core_rv("200.0", "166.0"), False),
+    (core_rv("200.0", "500.0"), False),
+    (core_rv("NaN", "150.0"), False),
+    (core_rv("Inf", "150.0"), False),
+    (core_rv("200.0", "150.0") + ["kernel:2:ss_ucs/aclk_kernel_02:200.0"], False),
+    (core_rv("200.0:extra", "150.0"), False),
+    (["kernel:0:ss_ucs/aclk_kernel_00:200.0"], False),
+    (["kernel:0:ss_ucs/aclk_kernel_00:200", "kernel:0:ss_ucs/aclk_kernel_00:200"], False),
+    (["kernel:0:ss_ucs/aclk_kernel_01:200", "kernel:1:ss_ucs/aclk_kernel_00:150"], False),
+]
+# k1 keeps its earlier window: core 250 to 300.1 MHz, RV 158.33 to 166.8 MHz.
+K1_FINAL = [
+    (core_rv("300.0", "166.666667"), True),
+    (core_rv("276.3", "166.6"), True),
+    (core_rv("276.29", "166.6"), True),
+    (core_rv("250.0", "166.0"), True),
+    (core_rv("249.99", "166.0"), False),
+    (core_rv("250.0", "158.33"), True),
+    (core_rv("250.0", "158.32"), False),
+    (core_rv("276.3", "500.0"), False),
+    (core_rv("200.0", "150.0"), False),       # the k4 clocks do not pass the k1 window
     (["kernel:0:ss_ucs/aclk_kernel_00:276.3"], False),
-    (["kernel:0:ss_ucs/aclk_kernel_00:300", "kernel:0:ss_ucs/aclk_kernel_00:300"], False),
-    (["kernel:0:ss_ucs/aclk_kernel_01:300", "kernel:1:ss_ucs/aclk_kernel_00:166.6"], False),
-    (["kernel:0:ss_ucs/aclk_kernel_00:NaN", "kernel:1:ss_ucs/aclk_kernel_01:166.6"], False),
-    (["kernel:0:ss_ucs/aclk_kernel_00:Inf", "kernel:1:ss_ucs/aclk_kernel_01:166.6"], False),
-    (["kernel:0:ss_ucs/aclk_kernel_00:300:extra", "kernel:1:ss_ucs/aclk_kernel_01:166.6"], False),
-])
-def test_final_scaled_frequencies(tmp_path, records, valid):
+    (core_rv("300", "166.6") + ["kernel:0:ss_ucs/aclk_kernel_00:300"], False),
+    (core_rv("NaN", "166.6"), False),
+    (core_rv("Inf", "166.6"), False),
+    (core_rv("300:extra", "166.6"), False),
+]
+
+
+@pytest.mark.parametrize("kernel,records,valid",
+                         [("k4", r, v) for r, v in K4_FINAL] + [("k1", r, v) for r, v in K1_FINAL])
+def test_final_scaled_frequencies(tmp_path, kernel, records, valid):
     (tmp_path / "_new_clk_freq").write_text("\n".join(records) + "\n")
-    r = run_tcl(tmp_path, f"cd {{{tmp_path}}}\nsource {{{REPO / 'hw/u200/clock_final_check.tcl'}}}\n")
+    r = run_tcl(tmp_path, FINAL_MOCK + f"set kernel_ref tsr_u200_{kernel}\ncd {{{tmp_path}}}\n" +
+                f"source {{{REPO / 'hw/u200/clock_final_check.tcl'}}}\n")
     assert (r.returncode == 0) == valid, (r.stdout, r.stderr)
     assert "CLKFINAL" in r.stdout + r.stderr
+    if valid:
+        assert f"CLKFINAL PASS {kernel}" in r.stdout
+
+
+def test_final_check_stops_on_an_unknown_kernel(tmp_path):
+    (tmp_path / "_new_clk_freq").write_text("\n".join(core_rv("200.0", "150.0")) + "\n")
+    r = run_tcl(tmp_path, FINAL_MOCK + f"set kernel_ref tsr_u200_k9\ncd {{{tmp_path}}}\n" +
+                f"source {{{REPO / 'hw/u200/clock_final_check.tcl'}}}\n")
+    assert r.returncode != 0, (r.stdout, r.stderr)
+    assert "CLKFINAL unknown kernel clock request" in r.stdout + r.stderr
+
+
+def test_final_check_stops_without_a_kernel_cell(tmp_path):
+    (tmp_path / "_new_clk_freq").write_text("\n".join(core_rv("200.0", "150.0")) + "\n")
+    r = run_tcl(tmp_path, FINAL_MOCK + "proc get_cells {args} { return {} }\n" +
+                f"cd {{{tmp_path}}}\nsource {{{REPO / 'hw/u200/clock_final_check.tcl'}}}\n")
+    assert r.returncode != 0, (r.stdout, r.stderr)
+    assert "expected one Tesseract kernel instance" in r.stdout + r.stderr
 
 
 @pytest.mark.parametrize("kernel", ["k1", "k4"])
@@ -244,8 +309,8 @@ def test_link_config_clock_requests_and_hooks(kernel):
     assert "freqHz=" not in text
     # U200's scalable clocks use kernel_frequency. clock.id is restricted to
     # fixed references: a real CFGEN run rejects IDs 0/1 with CFGEN83-2244.
-    core = 250 if kernel == "k4" else 300
-    assert f"kernel_frequency=0:{core}|1:166.666667\n" in text
+    request = "0:200|1:150" if kernel == "k4" else "0:300|1:166.666667"
+    assert f"kernel_frequency={request}\n" in text
     assert not any(line.startswith("id=") for line in text.splitlines())
     for hook in ("clock_bd_check.tcl", "clock_vitis_compat.tcl", "impl_pre.tcl", "cdc_check.tcl", "clock_final_check.tcl"):
         assert f"=../../../hw/u200/{hook}\n" in text
@@ -566,8 +631,9 @@ def test_cdc_restore_rejects_invalid_clock_pair(tmp_path, mutation):
     assert not (tmp_path / "tsr_ctrl_cdc_link.xdc").exists()
 
 
+# (5.0, 6.667) is the reduced first card image at 200 / 150 MHz: both periods are above the cap, so it stays 3.333 ns.
 @pytest.mark.parametrize("core,rv,bound", [(4.0, 6.023, 3.333), (3.333, 6.023, 3.333),
-                                         (3.0, 6.023, 3.0), (4.0, 2.5, 2.5)])
+                                         (3.0, 6.023, 3.0), (4.0, 2.5, 2.5), (5.0, 6.667, 3.333)])
 def test_cdc_restore_preserves_cap_and_faster_clock_bounds(tmp_path, core, rv, bound):
     body = CDC_LINK_MOCK + f"\nset periods(core) {core}\nset periods(rv) {rv}\n"
     body += f"source {{{REPO / 'hw/u200/cdc_restore.tcl'}}}\n"

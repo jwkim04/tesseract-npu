@@ -2,7 +2,26 @@
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
 
-## Resume here: reduced first card image (branch `k4-min`, November 6)
+## Resume here: the 200 MHz image with a control Pblock (branch `k4m200`, November 6)
+
+The branch `k4m200` (worktree `/home/limagin-dev/tesseract-k4m200`) starts from `e7488b0` of `k4-min`, the reduced first card
+image with the three register changes made after its first link. The user decided to run this image at core 200 MHz and
+`clk_rv` 150 MHz if that can work. Two things changed; [platform-u200.md](platform-u200.md) §8.7 "Second image" has the
+numbers and the comparison:
+
+- Clocks: `hw/u200/k4.cfg` requests `0:200|1:150`; `hw/u200/clock_final_check.tcl` takes its window from the kernel it finds
+  in the design (k4: exactly 200 and 150 MHz; k1 unchanged). The 3.333 ns CDC cap stays.
+- Placement: the control plane (control core, issue, CSR, DB core side) has its own Pblock `pblock_tsr_ctrl_plane`, a child of
+  `pblock_dynamic_SLR0`: clock-region rows Y3 and Y4 of SLR0 without X2Y3 (16,300 CLBs, 252 RAMB36, 840 DSP). It leaves the
+  DDR0 controller's clock regions X2Y1 to X2Y3, which were 99.5 % full and failed their clock by 0.33 ns. The map is
+  `docs/fig/floorplan/k4m200-pblock-plan.png`. The legality check (`tb/platform/viv/k4_pblock_check.tcl`) passed on the routed
+  checkpoint of the first link; no placement has run with this Pblock.
+
+Not done: the link. Launch it with the command at the end of §8.7. Read the DDR4 clocks, `clk_rv` and the core clock in the
+routed summary and the occupancy of X2Y1 to X2Y3 first. If the DDR0 clock still fails, the next lever is a Pblock for cluster
+0 that leaves out those three regions: the control Pblock cannot keep cluster 0 out of them.
+
+## Earlier: resume point, reduced first card image (branch `k4-min`, November 6)
 
 The branch `k4-min` (worktree `/home/limagin-dev/tesseract-k4min`, from `codex/local-intermediates` at `aadf92c`)
 makes `tsr_u200_k4` the reduced first card image: four MVM clusters at T_MAX 8, the RISC-V control core, issue path, CSR

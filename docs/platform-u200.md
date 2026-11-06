@@ -287,13 +287,15 @@ No installed or generated tool files are edited.
 `opt_design`, restores the scoped CDC XDC on the effective clocks, then applies the TCM
 power-optimisation exclusion. `cdc_pre_route.tcl` repeats the clock/reset and effective CDC
 checks before routing. The final pre-bitstream hook
-checks `_new_clk_freq` after Vitis scaling: core at least 250 MHz, RV within the current
-request's tolerance. These clock checks always fail the run on an error. `TSR_CDC_GATE=warn`
+checks `_new_clk_freq` after Vitis scaling against the window of the kernel it finds in the design:
+`tsr_u200_k4` accepts exactly core 200 MHz and `clk_rv` 150 MHz (§8.7), `tsr_u200_k1` core 250 to
+300 MHz and RV within the request's tolerance. These clock checks always fail the run on an error. `TSR_CDC_GATE=warn`
 only relaxes the final CDC report gate. A 125 MHz RV fallback needs an explicit request and
 frequency-window change. The early netlist check validates the current clock request, not
 the minimum accepted performance. For a route-only run, check timing at an accepted core
-frequency of at least 250 MHz before claiming success; retain RV, hold and CDC checks.
-Do not repeat implementation solely for 300 MHz after that criterion passes.
+frequency of the kernel's window (k4: 200 MHz; k1: at least 250 MHz) before claiming success;
+retain RV, hold and CDC checks. Do not repeat implementation solely for 300 MHz after that
+criterion passes.
 The K4 locality post-hook also writes timing and congestion reports from the open design:
 `k4_<step>_timing_summary.rpt` covers setup, hold and unconstrained paths, and
 `k4_<step>_congestion.rpt` records congestion. The reports use separate placement, physical
@@ -2366,7 +2368,7 @@ deleting code; every other configuration of the RTL is unchanged.
 | Attention | absent: `HAS_ATT` 0 | ATTQK / ATTPV in the clusters, the attention path of the gather, KVST in the DMA, the AT checker class |
 | Local intermediates | absent (`LOCAL_*` 0) | local FAST attention, local scale / softcap epilogues |
 | DB | `HAS_TRW` 0, `HIST_DEPTH` 0 | the trace writer with its write mux, the dispatch history |
-| Clocks | core 250 MHz (accept >= 250), `clk_rv` 166.666667 MHz on `ap_clk_2` | |
+| Clocks | core 200 MHz (accept exactly 200), `clk_rv` 150 MHz on `ap_clk_2` (accept exactly 150); the first link ran 250 / 166.666667 MHz | |
 | `CAPS` | 0; `CFG3` 0; `Q_DEPTH` VU 0 | |
 
 `gen_tops.py` carries the parameters (`HAS_VU`, `HAS_ATT`, `HAS_TRW` and `HIST_DEPTH` are new
@@ -2497,7 +2499,117 @@ shell clocks are not changed: the first two are deep logic inside SLR0 (no cross
 CSR / DB timing contracts), the Ibex paths are inside the vendored core and its bus. The next link is not expected to meet all
 clocks; see the handoff for what comes after it.
 
-**Launch.** From `/home/limagin-dev/tesseract-k4min` (the first link used `build/link/k4min`; a repeat uses a new output directory):
+**Second image: core 200 MHz, `clk_rv` 150 MHz and a control Pblock (branch `k4m200`, 2026-11-06).** The user decided
+to run the four-cluster image at core 200 MHz if that can work. `k4m200` starts from `e7488b0` of `k4-min`, which has
+the three register changes above. Lower clocks do not fix the other two failures by themselves. The shell's DDR4 clock is
+not a kernel clock. The Ibex paths are routing-bound (17 levels, 77 % routing): the 0.667 ns of the longer `clk_rv` period
+leaves them at about -0.13 ns by arithmetic, if placement does not change. So this image also moves the control plane off
+the DDR0 controller's clock regions.
+
+Clocks. The periods go from 4.0 to 5.0 ns (core) and from 6.0 to 6.667 ns (`clk_rv`). Of the 25,491 failing core endpoints
+of the first link, 641 would still fail at 5.0 ns: the DB `u_stop` and `s_q` registers, the issue `rec_q`, the DMA, MVM
+and QACT done strobes into issue, the CSR `ast_q`, the CDC handshake `cap_v_q` and the adapter's `g_gate` `mem_en_q`. The
+three register changes aim at most of them.
+
+- `hw/u200/k4.cfg` requests `kernel_frequency=0:200|1:150`.
+- `hw/u200/clock_final_check.tcl` names the kernel from the open design (`tsr_clock_kernel_kind` in `clock_common.tcl`,
+  the same lookup as the request check) and takes its window from a table. `tsr_u200_k4` accepts core 200.0 to 200.1 MHz and
+  `clk_rv` 150.0 to 150.1 MHz: a clock that Vitis scaled down fails the link. `tsr_u200_k1` keeps core 250.0 to 300.1 MHz and
+  RV 158.33 to 166.8 MHz. An unknown kernel stops the check.
+- `clock_net_check.tcl` reads the request from the kernel's own config and accepts a period within 0.5 % of it, so it follows
+  `k4.cfg` and needed no change (5.0 and 6.667 ns). `clock_bd_check.tcl` checks nets, not frequencies.
+- The CDC cap of 3.333 ns stays (`tsr_ctrl_cdc.xdc`, `cdc_restore.tcl`): both new periods are above it, so the bound that
+  the cap sets is still the smaller one and the 300 MHz crossing budget is kept. `tb/platform/test_link_checks.py` has the
+  new request and window cases, and the cap case at 5.0 / 6.667 ns.
+
+Control Pblock. In the first link the control plane (the control core with its TCMs, issue path, CSR block and the DB
+core side) took 7,584 CLBs (the CLBs touched by any block of it; counted one by one `u_ctrl` has 3,463, CSR 2,033, issue
+1,855 and the DB core side 1,260, and they share CLBs). It sat mostly in clock
+regions X0Y1 to X3Y3 of SLR0, 5,505 of the CLBs in X0 and X1. The three clock regions of the DDR0 controller, X2Y1 to X2Y3, hold 5,940
+CLBs and 5,913 were occupied: platform logic 3,715, cluster 0 1,316, the control plane 642, the DDR0 bridge, assembler and
+gather 150, cluster 2 91. Without the plane's 642 they would be 88.7 % occupied, if nothing took the space.
+
+What the plane needs: 7,584 CLBs, 48 RAMB36 (the TCMs) and one RAMB18 (the CSR), 8 DSP48E2 (issue 7, `u_ctrl` 1; read from
+the checkpoint). It must be near the SLR0 to SLR1 boundary, because issue and CSR talk to SPM, DMA and QACT, which are in
+SLR1's dynamic Pblock (X0 to X2). Cluster 0 stays around DDR0. Candidates, per clock-region set (CLB capacity is what the
+platform leaves; "free" is CLBs not occupied in the routed first link; "plane there now" counts a CLB that two blocks share
+in proportion to their cells, while the need of 7,584 counts every CLB the plane touches; "move out" is the slices of other
+blocks that must leave the set so that the plane, the platform logic and the blocks that stay fill 85 % or less):
+
+| | Clock regions | CLB | Free now | Plane there now | Others there: cluster 0 / cluster 2 / assemblers, gather | Platform logic | Move out for 85 % | RAMB36 free | Verdict |
+|---|---|---:|---:|---:|---|---:|---:|---:|---|
+| a1 | SLR0 row Y4 and column X5 (Y0 to Y3) | 14,500 | 7,864 | 174 | 570 / 3,644 / 2,120 | 1,409 | 3,000 | 117 | L shape; the plane would stretch along the whole row and into X5, far from SLR1's units |
+| **a2** | **SLR0 rows Y3 and Y4, all six columns, without X2Y3** | **16,300** | **5,710** | **1,050** | **2,301 / 3,567 / 2,305** | **2,647** | **4,550** | **81** | **chosen** |
+| a3 | a2 and column X5 (Y0 to Y2) | 21,040 | 8,539 | 1,050 | 2,301 / 5,476 / 2,305 | 2,649 | 2,430 | 122 | same use as a2; the arm only adds far slack |
+| b1 | SLR2 rows Y10 and Y11, column X5 (Y12 to Y14) | 22,680 | 8,135 | 2 | clusters 1 and 3 7,709, assemblers 2,786 | 5,668 | 4,470 | 104 | holds MIG 2 (X3 to X4, Y10 to Y13), whose clock failed by 0.07 ns |
+| b2 | SLR2 X0 to X2 of Y10, Y11 and column X5 (Y10 to Y14) | 17,120 | 7,379 | 2 | clusters 1 and 3 6,201, assemblers 2,774 | 1,703 | 3,710 | 97 | two pieces; the free area is in the far rows and column |
+| c1 | SLR0 west: X0 to X1 of Y1 to Y4, and X2Y4 | 14,460 | 2,813 | 4,921 | 4,548 / 67 / 2,205 | 265 | 2,380 | 43 | where the plane was; the west is full (the BRAM of X0Y1 to X0Y3 is 94 to 100 % used), so 2,380 CLBs of cluster 0 would be pushed toward X2 and the MIG 0 regions |
+| c2 | SLR0 east: X3 to X5 of Y2 to Y4, and X5 (Y0 to Y1) | 16,420 | 6,326 | 72 | 10 / 7,849 / 249 | 2,833 | 4,570 | 98 | cluster 2 pushed down; the plane is two to three clock regions from SLR1's units |
+
+All figures are before placement and count the CLBs of the first link. The plane's 7,584 CLBs and the platform logic fill
+62.8 % of a2 by themselves. SLR2 has no compact set at its boundary: outside column X5 the rows Y10 and Y11 are 76 to 97 %
+occupied by clusters 1 and 3, and the free CLBs are in row Y14 and column X5. East of the MIG, in SLR0, the free CLBs are far from SLR1's units.
+
+**Choice: a2**, the Pblock `pblock_tsr_ctrl_plane`, a child of `pblock_dynamic_SLR0`: `CLOCKREGION_X0Y3:CLOCKREGION_X1Y4`,
+`CLOCKREGION_X2Y4` and `CLOCKREGION_X3Y3:CLOCKREGION_X5Y4` in `hw/u200/k4_major_blocks.tcl`. It holds `u_ctrl`, the RV debug,
+the three RV-side link ends, and with `TSR_K4_CTRL` slr0 (default) `u_issue`, `u_csr`, the DB core side and the issue and LCQ
+link ends. It leaves out X2Y1 to X2Y3 and every row under them. It has all of row Y4 at X0 to X2, directly across the boundary
+from SLR1's dynamic Pblock. It leaves the west of rows Y0 to Y2 to cluster 0, and the 3.9 K CLBs the plane leaves at X0 to X1
+of Y1 to Y2 are free for it. Cluster 0 gives up its top-left corner (2,301 CLBs in the set), cluster 2 the top of its area.
+
+The Pblock does not exclude other logic, so clusters and the BRAM and DSP columns inside it stay usable. The slices of
+other blocks that must move out (4,550) go to the 3.9 K the plane leaves and to the free column X5 and row Y0 of the east.
+BRAM: 171 of its 252 RAMB36 sites were in use in the first link and 81 are free, against the 48 of the TCMs (which
+sat in X0Y2 and X0Y3, partly in the set).
+
+*Legality check* (`tb/platform/viv/k4_pblock_check.tcl`, one Vivado batch through `vivado_slot.sh`, 4 min 12 s of which
+3 min 50 s open the routed checkpoint of the first link, read only; log in `build/k4m200/pblock_check/vivado.log`). It
+sources `k4_major_blocks.tcl` on the checkpoint, which has the platform's own pblocks and the kernel hierarchy. The hook runs
+without error. Vivado resizes the child to its parent when the first cell is assigned (`Constraints 18-12550`,
+`SNAPPING_MODE NESTED`), so the capacity is counted after the assignments. No site of the child is outside the parent.
+Every range resolves. The platform cuts row Y4: of the 17,580 CLBs of the eleven clock regions 16,300 remain.
+
+| Pblock | CLB | RAMB36 | RAMB18 | DSP48E2 | URAM288 |
+|---|---:|---:|---:|---:|---:|
+| `pblock_dynamic_SLR0` | 47,980 | 720 | 1,440 | 2,280 | 320 |
+| `pblock_dynamic_SLR1` | 24,960 | 420 | 840 | 1,320 | 160 |
+| `pblock_dynamic_SLR2` | 47,640 | 720 | 1,440 | 2,280 | 320 |
+| `pblock_tsr_ctrl_plane` (new) | 16,300 | 252 | 504 | 840 | 112 |
+| of it: `CLOCKREGION_X0Y4:CLOCKREGION_X5Y4` | 8,140 | 144 | 288 | 456 | 64 |
+| of it: `CLOCKREGION_X3Y3:CLOCKREGION_X5Y3` | 4,860 | 60 | 120 | 192 | 32 |
+| of it: `CLOCKREGION_X0Y3:CLOCKREGION_X1Y3` | 3,300 | 48 | 96 | 192 | 16 |
+
+The first batch ran the west option (c1) and stopped at the hook's own RAMB36 floor (43 sites against 64): the
+checkpoint is placed, and an occupied RAMB36 site no longer reports `SITE_TYPE` `RAMBFIFO36`, so only the 43 free ones
+were counted of 228. The hook and the check script now count sites by name (`RAMB36_*`, `SLICE_*`), which is right
+before and after placement.
+
+Not verified: placement. The plane's links to SLR1 stay short only if Vivado puts the plane in the left half of the rows.
+A Pblock cannot keep cluster 0 out of X2Y1 to X2Y3. If the DDR0 clock still fails after this link, the next lever is a Pblock
+for cluster 0 that leaves out those three regions.
+
+The map is `docs/fig/floorplan/k4m200-pblock-plan.png`. `hw/viz/k4_pblock_preview.py` draws it from the hook and the Pblocks
+as Vivado resolved them (`build/k4m200/pblock_check/pblock_properties.txt`, written by the check; run it with
+`build/tools/svgvenv/bin/python hw/viz/k4_pblock_preview.py hw/u200/k4_major_blocks.tcl <properties> <png>`). Colors show where
+a block may be placed, not where it is placed; the outline marks the DDR0 controller's clock regions.
+
+![K4 first card image at 200 MHz: control Pblock](fig/floorplan/k4m200-pblock-plan.png)
+
+**Launch (`k4m200`).** From `/home/limagin-dev/tesseract-k4m200`; `build/platforms` links to the development platform and
+`third_party/ibex`, `riscv-dbg` and `common_cells` are checked out at the pinned commits:
+
+```sh
+mkdir -p build/link/k4m200
+TSR_BUILD_JOBS=8 TSR_U200_SYNTH_JOBS=16 TSR_U200_OUT=$PWD/build/link/k4m200 \
+  nohup hw/u200/vivado_slot.sh hw/u200/build_xclbin.sh k4 > build/link/k4m200/launch.log 2>&1 &
+```
+
+The wrapper packages the kernel first (no `build/u200/xo` exists in this worktree), then links. Read the same logs as for
+the first link, with `CLKFINAL PASS k4` for the clocks, and `K4 major blocks: pblock_tsr_ctrl_plane` in the log of the
+implementation run for the Pblock's capacity. Then check the DDR4 clocks (`mmcm_clkout0_1` to `_3`), `clk_rv` and the core
+clock in the routed timing summary, and the occupancy of X2Y1 to X2Y3.
+
+**Launch (`k4-min`).** From `/home/limagin-dev/tesseract-k4min` (the first link used `build/link/k4min`; a repeat uses a new output directory):
 
 ```sh
 mkdir -p build/link/k4min
@@ -2506,7 +2618,7 @@ TSR_BUILD_JOBS=8 TSR_U200_SYNTH_JOBS=16 TSR_U200_OUT=$PWD/build/link/k4min \
 ```
 
 `build/platforms` links to the development platform of the main checkout. The link config is `hw/u200/k4.cfg` (core
-250 MHz, `clk_rv` 166.666667 MHz on `ap_clk_2`, Vitis clock-calculator fix, linked CDC constraints, the major-block hook).
+200 MHz, `clk_rv` 150 MHz on `ap_clk_2`, Vitis clock-calculator fix, linked CDC constraints, the major-block hook).
 It is finished when the wrapper exits: status 0, the last line of `launch.log` is `== .../build/link/k4min/tsr_u200_k4.xclbin`
 and the file exists. Then read: the hooks' `CLKBD PASS` (ap_clk_2 on `aclk_kernel_01`, not `aclk_kernel_00`), `CLKNET PASS`,
 `CDCCHK`, `CLKFINAL PASS` (`grep -r` in `build/link/k4min/tmp/link/vivado/vpl/`: the Vivado log and the `runme.log` of the

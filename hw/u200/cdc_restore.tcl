@@ -26,7 +26,8 @@ namespace eval tsr_cdc_link {
       }
       lappend periods $p
     }
-    # Match the packaged XDC's conservative cap when the core runs below 300 MHz.
+    # Match the packaged XDC's conservative cap when the core runs below 300 MHz (K4: 200 MHz core, 150 MHz
+    # clk_rv; both periods are above the cap, so the bound is 3.333 ns).
     return [list $kernel $core $rv [expr {min(3.333, [lindex $periods 0], [lindex $periods 1])}]]
   }
 

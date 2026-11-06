@@ -1,4 +1,10 @@
-"""Draw the planned hierarchy assignments on the U200's retained SLICE Pblock ranges."""
+"""Draw the planned hierarchy assignments on the U200's retained SLICE Pblock ranges.
+
+The hook (hw/u200/k4_major_blocks.tcl) is interpreted with a Tcl mock: no Vivado executable, checkpoint or placement.
+The Pblock shapes come from a properties file (PBLOCK sections with DERIVED_RANGES, and an optional CAPACITY line):
+the platform's three SLR pblocks and, when the hook makes one, its control Pblock, as Vivado resolved them
+(tb/platform/viv/k4_pblock_check.tcl writes the file).
+"""
 import argparse
 import os
 import re
@@ -9,39 +15,68 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 COLORS = {0: "#40a79d", 1: "#db9958", 2: "#659ad0"}
+CTRL_COLOR = "#14544f"
 INK = "#172e44"
 GRAY = "#475b6c"
 SCALE = 2
+# SLICE columns of the clock-region columns X0 to X5 of the U200; every clock-region row is 60 SLICE rows (Y0 to Y14)
+CR_X = ((0, 30), (31, 54), (55, 87), (88, 111), (112, 141), (142, 168))
+# The DDR0 memory controller of the platform: clock regions X2Y1 to X2Y3 of SLR0 (docs/platform-u200.md §8.7)
+MIG0 = (2, 1, 2, 3)
 
 
 def assignments(hook):
-    # Interpret the hierarchy-only hook with Tcl. Record add_cells_to_pblock;
-    # no Vivado executable, checkpoint or actual placement is involved.
+    # Interpret the hierarchy-only hook with Tcl. Record add_cells_to_pblock and the Pblocks the hook creates
+    # (create_pblock / resize_pblock / PARENT). get_sites only satisfies the hook's own capacity checks.
     script = """
 proc current_instance {args} {}
+set ::pblocks {pblock_dynamic_SLR0 pblock_dynamic_SLR1 pblock_dynamic_SLR2}
+array set ::parent {}
+array set ::ranges {}
 proc get_cells {args} {
     if {[lsearch -exact $args -filter] >= 0} {return kernel}
     return [lindex $args end]
 }
 proc get_property {key obj} {
     if {$key eq "IS_PRIMITIVE"} {return 0}
+    if {$key eq "PARENT"} {return [expr {[info exists ::parent($obj)] ? $::parent($obj) : {}}]}
     return $obj
 }
-proc get_pblocks {args} {return [lindex $args end]}
+proc get_pblocks {args} {
+    set n [lindex $args end]
+    if {[lsearch -exact $::pblocks $n] >= 0} {return $n}
+    return {}
+}
+proc create_pblock {n} {lappend ::pblocks $n; set ::ranges($n) {}; return $n}
+proc resize_pblock {pb args} {lappend ::ranges($pb) [lindex $args 1]}
+proc set_property {key value obj} {if {$key eq "PARENT"} {set ::parent($obj) $value}}
+proc get_sites {args} {
+    set out {}
+    for {set i 0} {$i < 100000} {incr i} {lappend out site$i}
+    return $out
+}
 proc add_cells_to_pblock {pb obj} {puts [join [list assignment $pb $obj] "\\t"]}
 if {[catch {source $::env(PBLOCK_PREVIEW_HOOK)} err]} {
     puts stderr $err
     exit 1
 }
+foreach n $::pblocks {
+    if {[info exists ::parent($n)]} {puts [join [list pblock $n $::parent($n) $::ranges($n)] "\\t"]}
+}
 """
     result = subprocess.run(["tclsh"], input=script, text=True, capture_output=True,
                             env={**os.environ, "PBLOCK_PREVIEW_HOOK": str(hook.resolve())}, check=True)
     groups = defaultdict(list)
+    children = {}
     for line in result.stdout.splitlines():
         if line.startswith("assignment\t"):
             _, pblock, path = line.split("\t")
-            groups[int(pblock[-1])].append(path)
-    return groups
+            # the SLR pblocks by their digit, a Pblock the hook made by its name
+            groups[int(pblock[-1]) if re.fullmatch(r"pblock_dynamic_SLR\d", pblock) else pblock].append(path)
+        elif line.startswith("pblock\t"):
+            _, name, parent, *ranges = line.split("\t")
+            children[name] = (parent, ranges[0].split() if ranges else [])
+    return groups, children
 
 
 def labels(paths, reduced=False):
@@ -84,84 +119,169 @@ def labels(paths, reduced=False):
 
 
 def slice_ranges(report):
+    """SLICE ranges and capacity of every pblock in the properties file: {name: (ranges, capacity or None)}."""
     sections = re.split(r"(?m)^PBLOCK ", report.read_text())
     shapes = {}
     for section in sections:
         lines = section.splitlines()
-        if not lines or not re.fullmatch(r"pblock_dynamic_SLR[0-2]", lines[0]):
+        if not lines or not re.fullmatch(r"pblock_dynamic_SLR[0-2]|pblock_\w+", lines[0]):
             continue
-        ranges = next(line for line in lines if line.startswith("DERIVED_RANGES "))
-        shapes[int(lines[0][-1])] = [
-            tuple(map(int, match)) for match in
-            re.findall(r"SLICE_X(\d+)Y(\d+):SLICE_X(\d+)Y(\d+)", ranges)]
+        ranges = next((line for line in lines if line.startswith("DERIVED_RANGES ")), None)
+        if ranges is None:
+            continue
+        capacity = next((line.split()[1:] for line in lines if line.startswith("CAPACITY ")), None)
+        shapes[lines[0]] = ([tuple(map(int, match)) for match in
+                             re.findall(r"SLICE_X(\d+)Y(\d+):SLICE_X(\d+)Y(\d+)", ranges)],
+                            [int(v) for v in capacity] if capacity else None)
     return shapes
 
 
+def clock_region_slices(ranges):
+    """SLICE rectangles of clock-region ranges 'CLOCKREGION_XaYb:CLOCKREGION_XcYd'."""
+    out = []
+    for r in ranges:
+        m = re.fullmatch(r"CLOCKREGION_X(\d+)Y(\d+):CLOCKREGION_X(\d+)Y(\d+)", r)
+        x0, y0, x1, y1 = map(int, m.groups())
+        out.append((CR_X[x0][0], y0 * 60, CR_X[x1][1], y1 * 60 + 59))
+    return out
+
+
+def intersect(boxes, parent):
+    out = []
+    for ax0, ay0, ax1, ay1 in boxes:
+        for bx0, by0, bx1, by1 in parent:
+            x0, y0, x1, y1 = max(ax0, bx0), max(ay0, by0), min(ax1, bx1), min(ay1, by1)
+            if x0 <= x1 and y0 <= y1:
+                out.append((x0, y0, x1, y1))
+    return out
+
+
+def cr_label(r):
+    m = re.fullmatch(r"CLOCKREGION_(X\d+Y\d+):CLOCKREGION_(X\d+Y\d+)", r)
+    return m[1] if m[1] == m[2] else f"{m[1]}–{m[2]}"
+
+
 def render(hook, report, output):
-    groups, shapes = assignments(hook), slice_ranges(report)
+    groups, children = assignments(hook)
+    shapes = slice_ranges(report)
     has_vu_banks = any(path.endswith(".u_bank") for paths in groups.values() for path in paths)
     # The reduced first card image has no VU and no KVST; its hook also places QACT, issue and CSR.
     reduced = not has_vu_banks and any(path.endswith("/u_qact") for paths in groups.values() for path in paths)
+    # A Pblock the hook creates inside an SLR pblock (the control Pblock of the reduced image).
+    ctrl = next((name for name in children if name in groups), None)
     img = Image.new("RGB", (1120 * SCALE, 820 * SCALE), "#ffffff")
     draw = ImageDraw.Draw(img)
     fontdir = Path("/usr/share/fonts/opentype/noto")
     fonts = {}
 
-    def word(x, y, value, size=16, color=INK, bold=False):
+    def font(size, bold=False):
         key = (size, bold)
         if key not in fonts:
             name = "NotoSansCJK-" + ("Bold" if bold else "Regular") + ".ttc"
             fonts[key] = ImageFont.truetype(str(fontdir / name), size * SCALE, index=1)
-        draw.text((x*SCALE, y*SCALE), value, font=fonts[key], fill=color, anchor="lt")
+        return fonts[key]
 
-    def rect(x0, y0, x1, y1, fill):
-        draw.rectangle(tuple(round(v*SCALE) for v in (x0, y0, x1, y1)), fill=fill)
+    def word(x, y, value, size=16, color=INK, bold=False):
+        draw.text((x*SCALE, y*SCALE), value, font=font(size, bold), fill=color, anchor="lt")
 
-    def wrapped_items(x, y, items, max_width=524):
+    def rect(x0, y0, x1, y1, fill=None, outline=None, width=1):
+        draw.rectangle(tuple(round(v*SCALE) for v in (x0, y0, x1, y1)), fill=fill, outline=outline,
+                       width=width * SCALE)
+
+    def wrapped_items(x, y, items, max_width=524, max_lines=4):
         # Whole labels remain together. Long region lists must not disappear
         # beyond the image edge when another functional block is assigned.
-        font = ImageFont.truetype(str(fontdir / "NotoSansCJK-Regular.ttc"), 16 * SCALE, index=1)
         lines, line = [], ""
         for item in items:
             candidate = line + " / " + item if line else item
-            if line and draw.textlength(candidate, font=font) > max_width * SCALE:
+            if line and draw.textlength(candidate, font=font(16)) > max_width * SCALE:
                 lines.append(line)
                 line = item
             else:
                 line = candidate
         if line:
             lines.append(line)
-        if len(lines) > 4:
-            raise ValueError("Pblock labels need more than four lines")
+        if len(lines) > max_lines:
+            raise ValueError(f"Pblock labels need more than {max_lines} lines")
         for i, line in enumerate(lines):
             word(x, y + i * 22, line, 16, INK)
+        return len(lines)
 
-    word(44, 30, "ALVEO U200   /   K4-MIN   /   PRE-BUILD" if reduced else "ALVEO U200   /   K4   /   PRE-BUILD", 15, GRAY, True)
-    title = ("첫 카드 이미지(VU·어텐션 제외)의 Pblock 계획" if reduced else
+    word(44, 30, ("ALVEO U200   /   K4-MIN   /   CORE 200 MHz · CLK_RV 150 MHz   /   PRE-BUILD" if ctrl else
+                  "ALVEO U200   /   K4-MIN   /   PRE-BUILD") if reduced else "ALVEO U200   /   K4   /   PRE-BUILD",
+         15, GRAY, True)
+    title = ("첫 카드 이미지(200 MHz)의 Pblock 계획" if ctrl else
+             "첫 카드 이미지(VU·어텐션 제외)의 Pblock 계획" if reduced else
              "다음 빌드의 Pblock 계획" if has_vu_banks else "VU 제외 진단 빌드의 Pblock 계획")
     word(42, 60, title, 36, INK, True)
-    word(44, 119, "색은 큰 블록을 배치할 수 있는 범위입니다. 개별 유닛의 실제 위치는 배치 후 결정됩니다.", 17, GRAY)
+    if ctrl:
+        word(44, 112, "색은 큰 블록을 배치할 수 있는 범위입니다. 진한 청록은 SLR0 Pblock 안에 둔 제어부 전용 Pblock입니다.", 17, GRAY)
+        word(44, 136, "개별 유닛의 실제 위치는 배치 후 결정됩니다.", 17, GRAY)
+    else:
+        word(44, 119, "색은 큰 블록을 배치할 수 있는 범위입니다. 개별 유닛의 실제 위치는 배치 후 결정됩니다.", 17, GRAY)
     word(44, 167, "플랫폼 동적 영역", 17, INK, True)
     word(553, 167, "각 Pblock에 지정할 블록", 17, INK, True)
 
     left, top, width, height = 60, 207, 410, 405
+
+    def fx(x):          # SLICE column -> picture x
+        return left + width * x / 169
+
+    def fy(y):          # SLICE row -> picture y
+        return top + height * (900 - y) / 900
+
     rect(left, top, left+width, top+height, "#e4e9ee")
     for s in (2, 1, 0):
-        for x0, y0, x1, y1 in shapes[s]:
-            rect(left + width*x0/169, top + height*(899-y1)/900,
-                 left + width*(x1+1)/169, top + height*(900-y0)/900, COLORS[s])
+        for x0, y0, x1, y1 in shapes[f"pblock_dynamic_SLR{s}"][0]:
+            rect(fx(x0), fy(y1 + 1), fx(x1 + 1), fy(y0), COLORS[s])
     for i in (1, 2):
         y = top + i * height/3
         rect(left, y-1, left+width, y+1, "#ffffff")
+    ctrl_boxes = []
+    if ctrl:
+        parent = children[ctrl][0]
+        # Vivado's resolved ranges when the properties file has them, else the clock regions cut by the parent
+        ctrl_boxes = (shapes[ctrl][0] if ctrl in shapes else
+                      intersect(clock_region_slices(children[ctrl][1]), shapes[parent][0]))
+        for x0, y0, x1, y1 in ctrl_boxes:
+            rect(fx(x0), fy(y1 + 1), fx(x1 + 1), fy(y0), CTRL_COLOR)
+        # the DDR0 memory controller's clock regions stay outside the control Pblock
+        mx0, my0, mx1, my1 = MIG0
+        rect(fx(CR_X[mx0][0]), fy(my1 * 60 + 60), fx(CR_X[mx1][1] + 1), fy(my0 * 60), outline=INK, width=2)
+        word(fx(CR_X[mx0][0]) + 5, fy(my1 * 60 + 60) + 5, "DDR0", 12, "#ffffff", True)
+        word(fx(CR_X[mx0][0]) + 5, fy(my1 * 60 + 60) + 20, "컨트롤러", 11, "#ffffff", True)
+    # clock-region grid and labels
+    for i, (x0, x1) in enumerate(CR_X):
+        word(fx(x0) + (fx(x1 + 1) - fx(x0)) / 2 - 8, top - 16, f"X{i}", 11, GRAY)
+        if i:
+            rect(fx(x0) - 0.4, top, fx(x0) + 0.4, top + height, "#ffffff")
+    for r in range(15):
+        word(left - 27, fy(r * 60 + 60) + 5, f"Y{r}", 10, GRAY)
+        if r % 5:
+            rect(left, fy(r * 60) - 0.4, left + width, fy(r * 60) + 0.4, "#ffffff")
     word(left+width*0.59, top+height/2-9, "플랫폼 셸", 16, GRAY, True)
     for s in (2, 1, 0):
         y = top + (2-s)*135
-        word(79, y+52, f"SLR{s}", 21, "#122d3c", True)
+        word(79, y+52, f"SLR{s}", 21, "#ffffff" if s == 0 and ctrl else "#122d3c", True)
         rect(517, y+9, 523, y+125, COLORS[s])
         word(550, y+9, f"SLR{s}", 21, INK, True)
         items = labels(groups[s], reduced)
-        wrapped_items(550, y+39, items or ["커널 블록 별도 지정 없음"])
+        if s == 0 and ctrl:
+            n = wrapped_items(550, y+39, items or ["커널 블록 별도 지정 없음"], max_lines=2)
+            y2 = y + 39 + n * 22 + 8
+            word(550, y2, "제어 Pblock  " + ", ".join(cr_label(r) for r in children[ctrl][1]), 16, CTRL_COLOR, True)
+            cap = shapes[ctrl][1] if ctrl in shapes else None
+            lines = 1
+            if cap:
+                word(550, y2 + 22, f"CLB {cap[0]:,} · RAMB36 {cap[1]} · DSP {cap[3]}", 15, GRAY)
+                lines = 2
+            m = wrapped_items(550, y2 + 22 * lines, labels(groups[ctrl], reduced), max_lines=3)
+            rect(517, y2 - 2, 523, y2 + 22 * (lines + m) + 2, CTRL_COLOR)
+        else:
+            wrapped_items(550, y+39, items or ["커널 블록 별도 지정 없음"])
     word(60, 631, "실제 SLICE 범위 기준 · 회색은 해당 Pblock 밖", 14, GRAY)
+    if ctrl:
+        word(60, 651, "진한 청록: 제어 Pblock · 외곽선: DDR0 컨트롤러 영역", 14, GRAY)
     rect(42, 709, 1078, 780, "#eff4f7")
     word(61, 719, "Vivado 자율 배치", 16, INK, True)
     placed_dma = any(path.endswith("/u_dma") for paths in groups.values() for path in paths)

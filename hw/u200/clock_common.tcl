@@ -11,12 +11,18 @@ proc tsr_clock_one {objects what} {
 namespace eval tsr_clock {
   variable config_dir [file dirname [file normalize [info script]]]
 }
-proc tsr_clock_request {kernel} {
+# The kernel kind (k1 or k4) of a tsr_u200_k* cell, from its reference name. Every hook that needs a per-kernel
+# value (the request, the final acceptance window) asks here, so an unknown kernel stops the run in all of them.
+proc tsr_clock_kernel_kind {kernel tag} {
   set kind ""
   foreach property {REF_NAME ORIG_REF_NAME} {
     if {[regexp {^tsr_u200_(k[14])$} [get_property $property $kernel] -> kind]} break
   }
-  if {$kind eq ""} { error "CLKNET unknown kernel clock request for $kernel" }
+  if {$kind eq ""} { error "$tag unknown kernel clock request for $kernel" }
+  return $kind
+}
+proc tsr_clock_request {kernel} {
+  set kind [tsr_clock_kernel_kind $kernel CLKNET]
   set f [open [file join $::tsr_clock::config_dir $kind.cfg] r]
   try {set config [read $f]} finally {close $f}
   set requests {}

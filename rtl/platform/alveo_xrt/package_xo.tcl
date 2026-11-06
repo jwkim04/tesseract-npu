@@ -93,7 +93,8 @@ set fp [ipx::add_bus_parameter -quiet FREQ_HZ $clkbif]
 set_property value 300000000 $fp
 set_property value_resolve_type user $fp
 # the control core's clock (CC §11.1, §13.3): ap_clk_2 with its reset ap_rst_n_2; no bus interface
-# runs on it (every crossing is inside tsr_core). The link requests 166.7 MHz (hw/u200/k*.cfg).
+# runs on it (every crossing is inside tsr_core). The link requests 166.7 MHz for k1 and 150 MHz for k4
+# (hw/u200/k*.cfg); FREQ_HZ here is only the IP's declared value.
 # ipx::package_project infers only ap_clk / ap_rst_n by name: the second pair is inferred here.
 if {[llength [ipx::get_bus_interfaces ap_clk_2 -of_objects $core]] == 0} {
   ipx::infer_bus_interface ap_clk_2 xilinx.com:signal:clock_rtl:1.0 $core
