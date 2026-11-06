@@ -24,7 +24,7 @@ REPO = Path(__file__).resolve().parents[2]
     ("4", "5", (5, 4, 4)),
     ("8", "-1", None),
 ])
-@pytest.mark.parametrize("reuse", [None, "dcp", "missing"])
+@pytest.mark.parametrize("reuse", [None, "dcp", "derived", "missing", "noint"])
 def test_link_job_rendering(tmp_path, build_jobs, synth_jobs, expected, reuse):
     root = tmp_path / "repo"
     hw = root / "hw/u200"
@@ -59,6 +59,18 @@ args = sys.argv[1:]
 with Path(os.environ["TSR_TEST_TRACE"]).open("a") as f:
     f.write(json.dumps({"tool": "v++", "argv": args}) + "\\n")
 assert "--link" in args
+if "--reuse_impl" in args:
+    # the reuse flow writes no address_map.xml: the build script has to bring the three files into int/
+    import time
+    int_dir = Path(args[args.index("--temp_dir") + 1]) / "link" / "int"
+    int_dir.mkdir(parents=True)
+    names = ("address_map.xml", "kernel_service.json", "kernel_service.pb")
+    for _ in range(100):
+        if all((int_dir / n).is_file() for n in names):
+            break
+        time.sleep(0.1)
+    else:
+        sys.exit("fake v++: block-design outputs were not copied into int/")
 Path(args[args.index("-o") + 1]).write_text("fake xclbin; no CAD executed\\n")
 ''')
     fake_link.chmod(0o755)
@@ -86,10 +98,21 @@ Path(args[args.index("-o") + 1]).write_text("fake xclbin; no CAD executed\\n")
         env["TSR_U200_SYNTH_JOBS"] = synth_jobs
     # TSR_VPP_REUSE_IMPL imports a routed DCP (v++ --reuse_impl); a path that is not a file stops the script.
     dcp = tmp_path / "level0_wrapper_routed.dcp"
-    if reuse == "dcp":
+    src_int = tmp_path / "earlier/tmp/link/int"
+    if reuse == "derived":
+        # the layout of a v++ link: the script finds <link>/tmp/link/int from the DCP path
+        dcp = tmp_path / "earlier/tmp/link/vivado/vpl/prj/prj.runs/impl_1/level0_wrapper_routed.dcp"
+    if reuse in ("dcp", "derived", "noint"):
+        dcp.parent.mkdir(parents=True, exist_ok=True)
         dcp.write_text("isolated fake DCP\n")
+    if reuse in ("dcp", "derived"):
+        src_int.mkdir(parents=True)
+        for name in ("address_map.xml", "kernel_service.json", "kernel_service.pb"):
+            (src_int / name).write_text(f"isolated {name}\n")
     if reuse is not None:
         env["TSR_VPP_REUSE_IMPL"] = str(dcp)
+    if reuse == "dcp":
+        env["TSR_VPP_REUSE_INT"] = str(src_int)
     result = subprocess.run([str(script), "k4"], cwd=root, env=env,
                             text=True, capture_output=True, timeout=30)
     calls = [json.loads(line) for line in trace.read_text().splitlines()] if trace.exists() else []
@@ -102,9 +125,10 @@ Path(args[args.index("-o") + 1]).write_text("fake xclbin; no CAD executed\\n")
         assert not xo.parent.exists()
         return
 
-    if reuse == "missing":
+    if reuse in ("missing", "noint"):
         assert result.returncode == 2, (result.stdout, result.stderr)
-        assert "TSR_VPP_REUSE_IMPL is not a file" in result.stderr
+        assert ("TSR_VPP_REUSE_IMPL is not a file" if reuse == "missing"
+                else "needs the earlier link's tmp/link/int") in result.stderr
         assert not calls
         assert not rendered.exists()
         return
@@ -124,8 +148,10 @@ Path(args[args.index("-o") + 1]).write_text("fake xclbin; no CAD executed\\n")
     assert [call["tool"] for call in calls] == ["settings", "v++"]
     args = calls[-1]["argv"]
     assert args[args.index("--config") + 1] == str(rendered)
-    if reuse == "dcp":
+    if reuse in ("dcp", "derived"):
         assert args[args.index("--reuse_impl") + 1] == str(dcp)
+        for name in ("address_map.xml", "kernel_service.json", "kernel_service.pb"):
+            assert (out / "tmp/link/int" / name).read_text() == f"isolated {name}\n"
     else:
         assert "--reuse_impl" not in args
     assert args[-1] == str(xo)

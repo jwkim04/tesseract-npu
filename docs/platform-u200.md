@@ -372,7 +372,9 @@ products and the implementation runs with their hooks, nothing synthesised),
 `TSR_VPP_FROM_STEP` (`v++ --from_step`, e.g. `vpl.impl`: resume a link after a failed implementation run, the
 synthesis is kept),
 `TSR_VPP_REUSE_IMPL` (`v++ --reuse_impl <routed dcp>`: import the routed DCP of an earlier link and run only the frequency
-scaling, `write_bitstream` and the xclbin packaging; a path that is not a file stops the script),
+scaling, `write_bitstream` and the xclbin packaging; a path that is not a file stops the script; the script also copies
+`address_map.xml` and `kernel_service.*` from the earlier link's `tmp/link/int` while v++ runs, see §8.7;
+`TSR_VPP_REUSE_INT` names that directory when the DCP path does not show it),
 `TSR_U200_PLATFORMINFO=1` (resolve the platform, print its `platforminfo`, stop). Memory: on the
 dev host (14 GB RAM, swap) the k1 link peaked at 15.3 GB and the M0 link at 18.3 GB
 (Vivado-reported, write_bitstream) and both completed, using swap; the k4 link peaked at 29.6 GB
@@ -2538,8 +2540,50 @@ The 100 MHz image is not placed and routed again. It reuses the routed DCP of th
 frequency scaling, `write_bitstream` and the xclbin packaging. The paths that missed by 0.048 ns at 6.667 ns have about
 3.3 ns of slack at 10.0 ns (arithmetic, not a new timing run). Hold and the 3.333 ns CDC caps do not depend on the period.
 The packaged `.xo` is the one of the 200 / 150 MHz link (its source manifest still matches, and `k4.cfg` is not part of
-it). The host tools read `RV_FREQ` at run time, so firmware and host need no change. What the reuse run reports
-(`_new_clk_freq`, whether `CLKFINAL` runs in this path, the xclbin clock section) is not recorded here yet.
+it). The host tools read `RV_FREQ` at run time, so firmware and host need no change.
+
+What the reuse run did (2026-11-06, output `build/link/k4m200`, commit `9a8dd54` plus the script change below).
+
+- First attempt (`build/link/k4m200-reuse-fail1`). Vitis imported the DCP, scaled the clocks and wrote `partial.bit`, then
+  `rtdgen` / `cf2sw` stopped with `Cannot open .../tmp/link/int/address_map.xml`. The `--reuse_impl` flow of `vpl` skips the
+  block-design stage that writes `address_map.xml` and `kernel_service.json` / `.pb`, and the runtime-data step reads them.
+  `--from_step` cannot be combined with `--reuse_impl` (v++ 60-1540); `--from_step rtdgen` alone starts a full
+  implementation and must not be used here.
+- Fix. These three files do not depend on the clocks. `build_xclbin.sh` now copies them from the earlier link's
+  `tmp/link/int` into `<out>/tmp/link/int` while v++ runs (a background copy of the missing files, stopped on exit).
+  The directory is derived from the DCP path (`<link>/tmp/link/vivado/vpl/prj/prj.runs/impl_1/<dcp>`), or taken from
+  `TSR_VPP_REUSE_INT`; the script stops with status 2 when `address_map.xml` is not there. `tb/platform/test_link_build.py`
+  has the cases (explicit, derived, missing DCP, no `int` directory) with a fake `v++` that fails when the files do not
+  arrive.
+- Second attempt: finished, exit 0, 23 min 5 s (`open_checkpoint` 5 min 38 s, `report_route_status` 51 s,
+  `write_bitstream` 12 min 53 s). The flow checks `report_route_status -boolean_check ROUTED_FULLY` right after
+  `open_checkpoint` and stops with an error when the design is not fully routed; it did not stop. The routed run itself
+  ended with `Number of Failed Nets = 0`, `Number of Unrouted Nets = 0`, `Number of Partially Routed Nets = 0` and
+  `Routing Is Done.`
+- Scaling. Vitis read the DCP with its constraints of 4.999 ns and 6.666 ns (200 and 150 MHz) and reported what each clock
+  can reach: `ss_ucs/aclk_kernel_00` 200.4 MHz, `ss_ucs/aclk_kernel_01` 148.9 MHz (= 1 / (6.666 + 0.048) ns). Both are above
+  the request (200 and 100 MHz), so it kept the request: `_new_clk_freq` reads `kernel:0:ss_ucs/aclk_kernel_00:200.0` and
+  `kernel:1:ss_ucs/aclk_kernel_01:100.0`.
+- Timing at the shipped clocks. The routed summary of the 200 / 150 MHz run (`hw_bb_locked_timing_summary_routed.rpt`) has
+  WNS -0.048 ns and WHS +0.003 ns over the design, and only `clk_kernel_01` fails setup (71 endpoints, TNS -1.766 ns). The
+  other clocks: `clk_kernel_00` +0.009 ns, `mmcm_clkout0_1` +0.001, `mmcm_clkout0` +0.045, `mmcm_clkout0_2` +0.035,
+  `mmcm_clkout0_3` +0.049, `bufg_div_BUFGCE_O` +6.864, `io_clk_pcie_user_00` +4.616. Hold meets on every clock (worst
+  +0.003 ns on `clk_kernel_01`). At 10.000 ns the `clk_kernel_01` paths gain 10.000 - 6.666 = 3.334 ns:
+  -0.048 + 3.334 = +3.286 ns. The two crossings between the kernel clocks (WNS +0.938 and +1.601 ns at 6.666 ns) do not get
+  tighter, because the 100 MHz edges are every second edge of the 200 MHz clock; the 3.333 ns CDC caps do not depend on
+  the period. This is arithmetic on the routed 200 / 150 MHz summary, not a new timing run.
+- Checks. `CLKFINAL` is a `WRITE_BITSTREAM.TCL.PRE` hook of the full flow and does not run in the reuse path (no
+  `CLKFINAL` line in the log). Applied by hand: 200.0 is in 200.0 to 200.1 and 100.0 is in 100.0 to 100.1, PASS.
+  `CLKBD`, `CLKNET` and `CDCCHK` run before routing, so they are the lines of the 200 / 150 MHz run (same netlist and
+  routing): `CLKBD ap_clk_2 <- /ss_ucs/aclk_kernel_01` PASS; `CLKNET` PASS (`clk_rv` hart clock on 4,263 registers; it
+  checked the request of that run, 150 MHz); `CDCCHK cdc_gate(link) PASS unsafe 0 unconstrained 0`.
+- xclbin: `build/link/k4m200/tsr_u200_k4.xclbin`, 76,777,347 bytes, sha256
+  `7a662c678fb7a370059659205fce96741b0bd959690995a67e0001ebdb21e556`, UUID `5ec6fdb4-acd5-5f50-14d7-f85cf5c74b71`,
+  interface UUID `0dd37306b7f657a3bd57680fe9dad3a1` (the platform's). `xclbinutil --info` shows `DATA_CLK` 200 MHz and
+  `KERNEL_CLK` 100 MHz, and `ss_ucs_aclk_kernel_00` / `_01` requested 200 / 100 MHz, achieved 200 / 100 MHz. The
+  `CLOCK_FREQ_TOPOLOGY` section holds 2 entries: 200 (DATA) and 100 (KERNEL). Kernel `tsr_u200_k4`, compute unit
+  `tsr_k4` at 0xc10000, `ch0` to `ch3` on banks 0 to 3. The host tools take the path from `TSR_XCLBIN`, so the file stays
+  in the link directory.
 
 Control Pblock. In the first link the control plane (the control core with its TCMs, issue path, CSR block and the DB
 core side) took 7,584 CLBs (the CLBs touched by any block of it; counted one by one `u_ctrl` has 3,463, CSR 2,033, issue
@@ -2625,7 +2669,9 @@ TSR_BUILD_JOBS=8 TSR_U200_SYNTH_JOBS=16 TSR_U200_OUT=$PWD/build/link/k4m200 \
 
 The first launch packaged the kernel. The 100 MHz image is made in `build/link/k4m200` from the routed DCP of the
 200 / 150 MHz link (output `build/link/k4m200-rv150`); it adds `TSR_VPP_REUSE_IMPL=<routed dcp>` to the command above and
-reuses the packaged `.xo` (the wrapper repackages only when the source manifest no longer matches). Read the same logs as for
+reuses the packaged `.xo` (the wrapper repackages only when the source manifest no longer matches). The wrapper brings
+`address_map.xml` and `kernel_service.*` over from the earlier link; `CLKFINAL` does not run in that path, so check
+`_new_clk_freq` by hand. Read the same logs as for
 the first link, with `CLKFINAL PASS k4` for the clocks, and `K4 major blocks: pblock_tsr_ctrl_plane` in the log of the
 implementation run for the Pblock's capacity. Then check the DDR4 clocks (`mmcm_clkout0_1` to `_3`), `clk_rv` and the core
 clock in the routed timing summary, and the occupancy of X2Y1 to X2Y3.

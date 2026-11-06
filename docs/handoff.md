@@ -23,16 +23,26 @@ core and the shell clocks met (the DDR4 clocks too). The user stopped it on 2026
 with the core at 200 MHz. The Pblocks are unchanged. The host tools read `RV_FREQ` at run time, so firmware and host need no
 change.
 
-The 100 MHz image is not placed and routed again. It reuses the routed DCP of the 200 / 150 MHz link
+The 100 MHz image was not placed and routed again. It reuses the routed DCP of the 200 / 150 MHz link
 (`build/link/k4m200-rv150/tmp/link/vivado/vpl/prj/prj.runs/impl_1/level0_wrapper_routed.dcp`) with `kernel_frequency=0:200|1:100`,
-through `TSR_VPP_REUSE_IMPL` (`v++ --reuse_impl`): Vitis runs only the frequency scaling, `write_bitstream` and the xclbin
-packaging, in `build/link/k4m200`. The `clk_rv` paths that missed by 0.048 ns at 6.667 ns have about 3.3 ns of slack at 10.0 ns
-by arithmetic; hold and the 3.333 ns CDC caps do not depend on the period. §8.7 has the command.
+through `TSR_VPP_REUSE_IMPL` (`v++ --reuse_impl`): Vitis ran only the frequency scaling, `write_bitstream` and the xclbin
+packaging, in `build/link/k4m200` (23 min). The first attempt stopped in `rtdgen` because that flow does not write
+`address_map.xml`; `build_xclbin.sh` now copies it and `kernel_service.*` from the earlier link (they do not depend on the
+clocks). Details and numbers: [platform-u200.md](platform-u200.md) §8.7 "What the reuse run did".
 
-Not done: the result of that run. Read `_new_clk_freq` (expect core 200.0, `clk_rv` 100.0), whether `CLKFINAL` ran in the reuse
-path (if not, check `_new_clk_freq` against the window by hand), and the clock section of the xclbin. If a later image needs
-another placement, the next lever for a DDR0 clock failure is a Pblock for cluster 0 that leaves out X2Y1 to X2Y3: the control
-Pblock cannot keep cluster 0 out of them.
+Result: `build/link/k4m200/tsr_u200_k4.xclbin`, 76,777,347 bytes, sha256
+`7a662c678fb7a370059659205fce96741b0bd959690995a67e0001ebdb21e556`. `_new_clk_freq` reads core 200.0 and `clk_rv` 100.0 (Vitis
+could reach 200.4 and 148.9 MHz); `xclbinutil --info` shows `DATA_CLK` 200 and `KERNEL_CLK` 100 MHz. The route is
+fully routed (`ROUTED_FULLY` check passed). Setup and hold at the shipped clocks are by arithmetic on the routed 200 / 150 MHz
+summary: only `clk_rv` failed, by -0.048 ns at 6.666 ns, which is +3.286 ns at 10.0 ns; WHS +0.003 ns; every shell clock and the
+core met. `CLKBD`, `CLKNET` and `CDCCHK` are the lines of the 200 / 150 MHz run (same netlist and routing); `CLKFINAL` does not run
+in the reuse path and was applied by hand (200.0 and 100.0 are inside the k4 window).
+
+Not done: the card. No bring-up has run with this xclbin. Load it with `TSR_XCLBIN=build/link/k4m200/tsr_u200_k4.xclbin`
+and follow [platform-u200.md](platform-u200.md) §14. The setup and hold result is not a new timing run; a link of its own
+at 200 / 100 MHz (about 4.5 h) is the check if the card shows a timing fault. If a later image needs another placement, the
+next lever for a DDR0 clock failure is a Pblock for cluster 0 that leaves out X2Y1 to X2Y3: the control Pblock cannot keep
+cluster 0 out of them.
 
 ## Earlier: resume point, reduced first card image (branch `k4-min`, November 6)
 

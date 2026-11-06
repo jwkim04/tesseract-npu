@@ -38,7 +38,12 @@
 #   TSR_VPP_FROM_STEP   resume a link in TSR_U200_OUT from this step (v++ --from_step, e.g. vpl.impl after a
 #                       failed implementation run: the synthesis is kept)
 #   TSR_VPP_REUSE_IMPL  a routed DCP of an earlier link (v++ --reuse_impl): imports it and runs only the
-#                       frequency scaling, write_bitstream and the xclbin packaging, no synthesis or place and route
+#                       frequency scaling, write_bitstream and the xclbin packaging, no synthesis or place and route.
+#                       That flow skips the block-design stage that writes address_map.xml and kernel_service.*
+#                       into <OUT>/tmp/link/int, and the runtime-data step needs them. They do not depend on the
+#                       clocks, so the script copies them from the earlier link's tmp/link/int while v++ runs
+#   TSR_VPP_REUSE_INT   that earlier link's tmp/link/int directory (default: derived from the DCP path
+#                       <link>/tmp/link/vivado/vpl/prj/prj.runs/impl_1/<dcp>)
 #   TSR_U200_PLATFORMINFO  1 = resolve the platform, print its platforminfo and stop (exit 0)
 #   TSR_BUILD_JOBS      if set: the link's synth / impl jobs and Vivado's general.maxThreads (the configs: 8)
 #   TSR_U200_SYNTH_JOBS optional independent positive integer count of concurrent IP synthesis jobs;
@@ -63,9 +68,21 @@ if [ -n "${TSR_U200_SYNTH_JOBS:-}" ]; then
     exit 2
   fi
 fi
-if [ -n "${TSR_VPP_REUSE_IMPL:-}" ] && [ ! -f "$TSR_VPP_REUSE_IMPL" ]; then
-  echo "build_xclbin.sh: TSR_VPP_REUSE_IMPL is not a file: $TSR_VPP_REUSE_IMPL" >&2
-  exit 2
+REUSE_INT=${TSR_VPP_REUSE_INT:-}
+if [ -n "${TSR_VPP_REUSE_IMPL:-}" ]; then
+  if [ ! -f "$TSR_VPP_REUSE_IMPL" ]; then
+    echo "build_xclbin.sh: TSR_VPP_REUSE_IMPL is not a file: $TSR_VPP_REUSE_IMPL" >&2
+    exit 2
+  fi
+  if [ -z "$REUSE_INT" ]; then
+    case "$TSR_VPP_REUSE_IMPL" in
+      */tmp/link/vivado/vpl/prj/prj.runs/impl_1/*) REUSE_INT=${TSR_VPP_REUSE_IMPL%/vivado/vpl/prj/prj.runs/impl_1/*}/int ;;
+    esac
+  fi
+  if [ ! -f "$REUSE_INT/address_map.xml" ]; then
+    echo "build_xclbin.sh: TSR_VPP_REUSE_IMPL needs the earlier link's tmp/link/int (address_map.xml); set TSR_VPP_REUSE_INT" >&2
+    exit 2
+  fi
 fi
 KERNEL=tsr_u200_$K
 PLATFORM=${TSR_U200_PLATFORM:-xilinx_u200_gen3x16_xdma_2_202110_1}
@@ -172,6 +189,24 @@ fi
 # imports a routed DCP and only runs frequency scaling, write_bitstream and xclbin packaging (no place and route)
 if [ -n "${TSR_VPP_REUSE_IMPL:-}" ]; then
   extra+=(--reuse_impl "$TSR_VPP_REUSE_IMPL")
+fi
+# --reuse_impl: copy the clock-independent block-design outputs into <OUT>/tmp/link/int as soon as v++ makes it
+# (copy only what is missing; v++ may create the directory a few seconds after it starts)
+reuse_int_copy() {
+  local dst=$OUT/tmp/link/int f
+  while :; do
+    if [ -d "$dst" ]; then
+      for f in address_map.xml kernel_service.json kernel_service.pb; do
+        if [ ! -f "$dst/$f" ] && [ -f "$REUSE_INT/$f" ]; then cp -p "$REUSE_INT/$f" "$dst/$f"; fi
+      done
+    fi
+    sleep 1
+  done
+}
+if [ -n "${TSR_VPP_REUSE_IMPL:-}" ]; then
+  reuse_int_copy &
+  reuse_pid=$!
+  trap 'kill "$reuse_pid" 2>/dev/null || true' EXIT
 fi
 echo "== v++ link $KERNEL ($TARGET, $XPFM, $CFG) -> $OUT"
 locked bash -c "set +u; source '$VITIS_SETTINGS' >/dev/null && cd '$OUT' && v++ --link -t '$TARGET' --platform '$XPFM' \
