@@ -2756,17 +2756,23 @@ the whole VU in SLR2, pair 0 (clusters 0 and 2, SLR0) would cross two boundaries
   | Issue to VU: command, valid, ready (`tsr_rpipe`) | 2 | the VU starts a command 2 cycles later; the issue path sees a registered ready |
   | VU done to `tsr_issue` | 2 (+1 `DONE_REG`) | completion 3 cycles after the VU's strobe (it was 1) |
   | VU s registers (16 x 32) to `tsr_csr` | 2 | an s register shows a change 2 cycles later; the host reads it after the done |
-  | Progress and PERF strobes of the units, `perf_ch_*` of the channels to `tsr_csr` | 2 | diagnosis only; the counts and the watchdog decision are the same |
-  | Trace writer to the write mux on channel 0: request and data (`tsr_rslice`), burst response (flops) | 1 + 2 | the writer waits longer per burst; the DMA still waits at most one burst |
+  | Progress and PERF strobes of the units, `perf_ch_*` of the channels to `tsr_csr` | 2 | diagnosis only; the PERF counters and the watchdog see them 2 cycles late (below) |
+  | Trace writer to the write mux on channel 0: request and data (`tsr_rslice`), burst response (flops) | 1 + 2 | the writer waits longer per burst; the DMA waits at most one trace burst |
 
-  Results, queue order and the architectural state do not change. The synthesized core grows by 1,339 LUTs and 3,155 flops.
+  Results, queue order and the architectural state do not change. The diagnostics shift a little. `perf_busy` of the VU
+  (`tsr_issue`) runs from the issue path's start to its done, so it now includes the 2 pipe cycles before the VU sees the
+  command and the 2 cycles of the done pipe after the VU finished: 4 cycles more per isolated VU op. The progress strobes reach
+  the watchdog 2 cycles late, so the first no-progress stretch is about 4 cycles longer for the VU and 2 cycles longer for the
+  other units. HUNG does not change at the default `WDOG_CFG.L` of 24 (2^24 cycles). The synthesized core grows by 1,339 LUTs and 3,155 flops.
 - `tsr_vu.sv`: the zero assignment of `local_score_req` is one assignment per owner (Verilator `WIDTHCONCAT` above 8,192
   bits at `NUM_CH` 16; the netlist is the same).
 - Lint: the full K4 elaboration in `rtl/lint.sh`, the platform lint and the Xilinx lint (with XSim static elaboration); the
   twelve testbench-HDL lint failures of the checkpoint are fixed (open pins of the local-intermediate ports got targeted
   `PINCONNECTEMPTY` waivers, `tsr_tb_loop` marks the new command fields unused, and `rtl/lint.sh` lints a bind-only file such as
   `tsr_tb_local_tcm.sv` with the module it binds into as the top).
-- Tests: `test_core_k4full` (core_smoke and core_db on the packaged elaboration), `test_core_m7_rv_local` (production
+- Tests: `test_core_k4full` (core_smoke and core_db on the packaged elaboration), `test_dbg_trw_xslr` (the trace writer behind
+  the `XSLR_REG` slices with the memory's request stream stalled: the write mux passes trace data only with or after its
+  request), `test_core_m7_rv_local` (production
   decode and prefill, `RV_LOCAL_TRANSPORT` 1, `XSLR_REG` 1), `test_k4_full_graph` (replay of a K4 T4 graph trace without
   local kinds; needs `TSR_K4_TRACE`), and the hook test for both Pblocks.
 

@@ -847,8 +847,16 @@ the host reads them after the op's done, which comes later still. The issue path
 in flight (CC §9.4 I3) counts the commands in the pipe, so the VU never holds more than two. The
 unit's own checks (`tsr_core_dp` U4) are made on the unit's side of the stages. The trace writer's
 request and data streams pass a `tsr_rslice` each and its burst response two flops, so the writer
-waits a little longer for each burst; the DMA still waits at most one trace burst. The elaboration
-without the option has none of these stages.
+waits a little longer for each burst; the DMA still waits at most one trace burst. A request can
+then wait at its slice's head beside its data, so the write mux passes trace data only with or after
+the request. The elaboration without the option has none of these stages.
+
+The stages shift the diagnostics, not the results. `perf_busy` of the VU runs from the issue
+path's start of the op to its done, so it includes the 2 pipe cycles before the VU sees the
+command and the 2 cycles of the done pipe: 4 cycles more per isolated VU op. The progress strobes
+of the units reach the watchdog 2 cycles late, so the first no-progress stretch is about 4 cycles
+longer for the VU and 2 cycles longer for the other units. HUNG does not change at the default
+`WDOG_CFG.L` of 24.
 
 These links reduce declared signal width, not arithmetic precision. They add
 control latency and storage. The source registers and complete receive buffers

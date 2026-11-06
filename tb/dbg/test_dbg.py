@@ -41,6 +41,9 @@ step runner that executes the same push stream on both sides with DB's stop sema
                (dbg_step), RV_SAMPLE / RVWP_APPLY timeouts (no taps), MATCHQ_CLEAR
   dbg_rvtaps   RTL-only, HAS_RV_TAPS = 1 (test_dbg_rvtaps): RV watchpoints on synthetic Ibex taps (kinds,
                overlap edges, HITS, WPADDR, RVWP_HIT, halt requests), RV_SAMPLE, RV_DFAULT
+test_dbg_trw_xslr runs dbg_trw with the register slices of tsr_core_dp's XSLR_REG between the trace writer
+and the write mux (wrapper parameter XSLR_REG) and the memory's request stream mostly stalled: a trace burst's
+request and data wait at the slice heads together, and the mux must pass the data only with or after its request.
 Every RTL run also checks, every cycle, M1 (DRAINED implies the push-order prefix: every entry before
 T completed, DBG_NEXT_PIDX at or after T) and M2 (no entry at or after T starts while held).
 Mutation spot checks: test_dbg_mutants (12 mutants, opt-in, TSR_DBG_MUTANTS=1).
@@ -72,7 +75,7 @@ import dbg_tb as D                                        # noqa: E402
 
 M32 = 0xFFFFFFFF
 DBG_SRC = ["tsr_dbg_stop.sv", "tsr_dbg_shq.sv", "tsr_dbg_hist.sv", "tsr_dbg_trw.sv", "tsr_dbg.sv", "tsr_dbg_rv.sv",
-           "tsr_dbg_wrmux.sv"]
+           "tsr_dbg_wrmux.sv", "tsr_mem_arb.sv"]       # tsr_mem_arb.sv: tsr_rslice, the wrapper's XSLR_REG slices
 
 
 def rtl(name):
@@ -613,7 +616,8 @@ async def dbg_hist(dut):
 async def dbg_trw(dut):
     """The trace writer (DB §8.3): overwrite ring with wrap, TRW_STOP_FULL, no ring, a ring on another
     channel than TRW_CH, class mask, LAUNCH_END; a DMA write stream on the same write source; PERF
-    TRW_RECORDS / TRW_DROPS."""
+    TRW_RECORDS / TRW_DROPS. $TSR_DBG_CFG aw_ready / w_ready: the memory's ready probabilities for the
+    request and the data stream (test_dbg_trw_xslr)."""
     cfg, qd, c = env_cfg()
     s0 = seed()
     bad = []
@@ -630,7 +634,8 @@ async def dbg_trw(dut):
         steps = D.program(g, c.get("n_trw", 60), launch_end=True)
         g._chk.close()
         ds = D.DbgSim(cfg, qd)
-        b = D.Bench(dut, cfg, qd, seed=s0 * 41 + k, env_kw=dict(lat=(1, 25), gap=(0, 2)))
+        b = D.Bench(dut, cfg, qd, seed=s0 * 41 + k, env_kw=dict(lat=(1, 25), gap=(0, 2)),
+                    aw_ready=c.get("aw_ready"), w_ready=c.get("w_ready"))
         await b.start()
         await b.launch()                          # ACTIVE for the PERF event counters (EX §6)
         if name == "wrap":       # a DMA write stream through the mux on the same channel
@@ -667,6 +672,15 @@ async def dbg_trw(dut):
                 bad.append("trw wrap: %d DMA write responses, 40 expected" % b.dma_rsp)
             dut._log.info("trw wrap: %d DMA bursts, %d write bursts in all, %d beats before their request",
                           len(b.dma_sent), len(b.bursts), b.data_first)
+            # the trace writer is done: the mux is back in DMA mode, so a DMA stream sent now goes through
+            for i in range(6):
+                a = 0x50000 + 64 * i
+                n = rr.randint(1, 8)
+                b.dma_bursts.append([a, n, [rr.getrandbits(512) for _ in range(n)]])
+            await b.cycles(400)
+            if len(b.dma_sent) != 46 or b.dma_rsp != 46:
+                bad.append("trw wrap: %d of 46 DMA bursts sent and %d responses after the last trace burst "
+                           "(the mux stayed in TRW mode)" % (len(b.dma_sent), b.dma_rsp))
         ds.close()
         bad += b.errors
     fail(dut, bad, "dbg_trw")
@@ -1150,6 +1164,17 @@ def test_dbg_small():
     cfg = S.config(num_ch=1, t_max=2)
     _run("small", cfg, (2, 1, 2, 16, 0, 1), dict(n_prog=4, n_ops=40, n_serial=2, n_trw=40, n_hist=600),
          tests=["dbg_stops", "dbg_serial", "dbg_trw", "dbg_hist"])
+
+
+@pytest.mark.parametrize("ready", [(0.8, 0.8), (0.25, 0.95), (0.1, 1.0)])
+def test_dbg_trw_xslr(ready):
+    """The trace writer behind the XSLR_REG slices of tsr_core_dp (g_tslice: tsr_rslice for the request and the data), the
+    request stream of the memory mostly stalled while the data stream flows. A trace burst's request and its data
+    then sit at the slices' heads together; the mux must pass the data only with or after its request
+    (tsr_dbg_wrmux), or it leaves TRW mode with the request unpassed and the DMA stream hangs (dbg_trw checks every DMA
+    burst and the ring against the simulator, the mux asserts "trace data passed before its request")."""
+    _run("xslr", U200, S.U200_QD, dict(n_prog=4, n_ops=40, n_trw=40, aw_ready=ready[0], w_ready=ready[1]),
+         extra_params=dict(XSLR_REG=1), tests=["dbg_trw"])
 
 
 # (id, file, original text, mutated text, test that must fail, DB §14 item 7)

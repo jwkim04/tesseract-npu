@@ -315,7 +315,8 @@ def dma_write_mask(index):
 
 
 class Bench:
-    def __init__(self, dut, cfg, qd, seed=1, dm=None, mem_lat=(1, 10), mem_ready=0.8, env_kw=None):
+    def __init__(self, dut, cfg, qd, seed=1, dm=None, mem_lat=(1, 10), mem_ready=0.8, env_kw=None,
+                 aw_ready=None, w_ready=None):
         self.dut = dut
         self.cfg, self.qd = cfg, tuple(qd)
         self.r = random.Random(seed)
@@ -340,6 +341,10 @@ class Bench:
         # memory behind channel TRW_CH's write source
         self.mem = {}
         self.mem_lat, self.mem_ready = mem_lat, mem_ready
+        # ready probabilities of the request (AW) and data (W) streams; both mem_ready unless given: a low aw_ready
+        # with a high w_ready is an arbiter whose request slice is full while data keeps flowing
+        self.aw_ready = mem_ready if aw_ready is None else aw_ready
+        self.w_ready = mem_ready if w_ready is None else w_ready
         self.wreq = deque()             # [addr, len, id, beats received]
         self.wrsp = deque()             # [cycle, id]
         self.wdat = deque()             # beats not yet matched with a request
@@ -576,8 +581,8 @@ class Bench:
                     self.wreq.popleft()
             if rspq:
                 self.wrsp.popleft()
-            d.s_wr_req_ready.value = int(r.random() < self.mem_ready)
-            d.s_wr_dat_ready.value = int(r.random() < self.mem_ready)
+            d.s_wr_req_ready.value = int(r.random() < self.aw_ready)
+            d.s_wr_dat_ready.value = int(r.random() < self.w_ready)
             if self.wrsp and self.wrsp[0][0] <= c:
                 d.s_wr_rsp_valid.value = 1
                 d.s_wr_rsp_id.value = self.wrsp[0][1]

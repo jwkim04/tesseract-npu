@@ -35,7 +35,9 @@ module tsr_dbg_tb
   parameter int unsigned     NTBP        = 4,
   parameter int unsigned     NRVWP       = 2,
   parameter bit              HAS_REC     = 1'b1,
-  parameter bit              HAS_RV_TAPS = 1'b0
+  parameter bit              HAS_RV_TAPS = 1'b0,
+  // XSLR_REG: the register slices of tsr_core_dp (g_tslice) between the trace writer and the write mux
+  parameter bit              XSLR_REG    = 1'b0
 ) (
   input  logic                        clk,
   input  logic                        rst_n,
@@ -246,6 +248,12 @@ module tsr_dbg_tb
   logic [ADDR_BEAT_W-1:0]     t_wr_req_addr;
   logic [TSR_LEN_W-1:0]       t_wr_req_len;
   logic [511:0]               t_wr_dat_data;
+  // the trace writer's side of the slices
+  logic                       tw_req_valid, tw_req_ready, tw_dat_valid, tw_dat_ready, tw_dat_last;
+  logic                       tw_rsp_valid;
+  logic [ADDR_BEAT_W-1:0]     tw_req_addr;
+  logic [TSR_LEN_W-1:0]       tw_req_len;
+  logic [511:0]               tw_dat_data;
   logic [TSR_SRC_ID_W-1:0]    d_wr_rsp_id;
 
   tsr_csr #(
@@ -319,10 +327,41 @@ module tsr_dbg_tb
     .wpa_ready, .wpa_req, .wpa_local, .wpa_data, .wpa_done, .wpa_timeout, .wph_v, .wph_mask, .wph_addr, .wph_halt,
     .dfault, .flags,
     .mt_rd_req('0), .mt_rd_last('0), .mt_wr_req('0), .mt_wr_rsp('0),
-    .trw_wr_req_valid(t_wr_req_valid), .trw_wr_req_ready(t_wr_req_ready), .trw_wr_req_addr(t_wr_req_addr),
-    .trw_wr_req_len(t_wr_req_len), .trw_wr_dat_valid(t_wr_dat_valid), .trw_wr_dat_ready(t_wr_dat_ready),
-    .trw_wr_dat_data(t_wr_dat_data), .trw_wr_dat_last(t_wr_dat_last), .trw_wr_rsp_valid(t_wr_rsp_valid)
+    .trw_wr_req_valid(tw_req_valid), .trw_wr_req_ready(tw_req_ready), .trw_wr_req_addr(tw_req_addr),
+    .trw_wr_req_len(tw_req_len), .trw_wr_dat_valid(tw_dat_valid), .trw_wr_dat_ready(tw_dat_ready),
+    .trw_wr_dat_data(tw_dat_data), .trw_wr_dat_last(tw_dat_last), .trw_wr_rsp_valid(tw_rsp_valid)
   );
+
+  // The trace writer to the write mux: direct, or as tsr_core_dp wires it with XSLR_REG (g_tslice): a tsr_rslice each for
+  // the request and the data, two flops for the burst response.
+  if (XSLR_REG) begin : g_tslice
+    tsr_rslice #(.W(ADDR_BEAT_W + TSR_LEN_W), .FORM(1)) u_tq (
+      .clk, .rst_n,
+      .s_valid(tw_req_valid), .s_ready(tw_req_ready), .s_data({tw_req_addr, tw_req_len}),
+      .m_valid(t_wr_req_valid), .m_ready(t_wr_req_ready), .m_data({t_wr_req_addr, t_wr_req_len})
+    );
+    tsr_rslice #(.W(512 + 1), .FORM(1)) u_td (
+      .clk, .rst_n,
+      .s_valid(tw_dat_valid), .s_ready(tw_dat_ready), .s_data({tw_dat_data, tw_dat_last}),
+      .m_valid(t_wr_dat_valid), .m_ready(t_wr_dat_ready), .m_data({t_wr_dat_data, t_wr_dat_last})
+    );
+    logic [1:0] rsp_q;
+    always_ff @(posedge clk) begin
+      if (!rst_n) rsp_q <= '0;
+      else        rsp_q <= {rsp_q[0], t_wr_rsp_valid};
+    end
+    assign tw_rsp_valid = rsp_q[1];
+  end else begin : g_tdirect
+    assign t_wr_req_valid = tw_req_valid;
+    assign tw_req_ready   = t_wr_req_ready;
+    assign t_wr_req_addr  = tw_req_addr;
+    assign t_wr_req_len   = tw_req_len;
+    assign t_wr_dat_valid = tw_dat_valid;
+    assign tw_dat_ready   = t_wr_dat_ready;
+    assign t_wr_dat_data  = tw_dat_data;
+    assign t_wr_dat_last  = tw_dat_last;
+    assign tw_rsp_valid   = t_wr_rsp_valid;
+  end
 
   tsr_dbg_rv #(.REC_DEPTH(64), .HAS_RV_TAPS(HAS_RV_TAPS)) u_dbg_rv (
     .clk, .rst_n,

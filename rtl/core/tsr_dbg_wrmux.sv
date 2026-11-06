@@ -16,7 +16,9 @@
 //   belong to an accepted request; once
 //   every accepted DMA burst has passed its last beat (bal = 0, no burst half passed), the mux
 //   switches to TRW mode.
-// TRW mode: the trace writer's request (id TRW_ID) and its data beats pass; after its last beat
+// TRW mode: the trace writer's request (id TRW_ID) and its data beats pass, the data with or after the
+//   request (the writer offers data once its request is taken, but with register slices between the writer
+//   and the mux the request can wait beside its data); after its last beat
 //   the mux returns to DMA mode. The trace writer waits at most for the DMA bursts already
 //   accepted; the DMA waits at most one trace burst (<= 16 beats).
 // Responses: routed by id: TRW_ID to the trace writer (always ready), every other id to the DMA
@@ -82,6 +84,9 @@ module tsr_dbg_wrmux
   wire hold_new = t_wr_req_valid;        // the trace writer waits: no new DMA burst
   wire d_dat_ok = !hold_new || (bal_q > 7'sd0) || mid_q;     // data of a taken request only
   wire d_req_ok = !hold_new || (bal_q < 7'sd0);              // a request whose data already passed
+  // TRW mode: the trace writer's data passes with or after its request. The writer offers data only after it saw its
+  // request taken, but behind register slices (XSLR_REG) the request may still wait at the slice head with its data.
+  wire t_dat_ok = treq_q || (t_wr_req_valid && s_wr_req_ready);
 
   always_comb begin
     if (!trw_q) begin
@@ -102,14 +107,14 @@ module tsr_dbg_wrmux
       s_wr_req_addr  = t_wr_req_addr;
       s_wr_req_len   = t_wr_req_len;
       s_wr_req_id    = TRW_ID;
-      s_wr_dat_valid = t_wr_dat_valid;
+      s_wr_dat_valid = t_wr_dat_valid && t_dat_ok;
       s_wr_dat_data  = t_wr_dat_data;
       s_wr_dat_mask  = '1;
       s_wr_dat_last  = t_wr_dat_last;
       d_wr_req_ready = 1'b0;
       d_wr_dat_ready = 1'b0;
       t_wr_req_ready = s_wr_req_ready && !treq_q;
-      t_wr_dat_ready = s_wr_dat_ready;
+      t_wr_dat_ready = s_wr_dat_ready && t_dat_ok;
     end
   end
 

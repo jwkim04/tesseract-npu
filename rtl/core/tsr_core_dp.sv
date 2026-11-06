@@ -492,7 +492,8 @@ module tsr_core_dp
   // XSLR_REG: the units and the outer channels' arbiters sit in other SLRs than the CSR block (the control plane). Two register
   // stages, in this glue, on what only they feed the CSR block with: the watchdog progress strobes, the units' PERF strobes
   // and the channels' PERF strobes. The PERF counters and the watchdog (diagnosis only, EX §8.6: 2^L cycles without
-  // progress) see them two cycles late; their counts and the HUNG decision do not change.
+  // progress) see them two cycles late: the counts and the first no-progress stretch shift by a few cycles (perf_busy of
+  // the VU by 4 per op: its pipe cycles count), the HUNG decision does not change at the default limit of 2^24 cycles.
   logic [5:0]        unit_progress_c;
   logic [NUM_CH-1:0] perf_ch_rd_beat_c, perf_ch_wait_c;
   logic [63:0][3:0]  perf_ext_un_c;
@@ -988,7 +989,7 @@ module tsr_core_dp
   // vector unit in SLR2, every signal between them crosses two SLR boundaries. VX register stages on each, in this
   // glue (not in a Pblock, so the stages are free to sit in SLR1):
   //   command   a valid / ready pipe (tsr_rpipe): the issue path sees a registered ready of its own, the VU a registered
-  //             valid and command. Every item is offered to the VU as before, one VX cycles later; up to
+  //             valid and command. Every item is offered to the VU as before, VX cycles later; up to
   //             2 + 2 VX commands are in the pipe, but the issue path's limit (two ops in flight, CC §9.4 I3) counts them.
   //   done      the strobe reaches tsr_issue VX cycles later (tsr_issue's DONE_REG adds one more)
   //   sreg      VX stages towards tsr_csr: the s registers show a change VX cycles later, but the host reads them after
