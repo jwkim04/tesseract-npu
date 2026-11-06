@@ -689,6 +689,18 @@ def test_core_db():
     _run_db(seed=int(os.environ.get("TSR_SEED", "1"), 0))
 
 
+def test_core_db_local():
+    """core_db on the relocated control plane with RST_PIPE 3: RV_LOCAL_TRANSPORT 1 registers every unit done
+    strobe at the entry of tsr_issue (DONE_REG) and the DB memory taps (MT_PIPE 2), RST_PIPE 3 gives the clusters
+    their own reset copies (RST_COPY). The stop at the tile breakpoint, the DRAINED state, the history and the
+    final state equal the simulator's, as in test_core_db."""
+    from common.runner import run
+    elf = C.build_fw(FW_OUT)
+    run("tsr_core", __name__, parameters=dict(C.PARAMS, RV_LOCAL_TRANSPORT=1, RST_PIPE=3), sources=_sources(),
+        name="core_db_local", seed=int(os.environ.get("TSR_SEED", "1"), 0), testcase=["core_db"],
+        extra_env={"TB_CORE_ELF": str(elf), "TB_CORE_RV_PS": "6000"}, timescale=("1ps", "1ps"))
+
+
 def test_core_m7(m7case):
     _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0))
 

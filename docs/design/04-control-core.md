@@ -821,6 +821,19 @@ fault/data response. The ordinary accesses preserve their 32-bit write data;
 POST preserves its END bit and all eight record words. Other POST write-data
 bits are ignored by the existing CSR contract.
 
+With the option set, `tsr_core_dp` also registers the connections that run from the
+units and the memory ports into the relocated control plane. `tsr_issue` takes each unit's
+done strobe through one register (`DONE_REG`): the dispatcher, the queue states, the
+completion taps of the DB block and `perf_retired` see a completion one cycle later; the
+units are not told, and `perf_busy` keeps the unit's own timing (the done cycle counts as
+busy, the cycle after does not). The DB block's memory taps go through two register stages
+(`MT_PIPE`), so `DBG_RDOUT` / `DBG_WROUT` lag the memory ports by two cycles; the probes
+are not compared with the model (DB §9.1). Both stages exist because a done strobe or a
+handshake term with a unit-side consumer and a control-side consumer was merged into one
+LUT whose hierarchy put it in the unit's Pblock, in the middle of a path between two
+control-plane registers (k4min link, 2026-11-06: round trips SLR0 to SLR1 or SLR2 and back,
+-1.8 and -2.6 ns).
+
 These links reduce declared signal width, not arithmetic precision. They add
 control latency and storage. The source registers and complete receive buffers
 belong to their respective functional endpoints. Only those endpoint modules

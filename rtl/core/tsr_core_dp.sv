@@ -445,7 +445,8 @@ module tsr_core_dp
   tsr_issue #(
     .NUM_CH(NUM_CH), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES), .CH_BYTES(CH_BYTES),
     .ADDR_BEAT_W(ADDR_BEAT_W), .CAPS(CAPS), .QD_DMA(QD_DMA), .QD_QACT(QD_QACT), .QD_MVM(QD_MVM_E),
-    .QD_VU(QD_VU_E), .QD_ATT(QD_ATT), .QD_SYNC(QD_SYNC), .XC_CMD_W(XC_CMD_W)
+    .QD_VU(QD_VU_E), .QD_ATT(QD_ATT), .QD_SYNC(QD_SYNC), .XC_CMD_W(XC_CMD_W),
+    .DONE_REG(RV_LOCAL_TRANSPORT)
   ) u_issue (
     .clk, .rst_n(rst_b_n[RB_ISSUE]),
     .ifq_valid, .ifq_ready, .ifq_entry(tsr_ifent_t'(ifq_entry)),
@@ -631,10 +632,34 @@ module tsr_core_dp
   logic [TSR_LEN_W-1:0]    t_wr_req_len;
   logic [BEAT_BITS-1:0]    t_wr_dat_data;
   logic [NUM_CH-1:0]       mt_rd_req, mt_rd_last, mt_wr_req, mt_wr_rsp;
-  assign mt_rd_req  = m_rd_req_valid & m_rd_req_ready;
-  assign mt_rd_last = m_rd_rsp_valid & m_rd_rsp_ready & m_rd_rsp_last;
-  assign mt_wr_req  = m_wr_req_valid & m_wr_req_ready;
-  assign mt_wr_rsp  = m_wr_rsp_valid & m_wr_rsp_ready;
+  logic [NUM_CH-1:0]       mt_rd_req_i, mt_rd_last_i, mt_wr_req_i, mt_wr_rsp_i;
+  assign mt_rd_req_i  = m_rd_req_valid & m_rd_req_ready;
+  assign mt_rd_last_i = m_rd_rsp_valid & m_rd_rsp_ready & m_rd_rsp_last;
+  assign mt_wr_req_i  = m_wr_req_valid & m_wr_req_ready;
+  assign mt_wr_rsp_i  = m_wr_rsp_valid & m_wr_rsp_ready;
+  // The taps count handshakes at the memory ports, which sit in other SLRs than the DB block when the
+  // control plane is relocated (RV_LOCAL_TRANSPORT): two register stages in the glue, free to sit between
+  // the ports and the counters. They only lag DBG_RDOUT / DBG_WROUT by MT_PIPE cycles (the probes are not
+  // compared with the model, DB §5.5); with the taps wired straight, one handshake term (a LUT merged
+  // into a bridge) sat in SLR2 between two flops of the counter in SLR0 (k4min link, 2026-11-06: -2.6 ns).
+  localparam int unsigned MT_PIPE = RV_LOCAL_TRANSPORT ? 2 : 0;
+  if (MT_PIPE == 0) begin : g_mt0
+    assign mt_rd_req  = mt_rd_req_i;
+    assign mt_rd_last = mt_rd_last_i;
+    assign mt_wr_req  = mt_wr_req_i;
+    assign mt_wr_rsp  = mt_wr_rsp_i;
+  end else begin : g_mt
+    logic [MT_PIPE-1:0][4*NUM_CH-1:0] mt_q;
+    always_ff @(posedge clk) begin
+      if (!rst_b_n[RB_DBG]) begin
+        mt_q <= '0;
+      end else begin
+        mt_q[0] <= {mt_rd_req_i, mt_rd_last_i, mt_wr_req_i, mt_wr_rsp_i};
+        for (int unsigned k = 1; k < MT_PIPE; k++) mt_q[k] <= mt_q[k-1];
+      end
+    end
+    assign {mt_rd_req, mt_rd_last, mt_wr_req, mt_wr_rsp} = mt_q[MT_PIPE-1];
+  end
 
   if (HAS_DB) begin : g_db
     tsr_dbg #(

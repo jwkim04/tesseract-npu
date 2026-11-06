@@ -158,6 +158,8 @@ module tsr_issue
   parameter int unsigned     QD_ATT      = tsr_tables_pkg::TSR_QDEPTH_U200_ATT,
   parameter int unsigned     QD_SYNC     = tsr_tables_pkg::TSR_QDEPTH_U200_SYNC,
   parameter int unsigned     XC_CMD_W    = 256,
+  // one register stage on every unit done strobe (the units may sit in another SLR than this block)
+  parameter bit              DONE_REG    = 1'b0,
   // simulation only (ticket-wrap tests, CC §15.2): reset value of every sequence counter
   parameter logic [27:0]     SEQ_INIT    = 28'd0,
   parameter logic [31:0]     PIDX_INIT   = 32'd0
@@ -598,7 +600,24 @@ module tsr_issue
   logic [XC_CMD_W-1:0] u_xcmd [6];
   logic [5:0]          u_xc;
   assign u_rdy  = {1'b0, att_cmd_ready, vu_cmd_ready, mvm_cmd_ready, qact_cmd_ready, dma_cmd_ready};
-  assign u_done = {1'b0, att_done, vu_done, mvm_done, qact_done, dma_done};
+  // DONE_REG: every unit done strobe is registered at the entry of this block. A done strobe reaches
+  // the dependency counters, the run count and the queue-pop decision through a 28-bit add and
+  // compare (9 to 11 levels) and then the enables of the queue heads and records (up to 364 loads);
+  // coming straight from a unit in another SLR it left no time for the logic (k4min link, 2026-11-06:
+  // -1.2 ns, the crossing 1.4 to 1.7 ns). Every consumer sees the registered strobe, so the issue
+  // path is the same machine with each completion one cycle later; the units are not told.
+  logic [5:0] u_done_in;
+  assign u_done_in = {1'b0, att_done, vu_done, mvm_done, qact_done, dma_done};
+  if (DONE_REG) begin : g_done_reg
+    logic [5:0] u_done_q;
+    always_ff @(posedge clk) begin
+      if (!rst_n) u_done_q <= '0;
+      else        u_done_q <= u_done_in;
+    end
+    assign u_done = u_done_q;
+  end else begin : g_done_wire
+    assign u_done = u_done_in;
+  end
 
   assign dma_cmd_valid  = cmd_v[U_DMA];
   assign dma_cmd        = tsr_dma_cmd_t'(u_nat[U_DMA][DMAW-1:0]);
@@ -981,7 +1000,9 @@ module tsr_issue
     for (int u = 0; u < 6; u++) begin
       busy_u[u]     = (run_out[u] != 2'd0) || cmd_v[u] || nr_pend[u];
       q_nonempty[u] = (q_cnt[u] != 5'd0) || hd_v[u];
-      perf_busy[u]  = (run_out[u] != 2'd0);
+      // PERF busy is the unit's own view, done cycle included, with or without DONE_REG: the registered
+      // strobe still counts in run_out for the cycle after the unit finished
+      perf_busy[u]  = ((DONE_REG ? (run_out[u] - 2'(u_done[u])) : run_out[u]) != 2'd0);
       err_any       = err_any || rec_q[u].err;
       q_state[u]    = {rec_q[u].err, (stay_q[u] == ST_HOLD || stay_q[u] == ST_HARD), (stay_q[u] == ST_DEP),
                        (run_out[u] != 2'd0), 5'(q_cnt[u] + 5'(hd_v[u]))};
