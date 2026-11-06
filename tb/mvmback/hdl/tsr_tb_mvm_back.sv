@@ -87,7 +87,7 @@ module tsr_tb_mvm_back
     .K_MAX(K_MAX), .T_MAX(T_MAX), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT), .MUL_LAT(MUL_LAT),
     .ADD_LAT(ADD_LAT)
   ) u_back (
-    .clk, .rst_n,
+    .clk, .rst_n, .rst_tok_n({T_MAX{rst_n}}),
     .cfg_fmt, .cfg_d_lines,
     .att_cfg('0), .att_tbase('0), .att_start(1'b0), .seg_valid(seg_valid_u), .seg_y(seg_y_u),
     .pv_rd('0), .pv_mac_v(1'b0), .pv_mac_first(1'b0), .pv_mac_q('0), .pv_mac_a('0), .pv_acc(pv_acc_u),

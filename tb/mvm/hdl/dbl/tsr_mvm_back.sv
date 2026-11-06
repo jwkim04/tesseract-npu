@@ -43,6 +43,7 @@ module tsr_mvm_back
 ) (
   input  logic                          clk,
   input  logic                          rst_n,
+  input  logic [T_MAX-1:0]              rst_tok_n,      // the real back end's per-token reset copies (unused here)
   input  logic                          cfg_fmt,
   input  logic [7:0]                    cfg_d_lines,
   // W4-B at: attention ports (ignored / 0 in the double)
@@ -116,7 +117,7 @@ module tsr_mvm_back
       for (int s = 0; s < int'(NS); s++)
         for (int k = 0; k < 32; k++) pv_acc[g][s][k] = '0;
   end
-  wire unused_att = &{1'b0, att_cfg, att_tbase, att_start, pv_rd, pv_mac_v, pv_mac_first, pv_mac_q, pv_mac_a};
+  wire unused_att = &{1'b0, att_cfg, att_tbase, att_start, pv_rd, pv_mac_v, pv_mac_first, pv_mac_q, pv_mac_a, rst_tok_n};
 
   // ---- per-token row state and result queue ----
   int unsigned p    [T_MAX][16];      // partials (f32 bits)

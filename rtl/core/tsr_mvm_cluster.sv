@@ -105,6 +105,7 @@ module tsr_mvm_cluster
   parameter  int unsigned MUL_LAT       = TSR_DEF_FMUL_LAT,
   parameter  int unsigned ADD_LAT       = TSR_DEF_FADD_LAT,
   parameter  int unsigned WS_RD_LAT     = TSR_DEF_WS_RD_LAT,
+  parameter  bit          RST_COPY      = 1'b0,  // rst_n is one stage early; the cluster registers its own copies
   parameter  int unsigned SPM_AW        = 16,
   localparam int unsigned JW            = 1 + SPM_AW + 16 + 16 + TSR_LINE_BITS
 ) (
@@ -162,6 +163,39 @@ module tsr_mvm_cluster
   localparam logic [35:0] CH_HI     = 36'(CH >> 2);
 
   // -------------------------------------------------------------------------------------------
+  // Reset copies (RST_COPY; implementation only, no functional change). tsr_mvm feeds rst_n one
+  // register stage early and the cluster registers the last stage itself, in copies: one per
+  // token of the back end (accumulators and their control), one for the front end and one for the
+  // rest. A single last-stage register per cluster drove about 700 pins over a whole SLR (k4min
+  // link, 2026-11-06: -0.98 ns, 16 K failing endpoints, nets up to 2.8 ns). The copies are `keep`
+  // registers like every reset copy (not merged by the tools) and start at 0 like rc_q in
+  // tsr_mvm, so each reset is cycle-identical to the single stage. RST_COPY = 0: rst_n everywhere.
+  // -------------------------------------------------------------------------------------------
+  logic             rst_c_n, rst_f_n;
+  logic [T_MAX-1:0] rst_t_n;
+  if (RST_COPY) begin : g_rcp
+    (* keep = "true" *) logic             rest_q, front_q;
+    (* keep = "true" *) logic [T_MAX-1:0] tok_q;
+    initial begin            // FPGA INIT / simulation start: in reset until rst_n is seen high
+      rest_q  = 1'b0;
+      front_q = 1'b0;
+      tok_q   = '0;
+    end
+    always @(posedge clk) begin   // not always_ff: the initial block writes them too
+      rest_q  <= rst_n;
+      front_q <= rst_n;
+      tok_q   <= {T_MAX{rst_n}};
+    end
+    assign rst_c_n = rest_q;
+    assign rst_f_n = front_q;
+    assign rst_t_n = tok_q;
+  end else begin : g_rcp0
+    assign rst_c_n = rst_n;
+    assign rst_f_n = rst_n;
+    assign rst_t_n = {T_MAX{rst_n}};
+  end
+
+  // -------------------------------------------------------------------------------------------
   // Broadcast: activation-buffer write register and activation gating
   // -------------------------------------------------------------------------------------------
   logic            aw_v_q;
@@ -178,7 +212,7 @@ module tsr_mvm_cluster
 
 
   always_ff @(posedge clk) begin
-    if (!rst_n) begin
+    if (!rst_c_n) begin
       aw_v_q      <= 1'b0;
       act_ready_q <= 1'b0;
     end else begin
@@ -229,7 +263,7 @@ module tsr_mvm_cluster
   logic [31:0]                afc_stride_q;
 
   always_ff @(posedge clk) begin
-    if (!rst_n) begin
+    if (!rst_c_n) begin
       su_q        <= '0;
       busy_q      <= 1'b0;
       fmt_q       <= 1'b0;                 // back-end configuration: defined after reset
@@ -335,7 +369,7 @@ module tsr_mvm_cluster
     .K_MAX(K_MAX), .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BEAT_BITS), .WS_FIFO_BEATS(WS_FIFO_BEATS),
     .WS_RD_LAT(WS_RD_LAT)
   ) u_front (
-    .clk, .rst_n,
+    .clk, .rst_n(rst_f_n),
     .cmd_valid(fc_v_q), .cmd_ready(f_cmd_ready), .cmd(fc), .cmd_att(fc_att_q),
     .cmd_rbeats(fc_att_q ? afc_rbeats_q : fc.beats), .cmd_stride(fc_att_q ? afc_stride_q : 32'd0),
     .rd_req_valid, .rd_req_ready, .rd_req_addr, .rd_req_len, .rd_req_id,
@@ -351,7 +385,7 @@ module tsr_mvm_cluster
   wire   b_beat_valid = f_beat_valid & act_ready_q & ~at_pv_q & (~at_qk_q | qk_gate_q);
 
   tsr_mvm_actbuf #(.K_MAX(K_MAX), .T_MAX(T_MAX), .RD_LAT(ACT_RD_LAT)) u_act (
-    .clk, .rst_n,
+    .clk, .rst_n(rst_c_n),
     .wr_valid(aw_v_q), .wr_tmask(aw_tm_q), .wr_line(aw_q),
     .qs_re, .qs_addr, .qs_data, .dbs_re, .dbs_addr, .dbs_data
   );
@@ -371,7 +405,7 @@ module tsr_mvm_cluster
     .HAS_ATT(HAS_ATT), .K_MAX(K_MAX), .T_MAX(T_MAX), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT),
     .MUL_LAT(MUL_LAT), .ADD_LAT(ADD_LAT)
   ) u_back (
-    .clk, .rst_n,
+    .clk, .rst_n(rst_c_n), .rst_tok_n(rst_t_n),
     .cfg_fmt(fmt_q), .cfg_d_lines(dl_q),
     .att_cfg(acfg_q), .att_tbase(tbase_q), .att_start(att_start_q), .seg_valid, .seg_y,
     .pv_rd, .pv_mac_v, .pv_mac_first, .pv_mac_q, .pv_mac_a, .pv_acc,
@@ -419,7 +453,7 @@ module tsr_mvm_cluster
     wire [3:0] c_tq  = 4'(bc_acmd.c.tq_m1) + 4'd1;
 
     always_ff @(posedge clk) begin
-      if (!rst_n) begin
+      if (!rst_c_n) begin
         at_qk_q     <= 1'b0;
         at_pv_q     <= 1'b0;
         as_q        <= '0;
@@ -530,7 +564,7 @@ module tsr_mvm_cluster
       att_tm        = at_pv_q ? (T_MAX'(1) << pt_q) : qm_q[bc_line.tok];
     end
     always_ff @(posedge clk) begin
-      if (!rst_n || bc_acmd_valid) begin
+      if (!rst_c_n || bc_acmd_valid) begin
         pg_q    <= '0;
         puo_q   <= '0;
         pt_q    <= '0;
@@ -580,7 +614,7 @@ module tsr_mvm_cluster
     logic        tb_we;
     logic [SPM_AW-1:0] tb_data;
     always_ff @(posedge clk) begin
-      if (!rst_n || bc_acmd_valid) begin
+      if (!rst_c_n || bc_acmd_valid) begin
         tb_act_q  <= 1'b0;
         tb_done_q <= 1'b0;
       end else if (as_q[2] && at_qk_q) begin
@@ -630,7 +664,7 @@ module tsr_mvm_cluster
     wire [15:0]  gbt_n  = qk_acc ? (g_lastb ? 16'd0 : gbt_q + 16'd1) : gbt_q;
     wire [12:0]  gin_n  = gin_q + 13'(qk_acc & (gbt_q == 16'd0));
     always_ff @(posedge clk) begin
-      if (!rst_n || bc_acmd_valid) begin
+      if (!rst_c_n || bc_acmd_valid) begin
         gbt_q     <= '0;
         gin_q     <= '0;
         qk_gate_q <= 1'b0;
@@ -645,7 +679,7 @@ module tsr_mvm_cluster
     logic        q_jv, q_jr, q_busy;
     logic [JW-1:0] q_j;
     tsr_mvm_aqk #(.T_MAX(T_MAX), .NUM_CH(NUM_CH), .SPM_AW(SPM_AW)) u_aqk (
-      .clk, .rst_n,
+      .clk, .rst_n(rst_c_n),
       .start(att_start_q & at_qk_q), .tact(tact_q), .nseg(ac_q.nseg), .prows(ac_q.prows), .ng(ng_q),
       .off0(off0_q), .qt(qt_q), .lo(lo_q), .hi(hi_q),
       .tb_we, .tb_addr(tb_e_q), .tb_data, .tb_done(tb_done_q),
@@ -664,7 +698,7 @@ module tsr_mvm_cluster
       .K_MAX(K_MAX), .T_MAX(T_MAX), .SPM_AW(SPM_AW), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT),
       .MUL_LAT(MUL_LAT), .ADD_LAT(ADD_LAT)
     ) u_pv (
-      .clk, .rst_n,
+      .clk, .rst_n(rst_c_n),
       .start(att_start_q & at_pv_q), .tact(tact_q), .tq(tq_q), .gs(gs_q), .e64(ac_q.c.e64),
       .dcode(ac_q.c.dcode), .nseg(ac_q.nseg), .ng(ng_q), .ngl(ng_q), .lsum(ac_q.c.flags[TSR_ATT_FL_LSUM]),
       .g_heads(g_q), .hg0(ac_q.c.hg0), .n_head(ac_q.n_head), .ob0(ob0_q), .og(og_q), .lbase(lbase_q),
@@ -705,7 +739,7 @@ module tsr_mvm_cluster
 `ifndef SYNTHESIS
         logic checks_on_q;
         initial checks_on_q = 1'b0;
-        always_ff @(posedge clk) if (!rst_n) checks_on_q <= 1'b1;
+        always_ff @(posedge clk) if (!rst_c_n) checks_on_q <= 1'b1;
         else if (checks_on_q) begin
           assert (!(score_write && sel && local_score_req.wr && vu_sel));
           assert (!(pv_read && sel && local_score_req.rd && vu_sel));
@@ -724,7 +758,7 @@ module tsr_mvm_cluster
       end
       assign local_score_data = vu_data;
       always_ff @(posedge clk) begin
-        if (!rst_n) begin
+        if (!rst_c_n) begin
           pv_write <= 1'b0;
           rg3_q <= '0;
           rl3_q <= '0;
@@ -770,7 +804,7 @@ module tsr_mvm_cluster
         end
       end
       always_ff @(posedge clk) begin
-        if (!rst_n) begin
+        if (!rst_c_n) begin
           stat_count_q <= '0;
           stat_wr_q <= '0;
           stat_rd_q <= '0;
@@ -794,7 +828,7 @@ module tsr_mvm_cluster
       logic stats_checks_q;
       initial stats_checks_q = 1'b0;
       always_ff @(posedge clk) begin
-        if (!rst_n) stats_checks_q <= 1'b1;
+        if (!rst_c_n) stats_checks_q <= 1'b1;
         else if (stats_checks_q) begin
           assert (stat_count_q <= 4'(STAT_DEPTH));
           // Gather retirement, including the last statistics packet, must
@@ -872,10 +906,10 @@ module tsr_mvm_cluster
 `ifndef SYNTHESIS
   logic a_on_q;
   initial a_on_q = 1'b0;
-  always @(posedge clk) if (!rst_n) a_on_q <= 1'b1;
+  always @(posedge clk) if (!rst_c_n) a_on_q <= 1'b1;
 
   always_ff @(posedge clk) begin
-    if (rst_n && a_on_q) begin
+    if (rst_c_n && a_on_q) begin
       assert (!(bc_cmd_valid && bc_line_valid)) else $error("%m: bc_cmd and bc_line in one cycle");
       if (bc_cmd_valid) begin
         assert (!busy_q && su_q == '0 && !att_act_q) else $error("%m: bc_cmd while an MVM is in progress");

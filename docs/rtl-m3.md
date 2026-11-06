@@ -1045,7 +1045,12 @@ SLR0), so congestion inflated every route. Causes and fixes:
    `rst_n` exactly P cycles late, through P − min(P, 2) shared stages and min(P, 2) kept stages
    per block (CSR, DMA, QACT, SPM, each arbiter; inside `tsr_mvm`, new parameter
    `RST_LOCAL`: top, gather and every cluster with its pipes). The first per-block copy can sit
-   at the SLR boundary, the second (replicated by phys_opt) at the loads. The core is a P-cycle
+   at the SLR boundary, the second (replicated by phys_opt) at the loads. Inside a cluster the
+   last stage is made of copies, one per token of the back end, one for the front end and one for
+   the rest (`tsr_mvm_cluster` `RST_COPY`, set by `tsr_mvm` when `RST_LOCAL` > 0; the cluster
+   takes the stage before the last and registers the copies itself): one register per cluster
+   drove about 700 pins over a whole SLR in the k4min link (2026-11-06, -0.98 ns, 16 K failing
+   endpoints, 59 % of the core clock's TNS). The reset is cycle-identical to the single stage. The core is a P-cycle
    delayed copy of the `RST_PIPE = 0` core; the registers start in reset (INIT 0). Boundary
    consequence (§14.7, §14.8): the outputs go quiet P cycles after `rst_n` falls, and `rst_n`
    must stay low for at least P + 1 cycles.

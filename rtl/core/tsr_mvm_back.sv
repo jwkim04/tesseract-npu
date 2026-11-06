@@ -294,6 +294,7 @@ module tsr_mvm_back
 ) (
   input  logic                          clk,
   input  logic                          rst_n,
+  input  logic [T_MAX-1:0]              rst_tok_n,      // the reset of each token's datapath (a copy of rst_n)
 
   // ---- per-MVM configuration (stable while beats flow) ----
   input  logic                          cfg_fmt,        // 0: Q8_0, 1: Q4_K
@@ -761,8 +762,8 @@ module tsr_mvm_back
     // ATTQK per-token tags: the QS half at C_G, the Dx pair at C_M0
     logic       a_par_g;
     logic [2:0] a_ep_m0;
-    tsr_mvm_dly #(.W(1), .N(C_G - 1)) u_dly_apar (.clk, .rst_n, .d(a_par1_q[t]), .q(a_par_g));
-    tsr_mvm_dly #(.W(3), .N(C_M0 - 1)) u_dly_aep (.clk, .rst_n, .d(a_ep1_q[t]), .q(a_ep_m0));
+    tsr_mvm_dly #(.W(1), .N(C_G - 1)) u_dly_apar (.clk, .rst_n(rst_tok_n[t]), .d(a_par1_q[t]), .q(a_par_g));
+    tsr_mvm_dly #(.W(3), .N(C_M0 - 1)) u_dly_aep (.clk, .rst_n(rst_tok_n[t]), .d(a_ep1_q[t]), .q(a_ep_m0));
     wire hs_g = c_att ? a_par_g : (~cfg_fmt & cd[C_G].b4[1]);
     always_ff @(posedge clk) begin
       if (cfg_fmt) begin
@@ -815,13 +816,13 @@ module tsr_mvm_back
       msum_q <= (26'(m4_q[0]) + 26'(m4_q[1])) + (26'(m4_q[2]) + 26'(m4_q[3]));
     end
     logic [25:0] msum_cv;      // msum in cycle C_CV
-    tsr_mvm_dly #(.W(26), .N(C_CV - C_M0 - MS_LAT)) u_dly_ms (.clk, .rst_n, .d(msum_q), .q(msum_cv));
+    tsr_mvm_dly #(.W(26), .N(C_CV - C_M0 - MS_LAT)) u_dly_ms (.clk, .rst_n(rst_tok_n[t]), .d(msum_q), .q(msum_cv));
 
     // ---------------- int -> f32 (C_CV .. C_FI) ----------------
     logic [31:0] f0, f1, f0_f, f1_f;
     tsr_mvm_i2f #(.IW(26)) u_i2f0 (.clk, .v(is3_q[0]), .y(f0));
     tsr_mvm_i2f #(.IW(26)) u_i2f1 (.clk, .v(cfg_fmt ? msum_cv : is3_q[1]), .y(f1));
-    tsr_mvm_dly #(.W(64), .N(C_F - C_FI)) u_dly_f (.clk, .rst_n, .d({f1, f0}), .q({f1_f, f0_f}));
+    tsr_mvm_dly #(.W(64), .N(C_F - C_FI)) u_dly_f (.clk, .rst_n(rst_tok_n[t]), .d({f1, f0}), .q({f1_f, f0_f}));
 
     // ---------------- d * Dx (M0 .. FD) ----------------
     logic [511:0] dline;
@@ -837,26 +838,26 @@ module tsr_mvm_back
     logic [31:0] dd0, dd1, dd0_f, dd1_f;
     logic        dd0_v, dd1_v;
     tsr_fp_mul #(.LAT(MUL_LAT)) u_mul_a0 (
-      .clk, .rst_n, .ce(1'b1), .in_valid(cv[C_M0]),
+      .clk, .rst_n(rst_tok_n[t]), .ce(1'b1), .in_valid(cv[C_M0]),
       .a(da_m0), .b(cfg_fmt ? dxh_q : dx_even), .out_valid(dd0_v), .y(dd0)
     );
     tsr_fp_mul #(.LAT(MUL_LAT)) u_mul_a1 (
-      .clk, .rst_n, .ce(1'b1), .in_valid(cv[C_M0]),
+      .clk, .rst_n(rst_tok_n[t]), .ce(1'b1), .in_valid(cv[C_M0]),
       .a(db_m0), .b(cfg_fmt ? dxh_q : dx_odd), .out_valid(dd1_v), .y(dd1)
     );
-    tsr_mvm_dly #(.W(64), .N(C_F - C_FD)) u_dly_dd (.clk, .rst_n, .d({dd1, dd0}), .q({dd1_f, dd0_f}));
+    tsr_mvm_dly #(.W(64), .N(C_F - C_FD)) u_dly_dd (.clk, .rst_n(rst_tok_n[t]), .d({dd1, dd0}), .q({dd1_f, dd0_f}));
 
     // ---------------- second products (F .. P) and the Q4_K subtraction (P .. A4) ----------------
     logic [31:0] pb0, pb1, qd;
     logic        pb0_v, pb1_v, qd_v;
     tsr_fp_mul #(.LAT(MUL_LAT)) u_mul_b0 (
-      .clk, .rst_n, .ce(1'b1), .in_valid(cv[C_F]), .a(dd0_f), .b(f0_f), .out_valid(pb0_v), .y(pb0)
+      .clk, .rst_n(rst_tok_n[t]), .ce(1'b1), .in_valid(cv[C_F]), .a(dd0_f), .b(f0_f), .out_valid(pb0_v), .y(pb0)
     );
     tsr_fp_mul #(.LAT(MUL_LAT)) u_mul_b1 (
-      .clk, .rst_n, .ce(1'b1), .in_valid(cv[C_F]), .a(dd1_f), .b(f1_f), .out_valid(pb1_v), .y(pb1)
+      .clk, .rst_n(rst_tok_n[t]), .ce(1'b1), .in_valid(cv[C_F]), .a(dd1_f), .b(f1_f), .out_valid(pb1_v), .y(pb1)
     );
     tsr_fp_add #(.LAT(ADD_LAT)) u_sub (           // ATTQK: fadd(t_2j, t_2j+1), SEG level 1
-      .clk, .rst_n, .ce(1'b1), .in_valid(cv[C_P]), .a(pb0), .b(pb1), .sub(~c_att),
+      .clk, .rst_n(rst_tok_n[t]), .ce(1'b1), .in_valid(cv[C_P]), .a(pb0), .b(pb1), .sub(~c_att),
       .out_valid(qd_v), .y(qd)
     );
 
@@ -872,7 +873,7 @@ module tsr_mvm_back
     (* keep = "true" *) logic [1:0][3:0]      tc_l1_q;
     (* keep = "true" *) logic [1:0][4:0]      tc_a4_q, tc_a8_q;
     always_ff @(posedge clk) begin
-      if (!rst_n) begin
+      if (!rst_tok_n[t]) begin
         tc_wen_q  <= '0;
         tc_clr_q  <= '0;
         tc_byp4_q <= '0;
@@ -907,13 +908,13 @@ module tsr_mvm_back
       wire        lfirst = ltag[0];
       wire [31:0] opnd = lfirst ? 32'd0 : (lbyp ? acc_y[l] : pr_q[l][lset][lslot]);
       tsr_fp_add #(.LAT(ADD_LAT)) u_acc (
-        .clk, .rst_n, .ce(1'b1), .in_valid(iv[l]), .a(opnd), .b(term), .sub(1'b0),
+        .clk, .rst_n(rst_tok_n[t]), .ce(1'b1), .in_valid(iv[l]), .a(opnd), .b(term), .sub(1'b0),
         .out_valid(acc_v[l]), .y(acc_y[l])
       );
       always_ff @(posedge clk) begin
         for (int pr_s = 0; pr_s < 2; pr_s++) begin
           for (int pr_k = 0; pr_k < 8; pr_k++) begin
-            if (!rst_n || tc_clr_q[pr_s][pr_k]) begin
+            if (!rst_tok_n[t] || tc_clr_q[pr_s][pr_k]) begin
               pr_q[l][pr_s][pr_k] <= 32'd0;                 // reset / clear-on-read: +0.0
             end else if (tc_wen_q[l][pr_s][pr_k]) begin
               pr_q[l][pr_s][pr_k] <= acc_y[l];
@@ -928,19 +929,19 @@ module tsr_mvm_back
     logic [3:0]  tv;
     wire  [31:0] y1e = c_att ? qd : y1;             // level-2 operand: ATTQK the level-1 sum
     tsr_fp_add #(.LAT(ADD_LAT)) u_l1 (
-      .clk, .rst_n, .ce(1'b1), .in_valid(l1_act_q),
+      .clk, .rst_n(rst_tok_n[t]), .ce(1'b1), .in_valid(l1_act_q),
       .a(pr_q[0][tc_l1_q[0][3]][tc_l1_q[0][2:0]]), .b(pr_q[1][tc_l1_q[1][3]][tc_l1_q[1][2:0]]),
       .sub(1'b0),
       .out_valid(tv[0]), .y(y1)
     );
     tsr_fp_add #(.LAT(ADD_LAT)) u_l2 (
-      .clk, .rst_n, .ce(1'b1), .in_valid(i2v), .a(h1_q), .b(y1e), .sub(1'b0), .out_valid(tv[1]), .y(y2)
+      .clk, .rst_n(rst_tok_n[t]), .ce(1'b1), .in_valid(i2v), .a(h1_q), .b(y1e), .sub(1'b0), .out_valid(tv[1]), .y(y2)
     );
     tsr_fp_add #(.LAT(ADD_LAT)) u_l3 (
-      .clk, .rst_n, .ce(1'b1), .in_valid(i3v), .a(h2_q), .b(y2), .sub(1'b0), .out_valid(tv[2]), .y(y3)
+      .clk, .rst_n(rst_tok_n[t]), .ce(1'b1), .in_valid(i3v), .a(h2_q), .b(y2), .sub(1'b0), .out_valid(tv[2]), .y(y3)
     );
     tsr_fp_add #(.LAT(ADD_LAT)) u_l4 (
-      .clk, .rst_n, .ce(1'b1), .in_valid(i4v), .a(h3_q), .b(y3), .sub(1'b0), .out_valid(tv[3]), .y(y4[t])
+      .clk, .rst_n(rst_tok_n[t]), .ce(1'b1), .in_valid(i4v), .a(h3_q), .b(y3), .sub(1'b0), .out_valid(tv[3]), .y(y4[t])
     );
     always_ff @(posedge clk) begin
       if (tc_hen_q[0]) h1_q <= y1e;      // left operand of the next pair (t1v & ~tg1_q)

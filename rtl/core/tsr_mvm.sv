@@ -184,8 +184,11 @@ module tsr_mvm
 
   // Reset distribution (RST_LOCAL, header): rst_t_n top logic, rst_g_n gather, rst_c_n[c]
   // cluster c with its pipes.
+  // rst_ce_n: the clusters take the reset one stage early (stage RST_LOCAL - 1) and register the last
+  // stage in copies of their own (tsr_mvm_cluster RST_COPY): the same delay as rst_c_n, without one
+  // register driving a whole cluster. rst_c_n stays for the pipes around the clusters.
   logic              rst_t_n, rst_g_n;
-  logic [NUM_CH-1:0] rst_c_n;
+  logic [NUM_CH-1:0] rst_c_n, rst_ce_n;
   if (RST_LOCAL > 0) begin : g_rst
     (* keep = "true" *) logic [RST_LOCAL-1:0]             rt_q, rg_q;
     (* keep = "true" *) logic [RST_LOCAL-1:0][NUM_CH-1:0] rc_q;
@@ -207,10 +210,16 @@ module tsr_mvm
     assign rst_t_n = rt_q[RST_LOCAL-1];
     assign rst_g_n = rg_q[RST_LOCAL-1];
     assign rst_c_n = rc_q[RST_LOCAL-1];
+    if (RST_LOCAL > 1) begin : g_ce
+      assign rst_ce_n = rc_q[RST_LOCAL-2];
+    end else begin : g_ce1
+      assign rst_ce_n = {NUM_CH{rst_n}};
+    end
   end else begin : g_rst0
-    assign rst_t_n = rst_n;
-    assign rst_g_n = rst_n;
-    assign rst_c_n = {NUM_CH{rst_n}};
+    assign rst_t_n  = rst_n;
+    assign rst_g_n  = rst_n;
+    assign rst_c_n  = {NUM_CH{rst_n}};
+    assign rst_ce_n = {NUM_CH{rst_n}};
   end
 
   localparam int unsigned BCW = $bits(tsr_mvm_bcline_t);   // 527: broadcast payload
@@ -630,9 +639,9 @@ module tsr_mvm
     tsr_mvm_cluster #(
       .CH(c), .NUM_CH(NUM_CH), .HAS_ATT(HAS_ATT), .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .K_MAX(K_MAX), .T_MAX(T_MAX), .ADDR_BEAT_W(ADDR_BEAT_W),
       .BEAT_BITS(BEAT_BITS), .WS_FIFO_BEATS(WS_FIFO_BEATS), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT),
-      .MUL_LAT(MUL_LAT), .ADD_LAT(ADD_LAT), .WS_RD_LAT(WS_RD_LAT), .SPM_AW(SPM_AW)
+      .MUL_LAT(MUL_LAT), .ADD_LAT(ADD_LAT), .WS_RD_LAT(WS_RD_LAT), .RST_COPY(RST_LOCAL > 0), .SPM_AW(SPM_AW)
     ) u_cl (
-      .clk, .rst_n(rst_c_n[c]),
+      .clk, .rst_n(rst_ce_n[c]),
       .bc_cmd_valid(pv[1]), .bc_cmd(p_cmd), .bc_acmd_valid(pv[2]), .bc_acmd(p_acmd),
       .bc_line_valid(pv[0]), .bc_line(p_line),
       .rd_req_valid(wq_v), .rd_req_ready(wq_r), .rd_req_addr(wq_addr), .rd_req_len(wq_len),
@@ -665,6 +674,9 @@ module tsr_mvm
 `ifndef SYNTHESIS
     always_ff @(posedge clk) begin
       if (rst_c_n[c]) assert (wr_rdy) else $error("%m: weight-stream rd_rsp_ready low (the response pipe has no backpressure)");
+      // the cluster's own reset copies (RST_COPY) equal the last stage rst_c_n in every cycle
+      assert (u_cl.rst_c_n == rst_c_n[c] && u_cl.rst_f_n == rst_c_n[c] && u_cl.rst_t_n == {T_MAX{rst_c_n[c]}})
+        else $error("%m: the cluster's reset copies differ from rst_c_n");
     end
 `endif
 
