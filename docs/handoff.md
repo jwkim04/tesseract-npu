@@ -1,8 +1,38 @@
-# Handoff: where the work stands (2026-11-06)
+# Handoff: where the work stands (2026-11-07)
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
 
-## Resume here: the 200 / 100 MHz image on the card, M6 (branch `k4m200`, November 6, evening)
+## Resume here: the full-feature image, source ready to link (branch `k4full`, November 7)
+
+Branch `k4full` (worktree `/home/limagin-dev/tesseract-k4full`, from `07fbf33` of `k4m200`) makes `tsr_u200_k4` the full-feature card
+image: `NUM_CH` 4, `T_MAX` 4, VU 8 / 8 / 4 with `VU_LANE_PIPE` 2, attention with masked KVST, paired two-flit gather, DDR0 / DDR3
+boundaries, RV transport, trace writer and history, no local-intermediate banks (`CAPS` 0x21), core 200 MHz, `clk_rv` 100 MHz. No
+link was run. [platform-u200.md](platform-u200.md) §8.8 has the parameters, the Pblocks with the map
+(`docs/fig/floorplan/k4full-pblock-plan.png`), the reasons, the checks and the launch command. Short form:
+
+- Pblocks: `pblock_tsr_ctrl_plane` as in `k4m200` plus the two checker classes; the whole VU in a new child of SLR2,
+  `pblock_tsr_vu` (`CLOCKREGION_X0Y10:X2Y14`, off the DDR3 controller); clusters, assemblers, pair sources, bridges and arbiters of
+  channels 0 / 3 in SLR0 / SLR2; the hub in SLR1. The legality check on the platform passed (`tb/platform/viv/k4_pblock_check.tcl`).
+- Masked KVST was already in the base (from `aadf92c`); the main checkout has the older read-modify-write form, so nothing was
+  ported from it. `LOCAL_SCALE` and `LOCAL_SOFTCAP` are off with the local banks.
+- New: `XSLR_REG` (two register stages on every link between the control plane in SLR0 and the VU in SLR2, the CSR strobes, the
+  trace writer's request, data and response). The first out-of-context placement with hard Pblocks had WNS -8.2 ns at 3.333 ns,
+  from the VU's combinational `cmd_ready` into the issue decision and the other VU links. With `XSLR_REG`: WNS -0.686 ns, TNS
+  -1,392, 9,370 failing endpoints, no path group across two SLRs (the reduced image's run: -0.786 ns, 448 endpoints). The
+  full table is in §8.8. Out-of-context Pblocks are soft by default; `TSR_SLR_HARD=1` makes them hard as in the link.
+- Read first in the link: the placed SLR1 occupancy (the estimate with the shell is 91.8 to 93.4 %, the target 93 %), the SLR1
+  congestion windows (32x32 or smaller) and the router's column peaks. The kernel adds about 4.4 K SLLs at SLR0-SLR1 and 3.9 K at
+  SLR1-SLR2 over the reduced image. If a placement gate misses, do not spend the route.
+- Cost of `XSLR_REG`: the VU starts a command 2 cycles later and completes 3 later (it was 1); s registers 2 cycles later; trace
+  bursts a little slower; +1.3 K LUTs, +3.2 K flops, about +1 K CLBs in SLR1 (the stages sit in SLR1).
+- Source also fixed: the twelve testbench-HDL lint failures and the C16 `WIDTHCONCAT` of the checkpoint. New tests:
+  `test_core_k4full`, `test_core_m7_rv_local`, `test_k4_full_graph` (needs `TSR_K4_TRACE`; graph traces are in
+  `build/analysis/local_intermediates/` of `tesseract-local-intermediates-20261105`).
+- Setup of this worktree: `third_party` holds local clones at the pins (llama.cpp patched by `apply-patches.sh`), `build/tools`
+  links riscv and svgvenv from the main tree, and `traces/` has the main tree's trace files as symlinks (untracked, so the two
+  `tools_selftest_mock_traces` cases have data).
+
+## Earlier: the 200 / 100 MHz image on the card, M6 (branch `k4m200`, November 6, evening)
 
 The `k4m200` image (`build/link/k4m200/tsr_u200_k4.xclbin`, sha256
 `7a662c678fb7a370059659205fce96741b0bd959690995a67e0001ebdb21e556`, core 200 MHz, `clk_rv` 100 MHz) is the first

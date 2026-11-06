@@ -835,6 +835,21 @@ LUT whose hierarchy put it in the unit's Pblock, in the middle of a path between
 control-plane registers (k4min link, 2026-11-06: round trips SLR0 to SLR1 or SLR2 and back,
 -1.8 and -2.6 ns).
 
+`XSLR_REG` (implementation option of `tsr_core_dp`, set with `RV_LOCAL_TRANSPORT` in the full-feature
+K4 image) does the same for the blocks that sit two SLRs from the control plane: the whole vector
+unit in SLR2 and the trace writer's write mux. The VU's links to the issue path and the CSR block,
+the command and its ready, the done strobe, the 16 s registers, the three PERF strobes and the
+progress strobe, each pass two register stages in the glue of `tsr_core_dp`. The command goes through
+a valid / ready pipe (`tsr_rpipe`), so the issue path sees a registered ready and the VU a registered
+command. The VU starts a command two cycles later, its done strobe reaches `tsr_issue` two cycles
+later than before (`DONE_REG` adds the third), and the s registers show a change two cycles later;
+the host reads them after the op's done, which comes later still. The issue path's limit of two ops
+in flight (CC §9.4 I3) counts the commands in the pipe, so the VU never holds more than two. The
+unit's own checks (`tsr_core_dp` U4) are made on the unit's side of the stages. The trace writer's
+request and data streams pass a `tsr_rslice` each and its burst response two flops, so the writer
+waits a little longer for each burst; the DMA still waits at most one trace burst. The elaboration
+without the option has none of these stages.
+
 These links reduce declared signal width, not arithmetic precision. They add
 control latency and storage. The source registers and complete receive buffers
 belong to their respective functional endpoints. Only those endpoint modules

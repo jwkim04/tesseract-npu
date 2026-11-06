@@ -2377,8 +2377,9 @@ deleting code; every other configuration of the RTL is unchanged.
 
 `gen_tops.py` carries the parameters (`HAS_VU`, `HAS_ATT`, `HAS_TRW` and `HIST_DEPTH` are new
 pass-through parameters of `tsr_xrt_kernel`; their defaults are the earlier behaviour, so `tsr_u200_k1` is
-byte for byte as before). `tsr_u200_k4` is this image on this branch; the full elaboration
-(the earlier `tsr_u200_k4`) is `core_ooc.sh k4` and `hw/u200/k4_major_blocks_full.tcl`.
+byte for byte as before). `tsr_u200_k4` was this image on branch `k4m200` (commit `07fbf33`, hook and
+`gen_tops.py` entry as of that commit). On branch `k4full` it is the full-feature image of §8.8, and this
+elaboration is `core_ooc.sh k4min`.
 
 **Software.** `CAPS` 0 is the M6 convention. `tsr_build_supports` refuses every non-trivial op but MUL_MAT when the device's
 `CAPS` is 0, the planners refuse a VU kind without `CAPS.VU` (`BAD_RECORD`), and the checker refuses the AT and
@@ -2714,6 +2715,169 @@ checks above. Details and numbers: [`performance.md`](performance.md) "The first
   2.3 % on 32B.
 - Timing: no fault appeared in any run. The setup and hold figures remain arithmetic on the 200 / 150 MHz route.
 
+
+### 8.8 The full-feature image (`tsr_u200_k4`, branch `k4full`, 2026-11-07)
+
+Source for the full-feature card image, ready to link. No link has been run. The branch starts at `07fbf33` of `k4m200`, the
+reduced image that ran on the card (§8.7), and keeps every fix of it: the cluster reset copies, `DONE_REG` and `MT_PIPE`,
+the RV transport, core 200 MHz and `clk_rv` 100 MHz with the `CLKFINAL` window, and `--reuse_impl`. The reduced image is
+commit `07fbf33` (hook, `gen_tops.py` entry); `core_ooc.sh k4min` still elaborates it.
+
+| | `tsr_u200_k4` on `k4full` |
+|---|---|
+| Parameters | `NUM_CH` 4, `T_MAX` 4, `MVM_GATHER_PAIR` 1, `MVM_GATHER_FLITS` 2, `DDR_LOCAL_PIPE` 1, `RV_LOCAL_TRANSPORT` 1, `XSLR_REG` 1, `VU_FRONT_LANES` 8, `VU_EXP_LANES` 8, `VU_BACK_LANES` 4, `VU_LANE_PIPE` 2, plus `SPM_RD_LAT` 4, `MVM_BC_PIPE` 2, `MVM_RES_PIPE` 2, `MVM_MAC_LAT` 9, `RST_PIPE` 3, `AXI_SLICES` 2, `RST_STAGES` 3 |
+| At their defaults | `HAS_VU` 1, `HAS_ATT` 1 (KVST, ATTQK, ATTPV), `HAS_TRW` 1, `HIST_DEPTH` 512, `HAS_TOPK` 0, `HAS_DQROW` 0 |
+| Left out | `LOCAL_INTERMEDIATES`, `LOCAL_SCALE`, `LOCAL_SOFTCAP` 0: no local score / P banks, no local SCALE / softcap epilogues. `CAPS` reads 0x21 (VU, ATT) and the host keeps the legacy paths |
+| Clocks | core 200 MHz, `clk_rv` 100 MHz (`k4.cfg`, accepted exactly by `CLKFINAL`) |
+
+**Masked KVST metadata writes** are in. They came with the base, from `aadf92c` (`codex/kvst-masked-writes`, §8.6.14): the 16-bit
+word mask reaches the AXI `WSTRB`, the central read-modify-write queue is gone, `tb/at/test_at_kvst.py` checks the masks and
+`tb/platform/test_axi_write_mask.py` the strobes. The main checkout (`codex/k4-route-fixes`, `70bc1d6` plus uncommitted work)
+has the older read-modify-write form (`KQ` in `tsr_dma_kvst.sv`, no mask port on `tsr_dma` or the AXI bridge); nothing was
+ported from it, and none of its dirty files is newer than the base's version of the same file.
+
+**LOCAL_SCALE and LOCAL_SOFTCAP stay off.** They do not need the local score banks, but they send each pair source's results
+through the vector unit's lane banks and back, which only saves central traffic when the bank sits in the cluster's SLR. With
+the whole VU in SLR2, pair 0 (clusters 0 and 2, SLR0) would cross two boundaries each way for it. They also keep the
+`HAS_LOCAL` lane ports in the VU. The study (§8.8 "Why") ranks the local intermediates as no help to SLR1.
+
+**What this branch adds to the source.**
+
+- `gen_tops.py`: the `tsr_u200_k4` entry above; the reduced entry and the local-intermediate variant are comments.
+  `tsr_xrt_kernel`, `tsr_core` and `tsr_core_dp` have the new pass-through parameter `XSLR_REG` (default 0: the netlist of every
+  other configuration is unchanged).
+- `XSLR_REG` (design/04-control-core.md §11.4). The control plane is in SLR0 and the VU in SLR2, so every VU link to the
+  issue path and the CSR block crosses two boundaries. The out-of-context placement below showed it: the VU's `cmd_ready`
+  (combinational) into the issue decision was -8.2 ns at 3.333 ns. With `XSLR_REG` the glue of `tsr_core_dp`
+  (not in a Pblock, so the stages may sit in SLR1) has two register stages on each link:
+
+  | Link | Stages | Effect |
+  |---|---:|---|
+  | Issue to VU: command, valid, ready (`tsr_rpipe`) | 2 | the VU starts a command 2 cycles later; the issue path sees a registered ready |
+  | VU done to `tsr_issue` | 2 (+1 `DONE_REG`) | completion 3 cycles after the VU's strobe (it was 1) |
+  | VU s registers (16 x 32) to `tsr_csr` | 2 | an s register shows a change 2 cycles later; the host reads it after the done |
+  | Progress and PERF strobes of the units, `perf_ch_*` of the channels to `tsr_csr` | 2 | diagnosis only; the counts and the watchdog decision are the same |
+  | Trace writer to the write mux on channel 0: request and data (`tsr_rslice`), burst response (flops) | 1 + 2 | the writer waits longer per burst; the DMA still waits at most one burst |
+
+  Results, queue order and the architectural state do not change. The synthesized core grows by 1,339 LUTs and 3,155 flops.
+- `tsr_vu.sv`: the zero assignment of `local_score_req` is one assignment per owner (Verilator `WIDTHCONCAT` above 8,192
+  bits at `NUM_CH` 16; the netlist is the same).
+- Lint: the full K4 elaboration in `rtl/lint.sh`, the platform lint and the Xilinx lint (with XSim static elaboration); the
+  twelve testbench-HDL lint failures of the checkpoint are fixed (open pins of the local-intermediate ports got targeted
+  `PINCONNECTEMPTY` waivers, `tsr_tb_loop` marks the new command fields unused, and `rtl/lint.sh` lints a bind-only file such as
+  `tsr_tb_local_tcm.sv` with the module it binds into as the top).
+- Tests: `test_core_k4full` (core_smoke and core_db on the packaged elaboration), `test_core_m7_rv_local` (production
+  decode and prefill, `RV_LOCAL_TRANSPORT` 1, `XSLR_REG` 1), `test_k4_full_graph` (replay of a K4 T4 graph trace without
+  local kinds; needs `TSR_K4_TRACE`), and the hook test for both Pblocks.
+
+**Pblocks** (`hw/u200/k4_major_blocks.tcl`; whole major blocks only; the map is
+`docs/fig/floorplan/k4full-pblock-plan.png`, allowed regions and not placed cells):
+
+| Where | Blocks |
+|---|---|
+| SLR0 platform pblock | clusters 0 and 2 with their result assemblers, the pair source of clusters 0 / 2, the DDR0 bridge, the DDR0 arbiter |
+| `pblock_tsr_ctrl_plane`, child of SLR0: `CLOCKREGION_X0Y3:X1Y4`, `X2Y4`, `X3Y3:X5Y4` (16,300 CLBs, 252 RAMB36, 840 DSP) | control core (Ibex, TCMs, CDC), RV debug, the RV-side link ends, `u_issue`, `g_xc.u_xc` (VU checker class), `g_xc.g_at.u_chk_at` (AT class), `u_csr`, `g_db.u_dbg`, the issue and LCQ link ends |
+| SLR2 platform pblock | clusters 1 and 3 with their result assemblers, the pair source of clusters 1 / 3, the DDR3 bridge, the DDR3 arbiter |
+| `pblock_tsr_vu`, child of SLR2: `CLOCKREGION_X0Y10:X2Y14` (25,320 CLBs, 420 RAMB36, 1,320 DSP) | the whole `g_vu.u_vu`: front end and both lane banks |
+| SLR1 platform pblock | SPM, RISC-V bridge, SPM link end, DMA with KVST, QACT, the arbiters of channels 1 and 2 |
+| Free | central gather receiver, DDR1 / DDR2 bridges, the DMA-side DDR boundary slices of channels 0 and 3, the XSLR_REG glue, the adapter's control logic |
+
+The control Pblock is the one of §8.7 with the two checker classes added. It stays off the DDR0 controller (X2Y1 to X2Y3).
+The VU Pblock is the same idea for SLR2: the controller there (MIG 2, DDR[3]) is at X3Y10 to X3Y11 and X4Y10 to X4Y13 and
+failed its clock by 0.065 ns in the first link of the reduced image, so the VU gets the three left columns, next to the SPM
+across the SLR1 boundary. Nothing keeps clusters 1 and 3 out of that region; the VU is 10.6 to 13.8 K CLBs of its 25.3 K
+(60,104 LUT cells, 68,799 registers, 16 RAMB36, 13 RAMB18, 249 DSP after synthesis).
+
+![K4 full-feature image: Pblock plan](fig/floorplan/k4full-pblock-plan.png)
+
+**Why** (the SLR1 study of 2026-11-06, `build/analysis` of the session; census of three placed checkpoints). Every link of a
+full image failed with SLR1 98.5 to 99.9 % occupied (placed sites; the reduced image that routed had 90.7 %, the October
+image 92.1 %). SLLs were not the cause: the legal images had the highest SLL totals. The kernel in SLR1 was 13.8 to 16.0 K CLBs
+in the full runs and 7.8 K in the reduced image. The control plane (5.5 to 6.4 K CLBs, 33.5 K LUT cells), the two checker
+classes (0.7 to 0.8 K CLBs) and, when central, the VU front end (4.4 K CLBs, 31 K cells) are that difference. With all three in
+the outer SLRs SLR1 keeps only the data hub, about 38 K LUT cells, which the study puts at 88.5 to 92.6 % occupied with the
+shell (budget at 92.5 %: about 38 K cells). The local intermediate banks add 33.6 K LUTs and 192 URAM to the outer SLRs and
+nothing in SLR1, so they stay out of the first full image. The study's confidence that this configuration routes legally is
+about 50 % (about 25 to 30 % with the local banks).
+
+**Checks before the link** (all 2026-11-07, no link):
+
+- *Pblock legality on the platform* (`tb/platform/viv/k4_pblock_check.tcl`, one Vivado batch, 4 min, on the routed checkpoint of
+  the reduced image's first link, which carries the platform's pblocks). The hook ran; the blocks that image does not have (VU,
+  both checker classes, the pair sources) were skipped (`TSR_K4_SKIP_MISSING`, set by the script). Both child Pblocks are
+  children of their SLR pblock, hold no site outside it and resolve range by range (control 16,300 CLB / 252 RAMB36 / 840 DSP;
+  VU 25,320 / 420 / 1,320 and 160 URAM). The VU Pblock holds no cell on that checkpoint, so the script assigns the DDR3
+  bridge to it for the capacity read. The Pblocks are hard (`IS_SOFT` 0) in the platform design.
+- *Hook on the full hierarchy.* No routed checkpoint has the full elaboration with the RV transport, so the out-of-context
+  core (`core_ooc.sh k4`, hook with `TSR_K4_FP_CORE ""`) was the dry run: every named block exists under `u_core`; only the
+  kernel-level `g_ch[c].u_br` was checked on the checkpoint above and by the mock.
+- *Out-of-context synthesis* of the core (`core_ooc.sh k4 synth_only`): 408,802 LUT primitives (407,463 before `XSLR_REG`),
+  416,120 FFs (412,965 before), 1,768 DSP, 559 RAMB36, 80 RAMB18, 128 URAM; `report_cdc` gate PASS. By block (LUT cells): cluster 54.5 K each,
+  VU 60.1 K, gather 26.4 K, control core 8.9 K, issue 8.7 K, CSR 5.2 K, DB 8.4 K, checkers 4.3 K, DMA 5.5 K, QACT 5.6 K, SPM 4.3 K.
+- *Out-of-context placement* with the major-block map (`core_ooc.sh k4 ... floorplan=core_slr.tcl place_only`, 3.333 ns,
+  `clk_rv` 6.0 ns, no shell, stand-in platform pblocks, no `phys_opt_design`, no routing). Out-of-context designs make every
+  Pblock soft; `TSR_SLR_HARD=1` (new in `core_slr.tcl`) makes them hard as in the link. The first run, with soft Pblocks, left
+  two VU DSPs and about 500 VU cells in SLR1.
+
+  | Run | WNS (ns) | TNS (ns) | Failing endpoints | SLLs |
+  |---|---:|---:|---:|---:|
+  | Reduced image after its fixes (`k4min`, soft) | -0.786 | -228 | 448 | 8,563 |
+  | Full, soft Pblocks, no `XSLR_REG` | -3.206 | -26,363 | 46,224 | 10,001 |
+  | Full, hard Pblocks, no `XSLR_REG` | -8.156 | -36,391 | 48,070 | 9,299 |
+  | Full, hard, `XSLR_REG`: VU links and trace writer only | -1.207 | -3,354 | 15,097 | 15,046 |
+  | Full, hard, `XSLR_REG` (the image) | -0.686 | -1,392 | 9,370 | 16,829 |
+
+  The worst path of the hard run without `XSLR_REG` was the VU's `cmd_ready` into the issue decision (3 SLR crossings, 4
+  logic levels); the next were the done strobe into the issue cone, the CSR read of the s registers, the shadow-queue write
+  enable from `xfer`, and the trace writer into KVST's write logic (-2.4 ns). With the image's `XSLR_REG` no path group
+  crosses two SLRs in the worst 50: they are the MVM unit's `cmd_ready_q` into DSP clock enables (-0.69 ns), the attention stall
+  strobe, issue to the shadow queues, CDC to the SPM bridge and the CSR read mux (-0.53 to -0.57 ns). The period of the link is
+  5.0 ns, 1.67 ns more than here; the reduced image's run (-0.786 ns here) met 5.0 ns after place and route. The estimate has
+  no routing, no shell and no `phys_opt_design`, and the stand-in SLR1 is a hard region only for the blocks assigned to it.
+  Placed kernel only, whole-SLR %: CLBs 30,521 (62.0 %) / 7,895 (16.0 %) / 33,498 (68.0 %) in SLR0 / 1 / 2; SLR1 has 32,878
+  CLB LUTs. With the shell by the §8.7 method SLR1 is 45,238 CLBs (91.8 %, method 1) to 45,990 (93.4 %, method 2, 0.263 CLBs
+  per LUT cell): at the 93 % target and under the study's 40 K-cell gate. The glue stages put about 1 K CLBs more in SLR1
+  than the run without them (6,916 to 7,895). SLLs 16.8 K (kernel only; 8.2 K between SLR0 and SLR1, 8.7 K between SLR1 and
+  SLR2, 47 % and 50 % of the sites). The same stage of the reduced image had 8.6 K (3.8 K and 4.8 K), and its routed link
+  used 8.6 K and 7.2 K with the shell. The full kernel therefore adds about 4.4 K SLLs at the SLR0-SLR1 boundary and 3.9 K at
+  SLR1-SLR2 (the VU's SPM ports and links, the DDR0 / DDR3 boundaries, the pair links, the glue stages): the number to watch in
+  the router's column report. Estimated congestion of the whole design: global windows 16x16 north and 32x32 south; the
+  reduced image's link had 32x32.
+
+- *Gates* (the commit gates of AGENTS.md, `-j8`, all on this tree; the link of `k4full` was running during them):
+  `cmake --build build/dev` and `ctest -LE slow`: 296 passed, 0 failed (one case disabled);
+  `gen_tables.py --check` and `gen_tops.py --check`: pass; `rtl/lint.sh` with the Vivado wrapper: all clean, 414 Verilator
+  lint runs, 11 XSim static elaborations (the packaged K4 core among them), 8 Vivado syntheses, 3 generated-file checks. The
+  `WIDTHCONCAT` of `tsr_vu.sv` (`NUM_CH` 16) was in `aadf92c` and in `07fbf33` alike (the file is identical in both) and
+  is fixed here; so are the twelve testbench-HDL runs. `tb/run_all.sh --no-lint`, run in parts: `at` and `vu` 34 passed;
+  `core`, `csr`, `ctrl`, `dbg`, `issue` and `platform` 458 passed; `chk`, `common`, `dma`, `fastreplay`, `fp`, `qact`, `spm`
+  and `tech` 102 passed; `mvm`, `mvmback` and `mvmfront` 48 passed after the one failure below; 0 failed. The skipped
+  cases are the opt-in ones (mutants, Vivado runs, slow sweeps, the trace replays that need an environment variable).
+  The failure: `test_mvm[c16t2]` and `test_mvm_real[c16t2]` could not build, because `tsr_tb_mvm.sv` tied `local_score_req`
+  off with one `'0` (the same 8,672-bit replication); the bench now ties it off per channel. Replays of real graphs on the
+  packaged core (`test_k4_full_graph`, traces of the candidate's analysis directory): four legacy-attention graphs (the
+  `att_final_legacy` set, 000000 to 000003) and one dense prefill graph (`dense_ggml_t4/000004`) pass with every DRAM region
+  equal to the C oracle's. `test_core_m7_rv_local` and `test_core_k4full` pass with `XSLR_REG` 1, and `test_core_db_local`
+  with it off.
+
+**Not verified.** Routing, setup and hold at 200 / 100 MHz, the DDR clocks, CDC after placement and the shell's SLR1 occupancy
+are what the link decides. The study's gates for the stop-after-placement check of the link: SLR1 occupancy at or below
+92.5 %, global congestion windows in SLR1 at or below 32x32, router column peaks at or below about 106 %; if a gate misses,
+do not spend the route. The estimate of SLR1 above is already at 93 %, so the placement gate is the first thing to read.
+Card bring-up, M7 and any throughput figure of this image wait for a legal route.
+
+**Launch.** From `/home/limagin-dev/tesseract-k4full` (`build/platforms` links to the development platform; `third_party`
+holds local clones at the pinned commits, patched by `third_party/apply-patches.sh`). Show the map to the user first.
+
+```sh
+mkdir -p build/link/k4full
+TSR_BUILD_JOBS=8 TSR_U200_SYNTH_JOBS=16 TSR_U200_OUT=$PWD/build/link/k4full \
+  nohup hw/u200/vivado_slot.sh hw/u200/build_xclbin.sh k4 > build/link/k4full/launch.log 2>&1 &
+```
+
+Read the logs as for the first link of the reduced image (§8.7 "Launch (`k4-min`)"), with `K4 major blocks: pblock_tsr_ctrl_plane`
+and `pblock_tsr_vu` in the log of the implementation run for the Pblocks' capacity, `CLKFINAL PASS k4`, the placed SLR1
+occupancy and congestion windows, and the DDR4 clocks (`mmcm_clkout0_1` to `_3`).
 
 ## 9. Timing and resources (Vivado OOC synthesis of `tsr_u200_k1`)
 
