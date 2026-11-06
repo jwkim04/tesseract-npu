@@ -299,7 +299,11 @@ module tsr_vu
     assign local_busy = 1'b0;
     assign local_done = 1'b0;
     assign local_req = '0;
-    assign local_score_req = '0;
+    // one assignment per owner: a single '0 for the whole packed array is an 8,672-bit replication at NUM_CH 16
+    // (Verilator WIDTHCONCAT)
+    for (genvar c = 0; c < NUM_CH; c++) begin : g_zero_score
+      assign local_score_req[c] = '0;
+    end
     assign rd_req_valid = generic_rd_valid;
     assign rd_req_line = generic_rd_line;
     wire unused_local = &{1'b0, local_score_data, local_rsp, incoming[6:3]};

@@ -24,6 +24,9 @@ module tsr_tb_mvm_local_scale
     .clk, .rst_n, .l_v('0), .l_uop(U_NOP), .l_a('0), .l_b('0), .l_c1('0), .l_c2('0),
     .l_coeff('0), .angle('0), .l_neg('0), .l_lv('0), .l_fresh(1'b0), .l_pa('0), .l_ctx(1'b0),
     .back_valid(1'b0), .dr_addr('0), .dr_sel(1'b0), .dr_empty(1'b0), .dr_mx(1'b0),
+    // the lane outputs the bench does not read are left open
+    /* verilator lint_off PINCONNECTEMPTY */
     .dr_data(), .dr_l1(), .lane_y(), .local_req(req), .local_rsp(rsp)
+    /* verilator lint_on PINCONNECTEMPTY */
   );
 endmodule

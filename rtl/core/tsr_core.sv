@@ -76,6 +76,11 @@ module tsr_core
   parameter int unsigned     DTCM_BYTES     = tsr_tables_pkg::TSR_DTCM_BYTES,
   parameter bit              CTRL_SYNC      = 1'b0,
   parameter bit              RV_LOCAL_TRANSPORT = 1'b0,   // narrow links to a relocated control subsystem
+  // XSLR_REG (implementation; tsr_core_dp): register stages on the links between the relocated control plane (RV_LOCAL_TRANSPORT)
+  // and the blocks that sit two SLRs away from it, the vector unit and the trace writer's write mux. Results and the
+  // architectural state are unchanged, the units' completions and the trace bursts are a few cycles later; 0 builds the
+  // netlist without them.
+  parameter bit              XSLR_REG       = 1'b0,
   // W4-B (tsr_core_dp): vector unit (queue depth QD_VU; lane knobs VU_EXP_LANES / VU_BACK_LANES, VU §7.10),
   // attention, TOPK / DQROW (M8 RTL, off in the U200 M7 build), the DB block and its sizes (DB §10.3)
   parameter bit              HAS_VU         = 1'b1,
@@ -375,7 +380,7 @@ module tsr_core
     .MVM_WS_FIFO(MVM_WS_FIFO), .MVM_BC_PIPE(MVM_BC_PIPE), .MVM_RES_PIPE(MVM_RES_PIPE), .MVM_GATHER_PAIR(MVM_GATHER_PAIR), .MVM_GATHER_FLITS(MVM_GATHER_FLITS), .DDR_LOCAL_PIPE(DDR_LOCAL_PIPE),
     .MVM_ACT_RD_LAT(MVM_ACT_RD_LAT), .MVM_MAC_LAT(MVM_MAC_LAT), .MVM_MUL_LAT(MVM_MUL_LAT),
     .MVM_ADD_LAT(MVM_ADD_LAT), .MVM_WS_RD_LAT(MVM_WS_RD_LAT), .RST_PIPE(RST_PIPE),
-    .RV_LOCAL_TRANSPORT(RV_LOCAL_TRANSPORT),
+    .RV_LOCAL_TRANSPORT(RV_LOCAL_TRANSPORT), .XSLR_REG(XSLR_REG),
     .QD_DMA(QD_DMA), .QD_QACT(QD_QACT), .QD_MVM(QD_MVM), .QD_SYNC(QD_SYNC),
     .ITCM_BYTES(ITCM_BYTES), .DTCM_BYTES(DTCM_BYTES),
     .HAS_VU(HAS_VU), .HAS_ATT(HAS_ATT), .HAS_TOPK(HAS_TOPK), .HAS_DQROW(HAS_DQROW), .HAS_DB(HAS_DB),

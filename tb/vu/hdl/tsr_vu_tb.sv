@@ -118,8 +118,11 @@ module tsr_vu_tb
   tsr_vu #(.SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT), .NUM_CH(NUM_CH), .FRONT_LANES(FRONT_LANES), .EXP_LANES(EXP_LANES),
            .BACK_LANES(BACK_LANES), .LANE_PIPE(LANE_PIPE), .HAS_TOPK(HAS_TOPK), .HAS_DQROW(HAS_DQROW)) u_vu (
     .clk, .rst_n, .cmd_valid, .cmd_ready, .cmd, .done,
+    // the local-intermediate path is absent from this bench: its outputs are left open
+    /* verilator lint_off PINCONNECTEMPTY */
     .scale_request(1'b0), .scale_grant(), .scale_done(1'b0), .scale_req('0), .scale_rsp(),
     .local_score_req(), .local_score_data('0),
+    /* verilator lint_on PINCONNECTEMPTY */
     .rd_req_valid(rd_req_valid[2]), .rd_req_ready(rd_req_ready[2]), .rd_req_line(rd_req_line[2]),
     .rd_rsp_valid(rd_rsp_valid[2]), .rd_rsp_data,
     .wr_valid(wr_valid[2]), .wr_ready(wr_ready[2]), .wr_line(wr_line[2]), .wr_data(wr_data[2]), .wr_be(wr_be[2]),

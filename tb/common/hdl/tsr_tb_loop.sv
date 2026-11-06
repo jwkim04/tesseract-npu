@@ -207,6 +207,7 @@ module tsr_tb_loop
                      ccmd_in.fmt, ccmd_in.w_off, bcline_in.data[511:32], fcmd_in.fmt, fcmd_in.k,
                      fcmd_in.w_off, beat_in.sc[2:0], beat_in.m[7:6], beat_in.m[4:0], beat_in.w[126:1],
                      mvm_in.w_off, mvm_in.k, mvm_in.t, mvm_in.dst_stride, mvm_in.y_lines,
-                     mvm_in.rows_per_ch, mvm_in.qa_lines};
+                     mvm_in.rows_per_ch, mvm_in.qa_lines, mvm_in.local_scale, mvm_in.local_softcap,
+                     mvm_in.scale, mvm_in.post_scale};
 
 endmodule

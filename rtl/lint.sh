@@ -119,6 +119,10 @@ lint tsr_core -GNUM_CH=4 -GT_MAX=4 -GMVM_RES_PIPE=2 -GMVM_GATHER_PAIR=1 -GMVM_GA
 # no attention (KVST, ATTQK, ATTPV), no trace writer or history.
 lint tsr_core -GNUM_CH=4 -GT_MAX=8 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9 -GRV_LOCAL_TRANSPORT=1 -GHAS_VU=0 -GHAS_ATT=0 -GHAS_TRW=0 -GHIST_DEPTH=0
 lint tsr_core -GNUM_CH=4 -GT_MAX=8 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9 -GRV_LOCAL_TRANSPORT=1 -GHAS_VU=0 -GHAS_ATT=0 -GHAS_TRW=0 -GHIST_DEPTH=0 -GDDR_LOCAL_PIPE=1 -GMVM_GATHER_PAIR=1 -GMVM_GATHER_FLITS=2
+# The full-feature K4 image (tsr_u200_k4, gen_tops.py): four clusters, T_MAX 4, the vector unit 8 / 8 / 4 with two lane pipe
+# stages, attention with masked KVST, the DB block with trace writer and history, paired two-flit gather, the DDR0 / DDR3
+# boundaries and the RV transport. The local-intermediate banks stay off.
+lint tsr_core -GNUM_CH=4 -GT_MAX=4 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9 -GMVM_GATHER_PAIR=1 -GMVM_GATHER_FLITS=2 -GDDR_LOCAL_PIPE=1 -GRV_LOCAL_TRANSPORT=1 -GXSLR_REG=1 -GVU_FRONT_LANES=8 -GVU_EXP_LANES=8 -GVU_BACK_LANES=4 -GVU_LANE_PIPE=2
 lint tsr_mvm_pair_tx -GW=563
 lint tsr_mvm_pair_rx -GW=563
 lint tsr_core -GVU_LANE_PIPE=1 -GVU_EXP_LANES=8 -GVU_BACK_LANES=4
@@ -223,7 +227,11 @@ for d in "$ROOT"/tb/*/hdl; do
     for f in "$d"/*.sv; do
         [ -e "$f" ] || continue
         top=$(sed -n 's/^\s*module\s\+\([A-Za-z_][A-Za-z0-9_]*\).*/\1/p' "$f" | head -n 1)
-        if out=$("$VERILATOR" --lint-only -Wall --top-module "$top" -F "$FL" "$d"/*.sv "${tb_extra[@]}" 2>&1); then
+        # a file that only binds into an RTL module (tb/core/hdl/tsr_tb_local_tcm.sv reaches the TCMs through
+        # $root.tsr_core) is linted with that module as the top: its hierarchical references need it
+        bind_top=$(sed -n 's/^\s*bind\s\+\([A-Za-z_][A-Za-z0-9_]*\)\s.*/\1/p' "$f" | head -n 1)
+        lint_top=${bind_top:-$top}
+        if out=$("$VERILATOR" --lint-only -Wall --top-module "$lint_top" -F "$FL" "$d"/*.sv "${tb_extra[@]}" 2>&1); then
             echo "lint ok   $top (tb)"
         else
             echo "lint FAIL $top (tb)"

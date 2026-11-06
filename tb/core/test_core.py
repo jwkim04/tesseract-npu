@@ -598,7 +598,7 @@ def test_core(cfg):
     _run(seed=seed + int(os.environ.get("TSR_SEED", "1"), 0) - 1, rv_ps=rv_ps)   # --tsr-seed shifts all
 
 
-def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu=False):
+def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu=False, rv_local=False):
     """core_m7 of one case: the scenario from the simulator, the RTL core built with its configuration
     (lane_pipe: VU_LANE_PIPE, the k4 bitstream's register stages around the VU lanes)."""
     from common.runner import run
@@ -613,6 +613,10 @@ def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu
         params["VU_LANE_PIPE"] = lane_pipe
     if ddr_pipe:
         params["DDR_LOCAL_PIPE"] = ddr_pipe
+    if rv_local:
+        # the packaged image's control plane: DONE_REG on every unit done strobe, MT_PIPE on the DB memory taps and
+        # the cluster reset copies (RST_PIPE 3); the VU and the AT units are in the core
+        params.update(RV_LOCAL_TRANSPORT=1, RST_PIPE=3, XSLR_REG=1)
     env = {"TB_M7_ELF": str(C.M7_ELF), "TB_M7_DIR": str(d), "TB_CORE_RV_PS": str(rv_ps)}
     if half_vu:
         params.update(VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4)
@@ -620,7 +624,8 @@ def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu
     if mut:
         env["TB_M7_LIMIT"] = "300000"                 # core cycles to wait for the answer (the decode case needs ~60 K)
     run("tsr_core", __name__, parameters=params, sources=_sources(mut),
-        name=("core_m7_half_vu" if half_vu else ("core_m7" if not lane_pipe else "core_m7_pipe%d" % lane_pipe)) if not mut else "core_m7_mut_" + mut,
+        name=("core_m7_rv_local" if rv_local else "core_m7_half_vu" if half_vu else
+              ("core_m7" if not lane_pipe else "core_m7_pipe%d" % lane_pipe)) if not mut else "core_m7_mut_" + mut,
         seed=seed, testcase=["core_m7"], extra_env=env, timescale=("1ps", "1ps"))
 
 
@@ -637,6 +642,17 @@ def test_core_m7_half_vu(m7case):
     Only the documented hardware lane-count identity fields differ.
     """
     _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0), lane_pipe=2, ddr_pipe=1, half_vu=True)
+
+
+def test_core_m7_rv_local(m7case):
+    """Production decode/prefill on the core with the relocated control plane (RV_LOCAL_TRANSPORT 1, RST_PIPE 3).
+
+    Every unit done strobe, the VU and the AT work included, is registered at the entry of tsr_issue (DONE_REG),
+    the DB memory taps take MT_PIPE 2 and the clusters register their own reset copies. The comparisons to the C
+    oracle are core_m7's: output rows and KV planes bit for bit, Q_DONE / Q_ISSUED / Q_ERR_CODE per unit, the s
+    registers, the PERF event counters, the history and the trace records.
+    """
+    _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0), rv_local=True)
 
 
 def test_core_m7_ddr_local(m7case):
@@ -769,6 +785,7 @@ if pytest is not None:
     test_core_m7_lane_pipe = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_lane_pipe)
     test_core_m7_half_vu = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_half_vu)
     test_core_m7_ddr_local = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_ddr_local)
+    test_core_m7_rv_local = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_rv_local)
     test_core_mutants = pytest.mark.slow(test_core_mutants)
 
 
@@ -784,6 +801,27 @@ def test_core_k4_locality():
                   MVM_BC_PIPE=2, MVM_RES_PIPE=2, VU_LANE_PIPE=2,
                   VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, RST_PIPE=3, SPM_RD_LAT=4, MVM_MAC_LAT=9)
     run("tsr_core", __name__, parameters=params, sources=_sources(), name="core_k4_locality",
+        seed=int(os.environ.get("TSR_SEED", "1"), 0), testcase=["core_smoke", "core_db"],
+        extra_env={"TB_CORE_ELF": str(elf), "TB_CORE_RV_PS": "6000", "TB_CORE_PS": "4000",
+                   "TB_CORE_NCH": "4", "TB_CORE_TMAX": "4",
+                   "TB_CORE_VU_FRONT": "8", "TB_CORE_VU_BACK": "4"}, timescale=("1ps", "1ps"))
+
+
+def test_core_k4full():
+    """The full-feature card image (tsr_u200_k4, tb/core/viv/core_ooc.sh k4): four clusters with T_MAX 4, the vector
+    unit 8 / 8 / 4 behind two lane-pipe stages, attention with masked KVST, the paired two-flit gather, the DDR0 /
+    DDR3 boundaries, the control core behind the RV transport and the DB block with trace writer and history.
+    core_smoke and core_db run the firmware streams on the RTL Ibex and must equal the simulator in every DRAM
+    region, the identification registers and the final CSR state; core_db adds the stop state, the history and the
+    trace records. Core / RV periods are 250 / 166.7 MHz; random memory stalls cover every channel. The memory
+    sizes are reduced as in test_core_k4_locality.
+    """
+    from common.runner import run
+    elf = C.build_fw(FW_OUT)
+    params = dict(C.PARAMS, NUM_CH=4, T_MAX=4, DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
+                  RV_LOCAL_TRANSPORT=1, XSLR_REG=1, MVM_BC_PIPE=2, MVM_RES_PIPE=2, VU_LANE_PIPE=2,
+                  VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, RST_PIPE=3, SPM_RD_LAT=4, MVM_MAC_LAT=9)
+    run("tsr_core", __name__, parameters=params, sources=_sources(), name="core_k4full",
         seed=int(os.environ.get("TSR_SEED", "1"), 0), testcase=["core_smoke", "core_db"],
         extra_env={"TB_CORE_ELF": str(elf), "TB_CORE_RV_PS": "6000", "TB_CORE_PS": "4000",
                    "TB_CORE_NCH": "4", "TB_CORE_TMAX": "4",

@@ -62,6 +62,10 @@ module tsr_core_dp
   parameter int unsigned     MVM_BC_PIPE    = TSR_DEF_MVM_BC_PIPE,
   parameter bit              DDR_LOCAL_PIPE = 1'b0,
   parameter bit              RV_LOCAL_TRANSPORT = 1'b0,
+  // XSLR_REG: register stages on the links between the relocated control plane and the blocks two SLRs away from it
+  // (the vector unit's command, done, s-register, PERF and progress links; the trace writer's write mux). No functional
+  // change: the VU's commands start, its done strobes arrive and its s registers show a few cycles later.
+  parameter bit              XSLR_REG       = 1'b0,
   parameter bit              LOCAL_SOFTCAP = 1'b0,
   parameter bit              LOCAL_SCALE = 1'b0,
   parameter bit              LOCAL_INTERMEDIATES = 1'b0,
@@ -398,7 +402,11 @@ module tsr_core_dp
   tsr_mvm_cmd_t         mvm_cmd;
   logic                 perf_mvm_busy;
   logic [NUM_CH-1:0]    perf_ch_rd_beat, perf_ch_wait;
-  logic                 vu_cmd_valid, vu_cmd_ready, vu_done;       // unit 3 (HAS_VU = 0: no command ever)
+  // unit 3 (HAS_VU = 0: no command ever): vi_* on the issue path's side, vu_* on the unit's side (the same signals
+  // unless XSLR_REG puts register stages between them, g_vux below)
+  logic                 vi_cmd_valid, vi_cmd_ready, vi_done;
+  logic [XC_CMD_W-1:0]  vi_cmd;
+  logic                 vu_cmd_valid, vu_cmd_ready, vu_done;
   logic [XC_CMD_W-1:0]  vu_cmd;
 
   // -------------------------------------------------------------------------------------------
@@ -454,7 +462,7 @@ module tsr_core_dp
     .dma_cmd_valid, .dma_cmd_ready, .dma_cmd, .dma_cmd_xc, .dma_xcmd, .dma_done,
     .qact_cmd_valid, .qact_cmd_ready, .qact_cmd, .qact_done,
     .mvm_cmd_valid, .mvm_cmd_ready, .mvm_cmd, .mvm_cmd_xc, .mvm_xcmd, .mvm_done,
-    .vu_cmd_valid, .vu_cmd_ready, .vu_cmd, .vu_done,
+    .vu_cmd_valid(vi_cmd_valid), .vu_cmd_ready(vi_cmd_ready), .vu_cmd(vi_cmd), .vu_done(vi_done),
     .att_cmd_valid, .att_cmd_ready(1'b0), .att_cmd, .att_done(1'b0),
     .host_hold, .halt_hold, .qabort, .rv_reset, .host_clear, .sr_busy, .dbg_hold, .dbg_step,
     .err_rec(q_err_rec), .err_valid, .err_hs(err_rec), .err_ack, .rec_resync,
@@ -480,6 +488,40 @@ module tsr_core_dp
   logic [31:0]       dbg_wdata, dbg_rdata;
   logic [63:0][3:0]  perf_ext, perf_ext_db, perf_ext_un;
   logic [15:0][31:0] vu_sreg;
+
+  // XSLR_REG: the units and the outer channels' arbiters sit in other SLRs than the CSR block (the control plane). Two register
+  // stages, in this glue, on what only they feed the CSR block with: the watchdog progress strobes, the units' PERF strobes
+  // and the channels' PERF strobes. The PERF counters and the watchdog (diagnosis only, EX §8.6: 2^L cycles without
+  // progress) see them two cycles late; their counts and the HUNG decision do not change.
+  logic [5:0]        unit_progress_c;
+  logic [NUM_CH-1:0] perf_ch_rd_beat_c, perf_ch_wait_c;
+  logic [63:0][3:0]  perf_ext_un_c;
+  if (XSLR_REG) begin : g_csrx
+    (* shreg_extract = "no" *) logic [1:0][5:0]        prog_q;
+    (* shreg_extract = "no" *) logic [1:0][2*NUM_CH-1:0] chev_q;
+    (* shreg_extract = "no" *) logic [1:0][63:0][3:0]  pext_q;
+    initial begin
+      prog_q = '0;
+      chev_q = '0;
+      pext_q = '0;
+    end
+    always @(posedge clk) begin           // not always_ff: the initial block writes them too
+      prog_q[0] <= unit_progress;
+      chev_q[0] <= {perf_ch_wait, perf_ch_rd_beat};
+      pext_q[0] <= perf_ext_un;
+      prog_q[1] <= prog_q[0];
+      chev_q[1] <= chev_q[0];
+      pext_q[1] <= pext_q[0];
+    end
+    assign unit_progress_c = prog_q[1];
+    assign {perf_ch_wait_c, perf_ch_rd_beat_c} = chev_q[1];
+    assign perf_ext_un_c   = pext_q[1];
+  end else begin : g_csrd
+    assign unit_progress_c   = unit_progress;
+    assign perf_ch_rd_beat_c = perf_ch_rd_beat;
+    assign perf_ch_wait_c    = perf_ch_wait;
+    assign perf_ext_un_c     = perf_ext_un;
+  end
 
   tsr_csr #(
     .NUM_CH(NUM_CH), .LANES(LANES), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES),
@@ -510,12 +552,12 @@ module tsr_core_dp
     .qidle(qidle && ifq_drained), .qquiescent(qquiescent && ifq_drained),
     .err_any, .hold_src, .q_state, .seq_d(d_seq), .err_rec(q_err_rec), .q_pidx,
     .perf_retired, .perf_push, .perf_busy, .perf_mvm_wait, .perf_mvm_empty, .perf_hold,
-    .perf_ch_rd_beat, .perf_ch_wait, .perf_ext, .unit_progress,
+    .perf_ch_rd_beat(perf_ch_rd_beat_c), .perf_ch_wait(perf_ch_wait_c), .perf_ext, .unit_progress(unit_progress_c),
     .plat_err_i, .host_irq_o, .unit_hung
   );
   // PERF increments of the DB block (slots 61, 62, X + 10) and of the units (VU X + 13 .. 15, AT X + 16
   // .. 19): disjoint slots, so the arrays are OR-ed
-  assign perf_ext = perf_ext_db | perf_ext_un;
+  assign perf_ext = perf_ext_db | perf_ext_un_c;
 
   // -------------------------------------------------------------------------------------------
   // External checker classes (tsr_chk's xc_* port, CC §8.2): the VU class with the routing of AT's
@@ -894,6 +936,7 @@ module tsr_core_dp
   logic [1:0][TSR_LINE_BITS-1:0]          vu_wr_data;
   logic [1:0][TSR_SPM_BE_W-1:0]           vu_wr_be;
   logic                                   vu_perf_spm_wait, vu_perf_hazard, vu_perf_line, vu_progress;
+  logic [15:0][31:0]                      vu_sreg_u;                       // the unit's; vu_sreg is tsr_csr's side
   if (HAS_VU) begin : g_vu
     logic [1:0]  vu_dbg_held;
     logic [31:0] vu_dbg_w0;
@@ -909,7 +952,7 @@ module tsr_core_dp
       .rd_rsp_valid(vu_rd_rsp_valid), .rd_rsp_data(vu_rd_rsp_data),
       .wr_valid(vu_wr_valid), .wr_ready(vu_wr_ready), .wr_line(vu_wr_line), .wr_data(vu_wr_data),
       .wr_be(vu_wr_be),
-      .sreg(vu_sreg),
+      .sreg(vu_sreg_u),
       .perf_spm_wait(vu_perf_spm_wait), .perf_hazard(vu_perf_hazard), .perf_line(vu_perf_line),
       .dbg_held(vu_dbg_held), .dbg_w0(vu_dbg_w0), .dbg_flags(vu_dbg_flags),
       .progress(vu_progress)
@@ -931,13 +974,60 @@ module tsr_core_dp
     assign vu_wr_line        = '0;
     assign vu_wr_data        = '0;
     assign vu_wr_be          = '0;
-    assign vu_sreg           = '0;
+    assign vu_sreg_u         = '0;
     assign vu_perf_spm_wait  = 1'b0;
     assign vu_perf_hazard    = 1'b0;
     assign vu_perf_line      = 1'b0;
     assign vu_progress       = 1'b0;
     wire unused_novu = &{1'b0, rst_b_n[RB_VU], vu_cmd_valid, vu_cmd, vu_rd_req_ready, vu_rd_rsp_valid,
                          vu_rd_rsp_data, vu_wr_ready};
+  end
+
+  // -------------------------------------------------------------------------------------------
+  // The VU's links to the control plane (XSLR_REG). With the control plane in SLR0 (RV_LOCAL_TRANSPORT) and the whole
+  // vector unit in SLR2, every signal between them crosses two SLR boundaries. VX register stages on each, in this
+  // glue (not in a Pblock, so the stages are free to sit in SLR1):
+  //   command   a valid / ready pipe (tsr_rpipe): the issue path sees a registered ready of its own, the VU a registered
+  //             valid and command. Every item is offered to the VU as before, one VX cycles later; up to
+  //             2 + 2 VX commands are in the pipe, but the issue path's limit (two ops in flight, CC §9.4 I3) counts them.
+  //   done      the strobe reaches tsr_issue VX cycles later (tsr_issue's DONE_REG adds one more)
+  //   sreg      VX stages towards tsr_csr: the s registers show a change VX cycles later, but the host reads them after
+  //             the op's done, which takes VX + 1 cycles from the VU to the issue path
+  // The VU's PERF strobes and progress go with the other units' (g_csrx).
+  // The unit's own rules (U4 below) are checked on the unit's side.
+  // -------------------------------------------------------------------------------------------
+  localparam int unsigned VX = (XSLR_REG && HAS_VU) ? 2 : 0;
+  if (VX == 0) begin : g_vux0
+    assign vu_cmd_valid     = vi_cmd_valid;
+    assign vi_cmd_ready     = vu_cmd_ready;
+    assign vu_cmd           = vi_cmd;
+    assign vi_done          = vu_done;
+    assign vu_sreg          = vu_sreg_u;
+  end else begin : g_vux
+    tsr_rpipe #(.W(XC_CMD_W), .DEPTH(VX)) u_cmd (
+      .clk, .rst_n(rst_b_n[RB_VU]),
+      .s_valid(vi_cmd_valid), .s_ready(vi_cmd_ready), .s_data(vi_cmd),
+      .m_valid(vu_cmd_valid), .m_ready(vu_cmd_ready), .m_data(vu_cmd)
+    );
+    (* shreg_extract = "no", keep = "true" *) logic [VX-1:0] done_q;
+    (* shreg_extract = "no", keep = "true" *) logic [VX-1:0][511:0] sreg_q;
+    initial sreg_q = '0;                  // the data stages start at 0 like the VU's registers after reset
+    always @(posedge clk) begin           // not always_ff: the initial block writes them too
+      sreg_q[0] <= vu_sreg_u;
+      for (int unsigned k = 1; k < VX; k++) sreg_q[k] <= sreg_q[k-1];
+    end
+    always_ff @(posedge clk) begin
+      if (!rst_b_n[RB_VU]) begin
+        done_q <= '0;
+      end else begin
+        done_q[0] <= vu_done;
+        for (int unsigned k = 1; k < VX; k++) done_q[k] <= done_q[k-1];
+      end
+    end
+    assign vi_done = done_q[VX-1];
+    for (genvar r = 0; r < 16; r++) begin : g_sreg
+      assign vu_sreg[r] = sreg_q[VX-1][32*r +: 32];
+    end
   end
 
   // PERF increments of the units (EX §6): VU X + 13 .. 15, AT X + 16 .. 19 (levels are time slots, the
@@ -1093,6 +1183,43 @@ module tsr_core_dp
 
     // Write source: the DMA's port, on channel TSR_TRW_CH through the trace writer's mux (DB §8.3).
     if (HAS_DB && HAS_TRW && c == tsr_tables_pkg::TSR_TRW_CH) begin : g_trwmux
+      // The trace writer (tsr_dbg, with the control plane) and the write mux (beside the DMA and the channel's arbiter) sit in
+      // different SLRs when the control plane is relocated. XSLR_REG: the writer's request and data streams pass a tsr_rslice
+      // each and the burst response two flops, so every crossing ends in registers (without them the mux's combinational
+      // valid / ready terms joined the DMA's KVST write logic across the boundary: OOC placement 2026-11-07, -2.4 ns at
+      // 3.333 ns). The writer only waits longer; the DMA waits at most one trace burst (tsr_dbg_wrmux), as before.
+      logic                   w_req_valid, w_req_ready, w_dat_valid, w_dat_ready, w_dat_last, w_rsp_valid;
+      logic [ADDR_BEAT_W-1:0] w_req_addr;
+      logic [TSR_LEN_W-1:0]   w_req_len;
+      logic [BEAT_BITS-1:0]   w_dat_data;
+      if (XSLR_REG) begin : g_tslice
+        (* keep_hierarchy = "yes" *) tsr_rslice #(.W(ADDR_BEAT_W + TSR_LEN_W), .FORM(1)) u_tq (
+          .clk, .rst_n(rst_b_n[RB_DBG]),
+          .s_valid(t_wr_req_valid), .s_ready(t_wr_req_ready), .s_data({t_wr_req_addr, t_wr_req_len}),
+          .m_valid(w_req_valid), .m_ready(w_req_ready), .m_data({w_req_addr, w_req_len})
+        );
+        (* keep_hierarchy = "yes" *) tsr_rslice #(.W(BEAT_BITS + 1), .FORM(1)) u_td (
+          .clk, .rst_n(rst_b_n[RB_DBG]),
+          .s_valid(t_wr_dat_valid), .s_ready(t_wr_dat_ready), .s_data({t_wr_dat_data, t_wr_dat_last}),
+          .m_valid(w_dat_valid), .m_ready(w_dat_ready), .m_data({w_dat_data, w_dat_last})
+        );
+        (* shreg_extract = "no", keep = "true" *) logic [1:0] rsp_q;
+        always_ff @(posedge clk) begin
+          if (!rst_b_n[RB_DBG]) rsp_q <= '0;
+          else                  rsp_q <= {rsp_q[0], w_rsp_valid};
+        end
+        assign t_wr_rsp_valid = rsp_q[1];
+      end else begin : g_tdirect
+        assign w_req_valid    = t_wr_req_valid;
+        assign t_wr_req_ready = w_req_ready;
+        assign w_req_addr     = t_wr_req_addr;
+        assign w_req_len      = t_wr_req_len;
+        assign w_dat_valid    = t_wr_dat_valid;
+        assign t_wr_dat_ready = w_dat_ready;
+        assign w_dat_data     = t_wr_dat_data;
+        assign w_dat_last     = t_wr_dat_last;
+        assign t_wr_rsp_valid = w_rsp_valid;
+      end
       tsr_dbg_wrmux #(.ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BEAT_BITS)) u_wrmux (
         .clk, .rst_n(rst_b_n[RB_DBG]),
         .d_wr_req_valid(d_wr_req_valid[c]), .d_wr_req_ready(d_wr_req_ready[c]),
@@ -1100,8 +1227,9 @@ module tsr_core_dp
         .d_wr_dat_valid(d_wr_dat_valid[c]), .d_wr_dat_ready(d_wr_dat_ready[c]),
         .d_wr_dat_data(d_wr_dat_data[c]), .d_wr_dat_mask(d_wr_dat_mask[c]), .d_wr_dat_last(d_wr_dat_last[c]),
         .d_wr_rsp_valid(d_wr_rsp_valid[c]), .d_wr_rsp_ready(d_wr_rsp_ready[c]), .d_wr_rsp_id(d_wr_rsp_id[c]),
-        .t_wr_req_valid, .t_wr_req_ready, .t_wr_req_addr, .t_wr_req_len,
-        .t_wr_dat_valid, .t_wr_dat_ready, .t_wr_dat_data, .t_wr_dat_last, .t_wr_rsp_valid,
+        .t_wr_req_valid(w_req_valid), .t_wr_req_ready(w_req_ready), .t_wr_req_addr(w_req_addr),
+        .t_wr_req_len(w_req_len), .t_wr_dat_valid(w_dat_valid), .t_wr_dat_ready(w_dat_ready),
+        .t_wr_dat_data(w_dat_data), .t_wr_dat_last(w_dat_last), .t_wr_rsp_valid(w_rsp_valid),
         .s_wr_req_valid(a_wr_req_valid[c]), .s_wr_req_ready(a_wr_req_ready[c]),
         .s_wr_req_addr(a_wr_req_addr[c]), .s_wr_req_len(a_wr_req_len[c]), .s_wr_req_id(a_wr_req_id[c]),
         .s_wr_dat_valid(a_wr_dat_valid[c]), .s_wr_dat_ready(a_wr_dat_ready[c]),

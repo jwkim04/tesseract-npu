@@ -119,7 +119,10 @@ module tsr_tb_mvm
     .RES_PIPE(RES_PIPE), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT), .MUL_LAT(MUL_LAT),
     .ADD_LAT(ADD_LAT), .WS_RD_LAT(WS_RD_LAT), .RST_LOCAL(RST_LOCAL)
   ) u_mvm (
+    // the local-intermediate path is absent from this bench: its outputs are left open
+    /* verilator lint_off PINCONNECTEMPTY */
     .local_score_req('0), .local_score_data(), .scale_req(), .scale_rsp('0),
+    /* verilator lint_on PINCONNECTEMPTY */
     .clk, .rst_n,
     .cmd_valid, .cmd_ready, .cmd, .cmd_xc(1'b0), .xcmd('0), .done,     // W4-B at: no attention here (tb/at)
     .spm_rd_req_valid(mv_rd_req_valid), .spm_rd_req_ready(mv_rd_req_ready),

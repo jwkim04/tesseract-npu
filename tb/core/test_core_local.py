@@ -201,3 +201,32 @@ def test_k4_locality_graph(local, tmp_path):
         testcase=["locality_graph"], extra_env={"TB_LOCAL_TRACE": str(trace), "TB_LOCAL_ENABLE": str(local_enable),
                    "TB_LOCAL_MORE": extra, "TB_LOCAL_ABORT": os.environ.get("TSR_LOCAL_ABORT", "0")},
         timescale=("1ps", "1ps"))
+
+
+def test_k4_full_graph(tmp_path):
+    """TSR_K4_TRACE points to a trace of a K4 T4 graph whose records use no local kind (a legacy attention graph or a
+    dense graph, captured with the simulator and the production firmware). The core is the packaged full-feature image
+    (tsr_u200_k4, gen_tops.py): T_MAX 4, VU 8 / 8 / 4 behind two lane-pipe stages, attention, paired two-flit gather,
+    the DDR0 / DDR3 boundaries and the RV transport, with the local-intermediate banks and epilogues off (CAPS 0x21).
+    TSR_K4_TRACE_MORE adds further graphs of the same configuration, separated by the path separator."""
+    value = os.environ.get("TSR_K4_TRACE")
+    if not value:
+        pytest.skip("set TSR_K4_TRACE to a K4 T4 graph trace without local kinds")
+    trace = Path(value).resolve()
+    info = json.loads((trace / "meta.json").read_text())
+    cfg = info["config"]
+    preload = tcm_preload(tmp_path, trace / info["image"]["file"])
+    sv = Path(__file__).resolve().parent / "hdl" / "tsr_tb_local_tcm.sv"
+    assert cfg["num_ch"] == 4 and cfg["t_max"] == 4
+    params = dict(NUM_CH=4, T_MAX=4, K_MAX=cfg["k_max"], SPM_BYTES=cfg["spm_bytes"],
+                  CH_BYTES=f"64'd{cfg['ch_bytes']}", ADDR_BEAT_W=cfg["addr_beat_w"],
+                  MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2, DDR_LOCAL_PIPE=1, RV_LOCAL_TRANSPORT=1, XSLR_REG=1, RST_PIPE=3,
+                  SPM_RD_LAT=4, MVM_BC_PIPE=2, MVM_RES_PIPE=2, MVM_MAC_LAT=9,
+                  VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, VU_LANE_PIPE=2)
+    extra = os.pathsep.join(str(Path(item).resolve())
+                            for item in filter(None, os.environ.get("TSR_K4_TRACE_MORE", "").split(os.pathsep)))
+    run("tsr_core", __name__, parameters=params, name="core_k4_full_graph",
+        extra_sources=[sv], plusargs=preload,
+        testcase=["locality_graph"], extra_env={"TB_LOCAL_TRACE": str(trace), "TB_LOCAL_ENABLE": "0",
+                   "TB_LOCAL_MORE": extra, "TB_LOCAL_ABORT": "0"},
+        timescale=("1ps", "1ps"))
