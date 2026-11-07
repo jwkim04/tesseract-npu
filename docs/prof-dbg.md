@@ -331,8 +331,10 @@ planned, and §2 summarises the design.
 - Whether a new process can open a compute unit left by a dead one without disturbing it (hang dumps of a
   hung process; `TSR_ATTACH`): to be checked on the card.
 - The U200 debug build (`k4_dbg.cfg`): which nets survive synthesis and the exact hook step.
-- Profiling smoke tests on the card (`tsr-prof trw` needs the trace writer, which `k4m200` does not have). The GDB smoke
-  passed on `k4m200`; the full image still needs one.
+- Profiling on the card: the full image (`k4full`) has the trace writer and the history. `tsr-selftest --trw` ran the writer through the
+  kernel tests and 647 trace replays (16,247 records, none dropped, no hang on channel 0), and the GDB smoke (halt, breakpoints, a hardware
+  breakpoint in a kernel, `monitor hist`, `monitor trw`) passed on `k4full`. Open: the DB §8.7 self-check of records against PERF differs by
+  0.2 to 5 % on the card (`platform-u200.md` §8.8); a timeline of a model run (`tsr-prof trw` of a `graph` launch) was not made.
 - Complete the RTL sample/apply handshake and the `SBA_REFUSED` diagnostic described in §1.
 - `tsr-dbg diverge`, `tsr-prof report` and periodic firmware PC sampling.
 - Confirmations of third-party facts: riscv-dbg and Ibex behaviours marked *confirm* in CC §3 and DB §3.

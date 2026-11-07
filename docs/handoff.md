@@ -1,8 +1,60 @@
-# Handoff: where the work stands (2026-11-07)
+# Handoff: where the work stands (2026-11-08)
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
 
-## Resume here: the full-feature image, source ready to link (branch `k4full`, November 7)
+## Resume here: the full-feature image on the card, ATTPV fault fixed in the source, relink needed (branch `k4full`, November 8)
+
+The full-feature image of the link below (`build/link/k4full/tsr_u200_k4.xclbin`, sha256 `20f25925…22e7`, 200 / 100 MHz, timing met:
+WNS +0.003 ns, WHS +0.006 ns) ran on the card. Everything checked passes except attention on the device. Numbers and method:
+[platform-u200.md](platform-u200.md) §8.8 "Card bring-up", [performance.md](performance.md) "The full-feature image on the card".
+
+What passed (all bit-identical to the C simulator at `T_MAX` 4 and `CAPS` 0x21 unless a KL is given):
+
+- `tsr-selftest`: identity (`CAPS` 0x21, `T_MAX` 4, `RV_FREQ` ratio 0.5), memory, boot (8.4 ms cold, 2.5 ms warm), `PING` 6.53 µs,
+  `selftest` kernel ids 1 to 4 and 6 to 10 and the misuse cases (184 checks). Id 5 (attention) failed, below.
+- Trace replays through the `replay` kernel: `m2` 123, `gen` 26, `m3` 171, `vu` 196, `ctrl` 131, 0 failed. `at`: 75 passed, 23 failed.
+- Trace writer: `tsr-selftest --trw 16` (new) ran the kernel tests and 647 replays with the writer on: 16,247 records, 0 dropped, no
+  hang on channel 0 (the `eea134e` fix). The DB §8.7 PERF self-check differs by 0.2 to 5 % (one RETIRED strobe lost in some `m2`
+  replays; open, nothing wrong in a result).
+- M6: 0.5B 8 x 64 KL 2.5947e-3, ratio 1.077, 512 of 512 rows bit-identical; 32B 2 x 16 ratio 0.750, 32 of 32 bit-identical.
+- Vector-unit kinds on the device (`--phase m7 --offload-kqv off`): 0.5B ratio 1.127, 512 of 512 rows bit-identical, decode 69.6
+  tok/s (25 launches per token, was 145); 32B ratio 0.777, 32 of 32 bit-identical, 2.33 tok/s.
+- GDB smoke over `tsr-dbg` on the card: halt, registers, breakpoints, step, memory write, a hardware breakpoint in a kernel,
+  watchpoint, `finish`, history (512 entries), trace writer commands, detach.
+- Decode, M6 settings: 0.5B 49.5 tok/s, 32B 2.27 tok/s (the cycles per token equal `k4m200`'s); prefill 410.8 and 9.6 tok/s
+  (`T_MAX` 4 takes four tokens per weight pass, `k4m200` eight). Launch round trip 16 µs beyond the device time.
+
+The ATTPV fault and its cause (details: §8.8 "The ATTPV fault"):
+
+- On the card every ATTPV that executes returns, in each group of four output lines (a 64-dim slice), lines 2 and 3 equal to lines 0
+  and 1. M7 with attention gives KL ratio 525 (0.5B), the first differing node of a node dump is the first `FLASH_ATTN_EXT`, dims 32 to
+  63 of every head equal the simulator's dims 0 to 31.
+- The RTL is right: Verilator replays of the failing traces on the packaged K4 core (Xilinx wrappers, `XSLR_REG` 1, two-flit gather,
+  production firmware on the RTL Ibex), `test_at_mvm_u200_flits2` and `test_at_mvm_u200_xilinx` pass. Vivado 2024.2 synthesised
+  `automatic int L = 8 * int'(dr_l_q) + k` / `cb_a[t][6'(L)]` in `tsr_mvm_pv.sv` without the top bit of `dr_l_q` (the kernel netlist
+  had 4,864 `cb_a` registers instead of 9,728). A netlist simulation of the select gets 1,977 of 4,000 steps wrong.
+- The Route 35-3360 RAMs (30 `RAMB36`, `CLOCK_DOMAINS` `COMMON`) are not the cause: M6 and the 647 non-attention replays are exact,
+  the PV FIFO RAMs are flagged in cluster 0 only and all clusters fail alike.
+- Fix (`f06fefc`): `tsr_mvm_pv_lsel` (lane `{l, k}` as a concatenation) in `tsr_mvm_pv.sv`; the same form in `tsr_dbg.sv`. `tb/at/test_at_pv_netlist.py`
+  (opt-in, Vivado) is the regression test: the module 0 of 4,000 wrong, the old form (control) 1,977. Out-of-context synthesis of
+  `tsr_mvm_pv`: 106 loads on `dr_l_q[2]`, 9,728 `cb_a` registers.
+
+Next:
+
+- Relink the image (no v++ link was run for the fix). The corrected PV unit is larger than the linked one (the half of its capture
+  bank that Vivado removed is back): +3.4 K LUT and +5.0 K FF per cluster, about +2 to +3 points of CLB occupancy in SLR0 and SLR2
+  (77.6 / 84.4 % to about 80 / 87 %; estimate from synthesis, §8.8). Its timing at 5.0 ns is not worse (+3.35 ns on the drain stage).
+  On the new image run `tsr-selftest` (id 5 and the `at` traces must pass),
+  then M7: `klcheck all --device xrt --phase m7` against `klcheck run --device sim --tokens ... --phase m7` (bit-identical), 32B, and
+  the M7 throughput (one launch per token).
+- Host tools of this branch: `tsr-selftest` lists every differing line of a failing region and dumps both images with
+  `TSR_SELFTEST_DUMP=<dir>`; `TSR_DEVRUN_DUMP=<dir>` does the same for a failing trace replay (with a count of the differing beats);
+  `TSR_DEVRUN_ARGS=1` prints the `replay` launch arguments; `--trw MIB` runs the trace writer through a selftest.
+  `tb/core/test_core_local.py` `test_k4_full_ops_trace` (`TSR_K4_OPS_TRACE`) replays ops traces on the packaged core in Verilator.
+- Any other `automatic int` used as an index of a signal-dependent expression is suspect on this Vivado (audit: `tsr_dbg.sv`
+  fixed; the others are constants after unrolling or only arithmetic).
+
+## Earlier: the full-feature image, source ready to link (branch `k4full`, November 7)
 
 Branch `k4full` (worktree `/home/limagin-dev/tesseract-k4full`, from `07fbf33` of `k4m200`) makes `tsr_u200_k4` the full-feature card
 image: `NUM_CH` 4, `T_MAX` 4, VU 8 / 8 / 4 with `VU_LANE_PIPE` 2, attention with masked KVST, paired two-flit gather, DDR0 / DDR3

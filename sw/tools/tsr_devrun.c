@@ -745,8 +745,27 @@ static void check_expect(tsr_tgt * g, const tsr_trace2 * t, tsr_devrun_result * 
         if (memcmp(b, e->data, (size_t)e->size) != 0) {
             uint64_t k = 0;
             while (b[k] == e->data[k]) ++k;
-            fail(r, verbose, cls, "%s: expect ch %u byte 0x%llx: 0x%02x, expected 0x%02x", who, e->ch,
-                 (unsigned long long)(e->byte_off + k), b[k], e->data[k]);
+            // How far the region differs, in 64-byte beats of the region (a card failure is placed from this).
+            uint64_t nb = 0;
+            for (uint64_t o = 0; o < e->size; o += 64) {
+                const uint64_t n = e->size - o < 64 ? e->size - o : 64;
+                if (memcmp(b + o, e->data + o, (size_t)n) != 0) ++nb;
+            }
+            const char * dd = getenv("TSR_DEVRUN_DUMP");
+            if (dd != NULL) {   // keep the device's bytes and the expected ones of the first bad region
+                char fn[1024];
+                for (int q = 0; q < 2; ++q) {
+                    snprintf(fn, sizeof(fn), "%s/ch%u_%llx_%s.bin", dd, e->ch, (unsigned long long)e->byte_off, q ? "expect" : "device");
+                    FILE * f = fopen(fn, "wb");
+                    if (f) {
+                        fwrite(q ? e->data : b, 1, (size_t)e->size, f);
+                        fclose(f);
+                    }
+                }
+            }
+            fail(r, verbose, cls, "%s: expect ch %u byte 0x%llx: 0x%02x, expected 0x%02x (region ch %u 0x%llx +%llu: %llu of %llu beats differ)",
+                 who, e->ch, (unsigned long long)(e->byte_off + k), b[k], e->data[k], e->ch, (unsigned long long)e->byte_off,
+                 (unsigned long long)e->size, (unsigned long long)nb, (unsigned long long)((e->size + 63) / 64));
             free(b);
             return;
         }
@@ -879,6 +898,11 @@ int tsr_devrun_trace(tsr_tgt * dev, tsr_tgt * shadow, const tsr_trace2 * t, cons
         args[2] = (o->replay_flags & TSR_REPLAY_F_SERIAL) | TSR_REPLAY_F_BUF;
         args[3] = buf_line;
         args[4] = chunk ? chunk : 4u;
+    }
+    if (t->kind == TSR_TRACE2_KIND_OPS && getenv("TSR_DEVRUN_ARGS") != NULL) {   // the replay kernel's launch, for an RTL replay of the trace
+        const tsr_region * e0 = t->mem.n_expect ? &t->mem.expect[0] : NULL;
+        fprintf(stderr, "REPLAY_ARGS n_push %zu first_expect %u:%llx args %08x %u %u %u %u\n", t->n_push, e0 ? e0->ch : 0u,
+                (unsigned long long)(e0 ? e0->byte_off : 0u), args[0], args[1], args[2], args[3], args[4]);
     }
     for (int k = 0; k < ntg && rc == 0; ++k)
         if (load_regions(tg[k], t)) {

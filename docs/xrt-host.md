@@ -9,7 +9,7 @@ developer summary of the same code.
 
 > **Scope.** As-built documentation. Status words: the protocol layer and the `sim` and `mock` kdevs
 > are *implemented and tested on the simulator*; the `xrt` kdev is *unit-tested against XRT's no-op
-> shim* (§6) and *ran on the card with the reduced `k4m200` image on 2026-11-06* (§8, selftest and M6),
+> shim* (§6) and *ran on the card with the reduced `k4m200` image on 2026-11-06 and the full `k4full` image on 2026-11-08* (§8, selftest, M6, the vector-unit kinds of M7, trace replays),
 > with no run in hw_emu (no hw_emu xclbin with the control core); the `vkernel` client is implemented, its two-clock server *planned* (P5.3). The card and
 > hw_emu results (§8, §9, `platform-u200.md` §14) were taken before the control core was added, with
 > the host issuing the ops. Normative: [EX](design/01-execution-model.md) §9-§10,
@@ -271,7 +271,7 @@ launch could address memory past the buffer (other BOs, or a DECERR that shows u
 ## 5. tsr-selftest
 
 `tsr-selftest [--device KIND] [--image ELF] [--mem-mib N] [--no-mem] [--no-kernel] [--ids LIST]
-[--no-shadow] [--rate-n N] [--traces DIR]... [--traces-serial DIR]... [--max-traces N] [--debug]
+[--no-shadow] [--rate-n N] [--traces DIR]... [--traces-serial DIR]... [--max-traces N] [--trw MIB] [--debug]
 [--log-out FILE] [--seed N] [-v]` (`sw/tools/tsr_selftest.cpp`; SW §9.5, §7.6, SW-28). Default device
 `$TSR_DEVICE`, else `xrt`; `mock` (the adapter register model, used by the ctests) and `sim` check the
 tool and the protocol path. Exit code 0 = every check passed, 1 = a check failed, 2 = the transport
@@ -302,6 +302,13 @@ did not open or bad usage. Sections:
    transport's recovery counters 0, `ADAPTER_STATUS` clean at the end and no `PLAT_ERR` seen.
 
 `--log-out FILE` keeps every drained log word, raw, for `tsr-log`.
+
+`--trw MIB` runs the kernel tests and the trace replays with the trace writer on (a ring of MIB MiB at the top of the channel 0 IO
+region), drains it at the end and runs the DB §8.7 self-checks against the PERF deltas of the whole run. On the card the writer's
+bursts then share channel 0's write port with the DMA. A failing region of a `selftest` kernel case lists every differing line and the
+words of the first one (`TSR_SELFTEST_DUMP=<dir>` keeps both images); a failing trace replay says how many beats of the region differ
+(`TSR_DEVRUN_DUMP=<dir>` keeps the device's and the expected bytes; `TSR_DEVRUN_ARGS=1` prints the `replay` kernel's launch arguments, which
+`tb/core/test_core_local.py` `test_k4_full_ops_trace` uses to replay the same trace on the RTL).
 
 ## 6. Tests (no hardware)
 
@@ -351,6 +358,11 @@ the shell flash with `xbmgmt`, `xbutil validate`, the M0 bandwidth run (`tsr_bw`
 the Qwen2.5-0.5B Q8_0 gates M3 and M4. Those runs used the xclbin load, 16 GiB device-only buffers
 and unmanaged DMA in both the `direct` and the `staged` mode (`platform-u200.md` §14.3). They did not
 cover `m2m` and the behaviour after `xbutil reset`.
+
+Done on 2026-11-08 with the full image `k4full` (`platform-u200.md` §8.8 "Card bring-up"): `tsr-selftest` 184 of 185 checks (the
+attention case failed on the ATTPV fault of that section), the trace replays of every set that fits `T_MAX` 4 (647 bit-exact; the `at` set
+failed on the same fault), the same replays with the trace writer on, M6 on both models, the vector-unit kinds of M7 on both models
+(all bit-identical to the simulator) and the GDB smoke with the history and the trace writer.
 
 Done on 2026-11-06 with the reduced image `k4m200` (`platform-u200.md` §8.7): steps 1 and 2 below ran as
 `TSR_XCLBIN=build/link/k4m200/tsr_u200_k4.xclbin tsr-selftest --device xrt` (205 checks passed; the xclbin loaded as an

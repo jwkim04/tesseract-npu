@@ -4,7 +4,7 @@
 //
 //   tsr-selftest [--device KIND] [--image ELF] [--mem-mib N] [--no-mem] [--no-kernel] [--ids LIST]
 //                [--no-shadow] [--rate-n N] [--traces DIR]... [--traces-serial DIR]...
-//                [--max-traces N] [--debug] [--log-out FILE] [--seed N] [-v]
+//                [--max-traces N] [--trw MIB] [--debug] [--log-out FILE] [--seed N] [-v]
 //   tsr-selftest --version          this tool's Tesseract Basis version and Basis ABI
 //
 //   --device KIND   transport (default: $TSR_DEVICE, else xrt): xrt on the card; mock (the adapter
@@ -20,6 +20,9 @@
 //                   launch as full launches of their own image); --traces-serial DIR with the replay
 //                   kernel's SERIAL flag (traces/model-v1conv, SW §5.4); repeatable; --max-traces N
 //                   caps the replays per directory
+//   --trw MIB       run the kernel tests and the trace replays with the trace writer on (ring of MIB MiB at the top
+//                   of the channel 0 IO region), then drain it and run the DB §8.7 self-checks against the PERF
+//                   deltas of the whole run (the card's channel 0 then carries trace and DMA writes together)
 //   --debug         DMI smoke (DB §3.4-§3.5): halt, read dpc / dcsr, single step, resume, PING after
 //   --log-out FILE  every log word drained during the run, raw little-endian (decode: tsr-log)
 //
@@ -65,6 +68,7 @@
 #include "tsr_logdec.h"
 #include "tsr_ref.h"
 #include "tsr_trace.h"
+#include "tsr_dbg_lib.hpp"   // the trace writer (sw/tools/dbg)
 #include "tsr_transport.h"
 
 #include "selftest_abi.hpp"   // sw/ctrl/ref: the selftest kernel's arguments and layouts
@@ -617,9 +621,41 @@ void run_case(ctx & x, kcase & c) {
             const std::vector<uint8_t> a = read_dev(x.dev, o.ch, o.beat, o.lines), b = read_dev(x.sh, o.ch, o.beat, o.lines);
             lines += o.lines;
             const int64_t d = a.size() == b.size() && !a.empty() ? first_diff(a.data(), b.data(), a.size()) : 0;
-            if (d >= 0 && same) {
+            if (d >= 0) {
+                // Name every differing line (the first 96) so a card failure can be placed in the area layout.
+                uint64_t nd_lines = 0;
+                std::string list;
+                for (uint64_t l = 0; l < o.lines && (l + 1) * 64u <= a.size() && (l + 1) * 64u <= b.size(); ++l) {
+                    if (memcmp(a.data() + l * 64u, b.data() + l * 64u, 64u) == 0) continue;
+                    if (nd_lines++ < 96) list += strf(" %" PRIu64, l);
+                }
+                if (const char * dd = getenv("TSR_SELFTEST_DUMP")) {   // keep both images of a failing region
+                    for (int k = 0; k < 2; ++k) {
+                        const std::vector<uint8_t> & v = k ? b : a;
+                        const std::string fn = strf("%s/id%u_ch%u_%" PRIx64 "_%s.bin", dd, c.id, o.ch, o.beat, k ? "shadow" : "device");
+                        if (FILE * f = fopen(fn.c_str(), "wb")) {
+                            fwrite(v.data(), 1, v.size(), f);
+                            fclose(f);
+                        }
+                    }
+                }
+                if (same) {
+                    where = strf("ch%u beat 0x%" PRIx64 " byte %" PRId64, o.ch, o.beat, d);
+                    // The words of the first differing line, device then shadow.
+                    const uint64_t fl = (uint64_t) d / 64u;
+                    for (int k = 0; k < 2; ++k) {
+                        const std::vector<uint8_t> & v = k ? b : a;
+                        where += k ? "; shadow:" : "; device:";
+                        for (unsigned w = 0; w < 16 && (fl + 1) * 64u <= v.size(); ++w) {
+                            uint32_t u;
+                            memcpy(&u, v.data() + fl * 64u + w * 4u, 4);
+                            where += strf(" %08x", u);
+                        }
+                    }
+                }
+                where += strf("%sch%u 0x%" PRIx64 ": %" PRIu64 " lines differ (%s%s)", same ? "; " : " | ", o.ch, o.beat, nd_lines,
+                              list.c_str(), nd_lines > 96 ? " ..." : "");
                 same = false;
-                where = strf("ch%u beat 0x%" PRIx64 " byte %" PRId64, o.ch, o.beat, d);
             }
         }
         result(same, c.name + strf(": every output byte = shadow (%" PRIu64 " lines)", lines), where);
@@ -1258,7 +1294,7 @@ void log_and_status(tsr_transport * t, const tsr_image * img, std::vector<uint32
 void usage() {
     fprintf(stderr, "usage: tsr-selftest [--device KIND] [--image ELF] [--mem-mib N] [--no-mem] [--no-kernel] [--ids LIST]\n"
                     "                    [--no-shadow] [--rate-n N] [--traces DIR]... [--traces-serial DIR]... [--max-traces N]\n"
-                    "                    [--debug] [--log-out FILE] [--seed N] [-v]\n"
+                    "                    [--trw MIB] [--debug] [--log-out FILE] [--seed N] [-v]\n"
                     "       tsr-selftest --version\n");
 }
 
@@ -1275,7 +1311,7 @@ int main(int argc, char ** argv) {
     if (dev == nullptr || dev[0] == '\0') dev = "xrt";
     const char * image_path = nullptr, * log_out = nullptr;
     uint64_t mem_mib = 64, seed = 1;
-    uint32_t rate_n = 1000;
+    uint32_t rate_n = 1000, trw_mib = 0;
     size_t max_traces = SIZE_MAX;
     bool do_mem = true, do_kernel = true, do_shadow = true, do_debug = false;
     std::vector<uint32_t> ids;
@@ -1307,6 +1343,7 @@ int main(int argc, char ** argv) {
         else if (a == "--traces") trace_dirs.push_back({ val("--traces"), 0u });
         else if (a == "--traces-serial") trace_dirs.push_back({ val("--traces-serial"), (uint32_t) TSR_REPLAY_F_SERIAL });
         else if (a == "--max-traces") max_traces = strtoull(val("--max-traces"), nullptr, 10);
+        else if (a == "--trw") trw_mib = (uint32_t) strtoul(val("--trw"), nullptr, 10);
         else if (a == "--debug") do_debug = true;
         else if (a == "--log-out") log_out = val("--log-out");
         else if (a == "--seed") seed = strtoull(val("--seed"), nullptr, 10);
@@ -1359,6 +1396,16 @@ int main(int argc, char ** argv) {
                 }
             }
         }
+        tsr::dbg::trw_ring trw_r;
+        tsr_perf_summary trw_p0;
+        bool trw_on = false;
+        if (trw_mib != 0) {   // the trace writer runs through the kernel tests and the replays below
+            std::string why;
+            trw_r = tsr::dbg::trw_default_ring(trw_mib);
+            trw_on = tsr::dbg::trw_start(t, trw_r, &why) == 0;
+            result(trw_on, strf("trace writer started (ring %u MiB at ch%u 0x%" PRIx64 ")", trw_mib, trw_r.ch, (uint64_t) trw_r.off), why);
+            tsr_transport_perf_summary(t, &trw_p0);
+        }
         if (do_kernel) {
             ctx x;
             x.dev = dt;
@@ -1380,6 +1427,31 @@ int main(int argc, char ** argv) {
             x.dev = dt;
             x.sh = sh;
             traces(x, trace_dirs, max_traces, tsr_image_path(img));
+        }
+        if (trw_on) {
+            printf("== trace writer\n");
+            tsr_perf_summary p1;
+            tsr_transport_perf_summary(t, &p1);
+            uint64_t pd[64];
+            for (int k = 0; k < 64; ++k) pd[k] = p1.perf[k] - trw_p0.perf[k];
+            std::vector<tsr::dbg::trw_rec> recs;
+            uint64_t lost = 0;
+            std::string why;
+            const int drc = tsr::dbg::trw_drain(t, trw_r, &recs, &lost, &why);
+            tsr::dbg::trw_stop(t);
+            result(drc == 0, "trace writer ring drained", why);
+            uint32_t ops = 0, marks = 0;
+            for (const tsr::dbg::trw_rec & q : recs) {
+                ops += q.kind == TSR_TRW_W0_KIND_OP;
+                marks += q.kind == TSR_TRW_W0_KIND_MARK;
+            }
+            const uint64_t drops = pd[TSR_PERF_TRW_DROPS] + lost;
+            printf("  %zu records (%u ops, %u markers), %" PRIu64 " dropped or overwritten; PERF TRW_RECORDS %" PRIu64 ", TRW_DROPS %" PRIu64 "\n",
+                   recs.size(), ops, marks, drops, pd[TSR_PERF_TRW_RECORDS], pd[TSR_PERF_TRW_DROPS]);
+            result(!recs.empty(), "trace writer wrote records", strf("%zu records", recs.size()));
+            const tsr::dbg::trw_check_result cr = tsr::dbg::trw_check(recs, pd, tsr_transport_config(t)->num_ch, drops);
+            for (const std::string & l : cr.lines) printf("  check: %s\n", l.c_str());
+            result(cr.ok, "DB §8.7 trace writer self-checks against the PERF deltas");
         }
         tsr_tgt_free(sh);
         tsr_tgt_free(dt);

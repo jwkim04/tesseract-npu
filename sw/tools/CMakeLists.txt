@@ -86,7 +86,7 @@ if (TARGET tsr_devrun)
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
     target_compile_options(tsr-selftest PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra -Wshadow)
     target_include_directories(tsr-selftest PRIVATE ${TESSERACT_ROOT}/sw/ctrl/ref)   # selftest_abi.hpp
-    target_link_libraries(tsr-selftest PRIVATE tsr_devrun tsr_transport tsr_elf tsr_sim tsr_ref)
+    target_link_libraries(tsr-selftest PRIVATE tsr_devrun tsr_transport tsr_elf tsr_sim tsr_ref tsr_dbg)
 
     # The checklist on the adapter register model (SW §10.2: was tools_xrt_selftest_mock*), each with
     # the shadow, the DMI smoke and the log written for tsr-log: 4 channels T_MAX 1 with DMA rules that
