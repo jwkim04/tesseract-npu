@@ -681,8 +681,9 @@ module tsr_dbg
     end
     if (RA >= 12'h8C0 && RA < 12'h8E0) begin
       for (int b = 0; b < 4; b++) begin
-        automatic int c = 4 * int'(RA[3:2]) + b;
-        if (c < int'(NUM_CH)) g8_d[8*b +: 8] = RA[4] ? wrout_q[c] : rdout_q[c];
+        // channel {RA[3:2], b}; a concatenation, not integer arithmetic (tsr_mvm_pv_lsel: Vivado 2024.2 drops index bits)
+        automatic logic [3:0] c = {RA[3:2], 2'(b)};
+        if (int'(c) < int'(NUM_CH)) g8_d[8*b +: 8] = RA[4] ? wrout_q[c] : rdout_q[c];
       end
     end
   end

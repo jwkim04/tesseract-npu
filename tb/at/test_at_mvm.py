@@ -49,7 +49,7 @@ if str(HERE) not in sys.path:
 
 from common import isa, tables as T                       # noqa: E402
 from common.mem_model import MemModel                     # noqa: E402
-from common.runner import run, rtl_sources                # noqa: E402
+from common.runner import run, rtl_sources, RTL           # noqa: E402
 
 import at_isa as A                                        # noqa: E402
 import at_tb as B                                         # noqa: E402
@@ -776,10 +776,11 @@ def _run(name, cfg, testcase="at_mvm"):
                   RD_OUTSTANDING=cfg["rd_out"], BC_PIPE=cfg.get("bc_pipe", 1), RES_PIPE=cfg.get("res_pipe", 1),
                   ACT_RD_LAT=cfg.get("act_rd_lat", 2), MAC_LAT=cfg.get("mac_lat", 3), MUL_LAT=cfg.get("mul_lat", 4),
                   ADD_LAT=cfg.get("add_lat", 5), WS_FIFO_BEATS=cfg.get("ws_fifo", 512),
-                  RST_LOCAL=cfg.get("rst_local", 0), GATHER_PAIR=cfg.get("gather_pair", 0),
+                  RST_LOCAL=cfg.get("rst_local", 0), GATHER_PAIR=cfg.get("gather_pair", 0), GATHER_FLITS=cfg.get("gather_flits", 1),
                   XSLR_REG=cfg.get("xslr_reg", 0))
     run("tsr_tb_at_mvm", __name__, parameters=params, name="at_mvm_" + name, testcase=testcase,
-        sources=rtl_sources() + [HERE.parent / "mvm" / "hdl" / "tsr_mvm_bc_observer.sv",
+        sources=rtl_sources(RTL / ("filelist_xilinx.f" if cfg.get("tech") == "xilinx" else "filelist.f")) +
+                [HERE.parent / "mvm" / "hdl" / "tsr_mvm_bc_observer.sv",
                                  HERE / "hdl" / "tsr_tb_at_mvm.sv"],
         extra_env={"TSR_ATMVM_CFG": json.dumps(cfg), "TSR_ATMVM_DIRECTED": os.environ.get("TSR_ATMVM_DIRECTED", "[]")})
 
@@ -789,6 +790,22 @@ def test_at_mvm_u200():
     _run("u200", dict(num_ch=4, t_max=4, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30, spm_rd_lat=4,
                       addr_beat_w=28, rd_out=16, bc_pipe=2, res_pipe=2, mac_lat=9,
                       rst_local=2, gather_pair=1, n_ops=40))
+
+
+def test_at_mvm_u200_flits2():
+    """The U200 shape with the paired two-flit gather (MVM_GATHER_FLITS 2, the full K4 image's). The attention results
+    and the SPM image are the simulator's."""
+    _run("u200_flits2", dict(num_ch=4, t_max=4, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30, spm_rd_lat=4,
+                             addr_beat_w=28, rd_out=16, bc_pipe=2, res_pipe=2, mac_lat=9,
+                             rst_local=2, gather_pair=1, gather_flits=2, n_ops=40))
+
+
+def test_at_mvm_u200_xilinx():
+    """The full K4 shape (two-flit gather, XSLR_REG) with the Xilinx technology wrappers of the card image
+    (rtl/filelist_xilinx.f: inferred BRAM / URAM / LUTRAM, DSP48E2-packed MAC lanes) instead of the generic ones."""
+    _run("u200_xilinx", dict(num_ch=4, t_max=4, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30, spm_rd_lat=4,
+                             addr_beat_w=28, rd_out=16, bc_pipe=2, res_pipe=2, mac_lat=9,
+                             rst_local=2, gather_pair=1, gather_flits=2, xslr_reg=1, n_ops=40, tech="xilinx"))
 
 
 def test_at_mvm_xslr():

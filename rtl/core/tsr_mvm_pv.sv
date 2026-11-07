@@ -629,6 +629,10 @@ module tsr_mvm_pv
   // ===========================================================================================
   logic [3:0] dr_t_q;
   logic [2:0] dr_l_q;
+  // the drain's lane select: pipe k of the step (slot dr_t_q, lane group dr_l_q) reads lane 8 dr_l_q + k
+  logic [7:0][37:0] cb_sel;
+  logic [7:0]       nf_sel;
+  tsr_mvm_pv_lsel #(.T_MAX(T_MAX)) u_lsel (.l(dr_l_q), .t(TW'(dr_t_q)), .a(cb_a), .nf(cb_i.nf), .y(cb_sel), .f(nf_sel));
   // a drain starts once the bank is full, the slice output (O being read) is not running, and the
   // previous drain started >= DGAP cycles ago (its O / l read-modify-writes are written back before
   // the same (t, l) is read again: only tact = 1 can come closer)
@@ -765,9 +769,8 @@ module tsr_mvm_pv
     // stage 1 c1_q, stage 2 c2_q, stage 3 c3_q and o_old (from the stage-2 tags cv_*[1]); the
     // add issues in stage 3 (cv_*[2])
     for (int k = 0; k < 8; k++) begin
-      automatic int L = 8 * int'(dr_l_q) + k;     // pipe k: lanes 8 l + k
       automatic logic [TW-1:0] t = TW'(dr_t_q);
-      c1_q[k] <= fs1(cb_a[t][6'(L)], cb_i.es[t], cb_i.nf[t][L / 32], cb_i.any[t]);
+      c1_q[k] <= fs1(cb_sel[k], cb_i.es[t], nf_sel[k], cb_i.any[t]);
       c2_q[k] <= fs2(c1_q[k]);
       c3_q[k] <= fs3(c2_q[k]);
       o_old[k] <= cv_first[1] ? 32'd0 : om_rmw[k];
@@ -1037,3 +1040,30 @@ module tsr_mvm_pv
 `endif
 
 endmodule
+
+// The ATTPV drain's lane select (AT §8.2): pipe k of a drain step reads lane 8 l + k of slot t of the capture bank and
+// the non-finite flag of that lane's block (lane / 32). The lane number is the concatenation {l, k}; an integer
+// expression for it (`automatic int L = 8 * int'(l) + k`, then `a[t][6'(L)]` and `nf[t][L / 32]`) is synthesised by
+// Vivado 2024.2 without the top bit of l, so that lanes 32 to 63 read as lanes 0 to 31 (docs/platform-u200.md §8.8;
+// tb/at/viv/lsel_net.sh simulates the netlist of both forms).
+/* verilator lint_off DECLFILENAME */
+module tsr_mvm_pv_lsel #(
+  parameter  int unsigned T_MAX = 4,
+  localparam int unsigned TW    = (T_MAX > 1) ? $clog2(T_MAX) : 1
+) (
+  input  logic [2:0]                    l,
+  input  logic [TW-1:0]                 t,
+  input  logic [T_MAX-1:0][63:0][37:0]  a,
+  input  logic [T_MAX-1:0][1:0]         nf,
+  output logic [7:0][37:0]              y,
+  output logic [7:0]                    f
+);
+  always_comb begin
+    for (int k = 0; k < 8; k++) begin
+      automatic logic [5:0] lane = {l, 3'(k)};
+      y[k] = a[t][lane];
+      f[k] = nf[t][lane[5]];
+    end
+  end
+endmodule
+/* verilator lint_on DECLFILENAME */
