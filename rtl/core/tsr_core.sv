@@ -79,7 +79,8 @@ module tsr_core
   // XSLR_REG (implementation; tsr_core_dp): register stages on the links between the relocated control plane (RV_LOCAL_TRANSPORT)
   // and the blocks that sit two SLRs away from it, the vector unit and the trace writer's write mux. Results and the
   // architectural state are unchanged, the units' completions and the trace bursts are a few cycles later; 0 builds the
-  // netlist without them.
+  // netlist without them. Two more links of the same kind: the RISC-V SPM bridge request (one stage, in the SPM link
+  // end) and the MVM's attention-stall strobe (two stages per cluster, tsr_mvm).
   parameter bit              XSLR_REG       = 1'b0,
   // W4-B (tsr_core_dp): vector unit (queue depth QD_VU; lane knobs VU_EXP_LANES / VU_BACK_LANES, VU §7.10),
   // attention, TOPK / DQROW (M8 RTL, off in the U200 M7 build), the DB block and its sizes (DB §10.3)
@@ -175,6 +176,10 @@ module tsr_core
   logic                                    spm_req_valid, spm_req_we, spm_rsp_valid, spm_rsp_err;
   logic                                    spm_bridge_req_valid, spm_bridge_rsp_valid;
   logic                                    spm_bridge_rsp_ready, spm_bridge_rsp_err;
+  logic                                    spm_bridge_req_we;
+  logic [25:0]                             spm_bridge_req_addr;
+  logic [3:0]                              spm_bridge_req_be;
+  logic [31:0]                             spm_bridge_req_wdata;
   logic [25:0]                             spm_req_addr;
   logic [3:0]                              spm_req_be;
   logic [31:0]                             spm_req_wdata;
@@ -325,8 +330,10 @@ module tsr_core
     logic [128:0] issue_data;
     logic [11:0]  lq_off;
 
-    (* keep_hierarchy = "yes" *) tsr_rv_spm_tx u_spm_tx (
+    (* keep_hierarchy = "yes" *) tsr_rv_spm_tx #(.XSLR_REG(XSLR_REG)) u_spm_tx (
       .clk, .rst_n(rst_ctrl_n), .req_valid(spm_req_valid), .bridge_req_valid(spm_bridge_req_valid),
+      .req_fields({spm_req_we, spm_req_addr, spm_req_be, spm_req_wdata}),
+      .bridge_req_fields({spm_bridge_req_we, spm_bridge_req_addr, spm_bridge_req_be, spm_bridge_req_wdata}),
       .bridge_rsp_valid(spm_bridge_rsp_valid), .bridge_rsp_ready(spm_bridge_rsp_ready),
       .bridge_rsp_line(spm_bridge_rsp_line), .bridge_rsp_err(spm_bridge_rsp_err),
       .link_valid(spm_v), .link_data(spm_data), .link_err(spm_err)
@@ -355,6 +362,10 @@ module tsr_core
     );
   end else begin : g_rv_direct
     assign spm_bridge_req_valid = spm_req_valid;
+    assign spm_bridge_req_we    = spm_req_we;
+    assign spm_bridge_req_addr  = spm_req_addr;
+    assign spm_bridge_req_be    = spm_req_be;
+    assign spm_bridge_req_wdata = spm_req_wdata;
     assign spm_bridge_rsp_ready = 1'b1;
     assign spm_rsp_valid        = spm_bridge_rsp_valid;
     assign spm_rsp_line         = spm_bridge_rsp_line;
@@ -398,7 +409,8 @@ module tsr_core
     .rst_ctrl_n,
     .ifq_valid(issue_valid), .ifq_ready(issue_ready), .ifq_entry(issue_entry), .ifq_count(if_count),
     .issued_seq, .s_seq, .d_seq, .err_valid, .err_rec, .err_ack, .rec_resync, .q_hold, .q_err, .q_nonempty,
-    .spm_req_valid(spm_bridge_req_valid), .spm_req_we, .spm_req_addr, .spm_req_be, .spm_req_wdata,
+    .spm_req_valid(spm_bridge_req_valid), .spm_req_we(spm_bridge_req_we), .spm_req_addr(spm_bridge_req_addr),
+    .spm_req_be(spm_bridge_req_be), .spm_req_wdata(spm_bridge_req_wdata),
     .spm_rsp_valid(spm_bridge_rsp_valid), .spm_rsp_ready(spm_bridge_rsp_ready),
     .spm_rsp_line(spm_bridge_rsp_line), .spm_rsp_err(spm_bridge_rsp_err),
     .cwin_req_valid, .cwin_req_off, .cwin_rsp_valid, .cwin_rsp_rdata,

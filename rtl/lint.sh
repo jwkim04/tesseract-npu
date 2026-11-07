@@ -213,6 +213,8 @@ lint tsr_mvm -GNUM_CH=3 -GT_MAX=3 -GK_MAX=4096 -GSPM_BYTES=262144 -GADDR_BEAT_W=
 lint tsr_mvm -GNUM_CH=16 -GT_MAX=8 -GK_MAX=65280 -GADDR_BEAT_W=36 -GWS_FIFO_BEATS=1024
 lint tsr_mvm -GNUM_CH=3 -GT_MAX=3 -GRST_LOCAL=1
 lint tsr_mvm -GNUM_CH=1 -GT_MAX=8 -GK_MAX=256 -GSPM_BYTES=4096 -GADDR_BEAT_W=5 -GBC_PIPE=0 -GRES_PIPE=0 -GRST_LOCAL=2
+lint tsr_mvm -GNUM_CH=4 -GT_MAX=4 -GRST_LOCAL=2 -GXSLR_REG=1
+lint tsr_rv_spm_tx -GXSLR_REG=1
 
 # Testbench-only HDL (block testbench toplevels); linted with the same rules. Each file is a top,
 # together with the other files of its directory (wrappers may instantiate each other).

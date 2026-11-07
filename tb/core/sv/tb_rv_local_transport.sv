@@ -1,5 +1,7 @@
 // Check the segmented links with the same held-input contracts as the core.
-module tb_rv_local_transport;
+module tb_rv_local_transport #(
+  parameter bit XSLR_REG = 1'b0       // the SPM link end's request stage (tsr_rv_spm_tx)
+);
   timeunit 1ns;
   timeprecision 1ps;
   logic clk = 0;
@@ -9,8 +11,10 @@ module tb_rv_local_transport;
   logic spm_req, bridge_req, bridge_v, bridge_ready, bridge_err, spm_v, spm_err, spm_done, spm_done_err;
   logic [511:0] bridge_line, spm_done_line;
   logic [127:0] spm_data;
-  tsr_rv_spm_tx u_spm_tx (
-    .clk, .rst_n, .req_valid(spm_req), .bridge_req_valid(bridge_req), .bridge_rsp_valid(bridge_v),
+  logic [62:0] spm_fields, bridge_fields;
+  tsr_rv_spm_tx #(.XSLR_REG(XSLR_REG)) u_spm_tx (
+    .clk, .rst_n, .req_valid(spm_req), .req_fields(spm_fields), .bridge_req_valid(bridge_req),
+    .bridge_req_fields(bridge_fields), .bridge_rsp_valid(bridge_v),
     .bridge_rsp_ready(bridge_ready), .bridge_rsp_line(bridge_line), .bridge_rsp_err(bridge_err),
     .link_valid(spm_v), .link_data(spm_data), .link_err(spm_err)
   );
@@ -66,9 +70,15 @@ module tb_rv_local_transport;
     int response_cycle;
     for (int i = 0; i < 16; i++) bridge_line[32*i +: 32] = $urandom;
     bridge_err = 1'($urandom);
+    spm_fields = 63'({$urandom, $urandom});
     spm_req = 1;
     #1ps;
-    assert (bridge_req) else $fatal;
+    // XSLR_REG: the request pulse and its fields come one cycle later, still with the fields held.
+    if (XSLR_REG) begin
+      assert (!bridge_req) else $fatal;
+      tick();
+    end
+    assert (bridge_req && bridge_fields == spm_fields) else $fatal;
     tick();
     repeat (latency) begin
       assert (!bridge_req && !spm_done) else $fatal;

@@ -213,6 +213,8 @@ if [ -r "$VSET" ]; then
         xsim_static tsr_core "${u200[@]}" NUM_CH=1 T_MAX=1 HAS_VU=0 HAS_ATT=0 HAS_DB=0
         xsim_static tsr_core "${u200[@]}" NUM_CH=2 T_MAX=2 HAS_TOPK=1 HAS_DQROW=1
         xsim_elab tsr_mvm NUM_CH=2 T_MAX=2 RST_LOCAL=2
+        xsim_elab tsr_mvm NUM_CH=2 T_MAX=2 RST_LOCAL=2 XSLR_REG=1
+        xsim_elab tsr_rv_spm_tx XSLR_REG=1
     else
         echo "xsim FAIL xvlog rtl/filelist_xilinx.f"
         echo "$out" | grep -E '^(ERROR|CRITICAL)' | sed 's/^/    /'

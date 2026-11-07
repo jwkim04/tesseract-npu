@@ -3,11 +3,18 @@
 // consumes it. Only the segment stream and its control cross the boundary.
 /* verilator lint_off DECLFILENAME */
 
-module tsr_rv_spm_tx (
+module tsr_rv_spm_tx #(
+  // XSLR_REG: the request (valid and its fields) passes one register stage before the bridge. The control
+  // plane and this end are in different SLRs, and the fields feed the bridge's byte enables and
+  // line register through decode logic. The request starts one cycle later. 0: no stage.
+  parameter bit XSLR_REG = 1'b0
+) (
   input  logic         clk,
   input  logic         rst_n,
   input  logic         req_valid,
+  input  logic [62:0]  req_fields,          // {we, addr[25:0], be[3:0], wdata[31:0]}
   output logic         bridge_req_valid,
+  output logic [62:0]  bridge_req_fields,
   input  logic         bridge_rsp_valid,
   output logic         bridge_rsp_ready,
   input  logic [511:0] bridge_rsp_line,
@@ -21,8 +28,26 @@ module tsr_rv_spm_tx (
 
   // The CDC holds req_valid through the reassembled response, including
   // after an RV-side timeout. Issue once even after the bridge returns idle.
-  assign bridge_req_valid = req_valid && !req_seen_q;
+  wire req_once = req_valid && !req_seen_q;
   assign bridge_rsp_ready = part_q == 2'd3;
+
+  if (XSLR_REG) begin : g_rq
+    // The CDC holds the fields stable while req_valid is high (tsr_ctrl.sv header), so the fields
+    // follow the one-cycle pulse, delayed by the same stage. The fields have no reset: the bridge
+    // reads them only in the pulse's cycle.
+    logic        rq_v_q;
+    logic [62:0] rq_f_q;
+    always_ff @(posedge clk) begin
+      if (!rst_n) rq_v_q <= 1'b0;
+      else        rq_v_q <= req_once;
+      rq_f_q <= req_fields;
+    end
+    assign bridge_req_valid  = rq_v_q;
+    assign bridge_req_fields = rq_f_q;
+  end else begin : g_rq0
+    assign bridge_req_valid  = req_once;
+    assign bridge_req_fields = req_fields;
+  end
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin

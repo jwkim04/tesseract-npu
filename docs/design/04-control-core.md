@@ -849,14 +849,20 @@ unit's own checks (`tsr_core_dp` U4) are made on the unit's side of the stages. 
 request and data streams pass a `tsr_rslice` each and its burst response two flops, so the writer
 waits a little longer for each burst; the DMA still waits at most one trace burst. A request can
 then wait at its slice's head beside its data, so the write mux passes trace data only with or after
-the request. The elaboration without the option has none of these stages.
+the request. Two more links have stages for the same reason. Each MVM cluster's attention-stall
+strobe passes two registers in `tsr_mvm` before the OR that feeds its PERF counter, since clusters
+0 / 2 and 1 / 3 sit in different SLRs. The RISC-V's SPM request (the one-cycle valid and its fields;
+the CDC holds the fields while the request is pending) passes one register stage in the SPM link end,
+in front of the bridge, since the CDC capture register is in the control plane's SLR and the bridge
+decodes its byte enables from it: an SPM access of the RISC-V starts one cycle later. The elaboration
+without the option has none of these stages.
 
 The stages shift the diagnostics, not the results. `perf_busy` of the VU runs from the issue
 path's start of the op to its done, so it includes the 2 pipe cycles before the VU sees the
 command and the 2 cycles of the done pipe: 4 cycles more per isolated VU op. The progress strobes
 of the units reach the watchdog 2 cycles late, so the first no-progress stretch is about 4 cycles
-longer for the VU and 2 cycles longer for the other units. HUNG does not change at the default
-`WDOG_CFG.L` of 24.
+longer for the VU and 2 cycles longer for the other units. `ATT_PATH_STALL` counts 2 cycles later
+still (4 in all). HUNG does not change at the default `WDOG_CFG.L` of 24.
 
 These links reduce declared signal width, not arithmetic precision. They add
 control latency and storage. The source registers and complete receive buffers

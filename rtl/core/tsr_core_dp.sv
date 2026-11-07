@@ -64,7 +64,8 @@ module tsr_core_dp
   parameter bit              RV_LOCAL_TRANSPORT = 1'b0,
   // XSLR_REG: register stages on the links between the relocated control plane and the blocks two SLRs away from it
   // (the vector unit's command, done, s-register, PERF and progress links; the trace writer's write mux). No functional
-  // change: the VU's commands start, its done strobes arrive and its s registers show a few cycles later.
+  // change: the VU's commands start, its done strobes arrive and its s registers show a few cycles later. tsr_mvm gets the
+  // option too (two stages per cluster on the attention-stall strobe, which only feeds a PERF counter).
   parameter bit              XSLR_REG       = 1'b0,
   parameter bit              LOCAL_SOFTCAP = 1'b0,
   parameter bit              LOCAL_SCALE = 1'b0,
@@ -854,7 +855,7 @@ module tsr_core_dp
       .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BEAT_BITS), .WS_FIFO_BEATS(MVM_WS_FIFO),
       .BC_PIPE(MVM_BC_PIPE), .RES_PIPE(MVM_RES_PIPE), .GATHER_PAIR(MVM_GATHER_PAIR), .GATHER_FLITS(MVM_GATHER_FLITS), .ACT_RD_LAT(MVM_ACT_RD_LAT),
       .MAC_LAT(MVM_MAC_LAT), .MUL_LAT(MVM_MUL_LAT), .ADD_LAT(MVM_ADD_LAT), .WS_RD_LAT(MVM_WS_RD_LAT),
-      .RST_LOCAL(RST_BLK)
+      .RST_LOCAL(RST_BLK), .XSLR_REG(XSLR_REG)
     ) u_mvm (
       .clk, .rst_n(rst_pre_n),
       .cmd_valid(mvm_cmd_valid && (!needs_scale || scale_grant)), .cmd_ready(inner_ready), .cmd(mvm_cmd), .cmd_xc(mvm_cmd_xc),

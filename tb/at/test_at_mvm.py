@@ -139,6 +139,7 @@ class Bench:
         self.d = Data(self.r, cfg.get("p_sp", 0.03))
         self.stats = dict(qk=0, pv=0, fail=0, mvm=0, beats=0, cycles=0)
         self.perf_bad = []
+        self.stall_cycles = 0               # cycles with perf_att_stall high (the XSLR_REG test needs some)
 
     # ---- memory images ----
     def load_plane(self, B0, beats):
@@ -161,6 +162,7 @@ class Bench:
                 self.perf_bad.append("perf_att_* outside perf_mvm_busy")
             if qk and pv:
                 self.perf_bad.append("perf_att_qk and perf_att_pv together")
+            self.stall_cycles += int(self.dut.perf_att_stall.value)
 
     async def mvm_cmd(self, xc, xcmd=0, cmd=0, timeout=2000000):
         dut = self.dut
@@ -476,6 +478,10 @@ async def mvm_run(dut):
     b.mem.stop()
     b.sim.close()
     dut._log.info("ATT: %s", b.stats)
+    dut._log.info("perf_att_stall high in %d cycles", b.stall_cycles)
+    if cfg.get("require_stall"):
+        # tsr_mvm checks att_stall_q against the clusters' strobes delayed by 3 cycles (XSLR_REG); that needs strobes
+        assert b.stall_cycles > 0, "no attention stall in the run: the XSLR_REG stage was not exercised"
 
 
 @cocotb.test()
@@ -770,7 +776,8 @@ def _run(name, cfg, testcase="at_mvm"):
                   RD_OUTSTANDING=cfg["rd_out"], BC_PIPE=cfg.get("bc_pipe", 1), RES_PIPE=cfg.get("res_pipe", 1),
                   ACT_RD_LAT=cfg.get("act_rd_lat", 2), MAC_LAT=cfg.get("mac_lat", 3), MUL_LAT=cfg.get("mul_lat", 4),
                   ADD_LAT=cfg.get("add_lat", 5), WS_FIFO_BEATS=cfg.get("ws_fifo", 512),
-                  RST_LOCAL=cfg.get("rst_local", 0), GATHER_PAIR=cfg.get("gather_pair", 0))
+                  RST_LOCAL=cfg.get("rst_local", 0), GATHER_PAIR=cfg.get("gather_pair", 0),
+                  XSLR_REG=cfg.get("xslr_reg", 0))
     run("tsr_tb_at_mvm", __name__, parameters=params, name="at_mvm_" + name, testcase=testcase,
         sources=rtl_sources() + [HERE.parent / "mvm" / "hdl" / "tsr_mvm_bc_observer.sv",
                                  HERE / "hdl" / "tsr_tb_at_mvm.sv"],
@@ -782,6 +789,14 @@ def test_at_mvm_u200():
     _run("u200", dict(num_ch=4, t_max=4, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30, spm_rd_lat=4,
                       addr_beat_w=28, rd_out=16, bc_pipe=2, res_pipe=2, mac_lat=9,
                       rst_local=2, gather_pair=1, n_ops=40))
+
+
+def test_at_mvm_xslr():
+    """The U200 shape with XSLR_REG: two register stages per cluster on the attention-stall strobe. The results and
+    the SPM image are the simulator's; tsr_mvm asserts that att_stall_q equals the clusters' strobes of 3 cycles before."""
+    _run("xslr", dict(num_ch=4, t_max=4, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30, spm_rd_lat=4,
+                      addr_beat_w=28, rd_out=16, bc_pipe=2, res_pipe=2, mac_lat=9,
+                      rst_local=2, gather_pair=1, n_ops=24, xslr_reg=1, require_stall=True))
 
 
 def test_at_mvm_bc_reset():

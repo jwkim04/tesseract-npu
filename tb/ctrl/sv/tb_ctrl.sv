@@ -16,7 +16,8 @@ module tb_ctrl
   parameter int unsigned ISSUE_WAIT_MAX = TSR_ISSUE_WAIT_MAX,
   parameter int unsigned HS_TIMEOUT     = 4096,
   parameter bit          CTRL_SYNC      = 1'b0,
-  parameter bit          RV_LOCAL_TRANSPORT = 1'b0
+  parameter bit          RV_LOCAL_TRANSPORT = 1'b0,
+  parameter bit          XSLR_REG       = 1'b0    // the SPM link end's request stage (needs RV_LOCAL_TRANSPORT)
 ) (
   input  logic          clk,
   input  logic          rst_n,
@@ -242,6 +243,10 @@ module tb_ctrl
   logic issue_valid, issue_ready;
   logic [TSR_IFIFO_BITS-1:0] issue_entry;
   logic spm_bridge_req_valid, spm_bridge_rsp_valid, spm_bridge_rsp_ready;
+  logic spm_bridge_req_we;
+  logic [25:0] spm_bridge_req_addr;
+  logic [3:0] spm_bridge_req_be;
+  logic [31:0] spm_bridge_req_wdata;
   logic [511:0] spm_bridge_rsp_line;
   logic lq_csr_req_valid, lq_csr_req_we;
   logic [11:0] lq_csr_req_off;
@@ -255,8 +260,10 @@ module tb_ctrl
     logic [11:0]  lq_off;
     logic         unused_spm_rsp_err;
 
-    tsr_rv_spm_tx u_spm_tx (
+    tsr_rv_spm_tx #(.XSLR_REG(XSLR_REG)) u_spm_tx (
       .clk, .rst_n(rst_n), .req_valid(spm_req_valid), .bridge_req_valid(spm_bridge_req_valid),
+      .req_fields({spm_req_we, spm_req_addr, spm_req_be, spm_req_wdata}),
+      .bridge_req_fields({spm_bridge_req_we, spm_bridge_req_addr, spm_bridge_req_be, spm_bridge_req_wdata}),
       .bridge_rsp_valid(spm_bridge_rsp_valid), .bridge_rsp_ready(spm_bridge_rsp_ready),
       .bridge_rsp_line(spm_bridge_rsp_line), .bridge_rsp_err(1'b0),
       .link_valid(spm_v), .link_data(spm_data), .link_err(spm_err)
@@ -285,6 +292,10 @@ module tb_ctrl
     );
   end else begin : g_rv_direct
     assign spm_bridge_req_valid = spm_req_valid;
+    assign spm_bridge_req_we    = spm_req_we;
+    assign spm_bridge_req_addr  = spm_req_addr;
+    assign spm_bridge_req_be    = spm_req_be;
+    assign spm_bridge_req_wdata = spm_req_wdata;
     assign spm_bridge_rsp_ready = 1'b1;
     assign spm_rsp_valid        = spm_bridge_rsp_valid;
     assign spm_rsp_line         = spm_bridge_rsp_line;
@@ -304,8 +315,8 @@ module tb_ctrl
     .cfg_lq_mute(cfg_lq_mute),
     .if_valid(issue_valid), .if_ready(issue_ready), .if_data(issue_entry), .issued_seq(issued_q),
     .s_seq(s_q), .d_seq(d_q),
-    .spm_req_valid(spm_bridge_req_valid), .spm_req_we(spm_req_we), .spm_req_addr(spm_req_addr),
-    .spm_req_be(spm_req_be), .spm_req_wdata(spm_req_wdata), .spm_rsp_valid(spm_bridge_rsp_valid), .spm_rsp_ready(spm_bridge_rsp_ready),
+    .spm_req_valid(spm_bridge_req_valid), .spm_req_we(spm_bridge_req_we), .spm_req_addr(spm_bridge_req_addr),
+    .spm_req_be(spm_bridge_req_be), .spm_req_wdata(spm_bridge_req_wdata), .spm_rsp_valid(spm_bridge_rsp_valid), .spm_rsp_ready(spm_bridge_rsp_ready),
     .spm_rsp_line(spm_bridge_rsp_line),
     .cwin_req_valid(cwin_req_valid), .cwin_req_off(cwin_req_off), .cwin_rsp_valid(cwin_rsp_valid),
     .cwin_rsp_rdata(cwin_rsp_rdata),

@@ -645,6 +645,13 @@ def test_ctrl_rv_local_transport():
          env={"TB_CTRL_CORE_PS": "4000", "TB_CTRL_RV_PS": "6000"})
 
 
+def test_ctrl_rv_local_transport_xslr():
+    # The SPM link end's XSLR_REG request stage: the bridge and the line buffer, a reset with a request.
+    _run(["lockstep", "bridge", "rv_reset_bridge", "lb"],
+         parameters={"RV_LOCAL_TRANSPORT": 1, "XSLR_REG": 1}, name="tb_ctrl_rv_local_xslr",
+         env={"TB_CTRL_CORE_PS": "4000", "TB_CTRL_RV_PS": "6000"})
+
+
 def test_ctrl_lockstep():
     _run("lockstep")
 

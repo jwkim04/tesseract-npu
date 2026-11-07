@@ -25,6 +25,14 @@ link was run. [platform-u200.md](platform-u200.md) §8.8 has the parameters, the
   SLR1-SLR2 over the reduced image. If a placement gate misses, do not spend the route.
 - Cost of `XSLR_REG`: the VU starts a command 2 cycles later and completes 3 later (it was 1); s registers 2 cycles later; trace
   bursts a little slower; +1.3 K LUTs, +3.2 K flops, about +1 K CLBs in SLR1 (the stages sit in SLR1).
+- First link (200 / 100 MHz): routed legally, `clk_kernel_00` missed by 0.064 ns on 160 endpoints (list:
+  `build/k4full/postroute_exp/fail_before_clk_kernel_00_unbuffered_net.tsv`). 82 of them cross an SLR boundary, 78 do not. Two
+  crossings got `XSLR_REG` stages: the MVM attention-stall strobe (two per cluster, `tsr_mvm`; only `ATT_PATH_STALL` shifts, by 2
+  cycles) and the RISC-V SPM request (one, in `u_spm_tx`; an SPM access of the RISC-V starts a cycle later). Left alone: the reset
+  copies into `u_issue` and the gather (phys_opt moves loads between equal `keep` copies; `DONT_TOUCH` is untried, platform-u200.md §12),
+  the DDR0 / DDR3 slice outputs into the arbiters, the pair-link flit mux into the receiver, the result-pipe slices that
+  straddle SLR0 / SLR1, the VU write queue into the SPM input registers, and the 78 same-SLR paths (DMA write slices, SPM
+  grant into the DMA, cluster-internal paths).
 - Source also fixed: the twelve testbench-HDL lint failures and the C16 `WIDTHCONCAT` of the checkpoint. New tests:
   `test_core_k4full`, `test_core_m7_rv_local`, `test_k4_full_graph` (needs `TSR_K4_TRACE`; graph traces are in
   `build/analysis/local_intermediates/` of `tesseract-local-intermediates-20261105`).

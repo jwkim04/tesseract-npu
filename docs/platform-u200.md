@@ -2758,12 +2758,16 @@ the whole VU in SLR2, pair 0 (clusters 0 and 2, SLR0) would cross two boundaries
   | VU s registers (16 x 32) to `tsr_csr` | 2 | an s register shows a change 2 cycles later; the host reads it after the done |
   | Progress and PERF strobes of the units, `perf_ch_*` of the channels to `tsr_csr` | 2 | diagnosis only; the PERF counters and the watchdog see them 2 cycles late (below) |
   | Trace writer to the write mux on channel 0: request and data (`tsr_rslice`), burst response (flops) | 1 + 2 | the writer waits longer per burst; the DMA waits at most one trace burst |
+  | `att_stall` of each MVM cluster to the OR in `tsr_mvm` (it only feeds `ATT_PATH_STALL`) | 2 | the counter sees it 2 cycles later, 4 with the CSR stages above |
+  | RISC-V SPM bridge request (valid and fields), inside the SPM link end `u_spm_tx` | 1 | an access of the RISC-V to the SPM starts 1 cycle later |
 
   Results, queue order and the architectural state do not change. The diagnostics shift a little. `perf_busy` of the VU
   (`tsr_issue`) runs from the issue path's start to its done, so it now includes the 2 pipe cycles before the VU sees the
   command and the 2 cycles of the done pipe after the VU finished: 4 cycles more per isolated VU op. The progress strobes reach
   the watchdog 2 cycles late, so the first no-progress stretch is about 4 cycles longer for the VU and 2 cycles longer for the
   other units. HUNG does not change at the default `WDOG_CFG.L` of 24 (2^24 cycles). The synthesized core grows by 1,339 LUTs and 3,155 flops.
+  The last two rows came after the sizes and the placement runs below, from the failing paths of the first link of
+  the image (`clk_kernel_00` missed by 0.064 ns). They add at most 72 flops: 8 in `tsr_mvm` and 64 in the SPM link end.
 - `tsr_vu.sv`: the zero assignment of `local_score_req` is one assignment per owner (Verilator `WIDTHCONCAT` above 8,192
   bits at `NUM_CH` 16; the netlist is the same).
 - Lint: the full K4 elaboration in `rtl/lint.sh`, the platform lint and the Xilinx lint (with XSim static elaboration); the

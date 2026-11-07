@@ -87,7 +87,8 @@
 //   every channel writes its partials). done when the broadcast is complete and the gather is done
 //   (with MAXOUT after the row maxima). perf_att_qk / perf_att_pv: the unit holds an ATTQK /
 //   ATTPV (PERF ATT_QK_CYCLES / ATT_PV_CYCLES, subsets of perf_mvm_busy); perf_att_stall: a cluster's
-//   attention stream waits for its line buffer or p line (ATT_PATH_STALL, registered OR). HAS_ATT = 0:
+//   attention stream waits for its line buffer or p line (ATT_PATH_STALL, registered OR; XSLR_REG: each cluster's
+//   strobe passes two register stages first, 2 cycles later). HAS_ATT = 0:
 //   cmd_xc / xcmd are ignored, the unit above.
 //   Cost (RTL structure, no synthesis run here): command 294 FF + broadcast register 527 FF +
 //   ~140 FF control; broadcast 530 FF per stage (527 payload + 3 valid), with one shared
@@ -123,6 +124,7 @@ module tsr_mvm
   parameter  int unsigned ADD_LAT       = TSR_DEF_FADD_LAT,
   parameter  int unsigned WS_RD_LAT     = TSR_DEF_WS_RD_LAT,
   parameter  int unsigned RST_LOCAL     = 0,      // reset register stages per cluster / top / gather (0..2)
+  parameter  bit          XSLR_REG      = 1'b0,   // two register stages per cluster on the att_stall strobe (header)
   localparam int unsigned SPM_LINES     = SPM_BYTES / TSR_LINE_BYTES,
   localparam int unsigned SPM_AW        = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1
 ) (
@@ -700,9 +702,27 @@ module tsr_mvm
     end
   end
 
+  // XSLR_REG: in the K4 floorplan clusters 0 / 2 sit in SLR0 and 1 / 3 in SLR2, and att_stall_q lands in
+  // one of them. perf_att_stall only feeds a PERF counter (ATT_PATH_STALL), so each cluster's strobe passes two
+  // register stages before the OR: the strobe reaches the counter 2 cycles later. The stages have no
+  // reset (like the XSLR_REG stages in tsr_core_dp): they start at 0, and the cluster's reset clears
+  // the strobe at their input, so they are clear after 2 cycles of reset (att_stall_q has its own reset).
+  logic [NUM_CH-1:0] cl_stall_o;
+  if (XSLR_REG) begin : g_stx
+    (* shreg_extract = "no" *) logic [1:0][NUM_CH-1:0] stx_q;
+    initial stx_q = '0;
+    always @(posedge clk) begin           // not always_ff: the initial block writes it too
+      stx_q[0] <= cl_stall;
+      stx_q[1] <= stx_q[0];
+    end
+    assign cl_stall_o = stx_q[1];
+  end else begin : g_stx0
+    assign cl_stall_o = cl_stall;
+  end
+
   always_ff @(posedge clk) begin
     if (!rst_t_n) att_stall_q <= 1'b0;
-    else          att_stall_q <= |cl_stall;
+    else          att_stall_q <= |cl_stall_o;
   end
 
   tsr_mvm_gather #(
@@ -767,6 +787,17 @@ module tsr_mvm
                       spm_wr_valid, spm_rd_req_valid, ws_rd_req_valid, cl_idle);
       end
     end
+  end
+
+  // att_stall_q is the OR of the clusters' strobes of 1 cycle before (XSLR_REG: 3 cycles before)
+  logic [2:0] stl_h_q;
+  logic [2:0] stl_n_q;                       // cycles out of reset, saturating at 3
+  always_ff @(posedge clk) begin
+    stl_h_q <= {stl_h_q[1:0], |cl_stall};
+    stl_n_q <= rst_t_n ? {stl_n_q[1:0], 1'b1} : 3'b000;
+    if (rst_t_n && &stl_n_q && a_on_q)
+      assert (att_stall_q == (XSLR_REG ? stl_h_q[2] : stl_h_q[0]))
+        else $error("%m: att_stall_q is not the cluster strobes delayed by %0d cycles", XSLR_REG ? 3 : 1);
   end
 `endif
 
