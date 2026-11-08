@@ -2726,6 +2726,17 @@ static void tsr_backend_free(ggml_backend_t backend) {
         fprintf(stderr, "[tesseract] stats: PERF_CYCLES %" PRIu64 ", MVM %" PRIu64 ", RETIRED %" PRIu64 "\n",
                 p[TSR_PERF_CYCLES], p[TSR_PERF_MVM_CYCLES], p[TSR_PERF_RETIRED]);
         const size_t nch = (p.size() - 5) / 2;
+        {   // cycles in which a unit holds an op (EX §6; since the device was opened): the VU, DMA, QACT and AT units
+            auto rd64 = [d](uint32_t idx) {
+                const uint32_t lo = tsr_transport_csr_read(d->tp, TSR_CSR_PERF_BASE + 8 * idx);
+                const uint32_t hi = tsr_transport_csr_read(d->tp, TSR_CSR_PERF_BASE + 8 * idx + 4);
+                return ((uint64_t) hi << 32) | lo;
+            };
+            fprintf(stderr, "[tesseract] stats: unit busy cycles VU %" PRIu64 ", DMA %" PRIu64 ", QACT %" PRIu64 ", ATT %" PRIu64 "\n",
+                    rd64(TSR_PERF_VU_CYCLES), rd64(TSR_PERF_EXT((uint32_t) nch, TSR_PERF_XOFF_DMA_CYCLES)),
+                    rd64(TSR_PERF_EXT((uint32_t) nch, TSR_PERF_XOFF_QACT_CYCLES)),
+                    rd64(TSR_PERF_EXT((uint32_t) nch, TSR_PERF_XOFF_ATT_CYCLES)));
+        }
         for (size_t c = 0; c < nch; c++) {
             fprintf(stderr, "[tesseract] stats: ch%zu rd_beats %" PRIu64 ", wait %" PRIu64 "\n", c, p[5 + c], p[5 + nch + c]);
         }
