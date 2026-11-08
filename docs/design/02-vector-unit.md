@@ -1595,8 +1595,11 @@ placer packs tighter, so the tile count in the image lies between LUT / 8 and th
 |---|---|---|---|---|---|---|---|---|
 | 8 lanes, default RTL | 1,750 | 7,784 | 8,075 | 334 | 72 | 34 | +0.55 | +0.02 |
 | 8 lanes, `TSR_FP_ADD_DSP=1` (the DSP-aligned adder of §7.10 for the 9 `tsr_fp_add`) | 1,662 | 7,312 | 7,823 | 334 | 81 | 34 | +0.60 | +0.02 |
+| 8 lanes, `FM_LAT=3 FA_LAT=4` (one stage less in the f32 primitives) | 1,721 | 7,836 | 6,986 | 334 | 72 | 34 | +0.61 | +0.04 |
 | 16 lanes (`LANES=16 NB_MAX=16`, rows of up to 256) | 2,904 | 13,275 | 13,874 | 598 | 136 | 66 | +0.48 | +0.02 |
 
+The unit is LUT-bound: taking one pipeline stage out of the f32 primitives (`FM_LAT=3 FA_LAT=4`) removes 1,089
+flip-flops and saves 29 CLB; the defaults (LAT 4 and 5, the measured values of the MVM blocks) are kept.
 The worst setup slack is on an input port (`vec_valid` to the write enable of a key RAM, 2.4 ns of input delay); the worst
 register-to-register slack is +1.15 ns, 0 failing endpoints, so the 8-lane unit has margin at 5.0 ns. The 4.0 ns of
 the 250 MHz core clock was not run.
