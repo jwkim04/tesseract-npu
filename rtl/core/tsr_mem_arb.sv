@@ -80,7 +80,11 @@
 /* verilator lint_off DECLFILENAME */
 module tsr_rslice #(
   parameter int unsigned W    = 8,
-  parameter int unsigned FORM = 0      // 0 main + skid, 1 two slots with pointers (cycle-identical)
+  parameter int unsigned FORM = 0,     // 0 main + skid, 1 two slots with pointers (cycle-identical)
+  // FORM 1: RPC copies of the read pointer and of the occupancy flops (`keep`), each serving one slice of the payload: the
+  // output mux select and the slot enables then have W / RPC loads instead of W (cycle-identical; the 250 MHz work,
+  // docs/platform-u200.md §8.9). 1 = the single flops.
+  parameter int unsigned RPC  = 1
 ) (
   input  logic         clk,
   input  logic         rst_n,
@@ -160,14 +164,40 @@ module tsr_rslice #(
 
     // A free slot loads every cycle (enable = its occupancy flop); the edge that fills it (s_fire
     // with wp_q at it) leaves exactly that item in it, held while occupied.
-    always_ff @(posedge clk) begin
-      if (!occ_q[0]) slot_q[0] <= s_data;
-      if (!occ_q[1]) slot_q[1] <= s_data;
+    if (RPC <= 1) begin : g_one
+      always_ff @(posedge clk) begin
+        if (!occ_q[0]) slot_q[0] <= s_data;
+        if (!occ_q[1]) slot_q[1] <= s_data;
+      end
+      assign m_data = slot_q[rp_q];
+    end else begin : g_cp
+      localparam int unsigned CWD = (W + RPC - 1) / RPC;
+      (* keep = "true" *) logic [RPC-1:0]      rpc_q;      // copies of rp_q
+      (* keep = "true" *) logic [RPC-1:0][1:0] occc_q;     // copies of occ_q
+      always_ff @(posedge clk) begin
+        if (!rst_n) begin
+          rpc_q  <= '0;
+          occc_q <= '0;
+        end else begin
+          if (m_fire) rpc_q <= {RPC{~rp_q}};
+          occc_q <= {RPC{occ_n}};
+        end
+      end
+      for (genvar j = 0; j < RPC; j++) begin : g_c
+        localparam int unsigned LO = j * CWD;
+        localparam int unsigned HI = (LO + CWD > W) ? W - 1 : LO + CWD - 1;
+        if (LO <= HI) begin : g_w
+          always_ff @(posedge clk) begin
+            if (!occc_q[j][0]) slot_q[0][HI:LO] <= s_data[HI:LO];
+            if (!occc_q[j][1]) slot_q[1][HI:LO] <= s_data[HI:LO];
+          end
+          assign m_data[HI:LO] = slot_q[rpc_q[j]][HI:LO];
+        end
+      end
     end
 
     assign s_ready = rdy_q;
     assign m_valid = mv_q;
-    assign m_data  = slot_q[rp_q];
   end
 
 endmodule

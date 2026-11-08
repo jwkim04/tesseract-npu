@@ -31,6 +31,7 @@ module tsr_tb_at_mvm
   parameter  int unsigned     WS_FIFO_BEATS  = 512,
   parameter  int unsigned     RST_LOCAL      = 0,
   parameter  bit              XSLR_REG       = 1'b0,
+  parameter  bit              FAST_CLK       = 1'b0,
   localparam int unsigned     BB             = 512,
   localparam int unsigned     AW             = tsr_spm_aw(SPM_BYTES / TSR_LINE_BYTES)
 ) (
@@ -119,7 +120,7 @@ module tsr_tb_at_mvm
     .HAS_ATT(1'b1), .XC_CMD_W(256), .NUM_CH(NUM_CH), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES),
     .SPM_RD_LAT(SPM_RD_LAT), .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BB), .WS_FIFO_BEATS(WS_FIFO_BEATS),
     .BC_PIPE(BC_PIPE), .RES_PIPE(RES_PIPE), .GATHER_PAIR(GATHER_PAIR), .GATHER_FLITS(GATHER_FLITS), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT), .MUL_LAT(MUL_LAT),
-    .ADD_LAT(ADD_LAT), .RST_LOCAL(RST_LOCAL), .XSLR_REG(XSLR_REG)
+    .ADD_LAT(ADD_LAT), .RST_LOCAL(RST_LOCAL), .XSLR_REG(XSLR_REG), .FAST_CLK(FAST_CLK)
   ) u_mvm (
     // the local-intermediate path is absent from this bench: its outputs are left open
     /* verilator lint_off PINCONNECTEMPTY */

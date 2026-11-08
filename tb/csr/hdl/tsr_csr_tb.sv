@@ -24,7 +24,8 @@ module tsr_csr_tb
   parameter int unsigned     QD_SYNC     = 4,
   parameter int unsigned     SR_RV_MIN   = 64,
   parameter int unsigned     SR_RV_MAX   = 65536,
-  parameter int unsigned     XC_CMD_W    = 256
+  parameter int unsigned     XC_CMD_W    = 256,
+  parameter bit              FAST_CLK    = 1'b0
 ) (
   input  logic                        clk,
   input  logic                        rst_n,
@@ -178,7 +179,7 @@ module tsr_csr_tb
   tsr_csr #(
     .NUM_CH(NUM_CH), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES), .CAPS(CAPS), .CTL_ID(CTL_ID),
     .QD_DMA(QD_DMA), .QD_QACT(QD_QACT), .QD_MVM(QD_MVM), .QD_VU(QD_VU), .QD_ATT(QD_ATT), .QD_SYNC(QD_SYNC),
-    .SR_RV_MIN(SR_RV_MIN), .SR_RV_MAX(SR_RV_MAX)
+    .SR_RV_MIN(SR_RV_MIN), .SR_RV_MAX(SR_RV_MAX), .FAST_CLK(FAST_CLK)
   ) u_csr (
     .clk, .rst_n,
     .csr_valid, .csr_ready, .csr_we, .csr_addr, .csr_wdata, .csr_rdata,

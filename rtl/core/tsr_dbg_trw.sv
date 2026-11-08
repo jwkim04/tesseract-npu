@@ -36,7 +36,10 @@ module tsr_dbg_trw
 #(
   parameter int unsigned     ADDR_BEAT_W = TSR_DEF_ADDR_BEAT_W,
   parameter longint unsigned CH_BYTES    = TSR_DEF_CH_BYTES,
-  parameter int unsigned     TRW_CH      = tsr_tables_pkg::TSR_TRW_CH
+  parameter int unsigned     TRW_CH      = tsr_tables_pkg::TSR_TRW_CH,
+  // FAST_CLK (docs/platform-u200.md §8.9): the DROPS counter adds the drops of the cycle before (a statistic: the counter
+  // reads one cycle later; DROP records and the staging decisions use dpend_q as before)
+  parameter bit              FAST_CLK    = 1'b0
 ) (
   input  logic                    clk,
   input  logic                    rst_n,
@@ -106,7 +109,16 @@ module tsr_dbg_trw
 
   wire [1:0]  ndrop   = 2'(drop_in) + 2'(in_lost) + 2'(w_drop && !w_drop_isd);
   logic [31:0] drops_q;
-  wire [33:0] dsum    = 34'(drops_q) + 34'(ndrop);
+  logic [1:0] ndrop_q;
+  if (FAST_CLK) begin : g_nd
+    always_ff @(posedge clk) begin
+      if (!rst_n) ndrop_q <= '0;
+      else        ndrop_q <= ndrop;
+    end
+  end else begin : g_nd0
+    assign ndrop_q = ndrop;
+  end
+  wire [33:0] dsum    = 34'(drops_q) + 34'(ndrop_q);
   wire [31:0] dpadd   = 32'(ndrop) + ((w_drop && w_drop_isd) ? w_drop_cnt : 32'd0);
 
   always_ff @(posedge clk) begin

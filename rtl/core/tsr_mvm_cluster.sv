@@ -105,6 +105,7 @@ module tsr_mvm_cluster
   parameter  int unsigned MUL_LAT       = TSR_DEF_FMUL_LAT,
   parameter  int unsigned ADD_LAT       = TSR_DEF_FADD_LAT,
   parameter  int unsigned WS_RD_LAT     = TSR_DEF_WS_RD_LAT,
+  parameter  bit          FAST_CLK      = 1'b0,  // the cycle-changing stages of the 250 MHz clock (tsr_core FAST_CLK)
   parameter  bit          RST_COPY      = 1'b0,  // rst_n is one stage early; the cluster registers its own copies
   parameter  int unsigned SPM_AW        = 16,
   localparam int unsigned JW            = 1 + SPM_AW + 16 + 16 + TSR_LINE_BITS
@@ -403,7 +404,7 @@ module tsr_mvm_cluster
 
   tsr_mvm_back #(
     .HAS_ATT(HAS_ATT), .K_MAX(K_MAX), .T_MAX(T_MAX), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT),
-    .MUL_LAT(MUL_LAT), .ADD_LAT(ADD_LAT)
+    .MUL_LAT(MUL_LAT), .ADD_LAT(ADD_LAT), .FAST_CLK(FAST_CLK)
   ) u_back (
     .clk, .rst_n(rst_c_n), .rst_tok_n(rst_t_n),
     .cfg_fmt(fmt_q), .cfg_d_lines(dl_q),
@@ -678,7 +679,7 @@ module tsr_mvm_cluster
     // ---- ATTQK assembler ----
     logic        q_jv, q_jr, q_busy;
     logic [JW-1:0] q_j;
-    tsr_mvm_aqk #(.T_MAX(T_MAX), .NUM_CH(NUM_CH), .SPM_AW(SPM_AW)) u_aqk (
+    tsr_mvm_aqk #(.T_MAX(T_MAX), .NUM_CH(NUM_CH), .SPM_AW(SPM_AW), .FAST_CLK(FAST_CLK)) u_aqk (
       .clk, .rst_n(rst_c_n),
       .start(att_start_q & at_qk_q), .tact(tact_q), .nseg(ac_q.nseg), .prows(ac_q.prows), .ng(ng_q),
       .off0(off0_q), .qt(qt_q), .lo(lo_q), .hi(hi_q),
@@ -696,7 +697,7 @@ module tsr_mvm_cluster
     assign pv_beat = f_beat;
     tsr_mvm_pv #(
       .K_MAX(K_MAX), .T_MAX(T_MAX), .SPM_AW(SPM_AW), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT),
-      .MUL_LAT(MUL_LAT), .ADD_LAT(ADD_LAT)
+      .MUL_LAT(MUL_LAT), .ADD_LAT(ADD_LAT), .FAST_CLK(FAST_CLK)
     ) u_pv (
       .clk, .rst_n(rst_c_n),
       .start(att_start_q & at_pv_q), .tact(tact_q), .tq(tq_q), .gs(gs_q), .e64(ac_q.c.e64),

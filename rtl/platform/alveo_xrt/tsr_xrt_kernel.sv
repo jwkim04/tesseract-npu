@@ -65,6 +65,7 @@ module tsr_xrt_kernel
   parameter bit              LOCAL_SCALE = 1'b0,
   parameter bit              RV_LOCAL_TRANSPORT = 1'b0,
   parameter bit              XSLR_REG       = 1'b0,
+  parameter bit              FAST_CLK       = 1'b0,   // the cycle-changing stages of the 250 MHz core clock (tsr_core)
   // Optional blocks (tsr_core): the vector unit, attention (KVST on the DMA, ATTQK / ATTPV in the clusters and
   // the gather) and the DB block's trace writer and dispatch history. tsr_u200_k4 builds none of them.
   parameter bit              HAS_VU         = 1'b1,
@@ -268,7 +269,7 @@ module tsr_xrt_kernel
     .RD_OUTSTANDING(RD_OUTSTANDING), .CH_BYTES(CH_BYTES), .ADDR_BEAT_W(ADDR_BEAT_W),
     .HAS_MVM(HAS_MVM), .SPM_RD_LAT(SPM_RD_LAT),
     .HAS_VU(HAS_VU), .HAS_ATT(HAS_ATT), .HAS_TRW(HAS_TRW), .HIST_DEPTH(HIST_DEPTH),
-    .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .LOCAL_SCALE(LOCAL_SCALE), .LOCAL_SOFTCAP(LOCAL_SOFTCAP), .RV_LOCAL_TRANSPORT(RV_LOCAL_TRANSPORT), .XSLR_REG(XSLR_REG),
+    .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .LOCAL_SCALE(LOCAL_SCALE), .LOCAL_SOFTCAP(LOCAL_SOFTCAP), .RV_LOCAL_TRANSPORT(RV_LOCAL_TRANSPORT), .XSLR_REG(XSLR_REG), .FAST_CLK(FAST_CLK),
     .MVM_WS_FIFO(MVM_WS_FIFO), .MVM_BC_PIPE(MVM_BC_PIPE), .MVM_RES_PIPE(MVM_RES_PIPE), .MVM_GATHER_PAIR(MVM_GATHER_PAIR), .MVM_GATHER_FLITS(MVM_GATHER_FLITS), .DDR_LOCAL_PIPE(DDR_LOCAL_PIPE),
     .MVM_ACT_RD_LAT(MVM_ACT_RD_LAT), .MVM_MAC_LAT(MVM_MAC_LAT), .MVM_MUL_LAT(MVM_MUL_LAT),
     .MVM_ADD_LAT(MVM_ADD_LAT), .MVM_WS_RD_LAT(MVM_WS_RD_LAT), .RST_PIPE(RST_PIPE),

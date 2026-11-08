@@ -123,6 +123,11 @@ lint tsr_core -GNUM_CH=4 -GT_MAX=8 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -
 # stages, attention with masked KVST, the DB block with trace writer and history, paired two-flit gather, the DDR0 / DDR3
 # boundaries and the RV transport. The local-intermediate banks stay off.
 lint tsr_core -GNUM_CH=4 -GT_MAX=4 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9 -GMVM_GATHER_PAIR=1 -GMVM_GATHER_FLITS=2 -GDDR_LOCAL_PIPE=1 -GRV_LOCAL_TRANSPORT=1 -GXSLR_REG=1 -GVU_FRONT_LANES=8 -GVU_EXP_LANES=8 -GVU_BACK_LANES=4 -GVU_LANE_PIPE=2
+# The same with FAST_CLK 1 (docs/platform-u200.md §8.9): the 250 MHz stages of the card image.
+lint tsr_core -GNUM_CH=4 -GT_MAX=4 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9 -GMVM_GATHER_PAIR=1 -GMVM_GATHER_FLITS=2 -GDDR_LOCAL_PIPE=1 -GRV_LOCAL_TRANSPORT=1 -GXSLR_REG=1 -GFAST_CLK=1 -GVU_FRONT_LANES=8 -GVU_EXP_LANES=8 -GVU_BACK_LANES=4 -GVU_LANE_PIPE=2
+lint tsr_core -GFAST_CLK=1
+lint tsr_core -GHAS_MVM=0 -GFAST_CLK=1
+lint tsr_core_dp -GHAS_TRW=0 -GNUM_CH=3 -GT_MAX=3 -GRST_PIPE=1 -GFAST_CLK=1
 lint tsr_mvm_pair_tx -GW=563
 lint tsr_mvm_pair_rx -GW=563
 lint tsr_core -GVU_LANE_PIPE=1 -GVU_EXP_LANES=8 -GVU_BACK_LANES=4
@@ -210,12 +215,23 @@ lint tsr_mvm_cluster -GCH=15 -GK_MAX=4096 -GT_MAX=3 -GADDR_BEAT_W=40 -GADD_LAT=8
 lint tsr_mvm_gather -GNUM_CH=1 -GT_MAX=8 -GSPM_BYTES=4096 -GSPM_RD_LAT=1 -GADD_LAT=1
 lint tsr_mvm_gather -GNUM_CH=3 -GT_MAX=3 -GSPM_BYTES=262144 -GSPM_RD_LAT=4 -GADD_LAT=8
 lint tsr_mvm_gather -GNUM_CH=16 -GT_MAX=8 -GSPM_BYTES=4194304
+lint tsr_mvm_gather -GNUM_CH=3 -GT_MAX=3 -GSPM_BYTES=262144 -GSPM_RD_LAT=4 -GADD_LAT=8 -GFAST_CLK=1
 lint tsr_mvm -GNUM_CH=1 -GT_MAX=8 -GK_MAX=256 -GSPM_BYTES=4096 -GADDR_BEAT_W=5 -GBC_PIPE=0 -GRES_PIPE=0
 lint tsr_mvm -GNUM_CH=3 -GT_MAX=3 -GK_MAX=4096 -GSPM_BYTES=262144 -GADDR_BEAT_W=22 -GBC_PIPE=3 -GRES_PIPE=3 -GSPM_RD_LAT=4
 lint tsr_mvm -GNUM_CH=16 -GT_MAX=8 -GK_MAX=65280 -GADDR_BEAT_W=36 -GWS_FIFO_BEATS=1024
 lint tsr_mvm -GNUM_CH=3 -GT_MAX=3 -GRST_LOCAL=1
 lint tsr_mvm -GNUM_CH=1 -GT_MAX=8 -GK_MAX=256 -GSPM_BYTES=4096 -GADDR_BEAT_W=5 -GBC_PIPE=0 -GRES_PIPE=0 -GRST_LOCAL=2
 lint tsr_mvm -GNUM_CH=4 -GT_MAX=4 -GRST_LOCAL=2 -GXSLR_REG=1
+lint tsr_mvm -GNUM_CH=4 -GT_MAX=4 -GRST_LOCAL=2 -GXSLR_REG=1 -GFAST_CLK=1
+lint tsr_mvm_rvec -GPIPE=1
+lint tsr_mvm_rvec -GPIPE=1 -GSPM_AW=11
+lint tsr_rslice -GFORM=1 -GRPC=8 -GW=577
+lint tsr_rslice -GFORM=1 -GRPC=3 -GW=130
+lint tsr_mvm_pair_rx -GRPC=8
+lint tsr_csr -GFAST_CLK=1
+lint tsr_dma -GHAS_KVST=1 -GFAST_CLK=1
+lint tsr_mvm_cluster -GCH=0 -GK_MAX=256 -GT_MAX=4 -GHAS_ATT=1 -GMAC_LAT=9 -GFAST_CLK=1
+lint tsr_mvm_pv -GFAST_CLK=1
 lint tsr_rv_spm_tx -GXSLR_REG=1
 
 # Testbench-only HDL (block testbench toplevels); linted with the same rules. Each file is a top,

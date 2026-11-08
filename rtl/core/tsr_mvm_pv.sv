@@ -62,6 +62,7 @@ module tsr_mvm_pv
   parameter  int unsigned MAC_LAT    = TSR_DEF_MAC_LAT,
   parameter  int unsigned MUL_LAT    = TSR_DEF_FMUL_LAT,
   parameter  int unsigned ADD_LAT    = TSR_DEF_FADD_LAT,
+  parameter  bit          FAST_CLK   = 1'b0,    // the row-vector emitter in three stages (tsr_mvm_rvec PIPE)
   localparam int unsigned NS         = (T_MAX + 1) / 2,
   localparam int unsigned JW         = 1 + SPM_AW + 16 + 16 + TSR_LINE_BITS
 ) (
@@ -125,7 +126,9 @@ module tsr_mvm_pv
   localparam int unsigned P3       = P1 + 1 + MUL_LAT;   // w at the cell summary / FIFO w write
   localparam int unsigned P4       = P3 + 1;             // cell summary at the trackers
   localparam int unsigned CAPD     = 2 + 1 + PV_LAT; // aligner stages + back-end register + MAC
-  localparam int unsigned CVL      = 3;              // F() stages
+  localparam int unsigned CVX      = FAST_CLK ? 1 : 0;   // FAST_CLK: fs3 in two stages (docs/platform-u200.md §8.9)
+  localparam int unsigned CVP      = FAST_CLK ? 1 : 0;   // FAST_CLK: the lane / slot select in a stage of its own
+  localparam int unsigned CVL      = 3 + CVX + CVP;  // F() stages
   localparam logic [31:0] F_NAN    = TSR_CANON_NAN;   // (not NAN: a C macro in the Verilator model)
   localparam int unsigned TW       = (T_MAX > 1) ? $clog2(T_MAX) : 1;   // slot index into T_MAX arrays
 
@@ -679,22 +682,39 @@ module tsr_mvm_pv
     r.nrm = x.mag << (37 - m);
     return r;
   endfunction
-  function automatic logic [31:0] fs3(f2_t x);
+  // fs3 in two halves for FAST_CLK: fs3a rounds the mantissa and forms the exponent before the rounding carry,
+  // fs3b adds the carry, range-checks the exponent and packs the result; fs3 = fs3b o fs3a
+  typedef struct packed {
+    logic        nan, zero, s;
+    logic [24:0] mr;
+    logic [9:0]  ex;
+  } f3_t;
+  function automatic f3_t fs3a(f2_t x);
+    f3_t         r;
     logic [23:0] m;
     logic        g, st, up;
-    logic [24:0] mr;
-    int          ex;
-    if (x.nan) return F_NAN;
-    if (x.zero) return 32'd0;
     m  = x.nrm[37:14];
     g  = x.nrm[13];
     st = |x.nrm[12:0];
     up = g & (st | m[0]);
-    mr = {1'b0, m} + 25'(up);
-    ex = int'(x.msb) + int'(x.es) - 23 + (mr[24] ? 1 : 0);
+    r.nan  = x.nan;
+    r.zero = x.zero;
+    r.s    = x.s;
+    r.mr   = {1'b0, m} + 25'(up);
+    r.ex   = 10'(int'(x.msb) + int'(x.es) - 23);
+    return r;
+  endfunction
+  function automatic logic [31:0] fs3b(f3_t x);
+    int ex;
+    if (x.nan) return F_NAN;
+    if (x.zero) return 32'd0;
+    ex = int'($signed(x.ex)) + (x.mr[24] ? 1 : 0);
     if (ex < 1) return {x.s, 31'd0};
     if (ex > 254) return {x.s, 8'hFF, 23'd0};
-    return {x.s, 8'(ex), mr[24] ? mr[23:1] : mr[22:0]};
+    return {x.s, 8'(ex), x.mr[24] ? x.mr[23:1] : x.mr[22:0]};
+  endfunction
+  function automatic logic [31:0] fs3(f2_t x);
+    return fs3b(fs3a(x));
   endfunction
 
   // O stores: pipe k, lane l, slot t (LUTRAM, async read)
@@ -746,6 +766,28 @@ module tsr_mvm_pv
     end
   end
 
+  // the select stage of the F() pipeline: the lane group / slot select of the capture bank (FAST_CLK: registered first)
+  logic [7:0][37:0] sel_a;
+  logic [7:0][7:0]  sel_es;
+  logic [7:0]       sel_nf, sel_any;
+  if (CVP == 0) begin : g_sel0
+    for (genvar k = 0; k < 8; k++) begin : g_k
+      assign sel_a[k]   = cb_sel[k];
+      assign sel_es[k]  = cb_i.es[TW'(dr_t_q)];
+      assign sel_nf[k]  = nf_sel[k];
+      assign sel_any[k] = cb_i.any[TW'(dr_t_q)];
+    end
+  end else begin : g_sel1
+    always_ff @(posedge clk) begin
+      for (int k = 0; k < 8; k++) begin
+        sel_a[k]   <= cb_sel[k];
+        sel_es[k]  <= cb_i.es[TW'(dr_t_q)];
+        sel_nf[k]  <= nf_sel[k];
+        sel_any[k] <= cb_i.any[TW'(dr_t_q)];
+      end
+    end
+  end
+
   // convert pipeline (one step per cycle for all 8 pipes)
   always_ff @(posedge clk) begin
     if (!rst_n) begin
@@ -769,11 +811,22 @@ module tsr_mvm_pv
     // stage 1 c1_q, stage 2 c2_q, stage 3 c3_q and o_old (from the stage-2 tags cv_*[1]); the
     // add issues in stage 3 (cv_*[2])
     for (int k = 0; k < 8; k++) begin
-      automatic logic [TW-1:0] t = TW'(dr_t_q);
-      c1_q[k] <= fs1(cb_sel[k], cb_i.es[t], nf_sel[k], cb_i.any[t]);
+      c1_q[k] <= fs1(sel_a[k], sel_es[k], sel_nf[k], sel_any[k]);
       c2_q[k] <= fs2(c1_q[k]);
-      c3_q[k] <= fs3(c2_q[k]);
-      o_old[k] <= cv_first[1] ? 32'd0 : om_rmw[k];
+      o_old[k] <= cv_first[CVL-2] ? 32'd0 : om_rmw[k];
+    end
+  end
+  if (CVX == 0) begin : g_c3
+    always_ff @(posedge clk) begin
+      for (int k = 0; k < 8; k++) c3_q[k] <= fs3(c2_q[k]);
+    end
+  end else begin : g_c3x
+    f3_t [7:0] c3a_q;
+    always_ff @(posedge clk) begin
+      for (int k = 0; k < 8; k++) begin
+        c3a_q[k] <= fs3a(c2_q[k]);
+        c3_q[k]  <= fs3b(c3a_q[k]);
+      end
     end
   end
   for (genvar k = 0; k < 8; k++) begin : g_cvadd
@@ -797,7 +850,7 @@ module tsr_mvm_pv
     always_ff @(posedge clk) begin
       if (aw_v) om[{aw_p, aw_l, 3'(aw_t)}] <= add_y[k];
     end
-    assign om_rmw[k]    = om[{cv_par[1], cv_l[1], 3'(cv_t[1])}];
+    assign om_rmw[k]    = om[{cv_par[CVL-2], cv_l[CVL-2], 3'(cv_t[CVL-2])}];
     assign om_out[k][0] = om[{ob_p, ob_m, 1'b0, ob_t3}];
     assign om_out[k][1] = om[{ob_p, ob_m, 1'b1, ob_t3}];
   end
@@ -815,6 +868,22 @@ module tsr_mvm_pv
   logic [31:0] l_add_y;
   logic [3:0]  l_add_t;
   wire  l_go = lq_act_q;
+  logic [37:0] lsel_a;
+  logic [7:0]  lsel_es;
+  logic        lsel_nf, lsel_any;
+  if (CVP == 0) begin : g_lsel0
+    assign lsel_a   = 38'($signed(cb_ls[TW'(lq_t_q)]));
+    assign lsel_es  = cb_i.ep[TW'(lq_t_q)];
+    assign lsel_nf  = cb_i.nfp[TW'(lq_t_q)];
+    assign lsel_any = cb_i.anyp[TW'(lq_t_q)];
+  end else begin : g_lsel1
+    always_ff @(posedge clk) begin
+      lsel_a   <= 38'($signed(cb_ls[TW'(lq_t_q)]));
+      lsel_es  <= cb_i.ep[TW'(lq_t_q)];
+      lsel_nf  <= cb_i.nfp[TW'(lq_t_q)];
+      lsel_any <= cb_i.anyp[TW'(lq_t_q)];
+    end
+  end
   always_ff @(posedge clk) begin
     if (!rst_n || start) begin
       lq_act_q <= 1'b0;
@@ -835,10 +904,18 @@ module tsr_mvm_pv
   always_ff @(posedge clk) begin
     lt[0] <= lq_t_q;
     for (int i = 1; i <= int'(CVL); i++) lt[i] <= lt[i-1];
-    l1_q  <= fs1(38'($signed(cb_ls[TW'(lq_t_q)])), cb_i.ep[TW'(lq_t_q)], cb_i.nfp[TW'(lq_t_q)], cb_i.anyp[TW'(lq_t_q)]);
+    l1_q  <= fs1(lsel_a, lsel_es, lsel_nf, lsel_any);
     l2_q  <= fs2(l1_q);
-    l3_q  <= fs3(l2_q);
-    l_old <= cb_i.sfirst ? 32'd0 : l_cur[TW'(lt[1])];
+    l_old <= cb_i.sfirst ? 32'd0 : l_cur[TW'(lt[CVL-2])];
+  end
+  if (CVX == 0) begin : g_l3
+    always_ff @(posedge clk) l3_q <= fs3(l2_q);
+  end else begin : g_l3x
+    f3_t l3a_q;
+    always_ff @(posedge clk) begin
+      l3a_q <= fs3a(l2_q);
+      l3_q  <= fs3b(l3a_q);
+    end
   end
   tsr_fp_add #(.LAT(ADD_LAT)) u_ladd (
     .clk, .rst_n, .ce(1'b1), .in_valid(lv[CVL-1]), .a(l_old), .b(l3_q), .sub(1'b0),
@@ -1006,7 +1083,7 @@ module tsr_mvm_pv
     else if (done_q)     op_done_q <= 1'b1;
   end
 
-  tsr_mvm_rvec #(.SPM_AW(SPM_AW)) u_rvec (
+  tsr_mvm_rvec #(.SPM_AW(SPM_AW), .PIPE(FAST_CLK)) u_rvec (
     .clk, .rst_n,
     .start(rv_start_q), .tq, .gs, .tact, .nseg, .g_heads, .hg0, .n_head, .base(lbase), .last_en(1'b1),
     .val_addr(rv_addr), .val_data(lt_vld_q[rv_addr] ? lt_mem[rv_addr] : 32'd0),
@@ -1025,8 +1102,8 @@ module tsr_mvm_pv
   end
 
   wire unused_ok = &{1'b0, sq_ne, beat.last, beat.row_last, beat.blk, beat.two, beat.half, beat.sc, beat.m,
-                     beat.w[127:64], add_v, d2_t.last, i2[FRL], t2[FRL], dr_since_q, lt[CVL], lv[CVL], cv_v[CVL],
-                     cv_t[CVL], cv_l[CVL], cv_first[CVL], cv_first[2], cv_first[3], d2_i, cb_i, aw_t[3],
+                     beat.w[127:64], add_v, d2_t.last, i2[FRL], t2[FRL], dr_since_q, lt, lv, cv_v,
+                     cv_t, cv_l, cv_first, d2_i, cb_i, aw_t[3],
                      l_add_t, lt_gbase[7], lt_wt_q, ob_t_q};
 
 `ifndef SYNTHESIS

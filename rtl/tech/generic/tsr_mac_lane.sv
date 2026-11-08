@@ -58,6 +58,7 @@ module tsr_mac_lane #(
   parameter  int unsigned T     = 1,    // tokens sharing the weights
   parameter  int unsigned LAT   = 3,    // fixed latency, >= 1
   parameter  bit          PV    = 1'b0, // PV accumulate mode (ATTPV, AT §8.2)
+  parameter  bit          PVR   = 1'b0, // pv_en through one register (the Xilinx variant keeps a copy per eight lanes; tsr_mac_lane there)
   localparam int unsigned SUM_W = 16 + $clog2(N),
   localparam int unsigned NS    = (T + 1) / 2
 ) (
@@ -183,6 +184,12 @@ module tsr_mac_lane #(
     localparam int unsigned RA2  = R_AD ? RA1 - 1 : RA1;
     localparam bit          R_IN = RA2 >= 1;
 
+    logic pve_r;                         // pv_en, through one register with PVR
+    if (PVR) begin : g_pvr
+      always_ff @(posedge clk) pve_r <= pv_en;
+    end else begin : g_pv0
+      assign pve_r = pv_en;
+    end
     logic [NS-1:0][24:0] a_i, a_a;
     logic [N-1:0][7:0]   w_i, w_a;
     logic                v_i, v_a, f_i, f_a, v_m, f_m;
@@ -192,7 +199,7 @@ module tsr_mac_lane #(
     if (R_IN) begin : g_in
       always_ff @(posedge clk) begin
         if (!rst_n)  v_i <= 1'b0;
-        else if (ce) v_i <= pv_valid & pv_en;
+        else if (ce) v_i <= pv_valid & pve_r;
       end
       always_ff @(posedge clk) begin
         if (ce) begin
@@ -202,7 +209,7 @@ module tsr_mac_lane #(
         end
       end
     end else begin : g_no_in
-      assign v_i = pv_valid & pv_en;
+      assign v_i = pv_valid & pve_r;
       assign f_i = pv_first;
       assign a_i = pv_a;
       assign w_i = w;
@@ -249,6 +256,19 @@ module tsr_mac_lane #(
       end
     end
     assign pv_acc = acc_q;
+`ifndef SYNTHESIS
+    // PVR: the registered pv_en equals pv_en whenever an operand is in the lane or offered to it (as in the Xilinx lane)
+    if (PVR) begin : g_chk_pvr
+      logic a_on_q;
+      initial a_on_q = 1'b0;
+      always @(posedge clk) if (!rst_n) a_on_q <= 1'b1;
+      always_ff @(posedge clk) begin
+        if (rst_n && a_on_q && (in_valid || pv_valid || v_i || v_a || v_m)) begin
+          assert (pve_r == pv_en) else $error("%m: pv_en changed less than 2 cycles before an operand (PVR)");
+        end
+      end
+    end
+`endif
   end else begin : g_nopv
     assign pv_acc = '0;
     wire unused_pv = &{1'b0, pv_en, pv_valid, pv_first, pv_a};

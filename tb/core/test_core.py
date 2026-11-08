@@ -828,6 +828,24 @@ def test_core_k4full():
                    "TB_CORE_VU_FRONT": "8", "TB_CORE_VU_BACK": "4"}, timescale=("1ps", "1ps"))
 
 
+def test_core_k4_fast():
+    """The full-feature card image with FAST_CLK 1 (the 250 MHz stages, docs/platform-u200.md §8.9): everything of
+    test_core_k4full with the PERF counters, the row-vector emitters, the PV convert pipeline, the KVST placer and the
+    copied slice pointers in their registered forms. core_smoke and core_db must equal the simulator in every DRAM
+    region, the identification registers and the final CSR state; core_db adds the stop state, the history and the
+    trace records."""
+    from common.runner import run
+    elf = C.build_fw(FW_OUT)
+    params = dict(C.PARAMS, NUM_CH=4, T_MAX=4, DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
+                  RV_LOCAL_TRANSPORT=1, XSLR_REG=1, FAST_CLK=1, MVM_BC_PIPE=2, MVM_RES_PIPE=2, VU_LANE_PIPE=2,
+                  VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, RST_PIPE=3, SPM_RD_LAT=4, MVM_MAC_LAT=9)
+    run("tsr_core", __name__, parameters=params, sources=_sources(), name="core_k4fast",
+        seed=int(os.environ.get("TSR_SEED", "1"), 0), testcase=["core_smoke", "core_db"],
+        extra_env={"TB_CORE_ELF": str(elf), "TB_CORE_RV_PS": "6000", "TB_CORE_PS": "4000",
+                   "TB_CORE_NCH": "4", "TB_CORE_TMAX": "4",
+                   "TB_CORE_VU_FRONT": "8", "TB_CORE_VU_BACK": "4"}, timescale=("1ps", "1ps"))
+
+
 def test_core_k4min():
     """The reduced first card image (tsr_u200_k4, tb/core/viv/core_ooc.sh k4min): four clusters with T_MAX 8, the
     control core behind the RV transport, no vector unit, no attention (no KVST, ATTQK, ATTPV), no DB trace writer or

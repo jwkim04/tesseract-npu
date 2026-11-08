@@ -393,7 +393,8 @@ module tsr_u200_k4 (
     .MVM_GATHER_FLITS(2),
     .DDR_LOCAL_PIPE(1),
     .RV_LOCAL_TRANSPORT(1),
-    .XSLR_REG(1)
+    .XSLR_REG(1),
+    .FAST_CLK(1)
   ) u_kernel (
     .ap_clk(ap_clk),
     .ap_rst_n(ap_rst_n),

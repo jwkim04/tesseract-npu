@@ -37,7 +37,8 @@ module tsr_dbg_tb
   parameter bit              HAS_REC     = 1'b1,
   parameter bit              HAS_RV_TAPS = 1'b0,
   // XSLR_REG: the register slices of tsr_core_dp (g_tslice) between the trace writer and the write mux
-  parameter bit              XSLR_REG    = 1'b0
+  parameter bit              XSLR_REG    = 1'b0,
+  parameter bit              FAST_CLK    = 1'b0
 ) (
   input  logic                        clk,
   input  logic                        rst_n,
@@ -309,7 +310,7 @@ module tsr_dbg_tb
   tsr_dbg #(
     .NUM_CH(NUM_CH), .CH_BYTES(CH_BYTES), .ADDR_BEAT_W(ADDR_BEAT_W),
     .QD_DMA(QD_DMA), .QD_QACT(QD_QACT), .QD_MVM(QD_MVM), .QD_VU(QD_VU), .QD_ATT(QD_ATT), .QD_SYNC(QD_SYNC),
-    .HIST_DEPTH(HIST_DEPTH), .HAS_TRW(HAS_TRW), .NTBP(NTBP), .NRVWP(NRVWP), .HAS_REC(HAS_REC)
+    .HIST_DEPTH(HIST_DEPTH), .HAS_TRW(HAS_TRW), .NTBP(NTBP), .NRVWP(NRVWP), .HAS_REC(HAS_REC), .FAST_CLK(FAST_CLK)
   ) u_dbg (
     .clk, .rst_n,
     .dbg_req, .dbg_we, .dbg_addr, .dbg_wdata, .dbg_host, .dbg_rdata, .sr_db_clear, .db_stop_active, .dmi_en,

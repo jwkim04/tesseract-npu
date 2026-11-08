@@ -37,6 +37,7 @@ module tsr_mvm_aqk
   parameter  int unsigned NUM_CH  = TSR_DEF_NUM_CH,
   parameter  int unsigned SPM_AW  = 16,
   parameter  int unsigned RAM_LAT = 2,
+  parameter  bit          FAST_CLK = 1'b0,   // the bounds test of a row one stage earlier (RAM_LAT >= 2; the setup is stable)
   localparam int unsigned JW      = 1 + SPM_AW + 16 + 16 + TSR_LINE_BITS
 ) (
   input  logic                         clk,
@@ -231,14 +232,24 @@ module tsr_mvm_aqk
   rtag_t             ht;
   assign ht = rt_q[RAM_LAT-1];
   logic [15:0]       vis;
-  logic signed [18:0] lo_j, hi_j;
+  // the bounds test of lane j of the row read (AT §5.2): -inf outside [lo_q, hi_q) in the group's cell offsets
+  function automatic logic [15:0] vis_of(logic [2:0] q, logic [17:0] juo);
+    logic signed [18:0] lo_j, hi_j;
+    logic [15:0] v;
+    lo_j = $signed({lo[q][17], lo[q]}) - $signed({1'b0, juo});
+    hi_j = $signed({hi[q][17], hi[q]}) - $signed({1'b0, juo});
+    for (int j = 0; j < 16; j++) v[j] = (19'sd0 + 19'(j) >= lo_j) && (19'sd0 + 19'(j) < hi_j);
+    return v;
+  endfunction
   always_comb begin
-    lo_j = $signed({lo[ht.q][17], lo[ht.q]}) - $signed({1'b0, ht.juo});
-    hi_j = $signed({hi[ht.q][17], hi[ht.q]}) - $signed({1'b0, ht.juo});
-    for (int j = 0; j < 16; j++) begin
-      rot_w[j] = bq[4'(ht.e[3:0] + 4'(j))];
-      vis[j]   = (19'sd0 + 19'(j) >= lo_j) && (19'sd0 + 19'(j) < hi_j);
-    end
+    for (int j = 0; j < 16; j++) rot_w[j] = bq[4'(ht.e[3:0] + 4'(j))];
+  end
+  if (FAST_CLK && RAM_LAT >= 2) begin : g_visq
+    // the tags of the read one stage before the data: lo / hi are the op's setup, stable from start to the last job
+    always_ff @(posedge clk) vis <= vis_of(rt_q[RAM_LAT-2].q, rt_q[RAM_LAT-2].juo);
+    wire unused_ht = &{1'b0, ht.juo, ht.q};
+  end else begin : g_viscomb
+    assign vis = vis_of(ht.q, ht.juo);
   end
 
   logic [JW-1:0] oq_mem [OQ];
@@ -295,11 +306,22 @@ endmodule
 // val_data combinational) and writes word r mod 16 of line base + r / 16: consecutive rows of one
 // line merge into one job with their words in `own` (byte enables). Jobs {last, line, own, 0, y};
 // `last` on the final job when last_en. done (pulse) after the final job was taken.
+// PIPE = 0: one stage, the row address, the table read, the line compare and the line register in one cycle
+//   (12 levels with the table read in the caller; the 250 MHz work of docs/platform-u200.md §8.9 found them
+//   the slowest paths of the PV unit and the gather).
+// PIPE = 1: three stages with the same jobs in the same order: the walker (the loop counters and the
+//   row's r and table address, registered in the descriptor slice A), the read stage (the table read, line
+//   address and the "same line as the row before" flag, registered in slice B) and the line assembler. The
+//   slices are tsr_rslice (registered ready and valid), so no path runs through more than one stage. The
+//   table must not change while the emitter runs (the callers: the PV unit's l table after its last slice,
+//   the gather's key table after its last job). The first job is offered 3 cycles later and `done` comes 3
+//   cycles later than with PIPE = 0; the rate stays one row per cycle.
 // ================================================================================================
 module tsr_mvm_rvec
   import tsr_pkg::*;
 #(
   parameter  int unsigned SPM_AW = 16,
+  parameter  bit          PIPE   = 1'b0,
   localparam int unsigned JW     = 1 + SPM_AW + 16 + 16 + TSR_LINE_BITS
 ) (
   input  logic                  clk,
@@ -325,43 +347,141 @@ module tsr_mvm_rvec
   output logic                  done
 );
 
-  logic        act_q;
-  logic [3:0]  q_q, i_q;
-  logic [8:0]  g_q;
-  logic [17:0] rq_q;            // q n_head
-  logic [17:0] rg_q;            // q n_head + g G
-  logic [7:0]  eq_q;            // q gs
-  logic [7:0]  eg_q;            // g tact
-  logic        cur_v_q;         // a line is being collected
+  // The line assembler: the current line, the job register and the final-line handshake. Rows come from the
+  // caller of this block (the flat walk, PIPE = 0, or the read stage's slice B, PIPE = 1).
+  logic              cur_v_q;         // a line is being collected
   logic [SPM_AW-1:0] cur_l_q;
-  logic [15:0] cur_m_q;
+  logic [15:0]       cur_m_q;
   logic [15:0][31:0] cur_d_q;
-  logic        ov_q;            // job register
-  logic [JW-1:0] o_q;
-  logic        fin_q, done_q;
+  logic              ov_q;            // job register
+  logic [JW-1:0]     o_q;
+  logic              fin_q, done_q;
+  wire               o_free = ~ov_q | job_ready;
 
-  wire [17:0] r     = rg_q + 18'(hg0) + 18'(i_q);
-  wire [SPM_AW-1:0] rl = base + SPM_AW'(r >> 4);
-  wire [3:0]  rw    = r[3:0];
-  wire        last_row = (i_q == gs - 4'd1) & (g_q == nseg - 9'd1) & (q_q == tq - 4'd1);
-  wire        o_free = ~ov_q | job_ready;
-  // a row is consumed when it joins the current line, or when the current line can be emitted
-  wire        same  = cur_v_q & (rl == cur_l_q);
-  wire        step  = act_q & (same | ~cur_v_q | o_free);
-  assign val_addr = 7'(eg_q + eq_q + 8'(i_q));
+  if (!PIPE) begin : g_flat
+    logic        act_q;
+    logic [3:0]  q_q, i_q;
+    logic [8:0]  g_q;
+    logic [17:0] rq_q;            // q n_head
+    logic [17:0] rg_q;            // q n_head + g G
+    logic [7:0]  eq_q;            // q gs
+    logic [7:0]  eg_q;            // g tact
 
-  always_ff @(posedge clk) begin
-    if (!rst_n) begin
-      act_q   <= 1'b0;
-      cur_v_q <= 1'b0;
-      ov_q    <= 1'b0;
-      fin_q   <= 1'b0;
-      done_q  <= 1'b0;
-    end else begin
-      done_q <= 1'b0;
-      if (ov_q && job_ready) ov_q <= 1'b0;
+    wire [17:0] r     = rg_q + 18'(hg0) + 18'(i_q);
+    wire [SPM_AW-1:0] rl = base + SPM_AW'(r >> 4);
+    wire [3:0]  rw    = r[3:0];
+    wire        last_row = (i_q == gs - 4'd1) & (g_q == nseg - 9'd1) & (q_q == tq - 4'd1);
+    // a row is consumed when it joins the current line, or when the current line can be emitted
+    wire        same  = cur_v_q & (rl == cur_l_q);
+    wire        step  = act_q & (same | ~cur_v_q | o_free);
+    assign val_addr = 7'(eg_q + eq_q + 8'(i_q));
+
+    always_ff @(posedge clk) begin
+      if (!rst_n) begin
+        act_q   <= 1'b0;
+        cur_v_q <= 1'b0;
+        ov_q    <= 1'b0;
+        fin_q   <= 1'b0;
+        done_q  <= 1'b0;
+      end else begin
+        done_q <= 1'b0;
+        if (ov_q && job_ready) ov_q <= 1'b0;
+        if (start) begin
+          act_q   <= 1'b1;
+          q_q     <= '0;
+          g_q     <= '0;
+          i_q     <= '0;
+          rq_q    <= '0;
+          rg_q    <= '0;
+          eq_q    <= '0;
+          eg_q    <= '0;
+          cur_v_q <= 1'b0;
+          fin_q   <= 1'b0;
+        end else if (step) begin
+          if (cur_v_q && !same) begin                     // emit the current line, start a new one
+            ov_q <= 1'b1;
+            o_q  <= {1'b0, cur_l_q, cur_m_q, 16'd0, cur_d_q};
+          end
+          cur_v_q <= 1'b1;
+          cur_l_q <= rl;
+          cur_m_q <= (same ? cur_m_q : 16'd0) | (16'd1 << rw);
+          for (int k = 0; k < 16; k++) begin
+            if (!same) cur_d_q[k] <= 32'd0;
+            if (4'(k) == rw) cur_d_q[k] <= val_data;
+          end
+          // next row
+          if (i_q == gs - 4'd1) begin
+            i_q <= '0;
+            if (g_q == nseg - 9'd1) begin
+              g_q  <= '0;
+              rq_q <= rq_q + 18'(n_head);
+              rg_q <= rq_q + 18'(n_head);
+              eg_q <= '0;
+              q_q  <= q_q + 4'd1;
+              eq_q <= eq_q + 8'(gs);
+              if (q_q == tq - 4'd1) begin
+                act_q <= 1'b0;
+                fin_q <= 1'b1;
+              end
+            end else begin
+              g_q  <= g_q + 9'd1;
+              rg_q <= rg_q + 18'(g_heads);
+              eg_q <= eg_q + 8'(tact);
+            end
+          end else begin
+            i_q <= i_q + 4'd1;
+          end
+        end else if (fin_q && cur_v_q && o_free) begin     // the final line
+          ov_q    <= 1'b1;
+          o_q     <= {last_en, cur_l_q, cur_m_q, 16'd0, cur_d_q};
+          cur_v_q <= 1'b0;
+        end else if (fin_q && !cur_v_q && (!ov_q || job_ready)) begin
+          fin_q  <= 1'b0;
+          done_q <= 1'b1;
+        end
+      end
+    end
+
+    wire unused_ok = &{1'b0, last_row, r[17:4]};
+  end else begin : g_pipe
+    // ---- stage 1, the walker: loop counters, r and the table address of the next row ----
+    logic [3:0]  q_q, i_q;
+    logic [8:0]  g_q;
+    logic [17:0] rq_q, rg_q;
+    logic [7:0]  eq_q, eg_q;
+    logic [3:0]  tqm1_q, gsm1_q;                  // tq - 1, gs - 1, nseg - 1 as seen at start
+    logic [8:0]  nsm1_q;
+    logic [3:0]  gsw_q;                           // gs, tact, n_head, g_heads, hg0 of the op
+    logic [3:0]  tactw_q;
+    logic [14:0] nhw_q;
+    logic [6:0]  ghw_q;
+    logic [5:0]  hg0w_q;
+    logic        w_act_q;
+    wire w_last_i = (i_q == gsm1_q);
+    wire w_last_g = (g_q == nsm1_q);
+    wire w_last_q = (q_q == tqm1_q);
+    wire [17:0] w_r  = rg_q + 18'(hg0w_q) + 18'(i_q);
+    wire [6:0]  w_va = 7'(eg_q + eq_q + 8'(i_q));
+    localparam int unsigned DW = 1 + 18 + 7;      // {last, r, va}
+    logic          a_sv, a_sr, a_mv, a_mr;
+    logic [DW-1:0] a_sd, a_md;
+    assign a_sv = w_act_q;
+    assign a_sd = {w_last_i & w_last_g & w_last_q, w_r, w_va};
+    wire   w_adv = a_sv & a_sr;
+    tsr_rslice #(.W(DW)) u_a (
+      .clk, .rst_n, .s_valid(a_sv), .s_ready(a_sr), .s_data(a_sd), .m_valid(a_mv), .m_ready(a_mr), .m_data(a_md)
+    );
+    always_ff @(posedge clk) begin
+      if (!rst_n) begin
+        w_act_q <= 1'b0;
+      end else if (start) begin
+        w_act_q <= 1'b1;
+      end else if (w_adv && w_last_i && w_last_g && w_last_q) begin
+        w_act_q <= 1'b0;
+      end
+    end
+    always_ff @(posedge clk) begin
       if (start) begin
-        act_q   <= 1'b1;
         q_q     <= '0;
         g_q     <= '0;
         i_q     <= '0;
@@ -369,49 +489,100 @@ module tsr_mvm_rvec
         rg_q    <= '0;
         eq_q    <= '0;
         eg_q    <= '0;
-        cur_v_q <= 1'b0;
-        fin_q   <= 1'b0;
-      end else if (step) begin
-        if (cur_v_q && !same) begin                     // emit the current line, start a new one
-          ov_q <= 1'b1;
-          o_q  <= {1'b0, cur_l_q, cur_m_q, 16'd0, cur_d_q};
-        end
-        cur_v_q <= 1'b1;
-        cur_l_q <= rl;
-        cur_m_q <= (same ? cur_m_q : 16'd0) | (16'd1 << rw);
-        for (int k = 0; k < 16; k++) begin
-          if (!same) cur_d_q[k] <= 32'd0;
-          if (4'(k) == rw) cur_d_q[k] <= val_data;
-        end
-        // next row
-        if (i_q == gs - 4'd1) begin
+        tqm1_q  <= tq - 4'd1;
+        gsm1_q  <= gs - 4'd1;
+        nsm1_q  <= nseg - 9'd1;
+        gsw_q   <= gs;
+        tactw_q <= tact;
+        nhw_q   <= n_head;
+        ghw_q   <= g_heads;
+        hg0w_q  <= hg0;
+      end else if (w_adv) begin
+        if (w_last_i) begin
           i_q <= '0;
-          if (g_q == nseg - 9'd1) begin
+          if (w_last_g) begin
             g_q  <= '0;
-            rq_q <= rq_q + 18'(n_head);
-            rg_q <= rq_q + 18'(n_head);
+            rq_q <= rq_q + 18'(nhw_q);
+            rg_q <= rq_q + 18'(nhw_q);
             eg_q <= '0;
             q_q  <= q_q + 4'd1;
-            eq_q <= eq_q + 8'(gs);
-            if (q_q == tq - 4'd1) begin
-              act_q <= 1'b0;
-              fin_q <= 1'b1;
-            end
+            eq_q <= eq_q + 8'(gsw_q);
           end else begin
             g_q  <= g_q + 9'd1;
-            rg_q <= rg_q + 18'(g_heads);
-            eg_q <= eg_q + 8'(tact);
+            rg_q <= rg_q + 18'(ghw_q);
+            eg_q <= eg_q + 8'(tactw_q);
           end
         end else begin
           i_q <= i_q + 4'd1;
         end
-      end else if (fin_q && cur_v_q && o_free) begin     // the final line
-        ov_q    <= 1'b1;
-        o_q     <= {last_en, cur_l_q, cur_m_q, 16'd0, cur_d_q};
+      end
+    end
+
+    // ---- stage 2, the read: table value, line address, same line as the row before ----
+    wire [17:0]       a_r    = a_md[7 +: 18];
+    wire              a_last = a_md[7 + 18];
+    assign val_addr = a_md[6:0];
+    logic [17:0] pr_q;                            // r of the row before, valid while pv_q
+    logic        pv_q;
+    wire [SPM_AW-1:0] rd_l   = base + SPM_AW'(a_r >> 4);
+    wire              rd_same = pv_q & (SPM_AW'(a_r >> 4) == SPM_AW'(pr_q >> 4));
+    localparam int unsigned BW = 1 + 1 + SPM_AW + 4 + 32;     // {last, same, line, word, value}
+    logic          b_sv, b_sr, b_mv, b_mr;
+    logic [BW-1:0] b_sd, b_md;
+    assign b_sv = a_mv;
+    assign a_mr = b_sr;
+    assign b_sd = {a_last, rd_same, rd_l, a_r[3:0], val_data};
+    tsr_rslice #(.W(BW)) u_b (
+      .clk, .rst_n, .s_valid(b_sv), .s_ready(b_sr), .s_data(b_sd), .m_valid(b_mv), .m_ready(b_mr), .m_data(b_md)
+    );
+    always_ff @(posedge clk) begin
+      if (!rst_n || start) pv_q <= 1'b0;
+      else if (a_mv && b_sr) pv_q <= 1'b1;
+      if (a_mv && b_sr) pr_q <= a_r;
+    end
+
+    // ---- stage 3, the line assembler ----
+    wire [31:0]       h_val  = b_md[31:0];
+    wire [3:0]        h_rw   = b_md[35:32];
+    wire [SPM_AW-1:0] h_rl   = b_md[36 +: SPM_AW];
+    wire              h_same = b_md[36 + SPM_AW];
+    wire              h_last = b_md[37 + SPM_AW];
+    wire              step   = b_mv & (h_same | ~cur_v_q | o_free);
+    assign b_mr = step;
+
+    always_ff @(posedge clk) begin
+      if (!rst_n) begin
         cur_v_q <= 1'b0;
-      end else if (fin_q && !cur_v_q && (!ov_q || job_ready)) begin
-        fin_q  <= 1'b0;
-        done_q <= 1'b1;
+        ov_q    <= 1'b0;
+        fin_q   <= 1'b0;
+        done_q  <= 1'b0;
+      end else begin
+        done_q <= 1'b0;
+        if (ov_q && job_ready) ov_q <= 1'b0;
+        if (start) begin
+          cur_v_q <= 1'b0;
+          fin_q   <= 1'b0;
+        end else if (step) begin
+          if (cur_v_q && !h_same) begin                   // emit the current line, start a new one
+            ov_q <= 1'b1;
+            o_q  <= {1'b0, cur_l_q, cur_m_q, 16'd0, cur_d_q};
+          end
+          cur_v_q <= 1'b1;
+          cur_l_q <= h_rl;
+          cur_m_q <= (h_same ? cur_m_q : 16'd0) | (16'd1 << h_rw);
+          for (int k = 0; k < 16; k++) begin
+            if (!h_same) cur_d_q[k] <= 32'd0;
+            if (4'(k) == h_rw) cur_d_q[k] <= h_val;
+          end
+          if (h_last) fin_q <= 1'b1;
+        end else if (fin_q && cur_v_q && o_free) begin     // the final line
+          ov_q    <= 1'b1;
+          o_q     <= {last_en, cur_l_q, cur_m_q, 16'd0, cur_d_q};
+          cur_v_q <= 1'b0;
+        end else if (fin_q && !cur_v_q && (!ov_q || job_ready)) begin
+          fin_q  <= 1'b0;
+          done_q <= 1'b1;
+        end
       end
     end
   end
@@ -419,8 +590,6 @@ module tsr_mvm_rvec
   assign job_valid = ov_q;
   assign job       = o_q;
   assign done      = done_q;
-
-  wire unused_ok = &{1'b0, last_row, r[17:4]};
 
 endmodule
 /* verilator lint_on DECLFILENAME */

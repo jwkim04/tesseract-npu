@@ -311,6 +311,7 @@ endmodule
 
 module tsr_mvm_pair_rx #(
   parameter int unsigned W = 562,
+  parameter int unsigned RPC = 1,   // copies of the read pointer, one per slice of the payload (cycle-identical)
   localparam int unsigned FLIT_W = (W + 1) / 2
 ) (
   input logic clk, rst_n,
@@ -356,7 +357,23 @@ module tsr_mvm_pair_rx #(
   end
   assign s_ready = ready_q;
   assign m_valid = occupied_q[rp_q];
-  assign m_data = slot_q[rp_q];
+  if (RPC <= 1) begin : g_one
+    assign m_data = slot_q[rp_q];
+  end else begin : g_cp
+    localparam int unsigned CWD = (W + RPC - 1) / RPC;
+    (* keep = "true" *) logic [RPC-1:0] rpc_q;
+    always_ff @(posedge clk) begin
+      if (!rst_n)   rpc_q <= '0;
+      else if (pop) rpc_q <= {RPC{~rp_q}};
+    end
+    for (genvar j = 0; j < RPC; j++) begin : g_c
+      localparam int unsigned LO = j * CWD;
+      localparam int unsigned HI = (LO + CWD > W) ? W - 1 : LO + CWD - 1;
+      if (LO <= HI) begin : g_w
+        assign m_data[HI:LO] = slot_q[rpc_q[j]][HI:LO];
+      end
+    end
+  end
   wire unused_padding = &{1'b0, s_data};
 endmodule
 // A complete owner-pair result collector. Its two source queues, arbiter,
@@ -474,6 +491,7 @@ module tsr_mvm_gather
   parameter  int unsigned GATHER_FLITS = 1,   // 2: half-width serialized pair links
   parameter  int unsigned JOB_PIPE   = 0,     // register slices assembler c -> central (implementation)
   parameter  bit          XSLR_REG   = 1'b0,  // GATHER_PAIR: one tsr_rpipe stage on each pair link (below)
+  parameter  bit          FAST_CLK   = 1'b0,  // the row-maxima emitter in three stages (tsr_mvm_rvec PIPE)
   localparam int unsigned SPM_LINES  = SPM_BYTES / TSR_LINE_BYTES,
   localparam int unsigned SPM_AW     = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1,
   localparam int unsigned AJW        = 1 + SPM_AW + 16 + 16 + TSR_LINE_BITS
@@ -655,7 +673,7 @@ module tsr_mvm_gather
         .clk, .rst_n, .s_valid(p_v), .s_ready(p_r), .s_data(p_d),
         .m_valid(i_v), .m_ready(i_r), .m_data(i_d)
       );
-      tsr_rslice #(.W(JW), .FORM(1)) u_jl (
+      tsr_rslice #(.W(JW), .FORM(1), .RPC(FAST_CLK ? 8 : 1)) u_jl (
         .clk, .rst_n, .s_valid(i_v), .s_ready(i_r), .s_data(i_d),
         .m_valid(sv[c]), .m_ready(sr[c]), .m_data(sd[c])
       );
@@ -701,12 +719,12 @@ module tsr_mvm_gather
         assign rx_p   = packet;
       end
       if (GATHER_FLITS == 2) begin : g_narrow
-        tsr_mvm_pair_rx #(.W(JW+1)) u_remote (
+        tsr_mvm_pair_rx #(.W(JW+1), .RPC(FAST_CLK ? 8 : 1)) u_remote (
           .clk, .rst_n, .s_valid(rx_v), .s_ready(rx_r), .s_data(rx_p),
           .m_valid(jv[p]), .m_ready(jr[p]), .m_data(link_d)
         );
       end else begin : g_wide
-        tsr_rslice #(.W(JW+1), .FORM(1)) u_remote (
+        tsr_rslice #(.W(JW+1), .FORM(1), .RPC(FAST_CLK ? 8 : 1)) u_remote (
           .clk, .rst_n, .s_valid(rx_v), .s_ready(rx_r), .s_data(rx_p),
           .m_valid(jv[p]), .m_ready(jr[p]), .m_data(link_d)
         );
@@ -894,7 +912,7 @@ module tsr_mvm_gather
     end
     // a row's max: MAXT(M_FLOOR, scores): untouched rows give M_FLOOR
     wire [32:0] rv_k = fresh_q[rv_a] ? FLOOR_K : tk_mem[rv_a];
-    tsr_mvm_rvec #(.SPM_AW(SPM_AW)) u_rv (
+    tsr_mvm_rvec #(.SPM_AW(SPM_AW), .PIPE(FAST_CLK)) u_rv (
       .clk, .rst_n,
       .start(mx_start_q), .tq(atq_q), .gs(ags_q), .tact(atact_q), .nseg(anseg_q), .g_heads(ag_q),
       .hg0(ahg0_q), .n_head(anh_q), .base(amd_q), .last_en(1'b0),

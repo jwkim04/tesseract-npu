@@ -1177,6 +1177,13 @@ def test_dbg_trw_xslr(ready):
          extra_params=dict(XSLR_REG=1), tests=["dbg_trw"])
 
 
+def test_dbg_fast_clk():
+    """FAST_CLK 1: the trace writer's DROPS counter adds the drops one cycle later (a statistic; the DROP records and the staging
+    decisions are unchanged). The registers, stops, history and records equal the simulator's."""
+    _run("fast", U200, S.U200_QD, dict(n_prog=6, n_ops=50, n_serial=2, n_trw=60, n_hist=600),
+         extra_params=dict(FAST_CLK=1), tests=["dbg_stops", "dbg_serial", "dbg_trw", "dbg_hist"])
+
+
 # (id, file, original text, mutated text, test that must fail, DB §14 item 7)
 MUTANTS = [
     ("hold_ge_off_by_one", "tsr_dbg_stop.sv",
