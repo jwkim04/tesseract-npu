@@ -1570,8 +1570,8 @@ includes about 18 K cycles of launch overhead, shown by `softplus`): GATED_DELTA
 
 Whole decode tokens (`TSR_STATS=1`: PERF_CYCLES and the busy cycles of the units, which now include the VU and DMA).
 The 27B was not run whole: the free disk (the file-backed simulator DRAM needs about 22 GB) was below the 60 GB
-rule. Its row extrapolates the first 4 and first 8 layers of the real GGUF (truncated copies, the 27B's shapes:
-`Qwen3.8-27B-first4.gguf`, `-first8`): one group of 3 Gated DeltaNet and 1 attention layer costs the
+rule. Its row extrapolates the first 4 and first 8 layers of the real GGUF (truncated copies made with `sw/tools/gguf_truncate.py`,
+N = 4 and N = 8, the 27B's shapes): one group of 3 Gated DeltaNet and 1 attention layer costs the
 difference of the two, and the head (embedding, output projection) the rest of the 4-layer run; 16 groups and
 the head make the 64 layers.
 

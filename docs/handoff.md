@@ -20,7 +20,7 @@ What is in:
 - Models in `models/` (git-ignored): `qwen3.8-2b-empero/Qwen3.8-2B-Q4_K_M.gguf` (empero-ai/Qwen3.8-2B-Distill-GGUF, sha256
   `4aa0fb13c431514262f259d420ecc95a8714df58ac2a2384514e20b93983f0ff`), `qwen3.8-27b-ggml-org/Qwen3.8-27B-Q4_K_M.gguf`
   (ggml-org/Qwen3.8-27B-GGUF, 19,403,684,480 B, sha256 `d15d4b6de55f662ac40e867702d31afe738d032fa06b829b2b1a21a49d4a48ee`) and
-  truncated copies `qwen3.8-27b-trunc/Qwen3.8-27B-first{4,8}.gguf` made for the cost extrapolation.
+  truncated copies of the 27B made for the cost extrapolation (`sw/tools/gguf_truncate.py`, N = 4 and 8; deleted again for disk).
 
 Results (simulator): the 2B at klcheck ratio 1.06 (512 positions, top-1 98.05 %); a 4,127-token prompt at ratio 0.99; the 27B's
 first 4 layers at ratio 1.06. A 27B decode token is about 108 M core cycles (542 ms at 200 MHz), the composed recurrence 19.7 M
