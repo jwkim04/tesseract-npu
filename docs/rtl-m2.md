@@ -35,7 +35,10 @@ exists.
 - **Clock/reset**: one clock `clk`. `rst_n` is synchronous, active low, already synchronised by the
   platform layer. Reset every control flop (valid bits, FSM state, counters, pointers); wide datapath
   registers need no reset. Verilator builds randomise initial state (`--x-initial unique`,
-  `+verilator+rand+reset+2`), so missing resets show up in simulation. The control core runs on a second
+  `+verilator+rand+reset+2`), so missing resets show up in simulation. A reset value must not be loaded from a flop
+  that has no reset: that flop is 0 after configuration on the FPGA and random in simulation, so the bug shows only on the
+  card (the ATTPV output stage, `ob_zero_q`, docs/platform-u200.md §8.8). `run(rand_reset=0)` or `TSR_RAND_RESET=0` starts
+  everything at zero as the FPGA does; `tb/at` `test_at_mvm_zero_state` and `tb/core` `test_k4_selftest_first_run` do. The control core runs on a second
   clock `clk_rv` ([`ctrl-riscv.md`](ctrl-riscv.md) §7; designed, W4); every crossing is a CDC
   structure of `rtl/core/cdc/` (planned), and Ibex and riscv-dbg keep their own reset style (CC §3.1).
 - **valid/ready** (all streams, internal and external):

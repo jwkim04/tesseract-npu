@@ -3031,7 +3031,8 @@ HELLO 8.4 ms, warm restart 2.5 ms, `PING` 6.55 µs median (6.92 µs p99), 303,64
 
 - **ATTPV is fixed.** Every check that failed on the second link's image passes:
   - `tsr-selftest --device xrt`: id 5 passes, and with it ids 1 to 10, the misuse cases, memory and boot. A passing run has 184
-    results.
+    results (185 with `--log-out FILE`, which adds the check that the log words were written; the first card run of the second
+    link used it and counted 184 passed and 1 failed. No check went missing).
   - The `at` trace set replays 98 of 98 (75 passed and 23 failed before; 62 are skipped by configuration). The other sets are as
     before: `m2` 123, `gen` 26, `m3` 171, `vu` 196, `ctrl` 131. 745 replays in all, 0 failed, all bit-exact.
   - M7 with attention on the device: 0.5B 8 x 64 and 32B 2 x 16 are bit-identical to the simulator (512 of 512 and 32 of 32 rows;
@@ -3054,9 +3055,40 @@ HELLO 8.4 ms, warm restart 2.5 ms, `PING` 6.55 µs median (6.92 µs p99), 303,64
   - The 98 `at` traces pass bit-exactly as the first use after a load, and so does the first real M7 run: after a reload, the
     0.5B M7 token sequences replayed on the card with `klcheck run --device xrt --tokens` are 512 of 512 rows bit-identical to the
     simulator's replay (2 of 2 loads). So the effect shows in the `selftest` kernel only, so far.
-  - Not found: why an earlier ATTPV changes lines that an ATTQK writes before any ATTPV of the run. The causal ATTQK of id 5 is
-    issued without a dependency (`sw/ctrl/kernels/selftest.cpp`, `t_at`), and the final `ST` waits for the ANORM chain and the
-    QACT of Q. No simulation was run for it. Open.
+  - **Cause (found 2026-11-08, after this card run).** The lines are not written wrongly by the ATTQK. They are overwritten with
+    zero lines later, by the ATTPV output stage of the clusters (`tsr_mvm_pv`, `ob_zero_q`). Its reset value was `ng == 0`, and `ng`
+    is a setup flop that is 0 after configuration. So after a load every PV unit sat in `O_RUN` with its first zero line offered
+    (`jv_q` 1), with no op running. The line waits: the cluster hands a job to the gather only while `at_pv_q` is set. The first
+    ATTPV sets `at_pv_q` about five cycles before its own start reaches the unit. In that window the gather takes the stale jobs
+    (five zero lines per cluster in the simulation) and writes them to lines computed from the setup flops that still hold the
+    ATTQK before. In id 5 they fell on SPM lines 0, 530 and 531 (area lines 1, 531 and 532), on lines of `parts` that the ATTPV
+    writes again, and on lines above 1000 that nothing reads. The unit's `start` clears the stage, and the end of every op leaves it idle (`ob_zero_q` 0), so no later ATTPV has
+    the effect. That is why only the first run after a load fails, and why one executing ATTPV primes the card: the 7 `at` traces
+    that did not prime have no ATTPV that executes, so `at_pv_q` never rose.
+    The usual benches hide it: Verilator starts every flop at a random value, so `ng` is not 0 at reset and `ob_zero_q` is 0.
+  - **Reproduction.** The packaged K4 core in Verilator (Xilinx wrappers, `T_MAX` 4, two-flit gather, `XSLR_REG`, production
+    firmware on the RTL Ibex) with every flop and RAM word at zero (`TSR_RAND_RESET=0`) runs the captured `selftest` id 5 launch
+    (`tsr-selftest --device sim` with `TSR_TRACE`): the first launch differs from the simulator in area lines 531 and 532 (the
+    only differences in the recorded output regions), launches 2 and 3 are right. With random initial values (seeds 1 to 3) all three launches are right. At zero state
+    the probe shows `ob_zero_q` 1, `o_st_q` `O_RUN` and `jv_q` 1 in all four clusters before the first op. The C simulator was
+    run with 120 random schedules and the race detector fatal (`TSR_SIM_RACE=fatal`): id 5 is right in all of them, so the missing
+    dependency of the causal ATTQK is not the cause (it is in order behind the first ATTQK on the MVM unit, and the final `ST`
+    waits for the ANORM chain, whose AMERGE waits for the ATTPV, which completes after both ATTQK).
+  - **Other zero-state faults.** With the fix, the benches of `tb/at` (20 passed), `tb/core` (21 passed, the four that need a trace
+    variable skipped) and `tb/mvm`, `mvmback`, `mvmfront`, `qact`, `dma`, `spm`, `vu`, `chk`, `csr` (121 passed) all pass with
+    `TSR_RAND_RESET=0`. A scan of `rtl/core` for reset branches that load a value from an input finds no other case. `ctrl`,
+    `issue`, `dbg`, `fp`, `tech` and `platform` were not run at zero state.
+  - **Card check of the cause.** A copy of the kernel that also stores SPM lines 0 to 3 back over their inputs
+    (`build/dbgfw/tsr-fw.elf`, not committed; `build/card/link4/dbg`) shows on the first run after each of 3 fresh loads exactly area
+    lines 1, 531 and 532 differing, all three zero, and lines 2 to 4 (SPM lines 1 to 3) untouched; the second run is right (3 of 3).
+  - **Fix.** `ob_zero_q` is reset to 0 and gets `ng == 0` only at `start` (`rtl/core/tsr_mvm_pv.sv`). An assertion in the same
+    module (an output job while no ATTPV runs) fires in every bench at zero state without the fix. Tests: `tb/at`
+    `test_at_mvm_zero_state` (the ops of id 5 on the AT bench at zero state; fails with the old reset, passes with the new) and
+    `tb/core` `test_k4_selftest_first_run` (the id 5 launch on the packaged core, three launches, all equal to the simulator;
+    `-m slow` mutants `test_at_mvm_zero_state_mutant` and `test_k4_selftest_first_run_mutant` check that the old reset fails).
+    The image of the fourth link does not have the fix. It needs a new link. Until then the first ATTPV after a load can write
+    about 20 zero lines to SPM lines chosen by stale setup flops; the M7 runs after a load were bit-exact, but a layout that keeps
+    live data there would be hit.
 - **Debug block.** `tsr-selftest --trw 16` with the five sets of the earlier run (647 replays): 16,247 records (14,737 ops, 1,510
   markers), 0 dropped, no hang; with the `at` set too (745 replays): 18,207 records (16,501 ops, 1,706 markers), 0 dropped; the
   kernel tests alone: 374 records (342 ops, 32 markers), 0 dropped. The DB §8.7 self-check gives the same picture as on the second
@@ -3552,8 +3584,9 @@ everything except attention on the device (ATTPV returned lanes 32 to 63 as copi
 in the drain's lane select, §8.8 "The ATTPV fault"). The fourth link has the fix (§8.8 "Card bring-up of the fourth link"):
 selftest (id 5 passes after the first run of a load), every trace set including `at` 98 of 98, M6 and M7 on both models
 bit-identical to the simulator (M7 with attention on the device, one launch per token), the trace writer under load and the GDB smoke.
-Step 4 (M7 and its performance) is done for 0.5B and 32B in `performance.md`. Open: the first `selftest` run after a load differs in
-two lines of id 5 (§8.8). The steps below are the plan and are unchanged.
+Step 4 (M7 and its performance) is done for 0.5B and 32B in `performance.md`. The first `selftest` run after a load differs in
+two lines of id 5 (§8.8): found on 2026-11-08, an RTL reset bug of the ATTPV output stage (`ob_zero_q`) that shows only when every
+flop starts at zero, as on the card. Fixed in the source with tests; the next link has it. The steps below are the plan and are unchanged.
 
 The card runs with the control core follow its bitstream (W4 RTL, W5 Vivado with gates T1-T4, §8.4)
 and belong to W6 of [`docs/design/README.md`](design/README.md) §10 (P6.1-P6.6 of SW §11). Steps 1-5 of the
