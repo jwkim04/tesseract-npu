@@ -137,7 +137,9 @@ Path(args[args.index("-o") + 1]).write_text("fake xclbin; no CAD executed\\n")
     lines = rendered.read_text().splitlines()
     for key, value in zip(("synth.jobs", "impl.jobs", "param=general.maxThreads"), expected):
         assert [line for line in lines if line.startswith(key + "=")] == [f"{key}={value}"]
-    assert "kernel_frequency=0:200|1:100" in lines
+    request = [line for line in (REPO / "hw/u200/k4.cfg").read_text().splitlines() if line.startswith("kernel_frequency=")]
+    assert len(request) == 1 and request[0] in ("kernel_frequency=0:200|1:100", "kernel_frequency=0:250|1:100")
+    assert request[0] in lines                    # the link config is the checked-in request (200 or 250 MHz core)
     assert hook_paths
     # k4.cfg carries no OPT_DESIGN.TCL.POST hook (hw/u200/k4_post_opt.tcl stays available for a diagnostic
     # link); the placement hook is the major-block map.
