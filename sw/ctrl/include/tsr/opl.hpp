@@ -161,7 +161,7 @@ constexpr uint32_t kind_rev(uint32_t kind) {
         case K_MUL_MAT_ID:  return 1u;
         case K_SOFTPLUS:    return 1u;
         case K_SSM_CONV:    return 1u;
-        case K_GATED_DELTA_NET: return 1u;
+        case K_GATED_DELTA_NET: return 2u;   // r2 (SW-78): with CAPS bit 8 (the VU's GDN op) and S_v >= 64 the fused path; else r1's bits
         default:            return 0u;
     }
 }
@@ -350,7 +350,9 @@ constexpr uint32_t D_CONV_MAX = 8u;
 // BETA + n * BETA_TOKEN_STRIDE. State of (seq, head): S_v rows of L lines at STATE_{IN,OUT} +
 // (seq * H_v + h) * S_v * L (row j holds S[.][j]: the ggml-cpu layout). Output row (n, h) at
 // DST + (n * H_v + h) * L. Per token: S *= exp(g); delta_j = (v_j - S_j . k) * beta;
-// S_j += k * delta_j; o_j = (S_j . q) * SCALE (SW §7.10, decision SW-67).
+// S_j += k * delta_j; o_j = (S_j . q) * SCALE (SW §7.10, decision SW-67). The firmware composes this from VU
+// operations (revision 1) or, on a device with CAPS bit 8 and for S_v >= 64, runs the VU's GDN op (revision 2,
+// block fixed-point dot products, SW-78); the record is the same.
 namespace gdn {
 constexpr uint32_t DST = 0, STATE_OUT = 1, STATE_IN = 2, Q = 3, Q_HEAD_STRIDE = 4, Q_TOKEN_STRIDE = 5, K = 6,
                    K_HEAD_STRIDE = 7, K_TOKEN_STRIDE = 8, V = 9, V_HEAD_STRIDE = 10, V_TOKEN_STRIDE = 11, G = 12,

@@ -758,6 +758,29 @@ branch `gdn-sw`; simulator cycle model, fixed schedule, core clock 276.3 MHz in 
 | The fused GDN op (VU §7.12, branch `gdn-vu`) | 23.8 ms per 27B token, estimated: the composed recurrence is about 4.1 times slower; a token would be 468 ms instead of 542 |
 | Image size | ITCM 78,576 B, DTCM 49,912 B |
 
+**Gated DeltaNet with the fused GDN op on the simulator** (branch `gdn-fw`, GATED_DELTA_NET revision 2, [SW](design/06-software-verification.md)
+§7.10, SW-78; `TSR_SIM_GDN=1`, the simulator's `CAPS` bit 8 and the default RISC-V clock ratio; the card image of 2026-11-09 has no GDN op
+and the card runs above are the composed path). Device cycles of one decode token, composed / fused, **simulator model with 16 front and 8 back
+lanes** (the card has 8 / 4, so its VU is slower; hand-scaled figures below):
+
+| Quantity | Qwen3.8 2B | Qwen3.8 27B (from 4 and 8 layers) |
+| --- | --- | --- |
+| Total | 10.36 M / 9.14 M (−11.8 %) | 106.3 M / 96.8 M (−8.9 %) |
+| VU busy | 2.63 M / 0.72 M | 20.5 M / 5.25 M |
+| DMA busy | 2.40 M / 2.40 M | 17.7 M / 17.7 M |
+| Recurrence (step cost × heads × layers) | 2.47 M / 1.12 M | 19.7 M / 9.0 M |
+| Isolated record, T = 1 (with about 18 K launch overhead) | 151.6 K / 83.5 K | 425.0 K / 228.0 K |
+| Per head and token, steady state | 8.6 K / 3.9 K | 8.6 K / 3.9 K |
+| At 200 MHz | 51.8 ms (19.3 tok/s) / 45.7 ms (21.9 tok/s) | 531 ms / 484 ms |
+| At 250 MHz | 41.5 ms / 36.5 ms | 425 ms / 387 ms |
+
+The fused step is limited by the RISC-V's issue rate (11 pushes, 1,827 instructions per head and token), not by the VU: with the RISC-V
+four times faster the isolated 27B record of 16 tokens would take 1.48 M cycles instead of 2.98 M. The model charges the GDN op at 16 front lanes
+(1,802 cycles for 128 × 128); at the card's 8 front lanes it is 2,834. Hand-scaled to 8 / 8 / 4 lanes with the model's formulas: VU time per head
+and token 12.7 K composed against 3.0 K fused (8.5 K and 1.9 K in the model), the fused step about 3.5 K core cycles at the 250 MHz link because of
+the RISC-V, so about 2.6 M fewer cycles per 2B token (1.2 M in the model) and about 21 M fewer per 27B token; estimates, to be measured again when `vu-perf`
+makes the lane counts configurable. The image takes 85,504 B of ITCM. Accuracy: [klcheck.md](klcheck.md) (2B, 8 × 64: ratio 1.103, top-1 97.27 %).
+
 **Firmware image** (`tsr-elf size build/dev/fw/tsr-fw.elf`, measured on the production image;
 ITCM is 131,072 B, DTCM 65,536 B):
 
@@ -768,6 +791,7 @@ ITCM is 131,072 B, DTCM 65,536 B):
 | With the MoE kinds MOE_ROUTE and MUL_MAT_ID (`moe` branch, 18 kinds; the base image is 71,712 B and 49,504 B) | 78,520 B (59.9 %) | 49,680 B (75.8 %) |
 | With the Gated DeltaNet kinds (`gdn-sw`) | 78,576 B (59.9 %; budget 81,920 B) | 49,912 B (76.2 %; budget 57,344 B) |
 | With both sets of kinds (`sw-moegdn`, 21 kinds; the budget is 98,304 B since SW-75) | 84,056 B (64.1 %; 85.5 % of the budget) | 50,088 B (76.4 %; budget 57,344 B) |
+| With the fused path of GATED_DELTA_NET (`gdn-fw`, SW-78) | 85,504 B (65.2 %; 87.0 % of the budget) | 50,616 B (77.2 %; budget 57,344 B) |
 
 **Gemma 4 26B-A4B Q4_K_M, a model with experts** (measured on the simulator, `moe` branch; accuracy in
 [klcheck.md](klcheck.md)). Device cycles of one decode token, from the counters of two runs with 4 and 12 tokens

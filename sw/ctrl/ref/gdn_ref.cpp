@@ -7,7 +7,9 @@
 
 #include "tsr/opl.hpp"
 #include "tsr/plan.hpp"
+#include "tsr/plan_gdn.hpp"
 #include "tsr_ref.h"
+#include "tsr_ref_gdn.h"
 #include "tsr_ref_vu.h"
 
 namespace tsr {
@@ -170,10 +172,20 @@ void gdn_ref_step(uint32_t S_v, uint32_t * state, const uint32_t * q, const uint
     for (uint32_t j = 0; j < S_v; ++j) o[j] = u[j];
 }
 
-int gdn_ref(const dram_view & d, const uint32_t a[22]) {
+void gdn_ref_step_fused(uint32_t S_v, uint32_t * state, const uint32_t * q, const uint32_t * k, const uint32_t * v,
+                        uint32_t g, uint32_t beta, uint32_t scale, uint32_t * o) {
+    const uint32_t alpha = tsr_ref_sop(TSR_SOP_SUB_EXP, g, 0u, 0u, 0u);
+    std::vector<uint32_t> w(16u * lines_of(S_v), 0u);
+    tsr_ref_gdn(S_v, S_v, alpha, beta, k, q, v, state, state, w.data());       // S' in place, w = S' q
+    vop1(TSR_VOP_FUNC_MULC, TSR_VOP_CMODE_SREG, S_v, w.data(), w.data(), nullptr, &scale);   // o = w scale
+    for (uint32_t j = 0; j < S_v; ++j) o[j] = w[j];
+}
+
+int gdn_ref(const dram_view & d, const uint32_t a[22], uint32_t caps) {
     namespace g = opl::gdn;
     kind_plan kp{};
     if (!plan_gated_delta_net(a, g::NARGS, ref_limits(), &kp)) return GD_BAD_RECORD;
+    const bool fused = plan::gdn::use_fused(caps, a[g::S_V]);
     const uint32_t sv = a[g::S_V], hk = a[g::H_K], hv = a[g::H_V], T = a[g::N_TOKENS], ns = a[g::N_SEQS], L = sv >> 4;
     std::vector<uint32_t> st(size_t(sv) * 16u * L), q(16u * L), k(16u * L), v(16u * L), o(sv), gw(16u * lines_of(hv)),
         bw(16u * lines_of(hv));
@@ -191,7 +203,8 @@ int gdn_ref(const dram_view & d, const uint32_t a[22]) {
                     !get_words(d, a[g::G], n * a[g::G_TOKEN_STRIDE], hv, gw.data()) ||
                     !get_words(d, a[g::BETA], n * a[g::BETA_TOKEN_STRIDE], hv, bw.data()))
                     return GD_RANGE;
-                gdn_ref_step(sv, st.data(), q.data(), k.data(), v.data(), gw[h], bw[h], a[g::SCALE], o.data());
+                if (fused) gdn_ref_step_fused(sv, st.data(), q.data(), k.data(), v.data(), gw[h], bw[h], a[g::SCALE], o.data());
+                else gdn_ref_step(sv, st.data(), q.data(), k.data(), v.data(), gw[h], bw[h], a[g::SCALE], o.data());
                 if (!put_words(d, a[g::DST], (n * hv + h) * L, sv, o.data())) return GD_RANGE;
             }
             for (uint32_t j = 0; j < sv; ++j)

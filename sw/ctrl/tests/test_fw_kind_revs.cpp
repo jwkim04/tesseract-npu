@@ -26,6 +26,12 @@
 //                       ties and a NaN row
 //         MUL_MAT_ID    the gate-up form (x shared by the slots, Q4_K) and the down form (x per slot, Q8_0, scale table)
 //         SOFTPLUS, SSM_CONV, GATED_DELTA_NET   small fixed records (SW §7.10)
+//       GATED_DELTA_NET has two paths (SW-78), chosen from CAPS, so its table has two rows. The default row is the run
+//       on the simulator's CAPS (bit 8, the fused GDN op: S_v 64 and above take the fused path); the row marked
+//       "composed" is a second run on a simulator whose CAPS lacks bit 8, which takes the composition for every S_v.
+//       The composed row's corpus is the first two records, the corpus of revision 1, so its digest is revision 1's:
+//       the proof that revision 2 leaves the composed path's bits alone. The default row adds records at S_v 128
+//       and 256 (the production shape and the largest m of the op).
 //       Inputs come from an integer PRNG (splitmix64); every f32 input is an integer times a power of
 //       two and every f32 parameter a fixed bit pattern, so no libm call enters a digest. A kind's
 //       digest is FNV-1a 64 over, per launch in corpus order, the DONE status, ERR_CODE and RET, then
@@ -39,9 +45,11 @@
 //       of general records enters the general function. A record that stops taking its fast entry
 //       fails ("path"), so a numerics change confined to a fast entry cannot hide behind a general-path
 //       digest. --paths prints the entries per launch.
-//       Checks against TABLE (rows "0x10 MUL_MAT 1 <16 hex digits>", '#' comments): every kind with a
+//       Checks against TABLE (rows "0x10 MUL_MAT 1 <16 hex digits>", '#' comments; a kind with a second path
+//       has a second row with a fifth word "composed"): every kind with a
 //       revision (tsr/opl.hpp kind_rev) has a row; a digest that moved at the same revision fails
-//       ("bump the revision"), a revision that moved with the same digest fails ("revert the bump");
+//       ("bump the revision"), a revision that moved with none of the kind's digests changed fails
+//       ("revert the bump");
 //       every corpus launch answers DONE OK / RET 0 (a kind whose handler is missing answers
 //       BAD_RECORD); the image's .tsr_kinds declares exactly the kinds with a revision, each at
 //       kind_rev (a kind it runs but does not declare, or declares without a handler, fails).
@@ -73,6 +81,7 @@
 #include "fw_prof.h"
 #include "tsr/opl.hpp"
 #include "tsr/plan_attn.hpp"
+#include "tsr/plan_gdn.hpp"
 #include "tsr_elf.h"
 #include "tsr_ref_at.h"
 #include "tsr_rv.h"
@@ -116,6 +125,8 @@ const char * const WATCH[] = {
     "get_rows_general(", "cpy_general(", "set_rows_any(", "mulmat_any(", "route_general(", "mmid_general(",
     // the Gated DeltaNet kinds (one general function each: they have no fast entry)
     "softplus_run(", "sconv_run(", "gdn_run(",
+    // the two token steps of GATED_DELTA_NET (SW-78): the composition and the fused GDN op
+    "gdn_step_composed(", "gdn_step_fused(",
     // fast entries
     "kind_add_fast(", "kind_mul_fast(", "kind_scale_fast(", "kind_unary_fast(", "kind_glu_fast(", "kind_rms_norm_fast(",
     "kind_rope_fast(", "kind_get_rows_fast(", "kind_cpy_fast(", "kind_set_rows_kv_fast(", "mulmat_t1_fast(",
@@ -206,6 +217,8 @@ struct kind_digest {
 };
 
 std::map<uint32_t, kind_digest> g_dig;
+std::map<uint32_t, kind_digest> g_dig_composed;      // GATED_DELTA_NET on a device without CAPS bit 8 (SW-78)
+std::map<uint32_t, kind_digest> * g_dig_cur = &g_dig;   // where run() adds
 
 // Rows written by a record: rows x lines, `stride` lines apart, from handle h.
 void rows_region(std::vector<region> & out, uint32_t h, uint32_t rows, uint32_t stride, uint32_t lines) {
@@ -251,7 +264,7 @@ void run(launch_ctx & c, uint32_t kind, const char * what, const opl::writer & w
     }
     tsr_sim_dram_write(c.sim, 0, uint64_t(OPL_BEAT) * LINE, blob.data(), blob.size());
     const uint32_t a[7] = { H(0, OPL_BEAT), uint32_t(blob.size()), opl::LF_VERIFY_CRC, 0, 0, 0, 0 };
-    kind_digest & d = g_dig[kind];
+    kind_digest & d = (*g_dig_cur)[kind];
     d.launches++;
     memset(g_watch.hits, 0, sizeof(g_watch.hits));
     if (fwh_launch(c.h, uint32_t(c.graph), a, 0) != 0) {
@@ -808,7 +821,7 @@ void corpus_moe(launch_ctx & c) {
 
 // The Gated DeltaNet kinds (SW §7.10): small fixed records; inputs are integers times powers of two, so
 // the digests do not depend on libm either (the kinds use the VU's own functions).
-void corpus_gdn(launch_ctx & c) {
+void corpus_gdn(launch_ctx & c, bool fused_dev, bool extras) {
     // SOFTPLUS: one row of 48 (a decode gate vector) and 5 rows of 100 with a strided destination.
     struct spc { const char * what; uint32_t n, rows, pad; };
     static const spc sps[] = { { "SOFTPLUS 1 x 48", 48, 1, 0 }, { "SOFTPLUS 5 x 100, strided dst", 100, 5, 2 } };
@@ -843,11 +856,17 @@ void corpus_gdn(launch_ctx & c) {
         rows_region(out, so, q.ns * (q.dc - 1u), lc, lc);
         run(c, opl::K_SSM_CONV, q.what, w, out, true, general_path("sconv_run("));
     }
-    // GATED_DELTA_NET: S_v 64 with 2 key heads for 4 value heads, one token; S_v 32 with 3 tokens of 2 sequences.
+    // GATED_DELTA_NET: S_v 64 with 2 key heads for 4 value heads, one token; S_v 32 with 3 tokens of 2 sequences
+    // (the corpus of revision 1, SW-78: its digest is the composed row of the table). `fused_dev`: the simulator has
+    // CAPS bit 8, so a record with S_v >= 64 takes the fused path and S_v 32 the composition. `extras` (the default
+    // row only) adds the production shape S_v 128 and the largest m of the GDN op, S_v 256.
     struct gdc { const char * what; uint32_t sv, hk, hv, T, ns; };
     static const gdc gds[] = { { "GATED_DELTA_NET S_v 64, 4 heads of 2, T 1", 64, 2, 4, 1, 1 },
-                               { "GATED_DELTA_NET S_v 32, 2 heads, T 3 x 2 sequences", 32, 2, 2, 3, 2 } };
+                               { "GATED_DELTA_NET S_v 32, 2 heads, T 3 x 2 sequences", 32, 2, 2, 3, 2 },
+                               { "GATED_DELTA_NET S_v 128, 4 heads of 2, T 3", 128, 2, 4, 3, 1 },
+                               { "GATED_DELTA_NET S_v 256, 2 heads, T 1 x 2 sequences", 256, 1, 2, 1, 2 } };
     for (const gdc & q : gds) {
+        if (q.sv > 64u && !extras) continue;
         namespace g = opl::gdn;
         const uint32_t L = q.sv / 16u, nt = q.ns * q.T, Lg = L16(q.hv);
         const uint32_t hq = c.take(uint64_t(nt) * q.hk * L), hk = c.take(uint64_t(nt) * q.hk * L),
@@ -876,12 +895,16 @@ void corpus_gdn(launch_ctx & c) {
         a[g::V] = hv; a[g::V_HEAD_STRIDE] = L; a[g::V_TOKEN_STRIDE] = q.hv * L;
         a[g::G] = hg; a[g::G_TOKEN_STRIDE] = Lg; a[g::BETA] = hb; a[g::BETA_TOKEN_STRIDE] = Lg;
         a[g::S_V] = q.sv; a[g::H_K] = q.hk; a[g::H_V] = q.hv; a[g::N_TOKENS] = q.T; a[g::N_SEQS] = q.ns;
-        a[g::SCALE] = q.sv == 64u ? 0x3E000000u /* 1/8 */ : 0x3E3504F3u /* 1/sqrt(32) */;
+        a[g::SCALE] = q.sv == 64u ? 0x3E000000u /* 1/8 */ : q.sv == 128u ? 0x3DB504F3u /* 1/sqrt(128) */
+                      : q.sv == 256u ? 0x3D800000u /* 1/16 */ : 0x3E3504F3u /* 1/sqrt(32) */;
         w.add(opl::K_GATED_DELTA_NET, a, g::NARGS);
         std::vector<region> out;
         rows_region(out, dst, nt * q.hv, L, L);
         rows_region(out, so, q.ns * q.hv * q.sv, L, L);
-        run(c, opl::K_GATED_DELTA_NET, q.what, w, out, true, general_path("gdn_run("));
+        const bool fused = fused_dev && tsr::plan::gdn::use_fused(tsr_sim_config(c.sim)->caps, q.sv);
+        run(c, opl::K_GATED_DELTA_NET, q.what, w, out, true,
+            fused ? path_exp{ { "gdn_run(", "gdn_step_fused(" }, { "gdn_step_composed(" }, {} }
+                  : path_exp{ { "gdn_run(", "gdn_step_composed(" }, { "gdn_step_fused(" }, {} });
     }
 }
 
@@ -1038,7 +1061,17 @@ struct row {
     uint64_t digest;
 };
 
-bool read_table(const char * path, std::map<uint32_t, row> & t) {
+// The table: rows of the default run, and the rows marked "composed" (kinds with a second path, SW-78).
+struct table_t {
+    std::map<uint32_t, row> def, composed;
+};
+
+// Kinds with a composed row, and the digest of a kind's variant (0 default, 1 composed).
+bool has_composed(uint32_t kind) { return kind == opl::K_GATED_DELTA_NET; }
+const kind_digest & digest_of(uint32_t kind, int variant) { return variant ? g_dig_composed[kind] : g_dig[kind]; }
+const char * variant_name(int variant) { return variant ? " (composed path)" : ""; }
+
+bool read_table(const char * path, table_t & t) {
     FILE * f = fopen(path, "r");
     if (f == nullptr) return false;
     char line[256];
@@ -1046,8 +1079,9 @@ bool read_table(const char * path, std::map<uint32_t, row> & t) {
         if (line[0] == '#' || line[0] == '\n') continue;
         unsigned kind = 0, rev = 0;
         unsigned long long dg = 0;
-        char name[32];
-        if (sscanf(line, "%x %31s %u %llx", &kind, name, &rev, &dg) == 4) t[kind] = row{ rev, dg };
+        char name[32], var[32] = "";
+        const int n = sscanf(line, "%x %31s %u %llx %31s", &kind, name, &rev, &dg, var);
+        if (n == 4 || (n == 5 && !strcmp(var, "composed"))) (n == 5 ? t.composed : t.def)[kind] = row{ rev, dg };
         else CHECK(0, "%s: malformed row: %s", path, line);
     }
     fclose(f);
@@ -1061,49 +1095,64 @@ bool write_table(const char * path) {
                "# outputs on test_fw_kind_revs's fixed corpus (ctest fw_kind_revs; docs/design/06-software-\n"
                "# verification.md §6.9, SW-54). Written by `test_fw_kind_revs tsr-fw.elf kind_revs.txt --update` after\n"
                "# a deliberate revision bump in tsr/opl.hpp kind_rev, together with a CHANGELOG \"Unreleased\" line.\n"
+               "# A kind with a second path has a second row marked \"composed\": GATED_DELTA_NET on a device without CAPS\n"
+               "# bit 8 (SW-78); the first row is the run on the simulator's CAPS.\n"
                "# kind  name         rev  digest (FNV-1a 64: DONE status / RET and every output region, per launch)\n");
     for (uint32_t k = 0; k < opl::N_KINDS; ++k) {
         if (opl::kind_rev(k) == 0) continue;
         fprintf(f, "0x%02x  %-12s %-4u %016llx\n", k, opl::kind_name(k), opl::kind_rev(k), (unsigned long long)g_dig[k].h);
+        if (has_composed(k))
+            fprintf(f, "0x%02x  %-12s %-4u %016llx composed\n", k, opl::kind_name(k), opl::kind_rev(k),
+                    (unsigned long long)g_dig_composed[k].h);
     }
     return fclose(f) == 0;
 }
 
 // The rules of the table for this run's digests (rows of kinds without a revision are errors, a kind
-// with one needs its row). updating: --update, which records the kinds whose revision went up and any
-// new kind, and refuses what a plain run refuses otherwise: a digest that moved at an unchanged
-// revision, a revision that went up with the same digest, a revision that went down.
-void check_table(const char * table, const std::map<uint32_t, row> & t, bool digests_only, bool updating) {
+// with one needs its row, or its rows when it has two paths). updating: --update, which records the kinds
+// whose revision went up and any new kind, and refuses what a plain run refuses otherwise: a digest that moved
+// at an unchanged revision, a revision that went up with none of the kind's digests changed, a revision that went
+// down. A kind with two paths needs only one of its digests to move for a bump: the path that did not change
+// keeps its digest (that is the point of its row).
+void check_table(const char * table, const table_t & t, bool digests_only, bool updating) {
     for (uint32_t k = 0; k < opl::N_KINDS; ++k) {
         const uint32_t want = opl::kind_rev(k);
         if (want == 0) {
-            CHECK(t.find(k) == t.end(), "%s: row for kind 0x%02x, which has no revision", table, k);
+            CHECK(t.def.find(k) == t.def.end() && t.composed.find(k) == t.composed.end(),
+                  "%s: row for kind 0x%02x, which has no revision", table, k);
             continue;
         }
-        auto it = t.find(k);
-        if (it == t.end()) {
-            CHECK(updating, "%s: no row for %s (a new kind: run --update and add a CHANGELOG line)", table, opl::kind_name(k));
-            continue;
+        bool bumped = false, moved = false;
+        for (int v = 0; v < (has_composed(k) ? 2 : 1); ++v) {
+            const auto & m = v ? t.composed : t.def;
+            auto it = m.find(k);
+            if (it == m.end()) {
+                CHECK(updating, "%s: no row for %s%s (a new kind: run --update and add a CHANGELOG line)", table, opl::kind_name(k),
+                      variant_name(v));
+                continue;
+            }
+            const row & r = it->second;
+            const uint64_t got = digest_of(k, v).h;
+            if (digests_only) {
+                CHECK(r.digest == got, "%s%s: digest %016llx, recorded %016llx", opl::kind_name(k), variant_name(v),
+                      (unsigned long long)got, (unsigned long long)r.digest);
+            } else if (r.rev == want) {
+                CHECK(r.digest == got, "%s%s r%u: the outputs changed (digest %016llx, recorded %016llx): bump the revision in "
+                                       "tsr/opl.hpp kind_rev, run --update, add a CHANGELOG line", opl::kind_name(k), variant_name(v),
+                      want, (unsigned long long)got, (unsigned long long)r.digest);
+            } else if (want < r.rev) {
+                CHECK(0, "%s%s: revision %u -> %u: a revision never goes down (a released revision stays reproducible)",
+                      opl::kind_name(k), variant_name(v), r.rev, want);
+            } else {
+                bumped = true;
+                moved = moved || r.digest != got;
+                if (!updating)
+                    CHECK(r.digest == got, "%s%s: revision %u -> %u with new outputs: run --update to record digest %016llx",
+                          opl::kind_name(k), variant_name(v), r.rev, want, (unsigned long long)got);
+            }
         }
-        const row & r = it->second;
-        const uint64_t got = g_dig[k].h;
-        if (digests_only) {
-            CHECK(r.digest == got, "%s: digest %016llx, recorded %016llx", opl::kind_name(k), (unsigned long long)got,
-                  (unsigned long long)r.digest);
-        } else if (r.rev == want) {
-            CHECK(r.digest == got, "%s r%u: the outputs changed (digest %016llx, recorded %016llx): bump the revision in "
-                                   "tsr/opl.hpp kind_rev, run --update, add a CHANGELOG line", opl::kind_name(k), want,
-                  (unsigned long long)got, (unsigned long long)r.digest);
-        } else if (want < r.rev) {
-            CHECK(0, "%s: revision %u -> %u: a revision never goes down (a released revision stays reproducible)",
-                  opl::kind_name(k), r.rev, want);
-        } else {
-            CHECK(r.digest != got, "%s: revision %u -> %u but the outputs did not change (digest %016llx): revert the bump",
-                  opl::kind_name(k), r.rev, want, (unsigned long long)got);
-            if (!updating)
-                CHECK(r.digest == got, "%s: revision %u -> %u with new outputs: run --update to record digest %016llx",
-                      opl::kind_name(k), r.rev, want, (unsigned long long)got);
-        }
+        if (bumped)
+            CHECK(moved, "%s: revision bumped but none of its digests changed: revert the bump", opl::kind_name(k));
     }
 }
 
@@ -1145,24 +1194,39 @@ int main(int argc, char ** argv) {
     cfg.t_max = 8;
     cfg.ch_bytes = 256ull << 20;
     cfg.caps = TSR_SIM_CAPS_IMPLEMENTED;
-    tsr_sim_opts so;
-    memset(&so, 0, sizeof(so));
-    so.sched = "fixed";
-    so.threads = 2;
-    tsr_sim * sim = tsr_sim_create_opts(&cfg, &so);
-    CHECK(sim != nullptr, "simulator");
-    if (sim == nullptr) return test_finish("fw_kind_revs");
-    fwh h;
-    if (fwh_open(&h, sim, image) != 0) {
-        CHECK(0, "%s: boot", image);
+    CHECK((cfg.caps & TSR_CAPS_GDN) != 0u, "the simulator does not implement CAPS bit 8 (the fused GDN op)");
+    bool watch_loaded = false;
+    // One simulator with its own boot of the image: `body` runs the launches. The retire hook counts the entries into
+    // the image's functions (g_watch).
+    auto with_sim = [&](const tsr_config & c0, const std::function<void(launch_ctx &)> & body) {
+        tsr_sim_opts so;
+        memset(&so, 0, sizeof(so));
+        so.sched = "fixed";
+        so.threads = 2;
+        tsr_config c1 = c0;
+        tsr_sim * sim = tsr_sim_create_opts(&c1, &so);
+        CHECK(sim != nullptr, "simulator");
+        if (sim == nullptr) return;
+        fwh h;
+        if (fwh_open(&h, sim, image) != 0) {
+            CHECK(0, "%s: boot", image);
+            tsr_sim_destroy(sim);
+            return;
+        }
+        if (!watch_loaded) {
+            CHECK(g_watch.load(image), "%s: no function symbols (a stripped image: the path checks need them)", image);
+            watch_loaded = true;
+        }
+        tsr_rv_agent_set_retire_hook(tsr_sim_rv_agent(sim), path_retire, &g_watch);
+        launch_ctx c{ sim, &h, fwh_kernel(&h, "graph"), rng_t{ 0x6B696E64u } };
+        CHECK(c.graph >= 0, "%s: no graph kernel", image);
+        if (c.graph >= 0) body(c);
+        tsr_rv_agent_set_retire_hook(tsr_sim_rv_agent(sim), nullptr, nullptr);
+        fwh_close(&h);
         tsr_sim_destroy(sim);
-        return test_finish("fw_kind_revs");
-    }
-    CHECK(g_watch.load(image), "%s: no function symbols (a stripped image: the path checks need them)", image);
-    tsr_rv_agent_set_retire_hook(tsr_sim_rv_agent(sim), path_retire, &g_watch);
-    launch_ctx c{ sim, &h, fwh_kernel(&h, "graph"), rng_t{ 0x6B696E64u } };
-    CHECK(c.graph >= 0, "%s: no graph kernel", image);
-    if (c.graph >= 0) {
+    };
+    rng_t corpus_base{};
+    with_sim(cfg, [&](launch_ctx & c) {
         corpus_nop_join(c);
         corpus_mulmat(c);
         corpus_ew(c);
@@ -1180,14 +1244,23 @@ int main(int argc, char ** argv) {
         // The MoE and the Gated DeltaNet corpora therefore run last and each starts from the same PRNG state:
         // the digests of their kinds are the ones of the branch that added the kind, and adding the other corpus
         // does not move them.
-        const rng_t corpus_base = c.r;
+        corpus_base = c.r;
         corpus_moe(c);
         c.r = corpus_base;
-        corpus_gdn(c);
+        corpus_gdn(c, true, true);
+    });
+    // The composed path of GATED_DELTA_NET (SW-78): a simulator without CAPS bit 8, the same PRNG state, the corpus of
+    // revision 1. Its softplus / ssm_conv digests are the default run's and are not recorded.
+    {
+        tsr_config cfg2 = cfg;
+        cfg2.caps &= ~uint32_t(TSR_CAPS_GDN);
+        g_dig_cur = &g_dig_composed;
+        with_sim(cfg2, [&](launch_ctx & c) {
+            c.r = corpus_base;
+            corpus_gdn(c, false, false);
+        });
+        g_dig_cur = &g_dig;
     }
-    tsr_rv_agent_set_retire_hook(tsr_sim_rv_agent(sim), nullptr, nullptr);
-    fwh_close(&h);
-    tsr_sim_destroy(sim);
 
     // Every kind with a revision ran its corpus, answered OK and is declared at kind_rev; nothing else
     // is declared.
@@ -1197,18 +1270,25 @@ int main(int argc, char ** argv) {
             CHECK(rev[k] == 0, "the image declares kind 0x%02x (revision %u), which tsr/opl.hpp does not define", k, rev[k]);
             continue;
         }
-        const kind_digest & d = g_dig[k];
-        CHECK(d.launches > 0 && d.ok == d.launches, "%s: %u of %u corpus launches answered OK", opl::kind_name(k), d.ok,
-              d.launches);
+        for (int v = 0; v < (has_composed(k) ? 2 : 1); ++v) {
+            const kind_digest & d = digest_of(k, v);
+            CHECK(d.launches > 0 && d.ok == d.launches, "%s%s: %u of %u corpus launches answered OK", opl::kind_name(k),
+                  variant_name(v), d.ok, d.launches);
+        }
         if (!digests_only)
             CHECK(rev[k] == want, "%s: the image's .tsr_kinds says revision %u, tsr/opl.hpp kind_rev %u%s", opl::kind_name(k),
                   rev[k], want, rev[k] == 0 ? " (kind missing from the image's table: TSR_KIND beside its handler)" : "");
     }
     for (uint32_t k = 0; k < opl::N_KINDS; ++k)
-        if (opl::kind_rev(k)) printf("fw_kind_revs: 0x%02x %-12s rev %u digest %016llx (%u launches)\n", k, opl::kind_name(k),
-                                     opl::kind_rev(k), (unsigned long long)g_dig[k].h, g_dig[k].launches);
+        if (opl::kind_rev(k)) {
+            printf("fw_kind_revs: 0x%02x %-12s rev %u digest %016llx (%u launches)\n", k, opl::kind_name(k), opl::kind_rev(k),
+                   (unsigned long long)g_dig[k].h, g_dig[k].launches);
+            if (has_composed(k))
+                printf("fw_kind_revs: 0x%02x %-12s rev %u digest %016llx (%u launches) composed path\n", k, opl::kind_name(k),
+                       opl::kind_rev(k), (unsigned long long)g_dig_composed[k].h, g_dig_composed[k].launches);
+        }
 
-    std::map<uint32_t, row> t;
+    table_t t;
     const bool have = read_table(table, t);
     if (update) {
         // --digests-only: a base to compare another image with; else the table rules decide what may be recorded.

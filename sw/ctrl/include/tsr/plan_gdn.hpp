@@ -36,6 +36,8 @@
 // stride below ceil(H_v / 16) lines with more than one token, a stride above 2^24 - 1.
 // kind_plan: scratch_lines = block, row_lines = L, tile_rows = S_v, n_tiles = n_seqs H_v (heads),
 // aux[0] = token slots (2), aux[1] = lines of one token slot (5 L + 2).
+// The plan does not depend on the path the handler takes (plan::gdn::use_fused): the fused path (SW-78) uses the
+// same block and leaves the product tile unused, so the host and the firmware plan one way on every device.
 #pragma once
 
 #include <stdint.h>
@@ -50,6 +52,15 @@ constexpr uint32_t STRIDE_MAX = 0x00FFFFFFu;   // an SPM / DRAM line stride fiel
 constexpr uint32_t SP_BUFFERS = 5u;            // SOFTPLUS: buffers of the composition (gdn_kinds.cpp)
 
 constexpr uint32_t sp_block(uint32_t t, uint32_t L) { return SP_BUFFERS * t * L; }
+
+// GATED_DELTA_NET takes the fused path (the VU's GDN op, VU §7.12; numerics revision 2, SW-78) when the device
+// has the VU and its CAPS bit 8 and S_v is in the op's range of m (64 to 256, VU §7.12.4; S_v is at most 256 for
+// every record). Otherwise it runs the composition of revision 1. The firmware's handler and the references
+// choose with this function and nothing else, so a record's output depends on (record, CAPS) only.
+constexpr uint32_t FUSED_SV_MIN = 64u;
+constexpr bool use_fused(uint32_t caps, uint32_t s_v) {
+    return (caps & CAPS_VU) != 0u && (caps & CAPS_GDN) != 0u && s_v >= FUSED_SV_MIN;
+}
 
 }  // namespace gdn
 }  // namespace plan

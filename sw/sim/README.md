@@ -107,6 +107,7 @@ Both are informational estimates until the RVFI lockstep against the RTL exists 
 | `TSR_SIM_TMAX`, `TSR_SIM_CH_GIB`, `TSR_SIM_DRAM_DIR` | 1 to 8 (default 1), 1 to 16 (default 16), a directory | the `sim` transport kind (configuration of the simulated core: `T_MAX`, channel size, file-backed DRAM for models that do not fit in RAM) |
 | `TSR_SIM_VU` | 0 or 1 (default 1) | `sim` and `mock` transport kinds: 0 models the core of the reduced first card image `tsr_u200_k4` (built without the vector unit and attention, `docs/platform-u200.md` §8.7): CAPS 0, no VU queue (`Q_DEPTH` VU 0), so the host and the firmware leave every kind but MUL_MAT to the CPU (M6). Use it with `TSR_SIM_TMAX=8` for the whole `tsr_u200_k4` device. |
 | `TSR_SIM_ATT_LOCAL`, `TSR_SIM_MVM_LOCAL_SCALE`, `TSR_SIM_MVM_LOCAL_SOFTCAP` | 0 or 1 (default 1) | `sim` transport feature controls for matched legacy comparisons. The four-owner capabilities are reported only on four-channel configurations. Local execution uses the existing functional cycle model. |
+| `TSR_SIM_GDN` | 0 or 1 (default 1) | `sim` transport: 0 clears `CAPS` bit 8 (the fused GDN op of the vector unit, VU §7.12), as on an image built with `HAS_GDN` 0. `GATED_DELTA_NET` then runs its composed path (numerics revision 1 bits, SW-78). The card images before the one with the op need this for a matched replay. |
 | `TSR_REF_MATH_FULL`, `TSR_REF_MATH_THREADS` | `1`, a number | the opt-in exhaustive `ref_math_*_full` tests |
 
 A value that does not parse makes `tsr_sim_create_opts` fail with a message. The options exist as

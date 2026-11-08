@@ -24,6 +24,8 @@ bool sim_options_from_env(const char * who, sim_options * o) {
     if (r && v == 0) cfg.caps &= ~TSR_CAPS_MVM_LOCAL_SCALE;
     if ((r = env_u64(who, "TSR_SIM_MVM_LOCAL_SOFTCAP", 0, 1, &v)) < 0) return false;
     if (r && v == 0) cfg.caps &= ~TSR_CAPS_MVM_LOCAL_SOFTCAP;
+    if ((r = env_u64(who, "TSR_SIM_GDN", 0, 1, &v)) < 0) return false;
+    if (r && v == 0) cfg.caps &= ~TSR_CAPS_GDN;   // an image without the fused GDN op (HAS_GDN 0): the composed GATED_DELTA_NET path
     if ((r = env_u64(who, "TSR_SIM_VU", 0, 1, &v)) < 0) return false;
     if (r && v == 0) {   // tsr_u200_k4: HAS_VU = 0 and HAS_ATT = 0 leave CAPS = 0 and the VU queue absent
         cfg.caps = 0;

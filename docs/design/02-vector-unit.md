@@ -1726,10 +1726,15 @@ simulator's VU unit, the card test (selftest id 11).
 Next, in order:
 1. **Link.** A k4 image with `HAS_GDN` 1 (this branch's `tsr_u200_k4`), merged into the 250 MHz link branch. The engine is in the
    VU's Pblock; the map is unchanged (`hw/u200/k4_major_blocks.tcl`). Show the Pblocks before the build.
-2. **Firmware kind.** A `GDN_STATE` op-list kind: `LD` of the tile, the op, `ST`, double-buffered over the heads of a layer;
-   `fw_kind_revs` (docs/versioning.md) for the numerics revision. Heads follow each other back to back only if their ops are
-   independent: tiles apart, vectors apart.
-3. **Lowering.** `GGML_OP_GATED_DELTA_NET` and the graph form of the pinned llama.cpp to the kind; q scaled by 1/√S_v
+2. **Firmware kind. Done on the simulator** (branch `gdn-fw`, SW §7.10, SW-78): the existing GATED_DELTA_NET kind takes the op
+   when `CAPS` bit 8 is set and S_v ≥ 64 (no new kind: `LD` of the tile, the op, `ST`, double-buffered over the heads, the
+   next head's state loading during the current one) and keeps its composition otherwise; numerics revision 2 with a row of
+   `fw_kind_revs` for each path. The output is scaled after the op (`VOP.MULC`), not q before it. Heads of a launch use
+   distinct tiles and token slots, so their ops are independent. On the simulator (model with 16 front lanes, which charges the op
+   1.8 K cycles; 2.8 K with this section's 8 front lanes) the fused step costs 3.9 K core cycles per head and token at the default
+   RISC-V clock ratio: the firmware's eleven pushes per step (1,827 RISC-V instructions) limit it, not the VU (SW §7.10).
+3. **Lowering. Done** (the composed kind's lowering serves both paths, SW §7.10; the scale is applied to the output, as the CPU
+   kernel does). The note that follows is the original plan: q scaled by 1/√S_v
    before the op; the state tensor layout (rows of S_v contiguous words, [S_v, S_v, H, n_seqs]) is the one assumed here;
    KDA gates (a per-row α) and the K-snapshot output of the CPU kernel (speculative decoding) are not covered. Check long-sequence
    state and logits against llama.cpp.

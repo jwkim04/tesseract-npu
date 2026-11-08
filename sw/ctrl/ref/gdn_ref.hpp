@@ -18,7 +18,9 @@
 //
 // SSM_CONV: the channel-vector form of ggml_ssm_conv (record words opl::sconv).
 // GATED_DELTA_NET: ggml_gated_delta_net with a scalar gate and K = 1 (record words opl::gdn), the
-// per-token step gdn_ref_step.
+// per-token step gdn_ref_step (the composition, numerics revision 1) or gdn_ref_step_fused (the VU's GDN op,
+// revision 2, SW-78). The firmware takes the fused path when plan::gdn::use_fused(CAPS, S_v) holds, so gdn_ref
+// takes the CAPS of the device it models.
 #pragma once
 
 #include <cstddef>
@@ -53,9 +55,20 @@ int sconv_ref(const dram_view & d, const uint32_t args[12]);
 void gdn_ref_step(uint32_t S_v, uint32_t * state, const uint32_t * q, const uint32_t * k, const uint32_t * v,
                   uint32_t g, uint32_t beta, uint32_t scale, uint32_t * o);
 
-// Applies one GATED_DELTA_NET record (the 22 words of opl::gdn) to the DRAM view: every state is read
-// before it is written (STATE_OUT may equal STATE_IN).
-int gdn_ref(const dram_view & d, const uint32_t args[22]);
+// The same token on the fused path (SW-78): the VU's GDN op (VU §7.12, tsr_ref_gdn), then the scale. S_v must be
+// in [64, 256] (plan::gdn::use_fused). Sequence:
+//   alpha = EXPK(g)                         (SOP.EXP)
+//   o'_j  = tsr_ref_gdn(S_v, S_v, alpha, beta, k, q, v, state -> state)   (GDN: state updated in place)
+//   o     = FM(o', scale)                   (VOP.MULC)
+// The dot products inside the op are exact sums in a block frame, rounded once (VU-29), so the result differs
+// from gdn_ref_step by a few ulp of the dot products, not by a reordering.
+void gdn_ref_step_fused(uint32_t S_v, uint32_t * state, const uint32_t * q, const uint32_t * k, const uint32_t * v,
+                        uint32_t g, uint32_t beta, uint32_t scale, uint32_t * o);
+
+// Applies one GATED_DELTA_NET record (the 22 words of opl::gdn) to the DRAM view for a device with the given CAPS:
+// every state is read before it is written (STATE_OUT may equal STATE_IN). The path is
+// plan::gdn::use_fused(caps, S_v).
+int gdn_ref(const dram_view & d, const uint32_t args[22], uint32_t caps);
 
 }  // namespace ref
 }  // namespace tsr

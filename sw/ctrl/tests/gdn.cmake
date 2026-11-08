@@ -6,8 +6,10 @@
 #                     tails, strides, sequences, in-place state, small-SPM tiling; fixed + 7 random
 #                     schedules with TSR_SIM_RACE fatal, every output bit-exact against
 #                     sw/ctrl/ref/gdn_ref.cpp, SW §4.7 observables equal (test_fw_gdn_rv.cpp)
+#   fw_gdn_rv_composed the same with CAPS bit 8 clear (a device without the fused GDN op): GATED_DELTA_NET takes the
+#                     composition (numerics revision 1's bits) for every S_v, SW-78
 #   fw_gdn_rv_errors  refused records answer BAD_RECORD
-#   fw_gdn_ref        the reference against float64 math and the pinned ggml-cpu ops (test_fw_gdn_ref.cpp)
+#   fw_gdn_ggml       the reference (composed and fused path) against float64 math and the pinned ggml-cpu ops
 
 if (NOT TARGET tsr_fw_ref)
     return()                       # kernels.cmake (P2.5) provides tsr_fw_ref (mulmat_ref, dram_view)
@@ -37,6 +39,8 @@ target_link_libraries(test_fw_gdn_rv PRIVATE tsr_fw_gdn_ref tsr_fw_ref tsr_sim t
 add_dependencies(test_fw_gdn_rv tsr_fw)
 add_test(NAME fw_gdn_rv COMMAND test_fw_gdn_rv ${TSR_FW_ELF} suite)
 set_tests_properties(fw_gdn_rv PROPERTIES LABELS fw TIMEOUT 1800 SKIP_RETURN_CODE 77)
+add_test(NAME fw_gdn_rv_composed COMMAND test_fw_gdn_rv ${TSR_FW_ELF} suite --gdn 0)
+set_tests_properties(fw_gdn_rv_composed PROPERTIES LABELS fw TIMEOUT 1800 SKIP_RETURN_CODE 77)
 add_test(NAME fw_gdn_rv_errors COMMAND test_fw_gdn_rv ${TSR_FW_ELF} errors)
 set_tests_properties(fw_gdn_rv_errors PROPERTIES LABELS fw TIMEOUT 300 SKIP_RETURN_CODE 77)
 

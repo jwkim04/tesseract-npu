@@ -23,6 +23,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
   optional per-expert output scale. The image grows by about 5.4 KiB of ITCM. No RTL change.
 - Added the Gated DeltaNet kinds SOFTPLUS (0x2D), SSM_CONV (0x2E) and GATED_DELTA_NET (0x2F), each at numerics
   revision 1, composed from existing VU operations and the DMA: no new RTL operation. They need the VU (CAPS bit 0).
+- GATED_DELTA_NET r2 (SW-78): with `CAPS` bit 8 (the VU's fused GDN op, VU §7.12) and S_v of 64 or more, each head and token runs
+  one `GDN` op instead of the 13 VU operations. The dot products become exact block fixed-point sums rounded once, α is folded
+  into k, and the output comes from the old state and κ = k · q, so the output bits change on a device with the bit. A device
+  without it, and every record with S_v below 64, produces revision 1's bits (the composed row of `kind_revs.txt` keeps
+  digest `b040cc2f4da8c0ca`). The record and the planner do not change. The `sim` transport has `TSR_SIM_GDN=0` to clear
+  `CAPS` bit 8. The kind table signature is now 0x2381. The image takes 85,504 B of ITCM.
 - UNARY accepts func 5, SIGMOID (VOP SIGMOID). The kind's revision stays 1: no existing record changes.
 - The ggml-tesseract backend lowers the Gated DeltaNet layer graph of the pinned llama.cpp (`qwen35`): SOFTPLUS, SIGMOID and SILU
   on gate tensors, `GATED_DELTA_NET`, the `CONCAT` / `SSM_CONV` / state `CPY` group (two window `CPY` records and one

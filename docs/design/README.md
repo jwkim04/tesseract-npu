@@ -861,8 +861,9 @@ it does not by itself require a new RTL opcode or a RISC-V ISA extension.
   A fused state-update op (opcode 0x39, `HAS_GDN`, `CAPS` bit 8; URAM row buffers, dot products in DSP48E2, the
   element update on the VU's front lanes) is integrated in the VU, with its C reference, the simulator, the checker
   class, bit-exact benches and a card self-test (`selftest` id 11): `docs/design/02-vector-unit.md` §7.12. The k4 top of
-  branch `gdn-vu` builds it; no image with it has run on the card. The firmware kind and the llama.cpp lowering are the
-  next steps listed there.
+  branch `gdn-vu` builds it; no image with it has run on the card. The firmware kind uses it: GATED_DELTA_NET runs the op
+  per head and token when `CAPS` bit 8 is set and keeps the composition otherwise (numerics revision 2, SW §7.10, SW-78); the
+  llama.cpp lowering is the one of the composed kind.
 - **GDN surrounding operations (implemented):** the norms, gates and rotary variant are
   lowered (SW §7.10). SILU, SIGMOID and EXP already have VU functions; SOFTPLUS has none and is
   composed from VU functions in 20 VOPs, within 5 ulp of float64 (SW-69). IMROPE is the NEOX
