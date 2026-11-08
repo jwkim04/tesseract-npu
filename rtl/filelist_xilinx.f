@@ -20,6 +20,7 @@ tech/xilinx/tsr_mac_lane.sv
 core/tsr_fp_mul.sv
 core/tsr_fp_div.sv
 core/tsr_fp_add.sv
+core/tsr_fp_add_dsp.sv
 core/tsr_spm.sv
 // the single-port SPM client adapter and the RISC-V SPM bridge (CC §10.2, §10.5)
 core/tsr_spm_cport.sv

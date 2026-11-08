@@ -1104,6 +1104,98 @@ reuse can never stall another workload. See `docs/platform-u200.md` §8.6.12.
 - Historical reference: the earlier four-cluster link achieved 276.3 MHz. The current full
   K4 acceptance floor is 250 MHz, with legal routing and passing setup, hold and CDC checks.
 
+**DSP use in the fp units (area measurement, 2026-11-08).** Question: does an fp unit that spends more
+DSP48E2 use fewer CLB tiles under the same conditions? The placed K4 image is short of CLB tiles (SLR0 / 1 / 2
+at 79.6 / 87.7 / 84.5 % with 47–58 % LUT) and has DSP to spare (33 / 2 / 43 %).
+
+**Method.** Vivado 2024.2, out of context, `xcu200-fsgd2104-2-e`, clock 5.0 ns (the core clock), input and
+output delay 2.4 ns, default `synth_design`, `opt_design`, `place_design`, `phys_opt_design`, `route_design`
+for every row. The units have registered inputs and outputs. A primitive row is an array of 32 independent
+instances with their own ports (`tb/fp/viv/fp_area.sh`, `tsr_fp_arr.sv`); the table shows per-instance values
+after route. CLB and LUT do not change between place and route in any run. CLB is the tile count of
+`report_utilization`. It also carries placement spread: unconstrained, the placer used 1.7 to 2 times LUT / 8,
+and the same logic reruns within 1.3 % (16 against 32 instances: 84.8 against 84.4 CLB for the adder, 75.6
+against 74.6 for `tsr_fp_add_dsp`; the define path against the module: 74.9 against 74.6). Read CLB together
+with LUT. The IP rows add 98 flip-flops per instance (the wrapper registers the operands and the result) and
+two cycles of latency. The IP is an area reference only and is not instantiated anywhere.
+
+| fp add, LAT 5 | DSP | CLB | LUT | FF | CARRY8 | WNS ns | CLB saved per DSP (tiles / LUT÷8) |
+|---|---|---|---|---|---|---|---|
+| `tsr_fp_add` (default RTL) | 0 | 84.4 | 403 | 347 | 16 | +2.14 | |
+| same RTL, `use_dsp = "yes"` on the module | 9 | 67.8 | 330 | 252 | 1 | +1.22 | 1.8 / 1.0 |
+| `tsr_fp_add_dsp`: alignment shift as a one-hot product | 1 | 74.6 | 349 | 319 | 16 | +1.95 | 9.8 / 6.8 |
+| `tsr_fp_add_dsp`, `NORM_DSP`: also the near-path shift | 2 | 69.0 | 326 | 303 | 16 | +1.52 | 7.7 / 4.8 (second DSP alone: 5.6 / 2.9) |
+| Xilinx IP, `No_Usage`, latency 5 | 0 | 66.4 | 321 | 336 | 17 | +2.39 | |
+| Xilinx IP, `Full_Usage`, latency 5 | 2 | 43.6 | 167 | 322 | 10 | +2.02 | 11.4 / 9.6 (against the IP row above) |
+
+| fp mul, LAT 4 | DSP | CLB | LUT | FF | CARRY8 | WNS ns | CLB saved per DSP (tiles / LUT÷8) |
+|---|---|---|---|---|---|---|---|
+| `tsr_fp_mul` (default RTL, the `*` is inferred) | 2 | 26.2 | 104 | 163 | 8 | +2.32 | |
+| same RTL, `use_dsp = "no"` | 0 | 120.6 | 679 | 242 | 53 | +0.89 | 47 / 36 (the default against this row) |
+| same RTL, `use_dsp = "yes"` | 6 | 21.7 | 86 | 132 | 0 | +0.81 | 1.1 / 0.6 (for the 4 extra) |
+| Xilinx IP, `No_Usage`, latency 4 | 0 | 109.3 | 537 | 536 | 78 | +2.31 | |
+| Xilinx IP, `Full_Usage`, latency 4 | 2 | 27.5 | 104 | 202 | 9 | +2.46 | 41 / 27 |
+| Xilinx IP, `Max_Usage`, latency 4 | 3 | 24.0 | 82 | 170 | 4 | +2.35 | 28 / 19 (third DSP alone: 3.5 / 2.8) |
+
+At the IP's own default latency (11 for `Full_Usage`, 12 for `No_Usage` adders) the IP rows give the same picture
+(47.1 against 84.1 CLB). The IP adder without DSP is already 21 % smaller than `tsr_fp_add` in CLB (66.4
+against 84.4); some of the gap in the first rows is design, not DSP.
+
+**`tsr_fp_add_dsp`** (`rtl/core/tsr_fp_add_dsp.sv`, nowhere instantiated by default) keeps the algorithm of
+`tsr_fp_add` and does the far-path right shift of the small significand as `m_small * 2^k` in one DSP48E2
+(24 × 17 unsigned; shifts of 17 to 25 take a second shift by 17 in fabric, shifts of 26 and more give the
+sticky bit alone). The sticky bit is the OR of the shifted-out product bits, which removes the comparator chain.
+`NORM_DSP` does the near-path left shift by the leading-zero count the same way (second DSP, shifts above 16 in
+fabric). Same ports, same results, LAT 5 to 8, DSP input registers are [C1] and the P register is [C2], so
+the latency and the cut registers are those of `tsr_fp_add`. It is bit-exact: `tb/fp/test_fp.py`
+`test_fp_add_dsp` (the four `tsr_fp_add` cocotb tests at LAT 5 to 8 and `NORM_DSP`, random `ce` and gaps) and
+`test_fp_sweep_add_dsp` (9.8 M sums against `libtsr_ref` through the `TSR_FP_ADD_DSP` define). Five mutants
+of the window select, the sticky range and the shift split were run: four fail the test, one is equivalent (a
+contribution below a quarter ulp never changes the rounded result).
+
+**Whole VU, K4 configuration** (`tb/vu/viv/vu_ooc.sh`: `FRONT_LANES=8 EXP_LANES=8 BACK_LANES=4 LANE_PIPE=2
+SPM_RD_LAT=4 NUM_CH=4`, 5.0 ns, place only, no route). The define `TSR_FP_ADD_DSP=1` (`=2`: with `NORM_DSP`)
+makes every `tsr_fp_add` an instance of `tsr_fp_add_dsp`; no filelist sets it. The K4 VU has 35 fp adders
+(8 front-lane FA, 8 back-lane ONE, 4 bank-reduction, 8 reduction and post, 7 in the angle unit) and 47
+multipliers. Two clock periods (5.00 and 5.02 ns) show the rerun spread.
+
+| tsr_vu | DSP | CLB | LUT | FF | CARRY8 | WNS ns | CLB saved per DSP (tiles / LUT÷8) |
+|---|---|---|---|---|---|---|---|
+| default RTL | 249 | 12,645 (5.02 ns: 12,611) | 58,273 | 68,841 | 1,825 | +0.76 (+0.70) | |
+| `TSR_FP_ADD_DSP=1` | 284 | 12,282 (12,388) | 56,900 | 67,962 | 1,825 | +0.52 (+0.77) | 10.4 (6.4) / 4.9 |
+| `TSR_FP_ADD_DSP=2` | 315 | 12,564 | 56,624 | 67,466 | 1,825 | +0.71 | 1.2 / 3.1 |
+| `use_dsp = "yes"` on `tsr_fp_add` | 543 | 12,517 | 56,850 | 65,968 | 1,328 | +0.63 | 0.4 / 0.6 |
+
+The default RTL reruns within 0.3 % in CLB; a changed netlist moves CLB by up to 2 % (the `=1` and `=2`
+rows differ by 2.3 % in CLB but only 0.5 % in LUT). Use the LUT column for the trend and the CLB column as
+the tile count that the placer produced.
+
+**Result.**
+- Yes: every DSP variant uses fewer CLB tiles than the default at the same function and the same latency,
+  and meets 5.0 ns (primitives routed, WNS +0.8 to +2.5 ns; VU placed, +0.5 to +0.8 ns). The saving per DSP
+  depends on what the DSP replaces.
+- A 24 × 24 mantissa product: 36 to 47 CLB per DSP. Keep every multiplier in DSP.
+- A shifter done as a one-hot product, the first DSP of an fp adder: 7 to 10 CLB per DSP (4.9 to 10.4 in the
+  VU). The second DSP of the adder (the near-path shift) saves 3 to 6.
+- Carry-chain adders moved by `use_dsp = "yes"`: 1 to 2 CLB per DSP and 0.9 ns (adder) to 1.5 ns (multiplier)
+  less slack. Not worth the DSP.
+- The Xilinx adder IP with two DSP reaches 10 to 11 CLB per DSP. An fp adder is mostly shifters, exponent
+  and rounding logic; a DSP takes only the shifts.
+- Whole VU: 35 DSP (alignment shift) save 2.3 % of the VU's CLB tiles (about 220 to 360 tiles, 0.2 % of the
+  device) and 2.4 % of its LUT. This does not relieve the CLB pressure by itself.
+- `NORM_DSP` and `use_dsp = "yes"` in the VU cost 31 and 259 more DSP than the alignment shift alone and
+  save only 0.3 K and 0.05 K LUT more than it.
+
+Reproduce (all Vivado runs through the slot wrapper):
+`hw/u200/vivado_slot.sh tb/fp/viv/fp_area.sh build/fp_area/add_dsp kind=add_dsp` (kinds `add`, `mul`, `add_dsp`,
+`add_dsp2`, `ip_add`, `ip_mul`; keys `usedsp=yes|no`, `ipdsp=`, `iplat=`, `n=`, `define=`),
+`tb/fp/viv/fp_area_table.py build/fp_area` for the table, and
+`hw/u200/vivado_slot.sh tb/vu/viv/vu_ooc.sh build/vu_k4 place_only clk=5.0 iodly=2.4 FRONT_LANES=8 EXP_LANES=8
+BACK_LANES=4 LANE_PIPE=2 SPM_RD_LAT=4 NUM_CH=4 [define=TSR_FP_ADD_DSP=1] [usedsp=tsr_fp_add]`.
+The VU unit tests pass with the define (`tb/vu/test_vu_unit.py`: half_width, lane_pipe, u200 and knobs with
+`=1`, half_width and lane_pipe with `=2`; for the run, add `tsr_fp_add_dsp.sv` to `VU_SOURCES` and
+`+define+TSR_FP_ADD_DSP=<n>` to `rtl/filelist.f`, and revert both after).
+
 ---
 
 ### 7.11 Local attention and MVM epilogue consumers

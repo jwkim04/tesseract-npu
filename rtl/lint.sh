@@ -189,6 +189,8 @@ lint tsr_dbg_wrmux -GADDR_BEAT_W=5
 # (NUM_CH 1 / 3 / 16, T_MAX 1 / 8, small and maximal K_MAX, latency / pipe depth extremes).
 lint tsr_fp_add -GLAT=1
 lint tsr_fp_add -GLAT=8
+lint tsr_fp_add_dsp -GLAT=8
+lint tsr_fp_add_dsp -GNORM_DSP=1
 lint tsr_mac_lane -GT=8 -GLAT=1
 lint tsr_mac_lane -GN=32 -GT=2 -GLAT=6
 lint tsr_vpipe -GDEPTH=0 -GVW=2 -GW=527
