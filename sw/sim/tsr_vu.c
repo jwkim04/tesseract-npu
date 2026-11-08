@@ -39,20 +39,29 @@
 // effect. s operands are read from the bank at exec time, which is the op's start for every
 // observer because the queue model serves one VU op at a time (VU §4.4).
 //
-// Cycle model (unit busy time, deterministic, from the words and the configuration only; the
-// figures are VU §7.9's *estimates*, not part of the bit-exact contract). Lane rates from
-// TSR_VU_FRONT_LANES / TSR_VU_BACK_LANES (CFG3): a full-rate function streams 16/front lines per
-// cycle-line (1 cycle per line on the U200), a half-rate (back-lane) one 16/back (2).
-//   VOP    rows·L(m)·rate + rows if a and b both stream and L(m) is odd (pair reads end a row with
-//          a single-line read, VU §7.7) + ceil(rows/16) for a c vector + latency: 64 for the long
-//          class (back lanes, or EXPK: EXP, EXPSUB, EXPSUBC), else 20 (VU §7.4)
-//   RED    rows·max(L(m), min(ceil(m/8), 16)) + 45, + 30 with post RMS (VU §7.5)
-//   ROPE   T·(4·n_dims/2 + n_heads·head_dim/16) + 40; 8 per angle with FF (two iterative dividers,
-//          VU §7.6); angle reuse (§7.6, optional and invisible) is not modelled
-//   TOPK   rows·(L(m) + k) + 20 (the typical running-threshold case of VU §7.9; the data-dependent
-//          worst case m per row is not modelled because cycles() sees no data)
-//   DQROW  rows·L(K) + 30
-//   SOP    30, DIV 40
+// Cycle model (unit busy time, deterministic, from the words and the configuration only; SW-80). It is the cycles
+// of an op that waits for its predecessor: the unit's time from the done of the op before to its own done, the
+// quantity the queue model serves one op at a time (VU §4.4). The RTL overlaps the fill and drain of independent
+// ops (accept-ahead, VU §7.8); that gain is not modelled (VU §7.9). The constants are the unit's measured
+// behaviour: tb/vu test_vu_timing.py (the RTL unit alone on a 4 MiB SPM, SPM_RD_LAT 4) at both configurations that
+// were built, and on the card (the trace writer's per-op times of Qwen3.8 2B and Gemma 4 26B-A4B decode equal the
+// RTL's to the cycle where the VU waits for nothing else). The lanes come from tsr_sim_opts.vu_timing: F front, E EXP
+// and B back lanes (a line of 16 takes 16/F, 16/E and 16/B cycles per class) and P lane-pipe stages (X = 2P cycles
+// at the exit of the lanes and of a partial drain read; U200 image 16 / 16 / 8, P = 0; K4 image 8 / 8 / 4, P = 2).
+//   VOP    rows·L(m)·rate + ceil(rows/16) for a c vector + latency D: 59 + X for the front class (16/F per line)
+//          and for EXP, EXPSUB and EXPSUBC (16/E per line), 95 + X for the half-rate class (16/B per line); one more
+//          when the function reads both a and b. Odd line counts and rows cost nothing more: the RTL's pair reads
+//          alternate the sources.
+//   RED    a row streams L(m)·(16/F) cycles; its partials (P = min(L, 8) of the 16 ring entries) drain through the
+//          subtree one group of 8 per cycle, G = min(ceil(m/8), 16) cycles, starting 17 cycles after the row's last
+//          line; the entries are free again when the drain ends, so floor(16 / P) rows are in flight. The op ends
+//          108 + X cycles after the last drain (106 + X to an s register), for every kind and post-op (the post pipeline
+//          is fixed). The recurrence below is the RTL's ring; it reproduces every (m, rows) measured.
+//   ROPE   T tokens through two stages, angles (A per token) then rotation (R = H·16/F, H = n_heads·head_dim/16):
+//          (T - 1)·max(A, R) + A + R + D. A = 5 per angle of n_dims/2 (the recurrence form), 121/16 with freq factors (two
+//          iterative dividers) and 17/16 with the A table; D = 127 + X, 136 + X with freq factors, 134 + X with the table.
+//   TOPK   rows·(L(m)·16/F + k) + 20, DQROW rows·L(K)·16/F + 30 (not in the K4 image; the VU §7.9 estimates)
+//   SOP    53 + 5X/4 (LDS 58 + 5X/4, SQRT and RSQRT 68, DIV 25)
 //   An op that reads and writes nothing (n = 0 rule) takes 1 cycle.
 // PERF (EX §6, VU §5.10): VU_CYCLES is the queue model's (busy time). VU_LINES (X + 15, event) is
 // counted here: destination lines written (VOP rows·L(m), RED ceil(rows/16) for a vector, ROPE
@@ -68,18 +77,25 @@
 
 #include <string.h>
 
-#define VU_LAT_SHORT   20u   // VU §7.4: FM_A .. FM_C, cmp, incl. SPM read and write (*estimate*)
-#define VU_LAT_LONG    64u   // VU §7.4: the full chain (EXPK, back lanes)
-#define VU_RED_LAT     45u   // VU §7.5: result latency after the last line
-#define VU_RED_RMS_LAT 30u   // VU §7.5: + RMS post (SQ, RC)
-#define VU_ROPE_LAT    40u   // VU §7.9
-#define VU_ANGLE_CYC   4u    // VU §7.6: cycles per angle (recurrence form, A table)
-#define VU_ANGLE_FF    8u    // VU §7.6: with freq factors
-#define VU_TOPK_LAT    20u   // VU §7.9 (sorted insertion per row; short class)
-#define VU_DQROW_LAT   30u   // VU §7.9
-#define VU_SOP_CYC     30u   // VU §7.9
-#define VU_SOP_DIV_CYC 40u
-#define VU_GDN_LAT     130u  // VU §7.12.8: setup tail, dot pipeline, scalar chain and lane exit (*estimate*)
+// SW-80: latencies at P = 0 (the U200 image); every stage of the lane pipe adds 2 (VU_X).
+#define VU_LAT_F        59u   // VOP, front and EXP classes: accept of the dependent op to done (one more with a and b)
+#define VU_LAT_H        95u   // VOP, half-rate class (one more with a and b)
+#define VU_RED_T0       17u   // last line of a row to its first drain read
+#define VU_RED_RING     16u   // partial ring entries
+#define VU_RED_TAIL     108u  // last drain to the result in the SPM (106 for an s register)
+#define VU_ROPE_ANG_N   80u   // 16ths of a cycle per angle: the recurrence form (5)
+#define VU_ROPE_ANG_FF  121u  // with freq factors (two dividers: 121/16)
+#define VU_ROPE_ANG_TAB 17u   // with the A table
+#define VU_ROPE_LAT_N   127u
+#define VU_ROPE_LAT_FF  136u
+#define VU_ROPE_LAT_TAB 134u
+#define VU_TOPK_LAT     20u   // VU §7.9 (sorted insertion per row; short class)
+#define VU_DQROW_LAT    30u   // VU §7.9
+#define VU_SOP_CYC      53u
+#define VU_SOP_LDS      58u
+#define VU_SOP_SQRT     68u
+#define VU_SOP_DIV_CYC  25u
+#define VU_GDN_LAT      130u  // VU §7.12.8: setup tail, dot pipeline, scalar chain and lane exit (*estimate*)
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -131,9 +147,14 @@ static void vu_lines(tsr_sim * sim, uint64_t n) {
     if (n != 0u) tsr_sim_perf_add(sim, TSR_PERF_VU_LINES(tsr_sim_num_ch(sim)), n);
 }
 
-// Cycles per line of a full-rate / half-rate function (VU §7.2-§7.4, CFG3 lanes).
-static inline uint64_t rate_full(void) { return (TSR_VL + TSR_VU_FRONT_LANES - 1u) / TSR_VU_FRONT_LANES; }
-static inline uint64_t rate_half(void) { return (TSR_VL + TSR_VU_BACK_LANES - 1u) / TSR_VU_BACK_LANES; }
+// The lanes of the cycle model (SW-80): cycles per line of the front, EXP and back lane classes and the lane pipe's
+// 2P (tsr_sim_opts.vu_timing).
+typedef struct vu_rates { uint64_t front, exp, back, x; } vu_rates;
+static inline vu_rates vu_rates_of(const tsr_sim * sim) {
+    const tsr_vu_timing t = tsr_sim_vu_timing(sim);
+    vu_rates r = { (TSR_VL + t.front - 1u) / t.front, (TSR_VL + t.exp - 1u) / t.exp, (TSR_VL + t.back - 1u) / t.back, 2u * t.pipe };
+    return r;
+}
 
 // ---------------------------------------------------------------------------
 // VOP 0x30 (VU §5.2)
@@ -206,21 +227,21 @@ static void ex_vop(tsr_sim * sim, const uint32_t w[8]) {
     vu_lines(sim, (uint64_t)v.rows * lines_of(v.m));
 }
 
-static int vop_long(uint32_t func) {
-    return tsr_vop_func_half(func) || func == TSR_VOP_FUNC_EXP || func == TSR_VOP_FUNC_EXPSUB ||
-           func == TSR_VOP_FUNC_EXPSUBC;
+static int vop_exp_class(uint32_t func) {
+    return func == TSR_VOP_FUNC_EXP || func == TSR_VOP_FUNC_EXPSUB || func == TSR_VOP_FUNC_EXPSUBC;
 }
 
 static uint64_t cyc_vop(const tsr_sim * sim, const uint32_t w[8]) {
-    (void)sim;
     vop_dec v;
     vop_decode(w, &v);
     if (v.rows == 0u || v.m == 0u) return 1u;
+    const vu_rates r = vu_rates_of(sim);
     const uint64_t L = lines_of(v.m);
-    uint64_t cyc = (uint64_t)v.rows * L * (tsr_vop_func_half(v.func) ? rate_half() : rate_full());
-    if ((v.reads & TSR_VOP_READS_A) && (v.reads & TSR_VOP_READS_B) && (L & 1u)) cyc += v.rows;
+    const int half = tsr_vop_func_half(v.func);
+    uint64_t cyc = (uint64_t)v.rows * L * (half ? r.back : (vop_exp_class(v.func) ? r.exp : r.front));
     if (v.cmode == TSR_VOP_CMODE_VEC) cyc += lines_of(v.rows);
-    return cyc + (vop_long(v.func) ? VU_LAT_LONG : VU_LAT_SHORT);
+    const int two = (v.reads & TSR_VOP_READS_A) && (v.reads & TSR_VOP_READS_B);
+    return cyc + (half ? VU_LAT_H : VU_LAT_F) + r.x + (two ? 1u : 0u);
 }
 
 // ---------------------------------------------------------------------------
@@ -284,14 +305,32 @@ static void ex_red(tsr_sim * sim, const uint32_t w[8]) {
     vu_lines(sim, lines_of(r.rows));
 }
 
+// The RTL's partial ring (tsr_vu_inj.sv, tsr_vu_red.sv): a row of L lines takes P = min(L, 8) of 16 entries, streams
+// L(m)·(16/F) cycles, is drained 17 cycles after its last line in G = min(ceil(m/8), 16) cycles (one group of 8
+// partials per cycle, one row at a time) and frees its entries when the drain ends.
 static uint64_t cyc_red(const tsr_sim * sim, const uint32_t w[8]) {
-    (void)sim;
     red_dec r;
     red_decode(w, &r);
     if (!r.to_s && (r.rows == 0u || r.m == 0u)) return 1u;
-    const uint32_t tree = (r.m + 7u) / 8u < 16u ? (r.m + 7u) / 8u : 16u;    // VU §7.5
-    const uint32_t per_row = lines_of(r.m) > tree ? lines_of(r.m) : tree;
-    return (uint64_t)r.rows * per_row + VU_RED_LAT + (r.post == TSR_RED_POST_RMS ? VU_RED_RMS_LAT : 0u);
+    const vu_rates x = vu_rates_of(sim);
+    const uint64_t tail = VU_RED_TAIL + x.x - (r.to_s ? 2u : 0u);
+    if (r.m == 0u) return VU_RED_T0 + 1u + tail;                     // TO_S of an empty row: one group of init values
+    const uint64_t L = lines_of(r.m), s = L * x.front;
+    const uint64_t P = L < 8u ? L : 8u, in_flight = VU_RED_RING / P;
+    const uint64_t G = (r.m + 7u) / 8u < 16u ? (r.m + 7u) / 8u : 16u;
+    // The drain ends of the last `in_flight` rows are all the recurrence needs (the entries of row i come back at the
+    // drain end of row i - in_flight); rows are at most 1024 (a RED has no more rows than the s bank's vector).
+    uint64_t dend[VU_RED_RING] = { 0 };
+    uint64_t t_end = 0, last = 0;
+    for (uint32_t i = 0; i < r.rows; ++i) {
+        uint64_t a = t_end;
+        if (i >= in_flight && dend[i % in_flight] > a) a = dend[i % in_flight];
+        t_end = a + s;
+        const uint64_t ds = t_end + VU_RED_T0 > last ? t_end + VU_RED_T0 : last;
+        last = ds + G;
+        dend[i % in_flight] = last;
+    }
+    return last + tail;
 }
 
 // ---------------------------------------------------------------------------
@@ -382,12 +421,15 @@ static void ex_rope(tsr_sim * sim, const uint32_t w[8]) {
 }
 
 static uint64_t cyc_rope(const tsr_sim * sim, const uint32_t w[8]) {
-    (void)sim;
     rope_dec r;
     rope_decode(w, &r);
     if (r.Tp == 0u) return 1u;
-    const uint64_t angles = (uint64_t)(r.ff ? VU_ANGLE_FF : VU_ANGLE_CYC) * (r.nd / 2u);
-    return (uint64_t)r.T * (angles + r.H * rate_full()) + VU_ROPE_LAT;
+    const vu_rates x = vu_rates_of(sim);
+    const uint64_t n_ang = r.nd / 2u;
+    const uint64_t ang16 = r.atab ? VU_ROPE_ANG_TAB : (r.ff ? VU_ROPE_ANG_FF : VU_ROPE_ANG_N);
+    const uint64_t A = (ang16 * n_ang + 15u) / 16u, R = (uint64_t)r.H * x.front;
+    const uint64_t lat = (r.atab ? VU_ROPE_LAT_TAB : (r.ff ? VU_ROPE_LAT_FF : VU_ROPE_LAT_N)) + x.x;
+    return (uint64_t)(r.T - 1u) * (A > R ? A : R) + A + R + lat;
 }
 
 // ---------------------------------------------------------------------------
@@ -435,11 +477,10 @@ static void ex_topk(tsr_sim * sim, const uint32_t w[8]) {
 }
 
 static uint64_t cyc_topk(const tsr_sim * sim, const uint32_t w[8]) {
-    (void)sim;
     topk_dec t;
     topk_decode(w, &t);
     if (t.rows == 0u || t.m == 0u) return 1u;
-    return (uint64_t)t.rows * ((uint64_t)lines_of(t.m) * rate_full() + t.k) + VU_TOPK_LAT;
+    return (uint64_t)t.rows * ((uint64_t)lines_of(t.m) * vu_rates_of(sim).front + t.k) + VU_TOPK_LAT;
 }
 
 // ---------------------------------------------------------------------------
@@ -497,8 +538,14 @@ static void ex_sop(tsr_sim * sim, const uint32_t w[8]) {
 }
 
 static uint64_t cyc_sop(const tsr_sim * sim, const uint32_t w[8]) {
-    (void)sim;
-    return TSR_INSN_GET(w, TSR_SOP_SUB) == TSR_SOP_SUB_DIV ? VU_SOP_DIV_CYC : VU_SOP_CYC;
+    const uint64_t x = 5u * vu_rates_of(sim).x / 4u;          // 5 more cycles with the K4 lane pipe (X = 4)
+    switch (TSR_INSN_GET(w, TSR_SOP_SUB)) {
+    case TSR_SOP_SUB_DIV:   return VU_SOP_DIV_CYC;
+    case TSR_SOP_SUB_SQRT:
+    case TSR_SOP_SUB_RSQRT: return VU_SOP_SQRT;
+    case TSR_SOP_SUB_LDS:   return VU_SOP_LDS + x;
+    default:                return VU_SOP_CYC + x;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -548,11 +595,10 @@ static void ex_dqrow(tsr_sim * sim, const uint32_t w[8]) {
 }
 
 static uint64_t cyc_dqrow(const tsr_sim * sim, const uint32_t w[8]) {
-    (void)sim;
     dqrow_dec q;
     dqrow_decode(w, &q);
     if (q.rows == 0u) return 1u;
-    return (uint64_t)q.rows * lines_of(q.K) * rate_full() + VU_DQROW_LAT;
+    return (uint64_t)q.rows * lines_of(q.K) * vu_rates_of(sim).front + VU_DQROW_LAT;
 }
 
 // ---------------------------------------------------------------------------
@@ -626,11 +672,11 @@ static void ex_gdn(tsr_sim * sim, const uint32_t w[8]) {
 }
 
 // One head alone: the setup (4 m + rows + 45 cycles, VU §7.12.8) does not overlap with the rows of an earlier head here.
+// The beats follow the configured front lanes like the other VU ops (vu_timing, SW-80): (rows + 1) m / F, with F = 16 / rate.
 static uint64_t cyc_gdn(const tsr_sim * sim, const uint32_t w[8]) {
-    (void)sim;
     gdn_dec g;
     gdn_decode(w, &g);
-    const uint64_t beats = (uint64_t)(g.rows + 1u) * (g.m / TSR_VU_FRONT_LANES);
+    const uint64_t beats = (uint64_t)(g.rows + 1u) * lines_of(g.m) * vu_rates_of(sim).front;
     return beats + 4u * g.m + g.rows + VU_GDN_LAT;
 }
 

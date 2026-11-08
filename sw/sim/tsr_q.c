@@ -622,9 +622,15 @@ static int q_push(tsr_sim * sim, uint32_t val, uint32_t pc) {
     sim->iss_ticket = f->ticket;
     sim->iss_dep[0] = sim->iss_dep[1] = TSR_TICKET_NONE;
     tsr_sim_perf_add(sim, TSR_PERF_PUSHES(sim->num_ch), 1);
-    if (sim->log)
-        tsr_sim_log_line(sim, "%10llu push  u%u seq=%u pidx=%u w0=%08x dep=%08x,%08x pc=%08x%s", (unsigned long long)sim->now,
-                         u, tk_seq(f->ticket), f->pidx, f->w[0], f->dep[0], f->dep[1], pc, f->refused ? " (refused)" : "");
+    if (sim->log) {
+        if (tsr_sim_log_words(sim))
+            tsr_sim_log_line(sim, "%10llu push  u%u seq=%u pidx=%u w0=%08x dep=%08x,%08x pc=%08x%s w=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x",
+                             (unsigned long long)sim->now, u, tk_seq(f->ticket), f->pidx, f->w[0], f->dep[0], f->dep[1], pc,
+                             f->refused ? " (refused)" : "", f->w[0], f->w[1], f->w[2], f->w[3], f->w[4], f->w[5], f->w[6], f->w[7]);
+        else
+            tsr_sim_log_line(sim, "%10llu push  u%u seq=%u pidx=%u w0=%08x dep=%08x,%08x pc=%08x%s", (unsigned long long)sim->now,
+                             u, tk_seq(f->ticket), f->pidx, f->w[0], f->dep[0], f->dep[1], pc, f->refused ? " (refused)" : "");
+    }
     q_emit_push(sim, TSR_QEV_PUSH, u, f->ticket, f->pidx, f->w, f->dep, val, f->rec, pc);
     return TSR_CW_OK;
 }

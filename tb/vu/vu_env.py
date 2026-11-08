@@ -76,6 +76,7 @@ class Rtl:
         self.cycles = 0
         self.hazard_cycles = 0
         self.wait_cycles = 0
+        self.done_log = []           # (cycle, hazard cycles, SPM-wait cycles so far) at every done pulse (timing benches)
 
     async def reset(self, noise=False, seed=1):
         d = self.dut
@@ -100,12 +101,13 @@ class Rtl:
             await RisingEdge(d.clk)
             await ReadOnly()
             self.cycles += 1
-            if int(d.done.value):
-                self.done += 1
             if int(d.perf_hazard.value):
                 self.hazard_cycles += 1
             if int(d.perf_spm_wait.value):
                 self.wait_cycles += 1
+            if int(d.done.value):
+                self.done += 1
+                self.done_log.append((self.cycles, self.hazard_cycles, self.wait_cycles))
 
     LIMIT = 200_000      # cycles any single handshake or wait may take before the bench declares a hang
 

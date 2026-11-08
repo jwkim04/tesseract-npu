@@ -48,8 +48,14 @@ uint32_t tsr_sim_caps_implemented(void);
 //   rv_core    TSR_SIM_RV_CORE   Ibex configuration of the RISC-V cycle model: "small" | "maxperf"
 //                                (tsr_rv.h tables; default: the CC §3.2 configuration). Timing only:
 //                                every architectural result is the same under both
+//   vu_timing  TSR_SIM_VU_TIMING the VU's lane configuration for the cycle model (VU §7.9, SW-76): "u200" (default;
+//                                16 front, 16 EXP and 8 back lanes, no lane pipe), "k4" (the card image of the fourth
+//                                link: 8 / 8 / 4 lanes behind two lane-pipe stages) or "F,E,B,P" (front lanes 8 | 16,
+//                                EXP lanes 8 | 16, back lanes 4 | 8, lane-pipe stages 0 .. 3). Timing only; CFG3 reports
+//                                the EXP and back lane counts as the RTL does
 //   race       TSR_SIM_RACE      off | report | fatal = 0 | 1 | 2 (needs the race detector, P1.9)
-//   log        TSR_SIM_LOG       stderr | <file>, optionally prefixed "rv," for RV retire lines
+//   log        TSR_SIM_LOG       stderr | <file>, optionally prefixed "rv," for RV retire lines and "w," for the
+//                                words of every push
 //   trace_dir  TSR_TRACE         one trace per launch under the directory (P1.10)
 // A value that does not parse makes tsr_sim_create_opts fail (message on stderr).
 typedef struct tsr_sim_opts {
@@ -67,8 +73,10 @@ typedef struct tsr_sim_opts {
     uint32_t        log_flags;    // TSR_SIM_LOG_RV: also one line per retired RV instruction
     const char *    trace_dir;    // (env) TSR_TRACE directory, or NULL
     const char *    rv_core;      // (env) "small" | "maxperf", or NULL: TSR_SIM_RV_CORE, else the default
+    const char *    vu_timing;    // (env) "u200" | "k4" | "F,E,B,P", or NULL: TSR_SIM_VU_TIMING, else "u200"
 } tsr_sim_opts;
 #define TSR_SIM_LOG_RV 1u
+#define TSR_SIM_LOG_WORDS 2u   // every push line also carries the eight words (TSR_SIM_LOG prefix "w,")
 
 // Create a simulator. Channel DRAM is cfg->ch_bytes per channel, mapped lazily
 // (MAP_NORESERVE) so a 4 x 16 GiB address space costs only what is touched; it starts zeroed.

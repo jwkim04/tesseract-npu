@@ -80,14 +80,16 @@ The host was busy with other jobs (load average 5 to 12, below); the device coun
 | `VU_CYCLES` / `DMA_CYCLES` / `QACT_CYCLES` | 1.088 M (6.7 %) / 1.306 M (8.0 %) / 0.505 M (3.1 %) | 4.758 M (37.7 %) / 2.978 M (23.6 %) / 0.098 M (0.8 %) |
 | Launches per token, op records per launch (average over the run) | 1, 1,323 | 1, 756 |
 | Backend host work, outside the backend, launch beyond device time | 0.58, 0.87, 0.39 ms | 0.27, 0.31, 0.15 ms |
-| Simulator cycle model (`moe` and `gdn-sw`), at 200 MHz | 15.14 M, 13.2 tok/s | 10.51 M, 19 tok/s |
+| Simulator cycle model (`moe` and `gdn-sw`), at 200 MHz, before SW-80 | 15.14 M, 13.2 tok/s | 10.51 M, 19 tok/s |
+| Simulator cycle model after SW-80, card configuration (`TSR_SIM_CARD=k4full`) | 16.24 M (+ 0.4 % below the card) | 12.65 M (+ 0.2 % above the card) |
 
 The decode figure is llama.cpp's `eval time` (64 runs). The one slow Gemma run (run 2) had the host load rising from 10 to 12.7: its device time is
 the same as in the other two runs (16.316 M cycles), so the other 14.8 % of its wall time is host time. The unit percentages are shares of the token's cycles and overlap,
-so they do not add up to 100. The counters were read from the best run of each model. The cycles of the Gemma decode token are 7.7 % above the
+so they do not add up to 100. The counters were read from the best run of each model. The cycles of the Gemma decode token were 7.7 % above the
 simulator's model, and the MVM busy cycles are the same to 0.1 % (13.29 M against 13.30 M): the difference is `MVM_EMPTY` and `MVM_WAIT`. For Qwen3.8 the
-card takes 20 % more cycles than the model. The MVM busy cycles agree (5.71 M against 5.70 M); the card's VU busy cycles are 4.76 M against 2.73 M
-and its DMA busy cycles 2.98 M against 2.45 M in the simulator's counters. The cause of the VU difference has not been looked for.
+card took 20 % more cycles than the model. The MVM busy cycles agree (5.71 M against 5.70 M); the card's VU busy cycles are 4.76 M against 2.73 M
+and its DMA busy cycles 2.98 M against 2.45 M in the simulator's counters. The causes are in "Card against simulator" below; the simulator's model
+was corrected on 2026-11-09 (SW-80) and now agrees with these tokens to 0.2 % and 0.4 %.
 
 | 512-token prefill | Gemma 4 26B-A4B Q4_K_M (`-ub 64`) | Qwen3.8 2B Q4_K_M (`-ub 512`, the default) |
 | --- | --- | --- |
@@ -106,6 +108,86 @@ later tile's logits other than row for row. It is a host check and not a card fa
 The Gemma prefill runs one MVM of T = 1 per (token, slot) (SW-66): 7.6 M device cycles per prompt token, against 16.3 M for a decode token.
 Qwen3.8 prefills at 2.1 times its decode rate (6.0 M cycles per prompt token), and its MVM unit has nothing queued in 83 % of the prefill cycles. The
 Gated DeltaNet recurrence alone is about 1.3 G of the 3.1 G cycles, at its isolated record cost of 8.6 K cycles per head and token (SW §7.10).
+
+### Card against simulator: where the extra cycles came from (2026-11-09)
+
+The same op streams, op by op. The card's trace writer (DB §8.3; K4 full-feature image, `TSR_OPL_PROF=1`, a ring started with `tsr-dbg` before
+the run, [prof-dbg.md](prof-dbg.md) §3) gave the time of every op of three tokens of each model, and `TSR_SIM_LOG=w,...` gave the simulator's, in the card
+configuration (`T_MAX` 4, `CAPS` 0x21, `clk_rv` at half the core clock; before the fix with the VU of the U200 image, 16 / 16 / 8 lanes). The 9,032 (Qwen3.8) and
+7,903 (Gemma) ops of a decode launch are the same on both sides, op for op (the simulator's log has one more control entry). Decode launch of Qwen3.8 2B, cycles each record kind adds to the launch
+(`sw/tools/trw_vs_sim.py kinds`; the record numbers are those of the 24 layers):
+
+| Record kind | Records | Simulator before | Simulator after | Card |
+| --- | --- | --- | --- | --- |
+| GATED_DELTA_NET | 18 | 2,955,436 | 4,591,564 | 4,565,886 |
+| MUL_MAT | 187 | 5,849,202 | 5,918,147 | 5,918,598 |
+| SSM_CONV | 18 | 138,456 | 207,666 | 205,722 |
+| RMS_NORM | 115 | 107,118 | 150,468 | 151,641 |
+| GLU, ROPE, MUL, UNARY, SCALE, ADD, SOFTPLUS, FLASH_ATTN, SET_ROWS_KV | 211 | 445,663 | 461,850 | 461,341 |
+| CPY, GET_ROWS, JOIN (DMA only) | 199 | 1,331,429 | 1,322,983 | 1,324,216 |
+| **Decode launch** | 748 | **10,827,304** | **12,652,678** | **12,627,404** |
+
+Before the fix the card was 16.6 % above the simulator and 89 % of the gap (1.61 M of 1.80 M cycles) was the 18 GATED_DELTA_NET records; the three DMA kinds
+and MUL_MAT agreed to 1 %. The warm-up and prompt launches (18.9 M and 46.9 M cycles on the card) were 21 % and 30 % below the card in the model; all four launches now agree to 0.3 %. For Gemma 4 26B-A4B the decode launch was 15.35 M against the card's 16.31 M (5.9 % low) and is 16.24 M now (0.4 % low).
+
+**Causes.**
+
+1. **The VU of the card has 8 front, 8 EXP and 4 back lanes behind two register stages (`CFG3` 0x02480088), the simulator modelled 16 / 16 / 8.**
+   An 8-lane front takes 2 cycles per 16-element line and the half-rate functions 4. Every VU op of a decode token took twice what the model said when it
+   streams: the 128 x 128 f32 state of Gated DeltaNet is 1,024 lines and a pass over it takes 2,112 cycles on the card, 1,044 in the model.
+2. **The model's latencies were wrong at both lane counts.** An op that waits for the one before it costs 59 cycles (95 for SILU and the other half-rate
+   functions) plus 2 per register stage, measured on the RTL unit at 16 lanes as well (the model had 20 and 64). The reduction of 128 rows of 128 elements,
+   twice per head step, takes 3,264 cycles on the card (2,748 at 16 lanes), not the 2,093 of the model: the partial ring holds two such rows at a time (VU §7.5).
+3. **The card's VU is not slowed by anything the RTL unit does not do.** The 4,518 VU ops of the Qwen3.8 decode token take 4.737 M cycles when replayed
+   on the RTL unit alone (Verilator, `tb/vu/test_vu_timing.py vu_stream`) and `VU_CYCLES` reads 4.758 M on the card; the gaps between the completions of consecutive
+   VU ops equal the RTL's gaps to the cycle through the Gated DeltaNet head step. `VU_SPM_WAIT` (0.55 M per token) and `VU_HAZARD` (0.27 M) count cycles that lie
+   inside these figures: they are the unit waiting for its own predecessor and for SPM grants while the DMA moves the next head's state, and they cost 0.5 % of the VU's time.
+   There is no stall to remove in the sense of the question, but there are three places where the RTL could be faster ([VU §7.13](design/02-vector-unit.md)).
+4. **QACT: the A32 quantiser takes 16 cycles per 32-block** (divider bound, `tsr_qact.sv`; K = 2,816: 1,452 cycles on the card and 1,448 in the RTL bench), and the
+   simulator charged one cycle per source line (226). A256 is 17 cycles per 256-block plus 72 (259 against 227). Every Q8_0 matrix product and every KV store of Gemma waits for it:
+   0.41 M of the 0.95 M cycles of the Gemma gap. This is what `MVM_WAIT` was made of.
+5. **DDR latencies the model did not have**: a store of 128 to 256 lines takes its lines plus about 110 cycles on the card (the model 64), and an MVM starts its
+   weight stream about 80 cycles later than the model's fill. About 0.18 M cycles of the Gemma gap (0.1 M after the small corrections of SW-80),
+   and what remains of `MVM_EMPTY`.
+
+Gemma 4 26B-A4B decode launch, cycles each kind adds (card 16,305,653):
+
+| Record kind | Simulator before | Simulator after | Card |
+| --- | --- | --- | --- |
+| MUL_MAT (236), MUL_MAT_ID (60) | 13,534,830 | 13,786,788 | 13,805,669 |
+| RMS_NORM, ADD, MUL, GLU, SCALE, ROPE, UNARY, MOE_ROUTE, GET_ROWS, JOIN (937) | 1,648,644 | 2,100,183 | 2,130,506 |
+| FLASH_ATTN (30) | 143,850 | 273,750 | 278,979 |
+| SET_ROWS_KV (60) | 24,995 | 74,935 | 90,499 |
+| **Total** | **15,352,319** | **16,235,656** | **16,305,653** |
+
+Per-token PERF counters of the card against the corrected simulator (card configuration): `VU_CYCLES` 4.758 M against 4.785 M (Qwen3.8) and 1.088 M against 1.085 M
+(Gemma); `QACT_CYCLES` 98,070 against 98,244 and 505,087 against 505,654; `MVM_CYCLES` 5.712 M against 5.714 M and 13.286 M against 13.271 M. The DMA busy cycles stay low in the
+simulator (2.43 M against 2.98 M, 1.17 M against 1.31 M): the card's DMA moves lines at half rate while the VU runs (the Gated DeltaNet state tiles of 1,024 lines take 2,048 cycles
+there, 1,088 in the model), the next head's load is hidden behind the head, and the DMA kinds (CPY, GET_ROWS) agree on the critical path. The KV store (the V plane's masked
+writes, 0.5 K cycles on the card and 0.1 K in the model) and MOE_ROUTE (3.5 % low) are the larger parts of the 0.4 % left in Gemma.
+
+Table of single ops and records (cycles; card from the trace writer, RTL from the unit bench, [VU §7.13](design/02-vector-unit.md); the VU rows are the gap from the done of
+the op before):
+
+| Op or record | Simulator before | Simulator after | RTL bench | Card |
+| --- | --- | --- | --- | --- |
+| VOP MUL, 128 x 8 line tile (S times k, Gated DeltaNet) | 1,044 | 2,112 | 2,112 | 2,112 |
+| VOP MULC, tile (S times alpha) | 1,044 | 2,111 | 2,111 | 2,115 |
+| VOP MULCADD, tile with c vector | 1,052 | 2,120 | 2,120 | 2,120 |
+| RED SUM, 128 rows of 128 | 2,093 | 3,264 | 3,264 | 3,265 |
+| VOP SUB / MULC, one row of 128 | 28 | 80 / 79 | 80 / 79 | 80 / 79 |
+| SOP EXP (after an LDS) | 30 | 58 | 58 (60 in the stream) | 68 |
+| Gated DeltaNet head step, 13 VU ops | 8,514 | 15,405 | 15,288 | 15,306 |
+| RED RMS to an s register, 2,048 elements | 203 | 400 | 401 | 400 |
+| ROPE, head_dim 256, n_dims 64, 8 heads, T 1 | 296 | 547 | 547 | 559 (run time) |
+| AMERGE (INIT) R 16, D 256 / ANORM R 16, D 256 | 838 / 324 | 2,657 / 674 | 2,657 / 674 | |
+| QACT A32, K 2,816 / A256, K 2,816 | 226 / 227 | 1,452 / 259 | 1,448 / 255 | 1,452 / 259 |
+| GATED_DELTA_NET record, 2B (16 heads, 1 token) | 164,191 | 255,087 | 261,282 (isolated, with the launch) | 253,660 |
+| SSM_CONV record, 2B | 7,692 | 11,537 | | 11,429 |
+| RMS_NORM record, Qwen3.8 2B (E 2,048) | 931 | 1,308 | | 1,319 |
+
+The simulator's default configuration is unchanged: the U200 image's 16 / 16 / 8 lanes. A comparison with the card sets `TSR_SIM_CARD=k4full`.
+With the default configuration and the corrected model, the Qwen3.8 2B decode token takes 10.96 M cycles (VU 3.16 M, MVM 5.73 M, DMA 2.43 M busy) and Gemma 4 26B-A4B 15.69 M.
 
 ## The full-feature image after the ATTPV fix (`k4full`, fourth link, 2026-11-08)
 
@@ -750,10 +832,10 @@ branch `gdn-sw`; simulator cycle model, fixed schedule, core clock 276.3 MHz in 
 
 | Quantity | Value |
 | --- | --- |
-| GATED_DELTA_NET, one record, 2B (16 heads) / 27B (48 heads), one token | 151.6 K / 425.0 K core cycles (with about 18 K of launch overhead) |
-| GATED_DELTA_NET, 27B heads, 4 / 16 tokens | 1.655 M / 6.576 M cycles: 8.6 K per head and token |
-| SSM_CONV, 2B (C 6144) / 27B (C 10240) | 14.6 K / 19.0 K cycles; SOFTPLUS 18.5 K |
-| Qwen3.8 2B Q4_K_M decode token | 10.51 M cycles (52.6 ms at 200 MHz): MVM 5.70 M, VU 2.73 M, DMA 2.45 M busy; one launch of 735 records; 0.97 s of simulator time |
+| GATED_DELTA_NET, one record, 2B (16 heads) / 27B (48 heads), one token | 151.6 K / 425.0 K core cycles (with about 18 K of launch overhead); after SW-80 178.2 K / 504.9 K at 16 lanes, 261.3 K / 754.2 K at the card's 8 / 8 / 4 |
+| GATED_DELTA_NET, 27B heads, 4 / 16 tokens | 1.655 M / 6.576 M cycles: 8.6 K per head and token; after SW-80 1.975 M / 7.856 M (10.2 K) at 16 lanes, 2.972 M / 11.846 M (15.4 K) at 8 lanes |
+| SSM_CONV, 2B (C 6144) / 27B (C 10240) | 14.6 K / 19.0 K cycles; SOFTPLUS 18.5 K; after SW-80 14.8 K / 19.4 K (16 lanes), 18.2 K / 25.2 K (8 lanes) |
+| Qwen3.8 2B Q4_K_M decode token | 10.51 M cycles (52.6 ms at 200 MHz): MVM 5.70 M, VU 2.73 M, DMA 2.45 M busy; one launch of 735 records; 0.97 s of simulator time. After SW-80: 10.96 M (VU 3.16 M, MVM 5.73 M, DMA 2.43 M) with the default lanes, 12.65 M in the card configuration (the card: 12.63 M) |
 | Qwen3.8 27B Q4_K_M decode token, from 4 and 8 layers | 108.4 M cycles (542 ms at 200 MHz, 1.85 tokens/s): MVM 73.1 M, VU 22.0 M, DMA 18.4 M; the recurrence 19.7 M (18 %, 98 ms) |
 | The fused GDN op (VU §7.12, branch `gdn-vu`) | 23.8 ms per 27B token, estimated: the composed recurrence is about 4.1 times slower; a token would be 468 ms instead of 542 |
 | Image size | ITCM 78,576 B, DTCM 49,912 B |
@@ -802,7 +884,7 @@ ITCM is 131,072 B, DTCM 65,536 B):
 
 | Quantity | M6 (matrix products on the device) | M7 (one launch per token) |
 | --- | --- | --- |
-| Device cycles per decode token | 14,344,436 | 15,143,469 |
+| Device cycles per decode token | 14,344,436 | 15,143,469 (15,687,458 after SW-80 with the default lanes; 16.24 M in the card configuration, the card: 16.32 M) |
 | Beats read per channel and token | 13.08 M (channel 1) | 13.11 M |
 | Share of cycles with a beat | 91 % | 87 % |
 | Decode at 200 MHz | 13.9 tok/s | 13.2 tok/s |

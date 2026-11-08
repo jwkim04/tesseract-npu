@@ -44,6 +44,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 - `TSR_DUMP_RE` / `TSR_DUMP_DIR` dump device values of matching nodes; `TSR_STATS` prints the units' busy cycles.
 - klcheck writes the four M-RoPE position streams in its embedding path (the embd and floor runs of Qwen3.5 / 3.8 were not
   bit-identical to the token path before).
+- The simulator's cycle models follow the RTL and the card (SW-80): the VU from its lanes (`TSR_SIM_VU_TIMING`, `u200` 16 / 16 / 8 by
+  default, `k4` for the card image's 8 / 8 / 4 behind two lane-pipe stages) with latencies measured on the RTL unit, QACT (A32 is
+  divider bound: 16 cycles per 32-block), stores and MVM fill. `TSR_SIM_CARD=k4full` sets the card image's configuration for the
+  `sim` transport. Results do not change: only the cycle counts. `TSR_SIM_LOG` takes a `w,` prefix (the words of every push);
+  `TSR_OPL_PROF=1` / `TSR_OPL_KINDS=<file>` make the backend profile its launches and list their record kinds; `tsr-dbg`'s
+  `trw dump` reads a ring that an earlier process wrote; `sw/tools/trw_vs_sim.py` compares a card run with a simulator run.
 
 ## Basis 0.1.0 (2026-10-31)
 

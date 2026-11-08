@@ -62,8 +62,13 @@
 #include <unistd.h>
 
 #define CYC_ISSUE    1u      // tsr_sim_op only: the issue cycle
+// SW-80: the platform's DDR latencies as the card shows them (the trace writer's run times of the DMA and MVM ops of Qwen3.8 2B
+// and Gemma 4 26B-A4B decode; the RTL benches run on ideal memory): a load takes its lines plus 64 cycles, a store its lines plus
+// 110 (54 up to 8 lines: the write response), an MVM 144 cycles before its first weight beat is used.
 #define CYC_DMA_LAT  64u
-#define CYC_MVM_FILL 64u
+#define CYC_ST_LAT   110u
+#define CYC_ST_SMALL 54u
+#define CYC_MVM_FILL 144u
 
 #define RV_RATIO_DEFAULT (166.7 / 276.3)   // k4 clocks (SW §4.2)
 
@@ -507,7 +512,7 @@ static const char * opts_problem(const tsr_sim_opts * o) {
     if (o->race != 0 && !HAVE_RACE_MODEL) return "race: this simulator library was built without the race detector (tsr_race.c)";
     if (o->rv_ratio < 0.0 || (o->rv_ratio != 0.0 && (o->rv_ratio < 0.05 || o->rv_ratio > 4.0)))
         return "rv_ratio must be in [0.05, 4] (SW §4.9)";
-    if (o->log_flags & ~TSR_SIM_LOG_RV) return "log_flags: unknown bits";
+    if (o->log_flags & ~(TSR_SIM_LOG_RV | TSR_SIM_LOG_WORDS)) return "log_flags: unknown bits";
     if (o->q_depth != NULL) {
         for (uint32_t u = 0; u < TSR_NUM_UNITS; ++u)
             if (o->q_depth[u] > TSR_QDEPTH_MAX) return "q_depth: a depth is above 31 (5-bit Q_DEPTH field)";
@@ -521,6 +526,27 @@ static const char * opts_problem(const tsr_sim_opts * o) {
 
 // The Ibex configuration names of the RISC-V cycle model (tsr_rv.h; parsed here too, so that a
 // simulator library without tsr_rv.c validates the option the same way). 0, or -1 if unknown.
+// SW-76: "u200" | "k4" | "F,E,B,P". out[0..3] = front, EXP, back lanes and lane-pipe stages.
+static int vu_timing_parse(const char * s, uint32_t * out) {
+    uint32_t v[4];
+    if (strcmp(s, "u200") == 0) {
+        v[0] = 16; v[1] = 16; v[2] = 8; v[3] = 0;
+    } else if (strcmp(s, "k4") == 0) {
+        v[0] = 8; v[1] = 8; v[2] = 4; v[3] = 2;
+    } else {
+        char * end = NULL;
+        for (int i = 0; i < 4; ++i) {
+            const unsigned long x = strtoul(s, &end, 10);
+            if (end == s || (i < 3 && *end != ',') || (i == 3 && *end != '\0')) return -1;
+            v[i] = (uint32_t)x;
+            s = end + 1;
+        }
+    }
+    if ((v[0] != 8 && v[0] != 16) || (v[1] != 8 && v[1] != 16) || (v[2] != 4 && v[2] != 8) || v[3] > 3) return -1;
+    if (out) memcpy(out, v, sizeof v);
+    return 0;
+}
+
 static int rv_core_parse(const char * name, uint32_t * core) {
     uint32_t c;
     if (strcmp(name, "small") == 0) c = TSR_RV_CORE_SMALL;
@@ -566,9 +592,16 @@ static const char * env_fill(tsr_sim_opts * o, FILE ** log_open, char * buf, siz
         o->race = r;
     }
     if (o->log == NULL && (e = getenv("TSR_SIM_LOG")) != NULL && e[0] != '\0') {
-        if (strncmp(e, "rv,", 3) == 0) {
-            o->log_flags |= TSR_SIM_LOG_RV;
-            e += 3;
+        for (;;) {   // prefixes: "rv," (retire lines), "w," (the eight words of every push)
+            if (strncmp(e, "rv,", 3) == 0) {
+                o->log_flags |= TSR_SIM_LOG_RV;
+                e += 3;
+            } else if (strncmp(e, "w,", 2) == 0) {
+                o->log_flags |= TSR_SIM_LOG_WORDS;
+                e += 2;
+            } else {
+                break;
+            }
         }
         if (strcmp(e, "stderr") == 0) {
             o->log = stderr;
@@ -584,6 +617,12 @@ static const char * env_fill(tsr_sim_opts * o, FILE ** log_open, char * buf, siz
     }
     if (o->trace_dir == NULL && (e = getenv("TSR_TRACE")) != NULL && e[0] != '\0') o->trace_dir = e;
     if (o->rv_core == NULL && (e = getenv("TSR_SIM_RV_CORE")) != NULL && e[0] != '\0') o->rv_core = e;
+    if (o->vu_timing == NULL && (e = getenv("TSR_SIM_VU_TIMING")) != NULL && e[0] != '\0') o->vu_timing = e;
+    if (o->vu_timing != NULL && vu_timing_parse(o->vu_timing, NULL) != 0) {
+        snprintf(buf, n, "TSR_SIM_VU_TIMING / vu_timing=\"%s\": expected u200, k4 or F,E,B,P (front 8|16, EXP 8|16, back 4|8, pipe 0..3)",
+                 o->vu_timing);
+        return buf;
+    }
     if (o->rv_core != NULL && rv_core_parse(o->rv_core, NULL) != 0) {
         snprintf(buf, n, "TSR_SIM_RV_CORE / rv_core=\"%s\": expected small or maxperf", o->rv_core);
         return buf;
@@ -702,6 +741,11 @@ tsr_sim * tsr_sim_create_opts(const tsr_config * cfg, const tsr_sim_opts * opts)
     sim->rv_ratio = o.rv_ratio != 0.0 ? o.rv_ratio : RV_RATIO_DEFAULT;
     sim->rv_core = TSR_RV_CORE_DEFAULT;
     if (o.rv_core != NULL) (void)rv_core_parse(o.rv_core, &sim->rv_core);
+    {
+        uint32_t v[4] = { TSR_VU_FRONT_LANES, TSR_VU_FRONT_LANES, TSR_VU_BACK_LANES, 0 };
+        if (o.vu_timing != NULL) (void)vu_timing_parse(o.vu_timing, v);
+        sim->vu_front = v[0]; sim->vu_exp = v[1]; sim->vu_back = v[2]; sim->vu_pipe = v[3];
+    }
     sim->xbuf = (float *)xcalloc(cfg->k_max, sizeof(float));
     sim->threads = 1;
     sim->log = (FILE *)o.log;
@@ -823,6 +867,7 @@ uint64_t tsr_sim_rv_instret(const tsr_sim * sim) { (void)sim; return 0u; }
 void tsr_sim_set_log(tsr_sim * sim, void * file) { sim->log = (FILE *)file; }
 int  tsr_sim_log_on(const tsr_sim * sim) { return sim->log != NULL; }
 int  tsr_sim_log_rv(const tsr_sim * sim) { return sim->log != NULL && (sim->log_flags & TSR_SIM_LOG_RV) != 0; }
+int  tsr_sim_log_words(const tsr_sim * sim) { return sim->log != NULL && (sim->log_flags & TSR_SIM_LOG_WORDS) != 0; }
 
 void ** tsr_sim_model_slot(tsr_sim * sim, int id) {
     return (id >= 0 && id < TSR_MODEL_COUNT) ? &sim->models[id] : NULL;
@@ -913,6 +958,10 @@ uint32_t  tsr_sim_rv_run(const tsr_sim * sim) { return (sim->ctrl & TSR_CTRL_RV_
 uint32_t  tsr_sim_rv_boot(const tsr_sim * sim) { return sim->rv_boot; }
 uint64_t  tsr_sim_rv_boot_gen(const tsr_sim * sim) { return sim->rv_boot_gen; }
 double    tsr_sim_rv_ratio(const tsr_sim * sim) { return sim->rv_ratio; }
+tsr_vu_timing tsr_sim_vu_timing(const tsr_sim * sim) {
+    tsr_vu_timing t = { sim->vu_front, sim->vu_exp, sim->vu_back, sim->vu_pipe };
+    return t;
+}
 uint32_t  tsr_sim_rv_core(const tsr_sim * sim) { return sim->rv_core; }
 void      tsr_sim_rv_set_state(tsr_sim * sim, uint32_t bits) {
     const uint32_t old = sim->rv_state;
@@ -1050,7 +1099,7 @@ void tsr_sim_set_plat_err(tsr_sim * sim, int level) { sim->plat_err = level != 0
 static uint32_t cfg3_read(const tsr_sim * sim) {
     uint32_t v = 0;
     if (sim->cfg.caps & TSR_CAPS_VU)
-        v |= TSR_PUT(TSR_CFG3_VU_FRONT, TSR_VU_FRONT_LANES) | TSR_PUT(TSR_CFG3_VU_BACK, TSR_VU_BACK_LANES);
+        v |= TSR_PUT(TSR_CFG3_VU_FRONT, sim->vu_exp) | TSR_PUT(TSR_CFG3_VU_BACK, sim->vu_back);   // the RTL reports EXP_LANES
     if (sim->cfg.caps & TSR_CAPS_ATT) v |= TSR_PUT(TSR_CFG3_PCAP16, tsr_qa_lines(TSR_QA_A256, sim->cfg.k_max));
     return v;
 }
@@ -1397,6 +1446,10 @@ static uint64_t cyc_ldst(const tsr_sim * sim, const uint32_t w[8]) {
     (void)sim;
     return CYC_DMA_LAT + (uint64_t)w[3];
 }
+static uint64_t cyc_st(const tsr_sim * sim, const uint32_t w[8]) {
+    (void)sim;
+    return (w[3] <= 8u ? CYC_ST_SMALL : CYC_ST_LAT) + (uint64_t)w[3];
+}
 
 // QACT: sub = kind, w1 (A1 QA dst), w2 (A2 f32 src), w3 K, w4 T, w5 src stride (0 = dense).
 static uint32_t chk_qact(tsr_sim * sim, const uint32_t w[8], tsr_extents * ext, uint32_t * info) {
@@ -1435,9 +1488,14 @@ static void ex_qact(tsr_sim * sim, const uint32_t w[8]) {
         tsr_qact(kind, sim->xbuf, K, sim->spm + ((uint64_t)dst + (uint64_t)t * qa_lines) * TSR_LINE_BYTES);
     }
 }
+// SW-80: tsr_qact.sv is divider bound for A32 (one 32-block per 16 cycles, 8 per source line) and nearly line bound
+// for A256 (one 256-block per 17 cycles, tb/qact qact_timing); accept to done adds the pipeline fill (44 and 72 cycles
+// in the unit's run time as the trace writer reports it on the card). The tokens of one op run back to back.
 static uint64_t cyc_qact(const tsr_sim * sim, const uint32_t w[8]) {
+    (void)sim;
     const uint32_t kind = tsr_w0_sub(w[0]), K = w[3], T = w[4];
-    return (uint64_t)T * (tsr_ceil_div_u32(K, sim->cfg.vl) + tsr_qa_lines(kind, K));
+    const uint64_t blocks = (uint64_t)T * (K / tsr_qa_block_size(kind));
+    return kind == TSR_QA_A32 ? 16u * blocks + 44u : 17u * blocks + 72u;
 }
 
 // MVM: sub = fmt, flags bit0 ACC, w1 (A1 dst), w2 (A2 x), w3 (A3 W_OFF), w4 N, w5 K | T << 16,
@@ -1588,7 +1646,7 @@ static uint64_t cyc_mvm(const tsr_sim * sim, const uint32_t w[8]) {
 void tsr_core_register(void) {
     const tsr_op_handler nop   = { TSR_UNIT_SYNC, chk_sync, NULL, NULL };
     const tsr_op_handler ld    = { TSR_UNIT_DMA, chk_ld, ex_ld, cyc_ldst };
-    const tsr_op_handler st    = { TSR_UNIT_DMA, chk_st, ex_st, cyc_ldst };
+    const tsr_op_handler st    = { TSR_UNIT_DMA, chk_st, ex_st, cyc_st };
     const tsr_op_handler qact  = { TSR_UNIT_QACT, chk_qact, ex_qact, cyc_qact };
     const tsr_op_handler mvm   = { TSR_UNIT_MVM, chk_mvm, ex_mvm, cyc_mvm };
     tsr_sim_register_op(TSR_OP_NOP, &nop);

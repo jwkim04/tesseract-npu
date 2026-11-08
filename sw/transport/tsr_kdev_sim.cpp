@@ -7,6 +7,7 @@
 
 #include <cinttypes>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <unistd.h>
@@ -18,6 +19,21 @@ bool sim_options_from_env(const char * who, sim_options * o) {
     cfg.caps = tsr_sim_caps_implemented();   // EX §7.5: the simulator reports what it implements
     uint64_t v = 0;
     int r;
+    // TSR_SIM_CARD=k4full: the full-feature card image of the fourth link (docs/platform-u200.md §8.8): T_MAX 4, none of
+    // the local intermediates (CAPS 0x21), the VU's 8 / 8 / 4 lanes behind two lane-pipe stages and clk_rv at half the
+    // core clock. The image has no GDN op (HAS_GDN 0): CAPS bit 8 is clear, TSR_SIM_GDN=1 sets it for the 250 MHz link
+    // (k4f250: HAS_GDN 1; SW-78). The variables below still override what they name (SW-80).
+    if (const char * card = getenv("TSR_SIM_CARD"); card != nullptr && card[0] != '\0') {
+        if (strcmp(card, "k4full") != 0) {
+            fprintf(stderr, "%s: TSR_SIM_CARD=\"%s\": expected k4full\n", who, card);
+            return false;
+        }
+        cfg.t_max = 4;
+        cfg.caps &= ~(TSR_CAPS_ATT_LOCAL | TSR_CAPS_MVM_LOCAL_SCALE | TSR_CAPS_MVM_LOCAL_SOFTCAP | TSR_CAPS_GDN);
+        const char * rr = getenv("TSR_SIM_RV_RATIO"), * vt = getenv("TSR_SIM_VU_TIMING");
+        if (rr == nullptr || rr[0] == '\0') o->rv_ratio = 0.5;
+        if (vt == nullptr || vt[0] == '\0') o->vu_timing = "k4";
+    }
     if ((r = env_u64(who, "TSR_SIM_ATT_LOCAL", 0, 1, &v)) < 0) return false;
     if (r && v == 0) cfg.caps &= ~TSR_CAPS_ATT_LOCAL;
     if ((r = env_u64(who, "TSR_SIM_MVM_LOCAL_SCALE", 0, 1, &v)) < 0) return false;
@@ -26,6 +42,7 @@ bool sim_options_from_env(const char * who, sim_options * o) {
     if (r && v == 0) cfg.caps &= ~TSR_CAPS_MVM_LOCAL_SOFTCAP;
     if ((r = env_u64(who, "TSR_SIM_GDN", 0, 1, &v)) < 0) return false;
     if (r && v == 0) cfg.caps &= ~TSR_CAPS_GDN;   // an image without the fused GDN op (HAS_GDN 0): the composed GATED_DELTA_NET path
+    if (r && v == 1) cfg.caps |= tsr_sim_caps_implemented() & TSR_CAPS_GDN;   // an image with it (HAS_GDN 1): the fused path
     if ((r = env_u64(who, "TSR_SIM_VU", 0, 1, &v)) < 0) return false;
     if (r && v == 0) {   // tsr_u200_k4: HAS_VU = 0 and HAS_ATT = 0 leave CAPS = 0 and the VU queue absent
         cfg.caps = 0;
@@ -51,6 +68,8 @@ sim_kdev::sim_kdev(const sim_options & o) : cfg_(o.cfg), run_ahead_(o.run_ahead 
     memset(&so, 0, sizeof(so));
     so.dram_dir = o.dram_dir;
     so.threads = o.threads;
+    so.rv_ratio = o.rv_ratio;
+    so.vu_timing = o.vu_timing;
     uint8_t depth[TSR_NUM_UNITS] = { TSR_QDEPTH_U200_DMA, TSR_QDEPTH_U200_QACT, TSR_QDEPTH_U200_MVM,
                                      TSR_QDEPTH_U200_VU,  TSR_QDEPTH_U200_ATT,  TSR_QDEPTH_U200_SYNC };
     if (o.no_vu) {

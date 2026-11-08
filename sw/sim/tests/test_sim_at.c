@@ -757,13 +757,44 @@ static void test_cycles(void) {
     CHECK(cyc(s, e_att(TSR_OP_ATTQK, &q3)) == 350u + 2u * 272u, "ATTQK the busiest channel");
     att_f p = { 0, TSR_ATT_LSUM, 5, 0, 16, 1, 1, 5, 0, 100, 1000, 7000, 0, 128, 40, 0 };
     CHECK(cyc(s, e_att(TSR_OP_ATTPV, &p)) == 350u + 68u + 32u * 272u, "ATTPV");
-    CHECK(cyc(s, e_asmax(100, 100, 50, 13, 0, 16, 0x3F800000u)) == 16u * 13u + 64u, "ASMAX");
-    CHECK(cyc(s, e_amask(100, 100, 400, 13, 0, 16, 8, 13, 50)) == 16u * 13u + 16u + 45u, "AMASK odd n_lines");
-    CHECK(cyc(s, e_amask(100, 100, 400, 12, 0, 16, 8, 12, 50)) == 16u * 12u + 45u, "AMASK even n_lines");
-    CHECK(cyc(s, e_amerge(0, 100, 200, 50, 60, 40, 1, 0x3F800000u, 0)) == 6u * 3u + 64u + 320u * 5u, "AMERGE 32B (AT §9.2: 1,600 + prepass)");
-    CHECK(cyc(s, e_amerge(1, 100, 200, 50, 60, 40, 1, 0x3F800000u, 0)) == 6u * 3u + 64u + 320u * 3u, "AMERGE INIT");
-    CHECK(cyc(s, e_anorm(100, 200, 50, 40, 1)) == 4u * 3u + 64u + 320u, "ANORM");
+    // The vector ops against the RTL unit (SW-80; tb/vu test_vu_timing.py: an op that waits for the one before it, nothing
+    // else running): the U200 lanes here, the K4 image's below.
+    CHECK(cyc(s, e_asmax(100, 100, 50, 1, 0, 8, 0x3F800000u)) == 68u, "ASMAX R 8 n_lines 1 (RTL 68)");
+    CHECK(cyc(s, e_asmax(100, 100, 50, 1, 0, 16, 0x3F800000u)) == 76u, "ASMAX R 16 n_lines 1 (RTL 76)");
+    CHECK(cyc(s, e_amerge(1, 100, 200, 50, 60, 8, 2, 0x3F800000u, 0)) == 896u, "AMERGE INIT R 8 D 256 (RTL 896)");
+    CHECK(cyc(s, e_amerge(1, 100, 200, 50, 60, 16, 2, 0x3F800000u, 0)) == 1626u, "AMERGE INIT R 16 D 256 (RTL 1626)");
+    CHECK(cyc(s, e_amerge(1, 100, 200, 50, 60, 16, 3, 0x3F800000u, 0)) == 3086u, "AMERGE INIT R 16 D 512 (RTL 3086)");
+    CHECK(cyc(s, e_amerge(1, 100, 200, 50, 60, 32, 2, 0x3F800000u, 0)) == 3091u, "AMERGE INIT R 32 D 256 (RTL 3091)");
+    CHECK(cyc(s, e_amerge(0, 100, 200, 50, 60, 16, 2, 0x3F800000u, 0)) == 1699u, "AMERGE merging R 16 D 256 (RTL 1699)");
+    CHECK(cyc(s, e_anorm(100, 200, 50, 8, 2)) == 280u, "ANORM R 8 D 256 (RTL 280)");
+    CHECK(cyc(s, e_anorm(100, 200, 50, 16, 2)) == 408u, "ANORM R 16 D 256 (RTL 408)");
+    CHECK(cyc(s, e_anorm(100, 200, 50, 16, 3)) == 664u, "ANORM R 16 D 512 (RTL 664)");
+    CHECK(cyc(s, e_anorm(100, 200, 50, 32, 2)) == 667u, "ANORM R 32 D 256 (RTL 667)");
+    // AMASK is in no firmware kind and was not measured: the ASMAX shape
+    CHECK(cyc(s, e_amask(100, 100, 400, 13, 0, 16, 8, 13, 50)) == 16u * 13u + 60u, "AMASK");
     tsr_sim_destroy(s);
+    {
+        tsr_config c = cfg_u200(8);
+        c.spm_bytes = SPM_BYTES;
+        c.ch_bytes = CH_BYTES;
+        c.caps = CAPS_AT;
+        tsr_sim_opts o;
+        memset(&o, 0, sizeof o);
+        o.vu_timing = "k4";
+        tsr_sim * k = tsr_sim_create_opts(&c, &o);
+        CHECK(k != NULL, "k4 simulator");
+        if (k) {
+            CHECK(cyc(k, e_asmax(100, 100, 50, 1, 0, 8, 0x3F800000u)) == 80u, "k4: ASMAX R 8 n_lines 1 (RTL 80)");
+            CHECK(cyc(k, e_asmax(100, 100, 50, 1, 0, 16, 0x3F800000u)) == 96u, "k4: ASMAX R 16 n_lines 1 (RTL 96)");
+            CHECK(cyc(k, e_amerge(1, 100, 200, 50, 60, 8, 2, 0x3F800000u, 0)) == 1423u, "k4: AMERGE INIT R 8 D 256 (RTL 1423)");
+            CHECK(cyc(k, e_amerge(1, 100, 200, 50, 60, 16, 2, 0x3F800000u, 0)) == 2657u, "k4: AMERGE INIT R 16 D 256 (RTL 2657)");
+            CHECK(cyc(k, e_amerge(1, 100, 200, 50, 60, 16, 3, 0x3F800000u, 0)) == 5125u, "k4: AMERGE INIT R 16 D 512 (RTL 5125)");
+            CHECK(cyc(k, e_anorm(100, 200, 50, 8, 2)) == 418u, "k4: ANORM R 8 D 256 (RTL 418)");
+            CHECK(cyc(k, e_anorm(100, 200, 50, 16, 2)) == 674u, "k4: ANORM R 16 D 256 (RTL 674)");
+            CHECK(cyc(k, e_anorm(100, 200, 50, 16, 3)) == 1186u, "k4: ANORM R 16 D 512 (RTL 1186)");
+            tsr_sim_destroy(k);
+        }
+    }
 }
 
 static uint32_t q_push(tsr_sim * s, tsr_insn i, uint32_t d0, uint32_t d1) {
