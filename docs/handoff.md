@@ -2,9 +2,51 @@
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
 
-## Resume here: the full-feature image on the card, ATTPV fault fixed in the source, relink needed (branch `k4full`, November 8)
+## Resume here: the full-feature image on the card, everything passes (branch `k4full`, November 8, evening)
 
-The full-feature image of the link below (`build/link/k4full/tsr_u200_k4.xclbin`, sha256 `20f25925…22e7`, 200 / 100 MHz, timing met:
+The image of the fourth link (`build/link/k4full/tsr_u200_k4.xclbin`, source `d33f816`, 76,107,483 bytes, sha256
+`6fdf31fdee80778771644fdc7708041c66070fd2ed8f0b1f753c7f66d3745284`, UUID `c7f70219-f070-c4fd-cfdc-1da14a7eb251`, 200 / 100 MHz, WNS
++0.017 ns, WHS +0.009 ns, SLR CLBs 80.1 / 86.3 / 85.0 %) has the ATTPV fix and the link-3 stages. Everything checked on the card passes,
+and attention on the device is bit-identical to the simulator. Numbers and method: [platform-u200.md](platform-u200.md) §8.8 "Card
+bring-up of the fourth link", [performance.md](performance.md) "The full-feature image after the ATTPV fix",
+[klcheck.md](klcheck.md). Logs and the run scripts: `build/card/link4` (not in git).
+
+What passed (all bit-identical to the C simulator at `T_MAX` 4 and `CAPS` 0x21 unless a KL is given):
+
+- `tsr-selftest`: id 5 passes (184 of 184 results) from the second run after a load on; the first run after a load fails id 5 (below).
+- Trace replays through the `replay` kernel: `m2` 123, `gen` 26, `m3` 171, `vu` 196, `at` 98 (was 75 and 23 failed), `ctrl` 131; 745
+  in all, 0 failed.
+- M6: 0.5B 8 x 64 ratio 1.077, 512 of 512 rows; 32B 2 x 16 ratio 0.750, 32 of 32 (the figures of the second link, every digit).
+- Vector-unit kinds on the device (`--offload-kqv off`): 0.5B ratio 1.127, 512 of 512; 32B ratio 0.777, 32 of 32.
+- M7, attention and KV cache on the device, one launch per token: 0.5B KL 2.2216e-3, ratio 0.953 (0.914 against seed 1, the
+  simulator's own figure), top-1 98.05 %, 512 of 512 rows; 32B KL 1.3104e-3, ratio 0.735, top-1 100 %, 32 of 32.
+- Decode, best run: M7 0.5B 75.88 tok/s (13.18 ms, 97 % device time), 32B 2.35 tok/s (424.9 ms); vector-unit kinds 68.45 and 2.32;
+  `m6` 47.83 and 2.25. Prefill of 158 tokens: 0.5B 407 (`m6`), 384 (vector-unit kinds), 338 (M7) tok/s; 32B 9.5, 9.5, 9.3. The
+  device counters per decode token equal the second link's to four digits: the extra `XSLR_REG` stages cost nothing visible.
+- Trace writer (`tsr-selftest --trw 16`): 647 replays 16,247 records, 745 replays 18,207 records, 0 dropped, no hang. GDB smoke
+  passes (halt, registers, breakpoints, step, memory, hardware breakpoint in a kernel, watchpoint, `finish`, history, trace writer).
+
+Open:
+
+- The first `selftest` after an image load fails id 5 in two lines (area lines 531 and 532, the causal ATTQK score block, read
+  back as zero). It repeated in 19 of 19 loads, also on the second link's image, so it does not come from the fix or the stages.
+  An ATTPV that executes before the run prevents it (replaying the `at` traces up to `traces/at/errors/at_s53_0009`, the 8th
+  passing one, does; fewer, or `m2` / `vu` traces, do not). The real workloads are not affected so far: the 98 `at` traces and the
+  M7 0.5B replay as the first use after a load are bit-exact. Why an earlier ATTPV changes ATTQK output lines is not found, and no
+  simulation was run for it. Suspects to read: state in the attention units that is not reset and that ATTPV leaves in a defined
+  state, and the selftest's missing dependency of the causal ATTQK on the final `ST` (`sw/ctrl/kernels/selftest.cpp`, `t_at`).
+  Reproduce: load another image, then `TSR_XCLBIN=<k4full> tsr-selftest --device xrt --no-mem --ids 5`
+  (`build/card/link4/run_firstrun.sh` and `run_bisect.sh` do the cycles).
+- The DB §8.7 self-check of the trace writer still reports differences from the PERF counters (RETIRED 14,432 against 14,737 op records
+  in the 647 replays; the same numbers on both images; DMA, QACT, VU `RUN` sums 0.2 to 5.8 % above the counters). No result is wrong.
+- Prefill is slower than on the host at `T_MAX` 4 for the vector-unit kinds and for attention on the device (0.5B 407 to 338 tok/s).
+- `tsr-selftest` counts 184 results in a passing run; the log of the second link's run said 184 passed and 1 failed. The reason for
+  the one-count difference is not known (the transport counts are the same, 2,082 launches).
+- Branch `k4full` is not merged into the main checkout's branch (`codex/k4-route-fixes`, which has the older read-modify-write KVST).
+
+## Earlier: the full-feature image on the card, ATTPV fault found (second link, branch `k4full`, November 8, morning)
+
+The image of the second link (sha256 `20f25925…22e7`, 200 / 100 MHz, timing met:
 WNS +0.003 ns, WHS +0.006 ns) ran on the card. Everything checked passes except attention on the device. Numbers and method:
 [platform-u200.md](platform-u200.md) §8.8 "Card bring-up", [performance.md](performance.md) "The full-feature image on the card".
 
@@ -38,26 +80,6 @@ The ATTPV fault and its cause (details: §8.8 "The ATTPV fault"):
 - Fix (`f06fefc`): `tsr_mvm_pv_lsel` (lane `{l, k}` as a concatenation) in `tsr_mvm_pv.sv`; the same form in `tsr_dbg.sv`. `tb/at/test_at_pv_netlist.py`
   (opt-in, Vivado) is the regression test: the module 0 of 4,000 wrong, the old form (control) 1,977. Out-of-context synthesis of
   `tsr_mvm_pv`: 106 loads on `dr_l_q[2]`, 9,728 `cb_a` registers.
-
-Next:
-
-- The third link (source `92012ea`, with the ATTPV fix) missed the core clock by -0.430 ns on 81 endpoints (shell clocks pass). Source
-  fixes behind `XSLR_REG`, commit `e62417f`: two stages on the `REQ_HELD` event, one `tsr_rpipe` stage on each pair link of the gather,
-  three stages (was two) on the VU's command, done and s registers; `k4.cfg` has the post-place `phys_opt_design` with
-  `AggressiveExplore` for the local high-fanout paths. Path by path: platform-u200.md §8.8 "The links". About +2.2 K flops, at most
-  +0.8 K LUTs by structure. Verilator benches pass; nothing was placed.
-- Relink the image (no v++ link was run for the fix). The corrected PV unit is larger than the linked one (the half of its capture
-  bank that Vivado removed is back): +3.4 K LUT and +5.0 K FF per cluster, about +2 to +3 points of CLB occupancy in SLR0 and SLR2
-  (77.6 / 84.4 % to about 80 / 87 %; estimate from synthesis, §8.8). Its timing at 5.0 ns is not worse (+3.35 ns on the drain stage).
-  On the new image run `tsr-selftest` (id 5 and the `at` traces must pass),
-  then M7: `klcheck all --device xrt --phase m7` against `klcheck run --device sim --tokens ... --phase m7` (bit-identical), 32B, and
-  the M7 throughput (one launch per token).
-- Host tools of this branch: `tsr-selftest` lists every differing line of a failing region and dumps both images with
-  `TSR_SELFTEST_DUMP=<dir>`; `TSR_DEVRUN_DUMP=<dir>` does the same for a failing trace replay (with a count of the differing beats);
-  `TSR_DEVRUN_ARGS=1` prints the `replay` launch arguments; `--trw MIB` runs the trace writer through a selftest.
-  `tb/core/test_core_local.py` `test_k4_full_ops_trace` (`TSR_K4_OPS_TRACE`) replays ops traces on the packaged core in Verilator.
-- Any other `automatic int` used as an index of a signal-dependent expression is suspect on this Vivado (audit: `tsr_dbg.sv`
-  fixed; the others are constants after unrolling or only arithmetic).
 
 ## Earlier: the full-feature image, source ready to link (branch `k4full`, November 7)
 

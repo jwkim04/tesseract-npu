@@ -2718,7 +2718,8 @@ checks above. Details and numbers: [`performance.md`](performance.md) "The first
 
 ### 8.8 The full-feature image (`tsr_u200_k4`, branch `k4full`, 2026-11-07)
 
-The full-feature card image: its source, its two links and its first card run (2026-11-08, "Card bring-up" below). The branch
+The full-feature card image: its source, its four links and its two card runs (2026-11-08, "Card bring-up" and "Card bring-up of the
+fourth link" below). The branch
 starts at `07fbf33` of `k4m200`, the
 reduced image that ran on the card (§8.7), and keeps every fix of it: the cluster reset copies, `DONE_REG` and `MT_PIPE`,
 the RV transport, core 200 MHz and `clk_rv` 100 MHz with the `CLKFINAL` window, and `--reuse_impl`. The reduced image is
@@ -2927,9 +2928,18 @@ occupancy and congestion windows, and the DDR4 clocks (`mmcm_clkout0_1` to `_3`)
 
   Verilator: the gather bench has the pair link with `XSLR_REG` 1 (`g4t8_pair_x`, `g4t4_narrow_x`; the full-stall check counts the
   extra slots), the adapter bench runs `tsr_xrt_kernel` with it, and the core, AT, control, debug and platform benches pass. The
-  next link has to show the paths, nothing here was placed.
+  next link had to show the paths, nothing here was placed.
 
-**Card bring-up (`k4full`, 2026-11-08).** The image loaded through `load_xclbin` as an ordinary user. Host tools: `build/xrt` of
+- The fourth link (source `d33f816`: `f06fefc` the ATTPV fix, `e62417f` and `d33f816` the stages above) routed legally (0
+  overlaps) and met 200 / 100 MHz: final WNS +0.017 ns (`dma_ip_axi_aclk`) and WHS +0.009 ns; `clk_kernel_00` +0.020 / +0.010
+  ns, `clk_kernel_01` +0.622 / +0.010 ns. `CLKNET`, `CLKFINAL` and the four CDC gates pass. `[Route 35-3360]` is no longer
+  reported. Image `tsr_u200_k4.xclbin`, 76,107,483 bytes, sha256 `6fdf31fdee80778771644fdc7708041c66070fd2ed8f0b1f753c7f66d3745284`,
+  UUID `c7f70219-f070-c4fd-cfdc-1da14a7eb251`, `DATA_CLK` 200 MHz and `KERNEL_CLK` 100 MHz. Routed SLR occupancy (kernel and
+  shell): CLBs 39,431 / 42,517 / 41,855 = 80.05 / 86.31 / 84.97 % in SLR0 / 1 / 2 (the second link: 77.6 / 86.8 / 84.4 %; the
+  estimate for the corrected PV unit was about 80 / 87 % in SLR0 / SLR2). SLLs 15,444 (7,230 between SLR0 and SLR1, 8,214
+  between SLR1 and SLR2; the second link 15,403). The card run is below.
+
+**Card bring-up (`k4full`, 2026-11-08; the image of the second link, sha256 `20f25925…22e7`).** The image loaded through `load_xclbin` as an ordinary user. Host tools: `build/xrt` of
 this worktree (`-DTSR_WITH_XRT=ON`, `-j8`); before the card `test-tsr-xrt-noop` (32 checks), `test-tsr-kdev` (10,302) and
 `test-tsr-protocol` (2,398) passed. Logs: `build/card` (not in git). Numbers: [`performance.md`](performance.md) "The
 full-feature image on the card", [`handoff.md`](handoff.md).
@@ -2973,7 +2983,8 @@ group, bit for bit; lines 0 and 1 are right. This holds in all three channels th
 beat by beat, show the same copy (beats 2 and 3 of every group of four; one of them has two more differing beats that are not
 copies, not analysed), for `T_q` 1 to 4 and `D` 64 to 512, with and without `LSUM`. Every ATTPV that executes fails; the nine
 traces whose ATTPV is rejected pass. The signature did not move in about a dozen runs (once, on the first run after loading
-the image, `selftest` id 5 also differed in one line of the causal ATTQK scores; it did not come back).
+the image, `selftest` id 5 also differed in one line of the causal ATTQK scores; it did not come back. It does come back on the
+first run after every load: "Card bring-up of the fourth link" below).
 
 Triage: the C simulator and the RTL agree with each other. The packaged K4 core (`tsr_core`, the Xilinx technology wrappers, `T_MAX`
 4, two-flit paired gather, `XSLR_REG` 1, RV transport, the production firmware on the RTL Ibex) replays the traces that fail on the
@@ -2999,15 +3010,77 @@ link; the card gave no reason to act on it.
 `tsr_dbg.sv` had the same integer index form in the read of the per-channel outstanding counters (diagnostic only); it uses the
 concatenation too. Out-of-context synthesis of `tsr_mvm_pv` now shows `dr_l_q[2]` with 106 loads and 9,728 `cb_a` registers. The
 netlist test `tb/at/test_at_pv_netlist.py` (opt-in, `-k netlist`, Vivado) simulates the lane select: the module of the RTL 0 of
-4,000 wrong, the old form (kept as a control) 1,977. The card needs a new link of the image: the failure sits in the bitstream.
+4,000 wrong, the old form (kept as a control) 1,977. The card needed a new link of the image: the failure sat in the bitstream.
+The fourth link has the fix, and the card shows it works (below).
 
 The corrected unit is larger than the one that was linked, because the half of the capture bank that Vivado removed is back.
 Out-of-context synthesis of `tsr_mvm_pv` (`T_MAX` 4, `MAC_LAT` 9): 21,370 LUT and 21,389 FF, against 17,997 and 16,420 for the old
 text (+3.4 K LUT, +5.0 K FF per cluster; +13.5 K LUT and +20 K FF for the four clusters). At 5.0 ns the worst path into the drain's
 first stage is +3.35 ns (7 logic levels; +3.14 ns, 8 levels, before), and the unit's worst register-to-register slack is +1.74 ns
 in both. Clusters 0 and 2 sit in SLR0 and clusters 1 and 3 in SLR2, so each of the two SLRs gains about 1.0 to 1.6 K CLBs, about 2
-to 3 points: SLR0 77.6 to about 80 %, SLR2 84.4 to about 87 % (SLR1 does not change). That is an estimate from synthesis, not a
-result of a link.
+to 3 points: SLR0 77.6 to about 80 %, SLR2 84.4 to about 87 % (SLR1 does not change). That was an estimate from synthesis. The
+fourth link has SLR0 80.05 % and SLR2 84.97 %.
+
+**Card bring-up of the fourth link (`k4full`, 2026-11-08).** The image of the fourth link (above) loaded through `load_xclbin` as an
+ordinary user. Host tools: `build/xrt` of this worktree, unchanged since the first run (nothing to rebuild at `-j8`); before the card
+`transport_xrt_noop`, `transport_kdev` and `transport_protocol` passed in `ctest`. Logs: `build/card/link4` (not in git). Numbers:
+[`performance.md`](performance.md) "The full-feature image after the ATTPV fix", [`klcheck.md`](klcheck.md), [`handoff.md`](handoff.md).
+The identity registers equal those of the second link's image (`CAPS` 0x21, `CFG3` 0x02480088, `T_MAX` 4, `RV_FREQ` ratio 0.5000,
+`Q_DEPTH` DMA 8 / QACT 4 / MVM 4 / VU 16 / ATT 0 / SYNC 4, `ADAPTER_VERSION` 0x00010004); only the xclbin UUID differs. Cold boot to
+HELLO 8.4 ms, warm restart 2.5 ms, `PING` 6.55 µs median (6.92 µs p99), 303,644 pipelined launches per second.
+
+- **ATTPV is fixed.** Every check that failed on the second link's image passes:
+  - `tsr-selftest --device xrt`: id 5 passes, and with it ids 1 to 10, the misuse cases, memory and boot. A passing run has 184
+    results.
+  - The `at` trace set replays 98 of 98 (75 passed and 23 failed before; 62 are skipped by configuration). The other sets are as
+    before: `m2` 123, `gen` 26, `m3` 171, `vu` 196, `ctrl` 131. 745 replays in all, 0 failed, all bit-exact.
+  - M7 with attention on the device: 0.5B 8 x 64 and 32B 2 x 16 are bit-identical to the simulator (512 of 512 and 32 of 32 rows;
+    KL ratio 0.953 and 0.735, below).
+- **The first `selftest` after a load differs in id 5.** The first run after loading the image gives 183 passed and 1 failed: in
+  the area of id 5 two lines, 531 and 532, read back as all-zero 64-byte lines where the shadow has finite values. Line 531 is
+  entry 1 and line 532 entry 2 of the 12 lines of the causal ATTQK scores (`scores_c`, area lines 530 to 541; `n_kv` 40, `T_q`
+  4). Every later run passes (the first six runs: 183 and then five times 184). Method and facts, all on this image:
+  - It repeats. The first run after a load failed in 19 of 19 loads that were not followed by an ATTPV before the run (the first
+    load, then reloads through the previous image, and the cases below). None of the 17 later runs failed.
+  - The same two lines differ on the previous image (second link) on its first run after a load (50 lines differ in run 1: the
+    48 of the ATTPV fault and 531 and 532; 48 in run 2), twice in two. So it does not come from the ATTPV fix or from the added
+    stages.
+  - It does not depend on the boot (`--ids 1` first gives a cold boot, then the full run still fails), on the memory test (`--no-mem`)
+    or on the rate test.
+  - It is gone when ATTPV traces ran before. After a reload, the `at` set replayed first (98 of 98) and then the full
+    selftest: id 5 passes (2 of 2). Bisect over the first N passed `at` traces replayed: N = 8 primes, N = 7 does not (10, 16, 28, 51
+    and 98 prime). The 8th is `traces/at/errors/at_s53_0009` (two ATTPV among its nine pushes), the first of the 23 traces that
+    failed on the second link's image, in replay order. `m2` or `vu` traces first, or 1, 2 or 5 `at` traces, do not prime.
+  - The 98 `at` traces pass bit-exactly as the first use after a load, and so does the first real M7 run: after a reload, the
+    0.5B M7 token sequences replayed on the card with `klcheck run --device xrt --tokens` are 512 of 512 rows bit-identical to the
+    simulator's replay (2 of 2 loads). So the effect shows in the `selftest` kernel only, so far.
+  - Not found: why an earlier ATTPV changes lines that an ATTQK writes before any ATTPV of the run. The causal ATTQK of id 5 is
+    issued without a dependency (`sw/ctrl/kernels/selftest.cpp`, `t_at`), and the final `ST` waits for the ANORM chain and the
+    QACT of Q. No simulation was run for it. Open.
+- **Debug block.** `tsr-selftest --trw 16` with the five sets of the earlier run (647 replays): 16,247 records (14,737 ops, 1,510
+  markers), 0 dropped, no hang; with the `at` set too (745 replays): 18,207 records (16,501 ops, 1,706 markers), 0 dropped; the
+  kernel tests alone: 374 records (342 ops, 32 markers), 0 dropped. The DB §8.7 self-check gives the same picture as on the second
+  link's image: ATT, MVM and the launch windows pass; RETIRED 14,432 against 14,737 op records (the same two numbers as before),
+  and the sums of the `RUN` times above the counters for DMA (+0.9 %), QACT (+0.2 %) and VU (+5.8 %). In the window of the kernel
+  tests alone RETIRED passes (342 of 342), DMA is +0.14 %, QACT +0.4 % and VU +26.6 % (18,075 against 14,276). Open, no result is wrong.
+- **GDB** (`riscv-none-elf-gdb` over `tsr-dbg gdb --stdio`): the same session as before passes: halt at `_start` (0x80), registers,
+  breakpoint at `tsr_rt_main`, `stepi`, memory write and read, a hardware breakpoint in the `selftest` kernel after `monitor launch`,
+  `bt`, `finish`, `monitor hist 8` (the history shows the ops of the `selftest` kernel), `monitor trw start / status / stop`, `monitor status | units |
+  sreg | perf | rv`, `detach`; a hardware watchpoint on a DTCM word (old 0, new 65537), a backtrace and two steps.
+- **M6** (vector unit not on the device): 0.5B 8 x 64 KL 2.5947e-3 against 2.4101e-3 (ratio 1.077, 1.026 against seed 1), top-1 97.07 %,
+  512 of 512 rows bit-identical to the simulator at `T_MAX` 4; 32B 2 x 16 KL 1.3362e-3 against 1.7817e-3 (ratio 0.750), top-1
+  100 %, 32 of 32 bit-identical. Every digit equals the second link's run.
+- **M7, vector-unit kinds only** (`--offload-kqv off`): 0.5B KL 2.6613e-3 (ratio 1.127), top-1 98.63 %, 512 of 512 bit-identical;
+  32B KL 1.3848e-3 (ratio 0.777), top-1 100 %, 32 of 32 bit-identical. Every digit equals the second link's run.
+- **M7, attention and KV cache on the device** (`--phase m7`, one launch per token): 0.5B KL 2.2216e-3 against 2.3307e-3 (mean of
+  3 floors; ratio 0.953, 0.914 / 0.955 / 0.994 against seeds 1 to 3), top-1 98.05 %, 512 of 512 rows bit-identical to the simulator at
+  `T_MAX` 4 (the simulator's own M7 figures are 2.22e-3 and 0.914 against seed 1). 32B KL 1.3104e-3 against 1.7817e-3 (ratio 0.735,
+  0.750 / 0.671 / 0.797), top-1 100 %, 32 of 32 rows bit-identical. The second link's image gave ratios of 525 and 461.
+- **Cost of the stages** (`XSLR_REG`, third stage on the VU links): none visible in decode. `PERF_CYCLES` per decode token with the
+  vector-unit kinds: 0.5B 2.543 M against 2.542 M, 32B 84.072 M against 84.073 M. `VU_CYCLES` per token: 0.5B 75,833 against
+  75,490 (+343), 32B 763,627 against 762,725 (+902). The `RUN` sums of the VU records in the 647 replays are 297,797 against
+  292,081 and the counter delta is 281,357 against 276,030 (+5.7 K and +5.3 K cycles over the replays; consistent with 2 more cycles
+  on each VU op that runs alone, the third stage). M6 does not use the VU and its counters are unchanged.
 
 ## 9. Timing and resources (Vivado OOC synthesis of `tsr_u200_k1`)
 
@@ -3445,11 +3518,13 @@ check 49 s. Decode 2.93 tok/s (§14.2), above the M4 criterion of 1 tok/s. *Meas
 ### 14.5 Bring-up with the control core (W6)
 
 Status 2026-11-08: steps 1 to 3 ran with the reduced `k4m200` image on 2026-11-06 (§8.7 "Card bring-up"), except the trace
-replays, and with the full-feature `k4full` image on 2026-11-08 (§8.8 "Card bring-up"): selftest, the trace replays of every set
-that fits, M6 on both models (bit-identical to the simulator), the vector-unit kinds of M7 on the device (bit-identical, both
-models), the trace writer under load and the GDB smoke. Step 4 (M7 with attention) failed on the card: ATTPV returns lanes 32 to
-63 as copies of lanes 0 to 31. The cause is a Vivado 2024.2 synthesis fault in the drain's lane select (§8.8 "The ATTPV fault"),
-fixed in the source; the card needs a new link. The steps below are the plan and are unchanged.
+replays. They ran with the full-feature `k4full` image on 2026-11-08 (§8.8 "Card bring-up"): the first image (second link) passed
+everything except attention on the device (ATTPV returned lanes 32 to 63 as copies of lanes 0 to 31; a Vivado 2024.2 synthesis fault
+in the drain's lane select, §8.8 "The ATTPV fault"). The fourth link has the fix (§8.8 "Card bring-up of the fourth link"):
+selftest (id 5 passes after the first run of a load), every trace set including `at` 98 of 98, M6 and M7 on both models
+bit-identical to the simulator (M7 with attention on the device, one launch per token), the trace writer under load and the GDB smoke.
+Step 4 (M7 and its performance) is done for 0.5B and 32B in `performance.md`. Open: the first `selftest` run after a load differs in
+two lines of id 5 (§8.8). The steps below are the plan and are unchanged.
 
 The card runs with the control core follow its bitstream (W4 RTL, W5 Vivado with gates T1-T4, §8.4)
 and belong to W6 of [`docs/design/README.md`](design/README.md) §10 (P6.1-P6.6 of SW §11). Steps 1-5 of the
