@@ -1101,9 +1101,16 @@ module tsr_mvm_pv
     else if (done_q) started_q <= 1'b0;
   end
 
+  // every entry of the convert pipeline's tag arrays (the last ones, and with CVL 3 also entries between, are not read)
+  logic unused_cv;
+  always_comb begin
+    unused_cv = 1'b0;
+    for (int i = 0; i <= int'(CVL); i++) begin
+      unused_cv = unused_cv ^ lt[i][0] ^ lv[i] ^ cv_v[i] ^ cv_t[i][0] ^ cv_l[i][0] ^ cv_first[i];
+    end
+  end
   wire unused_ok = &{1'b0, sq_ne, beat.last, beat.row_last, beat.blk, beat.two, beat.half, beat.sc, beat.m,
-                     beat.w[127:64], add_v, d2_t.last, i2[FRL], t2[FRL], dr_since_q, lt, lv, cv_v,
-                     cv_t, cv_l, cv_first, d2_i, cb_i, aw_t[3],
+                     beat.w[127:64], add_v, d2_t.last, i2[FRL], t2[FRL], dr_since_q, unused_cv, d2_i, cb_i, aw_t[3],
                      l_add_t, lt_gbase[7], lt_wt_q, ob_t_q};
 
 `ifndef SYNTHESIS
