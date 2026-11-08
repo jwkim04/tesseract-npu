@@ -196,6 +196,11 @@ if (TARGET ggml AND TARGET ggml-tesseract)
         add_test(NAME ggml_tesseract_backend_ops_bigt
                  COMMAND test-backend-ops test -o MUL_MAT -b Tesseract0 -p "^type_a=f16,type_b=f32,m=16,n=2105344,k=32,")
         set_tests_properties(ggml_tesseract_backend_ops_bigt PROPERTIES LABELS slow ENVIRONMENT "TSR_SIM_RACE=off")
+        # MoE (SW-62): the whole MUL_MAT_ID case set of the pin (945 cases: 928 supported and compared with the CPU, 17
+        # refused: m not a multiple of 16, k not a multiple of the block, iq2_xxs).
+        add_test(NAME ggml_tesseract_backend_ops_mul_mat_id
+                 COMMAND test-backend-ops test -o MUL_MAT_ID -b Tesseract0)
+        set_tests_properties(ggml_tesseract_backend_ops_mul_mat_id PROPERTIES TIMEOUT 1200 ENVIRONMENT "TSR_SIM_RACE=fatal")
     endif()
 endif()
 

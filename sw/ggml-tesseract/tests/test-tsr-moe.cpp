@@ -69,6 +69,8 @@ struct weights {
     ggml_tensor * gate_inp = nullptr, * gate_inp_s = nullptr, * gate_up = nullptr, * down = nullptr, * down_s = nullptr;
     ggml_context * ctx = nullptr;
     ggml_backend_buffer_t buf = nullptr;
+    ggml_context * ctx2 = nullptr;          // the scale table in host memory (Gemma 4's: its loader probe has no kind)
+    ggml_backend_buffer_t buf2 = nullptr;
 };
 
 // The layer's weights in backend `be`: data from the fixed-seed host copies below.
@@ -91,7 +93,7 @@ static host_weights make_host_weights() {
     return h;
 }
 
-static weights make_weights(ggml_backend_t be, const host_weights & h, bool weights_usage) {
+static weights make_weights(ggml_backend_t be, const host_weights & h, bool weights_usage, bool scale_on_cpu = false) {
     weights w;
     ggml_init_params ip = { ggml_tensor_overhead() * 8, nullptr, true };
     w.ctx = ggml_init(ip);
@@ -99,7 +101,12 @@ static weights make_weights(ggml_backend_t be, const host_weights & h, bool weig
     w.gate_inp_s = ggml_new_tensor_1d(w.ctx, GGML_TYPE_F32, N_EMBD);
     w.gate_up = ggml_new_tensor_3d(w.ctx, GGML_TYPE_Q4_K, N_EMBD, 2 * N_FF, N_EXPERT);
     w.down = ggml_new_tensor_3d(w.ctx, GGML_TYPE_Q8_0, N_FF, N_EMBD, N_EXPERT);
-    w.down_s = ggml_new_tensor_1d(w.ctx, GGML_TYPE_F32, N_EXPERT);
+    if (scale_on_cpu) {
+        w.ctx2 = ggml_init(ip);
+        w.down_s = ggml_new_tensor_1d(w.ctx2, GGML_TYPE_F32, N_EXPERT);
+    } else {
+        w.down_s = ggml_new_tensor_1d(w.ctx, GGML_TYPE_F32, N_EXPERT);
+    }
     ggml_set_name(w.gate_inp, "blk.0.ffn_gate_inp.weight");
     ggml_set_name(w.gate_inp_s, "blk.0.ffn_gate_inp.scale");
     ggml_set_name(w.gate_up, "blk.0.ffn_gate_up_exps.weight");
@@ -108,6 +115,9 @@ static weights make_weights(ggml_backend_t be, const host_weights & h, bool weig
     w.buf = ggml_backend_alloc_ctx_tensors(w.ctx, be);
     if (weights_usage) {
         ggml_backend_buffer_set_usage(w.buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+    }
+    if (scale_on_cpu) {
+        w.buf2 = ggml_backend_alloc_ctx_tensors(w.ctx2, g_cpu);
     }
     ggml_backend_tensor_set(w.gate_inp, h.gate_inp.data(), 0, h.gate_inp.size());
     ggml_backend_tensor_set(w.gate_inp_s, h.gate_inp_s.data(), 0, h.gate_inp_s.size() * 4);
@@ -289,6 +299,19 @@ int main() {
     }
     for (int64_t T : { 1, 2, 5, 17, 70 }) {
         run_case(wd, wc, T);
+    }
+    // the scale table in host memory, as llama.cpp's loader places it for Gemma 4: the scheduler copies the reshaped view
+    // to the device (a leaf of its own), and the scale group must still fuse (without it graph_compute aborts)
+    {
+        const weights wh = make_weights(g_tsr, h, true, true);
+        printf("scale table in host memory:\n");
+        for (int64_t T : { 1, 17 }) {
+            run_case(wh, wc, T);
+        }
+        ggml_backend_buffer_free(wh.buf);
+        ggml_backend_buffer_free(wh.buf2);
+        ggml_free(wh.ctx);
+        ggml_free(wh.ctx2);
     }
     ggml_backend_buffer_free(wd.buf);
     ggml_backend_buffer_free(wc.buf);

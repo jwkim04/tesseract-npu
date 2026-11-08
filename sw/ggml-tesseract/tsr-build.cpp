@@ -932,7 +932,7 @@ bool tsr_lower_mul_mat_id(const tsr_build_env & env, bool probe, const ggml_tens
     }
     if (sc != nullptr) {
         const ggml_tensor * tab = sc->table;
-        if (tab == nullptr || tab->type != GGML_TYPE_F32 || tab->ne[0] != NE || !ggml_is_contiguous(tab) || !tsr_addr(env, probe, tab, "scale table", &sh, why)) {
+        if (tab == nullptr || tab->type != GGML_TYPE_F32 || ggml_nelements(tab) != NE || !ggml_is_contiguous(tab) || !tsr_addr(env, probe, tab, "scale table", &sh, why)) {
             return tsr_fail(why, "MUL_MAT_ID: the scale table is not a contiguous F32 vector of %lld experts", (long long) NE);
         }
     }
@@ -1309,8 +1309,17 @@ static void tsr_moe_groups(const tsr_build_env & env, const ggml_cgraph * cg, ts
             if (g.get_rows < 0 || g.repeat < 0 || gr->src[1] != sm->src[2] || !ggml_node_has_n_uses(cg, g.get_rows, 1) ||
                 !ggml_node_has_n_uses(cg, g.repeat, 1)) continue;
             const ggml_tensor * rs = rp->src[0];
-            if (rs == nullptr || rs->op != GGML_OP_RESHAPE || rs->src[0] == nullptr || rs->src[0]->op != GGML_OP_NONE) continue;
-            g.table = rs->src[0];
+            // The table is the RESHAPE of the leaf, or, when the scheduler copied the view's result to this backend (the
+            // table of Gemma 4 lives in host memory: no kind of the image takes a MUL_MAT_ID weight that is not an expert
+            // tensor), the copy: a leaf of its own with the same elements.
+            if (rs == nullptr) continue;
+            if (rs->op == GGML_OP_RESHAPE && rs->src[0] != nullptr && rs->src[0]->op == GGML_OP_NONE) {
+                g.table = rs->src[0];
+            } else if (rs->op == GGML_OP_NONE && rs->view_src == nullptr) {
+                g.table = rs;
+            } else {
+                continue;
+            }
             bool flagged = true;
             for (int m : { g.repeat, g.get_rows, g.mul }) flagged = flagged && (cg->nodes[m]->flags & GGML_TENSOR_FLAG_COMPUTE) && f->into[m] < 0;
             if (!flagged || !ggml_are_same_shape(cg->nodes[g.mul], sm)) continue;

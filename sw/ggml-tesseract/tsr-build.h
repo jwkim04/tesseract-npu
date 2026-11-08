@@ -196,7 +196,7 @@ struct tsr_moe_route {
 };
 struct tsr_moe_scale {
     int mmid = -1, repeat = -1, get_rows = -1, mul = -1;
-    const ggml_tensor * table = nullptr;     // the F32 [n_expert] tensor (a leaf)
+    const ggml_tensor * table = nullptr;     // the F32 tensor of n_expert elements (a leaf: the weight, or the scheduler's copy of its reshaped view)
 };
 
 // Pass 3: fusion pairs of a graph (decisions above). with[i] = k: node i's record absorbs node k
