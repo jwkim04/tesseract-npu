@@ -21,7 +21,26 @@ with SWIGLU, Q of 4,096 for a hidden size of 2,048 with per-head Q and K norms).
 - Prefill at `-ub` 128 and above used to stop at layer 0 (`MOE_ROUTE: ... its outputs overlap the logits of a later tile`), earlier than Gemma 4 (which ran at 128).
   SW-76 fixed it (merged): the 512-token prefill at the default `-ub 512` gives 26.72 tok/s best and 26.60 median on the card, with 513 of 513 rows
   bit-identical to the simulator, and the Qwen3 layer test runs T = 65, 70, 130 and 256 (70 aborted before SW-76).
-  Open: grouping of tokens by expert (SW-66) is still not built. The card's VU and DMA counters were not compared with the simulator's for this model.
+  Open: grouping of tokens by expert (SW-66) is still not built. The card's VU and DMA counters were not compared with the simulator's for this model (the corrected cycle model of SW-80 was checked on Qwen3.8 2B and Gemma 4 only).
+
+## Why the card spent more cycles than the simulator (SW-80, November 9)
+
+Software only; no RTL change. The card took 12.63 M cycles per Qwen3.8 2B decode token and 16.32 M per Gemma 4 26B-A4B token; the simulator said 10.5 M
+and 15.1 M. Op-by-op comparison of the card's trace-writer records with the simulator's event log ([prof-dbg.md](prof-dbg.md) §3,
+`sw/tools/trw_vs_sim.py`) found two errors of the simulator's cycle model, both fixed (SW-80), and no stall in the hardware:
+
+- The VU of the card has 8 / 8 / 4 lanes behind two register stages; the model had 16 / 16 / 8, and latencies of 20 and 64 cycles where the RTL takes 59 and 95
+  (at 16 lanes too) and a reduction ring it did not know. 89 % of the Qwen3.8 gap is the 18 GATED_DELTA_NET records. The RTL unit alone takes 4.737 M cycles for
+  the 4,518 VU ops of the token and `VU_CYCLES` reads 4.758 M on the card: the card's VU waits for nothing the unit does not wait for in the RTL bench.
+- QACT A32 takes 16 cycles per 32-block (divider bound); the model had one cycle per line. That is 43 % of the Gemma gap (`MVM_WAIT`).
+
+Corrected, the simulator in the card configuration (`TSR_SIM_CARD=k4full`) gives 12.65 M and 16.24 M (0.2 % above, 0.4 % below the card), and every
+launch of both runs, prompt and warm-up included, agrees to 0.7 %. Outputs are bit-identical before and after (`klcheck compare --expect-identical`, 2 x 16
+tokens each). The default simulator configuration is still the U200 image's 16 lanes. Numbers: [performance.md](performance.md) "Card against simulator",
+[design/02-vector-unit.md](design/02-vector-unit.md) §7.13 (it also lists three RTL changes that would make the VU faster: a ring of 32 partial entries
+removes 0.6 M of the 12.63 M cycles of the Qwen3.8 token).
+Open: the KV store (the V plane's masked writes), MOE_ROUTE and the DMA's half rate while the VU runs are not modelled (together 0.4 % of a Gemma token);
+independent VU ops are charged as dependent ones (0.9 % high on the Qwen3.8 token); ROPE with T > 2 and rotation as long as the angles is up to 7 % low.
 
 ## Card runs of the merged firmware (branch `sw-moegdn`, November 9)
 
@@ -40,7 +59,8 @@ Gated DeltaNet on the card"):
   `-ub 2048 -b 2048` run on the card. Qwen3-30B-A3B (section above, which hit the same refusal at `-ub 128`) runs its 512-token prefill at the default `-ub 512` with
   this fix: 26.60 tok/s median on the card, 513 of 513 rows bit-identical to the simulator, and the simulator's `-ub 512` and `-ub 64` logits are bit-identical.
   The Qwen3 layer test in `test-tsr-moe` covers 65 to 256 tokens.
-  The card's VU busy cycles for Gated DeltaNet are 1.7 times the simulator's.
+  The card's VU busy cycles for Gated DeltaNet were 1.7 times the simulator's. The cause was the simulator's cycle model, not the card (next section, SW-80): in the
+  card configuration the simulator now agrees with the card to 0.2 % (Qwen3.8 2B) and 0.4 % (Gemma 4 26B-A4B).
 
 ## Resume here for the software: MoE and Gated DeltaNet merged (branch `sw-moegdn`, November 9)
 
@@ -102,7 +122,8 @@ Results on the simulator (`klcheck all`, 8 prompts x 64 tokens, three floors; [k
 - The floor of this model is large (mean KL 0.17 to 0.19 for a one-ulp change); the medians are 5e-4. Use 8 x 64: a run of
   2 x 16 fails the top-1 limit (78 %) with a floor of 83 % on the same rows.
 - Device cycles per decode token: 14.34 M (M6) and 15.14 M (M7), 13.08 M beats per channel; 13.2 tok/s at 200 MHz, 18.2 at 276.3 MHz
-  (device time only, an estimate for the card, [performance.md](performance.md)).
+  (device time only, an estimate for the card, [performance.md](performance.md)). These are the simulator's figures before SW-80; the card takes 16.32 M for M7
+  and the corrected simulator 16.24 M in the card configuration.
 - Generate and replay on the simulator are bit-identical: the generated tokens of 3 prompts x 16 tokens replayed on the device
   (`klcheck run --tokens`, one token per step) give 48 of 48 rows with `compare --expect-identical`, in M6 and in M7.
 

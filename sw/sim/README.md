@@ -100,7 +100,8 @@ Both are informational estimates until the RVFI lockstep against the RTL exists 
 | `TSR_SIM_RACE` | `off`, `report`, `fatal` | `tsr_sim_create_opts` (ignored with a note when the library was built without `race.cmake`) |
 | `TSR_SIM_RV_CORE` | `maxperf`, `small` | `tsr_sim_create_opts` |
 | `TSR_SIM_RV_RATIO` | number in `[0.05, 4]` | `tsr_sim_create_opts` |
-| `TSR_SIM_LOG` | `stderr` or a file, optionally prefixed `rv,` | `tsr_sim_create_opts`: queue events (push, enqueue, start, done) and one line per `tsr_sim_op`; `rv,` adds one line per retired RISC-V instruction |
+| `TSR_SIM_LOG` | `stderr` or a file, optionally prefixed `rv,` and `w,` | `tsr_sim_create_opts`: queue events (push, enqueue, start, done) and one line per `tsr_sim_op`; `rv,` adds one line per retired RISC-V instruction, `w,` the eight words of every push |
+| `TSR_SIM_VU_TIMING` | `u200`, `k4` or `F,E,B,P` | `tsr_sim_create_opts`: the VU lanes of the cycle model (16 / 16 / 8 and no lane pipe by default; `k4` is the card image's 8 / 8 / 4 behind two lane-pipe stages; timing only, SW-80) |
 | `TSR_TRACE` | a directory | `tsr_sim_create_opts`: one trace per launch, in `<dir>/<seq, 6 digits>/`, firmware images in `<dir>/images/` |
 | `TSR_TRACE_KR_DUMP` | any value | `tsr_trace.c`: with verbose replay through the replay kernel, prints the captured launch (debugging aid) |
 | `TSR_SIM_THREADS` | 1 to 64 | MVM worker threads of the simulator behind the `sim` and `mock` transport kinds (default `min(online CPUs, 8)`) and of the tools that create simulators themselves (`tsr-trace-replay`, `tsr-trace-conv`, the `tsr-selftest` shadow: default 1; `tsr-numcheck`: 4 when unset). The library default is 1. Results do not depend on it |

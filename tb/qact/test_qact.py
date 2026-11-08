@@ -87,6 +87,8 @@ CFGS = {
                ["qact_directed", "qact_random", "qact_kmax", "qact_throughput", "qact_reset"], 150),
     "tight":  (dict(K_MAX=2048, T_MAX=3, SPM_BYTES=32 * 1024, SPM_RD_LAT=4, MUL_LAT=1, BUF_LINES=16,
                     AQ_DEPTH=2, PQ_DEPTH=2), ALL_TESTS, 300),
+    # the card image of the fourth link: T_MAX 4, SPM_RD_LAT 4 (tb/qact qact_timing)
+    "k4":     (dict(T_MAX=4, SPM_RD_LAT=4), ["qact_timing"], 1),
     "k65280": (dict(K_MAX=65280, T_MAX=2, SPM_BYTES=1 * MIB, SPM_RD_LAT=3, MUL_LAT=3),
                ["qact_kmax", "qact_random"], 16),
 }
@@ -358,6 +360,34 @@ async def qact_kmax(dut):
             src, dst, stride = drv.place(kind, K, T)
             cyc = await drv.qact(kind, K, T, xs, src, dst, stride)
             dut._log.info("kmax kind %d K %d T %d (%s): %d cycles", kind, K, T, mode, cyc)
+
+
+@cocotb.test()
+async def qact_timing(dut):
+    """Accept to done of QACT ops with an always-ready SPM, by kind, K and T (the table behind the simulator's cycle model,
+    SW-80). TSR_QACT_TIMING_OUT gets the json rows [kind, K, T, cycles]."""
+    cfg, rnd, spm, drv, _ = await _setup(dut, 15)
+    _set_ready(spm, rnd, "always")
+    spm.garbage = False
+    rows = []
+    for kind in (QA_A32, QA_A256):
+        for T in range(1, cfg["T_MAX"] + 1):
+            for K in (256, 512, 704, 1024, 2048, 2816, 4096, 6144, 8192):
+                if K % block_size(kind) or K > _kfit(cfg, kind, T):
+                    continue
+                xs = [gen_vector(rnd, kind, K, "normal") for _ in range(T)]
+                src, dst, stride = drv.place(kind, K, T)
+                cyc = await drv.qact(kind, K, T, xs, src, dst, stride)
+                rows.append([kind, K, T, cyc])
+                dut._log.info("qact_timing kind %d K %d T %d: %d cycles", kind, K, T, cyc)
+                # the simulator's model (sw/sim/tsr_sim.c cyc_qact, SW-80) is these plus 4 cycles of the core's done path:
+                # A32 16 cycles per 32-block + 40 (divider bound), A256 17 per 256-block + 68
+                nblk = T * (K // block_size(kind))
+                want, tol = (16 * nblk + 40, 1) if kind == QA_A32 else (17 * nblk + 68, 8)
+                assert abs(cyc - want) <= tol, "kind %d K %d T %d: %d cycles, the model says %d" % (kind, K, T, cyc, want)
+    out = os.environ.get("TSR_QACT_TIMING_OUT")
+    if out:
+        Path(out).write_text(json.dumps(rows) + "\n")
 
 
 @cocotb.test()

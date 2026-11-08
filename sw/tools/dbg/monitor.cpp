@@ -592,7 +592,15 @@ int monitor::cmd_trw(const std::vector<std::string> & a, std::string * out) {
         *out += strf("TRW %s: WPTR %u RPTR %u drops %u, PERF TRW_RECORDS %u\n", trw_on ? "on" : "off", tg_.csr(TSR_CSR_DBG_TRW_WPTR),
                      tg_.csr(TSR_CSR_DBG_TRW_RPTR), tg_.csr(TSR_CSR_DBG_TRW_DROPS), tg_.csr(TSR_CSR_PERF_LO(TSR_PERF_TRW_RECORDS)));
     } else if (sub == "dump") {
-        if (!trw_on) return *out += "trw dump: the trace writer is off (trw start)\n", E_POLICY;
+        if (!trw_on) {
+            // A ring written by an earlier process (the DBG configuration, the ring registers and the ring's DRAM survive
+            // SOFT_RESET and the end of that process): rebuild the ring from DBG_TRW_BASE / DBG_TRW_LINES.
+            const uint32_t base = tg_.csr(TSR_CSR_DBG_TRW_BASE), lines = tg_.csr(TSR_CSR_DBG_TRW_LINES);
+            if (lines == 0) return *out += "trw dump: no ring is configured (trw start)\n", E_POLICY;
+            trw.ch = TSR_GET(base, TSR_HANDLE_CH);
+            trw.off = (uint64_t) TSR_GET(base, TSR_HANDLE_BEAT) * 64;
+            trw.lines = lines;
+        }
         if (a.size() < 3) return *out += "trw dump <file.json> [raw.bin]\n", E_MALFORMED;
         std::vector<trw_rec> recs;
         uint64_t lost = 0;

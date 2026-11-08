@@ -152,7 +152,7 @@ static uint64_t run_case(const mvm_case * mc) {
         CHECK(tsr_sim_perf(s, tsr_perf_ch_rd_beats(c)) - rd0[c] == want_b, "%s: ch%u beats %llu, expected %llu", tag, c,
               (unsigned long long)(tsr_sim_perf(s, tsr_perf_ch_rd_beats(c)) - rd0[c]), (unsigned long long)want_b);
     }
-    CHECK(tsr_sim_perf(s, TSR_PERF_MVM_CYCLES) - mvm0 == 64 + (uint64_t)T * qa_lines + maxb, "%s: MVM cycles", tag);
+    CHECK(tsr_sim_perf(s, TSR_PERF_MVM_CYCLES) - mvm0 == 144 + (uint64_t)T * qa_lines + maxb, "%s: MVM cycles", tag);
 
     const uint64_t h = fnv64(got_spm, (size_t)y_span * 64);
     free(blocks); free(x); free(y_old); free(qa); free(want); free(rowbuf);

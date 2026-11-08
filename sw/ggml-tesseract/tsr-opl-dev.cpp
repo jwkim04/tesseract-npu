@@ -69,7 +69,23 @@ tsr_opl_run_result tsr_opl_dev::run(const std::vector<uint8_t> & blob, uint32_t 
     }
     tsr_launch l = {};
     l.type   = TSR_DESC_TYPE_LAUNCH;
-    l.flags  = 0;
+    // Diagnostics (profiling the device against the simulator by record kind): TSR_OPL_PROF=1 sets the descriptor's PROF
+    // bit (NODE_BEGIN markers, EX §4.3), TSR_OPL_KINDS=<file> appends the kind id of every record of every launch (one
+    // line per launch) so that the op indices of the markers can be named.
+    static const bool prof_env = [] { const char * e = getenv("TSR_OPL_PROF"); return e && e[0] == '1'; }();
+    l.flags  = prof_env ? 1u : 0u;
+    if (const char * kf = getenv("TSR_OPL_KINDS"); kf && kf[0]) {
+        if (FILE * f = fopen(kf, "a")) {
+            opl::reader rd;
+            fprintf(f, "launch %" PRIu64 ":", (uint64_t) launches);
+            if (rd.open(blob.data(), (uint32_t) blob.size(), false) == opl::RET_OK) {
+                opl::record rec;
+                while (rd.next(rec, true) == opl::RET_OK) fprintf(f, " %x", rec.kind);
+            }
+            fprintf(f, "\n");
+            fclose(f);
+        }
+    }
     l.kernel = (uint16_t) k_graph_;
     l.arg[0] = tsr_dram_handle(cache_.channel(), r.opl_off);
     l.arg[1] = (uint32_t) blob.size();

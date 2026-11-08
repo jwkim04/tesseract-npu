@@ -480,6 +480,9 @@ prompt, 8 decode passes; `TSR_STATS=1`; no host time in them):
 | At 200 MHz (device time only) | 13.9 tok/s | 13.2 tok/s |
 | At 276.3 MHz | 19.3 tok/s | 18.2 tok/s |
 
+These cycle counts are from the simulator's model before SW-80. With the corrected model an M7 token takes 15.69 M cycles (the default 16-lane VU) and 16.24 M in the card
+configuration (`TSR_SIM_CARD=k4full`), against 16.32 M on the card ([performance.md](performance.md), "Card against simulator").
+
 The beats per channel match the weight sizes: 8 experts × 30 layers × (8,800 + 8,448) = 4.14 M for the experts, 3.07 M for
 the output head (262,144 rows of Q8_0 over four channels), 5.87 M for the attention and dense-branch weights. Prefill
 runs the same MVMs once per prompt token, with one head: a prompt of 8 tokens plus 3 decode tokens took 139.7 M cycles.

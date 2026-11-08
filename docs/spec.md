@@ -1283,7 +1283,9 @@ prompts of 64 tokens, three floors, M6 settings with the matrix products on the 
 M7 settings, one launch per token: ratio 0.742, top-1 94.53 %. A decode token reads 13.08 M beats per channel
 (3.35 GB over the four channels) and takes 14.34 M device cycles in M6 and 15.14 M in M7 (91 % and 86 % of the cycles
 read a beat): 13.2 tok/s at the 200 MHz of the current card image, 18.2 tok/s at 276.3 MHz, device time only. The experts
-are 4.14 M of the beats; the output head (3.07 M) and the dense branch and attention weights (5.87 M) are the rest.
+are 4.14 M of the beats; the output head (3.07 M) and the dense branch and attention weights (5.87 M) are the rest. The cycle counts are
+from the simulator's model before SW-80; the corrected model gives 15.69 M for M7 (the default 16-lane VU) and 16.24 M in the card
+configuration, and the card takes 16.32 M (`docs/performance.md`, "Card against simulator").
 
 Qwen3-30B-A3B (llama.cpp `qwen3moe`: 48 layers, 128 experts of width 768, 8 used, no shared expert and no scale per expert) runs on
 the same kinds and the same backend (SW §7.9, SW-77): klcheck M7 ratio 0.813 and top-1 96.68 % on the card, with the logits

@@ -289,7 +289,8 @@ is never silently ignored. Component documents hold the complete lists for their
 | `TSR_SIM_DRAM_DIR` | Back the simulator's DRAM with sparse temporary files in this directory (needed for 32B models) | `sw/transport/tsr_kdev_sim.cpp` |
 | `TSR_SIM_SCHED` | `fixed` (default) or `random:<seed>[,<min>,<max>]`: the scheduler's time model | `sw/sim/tsr_sim.c` |
 | `TSR_SIM_RACE` | Race detector: `off` (default), `report` or `fatal` | `sw/sim/tsr_sim.c` |
-| `TSR_SIM_LOG` | `stderr` or a file; the prefix `rv,` adds one line per retired RISC-V instruction | `sw/sim/tsr_sim.c` |
+| `TSR_SIM_LOG` | `stderr` or a file; the prefix `rv,` adds one line per retired RISC-V instruction, `w,` the eight words of every push | `sw/sim/tsr_sim.c` |
+| `TSR_SIM_VU_TIMING`, `TSR_SIM_CARD` | the VU lanes of the cycle model: `u200` (default, 16 / 16 / 8) or `k4` (the card image's 8 / 8 / 4, two lane-pipe stages); `TSR_SIM_CARD=k4full` sets the whole card image for the `sim` transport (T_MAX 4, CAPS 0x21, `k4`, `clk_rv` at half the core clock) | `sw/sim/tsr_sim.c`, `sw/transport/tsr_kdev_sim.cpp` |
 | `TSR_SIM_RV_CORE`, `TSR_SIM_RV_RATIO` | Ibex cycle table `small` or `maxperf` (default); `clk_rv` over core clock, 0.05 to 4 (default 166.7 / 276.3) | `sw/sim/tsr_sim.c` |
 | `TSR_TRACE` | Directory: dump every launch as a trace directory; several processes never overwrite each other's launches | `sw/sim/tsr_sim.c` |
 | `TSR_DUMP_DIR` | Directory for hang dumps (recovery ladder level 0) | `sw/transport/tsr_kdev.cpp` |

@@ -368,7 +368,7 @@ static void test_perf(void) {
     const uint32_t lt = tsr_sim_push(s, tsr_enc_ld(0, 3000, 0, 50).w, TSR_TICKET_NONE, TSR_TICKET_NONE, PUSH_ALL);
     tsr_sim_push(s, mvm.w, lt, TSR_TICKET_NONE, PUSH_ALL);   // waits for the LD: MVM_WAIT
     CHECK(tsr_sim_run_until_idle(s, 100000), "idle");
-    const uint64_t mvm_cyc = 64 + tsr_qa_lines(TSR_QA_A32, K) + (uint64_t)(N / 4) * tsr_row_beats(TSR_FMT_Q8_0, K);
+    const uint64_t mvm_cyc = 144 + tsr_qa_lines(TSR_QA_A32, K) + (uint64_t)(N / 4) * tsr_row_beats(TSR_FMT_Q8_0, K);
     CHECK(tsr_sim_perf(s, TSR_PERF_MVM_CYCLES) == mvm_cyc, "MVM_CYCLES %llu, expected %llu",
           (unsigned long long)tsr_sim_perf(s, TSR_PERF_MVM_CYCLES), (unsigned long long)mvm_cyc);
     CHECK(tsr_sim_perf(s, TSR_PERF_MVM_WAIT(C)) >= 100, "MVM_WAIT %llu", (unsigned long long)tsr_sim_perf(s, TSR_PERF_MVM_WAIT(C)));

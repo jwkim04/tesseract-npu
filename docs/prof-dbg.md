@@ -46,7 +46,9 @@ Environment variables, as implemented (`grep` of `"TSR_..."` in `sw/transport` a
 | `TSR_GDB_WAIT=boot\|launch` | with the embedded service, halt at boot or kernel entry for GDB; also retain a trapped device instead of restarting it |
 | `TSR_TILE_SERIAL=0\|1`, `TSR_TILE_HIST=0\|1` | write `DBG_CFG.SERIAL` / `HIST_EN` at open (needs the DBG block, present on the simulator) |
 | `TSR_ATTACH=1` | open without `SOFT_RESET` or bind, for diagnosis |
-| `TSR_SIM_LOG=stderr\|<file>` (optional prefix `rv,`) | simulator event log: pushes, starts, completions and RISC-V retire lines |
+| `TSR_SIM_LOG=stderr\|<file>` (optional prefixes `rv,` and `w,`) | simulator event log: pushes, starts, completions and, with `rv,`, RISC-V retire lines, with `w,` the eight words of every push |
+| `TSR_SIM_VU_TIMING=u200\|k4\|F,E,B,P`, `TSR_SIM_CARD=k4full` | the simulator's VU lanes for the cycle model (16 / 16 / 8, or the card image's 8 / 8 / 4 behind two lane-pipe stages), and the whole card-image configuration in one variable (SW-80) |
+| `TSR_OPL_PROF=1`, `TSR_OPL_KINDS=<file>` | the ggml backend sets the launch descriptor's PROF bit (a marker before every record) and appends the kind of every record of every launch to the file |
 | `TSR_TRACE=<dir>` | one trace per launch |
 | `TSR_SIM_RACE=off\|report\|fatal`, `TSR_SIM_SCHED=fixed\|random:<seed>[,min,max]` | race detector, schedules |
 | `TSR_DEBUG=1\|2` | the ggml backend's lowering and placement log (not the device) |
@@ -222,6 +224,27 @@ beats) run on every profiled launch. The model of the trace writer exists on the
 **`TSR_STATS`** is partly there: the transport and the backend print the quantities listed in §1; the
 per-channel read rates, idle shares, `MVM_WAIT` / `MVM_EMPTY` shares and `RV_WFI` percentage arrive with
 P3.8. The cost of reading about 16 counters per launch is 16-32 µs (*estimate*, DB §8.6).
+
+**Comparing a card run with the simulator (2026-11-09).** The trace writer works on the card (K4 full-feature image: 32-byte
+records, the ring at the top of the ch0 I/O region) and its configuration survives `SOFT_RESET` and the end of the process that
+set it, so a ring started with `tsr-dbg` records the launches of a later `llama-completion` run with no change to that run.
+The dispatch history of the same image freezes at the first error entry and is not useful for this. Steps:
+
+1. Card: `tsr-dbg --device xrt --attach -ex "trw start 16"` (16 MiB: 500,000 records, about 50 decode tokens of a 9,000-op list),
+   then the run with `TSR_OPL_PROF=1 TSR_OPL_KINDS=run.kinds` (the backend sets the descriptor's PROF bit, so the graph
+   kernel pushes a `NODE_BEGIN` marker before every record, and writes the kind of every record of every launch to
+   `run.kinds`), then `tsr-dbg --device xrt --attach -ex "trw dump run.json run.raw" -ex "trw stop"`. `trw dump` rebuilds the
+   ring from `DBG_TRW_BASE` / `DBG_TRW_LINES` when the monitor did not start it.
+2. Simulator: the same command line with `TSR_DEVICE=sim TSR_SIM_CARD=k4full TSR_SIM_LOG=w,sim.log` (the card's configuration:
+   `T_MAX` 4, `CAPS` 0x21, VU 8 / 8 / 4 lanes behind two lane-pipe stages, `clk_rv` at half the core clock; `TSR_SIM_LOG` with
+   the prefix `w,` also writes the eight words of every push).
+3. `sw/tools/trw_vs_sim.py kinds --trw run.raw --sim sim.log --kinds run.kinds --launch 2` gives, per record kind, the cycles the
+   record adds to the launch on both sides; `units`, `gaps` and `record` give the same by op class and for one record. Launch 0 is
+   llama.cpp's warm-up pass, 1 the prompt, the rest are decode tokens. The two op streams must be the same (the tool refuses a
+   unit whose op counts differ); the card's run times of VU ops include their wait for the op before them, so the VU is
+   compared by the gaps between completions.
+
+The method found the VU width and the QACT rate errors of SW-80 ([performance.md](performance.md), "Card against simulator").
 
 ---
 
