@@ -705,7 +705,7 @@ ITCM is 131,072 B, DTCM 65,536 B):
 | With the M7 kinds (`a775222`) | 71,588 B (54.6 %; budget 81,920 B) | 49,448 B (75.5 %; budget 57,344 B) |
 | With the MoE kinds MOE_ROUTE and MUL_MAT_ID (`moe` branch, 18 kinds; the base image is 71,712 B and 49,504 B) | 78,520 B (59.9 %) | 49,680 B (75.8 %) |
 | With the Gated DeltaNet kinds (`gdn-sw`) | 78,576 B (59.9 %; budget 81,920 B) | 49,912 B (76.2 %; budget 57,344 B) |
-| @@MERGED_ROW@@ |
+| With both sets of kinds (`sw-moegdn`, 21 kinds; the budget is 98,304 B since SW-75) | 84,056 B (64.1 %; 85.5 % of the budget) | 50,088 B (76.4 %; budget 57,344 B) |
 
 **Gemma 4 26B-A4B Q4_K_M, a model with experts** (measured on the simulator, `moe` branch; accuracy in
 [klcheck.md](klcheck.md)). Device cycles of one decode token, from the counters of two runs with 4 and 12 tokens

@@ -215,7 +215,8 @@ function(tsr_fw_image name)
         ${_versions}
         -Wl,--orphan-handling=warn
         -Wl,-Map=${_out}/${name}.map)
-    # SW §7.8's budget is the production image's (tsr-fw; fw_elf_image / fw_elf_test_image check it on
+    # SW §7.8's budget (ITCM 96 KiB, SW-75; tsr-elf's default, TSR_ELF_BUDGET_ITCM) is the production
+    # image's (tsr-fw; fw_elf_image / fw_elf_test_image check it on
     # tsr-fw and on fw_elf_probe = production + one probe kernel); a test image (production code plus
     # test kernels, never shipped) is bound by the ITCM only (W2b integration: with the M7 kinds the
     # images with the executor's / header library's test kernels exceed the production budget).

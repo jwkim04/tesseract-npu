@@ -29,6 +29,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
   SSM_CONV record), the regrouped state `CPY`, IMROPE as NEOX for text positions, per-token `RMS_NORM` for strided views,
   and the recurrent-state caches as device windows. The conv taps are stored as tap rows at weight upload. Whole decode
   tokens of Qwen3.8 2B run in one launch. No llama.cpp patch.
+- Raised the ITCM budget of the production firmware image from 80 KiB to 96 KiB (SW-75, amends SW-38). The image with the MoE and the
+  Gated DeltaNet kinds together takes 84,056 B; each set alone fit the old budget. The kind table has 21 kinds (signature 0x804f).
 - `TSR_DUMP_RE` / `TSR_DUMP_DIR` dump device values of matching nodes; `TSR_STATS` prints the units' busy cycles.
 - klcheck writes the four M-RoPE position streams in its embedding path (the embd and floor runs of Qwen3.5 / 3.8 were not
   bit-identical to the token path before).

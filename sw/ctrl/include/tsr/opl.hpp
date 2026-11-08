@@ -70,7 +70,8 @@ constexpr uint32_t RET_CRC            = 0x80000007u;
 
 // ---------------------------------------------------------------------------------------------
 // Kinds (SW §7.2). M6 implements NOP, JOIN and MUL_MAT; M7 the rest (W2b); 0x1E and 0x1F are the MoE kinds (the
-// lowest free numbers; the Gated DeltaNet kinds take the highest free ones downward from 0x3F); 0x20-0x3F are M8's.
+// lowest free numbers); 0x2D-0x2F are the Gated DeltaNet kinds (numbered downward from the top of the free range);
+// 0x20-0x2C are free and 0x30-0x3F are test kinds.
 // ---------------------------------------------------------------------------------------------
 constexpr uint32_t K_NOP         = 0x00u;   // no tile ops; its ticket is "none"
 constexpr uint32_t K_JOIN        = 0x01u;   // SYNC NOP over dep0, dep1

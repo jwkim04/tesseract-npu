@@ -38,7 +38,7 @@ extern "C" {
 #define TSR_ELF_KIND_BYTES       4u            // kind table entry: kind, rev, rsvd (u16)
 #define TSR_ELF_N_KINDS          64u           // op list kinds 0x00-0x3F (tsr/opl.hpp N_KINDS)
 #define TSR_ELF_RESET_OFFSET     0x80u         // reset entry at RV_BOOT + 0x80 (RV_BOOT = 0)
-#define TSR_ELF_BUDGET_ITCM      (80u * 1024u) // SW §7.8 image-size targets (ITCM 48 -> 80 KiB: W2b integration, M7 kinds)
+#define TSR_ELF_BUDGET_ITCM      (96u * 1024u) // SW §7.8 image-size targets (ITCM 48 -> 80 KiB: SW-38, M7 kinds; -> 96 KiB: SW-75, MoE + Gated DeltaNet kinds)
 #define TSR_ELF_BUDGET_DTCM      (56u * 1024u)
 
 typedef struct tsr_elf tsr_elf;

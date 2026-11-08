@@ -793,10 +793,11 @@ sw/ctrl/
   CSRs, WFI and `fence.i`.
 - The `graph` executor reads op-list records in place through the line-buffered SPM alias, keeps its ticket and
   push-index tables (32 KiB) in DTCM, and executes at most 4,096 records per launch (SW-29, SW-35).
-- The image (production `tsr-fw.elf`): ITCM 71,588 B of 131,072 B (budget 81,920 B) and DTCM 49,448 B of
-  65,536 B (budget 57,344 B), with the kernels `graph`, `selftest` and `replay` (`tsr-elf size`, tree of
-  `a775222`, with the M7 kinds, which are on the simulator and not yet emitted by the backend). The W2a image
-  was ITCM 25.8 KiB and DTCM 46.3 KiB (measured, `92f0b17`).
+- The image (production `tsr-fw.elf`): ITCM 84,056 B of 131,072 B (budget 98,304 B, SW-75) and DTCM 50,088 B of
+  65,536 B (budget 57,344 B), with the kernels `graph`, `selftest` and `replay` and 21 kinds (`tsr-elf size`,
+  with the M7, MoE and Gated DeltaNet kinds). With the M7 kinds alone (tree of `a775222`) it was ITCM 71,588 B,
+  DTCM 49,448 B (budget 81,920 B then, SW-38). The W2a image was ITCM 25.8 KiB and DTCM 46.3 KiB (measured,
+  `92f0b17`).
 
 ### 8.2 Header library (API sketch)
 

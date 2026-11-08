@@ -1,6 +1,31 @@
-# Handoff: where the work stands (2026-11-08)
+# Handoff: where the work stands (2026-11-09)
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
+
+## Resume here for the software: MoE and Gated DeltaNet merged (branch `sw-moegdn`, November 9)
+
+Software only; no RTL change, no card run. The branch merges `moe` (7c4088e) and then `gdn-sw` (079b44c) onto `k4full`
+(c1f3aaf). Both merges are real merges; neither source branch was rewritten. The two sections below describe the branches as
+they were before the merge.
+
+- Decision numbers: MoE keeps SW-60 to SW-66 and section 7.9 of [design/06-software-verification.md](design/06-software-verification.md).
+  The Gated DeltaNet decisions SW-60 to SW-67 became SW-67 to SW-74 (same order) and its section 7.9 became 7.10; the citations in
+  docs, code comments and test comments were changed with them. SW-75 is new: the ITCM budget.
+- Kinds: MOE_ROUTE 0x1E, MUL_MAT_ID 0x1F, SOFTPLUS 0x2D, SSM_CONV 0x2E, GATED_DELTA_NET 0x2F, all at numerics revision 1, with
+  UNARY func 5 (SIGMOID). 21 kinds, kind-table signature 0x804f. The `fw_kind_revs` digests of the five kinds are the digests of their
+  branches (the two corpora start from the same PRNG state, so neither moves the other).
+- Firmware image: ITCM 84,056 B, DTCM 50,088 B. The old 80 KiB ITCM budget (SW-38) is exceeded by 2,136 B, so SW-75 raises it to
+  96 KiB (98,304 B; the upper 48 KiB that SW-38 kept for M8 MoE / M9 are now 32 KiB). Each branch alone was below 80 KiB (78,520 B and
+  78,576 B). No feature was removed. The `fw_elf` BIG_TEXT image grew to 98 KiB of code so that it is still over the budget.
+- Backend: the MoE chains (router group, scale group, MUL_MAT_ID) and the Gated DeltaNet groups (SSM_CONV with its CONCAT / state CPY / SILU,
+  GATED_DELTA_NET, the state caches as device windows) recognise different nodes. Their fusion passes run one after the other and
+  neither takes a node the other owns. A model that has both (a Qwen3.5 MoE) is untested.
+- Checks: `ctest -LE slow` passes (the two `tools_selftest_mock_traces` tests need the git-ignored trace data of `traces/`; with it they
+  pass), `gen_tables.py --check` and `gen_tops.py --check` pass. `rtl/lint.sh` and `tb/run_all.sh` were not run: the branch changes no
+  file under `rtl/`, `tb/` or `hw/` against `k4full`.
+- Bit identity on the simulator, M7 settings, 2 prompts x 16 tokens, `klcheck compare --expect-identical`: Gemma 4 26B-A4B against the
+  `moe` branch build, 32 of 32 rows; Qwen3.8 2B against the `gdn-sw` branch build, 32 of 32 rows.
+- Open: the card was not used. A card run needs the new `tsr-fw.elf`; the K4 bitstream is unchanged.
 
 ## Resume here for MoE: Gemma 4 26B-A4B runs on the simulator (branch `moe`, November 8, night)
 
@@ -14,7 +39,7 @@ What exists (all in `sw/`, all checked against the C simulator or the CPU):
   first, equal values by the smaller index, NaN first, then the renormalised weights by the tree sum and RC). Test `ref_moe`;
   it also measures ggml-cpu's `std::sort` on ties and NaN (SW-63).
 - Firmware kinds: MOE_ROUTE **0x1E** and MUL_MAT_ID **0x1F** (`sw/ctrl/kernels/k_moe.cpp`, planners `tsr/plan_moe.hpp`, record words
-  `opl::moer` / `opl::mmid`). 18 kinds, kind-table signature 0xC341. ITCM 78,520 B of the 81,920 B budget. Tests
+  `opl::moer` / `opl::mmid`). On its own branch: 18 kinds, kind-table signature 0xC341, ITCM 78,520 B of the then 81,920 B budget (the merged image is in the first section above). Tests
   `fw_kernels_moe_rv`, `fw_kernels_moe_rv_errors`, `fw_kernels_moe_host` (7,000 rows against the reference), `fw_kind_revs`, `fw_m6_e2e`.
 - Backend: 3D expert tensors placed with `EXP_STRIDE` (SW-60), `MUL_MAT_ID` lowering, fusion of the router chain into one MOE_ROUTE
   record and of the scale chain into the down MUL_MAT_ID (SW-64). Tests `ggml_tesseract_moe*` (the graph of `build_moe_ffn` in
@@ -22,8 +47,8 @@ What exists (all in `sw/`, all checked against the C simulator or the CPU):
   `ggml_tesseract_backend_ops_mul_mat_id` (928 of 945 cases of the pin's `test-backend-ops`; 17 refused).
 - `klcheck` / `tsr-numcheck`: `--phase m6` now sets `TSR_KINDS=m6,+MUL_MAT_ID`.
 
-Kind numbers: the MoE kinds took the lowest free numbers, 0x1E and 0x1F. The next free kind starts at 0x20; the Gated DeltaNet
-work numbers its kinds downward from 0x3F, so the two never meet.
+Kind numbers: the MoE kinds took the lowest free numbers, 0x1E and 0x1F. The Gated DeltaNet kinds took 0x2D to 0x2F, so the two
+sets do not meet; 0x20 to 0x2C are free.
 
 Model: `bartowski/google_gemma-4-26B-A4B-it-GGUF`, `google_gemma-4-26B-A4B-it-Q4_K_M.gguf`, 17,035,039,872 bytes, sha256
 `a07f72221e8e3f77455ab0d7f7652d01a9f63c262b954aa6932a53275a0e895a` (in `models/gemma4-26b-a4b/`, not in git). The pinned llama.cpp
@@ -68,7 +93,7 @@ RTL change and no llama.cpp patch. Design, decisions SW-67 to SW-74 and the numb
 What is in:
 
 - Kinds SOFTPLUS 0x2D, SSM_CONV 0x2E, GATED_DELTA_NET 0x2F (numerics revision 1, `sw/ctrl/kernels/gdn_kinds.cpp`, planners in
-  `tsr/plan_gdn.hpp`, oracle in `sw/ctrl/ref/gdn_ref.cpp`). UNARY takes SIGMOID. ITCM 78,576 B of the 81,920 B budget.
+  `tsr/plan_gdn.hpp`, oracle in `sw/ctrl/ref/gdn_ref.cpp`). UNARY takes SIGMOID. On its own branch: ITCM 78,576 B of the then 81,920 B budget (the merged image is in the first section above).
 - Backend lowering in `sw/ggml-tesseract` (`tsr-build.cpp`: `tsr_lower_gdn`, `tsr_lower_conv_group`, `tsr_lower_conv_window`,
   `tsr_lower_unary`, the per-token `tsr_lower_rms`). The recurrent caches are device windows; with `-nkvo` the ops that touch
   them stay on the CPU.

@@ -71,7 +71,7 @@ Outputs in `build/dev/fw/`: `tsr-fw.elf` (the production image), `tsr-fw.map`, `
 production sources plus extra ones; `NO_KERNELS` keeps only `rt/`). `build/dev/fw/tsr-fw.elf` is
 the default image of the host libraries; `TSR_IMAGE` overrides it.
 
-The production image uses about 72 KB of the 128 KiB ITCM (budget 80 KiB, SW §7.8) and about 49 KB
+The production image uses about 84 KB of the 128 KiB ITCM (budget 96 KiB, SW §7.8, SW-75) and about 50 KB
 of the 64 KiB DTCM (budget 56 KiB) with the three base kernels and every kind handler below. The
 sizes change with every commit; `tsr-elf size build/dev/fw/tsr-fw.elf` prints the current ones.
 

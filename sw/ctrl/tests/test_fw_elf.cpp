@@ -490,11 +490,11 @@ void test_layout(const Img & m) {
     // used is exactly the loaded words plus the zeroed sections and the stacks.
     CHECK(z.dtcm_used == z.dtcm_zeroed + z.dtcm_loaded, "DTCM used %u = zeroed %u + loaded %u", z.dtcm_used, z.dtcm_zeroed,
           z.dtcm_loaded);
-    CHECK(z.logfmt == 21 && !z.over_itcm && !z.over_dtcm && z.budget_itcm == 80 * 1024 && z.budget_dtcm == 56 * 1024, "sizes");
+    CHECK(z.logfmt == 21 && !z.over_itcm && !z.over_dtcm && z.budget_itcm == 96 * 1024 && z.budget_dtcm == 56 * 1024, "sizes");
     std::vector<char> rep(1 << 16);
     tsr_elf_size_report(e, nullptr, rep.data(), rep.size());
     const std::string r = rep.data();
-    CHECK(r.find("SW §7.8 budget 81920 B: ok") != std::string::npos && r.find("SW §7.8 budget 57344 B: ok") != std::string::npos &&
+    CHECK(r.find("SW §7.8 budget 98304 B: ok") != std::string::npos && r.find("SW §7.8 budget 57344 B: ok") != std::string::npos &&
               r.find(".stack") != std::string::npos && r.find("not stamped") != std::string::npos &&
               r.find("kernels    5") != std::string::npos,
           "size report:\n%s", r.c_str());
@@ -696,10 +696,10 @@ void test_validation(const Img & stamped, const Img & nobase, const Img & big) {
           "BIG_TEXT image: budget warning only:\n%s", bg.report.c_str());
     tsr_elf_sizes z;
     tsr_elf_get_sizes(big.e, nullptr, &z);
-    CHECK(z.over_itcm && !z.over_dtcm && z.itcm_used > 82 * 1024, "BIG_TEXT sizes");
-    const tsr_elf_limits loose = { 0, 0, 96 * 1024, 0 };
+    CHECK(z.over_itcm && !z.over_dtcm && z.itcm_used > 96 * 1024, "BIG_TEXT sizes");
+    const tsr_elf_limits loose = { 0, 0, 112 * 1024, 0 };
     tsr_elf_get_sizes(big.e, &loose, &z);
-    CHECK(!z.over_itcm, "BIG_TEXT within a 96 KiB budget");
+    CHECK(!z.over_itcm, "BIG_TEXT within a 112 KiB budget");
 }
 
 // ---------------------------------------------------------------------------
@@ -754,7 +754,7 @@ void test_cli(const std::string & tool, const std::string & dir, const std::stri
     r = run(tool + " logfmt " + out);
     CHECK(r.rc == 0 && r.out == slurp(lf), "logfmt command = stamp's table");
     const std::string sr = slurp(rep);
-    CHECK(sr.find("image id   " + id + " (stamped)") != std::string::npos && sr.find("budget 81920 B: ok") != std::string::npos,
+    CHECK(sr.find("image id   " + id + " (stamped)") != std::string::npos && sr.find("budget 98304 B: ok") != std::string::npos,
           "size report file:\n%s", sr.c_str());
     r = run(tool + " size " + out);
     CHECK(r.rc == 0 && r.out == sr, "size command = stamp's report:\n%s", r.out.c_str());
@@ -809,8 +809,8 @@ void test_cli(const std::string & tool, const std::string & dir, const std::stri
     CHECK(r.rc == 1 && !exists(out), "stamp --strict-budget over budget: rc %d\n%s", r.rc, r.out.c_str());
     r = run(tool + " size " + big + " --strict-budget");
     CHECK(r.rc == 1 && r.out.find("EXCEEDED") != std::string::npos, "size --strict-budget: rc %d", r.rc);
-    r = run(tool + " size " + big + " --strict-budget --budget-itcm 96K");
-    CHECK(r.rc == 0, "size with a 96 KiB budget: rc %d\n%s", r.rc, r.out.c_str());
+    r = run(tool + " size " + big + " --strict-budget --budget-itcm 112K");
+    CHECK(r.rc == 0, "size with a 112 KiB budget: rc %d\n%s", r.rc, r.out.c_str());
     r = run(tool + " check " + tmp + "/nonexistent.elf");
     CHECK(r.rc == 1 && r.out.find("cannot open") != std::string::npos, "missing file: rc %d", r.rc);
     r = run(tool + " frobnicate " + img);

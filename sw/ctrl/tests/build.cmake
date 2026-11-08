@@ -7,7 +7,7 @@
 # and with --fatal-warnings (link.ld must place every section):
 #   fw_elf/elf_img.elf            five kernels, every SW §6.2 section, not stamped
 #   fw_elf/elf_img_no_base.elf    no graph / selftest / replay
-#   fw_elf/elf_img_big_text.elf   over SW §7.8's ITCM budget (80 KiB)
+#   fw_elf/elf_img_big_text.elf   over SW §7.8's ITCM budget (96 KiB)
 #
 # ctests (label fw):
 #   fw_elf        tsr-elf as a library and a tool (sw/ctrl/tests/test_fw_elf.cpp "unit"): SHA-256 /
