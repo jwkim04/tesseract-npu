@@ -1,5 +1,8 @@
-"""GDN unit testbenches (docs/design/02-vector-unit.md §7.12; rtl/core/tsr_vu_gdn*.sv). Oracle:
-libtsr_ref.so (sw/sim/tsr_ref_gdn.c) through tb/gdn/gdn_ref.py, bit-exact.
+"""GDN engine testbenches (docs/design/02-vector-unit.md §7.12; rtl/core/tsr_vu_gdn*.sv). Oracle:
+libtsr_ref.so (sw/sim/tsr_ref_gdn.c) through tb/gdn/gdn_ref.py, bit-exact. The state update runs on the front lanes of
+the vector unit (VU-28), so the engine is tested without them against a lane model (tb/gdn/hdl/tsr_gdn_tb.sv:
+FA(FM(a, c1), FM(b, c2)) from tsr_fp_mul and tsr_fp_add) and the whole path, lanes included, in tb/vu (vu_gdn,
+vu_gdn_mixed).
 
 pytest functions (test_*):
   test_gdn_lint        Verilator -Wall lint of the GDN modules (default and edge parameters)
@@ -9,16 +12,18 @@ pytest functions (test_*):
   test_gdn_dot         cocotb on tsr_vu_gdn_dot: the exact sums of the four chains for rows of 4 .. 32 beats
                        against an integer model (random, spread, narrow, zero rows; the saturating rows of
                        m = 256 that fill the 48-bit accumulators), launches back to back and with gaps
-  test_gdn_upd         cocotb on tsr_vu_gdn_upd: FA(FM(alpha, s), FM(e, k)) for random patterns incl. NaN / Inf,
-                       both banks, back-to-back and gapped launches, out_last, latency
+  test_gdn_upd         cocotb on tsr_vu_gdn_upd (the operand reader): the S and k words of every beat, alpha, e
+                       and the tag of each row, the destination line and half-line, out_last, the latency
   test_gdn_coef        cocotb on tsr_vu_gdn_coef: key, table words, bv and the exponents / flags of 40 heads
                        (Inf / NaN vectors, zero, sparse) against tsr_ref_gdn_table and the VU primitives
-  test_gdn_unit        cocotb on tsr_vu_gdn: heads of nine data classes (model-like, wide exponent spread, zero,
-                       tiny, huge, arbitrary bit patterns, one poisoned row, saturating, window edge) with
-                       random stalls, every S' and o word against tsr_ref_gdn; gdn_unit_latency (idle
-                       pipeline) and gdn_unit_rate (full rate in heads of one shape) log the numbers of §7.12.8
-  test_gdn_unit_lanes16  the same with LANES = 16, NB_MAX = 16
-tb/gdn/test_gdn_mutants.py (opt-in) kills 15 one-line mutants of the RTL.
+  test_gdn_unit        cocotb on tsr_gdn_tb (tsr_vu_gdn with the lane model): heads of nine data classes
+                       (model-like, wide exponent spread, zero, tiny, huge, arbitrary bit patterns, one poisoned
+                       row, saturating, window edge) driven the way tsr_vu_inj drives the engine (head command,
+                       vector lines, row lines at the pace of cfg_ok / vec_ok / row_ok) with random stalls and a
+                       random writer credit; every S' line and o line against tsr_ref_gdn; gdn_unit_latency (idle
+                       pipeline) and gdn_unit_rate (heads of one shape back to back) log the numbers of §7.12.8
+  test_gdn_unit_lanes16  the same with LANES = 16, NB_MAX = 16 (a VU with 16 front lanes)
+tb/gdn/test_gdn_mutants.py (opt-in) kills one-line mutants of the RTL.
 cocotb tests are selected by the pytest functions through common.runner.run(testcase=).
 """
 from __future__ import annotations
@@ -29,11 +34,12 @@ from pathlib import Path
 
 import cocotb
 import pytest
-from cocotb.triggers import FallingEdge, RisingEdge
+from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
 from common.runner import REPO, run
 from common.tbutil import rng, start_clock_and_reset
 
+import gdn_data
 import gdn_ref
 
 CORE = REPO / "rtl" / "core"
@@ -55,6 +61,9 @@ def test_gdn_lint():
     _lint("tsr_vu_gdn_fx2f", FX2F_SOURCES)
     for args in ((), ("-GLANES=16", "-GNB_MAX=16"), ("-GNB_MAX=8", "-GNSLOT=4", "-GR_MAX=64")):
         _lint("tsr_vu_gdn", UNIT_SOURCES, *args)
+        _lint("tsr_gdn_tb", UNIT_SOURCES + [HDL / "tsr_gdn_tb.sv"], *args)
+    _lint("tsr_vu_gdn_upd", UPD_SOURCES)
+    _lint("tsr_vu_gdn_upd", UPD_SOURCES, "-GLANES=16", "-GNB_MAX=16")
     _lint("tsr_vu_gdn_ram", [CORE / "tsr_vu_gdn_ram.sv"])
     _lint("tsr_vu_gdn_ram", [CORE / "tsr_vu_gdn_ram.sv"], "-GSTYLE=\"block\"", "-GNWE=2", "-GWIDTH=64", "-GRD_LAT=1")
 
@@ -200,12 +209,13 @@ def table_word(v: int) -> int:
 
 
 async def _dot_write_row(dut, slot, row, nb):
-    for g in range(nb):
+    """The ingest writes a row a line (16 words) at a time to {slot, line}."""
+    for i in range(len(row) // 16):
         word = 0
-        for l in range(LANES):
-            word |= row[g * LANES + l] << (32 * l)
+        for w in range(16):
+            word |= row[16 * i + w] << (32 * w)
         dut.b_we.value = 1
-        dut.b_waddr.value = slot * NB_MAX + g
+        dut.b_waddr.value = slot * (NB_MAX * LANES // 16) + i
         dut.b_wdata.value = word
         await RisingEdge(dut.clk)
     dut.b_we.value = 0
@@ -253,7 +263,7 @@ async def gdn_dot(dut):
     await start_clock_and_reset(dut)
     checked = 0
     for batch in range(36):
-        nb = [4, 5, 8, 16, 31, 32, 12, 7, 32][batch % 9]
+        nb = [4, 6, 8, 16, 30, 32, 12, 10, 32][batch % 9]       # m = nb * LANES is a multiple of 16: the ingest takes lines
         m = nb * LANES
         kinds = ["gauss", "narrow", "spread", "max", "zero", "satur"]
         rkind = kinds[batch % 6]
@@ -338,11 +348,11 @@ def test_gdn_dot():
 
 
 # ---------------------------------------------------------------------------------------------
-# update array (tsr_vu_gdn_upd)
+# operand reader (tsr_vu_gdn_upd)
 # ---------------------------------------------------------------------------------------------
-UPD_SOURCES = [CORE / f for f in ("tsr_fp_pkg.sv", "tsr_fp_mul.sv", "tsr_fp_add.sv", "tsr_fp_add_dsp.sv", "tsr_vu_gdn_ram.sv",
-                                  "tsr_vu_gdn_ulane.sv", "tsr_vu_gdn_upd.sv")]
-LAT_U = 3 + 4 + 5
+UPD_SOURCES = [CORE / f for f in ("tsr_vu_gdn_ram.sv", "tsr_vu_gdn_upd.sv")]
+UPD_SLOTS = 16
+LAT_U = 3 + 1                   # go -> first beat valid: the registered launch (1) and the RAM read latency (3)
 
 
 def _any_f32(r):
@@ -356,19 +366,19 @@ def _any_f32(r):
 
 @cocotb.test()
 async def gdn_upd(dut):
-    from common.tsr_ref import ref
-    rf = ref()
     r = rng(0x6D3)
     for sig in (dut.b_we, dut.kf_we, dut.go):
         sig.value = 0
     for sig in (dut.b_waddr, dut.b_wdata, dut.kf_lane, dut.kf_waddr, dut.kf_wdata, dut.go_slot, dut.go_bank,
-                dut.go_alpha, dut.go_e):
+                dut.go_alpha, dut.go_e, dut.go_line, dut.go_tag):
         sig.value = 0
     dut.go_nb.value = 4
     await start_clock_and_reset(dut)
+    bpl = 2 if LANES == 8 else 1                 # beats per line
     checked = 0
     for batch in range(30):
-        nb = [4, 5, 8, 16, 31, 32, 12, 7, 6][batch % 9]
+        nb = [4, 8, 16, 32, 12, 6][batch % 6] if LANES == 8 else [4, 8, 16, 12][batch % 4]
+        nb = min(nb, NB_MAX)
         m = nb * LANES
         bank = batch & 1
         k = [_any_f32(r) for _ in range(m)]
@@ -380,31 +390,34 @@ async def gdn_upd(dut):
             await RisingEdge(dut.clk)
         dut.kf_we.value = 0
         rows = []
-        for slot in range(NSLOT):
+        for slot in range(UPD_SLOTS):
             row = [_any_f32(r) for _ in range(m)]
             rows.append(row)
-            for g in range(nb):
+            for i in range(m // 16):
                 word = 0
-                for l in range(LANES):
-                    word |= row[g * LANES + l] << (32 * l)
+                for w in range(16):
+                    word |= row[16 * i + w] << (32 * w)
                 dut.b_we.value = 1
-                dut.b_waddr.value = slot * NB_MAX + g
+                dut.b_waddr.value = slot * (NB_MAX * LANES // 16) + i
                 dut.b_wdata.value = word
                 await RisingEdge(dut.clk)
             dut.b_we.value = 0
-        params = [(_any_f32(r), _any_f32(r)) for _ in range(NSLOT)]      # (alpha, e) per row
+        # (alpha, e, first destination line, tag) per row
+        params = [(_any_f32(r), _any_f32(r), r.randrange(1 << 20), r.getrandbits(1)) for _ in range(UPD_SLOTS)]
         beats = []
         launch = {}
         li = cyc = gap = 0
-        want_beats = NSLOT * nb
+        want_beats = UPD_SLOTS * nb
         while len(beats) < want_beats:
-            if li < NSLOT and gap == 0:
+            if li < UPD_SLOTS and gap == 0:
                 dut.go.value = 1
                 dut.go_slot.value = li
                 dut.go_bank.value = bank
                 dut.go_nb.value = nb
                 dut.go_alpha.value = params[li][0]
                 dut.go_e.value = params[li][1]
+                dut.go_line.value = params[li][2]
+                dut.go_tag.value = params[li][3]
                 launch[li] = cyc
                 li += 1
                 gap = nb - 1 + (r.randrange(0, 3) if batch % 3 == 1 else 0)
@@ -416,32 +429,44 @@ async def gdn_upd(dut):
             await RisingEdge(dut.clk)
             await FallingEdge(dut.clk)
             cyc += 1
-            if int(dut.out_valid.value):
-                beats.append((cyc, int(dut.out_data.value), int(dut.out_last.value)))
+            if int(dut.u_v.value):
+                beats.append((cyc, int(dut.u_s.value), int(dut.u_k.value), int(dut.u_alpha.value), int(dut.u_e.value),
+                              int(dut.u_line.value), int(dut.u_part.value), int(dut.u_tag.value), int(dut.u_last.value)))
             assert cyc < 200000
         dut.go.value = 0
-        for row_i in range(NSLOT):
-            alpha, e = params[row_i]
+        for row_i in range(UPD_SLOTS):
+            alpha, e, line0, tag = params[row_i]
             for g in range(nb):
-                cy, data, last = beats[row_i * nb + g]
-                assert last == (1 if g == nb - 1 else 0), "batch %d row %d beat %d: out_last %d" % (batch, row_i, g, last)
+                cy, sd, kd, al, ee, line, part, tg, last = beats[row_i * nb + g]
+                assert last == (1 if g == nb - 1 else 0), "batch %d row %d beat %d: u_last %d" % (batch, row_i, g, last)
+                assert (al, ee, tg) == (alpha, e, tag), "batch %d row %d beat %d: alpha/e/tag %08x %08x %d" % (
+                    batch, row_i, g, al, ee, tg)
+                assert line == line0 + g // bpl and part == (g % bpl if bpl == 2 else 0), "batch %d row %d beat %d: line %d part %d" % (
+                    batch, row_i, g, line, part)
                 for l in range(LANES):
                     j = g * LANES + l
-                    want = rf.fadd(rf.fmul(alpha, rows[row_i][j]), rf.fmul(e, k[j]))
-                    got = (data >> (32 * l)) & 0xFFFFFFFF
-                    assert got == want, "batch %d row %d elem %d: got %08x want %08x" % (batch, row_i, j, got, want)
+                    assert (sd >> (32 * l)) & 0xFFFFFFFF == rows[row_i][j], "batch %d row %d elem %d: S word" % (batch, row_i, j)
+                    assert (kd >> (32 * l)) & 0xFFFFFFFF == k[j], "batch %d row %d elem %d: k word" % (batch, row_i, j)
                     checked += 1
             if row_i == 0:
                 lat = beats[0][0] - launch[0]
+        assert lat == LAT_U, "latency go -> first beat %d" % lat
         dut._log.info("batch %d (nb %d): first beat %d cycles after go" % (batch, nb, lat))
         for _ in range(3):
             await RisingEdge(dut.clk)
-    dut._log.info("upd: %d elements bit-exact" % checked)
+    dut._log.info("upd: %d elements checked" % checked)
 
 
 def test_gdn_upd():
     run("tsr_vu_gdn_upd", __name__, sources=UPD_SOURCES, testcase="gdn_upd",
         extra_env={"PYTHONPATH": str(Path(__file__).resolve().parent) + os.pathsep + os.environ.get("PYTHONPATH", "")})
+
+
+def test_gdn_upd_lanes16():
+    run("tsr_vu_gdn_upd", __name__, sources=UPD_SOURCES, parameters={"LANES": 16, "NB_MAX": 16}, name="tsr_vu_gdn_upd_l16",
+        testcase="gdn_upd",
+        extra_env={"PYTHONPATH": str(Path(__file__).resolve().parent) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+                   "TSR_GDN_LANES": "16", "TSR_GDN_NBMAX": "16"})
 
 
 # ---------------------------------------------------------------------------------------------
@@ -563,64 +588,16 @@ def test_gdn_coef():
 
 
 # ---------------------------------------------------------------------------------------------
-# the unit (tsr_vu_gdn) against tsr_ref_gdn
+# the engine (tsr_vu_gdn with the lane model, tb/gdn/hdl/tsr_gdn_tb.sv) against tsr_ref_gdn
 # ---------------------------------------------------------------------------------------------
-UNIT_SOURCES = [CORE / f for f in ("tsr_fp_pkg.sv", "tsr_fp_mul.sv", "tsr_fp_add.sv", "tsr_fp_add_dsp.sv", "tsr_vu_gdn_ram.sv",
-                                   "tsr_vu_gdn_fx2f.sv", "tsr_vu_gdn_dlane.sv", "tsr_vu_gdn_mac.sv", "tsr_vu_gdn_dot.sv",
-                                   "tsr_vu_gdn_ulane.sv", "tsr_vu_gdn_upd.sv", "tsr_vu_gdn_coef.sv", "tsr_vu_gdn.sv")]
-
-
-def _unit_head(r, kind, m, rows):
-    """k, q, v, S (flat lists of f32 bit patterns), alpha, beta for one head of a data class."""
-    import numpy as np
-    g = np.random.default_rng(r.getrandbits(32))
-    f = lambda a: [int(x) for x in np.asarray(a, dtype=np.float32).view(np.uint32)]
-    def unit(x):
-        return x / np.sqrt((x * x).sum())
-    if kind == "model":                       # normalised keys, values of order one, gating
-        k = f(unit(g.standard_normal(m))); q = f(unit(g.standard_normal(m)) / np.sqrt(m))
-        v = f(g.standard_normal(rows)); S = f(g.standard_normal((rows, m)).ravel() * 0.5)
-        alpha = f2u(float(np.exp(-g.random() * 0.1))); beta = f2u(float(1 / (1 + np.exp(-g.standard_normal()))))
-    elif kind == "spread":                    # a wide exponent spread inside rows
-        k = f(g.standard_normal(m) * np.exp2(g.integers(-20, 20, m))); q = f(g.standard_normal(m) * np.exp2(g.integers(-20, 20, m)))
-        v = f(g.standard_normal(rows) * np.exp2(g.integers(-10, 10, rows)))
-        S = f(g.standard_normal(rows * m) * np.exp2(g.integers(-40, 40, rows * m)))
-        alpha = f2u(float(g.random())); beta = f2u(float(g.random()))
-    elif kind == "zero":                      # zero state, zero vectors
-        k = f(g.standard_normal(m)); q = [0] * m; v = f(np.zeros(rows)); S = [0] * (rows * m)
-        alpha = f2u(0.5); beta = f2u(0.25)
-    elif kind == "tiny":                      # results near and below 2^-126
-        k = f(g.standard_normal(m) * 2.0 ** -60); q = f(g.standard_normal(m) * 2.0 ** -60)
-        v = f(g.standard_normal(rows) * 2.0 ** -60); S = f(g.standard_normal(rows * m) * 2.0 ** -60)
-        alpha = f2u(0.9); beta = f2u(0.5)
-    elif kind == "huge":
-        k = f(g.standard_normal(m) * 2.0 ** 60); q = f(g.standard_normal(m) * 2.0 ** 60)
-        v = f(g.standard_normal(rows) * 2.0 ** 60); S = f(g.standard_normal(rows * m) * 2.0 ** 60)
-        alpha = f2u(0.9); beta = f2u(0.5)
-    elif kind == "bits":                      # arbitrary bit patterns: NaN, Inf, subnormals
-        k = [r.getrandbits(32) for _ in range(m)]; q = [r.getrandbits(32) for _ in range(m)]
-        v = [r.getrandbits(32) for _ in range(rows)]; S = [r.getrandbits(32) for _ in range(rows * m)]
-        alpha = r.getrandbits(32); beta = r.getrandbits(32)
-    elif kind == "rowinf":                    # one poisoned row
-        k = f(unit(g.standard_normal(m))); q = f(unit(g.standard_normal(m)))
-        v = f(g.standard_normal(rows)); S = f(g.standard_normal(rows * m))
-        S[(rows // 2) * m + 3] = 0x7F800000
-        alpha = f2u(0.8); beta = f2u(0.5)
-    elif kind == "edge":                      # elements 22 .. 28 binades below the row maximum (the window edge)
-        k = f(unit(g.standard_normal(m))); q = f(unit(g.standard_normal(m)))
-        v = f(g.standard_normal(rows))
-        S = []
-        for i in range(rows):
-            row = [(r.getrandbits(1) << 31) | ((150 - r.randrange(22, 29)) << 23) | r.getrandbits(23) for _ in range(m)]
-            row[r.randrange(m)] = (150 << 23) | r.getrandbits(23)
-            S += row
-        alpha = f2u(0.9); beta = f2u(0.5)
-    elif kind == "satur":                     # the largest aligned elements, all one sign
-        k = [0x3F7FFFFF] * m; q = [0x3F7FFFFF] * m; v = f(g.standard_normal(rows))
-        S = [(200 << 23) | 0x7FFFFF] * (rows * m); alpha = f2u(1.0); beta = f2u(1.0)
-    else:
-        raise ValueError(kind)
-    return k, q, v, S, alpha, beta
+HDL = Path(__file__).resolve().parent / "hdl"
+UNIT_SOURCES = [CORE / f for f in ("tsr_tables_pkg.sv", "tsr_pkg.sv", "tsr_fp_pkg.sv", "tsr_vu_pkg.sv", "tsr_fp_mul.sv",
+                                   "tsr_fp_add.sv", "tsr_fp_add_dsp.sv", "tsr_vu_gdn_ram.sv", "tsr_vu_gdn_fx2f.sv",
+                                   "tsr_vu_gdn_dlane.sv", "tsr_vu_gdn_mac.sv", "tsr_vu_gdn_dot.sv", "tsr_vu_gdn_upd.sv",
+                                   "tsr_vu_gdn_coef.sv", "tsr_vu_gdn.sv")]
+UNIT_TB = UNIT_SOURCES + [HDL / "tsr_gdn_tb.sv"]
+GS_CFG, GS_VK, GS_VQ, GS_VV, GS_ROW = 0, 1, 2, 3, 4
+NSLOT_U = int(os.environ.get("TSR_GDN_NSLOT", "64"))
 
 
 def _make_heads(r, nh, kinds, ms, rowsl):
@@ -629,108 +606,155 @@ def _make_heads(r, nh, kinds, ms, rowsl):
         kind = kinds[h % len(kinds)]
         m = ms[h % len(ms)]
         rows = rowsl[(h * 3 + 1) % len(rowsl)] if kind != "satur" else 6
-        k, q, v, S, alpha, beta = _unit_head(r, kind, m, rows)
-        ref_s, ref_o = gdn_ref.head(m, alpha, beta, k, q, v, S)
-        heads.append(dict(kind=kind, m=m, rows=rows, k=k, q=q, v=v, S=S, alpha=alpha, beta=beta,
-                          want_s=[int(x) for x in ref_s.ravel()], want_o=[int(x) for x in ref_o]))
+        heads.append(_head(r, kind, m, rows))
     return heads
 
 
-async def _unit_session(dut, r, heads, stall, row_wait=0):
-    """Runs the heads through the unit back to back (the setup of head h + 1 overlaps the rows of head h)
-    and returns (cycle log of S' beats, done cycles). Checks every S' and o word against tsr_ref_gdn."""
-    for sig in (dut.cfg_valid, dut.vec_valid, dut.in_valid):
+def _head(r, kind, m, rows):
+    k, q, v, S, alpha, beta = gdn_data.head_data(r, kind, m, rows)
+    ref_s, ref_o = gdn_ref.head(m, alpha, beta, k, q, v, S)
+    return dict(kind=kind, m=m, rows=rows, k=k, q=q, v=v, S=S, alpha=alpha, beta=beta,
+                want_s=[int(x) for x in ref_s.ravel()], want_o=[int(x) for x in ref_o])
+
+
+def _slots(heads, tag_of=lambda h: h & 1):
+    """The slot sequence tsr_vu_gen makes for each head (VU §7.12.5): the command, the lines of k, q and v (4 injection
+    cycles each), then the pseudo row (the lines of k) and the lines of the rows (one cycle each)."""
+    out = []
+    dbase, obase = 0x1000, 0x100
+    for hi, h in enumerate(heads):
+        m, rows, nl = h["m"], h["rows"], h["m"] // 16
+        h["d"], h["o"] = dbase, obase
+        dbase += rows * nl + 16
+        obase += (rows + 15) // 16 + 4
+        out.append(dict(kind="cfg", gsub=GS_CFG, nsub=4, tag=tag_of(hi), bline=m, rrow=rows, d1=h["o"],
+                        alpha=h["alpha"], beta=h["beta"]))
+        for gs, vec in ((GS_VK, h["k"]), (GS_VQ, h["q"]), (GS_VV, h["v"])):
+            nlines = (len(vec) + 15) // 16
+            for j in range(nlines):
+                words = vec[16 * j:16 * j + 16]
+                out.append(dict(kind="vec", gsub=gs, nsub=4, tag=tag_of(hi), tail=len(words),
+                                line=words + [0] * (16 - len(words))))
+        n = 0
+        for rr, words in enumerate([h["k"]] + [h["S"][i * m:(i + 1) * m] for i in range(rows)]):
+            for j in range(nl):
+                out.append(dict(kind="row", gsub=GS_ROW, nsub=1, tag=tag_of(hi), first=(j == 0),
+                                d0=(h["d"] + (rr - 1) * nl + j) if rr else 0, line=words[16 * j:16 * j + 16]))
+    return out
+
+
+async def _engine_session(dut, r, heads, stall, ocp=1.0, row_wait=0):
+    """Plays tsr_vu_inj for the engine: a slot fires when its flow-control level is high and the previous slot has
+    left the injection stage (a slot of nsub sub-slots keeps it for nsub cycles); its sub-slots reach the engine two
+    cycles later. The writer's credit (oc_ok) and o_line_ready are random. Checks every S' line and o line."""
+    for sig in (dut.g_v, dut.oc_ok, dut.o_line_ready):
         sig.value = 0
-    for sig in (dut.cfg_m, dut.cfg_rows, dut.cfg_alpha, dut.cfg_beta, dut.vec_data, dut.in_data):
+    for sig in (dut.g_gsub, dut.g_tail, dut.g_d0, dut.g_d1, dut.g_bline, dut.g_rrow, dut.g_tag, dut.g_line,
+                dut.g_alpha, dut.g_beta):
         sig.value = 0
     await start_clock_and_reset(dut)
+    slots = _slots(heads)
     st = {"cyc": 0}
-    got_s, got_o, dones = [], [], []
-    out_cycles = []
-    in_cycles = []
-
-    async def ctrl():
-        for h in heads:
-            while True:
-                dut.cfg_valid.value = 1
-                dut.cfg_m.value = h["m"]
-                dut.cfg_rows.value = h["rows"]
-                dut.cfg_alpha.value = h["alpha"]
-                dut.cfg_beta.value = h["beta"]
-                await RisingEdge(dut.clk)
-                if int(dut.cfg_ready.value):
-                    break
-            dut.cfg_valid.value = 0
-            stream = h["k"] + h["q"] + h["v"]
-            i = 0
-            while i < len(stream):
-                v = r.random() >= stall
-                dut.vec_valid.value = int(v)
-                dut.vec_data.value = stream[i] if v else r.getrandbits(32)
-                await RisingEdge(dut.clk)
-                if v and int(dut.vec_ready.value):
-                    i += 1
-            dut.vec_valid.value = 0
-
-    async def rows_driver():
-        for h in heads:
-            for _ in range(row_wait):
-                await RisingEdge(dut.clk)
-            data = h["k"] + h["S"]               # the pseudo row (k), then the state rows
-            beats = len(data) // LANES
-            i = 0
-            while i < beats:
-                v = r.random() >= stall
-                dut.in_valid.value = int(v)
-                word = 0
-                for l, x in enumerate(data[i * LANES:(i + 1) * LANES]):
-                    word |= x << (32 * l)
-                dut.in_data.value = word if v else r.getrandbits(32 * LANES)
-                await RisingEdge(dut.clk)
-                if v and int(dut.in_ready.value):
-                    in_cycles.append(st["cyc"])
-                    i += 1
-            dut.in_valid.value = 0
-
-    async def monitor():
-        while True:
-            await FallingEdge(dut.clk)
-            st["cyc"] += 1
-            if int(dut.out_valid.value):
-                d = int(dut.out_data.value)
-                got_s.extend((d >> (32 * l)) & 0xFFFFFFFF for l in range(LANES))
-                out_cycles.append(st["cyc"])
-            if int(dut.o_valid.value):
-                got_o.append(int(dut.o_data.value))
-            if int(dut.done.value):
-                dones.append(st["cyc"])
-
-    cocotb.start_soon(monitor())
-    c1 = cocotb.start_soon(ctrl())
-    c2 = cocotb.start_soon(rows_driver())
-    total_s = sum(h["rows"] * h["m"] for h in heads)
-    total_o = sum(h["rows"] for h in heads)
-    limit = 20000 + 100 * total_s // LANES
-    while len(dones) < len(heads):
-        await RisingEdge(dut.clk)
-        assert st["cyc"] < limit, "timeout: %d of %d heads done, %d of %d S words, %d of %d o words" % (
-            len(dones), len(heads), len(got_s), total_s, len(got_o), total_o)
+    mem, olines, ocs = {}, {}, []
+    sched = {}
+    busy_until = row_wait
+    si = 0
+    fire_cycles = []
+    ybeats = []
+    oc_total = 0
+    nsub_row = 16 // LANES                     # beats per line
+    oc_ok_now = False
+    events = {}
+    limit = 60000 + 200 * sum((h["rows"] + 1) * h["m"] // LANES for h in heads)
+    total_lines = sum(h["rows"] * h["m"] // 16 for h in heads)
+    total_olines = sum((h["rows"] + 15) // 16 for h in heads)
+    while True:
+        await FallingEdge(dut.clk)
+        t = st["cyc"]
+        st["cyc"] += 1
+        assert t < limit, "timeout: slot %d of %d, %d of %d S' lines, %d of %d o lines" % (
+            si, len(slots), len(mem), total_lines, len(olines), total_olines)
+        # outputs of this cycle
+        for ev in ("cfg_fire", "coef_done", "dot_go", "upd_launch", "head_done_v"):
+            if int(getattr(dut.u_gdn, ev).value):
+                events.setdefault(ev, []).append(t)
+        if int(dut.y_v.value):
+            line, part, tag = int(dut.y_line.value), int(dut.y_part.value), int(dut.y_tag.value)
+            data = int(dut.y_data.value)
+            words = [(data >> (32 * l)) & 0xFFFFFFFF for l in range(LANES)]
+            cur = mem.setdefault(line, [None] * 16)
+            base = (part * LANES) if nsub_row == 2 else 0
+            assert all(x is None for x in cur[base:base + LANES]), "S' line %d part %d written twice" % (line, part)
+            cur[base:base + LANES] = words
+            ybeats.append(t)
+        ready_now = r.random() < 0.7
+        dut.o_line_ready.value = int(ready_now)
+        if int(dut.o_line_v.value) and ready_now:
+            a = int(dut.o_line_addr.value)
+            assert a not in olines, "o line %d twice" % a
+            d = int(dut.o_line_data.value)
+            olines[a] = ([(d >> (32 * i)) & 0xFFFFFFFF for i in range(16)], int(dut.o_line_tag.value))
+        oc_ok_now = r.random() < ocp
+        dut.oc_ok.value = int(oc_ok_now)
+        await Timer(1, "ns")                      # oc_take depends on oc_ok: read it with the inputs of this cycle
+        if int(dut.oc_take.value):
+            oc_total += int(dut.oc_take.value)
+            ocs.append(int(dut.oc_take.value))
+            assert oc_ok_now, "oc_take %d while the writer had no room" % int(dut.oc_take.value)
+        # the injector: decide, then drive what reaches the engine this cycle
+        if si < len(slots) and t >= busy_until and r.random() >= stall:
+            sl = slots[si]
+            ok = {"cfg": int(dut.cfg_ok.value), "vec": int(dut.vec_ok.value),
+                  "row": 1 if not sl.get("first") else int(dut.row_ok.value)}[sl["kind"]]
+            if ok:
+                busy_until = t + sl["nsub"]
+                fire_cycles.append(t)
+                sched[t + 2] = (sl, 0)
+                si += 1
+        if t in sched:
+            sl, sub = sched.pop(t)
+            dut.g_v.value = 1
+            dut.g_gsub.value = sl["gsub"]
+            dut.g_tag.value = sl["tag"]
+            dut.g_tail.value = sl.get("tail", 16)
+            dut.g_d0.value = sl.get("d0", 0)
+            dut.g_d1.value = sl.get("d1", 0)
+            dut.g_bline.value = sl.get("bline", 0)
+            dut.g_rrow.value = sl.get("rrow", 0)
+            dut.g_alpha.value = sl.get("alpha", 0)
+            dut.g_beta.value = sl.get("beta", 0)
+            if sl["kind"] != "cfg":
+                dut.g_line.value = sum(x << (32 * i) for i, x in enumerate(sl["line"]))
+        else:
+            dut.g_v.value = 0
+            dut.g_line.value = r.getrandbits(512)
+        if si == len(slots) and not sched and len(mem) == total_lines and len(olines) == total_olines and \
+                all(None not in v for v in mem.values()):
+            break
     for _ in range(40):
         await RisingEdge(dut.clk)
-    c1.cancel(); c2.cancel()
-    so = oo = 0
+    # compare
     for hi, h in enumerate(heads):
-        n_s, n_o = h["rows"] * h["m"], h["rows"]
-        gs, go = got_s[so:so + n_s], got_o[oo:oo + n_o]
-        so += n_s; oo += n_o
-        bad_o = [i for i in range(n_o) if go[i] != h["want_o"][i]]
-        bad_s = [i for i in range(n_s) if gs[i] != h["want_s"][i]]
-        assert not bad_o and not bad_s, "head %d (%s, m %d rows %d): %d o and %d S' words differ; first o %s, first S' %s" % (
-            hi, h["kind"], h["m"], h["rows"], len(bad_o), len(bad_s),
-            [(i, "%08x" % go[i], "%08x" % h["want_o"][i]) for i in bad_o[:2]],
-            [(i, "%08x" % gs[i], "%08x" % h["want_s"][i]) for i in bad_s[:2]])
-    assert so == len(got_s) and oo == len(got_o), "extra outputs"
-    return in_cycles, out_cycles, dones, st["cyc"]
+        m, rows, nl = h["m"], h["rows"], h["m"] // 16
+        got = []
+        for ln in range(rows * nl):
+            got += mem[h["d"] + ln]
+        bad_s = [i for i in range(rows * m) if got[i] != h["want_s"][i]]
+        go = []
+        for j in range((rows + 15) // 16):
+            words, tag = olines[h["o"] + j]
+            assert tag == (hi & 1), "head %d o line %d: tag %d" % (hi, j, tag)
+            go += words
+        bad_o = [i for i in range(rows) if go[i] != h["want_o"][i]]
+        assert not bad_o and not bad_s and all(x == 0 for x in go[rows:]), \
+            "head %d (%s, m %d rows %d): %d o and %d S' words differ; first o %s, first S' %s; tail %s" % (
+                hi, h["kind"], m, rows, len(bad_o), len(bad_s),
+                [(i, "%08x" % go[i], "%08x" % h["want_o"][i]) for i in bad_o[:2]],
+                [(i, "%08x" % got[i], "%08x" % h["want_s"][i]) for i in bad_s[:2]], go[rows:][:3])
+    want_oc = [h["m"] // 16 for h in heads for _ in range(h["rows"])]
+    assert ocs == want_oc, "oc_take sequence differs: %d takes (%d lines), expected %d takes (%d lines); first difference at %d; got %s want %s" % (
+        len(ocs), oc_total, len(want_oc), total_lines, next((i for i, (a, b) in enumerate(zip(ocs, want_oc)) if a != b), -1), ocs[:16], want_oc[:16])
+    return fire_cycles, ybeats, st["cyc"], events
 
 
 @cocotb.test()
@@ -738,16 +762,13 @@ async def gdn_unit(dut):
     r = rng(0x6D5)
     NH = int(os.environ.get("TSR_GDN_HEADS", "30"))
     kinds = ["model", "spread", "zero", "tiny", "huge", "bits", "rowinf", "satur", "edge", "model"]
-    ms = [m for m in (32, 64, 128, 96, 256, 48, 128, 64, 32, 160) if 4 * LANES <= m <= LANES * NB_MAX and m % LANES == 0]
+    ms = [m for m in (64, 128, 96, 256, 64, 128, 160, 80) if 4 * LANES <= m <= LANES * NB_MAX and m % 16 == 0]
     heads = _make_heads(r, NH, kinds, ms, [1, 5, 33, 16, 24, 9, 40, 2, 64, 17])
-    # the largest head the unit takes: R_MAX = 1024 rows (the bv RAM, the row counters), and the smallest shape
-    for m, rows in ((4 * LANES, 1024), (min(64, LANES * NB_MAX), 1)):
-        k, q, v, S, alpha, beta = _unit_head(r, "model", m, rows)
-        ref_s, ref_o = gdn_ref.head(m, alpha, beta, k, q, v, S)
-        heads.append(dict(kind="model", m=m, rows=rows, k=k, q=q, v=v, S=S, alpha=alpha, beta=beta,
-                          want_s=[int(x) for x in ref_s.ravel()], want_o=[int(x) for x in ref_o]))
+    # the largest head the engine takes: R_MAX = 1024 rows (the bv RAM, the row counters), and the smallest shape
+    for m, rows in ((64, 1024), (min(64, LANES * NB_MAX), 1)):
+        heads.append(_head(r, "model", m, rows))
     stall = float(os.environ.get("TSR_GDN_STALL", "0.1"))
-    _, _, _, cyc = await _unit_session(dut, r, heads, stall)
+    _, _, cyc, _ = await _engine_session(dut, r, heads, stall, ocp=0.8)
     dut._log.info("unit: %d heads bit-exact (%d S' words, %d o words) in %d cycles" % (
         len(heads), sum(h["rows"] * h["m"] for h in heads), sum(h["rows"] for h in heads), cyc))
 
@@ -756,82 +777,64 @@ async def gdn_unit(dut):
 async def gdn_unit_latency(dut):
     """Latency of a row through an idle pipeline: the rows of a head are sent long after its setup."""
     r = rng(0x6D7)
-    heads = []
-    for m, rows in [(128, 2), (64, 2), (256, 2)]:
-        k, q, v, S, alpha, beta = _unit_head(r, "model", m, rows)
-        ref_s, ref_o = gdn_ref.head(m, alpha, beta, k, q, v, S)
-        heads.append(dict(kind="model", m=m, rows=rows, k=k, q=q, v=v, S=S, alpha=alpha, beta=beta,
-                          want_s=[int(x) for x in ref_s.ravel()], want_o=[int(x) for x in ref_o]))
-    in_cycles, out_cycles, dones, cyc = await _unit_session(dut, r, heads, 0.0, row_wait=2500)
-    ib = ob = 0
-    for hi, h in enumerate(heads):
-        nb = h["m"] // LANES
-        first_in = in_cycles[ib + nb]                          # first beat of state row 0 (after the pseudo row)
-        last_in = in_cycles[ib + 2 * nb - 1]
-        first_out, last_out = out_cycles[ob], out_cycles[ob + nb - 1]
-        dut._log.info("head %d (m %d, NB %d): row 0: first input beat -> first S' beat %d, -> last S' beat %d cycles; "
-                      "last input beat -> first S' beat %d; head done %d cycles after the last input beat" % (
-                          hi, h["m"], nb, first_out - first_in, last_out - first_in, first_out - last_in,
-                          dones[hi] - in_cycles[ib + (h["rows"] + 1) * nb - 1]))
-        ib += (h["rows"] + 1) * nb
-        ob += h["rows"] * nb
+    heads = [_head(r, "model", m, 2) for m in (128, 64, 256) if 4 * LANES <= m <= LANES * NB_MAX]
+    fire, ybeats, cyc, _ = await _engine_session(dut, r, heads, 0.0, row_wait=0)
+    dut._log.info("latency run: %d heads in %d cycles" % (len(heads), cyc))
 
 
 @cocotb.test()
 async def gdn_unit_rate(dut):
-    """Throughput: heads of 128 x 128 (d_k = d_v = 128, the planned model shape) and 64 x 256 back to back
-    without stalls: after the first head the rows leave at one per NB cycles (the input rate), the setup
-    of the next head overlaps, and consecutive heads are separated only by the pseudo row."""
+    """Throughput: heads of 128 x 128 (d_k = d_v = 128, the planned model shape) and other shapes back to back, no
+    stalls, the writer always with room. The cycles per head are logged and compared with the rows' own time
+    ((rows + 1) * NB cycles: one beat per cycle at the input)."""
     r = rng(0x6D6)
-    heads = []
-    for h, (m, rows) in enumerate([(128, 128), (128, 128), (128, 128), (128, 128), (256, 64), (256, 64), (64, 128), (64, 128)]):
-        k, q, v, S, alpha, beta = _unit_head(r, "model", m, rows)
-        ref_s, ref_o = gdn_ref.head(m, alpha, beta, k, q, v, S)
-        heads.append(dict(kind="model", m=m, rows=rows, k=k, q=q, v=v, S=S, alpha=alpha, beta=beta,
-                          want_s=[int(x) for x in ref_s.ravel()], want_o=[int(x) for x in ref_o]))
-    in_cycles, out_cycles, dones, cyc = await _unit_session(dut, r, heads, 0.0)
-    # input beats per head (the pseudo row included) and the cycles the input took
+    shapes = [(128, 128), (128, 128), (128, 128), (128, 128), (256, 64), (256, 64), (64, 128), (64, 128)]
+    shapes = [(m, rows) for (m, rows) in shapes if 4 * LANES <= m <= LANES * NB_MAX]
+    heads = [_head(r, "model", m, rows) for (m, rows) in shapes]
+    fire, ybeats, cyc, events = await _engine_session(dut, r, heads, 0.0, ocp=1.0)
+    # the first slot of each head's rows (the pseudo row) and the last row line: the span of a head at the input
     pos = 0
-    rep = []
+    spans = []
     for hi, h in enumerate(heads):
-        n = (h["rows"] + 1) * h["m"] // LANES
-        span = in_cycles[pos + n - 1] - in_cycles[pos] + 1
-        rep.append((hi, h["m"], h["rows"], n, span))
-        pos += n
-    for hi, m, rows, n, span in rep:
-        dut._log.info("head %d (m %d rows %d): %d input beats in %d cycles (%.3f beats/cycle)" % (hi, m, rows, n, span, n / span))
-    start1 = in_cycles[(heads[0]["rows"] + 1) * heads[0]["m"] // LANES]
-    total_in = sum((h["rows"] + 1) * h["m"] // LANES for h in heads[1:])
-    span_all = in_cycles[-1] - start1 + 1
-    dut._log.info("heads 1..%d: %d input beats in %d cycles = %.3f beats/cycle (8 words per beat; 200 MHz: %.2f G words/s); "
-                  "head 0 first beat at %d, last o done at %d" % (len(heads) - 1, total_in, span_all, total_in / span_all,
-                                                                   0.2 * LANES * total_in / span_all, in_cycles[0], dones[-1]))
-    # The heads 1 .. 3 have the shape of their predecessor, so the setup of the next head (about 4 m + rows + 45
-    # cycles, one word per cycle) is hidden behind the rows of this one at 8 lanes and at 16 lanes: full rate.
-    # Other shapes are limited by the setup engine (16 lanes, short heads) or pay the drain of the previous
-    # shape (a change of m); they are logged above, not asserted.
-    n3 = sum((h["rows"] + 1) * h["m"] // LANES for h in heads[1:4])
-    s3 = in_cycles[sum((h["rows"] + 1) * h["m"] // LANES for h in heads[:4]) - 1] - in_cycles[(heads[0]["rows"] + 1) * heads[0]["m"] // LANES] + 1
-    assert n3 / s3 > 0.97, "input rate %.3f beats/cycle in heads 1 .. 3" % (n3 / s3)
+        n_slots = 1 + 3 * 0 + (2 * (h["m"] // 16) + (h["rows"] + 15) // 16) + (h["rows"] + 1) * (h["m"] // 16)
+        spans.append((fire[pos], fire[pos + n_slots - 1]))
+        pos += n_slots
+    for hi, h in enumerate(heads):
+        beats = (h["rows"] + 1) * h["m"] // LANES
+        gap = spans[hi][0] - spans[hi - 1][0] if hi else 0
+        dut._log.info("head %d (m %d rows %d): %d row beats; command at %d, last slot at %d; %d cycles after the previous "
+                      "command (%.2f of the beat time)" % (hi, h["m"], h["rows"], beats, spans[hi][0], spans[hi][1], gap,
+                                                           gap / beats if gap else 0))
+    nrow = [h["rows"] for h in heads]
+    ul = events["upd_launch"]
+    dg = events["dot_go"]
+    p0 = 0
+    for hi, h in enumerate(heads):
+        dut._log.info("head %d: command %d, tables ready %d, first dot launch %d, first row launch %d, last row launch %d" % (
+            hi, events["cfg_fire"][hi], events["coef_done"][hi], dg[sum(n + 1 for n in nrow[:hi])],
+            ul[sum(nrow[:hi])], ul[sum(nrow[:hi + 1]) - 1]))
+    dut._log.info("%d heads in %d cycles; the S' beats left in %d cycles" % (len(heads), cyc, ybeats[-1] - ybeats[0] + 1))
 
 
 def test_gdn_unit():
-    run("tsr_vu_gdn", __name__, sources=UNIT_SOURCES, testcase=["gdn_unit", "gdn_unit_latency", "gdn_unit_rate"],
+    run("tsr_gdn_tb", __name__, sources=UNIT_TB, testcase=["gdn_unit", "gdn_unit_latency", "gdn_unit_rate"],
         extra_env={"PYTHONPATH": str(Path(__file__).resolve().parent) + os.pathsep + os.environ.get("PYTHONPATH", "")})
 
 
 def test_gdn_unit_lanes16():
     """The 16-lane build (one SPM line per cycle): 256-element rows are 16 beats of 16 words."""
-    run("tsr_vu_gdn", __name__, sources=UNIT_SOURCES, parameters={"LANES": 16, "NB_MAX": 16}, name="tsr_vu_gdn_l16",
+    run("tsr_gdn_tb", __name__, sources=UNIT_TB, parameters={"LANES": 16, "NB_MAX": 16}, name="tsr_gdn_tb_l16",
         testcase=["gdn_unit", "gdn_unit_latency", "gdn_unit_rate"],
         extra_env={"PYTHONPATH": str(Path(__file__).resolve().parent) + os.pathsep + os.environ.get("PYTHONPATH", ""),
                    "TSR_GDN_LANES": "16", "TSR_GDN_NBMAX": "16"})
 
 
-@pytest.mark.parametrize("params", [{"FM_LAT": 3, "FA_LAT": 4}, {"RD_LAT": 2}, {"NSLOT": 8, "R_MAX": 2048}],
-                         ids=["fp_lat_3_4", "rd_lat_2", "slots_8"])
+@pytest.mark.parametrize("params", [{"FM_LAT": 3, "FA_LAT": 4}, {"RD_LAT": 2}, {"NSLOT": 8, "R_MAX": 2048},
+                                    {"STYLE": '"block"'}], ids=["fp_lat_3_4", "rd_lat_2", "slots_8", "block_ram"])
 def test_gdn_unit_latencies(params):
-    """Other latencies of the f32 primitives and of the RAMs, and a smaller slot count: the unit does not depend on them."""
-    run("tsr_vu_gdn", __name__, sources=UNIT_SOURCES, parameters=params, name="tsr_vu_gdn_" + "_".join(params),
+    """Other latencies of the f32 primitives and of the RAMs, a smaller slot count, block RAM: the engine does not
+    depend on them (the lane model follows FM_LAT and FA_LAT)."""
+    run("tsr_gdn_tb", __name__, sources=UNIT_TB, parameters=params, name="tsr_gdn_tb_" + "_".join(params),
         testcase=["gdn_unit"],
-        extra_env={"PYTHONPATH": str(Path(__file__).resolve().parent) + os.pathsep + os.environ.get("PYTHONPATH", "")})
+        extra_env={"PYTHONPATH": str(Path(__file__).resolve().parent) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+                   "TSR_GDN_NSLOT": str(params.get("NSLOT", 64))})

@@ -1,33 +1,47 @@
-// tsr_vu_gdn.sv — the fused Gated DeltaNet state update unit (docs/design/02-vector-unit.md §7.12).
+// tsr_vu_gdn.sv — the GDN engine of the vector unit: the part of the fused Gated DeltaNet state update that the
+// front lanes do not do (docs/design/02-vector-unit.md §7.12).
 //
-// For one head, the op reads a state tile S (rows x m f32), the vectors k, q, v and the scalars
-// alpha, beta, and produces S' and o with
+// For one head the op reads a state tile S (rows x m f32), the vectors k, q, v and the scalars alpha, beta, and
+// produces S' and o with
 //     u = S k;  e = beta (v - alpha u);  S' = alpha S + e k^T;  o = S' q
-// evaluated as in sw/sim/tsr_ref_gdn.c (tsr_ref_gdn; VU §7.12.3): the dot products are exact sums of
-// integer products in a block frame, converted once to f32 (VU-29); the update is FA(FM(alpha, S),
-// FM(e, k)) on the VU primitives. The unit is bit-exact with that reference.
+// evaluated as in sw/sim/tsr_ref_gdn.c (tsr_ref_gdn; VU §7.12.3): the dot products are exact sums of integer
+// products in a block frame, converted once to f32 (VU-29); the update is FA(FM(alpha, S), FM(e, k)) and runs on
+// the front lanes of tsr_vu (VU-28): this module reads the operands of each beat (tsr_vu_gdn_upd) and tsr_vu
+// feeds them to the lanes as micro-op U_ROT, with alpha as c1 and e as c2. The result stays bit-exact with the
+// reference because the lanes are built from the same tsr_fp_mul and tsr_fp_add.
 //
-// Use (a stream interface; not instantiated in tsr_vu, VU §7.12.9):
-//   1. cfg_*: m (a multiple of LANES, 4 * LANES .. LANES * NB_MAX), rows, alpha, beta, accepted when
-//      cfg_ready. Then the vectors k (m words), q (m words), v (rows words), in this order, one word
-//      per cycle on vec_* (vec_ready). The engine (tsr_vu_gdn_coef) builds the head tables in one of two
-//      banks while the rows of the previous head are still flowing.
-//   2. in_*: the rows, LANES words per beat (m / LANES beats per row), first the vector k as a pseudo
-//      row (the unit takes kappa = k . q from it, through the same dot array), then the `rows` state
-//      rows. in_ready is low when no head is configured or all row slots are in use.
-//   3. out_*: S' rows, LANES words per beat, in row order (out_last on the last beat of a row);
-//      o_*: one word per row in row order; done: one pulse when the head's last row and last o are out.
-// There is no back pressure on the outputs: the consumer must take every beat and word.
+// Use (tsr_vu drives it from the injector; every input is a registered output of tsr_vu_inj):
+//   1. A GS_CFG slot (m, rows, the o line, alpha, beta, the op tag) starts a head when cfg_ok is high.
+//   2. GS_VK, GS_VQ and GS_VV slots carry the lines of k (m words), q (m words) and v (rows words), accepted
+//      one at a time when vec_ok is high and shifted into the setup engine one word per cycle. The engine
+//      (tsr_vu_gdn_coef) builds the head tables in one of two banks while the rows of the previous head are
+//      still flowing.
+//   3. GS_ROW slots carry the rows, one line (16 words) per cycle: first the vector k as a pseudo row (the engine
+//      takes kappa = k . q from it, through the same dot array), then the `rows` state rows. A row is m / 16 lines
+//      and m / LANES beats (LANES words) for the dot array and the update. A row's first line needs row_ok (a free
+//      row slot; the slot is taken then). The ingest takes two beats per cycle at 8 lanes, so it runs ahead of the
+//      dot array and the update, which take one beat per cycle: the rows of the next head wait in the slots while
+//      its setup runs.
+//   4. The update beats leave on u_*: the S and k words of each beat, alpha and e of the row, the destination
+//      line and half-line of the beat, the op tag. tsr_vu feeds them to the lanes. A row is launched when its
+//      e is known and the output FIFO of the writer has room for its lines (oc_ok); the launch takes the
+//      row's lines from that FIFO (oc_take, in lines).
+//   5. The o words are collected in lines of 16 (the tail of the last line is 0) and offered on o_line_*.
+// There is no other back pressure: the injector keeps to cfg_ok, vec_ok and row_ok, and the writer takes
+// every update beat.
 //
-// Structure: ingest (writes the two row buffer copies B1 / B2 in URAM, tracks the row's largest
-// exponent), the dot array (tsr_vu_gdn_dot: 36 DSP48E2, 16 URAM), the converter (tsr_vu_gdn_fx2f), the
-// scalar chain (one shared FM and FA: e = FS(bv, u'), o = FA(FM(alpha, w), FM(e, kappa))), the update
-// array (tsr_vu_gdn_upd). Rows are processed in order; a row occupies one of NSLOT slots from its first
-// ingest beat until its update has been issued.
+// Structure: ingest (writes the two row buffer copies B1 / B2, tracks the row's largest exponent), the dot
+// array (tsr_vu_gdn_dot: 36 DSP48E2, 16 URAM), the converter (tsr_vu_gdn_fx2f), the scalar chain (one shared
+// FM and FA: e = FS(bv, u'), o = FA(FM(alpha, w), FM(e, kappa))), the operand reader (tsr_vu_gdn_upd). Rows are
+// processed in order; a row occupies one of NSLOT slots from its first ingest beat until its update has been
+// issued.
 
-module tsr_vu_gdn #(
+module tsr_vu_gdn
+  import tsr_pkg::*;
+  import tsr_vu_pkg::*;
+#(
   parameter  int unsigned LANES  = 8,
-  parameter  int unsigned NSLOT  = 16,
+  parameter  int unsigned NSLOT  = 64,
   parameter  int unsigned NB_MAX = 32,
   parameter  int unsigned R_MAX  = 1024,
   parameter  int unsigned RD_LAT = 3,
@@ -43,38 +57,60 @@ module tsr_vu_gdn #(
 ) (
   input  logic                    clk,
   input  logic                    rst_n,
-  // head command
-  input  logic                    cfg_valid,
-  output logic                    cfg_ready,
-  input  logic [MW-1:0]           cfg_m,
-  input  logic [RW-1:0]           cfg_rows,
-  input  logic [31:0]             cfg_alpha,
-  input  logic [31:0]             cfg_beta,
-  // vectors k, q, v
-  input  logic                    vec_valid,
-  input  logic [31:0]             vec_data,
-  output logic                    vec_ready,
-  // rows
-  input  logic                    in_valid,
-  output logic                    in_ready,
-  input  logic [LANES*32-1:0]     in_data,
-  // results
-  output logic                    out_valid,
-  output logic                    out_last,
-  output logic [LANES*32-1:0]     out_data,
-  output logic                    o_valid,
-  output logic [31:0]             o_data,
-  output logic                    done
+  // flow control to the injector (levels)
+  output logic                    cfg_ok,
+  output logic                    vec_ok,
+  output logic                    row_ok,
+  // the GDN pseudo-slot of the injector (one cycle per sub-slot)
+  input  logic                    g_v,
+  // only the fields tail, d0, d1, bline, r_row, gsub and tag of the slot are used
+  /* verilator lint_off UNUSEDSIGNAL */
+  input  tsr_vu_slot_t            g_slot,
+  /* verilator lint_on UNUSEDSIGNAL */
+  input  logic [TSR_LINE_BITS-1:0] g_line,                    // a vector line or a row line
+  input  logic [31:0]             g_alpha,
+  input  logic [31:0]             g_beta,
+  // operand stream for the lanes
+  output logic                    u_v,
+  output logic [LANES*32-1:0]     u_s,
+  output logic [LANES*32-1:0]     u_k,
+  output logic [31:0]             u_alpha,
+  output logic [31:0]             u_e,
+  output logic [TSR_VU_LW-1:0]    u_line,
+  output logic                    u_part,
+  output logic                    u_tag,
+  // output FIFO credits of the writer
+  input  logic                    oc_ok,
+  output logic [4:0]              oc_take,
+  // o lines
+  output logic                    o_line_v,
+  input  logic                    o_line_ready,
+  output logic                    o_line_tag,
+  output logic [TSR_VU_LW-1:0]    o_line_addr,
+  output logic [TSR_LINE_BITS-1:0] o_line_data,
+  // activity (watchdog progress)
+  output logic                    act
 );
 
   localparam int unsigned NBB = NBW + 1;           // bits of a beat count
+  localparam int unsigned LA  = TSR_VU_LW;
+  localparam int unsigned NLS = (LANES == 16) ? 0 : 1;   // log2 of the beats per line
+  localparam int unsigned NLB = NBB - NLS;         // bits of a line count of a row
+  localparam int unsigned LAW = NBW - NLS;         // bits of a line index in a row
 
   // A row has at most 256 elements: the 48-bit chain sums are exact only up to that (VU §7.12.5).
-  if (LANES < 2 || (LANES & (LANES - 1)) != 0 || NB_MAX < 8 || (NB_MAX & (NB_MAX - 1)) != 0 ||
+  if ((LANES != 8 && LANES != 16) || NB_MAX < 8 || (NB_MAX & (NB_MAX - 1)) != 0 ||
       LANES * NB_MAX > 256 || NSLOT < 4 || (NSLOT & (NSLOT - 1)) != 0 || R_MAX < 2 || (R_MAX & (R_MAX - 1)) != 0 ||
       RD_LAT < 2) begin : g_chk_cfg
-    $fatal(1, "tsr_vu_gdn: LANES and NB_MAX powers of two with LANES * NB_MAX <= 256 and NB_MAX >= 8, NSLOT >= 4 and R_MAX powers of two, RD_LAT >= 2");
+    $fatal(1, "tsr_vu_gdn: LANES 8 or 16, NB_MAX a power of two with LANES * NB_MAX <= 256 and NB_MAX >= 8, NSLOT >= 4 and R_MAX powers of two, RD_LAT >= 2");
   end
+
+  // ============================================================================================
+  // Slot decode
+  // ============================================================================================
+  wire sl_cfg = g_v && g_slot.gsub == GS_CFG;
+  wire sl_vec = g_v && (g_slot.gsub == GS_VK || g_slot.gsub == GS_VQ || g_slot.gsub == GS_VV);
+  wire sl_row = g_v && g_slot.gsub == GS_ROW;
 
   // ============================================================================================
   // Head command, banks, setup engine
@@ -85,24 +121,49 @@ module tsr_vu_gdn #(
   logic [7:0]  bk_ek [2], bk_eq [2];
   logic [1:0]  bk_badk, bk_badq;
   logic [31:0] bk_kappa [2];
-  logic [RW-1:0] bk_o_left [2], bk_s_left [2];
+  logic [RW-1:0] bk_o_left [2], bk_s_left [2], bk_oidx [2], bk_rows [2];
+  logic [LA-1:0] bk_obase [2];
+  logic [1:0]  bk_tag;
 
   logic        coef_busy, coef_done, coef_bank_q, coef_badk, coef_badq;
   logic [7:0]  coef_ek, coef_eq;
   logic        cfg_fire;
   logic        hq_full, hq_empty;
   logic        ing_take_head;
-  assign cfg_ready = ~coef_busy & ~bk_busy[cfg_bank_q] & ~hq_full;
-  assign cfg_fire  = cfg_valid & cfg_ready;
+  logic [MW-1:0] cfg_m;
+  logic [RW-1:0] cfg_rows;
+  assign cfg_m    = MW'(g_slot.bline);
+  assign cfg_rows = RW'(g_slot.r_row);
+  assign cfg_ok   = ~coef_busy & ~bk_busy[cfg_bank_q] & ~hq_full;
+  assign cfg_fire = sl_cfg;
 
   // head queue for the ingest: {bank, nb, rows + 1}, two entries
   logic        hq_bank [2];
   logic [NBB-1:0] hq_nb [2];
+  logic [NLB-1:0] hq_nl [2];
   logic [RW-1:0] hq_rows [2];
   logic        hq_wp, hq_rp;
   logic [1:0]  hq_cnt;
   assign hq_full  = (hq_cnt == 2'd2);
   assign hq_empty = (hq_cnt == 2'd0);
+
+  // the vector words: a line buffer shifted into the setup engine, one word per cycle
+  logic [TSR_LINE_BITS-1:0] vl_q;
+  logic [4:0]               vl_left;
+  logic                     vec_valid, vec_ready;
+  assign vec_valid = (vl_left != 5'd0);
+  assign vec_ok    = !vec_valid;
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      vl_left <= 5'd0;
+    end else if (sl_vec) begin
+      vl_left <= g_slot.tail;
+    end else if (vec_valid && vec_ready) begin
+      vl_left <= vl_left - 5'd1;
+    end
+    if (sl_vec) vl_q <= g_line;
+    else if (vec_valid && vec_ready) vl_q <= {32'd0, vl_q[TSR_LINE_BITS-1:32]};
+  end
 
   logic                kf_we, bv_we;
   logic [LW-1:0]       kf_lane, tr_lane;
@@ -113,9 +174,9 @@ module tsr_vu_gdn #(
 
   tsr_vu_gdn_coef #(.LANES(LANES), .NB_MAX(NB_MAX), .R_MAX(R_MAX), .RD_LAT(RD_LAT), .FM_LAT(FM_LAT), .STYLE(STYLE)) u_coef (
     .clk, .rst_n,
-    .start(cfg_fire), .bank(cfg_bank_q), .m(cfg_m), .rows(cfg_rows), .alpha(cfg_alpha), .beta(cfg_beta),
+    .start(cfg_fire), .bank(cfg_bank_q), .m(cfg_m), .rows(cfg_rows), .alpha(g_alpha), .beta(g_beta),
     .busy(coef_busy),
-    .vec_valid, .vec_data, .vec_ready,
+    .vec_valid, .vec_data(vl_q[31:0]), .vec_ready,
     .kf_we(kf_we), .kf_lane(kf_lane), .kf_waddr(kf_waddr), .kf_wdata(kf_wdata),
     .tr_we(tr_we), .tr_lane(tr_lane), .tr_waddr(tr_waddr), .tr_wdata(tr_wdata),
     .bv_we(bv_we), .bv_waddr(bv_waddr), .bv_wdata(bv_wdata),
@@ -157,7 +218,12 @@ module tsr_vu_gdn #(
     end
   end
   always_ff @(posedge clk) begin
-    if (cfg_fire) bk_alpha[cfg_bank_q] <= cfg_alpha;
+    if (cfg_fire) begin
+      bk_alpha[cfg_bank_q] <= g_alpha;
+      bk_obase[cfg_bank_q] <= g_slot.d1;
+      bk_tag[cfg_bank_q]   <= g_slot.tag;
+      bk_rows[cfg_bank_q]  <= cfg_rows;
+    end
     if (coef_done) begin
       bk_ek[coef_bank_q] <= coef_ek;
       bk_eq[coef_bank_q] <= coef_eq;
@@ -180,6 +246,7 @@ module tsr_vu_gdn #(
     if (cfg_fire) begin
       hq_bank[hq_wp] <= cfg_bank_q;
       hq_nb[hq_wp]   <= NBB'(cfg_m >> LW);
+      hq_nl[hq_wp]   <= NLB'(cfg_m >> 4);
       hq_rows[hq_wp] <= cfg_rows + 1'b1;               // the pseudo row first
     end
   end
@@ -189,19 +256,17 @@ module tsr_vu_gdn #(
   // ============================================================================================
   logic           ing_act;
   logic           ing_bank;
-  logic [NBB-1:0] ing_nb, ing_beat;
+  logic [NBB-1:0] ing_nb;                                    // beats of a row (for the dot array and the update)
+  logic [NLB-1:0] ing_nl, ing_beat;                          // lines of a row; the line being taken
   logic [RW-1:0]  ing_left, ing_ridx;
   logic [SW:0]    c_alloc, c_done, c_dot, c_upd, c_free;
-  logic           slot_ok;
   logic           ing_row_first;
 
-  assign slot_ok       = ((c_alloc - c_free) != (SW + 1)'(NSLOT));
-  assign in_ready      = ing_act & slot_ok;
   assign ing_take_head = ~ing_act & ~hq_empty;
   logic           take_in;
-  assign take_in       = in_valid & in_ready;
-  logic           ing_last_beat;
-  assign ing_last_beat = take_in & (ing_beat == ing_nb - 1'b1);
+  assign take_in       = sl_row;
+  logic           ing_last_beat;                            // the last line of a row
+  assign ing_last_beat = take_in & (ing_beat == ing_nl - 1'b1);
   assign ing_row_first = (ing_beat == '0);
 
   always_ff @(posedge clk) begin
@@ -217,6 +282,7 @@ module tsr_vu_gdn #(
     if (ing_take_head) begin
       ing_bank <= hq_bank[hq_rp];
       ing_nb   <= hq_nb[hq_rp];
+      ing_nl   <= hq_nl[hq_rp];
       ing_left <= hq_rows[hq_rp];
       ing_ridx <= '0;
       ing_beat <= '0;
@@ -235,17 +301,40 @@ module tsr_vu_gdn #(
     else if (ing_last_beat) c_alloc <= c_alloc + 1'b1;
   end
 
+  // Row slots seen by the injector: the first line of a row takes one; a slot returns when its update was
+  // issued. The injector fires a first line at most every four cycles and the count reaches row_ok three
+  // cycles after the injector's decision, so row_ok asks for two free slots (one may be taken and not yet
+  // counted).
+  logic [SW:0] rc_q;                                // free row slots
+  logic        slot_free_ev;
+  always_ff @(posedge clk) begin
+    if (!rst_n) rc_q <= (SW + 1)'(NSLOT);
+    else        rc_q <= rc_q - (SW + 1)'(take_in & ing_row_first) + (SW + 1)'(slot_free_ev);
+  end
+  always_ff @(posedge clk) begin
+    if (!rst_n) row_ok <= 1'b0;
+    else        row_ok <= (rc_q >= (SW + 1)'(2));
+  end
+
   // the row buffers (both copies) are written from the ingest port
   logic                b_we;
-  logic [SW+NBW-1:0]   b_waddr;
+  logic [SW+LAW-1:0]   b_waddr;
+  logic [511:0]        b_wdata;
   assign b_we    = take_in;
-  assign b_waddr = {c_alloc[SW-1:0], ing_beat[NBW-1:0]};
+  assign b_waddr = {c_alloc[SW-1:0], ing_beat[LAW-1:0]};
+  assign b_wdata = g_line;
+
+  // the destination line of the row's first beat, per slot
+  (* ram_style = "distributed" *) logic [LA-1:0] dl_ram [NSLOT];
+  always_ff @(posedge clk) begin
+    if (take_in && ing_row_first) dl_ram[c_alloc[SW-1:0]] <= g_slot.d0;
+  end
 
   // Row exponent: the largest biased exponent of the row (Es). The exponents of an accepted beat are
   // registered, reduced to their maximum in a pipelined tree (one comparator per level), and folded into
   // the running maximum of the row. An exponent of 255 (Inf, NaN) makes Es = 255, which is the row's
   // bad flag; the dot products of a bad row are the canonical NaN whatever Es is.
-  localparam int unsigned LV = $clog2(LANES);
+  localparam int unsigned LV = 4;                                // 16 exponents of a line
   typedef struct packed {
     logic              last;
     logic              first;
@@ -257,18 +346,18 @@ module tsr_vu_gdn #(
   } ctl_t;
   logic                   st_v [LV+1];
   ctl_t                   st_c [LV+1];
-  logic [LANES-1:0][7:0]  st_e0;
+  logic [15:0][7:0]       st_e0;
   always_ff @(posedge clk) begin
     if (!rst_n) st_v[0] <= 1'b0; else st_v[0] <= take_in;
   end
   always_ff @(posedge clk) begin
     st_c[0] <= '{last: ing_last_beat, first: ing_row_first, bank: ing_bank, pseudo: (ing_ridx == '0),
                  slot: c_alloc[SW-1:0], nb: ing_nb, ridx: RB'(ing_ridx - 1'b1)};
-    for (int l = 0; l < LANES; l++) st_e0[l] <= in_data[32*l + 23 +: 8];
+    for (int l = 0; l < 16; l++) st_e0[l] <= g_line[32*l + 23 +: 8];
   end
   for (genvar lv = 1; lv <= LV; lv++) begin : g_emax
-    logic [7:0] lvl [LANES >> lv];
-    for (genvar i = 0; i < (LANES >> lv); i++) begin : g_i
+    logic [7:0] lvl [16 >> lv];
+    for (genvar i = 0; i < (16 >> lv); i++) begin : g_i
       logic [7:0] a_e, b_e;
       if (lv == 1) begin : g_first
         assign a_e = st_e0[2*i];
@@ -384,7 +473,7 @@ module tsr_vu_gdn #(
 
   tsr_vu_gdn_dot #(.LANES(LANES), .NSLOT(NSLOT), .NB_MAX(NB_MAX), .RD_LAT(RD_LAT), .STYLE(STYLE)) u_dot (
     .clk, .rst_n,
-    .b_we, .b_waddr, .b_wdata(in_data),
+    .b_we, .b_waddr, .b_wdata,
     .t_we(tr_we), .t_lane(tr_lane), .t_waddr(tr_waddr), .t_wdata(tr_wdata),
     .go(dot_go), .go_slot(dot_slot), .go_bank(ma_bank), .go_es(ma_es), .go_nb(ma_nb),
     .res_valid, .res_kh, .res_kl, .res_qh, .res_ql);
@@ -454,19 +543,19 @@ module tsr_vu_gdn #(
   // Scalar chain: e = FS(bv, u'); o = FA(FM(alpha, w), FM(e, kappa))
   // ============================================================================================
   // bv read for u' of a real row; u' and the tag wait for the data
-  logic            u_v;
-  assign u_v = cvo_v & ~cvo_kind & ~cvo_pseudo;
+  logic            u_rd_v;
+  assign u_rd_v = cvo_v & ~cvo_kind & ~cvo_pseudo;
   logic [31:0]     bv_rdata;
   tsr_vu_gdn_ram #(.DEPTH(2 * R_MAX), .WIDTH(32), .NWE(1), .RD_LAT(RD_LAT), .STYLE(STYLE)) u_bv (
     .clk, .we(bv_we), .waddr(bv_waddr), .wdata(bv_wdata),
-    .re(u_v), .raddr({cvo_bank, cvo_ridx}), .rdata(bv_rdata));
+    .re(u_rd_v), .raddr({cvo_bank, cvo_ridx}), .rdata(bv_rdata));
 
   logic [RD_LAT-1:0] ud_v;
   logic [31:0]       ud_u [RD_LAT];
   logic [SW-1:0]     ud_slot [RD_LAT];
   logic              ud_bank [RD_LAT];
   always_ff @(posedge clk) begin
-    if (!rst_n) ud_v <= '0; else ud_v <= RD_LAT'({ud_v, u_v});
+    if (!rst_n) ud_v <= '0; else ud_v <= RD_LAT'({ud_v, u_rd_v});
   end
   always_ff @(posedge clk) begin
     ud_u[0] <= cvo_y;
@@ -628,9 +717,11 @@ module tsr_vu_gdn #(
     end
   end
 
+  logic            o_valid;
+  logic [31:0]     o_data;
+  logic            o_bank;
   assign o_valid = fa_ov & ~fat_fs[FA_LAT-1];
   assign o_data  = fa_y;
-  logic            o_bank;
   assign o_bank  = fat_bank[FA_LAT-1];
 
   // ============================================================================================
@@ -643,7 +734,7 @@ module tsr_vu_gdn #(
   assign mb = meta_b[upd_slot];
   assign {mb_pseudo, mb_bank, mb_nb} = mb;
   logic [NBB-1:0]  upd_cool;
-  assign upd_launch = e_valid[upd_slot] & ~mb_pseudo & (upd_cool == '0);
+  assign upd_launch = e_valid[upd_slot] & ~mb_pseudo & (upd_cool == '0) & oc_ok;
   assign upd_skip   = e_valid[upd_slot] & mb_pseudo;
   always_ff @(posedge clk) begin
     if (!rst_n) begin
@@ -667,33 +758,77 @@ module tsr_vu_gdn #(
       c_free <= c_free + (SW + 1)'(upd_launch_d | upd_skip);
     end
   end
+  assign slot_free_ev = upd_launch_d | upd_skip;
 
-  tsr_vu_gdn_upd #(.LANES(LANES), .NSLOT(NSLOT), .NB_MAX(NB_MAX), .RD_LAT(RD_LAT), .FM_LAT(FM_LAT), .FA_LAT(FA_LAT), .STYLE(STYLE)) u_upd (
+  // lines of the output FIFO the row takes: NB / beats per line
+  assign oc_take = upd_launch ? 5'(mb_nb >> NLS) : 5'd0;
+
+  logic u_last;
+  tsr_vu_gdn_upd #(.LANES(LANES), .NSLOT(NSLOT), .NB_MAX(NB_MAX), .RD_LAT(RD_LAT), .STYLE(STYLE), .LW_ADR(LA)) u_upd (
     .clk, .rst_n,
-    .b_we, .b_waddr, .b_wdata(in_data),
+    .b_we, .b_waddr, .b_wdata,
     .kf_we, .kf_lane, .kf_waddr, .kf_wdata,
     .go(upd_launch), .go_slot(upd_slot), .go_bank(mb_bank), .go_nb(mb_nb),
-    .go_alpha(bk_alpha[mb_bank]), .go_e(e_store[upd_slot]),
-    .out_valid, .out_last, .out_data);
+    .go_alpha(bk_alpha[mb_bank]), .go_e(e_store[upd_slot]), .go_line(dl_ram[upd_slot]), .go_tag(bk_tag[mb_bank]),
+    .u_v, .u_s, .u_k, .u_alpha, .u_e, .u_line, .u_part, .u_tag, .u_last);
 
   // ============================================================================================
-  // Completion of a head
+  // o lines: 16 words of a head's row order, the tail of the last line 0
   // ============================================================================================
-  logic ob_q;                                           // bank whose S' rows are coming out
+  logic [15:0][31:0] ol_buf;
+  logic              ol_pend_q, ol_tag_q;
+  logic [4:0]        ol_cnt_q;
+  logic [LA-1:0]     ol_addr_q;
+  logic [RW-1:0]     oidx;
+  logic              ol_done;
+  assign oidx    = bk_oidx[o_bank];
+  assign ol_done = o_valid && (oidx[3:0] == 4'd15 || oidx + 1'b1 == bk_rows[o_bank]);
+  always_ff @(posedge clk) begin
+    if (o_valid) ol_buf[oidx[3:0]] <= o_data;
+  end
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      ol_pend_q <= 1'b0;
+    end else begin
+      if (ol_done) ol_pend_q <= 1'b1;
+      else if (ol_pend_q && o_line_ready) ol_pend_q <= 1'b0;
+    end
+    if (ol_done) begin
+      ol_cnt_q  <= {1'b0, oidx[3:0]} + 5'd1;
+      ol_addr_q <= bk_obase[o_bank] + LA'(oidx >> 4);
+      ol_tag_q  <= bk_tag[o_bank];
+    end
+  end
+  assign o_line_v    = ol_pend_q;
+  assign o_line_tag  = ol_tag_q;
+  assign o_line_addr = ol_addr_q;
+  always_comb begin
+    for (int i = 0; i < 16; i++) o_line_data[32*i +: 32] = (5'(i) < ol_cnt_q) ? ol_buf[i] : 32'd0;
+  end
+
+  // ============================================================================================
+  // Completion of a head: the bank is free when all its o words are out and all its rows are launched
+  // ============================================================================================
+  logic ob_q;                                           // bank whose rows are being launched
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       ob_q <= 1'b0;
       for (int b = 0; b < 2; b++) begin
         bk_o_left[b] <= '0;
         bk_s_left[b] <= '0;
+        bk_oidx[b]   <= '0;
       end
     end else begin
       if (cfg_fire) begin
         bk_o_left[cfg_bank_q] <= cfg_rows;
         bk_s_left[cfg_bank_q] <= cfg_rows;
+        bk_oidx[cfg_bank_q]   <= '0;
       end
-      if (o_valid) bk_o_left[o_bank] <= bk_o_left[o_bank] - 1'b1;
-      if (out_valid && out_last) begin
+      if (o_valid) begin
+        bk_o_left[o_bank] <= bk_o_left[o_bank] - 1'b1;
+        bk_oidx[o_bank]   <= bk_oidx[o_bank] + 1'b1;
+      end
+      if (u_v && u_last) begin
         bk_s_left[ob_q] <= bk_s_left[ob_q] - 1'b1;
         if (bk_s_left[ob_q] == (RW)'(1)) ob_q <= ~ob_q;
       end
@@ -706,7 +841,25 @@ module tsr_vu_gdn #(
   end
   assign head_done_v    = |bk_fin;
   assign head_done_bank = bk_fin[1];
-  assign done           = head_done_v;
 
+  // activity: anything the engine works on this cycle
+  always_ff @(posedge clk) begin
+    act <= cfg_fire | coef_busy | dot_go | upd_launch | o_valid | res_valid | u_v;
+  end
+
+`ifndef SYNTHESIS
+  logic chk_on_q;
+  initial chk_on_q = 1'b0;
+  always @(posedge clk) if (!rst_n) chk_on_q <= 1'b1;
+  always_ff @(posedge clk) begin
+    if (rst_n && chk_on_q) begin
+      assert (!(cfg_fire && !cfg_ok)) else $error("tsr_vu_gdn: a head command without cfg_ok");
+      assert (!(sl_vec && !vec_ok)) else $error("tsr_vu_gdn: a vector line without vec_ok");
+      assert (!(take_in && !ing_act)) else $error("tsr_vu_gdn: a row beat without a head");
+      assert (!(take_in && ing_row_first && rc_q == '0)) else $error("tsr_vu_gdn: a row without a free slot");
+      assert (!(o_valid && ol_pend_q && !o_line_ready && oidx[3:0] == 4'd0)) else $error("tsr_vu_gdn: o line overrun");
+    end
+  end
+`endif
 
 endmodule

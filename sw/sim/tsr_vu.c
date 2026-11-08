@@ -1,5 +1,5 @@
 // tsr_vu.c — the simulator's VU unit (P1.4): decode, dispatch checks, operand extents, execution and
-// cycle model of VOP 0x30, RED 0x31, ROPE 0x32, TOPK 0x33, SOP 0x40 and DQROW 0x12 on unit 3.
+// cycle model of VOP 0x30, RED 0x31, ROPE 0x32, TOPK 0x33, SOP 0x40, DQROW 0x12 and GDN 0x39 on unit 3.
 //
 // Normative sources: docs/design/02-vector-unit.md (VU) §4 (operand model, n = 0 and tail rules, the s
 // bank, aliasing), §5.1–§5.9 (encodings, dispatch checks, extents), §5.10 (CAPS, PERF) and §7 (the
@@ -9,7 +9,7 @@
 // with the generated field constants (tsr_tables.h), checks, and points the references at the
 // simulator's SPM and s bank. AT's vector ops 0x34–0x37 also run on unit 3 but are AT's ops
 // (tsr_at.c). VMASK 0x38 (M9) has no handler, so the issue path completes it ILLEGAL_OP (CAPS
-// bit7 = 0), as it does every reserved VU opcode (0x13, 0x39–0x3F, 0x41–0x47, EX §7.2).
+// bit7 = 0), as it does every reserved VU opcode (0x13, 0x3A–0x3F, 0x41–0x47, EX §7.2).
 //
 // Checks (VU §5.1, §5.9; EX §8.1 order ILLEGAL_OP -> BAD_FMT -> K_RANGE -> T_RANGE -> OPERAND ->
 // SPM_RANGE; BAD_DEP is the queue model's; no VU op has a DRAM operand):
@@ -64,6 +64,7 @@
 #include "tsr_sim_int.h"
 #include "tsr_ref.h"
 #include "tsr_ref_vu.h"
+#include "tsr_ref_gdn.h"
 
 #include <string.h>
 
@@ -78,6 +79,7 @@
 #define VU_DQROW_LAT   30u   // VU §7.9
 #define VU_SOP_CYC     30u   // VU §7.9
 #define VU_SOP_DIV_CYC 40u
+#define VU_GDN_LAT     130u  // VU §7.12.8: setup tail, dot pipeline, scalar chain and lane exit (*estimate*)
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -554,6 +556,84 @@ static uint64_t cyc_dqrow(const tsr_sim * sim, const uint32_t w[8]) {
 }
 
 // ---------------------------------------------------------------------------
+// GDN 0x39 (VU §7.12; CAPS bit 8)
+// ---------------------------------------------------------------------------
+static const uint32_t k_gdn_rsv[8] = { TSR_GDN_RSV_W0, TSR_GDN_RSV_W1, TSR_GDN_RSV_W2, TSR_GDN_RSV_W3,
+                                       TSR_GDN_RSV_W4, TSR_GDN_RSV_W5, TSR_GDN_RSV_W6, TSR_GDN_RSV_W7 };
+
+typedef struct gdn_dec {
+    uint32_t sa, sb, d, a, k, q, v, o, m, rows;
+} gdn_dec;
+
+static void gdn_decode(const uint32_t w[8], gdn_dec * g) {
+    g->sa   = TSR_INSN_GET(w, TSR_GDN_SA);
+    g->sb   = TSR_INSN_GET(w, TSR_GDN_SB);
+    g->d    = TSR_INSN_GET(w, TSR_GDN_D);
+    g->a    = TSR_INSN_GET(w, TSR_GDN_A);
+    g->k    = TSR_INSN_GET(w, TSR_GDN_K);
+    g->q    = TSR_INSN_GET(w, TSR_GDN_Q);
+    g->v    = TSR_INSN_GET(w, TSR_GDN_V);
+    g->o    = TSR_INSN_GET(w, TSR_GDN_O);
+    g->m    = TSR_INSN_GET(w, TSR_GDN_M);
+    g->rows = TSR_INSN_GET(w, TSR_GDN_ROWS);
+}
+
+static inline int ranges_overlap(uint32_t alo, uint64_t alen, uint32_t blo, uint64_t blen) {
+    return alen != 0u && blen != 0u && (uint64_t)alo < (uint64_t)blo + blen && (uint64_t)blo < (uint64_t)alo + alen;
+}
+
+// OPERAND (VU §7.12.4, in this order): m not a multiple of 16 or outside [64, 256]; rows 0 or above 1,024; d != a with
+// overlapping extents; o overlapping d or a. SPM_RANGE in field order d, a, k, q, v, o. The extent list holds the first
+// four SPM operands (d W, a R, k R, q R) and the s registers: v and o are not listed (CC §8.2: four slots).
+static uint32_t chk_gdn(tsr_sim * sim, const uint32_t w[8], tsr_extents * ext, uint32_t * info) {
+    if (rsv_bad(w, k_gdn_rsv)) return TSR_ERR_ILLEGAL_OP;
+    gdn_dec g;
+    gdn_decode(w, &g);
+    if ((g.m & 15u) != 0u || g.m < TSR_GDN_MIN_M || g.m > TSR_GDN_MAX_M) { *info = g.m; return TSR_ERR_OPERAND; }
+    if (g.rows == 0u || g.rows > TSR_GDN_MAX_ROWS) { *info = g.rows; return TSR_ERR_OPERAND; }
+    const uint32_t nl = g.m / 16u;
+    const uint64_t et = (uint64_t)g.rows * nl, ev = lines_of(g.rows);
+    if (g.d != g.a && ranges_overlap(g.d, et, g.a, et)) { *info = g.d; return TSR_ERR_OPERAND; }
+    if (ranges_overlap(g.o, ev, g.d, et) || ranges_overlap(g.o, ev, g.a, et)) { *info = g.o; return TSR_ERR_OPERAND; }
+    if (spm_bad(sim, g.d, et, info) || spm_bad(sim, g.a, et, info) || spm_bad(sim, g.k, nl, info) ||
+        spm_bad(sim, g.q, nl, info) || spm_bad(sim, g.v, ev, info) || spm_bad(sim, g.o, ev, info))
+        return TSR_ERR_SPM_RANGE;
+    ext_spm(ext, TSR_EXT_WRITE, g.d, et);
+    ext_spm(ext, TSR_EXT_READ, g.a, et);
+    ext_spm(ext, TSR_EXT_READ, g.k, nl);
+    ext_spm(ext, TSR_EXT_READ, g.q, nl);
+    ext_sreg(ext, TSR_EXT_READ, g.sa);
+    ext_sreg(ext, TSR_EXT_READ, g.sb);
+    return TSR_ERR_NONE;
+}
+
+// The vectors k, q and v are read before any word is written (the unit reads them in its first phase), so a d or o
+// that overlaps them changes nothing; the tile may be updated in place.
+static void ex_gdn(tsr_sim * sim, const uint32_t w[8]) {
+    gdn_dec g;
+    gdn_decode(w, &g);
+    uint32_t k[TSR_GDN_MAX_M], q[TSR_GDN_MAX_M], v[TSR_GDN_MAX_ROWS];
+    memcpy(k, spm_words(sim, g.k), (size_t)g.m * 4u);
+    memcpy(q, spm_words(sim, g.q), (size_t)g.m * 4u);
+    memcpy(v, spm_words(sim, g.v), (size_t)g.rows * 4u);
+    uint32_t o[TSR_GDN_MAX_ROWS + 16u];
+    tsr_ref_gdn(g.m, g.rows, sreg_get(sim, g.sa), sreg_get(sim, g.sb), k, q, v, spm_words(sim, g.a),
+                spm_words(sim, g.d), o);
+    const uint32_t nov = 16u * lines_of(g.rows);
+    memcpy(spm_words(sim, g.o), o, (size_t)nov * 4u);
+    vu_lines(sim, (uint64_t)g.rows * (g.m / 16u) + lines_of(g.rows));
+}
+
+// One head alone: the setup (4 m + rows + 45 cycles, VU §7.12.8) does not overlap with the rows of an earlier head here.
+static uint64_t cyc_gdn(const tsr_sim * sim, const uint32_t w[8]) {
+    (void)sim;
+    gdn_dec g;
+    gdn_decode(w, &g);
+    const uint64_t beats = (uint64_t)(g.rows + 1u) * (g.m / TSR_VU_FRONT_LANES);
+    return beats + 4u * g.m + g.rows + VU_GDN_LAT;
+}
+
+// ---------------------------------------------------------------------------
 // Registration (tsr_sim_int.h §2)
 // ---------------------------------------------------------------------------
 void tsr_vu_register(void) {
@@ -563,10 +643,12 @@ void tsr_vu_register(void) {
     const tsr_op_handler topk  = { TSR_UNIT_VU, chk_topk, ex_topk, cyc_topk };
     const tsr_op_handler sop   = { TSR_UNIT_VU, chk_sop, ex_sop, cyc_sop };
     const tsr_op_handler dqrow = { TSR_UNIT_VU, chk_dqrow, ex_dqrow, cyc_dqrow };
+    const tsr_op_handler gdn   = { TSR_UNIT_VU, chk_gdn, ex_gdn, cyc_gdn };
     tsr_sim_register_op(TSR_OP_VOP, &vop);
     tsr_sim_register_op(TSR_OP_RED, &red);
     tsr_sim_register_op(TSR_OP_ROPE, &rope);
     tsr_sim_register_op(TSR_OP_TOPK, &topk);
     tsr_sim_register_op(TSR_OP_SOP, &sop);
     tsr_sim_register_op(TSR_OP_DQROW, &dqrow);
+    tsr_sim_register_op(TSR_OP_GDN, &gdn);
 }

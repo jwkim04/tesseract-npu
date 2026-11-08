@@ -120,8 +120,19 @@ package tsr_vu_pkg;
     SK_POS  = 4'd4,     // ROPE: source A's line into pos buffer half d0[0]
     SK_TOPK = 4'd5,     // TOPK: source A's line to the TOPK unit
     SK_REDE = 4'd6,     // RED: an empty row (m = 0 with TO_S): a row token without lines
-    SK_SOPX = 4'd7      // SOP SQRT / RSQRT / DIV: the scalar path (operands in the op constants)
+    SK_SOPX = 4'd7,     // SOP SQRT / RSQRT / DIV: the scalar path (operands in the op constants)
+    SK_GDN  = 4'd8      // GDN: a head command or a vector / row line for the GDN engine (tsr_vu_gdn, VU §7.12.5)
   } tsr_vu_sk_e;
+
+  // GDN slot sub-kinds (SK_GDN, field gsub). A head is one CFG slot, the lines of k, q and v (to the setup engine),
+  // the lines of k again (the pseudo row) and the lines of the rows of S (to the ingest).
+  typedef enum logic [2:0] {
+    GS_CFG = 3'd0,      // head command: m (bline), rows (r_row), o line (d1); alpha, beta from the op constants
+    GS_VK  = 3'd1,      // a line of k  (tail words)
+    GS_VQ  = 3'd2,      // a line of q
+    GS_VV  = 3'd3,      // a line of v  (tail words: the last line holds rows mod 16)
+    GS_ROW = 3'd4       // a line of a row of S (or of the pseudo row); r_first marks the first line of a row
+  } tsr_vu_gs_e;
 
   // operand source of a slot: none (0), an SPM line, a local-memory line, the op constant (k1 for a,
   // k2 for b; SOP's scalar operands)
@@ -175,6 +186,8 @@ package tsr_vu_pkg;
     // sub-block in the chunk). The chunk's meta line is an SK_CL2 pseudo-slot with dq[5] set.
     logic [5:0]         dq;
     logic [4:0]         dqb;
+    // GDN (SK_GDN): sub-kind
+    tsr_vu_gs_e         gsub;
   } tsr_vu_slot_t;
 
   // Per-op constants, latched by tsr_vu_gen at the op's start (s registers read then, VU §4.4)

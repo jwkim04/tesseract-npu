@@ -355,6 +355,7 @@ static const char * op_name(uint32_t op) {
     case TSR_OP_ROPE:   return "ROPE";   case TSR_OP_TOPK:   return "TOPK";   case TSR_OP_ASMAX:  return "ASMAX";
     case TSR_OP_AMASK:  return "AMASK";  case TSR_OP_AMERGE: return "AMERGE"; case TSR_OP_ANORM:  return "ANORM";
     case TSR_OP_VMASK:  return "VMASK";  case TSR_OP_SOP:    return "SOP";    case TSR_OP_DQROW:  return "DQROW";
+    case TSR_OP_GDN:    return "GDN";
     default:            return "op";
     }
 }

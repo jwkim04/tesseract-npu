@@ -28,15 +28,20 @@
 // The DSP chain itself is tsr_vu_gdn_mac (all lanes in one module, so that Vivado infers the PCIN
 // cascade and the accumulators: a chain split over module boundaries is mapped through the C port).
 // Contents of RAM T are written by the parent; the write address is {bank, g}. RAM B1 is written by
-// the parent from the ingest port (all lanes in one cycle).
+// the parent from the ingest port (all lanes in one cycle). The ingest takes a whole line (16 words) per cycle:
+// with 8 lanes a lane's RAM word holds the words of two beats (PAIR = 2: beat 2i in the low half, beat 2i + 1 in
+// the high half, one address per line), and the lane picks the half of its beat.
 
 module tsr_vu_gdn_dlane #(
   parameter  int unsigned NSLOT  = 16,
   parameter  int unsigned NB_MAX = 32,
   parameter  int unsigned RD_LAT = 3,
+  parameter  int unsigned PAIR   = 1,            // beats per ingest line: 2 with 8 lanes, 1 with 16
   parameter                STYLE  = "ultra",
   localparam int unsigned SW     = $clog2(NSLOT),
-  localparam int unsigned NBW    = $clog2(NB_MAX)
+  localparam int unsigned NBW    = $clog2(NB_MAX),
+  localparam int unsigned PSH    = (PAIR == 2) ? 1 : 0,
+  localparam int unsigned LAW    = NBW - PSH         // bits of a line index in a row
 ) (
   input  logic                clk,
   input  logic                rst_n,
@@ -49,8 +54,8 @@ module tsr_vu_gdn_dlane #(
   input  logic                d_par,         // row parity: selects one of two Es registers
   // row buffer write (parent: all lanes at once)
   input  logic                b_we,
-  input  logic [SW+NBW-1:0]   b_waddr,
-  input  logic [31:0]         b_wdata,
+  input  logic [SW+LAW-1:0]   b_waddr,
+  input  logic [32*PAIR-1:0]  b_wdata,
   // table write: [0] K' half, [1] Q half; address {bank, g}
   input  logic [1:0]          t_we,
   input  logic [NBW:0]        t_waddr,
@@ -120,6 +125,8 @@ module tsr_vu_gdn_dlane #(
   logic              tp [CP+1];
   logic              tb [TQ+1];
   logic [NBW-1:0]    tg [TQ+1];
+  logic              tpar [RD_LAT+1];            // beat parity: the half of the RAM word
+  assign tpar[0] = g_c[0];
   assign tv[0] = issue;
   assign tf[0] = start;
   assign tl[0] = issue & last_c;
@@ -127,6 +134,7 @@ module tsr_vu_gdn_dlane #(
   assign tb[0] = bank_c;
   assign tg[0] = g_c;
   always_ff @(posedge clk) begin
+    for (int i = 1; i <= RD_LAT; i++) tpar[i] <= tpar[i-1];
     for (int i = 1; i <= CP; i++) begin
       tf[i] <= tf[i-1];
       tl[i] <= tl[i-1];
@@ -151,12 +159,19 @@ module tsr_vu_gdn_dlane #(
   // ---------------------------------------------------------------------------------------------
   // RAMs
   // ---------------------------------------------------------------------------------------------
+  logic [32*PAIR-1:0] b1_word;
   logic [31:0] b1_rdata;
   logic [63:0] tr_rdata;
 
-  tsr_vu_gdn_ram #(.DEPTH(NSLOT * NB_MAX), .WIDTH(32), .NWE(1), .RD_LAT(RD_LAT), .STYLE(STYLE)) u_b1 (
+  tsr_vu_gdn_ram #(.DEPTH(NSLOT * (NB_MAX / PAIR)), .WIDTH(32 * PAIR), .NWE(1), .RD_LAT(RD_LAT), .STYLE(STYLE)) u_b1 (
     .clk, .we(b_we), .waddr(b_waddr), .wdata(b_wdata),
-    .re(issue), .raddr({slot_c, g_c}), .rdata(b1_rdata));
+    .re(issue), .raddr({slot_c, g_c[NBW-1:PSH]}), .rdata(b1_word));
+  if (PAIR == 2) begin : g_half
+    assign b1_rdata = tpar[RD_LAT] ? b1_word[63:32] : b1_word[31:0];
+  end else begin : g_whole
+    assign b1_rdata = b1_word;
+    wire unused_par = &{1'b0, tpar[RD_LAT]};
+  end
 
   tsr_vu_gdn_ram #(.DEPTH(2 * NB_MAX), .WIDTH(64), .NWE(2), .RD_LAT(RD_LAT_T), .STYLE(STYLE)) u_tr (
     .clk, .we(t_we), .waddr(t_waddr), .wdata({t_wdata, t_wdata}),

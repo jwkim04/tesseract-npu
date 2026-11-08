@@ -1,7 +1,7 @@
 // tsr_vu_chk.sv — the VU checker class on tsr_chk's external-class port: dispatch checks, ERR_INFO
 // and operand extents of the unit-3 opcodes: DQROW 0x12, VOP 0x30, RED 0x31, ROPE 0x32, TOPK 0x33,
-// SOP 0x40 and AT's vector ops ASMAX 0x34, AMASK 0x35, AMERGE 0x36, ANORM 0x37 (AT §5.8 rows; the VU
-// executes them, VU §5.11).
+// SOP 0x40, GDN 0x39 (HAS_GDN, VU §7.12.4) and AT's vector ops ASMAX 0x34, AMASK 0x35, AMERGE 0x36,
+// ANORM 0x37 (AT §5.8 rows; the VU executes them, VU §5.11).
 //
 // Owner: VU (docs/design/02-vector-unit.md "VU" §5.1-§5.9; CC §8.2 checker classes; W4-B task "vu").
 // Port contract: rtl/core/tsr_xc_pkg.sv (one class of tsr_chk's xc_* port; AT's opcodes belong to the
@@ -25,6 +25,10 @@
 //               (d_stride); RED TO_S and rows != 1 (rows); ROPE head_dim (head_dim), n_dims (n_dims),
 //               T > 1, n_heads > 0 and d_stride' < H (d_stride); TOPK k (k), rows > 1 and d_stride' <
 //               ceil(k/8) (d_stride); DQROW rows > 1 and d_stride' < L(K) (d_stride).
+//   GDN         reserved bits ILLEGAL_OP; OPERAND (VU §7.12.4, in this order): m not a multiple of 16 or outside
+//               [64, 256] (m), rows 0 or above 1,024 (rows), d != a with overlapping extents (d), o overlapping d or a
+//               (o); SPM_RANGE in field order d, a, k, q, v, o (six range operands: d and a E(rows, m/16, m/16),
+//               k and q m/16 lines, v and o ceil(rows/16) lines). The extents are d W, a R, k R, q R (four slots).
 //   AT ops      reserved bits ILLEGAL_OP; OPERAND (AT §5.8): ASMAX n_lines not in [1, 4095] (n_lines),
 //               R not in [1, 1024] (R), scale not finite, not normal or <= 0 (the scale bits); AMASK
 //               n_lines, R, rpq = 0 (0); AMERGE R, scale; ANORM R. Range operands: ASMAX dst, src
@@ -60,6 +64,7 @@ module tsr_vu_chk
   import tsr_xc_pkg::*;
 #(
   parameter bit          LOCAL_INTERMEDIATES = 1'b0,
+  parameter bit          HAS_GDN  = 1'b0,
   parameter int unsigned SPM_BYTES = TSR_DEF_SPM_BYTES,
   parameter int unsigned K_MAX     = TSR_DEF_K_MAX,
   parameter int unsigned NUM_CH    = TSR_DEF_NUM_CH
@@ -79,10 +84,11 @@ module tsr_vu_chk
   localparam logic [TSR_EXT_AW-1:0] SPM_LIM = TSR_EXT_AW'(SPM_BYTES / TSR_LINE_BYTES);
   localparam logic [TSR_EXT_AW-1:0] SPM_WRD = TSR_EXT_AW'(SPM_BYTES / 4);
   localparam int unsigned AW = TSR_EXT_AW;
+  localparam int unsigned NR = HAS_GDN ? 6 : 4;       // range operands (GDN checks six)
 
   // op classes (one-hot)
   localparam int unsigned C_VOP = 0, C_RED = 1, C_ROPE = 2, C_TOPK = 3, C_SOP = 4, C_DQ = 5;
-  localparam int unsigned C_ASM = 6, C_AMK = 7, C_AMG = 8, C_ANM = 9, NC = 10;
+  localparam int unsigned C_ASM = 6, C_AMK = 7, C_AMG = 8, C_ANM = 9, C_GDN = 10, NC = 11;
 
   function automatic logic rsv_any(input tsr_insn_t w, input logic [7:0][31:0] m);
     logic r;
@@ -111,6 +117,8 @@ module tsr_vu_chk
                              TSR_AMERGE_RSV_W3, TSR_AMERGE_RSV_W2, TSR_AMERGE_RSV_W1, TSR_AMERGE_RSV_W0};
       TSR_OP_ANORM:  return {TSR_ANORM_RSV_W7, TSR_ANORM_RSV_W6, TSR_ANORM_RSV_W5, TSR_ANORM_RSV_W4,
                              TSR_ANORM_RSV_W3, TSR_ANORM_RSV_W2, TSR_ANORM_RSV_W1, TSR_ANORM_RSV_W0};
+      tsr_tables_pkg::TSR_OP_GDN: return {TSR_GDN_RSV_W7, TSR_GDN_RSV_W6, TSR_GDN_RSV_W5, TSR_GDN_RSV_W4,
+                           TSR_GDN_RSV_W3, TSR_GDN_RSV_W2, TSR_GDN_RSV_W1, TSR_GDN_RSV_W0};
       default:     return {TSR_DQROW_RSV_W7, TSR_DQROW_RSV_W6, TSR_DQROW_RSV_W5, TSR_DQROW_RSV_W4,
                            TSR_DQROW_RSV_W3, TSR_DQROW_RSV_W2, TSR_DQROW_RSV_W1, TSR_DQROW_RSV_W0};
     endcase
@@ -178,6 +186,7 @@ module tsr_vu_chk
       TSR_OP_AMASK:  d_cls[C_AMK] = 1'b1;
       TSR_OP_AMERGE: d_cls[C_AMG] = 1'b1;
       TSR_OP_ANORM:  d_cls[C_ANM] = 1'b1;
+      tsr_tables_pkg::TSR_OP_GDN: d_cls[C_GDN] = HAS_GDN;
       default:     d_cls[C_DQ]   = 1'b1;
     endcase
     d_ill      = rsv_any(w_q, rsv_of(op));
@@ -316,11 +325,11 @@ module tsr_vu_chk
 
   logic        c2_opd;                 // OPERAND
   logic [31:0] c2_opd_info;
-  logic [3:0]  c2_pres;
-  logic [3:0][31:0] c2_a;
-  logic [3:0][16:0] c2_n;              // rows / T' (17 bits: (n - 1) needs n >= 1)
-  logic [3:0][31:0] c2_s;
-  logic [3:0][AW-1:0] c2_len;
+  logic [NR-1:0]  c2_pres;
+  logic [NR-1:0][31:0] c2_a;
+  logic [NR-1:0][16:0] c2_n;           // rows / T' (17 bits: (n - 1) needs n >= 1)
+  logic [NR-1:0][31:0] c2_s;
+  logic [NR-1:0][AW-1:0] c2_len;
   logic [5:0]       c2_ev;             // extent list
   logic [5:0][1:0]  c2_es;
   logic [5:0]       c2_ew;
@@ -351,6 +360,10 @@ module tsr_vu_chk
     nl  = w_q[4][15:0];
     st  = (w_q[4][31:16] != 16'd0) ? w_q[4][31:16] : w_q[4][15:0];
     for (int k = 0; k < 4; k++) c2_a[k] = 32'(w_q[k + 1][23:0]);
+    if (HAS_GDN) begin
+      c2_a[NR-2] = 32'(w_q[5][23:0]);
+      c2_a[NR-1] = 32'(w_q[6][23:0]);
+    end
     // default extent list: the slots in field order, slot 0 written
     for (int k = 0; k < 4; k++) begin
       c2_ev[k] = 1'b1;
@@ -413,6 +426,21 @@ module tsr_vu_chk
       c2_pres = 4'b0011;
       c2_n[0] = 17'(rows); c2_s[0] = dsp; c2_len[0] = AW'(lm_q);
       c2_n[1] = 17'(rows); c2_s[1] = ssp; c2_len[1] = AW'(rb_q);
+    end
+    if (HAS_GDN && cls_q[C_GDN]) begin
+      // VU §7.12.4: d and a E(rows, m/16, m/16), k and q m/16 lines, v and o ceil(rows/16) lines
+      if (w_q[7][3:0] != 4'd0 || w_q[7][15:0] < 16'(TSR_GDN_MIN_M) || w_q[7][15:0] > 16'(TSR_GDN_MAX_M)) begin
+        c2_opd = 1'b1; c2_opd_info = 32'(w_q[7][15:0]);
+      end else if (w_q[7][31:16] == 16'd0 || w_q[7][31:16] > 16'(TSR_GDN_MAX_ROWS)) begin
+        c2_opd = 1'b1; c2_opd_info = 32'(w_q[7][31:16]);
+      end
+      c2_pres = '1;
+      c2_n[0] = 17'(w_q[7][31:16]); c2_s[0] = 32'(w_q[7][15:4]); c2_len[0] = AW'(w_q[7][15:4]);
+      c2_n[1] = 17'(w_q[7][31:16]); c2_s[1] = 32'(w_q[7][15:4]); c2_len[1] = AW'(w_q[7][15:4]);
+      c2_n[2] = 17'd1; c2_s[2] = 32'd0; c2_len[2] = AW'(w_q[7][15:4]);
+      c2_n[3] = 17'd1; c2_s[3] = 32'd0; c2_len[3] = AW'(w_q[7][15:4]);
+      c2_n[4] = 17'd1; c2_s[4] = 32'd0; c2_len[4] = AW'((32'(w_q[7][31:16]) + 32'd15) >> 4);
+      c2_n[5] = 17'd1; c2_s[5] = 32'd0; c2_len[5] = AW'((32'(w_q[7][31:16]) + 32'd15) >> 4);
     end
     if (cls_q[C_SOP]) begin
       // LDS / STS: one word (VU §5.9), its line as the extent
@@ -493,11 +521,11 @@ module tsr_vu_chk
 
   logic        opd_q, sop_oor_q;
   logic [31:0] opd_info_q;
-  logic [3:0]  pres_q;
-  logic [3:0][31:0] a_q, s_q;
-  logic [3:0][AW-1:0] len_q;
-  logic [3:0][15:0] nm1_q;             // n - 1 (n >= 1), else 0
-  logic [3:0]       nz_q;              // n != 0 and len != 0
+  logic [NR-1:0]  pres_q;
+  logic [NR-1:0][31:0] a_q, s_q;
+  logic [NR-1:0][AW-1:0] len_q;
+  logic [NR-1:0][15:0] nm1_q;          // n - 1 (n >= 1), else 0
+  logic [NR-1:0]       nz_q;           // n != 0 and len != 0
   logic [5:0]       ev_q, ew_q;
   logic [5:0][1:0]  es_q;
   always_ff @(posedge clk) begin
@@ -512,7 +540,7 @@ module tsr_vu_chk
       ev_q       <= c2_ev;
       es_q       <= c2_es;
       ew_q       <= c2_ew;
-      for (int k = 0; k < 4; k++) begin
+      for (int k = 0; k < NR; k++) begin
         nz_q[k]  <= (c2_n[k] != 17'd0) && (c2_len[k] != '0);
         nm1_q[k] <= (c2_n[k] != 17'd0) ? 16'(c2_n[k] - 17'd1) : 16'd0;
       end
@@ -522,21 +550,33 @@ module tsr_vu_chk
   // -------------------------------------------------------------------------------------------
   // K3: (n - 1)·s;  K4: extents and ends;  K5: compares
   // -------------------------------------------------------------------------------------------
-  logic [3:0][AW-1:0] prod_q, ext_q, end_q;
-  logic [3:0]         oor_q;
+  logic [NR-1:0][AW-1:0] prod_q, ext_q, end_q;
+  logic [NR-1:0]         oor_q;
+  logic                  ovda_q, ovo_q;   // GDN: d and a overlap (d != a); o overlaps d or a
   always_ff @(posedge clk) begin
     if (st_q[2]) begin
-      for (int k = 0; k < 4; k++) prod_q[k] <= AW'(nm1_q[k]) * AW'(s_q[k]);
+      for (int k = 0; k < NR; k++) prod_q[k] <= AW'(nm1_q[k]) * AW'(s_q[k]);
     end
     if (st_q[3]) begin
-      for (int k = 0; k < 4; k++) begin
+      for (int k = 0; k < NR; k++) begin
         ext_q[k] <= nz_q[k] ? prod_q[k] + len_q[k] : '0;
         end_q[k] <= AW'(a_q[k]) + (nz_q[k] ? prod_q[k] + len_q[k] : '0);
       end
     end
     if (st_q[4]) begin
-      for (int k = 0; k < 4; k++) oor_q[k] <= pres_q[k] && (end_q[k] > SPM_LIM);
+      for (int k = 0; k < NR; k++) oor_q[k] <= pres_q[k] && (end_q[k] > SPM_LIM);
     end
+  end
+  if (HAS_GDN) begin : g_gdn_ov
+    always_ff @(posedge clk) begin
+      if (st_q[4]) begin
+        ovda_q <= a_q[0] != a_q[1] && a_q[0] < end_q[1] && a_q[1] < end_q[0];
+        ovo_q  <= (a_q[NR-1] < end_q[0] && a_q[0] < end_q[NR-1]) || (a_q[NR-1] < end_q[1] && a_q[1] < end_q[NR-1]);
+      end
+    end
+  end else begin : g_nogdn_ov
+    assign ovda_q = 1'b0;
+    assign ovo_q  = 1'b0;
   end
 
   // -------------------------------------------------------------------------------------------
@@ -557,11 +597,17 @@ module tsr_vu_chk
     end else if (opd_q) begin
       c6_code = tsr_tables_pkg::TSR_ERR_OPERAND;
       c6_info = opd_info_q;
+    end else if (HAS_GDN && cls_q[C_GDN] && ovda_q) begin
+      c6_code = tsr_tables_pkg::TSR_ERR_OPERAND;
+      c6_info = a_q[0];
+    end else if (HAS_GDN && cls_q[C_GDN] && ovo_q) begin
+      c6_code = tsr_tables_pkg::TSR_ERR_OPERAND;
+      c6_info = a_q[5];
     end else if (sop_oor_q) begin
       c6_code = tsr_tables_pkg::TSR_ERR_SPM_RANGE;
       c6_info = w_q[3];
     end else begin
-      for (int k = 3; k >= 0; k--) begin
+      for (int k = NR - 1; k >= 0; k--) begin
         if (oor_q[k]) begin
           c6_code = tsr_tables_pkg::TSR_ERR_SPM_RANGE;
           c6_info = a_q[k];

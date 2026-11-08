@@ -69,7 +69,6 @@ core/tsr_vu_gdn_fx2f.sv
 core/tsr_vu_gdn_dlane.sv
 core/tsr_vu_gdn_mac.sv
 core/tsr_vu_gdn_dot.sv
-core/tsr_vu_gdn_ulane.sv
 core/tsr_vu_gdn_upd.sv
 core/tsr_vu_gdn_coef.sv
 core/tsr_vu_gdn.sv

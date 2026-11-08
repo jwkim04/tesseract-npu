@@ -20,14 +20,16 @@ module tsr_vu_gdn_dot #(
   parameter                STYLE  = "ultra",
   localparam int unsigned SW     = $clog2(NSLOT),
   localparam int unsigned NBW    = $clog2(NB_MAX),
-  localparam int unsigned LW     = (LANES > 1) ? $clog2(LANES) : 1
+  localparam int unsigned LW     = (LANES > 1) ? $clog2(LANES) : 1,
+  localparam int unsigned PAIR   = 16 / LANES,                // beats per ingest line
+  localparam int unsigned LAW    = NBW - ((PAIR == 2) ? 1 : 0)
 ) (
   input  logic                    clk,
   input  logic                    rst_n,
   // row buffer write: one beat (LANES words) to {slot, beat}
   input  logic                    b_we,
-  input  logic [SW+NBW-1:0]       b_waddr,
-  input  logic [LANES*32-1:0]     b_wdata,
+  input  logic [SW+LAW-1:0]       b_waddr,
+  input  logic [511:0]            b_wdata,                    // one line: 16 words, word w for lane w % LANES, beat w / LANES
   // table write: one 32-bit half word of one lane; [0] K' half, [1] Q half; address {bank, g}
   input  logic [1:0]              t_we,
   input  logic [LW-1:0]           t_lane,
@@ -94,10 +96,16 @@ module tsr_vu_gdn_dot #(
   logic [LANES-1:0]    tgv, tgf, tgl;
 
   for (genvar l = 0; l < LANES; l++) begin : g_lane
-    tsr_vu_gdn_dlane #(.NSLOT(NSLOT), .NB_MAX(NB_MAX), .RD_LAT(RD_LAT), .STYLE(STYLE)) u_lane (
+    logic [32*PAIR-1:0] lw;
+    if (PAIR == 2) begin : g_pair
+      assign lw = {b_wdata[32*(l+LANES) +: 32], b_wdata[32*l +: 32]};
+    end else begin : g_one
+      assign lw = b_wdata[32*l +: 32];
+    end
+    tsr_vu_gdn_dlane #(.NSLOT(NSLOT), .NB_MAX(NB_MAX), .RD_LAT(RD_LAT), .PAIR(PAIR), .STYLE(STYLE)) u_lane (
       .clk, .rst_n,
       .d_valid(dv[l]), .d_slot(dslt[l]), .d_bank(dbnk[l]), .d_es(des[l]), .d_nb(dnb[l]), .d_par(dpar[l]),
-      .b_we, .b_waddr, .b_wdata(b_wdata[32*l +: 32]),
+      .b_we, .b_waddr, .b_wdata(lw),
       .t_we(t_we & {2{t_lane == LW'(l)}}), .t_waddr, .t_wdata,
       .ax(ax[27*l +: 27]), .dsgn(dsgn[l]), .tw(tw[64*l +: 64]),
       .tg_v(tgv[l]), .tg_first(tgf[l]), .tg_last(tgl[l]));

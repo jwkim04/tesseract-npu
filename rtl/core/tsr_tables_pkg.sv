@@ -78,6 +78,9 @@ package tsr_tables_pkg;
   localparam int unsigned TSR_ROPE_MAX_HEAD_DIM     = 1024;           // VU §5.4: head_dim is a multiple of 16 in [16, 1024]
   localparam int unsigned TSR_TOPK_MAX_K            = 16;             // VU §5.5: k in 1..16
   localparam int unsigned TSR_VU_ACCEPT_AHEAD       = 2;              // VU §7.8, CC §9.4: VU ops held at once (I3 for unit 3)
+  localparam int unsigned TSR_GDN_MIN_M             = 64;             // VU §7.12.4: GDN d_k in [64, 256]: at least four beats of the widest build (16 lanes) per row
+  localparam int unsigned TSR_GDN_MAX_M             = 256;            // VU §7.12.4: GDN d_k at most 256: the 48-bit DSP accumulator bound
+  localparam int unsigned TSR_GDN_MAX_ROWS          = 1024;           // VU §7.12.4: GDN d_v in [1, 1024]: the bv RAM
   localparam int unsigned TSR_M_FLOOR               = 32'hF180_0000;  // AT §6.3: -2^100: row-maximum floor of ATTQK MAXOUT and AMASK
   localparam int unsigned TSR_ANORM_L_FLOOR         = 32'h0080_0000;  // AT §5.7: 2^-126: ANORM divides by MAXT(l, 2^-126)
   localparam int unsigned TSR_ATT_GROUP_CELLS       = 16;             // AT §4.2: KV cells per group (groups round-robin over the channels)
@@ -511,9 +514,12 @@ package tsr_tables_pkg;
   localparam logic [31:0] TSR_CAPS_VMASK                 = 32'h0000_0080;  // [7] VMASK (M9)
   localparam int unsigned TSR_CAPS_VMASK_LSB             = 7;
   localparam int unsigned TSR_CAPS_VMASK_W               = 1;
-  localparam logic [31:0] TSR_CAPS_VU_RSVD               = 32'h0000_0F00;  // [11:8] reserved for VU extensions, 0
-  localparam int unsigned TSR_CAPS_VU_RSVD_LSB           = 8;
-  localparam int unsigned TSR_CAPS_VU_RSVD_W             = 4;
+  localparam logic [31:0] TSR_CAPS_GDN                   = 32'h0000_0100;  // [8] GDN present (the fused Gated DeltaNet state update, VU §7.12)
+  localparam int unsigned TSR_CAPS_GDN_LSB               = 8;
+  localparam int unsigned TSR_CAPS_GDN_W                 = 1;
+  localparam logic [31:0] TSR_CAPS_VU_RSVD               = 32'h0000_0E00;  // [11:9] reserved for VU extensions, 0
+  localparam int unsigned TSR_CAPS_VU_RSVD_LSB           = 9;
+  localparam int unsigned TSR_CAPS_VU_RSVD_W             = 3;
   localparam logic [31:0] TSR_CAPS_ATT_LOCAL             = 32'h0000_1000;  // [12] four-owner local FAST attention score and probability slots
   localparam int unsigned TSR_CAPS_ATT_LOCAL_LSB         = 12;
   localparam int unsigned TSR_CAPS_ATT_LOCAL_W           = 1;
@@ -1681,6 +1687,7 @@ package tsr_tables_pkg;
   localparam logic [7:0] TSR_OP_AMERGE = 8'h36;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.6: channel tree and online merge
   localparam logic [7:0] TSR_OP_ANORM  = 8'h37;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.7: final normalisation
   localparam logic [7:0] TSR_OP_VMASK  = 8'h38;  // new, unit VU, CAPS.VMASK: EX §7.2, VU §5.7: position-window mask; ILLEGAL_OP until M9
+  localparam logic [7:0] TSR_OP_GDN    = 8'h39;  // new, unit VU, CAPS.GDN: EX §7.2, VU §7.12: fused Gated DeltaNet state update of one head
   localparam logic [7:0] TSR_OP_SOP    = 8'h40;  // respec, unit VU, CAPS.VU: EX §7.2, VU §5.8: scalar op on s0..s15
   localparam logic [7:0] TSR_OP_FENCE  = 8'h7F;  // kept, unit SYNC: EX §7.2: SYNC barrier: completes when every op pushed before it is done
 
@@ -1689,7 +1696,8 @@ package tsr_tables_pkg;
   function automatic logic [3:0] tsr_op_unit(input logic [7:0] opcode);
     case (opcode)
       8'h10, 8'h11, 8'h14: return TSR_UNIT_DMA;
-      8'h12, 8'h30, 8'h31, 8'h32, 8'h33, 8'h34, 8'h35, 8'h36, 8'h37, 8'h38, 8'h40: return TSR_UNIT_VU;
+      8'h12, 8'h30, 8'h31, 8'h32, 8'h33, 8'h34, 8'h35, 8'h36, 8'h37, 8'h38, 8'h39, 8'h40:
+      return TSR_UNIT_VU;
       8'h18: return TSR_UNIT_QACT;
       8'h20, 8'h21, 8'h22: return TSR_UNIT_MVM;
       default: return TSR_UNIT_SYNC;
@@ -1699,7 +1707,7 @@ package tsr_tables_pkg;
   function automatic logic tsr_op_legal(input logic [7:0] opcode);
     case (opcode)
       8'h00, 8'h10, 8'h11, 8'h12, 8'h14, 8'h18, 8'h20, 8'h21, 8'h22, 8'h30, 8'h31, 8'h32, 8'h33,
-      8'h34, 8'h35, 8'h36, 8'h37, 8'h38, 8'h40, 8'h7F: return 1'b1;
+      8'h34, 8'h35, 8'h36, 8'h37, 8'h38, 8'h39, 8'h40, 8'h7F: return 1'b1;
       default: return 1'b0;
     endcase
   endfunction
@@ -1711,6 +1719,7 @@ package tsr_tables_pkg;
       8'h30, 8'h31, 8'h32, 8'h40: return TSR_CAPS_VU;
       8'h33: return TSR_CAPS_TOPK;
       8'h38: return TSR_CAPS_VMASK;
+      8'h39: return TSR_CAPS_GDN;
       default: return 32'h0;
     endcase
   endfunction
@@ -2409,6 +2418,66 @@ package tsr_tables_pkg;
   localparam logic [31:0] TSR_VMASK_RSV_W6        = 32'h0000_0000;
   localparam logic [31:0] TSR_VMASK_RSV_W7        = 32'h0000_0000;
   localparam logic [7:0] TSR_VMASK_WORDS          = 8'd255;         // words holding a field (w0 always)
+  // GDN 0x39 (VU §7.12.4, owner VU)
+  localparam logic [31:0] TSR_GDN_SA        = 32'h000F_0000;  // x16[3:0] s register holding alpha
+  localparam int unsigned TSR_GDN_SA_LSB    = 16;
+  localparam int unsigned TSR_GDN_SA_W      = 4;
+  localparam int unsigned TSR_GDN_SA_WORD   = 0;
+  localparam int unsigned TSR_GDN_SA_BIT    = 16;
+  localparam logic [31:0] TSR_GDN_SB        = 32'h00F0_0000;  // x16[7:4] s register holding beta
+  localparam int unsigned TSR_GDN_SB_LSB    = 20;
+  localparam int unsigned TSR_GDN_SB_W      = 4;
+  localparam int unsigned TSR_GDN_SB_WORD   = 0;
+  localparam int unsigned TSR_GDN_SB_BIT    = 20;
+  localparam logic [31:0] TSR_GDN_D         = 32'h00FF_FFFF;  // w1[23:0] S' tile, line of row 0 (may equal A: in place)
+  localparam int unsigned TSR_GDN_D_LSB     = 0;
+  localparam int unsigned TSR_GDN_D_W       = 24;
+  localparam int unsigned TSR_GDN_D_WORD    = 1;
+  localparam int unsigned TSR_GDN_D_BIT     = 32;
+  localparam logic [31:0] TSR_GDN_A         = 32'h00FF_FFFF;  // w2[23:0] S tile, line of row 0
+  localparam int unsigned TSR_GDN_A_LSB     = 0;
+  localparam int unsigned TSR_GDN_A_W       = 24;
+  localparam int unsigned TSR_GDN_A_WORD    = 2;
+  localparam int unsigned TSR_GDN_A_BIT     = 64;
+  localparam logic [31:0] TSR_GDN_K         = 32'h00FF_FFFF;  // w3[23:0] k vector line (m words)
+  localparam int unsigned TSR_GDN_K_LSB     = 0;
+  localparam int unsigned TSR_GDN_K_W       = 24;
+  localparam int unsigned TSR_GDN_K_WORD    = 3;
+  localparam int unsigned TSR_GDN_K_BIT     = 96;
+  localparam logic [31:0] TSR_GDN_Q         = 32'h00FF_FFFF;  // w4[23:0] q vector line (m words)
+  localparam int unsigned TSR_GDN_Q_LSB     = 0;
+  localparam int unsigned TSR_GDN_Q_W       = 24;
+  localparam int unsigned TSR_GDN_Q_WORD    = 4;
+  localparam int unsigned TSR_GDN_Q_BIT     = 128;
+  localparam logic [31:0] TSR_GDN_V         = 32'h00FF_FFFF;  // w5[23:0] v vector line (rows words)
+  localparam int unsigned TSR_GDN_V_LSB     = 0;
+  localparam int unsigned TSR_GDN_V_W       = 24;
+  localparam int unsigned TSR_GDN_V_WORD    = 5;
+  localparam int unsigned TSR_GDN_V_BIT     = 160;
+  localparam logic [31:0] TSR_GDN_O         = 32'h00FF_FFFF;  // w6[23:0] o vector line (rows words, tail rule of VU §4.2)
+  localparam int unsigned TSR_GDN_O_LSB     = 0;
+  localparam int unsigned TSR_GDN_O_W       = 24;
+  localparam int unsigned TSR_GDN_O_WORD    = 6;
+  localparam int unsigned TSR_GDN_O_BIT     = 192;
+  localparam logic [31:0] TSR_GDN_M         = 32'h0000_FFFF;  // w7[15:0] d_k: a multiple of 16
+  localparam int unsigned TSR_GDN_M_LSB     = 0;
+  localparam int unsigned TSR_GDN_M_W       = 16;
+  localparam int unsigned TSR_GDN_M_WORD    = 7;
+  localparam int unsigned TSR_GDN_M_BIT     = 224;
+  localparam logic [31:0] TSR_GDN_ROWS      = 32'hFFFF_0000;  // w7[31:16] d_v rows of the tile
+  localparam int unsigned TSR_GDN_ROWS_LSB  = 16;
+  localparam int unsigned TSR_GDN_ROWS_W    = 16;
+  localparam int unsigned TSR_GDN_ROWS_WORD = 7;
+  localparam int unsigned TSR_GDN_ROWS_BIT  = 240;
+  localparam logic [31:0] TSR_GDN_RSV_W0    = 32'hFF00_FF00;  // must be 0 (ILLEGAL_OP)
+  localparam logic [31:0] TSR_GDN_RSV_W1    = 32'hFF00_0000;
+  localparam logic [31:0] TSR_GDN_RSV_W2    = 32'hFF00_0000;
+  localparam logic [31:0] TSR_GDN_RSV_W3    = 32'hFF00_0000;
+  localparam logic [31:0] TSR_GDN_RSV_W4    = 32'hFF00_0000;
+  localparam logic [31:0] TSR_GDN_RSV_W5    = 32'hFF00_0000;
+  localparam logic [31:0] TSR_GDN_RSV_W6    = 32'hFF00_0000;
+  localparam logic [31:0] TSR_GDN_RSV_W7    = 32'h0000_0000;
+  localparam logic [7:0] TSR_GDN_WORDS      = 8'd255;         // words holding a field (w0 always)
   // SOP 0x40 (VU §5.8, owner VU)
   localparam logic [31:0] TSR_SOP_SUB       = 32'h0000_0F00;  // w0[11:8] function (SOP_FUNCS)
   localparam int unsigned TSR_SOP_SUB_LSB   = 8;

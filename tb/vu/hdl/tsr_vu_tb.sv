@@ -18,6 +18,8 @@ module tsr_vu_tb
   parameter  int unsigned LANE_PIPE  = 0,
   parameter  bit          HAS_TOPK   = 1'b1,
   parameter  bit          HAS_DQROW  = 1'b1,
+  parameter  bit          HAS_GDN    = 1'b0,
+  parameter  int unsigned GDN_NSLOT  = 64,
   localparam int unsigned LINES      = SPM_BYTES / TSR_LINE_BYTES,
   localparam int unsigned AW         = (LINES > 1) ? $clog2(LINES) : 1
 ) (
@@ -116,7 +118,8 @@ module tsr_vu_tb
   logic [31:0] dbg_w0;
   logic [2:0] dbg_flags;
   tsr_vu #(.SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT), .NUM_CH(NUM_CH), .FRONT_LANES(FRONT_LANES), .EXP_LANES(EXP_LANES),
-           .BACK_LANES(BACK_LANES), .LANE_PIPE(LANE_PIPE), .HAS_TOPK(HAS_TOPK), .HAS_DQROW(HAS_DQROW)) u_vu (
+           .BACK_LANES(BACK_LANES), .LANE_PIPE(LANE_PIPE), .HAS_TOPK(HAS_TOPK), .HAS_DQROW(HAS_DQROW),
+           .HAS_GDN(HAS_GDN), .GDN_NSLOT(GDN_NSLOT)) u_vu (
     .clk, .rst_n, .cmd_valid, .cmd_ready, .cmd, .done,
     // the local-intermediate path is absent from this bench: its outputs are left open
     /* verilator lint_off PINCONNECTEMPTY */

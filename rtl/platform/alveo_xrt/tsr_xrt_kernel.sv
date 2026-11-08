@@ -69,6 +69,7 @@ module tsr_xrt_kernel
   // the gather) and the DB block's trace writer and dispatch history. tsr_u200_k4 builds none of them.
   parameter bit              HAS_VU         = 1'b1,
   parameter bit              HAS_ATT        = HAS_MVM,
+  parameter bit              HAS_GDN        = 1'b0,
   parameter bit              HAS_TRW        = 1'b1,
   parameter int unsigned     HIST_DEPTH     = tsr_tables_pkg::TSR_HIST_DEPTH,
   parameter bit              MVM_GATHER_PAIR = 1'b0,
@@ -267,7 +268,7 @@ module tsr_xrt_kernel
     .SPM_BYTES(SPM_BYTES), .VL(VL), .NSREG(NSREG),
     .RD_OUTSTANDING(RD_OUTSTANDING), .CH_BYTES(CH_BYTES), .ADDR_BEAT_W(ADDR_BEAT_W),
     .HAS_MVM(HAS_MVM), .SPM_RD_LAT(SPM_RD_LAT),
-    .HAS_VU(HAS_VU), .HAS_ATT(HAS_ATT), .HAS_TRW(HAS_TRW), .HIST_DEPTH(HIST_DEPTH),
+    .HAS_VU(HAS_VU), .HAS_ATT(HAS_ATT), .HAS_GDN(HAS_GDN), .HAS_TRW(HAS_TRW), .HIST_DEPTH(HIST_DEPTH),
     .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .LOCAL_SCALE(LOCAL_SCALE), .LOCAL_SOFTCAP(LOCAL_SOFTCAP), .RV_LOCAL_TRANSPORT(RV_LOCAL_TRANSPORT), .XSLR_REG(XSLR_REG),
     .MVM_WS_FIFO(MVM_WS_FIFO), .MVM_BC_PIPE(MVM_BC_PIPE), .MVM_RES_PIPE(MVM_RES_PIPE), .MVM_GATHER_PAIR(MVM_GATHER_PAIR), .MVM_GATHER_FLITS(MVM_GATHER_FLITS), .DDR_LOCAL_PIPE(DDR_LOCAL_PIPE),
     .MVM_ACT_RD_LAT(MVM_ACT_RD_LAT), .MVM_MAC_LAT(MVM_MAC_LAT), .MVM_MUL_LAT(MVM_MUL_LAT),

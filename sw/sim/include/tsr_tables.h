@@ -83,6 +83,9 @@ extern "C" {
 #define TSR_ROPE_MAX_HEAD_DIM     1024u        // VU §5.4: head_dim is a multiple of 16 in [16, 1024]
 #define TSR_TOPK_MAX_K            16u          // VU §5.5: k in 1..16
 #define TSR_VU_ACCEPT_AHEAD       2u           // VU §7.8, CC §9.4: VU ops held at once (I3 for unit 3)
+#define TSR_GDN_MIN_M             64u          // VU §7.12.4: GDN d_k in [64, 256]: at least four beats of the widest build (16 lanes) per row
+#define TSR_GDN_MAX_M             256u         // VU §7.12.4: GDN d_k at most 256: the 48-bit DSP accumulator bound
+#define TSR_GDN_MAX_ROWS          1024u        // VU §7.12.4: GDN d_v in [1, 1024]: the bv RAM
 #define TSR_M_FLOOR               0xF1800000u  // AT §6.3: -2^100: row-maximum floor of ATTQK MAXOUT and AMASK
 #define TSR_ANORM_L_FLOOR         0x00800000u  // AT §5.7: 2^-126: ANORM divides by MAXT(l, 2^-126)
 #define TSR_ATT_GROUP_CELLS       16u          // AT §4.2: KV cells per group (groups round-robin over the channels)
@@ -565,9 +568,12 @@ extern "C" {
 #define TSR_CAPS_VMASK                 0x00000080u  // [7] VMASK (M9)
 #define TSR_CAPS_VMASK_LSB             7u
 #define TSR_CAPS_VMASK_W               1u
-#define TSR_CAPS_VU_RSVD               0x00000F00u  // [11:8] reserved for VU extensions, 0
-#define TSR_CAPS_VU_RSVD_LSB           8u
-#define TSR_CAPS_VU_RSVD_W             4u
+#define TSR_CAPS_GDN                   0x00000100u  // [8] GDN present (the fused Gated DeltaNet state update, VU §7.12)
+#define TSR_CAPS_GDN_LSB               8u
+#define TSR_CAPS_GDN_W                 1u
+#define TSR_CAPS_VU_RSVD               0x00000E00u  // [11:9] reserved for VU extensions, 0
+#define TSR_CAPS_VU_RSVD_LSB           9u
+#define TSR_CAPS_VU_RSVD_W             3u
 #define TSR_CAPS_ATT_LOCAL             0x00001000u  // [12] four-owner local FAST attention score and probability slots
 #define TSR_CAPS_ATT_LOCAL_LSB         12u
 #define TSR_CAPS_ATT_LOCAL_W           1u
@@ -1735,6 +1741,7 @@ extern "C" {
 #define TSR_OP_AMERGE 0x36u  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.6: channel tree and online merge
 #define TSR_OP_ANORM  0x37u  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.7: final normalisation
 #define TSR_OP_VMASK  0x38u  // new, unit VU, CAPS.VMASK: EX §7.2, VU §5.7: position-window mask; ILLEGAL_OP until M9
+#define TSR_OP_GDN    0x39u  // new, unit VU, CAPS.GDN: EX §7.2, VU §7.12: fused Gated DeltaNet state update of one head
 #define TSR_OP_SOP    0x40u  // respec, unit VU, CAPS.VU: EX §7.2, VU §5.8: scalar op on s0..s15
 #define TSR_OP_FENCE  0x7Fu  // kept, unit SYNC: EX §7.2: SYNC barrier: completes when every op pushed before it is done
 // Unit of a legal opcode; UNIT_SYNC for every reserved or retired opcode (they complete
@@ -1744,7 +1751,7 @@ static inline uint32_t tsr_op_unit(uint32_t opcode) {
     switch (opcode & 0xFFu) {
     case 0x10u: case 0x11u: case 0x14u: return TSR_UNIT_DMA;
     case 0x12u: case 0x30u: case 0x31u: case 0x32u: case 0x33u: case 0x34u: case 0x35u: case 0x36u:
-    case 0x37u: case 0x38u: case 0x40u: return TSR_UNIT_VU;
+    case 0x37u: case 0x38u: case 0x39u: case 0x40u: return TSR_UNIT_VU;
     case 0x18u: return TSR_UNIT_QACT;
     case 0x20u: case 0x21u: case 0x22u: return TSR_UNIT_MVM;
     default: return TSR_UNIT_SYNC;
@@ -1755,7 +1762,7 @@ static inline uint32_t tsr_op_legal(uint32_t opcode) {
     switch (opcode & 0xFFu) {
     case 0x00u: case 0x10u: case 0x11u: case 0x12u: case 0x14u: case 0x18u: case 0x20u: case 0x21u:
     case 0x22u: case 0x30u: case 0x31u: case 0x32u: case 0x33u: case 0x34u: case 0x35u: case 0x36u:
-    case 0x37u: case 0x38u: case 0x40u: case 0x7Fu: return 1u;
+    case 0x37u: case 0x38u: case 0x39u: case 0x40u: case 0x7Fu: return 1u;
     default: return 0u;
     }
 }
@@ -1768,6 +1775,7 @@ static inline uint32_t tsr_op_caps(uint32_t opcode) {
     case 0x30u: case 0x31u: case 0x32u: case 0x40u: return TSR_CAPS_VU;
     case 0x33u: return TSR_CAPS_TOPK;
     case 0x38u: return TSR_CAPS_VMASK;
+    case 0x39u: return TSR_CAPS_GDN;
     default: return 0u;
     }
 }
@@ -2496,6 +2504,66 @@ static inline uint32_t tsr_lcq_status_rank(uint32_t status) {
 #define TSR_VMASK_RSV_W6        0x00000000u
 #define TSR_VMASK_RSV_W7        0x00000000u
 #define TSR_VMASK_WORDS         0xFFu        // words holding a field (w0 always)
+// GDN 0x39 (VU §7.12.4, owner VU)
+#define TSR_GDN_SA        0x000F0000u  // x16[3:0] s register holding alpha
+#define TSR_GDN_SA_LSB    16u
+#define TSR_GDN_SA_W      4u
+#define TSR_GDN_SA_WORD   0u
+#define TSR_GDN_SA_BIT    16u
+#define TSR_GDN_SB        0x00F00000u  // x16[7:4] s register holding beta
+#define TSR_GDN_SB_LSB    20u
+#define TSR_GDN_SB_W      4u
+#define TSR_GDN_SB_WORD   0u
+#define TSR_GDN_SB_BIT    20u
+#define TSR_GDN_D         0x00FFFFFFu  // w1[23:0] S' tile, line of row 0 (may equal A: in place)
+#define TSR_GDN_D_LSB     0u
+#define TSR_GDN_D_W       24u
+#define TSR_GDN_D_WORD    1u
+#define TSR_GDN_D_BIT     32u
+#define TSR_GDN_A         0x00FFFFFFu  // w2[23:0] S tile, line of row 0
+#define TSR_GDN_A_LSB     0u
+#define TSR_GDN_A_W       24u
+#define TSR_GDN_A_WORD    2u
+#define TSR_GDN_A_BIT     64u
+#define TSR_GDN_K         0x00FFFFFFu  // w3[23:0] k vector line (m words)
+#define TSR_GDN_K_LSB     0u
+#define TSR_GDN_K_W       24u
+#define TSR_GDN_K_WORD    3u
+#define TSR_GDN_K_BIT     96u
+#define TSR_GDN_Q         0x00FFFFFFu  // w4[23:0] q vector line (m words)
+#define TSR_GDN_Q_LSB     0u
+#define TSR_GDN_Q_W       24u
+#define TSR_GDN_Q_WORD    4u
+#define TSR_GDN_Q_BIT     128u
+#define TSR_GDN_V         0x00FFFFFFu  // w5[23:0] v vector line (rows words)
+#define TSR_GDN_V_LSB     0u
+#define TSR_GDN_V_W       24u
+#define TSR_GDN_V_WORD    5u
+#define TSR_GDN_V_BIT     160u
+#define TSR_GDN_O         0x00FFFFFFu  // w6[23:0] o vector line (rows words, tail rule of VU §4.2)
+#define TSR_GDN_O_LSB     0u
+#define TSR_GDN_O_W       24u
+#define TSR_GDN_O_WORD    6u
+#define TSR_GDN_O_BIT     192u
+#define TSR_GDN_M         0x0000FFFFu  // w7[15:0] d_k: a multiple of 16
+#define TSR_GDN_M_LSB     0u
+#define TSR_GDN_M_W       16u
+#define TSR_GDN_M_WORD    7u
+#define TSR_GDN_M_BIT     224u
+#define TSR_GDN_ROWS      0xFFFF0000u  // w7[31:16] d_v rows of the tile
+#define TSR_GDN_ROWS_LSB  16u
+#define TSR_GDN_ROWS_W    16u
+#define TSR_GDN_ROWS_WORD 7u
+#define TSR_GDN_ROWS_BIT  240u
+#define TSR_GDN_RSV_W0    0xFF00FF00u  // must be 0 (ILLEGAL_OP)
+#define TSR_GDN_RSV_W1    0xFF000000u
+#define TSR_GDN_RSV_W2    0xFF000000u
+#define TSR_GDN_RSV_W3    0xFF000000u
+#define TSR_GDN_RSV_W4    0xFF000000u
+#define TSR_GDN_RSV_W5    0xFF000000u
+#define TSR_GDN_RSV_W6    0xFF000000u
+#define TSR_GDN_RSV_W7    0x00000000u
+#define TSR_GDN_WORDS     0xFFu        // words holding a field (w0 always)
 // SOP 0x40 (VU §5.8, owner VU)
 #define TSR_SOP_SUB       0x00000F00u  // w0[11:8] function (SOP_FUNCS)
 #define TSR_SOP_SUB_LSB   8u

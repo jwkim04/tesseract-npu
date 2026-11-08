@@ -1,9 +1,9 @@
-"""Mutation spot checks of the GDN unit (docs/design/02-vector-unit.md §7.12.10; the style of
+"""Mutation spot checks of the GDN engine (docs/design/02-vector-unit.md §7.12.10; the style of
 tb/vu/test_vu_mutants.py): each mutant is a one-line change of one rtl/core/tsr_vu_gdn*.sv file written to a
 private copy (build/cocotb/gdn_mutants/<id>/); the bench of that block runs on the copy and must fail.
 
-Benches: "fx2f", "dot", "upd", "coef" the block benches of tb/gdn/test_gdn.py, "unit" the whole unit against
-tsr_ref_gdn (gdn_unit: 30 heads of nine data classes).
+Benches: "fx2f", "dot", "upd", "coef" the block benches of tb/gdn/test_gdn.py, "unit" the whole engine with the lane
+model against tsr_ref_gdn (gdn_unit: 32 heads of nine data classes).
 
 Opt-in (about 3 minutes): TSR_GDN_MUTANTS=1, or -m slow, or -k mutants.
 """
@@ -45,8 +45,19 @@ MUTANTS = [
      "t3_w <= {1'b0, t2_mag};", "coef", "table entries lose their sign"),
     ("upd_alpha", "tsr_vu_gdn_upd.sv", "if (go_d[RD_LAT-1]) begin", "if (go_d[RD_LAT-2]) begin", "upd",
      "alpha and e reach the multipliers one beat early"),
-    ("ul_sub", "tsr_vu_gdn_ulane.sv", ".sub(1'b0), .out_valid, .y);", ".sub(1'b1), .out_valid, .y);", "upd",
-     "the update subtracts"),
+    ("upd_line", "tsr_vu_gdn_upd.sv", "assign line_c = (start_q ? line_h : line_q) + LW_ADR'(g_c >> LSH);",
+     "assign line_c = (start_q ? line_h : line_q) + LW_ADR'(g_c);", "upd", "the destination line advances every beat"),
+    ("upd_tag", "tsr_vu_gdn_upd.sv", "tag_q   <= tag_h;", "tag_q   <= 1'b0;", "upd", "the op tag of the row is lost"),
+    ("top_otail", "tsr_vu_gdn.sv", "(5'(i) < ol_cnt_q) ? ol_buf[i] : 32'd0;", "(5'(i) <= ol_cnt_q) ? ol_buf[i] : 32'd0;",
+     "unit", "the o line keeps a stale word past the last row"),
+    ("top_oc", "tsr_vu_gdn.sv", "assign oc_take = upd_launch ? 5'(mb_nb >> NLS) : 5'd0;",
+     "assign oc_take = upd_launch ? 5'(mb_nb) : 5'd0;", "unit", "a row takes a place per beat, not per line"),
+    ("top_vtail", "tsr_vu_gdn.sv", "vl_left <= g_slot.tail;", "vl_left <= 5'd16;", "unit",
+     "the last line of v delivers 16 words"),
+    ("top_credit", "tsr_vu_gdn.sv", "else        row_ok <= (rc_q >= (SW + 1)'(2));", "else        row_ok <= 1'b1;", "unit",
+     "rows are accepted without a free slot"),
+    ("top_dline", "tsr_vu_gdn.sv", "if (take_in && ing_row_first) dl_ram[c_alloc[SW-1:0]] <= g_slot.d0;",
+     "if (take_in && ing_row_first) dl_ram[c_alloc[SW-1:0]] <= '0;", "unit", "every row writes to line 0"),
     ("top_fs", "tsr_vu_gdn.sv", "assign fa_a = fs_issue ? bv_rdata : x2_q[x2_rp[2:0]];",
      "assign fa_a = fs_issue ? ud_u[RD_LAT-1] : x2_q[x2_rp[2:0]];", "unit", "e = u' - bv instead of bv - u'"),
     ("top_kappa", "tsr_vu_gdn.sv", "assign fm_b = fm_issueB ? bk_kappa[eb_bank] : wa_y;",
@@ -63,7 +74,7 @@ BENCH = {
     "dot": (T.DOT_SOURCES, "tsr_vu_gdn_dot", "gdn_dot"),
     "upd": (T.UPD_SOURCES, "tsr_vu_gdn_upd", "gdn_upd"),
     "coef": (T.COEF_SOURCES, "tsr_vu_gdn_coef", "gdn_coef"),
-    "unit": (T.UNIT_SOURCES, "tsr_vu_gdn", "gdn_unit"),
+    "unit": (T.UNIT_TB, "tsr_gdn_tb", "gdn_unit"),
 }
 
 
