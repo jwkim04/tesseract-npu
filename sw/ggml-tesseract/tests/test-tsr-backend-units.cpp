@@ -1553,6 +1553,24 @@ static void test_gdn_lowering() {
         }
     }
     {
+        // the L2 norm of q (a [128, 16, T] view into the convolution output, token stride of the whole channel row):
+        // one record per token, in time linear in T (a copy of the record list inside the loop doubled it per token)
+        gctx c;
+        const int64_t S = 128, H = 16, C = 6144;
+        for (int64_t T : { 2, 26, 64 }) {
+            ggml_tensor * conv = c.f32(C, T, 0x100000, "conv_out");
+            ggml_tensor * q = ggml_view_3d(c.ctx, conv, S, H, T, S * 4, conv->nb[1], 0);
+            ggml_tensor * n = ggml_rms_norm(c.ctx, q, 1e-6f);
+            n->data = fake_at(0x4000000);
+            CHECK(tsr_lower_m7(env, false, n, nullptr, &r, &why));
+            CHECK(r.kind == opl::K_RMS_NORM && r.args[opl::rms::ROWS] == (uint32_t) H && r.more.size() == (size_t) (T - 1));
+            if (T > 2) {
+                CHECK(r.more.back().args[opl::rms::SRC] == r.args[opl::rms::SRC] + (uint32_t) ((T - 1) * (C / 16)) &&
+                      r.more.back().more.empty());
+            }
+        }
+    }
+    {
         // the new state into its cache cell: the GATED_DELTA_NET result's state rows (a view of 128 x 128 x 48), one run
         gctx c;
         const int64_t S = 128, hv = 48;

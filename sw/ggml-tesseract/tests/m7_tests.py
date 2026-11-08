@@ -290,8 +290,8 @@ def cmd_graph(a: argparse.Namespace) -> int:
         return 1
     rc_id = run([kl, "compare", "--ref", cpu, "--dev", embd, "--expect-identical", "-q"])
     if rc_id != 0 and a.embd_identity == "report":
-        # the CPU's own difference between the two input paths (Qwen3.5 / 3.8: from the full-attention layers' FLASH_ATTN
-        # node on, the nodes before it are bit-identical): the floor includes it and is larger, not smaller (SW §7.9)
+        # the CPU's own difference between the two input paths (Qwen3.5 / 3.8: the nodes up to the first full-attention
+        # layer are bit-identical, two nodes in that layer differ): the floor includes it and is larger, not smaller (SW-67)
         print("m7_tests: note: the embd input path is not the token path bit for bit on the CPU for this model "
               "(--embd-identity report): the floor includes that difference")
         rc_id = 0

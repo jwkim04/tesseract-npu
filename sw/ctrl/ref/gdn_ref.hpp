@@ -1,6 +1,6 @@
 // gdn_ref.hpp — host C++ references of the Gated DeltaNet kinds SOFTPLUS (0x2D), SSM_CONV (0x2E) and
-// GATED_DELTA_NET (0x2F) (docs/design/06-software-verification.md "SW" §7.9, decisions GDN-1 to
-// GDN-4). Like the other references of sw/ctrl/ref they compose the tsr_ref_vu calls that the
+// GATED_DELTA_NET (0x2F) (docs/design/06-software-verification.md "SW" §7.9, decisions SW-60 to
+// SW-63). Like the other references of sw/ctrl/ref they compose the tsr_ref_vu calls that the
 // kernels' tile ops execute, in the kernels' order, so the kernel tests compare the firmware against
 // them bit for bit. Rows, tiles and heads never change a value: every element is computed by the
 // same sequence whatever the tiling.
@@ -42,7 +42,7 @@ int softplus_ref(const dram_view & d, const uint32_t args[6]);
 int sconv_ref(const dram_view & d, const uint32_t args[12]);
 
 // One token of one head. state: S_v rows of 16 L words (L = S_v / 16), updated in place; q, k, v:
-// S_v words each; g, beta: f32 bits; scale: f32 bits; o: S_v words out. Sequence (decision GDN-1):
+// S_v words each; g, beta: f32 bits; scale: f32 bits; o: S_v words out. Sequence (decision SW-60):
 //   alpha = EXPK(g)                         (SOP.EXP)
 //   S     = FM(S, alpha)                    (VOP.MULC)
 //   u_j   = RED.SUM(FM(S_j, k))             (VOP.MUL, RED.SUM: the 128-partial tree of VU §6.2)

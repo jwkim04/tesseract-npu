@@ -1,6 +1,6 @@
 // test_fw_gdn_ggml.cpp — fw_gdn_ggml: the Gated DeltaNet kinds' numerics (sw/ctrl/ref/gdn_ref.cpp,
 // bit-exact with the firmware by fw_gdn_rv) against the pinned ggml-cpu's ops on the same inputs
-// (docs/design/06-software-verification.md "SW" §7.9, decisions GDN-1 to GDN-4). Built with
+// (docs/design/06-software-verification.md "SW" §7.9, decisions SW-60 to SW-67). Built with
 // TSR_WITH_LLAMA only (links ggml-cpu). Also against float64 math, so a defect of the reference cannot
 // hide behind the CPU kernel's own rounding.
 //

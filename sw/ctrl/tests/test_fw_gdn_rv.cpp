@@ -557,6 +557,39 @@ int main(int argc, char ** argv) {
         run_errors();
         return test_finish("fw_gdn_rv errors");
     }
+    if (mode == "bench") {
+        // One record per launch on the 4 MiB-SPM configuration with the fixed schedule: the core cycles of the launch
+        // (the record, the executor and the launch overhead; "softplus 16" is nearly all overhead). The numbers behind
+        // the decode-token estimate of SW §7.9. Not part of ctest.
+        struct bc {
+            const char * name;
+            void (*add)(suite &);
+        };
+        static const bc cases[] = {
+            {"softplus n 16", [](suite & s) { softplus(s, 16, 1, 0, 0, false, -1, "n 16"); }},
+            {"softplus n 48", [](suite & s) { softplus(s, 48, 1, 0, 0, false, -1, "n 48"); }},
+            {"sconv C 6144 T 1 (2B)", [](suite & s) { sconv(s, 6144, 4, 1, 1, true, 0, 0, false, "2B"); }},
+            {"sconv C 10240 T 1 (27B)", [](suite & s) { sconv(s, 10240, 4, 1, 1, true, 0, 0, false, "27B"); }},
+            {"gdn S_v 128 H_k 16 H_v 16 T 1 (2B)", [](suite & s) { gdn(s, 128, 16, 16, 1, 1, gdn_opts{}, "2B"); }},
+            {"gdn S_v 128 H_k 16 H_v 48 T 1 (27B)", [](suite & s) { gdn(s, 128, 16, 48, 1, 1, gdn_opts{}, "27B"); }},
+            {"gdn S_v 128 H_k 16 H_v 48 T 4", [](suite & s) { gdn(s, 128, 16, 48, 4, 1, gdn_opts{}, "27B T 4"); }},
+            {"gdn S_v 128 H_k 16 H_v 48 T 16", [](suite & s) { gdn(s, 128, 16, 48, 16, 1, gdn_opts{}, "27B T 16"); }},
+        };
+        for (const bc & c : cases) {
+            suite s{};
+            s.name = c.name;
+            s.cfg = base_cfg(4u << 20);
+            s.seed = 0xBE4C;
+            c.add(s);
+            build(s);
+            mirror m;
+            run_obs ro;
+            run_suite(s, "fixed", m, true, &ro);
+            printf("BENCH %-40s %10llu core cycles\n", c.name, (unsigned long long)ro.cycles);
+            obs_free(&ro.o);
+        }
+        return test_finish("fw_gdn_rv bench");
+    }
     fprintf(stderr, "unknown mode %s\n", mode.c_str());
     return 2;
 }

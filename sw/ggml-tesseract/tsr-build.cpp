@@ -406,8 +406,9 @@ static bool tsr_lower_rms(const tsr_build_env & env, bool probe, const ggml_tens
                                 tsr_bits(1.0f / (float) n), wh, wp };
     opl::put_args(w, r->args);
     if (per_token && !probe) {
+        const tsr_rec first = *r;      // a copy of r with no `more` yet: copying r inside the loop would copy the records so far
         for (int64_t t = 1; t < x->ne[2]; ++t) {
-            tsr_rec q = *r;
+            tsr_rec q = first;
             q.args[opl::rms::SRC] = X.h + (uint32_t) (t * (int64_t) (x->nb[2] / TSR_LINE_BYTES));
             q.args[opl::rms::DST] = D.h + (uint32_t) (t * (int64_t) rows * D.stride);
             r->more.push_back(q);
@@ -854,7 +855,7 @@ static bool tsr_lower_unary(const tsr_build_env & env, bool probe, const ggml_te
     } else if (op == GGML_UNARY_OP_SIGMOID) {
         func = opl::unary::SIGMOID;
     } else if (op == GGML_UNARY_OP_SOFTPLUS) {
-        softplus = true;              // composed from VU functions (SW §7.9, GDN-3)
+        softplus = true;              // composed from VU functions (SW §7.9, SW-62)
     } else {
         return tsr_fail(why, "UNARY %s is not on the device (TANH, GELU, SILU, SIGMOID, SOFTPLUS)", ggml_unary_op_name(op));
     }

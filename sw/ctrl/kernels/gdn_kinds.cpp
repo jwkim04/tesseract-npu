@@ -2,7 +2,7 @@
 // GATED_DELTA_NET (0x2F) (docs/design/06-software-verification.md "SW" §7.9; handler interface
 // tsr/exec.hpp, SW §7.3; planning tsr/plan_gdn.hpp; references sw/ctrl/ref/gdn_ref.cpp, which
 // composes the same tsr_ref_vu calls in the same order). They are built from existing VU functions
-// and the DMA; nothing here needs a new RTL op (decision GDN-1).
+// and the DMA; nothing here needs a new RTL op (decision SW-60).
 //
 // Deps (exec.hpp contract). The op's predecessors d (and the ring block's release tickets, DMA
 // tickets dropped: queue order implies them) go on the op's first LD. A VU op depends on the LD of

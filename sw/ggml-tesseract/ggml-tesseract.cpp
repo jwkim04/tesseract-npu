@@ -57,6 +57,7 @@
 // non-WEIGHTS buffer in host memory (exercises the staged path), TSR_COMPUTE_WINDOWS=io limits
 // compute windows to ch0 IO (M6 placement), TSR_OPL_SPLIT=<n> cuts every op list after n records,
 // TSR_STAGE_KIB=<n> sets the IO staging area size,
+// TSR_DUMP_RE=<regex> TSR_DUMP_DIR=<dir> dumps the device value of matching nodes (tsr_dump_node),
 // TSR_OPL_CRC=1 sets the `graph` launch flag VERIFY_CRC (the executor checks each list's CRC, SW
 // §7.3). TSR_LOAD_THREADS=<n> sets the workers that convert and repack weights while they are
 // uploaded (default: online CPUs, at most 16). TSR_STATS=1 prints, when the backend is freed, the

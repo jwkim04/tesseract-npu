@@ -1,5 +1,5 @@
 // test-tsr-gdn-logits.cpp — ctest ggml_tesseract_gdn_logits (docs/design/06-software-verification.md §7.9
-// "Gated DeltaNet", SW-60): the logits of a Gated DeltaNet model (llama.cpp's qwen35 graph: the conv state, the
+// "Gated DeltaNet", SW-67): the logits of a Gated DeltaNet model (llama.cpp's qwen35 graph: the conv state, the
 // SSM_CONV group, the recurrent state in a device cache) on the device against the CPU, for short prompts and
 // single-token steps. klcheck's KL criterion has a floor and a mean over 24 rows; a wrong hidden state of a
 // random tiny model can hide inside it. This test checks the logits of every step directly: cosine and the

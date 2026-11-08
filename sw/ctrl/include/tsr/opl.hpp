@@ -274,11 +274,11 @@ constexpr uint32_t DST = 0, DST_STRIDE = 1, SRC = 2, SRC_STRIDE = 3, N = 4, ROWS
 constexpr uint32_t TANH = 0u, GELU16 = 1u, SILU = 2u, EXP = 3u, GELU = 4u, SIGMOID = 5u, FUNC_MAX = SIGMOID;
 }  // namespace unary
 
-// The GDN kinds (SW §7.9; docs/design/02-vector-unit.md §7.12 for the fused op these compose).
+// The GDN kinds (SW §7.9): composed from existing VU operations and the DMA.
 // Handles are {ch[31:28], beat[27:0]}; strides are in lines; f32 parameters are bit patterns.
 //
 // SOFTPLUS (0x2D): dst = softplus(src) = log(1 + exp(x)) for `rows` rows of n f32, by the stable
-// composition max(x, 0) + log1p(exp(-|x|)) of VU functions (SW §7.9, decision GDN-3).
+// composition max(x, 0) + log1p(exp(-|x|)) of VU functions (SW §7.9, decision SW-62).
 namespace softplus {
 constexpr uint32_t DST = 0, DST_STRIDE = 1, SRC = 2, SRC_STRIDE = 3, N = 4, ROWS = 5, NARGS = 6;
 // The f32 constants of the composition (bit patterns; the firmware has no float): COEF[k] =
@@ -307,7 +307,7 @@ constexpr uint32_t D_CONV_MAX = 8u;
 // BETA + n * BETA_TOKEN_STRIDE. State of (seq, head): S_v rows of L lines at STATE_{IN,OUT} +
 // (seq * H_v + h) * S_v * L (row j holds S[.][j]: the ggml-cpu layout). Output row (n, h) at
 // DST + (n * H_v + h) * L. Per token: S *= exp(g); delta_j = (v_j - S_j . k) * beta;
-// S_j += k * delta_j; o_j = (S_j . q) * SCALE (SW §7.9, decision GDN-1).
+// S_j += k * delta_j; o_j = (S_j . q) * SCALE (SW §7.9, decision SW-60).
 namespace gdn {
 constexpr uint32_t DST = 0, STATE_OUT = 1, STATE_IN = 2, Q = 3, Q_HEAD_STRIDE = 4, Q_TOKEN_STRIDE = 5, K = 6,
                    K_HEAD_STRIDE = 7, K_TOKEN_STRIDE = 8, V = 9, V_HEAD_STRIDE = 10, V_TOKEN_STRIDE = 11, G = 12,

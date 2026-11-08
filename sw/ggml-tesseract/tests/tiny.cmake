@@ -135,7 +135,11 @@ if (TARGET llama)
                          --out-dir ${CMAKE_BINARY_DIR}/sw/ggml-tesseract/${_name}
                          --n-prompts 4 -n 17 --prompt-tail 8 -ub 16 -t 4 --min-decodes 64
                          --min-kl ${_min_kl} --min-top1 ${_min_top1} ${_extra_args})
-        set_tests_properties(${_name} PROPERTIES TIMEOUT 300 ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal")
+        set(_timeout 300)
+        if (_model MATCHES "^qwen35")
+            set(_timeout 900)      # S_v 128: 40 s alone, several times that on a loaded host
+        endif()
+        set_tests_properties(${_name} PROPERTIES TIMEOUT ${_timeout} ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal")
     endforeach()
     # W3b fix (SW-43): a prefill ubatch of 692 tokens (the first four prompts joined, -ub 1024): its
     # FLASH_ATTN needs 174 MSUM + 87 FA_NEW preload lines (> 256, one list), so supports_op
