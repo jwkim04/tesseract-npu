@@ -154,6 +154,8 @@ constexpr kind_slot make_slot(uint32_t kind) {
     if (kind == opl::K_MUL_MAT_SCALE) return slot_for(&kind_mulmat_scale, opl::kind_nargs(kind));
     if (kind == opl::K_MUL_MAT_SOFTCAP) return slot_for(&kind_mulmat_softcap, opl::kind_nargs(kind));
 #endif
+    if (kind == opl::K_MOE_ROUTE) return slot_for(&kind_moe_route, opl::kind_nargs(kind));
+    if (kind == opl::K_MUL_MAT_ID) return slot_for(&kind_mul_mat_id, opl::kind_nargs(kind));
     if (kind >= opl::K_ADD && kind <= opl::K_UNARY) return slot_for(m7_handler(kind), opl::kind_nargs(kind), m7_fast(kind));
     return kind_slot{nullptr, nullptr, W0X_NONE, 1u};
 }

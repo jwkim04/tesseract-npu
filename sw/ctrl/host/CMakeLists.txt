@@ -176,7 +176,7 @@ foreach(_snip build hdr runtime exec kernels e2e)   # e2e: W2a integration (fw_m
 endforeach()
 # W2b: the M7 kinds' tests, required (m7layer links the other three snippets' reference libraries);
 # kindrevs: the kinds' numerics revisions (fw_kind_revs, SW §6.9).
-foreach(_snip elem kvfa normrope m7layer kindrevs)
+foreach(_snip elem kvfa normrope m7layer moe kindrevs)
     include(${TSR_CTRL_DIR}/tests/${_snip}.cmake)
 endforeach()
 # [additive] SDK example kernel (sw/ctrl/examples/vadd.cpp, ctest fw_example_vadd)
