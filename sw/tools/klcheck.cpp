@@ -650,6 +650,7 @@ struct session {
     embd_table           embd;
     llama_batch          batch{};
     bool                 have_batch = false;
+    bool                 mrope = false;        // M-RoPE / IMROPE model: an embedding batch carries 4 position streams
     uint64_t             n_prefill_tok = 0, n_gen_tok = 0;
 
     ~session() {
@@ -710,6 +711,14 @@ static void create_context(session & s, const run_opts & o, int n_ctx_needed, in
     s.n_batch = (int) cp.n_batch;
     s.batch   = llama_batch_init(s.n_batch, s.input == KLC_INPUT_TOKENS ? 0 : s.n_embd, 1);
     s.have_batch = true;
+    const enum llama_rope_type rt = llama_model_rope_type(s.model);
+    s.mrope = rt == LLAMA_ROPE_TYPE_MROPE || rt == LLAMA_ROPE_TYPE_IMROPE;
+    if (s.mrope && s.input != KLC_INPUT_TOKENS) {
+        // llama_batch_init allocates one position per token; an embedding batch of an M-RoPE model has four per
+        // token, section-major (src/llama-batch.cpp: pos[j * n_tokens + i]). The token path expands one to [p, p, p, 0].
+        s.batch.pos = (llama_pos *) realloc(s.batch.pos, sizeof(llama_pos) * 4u * (size_t) s.n_batch);
+        if (!s.batch.pos) die("out of memory (batch positions)");
+    }
 }
 
 static std::vector<int32_t> tokenize(session & s, const std::string & text, bool chat) {
@@ -794,6 +803,17 @@ static void decode_span(session & s, uint32_t seq_index, const std::vector<int32
             b.n_seq_id[k]  = 1;
             b.seq_id[k][0] = 0;
             b.logits[k]    = (i >= r0 && i < r1) ? 1 : 0;
+        }
+        if (s.mrope && s.input != KLC_INPUT_TOKENS) {
+            // the text positions of the token path, [p, p, p, 0], in the embedding batch's section-major layout
+            const int n = b.n_tokens;
+            for (int k = 0; k < n; ++k) {
+                const llama_pos p = b.pos[k];
+                b.pos[k] = p;
+                b.pos[n + k] = p;
+                b.pos[2 * n + k] = p;
+                b.pos[3 * n + k] = 0;
+            }
         }
         // -v: one marker line before and after each llama_decode, so that a log reader can assign
         // the backend's per-launch lines (TSR_DEBUG=1) and the scheduler's split listings

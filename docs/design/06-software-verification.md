@@ -930,7 +930,7 @@ word2..: args[n_args]                  (n_args <= 16 * n_slots - 2)
 - Row strides are in lines.
 - All f32 parameters are bit patterns computed by the host (§6.1).
 
-**Kinds and argument words.** M6 implements 0x01 and 0x10; M7 the rest. Rev is the kind's numerics
+**Kinds and argument words.** M6 implements 0x01 and 0x10; M7 the rest. The Gated DeltaNet kinds (0x2D to 0x2F) are numbered from the top of the free range downwards. Rev is the kind's numerics
 revision at Tesseract Basis 0.1.0 (`opl::kind_rev`, §6.9). Shapes are flattened to
 rows: `rows` = ne1·ne2·ne3, and every row of a tensor starts on a line (ensured by `supports_op`).
 
@@ -949,10 +949,14 @@ rows: `rows` = ne1·ne2·ne3, and every row of a tensor starts on a line (ensure
 | 0x18 | SET_ROWS_KV | 1 | 0 cache base handle, 1 cache row stride (AT units), 2 src, 3 src stride, 4 idx preload byte offset (I64; the host checks idx < 2^31), 5 n_rows, 6 row elements, 7 which (0 K, 1 V), 8 plane base, 9 E/64 \| LG << 16, 10 plane kind, 11 stream (AT §12) | SET_ROWS into a KV buffer: QACT A32 + KVST per run of consecutive cells (AT §5.1) |
 | 0x19 | FLASH_ATTN | 1 | 0 dst, 1 dst token stride, 2 q, 3 q head stride, 4 q token stride, 5 K cache base, 6 V cache base, 7 n_kv, 8 head_dim, 9 n_head, 10 n_head_kv, 11 n_tokens, 12 MSUM preload byte offset, 13 f32-mask handle (with a mask: always the copy for this record's scale, written only when needed, because the cached list outlives per-token mask changes and a rule-3 GENERAL tile reads it also when the MSUM is not GENERAL; 0xFFFF_FFFF only without a mask; W3b, SW-48), 14 scale (f32), 15 softcap (must be 0), 16 K plane base, 17 V plane base, 18 E/64 \| LG << 16, 19 D, 20 G, 21 flags (AT §12; two slots) | FLASH_ATTN_EXT with K/V in KV buffers; the device never reads the F16 mask |
 | 0x1A | CPY | 1 | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 row lines, 5 rows | CPY/CONT f32 → f32 with contiguous rows |
-| 0x1B | UNARY | 1 | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 n, 5 rows, 6 func (0 TANH, 1 GELU16 (llama.cpp GELU), 2 SILU, 3 EXP, 4 GELU exact tanh form) | UNARY ops the VU has |
+| 0x1B | UNARY | 1 | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 n, 5 rows, 6 func (0 TANH, 1 GELU16 (llama.cpp GELU), 2 SILU, 3 EXP, 4 GELU exact tanh form, 5 SIGMOID) | UNARY ops the VU has |
 | 0x1C | MUL_MAT_SCALE | 1 | MUL_MAT words 0–11, requiring no addend, addend stride 0 and flags 0; word 12 FP32 scale | single-consumer MUL_MAT → SCALE |
 | 0x1D | MUL_MAT_SOFTCAP | 1 | same restricted MUL_MAT words 0–11; words 12/13 exact FP32 pre/post scales | MUL_MAT → SCALE → TANH → SCALE |
-| 0x20–0x3F | reserved for M8 | — | MUL_MAT_ID, TOPK/ARGMAX, SOFT_MAX | |
+| 0x2D | SOFTPLUS | 1 | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 n, 5 rows | UNARY SOFTPLUS (§7.9, SW-62) |
+| 0x2E | SSM_CONV | 1 | 0 dst, 1 dst token stride, 2 x (token rows), 3 x token stride, 4 state in, 5 state out, 6 taps (d_conv rows of C), 7 C, 8 d_conv, 9 T, 10 n_seqs, 11 flags (bit0 SILU) | SSM_CONV with its CONCAT window, state CPY and SILU (§7.9, SW-61, SW-64) |
+| 0x2F | GATED_DELTA_NET | 1 | 0 dst, 1 state out, 2 state in, 3 q, 4 q head stride, 5 q token stride, 6 k, 7 k head stride, 8 k token stride, 9 v, 10 v head stride, 11 v token stride, 12 g, 13 g token stride, 14 beta, 15 beta token stride, 16 S_v, 17 H_k, 18 H_v, 19 T, 20 n_seqs, 21 scale (f32) | GATED_DELTA_NET, scalar gate, K = 1 (§7.9, SW-60) |
+| 0x20–0x2C | reserved for M8 | — | MUL_MAT_ID, TOPK/ARGMAX, SOFT_MAX | |
+| 0x30–0x3F | test kinds | — | | |
 
 **Optional local epilogues (November 2026).** The two new kinds above require
 both the booted image's kind entry and `CAPS.MVM_LOCAL_SCALE` (bit 13) or
@@ -1310,7 +1314,7 @@ summarises them (W2b, as built).
 | SET_ROWS_KV | per run of consecutive cells (index order, at most 64 rows): LD the source rows, QACT A32 (K = E, at most T_MAX rows per QACT), KVST of the run (AT §5.1) | run·(E/16 + QA_LINES(A32, E)); the one-tile block when it fits | `kv_ref.cpp` (`tsr_qact` + `tsr_ref_kvst` per row) |
 | FLASH_ATTN | AT §6.6 (normative; at the W2b integration reconciled with `tsr_ref_fa`: query tiles, the head subsets inside each chunk, the shared chunk planner `sw/sim/include/tsr_fa_plan.h`): per query tile LD Q, QACT per token; per chunk ATTQK per head subset (FAST) or ATTQK + AMASK (GENERAL), ASMAX, ATTPV per head subset (LSUM), AMERGE, with ATTPV / AMERGE issued one chunk behind ATTQK / ASMAX; ANORM; ST. Buffers S[3], P[2], MK[4] and, for GENERAL chunks, the mask rows M[2] (AT §7.1; the mask LD into M[k mod 2] waits for the AMASK of chunk k − 2), every op ≤ 2 deps | one ring block per op (`plan_attn.hpp` `fa_plan`: 18,948 lines for Qwen2.5-32B decode) | `fattn_ref.cpp` (`tsr_ref_fa`, AT §13.1) |
 | CPY | LD rows, ST rows (one run when dense on both sides); rows beyond half the budget in chunks | block; the one-tile block when it fits | copy (`elem_ref.cpp`) |
-| UNARY | LD, VOP func in place (TANH, GELU16, SILU, EXP, GELU), ST | rows·L | `elem_ref.cpp` (`tsr_ref_math`) |
+| UNARY | LD, VOP func in place (TANH, GELU16, SILU, EXP, GELU, SIGMOID), ST | rows·L | `elem_ref.cpp` (`tsr_ref_math`) |
 
 The numerics of a composite kernel are defined by its tile-op sequence. Each kernel's header
 comment states the sequence. A host C++ reference in `sw/ctrl/ref/` composes the same `tsr_ref`
@@ -1478,6 +1482,95 @@ inputs and args. It compares DONE, every output byte and the per-unit completion
   own leaf (a shared body measured +22–29 RISC-V cycles per record) and the general paths are cold
   (compiled for size). The budget applies to the production image (`tsr-fw.elf`; `fw_elf_image`,
   `fw_elf_test_image`); test images (production plus test kernels) are stamped against the whole ITCM.
+
+### 7.9 Gated DeltaNet and the Qwen3.5 / 3.8 layer graph (SW-60 to SW-67)
+
+Status (2026-11-09): the three kinds, their planners, references, the backend lowering and the tests are in. The
+Qwen3.8 2B model runs its whole decode graph on the simulator in one launch per token and agrees with the CPU at
+the usual klcheck floor (below). No RTL changed and no card run was made. The kinds compose existing VU
+operations, so they run on any image that has the VU (`CAPS` bit 0, the K4 full-feature image).
+
+**The models.** llama.cpp calls the family `qwen35`. It is hybrid: layer `il` is full attention when
+`(il + 1) % full_attention_interval == 0` (interval 4), otherwise Gated DeltaNet ("GDN", the `recurrent_layers`
+array of the GGUF). The sizes that matter:
+
+| Model | Layers | GDN / attention | E | S_v | K heads / V heads | Conv channels C | State per layer | Attention |
+|---|---|---|---|---|---|---|---|---|
+| Qwen3.8 2B (empero-ai distill, Q4_K_M) | 24 (+1 unused MTP block) | 18 / 6 | 2048 | 128 | 16 / 16 | 6144 | 1 MiB | 8 heads, 2 KV heads, D 256 |
+| Qwen3.8 27B (ggml-org, Q4_K_M) | 64 | 48 / 16 | 5120 | 128 | 16 / 48 | 10240 | 3 MiB | 24 heads, 4 KV heads, D 256 |
+
+(`d_conv` is 4 in both. C is `2 · H_k · S_v + H_v · S_v`. One sequence of the 27B holds 144 MiB of GDN state and
+5.6 MiB of conv history in its 48 GDN layers.) The pinned llama.cpp supports the family (`qwen35`; the larger
+MoE family `qwen4exp` is a separate arch). No llama.cpp patch is needed: everything below lowers from the graph
+the pinned llama.cpp emits (SW-64, SW-65).
+
+**The GDN layer graph** (one token; names are those of `src/models/qwen35.cpp`, nodes in graph order):
+
+| Step | ggml nodes | Device |
+|---|---|---|
+| norm | `RMS_NORM` + `MUL` (`attn_norm`) | RMS_NORM with weight (fused, SW-42) |
+| projections | `MUL_MAT` qkv (C), z (`attn_gate`, H_v S_v), alpha, beta (H_v each) | MUL_MAT |
+| conv state | `GET_ROWS` of `cache_r_l` by `rs_s_copy`, `CONCAT` with the transposed qkv, `SSM_CONV`, `SILU`, a `CPY` of the last `d_conv - 1` columns into `cache_r_l` | CPY ×2 at the CONCAT (the window), one SSM_CONV (SILU and the state CPY folded in), SW-64 |
+| q, k | views of the conv output, `RMS_NORM` (eps / n) and `SCALE` by 1 / √S_v (the L2 norm) | RMS_NORM, SCALE |
+| gates | `ADD` dt bias, `SOFTPLUS`, `MUL` ssm_a → g; `SIGMOID` of beta | ADD, SOFTPLUS, MUL, UNARY SIGMOID |
+| state | `GET_ROWS` of `cache_s_l`, `SCALE` by 0 in place for a new sequence | GET_ROWS, SCALE |
+| recurrence | `GATED_DELTA_NET` (scalar gate, K = 1), a `CPY` of the new state into `cache_s_l` | GATED_DELTA_NET, CPY (rows regrouped) |
+| output | `RMS_NORM` + `MUL` (ssm_norm), `SILU` of z, `MUL`, `MUL_MAT` ssm_out, residual `ADD` | RMS_NORM, UNARY SILU, MUL, MUL_MAT |
+| FFN | norm, gate / up `MUL_MAT`, SWIGLU, down `MUL_MAT`, residual | as for every model |
+
+The attention layers of the family: a joint Q and gate projection (`MUL_MAT` of 2 · H · D outputs, split by
+views), per-head `RMS_NORM` + `MUL` of q and k, `ROPE` in IMROPE mode, `FLASH_ATTN_EXT` (D = 256), a SIGMOID
+gate on the attention output (`MUL`), the output projection. IMROPE carries four position streams. For text all
+three section streams equal the token position (the fourth is 0), which makes IMROPE the NEOX rotation over
+`n_dims` (SW-65). `graph_compute` checks the streams of the position input and stops with a message if they
+differ (vision positions).
+
+**State layouts.** `cache_s_l` is `H_v` states per cell, state `h` being `S_v` rows of `S_v` f32, row `j` holding
+`S[.][j]` (the ggml-cpu layout; one row is `S_v / 16` lines). The recurrence of `ggml_gated_delta_net`, per token
+and head, is  `S *= exp(g); delta_j = (v_j - S_j · k) β; S_j += k delta_j; o_j = (S_j · q) / √S_v`  (q and k head
+`h mod H_k`). `cache_r_l` holds `d_conv - 1` rows of `C` f32 per cell (time-major rows of channel vectors). This is
+not ggml's channel-major order. The caches are in a Tesseract buffer (a device window, SW-65) and only the device
+reads them, so the layout is the device's. llama.cpp copies and clears whole cells (sequence copy, clear, state
+save and load), which keeps working because those are byte copies of a cell. The conv taps (`ssm_conv1d.weight`,
+`[d_conv, C]` tap-fastest in the GGUF) are re-laid out as `d_conv` rows of `C` f32 when the weight is uploaded.
+
+**Kinds** (record words in `tsr/opl.hpp`, planners in `tsr/plan_gdn.hpp`, handlers in `kernels/gdn_kinds.cpp`,
+references in `ref/gdn_ref.cpp`). Kind ids are numbered from the top of the free range downwards (0x30 to 0x3F
+stay test kinds). All are at numerics revision 1 (`kind_revs.txt`).
+
+| Kind | Id | Words | Tile composition | Numerics |
+|---|---|---|---|---|
+| SOFTPLUS | 0x2D | dst, dst stride, src, src stride, n, rows | row tile of 5 buffers; 20 VOPs (SW-62) | `softplus_ref` |
+| SSM_CONV | 0x2E | dst, dst token stride, x, x token stride, state in, state out, taps, C, d_conv, T, n_seqs, flags (bit 0 SILU) | per sequence and channel tile: LD taps, state rows and token rows; `d_conv` VOP.MUL, `d_conv - 1` VOP.ADD in tap order; optional VOP.SILU; ST the T output rows and the new state rows (SW-61) | `sconv_ref` |
+| GATED_DELTA_NET | 0x2F | dst, state out, state in, q / k / v with head and token strides, g and beta with token strides, S_v, H_k, H_v, T, n_seqs, scale | per (sequence, head): LD the state tile, then per token 13 VU ops (below); ST the state tile (SW-60, SW-63) | `gdn_ref` |
+
+GATED_DELTA_NET per head and token: `SOP.EXP` α = exp(g); `VOP.MULC` S = S α; `VOP.MUL` P = S · k (broadcast of k
+over the rows) and `RED.SUM` u (one value per row; the fixed 128-partial tree of VU §6.2); `VOP.SUB` and
+`VOP.MULC` delta = (v − u) β; `VOP.MULCADD` S = k δ + S (δ_j a per-row scalar); `VOP.MUL` P = S · q and `RED.SUM` w;
+`VOP.MULC` o = w · scale. Heads run in order with the next head's state loading while the VU works on the
+current one; the next token's vectors load two tokens ahead. One ring block holds two state tiles (the head in flight and the next one), the
+product tile and two token slots (3 · S_v · L + 2 (5 L + 2) lines, L = S_v / 16; 3,156 lines for S_v = 128, so
+the block is far below half of the planning budget; S_v up to 256 fits). The result tensor is `[S_v H_v, T n_seqs + S_v n_seqs]` rows: the attention
+rows, then the new states. DRAM traffic per token and layer is the state read and written once.
+
+**Softplus (SW-62).** The ggml node is `softplus(x) = log(1 + exp(x))`; the CPU computes `x > 20 ? x : logf(1 + expf(x))`,
+which loses the relative accuracy of small results (`1 + exp(x)` rounds). `SOFTPLUS` computes the stable form
+`max(x, 0) + log1p(exp(-|x|))`. The VU has EXP, RECIP and the multiply-add functions but no log. `log1p(h)` for
+`h = exp(-|x|)` in (0, 1] is `2 atanh(s)` with `s = h / (2 + h)` in (0, 1/3], by the odd series to `z^5` (`z = s²`,
+coefficients `2 / (2k + 1)`). That is 20 VOPs for any row length. Against float64 the error is below 5 ulp for results
+above 1e-3 and below 4.2e-7 relative for every result above 1e-30; against ggml-cpu the absolute difference is below
+1.2e-6 (test `fw_gdn_ggml`). A VU `LOG1P` function was not added: the gate vector is H_v values per layer, and one
+SOFTPLUS launch is dominated by its launch cost (about 18.5 K core cycles).
+
+**Cost.** Measured on the simulator (fixed schedule, one record per launch, 4 MiB SPM, `test_fw_gdn_rv bench`; the
+numbers include the launch overhead of about 18 K cycles shown by `softplus`): GATED_DELTA_NET 151.6 K cycles for
+the 2B (16 heads) and 425.0 K for the 27B (48 heads) at one token; 1.655 M for four tokens and 6.576 M for sixteen,
+so 8.6 K cycles per head and token in steady state (13 dependent VU ops; each of the two `RED.SUM` takes 16 cycles per row, 2,048 cycles for the 128 rows). SSM_CONV 14.6 K (2B) and 19.0 K (27B), SOFTPLUS 18.5 K. At the 27B's 48 GDN layers the recurrence
+takes 20.4 M core cycles per decode token: 102 ms at 200 MHz, 74 ms at 276.3 MHz. The fused GDN op of the VU design
+(8 elements per cycle at 200 MHz) is estimated at 23.8 ms per token, so the composed recurrence is about 4.3 times
+slower than the fused one at the same clock. It does not need new hardware and its numerics are the oracle's;
+it is the baseline against which a fused op or local state buffers are measured. See also
+`docs/performance.md`.
 
 ---
 
@@ -1744,12 +1837,15 @@ The `xrt` kdev reads the `TSR_XRT_DMA*` and `TSR_XRT_CH_GIB` settings.
 | SCALE | F32 |
 | RMS_NORM | F32 rows |
 | GLU | SWIGLU, or GEGLU lowered to GEGLU16 (the CPU's fp16-table form, VU §6.5); split form or non-swapped single form |
-| ROPE | NORM/NEOX, F32, I32 positions that are a graph input, freq_factors F32 or none, head_dim a multiple of 16 (≤ 1024) and n_dims a multiple of 32 (NEOX) or 16 (NORM) (VU §5.4), no mrope/vision modes |
+| ROPE | NORM/NEOX, F32, I32 positions that are a graph input, freq_factors F32 or none, head_dim a multiple of 16 (≤ 1024) and n_dims a multiple of 32 (NEOX) or 16 (NORM) (VU §5.4); IMROPE as NEOX when the position streams are equal (text, SW-65); no other mrope / vision modes |
 | GET_ROWS | F32 src0 in a compute buffer, I32 ids that are a graph input |
 | SET_ROWS | dst in a KV buffer, F32 src, I64 ids that are a graph input (any other SET_ROWS: false, R1) |
 | FLASH_ATTN_EXT | AT §2.6: Q F32; K/V q8_0 views in KV buffers; D = DK = DV ∈ {64, 128, 256, 512}; mask F16 or none; `max_bias` = 0; `logit_softcap` = 0; no sinks; `n_kv_max` = 0 |
-| CPY, CONT | F32 → F32 with contiguous rows |
-| UNARY TANH, GELU | TANH; GELU lowered to GELU16 |
+| CPY, CONT | F32 → F32 with contiguous rows; a copy whose two sides have rows of different length but the same values, into one dense run, regroups into the source's rows (the new GDN state into its cache cell) |
+| UNARY | TANH; GELU lowered to GELU16; SILU; SIGMOID; SOFTPLUS (kind SOFTPLUS, SW-62). A tensor whose rows break the 64-byte rule is one flat row when it is contiguous (the `[1, H_v]` gate tensors) |
+| GATED_DELTA_NET | F32; scalar gate (`g->ne[0] = 1`), K = 1, S_v a multiple of 16 up to 256, H_v a multiple of H_k, g / beta contiguous with H_v a multiple of 16 when there is more than one token, state contiguous; q / k / v rows with heads and tokens 64-byte spaced (§7.9) |
+| CONCAT, SSM_CONV, CPY of a conv state | only as the group of §7.9 (SW-64): CONCAT(state, transposed tokens) along time, SSM_CONV with F32 taps, d_conv 2 … 8, C a multiple of 16, and the state CPY, with the state cache in a Tesseract buffer |
+| GET_ROWS, SCALE, CPY on a recurrent-state cache | when the cache is in a Tesseract buffer; a cache in another backend's memory keeps the op on the CPU (SW-65) |
 | DUP, nodes without `GGML_TENSOR_FLAG_COMPUTE` | false (R1) |
 | everything else | false |
 
@@ -2069,6 +2165,14 @@ Other ctests:
   test, 23 s for 0.5B. `ggml_tesseract_graph_qwen_tiny_ub1024` (W3b fix): one prompt of 692 tokens
   (four prompts joined) at `-ub 1024`, one prefill ubatch whose FLASH_ATTN (T > 680, SW-43) runs on
   the CPU; prefill launches reported only, 16 decodes one launch each, KL ratio 0.66;
+- Gated DeltaNet (§7.9, SW-67): `fw_gdn_rv` / `fw_gdn_rv_errors` (the three kinds on `tsr_rv`, 8 schedules, race
+  `fatal`, bit-exact against `gdn_ref.cpp`, written DRAM equal to the output regions; refused records), `fw_gdn_ggml`
+  (LLAMA builds: SOFTPLUS against float64 and ggml-cpu, SSM_CONV and GATED_DELTA_NET against ggml-cpu and float64
+  up to 512 tokens), `fw_kind_revs` (the three kinds' corpus digests), `ggml_tesseract_units` (the lowering of the
+  gate tensors, GATED_DELTA_NET at the 2B and 27B shapes, the conv group and its window records, the regrouped
+  state CPY), `ggml_tesseract_graph_qwen35_tiny` and `_s128` (tiny Qwen3.5-style models, `gen_tiny_models.py`: 3 GDN +
+  1 attention layer, S_v 32 and 128; one launch per decode token, the embd identity and klcheck's criterion) and `ggml_tesseract_gdn_logits_<model>` (the logits of every step of prompts of 1, 2, 5 and 17 tokens
+  against the CPU). `test_fw_gdn_rv <image> bench` prints the cycles of one record per launch (§7.9).
 - `ggml_tesseract_backend_ops_<op>` (W3b; SW §10.4 M7 gate item 4 with `ggml_tesseract_backend_ops`):
   test-backend-ops on `sim` per M7 op filter (ADD, MUL, RMS_NORM, SWIGLU, GEGLU, ROPE, GET_ROWS, CPY,
   CONT, TANH, GELU, SCALE, SOFTCAP, RMS_NORM_MUL_ADD, ADD_RMS_NORM, ADD_ADD, MUL_MAT_ADD,
@@ -2282,6 +2386,14 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
 | SW-52 | test-backend-ops coverage of the M7 kinds (2026-10-31, W3b; §10.4 item 4) | One ctest per op filter (`ggml_tesseract_backend_ops_<op>`, 21) with a minimum count of supported cases (0 for SCALE / SOFTCAP, whose cases have 10- or 100-float rows, and for SET_ROWS / ROPE_SET_ROWS / FLASH_ATTN_EXT, whose tensors are not KV-cache tensors); FA and SET_ROWS on the device are covered by `ggml_tesseract_attn` | one ctest for every op; exact supported counts | Per-op reports; the minimum stops a supports_op regression from passing as "everything unsupported"; test-backend-ops cannot place its K / V / dst in a KV buffer (amends AT §13.6) |
 | SW-53 | Host memory and the M7 kinds (2026-10-31, W3b fix; amends §8 R6, SW-26 / 46) | Only MUL_MAT is staged; supports_op refuses an M7 op with an operand in a HOSTED buffer or one that will be (ANY with leaf data only: control vectors, LoRA adapters; every buffer under `TSR_FORCE_HOST`), so it runs on the CPU; a compute buffer without a window is found only at graph_compute, which aborts naming it and the remedies; a refused SET_ROWS into the device KV cache is reported before the scheduler stops (R10: streams, `TSR_FORCE_HOST` needs `-nkvo`) | staging every M7 operand through IO; a host fallback per record | Correct runs with a control vector (tiny Qwen2: 2 launches per token, text identical to the CPU) and `TSR_FORCE_HOST -nkvo` instead of aborts; staging all kinds is a lowering of its own for a case that does not occur at `-ub 512 -c 4096` (0 staged chunks for every model run) |
 | SW-54 | Versions (2026-10-31; §6.9, EX §7.5, EX-12) | Four numbers: the Tesseract Core capability in `VERSION` (1.0); the Tesseract Basis SemVer in `tsr/version.h` (0.1.0; `.note.tsr` word 6, HELLO r6); the Basis ABI (1); a numerics revision per kind (`opl::kind_rev`, `.tsr_kinds`, HELLO r4[31:16] = the kind table signature), guarded by `fw_kind_revs`. Images name the capability they need (`cap_min`); a core without the control core is refused by `CTL_ID` = 0; the backends refuse an image of an older Basis (major, minor) and route only the booted image's kinds; `CTL_ID[7:0]`, `ADAPTER_VERSION` major and `DBG_ID[7:0]` are 1 | one product version for everything; the Basis version in `tsr_tables.py`; a runtime version in HELLO; a control-core version images compare with; pinning revisions in the host | The capability is the hardware contract and the Basis version the software's, so a software release never regenerates RTL packages; a capability per image works as a cubin's `sm_XY`; the existing bit-exact tests compare kernels with references that move with them, so only a digest guard makes (kind, revision) a reproducibility key; recording revisions in reports (klcheck, numcheck) is enough for reproducibility, enforcing them would break subset images |
+| SW-60 | Gated DeltaNet recurrence (2026-11-09; §7.9) | `GATED_DELTA_NET` (0x2F) composes the delta rule from existing VU operations: `SOP.EXP`, `VOP.MULC`, `VOP.MUL` + `RED.SUM`, `VOP.SUB`, `VOP.MULCADD`, per head and token, FP32 state in DRAM, head tiles in the SPM; order and rounding are `gdn_ref_step` | a fused state-update RTL op (VU §7.12, 23.8 ms per token estimated); CPU fallback | No RTL, no new opcode, the numerics are the oracle's, and it runs on any image with the VU. It is 4.3 times slower than the fused op at the same clock (§7.9), which is the baseline a fused op is measured against. |
+| SW-61 | Convolution kind and conv state (2026-11-09; §7.9) | `SSM_CONV` (0x2E) works on channel vectors: the window of `d_conv - 1 + T` rows of C channels, taps as `d_conv` rows of C, summed in tap order, SILU optional; the state cache holds `d_conv - 1` rows of C per cell and belongs to the device; the taps are re-laid out at weight upload | ggml's channel-major order with a transpose kernel; a CPU-side conv | Channel vectors are what the VU lanes take; the state needs no transpose. llama.cpp only copies, clears and saves whole cells, which are byte copies. |
+| SW-62 | Softplus (2026-11-09; §7.9) | `SOFTPLUS` (0x2D) is the stable composition `max(x, 0) + log1p(exp(-|x|))` with `log1p` from the odd atanh series: 20 VOPs; UNARY gains SIGMOID (func 5) | a VU `LOG1P` function; the CPU's `logf(1 + expf(x))` form | The VU has no log. The composition is within 5 ulp of float64 (above 1e-3) and costs one launch's worth of cycles per layer; a new VU function would be RTL for H_v values per layer. |
+| SW-63 | Tiling of the recurrence (2026-11-09; §7.9) | One ring block per op: two state tiles, the product tile and two token slots; heads in order, the next head's state loads during the current head; tokens in order; S_v a multiple of 16 up to 256; the planner (`plan_gdn.hpp`) is shared by firmware and host | a block per head; tokens in parallel across heads | The recurrence is serial in tokens and independent in heads. Prefetching the next head's state hides its DMA. A block per op gives the planner one decision (3,156 lines at S_v 128). |
+| SW-64 | The SSM_CONV group and ggml-alloc lifetimes (2026-11-09; §7.9) | The pinned graph is `CONCAT → SSM_CONV → SILU` with a state `CPY`. At the CONCAT two CPY records fill the CONCAT's result buffer with the window (state rows, then token rows); at the SSM_CONV one record reads the window, folds in the SILU and writes the new state rows into the cache; the state CPY is absorbed | one SSM_CONV record at the SSM_CONV reading the CONCAT's inputs; materialising the CONCAT in ggml's order | ggml-alloc frees the CONCAT's inputs after the CONCAT and may give their memory to nodes before the SSM_CONV. The first design read them there and got zeros on the 2B model while the tiny model passed. The window lives exactly as long as ggml-alloc keeps the CONCAT result, and costs two small CPY records. |
+| SW-65 | Recurrent state caches and IMROPE (2026-11-09; §7.9) | Buffers holding `cache_r_l*` / `cache_s_l*` are device windows (not leaf data); `GET_ROWS`, `SCALE` (zeroing), `CPY` and the group records address them in place; a cache in another backend's memory (`-nkvo`) keeps every op that touches it on the CPU; IMROPE with equal section positions is the NEOX rotation, and `graph_compute` checks the position streams | copy the state to the host each token; mrope on the device | The graph reads and writes the state in place; one copy per token would be the cost of the state. Text positions are `[p, p, p, 0]`. |
+| SW-66 | llama.cpp is unchanged for GDN (2026-11-09; §7.9) | No `third_party/patches/0003-*` for GDN: the backend takes the fused `GATED_DELTA_NET` node, the conv group and the state nodes as the pinned graph emits them | a patch that builds a device-friendly graph | `resolve_fused_ops` keeps the fused node when the backend supports it. The only llama.cpp-side facts needed (recurrent memory names, the build_rs form, the mixed input select) are in the pinned source. |
+| SW-67 | GDN test method (2026-11-09; §10.2) | Tiny Qwen3.5-style models (S_v 32 and 128, 3 GDN + 1 attention layer) with klcheck graph tests; `test-tsr-gdn-logits` compares the logits of every step of 1, 2, 5 and 17 token prompts with the CPU's (cosine ≥ 0.9995, largest difference ≤ 3 % of the logit range); klcheck's embd path writes the four M-RoPE position streams | klcheck's KL alone | klcheck's KL missed a convolution that returned zeros on the tiny model (ratio 1.2): a random tiny model hides a wrong hidden state. klcheck's embedding input path gave an M-RoPE model one position per token, where llama.cpp reads four, section-major; the CPU's embd path then differed from its token path (KL 6.5e-3 on the 2B, equal to the "floor"). klcheck now writes `[p, p, p, 0]` in that layout, and the embd identity is bit-exact (512 of 512 rows). |
 
 ---
 

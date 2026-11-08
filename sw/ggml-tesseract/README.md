@@ -368,8 +368,7 @@ bound and the W3b measurements are in its header.
 - **Gated DeltaNet (Qwen3.5 / 3.8, SW §7.9).** `qwen35-tiny-q8_0.gguf` and `qwen35-tiny-s128-q8_0.gguf`
   (4 layers: 3 Gated DeltaNet and 1 full attention with the joint Q and gate projection, per-head norms and IMROPE;
   S_v 32 with 4 key heads for 16 value heads, and S_v 128 with the real models' 16 key heads and D 256), the graph
-  tests `ggml_tesseract_graph_qwen35_tiny` and `_s128` (the embd identity is reported, not required: the CPU's own
-  embd path differs from its token path in the attention layer) and `ggml_tesseract_gdn_logits_<model>`
+  tests `ggml_tesseract_graph_qwen35_tiny` and `_s128` and `ggml_tesseract_gdn_logits_<model>`
   (`tests/test-tsr-gdn-logits.cpp`: the logits of every step of prompts of 1, 2, 5 and 17 tokens against the CPU).
   The logits test exists because klcheck's mean KL on a random tiny model did not see a convolution that returned
   zeros (SW-64, SW-67). The device holds the conv and recurrent state caches (`cache_r_l*`, `cache_s_l*`) as device

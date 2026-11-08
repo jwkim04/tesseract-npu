@@ -124,17 +124,12 @@ if (TARGET llama)
         list(GET _f 1 _model)
         list(GET _f 2 _min_kl)
         list(GET _f 3 _min_top1)
-        # Qwen3.5 / 3.8: the CPU's embd path differs from its token path in the attention layers (m7_tests.py)
-        set(_extra_args "")
-        if (_model MATCHES "^qwen35")
-            set(_extra_args --embd-identity report)
-        endif()
         add_test(NAME ${_name}
                  COMMAND ${_tiny_py} ${_tiny_m7} graph --klcheck $<TARGET_FILE:klcheck>
                          --model ${TSR_TINY_MODEL_DIR}/${_model} --prompts ${TSR_TINY_MODEL_DIR}/tiny-prompts.txt
                          --out-dir ${CMAKE_BINARY_DIR}/sw/ggml-tesseract/${_name}
                          --n-prompts 4 -n 17 --prompt-tail 8 -ub 16 -t 4 --min-decodes 64
-                         --min-kl ${_min_kl} --min-top1 ${_min_top1} ${_extra_args})
+                         --min-kl ${_min_kl} --min-top1 ${_min_top1})
         set(_timeout 300)
         if (_model MATCHES "^qwen35")
             set(_timeout 900)      # S_v 128: 40 s alone, several times that on a loaded host

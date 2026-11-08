@@ -72,6 +72,13 @@ results below use the single seed 1 unless a row says otherwise.
   reproduces the token path **bit for bit**. `klcheck all` checks this on every run (an extra CPU
   replay with `--input embd`, compared with `--expect-identical`). That check guarantees the floor
   measures the nudge and nothing else.
+  For a model with M-RoPE or IMROPE (Qwen3.5 / 3.8, `LLAMA_ROPE_TYPE_MROPE` / `IMROPE`) an embedding batch needs four
+  positions per token in llama.cpp's section-major layout (`pos[j * n_tokens + i]`, `src/llama-batch.cpp`), where a
+  token batch has one and llama.cpp expands it to `[p, p, p, 0]`. klcheck writes `[p, p, p, 0]` that way (it
+  allocates the four-fold array itself, `llama_batch_init` allocates one per token). Before that was added, the
+  embd path of Qwen3.8 2B differed from its token path by a mean KL of 6.5e-3 on 512 rows, and the "floor" was that
+  difference, not the nudge (ratio 0.35); with it the path is bit-identical (512 of 512 rows) and the floor is
+  2.24e-3 (ratio 1.06).
 - **How:** element j of the embedding of token index `pos` in sequence `seq` becomes
   `nextafterf(x, ±inf)`. The sign is the top bit of `splitmix64(key + j)`, where
   `key = splitmix64(splitmix64(splitmix64(seed) ^ seq) ^ (pos << 1))`. Every element moves by
