@@ -13,7 +13,8 @@ bring-up of the fourth link", [performance.md](performance.md) "The full-feature
 
 What passed (all bit-identical to the C simulator at `T_MAX` 4 and `CAPS` 0x21 unless a KL is given):
 
-- `tsr-selftest`: id 5 passes (184 of 184 results) from the second run after a load on; the first run after a load fails id 5 (below).
+- `tsr-selftest`: id 5 passes (184 of 184 results) from the second run after a load on; the first run after a load fails id 5 (below; the
+  cause is an RTL reset bug, fixed in the source).
 - Trace replays through the `replay` kernel: `m2` 123, `gen` 26, `m3` 171, `vu` 196, `at` 98 (was 75 and 23 failed), `ctrl` 131; 745
   in all, 0 failed.
 - M6: 0.5B 8 x 64 ratio 1.077, 512 of 512 rows; 32B 2 x 16 ratio 0.750, 32 of 32 (the figures of the second link, every digit).
@@ -29,19 +30,26 @@ What passed (all bit-identical to the C simulator at `T_MAX` 4 and `CAPS` 0x21 u
 Open:
 
 - The first `selftest` after an image load fails id 5 in two lines (area lines 531 and 532, the causal ATTQK score block, read
-  back as zero). It repeated in 19 of 19 loads, also on the second link's image, so it does not come from the fix or the stages.
-  An ATTPV that executes before the run prevents it (replaying the `at` traces up to `traces/at/errors/at_s53_0009`, the 8th
-  passing one, does; fewer, or `m2` / `vu` traces, do not). The real workloads are not affected so far: the 98 `at` traces and the
-  M7 0.5B replay as the first use after a load are bit-exact. Why an earlier ATTPV changes ATTQK output lines is not found, and no
-  simulation was run for it. Suspects to read: state in the attention units that is not reset and that ATTPV leaves in a defined
-  state, and the selftest's missing dependency of the causal ATTQK on the final `ST` (`sw/ctrl/kernels/selftest.cpp`, `t_at`).
-  Reproduce: load another image, then `TSR_XCLBIN=<k4full> tsr-selftest --device xrt --no-mem --ids 5`
-  (`build/card/link4/run_firstrun.sh` and `run_bisect.sh` do the cycles).
+  back as zero). **Cause found and fixed in the source (branch `k4full`, not in the image).** The ATTPV output stage of every
+  cluster (`tsr_mvm_pv`, `ob_zero_q`) was reset to `ng == 0`, and `ng` is a setup flop that is 0 after configuration. After a load
+  every PV unit held a zero-line job with no op running. The first ATTPV let the gather take about five of these jobs per cluster
+  before its own start reached the unit; they were written to lines of the setup flops of the ATTQK before (here SPM lines 0, 530,
+  531 and lines of `parts`). The start of the unit and the end of an op clear the stage, so only the first ATTPV after a load is hit.
+  Verilator starts flops at random values, so no bench saw it. With every flop at zero (`TSR_RAND_RESET=0`) the packaged core
+  reproduces the card exactly (area lines 531 and 532, first launch only). A card run of a copy of the kernel that stores SPM
+  lines 0 to 3 back showed the extra zero line at SPM line 0 on the first run of 3 of 3 fresh loads, as the simulation predicts.
+  Details: [platform-u200.md](platform-u200.md) §8.8 and §14.5. Tests: `tb/at` `test_at_mvm_zero_state`, `tb/core`
+  `test_k4_selftest_first_run`. **Needs a relink to reach the card** (the user decides). Until then a first ATTPV after a load can
+  write about 20 zero lines to SPM lines picked by stale setup flops; the M7 runs after a load were bit-exact so far.
+  Not the cause (ruled out): the missing dependency of the causal ATTQK in `t_at` (the C simulator with 120 random schedules and
+  the race detector fatal passes; the ops are in order on the MVM unit and the final `ST` waits for the ATTPV through the AMERGE
+  chain). Reproduce on the card: load another image, then `TSR_XCLBIN=<k4full> tsr-selftest --device xrt --no-mem --ids 5`.
 - The DB §8.7 self-check of the trace writer still reports differences from the PERF counters (RETIRED 14,432 against 14,737 op records
   in the 647 replays; the same numbers on both images; DMA, QACT, VU `RUN` sums 0.2 to 5.8 % above the counters). No result is wrong.
 - Prefill is slower than on the host at `T_MAX` 4 for the vector-unit kinds and for attention on the device (0.5B 407 to 338 tok/s).
-- `tsr-selftest` counts 184 results in a passing run; the log of the second link's run said 184 passed and 1 failed. The reason for
-  the one-count difference is not known (the transport counts are the same, 2,082 launches).
+- `tsr-selftest` counts 184 results in a passing run. The log of the second link's run said 184 passed and 1 failed because that
+  run used `--log-out FILE`, which adds one check (the log words were written). With `--log-out` a passing run counts 185 (checked on
+  the card). No test went missing.
 - Branch `k4full` is not merged into the main checkout's branch (`codex/k4-route-fixes`, which has the older read-modify-write KVST).
 
 ## Earlier: the full-feature image on the card, ATTPV fault found (second link, branch `k4full`, November 8, morning)
