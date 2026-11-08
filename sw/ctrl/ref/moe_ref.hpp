@@ -7,7 +7,7 @@
 // LOGITS + t * LOGITS_STRIDE lines give the k expert numbers and weights of tsr_ref_moe_route. The ids
 // go to the first line of row t of the IDS tensor (IDS + t * IDS_STRIDE lines): words 0 .. k-1 the
 // numbers, words k .. 15 zero (the rest of the row is untouched). The weights go packed to W: word
-// t * k + j. Tiles of 16 tokens store whole lines, so the words after the last token's weights up to
+// t * k + j. Tiles of 64 tokens store whole lines, so the words after the last token's weights up to
 // the end of its line are zero.
 //
 // mul_mat_id_ref, per (token t, slot j) of the record (tsr::opl::mmid words): e = the I32 at IDS + t *

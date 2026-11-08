@@ -3,7 +3,7 @@
 // themselves run on tsr_rv in fw_kernels_moe_rv; this test holds what the host build can reach directly:
 //
 //   1. the planners (tsr/plan_moe.hpp): the refusals of their header comment, the tiling of MOE_ROUTE
-//      (tiles of 16 tokens, ring block lines) and of MUL_MAT_ID (token block, head block) on a grid of
+//      (tiles of 64 tokens, ring block lines) and of MUL_MAT_ID (token block, head block) on a grid of
 //      shapes, RET_SCRATCH exactly when the block exceeds the budget, plan_kind / plan_op dispatch,
 //      opl::check_args;
 //   2. the RISC-V selection (the kernel's integer top-k) against tsr_ref_topk on random words, on words from
@@ -35,14 +35,14 @@ void test_route_plans() {
     tsr::kind_plan kp{};
     CHECK(tsr::plan_moe_route(a, mr::NARGS, pl::LIMITS_U200, &kp) && kp.status == opl::RET_OK, "route plans");
     CHECK(kp.scratch_lines == 8u + 1u + 2u && kp.n_tiles == 1u && kp.tile_rows == 1u && kp.row_lines == 8u, "route T=1 block");
-    for (uint32_t T : { 2u, 15u, 16u, 17u, 31u, 32u, 33u, 512u, 4096u }) {
+    for (uint32_t T : { 2u, 15u, 16u, 17u, 63u, 64u, 65u, 129u, 512u, 4096u }) {
         a[mr::T] = T;
         a[mr::LOGITS_STRIDE] = 8u;
         a[mr::IDS_STRIDE] = 8u;
         CHECK(tsr::plan_moe_route(a, mr::NARGS, pl::LIMITS_U200, &kp), "route T=%u plans", T);
-        const uint32_t tr = T < 16u ? T : 16u;
-        CHECK(kp.tile_rows == tr && kp.n_tiles == (T + 15u) / 16u, "route T=%u: %u tiles of %u", T, kp.n_tiles, kp.tile_rows);
-        CHECK(kp.scratch_lines == tr * 8u + 1u + 2u * tr + pl::vu_lines(tr * 8u), "route T=%u: block %u", T, kp.scratch_lines);
+        const uint32_t tr = T < 64u ? T : 64u;
+        CHECK(kp.tile_rows == tr && kp.n_tiles == (T + 63u) / 64u, "route T=%u: %u tiles of %u", T, kp.n_tiles, kp.tile_rows);
+        CHECK(kp.scratch_lines == tr * 8u + pl::vu_lines(tr) + 2u * tr + pl::vu_lines(tr * 8u), "route T=%u: block %u", T, kp.scratch_lines);
         CHECK(tsr::plan::plan_op(pl::U200_K4, opl::K_MOE_ROUTE, a, mr::NARGS).status == opl::RET_OK, "plan_op route");
     }
     // refusals

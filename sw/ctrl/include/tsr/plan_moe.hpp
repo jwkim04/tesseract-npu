@@ -5,10 +5,10 @@
 // tsr/plan.hpp's ("M7 planning"), which declares plan_moe_route / plan_mul_mat_id and includes this
 // file after the declarations.
 //
-// MOE_ROUTE. Per tile of tr = min(T, 16) tokens (the c vector of a tile is one line, VU §4.3) one ring
+// MOE_ROUTE. Per tile of tr = min(T, 64) tokens (the c vector of a tile is up to four lines, VU §4.3) one ring
 // block, in this order:
 //     P    tr x L(n_expert)   the logits, then the softmax probabilities (in place)
-//     V    1                  the c vector: max, then 1 / sum, then 1 / (sum of the selected)
+//     V    L(tr)              the c vector: max, then 1 / sum, then 1 / (sum of the selected)
 //     SEL  tr                 one line per token: the k selected probabilities, then their weights (in place)
 //     IDL  tr                 one line per token: the k expert numbers, 0 in the rest of the line
 //     PK   L(tr k)            the weights packed, k words per token (not used when tr = 1: SEL is the packed form)
@@ -54,7 +54,7 @@ constexpr route_geom route_geometry(uint32_t n_expert, uint32_t k, uint32_t T) {
     g.tr = T < opl::moer::TILE_TOKENS ? T : opl::moer::TILE_TOKENS;
     g.n_tiles = ceil_div(T, opl::moer::TILE_TOKENS);
     g.pk_lines = vu_lines(g.tr * k);
-    g.lines = g.tr * g.ln + 1u + 2u * g.tr + (g.tr > 1u ? g.pk_lines : 0u);
+    g.lines = g.tr * g.ln + vu_lines(g.tr) + 2u * g.tr + (g.tr > 1u ? g.pk_lines : 0u);
     return g;
 }
 
@@ -158,8 +158,8 @@ constexpr kind_plan mmid(uint32_t fmt, uint32_t N, uint32_t K, uint32_t slot_str
 }  // namespace moe_check
 }  // namespace plan
 static_assert(plan::moe_check::route(1u).status == opl::RET_OK && plan::moe_check::route(1u).scratch_lines == 8u + 1u + 2u &&
-                  plan::moe_check::route(16u).status == opl::RET_OK && plan::moe_check::route(16u).n_tiles == 1u &&
-                  plan::moe_check::route(17u).n_tiles == 2u && plan::moe_check::route(512u).n_tiles == 32u,
+                  plan::moe_check::route(64u).status == opl::RET_OK && plan::moe_check::route(64u).n_tiles == 1u &&
+                  plan::moe_check::route(65u).n_tiles == 2u && plan::moe_check::route(512u).n_tiles == 8u,
               "plan_moe.hpp: MOE_ROUTE of 128 experts, 8 used, plans on the U200");
 static_assert(plan::moe_check::mmid(plan::FMT_Q4_K, 1408u, 2816u, 0u, 1u, false).status == opl::RET_OK &&
                   plan::moe_check::mmid(plan::FMT_Q4_K, 1408u, 2816u, 0u, 1u, false).aux[2] == 1u &&

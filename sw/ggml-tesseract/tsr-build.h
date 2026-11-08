@@ -74,6 +74,15 @@
 #include "tsr-msum.h"
 #include "tsr-opl.h"
 
+// An expert weight tensor as MUL_MAT_ID addresses it (SW-60): the device format, the W_OFF of expert 0 and the
+// per-channel stride of one expert (both in beats), and the number of experts. Probe mode passes none.
+struct tsr_moe_w {
+    uint32_t fmt = 0;
+    uint32_t w_off = 0;
+    uint32_t exp_stride = 0;
+    uint32_t n_expert = 0;
+};
+
 // Where a tensor's first byte lives on the device.
 struct tsr_tloc {
     uint32_t ch = 0;
@@ -110,6 +119,9 @@ struct tsr_build_env {
     // Probe mode: a FLASH_ATTN's mask can be summarized (W3b kv: tsr_msum_mask_supported); no mask is
     // always fine (nomask).
     std::function<bool(const ggml_tensor *)> fa_mask_probe;
+    // Probe mode: t is a weight MUL_MAT_ID can address: the type loads (a device format or convertible), the
+    // buffer holds weights or raw bytes the backend converts lazily (the rules of MUL_MAT's src0).
+    std::function<bool(const ggml_tensor *)> moe_w_probe;
 };
 
 // Pass 1: nodes that cost nothing on the device.
@@ -167,13 +179,51 @@ bool tsr_fuse_mm_softcap(const tsr_build_env & env, const ggml_tensor * mm, cons
 // lowering). The no-ops are supported; DUP and a SET_ROWS that does not write a KV cache are not (R1).
 bool tsr_build_supports(const tsr_build_env & env, const ggml_tensor * op, std::string * why);
 
+// MoE (SW-60 to SW-65; docs/spec.md §13). llama.cpp's build_moe_ffn emits, for softmax gating with a normalised top-k:
+//     ffn_moe_probs  SOFT_MAX(logits)                 [n_expert, T]
+//     ffn_moe_argsort  ARGSORT(probs, DESC), ffn_moe_topk  VIEW [k, T]
+//     ffn_moe_weights  GET_ROWS(RESHAPE(probs) [1, n, T], topk) [1, k, T]   (+ RESHAPE [k, T])
+//     SUM_ROWS, CLAMP(6.1035e-5, inf), DIV            [k, T] (+ RESHAPE [1, k, T])
+// one MOE_ROUTE record absorbs the six nodes (the group of the SOFT_MAX): the ids are written into the first line of
+// each row of the ARGSORT tensor, the weights into the DIV tensor. And, after a MUL_MAT_ID with a per-expert output
+// scale (Gemma 4's ffn_down_exps.scale):
+//     RESHAPE(scale) [1, E], REPEAT [1, E, T], GET_ROWS(repeat, topk) [1, k, T], MUL(MUL_MAT_ID, gathered)
+// the MUL_MAT_ID record takes the scale table (y = FM(dot, scale[id])) and a CPY record moves its result into the MUL's
+// tensor; REPEAT, GET_ROWS and MUL are absorbed. A node of either chain that the fusion did not absorb has no device kind.
+struct tsr_moe_route {
+    int softmax = -1, argsort = -1, get_rows = -1, sum_rows = -1, clamp = -1, div = -1;
+    const ggml_tensor * topk = nullptr;      // the VIEW [k, T] of the ARGSORT tensor (ids of the experts)
+};
+struct tsr_moe_scale {
+    int mmid = -1, repeat = -1, get_rows = -1, mul = -1;
+    const ggml_tensor * table = nullptr;     // the F32 [n_expert] tensor (a leaf)
+};
+
 // Pass 3: fusion pairs of a graph (decisions above). with[i] = k: node i's record absorbs node k
 // (MUL_MAT + ADD or RMS_NORM + MUL); into[k] = i. Pairs need build-mode locations (env.loc).
+// route_of[i] / scale_of[i]: the index into routes / scales of the group headed by node i (SOFT_MAX / MUL_MAT_ID), else -1;
+// into[k] = the head for every absorbed member of a group.
 struct tsr_fusion {
     std::vector<int32_t> with, into, softcap_mid, softcap_tail;
+    std::vector<int32_t> route_of, scale_of;
+    std::vector<tsr_moe_route> routes;
+    std::vector<tsr_moe_scale> scales;
     uint32_t n_pairs = 0;
 };
 tsr_fusion tsr_build_fusion(const tsr_build_env & env, const ggml_cgraph * cg);
+
+// MoE lowering. tsr_lower_moe_route: the MOE_ROUTE record of a group (probe: the question of supports_op for the head);
+// tsr_lower_mul_mat_id: the MUL_MAT_ID record of a node, with the scale group's table when sc != nullptr (the record then
+// writes the MUL_MAT_ID's own tensor); w: the resolved weights (nullptr in probe mode). False with *why if a record cannot
+// be expressed or the firmware's planner refuses it.
+bool tsr_lower_moe_route(const tsr_build_env & env, const ggml_cgraph * cg, const tsr_moe_route & g, tsr_rec * out,
+                         std::string * why);
+bool tsr_lower_mul_mat_id(const tsr_build_env & env, bool probe, const ggml_tensor * node, const tsr_moe_scale * sc,
+                          const tsr_moe_w * w, tsr_rec * out, std::string * why);
+// The CPY record that moves the scaled MUL_MAT_ID result into the MUL's tensor (src: the MUL_MAT_ID's tensor).
+bool tsr_lower_moe_scale_copy(const tsr_build_env & env, const ggml_tensor * mmid, const ggml_tensor * mul, tsr_rec * out,
+                              std::string * why);
+
 
 // Passes 4-6 for one record: its preload entries (deduplicated; FA_NEW from fanew for a FLASH_ATTN),
 // their offsets into its words, its DRAM ranges and its dependencies (b.add). Returns the op index,

@@ -234,7 +234,11 @@ struct tsr_tensor_rec {
     uint32_t N = 0;
     uint32_t K = 0;
     uint64_t w_off = 0;           // byte offset of W_OFF (identical on every channel)
-    uint64_t ch_bytes = 0;        // bytes reserved per channel = R * ROW_BEATS * 64
+    uint64_t ch_bytes = 0;        // bytes reserved per channel = n_exp * exp_ch_bytes
+    // Expert tensor (MoE, spec §4 "Expert tensors", SW-60): n_exp matrices of N x K, ggml dimension 2; expert e is
+    // symmetric-allocated at w_off + e * exp_ch_bytes (EXP_STRIDE = exp_ch_bytes / 64 beats). n_exp = 1: a matrix.
+    uint32_t n_exp = 1;
+    uint64_t exp_ch_bytes = 0;    // bytes of one expert per channel = R * ROW_BEATS * 64
     bool     complete = false;    // all bytes received and stored
     std::vector<uint8_t> staging; // split upload in progress: original ggml bytes
     tsr_intervals have;           // received byte ranges of `staging`
@@ -278,13 +282,15 @@ struct tsr_lazy_key {
     int      type;
     uint32_t N;
     uint32_t K;
+    uint32_t n_exp;
 
     bool operator<(const tsr_lazy_key & o) const {
         if (buf_id != o.buf_id)   return buf_id < o.buf_id;
         if (src_off != o.src_off) return src_off < o.src_off;
         if (type != o.type)       return type < o.type;
         if (N != o.N)             return N < o.N;
-        return K < o.K;
+        if (K != o.K)             return K < o.K;
+        return n_exp < o.n_exp;
     }
 };
 
@@ -292,7 +298,8 @@ struct tsr_lazy_entry {
     uint64_t gen = 0;             // source buffer generation the conversion was made from
     uint32_t fmt = 0;
     uint64_t w_off = 0;
-    uint64_t ch_bytes = 0;
+    uint64_t ch_bytes = 0;        // all experts, per channel
+    uint64_t exp_ch_bytes = 0;    // one expert, per channel
 };
 
 // W3b builder: a graph's cached plan (SW §8 R7, §9.3 "cached per graph identity"): the op lists one
@@ -620,6 +627,34 @@ static void tsr_load_weight_rows(tsr_device * d, tsr_tensor_rec & rec, uint32_t 
         });
 }
 
+// Expert tensors (MoE, SW-60): the n_exp x N rows of the ggml tensor in order. Row rr is row rr % N of expert
+// rr / N, and expert e sits at w_off + e * exp_ch_bytes on every channel (spec §4 EXP_STRIDE). Rows [r0, r1)
+// at src (row r0), as tsr_store_weight_rows per expert.
+static void tsr_store_expert_rows(tsr_device * d, enum ggml_type type, uint32_t fmt, uint32_t N, uint32_t K,
+                                  uint64_t exp_ch_bytes, uint64_t w_off, const uint8_t * src, uint32_t r0, uint32_t r1) {
+    const size_t src_rb = ggml_row_size(type, K);
+    while (r0 < r1) {
+        const uint32_t e = r0 / N, lo = r0 - e * N, hi = std::min<uint32_t>(r1 - e * N, N);
+        tsr_store_weight_rows(d, type, fmt, N, K, w_off + (uint64_t) e * exp_ch_bytes, src, lo, hi);
+        src += (size_t) (hi - lo) * src_rb;
+        r0 += hi - lo;
+    }
+}
+
+// The same rows read back in the tensor's type (debug get_tensor).
+static void tsr_load_expert_rows(tsr_device * d, tsr_tensor_rec & rec, uint32_t r0, uint32_t r1, uint8_t * dst) {
+    const size_t src_rb = ggml_row_size(rec.type, rec.K);
+    const uint64_t w_off = rec.w_off;
+    while (r0 < r1) {
+        const uint32_t e = r0 / rec.N, lo = r0 - e * rec.N, hi = std::min<uint32_t>(r1 - e * rec.N, rec.N);
+        rec.w_off = w_off + (uint64_t) e * rec.exp_ch_bytes;
+        tsr_load_weight_rows(d, rec, lo, hi, dst);
+        dst += (size_t) (hi - lo) * src_rb;
+        r0 += hi - lo;
+    }
+    rec.w_off = w_off;
+}
+
 // ---------------------------------------------------------------------------
 // PLACED (weights) buffers
 // ---------------------------------------------------------------------------
@@ -688,8 +723,16 @@ static bool tsr_heap_alloc(tsr_device * d, uint64_t size, uint64_t * off) {
 }
 
 // Is this tensor stored as a device weight (vs raw)? Mirrors what MUL_MAT can use directly.
+// An expert tensor of a MoE model (llama.cpp: ffn_gate_exps, ffn_up_exps, ffn_down_exps, ffn_gate_up_exps): 3D, the
+// experts in dimension 2, used by MUL_MAT_ID. Recognised by its name, because a placed weight must be decided when it
+// is uploaded; other 3D tensors stay raw (a lazily converted MUL_MAT_ID source is the other way in).
+static bool tsr_rec_is_expert_name(const tsr_tensor_rec & r) {
+    return r.name.find("_exps") != std::string::npos;
+}
+
 static bool tsr_rec_is_devweight_shape(const tsr_device * d, const tsr_tensor_rec & r) {
-    if (r.ne[2] != 1 || r.ne[3] != 1) {
+    if (r.ne[3] != 1 || (r.ne[2] != 1 && (!tsr_rec_is_expert_name(r) || r.ne[2] > (int64_t) tsr::opl::mmid::MAX_EXPERTS ||
+                                            r.nb[2] != r.nb[1] * (size_t) r.ne[1]))) {
         return false;
     }
     if (!tsr_type_loadable(r.type)) {
@@ -710,15 +753,18 @@ static void tsr_place(tsr_device * d, tsr_tensor_rec & r) {
         r.fmt = tsr_dev_fmt_for_type(r.type);
         r.N   = (uint32_t) r.ne[1];
         r.K   = (uint32_t) r.ne[0];
-        r.ch_bytes = tsr_tensor_ch_beats(r.fmt, r.N, r.K, d->cfg.num_ch) * TSR_BEAT_BYTES;
+        r.n_exp = (uint32_t) r.ne[2];
+        r.exp_ch_bytes = tsr_tensor_ch_beats(r.fmt, r.N, r.K, d->cfg.num_ch) * TSR_BEAT_BYTES;
+        r.ch_bytes = r.exp_ch_bytes * r.n_exp;
         if (!tsr_heap_alloc(d, r.ch_bytes, &r.w_off)) {
             GGML_ABORT("tesseract: WEIGHT heap full: weight '%s' needs %.1f MiB per channel, %.1f MiB free (largest %.1f MiB)",
                        r.name.c_str(), tsr_mib(r.ch_bytes), tsr_mib(d->heap.free_bytes()), tsr_mib(d->heap.largest_free()));
         }
         r.kind = tsr_kind::DEVWEIGHT;
         r.complete = false;
-        TSR_DBG(1, "weight %-28s %-6s [%6u x %6u] -> %s W_OFF=0x%09" PRIx64 " (%.2f MiB/ch x %u ch)%s\n",
-                r.name.c_str(), ggml_type_name(r.type), r.N, r.K, r.fmt == TSR_FMT_Q8_0 ? "Q8_0" : "Q4_K",
+        TSR_DBG(1, "weight %-28s %-6s [%6u x %6u%s] -> %s W_OFF=0x%09" PRIx64 " (%.2f MiB/ch x %u ch)%s\n",
+                r.name.c_str(), ggml_type_name(r.type), r.N, r.K, r.n_exp > 1 ? (" x " + std::to_string(r.n_exp)).c_str() : "",
+                r.fmt == TSR_FMT_Q8_0 ? "Q8_0" : "Q4_K",
                 r.w_off, tsr_mib(r.ch_bytes), d->cfg.num_ch, tsr_type_is_native(r.type) ? "" : " (converted)");
         return;
     }
@@ -737,7 +783,7 @@ static void tsr_place(tsr_device * d, tsr_tensor_rec & r) {
 }
 
 static void tsr_rec_store_all(tsr_device * d, tsr_tensor_rec & r, const uint8_t * src) {
-    tsr_store_weight_rows(d, r.type, r.fmt, r.N, r.K, r.w_off, src, 0, r.N);
+    tsr_store_expert_rows(d, r.type, r.fmt, r.N, r.K, r.exp_ch_bytes, r.w_off, src, 0, r.N * r.n_exp);
     r.complete = true;
     r.staging.clear();
     r.staging.shrink_to_fit();
@@ -782,7 +828,7 @@ static void tsr_rec_write(tsr_device * d, tsr_tensor_rec & r, uint64_t rel, cons
     const uint32_t r0 = (uint32_t) (rel / src_rb);
     const uint32_t r1 = (uint32_t) ((rel + n + src_rb - 1) / src_rb);
     if (rel % src_rb == 0 && n % src_rb == 0) {
-        tsr_store_weight_rows(d, r.type, r.fmt, r.N, r.K, r.w_off, data, r0, r1);
+        tsr_store_expert_rows(d, r.type, r.fmt, r.N, r.K, r.exp_ch_bytes, r.w_off, data, r0, r1);
         return;
     }
     if (!tsr_type_is_native(r.type)) {
@@ -790,9 +836,9 @@ static void tsr_rec_write(tsr_device * d, tsr_tensor_rec & r, uint64_t rel, cons
                    "the original bytes are not kept", r.name.c_str(), ggml_type_name(r.type));
     }
     std::vector<uint8_t> rows((size_t) (r1 - r0) * src_rb);
-    tsr_load_weight_rows(d, r, r0, r1, rows.data());
+    tsr_load_expert_rows(d, r, r0, r1, rows.data());
     memcpy(rows.data() + (rel - (uint64_t) r0 * src_rb), data, n);
-    tsr_store_weight_rows(d, r.type, r.fmt, r.N, r.K, r.w_off, rows.data(), r0, r1);
+    tsr_store_expert_rows(d, r.type, r.fmt, r.N, r.K, r.exp_ch_bytes, r.w_off, rows.data(), r0, r1);
 }
 
 static void tsr_rec_read(tsr_device * d, const tsr_buffer_ctx * b, tsr_tensor_rec & r, uint64_t rel, uint8_t * dst, size_t n) {
@@ -821,7 +867,7 @@ static void tsr_rec_read(tsr_device * d, const tsr_buffer_ctx * b, tsr_tensor_re
     const uint32_t r0 = (uint32_t) (rel / src_rb);
     const uint32_t r1 = (uint32_t) ((rel + n + src_rb - 1) / src_rb);
     std::vector<uint8_t> rows((size_t) (r1 - r0) * src_rb);
-    tsr_load_weight_rows(d, r, r0, r1, rows.data());
+    tsr_load_expert_rows(d, r, r0, r1, rows.data());
     memcpy(dst, rows.data() + (rel - (uint64_t) r0 * src_rb), n);
 }
 
@@ -1875,27 +1921,31 @@ static void tsr_seg_add_rec(tsr_device * d, tsr_segment & seg, tsr_rec & r, cons
 struct tsr_wref {
     uint32_t fmt;
     uint64_t w_off;
+    uint64_t exp_ch_bytes = 0;    // expert tensors: bytes of one expert per channel (EXP_STRIDE x 64); matrices: the whole
+    uint32_t n_exp = 1;
 };
 
 // Convert a MUL_MAT src0 stored as raw ggml bytes into the WEIGHT heap (cached). The bytes are
 // at byte offset `src_off` of channel `src_ch` (LINEAR window, RAW tensor of a weight buffer), or at
 // `host` for a HOSTED buffer (src_off is then the offset inside the buffer and only keys the cache).
 static tsr_wref tsr_lazy_weight(tsr_device * d, tsr_segment & seg, tsr_buffer_ctx * b, uint32_t src_ch, uint64_t src_off,
-                                const uint8_t * host, enum ggml_type type, uint32_t N, uint32_t K, const char * name) {
+                                const uint8_t * host, enum ggml_type type, uint32_t N, uint32_t K, const char * name,
+                                uint32_t n_exp = 1) {
     d->build_dynamic = true;    // W3b: a plan that converts weights is rebuilt every time (R7)
     if (seg.written.count(b)) {
         tsr_flush(d, seg);      // src0 may be produced by the pending list
     }
-    const tsr_lazy_key key = { b->id, src_off, (int) type, N, K };
+    const tsr_lazy_key key = { b->id, src_off, (int) type, N, K, n_exp };
     const uint32_t fmt = tsr_dev_fmt_for_type(type);
     auto it = d->lazy.find(key);
     if (it != d->lazy.end() && it->second.gen == b->gen) {
-        return { it->second.fmt, it->second.w_off };
+        return { it->second.fmt, it->second.w_off, it->second.exp_ch_bytes, n_exp };
     }
     if (it == d->lazy.end()) {
         tsr_lazy_entry e;
         e.fmt = fmt;
-        e.ch_bytes = tsr_tensor_ch_beats(fmt, N, K, d->cfg.num_ch) * TSR_BEAT_BYTES;
+        e.exp_ch_bytes = tsr_tensor_ch_beats(fmt, N, K, d->cfg.num_ch) * TSR_BEAT_BYTES;
+        e.ch_bytes = e.exp_ch_bytes * n_exp;
         if (!d->heap.alloc(e.ch_bytes, &e.w_off)) {
             // evicting cached conversions is only safe with nothing pending
             tsr_flush(d, seg);
@@ -1915,23 +1965,28 @@ static tsr_wref tsr_lazy_weight(tsr_device * d, tsr_segment & seg, tsr_buffer_ct
         }
     }
     const size_t src_rb = ggml_row_size(type, K);
+    const uint64_t exp_ch_bytes = it->second.exp_ch_bytes;
     if (host != nullptr) {
-        tsr_store_weight_rows(d, type, fmt, N, K, it->second.w_off, host, 0, N);
+        tsr_store_expert_rows(d, type, fmt, N, K, exp_ch_bytes, it->second.w_off, host, 0, N * n_exp);
     } else {
         const uint32_t batch = (uint32_t) std::max<size_t>(1, TSR_XFER_CHUNK / src_rb);
         std::vector<uint8_t> rows;
-        for (uint32_t r = 0; r < N; r += batch) {
-            const uint32_t n = std::min(batch, N - r);
+        const uint64_t total = (uint64_t) N * n_exp;
+        for (uint64_t r = 0; r < total;) {
+            const uint32_t e = (uint32_t) (r / N), lo = (uint32_t) (r - (uint64_t) e * N);
+            const uint32_t n = std::min<uint32_t>(batch, N - lo);       // a batch stays inside one expert
             rows.resize((size_t) n * src_rb);
-            tsr_read(d, src_ch, src_off + (uint64_t) r * src_rb, rows.data(), rows.size());
-            tsr_store_weight_rows(d, type, fmt, N, K, it->second.w_off, rows.data(), r, r + n);
+            tsr_read(d, src_ch, src_off + r * src_rb, rows.data(), rows.size());
+            tsr_store_weight_rows(d, type, fmt, N, K, it->second.w_off + (uint64_t) e * exp_ch_bytes, rows.data(), lo, lo + n);
+            r += n;
         }
     }
     it->second.gen = b->gen;
-    TSR_DBG(1, "lazy   %-28s %-6s [%6u x %6u] -> %s W_OFF=0x%09" PRIx64 " (from %s%u+0x%09" PRIx64 ", gen %" PRIu64 ")\n",
-            name, ggml_type_name(type), N, K, fmt == TSR_FMT_Q8_0 ? "Q8_0" : "Q4_K", it->second.w_off,
+    TSR_DBG(1, "lazy   %-28s %-6s [%6u x %6u%s] -> %s W_OFF=0x%09" PRIx64 " (from %s%u+0x%09" PRIx64 ", gen %" PRIu64 ")\n",
+            name, ggml_type_name(type), N, K, n_exp > 1 ? (" x " + std::to_string(n_exp)).c_str() : "",
+            fmt == TSR_FMT_Q8_0 ? "Q8_0" : "Q4_K", it->second.w_off,
             host != nullptr ? "host" : "ch", src_ch, src_off, b->gen);
-    return { it->second.fmt, it->second.w_off };
+    return { it->second.fmt, it->second.w_off, exp_ch_bytes, n_exp };
 }
 
 static tsr_buffer_ctx * tsr_tensor_buf(tsr_device * d, const ggml_tensor * t, const char * what) {
@@ -1969,14 +2024,15 @@ static tsr_wref tsr_resolve_weight(tsr_device * d, tsr_segment & seg, const ggml
     tsr_buffer_ctx * b = tsr_tensor_buf(d, src0, "src0");
     const uint32_t K = (uint32_t) src0->ne[0];
     const uint32_t N = (uint32_t) src0->ne[1];
+    const uint32_t NE = (uint32_t) src0->ne[2];          // experts (MUL_MAT_ID); 1 for a matrix
     const uint64_t a = tsr_vaddr(src0->data);
     if (b->mode == tsr_bmode::LINEAR) {
         tsr_check_range(b, a, ggml_nbytes(src0));
-        return tsr_lazy_weight(d, seg, b, b->ch, b->io_off + (a - b->base), nullptr, src0->type, N, K, src0->name);
+        return tsr_lazy_weight(d, seg, b, b->ch, b->io_off + (a - b->base), nullptr, src0->type, N, K, src0->name, NE);
     }
     if (b->mode == tsr_bmode::HOSTED) {
         tsr_check_range(b, a, ggml_nbytes(src0));
-        return tsr_lazy_weight(d, seg, b, 0, a - b->base, b->host + (a - b->base), src0->type, N, K, src0->name);
+        return tsr_lazy_weight(d, seg, b, 0, a - b->base, b->host + (a - b->base), src0->type, N, K, src0->name, NE);
     }
     if (b->mode == tsr_bmode::KV) {
         GGML_ABORT("tesseract: MUL_MAT src0 '%s' is a KV cache; attention runs as FLASH_ATTN only (AT §2.6)", src0->name);
@@ -1989,16 +2045,16 @@ static tsr_wref tsr_resolve_weight(tsr_device * d, tsr_segment & seg, const ggml
         GGML_ABORT("tesseract: weight '%s' was never uploaded", src0->name);
     }
     if (r->kind == tsr_kind::DEVWEIGHT) {
-        if (r->vaddr != a || r->type != src0->type || r->K != K || r->N != N) {
+        if (r->vaddr != a || r->type != src0->type || r->K != K || r->N != N || r->n_exp != NE) {
             GGML_ABORT("tesseract: MUL_MAT uses a view of device weight '%s'; views of placed weights are not supported", r->name.c_str());
         }
         if (!r->complete) {
             GGML_ABORT("tesseract: weight '%s' is only partially uploaded", r->name.c_str());
         }
-        return { r->fmt, r->w_off };
+        return { r->fmt, r->w_off, r->exp_ch_bytes, r->n_exp };
     }
     // RAW in a weight buffer (e.g. a 1D f32 tensor used as a 1 x K matrix): ch0 (AUX or the heap)
-    return tsr_lazy_weight(d, seg, b, 0, r->raw_off + (a - r->vaddr), nullptr, src0->type, N, K, src0->name);
+    return tsr_lazy_weight(d, seg, b, 0, r->raw_off + (a - r->vaddr), nullptr, src0->type, N, K, src0->name, NE);
 }
 
 // The MUL_MAT record (SW §7.2 kind 0x10) of T tokens: x rows x_lines apart at handle x, y rows
@@ -2292,6 +2348,30 @@ static tsr::plan::dev_cfg tsr_plan_cfg_m7(tsr_device * d) {
     return c;
 }
 
+// MUL_MAT_ID's src0 (supports_op, SW-60): the rules of MUL_MAT's weights for a 3D expert tensor. A device-format weight
+// (Q8_0 / Q4_K, or anything the device converts at load) in a weights buffer, raw bytes in any other Tesseract buffer
+// that the backend converts at graph_compute, or an unallocated leaf (llama.cpp's weight-placement probe).
+static bool tsr_is_our_buffer(const tsr_device * d, const ggml_backend_buffer * buf);
+static bool tsr_moe_weight_ok(tsr_device * d, const ggml_tensor * w) {
+    if (!tsr_type_loadable(w->type) || w->ne[3] != 1 || w->ne[2] < 1 || !ggml_is_contiguous(w)) {
+        return false;
+    }
+    const uint32_t fmt = tsr_dev_fmt_for_type(w->type);
+    if (w->ne[1] > (int64_t) UINT32_MAX || !tsr_mm_shape_ok(d->cfg, fmt, (uint64_t) w->ne[1], (uint64_t) w->ne[0]) ||
+        !tsr::plan::mm_supported(tsr_plan_cfg(d->cfg), fmt, (uint32_t) w->ne[1], (uint32_t) w->ne[0])) {
+        return false;
+    }
+    const ggml_tensor * base0 = w->view_src ? w->view_src : w;
+    const ggml_backend_buffer * buf0 = base0->buffer;
+    if (buf0 == nullptr) {
+        return base0->op == GGML_OP_NONE && (base0->flags & GGML_TENSOR_FLAG_INPUT) == 0;
+    }
+    if (!tsr_is_our_buffer(d, buf0) || buf0->usage == GGML_BACKEND_BUFFER_USAGE_COMPUTE) {
+        return false;
+    }
+    return !(buf0->usage == GGML_BACKEND_BUFFER_USAGE_WEIGHTS && w->view_src != nullptr);
+}
+
 // The builder's environment (tsr-build.h) for this device. Callers hold dev->mtx (device open).
 static tsr_build_env tsr_env_of(tsr_device * d) {
     if (!d->m7cfg_ok) {
@@ -2312,6 +2392,7 @@ static tsr_build_env tsr_env_of(tsr_device * d) {
         return tsr_kv_probe_tensor(d, t->view_src != nullptr ? t->view_src : t, s, true);
     };
     e.fa_mask_probe = [](const ggml_tensor * fa) { return tsr_fa_mask_supported(fa); };
+    e.moe_w_probe = [d](const ggml_tensor * w) { return tsr_moe_weight_ok(d, w); };
     return e;
 }
 
@@ -2387,6 +2468,44 @@ static void tsr_check_fanew_source(const ggml_cgraph * cg, const tsr_kv_write & 
     }
 }
 
+// MUL_MAT_ID (SW-62): the weights resolved to W_OFF and EXP_STRIDE (placed, or converted at graph_compute like MUL_MAT's), then
+// the record from tsr-build; with a scale group (SW-64) the record carries the table and a CPY moves its result into the MUL's
+// tensor (the allocator may have put that tensor over the MUL_MAT_ID's inputs), unless both tensors are the same bytes.
+static void tsr_lower_mul_mat_id_node(tsr_device * d, tsr_segment & seg, tsr_gctx & g, ggml_cgraph * cgraph, int i,
+                                      std::vector<char> & absorbed) {
+    ggml_tensor * node = cgraph->nodes[i];
+    const tsr_wref w = tsr_resolve_weight(d, seg, node->src[0]);
+    const tsr_moe_w mw = { w.fmt, (uint32_t) (w.w_off / TSR_BEAT_BYTES), (uint32_t) (w.exp_ch_bytes / TSR_BEAT_BYTES), w.n_exp };
+    const int si = g.fusion.scale_of[i];
+    const tsr_moe_scale * sc = si >= 0 ? &g.fusion.scales[(size_t) si] : nullptr;
+    tsr_rec r;
+    std::string why;
+    if (!tsr_lower_mul_mat_id(g.env, false, node, sc, &mw, &r, &why)) {
+        const ggml_tensor * h = tsr_hosted_operand(d, node, nullptr);
+        GGML_ABORT("tesseract: MUL_MAT_ID '%s' reached graph_compute but cannot run on the device: %s%s%s", node->name, why.c_str(),
+                   h != nullptr ? "; in host memory: " : "", h != nullptr ? h->name : "");
+    }
+    seg.w_offs.push_back(w.w_off);
+    tsr_seg_add_rec(d, seg, r, node->name, tsr_written_buf(d, node), false);
+    TSR_DBG(1, "MUL_MAT_ID  %-24s %-6s N=%lld K=%lld experts=%u used=%lld T=%lld W_OFF=0x%09" PRIx64 " stride=%u beats%s\n", node->name,
+            ggml_type_name(node->src[0]->type), (long long) node->src[0]->ne[1], (long long) node->src[0]->ne[0], w.n_exp,
+            (long long) node->src[2]->ne[0], (long long) node->src[2]->ne[1], w.w_off, mw.exp_stride, sc != nullptr ? " + scale" : "");
+    if (sc == nullptr) {
+        return;
+    }
+    ggml_tensor * mul = cgraph->nodes[sc->mul];
+    tsr_rec c;
+    if (!tsr_lower_moe_scale_copy(g.env, node, mul, &c, &why)) {
+        GGML_ABORT("tesseract: the scaled MUL_MAT_ID result of '%s' cannot be moved into '%s': %s", node->name, mul->name, why.c_str());
+    }
+    if (c.kind != tsr::opl::K_NOP) {
+        tsr_seg_add_rec(d, seg, c, std::string(node->name) + " -> " + mul->name, tsr_written_buf(d, mul), false);
+    }
+    for (int m : { sc->repeat, sc->get_rows, sc->mul }) {
+        absorbed[(size_t) m] = 1;
+    }
+}
+
 // SW §9.3 M7 passes 1-6 over one graph, launching each list as it fills (a split is one list unless a
 // list fills, a MUL_MAT is staged or a src0 must be converted after the pending list ran).
 static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key) {
@@ -2406,6 +2525,29 @@ static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key
             continue;
         }
         const int32_t k = g.fusion.with[i];
+        if (g.fusion.route_of[i] >= 0) {                   // the MoE routing group (SW-64): one MOE_ROUTE record
+            const tsr_moe_route & grp = g.fusion.routes[(size_t) g.fusion.route_of[i]];
+            tsr_rec r;
+            std::string why;
+            if (!tsr_lower_moe_route(g.env, cgraph, grp, &r, &why)) {
+                GGML_ABORT("tesseract: MoE routing at '%s' cannot run on the device: %s", node->name, why.c_str());
+            }
+            for (int m : { grp.argsort, grp.get_rows, grp.sum_rows, grp.clamp, grp.div }) {
+                absorbed[(size_t) m] = 1;
+            }
+            tsr_seg_add_rec(d, seg, r, std::string(node->name) + " + " + cgraph->nodes[grp.div]->name, tsr_written_buf(d, cgraph->nodes[grp.div]),
+                            true);
+            tsr_buffer_ctx * ib = tsr_written_buf(d, cgraph->nodes[grp.argsort]);
+            if (ib != nullptr) {
+                seg.written.insert(ib);
+            }
+            TSR_DBG(1, "MOE_ROUTE   %-32s\n", node->name);
+            continue;
+        }
+        if (node->op == GGML_OP_MUL_MAT_ID) {              // MUL_MAT_ID (+ the scale group) (SW-62)
+            tsr_lower_mul_mat_id_node(d, seg, g, cgraph, i, absorbed);
+            continue;
+        }
         if (node->op == GGML_OP_MUL_MAT) {
             const int32_t tail = g.fusion.softcap_tail[i];
             if (tsr_lower_mul_mat(d, seg, node, k >= 0 ? cgraph->nodes[k] : nullptr,

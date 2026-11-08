@@ -5,7 +5,7 @@
 //
 //   test_fw_moe_rv IMAGE suite [--scheds N]
 //       op lists launched under the fixed schedule and 7 random ones with TSR_SIM_RACE fatal:
-//       route    MOE_ROUTE of 128 experts / 8 used and of 64 / 4, T = 1 .. 40 (tiles of 16, a partial
+//       route    MOE_ROUTE of 128 experts / 8 used and of 64 / 4, T = 1 .. 140 (tiles of 64, a partial
 //                last tile, dense and strided ids rows, strided logits rows), logits with equal values
 //                (the tie rule), a NaN row, an inf row, one expert far above the rest
 //       mmid     MUL_MAT_ID: the gate-up form (one x row shared by the slots, Q4_K) and the down form (one
@@ -395,9 +395,10 @@ suite suite_route() {
     // T = 1: the decode shape; dense ids (stride 1), strided ids rows as the argsort tensor (8 lines)
     s.recs.push_back(make_route(s, al, 128, 8, 1, 0, 8, L_RANDOM, 0, 1, 2));
     s.recs.push_back(make_route(s, al, 128, 8, 3, 0, 8, L_RANDOM, 0, 1, 2));
-    s.recs.push_back(make_route(s, al, 128, 8, 16, 0, 1, L_RANDOM, 1, 2, 3));        // one full tile, dense ids
-    s.recs.push_back(make_route(s, al, 128, 8, 17, 0, 8, L_RANDOM, 2, 3, 0));        // 16 + 1
-    s.recs.push_back(make_route(s, al, 128, 8, 40, 2, 8, L_RANDOM, 3, 0, 1));        // 16 + 16 + 8, strided logits
+    s.recs.push_back(make_route(s, al, 128, 8, 16, 0, 1, L_RANDOM, 1, 2, 3));        // dense ids rows
+    s.recs.push_back(make_route(s, al, 128, 8, 64, 0, 8, L_RANDOM, 2, 3, 0));        // one full tile
+    s.recs.push_back(make_route(s, al, 128, 8, 65, 0, 8, L_RANDOM, 3, 0, 1));        // 64 + 1
+    s.recs.push_back(make_route(s, al, 128, 8, 140, 2, 8, L_RANDOM, 0, 1, 2));       // 64 + 64 + 12, strided logits
     s.recs.push_back(make_route(s, al, 64, 4, 5, 0, 4, L_RANDOM, 0, 1, 2));
     s.recs.push_back(make_route(s, al, 128, 8, 9, 0, 8, L_TIES, 1, 2, 3));
     s.recs.push_back(make_route(s, al, 128, 8, 7, 0, 8, L_SPECIAL, 2, 3, 0));

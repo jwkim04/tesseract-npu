@@ -244,6 +244,39 @@ void tsr_opl_builder::kind_ranges(uint32_t kind, const uint32_t * a, uint64_t au
             wr.push_back(tsr_rows_of(a[u::DST], a[u::ROWS], a[u::DST_STRIDE], L));
             return;
         }
+        case opl::K_MOE_ROUTE: {
+            // reads the logits rows; writes the first line of each ids row and the packed weights (SW §7.5)
+            namespace r = opl::moer;
+            const uint32_t T = a[r::T], k = a[r::N_USED];
+            rd.push_back(tsr_rows_of(a[r::LOGITS], T, a[r::LOGITS_STRIDE], tsr_f32_lines(a[r::N_EXPERT])));
+            wr.push_back(tsr_rows_of(a[r::IDS], T, a[r::IDS_STRIDE], 1u));
+            wr.push_back(tsr_rows_of(a[r::W], 1, 0, tsr_f32_lines((uint32_t) std::min<uint64_t>((uint64_t) T * k, UINT32_MAX))));
+            return;
+        }
+        case opl::K_MUL_MAT_ID: {
+            // reads x (per token the span of its slot rows: a superset when the slots are not dense), the ids
+            // (N_USED words per token, rows IDS_STRIDE bytes apart), the scale table and every expert's rows on
+            // every channel; writes the T * N_USED dst rows (SW §7.5)
+            namespace m = opl::mmid;
+            const uint32_t T = a[m::T], nu = a[m::N_USED], fmt = a[m::FMT], N = a[m::N], K = a[m::K];
+            const uint32_t xl = (uint32_t) tsr_ceil_div_u64((uint64_t) K * 4, TSR_LINE_BYTES);
+            const uint32_t yl = (uint32_t) tsr_ceil_div_u64((uint64_t) N * 4, TSR_LINE_BYTES);
+            const uint32_t span = a[m::X_SLOT_STRIDE] == 0u ? xl : (nu - 1u) * a[m::X_SLOT_STRIDE] + xl;
+            rd.push_back(tsr_rows_of(a[m::X], T, a[m::X_TOK_STRIDE], span));
+            rd.push_back(tsr_rows_range(tsr_handle_ch(a[m::IDS]), tsr_handle_byte(a[m::IDS]), T, (uint64_t) 4 * nu, a[m::IDS_STRIDE]));
+            if (a[m::SCALE] != opl::HANDLE_NONE) {
+                rd.push_back(tsr_rows_of(a[m::SCALE], 1, 0, tsr_f32_lines(a[m::N_EXPERT])));
+            }
+            if (tsr::plan::fmt_valid(fmt) && K > 0 && K % tsr::plan::fmt_block(fmt) == 0 && N > 0 && num_ch_ > 0) {
+                const uint64_t lo = (uint64_t) a[m::W_OFF] * TSR_BEAT_BYTES;
+                const uint64_t bytes = (uint64_t) a[m::EXP_STRIDE] * TSR_BEAT_BYTES * a[m::N_EXPERT];
+                for (uint32_t c = 0; c < num_ch_; ++c) {
+                    rd.push_back(tsr_rows_range(c, lo, 1, bytes, 0));
+                }
+            }
+            wr.push_back(tsr_rows_of(a[m::DST], (uint32_t) std::min<uint64_t>((uint64_t) T * nu, UINT32_MAX), a[m::DST_STRIDE], yl));
+            return;
+        }
         default:
             return;
     }

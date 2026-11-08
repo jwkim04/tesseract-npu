@@ -691,7 +691,7 @@ static int cmd_run(int argc, char ** argv) {
     // the phase's device kinds, as klcheck: M6 MUL_MAT only (SW-14); M7 keeps the caller's TSR_KINDS
     // (a kind list such as all,-RMS_NORM, sw/ggml-tesseract/README.md; unset: every kind, SW-49).
     // The value the run used is recorded in meta.json info "TSR_KINDS".
-    if (o.phase == "m6") setenv("TSR_KINDS", "m6", 1);
+    if (o.phase == "m6") setenv("TSR_KINDS", "m6,+MUL_MAT_ID", 1);
 
     llama_log_set(log_cb, nullptr);
     llama_backend_init();

@@ -282,7 +282,7 @@ namespace moer {
 constexpr uint32_t LOGITS = 0, LOGITS_STRIDE = 1, IDS = 2, IDS_STRIDE = 3, W = 4, N_EXPERT = 5, N_USED = 6, T = 7,
                    FLAGS = 8, NARGS = 9;
 constexpr uint32_t MAX_EXPERTS = 512u, MAX_USED = 16u;    // = TSR_MOE_MAX_EXPERTS, TSR_TOPK_MAX_K
-constexpr uint32_t TILE_TOKENS = 16u;                     // tokens per tile: the c vector of a tile is one line
+constexpr uint32_t TILE_TOKENS = 64u;                     // tokens per tile (the c vector of a tile is up to 4 lines)
 }  // namespace moer
 // MUL_MAT_ID (0x1F): y[token, slot] = W[ids[token][slot]] . x[token, slot] for every (token, slot), each
 // an MUL_MAT of T = 1 against the expert's weights at W_OFF + id * EXP_STRIDE (beats; the per-channel

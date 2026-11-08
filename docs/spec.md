@@ -1259,8 +1259,24 @@ are estimates from the tensor list of that one GGUF.
 
 | Stage | Method | Needs | Milestone |
 | --- | --- | --- | --- |
-| Device | The device does the router, softmax, TOPK and the expert MVMs by itself | Control core (reads the TOPK result from the SPM window, computes the expert addresses, issues asynchronously), TOPK RTL (`CAPS` bit 3) | M8 |
-| Prefill | Group the tokens per expert and run MVMs with T > 1 | Host or device sorting; not decided | After M8 |
+| Device | The device does the router, softmax, top-k and the expert MVMs by itself, one launch per token | Control core (reads the selection from the SPM window, computes the expert addresses, issues asynchronously); the top-k is integer compares on the RISC-V, the TOPK RTL (`CAPS` bit 3) is not needed | Implemented on the simulator (firmware kinds MOE_ROUTE and MUL_MAT_ID, SW §7.9); card run pending |
+| Host selection | The host issues the matrix products (M6 settings); llama.cpp's own CPU ops select the experts | `TSR_KINDS=m6,+MUL_MAT_ID` | Implemented on the simulator |
+| Prefill | Group the tokens per expert and run MVMs with T > 1 | Sorting of the (token, slot) pairs by expert per ids chunk; designed, not built (SW-66): prefill runs one MVM of T = 1 per (token, slot) | After M8 |
+
+**As built (simulator, November 2026; SW §7.9, SW-60 to SW-66).** The software stack runs Gemma 4 26B-A4B
+on the simulator in both modes. The expert tensors (`ffn_gate_up_exps`, `ffn_down_exps`, 3D) are placed with
+the `EXP_STRIDE` layout of section 4: expert e of a tensor at `W_OFF + e × EXP_STRIDE` on every channel, each
+expert split by rows over the channels. The router (F32 in the GGUF) is an ordinary 2D weight converted to Q8_0
+at load. Two firmware kinds do the rest: MOE_ROUTE (0x1E) computes the softmax on the VU, selects the k largest
+probabilities by integer compares on the RISC-V (the order of the VU TOPK: larger value first, equal values by
+the smaller index, NaN first) and renormalises their weights by the tree sum of the VU; MUL_MAT_ID (0x1F) runs a
+MUL_MAT of T = 1 per (token, slot) against the weights of the expert whose number it reads from DRAM, with an
+optional per-expert output scale. The backend fuses llama.cpp's ten router nodes (softmax, argsort, get_rows,
+sum_rows, clamp, div and their views) into one MOE_ROUTE record, and the scale nodes (reshape, repeat, get_rows,
+mul) into the MUL_MAT_ID record of the down projection. The combine follows ggml's order, not the sketch below:
+the expert output is multiplied by its scale and then by its router weight after the down MVM, and the eight
+outputs are added in slot order, so the model-level KL compares like with like; ACC and the weight-before-down
+form stay options for later.
 
 Milestone M5 was merged into M8 (D14). The router and the expert tensors are placed as sections 4
 and 5 say.
@@ -1269,7 +1285,8 @@ and 5 say.
 gate-up matrix 2816 → 1408 in Q4_K and a down matrix 704 → 2816 in Q8_0, the router weight
 multiplied into h beforehand and summed by the ACC of the down MVM). The example is illustrative: the
 builder names are simplified, and the as-built builders take field structs
-(`sw/ctrl/include/tsr/kernel.hpp`, `vu.hpp`); the MoE kernel is not written yet (M8).
+(`sw/ctrl/include/tsr/kernel.hpp`, `vu.hpp`). The as-built kernels are `sw/ctrl/kernels/k_moe.cpp`
+(see "As built" above); this sketch, with the TOPK op, is the alternative for an image that has the TOPK RTL.
 
 ```cpp
 join(issue(TOPK(sel, probs, 128, 8)));                    // sel = (idx, val) × 8. Join before reading the numbers

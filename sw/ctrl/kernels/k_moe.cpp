@@ -8,7 +8,7 @@
 // while the RISC-V waits, and every record before it is already pushed; what stops is only the issue of
 // the records after it.
 //
-// MOE_ROUTE, per tile of tr = min(T, 16) tokens (tsr/plan_moe.hpp has the ring block):
+// MOE_ROUTE, per tile of tr = min(T, 64) tokens (tsr/plan_moe.hpp has the ring block):
 //   1. LD the logits rows (n_expert f32 each) into P;
 //   2. the softmax on the VU, as tsr_ref_moe_route composes it: RED.MAX -> V, VOP.EXPSUBC (c = V) in
 //      place, RED.SUM with post RCP -> V, VOP.MULC (c = V) in place: P holds the probabilities;
@@ -144,9 +144,10 @@ TSR_HOT op vop_vec(uint32_t func, spm d, spm a, spm c, uint32_t m, uint32_t rows
         const uint32_t tr = T - t0 < mr::TILE_TOKENS ? T - t0 : mr::TILE_TOKENS;
         const uint32_t pk_lines = plan::vu_lines(tr * k);
         deps rd;
-        const spm blk = kf::alloc_g(ring, tr * g.ln + 1u + 2u * tr + (tr > 1u ? pk_lines : 0u), &rd);
+        const uint32_t vl = plan::vu_lines(tr);
+        const spm blk = kf::alloc_g(ring, tr * g.ln + vl + 2u * tr + (tr > 1u ? pk_lines : 0u), &rd);
         if (!valid(blk)) return ctx.fail(opl::RET_SCRATCH);
-        const spm P = blk, V = P + tr * g.ln, SEL = V + 1u, IDL = SEL + tr, PK = tr > 1u ? IDL + tr : SEL;
+        const spm P = blk, V = P + tr * g.ln, SEL = V + vl, IDL = SEL + tr, PK = tr > 1u ? IDL + tr : SEL;
         // 1-2: the logits and the softmax
         const deps f = first ? mmk::first_deps(d, rd) : kf::drop_dma(rd);
         first = false;
