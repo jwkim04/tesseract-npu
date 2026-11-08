@@ -41,6 +41,11 @@ The ATTPV fault and its cause (details: §8.8 "The ATTPV fault"):
 
 Next:
 
+- The third link (source `92012ea`, with the ATTPV fix) missed the core clock by -0.430 ns on 81 endpoints (shell clocks pass). Source
+  fixes behind `XSLR_REG`, commit `e62417f`: two stages on the `REQ_HELD` event, one `tsr_rpipe` stage on each pair link of the gather,
+  three stages (was two) on the VU's command, done and s registers; `k4.cfg` has the post-place `phys_opt_design` with
+  `AggressiveExplore` for the local high-fanout paths. Path by path: platform-u200.md §8.8 "The links". About +2.2 K flops, at most
+  +0.8 K LUTs by structure. Verilator benches pass; nothing was placed.
 - Relink the image (no v++ link was run for the fix). The corrected PV unit is larger than the linked one (the half of its capture
   bank that Vivado removed is back): +3.4 K LUT and +5.0 K FF per cluster, about +2 to +3 points of CLB occupancy in SLR0 and SLR2
   (77.6 / 84.4 % to about 80 / 87 %; estimate from synthesis, §8.8). Its timing at 5.0 ns is not worse (+3.35 ns on the drain stage).
@@ -75,8 +80,9 @@ link was run. [platform-u200.md](platform-u200.md) §8.8 has the parameters, the
 - Read first in the link: the placed SLR1 occupancy (the estimate with the shell is 91.8 to 93.4 %, the target 93 %), the SLR1
   congestion windows (32x32 or smaller) and the router's column peaks. The kernel adds about 4.4 K SLLs at SLR0-SLR1 and 3.9 K at
   SLR1-SLR2 over the reduced image. If a placement gate misses, do not spend the route.
-- Cost of `XSLR_REG`: the VU starts a command 2 cycles later and completes 3 later (it was 1); s registers 2 cycles later; trace
-  bursts a little slower; +1.3 K LUTs, +3.2 K flops, about +1 K CLBs in SLR1 (the stages sit in SLR1).
+- Cost of `XSLR_REG`: the VU starts a command 3 cycles later and completes 4 later (it was 1); s registers 3 cycles later (2, 3 and 2
+  before the third link); trace bursts a little slower; +1.3 K LUTs, +3.2 K flops, about +1 K CLBs in SLR1 (the stages sit in SLR1;
+  measured with two stages).
 - First link (200 / 100 MHz): routed legally, `clk_kernel_00` missed by 0.064 ns on 160 endpoints (list:
   `build/k4full/postroute_exp/fail_before_clk_kernel_00_unbuffered_net.tsv`). 82 of them cross an SLR boundary, 78 do not. Two
   crossings got `XSLR_REG` stages: the MVM attention-stall strobe (two per cluster, `tsr_mvm`; only `ATT_PATH_STALL` shifts, by 2

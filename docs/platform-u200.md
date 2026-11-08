@@ -2750,25 +2750,32 @@ the whole VU in SLR2, pair 0 (clusters 0 and 2, SLR0) would cross two boundaries
 - `XSLR_REG` (design/04-control-core.md §11.4). The control plane is in SLR0 and the VU in SLR2, so every VU link to the
   issue path and the CSR block crosses two boundaries. The out-of-context placement below showed it: the VU's `cmd_ready`
   (combinational) into the issue decision was -8.2 ns at 3.333 ns. With `XSLR_REG` the glue of `tsr_core_dp`
-  (not in a Pblock, so the stages may sit in SLR1) has two register stages on each link:
+  (not in a Pblock, so the stages may sit in SLR1) has register stages on each link (three on the VU's command, done and s
+  registers since the third link, two on the rest):
 
   | Link | Stages | Effect |
   |---|---:|---|
-  | Issue to VU: command, valid, ready (`tsr_rpipe`) | 2 | the VU starts a command 2 cycles later; the issue path sees a registered ready |
-  | VU done to `tsr_issue` | 2 (+1 `DONE_REG`) | completion 3 cycles after the VU's strobe (it was 1) |
-  | VU s registers (16 x 32) to `tsr_csr` | 2 | an s register shows a change 2 cycles later; the host reads it after the done |
+  | Issue to VU: command, valid, ready (`tsr_rpipe`) | 3 | the VU starts a command 3 cycles later; the issue path sees a registered ready |
+  | VU done to `tsr_issue` | 3 (+1 `DONE_REG`) | completion 4 cycles after the VU's strobe (it was 1) |
+  | VU s registers (16 x 32) to `tsr_csr` | 3 | an s register shows a change 3 cycles later; the host reads it after the done |
   | Progress and PERF strobes of the units, `perf_ch_*` of the channels to `tsr_csr` | 2 | diagnosis only; the PERF counters and the watchdog see them 2 cycles late (below) |
   | Trace writer to the write mux on channel 0: request and data (`tsr_rslice`), burst response (flops) | 1 + 2 | the writer waits longer per burst; the DMA waits at most one trace burst |
   | `att_stall` of each MVM cluster to the OR in `tsr_mvm` (it only feeds `ATT_PATH_STALL`) | 2 | the counter sees it 2 cycles later, 4 with the CSR stages above |
   | RISC-V SPM bridge request (valid and fields), inside the SPM link end `u_spm_tx` | 1 | an access of the RISC-V to the SPM starts 1 cycle later |
+  | Pair links of the MVM gather, pair source to receiver (`tsr_rpipe`, `tsr_mvm_gather`) | 1 | a result job reaches the central part 1 cycle later; the link holds `2 / GATHER_FLITS` jobs more under a full stall |
+  | Channel arbiters' held event to `REQ_HELD` (`tsr_xrt_kernel`, before the OR) | 2 | `REQ_HELD` sets 2 cycles later |
 
   Results, queue order and the architectural state do not change. The diagnostics shift a little. `perf_busy` of the VU
-  (`tsr_issue`) runs from the issue path's start to its done, so it now includes the 2 pipe cycles before the VU sees the
-  command and the 2 cycles of the done pipe after the VU finished: 4 cycles more per isolated VU op. The progress strobes reach
-  the watchdog 2 cycles late, so the first no-progress stretch is about 4 cycles longer for the VU and 2 cycles longer for the
-  other units. HUNG does not change at the default `WDOG_CFG.L` of 24 (2^24 cycles). The synthesized core grows by 1,339 LUTs and 3,155 flops.
-  The last two rows came after the sizes and the placement runs below, from the failing paths of the first link of
-  the image (`clk_kernel_00` missed by 0.064 ns). They add at most 72 flops: 8 in `tsr_mvm` and 64 in the SPM link end.
+  (`tsr_issue`) runs from the issue path's start to its done, so it now includes the 3 pipe cycles before the VU sees the
+  command and the 3 cycles of the done pipe after the VU finished: 6 cycles more per isolated VU op (4 with the two stages of
+  the first links). The progress strobes reach the watchdog 2 cycles late, so the first no-progress stretch is about 5 cycles
+  longer for the VU and 2 cycles longer for the other units. HUNG does not change at the default `WDOG_CFG.L` of 24 (2^24 cycles). The synthesized core grows by 1,339 LUTs and 3,155 flops.
+  The attention-stall and SPM request rows came after the sizes and the placement runs below, from the failing paths of
+  the first link of the image (`clk_kernel_00` missed by 0.064 ns). They add at most 72 flops: 8 in `tsr_mvm` and 64 in the SPM
+  link end. The third stage on the VU links, the pair-link stage and the `REQ_HELD` stages came from the third link (below);
+  by structure they add about 2.2 K flops (1,028 for the VU: one more command stage of 2 x 256 + 3, 512 for the s registers and
+  1 for done; 1,130 for the two pair links at 2 x 281 + 3 per stage; 8 for `REQ_HELD`) and at most 0.8 K LUTs (the input
+  select of each `tsr_rslice` main entry). Not measured.
 - `tsr_vu.sv`: the zero assignment of `local_score_req` is one assignment per owner (Verilator `WIDTHCONCAT` above 8,192
   bits at `NUM_CH` 16; the netlist is the same).
 - Lint: the full K4 elaboration in `rtl/lint.sh`, the platform lint and the Xilinx lint (with XSim static elaboration); the
@@ -2898,12 +2905,29 @@ occupancy and congestion windows, and the DDR4 clocks (`mmcm_clkout0_1` to `_3`)
   and WHS +0.006 ns (`clk_kernel_00` +0.044, `clk_kernel_01` +0.226, `dma_ip_axi_aclk` +0.017 ns). Image `tsr_u200_k4.xclbin`,
   75,291,155 bytes, sha256 `20f25925…22e7`, UUID `4a095476-ebbd-cfb5-a49d-2a790b2e9684`, `DATA_CLK` 200 MHz (core) and
   `KERNEL_CLK` 100 MHz (`clk_rv`).
-- Routed SLR occupancy (kernel and shell): CLBs 38,199 / 42,779 / 41,596 = 77.6 / 86.8 / 84.4 % in SLR0 / 1 / 2, against the
+- Routed SLR occupancy (kernel and shell, second link): CLBs 38,199 / 42,779 / 41,596 = 77.6 / 86.8 / 84.4 % in SLR0 / 1 / 2, against the
   study's estimate of 91.8 to 93.4 % for SLR1. SLLs 15,403 (7,141 between SLR0 and SLR1, 8,262 between SLR1 and SLR2).
 - The route reported `CRITICAL WARNING: [Route 35-3360]` on 30 `RAMB36E2` cells with `CLOCK_DOMAINS` `COMMON` whose two clock pins
   sit on different clock leaves: 23 in the activation buffer (`u_act`: `u_qs` scale banks and `u_dbs` of clusters 0 to 2) and 7 in
   the attention PV delay FIFOs of cluster 0 (`g_att.u_pv/u_fq`, `u_fw`). It is new in this link. What the card showed about it is
   below.
+
+- The third link (source `92012ea`: the ATTPV fix) routed and missed the core clock `clk_kernel_00` by -0.430 ns on 81 endpoints.
+  The shell clocks and `clk_kernel_01` passed. The failing paths (list: `build/k4full/link3_fail/fail_clk_kernel_00_unbuffered_net.tsv`)
+  and what the source and the configuration do about each (the RTL changes are behind `XSLR_REG`):
+
+  | Slack (ns) | Path | Change |
+  |---:|---|---|
+  | -0.430 | channel 2 arbiter `u_rq_out` `main_v_q` (SLR1) into `u_ctrl` `held_q` (SLR0), through the OR of the four channels | two register stages per channel before the OR (`g_hx` in `tsr_xrt_kernel`) |
+  | -0.177 (18 paths) | pair-0 source (`u_tx` `high_q` and `u_queue` main entry, outer SLR) through the flit mux into the receiver `slot_q` (SLR1, rows 420 to 473): one hop of 250 to 380 rows with a LUT | one `tsr_rpipe` stage of the link width between source and receiver, for one and two flits (`g_xslr` in `tsr_mvm_gather`) |
+  | -0.159, -0.151, -0.099, -0.061 | issue `cmd_q` of the VU (SLR0, row 291) into stage 0 of the command pipe (SLR2, row 601) | `VX` 3 in `tsr_core_dp`: three stages, so no hop spans both boundaries |
+  | -0.057 | s register stage 0 into stage 1 (rows 606 to 261) | same |
+  | -0.148 (47 paths) | cluster 3 `tsr_mvm_front` `u_p` `rdy_q` into its main and skid registers (about 1,200 loads) | none in the source: post-place `phys_opt_design` with `AggressiveExplore` in `k4.cfg` |
+  | -0.107 (4 paths), -0.081, -0.096 (3 paths), -0.046, -0.028 | VU write queue into the SPM input registers; CSR read mux; receiver `rp_q` copies into `occupied_q` and the gather's `k0_q`; SPM grant into the MVM request; broadcast head into the cluster 1 pipe | same |
+
+  Verilator: the gather bench has the pair link with `XSLR_REG` 1 (`g4t8_pair_x`, `g4t4_narrow_x`; the full-stall check counts the
+  extra slots), the adapter bench runs `tsr_xrt_kernel` with it, and the core, AT, control, debug and platform benches pass. The
+  next link has to show the paths, nothing here was placed.
 
 **Card bring-up (`k4full`, 2026-11-08).** The image loaded through `load_xclbin` as an ordinary user. Host tools: `build/xrt` of
 this worktree (`-DTSR_WITH_XRT=ON`, `-j8`); before the card `test-tsr-xrt-noop` (32 checks), `test-tsr-kdev` (10,302) and

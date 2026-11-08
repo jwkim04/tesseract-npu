@@ -837,12 +837,13 @@ control-plane registers (k4min link, 2026-11-06: round trips SLR0 to SLR1 or SLR
 
 `XSLR_REG` (implementation option of `tsr_core_dp`, set with `RV_LOCAL_TRANSPORT` in the full-feature
 K4 image) does the same for the blocks that sit two SLRs from the control plane: the whole vector
-unit in SLR2 and the trace writer's write mux. The VU's links to the issue path and the CSR block,
-the command and its ready, the done strobe, the 16 s registers, the three PERF strobes and the
-progress strobe, each pass two register stages in the glue of `tsr_core_dp`. The command goes through
-a valid / ready pipe (`tsr_rpipe`), so the issue path sees a registered ready and the VU a registered
-command. The VU starts a command two cycles later, its done strobe reaches `tsr_issue` two cycles
-later than before (`DONE_REG` adds the third), and the s registers show a change two cycles later;
+unit in SLR2 and the trace writer's write mux. The VU's links to the issue path and the CSR block
+pass register stages in the glue of `tsr_core_dp`: three on the command and its ready, the done
+strobe and the 16 s registers, two on the three PERF strobes and the progress strobe. (With two
+stages one hop of the command pipe and of the s registers still spanned both SLR boundaries.)
+The command goes through a valid / ready pipe (`tsr_rpipe`), so the issue path sees a registered ready and the VU a registered
+command. The VU starts a command three cycles later, its done strobe reaches `tsr_issue` three cycles
+later than before (`DONE_REG` adds the fourth), and the s registers show a change three cycles later;
 the host reads them after the op's done, which comes later still. The issue path's limit of two ops
 in flight (CC §9.4 I3) counts the commands in the pipe, so the VU never holds more than two. The
 unit's own checks (`tsr_core_dp` U4) are made on the unit's side of the stages. The trace writer's
@@ -854,13 +855,16 @@ strobe passes two registers in `tsr_mvm` before the OR that feeds its PERF count
 0 / 2 and 1 / 3 sit in different SLRs. The RISC-V's SPM request (the one-cycle valid and its fields;
 the CDC holds the fields while the request is pending) passes one register stage in the SPM link end,
 in front of the bridge, since the CDC capture register is in the control plane's SLR and the bridge
-decodes its byte enables from it: an SPM access of the RISC-V starts one cycle later. The elaboration
-without the option has none of these stages.
+decodes its byte enables from it: an SPM access of the RISC-V starts one cycle later. Each pair link of
+the MVM gather (pair source to receiver) passes one `tsr_rpipe` stage, so a result job reaches the
+central part one cycle later and the link holds `2 / GATHER_FLITS` jobs more under a full stall. In
+`tsr_xrt_kernel` the held event of each channel passes two register stages before the OR that sets
+`REQ_HELD`. The elaboration without the option has none of these stages.
 
 The stages shift the diagnostics, not the results. `perf_busy` of the VU runs from the issue
-path's start of the op to its done, so it includes the 2 pipe cycles before the VU sees the
-command and the 2 cycles of the done pipe: 4 cycles more per isolated VU op. The progress strobes
-of the units reach the watchdog 2 cycles late, so the first no-progress stretch is about 4 cycles
+path's start of the op to its done, so it includes the 3 pipe cycles before the VU sees the
+command and the 3 cycles of the done pipe: 6 cycles more per isolated VU op. The progress strobes
+of the units reach the watchdog 2 cycles late, so the first no-progress stretch is about 5 cycles
 longer for the VU and 2 cycles longer for the other units. `ATT_PATH_STALL` counts 2 cycles later
 still (4 in all). HUNG does not change at the default `WDOG_CFG.L` of 24.
 
