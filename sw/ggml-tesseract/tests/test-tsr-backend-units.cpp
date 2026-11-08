@@ -1571,6 +1571,26 @@ static void test_gdn_lowering() {
         }
     }
     {
+        // IMROPE (Qwen3.5 / 3.8 text positions [p, p, p, 0]) runs as NEOX, but only on llama.cpp's own position input
+        gctx c;
+        const int64_t D = 256, H = 8, T = 3;
+        int sections[GGML_MROPE_SECTIONS] = { 11, 11, 10, 0 };
+        ggml_tensor * x = c.f32(D, H, 0x100000, "x", T);
+        for (const char * nm : { "inp_pos", "Tesseract0#inp_pos#0", "positions" }) {
+            ggml_tensor * pos = ggml_new_tensor_1d(c.ctx, GGML_TYPE_I32, 4 * T);
+            pos->data = fake_at(0x200000);
+            ggml_set_name(pos, nm);
+            ggml_tensor * rp = ggml_rope_multi(c.ctx, x, pos, nullptr, 64, sections, GGML_ROPE_TYPE_IMROPE, 4096, 1e7f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f);
+            rp->data = fake_at(0x300000);
+            const bool ok = tsr_build_supports(env, rp, &why);
+            CHECK(ok == (strcmp(nm, "positions") != 0));
+            if (ok) {
+                CHECK(tsr_lower_m7(env, false, rp, nullptr, &r, &why) && r.kind == opl::K_ROPE &&
+                      (r.args[opl::rope::MODE] & opl::rope::MODE_NEOX) != 0);
+            }
+        }
+    }
+    {
         // the new state into its cache cell: the GATED_DELTA_NET result's state rows (a view of 128 x 128 x 48), one run
         gctx c;
         const int64_t S = 128, hv = 48;

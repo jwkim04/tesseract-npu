@@ -528,6 +528,11 @@ static bool tsr_lower_rope(const tsr_build_env & env, bool probe, const ggml_ten
     if (!tsr_index_input(env, probe, pos, GGML_TYPE_I32, imrope ? 4ull * T : T, "positions", &ph, why)) {
         return false;
     }
+    if (imrope && strstr(pos->name, "inp_pos") == nullptr) {     // also the scheduler's copy, "Tesseract0#inp_pos#0"
+        // the guard (tsr_check_imrope_pos) can only check llama.cpp's own position input, whose text batches are
+        // [p, p, p, 0]; positions of any other graph (test-backend-ops draws them at random) keep the ROPE on the CPU
+        return tsr_fail(why, "IMROPE: the positions '%s' are not llama.cpp's inp_pos input", pos->name);
+    }
     if (ff != nullptr) {
         if (ff->type != GGML_TYPE_F32 || !ggml_is_contiguous(ff) || (ff->ne[0] < n_dims / 2 && !probe)) {
             return tsr_fail(why, "ROPE freq_factors '%s' is not an F32 vector of n_dims/2", ff->name);

@@ -1879,7 +1879,7 @@ The `xrt` kdev reads the `TSR_XRT_DMA*` and `TSR_XRT_CH_GIB` settings.
 | SCALE | F32 |
 | RMS_NORM | F32 rows |
 | GLU | SWIGLU, or GEGLU lowered to GEGLU16 (the CPU's fp16-table form, VU §6.5); split form or non-swapped single form |
-| ROPE | NORM/NEOX, F32, I32 positions that are a graph input, freq_factors F32 or none, head_dim a multiple of 16 (≤ 1024) and n_dims a multiple of 32 (NEOX) or 16 (NORM) (VU §5.4); IMROPE as NEOX when the position streams are equal (text, SW-65); no other mrope / vision modes |
+| ROPE | NORM/NEOX, F32, I32 positions that are a graph input, freq_factors F32 or none, head_dim a multiple of 16 (≤ 1024) and n_dims a multiple of 32 (NEOX) or 16 (NORM) (VU §5.4); IMROPE as NEOX when the positions are llama.cpp's `inp_pos` input and its streams are equal (text, SW-65); no other mrope / vision modes |
 | GET_ROWS | F32 src0 in a compute buffer, I32 ids that are a graph input |
 | SET_ROWS | dst in a KV buffer, F32 src, I64 ids that are a graph input (any other SET_ROWS: false, R1) |
 | FLASH_ATTN_EXT | AT §2.6: Q F32; K/V q8_0 views in KV buffers; D = DK = DV ∈ {64, 128, 256, 512}; mask F16 or none; `max_bias` = 0; `logit_softcap` = 0; no sinks; `n_kv_max` = 0 |
