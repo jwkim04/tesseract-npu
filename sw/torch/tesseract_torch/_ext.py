@@ -2,7 +2,8 @@
 
 It is built by the project's CMake (``-DTSR_WITH_TORCH=ON``, target ``tesseract_torch_ext``) into
 ``<build>/python``. It is found on ``sys.path`` (``PYTHONPATH=sw/torch:build/torch/python``), else in
-the directory named by ``TSR_TORCH_EXT_DIR``, else in ``<repo>/build/torch/python``.
+the directory named by ``TSR_TORCH_EXT_DIR``, else in ``<repo>/build/torch/python`` or
+``<repo>/build/dev/python``.
 """
 from __future__ import annotations
 
@@ -22,8 +23,9 @@ def _load():
         return importlib.import_module(_NAME)
     except ImportError as first:
         tried = []
-        for d in (os.environ.get("TSR_TORCH_EXT_DIR"), str(_REPO / "build" / "torch" / "python")):
-            if not d or d in sys.path:
+        for d in (os.environ.get("TSR_TORCH_EXT_DIR"), str(_REPO / "build" / "torch" / "python"),
+                  str(_REPO / "build" / "dev" / "python")):
+            if not d or d in sys.path or not Path(d).is_dir():
                 continue
             tried.append(d)
             if any(p.name.startswith(_NAME + ".") for p in Path(d).glob(_NAME + ".*")):

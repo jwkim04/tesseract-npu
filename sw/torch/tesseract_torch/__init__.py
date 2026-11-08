@@ -21,6 +21,7 @@ import torch
 
 from ._ext import _C
 from .backend import Options, specs, tesseract_backend
+from .quant import QuantLinear, linear_blocks
 from .runtime import (
     SUPPORTED_DTYPES,
     TesseractError,
@@ -44,8 +45,8 @@ from .runtime import (
 )
 
 __all__ = [
-    "BACKEND_NAME", "Options", "SUPPORTED_DTYPES", "TesseractError", "WeightCache", "close_device", "compile",
-    "counters", "debug_level", "device", "format_counters", "linear", "linear_ref", "open_device",
+    "BACKEND_NAME", "Options", "QuantLinear", "SUPPORTED_DTYPES", "TesseractError", "WeightCache", "close_device", "compile",
+    "counters", "debug_level", "device", "format_counters", "linear", "linear_blocks", "linear_ref", "open_device",
     "reference_linears", "release_weights", "reset_counters", "set_debug", "set_verify", "specs", "supported_weight",
     "tesseract_backend", "verify_enabled", "weight_cache", "_C",
 ]
