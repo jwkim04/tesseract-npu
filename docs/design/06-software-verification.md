@@ -1562,15 +1562,57 @@ above 1e-3 and below 4.2e-7 relative for every result above 1e-30; against ggml-
 1.2e-6 (test `fw_gdn_ggml`). A VU `LOG1P` function was not added: the gate vector is H_v values per layer, and one
 SOFTPLUS launch is dominated by its launch cost (about 18.5 K core cycles).
 
-**Cost.** Measured on the simulator (fixed schedule, one record per launch, 4 MiB SPM, `test_fw_gdn_rv bench`; the
-numbers include the launch overhead of about 18 K cycles shown by `softplus`): GATED_DELTA_NET 151.6 K cycles for
-the 2B (16 heads) and 425.0 K for the 27B (48 heads) at one token; 1.655 M for four tokens and 6.576 M for sixteen,
-so 8.6 K cycles per head and token in steady state (13 dependent VU ops; each of the two `RED.SUM` takes 16 cycles per row, 2,048 cycles for the 128 rows). SSM_CONV 14.6 K (2B) and 19.0 K (27B), SOFTPLUS 18.5 K. At the 27B's 48 GDN layers the recurrence
-takes 20.4 M core cycles per decode token: 102 ms at 200 MHz, 74 ms at 276.3 MHz. The fused GDN op of the VU design
-(8 elements per cycle at 200 MHz) is estimated at 23.8 ms per token, so the composed recurrence is about 4.3 times
-slower than the fused one at the same clock. It does not need new hardware and its numerics are the oracle's;
-it is the baseline against which a fused op or local state buffers are measured. See also
-`docs/performance.md`.
+**Cost.** Isolated records, simulator cycle model, fixed schedule, 4 MiB SPM (`test_fw_gdn_rv <image> bench`; each launch
+includes about 18 K cycles of launch overhead, shown by `softplus`): GATED_DELTA_NET 151.6 K cycles for the 2B
+(16 heads) and 425.0 K for the 27B (48 heads) at one token; 1.655 M for four tokens and 6.576 M for sixteen, so
+8.6 K cycles per head and token in steady state (13 dependent VU ops; each of the two `RED.SUM` takes 16 cycles per row,
+2,048 cycles for the 128 rows). SSM_CONV 14.6 K (2B) and 19.0 K (27B), SOFTPLUS 18.5 K.
+
+Whole decode tokens (`TSR_STATS=1`: PERF_CYCLES and the busy cycles of the units, which now include the VU and DMA).
+The 27B was not run whole: the free disk (the file-backed simulator DRAM needs about 22 GB) was below the 60 GB
+rule. Its row extrapolates the first 4 and first 8 layers of the real GGUF (truncated copies, the 27B's shapes:
+`Qwen3.8-27B-first4.gguf`, `-first8`): one group of 3 Gated DeltaNet and 1 attention layer costs the
+difference of the two, and the head (embedding, output projection) the rest of the 4-layer run; 16 groups and
+the head make the 64 layers.
+
+| Per decode token (core cycles) | 2B (24 layers, measured) | 27B (64 layers, from 4 and 8 layers) |
+|---|---|---|
+| Total | 10.51 M | 108.4 M |
+| MVM busy | 5.70 M | 73.1 M |
+| VU busy | 2.73 M | 22.0 M |
+| DMA busy | 2.45 M | 18.4 M |
+| Recurrence (isolated record cost × heads × layers) | 2.47 M (24 % of the token) | 19.7 M (18 %) |
+| At 200 MHz (the card image's core clock) | 52.6 ms, 19 tokens/s | 542 ms, 1.85 tokens/s |
+| At 276.3 MHz (the simulator's core clock) | 38.0 ms | 392 ms |
+
+The busy cycles add up to about the total (2B: 10.9 M against 10.5 M; one group of the 27B: 6.76 M against 6.45 M):
+a decode token is a chain of dependent ops, so the VU's time is not hidden behind the MVM's. In a group of four
+layers the VU is busy 1.375 M cycles, of which the three recurrences take 1.23 M. At the 27B's 48 GDN layers the
+recurrence takes 19.7 M cycles per decode token: 98 ms at 200 MHz, 71 ms at 276.3 MHz. The fused GDN op of the VU design
+(8 elements per cycle at 200 MHz) is estimated at 23.8 ms per token, so the composed recurrence is about 4.1 times
+slower than the fused one at the same clock, and a 27B token would take about 468 ms with the fused op instead of
+542 ms (14 % less). Next to that, the composed kinds need no new hardware and their numerics are the oracle's;
+they are the baseline against which a fused op or local state buffers are measured. What would shrink the
+baseline in software: the state makes three passes through DRAM per layer (the `GET_ROWS` copy of the cell, the
+record's read and write, the `CPY` back; each pass reads and writes it), which a record working on the cache cell in
+place would cut to one (the DMA is 17 to 23 % of the token), and a reduction that does not serialise on the
+16-cycle `RED.SUM`.
+
+**Results** (simulator; klcheck at the usual floor: mean of the seeds 1 to 3, M7 settings, one launch per decode token;
+[klcheck.md](../klcheck.md)):
+
+- Qwen3.8 2B Q4_K_M, 8 prompts × 64 tokens (512 positions): mean KL 2.377e-3 against a floor of 2.240e-3, ratio 1.061,
+  top-1 98.05 %. 744 records per launch, 18 Gated DeltaNet and 6 attention layers on the device.
+- Long sequence: a 4,127-token prompt prefilled in ubatches of 512 (GATED_DELTA_NET records of 512 tokens) and 16 generated
+  tokens, 79 positions (the last 63 prompt positions and the 16 generated): KL 4.250e-3 against 4.298e-3, ratio 0.989, top-1
+  94.94 %, lowest cosine 0.9945. The state has been through 4,127 tokens in each of 18 layers. The simulator took 2,752 s
+  for the prefill and 1.6 s per decode token at that context.
+- The 27B's shapes, first 4 layers: ratio 1.062 (128 positions, top-1 100 %), logits cosine 0.99999 or better.
+- `fw_gdn_ggml`: the recurrence against ggml-cpu and float64 up to 512 tokens, the error equal to the CPU's own.
+
+**Not covered.** The whole 27B, a card run, more than one sequence in a ubatch end to end (the kinds and the
+lowering take `n_seqs` > 1 and the kind tests cover it; no llama.cpp run does), snapshots and rollback (`K` > 1
+state snapshots for multi-token prediction: such a node stays on the CPU), vision positions, and a KDA gate.
 
 ---
 

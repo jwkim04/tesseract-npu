@@ -2,6 +2,49 @@
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
 
+## Gated DeltaNet in software (branch `gdn-sw`, November 9)
+
+The Qwen3.5 / 3.8 layer graph (3 Gated DeltaNet layers to 1 attention layer) runs on the device through the simulator, with no
+RTL change and no llama.cpp patch. Design, decisions SW-60 to SW-67 and the numbers: [design/06-software-verification.md](design/06-software-verification.md)
+§7.9, [klcheck.md](klcheck.md), [performance.md](performance.md) "Gated DeltaNet on the simulator".
+
+What is in:
+
+- Kinds SOFTPLUS 0x2D, SSM_CONV 0x2E, GATED_DELTA_NET 0x2F (numerics revision 1, `sw/ctrl/kernels/gdn_kinds.cpp`, planners in
+  `tsr/plan_gdn.hpp`, oracle in `sw/ctrl/ref/gdn_ref.cpp`). UNARY takes SIGMOID. ITCM 78,576 B of the 81,920 B budget.
+- Backend lowering in `sw/ggml-tesseract` (`tsr-build.cpp`: `tsr_lower_gdn`, `tsr_lower_conv_group`, `tsr_lower_conv_window`,
+  `tsr_lower_unary`, the per-token `tsr_lower_rms`). The recurrent caches are device windows; with `-nkvo` the ops that touch
+  them stay on the CPU.
+- Tests: `fw_gdn_rv`, `fw_gdn_ggml`, `fw_kind_revs`, `ggml_tesseract_units` (lowering cases), `ggml_tesseract_graph_qwen35_tiny` /
+  `_s128`, `ggml_tesseract_gdn_logits_*`. The tiny models come from `gen_tiny_models.py`.
+- Models in `models/` (git-ignored): `qwen3.8-2b-empero/Qwen3.8-2B-Q4_K_M.gguf` (empero-ai/Qwen3.8-2B-Distill-GGUF, sha256
+  `4aa0fb13c431514262f259d420ecc95a8714df58ac2a2384514e20b93983f0ff`), `qwen3.8-27b-ggml-org/Qwen3.8-27B-Q4_K_M.gguf`
+  (ggml-org/Qwen3.8-27B-GGUF, 19,403,684,480 B, sha256 `d15d4b6de55f662ac40e867702d31afe738d032fa06b829b2b1a21a49d4a48ee`) and
+  truncated copies `qwen3.8-27b-trunc/Qwen3.8-27B-first{4,8}.gguf` made for the cost extrapolation.
+
+Results (simulator): the 2B at klcheck ratio 1.06 (512 positions, top-1 98.05 %); a 4,127-token prompt at ratio 0.99; the 27B's
+first 4 layers at ratio 1.06. A 27B decode token is about 108 M core cycles (542 ms at 200 MHz), the composed recurrence 19.7 M
+of them (98 ms), about 4.1 times the fused op's 23.8 ms estimate.
+
+Two bugs found on the way, both worth remembering:
+
+- ggml-alloc frees the inputs of a `CONCAT` after it. A record that reads them later reads reused memory. The SSM_CONV group now
+  builds its window at the CONCAT (SW-64). The tiny model's klcheck did not see it (mean KL ratio 1.2 with a convolution that
+  returned zeros), so `test-tsr-gdn-logits` checks the logits of every step.
+- klcheck's embd / floor path gave an M-RoPE model one position per token where llama.cpp reads four. The floor of Qwen3.8 was
+  inflated by that (ratio 0.35 instead of 1.06). Fixed in `sw/tools/klcheck.cpp`.
+
+Open:
+
+- The whole 27B was not simulated (the file-backed DRAM needs about 22 GB and the free disk was near the 60 GB rule). Its row
+  extrapolates the first 4 and 8 layers. Run `klcheck all` on it with `TSR_SIM_DRAM_DIR` when the disk allows.
+- More than one sequence per ubatch, `K` > 1 snapshots (MTP), vision positions and the KDA gate stay on the CPU or are untested end
+  to end. A card run was not made.
+- Cost ideas, not done: a record that updates the cache cell in place (three DRAM passes per layer become one), and a reduction
+  that does not wait on the 16-cycle `RED.SUM`. `TSR_DUMP_RE` / `TSR_DUMP_DIR` dump device node values for the next debugging
+  session.
+- `docs/design/02-vector-unit.md` §7.12 (the fused op, 23.8 ms) is on branch `gdn-vu`; this branch cites it before the merge.
+
 ## Resume here: the full-feature image on the card, everything passes (branch `k4full`, November 8, evening)
 
 The image of the fourth link (`build/link/k4full/tsr_u200_k4.xclbin`, source `d33f816`, 76,107,483 bytes, sha256

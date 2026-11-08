@@ -788,6 +788,17 @@ DCP loads or links were run for this mapping.
 
 ### 12.6 MoE and GDN extension checkpoints
 
+**GDN software baseline (2026-11-09, branch `gdn-sw`).** The recurrence and the surrounding operations of the
+Qwen3.5 / 3.8 layers are implemented in software on the existing VU: the kinds SOFTPLUS (0x2D), SSM_CONV (0x2E) and
+GATED_DELTA_NET (0x2F) (firmware, planners and C oracle, numerics revision 1), the ggml-tesseract lowering of the
+pinned llama.cpp graph (no llama.cpp patch), the recurrent state as device tensors, and tests at every layer. No RTL
+changed and the card was not used. Qwen3.8 2B (Q4_K_M) runs its whole decode graph on the simulator in one launch
+per token at klcheck ratio 1.06 (512 positions, top-1 98.05 %), and the first four layers of the 27B (the 27B's
+shapes: 48 value heads, C = 10240) agree with the CPU at cosine 0.99999. The composed recurrence costs 8.6 K core
+cycles per head and token: for the 27B (48 layers, 48 heads) 20.4 M cycles per decode token, 102 ms at 200 MHz,
+against the 23.8 ms estimated for the fused op (branch `gdn-vu`, VU §7.12). Design, decisions SW-60 to SW-67, measurements and the open
+items: `docs/design/06-software-verification.md` §7.9, `docs/klcheck.md`, `docs/performance.md`.
+
 The local-intermediate candidate's checked shared window helper now represents
 expert base/stride and input/output token origins while preserving original N
 and owner packing. The executing dense commands still use expert zero and
@@ -819,18 +830,19 @@ it does not by itself require a new RTL opcode or a RISC-V ISA extension.
   M8 device-embedding feature, not a prerequisite for expert matrix multiplication.
   VU §7.10 records about 5.6 K LUT for TOPK in the earlier VU synthesis. This is not a
   measured K4 placement increment; check local SLR capacity before enabling it.
-- **GDN baseline:** retain the proposed FP32 recurrent state in DDR and compose VOP,
-  RED, LD and ST in new firmware kinds for the recurrence and SSM convolution. Define
-  head/row tiling, scratch use and dependencies before claiming a complete mapping.
+- **GDN baseline (implemented, SW §7.9):** the FP32 recurrent state stays in DDR and the
+  recurrence and the SSM convolution are firmware kinds that compose VOP, RED, LD and ST.
+  Head tiles, scratch use and dependencies are defined in SW §7.9 (SW-60 to SW-67).
   For the planned 48-layer, 48-head, 128-by-128 state, one head is 64 KiB, one layer is
   3 MiB and one sequence is 144 MiB, excluding convolution history and snapshots.
   Start with head-sized SPM tiles. Local URAM buffers or fused state-update RTL remain
   performance options after measuring this baseline, not prerequisites already selected.
-- **GDN surrounding operations:** add lowering for the required norms, gates and rotary
-  variants. SILU, SIGMOID and EXP already have VU functions; SOFTPLUS/log does not.
-  Decide its stable numerical algorithm and cost before choosing a composition of existing
-  operations or a new VU function. Full model support is not established by the recurrence
-  mapping alone. No new wide SLR interface is assumed by the baseline.
+- **GDN surrounding operations (implemented):** the norms, gates and rotary variant are
+  lowered (SW §7.9). SILU, SIGMOID and EXP already have VU functions; SOFTPLUS has none and is
+  composed from VU functions in 20 VOPs, within 5 ulp of float64 (SW-62). IMROPE is the NEOX
+  rotation for text positions, with a guard. Full model support also needs sequences of
+  more than one slot per ubatch, snapshots and MTP, which are not covered. No new wide SLR
+  interface is assumed by the baseline.
 - **Numerics and cost:** specify rounding, reduction order and state-update order in the
   C oracle, with kind revisions under `docs/versioning.md`. Check long-sequence state and
   logits against llama.cpp, as well as oracle/RTL agreement. The earlier 8 ms GDN estimate

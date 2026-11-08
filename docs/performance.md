@@ -682,6 +682,20 @@ no such differences. These measurements cover one layer; full-model board tokens
 still pending. Raw timestamps, digests, configuration and reproduction details are in
 `build/analysis/k4_vu_model_perf_20261104/rtl_measurement/completion.json`.
 
+**Gated DeltaNet on the simulator** (Qwen3.5 / 3.8, composed from existing VU operations; [SW](design/06-software-verification.md) §7.9,
+branch `gdn-sw`; simulator cycle model, fixed schedule, core clock 276.3 MHz in the simulator, 200 MHz on the card image;
+`TSR_STATS=1` for the whole tokens, `test_fw_gdn_rv build/dev/fw/tsr-fw.elf bench` for single records):
+
+| Quantity | Value |
+| --- | --- |
+| GATED_DELTA_NET, one record, 2B (16 heads) / 27B (48 heads), one token | 151.6 K / 425.0 K core cycles (with about 18 K of launch overhead) |
+| GATED_DELTA_NET, 27B heads, 4 / 16 tokens | 1.655 M / 6.576 M cycles: 8.6 K per head and token |
+| SSM_CONV, 2B (C 6144) / 27B (C 10240) | 14.6 K / 19.0 K cycles; SOFTPLUS 18.5 K |
+| Qwen3.8 2B Q4_K_M decode token | 10.51 M cycles (52.6 ms at 200 MHz): MVM 5.70 M, VU 2.73 M, DMA 2.45 M busy; one launch of 735 records; 0.97 s of simulator time |
+| Qwen3.8 27B Q4_K_M decode token, from 4 and 8 layers | 108.4 M cycles (542 ms at 200 MHz, 1.85 tokens/s): MVM 73.1 M, VU 22.0 M, DMA 18.4 M; the recurrence 19.7 M (18 %, 98 ms) |
+| The fused GDN op (VU §7.12, branch `gdn-vu`) | 23.8 ms per 27B token, estimated: the composed recurrence is about 4.1 times slower; a token would be 468 ms instead of 542 |
+| Image size | ITCM 78,576 B, DTCM 49,912 B |
+
 **Firmware image** (`tsr-elf size build/dev/fw/tsr-fw.elf`, measured on the production image;
 ITCM is 131,072 B, DTCM 65,536 B):
 
@@ -689,6 +703,7 @@ ITCM is 131,072 B, DTCM 65,536 B):
 | --- | --- | --- |
 | W2a (`92f0b17`: `graph`, `selftest`, `replay`) | 25.8 KiB | 46.3 KiB |
 | With the M7 kinds (`a775222`) | 71,588 B (54.6 %; budget 81,920 B) | 49,448 B (75.5 %; budget 57,344 B) |
+| With the Gated DeltaNet kinds (`gdn-sw`) | 78,576 B (59.9 %; budget 81,920 B) | 49,912 B (76.2 %; budget 57,344 B) |
 
 **Verification facts** (measured on the simulator, as recorded in the commit messages):
 
@@ -794,6 +809,10 @@ TSR_SIM_DRAM_DIR=/path/with/space build/dev/bin/klcheck all \
 build/dev/bin/tsr-numcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf -o build/numcheck-05b -T 32 --checks full
 # firmware cycle counts, launch costs and the M7 layer costs
 ctest --test-dir build/dev -R '_perf' -V
+# Gated DeltaNet: one record per launch, then whole decode tokens (TSR_STATS prints PERF_CYCLES and the unit busy cycles)
+build/dev/sw/ctrl/host/test_fw_gdn_rv build/dev/fw/tsr-fw.elf bench
+LLAMA_ATTN_ROT_DISABLE=1 TSR_DEVICE=sim TSR_STATS=1 build/dev/bin/llama-completion -m models/qwen3.8-2b-empero/Qwen3.8-2B-Q4_K_M.gguf \
+    -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -c 256 -no-cnv -p "The" -n 32 --temp 0
 # op level
 build/dev/bin/test-backend-ops -o MUL_MAT -b Tesseract0
 # firmware image size

@@ -133,7 +133,7 @@ build/dev/bin/tsr-selftest --device sim
   CTL_ID 0x00005d01 (control core, debug module, SPM bridge, log ring, watchdog, SPM alias)  ...
 == boot (fw/tsr-fw.elf, id 21df766de1377d19)
   image fw/tsr-fw.elf: id 21df766de1377d19, Tesseract Basis 0.1.0, Basis ABI 1, needs capability 1.0; host Tesseract Basis 0.1.0
-  kinds (14, signature 0xfa6f): NOP r1 JOIN r1 MUL_MAT r1 ADD r1 MUL r1 SCALE r1 RMS_NORM r1 GLU r1 ROPE r1 GET_ROWS r1 SET_ROWS_KV r1 FLASH_ATTN r1 CPY r1 UNARY r1
+  kinds (19, signature 0x64dc): NOP r1 JOIN r1 MUL_MAT r1 ADD r1 MUL r1 SCALE r1 RMS_NORM r1 GLU r1 ROPE r1 GET_ROWS r1 SET_ROWS_KV r1 FLASH_ATTN r1 CPY r1 UNARY r1 MUL_MAT_SCALE r1 MUL_MAT_SOFTCAP r1 SOFTPLUS r1 SSM_CONV r1 GATED_DELTA_NET r1
 ```
 
 The image id changes with every build. `tsr-selftest --version` prints the Basis version and ABI of
