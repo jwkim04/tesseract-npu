@@ -6,7 +6,7 @@
 //     u = S k;  e = beta (v - alpha u);  S' = alpha S + e k^T;  o = S' q
 // evaluated as in sw/sim/tsr_ref_gdn.c (tsr_ref_gdn; VU §7.12.3): the dot products are exact sums of integer
 // products in a block frame, converted once to f32 (VU-29); the update is FA(FM(alpha, S), FM(e, k)) and runs on
-// the front lanes of tsr_vu (VU-28): this module reads the operands of each beat (tsr_vu_gdn_upd) and tsr_vu
+// the front lanes of tsr_vu (VU-30, VU-34): this module reads the operands of each beat (tsr_vu_gdn_upd) and tsr_vu
 // feeds them to the lanes as micro-op U_ROT, with alpha as c1 and e as c2. The result stays bit-exact with the
 // reference because the lanes are built from the same tsr_fp_mul and tsr_fp_add.
 //

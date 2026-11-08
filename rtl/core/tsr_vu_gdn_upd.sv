@@ -2,7 +2,7 @@
 // buffer (RAM B2) and the table of the key (RAM KF) (docs/design/02-vector-unit.md §7.12.5).
 //
 // The state update S'_j = FA(FM(alpha, S_j), FM(e, k_j)) is not computed here. It runs on the front lanes of
-// the vector unit (micro-op U_ROT of tsr_vu_lane with a = S_j, b = k_j, c1 = alpha, c2 = e; VU-28), which are
+// the vector unit (micro-op U_ROT of tsr_vu_lane with a = S_j, b = k_j, c1 = alpha, c2 = e; VU-30), which are
 // FM_A and FM_B in parallel into FA, built from the same tsr_fp_mul and tsr_fp_add. This module reads the
 // operands in the beat layout of the lanes and delivers them with the lane constants and the write
 // descriptor of the beat.

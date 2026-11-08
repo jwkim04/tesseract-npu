@@ -25,6 +25,7 @@
 #   VOOC worst <start> -> <end> slack <ns> levels <n>     (20 paths)
 #   VOOC failing_endpoints <n>
 #   VOOC blk <instance> slack <ns> <start> -> <end> levels <n>   (worst path into each block)
+#   VOOC gdn_from / gdn_to / gdn_lanes / gdn_wr slack <ns> ...   (HAS_GDN: worst paths from and to the engine, into the lanes, into the writer)
 #   VOOC hier <instance> LUT <n> FF <n> DSP <n> RAMB36 <n>   (per block)
 set repo [lindex $argv 0]
 set out  [lindex $argv 1]
@@ -123,6 +124,25 @@ foreach inst [list u_gen u_rd u_inj u_wr u_red u_ang g_topk.u_topk g_gdn.u_gdn g
   set p [get_timing_paths -quiet -setup -max_paths 1 -to $cs]
   if {[llength $p] == 0} { continue }
   puts "VOOC blk $inst slack [get_property SLACK $p] [get_property STARTPOINT_PIN $p] -> [get_property ENDPOINT_PIN $p] levels [get_property LOGIC_LEVELS $p]"
+}
+# the paths that start in the GDN engine (operand beats and the lane select into the lanes, the writer and the checker) and
+# end in it (the injector's slot and line, the writer's credits)
+set gs [get_cells -quiet -hierarchical -filter {NAME =~ g_gdn.u_gdn/* && IS_SEQUENTIAL}]
+if {[llength $gs] > 0} {
+  foreach p [get_timing_paths -quiet -setup -max_paths 10 -nworst 1 -from $gs] {
+    puts "VOOC gdn_from slack [get_property SLACK $p] [get_property STARTPOINT_PIN $p] -> [get_property ENDPOINT_PIN $p] levels [get_property LOGIC_LEVELS $p]"
+  }
+  foreach p [get_timing_paths -quiet -setup -max_paths 10 -nworst 1 -to $gs] {
+    puts "VOOC gdn_to slack [get_property SLACK $p] [get_property STARTPOINT_PIN $p] -> [get_property ENDPOINT_PIN $p] levels [get_property LOGIC_LEVELS $p]"
+  }
+  set p [get_timing_paths -quiet -setup -max_paths 1 -from $gs -to [get_cells -quiet -hierarchical -filter {NAME =~ u_lanes/* && IS_SEQUENTIAL}]]
+  if {[llength $p] > 0} {
+    puts "VOOC gdn_lanes slack [get_property SLACK $p] [get_property STARTPOINT_PIN $p] -> [get_property ENDPOINT_PIN $p] levels [get_property LOGIC_LEVELS $p]"
+  }
+  set p [get_timing_paths -quiet -setup -max_paths 1 -from $gs -to [get_cells -quiet -hierarchical -filter {NAME =~ u_wr/* && IS_SEQUENTIAL}]]
+  if {[llength $p] > 0} {
+    puts "VOOC gdn_wr slack [get_property SLACK $p] [get_property STARTPOINT_PIN $p] -> [get_property ENDPOINT_PIN $p] levels [get_property LOGIC_LEVELS $p]"
+  }
 }
 set cs [get_cells -quiet -filter {IS_SEQUENTIAL}]
 if {[llength $cs] > 0} {
