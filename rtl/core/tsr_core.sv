@@ -89,6 +89,7 @@ module tsr_core
   parameter bit              HAS_ATT        = HAS_MVM,           // needs HAS_VU, HAS_MVM and MVM_MAC_LAT >= 3
   parameter bit              HAS_TOPK       = 1'b0,
   parameter bit              HAS_DQROW      = 1'b0,
+  parameter bit              HAS_GDN        = 1'b0,              // the fused Gated DeltaNet state update (VU §7.12), CAPS bit 8
   parameter bit              HAS_DB         = 1'b1,
   parameter int unsigned     QD_VU          = tsr_tables_pkg::TSR_QDEPTH_U200_VU,
   parameter int unsigned     VU_FRONT_LANES = tsr_tables_pkg::TSR_VU_FRONT_LANES,
@@ -156,6 +157,7 @@ module tsr_core
                                      (HAS_ATT   ? tsr_tables_pkg::TSR_CAPS_ATT   : 32'd0) |
                                      (HAS_TOPK  ? tsr_tables_pkg::TSR_CAPS_TOPK  : 32'd0) |
                                      (HAS_DQROW ? tsr_tables_pkg::TSR_CAPS_DQROW : 32'd0) |
+                                     (HAS_GDN   ? tsr_tables_pkg::TSR_CAPS_GDN   : 32'd0) |
                                      (LOCAL_INTERMEDIATES ? tsr_tables_pkg::TSR_CAPS_ATT_LOCAL : 32'd0) |
                                      (LOCAL_SCALE ? tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SCALE : 32'd0) |
                                      (LOCAL_SOFTCAP ? tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SOFTCAP : 32'd0);
@@ -395,7 +397,7 @@ module tsr_core
     .RV_LOCAL_TRANSPORT(RV_LOCAL_TRANSPORT), .XSLR_REG(XSLR_REG),
     .QD_DMA(QD_DMA), .QD_QACT(QD_QACT), .QD_MVM(QD_MVM), .QD_SYNC(QD_SYNC),
     .ITCM_BYTES(ITCM_BYTES), .DTCM_BYTES(DTCM_BYTES),
-    .HAS_VU(HAS_VU), .HAS_ATT(HAS_ATT), .HAS_TOPK(HAS_TOPK), .HAS_DQROW(HAS_DQROW), .HAS_DB(HAS_DB),
+    .HAS_VU(HAS_VU), .HAS_ATT(HAS_ATT), .HAS_TOPK(HAS_TOPK), .HAS_DQROW(HAS_DQROW), .HAS_GDN(HAS_GDN), .HAS_DB(HAS_DB),
     .QD_VU(QD_VU), .VU_FRONT_LANES(VU_FRONT_LANES), .VU_EXP_LANES(VU_EXP_LANES), .VU_BACK_LANES(VU_BACK_LANES), .VU_LANE_PIPE(VU_LANE_PIPE),
     .HIST_DEPTH(HIST_DEPTH),
     .HAS_TRW(HAS_TRW), .NTBP(NTBP), .NRVWP(NRVWP), .HAS_REC(HAS_REC)

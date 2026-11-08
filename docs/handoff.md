@@ -141,6 +141,27 @@ Open:
   session.
 - `docs/design/02-vector-unit.md` §7.12 (the fused op, 23.8 ms) is on branch `gdn-vu`; this branch cites it before the merge.
 
+## Branch `gdn-vu`: the GDN op is in the vector unit (November 9)
+
+The fused Gated DeltaNet state update (opcode 0x39, `HAS_GDN`, `CAPS` bit 8) is integrated in `tsr_vu` and in the `tsr_u200_k4` top
+(`HAS_GDN` 1; `CAPS` reads 0x121). Design and numbers: [design/02-vector-unit.md](design/02-vector-unit.md) §7.12, decisions VU-28 to
+VU-37. The element update runs on the front lanes (micro-op U_ROT); the engine keeps the DSP dot array, the converter, the setup
+engine, the scalar chain and the URAM buffers, and is inside `pblock_tsr_vu`. The Pblocks are unchanged. No link was run.
+
+- Oracle and tables: `sw/sim/tsr_ref_gdn.c`; opcode, `CAPS` bit 8, encoding and limits (m 64 to 256 in steps of 16, rows 1 to 1,024) in
+  `sw/tables/tsr_tables.py` with the generated files; the simulator's VU unit executes the op and the checker class gives the
+  same codes, `ERR_INFO` and extents (d W, a R, k R, o W).
+- With `HAS_GDN` 0 nothing of the op is built; every existing VU test passes unchanged with `HAS_GDN` 1 as well (`tb/vu`).
+- Out of context, K4 VU, after route, 4.0 ns: +5.0 K LUT, +40 DSP, +34 URAM, no RAMB; WNS +0.262 ns (a path of the unchanged
+  unit), every engine path at least +0.46 ns. Throughput: heads run back to back at (rows + 1) x m / 8 cycles, 19.0 ms per token for the
+  planned 48 x 48 heads of 128 x 128 at 250 MHz.
+- Card test hook: `selftest` kernel id 11 (`tsr-selftest --ids 11`), only with `CAPS` bit 8.
+- For the 250 MHz link branch (`k4f250`): merge `gdn-vu`; the k4 top gets `HAS_GDN` 1, `CAPS` reads 0x121, `tsr-selftest` has a new id 11
+  (counts change on a device with the bit), the simulator's implemented `CAPS` includes bit 8, and the VU grows by 5.0 K LUT. A
+  link has to show that the VU region still routes at 4.0 ns. `HAS_GDN` 0 in `gen_tops.py` gives back the earlier top.
+- Next: the `GDN_STATE` firmware kind (`LD`, op, `ST`, double-buffered over the heads), the lowering of `GGML_OP_GATED_DELTA_NET`, the
+  surrounding ops (conv1d, norms, gates), then a long-sequence comparison with llama.cpp (VU §7.12.11).
+
 ## Resume here: the full-feature image on the card, everything passes (branch `k4full`, November 8, evening)
 
 The image of the fourth link (`build/link/k4full/tsr_u200_k4.xclbin`, source `d33f816`, 76,107,483 bytes, sha256

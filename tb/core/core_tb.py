@@ -41,7 +41,8 @@ RT_DONE = 0xD0E
 # reserved).
 # TB_CORE_NOVU=1: the core of the reduced first card image (HAS_VU 0, HAS_ATT 0): CAPS 0, no VU queue.
 NOVU = os.environ.get("TB_CORE_NOVU", "0") == "1"
-CAPS_U200 = 0x00 if NOVU else 0x21
+GDN = os.environ.get("TB_CORE_GDN", "0") == "1"          # the core has the GDN op (HAS_GDN 1: CAPS bit 8)
+CAPS_U200 = 0x00 if NOVU else 0x21 | (0x100 if GDN else 0)
 NCH = int(os.environ.get("TB_CORE_NCH", "2"))
 TMAX = int(os.environ.get("TB_CORE_TMAX", "2"))
 CFG = S.config(num_ch=NCH, t_max=TMAX, k_max=4096, spm_bytes=256 * 1024, ch_bytes=1 << 30, addr_beat_w=24,
@@ -52,7 +53,8 @@ PARAMS = {"NUM_CH": NCH, "T_MAX": TMAX, "K_MAX": 4096, "SPM_BYTES": 256 * 1024, 
 
 ARG_NAMES = ("K", "T", "N1", "N2", "X_BEAT", "W1_OFF", "W2_OFF", "X_LINE", "QA1_LINE", "QA2_LINE", "Y1_LINE",
              "Y2_LINE", "X_LINES", "Y1_LINES", "Y2_LINES", "Y1_DST", "Y2_DST", "DUMP_DST", "DUMP_LINES",
-             "SCRATCH_LINE", "BG_SRC", "SPM_LINES")
+             "SCRATCH_LINE", "BG_SRC", "SPM_LINES", "GDN_ON", "GDN_IN", "GDN_OUT", "GDN_SPM", "GDN_M", "GDN_ROWS",
+             "GDN_AL0", "GDN_BE0", "GDN_AL1", "GDN_BE1")
 
 
 def build_fw(out_dir: Path, src: Path | None = None) -> Path:
@@ -114,9 +116,31 @@ def scenario(seed: int, K: int = 512, T: int = 2, N1: int = 40, N2: int = 24) ->
              Y1_DST=(outer << 28) | y1_beat, Y2_DST=(0 << 28) | y2_beat, DUMP_DST=(outer << 28) | dump_beat,
              DUMP_LINES=dump, SCRATCH_LINE=SCR, BG_SRC=(outer << 28) | bg_beat,
              SPM_LINES=CFG["spm_bytes"] // 64)          # the failing LD's line (SPM_RANGE)
+    a.update(GDN_ON=0, GDN_IN=0, GDN_OUT=0, GDN_SPM=0, GDN_M=0, GDN_ROWS=0, GDN_AL0=0, GDN_BE0=0, GDN_AL1=0, GDN_BE1=0)
     regions = [(outer, y1_beat * 64, 64 * (T * yl1 + 2)), (0, y2_beat * 64, 64 * (T * yl2 + 2)),
                (outer, dump_beat * 64, 64 * (dump + 2)), (0, x_beat * 64, len(x))]
-    return dict(writes=writes, args=[a[n] for n in ARG_NAMES], regions=regions, spm_lines=dump)
+    stores = regions[:3]
+    if GDN:
+        # two heads of the fused GDN op (VU §7.12): head 0 to its own tile, head 1 in place; the simulator's run of
+        # the same firmware is the oracle (tsr_ref_gdn), DRAM equality is the test
+        m, rows = 128, 20
+        nl, lv, tile = m // 16, (rows + 15) // 16, rows * (m // 16)
+        inh = 2 * nl + lv + tile
+        gin, gout = io + 32768, io + 40960
+        gdata = b""
+        for hd in range(2):
+            gdata += struct.pack("<%df" % m, *[rnd.gauss(0.0, 0.25) for _ in range(m)])       # k
+            gdata += struct.pack("<%df" % m, *[rnd.gauss(0.0, 0.25) for _ in range(m)])       # q
+            gdata += struct.pack("<%df" % (16 * lv), *([rnd.gauss(0.0, 1.0) for _ in range(rows)] + [0.0] * (16 * lv - rows)))
+            gdata += struct.pack("<%df" % (rows * m), *[rnd.gauss(0.0, 0.5) for _ in range(rows * m)])
+        writes.append((0, gin * 64, gdata))
+        writes.append((0, gout * 64, rnd.randbytes(64 * 2 * (tile + lv))))
+        f32 = lambda v: struct.unpack("<I", struct.pack("<f", v))[0]
+        a.update(GDN_ON=1, GDN_IN=gin, GDN_OUT=gout, GDN_SPM=2048, GDN_M=m, GDN_ROWS=rows, GDN_AL0=f32(0.95),
+                 GDN_BE0=f32(0.5), GDN_AL1=f32(0.99), GDN_BE1=f32(0.25))
+        regions.append((0, gout * 64, 64 * 2 * (tile + lv)))
+        stores.append(regions[-1])
+    return dict(writes=writes, args=[a[n] for n in ARG_NAMES], regions=regions, stores=stores, spm_lines=dump)
 
 
 # ---------------------------------------------------------------------------------------------

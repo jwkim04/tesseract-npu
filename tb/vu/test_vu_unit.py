@@ -41,6 +41,9 @@ from common.runner import REPO, run       # noqa: E402
 import vu_ops as V                         # noqa: E402
 from vu_env import Oracle, Rtl, rnd_f32, rnd_line, M32   # noqa: E402
 
+sys.path.insert(0, str(REPO / "tb" / "gdn"))
+import gdn_data as GD                      # noqa: E402
+
 CORE = REPO / "rtl" / "core"
 VU_SOURCES = [CORE / s for s in (
     "tsr_tables_pkg.sv", "tsr_pkg.sv", "tsr_fp_pkg.sv", "tsr_att_pkg.sv", "tsr_xc_pkg.sv", "tsr_vu_pkg.sv")] + \
@@ -50,7 +53,9 @@ VU_SOURCES = [CORE / s for s in (
         "tsr_vu_lane_share.sv", "tsr_vu_lanes.sv",
         "tsr_vu_gen.sv",
         "tsr_vu_rd.sv", "tsr_vu_dq.sv", "tsr_vu_inj.sv", "tsr_vu_wr.sv", "tsr_vu_red.sv", "tsr_vu_angle.sv",
-        "tsr_vu_topk.sv", "tsr_local_asmax.sv", "tsr_vu.sv")] + \
+        "tsr_vu_topk.sv", "tsr_local_asmax.sv",
+        "tsr_vu_gdn_ram.sv", "tsr_vu_gdn_fx2f.sv", "tsr_vu_gdn_dlane.sv", "tsr_vu_gdn_mac.sv", "tsr_vu_gdn_dot.sv",
+        "tsr_vu_gdn_upd.sv", "tsr_vu_gdn_coef.sv", "tsr_vu_gdn.sv", "tsr_vu.sv")] + \
     [HERE / "hdl" / "tsr_vu_tb.sv"]
 
 
@@ -69,7 +74,7 @@ def cfg():
     return dict(spm_bytes=c.get("spm_bytes", 262144), num_ch=c.get("num_ch", 4), n=c.get("n", 1.0),
                 topk=c.get("topk", 1), dqrow=c.get("dqrow", 1),
                 front_lanes=c.get("front_lanes", 16), exp_lanes=c.get("exp_lanes", 16),
-                back_lanes=c.get("back_lanes", 8), lane_pipe=c.get("lane_pipe", 0))
+                back_lanes=c.get("back_lanes", 8), lane_pipe=c.get("lane_pipe", 0), gdn=c.get("gdn", 0))
 
 
 # ---------------------------------------------------------------------------------------------
@@ -82,7 +87,8 @@ class Bench:
         self.spm_bytes = c["spm_bytes"]
         self.L = self.spm_bytes // 64
         self.scale = c["n"]
-        self.o = Oracle(self.spm_bytes, c["num_ch"], caps=0x21 | 0x8 | 0x40)
+        self.gdn = c["gdn"]
+        self.o = Oracle(self.spm_bytes, c["num_ch"], caps=0x21 | 0x8 | 0x40 | (0x100 if c["gdn"] else 0))
         self.rtl = Rtl(dut, self.L)
         self.r = random.Random(seed)
         self.noise = noise
@@ -107,11 +113,12 @@ class Bench:
             self.o.set_line(ln, b)
         await self.rtl.write_lines(items)
 
-    async def batch(self, ops, what=""):
-        """Push ops (each must pass the simulator's check), wait for their done, compare."""
+    async def batch(self, ops, what="", extra_wr=()):
+        """Push ops (each must pass the simulator's check), wait for their done, compare. extra_wr: lines written
+        that the extent list of the checks does not carry (a GDN op lists four of its six operands: not v, o)."""
         import time
         t0, c0 = time.time(), self.rtl.cycles
-        wr = set()
+        wr = set(extra_wr)
         accepted = []
         for w in ops:
             w = [x & M32 for x in w]
@@ -298,6 +305,39 @@ def gen_rope(b: Bench, mode=None, hd=None, nd=None, nh=None, T=None, form=None):
     w = V.enc_rope(1 if neox else 0, d, src, pos, hd, nd, nh, T, table, ss, dsr, ff, fs, atab, sm,
                    0 if atab else sts, sfs if fs else 0)
     return pre, sops + [w]
+
+
+# ---------------------------------------------------------------------------------------------
+# GDN (VU §7.12): one head = SOP MOVI of alpha and beta, then the op; the tile, the vectors and o in disjoint regions
+# ---------------------------------------------------------------------------------------------
+def gen_gdn(b: Bench, kind=None, m=None, rows=None, inplace=None, avoid=(), sa=None, sb=None):
+    """Returns (pre, ops, extra_wr, regions): pre-written lines (the head's data), the MOVI ops and the GDN op, the
+    o lines (not in the check's extent list), and the regions used (for the next head to avoid)."""
+    r = b.r
+    kind = r.choice(GD.KINDS + ["model", "model"]) if kind is None else kind
+    m = r.choice([64, 128, 128, 256, 96, 160]) if m is None else m
+    rows = r.choice([1, 2, 7, 16, 17, 33, 64, 40]) if rows is None else rows
+    nl = m // 16
+    inplace = (r.random() < 0.4) if inplace is None else inplace
+    k, q, v, S, alpha, beta = GD.head_data(r, kind, m, rows)
+    te = rows * nl
+    a = b.region(te, avoid)
+    ax = (a, a + te)
+    d = a if inplace else b.region(te, list(avoid) + [ax])
+    tx = [ax] + ([] if inplace else [(d, d + te)])
+    kl = b.region(nl, list(avoid) + tx)
+    ql = b.region(nl, list(avoid) + tx + [(kl, kl + nl)])
+    vl = b.region(V.L(rows), list(avoid) + tx + [(kl, kl + nl), (ql, ql + nl)])
+    ol = b.region(V.L(rows), list(avoid) + tx + [(kl, kl + nl), (ql, ql + nl), (vl, vl + V.L(rows))])
+    def lines(base, words):
+        words = list(words) + [0] * (-len(words) % 16)
+        return [(base + i, struct.pack("<16I", *words[16 * i:16 * i + 16])) for i in range(len(words) // 16)]
+    pre = lines(a, S) + lines(kl, k) + lines(ql, q) + lines(vl, v)
+    sa = r.randrange(16) if sa is None else sa
+    sb = r.choice([x for x in range(16) if x != sa]) if sb is None else sb
+    ops = [b.movi(sa, alpha), b.movi(sb, beta), V.enc_gdn(sa, sb, d, a, kl, ql, vl, ol, m, rows)]
+    used = tx + [(kl, kl + nl), (ql, ql + nl), (vl, vl + V.L(rows)), (ol, ol + V.L(rows))]
+    return pre, ops, list(range(ol, ol + V.L(rows))), used
 
 
 def gen_asmax(b: Bench):
@@ -636,6 +676,75 @@ async def vu_dqrow(dut):
 
 
 @cocotb.test()
+async def vu_gdn(dut):
+    """GDN heads of every data class, shape and layout (in place or not), one at a time and several back to back
+    (the next head's setup under the rows of the previous one), against the simulator's tsr_ref_gdn on SPM bytes."""
+    b = Bench(dut, 0x6D4, noise=True)
+    if not b.gdn:
+        b.o.close()
+        return
+    await b.start()
+    for kind in GD.KINDS:
+        for m, rows in ((64, 5), (128, 20), (256, 9)):
+            pre, ops, ex, _ = gen_gdn(b, kind=kind, m=m, rows=rows)
+            await b.prewrite(pre)
+            await b.batch(ops, "GDN %s m %d rows %d" % (kind, m, rows), extra_wr=ex)
+    for it in range(6):
+        pre, ops, ex, used = [], [], [], []
+        r_n = b.r.choice([2, 3, 4])
+        for h in range(r_n):
+            p, o_, e, u = gen_gdn(b, m=b.r.choice([64, 128, 96]), rows=b.r.choice([5, 16, 17, 24]), avoid=used)
+            pre += p
+            ops += o_
+            ex += e
+            used += u
+        await b.prewrite(pre)
+        await b.batch(ops, "GDN %d heads back to back" % r_n, extra_wr=ex)
+    b.finish("vu_gdn")
+
+
+@cocotb.test()
+async def vu_gdn_mixed(dut):
+    """GDN between other ops: VOP / RED on the head's results (RAW across the op), the same tile in two consecutive
+    heads (the state of head 2 is the S' of head 1: RAW and WAW), and a VOP overwriting a vector that GDN read."""
+    b = Bench(dut, 0x6D5, noise=True)
+    if not b.gdn:
+        b.o.close()
+        return
+    await b.start()
+    r = b.r
+
+    def lines(base, words):
+        words = list(words) + [0] * (-len(words) % 16)
+        return [(base + i, struct.pack("<16I", *words[16 * i:16 * i + 16])) for i in range(len(words) // 16)]
+
+    for it in range(8):
+        m, rows = r.choice([(64, 16), (128, 17), (128, 33), (256, 8)])
+        nl, te, lr = m // 16, rows * (m // 16), V.L(rows)
+        pre, ops, ex, used = gen_gdn(b, kind="model", m=m, rows=rows, inplace=True)
+        a, o1 = ops[-1][2], ops[-1][6]                 # the tile (in place), the o vector of head 1
+        seq = list(ops)
+        dst = b.region(te, used)                       # RAW: a VOP COPY of the new state, one of o
+        used.append((dst, dst + te))
+        seq.append(V.enc_vop(0x09, dst, a, 0, 0, m, rows, nl, nl, 0))
+        dst2 = b.region(lr, used)
+        used.append((dst2, dst2 + lr))
+        seq.append(V.enc_vop(0x09, dst2, o1, 0, 0, rows, 1))
+        k2, q2, v2, _, al2, be2 = GD.head_data(r, "model", m, rows)    # head 2 on the same tile
+        kl2 = b.region(nl, used); used.append((kl2, kl2 + nl))
+        ql2 = b.region(nl, used); used.append((ql2, ql2 + nl))
+        vl2 = b.region(lr, used); used.append((vl2, vl2 + lr))
+        ol2 = b.region(lr, used); used.append((ol2, ol2 + lr))
+        pre += lines(kl2, k2) + lines(ql2, q2) + lines(vl2, v2)
+        seq += [b.movi(1, al2), b.movi(2, be2), V.enc_gdn(1, 2, a, a, kl2, ql2, vl2, ol2, m, rows)]
+        seq.append(V.enc_vop(0x09, vl2, dst2, 0, 0, rows, 1))      # overwrites v of head 2 afterwards
+        seq.append(V.enc_red(0, 0, ol2, rows, 1, 0, to_s=1, sd=7))   # a RED over the final o
+        await b.prewrite(pre)
+        await b.batch(seq, "GDN mixed %d (m %d rows %d)" % (it, m, rows), extra_wr=ex + list(range(ol2, ol2 + lr)))
+    b.finish("vu_gdn_mixed")
+
+
+@cocotb.test()
 async def vu_stream(dut):
     """Random streams: each batch mixes op kinds; a third of the ops read the previous op's destination
     (RAW) or write it (WAW), s registers are written by SOP / RED TO_S and read by the next ops."""
@@ -819,12 +928,12 @@ async def vu_width_cycles(dut):
 # pytest
 # ---------------------------------------------------------------------------------------------
 def _run(name, spm_bytes=262144, rd_lat=4, exp_lanes=16, back_lanes=8, num_ch=4, n=1.0, testcase=None, topk=1,
-         dqrow=1, lane_pipe=0, front_lanes=16, cycle_report=None):
-    c = dict(spm_bytes=spm_bytes, num_ch=num_ch, n=n, topk=topk, dqrow=dqrow, front_lanes=front_lanes, exp_lanes=exp_lanes, back_lanes=back_lanes, lane_pipe=lane_pipe)
+         dqrow=1, lane_pipe=0, front_lanes=16, cycle_report=None, gdn=0):
+    c = dict(spm_bytes=spm_bytes, num_ch=num_ch, n=n, topk=topk, dqrow=dqrow, front_lanes=front_lanes, exp_lanes=exp_lanes, back_lanes=back_lanes, lane_pipe=lane_pipe, gdn=gdn)
     run("tsr_vu_tb", __name__, sources=vu_sources(), name="vu_unit_" + name, testcase=testcase,
         extra_env={"TSR_VU_UNIT_CFG": json.dumps(c), **({"TSR_VU_CYCLE_REPORT": str(cycle_report)} if cycle_report else {})},
         parameters=dict(SPM_BYTES=spm_bytes, SPM_RD_LAT=rd_lat, NUM_CH=num_ch, FRONT_LANES=front_lanes, EXP_LANES=exp_lanes,
-                        BACK_LANES=back_lanes, LANE_PIPE=lane_pipe, HAS_TOPK=topk, HAS_DQROW=dqrow))
+                        BACK_LANES=back_lanes, LANE_PIPE=lane_pipe, HAS_TOPK=topk, HAS_DQROW=dqrow, HAS_GDN=gdn))
 
 
 def test_vu_unit_u200():
@@ -878,3 +987,15 @@ def test_vu_unit_half_transport():
     """The same eight physical lanes and two contexts with zero/three pipe stages."""
     _run("half8_wire", front_lanes=8, exp_lanes=8, back_lanes=4, lane_pipe=0)
     _run("half8_pipe3", front_lanes=8, exp_lanes=8, back_lanes=4, lane_pipe=3)
+
+
+def test_vu_unit_gdn_k4():
+    """HAS_GDN = 1 on the k4 shape (8 front lanes, two lane-pipe stages): the GDN tests and every existing test of
+    the unit, which must pass unchanged with the engine present."""
+    _run("gdn_half8_pipe2", front_lanes=8, exp_lanes=8, back_lanes=4, lane_pipe=2, gdn=1)
+
+
+def test_vu_unit_gdn_front16():
+    """HAS_GDN = 1 with 16 front lanes (the unit at 16 elements per cycle), no lane pipe and two."""
+    _run("gdn_front16", gdn=1, testcase="vu_gdn|vu_gdn_mixed|vu_smoke|vu_stream")
+    _run("gdn_front16_pipe2", gdn=1, lane_pipe=2, testcase="vu_gdn|vu_gdn_mixed")

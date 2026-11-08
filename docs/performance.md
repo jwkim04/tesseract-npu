@@ -663,6 +663,12 @@ shapes, Qwen2.5-0.5B Q8_0, one token, 4 channels:
   decoded token takes 2,281,377 PERF cycles on k4t1 (7.60 ms at 300 MHz) and 8,476,150 on k1
   (28.25 ms). The kernel adds 99 cycles per exec. On k4 (T_MAX 8) a 6-token prompt runs as one
   T = 6 pass of 3.14 M cycles, against 13.67 M at T_MAX 1.
+- The fused GDN state update (VU §7.12; engine and lane model in `tb/gdn`, the VU in `tb/vu`), ideal SPM, 8 front lanes: heads of one
+  shape run back to back at (rows + 1) x m / 8 cycles (128 x 128: 2,064 cycles, 100 % of the beat time; the +1 is the pseudo row). Eight
+  heads of mixed shape (4 x 128 x 128, 2 x 64 x 256, 2 x 128 x 64): 15,555 cycles for 14,480 beats (98 % over the S' output span of
+  14,737 cycles). With 16 front lanes the same eight heads take 11,259 cycles. The setup of a head (4 m + rows + 45 cycles) is hidden
+  behind the rows of the head before it. For the planned 48-layer, 48-head, 128-by-128 model that is 4.76 M cycles per token: 19.0 ms
+  at 250 MHz, 23.8 ms at 200 MHz. Simulation only: the op is in no image that ran on the card.
 - The RTL replay of the trace sets returns with the RTL work packages W4 and W5 (see
   [Verify](getting-started.md#verify)).
 - Mutation campaigns (every test must fail on at least one deliberate mutant): the M3 core 31
@@ -813,6 +819,7 @@ the card in W6 and in synthesis in W4/W5.
 | SLR1 LUT use | 125 to 143 K (62 to 72 %) against the 65 % gate (CC-24) | estimate (CC §14.1) |
 | Control core, issue path, CSR block | 14.5 to 25 K LUT, 49 RAMB36, 4 to 6 DSP | estimate (CC §14.1, §14.5) |
 | Vector unit | about 48 K LUT, 15 RAMB36, 366 DSP (plus or minus 30 %) | estimate (CC §14.1) |
+| GDN op in the K4 vector unit | +5.0 K LUT, +40 DSP, +34 URAM; 19.0 ms per token at 250 MHz for the planned 48 x 48 heads of 128 x 128 | out of context, after route (VU §7.12.9); cycles from RTL simulation |
 | Debug block | 4.2 to 6.3 K LUT, 7 RAMB36 | estimate (CC §14.1) |
 | Attention cluster modes | 19 to 27 K LUT per cluster (SLR0 and SLR2) | estimate (CC §14.1) |
 | Attention share of a decode token at 4K context | 0.5B Q8_0 about 9 %, 12B Q4_K_M about 3.5 %, 32B Q4_K_M about 3.0 % (device time) | estimate (AT §9.3) |

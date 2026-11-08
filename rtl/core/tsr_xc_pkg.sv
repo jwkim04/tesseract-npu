@@ -5,7 +5,7 @@
 // and the integrator (tsr_core_dp) joins them on tsr_chk's single xc port.
 //
 // Split of the external opcodes (EX §7.2; tsr_tables_pkg TSR_OP_*), by the unit that runs them:
-//   VU class (tsr_vu_chk)   unit 3: DQROW 0x12, VOP 0x30, RED 0x31, ROPE 0x32, TOPK 0x33, SOP 0x40, and AT's
+//   VU class (tsr_vu_chk)   unit 3: DQROW 0x12, VOP 0x30, RED 0x31, ROPE 0x32, TOPK 0x33, GDN 0x39, SOP 0x40, and AT's
 //                           vector ops ASMAX 0x34, AMASK 0x35, AMERGE 0x36, ANORM 0x37 (AT §5.8's checks,
 //                           VU §5.11: the VU executes them)
 //   AT class (tsr_chk_at)   KVST 0x14 (unit 0), ATTQK 0x21, ATTPV 0x22 (unit 2)
@@ -50,7 +50,7 @@ package tsr_xc_pkg;
 
   function automatic logic [1:0] tsr_xc_class(input logic [7:0] op);
     case (op)
-      8'h12, 8'h30, 8'h31, 8'h32, 8'h33, 8'h34, 8'h35, 8'h36, 8'h37, 8'h40: return TSR_XC_VU;
+      8'h12, 8'h30, 8'h31, 8'h32, 8'h33, 8'h34, 8'h35, 8'h36, 8'h37, 8'h39, 8'h40: return TSR_XC_VU;
       8'h14, 8'h21, 8'h22: return TSR_XC_AT;
       default: return TSR_XC_NONE;
     endcase

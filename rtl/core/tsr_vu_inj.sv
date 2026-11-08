@@ -7,6 +7,10 @@
 // Stages: D (decide: the head slot and its operands are ready, the lanes' exit order allows it; pop the
 // FIFOs, read the local memory) -> I (one cycle per sub-slot: operand selection) -> registered outputs
 // to the lanes (their input register is the next stage).
+// GDN (HAS_GDN, VU §7.12.5): a slot of kind SK_GDN goes to the GDN engine, not to the lanes. It takes nsub injection
+//   cycles like a lane slot (4 for the head command and the vector lines, 1 for a row line), and fires only when the
+//   engine says it can take it (gdn_cfg_ok, gdn_vec_ok, gdn_row_ok for the first line of a row). The engine sees
+//   gdn_v once per slot, with the registered slot (topk_slot) and the line (pa_data) of the cycle.
 // Rules:
 //   - Exit order: every sub-slot leaves the lanes after every earlier one. A slot with exit latency L
 //     (TSR_VU_LF front, TSR_VU_LB back) and n sub-slots is admitted only if L >= ex_rem, the cycles to
@@ -35,6 +39,7 @@ module tsr_vu_inj
   parameter int unsigned FRONT_LANES = 16,
   parameter int unsigned LMAW      = 9,
   parameter bit          HAS_DQROW = 1'b0,
+  parameter bit          HAS_GDN   = 1'b0,
   parameter int unsigned LANE_X    = 0       // cycles the lane pipes add to every exit (tsr_vu_lanes: 2 x stages)
 ) (
   input  logic                           clk,
@@ -80,6 +85,11 @@ module tsr_vu_inj
   input  logic                           topk_ready,
   output logic                           topk_v,
   output tsr_vu_slot_t                   topk_slot,
+  // GDN engine (registered slot: topk_slot)
+  input  logic                           gdn_cfg_ok,
+  input  logic                           gdn_vec_ok,
+  input  logic                           gdn_row_ok,
+  output logic                           gdn_v,
   // lanes (registered)
   output logic [15:0]                    l_v,
   output tsr_vu_uop_e                    l_uop,
@@ -120,7 +130,8 @@ module tsr_vu_inj
   logic       i_v;                                       // I holds a slot
   logic [2:0] k_q;                                       // its current sub-slot
   tsr_vu_slot_t i_s;
-  wire        i_last = i_v && (i_s.kind != SK_LANE || k_q == i_s.nsub - 3'd1);
+  wire        i_gdn  = HAS_GDN && i_s.kind == SK_GDN;
+  wire        i_last = i_v && ((i_s.kind != SK_LANE && !i_gdn) || k_q == i_s.nsub - 3'd1);
   wire        i_free = !i_v || i_last;
 
   // tsr_vu_red's idle, registered: a scalar-path op starts only after every earlier op is done (the
@@ -139,6 +150,13 @@ module tsr_vu_inj
         if (dq_line && dq_prod <= 6'(s.dqb)) ops_in = 1'b0;
       end
       SK_TOPK: if (!topk_ready) ops_in = 1'b0;
+      SK_GDN: if (HAS_GDN) begin
+        case (s.gsub)
+          GS_CFG:  if (!gdn_cfg_ok) ops_in = 1'b0;
+          GS_ROW:  if (s.r_first && !gdn_row_ok) ops_in = 1'b0;
+          default: if (!gdn_vec_ok) ops_in = 1'b0;
+        endcase
+      end
       SK_SOPX: if (!red_idle_q || !sopx_idle || ex_rem_q != 8'd0) ops_in = 1'b0;
       default: ;
     endcase
@@ -369,6 +387,7 @@ module tsr_vu_inj
       ang_rel <= 1'b0;
       sopx_v  <= 1'b0;
       topk_v  <= 1'b0;
+      gdn_v   <= 1'b0;
     end else begin
       tbl_we  <= i_v && i_s.kind == SK_TBL;
       pos_we  <= i_v && i_s.kind == SK_POS;
@@ -376,6 +395,7 @@ module tsr_vu_inj
       ang_rel <= i_v && i_s.kind == SK_LANE && i_s.tok_last && i_last;   // the token's angles are read
       sopx_v  <= i_v && i_s.kind == SK_SOPX;
       topk_v  <= i_v && i_s.kind == SK_TOPK;
+      gdn_v   <= i_v && i_gdn && k_q == 3'd0;                             // once per slot
     end
     tbl_line  <= i_s.d0[4:0];
     pos_idx   <= 16'(i_s.d0);
@@ -396,6 +416,9 @@ module tsr_vu_inj
 
   assign busy = i_v || q_valid || (ex_rem_q != 8'd0);
 
+  if (!HAS_GDN) begin : g_nogdn
+    wire unused_gdn = &{1'b0, gdn_cfg_ok, gdn_vec_ok, gdn_row_ok, s.gsub, s.r_first};
+  end
   wire unused_ok = &{1'b0, i_s.d1[0], s.d0, s.cword, i_s.dq[0]};
 
 endmodule

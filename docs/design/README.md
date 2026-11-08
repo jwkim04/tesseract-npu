@@ -330,6 +330,16 @@ the alternatives and the full rationale.
 | VU-25 | Accuracy contract | Functions defined by their algorithms (bit-exact); error bounds informative and measured | Bit-exactness between simulator, RTL and card is the verification basis |
 | VU-26 | CPU-compatible GELU | GELU16 (0x17) and GEGLU16 (0x18): clamps at ±10, binary16 rounding of input and result; llama.cpp GELU/GEGLU map to them; exact GELU kept for M8/PyTorch | The pinned CPU rounds every GEGLU element to fp16 (up to 3.9·10⁻³ relative); matching its form removes that gap for about 0.6 K LUT |
 | VU-27 | AT vector ops on the VU | ASMAX, AMASK, AMERGE, ANORM run on unit 3 with the front lanes, the MAX path and a multi-pass AMERGE (about 4-5 cycles per output line at C = 4) | Reuses the EXPK lanes and pair reads; matches AT's 1,600-cycle merge tail for about 2 K LUT |
+| VU-28 | Fused GDN op | Opcode 0x39, one head per op: state tile in the SPM, k, q, v vectors, α and β in s registers; u, e, S', o in one pass; d_k a multiple of 16 in [64, 256], d_v in [1, 1024]; `CAPS` bit 8, `HAS_GDN` | S is read and written once; integrated in `tsr_vu`, off by default |
+| VU-29 | GDN dot products | Exact integer sums of aligned mantissa products in DSP48E2 cascades (26-bit row window, 24-bit table entries), one RNE conversion per dot | Accuracy of f32 trees, no f32 adder, order independent; 36 DSP, no CLB-heavy adder |
+| VU-30 | GDN element update | S' = FA(FM(α, S), FM(e, k)) is the front lanes' micro-op U_ROT (FM_A and FM_B into FA); no update array of its own | The lanes already are that structure and give the bit-exact result; a block-frame update in the DSP is 1.3 to 30 times less accurate |
+| VU-31 | GDN state tile and placement | Through the SPM with `LD` / `ST`; the GDN-specific part (dot array, converter, setup engine, scalar chain, buffers) is inside `tsr_vu`, so in the VU's Pblock in SLR2 | Half of the SPM bandwidth at 8 elements per cycle; no new DRAM path or SLR crossing; the VU Pblock has the DSP and URAM; nothing goes to SLR1 |
+| VU-32 | GDN scalar algebra | Table of αβ k, bv = β v, o = α (S · q) + e κ with κ = k · q from a pseudo row | Both dots on the old S in one pass; no second pass over S' |
+| VU-33 | GDN buffers | Per-lane URAM for the row (two copies), tables and key, 64 row slots; lanes started one cycle apart; DSP chain in one module | Cascade without skew registers; the VU Pblock has 160 URAM and the K4 VU uses none |
+| VU-34 | GDN lane operands | The engine's operand beats take the lanes' inputs and the writer's descriptors through a registered select after the injector | No lane or writer change; the mux does not exist with `HAS_GDN` 0 |
+| VU-35 | GDN hazards and extents | A GDN op excludes every other VU op; extents d W, a R, k R, o W | One source for the lane inputs; four slots of CC §8.2 |
+| VU-36 | GDN line-wide ingest | Row buffers take a 16-word line per cycle, 64 row slots | Back-to-back heads at (rows + 1) × m / 8 cycles; the next head's setup is hidden |
+| VU-37 | GDN credits | The writer's output credits for a row are taken at its launch; o lines use the TOPK result port | The lanes have no back pressure; one port serves both |
 
 ### 6.3 AT — attention and the KV cache (`03-attention-kv.md`)
 
@@ -848,6 +858,11 @@ it does not by itself require a new RTL opcode or a RISC-V ISA extension.
   3 MiB and one sequence is 144 MiB, excluding convolution history and snapshots.
   Start with head-sized SPM tiles. Local URAM buffers or fused state-update RTL remain
   performance options after measuring this baseline, not prerequisites already selected.
+  A fused state-update op (opcode 0x39, `HAS_GDN`, `CAPS` bit 8; URAM row buffers, dot products in DSP48E2, the
+  element update on the VU's front lanes) is integrated in the VU, with its C reference, the simulator, the checker
+  class, bit-exact benches and a card self-test (`selftest` id 11): `docs/design/02-vector-unit.md` §7.12. The k4 top of
+  branch `gdn-vu` builds it; no image with it has run on the card. The firmware kind and the llama.cpp lowering are the
+  next steps listed there.
 - **GDN surrounding operations (implemented):** the norms, gates and rotary variant are
   lowered (SW §7.10). SILU, SIGMOID and EXP already have VU functions; SOFTPLUS has none and is
   composed from VU functions in 20 VOPs, within 5 ulp of float64 (SW-69). IMROPE is the NEOX

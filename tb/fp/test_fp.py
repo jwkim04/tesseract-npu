@@ -34,6 +34,11 @@ pytest functions (test_*):
                         operations: first result after exactly LAT edges, then one per cycle),
                         fp_add_reset (reset with a full pipeline,
                         with ce 0 or 1, clears every valid stage)
+  test_fp_add_dsp[LAT,NORM_DSP]
+                        the same four cocotb tests on tsr_fp_add_dsp (rtl/core/tsr_fp_add_dsp.sv, the
+                        measurement prototype with the far-path alignment shift, and with NORM_DSP the
+                        near-path left shift, as DSP48E2 multiplications by a one-hot power of two): LAT 5..8,
+                        NORM_DSP 0, and LAT 5 / 8 with NORM_DSP 1; bit-exact against libtsr_ref
   test_fp_default_lats  cocotb on tb/fp/hdl/tsr_fp_defaults_tb.sv: the measured latency of
                         tsr_fp_mul / tsr_fp_add at their default LAT equals MUL_LAT_U200 /
                         ADD_LAT_U200 (the LATs swept and run out of context below) and
@@ -45,6 +50,8 @@ pytest functions (test_*):
                         products at LAT 4 and at LAT 5, 0.65 M quotients, 2.6 M sums at the
                         default adder LAT and 0.65 M at LAT 1 (10 vector classes each, see
                         fp_sweep.cpp; the add mode also checks coverage floors), ~30 s
+  test_fp_sweep_add_dsp Verilator C++ harness with +define+TSR_FP_ADD_DSP=1 / 2 (tsr_fp_add becomes a wrapper of
+                        tsr_fp_add_dsp): 2 x 2.6 M sums at LAT 5, 0.65 M at LAT 8, 3.9 M with NORM_DSP, ~30 s
   test_fp_slow_gate     the opt-in rule of the slow tests below (fast; no simulation)
   test_fp_sweep_full    (slow, opt-in) exhaustive: all 2^32 f32 / int32 patterns through every
                         conversion; 2^23 products (LAT 4) and 2^23 quotients per class (84 M each),
@@ -90,6 +97,7 @@ from common.tsr_ref import QA_A32, QA_A256, ref
 CANON = 0x7FC00000
 FP_SOURCES = [REPO / "rtl" / "core" / f
               for f in ("tsr_fp_pkg.sv", "tsr_fp_mul.sv", "tsr_fp_div.sv", "tsr_fp_add.sv")]
+FP_DSP_SOURCES = FP_SOURCES + [REPO / "rtl" / "core" / "tsr_fp_add_dsp.sv"]
 HDL = REPO / "tb" / "fp" / "hdl"
 FUNCS_SV = HDL / "tsr_fp_funcs_tb.sv"
 SWEEP_SV = HDL / "tsr_fp_sweep_tb.sv"
@@ -101,6 +109,8 @@ OOC_TCL = REPO / "tb" / "fp" / "viv" / "fp_ooc.tcl"
 MUL_LAT_U200 = 4          # tsr_fp_mul default LAT: the 300 MHz U200 configuration
 ADD_LAT_U200 = 5          # tsr_fp_add default LAT: the 300 MHz U200 configuration
 ADD_LATS = list(range(1, 9))
+ADD_DSP_LATS = list(range(5, 9))   # tsr_fp_add_dsp: the DSP sits between [C1] and [C2]
+ADD_DSP_CFGS = [(lat, 0) for lat in ADD_DSP_LATS] + [(5, 1), (8, 1)]   # (LAT, NORM_DSP)
 LANES = 16
 DIV_LATENCY = 14          # out_valid after edge n + 14 for an operation accepted at edge n
 
@@ -991,10 +1001,11 @@ def test_fp_lint():
     vl = os.environ.get("VERILATOR", "verilator")
     runs = [("tsr_fp_mul", ["-GLAT=%d" % lat]) for lat in range(1, 9)]
     runs += [("tsr_fp_add", ["-GLAT=%d" % lat]) for lat in ADD_LATS]
+    runs += [("tsr_fp_add_dsp", ["-GLAT=%d" % lat, "-GNORM_DSP=%d" % norm]) for lat, norm in ADD_DSP_CFGS]
     runs += [("tsr_fp_div", []), ("tsr_fp_funcs_tb", ["-GLANES=4"]), ("tsr_fp_funcs_tb", []),
              ("tsr_fp_sweep_tb", ["-GMUL_LAT=1", "-GADD_LAT=1"]),
              ("tsr_fp_sweep_tb", ["-GMUL_LAT=5", "-GADD_LAT=8", "-GALANES=3"])]
-    srcs = [str(s) for s in FP_SOURCES + [FUNCS_SV, SWEEP_SV]]
+    srcs = [str(s) for s in FP_DSP_SOURCES + [FUNCS_SV, SWEEP_SV]]
     for top, args in runs:
         p = subprocess.run([vl, "--lint-only", "-Wall", "--top-module", top] + args + srcs,
                            capture_output=True, text=True)
@@ -1023,6 +1034,16 @@ def test_fp_div():
 @pytest.mark.parametrize("lat", ADD_LATS)
 def test_fp_add(lat):
     run("tsr_fp_add", __name__, sources=FP_SOURCES, parameters={"LAT": lat},
+        testcase=["fp_add_stages", "fp_add_vectors", "fp_add_throughput", "fp_add_reset"],
+        extra_env={"TSR_FP_LAT": str(lat)})
+
+
+@pytest.mark.parametrize("lat,norm", ADD_DSP_CFGS)
+def test_fp_add_dsp(lat, norm):
+    """tsr_fp_add_dsp (the DSP alignment prototype, area run E1c of docs/design/02-vector-unit.md §7.10;
+    norm: NORM_DSP, the near-path shift in a DSP as well): the same cocotb tests as tsr_fp_add, bit-exact
+    against libtsr_ref."""
+    run("tsr_fp_add_dsp", __name__, sources=FP_DSP_SOURCES, parameters={"LAT": lat, "NORM_DSP": norm},
         testcase=["fp_add_stages", "fp_add_vectors", "fp_add_throughput", "fp_add_reset"],
         extra_env={"TSR_FP_LAT": str(lat)})
 
@@ -1117,11 +1138,12 @@ def test_fp_slow_gate():
 # =============================================================================================
 # pytest: Verilator C++ sweep harness
 # =============================================================================================
-def build_sweep(mul_lat: int = MUL_LAT_U200, add_lat: int = ADD_LAT_U200) -> Path:
-    """Build tb/fp/cpp/fp_sweep.cpp against libtsr_ref.so; returns the executable."""
+def build_sweep(mul_lat: int = MUL_LAT_U200, add_lat: int = ADD_LAT_U200, add_dsp: int = 0) -> Path:
+    """Build tb/fp/cpp/fp_sweep.cpp against libtsr_ref.so; returns the executable. add_dsp: the adders are
+    tsr_fp_add_dsp (+define+TSR_FP_ADD_DSP=<add_dsp> makes tsr_fp_add a wrapper of it; 2: NORM_DSP)."""
     lib = Path(ref().path).resolve()
     vl = os.environ.get("VERILATOR", "verilator")
-    bdir = build_root() / ("fp_sweep_mul%d_add%d" % (mul_lat, add_lat))
+    bdir = build_root() / ("fp_sweep_mul%d_add%d%s" % (mul_lat, add_lat, "_dsp%d" % add_dsp if add_dsp else ""))
     bdir.mkdir(parents=True, exist_ok=True)
     jobs = os.environ.get("TSR_BUILD_JOBS", "4")
     cmd = [vl, "--cc", "--exe", "--build", "-O3", "-j", jobs, "--top-module", "tsr_fp_sweep_tb",
@@ -1131,7 +1153,9 @@ def build_sweep(mul_lat: int = MUL_LAT_U200, add_lat: int = ADD_LAT_U200) -> Pat
                REPO / "sw" / "sim" / "include", mul_lat, add_lat),
            "-LDFLAGS", "-L%s -ltsr_ref -Wl,-rpath,%s" % (lib.parent, lib.parent),
            "--Mdir", str(bdir), "-o", "fp_sweep"]
-    cmd += [str(s) for s in FP_SOURCES + [FUNCS_SV, SWEEP_SV, SWEEP_CPP]]
+    if add_dsp:
+        cmd += ["+define+TSR_FP_ADD_DSP=%d" % add_dsp]
+    cmd += [str(s) for s in (FP_DSP_SOURCES if add_dsp else FP_SOURCES) + [FUNCS_SV, SWEEP_SV, SWEEP_CPP]]
     p = subprocess.run(cmd, capture_output=True, text=True)
     assert p.returncode == 0, "fp_sweep build failed:\n%s\n%s" % (p.stdout[-4000:], p.stderr[-4000:])
     return bdir / "fp_sweep"
@@ -1170,6 +1194,16 @@ def test_fp_sweep_quick():
                + I2F_EXHAUSTIVE)
     exe5 = build_sweep(5, 1)   # tsr_fp_mul with the [NORM] register; tsr_fp_add fully combinational
     run_sweeps(exe5, [("mul", 1 << 17, seed + 1), ("add", 1 << 16, seed + 1)])
+
+
+def test_fp_sweep_add_dsp():
+    """tsr_fp_add_dsp (through the TSR_FP_ADD_DSP define of tsr_fp_add) against libtsr_ref: 2.6 M sums at LAT 5
+    for two seeds and 0.65 M at LAT 8, then 3.9 M with the near-path shift in a DSP too (NORM_DSP); the add
+    classes of fp_sweep.cpp."""
+    seed = int(os.environ.get("TSR_SEED", "1"), 0)
+    run_sweeps(build_sweep(MUL_LAT_U200, 5, add_dsp=1), [("add", 1 << 18, seed), ("add", 1 << 18, seed + 31)])
+    run_sweeps(build_sweep(MUL_LAT_U200, 8, add_dsp=1), [("add", 1 << 16, seed + 7)])
+    run_sweeps(build_sweep(MUL_LAT_U200, 5, add_dsp=2), [("add", 1 << 18, seed + 63), ("add", 1 << 17, seed + 95)])
 
 
 @pytest.mark.slow
