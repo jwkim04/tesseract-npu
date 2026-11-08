@@ -16,7 +16,10 @@ Gated DeltaNet on the card"):
 - Gemma prefill at `-ub 256` and above used to stop in the host backend (MOE_ROUTE with several tiles whose outputs overlapped a later tile's logits,
   SW-64). SW-76 fixes it: a route of more than 64 tokens writes its ids and weights to a device scratch and two CPY records move them
   ([design/06-software-verification.md](design/06-software-verification.md) §7.9; host only, no firmware or kind change). The default `-ub 512` and
-  `-ub 2048 -b 2048` run on the card. The card's VU busy cycles for Gated DeltaNet are 1.7 times the simulator's.
+  `-ub 2048 -b 2048` run on the card. Qwen3-30B-A3B (branch `moe-qwen3`, which hit the same refusal at `-ub 128`) runs its 512-token prefill at the default `-ub 512` with
+  this fix: 26.60 tok/s median on the card, 513 of 513 rows bit-identical to the simulator, and the simulator's `-ub 512` and `-ub 64` logits are bit-identical.
+  Extending the Qwen3 layer test of that branch past one tile is left for the merge (its layer passes at 65 to 256 tokens with this fix).
+  The card's VU busy cycles for Gated DeltaNet are 1.7 times the simulator's.
 
 ## Resume here for the software: MoE and Gated DeltaNet merged (branch `sw-moegdn`, November 9)
 

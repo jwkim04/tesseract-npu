@@ -110,6 +110,10 @@ The 61 launches are the 60 lists of the 512-token graph (`TSR_STATS`: lists cut 
 The host load of these runs was 39 to 44, from other jobs on the machine (the other columns ran at 5 to 9); the device share of wall time is 98.3 to 98.9 %.
 `-ub 2048` with `-b 2048` (a 2,048-token prompt, one run) also runs on the device without a refusal: 104.2 s, 19.65 tok/s. Flash attention of more than 680 tokens stays on the CPU
 (SW-43), so the 2,048-token graph runs in 31 backend splits (92 launches in the whole run); the MoE records are still the device's (60 MOE_ROUTE, 120 MUL_MAT_ID).
+Qwen3-30B-A3B (branch `moe-qwen3`, not merged here; its layer test refused at 70 tokens and the model at `-ub 128`, in layer 0) runs the same way on this branch at `-ub 512`,
+three runs of the 512-token prefill (M7, its tokenizer's 512 tokens): 26.72 / 26.60 / 25.69 tok/s (best 26.72, median 26.60; `-ub 64` on that branch: 26.30 and 26.04, 3,850.6 M cycles),
+3,798.4 M cycles (18.99 s, 7.4 M per prompt token), device share 99.1 / 98.7 / 95.3 %, `MVM_EMPTY` / `MVM_WAIT` 16.6 % / 7.3 %, 97 launches, host load 17 to 44. `-ub 2048 -b 2048` with a
+1,911-token prompt runs too: 90.0 s, 21.23 tok/s (flash attention on the CPU, 146 launches). Logs: `build/card/moegdn/speed/q3ub512`, `build/moeub/runs-q3`.
 The Gemma prefill runs one MVM of T = 1 per (token, slot) (SW-66): 7.4 M device cycles per prompt token (7.6 M at `-ub 64`), against 16.3 M for a decode token.
 Qwen3.8 prefills at 2.1 times its decode rate (6.0 M cycles per prompt token), and its MVM unit has nothing queued in 83 % of the prefill cycles. The
 Gated DeltaNet recurrence alone is about 1.3 G of the 3.1 G cycles, at its isolated record cost of 8.6 K cycles per head and token (SW §7.10).
