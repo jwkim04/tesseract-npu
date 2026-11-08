@@ -3114,6 +3114,35 @@ HELLO 8.4 ms, warm restart 2.5 ms, `PING` 6.55 µs median (6.92 µs p99), 303,64
   292,081 and the counter delta is 281,357 against 276,030 (+5.7 K and +5.3 K cycles over the replays; consistent with 2 more cycles
   on each VU op that runs alone, the third stage). M6 does not use the VU and its counters are unchanged.
 
+### 8.9 The GDN op in the K4 image (`tsr_u200_k4`, branch `gdn-vu`, 2026-11-08)
+
+The vector unit of `tsr_u200_k4` has the fused Gated DeltaNet op (`HAS_GDN` 1 in `rtl/platform/alveo_xrt/gen_tops.py`, VU §7.12). `CAPS`
+reads 0x121 (VU, ATT, GDN). Every other knob is that of §8.8, the clocks are unchanged, and **the Pblocks are unchanged**: the engine is
+inside `g_vu.u_vu`, so `hw/u200/k4_major_blocks.tcl` already puts it in `pblock_tsr_vu` (SLR2). Nothing goes to SLR1. No link has run
+with it.
+
+| `tsr_vu` out of context, K4 configuration, after route | `HAS_GDN` 0 | `HAS_GDN` 1 |
+|---|---|---|
+| LUT / FF | 58,696 / 68,842 | 63,707 / 73,604 |
+| DSP48E2 / URAM / RAMB36 | 249 / 0 / 16 | 289 / 34 / 16 |
+| CLB tiles (placer spread, empty region) | 13,082 | 13,647 |
+| WNS / WHS at 4.0 ns | +0.297 / +0.013 ns | +0.262 / +0.010 ns |
+| worst engine path at 4.0 ns | | +0.460 ns |
+
+`pblock_tsr_vu` has 160 URAM288, 420 RAMB36 and 1,320 DSP48E2 (queried on the device, `CLOCKREGION_X0Y10:X2Y14`); the unit with the op
+uses 34, 16 and 289. The row and table buffers are URAM. Method, the per-block figures and the paths: VU §7.12.9.
+
+What a link with it has to check, beside §8.8's list:
+
+- The identity registers: `CAPS` 0x121, the rest as before (`CFG3`, `T_MAX` 4, `NUM_CH` 4).
+- `tsr-selftest --device xrt --ids 11`: four heads of 20 x 128, out of place and in place, against `tsr_ref_gdn` and the shadow
+  simulator; on an image without the bit the kernel returns `RET CAPS` and the tool expects that.
+- SLR2 occupancy: the engine adds about 0.6 K CLB tiles (5.0 K LUT) to the VU, which sits in a region that is 54 % used in the
+  out-of-context placement. Timing of the VU paths at the clock of the link (the out-of-context margin is +0.26 ns at 4.0 ns).
+- The simulation that stands in for it: `tb/core/test_core.py::test_core_k4gdn` runs the k4 core with `HAS_GDN` 1 and two GDN heads
+  from the RISC-V firmware through the issue path, the checker and the DMA; DRAM, `CAPS` and the final CSR state equal the
+  simulator's.
+
 ## 9. Timing and resources (Vivado OOC synthesis of `tsr_u200_k1`)
 
 *Measured in Vivado 2024.2 (out of context).* `tb/platform/viv/kernel_ooc.tcl` (synth only, 3.333 ns `ap_clk`, every I/O budgeted 1.6 ns outside,

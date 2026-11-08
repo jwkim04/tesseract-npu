@@ -1,5 +1,5 @@
 # sw/sim/refgdn.cmake — the fused Gated DeltaNet state update reference (sw/sim/tsr_ref_gdn.c: GDN,
-# VU opcode 0x39; docs/design/02-vector-unit.md §7.12 and VU-28 … VU-33) in the reference library,
+# VU opcode 0x39; docs/design/02-vector-unit.md §7.12 and VU-28 … VU-37) in the reference library,
 # and its tests.
 #
 # Include from sw/sim/CMakeLists.txt after ref_math.cmake:

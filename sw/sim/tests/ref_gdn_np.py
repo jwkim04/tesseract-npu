@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Independent numpy model of the fused GDN state update (VU opcode 0x39, VU §7.12, VU-28 … VU-33).
+"""Independent numpy model of the fused GDN state update (VU opcode 0x39, VU §7.12, VU-28 … VU-37).
 
 Written from the text of docs/design/02-vector-unit.md §7.12.3 alone: the head tables (a block
 frame with 24-bit entries, round half up), the row frame (26-bit window, truncation), the exact

@@ -2,7 +2,7 @@
 // bit for bit.
 //
 // Normative source: docs/design/02-vector-unit.md (VU) §7.12 (the op, its operands and encoding,
-// the numerics in §7.12.3) and decisions VU-28 … VU-33. The f32 primitives are tsr_ref.c's
+// the numerics in §7.12.3) and decisions VU-28 … VU-37. The f32 primitives are tsr_ref.c's
 // (FA tsr_fadd, FS tsr_fsub, FM tsr_fmul: DAZ, RNE, FTZ, canonical NaN); the dot products are not
 // f32 sums. They are exact sums of integer products in a block-floating-point frame, converted to
 // f32 once (VU-29).

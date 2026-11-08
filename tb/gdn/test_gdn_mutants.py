@@ -63,8 +63,8 @@ MUTANTS = [
     ("top_kappa", "tsr_vu_gdn.sv", "assign fm_b = fm_issueB ? bk_kappa[eb_bank] : wa_y;",
      "assign fm_b = fm_issueB ? bk_kappa[~eb_bank] : wa_y;", "unit", "kappa of the other bank"),
     ("top_pseudo", "tsr_vu_gdn.sv",
-     "if (cvo_v & cvo_kind & cvo_pseudo) e_valid[cvo_slot] <= 1'b1;     // the pseudo row is over: skip it",
-     "if (dot_go & ma_pseudo) e_valid[dot_slot] <= 1'b1;", "unit", "the pseudo row's slot is freed while its dot reads"),
+     "assign upd_launch = e_valid[upd_slot] & ~mb_pseudo & (upd_cool == '0) & oc_ok;",
+     "assign upd_launch = e_valid[upd_slot] & (upd_cool == '0) & oc_ok;", "unit", "the pseudo row is updated like a state row"),
     ("top_emax", "tsr_vu_gdn.sv", "always_ff @(posedge clk) lvl[i] <= (a_e > b_e) ? a_e : b_e;",
      "always_ff @(posedge clk) lvl[i] <= (a_e < b_e) ? a_e : b_e;", "unit", "the row exponent is the smallest"),
 ]

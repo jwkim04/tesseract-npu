@@ -1332,6 +1332,7 @@ baselines.
 | 8 | SPM window byte/half/word, ordering of a store before a push |
 | 9 | log records and PING |
 | 10 | credits: fill every queue under QHOLD; each credit must read 0 (exact under the hold, §4.7) |
+| 11 | GDN: four heads of 20 × 128 (two out of place, two in place) with LD, `SOP MOVI` of α and β, the op and ST; runs only when `CAPS` bit 8 is set, otherwise the kernel returns RET CAPS (VU §7.12) |
 
 `tsr-selftest` runs each test on the device and, in process, on the simulator with the same image,
 inputs and args. It compares DONE, every output byte and the per-unit completion counts.

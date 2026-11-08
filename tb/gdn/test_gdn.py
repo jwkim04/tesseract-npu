@@ -1,6 +1,6 @@
 """GDN engine testbenches (docs/design/02-vector-unit.md §7.12; rtl/core/tsr_vu_gdn*.sv). Oracle:
 libtsr_ref.so (sw/sim/tsr_ref_gdn.c) through tb/gdn/gdn_ref.py, bit-exact. The state update runs on the front lanes of
-the vector unit (VU-28), so the engine is tested without them against a lane model (tb/gdn/hdl/tsr_gdn_tb.sv:
+the vector unit (VU-30), so the engine is tested without them against a lane model (tb/gdn/hdl/tsr_gdn_tb.sv:
 FA(FM(a, c1), FM(b, c2)) from tsr_fp_mul and tsr_fp_add) and the whole path, lanes included, in tb/vu (vu_gdn,
 vu_gdn_mixed).
 
