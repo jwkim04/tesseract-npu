@@ -1092,7 +1092,15 @@ static void test_gdn_misc(void) {
     check_only(s, e_gdn(4, 4, 1000, 1000, 200, 300, 400, 500, 64, 1), &info, &x);
     CHECK(x.n == 5 && ext_is(&x, 0, SP, Wr, 1000, 1004) && ext_is(&x, 1, SP, R, 1000, 1004) && ext_is(&x, 4, SG, R, 4, 5) &&
           x.overflow == 0, "GDN in place, one s register");
-    CHECK(cyc(s, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 128, 128)) == 129u * 8u + 4u * 128u + 128u + 130u, "GDN cycles");
+    // The RTL unit's cycles of a dependent op (tb/vu test_vu_timing.py vu_gdn_op, SW-78): 2,913.7 for 128 x 128 at the K4 lanes,
+    // 1,917 at the U200 lanes (the model: 1,898, within 1.5 %), 5,554 for m 256 rows 128 and 989 for m 128 rows 16 at the K4 lanes.
+    CHECK(cyc(s, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 128, 128)) == 1032u + 168u + 576u + 122u, "GDN cycles, U200 lanes");
+    tsr_sim_destroy(s);
+    s = mk_sim_vu("k4");
+    CHECK(cyc(s, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 128, 128)) == 2914u, "GDN cycles 128 x 128, K4 lanes");
+    CHECK(cyc(s, e_gdn(1, 2, 8000, 1000, 200, 300, 400, 500, 256, 128)) == 5554u, "GDN cycles m 256 rows 128, K4 lanes");
+    CHECK(cyc(s, e_gdn(1, 2, 8000, 1000, 200, 300, 400, 500, 128, 16)) == 989u, "GDN cycles m 128 rows 16, K4 lanes");
+    CHECK(cyc(s, e_gdn(1, 2, 8000, 1000, 200, 300, 400, 500, 128, 256)) == 5114u, "GDN cycles m 128 rows 256, K4 lanes");
     tsr_sim_destroy(s);
     s = mk_sim(TSR_CAPS_VU | TSR_CAPS_TOPK | TSR_CAPS_DQROW, 8);
     CHECK(tsr_sim_op(s, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 128, 20).w, &info) == TSR_ERR_ILLEGAL_OP, "GDN without CAPS.GDN");

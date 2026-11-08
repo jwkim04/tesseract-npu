@@ -7,6 +7,9 @@ vu_stream      pushes the ops of a stream file (TSR_VU_STREAM: one op per line, 
                test_vu_unit does that); the timing is the point.
 vu_gdn_step    the ops of one Gated DeltaNet head step (sw/ctrl/kernels/gdn_kinds.cpp: S_v 128, L 8, 13 VU ops) on tiles of
                a 4 MiB SPM, repeated; no external file. The test asserts the model against the RTL (see _TOL).
+vu_gdn_op      the fused GDN op (VU §7.12, opcode 0x39; the unit built with HAS_GDN 1), one op and four dependent in-place
+               repetitions of it on a 128 x 128 head: the model's cycles of the op (sw/sim/tsr_vu.c cyc_gdn, SW-78)
+               against the RTL's, at the front lanes of the configuration (2,064 beats at 8 lanes).
 
 The RTL configuration is the card image (VU 8 / 8 / 4 lanes behind two lane-pipe stages, SPM_RD_LAT 4, four channels, no
 TOPK / DQROW) unless TSR_VU_TIMING_CFG names the U200 lanes ("u200": 16 / 16 / 8, no lane pipe). The simulator side is
@@ -140,10 +143,10 @@ def gdn_steps(heads: int):
     return ops
 
 
-def sim_done_times(ops, vu_timing=None):
+def sim_done_times(ops, vu_timing=None, caps=0x21):
     """The simulator's done time of every VU op (one VU queue, no other unit running), relative to the first push."""
     import issue_sim as S
-    cfg = S.config(num_ch=4, t_max=4, spm_bytes=SPM_BYTES, caps=0x21)
+    cfg = S.config(num_ch=4, t_max=4, spm_bytes=SPM_BYTES, caps=caps)
     if vu_timing in CFGS:
         vu_timing = ",".join(str(x) for x in CFGS[vu_timing])     # the simulator knows "u200" and "k4" by name only
     sim = S.Sim(cfg, (8, 4, 4, 16, 0, 4), vu_timing=vu_timing)
@@ -172,6 +175,31 @@ async def vu_gdn_step(dut):
         Path(out).write_text(json.dumps(dict(heads=heads, per_step=per, done=log, gaps=gaps)) + "\n")
     dut._log.info("vu_gdn_step: %d heads, %d ops, head-step gaps %s cycles, hazard %d, SPM wait %d", heads, len(ops), gaps,
                   log[-1][1], log[-1][2])
+
+
+GDN_S, GDN_K, GDN_Q, GDN_V, GDN_O = 0, 5000, 5040, 5080, 5120     # lines of the tile (up to 256 rows x 16 lines) and the vectors of the GDN op test
+
+
+GDN_SHAPES = [(128, 128), (64, 128), (256, 128), (128, 16), (128, 64), (128, 256), (64, 16), (256, 256), (256, 16), (192, 100)]
+
+
+@cocotb.test()
+async def vu_gdn_op(dut):
+    """TSR_VU_TIMING_OUT: a list of {"m", "rows", "one": T(1), "four": T(4)} of the GDN op in place on one tile (so each
+    repetition waits for the one before), in RTL cycles from the first push to the last done, for the shapes of GDN_SHAPES."""
+    t = Timer(dut)
+    await t.start()
+    await t.run([V.enc_sop(0, sd=i, imm=0x3F800000) for i in range(16)])
+    res = []
+    for m, rows in GDN_SHAPES:
+        op = V.enc_gdn(1, 2, GDN_S, GDN_S, GDN_K, GDN_Q, GDN_V, GDN_O, m, rows)
+        r = dict(m=m, rows=rows)
+        for name, n in (("one", 1), ("four", 4)):
+            log, _ = await t.run([op] * n)
+            r[name] = log[-1][0]
+        res.append(r)
+        dut._log.info("vu_gdn_op: m %d rows %d: one op %d cycles, four dependent ops %d", m, rows, r["one"], r["four"])
+    Path(os.environ["TSR_VU_TIMING_OUT"]).write_text(json.dumps(res) + "\n")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -343,13 +371,14 @@ def sweep_table(rtl, sim):
 # ---------------------------------------------------------------------------------------------
 # pytest
 # ---------------------------------------------------------------------------------------------
-def _run(name, testcase, extra_env=None):
+def _run(name, testcase, extra_env=None, gdn=False):
     f, e, b, p = timing_cfg()
     env = {"TSR_VU_TIMING_CFG": os.environ.get("TSR_VU_TIMING_CFG", "k4")}
     env.update(extra_env or {})
-    run("tsr_vu_tb", __name__, sources=U.vu_sources(), name="vu_timing_" + os.environ.get("TSR_VU_TIMING_CFG", "k4"), testcase=testcase, extra_env=env,
+    run("tsr_vu_tb", __name__, sources=U.vu_sources(), name="vu_timing_" + os.environ.get("TSR_VU_TIMING_CFG", "k4") + ("_gdn" if gdn else ""),
+        testcase=testcase, extra_env=env,
         parameters=dict(SPM_BYTES=SPM_BYTES, SPM_RD_LAT=4, NUM_CH=4, FRONT_LANES=f, EXP_LANES=e, BACK_LANES=b, LANE_PIPE=p,
-                        HAS_TOPK=0, HAS_DQROW=0))
+                        HAS_TOPK=0, HAS_DQROW=0, **(dict(HAS_GDN=1) if gdn else {})))
 
 
 _TOL = 0.02     # the model must be within 2 % of the RTL on a head step (0.8 % today: it does not overlap the independent SOPs)
@@ -372,6 +401,35 @@ def test_vu_timing_gdn_step(tmp_path, monkeypatch, cfg):
     print("head step cycles: RTL %s, simulator %s" % (rtl, sim))
     for a, b in zip(rtl, sim):
         assert abs(a - b) <= _TOL * a, "head step: RTL %d, simulator %d cycles" % (a, b)
+
+
+@pytest.mark.parametrize("cfg", ["k4", "u200"])
+def test_vu_timing_gdn_op(tmp_path, monkeypatch, cfg):
+    """The fused GDN op on the RTL unit (HAS_GDN 1) against the model, as the marginal cost of a dependent in-place
+    repetition, for the shapes of GDN_SHAPES (SW-78: cyc_gdn follows the front lanes of TSR_SIM_VU_TIMING). The 128 x 128 head
+    of Qwen3.8 must agree within _GDN_TOL (_GDN_TOL_U200), every shape within _GDN_TOL_ALL."""
+    monkeypatch.setenv("TSR_VU_TIMING_CFG", cfg)
+    out = tmp_path / "gdnop.json"
+    _run("gdnop", "vu_gdn_op", {"TSR_VU_TIMING_OUT": str(out)}, gdn=True)
+    movi = [V.enc_sop(0, sd=i, imm=0x3F800000) for i in range(16)]
+    bad = []
+    print("GDN op, %s: %5s %5s | %9s %9s | %7s" % (cfg, "m", "rows", "RTL marg", "sim marg", "RTL one"))
+    for r in json.loads(out.read_text()):
+        op = V.enc_gdn(1, 2, GDN_S, GDN_S, GDN_K, GDN_Q, GDN_V, GDN_O, r["m"], r["rows"])
+        t1 = sim_done_times(movi + [op], cfg, caps=0x121)
+        t4 = sim_done_times(movi + [op] * 4, cfg, caps=0x121)
+        sim_marg = (t4[-1] - t1[-1]) / 3.0
+        rtl_marg = (r["four"] - r["one"]) / 3.0
+        print("GDN op, %s: %5d %5d | %9.1f %9.1f | %7d" % (cfg, r["m"], r["rows"], rtl_marg, sim_marg, r["one"]))
+        tol = (_GDN_TOL if cfg == "k4" else _GDN_TOL_U200) if (r["m"], r["rows"]) == (128, 128) else _GDN_TOL_ALL
+        if abs(rtl_marg - sim_marg) > tol * rtl_marg:
+            bad.append("m %d rows %d: RTL %.1f, simulator %.1f cycles per dependent op" % (r["m"], r["rows"], rtl_marg, sim_marg))
+    assert not bad, "GDN op: " + "; ".join(bad)
+
+
+_GDN_TOL = 0.005       # the 128 x 128 head of the Qwen3.8 models at the K4 lanes (the model is within 2 cycles of 2,914)
+_GDN_TOL_U200 = 0.015   # the same head at the U200 lanes (1,898 against 1,917)
+_GDN_TOL_ALL = 0.03     # every other shape, both lane configurations
 
 
 def test_vu_timing_stream():

@@ -95,7 +95,7 @@
 #define VU_SOP_LDS      58u
 #define VU_SOP_SQRT     68u
 #define VU_SOP_DIV_CYC  25u
-#define VU_GDN_LAT      130u  // VU §7.12.8: setup tail, dot pipeline, scalar chain and lane exit (*estimate*)
+#define VU_GDN_BASE     122u  // GDN op: setup tail, dot pipeline, scalar chain and lane exit (fitted to the RTL, cyc_gdn)
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -671,13 +671,20 @@ static void ex_gdn(tsr_sim * sim, const uint32_t w[8]) {
     vu_lines(sim, (uint64_t)g.rows * (g.m / 16u) + lines_of(g.rows));
 }
 
-// One head alone: the setup (4 m + rows + 45 cycles, VU §7.12.8) does not overlap with the rows of an earlier head here.
-// The beats follow the configured front lanes like the other VU ops (vu_timing, SW-80): (rows + 1) m / F, with F = 16 / rate.
+// One head alone, the op waiting for its predecessor (a dependent repetition on the same tile): fitted to the RTL unit
+// (tb/vu test_vu_timing.py vu_gdn_op: ten shapes, m 64 .. 256 and rows 16 .. 256, at the K4 and the U200 lanes; SW-78):
+//   (rows + 1) L(m) R + ceil(rows (23 - 2 R) / 16) + 9 m / 2 + 122,   R = cycles per line of the front lanes (16 / F)
+// The first term is the (rows + 1) m / F beats of VU §7.12.8, the others the setup (4 m + rows + 45 in the estimate of the
+// VU §7.12.8 table, now measured: a row costs a little more than its beats, the setup 4.5 cycles per element and 122 cycles).
+// Equal to the RTL within 2 cycles at the K4 lanes (2,914 for 128 x 128, 8 lanes), within 1.5 % at the U200 lanes
+// (1,898 against 1,917). Heads that follow each other with independent tiles overlap the next setup under the rows of
+// the previous head in the RTL (VU §7.12.8); that gain is not modelled, as for the other ops (VU §7.9).
 static uint64_t cyc_gdn(const tsr_sim * sim, const uint32_t w[8]) {
     gdn_dec g;
     gdn_decode(w, &g);
-    const uint64_t beats = (uint64_t)(g.rows + 1u) * lines_of(g.m) * vu_rates_of(sim).front;
-    return beats + 4u * g.m + g.rows + VU_GDN_LAT;
+    const uint64_t R = vu_rates_of(sim).front;
+    return (uint64_t)(g.rows + 1u) * lines_of(g.m) * R + ((uint64_t)g.rows * (23u - 2u * R) + 15u) / 16u +
+           (9u * (uint64_t)g.m) / 2u + VU_GDN_BASE;
 }
 
 // ---------------------------------------------------------------------------
