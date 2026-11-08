@@ -245,3 +245,19 @@ if (TARGET llama AND TARGET tsr_tiny_models AND TARGET ggml-tesseract)
     set_tests_properties(ggml_tesseract_kvstate PROPERTIES TIMEOUT 300
         ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal;LLAMA_ATTN_ROT_DISABLE=1")
 endif()
+
+# Gated DeltaNet logits, device against CPU, short prompts and single-token steps, the tiny Qwen3.5-style models
+# (tests/test-tsr-gdn-logits.cpp, SW §7.10). The second model has the real models' S_v = 128.
+if (TARGET llama AND TARGET tsr_tiny_models AND TARGET ggml-tesseract)
+    add_executable(test-tsr-gdn-logits tests/test-tsr-gdn-logits.cpp)
+    target_link_libraries(test-tsr-gdn-logits PRIVATE llama ggml)
+    target_compile_features(test-tsr-gdn-logits PRIVATE cxx_std_17)
+    target_compile_options(test-tsr-gdn-logits PRIVATE -Wall -Wextra)
+    target_include_directories(test-tsr-gdn-logits PRIVATE ${TESSERACT_ROOT}/third_party/llama.cpp/ggml/include)
+    set_target_properties(test-tsr-gdn-logits PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    foreach (_m qwen35-tiny-q8_0 qwen35-tiny-s128-q8_0)
+        add_test(NAME ggml_tesseract_gdn_logits_${_m} COMMAND test-tsr-gdn-logits ${TSR_TINY_MODEL_DIR}/${_m}.gguf 3)
+        set_tests_properties(ggml_tesseract_gdn_logits_${_m} PROPERTIES TIMEOUT 300
+            ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal;LLAMA_ATTN_ROT_DISABLE=1")
+    endforeach()
+endif()

@@ -57,6 +57,7 @@
 // non-WEIGHTS buffer in host memory (exercises the staged path), TSR_COMPUTE_WINDOWS=io limits
 // compute windows to ch0 IO (M6 placement), TSR_OPL_SPLIT=<n> cuts every op list after n records,
 // TSR_STAGE_KIB=<n> sets the IO staging area size,
+// TSR_DUMP_RE=<regex> TSR_DUMP_DIR=<dir> dumps the device value of matching nodes (tsr_dump_node),
 // TSR_OPL_CRC=1 sets the `graph` launch flag VERIFY_CRC (the executor checks each list's CRC, SW
 // §7.3). TSR_LOAD_THREADS=<n> sets the workers that convert and repack weights while they are
 // uploaded (default: online CPUs, at most 16). TSR_STATS=1 prints, when the backend is freed, the
@@ -247,6 +248,10 @@ struct tsr_tensor_rec {
     // RAW
     tsr_raw_region raw_region = tsr_raw_region::NONE;
     uint64_t raw_off = 0;         // ch0 byte offset
+    // SW §7.10: the taps of a Gated DeltaNet convolution (ggml [d_conv, C], tap fastest) are stored as d_conv rows of C
+    // values, the layout of the SSM_CONV kind; taps = d_conv, 0 for every other tensor. The upload is staged whole
+    // (staging / have / complete as for a device-format weight) and converted when complete.
+    uint32_t taps = 0;
 };
 
 enum class tsr_bmode : uint8_t { UNDECIDED, LINEAR, PLACED, HOSTED,
@@ -747,6 +752,8 @@ static bool tsr_rec_is_devweight_shape(const tsr_device * d, const tsr_tensor_re
     return tsr_mm_shape_ok(d->cfg, tsr_dev_fmt_for_type(r.type), (uint64_t) r.ne[1], (uint64_t) r.ne[0]);
 }
 
+static bool tsr_rec_is_conv_taps(const tsr_tensor_rec & r);
+
 static void tsr_place(tsr_device * d, tsr_tensor_rec & r) {
     GGML_ASSERT(r.kind == tsr_kind::UNPLACED);
     if (tsr_rec_is_devweight_shape(d, r)) {
@@ -777,9 +784,11 @@ static void tsr_place(tsr_device * d, tsr_tensor_rec & r) {
         GGML_ABORT("tesseract: no device memory for tensor '%s' (%.1f MiB)", r.name.c_str(), tsr_mib(size));
     }
     r.kind = tsr_kind::RAW;
-    TSR_DBG(1, "raw    %-28s %-6s [%lld,%lld,%lld,%lld] -> %s ch0+0x%09" PRIx64 " (%zu B)\n",
+    r.taps = tsr_rec_is_conv_taps(r) ? (uint32_t) r.ne[0] : 0u;
+    TSR_DBG(1, "raw    %-28s %-6s [%lld,%lld,%lld,%lld] -> %s ch0+0x%09" PRIx64 " (%zu B)%s\n",
             r.name.c_str(), ggml_type_name(r.type), (long long) r.ne[0], (long long) r.ne[1], (long long) r.ne[2],
-            (long long) r.ne[3], r.raw_region == tsr_raw_region::AUX ? "AUX" : "HEAP", r.raw_off, r.nbytes);
+            (long long) r.ne[3], r.raw_region == tsr_raw_region::AUX ? "AUX" : "HEAP", r.raw_off, r.nbytes,
+            r.taps != 0 ? " (convolution taps, stored as tap rows)" : "");
 }
 
 static void tsr_rec_store_all(tsr_device * d, tsr_tensor_rec & r, const uint8_t * src) {
@@ -790,6 +799,42 @@ static void tsr_rec_store_all(tsr_device * d, tsr_tensor_rec & r, const uint8_t 
     r.have = tsr_intervals();
 }
 
+// A tensor that is a Gated DeltaNet convolution kernel: F32 [d_conv, C], d_conv in 2 .. 8, C a multiple of 16,
+// named *ssm_conv1d* (the weight of llama.cpp's qwen35 / qwen3next graphs, read by SSM_CONV).
+static bool tsr_rec_is_conv_taps(const tsr_tensor_rec & r) {
+    return r.type == GGML_TYPE_F32 && r.name.find("ssm_conv1d") != std::string::npos && r.ne[0] >= 2 &&
+           r.ne[0] <= (int64_t) tsr::opl::sconv::D_CONV_MAX && r.ne[1] > 0 && r.ne[1] % 16 == 0 && r.ne[2] == 1 && r.ne[3] == 1 &&
+           r.nb[0] == 4 && (uint64_t) r.nb[1] == 4 * (uint64_t) r.ne[0];
+}
+
+// ggml tap-fastest rows <-> tap rows (dev[w * C + c] = raw[c * d_conv + w])
+static void tsr_taps_to_dev(const tsr_tensor_rec & r, const uint8_t * raw, uint8_t * dev) {
+    const size_t dc = (size_t) r.ne[0], C = (size_t) r.ne[1];
+    for (size_t c = 0; c < C; ++c) {
+        for (size_t w = 0; w < dc; ++w) {
+            memcpy(dev + 4 * (w * C + c), raw + 4 * (c * dc + w), 4);
+        }
+    }
+}
+static void tsr_taps_from_dev(const tsr_tensor_rec & r, const uint8_t * dev, uint8_t * raw) {
+    const size_t dc = (size_t) r.ne[0], C = (size_t) r.ne[1];
+    for (size_t c = 0; c < C; ++c) {
+        for (size_t w = 0; w < dc; ++w) {
+            memcpy(raw + 4 * (c * dc + w), dev + 4 * (w * C + c), 4);
+        }
+    }
+}
+static void tsr_taps_store(tsr_device * d, tsr_tensor_rec & r, const uint8_t * raw) {
+    std::vector<uint8_t> dev(r.nbytes);
+    tsr_taps_to_dev(r, raw, dev.data());
+    tsr_write(d, 0, r.raw_off, dev.data(), r.nbytes);
+    r.complete = true;
+    r.staging.clear();
+    r.staging.shrink_to_fit();
+    r.have = tsr_intervals();
+}
+static void tsr_rec_read(tsr_device * d, const tsr_buffer_ctx * b, tsr_tensor_rec & r, uint64_t rel, uint8_t * dst, size_t n);
+
 // Write bytes [rel, rel+n) of a tensor in a PLACED buffer.
 static void tsr_rec_write(tsr_device * d, tsr_tensor_rec & r, uint64_t rel, const uint8_t * data, size_t n) {
     if (n == 0) {
@@ -798,8 +843,32 @@ static void tsr_rec_write(tsr_device * d, tsr_tensor_rec & r, uint64_t rel, cons
     if (r.kind == tsr_kind::UNPLACED) {
         tsr_place(d, r);
     }
-    if (r.kind == tsr_kind::RAW) {
+    if (r.kind == tsr_kind::RAW && r.taps == 0) {
         tsr_write(d, 0, r.raw_off + rel, data, n);
+        return;
+    }
+    if (r.kind == tsr_kind::RAW) {             // convolution taps: converted when every byte is here
+        if (!r.complete) {
+            if (rel == 0 && n == r.nbytes && r.staging.empty()) {
+                tsr_taps_store(d, r, data);
+                return;
+            }
+            if (r.staging.empty()) {
+                r.staging.assign(r.nbytes, 0);
+            }
+            memcpy(r.staging.data() + rel, data, n);
+            r.have.add(rel, rel + n);
+            if (r.have.covers(0, r.nbytes)) {
+                std::vector<uint8_t> full;
+                full.swap(r.staging);
+                tsr_taps_store(d, r, full.data());
+            }
+            return;
+        }
+        std::vector<uint8_t> raw(r.nbytes);        // a complete tensor updated in part
+        tsr_rec_read(d, nullptr, r, 0, raw.data(), r.nbytes);
+        memcpy(raw.data() + rel, data, n);
+        tsr_taps_store(d, r, raw.data());
         return;
     }
 
@@ -847,11 +916,27 @@ static void tsr_rec_read(tsr_device * d, const tsr_buffer_ctx * b, tsr_tensor_re
     }
     switch (r.kind) {
         case tsr_kind::UNPLACED:
-            memset(dst, b->clear_value, n);
+            memset(dst, b != nullptr ? b->clear_value : 0, n);
             return;
         case tsr_kind::RAW:
-            tsr_read(d, 0, r.raw_off + rel, dst, n);
-            return;
+            if (r.taps == 0) {
+                tsr_read(d, 0, r.raw_off + rel, dst, n);
+                return;
+            }
+            if (!r.complete) {
+                if (r.staging.empty()) {
+                    memset(dst, b != nullptr ? b->clear_value : 0, n);
+                } else {
+                    memcpy(dst, r.staging.data() + rel, n);
+                }
+                return;
+            } else {
+                std::vector<uint8_t> dev(r.nbytes), raw(r.nbytes);
+                tsr_read(d, 0, r.raw_off, dev.data(), r.nbytes);
+                tsr_taps_from_dev(r, dev.data(), raw.data());
+                memcpy(dst, raw.data() + rel, n);
+                return;
+            }
         case tsr_kind::DEVWEIGHT:
             break;
     }
@@ -952,6 +1037,9 @@ static void tsr_placed_fill(tsr_device * d, tsr_buffer_ctx * b, uint64_t addr, u
                 buf.assign(n, value);
                 tsr_rec_write(d, *r, rel, buf.data(), n);
             }
+        } else if (r->taps != 0) {
+            buf.assign(n, value);
+            tsr_rec_write(d, *r, rel, buf.data(), n);
         } else {
             tsr_fill(d, 0, r->raw_off + rel, value, n);
         }
@@ -1151,10 +1239,18 @@ static void tsr_window_release(tsr_device * d, tsr_buffer_ctx * b) {
 //                                    (graph_compute stages its MUL_MAT rows through IO)
 // An ANY buffer whose recorded tensors are all leaf data (no op result, no input): it becomes HOSTED
 // (tsr_buf_decide); supports_op asks it ahead of the decision (tsr_probe_raw_ok).
+// llama.cpp's recurrent memory (llama-memory-recurrent.cpp) names the per-layer state tensors cache_r_l<N> (the
+// convolution state) and cache_s_l<N> (the Gated DeltaNet state). The graph reads and writes them in place
+// (GET_ROWS of a cell, SCALE of a cell to zero it, CPY of the new state into a cell, the SSM_CONV and
+// GATED_DELTA_NET records), so a buffer that holds them is a device window, not leaf data (SW §7.10).
+static bool tsr_is_state_name(const std::string & n) {
+    return (n.compare(0, 9, "cache_r_l") == 0 || n.compare(0, 9, "cache_s_l") == 0) && n.size() > 9 && n[9] >= '0' && n[9] <= '9';
+}
+
 static bool tsr_buf_leaves_only(const tsr_buffer_ctx * b, const ggml_backend_buffer * gbuf) {
     bool leaves_only = gbuf->usage == GGML_BACKEND_BUFFER_USAGE_ANY && !b->recs.empty() && !b->computed_view;
     for (const auto & kv : b->recs) {
-        leaves_only = leaves_only && kv.second.leaf;
+        leaves_only = leaves_only && kv.second.leaf && !tsr_is_state_name(kv.second.name);
     }
     return leaves_only;
 }
@@ -2373,6 +2469,8 @@ static bool tsr_moe_weight_ok(tsr_device * d, const ggml_tensor * w) {
 }
 
 // The builder's environment (tsr-build.h) for this device. Callers hold dev->mtx (device open).
+static bool tsr_is_our_buffer(const tsr_device * d, const ggml_backend_buffer * buf);
+
 static tsr_build_env tsr_env_of(tsr_device * d) {
     if (!d->m7cfg_ok) {
         d->m7cfg = tsr_plan_cfg_m7(d);   // one CFG3 read per device
@@ -2388,6 +2486,10 @@ static tsr_build_env tsr_env_of(tsr_device * d) {
     e.kv_view = [d](const ggml_tensor * t, tsr_kv_view * v) { return tsr_kv_view_of(d, t, v); };
     e.fa_mask = [d](const ggml_tensor * fa) { return tsr_fa_mask_ref(d, fa); };
     e.raw_ok = [d](const ggml_tensor * t) { return tsr_probe_raw_ok(d, t); };
+    e.on_device = [d](const ggml_tensor * t) {
+        const ggml_backend_buffer * gb = t->view_src != nullptr ? t->view_src->buffer : t->buffer;
+        return tsr_is_our_buffer(d, gb);
+    };
     e.kv_probe = [d](const ggml_tensor * t, tsr_kv_shape * s) {
         return tsr_kv_probe_tensor(d, t->view_src != nullptr ? t->view_src : t, s, true);
     };
@@ -2508,20 +2610,106 @@ static void tsr_lower_mul_mat_id_node(tsr_device * d, tsr_segment & seg, tsr_gct
 
 // SW §9.3 M7 passes 1-6 over one graph, launching each list as it fills (a split is one list unless a
 // list fills, a MUL_MAT is staged or a src0 must be converted after the pending list ran).
+// Debug knob: TSR_DUMP_RE=<regex> TSR_DUMP_DIR=<dir> runs the pending list after each node whose result name matches
+// (an unfused-style cut: results of the other nodes are unchanged), reads the result tensor from device memory,
+// prints its range to stderr and writes it to <dir>/<name>.f32. Only the first run of a graph builds records, so
+// only that run dumps. Compare with a CPU run of the same model (a cb_eval on the CPU backend) to find the first
+// node whose device value is off.
+#include <regex>
+static void tsr_dump_node(tsr_device * d, tsr_segment & seg, const ggml_tensor * res) {
+    static const char * re_s = getenv("TSR_DUMP_RE");
+    static const char * dir = getenv("TSR_DUMP_DIR");
+    if (re_s == nullptr || dir == nullptr || res == nullptr || res->type != GGML_TYPE_F32) {
+        return;
+    }
+    static const std::regex re(re_s);
+    if (!std::regex_match(res->name, re)) {
+        return;
+    }
+    tsr_flush(d, seg);
+    tsr_buffer_ctx * b = tsr_written_buf(d, res);
+    if (b == nullptr || b->mode != tsr_bmode::LINEAR) {
+        return;
+    }
+    const size_t nb = ggml_nbytes(res);
+    std::vector<float> v(nb / 4);
+    tsr_read(d, b->ch, b->io_off + (tsr_vaddr(res->data) - b->base), v.data(), nb);
+    double mn = 1e300, mx = -1e300, s2 = 0;
+    size_t bad = 0;
+    for (float x : v) {
+        if (!std::isfinite(x)) { ++bad; continue; }
+        mn = std::min<double>(mn, x); mx = std::max<double>(mx, x); s2 += (double) x * x;
+    }
+    fprintf(stderr, "DUMP %-28s @ch%u+line 0x%llx ne=[%lld,%lld,%lld,%lld] min %.4g max %.4g rms %.4g nonfinite %zu\n", res->name,
+            b->ch, (unsigned long long) ((b->io_off + (tsr_vaddr(res->data) - b->base)) / 64),
+            (long long) res->ne[0], (long long) res->ne[1], (long long) res->ne[2], (long long) res->ne[3], mn, mx,
+            std::sqrt(s2 / std::max<size_t>(v.size(), 1)), bad);
+    const std::string path = std::string(dir) + "/" + res->name + ".f32";
+    if (FILE * f = fopen(path.c_str(), "wb")) {
+        fwrite(v.data(), 4, v.size(), f);
+        fclose(f);
+    }
+}
+
 static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key) {
     tsr_gctx g;
     g.env = tsr_env_of(d);
     g.fusion = tsr_build_fusion(g.env, cgraph);
     d->build_dynamic = false;
     std::vector<char> absorbed(cgraph->n_nodes, 0);
+    std::vector<int32_t> window_of(cgraph->n_nodes, -1);   // a CONCAT of an SSM_CONV group: that SSM_CONV
+    for (int i = 0; i < cgraph->n_nodes; i++) {          // the state CPY and the SILU of an SSM_CONV group; its CONCAT fills the window
+        if (g.fusion.conv_concat[i] >= 0) {
+            window_of[g.fusion.conv_concat[i]] = i;
+            absorbed[g.fusion.conv_cpy[i]] = 1;
+            if (g.fusion.conv_silu[i] >= 0) {
+                absorbed[g.fusion.conv_silu[i]] = 1;
+            }
+        }
+    }
     tsr_segment seg(d->cfg.num_ch, &g);
     std::map<uint32_t, tsr_kv_write> kv_writes;      // by plane base beat, as tsr_fanew_map
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
+        if (window_of[i] >= 0 && (node->flags & GGML_TENSOR_FLAG_COMPUTE) != 0) {
+            tsr_rec recs[2];
+            uint32_t nr = 0;
+            std::string why;
+            if (!tsr_lower_conv_window(g.env, false, node, recs, &nr, &why)) {
+                GGML_ABORT("tesseract: CONCAT '%s' of an SSM_CONV group reached graph_compute but cannot run on the device: %s",
+                           node->name, why.c_str());
+            }
+            for (uint32_t q = 0; q < nr; ++q) {
+                tsr_seg_add_rec(d, seg, recs[q], node->name, tsr_written_buf(d, node), false);
+            }
+            TSR_DBG(1, "%-11s %-32s (window)\n", tsr_kind_name(recs[0].kind), node->name);
+            continue;
+        }
         if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0 || tsr_node_is_noop(node) || absorbed[i]) {
             continue;                        // pass 1 (and the second node of a fused pair)
         }
         if (ggml_is_empty(node)) {
+            continue;
+        }
+        if (node->op == GGML_OP_SSM_CONV) {
+            // SW §7.10: the SSM_CONV record carries the group's CONCAT, state CPY and SILU
+            tsr_rec r;
+            std::string why;
+            const ggml_tensor * silu = g.fusion.conv_silu[i] >= 0 ? cgraph->nodes[g.fusion.conv_silu[i]] : nullptr;
+            const ggml_tensor * cpy = g.fusion.conv_cpy[i] >= 0 ? cgraph->nodes[g.fusion.conv_cpy[i]] : nullptr;
+            if (cpy == nullptr || !tsr_lower_conv_group(g.env, false, node, silu, cpy, &r, &why)) {
+                GGML_ABORT("tesseract: SSM_CONV '%s' reached graph_compute but cannot run on the device: %s", node->name,
+                           cpy == nullptr ? "its CONCAT / state CPY group was not found in the graph" : why.c_str());
+            }
+            const std::string name = std::string(node->name) + (silu != nullptr ? " + SILU" : "");
+            tsr_seg_add_rec(d, seg, r, name, tsr_written_buf(d, silu != nullptr ? silu : node), true);
+            if (cpy->view_src != nullptr) {
+                if (tsr_buffer_ctx * sb = tsr_written_buf(d, cpy)) {
+                    seg.written.insert(sb);
+                }
+            }
+            TSR_DBG(1, "%-11s %-32s\n", tsr_kind_name(r.kind), name.c_str());
+            tsr_dump_node(d, seg, silu != nullptr ? silu : node);
             continue;
         }
         const int32_t k = g.fusion.with[i];
@@ -2561,6 +2749,7 @@ static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key
             if (tsr_stats_on()) {
                 d->st_mm++;
             }
+            tsr_dump_node(d, seg, absorbed[k >= 0 ? k : i] && k >= 0 ? cgraph->nodes[k] : node);
             continue;
         }
         const ggml_tensor * mul = node->op == GGML_OP_RMS_NORM && k >= 0 ? cgraph->nodes[k] : nullptr;
@@ -2594,6 +2783,9 @@ static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key
         tsr_note_kv_write(r, &g.fanew);
         const std::string name = mul != nullptr ? std::string(node->name) + " + " + mul->name : std::string(node->name);
         tsr_seg_add_rec(d, seg, r, name, tsr_written_buf(d, mul != nullptr ? mul : node), mul != nullptr);
+        for (tsr_rec & more : r.more) {
+            tsr_seg_add_rec(d, seg, more, name, tsr_written_buf(d, mul != nullptr ? mul : node), mul != nullptr);
+        }
         if (r.kind == tsr::opl::K_SET_ROWS_KV) {
             kv_writes[r.kv_plane] = { node->src[1], i, g.plan.lists.size() };
         } else if (r.kind == tsr::opl::K_FLASH_ATTN && (r.args[tsr::opl::fa::FLAGS] & 1u)) {
@@ -2604,6 +2796,7 @@ static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key
         }
         TSR_DBG(1, "%-11s %-32s%s\n", tsr_kind_name(r.kind), name.c_str(),
                 r.kind == tsr::opl::K_FLASH_ATTN && (r.args[tsr::opl::fa::FLAGS] & 1u) ? " (FA_NEW)" : "");
+        tsr_dump_node(d, seg, mul != nullptr ? mul : node);
     }
     tsr_flush(d, seg);
     if (d->build_dynamic) {
@@ -2675,6 +2868,17 @@ static void tsr_backend_free(ggml_backend_t backend) {
         fprintf(stderr, "[tesseract] stats: PERF_CYCLES %" PRIu64 ", MVM %" PRIu64 ", RETIRED %" PRIu64 "\n",
                 p[TSR_PERF_CYCLES], p[TSR_PERF_MVM_CYCLES], p[TSR_PERF_RETIRED]);
         const size_t nch = (p.size() - 5) / 2;
+        {   // cycles in which a unit holds an op (EX §6; since the device was opened): the VU, DMA, QACT and AT units
+            auto rd64 = [d](uint32_t idx) {
+                const uint32_t lo = tsr_transport_csr_read(d->tp, TSR_CSR_PERF_BASE + 8 * idx);
+                const uint32_t hi = tsr_transport_csr_read(d->tp, TSR_CSR_PERF_BASE + 8 * idx + 4);
+                return ((uint64_t) hi << 32) | lo;
+            };
+            fprintf(stderr, "[tesseract] stats: unit busy cycles VU %" PRIu64 ", DMA %" PRIu64 ", QACT %" PRIu64 ", ATT %" PRIu64 "\n",
+                    rd64(TSR_PERF_VU_CYCLES), rd64(TSR_PERF_EXT((uint32_t) nch, TSR_PERF_XOFF_DMA_CYCLES)),
+                    rd64(TSR_PERF_EXT((uint32_t) nch, TSR_PERF_XOFF_QACT_CYCLES)),
+                    rd64(TSR_PERF_EXT((uint32_t) nch, TSR_PERF_XOFF_ATT_CYCLES)));
+        }
         for (size_t c = 0; c < nch; c++) {
             fprintf(stderr, "[tesseract] stats: ch%zu rd_beats %" PRIu64 ", wait %" PRIu64 "\n", c, p[5 + c], p[5 + nch + c]);
         }
@@ -2699,9 +2903,55 @@ static void tsr_backend_free(ggml_backend_t backend) {
 // SW §9.3: the split as one op list (M6: its MUL_MATs; M7: every node, fused, with the preload table),
 // one launch; staged MUL_MATs on their own. The plan of a graph is cached by its identity (R7): a
 // decode token's graph runs its lists again without a rebuild while only the inputs change.
+static int32_t tsr_param_i32_of(const ggml_tensor * t, int i) {
+    int32_t v;
+    memcpy(&v, (const char *) t->op_params + 4 * i, 4);
+    return v;
+}
+
+// IMROPE ROPEs run as NEOX on the first n_tokens positions (the temporal stream, tsr_lower_rope). That is the
+// rotation of text tokens, whose [t, h, w] positions are equal; a batch with image or video positions would
+// rotate differently, so the position input is checked before the graph runs (SW §7.10). Holds d->mtx.
+static void tsr_check_imrope_pos(tsr_device * d, const ggml_cgraph * cg) {
+    const ggml_tensor * checked = nullptr;
+    for (int i = 0; i < cg->n_nodes; ++i) {
+        const ggml_tensor * n = cg->nodes[i];
+        if (n->op != GGML_OP_ROPE || tsr_param_i32_of(n, 2) != GGML_ROPE_TYPE_IMROPE || n->src[1] == checked ||
+            (n->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
+            continue;
+        }
+        const ggml_tensor * pos = n->src[1];
+        checked = pos;
+        ggml_backend_buffer_t gb = pos->buffer;
+        if (pos->type != GGML_TYPE_I32 || gb == nullptr || gb->buft != &d->buft || gb->context == nullptr) {
+            continue;
+        }
+        tsr_buffer_ctx * b = tsr_buf(gb);
+        const size_t nb = ggml_nbytes(pos);
+        std::vector<int32_t> v(nb / 4);
+        const uint64_t addr = tsr_vaddr(pos->data);
+        if (b->mode == tsr_bmode::LINEAR) {
+            tsr_read(d, b->ch, b->io_off + (addr - b->base), v.data(), nb);
+        } else if (b->mode == tsr_bmode::HOSTED) {
+            memcpy(v.data(), b->host + (addr - b->base), nb);
+        } else {
+            continue;
+        }
+        const size_t T = v.size() / 4;
+        for (size_t t = 0; t < T; ++t) {
+            if (v[t] != v[T + t] || v[t] != v[2 * T + t]) {
+                GGML_ABORT("tesseract: the M-RoPE positions of token %zu differ between sections (t %d, h %d, w %d): the device "
+                           "rotates with the temporal position only (image / video input); keep ROPE on the CPU with "
+                           "TSR_KINDS=all,-ROPE (docs/design/06-software-verification.md SW §7.10)", t, v[t], v[T + t], v[2 * T + t]);
+            }
+        }
+    }
+}
+
 static enum ggml_status tsr_backend_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     tsr_device * d = ((tsr_backend_ctx *) backend->context)->dev;
     std::lock_guard<std::mutex> lock(d->mtx);
+    tsr_check_imrope_pos(d, cgraph);
     const uint64_t t_start = tsr_stats_on() ? tsr_now_ns() : 0;
     const uint64_t launches0 = d->odev.launches;
     const uint64_t key = tsr_graph_key(cgraph, d->plan_epoch);

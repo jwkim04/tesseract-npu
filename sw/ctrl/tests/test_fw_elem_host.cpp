@@ -219,7 +219,7 @@ void test_planners() {
     }
     bad(opl::K_SCALE, {H(1, 0), 56, H(0, 0), 56, 0, 1, 0, 0}, "SCALE n 0");
     bad(opl::K_GLU, {H(1, 0), 56, H(0, 0), 56, H(2, 0), 56, 896, 1, 3}, "GLU variant 3");
-    bad(opl::K_UNARY, {H(1, 0), 56, H(0, 0), 56, 896, 1, 5}, "UNARY func 5");
+    bad(opl::K_UNARY, {H(1, 0), 56, H(0, 0), 56, 896, 1, 6}, "UNARY func 6");
     bad(opl::K_UNARY, {H(1, 0), 56, H(0, 0), 56, 896, 0, 0}, "UNARY rows 0");
     bad(opl::K_CPY, {H(1, 0), 4, H(0, 0), 4, 0, 1}, "CPY rl 0");
     bad(opl::K_CPY, {H(1, 0), 3, H(0, 0), 5, 4, 2}, "CPY dst rows overlap");

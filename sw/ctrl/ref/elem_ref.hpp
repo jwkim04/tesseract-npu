@@ -10,7 +10,7 @@
 //               y = VOP.ADDC / MULC (a_r, c = b word (r mod p))          (FLAG_B_SCALAR)
 //   SCALE       y = VOP.MULC (x_r, c = s), then VOP.ADDC (y, c = b) when b != 0 (bits)
 //   GLU         y = VOP.SWIGLU / GEGLU16 / GEGLU (gate_r, up_r)          (variant 0 / 1 / 2)
-//   UNARY       y = VOP.TANH / GELU16 / SILU / EXP / GELU (x_r)          (func 0 .. 4)
+//   UNARY       y = VOP.TANH / GELU16 / SILU / EXP / GELU / SIGMOID (x_r) (func 0 .. 5)
 //   CPY         dst row r = the src row's rl lines, bit for bit
 //   GET_ROWS    dst row i = src row ids[i] (I32 in the preload area), bit for bit
 // An f32 output row is L(n) = ceil(n/16) lines with words [n, 16 L) zero (the VOP tail rule; the ST

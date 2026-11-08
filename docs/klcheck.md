@@ -72,6 +72,13 @@ results below use the single seed 1 unless a row says otherwise.
   reproduces the token path **bit for bit**. `klcheck all` checks this on every run (an extra CPU
   replay with `--input embd`, compared with `--expect-identical`). That check guarantees the floor
   measures the nudge and nothing else.
+  For a model with M-RoPE or IMROPE (Qwen3.5 / 3.8, `LLAMA_ROPE_TYPE_MROPE` / `IMROPE`) an embedding batch needs four
+  positions per token in llama.cpp's section-major layout (`pos[j * n_tokens + i]`, `src/llama-batch.cpp`), where a
+  token batch has one and llama.cpp expands it to `[p, p, p, 0]`. klcheck writes `[p, p, p, 0]` that way (it
+  allocates the four-fold array itself, `llama_batch_init` allocates one per token). Before that was added, the
+  embd path of Qwen3.8 2B differed from its token path by a mean KL of 6.5e-3 on 512 rows, and the "floor" was that
+  difference, not the nudge (ratio 0.35); with it the path is bit-identical (512 of 512 rows) and the floor is
+  2.24e-3 (ratio 1.06).
 - **How:** element j of the embedding of token index `pos` in sequence `seq` becomes
   `nextafterf(x, ±inf)`. The sign is the top bit of `splitmix64(key + j)`, where
   `key = splitmix64(splitmix64(splitmix64(seed) ^ seq) ^ (pos << 1))`. Every element moves by
@@ -229,6 +236,9 @@ runs against several seeds are described in the text.
 | Gemma 4 12B Q4_K_M | sim | M7 | 512 (8 × 64) | 1.281e-1 / 5.849e-2 | 2.190 | 95.12 % | measured on the simulator (M7) |
 | Gemma 4 26B-A4B Q4_K_M (MoE) | sim | M6 (`TSR_KINDS=m6,+MUL_MAT_ID`: matrix products on the device, the CPU selects the experts) | 512 (8 × 64) | 2.4025e-1 / 1.8563e-1 (mean of 3 floors) | 1.294 (1.171 / 1.364 / 1.368 per seed) | 92.77 % | measured on the simulator (`moe` branch) |
 | Gemma 4 26B-A4B Q4_K_M (MoE) | sim | M7 (router, top-k and experts in the one launch) | 512 (8 × 64) | 1.2770e-1 / 1.7200e-1 (mean of 3 floors) | 0.742 (0.729 / 0.690 / 0.820 per seed) | 94.53 % | measured on the simulator (`moe` branch) |
+| Qwen3.8 2B Q4_K_M | sim | M7 | 512 (8 × 64) | 2.377e-3 / 2.240e-3 (mean of 3 floors) | 1.061 (1.029 against seed 1) | 98.05 % | measured on the simulator (Gated DeltaNet, SW §7.10; `gdn-sw`); 18 Gated DeltaNet and 6 attention layers on the device, one launch per token, 744 records per launch |
+| Qwen3.8 27B Q4_K_M, first 4 layers (3 Gated DeltaNet, 1 attention; a copy of the GGUF cut by `sw/tools/gguf_truncate.py`) | sim | M7 | 128 (4 × 32) | 9.259e-6 / 8.718e-6 (mean of 3 floors) | 1.062 (1.318 against seed 1) | 100 % | measured on the simulator (the 27B's shapes: 48 value heads over 16 key heads, C = 10240, attention D 256 with 24 / 4 heads; the truncated model's logits are nearly flat, so the KLs are small and only the ratio means anything) |
+| Qwen3.8 2B Q4_K_M, long sequence | sim | M7 | 79 (1 × (4,127-token prompt, last 63 prompt positions, 16 generated); `-ub 512`) | 4.250e-3 / 4.298e-3 (mean of 3 floors) | 0.989 (0.973 against seed 1) | 94.94 % | measured on the simulator (the recurrent state has run through 4,127 tokens in 18 layers; prefill 2,752 s, 1.6 s per decode token at that context; lowest cosine 0.9945) |
 
 On the card the 0.5B run gives the simulator's mean KL to seven digits (1.095007e-3), and the small
 identity check (`klcheck compare --expect-identical`, sim against xrt, 8 of 8 rows bit-identical on k1

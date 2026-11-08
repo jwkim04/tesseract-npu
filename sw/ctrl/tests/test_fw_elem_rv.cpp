@@ -681,7 +681,7 @@ int errors_main() {
         {"ADD kind flags", [&](suite & s) { good(s); ew(s, K_ADD, 64, 1, 1, false); s.ops.back().kflags = 1; }, BAD, 0},
         {"SCALE kind flags (fast shape)", [&](suite & s) { good(s); scale(s, 64, 1, 2.0f, 0.0f); s.ops.back().kflags = 0x80; }, BAD, 0},
         {"GLU variant 3", [&](suite & s) { good(s); glu(s, 0, 64, 1); patch(s, gl::VARIANT, 3); }, BAD, 0},
-        {"UNARY func 5", [&](suite & s) { good(s); unary(s, 0, 64, 1); patch(s, un::FUNC, 5); }, BAD, 0},
+        {"UNARY func 6", [&](suite & s) { good(s); unary(s, 0, 64, 1); patch(s, un::FUNC, 6); }, BAD, 0},
         {"CPY row lines 0", [&](suite & s) { good(s); cpy(s, 4, 1); patch(s, opl::cpy::ROW_LINES, 0); }, BAD, 0},
         {"CPY merged beyond beat[27:0]", [&](suite & s) { good(s); cpy(s, 4, 1); patch(s, opl::cpy::ROWS, 0x08000000u); patch(s, opl::cpy::ROW_LINES, 4); }, BAD, 0},
         {"GET_ROWS ids misaligned", [&](suite & s) { good(s); get_rows(s, 4, 4, {1}); patch(s, opl::getrows::IDS, 2); }, BAD, 0},

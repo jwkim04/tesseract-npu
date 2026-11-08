@@ -141,6 +141,12 @@ ticket kind_unary(const volatile uint32_t * args, uint32_t n_args, uint32_t kfla
 ticket kind_moe_route(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
 ticket kind_mul_mat_id(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
 
+// The Gated DeltaNet kinds (SW §7.10; argument words opl.hpp softplus / sconv / gdn): sw/ctrl/kernels/gdn_kinds.cpp.
+// 0x2D SOFTPLUS, 0x2E SSM_CONV, 0x2F GATED_DELTA_NET (no fast paths: their records are long).
+ticket kind_softplus(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
+ticket kind_ssm_conv(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
+ticket kind_gated_delta_net(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
+
 // The decode fast paths of the short M7 kinds (W2b integration; SW §7.3 "M7 kinds in the executor"),
 // the executor's first call for a record of these kinds (graph.cpp's kind table): args, kflags and d
 // as for the kind_fn (n_args already checked by the executor). A fast function either takes the

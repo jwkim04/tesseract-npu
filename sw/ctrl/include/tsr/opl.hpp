@@ -90,6 +90,12 @@ constexpr uint32_t K_MUL_MAT_SCALE = 0x1Cu;  // local pointwise epilogue and fin
 constexpr uint32_t K_MUL_MAT_SOFTCAP = 0x1Du;  // scale, TANH, scale before export
 constexpr uint32_t K_MOE_ROUTE   = 0x1Eu;   // MoE: softmax over the router logits, top-k, renormalised weights (SW §7.5)
 constexpr uint32_t K_MUL_MAT_ID  = 0x1Fu;   // MoE: MUL_MAT with the weight chosen per (token, slot) by an expert id (SW §7.5)
+// Gated DeltaNet kinds (GDN software baseline; SW §7.10). Numbered from the top of the free range
+// downwards: 0x30-0x3F stay the test kinds, 0x1E upwards belongs to the next kinds of the other
+// extensions (MoE).
+constexpr uint32_t K_SOFTPLUS    = 0x2Du;   // log(1 + exp(x)), composed from VU functions
+constexpr uint32_t K_SSM_CONV    = 0x2Eu;   // causal conv1d with a rolling state (+ SILU), channel-vector layout
+constexpr uint32_t K_GATED_DELTA_NET = 0x2Fu;   // the delta-rule recurrence of one layer
 constexpr uint32_t N_KINDS       = 0x40u;   // kind table size (0x00-0x3F); a larger kind is BAD_RECORD
 
 // Argument count of each defined kind (the table of SW §7.2), or NARGS_UNDEF for a kind without a
@@ -115,6 +121,9 @@ constexpr uint32_t kind_nargs(uint32_t kind) {
         case K_MUL_MAT_SOFTCAP: return 14u;
         case K_MOE_ROUTE:   return 9u;
         case K_MUL_MAT_ID:  return 17u;
+        case K_SOFTPLUS:    return 6u;
+        case K_SSM_CONV:    return 12u;
+        case K_GATED_DELTA_NET: return 22u;
         default:            return NARGS_UNDEF;
     }
 }
@@ -149,6 +158,9 @@ constexpr uint32_t kind_rev(uint32_t kind) {
         case K_MUL_MAT_SOFTCAP: return 1u;
         case K_MOE_ROUTE:   return 1u;
         case K_MUL_MAT_ID:  return 1u;
+        case K_SOFTPLUS:    return 1u;
+        case K_SSM_CONV:    return 1u;
+        case K_GATED_DELTA_NET: return 1u;
         default:            return 0u;
     }
 }
@@ -173,6 +185,9 @@ constexpr const char * kind_name(uint32_t kind) {
         case K_MUL_MAT_SOFTCAP: return "MUL_MAT_SOFTCAP";
         case K_MOE_ROUTE:   return "MOE_ROUTE";
         case K_MUL_MAT_ID:  return "MUL_MAT_ID";
+        case K_SOFTPLUS:    return "SOFTPLUS";
+        case K_SSM_CONV:    return "SSM_CONV";
+        case K_GATED_DELTA_NET: return "GATED_DELTA_NET";
         default:            return "?";
     }
 }
@@ -265,7 +280,7 @@ constexpr uint32_t DST = 0, DST_STRIDE = 1, SRC = 2, SRC_STRIDE = 3, ROW_LINES =
 // UNARY (0x1B).
 namespace unary {
 constexpr uint32_t DST = 0, DST_STRIDE = 1, SRC = 2, SRC_STRIDE = 3, N = 4, ROWS = 5, FUNC = 6, NARGS = 7;
-constexpr uint32_t TANH = 0u, GELU16 = 1u, SILU = 2u, EXP = 3u, GELU = 4u, FUNC_MAX = GELU;
+constexpr uint32_t TANH = 0u, GELU16 = 1u, SILU = 2u, EXP = 3u, GELU = 4u, SIGMOID = 5u, FUNC_MAX = SIGMOID;
 }  // namespace unary
 
 // MoE kinds (SW §7.5, SW-60 to SW-65; docs/spec.md §13). Both read device-computed data with the RISC-V (the
@@ -300,6 +315,48 @@ constexpr uint32_t DST = 0, DST_STRIDE = 1, X = 2, X_SLOT_STRIDE = 3, X_TOK_STRI
                    SCALE = 15, FLAGS = 16, NARGS = 17;
 constexpr uint32_t MAX_USED = 16u, MAX_EXPERTS = 4096u;
 }  // namespace mmid
+
+// The GDN kinds (SW §7.10): composed from existing VU operations and the DMA.
+// Handles are {ch[31:28], beat[27:0]}; strides are in lines; f32 parameters are bit patterns.
+//
+// SOFTPLUS (0x2D): dst = softplus(src) = log(1 + exp(x)) for `rows` rows of n f32, by the stable
+// composition max(x, 0) + log1p(exp(-|x|)) of VU functions (SW §7.10, decision SW-69).
+namespace softplus {
+constexpr uint32_t DST = 0, DST_STRIDE = 1, SRC = 2, SRC_STRIDE = 3, N = 4, ROWS = 5, NARGS = 6;
+// The f32 constants of the composition (bit patterns; the firmware has no float): COEF[k] =
+// RNE_f32(2 / (2k + 1)), k = 0 .. 5, then -1, 2 (= COEF[0]) and 1/2.
+constexpr uint32_t COEF[6] = {0x40000000u, 0x3F2AAAABu, 0x3ECCCCCDu, 0x3E924925u, 0x3E638E39u, 0x3E3A2E8Cu};
+constexpr uint32_t NEG_ONE = 0xBF800000u, TWO = 0x40000000u, HALF = 0x3F000000u;
+}  // namespace softplus
+// SSM_CONV (0x2E): the causal depthwise conv1d of a Gated DeltaNet layer on channel vectors.
+// Token n (n = seq * T + t) is a row of C channels (C a multiple of 16) at X + n * X_TS; the
+// kernel taps are d_conv rows of C words at W (row w = tap w, dense); the state is d_conv - 1 rows
+// of C words per sequence, dense, at STATE_IN + seq * (d_conv - 1) * C / 16 (STATE_OUT likewise;
+// the same lines are allowed). y[n][c] = sum over w of window[t + w][c] * W[w][c], summed in the
+// order w = 0 .. d_conv - 1, where window rows 0 .. d_conv - 2 are the state and the rest the
+// tokens; the new state is the last d_conv - 1 window rows. FLAG_SILU applies SILU to y.
+namespace sconv {
+constexpr uint32_t DST = 0, DST_TOKEN_STRIDE = 1, X = 2, X_TOKEN_STRIDE = 3, STATE_IN = 4, STATE_OUT = 5, W = 6,
+                   N_CH = 7, D_CONV = 8, N_TOKENS = 9, N_SEQS = 10, FLAGS = 11, NARGS = 12;
+constexpr uint32_t FLAG_SILU = 1u << 0, FLAGS_KNOWN = FLAG_SILU;
+constexpr uint32_t D_CONV_MAX = 8u;
+}  // namespace sconv
+// GATED_DELTA_NET (0x2F, two slots): the recurrence of ggml_gated_delta_net (scalar gate, K = 1) for
+// n_seqs sequences of T tokens (flattened token n = seq * T + t) and H_v heads of S_v x S_v f32 state.
+// Rows are L = S_v / 16 lines. Head h of token n reads its q and k row of head h mod H_k at
+// {Q,K} + (h mod H_k) * HEAD_STRIDE + n * TOKEN_STRIDE and its v row at V + h * V_HEAD_STRIDE +
+// n * V_TOKEN_STRIDE; the gate g and beta of token n are H_v f32 at G + n * G_TOKEN_STRIDE and
+// BETA + n * BETA_TOKEN_STRIDE. State of (seq, head): S_v rows of L lines at STATE_{IN,OUT} +
+// (seq * H_v + h) * S_v * L (row j holds S[.][j]: the ggml-cpu layout). Output row (n, h) at
+// DST + (n * H_v + h) * L. Per token: S *= exp(g); delta_j = (v_j - S_j . k) * beta;
+// S_j += k * delta_j; o_j = (S_j . q) * SCALE (SW §7.10, decision SW-67).
+namespace gdn {
+constexpr uint32_t DST = 0, STATE_OUT = 1, STATE_IN = 2, Q = 3, Q_HEAD_STRIDE = 4, Q_TOKEN_STRIDE = 5, K = 6,
+                   K_HEAD_STRIDE = 7, K_TOKEN_STRIDE = 8, V = 9, V_HEAD_STRIDE = 10, V_TOKEN_STRIDE = 11, G = 12,
+                   G_TOKEN_STRIDE = 13, BETA = 14, BETA_TOKEN_STRIDE = 15, S_V = 16, H_K = 17, H_V = 18,
+                   N_TOKENS = 19, N_SEQS = 20, SCALE = 21, NARGS = 22;
+constexpr uint32_t S_V_MAX = 256u;
+}  // namespace gdn
 
 // The GEOM word of SET_ROWS_KV / FLASH_ATTN.
 constexpr uint32_t geom_word(uint32_t e_div64, uint32_t lg) { return (e_div64 & 0xFFFFu) | (lg << 16); }
@@ -623,10 +680,12 @@ static_assert(ew::NARGS == kind_nargs(K_ADD) && ew::NARGS == kind_nargs(K_MUL) &
                   setrows::NARGS == kind_nargs(K_SET_ROWS_KV) && fa::NARGS == kind_nargs(K_FLASH_ATTN) &&
                   cpy::NARGS == kind_nargs(K_CPY) && unary::NARGS == kind_nargs(K_UNARY) &&
                   moer::NARGS == kind_nargs(K_MOE_ROUTE) && mmid::NARGS == kind_nargs(K_MUL_MAT_ID) &&
-                  mm::NARGS == kind_nargs(K_MUL_MAT),
+                  mm::NARGS == kind_nargs(K_MUL_MAT) && softplus::NARGS == kind_nargs(K_SOFTPLUS) &&
+                  sconv::NARGS == kind_nargs(K_SSM_CONV) && gdn::NARGS == kind_nargs(K_GATED_DELTA_NET),
               "opl.hpp: argument counts = the SW §7.2 table");
-static_assert(slots_for_nargs(fa::NARGS) == 2u && slots_for_nargs(rope::NARGS) == 1u,
-              "FLASH_ATTN takes two slots, ROPE one");
+static_assert(slots_for_nargs(fa::NARGS) == 2u && slots_for_nargs(rope::NARGS) == 1u &&
+                  slots_for_nargs(gdn::NARGS) == 2u && slots_for_nargs(sconv::NARGS) == 1u,
+              "FLASH_ATTN and GATED_DELTA_NET take two slots, ROPE and SSM_CONV one");
 
 // A preload reference [off, off + bytes) inside a preload area of pre_lines lines, off a multiple
 // of `align` (a power of two).
@@ -691,6 +750,9 @@ constexpr uint32_t check_args(uint32_t kind, const uint32_t * a, uint32_t n_args
             break;
         case K_MUL_MAT_ID:
             ok = a[mmid::FLAGS] == 0u && (a[mmid::IDS_STRIDE] & 3u) == 0u;
+            break;
+        case K_SSM_CONV:
+            ok = (a[sconv::FLAGS] & ~sconv::FLAGS_KNOWN) == 0u;
             break;
         default:
             break;

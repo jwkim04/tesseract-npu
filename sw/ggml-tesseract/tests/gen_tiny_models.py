@@ -18,6 +18,10 @@ graphs from (SW §8 "Ops in the two model families"):
                           per-head Q/K norms, rope_freqs on the full layer (25 % rotated, the rest
                           1e30 as in the 12B), layer_output_scale, GEGLU, tied output head,
                           final logit softcap 30, embedding x sqrt(n_embd)
+  qwen35-tiny-q8_0.gguf   4 layers, 3 Gated DeltaNet + 1 full attention (Qwen3.5 / 3.8's 3 : 1 pattern):
+                          S_v = 32, 4 key heads for 16 value heads (a 4x tiling like the 27B's 16 : 48), conv kernel 4,
+                          the full layer with the joint Q|gate projection, per-head Q/K norms and partial
+                          IMROPE (32 of 64 dims, sections 8 / 4 / 4 / 0)
   tiny-prompts.txt        prompts in the vocabularies' alphabet (klcheck --prompts)
 
 Every model has a 64-row vocabulary with valid tokenizer metadata: Qwen2 a GPT-2 byte-level BPE
@@ -263,6 +267,71 @@ def qwen2_spec(seed: int) -> dict:
     return {"arch": "qwen2", "tensors": t, "kv": kv, "vocab": vocab_qwen2()}
 
 
+def qwen35_spec(seed: int, big: bool = False) -> dict:
+    """Qwen3.5 / 3.8 architecture (llama.cpp "qwen35"): Gated DeltaNet layers and every 4th layer attention.
+    big: the shapes of the real models' linear layers (S_v = 128, 16 value heads over 16 key heads)."""
+    E, F, L, V = 256, 512, 4, 64
+    S, HK, HV = (128, 16, 16) if big else (32, 4, 16)   # head_k_dim = head_v_dim, key heads, value heads (H_v % 16 = 0: gate rows are lines)
+    KEY, VAL = S * HK, S * HV                  # 128, 512
+    CONV = 2 * KEY + VAL                       # 768 channels
+    H, HKV, D, NROT = (8, 2, 256, 64) if big else (4, 2, 64, 32)   # full attention: heads, KV heads, head_dim, rotated dims
+    interval = 4
+    r = Rng(seed, "qwen35-tiny-s128" if big else "qwen35-tiny")
+    t: dict[str, np.ndarray] = {}
+    t["token_embd.weight"] = r.normal((V, E), 1.0)
+    for il in range(L):
+        p = f"blk.{il}."
+        t[p + "attn_norm.weight"] = r.normal((E,), 0.1, 1.0)
+        t[p + "post_attention_norm.weight"] = r.normal((E,), 0.1, 1.0)
+        if (il + 1) % interval != 0:           # Gated DeltaNet layer
+            t[p + "attn_qkv.weight"] = r.normal((CONV, E), 1.0 / math.sqrt(E))
+            t[p + "attn_gate.weight"] = r.normal((VAL, E), 1.0 / math.sqrt(E))
+            t[p + "ssm_conv1d.weight"] = r.normal((CONV, 4), 0.5)          # ggml [4, CONV]: F32
+            t[p + "ssm_dt.bias"] = r.normal((HV,), 0.4)
+            t[p + "ssm_a"] = -(0.3 + 2.0 * r.g.random_sample((HV,))).astype(np.float32)
+            t[p + "ssm_beta.weight"] = r.normal((HV, E), 1.0 / math.sqrt(E))
+            t[p + "ssm_alpha.weight"] = r.normal((HV, E), 1.0 / math.sqrt(E))
+            t[p + "ssm_norm.weight"] = r.normal((S,), 0.1, 1.0)
+            t[p + "ssm_out.weight"] = r.normal((E, VAL), 0.7 / math.sqrt(VAL))
+        else:                                  # full attention with the output gate
+            t[p + "attn_q.weight"] = r.normal((2 * H * D, E), 1.0 / math.sqrt(E))
+            t[p + "attn_k.weight"] = r.normal((HKV * D, E), 1.0 / math.sqrt(E))
+            t[p + "attn_v.weight"] = r.normal((HKV * D, E), 1.0 / math.sqrt(E))
+            wqk = (16.0 / D) ** 0.25
+            t[p + "attn_q_norm.weight"] = r.normal((D,), 0.05 * wqk, wqk)
+            t[p + "attn_k_norm.weight"] = r.normal((D,), 0.05 * wqk, wqk)
+            t[p + "attn_output.weight"] = r.normal((E, H * D), 0.7 / math.sqrt(H * D))
+        t[p + "ffn_gate.weight"] = r.normal((F, E), 1.0 / math.sqrt(E))
+        t[p + "ffn_up.weight"] = r.normal((F, E), 1.0 / math.sqrt(E))
+        t[p + "ffn_down.weight"] = r.normal((E, F), 0.7 / math.sqrt(F))
+    t["output_norm.weight"] = r.normal((E,), 0.1, 1.0)
+    t["output.weight"] = r.normal((V, E), 4.0 / math.sqrt(E))
+    kv = {
+        "general.architecture": "qwen35",
+        "general.type": "model",
+        "general.name": "qwen35-tiny-s128" if big else "qwen35-tiny",
+        "qwen35.block_count": (VT.UINT32, L),
+        "qwen35.context_length": (VT.UINT32, 4096),
+        "qwen35.embedding_length": (VT.UINT32, E),
+        "qwen35.feed_forward_length": (VT.UINT32, F),
+        "qwen35.attention.head_count": (VT.UINT32, H),
+        "qwen35.attention.head_count_kv": (VT.UINT32, HKV),
+        "qwen35.attention.key_length": (VT.UINT32, D),
+        "qwen35.attention.value_length": (VT.UINT32, D),
+        "qwen35.attention.layer_norm_rms_epsilon": (VT.FLOAT32, 1e-6),
+        "qwen35.rope.freq_base": (VT.FLOAT32, 1000000.0),
+        "qwen35.rope.dimension_count": (VT.UINT32, NROT),
+        "qwen35.rope.dimension_sections": (VT.INT32, [11, 11, 10, 0] if big else [8, 4, 4, 0]),
+        "qwen35.ssm.conv_kernel": (VT.UINT32, 4),
+        "qwen35.ssm.state_size": (VT.UINT32, S),
+        "qwen35.ssm.group_count": (VT.UINT32, HK),
+        "qwen35.ssm.time_step_rank": (VT.UINT32, HV),
+        "qwen35.ssm.inner_size": (VT.UINT32, VAL),
+        "qwen35.full_attention_interval": (VT.UINT32, interval),
+    }
+    return {"arch": "qwen35", "tensors": t, "kv": kv, "vocab": vocab_qwen2()}
+
+
 def gemma4_spec(seed: int) -> dict:
     E, H, F, L, V = 256, 16, 512, 4, 64
     D_SWA, HKV_SWA, D_FULL, HKV_FULL = 64, 8, 128, 1
@@ -332,7 +401,7 @@ def gemma4_spec(seed: int) -> dict:
 
 def tensor_type(name: str, arr: np.ndarray, variant: str) -> QT:
     """Every 2D weight in the variant's type (as the real Q8_0 GGUFs), 1D tensors F32."""
-    if arr.ndim < 2:
+    if arr.ndim < 2 or "ssm_conv1d" in name:      # the convolution kernel is an F32 matrix in the real GGUFs too
         return QT.F32
     return {"q8_0": QT.Q8_0, "q4_k": QT.Q4_K}[variant]
 
@@ -411,10 +480,12 @@ def check_model(spec: dict, variant: str, path: Path) -> None:
     assert not missing, missing
 
 
-SPECS = {"qwen2": qwen2_spec, "gemma4": gemma4_spec}
+SPECS = {"qwen2": qwen2_spec, "qwen35": qwen35_spec, "qwen35big": lambda seed: qwen35_spec(seed, True), "gemma4": gemma4_spec}
 OUTPUTS = [("qwen2-tiny-q8_0.gguf", "qwen2", "q8_0"),
            ("qwen2-tiny-q4_k.gguf", "qwen2", "q4_k"),
-           ("gemma4-tiny-q8_0.gguf", "gemma4", "q8_0")]
+           ("gemma4-tiny-q8_0.gguf", "gemma4", "q8_0"),
+           ("qwen35-tiny-q8_0.gguf", "qwen35", "q8_0"),
+           ("qwen35-tiny-s128-q8_0.gguf", "qwen35big", "q8_0")]
 
 
 def main() -> int:

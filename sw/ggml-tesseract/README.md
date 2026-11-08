@@ -194,6 +194,7 @@ Public C API (`third_party/llama.cpp/ggml/include/ggml-tesseract.h`, from the pa
 | `TSR_OPL_SPLIT=<n>` | test knob: cut every op list after n records (a split's results do not depend on the cuts: Qwen2.5-0.5B with n = 7, 53 launches per token, gives logits bit-identical to one launch per token) |
 | `TSR_FORCE_HOST=1` | test knob: every non-WEIGHTS buffer in host memory, so every MUL_MAT takes the staged path and the other kinds stay on the CPU (with M7 settings add `-nkvo`: a KV cache on the device needs its SET_ROWS on the device) |
 | `TSR_STAGE_KIB=<n>` | test knob: IO stage size in KiB (default max(16 MiB, 2 × SPM)); a small stage forces several T tiles |
+| `TSR_DUMP_RE=<regex>` `TSR_DUMP_DIR=<dir>` | debug knob: when a graph is built, run the pending op list after every node whose result name matches the regex, read the result from device memory, print its range to stderr (`DUMP name ...`) and write it to `<dir>/<name>.f32`. Compare with the same nodes of a CPU run (`cb_eval` on the CPU backend) to find the first node that differs. Only the first run of a graph dumps (later runs use the cached plan) |
 | `TSR_OPL_CRC=1` | debug knob: `graph` launch flag VERIFY_CRC (the executor checks each list's CRC-32 before running it) |
 | `TSR_STATS=1` | at backend free: upload statistics; graph_compute calls, launches, launches per scheduler pass (≈ per token: a split seen again starts a pass) and per graph_compute (0 / 1 / 2 / ≥ 3), op records per launch, records per kind, fused ops, MUL_MAT / JOIN records, staged chunks and their launches, the plan cache (hits, builds, builds not cacheable), lists cut early, OPL cache hits / misses / evictions, launch wall time, PERF counter deltas; with the KV agent's lines on mask summaries |
 | `TSR_SIM_*`, `TSR_TRACE`, `TSR_LOG`, `TSR_LAUNCH_TIMEOUT_MS`, … | handled by the transport (`sw/transport/tsr_transport.h`, SW §9.2) |
@@ -376,6 +377,14 @@ bound and the W3b measurements are in its header.
   `python3 sw/ggml-tesseract/tests/m7_tests.py graph --klcheck build/dev/bin/klcheck --model
   build/dev/models/tiny/gemma4-tiny-q8_0.gguf --prompts build/dev/models/tiny/tiny-prompts.txt
   --out-dir /tmp/g --min-kl 3e-3`.
+- **Gated DeltaNet (Qwen3.5 / 3.8, SW §7.10).** `qwen35-tiny-q8_0.gguf` and `qwen35-tiny-s128-q8_0.gguf`
+  (4 layers: 3 Gated DeltaNet and 1 full attention with the joint Q and gate projection, per-head norms and IMROPE;
+  S_v 32 with 4 key heads for 16 value heads, and S_v 128 with the real models' 16 key heads and D 256), the graph
+  tests `ggml_tesseract_graph_qwen35_tiny` and `_s128` and `ggml_tesseract_gdn_logits_<model>`
+  (`tests/test-tsr-gdn-logits.cpp`: the logits of every step of prompts of 1, 2, 5 and 17 tokens against the CPU).
+  The logits test exists because klcheck's mean KL on a random tiny model did not see a convolution that returned
+  zeros (SW-71, SW-74). The device holds the conv and recurrent state caches (`cache_r_l*`, `cache_s_l*`) as device
+  windows; with `-nkvo` the ops that touch them stay on the CPU.
 - **test-backend-ops per op** (`tests/m7_tests.py ops`): `ggml_tesseract_backend_ops_<op>` for ADD,
   MUL, RMS_NORM, SWIGLU, GEGLU, ROPE, GET_ROWS, CPY, CONT, TANH, GELU, SCALE, SOFTCAP, the fused cases
   RMS_NORM_MUL_ADD, ADD_RMS_NORM, ADD_ADD, MUL_MAT_ADD, RMS_NORM_MUL_ROPE, and SET_ROWS, ROPE_SET_ROWS,

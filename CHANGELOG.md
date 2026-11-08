@@ -21,6 +21,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
   smaller index, NaN first, by integer compares on the RISC-V) and renormalises their weights.
   MUL_MAT_ID runs a MUL_MAT per (token, slot) against the expert chosen by an id read from DRAM, with an
   optional per-expert output scale. The image grows by about 5.4 KiB of ITCM. No RTL change.
+- Added the Gated DeltaNet kinds SOFTPLUS (0x2D), SSM_CONV (0x2E) and GATED_DELTA_NET (0x2F), each at numerics
+  revision 1, composed from existing VU operations and the DMA: no new RTL operation. They need the VU (CAPS bit 0).
+- UNARY accepts func 5, SIGMOID (VOP SIGMOID). The kind's revision stays 1: no existing record changes.
+- The ggml-tesseract backend lowers the Gated DeltaNet layer graph of the pinned llama.cpp (`qwen35`): SOFTPLUS, SIGMOID and SILU
+  on gate tensors, `GATED_DELTA_NET`, the `CONCAT` / `SSM_CONV` / state `CPY` group (two window `CPY` records and one
+  SSM_CONV record), the regrouped state `CPY`, IMROPE as NEOX for text positions, per-token `RMS_NORM` for strided views,
+  and the recurrent-state caches as device windows. The conv taps are stored as tap rows at weight upload. Whole decode
+  tokens of Qwen3.8 2B run in one launch. No llama.cpp patch.
+- `TSR_DUMP_RE` / `TSR_DUMP_DIR` dump device values of matching nodes; `TSR_STATS` prints the units' busy cycles.
+- klcheck writes the four M-RoPE position streams in its embedding path (the embd and floor runs of Qwen3.5 / 3.8 were not
+  bit-identical to the token path before).
 
 ## Basis 0.1.0 (2026-10-31)
 
