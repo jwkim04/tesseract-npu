@@ -213,9 +213,9 @@ if cocotb is not None:
                 bad = [i // 64 for i in range(0, size, 64) if got[i:i + 64] != want[i:i + 64]]
                 errs.append("DRAM ch%d [%#x, +%#x): %d beats differ (first beats %s)" % (
                     ch, off, size, len(bad), bad[:8]))
-        # no DRAM write outside the three store targets
+        # no DRAM write outside the store targets (the three of the MUL_MAT stream, and the GDN outputs with CAPS bit 8)
         allowed = {}
-        for ch, off, size in sc["regions"][:3]:
+        for ch, off, size in sc["stores"]:
             allowed.setdefault(ch, set()).update(range(off // 64, (off + size) // 64))
         for c in range(C.CFG["num_ch"]):
             stray = sorted(set(mem.written[c]) - allowed.get(c, set()))
@@ -854,6 +854,44 @@ def test_core_k4_fast():
         seed=int(os.environ.get("TSR_SEED", "1"), 0), testcase=["core_smoke", "core_db"],
         extra_env={"TB_CORE_ELF": str(elf), "TB_CORE_RV_PS": "6000", "TB_CORE_PS": "4000",
                    "TB_CORE_NCH": "4", "TB_CORE_TMAX": "4",
+                   "TB_CORE_VU_FRONT": "8", "TB_CORE_VU_BACK": "4"}, timescale=("1ps", "1ps"))
+
+
+def test_core_k4gdn():
+    """The full-feature card image with the fused GDN op (tsr_u200_k4 with HAS_GDN 1, CAPS 0x121): core_smoke runs the
+    firmware stream of test_core_k4full and, after it, two heads of the GDN op (an LD of k, q, v and S, SOP MOVI of
+    alpha and beta, GDN, ST of S' and o; head 0 to a tile of its own, head 1 in place) through the issue path, the
+    VU checker class, the VU and the DMA on the RTL Ibex. The simulator runs the same firmware with CAPS 0x121 (the
+    op is tsr_ref_gdn there); every DRAM region, the identification registers (CAPS), the per-unit completion counts and
+    the final CSR state must be equal."""
+    from common.runner import run
+    elf = C.build_fw(FW_OUT)
+    params = dict(C.PARAMS, NUM_CH=4, T_MAX=4, DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
+                  RV_LOCAL_TRANSPORT=1, XSLR_REG=1, MVM_BC_PIPE=2, MVM_RES_PIPE=2, VU_LANE_PIPE=2,
+                  VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, RST_PIPE=3, SPM_RD_LAT=4, MVM_MAC_LAT=9, HAS_GDN=1)
+    run("tsr_core", __name__, parameters=params, sources=_sources(), name="core_k4gdn",
+        seed=int(os.environ.get("TSR_SEED", "1"), 0), testcase=["core_smoke"],
+        extra_env={"TB_CORE_ELF": str(elf), "TB_CORE_RV_PS": "6000", "TB_CORE_PS": "4000",
+                   "TB_CORE_NCH": "4", "TB_CORE_TMAX": "4", "TB_CORE_GDN": "1",
+                   "TB_CORE_VU_FRONT": "8", "TB_CORE_VU_BACK": "4"}, timescale=("1ps", "1ps"))
+
+
+def test_core_k4gdn_fast():
+    """The same image with FAST_CLK 1 (the 250 MHz stages, docs/platform-u200.md §8.9): core_smoke runs the
+    firmware stream of test_core_k4full and, after it, two heads of the GDN op (an LD of k, q, v and S, SOP MOVI of
+    alpha and beta, GDN, ST of S' and o; head 0 to a tile of its own, head 1 in place) through the issue path, the
+    VU checker class, the VU and the DMA on the RTL Ibex. The simulator runs the same firmware with CAPS 0x121 (the
+    op is tsr_ref_gdn there); every DRAM region, the identification registers (CAPS), the per-unit completion counts and
+    the final CSR state must be equal."""
+    from common.runner import run
+    elf = C.build_fw(FW_OUT)
+    params = dict(C.PARAMS, NUM_CH=4, T_MAX=4, DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
+                  RV_LOCAL_TRANSPORT=1, XSLR_REG=1, FAST_CLK=1, MVM_BC_PIPE=2, MVM_RES_PIPE=2, VU_LANE_PIPE=2,
+                  VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, RST_PIPE=3, SPM_RD_LAT=4, MVM_MAC_LAT=9, HAS_GDN=1)
+    run("tsr_core", __name__, parameters=params, sources=_sources(), name="core_k4gdn_fast",
+        seed=int(os.environ.get("TSR_SEED", "1"), 0), testcase=["core_smoke"],
+        extra_env={"TB_CORE_ELF": str(elf), "TB_CORE_RV_PS": "6000", "TB_CORE_PS": "4000",
+                   "TB_CORE_NCH": "4", "TB_CORE_TMAX": "4", "TB_CORE_GDN": "1",
                    "TB_CORE_VU_FRONT": "8", "TB_CORE_VU_BACK": "4"}, timescale=("1ps", "1ps"))
 
 

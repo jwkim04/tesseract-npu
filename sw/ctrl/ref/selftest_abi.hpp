@@ -5,7 +5,7 @@
 // is written in the common subset of C11 and C++ (macros, plain structs, static inline functions).
 //
 // Kernel arguments (SW §7.1):
-//   a0 test id (1-10)    a1 data handle {ch[31:28], beat[27:0]}: the test's data area
+//   a0 test id (1-11)    a1 data handle {ch[31:28], beat[27:0]}: the test's data area
 //   a2 area lines        (the kernel refuses a layout that does not fit: RET AREA)
 //   a3 seed              (patterns the device generates: ids 1, 8, 9)
 //   a4 flags             (id-specific; 0 everywhere today)
@@ -33,12 +33,13 @@
 #define TSR_ST_ID_SPMWIN  8u                // SPM window byte / half / word, store-before-push ordering
 #define TSR_ST_ID_LOG     9u                // log records and a kernel event (PING is the runtime's)
 #define TSR_ST_ID_CREDITS 10u               // fill every queue (QHOLD), credits
-#define TSR_ST_N_IDS      10u
+#define TSR_ST_ID_GDN     11u               // the fused Gated DeltaNet state update (GDN, VU §7.12): heads of one shape
+#define TSR_ST_N_IDS      11u
 
-#define TSR_ST_RET_BAD_ID     0x80000201u   // a0 not 1..10
+#define TSR_ST_RET_BAD_ID     0x80000201u   // a0 not 1..11
 #define TSR_ST_RET_BAD_PARAMS 0x80000202u   // bad magic / id in P, or a parameter out of range
 #define TSR_ST_RET_AREA       0x80000203u   // the layout needs more than a2 lines
-#define TSR_ST_RET_CAPS       0x80000204u   // the device lacks a CAPS bit the test needs (VU, ATT)
+#define TSR_ST_RET_CAPS       0x80000204u   // the device lacks a CAPS bit the test needs (VU, ATT, GDN)
 
 static inline uint32_t tsr_st_lines(uint32_t words) { return (words + 15u) / 16u; }   // f32 words -> lines
 
@@ -255,5 +256,37 @@ static inline void tsr_st8_pattern(uint32_t seed, uint8_t b[128]) {
 // for a held op); its credit must then read 0. RET 0, or 0x100 (u + 1) for unit u.
 typedef struct tsr_st10_layout { uint32_t x, end; } tsr_st10_layout;
 static inline tsr_st10_layout tsr_st10(void) { tsr_st10_layout l; l.x = 1u; l.end = 3u; return l; }
+
+// ---------------------------------------------------------------------------------------------
+// 11 GDN (needs CAPS.VU and CAPS.GDN, else RET CAPS). P[2] = m (64 .. 256, a multiple of 16), P[3] = rows (1 .. 64),
+// P[4] = H heads (1 .. 4), P[5 + 2 h] = alpha bits and P[6 + 2 h] = beta bits of head h. Inputs, per head h in turn
+// (lines from 1): k (m / 16 lines), q (m / 16), v (L(rows)), S (rows x m / 16, dense). Outputs, per head: S'
+// (rows x m / 16 lines), o (L(rows), the tail words 0). The kernel LDs all inputs and issues, per head, SOP MOVI of alpha
+// (s[2 h]) and beta (s[2 h + 1]) and the GDN op, all heads back to back (the setup of head h + 1 runs under the rows of head h):
+// S' to a tile of its own for even h, in place on S for odd h (that tile is then stored); ST of S' and o of each head
+// follows its op. The device does not check results: the host compares them with tsr_ref_gdn and, on the card, with the
+// simulator running the same image.
+#define TSR_ST11_MAX_HEADS 4u
+typedef struct tsr_st11_layout {
+    uint32_t nl, lv, tile, in_head;                  // lines per row, L(rows), lines of a tile, input lines of a head
+    uint32_t in_end, out_head, end;
+} tsr_st11_layout;
+static inline tsr_st11_layout tsr_st11(uint32_t m, uint32_t rows, uint32_t H) {
+    tsr_st11_layout l;
+    l.nl = m / 16u;
+    l.lv = tsr_st_lines(rows);
+    l.tile = rows * l.nl;
+    l.in_head = 2u * l.nl + l.lv + l.tile;
+    l.in_end = 1u + H * l.in_head;
+    l.out_head = l.tile + l.lv;
+    l.end = l.in_end + H * l.out_head;
+    return l;
+}
+static inline uint32_t tsr_st11_k(const tsr_st11_layout * l, uint32_t h) { return 1u + h * l->in_head; }
+static inline uint32_t tsr_st11_q(const tsr_st11_layout * l, uint32_t h) { return tsr_st11_k(l, h) + l->nl; }
+static inline uint32_t tsr_st11_v(const tsr_st11_layout * l, uint32_t h) { return tsr_st11_q(l, h) + l->nl; }
+static inline uint32_t tsr_st11_s(const tsr_st11_layout * l, uint32_t h) { return tsr_st11_v(l, h) + l->lv; }
+static inline uint32_t tsr_st11_sp(const tsr_st11_layout * l, uint32_t h) { return l->in_end + h * l->out_head; }
+static inline uint32_t tsr_st11_o(const tsr_st11_layout * l, uint32_t h) { return tsr_st11_sp(l, h) + l->tile; }
 
 #endif  // TSR_SELFTEST_ABI_HPP

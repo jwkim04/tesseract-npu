@@ -34,7 +34,11 @@
 enum {
     ARG_K, ARG_T, ARG_N1, ARG_N2, ARG_X_BEAT, ARG_W1_OFF, ARG_W2_OFF, ARG_X_LINE, ARG_QA1_LINE,
     ARG_QA2_LINE, ARG_Y1_LINE, ARG_Y2_LINE, ARG_X_LINES, ARG_Y1_LINES, ARG_Y2_LINES, ARG_Y1_DST,
-    ARG_Y2_DST, ARG_DUMP_DST, ARG_DUMP_LINES, ARG_SCRATCH_LINE, ARG_BG_SRC, ARG_SPM_LINES, ARG_N
+    ARG_Y2_DST, ARG_DUMP_DST, ARG_DUMP_LINES, ARG_SCRATCH_LINE, ARG_BG_SRC, ARG_SPM_LINES,
+    // GDN (CAPS bit 8; 0 = off): two heads of rows x m, inputs k, q, v, S per head from DRAM ch0 beat GDN_IN, outputs S'
+    // and o per head to GDN_OUT; SPM from line GDN_SPM; alpha and beta of each head
+    ARG_GDN_ON, ARG_GDN_IN, ARG_GDN_OUT, ARG_GDN_SPM, ARG_GDN_M, ARG_GDN_ROWS, ARG_GDN_AL0, ARG_GDN_BE0, ARG_GDN_AL1,
+    ARG_GDN_BE1, ARG_N
 };
 // {ch[31:28], beat[27:0]} for the *_DST arguments.
 #define DST_CH(v)   ((v) >> 28)
@@ -132,6 +136,45 @@ int main(void) {
     tk[8] = push(&i, tk[7], NONE);
     CW(TSR_CW_RT_INFO) = 9u;
     while (!ticket_done(tk[8])) {
+    }
+    // GDN: head 0 to its own tile, head 1 in place (the fused op on the VU, VU §7.12); joined on its stores
+    if (args[ARG_GDN_ON] != 0u) {
+        const uint32_t m = args[ARG_GDN_M], rows = args[ARG_GDN_ROWS], nl = m / 16u, lv = (rows + 15u) / 16u, tile = rows * nl;
+        const uint32_t inh = 2u * nl + lv + tile, hs = inh + tile + lv, sp = args[ARG_GDN_SPM];
+        const uint32_t al[2] = { args[ARG_GDN_AL0], args[ARG_GDN_AL1] }, be[2] = { args[ARG_GDN_BE0], args[ARG_GDN_BE1] };
+        uint32_t t_last = NONE;
+        for (uint32_t hd = 0; hd < 2u; ++hd) {
+            const uint32_t b = sp + hd * hs, kl = b, ql = b + nl, vl = b + 2u * nl, sl = vl + lv, tl = b + inh, ol = tl + tile;
+            i = tsr_enc_ld(0, b, args[ARG_GDN_IN] + hd * inh, inh);
+            const uint32_t t_ld = push(&i, NONE, NONE);
+            for (uint32_t k = 0; k < 2u; ++k) {                         // MOVI s(2 hd + k) = alpha / beta
+                memset(&i, 0, sizeof(i));
+                i.w[0] = TSR_OP_SOP;
+                TSR_INSN_SET(i.w, TSR_SOP_SUB, TSR_SOP_SUB_MOVI);
+                TSR_INSN_SET(i.w, TSR_SOP_SD, 2u * hd + k);
+                TSR_INSN_SET(i.w, TSR_SOP_IMM, k ? be[hd] : al[hd]);
+                (void)push(&i, NONE, NONE);
+            }
+            memset(&i, 0, sizeof(i));
+            i.w[0] = TSR_OP_GDN;
+            TSR_INSN_SET(i.w, TSR_GDN_SA, 2u * hd);
+            TSR_INSN_SET(i.w, TSR_GDN_SB, 2u * hd + 1u);
+            TSR_INSN_SET(i.w, TSR_GDN_D, hd ? sl : tl);
+            TSR_INSN_SET(i.w, TSR_GDN_A, sl);
+            TSR_INSN_SET(i.w, TSR_GDN_K, kl);
+            TSR_INSN_SET(i.w, TSR_GDN_Q, ql);
+            TSR_INSN_SET(i.w, TSR_GDN_V, vl);
+            TSR_INSN_SET(i.w, TSR_GDN_O, ol);
+            TSR_INSN_SET(i.w, TSR_GDN_M, m);
+            TSR_INSN_SET(i.w, TSR_GDN_ROWS, rows);
+            const uint32_t t_g = push(&i, t_ld, NONE);
+            i = tsr_enc_st(0, hd ? sl : tl, args[ARG_GDN_OUT] + hd * (tile + lv), tile);
+            (void)push(&i, t_g, NONE);
+            i = tsr_enc_st(0, ol, args[ARG_GDN_OUT] + hd * (tile + lv) + tile, lv);
+            t_last = push(&i, t_g, NONE);
+        }
+        while (!ticket_done(t_last)) {
+        }
     }
     // QSTATUS's error field only: QIDLE and NONEMPTY are synchronised levels (may lag, CC §5.1)
     const uint32_t qstatus = CW(TSR_CW_QSTATUS) & TSR_QSTATUS_ERR;
