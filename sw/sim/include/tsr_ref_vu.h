@@ -151,6 +151,28 @@ void tsr_ref_topk(uint32_t k, uint32_t rows, uint32_t m, uint32_t * d, uint32_t 
                   const uint32_t * a, uint32_t a_stride);
 
 // ---------------------------------------------------------------------------
+// MoE routing (docs/spec.md §13; SW §7.5 MOE_ROUTE, SW-61)
+// ---------------------------------------------------------------------------
+// One token's expert selection as the MOE_ROUTE kind computes it: a composition of the VU
+// references above, with the selection itself done by integer compares on the RISC-V (the TOPK RTL
+// stays disabled). n router logits (f32 bits), 1 <= k <= min(n, 16), n <= TSR_MOE_MAX_EXPERTS.
+//   m  = RED.MAX(logits)                          (any NaN: canonical NaN)
+//   e  = VOP.EXPSUBC(logits, c = m)               EXPSUB(l, m) = EXPK(FS(l, m))
+//   r  = RED.SUM post RCP (e)                     the 128-partial tree, then RC
+//   p  = VOP.MULC(e, c = r)                       the softmax probabilities
+//   (id_j, q_j) = TOPK(p, k)                      value descending under the total order (NaN first),
+//                                                 ties by the smaller index (VU §6.8); q_j is the DAZ'd value
+//   r2 = RED.SUM post RCP (q_0 .. q_(k-1))       the tree over the k selected probabilities
+//   w_j = VOP.MULC(q_j, c = r2)                   the renormalised weights, in selection order
+// ggml's graph computes the same quantities as soft_max, argsort(DESC) + view, get_rows, sum_rows,
+// clamp(6.1035e-5, inf) and div; the clamp never acts because the k largest of n probabilities sum
+// to at least k / n (a caller that fuses the graph checks k / n >= the clamp), and a NaN passes it.
+// ids[0..k), w[0..k) are written; probs (n words) receives p when it is not NULL.
+#define TSR_MOE_MAX_EXPERTS 512u
+void tsr_ref_moe_route(uint32_t n, uint32_t k, const uint32_t * logits, uint32_t * ids, uint32_t * w,
+                       uint32_t * probs);
+
+// ---------------------------------------------------------------------------
 // SOP 0x40 (VU §5.8)
 // ---------------------------------------------------------------------------
 // The value an SOP writes: to s[sd] for every sub except STS, to the SPM word for STS. sa, sb are

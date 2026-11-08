@@ -17,6 +17,7 @@
 #pragma GCC diagnostic pop
 
 #include "tsr/plan.hpp"
+#include "tsr-weights.h"
 
 namespace opl = tsr::opl;
 
@@ -762,10 +763,272 @@ static bool tsr_lower_unary(const tsr_build_env & env, bool probe, const ggml_te
     return true;
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// MoE (SW-60 to SW-65; docs/spec.md §13): MUL_MAT_ID, the routing group and the scale group (tsr-build.h)
+// ---------------------------------------------------------------------------------------------
+
+static bool tsr_param_inf(const ggml_tensor * t, int i) {
+    const float f = tsr_param_f32(t, i);
+    return std::isinf(f) && f > 0.0f;
+}
+
+// SOFT_MAX of the routing group: probabilities over the experts, plain (no mask, scale 1, no bias or sinks).
+static bool tsr_moe_softmax_ok(const tsr_build_env & env, const ggml_tensor * sm, std::string * why) {
+    if (!tsr_kind_in_image(env.kinds, opl::K_MOE_ROUTE)) {
+        return tsr_fail(why, "kind MOE_ROUTE is not in the booted image (%s)", env.image.c_str());
+    }
+    const ggml_tensor * x = sm->src[0];
+    if (x == nullptr || sm->src[1] != nullptr || sm->src[2] != nullptr || sm->type != GGML_TYPE_F32 || x->type != GGML_TYPE_F32 ||
+        tsr_param_f32(sm, 0) != 1.0f || tsr_param_f32(sm, 1) != 0.0f) {
+        return tsr_fail(why, "SOFT_MAX is not the plain softmax of a router (a mask, scale, bias or sinks)");
+    }
+    if (x->ne[2] != 1 || x->ne[3] != 1 || x->nb[0] != 4 || (uint64_t) x->nb[1] != 4 * (uint64_t) x->ne[0] ||
+        x->ne[0] < 16 || x->ne[0] > opl::moer::MAX_EXPERTS || (x->ne[0] * 4) % TSR_LINE_BYTES != 0 || x->ne[1] < 1) {
+        return tsr_fail(why, "SOFT_MAX: the router logits are not F32 [n_expert, T] rows with n_expert a multiple of 16, at most %u",
+                        opl::moer::MAX_EXPERTS);
+    }
+    return true;
+}
+
+static bool tsr_is_moe_probs(const tsr_build_env & env, const ggml_tensor * t) {
+    return t != nullptr && t->op == GGML_OP_SOFT_MAX && tsr_moe_softmax_ok(env, t, nullptr);
+}
+// The GET_ROWS of the routing group: probs [1, n, T] reshaped, rows picked by the top-k view.
+static bool tsr_is_moe_weights(const tsr_build_env & env, const ggml_tensor * g) {
+    return g != nullptr && g->op == GGML_OP_GET_ROWS && g->src[0] != nullptr && g->src[0]->op == GGML_OP_RESHAPE &&
+           tsr_is_moe_probs(env, g->src[0]->src[0]) && g->src[1] != nullptr && g->src[1]->type == GGML_TYPE_I32 &&
+           g->ne[0] == 1 && g->ne[1] == g->src[1]->ne[0] && g->ne[2] == g->src[1]->ne[1];
+}
+
+// A node of either MoE chain that the device accepts if the whole group is present (the fusion pass takes it).
+// *handled: the node belongs to a chain (then the answer is final).
+static bool tsr_moe_probe(const tsr_build_env & env, const ggml_tensor * node, bool * handled, std::string * why) {
+    *handled = true;
+    switch (node->op) {
+        case GGML_OP_SOFT_MAX:
+            return tsr_moe_softmax_ok(env, node, why);
+        case GGML_OP_ARGSORT:
+            if (!tsr_is_moe_probs(env, node->src[0]) || tsr_param_i32(node, 0) != GGML_SORT_ORDER_DESC || node->type != GGML_TYPE_I32) {
+                *handled = tsr_is_moe_probs(env, node->src[0]);
+                return tsr_fail(why, "ARGSORT is not the descending sort of the router probabilities");
+            }
+            return true;
+        case GGML_OP_GET_ROWS:
+            if (tsr_is_moe_weights(env, node)) {
+                return true;
+            }
+            if (node->src[0] != nullptr && node->src[0]->op == GGML_OP_REPEAT) {      // the scale chain
+                const ggml_tensor * rp = node->src[0];
+                const ggml_tensor * ids = node->src[1];
+                bool ok = tsr_kind_in_image(env.kinds, opl::K_MUL_MAT_ID) && tsr_kind_in_image(env.kinds, opl::K_CPY) &&
+                          tsr_kind_in_image(env.kinds, opl::K_MUL) && ids != nullptr && ids->type == GGML_TYPE_I32 &&
+                          ids->ne[2] == 1 && node->type == GGML_TYPE_F32 && node->ne[0] == 1 && node->ne[1] == ids->ne[0] &&
+                          node->ne[2] == ids->ne[1] && rp->ne[0] == 1 && rp->ne[2] == ids->ne[1];
+                return ok ? true : tsr_fail(why, "GET_ROWS of a REPEAT is not the per-expert scale gather of a MoE layer (or its kinds are off)");
+            }
+            *handled = false;
+            return false;
+        case GGML_OP_SUM_ROWS:
+        case GGML_OP_CLAMP:
+        case GGML_OP_DIV: {
+            const ggml_tensor * a = node->src[0];
+            // SUM_ROWS(RESHAPE(weights)), CLAMP(SUM_ROWS), DIV(RESHAPE(weights), CLAMP)
+            const ggml_tensor * g = a;
+            if (node->op == GGML_OP_CLAMP) {
+                g = a != nullptr && a->op == GGML_OP_SUM_ROWS ? a->src[0] : nullptr;
+            }
+            const bool ok = g != nullptr && g->op == GGML_OP_RESHAPE && tsr_is_moe_weights(env, g->src[0]);
+            if (!ok) {
+                *handled = false;
+                return false;
+            }
+            if (node->op == GGML_OP_CLAMP && (!tsr_param_inf(node, 1) || !(tsr_param_f32(node, 0) > 0.0f))) {
+                return tsr_fail(why, "CLAMP of the MoE weight sum has an unexpected range");
+            }
+            if (node->op == GGML_OP_DIV && !(node->src[1] != nullptr && node->src[1]->op == GGML_OP_CLAMP)) {
+                *handled = false;
+                return false;
+            }
+            return true;
+        }
+        case GGML_OP_REPEAT: {
+            const ggml_tensor * t = node->src[0];
+            const bool ok = t != nullptr && t->op == GGML_OP_RESHAPE && t->src[0] != nullptr && t->src[0]->op == GGML_OP_NONE &&
+                            t->src[0]->type == GGML_TYPE_F32 && t->src[0]->ne[1] == 1 && t->ne[0] == 1 &&
+                            t->ne[1] == t->src[0]->ne[0] && node->type == GGML_TYPE_F32 && node->ne[0] == 1 &&
+                            node->ne[1] == t->ne[1] && node->ne[3] == 1 &&
+                            tsr_kind_in_image(env.kinds, opl::K_MUL_MAT_ID) && tsr_kind_in_image(env.kinds, opl::K_CPY) &&
+                            tsr_kind_in_image(env.kinds, opl::K_MUL);
+            if (!ok) {
+                *handled = false;
+                return false;
+            }
+            return true;
+        }
+        default:
+            *handled = false;
+            return false;
+    }
+}
+
+bool tsr_lower_mul_mat_id(const tsr_build_env & env, bool probe, const ggml_tensor * node, const tsr_moe_scale * sc,
+                          const tsr_moe_w * w, tsr_rec * r, std::string * why) {
+    namespace m = opl::mmid;
+    *r = tsr_rec();
+    const ggml_tensor * W = node->src[0];
+    const ggml_tensor * X = node->src[1];
+    const ggml_tensor * IDS = node->src[2];
+    if (W == nullptr || X == nullptr || IDS == nullptr) {
+        return tsr_fail(why, "MUL_MAT_ID: a missing source");
+    }
+    if (!tsr_kind_in_image(env.kinds, opl::K_MUL_MAT_ID)) {
+        return tsr_fail(why, "kind MUL_MAT_ID is not in the booted image (%s)", env.image.c_str());
+    }
+    if (node->type != GGML_TYPE_F32 || X->type != GGML_TYPE_F32 || IDS->type != GGML_TYPE_I32 || !tsr_type_loadable(W->type)) {
+        return tsr_fail(why, "MUL_MAT_ID: the weights are %s, x %s, ids %s (a loadable weight, F32 x, I32 ids)", ggml_type_name(W->type),
+                        ggml_type_name(X->type), ggml_type_name(IDS->type));
+    }
+    const int64_t K = W->ne[0], N = W->ne[1], NE = W->ne[2], NU = IDS->ne[0], T = IDS->ne[1];
+    if (W->ne[3] != 1 || IDS->ne[2] != 1 || IDS->ne[3] != 1 || X->ne[0] != K || (X->ne[1] != 1 && X->ne[1] != NU) || X->ne[2] != T ||
+        X->ne[3] != 1 || node->ne[0] != N || node->ne[1] != NU || node->ne[2] != T || node->ne[3] != 1) {
+        return tsr_fail(why, "MUL_MAT_ID: shapes (weights %lld x %lld x %lld, x %lld x %lld x %lld, ids %lld x %lld) do not fit",
+                        (long long) K, (long long) N, (long long) NE, (long long) X->ne[0], (long long) X->ne[1], (long long) X->ne[2],
+                        (long long) NU, (long long) T);
+    }
+    if (NE < 1 || NE > opl::mmid::MAX_EXPERTS || NU < 1 || NU > opl::mmid::MAX_USED || T < 1 || T > INT32_MAX || N < 1 ||
+        N > INT32_MAX || K < 1 || K > INT32_MAX) {
+        return tsr_fail(why, "MUL_MAT_ID: %lld experts / %lld used / %lld tokens are beyond the kind's limits", (long long) NE,
+                        (long long) NU, (long long) T);
+    }
+    if (probe && env.moe_w_probe && !env.moe_w_probe(W)) {
+        return tsr_fail(why, "MUL_MAT_ID: the weights '%s' are not in a buffer the device can read", W->name);
+    }
+    // x rows: contiguous, whole lines; a token's slots (ne11 = n_used) a multiple of 64 bytes apart
+    if (X->nb[0] != 4 || (K * 4) % TSR_LINE_BYTES != 0 || (X->ne[1] > 1 && (X->nb[1] % TSR_LINE_BYTES != 0 || (uint64_t) X->nb[1] < 4 * (uint64_t) K)) ||
+        (T > 1 && X->nb[2] % TSR_LINE_BYTES != 0)) {
+        return tsr_fail(why, "MUL_MAT_ID: x '%s' has rows that are not contiguous whole lines (K %% 16 = %lld, strides %zu / %zu)", X->name,
+                        (long long) (K % 16), X->nb[1], X->nb[2]);
+    }
+    const bool shared = X->ne[1] == 1;
+    const uint32_t xl = (uint32_t) (K / 16);
+    if (T > 1 && (uint64_t) X->nb[2] < (shared ? 4 * (uint64_t) K : (uint64_t) NU * X->nb[1])) {
+        return tsr_fail(why, "MUL_MAT_ID: x '%s' tokens overlap", X->name);
+    }
+    // ids: I32, a token's ids contiguous, rows a multiple of 4 bytes apart
+    if (IDS->nb[0] != 4 || IDS->nb[1] % 4 != 0 || (T > 1 && (uint64_t) IDS->nb[1] < 4 * (uint64_t) NU)) {
+        return tsr_fail(why, "MUL_MAT_ID: ids '%s' are not rows of %lld contiguous I32", IDS->name, (long long) NU);
+    }
+    // dst: the node's own tensor, contiguous rows of whole lines
+    if (node->view_src != nullptr || node->nb[0] != 4 || (uint64_t) node->nb[1] != 4 * (uint64_t) N ||
+        (uint64_t) node->nb[2] != 4 * (uint64_t) N * (uint64_t) NU || (N * 4) % TSR_LINE_BYTES != 0) {
+        return tsr_fail(why, "MUL_MAT_ID: the result '%s' is not contiguous rows of whole lines (N %% 16 = %lld)", node->name,
+                        (long long) (N % 16));
+    }
+    uint32_t xh = 0, ih = 0, dh = 0, sh = opl::HANDLE_NONE;
+    if (!tsr_addr(env, probe, X, "x", &xh, why) || !tsr_addr(env, probe, IDS, "ids", &ih, why) ||
+        !tsr_addr(env, probe, node, "result", &dh, why)) {
+        return false;
+    }
+    if (sc != nullptr) {
+        const ggml_tensor * tab = sc->table;
+        if (tab == nullptr || tab->type != GGML_TYPE_F32 || ggml_nelements(tab) != NE || !ggml_is_contiguous(tab) || !tsr_addr(env, probe, tab, "scale table", &sh, why)) {
+            return tsr_fail(why, "MUL_MAT_ID: the scale table is not a contiguous F32 vector of %lld experts", (long long) NE);
+        }
+    }
+    r->kind = opl::K_MUL_MAT_ID;
+    r->n_args = m::NARGS;
+    const uint32_t yl = (uint32_t) (N / 16);
+    const opl::mul_mat_id_args a{ dh, yl, xh, shared ? 0u : (uint32_t) (X->nb[1] / TSR_LINE_BYTES),
+                                  T > 1 ? (uint32_t) (X->nb[2] / TSR_LINE_BYTES) : (shared ? xl : (uint32_t) NU * (uint32_t) (X->nb[1] / TSR_LINE_BYTES)),
+                                  ih, (uint32_t) IDS->nb[1], w != nullptr ? w->w_off : 0u, w != nullptr ? w->exp_stride : 1u,
+                                  w != nullptr ? w->fmt : tsr_dev_fmt_for_type(W->type), (uint32_t) N, (uint32_t) K, (uint32_t) T,
+                                  (uint32_t) NU, (uint32_t) NE, sh, 0u };
+    opl::put_args(a, r->args);
+    return tsr_plan_ok(env, *r, why);
+}
+
+bool tsr_lower_moe_scale_copy(const tsr_build_env & env, const ggml_tensor * mmid, const ggml_tensor * mul, tsr_rec * r,
+                              std::string * why) {
+    *r = tsr_rec();
+    tsr_rows S, D;
+    if (!tsr_out_rows(env, false, mmid, "MUL_MAT_ID result", &S, why) || !tsr_out_rows(env, false, mul, "scaled result", &D, why)) {
+        return false;
+    }
+    if (S.h == D.h) {
+        r->kind = opl::K_NOP;                         // the allocator put the MUL's result where the MUL_MAT_ID wrote: nothing to move
+        return true;
+    }
+    if (!ggml_are_same_shape(mmid, mul) || S.rows != D.rows || S.elems != D.elems || (D.rows > 1 && (S.stride != D.stride))) {
+        return tsr_fail(why, "MUL_MAT_ID scale copy: the tensors differ in shape");
+    }
+    r->kind = opl::K_CPY;
+    r->n_args = opl::cpy::NARGS;
+    const opl::cpy_args a{ D.h, D.stride, S.h, S.stride, tsr_l16(D.elems), (uint32_t) D.rows };
+    opl::put_args(a, r->args);
+    return tsr_plan_ok(env, *r, why);
+}
+
+bool tsr_lower_moe_route(const tsr_build_env & env, const ggml_cgraph * cg, const tsr_moe_route & g, tsr_rec * r, std::string * why) {
+    namespace rt = opl::moer;
+    *r = tsr_rec();
+    const ggml_tensor * sm = cg->nodes[g.softmax], * as = cg->nodes[g.argsort], * dv = cg->nodes[g.div], * cl = cg->nodes[g.clamp];
+    if (!tsr_moe_softmax_ok(env, sm, why)) {
+        return false;
+    }
+    const ggml_tensor * x = sm->src[0];
+    const int64_t n = sm->ne[0], T = sm->ne[1], k = g.topk->ne[0];
+    if (k < 1 || k > rt::MAX_USED || k > n || g.topk->ne[1] != T || dv->ne[0] != k || dv->ne[1] != T || dv->type != GGML_TYPE_F32 ||
+        !ggml_is_contiguous(dv) || as->nb[0] != 4 || as->nb[1] % TSR_LINE_BYTES != 0 || as->ne[0] != n || as->ne[1] != T ||
+        (double) tsr_param_f32(cl, 0) * (double) n > (double) k) {
+        return tsr_fail(why, "MOE_ROUTE: the routing tensors do not fit (n %lld, k %lld, T %lld, clamp %g)", (long long) n, (long long) k,
+                        (long long) T, (double) tsr_param_f32(cl, 0));
+    }
+    tsr_rows L;
+    uint32_t ih = 0, wh = 0;
+    if (!tsr_f32_rows(env, false, x, "logits", &L, why) || !tsr_addr(env, false, as, "ids", &ih, why) ||
+        !tsr_addr(env, false, dv, "weights", &wh, why)) {
+        return false;
+    }
+    if (T > rt::TILE_TOKENS) {
+        // more than one tile: tile t + 1's logits must not lie where an earlier tile stores its ids or weights, except the
+        // ids rows that replace their own logits row (the allocator reuses the dead logits for the sort result)
+        const uint64_t lb = (uint64_t) (uintptr_t) x->data, le = lb + (uint64_t) x->nb[1] * (uint64_t) T;
+        const uint64_t ab = (uint64_t) (uintptr_t) as->data, ae = ab + (uint64_t) as->nb[1] * (uint64_t) T;
+        const uint64_t wb = (uint64_t) (uintptr_t) dv->data, we = wb + ggml_nbytes(dv);
+        const bool ids_ok = ae <= lb || ab >= le || (ab == lb && as->nb[1] == x->nb[1]);
+        if (!ids_ok || !(we <= lb || wb >= le)) {
+            return tsr_fail(why, "MOE_ROUTE: with %lld tokens (several tiles) its outputs overlap the logits of a later tile", (long long) T);
+        }
+    }
+    r->kind = opl::K_MOE_ROUTE;
+    r->n_args = rt::NARGS;
+    const opl::moe_route_args a{ L.h, T > 1 ? L.stride : tsr_l16((uint64_t) n), ih, (uint32_t) (as->nb[1] / TSR_LINE_BYTES), wh,
+                                 (uint32_t) n, (uint32_t) k, (uint32_t) T, 0u };
+    opl::put_args(a, r->args);
+    return tsr_plan_ok(env, *r, why);
+}
+
 bool tsr_lower_m7(const tsr_build_env & env, bool probe, const ggml_tensor * node, const ggml_tensor * fused, tsr_rec * out,
                   std::string * why) {
     *out = tsr_rec();
     bool ok = false;
+    if (node->op == GGML_OP_MUL_MAT_ID) {
+        if (probe) {
+            return tsr_lower_mul_mat_id(env, true, node, nullptr, nullptr, out, why);
+        }
+    } else {                                      // the MoE chains: probe = supports_op's answer; build: a member the fusion did not take
+        bool handled = false;
+        std::string ignore;
+        const bool r = tsr_moe_probe(env, node, &handled, probe ? why : &ignore);
+        if (handled && probe) {
+            return r;
+        }
+        if (handled) {
+            return tsr_fail(why, "op %s belongs to a MoE routing or scale chain that did not fuse into one record (the graph differs "
+                                 "from llama.cpp's build_moe_ffn: docs/design/06-software-verification.md SW-64)", ggml_op_desc(node));
+        }
+    }
     switch (node->op) {
         case GGML_OP_ADD:
         case GGML_OP_MUL:            ok = tsr_lower_ew(env, probe, node, out, why); break;
@@ -779,6 +1042,16 @@ bool tsr_lower_m7(const tsr_build_env & env, bool probe, const ggml_tensor * nod
         case GGML_OP_CPY:
         case GGML_OP_CONT:           ok = tsr_lower_cpy(env, probe, node, out, why); break;
         case GGML_OP_UNARY:          ok = tsr_lower_unary(env, probe, node, out, why); break;
+        case GGML_OP_MUL_MAT_ID:
+            return tsr_fail(why, "MUL_MAT_ID is lowered with its weights by the backend (tsr_lower_mul_mat_id)");
+        case GGML_OP_SOFT_MAX:
+        case GGML_OP_ARGSORT:
+        case GGML_OP_SUM_ROWS:
+        case GGML_OP_CLAMP:
+        case GGML_OP_DIV:
+        case GGML_OP_REPEAT:
+            return tsr_fail(why, "op %s belongs to a MoE routing or scale chain that did not fuse into one record (the graph differs "
+                                 "from llama.cpp's build_moe_ffn: docs/design/06-software-verification.md SW-64)", ggml_op_desc(node));
         default:
             return tsr_fail(why, "op %s has no device kind", ggml_op_desc(node));
     }
@@ -795,7 +1068,7 @@ bool tsr_build_supports(const tsr_build_env & env, const ggml_tensor * op, std::
     if (op->op == GGML_OP_DUP) {
         return tsr_fail(why, "DUP stays on the CPU (SW §8 R1)");
     }
-    if (env.pl.caps == 0 || env.pl.num_ch == 0) {
+    if ((env.pl.caps == 0 && op->op != GGML_OP_MUL_MAT_ID) || env.pl.num_ch == 0) {
         return tsr_fail(why, "the device configuration has no VU / AT parameters");
     }
     tsr_rec r;
@@ -953,6 +1226,111 @@ static int tsr_fusion_user(const ggml_cgraph * cg, int i) {
     return -1;
 }
 
+
+// The first node after i of op `op` with src[s] == t (a node of the graph), or -1.
+static int tsr_find_after(const ggml_cgraph * cg, int i, enum ggml_op op, int s, const ggml_tensor * t) {
+    for (int j = i + 1; j < cg->n_nodes; ++j) {
+        if (cg->nodes[j]->op == op && cg->nodes[j]->src[s] == t) return j;
+    }
+    return -1;
+}
+static int tsr_index_of(const ggml_cgraph * cg, const ggml_tensor * t) {
+    for (int j = 0; j < cg->n_nodes; ++j) {
+        if (cg->nodes[j] == t) return j;
+    }
+    return -1;
+}
+
+// Pass 3 for the MoE chains (tsr-build.h): the routing group of every SOFT_MAX and the scale group of every MUL_MAT_ID that
+// matches llama.cpp's build_moe_ffn node for node, with the use counts that make the absorbed nodes unobserved.
+static void tsr_moe_groups(const tsr_build_env & env, const ggml_cgraph * cg, tsr_fusion * f) {
+    const int n = cg->n_nodes;
+    for (int i = 0; i < n; ++i) {
+        const ggml_tensor * sm = cg->nodes[i];
+        if ((sm->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) continue;
+        if (sm->op == GGML_OP_SOFT_MAX && tsr_moe_softmax_ok(env, sm, nullptr) && ggml_node_has_n_uses(cg, i, 2)) {
+            tsr_moe_route g;
+            g.softmax = i;
+            g.argsort = tsr_find_after(cg, i, GGML_OP_ARGSORT, 0, sm);
+            const ggml_tensor * as = g.argsort >= 0 ? cg->nodes[g.argsort] : nullptr;
+            if (as == nullptr || tsr_param_i32(as, 0) != GGML_SORT_ORDER_DESC || !ggml_node_has_n_uses(cg, g.argsort, 1)) continue;
+            // the view of the first k sorted: the top-k ids
+            int vi = -1;
+            for (int j = g.argsort + 1; j < n && vi < 0; ++j) {
+                if (cg->nodes[j]->op == GGML_OP_VIEW && cg->nodes[j]->view_src == as) vi = j;
+            }
+            if (vi < 0) continue;
+            g.topk = cg->nodes[vi];
+            // GET_ROWS(RESHAPE(probs), topk)
+            int ri = -1;
+            for (int j = i + 1; j < n && ri < 0; ++j) {
+                if (cg->nodes[j]->op == GGML_OP_RESHAPE && cg->nodes[j]->src[0] == sm) ri = j;
+            }
+            if (ri < 0) continue;
+            g.get_rows = tsr_find_after(cg, ri, GGML_OP_GET_ROWS, 0, cg->nodes[ri]);
+            const ggml_tensor * gr = g.get_rows >= 0 ? cg->nodes[g.get_rows] : nullptr;
+            if (gr == nullptr || gr->src[1] != g.topk || !ggml_node_has_n_uses(cg, g.get_rows, 1)) continue;
+            // RESHAPE(weights) -> SUM_ROWS, DIV
+            int wi = -1;
+            for (int j = g.get_rows + 1; j < n && wi < 0; ++j) {
+                if (cg->nodes[j]->op == GGML_OP_RESHAPE && cg->nodes[j]->src[0] == gr) wi = j;
+            }
+            if (wi < 0 || ggml_node_get_use_count(cg, wi) != 2) continue;
+            g.sum_rows = tsr_find_after(cg, wi, GGML_OP_SUM_ROWS, 0, cg->nodes[wi]);
+            if (g.sum_rows < 0 || !ggml_node_has_n_uses(cg, g.sum_rows, 1)) continue;
+            g.clamp = tsr_find_after(cg, g.sum_rows, GGML_OP_CLAMP, 0, cg->nodes[g.sum_rows]);
+            if (g.clamp < 0 || !ggml_node_has_n_uses(cg, g.clamp, 1) || !tsr_param_inf(cg->nodes[g.clamp], 1)) continue;
+            g.div = tsr_find_after(cg, g.clamp, GGML_OP_DIV, 1, cg->nodes[g.clamp]);
+            if (g.div < 0 || cg->nodes[g.div]->src[0] != cg->nodes[wi] || !ggml_node_has_n_uses(cg, g.div, 1)) continue;
+            bool flagged = true;
+            for (int m : { g.argsort, g.get_rows, g.sum_rows, g.clamp, g.div }) {
+                flagged = flagged && (cg->nodes[m]->flags & GGML_TENSOR_FLAG_COMPUTE) && f->into[m] < 0;
+            }
+            if (!flagged) continue;
+            f->route_of[i] = (int32_t) f->routes.size();
+            f->routes.push_back(g);
+            for (int m : { g.argsort, g.get_rows, g.sum_rows, g.clamp, g.div }) f->into[m] = i;
+            f->n_pairs++;
+        } else if (sm->op == GGML_OP_MUL_MAT_ID && ggml_node_has_n_uses(cg, i, 1) && tsr_kind_in_image(env.kinds, opl::K_CPY) &&
+                   tsr_kind_in_image(env.kinds, opl::K_MUL_MAT_ID)) {
+            // MUL(mmid, GET_ROWS(REPEAT(RESHAPE(table)), ids))
+            tsr_moe_scale g;
+            g.mmid = i;
+            g.mul = -1;
+            for (int j = i + 1; j < n && g.mul < 0; ++j) {
+                const ggml_tensor * u = cg->nodes[j];
+                if (u->op == GGML_OP_MUL && u->src[0] == sm && u->src[1] != nullptr && u->src[1]->op == GGML_OP_GET_ROWS) g.mul = j;
+            }
+            if (g.mul < 0) continue;
+            const ggml_tensor * gr = cg->nodes[g.mul]->src[1];
+            g.get_rows = tsr_index_of(cg, gr);
+            const ggml_tensor * rp = gr->src[0];
+            g.repeat = rp != nullptr && rp->op == GGML_OP_REPEAT ? tsr_index_of(cg, rp) : -1;
+            if (g.get_rows < 0 || g.repeat < 0 || gr->src[1] != sm->src[2] || !ggml_node_has_n_uses(cg, g.get_rows, 1) ||
+                !ggml_node_has_n_uses(cg, g.repeat, 1)) continue;
+            const ggml_tensor * rs = rp->src[0];
+            // The table is the RESHAPE of the leaf, or, when the scheduler copied the view's result to this backend (the
+            // table of Gemma 4 lives in host memory: no kind of the image takes a MUL_MAT_ID weight that is not an expert
+            // tensor), the copy: a leaf of its own with the same elements.
+            if (rs == nullptr) continue;
+            if (rs->op == GGML_OP_RESHAPE && rs->src[0] != nullptr && rs->src[0]->op == GGML_OP_NONE) {
+                g.table = rs->src[0];
+            } else if (rs->op == GGML_OP_NONE && rs->view_src == nullptr) {
+                g.table = rs;
+            } else {
+                continue;
+            }
+            bool flagged = true;
+            for (int m : { g.repeat, g.get_rows, g.mul }) flagged = flagged && (cg->nodes[m]->flags & GGML_TENSOR_FLAG_COMPUTE) && f->into[m] < 0;
+            if (!flagged || !ggml_are_same_shape(cg->nodes[g.mul], sm)) continue;
+            f->scale_of[i] = (int32_t) f->scales.size();
+            f->scales.push_back(g);
+            for (int m : { g.repeat, g.get_rows, g.mul }) f->into[m] = i;
+            f->n_pairs++;
+        }
+    }
+}
+
 tsr_fusion tsr_build_fusion(const tsr_build_env & env, const ggml_cgraph * cg) {
     tsr_fusion f;
     const int n = cg->n_nodes;
@@ -960,6 +1338,9 @@ tsr_fusion tsr_build_fusion(const tsr_build_env & env, const ggml_cgraph * cg) {
     f.into.assign(n, -1);
     f.softcap_mid.assign(n, -1);
     f.softcap_tail.assign(n, -1);
+    f.route_of.assign(n, -1);
+    f.scale_of.assign(n, -1);
+    tsr_moe_groups(env, cg, &f);
     for (int i = 0; i < n; ++i) {
         const ggml_tensor * node = cg->nodes[i];
         if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0 || f.into[i] >= 0 ||

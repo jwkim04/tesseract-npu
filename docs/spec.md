@@ -1049,7 +1049,7 @@ for t in 0 .. T-1:
         p = (flags.ACC) ? p + y : y
 ```
 
-- `ACC` is used to fuse the residual addition and the summation of MoE expert outputs into the MVM.
+- `ACC` fuses a residual addition into the MVM. The as-built MoE kinds do not use it for the expert sum: they add the weighted expert outputs in slot order after the down MVM, as ggml does (§13).
 - `dst_stride` = 0 is interpreted as ⌈4N/64⌉ lines. If the dst and x regions overlap, the result is
   undefined.
 - An expert MVM is expressed by putting A3 = tensor W_OFF + expert number × EXP_STRIDE into the
@@ -1259,8 +1259,31 @@ are estimates from the tensor list of that one GGUF.
 
 | Stage | Method | Needs | Milestone |
 | --- | --- | --- | --- |
-| Device | The device does the router, softmax, TOPK and the expert MVMs by itself | Control core (reads the TOPK result from the SPM window, computes the expert addresses, issues asynchronously), TOPK RTL (`CAPS` bit 3) | M8 |
-| Prefill | Group the tokens per expert and run MVMs with T > 1 | Host or device sorting; not decided | After M8 |
+| Device | The device does the router, softmax, top-k and the expert MVMs by itself, one launch per token | Control core (reads the selection from the SPM window, computes the expert addresses, issues asynchronously); the top-k is integer compares on the RISC-V, the TOPK RTL (`CAPS` bit 3) is not needed | Implemented on the simulator (firmware kinds MOE_ROUTE and MUL_MAT_ID, SW §7.9); card run pending |
+| Host selection | The host issues the matrix products (M6 settings); llama.cpp's own CPU ops select the experts | `TSR_KINDS=m6,+MUL_MAT_ID` | Implemented on the simulator |
+| Prefill | Group the tokens per expert and run MVMs with T > 1 | Sorting of the (token, slot) pairs by expert per ids chunk; designed, not built (SW-66): prefill runs one MVM of T = 1 per (token, slot) | After M8 |
+
+**As built (simulator, November 2026; SW §7.9, SW-60 to SW-66).** The software stack runs Gemma 4 26B-A4B
+on the simulator in both modes. The expert tensors (`ffn_gate_up_exps`, `ffn_down_exps`, 3D) are placed with
+the `EXP_STRIDE` layout of section 4: expert e of a tensor at `W_OFF + e × EXP_STRIDE` on every channel, each
+expert split by rows over the channels. The router (F32 in the GGUF) is an ordinary 2D weight converted to Q8_0
+at load. Two firmware kinds do the rest: MOE_ROUTE (0x1E) computes the softmax on the VU, selects the k largest
+probabilities by integer compares on the RISC-V (the order of the VU TOPK: larger value first, equal values by
+the smaller index, NaN first) and renormalises their weights by the tree sum of the VU; MUL_MAT_ID (0x1F) runs a
+MUL_MAT of T = 1 per (token, slot) against the weights of the expert whose number it reads from DRAM, with an
+optional per-expert output scale. The backend fuses llama.cpp's ten router nodes (softmax, argsort, get_rows,
+sum_rows, clamp, div and their views) into one MOE_ROUTE record, and the scale nodes (reshape, repeat, get_rows,
+mul) into the MUL_MAT_ID record of the down projection. The combine follows ggml's order, not the sketch below:
+the expert output is multiplied by its scale and then by its router weight after the down MVM, and the eight
+outputs are added in slot order, so the model-level KL compares like with like; ACC and the weight-before-down
+form stay options for later.
+
+Measured on the simulator with the Q4_K_M GGUF of 17.0 GB (`docs/klcheck.md`, `docs/performance.md`): `klcheck all`, 8
+prompts of 64 tokens, three floors, M6 settings with the matrix products on the device: mean KL ratio 1.294, top-1 92.77 %;
+M7 settings, one launch per token: ratio 0.742, top-1 94.53 %. A decode token reads 13.08 M beats per channel
+(3.35 GB over the four channels) and takes 14.34 M device cycles in M6 and 15.14 M in M7 (91 % and 86 % of the cycles
+read a beat): 13.2 tok/s at the 200 MHz of the current card image, 18.2 tok/s at 276.3 MHz, device time only. The experts
+are 4.14 M of the beats; the output head (3.07 M) and the dense branch and attention weights (5.87 M) are the rest.
 
 Milestone M5 was merged into M8 (D14). The router and the expert tensors are placed as sections 4
 and 5 say.
@@ -1269,7 +1292,8 @@ and 5 say.
 gate-up matrix 2816 → 1408 in Q4_K and a down matrix 704 → 2816 in Q8_0, the router weight
 multiplied into h beforehand and summed by the ACC of the down MVM). The example is illustrative: the
 builder names are simplified, and the as-built builders take field structs
-(`sw/ctrl/include/tsr/kernel.hpp`, `vu.hpp`); the MoE kernel is not written yet (M8).
+(`sw/ctrl/include/tsr/kernel.hpp`, `vu.hpp`). The as-built kernels are `sw/ctrl/kernels/k_moe.cpp`
+(see "As built" above); this sketch, with the TOPK op, is the alternative for an image that has the TOPK RTL.
 
 ```cpp
 join(issue(TOPK(sel, probs, 128, 8)));                    // sel = (idx, val) × 8. Join before reading the numbers
@@ -1827,7 +1851,7 @@ the goal of section 1, M5 was merged into M8, and M7 to M9 are the host-independ
 | M5 · (merged into M8) | Merged into M8 (D14) | – | – |
 | M6 · Control core hardware | RISC-V control core (Ibex) with asynchronous issue queues; vector unit; attention and KV on the device (q8_0 KV, flash attention); second SPM read path; debug including GDB over PCIe | Qwen2.5-0.5B Q8_0 logits bit-identical to the simulator and the 32B Q4_K_M KL criterion met (MVMs issued by RISC-V kernels; attention on the CPU: `offload_kqv` = false); GDB smoke on the card | In development. On the simulator: simulator and references, firmware SDK with the M6 kernels, transport, M6 backend and tools (W0 to W3a). Planned: RTL (W4), integration (W5), card (W6) |
 | M7 · RISC-V kernel library, graph execution | Kernels for RMSNorm, RoPE, SwiGLU, GELU, residual, flash attention, activation quantization; a ggml split is written as an op list and launched once | Qwen2.5 and Gemma 4 (dense) with one launch per token (KV cache and attention on the device), logits bit-identical to the simulator, KL criterion met; DDR utilisation measured | Planned. On the simulator: the kernels, verified per layer (W2b). Planned: the M7 backend and M7 on the simulator (W3b) |
-| M8 · Device MoE, PyTorch on the kernels | MUL_MAT_ID with TOPK and expert placement; stage B decode step; PyTorch on the same kernels; device embedding lookup (DQROW RTL), TOPK RTL | Defined at the start of M8 (working target: Gemma 4 26B-A4B on the card) | Planned |
+| M8 · Device MoE, PyTorch on the kernels | MUL_MAT_ID and expert placement (done on the simulator, §13: the selection is software on the control core, TOPK RTL optional); stage B decode step; PyTorch on the same kernels; device embedding lookup (DQROW RTL) | Defined at the start of M8 (working target: Gemma 4 26B-A4B on the card) | MoE on the simulator; the rest planned |
 | M9 · Resident decode loop (optional) | Stage C: a decode loop resident in the control core, token ring buffer, device sampling, `sw/runner`; VMASK | The host only polls the ring buffer | Planned |
 
 The host only launches kernels that were loaded onto the RISC-V control core (decision,

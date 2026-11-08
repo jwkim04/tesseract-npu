@@ -16,6 +16,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
   Basis ABI 1 retain their existing contracts.
 - Added the optional MUL_MAT_SOFTCAP kind at numerical revision 1. The two
   scale coefficients are the original FP32 graph constants.
+- Added the MoE kinds MOE_ROUTE (0x1E) and MUL_MAT_ID (0x1F) at numerical revision 1. MOE_ROUTE computes
+  the softmax over the router logits, selects the k largest probabilities (value descending, ties by the
+  smaller index, NaN first, by integer compares on the RISC-V) and renormalises their weights.
+  MUL_MAT_ID runs a MUL_MAT per (token, slot) against the expert chosen by an id read from DRAM, with an
+  optional per-expert output scale. The image grows by about 5.4 KiB of ITCM. No RTL change.
 
 ## Basis 0.1.0 (2026-10-31)
 

@@ -845,7 +845,7 @@ Four public numbers, in CUDA's terms: the **Tesseract Core capability** (compute
 - **Kind table.** `TSR_KIND(NAME)` beside each handler (NOP and JOIN in `graph.cpp`) emits
   `{kind, rev, 0}` into `.tsr_kinds`; the signature is FNV-1a 32 over the 64 revision bytes (0 for an
   absent kind), folded to 16 bits (`opl::kinds_sig`: no kinds 0xB51B, NOP + JOIN + MUL_MAT 0x512E,
-  the 14 kinds 0xFA6F). The runtime computes it at R1; the host computes it from the ELF.
+  the 14 kinds 0xFA6F, the 18 kinds with the MoE kinds 0xC341). The runtime computes it at R1; the host computes it from the ELF.
 
 Who refuses what:
 
@@ -877,8 +877,8 @@ ATT), Tesseract Basis 0.1.0 (ABI 1, 14 kinds)".
 | `replay` | M6 | a0 `push.bin` handle, a1 count, a2 flags (bit0 SERIAL: every op record depends on the previous op record instead of its recorded deps; bit1 BUF: a3 / a4 valid), a3 SPM line of the chunk buffers, a4 records per chunk (a multiple of 4, ≤ 1,364) | tile-only trace replay, SPM dumps (§7.7) |
 
 These are EX's base kernels (EX §4.6). PING is part of the runtime (descriptor TYPE 0x02), not a
-kernel. MoE kernels, decode steps, the resident loop and JIT
-entry points come with M8 and M9.
+kernel. The MoE kinds MOE_ROUTE and MUL_MAT_ID are op list kinds of `graph` (§7.9), not kernels. Decode steps, the
+resident loop and JIT entry points come with M8 and M9.
 
 ### 7.2 Op list format (OPL, SW-12)
 
@@ -952,7 +952,9 @@ rows: `rows` = ne1·ne2·ne3, and every row of a tensor starts on a line (ensure
 | 0x1B | UNARY | 1 | 0 dst, 1 dst stride, 2 src, 3 src stride, 4 n, 5 rows, 6 func (0 TANH, 1 GELU16 (llama.cpp GELU), 2 SILU, 3 EXP, 4 GELU exact tanh form) | UNARY ops the VU has |
 | 0x1C | MUL_MAT_SCALE | 1 | MUL_MAT words 0–11, requiring no addend, addend stride 0 and flags 0; word 12 FP32 scale | single-consumer MUL_MAT → SCALE |
 | 0x1D | MUL_MAT_SOFTCAP | 1 | same restricted MUL_MAT words 0–11; words 12/13 exact FP32 pre/post scales | MUL_MAT → SCALE → TANH → SCALE |
-| 0x20–0x3F | reserved for M8 | — | MUL_MAT_ID, TOPK/ARGMAX, SOFT_MAX | |
+| 0x1E | MOE_ROUTE | 1 | 0 logits, 1 logits stride (lines), 2 ids (first line of each row of the ARGSORT tensor), 3 ids stride (lines), 4 weights (packed f32, k per token), 5 n_expert (≤ 512), 6 n_used k (≤ 16), 7 T, 8 flags (0) | SOFT_MAX, ARGSORT + VIEW, GET_ROWS, SUM_ROWS, CLAMP, DIV of `build_moe_ffn` (§7.9, SW-61) |
+| 0x1F | MUL_MAT_ID | 1 | 0 dst, 1 dst stride, 2 x, 3 x slot stride (0: one x row per token), 4 x token stride, 5 ids, 6 ids stride (bytes), 7 W_OFF of expert 0 (beats), 8 EXP_STRIDE (beats per channel), 9 fmt, 10 N, 11 K, 12 T, 13 n_used, 14 n_expert, 15 scale table handle (0xFFFF_FFFF none), 16 flags (0) | MUL_MAT_ID; with the per-expert scale chain REPEAT + GET_ROWS + MUL (§7.9, SW-62) |
+| 0x20–0x3D | free (the MoE kinds took 0x1E and 0x1F, the lowest free numbers; Gated DeltaNet kinds are numbered downward from 0x3F) | — | | |
 
 **Optional local epilogues (November 2026).** The two new kinds above require
 both the booted image's kind entry and `CAPS.MVM_LOCAL_SCALE` (bit 13) or
@@ -984,7 +986,7 @@ by the device approximation. This change does not add PyTorch device attention.
 The real `torch.compile` path, escaping intermediates and old firmware images
 are regression cases, rather than only tests of the runtime API.
 
-MoE remains the next model feature. The shared dense-window metadata preserves
+MoE is built on the simulator (§7.9; the next paragraph is the locality plan's note that preceded it). The shared dense-window metadata preserves
 original global N, per-channel row ownership, expert base/stride and input/output
 token origins. Current dense opcodes use expert zero and identity token order;
 the helper is not an indexed-expert opcode. MoE still needs expert-bank packing,
@@ -1476,8 +1478,116 @@ inputs and args. It compares DONE, every output byte and the per-unit completion
   Of the ITCM, the M7 kinds take ≈ 36 KB (FLASH_ATTN ≈ 12 KB with its planner, the element-wise and row
   kinds ≈ 14 KB, RMS_NORM / ROPE ≈ 9 KB, SET_ROWS_KV ≈ 3 KB): each short kind keeps its fast path as its
   own leaf (a shared body measured +22–29 RISC-V cycles per record) and the general paths are cold
-  (compiled for size). The budget applies to the production image (`tsr-fw.elf`; `fw_elf_image`,
+  (compiled for size). *With the MoE kinds* (SW-61, SW-62): ITCM 78,520 B (was 71,712 B with the 14 kinds of the base: the two kinds take 6.8 KB, the general paths of both are
+  cold), DTCM 49,680 B (+176 B). The budget applies to the production image (`tsr-fw.elf`; `fw_elf_image`,
   `fw_elf_test_image`); test images (production plus test kernels) are stamped against the whole ITCM.
+
+---
+
+### 7.9 MoE kinds (SW-60 to SW-66)
+
+Status: built and checked on the simulator (November 2026); no card run. Source: `sw/ctrl/kernels/k_moe.cpp`,
+planners `tsr/plan_moe.hpp`, references `sw/ctrl/ref/moe_ref.cpp` and `tsr_ref_moe_route` (`sw/sim/tsr_ref_vu.c`),
+backend `tsr-build.{h,cpp}` and `ggml-tesseract.cpp`. Spec side: `docs/spec.md` §4 (expert tensors), §13.
+
+**The graph.** For Gemma 4 26B-A4B (30 layers, 128 experts, 8 used, hidden 2816, expert width 704; a dense GELU
+branch beside the experts) llama.cpp's `build_moe_ffn` emits, per layer and in this node order: the router input
+(RMS_NORM, SCALE by 1/√2816, MUL by `ffn_gate_inp.scale`), the router MUL_MAT (`ffn_gate_inp`, F32 [2816, 128] in the
+GGUF), SOFT_MAX, ARGSORT (descending) with a VIEW of the first k, GET_ROWS of the probabilities by those numbers,
+SUM_ROWS, CLAMP (6.1035e-5, inf), DIV, the expert input norm, MUL_MAT_ID (gate-up: one tensor `ffn_gate_up_exps`, Q4_K
+[2816, 1408, 128], src1 one row per token), two VIEWs and a GLU (GEGLU), MUL_MAT_ID (down: Q5_0 or Q8_0 [704, 2816,
+128], src1 one row per slot), RESHAPE + REPEAT + GET_ROWS of `ffn_down_exps.scale` by the same numbers and a MUL,
+the MUL by the normalised weights, eight VIEWs and seven ADDs; the dense branch, the norms and the residual follow.
+
+**SW-60 Expert tensors (EXP_STRIDE).** A 3D tensor `[K, N, n_expert]` whose name contains `_exps` is placed as a
+weight with `n_expert` matrices of N × K: expert e at `W_OFF + e × EXP_STRIDE` on every channel, with `EXP_STRIDE` =
+`R × ROW_BEATS` beats (spec §4); one expert MVM uses all four channels, as a dense MUL_MAT does. Gemma 4: gate-up
+8,800 beats (25 per row, 352 rows per channel), down 8,448 beats (Q8_0 K = 704: 12 beats, 704 rows per channel), 68.75
+and 66.00 MiB per channel and layer. `tsr_store_expert_rows` / `tsr_load_expert_rows` scatter and gather per expert (the
+row sink of the dense path per expert), the conversion at load is the dense one (Q5_0 to Q8_0, Q6_K to Q8_0), a split
+upload stages the tensor and stores it when complete, an ANY-buffer source (test-backend-ops) converts lazily with
+the expert count in the cache key. Other 3D tensors stay raw. The router is an ordinary 2D weight: the F32 matrix is
+converted to Q8_0 (spec §5).
+
+**SW-61 MOE_ROUTE (0x1E, rev 1, 9 words).** Words `LOGITS, LOGITS_STRIDE, IDS, IDS_STRIDE, W, N_EXPERT, N_USED, T,
+FLAGS` (`opl::moer`). Per tile of 64 tokens (one ring block, `plan_moe.hpp`): LD the logits rows; the softmax on the
+VU (RED.MAX → vector, VOP.EXPSUBC with that vector as c, RED.SUM with post-op RCP, VOP.MULC); **join**; the RISC-V
+selects per token the k largest probabilities by integer compares on the words and writes the selected values to a
+line and the numbers to another; RED.SUM with post-op RCP over the k values and VOP.MULC give the weights; **join**;
+for T > 1 the RISC-V packs the weights (k words per token), and the STs write the numbers into the first line of
+each row of the IDS tensor (the ARGSORT result: rows `IDS_STRIDE` lines apart, words k .. 15 of the line are 0) and
+the weights, packed, into W (the DIV result `[k, T]`). The arithmetic is `tsr_ref_moe_route` in `sw/sim/tsr_ref_vu.c`
+(VU §6.2 trees, EXPK, RC): `m` = max, `e` = EXPSUB(l, m), `r` = RC(tree sum of e), `p` = FM(e, r); `(id, q)` = the
+top k of `p`; `r2` = RC(tree sum of the k values q in selection order), `w` = FM(q, r2). ggml's graph does the same with
+`expf`, a double sum and a true division: the device differs at rounding level (probabilities by up to ~1e-6
+relative, weights by up to 5 ulp on 512 random rows) and its weights sum to 1 within 1e-6.
+The CLAMP is not computed: the k largest of n probabilities sum to at least k/n, so the clamp is the identity for
+every row without a NaN (the builder requires `clamp_min × n ≤ k`), and a NaN passes it.
+
+**SW-63 Tie rule and NaN.** The selection is the order of the VU TOPK (VU §6.8): the DAZ'd value under the total
+order (−inf < … < +inf < NaN), larger first, equal values by the smaller index; every NaN is the canonical NaN, ranks
+first, and ties by the smaller index. The firmware insertion loop (`select_topk`) is checked against `tsr_ref_topk` on
+every row length 1 to 70 with every k, three value classes, and 4,000 rows of 128 and 512 words (`fw_kernels_moe_host`: 7,000 rows). ggml's
+CPU sorts the indices with `std::sort` and `a > b`, so equal values come out in an unspecified order and NaN breaks
+the strict weak ordering. Measured on the pinned ggml-cpu (`ref_moe`): for one pair of equal logits at places 8 and 9
+of 128, ggml takes the smaller index in 241 of 512 rows and this rule in 512 of 512; with many equal values at the
+boundary the selected sets differ in 511 of 512 rows; with a NaN logit every weight is NaN in both and the sets
+differ (ggml: an arbitrary permutation, here 0 .. k−1). Ties in the f32 probabilities of a trained router are
+rare (two logits within an ulp of each other), and the continuous case agrees (512 of 512 rows identical, except
+where the device's exponential and Q8_0 router move the 8th and 9th probabilities across each other).
+
+**SW-62 MUL_MAT_ID (0x1F, rev 1, 17 words).** Words `DST, DST_STRIDE, X, X_SLOT_STRIDE, X_TOK_STRIDE, IDS,
+IDS_STRIDE (bytes), W_OFF, EXP_STRIDE, FMT, N, K, T, N_USED, N_EXPERT, SCALE, FLAGS` (`opl::mmid`). One MUL_MAT of T
+= 1 per (token, slot) against `W_OFF + id × EXP_STRIDE`; x rows shared by the slots (`X_SLOT_STRIDE` 0: gate-up) or
+one per slot (down); y row (token, slot) is row `token × N_USED + slot` of the dense dst; with a `SCALE` table
+(F32 [n_expert]) the y block is multiplied by `table[id]` (VOP.MULC with an s register) before its ST. The handler
+LDs a chunk of the ids rows (up to 128 lines) and the scale table into the executor's one-tile block, **joins**, and
+reads the numbers with the RISC-V (the exact SPM window); per token it takes one ring block `[x | QA | y_0 … y_(k−1)]`
+and pushes LD / QACT / MVM of slot j + 1 before the ST of slot j (MUL_MAT's double buffering), the next token's
+block while this one's STs are pending. An id outside [0, N_EXPERT) gets W_OFF 0xFFFF_FFFF: the MVM fails with
+DRAM_RANGE and the launch ends with TILE_ERR on this op. The returned ticket is the last ST. Numerics: the dense
+MUL_MAT's (`mulmat_ref_token`), then `tsr_ref_vop_elem(MULC)` with the scale.
+
+**Joins.** Both kinds wait inside the op stream, which the executor contract forbids to other kinds (`tsr/exec.hpp`):
+MOE_ROUTE twice per tile of 64 tokens, MUL_MAT_ID once per chunk of ids (once for a token count below ~16 with
+argsort-shaped ids rows, 16 tokens per chunk at 512-byte rows). The wait is on the handler's own ops; records already
+pushed keep running and only the issue of later records stops.
+
+**SW-64 Backend: fusion of the router and the scale chain.** supports_op takes MUL_MAT_ID (probe-mode lowering and
+`plan_mul_mat_id`) and, with the kinds in the image, the nodes of the two chains by their local shape (SOFT_MAX
+without mask or bias, ARGSORT descending of such a SOFT_MAX, GET_ROWS of its reshaped output by the sorted view, SUM_ROWS,
+CLAMP, DIV, REPEAT of a 1D F32 leaf, GET_ROWS of a REPEAT). `tsr_build_fusion` finds the groups node for node with
+the use counts of llama.cpp's graph: the SOFT_MAX heads six nodes that become one MOE_ROUTE record (ids into the
+ARGSORT tensor, weights into the DIV tensor; the record sits at the SOFT_MAX); the MUL_MAT_ID heads REPEAT, GET_ROWS and
+MUL: its record carries the scale table (the RESHAPE of the weight leaf, or the scheduler's copy of the reshaped view when the table stays in host memory, as in Gemma 4: no kind takes a MUL_MAT_ID weight that is not an expert tensor), writes its own tensor, and a CPY record moves the result into the MUL's
+tensor (no record when the allocator put both at the same address, as it did in every graph looked at). A
+group member that did not fuse aborts at graph_compute naming the node: a graph other than llama.cpp's
+`build_moe_ffn` is not supported. A route with more than 64 tokens is refused (abort) when its outputs overlap a later
+tile's logits other than row for row. The OPL builder knows both kinds' DRAM ranges (`kind_ranges`).
+`TSR_KINDS` without MOE_ROUTE leaves the router chain on the CPU (the ids are copied to the device for the MUL_MAT_ID);
+without MUL_MAT_ID the experts stay on the CPU (the loader's weight probe then places them in host memory).
+
+**SW-65 M6 and M7 paths.** M6 (`TSR_KINDS=m6,+MUL_MAT_ID`; klcheck and numcheck `--phase m6` set it): the host issues the
+matrix products (the router MUL_MAT, both MUL_MAT_IDs per layer); llama.cpp's own CPU ops do the softmax, the top-k, the
+renormalisation, the GLU, the scale, the weights and the sums, because the CPU's `std::sort` and double sums are then
+the reference of the selection and the ids reach the device unchanged. This is the card's M6 step too: MUL_MAT_ID is a
+firmware kind, so it needs the new image's `tsr-fw.elf` (a firmware change, no bitstream change). M7 (all kinds): the
+whole layer, router and experts, is part of the one launch per token. The selection is software on the RISC-V in both
+senses: nothing needs the TOPK RTL (`CAPS` bit 3), which the K4 wrapper leaves off.
+
+**SW-66 Prefill and token grouping.** The kinds run an MVM of T = 1 per (token, slot), so a prefill of T tokens
+reads T × k experts of every layer once each, with no reuse (25 tokens read 200 experts, about 100 distinct ones if the
+choices were uniform; 512 tokens read 4,096 for 128 experts), where a dense layer reads its weights once per T_MAX tokens. Grouping is
+designed, not built: per ids chunk the RISC-V counting-sorts the (token, slot) pairs by expert, and per expert pushes
+LDs of up to T_MAX x rows (gathered), one QACT and one MVM of T' tokens, one VOP.MULC (the scale is the same for the
+group) and T' STs. Numerics do not change (an MVM row is independent of T), so the references stay valid. It pays when
+tokens per expert reach T_MAX: T × k / n_expert ≥ T_MAX, i.e. T ≥ 64 (T_MAX 4) on Gemma 4. It is not built because
+the pairs need a scratch list in SPM (the stack of the firmware is 8.7 KiB) and a second push order to verify, for a gain
+that only long prompts see.
+
+**Limits.** n_expert ≤ 512 for MOE_ROUTE and a multiple of 16 (the ids rows are whole lines); k ≤ 16; ≤ 4,096 experts
+per tensor; N a multiple of 16; K a multiple of the format's block; softmax gating with a normalised top-k only (no
+bias, group selection, sigmoid or softmax-after-top-k: those graphs run the router on the CPU).
 
 ---
 
@@ -1751,6 +1861,8 @@ The `xrt` kdev reads the `TSR_XRT_DMA*` and `TSR_XRT_CH_GIB` settings.
 | CPY, CONT | F32 → F32 with contiguous rows |
 | UNARY TANH, GELU | TANH; GELU lowered to GELU16 |
 | DUP, nodes without `GGML_TENSOR_FLAG_COMPUTE` | false (R1) |
+| MUL_MAT_ID | `MUL_MAT_ID` kind in the image; weights a loadable 3D expert tensor (WEIGHTS buffer, or raw bytes converted at graph_compute, or llama.cpp's unallocated probe leaf), `N` a multiple of 16, x F32 rows of whole lines, ids I32 rows, result of its own (§7.9, SW-62) |
+| SOFT_MAX, ARGSORT, GET_ROWS, SUM_ROWS, CLAMP, DIV, REPEAT of the MoE chains | `MOE_ROUTE` (the router chain) or `MUL_MAT_ID` + `CPY` + `MUL` (the scale chain) in the image, and the node's own sources match `build_moe_ffn` (§7.9, SW-64); the fusion pass takes the group |
 | everything else | false |
 
 **M7 builder as built (W3b builder, 2026-10-31; `sw/ggml-tesseract/tsr-build.{h,cpp}`, the glue in
@@ -2282,6 +2394,13 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
 | SW-52 | test-backend-ops coverage of the M7 kinds (2026-10-31, W3b; §10.4 item 4) | One ctest per op filter (`ggml_tesseract_backend_ops_<op>`, 21) with a minimum count of supported cases (0 for SCALE / SOFTCAP, whose cases have 10- or 100-float rows, and for SET_ROWS / ROPE_SET_ROWS / FLASH_ATTN_EXT, whose tensors are not KV-cache tensors); FA and SET_ROWS on the device are covered by `ggml_tesseract_attn` | one ctest for every op; exact supported counts | Per-op reports; the minimum stops a supports_op regression from passing as "everything unsupported"; test-backend-ops cannot place its K / V / dst in a KV buffer (amends AT §13.6) |
 | SW-53 | Host memory and the M7 kinds (2026-10-31, W3b fix; amends §8 R6, SW-26 / 46) | Only MUL_MAT is staged; supports_op refuses an M7 op with an operand in a HOSTED buffer or one that will be (ANY with leaf data only: control vectors, LoRA adapters; every buffer under `TSR_FORCE_HOST`), so it runs on the CPU; a compute buffer without a window is found only at graph_compute, which aborts naming it and the remedies; a refused SET_ROWS into the device KV cache is reported before the scheduler stops (R10: streams, `TSR_FORCE_HOST` needs `-nkvo`) | staging every M7 operand through IO; a host fallback per record | Correct runs with a control vector (tiny Qwen2: 2 launches per token, text identical to the CPU) and `TSR_FORCE_HOST -nkvo` instead of aborts; staging all kinds is a lowering of its own for a case that does not occur at `-ub 512 -c 4096` (0 staged chunks for every model run) |
 | SW-54 | Versions (2026-10-31; §6.9, EX §7.5, EX-12) | Four numbers: the Tesseract Core capability in `VERSION` (1.0); the Tesseract Basis SemVer in `tsr/version.h` (0.1.0; `.note.tsr` word 6, HELLO r6); the Basis ABI (1); a numerics revision per kind (`opl::kind_rev`, `.tsr_kinds`, HELLO r4[31:16] = the kind table signature), guarded by `fw_kind_revs`. Images name the capability they need (`cap_min`); a core without the control core is refused by `CTL_ID` = 0; the backends refuse an image of an older Basis (major, minor) and route only the booted image's kinds; `CTL_ID[7:0]`, `ADAPTER_VERSION` major and `DBG_ID[7:0]` are 1 | one product version for everything; the Basis version in `tsr_tables.py`; a runtime version in HELLO; a control-core version images compare with; pinning revisions in the host | The capability is the hardware contract and the Basis version the software's, so a software release never regenerates RTL packages; a capability per image works as a cubin's `sm_XY`; the existing bit-exact tests compare kernels with references that move with them, so only a digest guard makes (kind, revision) a reproducibility key; recording revisions in reports (klcheck, numcheck) is enough for reproducibility, enforcing them would break subset images |
+| SW-60 | Expert tensors (2026-11-08, MoE; §7.9; spec §4) | A 3D tensor whose name contains `_exps` is a DEVWEIGHT of n_expert matrices at `W_OFF + e × EXP_STRIDE` per channel (`EXP_STRIDE` = `R × ROW_BEATS`), stored, read back and converted lazily per expert; other 3D tensors stay raw | Expert-major packing over channels (one expert per channel group); a separate allocation per expert; any 3D tensor | Every expert MVM keeps the four-channel stream of a dense MUL_MAT and the address is one multiply; per-expert allocations would be 3,840 records for 30 layers and give no stride; the name is the only information at upload time, a wrong guess only costs a lazy conversion |
+| SW-61 | MOE_ROUTE (2026-11-08) | One kind: softmax on the VU, top-k by integer compares on the RISC-V, weights renormalised on the VU, two joins per tile of 64 tokens, ids into the argsort tensor's first line per row, weights packed | The VU TOPK op (RTL off in K4); firmware soft-float for the sum and a true division; separate SOFT_MAX / ARGSORT / GET_ROWS / DIV kinds | No RTL change and no float in the firmware; the VU already holds the exact softmax pieces (RED, EXPSUB, RC); the unit tests compare the firmware with `tsr_ref_moe_route`, built from the same VU references; the weights differ from ggml's true division by up to 5 ulp |
+| SW-62 | MUL_MAT_ID (2026-11-08) | One MUL_MAT of T = 1 per (token, slot) at `W_OFF + id × EXP_STRIDE`, ids read by the RISC-V from DRAM (a chunk in the one-tile block, one join), optional scale `table[id]` applied by VOP.MULC after the dot product, out-of-range id → DRAM_RANGE on the MVM | The host reads the ids and issues W_OFF per op; ACC across experts with the weight multiplied into h (spec §13's sketch); one record per expert | The op list stays static and cacheable (the ids change per token, the list does not); ggml's order (scale, weight after the down MVM, slot-order adds) keeps the CPU a fair reference; the sketch quantises `w × h`, a different A32 input |
+| SW-63 | Selection order (2026-11-08) | The order of the VU TOPK: DAZ'd value under the total order, larger first, NaN first, equal values by the smaller index | ggml's `std::sort` result (unspecified for ties); lowest index last | A rule that does not depend on a library's sort; the firmware loop and `tsr_ref_topk` agree on 7,000 rows (ties, NaN, ±0, subnormals); against ggml: 512 of 512 identical rows on continuous data, 241 of 512 for one tied pair at the boundary (§7.9) |
+| SW-64 | Graph fusion of the MoE chains (2026-11-08) | `tsr_build_fusion` takes the router chain (SOFT_MAX … DIV, six nodes) into one MOE_ROUTE record and the scale chain into the MUL_MAT_ID record plus a CPY into the MUL's tensor; supports_op accepts the chain nodes by their own sources; a member that did not fuse aborts at graph_compute naming it | Lowering each node (seven new kinds); refusing the chains and running the router on the CPU; writing the MUL's tensor directly | The router is one data-dependent step; the allocator may put the MUL's result over the MUL_MAT_ID's inputs (no in-place write is safe), so the record writes its own tensor and a CPY moves it (no record when the addresses are equal, as seen); supports_op cannot see consumers, so an unusual graph fails loudly instead of silently reading unwritten tensors |
+| SW-65 | M6 and M7 MoE paths (2026-11-08) | `--phase m6` (klcheck, numcheck) sets `TSR_KINDS=m6,+MUL_MAT_ID`: the device runs the matrix products and the CPU selects; M7 runs everything in one launch; no path needs the TOPK RTL | Redefining `m6` to include MUL_MAT_ID (the unit test pins it to NOP, JOIN, MUL_MAT); CPU selection only | The M6 baseline for a MoE model is llama.cpp's own selection, so the M7 delta measures the firmware selection; a card at the M6 step needs the new `tsr-fw.elf` but no bitstream |
+| SW-66 | Prefill and token grouping (2026-11-08) | Per-token expert MVMs (T = 1) in prefill; grouping by expert designed (counting sort of the (token, slot) pairs per ids chunk, MVMs of up to T_MAX rows), not built | Grouping now | Grouping pays when T × k / n_expert ≥ T_MAX (T ≥ 64 at T_MAX 4 on Gemma 4); it needs a pair list in SPM and a second push order; numerics are unchanged either way |
 
 ---
 

@@ -38,6 +38,8 @@ TSR_KIND_STUB(kind_set_rows_kv)
 TSR_KIND_STUB(kind_flash_attn)
 TSR_KIND_STUB(kind_cpy)
 TSR_KIND_STUB(kind_unary)
+TSR_KIND_STUB(kind_moe_route)
+TSR_KIND_STUB(kind_mul_mat_id)
 #undef TSR_KIND_STUB
 
 // The fast-path entries (exec.hpp kind_<name>_fast; W2b integration): weakly "not taken", so the

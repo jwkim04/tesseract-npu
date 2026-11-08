@@ -788,6 +788,17 @@ DCP loads or links were run for this mapping.
 
 ### 12.6 MoE and GDN extension checkpoints
 
+**MoE status (November 8, branch `moe`).** The software stack runs Gemma 4 26B-A4B on the simulator, in the
+M6 form (the host issues the matrix products, llama.cpp's CPU ops select the experts) and in the M7 form (the
+router, the top-k, the expert products and the combine in one launch per token). No RTL changed and the TOPK RTL
+stays off: the selection is integer compares on the RISC-V in the new firmware kind MOE_ROUTE (0x1E); MUL_MAT_ID
+(0x1F) runs the expert MVMs at `W_OFF + id × EXP_STRIDE`. Expert tensors are placed per channel with the expert
+stride, the router is converted to Q8_0 at load, and the backend fuses llama.cpp's router nodes and the per-expert
+scale nodes into one record each. Prefill still reads each token's experts separately; token grouping is designed
+(SW-66), not built. The details and decisions SW-60 to SW-66 are in
+[SW](06-software-verification.md) §7.9; the measurements are in [klcheck](../klcheck.md) and the handoff. The
+paragraphs below are the planning text that preceded it.
+
 The local-intermediate candidate's checked shared window helper now represents
 expert base/stride and input/output token origins while preserving original N
 and owner packing. The executing dense commands still use expert zero and

@@ -3,7 +3,8 @@
 ggml backend for the Tesseract NPU core (spec "ggml backend integration"). One registry
 `"Tesseract"` with one device `"Tesseract0"` of type `GGML_BACKEND_DEVICE_TYPE_GPU`. M7 (W3b) runs a
 whole decode token of Qwen2.5 / Gemma 4 as one launch with the KV cache on the device; M6 (`TSR_KINDS=m6`)
-runs `MUL_MAT` only. Pin and verified llama.cpp API: `docs/llama-pin.md`.
+runs the matrix products (`MUL_MAT`, and `MUL_MAT_ID` of a MoE model: `TSR_KINDS=m6,+MUL_MAT_ID`). Pin and verified
+llama.cpp API: `docs/llama-pin.md`.
 
 > **M6 (`docs/design/06-software-verification.md` §9.3, P3.2).** Each split's MUL_MATs become one
 > op list (the op list format, SW §7.2) of MUL_MAT records (+ JOINs), written into an OPL cache in
@@ -21,6 +22,17 @@ runs `MUL_MAT` only. Pin and verified llama.cpp API: `docs/llama-pin.md`.
 > preload table and caches each graph's plan by identity, so a decode token reuses its list and only
 > its inputs change. Compute buffers live in device memory (IO, the low 512 MiB of ch1-3, the compute
 > heap), so nothing is staged.
+
+> **MoE (SW §7.9, SW-60 to SW-66).** Gemma 4 26B-A4B (softmax gating, normalised top-8 of 128, a per-expert scale)
+> runs on the simulator. 3D expert tensors (names with `_exps`) are placed per channel with the expert stride
+> (`tsr_store_expert_rows`), `MUL_MAT_ID` is lowered by `tsr_lower_mul_mat_id` (the weights resolved by
+> `tsr_resolve_weight` to W_OFF and EXP_STRIDE, the probe `tsr_moe_weight_ok`), and `tsr_build_fusion` turns
+> llama.cpp's router nodes into one `MOE_ROUTE` record and the scale nodes into the scale table of the down
+> `MUL_MAT_ID` plus a `CPY`. Without `MOE_ROUTE` in `TSR_KINDS` llama.cpp's own CPU ops select the experts and the
+> device runs the matrix products (the M6 form). Tests: `ggml_tesseract_moe*` (`tests/test-tsr-moe.cpp`: the
+> graph of `build_moe_ffn` in three kind configurations against the CPU), `test-backend-ops -o MUL_MAT_ID -b
+> Tesseract0` (ctest `ggml_tesseract_backend_ops_mul_mat_id`: 928 of 945 cases supported and passing; 17 refused: m not a
+> multiple of 16, k not a multiple of the block, iq2_xxs).
 
 ## Files
 
@@ -177,7 +189,7 @@ Public C API (`third_party/llama.cpp/ggml/include/ggml-tesseract.h`, from the pa
 | `TSR_DEVICE` | transport kind (`sim` default, `xrt`); `none` registers no device |
 | `TSR_IMAGE` | firmware image (default: the build's `tsr-fw.elf`) |
 | `TSR_DEBUG=1` | placement, lowering and launch log on stderr; `2` adds buffer events, the records and preload entries of every launched op list and supports_op's reasons |
-| `TSR_KINDS` | the kinds the device takes, a comma-separated list read from left to right: `m6` (MUL_MAT only, M6 runs), `all`, `NAME` / `+NAME` adds a kind, `-NAME` removes one (`all,-FLASH_ATTN,-RMS_NORM`). What a list starts from: a list whose first word is a removal starts from every kind; any other list starts from NOP and JOIN only, which cannot be removed. So `TSR_KINDS=+FLASH_ATTN` alone turns MUL_MAT off; write `m6,+FLASH_ATTN` or `all,...` to keep it. The removed kinds' ops run on the CPU; a SET_ROWS into a device KV cache cannot, so SET_ROWS_KV leaves the device only with `-nkvo` (which keeps FLASH_ATTN on the CPU too). Unset: every kind of the booted image |
+| `TSR_KINDS` | the kinds the device takes, a comma-separated list read from left to right: `m6` (NOP, JOIN, MUL_MAT; M6 runs; `m6,+MUL_MAT_ID` for a MoE model, what `klcheck` and `tsr-numcheck` `--phase m6` set), `all`, `NAME` / `+NAME` adds a kind, `-NAME` removes one (`all,-FLASH_ATTN,-RMS_NORM`). What a list starts from: a list whose first word is a removal starts from every kind; any other list starts from NOP and JOIN only, which cannot be removed. So `TSR_KINDS=+FLASH_ATTN` alone turns MUL_MAT off; write `m6,+FLASH_ATTN` or `all,...` to keep it. The removed kinds' ops run on the CPU; a SET_ROWS into a device KV cache cannot, so SET_ROWS_KV leaves the device only with `-nkvo` (which keeps FLASH_ATTN on the CPU too). Unset: every kind of the booted image |
 | `TSR_COMPUTE_WINDOWS=io` | test knob: compute windows in ch0 IO only (M6 placement; larger buffers in host memory, their MUL_MATs staged) |
 | `TSR_OPL_SPLIT=<n>` | test knob: cut every op list after n records (a split's results do not depend on the cuts: Qwen2.5-0.5B with n = 7, 53 launches per token, gives logits bit-identical to one launch per token) |
 | `TSR_FORCE_HOST=1` | test knob: every non-WEIGHTS buffer in host memory, so every MUL_MAT takes the staged path and the other kinds stay on the CPU (with M7 settings add `-nkvo`: a KV cache on the device needs its SET_ROWS on the device) |

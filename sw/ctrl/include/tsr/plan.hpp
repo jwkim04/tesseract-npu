@@ -16,7 +16,7 @@
 //   - the per-kind plan (plan_op / check_op): RET_OK, RET_SCRATCH (cannot be planned in the ring)
 //     or RET_BAD_RECORD (arguments the device cannot run), and the scratch lines per tile;
 //   - M7 planning (W2b): plan_limits / kind_plan, the planners tsr::plan_<kind> (declared here,
-//     defined in tsr/plan_elem.hpp, plan_norm.hpp, plan_attn.hpp), plan_kind, and the shared rules
+//     defined in tsr/plan_elem.hpp, plan_norm.hpp, plan_attn.hpp, plan_moe.hpp), plan_kind, and the shared rules
 //     plan_rows (row tiles) and for_period_segments (row periods).
 //
 // Planning budget (decision P2.4): every plan uses ring_budget(cfg) = SPM lines - 16 (argument
@@ -327,7 +327,7 @@ static_assert(detail::mm_t_tile_u200(FMT_Q8_0, 151936u, 896u) == 3u && detail::m
 //     handler: kind_ctx::pre_ok, exec.hpp; the host reader: opl::check_args), not here;
 //   - per-op work is shifts, adds and compares when the op has one tile (decode shapes, T = 1): a
 //     divide only where a multi-tile op needs its tile count (as mm_plan, SW §4.2).
-// The eleven planners are declared below (after plan_limits / kind_plan) and defined by the three
+// The thirteen planners are declared below (after plan_limits / kind_plan) and defined by the three
 // headers, which this one includes after the declarations; plan_op / plan_kind call them. A
 // planner header either starts with #pragma once and #include "tsr/plan.hpp", or is a fragment
 // (#if !defined(TSR_PLAN_CORE_HPP) #include "tsr/plan.hpp" #elif !defined(<its guard>) ...), then
@@ -454,12 +454,15 @@ TSR_PLAN_HOT constexpr bool plan_set_rows_kv(const uint32_t * args, uint32_t n_a
 TSR_PLAN_HOT constexpr bool plan_flash_attn(const uint32_t * args, uint32_t n_args, const plan_limits & l, kind_plan * out);
 TSR_PLAN_HOT constexpr bool plan_cpy(const uint32_t * args, uint32_t n_args, const plan_limits & l, kind_plan * out);
 TSR_PLAN_HOT constexpr bool plan_unary(const uint32_t * args, uint32_t n_args, const plan_limits & l, kind_plan * out);
+TSR_PLAN_HOT constexpr bool plan_moe_route(const uint32_t * args, uint32_t n_args, const plan_limits & l, kind_plan * out);
+TSR_PLAN_HOT constexpr bool plan_mul_mat_id(const uint32_t * args, uint32_t n_args, const plan_limits & l, kind_plan * out);
 }  // namespace tsr
 
 #define TSR_PLAN_CORE_HPP 1   // the planner headers' fragment guard (either form above works)
 #include "tsr/plan_elem.hpp"
 #include "tsr/plan_norm.hpp"
 #include "tsr/plan_attn.hpp"
+#include "tsr/plan_moe.hpp"
 
 namespace tsr {
 namespace plan {
@@ -495,6 +498,8 @@ constexpr bool plan_kind(const plan_limits & l, uint32_t kind, const uint32_t * 
         case opl::K_FLASH_ATTN:  return plan_flash_attn(args, n_args, l, out);
         case opl::K_CPY:         return plan_cpy(args, n_args, l, out);
         case opl::K_UNARY:       return plan_unary(args, n_args, l, out);
+        case opl::K_MOE_ROUTE:   return plan_moe_route(args, n_args, l, out);
+        case opl::K_MUL_MAT_ID:  return plan_mul_mat_id(args, n_args, l, out);
         default:                 return plan_fail(out, opl::RET_BAD_RECORD);
     }
 }

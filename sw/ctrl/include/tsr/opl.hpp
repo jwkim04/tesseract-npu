@@ -69,7 +69,8 @@ constexpr uint32_t RET_SCRATCH        = 0x80000006u;  // the op cannot be planne
 constexpr uint32_t RET_CRC            = 0x80000007u;
 
 // ---------------------------------------------------------------------------------------------
-// Kinds (SW §7.2). M6 implements NOP, JOIN and MUL_MAT; M7 the rest (W2b); 0x20-0x3F are M8's.
+// Kinds (SW §7.2). M6 implements NOP, JOIN and MUL_MAT; M7 the rest (W2b); 0x1E and 0x1F are the MoE kinds (the
+// lowest free numbers; the Gated DeltaNet kinds take the highest free ones downward from 0x3F); 0x20-0x3F are M8's.
 // ---------------------------------------------------------------------------------------------
 constexpr uint32_t K_NOP         = 0x00u;   // no tile ops; its ticket is "none"
 constexpr uint32_t K_JOIN        = 0x01u;   // SYNC NOP over dep0, dep1
@@ -87,6 +88,8 @@ constexpr uint32_t K_CPY         = 0x1Au;
 constexpr uint32_t K_UNARY       = 0x1Bu;
 constexpr uint32_t K_MUL_MAT_SCALE = 0x1Cu;  // local pointwise epilogue and final DDR export
 constexpr uint32_t K_MUL_MAT_SOFTCAP = 0x1Du;  // scale, TANH, scale before export
+constexpr uint32_t K_MOE_ROUTE   = 0x1Eu;   // MoE: softmax over the router logits, top-k, renormalised weights (SW §7.5)
+constexpr uint32_t K_MUL_MAT_ID  = 0x1Fu;   // MoE: MUL_MAT with the weight chosen per (token, slot) by an expert id (SW §7.5)
 constexpr uint32_t N_KINDS       = 0x40u;   // kind table size (0x00-0x3F); a larger kind is BAD_RECORD
 
 // Argument count of each defined kind (the table of SW §7.2), or NARGS_UNDEF for a kind without a
@@ -110,6 +113,8 @@ constexpr uint32_t kind_nargs(uint32_t kind) {
         case K_UNARY:       return 7u;
         case K_MUL_MAT_SCALE: return 13u;
         case K_MUL_MAT_SOFTCAP: return 14u;
+        case K_MOE_ROUTE:   return 9u;
+        case K_MUL_MAT_ID:  return 17u;
         default:            return NARGS_UNDEF;
     }
 }
@@ -142,6 +147,8 @@ constexpr uint32_t kind_rev(uint32_t kind) {
         case K_UNARY:       return 1u;
         case K_MUL_MAT_SCALE: return 1u;
         case K_MUL_MAT_SOFTCAP: return 1u;
+        case K_MOE_ROUTE:   return 1u;
+        case K_MUL_MAT_ID:  return 1u;
         default:            return 0u;
     }
 }
@@ -164,6 +171,8 @@ constexpr const char * kind_name(uint32_t kind) {
         case K_UNARY:       return "UNARY";
         case K_MUL_MAT_SCALE: return "MUL_MAT_SCALE";
         case K_MUL_MAT_SOFTCAP: return "MUL_MAT_SOFTCAP";
+        case K_MOE_ROUTE:   return "MOE_ROUTE";
+        case K_MUL_MAT_ID:  return "MUL_MAT_ID";
         default:            return "?";
     }
 }
@@ -258,6 +267,39 @@ namespace unary {
 constexpr uint32_t DST = 0, DST_STRIDE = 1, SRC = 2, SRC_STRIDE = 3, N = 4, ROWS = 5, FUNC = 6, NARGS = 7;
 constexpr uint32_t TANH = 0u, GELU16 = 1u, SILU = 2u, EXP = 3u, GELU = 4u, FUNC_MAX = GELU;
 }  // namespace unary
+
+// MoE kinds (SW §7.5, SW-60 to SW-65; docs/spec.md §13). Both read device-computed data with the RISC-V (the
+// handler joins once per tile or ids chunk: the one place a kind waits inside the op stream).
+//
+// MOE_ROUTE (0x1E): per token, the softmax over the router logits (row of N_EXPERT f32 at LOGITS +
+// token * LOGITS_STRIDE lines), the N_USED largest probabilities (value descending, ties by the smaller
+// index, NaN first: the order of VU TOPK, selection by integer compares on the RISC-V) and their weights
+// renormalised by the tree sum (tsr_ref_moe_route). Writes the expert numbers as I32 into the first
+// line of row token of the IDS tensor (IDS + token * IDS_STRIDE lines; words N_USED .. 15 of the line
+// are 0, the rest of the row is not touched) and the weights as f32 packed, N_USED words per token, at
+// W (whole lines; the tail of the last line is 0). FLAGS must be 0.
+namespace moer {
+constexpr uint32_t LOGITS = 0, LOGITS_STRIDE = 1, IDS = 2, IDS_STRIDE = 3, W = 4, N_EXPERT = 5, N_USED = 6, T = 7,
+                   FLAGS = 8, NARGS = 9;
+constexpr uint32_t MAX_EXPERTS = 512u, MAX_USED = 16u;    // = TSR_MOE_MAX_EXPERTS, TSR_TOPK_MAX_K
+constexpr uint32_t TILE_TOKENS = 64u;                     // tokens per tile (the c vector of a tile is up to 4 lines)
+}  // namespace moer
+// MUL_MAT_ID (0x1F): y[token, slot] = W[ids[token][slot]] . x[token, slot] for every (token, slot), each
+// an MUL_MAT of T = 1 against the expert's weights at W_OFF + id * EXP_STRIDE (beats; the per-channel
+// expert stride of an expert tensor, spec §4), optionally scaled by SCALE[id] (one f32 multiply after the
+// dot product, ggml's `res * s`). x row (token, slot) is at X + token * X_TOK_STRIDE + slot * X_SLOT_STRIDE
+// lines (X_SLOT_STRIDE 0: one row per token for every slot, the gate and up projections); y row
+// (token, slot) is row token * N_USED + slot of the dst tensor, DST_STRIDE lines apart. IDS is an I32
+// matrix of N_USED words per token, rows IDS_STRIDE bytes apart (a multiple of 4), at a line-aligned
+// handle. An id outside [0, N_EXPERT) makes the op fail with DRAM_RANGE on its MVM (TILE_ERR on this
+// op, never a panic). SCALE: HANDLE_NONE or an f32 table of N_EXPERT words at a line-aligned handle.
+// FLAGS must be 0.
+namespace mmid {
+constexpr uint32_t DST = 0, DST_STRIDE = 1, X = 2, X_SLOT_STRIDE = 3, X_TOK_STRIDE = 4, IDS = 5, IDS_STRIDE = 6,
+                   W_OFF = 7, EXP_STRIDE = 8, FMT = 9, N = 10, K = 11, T = 12, N_USED = 13, N_EXPERT = 14,
+                   SCALE = 15, FLAGS = 16, NARGS = 17;
+constexpr uint32_t MAX_USED = 16u, MAX_EXPERTS = 4096u;
+}  // namespace mmid
 
 // The GEOM word of SET_ROWS_KV / FLASH_ATTN.
 constexpr uint32_t geom_word(uint32_t e_div64, uint32_t lg) { return (e_div64 & 0xFFFFu) | (lg << 16); }
@@ -444,6 +486,13 @@ struct cpy_args {        // CPY (0x1A)
 struct unary_args {      // UNARY (0x1B)
     uint32_t dst, dst_stride, src, src_stride, n, rows, func;
 };
+struct moe_route_args {  // MOE_ROUTE (0x1E)
+    uint32_t logits, logits_stride, ids, ids_stride, w, n_expert, n_used, t, flags;
+};
+struct mul_mat_id_args { // MUL_MAT_ID (0x1F)
+    uint32_t dst, dst_stride, x, x_slot_stride, x_tok_stride, ids, ids_stride, w_off, exp_stride, fmt, n, k, t,
+        n_used, n_expert, scale, flags;
+};
 
 template <class A> struct args_of;
 template <> struct args_of<ew_args> {
@@ -508,6 +557,20 @@ template <> struct args_of<unary_args> {
     static constexpr uint32_t unary_args::* F[NARGS] = {&unary_args::dst, &unary_args::dst_stride, &unary_args::src,
         &unary_args::src_stride, &unary_args::n, &unary_args::rows, &unary_args::func};
 };
+template <> struct args_of<moe_route_args> {
+    static constexpr uint32_t NARGS = moer::NARGS;
+    static constexpr uint32_t moe_route_args::* F[NARGS] = {&moe_route_args::logits, &moe_route_args::logits_stride,
+        &moe_route_args::ids, &moe_route_args::ids_stride, &moe_route_args::w, &moe_route_args::n_expert,
+        &moe_route_args::n_used, &moe_route_args::t, &moe_route_args::flags};
+};
+template <> struct args_of<mul_mat_id_args> {
+    static constexpr uint32_t NARGS = mmid::NARGS;
+    static constexpr uint32_t mul_mat_id_args::* F[NARGS] = {&mul_mat_id_args::dst, &mul_mat_id_args::dst_stride,
+        &mul_mat_id_args::x, &mul_mat_id_args::x_slot_stride, &mul_mat_id_args::x_tok_stride, &mul_mat_id_args::ids,
+        &mul_mat_id_args::ids_stride, &mul_mat_id_args::w_off, &mul_mat_id_args::exp_stride, &mul_mat_id_args::fmt,
+        &mul_mat_id_args::n, &mul_mat_id_args::k, &mul_mat_id_args::t, &mul_mat_id_args::n_used,
+        &mul_mat_id_args::n_expert, &mul_mat_id_args::scale, &mul_mat_id_args::flags};
+};
 template <class A> constexpr void put_args(const A & a, uint32_t * w) {
     for (uint32_t i = 0; i < args_of<A>::NARGS; ++i) w[i] = a.*args_of<A>::F[i];
 }
@@ -532,7 +595,8 @@ template <class A> constexpr bool args_layout_ok() {
 static_assert(args_layout_ok<ew_args>() && args_layout_ok<scale_args>() && args_layout_ok<rms_norm_args>() &&
                   args_layout_ok<glu_args>() && args_layout_ok<rope_args>() && args_layout_ok<get_rows_args>() &&
                   args_layout_ok<set_rows_kv_args>() && args_layout_ok<flash_attn_args>() &&
-                  args_layout_ok<cpy_args>() && args_layout_ok<unary_args>(),
+                  args_layout_ok<cpy_args>() && args_layout_ok<unary_args>() && args_layout_ok<moe_route_args>() &&
+                  args_layout_ok<mul_mat_id_args>(),
               "opl.hpp: M7 argument structs: one field per word, each once");
 static_assert(args_of<ew_args>::F[ew::B_PERIOD] == &ew_args::b_period && args_of<scale_args>::F[scl::B] == &scale_args::b &&
                   args_of<rms_norm_args>::F[rms::W_PERIOD] == &rms_norm_args::w_period &&
@@ -546,13 +610,19 @@ static_assert(args_of<ew_args>::F[ew::B_PERIOD] == &ew_args::b_period && args_of
                   args_of<flash_attn_args>::F[fa::SOFTCAP] == &flash_attn_args::softcap &&
                   args_of<flash_attn_args>::F[fa::FLAGS] == &flash_attn_args::flags &&
                   args_of<cpy_args>::F[cpy::ROWS] == &cpy_args::rows &&
-                  args_of<unary_args>::F[unary::FUNC] == &unary_args::func,
+                  args_of<unary_args>::F[unary::FUNC] == &unary_args::func &&
+                  args_of<moe_route_args>::F[moer::T] == &moe_route_args::t &&
+                  args_of<moe_route_args>::F[moer::FLAGS] == &moe_route_args::flags &&
+                  args_of<mul_mat_id_args>::F[mmid::EXP_STRIDE] == &mul_mat_id_args::exp_stride &&
+                  args_of<mul_mat_id_args>::F[mmid::SCALE] == &mul_mat_id_args::scale &&
+                  args_of<mul_mat_id_args>::F[mmid::FLAGS] == &mul_mat_id_args::flags,
               "opl.hpp: argument struct fields sit at their SW §7.2 word index");
 static_assert(ew::NARGS == kind_nargs(K_ADD) && ew::NARGS == kind_nargs(K_MUL) && scl::NARGS == kind_nargs(K_SCALE) &&
                   rms::NARGS == kind_nargs(K_RMS_NORM) && glu::NARGS == kind_nargs(K_GLU) &&
                   rope::NARGS == kind_nargs(K_ROPE) && getrows::NARGS == kind_nargs(K_GET_ROWS) &&
                   setrows::NARGS == kind_nargs(K_SET_ROWS_KV) && fa::NARGS == kind_nargs(K_FLASH_ATTN) &&
                   cpy::NARGS == kind_nargs(K_CPY) && unary::NARGS == kind_nargs(K_UNARY) &&
+                  moer::NARGS == kind_nargs(K_MOE_ROUTE) && mmid::NARGS == kind_nargs(K_MUL_MAT_ID) &&
                   mm::NARGS == kind_nargs(K_MUL_MAT),
               "opl.hpp: argument counts = the SW §7.2 table");
 static_assert(slots_for_nargs(fa::NARGS) == 2u && slots_for_nargs(rope::NARGS) == 1u,
@@ -615,6 +685,12 @@ constexpr uint32_t check_args(uint32_t kind, const uint32_t * a, uint32_t n_args
             break;
         case K_UNARY:
             ok = a[unary::FUNC] <= unary::FUNC_MAX;
+            break;
+        case K_MOE_ROUTE:
+            ok = a[moer::FLAGS] == 0u;
+            break;
+        case K_MUL_MAT_ID:
+            ok = a[mmid::FLAGS] == 0u && (a[mmid::IDS_STRIDE] & 3u) == 0u;
             break;
         default:
             break;
@@ -908,6 +984,14 @@ public:
     uint32_t add_unary(const unary_args & a, const uint32_t * deps = nullptr, uint32_t n_deps = 0, uint32_t kflags = 0) {
         return add_kind(K_UNARY, a, deps, n_deps, kflags);
     }
+    uint32_t add_moe_route(const moe_route_args & a, const uint32_t * deps = nullptr, uint32_t n_deps = 0,
+                           uint32_t kflags = 0) {
+        return add_kind(K_MOE_ROUTE, a, deps, n_deps, kflags);
+    }
+    uint32_t add_mul_mat_id(const mul_mat_id_args & a, const uint32_t * deps = nullptr, uint32_t n_deps = 0,
+                            uint32_t kflags = 0) {
+        return add_kind(K_MUL_MAT_ID, a, deps, n_deps, kflags);
+    }
     // The same with an initializer list of predecessors: w.add_rms_norm(a, {prev}).
     uint32_t add_add(const ew_args & a, std::initializer_list<uint32_t> deps, uint32_t kflags = 0) {
         return add_kind(K_ADD, a, deps, kflags);
@@ -941,6 +1025,12 @@ public:
     }
     uint32_t add_unary(const unary_args & a, std::initializer_list<uint32_t> deps, uint32_t kflags = 0) {
         return add_kind(K_UNARY, a, deps, kflags);
+    }
+    uint32_t add_moe_route(const moe_route_args & a, std::initializer_list<uint32_t> deps, uint32_t kflags = 0) {
+        return add_kind(K_MOE_ROUTE, a, deps, kflags);
+    }
+    uint32_t add_mul_mat_id(const mul_mat_id_args & a, std::initializer_list<uint32_t> deps, uint32_t kflags = 0) {
+        return add_kind(K_MUL_MAT_ID, a, deps, kflags);
     }
     template <class A> uint32_t add_kind(uint32_t kind, const A & a, std::initializer_list<uint32_t> deps,
                                          uint32_t kflags = 0) {

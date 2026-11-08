@@ -295,11 +295,11 @@ static std::string versions_str(const klc_header & h) {
              (h.basis >> 16) & 0xFFu, (h.basis >> 8) & 0xFFu, h.basis & 0xFFu, h.kinds_sig);
     return b;
 }
-// The TSR_KINDS a device run of the phase uses (cmd_run): "m6" for --phase m6, else the caller's
+// The TSR_KINDS a device run of the phase uses (cmd_run): "m6,+MUL_MAT_ID" for --phase m6, else the caller's
 // value, or "unset" without one (the device takes every kind of the booted image; an empty value
 // is the same as none).
 static std::string tsr_kinds_of(int phase) {
-    if (phase == KLC_PHASE_M6) return "m6";
+    if (phase == KLC_PHASE_M6) return "m6,+MUL_MAT_ID";
     const char * e = getenv("TSR_KINDS");
     return e && *e ? e : "unset";
 }
@@ -916,7 +916,7 @@ static int cmd_run(int argc, char ** argv) {
     // The phase also picks the device's kinds (read by the backend's supports_op): M6 runs MUL_MAT
     // only (SW-14). M7 keeps the caller's TSR_KINDS, so a kind list (all,-RMS_NORM) reaches the
     // backend; unset, the device takes every kind of SW §9.3 (W3b integration, SW-49).
-    if (o.phase == KLC_PHASE_M6) setenv("TSR_KINDS", "m6", 1);
+    if (o.phase == KLC_PHASE_M6) setenv("TSR_KINDS", "m6,+MUL_MAT_ID", 1);   // M6: the matrix products (MUL_MAT, and MUL_MAT_ID of a MoE model); the CPU selects the experts
 
     const bool replay = !o.tokens.empty();
     std::vector<plan_seq> plan;

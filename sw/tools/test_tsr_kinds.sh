@@ -49,9 +49,9 @@ expect() {
 run m7 "all,-RMS_NORM" m7_list
 expect m7_list "all,-RMS_NORM" "NOP JOIN MUL_MAT ADD MUL SCALE GLU ROPE GET_ROWS SET_ROWS_KV FLASH_ATTN CPY UNARY"
 
-# M6 sets m6 over the caller's list
+# M6 sets m6,+MUL_MAT_ID (the matrix products) over the caller's list
 run m6 "all" m6_forced
-expect m6_forced m6 "NOP JOIN MUL_MAT"
+expect m6_forced "m6,+MUL_MAT_ID" "NOP JOIN MUL_MAT MUL_MAT_ID"
 
 # M7 without a list: every kind of the booted image
 run m7 - m7_unset

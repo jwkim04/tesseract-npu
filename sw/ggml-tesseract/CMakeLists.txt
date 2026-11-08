@@ -23,7 +23,7 @@ add_test(NAME ggml_tesseract_units COMMAND test-tsr-backend-units)
 # when it exists (fusion, dependencies of views, the preload table, the plan key, supports_op against
 # the planners), else they test the ggml-free parts only.
 if (TARGET ggml-base)
-    target_sources(test-tsr-backend-units PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tsr-build.cpp)
+    target_sources(test-tsr-backend-units PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tsr-build.cpp ${CMAKE_CURRENT_SOURCE_DIR}/tsr-weights.cpp)
     target_include_directories(test-tsr-backend-units PRIVATE
         ${TESSERACT_ROOT}/third_party/llama.cpp/ggml/include ${TESSERACT_ROOT}/third_party/llama.cpp/ggml/src)
     target_link_libraries(test-tsr-backend-units PRIVATE ggml-base)
@@ -89,6 +89,27 @@ if (TARGET ggml AND TARGET ggml-tesseract)
     add_test(NAME transport_ggml_e2e_mock_tmax8 COMMAND test-ggml-tesseract)
     set_tests_properties(transport_ggml_e2e_mock_tmax8 PROPERTIES ENVIRONMENT
         "TSR_DEVICE=mock;TSR_MOCK_TMAX=8;TSR_MOCK_NUM_CH=3;TSR_MOCK_DMA_ALIGN=4096;TSR_MOCK_DMA_CHUNK_KIB=12;TSR_SIM_RACE=fatal")
+    # MoE (SW-60 to SW-65): build_moe_ffn's graph with Gemma 4's router, the expert tensors placed per channel with the
+    # expert stride, T = 1 .. 70, against the CPU. Three device configurations: every kind (the routing group is one
+    # MOE_ROUTE record, the scale group fused into MUL_MAT_ID), M6's kinds plus MUL_MAT_ID (the CPU selects the experts,
+    # the device runs the matrix products) and every kind but MOE_ROUTE.
+    add_executable(test-tsr-moe tests/test-tsr-moe.cpp)
+    target_link_libraries(test-tsr-moe PRIVATE ggml ggml-base)
+    target_compile_features(test-tsr-moe PRIVATE cxx_std_17)
+    target_compile_options(test-tsr-moe PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra)
+    set_target_properties(test-tsr-moe PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    add_test(NAME ggml_tesseract_moe COMMAND test-tsr-moe)
+    set_tests_properties(ggml_tesseract_moe PROPERTIES ENVIRONMENT "TSR_SIM_RACE=fatal;TSR_TEST_ROUTE=1;TSR_TEST_MMID=1")
+    add_test(NAME ggml_tesseract_moe_tmax8 COMMAND test-tsr-moe)
+    set_tests_properties(ggml_tesseract_moe_tmax8 PROPERTIES ENVIRONMENT
+        "TSR_SIM_TMAX=8;TSR_SIM_RACE=fatal;TSR_TEST_ROUTE=1;TSR_TEST_MMID=1")
+    add_test(NAME ggml_tesseract_moe_m6 COMMAND test-tsr-moe)
+    set_tests_properties(ggml_tesseract_moe_m6 PROPERTIES ENVIRONMENT
+        "TSR_KINDS=m6,+MUL_MAT_ID;TSR_SIM_RACE=fatal;TSR_TEST_ROUTE=0;TSR_TEST_MMID=1")
+    add_test(NAME ggml_tesseract_moe_host_route COMMAND test-tsr-moe)
+    set_tests_properties(ggml_tesseract_moe_host_route PROPERTIES ENVIRONMENT
+        "TSR_KINDS=all,-MOE_ROUTE;TSR_SIM_RACE=fatal;TSR_TEST_ROUTE=0;TSR_TEST_MMID=1")
+
     # W3b builder: these e2e cases are M6's (MUL_MAT only: "ADD must be rejected"; the IO region
     # filled to force host memory and the staged path): they run with the device restricted to M6's
     # kinds (TSR_KINDS=m6, SW-14) and IO-only compute windows (TSR_COMPUTE_WINDOWS=io). M7 is
@@ -175,6 +196,11 @@ if (TARGET ggml AND TARGET ggml-tesseract)
         add_test(NAME ggml_tesseract_backend_ops_bigt
                  COMMAND test-backend-ops test -o MUL_MAT -b Tesseract0 -p "^type_a=f16,type_b=f32,m=16,n=2105344,k=32,")
         set_tests_properties(ggml_tesseract_backend_ops_bigt PROPERTIES LABELS slow ENVIRONMENT "TSR_SIM_RACE=off")
+        # MoE (SW-62): the whole MUL_MAT_ID case set of the pin (945 cases: 928 supported and compared with the CPU, 17
+        # refused: m not a multiple of 16, k not a multiple of the block, iq2_xxs).
+        add_test(NAME ggml_tesseract_backend_ops_mul_mat_id
+                 COMMAND test-backend-ops test -o MUL_MAT_ID -b Tesseract0)
+        set_tests_properties(ggml_tesseract_backend_ops_mul_mat_id PROPERTIES TIMEOUT 1200 ENVIRONMENT "TSR_SIM_RACE=fatal")
     endif()
 endif()
 

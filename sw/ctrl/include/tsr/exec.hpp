@@ -136,6 +136,10 @@ ticket kind_set_rows_kv(const volatile uint32_t * args, uint32_t n_args, uint32_
 ticket kind_flash_attn(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
 ticket kind_cpy(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
 ticket kind_unary(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
+// The MoE kinds (SW §7.5, SW-60 to SW-65; sw/ctrl/kernels/k_moe.cpp): 0x1E MOE_ROUTE, 0x1F MUL_MAT_ID. They read
+// device-computed data with the RISC-V and join inside the op stream (header comment of k_moe.cpp).
+ticket kind_moe_route(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
+ticket kind_mul_mat_id(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
 
 // The decode fast paths of the short M7 kinds (W2b integration; SW §7.3 "M7 kinds in the executor"),
 // the executor's first call for a record of these kinds (graph.cpp's kind table): args, kflags and d

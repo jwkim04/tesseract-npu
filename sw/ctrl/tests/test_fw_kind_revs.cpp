@@ -22,6 +22,9 @@
 //                       (finite) mask with its f32 copy
 //         CPY           dense and strided rows; one row
 //         UNARY         TANH, GELU16, SILU, EXP, GELU
+//         MOE_ROUTE     128 and 64 experts: one token, three, tiles of 16 and 4, argsort-shaped and dense ids rows,
+//                       ties and a NaN row
+//         MUL_MAT_ID    the gate-up form (x shared by the slots, Q4_K) and the down form (x per slot, Q8_0, scale table)
 //       Inputs come from an integer PRNG (splitmix64); every f32 input is an integer times a power of
 //       two and every f32 parameter a fixed bit pattern, so no libm call enters a digest. A kind's
 //       digest is FNV-1a 64 over, per launch in corpus order, the DONE status, ERR_CODE and RET, then
@@ -109,7 +112,7 @@ void put_f32_rows(tsr_sim * sim, rng_t * r, uint32_t h, uint32_t rows, uint32_t 
 const char * const WATCH[] = {
     // general paths
     "addmul_general(", "scale_general(", "unary_general(", "glu_general(", "rms_general(", "rope_general(",
-    "get_rows_general(", "cpy_general(", "set_rows_any(", "mulmat_any(",
+    "get_rows_general(", "cpy_general(", "set_rows_any(", "mulmat_any(", "route_general(", "mmid_general(",
     // fast entries
     "kind_add_fast(", "kind_mul_fast(", "kind_scale_fast(", "kind_unary_fast(", "kind_glu_fast(", "kind_rms_norm_fast(",
     "kind_rope_fast(", "kind_get_rows_fast(", "kind_cpy_fast(", "kind_set_rows_kv_fast(", "mulmat_t1_fast(",
@@ -726,6 +729,80 @@ void corpus_unary(launch_ctx & c) {
     }
 }
 
+// MOE_ROUTE and MUL_MAT_ID (SW §7.5): the routing of 128 / 64 experts (tiles of 16 tokens, argsort-shaped and
+// dense ids rows, ties, a NaN row) and the two projection forms (the x row shared by the slots, one x row per
+// slot with the scale table). Both kinds have one path (their general function).
+void corpus_moe(launch_ctx & c) {
+    struct rt { const char * what; uint32_t n, k, T, istride; int mode; };
+    static const rt routes[] = {
+        { "MOE_ROUTE 128 experts, 8 used, T 1", 128, 8, 1, 8, 0 },
+        { "MOE_ROUTE 128 experts, 8 used, T 3, argsort-shaped ids rows", 128, 8, 3, 8, 0 },
+        { "MOE_ROUTE 64 experts, 4 used, T 20 (tiles of 16 and 4), dense ids rows", 64, 4, 20, 1, 0 },
+        { "MOE_ROUTE 128 experts, 8 used, T 4, ties and a NaN row", 128, 8, 4, 8, 1 },
+    };
+    for (const rt & q : routes) {
+        const uint32_t ln = L16(q.n);
+        const uint32_t logits = c.take(uint64_t(q.T) * ln), ids = c.take(uint64_t(q.T) * q.istride + 1u),
+                       wout = c.take(L16(q.T * q.k) + 1u);
+        put_f32_rows(c.sim, &c.r, logits, q.T, ln, q.n, 2.0f);
+        if (q.mode == 1) {                                  // equal logits across the boundary; the last row has a NaN
+            for (uint32_t t = 0; t < q.T; ++t) {
+                std::vector<uint32_t> row(size_t(ln) * 16u, 0u);
+                for (uint32_t i = 0; i < q.n; ++i) row[i] = f2u(-2.0f + 0.5f * float(rng_below(&c.r, 5)));
+                if (t + 1u == q.T) row[37] = 0x7FC00000u;
+                tsr_sim_dram_write(c.sim, logits >> 28, (uint64_t(logits & 0x0FFFFFFFu) + uint64_t(t) * ln) * LINE, row.data(),
+                                   row.size() * 4u);
+            }
+        }
+        opl::writer w(opl::F_STOP_ON_ERROR, 0x4D52u);
+        w.add_moe_route(opl::moe_route_args{ logits, ln, ids, q.istride, wout, q.n, q.k, q.T, 0u });
+        std::vector<region> out;
+        for (uint32_t t = 0; t < q.T; ++t) out.push_back(region{ ids >> 28, (ids & 0x0FFFFFFFu) + uint64_t(t) * q.istride, 1u });
+        out.push_back(region{ wout >> 28, wout & 0x0FFFFFFFu, L16(q.T * q.k) });
+        run(c, opl::K_MOE_ROUTE, q.what, w, out, true, general_path("route_general("));
+    }
+    struct mm { const char * what; uint32_t fmt, N, K, T, nu, ne; bool shared, scale; };
+    static const mm mms[] = {
+        { "MUL_MAT_ID Q4_K 64 x 256, 8 experts, 4 used, T 2, x shared by the slots", TSR_FMT_Q4_K, 64, 256, 2, 4, 8, true, false },
+        { "MUL_MAT_ID Q8_0 48 x 64, 8 experts, 4 used, T 2, x per slot, scale table", TSR_FMT_Q8_0, 48, 64, 2, 4, 8, false, true },
+    };
+    uint64_t ebase = W_BEAT + 0x40000u;
+    for (const mm & q : mms) {
+        const uint32_t C = tsr_sim_config(c.sim)->num_ch;
+        const uint64_t stride = tsr_tensor_ch_beats(q.fmt, q.N, q.K, C);
+        const size_t row_bytes = size_t(q.K / tsr_fmt_block_size(q.fmt)) * tsr_fmt_ggml_block_bytes(q.fmt);
+        std::vector<uint8_t> blk(row_bytes);
+        for (uint32_t e = 0; e < q.ne; ++e)
+            for (uint32_t n = 0; n < q.N; ++n) {
+                gen_row_blocks(&c.r, q.fmt, q.K, blk.data());
+                uint32_t ch;
+                uint64_t off;
+                tsr_row_location(q.fmt, q.N, q.K, C, n, &ch, &off);
+                tsr_repack_row(q.fmt, blk.data(), q.K, tsr_sim_dram(c.sim, ch) + (ebase + e * stride + off) * LINE);
+            }
+        const uint32_t xl = q.K / 16u, yl = L16(q.N);
+        const uint32_t xslot = q.shared ? 0u : xl, xtok = q.shared ? xl : q.nu * xl;
+        const uint32_t x = c.take(uint64_t(q.T) * xtok), dst = c.take(uint64_t(q.T) * q.nu * yl);
+        put_f32_rows(c.sim, &c.r, x, q.T * (q.shared ? 1u : q.nu), xl, q.K, 1.0f);
+        const uint32_t idh = c.take(L16(q.T * q.nu) + 1u, 0);
+        std::vector<uint32_t> idw(size_t(L16(q.T * q.nu) + 1u) * 16u, 0u);
+        for (uint32_t i = 0; i < q.T * q.nu; ++i) idw[i] = rng_below(&c.r, q.ne);
+        tsr_sim_dram_write(c.sim, 0, uint64_t(idh & 0x0FFFFFFFu) * LINE, idw.data(), idw.size() * 4u);
+        uint32_t sc = NONE;
+        if (q.scale) {
+            sc = c.take(L16(q.ne));
+            put_f32_rows(c.sim, &c.r, sc, 1, L16(q.ne), q.ne, 2.0f);
+        }
+        opl::writer w(opl::F_STOP_ON_ERROR, 0x4D49u);
+        w.add_mul_mat_id(opl::mul_mat_id_args{ dst, yl, x, xslot, xtok, idh, 4u * q.nu, uint32_t(ebase), uint32_t(stride), q.fmt, q.N,
+                                               q.K, q.T, q.nu, q.ne, sc, 0u });
+        std::vector<region> out;
+        rows_region(out, dst, q.T * q.nu, yl, yl);
+        run(c, opl::K_MUL_MAT_ID, q.what, w, out, true, general_path("mmid_general("));
+        ebase += (stride * q.ne + 63u) & ~63ull;
+    }
+}
+
 // A KV plane pair (AT §4) at KV_BEAT on every channel: the geometry, every cell below n_fill holding a
 // row stored the device's way (QACT A32 + KVST of the reference: tile ops, not a kind).
 struct planes {
@@ -1017,6 +1094,7 @@ int main(int argc, char ** argv) {
         corpus_unary(c);
         corpus_mulmat_epilogue(c, opl::K_MUL_MAT_SCALE);
         corpus_mulmat_epilogue(c, opl::K_MUL_MAT_SOFTCAP);
+        corpus_moe(c);                  // last: it must not move the data of the corpora above
     }
     tsr_rv_agent_set_retire_hook(tsr_sim_rv_agent(sim), nullptr, nullptr);
     fwh_close(&h);
