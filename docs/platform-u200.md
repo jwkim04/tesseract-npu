@@ -3301,7 +3301,9 @@ regions; the Pblocks have kept the kernel out of them since. What a 4.0 ns kerne
 interconnect has 2,668 endpoints with a data path over 4.0 ns at 5.0 ns (2,014 of them one or two levels, so wires; 416 over 4.4 ns), and our adapter
 642 (124 over 4.4 ns), the data-mover (`h2c`) 302. Nothing of it can be changed in the source. Risk: high.
 
-**Decision.** No-go for a 250 MHz first link; the combined link is prepared at 200 MHz.
+**Decision.** The user decided on 2026-11-09 to link at 250 MHz (`k4.cfg` requests `0:250|1:100`, commit `f8913e6`) after the block results. My assessment
+before that decision was no-go for a first 250 MHz link, with the 200 MHz link of the same source first; the reasons stand and are the
+risks of this link:
 
 - The bar (every block at 4.0 ns out of context with WNS of about +0.3 ns): after the changes five of the eight rows are below it at 4.0 ns
   (SPM +0.07, QACT +0.18, control plane +0.14, cluster +0.20, gather +0.29; the DMA +0.37 and the vector unit with GDN +0.34 are above). They
@@ -3313,9 +3315,9 @@ interconnect has 2,668 endpoints with a data path over 4.0 ns at 5.0 ns (2,014 o
 - The shell is the risk that cannot be reduced in the source: its own 250 MHz clock closed by +0.017 ns in the fourth link, and its
   logic on the kernel clock has 2,668 endpoints longer than 4.0 ns at 5.0 ns.
 - My estimate for a 250 MHz link of this image closing the core clock and every shell clock at the first attempt is below 25 %. A failed
-  link costs about 4.5 hours and gives no image; the 200 MHz link of the same source gives the image the PV fix, GDN and the stages
-  need, and its slack list (endpoints below 0.5 ns at 5.0 ns, the tool of `build/k4full/f250`) shows how far a later 250 MHz attempt
-  is. If the user wants to try 250 MHz first, the change is one line (below).
+  link costs about 4.5 hours and gives no image. The routed checkpoint of a failed link is the first in-context data at 4.0 ns: read its
+  failing endpoints by group (`tb/core/viv/retime.tcl` and the list tool of `build/k4full/f250` work on it) against the groups above. The 200
+  MHz request is one line of `k4.cfg` (`0:200|1:100`).
 
 **The link** (prepared, not started). `build/f250/k4f250_link.sh` (not in git; `k4full_link.sh` for this worktree): records the source commit,
 status and diff, then `hw/u200/vivado_slot.sh hw/u200/build_xclbin.sh k4` with `TSR_BUILD_JOBS=8` and `TSR_U200_SYNTH_JOBS=16`; output
@@ -3325,7 +3327,7 @@ Differences from the fourth link (`k4full` at `d33f816`):
 | | Fourth link | This link |
 |---|---|---|
 | Source | `d33f816` | branch `k4f250`: `FAST_CLK` 1, `HAS_GDN` 1 (CAPS 0x121), the ATTPV zero-state fix (`b967a31`) |
-| Request (`hw/u200/k4.cfg`) | `kernel_frequency=0:200|1:100` | the same; a 250 MHz link is `0:250|1:100`, and `clock_net_check.tcl` and `clock_final_check.tcl` follow it (accept 250.0 to 250.1 and 100.0 to 100.1 MHz) |
+| Request (`hw/u200/k4.cfg`) | `kernel_frequency=0:200|1:100` | `0:250|1:100`; `clock_net_check.tcl` and `clock_final_check.tcl` follow the request (accept 250.0 to 250.1 and 100.0 to 100.1 MHz) |
 | Pblocks, hooks, directives | `k4_major_blocks.tcl`, `AggressiveExplore` place / route / post-route | unchanged; the GDN engine is inside `pblock_tsr_vu` (map `docs/fig/floorplan/k4f250-pblock-plan.png`) |
 
 Read in the log: the VU Pblock's occupancy (`K4 major blocks: pblock_tsr_vu`: 25,320 CLBs, 420 RAMB36, 1,320 DSP, 160 URAM), the SLR occupancy
