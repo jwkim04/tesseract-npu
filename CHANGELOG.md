@@ -40,6 +40,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
   `sim` transport. Results do not change: only the cycle counts. `TSR_SIM_LOG` takes a `w,` prefix (the words of every push);
   `TSR_OPL_PROF=1` / `TSR_OPL_KINDS=<file>` make the backend profile its launches and list their record kinds; `tsr-dbg`'s
   `trw dump` reads a ring that an earlier process wrote; `sw/tools/trw_vs_sim.py` compares a card run with a simulator run.
+- The ggml-tesseract backend runs a MOE_ROUTE of more than 64 tokens (several tiles): the record writes its ids and weights to a device
+  scratch and two CPY records move them into the graph's tensors (SW-76). Host only: no firmware, kind or numerics change. Gemma 4 26B-A4B
+  and Qwen3-30B-A3B prefill at the default `-ub 512`; before, the backend aborted at `-ub 256` and above (Qwen3: at `-ub 128`).
+- Qwen3-30B-A3B (llama.cpp `qwen3moe`) runs on the MoE kinds with no backend, firmware or llama.cpp change (SW-77). New tests: the
+  Qwen3 layer in `test-tsr-moe` (T = 1 to 256) and two tiny `qwen3moe` models through klcheck.
+- The PyTorch backend runs on the Basis firmware and the K4 card image (`tsr_u200_k4`, `T_MAX` 4). `tesseract_torch.QuantLinear` and the
+  op `tesseract::linear_blocks` run weights that arrive as ggml Q8_0 or Q4_K blocks without conversion (SW-81). New ctests
+  `rt_sim_tmax4` and `torch_pytest_tmax4`; `hf_check.py` has a steady-state forward and a `--speed` mode.
 
 ## Basis 0.1.0 (2026-10-31)
 

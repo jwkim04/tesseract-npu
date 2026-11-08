@@ -503,16 +503,22 @@ values and generated tokens are identical to those of the first run of this chec
 - **GGUF head.** The head's blocks equal `output.weight` of `models/qwen2.5-0.5b-instruct-q8_0.gguf`
   (the llama.cpp path's GGUF), and libtsr_ref on those GGUF blocks gives the same y.
 - **Upload.** 169 weights, 1.98 GB of f32 in, 528.7 MB (504.2 MiB) of Q8_0 written.
-- **Device (sim cycle model, T_MAX 1).** 2,142,863 PERF cycles per token over the 32-token forward (MVM 2,080,256; the
-  first run of this check (October 2026) had 2,166,289 with the same MVM cycles). 169 execs per forward, all program-cache
+- **Device (sim cycle model, T_MAX 1).** 2,155,269 PERF cycles per token over the 32-token forward (MVM 2,093,776), with the
+  cycle model of SW-80 (2,142,863 and 2,080,256 before it; the first run of this check (October 2026) had 2,166,289 with the
+  MVM cycles of the older model). 169 execs per forward, all program-cache
   hits. 529.6 MB read from device DRAM per token.
 - **T_MAX.** The firmware tiles the tokens of a record by T_MAX (§3.3), and a tile reads the weights once. Forward of
   the first 8 prompt tokens (`--forward-only --tokens 8`, the first forward), PERF cycles per token (MVM cycles):
 
   | `TSR_SIM_TMAX` | 1 | 4 (K4 image) | 8 |
   | --- | --- | --- | --- |
-  | cycles per token | 2,213,080 (2,080,256) | 716,870 (594,580) | 478,237 (335,128) |
+  | cycles per token | 2,233,687 (2,093,776) | 776,816 (597,970) | 585,588 (336,848) |
   | logits | sha256 `4a5e7b24…7f66`, 8 of 8 rows bit-identical | the same | the same |
+
+  These cycles are from the model after SW-80 (default lanes, merged build, 2026-11-09); before it they were 2,213,080 (2,080,256),
+  716,870 (594,580) and 478,237 (335,128). The difference is the store and MVM-fill latencies of the card and the QACT divider time that SW-80
+  added to the model. The logits did not change. With `TSR_SIM_CARD=k4full` (the K4 image's
+  configuration) the 8-token forward takes 793,988 cycles per token, the logits are the same, and the card takes 808 K.
 
 - **Wall time on the simulator.** On the loaded host the 32-token forward took 21.8 s (the CPU ops 1.9 s), the first
   call 59 s (Dynamo, AOT, partition, run), the 16-token generation 536 s (600 token passes; 150 s on the CPU) and the whole
@@ -617,8 +623,9 @@ Device cost against the first card run of this backend (October 2026, the earlie
 | first 8-token forward with compilation, wall | 2.8 s | 50 s (Dynamo and AOT on the loaded host; the same step took 31 to 53 s on the simulator) |
 
 The PERF cycles are 11.2 times fewer, and the device time per token 7.5 times shorter (the clock is lower). The cycle factor is
-the four channels (4 times) and `T_MAX` 4 (3.1 times: on the simulator the same 8-token forward takes 2.21 M cycles at `T_MAX` 1
-and 0.72 M at `T_MAX` 4, §6.5). The simulator's cycle model gives 0.717 M for this forward; the card gives 0.808 M.
+the four channels (4 times) and `T_MAX` 4 (2.9 times: on the simulator the same 8-token forward takes 2.23 M cycles at `T_MAX` 1
+and 0.78 M at `T_MAX` 4, §6.5). The simulator's cycle model in the card configuration (`TSR_SIM_CARD=k4full`, SW-80) gives 0.794 M for this
+forward and 0.639 M for the 32-token one; the card gives 0.808 M and 0.659 M (1.7 % and 3.0 % more). Before SW-80 the model gave 0.717 M for the 8-token forward.
 
 Steady-state forwards, `hf_check.py --speed 1,8,32` (best of 3, the card, `T_MAX` 4; the values in parentheses are from a second
 pass with the PERF counters off, which saves their 12 CSR reads per launch):

@@ -2,6 +2,26 @@
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
 
+## Resume here for the software: four branches in `sw-moegdn` (November 9)
+
+Software only; no RTL change (`git diff 2d887ec -- rtl hw` is empty). Three finished branches were merged into `sw-moegdn` (real merges, in this order), on top
+of SW-76: `moe-qwen3` (SW-77, Qwen3-30B-A3B), `vu-perf` (SW-80, the simulator's cycle models) and `torch-basis` (SW-81, the PyTorch backend and `QuantLinear`).
+The sections below describe each branch as it was before the merge.
+
+- Decisions in [design/06-software-verification.md](design/06-software-verification.md): SW-75, 76, 77, 80, 81. SW-78 and SW-79 belong to branch `gdn-fw`, which is
+  not merged yet; do not use the numbers.
+- Qwen3-30B-A3B prefill runs at the default `-ub 512` (SW-76 fixed the several-tile route): 26.72 tok/s best, 26.60 median on the card, 513 of 513 rows identical to the
+  simulator. Gemma 4 26B-A4B: 26.58 / 26.56 tok/s, 515 of 515 rows identical. The Qwen3 layer test in `test-tsr-moe` now runs T = 65, 70, 130 and 256 as well
+  (70 aborted before SW-76).
+- The simulator in the card configuration (`TSR_SIM_CARD=k4full`) is within 0.2 % (Qwen3.8 2B, 12.65 M against 12.63 M cycles) and 0.4 % (Gemma 4 26B-A4B) of the card.
+  The Qwen2.5-0.5B forward of the PyTorch backend: 0.794 M against the card's 0.808 M for 8 tokens, 0.639 M against 0.659 M for 32.
+  Older simulator cycle figures in the docs say that they come from the model before SW-80.
+- Checked after the merges (build `build/dev`, with `TSR_WITH_TORCH=ON`): `ctest -LE slow` 318 of 318 (the tokenizer vocabulary test is disabled), including the six
+  `ggml_tesseract_moe*` / `qwen3moe` cases and `torch_pytest*` at `T_MAX` 1, 4 and 8; `gen_tables.py --check` and `gen_tops.py --check`; `tb/vu/test_vu_timing.py` and
+  `tb/qact` (15 passed, 4 opt-in skipped). klcheck M7 on Qwen3.8 2B (1 prompt, 16 tokens, simulator): 16 of 16 rows bit-identical to the same run of the build before the
+  merges (510e282), with the default lanes and with `TSR_SIM_CARD=k4full`; the logits of the PyTorch 8-token forward keep their sha256 at `T_MAX` 1, 4 and 8.
+- Open: branch `gdn-fw` (SW-78, SW-79); grouping of tokens by expert (SW-66); the KV store, MOE_ROUTE and the DMA's half rate while the VU runs are not in the cycle model (SW-80).
+
 ## Qwen3-30B-A3B on the simulator and the card (SW-77, November 9)
 
 Done on a branch from `sw-moegdn` (2d887ec), now merged. No RTL, firmware, backend or llama.cpp change: llama.cpp's `qwen3moe` graph (the same `build_moe_ffn`

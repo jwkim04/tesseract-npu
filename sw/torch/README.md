@@ -422,14 +422,14 @@ those of the card run below:
   byte-identical to ggml. (The head's blocks equal `output.weight` of
   `models/qwen2.5-0.5b-instruct-q8_0.gguf`, and libtsr_ref on those GGUF blocks gives the same y: `--gguf`, the first run
   of this check; not repeated.)
-- Device: PERF 2,142,863 cycles / token (MVM 2,080,256; sim cycle model; 2,166,289 in the first run, the same MVM
+- Device: PERF 2,155,269 cycles / token (MVM 2,093,776; sim cycle model of SW-80; 2,142,863 and 2,080,256 before it, 2,166,289 in the first run, the same MVM
   cycles), 169 execs per forward (all program-cache hits), 529.6 MB read from device DRAM per token. Upload of 169 weights
   (504.2 MiB Q8_0) 4.2 s. On the loaded host: 21.8 s per 32-token forward (device calls 19.9 s, CPU ops 1.9 s), first call
   59 s, generation 536 s on the device (600 token passes) and 150 s on the CPU, whole script 1053 s, peak RSS 3.2 GB.
 
 The `--forward-only --tokens 8` run gives logits with sha256 `4a5e7b24…7f66` (8 rows): 169 / 169 matmul nodes and
 calls on the device, 0 CPU fallbacks, PASS, at T_MAX 1, 4 and 8 alike (8 of 8 rows bit-identical to the T_MAX 1 run). The
-PERF cycles per token of that forward are 2,213,080 at T_MAX 1, 716,870 at 4 and 478,237 at 8: the firmware tiles the
+PERF cycles per token of that forward are 2,233,687 at T_MAX 1, 776,816 at 4 and 585,588 at 8 (2,213,080, 716,870 and 478,237 before SW-80 changed the cycle model): the firmware tiles the
 tokens of a record by T_MAX, and a tile reads the weights once. It also runs a second, steady-state forward.
 `--speed 1,8,32` gives the steady-state wall, device-call time and PERF cycles per token of forwards of 1, 8 and 32
 tokens, with the PERF counters on and off.

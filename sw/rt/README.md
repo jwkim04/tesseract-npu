@@ -96,8 +96,8 @@ amax (DAZ / FTZ, `docs/spec.md` §21), and it emits a QA image (f32 scale), not 
   independent. A list above 4096 records would run in pieces.
 - **T tiling is the firmware's.** The record carries the whole T of an IO tile and the firmware cuts it into tiles of
   min(T_MAX, ring) tokens. The runtime does not split T by T_MAX. On the K4 image (T_MAX 4) a 32-token call is eight
-  tiles in one launch and reads the weights eight times, not 32 (Qwen2.5-0.5B, 8 tokens: 716,870 PERF cycles per
-  token at T_MAX 4 against 2,213,080 at T_MAX 1, on the simulator; `docs/torch-backend.md` §6.5).
+  tiles in one launch and reads the weights eight times, not 32 (Qwen2.5-0.5B, 8 tokens: 776,816 PERF cycles per
+  token at T_MAX 4 against 2,233,687 at T_MAX 1, on the simulator; `docs/torch-backend.md` §6.5).
 - **N parts**: a weight is cut into row ranges when x + QA + y of T_MAX tokens (or of one token, if
   T_MAX tokens can never fit) would exceed the SPM, and one token of a part must fit the
   firmware's scratch-ring budget (`plan.hpp` `ring_budget`: the SPM minus the executor's argument,
