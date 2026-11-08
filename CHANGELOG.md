@@ -29,6 +29,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
   without it, and every record with S_v below 64, produces revision 1's bits (the composed row of `kind_revs.txt` keeps
   digest `b040cc2f4da8c0ca`). The record and the planner do not change. The `sim` transport has `TSR_SIM_GDN=0` to clear
   `CAPS` bit 8. The kind table signature is now 0x2381. The image takes 85,504 B of ITCM.
+- The ggml-tesseract backend puts a GATED_DELTA_NET on its recurrent-state cache cell when the ids of the state gather say that every
+  sequence keeps its cell (SW-82): the record reads the cell and writes the new state back into it, and the `GET_ROWS` gather and the state
+  `CPY` of the pinned graph are absorbed. One pass over the state instead of three. No record, firmware or ABI change; the results are
+  bit-identical. A plan that depends on the ids is checked again at every reuse. `TSR_GDN_CELL=0` turns it off.
 - UNARY accepts func 5, SIGMOID (VOP SIGMOID). The kind's revision stays 1: no existing record changes.
 - The ggml-tesseract backend lowers the Gated DeltaNet layer graph of the pinned llama.cpp (`qwen35`): SOFTPLUS, SIGMOID and SILU
   on gate tensors, `GATED_DELTA_NET`, the `CONCAT` / `SSM_CONV` / state `CPY` group (two window `CPY` records and one

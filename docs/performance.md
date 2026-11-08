@@ -773,13 +773,16 @@ lanes** (the card has 8 / 4, so its VU is slower; hand-scaled figures below):
 | Per head and token, steady state | 8.6 K / 3.9 K | 8.6 K / 3.9 K |
 | At 200 MHz | 51.8 ms (19.3 tok/s) / 45.7 ms (21.9 tok/s) | 531 ms / 484 ms |
 | At 250 MHz | 41.5 ms / 36.5 ms | 425 ms / 387 ms |
+| With the state on its cache cell (SW-82), total | 9.18 M / 7.95 M | 96.8 M / 87.3 M |
+| With the state on its cache cell, DMA busy | 1.21 M / 1.21 M | 8.2 M / 8.2 M |
+| With the state on its cache cell, 200 MHz / 250 MHz | 45.9 ms, 21.8 tok/s / 36.7 ms and 39.8 ms, 25.2 tok/s / 31.8 ms | 484 ms / 387 ms and 437 ms / 349 ms |
 
 The fused step is limited by the RISC-V's issue rate (11 pushes, 1,827 instructions per head and token), not by the VU: with the RISC-V
 four times faster the isolated 27B record of 16 tokens would take 1.48 M cycles instead of 2.98 M. The model charges the GDN op at 16 front lanes
 (1,802 cycles for 128 × 128); at the card's 8 front lanes it is 2,834. Hand-scaled to 8 / 8 / 4 lanes with the model's formulas: VU time per head
 and token 12.7 K composed against 3.0 K fused (8.5 K and 1.9 K in the model), the fused step about 3.5 K core cycles at the 250 MHz link because of
 the RISC-V, so about 2.6 M fewer cycles per 2B token (1.2 M in the model) and about 21 M fewer per 27B token; estimates, to be measured again when `vu-perf`
-makes the lane counts configurable. The image takes 85,504 B of ITCM. Accuracy: [klcheck.md](klcheck.md) (2B, 8 × 64: ratio 1.103, top-1 97.27 %).
+makes the lane counts configurable. The state on its cache cell (the gather and the copy of the pinned graph absorbed when the sequences keep their cells; `TSR_GDN_CELL=0` turns it off, results bit-identical) removes two of the three DRAM passes over the state: DMA busy halves, and a 2B token takes 11 to 13 % fewer cycles, 23 % with the fused path (7.95 M against 10.36 M). The image takes 85,504 B of ITCM. Accuracy: [klcheck.md](klcheck.md) (2B, 8 × 64: ratio 1.103, top-1 97.27 %).
 
 **Firmware image** (`tsr-elf size build/dev/fw/tsr-fw.elf`, measured on the production image;
 ITCM is 131,072 B, DTCM 65,536 B):

@@ -29,8 +29,15 @@ came out of the merge unchanged (`gen_tables.py --check` and `gen_tops.py --chec
   GDN op at 16 front lanes (1.8 K cycles for 128 × 128, 2.8 K at 8). The fused step is limited by the RISC-V issue rate (3.9 K cycles per head and
   token), so the model gains 12 % (2B) and 9 % (27B) of a token. Hand-scaled to 8 / 8 / 4 lanes: VU time per head and token 12.7 K composed against
   3.0 K fused, the fused step about 3.5 K core cycles (RISC-V-bound) at the 250 MHz link, about 2.6 M fewer cycles per 2B token.
-- Left: the card run (plan below); a decode step that shares the g / beta / k / q / v loads across the heads of a token (6 pushes per head
-  instead of 11, about 2 % of a 27B token); the state's three DRAM passes per layer (DMA busy 2.4 M of 9.1 M cycles on the 2B).
+- The state on its cache cell (SW-82, host lowering only): when `rs_s_copy` says every sequence keeps its cell, the GATED_DELTA_NET record reads and
+  writes the cell (`STATE_IN` = `STATE_OUT`) and the `GET_ROWS` gather and the state `CPY` are absorbed: one pass over the state instead of three,
+  for both paths, bits unchanged (512 of 512 klcheck rows identical to runs made before it). A plan that depends on the ids is checked at every reuse
+  (`tsr_plan_state_holds`). Model with 16 / 8 lanes: DMA busy of a 2B token 2.40 M to 1.21 M, the token 10.36 M to 9.18 M composed and 9.14 M to 7.95 M
+  fused (−23 % together); 27B 106.3 M to 87.3 M. `TSR_GDN_CELL=0` turns it off; `TSR_STATS` shows "GATED_DELTA_NET records on their state cache cell".
+  Cases that keep the three passes: a new sequence whose zero cell is another cell, `seq_cp`, several sequences that swap cells, extra states.
+- Left: the card run (plan below; the card plan applies to the host build with SW-82, so the card also shows the DMA saving: compare DMA busy against the
+  2.4 M of the 2B's earlier card run); a decode step that shares the g / beta / k / q / v loads across the heads of a token (6 pushes per head instead of 11,
+  about 2 % of a 27B token).
 
 ### Card plan for the `k4f250` image (not run)
 
@@ -54,10 +61,12 @@ build/xrt/bin/klcheck compare --ref build/card/gdnfw/sim16.klc --dev build/card/
 TSR_XCLBIN=$X TSR_STATS=1 build/xrt/bin/llama-completion -m models/qwen3.8-2b-empero/Qwen3.8-2B-Q4_K_M.gguf -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -c 4096 --temp 0 -no-cnv -n 65 -p "The history of the printing press begins"
 ```
 
-What to expect (simulator model with 16 / 8 lanes, per decode token): 9.14 M cycles against 10.36 M composed (−1.23 M); VU busy 0.72 M against 2.63 M.
+What to expect (simulator model with 16 / 8 lanes, per decode token): 7.95 M cycles against 10.36 M composed three-pass (fused path −1.23 M, state on its cell −1.19 M); VU busy 0.72 M
+against 2.63 M, DMA busy 1.21 M against 2.40 M. `TSR_GDN_CELL=0` gives the three-pass figure (9.14 M) on the same image.
 The card showed 12.63 M cycles and a VU busy of 4.76 M for the composed path at 200 MHz (1.7 times the model's VU busy, from the 8 / 4 lanes), where the
-recurrence is dearer, so the hand-scaled saving is about 2.6 M cycles (20 %): 10 M cycles, about 25 tok/s at 250 MHz against 15.66 tok/s of the composed
-path at 200 MHz. Anything from 1.2 M (the model's figure) up is consistent with the model; compare the card's VU busy (the recurrence part shrinks from about 3.7 M to 0.9 M, so 1 to 2 M in all) first. If the
+recurrence is dearer, so the hand-scaled saving of the fused path is about 2.6 M cycles, and the state on its cell takes about 1.2 M more (DMA busy, not lane-bound):
+12.63 M becomes about 8.8 M, about 28 tok/s at 250 MHz against 15.66 tok/s of the composed path at 200 MHz. Any saving from the model's 2.4 M up is consistent with the
+model. Compare the card's VU busy first (the recurrence part shrinks from about 3.7 M to 0.9 M, so 1 to 2 M in all) and its DMA busy second (about half of 2.4 M). If the
 bits are not identical to the simulator, the first suspects are the op itself (id 11 shows it alone), then the in-place state tile (the odd heads of id 11
 update in place) and the s-register ordering of the `SOP` pair before each `GDN`. For a record-level difference use `TSR_DUMP_RE` on the nodes
 `attn_output-<layer>` against a `TSR_SIM_GDN=1` simulator run.

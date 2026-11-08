@@ -1603,6 +1603,155 @@ static void test_gdn_lowering() {
     }
 }
 
+// The state cell of a GATED_DELTA_NET (SW-82): llama.cpp's build_rs gathers the layer's state rows by the ids of rs_s_copy
+// (GET_ROWS), build_recurrent_attn runs the recurrence and a CPY moves the new state into the sequences' cache cells. When the
+// ids are the identity the record reads and writes the cell itself and the gather and the CPY are absorbed. The group is built
+// as the pinned graph does (qwen35.cpp, delta-net-base.cpp) and the cases that must keep the three passes are checked.
+static void test_gdn_state_cell() {
+    fake_kv kv;
+    tsr_build_env env = fake_env(&kv);
+    std::vector<int32_t> ids_now;
+    env.read_i32 = [&](const ggml_tensor *, std::vector<int32_t> * v) {
+        *v = ids_now;
+        return true;
+    };
+    std::string why;
+    namespace gd = opl::gdn;
+    struct shape_t { int64_t S, hk, hv, T, ns, n_rs, head; };
+    struct extras_t { bool other_gather_reader, other_state_reader, clash; };
+    auto run = [&](const shape_t & sh, const extras_t & ex, std::vector<int32_t> ids, tsr_fusion * fout, int * ig, int * in, int * ic,
+                   tsr_rec * rec, ggml_cgraph ** gout, gctx * c) {
+        ids_now = ids;
+        const int64_t S = sh.S, hk = sh.hk, hv = sh.hv, T = sh.T, ns = sh.ns, D = S * S * hv;
+        ggml_tensor * cache = c->f32(D, 8, 0x4000000, "cache_s_l0");
+        ggml_tensor * idt = ggml_new_tensor_1d(c->ctx, GGML_TYPE_I32, sh.n_rs);
+        idt->data = fake_at(0x500000);
+        ggml_set_name(idt, "rs_s_copy");
+        ggml_tensor * states = ggml_reshape_2d(c->ctx, cache, D, cache->ne[1]);
+        ggml_tensor * gather = ggml_get_rows(c->ctx, states, idt);
+        gather->data = fake_at(0x6000000);
+        ggml_tensor * out_states = ggml_view_2d(c->ctx, gather, D, ns, gather->nb[1], 0);
+        ggml_tensor * st4 = ggml_reshape_4d(c->ctx, out_states, S, S, hv, ns);
+        ggml_tensor * q = c->f32(S, hk, 0x100000, "q", T * ns), * k = c->f32(S, hk, 0x200000, "k", T * ns);
+        ggml_tensor * v = c->f32(S, hv, 0x300000, "v", T * ns);
+        ggml_tensor * g = c->f32(1, hv, 0x400000, "g", T * ns), * b = c->f32(1, hv, 0x410000, "beta", T * ns);
+        q = ggml_reshape_4d(c->ctx, q, S, hk, T, ns);
+        k = ggml_reshape_4d(c->ctx, k, S, hk, T, ns);
+        v = ggml_reshape_4d(c->ctx, v, S, hv, T, ns);
+        g = ggml_reshape_4d(c->ctx, g, 1, hv, T, ns);
+        b = ggml_reshape_4d(c->ctx, b, 1, hv, T, ns);
+        ggml_tensor * gdn = ggml_gated_delta_net(c->ctx, q, k, v, g, b, st4, 1);
+        gdn->data = fake_at(0x8000000);
+        ggml_tensor * ns_view = ggml_view_4d(c->ctx, gdn, S, S, hv, ns, S * 4, S * S * 4, S * S * hv * 4, (size_t) (S * hv * T * ns * 4));
+        ggml_tensor * dst = ggml_view_2d(c->ctx, cache, D, ns, cache->nb[1], (size_t) sh.head * cache->nb[1]);
+        ggml_tensor * cpy = ggml_cpy(c->ctx, ns_view, dst);
+        ggml_cgraph * graph = ggml_new_graph(c->ctx);
+        ggml_tensor * out_view = ggml_view_4d(c->ctx, gdn, S, hv, T, ns, S * 4, S * hv * 4, S * hv * T * 4, 0);
+        ggml_build_forward_expand(graph, gather);
+        if (ex.other_gather_reader) {
+            ggml_build_forward_expand(graph, ggml_scale(c->ctx, out_states, 2.0f));
+        }
+        ggml_build_forward_expand(graph, gdn);
+        ggml_build_forward_expand(graph, ggml_scale(c->ctx, out_view, 1.0f));
+        if (ex.other_state_reader) {
+            ggml_tensor * sc = ggml_scale(c->ctx, ns_view, 0.5f);
+            sc->data = fake_at(0x9000000);
+            ggml_build_forward_expand(graph, sc);
+        }
+        if (ex.clash) {                                   // a node writing the cell between the gather and the copy
+            ggml_tensor * w = ggml_scale_inplace(c->ctx, ggml_view_1d(c->ctx, cache, D, (size_t) sh.head * cache->nb[1]), 0.0f);
+            ggml_build_forward_expand(graph, w);
+        }
+        ggml_build_forward_expand(graph, cpy);
+        for (int i = 0; i < ggml_graph_n_nodes(graph); ++i) {
+            ggml_graph_node(graph, i)->flags |= GGML_TENSOR_FLAG_COMPUTE;
+        }
+        *ig = node_index(graph, gather);
+        *in = node_index(graph, gdn);
+        *ic = node_index(graph, cpy);
+        *fout = tsr_build_fusion(env, graph);
+        *gout = graph;
+        if (rec != nullptr) {
+            const bool ok = tsr_lower_m7(env, false, gdn, fout->gdn_cell[(size_t) *in].in_place ? cpy : nullptr, rec, &why);
+            CHECK(ok);
+        }
+    };
+    const shape_t decode{ 64, 2, 4, 1, 1, 1, 3 }, prefill{ 128, 2, 16, 5, 1, 1, 3 }, two{ 64, 2, 16, 2, 2, 2, 3 }, extras{ 64, 2, 4, 1, 1, 3, 3 };
+    const extras_t plain{ false, false, false };
+    for (const shape_t & sh : { decode, prefill, two }) {
+        // the sequences keep their cells: the record works on the cell; the gather and the CPY are absorbed
+        {
+            gctx c;
+            tsr_fusion f;
+            int ig = -1, in = -1, ic = -1;
+            ggml_cgraph * g = nullptr;
+            tsr_rec r;
+            std::vector<int32_t> ids;
+            for (int64_t j = 0; j < sh.ns; ++j) ids.push_back((int32_t) (sh.head + j));
+            run(sh, plain, ids, &f, &ig, &in, &ic, &r, &g, &c);
+            const tsr_gdn_cell & gc = f.gdn_cell[(size_t) in];
+            CHECK(gc.in_place && gc.gather == ig && gc.cpy == ic && gc.n == (uint32_t) sh.ns && gc.cell0 == (int32_t) sh.head);
+            CHECK(f.into[(size_t) ig] == in && f.into[(size_t) ic] == in);
+            const uint32_t cell = tsr_dram_handle(1, 0x4000000 + (uint64_t) sh.head * 4ull * (uint64_t) (sh.S * sh.S * sh.hv));
+            CHECK(r.kind == opl::K_GATED_DELTA_NET && r.args[gd::STATE_IN] == cell && r.args[gd::STATE_OUT] == cell);
+            CHECK(r.args[gd::DST] == tsr_dram_handle(1, 0x8000000) && r.args[gd::N_SEQS] == (uint32_t) sh.ns);
+        }
+        // ids that move a state to another cell, or a swap: the gather and the copy stay (the group is known, not in place)
+        {
+            gctx c;
+            tsr_fusion f;
+            int ig = -1, in = -1, ic = -1;
+            ggml_cgraph * g = nullptr;
+            std::vector<int32_t> ids;
+            for (int64_t j = 0; j < sh.ns; ++j) ids.push_back((int32_t) (sh.head + (sh.ns - 1 - j) + (sh.ns == 1 ? 2 : 0)));
+            run(sh, plain, ids, &f, &ig, &in, &ic, nullptr, &g, &c);
+            const tsr_gdn_cell & gc = f.gdn_cell[(size_t) in];
+            CHECK(gc.ids != nullptr && gc.cpy == ic && !gc.in_place && f.into[(size_t) ig] < 0 && f.into[(size_t) ic] < 0);
+        }
+    }
+    // the plan check the backend makes on reuse: the same ids give the same decision, another id flips it
+    {
+        gctx c;
+        tsr_fusion f;
+        int ig = -1, in = -1, ic = -1;
+        ggml_cgraph * g = nullptr;
+        run(decode, plain, { 3 }, &f, &ig, &in, &ic, nullptr, &g, &c);
+        const tsr_gdn_cell & gc = f.gdn_cell[(size_t) in];
+        CHECK(gc.in_place && gc.ids != nullptr && gc.n == 1u && gc.cell0 == 3);
+    }
+    // shapes that must not form a group
+    {
+        gctx c0;
+        tsr_fusion f;
+        int ig = -1, in = -1, ic = -1;
+        ggml_cgraph * g = nullptr;
+        run(extras, plain, { 3, 4, 5 }, &f, &ig, &in, &ic, nullptr, &g, &c0);       // extra states behind the sequence's own
+        CHECK(f.gdn_cell[(size_t) in].ids == nullptr && f.into[(size_t) ig] < 0);
+        gctx c1;
+        run(decode, extras_t{ true, false, false }, { 3 }, &f, &ig, &in, &ic, nullptr, &g, &c1);   // another reader of the gathered copy
+        CHECK(f.gdn_cell[(size_t) in].ids == nullptr && f.into[(size_t) ig] < 0);
+        gctx c2;
+        run(decode, extras_t{ false, true, false }, { 3 }, &f, &ig, &in, &ic, nullptr, &g, &c2);   // another reader of the new state
+        CHECK(f.gdn_cell[(size_t) in].ids == nullptr && f.into[(size_t) ic] < 0);
+        gctx c3;
+        run(decode, extras_t{ false, false, true }, { 3 }, &f, &ig, &in, &ic, nullptr, &g, &c3);   // a node writes the cell in between
+        CHECK(f.gdn_cell[(size_t) in].ids == nullptr && f.into[(size_t) ic] < 0);
+    }
+    // without a reader of the values (a host that cannot read the ids), no group is made
+    {
+        gctx c;
+        tsr_fusion f;
+        int ig = -1, in = -1, ic = -1;
+        ggml_cgraph * g = nullptr;
+        tsr_build_env saved = env;
+        env.read_i32 = nullptr;
+        run(decode, plain, { 3 }, &f, &ig, &in, &ic, nullptr, &g, &c);
+        CHECK(f.gdn_cell[(size_t) in].ids == nullptr);
+        env = saved;
+    }
+    (void) why;
+}
+
 // TSR_KINDS (tsr_kinds_parse): m6, all, additions and removals from left to right, NOP and JOIN always
 // kept, and the words it refuses.
 static void test_kinds_parse() {
@@ -1657,6 +1806,7 @@ int main() {
     test_supports_sweep();
     test_supports_rules();
     test_gdn_lowering();
+    test_gdn_state_cell();
     test_kinds_parse();
 #else
     printf("test-tsr-backend-units: built without ggml: the M7 builder's ggml tests are skipped\n");

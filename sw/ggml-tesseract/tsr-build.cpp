@@ -1154,7 +1154,10 @@ static bool tsr_gdn_token_rows(const tsr_build_env & env, bool probe, const ggml
     return tsr_addr(env, probe, t, what, h, why);
 }
 
-static bool tsr_lower_gdn(const tsr_build_env & env, bool probe, const ggml_tensor * node, tsr_rec * r, std::string * why) {
+// cell: the state CPY of a group in place (tsr_gdn_cell): the record then reads the state from the cache cell the CPY writes
+// and writes the new state back into it; nullptr: STATE_IN is the state tensor, STATE_OUT follows the result's rows.
+static bool tsr_lower_gdn(const tsr_build_env & env, bool probe, const ggml_tensor * node, const ggml_tensor * cell, tsr_rec * r,
+                          std::string * why) {
     const ggml_tensor * q = node->src[0], * k = node->src[1], * v = node->src[2], * g = node->src[3], * b = node->src[4],
                       * s = node->src[5];
     if (!q || !k || !v || !g || !b || !s) {
@@ -1192,7 +1195,22 @@ static bool tsr_lower_gdn(const tsr_build_env & env, bool probe, const ggml_tens
         !tsr_gdn_token_rows(env, probe, k, "k", (uint32_t) Sv, (uint32_t) Hk, &kh, &khs, &kts, why) ||
         !tsr_gdn_token_rows(env, probe, v, "v", (uint32_t) Sv, (uint32_t) Hv, &vh, &vhs, &vts, why) ||
         !tsr_addr(env, probe, g, "g", &gh, why) || !tsr_addr(env, probe, b, "beta", &bh, why) ||
-        !tsr_addr(env, probe, s, "state", &sh, why) || !tsr_addr(env, probe, node, "result", &dh, why)) {
+        !tsr_addr(env, probe, node, "result", &dh, why)) {
+        return false;
+    }
+    uint32_t ch = 0;
+    if (cell != nullptr) {
+        // the cache cell run of n_seqs states: F32 rows of S_v S_v H_v values, one cell after the other
+        if (cell->type != GGML_TYPE_F32 || cell->nb[0] != 4 || cell->ne[0] != Sv * Sv * Hv || cell->ne[1] != ns ||
+            (ns > 1 && (uint64_t) cell->nb[1] != 4ull * (uint64_t) (Sv * Sv * Hv)) || cell->ne[2] != 1 || cell->ne[3] != 1) {
+            return tsr_fail(why, "GATED_DELTA_NET: the state cache run '%s' is not %lld F32 states of %lld values in cells of their size",
+                            cell->name, (long long) ns, (long long) (Sv * Sv * Hv));
+        }
+        if (!tsr_addr(env, probe, cell, "state cache", &ch, why)) {
+            return false;
+        }
+        sh = ch;
+    } else if (!tsr_addr(env, probe, s, "state", &sh, why)) {
         return false;
     }
     const uint32_t L = (uint32_t) Sv / 16u, nt = (uint32_t) (T * ns), Lg = tsr_l16((uint64_t) Hv);
@@ -1201,7 +1219,8 @@ static bool tsr_lower_gdn(const tsr_build_env & env, bool probe, const ggml_tens
     r->n_args = gd::NARGS;
     uint32_t * a = r->args;
     a[gd::DST] = dh;
-    a[gd::STATE_OUT] = probe ? 0u : dh + nt * (uint32_t) Hv * L;   // the state follows the attention rows, same channel
+    // the state follows the attention rows, same channel; in place it is the cache cell, which the record also reads
+    a[gd::STATE_OUT] = cell != nullptr ? sh : (probe ? 0u : dh + nt * (uint32_t) Hv * L);
     a[gd::STATE_IN] = sh;
     a[gd::Q] = qh; a[gd::Q_HEAD_STRIDE] = qhs; a[gd::Q_TOKEN_STRIDE] = qts;
     a[gd::K] = kh; a[gd::K_HEAD_STRIDE] = khs; a[gd::K_TOKEN_STRIDE] = kts;
@@ -1461,7 +1480,7 @@ bool tsr_lower_m7(const tsr_build_env & env, bool probe, const ggml_tensor * nod
         case GGML_OP_REPEAT:
             return tsr_fail(why, "op %s belongs to a MoE routing or scale chain that did not fuse into one record (the graph differs "
                                  "from llama.cpp's build_moe_ffn: docs/design/06-software-verification.md SW-64)", ggml_op_desc(node));
-        case GGML_OP_GATED_DELTA_NET: ok = tsr_lower_gdn(env, probe, node, out, why); break;
+        case GGML_OP_GATED_DELTA_NET: ok = tsr_lower_gdn(env, probe, node, fused, out, why); break;
         case GGML_OP_SSM_CONV:       ok = tsr_lower_conv_group(env, probe, node, nullptr, nullptr, out, why); break;
         default:
             return tsr_fail(why, "op %s has no device kind", ggml_op_desc(node));
@@ -1767,6 +1786,118 @@ static void tsr_moe_groups(const tsr_build_env & env, const ggml_cgraph * cg, ts
     }
 }
 
+// The state cell group of a GATED_DELTA_NET node i (tsr_gdn_cell, SW-82): the shape of llama.cpp's build_rs /
+// build_recurrent_attn in the graph. The state operand is RESHAPE / VIEW (offset 0) nodes over GET_ROWS(RESHAPE(cache), ids)
+// with one id per sequence (no extra states); the new state is the VIEW of the node's result behind the attention rows,
+// and its only reader is one CPY into rows of the same cache. Nothing else reads the gathered copy or the result's state
+// rows, and no node between the gather and the CPY touches the cache rows the CPY writes. Fills *c (gather, cpy, ids, n,
+// cell0 and, with the ids' values from env.read_i32, in_place) and returns true when the group has this shape.
+static bool tsr_gdn_state_group(const tsr_build_env & env, const ggml_cgraph * cg, int i, tsr_gdn_cell * c) {
+    const ggml_tensor * node = cg->nodes[i];
+    const int n_nodes = cg->n_nodes;
+    if (!env.gdn_cell || !env.read_i32 || node->src[5] == nullptr || node->src[0] == nullptr || node->src[2] == nullptr) {
+        return false;
+    }
+    const int64_t Sv = node->src[2]->ne[0], Hv = node->src[2]->ne[1], T = node->src[2]->ne[2], ns = node->src[2]->ne[3];
+    std::vector<const ggml_tensor *> chain;                     // the RESHAPE / VIEW nodes from the state operand to the gather
+    const ggml_tensor * t = node->src[5];
+    while (t != nullptr && (t->op == GGML_OP_RESHAPE || (t->op == GGML_OP_VIEW && t->view_offs == 0))) {
+        chain.push_back(t);
+        t = t->src[0];
+    }
+    if (t == nullptr || t->op != GGML_OP_GET_ROWS || t->src[0] == nullptr || t->src[1] == nullptr || t->type != GGML_TYPE_F32 ||
+        t->ne[0] != Sv * Sv * Hv || t->ne[1] != ns || t->src[1]->type != GGML_TYPE_I32 || t->src[1]->ne[0] != ns ||
+        t->src[1]->ne[1] != 1 || t->src[1]->ne[2] != 1 || !ggml_is_contiguous(t->src[1])) {
+        return false;
+    }
+    const ggml_tensor * gather = t;
+    for (const ggml_tensor * m : chain) {
+        if ((m->flags & GGML_TENSOR_FLAG_OUTPUT) != 0) {
+            return false;                                         // someone outside the graph reads the gathered copy
+        }
+    }
+    if ((gather->flags & GGML_TENSOR_FLAG_OUTPUT) != 0) {
+        return false;
+    }
+    const ggml_tensor * cache = gather->src[0]->view_src != nullptr ? gather->src[0]->view_src : gather->src[0];
+    if (cache->type != GGML_TYPE_F32 || cache->ne[0] != Sv * Sv * Hv || (uint64_t) cache->nb[1] != 4ull * (uint64_t) (Sv * Sv * Hv)) {
+        return false;
+    }
+    int ig = -1, ik = -1;
+    for (int j = 0; j < n_nodes; ++j) {
+        if (cg->nodes[j] == gather) ig = j;
+    }
+    // the new state's view and its CPY
+    const size_t att_bytes = (size_t) (4 * Sv * Hv * T * ns);
+    for (int j = i + 1; j < n_nodes; ++j) {
+        const ggml_tensor * u = cg->nodes[j];
+        if (u->op == GGML_OP_CPY && u->src[0] != nullptr && u->src[0]->view_src == node && u->src[0]->view_offs == att_bytes) {
+            if (ik >= 0) {
+                return false;                                     // two copies of the state
+            }
+            ik = j;
+        }
+    }
+    if (ig < 0 || ig >= i || ik < 0 || (gather->flags & GGML_TENSOR_FLAG_COMPUTE) == 0 ||
+        (cg->nodes[ik]->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
+        return false;
+    }
+    const ggml_tensor * cpy = cg->nodes[ik];
+    const ggml_tensor * ns_view = cpy->src[0];
+    if (cpy->type != GGML_TYPE_F32 || cpy->view_src != cache || ggml_nelements(cpy) != Sv * Sv * Hv * ns ||
+        ggml_nelements(ns_view) != ggml_nelements(cpy) || cpy->view_offs % cache->nb[1] != 0 || !ggml_is_contiguous(ns_view)) {
+        return false;
+    }
+    // readers: of the gathered copy (its chain and the node; empty views of zero rows aside), of the new state (the CPY only)
+    for (int j = 0; j < n_nodes; ++j) {
+        const ggml_tensor * u = cg->nodes[j];
+        if (u == node || u == cpy || u == gather || ggml_is_empty(u) || std::find(chain.begin(), chain.end(), u) != chain.end()) {
+            continue;
+        }
+        for (int q = 0; q < GGML_MAX_SRC; ++q) {
+            const ggml_tensor * x = u->src[q];
+            if (x == nullptr) continue;
+            if (x == gather || std::find(chain.begin(), chain.end(), x) != chain.end()) {
+                return false;                                     // another reader of the gathered state
+            }
+            if (x->view_src == node && x->view_offs >= att_bytes) {
+                return false;                                     // another reader of the result's state rows
+            }
+        }
+    }
+    // nothing between the gather and the CPY (but the group's own nodes) touches the cache rows the CPY writes: the record
+    // reads them at the node's position and writes them there
+    const tsr_vrange rb = tsr_bytes_of(cpy);
+    if (rb.lo == 0) {
+        return false;
+    }
+    for (int j = ig + 1; j < ik; ++j) {
+        const ggml_tensor * u = cg->nodes[j];
+        if (j == i || (u->flags & GGML_TENSOR_FLAG_COMPUTE) == 0 || tsr_node_is_noop(u) || ggml_is_empty(u)) continue;
+        bool clash = tsr_vr_overlap(tsr_bytes_of(u), rb);
+        for (int q = 0; q < GGML_MAX_SRC && !clash; ++q) {
+            clash = u->src[q] != nullptr && tsr_vr_overlap(tsr_bytes_of(u->src[q]), rb);
+        }
+        if (clash) {
+            return false;
+        }
+    }
+    std::vector<int32_t> ids;
+    if (!env.read_i32(gather->src[1], &ids) || ids.size() != (size_t) ns) {
+        return false;
+    }
+    c->gather = ig;
+    c->cpy = ik;
+    c->ids = gather->src[1];
+    c->n = (uint32_t) ns;
+    c->cell0 = (int32_t) (cpy->view_offs / cache->nb[1]);
+    c->in_place = true;
+    for (int64_t j = 0; j < ns; ++j) {
+        c->in_place = c->in_place && ids[(size_t) j] == c->cell0 + (int32_t) j;
+    }
+    return true;
+}
+
 tsr_fusion tsr_build_fusion(const tsr_build_env & env, const ggml_cgraph * cg) {
     tsr_fusion f;
     const int n = cg->n_nodes;
@@ -1833,6 +1964,23 @@ tsr_fusion tsr_build_fusion(const tsr_build_env & env, const ggml_cgraph * cg) {
         f.into[ic] = f.into[icpy] = i;
         if (isilu >= 0) f.into[isilu] = i;
         f.n_pairs++;
+    }
+    f.gdn_cell.assign(n, tsr_gdn_cell{});
+    for (int i = 0; i < n; ++i) {            // GATED_DELTA_NET state cells (tsr_gdn_state_group, SW-82)
+        const ggml_tensor * node = cg->nodes[i];
+        if (node->op != GGML_OP_GATED_DELTA_NET || (node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0 ||
+            !tsr_kind_in_image(env.kinds, opl::K_GATED_DELTA_NET)) {
+            continue;
+        }
+        tsr_gdn_cell c;
+        if (!tsr_gdn_state_group(env, cg, i, &c)) {
+            continue;
+        }
+        f.gdn_cell[i] = c;
+        if (c.in_place) {
+            f.into[c.gather] = f.into[c.cpy] = i;
+            f.n_pairs++;
+        }
     }
     for (int i = 0; i < n; ++i) {
         const ggml_tensor * node = cg->nodes[i];

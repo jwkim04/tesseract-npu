@@ -317,7 +317,7 @@ struct tsr_plan_list {
     std::vector<uint8_t>     blob;
     std::vector<std::string> names;        // node names by record tag
     std::vector<int32_t>     tags;         // record index -> tag (-1: JOIN)
-    uint32_t n_ops = 0, n_joins = 0, n_fused = 0;
+    uint32_t n_ops = 0, n_joins = 0, n_fused = 0, n_gdn_cell = 0;   // n_gdn_cell: GATED_DELTA_NET records on their cache cell (SW-82)
     uint32_t n_kind[tsr::opl::N_KINDS] = {};
     std::vector<tsr_buffer_ctx *> written; // buffers the list writes (their generations)
 };
@@ -325,6 +325,7 @@ struct tsr_plan {
     std::vector<tsr_plan_list> lists;
     std::vector<const ggml_tensor *> fa_nodes;   // re-registered as mask readers on every reuse
     std::vector<tsr_msum_ref> fa_refs;           // the words the lists carry
+    std::vector<tsr_gdn_cell> gdn_cells;         // the state gathers of GATED_DELTA_NET nodes and what the build decided (SW-82)
     uint64_t used = 0;                           // LRU stamp
 };
 
@@ -384,6 +385,7 @@ struct tsr_device {
     uint64_t st_staged_mm = 0;     // MUL_MATs that took the staged path ("staged chunks", SW §8 R6)
     uint64_t st_staged_launches = 0;
     uint64_t st_fused = 0;         // W3b: fused records (MUL_MAT + ADD, RMS_NORM + MUL) launched
+    uint64_t st_gdn_cell = 0;      // SW-82: GATED_DELTA_NET records that read and write their cache cell in place
     uint64_t st_kind[tsr::opl::N_KINDS] = {};   // W3b: records launched per kind
     uint64_t st_plan_hits = 0, st_plan_misses = 0, st_plan_dynamic = 0;   // W3b: plan cache (R7)
     uint64_t st_cut_lists = 0;     // W3b: lists cut early (4096 records or 256 preload lines)
@@ -1815,7 +1817,7 @@ struct tsr_segment {
     std::vector<std::string>      names;      // node name per record tag
     std::set<tsr_buffer_ctx *>    written;    // buffers the pending list writes
     std::vector<uint64_t>         w_offs;     // W_OFF (bytes) of the pending MUL_MATs
-    uint32_t                      n_fused = 0;
+    uint32_t                      n_fused = 0, n_gdn_cell = 0;
     uint32_t                      n_kind[tsr::opl::N_KINDS] = {};
 
     void clear() {
@@ -1824,6 +1826,7 @@ struct tsr_segment {
         written.clear();
         w_offs.clear();
         n_fused = 0;
+        n_gdn_cell = 0;
         std::fill(std::begin(n_kind), std::end(n_kind), 0u);
     }
 };
@@ -1910,6 +1913,7 @@ static void tsr_run_list(tsr_device * d, const tsr_plan_list & L) {
         d->st_mm_records += L.n_kind[tsr::opl::K_MUL_MAT];
         d->st_joins += L.n_joins;
         d->st_fused += L.n_fused;
+        d->st_gdn_cell += L.n_gdn_cell;
         for (uint32_t k = 0; k < tsr::opl::N_KINDS; ++k) {
             d->st_kind[k] += L.n_kind[k];
         }
@@ -1933,6 +1937,7 @@ static void tsr_flush(tsr_device * d, tsr_segment & seg) {
     L.n_ops = seg.ops.n_ops();
     L.n_joins = seg.ops.n_joins();
     L.n_fused = seg.n_fused;
+    L.n_gdn_cell = seg.n_gdn_cell;
     L.tags.resize(L.n_ops);
     for (uint32_t i = 0; i < L.n_ops; ++i) {
         L.tags[i] = seg.ops.tag_of(i);
@@ -2471,6 +2476,36 @@ static bool tsr_moe_weight_ok(tsr_device * d, const ggml_tensor * w) {
 // The builder's environment (tsr-build.h) for this device. Callers hold dev->mtx (device open).
 static bool tsr_is_our_buffer(const tsr_device * d, const ggml_backend_buffer * buf);
 
+// The values of an I32 input as the next launch sees them: in a device window (read through the transport), in a hosted
+// buffer, or in another backend's host buffer. False when t is not I32, has no data or lives somewhere the backend cannot read
+// (graph_compute then makes no plan that depends on the values). Callers hold dev->mtx.
+static bool tsr_is_our_buffer(const tsr_device * d, const ggml_backend_buffer * buf);
+static bool tsr_read_i32(tsr_device * d, const ggml_tensor * t, std::vector<int32_t> * out) {
+    ggml_backend_buffer_t gb = t->buffer;
+    if (t->type != GGML_TYPE_I32 || gb == nullptr || t->data == nullptr || t->view_src != nullptr) {
+        return false;
+    }
+    const size_t nb = ggml_nbytes(t);
+    out->assign(nb / 4, 0);
+    if (!tsr_is_our_buffer(d, gb)) {
+        if (!ggml_backend_buffer_is_host(gb)) {
+            return false;
+        }
+        memcpy(out->data(), t->data, nb);
+        return true;
+    }
+    tsr_buffer_ctx * b = tsr_buf(gb);
+    const uint64_t addr = tsr_vaddr(t->data);
+    if (b->mode == tsr_bmode::LINEAR) {
+        tsr_read(d, b->ch, b->io_off + (addr - b->base), out->data(), nb);
+    } else if (b->mode == tsr_bmode::HOSTED) {
+        memcpy(out->data(), b->host + (addr - b->base), nb);
+    } else {
+        return false;
+    }
+    return true;
+}
+
 static tsr_build_env tsr_env_of(tsr_device * d) {
     if (!d->m7cfg_ok) {
         d->m7cfg = tsr_plan_cfg_m7(d);   // one CFG3 read per device
@@ -2495,6 +2530,9 @@ static tsr_build_env tsr_env_of(tsr_device * d) {
     };
     e.fa_mask_probe = [](const ggml_tensor * fa) { return tsr_fa_mask_supported(fa); };
     e.moe_w_probe = [d](const ggml_tensor * w) { return tsr_moe_weight_ok(d, w); };
+    e.read_i32 = [d](const ggml_tensor * t, std::vector<int32_t> * v) { return tsr_read_i32(d, t, v); };
+    static const char * cell_env = getenv("TSR_GDN_CELL");
+    e.gdn_cell = cell_env == nullptr || strcmp(cell_env, "0") != 0;
     return e;
 }
 
@@ -2515,6 +2553,26 @@ static bool tsr_plan_masks_hold(tsr_device * d, const tsr_plan & p) {
     for (size_t i = 0; i < p.fa_nodes.size(); ++i) {
         const tsr_msum_ref r = tsr_fa_mask_ref(d, p.fa_nodes[i]);
         if (!r.valid || r.msum_handle != p.fa_refs[i].msum_handle || r.mask_handle != p.fa_refs[i].mask_handle) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The plan of a graph with a GATED_DELTA_NET state gather (SW-82) holds while the ids of the gather say what the build
+// decided: the identity (every sequence keeps its cache cell, the record works on the cell in place) or not (the gather and
+// the copy run). The ids change with the sequences, not with the shape of the graph, so the graph key does not see them.
+static bool tsr_plan_state_holds(tsr_device * d, const tsr_plan & p) {
+    std::vector<int32_t> ids;
+    for (const tsr_gdn_cell & c : p.gdn_cells) {
+        if (!tsr_read_i32(d, c.ids, &ids) || ids.size() != (size_t) c.n) {
+            return false;
+        }
+        bool identity = true;
+        for (uint32_t j = 0; j < c.n; ++j) {
+            identity = identity && ids[j] == c.cell0 + (int32_t) j;
+        }
+        if (identity != c.in_place) {
             return false;
         }
     }
@@ -2658,6 +2716,16 @@ static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key
     d->build_dynamic = false;
     std::vector<char> absorbed(cgraph->n_nodes, 0);
     std::vector<int32_t> window_of(cgraph->n_nodes, -1);   // a CONCAT of an SSM_CONV group: that SSM_CONV
+    for (int i = 0; i < cgraph->n_nodes; i++) {          // the state gather and the state CPY of a GATED_DELTA_NET on its cache cell
+        const tsr_gdn_cell & c = g.fusion.gdn_cell[(size_t) i];
+        if (c.ids != nullptr) {
+            g.plan.gdn_cells.push_back(c);
+        }
+        if (c.in_place) {
+            absorbed[(size_t) c.gather] = 1;
+            absorbed[(size_t) c.cpy] = 1;
+        }
+    }
     for (int i = 0; i < cgraph->n_nodes; i++) {          // the state CPY and the SILU of an SSM_CONV group; its CONCAT fills the window
         if (g.fusion.conv_concat[i] >= 0) {
             window_of[g.fusion.conv_concat[i]] = i;
@@ -2710,6 +2778,24 @@ static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key
             }
             TSR_DBG(1, "%-11s %-32s\n", tsr_kind_name(r.kind), name.c_str());
             tsr_dump_node(d, seg, silu != nullptr ? silu : node);
+            continue;
+        }
+        if (node->op == GGML_OP_GATED_DELTA_NET && g.fusion.gdn_cell[(size_t) i].in_place) {
+            // SW-82: the record reads the cache cell the state CPY writes and writes the new state back into it
+            const ggml_tensor * cpy = cgraph->nodes[g.fusion.gdn_cell[(size_t) i].cpy];
+            tsr_rec r;
+            std::string why;
+            if (!tsr_lower_m7(g.env, false, node, cpy, &r, &why)) {
+                GGML_ABORT("tesseract: GATED_DELTA_NET '%s' on its state cache cell cannot run on the device: %s", node->name,
+                           why.c_str());
+            }
+            tsr_seg_add_rec(d, seg, r, std::string(node->name) + " (state in place)", tsr_written_buf(d, node), true);
+            seg.n_gdn_cell++;
+            if (tsr_buffer_ctx * sb = tsr_written_buf(d, cpy)) {
+                seg.written.insert(sb);
+            }
+            TSR_DBG(1, "%-11s %-32s (state in place)\n", tsr_kind_name(r.kind), node->name);
+            tsr_dump_node(d, seg, node);
             continue;
         }
         const int32_t k = g.fusion.with[i];
@@ -2865,6 +2951,8 @@ static void tsr_backend_free(ggml_backend_t backend) {
             }
         }
         fprintf(stderr, "[tesseract] stats: records per kind: %s\n", kinds.empty() ? "none" : kinds.c_str());
+        fprintf(stderr, "[tesseract] stats: GATED_DELTA_NET records on their state cache cell (no gather, no copy): %" PRIu64 " of %" PRIu64 "\n",
+                d->st_gdn_cell, d->st_kind[tsr::opl::K_GATED_DELTA_NET]);
         fprintf(stderr, "[tesseract] stats: PERF_CYCLES %" PRIu64 ", MVM %" PRIu64 ", RETIRED %" PRIu64 "\n",
                 p[TSR_PERF_CYCLES], p[TSR_PERF_MVM_CYCLES], p[TSR_PERF_RETIRED]);
         const size_t nch = (p.size() - 5) / 2;
@@ -2956,7 +3044,7 @@ static enum ggml_status tsr_backend_graph_compute(ggml_backend_t backend, ggml_c
     const uint64_t launches0 = d->odev.launches;
     const uint64_t key = tsr_graph_key(cgraph, d->plan_epoch);
     auto it = d->plans.find(key);
-    if (it != d->plans.end() && tsr_plan_masks_hold(d, it->second)) {
+    if (it != d->plans.end() && tsr_plan_masks_hold(d, it->second) && tsr_plan_state_holds(d, it->second)) {
         it->second.used = ++d->plan_stamp;
         TSR_DBG(1, "graph %p (%d nodes): cached plan, %zu list(s)\n", (void *) cgraph, cgraph->n_nodes, it->second.lists.size());
         for (const tsr_plan_list & L : it->second.lists) {
@@ -2965,7 +3053,7 @@ static enum ggml_status tsr_backend_graph_compute(ggml_backend_t backend, ggml_c
         d->st_plan_hits++;
     } else {
         if (it != d->plans.end()) {
-            d->plans.erase(it);              // a mask summary moved: build again
+            d->plans.erase(it);              // a mask summary moved or a state gather changed its mind: build again
         }
         d->st_plan_misses++;
         tsr_build_and_run(d, cgraph, key);

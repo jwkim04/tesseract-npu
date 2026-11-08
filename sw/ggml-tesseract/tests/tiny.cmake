@@ -124,15 +124,28 @@ if (TARGET llama)
         list(GET _f 1 _model)
         list(GET _f 2 _min_kl)
         list(GET _f 3 _min_top1)
+        set(_cells_arg "")
+        if (_model MATCHES "^qwen35")
+            set(_cells_arg --gdn-cells all)   # SW-82: every GATED_DELTA_NET record runs on its state cache cell
+        endif()
         add_test(NAME ${_name}
                  COMMAND ${_tiny_py} ${_tiny_m7} graph --klcheck $<TARGET_FILE:klcheck>
                          --model ${TSR_TINY_MODEL_DIR}/${_model} --prompts ${TSR_TINY_MODEL_DIR}/tiny-prompts.txt
                          --out-dir ${CMAKE_BINARY_DIR}/sw/ggml-tesseract/${_name}
                          --n-prompts 4 -n 17 --prompt-tail 8 -ub 16 -t 4 --min-decodes 64
-                         --min-kl ${_min_kl} --min-top1 ${_min_top1})
+                         --min-kl ${_min_kl} --min-top1 ${_min_top1} ${_cells_arg})
         set(_timeout 300)
         if (_model MATCHES "^qwen35")
             set(_timeout 900)      # S_v 128: 40 s alone, several times that on a loaded host
+            # SW-82: the same run with TSR_GDN_CELL=0 has the gather and the copy back (the three passes of the pinned graph)
+            add_test(NAME ${_name}_nocell
+                     COMMAND ${_tiny_py} ${_tiny_m7} graph --klcheck $<TARGET_FILE:klcheck>
+                             --model ${TSR_TINY_MODEL_DIR}/${_model} --prompts ${TSR_TINY_MODEL_DIR}/tiny-prompts.txt
+                             --out-dir ${CMAKE_BINARY_DIR}/sw/ggml-tesseract/${_name}_nocell
+                             --n-prompts 4 -n 17 --prompt-tail 8 -ub 16 -t 4 --min-decodes 64
+                             --min-kl ${_min_kl} --min-top1 ${_min_top1} --gdn-cells none)
+            set_tests_properties(${_name}_nocell PROPERTIES TIMEOUT ${_timeout}
+                                 ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal;TSR_GDN_CELL=0")
         endif()
         set_tests_properties(${_name} PROPERTIES TIMEOUT ${_timeout} ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal")
     endforeach()
