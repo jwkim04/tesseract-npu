@@ -194,6 +194,16 @@ lint tsr_dbg_wrmux -GADDR_BEAT_W=5
 # (NUM_CH 1 / 3 / 16, T_MAX 1 / 8, small and maximal K_MAX, latency / pipe depth extremes).
 lint tsr_fp_add -GLAT=1
 lint tsr_fp_add -GLAT=8
+lint tsr_fp_add_dsp -GLAT=8
+lint tsr_fp_add_dsp -GNORM_DSP=1
+# GDN unit (VU §7.12): the 16-lane build, small and large shapes, RAM styles, read latency 2
+lint tsr_vu_gdn -GLANES=16 -GNB_MAX=16
+lint tsr_vu_gdn -GLANES=4 -GNB_MAX=64
+lint tsr_vu_gdn -GNB_MAX=8 -GNSLOT=4 -GR_MAX=64
+lint tsr_vu_gdn -GRD_LAT=2
+lint tsr_vu_gdn -GSTYLE=\"block\"
+lint tsr_vu_gdn_ram -GSTYLE=\"distributed\" -GDEPTH=64 -GRD_LAT=1
+lint tsr_vu_gdn_ram -GNWE=2 -GWIDTH=64 -GRD_LAT=4
 lint tsr_mac_lane -GT=8 -GLAT=1
 lint tsr_mac_lane -GN=32 -GT=2 -GLAT=6
 lint tsr_vpipe -GDEPTH=0 -GVW=2 -GW=527

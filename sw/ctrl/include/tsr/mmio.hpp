@@ -81,6 +81,9 @@ constexpr uint32_t VU_LINE_FIELD_W       = 24u;          // VU §5.1: SPM line a
 constexpr uint32_t ROPE_MAX_HEAD_DIM     = 1024u;        // VU §5.4: head_dim is a multiple of 16 in [16, 1024]
 constexpr uint32_t TOPK_MAX_K            = 16u;          // VU §5.5: k in 1..16
 constexpr uint32_t VU_ACCEPT_AHEAD       = 2u;           // VU §7.8, CC §9.4: VU ops held at once (I3 for unit 3)
+constexpr uint32_t GDN_MIN_M             = 64u;          // VU §7.12.4: GDN d_k in [64, 256]: at least four beats of the widest build (16 lanes) per row
+constexpr uint32_t GDN_MAX_M             = 256u;         // VU §7.12.4: GDN d_k at most 256: the 48-bit DSP accumulator bound
+constexpr uint32_t GDN_MAX_ROWS          = 1024u;        // VU §7.12.4: GDN d_v in [1, 1024]: the bv RAM
 constexpr uint32_t M_FLOOR               = 0xF1800000u;  // AT §6.3: -2^100: row-maximum floor of ATTQK MAXOUT and AMASK
 constexpr uint32_t ANORM_L_FLOOR         = 0x00800000u;  // AT §5.7: 2^-126: ANORM divides by MAXT(l, 2^-126)
 constexpr uint32_t ATT_GROUP_CELLS       = 16u;          // AT §4.2: KV cells per group (groups round-robin over the channels)
@@ -596,9 +599,12 @@ constexpr uint32_t CAPS_DQROW_W               = 1u;
 constexpr uint32_t CAPS_VMASK                 = 0x00000080u;  // [7] VMASK (M9)
 constexpr uint32_t CAPS_VMASK_LSB             = 7u;
 constexpr uint32_t CAPS_VMASK_W               = 1u;
-constexpr uint32_t CAPS_VU_RSVD               = 0x00000F00u;  // [11:8] reserved for VU extensions, 0
-constexpr uint32_t CAPS_VU_RSVD_LSB           = 8u;
-constexpr uint32_t CAPS_VU_RSVD_W             = 4u;
+constexpr uint32_t CAPS_GDN                   = 0x00000100u;  // [8] GDN present (the fused Gated DeltaNet state update, VU §7.12)
+constexpr uint32_t CAPS_GDN_LSB               = 8u;
+constexpr uint32_t CAPS_GDN_W                 = 1u;
+constexpr uint32_t CAPS_VU_RSVD               = 0x00000E00u;  // [11:9] reserved for VU extensions, 0
+constexpr uint32_t CAPS_VU_RSVD_LSB           = 9u;
+constexpr uint32_t CAPS_VU_RSVD_W             = 3u;
 constexpr uint32_t CAPS_ATT_LOCAL             = 0x00001000u;  // [12] four-owner local FAST attention score and probability slots
 constexpr uint32_t CAPS_ATT_LOCAL_LSB         = 12u;
 constexpr uint32_t CAPS_ATT_LOCAL_W           = 1u;
@@ -1766,6 +1772,7 @@ constexpr uint32_t OP_AMASK  = 0x35u;  // new, unit VU, CAPS.ATT: EX §7.2, AT �
 constexpr uint32_t OP_AMERGE = 0x36u;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.6: channel tree and online merge
 constexpr uint32_t OP_ANORM  = 0x37u;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.7: final normalisation
 constexpr uint32_t OP_VMASK  = 0x38u;  // new, unit VU, CAPS.VMASK: EX §7.2, VU §5.7: position-window mask; ILLEGAL_OP until M9
+constexpr uint32_t OP_GDN    = 0x39u;  // new, unit VU, CAPS.GDN: EX §7.2, VU §7.12: fused Gated DeltaNet state update of one head
 constexpr uint32_t OP_SOP    = 0x40u;  // respec, unit VU, CAPS.VU: EX §7.2, VU §5.8: scalar op on s0..s15
 constexpr uint32_t OP_FENCE  = 0x7Fu;  // kept, unit SYNC: EX §7.2: SYNC barrier: completes when every op pushed before it is done
 // Unit of a legal opcode; UNIT_SYNC for every reserved or retired opcode. A legal opcode is
@@ -1774,7 +1781,7 @@ constexpr uint32_t op_unit(uint32_t opcode) {
     switch (opcode & 0xFFu) {
     case 0x10u: case 0x11u: case 0x14u: return UNIT_DMA;
     case 0x12u: case 0x30u: case 0x31u: case 0x32u: case 0x33u: case 0x34u: case 0x35u: case 0x36u:
-    case 0x37u: case 0x38u: case 0x40u: return UNIT_VU;
+    case 0x37u: case 0x38u: case 0x39u: case 0x40u: return UNIT_VU;
     case 0x18u: return UNIT_QACT;
     case 0x20u: case 0x21u: case 0x22u: return UNIT_MVM;
     default: return UNIT_SYNC;
@@ -1784,7 +1791,7 @@ constexpr bool op_legal(uint32_t opcode) {
     switch (opcode & 0xFFu) {
     case 0x00u: case 0x10u: case 0x11u: case 0x12u: case 0x14u: case 0x18u: case 0x20u: case 0x21u:
     case 0x22u: case 0x30u: case 0x31u: case 0x32u: case 0x33u: case 0x34u: case 0x35u: case 0x36u:
-    case 0x37u: case 0x38u: case 0x40u: case 0x7Fu: return true;
+    case 0x37u: case 0x38u: case 0x39u: case 0x40u: case 0x7Fu: return true;
     default: return false;
     }
 }
@@ -1796,6 +1803,7 @@ constexpr uint32_t op_caps(uint32_t opcode) {
     case 0x30u: case 0x31u: case 0x32u: case 0x40u: return CAPS_VU;
     case 0x33u: return CAPS_TOPK;
     case 0x38u: return CAPS_VMASK;
+    case 0x39u: return CAPS_GDN;
     default: return 0u;
     }
 }

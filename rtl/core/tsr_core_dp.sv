@@ -95,6 +95,7 @@ module tsr_core_dp
   parameter bit              HAS_ATT        = HAS_MVM,           // needs HAS_VU, HAS_MVM and MVM_MAC_LAT >= 3
   parameter bit              HAS_TOPK       = 1'b0,
   parameter bit              HAS_DQROW      = 1'b0,
+  parameter bit              HAS_GDN        = 1'b0,
   parameter bit              HAS_DB         = 1'b1,
   parameter int unsigned     QD_VU          = tsr_tables_pkg::TSR_QDEPTH_U200_VU,
   parameter int unsigned     VU_FRONT_LANES = tsr_tables_pkg::TSR_VU_FRONT_LANES,
@@ -324,8 +325,8 @@ module tsr_core_dp
   if (HAS_ATT && MVM_MAC_LAT < 3) begin : g_chk_attlat
     $fatal(1, "tsr_core_dp: HAS_ATT needs MVM_MAC_LAT >= 3 (the exact PV accumulation of tsr_mvm_back)");
   end
-  if ((HAS_TOPK || HAS_DQROW) && !HAS_VU) begin : g_chk_topk
-    $fatal(1, "tsr_core_dp: HAS_TOPK / HAS_DQROW need HAS_VU");
+  if ((HAS_TOPK || HAS_DQROW || HAS_GDN) && !HAS_VU) begin : g_chk_topk
+    $fatal(1, "tsr_core_dp: HAS_TOPK / HAS_DQROW / HAS_GDN need HAS_VU");
   end
   if (HAS_VU && (QD_VU < 1 || QD_VU > TSR_QD_MAX)) begin : g_chk_qdvu
     $fatal(1, "tsr_core_dp: with HAS_VU the VU queue depth must be in [1, 31]");
@@ -337,6 +338,7 @@ module tsr_core_dp
                                       (HAS_ATT   ? tsr_tables_pkg::TSR_CAPS_ATT   : 32'd0) |
                                       (HAS_TOPK  ? tsr_tables_pkg::TSR_CAPS_TOPK  : 32'd0) |
                                       (HAS_DQROW ? tsr_tables_pkg::TSR_CAPS_DQROW : 32'd0) |
+                                      (HAS_GDN   ? tsr_tables_pkg::TSR_CAPS_GDN   : 32'd0) |
                                       (LOCAL_INTERMEDIATES ? tsr_tables_pkg::TSR_CAPS_ATT_LOCAL : 32'd0) |
                                       (LOCAL_SCALE ? tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SCALE : 32'd0) |
                                      (LOCAL_SOFTCAP ? tsr_tables_pkg::TSR_CAPS_MVM_LOCAL_SOFTCAP : 32'd0);
@@ -582,7 +584,7 @@ module tsr_core_dp
     tsr_ext_t [TSR_EXT_N-1:0] at_rsp_ext;
     logic [XC_CMD_W-1:0]      at_rsp_cmd;
 
-    tsr_vu_xc #(.LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .SPM_BYTES(SPM_BYTES), .K_MAX(K_MAX), .NUM_CH(NUM_CH)) u_xc (
+    tsr_vu_xc #(.LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .HAS_GDN(HAS_GDN), .SPM_BYTES(SPM_BYTES), .K_MAX(K_MAX), .NUM_CH(NUM_CH)) u_xc (
       .clk, .rst_n(rst_b_n[RB_ISSUE]),
       .xc_req_valid, .xc_req_insn, .xc_rsp_valid, .xc_rsp_code, .xc_rsp_info, .xc_rsp_ext, .xc_rsp_cmd,
       .at_req_valid, .at_req_insn, .at_rsp_valid, .at_rsp_code, .at_rsp_info, .at_rsp_ext, .at_rsp_cmd
@@ -954,7 +956,7 @@ module tsr_core_dp
     logic [2:0]  vu_dbg_flags;
     tsr_vu #(
       .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT), .NUM_CH(NUM_CH), .FRONT_LANES(VU_FRONT_LANES), .EXP_LANES(VU_EXP_LANES),
-      .BACK_LANES(VU_BACK_LANES), .LANE_PIPE(VU_LANE_PIPE), .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .LOCAL_SCALE(LOCAL_SCALE), .HAS_TOPK(HAS_TOPK), .HAS_DQROW(HAS_DQROW)
+      .BACK_LANES(VU_BACK_LANES), .LANE_PIPE(VU_LANE_PIPE), .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .LOCAL_SCALE(LOCAL_SCALE), .HAS_TOPK(HAS_TOPK), .HAS_DQROW(HAS_DQROW), .HAS_GDN(HAS_GDN)
     ) u_vu (
       .clk, .rst_n(rst_b_n[RB_VU]),
       .cmd_valid(vu_cmd_valid), .cmd_ready(vu_cmd_ready), .cmd(vu_cmd), .done(vu_done),

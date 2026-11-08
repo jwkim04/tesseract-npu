@@ -79,6 +79,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/ref_math.cmake)   # tsr_ref_math.c + ref_mat
 
 # Optional snippets of the other W1 packages, included when present (each one owns its file):
 #   refvu.cmake  VU references (P1.3)     refat.cmake  AT references (P1.3)
+#   refgdn.cmake GDN reference (VU §7.12; after refvu.cmake, which picks the numpy interpreter)
 # They are included after tsr_ref / tsr_ref_shared exist: add sources with target_sources() to both
 # and append them to TSR_REF_SOURCES (as ref_math.cmake does).
 # TSR_SIM_SKIP_SNIPPETS (cache, a list of snippet names) leaves some out, e.g. while one is
@@ -86,8 +87,8 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/ref_math.cmake)   # tsr_ref_math.c + ref_mat
 # tools (they link the trace library); "trace_tools" / "trace_gen" leave out one sw/tools snippet.
 # Every subset builds; the whole list builds the bare core (tsr_sim.c, tsr_q.c, tsr_sched.c).
 set(TSR_SIM_SKIP_SNIPPETS "" CACHE STRING
-    "snippets (sw/sim: refvu refat rv units dm dbg race trace rvtests; sw/tools: trace_tools trace_gen) not to include")
-foreach(_snip refvu refat)
+    "snippets (sw/sim: refvu refgdn refat rv units dm dbg race trace rvtests; sw/tools: trace_tools trace_gen) not to include")
+foreach(_snip refvu refgdn refat)
     if (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${_snip}.cmake AND NOT _snip IN_LIST TSR_SIM_SKIP_SNIPPETS)
         include(${CMAKE_CURRENT_SOURCE_DIR}/${_snip}.cmake)
     endif()

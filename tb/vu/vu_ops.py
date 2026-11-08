@@ -12,6 +12,7 @@ M32 = 0xFFFFFFFF
 
 OP_DQROW, OP_VOP, OP_RED, OP_ROPE, OP_TOPK, OP_SOP = 0x12, 0x30, 0x31, 0x32, 0x33, 0x40
 OP_ASMAX, OP_AMASK, OP_AMERGE, OP_ANORM = 0x34, 0x35, 0x36, 0x37
+OP_GDN = 0x39
 
 # VOP functions (VU §5.2): code -> (name, reads 'a' 'b' 'c', half rate)
 VOP_FUNCS = {
@@ -71,6 +72,11 @@ def enc_topk(k, d, a, m, rows=1, ds=0, as_=0):
 def enc_sop(sub, sd=0, sa=0, sb=0, imm=0, addr=0):
     return [OP_SOP | (sub & 0xF) << 8, (sd & 0xF) | (sa & 0xF) << 4 | (sb & 0xF) << 8, imm & M32, addr & M32,
             0, 0, 0, 0]
+
+
+def enc_gdn(sa, sb, d, a, k, q, v, o, m, rows):
+    """GDN 0x39 (VU §7.12.4): alpha in s[sa], beta in s[sb]; S' tile d, S tile a, vectors k q v, o; m, rows."""
+    return [OP_GDN | (sa & 0xF) << 16 | (sb & 0xF) << 20, d, a, k, q, v, o, (m & 0xFFFF) | (rows & 0xFFFF) << 16]
 
 
 def enc_dqrow(fmt, d, src, K, rows=1, ss=0, ds=0):

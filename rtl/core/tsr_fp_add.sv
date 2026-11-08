@@ -79,6 +79,29 @@
 //   LAT 3: WNS +0.41 ns, 8 LUT levels.  LAT 1, 2: for low clock rates only.
 //   LAT 6..8: the LAT 5 segments plus LAT - 5 output registers (no added logic).
 
+`ifdef TSR_FP_ADD_DSP
+// Area experiment only (docs/design/02-vector-unit.md §7.10, run E2): with +define+TSR_FP_ADD_DSP=1 every
+// tsr_fp_add is the DSP-aligned adder tsr_fp_add_dsp (same ports and results, LAT 5..8); =2 also does the
+// near-path left shift in a DSP (NORM_DSP). The define is not set by any filelist, script or build in the
+// tree, so the default RTL is the module below.
+module tsr_fp_add #(
+  parameter int unsigned LAT = 5
+) (
+  input  logic        clk,
+  input  logic        rst_n,
+  input  logic        ce,
+  input  logic        in_valid,
+  input  logic [31:0] a,
+  input  logic [31:0] b,
+  input  logic        sub,
+  output logic        out_valid,
+  output logic [31:0] y
+);
+  tsr_fp_add_dsp #(.LAT(LAT), .NORM_DSP(`TSR_FP_ADD_DSP == 2)) u_add (
+    .clk, .rst_n, .ce, .in_valid, .a, .b, .sub, .out_valid, .y
+  );
+endmodule
+`else
 module tsr_fp_add #(
   parameter int unsigned LAT = 5
 ) (
@@ -437,3 +460,4 @@ module tsr_fp_add #(
   end
 
 endmodule
+`endif

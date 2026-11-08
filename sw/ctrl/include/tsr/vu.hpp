@@ -628,6 +628,96 @@ struct vmask_f {
     o.used = uint8_t(VMASK_WORDS);
     return o;
 }
+// GDN 0x39 (VU §7.12.4, owner VU)
+constexpr uint32_t GDN_SA        = 0x000F0000u;  // x16[3:0] s register holding alpha
+constexpr uint32_t GDN_SA_LSB    = 16u;
+constexpr uint32_t GDN_SA_W      = 4u;
+constexpr uint32_t GDN_SA_WORD   = 0u;
+constexpr uint32_t GDN_SA_BIT    = 16u;
+constexpr uint32_t GDN_SB        = 0x00F00000u;  // x16[7:4] s register holding beta
+constexpr uint32_t GDN_SB_LSB    = 20u;
+constexpr uint32_t GDN_SB_W      = 4u;
+constexpr uint32_t GDN_SB_WORD   = 0u;
+constexpr uint32_t GDN_SB_BIT    = 20u;
+constexpr uint32_t GDN_D         = 0x00FFFFFFu;  // w1[23:0] S' tile, line of row 0 (may equal A: in place)
+constexpr uint32_t GDN_D_LSB     = 0u;
+constexpr uint32_t GDN_D_W       = 24u;
+constexpr uint32_t GDN_D_WORD    = 1u;
+constexpr uint32_t GDN_D_BIT     = 32u;
+constexpr uint32_t GDN_A         = 0x00FFFFFFu;  // w2[23:0] S tile, line of row 0
+constexpr uint32_t GDN_A_LSB     = 0u;
+constexpr uint32_t GDN_A_W       = 24u;
+constexpr uint32_t GDN_A_WORD    = 2u;
+constexpr uint32_t GDN_A_BIT     = 64u;
+constexpr uint32_t GDN_K         = 0x00FFFFFFu;  // w3[23:0] k vector line (m words)
+constexpr uint32_t GDN_K_LSB     = 0u;
+constexpr uint32_t GDN_K_W       = 24u;
+constexpr uint32_t GDN_K_WORD    = 3u;
+constexpr uint32_t GDN_K_BIT     = 96u;
+constexpr uint32_t GDN_Q         = 0x00FFFFFFu;  // w4[23:0] q vector line (m words)
+constexpr uint32_t GDN_Q_LSB     = 0u;
+constexpr uint32_t GDN_Q_W       = 24u;
+constexpr uint32_t GDN_Q_WORD    = 4u;
+constexpr uint32_t GDN_Q_BIT     = 128u;
+constexpr uint32_t GDN_V         = 0x00FFFFFFu;  // w5[23:0] v vector line (rows words)
+constexpr uint32_t GDN_V_LSB     = 0u;
+constexpr uint32_t GDN_V_W       = 24u;
+constexpr uint32_t GDN_V_WORD    = 5u;
+constexpr uint32_t GDN_V_BIT     = 160u;
+constexpr uint32_t GDN_O         = 0x00FFFFFFu;  // w6[23:0] o vector line (rows words, tail rule of VU §4.2)
+constexpr uint32_t GDN_O_LSB     = 0u;
+constexpr uint32_t GDN_O_W       = 24u;
+constexpr uint32_t GDN_O_WORD    = 6u;
+constexpr uint32_t GDN_O_BIT     = 192u;
+constexpr uint32_t GDN_M         = 0x0000FFFFu;  // w7[15:0] d_k: a multiple of 16
+constexpr uint32_t GDN_M_LSB     = 0u;
+constexpr uint32_t GDN_M_W       = 16u;
+constexpr uint32_t GDN_M_WORD    = 7u;
+constexpr uint32_t GDN_M_BIT     = 224u;
+constexpr uint32_t GDN_ROWS      = 0xFFFF0000u;  // w7[31:16] d_v rows of the tile
+constexpr uint32_t GDN_ROWS_LSB  = 16u;
+constexpr uint32_t GDN_ROWS_W    = 16u;
+constexpr uint32_t GDN_ROWS_WORD = 7u;
+constexpr uint32_t GDN_ROWS_BIT  = 240u;
+constexpr uint32_t GDN_RSV_W0    = 0xFF00FF00u;  // must be 0 (ILLEGAL_OP)
+constexpr uint32_t GDN_RSV_W1    = 0xFF000000u;
+constexpr uint32_t GDN_RSV_W2    = 0xFF000000u;
+constexpr uint32_t GDN_RSV_W3    = 0xFF000000u;
+constexpr uint32_t GDN_RSV_W4    = 0xFF000000u;
+constexpr uint32_t GDN_RSV_W5    = 0xFF000000u;
+constexpr uint32_t GDN_RSV_W6    = 0xFF000000u;
+constexpr uint32_t GDN_RSV_W7    = 0x00000000u;
+constexpr uint32_t GDN_WORDS     = 0xFFu;        // words holding a field (w0 always)
+struct gdn_f {
+    uint32_t sa = 0;    // x16[3:0] s register holding alpha
+    uint32_t sb = 0;    // x16[7:4] s register holding beta
+    uint32_t d = 0;     // w1[23:0] S' tile, line of row 0 (may equal A: in place)
+    uint32_t a = 0;     // w2[23:0] S tile, line of row 0
+    uint32_t k = 0;     // w3[23:0] k vector line (m words)
+    uint32_t q = 0;     // w4[23:0] q vector line (m words)
+    uint32_t v = 0;     // w5[23:0] v vector line (rows words)
+    uint32_t o = 0;     // w6[23:0] o vector line (rows words, tail rule of VU §4.2)
+    uint32_t m = 0;     // w7[15:0] d_k: a multiple of 16
+    uint32_t rows = 0;  // w7[31:16] d_v rows of the tile
+};
+[[gnu::always_inline]] constexpr op GDN(const gdn_f& f) {
+    op o{};
+    bool bad = false;
+    o.w[0] = OP_GDN;
+    o.w[0] |= op_put(f.sa, 0xFu, 16, bad);
+    o.w[0] |= op_put(f.sb, 0xFu, 20, bad);
+    o.w[1] |= op_put(f.d, 0xFFFFFFu, 0, bad);
+    o.w[2] |= op_put(f.a, 0xFFFFFFu, 0, bad);
+    o.w[3] |= op_put(f.k, 0xFFFFFFu, 0, bad);
+    o.w[4] |= op_put(f.q, 0xFFFFFFu, 0, bad);
+    o.w[5] |= op_put(f.v, 0xFFFFFFu, 0, bad);
+    o.w[6] |= op_put(f.o, 0xFFFFFFu, 0, bad);
+    o.w[7] |= op_put(f.m, 0xFFFFu, 0, bad);
+    o.w[7] |= op_put(f.rows, 0xFFFFu, 16, bad);
+    op_poison_if(o, bad, 0x100u);   // the lowest reserved w0 bit
+    o.used = uint8_t(GDN_WORDS);
+    return o;
+}
 // SOP 0x40 (VU §5.8, owner VU)
 constexpr uint32_t SOP_SUB       = 0x00000F00u;  // w0[11:8] function (SOP_FUNCS)
 constexpr uint32_t SOP_SUB_LSB   = 8u;

@@ -3,9 +3,21 @@
 # CC §14.3 the run before gate T2). Opt-in (tb/vu/viv/vu_ooc.sh), not part of tb/run_all.sh.
 #
 # usage: vivado -mode batch -nojournal -nolog -source tb/vu/viv/vu_ooc.tcl -tclargs <repo> <outdir> [synth_only]
-#          [GEN=value ...]      e.g. EXP_LANES=8 BACK_LANES=4 SPM_RD_LAT=4
+#          [place_only] [clk=<ns>] [iodly=<ns>] [define=<NAME>] [GEN=value ...]
+#          e.g. EXP_LANES=8 BACK_LANES=4 SPM_RD_LAT=4
+#   place_only   stop after place_design (no phys_opt_design, no route_design); the VOOC lines carry the
+#                placed utilization and the WNS of the placed (estimated-route) design
+#   clk=<ns>     clock period (default 3.333)
+#   iodly=<ns>   input and output delay on the boundary (default 1.6)
+#   define=<N>   verilog define (e.g. TSR_FP_ADD_DSP=1: every tsr_fp_add is tsr_fp_add_dsp, rtl/core/tsr_fp_add.sv)
+#   usedsp=<module>   put (* use_dsp = "yes" *) on that module's declaration (text-patched copy in <outdir>/src),
+#                the synthesis attribute that lets Vivado map the module's adders into DSP48E2
 # Constraints as tb/spm/viv/spm_ooc.tcl: 3.333 ns clock, I/O delay 1.6 ns on both sides of the boundary.
+# The K4 configuration (docs/platform-u200.md §8.8, rtl/platform/alveo_xrt/gen_tops.py):
+#   FRONT_LANES=8 EXP_LANES=8 BACK_LANES=4 LANE_PIPE=2 SPM_RD_LAT=4 NUM_CH=4
 # Prints (grep VOOC):
+#   VOOC <stage> CLB <n> LUT <n> FF <n> CARRY8 <n> DSP <n> LUTMEM <n> WNS <ns> WHS <ns>  (stage = place | route;
+#                from report_utilization of the placed / routed design, CLB = CLB tiles)
 #   VOOC util LUT <n> FF <n> DSP <n> RAMB36 <n> RAMB18 <n> URAM <n> LUTRAM <n> SRL <n>
 #   VOOC wns <ns> whs <ns>           (after route; synth_only: the post-synthesis estimate)
 #   VOOC r2r_wns <ns> <start> -> <end> levels <n>
@@ -17,32 +29,69 @@ set repo [lindex $argv 0]
 set out  [lindex $argv 1]
 set rest [lrange $argv 2 end]
 set synth_only 0
+set place_only 0
+set clk 3.333
+set iodly 1.6
+set vdef [list]
+set usedsp [list]
 set gens [list]
 foreach a $rest {
-  if {$a eq "synth_only"} { set synth_only 1 } else { lappend gens $a }
+  if {$a eq "synth_only"} { set synth_only 1 } elseif {$a eq "place_only"} { set place_only 1 } \
+  elseif {[string match clk=* $a]} { set clk [string range $a 4 end] } \
+  elseif {[string match iodly=* $a]} { set iodly [string range $a 6 end] } \
+  elseif {[string match define=* $a]} { lappend vdef -verilog_define [string range $a 7 end] } \
+  elseif {[string match usedsp=* $a]} { lappend usedsp [string range $a 7 end] } \
+  else { lappend gens $a }
 }
 set_param general.maxThreads 4
 set c $repo/rtl/core
-read_verilog -sv [list $c/tsr_tables_pkg.sv $c/tsr_pkg.sv $c/tsr_fp_pkg.sv $c/tsr_xc_pkg.sv $c/tsr_vu_pkg.sv \
-  $repo/rtl/tech/xilinx/tsr_sram_1r1w.sv $c/tsr_fp_mul.sv $c/tsr_fp_add.sv $c/tsr_fp_div.sv $c/tsr_vu_dly.sv \
-  $c/tsr_vu_exp.sv $c/tsr_vu_rcp.sv $c/tsr_vu_sqrt.sv $c/tsr_vu_sincos.sv $c/tsr_vu_lane.sv $c/tsr_vu_lanes.sv $c/tsr_vu_gen.sv \
+proc src {c out usedsp name} {
+  if {[lsearch -exact $usedsp [file rootname $name]] < 0} { return $c/$name }
+  file mkdir $out/src
+  set f [open $c/$name]; set t [read $f]; close $f
+  regsub -all "(\n|^)module [file rootname $name]" $t "\\1(* use_dsp = \"yes\" *) module [file rootname $name]" t
+  set f [open $out/src/$name w]; puts -nonewline $f $t; close $f
+  return $out/src/$name
+}
+read_verilog -sv [list $c/tsr_tables_pkg.sv $c/tsr_pkg.sv $c/tsr_fp_pkg.sv $c/tsr_att_pkg.sv $c/tsr_xc_pkg.sv $c/tsr_vu_pkg.sv \
+  $repo/rtl/tech/xilinx/tsr_sram_1r1w.sv $c/tsr_fp_mul.sv [src $c $out $usedsp tsr_fp_add.sv] $c/tsr_fp_add_dsp.sv $c/tsr_fp_div.sv $c/tsr_vu_dly.sv \
+  $c/tsr_vu_exp.sv $c/tsr_vu_rcp.sv $c/tsr_vu_sqrt.sv $c/tsr_vu_sincos.sv $c/tsr_vu_lane.sv $c/tsr_vu_lane_share.sv $c/tsr_vu_lanes.sv \
+  $c/tsr_local_asmax.sv $c/tsr_vu_gen.sv \
   $c/tsr_vu_rd.sv $c/tsr_vu_dq.sv $c/tsr_vu_inj.sv $c/tsr_vu_wr.sv $c/tsr_vu_red.sv $c/tsr_vu_angle.sv $c/tsr_vu_topk.sv $c/tsr_vu.sv]
 set gopt [list]
 foreach g $gens { lappend gopt -generic $g }
 file mkdir $out
-synth_design -mode out_of_context -part xcu200-fsgd2104-2-e -top tsr_vu -flatten_hierarchy rebuilt {*}$gopt
-create_clock -name clk -period 3.333 [get_ports clk]
-set_input_delay  -clock clk 1.6 [get_ports -filter {DIRECTION == IN && NAME != clk}]
-set_output_delay -clock clk 1.6 [get_ports -filter {DIRECTION == OUT}]
+synth_design -mode out_of_context -part xcu200-fsgd2104-2-e -top tsr_vu -flatten_hierarchy rebuilt {*}$gopt {*}$vdef
+create_clock -name clk -period $clk [get_ports clk]
+set_input_delay  -clock clk $iodly [get_ports -filter {DIRECTION == IN && NAME != clk}]
+set_output_delay -clock clk $iodly [get_ports -filter {DIRECTION == OUT}]
 report_utilization -file $out/util_synth.rpt
 report_utilization -hierarchical -hierarchical_depth 3 -file $out/util_hier_synth.rpt
+proc grab {name} {
+  upvar rep rep
+  if {[regexp "\\|\\s*[string map {( \\( ) \\) + \\+} $name]\\s*\\|\\s*(\\d+)\\s*\\|" $rep -> v]} { return $v }
+  return 0
+}
+proc stage_report {tag out} {
+  set rep [report_utilization -return_string]
+  set f [open $out/util_$tag.rpt w]; puts $f $rep; close $f
+  set wns [get_property SLACK [get_timing_paths -setup -max_paths 1]]
+  set whs [get_property SLACK [get_timing_paths -hold -max_paths 1]]
+  puts "VOOC $tag CLB [grab CLB] LUT [grab {CLB LUTs}] FF [grab {CLB Registers}] CARRY8 [grab CARRY8] DSP [grab DSPs] LUTMEM [grab {LUT as Memory}] WNS $wns WHS $whs"
+}
 if {!$synth_only} {
   opt_design
   place_design
-  phys_opt_design
-  route_design
-  report_utilization -file $out/util.rpt
-  report_utilization -hierarchical -hierarchical_depth 3 -file $out/util_hier.rpt
+  stage_report place $out
+  report_utilization -hierarchical -hierarchical_depth 3 -file $out/util_hier_place.rpt
+  report_timing_summary -max_paths 30 -file $out/timing_place.rpt
+  if {!$place_only} {
+    phys_opt_design
+    route_design
+    stage_report route $out
+    report_utilization -file $out/util.rpt
+    report_utilization -hierarchical -hierarchical_depth 3 -file $out/util_hier.rpt
+  }
 }
 report_timing_summary -max_paths 30 -file $out/timing.rpt
 set luts [llength [get_cells -quiet -hierarchical -filter {REF_NAME =~ LUT*}]]

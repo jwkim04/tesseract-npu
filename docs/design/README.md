@@ -330,6 +330,12 @@ the alternatives and the full rationale.
 | VU-25 | Accuracy contract | Functions defined by their algorithms (bit-exact); error bounds informative and measured | Bit-exactness between simulator, RTL and card is the verification basis |
 | VU-26 | CPU-compatible GELU | GELU16 (0x17) and GEGLU16 (0x18): clamps at ±10, binary16 rounding of input and result; llama.cpp GELU/GEGLU map to them; exact GELU kept for M8/PyTorch | The pinned CPU rounds every GEGLU element to fp16 (up to 3.9·10⁻³ relative); matching its form removes that gap for about 0.6 K LUT |
 | VU-27 | AT vector ops on the VU | ASMAX, AMASK, AMERGE, ANORM run on unit 3 with the front lanes, the MAX path and a multi-pass AMERGE (about 4-5 cycles per output line at C = 4) | Reuses the EXPK lanes and pair reads; matches AT's 1,600-cycle merge tail for about 2 K LUT |
+| VU-28 | Fused GDN op | Opcode 0x39, one head per op: state tile in the SPM, k, q, v vectors, α and β in s registers; u, e, S', o in one pass; d_k a multiple of 16 up to 256 | S is read and written once; designed, built and measured out of context, not integrated |
+| VU-29 | GDN dot products | Exact integer sums of aligned mantissa products in DSP48E2 cascades (26-bit row window, 24-bit table entries), one RNE conversion per dot | Accuracy of f32 trees, no f32 adder, order independent; 36 DSP, no CLB-heavy adder |
+| VU-30 | GDN element update | S' = FA(FM(α, S), FM(e, k)) on the VU primitives | A block-frame update in the DSP is 1.3 to 30 times less accurate and needs shifters and normalisers |
+| VU-31 | GDN state tile | Through the SPM with `LD` / `ST`; the unit sits beside the SPM in SLR1 | Half of the SPM bandwidth at 8 elements per cycle; no new DRAM path or SLR crossing; SLR1 has the free DSP and URAM |
+| VU-32 | GDN scalar algebra | Table of αβ k, bv = β v, o = α (S · q) + e κ with κ = k · q from a pseudo row | Both dots on the old S in one pass; no second pass over S' |
+| VU-33 | GDN buffers | Per-lane URAM for the row (two copies), tables and key; lanes started one cycle apart; DSP chain in one module | Cascade without skew registers; URAM is free in SLR0 / SLR2 and half free in SLR1 |
 
 ### 6.3 AT — attention and the KV cache (`03-attention-kv.md`)
 
@@ -826,6 +832,10 @@ it does not by itself require a new RTL opcode or a RISC-V ISA extension.
   3 MiB and one sequence is 144 MiB, excluding convolution history and snapshots.
   Start with head-sized SPM tiles. Local URAM buffers or fused state-update RTL remain
   performance options after measuring this baseline, not prerequisites already selected.
+  A fused state-update unit (opcode 0x39, URAM row buffers, dot products in DSP48E2) is designed, built and
+  measured out of context, with its C reference and a bit-exact RTL bench: `docs/design/02-vector-unit.md` §7.12.
+  It is not decoded by the VU, not in the tables and in no image; the integration and the firmware kind are the
+  next steps listed there.
 - **GDN surrounding operations:** add lowering for the required norms, gates and rotary
   variants. SILU, SIGMOID and EXP already have VU functions; SOFTPLUS/log does not.
   Decide its stable numerical algorithm and cost before choosing a composition of existing
