@@ -2,6 +2,25 @@
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
 
+## Why the card spent more cycles than the simulator (branch `vu-perf`, November 9)
+
+Software only; no RTL change. The card took 12.63 M cycles per Qwen3.8 2B decode token and 16.32 M per Gemma 4 26B-A4B token; the simulator said 10.5 M
+and 15.1 M. Op-by-op comparison of the card's trace-writer records with the simulator's event log ([prof-dbg.md](prof-dbg.md) §3,
+`sw/tools/trw_vs_sim.py`) found two errors of the simulator's cycle model, both fixed (SW-80), and no stall in the hardware:
+
+- The VU of the card has 8 / 8 / 4 lanes behind two register stages; the model had 16 / 16 / 8, and latencies of 20 and 64 cycles where the RTL takes 59 and 95
+  (at 16 lanes too) and a reduction ring it did not know. 89 % of the Qwen3.8 gap is the 18 GATED_DELTA_NET records. The RTL unit alone takes 4.737 M cycles for
+  the 4,518 VU ops of the token and `VU_CYCLES` reads 4.758 M on the card: the card's VU waits for nothing the unit does not wait for in the RTL bench.
+- QACT A32 takes 16 cycles per 32-block (divider bound); the model had one cycle per line. That is 43 % of the Gemma gap (`MVM_WAIT`).
+
+Corrected, the simulator in the card configuration (`TSR_SIM_CARD=k4full`) gives 12.65 M and 16.24 M (0.2 % above, 0.4 % below the card), and every
+launch of both runs, prompt and warm-up included, agrees to 0.7 %. Outputs are bit-identical before and after (`klcheck compare --expect-identical`, 2 x 16
+tokens each). The default simulator configuration is still the U200 image's 16 lanes. Numbers: [performance.md](performance.md) "Card against simulator",
+[design/02-vector-unit.md](design/02-vector-unit.md) §7.13 (it also lists three RTL changes that would make the VU faster: a ring of 32 partial entries
+removes 0.6 M of the 12.63 M cycles of the Qwen3.8 token).
+Open: the KV store (the V plane's masked writes), MOE_ROUTE and the DMA's half rate while the VU runs are not modelled (together 0.4 % of a Gemma token);
+independent VU ops are charged as dependent ones (0.9 % high on the Qwen3.8 token); ROPE with T > 2 and rotation as long as the angles is up to 7 % low.
+
 ## Card runs of the merged firmware (branch `sw-moegdn`, November 9)
 
 The K4 full-feature image of the fourth link (bitstream unchanged) ran the `tsr-fw.elf` of `sw-moegdn` (21 kinds, kind table 0x804f) with a

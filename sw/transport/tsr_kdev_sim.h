@@ -33,6 +33,8 @@ struct sim_options {
     unsigned     threads = 1;
     bool         no_vu = false;             // a core built without the VU and AT (HAS_VU = 0): the VU queue depth is 0
     uint64_t     run_ahead = 1ull << 20;    // core cycles one run-ahead read may simulate
+    double       rv_ratio = 0.0;            // F_RV / F_CORE (tsr_sim_opts.rv_ratio; 0: TSR_SIM_RV_RATIO, else the default)
+    const char * vu_timing = nullptr;       // tsr_sim_opts.vu_timing (nullptr: TSR_SIM_VU_TIMING, else "u200")
 };
 
 // Options from the TSR_SIM_* environment (who names the kind in messages). false if malformed.

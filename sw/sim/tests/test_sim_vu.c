@@ -841,30 +841,99 @@ static uint64_t cyc(tsr_sim * s, tsr_insn i) {
     return h->cycles(s, i.w);
 }
 
-static void test_cycles(void) {
+// A simulator with the VU's lanes of a configuration ("u200" 16 / 16 / 8 lanes, no lane pipe; "k4" 8 / 8 / 4 behind two
+// stages: the card image of the fourth link).
+static tsr_sim * mk_sim_vu(const char * vu_timing) {
+    tsr_config c = cfg_u200(8);
+    c.spm_bytes = SPM_BYTES;
+    c.ch_bytes = 64ull << 20;
+    c.caps = CAPS_ALL;
+    tsr_sim_opts o;
+    memset(&o, 0, sizeof o);
+    o.vu_timing = vu_timing;
+    tsr_sim * s = tsr_sim_create_opts(&c, &o);
+    if (s == NULL) {
+        fprintf(stderr, "tsr_sim_create_opts(vu_timing %s) failed\n", vu_timing);
+        exit(1);
+    }
+    return s;
+}
+
+// The cycle model against what the RTL unit takes (SW-80). The numbers are tb/vu test_vu_timing.py's marginal cycles of an
+// op that waits for the one before it (RTL on a 4 MiB SPM, nothing else running), at the two lane configurations
+// that were built: first the U200 lanes, then the K4 image's.
+static void test_cycles_rtl(void) {
+    static const char * const cfg[2] = { "u200", "k4" };
+    for (int k = 0; k < 2; ++k) {
+        tsr_sim * s = mk_sim_vu(cfg[k]);
+        const int K = k;
+#define EXPECT(what, u200, k4, ...) CHECK(cyc(s, __VA_ARGS__) == (K ? (k4) : (u200)), "%s: %s: %llu, RTL %u", cfg[K], what, \
+                                          (unsigned long long)cyc(s, __VA_ARGS__), K ? (k4) : (u200))
+        EXPECT("VOP ADD rows 4 L 3", 72, 88, e_vop(TSR_VOP_FUNC_ADD, 0, 0, 10, 100, 200, 0, 48, 4, 3, 3, 3));
+        EXPECT("VOP ADD one row L 8", 68, 80, e_vop(TSR_VOP_FUNC_ADD, 0, 0, 10, 100, 200, 0, 128, 1, 0, 0, 0));
+        EXPECT("VOP ADD 128 rows L 9", 1212, 2368, e_vop(TSR_VOP_FUNC_ADD, 0, 0, 10, 2000, 4000, 0, 144, 128, 9, 9, 9));
+        EXPECT("VOP COPY 16 rows L 8", 187, 319, e_vop(TSR_VOP_FUNC_COPY, 0, 0, 10, 100, 0, 0, 128, 16, 8, 8, 0));
+        EXPECT("VOP EXP L 8", 67, 79, e_vop(TSR_VOP_FUNC_EXP, 0, 0, 10, 100, 0, 0, 128, 1, 0, 0, 0));
+        EXPECT("VOP EXPSUB L 8", 68, 80, e_vop(TSR_VOP_FUNC_EXPSUB, 0, 0, 10, 100, 200, 0, 128, 1, 0, 0, 0));
+        EXPECT("VOP SILU 16 rows L 8", 351, 611, e_vop(TSR_VOP_FUNC_SILU, 0, 0, 10, 100, 0, 0, 128, 16, 8, 8, 0));
+        EXPECT("VOP SWIGLU L 64", 224, 356, e_vop(TSR_VOP_FUNC_SWIGLU, 0, 0, 10, 100, 2000, 0, 1024, 1, 0, 0, 0));
+        EXPECT("VOP MULC tile 128 x 8", 1083, 2111, e_vop(TSR_VOP_FUNC_MULC, 1, 1, 10, 10, 0, 0, 128, 128, 8, 8, 0));
+        EXPECT("VOP MULCADD tile 128 x 8, c vector", 1092, 2120, e_vop(TSR_VOP_FUNC_MULCADD, 2, 0, 10, 10, 2000, 4000, 128, 128, 8, 8, 8));
+        EXPECT("VOP m = 0", 1, 1, e_vop(TSR_VOP_FUNC_ADD, 0, 0, 10, 100, 200, 0, 0, 4, 3, 3, 3));
+        EXPECT("RED SUM 1 row m 128", 149, 161, e_red(TSR_RED_KIND_SUM, 0, 0, 0, 0, 0, 7, 50, 128, 1, 8));
+        EXPECT("RED SUM 1 row m 2048", 269, 401, e_red(TSR_RED_KIND_SUM, 0, 0, 0, 0, 0, 7, 50, 2048, 1, 128));
+        EXPECT("RED SUMSQ RMS 1 row m 4096", 397, 657, e_red(TSR_RED_KIND_SUMSQ, 0, 0, TSR_RED_POST_RMS, 2, 3, 7, 50, 4096, 1, 256));
+        EXPECT("RED SUM 16 rows m 128", 452, 520, e_red(TSR_RED_KIND_SUM, 0, 0, 0, 0, 0, 7, 50, 128, 16, 8));
+        EXPECT("RED SUM 16 rows m 256", 516, 664, e_red(TSR_RED_KIND_SUM, 0, 0, 0, 0, 0, 7, 50, 256, 16, 16));
+        EXPECT("RED SUM 128 rows m 128 (the Gated DeltaNet tile)", 2748, 3264, e_red(TSR_RED_KIND_SUM, 0, 0, 0, 0, 0, 7, 50, 128, 128, 8));
+        EXPECT("RED SUM 128 rows m 64", 1153, 1192, e_red(TSR_RED_KIND_SUM, 0, 0, 0, 0, 0, 7, 50, 64, 128, 4));
+        EXPECT("RED SUM to s m 256", 155, 175, e_red(TSR_RED_KIND_SUM, 1, 4, 0, 0, 0, 0, 50, 256, 1, 0));
+        EXPECT("SOP MOVI", 53, 58, e_sop(TSR_SOP_SUB_MOVI, 1, 0, 0, F_ONE, 0));
+        EXPECT("SOP ADD", 53, 58, e_sop(TSR_SOP_SUB_ADD, 1, 2, 3, 0, 0));
+        EXPECT("SOP LDS", 58, 63, e_sop(TSR_SOP_SUB_LDS, 6, 0, 0, 0, 1000));
+        EXPECT("SOP RSQRT", 68, 68, e_sop(TSR_SOP_SUB_RSQRT, 1, 2, 0, 0, 0));
+        EXPECT("SOP DIV", 25, 25, e_sop(TSR_SOP_SUB_DIV, 1, 2, 3, 0, 0));
+        rope_f rf = { TSR_ROPE_MODE_NEOX, 0, 0, 0, 1, 2, 0, 100, 3000, 5000, 0, 128, 64, 16, 2, 0, 0 };
+        EXPECT("ROPE recurrence hd 128 nd 64 nh 16 T 2", 575, 803, e_rope(&rf));
+        rf.hd = 256; rf.nd = 256; rf.nh = 4; rf.T = 1; rf.ff = 1; rf.table = 7000;
+        EXPECT("ROPE freq factors hd 256 nd 256 nh 4", 1168, 1236, e_rope(&rf));
+        rf.ff = 0; rf.atab = 1; rf.sts = 0;
+        EXPECT("ROPE A table hd 256 nd 256 nh 4", 334, 402, e_rope(&rf));
+        rf.atab = 0; rf.table = 0; rf.sts = 2; rf.T = 0;
+        EXPECT("ROPE T = 0", 1, 1, e_rope(&rf));
+#undef EXPECT
+        tsr_sim_destroy(s);
+    }
+    // Not measured on the RTL of the cards (no TOPK, no DQROW in the K4 image): the estimates of VU §7.9 on the front lanes.
     tsr_sim * s = mk_sim(CAPS_ALL, 8);
-    CHECK(cyc(s, e_vop(TSR_VOP_FUNC_ADD, 0, 0, 10, 100, 200, 0, 40, 4, 3, 3, 3)) == 4u * 3u + 4u + 20u, "VOP ADD odd L, two sources");
-    CHECK(cyc(s, e_vop(TSR_VOP_FUNC_ADD, 0, 0, 10, 100, 200, 0, 32, 4, 3, 3, 3)) == 4u * 2u + 20u, "VOP ADD even L");
-    CHECK(cyc(s, e_vop(TSR_VOP_FUNC_COPY, 0, 0, 10, 100, 0, 0, 40, 4, 3, 3, 0)) == 4u * 3u + 20u, "VOP COPY one source");
-    CHECK(cyc(s, e_vop(TSR_VOP_FUNC_SILU, 0, 0, 10, 100, 0, 0, 32, 2, 2, 2, 0)) == 2u * 2u * 2u + 64u, "VOP SILU half rate");
-    CHECK(cyc(s, e_vop(TSR_VOP_FUNC_EXPSUBC, 2, 0, 10, 100, 0, 300, 16, 20, 1, 1, 0)) == 20u + 2u + 64u, "VOP EXPSUBC: EXPK, c vector");
-    CHECK(cyc(s, e_vop(TSR_VOP_FUNC_MULCB, 1, 1, 10, 100, 200, 0, 16, 1, 0, 0, 0)) == 1u + 1u + 20u, "VOP MULCB one line");
-    CHECK(cyc(s, e_vop(TSR_VOP_FUNC_GEGLU16, 0, 0, 10, 100, 200, 0, 48, 2, 3, 3, 3)) == 2u * 3u * 2u + 2u + 64u, "VOP GEGLU16");
-    CHECK(cyc(s, e_vop(TSR_VOP_FUNC_ADD, 0, 0, 10, 100, 200, 0, 0, 4, 3, 3, 3)) == 1u, "VOP m = 0");
-    CHECK(cyc(s, e_red(TSR_RED_KIND_SUMSQ, 1, 1, TSR_RED_POST_RMS, 2, 3, 0, 50, 896, 1, 0)) == 56u + 45u + 30u, "RED RMS TO_S");
-    CHECK(cyc(s, e_red(TSR_RED_KIND_SUM, 0, 0, 0, 0, 0, 7, 50, 128, 40, 8)) == 40u * 16u + 45u, "RED short rows: tree-bound");
-    CHECK(cyc(s, e_red(TSR_RED_KIND_MAX, 0, 0, 0, 0, 0, 7, 50, 512, 3, 32)) == 3u * 32u + 45u, "RED long rows: line-bound");
     CHECK(cyc(s, e_red(TSR_RED_KIND_SUM, 0, 0, 0, 0, 0, 7, 50, 0, 3, 32)) == 1u, "RED vector m = 0");
-    CHECK(cyc(s, e_red(TSR_RED_KIND_SUM, 1, 2, TSR_RED_POST_RCP, 0, 0, 0, 50, 0, 1, 0)) == 45u, "RED TO_S m = 0");
-    rope_f rf = { TSR_ROPE_MODE_NEOX, 0, 0, 0, 1, 2, 0, 100, 200, 300, 0, 64, 64, 3, 8, 0, 0 };
-    CHECK(cyc(s, e_rope(&rf)) == 8u * (4u * 32u + 12u) + 40u, "ROPE recurrence");
-    rf.ff = 1; rf.table = 400;
-    CHECK(cyc(s, e_rope(&rf)) == 8u * (8u * 32u + 12u) + 40u, "ROPE freq factors");
-    rf.T = 0;
-    CHECK(cyc(s, e_rope(&rf)) == 1u, "ROPE T = 0");
     CHECK(cyc(s, e_topk(5, 10, 20, 100, 2, 0, 7)) == 2u * (7u + 5u) + 20u, "TOPK");
     CHECK(cyc(s, e_dqrow(TSR_FMT_Q8_0, 10, 100, 512, 3, 0, 0)) == 3u * 32u + 30u, "DQROW");
-    CHECK(cyc(s, e_sop(TSR_SOP_SUB_DIV, 1, 2, 3, 0, 0)) == 40u && cyc(s, e_sop(TSR_SOP_SUB_ADD, 1, 2, 3, 0, 0)) == 30u, "SOP");
+    tsr_sim_destroy(s);
+    // The configuration is validated.
+    tsr_config c = cfg_u200(8);
+    c.spm_bytes = SPM_BYTES;
+    c.ch_bytes = 64ull << 20;
+    c.caps = CAPS_ALL;
+    tsr_sim_opts o;
+    memset(&o, 0, sizeof o);
+    const char * good[] = { "u200", "k4", "16,16,8,0", "8,8,4,3" }, * bad[] = { "k5", "12,16,8,0", "8,8,4", "8,8,4,4", "8,8,3,0", "" };
+    for (size_t k = 0; k < sizeof good / sizeof good[0]; ++k) {
+        o.vu_timing = good[k];
+        tsr_sim * g = tsr_sim_create_opts(&c, &o);
+        CHECK(g != NULL, "vu_timing %s is accepted", good[k]);
+        if (g) tsr_sim_destroy(g);
+    }
+    for (size_t k = 0; k < sizeof bad / sizeof bad[0]; ++k) {
+        o.vu_timing = bad[k];
+        tsr_sim * g = tsr_sim_create_opts(&c, &o);
+        CHECK(g == NULL || bad[k][0] == '\0', "vu_timing %s is refused", bad[k]);
+        if (g) tsr_sim_destroy(g);
+    }
+    o.vu_timing = "k4";
+    s = tsr_sim_create_opts(&c, &o);
+    CHECK(TSR_GET(tsr_sim_csr_read(s, TSR_CSR_CFG3), TSR_CFG3_VU_FRONT) == 8 && TSR_GET(tsr_sim_csr_read(s, TSR_CSR_CFG3), TSR_CFG3_VU_BACK) == 4,
+          "CFG3 reports the EXP and back lanes of the card image (0x02480088 with the attention field)");
     tsr_sim_destroy(s);
 }
 
@@ -1049,7 +1118,7 @@ int main(void) {
     test_checks();
     test_queue_records();
     test_extents();
-    test_cycles();
+    test_cycles_rtl();
     test_perf();
     test_rmsnorm();
     test_softmax();

@@ -923,21 +923,29 @@ feed back lanes 0–7, and front lanes 8–15 idle.
 | AMERGE | prepass over the row vectors (≤ 64 lines): MAXT, FS, FM, EXPK give a_r, b_r (row buffer) and the l_run update; then per output line: CTREE of the C partial lines on FA (C − 1 passes), FM_A(Orun, a_r) ∥ FM_B(Ok, b_r) → FA | ≈ 4–5 cycles per output line at C = 4 (5 line reads, 4 FA uses); INIT ≈ 3 |
 | ANORM | prepass: RC(MAXT(l_r, 2⁻¹²⁶)) on the back lanes into the row buffer; then FM_A(Orun, rinv_r) | F (after the prepass) |
 
-There are two fixed latency classes: short (FM_A … FM_C, cmp: about 20 cycles including SPM read
-and write) and long (the full chain: about 64 cycles) (*estimates*). An op uses one class for all
-its elements.
+There are two latency classes, short (FM_A … FM_C, cmp, EXPK) and long (the half-rate functions). An op uses
+one class for all its elements. *Measured* on the RTL unit (§7.13), an op that waits for the one before it takes
+59 cycles (60 when it reads both a and b) from accept to done, plus its stream time, in the short class and 95 (96)
+in the long class, and every lane-pipe stage (`VU_LANE_PIPE`) adds 2 cycles. The figures this section carried before
+2026-11-09, about 20 and about 64 cycles, were estimates and were low by 40 and 31 cycles.
 
 ### 7.5 Reduction unit and row post
 
 - **Draining a row:** at a row's end its 128 partials (double-buffered) drain through an 8-input
   subtree adder (7 FA, 3 levels). It consumes 8 partials per cycle and yields 16 subtree sums per
   row, or ⌈m/8⌉ when m < 128 (§6.2). A scheduled 2-FA top combiner finishes the last 4 levels.
-- **Throughput:** a row costs max(L(m), min(⌈m/8⌉, 16)) cycles. Rows of ≥ 256 elements run at
-  full rate (Gemma head_dim 256 / 512, prefill norms, attention blocks of ≥ 256 keys); rows of 64
-  or 128 elements run at half rate.
+- **Partial ring:** a row of L lines holds min(L, 8) of the 16 ring entries from its first line until its drain
+  ends, and the drain starts 17 cycles after the row's last line. A row with L ≥ 8 therefore leaves room for
+  one more row (two rows in flight) and a row with L = 4 for three more.
+- **Throughput:** in a stream of rows a row takes max(s, G, (s + 17 + G) / R) cycles, where s = L(m) · 16 / F is its
+  stream time, G = min(⌈m/8⌉, 16) its drain and R = ⌊16 / min(L, 8)⌋ the rows in flight. Rows of ≥ 256 elements
+  at 16 lanes and rows of ≥ 512 at 8 lanes are stream-bound (Gemma head_dim 256 / 512, prefill norms, attention blocks
+  of ≥ 256 keys); rows of 128 elements wait for the ring: 21 cycles per row at 16 lanes, 25 at 8 (the Gated DeltaNet
+  recurrence's 128 rows of 128 elements: 2,748 and 3,264 cycles), which a ring of 32 entries would remove (§7.13).
 - **Post unit:** FM, FA, a pipelined exact SQ and an exact RC, at ≥ 1 row per 4 cycles. Results
   are packed 16 per line into the row vector, or written to s[sd].
-- **Result latency:** about 45 cycles after the last line, plus about 30 for RMS (*estimate*).
+- **Result latency:** *measured* 108 cycles after the last drain (106 to an s register), plus 2 per lane-pipe stage,
+  the same for every kind and post-op: the post pipeline (FM, FA, SQ, RC) is fixed and its stages are bypassed.
 
 ### 7.6 Angle unit and ROPE engine
 
@@ -990,24 +998,30 @@ its elements.
 - **Gain.** Independent ops then overlap their fill and drain (about 20–64 cycles each). Dependent
   chains pay the latency.
 
-### 7.9 Throughput targets (*estimates*, core clock 276.3 MHz)
+### 7.9 Throughput (*measured* 2026-11-09, §7.13; the targets this section carried were estimates)
+
+Cycles of an op that waits for the op before it, from the done of that op to its own. F, E and B are the front,
+EXP and back lanes, P the lane-pipe stages and X = 2 P (U200 image 16 / 16 / 8 lanes and X = 0; K4 image 8 / 8 / 4 and X = 4).
 
 | Op | Cost |
 |---|---|
-| VOP, rate F | rows × L(m) cycles + ≤ 1 per row (odd line count) + ⌈rows/16⌉ (c vector) + latency (20 / 64) |
-| VOP, rate H | 2 × rows × L(m) + same overheads |
-| RED | rows × max(L(m), min(⌈m/8⌉, 16)) + about 45 (+30 RMS) |
-| ROPE | T × (4 × n_dims/2 [unless reused] + n_heads × head_dim/16) + about 40 |
-| COPY, SETC (VMASK from M9) | rows × L(m) + about 20 |
-| ASMAX | R × n_lines + about 64 |
-| AMASK | R × n_lines (+ ≤ 1 per row) + about 45 (row maxima) |
-| AMERGE | prepass ≈ 6 × ⌈R/16⌉ + 64; then R × D/16 × (4–5) (INIT: × 3); 32B, R = 40, D = 128: ≈ 1,600 (AT §9.2) |
-| ANORM | prepass ≈ 4 × ⌈R/16⌉ + 64; then R × D/16 |
-| DQROW (M8) | 16 outputs per cycle: rows × L(K) + about 30 |
-| TOPK (M8) | m/16 per row typical (running-threshold filter, one insertion per cycle); m per row worst case (ascending input) |
-| SOP | ≤ 30 cycles (DIV ≤ 40) |
+| VOP, front class | rows × L(m) × 16/F + ⌈rows/16⌉ (c vector) + 59 + X (+1 with a and b) |
+| VOP, EXP, EXPSUB, EXPSUBC | rows × L(m) × 16/E + ⌈rows/16⌉ + 59 + X (+1 with a and b) |
+| VOP, half rate (SILU, SIGMOID, GELU, TANH, RECIP, SWIGLU, GEGLU) | rows × L(m) × 16/B + ⌈rows/16⌉ + 95 + X (+1 with a and b) |
+| RED | the partial ring of §7.5: the last drain ends after the rows' recurrence, then + 108 + X (106 + X to an s register) |
+| ROPE | (T − 1) × max(A, R) + A + R + D: A = angles per token (5 per angle of n_dims/2; 121/16 with freq factors; 17/16 with the A table), R = n_heads × head_dim/16 × 16/F, D = 127 + X (136 + X with freq factors, 134 + X with the table) |
+| ASMAX | R × n_lines × 16/F + 60 + X |
+| AMERGE (INIT; a merging op + 73) | R × D/16 × (244 × 16/F + 121 + 4 P) / 64 + 161 + 5 × ⌈R/16⌉ + 11 × (16/F − 1) + 6 P, C = 4 |
+| ANORM | R × D/16 × 16/F + 149 + 3 × ⌈R/16⌉ + 2 × (16/F − 1) + 4 P |
+| SOP | 53 + 5X/4 (LDS 58 + 5X/4, SQRT and RSQRT 68, DIV 25) |
+| AMASK, DQROW, TOPK | not measured (no firmware kind uses AMASK; the K4 image has no TOPK and no DQROW): AMASK as ASMAX, DQROW rows × L(K) × 16/F + 30, TOPK rows × (L(m) × 16/F + k) + 20 (estimates) |
 
-For TOPK with m = 262,144: about 59 µs typical, 0.95 ms worst case.
+Independent ops do better than these figures: the unit overlaps their fill and drain (§7.8). An independent op costs its
+stream time plus about 3 cycles when that is longer than half its accept-to-done latency (about 50), else about half
+that latency. The simulator's cycle model charges the dependent figure for every op (SW-80); on the Gated DeltaNet
+decode token (4,518 VU ops) that is 0.9 % above the RTL.
+
+For TOPK with m = 262,144: about 59 µs typical, 0.95 ms worst case (estimate).
 
 ### 7.10 Area, placement and timing
 
@@ -1157,6 +1171,48 @@ shared logic remain free to place. This is major-block floorplanning only;
 ordinary synthesis/implementation must establish memory mapping, timing and
 routing. No cell/stage placement or optimizer ownership constraint is used.
 
+
+### 7.13 Measured timing and the simulator's cycle model
+
+The VU's cycles were measured in three places, and they agree.
+
+- **The RTL unit alone** (`tb/vu/test_vu_timing.py`, Verilator: `tsr_vu` on a 4 MiB `tsr_spm`, `SPM_RD_LAT` 4, four channels,
+  nothing else running). `vu_sweep` and `vu_sweep_words` time every op shape of §7.9 repeated four times, dependent (the next
+  op reads or overwrites the result) and independent, at four lane configurations (16 / 16 / 8 and 8 / 8 / 4, each with
+  and without two lane-pipe stages); `vu_stream` replays the unit-3 pushes of a simulator run as fast as the unit accepts them.
+- **The card** (K4 full-feature image: 8 / 8 / 4 lanes, `VU_LANE_PIPE` 2, 200 MHz): the trace writer's per-op times (DB §8.3)
+  of Qwen3.8 2B and Gemma 4 26B-A4B decode (`sw/tools/trw_vs_sim.py`). In the Gated DeltaNet head step the gaps between the
+  completions of consecutive VU ops equal the RTL's gaps to the cycle (a 128 x 8 line tile VOP 2,112, RED of 128 rows 3,264,
+  a one-row VOP 79 to 80), and the 4,518 VU ops of one token take 4.737 M cycles on the RTL unit alone against 4.758 M
+  of `VU_CYCLES` on the card. Nothing else slows the VU on the card: `VU_SPM_WAIT` (0.55 M per token) and `VU_HAZARD`
+  (0.27 M) count cycles that lie inside those figures.
+- **The simulator** (`sw/sim/tsr_vu.c`, `tsr_at.c`, SW-80): the model of §7.9 reproduces the dependent figure of every
+  shape measured: 101 shapes of the sweep at both built configurations to the cycle (the first one-line op by one), and
+  the 115 distinct non-VOP op words of the model streams at four lane configurations to within 2 % (mostly to the cycle),
+  except the ROPE case below. `TSR_SIM_VU_TIMING` names the lane configuration (`u200`, `k4` or `F,E,B,P`).
+
+Against the estimates of before, and against a 16-lane VU, the card's VU differs in three ways: an 8-lane front takes 2 cycles
+per line and the half-rate functions 4; every dependent op pays a latency of 60 to 100 cycles (the old model charged 20 and
+64); a reduction of rows of 128 elements is bound by the partial ring (25 cycles per row, not 16). On the Gated DeltaNet head
+step (13 VU ops on a 128 x 128 f32 state) that is 15,306 cycles on the K4 image against 8,514 in the old model.
+
+Avoidable stalls of the unit, for an RTL change (not made):
+
+1. **The partial ring.** A row of ≥ 8 lines holds 8 of 16 entries until 17 + 16 cycles after its last line, so two rows are in
+   flight and a row of 128 elements costs 25 cycles at 8 lanes (21 at 16) where its 16 cycles of stream would do. A ring of 32
+   entries (four rows in flight, 1 KiB more LUTRAM) cuts the Gated DeltaNet recurrence's RED of 128 rows from 3,264 to about
+   2,200 cycles; there are two per head step, 0.62 M cycles of the 12.63 M of the 2B decode token.
+2. **A dependent op waits for the done of the op before it** (about 60 cycles plus 2 per lane-pipe stage). Chaining by line,
+   so that the second op reads a line as soon as the first has written it, would remove most of it for the element-wise chains
+   of the norms and the gates; the hazard check is per extent now.
+3. **Two ops held at once.** Small independent ops (one-row VOPs, SOPs) run at 25 to 45 cycles each, bound by two ops in
+   flight over an accept-to-done latency of about 50; four held ops would double their rate. Their share of the VU's time on
+   the model streams is below 1 %.
+
+The simulator charges the dependent figure for every op, so it is 0.9 % above the RTL on the Gated DeltaNet token (the
+independent SOP.LDS and SOP.MOVI ops overlap). A ROPE whose rotation is nearly as long as its angles (R/A between 0.7 and 1)
+takes up to 7 % more per extra token in the RTL than in the model (head_dim 256, n_dims 64, 8 heads, T = 7: 1,471 against 1,375
+cycles at the U200 lanes); decode has T = 1, which is exact.
 
 ## 8. Usage (informative; SW builds the kernels)
 

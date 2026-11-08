@@ -29,7 +29,7 @@ class TsrSimOpts(ctypes.Structure):         # tsr_sim_opts (sw/sim/include/tsr_s
     _fields_ = [("dram_dir", ctypes.c_char_p), ("threads", u32), ("sched", ctypes.c_char_p),
                 ("rv_ratio", ctypes.c_double), ("race", u32), ("log", vp), ("q_depth", ctypes.POINTER(u8)),
                 ("itcm_bytes", u32), ("dtcm_bytes", u32), ("log_flags", u32), ("trace_dir", ctypes.c_char_p),
-                ("rv_core", ctypes.c_char_p)]
+                ("rv_core", ctypes.c_char_p), ("vu_timing", ctypes.c_char_p)]
 
 
 class TsrExtent(ctypes.Structure):          # tsr_extent (sw/sim/tsr_sim_int.h §1)
@@ -125,7 +125,7 @@ class Sim:
     """One simulator instance (tsr_sim.h): host CSR port, the RISC-V control window through the test
     hooks, the queue listener, DB's per-unit hold / step through the debug hooks (CC §9.2)."""
 
-    def __init__(self, cfg: dict, q_depth=U200_QD, sched: str = "fixed", rv_ratio: float = 0.0):
+    def __init__(self, cfg: dict, q_depth=U200_QD, sched: str = "fixed", rv_ratio: float = 0.0, vu_timing: str = None):
         L = self.L = lib()
         self.cfg = dict(cfg)
         self.qd = tuple(q_depth)
@@ -133,7 +133,8 @@ class Sim:
         self._sched = sched.encode()
         opts = TsrSimOpts(dram_dir=None, threads=1, sched=self._sched, rv_ratio=rv_ratio, race=0, log=None,
                           q_depth=ctypes.cast(self._qd_arr, ctypes.POINTER(u8)), itcm_bytes=0, dtcm_bytes=0,
-                          log_flags=0, trace_dir=None, rv_core=None)
+                          log_flags=0, trace_dir=None, rv_core=None,
+                          vu_timing=vu_timing.encode() if vu_timing else None)
         self.sim = L.tsr_sim_create_opts(ctypes.byref(TsrConfig(**self.cfg)), ctypes.byref(opts))
         if not self.sim:
             raise RuntimeError("tsr_sim_create_opts refused %r q_depth %r" % (cfg, q_depth))

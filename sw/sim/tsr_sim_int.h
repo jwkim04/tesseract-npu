@@ -237,6 +237,10 @@ uint32_t tsr_sim_rv_boot(const tsr_sim * sim);
 uint64_t tsr_sim_rv_boot_gen(const tsr_sim * sim);
 void     tsr_sim_rv_set_state(tsr_sim * sim, uint32_t status_bits);
 double   tsr_sim_rv_ratio(const tsr_sim * sim);
+// The VU's physical lanes (front, EXP, back) and register stages on each side of the lane array (VU §7.10): the cycle
+// model's rates and latencies (tsr_vu.c, tsr_at.c). Default 16 / 16 / 8 and 0.
+typedef struct tsr_vu_timing { uint32_t front, exp, back, pipe; } tsr_vu_timing;
+tsr_vu_timing tsr_sim_vu_timing(const tsr_sim * sim);
 uint32_t tsr_sim_rv_core(const tsr_sim * sim);
 // The TCMs (CC §4.1-§4.2): byte arrays the loader writes (EX §3.3) and the hart fetches and
 // accesses; *bytes (if not NULL) = their size (TSR_ITCM_BYTES / TSR_DTCM_BYTES by default).
@@ -592,6 +596,7 @@ void     tsr_sim_rv_kick(tsr_sim * sim);
 // tsr_sim_log_line appends one line (no-op without a log).
 int      tsr_sim_log_on(const tsr_sim * sim);
 int      tsr_sim_log_rv(const tsr_sim * sim);
+int      tsr_sim_log_words(const tsr_sim * sim);
 void     tsr_sim_log_line(tsr_sim * sim, const char * fmt, ...) __attribute__((format(printf, 2, 3)));
 
 #ifdef __cplusplus
@@ -702,6 +707,7 @@ struct tsr_sim {
     uint32_t   itcm_bytes, dtcm_bytes;
     double     rv_ratio;
     uint32_t   rv_core;         // TSR_RV_CORE_* (tsr_rv.h)
+    uint32_t   vu_front, vu_exp, vu_back, vu_pipe;   // the VU's lanes and lane-pipe stages (tsr_sim_opts.vu_timing)
 
     // PERF (EX §6)
     uint64_t   perf[TSR_PERF_SLOTS];

@@ -204,10 +204,27 @@ static void test_opts(void) {
     setenv("TSR_SIM_RACE", "sometimes", 1);
     CHECK(tsr_sim_create_opts(&cfg, &o) == NULL, "bad TSR_SIM_RACE refused");
     unsetenv("TSR_SIM_RACE");
+    // SW-80: the VU's lanes for the cycle model
+    setenv("TSR_SIM_VU_TIMING", "k5", 1);
+    CHECK(tsr_sim_create_opts(&cfg, &o) == NULL, "bad TSR_SIM_VU_TIMING refused");
+    setenv("TSR_SIM_VU_TIMING", "8,8,4,2", 1);
+    {
+        tsr_sim * k = tsr_sim_create_opts(&cfg, &o);
+        const tsr_vu_timing t = k ? tsr_sim_vu_timing(k) : (tsr_vu_timing){ 0, 0, 0, 0 };
+        CHECK(k != NULL && t.front == 8 && t.exp == 8 && t.back == 4 && t.pipe == 2, "TSR_SIM_VU_TIMING 8,8,4,2");
+        if (k) tsr_sim_destroy(k);
+    }
+    unsetenv("TSR_SIM_VU_TIMING");
+    {
+        tsr_sim * k = tsr_sim_create_opts(&cfg, &o);
+        const tsr_vu_timing t = k ? tsr_sim_vu_timing(k) : (tsr_vu_timing){ 0, 0, 0, 0 };
+        CHECK(k != NULL && t.front == 16 && t.exp == 16 && t.back == 8 && t.pipe == 0, "the default lanes are the U200 image's");
+        if (k) tsr_sim_destroy(k);
+    }
     o.race = 3;
     CHECK(tsr_sim_create_opts(&cfg, &o) == NULL, "race 3 refused");
     o.race = 0;
-    o.log_flags = 2;
+    o.log_flags = 4;   // TSR_SIM_LOG_RV (1) and TSR_SIM_LOG_WORDS (2) are the known flags
     CHECK(tsr_sim_create_opts(&cfg, &o) == NULL, "unknown log flag refused");
     o.log_flags = 0;
     setenv("TSR_SIM_LOG", "/nonexistent-dir/x.log", 1);
@@ -630,6 +647,23 @@ static void test_log(void) {
     }
     free(a);
     free(b);
+    // SW-80: the prefix "w," adds the eight words of every push
+    {
+        remove(path);
+        char env[512];
+        snprintf(env, sizeof(env), "w,%s", path);
+        setenv("TSR_SIM_LOG", env, 1);
+        tsr_sim * s = mk("fixed");
+        unsetenv("TSR_SIM_LOG");
+        op(s, TSR_OP_LD, 20, TSR_TICKET_NONE, TSR_TICKET_NONE);
+        tsr_sim_advance(s, 400);
+        tsr_sim_destroy(s);
+        size_t n = 0;
+        char * w = slurp(path, &n);
+        CHECK(w && strstr(w, " push  u0 seq=0 pidx=0 w0=00000010") && strstr(w, " w=00000010,"), "TSR_SIM_LOG prefix w: the words of a push");
+        CHECK(w && !strstr(w, " rv    pc="), "no RV retire lines without the rv prefix");
+        free(w);
+    }
     remove(path);
 }
 

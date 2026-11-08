@@ -53,11 +53,14 @@
 //   KVST    40 + the beats written (meta + quant, all channels); controller ECC latency unmodeled
 //   ATTQK   350 + max(max_c beats_c, lines)               (fill ≈ 300–400, AT §9.1–§9.2)
 //   ATTPV   350 + 68 + max(max_c beats_c, lines)          (+ the 64-beat segment delay, AT §13.4)
-//   ASMAX   R·n_lines + 64                                (VU §7.9)
-//   AMASK   R·n_lines + R if n_lines is odd (pair reads of two sources) + 45
-//   AMERGE  6·ceil(R/16) + 64 + R·D/16·(C + 1) (INIT: max(1, C - 1)): C partial line reads + the
-//           Orun line per output line (VU §7.4: ≈ 5 at C = 4, INIT ≈ 3; AT §9.2)
-//   ANORM   4·ceil(R/16) + 64 + R·D/16
+// The vector ops follow the measured behaviour of the RTL unit (SW-80, tb/vu test_vu_timing.py) on the lanes the
+// simulator is told (tsr_sim_opts.vu_timing: rate = 16 / front lanes cycles per line, X = 2 · lane-pipe stages):
+//   ASMAX   R·n_lines·rate + 60 + X
+//   AMASK   R·n_lines·rate + 60 + X                       (not in any firmware kind; not measured)
+//   AMERGE  with U = R·D/16 output lines (INIT; a merging op adds 73): U·(244·rate + 121 + 4·P)/64 + 161 + 5·ceil(R/16)
+//           + 11·(rate - 1) + 6·P, P the lane-pipe stages, for C = 4 channels (the RTL's per-line cost is the
+//           C - 1 passes of the channel tree on the lanes, the fit is to C = 4 only)
+//   ANORM   U·rate + 149 + 3·ceil(R/16) + 2·(rate - 1) + 4·P
 // PERF (EX §6, AT §10): MVM_CYCLES, ATT_QK_CYCLES, ATT_PV_CYCLES, DMA_CYCLES and VU_CYCLES are the
 // queue model's busy time. Counted here at completion (events, gated by ACTIVE): CH_RD_BEATS[c]
 // += beats_c (ATTQK, ATTPV). KVST performs no core reads and leaves KVST_RMW at zero;
@@ -77,9 +80,8 @@
 #define AT_KVST_LAT   40u    // AT §13.4
 #define AT_FILL       350u   // AT §9.1-§9.2: dispatch, broadcast, pipeline, gather drain (*estimate*)
 #define AT_PV_SEG_LAT 68u    // AT §13.4: ATTPV's segment delay (64 beats) and drain
-#define VU_ASMAX_LAT  64u    // VU §7.9
-#define VU_AMASK_LAT  45u
-#define VU_PREPASS    64u    // VU §7.9: AMERGE / ANORM row-vector prepass latency
+#define VU_ASMAX_LAT  60u    // SW-80: at P = 0, plus X
+#define VU_AMASK_LAT  60u
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -533,8 +535,9 @@ static void ex_asmax(tsr_sim * sim, const uint32_t w[8]) {
 }
 
 static uint64_t cyc_asmax(const tsr_sim * sim, const uint32_t w[8]) {
-    (void)sim;
-    return (uint64_t)TSR_INSN_GET(w, TSR_ASMAX_R) * TSR_INSN_GET(w, TSR_ASMAX_N_LINES) + VU_ASMAX_LAT;
+    const tsr_vu_timing t = tsr_sim_vu_timing(sim);
+    return (uint64_t)TSR_INSN_GET(w, TSR_ASMAX_R) * TSR_INSN_GET(w, TSR_ASMAX_N_LINES) * (16u / t.front) + VU_ASMAX_LAT +
+           2u * t.pipe;
 }
 
 // ---------------------------------------------------------------------------
@@ -571,9 +574,9 @@ static void ex_amask(tsr_sim * sim, const uint32_t w[8]) {
 }
 
 static uint64_t cyc_amask(const tsr_sim * sim, const uint32_t w[8]) {
-    (void)sim;
+    const tsr_vu_timing t = tsr_sim_vu_timing(sim);
     const uint64_t nl = TSR_INSN_GET(w, TSR_AMASK_N_LINES), R = TSR_INSN_GET(w, TSR_AMASK_R);
-    return R * nl + ((nl & 1u) ? R : 0u) + VU_AMASK_LAT;
+    return R * nl * (16u / t.front) + VU_AMASK_LAT + 2u * t.pipe;
 }
 
 // ---------------------------------------------------------------------------
@@ -630,9 +633,10 @@ static void ex_amerge(tsr_sim * sim, const uint32_t w[8]) {
 static uint64_t cyc_amerge(const tsr_sim * sim, const uint32_t w[8]) {
     amerge_dec m;
     amerge_decode(w, &m);
-    const uint64_t C = tsr_sim_num_ch(sim);
-    const uint64_t per_line = m.init ? (C > 1u ? C - 1u : 1u) : C + 1u;
-    return 6u * (uint64_t)ceil16(m.R) + VU_PREPASS + (uint64_t)m.R * m.D / 16u * per_line;
+    const tsr_vu_timing t = tsr_sim_vu_timing(sim);
+    const uint64_t rate = 16u / t.front, P = t.pipe, U = (uint64_t)m.R * m.D / 16u;
+    const uint64_t slope64 = 244u * rate + 121u + 4u * P;                 // 64ths of a cycle per output line
+    return (U * slope64 + 32u) / 64u + 161u + 5u * ceil16(m.R) + 11u * (rate - 1u) + 6u * P + (m.init ? 0u : 73u);
 }
 
 // ---------------------------------------------------------------------------
@@ -661,9 +665,9 @@ static void ex_anorm(tsr_sim * sim, const uint32_t w[8]) {
 }
 
 static uint64_t cyc_anorm(const tsr_sim * sim, const uint32_t w[8]) {
-    (void)sim;
-    const uint64_t R = TSR_INSN_GET(w, TSR_ANORM_R), D = 64u << TSR_INSN_GET(w, TSR_ANORM_DCODE);
-    return 4u * ((R + 15u) / 16u) + VU_PREPASS + R * D / 16u;
+    const tsr_vu_timing t = tsr_sim_vu_timing(sim);
+    const uint64_t R = TSR_INSN_GET(w, TSR_ANORM_R), D = 64u << TSR_INSN_GET(w, TSR_ANORM_DCODE), rate = 16u / t.front;
+    return R * D / 16u * rate + 149u + 3u * ceil16((uint32_t)R) + 2u * (rate - 1u) + 4u * t.pipe;
 }
 
 // ---------------------------------------------------------------------------

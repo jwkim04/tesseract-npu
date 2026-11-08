@@ -232,6 +232,20 @@ Reads have no side effects except EX's PERF LO snapshot (`docs/spec.md` §21, CS
 | KVST, ATTQK, ATTPV, ASMAX, AMASK, AMERGE, ANORM | AT §5–§6 (vector ops executed by the VU, VU §5.11) | `tsr_ref_at.c` (AT §13.1) | in the simulator: `tsr_at.c` (P1.5) |
 | QCLEAR, QABORT, hold control entries | area EX | `tsr_q.c` | in the simulator |
 
+**Cycle models (SW-80).** The durations of the ops are estimates, not part of the bit-exact contract, but the card measures
+them (the trace writer's RUN time of every op, DB §8.3) and the RTL benches time them, so the models follow what they show.
+`tsr_vu.c` and `tsr_at.c` take the VU's lanes from `tsr_sim_opts.vu_timing` (`TSR_SIM_VU_TIMING`: `u200`, the default, 16 / 16 / 8 lanes
+and no lane pipe; `k4`, the card image's 8 / 8 / 4 lanes behind two lane-pipe stages; or `F,E,B,P`) and charge the cycles of an op
+that waits for the one before it as the RTL unit takes them (VU §7.9, §7.13: latencies of 59 to 95 cycles, the reduction's partial ring,
+the two-stage ROPE, the AT vector ops). QACT takes 16 cycles per 32-block of an A32 vector and 17 per 256-block of an A256 one, plus 44
+and 72 (`tsr_qact.sv`: the A32 quantiser is divider bound; `tb/qact` `qact_timing`). A store takes its lines plus 110 cycles
+(54 up to 8 lines) and an MVM starts 144 cycles before its first weight beat counts, the DDR latencies of the card (the RTL benches
+run on ideal memory). `TSR_SIM_CARD=k4full` sets the whole card image: `T_MAX` 4, `CAPS` 0x21, VU `k4`, `clk_rv` at half the core clock.
+The unit tests `sim_vu` and `sim_at` hold numbers the RTL unit produces at both lane configurations; `tb/vu/test_vu_timing.py` times
+op shapes and whole op streams on the RTL unit and compares them with the model (opt-in), and `sw/tools/trw_vs_sim.py` compares a card
+run with a simulator run op by op ([prof-dbg.md](../prof-dbg.md) §3). The model charges every op as if it waited for the one before; the RTL
+overlaps independent ops (VU §7.8), so a stream of small independent ops is overcharged.
+
 **`tsr_ref_math.c`.** Area VU fixes each algorithm: range reduction, polynomial or table, the
 coefficients as f32 bit patterns, and the evaluation order. SW implements the file under these
 rules:
@@ -382,8 +396,10 @@ uint64_t   tsr_sim_rv_instret(const tsr_sim * sim);
 | `TSR_SIM_SCHED` | `fixed`, `random:<seed>[,<min>,<max>]` | `fixed` |
 | `TSR_SIM_RV_RATIO` | F_RV / F_CORE, 0.05–4 | 0.603 (166.7 / 276.3) |
 | `TSR_SIM_RV_CORE` | `maxperf`, `small`: the Ibex cycle table (§4.2, CC §3.2; timing only) | CC's configuration (`maxperf`) |
+| `TSR_SIM_VU_TIMING` | the VU's lanes in the cycle model: `u200` (16 / 16 / 8, no lane pipe), `k4` (8 / 8 / 4, two lane-pipe stages) or `F,E,B,P` (§4.5, SW-80; timing only; CFG3 reports the EXP and back lanes) | `u200` |
+| `TSR_SIM_CARD` | `k4full`: the card image of the fourth link in one variable: `T_MAX` 4, `CAPS` 0x21 (no local intermediates), `TSR_SIM_VU_TIMING=k4`, `TSR_SIM_RV_RATIO` 0.5; the single variables still override (`sim` transport) | off |
 | `TSR_SIM_RACE` | `off`, `report`, `fatal` | `off` (ctest: `fatal`) |
-| `TSR_SIM_LOG` | `stderr` or a file: RV retire lines (optional), push / start / done events | off |
+| `TSR_SIM_LOG` | `stderr` or a file, optional prefixes `rv,` (RV retire lines) and `w,` (the eight words of every push): push / start / done events | off |
 | `TSR_SIM_THREADS`, `TSR_SIM_DRAM_DIR`, `TSR_SIM_TMAX`, `TSR_SIM_CH_GIB` | as today | as today |
 | `TSR_TRACE` | directory: one trace per launch (`<dir>/<seq 6 digits>/`) | off |
 
@@ -1674,7 +1690,10 @@ above 1e-3 and below 4.2e-7 relative for every result above 1e-30; against ggml-
 1.2e-6 (test `fw_gdn_ggml`). A VU `LOG1P` function was not added: the gate vector is H_v values per layer, and one
 SOFTPLUS launch is dominated by its launch cost (about 18.5 K core cycles).
 
-**Cost.** Isolated records, simulator cycle model, fixed schedule, 4 MiB SPM (`test_fw_gdn_rv <image> bench`; each launch
+**Cost.** *Measured before SW-80, which changed the model* (§4.5): at the default 16 lanes the isolated records below take 178.2 K and 504.9 K cycles
+(2B, 27B) and 10.2 K per head and token; at the card image's 8 / 8 / 4 lanes (`TSR_SIM_VU_TIMING=k4`) 261.3 K, 754.2 K and 15.4 K, and the card
+takes 15.3 K per head step ([performance.md](../performance.md) "Card against simulator"). The 27B figures further down scale the same way: a decode token
+spends 23.5 M cycles in the recurrence at 16 lanes and 35.5 M at 8 lanes, against the 19.7 M of the old model. Isolated records, simulator cycle model, fixed schedule, 4 MiB SPM (`test_fw_gdn_rv <image> bench`; each launch
 includes about 18 K cycles of launch overhead, shown by `softplus`): GATED_DELTA_NET 151.6 K cycles for the 2B
 (16 heads) and 425.0 K for the 27B (48 heads) at one token; 1.655 M for four tokens and 6.576 M for sixteen, so
 8.6 K cycles per head and token in steady state (13 dependent VU ops; each of the two `RED.SUM` takes 16 cycles per row,
@@ -2558,6 +2577,7 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
 | SW-73 | llama.cpp is unchanged for GDN (2026-11-09; §7.10) | No `third_party/patches/0003-*` for GDN: the backend takes the fused `GATED_DELTA_NET` node, the conv group and the state nodes as the pinned graph emits them | a patch that builds a device-friendly graph | `resolve_fused_ops` keeps the fused node when the backend supports it. The only llama.cpp-side facts needed (recurrent memory names, the build_rs form, the mixed input select) are in the pinned source. |
 | SW-74 | GDN test method (2026-11-09; §10.2) | Tiny Qwen3.5-style models (S_v 32 and 128, 3 GDN + 1 attention layer) with klcheck graph tests; `test-tsr-gdn-logits` compares the logits of every step of 1, 2, 5 and 17 token prompts with the CPU's (cosine ≥ 0.9995, largest difference ≤ 3 % of the logit range); klcheck's embd path writes the four M-RoPE position streams | klcheck's KL alone | klcheck's KL missed a convolution that returned zeros on the tiny model (ratio 1.2): a random tiny model hides a wrong hidden state. klcheck's embedding input path gave an M-RoPE model one position per token, where llama.cpp reads four, section-major; the CPU's embd path then differed from its token path (KL 6.5e-3 on the 2B, equal to the "floor"). klcheck now writes `[p, p, p, 0]` in that layout, and the embd identity is bit-exact (512 of 512 rows). |
 | SW-75 | ITCM budget of the merged firmware (2026-11-09; §7.8; amends SW-38) | 96 KiB (98,304 B) for the production image, 32 KiB of the 128 KiB ITCM left for M9, sampling and debug formatting. The measured image with the MoE kinds (SW-61, SW-62) and the Gated DeltaNet kinds (SW-67 to SW-69) together is 84,056 B (DTCM 50,088 B, budget unchanged at 56 KiB). `tsr-elf` takes 96 KiB as its default and `sw/ctrl/CMakeLists.txt` passes it to the production image as `--budget-itcm`; test images stay stamped against the whole ITCM. The BIG_TEXT test image of `fw_elf` grows to 98 KiB of code so that it stays over the budget | keep 80 KiB and remove code (the general paths are already compiled for size; each fast path is a leaf because a shared body cost 22–29 cycles per record, SW-38); 112 KiB or the whole 128 KiB | SW-38 sized the budget for the M7 kinds and set aside the upper 48 KiB of the ITCM for "M8 MoE / M9" (CC-3). The two feature branches each measured below 80 KiB (78,520 B and 78,576 B) and the merge is 2.1 KB over it: this is that reserved use, taken as the amount the image needs plus 14 KB of headroom. No feature is removed and no kind loses its fast path |
+| SW-80 | The VU, QACT, store and MVM cycle models follow the RTL and the card (2026-11-09; §4.5; VU §7.9, §7.13) | The VU's cycles come from its lanes (`tsr_sim_opts.vu_timing`, `TSR_SIM_VU_TIMING`; the default stays the U200 image's 16 / 16 / 8 lanes, the card image is `k4`) and from latencies measured on the RTL unit: 59 to 95 cycles per dependent op, the reduction's partial ring, the two-stage ROPE, the AT vector ops. QACT A32 16 cycles per 32-block + 44, A256 17 per 256-block + 72. Store lines + 110, MVM fill 144. `TSR_SIM_CARD=k4full` is the whole card image. | Make `k4` the default; scale the old figures by the lane ratio; put SPM arbitration and accept-ahead into the model | On Qwen3.8 2B decode the card took 12.63 M cycles and the old model 10.83 M (card configuration): 1.61 M of the 1.80 M in GATED_DELTA_NET, whose VU ops take on the card exactly what the RTL unit alone takes (4.737 M cycles against `VU_CYCLES` 4.758 M per token), so the unit has no stall that the model lacks; the model had 16 lanes, latencies of 20 and 64 (60 and 95 measured, also at 16 lanes) and 16 cycles per row of a 128-row reduction (25). On Gemma 4 26B-A4B (16.31 M against 15.35 M) the QACT A32 (1,452 cycles for K = 2,816 against 226) and the VU are the larger parts. The default stays 16 lanes because the lane count is an elaboration parameter and the unit tests and trace replays are not the card; scaling by the lane ratio would fix neither the latencies nor the ring. The unit overlaps independent ops (VU §7.8); the model is 0.9 % above the RTL on a decode token for lack of it, and the card's `VU_SPM_WAIT` is inside the figures. |
 
 ---
 
