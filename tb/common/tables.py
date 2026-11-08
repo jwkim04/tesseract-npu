@@ -76,6 +76,9 @@ VU_LINE_FIELD_W       = 24          # VU §5.1: SPM line addresses and element c
 ROPE_MAX_HEAD_DIM     = 1024        # VU §5.4: head_dim is a multiple of 16 in [16, 1024]
 TOPK_MAX_K            = 16          # VU §5.5: k in 1..16
 VU_ACCEPT_AHEAD       = 2           # VU §7.8, CC §9.4: VU ops held at once (I3 for unit 3)
+GDN_MIN_M             = 64          # VU §7.12.4: GDN d_k in [64, 256]: at least four beats of the widest build (16 lanes) per row
+GDN_MAX_M             = 256         # VU §7.12.4: GDN d_k at most 256: the 48-bit DSP accumulator bound
+GDN_MAX_ROWS          = 1024        # VU §7.12.4: GDN d_v in [1, 1024]: the bv RAM
 M_FLOOR               = 0xF1800000  # AT §6.3: -2^100: row-maximum floor of ATTQK MAXOUT and AMASK
 ANORM_L_FLOOR         = 0x800000    # AT §5.7: 2^-126: ANORM divides by MAXT(l, 2^-126)
 ATT_GROUP_CELLS       = 16          # AT §4.2: KV cells per group (groups round-robin over the channels)
@@ -734,9 +737,12 @@ CAPS_DQROW_W               = 1
 CAPS_VMASK                 = 0x80    # [7] VMASK (M9)
 CAPS_VMASK_LSB             = 7
 CAPS_VMASK_W               = 1
-CAPS_VU_RSVD               = 0xF00   # [11:8] reserved for VU extensions, 0
-CAPS_VU_RSVD_LSB           = 8
-CAPS_VU_RSVD_W             = 4
+CAPS_GDN                   = 0x100   # [8] GDN present (the fused Gated DeltaNet state update, VU §7.12)
+CAPS_GDN_LSB               = 8
+CAPS_GDN_W                 = 1
+CAPS_VU_RSVD               = 0xE00   # [11:9] reserved for VU extensions, 0
+CAPS_VU_RSVD_LSB           = 9
+CAPS_VU_RSVD_W             = 3
 CAPS_ATT_LOCAL             = 0x1000  # [12] four-owner local FAST attention score and probability slots
 CAPS_ATT_LOCAL_LSB         = 12
 CAPS_ATT_LOCAL_W           = 1
@@ -1904,13 +1910,14 @@ OP_AMASK  = 0x35  # new, unit VU, CAPS.ATT: EX §7.2, AT §5.5: general mask pat
 OP_AMERGE = 0x36  # new, unit VU, CAPS.ATT: EX §7.2, AT §5.6: channel tree and online merge
 OP_ANORM  = 0x37  # new, unit VU, CAPS.ATT: EX §7.2, AT §5.7: final normalisation
 OP_VMASK  = 0x38  # new, unit VU, CAPS.VMASK: EX §7.2, VU §5.7: position-window mask; ILLEGAL_OP until M9
+OP_GDN    = 0x39  # new, unit VU, CAPS.GDN: EX §7.2, VU §7.12: fused Gated DeltaNet state update of one head
 OP_SOP    = 0x40  # respec, unit VU, CAPS.VU: EX §7.2, VU §5.8: scalar op on s0..s15
 OP_FENCE  = 0x7F  # kept, unit SYNC: EX §7.2: SYNC barrier: completes when every op pushed before it is done
 
 # Per opcode (index = opcode): unit of a legal opcode (UNIT_SYNC otherwise), legality, CAPS bits.
 OP_UNIT = [
     5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0, 0, 3, 5, 0, 5, 5, 5, 1, 5, 5, 5, 5, 5, 5, 5,
-    2, 2, 2, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 3, 3, 3, 3, 3, 3, 5, 5, 5, 5, 5, 5, 5,
+    2, 2, 2, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 5, 5, 5, 5, 5, 5,
     3, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
     5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
     5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
@@ -1920,7 +1927,7 @@ OP_UNIT = [
 ]
 OP_LEGAL = [
     1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
-    1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0,
+    1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0,
     1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -1930,21 +1937,21 @@ OP_LEGAL = [
 ]
 OP_CAPS = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 64, 0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 32, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 8, 32, 32, 32, 32, 128, 0, 0, 0,
-    0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 32, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 8, 32, 32, 32, 32, 128, 256, 0,
+    0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0,
+    0, 0, 0, 0, 0,
 ]
 OPCODES = {
     'NOP': 0x00, 'END': 0x01, 'LI': 0x02, 'ADDI': 0x03, 'MULI': 0x04, 'RLD': 0x05, 'LOOP': 0x06,
     'WAITM': 0x07, 'JUMP': 0x08, 'CALL': 0x09, 'LD': 0x10, 'ST': 0x11, 'DQROW': 0x12, 'KVST': 0x14,
     'QACT': 0x18, 'MVM': 0x20, 'ATTQK': 0x21, 'ATTPV': 0x22, 'VOP': 0x30, 'RED': 0x31,
     'ROPE': 0x32, 'TOPK': 0x33, 'ASMAX': 0x34, 'AMASK': 0x35, 'AMERGE': 0x36, 'ANORM': 0x37,
-    'VMASK': 0x38, 'SOP': 0x40, 'FENCE': 0x7F,
+    'VMASK': 0x38, 'GDN': 0x39, 'SOP': 0x40, 'FENCE': 0x7F,
 }
 
 
@@ -2666,6 +2673,66 @@ VMASK_RSV_W5        = 0xFF000000
 VMASK_RSV_W6        = 0x0
 VMASK_RSV_W7        = 0x0
 VMASK_WORDS         = 0xFF        # words holding a field (w0 always)
+# GDN 0x39 (VU §7.12.4, owner VU)
+GDN_SA        = 0xF0000     # x16[3:0] s register holding alpha
+GDN_SA_LSB    = 16
+GDN_SA_W      = 4
+GDN_SA_WORD   = 0
+GDN_SA_BIT    = 16
+GDN_SB        = 0xF00000    # x16[7:4] s register holding beta
+GDN_SB_LSB    = 20
+GDN_SB_W      = 4
+GDN_SB_WORD   = 0
+GDN_SB_BIT    = 20
+GDN_D         = 0xFFFFFF    # w1[23:0] S' tile, line of row 0 (may equal A: in place)
+GDN_D_LSB     = 0
+GDN_D_W       = 24
+GDN_D_WORD    = 1
+GDN_D_BIT     = 32
+GDN_A         = 0xFFFFFF    # w2[23:0] S tile, line of row 0
+GDN_A_LSB     = 0
+GDN_A_W       = 24
+GDN_A_WORD    = 2
+GDN_A_BIT     = 64
+GDN_K         = 0xFFFFFF    # w3[23:0] k vector line (m words)
+GDN_K_LSB     = 0
+GDN_K_W       = 24
+GDN_K_WORD    = 3
+GDN_K_BIT     = 96
+GDN_Q         = 0xFFFFFF    # w4[23:0] q vector line (m words)
+GDN_Q_LSB     = 0
+GDN_Q_W       = 24
+GDN_Q_WORD    = 4
+GDN_Q_BIT     = 128
+GDN_V         = 0xFFFFFF    # w5[23:0] v vector line (rows words)
+GDN_V_LSB     = 0
+GDN_V_W       = 24
+GDN_V_WORD    = 5
+GDN_V_BIT     = 160
+GDN_O         = 0xFFFFFF    # w6[23:0] o vector line (rows words, tail rule of VU §4.2)
+GDN_O_LSB     = 0
+GDN_O_W       = 24
+GDN_O_WORD    = 6
+GDN_O_BIT     = 192
+GDN_M         = 0xFFFF      # w7[15:0] d_k: a multiple of 16
+GDN_M_LSB     = 0
+GDN_M_W       = 16
+GDN_M_WORD    = 7
+GDN_M_BIT     = 224
+GDN_ROWS      = 0xFFFF0000  # w7[31:16] d_v rows of the tile
+GDN_ROWS_LSB  = 16
+GDN_ROWS_W    = 16
+GDN_ROWS_WORD = 7
+GDN_ROWS_BIT  = 240
+GDN_RSV_W0    = 0xFF00FF00  # must be 0 (ILLEGAL_OP)
+GDN_RSV_W1    = 0xFF000000
+GDN_RSV_W2    = 0xFF000000
+GDN_RSV_W3    = 0xFF000000
+GDN_RSV_W4    = 0xFF000000
+GDN_RSV_W5    = 0xFF000000
+GDN_RSV_W6    = 0xFF000000
+GDN_RSV_W7    = 0x0
+GDN_WORDS     = 0xFF        # words holding a field (w0 always)
 # SOP 0x40 (VU §5.8, owner VU)
 SOP_SUB       = 0xF00       # w0[11:8] function (SOP_FUNCS)
 SOP_SUB_LSB   = 8
@@ -3219,7 +3286,7 @@ LAYOUTS = {   # layout -> field -> (lsb, width)
     'VERSION': {'MINOR': (0, 8), 'MAJOR': (8, 8)},
     'CFG0': {'NUM_CH': (0, 8), 'LANES': (8, 12), 'T_MAX': (20, 4)},
     'CFG2': {'VL': (0, 8), 'NSREG': (8, 8), 'K_MAX_256': (16, 16)},
-    'CAPS': {'VU': (0, 1), 'TOPK': (3, 1), 'ATT': (5, 1), 'DQROW': (6, 1), 'VMASK': (7, 1), 'VU_RSVD': (8, 4), 'ATT_LOCAL': (12, 1), 'MVM_LOCAL_SCALE': (13, 1), 'MVM_LOCAL_SOFTCAP': (14, 1), 'AT_RSVD': (15, 1)},
+    'CAPS': {'VU': (0, 1), 'TOPK': (3, 1), 'ATT': (5, 1), 'DQROW': (6, 1), 'VMASK': (7, 1), 'GDN': (8, 1), 'VU_RSVD': (9, 3), 'ATT_LOCAL': (12, 1), 'MVM_LOCAL_SCALE': (13, 1), 'MVM_LOCAL_SOFTCAP': (14, 1), 'AT_RSVD': (15, 1)},
     'CFG3': {'VU_FRONT': (0, 5), 'VU_BACK': (5, 5), 'PCAP16': (16, 16)},
     'CTL_ID': {'VERSION': (0, 8), 'DM': (8, 1), 'REC': (9, 1), 'BRIDGE': (10, 1), 'LOG': (11, 1), 'WDOG': (12, 1), 'SBA': (13, 1), 'SPM_LB': (14, 1)},
     'CTRL': {'RV_RUN': (0, 1), 'HOST_HOLD': (1, 1), 'HOLD_ON_HALT': (2, 1), 'IRQ_EN': (3, 1), 'QABORT': (8, 1), 'QCLEAR': (9, 1), 'SOFT_RESET': (10, 1)},
@@ -3306,6 +3373,8 @@ ENCODINGS = {   # op -> opcode, fields: name -> (word, lsb, width), rsv: must-be
         rsv=[0xFFFFF000, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0xFFFF0000, 0x00000000]),
     'VMASK': dict(opcode=0x38, unit=3, fields={'SUB': (0, 8, 4), 'X': (1, 0, 24), 'WIN': (2, 0, 32), 'K0': (3, 0, 32), 'Q0': (4, 0, 32), 'M': (5, 0, 24), 'ROWS': (6, 0, 16), 'G': (6, 16, 16), 'X_STRIDE': (7, 0, 16), 'P': (7, 16, 16)},
         rsv=[0xFFFFF000, 0xFF000000, 0x00000000, 0x00000000, 0x00000000, 0xFF000000, 0x00000000, 0x00000000]),
+    'GDN': dict(opcode=0x39, unit=3, fields={'SA': (0, 16, 4), 'SB': (0, 20, 4), 'D': (1, 0, 24), 'A': (2, 0, 24), 'K': (3, 0, 24), 'Q': (4, 0, 24), 'V': (5, 0, 24), 'O': (6, 0, 24), 'M': (7, 0, 16), 'ROWS': (7, 16, 16)},
+        rsv=[0xFF00FF00, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0x00000000]),
     'SOP': dict(opcode=0x40, unit=3, fields={'SUB': (0, 8, 4), 'SD': (1, 0, 4), 'SA': (1, 4, 4), 'SB': (1, 8, 4), 'IMM': (2, 0, 32), 'ADDR': (3, 0, 28)},
         rsv=[0xFFFFF000, 0xFFFFF000, 0x00000000, 0xF0000000, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF]),
     'KVST': dict(opcode=0x14, unit=0, fields={'KV': (0, 8, 4), 'N_ROWS_M1': (0, 16, 6), 'SRC': (1, 0, 32), 'BASE': (2, 0, 32), 'E64': (3, 0, 9), 'LG': (3, 16, 16), 'C0': (4, 0, 32), 'SRC_STRIDE': (5, 0, 32)},

@@ -712,7 +712,8 @@ opcode[7:0]}.
 | 0x30–0x33 | `VOP`, `RED`, `ROPE`, `TOPK` | defined by VU (TOPK: simulator from M6, RTL in M8) | 3 VU | VU |
 | 0x34–0x37 | `ASMAX`, `AMASK`, `AMERGE`, `ANORM` | softmax and merge steps; semantics AT §5.4–§5.7, executed by the VU (VU §5.11) | 3 VU | AT |
 | 0x38 | `VMASK` | position-window mask for caches where cell j holds position k0 + j (VU §5.7); reserved until M9: `ILLEGAL_OP` in M6/M7 | 3 VU | VU |
-| 0x39–0x3F | — | reserved for VU extensions | 3 VU | VU |
+| 0x39 | `GDN` | fused Gated DeltaNet state update of one head (VU §7.12; CAPS bit 8) | 3 VU | VU |
+| 0x3A–0x3F | — | reserved for VU extensions | 3 VU | VU |
 | 0x40 | `SOP` | defined | 3 VU | VU |
 | 0x41–0x47 | — | reserved for VU (scalar extensions) | 3 VU | VU |
 | 0x48–0x6F | — | reserved (future units) | | — |
@@ -774,7 +775,7 @@ requirement: `SOFT_RESET` does not change it, and a hardware reset sets it to +0
   configuration, not capability. Shown as "Tesseract Core 1.0 (VU ATT)".
 - `CAPS`: bit0 VU (VOP, RED, ROPE, SOP present), bit1 0, bit2 retired, bit3 TOPK (RTL from M8),
   bit4 retired, **bit5 ATT** (the seven AT ops are present), **bit6 DQROW** (RTL from M8), bit7
-  VMASK (M9), bits 8–11 reserved for VU, bits 12–15 reserved for AT, bits 16–31 0. Retired bits are
+  VMASK (M9), **bit8 GDN** (the fused state update of VU §7.12; the simulator implements it, RTL builds with `HAS_GDN`), bits 9–11 reserved for VU, bits 12–15 reserved for AT, bits 16–31 0. Retired bits are
   never set and never reused. The simulator reports what its configuration implements, so a
   simulator may set bits 3 and 6 while an M6 bitstream does not.
 - `CFG3`: [4:0] VU front lanes with an EXP core, [9:5] VU back lanes, [15:10] 0 (VU §5.10);
@@ -1268,7 +1269,7 @@ the user's delegation (2026-10-30).
 
 | Area | EX provides | EX assumes |
 |---|---|---|
-| **VU** | Opcodes 0x12, 0x13, 0x30–0x33, 0x38–0x3F, 0x40, 0x41–0x47; unit 3; the `x16` field; error code 13 `OPERAND` and the check order; `CAPS` bits 0, 3, 6, 7 and 8–11; `CFG3[15:0]`; PERF indices 3 and X + 13 … X + 15; one s-register bank (§7.4) read at `SREG` 0x9C0 | VU fixes encodings, units, dispatch checks and numeric rules inside these numbers; it has no run-time errors (§7.2); DQROW runs on the VU (VU §5.6); it defines the s-bank initial value (hardware reset +0.0, unchanged by `SOFT_RESET`); it executes AT's vector-class ops 0x34–0x37 (VU §5.11) |
+| **VU** | Opcodes 0x12, 0x13, 0x30–0x33, 0x38, 0x39 (GDN), 0x3A–0x3F, 0x40, 0x41–0x47; unit 3; the `x16` field; error code 13 `OPERAND` and the check order; `CAPS` bits 0, 3, 6, 7, 8 and 9–11; `CFG3[15:0]`; PERF indices 3 and X + 13 … X + 15; one s-register bank (§7.4) read at `SREG` 0x9C0 | VU fixes encodings, units, dispatch checks and numeric rules inside these numbers; it has no run-time errors (§7.2); DQROW runs on the VU (VU §5.6); it defines the s-bank initial value (hardware reset +0.0, unchanged by `SOFT_RESET`); it executes AT's vector-class ops 0x34–0x37 (VU §5.11) |
 | **AT** | Opcodes 0x14–0x17, 0x19–0x1B, 0x21–0x23, 0x34–0x37; unit id 4 reserved (absent in M6); `CAPS` bits 5 and 12–15; `CFG3[31:16]`; PERF X + 16 … X + 19; the DRAM heap for the KV cache (§11); watchdog coverage of the units its ops use | AT fixes encodings, units and checks; its ops are fully checked at dispatch; data-dependent lengths are clamped, not errors; it defines the KV layout and its placement through the backend allocator |
 | **CC** | The static opcode → unit table (generated, EX-30); the RISC-V-side LQ / LCQ / LOG / RT registers at control window 0x200–0x2FC (§4.5) and `irq_fast[2]` / `[3]`; the runtime contract R1–R10; `RV_BOOT`, `RV_FREQ`, `RV_CFG`, `CTL_ID` and `Q_DEPTH` offsets; the `SOFT_RESET`, RISC-V reset and QABORT semantics (§8.5); ACTIVE and the PERF gates; PERF X + 20, X + 21 | CC implements the rings' CDC by tagged handshakes (§4.1, lag never leads), the core-domain SR sequencer of `SOFT_RESET` (works without `clk_rv`); the issue path, tickets, dependencies, error records, I1 and I2 as in ctrl-riscv §4; `ISSUE_PIDX`; the RISC-V reset sequence setting ANSWERED := TAKEN; the loader's TCM write and VERIFY read port; Ibex, TCMs, clocks and the bus rules |
 | **DB** | CSR range 0x800–0xAFC for `DBG_*`; DMI 0xC00–0xDFC; `HOLD_ON_HALT`; QHALT gating of time counters; `Q_*` and `RT_*` for post-mortem; the log ring with DB's record header; PERF 61–63; `tsr_transport_csr_write`; the in-process ownership rule (§2.4); the debug-aware wait timeout (§4.8) | DB defines `DBG_*` contents (tile-level debug per queue), the GDB RSP server inside the owning process over DMI, the halt rules on top of `HOLD_ON_HALT`, the SPM access rule through SBA, the log record header and the trap contract |

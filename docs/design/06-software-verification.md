@@ -1354,6 +1354,7 @@ baselines.
 | 8 | SPM window byte/half/word, ordering of a store before a push |
 | 9 | log records and PING |
 | 10 | credits: fill every queue under QHOLD; each credit must read 0 (exact under the hold, §4.7) |
+| 11 | GDN: four heads of 20 × 128 (two out of place, two in place) with LD, `SOP MOVI` of α and β, the op and ST; runs only when `CAPS` bit 8 is set, otherwise the kernel returns RET CAPS (VU §7.12) |
 
 `tsr-selftest` runs each test on the device and, in process, on the simulator with the same image,
 inputs and args. It compares DONE, every output byte and the per-unit completion counts.
@@ -1501,7 +1502,8 @@ inputs and args. It compares DONE, every output byte and the per-unit completion
   (compiled for size). *With the MoE kinds* (SW-61, SW-62): ITCM 78,520 B (was 71,712 B with the 14 kinds of the base: the two kinds take 6.8 KB, the general paths of both are
   cold), DTCM 49,680 B (+176 B). *With the Gated DeltaNet kinds alone* (SW-67 to SW-69, §7.10): ITCM 78,576 B, DTCM
   49,912 B. *With the MoE and the Gated DeltaNet kinds together* (21 kinds, SW-75): ITCM 84,056 B (64.1 % of
-  128 KiB, 85.5 % of the budget), DTCM 50,088 B. Each set fits the old 80 KiB budget on its own; both together
+  128 KiB, 85.5 % of the budget), DTCM 50,088 B; with the fused path of GATED_DELTA_NET (SW-78): ITCM 85,504 B (87.0 % of the
+  budget), DTCM 50,616 B. Each set fits the old 80 KiB budget on its own; both together
   do not, and SW-75 raises the budget to 96 KiB (the part of the upper 48 KiB that SW-38 reserved for M8 MoE).
   The budget applies to the production image (`tsr-fw.elf`; `fw_elf_image`,
   `fw_elf_test_image`); test images (production plus test kernels) are stamped against the whole ITCM.
@@ -1663,12 +1665,14 @@ with the M7 settings (one launch per decode, one per prefill ubatch, KL against 
 model runs at the default `-ub 512` since SW-76: on the card a 512-token prompt gives 26.72 tok/s best and 26.60 median, and
 513 of 513 rows are bit-identical to the simulator ([klcheck.md](../klcheck.md)).
 
-### 7.10 Gated DeltaNet and the Qwen3.5 / 3.8 layer graph (SW-67 to SW-74)
+### 7.10 Gated DeltaNet and the Qwen3.5 / 3.8 layer graph (SW-67 to SW-74, SW-78, SW-79, SW-82)
 
 Status (2026-11-09): the three kinds, their planners, references, the backend lowering and the tests are in. The
 Qwen3.8 2B model runs its whole decode graph on the simulator in one launch per token and agrees with the CPU at
 the usual klcheck floor (below). No RTL changed. The model ran on the card on 2026-11-09 (the K4 full-feature image; [klcheck.md](../klcheck.md), [performance.md](../performance.md)). The kinds compose existing VU
-operations, so they run on any image that has the VU (`CAPS` bit 0, the K4 full-feature image).
+operations, so they run on any image that has the VU (`CAPS` bit 0, the K4 full-feature image). GATED_DELTA_NET has a
+second, fused path for an image whose VU has the GDN op (`CAPS` bit 8, VU §7.12): numerics revision 2, chosen at run time
+(SW-78, below). The card image of 2026-11-09 has no GDN op and runs the composed path, bit for bit as before.
 
 **The models.** llama.cpp calls the family `qwen35`. It is hybrid: layer `il` is full attention when
 `(il + 1) % full_attention_interval == 0` (interval 4), otherwise Gated DeltaNet ("GDN", the `recurrent_layers`
@@ -1716,13 +1720,13 @@ save and load), which keeps working because those are byte copies of a cell. The
 
 **Kinds** (record words in `tsr/opl.hpp`, planners in `tsr/plan_gdn.hpp`, handlers in `kernels/gdn_kinds.cpp`,
 references in `ref/gdn_ref.cpp`). Kind ids are numbered from the top of the free range downwards (0x30 to 0x3F
-stay test kinds). All are at numerics revision 1 (`kind_revs.txt`).
+stay test kinds). SOFTPLUS and SSM_CONV are at numerics revision 1, GATED_DELTA_NET at revision 2 (`kind_revs.txt`, SW-78).
 
 | Kind | Id | Words | Tile composition | Numerics |
 |---|---|---|---|---|
 | SOFTPLUS | 0x2D | dst, dst stride, src, src stride, n, rows | row tile of 5 buffers; 20 VOPs (SW-69) | `softplus_ref` |
 | SSM_CONV | 0x2E | dst, dst token stride, x, x token stride, state in, state out, taps, C, d_conv, T, n_seqs, flags (bit 0 SILU) | per sequence and channel tile: LD taps, state rows and token rows; `d_conv` VOP.MUL, `d_conv - 1` VOP.ADD in tap order; optional VOP.SILU; ST the T output rows and the new state rows (SW-68) | `sconv_ref` |
-| GATED_DELTA_NET | 0x2F | dst, state out, state in, q / k / v with head and token strides, g and beta with token strides, S_v, H_k, H_v, T, n_seqs, scale | per (sequence, head): LD the state tile, then per token 13 VU ops (below); ST the state tile (SW-67, SW-70) | `gdn_ref` |
+| GATED_DELTA_NET | 0x2F | dst, state out, state in, q / k / v with head and token strides, g and beta with token strides, S_v, H_k, H_v, T, n_seqs, scale | per (sequence, head): LD the state tile, then per token 13 VU ops (below) or, on the fused path, 5 (SW-78); ST the state tile (SW-67, SW-70) | `gdn_ref` (`gdn_ref_step` composed, `gdn_ref_step_fused`) |
 
 GATED_DELTA_NET per head and token: `SOP.EXP` α = exp(g); `VOP.MULC` S = S α; `VOP.MUL` P = S · k (broadcast of k
 over the rows) and `RED.SUM` u (one value per row; the fixed 128-partial tree of VU §6.2); `VOP.SUB` and
@@ -1732,6 +1736,58 @@ current one; the next token's vectors load two tokens ahead. One ring block hold
 product tile and two token slots (3 · S_v · L + 2 (5 L + 2) lines, L = S_v / 16; 3,156 lines for S_v = 128, so
 the block is far below half of the planning budget; S_v up to 256 fits). The result tensor is `[S_v H_v, T n_seqs + S_v n_seqs]` rows: the attention
 rows, then the new states. DRAM traffic per token and layer is the state read and written once.
+
+**The fused path (SW-78, numerics revision 2).** When the device has the GDN op (`CAPS` bit 8 with the VU) and S_v is 64 or more
+(the op's range of `m` is 64 to 256, VU §7.12.4), the handler runs one `GDN` op per head and token in place of the 13 VU ops.
+The record, the planner and the ring block are the same (the block keeps the product tile, unused on this path), so the host
+plans one way for every device. The choice is `plan::gdn::use_fused(caps, S_v)` in `tsr/plan_gdn.hpp`, read from the device's
+`CAPS` at each launch; the firmware, the references and the tests use that function and nothing else. Per head and token the
+fused step pushes `SOP.LDS` g, `SOP.EXP` α = exp(g), `SOP.LDS` β, `GDN` (d = a = the state tile, in place; k, q, v, o in the
+token slot; m = rows = S_v), `VOP.MULC` o = o' · scale. The op waits for the DMA ticket of the state LD, the LDs of k, v and q and
+the ST that last read the slot's output vector (all one unit, so the latest covers the others). The loads, the state prefetch,
+the state ST and the token slots are those of the composed path. S_v of 16 and 32 take the composed path on every device.
+
+What revision 2 changes, exactly, for a record with S_v ≥ 64 on a device with `CAPS` bit 8 (everything else, a device without
+the bit and every record with S_v < 64, produces revision 1's bits; the composed row of `kind_revs.txt` has revision 1's
+digest, `b040cc2f4da8c0ca`):
+
+- The two dot products per row, S_j · k and S_j · q, are no longer `RED.SUM` trees of products rounded to f32. They are exact
+  integer sums in a block-floating-point frame, rounded once to f32 (VU §7.12.3, VU-29): the vector (k scaled by αβ, or q) is
+  a table of 24-bit entries relative to its largest exponent (round half up), the row's elements are 26-bit windows below the
+  row's largest exponent (truncation, shifts of 26 or more give 0). Small elements of a row lose bits against its largest one.
+- α is not applied to the state before the first dot product. The op uses u' = αβ (S_j · k) (k scaled by FM(α, β) first),
+  e_j = FS(FM(β, v_j), u'_j), S'_ji = FA(FM(α, S_ji), FM(e_j, k_i)) (the element update on the VU's front lanes) and
+  o_j = FA(FM(α, w_j), FM(e_j, κ)) with w_j = S_j · q on the old state and κ = k · q. The output is not a dot product of the
+  new state. Mathematically the same recurrence; the rounding points differ.
+- A row with Inf or NaN in its elements, or a k or q with one, gives canonical NaN for that row's e, S' and o (the head's, for k
+  or q). The composed path propagates the values through its f32 operations (an Inf in a state element of an otherwise finite
+  row gives Inf or NaN in a different set of outputs).
+- The scale is applied to the output vector after the op, as on the composed path (`o = FM(o', scale)`).
+
+The oracle `gdn_ref` takes the `CAPS` of the device it models and calls `tsr_ref_gdn` (VU §7.12, `sw/sim/tsr_ref_gdn.c`) for the
+fused path. Against float64 and ggml-cpu (`fw_gdn_ggml`, 512 tokens, S_v 128, 4 key heads for 16 value heads): rms error against
+a float64 recurrence 1.03e-7 (output) and 6.1e-8 (state) for the fused path, 1.00e-7 and 6.1e-8 for the composed path, and 9.5e-8 and
+5.5e-8 for ggml-cpu itself; the largest error of the output is 2.0e-6 of its rms for the fused path and 1.8e-6 for the composed one; fused against
+ggml-cpu 1.4e-7 (output) and 7.1e-8 (state). SOFTPLUS (SW-69) is unchanged: 4.06e-7 relative and 4.7 ulp above 1e-3 against float64.
+
+**The state on its cache cell (SW-82).** The pinned graph passes the recurrent state through DRAM three times per layer and token: `build_rs`
+gathers the layer's state rows from the cache by the ids of `rs_s_copy` (`GET_ROWS`: read the cell, write a copy), the recurrence reads the copy and
+writes the new state into its own result (`GATED_DELTA_NET`: read, write), and a `CPY` moves it into the sequence's cache cell (read, write). The ids
+are data: `cells[head + j].src0`, the cell a sequence's state comes from. They are the identity (`ids[j] = kv_head + j`, the cell the `CPY` writes) while a
+sequence keeps its cell, which is every decode token and every prefill ubatch after the first, and also the first one when the zero-state cell that
+llama.cpp picks (`rs_z`) is the sequence's own cell (it is, for the first sequence of a fresh cache). Then the gather and the copy change nothing
+the graph can see, and the record can read the cell and write the new state back into it: `STATE_IN` = `STATE_OUT` = the cell, one read and one write.
+The kind needs no change (in-place state is a case of `fw_gdn_rv`, for both paths); the lowering does it. `tsr_build_fusion`
+(`tsr_gdn_state_group`) recognises the group at the `GATED_DELTA_NET` node: the state operand is `RESHAPE` / `VIEW` over `GET_ROWS(RESHAPE(cache), ids)`
+with one id per sequence (no extra states), the new state is the `VIEW` of the result behind the attention rows and its only reader is one `CPY` into
+rows of the same cache, nothing else reads the gathered copy (and it is not a graph output), and no node between the gather and the `CPY` touches the
+cache rows the `CPY` writes. The backend reads the ids of the launch (`rs_s_copy` is in a device window or a host buffer) and absorbs the gather and the `CPY`
+only if they are the identity. The plan of a graph is cached by its identity, which does not see values, so the plan keeps the ids' answer and the backend
+reads them again at every reuse (`tsr_plan_state_holds`, as for the mask summaries): another answer rebuilds the plan, which then has the three passes
+(a new sequence whose zero cell is another cell, `seq_cp`, several sequences that swap cells, extra states in the gather). A true in-place `GATED_DELTA_NET` is not
+possible in ggml: its result is a new tensor (attention rows, then the state), the allocator cannot alias it with the cache, and the gather's source cells are
+runtime data. `TSR_GDN_CELL=0` turns the group off; the results are bit-identical with and without it (klcheck replays, below). `TSR_STATS` prints how many
+records ran on their cell.
 
 **Softplus (SW-69).** The ggml node is `softplus(x) = log(1 + exp(x))`; the CPU computes `x > 20 ? x : logf(1 + expf(x))`,
 which loses the relative accuracy of small results (`1 + exp(x)` rounds). `SOFTPLUS` computes the stable form
@@ -1781,11 +1837,53 @@ record's read and write, the `CPY` back; each pass reads and writes it), which a
 place would cut to one (the DMA is 17 to 23 % of the token), and a reduction that does not serialise on the
 16-cycle `RED.SUM`.
 
+**Cost of the fused path and of the state on its cell** (SW-78, SW-82). The figures are the simulator in the card configuration (`TSR_SIM_CARD=k4full`,
+SW-80: VU 8 / 8 / 4 lanes behind two lane-pipe stages, `T_MAX` 4, `clk_rv` at half the core clock), whose composed three-pass run is the card's own
+(12.65 M cycles per 2B decode token against the card's 12.63 M, VU busy 4.785 M against 4.758 M). The fused path is the same configuration with
+`TSR_SIM_GDN=1` (an image with `CAPS` bit 8). The 250 MHz link (`k4f250`) has core 250 MHz and `clk_rv` 166.7 MHz, a RISC-V ratio of 0.667
+(`TSR_SIM_RV_RATIO=0.6667`); the 200 MHz columns have 0.5. The model of the GDN op itself is fitted to the RTL unit: `tb/vu/test_vu_timing.py` `vu_gdn_op` times
+ten shapes (m 64 to 256, rows 16 to 256) at both built lane configurations, and `cyc_gdn` equals the RTL within 2 cycles at the K4 lanes (2,914 cycles for a
+128 × 128 head, the RTL 2,913.7; VU §7.12.8) and within 1.5 % at the U200 lanes. Timing changes no bit: `fw_kind_revs` and a 16-row klcheck of the 2B give the same digests and
+16 of 16 identical rows with the default and the card timing, for both paths.
+
+Isolated records (`test_fw_gdn_rv <image> bench --gdn 0|1` with `TSR_SIM_VU_TIMING=k4`, about 18 K cycles of launch overhead in each): at RISC-V ratio 0.5 the composed
+record takes 264.3 K cycles for the 2B (16 heads) and 757.3 K for the 27B (48 heads) at one token and 15.4 K per head and token in steady state; the fused record 101.4 K,
+275.8 K and 4.69 K (3.3 times less); at ratio 0.667 the fused record takes 77.9 K, 208.7 K and 3.52 K. The fused step is limited by the RISC-V's issue rate, not by the VU:
+it pushes eleven operations (three `SOP`, `GDN`, `VOP.MULC`, five LDs of g, beta, k, v and q, the output ST) and runs 1,827 RISC-V instructions per head and token (3,635 on the composed
+path), while the VU needs 2,914 cycles for the op and about 3.1 K for the step. A step that loaded g, beta, k, q and v for all the heads of a token once (decode, T = 1) would
+push six operations per head instead of eleven; it is not done (the recurrence is now 9 to 12 % of a token).
+
+Whole decode tokens, from the counters of two runs of the same prompt (27B: 2 and 10 generated tokens, 2B: 2 and 18), divided by the added launches (`TSR_STATS=1`).
+The 27B rows are by the method above (4 and 8 layers of the real GGUF, `sw/tools/gguf_truncate.py`). Core cycles per decode token; the state on its cell is SW-82 (below):
+
+| Core cycles per decode token | 2B composed | 2B fused | 2B fused, state on its cell | 27B composed | 27B fused | 27B fused, state on its cell |
+|---|---|---|---|---|---|---|
+| Total, 200 MHz image (ratio 0.5) | 12.65 M | 9.72 M (−23.2 %) | 8.53 M (−32.6 %) | 123.7 M | 100.6 M (−18.7 %) | 91.1 M (−26.3 %) |
+| Total, 250 MHz link (ratio 0.667) | 12.51 M | 9.23 M | 8.04 M | 123.3 M | 97.2 M | 87.7 M |
+| VU busy | 4.79 M | 1.26 M | 1.26 M | 37.2 M | 8.99 M | 8.99 M |
+| DMA busy | 2.43 M | 2.43 M | 1.25 M | 17.8 M | 17.8 M | 8.34 M |
+| MVM busy | 5.71 M | 5.71 M | 5.71 M | 73.1 M | 73.1 M | 73.1 M |
+| At 200 MHz | 63.3 ms, 15.8 tok/s | 48.6 ms, 20.6 tok/s | 42.6 ms, 23.5 tok/s | 618 ms, 1.62 tok/s | 503 ms, 1.99 tok/s | 456 ms, 2.20 tok/s |
+| At 250 MHz | 50.0 ms, 20.0 tok/s | 36.9 ms, 27.1 tok/s | 32.2 ms, 31.1 tok/s | 493 ms, 2.03 tok/s | 389 ms, 2.57 tok/s | 351 ms, 2.85 tok/s |
+
+The composed path with the state on its cell takes 11.46 M (200 MHz image) for the 2B. The composed 250 MHz column is the same image's core cycles at the other RISC-V
+ratio (the composed path is VU-bound; it does not exist on the link, which has the op). The savings are separate: the fused path takes the recurrence from 4.8 M of VU busy
+to 1.3 M (2B) and from 37 M to 9 M (27B), the state on its cell takes the DMA busy cycles in half (1.2 M and 9.5 M cycles of a token, as much as the token falls: a decode token is a
+chain of dependent ops that does not hide the DMA). The 27B token of the fused path with its state on the cell is 74 % of the composed three-pass token.
+The figures before SW-80 (model with 16 lanes: composed 10.36 M and 106.3 M, fused 9.14 M and 96.8 M, fused with the cell 7.95 M and 87.3 M) were 2.3 M and 17 M cycles too low for the composed 2B and 27B.
+
 **Results** (simulator; klcheck at the usual floor: mean of the seeds 1 to 3, M7 settings, one launch per decode token;
 [klcheck.md](../klcheck.md)):
 
 - Qwen3.8 2B Q4_K_M, 8 prompts × 64 tokens (512 positions): mean KL 2.377e-3 against a floor of 2.240e-3, ratio 1.061,
   top-1 98.05 %. 744 records per launch, 18 Gated DeltaNet and 6 attention layers on the device.
+- The same model with the fused path (SW-78; `TSR_SIM_GDN=1`, the simulator's default since `CAPS` bit 8), 8 prompts × 64 tokens,
+  `T_MAX` 4: mean KL 2.6498e-3 against a floor of 2.4016e-3 (mean of 3 floors; the run generated its own tokens), ratio 1.103,
+  top-1 97.27 %. Replaying the composed run's tokens on the fused path (same 512 positions): mean KL 2.4391e-3 against the
+  composed run's floor of 2.2397e-3, ratio 1.089, top-1 97.85 % (composed: 2.3771e-3, 1.061, 98.05 %). The two device paths
+  against each other on those tokens: mean KL 1.72e-3, top-1 agreement 99.02 %, which is the size of the 1-ulp floor, not a defect.
+  The composed run with this image (`TSR_SIM_GDN=0`) gives the earlier figures to every digit (2.3771e-3 / 2.2397e-3, 1.061,
+  98.05 %), so the card runs of 2026-11-09 stay valid for the image without the op.
 - Long sequence: a 4,127-token prompt prefilled in ubatches of 512 (GATED_DELTA_NET records of 512 tokens) and 16 generated
   tokens, 79 positions (the last 63 prompt positions and the 16 generated): KL 4.250e-3 against 4.298e-3, ratio 0.989, top-1
   94.94 %, lowest cosine 0.9945. The state has been through 4,127 tokens in each of 18 layers. The simulator took 2,752 s
@@ -1793,7 +1891,7 @@ place would cut to one (the DMA is 17 to 23 % of the token), and a reduction tha
 - The 27B's shapes, first 4 layers: ratio 1.062 (128 positions, top-1 100 %), logits cosine 0.99999 or better.
 - `fw_gdn_ggml`: the recurrence against ggml-cpu and float64 up to 512 tokens, the error equal to the CPU's own.
 
-**Not covered.** The whole 27B, a card run, more than one sequence in a ubatch end to end (the kinds and the
+**Not covered.** The whole 27B, a card run of the fused path (no image with the op has run), more than one sequence in a ubatch end to end (the kinds and the
 lowering take `n_seqs` > 1 and the kind tests cover it; no llama.cpp run does), snapshots and rollback (`K` > 1
 state snapshots for multi-token prediction: such a node stays on the CPU), vision positions, and a KDA gate.
 
@@ -2411,10 +2509,14 @@ Other ctests:
   test, 23 s for 0.5B. `ggml_tesseract_graph_qwen_tiny_ub1024` (W3b fix): one prompt of 692 tokens
   (four prompts joined) at `-ub 1024`, one prefill ubatch whose FLASH_ATTN (T > 680, SW-43) runs on
   the CPU; prefill launches reported only, 16 decodes one launch each, KL ratio 0.66;
-- Gated DeltaNet (§7.10, SW-74): `fw_gdn_rv` / `fw_gdn_rv_errors` (the three kinds on `tsr_rv`, 8 schedules, race
-  `fatal`, bit-exact against `gdn_ref.cpp`, written DRAM equal to the output regions; refused records), `fw_gdn_ggml`
-  (LLAMA builds: SOFTPLUS against float64 and ggml-cpu, SSM_CONV and GATED_DELTA_NET against ggml-cpu and float64
-  up to 512 tokens), `fw_kind_revs` (the three kinds' corpus digests), `ggml_tesseract_units` (the lowering of the
+- Gated DeltaNet (§7.10, SW-74, SW-78, SW-79): `fw_gdn_rv` / `fw_gdn_rv_errors` (the three kinds on `tsr_rv`, 8 schedules, race
+  `fatal`, bit-exact against `gdn_ref.cpp`, written DRAM equal to the output regions; refused records; GATED_DELTA_NET with the
+  simulator's `CAPS` bit 8, so S_v ≥ 64 runs the fused path, including records with Inf, NaN, zeros and subnormals),
+  `fw_gdn_rv_composed` (the same without `CAPS` bit 8, `--gdn 0`: every record on the composed path), `fw_gdn_ggml`
+  (LLAMA builds: SOFTPLUS against float64 and ggml-cpu, SSM_CONV and GATED_DELTA_NET, both paths, against ggml-cpu and float64
+  up to 512 tokens), `fw_kind_revs` (the three kinds' corpus digests; GATED_DELTA_NET has a row for each path), `ggml_tesseract_units` (also the state cell group of SW-82: the
+  identity, a moved or swapped state, extra states, another reader of the copy or of the new state, a node writing the cell in between, no reader of the ids),
+  `ggml_tesseract_graph_qwen35_tiny*` (every GATED_DELTA_NET record on its cell; the `_nocell` variants with `TSR_GDN_CELL=0` have none and pass the same criteria), `ggml_tesseract_units` (the lowering of the
   gate tensors, GATED_DELTA_NET at the 2B and 27B shapes, the conv group and its window records, the regrouped
   state CPY), `ggml_tesseract_graph_qwen35_tiny` and `_s128` (tiny Qwen3.5-style models, `gen_tiny_models.py`: 3 GDN +
   1 attention layer, S_v 32 and 128; one launch per decode token, the embd identity and klcheck's criterion) and `ggml_tesseract_gdn_logits_<model>` (the logits of every step of prompts of 1, 2, 5 and 17 tokens
@@ -2650,8 +2752,11 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
 | SW-75 | ITCM budget of the merged firmware (2026-11-09; §7.8; amends SW-38) | 96 KiB (98,304 B) for the production image, 32 KiB of the 128 KiB ITCM left for M9, sampling and debug formatting. The measured image with the MoE kinds (SW-61, SW-62) and the Gated DeltaNet kinds (SW-67 to SW-69) together is 84,056 B (DTCM 50,088 B, budget unchanged at 56 KiB). `tsr-elf` takes 96 KiB as its default and `sw/ctrl/CMakeLists.txt` passes it to the production image as `--budget-itcm`; test images stay stamped against the whole ITCM. The BIG_TEXT test image of `fw_elf` grows to 98 KiB of code so that it stays over the budget | keep 80 KiB and remove code (the general paths are already compiled for size; each fast path is a leaf because a shared body cost 22–29 cycles per record, SW-38); 112 KiB or the whole 128 KiB | SW-38 sized the budget for the M7 kinds and set aside the upper 48 KiB of the ITCM for "M8 MoE / M9" (CC-3). The two feature branches each measured below 80 KiB (78,520 B and 78,576 B) and the merge is 2.1 KB over it: this is that reserved use, taken as the amount the image needs plus 14 KB of headroom. No feature is removed and no kind loses its fast path |
 | SW-76 | MOE_ROUTE outputs with several tiles (2026-11-09; §7.9; amends SW-64) | A route of more than 64 tokens writes its ids and weights to a device scratch window (taken from the top of IO, grown when needed, shared by all layers) and two CPY records move them into the ARGSORT and DIV tensors after the record. One tile (decode, up to 64 tokens): unchanged. No firmware change, no kind revision: same words, same output bits | the refusal of SW-64 for a layout that overlaps a later tile (it aborted Gemma 4 prefill at `-ub 256` and above, the default `-ub 512` included); an exact per-tile overlap check (accepts the layouts seen, still refuses others); firmware that holds the outputs of all tiles in the SPM until the last load (the ring cannot hold a block across its wrap, and T has no bound); reversing the tile order or one record per tile (a layout can still need a cycle); outputs in the unused tails of the ARGSORT rows (the weights are packed, a pack pass would be new firmware) | The allocator's layout is not a fact the record can rely on: a record that reads for a long time cannot be told apart from its outputs by address. The scratch makes the outputs independent of every placement and costs two small CPY records per layer in prefill. It needs no ITCM (the image stays 84,056 B) and leaves decode and its op lists as they were. The ctest cases place the outputs by hand over the logits of later tiles, which the old build refused and a direct store corrupts |
 | SW-77 | Qwen3 MoE graph (2026-11-09; §7.9) | llama.cpp's `qwen3moe` graph (the router group of SW-64, separate gate and up experts with SWIGLU, no per-expert scale, Q and K norms) runs on the existing kinds and lowering; the work is tests (`test-tsr-moe` Qwen3 layer, two tiny `qwen3moe` models with klcheck graph tests at `--min-kl` 1e-3) and records; prefill at `-ub 64` until SW-76 handled the several-tile route, then at the default `-ub 512` | a Qwen3-specific fusion pass or kind; a llama.cpp patch | `build_moe_ffn` is the same function for both models, so the fusion pass already finds the group by its nodes; the missing scale group only means the down MUL_MAT_ID is lowered alone. Card: klcheck M7 8 x 64 ratio 0.813, top-1 96.68 %, 512 of 512 rows bit-identical to the simulator; decode 15.8 tok/s, 11.34 M device cycles per token; with SW-76, a 512-token prefill at `-ub 512`: 26.72 tok/s best, 26.60 median, 513 of 513 rows bit-identical to the simulator |
+| SW-78 | Fused GATED_DELTA_NET path and numerics revision 2 (2026-11-09; §7.10; VU §7.12) | `GATED_DELTA_NET` runs the VU's GDN op (opcode 0x39) per head and token when `CAPS` bit 8 and the VU are present and S_v ≥ 64, else the composition of revision 1. The choice is made per launch by `plan::gdn::use_fused(CAPS, S_v)`, which the firmware, `gdn_ref` and the tests share. The record, the planner and the ring block do not change. The kind goes from revision 1 to 2: its outputs change on a device with the bit (block fixed-point dot products, α folded into k, output from the old state and κ = k · q, NaN rows), and are revision 1's on a device without it and for S_v < 64 | a new kind or record flag for the fused path; a host-side choice; always composed (the op unused); `CAPS`-independent selection by a test image | The kind stays one kind with one record, so the host lowering, the planner and the plan cache are untouched and a card image with or without the op runs the same op lists. The revision key of docs/versioning.md includes `CAPS`, and the bits on a device with the bit do change, so the revision goes up. The composed path is the revision-1 oracle and its digest in `kind_revs.txt` (`b040cc2f4da8c0ca`) did not move: nothing that runs on the card image of 2026-11-09 changed. The numerics stay within the CPU's own error against float64 (§7.10) |
+| SW-79 | Test method of the two paths (2026-11-09; §7.10) | `fw_kind_revs` has two rows for GATED_DELTA_NET: the run on the simulator's `CAPS` (fused for S_v ≥ 64; the corpus adds S_v 128 and 256) and a second run on a simulator without bit 8 (the composed path, the corpus of revision 1, so its digest is revision 1's). A bump needs one digest of the kind to move. `fw_gdn_rv` runs with the simulator's `CAPS`, `fw_gdn_rv_composed` without bit 8, and the reference takes the `CAPS`. The `sim` transport has `TSR_SIM_GDN=0` to clear `CAPS` bit 8, for a matched replay of an image without the op | one digest for the kind, taken on the simulator's `CAPS` only; a test image with the path forced | Without the second row the composed path could change unseen, because the simulator now reports bit 8 and every default run takes the fused path. The composed row's digest equal to revision 1's is the proof that revision 2 leaves the card image's results alone. Every card run on an image without the op needs `TSR_SIM_GDN=0` for its simulator replay |
 | SW-80 | The VU, QACT, store and MVM cycle models follow the RTL and the card (2026-11-09; §4.5; VU §7.9, §7.13) | The VU's cycles come from its lanes (`tsr_sim_opts.vu_timing`, `TSR_SIM_VU_TIMING`; the default stays the U200 image's 16 / 16 / 8 lanes, the card image is `k4`) and from latencies measured on the RTL unit: 59 to 95 cycles per dependent op, the reduction's partial ring, the two-stage ROPE, the AT vector ops. QACT A32 16 cycles per 32-block + 44, A256 17 per 256-block + 72. Store lines + 110, MVM fill 144. `TSR_SIM_CARD=k4full` is the whole card image. | Make `k4` the default; scale the old figures by the lane ratio; put SPM arbitration and accept-ahead into the model | On Qwen3.8 2B decode the card took 12.63 M cycles and the old model 10.83 M (card configuration): 1.61 M of the 1.80 M in GATED_DELTA_NET, whose VU ops take on the card exactly what the RTL unit alone takes (4.737 M cycles against `VU_CYCLES` 4.758 M per token), so the unit has no stall that the model lacks; the model had 16 lanes, latencies of 20 and 64 (60 and 95 measured, also at 16 lanes) and 16 cycles per row of a 128-row reduction (25). On Gemma 4 26B-A4B (16.31 M against 15.35 M) the QACT A32 (1,452 cycles for K = 2,816 against 226) and the VU are the larger parts. The default stays 16 lanes because the lane count is an elaboration parameter and the unit tests and trace replays are not the card; scaling by the lane ratio would fix neither the latencies nor the ring. The unit overlaps independent ops (VU §7.8); the model is 0.9 % above the RTL on a decode token for lack of it, and the card's `VU_SPM_WAIT` is inside the figures. |
 | SW-81 | Weights as ggml blocks in the PyTorch backend (2026-11-09; §9.4) | `tesseract_torch.QuantLinear` holds a Q8_0 or Q4_K weight as a uint8 buffer of ggml blocks [N, row_bytes] and calls the custom op `tesseract::linear_blocks`, which uploads the blocks unchanged (`Device.upload_blocks`, cached by storage, format and K like a float weight) and runs `linear` (QACT A32 or A256, f32 result); the module adds the bias in float32 and casts once. Under `torch.compile` the op is one node that the partitioner does not touch. A weight that cannot be placed raises `TesseractError`. `QuantLinear.from_gguf` takes a `gguf.ReaderTensor`. T tiling stays in the firmware: `tsr_rt` sends the whole T of an IO tile in one record (SW-20) | a tensor subclass that the partitioner recognises (needs `__torch_dispatch__` through AOTAutograd, and the weight cache and the aten patterns would depend on it); dequantizing to float and uploading as Q8_0 (the Q4_K blocks and their bandwidth are lost, and Q4_K → Q8_0 changes the numerics); a loader that maps a whole GGUF onto a model (the layer tensors of the Qwen2.5 GGUF in use are rescaled versions of the checkpoint's, so a partial load is wrong, and the norms and RoPE parameters come from the same file) | The blocks stay byte-identical (the test reads them back) and y equals the numpy spec model of the format; a Q4_K weight is read at 0.5625 bytes per element, a Q8_0 weight at 1.0625. A custom op needs no change to the partitioner or to `tsr_rt`. The loader is a separate piece of work (`docs/torch-backend.md` §8) |
+| SW-82 | The GDN state on its cache cell (2026-11-09; §7.10) | When the ids of the layer's state gather say that every sequence keeps its cell (`rs_s_copy[j]` = the cell the state `CPY` writes, `kv_head + j`), the `GATED_DELTA_NET` record reads the cell and writes the new state back into it (`STATE_IN` = `STATE_OUT` = the cell); the `GET_ROWS` gather and the state `CPY` are absorbed. The group is recognised in `tsr_build_fusion` (the shape of `build_rs` and `build_recurrent_attn`, one id per sequence, no other reader of the copy or of the result's state rows, nothing between the gather and the `CPY` touching the cell); the backend reads the ids of the launch and, because the plan cache's key has no values, reads them again at every reuse of a plan and rebuilds it if the answer changed. Both paths of the kind, no record or firmware change, bits unchanged. `TSR_GDN_CELL=0` turns it off | an in-place variant of `ggml_gated_delta_net` in llama.cpp (a new patch and a result tensor that aliases the cache); a record flag that names the source cells by an id preload (an ABI change: a new argument word for every record); a firmware check of the ids that skips the copy when they are the identity (the kind would need the cell as a second address) | The record already supports `STATE_IN` = `STATE_OUT`; what stood in the way was the graph. ggml's result is a new tensor and the cell indices are runtime data, so true in-place is only possible for the identity, which is every decode token, every later prefill ubatch and the first ubatch of the first sequence of a cache (`rs_z` is the sequence's own cell). The other cases (a new sequence whose zero cell is elsewhere, `seq_cp`, a swap of cells, extra states) keep the three passes, which is the graph's own semantics. No ABI change, nothing changes on the card image. Measured: bit-identical logits (512 of 512 rows against runs made before the change, both paths); in the card-configuration model the DMA busy cycles fall by 49 % and the 2B decode token by 9 % (composed, 12.65 M to 11.46 M) and 12 % (fused, 9.72 M to 8.53 M) |
 
 ---
 

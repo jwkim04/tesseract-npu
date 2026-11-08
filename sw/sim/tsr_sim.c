@@ -303,6 +303,7 @@ uint32_t tsr_sim_caps_implemented(void) {
     if (all) caps |= TSR_CAPS_ATT | TSR_CAPS_ATT_LOCAL;
     if (g_have[TSR_OP_TOPK])  caps |= TSR_CAPS_TOPK;
     if (g_have[TSR_OP_DQROW]) caps |= TSR_CAPS_DQROW;
+    if (g_have[TSR_OP_GDN])   caps |= TSR_CAPS_GDN;
     if (g_have[TSR_OP_VMASK]) caps |= TSR_CAPS_VMASK;
     return caps;
 }
@@ -1667,6 +1668,7 @@ static const char * op_name(uint32_t op) {
     case TSR_OP_VOP: return "VOP";     case TSR_OP_RED: return "RED";     case TSR_OP_ROPE: return "ROPE";
     case TSR_OP_TOPK: return "TOPK";   case TSR_OP_ASMAX: return "ASMAX"; case TSR_OP_AMASK: return "AMASK";
     case TSR_OP_AMERGE: return "AMERGE"; case TSR_OP_ANORM: return "ANORM"; case TSR_OP_VMASK: return "VMASK";
+    case TSR_OP_GDN: return "GDN";
     case TSR_OP_SOP: return "SOP";     case TSR_OP_FENCE: return "FENCE";
     default: return "?";
     }

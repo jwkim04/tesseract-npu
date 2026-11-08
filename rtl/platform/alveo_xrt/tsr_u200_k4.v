@@ -389,6 +389,7 @@ module tsr_u200_k4 (
     .RST_PIPE(3),
     .AXI_SLICES(2),
     .RST_STAGES(3),
+    .HAS_GDN(1),
     .MVM_GATHER_PAIR(1),
     .MVM_GATHER_FLITS(2),
     .DDR_LOCAL_PIPE(1),

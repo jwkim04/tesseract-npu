@@ -65,6 +65,7 @@ struct dev_cfg {
     uint32_t caps = 0;    // CAPS (EX §5.1): bit0 VU (VOP, RED, ROPE, SOP), bit5 AT ops, bit6 DQROW
 };
 constexpr uint32_t CAPS_VU = 1u << 0, CAPS_ATT = 1u << 5, CAPS_DQROW = 1u << 6;   // = mmio.hpp CAPS_*
+constexpr uint32_t CAPS_GDN = 1u << 8;   // the fused Gated DeltaNet state update (VU §7.12; mmio.hpp CAPS_GDN)
 constexpr uint32_t CAPS_MVM_LOCAL_SCALE = 1u << 13, CAPS_MVM_LOCAL_SOFTCAP = 1u << 14;
 constexpr dev_cfg U200_K4 = {65536u, 8u, 32768u, 4u, 9344u, 16u, CAPS_VU | CAPS_ATT};
 

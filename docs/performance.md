@@ -805,6 +805,12 @@ shapes, Qwen2.5-0.5B Q8_0, one token, 4 channels:
   decoded token takes 2,281,377 PERF cycles on k4t1 (7.60 ms at 300 MHz) and 8,476,150 on k1
   (28.25 ms). The kernel adds 99 cycles per exec. On k4 (T_MAX 8) a 6-token prompt runs as one
   T = 6 pass of 3.14 M cycles, against 13.67 M at T_MAX 1.
+- The fused GDN state update (VU §7.12; engine and lane model in `tb/gdn`, the VU in `tb/vu`), ideal SPM, 8 front lanes: heads of one
+  shape run back to back at (rows + 1) x m / 8 cycles (128 x 128: 2,064 cycles, 100 % of the beat time; the +1 is the pseudo row). Eight
+  heads of mixed shape (4 x 128 x 128, 2 x 64 x 256, 2 x 128 x 64): 15,555 cycles for 14,480 beats (98 % over the S' output span of
+  14,737 cycles). With 16 front lanes the same eight heads take 11,259 cycles. The setup of a head (4 m + rows + 45 cycles) is hidden
+  behind the rows of the head before it. For the planned 48-layer, 48-head, 128-by-128 model that is 4.76 M cycles per token: 19.0 ms
+  at 250 MHz, 23.8 ms at 200 MHz. Simulation only: the op is in no image that ran on the card.
 - The RTL replay of the trace sets returns with the RTL work packages W4 and W5 (see
   [Verify](getting-started.md#verify)).
 - Mutation campaigns (every test must fail on at least one deliberate mutant): the M3 core 31
@@ -894,6 +900,28 @@ branch `gdn-sw`; simulator cycle model, fixed schedule, core clock 276.3 MHz in 
 | The fused GDN op (VU §7.12, branch `gdn-vu`) | 23.8 ms per 27B token, estimated: the composed recurrence is about 4.1 times slower; a token would be 468 ms instead of 542 |
 | Image size | ITCM 78,576 B, DTCM 49,912 B |
 
+**Gated DeltaNet with the fused GDN op and the state on its cache cell, on the simulator** (branch `gdn-fw`, GATED_DELTA_NET revision 2, [SW](design/06-software-verification.md)
+§7.10, SW-78, SW-82). The simulator is in the card configuration (`TSR_SIM_CARD=k4full`, SW-80: VU 8 / 8 / 4 lanes, `clk_rv` at half the core clock), whose composed
+three-pass run is the card's own: 12.65 M cycles per 2B decode token against the card's 12.63 M. The card image of 2026-11-09 has no GDN op; the fused path is the same
+configuration with `TSR_SIM_GDN=1` (an image with `CAPS` bit 8: `k4f250`, core 250 MHz, `clk_rv` 166.7 MHz, `TSR_SIM_RV_RATIO=0.6667`). The model of the GDN op is fitted to the
+RTL unit (2,914 cycles for 128 × 128 at 8 front lanes, RTL 2,913.7). Core cycles per decode token:
+
+| Quantity | Qwen3.8 2B composed | 2B fused | 2B fused + state on its cell | 27B composed (4 and 8 layers) | 27B fused | 27B fused + cell |
+| --- | --- | --- | --- | --- | --- | --- |
+| Total, 200 MHz image (RISC-V ratio 0.5) | 12.65 M | 9.72 M (−23.2 %) | 8.53 M (−32.6 %) | 123.7 M | 100.6 M (−18.7 %) | 91.1 M (−26.3 %) |
+| Total, 250 MHz link (ratio 0.667) | 12.51 M | 9.23 M | 8.04 M | 123.3 M | 97.2 M | 87.7 M |
+| VU busy / DMA busy | 4.79 M / 2.43 M | 1.26 M / 2.43 M | 1.26 M / 1.25 M | 37.2 M / 17.8 M | 9.0 M / 17.8 M | 9.0 M / 8.3 M |
+| At 200 MHz | 63.3 ms, 15.8 tok/s | 48.6 ms, 20.6 tok/s | 42.6 ms, 23.5 tok/s | 618 ms, 1.62 tok/s | 503 ms, 1.99 tok/s | 456 ms, 2.20 tok/s |
+| At 250 MHz | 50.0 ms, 20.0 tok/s | 36.9 ms, 27.1 tok/s | 32.2 ms, 31.1 tok/s | 493 ms, 2.03 tok/s | 389 ms, 2.57 tok/s | 351 ms, 2.85 tok/s |
+| GATED_DELTA_NET record, one token (with about 18 K launch overhead) | 264.3 K | 101.4 K (ratio 0.5), 77.9 K (0.667) | | 757.3 K | 275.8 K, 208.7 K | |
+| Per head and token, steady state | 15.4 K | 4.69 K (ratio 0.5), 3.52 K (0.667) | | 15.4 K | 4.69 K, 3.52 K | |
+
+The fused step is limited by the RISC-V's issue rate (eleven pushes and 1,827 instructions per head and token), not by the VU (the op takes 2,914 cycles). The state on its cache cell
+(the gather and the copy of the pinned graph absorbed when the sequences keep their cells; `TSR_GDN_CELL=0` turns it off; results bit-identical) removes two of the three DRAM
+passes over the state and halves the DMA busy cycles. The composed 250 MHz column is the same image's cycles at the other RISC-V ratio (the link has the op). Before SW-80 the
+model had 16 / 16 / 8 lanes and gave 10.36 M (composed) and 9.14 M (fused) for the 2B and 106.3 M and 96.8 M for the 27B. The image takes 85,504 B of ITCM. Accuracy:
+[klcheck.md](klcheck.md) (2B, 8 × 64: ratio 1.103, top-1 97.27 %).
+
 **Firmware image** (`tsr-elf size build/dev/fw/tsr-fw.elf`, measured on the production image;
 ITCM is 131,072 B, DTCM 65,536 B):
 
@@ -904,6 +932,7 @@ ITCM is 131,072 B, DTCM 65,536 B):
 | With the MoE kinds MOE_ROUTE and MUL_MAT_ID (`moe` branch, 18 kinds; the base image is 71,712 B and 49,504 B) | 78,520 B (59.9 %) | 49,680 B (75.8 %) |
 | With the Gated DeltaNet kinds (`gdn-sw`) | 78,576 B (59.9 %; budget 81,920 B) | 49,912 B (76.2 %; budget 57,344 B) |
 | With both sets of kinds (`sw-moegdn`, 21 kinds; the budget is 98,304 B since SW-75) | 84,056 B (64.1 %; 85.5 % of the budget) | 50,088 B (76.4 %; budget 57,344 B) |
+| With the fused path of GATED_DELTA_NET (`gdn-fw`, SW-78) | 85,504 B (65.2 %; 87.0 % of the budget) | 50,616 B (77.2 %; budget 57,344 B) |
 
 **Gemma 4 26B-A4B Q4_K_M, a model with experts** (measured on the simulator, `moe` branch; accuracy in
 [klcheck.md](klcheck.md)). Device cycles of one decode token, from the counters of two runs with 4 and 12 tokens
@@ -955,6 +984,7 @@ the card in W6 and in synthesis in W4/W5.
 | SLR1 LUT use | 125 to 143 K (62 to 72 %) against the 65 % gate (CC-24) | estimate (CC §14.1) |
 | Control core, issue path, CSR block | 14.5 to 25 K LUT, 49 RAMB36, 4 to 6 DSP | estimate (CC §14.1, §14.5) |
 | Vector unit | about 48 K LUT, 15 RAMB36, 366 DSP (plus or minus 30 %) | estimate (CC §14.1) |
+| GDN op in the K4 vector unit | +5.0 K LUT, +40 DSP, +34 URAM; 19.0 ms per token at 250 MHz for the planned 48 x 48 heads of 128 x 128 | out of context, after route (VU §7.12.9); cycles from RTL simulation |
 | Debug block | 4.2 to 6.3 K LUT, 7 RAMB36 | estimate (CC §14.1) |
 | Attention cluster modes | 19 to 27 K LUT per cluster (SLR0 and SLR2) | estimate (CC §14.1) |
 | Attention share of a decode token at 4K context | 0.5B Q8_0 about 9 %, 12B Q4_K_M about 3.5 %, 32B Q4_K_M about 3.0 % (device time) | estimate (AT §9.3) |

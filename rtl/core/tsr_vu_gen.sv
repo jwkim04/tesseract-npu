@@ -37,6 +37,9 @@
 //          tsr_vu_dq), then per output line j the quant line holding it (Q8_0 chunk line 1 + (j mod 64)/4,
 //          bytes 16·(j mod 4); Q4_K line 1 + (j mod 64)/8, bytes 16·{j[2], j[0]}, nibble j[1]); chunk
 //          bases advance by 17 (Q8_0) / 9 (Q4_K) lines (tsr_row_beats)
+//   GDN    CFG slot (m, rows, o line), the lines of k, q and v (vector slots, 4 injection cycles each), the m / 16
+//          lines of k again (the pseudo row), then rows × m / 16 lines of S (row slots, one cycle each; a row's first
+//          line takes a row slot of the engine); the writes (S' lines, o lines) come from the engine (VU §7.12.5)
 //   AMERGE: see the op FSM below.
 
 module tsr_vu_gen
@@ -49,7 +52,8 @@ module tsr_vu_gen
   parameter int unsigned NUM_CH     = 4,
   parameter int unsigned LM_X       = 1,         // local memory: 512·LM_X lines (2 for NUM_CH > 8)
   parameter bit          HAS_TOPK   = 1'b0,      // TOPK (CAPS bit3; RTL from M8, VU §5.5)
-  parameter bit          HAS_DQROW  = 1'b0       // DQROW (CAPS bit6; RTL from M8, VU §5.6)
+  parameter bit          HAS_DQROW  = 1'b0,      // DQROW (CAPS bit6; RTL from M8, VU §5.6)
+  parameter bit          HAS_GDN    = 1'b0       // GDN (CAPS bit8, VU §7.12)
 ) (
   input  logic                clk,
   input  logic                rst_n,
@@ -165,7 +169,8 @@ module tsr_vu_gen
   // Op FSM state
   // -------------------------------------------------------------------------------------------
   typedef enum logic [3:0] {
-    G_IDLE, G_SETUP, G_PASS, G_SOP, G_REDE, G_RTBL, G_RPOS0, G_RPOS1, G_RTOK, G_RROT, G_BAR, G_FIN, G_AM
+    G_IDLE, G_SETUP, G_PASS, G_SOP, G_REDE, G_RTBL, G_RPOS0, G_RPOS1, G_RTOK, G_RROT, G_BAR, G_FIN, G_AM,
+    G_GSEQ, G_GSET2
   } gst_e;
   // AMERGE sub-states (AT §5.6): prepass tree over the LSUM vectors, m', a, b, l_run, m_run, then batches of
   // the main tree and the combine
@@ -192,7 +197,7 @@ module tsr_vu_gen
   logic                 bases_ok;        // the AMERGE pass bases are settled (assigned with them below)
   logic [TSR_VU_LW-1:0] pm_a_q, pm_b_q, pp_a_q, pp_b_q;        // products i·am_Rl (prepass), i·am_cs (main)
   logic [TSR_VU_LW-1:0] bpa_q, bpb_q, bpd_q, bma_q, bmb_q, bmd_q;
-  typedef enum logic [2:0] { P_VOP, P_RED, P_ASMAX, P_AMASK, P_ANORM1, P_ANORM2, P_TOPK, P_DQ } pass_e;
+  typedef enum logic [3:0] { P_VOP, P_RED, P_ASMAX, P_AMASK, P_ANORM1, P_ANORM2, P_TOPK, P_DQ, P_GPS, P_GROW } pass_e;
 
   gst_e        st_q;
   gst_e        setup_next;             // the state after G_SETUP (decoded below)
@@ -221,6 +226,10 @@ module tsr_vu_gen
   logic        cl_done_q;              // the c-line of the current 16-row group was emitted
   tsr_vu_dst_e dst_q;
   logic        dqf_q;                  // DQROW format: 1 Q4_K
+
+  // GDN: the head command and vector slots (G_GSEQ), then the pseudo row and the rows (G_PASS)
+  logic [1:0]  gp_q;                   // phase: 0 CFG, 1 k, 2 q, 3 v
+  logic [15:0] gj_q;                   // line in the phase
 
   // ROPE
   logic [15:0] hd_q, nd_q, nh_q, tp_q; // head_dim, n_dims, n_heads, T'
@@ -306,6 +315,20 @@ module tsr_vu_gen
           nxt_oc    = 2'd1;
           nxt_cnt   = 2'd1;
           nxt_last  = last_line && last_row;
+        end else if (HAS_GDN && (pk_q == P_GPS || pk_q == P_GROW)) begin
+          // GDN rows (VU §7.12.5): the lines of the pseudo row (k again) and of S go to the engine, which writes S'
+          // and o itself. A line takes no output place here (the engine takes them when a row is launched); its
+          // S' line counts as a write of the op, and the first row of each 16 also counts the o line.
+          nxt.kind    = SK_GDN;
+          nxt.gsub    = GS_ROW;
+          nxt.nsub    = 3'd1;                                  // a whole line to the engine
+          nxt.asrc    = SRC_SPM;
+          nxt.aline   = ab_q + TSR_VU_LW'(j_q);
+          nxt.d0      = db_q + TSR_VU_LW'(j_q);
+          nxt.tail    = 5'd16;
+          nxt.r_first = (j_q == 24'd0);
+          nxt_cnt     = (pk_q == P_GROW) ? ((j_q == 24'd0 && r_q[3:0] == 4'd0) ? 2'd2 : 2'd1) : 2'd0;
+          nxt_last    = (pk_q == P_GROW) && last_line && last_row;
         end else if (pk_q == P_TOPK) begin
           // TOPK (VU §6.8): the source lines to tsr_vu_topk; ceil(k/8) result lines per row
           nxt.kind    = SK_TOPK;
@@ -361,6 +384,36 @@ module tsr_vu_gen
           end
           nxt_last = last_line && last_row && (pk_q != P_ANORM1);
         end
+      end
+      G_GSEQ: begin                      // GDN: the head command, then the lines of k, q and v (VU §7.12.5)
+        nxt_v     = 1'b1;
+        nxt.kind  = SK_GDN;
+        nxt.nsub  = 3'd4;
+        nxt.tail  = 5'd16;
+        case (gp_q)
+          2'd0: begin
+            nxt.gsub  = GS_CFG;
+            nxt.bline = TSR_VU_LW'(w_q[7][15:0]);          // m
+            nxt.r_row = w_q[7][31:16];                     // rows
+            nxt.d1    = TSR_VU_LW'(w_q[6]);                // o line
+          end
+          2'd1: begin
+            nxt.gsub  = GS_VK;
+            nxt.asrc  = SRC_SPM;
+            nxt.aline = TSR_VU_LW'(w_q[3]) + TSR_VU_LW'(gj_q);
+          end
+          2'd2: begin
+            nxt.gsub  = GS_VQ;
+            nxt.asrc  = SRC_SPM;
+            nxt.aline = TSR_VU_LW'(w_q[4]) + TSR_VU_LW'(gj_q);
+          end
+          default: begin
+            nxt.gsub  = GS_VV;
+            nxt.asrc  = SRC_SPM;
+            nxt.aline = TSR_VU_LW'(w_q[5]) + TSR_VU_LW'(gj_q);
+            if (gj_q == ((w_q[7][31:16] + 16'd15) >> 4) - 16'd1 && w_q[7][19:16] != 4'd0) nxt.tail = 5'(w_q[7][19:16]);
+          end
+        endcase
       end
       G_REDE: begin                      // RED TO_S with m = 0: the empty-row result (VU §6.2)
         nxt_v       = 1'b1;
@@ -785,6 +838,10 @@ module tsr_vu_gen
               ra_q   <= 1'b1;
               dst_q  <= DS_NONE;
             end
+            tsr_tables_pkg::TSR_OP_GDN: begin
+              gp_q <= 2'd0;
+              gj_q <= '0;
+            end
             tsr_tables_pkg::TSR_OP_DQROW: begin
               logic [15:0] lk, rb;
               lk = 16'(w_q[5] >> 4);                                       // L(K), K = 32·n
@@ -897,6 +954,8 @@ module tsr_vu_gen
                   end
                 end else if (pk_q == P_ANORM1) begin
                   st_q <= G_BAR;
+                end else if (HAS_GDN && pk_q == P_GPS) begin
+                  st_q <= G_GSET2;
                 end else begin
                   st_q         <= G_IDLE;
                   gen_done     <= 1'b1;
@@ -938,6 +997,47 @@ module tsr_vu_gen
             gen_done     <= 1'b1;
             gen_done_tag <= tag_q;
           end
+        end
+        G_GSEQ: if (HAS_GDN && load) begin
+          gj_q <= gj_q + 16'd1;
+          case (gp_q)
+            2'd0: begin gp_q <= 2'd1; gj_q <= '0; end
+            2'd1: if (gj_q == 16'(w_q[7][15:4]) - 16'd1) begin gp_q <= 2'd2; gj_q <= '0; end
+            2'd2: if (gj_q == 16'(w_q[7][15:4]) - 16'd1) begin gp_q <= 2'd3; gj_q <= '0; end
+            default: if (gj_q == ((w_q[7][31:16] + 16'd15) >> 4) - 16'd1) begin
+              // the pseudo row: the lines of k once more, as one row
+              st_q      <= G_PASS;
+              pk_q      <= P_GPS;
+              rows_q    <= 16'd1;
+              nl_q      <= 24'(w_q[7][15:4]);
+              tail_q    <= 5'd16;
+              r_q       <= '0;
+              j_q       <= '0;
+              ab_q      <= TSR_VU_LW'(w_q[3]);
+              as_q      <= '0;
+              db_q      <= '0;
+              ds_q      <= '0;
+              nsub_q    <= 3'(RF);
+              ra_q      <= 1'b1;
+              rbq_q     <= 1'b0;
+              cl_q      <= 1'b0;
+              cl_done_q <= 1'b0;
+              dst_q     <= DS_NONE;
+            end
+          endcase
+        end
+        G_GSET2: begin                   // GDN: the rows of S
+          st_q      <= G_PASS;
+          pk_q      <= P_GROW;
+          rows_q    <= w_q[7][31:16];
+          nl_q      <= 24'(w_q[7][15:4]);
+          r_q       <= '0;
+          j_q       <= '0;
+          ab_q      <= TSR_VU_LW'(w_q[2]);
+          as_q      <= 16'(w_q[7][15:4]);
+          db_q      <= TSR_VU_LW'(w_q[1]);
+          ds_q      <= 16'(w_q[7][15:4]);
+          cl_done_q <= 1'b0;
         end
         G_RTBL: begin
           if (load) begin
@@ -1096,6 +1196,7 @@ module tsr_vu_gen
       TSR_OP_AMERGE: setup_next = G_AM;
       tsr_tables_pkg::TSR_OP_TOPK: setup_next = (HAS_TOPK && w_q[6][15:0] != 16'd0 && m != 24'd0) ? G_PASS : G_FIN;
       tsr_tables_pkg::TSR_OP_DQROW: setup_next = (HAS_DQROW && w_q[6][15:0] != 16'd0) ? G_PASS : G_FIN;
+      tsr_tables_pkg::TSR_OP_GDN:   setup_next = HAS_GDN ? G_GSEQ : G_FIN;
       default:     setup_next = G_FIN;
     endcase
   end
@@ -1126,6 +1227,10 @@ module tsr_vu_gen
         end
         TSR_OP_ASMAX, TSR_OP_AMERGE: begin
           opk[start_tag].k2 <= start_w[6];                            // scale
+        end
+        tsr_tables_pkg::TSR_OP_GDN: begin
+          opk[start_tag].k1 <= sreg[start_w[0][19:16]];               // alpha
+          opk[start_tag].k2 <= sreg[start_w[0][23:20]];               // beta
         end
         TSR_OP_AMASK: begin
           opk[start_tag].rkind <= 2'd3;

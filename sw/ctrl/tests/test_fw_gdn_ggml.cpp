@@ -14,7 +14,10 @@
 //   gdn       ggml_gated_delta_net (K = 1) against gdn_ref over 1, 16 and 512 tokens, H_k < H_v,
 //             S_v 128: the largest relative error of the outputs and states against the CPU result
 //             and against a float64 recurrence; asserted: both below 1e-3 at 512 tokens, and ours
-//             no worse than 4x the CPU's own error against float64.
+//             no worse than 4x the CPU's own error against float64. Both paths of the kind (SW-78): the
+//             composition of revision 1 (gdn_ref with CAPS without bit 8) and the fused path of
+//             revision 2 (gdn_ref with CAPS bit 8, the VU's GDN op), each against the same CPU and
+//             float64 results.
 // Exit 0 / 1.
 #include <algorithm>
 #include <cmath>
@@ -29,6 +32,7 @@
 
 #include "../ref/gdn_ref.hpp"
 #include "tsr/opl.hpp"
+#include "tsr/plan_gdn.hpp"
 
 namespace {
 
@@ -279,7 +283,7 @@ void test_gdn(int T) {
     std::vector<double> st64(st0.begin(), st0.end()), o64;
     gdn_f64(S, Hk, Hv, T, q, k, v, g, b, st64, o64);
 
-    // ours
+    // ours: the two paths of the kind (gdn_ref models the firmware for a given CAPS, SW-78)
     const uint32_t Lg = 1;
     dview d(24u << 20);
     const uint32_t hq = d.take(uint64_t(T) * Hk * L), hk = d.take(uint64_t(T) * Hk * L), hv = d.take(uint64_t(T) * Hv * L),
@@ -304,10 +308,6 @@ void test_gdn(int T) {
     a[gg::V] = hv; a[gg::V_HEAD_STRIDE] = L; a[gg::V_TOKEN_STRIDE] = Hv * L;
     a[gg::G] = hg; a[gg::G_TOKEN_STRIDE] = Lg; a[gg::BETA] = hb; a[gg::BETA_TOKEN_STRIDE] = Lg;
     a[gg::S_V] = S; a[gg::H_K] = Hk; a[gg::H_V] = Hv; a[gg::N_TOKENS] = uint32_t(T); a[gg::N_SEQS] = 1; a[gg::SCALE] = scb;
-    CHECK(tsr::ref::gdn_ref(d.view(), a) == tsr::ref::GD_OK, "gdn: reference refused");
-    std::vector<float> our_o(size_t(S) * Hv * T), our_st(st0.size());
-    for (int n = 0; n < T * Hv; ++n) get_rows(d, hd, uint32_t(n), L, &our_o[size_t(n) * S], uint32_t(S));
-    get_rows(d, hso, 0, 1, our_st.data(), uint32_t(our_st.size()));
 
     auto rel = [](const float * a_, const double * ref, size_t n) {   // error / rms of the reference
         double e2 = 0, r2 = 0;
@@ -317,15 +317,35 @@ void test_gdn(int T) {
         }
         return std::sqrt(e2 / std::max(r2, 1e-300));
     };
-    std::vector<double> cpu_o64(cpu_o, cpu_o + our_o.size()), cpu_st64(cpu_st, cpu_st + our_st.size());
-    const double e_ours_o = rel(our_o.data(), o64.data(), our_o.size()), e_cpu_o = rel(cpu_o, o64.data(), our_o.size());
-    const double e_ours_s = rel(our_st.data(), st64.data(), our_st.size()), e_cpu_s = rel(cpu_st, st64.data(), our_st.size());
-    const double e_vs_cpu_o = rel(our_o.data(), cpu_o64.data(), our_o.size()), e_vs_cpu_s = rel(our_st.data(), cpu_st64.data(), our_st.size());
-    printf("gdn T=%d: rms error vs float64  out ours %.3e cpu %.3e | state ours %.3e cpu %.3e | ours vs cpu  out %.3e state %.3e\n", T,
-           e_ours_o, e_cpu_o, e_ours_s, e_cpu_s, e_vs_cpu_o, e_vs_cpu_s);
-    CHECK(e_ours_o <= 4.0 * e_cpu_o + 2e-6 && e_ours_s <= 4.0 * e_cpu_s + 2e-6,
-          "gdn T=%d: ours (%.3e / %.3e) is worse than 4x the CPU's (%.3e / %.3e) against float64", T, e_ours_o, e_ours_s, e_cpu_o, e_cpu_s);
-    CHECK(e_vs_cpu_o <= 1e-3 && e_vs_cpu_s <= 1e-3, "gdn T=%d: ours vs cpu %.3e / %.3e", T, e_vs_cpu_o, e_vs_cpu_s);
+    auto linf = [](const float * a_, const double * ref, size_t n) {   // largest error / rms of the reference
+        double mx = 0, r2 = 0;
+        for (size_t i = 0; i < n; ++i) {
+            mx = std::max(mx, std::fabs(double(a_[i]) - ref[i]));
+            r2 += ref[i] * ref[i];
+        }
+        return mx / std::sqrt(std::max(r2 / double(n), 1e-300));
+    };
+    std::vector<double> cpu_o64(cpu_o, cpu_o + size_t(S) * Hv * T), cpu_st64(cpu_st, cpu_st + st0.size());
+    const double e_cpu_o = rel(cpu_o, o64.data(), cpu_o64.size()), e_cpu_s = rel(cpu_st, st64.data(), cpu_st64.size());
+    printf("gdn T=%d: ggml-cpu rms error vs float64  out %.3e state %.3e\n", T, e_cpu_o, e_cpu_s);
+    struct path_t { const char * name; uint32_t caps; };
+    const path_t paths[2] = {{"composed (r1)", tsr::plan::CAPS_VU}, {"fused (r2)", tsr::plan::CAPS_VU | tsr::plan::CAPS_GDN}};
+    for (const path_t & pth : paths) {
+        CHECK(tsr::ref::gdn_ref(d.view(), a, pth.caps) == tsr::ref::GD_OK, "gdn %s: reference refused", pth.name);
+        std::vector<float> our_o(size_t(S) * Hv * T), our_st(st0.size());
+        for (int n = 0; n < T * Hv; ++n) get_rows(d, hd, uint32_t(n), L, &our_o[size_t(n) * S], uint32_t(S));
+        get_rows(d, hso, 0, 1, our_st.data(), uint32_t(our_st.size()));
+        const double e_ours_o = rel(our_o.data(), o64.data(), our_o.size());
+        const double e_ours_s = rel(our_st.data(), st64.data(), our_st.size());
+        const double e_vs_cpu_o = rel(our_o.data(), cpu_o64.data(), our_o.size()), e_vs_cpu_s = rel(our_st.data(), cpu_st64.data(), our_st.size());
+        printf("gdn T=%d %-13s: rms error vs float64  out %.3e state %.3e (largest %.3e / %.3e of the rms) | vs ggml-cpu  out %.3e state %.3e\n", T,
+               pth.name, e_ours_o, e_ours_s, linf(our_o.data(), o64.data(), our_o.size()), linf(our_st.data(), st64.data(), our_st.size()),
+               e_vs_cpu_o, e_vs_cpu_s);
+        CHECK(e_ours_o <= 4.0 * e_cpu_o + 2e-6 && e_ours_s <= 4.0 * e_cpu_s + 2e-6,
+              "gdn T=%d %s: ours (%.3e / %.3e) is worse than 4x the CPU's (%.3e / %.3e) against float64", T, pth.name, e_ours_o, e_ours_s,
+              e_cpu_o, e_cpu_s);
+        CHECK(e_vs_cpu_o <= 1e-3 && e_vs_cpu_s <= 1e-3, "gdn T=%d %s: ours vs cpu %.3e / %.3e", T, pth.name, e_vs_cpu_o, e_vs_cpu_s);
+    }
 }
 
 }  // namespace

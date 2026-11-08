@@ -39,7 +39,7 @@ module tsr_vu_wr
   input  tsr_vu_desc_t                   d_desc,
   input  logic [15:0][31:0]              lane_y,   // selected before the lane return pipe
   // credits
-  input  logic [1:0]                     oc_take,
+  input  logic [4:0]                     oc_take,    // lines: a slot takes 0..2, a GDN row launch up to 16
   output logic [7:0]                     oc_free,
   input  logic                           rc_take,
   output logic [3:0]                     rc_free,
@@ -217,7 +217,7 @@ module tsr_vu_wr
   // registered first (oc_take_q, rc_take_q: off the generator's load path) and counts as taken from then.
   logic [$clog2(OFD)+1:0] oc_res;
   logic [$clog2(RFD)+1:0] rc_res;
-  logic [1:0]             oc_take_q;
+  logic [4:0]             oc_take_q;
   logic                   rc_take_q;
   always_ff @(posedge clk) begin
     if (!rst_n) begin

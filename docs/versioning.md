@@ -133,7 +133,7 @@ build/dev/bin/tsr-selftest --device sim
   CTL_ID 0x00005d01 (control core, debug module, SPM bridge, log ring, watchdog, SPM alias)  ...
 == boot (fw/tsr-fw.elf, id 21df766de1377d19)
   image fw/tsr-fw.elf: id 21df766de1377d19, Tesseract Basis 0.1.0, Basis ABI 1, needs capability 1.0; host Tesseract Basis 0.1.0
-  kinds (21, signature 0x804f): NOP r1 JOIN r1 MUL_MAT r1 ADD r1 MUL r1 SCALE r1 RMS_NORM r1 GLU r1 ROPE r1 GET_ROWS r1 SET_ROWS_KV r1 FLASH_ATTN r1 CPY r1 UNARY r1 MUL_MAT_SCALE r1 MUL_MAT_SOFTCAP r1 MOE_ROUTE r1 MUL_MAT_ID r1 SOFTPLUS r1 SSM_CONV r1 GATED_DELTA_NET r1
+  kinds (21, signature 0x2381): NOP r1 JOIN r1 MUL_MAT r1 ADD r1 MUL r1 SCALE r1 RMS_NORM r1 GLU r1 ROPE r1 GET_ROWS r1 SET_ROWS_KV r1 FLASH_ATTN r1 CPY r1 UNARY r1 MUL_MAT_SCALE r1 MUL_MAT_SOFTCAP r1 MOE_ROUTE r1 MUL_MAT_ID r1 SOFTPLUS r1 SSM_CONV r1 GATED_DELTA_NET r2
 ```
 
 The image id changes with every build. `tsr-selftest --version` prints the Basis version and ABI of
@@ -266,15 +266,20 @@ The argument words of each kind are in [SW](design/06-software-verification.md) 
 | 0x1F | MUL_MAT_ID | 1 | `k_moe.cpp` | Matrix product against the experts that the ids of each token select, with an optional per-expert scale (SW-62). |
 | 0x2D | SOFTPLUS | 1 | `gdn_kinds.cpp` | log(1 + exp(x)) of the gate tensors of a Gated DeltaNet layer (SW §7.10, SW-69). |
 | 0x2E | SSM_CONV | 1 | `gdn_kinds.cpp` | The causal convolution of a Gated DeltaNet layer with its rolling state, optionally followed by SILU (SW-68). |
-| 0x2F | GATED_DELTA_NET | 1 | `gdn_kinds.cpp` | The delta-rule recurrence of a Gated DeltaNet layer (SW-67). |
+| 0x2F | GATED_DELTA_NET | 2 | `gdn_kinds.cpp` | The delta-rule recurrence of a Gated DeltaNet layer (SW-67). Revision 2 adds the fused path on a device with `CAPS` bit 8 (SW-78). |
 
 Kinds 0x20 to 0x2C are free and 0x30 to 0x3F are test kinds. The MoE kinds took the lowest free numbers; the
-Gated DeltaNet kinds took 0x2D to 0x2F. The signature of the table above (21 kinds) is `0x804f`; the 14 kinds up
+Gated DeltaNet kinds took 0x2D to 0x2F. The signature of the table above (21 kinds) is `0x2381` (it was `0x804f` with GATED_DELTA_NET at revision 1); the 14 kinds up
 to UNARY have `0xfa6f`, and the 18 kinds up to MUL_MAT_ID (the MoE branch before the merge) `0xc341`.
 A table with only NOP, JOIN and MUL_MAT at revision 1 has `0x512e`, and an empty table `0xb51b`.
 
 A kind has one revision for all its variants. Adding a variant of GLU is a Basis minor. Changing
 the bits of an existing variant raises the revision of GLU.
+
+A kind whose result depends on a `CAPS` bit has one revision and one row of `kind_revs.txt` for each path.
+GATED_DELTA_NET (SW-78) runs the VU's GDN op when `CAPS` bit 8 is set and its composition otherwise. Revision 2
+changed the bits of the first path only. The row marked `composed` keeps the digest of revision 1, which shows that
+a device without the bit gives the same results as before. The revision is raised when any of the kind's digests moves.
 
 ## Releases
 

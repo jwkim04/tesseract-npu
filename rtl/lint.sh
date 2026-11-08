@@ -126,6 +126,8 @@ lint tsr_core -GNUM_CH=4 -GT_MAX=4 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -
 lint tsr_mvm_pair_tx -GW=563
 lint tsr_mvm_pair_rx -GW=563
 lint tsr_core -GVU_LANE_PIPE=1 -GVU_EXP_LANES=8 -GVU_BACK_LANES=4
+lint tsr_core -GHAS_GDN=1 -GNUM_CH=4 -GT_MAX=4 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9 -GMVM_GATHER_PAIR=1 -GMVM_GATHER_FLITS=2 -GDDR_LOCAL_PIPE=1 -GRV_LOCAL_TRANSPORT=1 -GXSLR_REG=1 -GVU_FRONT_LANES=8 -GVU_EXP_LANES=8 -GVU_BACK_LANES=4 -GVU_LANE_PIPE=2
+lint tsr_core -GHAS_GDN=1 -GHAS_TOPK=1 -GHAS_DQROW=1
 lint tsr_core -GNUM_CH=16 -GT_MAX=8 -GK_MAX=65280 -GADDR_BEAT_W=36 -GCH_BYTES="64'd17179869184" -GHAS_TOPK=1 -GHAS_DQROW=1
 lint tsr_core -GNUM_CH=2 -GT_MAX=2 -GK_MAX=4096 -GSPM_BYTES=1048576 -GCH_BYTES="64'd536870912" -GADDR_BEAT_W=24
 lint tsr_core_dp -GHAS_DB=0 -GHAS_VU=0 -GHAS_ATT=0 -GNUM_CH=1 -GSPM_BYTES=4096 -GRST_PIPE=2
@@ -137,6 +139,9 @@ lint tsr_vu -GNUM_CH=1
 lint tsr_vu -GNUM_CH=16 -GHAS_TOPK=1 -GHAS_DQROW=1
 lint tsr_vu -GEXP_LANES=8 -GBACK_LANES=4
 lint tsr_vu -GEXP_LANES=8 -GBACK_LANES=4 -GHAS_TOPK=1 -GHAS_DQROW=1
+lint tsr_vu -GHAS_GDN=1
+lint tsr_vu -GHAS_GDN=1 -GFRONT_LANES=8 -GEXP_LANES=8 -GBACK_LANES=4 -GLANE_PIPE=2
+lint tsr_vu -GHAS_GDN=1 -GFRONT_LANES=8 -GEXP_LANES=8 -GBACK_LANES=4 -GLANE_PIPE=2 -GHAS_TOPK=1 -GHAS_DQROW=1 -GGDN_NSLOT=16 -GGDN_STYLE=\"block\"
 lint tsr_vu -GSPM_BYTES=65536 -GSPM_RD_LAT=1
 lint tsr_vu -GLANE_PIPE=1
 lint tsr_vu -GLANE_PIPE=2
@@ -147,6 +152,9 @@ lint tsr_vu_lanes -GPIPE=3 -GEXP_LANES=8 -GBACK_LANES=4
 lint tsr_vu -GNUM_CH=3 -GSPM_RD_LAT=4
 lint tsr_vu_chk -GNUM_CH=1 -GSPM_BYTES=65536 -GK_MAX=4096
 lint tsr_vu_chk -GNUM_CH=16 -GK_MAX=65280
+lint tsr_vu_chk -GHAS_GDN=1
+lint tsr_vu_chk -GHAS_GDN=1 -GNUM_CH=1 -GSPM_BYTES=65536 -GK_MAX=4096
+lint tsr_vu_xc -GHAS_GDN=1
 lint tsr_vu_xc -GNUM_CH=3 -GSPM_BYTES=262144 -GK_MAX=4096
 
 # AT (docs/design/03-attention-kv.md "AT" §8): KVST on the DMA, the attention cluster / gather / unit modes, the
@@ -189,6 +197,18 @@ lint tsr_dbg_wrmux -GADDR_BEAT_W=5
 # (NUM_CH 1 / 3 / 16, T_MAX 1 / 8, small and maximal K_MAX, latency / pipe depth extremes).
 lint tsr_fp_add -GLAT=1
 lint tsr_fp_add -GLAT=8
+lint tsr_fp_add_dsp -GLAT=8
+lint tsr_fp_add_dsp -GNORM_DSP=1
+# GDN unit (VU §7.12): the 16-lane build, small and large shapes, RAM styles, read latency 2
+lint tsr_vu_gdn -GLANES=16 -GNB_MAX=16
+lint tsr_vu_gdn -GLANES=16 -GNB_MAX=8 -GNSLOT=4
+lint tsr_vu_gdn -GNB_MAX=16 -GNSLOT=4 -GR_MAX=64
+lint tsr_vu_gdn_upd -GLANES=16 -GNB_MAX=16
+lint tsr_vu_gdn_dlane -GPAIR=2
+lint tsr_vu_gdn -GRD_LAT=2
+lint tsr_vu_gdn -GSTYLE=\"block\"
+lint tsr_vu_gdn_ram -GSTYLE=\"distributed\" -GDEPTH=64 -GRD_LAT=1
+lint tsr_vu_gdn_ram -GNWE=2 -GWIDTH=64 -GRD_LAT=4
 lint tsr_mac_lane -GT=8 -GLAT=1
 lint tsr_mac_lane -GN=32 -GT=2 -GLAT=6
 lint tsr_vpipe -GDEPTH=0 -GVW=2 -GW=527

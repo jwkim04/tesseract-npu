@@ -1013,10 +1013,11 @@ FENCE have RTL that ran on the card; every other row is designed and runs on the
 | 0x33 | `TOPK` | – | VU §5.5 | Top k ≤ 16 (index, value) pairs per row. Simulator M6 | M8 |
 | 0x34–0x37 | `ASMAX`, `AMASK`, `AMERGE`, `ANORM` | | AT §5.4–§5.7, VU §5.11 | Softmax numerator, general mask, channel tree and online merge, normalisation (VU unit) | M6 |
 | 0x38 | `VMASK` | | VU §5.7 | Position-window mask. `ILLEGAL_OP` before M9 | M9 |
+| 0x39 | `GDN` | – | VU §7.12.4 (w1 d, w2 a, w3 k, w4 q, w5 v, w6 o, w7 m·rows; x16 sa·sb) | Fused Gated DeltaNet state update of one head (S' and o); `CAPS` bit 8 | HAS_GDN |
 | 0x40 | `SOP` | function | VU §5.8 (w1 sd·sa·sb, w2 imm, w3 SPM word) | 15 f32 scalar functions | M6 |
 | 0x7F | `FENCE` | – | – (w1–w7 = 0) | Barrier of the SYNC unit: completes when every earlier instruction is done | M2 |
 
-The reserved opcode blocks (VU: 0x13, 0x39–0x3F, 0x41–0x47; AT: 0x15–0x17, 0x19–0x1B, 0x23; SYNC
+The reserved opcode blocks (VU: 0x13, 0x3A–0x3F, 0x41–0x47; AT: 0x15–0x17, 0x19–0x1B, 0x23; SYNC
 class: 0x0A–0x0F, 0x70–0x7E) and all other numbers are in EX §7.2. A retired or reserved opcode is
 never reused for another instruction.
 

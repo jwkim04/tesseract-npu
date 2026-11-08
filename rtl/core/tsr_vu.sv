@@ -1,5 +1,5 @@
 // tsr_vu.sv — the vector unit (unit 3): VOP, RED, ROPE, SOP and AT's vector ops ASMAX, AMASK, AMERGE, ANORM
-// (TOPK and DQROW with HAS_TOPK / HAS_DQROW), with the s registers s0-s15.
+// (TOPK, DQROW and GDN with HAS_TOPK / HAS_DQROW / HAS_GDN), with the s registers s0-s15.
 //
 // Owner: VU (docs/design/02-vector-unit.md "VU" §4 programming model, §5 encodings, §6 numerics, §7
 // microarchitecture; AT §5.4-§5.7; W4-B task "vu").
@@ -19,6 +19,13 @@
 //   tsr_vu_wr (assembler, output FIFO, SPM writes); tsr_vu_red (partial drain, trees, post, scalar path);
 //   tsr_vu_angle (ROPE); the local memory (512 lines x 512 bits, 1024 with NUM_CH > 8; two read ports) for
 //   AT's multi-pass ops (ANORM 1/l; AMERGE a, b, m' vectors and the channel-tree scratch).
+// GDN (HAS_GDN, VU §7.12): the fused Gated DeltaNet state update. Its slots (kind SK_GDN) go from the injector to the
+//   GDN engine (tsr_vu_gdn: setup engine, row buffers, DSP dot array, scalar chain). The element update
+//   S' = FA(FM(alpha, S), FM(e, k)) runs on the front lanes: the engine's operand reader offers each beat as
+//   micro-op U_ROT (a = S, b = k, c1 = alpha, c2 = e) in place of the injector's lane inputs, with the write
+//   descriptor of its line. An op GDN is held back from every other op (hazard), so the lane inputs and the
+//   descriptors never have two owners; two GDN ops overlap (the next head's setup runs under the rows of the
+//   previous one). With HAS_GDN = 0 nothing of this exists.
 // Knobs (VU §7.10, results unchanged): EXP_LANES 16 / 8, BACK_LANES 8 / 4.
 // LANE_PIPE (CC §14.1 remedy 3, results unchanged): register stages on each side of the lane array
 //   (tsr_vu_lanes), 0 = none. With p stages the lanes can sit in another SLR than the SPM-facing part:
@@ -41,6 +48,9 @@ module tsr_vu
   parameter  bit          LOCAL_INTERMEDIATES = 1'b0,
   parameter  bit          HAS_TOPK   = 1'b0,          // TOPK (CAPS bit3, VU §5.10: RTL from M8)
   parameter  bit          HAS_DQROW  = 1'b0,          // DQROW (CAPS bit6, VU §5.6: RTL from M8)
+  parameter  bit          HAS_GDN    = 1'b0,          // GDN (CAPS bit8, VU §7.12)
+  parameter  int unsigned GDN_NSLOT  = 64,            // GDN: rows held between the ingest and the update launch
+  parameter                GDN_STYLE  = "ultra",       // GDN: RAM style of the row buffers and tables (ultra: URAM)
   parameter  int unsigned OFD        = 64,
   localparam int unsigned LINES      = SPM_BYTES / TSR_LINE_BYTES,
   localparam int unsigned AW         = (LINES > 1) ? $clog2(LINES) : 1
@@ -89,6 +99,10 @@ module tsr_vu
   localparam int unsigned LM_LINES = 512 * LM_X;
   localparam int unsigned LMAW     = $clog2(LM_LINES);
   localparam int unsigned EXW  = TSR_VU_LW + 1;        // extent bounds (lines; checked < 2^24)
+
+  if (HAS_GDN && (FRONT_LANES != 8 && FRONT_LANES != 16)) begin : g_chk_gdn
+    $fatal(1, "tsr_vu: HAS_GDN needs FRONT_LANES 8 or 16");
+  end
 
   // block interconnect (declared before the held-op logic, which uses some of it)
   tsr_vu_opk_t [1:0] opk;
@@ -165,6 +179,7 @@ module tsr_vu
     logic [15:0]         sr, sw;        // s registers read / written
     logic                sopx;          // SOP SQRT / RSQRT / DIV
     logic                rope;
+    logic                gdn;           // GDN: alone with every op but another GDN
   } hz_t;
 
   logic [1:0]       ov_q, os_q, og_q;    // [tag] held, started, generated
@@ -321,7 +336,7 @@ module tsr_vu
   logic [5:0][EXW-1:0]    dc2_lo, dc2_len;
   logic [5:0]             dc2_nz;
   logic [15:0]  dc1_sr, dc1_sw, dc2_sr, dc2_sw;
-  logic         dc1_sopx, dc1_rope, dc2_sopx, dc2_rope;
+  logic         dc1_sopx, dc1_rope, dc2_sopx, dc2_rope, dc1_gdn, dc2_gdn;
 
   function automatic logic [EXW-1:0] c16(input logic [31:0] x);   // ceil(x / 16)
     return EXW'((33'(x) + 33'd15) >> 4);
@@ -362,6 +377,7 @@ module tsr_vu
       dc1_sw   <= '0;
       dc1_sopx <= 1'b0;
       dc1_rope <= 1'b0;
+      dc1_gdn  <= 1'b0;
       case (op)
         tsr_tables_pkg::TSR_OP_VOP: begin
           // E(rows, stride, L(m)) for d (W), a, b (R) when read; c: ceil(rows/16)
@@ -451,6 +467,22 @@ module tsr_vu
           dc1_lo[2] <= EXW'(w[2][23:0]); dc1_nm1[2] <= rows - 16'd1; dc1_s[2] <= 24'(w[7][15:0]);
           dc1_len[2] <= EXW'(lm); dc1_nz[2] <= rows != 16'd0 && m != 24'd0;
         end
+        tsr_tables_pkg::TSR_OP_GDN: if (HAS_GDN) begin
+          // d E(rows, m/16, m/16) W; o ceil(rows/16) W; a E(rows, m/16, m/16) R; k, q m/16 R; v ceil(rows/16) R (VU §7.12.4)
+          logic [15:0] gn;
+          gn = w[7][15:0] >> 4;
+          dc1_gdn <= 1'b1;
+          dc1_lo[0] <= EXW'(w[1][23:0]); dc1_nm1[0] <= w[7][31:16] - 16'd1; dc1_s[0] <= 24'(gn);
+          dc1_len[0] <= EXW'(gn); dc1_nz[0] <= w[7][31:16] != 16'd0;
+          dc1_lo[1] <= EXW'(w[6][23:0]); dc1_len[1] <= c16(32'(w[7][31:16])); dc1_nz[1] <= w[7][31:16] != 16'd0;
+          dc1_lo[2] <= EXW'(w[2][23:0]); dc1_nm1[2] <= w[7][31:16] - 16'd1; dc1_s[2] <= 24'(gn);
+          dc1_len[2] <= EXW'(gn); dc1_nz[2] <= w[7][31:16] != 16'd0;
+          dc1_lo[3] <= EXW'(w[3][23:0]); dc1_len[3] <= EXW'(gn); dc1_nz[3] <= w[7][31:16] != 16'd0;
+          dc1_lo[4] <= EXW'(w[4][23:0]); dc1_len[4] <= EXW'(gn); dc1_nz[4] <= w[7][31:16] != 16'd0;
+          dc1_lo[5] <= EXW'(w[5][23:0]); dc1_len[5] <= c16(32'(w[7][31:16])); dc1_nz[5] <= w[7][31:16] != 16'd0;
+          dc1_sr[w[0][19:16]] <= 1'b1;
+          dc1_sr[w[0][23:20]] <= 1'b1;
+        end
         tsr_tables_pkg::TSR_OP_DQROW: begin
           // d E(rows, d_stride', L(K)) W; src E(rows, src_stride', ROW_BEATS(fmt, K)) R (VU §5.9)
           logic [15:0] lk, rb;
@@ -487,6 +519,7 @@ module tsr_vu
     dc2_sw  <= dc1_sw;
     dc2_sopx <= dc1_sopx;
     dc2_rope <= dc1_rope;
+    dc2_gdn  <= dc1_gdn;
     for (int k = 0; k < 6; k++) dc2_p[k] <= (EXW+16)'(dc1_nm1[k]) * (EXW+16)'(dc1_s[k]);
   end
   always_ff @(posedge clk) begin
@@ -521,6 +554,7 @@ module tsr_vu
     dc3.sw   = dc2_sw;
     dc3.sopx = dc2_sopx;
     dc3.rope = dc2_rope;
+    dc3.gdn  = dc2_gdn;
   end
 
   // -------------------------------------------------------------------------------------------
@@ -534,7 +568,7 @@ module tsr_vu
   /* verilator lint_off UNUSEDSIGNAL */
   function automatic logic hazard(input hz_t a, input hz_t b);   // a older, b newer
     logic h;
-    h = ((a.sw & (b.sr | b.sw)) != 16'd0) || a.sopx || b.sopx || (a.rope && b.rope);
+    h = ((a.sw & (b.sr | b.sw)) != 16'd0) || a.sopx || b.sopx || (a.rope && b.rope) || (a.gdn != b.gdn);
     for (int i = 0; i < 2; i++) begin
       for (int j = 0; j < 4; j++) h |= ovl(a.wlo[i], a.whi[i], b.rlo[j], b.rhi[j]);
       for (int j = 0; j < 2; j++) h |= ovl(a.wlo[i], a.whi[i], b.wlo[j], b.whi[j]);
@@ -639,7 +673,7 @@ module tsr_vu
   assign slot_tag = slot_take_tag;                     // the slot being loaded (its writes, its LM line)
 
   tsr_vu_gen #(.FRONT_LANES(FRONT_LANES), .EXP_LANES(EXP_LANES), .BACK_LANES(BACK_LANES), .NUM_CH(NUM_CH), .LM_X(LM_X), .HAS_TOPK(HAS_TOPK),
-               .HAS_DQROW(HAS_DQROW)) u_gen (
+               .HAS_DQROW(HAS_DQROW), .HAS_GDN(HAS_GDN)) u_gen (
     .clk, .rst_n, .start(start_q), .start_tag(c_tag_q), .start_w(ow_q[c_tag_q]), .sreg,
     .busy(gen_busy), .gen_done, .gen_done_tag, .opk,
     .rope_start, .rope_neox, .rope_ff, .rope_fs, .rope_atab, .rope_m, .rope_ts, .rope_fsv, .rope_na, .rope_t,
@@ -716,12 +750,13 @@ module tsr_vu
 
   // injector
   logic l_ctx;
-  tsr_vu_inj #(.FRONT_LANES(FRONT_LANES), .LMAW(LMAW), .HAS_DQROW(HAS_DQROW), .LANE_X(LANE_X)) u_inj (
+  logic gdn_cfg_ok, gdn_vec_ok, gdn_row_ok, gdn_v;
+  tsr_vu_inj #(.FRONT_LANES(FRONT_LANES), .LMAW(LMAW), .HAS_DQROW(HAS_DQROW), .HAS_GDN(HAS_GDN), .LANE_X(LANE_X)) u_inj (
     .clk, .rst_n, .q_valid, .q_slot, .q_pop, .f_valid, .f_data, .f_pop, .opk,
     .lm_re_a, .lm_ra_a, .lm_rd_a, .lm_re_b, .lm_ra_b, .lm_rd_b,
     .ang_ready, .ang_rel, .ang_rel_h, .ang_rh, .ang_re, .ang_cs, .tbl_we, .tbl_line, .pos_we, .pos_idx, .pa_data,
     .ring_free(ring_free_q), .ring_take, .row_v, .row_tok, .red_idle, .sopx_v, .sopx_tag, .sopx_idle,
-    .topk_ready, .topk_v, .topk_slot,
+    .topk_ready, .topk_v, .topk_slot, .gdn_cfg_ok, .gdn_vec_ok, .gdn_row_ok, .gdn_v,
     .l_v, .l_uop, .l_a, .l_b, .l_c1, .l_c2, .l_coeff, .l_neg, .l_lv, .l_fresh, .l_pa, .l_ctx, .d_v, .d_back, .d_desc,
     .busy(inj_busy)
   );
@@ -745,18 +780,147 @@ module tsr_vu
     wire unused_topk = &{1'b0, topk_v, topk_slot, tk_ready};
   end
 
+  // GDN engine (HAS_GDN, VU §7.12): its update beats take the lanes' inputs and the writer's descriptors, its o lines
+  // the TOPK result port of the writer (an op GDN is alone with every other op, so TOPK is idle).
+  logic                     gu_v;                     // an update beat, valid for the lanes
+  logic [FRONT_LANES*32-1:0] gu_s, gu_k;
+  logic [31:0]              gu_alpha, gu_e;
+  logic [TSR_VU_LW-1:0]     gu_line;
+  logic                     gu_part, gu_tag;
+  logic [4:0]               gdn_oc_take;
+  logic                     gdn_oc_ok, gdn_act, t_ready_w;
+  logic                     go_v, go_tag;
+  logic [TSR_VU_LW-1:0]     go_line;
+  logic [TSR_LINE_BITS-1:0] go_data;
+  if (HAS_GDN) begin : g_gdn
+    tsr_vu_gdn #(.LANES(FRONT_LANES), .NSLOT(GDN_NSLOT), .NB_MAX(256 / FRONT_LANES), .STYLE(GDN_STYLE)) u_gdn (
+      .clk, .rst_n, .cfg_ok(gdn_cfg_ok), .vec_ok(gdn_vec_ok), .row_ok(gdn_row_ok),
+      .g_v(gdn_v), .g_slot(topk_slot), .g_line(pa_data),
+      .g_alpha(opk[topk_slot.tag].k1), .g_beta(opk[topk_slot.tag].k2),
+      .u_v(gu_v), .u_s(gu_s), .u_k(gu_k), .u_alpha(gu_alpha), .u_e(gu_e), .u_line(gu_line), .u_part(gu_part),
+      .u_tag(gu_tag), .oc_ok(gdn_oc_ok), .oc_take(gdn_oc_take),
+      .o_line_v(go_v), .o_line_ready(t_ready_w), .o_line_tag(go_tag), .o_line_addr(go_line), .o_line_data(go_data),
+      .act(gdn_act)
+    );
+    // The launch of a row needs room for its lines (at most 256 / 16) in the output FIFO; the count is registered
+    // (a launch happens at most every four cycles, see tsr_vu_gdn)
+    always_ff @(posedge clk) gdn_oc_ok <= (oc_free >= 8'd16);
+  end else begin : g_nogdn
+    assign gdn_cfg_ok  = 1'b1;
+    assign gdn_vec_ok  = 1'b1;
+    assign gdn_row_ok  = 1'b1;
+    assign gu_v        = 1'b0;
+    assign gu_s        = '0;
+    assign gu_k        = '0;
+    assign gu_alpha    = '0;
+    assign gu_e        = '0;
+    assign gu_line     = '0;
+    assign gu_part     = 1'b0;
+    assign gu_tag      = 1'b0;
+    assign gdn_oc_take = 5'd0;
+    assign gdn_oc_ok   = 1'b0;
+    assign gdn_act     = 1'b0;
+    assign go_v        = 1'b0;
+    assign go_tag      = 1'b0;
+    assign go_line     = '0;
+    assign go_data     = '0;
+    wire unused_gdn = &{1'b0, gdn_v, t_ready_w};
+  end
+
+  // lane inputs: the injector's, or an update beat of the GDN engine (micro-op U_ROT: FA(FM(a, c1), FM(b, c2)) with
+  // a = S, b = k, c1 = alpha, c2 = e; the front lanes are FM_A and FM_B in parallel into FA)
+  localparam int unsigned CW = (FRONT_LANES == 8) ? 1 : 16;
+  logic [15:0]       m_v, m_neg, m_lv;
+  tsr_vu_uop_e       m_uop;
+  logic [15:0][31:0] m_a, m_b;
+  logic [CW-1:0][31:0] m_c1, m_c2;
+  tsr_vu_bank_coeff_t m_coeff;
+  logic              m_fresh, m_ctx;
+  logic [3:0]        m_pa;
+  logic              m_dv, m_dback;
+  tsr_vu_desc_t      m_desc;
+  if (HAS_GDN) begin : g_lane_mux
+    always_comb begin
+      m_v     = l_v;
+      m_uop   = l_uop;
+      m_a     = l_a;
+      m_b     = l_b;
+      m_c1    = l_c1;
+      m_c2    = l_c2;
+      m_coeff = l_coeff;
+      m_neg   = l_neg;
+      m_lv    = l_lv;
+      m_fresh = l_fresh;
+      m_pa    = l_pa;
+      m_ctx   = l_ctx;
+      m_dv    = d_v;
+      m_dback = d_back;
+      m_desc  = d_desc;
+      if (gu_v) begin
+        m_v     = '0;
+        m_v[FRONT_LANES-1:0] = '1;
+        m_uop   = U_ROT;
+        for (int l = 0; l < FRONT_LANES; l++) begin
+          m_a[l] = gu_s[32*l +: 32];
+          m_b[l] = gu_k[32*l +: 32];
+        end
+        for (int c = 0; c < CW; c++) begin
+          m_c1[c] = gu_alpha;
+          m_c2[c] = gu_e;
+        end
+        m_coeff = '0;
+        m_neg   = '0;
+        m_lv    = '0;
+        m_fresh = 1'b0;
+        m_pa    = 4'd0;
+        m_ctx   = 1'b0;
+        m_dv    = 1'b1;
+        m_dback = 1'b0;
+        m_desc  = '{tag: gu_tag, dst: DS_SPM, line: gu_line, part: {1'b0, gu_part}, nparts: 3'(16 / FRONT_LANES),
+                    tail: 5'd16, dword: 4'd0, sts: 1'b0, keep: 1'b0};
+      end
+    end
+  end else begin : g_no_lane_mux
+    assign m_v     = l_v;
+    assign m_uop   = l_uop;
+    assign m_a     = l_a;
+    assign m_b     = l_b;
+    assign m_c1    = l_c1;
+    assign m_c2    = l_c2;
+    assign m_coeff = l_coeff;
+    assign m_neg   = l_neg;
+    assign m_lv    = l_lv;
+    assign m_fresh = l_fresh;
+    assign m_pa    = l_pa;
+    assign m_ctx   = l_ctx;
+    assign m_dv    = d_v;
+    assign m_dback = d_back;
+    assign m_desc  = d_desc;
+    wire unused_gu = &{1'b0, gu_v, gu_s, gu_k, gu_alpha, gu_e, gu_line, gu_part, gu_tag, gdn_oc_take, gdn_oc_ok, gdn_act,
+                       go_v, go_tag, go_line, go_data};
+  end
+
   // lanes (behind LANE_PIPE register stages on each side)
   tsr_vu_lanes #(.FRONT_LANES(FRONT_LANES), .EXP_LANES(EXP_LANES), .BACK_LANES(BACK_LANES), .PIPE(LANE_PIPE), .HAS_LOCAL(LOCAL_INTERMEDIATES || LOCAL_SCALE)) u_lanes (
-    .clk, .rst_n, .l_v, .l_uop, .l_a, .l_b, .l_c1, .l_c2, .l_coeff, .l_neg, .l_lv, .l_fresh, .l_pa, .l_ctx, .bank_angle,
-    .back_valid(d_v && d_back), .dr_addr, .dr_sel, .dr_empty, .dr_mx, .dr_data, .dr_l1, .lane_y, .local_req(bank_req), .local_rsp(bank_rsp)
+    .clk, .rst_n, .l_v(m_v), .l_uop(m_uop), .l_a(m_a), .l_b(m_b), .l_c1(m_c1), .l_c2(m_c2), .l_coeff(m_coeff), .l_neg(m_neg),
+    .l_lv(m_lv), .l_fresh(m_fresh), .l_pa(m_pa), .l_ctx(m_ctx), .bank_angle,
+    .back_valid(m_dv && m_dback), .dr_addr, .dr_sel, .dr_empty, .dr_mx, .dr_data, .dr_l1, .lane_y, .local_req(bank_req), .local_rsp(bank_rsp)
   );
 
-  // write side
+  // write side: the TOPK and the GDN o lines share the result port
+  logic t_v_w, t_tag_w;
+  logic [TSR_VU_LW-1:0]     t_line_w;
+  logic [TSR_LINE_BITS-1:0] t_data_w;
+  assign t_v_w    = tk_v | go_v;
+  assign t_tag_w  = go_v ? go_tag : tk_tag;
+  assign t_line_w = go_v ? go_line : tk_line;
+  assign t_data_w = go_v ? go_data : tk_data;
+  assign tk_ready = t_ready_w;
   tsr_vu_wr #(.SPM_BYTES(SPM_BYTES), .OFD(OFD), .LMAW(LMAW), .LANE_X(LANE_X)) u_wr (
-    .clk, .rst_n, .d_v, .d_back, .d_desc, .lane_y,
-    .oc_take(slot_take ? slot_oc : 2'd0), .oc_free, .rc_take(slot_take && slot_rc), .rc_free,
+    .clk, .rst_n, .d_v(m_dv), .d_back(m_dback), .d_desc(m_desc), .lane_y,
+    .oc_take(5'(slot_take ? slot_oc : 2'd0) + gdn_oc_take), .oc_free, .rc_take(slot_take && slot_rc), .rc_free,
     .r_v, .r_tag, .r_line, .r_data, .r_be,
-    .t_v(tk_v), .t_ready(tk_ready), .t_tag(tk_tag), .t_line(tk_line), .t_data(tk_data),
+    .t_v(t_v_w), .t_ready(t_ready_w), .t_tag(t_tag_w), .t_line(t_line_w), .t_data(t_data_w),
     .lm_we, .lm_wa, .lm_wd, .s_we, .s_wi, .s_wd, .s_wtag,
     .wr_valid, .wr_ready, .wr_line, .wr_data, .wr_be, .ev_w, .ev_line, .wr_wait, .idle(wr_idle)
   );
@@ -778,7 +942,7 @@ module tsr_vu
       perf_spm_wait <= wt_c;
       perf_hazard   <= hz_c;
       perf_line     <= ev_line;
-      progress      <= done || slot_take || ev_line || (|(rd_req_valid & rd_req_ready)) || d_v || (|local_rsp[0].valid) || (|local_rsp[1].valid);
+      progress      <= done || slot_take || ev_line || (|(rd_req_valid & rd_req_ready)) || m_dv || gdn_act || (|local_rsp[0].valid) || (|local_rsp[1].valid);
     end
     dbg_held  <= 2'(ov_q[0]) + 2'(ov_q[1]);
     dbg_w0    <= ow_q[old_q][0];

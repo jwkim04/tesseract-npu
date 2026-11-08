@@ -23,6 +23,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
   optional per-expert output scale. The image grows by about 5.4 KiB of ITCM. No RTL change.
 - Added the Gated DeltaNet kinds SOFTPLUS (0x2D), SSM_CONV (0x2E) and GATED_DELTA_NET (0x2F), each at numerics
   revision 1, composed from existing VU operations and the DMA: no new RTL operation. They need the VU (CAPS bit 0).
+- GATED_DELTA_NET r2 (SW-78): with `CAPS` bit 8 (the VU's fused GDN op, VU §7.12) and S_v of 64 or more, each head and token runs
+  one `GDN` op instead of the 13 VU operations. The dot products become exact block fixed-point sums rounded once, α is folded
+  into k, and the output comes from the old state and κ = k · q, so the output bits change on a device with the bit. A device
+  without it, and every record with S_v below 64, produces revision 1's bits (the composed row of `kind_revs.txt` keeps
+  digest `b040cc2f4da8c0ca`). The record and the planner do not change. The `sim` transport has `TSR_SIM_GDN=0|1` to clear or set
+  `CAPS` bit 8 (`TSR_SIM_CARD=k4full`, the card image of 2026-11-09, has no bit 8). The simulator's cycle count of the GDN op follows the configured
+  front lanes and is fitted to the RTL unit (`tb/vu/test_vu_timing.py` `vu_gdn_op`). The kind table signature is now 0x2381. The image takes 85,504 B of ITCM.
+- The ggml-tesseract backend puts a GATED_DELTA_NET on its recurrent-state cache cell when the ids of the state gather say that every
+  sequence keeps its cell (SW-82): the record reads the cell and writes the new state back into it, and the `GET_ROWS` gather and the state
+  `CPY` of the pinned graph are absorbed. One pass over the state instead of three. No record, firmware or ABI change; the results are
+  bit-identical. A plan that depends on the ids is checked again at every reuse. `TSR_GDN_CELL=0` turns it off.
 - UNARY accepts func 5, SIGMOID (VOP SIGMOID). The kind's revision stays 1: no existing record changes.
 - The ggml-tesseract backend lowers the Gated DeltaNet layer graph of the pinned llama.cpp (`qwen35`): SOFTPLUS, SIGMOID and SILU
   on gate tensors, `GATED_DELTA_NET`, the `CONCAT` / `SSM_CONV` / state `CPY` group (two window `CPY` records and one
@@ -30,7 +41,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
   and the recurrent-state caches as device windows. The conv taps are stored as tap rows at weight upload. Whole decode
   tokens of Qwen3.8 2B run in one launch. No llama.cpp patch.
 - Raised the ITCM budget of the production firmware image from 80 KiB to 96 KiB (SW-75, amends SW-38). The image with the MoE and the
-  Gated DeltaNet kinds together takes 84,056 B; each set alone fit the old budget. The kind table has 21 kinds (signature 0x804f).
+  Gated DeltaNet kinds together takes 84,056 B (85,504 B with the fused GDN path of SW-78); each set alone fit the old budget. The kind table has 21 kinds
+  (signature 0x804f with GATED_DELTA_NET at revision 1, 0x2381 at revision 2).
 - `TSR_DUMP_RE` / `TSR_DUMP_DIR` dump device values of matching nodes; `TSR_STATS` prints the units' busy cycles.
 - klcheck writes the four M-RoPE position streams in its embedding path (the embd and floor runs of Qwen3.5 / 3.8 were not
   bit-identical to the token path before).

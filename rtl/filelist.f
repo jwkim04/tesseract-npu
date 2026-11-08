@@ -19,6 +19,7 @@ tech/generic/tsr_mac_lane.sv
 core/tsr_fp_mul.sv
 core/tsr_fp_div.sv
 core/tsr_fp_add.sv
+core/tsr_fp_add_dsp.sv
 core/tsr_spm.sv
 // the single-port SPM client adapter and the RISC-V SPM bridge (CC §10.2, §10.5)
 core/tsr_spm_cport.sv
@@ -60,6 +61,16 @@ core/tsr_vu_red.sv
 core/tsr_vu_angle.sv
 core/tsr_vu_topk.sv
 core/tsr_vu.sv
+// the fused Gated DeltaNet state update unit (VU §7.12): a stream-interface unit, not instantiated by tsr_vu
+// or the core; its tests are tb/gdn
+core/tsr_vu_gdn_ram.sv
+core/tsr_vu_gdn_fx2f.sv
+core/tsr_vu_gdn_dlane.sv
+core/tsr_vu_gdn_mac.sv
+core/tsr_vu_gdn_dot.sv
+core/tsr_vu_gdn_upd.sv
+core/tsr_vu_gdn_coef.sv
+core/tsr_vu_gdn.sv
 core/tsr_csr.sv
 // the dispatch checker and the issue path (CC §8-§9; tsr_issue instantiates tsr_chk)
 core/tsr_chk.sv

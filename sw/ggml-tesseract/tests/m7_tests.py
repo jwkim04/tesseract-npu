@@ -65,6 +65,8 @@ RE_INPUT = re.compile(r"\[(.*?) \(\s*[^)]*\)\]")
 #   "node #%3d (%10.10s): %20.20s (%5.5s) [%5.5s %8.8s] use=%d,c=%d:"
 RE_NODE = re.compile(r"^node #\s*(\d+) \((.{10})\): (.{20}) \((.{5})\) \[(.{5}) (.{8})\] use=(\d+),c=(\d)")
 RE_STATS = re.compile(r"^\[tesseract\] stats: graph_compute (\d+) calls.*?launches (\d+) .*?([\d.]+) per scheduler pass")
+# SW-82: GATED_DELTA_NET records that ran on their state cache cell (no gather, no copy) of all those launched
+RE_GDN_CELLS = re.compile(r"^\[tesseract\] stats: GATED_DELTA_NET records on their state cache cell.*?: (\d+) of (\d+)")
 
 
 class Listing:
@@ -124,6 +126,7 @@ def parse_log(text: str, launch_re: re.Pattern) -> dict:
     launches_outside = 0
     launch_lines = 0
     stats = None
+    gdn_cells = None
     for raw in text.splitlines():
         line = ANSI.sub("", raw)
         m = RE_BEGIN.match(line)
@@ -160,12 +163,15 @@ def parse_log(text: str, launch_re: re.Pattern) -> dict:
         m = RE_STATS.match(line)
         if m:
             stats = {"graph_compute": int(m.group(1)), "launches": int(m.group(2)), "per_pass": float(m.group(3))}
+        m = RE_GDN_CELLS.match(line)
+        if m:
+            gdn_cells = (int(m.group(1)), int(m.group(2)))
     return {"decodes": decodes, "outside": outside_listings, "launches_outside": launches_outside,
-            "launch_lines": launch_lines, "stats": stats}
+            "launch_lines": launch_lines, "stats": stats, "gdn_cells": gdn_cells}
 
 
 def check_graph_log(p: dict, ub: int, min_decodes: int, prefill: str = "ubatch",
-                    min_prefill_tokens: int = 0) -> tuple[list[str], dict]:
+                    min_prefill_tokens: int = 0, gdn_cells: str = "") -> tuple[list[str], dict]:
     fails: list[str] = []
     decodes: list[Decode] = p["decodes"]
     tok = [d for d in decodes if d.n == 1]
@@ -220,6 +226,16 @@ def check_graph_log(p: dict, ub: int, min_decodes: int, prefill: str = "ubatch",
         d, l, why = bad_listings[0]
         fails.append(f"{len(bad_listings)}/{len(tok_listings)} single-token decode graphs do not have exactly one Tesseract "
                      f"split; first: decode {d.idx}: {'; '.join(why)}\n{l.describe()}")
+    if gdn_cells:
+        # SW-82: with the pinned graph every sequence keeps its cache cell, so every GATED_DELTA_NET record of the run reads
+        # and writes its cell ("all"); with TSR_GDN_CELL=0 none does ("none")
+        gc = p["gdn_cells"]
+        if gc is None or gc[1] == 0:
+            fails.append("no GATED_DELTA_NET records in the TSR_STATS summary (the model has none, or the line is missing)")
+        elif gdn_cells == "all" and gc[0] != gc[1]:
+            fails.append(f"{gc[0]} of {gc[1]} GATED_DELTA_NET records ran on their state cache cell, want all")
+        elif gdn_cells == "none" and gc[0] != 0:
+            fails.append(f"{gc[0]} of {gc[1]} GATED_DELTA_NET records ran on their state cache cell with TSR_GDN_CELL=0")
     st = p["stats"]
     if st is None:
         print("m7_tests: note: no TSR_STATS summary line in the log")
@@ -267,7 +283,7 @@ def cmd_graph(a: argparse.Namespace) -> int:
             print(line)
 
     fails, s = check_graph_log(parse_log(text, re.compile(a.launch_re)), a.ub, a.min_decodes, a.prefill,
-                               a.min_prefill_tokens)
+                               a.min_prefill_tokens, a.gdn_cells)
     print(f"m7_tests: decodes: {s['token_decodes']} single-token (launches per decode: {s['token_launches']}), "
           f"{s['prefill_decodes']} prefill [(tokens, ubatches, launches)]: {s['prefill']}")
     print(f"m7_tests: scheduler listings inside decodes: {s['listings_in_decodes']} "
@@ -385,6 +401,8 @@ def main() -> int:
     g.add_argument("--floor-seeds", type=int, default=3, help="floor runs with the seeds 1 to N (klcheck all's default)")
     g.add_argument("--min-top1", type=float, default=0.8)
     g.add_argument("--launch-re", default=r"^\[tesseract\] launch #\d+")
+    g.add_argument("--gdn-cells", choices=("all", "none"), default="",
+                   help="SW-82: require every (all) or no (none) GATED_DELTA_NET record to run on its state cache cell")
     g.add_argument("--join-prompts", type=int, default=0, metavar="N",
                    help="generate from one prompt: the --prompts file's first N prompts joined (with --n-prompts 1)")
     g.add_argument("--prefill", choices=("ubatch", "any"), default="ubatch",

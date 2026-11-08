@@ -3,7 +3,9 @@
 # subsystem's, the Xilinx technology, XRT platform and M0 bandwidth-kernel lint scripts), then every
 # testbench under tb/:
 #   block benches   common, dma, fp, qact, spm (2R2W banks, client adapter, RISC-V bridge, the
-#                   six-client system bench); M3: mvmfront, mvmback, mvm
+#                   six-client system bench); M3: mvmfront, mvmback, mvm; gdn (the fused GDN state
+#                   update unit of VU §7.12 against tsr_ref_gdn: fx2f, dot array, update array, setup
+#                   engine, the unit at 8 and 16 lanes)
 #   issue path      chk (tsr_chk against the simulator's checker), issue (tsr_issue: random programs
 #                   and the trace sets, against the simulator's queue model), csr (tsr_csr + tsr_issue
 #                   against the simulator's host port and control window)

@@ -6,7 +6,7 @@ backend="tesseract")`: the weight matmuls go to the device, everything else stay
 `sw/torch`, whose extension `_tesseract_rt` binds this API). It runs on `tsr_transport`, so
 `TSR_DEVICE=sim | mock | vkernel | xrt` select the device as for the ggml backend (`sim` and `mock`
 run on the simulator; `vkernel` is not available until P5.3; `xrt` runs the K4 image on the U200 card with the
-control core, firmware kind table 0x804f).
+control core, firmware kind table 0x2381; 0x804f before the fused GDN path of SW-78).
 
 A `linear` call is one launch of the firmware's `graph` kernel per IO tile: an op list with one
 MUL_MAT record per weight part (K parts as further records with `ACC_DST`), cached by content in the

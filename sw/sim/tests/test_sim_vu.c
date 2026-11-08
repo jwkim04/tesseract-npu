@@ -1,5 +1,5 @@
-// test_sim_vu.c — the simulator's VU unit (P1.4, sw/sim/tsr_vu.c): VOP, RED, ROPE, TOPK, SOP and
-// DQROW pushed as encoded ops through the test hooks (tsr_sim_op, and tsr_sim_push on the queue
+// test_sim_vu.c — the simulator's VU unit (P1.4, sw/sim/tsr_vu.c): VOP, RED, ROPE, TOPK, SOP,
+// DQROW and GDN pushed as encoded ops through the test hooks (tsr_sim_op, and tsr_sim_push on the queue
 // path), each compared bit for bit with direct tsr_ref_vu calls applied to a copy of the SPM and
 // of the s bank (whole SPM images: results, tails, strides, in place, and every untouched line).
 // Also: every check code each op can raise with its ERR_INFO and the check order (VU §5.9, EX
@@ -12,10 +12,11 @@
 #include "tsr_sim_int.h"
 #include "tsr_ref_vu.h"
 #include "tsr_ref_math.h"
+#include "tsr_ref_gdn.h"
 
 #define SPM_BYTES (1u << 20)                  // 16,384 lines: whole-image comparisons stay cheap
 #define SPM_LINES (SPM_BYTES / 64u)
-#define CAPS_ALL  (TSR_CAPS_VU | TSR_CAPS_TOPK | TSR_CAPS_DQROW)
+#define CAPS_ALL  (TSR_CAPS_VU | TSR_CAPS_TOPK | TSR_CAPS_DQROW | TSR_CAPS_GDN)
 #define ALL_WORDS 0xFF00u                     // ISSUE_PUSH: send all eight words
 
 static const uint32_t F_ONE = 0x3F800000u;
@@ -116,6 +117,23 @@ static tsr_insn e_dqrow(uint32_t fmt, uint32_t d, uint32_t src, uint32_t K, uint
     TSR_INSN_SET(i.w, TSR_DQROW_ROWS, rows);
     TSR_INSN_SET(i.w, TSR_DQROW_SRC_STRIDE, ss);
     TSR_INSN_SET(i.w, TSR_DQROW_D_STRIDE, ds);
+    return i;
+}
+
+static tsr_insn e_gdn(uint32_t sa, uint32_t sb, uint32_t d, uint32_t a, uint32_t k, uint32_t q, uint32_t v,
+                      uint32_t o, uint32_t m, uint32_t rows) {
+    tsr_insn i = {{0}};
+    i.w[0] = TSR_OP_GDN;
+    TSR_INSN_SET(i.w, TSR_GDN_SA, sa);
+    TSR_INSN_SET(i.w, TSR_GDN_SB, sb);
+    TSR_INSN_SET(i.w, TSR_GDN_D, d);
+    TSR_INSN_SET(i.w, TSR_GDN_A, a);
+    TSR_INSN_SET(i.w, TSR_GDN_K, k);
+    TSR_INSN_SET(i.w, TSR_GDN_Q, q);
+    TSR_INSN_SET(i.w, TSR_GDN_V, v);
+    TSR_INSN_SET(i.w, TSR_GDN_O, o);
+    TSR_INSN_SET(i.w, TSR_GDN_M, m);
+    TSR_INSN_SET(i.w, TSR_GDN_ROWS, rows);
     return i;
 }
 
@@ -674,7 +692,7 @@ static void test_checks(void) {
     // VMASK and the reserved VU opcodes: refused by the issue path (ILLEGAL_OP), with any words.
     tsr_insn vm = {{ TSR_OP_VMASK, 10, 0, 0, 0, 16, 1u | (1u << 16), 1 }};
     expect_err(&t, vm, IL, 0, "VMASK (M9)");
-    static const uint8_t rsvd[] = { 0x13, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47 };
+    static const uint8_t rsvd[] = { 0x13, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47 };
     for (size_t k = 0; k < sizeof rsvd; ++k) {
         tsr_insn r0 = {{ rsvd[k], 0, 0, 0, 0, 0, 0, 0 }};
         char what[40];
@@ -712,6 +730,131 @@ static void test_checks(void) {
         CHECK(tsr_sim_csr_read(s, TSR_CSR_CAPS) == CAPS_ALL, "CAPS register = the config");
         tsr_sim_destroy(s);
     }
+}
+
+
+// ---------------------------------------------------------------------------
+// GDN (VU §7.12): a head of rows x m against tsr_ref_gdn applied to a copy of the SPM, out of place and in
+// place, with the specials of rand_word in the tile (Inf, NaN, subnormals, huge and tiny exponents) and with
+// finite model-like data, the tail words of o written 0, every untouched line unchanged. d or o on the
+// vectors changes nothing: the vectors are read before the first write.
+// ---------------------------------------------------------------------------
+static void test_gdn(void) {
+    twin t;
+    tw_init(&t, CAPS_ALL, 0x5EED00A1u);
+    static const uint32_t ms[] = { 64, 128, 256 }, rowsv[] = { 1, 7, 16, 17, 100 };
+    const uint32_t A = 1000, D = 5000, K = 200, Q = 300, V = 400, O = 600;
+    for (size_t mi = 0; mi < 3; ++mi) {
+        for (size_t ri = 0; ri < 5; ++ri) {
+            for (int mode = 0; mode < 4; ++mode) {
+                const uint32_t m = ms[mi], rows = rowsv[ri], nl = m / 16u, lines = rows * nl;
+                const int inplace = (mode & 1) != 0, tame = (mode & 2) != 0;
+                tw_rand(&t, A, lines);
+                tw_rand(&t, D, lines);
+                tw_rand(&t, K, nl);
+                tw_rand(&t, Q, nl);
+                tw_rand(&t, V, tsr_ref_vu_lines(rows));
+                tw_rand(&t, O, tsr_ref_vu_lines(rows));
+                if (tame) {                                       // finite, comparable magnitudes
+                    for (uint32_t i = 0; i < 16u * lines; ++i) tw_put(&t, A + i / 16u, i % 16u, rand_norm(&t.r, 1.0));
+                    for (uint32_t i = 0; i < m; ++i) {
+                        tw_put(&t, K + i / 16u, i % 16u, rand_norm(&t.r, 0.2));
+                        tw_put(&t, Q + i / 16u, i % 16u, rand_norm(&t.r, 0.2));
+                    }
+                    for (uint32_t i = 0; i < rows; ++i) tw_put(&t, V + i / 16u, i % 16u, rand_norm(&t.r, 1.0));
+                }
+                const uint32_t alpha = tame ? f2u(0.97f) : rand_word(&t.r), beta = tame ? f2u(0.4f) : rand_word(&t.r);
+                tw_movi(&t, 3, alpha);
+                tw_movi(&t, 9, beta);
+                const uint32_t d = inplace ? A : D;
+                char what[96];
+                snprintf(what, sizeof what, "GDN m %u rows %u %s%s", m, rows, inplace ? "in place" : "to D", tame ? " tame" : "");
+                if (tw_op(&t, e_gdn(3, 9, d, A, K, Q, V, O, m, rows), what) != 0) continue;
+                uint32_t o[1040];
+                tsr_ref_gdn(m, rows, alpha, beta, W(t.exp, K), W(t.exp, Q), W(t.exp, V), W(t.exp, A), W(t.exp, d), o);
+                memcpy(W(t.exp, O), o, 64u * tsr_ref_vu_lines(rows));
+                tw_same(&t, what);
+            }
+        }
+    }
+    {
+        const uint32_t m = 64, rows = 20;                         // d on k, o on v: the vectors are read first
+        tw_rand(&t, A, rows * 4u);
+        tw_rand(&t, K, 4);
+        tw_rand(&t, Q, 4);
+        tw_rand(&t, V, 2);
+        const uint32_t alpha = f2u(0.9f), beta = f2u(0.5f);
+        tw_movi(&t, 1, alpha);
+        tw_movi(&t, 2, beta);
+        uint32_t k[64], q[64], v[32], o[32], dd[1280];
+        memcpy(k, W(t.exp, K), sizeof k);
+        memcpy(q, W(t.exp, Q), sizeof q);
+        memcpy(v, W(t.exp, V), 4u * rows);
+        tw_op(&t, e_gdn(1, 2, 1100, A, K, Q, V, V, m, rows), "GDN o on v");
+        tsr_ref_gdn(m, rows, alpha, beta, k, q, v, W(t.exp, A), dd, o);
+        memcpy(W(t.exp, 1100), dd, 4u * rows * m);
+        memcpy(W(t.exp, V), o, 64u * 2u);
+        tw_same(&t, "GDN o on v");
+    }
+    tw_free(&t);
+}
+
+static void test_gdn_checks(void) {
+    twin t;
+    tw_init(&t, CAPS_ALL, 0x5EED00A2u);
+    const uint32_t IL = TSR_ERR_ILLEGAL_OP, OP = TSR_ERR_OPERAND, SR = TSR_ERR_SPM_RANGE, N = SPM_LINES;
+    // m 128 (8 lines per row), 20 rows: the tile is 160 lines, v and o two lines
+    const tsr_insn g = e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 128, 20);
+    expect_ok(&t, g, "GDN base");
+    expect_ok(&t, e_gdn(1, 2, 1000, 1000, 200, 300, 400, 500, 128, 20), "GDN in place");
+    expect_ok(&t, e_gdn(1, 1, 3000, 1000, 200, 300, 400, 500, 128, 20), "GDN alpha and beta in one register");
+    expect_ok(&t, e_gdn(1, 2, 3000, 1000, 200, 200, 400, 500, 64, 1), "GDN k and q equal");
+    expect_ok(&t, e_gdn(1, 2, 9000, 1000, 200, 300, 400, 500, 64, 1024), "GDN m 64, rows 1,024");
+    expect_ok(&t, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 256, 64), "GDN m 256, rows 64");
+    expect_ok(&t, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 64, 1), "GDN m 64");
+    expect_err(&t, with(g, 0, 1u << 12), IL, 0, "GDN flags");
+    expect_err(&t, with(g, 0, 1u << 8), IL, 0, "GDN sub");
+    expect_err(&t, with(g, 0, 1u << 24), IL, 0, "GDN x16[8]");
+    expect_err(&t, with(g, 0, 1u << 31), IL, 0, "GDN x16[15]");
+    for (unsigned w = 1; w <= 6; ++w) {
+        char what[32];
+        snprintf(what, sizeof what, "GDN w%u[24]", w);
+        expect_err(&t, with(g, w, 1u << 24), IL, 0, what);
+    }
+    expect_err(&t, with(e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 48, 20), 1, 1u << 24), IL, 0, "GDN ILLEGAL_OP before OPERAND");
+    expect_err(&t, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 0, 20), OP, 0, "GDN m 0");
+    expect_err(&t, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 32, 20), OP, 32, "GDN m 32 (below the 64 of every build)");
+    expect_err(&t, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 48, 20), OP, 48, "GDN m 48");
+    expect_err(&t, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 72, 20), OP, 72, "GDN m 72 (not a multiple of 16)");
+    expect_err(&t, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 272, 20), OP, 272, "GDN m 272");
+    expect_err(&t, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 0xFFF0, 20), OP, 0xFFF0, "GDN m 65,520");
+    expect_err(&t, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 72, 0), OP, 72, "GDN m before rows");
+    expect_err(&t, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 128, 0), OP, 0, "GDN rows 0");
+    expect_err(&t, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 128, 1025), OP, 1025, "GDN rows 1,025");
+    expect_err(&t, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 128, 0xFFFF), OP, 0xFFFF, "GDN rows 65,535");
+    expect_err(&t, e_gdn(1, 2, 1040, 1000, 200, 300, 400, 500, 128, 20), OP, 1040, "GDN d overlaps a (shifted)");
+    expect_err(&t, e_gdn(1, 2, 900, 1000, 200, 300, 400, 500, 128, 20), OP, 900, "GDN d overlaps a (below)");
+    expect_err(&t, e_gdn(1, 2, 1159, 1000, 200, 300, 400, 500, 128, 20), OP, 1159, "GDN d overlaps a by one line");
+    expect_ok(&t, e_gdn(1, 2, 1160, 1000, 200, 300, 400, 500, 128, 20), "GDN d right after a");
+    expect_ok(&t, e_gdn(1, 2, 840, 1000, 200, 300, 400, 500, 128, 20), "GDN d right before a");
+    expect_err(&t, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 3000, 128, 20), OP, 3000, "GDN o on d");
+    expect_err(&t, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 1159, 128, 20), OP, 1159, "GDN o in a");
+    expect_err(&t, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 3159, 128, 20), OP, 3159, "GDN o in d");
+    expect_ok(&t, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 3160, 128, 20), "GDN o right after d");
+    expect_ok(&t, e_gdn(1, 2, 3000, 1000, 200, 300, 200, 200, 128, 20), "GDN o and v on k");
+    expect_err(&t, e_gdn(1, 2, N - 159, 1000, 200, 300, 400, 500, 128, 20), SR, N - 159, "GDN d range");
+    expect_ok(&t, e_gdn(1, 2, N - 160, 1000, 200, 300, 400, 500, 128, 20), "GDN d ends at the limit");
+    expect_err(&t, e_gdn(1, 2, 3000, N - 159, 200, 300, 400, 500, 128, 20), SR, N - 159, "GDN a range (d before a)");
+    expect_err(&t, e_gdn(1, 2, N - 159, N - 159, 200, 300, 400, 500, 128, 20), SR, N - 159, "GDN in place, range");
+    expect_err(&t, e_gdn(1, 2, 3000, 1000, N - 7, 300, 400, 500, 128, 20), SR, N - 7, "GDN k range");
+    expect_ok(&t, e_gdn(1, 2, 3000, 1000, N - 8, 300, 400, 500, 128, 20), "GDN k ends at the limit");
+    expect_err(&t, e_gdn(1, 2, 3000, 1000, 200, N - 7, 400, 500, 128, 20), SR, N - 7, "GDN q range");
+    expect_err(&t, e_gdn(1, 2, 3000, 1000, 200, 300, N - 1, 500, 128, 20), SR, N - 1, "GDN v range (20 rows: 2 lines)");
+    expect_ok(&t, e_gdn(1, 2, 3000, 1000, 200, 300, N - 1, 500, 128, 16), "GDN v of 16 rows: one line");
+    expect_err(&t, e_gdn(1, 2, 3000, 1000, 200, 300, 400, N - 1, 128, 20), SR, N - 1, "GDN o range");
+    expect_err(&t, e_gdn(1, 2, N - 159, 1000, 200, 300, N, 500, 128, 20), SR, N - 159, "GDN d before v in field order");
+    expect_err(&t, e_gdn(1, 2, N, 1000, 200, 300, 400, 500, 128, 20), SR, N, "GDN d at N");
+    tw_free(&t);
 }
 
 // The queue path records the checker's codes (EX §8.2): ERR_CODE / ERR_INFO / ERR_W0 of unit 3,
@@ -937,6 +1080,33 @@ static void test_cycles_rtl(void) {
     tsr_sim_destroy(s);
 }
 
+static void test_gdn_misc(void) {
+    tsr_sim * s = mk_sim(CAPS_ALL, 8);
+    tsr_extents x;
+    uint32_t info;
+    const uint8_t SP = TSR_EXT_SPM, SG = TSR_EXT_SREG, R = TSR_EXT_READ, Wr = TSR_EXT_WRITE;
+    // extents: d W, a R, k R, o W, then the s registers; q and v are not listed (four SPM slots)
+    check_only(s, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 128, 20), &info, &x);
+    CHECK(x.n == 6 && ext_is(&x, 0, SP, Wr, 3000, 3160) && ext_is(&x, 1, SP, R, 1000, 1160) && ext_is(&x, 2, SP, R, 200, 208) &&
+          ext_is(&x, 3, SP, Wr, 500, 502) && ext_is(&x, 4, SG, R, 1, 2) && ext_is(&x, 5, SG, R, 2, 3), "GDN extents");
+    check_only(s, e_gdn(4, 4, 1000, 1000, 200, 300, 400, 500, 64, 1), &info, &x);
+    CHECK(x.n == 5 && ext_is(&x, 0, SP, Wr, 1000, 1004) && ext_is(&x, 1, SP, R, 1000, 1004) && ext_is(&x, 4, SG, R, 4, 5) &&
+          x.overflow == 0, "GDN in place, one s register");
+    // The RTL unit's cycles of a dependent op (tb/vu test_vu_timing.py vu_gdn_op, SW-78): 2,913.7 for 128 x 128 at the K4 lanes,
+    // 1,917 at the U200 lanes (the model: 1,898, within 1.5 %), 5,554 for m 256 rows 128 and 989 for m 128 rows 16 at the K4 lanes.
+    CHECK(cyc(s, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 128, 128)) == 1032u + 168u + 576u + 122u, "GDN cycles, U200 lanes");
+    tsr_sim_destroy(s);
+    s = mk_sim_vu("k4");
+    CHECK(cyc(s, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 128, 128)) == 2914u, "GDN cycles 128 x 128, K4 lanes");
+    CHECK(cyc(s, e_gdn(1, 2, 8000, 1000, 200, 300, 400, 500, 256, 128)) == 5554u, "GDN cycles m 256 rows 128, K4 lanes");
+    CHECK(cyc(s, e_gdn(1, 2, 8000, 1000, 200, 300, 400, 500, 128, 16)) == 989u, "GDN cycles m 128 rows 16, K4 lanes");
+    CHECK(cyc(s, e_gdn(1, 2, 8000, 1000, 200, 300, 400, 500, 128, 256)) == 5114u, "GDN cycles m 128 rows 256, K4 lanes");
+    tsr_sim_destroy(s);
+    s = mk_sim(TSR_CAPS_VU | TSR_CAPS_TOPK | TSR_CAPS_DQROW, 8);
+    CHECK(tsr_sim_op(s, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 128, 20).w, &info) == TSR_ERR_ILLEGAL_OP, "GDN without CAPS.GDN");
+    tsr_sim_destroy(s);
+}
+
 static void make_active(tsr_sim * s) {
     tsr_sim_csr_write(s, TSR_CSR_LQ_PUSH, 0);
     uint32_t v = 0;
@@ -1109,6 +1279,8 @@ static void test_softmax(void) {
 }
 
 int main(void) {
+    test_gdn();
+    test_gdn_checks();
     test_vop();
     test_red();
     test_rope();
@@ -1119,6 +1291,7 @@ int main(void) {
     test_queue_records();
     test_extents();
     test_cycles_rtl();
+    test_gdn_misc();
     test_perf();
     test_rmsnorm();
     test_softmax();

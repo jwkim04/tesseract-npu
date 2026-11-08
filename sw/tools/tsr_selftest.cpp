@@ -43,12 +43,12 @@
 //   4. PING (EX §4.11): one round trip with the ARG0 echo; N sequential round trips (median / p99
 //      host wall time, the device's DURATION); N pipelined launches (LQ_DEPTH outstanding): rate.
 //      Measured values, not gated (EX §4.11's targets are estimates for the card).
-//   5. The `selftest` kernel (SW §7.6): ids 1-10 (id 2 twice) and five misuses, each run on the
+//   5. The `selftest` kernel (SW §7.6): ids 1-11 (id 2 twice; id 11, the GDN op, needs CAPS bit 8) and five misuses, each run on the
 //      device and on the shadow simulator with the same image, inputs and arguments; compared:
 //      the answer (r0-r6, tickets and push indices relative), every output byte (the data area and
 //      the ids' other output regions), the per-unit completion counts, the kernel events and the
 //      log records; plus RET (the device-side checks of ids 1, 7, 8, 10) and references computed
-//      here for ids 1, 2, 3, 7, 8 and 9 (copies, QACT, MVM, the recovery round trip, the SPM window
+//      here for ids 1, 2, 3, 7, 8, 9 and 11 (copies, QACT, MVM, the recovery round trip, the SPM window
 //      pattern, the id 9 log strings from the ELF and its event).
 //   6. --traces: trace replays through the device (tsr_devrun.h): answer = the trace's DONE, every
 //      expect region, and device = shadow; traces made for another configuration are skipped.
@@ -67,6 +67,7 @@
 #include "tsr_kdev.h"
 #include "tsr_logdec.h"
 #include "tsr_ref.h"
+#include "tsr_ref_gdn.h"
 #include "tsr_trace.h"
 #include "tsr_dbg_lib.hpp"   // the trace writer (sw/tools/dbg)
 #include "tsr_transport.h"
@@ -490,7 +491,7 @@ struct kcase {
     uint32_t    want_status = TSR_LCQ_R0_STATUS_OK;
     std::vector<region> in;       // written to both targets (the area itself is in[0])
     std::vector<outreg> out;      // compared device vs shadow after the launch (besides the area)
-    // reference checks on the device's DRAM and run (ids 1, 2, 3, 7, 8, 9)
+    // reference checks on the device's DRAM and run (ids 1, 2, 3, 7, 8, 9, 11)
     std::function<void(tsr_tgt *, const tsr_tgt_run &)> ref;
 };
 
@@ -996,13 +997,62 @@ std::vector<kcase> make_cases(ctx & x, const std::vector<uint32_t> & ids) {
         c.in.insert(c.in.end(), w.begin(), w.end());
         cs.push_back(std::move(c));
     }
+    // 11 GDN: four heads of the fused Gated DeltaNet state update (needs CAPS.GDN; shadow and tsr_ref_gdn)
+    if (want(11)) {
+        const uint32_t m = 128, rows = 20, H = 4;
+        const tsr_st11_layout L = tsr_st11(m, rows, H);
+        kcase c;
+        c.name = strf("id 11 GDN, %u heads of %u x %u", H, rows, m);
+        c.id = 11;
+        c.area = AREA0 + 11 * AREA_STEP;
+        c.lines = L.end;
+        if (!(x.caps & TSR_CAPS_GDN) || !(x.caps & TSR_CAPS_VU)) {
+            c.want_ret = (int32_t) TSR_ST_RET_CAPS;
+            c.want_status = TSR_LCQ_R0_STATUS_KERNEL_ERR;
+        }
+        const uint32_t al[4] = { f2u(0.95f), f2u(0.5f), f2u(0.99f), f2u(1.0f) }, be[4] = { f2u(0.5f), f2u(0.25f), f2u(0.9f), f2u(1.0f) };
+        std::vector<uint32_t> p = { m, rows, H };
+        for (uint32_t h = 0; h < H; ++h) {
+            p.push_back(al[h]);
+            p.push_back(be[h]);
+        }
+        std::vector<uint8_t> a = area_with_params(11, L.end, p);
+        rng r{ 0x6D11 };
+        for (uint32_t h = 0; h < H; ++h) {
+            rand_f32(r, a.data() + (size_t) tsr_st11_k(&L, h) * 64u, m, 0.25);
+            rand_f32(r, a.data() + (size_t) tsr_st11_q(&L, h) * 64u, m, 0.25);
+            rand_f32(r, a.data() + (size_t) tsr_st11_v(&L, h) * 64u, rows, 1.0);
+            rand_f32(r, a.data() + (size_t) tsr_st11_s(&L, h) * 64u, rows * m, 0.5);
+        }
+        std::fill(a.begin() + (size_t) L.in_end * 64u, a.end(), (uint8_t) 0x5A);
+        c.in.push_back({ 0, c.area, a });
+        const uint64_t area = c.area;
+        if ((x.caps & TSR_CAPS_GDN) && (x.caps & TSR_CAPS_VU)) c.ref = [=](tsr_tgt * d, const tsr_tgt_run &) {   // else RET CAPS: no outputs
+            const std::vector<uint8_t> got = read_dev(d, 0, area, L.end);
+            std::vector<uint32_t> k(m), q(m), v(rows), S((size_t) rows * m), Sp((size_t) rows * m), o(16u * L.lv);
+            for (uint32_t h = 0; h < H; ++h) {
+                for (uint32_t j = 0; j < m; ++j) {
+                    k[j] = rd(a.data() + (size_t) tsr_st11_k(&L, h) * 64u, j);
+                    q[j] = rd(a.data() + (size_t) tsr_st11_q(&L, h) * 64u, j);
+                }
+                for (uint32_t i = 0; i < rows; ++i) v[i] = rd(a.data() + (size_t) tsr_st11_v(&L, h) * 64u, i);
+                for (size_t i = 0; i < S.size(); ++i) S[i] = rd(a.data() + (size_t) tsr_st11_s(&L, h) * 64u, (uint32_t) i);
+                tsr_ref_gdn(m, rows, al[h], be[h], k.data(), q.data(), v.data(), S.data(), Sp.data(), o.data());
+                cmp_ref(strf("id 11: head %u S' = tsr_ref_gdn", h), got.data() + (size_t) tsr_st11_sp(&L, h) * 64u,
+                        (const uint8_t *) Sp.data(), (size_t) L.tile * 64u);
+                cmp_ref(strf("id 11: head %u o = tsr_ref_gdn", h), got.data() + (size_t) tsr_st11_o(&L, h) * 64u,
+                        (const uint8_t *) o.data(), (size_t) L.lv * 64u);
+            }
+        };
+        cs.push_back(std::move(c));
+    }
     // Misuses: unknown id, wrong magic, an area too small (KERNEL_ERR); a device-side check failing
     // (id 7 with an in-range "bad" beat: RET 1, OK); id 8 with its SPM lines in the argument range.
-    if (want(11)) {
-        const uint64_t area = AREA0 + 11 * AREA_STEP;
+    if (want(12)) {
+        const uint64_t area = AREA0 + 12 * AREA_STEP;
         struct mu { const char * name; uint32_t id, lines; std::vector<uint8_t> a; int32_t ret; uint32_t st; std::vector<region> extra; };
         std::vector<mu> m;
-        m.push_back({ "misuse: unknown id 11", 11, 1, area_with_params(11, 1, {}), (int32_t) TSR_ST_RET_BAD_ID,
+        m.push_back({ "misuse: unknown id 12", 12, 1, area_with_params(12, 1, {}), (int32_t) TSR_ST_RET_BAD_ID,
                       TSR_LCQ_R0_STATUS_KERNEL_ERR, {} });
         m.push_back({ "misuse: parameter line of id 3 for id 2", 2, 100, area_with_params(3, 100, {}), (int32_t) TSR_ST_RET_BAD_PARAMS,
                       TSR_LCQ_R0_STATUS_KERNEL_ERR, {} });

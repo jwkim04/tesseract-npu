@@ -130,6 +130,14 @@ struct tsr_build_env {
     // op sequence use it at a time: its users write it, read it back and are done before the next user starts (SW-76).
     // False when the device has no room for it.
     std::function<bool(uint64_t bytes, tsr_tloc *)> scratch;
+    // Build mode: the values of an I32 graph input as the next launch will see them (the backend reads them from its
+    // buffer). False when they cannot be read. A graph whose plan depends on the values (the recurrent-state gather of a
+    // GATED_DELTA_NET, tsr_gdn_cell) is built only with it, and the backend checks the values again before it reuses
+    // the plan.
+    std::function<bool(const ggml_tensor *, std::vector<int32_t> *)> read_i32;
+    // Whether tsr_build_fusion may put a GATED_DELTA_NET on its state cache cell (tsr_gdn_cell). TSR_GDN_CELL=0 turns it off
+    // (the three passes of the pinned graph: the same results, for a comparison).
+    bool gdn_cell = true;
 };
 
 // Pass 1: nodes that cost nothing on the device.
@@ -168,7 +176,8 @@ void tsr_note_kv_write(const tsr_rec & r, tsr_fanew_map * m);
 // Pass 2 / 6: the record of an M7 node (every op of the SW §9.3 table but MUL_MAT; the no-ops have
 // none). probe: supports_op's question (handles 0, preload offsets 0, the KV shape from kv_probe, no
 // side effects); else the device's words (env.loc / kv_view / fa_mask). fused: the MUL that
-// tsr_build_fusion folded into this RMS_NORM (its weight and its result), else nullptr. False with
+// tsr_build_fusion folded into this RMS_NORM (its weight and its result), or the state CPY of a
+// GATED_DELTA_NET in place (tsr_gdn_cell: its destination is the cell the record reads and writes), else nullptr. False with
 // *why when the node cannot be expressed as a record of its kind.
 bool tsr_lower_m7(const tsr_build_env & env, bool probe, const ggml_tensor * node, const ggml_tensor * fused,
                   tsr_rec * out, std::string * why);
@@ -225,6 +234,23 @@ bool tsr_lower_conv_window(const tsr_build_env & env, bool probe, const ggml_ten
 // (MUL_MAT + ADD or RMS_NORM + MUL); into[k] = i. Pairs need build-mode locations (env.loc).
 // route_of[i] / scale_of[i]: the index into routes / scales of the group headed by node i (SOFT_MAX / MUL_MAT_ID), else -1;
 // into[k] = the head for every absorbed member of a group.
+// The state cell of a GATED_DELTA_NET (SW-82). llama.cpp's build_rs gathers the layer's state rows from the cache by the
+// ids of `rs_s_copy` (GET_ROWS), the recurrence reads that copy and writes a new state into its own result, and a CPY
+// moves the result into the cache cell of the sequence (kv_head + j). When the ids say that every sequence keeps its cell
+// (ids[j] = cell0 + j, the CPY's destination) and nothing else reads the copy or the result's state rows, the gather and the
+// CPY change nothing the graph can see: the record reads the cell and writes the new state back into it (STATE_IN =
+// STATE_OUT = the cell), one pass over the state instead of three. The group is made for the GATED_DELTA_NET node when the
+// graph has the gather and the CPY in the shape above (`gather`, `cpy` >= 0; `ids` the index input, `n` its length,
+// `cell0` the cell of the CPY's first row) and `in_place` when the ids of this launch are the identity; the plan keeps
+// the ids tensor and the decision and is rebuilt when they disagree (tsr_plan_state_holds).
+struct tsr_gdn_cell {
+    int32_t gather = -1, cpy = -1;
+    const ggml_tensor * ids = nullptr;
+    uint32_t n = 0;
+    int32_t cell0 = 0;
+    bool in_place = false;
+};
+
 struct tsr_fusion {
     std::vector<int32_t> with, into, softcap_mid, softcap_tail;
     std::vector<int32_t> route_of, scale_of;
@@ -233,6 +259,8 @@ struct tsr_fusion {
     // SSM_CONV groups (tsr_lower_conv_group): for the SSM_CONV node i, the CONCAT, the state CPY (both earlier in the
     // graph) and the SILU (later) that its record absorbs; -1 for no group (silu: the group without SILU)
     std::vector<int32_t> conv_concat, conv_cpy, conv_silu;
+    // GATED_DELTA_NET nodes with their state gather and state CPY (tsr_gdn_cell): by node index
+    std::vector<tsr_gdn_cell> gdn_cell;
     uint32_t n_pairs = 0;
 };
 tsr_fusion tsr_build_fusion(const tsr_build_env & env, const ggml_cgraph * cg);

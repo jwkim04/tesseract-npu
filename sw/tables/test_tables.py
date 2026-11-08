@@ -42,7 +42,7 @@ ASSIGNED = {
     0x14: ("KVST", "DMA"), 0x18: ("QACT", "QACT"), 0x20: ("MVM", "MVM"), 0x21: ("ATTQK", "MVM"),
     0x22: ("ATTPV", "MVM"), 0x30: ("VOP", "VU"), 0x31: ("RED", "VU"), 0x32: ("ROPE", "VU"),
     0x33: ("TOPK", "VU"), 0x34: ("ASMAX", "VU"), 0x35: ("AMASK", "VU"), 0x36: ("AMERGE", "VU"),
-    0x37: ("ANORM", "VU"), 0x38: ("VMASK", "VU"), 0x40: ("SOP", "VU"), 0x7F: ("FENCE", "SYNC"),
+    0x37: ("ANORM", "VU"), 0x38: ("VMASK", "VU"), 0x39: ("GDN", "VU"), 0x40: ("SOP", "VU"), 0x7F: ("FENCE", "SYNC"),
 }
 # EX §7.2: opcodes that are reserved or retired and never reused.
 RETIRED_V1 = {0x01: "END", 0x02: "LI", 0x03: "ADDI", 0x04: "MULI", 0x05: "RLD", 0x06: "LOOP",
@@ -247,6 +247,7 @@ def test_layouts():
     caps = M.layouts["CAPS"]
     assert {b for b, *_ in caps.retired} == {2, 4}, "CAPS retired bits"
     assert caps.field("ATT").lsb == 5 and caps.field("DQROW").lsb == 6 and caps.field("VMASK").lsb == 7
+    assert caps.field("GDN").lsb == 8 and caps.field("GDN").width == 1 and caps.field("VU_RSVD").lsb == 9
     assert [caps.field(f).lsb for f in ("ATT_LOCAL", "MVM_LOCAL_SCALE", "MVM_LOCAL_SOFTCAP")] == [12, 13, 14]
     # Hold-source bit order shared by STATUS, QSTATUS and DBG_U_STATE
     hs = M.layouts["HOLD_SRC"]
@@ -295,12 +296,15 @@ def test_encodings():
     assert M.encs["NOP"].rsv == [0xFFFFFF00] + [0xFFFFFFFF] * 7 == M.encs["FENCE"].rsv
     assert M.encs["LD"].words_mask == 0x0F and M.encs["QACT"].words_mask == 0x3F and M.encs["MVM"].words_mask == 0xFF
     # VU §5.1: line addresses and m are w[23:0]; rows / strides / head counts / T are 16 bits
-    for op in ("VOP", "RED", "ROPE", "TOPK", "DQROW", "VMASK"):
+    for op in ("VOP", "RED", "ROPE", "TOPK", "DQROW", "VMASK", "GDN"):
         for f in M.encs[op].fields:
-            if f.name in ("D", "A", "B", "C", "M", "SRC", "POS", "TABLE", "X"):
+            if f.name in ("D", "A", "B", "C", "M", "SRC", "POS", "TABLE", "X") and op != "GDN":
                 assert (f.lsb, f.width) == (0, 24), "%s.%s: 24-bit line / element field" % (op, f.name)
             if f.name in ("ROWS", "D_STRIDE", "A_STRIDE", "B_STRIDE", "SRC_STRIDE", "X_STRIDE", "N_HEADS", "T"):
                 assert f.width == 16, "%s.%s: 16-bit field" % (op, f.name)
+    gdn = {f.name: (f.word, f.lsb, f.width) for f in M.encs["GDN"].fields}
+    assert all(gdn[n] == (w, 0, 24) for n, w in (("D", 1), ("A", 2), ("K", 3), ("Q", 4), ("V", 5), ("O", 6)))
+    assert gdn["M"] == (7, 0, 16) and gdn["ROWS"] == (7, 16, 16) and gdn["SA"] == (0, 16, 4) and gdn["SB"] == (0, 20, 4)
     # VOP functions dense 0..24, SOP subs dense 0..14
     codes = [c for c, *_ in M.vop_funcs]
     assert codes == list(range(len(codes))) and len(codes) == 25, "VOP function codes 0..0x18"
@@ -346,7 +350,7 @@ def test_opcodes():
             assert o["caps"] in {f.name for f in M.layouts["CAPS"].fields}, "0x%02X: CAPS.%s" % (o["code"], o["caps"])
     # CAPS gates (EX §7.5, VU §5.10, AT §5.10)
     gate = {o["mnem"]: o["caps"] for o in M.ops if o["legal"]}
-    assert gate["TOPK"] == "TOPK" and gate["DQROW"] == "DQROW" and gate["VMASK"] == "VMASK"
+    assert gate["TOPK"] == "TOPK" and gate["DQROW"] == "DQROW" and gate["VMASK"] == "VMASK" and gate["GDN"] == "GDN"
     assert all(gate[x] == "ATT" for x in ("KVST", "ATTQK", "ATTPV", "ASMAX", "AMASK", "AMERGE", "ANORM"))
     assert all(gate[x] == "VU" for x in ("VOP", "RED", "ROPE", "SOP"))
     assert all(gate[x] is None for x in ("NOP", "FENCE", "LD", "ST", "QACT", "MVM"))

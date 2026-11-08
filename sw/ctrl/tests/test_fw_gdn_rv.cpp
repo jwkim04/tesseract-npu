@@ -5,13 +5,19 @@
 // bit-exact against sw/ctrl/ref/gdn_ref.cpp, SW §4.7 observables equal across schedules, the written
 // DRAM exactly the declared output regions).
 //
-//   test_fw_gdn_rv IMAGE suite [--scheds N]
+//   test_fw_gdn_rv IMAGE suite [--scheds N] [--gdn 0|1]
 //       softplus  rows, strides, a tile boundary on a small SPM, the VU specials (inf, NaN, +-0,
 //                 subnormals, +-88, 1e30), a chain from another op's output (dep);
 //       sconv     the 2B / 27B shapes (C 6144 / 10240, d_conv 4, T 1 and 5), several sequences, strided
 //                 token rows, in-place state, a small SPM that tiles the channels, with and without SILU;
 //       gdn       S_v 128 with H_k = H_v = 16 and H_v = 48 / H_k = 16, T 1 and 3, two sequences, strided q / k / v
-//                 token rows, S_v 16 / 32 / 64, in-place state, a small SPM;
+//                 token rows, S_v 16 / 32 / 64, in-place state, a small SPM; records with Inf / NaN / zero / subnormal
+//                 words among the state, q, k, v, g and beta;
+//       --gdn 1   (default) the simulator has CAPS bit 8, the fused GDN op: GATED_DELTA_NET records with S_v >= 64
+//                 take the fused path (numerics revision 2, SW-78), S_v 16 / 32 the composition; the reference is
+//                 gdn_ref with the simulator's CAPS. All suites run.
+//       --gdn 0   CAPS bit 8 is clear (the card image of November 8): every record takes the composition (revision 1's
+//                 bits). Only the suites with a GATED_DELTA_NET record run (gdn, gdn_small, chain).
 //       chain     SSM_CONV -> SOFTPLUS-free conv output feeding nothing, GDN -> SOFTPLUS (deps across kinds).
 //   test_fw_gdn_rv IMAGE errors
 //       refused records answer BAD_RECORD / SCRATCH and write nothing.
@@ -40,6 +46,7 @@ uint32_t H(uint32_t ch, uint64_t beat) { return (ch << 28) | uint32_t(beat & 0x0
 uint32_t L16(uint32_t n) { return (n + 15u) / 16u; }
 
 const char * g_image = nullptr;
+bool g_gdn_caps = true;   // --gdn: the simulator's CAPS has bit 8 (the fused GDN op)
 
 // ---------------------------------------------------------------------------
 // Data
@@ -55,7 +62,8 @@ uint32_t special_word(rng_t * r) {
 
 struct fill_t {
     uint32_t h, rows, stride, n;   // rows of `stride` lines; the first n words of each row get data
-    int mode;                      // 0: normal * a, 1: uniform in [a, b], 2: normal * a with specials
+    int mode;                      // 0: normal * a, 1: uniform in [a, b], 2: normal * a with specials (1 in 4),
+                                   // 3: normal * a with a special in 1 of 192 words
     float a, b;
 };
 struct region {
@@ -93,6 +101,7 @@ tsr_config base_cfg(uint32_t spm_bytes) {
     c.spm_bytes = spm_bytes;
     c.ch_bytes = 1ull << 30;
     c.caps = TSR_SIM_CAPS_IMPLEMENTED;
+    if (!g_gdn_caps) c.caps &= ~uint32_t(TSR_CAPS_GDN);
     return c;
 }
 
@@ -161,15 +170,18 @@ struct gdn_opts {
     uint32_t qpad = 0, vpad = 0, gpad = 0, vhs_extra = 0;
     bool inplace = false;
     bool scale_nontrivial = true;
+    bool specials = false;   // Inf, NaN, zeros and subnormals among the inputs (fill mode 3)
 };
 int gdn(suite & s, uint32_t sv, uint32_t hk, uint32_t hv, uint32_t T, uint32_t ns, const gdn_opts & o = {}, const char * what = "") {
     const uint32_t L = sv / 16u, nt = ns * T, Lg = L16(hv);
     const float qs = 1.0f / std::sqrt(float(sv));
     const uint32_t qts = hk * L + o.qpad, vhs = L + o.vhs_extra, vts = hv * vhs + o.vpad, gts = Lg + o.gpad;
-    const uint32_t hq = tensor(s, nt, qts, hk * L * 16u, 0, qs), hk_ = tensor(s, nt, qts, hk * L * 16u, 0, qs);
-    const uint32_t hv_ = tensor(s, nt, vts, hv * vhs * 16u, 0, 1.0f);
-    const uint32_t hg = tensor(s, nt, gts, hv, 1, -3.0f, -0.001f), hb = tensor(s, nt, gts, hv, 1, 0.0f, 1.0f);
-    const uint32_t hsi = tensor(s, ns * hv * sv, L, sv, 0, 0.3f);
+    const int nm = o.specials ? 3 : 0, um = o.specials ? 3 : 1;   // fill modes: normal data, uniform data (g, beta)
+    const uint32_t hq = tensor(s, nt, qts, hk * L * 16u, nm, qs), hk_ = tensor(s, nt, qts, hk * L * 16u, nm, qs);
+    const uint32_t hv_ = tensor(s, nt, vts, hv * vhs * 16u, nm, 1.0f);
+    const uint32_t hg = o.specials ? tensor(s, nt, gts, hv, 3, -1.0f) : tensor(s, nt, gts, hv, um, -3.0f, -0.001f),
+                   hb = o.specials ? tensor(s, nt, gts, hv, 3, 0.5f) : tensor(s, nt, gts, hv, um, 0.0f, 1.0f);
+    const uint32_t hsi = tensor(s, ns * hv * sv, L, sv, nm, 0.3f);
     const uint32_t hso = o.inplace ? hsi : outtensor(s, ns * hv * sv, L);
     const uint32_t hd = outtensor(s, nt * hv, L);
     const uint32_t scale = o.scale_nontrivial ? 0x3db504f3u /* 1/sqrt(128) */ : 0x3f800000u;
@@ -205,6 +217,7 @@ void fill(tsr_sim * sim, const suite & s) {
                 if (j >= g.n) v = rng_u32(&r);
                 else if (g.mode == 1) v = f2u(g.a + float(rng_unit(&r)) * (g.b - g.a));
                 else if (g.mode == 2 && rng_below(&r, 4) == 0) v = special_word(&r);
+                else if (g.mode == 3 && rng_below(&r, 192) == 0) v = special_word(&r);
                 else v = f2u(float(rng_normal(&r)) * g.a);
                 memcpy(p + 4u * j, &v, 4);
             }
@@ -253,11 +266,11 @@ std::vector<ival_t> written_rows(const suite & s) {
 
 const char * kind_nm(uint32_t k) { return opl::kind_name(k); }
 
-int apply_ref(const tsr::ref::dram_view & v, const op_t & o) {
+int apply_ref(const tsr::ref::dram_view & v, const op_t & o, uint32_t caps) {
     switch (o.kind) {
         case opl::K_SOFTPLUS: return tsr::ref::softplus_ref(v, o.a.data());
         case opl::K_SSM_CONV: return tsr::ref::sconv_ref(v, o.a.data());
-        case opl::K_GATED_DELTA_NET: return tsr::ref::gdn_ref(v, o.a.data());
+        case opl::K_GATED_DELTA_NET: return tsr::ref::gdn_ref(v, o.a.data(), caps);
         default: return -100;
     }
 }
@@ -266,6 +279,7 @@ struct run_obs {
     obs o;
     uint32_t done[7];
     uint64_t cycles = 0;
+    uint64_t instret = 0;   // RV instructions of the launch
 };
 
 bool run_suite(suite & s, const char * sched, mirror & m, bool first, run_obs * out) {
@@ -282,7 +296,7 @@ bool run_suite(suite & s, const char * sched, mirror & m, bool first, run_obs * 
         make_mirror(sim, s, m);
         const tsr::ref::dram_view v = m.view();
         for (const auto & o : s.ops) {
-            const int rc = apply_ref(v, o);
+            const int rc = apply_ref(v, o, s.cfg.caps);
             CHECK(rc == tsr::ref::GD_OK, "%s: the reference refused op %u (%s %s): %d", s.name, o.index, kind_nm(o.kind), o.what, rc);
         }
     }
@@ -333,6 +347,7 @@ bool run_suite(suite & s, const char * sched, mirror & m, bool first, run_obs * 
         const size_t reports = tsr_sim_race_reports(sim, &rr);
         CHECK(reports == 0, "%s [%s]: %zu race reports", s.name, sched, reports);
         out->cycles = h.cycles;
+        out->instret = out->o.instret;
         printf("%s [%s]: %zu ops, %llu core cycles, %llu RV instructions\n", s.name, sched, s.ops.size(),
                (unsigned long long)h.cycles, (unsigned long long)out->o.instret);
     }
@@ -434,6 +449,13 @@ suite suite_gdn() {
     p.scale_nontrivial = false;
     gdn(s, 128, 4, 4, 2, 1, p, "v head stride 10 lines, scale 1");
     gdn(s, 256, 2, 2, 1, 1, gdn_opts{}, "S_v 256");
+    gdn(s, 128, 16, 48, 16, 1, gdn_opts{}, "27B, T = 16");
+    gdn_opts sp;
+    sp.specials = true;
+    gdn(s, 64, 2, 4, 3, 1, sp, "S_v 64, specials (Inf, NaN, zeros, subnormals), T = 3");
+    sp.inplace = true;
+    gdn(s, 128, 4, 4, 2, 2, sp, "S_v 128, specials, two sequences, in place");
+    gdn(s, 32, 2, 4, 2, 1, sp, "S_v 32, specials (composed on every device)");
     return s;
 }
 suite suite_gdn_small() {
@@ -521,7 +543,7 @@ bool run_errors() {
         mirror m;
         tsr_sim * sim = tsr_sim_create(&s.cfg, nullptr);
         make_mirror(sim, s, m);
-        CHECK(tsr::ref::gdn_ref(m.view(), s.ops[0].a.data()) == tsr::ref::GD_BAD_RECORD, "errors: gdn_ref BAD_RECORD");
+        CHECK(tsr::ref::gdn_ref(m.view(), s.ops[0].a.data(), s.cfg.caps) == tsr::ref::GD_BAD_RECORD, "errors: gdn_ref BAD_RECORD");
         tsr_sim_destroy(sim);
     }
     return ok;
@@ -542,16 +564,20 @@ int main(int argc, char ** argv) {
     }
     const std::string mode = argv[2];
     uint32_t n_sched = 8;
-    for (int i = 3; i + 1 < argc; ++i)
+    for (int i = 3; i + 1 < argc; ++i) {
         if (!strcmp(argv[i], "--scheds")) n_sched = uint32_t(atoi(argv[i + 1]));
+        if (!strcmp(argv[i], "--gdn")) g_gdn_caps = atoi(argv[i + 1]) != 0;
+    }
     if (mode == "suite") {
         suite (*suites[])() = {suite_softplus, suite_softplus_small, suite_sconv, suite_sconv_small,
                                suite_gdn, suite_gdn_small, suite_chain};
         for (auto mk : suites) {
+            if (!g_gdn_caps && (mk == suite_softplus || mk == suite_softplus_small || mk == suite_sconv || mk == suite_sconv_small))
+                continue;   // the same on both devices: --gdn 1 runs them
             suite s = mk();
             run_scheds(s, n_sched);
         }
-        return test_finish("fw_gdn_rv");
+        return test_finish(g_gdn_caps ? "fw_gdn_rv" : "fw_gdn_rv composed");
     }
     if (mode == "errors") {
         run_errors();
@@ -560,7 +586,7 @@ int main(int argc, char ** argv) {
     if (mode == "bench") {
         // One record per launch on the 4 MiB-SPM configuration with the fixed schedule: the core cycles of the launch
         // (the record, the executor and the launch overhead; "softplus 16" is nearly all overhead). The numbers behind
-        // the decode-token estimate of SW §7.10. Not part of ctest.
+        // the decode-token estimate of SW §7.10 (--gdn 0 the composed path, --gdn 1 the fused path). Not part of ctest.
         struct bc {
             const char * name;
             void (*add)(suite &);
@@ -585,7 +611,8 @@ int main(int argc, char ** argv) {
             mirror m;
             run_obs ro;
             run_suite(s, "fixed", m, true, &ro);
-            printf("BENCH %-40s %10llu core cycles\n", c.name, (unsigned long long)ro.cycles);
+            printf("BENCH %-40s %10llu core cycles %10llu RV instructions\n", c.name, (unsigned long long)ro.cycles,
+                   (unsigned long long)ro.instret);
             obs_free(&ro.o);
         }
         return test_finish("fw_gdn_rv bench");

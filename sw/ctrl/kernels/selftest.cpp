@@ -512,6 +512,34 @@ int32_t t_credits(st_ctx & c) {
     return fail;
 }
 
+// ---------------------------------------------------------------------------------------------
+// 11 GDN: H heads of the fused Gated DeltaNet state update (VU §7.12), back to back. The host data of each head is
+// k, q, v and the state tile S; alpha and beta come from the parameter line and go to s registers by SOP MOVI. Even
+// heads write S' to a tile of their own, odd heads update the tile in place (the in-place form of the op).
+int32_t t_gdn(st_ctx & c) {
+    if (!(c.caps & CAPS_VU) || !(c.caps & CAPS_GDN)) return ret(TSR_ST_RET_CAPS);
+    const uint32_t m = c.P[2], rows = c.P[3], H = c.P[4];
+    if (m < 64u || m > 256u || (m & 15u) != 0u || rows == 0u || rows > 64u || H == 0u || H > TSR_ST11_MAX_HEADS)
+        return ret(TSR_ST_RET_BAD_PARAMS);
+    const tsr_st11_layout L = tsr_st11(m, rows, H);
+    if (L.end > c.lines) return ret(TSR_ST_RET_AREA);
+    auto S = [](uint32_t area_line) { return area_line - 1u; };     // SPM line of an area line
+    const ticket ld = issue(LD(spm{0}, at(c, 1), L.in_end - 1u));
+    for (uint32_t h = 0; h < H; ++h) {
+        const bool inplace = (h & 1u) != 0u;
+        const uint32_t sa = 2u * h, sb = 2u * h + 1u;
+        issue(SOP({.sub = SOP_SUB_MOVI, .sd = sa, .imm = c.P[5u + 2u * h]}), deps{ld});
+        issue(SOP({.sub = SOP_SUB_MOVI, .sd = sb, .imm = c.P[6u + 2u * h]}), deps{ld});
+        const uint32_t tile = S(tsr_st11_s(&L, h)), out = S(tsr_st11_sp(&L, h));
+        const ticket g = issue(GDN({.sa = sa, .sb = sb, .d = inplace ? tile : out, .a = tile, .k = S(tsr_st11_k(&L, h)),
+                                    .q = S(tsr_st11_q(&L, h)), .v = S(tsr_st11_v(&L, h)), .o = S(tsr_st11_o(&L, h)),
+                                    .m = m, .rows = rows}), deps{ld});
+        issue(ST(spm{inplace ? tile : out}, at(c, tsr_st11_sp(&L, h)), L.tile), deps{g});
+        issue(ST(spm{S(tsr_st11_o(&L, h))}, at(c, tsr_st11_o(&L, h)), L.lv), deps{g});
+    }
+    return 0;
+}
+
 }  // namespace
 
 extern "C" int32_t selftest(const tsr_args * args) {
@@ -541,6 +569,7 @@ extern "C" int32_t selftest(const tsr_args * args) {
         case TSR_ST_ID_SPMWIN:  return t_spmwin(c);
         case TSR_ST_ID_LOG:     return t_log(c);
         case TSR_ST_ID_CREDITS: return t_credits(c);
+        case TSR_ST_ID_GDN:     return t_gdn(c);
         default:                return ret(TSR_ST_RET_BAD_ID);
     }
 }

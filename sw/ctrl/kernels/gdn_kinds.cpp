@@ -28,10 +28,13 @@
 // VOP.MUL TMP = window rows w .. w+T-1 * tap w, VOP.ADD ACC += TMP; with FLAG_SILU VOP.SILU ACC;
 // ST the T output rows and the last d_conv - 1 window rows (the new state).
 //
-// GATED_DELTA_NET, per head (sequence, head) in order and per token: see gdn_ref_step
-// (ref/gdn_ref.hpp) for the numerics and the comments below for the pipeline: one ring block for
-// the whole op holds two state tiles (the next head's state loads while the VU works on this
-// head's), the product tile P and two token slots (token i + 2 loads while token i computes).
+// GATED_DELTA_NET, per head (sequence, head) in order and per token, on one of two paths chosen at run time
+// from CAPS (plan::gdn::use_fused, SW-78): the composition of revision 1 (gdn_ref_step in ref/gdn_ref.hpp: the
+// numerics, 13 VU ops per head and token), or, when the device has the fused op (CAPS_GDN) and S_v >= 64, the
+// VU's GDN op (VU §7.12; gdn_ref_step_fused: the state update and the output in one op, then the scale). The
+// pipeline is the same: one ring block for the whole op holds two state tiles (the next head's state loads
+// while the VU works on this head's), the product tile P (composed path only) and two token slots (token
+// i + 2 loads while token i computes). The loads, the stores and the planner do not depend on the path.
 #include "k_elem.hpp"
 
 #include "tsr/plan_gdn.hpp"
@@ -277,10 +280,62 @@ struct slot_t {
     ticket st_o;               // the ST that reads the slot's output vector w
 };
 
+// What a token step returns: the last VU op that writes the state tile (the state ST of the head's last token
+// waits for it) and the last VU op of the step (it ends every read and write of the slot).
+struct step_out {
+    ticket state, last;
+};
+
+// One token of one head, composed path (revision 1): alpha = exp(g), beta, 9 VOPs and two RED.SUMs.
+// hl: the lane of the head in its g / beta line; st_ld: the state LD when this is the head's first token.
+[[gnu::noinline, gnu::cold]] step_out gdn_step_composed(uint32_t pf, uint32_t sv, uint32_t L, uint32_t hl, const slot_t & s,
+                                                        uint32_t S_line, uint32_t P_line, ticket st_ld) {
+    const uint32_t line[7] = {S_line, P_line, s.k, s.q, s.v, s.u, s.w};
+    const ticket dep[5] = {ticket{}, st_ld, s.ld_k, s.ld_v, s.ld_q};
+    ticket v_mulcadd{};
+    psop(SOP_SUB_LDS, S_G, 0u, 16u * s.g + hl, deps{s.ld_g}, pf);          // alpha = exp(g), beta
+    psop(SOP_SUB_EXP, S_ALPHA, S_G, 0u, deps{}, pf);
+    psop(SOP_SUB_LDS, S_BETA, 0u, 16u * s.b + hl, deps{s.ld_b}, pf);
+    for (const gstep & g : GA) pv(g.v, line, TILES, sv, sv, L, deps{dep[g.dep]}, pf);
+    pred(s.u, P_line, sv, L, deps{}, pf);                                   // u = rowsums
+    for (const gstep & g : GB) {
+        const ticket tk = pv(g.v, line, TILES, sv, sv, L, deps{dep[g.dep]}, pf);
+        if (g.v.func == VOP_FUNC_MULCADD) v_mulcadd = tk;
+    }
+    pred(s.w, P_line, sv, L, deps{s.st_o}, pf);                             // w = rowsums (w: previous ST done)
+    return {v_mulcadd, pv(GC, line, TILES, sv, sv, L, deps{}, pf)};
+}
+
+// The same token, fused path (revision 2): one GDN op updates the state tile in place and writes the output
+// vector (rows = m = S_v), then VOP.MULC scales it. The op reads the state tile, k, q and v and writes the
+// tile and w. The DMA tickets (the state LD, the LDs of k, v and q, the ST that last read w) are one unit:
+// the latest of them covers the others (I1).
+[[gnu::noinline, gnu::cold]] step_out gdn_step_fused(uint32_t pf, uint32_t sv, uint32_t L, uint32_t hl, const slot_t & s,
+                                                     uint32_t S_line, ticket st_ld) {
+    psop(SOP_SUB_LDS, S_G, 0u, 16u * s.g + hl, deps{s.ld_g}, pf);
+    psop(SOP_SUB_EXP, S_ALPHA, S_G, 0u, deps{}, pf);
+    psop(SOP_SUB_LDS, S_BETA, 0u, 16u * s.b + hl, deps{s.ld_b}, pf);
+    gdn_f f{};
+    f.sa = S_ALPHA;
+    f.sb = S_BETA;
+    f.d = f.a = S_line;
+    f.k = s.k;
+    f.q = s.q;
+    f.v = s.v;
+    f.o = s.w;
+    f.m = sv;
+    f.rows = sv;
+    const ticket dma = later(later(later(st_ld, s.ld_k), later(s.ld_v, s.ld_q)), s.st_o);
+    const ticket gt = push_g(GDN(f), deps{dma}, pf);
+    const uint32_t line[7] = {S_line, 0u, s.k, s.q, s.v, s.u, s.w};
+    return {gt, pv(GC, line, TILES, sv, sv, L, deps{}, pf)};
+}
+
 [[gnu::noinline, gnu::cold]] ticket gdn_run(const uint32_t * a, const kind_plan & kp, deps d, kind_ctx & ctx) {
     const uint32_t pf = ctx.push_flags;
     const uint32_t sv = a[gd::S_V], hk = a[gd::H_K], hv = a[gd::H_V], T = a[gd::N_TOKENS], ns = a[gd::N_SEQS];
     const uint32_t L = kp.row_lines, SL = sv * L, slot_lines = kp.aux[1];
+    const bool fused = plan::gdn::use_fused(ctx.pl.caps, sv);
     const dram dst = from_handle(a[gd::DST]), sout = from_handle(a[gd::STATE_OUT]), sin = from_handle(a[gd::STATE_IN]),
                qd = from_handle(a[gd::Q]), kd = from_handle(a[gd::K]), vd = from_handle(a[gd::V]),
                gd_ = from_handle(a[gd::G]), bd = from_handle(a[gd::BETA]);
@@ -334,29 +389,17 @@ struct slot_t {
     for (uint32_t hidx = 0; hidx < nheads; ++hidx) {
         const uint32_t sq = hidx / hv, h = hidx - sq * hv;
         const spm S = St[hidx & 1u];
-        ticket v_mulcadd{};
         for (uint32_t t = 0; t < T; ++t) {
             const uint32_t i = hidx * T + t;
             slot_t & s = sl[i & 1u];
             const uint32_t n = sq * T + t;
             if (t + 1u == T && hidx + 1u < nheads) load_state(hidx + 1u, deps{});   // prefetch the next head's state
-            const uint32_t line[7] = {S.line, P.line, s.k, s.q, s.v, s.u, s.w};
-            const ticket dep[5] = {ticket{}, t == 0u ? st_ld[hidx & 1u] : ticket{}, s.ld_k, s.ld_v, s.ld_q};
-            // alpha = exp(g), beta
-            psop(SOP_SUB_LDS, S_G, 0u, 16u * s.g + (h & 15u), deps{s.ld_g}, pf);
-            psop(SOP_SUB_EXP, S_ALPHA, S_G, 0u, deps{}, pf);
-            psop(SOP_SUB_LDS, S_BETA, 0u, 16u * s.b + (h & 15u), deps{s.ld_b}, pf);
-            for (const gstep & g : GA) pv(g.v, line, TILES, sv, sv, L, deps{dep[g.dep]}, pf);
-            pred(s.u, P.line, sv, L, deps{}, pf);                                   // u = rowsums
-            for (const gstep & g : GB) {
-                const ticket tk = pv(g.v, line, TILES, sv, sv, L, deps{dep[g.dep]}, pf);
-                if (g.v.func == VOP_FUNC_MULCADD) v_mulcadd = tk;
-            }
-            pred(s.w, P.line, sv, L, deps{s.st_o}, pf);                             // w = rowsums (w: previous ST done)
-            const ticket vt = pv(GC, line, TILES, sv, sv, L, deps{}, pf);
-            s.done = vt;
-            if (t + 1u == T) pst(S, sout + hidx * SL, SL, deps{v_mulcadd}, pf);
-            last = s.st_o = pst(spm{s.w}, dst + uint32_t((uint64_t(n) * hv + h) * L), L, deps{vt}, pf);
+            const ticket first_ld = t == 0u ? st_ld[hidx & 1u] : ticket{};
+            const step_out so = fused ? gdn_step_fused(pf, sv, L, h & 15u, s, S.line, first_ld)
+                                      : gdn_step_composed(pf, sv, L, h & 15u, s, S.line, P.line, first_ld);
+            s.done = so.last;
+            if (t + 1u == T) pst(S, sout + hidx * SL, SL, deps{so.state}, pf);
+            last = s.st_o = pst(spm{s.w}, dst + uint32_t((uint64_t(n) * hv + h) * L), L, deps{so.last}, pf);
             if (i + 2u < nsteps) load_step(i + 2u);
         }
     }

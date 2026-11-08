@@ -2,6 +2,8 @@
 # outputs on test_fw_kind_revs's fixed corpus (ctest fw_kind_revs; docs/design/06-software-
 # verification.md §6.9, SW-54). Written by `test_fw_kind_revs tsr-fw.elf kind_revs.txt --update` after
 # a deliberate revision bump in tsr/opl.hpp kind_rev, together with a CHANGELOG "Unreleased" line.
+# A kind with a second path has a second row marked "composed": GATED_DELTA_NET on a device without CAPS
+# bit 8 (SW-78); the first row is the run on the simulator's CAPS.
 # kind  name         rev  digest (FNV-1a 64: DONE status / RET and every output region, per launch)
 0x00  NOP          1    29034675a49f07c2
 0x01  JOIN         1    29034675a49f07c2
@@ -23,4 +25,5 @@
 0x1f  MUL_MAT_ID   1    7211ed2e39f19e6e
 0x2d  SOFTPLUS     1    6b7ec84f0711a028
 0x2e  SSM_CONV     1    2a8a1f86635efd9f
-0x2f  GATED_DELTA_NET 1    b040cc2f4da8c0ca
+0x2f  GATED_DELTA_NET 2    f768379b55c9df2c
+0x2f  GATED_DELTA_NET 2    b040cc2f4da8c0ca composed

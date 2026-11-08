@@ -7,7 +7,7 @@ the M7 kernels (attention, norms, MoE, Gated DeltaNet) is not built; §8 says wh
 
 > **Scope.** User documentation, as-built record and measurement record of `sw/torch` and `sw/rt`. The
 > backend, `tsr_rt` and their tests run on the firmware of the control core (Tesseract Basis 0.1.0, 21 kinds, kind-table
-> signature 0x804f) on the simulator, the mock transport and the U200 card (`tsr_u200_k4`, T_MAX 4). The C++ runtime tests
+> signature 0x2381; 0x804f when the results below were measured, before the fused GDN path of SW-78) on the simulator, the mock transport and the U200 card (`tsr_u200_k4`, T_MAX 4). The C++ runtime tests
 > (`rt_*`), the Python suite (`torch_pytest`, `torch_pytest_tmax4`, `torch_pytest_tmax8`) and `hf_check.py` were run on all
 > of them; §6 has the results, each labelled by the device that produced it. Order of authority: `docs/spec.md` (§5 Device
 > weight layout, §6 Quantized activation layout, §7 Numeric rules) > the simulator (`sw/sim`) > this document. Normative for the
