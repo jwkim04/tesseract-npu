@@ -34,6 +34,9 @@ them.
   - `SOP` 0x40: 15 scalar functions.
   - AT's vector ops `ASMAX`, `AMASK`, `AMERGE`, `ANORM` (0x34–0x37): semantics by AT, executed by
     the VU's lanes (§5.11).
+  - `GDN` 0x39 (designed, built out of context, not integrated; §7.12): the fused Gated DeltaNet
+    state update for one head, S read and written once. Dot products as exact integer sums in DSP48E2
+    accumulators, URAM row buffers, 8 state elements per cycle.
 - **No op fails at run time.** Every check runs at dispatch. Shape limits use EX's new code 13
   `OPERAND`.
 - **Numerics, all bit-exact:**
@@ -1249,6 +1252,440 @@ shared logic remain free to place. This is major-block floorplanning only;
 ordinary synthesis/implementation must establish memory mapping, timing and
 routing. No cell/stage placement or optimizer ownership constraint is used.
 
+---
+
+### 7.12 Fused GDN state update (GDN, opcode 0x39; designed, built and measured, not integrated)
+
+Status (2026-11-08): the C reference `sw/sim/tsr_ref_gdn.c` and the unit `rtl/core/tsr_vu_gdn*.sv`
+exist and agree bit for bit (§7.12.10). The op is not decoded by `tsr_vu`, not in
+`sw/tables/tsr_tables.py`, not in the simulator's VU unit and in no image. §7.12.4 gives the encoding
+that would be added. The goal of the design is to spend DSP48E2 and URAM, which the K4 image has
+(SLR0 / 1 / 2: DSP 33 / 2 / 43 %, URAM 0 / 46 / 0 %), and as few CLB tiles as possible, which it has not
+(80 / 86 / 85 %). Decisions VU-28 … VU-33 in §11.
+
+#### 7.12.1 The op
+
+Gated DeltaNet layers keep a recurrent state S per head, d_v × d_k f32. For one token and one head, with
+k and q (d_k, L2-normalised by earlier ops), v (d_v), and the scalars α = exp(g) and β:
+
+```
+for each row i (rows are independent):
+    u_i  = S_i · k
+    e_i  = β (v_i − α u_i)
+    S'_i = α S_i + e_i k            (written back)
+    o_i  = S'_i · q
+```
+
+The planned model has 48 layers, 48 heads and d_k = d_v = 128. One head is 64 KiB, a layer 3 MiB, a
+sequence 144 MiB. A decode token reads and writes all of it: 37,748,736 state elements, 151 MB each way.
+Composed from VOP and RED, the recurrence needs four passes over S (decay, S·k, update, S'·q). The
+fused op reads and writes S once. The pinned llama.cpp computes the same recurrence (`build_delta_net_autoregressive`
+in `src/models/delta-net-base.cpp`, and `ggml_compute_forward_gated_delta_net` in `ggml-cpu/ops.cpp`: decay S, delta = β
+(v − S·k), S += k δ, o = S·q, a row of S being S_v contiguous words dotted with k and q). The CPU kernel
+scales o by 1/√S_v; the graph version scales q. This op takes q as given.
+
+Throughput target: 8 state elements per cycle at 200 MHz, 23.8 ms per token for the planned state
+(measured, §7.12.8). `LANES` = 16 gives 16 elements per cycle (one SPM line) for about twice the arithmetic.
+
+#### 7.12.2 Operands and where they live
+
+| Operand | Form | Where |
+|---|---|---|
+| S | d_v rows of m = d_k f32, dense (row stride m / 16 lines), updated in place or to another tile | SPM tile, loaded by `LD` from the state tensor in DRAM, stored back by `ST` |
+| k, q | m f32 each | SPM vectors (earlier VU ops L2-normalise them) |
+| v | d_v f32 | SPM vector |
+| o | d_v f32 | SPM vector, tail rule of §4.2 |
+| α, β | f32 | s registers (`SOP.EXP` gives α = exp(g)) |
+
+The state tile comes through the SPM and the existing DMA, not through a direct stream (VU-31).
+- Traffic per element at 8 elements per cycle: LD writes 4 B, the op reads 4 B and writes 4 B, ST reads
+  4 B. That is 64 B per cycle of SPM reads and 64 B per cycle of writes, half of the 128 B per cycle each
+  way of the 2R + 2W SPM (CC §10), and the GDN phase of a layer has no competing MVM work (the next layer waits for
+  its output). With `LANES` = 16 the four streams use all of it. DRAM traffic is 302 MB per token, 12.6 GB/s at
+  24 ms, well under the four channels.
+- A head tile is 64 KiB. Three tiles (LD of the next head, the op, ST of the previous one) are 192 KiB of
+  the 4 MiB SPM.
+- A direct DDR to unit to DDR stream would need a new DRAM path out of and into the DMA, a new arbiter
+  against the weight streams and an SLR crossing for 2 × 256 bit per cycle. It saves traffic that the SPM
+  carries without trouble, and it would not be a tile op that firmware can order with the checker, queues and
+  hazards.
+
+Placement: the unit belongs in SLR1 beside the SPM. The row data (256 bit per cycle each way) then never
+crosses an SLR, SLR1 has about 2,230 DSP48E2 and 170 URAM free in K4, and the VU side needs only the
+command (alpha, beta, m, rows, 3 s-register-sized words), the vector stream (32 bit) and the o stream
+(32 bit), which can cross behind registered pipes like `LANE_PIPE`. The CLB cost is the problem
+(§7.12.9): SLR1 is at 86 %.
+
+#### 7.12.3 Numerics
+
+All f32 operations are the VU primitives (§6.1): DAZ, RNE, FTZ, canonical NaN. The dot products are not
+f32 sums. They are exact sums of integer products in a block frame, converted to f32 once.
+
+With `ab = FM(α, β)`, `kp_j = FM(ab, k_j)` and `bv_i = FM(β, v_i)`:
+
+```
+TK = table(kp)         TQ = table(q)            head tables, 24-bit entries
+κ  = rowdot(k, TQ)     u'_i = rowdot(S_i, TK)   w_i = rowdot(S_i, TQ)
+e_i   = FS(bv_i, u'_i)
+S'_ij = FA(FM(α, S_ij), FM(e_i, k_j))
+o_i   = FA(FM(α, w_i), FM(e_i, κ))
+```
+
+u' = αβ (S_i · k) and w_i = S_i · q, so e_i = β v_i − αβ u_i and o_i = α (S_i · q) + e_i (k · q) = S'_i · q.
+The output needs no second pass over S'. It uses the pseudo row below to get κ = k · q.
+
+- **table(x)** (m ≤ 256 elements). DAZ. E_max is the largest biased exponent among the nonzero elements
+  (0 if none). Entry j is sign × ⌊(M_j + 2^(sh−1)) / 2^sh⌋ with M_j the 24-bit significand, sh = E_max − E_j
+  (sh = 0 keeps M_j; entries are 0 for zero elements and for sh ≥ 25). Entries are below 2^24 in
+  magnitude; entry × 2^(E_max − 150) is the element. The table is the same for every row of the head.
+- **rowdot(row, T)**. E_s is the largest biased exponent of the row's nonzero elements. Element j becomes
+  A_j = sign × ((M_j << 2) >> (E_s − E_j)), a 26-bit window below the row's frame, truncated (0 for a shift
+  of 26 or more). I = Σ_j A_j T_j is computed exactly (|I| < 2^58). The result is the f32 nearest to
+  I × 2^(E_s + E_max,T − 302): RNE, overflow to ±Inf, a result below 2^-126 − 2^-150 flushed to a signed zero
+  (the rule of FM), I = 0 gives +0.
+- **Order does not matter.** The sum is an integer sum, so lane count, beat order and accumulation order
+  change nothing. There is one rounding per dot product.
+- **Inf and NaN.** Any Inf or NaN among a row's elements, or among a table's elements, makes the rowdot
+  result the canonical NaN. A bad state row poisons that row's e, S' and o. A bad k or q poisons the head.
+- **κ from a pseudo row.** The op takes κ = rowdot(k, TQ), the row dot product of the vector k itself
+  with TQ. The hardware streams k through the dot array as an extra first row; its u' is dropped.
+
+The C reference is `tsr_ref_gdn` (`sw/sim/tsr_ref_gdn.c`, header `tsr_ref_gdn.h`) with the pieces
+`tsr_ref_gdn_table`, `tsr_ref_gdn_rowdot`, `tsr_ref_gdn_fx2f`, `tsr_ref_gdn_e`, `tsr_ref_gdn_o` and
+`tsr_ref_gdn_upd_elem`. Row bound: with a 26-bit window and 24-bit entries, 256 terms stay below 2^58, so
+d_k ≤ 256 (the 48-bit DSP accumulators are exact for the two 13-bit pieces of an entry, §7.12.5).
+
+Differences from the CPU kernel: it decays S in place and then dots (ours folds α β into k), it sums in
+whatever order `ggml_vec_dot_f32` uses, and its `ggml_vec_mad_f32` may contract to an FMA. All of these
+are rounding differences of a few ulp; §7.12.6 measures them against float64.
+
+#### 7.12.4 Encoding (to be added to the tables; nothing generated changes now)
+
+`GDN` = 0x39 (the first of the opcodes reserved for VU extensions, EX §7.2), unit 3, `CAPS` bit 8.
+
+| Field | Bits | Meaning |
+|---|---|---|
+| opcode | w0[7:0] | 0x39 |
+| sub, flags | w0[15:8] | 0 |
+| sa | x16[3:0] | s register holding α |
+| sb | x16[7:4] | s register holding β |
+| — | x16[15:8] | 0 |
+| d | w1[23:0] | S' tile, line of row 0 (may equal a: in place) |
+| a | w2[23:0] | S tile, line of row 0 |
+| k | w3[23:0] | k vector line (m words) |
+| q | w4[23:0] | q vector line (m words) |
+| v | w5[23:0] | v vector line (rows words) |
+| o | w6[23:0] | o vector line (rows words, tail rule of §4.2) |
+| m | w7[15:0] | d_k: a multiple of 16 with 4 × LANES ≤ m ≤ 256 |
+| rows | w7[31:16] | d_v ≥ 1 |
+
+Rows of the tile are dense, stride m / 16 lines, for a and d. Extents for the checker: d and a
+E(rows, m/16, m/16) lines, k and q m/16 lines, v and o ⌈rows/16⌉ lines. `OPERAND` (13) for m not a
+multiple of 16, m below 4 × LANES (32 for the 8-lane build; CFG3 would report LANES), m above 256, rows = 0
+or rows above the unit's row limit (1,024), d ≠ a with overlapping extents of d and a. One op is one head;
+firmware issues 48 per layer and overlaps `LD` and `ST` with it.
+
+#### 7.12.5 Microarchitecture
+
+```
+ vec: k, q, v (32 b/cycle)                    in: pseudo row k, then the rows (8 x 32 b/cycle)
+        |                                              |
+        v                                              v
+  setup engine (1 FM)                             ingest: Es tree, slots
+   |      |        |                                 |                 |
+   v      v        v                                 v                 v
+ KF RAM  T RAM   bv RAM                           B1 RAM            B2 RAM (copy of B1)
+ (k)    (TK, TQ) (beta v)                            |                 |
+          |        |                                 v                 |
+          +--------|-----------------------> dot array: 8 lanes,       |
+                   |                          align, 4 DSP cascades,    |
+                   |                          accumulators (36 DSP48E2) |
+                   |                                 |                 |
+                   |                          converter (once per dot)  |
+                   |                                 |                 |
+                   +---------------------> scalar chain (1 FM, 1 FA)    |
+                                              e = FS(bv, u')  --------+|
+                                              o = FA(FM(alpha, w), FM(e, kappa))  --> o (32 b/row)
+                                                                        v v
+                                            update array: 8 x (FM, FM, FA), alpha, e, k from KF --> S' (8 x 32 b/cycle)
+```
+
+- **Banks.** Two banks hold the coefficients of two heads: key, tables, α, κ, bv. The setup of head h + 1
+  runs while the rows of head h flow, so consecutive heads of one shape leave no gap.
+- **Setup engine** (`tsr_vu_gdn_coef`). One word per cycle in, in the order k, q, v. One shared FM computes
+  ab, kp_j and bv_i. It writes the raw key to the KF RAM, keeps kp and q in a scratch RAM with their largest
+  exponents and Inf/NaN flags, then aligns both to their frames (round half up) and writes the table words.
+  About 4 m + rows + 45 cycles per head.
+- **Ingest.** Row beats (8 words) go to both row buffer copies. The exponents of each beat go through a
+  pipelined maximum tree into the row's E_s. E_s = 255 is the row's bad flag. The row is complete a few cycles
+  after its last beat.
+- **Dot array** (`tsr_vu_gdn_dot`). Lane l holds elements j ≡ l (mod 8) of every row (RAM B1) and of
+  both tables (RAM T). A launch (slot, bank, E_s, beats) starts lane 0 one cycle later and lane l, l cycles
+  after that: the descriptor travels down a register chain. Per beat a lane reads its word, aligns it (a
+  26-bit right shift in two LUT stages), applies the sign as `(a ^ s) + s` (the pre-adder of the DSP) and
+  multiplies by the four table pieces: high piece (12 bits signed) and low piece (13 bits) of the K' entry
+  and of the Q entry. The four products go into four DSP48E2 cascades (`tsr_vu_gdn_mac`):
+  P_l(t+1) = P_(l−1)(t) + product_l(t). Because the lanes start one after another, the cascade adds the 8
+  lanes' products of one beat with no fabric adder and no skew registers. One accumulator slice per chain
+  adds the beats of the row. After the last beat the four 48-bit sums (I = hi · 2^13 + lo) are valid for one
+  cycle. Everything is exact: |P| < 2^47 for 256 elements.
+- **Converter** (`tsr_vu_gdn_fx2f`). One pipeline of 8 stages (add the pieces, sign and magnitude,
+  leading zeros, two shift stages, round, pack) converts the K sum and, one cycle later, the Q sum.
+- **Scalar chain.** One shared FM and one shared FA, FIFOs between them. u' and a read of bv_i give
+  e = FS(bv_i, u') (priority on the FA); w gives FM(α, w); e gives FM(e, κ); the two products give o.
+  The pseudo row's w becomes κ of the bank.
+- **Update array** (`tsr_vu_gdn_upd`). A row whose e is known is read again from RAM B2 together with the
+  key from RAM KF, and each lane computes FA(FM(α, S), FM(e, k)) with `tsr_fp_mul` and `tsr_fp_add`.
+- **Slots.** 16 row slots (NSLOT) hold rows from the first ingest beat until their update is issued. Each
+  slot is a region of the two RAM copies. A launch needs the previous launch of its engine to be NB cycles old
+  (NB = m / 8), nothing else, so the three engines run at one row per NB cycles.
+- **No back pressure** on the outputs: the consumer takes every beat. A wrapper keeps credits for the rows in
+  flight, like the VU's output FIFO (§7.7).
+- **Parameters.** `LANES` (8 or 16, a power of two with LANES × NB_MAX ≤ 256), `NB_MAX`, `NSLOT`, `R_MAX`
+  (rows per head, the bv RAM), `RD_LAT`, `FM_LAT`, `FA_LAT`, `STYLE` of the RAMs. The 16-lane build passes
+  the same tests.
+
+**DSP48E2 by inference.** The dot array needs no DSP48E2 primitive. Vivado 2024.2 maps the written
+registers and the pre-adder, multiplier and cascade adder into the slices with `PCIN` cascades and
+accumulators (`(PCIN+((D'+A2)*B'')')'`, no fabric adder, `CARRY8` count 0 in `tsr_vu_gdn_dot`), provided
+that all lanes of a chain are in one module: when the P registers cross module boundaries Vivado uses
+the C port and keeps the accumulators in fabric adders (found in the first build, 32 DSP and 24 CARRY8).
+The unisim `DSP48E2.v` model does not compile in Verilator 5.046 (`Unsupported: tristate in top-level IO`,
+and it needs `glbl`); it elaborates and runs in XSim (checked with `P = A × B` and a 100 ns GSR wait). The
+repo's netlist simulations use it that way (`tb/tech/viv/net_sim.sh`). Since inference works, the RTL
+is plain SystemVerilog that Verilator simulates directly.
+
+**URAM.** Every buffer the dependency needs is a RAM with `ram_style = "ultra"` (`tsr_vu_gdn_ram`, same
+read pipeline as `rtl/tech/xilinx/tsr_sram_1r1w.sv`): per lane the row buffer B1 (dot pass), its copy B2
+(update pass), the table RAM T and the key RAM KF, plus the scratch RAM and the bv RAM. Two copies of the
+row are needed because three accesses per cycle (ingest write, dot read, update read) exceed the two ports of a
+URAM, and because lane l reads beat g at a different time than lane l + 1 (the cascade skew), which a
+per-lane RAM gives for free. A row of 128 words is 16 beats; 16 slots use 256 entries of the 4,096 of each
+URAM. The URAM count is therefore set by the lane count and not by the buffer size (34 for 8 lanes).
+
+#### 7.12.6 The dot products: f32 adder trees (A) or wide fixed point in the DSP (B)
+
+Each row needs two d_k-long dot products (S_i · k and S_i · q), and the head needs a third (k · q).
+At 8 elements per cycle that is 16 products and 16 additions per cycle, in a design where the f32 adders
+are the CLB-heavy part (§7.10: 84 CLB for `tsr_fp_add`, 75 with the DSP shifter, 66 for the Xilinx IP
+without DSP; a DSP replacing a shifter saves 10 CLB, a DSP replacing a 24 × 24 mantissa product saves 47).
+
+- **(A) f32 adders in a fixed tree.** 8 multipliers, one accumulator adder per lane (lane l sums elements
+  l, l + 8, … in order), then ((l0+l1)+(l2+l3))+((l4+l5)+(l6+l7)) on one shared adder. Per dot product:
+  8 `tsr_fp_mul` and 9 `tsr_fp_add`; the loop of an accumulator needs 5 interleaved rows (adder latency 5).
+  Two engines (u', w): 16 multipliers and 18 adders.
+- **(B) Exact integer sums in DSP48E2 accumulators.** Align each row element to the row's largest exponent
+  (a 26-bit window; the table is aligned once per head), multiply by the table entry (a 26 × 13-bit product
+  per piece, two pieces per entry), add in the DSP cascade, convert once. No f32 adder at all. The cost is
+  the aligner (a 26-bit shifter per lane), the pre-adder sign, the converter (once for all lanes) and two
+  RAM reads per beat.
+
+**Accuracy.** Script `tb/gdn/gdn_accuracy.py` (PyTorch float64 reference; run with `build/tools/torchvenv`).
+`dot`: 200 trials of a 128 × 128 state against a unit k, error relative to |S_row| |k| (one f32 ulp of a
+result is 6.0·10⁻⁸ of its own magnitude); max over rows and trials, (median of the per-trial maxima).
+
+| data | f32 matmul | A: f32 tree | **B: 26 / 24** | B: 24 / 24 | B: 26 / 20 | B: 26 / 18 | B: 26 / 16 |
+|---|---|---|---|---|---|---|---|
+| gauss | 4.2·10⁻⁸ (2.4·10⁻⁸) | 4.0·10⁻⁸ (2.5·10⁻⁸) | 4.2·10⁻⁸ (1.9·10⁻⁸) | 5.6·10⁻⁸ (3.2·10⁻⁸) | 4.9·10⁻⁷ (2.3·10⁻⁷) | 2.2·10⁻⁶ (8.7·10⁻⁷) | 9.1·10⁻⁶ (3.5·10⁻⁶) |
+| heavy | 6.1·10⁻⁸ (2.8·10⁻⁸) | 6.1·10⁻⁸ (2.9·10⁻⁸) | 6.3·10⁻⁸ (3.6·10⁻⁸) | 2.4·10⁻⁷ (1.3·10⁻⁷) | 4.4·10⁻⁷ (2.0·10⁻⁷) | 1.7·10⁻⁶ (8.0·10⁻⁷) | 6.8·10⁻⁶ (3.4·10⁻⁶) |
+| log-uniform | 6.2·10⁻⁸ (2.5·10⁻⁸) | 5.5·10⁻⁸ (2.5·10⁻⁸) | 4.5·10⁻⁸ (2.6·10⁻⁸) | 1.4·10⁻⁷ (7.7·10⁻⁸) | 4.8·10⁻⁷ (2.1·10⁻⁷) | 2.0·10⁻⁶ (8.3·10⁻⁷) | 7.8·10⁻⁶ (3.2·10⁻⁶) |
+| orthogonal | 3.5·10⁻⁸ (2.0·10⁻⁸) | 3.9·10⁻⁸ (2.2·10⁻⁸) | 3.5·10⁻⁸ (1.4·10⁻⁸) | 5.5·10⁻⁸ (3.0·10⁻⁸) | 5.1·10⁻⁷ (2.3·10⁻⁷) | 2.0·10⁻⁶ (9.5·10⁻⁷) | 7.7·10⁻⁶ (3.5·10⁻⁶) |
+
+Columns: the f32 matmul of numpy, scheme (A), and scheme (B) with the row window / table entry widths in bits.
+
+(B) with a 26-bit row window and 24-bit table entries is as accurate as the f32 tree and as numpy's matmul
+and slightly better on wide exponent spreads and near-orthogonal rows (one rounding instead of seven).
+A 24-bit window costs a factor 1.3 to 4 on the harder data, 20-bit entries a factor 7 to 12, 18-bit entries 30 to 50,
+16-bit entries more than 100. That settles the widths of VU-29: 26 / 24 bits. They also fix the DSP use (a 24-bit
+entry is two 13-bit pieces, so 4 DSP per lane for the two tables) and the accumulator bound (§7.12.3).
+
+`system`: a head of 128 × 128 over 32,768 steps with gating, six input scenarios (α ≈ 0.9, 0.99 and
+0.9999 per token with log-normal variation; correlated keys; two key channels 30 × larger and
+heavy-tailed v; v of order 10³). Same inputs for all runs; the reference is the plain recurrence in float64
+from the same f32 inputs. "lit32" is the textbook recurrence in PyTorch float32 (`torch.mv` for both
+dots). Relative error ‖o − o_ref‖ / ‖o_ref‖ per step and ‖S − S_ref‖_F / ‖S_ref‖_F after 32,768 steps, in
+units of 10⁻⁷ (one f32 ulp is 0.6 · 10⁻⁷):
+
+| scenario | o, median over steps (A / B / lit32) | o, worst step (A / B / lit32) | S after 32,768 steps (A / B / lit32) |
+|---|---|---|---|
+| fast | 1.36 / 1.25 / 1.54 | 5.10 / 4.73 / 4.92 | 0.90 / 0.89 / 0.92 |
+| typical | 2.43 / 2.37 / 2.53 | 4.30 / 4.11 / 4.33 | 2.25 / 2.26 / 2.26 |
+| slow | 4.88 / 4.84 / 4.95 | 7.70 / 7.22 / 7.22 | 4.78 / 4.79 / 4.76 |
+| correlated | 2.49 / 2.43 / 2.58 | 4.30 / 4.14 / 4.20 | 2.33 / 2.33 / 2.33 |
+| outliers | 2.50 / 2.43 / 2.61 | 8.02 / 8.91 / 8.37 | 2.19 / 2.14 / 2.24 |
+| large | 2.43 / 2.37 / 2.53 | 3.91 / 3.97 / 4.37 | 2.25 / 2.25 / 2.26 |
+
+All three agree to a few percent. The error floor of 2 to 5 · 10⁻⁷ (4 to 8 ulp) is the f32 rounding of the
+state itself, which every scheme has, and it does not grow over the run (the error of S after 8,192, 16,384,
+24,576 and 32,768 steps is flat). (B) is marginally the best (1 to 3 % below (A) in the median). The
+way the dots are summed is therefore not what limits the accuracy, so the cheaper scheme can be chosen on area.
+
+**Area.** Measured out of context with the method of §7.10 (xcu200-fsgd2104-2-e, 5.0 ns, place and route; CLB tiles
+carry the placer's spread, read them with the LUT count). One engine of (A) (`tb/gdn/viv/tsr_gdn_dota.sv`, an area
+reference, 8 `tsr_fp_mul`, 8 lane accumulators and 1 shared tree adder `tsr_fp_add`): 1,041 CLB, 4,568 LUT, 5,203 FF,
+208 CARRY8, 16 DSP. Two engines (u' and w): 2,082 CLB, 9,136 LUT, 32 DSP. Scheme (B), the same job for both dots
+(`tsr_vu_gdn_dot`, 8 lanes with their row buffers and tables, plus `tsr_vu_gdn_fx2f`):
+
+| | CLB | LUT | FF | CARRY8 | DSP | URAM | WNS ns |
+|---|---|---|---|---|---|---|---|
+| (A) one engine, 8 `tsr_fp_mul` + 9 `tsr_fp_add` | 1,041 | 4,568 | 5,203 | 208 | 16 | 0 | +2.32 |
+| (A) two engines (u', w), twice the line above | 2,082 | 9,136 | 10,406 | 416 | 32 | 0 | |
+| (B) dot array, 8 lanes (36 DSP48E2 chains and accumulators, B1 and T RAMs) | 258 | 877 | 989 | 0 | 36 | 16 | +1.84 (placed) |
+| (B) converter `tsr_vu_gdn_fx2f` | 94 | 415 | 536 | 22 | 0 | 0 | +2.46 |
+| (B) total | 352 | 1,292 | 1,525 | 22 | 36 | 16 | |
+
+The dot products of (B) take 17 % of the CLB of (A) and 14 % of the LUT, with 4 more DSP and the 16 URAM that hold the row
+and the tables (the row buffer is needed by (A) as well, in LUTRAM or URAM). For the whole unit that is about
+1,750 − 352 + 2,082 = 3,480 CLB with (A) against 1,750 CLB with (B), derived from the measured blocks.
+
+**Decision VU-29:** (B). The same accuracy as (A), no f32 adder in the dot products: 352 CLB and 36 DSP instead of 2,082 CLB
+and 32 DSP.
+
+#### 7.12.7 The element update stays f32 (VU-30)
+
+After (B) the largest CLB consumer of the unit is the update itself: per lane FM(α, S), FM(e, k) and FA,
+4,536 of the unit's 7,784 LUT (58 %), 32 of its 72 DSP. Can it move into the DSP as well? The block-frame alternative computes
+S'_j = α S_j + e k_j as integer products of the row-aligned S and the table-aligned k (the DSP would
+add both products), and converts each element to f32 (leading zero count, shift, round). It needs no f32 adder
+and no exponent compare or swap, only a normaliser per lane. The two terms have different frames. Either the
+scalar mantissa of the smaller term is shifted before the product (the DSP has no product shifter), or the
+element of S is aligned again with an extra shift per row. `gdn_accuracy.py update` measures it against the f32 update with the
+same dot products, ‖S − S_ref‖_F / ‖S_ref‖_F after 8,192 steps:
+
+| α per token | f32 update | block frame, 26-bit window, rounded | truncated | 24-bit window, truncated |
+|---|---|---|---|---|
+| ≈ 0.9 | 0.9 · 10⁻⁷ | 2.2 · 10⁻⁷ | 2.3 · 10⁻⁷ | 4.2 · 10⁻⁷ |
+| ≈ 0.999 | 4.1 · 10⁻⁷ | 5.2 · 10⁻⁷ | 8.7 · 10⁻⁷ | 1.0 · 10⁻⁵ |
+| ≈ 0.99999 | 4.8 · 10⁻⁷ | 7.5 · 10⁻⁷ | 1.4 · 10⁻⁶ | 1.5 · 10⁻⁵ |
+
+The best variant is 1.3 to 2.5 times worse, the cheaper ones up to 30 times: elements that are small
+against their row keep fewer bits, and every step re-truncates them. It would also need a second set of
+row shifters (the extra shift depends on e, which is known only after the dot pass) and a 50-bit normaliser per
+lane, about 50 CLB against 137 for FM + FM + FA (*estimates*, nothing was built), a saving of about 600 CLB for a
+state that is no longer an f32 state element by element. Not chosen. The element update remains `FA(FM(α, S), FM(e, k))` on the VU primitives
+(bit-exact with the CPU kernel's decay and multiply-add up to FMA contraction), and
+`TSR_FP_ADD_DSP=1` (the DSP-aligned adder of §7.10) applies to it unchanged. A DSP-ALU adder (alignment and
+add in one slice, normalisation in a second) is the next lever: the Xilinx IP reaches 44 CLB with two DSP
+(§7.10); nine such adders would save about 300 CLB.
+
+#### 7.12.8 Throughput and latency
+
+Measured on the RTL (`tb/gdn/test_gdn.py`, 200 MHz = 5.0 ns assumed; cycles are exact):
+
+- **Rate.** One beat of 8 words per cycle at the input and at the output, whatever the shape (m = 64, 128, 256), once the
+  tables of the head are ready; consecutive heads cost only the pseudo row (m / 8 beats). A head of 128 × 128 takes
+  129 × 16 = 2,064 cycles. The planned model: 48 × 48 heads × 2,064 = 4.76 M cycles = **23.8 ms per token** at 200 MHz
+  (11.9 ms with LANES = 16, 1,032 cycles per head).
+- **Setup** of a head: about 4 m + rows + 45 cycles (128 × 128: 650 cycles), overlapped with the rows of the previous
+  head. A change of m between heads costs about 100 cycles while the rows of the old shape drain.
+- **Latency** of the idle pipeline: last input beat of a row to its first S' beat NB + 52 cycles (NB = m / 8: 60 for
+  m = 64, 68 for 128, 84 for 256); first input beat to last S' beat 3 NB + 50. The head's `done` comes one cycle
+  after its last S' beat.
+- **Rows in flight:** (3 NB + 50) / NB: 6.1 for m = 128, 9.3 for m = 64, 15.5 for m = 32 (NB = 4, the smallest shape).
+  16 slots hold them; m = 32 would use nearly all of them.
+
+#### 7.12.9 Area, placement and timing
+
+Out of context, `xcu200-fsgd2104-2-e`, 5.0 ns, input and output delay 2.4 ns, default `synth_design`, `opt_design`,
+`place_design`, `phys_opt_design`, `route_design` (`tb/gdn/viv/gdn_ooc.sh`, through `hw/u200/vivado_slot.sh`; CLB is the tile
+count of `report_utilization` and carries the placer's spread of 1.7 to 2 times LUT / 8; at the 85 % of the K4 image the
+placer packs tighter, so the tile count in the image lies between LUT / 8 and the figure below):
+
+| `tsr_vu_gdn` | CLB | LUT | FF | CARRY8 | DSP | URAM | WNS ns | WHS ns |
+|---|---|---|---|---|---|---|---|---|
+| 8 lanes, default RTL | 1,750 | 7,784 | 8,075 | 334 | 72 | 34 | +0.55 | +0.02 |
+| 8 lanes, `TSR_FP_ADD_DSP=1` (the DSP-aligned adder of §7.10 for the 9 `tsr_fp_add`) | 1,662 | 7,312 | 7,823 | 334 | 81 | 34 | +0.60 | +0.02 |
+| 16 lanes (`LANES=16 NB_MAX=16`, rows of up to 256) | 2,904 | 13,275 | 13,874 | 598 | 136 | 66 | +0.48 | +0.02 |
+
+The worst setup slack is on an input port (`vec_valid` to the write enable of a key RAM, 2.4 ns of input delay); the worst
+register-to-register slack is +1.15 ns, 0 failing endpoints, so the 8-lane unit has margin at 5.0 ns. The 4.0 ns of
+the 250 MHz core clock was not run.
+
+Where the resources go (default RTL, 8 lanes; Vivado hierarchical report after route):
+
+| Block | LUT | FF | DSP | URAM |
+|---|---|---|---|---|
+| update array: 8 × (2 `tsr_fp_mul` + `tsr_fp_add`), RAM B2, KF | 4,786 | 5,053 | 32 | 16 |
+| dot array: 8 lanes, 4 chains, accumulators, RAM B1, T | 944 | 985 | 36 | 16 |
+| converter | 486 | 518 | 0 | 0 |
+| setup engine (one `tsr_fp_mul`, scratch RAM) | 535 | 441 | 2 | 1 |
+| scalar chain (one `tsr_fp_mul`, one `tsr_fp_add`) | 586 | 510 | 2 | 0 |
+| ingest, exponent tree, slots, launch control, bv RAM | 449 | 568 | 0 | 1 |
+| **Total** | **7,784** | **8,075** | **72** | **34** |
+
+- **DSP** (72 of the SLR1 free 2,200): 36 in the dot array, 4 per update lane for the two multipliers, 2 each in the setup
+  engine and the scalar chain. **URAM** (34 of about 170 free in SLR1): per lane B1, T, B2 and KF, plus scratch and bv.
+- **CLB.** The update array is 61 % of the LUT: each lane is 569 LUT, 403 of them in the f32 adder. The 8-lane unit needs
+  1,750 CLB placed in an empty out-of-context region, 25 % of the roughly 6,900 free tiles of SLR1 in the K4 image (86 % used),
+  or 18 % of SLR0's. With the DSP adder variant it needs 1,662. The 16-lane build needs 2,904 (1.7 times the LUT: the
+  setup engine, converter and scalar chain are shared).
+- **Throughput per CLB.** 8 elements per cycle for 1,750 CLB; the f32-adder version of the dot products would need about
+  3,480.
+- **Placement.** The nets of the update lanes and of the dot array are lane-local; the cascades are DSP columns. The URAM and
+  DSP columns of SLR1 decide the Pblocks; only major blocks (the dot array with its URAM, the update array, the
+  setup engine and scalar chain) would be constrained, as for the K4 builds (AGENTS.md).
+
+Reproduce: `hw/u200/vivado_slot.sh tb/gdn/viv/gdn_ooc.sh build/gdn_ooc/unit top=tsr_vu_gdn srcs=unit flow=route
+[define=TSR_FP_ADD_DSP=1] [LANES=16 NB_MAX=16]`, `top=tsr_vu_gdn_dot srcs=dot`, `top=tsr_vu_gdn_fx2f srcs=fx2f`, and
+`top=tsr_gdn_dota srcs=rtl/core/tsr_fp_pkg.sv,rtl/core/tsr_fp_mul.sv,rtl/core/tsr_fp_add.sv,tb/gdn/viv/tsr_gdn_dota.sv`
+(summary lines: `grep GOOC build/gdn_ooc/<run>/vivado.log`).
+
+#### 7.12.10 Verification
+
+- **Reference** (`sw/sim/tsr_ref_gdn.c`, ctest `ref_gdn`, `ref_gdn_np`). `tests/test_ref_gdn.c`: the conversion
+  against exact long-double arithmetic rounded by the hardware conversion (4 M random cases of every length and
+  exponent, the RNE ties, the carry, the overflow edge, the 2⁻¹²⁶ − 2⁻¹⁵⁰ edge), integer dot products (exact),
+  the window edge (elements 24, 25 and 26 binades below the row maximum), the tables, the head against the float64 recurrence
+  (S' within 1.6 · 10⁻⁷ of the row maximum, o within 1.3 · 10⁻⁷ of Σ|S'q|), α = 0, β = 0, zero state, in place, tails, poison by Inf
+  and NaN. `tests/ref_gdn_np.py` is an independent numpy model written from §7.12.3 (the conversion is derived on the
+  binary32 grid, where the C works from the bit length); it matches the C bit for bit on random and edge heads
+  (Inf, NaN, subnormals, zero rows, exponent spreads; 600 in ctest, 2,000 in a longer run) and on 20,000 conversions. Nine mutants of the C (truncation instead of
+  round half up, the window width and its edge, the tie rule, the FTZ edge, the operand order of e, κ) are killed by one
+  or both.
+- **RTL** (`tb/gdn/test_gdn.py`, Verilator and cocotb, bit-exact against `libtsr_ref.so`):
+  `gdn_fx2f` (6,000 conversions, one per cycle, the tag, the latency), `gdn_dot` (576 rows, the exact sums, including the
+  saturating case that fills the 48-bit accumulators at m = 256), `gdn_upd` (48,640 elements), `gdn_coef` (40 heads: key,
+  tables, bv, exponents, Inf/NaN flags), `gdn_unit` (30 heads of nine data classes with random stalls: model-like, wide
+  exponent spread, zero, tiny, huge, arbitrary bit patterns, one poisoned row, saturating, window edge; every S' and o
+  word), `gdn_unit_latency` and `gdn_unit_rate` (the numbers of §7.12.8; the rate test fails below 0.97 beats per cycle in three heads of one shape),
+  and the same unit tests with `LANES` = 16. Ten mutants of the RTL (alignment width, the sign of the low piece, the tie
+  rule of the converter, the FTZ edge, the rounding of the tables, the operand order of FS, the timing of α, the κ bank,
+  the pseudo row's release, the accumulator restart) are killed; the two that survived the unit test
+  (converter tie, FTZ edge) are killed by `gdn_fx2f`, and a mutant of the window edge that is equivalent (26 instead of 25 for the
+  zero threshold) is explained by the shifter width.
+- **Lint.** `rtl/lint.sh` (Verilator -Wall with the lane, shape and RAM-style variants) and the Xilinx filelist.
+
+#### 7.12.11 Integration, next steps, risks
+
+Out of scope here and listed as the next steps, in order:
+1. **VU integration.** A GDN decoder in `tsr_vu` behind a `HAS_GDN` parameter (default 0): the sequencer fills the vector port
+   and the cfg port from the s registers and the SPM, the reader feeds `in_*` (two beats per line at 8 lanes),
+   the writer takes `out_*` and `o_*` (tail rule), credits for the rows in flight, `done`. Checker class, `CAPS` bit 8,
+   the row for 0x39 in `sw/tables/tsr_tables.py` and the regenerated files, PERF counters.
+2. **Simulator.** The VU unit of `tsr_sim` decoding GDN and calling `tsr_ref_gdn`, and the dispatch checks of §7.12.4.
+3. **Firmware kind.** A `GDN_STATE` op-list kind: `LD` of the tile, the op, `ST`, double-buffered over the heads of a layer;
+   `fw_kind_revs` (docs/versioning.md) for the numerics revision.
+4. **Lowering.** `GGML_OP_GATED_DELTA_NET` and the graph form of the pinned llama.cpp to the kind; q scaled by 1/√S_v
+   before the op; the state tensor layout (rows of S_v contiguous words, [S_v, S_v, H, n_seqs]) is the one assumed here;
+   KDA gates (a per-row α) and the K-snapshot output of the CPU kernel (speculative decoding) are not covered. Check long-sequence
+   state and logits against llama.cpp.
+5. **The surrounding ops.** Convolution (SSM conv1d), L2 norm of q and k, the gates g and β (SOFTPLUS, SIGMOID, EXP: SOFTPLUS
+   needs a stable algorithm and a cost, `docs/design/README.md` §12.6), the output gate and norm.
+6. **Placement.** The unit in SLR1 with Pblocks of the major blocks only (the dot array with its URAM column, the update
+   array); a K4 build with it is a new image and needs the CLB budget of SLR1. The planned Pblocks are shown before the build
+   (AGENTS.md).
+7. **Area.** The DSP-ALU adder of §7.12.7, `TSR_FP_ADD_DSP` for the update lanes, and the 4 ns core clock check
+   (the unit is closed at 5.0 ns).
+
+Risks (also in §12):
+- The CLB cost, 1,750 tiles placed out of context, 25 % of the free tiles of SLR1.
+- Vivado's DSP cascade inference is version-dependent. The structure is checked on 2024.2. If a later version changes it,
+  `tsr_vu_gdn_mac` takes DSP48E2 primitives behind an `ifdef`, with this module as the simulation model (the unisim model runs in
+  XSim, not in Verilator).
+- The URAM read-first rule for a read and a write of one address in one cycle. The ingest never writes beat g of a freed slot
+  before one cycle after the update read of that beat.
+- `d_k` is limited to 256 (the accumulator bound) and `d_v` to the unit's `R_MAX`; the pseudo row means that k is streamed twice.
+- End-to-end quality against llama.cpp is not measured, only the state and the output against float64.
 
 ## 8. Usage (informative; SW builds the kernels)
 
@@ -1308,7 +1745,7 @@ These times sit on the decode critical path. MVMs wait for them.
 
 | Area | VU provides | VU assumes |
 |---|---|---|
-| **EX** | Encodings and checks for 0x12, 0x30–0x33, 0x38, 0x40 (0x13, 0x39–0x3F, 0x41–0x47 stay reserved); the `x16` usage of §5; `OPERAND` conditions and `ERR_INFO` values (§5.9); `CAPS` bits 0, 3, 6, 7; `CFG3[15:0]`; s bank reset +0.0 and unchanged by `SOFT_RESET`; no run-time errors; DQROW's unit = 3 (VU); execution of AT's 0x34–0x37 | Opcode blocks, `x16`, code 13 and the check order of EX §7–§8; PERF slots X + 13 … X + 15 (EX §6); ACTIVE / QHALT gating of `VU_CYCLES`; `SREG` at 0x9C0 |
+| **EX** | Encodings and checks for 0x12, 0x30–0x33, 0x38, 0x40 (0x13, 0x39–0x3F, 0x41–0x47 stay reserved; 0x39 is planned for GDN, §7.12.4); the `x16` usage of §5; `OPERAND` conditions and `ERR_INFO` values (§5.9); `CAPS` bits 0, 3, 6, 7; `CFG3[15:0]`; s bank reset +0.0 and unchanged by `SOFT_RESET`; no run-time errors; DQROW's unit = 3 (VU); execution of AT's 0x34–0x37 | Opcode blocks, `x16`, code 13 and the check order of EX §7–§8; PERF slots X + 13 … X + 15 (EX §6); ACTIVE / QHALT gating of `VU_CYCLES`; `SREG` at 0x9C0 |
 | **AT** | Execution of ASMAX, AMASK, AMERGE and ANORM with the mapping of §7.4 and the rates of §7.9; EXPK (EXP(−∞) = +0, EXP(±0) = 1, no −0 or subnormal results, ≤ 0.53 ulp *model*); RC = `tsr_frecip`; per-head RMSNorm for Gemma's QK norm (§8.1); VOP for the K/V bias and RoPE before QACT; numerics in §6 | AT owns scores (QKᵀ), P·V, the KV layout and its quantization (no VU op writes Q8_0 data), GQA mapping, the kq scale (Gemma 4: 1.0), the semantics and checks of its vector ops (AT §5.4–§5.8) and the FA sequence (AT §6.6) |
 | **CC** | Unit 3 dispatch with `cmd_ready` (accept-ahead) / `done` (no error output); SPM client 4 (pair reads, one write per cycle, R2 / R4 kept); the s bank (16 × 32 FF) exported to `SREG` (0x9C0) and the core window; the checker class (reserved masks, used words, conditions, four tagged extents, command struct ≈ 260 bits); resource figures §7.10 | Taken in CC: four extents per checker class (CC §8.2); I3 S − D ≤ 2 for unit 3 (CC §9.4); queue depth 16; SLR1 placement beside `tsr_spm` and the budget gate of CC §14.1 with the knobs of §7.10 as its first remedy |
 | **DB** | Debug state of §5.10; `VU_CYCLES` and three extension counters; ops always complete in bounded time (≤ ≈ 1 M cycles: COPY of the whole SPM, TOPK worst case); hold points are op boundaries only | DB places the per-unit probes in `DBG_U3_*`, exposes `SREG` (0x9C0), and halts at the queue head (no mid-op halt); there is no s-register debug write in M6 |
@@ -1568,6 +2005,46 @@ The simulator is the oracle; every VU op has a C reference, and the RTL must mat
     lane; the multi-pass mapping matches AT's 1,600-cycle merge tail for 32B and costs ≈ 2 K LUT
     and 2 RAMB36.
 
+- **VU-28 Fused GDN op.**
+  - *Choice:* one op, opcode 0x39, one head per op: state tile in the SPM (rows × m, dense), vectors k, q, v, scalars
+    α, β from s registers; it computes u, e, S' and o in one pass over S. m a multiple of 16, 4 × LANES ≤ m ≤ 256.
+  - *Alternatives:* VOP / RED composition (four passes over S), an op for all heads of a layer, an op per row.
+  - *Rationale:* S (151 MB per token) is read and written once; every head has its own k, q, v, α, β; 48 ops per
+    layer cost nothing next to 2,064 cycles each, and the firmware overlaps `LD` and `ST` with them.
+- **VU-29 Dot products in block fixed point.**
+  - *Choice:* exact integer sums of aligned mantissa products in DSP48E2 cascades: a 26-bit row window (truncated),
+    24-bit table entries in two 13-bit pieces, one RNE conversion per dot product, Inf and NaN poison the row.
+  - *Alternatives:* f32 adder trees with a fixed order (A); 20-, 18- and 16-bit table entries.
+  - *Rationale:* the same accuracy as (A) (dot error 4 · 10⁻⁸ of |S||k|; 32 K-step error of o and S equal to a
+    few percent); no f32 adder (16 + 18 for two engines of (A)); order independent, so lane count and beat order are
+    free; narrower entries lose a factor 7 to 50 (§7.12.6).
+- **VU-30 The element update stays f32.**
+  - *Choice:* S'_ij = FA(FM(α, S_ij), FM(e_i, k_j)) on `tsr_fp_mul` and `tsr_fp_add`.
+  - *Alternatives:* S' as integer products in a block frame with a per-element conversion in the DSP lanes.
+  - *Rationale:* the block-frame form is 1.3 to 30 times less accurate in S and needs a second row aligner and a
+    normaliser per lane; the f32 form is bit-exact with the CPU kernel's decay and multiply-add up to FMA contraction
+    and takes the DSP adder variants unchanged.
+- **VU-31 State tile through the SPM; unit in SLR1.**
+  - *Choice:* `LD` and `ST` move the tile (existing DMA), the op reads and writes the SPM line by line; the unit sits
+    beside the SPM.
+  - *Alternatives:* a direct DDR stream into and out of the unit.
+  - *Rationale:* 16 B of SPM traffic per element is half of the SPM bandwidth at 8 elements per cycle; a direct
+    stream needs a new DRAM path, arbitration and an SLR crossing. SLR1 has the free DSP and URAM; its CLB are the cost.
+- **VU-32 Algebra of the scalars.**
+  - *Choice:* the head table holds αβ k, the setup engine computes β v, e = β v − αβ (S · k); o = α (S · q) +
+    e κ with κ = k · q from a pseudo row that streams k through the dot array.
+  - *Alternatives:* o = S' · q as a second dot product over the new row (a second pass and a second frame per row);
+    κ from two VU ops (MUL, RED) or from a separate MAC.
+  - *Rationale:* both dots of a row run on the old S in one pass; no second pass over S'; the pseudo row costs one row
+    time per head (0.8 %) and no hardware.
+- **VU-33 URAM row buffers, lane cascade.**
+  - *Choice:* per lane four URAM (row buffer for the dot pass, its copy for the update pass, the table RAM, the key
+    RAM), 16 row slots, the lanes started one cycle apart so that the DSP cascade adds a beat without skew registers;
+    all lanes of a chain in one module so that Vivado infers the cascade.
+  - *Alternatives:* wide RAMs with skew registers (about 45 CLB of flip-flops); one buffer with two read passes
+    (three accesses per cycle on two URAM ports); LUTRAM or FF buffers.
+  - *Rationale:* URAM is free in SLR0 and SLR2 and half free in SLR1; the pairs of RAM copies and the per-lane skew cost no CLB.
+
 ---
 
 ## 12. Risks
@@ -1582,6 +2059,9 @@ The simulator is the oracle; every VU op has a C reference, and the RTL must mat
 | Gemma 4 31B dimensions unverified (no 31B GGUF on the build host; 12B is read and confirmed) | 31B head_dim / layer assumptions wrong | limits cover head_dim ≤ 1024 and any vocab; confirm with a 31B GGUF before relying on it |
 | KL on Gemma 4 with FA on has no baseline yet | M7 gate unclear for Gemma | SW sets the FA-on baselines (D17); GELU16 and the RoPE recurrence follow the CPU's forms |
 | TOPK worst case (sorted input) is 16× slower | M9 sampling latency spikes | deterministic bound n cycles (0.95 ms for 262 K); acceptable for greedy decode |
+| GDN unit CLB cost (§7.12.9: 1,750 CLB placed, 25 % of the free tiles of SLR1) in an SLR that is at 86 % CLB | no room in SLR1 for the unit on the K4 image | LANES = 8 is the minimum for 24 ms per token; the DSP adder variants and a DSP-ALU adder (§7.12.7); a second image |
+| GDN DSP cascade inference differs in another Vivado version | the dot array loses its cascades and the accumulators fall back to fabric adders | the structure is checked on 2024.2; `tsr_vu_gdn_mac` is the one module to change to DSP48E2 primitives (the unisim model runs in XSim, not in Verilator) |
+| GDN quality against llama.cpp is measured on float64 only | a model-level difference not seen at the state level | long-sequence logits against the pinned llama.cpp before the firmware kind is accepted (§7.12.11, item 4) |
 
 ## 13. Open items (measurements and confirmations only)
 
