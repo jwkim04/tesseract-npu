@@ -12,6 +12,8 @@
 #          ctl     tsr_core_dp without MVM, VU and attention: the issue path with its checkers, the CSR
 #                  block, the DB block (core side, trace writer, history), DMA, QACT, SPM, the arbiters
 #                  and the XSLR_REG / reset glue, with the K4 parameters
+#   The cl, gather, dma and ctl presets have FAST_CLK 1 (the 250 MHz stages; FAST_CLK=0 gives the 200 MHz netlist). vu: add
+#   HAS_GDN=1 for the fused GDN update (branch gdn-vu), HAS_TOPK=1 for TOPK.
 #   Extra NAME=VALUE arguments after the block's own (they override) go to synth_design -generic; other
 #   arguments (synth_only, place_only, dcp, from=<dcp>, io=, thr=) go to blk_ooc.tcl.
 # Environment: VIVADO_SETTINGS (default /tool/Xilinx/Vivado/2024.2/settings64.sh). Run it through
@@ -19,16 +21,16 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/../../.." && pwd)"
-if [ $# -lt 3 ]; then sed -n '2,19p' "$0"; exit 2; fi
+if [ $# -lt 3 ]; then sed -n '2,21p' "$0"; exit 2; fi
 blk="$1"; per="$2"; out="$3"; shift 3
 case "$blk" in
-  cl)     top=tsr_mvm_cluster; p=(CH=0 NUM_CH=4 HAS_ATT=1 T_MAX=4 MAC_LAT=9 RST_COPY=1) ;;
-  gather) top=tsr_mvm_gather;  p=(HAS_ATT=1 NUM_CH=4 T_MAX=4 SPM_RD_LAT=4 JOB_PIPE=2 GATHER_PAIR=1 GATHER_FLITS=2 XSLR_REG=1) ;;
+  cl)     top=tsr_mvm_cluster; p=(CH=0 NUM_CH=4 HAS_ATT=1 T_MAX=4 MAC_LAT=9 RST_COPY=1 FAST_CLK=1) ;;
+  gather) top=tsr_mvm_gather;  p=(HAS_ATT=1 NUM_CH=4 T_MAX=4 SPM_RD_LAT=4 JOB_PIPE=2 GATHER_PAIR=1 GATHER_FLITS=2 XSLR_REG=1 FAST_CLK=1) ;;
   vu)     top=tsr_vu;          p=(NUM_CH=4 SPM_RD_LAT=4 FRONT_LANES=8 EXP_LANES=8 BACK_LANES=4 LANE_PIPE=2) ;;
-  dma)    top=tsr_dma;         p=(NUM_CH=4 SPM_RD_LAT=4 HAS_KVST=1) ;;
+  dma)    top=tsr_dma;         p=(NUM_CH=4 SPM_RD_LAT=4 HAS_KVST=1 FAST_CLK=1) ;;
   spm)    top=tsr_spm;         p=(RD_LAT=4) ;;
   qact)   top=tsr_qact;        p=(T_MAX=4 SPM_RD_LAT=4) ;;
-  ctl)    top=tsr_core_dp;     p=(NUM_CH=4 T_MAX=4 HAS_MVM=0 HAS_VU=0 HAS_ATT=0 SPM_RD_LAT=4 DDR_LOCAL_PIPE=1 RV_LOCAL_TRANSPORT=1 XSLR_REG=1 RST_PIPE=3) ;;
+  ctl)    top=tsr_core_dp;     p=(NUM_CH=4 T_MAX=4 HAS_MVM=0 HAS_VU=0 HAS_ATT=0 SPM_RD_LAT=4 DDR_LOCAL_PIPE=1 RV_LOCAL_TRANSPORT=1 XSLR_REG=1 RST_PIPE=3 FAST_CLK=1) ;;
   *) echo "blk_ooc.sh: unknown block '$blk' (cl, gather, vu, dma, spm, qact, ctl)" >&2; exit 2 ;;
 esac
 mkdir -p "$out"

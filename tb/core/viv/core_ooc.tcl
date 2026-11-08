@@ -21,6 +21,7 @@
 #                 configured by TSR_SLR_* environment variables, see its header).
 #   place= / phys= / route=  -directive of place_design / phys_opt_design / route_design.
 #   prphys        phys_opt_design once more after routing.
+#   period=<ns>   core clock period (default 3.333); rvperiod=<ns> the clk_rv period (default 6.0)
 #   unc=<ns>      extra setup uncertainty on clk (the platform's MMCM jitter is not modelled by
 #                 default, as in the block runs of tb/tech/viv and tb/qact/viv).
 # Constraints as tb/qact/viv/qact_ooc.tcl: 3.333 ns clock, every I/O budgeted 1.6 ns outside (the
@@ -44,6 +45,8 @@ set pdir ""; set odir ""; set rdir ""
 set prphys 0
 set place_only 0
 set unc ""
+set period 3.333
+set rvperiod 6.000
 set gens [dict create]
 foreach a [lrange $argv 2 end] {
   if {$a eq "synth_only"} {
@@ -68,6 +71,10 @@ foreach a [lrange $argv 2 end] {
     set rdir $v
   } elseif {[regexp {^unc=(.*)$} $a -> v]} {
     set unc $v
+  } elseif {[regexp {^period=(.*)$} $a -> v]} {
+    set period $v
+  } elseif {[regexp {^rvperiod=(.*)$} $a -> v]} {
+    set rvperiod $v
   } elseif {[regexp {^([A-Za-z_][A-Za-z0-9_]*)=(.*)$} $a -> k v]} {
     dict set gens $k $v      ;# a later NAME=VALUE overrides an earlier one
   } else {
@@ -91,10 +98,10 @@ if {$from eq ""} {
   # size rule of rtl/tech/xilinx/tsr_sram_1r1w.sv (synth WNS -1.257 ns with the ITCM in a URAM cascade)
   read_xdc $repo/rtl/ctrl/viv/tsr_ctrl_tcm.xdc
   synth_design -mode out_of_context -part xcu200-fsgd2104-2-e -top tsr_core {*}[tsr_synth_opts $fld] {*}$genargs
-  create_clock -name clk -period 3.333 [get_ports clk]
+  create_clock -name clk -period $period [get_ports clk]
   # the control core's clock (CC §11.1, 166.7 MHz) and its crossings (rtl/ctrl/viv/tsr_ctrl_cdc.xdc takes
   # both clocks from the ports named below; the report_cdc waivers are tsr_cdc_waivers.tcl)
-  create_clock -name clk_rv -period 6.000 [get_ports clk_rv]
+  create_clock -name clk_rv -period $rvperiod [get_ports clk_rv]
   set_input_delay  -clock clk 1.6 [get_ports -filter {DIRECTION == IN && NAME != clk && NAME != clk_rv}]
   set_output_delay -clock clk 1.6 [get_ports -filter {DIRECTION == OUT}]
   set tsr_cdc_core_port clk

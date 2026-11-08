@@ -851,6 +851,24 @@ module tsr_mvm_gather
     logic        rv_done;
     logic [6:0]  rv_a;
     wire         t_in = take & att_q & j_tail[15];
+    // FAST_CLK: the taken line, its tail flags and the tracker's strobe pass one register before the key tree, so the pair link's
+    // slot mux, the job mux and the key conversion are not in one cycle (a row maximum is in the table one cycle later; tr_n_q
+    // counts the item from t_in on, the emitter starts only after the tree has drained)
+    logic        t_in_d;
+    logic [7:0]  tail_d;                   // {j_tail[14], j_tail[6:0]}
+    line_t       jy_d;
+    if (FAST_CLK) begin : g_ti
+      always_ff @(posedge clk) begin
+        if (!rst_n) t_in_d <= 1'b0;
+        else        t_in_d <= t_in;
+        tail_d <= {j_tail[14], j_tail[6:0]};
+        jy_d   <= j_y;
+      end
+    end else begin : g_ti0
+      assign t_in_d = t_in;
+      assign tail_d = {j_tail[14], j_tail[6:0]};
+      assign jy_d   = j_y;
+    end
     function automatic logic [32:0] kmax(logic [32:0] a, logic [32:0] b);
       return (a >= b) ? a : b;
     endfunction
@@ -866,7 +884,7 @@ module tsr_mvm_gather
         mx_run_q  <= 1'b0;
         fresh_q   <= '1;
       end else begin
-        tv_q[0] <= t_in;
+        tv_q[0] <= t_in_d;
         for (int i = 1; i < 5; i++) tv_q[i] <= tv_q[i-1];
         pw_v_q  <= tv_q[4];
         tr_n_q  <= tr_n_q + 3'(t_in) - 3'(tv_q[4]);
@@ -895,9 +913,9 @@ module tsr_mvm_gather
         atq_q <= att_tq; ags_q <= att_gs; atact_q <= att_tact; anseg_q <= att_nseg; ag_q <= att_g;
         ahg0_q <= att_hg0; anh_q <= att_nhead; amd_q <= att_mdst;
       end
-      te_q[0] <= j_tail[6:0];
+      te_q[0] <= tail_d[6:0];
       for (int i = 1; i < 5; i++) te_q[i] <= te_q[i-1];
-      for (int l = 0; l < 16; l++) k0_q[l] <= tsr_att_maxkey(j_y[j_tail[14] ? 0 : l]);
+      for (int l = 0; l < 16; l++) k0_q[l] <= tsr_att_maxkey(jy_d[tail_d[7] ? 0 : l]);
       for (int l = 0; l < 8; l++)  k1_q[l] <= kmax(k0_q[2*l], k0_q[2*l+1]);
       for (int l = 0; l < 4; l++)  k2_q[l] <= kmax(k1_q[2*l], k1_q[2*l+1]);
       for (int l = 0; l < 2; l++)  k3_q[l] <= kmax(k2_q[2*l], k2_q[2*l+1]);
@@ -943,7 +961,9 @@ module tsr_mvm_gather
   logic              ap_v;
   logic [MT_W-1:0]   ap_d;
 
-  tsr_rslice #(.W(IS_W)) u_iss (
+  // FAST_CLK: two slots with copied pointers (cycle-identical): the SPM's read grant (m_ready) then reaches five control flops and
+  // not the 560 payload enables of the main entry
+  tsr_rslice #(.W(IS_W), .FORM(FAST_CLK ? 1 : 0), .RPC(FAST_CLK ? 8 : 1)) u_iss (
     .clk, .rst_n,
     .s_valid(take & acc_q), .s_ready(iss_s_ready), .s_data({j_line, j_own, j_tail, j_y}),
     .m_valid(iss_v), .m_ready(spm_rd_req_ready), .m_data(iss_d)

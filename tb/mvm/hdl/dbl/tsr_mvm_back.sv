@@ -35,6 +35,7 @@ module tsr_mvm_back
   parameter  int unsigned MAC_LAT    = TSR_DEF_MAC_LAT,
   parameter  int unsigned MUL_LAT    = TSR_DEF_FMUL_LAT,
   parameter  int unsigned ADD_LAT    = TSR_DEF_FADD_LAT,
+  parameter  bit          FAST_CLK   = 1'b0,          // the real back end's PV mode copies (ignored: the double has no PV)
   localparam int unsigned QS_WORDS   = tsr_actbuf_qs_words(K_MAX),
   localparam int unsigned DBS_LINES  = tsr_actbuf_dbs_lines(K_MAX),
   localparam int unsigned QS_AW      = (QS_WORDS > 1) ? $clog2(QS_WORDS) : 1,

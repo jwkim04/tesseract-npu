@@ -598,7 +598,7 @@ def test_core(cfg):
     _run(seed=seed + int(os.environ.get("TSR_SEED", "1"), 0) - 1, rv_ps=rv_ps)   # --tsr-seed shifts all
 
 
-def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu=False, rv_local=False):
+def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu=False, rv_local=False, fast_clk=False):
     """core_m7 of one case: the scenario from the simulator, the RTL core built with its configuration
     (lane_pipe: VU_LANE_PIPE, the k4 bitstream's register stages around the VU lanes)."""
     from common.runner import run
@@ -613,6 +613,8 @@ def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu
         params["VU_LANE_PIPE"] = lane_pipe
     if ddr_pipe:
         params["DDR_LOCAL_PIPE"] = ddr_pipe
+    if fast_clk:
+        params["FAST_CLK"] = 1
     if rv_local:
         # the packaged image's control plane: DONE_REG on every unit done strobe, MT_PIPE on the DB memory taps and
         # the cluster reset copies (RST_PIPE 3); the VU and the AT units are in the core
@@ -624,7 +626,7 @@ def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu
     if mut:
         env["TB_M7_LIMIT"] = "300000"                 # core cycles to wait for the answer (the decode case needs ~60 K)
     run("tsr_core", __name__, parameters=params, sources=_sources(mut),
-        name=("core_m7_rv_local" if rv_local else "core_m7_half_vu" if half_vu else
+        name=("core_m7_fast" if fast_clk else "core_m7_rv_local" if rv_local else "core_m7_half_vu" if half_vu else
               ("core_m7" if not lane_pipe else "core_m7_pipe%d" % lane_pipe)) if not mut else "core_m7_mut_" + mut,
         seed=seed, testcase=["core_m7"], extra_env=env, timescale=("1ps", "1ps"))
 
@@ -653,6 +655,15 @@ def test_core_m7_rv_local(m7case):
     registers, the PERF event counters, the history and the trace records.
     """
     _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0), rv_local=True)
+
+
+def test_core_m7_fast(m7case):
+    """Production decode / prefill on the packaged control plane with FAST_CLK 1 (the 250 MHz stages, docs/platform-u200.md
+    §8.9): every comparison of core_m7 unchanged (output rows and KV planes bit for bit, Q_DONE / Q_ISSUED / Q_ERR_CODE per
+    unit, the s registers, the PERF event counters, the history and the trace records). The attention ops of the M7 layer run
+    the three-stage row-vector emitter, the five-stage PV convert pipeline and the KVST placer with the extra stage."""
+    _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0), rv_local=True, fast_clk=True, lane_pipe=2, ddr_pipe=1,
+            half_vu=True)
 
 
 def test_core_m7_ddr_local(m7case):
