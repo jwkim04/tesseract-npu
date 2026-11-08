@@ -1490,7 +1490,7 @@ inputs and args. It compares DONE, every output byte and the per-unit completion
   The budget applies to the production image (`tsr-fw.elf`; `fw_elf_image`,
   `fw_elf_test_image`); test images (production plus test kernels) are stamped against the whole ITCM.
 
-### 7.9 MoE kinds (SW-60 to SW-66, SW-76)
+### 7.9 MoE kinds (SW-60 to SW-66, SW-76, SW-77)
 
 Status: built and checked on the simulator (November 2026). On the card since 2026-11-09 with the K4 full-feature image ([klcheck.md](../klcheck.md), [performance.md](../performance.md)): the KL checks pass and the logits are bit-identical to the simulator. Source: `sw/ctrl/kernels/k_moe.cpp`,
 planners `tsr/plan_moe.hpp`, references `sw/ctrl/ref/moe_ref.cpp` and `tsr_ref_moe_route` (`sw/sim/tsr_ref_vu.c`),
@@ -1598,7 +1598,7 @@ into the first line of each of the `T` rows of the ARGSORT tensor, the weights i
 `ceil(T k / 16)` lines). The record reads the logits tile by tile and stores the outputs of a tile before it loads the next
 one. ggml-alloc plans the graph node by node, with the group's nodes one after the other, so it may put the DIV tensor or the
 ARGSORT tensor over logits that the record still has to read: the weights of Gemma 4's layer 28 lie at the start of the
-logits at 256 tokens, and the layer test of Qwen3-30B-A3B (branch `moe-qwen3`) met a layout of this kind in layer 0 at 70 tokens. The
+logits at 256 tokens, and the layer test of Qwen3-30B-A3B (SW-77) met a layout of this kind in layer 0 at 70 tokens. The
 first build refused such a layout and aborted at `-ub 256` and above for Gemma 4 (the default is `-ub 512`) and at `-ub 128` for Qwen3. The CPY records run after the record is done, so after every load, and no placement of the two tensors can hurt a
 later tile. The scratch is one window in device DRAM, taken at the first such route from the top of IO (1 MiB, or more when the
 route needs more; it is replaced by a larger window when a later route needs more: 192 KiB at 2,048 tokens and k = 8). All
@@ -1614,6 +1614,38 @@ middle and at the end of the logits, the ids over the logits row for row and a t
 **Limits.** n_expert ≤ 512 for MOE_ROUTE and a multiple of 16 (the ids rows are whole lines); k ≤ 16; ≤ 4,096 experts
 per tensor; N a multiple of 16; K a multiple of the format's block; softmax gating with a normalised top-k only (no
 bias, group selection, sigmoid or softmax-after-top-k: those graphs run the router on the CPU).
+
+**SW-77 The Qwen3-30B-A3B graph (llama.cpp `qwen3moe`).** `src/models/qwen3moe.cpp` calls the same `build_moe_ffn` with
+softmax gating and `norm_w`, so its router group is the one of SW-64 and the kinds, planners and fusion pass did not change.
+The model: 48 layers, hidden size 2,048, 128 experts of width 768 with 8 used, no shared expert, no dense branch. Where
+the graph differs from Gemma 4's, in node order:
+
+- Attention: a Q of 4,096 elements for a hidden size of 2,048 (32 heads of 128, 4 KV heads, G = 8), RMS_NORM with a
+  `[128]` weight on every head of Q and K before the NEOX RoPE (as Gemma 4 and Qwen3.8 have), full attention in every
+  layer, no V norm, no post norms, no layer scale, no soft cap. These are existing records.
+- Router: the MUL_MAT of `ffn_gate_inp` (F32 `[2048, 128]`, converted to Q8_0 at load) reads the normed FFN input that the
+  experts read. Gemma 4 puts RMS_NORM, SCALE and MUL by `ffn_gate_inp.scale` in front of it.
+- Experts: gate and up are two tensors (`ffn_gate_exps`, `ffn_up_exps`, Q4_K `[2048, 768, 128]` in every layer), read by
+  two MUL_MAT_IDs with the same ids and the same input (up first), and the activation is `swiglu_split` of their two
+  results (GLU SWIGLU of two contiguous `[768, 8, T]` tensors, the split form the dense models use). Gemma 4 has one
+  `ffn_gate_up_exps` and a GEGLU of two views of its result. The down tensor is Q4_K in 24 layers and Q6_K in the other
+  24 (`[768, 2048, 128]`; Q6_K is converted to Q8_0 at load, SW-60); the device holds 19.8 GB of weights.
+- No per-expert output scale: there is no REPEAT / GET_ROWS / MUL chain, so the scale group of SW-64 does not form. The
+  down MUL_MAT_ID is lowered alone, with no table and no CPY, and the MUL by the router weights (`[1, 8, T]` against
+  `[2048, 8, T]`) is an ordinary MUL record.
+
+`hparams.expert_weights_scale` is 0 for the family, so `build_moe_ffn` adds no SCALE node after the DIV. Nothing was
+patched in llama.cpp. A decode token is one launch of 1,397 records (the same count for a prefill ubatch): per layer 29
+records, namely 5 MUL_MAT (q, k, v, o, router; the residual ADD after the output projection is fused into it, SW-42),
+4 RMS_NORM (attention norm, Q norm, K norm, FFN norm), 2 ROPE, 2 SET_ROWS_KV, 1 FLASH_ATTN, 1 MOE_ROUTE, 3 MUL_MAT_ID, 1 GLU,
+1 MUL (the router weights), 8 ADD (seven for the sum of the experts, one residual) and 1 JOIN; the end of the graph adds 5 (output norm,
+the output MUL_MAT, two GET_ROWS of the output rows, one ADD). Tests (no model file needed): `ggml_tesseract_moe*` build the Qwen3 layer next to
+the Gemma 4 one (`test-tsr-moe`: T = 1 to 256 against the CPU in the four kind configurations; 65, 70, 130 and 256 tokens are several
+tiles, whose router outputs go through the scratch of SW-76), and `ggml_tesseract_graph_qwen3moe_tiny` / `_q4k` run a 2-layer model of the
+same graph (`gen_tiny_models.py`: 64 experts, 8 used, head size 128 with G = 8, Q 4 times the hidden size) through klcheck
+with the M7 settings (one launch per decode, one per prefill ubatch, KL against the CPU, `tiny.cmake`). Prefill of the real
+model runs at the default `-ub 512` since SW-76: on the card a 512-token prompt gives 26.72 tok/s best and 26.60 median, and
+513 of 513 rows are bit-identical to the simulator ([klcheck.md](../klcheck.md)).
 
 ### 7.10 Gated DeltaNet and the Qwen3.5 / 3.8 layer graph (SW-67 to SW-74)
 
@@ -2579,6 +2611,7 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
 | SW-74 | GDN test method (2026-11-09; §10.2) | Tiny Qwen3.5-style models (S_v 32 and 128, 3 GDN + 1 attention layer) with klcheck graph tests; `test-tsr-gdn-logits` compares the logits of every step of 1, 2, 5 and 17 token prompts with the CPU's (cosine ≥ 0.9995, largest difference ≤ 3 % of the logit range); klcheck's embd path writes the four M-RoPE position streams | klcheck's KL alone | klcheck's KL missed a convolution that returned zeros on the tiny model (ratio 1.2): a random tiny model hides a wrong hidden state. klcheck's embedding input path gave an M-RoPE model one position per token, where llama.cpp reads four, section-major; the CPU's embd path then differed from its token path (KL 6.5e-3 on the 2B, equal to the "floor"). klcheck now writes `[p, p, p, 0]` in that layout, and the embd identity is bit-exact (512 of 512 rows). |
 | SW-75 | ITCM budget of the merged firmware (2026-11-09; §7.8; amends SW-38) | 96 KiB (98,304 B) for the production image, 32 KiB of the 128 KiB ITCM left for M9, sampling and debug formatting. The measured image with the MoE kinds (SW-61, SW-62) and the Gated DeltaNet kinds (SW-67 to SW-69) together is 84,056 B (DTCM 50,088 B, budget unchanged at 56 KiB). `tsr-elf` takes 96 KiB as its default and `sw/ctrl/CMakeLists.txt` passes it to the production image as `--budget-itcm`; test images stay stamped against the whole ITCM. The BIG_TEXT test image of `fw_elf` grows to 98 KiB of code so that it stays over the budget | keep 80 KiB and remove code (the general paths are already compiled for size; each fast path is a leaf because a shared body cost 22–29 cycles per record, SW-38); 112 KiB or the whole 128 KiB | SW-38 sized the budget for the M7 kinds and set aside the upper 48 KiB of the ITCM for "M8 MoE / M9" (CC-3). The two feature branches each measured below 80 KiB (78,520 B and 78,576 B) and the merge is 2.1 KB over it: this is that reserved use, taken as the amount the image needs plus 14 KB of headroom. No feature is removed and no kind loses its fast path |
 | SW-76 | MOE_ROUTE outputs with several tiles (2026-11-09; §7.9; amends SW-64) | A route of more than 64 tokens writes its ids and weights to a device scratch window (taken from the top of IO, grown when needed, shared by all layers) and two CPY records move them into the ARGSORT and DIV tensors after the record. One tile (decode, up to 64 tokens): unchanged. No firmware change, no kind revision: same words, same output bits | the refusal of SW-64 for a layout that overlaps a later tile (it aborted Gemma 4 prefill at `-ub 256` and above, the default `-ub 512` included); an exact per-tile overlap check (accepts the layouts seen, still refuses others); firmware that holds the outputs of all tiles in the SPM until the last load (the ring cannot hold a block across its wrap, and T has no bound); reversing the tile order or one record per tile (a layout can still need a cycle); outputs in the unused tails of the ARGSORT rows (the weights are packed, a pack pass would be new firmware) | The allocator's layout is not a fact the record can rely on: a record that reads for a long time cannot be told apart from its outputs by address. The scratch makes the outputs independent of every placement and costs two small CPY records per layer in prefill. It needs no ITCM (the image stays 84,056 B) and leaves decode and its op lists as they were. The ctest cases place the outputs by hand over the logits of later tiles, which the old build refused and a direct store corrupts |
+| SW-77 | Qwen3 MoE graph (2026-11-09; §7.9) | llama.cpp's `qwen3moe` graph (the router group of SW-64, separate gate and up experts with SWIGLU, no per-expert scale, Q and K norms) runs on the existing kinds and lowering; the work is tests (`test-tsr-moe` Qwen3 layer, two tiny `qwen3moe` models with klcheck graph tests at `--min-kl` 1e-3) and records; prefill at `-ub 64` until SW-76 handled the several-tile route, then at the default `-ub 512` | a Qwen3-specific fusion pass or kind; a llama.cpp patch | `build_moe_ffn` is the same function for both models, so the fusion pass already finds the group by its nodes; the missing scale group only means the down MUL_MAT_ID is lowered alone. Card: klcheck M7 8 x 64 ratio 0.813, top-1 96.68 %, 512 of 512 rows bit-identical to the simulator; decode 15.8 tok/s, 11.34 M device cycles per token; with SW-76, a 512-token prefill at `-ub 512`: 26.72 tok/s best, 26.60 median, 513 of 513 rows bit-identical to the simulator |
 
 ---
 

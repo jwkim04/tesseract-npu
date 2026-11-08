@@ -1285,6 +1285,10 @@ M7 settings, one launch per token: ratio 0.742, top-1 94.53 %. A decode token re
 read a beat): 13.2 tok/s at the 200 MHz of the current card image, 18.2 tok/s at 276.3 MHz, device time only. The experts
 are 4.14 M of the beats; the output head (3.07 M) and the dense branch and attention weights (5.87 M) are the rest.
 
+Qwen3-30B-A3B (llama.cpp `qwen3moe`: 48 layers, 128 experts of width 768, 8 used, no shared expert and no scale per expert) runs on
+the same kinds and the same backend (SW §7.9, SW-77): klcheck M7 ratio 0.813 and top-1 96.68 % on the card, with the logits
+bit-identical to the simulator, 15.8 tok/s decode and 26.7 tok/s at a 512-token prefill (the default `-ub 512`, SW-76) on the card (`docs/performance.md`).
+
 Milestone M5 was merged into M8 (D14). The router and the expert tensors are placed as sections 4
 and 5 say.
 

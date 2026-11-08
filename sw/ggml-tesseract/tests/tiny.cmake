@@ -6,7 +6,8 @@
 # build time, into ${TSR_TINY_MODEL_DIR}:
 #   qwen2-tiny-q8_0.gguf, qwen2-tiny-q4_k.gguf (2 layers), gemma4-tiny-q8_0.gguf (4 layers, 3 SWA +
 #   1 full), qwen35-tiny-q8_0.gguf and qwen35-tiny-s128-q8_0.gguf (Qwen3.5 / 3.8 layout: 3 Gated DeltaNet
-#   layers and 1 full attention layer; S_v 32 and 128), tiny-prompts.txt — random weights, 64-row
+#   layers and 1 full attention layer; S_v 32 and 128), qwen3moe-tiny-q8_0.gguf and qwen3moe-tiny-q4_k.gguf
+#   (Qwen3-30B-A3B's graph: 2 layers, 64 experts, 8 used), tiny-prompts.txt — random weights, 64-row
 #   vocabularies, no binary in git.
 #
 # Graph tests (m7_tests.py graph): klcheck generates with the M7 settings (--phase m7) on the device;
@@ -38,6 +39,12 @@
 # 8.1e-3; Qwen2 freq_base x 1.001: 4.2e-4; eps 1e-6 -> 1e-3: 4.4e-4. --min-top1 0.95 (the spec's
 # 0.8 would pass the sliding-window error). Against the mean of three floors the Gemma 4 M7 ratio is
 # 1.7 (0.79 to 4.8 per seed); --min-kl stays.
+# The Qwen3 MoE models (SW-77; 96 positions, mean of three floors) have the same shape of result: the 1-ulp floor of a
+# 2-layer random model with a router is small, the device's mean KL is 3.98e-4 (Q8_0, ratio 11.5, floor 3.5e-5) and
+# 5.84e-4 (Q4_K, ratio 4.7, floor 1.2e-4), top-1 100 %. M6 on the Q8_0 model (the CPU selects the experts, the device
+# runs the matrix products) gives 4.85e-4, so the routing on the device is not the larger part. --min-kl 1e-3
+# (openTPU's MAX_KL form, docs/klcheck.md) is 2.5 times the Q8_0 value; a router or expert error of the size of a wrong
+# expert gives mean KL above 1e-1.
 #
 # test-backend-ops (m7_tests.py ops): one ctest per op filter, Tesseract0 vs CPU on the sim with the
 # race detector fatal: every supported case must pass, at least MIN_RUN cases must be supported, the
@@ -85,7 +92,8 @@ foreach (_cand ${_tiny_candidates})
 endforeach()
 
 set(_tiny_tests ggml_tesseract_graph_qwen_tiny ggml_tesseract_graph_qwen_tiny_q4k ggml_tesseract_graph_gemma_tiny
-                ggml_tesseract_graph_qwen35_tiny ggml_tesseract_graph_qwen35_tiny_s128)
+                ggml_tesseract_graph_qwen35_tiny ggml_tesseract_graph_qwen35_tiny_s128
+                ggml_tesseract_graph_qwen3moe_tiny ggml_tesseract_graph_qwen3moe_tiny_q4k)
 if (NOT _tiny_py)
     set(_tiny_msg "tiny models: no Python with numpy and gguf-py among '${_tiny_candidates}'; set -DTSR_TINY_PYTHON=<python with numpy> (sw/ggml-tesseract/tests/tiny.cmake)")
     message(WARNING "${_tiny_msg}")
@@ -98,7 +106,8 @@ message(STATUS "tiny models: gen_tiny_models.py run by ${_tiny_py}")
 
 set(_tiny_outputs ${TSR_TINY_MODEL_DIR}/qwen2-tiny-q8_0.gguf ${TSR_TINY_MODEL_DIR}/qwen2-tiny-q4_k.gguf
                   ${TSR_TINY_MODEL_DIR}/gemma4-tiny-q8_0.gguf ${TSR_TINY_MODEL_DIR}/qwen35-tiny-q8_0.gguf
-                  ${TSR_TINY_MODEL_DIR}/qwen35-tiny-s128-q8_0.gguf ${TSR_TINY_MODEL_DIR}/tiny-prompts.txt)
+                  ${TSR_TINY_MODEL_DIR}/qwen35-tiny-s128-q8_0.gguf ${TSR_TINY_MODEL_DIR}/qwen3moe-tiny-q8_0.gguf
+                  ${TSR_TINY_MODEL_DIR}/qwen3moe-tiny-q4_k.gguf ${TSR_TINY_MODEL_DIR}/tiny-prompts.txt)
 add_custom_command(
     OUTPUT ${_tiny_outputs}
     COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${_tiny_gguf_py}
@@ -117,7 +126,9 @@ if (TARGET llama)
         "ggml_tesseract_graph_qwen_tiny_q4k|qwen2-tiny-q4_k.gguf|0|0.95"
         "ggml_tesseract_graph_gemma_tiny|gemma4-tiny-q8_0.gguf|3e-3|0.95"
         "ggml_tesseract_graph_qwen35_tiny|qwen35-tiny-q8_0.gguf|0|0.95"
-        "ggml_tesseract_graph_qwen35_tiny_s128|qwen35-tiny-s128-q8_0.gguf|0|0.95")
+        "ggml_tesseract_graph_qwen35_tiny_s128|qwen35-tiny-s128-q8_0.gguf|0|0.95"
+        "ggml_tesseract_graph_qwen3moe_tiny|qwen3moe-tiny-q8_0.gguf|1e-3|0.95"
+        "ggml_tesseract_graph_qwen3moe_tiny_q4k|qwen3moe-tiny-q4_k.gguf|1e-3|0.95")
     foreach (_case ${_tiny_graph_cases})
         string(REPLACE "|" ";" _f "${_case}")
         list(GET _f 0 _name)

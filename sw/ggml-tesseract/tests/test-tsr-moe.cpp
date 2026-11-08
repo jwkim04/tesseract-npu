@@ -1,12 +1,17 @@
-// test-tsr-moe.cpp — the MoE graph of llama.cpp's build_moe_ffn (softmax gating, normalised top-k, a per-expert
-// output scale: Gemma 4 26B-A4B's layer) through the ggml-tesseract backend on whatever transport TSR_DEVICE selects
-// (docs/design/06-software-verification.md "SW" §9.3, SW-60 to SW-65).
+// test-tsr-moe.cpp — the MoE graph of llama.cpp's build_moe_ffn (softmax gating, normalised top-k) through the
+// ggml-tesseract backend on whatever transport TSR_DEVICE selects (docs/design/06-software-verification.md "SW" §9.3,
+// SW-60 to SW-65, SW-77). Two layers of two models:
 //
-// The graph is the node sequence the pinned llama.cpp emits (the nodes of a layer of the model: build_moe_ffn in
+// Gemma 4 26B-A4B (a per-expert output scale): the node sequence the pinned llama.cpp emits (build_moe_ffn in
 // src/llama-graph.cpp and the router of src/models/gemma4.cpp): rms_norm, scale, mul, mul_mat (the router),
 // soft_max, argsort_top_k, get_rows, sum_rows, clamp, div, mul_mat_id (gate-up), geglu_split of two views,
-// mul_mat_id (down), repeat + get_rows + mul (the scale), mul (the weights), eight views and seven adds. The
-// expert tensors are in a WEIGHTS buffer (placed with the per-channel expert stride, SW-60), the activations in
+// mul_mat_id (down), repeat + get_rows + mul (the scale), mul (the weights), eight views and seven adds.
+//
+// Qwen3-30B-A3B (src/models/qwen3moe.cpp): the router reads the normed input as the experts do, the gate and up
+// experts are two tensors (two mul_mat_id with the same ids and input), swiglu_split of their two results, no scale
+// chain (the down result goes straight to the mul by the weights). The routing group is the same.
+//
+// The expert tensors are in a WEIGHTS buffer (placed with the per-channel expert stride, SW-60), the activations in
 // compute buffers of ggml_gallocr (the allocator reuses the dead tensors, as llama.cpp's does).
 //
 // For T = 1, 2, 5, 17 and 70 tokens the device output is compared with the same graph on the ggml CPU backend:
@@ -72,6 +77,7 @@ static std::vector<uint8_t> encode(ggml_type type, const std::vector<float> & f,
 
 struct weights {
     ggml_tensor * gate_inp = nullptr, * gate_inp_s = nullptr, * gate_up = nullptr, * down = nullptr, * down_s = nullptr;
+    ggml_tensor * q3_inp = nullptr, * q3_gate = nullptr, * q3_up = nullptr;      // Qwen3 layer: router, separate gate and up experts
     ggml_context * ctx = nullptr;
     ggml_backend_buffer_t buf = nullptr;
     ggml_context * ctx2 = nullptr;          // the scale table in host memory (Gemma 4's: its loader probe has no kind)
@@ -80,7 +86,7 @@ struct weights {
 
 // The layer's weights in backend `be`: data from the fixed-seed host copies below.
 struct host_weights {
-    std::vector<uint8_t> gate_inp, gate_up, down;
+    std::vector<uint8_t> gate_inp, gate_up, down, q3_inp, q3_gate, q3_up;
     std::vector<float> gate_inp_s, down_s;
 };
 
@@ -91,6 +97,10 @@ static host_weights make_host_weights() {
     h.gate_inp = encode(GGML_TYPE_F32, randn(N_EMBD * N_EXPERT, 4.0f), N_EXPERT, N_EMBD);
     h.gate_up = encode(GGML_TYPE_Q4_K, randn((size_t) N_EMBD * 2 * N_FF * N_EXPERT, 0.1f), 2 * N_FF * N_EXPERT, N_EMBD);
     h.down = encode(GGML_TYPE_Q8_0, randn((size_t) N_FF * N_EMBD * N_EXPERT, 0.1f), N_EMBD * N_EXPERT, N_FF);
+    // Qwen3: the router reads the rms-normed input (elements of 1, not 1 / 16): the same logit spread with weights of 1 / 16 of the size
+    h.q3_inp = encode(GGML_TYPE_F32, randn(N_EMBD * N_EXPERT, 0.25f), N_EXPERT, N_EMBD);
+    h.q3_gate = encode(GGML_TYPE_Q4_K, randn((size_t) N_EMBD * N_FF * N_EXPERT, 0.1f), N_FF * N_EXPERT, N_EMBD);
+    h.q3_up = encode(GGML_TYPE_Q4_K, randn((size_t) N_EMBD * N_FF * N_EXPERT, 0.1f), N_FF * N_EXPERT, N_EMBD);
     h.gate_inp_s.assign(N_EMBD, 1.0f);
     for (auto & x : h.gate_inp_s) x = 0.5f + (float) (g_rng() % 1000) / 1000.0f;
     h.down_s.assign(N_EXPERT, 1.0f);
@@ -100,12 +110,15 @@ static host_weights make_host_weights() {
 
 static weights make_weights(ggml_backend_t be, const host_weights & h, bool weights_usage, bool scale_on_cpu = false) {
     weights w;
-    ggml_init_params ip = { ggml_tensor_overhead() * 8, nullptr, true };
+    ggml_init_params ip = { ggml_tensor_overhead() * 12, nullptr, true };
     w.ctx = ggml_init(ip);
     w.gate_inp = ggml_new_tensor_2d(w.ctx, GGML_TYPE_F32, N_EMBD, N_EXPERT);
     w.gate_inp_s = ggml_new_tensor_1d(w.ctx, GGML_TYPE_F32, N_EMBD);
     w.gate_up = ggml_new_tensor_3d(w.ctx, GGML_TYPE_Q4_K, N_EMBD, 2 * N_FF, N_EXPERT);
     w.down = ggml_new_tensor_3d(w.ctx, GGML_TYPE_Q8_0, N_FF, N_EMBD, N_EXPERT);
+    w.q3_inp = ggml_new_tensor_2d(w.ctx, GGML_TYPE_F32, N_EMBD, N_EXPERT);
+    w.q3_gate = ggml_new_tensor_3d(w.ctx, GGML_TYPE_Q4_K, N_EMBD, N_FF, N_EXPERT);
+    w.q3_up = ggml_new_tensor_3d(w.ctx, GGML_TYPE_Q4_K, N_EMBD, N_FF, N_EXPERT);
     if (scale_on_cpu) {
         w.ctx2 = ggml_init(ip);
         w.down_s = ggml_new_tensor_1d(w.ctx2, GGML_TYPE_F32, N_EXPERT);
@@ -117,6 +130,9 @@ static weights make_weights(ggml_backend_t be, const host_weights & h, bool weig
     ggml_set_name(w.gate_up, "blk.0.ffn_gate_up_exps.weight");
     ggml_set_name(w.down, "blk.0.ffn_down_exps.weight");
     ggml_set_name(w.down_s, "blk.0.ffn_down_exps.scale");
+    ggml_set_name(w.q3_inp, "blk.1.ffn_gate_inp.weight");
+    ggml_set_name(w.q3_gate, "blk.1.ffn_gate_exps.weight");
+    ggml_set_name(w.q3_up, "blk.1.ffn_up_exps.weight");
     w.buf = ggml_backend_alloc_ctx_tensors(w.ctx, be);
     if (weights_usage) {
         ggml_backend_buffer_set_usage(w.buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
@@ -129,6 +145,9 @@ static weights make_weights(ggml_backend_t be, const host_weights & h, bool weig
     ggml_backend_tensor_set(w.gate_up, h.gate_up.data(), 0, h.gate_up.size());
     ggml_backend_tensor_set(w.down, h.down.data(), 0, h.down.size());
     ggml_backend_tensor_set(w.down_s, h.down_s.data(), 0, h.down_s.size() * 4);
+    ggml_backend_tensor_set(w.q3_inp, h.q3_inp.data(), 0, h.q3_inp.size());
+    ggml_backend_tensor_set(w.q3_gate, h.q3_gate.data(), 0, h.q3_gate.size());
+    ggml_backend_tensor_set(w.q3_up, h.q3_up.data(), 0, h.q3_up.size());
     return w;
 }
 
@@ -139,8 +158,9 @@ struct layer {
     std::vector<ggml_tensor *> chain;       // the routing and scale chain ops
 };
 
-// llama.cpp's build_moe_ffn (norm_w, softmax gating, GELU, down_exps_s) with Gemma 4's router in front.
-static layer build_layer(const weights & w, int64_t T) {
+// llama.cpp's build_moe_ffn (norm_w, softmax gating) in Gemma 4's form (GELU, one gate-up tensor, down_exps_s, the router
+// behind rms_norm / scale / mul) or, with `qwen3`, in Qwen3's (SILU, gate and up tensors, no scale, the router on the normed input).
+static layer build_layer(const weights & w, int64_t T, bool qwen3 = false) {
     layer l;
     ggml_init_params ip = { ggml_tensor_overhead() * 128 + ggml_graph_overhead_custom(256, false), nullptr, true };
     l.ctx = ggml_init(ip);
@@ -150,9 +170,13 @@ static layer build_layer(const weights & w, int64_t T) {
     ggml_set_name(l.x, "x");
     ggml_set_input(l.x);
     ggml_tensor * tmp = ggml_rms_norm(ctx, l.x, 1e-6f);
-    tmp = ggml_scale(ctx, tmp, 1.0f / std::sqrt((float) N_EMBD));
-    tmp = ggml_mul(ctx, tmp, w.gate_inp_s);
-    ggml_tensor * logits = ggml_mul_mat(ctx, w.gate_inp, tmp);
+    if (qwen3) {
+        tmp = ggml_mul(ctx, tmp, w.gate_inp_s);             // the ffn_norm weight
+    } else {
+        tmp = ggml_scale(ctx, tmp, 1.0f / std::sqrt((float) N_EMBD));
+        tmp = ggml_mul(ctx, tmp, w.gate_inp_s);
+    }
+    ggml_tensor * logits = ggml_mul_mat(ctx, qwen3 ? w.q3_inp : w.gate_inp, tmp);
     ggml_set_name(logits, "ffn_moe_logits");
     l.logits = logits;
     ggml_tensor * probs = ggml_soft_max(ctx, logits);
@@ -175,15 +199,21 @@ static layer build_layer(const weights & w, int64_t T) {
     weights_ = ggml_reshape_3d(ctx, weights_, 1, N_USED, T);
     l.wnorm = weights_;
     ggml_build_forward_expand(l.gf, weights_);
-    ggml_tensor * cur = ggml_rms_norm(ctx, l.x, 1e-6f);
+    ggml_tensor * cur = qwen3 ? tmp : ggml_rms_norm(ctx, l.x, 1e-6f);
     cur = ggml_reshape_3d(ctx, cur, N_EMBD, 1, T);
-    ggml_tensor * gate_up = ggml_mul_mat_id(ctx, w.gate_up, cur, selected);
-    ggml_tensor * gate = ggml_view_3d(ctx, gate_up, N_FF, gate_up->ne[1], gate_up->ne[2], gate_up->nb[1], gate_up->nb[2], 0);
-    ggml_tensor * up = ggml_view_3d(ctx, gate_up, N_FF, gate_up->ne[1], gate_up->ne[2], gate_up->nb[1], gate_up->nb[2],
-                                    N_FF * gate_up->nb[0]);
-    cur = ggml_geglu_split(ctx, gate, up);
+    if (qwen3) {
+        ggml_tensor * up = ggml_mul_mat_id(ctx, w.q3_up, cur, selected);
+        ggml_tensor * gate = ggml_mul_mat_id(ctx, w.q3_gate, cur, selected);
+        cur = ggml_swiglu_split(ctx, gate, up);
+    } else {
+        ggml_tensor * gate_up = ggml_mul_mat_id(ctx, w.gate_up, cur, selected);
+        ggml_tensor * gate = ggml_view_3d(ctx, gate_up, N_FF, gate_up->ne[1], gate_up->ne[2], gate_up->nb[1], gate_up->nb[2], 0);
+        ggml_tensor * up = ggml_view_3d(ctx, gate_up, N_FF, gate_up->ne[1], gate_up->ne[2], gate_up->nb[1], gate_up->nb[2],
+                                        N_FF * gate_up->nb[0]);
+        cur = ggml_geglu_split(ctx, gate, up);
+    }
     ggml_tensor * experts = ggml_mul_mat_id(ctx, w.down, cur, selected);
-    {
+    if (!qwen3) {
         ggml_tensor * s = ggml_reshape_3d(ctx, w.down_s, 1, N_EXPERT, 1);
         s = ggml_repeat_4d(ctx, s, 1, N_EXPERT, T, 1);
         l.chain.push_back(s);
@@ -223,8 +253,8 @@ struct result {
 
 // The graph on the scheduler: `dev` set: the device first and the CPU for what it does not take (as llama.cpp's loader
 // does); else the CPU alone.
-static result run_on(bool dev, const weights & w, int64_t T, const std::vector<float> & x) {
-    layer l = build_layer(w, T);
+static result run_on(bool dev, const weights & w, int64_t T, const std::vector<float> & x, bool qwen3) {
+    layer l = build_layer(w, T, qwen3);
     ggml_backend_t bes[2] = { g_tsr, g_cpu };
     ggml_backend_buffer_type_t bufts[2] = { ggml_backend_get_default_buffer_type(g_tsr), ggml_backend_get_default_buffer_type(g_cpu) };
     ggml_backend_sched_t sched = dev ? ggml_backend_sched_new(bes, bufts, 2, 256, false, false)
@@ -245,10 +275,10 @@ static result run_on(bool dev, const weights & w, int64_t T, const std::vector<f
 // 8th and 9th probabilities are closer than that may pick the other one. The inputs are drawn so that it is rare.
 static constexpr double OTHER_EXPERTS = 0.02;
 
-static void run_case(const weights & wd, const weights & wc, int64_t T) {
+static void run_case(const weights & wd, const weights & wc, int64_t T, bool qwen3 = false) {
     const std::vector<float> x = randn(N_EMBD * T, 1.0f);
-    const result d = run_on(true, wd, T, x);
-    const result c = run_on(false, wc, T, x);
+    const result d = run_on(true, wd, T, x, qwen3);
+    const result c = run_on(false, wc, T, x, qwen3);
     int same = 0;
     double worst = 0;
     std::vector<float> od, oc;
@@ -460,6 +490,32 @@ int main() {
     }
     if (getenv("TSR_TEST_ROUTE") != nullptr && atoi(getenv("TSR_TEST_ROUTE")) != 0) {   // the device takes the router group
         run_route_layouts();
+    }
+    // Qwen3-30B-A3B's layer: separate gate and up experts, SWIGLU, no scale chain (SW-77)
+    {
+        layer l = build_layer(wd, 3, true);
+        const char * er = getenv("TSR_TEST_ROUTE"), * em = getenv("TSR_TEST_MMID");
+        if (er != nullptr) {
+            for (ggml_tensor * t : { l.chain[0], l.chain[1] }) {
+                CHECK(ggml_backend_supports_op(g_tsr, t) == (atoi(er) != 0), "qwen3: supports_op(%s), expected %s", ggml_op_name(t->op), er);
+            }
+        }
+        if (em != nullptr) {
+            int n_mmid = 0;
+            for (int i = 0; i < ggml_graph_n_nodes(l.gf); ++i) {
+                if (ggml_graph_node(l.gf, i)->op == GGML_OP_MUL_MAT_ID) {
+                    n_mmid++;
+                    CHECK(ggml_backend_supports_op(g_tsr, ggml_graph_node(l.gf, i)) == (atoi(em) != 0), "qwen3: supports_op(MUL_MAT_ID), expected %s", em);
+                }
+            }
+            CHECK(n_mmid == 3, "qwen3 layer: %d MUL_MAT_ID nodes", n_mmid);
+        }
+        ggml_free(l.ctx);
+        printf("qwen3 layer (separate gate / up experts, SWIGLU, no scale):\n");
+        // past one tile (64 tokens) too: the route's outputs of a several-tile MOE_ROUTE go through a scratch (SW-76)
+        for (int64_t T : { 1, 2, 5, 17, 64, 65, 70, 130, 256 }) {
+            run_case(wd, wc, T, true);
+        }
     }
     // the scale table in host memory, as llama.cpp's loader places it for Gemma 4: the scheduler copies the reshaped view
     // to the device (a leaf of its own), and the scale group must still fuse (without it graph_compute aborts)

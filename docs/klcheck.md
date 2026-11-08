@@ -526,6 +526,54 @@ model garbled text, as described above. A 1 × 16 run has no KL meaning; it chec
 `klcheck all` on the MoE model took 9 min 24 s (M7) and 7 min 53 s (M6) wall; the floor files and the embd file of each run were
 deleted after the summary (3.2 GB per run), the `dev.klc` and `cpu.klc` files stay in `build/card/moegdn/`.
 
+### Qwen3-30B-A3B Q4_K_M (MoE, simulator and card, SW-77, 2026-11-09)
+
+The second MoE model: llama.cpp `qwen3moe`, 48 layers, hidden size 2,048, 128 experts of width 768 with 8 used, no shared
+expert, attention with per-head Q and K norms (head size 128, 32 heads, 4 KV heads). The graph and what differs from Gemma 4
+are in [SW](design/06-software-verification.md) §7.9, SW-77; no backend, firmware or llama.cpp change was needed. Model:
+`Qwen/Qwen3-30B-A3B-GGUF`, file `Qwen3-30B-A3B-Q4_K_M.gguf`, 18,556,685,824 bytes, sha256
+`0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5` (the repository's own LFS hash; not in git;
+`models/qwen3-30b-a3b/`). It is the original Qwen3-30B-A3B: neither the `Qwen` nor the `ggml-org` organisation publishes a
+Q4_K_M of the Instruct-2507 version (`ggml-org` has its Q8_0 only). The up and gate experts are Q4_K in every layer, the down
+experts Q4_K in 24 layers and Q6_K in the other 24 (converted to Q8_0 at load), the router F32 (converted to Q8_0). The upload
+writes 20.2 GB to the four channels.
+
+Commands (the simulator run in a screen with the file-backed DRAM, 14 GB host RAM; `TSR_SIM_TMAX=4` as the card replays):
+
+```sh
+TSR_SIM_TMAX=4 TSR_SIM_DRAM_DIR=build/simdram build/dev/bin/klcheck all -m models/qwen3-30b-a3b/Qwen3-30B-A3B-Q4_K_M.gguf \
+    -o build/qmoe-runs/kl-m7-8x64 --device sim --phase m7 -n 64 --n-prompts 8
+klcheck all -m MODEL --device xrt --phase m7 -n 64 --n-prompts 8 -o DIR            # the card, as in the section above
+klcheck run -m MODEL --device xrt --phase m7 -n 16 --n-prompts 1 --out DIR/dev.klc
+TSR_SIM_TMAX=4 klcheck run -m MODEL --device sim --phase m7 --tokens DIR/dev.klc --out DIR/dev-sim-replay.klc
+```
+
+| | Simulator, M7 | Card, M7 |
+| --- | --- | --- |
+| Positions | 512 (8 x 64) | 512 (8 x 64) |
+| Mean KL, device / floor (mean of 3 floors) | 1.2482e-2 / 1.5359e-2 | 1.2482e-2 / 1.5359e-2 |
+| Ratio (limit 3), seeds 1 / 2 / 3 | **0.813**, 0.872 / 0.823 / 0.752 | **0.813**, 0.872 / 0.823 / 0.752 |
+| Top-1 against the CPU (floor) | **96.68 %** (97.40 %) | **96.68 %** (97.40 %) |
+| Median KL, device / floor | 1.06e-3 / 9.01e-4 | 1.06e-3 / 9.01e-4 |
+| Max KL | 0.727 (seq 6 row 35); floor 2.257 | 0.727 (seq 6 row 35); floor 2.257 |
+| Bit-identical rows against the CPU | 0 / 512 | 0 / 512 |
+| Embd path against token path | bit-identical | bit-identical |
+| Verdict | PASS | PASS |
+
+Both pass, and the simulator's numbers equal the card's to every digit shown. The floor of this model is smaller than Gemma 4's (0.015 against 0.17 nats), so the mean is set by a few positions
+again (sequence 6 has a floor of 0.061 and a device KL of 0.039) but the ratio is stable across the three seeds. The identity
+checks are the stronger statement: the card's 8 x 64 logits against the simulator's generate run: **512 of 512 rows bit-identical**
+(`compare --expect-identical`; the card and the simulator chose the same 512 tokens); a 1 x 16 run on the card (prompt
+`The history of the printing press begins`, output ` with the invention of the first known printing press in the 15th century`)
+replayed on the simulator at `T_MAX` 4: **16 of 16 rows bit-identical**. Device phase on the card: 245 s for the load (178 s)
+and 512 tokens (55.9 s of decode, 94 to 124 ms per token on a host with a load average of 30 to 45); `klcheck all` took 29 min in all.
+On the simulator the device phase took 4,596 s under a host load average of 30 to 90 (1.3 s per decode token when the host was quiet, 140 s to load the weights), the
+CPU, floor and embd phases 397 s, 1,324 s and 576 s, and `klcheck all` 1 h 55 min. The floor files and the embd file of each run were deleted after the summary.
+
+Prefill: this run and its first speed runs used `-ub 64` (one tile per route), because at `-ub 128` and 512 the host
+backend stopped at layer 0 with the refusal of SW-64 (`MOE_ROUTE: with 128 tokens (several tiles) its outputs overlap the logits of a later tile`),
+where Gemma 4 ran at 128. SW-76 removed the refusal: the default `-ub 512` runs, with the checks in the next section.
+
 ### Gemma 4 26B-A4B and Qwen3-30B-A3B prefill at the default `-ub 512` (SW-76, 2026-11-09)
 
 A router of more than 64 tokens used to abort the host backend at `-ub 256` and above. SW-76 ([SW](design/06-software-verification.md) §7.9) writes its
@@ -548,7 +596,7 @@ klcheck compare --ref sim_replay_card.klc --dev card_ub512.klc --expect-identica
 | `klcheck all` against the CPU, M7, `-ub 512`, a 160-token prompt (three tiles per route) and 8 generated tokens, 167 positions, one floor run | mean KL 0.405 against a floor of 0.418 (ratio 0.968, limit 3), top-1 81.44 % (floor 78.44 %, limit 80 %): PASS. The floor of this model is large (mean KL 0.42 for a 1-ulp change of the input), so the check is that the prefill is not worse than that noise |
 | The 2 x 16 run of `build/swm-runs/g26-merged.klc` (made before SW-76; prompts of 8 and 19 tokens, one tile per route, decode of 16 tokens) repeated with the new build | **32 / 32 rows bit-identical**: decode and the short prompts did not change |
 
-Qwen3-30B-A3B (`Qwen3-30B-A3B-Q4_K_M.gguf`, from branch `moe-qwen3`, which refused at `-ub 128`) with the same commands and a 512-token prose prompt cut for its tokenizer (512 tokens,
+Qwen3-30B-A3B (`Qwen3-30B-A3B-Q4_K_M.gguf`, the section above; it refused at `-ub 128` before SW-76) with the same commands and a 512-token prose prompt cut for its tokenizer (512 tokens,
 no `<bos>`; 513 rows with 2 generated tokens):
 
 | Check | Result |

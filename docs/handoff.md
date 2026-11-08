@@ -2,6 +2,27 @@
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
 
+## Qwen3-30B-A3B on the simulator and the card (SW-77, November 9)
+
+Done on a branch from `sw-moegdn` (2d887ec), now merged. No RTL, firmware, backend or llama.cpp change: llama.cpp's `qwen3moe` graph (the same `build_moe_ffn`
+with softmax gating and normalised weights) lowers with the code of the Gemma 4 work. What differs from Gemma 4 is in
+[design/06-software-verification.md](design/06-software-verification.md) §7.9, SW-77 (no scale chain, no router input norm, gate and up as two tensors
+with SWIGLU, Q of 4,096 for a hidden size of 2,048 with per-head Q and K norms). The new things are tests and records:
+
+- Tests: `test-tsr-moe` has the Qwen3 layer next to the Gemma 4 one (T = 1 to 256 since SW-76, four kind configurations); `ggml_tesseract_graph_qwen3moe_tiny` and
+  `_q4k` run a 2-layer model of the same graph (`gen_tiny_models.py`, 64 experts) through klcheck with the M7 settings. `ctest -LE slow`: 314 of 314.
+- Model: `Qwen/Qwen3-30B-A3B-GGUF`, `Qwen3-30B-A3B-Q4_K_M.gguf`, 18,556,685,824 bytes, sha256
+  `0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5` (`models/qwen3-30b-a3b/`, not in git). The Instruct-2507 version has no Q4_K_M at
+  `Qwen` or `ggml-org`, so this is the original model.
+- klcheck M7, 8 prompts x 64 tokens ([klcheck.md](klcheck.md)): simulator ratio 0.813, top-1 96.68 %, PASS; card the same to every digit. The card's 512 rows are bit-identical to the
+  simulator's; a 1 x 16 card run replayed on the simulator: 16 of 16.
+- Speed on the card, M7 ([performance.md](performance.md) "Qwen3-30B-A3B on the card"): decode 15.82 tok/s best, 13.06 median (11.338 M device cycles per token,
+  17.6 tok/s from device time alone); a 512-token prefill at `-ub 64` 26.30 tok/s best, 26.04 median. The host load average was 23 to 58 during the runs.
+- Prefill at `-ub` 128 and above used to stop at layer 0 (`MOE_ROUTE: ... its outputs overlap the logits of a later tile`), earlier than Gemma 4 (which ran at 128).
+  SW-76 fixed it (merged): the 512-token prefill at the default `-ub 512` gives 26.72 tok/s best and 26.60 median on the card, with 513 of 513 rows
+  bit-identical to the simulator, and the Qwen3 layer test runs T = 65, 70, 130 and 256 (70 aborted before SW-76).
+  Open: grouping of tokens by expert (SW-66) is still not built. The card's VU and DMA counters were not compared with the simulator's for this model.
+
 ## Card runs of the merged firmware (branch `sw-moegdn`, November 9)
 
 The K4 full-feature image of the fourth link (bitstream unchanged) ran the `tsr-fw.elf` of `sw-moegdn` (21 kinds, kind table 0x804f) with a
@@ -16,9 +37,9 @@ Gated DeltaNet on the card"):
 - Gemma prefill at `-ub 256` and above used to stop in the host backend (MOE_ROUTE with several tiles whose outputs overlapped a later tile's logits,
   SW-64). SW-76 fixes it: a route of more than 64 tokens writes its ids and weights to a device scratch and two CPY records move them
   ([design/06-software-verification.md](design/06-software-verification.md) §7.9; host only, no firmware or kind change). The default `-ub 512` and
-  `-ub 2048 -b 2048` run on the card. Qwen3-30B-A3B (branch `moe-qwen3`, which hit the same refusal at `-ub 128`) runs its 512-token prefill at the default `-ub 512` with
+  `-ub 2048 -b 2048` run on the card. Qwen3-30B-A3B (section above, which hit the same refusal at `-ub 128`) runs its 512-token prefill at the default `-ub 512` with
   this fix: 26.60 tok/s median on the card, 513 of 513 rows bit-identical to the simulator, and the simulator's `-ub 512` and `-ub 64` logits are bit-identical.
-  Extending the Qwen3 layer test of that branch past one tile is left for the merge (its layer passes at 65 to 256 tokens with this fix).
+  The Qwen3 layer test in `test-tsr-moe` covers 65 to 256 tokens.
   The card's VU busy cycles for Gated DeltaNet are 1.7 times the simulator's.
 
 ## Resume here for the software: MoE and Gated DeltaNet merged (branch `sw-moegdn`, November 9)
@@ -30,7 +51,7 @@ they were before the merge.
 - Decision numbers: MoE keeps SW-60 to SW-66 and section 7.9 of [design/06-software-verification.md](design/06-software-verification.md).
   The Gated DeltaNet decisions SW-60 to SW-67 became SW-67 to SW-74 (same order) and its section 7.9 became 7.10; the citations in
   docs, code comments and test comments were changed with them. SW-75 is new: the ITCM budget. SW-76 (the outputs of a MOE_ROUTE with several tiles, a host
-  change in section 7.9) follows it.
+  change in section 7.9) and SW-77 (the Qwen3 MoE graph, section 7.9) follow it.
 - Kinds: MOE_ROUTE 0x1E, MUL_MAT_ID 0x1F, SOFTPLUS 0x2D, SSM_CONV 0x2E, GATED_DELTA_NET 0x2F, all at numerics revision 1, with
   UNARY func 5 (SIGMOID). 21 kinds, kind-table signature 0x804f. The `fw_kind_revs` digests of the five kinds are the digests of their
   branches (the two corpora start from the same PRNG state, so neither moves the other).

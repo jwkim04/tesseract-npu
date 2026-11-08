@@ -23,8 +23,8 @@ llama.cpp API: `docs/llama-pin.md`.
 > its inputs change. Compute buffers live in device memory (IO, the low 512 MiB of ch1-3, the compute
 > heap), so nothing is staged.
 
-> **MoE (SW §7.9, SW-60 to SW-66, SW-76).** Gemma 4 26B-A4B (softmax gating, normalised top-8 of 128, a per-expert scale)
-> runs on the simulator. 3D expert tensors (names with `_exps`) are placed per channel with the expert stride
+> **MoE (SW §7.9, SW-60 to SW-66, SW-76, SW-77).** Gemma 4 26B-A4B (softmax gating, normalised top-8 of 128, a per-expert scale)
+> runs on the simulator and the card, and so does Qwen3-30B-A3B (llama.cpp `qwen3moe`: gate and up experts as two tensors, no scale) on the same lowering. 3D expert tensors (names with `_exps`) are placed per channel with the expert stride
 > (`tsr_store_expert_rows`), `MUL_MAT_ID` is lowered by `tsr_lower_mul_mat_id` (the weights resolved by
 > `tsr_resolve_weight` to W_OFF and EXP_STRIDE, the probe `tsr_moe_weight_ok`), and `tsr_build_fusion` turns
 > llama.cpp's router nodes into one `MOE_ROUTE` record and the scale nodes into the scale table of the down
@@ -32,8 +32,8 @@ llama.cpp API: `docs/llama-pin.md`.
 > scratch window (`tsr_scratch_window`) and two `CPY` records move them into the graph's tensors (SW-76), because
 > ggml-alloc may have put those over logits a later tile still reads. Without `MOE_ROUTE` in `TSR_KINDS` llama.cpp's own CPU ops select the experts and the
 > device runs the matrix products (the M6 form). Tests: `ggml_tesseract_moe*` (`tests/test-tsr-moe.cpp`: the
-> graph of `build_moe_ffn` in three kind configurations against the CPU, and the router group with its outputs placed by
-> hand over the logits of later tiles, 65 to 11,000 tokens), `test-backend-ops -o MUL_MAT_ID -b
+> graph of `build_moe_ffn` of both models in four kind configurations against the CPU (T = 1 to 256), and the router group with its outputs placed by
+> hand over the logits of later tiles, 65 to 11,000 tokens; `ggml_tesseract_graph_qwen3moe_*`: two tiny `qwen3moe` models through klcheck), `test-backend-ops -o MUL_MAT_ID -b
 > Tesseract0` (ctest `ggml_tesseract_backend_ops_mul_mat_id`: 928 of 945 cases supported and passing; 17 refused: m not a
 > multiple of 16, k not a multiple of the block, iq2_xxs).
 
