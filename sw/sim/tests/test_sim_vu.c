@@ -1016,10 +1016,10 @@ static void test_gdn_misc(void) {
     tsr_extents x;
     uint32_t info;
     const uint8_t SP = TSR_EXT_SPM, SG = TSR_EXT_SREG, R = TSR_EXT_READ, Wr = TSR_EXT_WRITE;
-    // extents: d W, a R, k R, q R, then the s registers; v and o are not listed (four SPM slots)
+    // extents: d W, a R, k R, o W, then the s registers; q and v are not listed (four SPM slots)
     check_only(s, e_gdn(1, 2, 3000, 1000, 200, 300, 400, 500, 128, 20), &info, &x);
     CHECK(x.n == 6 && ext_is(&x, 0, SP, Wr, 3000, 3160) && ext_is(&x, 1, SP, R, 1000, 1160) && ext_is(&x, 2, SP, R, 200, 208) &&
-          ext_is(&x, 3, SP, R, 300, 308) && ext_is(&x, 4, SG, R, 1, 2) && ext_is(&x, 5, SG, R, 2, 3), "GDN extents");
+          ext_is(&x, 3, SP, Wr, 500, 502) && ext_is(&x, 4, SG, R, 1, 2) && ext_is(&x, 5, SG, R, 2, 3), "GDN extents");
     check_only(s, e_gdn(4, 4, 1000, 1000, 200, 300, 400, 500, 64, 1), &info, &x);
     CHECK(x.n == 5 && ext_is(&x, 0, SP, Wr, 1000, 1004) && ext_is(&x, 1, SP, R, 1000, 1004) && ext_is(&x, 4, SG, R, 4, 5) &&
           x.overflow == 0, "GDN in place, one s register");

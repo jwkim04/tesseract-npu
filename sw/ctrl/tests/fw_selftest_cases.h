@@ -3,7 +3,7 @@
 // (P2.5) by the W2a integration so that fw_m6_e2e (test_fw_m6_e2e.cpp) runs the same cases in its
 // sessions. Plain C, also valid C++. The includer provides test_sim_obs.h (CHECK, rng, put_weights)
 // first; a session is one booted image (fw_sim_host.hpp) with `idx` = the selftest kernel's index.
-//   st_run_ids   ids 1-10 (id 2 twice) and the misuses, in fw_selftest_sim's order
+//   st_run_ids   ids 1-11 (id 2 twice; id 11 with CAPS.GDN) and the misuses, in fw_selftest_sim's order
 #pragma once
 
 #include <math.h>
@@ -11,6 +11,7 @@
 #include "../ref/fw_sim_host.hpp"
 #include "../ref/selftest_abi.hpp"
 #include "tsr_ref_at.h"
+#include "tsr_ref_gdn.h"
 #include "tsr_ref_math.h"
 #include "tsr_ref_vu.h"
 
@@ -559,10 +560,54 @@ static void id10(session * s) {
     launch(s, 10, area, tsr_st10().end, 0, 0, 0);
 }
 
+// ---------------------------------------------------------------------------
+// 11 GDN: four heads of the fused Gated DeltaNet state update against tsr_ref_gdn
+// ---------------------------------------------------------------------------
+static void id11(session * s) {
+    tsr_sim * sim = s->sim;
+    const uint32_t m = 128, rows = 20, H = 4;
+    const uint64_t area = AREA0 + 11u * AREA_STEP;
+    const tsr_st11_layout L = tsr_st11(m, rows, H);
+    const uint32_t al[4] = { f2u(0.95f), f2u(0.5f), f2u(0.99f), f2u(1.0f) }, be[4] = { f2u(0.5f), f2u(0.25f), f2u(0.9f), f2u(1.0f) };
+    uint32_t p[3 + 2 * 4] = { m, rows, H };
+    for (uint32_t h = 0; h < H; ++h) { p[3 + 2 * h] = al[h]; p[4 + 2 * h] = be[h]; }
+    put_params(sim, area, 11, p, 3 + 2 * H);
+    rng_t r = { 0x6D11 };
+    uint8_t * A = D(sim, 0, area);
+    memset(A + 64, 0x5A, (size_t)(L.end - 1u) * 64u);
+    for (uint32_t h = 0; h < H; ++h) {
+        rand_f32(&r, A + (size_t)tsr_st11_k(&L, h) * 64u, m, 0.25);
+        rand_f32(&r, A + (size_t)tsr_st11_q(&L, h) * 64u, m, 0.25);
+        rand_f32(&r, A + (size_t)tsr_st11_v(&L, h) * 64u, rows, 1.0);
+        memset(A + (size_t)tsr_st11_v(&L, h) * 64u + 4u * rows, 0, (size_t)(16u * L.lv - rows) * 4u);
+        rand_f32(&r, A + (size_t)tsr_st11_s(&L, h) * 64u, rows * m, 0.5);
+    }
+    const size_t in_bytes = (size_t)L.in_end * 64u;
+    uint8_t * in = (uint8_t *)malloc(in_bytes);
+    memcpy(in, A, in_bytes);
+    if (!launch(s, 11, area, L.end, 0, 0, 0)) { free(in); return; }
+    uint32_t k[256], q[256], v[64], S[64 * 256], Sp[64 * 256], o[64];
+    char what[96];
+    for (uint32_t h = 0; h < H; ++h) {
+        const uint8_t * kk = in + (size_t)tsr_st11_k(&L, h) * 64u, * qq = in + (size_t)tsr_st11_q(&L, h) * 64u;
+        const uint8_t * vv = in + (size_t)tsr_st11_v(&L, h) * 64u, * ss = in + (size_t)tsr_st11_s(&L, h) * 64u;
+        for (uint32_t j = 0; j < m; ++j) { k[j] = rd(kk, j); q[j] = rd(qq, j); }
+        for (uint32_t i = 0; i < rows; ++i) v[i] = rd(vv, i);
+        for (uint32_t i = 0; i < rows * m; ++i) S[i] = rd(ss, i);
+        memset(o, 0, sizeof(o));
+        tsr_ref_gdn(m, rows, al[h], be[h], k, q, v, S, Sp, o);
+        snprintf(what, sizeof(what), "[%s] id 11: head %u S'%s", s->sched, h, (h & 1u) ? " (in place)" : "");
+        cmp_lines(what, A + (size_t)tsr_st11_sp(&L, h) * 64u, (const uint8_t *)Sp, L.tile);
+        snprintf(what, sizeof(what), "[%s] id 11: head %u o", s->sched, h);
+        cmp_lines(what, A + (size_t)tsr_st11_o(&L, h) * 64u, (const uint8_t *)o, L.lv);
+    }
+    free(in);
+}
+
 // Misuses: unknown id, wrong magic, an area too small (KERNEL_ERR: RET negative).
 static void misuse(session * s) {
-    const uint64_t area = AREA0 + 11u * AREA_STEP;
-    launch(s, 11, area, 1, 0, (int32_t)TSR_ST_RET_BAD_ID, TSR_LCQ_R0_STATUS_KERNEL_ERR);
+    const uint64_t area = AREA0 + 12u * AREA_STEP;
+    launch(s, 12, area, 1, 0, (int32_t)TSR_ST_RET_BAD_ID, TSR_LCQ_R0_STATUS_KERNEL_ERR);
     put_params(s->sim, area, 3, NULL, 0);
     launch(s, 2, area, 100, 0, (int32_t)TSR_ST_RET_BAD_PARAMS, TSR_LCQ_R0_STATUS_KERNEL_ERR);
     const uint32_t p[2] = { 1024, 8 };
@@ -578,7 +623,7 @@ static void misuse(session * s) {
     launch(s, 8, area, tsr_st8().end, 0, (int32_t)TSR_ST_RET_BAD_PARAMS, TSR_LCQ_R0_STATUS_KERNEL_ERR);
 }
 
-// Every id in fw_selftest_sim's order: 1, 2 (K 1024 T 8; K 4096 T 1), 3-10, then the misuses.
+// Every id in fw_selftest_sim's order: 1, 2 (K 1024 T 8; K 4096 T 1), 3-10, 11 (with CAPS.GDN), then the misuses.
 static void st_run_ids(session * s) {
     id1(s);
     id2(s, 1024, 8, 2);
@@ -591,5 +636,6 @@ static void st_run_ids(session * s) {
     id8(s);
     id9(s);
     id10(s);
+    if (tsr_sim_config(s->sim)->caps & TSR_CAPS_GDN) id11(s);
     misuse(s);
 }

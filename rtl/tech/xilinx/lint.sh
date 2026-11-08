@@ -105,6 +105,7 @@ lint tsr_core -GNUM_CH=4 -GT_MAX=8 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -
 lint tsr_core -GNUM_CH=4 -GT_MAX=8 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9 -GRV_LOCAL_TRANSPORT=1 -GHAS_VU=0 -GHAS_ATT=0 -GHAS_TRW=0 -GHIST_DEPTH=0
 lint tsr_core -GNUM_CH=4 -GT_MAX=4 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9 -GMVM_GATHER_PAIR=1 -GMVM_GATHER_FLITS=2 -GDDR_LOCAL_PIPE=1 -GRV_LOCAL_TRANSPORT=1 -GXSLR_REG=1 -GVU_LANE_PIPE=2 -GVU_FRONT_LANES=8 -GVU_EXP_LANES=8 -GVU_BACK_LANES=4
 lint tsr_core -GHAS_TOPK=1 -GHAS_DQROW=1
+lint tsr_core -GNUM_CH=4 -GT_MAX=4 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9 -GMVM_GATHER_PAIR=1 -GMVM_GATHER_FLITS=2 -GDDR_LOCAL_PIPE=1 -GRV_LOCAL_TRANSPORT=1 -GXSLR_REG=1 -GVU_LANE_PIPE=2 -GVU_FRONT_LANES=8 -GVU_EXP_LANES=8 -GVU_BACK_LANES=4 -GHAS_GDN=1
 lint tsr_core -GHAS_MVM=1 -GT_MAX=8
 lint tsr_core -GHAS_MVM=1 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=5
 lint tsr_core -GHAS_MVM=1 -GT_MAX=8 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=5
@@ -231,7 +232,7 @@ fi
 # (found by the first whole-core synthesis, tb/core/viv/core_ooc.sh k1: tsr_dma_kvst wrote five registers from two
 # blocks); the GDN unit (VU §7.12) as well
 "$ROOT/rtl/tech/xilinx/synth_check.sh" tsr_issue tsr_csr tsr_dbg tsr_chk_at tsr_vu_chk "tsr_dma:HAS_KVST=1" \
-    "tsr_vu:HAS_TOPK=1,HAS_DQROW=1" "tsr_mvm:HAS_ATT=1,NUM_CH=2,T_MAX=2" tsr_vu_gdn
+    "tsr_vu:HAS_TOPK=1,HAS_DQROW=1" "tsr_mvm:HAS_ATT=1,NUM_CH=2,T_MAX=2" tsr_vu_gdn "tsr_vu:HAS_GDN=1,FRONT_LANES=8,EXP_LANES=8,BACK_LANES=4,LANE_PIPE=2"
 fails=$((fails + $?))
 
 # ---- tb/tech HDL with both targets (each toplevel with the tech files of one target only) ----

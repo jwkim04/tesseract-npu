@@ -583,8 +583,9 @@ static inline int ranges_overlap(uint32_t alo, uint64_t alen, uint32_t blo, uint
 }
 
 // OPERAND (VU §7.12.4, in this order): m not a multiple of 16 or outside [64, 256]; rows 0 or above 1,024; d != a with
-// overlapping extents; o overlapping d or a. SPM_RANGE in field order d, a, k, q, v, o. The extent list holds the first
-// four SPM operands (d W, a R, k R, q R) and the s registers: v and o are not listed (CC §8.2: four slots).
+// overlapping extents; o overlapping d or a. SPM_RANGE in field order d, a, k, q, v, o. The extent list holds four SPM
+// operands (d W, a R, k R, o W: every write is listed, the race detector needs them) and the s registers; q and v are not
+// listed (CC §8.2: four slots).
 static uint32_t chk_gdn(tsr_sim * sim, const uint32_t w[8], tsr_extents * ext, uint32_t * info) {
     if (rsv_bad(w, k_gdn_rsv)) return TSR_ERR_ILLEGAL_OP;
     gdn_dec g;
@@ -601,7 +602,7 @@ static uint32_t chk_gdn(tsr_sim * sim, const uint32_t w[8], tsr_extents * ext, u
     ext_spm(ext, TSR_EXT_WRITE, g.d, et);
     ext_spm(ext, TSR_EXT_READ, g.a, et);
     ext_spm(ext, TSR_EXT_READ, g.k, nl);
-    ext_spm(ext, TSR_EXT_READ, g.q, nl);
+    ext_spm(ext, TSR_EXT_WRITE, g.o, ev);
     ext_sreg(ext, TSR_EXT_READ, g.sa);
     ext_sreg(ext, TSR_EXT_READ, g.sb);
     return TSR_ERR_NONE;

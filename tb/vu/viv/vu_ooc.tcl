@@ -15,6 +15,7 @@
 # Constraints as tb/spm/viv/spm_ooc.tcl: 3.333 ns clock, I/O delay 1.6 ns on both sides of the boundary.
 # The K4 configuration (docs/platform-u200.md §8.8, rtl/platform/alveo_xrt/gen_tops.py):
 #   FRONT_LANES=8 EXP_LANES=8 BACK_LANES=4 LANE_PIPE=2 SPM_RD_LAT=4 NUM_CH=4
+# The GDN engine (HAS_GDN=1) is read always; its blocks have VOOC hier lines (g_gdn.u_gdn, u_dot, u_upd, u_coef, u_cvt).
 # Prints (grep VOOC):
 #   VOOC <stage> CLB <n> LUT <n> FF <n> CARRY8 <n> DSP <n> LUTMEM <n> WNS <ns> WHS <ns>  (stage = place | route;
 #                from report_utilization of the placed / routed design, CLB = CLB tiles)
@@ -57,7 +58,9 @@ read_verilog -sv [list $c/tsr_tables_pkg.sv $c/tsr_pkg.sv $c/tsr_fp_pkg.sv $c/ts
   $repo/rtl/tech/xilinx/tsr_sram_1r1w.sv $c/tsr_fp_mul.sv [src $c $out $usedsp tsr_fp_add.sv] $c/tsr_fp_add_dsp.sv $c/tsr_fp_div.sv $c/tsr_vu_dly.sv \
   $c/tsr_vu_exp.sv $c/tsr_vu_rcp.sv $c/tsr_vu_sqrt.sv $c/tsr_vu_sincos.sv $c/tsr_vu_lane.sv $c/tsr_vu_lane_share.sv $c/tsr_vu_lanes.sv \
   $c/tsr_local_asmax.sv $c/tsr_vu_gen.sv \
-  $c/tsr_vu_rd.sv $c/tsr_vu_dq.sv $c/tsr_vu_inj.sv $c/tsr_vu_wr.sv $c/tsr_vu_red.sv $c/tsr_vu_angle.sv $c/tsr_vu_topk.sv $c/tsr_vu.sv]
+  $c/tsr_vu_rd.sv $c/tsr_vu_dq.sv $c/tsr_vu_inj.sv $c/tsr_vu_wr.sv $c/tsr_vu_red.sv $c/tsr_vu_angle.sv $c/tsr_vu_topk.sv \
+  $c/tsr_vu_gdn_ram.sv $c/tsr_vu_gdn_fx2f.sv $c/tsr_vu_gdn_dlane.sv $c/tsr_vu_gdn_mac.sv $c/tsr_vu_gdn_dot.sv \
+  $c/tsr_vu_gdn_upd.sv $c/tsr_vu_gdn_coef.sv $c/tsr_vu_gdn.sv $c/tsr_vu.sv]
 set gopt [list]
 foreach g $gens { lappend gopt -generic $g }
 file mkdir $out
@@ -114,7 +117,7 @@ foreach p [get_timing_paths -setup -max_paths 20 -nworst 1 -from [all_registers]
 # worst register-to-register path ending in each block, and the failing endpoints
 set nfail [llength [get_timing_paths -quiet -setup -max_paths 100000 -nworst 1 -slack_lesser_than 0]]
 puts "VOOC failing_endpoints $nfail"
-foreach inst [list u_gen u_rd u_inj u_wr u_red u_ang g_topk.u_topk g_lane\[0\].u_lane g_lane\[1\].u_lane g_lane\[15\].u_lane] {
+foreach inst [list u_gen u_rd u_inj u_wr u_red u_ang g_topk.u_topk g_gdn.u_gdn g_gdn.u_gdn/u_dot g_gdn.u_gdn/u_upd g_gdn.u_gdn/u_coef g_gdn.u_gdn/u_cvt g_lane\[0\].u_lane g_lane\[1\].u_lane g_lane\[15\].u_lane] {
   set cs [get_cells -quiet -hierarchical -filter "NAME =~ ${inst}/* && IS_SEQUENTIAL"]
   if {[llength $cs] == 0} { continue }
   set p [get_timing_paths -quiet -setup -max_paths 1 -to $cs]
@@ -126,9 +129,10 @@ if {[llength $cs] > 0} {
   set p [get_timing_paths -quiet -setup -max_paths 1 -to $cs]
   puts "VOOC blk top slack [get_property SLACK $p] [get_property STARTPOINT_PIN $p] -> [get_property ENDPOINT_PIN $p] levels [get_property LOGIC_LEVELS $p]"
 }
-foreach inst [list u_gen u_rd u_inj u_wr u_red u_ang u_lma u_lmb g_topk.u_topk u_inj/g_dq.u_dq] {
+foreach inst [list u_gen u_rd u_inj u_wr u_red u_ang u_lma u_lmb g_topk.u_topk u_inj/g_dq.u_dq g_gdn.u_gdn g_gdn.u_gdn/u_dot g_gdn.u_gdn/u_upd \
+                  g_gdn.u_gdn/u_coef g_gdn.u_gdn/u_cvt g_gdn.u_gdn/u_sfm g_gdn.u_gdn/u_sfa g_gdn.u_gdn/u_bv] {
   set cs [get_cells -quiet -hierarchical -filter "NAME =~ ${inst}/*"]
-  puts "VOOC hier $inst LUT [llength [filter $cs {REF_NAME =~ LUT*}]] FF [llength [filter $cs {REF_NAME =~ FD*}]] DSP [llength [filter $cs {REF_NAME =~ DSP48E2}]] RAMB36 [llength [filter $cs {REF_NAME =~ RAMB36*}]]"
+  puts "VOOC hier $inst LUT [llength [filter $cs {REF_NAME =~ LUT*}]] FF [llength [filter $cs {REF_NAME =~ FD*}]] DSP [llength [filter $cs {REF_NAME =~ DSP48E2}]] RAMB36 [llength [filter $cs {REF_NAME =~ RAMB36*}]] RAMB18 [llength [filter $cs {REF_NAME =~ RAMB18*}]] URAM [llength [filter $cs {REF_NAME == URAM288}]]"
 }
 for {set l 0} {$l < 16} {incr l} {
   set cs [get_cells -quiet -hierarchical -filter "NAME =~ g_lane\[$l\].u_lane/*"]

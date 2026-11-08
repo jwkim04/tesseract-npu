@@ -28,7 +28,8 @@
 //   GDN         reserved bits ILLEGAL_OP; OPERAND (VU §7.12.4, in this order): m not a multiple of 16 or outside
 //               [64, 256] (m), rows 0 or above 1,024 (rows), d != a with overlapping extents (d), o overlapping d or a
 //               (o); SPM_RANGE in field order d, a, k, q, v, o (six range operands: d and a E(rows, m/16, m/16),
-//               k and q m/16 lines, v and o ceil(rows/16) lines). The extents are d W, a R, k R, q R (four slots).
+//               k and q m/16 lines, v and o ceil(rows/16) lines). The extents are d W, a R, k R, o W (four slots; the
+//               writes must all be listed, the race detector reads them).
 //   AT ops      reserved bits ILLEGAL_OP; OPERAND (AT §5.8): ASMAX n_lines not in [1, 4095] (n_lines),
 //               R not in [1, 1024] (R), scale not finite, not normal or <= 0 (the scale bits); AMASK
 //               n_lines, R, rpq = 0 (0); AMERGE R, scale; ANORM R. Range operands: ASMAX dst, src
@@ -85,6 +86,7 @@ module tsr_vu_chk
   localparam logic [TSR_EXT_AW-1:0] SPM_WRD = TSR_EXT_AW'(SPM_BYTES / 4);
   localparam int unsigned AW = TSR_EXT_AW;
   localparam int unsigned NR = HAS_GDN ? 6 : 4;       // range operands (GDN checks six)
+  localparam int unsigned RIW = $clog2(NR);           // bits of an index into them
 
   // op classes (one-hot)
   localparam int unsigned C_VOP = 0, C_RED = 1, C_ROPE = 2, C_TOPK = 3, C_SOP = 4, C_DQ = 5;
@@ -186,9 +188,9 @@ module tsr_vu_chk
       TSR_OP_AMASK:  d_cls[C_AMK] = 1'b1;
       TSR_OP_AMERGE: d_cls[C_AMG] = 1'b1;
       TSR_OP_ANORM:  d_cls[C_ANM] = 1'b1;
-      tsr_tables_pkg::TSR_OP_GDN: d_cls[C_GDN] = HAS_GDN;
       default:     d_cls[C_DQ]   = 1'b1;
     endcase
+    if (HAS_GDN && op == tsr_tables_pkg::TSR_OP_GDN) d_cls = NC'(1) << C_GDN;
     d_ill      = rsv_any(w_q, rsv_of(op));
     if (op == TSR_OP_ASMAX) begin
       tsr_insn_t w_std;
@@ -331,7 +333,7 @@ module tsr_vu_chk
   logic [NR-1:0][31:0] c2_s;
   logic [NR-1:0][AW-1:0] c2_len;
   logic [5:0]       c2_ev;             // extent list
-  logic [5:0][1:0]  c2_es;
+  logic [5:0][RIW-1:0] c2_es;
   logic [5:0]       c2_ew;
   logic        c2_sop_oor;
   always_comb begin
@@ -367,14 +369,14 @@ module tsr_vu_chk
     // default extent list: the slots in field order, slot 0 written
     for (int k = 0; k < 4; k++) begin
       c2_ev[k] = 1'b1;
-      c2_es[k] = 2'(k);
+      c2_es[k] = RIW'(k);
       c2_ew[k] = (k == 0);
     end
     if (cls_q[C_VOP]) begin
       if (rows > 16'd1 && 32'(w_q[6][31:16]) < lm_q) begin
         c2_opd = 1'b1; c2_opd_info = 32'(w_q[6][31:16]);
       end
-      c2_pres = {sub == TSR_VOP_CMODE_VEC, reads_q[1], reads_q[0], 1'b1};
+      c2_pres = NR'({sub == TSR_VOP_CMODE_VEC, reads_q[1], reads_q[0], 1'b1});
       c2_n[0] = 17'(rows); c2_s[0] = 32'(w_q[6][31:16]); c2_len[0] = AW'(lm_q);
       c2_n[1] = 17'(rows); c2_s[1] = 32'(w_q[7][15:0]);  c2_len[1] = AW'(lm_q);
       c2_n[2] = 17'(rows); c2_s[2] = 32'(w_q[7][31:16]); c2_len[2] = AW'(lm_q);
@@ -384,7 +386,7 @@ module tsr_vu_chk
       if (tos_q && rows != 16'd1) begin
         c2_opd = 1'b1; c2_opd_info = 32'(rows);
       end
-      c2_pres = {2'b00, 1'b1, !tos_q};
+      c2_pres = NR'({2'b00, 1'b1, !tos_q});
       c2_n[0] = 17'(!tos_q && rows != 16'd0); c2_s[0] = 32'd0; c2_len[0] = AW'(lr_q);
       c2_n[1] = 17'(rows); c2_s[1] = 32'(w_q[7][15:0]); c2_len[1] = AW'(lm_q);
     end
@@ -400,7 +402,7 @@ module tsr_vu_chk
       end else if (tt > 16'd1 && nh != 16'd0 && dsp < H) begin
         c2_opd = 1'b1; c2_opd_info = 32'(w_q[7][31:16]);
       end
-      c2_pres = {tab_q, 3'b111};
+      c2_pres = NR'({tab_q, 3'b111});
       c2_n[0] = 17'(tp); c2_s[0] = dsp;   c2_len[0] = AW'(H);
       c2_n[1] = 17'(tp); c2_s[1] = ssp;   c2_len[1] = AW'(H);
       c2_n[2] = 17'(tp != 16'd0); c2_s[2] = 32'd0; c2_len[2] = AW'(32'((32'(tp) + 32'd15) >> 4));
@@ -413,7 +415,7 @@ module tsr_vu_chk
       end else if (rows > 16'd1 && dsp < kl) begin
         c2_opd = 1'b1; c2_opd_info = 32'(w_q[6][31:16]);
       end
-      c2_pres = 4'b0011;
+      c2_pres = NR'(4'b0011);
       c2_n[0] = 17'(rows); c2_s[0] = dsp;                c2_len[0] = AW'(kl);
       c2_n[1] = 17'(rows); c2_s[1] = 32'(w_q[7][15:0]);  c2_len[1] = AW'(lm_q);
     end
@@ -423,7 +425,7 @@ module tsr_vu_chk
       if (rows > 16'd1 && dsp < lm_q) begin
         c2_opd = 1'b1; c2_opd_info = 32'(w_q[7][31:16]);
       end
-      c2_pres = 4'b0011;
+      c2_pres = NR'(4'b0011);
       c2_n[0] = 17'(rows); c2_s[0] = dsp; c2_len[0] = AW'(lm_q);
       c2_n[1] = 17'(rows); c2_s[1] = ssp; c2_len[1] = AW'(rb_q);
     end
@@ -435,17 +437,21 @@ module tsr_vu_chk
         c2_opd = 1'b1; c2_opd_info = 32'(w_q[7][31:16]);
       end
       c2_pres = '1;
+      // extents: d W, a R, k R, o W (the first four, the list of CC §8.2 has four slots); q and v are range-checked only
+      c2_ev = 6'b001111;
+      c2_es[3:0] = {RIW'(NR-1), RIW'(2), RIW'(1), RIW'(0)};
+      c2_ew = 6'b001001;
       c2_n[0] = 17'(w_q[7][31:16]); c2_s[0] = 32'(w_q[7][15:4]); c2_len[0] = AW'(w_q[7][15:4]);
       c2_n[1] = 17'(w_q[7][31:16]); c2_s[1] = 32'(w_q[7][15:4]); c2_len[1] = AW'(w_q[7][15:4]);
       c2_n[2] = 17'd1; c2_s[2] = 32'd0; c2_len[2] = AW'(w_q[7][15:4]);
       c2_n[3] = 17'd1; c2_s[3] = 32'd0; c2_len[3] = AW'(w_q[7][15:4]);
-      c2_n[4] = 17'd1; c2_s[4] = 32'd0; c2_len[4] = AW'((32'(w_q[7][31:16]) + 32'd15) >> 4);
-      c2_n[5] = 17'd1; c2_s[5] = 32'd0; c2_len[5] = AW'((32'(w_q[7][31:16]) + 32'd15) >> 4);
+      c2_n[NR-2] = 17'd1; c2_s[NR-2] = 32'd0; c2_len[NR-2] = AW'(32'((32'(w_q[7][31:16]) + 32'd15) >> 4));
+      c2_n[NR-1] = 17'd1; c2_s[NR-1] = 32'd0; c2_len[NR-1] = AW'(32'((32'(w_q[7][31:16]) + 32'd15) >> 4));
     end
     if (cls_q[C_SOP]) begin
       // LDS / STS: one word (VU §5.9), its line as the extent
       c2_sop_oor = uses_q[4] && (TSR_EXT_AW'(w_q[3]) + TSR_EXT_AW'(1) > SPM_WRD);
-      c2_pres    = {3'b000, uses_q[4]};
+      c2_pres    = NR'({3'b000, uses_q[4]});
       c2_ew[0]   = (sub == TSR_SOP_SUB_STS);
       c2_a[0]    = {4'd0, w_q[3][31:4]};
       c2_n[0]    = 17'(uses_q[4]); c2_s[0] = 32'd0; c2_len[0] = AW'(1);
@@ -474,10 +480,10 @@ module tsr_vu_chk
       c2_n[0] = 17'(rr); c2_s[0] = 32'(st); c2_len[0] = AW'(nl);
       c2_n[1] = 17'(rr); c2_s[1] = 32'(st); c2_len[1] = AW'(nl);
       if (cls_q[C_ASM]) begin
-        c2_pres = 4'b0111;
+        c2_pres = NR'(4'b0111);
         c2_n[2] = 17'd1; c2_len[2] = AW'(r16);
       end else begin
-        c2_pres = 4'b1111;
+        c2_pres = NR'(4'b1111);
         c2_n[2] = dvq_q; c2_s[2] = w_q[6]; c2_len[2] = AW'(nl);
         c2_a[3] = w_q[7];
         c2_n[3] = 17'd1; c2_len[3] = AW'(r16);
@@ -494,16 +500,16 @@ module tsr_vu_chk
       end else if (scale_bad(w_q[6][31:23])) begin
         c2_opd = 1'b1; c2_opd_info = w_q[6];
       end
-      c2_pres = 4'b1111;
+      c2_pres = NR'(4'b1111);
       c2_n[0] = 17'd1; c2_len[0] = AW'(rl);
       c2_n[1] = 17'd1; c2_len[1] = AW'(NUM_CH) * AW'(cs) + AW'(NUM_CH) * AW'(r16);
       c2_n[2] = 17'd1; c2_len[2] = AW'(r16);
       c2_n[3] = 17'd1; c2_len[3] = AW'(2 * r16);
       // Orun W, [Orun R], parts R, mk R, st W, [st R] (merging: both directions of Orun and st)
       if (w_q[0][12]) begin
-        c2_ev = 6'b001111; c2_es = {2'd0, 2'd0, 2'd3, 2'd2, 2'd1, 2'd0}; c2_ew = 6'b001001;
+        c2_ev = 6'b001111; c2_es[3:0] = {RIW'(3), RIW'(2), RIW'(1), RIW'(0)}; c2_ew = 6'b001001;
       end else begin
-        c2_ev = 6'b111111; c2_es = {2'd3, 2'd3, 2'd2, 2'd1, 2'd0, 2'd0}; c2_ew = 6'b010001;
+        c2_ev = 6'b111111; c2_es = {RIW'(3), RIW'(3), RIW'(2), RIW'(1), RIW'(0), RIW'(0)}; c2_ew = 6'b010001;
       end
     end
     if (cls_q[C_ANM]) begin
@@ -512,7 +518,7 @@ module tsr_vu_chk
       if (rr == 32'd0 || rr > 32'd1024) begin
         c2_opd = 1'b1; c2_opd_info = rr;
       end
-      c2_pres = 4'b0111;
+      c2_pres = NR'(4'b0111);
       c2_n[0] = 17'd1; c2_len[0] = AW'(rl);
       c2_n[1] = 17'd1; c2_len[1] = AW'(rl);
       c2_n[2] = 17'd1; c2_len[2] = AW'(32'((rr + 32'd15) >> 4));
@@ -527,7 +533,7 @@ module tsr_vu_chk
   logic [NR-1:0][15:0] nm1_q;          // n - 1 (n >= 1), else 0
   logic [NR-1:0]       nz_q;           // n != 0 and len != 0
   logic [5:0]       ev_q, ew_q;
-  logic [5:0][1:0]  es_q;
+  logic [5:0][RIW-1:0] es_q;
   always_ff @(posedge clk) begin
     if (st_q[1]) begin
       opd_q      <= c2_opd;
@@ -570,8 +576,9 @@ module tsr_vu_chk
   if (HAS_GDN) begin : g_gdn_ov
     always_ff @(posedge clk) begin
       if (st_q[4]) begin
-        ovda_q <= a_q[0] != a_q[1] && a_q[0] < end_q[1] && a_q[1] < end_q[0];
-        ovo_q  <= (a_q[NR-1] < end_q[0] && a_q[0] < end_q[NR-1]) || (a_q[NR-1] < end_q[1] && a_q[1] < end_q[NR-1]);
+        ovda_q <= a_q[0] != a_q[1] && AW'(a_q[0]) < end_q[1] && AW'(a_q[1]) < end_q[0];
+        ovo_q  <= (AW'(a_q[NR-1]) < end_q[0] && AW'(a_q[0]) < end_q[NR-1]) ||
+                  (AW'(a_q[NR-1]) < end_q[1] && AW'(a_q[1]) < end_q[NR-1]);
       end
     end
   end else begin : g_nogdn_ov
@@ -619,9 +626,9 @@ module tsr_vu_chk
       int unsigned j;
       j = 0;
       for (int e = 0; e < 6; e++) begin
-        if (ev_q[e] && pres_q[es_q[e]] && ext_q[es_q[e]] != '0 && j < 4) begin
-          c6_ext[j[1:0]] = '{v: 1'b1, dram: 1'b0, wr: ew_q[e], ch: 8'd0, lo: AW'(a_q[es_q[e]]),
-                            hi: end_q[es_q[e]]};
+        if (ev_q[e] && pres_q[RIW'(es_q[e])] && ext_q[RIW'(es_q[e])] != '0 && j < 4) begin
+          c6_ext[j[1:0]] = '{v: 1'b1, dram: 1'b0, wr: ew_q[e], ch: 8'd0, lo: AW'(a_q[RIW'(es_q[e])]),
+                            hi: end_q[RIW'(es_q[e])]};
           j = j + 1;
         end
       end

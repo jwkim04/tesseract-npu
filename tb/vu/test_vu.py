@@ -32,7 +32,7 @@ import issue_tb as E                                      # noqa: E402
 import vu_ops as V                                        # noqa: E402
 
 M32 = 0xFFFFFFFF
-CAPS_VU, CAPS_TOPK, CAPS_DQROW, CAPS_ATT = 0x1, 0x8, 0x40, 0x20
+CAPS_VU, CAPS_TOPK, CAPS_DQROW, CAPS_ATT, CAPS_GDN = 0x1, 0x8, 0x40, 0x20, 0x100
 
 
 def chk_sources():
@@ -43,14 +43,18 @@ def chk_sources():
             REPO / "rtl/core/tsr_xc_pkg.sv", f]
 
 
+GDN = json.loads(os.environ.get("TSR_VU_CHK_CFG", "{}")).get("gdn", 0)
+
+
 def chk_cfg():
     c = json.loads(os.environ.get("TSR_VU_CHK_CFG", "{}"))
     return S.config(num_ch=c.get("num_ch", 4), t_max=8, k_max=c.get("k_max", 32768),
-                    spm_bytes=c.get("spm_bytes", 4 << 20), caps=CAPS_VU | CAPS_TOPK | CAPS_DQROW | CAPS_ATT), \
+                    spm_bytes=c.get("spm_bytes", 4 << 20),
+                    caps=CAPS_VU | CAPS_TOPK | CAPS_DQROW | CAPS_ATT | (CAPS_GDN if c.get("gdn") else 0)), \
         c.get("n_ops", 3000)
 
 
-def directed_chk_ops(cfg):
+def directed_chk_ops(cfg, gdn=False):
     """Edge cases the random stream may miss: extents at the SPM end, 32-bit products, every VU §5.9
     OPERAND row, SOP word addresses at the limit."""
     Ls = cfg["spm_bytes"] // 64
@@ -114,6 +118,27 @@ def directed_chk_ops(cfg):
     v.append(V.enc_anorm(0, 4096, Ls - 3, 40, 1))
     v.append(V.enc_anorm(0, 4096, Ls - 2, 40, 1))
     v.append(V.enc_asmax(1 << 31, 64, 128, 1, 1, one))                    # a 32-bit line address
+    if gdn:
+        # GDN (VU §7.12.4): m and rows at their limits, d / a / o overlaps, each range operand at the SPM end
+        base = (3, 5, 40000, 20000, 100, 200, 300, 400)
+        g = lambda **kw: V.enc_gdn(*[kw.get(n, b) for n, b in zip(("sa", "sb", "d", "a", "k", "q", "v", "o"), base)],  # noqa: E731
+                                   kw.get("m", 128), kw.get("rows", 20))
+        v.append(g())
+        v.append(g(d=20000))                                         # in place
+        for m in (0, 16, 32, 48, 63, 64, 72, 128, 240, 256, 272, 0xFFF0, 0xFFFF):
+            v.append(g(m=m))
+        for rows in (0, 1, 1023, 1024, 1025, 0xFFFF):
+            v.append(g(rows=rows, m=64))
+        v.append(g(m=72, rows=0))                                   # m is checked before rows
+        for d in (20000 - 160, 20000 - 159, 20000 - 1, 20000 + 1, 20000 + 159, 20000 + 160):
+            v.append(g(d=d))                                         # tile 160 lines
+        for o in (40000, 40000 + 159, 40000 + 160, 20000 + 159, 20000 - 1, 20000 - 2, 20000 - 1 + 160):
+            v.append(g(o=o))
+        for name in ("d", "a", "k", "q", "v", "o"):
+            for off in (0, 1, 2, 8, 9, 160, 161):
+                v.append(g(**{name: Ls - off}))
+        v.append(g(d=Ls - 160, a=20000, v=Ls - 2, o=Ls - 1))
+        v.append(g(d=Ls - 160, a=Ls - 320, k=Ls - 8, q=Ls - 16, v=Ls - 2, o=Ls - 3))
     return [[x & M32 for x in w] for w in v]
 
 
@@ -160,7 +185,7 @@ async def chk_run(dut, cfg, ops):
 @cocotb.test()
 async def vu_chk_directed(dut):
     cfg, _ = chk_cfg()
-    bad = await chk_run(dut, cfg, directed_chk_ops(cfg))
+    bad = await chk_run(dut, cfg, directed_chk_ops(cfg, GDN))
     for b in bad[:20]:
         dut._log.error(b)
     assert not bad, "%d mismatches" % len(bad)
@@ -169,18 +194,18 @@ async def vu_chk_directed(dut):
 @cocotb.test()
 async def vu_chk_random(dut):
     cfg, n = chk_cfg()
-    g = V.ChkGen(cfg["spm_bytes"] // 64, cfg["k_max"], int(os.environ.get("TSR_SEED", "1")))
+    g = V.ChkGen(cfg["spm_bytes"] // 64, cfg["k_max"], int(os.environ.get("TSR_SEED", "1")), GDN)
     bad = await chk_run(dut, cfg, [g.op() for _ in range(n)])
     for b in bad[:20]:
         dut._log.error(b)
     assert not bad, "%d mismatches" % len(bad)
 
 
-def _run_chk(name, spm_bytes, k_max, n_ops=3000, num_ch=4):
-    c = dict(spm_bytes=spm_bytes, k_max=k_max, n_ops=n_ops, num_ch=num_ch)
+def _run_chk(name, spm_bytes, k_max, n_ops=3000, num_ch=4, gdn=0):
+    c = dict(spm_bytes=spm_bytes, k_max=k_max, n_ops=n_ops, num_ch=num_ch, gdn=gdn)
     run("tsr_vu_chk", __name__, sources=chk_sources(), name="vu_chk_" + name,
         extra_env={"TSR_VU_CHK_CFG": json.dumps(c)},
-        parameters=dict(SPM_BYTES=spm_bytes, K_MAX=k_max, NUM_CH=num_ch))
+        parameters=dict(SPM_BYTES=spm_bytes, K_MAX=k_max, NUM_CH=num_ch, HAS_GDN=gdn))
 
 
 def test_vu_chk_u200():
@@ -191,3 +216,10 @@ def test_vu_chk_u200():
 def test_vu_chk_small():
     """64 KiB SPM (1024 lines), K_MAX 4096, 3 channels: more operands at the SPM end."""
     _run_chk("small", 64 << 10, 4096, 4000, num_ch=3)
+
+
+def test_vu_chk_gdn():
+    """With the GDN class (HAS_GDN = 1, CAPS bit 8): GDN words of every shape and overlap beside the other ops, on the
+    U200 SPM and on 64 KiB (the six range operands at the SPM end)."""
+    _run_chk("gdn_u200", 4 << 20, 32768, 6000, gdn=1)
+    _run_chk("gdn_small", 64 << 10, 4096, 4000, num_ch=3, gdn=1)

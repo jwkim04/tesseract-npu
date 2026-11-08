@@ -108,10 +108,11 @@ class ChkGen:
     """Random VU-class words: shapes near the limits, every enumeration value, unused fields set,
     reserved bits flipped one at a time (the simulator decides what is legal)."""
 
-    def __init__(self, spm_lines: int, k_max: int, seed: int):
+    def __init__(self, spm_lines: int, k_max: int, seed: int, gdn: bool = False):
         self.r = random.Random(seed)
         self.Ls = spm_lines
         self.k_max = k_max
+        self.gdn_on = gdn
 
     def line(self, ext=0):
         r = self.r
@@ -255,10 +256,31 @@ class ChkGen:
         rl = R * (64 << dcode) // 16
         return enc_anorm(self.at_line(rl), self.at_line(rl), self.at_line(L(R)), R, dcode)
 
+    def gdn(self):
+        """GDN words (VU §7.12.4): shapes at the limits of m and rows, d and a in place, shifted, overlapping, adjacent
+        and apart, o on the tile, vectors at the end of the SPM."""
+        r = self.r
+        m = r.choice([64, 128, 256, 16, 32, 48, 72, 240, 272, 0, 0xFFF0, r.getrandbits(16)])
+        rows = r.choice([1, 2, 17, 128, 1024, 1025, 0, 0xFFFF, r.getrandbits(16)])
+        nl = (m & 0xFFFF) // 16
+        te = max(rows, 1) * max(nl, 1)
+        a = self.line(te)
+        d = r.choice([a, a, a + 1, a + te, a + te - 1, max(0, a - te), self.line(te), a ^ 1, self.line(te)])
+        o = r.choice([self.line(L(rows)), self.line(L(rows)), d, a, d + te - 1, a + te - 1, d + te, max(0, a - 1),
+                      self.line(L(rows))])
+        k_, q_ = self.line(nl), self.line(nl)
+        v_ = self.line(L(rows))
+        sa, sb = r.randrange(16), r.randrange(16)
+        return enc_gdn(sa, sb, d & 0xFFFFFF, a & 0xFFFFFF, k_, q_, v_, o & 0xFFFFFF, m & 0xFFFF, rows & 0xFFFF)
+
     def op(self):
         r = self.r
-        k = r.choices(["vop", "red", "rope", "topk", "sop", "dqrow", "asmax", "amask", "amerge", "anorm"],
-                      [5, 3, 3, 1.5, 2, 1.5, 1, 1, 1, 1])[0]
+        names = ["vop", "red", "rope", "topk", "sop", "dqrow", "asmax", "amask", "amerge", "anorm"]
+        weights = [5, 3, 3, 1.5, 2, 1.5, 1, 1, 1, 1]
+        if self.gdn_on:
+            names.append("gdn")
+            weights.append(3)
+        k = r.choices(names, weights)[0]
         w = getattr(self, k)()
         if r.random() < 0.1:
             j = r.randrange(8)
