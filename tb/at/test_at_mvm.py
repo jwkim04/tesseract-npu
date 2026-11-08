@@ -840,7 +840,7 @@ def _zero_state(mutant=None, fast_clk=0):
 
 
 def test_at_mvm_fast_clk():
-    """The full K4 shape with FAST_CLK 1 (the 250 MHz stages, docs/platform-u200.md §8.9): the three-stage row-vector
+    """The full K4 shape with FAST_CLK 1 (the 250 MHz stages, docs/platform-u200.md §8.10): the three-stage row-vector
     emitter of the PV unit and of the gather (MAXOUT and LSUM lines 3 cycles later). Results and SPM image are the
     simulator's."""
     _run("u200_fast", dict(num_ch=4, t_max=4, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30, spm_rd_lat=4,

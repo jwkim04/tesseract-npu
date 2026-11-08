@@ -869,7 +869,7 @@ longer for the VU and 2 cycles longer for the other units. `ATT_PATH_STALL` coun
 still (4 in all). HUNG does not change at the default `WDOG_CFG.L` of 24.
 
 `FAST_CLK` (implementation option of `tsr_core` and below, set in the K4 image) is the same kind of change for a 4.0 ns core clock
-(docs/platform-u200.md §8.9 lists every block). Two parts reach the control plane. The PERF counters of `tsr_csr` take their clear, their
+(docs/platform-u200.md §8.10 lists every block). Two parts reach the control plane. The PERF counters of `tsr_csr` take their clear, their
 enable and their increment from registers, one copy per counter: every count is the single-stage count shifted by one cycle (two for the
 DB block's increments, which pass one more register), and a read in the cycle after an event misses it. The trace writer's DROPS counter
 adds the drops of the cycle before. Everything the host reads after an op's done is equal; the DROP records, the stop logic, the issue

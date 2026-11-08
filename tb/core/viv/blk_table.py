@@ -2,7 +2,7 @@
 """Tables of block_ooc runs: blk_table.py <rundir> ... (each <block>_<period>/vivado.log of blk_ooc.sh).
 
 Prints one row per run: block, period, routed WNS / TNS / failing endpoints, the register-to-register and
-I/O worst slack, LUT / FF / CLB, and the placed (estimate) WNS. Markdown, for docs/platform-u200.md §8.9.
+I/O worst slack, LUT / FF / CLB, and the placed (estimate) WNS. Markdown, for docs/platform-u200.md §8.10.
 """
 import re
 import sys

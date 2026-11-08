@@ -1,6 +1,6 @@
 # tb/core/viv/blk_ooc.tcl — out-of-context implementation of one block of the core (a cluster, the gather, the
 # vector unit, the DMA, the SPM, the issue / CSR / DB part) on the U200 part, at any core clock period. Opt-in
-# (Vivado 2024.2); the runner with the K4 parameter sets is blk_ooc.sh. Results: docs/platform-u200.md §8.9.
+# (Vivado 2024.2); the runner with the K4 parameter sets is blk_ooc.sh. Results: docs/platform-u200.md §8.10.
 #
 # usage: vivado -mode batch -nojournal -nolog -source tb/core/viv/blk_ooc.tcl \
 #          -tclargs <repo> <outdir> <top> <period ns> [synth_only] [place_only] [dcp] [from=<dcp>] [io=<ns>]

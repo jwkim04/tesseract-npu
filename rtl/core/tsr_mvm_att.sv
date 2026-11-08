@@ -307,7 +307,7 @@ endmodule
 // line merge into one job with their words in `own` (byte enables). Jobs {last, line, own, 0, y};
 // `last` on the final job when last_en. done (pulse) after the final job was taken.
 // PIPE = 0: one stage, the row address, the table read, the line compare and the line register in one cycle
-//   (12 levels with the table read in the caller; the 250 MHz work of docs/platform-u200.md §8.9 found them
+//   (12 levels with the table read in the caller; the 250 MHz work of docs/platform-u200.md §8.10 found them
 //   the slowest paths of the PV unit and the gather).
 // PIPE = 1: three stages with the same jobs in the same order: the walker (the loop counters and the
 //   row's r and table address, registered in the descriptor slice A), the read stage (the table read, line

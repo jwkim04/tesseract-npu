@@ -46,7 +46,7 @@ module tsr_dma_kvst
   parameter  int unsigned ADDR_BEAT_W = TSR_DEF_ADDR_BEAT_W,
   parameter  int unsigned SPM_AW      = 16,
   parameter  int unsigned SPM_RD_LAT  = TSR_DEF_SPM_RD_LAT,
-  // FAST_CLK (docs/platform-u200.md §8.9): the placer picks the word pair in one cycle and converts and writes it in the
+  // FAST_CLK (docs/platform-u200.md §8.10): the placer picks the word pair in one cycle and converts and writes it in the
   // next; a META is complete one cycle later (placed_q counts the pair after the write)
   parameter  bit          FAST_CLK    = 1'b0,
   localparam int unsigned LB          = TSR_LINE_BITS

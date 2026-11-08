@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tb/core/viv/blk_ooc.sh — block out-of-context runs of the K4 image at any core clock period
-# (tb/core/viv/blk_ooc.tcl; docs/platform-u200.md §8.9). Opt-in, Vivado 2024.2 (batch).
+# (tb/core/viv/blk_ooc.tcl; docs/platform-u200.md §8.10). Opt-in, Vivado 2024.2 (batch).
 #
 # usage: tb/core/viv/blk_ooc.sh <block> <period ns> <outdir> [blk_ooc.tcl args ...] [NAME=VALUE ...]
 #   block  cl      tsr_mvm_cluster: one MVM cluster with attention (CH 0, NUM_CH 4, T_MAX 4, MAC_LAT 9)

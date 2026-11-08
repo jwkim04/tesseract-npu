@@ -253,7 +253,7 @@ def test_k4_selftest_first_run(tmp_path):
 
 
 def test_k4_selftest_first_run_fast(tmp_path, monkeypatch):
-    """The same first launch at zero state with FAST_CLK 1 (docs/platform-u200.md §8.9): the Xilinx wrappers with the DSP
+    """The same first launch at zero state with FAST_CLK 1 (docs/platform-u200.md §8.10): the Xilinx wrappers with the DSP
     lanes' pv_en copies, the three-stage emitters, the PV convert pipeline and the KVST placer stage."""
     monkeypatch.setenv("TSR_FR_FAST", "1")
     _first_run(tmp_path, False)

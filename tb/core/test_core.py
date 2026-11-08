@@ -659,7 +659,7 @@ def test_core_m7_rv_local(m7case):
 
 def test_core_m7_fast(m7case):
     """Production decode / prefill on the packaged control plane with FAST_CLK 1 (the 250 MHz stages, docs/platform-u200.md
-    §8.9): every comparison of core_m7 unchanged (output rows and KV planes bit for bit, Q_DONE / Q_ISSUED / Q_ERR_CODE per
+    §8.10): every comparison of core_m7 unchanged (output rows and KV planes bit for bit, Q_DONE / Q_ISSUED / Q_ERR_CODE per
     unit, the s registers, the PERF event counters, the history and the trace records). The attention ops of the M7 layer run
     the three-stage row-vector emitter, the five-stage PV convert pipeline and the KVST placer with the extra stage."""
     _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0), rv_local=True, fast_clk=True, lane_pipe=2, ddr_pipe=1,
@@ -841,7 +841,7 @@ def test_core_k4full():
 
 
 def test_core_k4_fast():
-    """The full-feature card image with FAST_CLK 1 (the 250 MHz stages, docs/platform-u200.md §8.9): everything of
+    """The full-feature card image with FAST_CLK 1 (the 250 MHz stages, docs/platform-u200.md §8.10): everything of
     test_core_k4full with the PERF counters, the row-vector emitters, the PV convert pipeline, the KVST placer and the
     copied slice pointers in their registered forms. core_smoke and core_db must equal the simulator in every DRAM
     region, the identification registers and the final CSR state; core_db adds the stop state, the history and the
@@ -878,7 +878,7 @@ def test_core_k4gdn():
 
 
 def test_core_k4gdn_fast():
-    """The same image with FAST_CLK 1 (the 250 MHz stages, docs/platform-u200.md §8.9): core_smoke runs the
+    """The same image with FAST_CLK 1 (the 250 MHz stages, docs/platform-u200.md §8.10): core_smoke runs the
     firmware stream of test_core_k4full and, after it, two heads of the GDN op (an LD of k, q, v and S, SOP MOVI of
     alpha and beta, GDN, ST of S' and o; head 0 to a tile of its own, head 1 in place) through the issue path, the
     VU checker class, the VU and the DMA on the RTL Ibex. The simulator runs the same firmware with CAPS 0x121 (the

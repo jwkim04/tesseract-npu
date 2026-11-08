@@ -83,7 +83,7 @@ module tsr_core
   // the RISC-V SPM bridge request (one stage, in the SPM link end), the MVM's attention-stall strobe (two stages per
   // cluster, tsr_mvm) and the pair links of the MVM gather (one tsr_rpipe stage each, tsr_mvm_gather).
   parameter bit              XSLR_REG       = 1'b0,
-  // FAST_CLK (implementation; tsr_core_dp and below, docs/platform-u200.md §8.9): the register stages and protocol changes that
+  // FAST_CLK (implementation; tsr_core_dp and below, docs/platform-u200.md §8.10): the register stages and protocol changes that
   // make the core meet a 4.0 ns clock. Results and the architectural state are unchanged; the cycle counts of some control
   // and diagnostic paths grow by a few cycles. 0 builds the netlist of every earlier configuration.
   parameter bit              FAST_CLK       = 1'b0,

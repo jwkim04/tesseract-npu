@@ -57,7 +57,7 @@ KERNELS = {
     # GDN), so the host keeps the legacy attention and epilogue paths. HAS_GDN 1 adds the fused Gated DeltaNet state
     # update (VU §7.12: the engine and the lanes' shared update, in the VU's Pblock). The place_design hook is
     # hw/u200/k4_major_blocks.tcl.
-    # FAST_CLK 1 (docs/platform-u200.md §8.9) is the 250 MHz work: the PERF counters, the row-vector emitters, the PV convert pipeline,
+    # FAST_CLK 1 (docs/platform-u200.md §8.10) is the 250 MHz work: the PERF counters, the row-vector emitters, the PV convert pipeline,
     # the KVST placer and the slice pointer copies in their registered forms. Remove it for the netlist of the 200 MHz images.
     # Two other elaborations of tsr_u200_k4, as kernel entries:
     #  - the reduced first card image (branch k4m200, docs/platform-u200.md §8.7): no vector unit, no attention,

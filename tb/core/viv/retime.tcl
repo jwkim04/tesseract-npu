@@ -1,5 +1,5 @@
 # tb/core/viv/retime.tcl — time a placed or routed out-of-context checkpoint of the core at other clock periods, with its
-# own placement: the same cells and routes against a tighter clock (docs/platform-u200.md §8.9).
+# own placement: the same cells and routes against a tighter clock (docs/platform-u200.md §8.10).
 #
 # usage: vivado -mode batch -nojournal -nolog -source tb/core/viv/retime.tcl -tclargs <dcp> <outdir> <period ns> [<rvperiod ns>]
 #          [io=<ns>] [thr=<ns>]

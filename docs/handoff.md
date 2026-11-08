@@ -1,6 +1,24 @@
-# Handoff: where the work stands (2026-11-08)
+# Handoff: where the work stands (2026-11-09)
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
+
+## Branch `k4f250`: the combined link (PV fix, GDN, `FAST_CLK`), 250 MHz measured out of context (November 9)
+
+Branch `k4f250` (worktree `/home/limagin-dev/tesseract-f250`, from `244a839` of `k4full`) has the ATTPV zero-state fix (`b967a31`), the GDN op in the
+vector unit (`gdn-vu`, merged at `bdcf7b9`) and the work for a 4.0 ns core clock: [platform-u200.md](platform-u200.md) §8.10. Nothing was linked.
+
+- **Link to start** (the user starts it after seeing the Pblock map, `docs/fig/floorplan/k4f250-pblock-plan.png`; the VU Pblock holds the GDN
+  engine too): `screen -dmS k4f250-link /home/limagin-dev/tesseract-f250/build/f250/k4f250_link.sh` (not in git; the 200 MHz version of
+  `k4full_link.sh` for this worktree: output `build/link/k4f250`, source commit and diff recorded next to the log, same slot, jobs and
+  `AggressiveExplore` options as the fourth link). Request: `hw/u200/k4.cfg` is `kernel_frequency=0:200|1:100`; a 250 MHz link is `0:250|1:100`. The final clock check follows the request.
+- **What the image is:** `tsr_u200_k4` with `FAST_CLK` 1 and `HAS_GDN` 1 (CAPS 0x121), T_MAX 4, 200 / 100 MHz, the Pblocks of the fourth link.
+  `FAST_CLK` lengthens a few attention and diagnostic paths by a few cycles and changes no result (list and costs: §8.10).
+- **250 MHz decision:** no-go for a first 250 MHz link (my estimate for closing the core and every shell clock at 4.0 ns is below 25 %: §8.10). Every block
+  meets 4.0 ns out of context and the changed ones meet 3.5 ns; what cannot be shown without a link is the in-context closure (19.8 K core and
+  3.6 K shell endpoints of the fourth link have a data path over 4.0 ns at 5.0 ns). The 200 MHz link of this source comes first.
+- **Open:** `ctest` was not run in this worktree (no `sw/` change of this branch; the GDN software has its own gates on `gdn-sw`). The
+  `tb/core` GDN cases (`test_core_k4gdn`, `_fast`) need the GDN simulator library: `TSR_SIM_LIB` and `TSR_REF_LIB` of `/home/limagin-dev/tesseract-gdn/build/dev/sw/sim`.
+  Not run: the block runs at 5.0 ns, the old source at 3.5 ns, a routed whole-core run (§8.10).
 
 ## Branch `gdn-vu`: the GDN op is in the vector unit (November 9)
 

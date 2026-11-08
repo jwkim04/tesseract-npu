@@ -108,7 +108,7 @@ module tsr_csr
   parameter int unsigned SR_RV_MAX   = tsr_tables_pkg::TSR_SR_RV_WAIT_CYCLES,
   parameter int unsigned LD_WAIT_MAX = tsr_tables_pkg::TSR_LOAD_TIMEOUT_CYCLES,
   parameter int unsigned FREQ_WIN    = 4096,
-  // FAST_CLK (docs/platform-u200.md §8.9): the PERF counters take their clear, enable and increment from registers (1 cycle later,
+  // FAST_CLK (docs/platform-u200.md §8.10): the PERF counters take their clear, enable and increment from registers (1 cycle later,
   // all alike, so the counts equal the single-stage counts shifted by one cycle)
   parameter bit          FAST_CLK    = 1'b0
 ) (

@@ -83,7 +83,7 @@ module tsr_rslice #(
   parameter int unsigned FORM = 0,     // 0 main + skid, 1 two slots with pointers (cycle-identical)
   // FORM 1: RPC copies of the read pointer and of the occupancy flops (`keep`), each serving one slice of the payload: the
   // output mux select and the slot enables then have W / RPC loads instead of W (cycle-identical; the 250 MHz work,
-  // docs/platform-u200.md §8.9). 1 = the single flops.
+  // docs/platform-u200.md §8.10). 1 = the single flops.
   parameter int unsigned RPC  = 1
 ) (
   input  logic         clk,

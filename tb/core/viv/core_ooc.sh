@@ -16,7 +16,7 @@
 #           k4t1  NUM_CH 4, T_MAX 1, VU 8 / 8 / 4 lanes, VU_LANE_PIPE 2
 #           k4    NUM_CH 4, T_MAX 4, VU 8 / 8 / 4 lanes, VU_LANE_PIPE 2, paired two-flit gather, DDR0 / DDR3 boundaries,
 #                 RV_LOCAL_TRANSPORT 1, XSLR_REG 1, FAST_CLK 1, attention, trace writer and history: the kernel tsr_u200_k4 of
-#                 rtl/platform/alveo_xrt/gen_tops.py, the full-feature card image (docs/platform-u200.md §8.8, §8.9)
+#                 rtl/platform/alveo_xrt/gen_tops.py, the full-feature card image (docs/platform-u200.md §8.8, §8.10)
 #           k4base the same without FAST_CLK: the 200 MHz images of the fourth link and before
 #           k4min NUM_CH 4, T_MAX 8, no vector unit, no attention (HAS_VU 0, HAS_ATT 0: no KVST, ATTQK, ATTPV),
 #                 no DB trace writer or history (HAS_TRW 0, HIST_DEPTH 0), RV_LOCAL_TRANSPORT 1: the reduced first card

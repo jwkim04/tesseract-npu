@@ -37,7 +37,7 @@ module tsr_dbg_trw
   parameter int unsigned     ADDR_BEAT_W = TSR_DEF_ADDR_BEAT_W,
   parameter longint unsigned CH_BYTES    = TSR_DEF_CH_BYTES,
   parameter int unsigned     TRW_CH      = tsr_tables_pkg::TSR_TRW_CH,
-  // FAST_CLK (docs/platform-u200.md §8.9): the DROPS counter adds the drops of the cycle before (a statistic: the counter
+  // FAST_CLK (docs/platform-u200.md §8.10): the DROPS counter adds the drops of the cycle before (a statistic: the counter
   // reads one cycle later; DROP records and the staging decisions use dpend_q as before)
   parameter bit              FAST_CLK    = 1'b0
 ) (

@@ -3,7 +3,7 @@
 job_ready for each emitter; the jobs {last, line, own, 0, y} and the done pulses must be equal in order and content.
 
 DUT: tb/at/hdl/tsr_tb_rvec.sv. Both emitters run the same op at the same time; PIPE 1 offers its first job 3 cycles later and
-done 3 cycles later (docs/platform-u200.md §8.9). The value table does not change while an op runs (the callers' contract).
+done 3 cycles later (docs/platform-u200.md §8.10). The value table does not change while an op runs (the callers' contract).
 """
 from __future__ import annotations
 

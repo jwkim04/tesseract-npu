@@ -3143,6 +3143,194 @@ What a link with it has to check, beside §8.8's list:
   from the RISC-V firmware through the issue path, the checker and the DMA; DRAM, `CAPS` and the final CSR state equal the
   simulator's.
 
+### 8.10 The 250 MHz work (`tsr_u200_k4`, branch `k4f250`, 2026-11-08)
+
+The fourth link of the full-feature image met 200 / 100 MHz with WNS +0.017 ns. The user asked how far the same configuration is from a
+250 MHz core clock (4.0 ns), and approved three steps: a reset distribution that is local and may take more cycles, no resets on
+pure datapath registers, debug paths (CSR read, PERF, DB, trace writer) off the critical budget, and block runs at 4.0 ns for the MVM
+cluster, the vector unit, the DMA and the control plane. This section is that work. The core stays at 200 MHz in every other part of
+this document; the request in `hw/u200/k4.cfg` is the one that decides.
+
+**Where the fourth link stands at 4.0 ns.** Analysis only, on the routed checkpoint: every endpoint of the core clock with slack below
+1.0 ns at 5.0 ns (`build/k4full/f250/paths_lt1.tsv` of the `k4full` tree: 50,843 endpoints). Vivado stops improving a path when it
+meets its period, so the count overstates the work, but the shape is what matters.
+
+| Bin of the endpoints | Endpoints |
+|---|---:|
+| MVM clusters (internal): `u_back` MAC lanes 5,294, PV `u_rvec` 1,698, gather assemblers 1,386, the rest | 22,637 |
+| Shell memory interconnect on the kernel clock (`memory_subsystem`) | 5,067 |
+| Endpoints on reset pins (PERF clear 2,368, history valid 333, ...) | 5,118 |
+| CSR 2,834, CSR to DB 669, CSR to issue 256 | 3,759 |
+| DB core side 1,534, DB to trace slices 766 | 2,300 |
+| Vector unit 1,153, DMA 1,014, issue 1,010, control CDC 816 | 3,993 |
+
+Of the 50,843, 42,394 are inside the core and 8,449 in the shell or the adapter. Slack: 1,633 below 0.25 ns, 7,150 from 0.25 to 0.5,
+17,563 from 0.5 to 0.75. The data path (including clock-to-output) of 19,794 core endpoints is longer than 4.0 ns already; for 33,114
+it is longer than 3.8 ns. Of the 4,344 tight endpoints (slack below 0.4 ns) with a slice at both ends, 1,383 cross an SLR boundary: the
+DDR0 / DDR3 write data into the arbiters 527, the trace writer into its slices 130, the MVM read request into the gather 104, the
+issue to the VU command pipe 143, the gather pair links 70 and the broadcast head 52. Deep logic (7 or more levels, slack below 1.0
+ns): the PV row-vector emitter 1,238 + 458 (11 to 12 levels), the gather's emitter 512 + 416, the DB shadow-queue record
+serializer 694 + 342 (9), the KVST placer 479 (11), the PV convert pipeline 256 + 221 + 79 (up to 14), the gather key tree 435 (7),
+the issue dependency compare 294 (8), the CSR LQ ring 198 (10), the DB stop logic 64 + 32 (up to 15), the trace writer's drop
+counter 64 + 32 (16 to 18).
+
+**Block runs** (`tb/core/viv/blk_ooc.sh`, `blk_ooc.tcl`; new). One block as the top of an out-of-context run, the K4 parameters
+(`blk_ooc.sh` header), a `clk` port with the period asked for and 1.6 ns of input and output delay on every port (the other
+side of the boundary is a register: as `tb/spm/viv` and `core_ooc.tcl`). Flow: synthesis, `opt_design`, `place_design`,
+`phys_opt_design -directive AggressiveExplore`, `route_design -directive AggressiveExplore`, `phys_opt_design -directive
+AggressiveExplore` (the directives of `k4.cfg`). Prints the failing endpoints by (start, end) group; `blk_table.py` makes the rows. A
+second period can reuse the synthesis (`from=`). `tb/core/viv/retime.tcl` times an existing checkpoint at another period. The blocks:
+
+| Block | Top and parameters |
+|---|---|
+| `cl` | `tsr_mvm_cluster`, cluster 0 of 4, `T_MAX` 4, `HAS_ATT` 1, `MAC_LAT` 9, `RST_COPY` 1 |
+| `gather` | `tsr_mvm_gather`, 4 channels, paired two-flit links, `XSLR_REG` 1, `HAS_ATT` 1, `JOB_PIPE` 2 |
+| `vu` | `tsr_vu`, 4 channels, lanes 8 / 8 / 4, `LANE_PIPE` 2 |
+| `dma` | `tsr_dma` with KVST, 4 channels |
+| `spm`, `qact` | `tsr_spm` (4 MiB, `RD_LAT` 4), `tsr_qact` (`T_MAX` 4) |
+| `ctl` | `tsr_core_dp` with no MVM, VU or attention: issue path with its checkers, CSR, DB core side with trace writer and history, DMA, QACT, SPM, arbiters, the `XSLR_REG` and reset glue |
+
+A run with the router stopping at 0 ns slack cannot show a margin: a block that has more than it needs ends near zero. So the
+table also has a run at 3.7 ns (0.3 ns tighter) on the same synthesis: a block that meets 3.7 ns has 0.3 ns at 4.0.
+
+**What changed: `FAST_CLK`.** One new parameter (`tsr_xrt_kernel`, `tsr_core`, `tsr_core_dp` and the blocks below; default 0, which builds
+the netlist of every earlier configuration; `gen_tops.py` sets it to 1 for `tsr_u200_k4`). Results and the architectural state do not
+change; some control and diagnostic paths take a few cycles more. Each row is a register stage or a copy that the block-level
+evidence or the link-4 endpoint list asked for.
+
+| Where | Change | Cycles |
+|---|---|---|
+| `tsr_mvm_rvec` `PIPE` (PV unit LSUM, gather MAXOUT) | the row-vector emitter in three stages: walker (loop counters, `r`, table address; slice A), table read and line address and the same-line flag (slice B), line assembler; the op's setup is registered at `start` | first job and `done` 3 cycles later per ATTPV with LSUM and per ATTQK with MAXOUT; one row per cycle as before |
+| `tsr_mvm_pv` | the lane / slot select of the capture bank in a stage of its own, and `fs3` (round, exponent, pack) in two: the convert pipeline is 5 stages, not 3 | each drain 2 cycles longer; the gap between drains (`DGAP`) 2 cycles more |
+| `tsr_dma_kvst` | the placer registers the word pair, converts and writes it a cycle later | a META is complete 1 cycle later |
+| `tsr_mvm_gather` | the key tree has an input register (the line, its tail flags and the strobe); the SPM-read issue slice is `tsr_rslice` FORM 1 with pointer copies | a row maximum is in the table 1 cycle later; none for the slice |
+| `tsr_csr` | the PERF counters take clear, enable and increment from registers, one copy per counter (64 loads each, was 4,096 / 1,345); the DB block's increments pass one register | counts shift by 1 cycle (2 for the DB's); totals equal |
+| `tsr_dbg_trw` | the DROPS counter adds the drops of the cycle before | reads 1 cycle later; the DROP records and the staging do not change |
+| `tsr_rslice` FORM 1, `tsr_mvm_pair_rx` `RPC` | copies of the read pointer and of the occupancy flops, one per slice of the payload, on the DDR0 / DDR3 write data (`u_wd`), the trace data (`u_td`), the gather's job slices and the pair receiver | none (cycle-identical, `tb/dma/test_rslice.py`) |
+| `tsr_mvm_aqk` | the bounds test of a row one stage earlier (the setup is stable) | none |
+| `tsr_mac_lane` `PVR` | `pv_en` reaches the DSP controls through a register copy per slot and eight lanes (the A / D input mux, the post-adder mode and enable) | none; `pv_en` changes at least 2 cycles before an operand (simulation assertion in both lane variants) |
+
+The reset distribution did not need a change at 4.0 ns: in the endpoint list of the fourth link the reset registers themselves
+(`rb_q`, the cluster copies) have 68 endpoints below 1.0 ns. The endpoints on reset pins are functional clears that happen to use the
+`R` pin: the PERF clear (2,368), the history's valid bits (333), the shadow queues' record registers. The PERF clear and enable now come
+from a copy per counter. Registers that nothing reads before they are written under a valid already have no reset (the scan of `rtl/core`
+for reset branches found only control state and the zero-state cases of `tsr_mvm_pv`). `tsr_chk_at`'s response registers are cleared
+by `!st_q[7]` as well as by the reset; the reset term is redundant there and was left in.
+
+**Tests.** `FAST_CLK` has its own case in every bench that a stage touches, and the core runs the production firmware with it:
+
+- `tb/at/test_rvec_pipe.py`: the three-stage emitter against the single-stage one on random op descriptions, a random table and a
+  random `job_ready` for each (jobs and `done` equal; two builds, `SPM_AW` 16 and 11; three mutants of the new stages must fail).
+- `tb/at/test_at_mvm.py` `test_at_mvm_fast_clk` (generic lanes), `_xilinx` (the DSP lanes with `PVR`) and `test_at_mvm_zero_state_fast`
+  (the first ATTPV at zero state): 40 random attention ops with MAXOUT and LSUM against the simulator, SPM image equal.
+  `tb/at/test_at_kvst.py` `test_at_kvst_fast_clk`: the planes, masks and beats of 150 KVST ops against the simulator.
+- `tb/csr` `test_csr_fast_clk` (PERF against the simulator in a launch, the time counters within the bench's tolerance),
+  `tb/dbg` `test_dbg_fast_clk` (stops, serial mode, trace writer, history against the simulator), `tb/dma/test_rslice.py` (the pointer
+  copies equal the single flops cycle for cycle, FORM 0 and FORM 1 included).
+- `tb/core`: `test_core_k4_fast` (core_smoke and core_db on the packaged elaboration: every DRAM region, the identification registers,
+  the stop state, the history and the trace records equal the simulator's), `test_core_m7_fast` (production decode and prefill on the
+  packaged control plane: output rows and KV planes bit for bit, the per-unit counts, the s registers, the PERF counters),
+  `test_k4_selftest_first_run_fast` (the first `selftest` launch at zero state on the Xilinx wrappers) and `test_core_k4gdn_fast`
+  (the GDN stream; needs the GDN simulator library).
+- Zero initial state (`TSR_RAND_RESET=0`, the FPGA without INIT) was run for `test_at_mvm_fast_clk`, `_xilinx` and `test_at_mvm_zero_state_fast`,
+  `test_at_kvst_fast_clk`, `test_csr_fast_clk`, `test_dbg_fast_clk`, `test_rvec_pipe`, `test_rslice`, `test_core_k4_fast` and `test_k4_selftest_first_run_fast` (zero is its
+  default); `test_core_k4_fast` also with seeds 1 to 3. The registers the stages added (slice payloads, walker counters, convert-pipeline
+  registers) have no reset: none is read before it is written under a valid.
+
+**Block runs, before and after.** Routed WNS in ns (the register-to-register worst slack in brackets where it differs), core clock
+period as the column says, the synthesis of the 4.0 ns run reused for 3.5 ns. The 5.0 ns runs and the 3.5 ns runs of the old source were
+dropped to start the link sooner. "Before" is the source of the fourth link (`244a839` of
+`k4full`: no `FAST_CLK`, no GDN), "after" the merged tree (`FAST_CLK` 1). The SPM and QACT sources did not change, and neither did the
+vector unit's RTL beyond the GDN merge: one run serves as both.
+
+| Block | 4.0 ns before | 4.0 ns after | 3.5 ns after |
+|---|---:|---:|---:|
+| SPM | 0.073 | 0.073 | - |
+| QACT | 0.180 | 0.180 | - |
+| DMA with KVST | 0.301 | 0.373 | 0.076 |
+| gather | 0.291 (0.463) | 0.287 (0.387) | 0.116 (0.305) |
+| control plane | 0.023 | 0.137 | 0.009 (0.055) |
+| vector unit | 0.259 | 0.259 | - |
+| MVM cluster | 0.142 | 0.204 (0.336) | 0.211 |
+| vector unit, `HAS_GDN` 1 | - | 0.338 (0.418) | - |
+
+Sizes after synthesis (LUT cells, flip-flops; CLBs after routing in brackets):
+
+| Block | Before | After |
+|---|---:|---:|
+| SPM | 4832 / 3387 (835) | 4832 / 3387 (835) |
+| QACT | 6252 / 6416 (1246) | 6252 / 6416 (1246) |
+| DMA with KVST | 4725 / 2560 (843) | 4654 / 2624 (915) |
+| gather | 31947 / 35906 (5506) | 32491 / 36711 (5579) |
+| control plane | 36347 / 43221 (7451) | 36273 / 43503 (7416) |
+| vector unit | 61764 / 68839 (12404) | 61764 / 68839 (12404) |
+| MVM cluster | 61616 / 60290 (12423) | 64806 / 60683 (12930) |
+| vector unit, `HAS_GDN` 1 | - | 68363 / 73601 (13884) |
+
+Reading the tables:
+
+- Every block meets 4.0 ns out of context before and after the changes. The router stops when the slack is positive, so the routed WNS
+  of a block with margin is a few tenths of a nanosecond and says little. The placed estimate (after `phys_opt_design`) is 0.41 to 0.51 ns for
+  every block (QACT 1.18), the placer's own target.
+- At 3.5 ns the changed blocks still meet: the DMA +0.08 ns, the gather +0.12 ns, the control plane +0.01 ns, the cluster +0.21 ns. That is the
+  margin the +0.3 ns bar asks for, measured as a tighter clock on the same netlist (0.5 ns to the 4.0 ns period).
+- The changes buy little in isolation, as the numbers show: the register-to-register worst slack at 4.0 ns went from +0.14 to +0.34 ns in the cluster, from
+  +0.02 to +0.14 ns in the control plane, from +0.30 to +0.37 ns in the DMA, and fell from +0.46 to +0.39 ns in the gather. The block
+  that was already deepest (the PV unit's convert pipeline, 14 levels at 5.0 ns in the link) met 4.0 ns before the change, because the
+  block run has no long wires. The paths of the fourth link that are near 4.0 ns are made of wires between blocks and SLRs, and those
+  are not in a block run.
+- The vector unit with the GDN engine (`HAS_GDN` 1, the image's) meets 4.0 ns by +0.34 ns (+0.42 register to register): 68.4 K LUT cells,
+  73.6 K flip-flops, 289 DSP, 34 URAM, 13.9 K CLBs, against 61.8 K, 68.8 K, 249, 0 and 12.4 K without it. Its Pblock has 25.3 K CLBs.
+- Cost: the cluster has 3.2 K LUT cells (+5 %) and 0.8 K flip-flops more, the gather 0.5 K and 0.8 K, the control plane 0.3 K flip-flops, the DMA 0.1 K
+  flip-flops. Four clusters and the gather: about +13 K LUT cells and +4 K flip-flops, about +1 K CLBs in each of SLR0 and SLR2 (the two
+  outer SLRs were 80.1 and 85.0 % in the fourth link; SLR1 does not change by more than the gather's 0.1 K CLBs).
+
+**In-context evidence.** A placed-only run of the whole core with hard Pblocks cannot decide this either. The checkpoint of the earlier
+out-of-context placement of the core (`ooc_place3_hard`, 3.333 ns, WNS -0.686 ns with 9,370 failing endpoints) re-timed at 4.0 ns
+(`retime.tcl`, same cells) has WNS -0.019 ns and one failing endpoint: placement without routing is 1 ns optimistic (the QACT block: 1.18 ns
+placed, 0.18 ns routed). A routed whole-core run was not made: it takes hours, peaks near the host's memory and still has no shell. The only
+routed in-context data is the fourth link, which is the list at the top: at 5.0 ns 19,794 core endpoints and 3,612 shell and adapter endpoints
+have a data path longer than 4.0 ns, and 33,114 and 6,417 longer than 3.8 ns. At 4.0 ns every one of them must come out shorter by the
+router's choice. The changes address groups holding about 9.6 K of the 50,843 endpoints (logic depth or fan-out) and do nothing for the
+wires between SLRs and for the shell.
+
+**Shell-clock risk.** The shell's own clocks do not depend on the kernel's. In the fourth link they met by +0.017 ns (`dma_ip_axi_aclk`, which
+runs at 250 MHz itself) to +0.07 ns, and the kernel-clock paths of the memory interconnect had +0.07 ns at 5.0 ns. The first 250 MHz link of
+the reduced image missed the DDR4 user clocks by 0.33, 0.23 and 0.07 ns when the control plane and cluster 0 sat in the controller's clock
+regions; the Pblocks have kept the kernel out of them since. What a 4.0 ns kernel clock changes is the shell logic on that clock: the memory
+interconnect has 2,668 endpoints with a data path over 4.0 ns at 5.0 ns (2,014 of them one or two levels, so wires; 416 over 4.4 ns), and our adapter
+642 (124 over 4.4 ns), the data-mover (`h2c`) 302. Nothing of it can be changed in the source. Risk: high.
+
+**Decision.** No-go for a 250 MHz first link; the combined link is prepared at 200 MHz.
+
+- The bar (every block at 4.0 ns out of context with WNS of about +0.3 ns): after the changes five of the eight rows are below it at 4.0 ns
+  (SPM +0.07, QACT +0.18, control plane +0.14, cluster +0.20, gather +0.29; the DMA +0.37 and the vector unit with GDN +0.34 are above). They
+  all meet, and the four changed blocks that were run tighter meet 3.5 ns, so the isolated margin is there; but the bar was set for the in-context cost,
+  and the router's stop makes the number at 4.0 ns an artefact. SPM and QACT were not run at 3.5 ns (unchanged sources).
+- In context nothing here can show that 4.0 ns closes. The only routed data is the fourth link at 5.0 ns: 19,794 core and 3,612 shell and
+  adapter endpoints have a data path longer than 4.0 ns there. The changes address groups with about 9.6 K of the 50,843 endpoints (logic
+  depth or fan-out); the 1,383 tight crossings of SLR boundaries and the shell are wires and stay.
+- The shell is the risk that cannot be reduced in the source: its own 250 MHz clock closed by +0.017 ns in the fourth link, and its
+  logic on the kernel clock has 2,668 endpoints longer than 4.0 ns at 5.0 ns.
+- My estimate for a 250 MHz link of this image closing the core clock and every shell clock at the first attempt is below 25 %. A failed
+  link costs about 4.5 hours and gives no image; the 200 MHz link of the same source gives the image the PV fix, GDN and the stages
+  need, and its slack list (endpoints below 0.5 ns at 5.0 ns, the tool of `build/k4full/f250`) shows how far a later 250 MHz attempt
+  is. If the user wants to try 250 MHz first, the change is one line (below).
+
+**The link** (prepared, not started). `build/f250/k4f250_link.sh` (not in git; `k4full_link.sh` for this worktree): records the source commit,
+status and diff, then `hw/u200/vivado_slot.sh hw/u200/build_xclbin.sh k4` with `TSR_BUILD_JOBS=8` and `TSR_U200_SYNTH_JOBS=16`; output
+`build/link/k4f250`. Start it in a detached screen: `screen -dmS k4f250-link /home/limagin-dev/tesseract-f250/build/f250/k4f250_link.sh`.
+Differences from the fourth link (`k4full` at `d33f816`):
+
+| | Fourth link | This link |
+|---|---|---|
+| Source | `d33f816` | branch `k4f250`: `FAST_CLK` 1, `HAS_GDN` 1 (CAPS 0x121), the ATTPV zero-state fix (`b967a31`) |
+| Request (`hw/u200/k4.cfg`) | `kernel_frequency=0:200|1:100` | the same; a 250 MHz link is `0:250|1:100`, and `clock_net_check.tcl` and `clock_final_check.tcl` follow it (accept 250.0 to 250.1 and 100.0 to 100.1 MHz) |
+| Pblocks, hooks, directives | `k4_major_blocks.tcl`, `AggressiveExplore` place / route / post-route | unchanged; the GDN engine is inside `pblock_tsr_vu` (map `docs/fig/floorplan/k4f250-pblock-plan.png`) |
+
+Read in the log: the VU Pblock's occupancy (`K4 major blocks: pblock_tsr_vu`: 25,320 CLBs, 420 RAMB36, 1,320 DSP, 160 URAM), the SLR occupancy
+(the changes add about 1 K CLBs to SLR0 and to SLR2, from 80.1 and 85.0 %), `CLKFINAL PASS k4`, the shell clocks.
+
 ## 9. Timing and resources (Vivado OOC synthesis of `tsr_u200_k1`)
 
 *Measured in Vivado 2024.2 (out of context).* `tb/platform/viv/kernel_ooc.tcl` (synth only, 3.333 ns `ap_clk`, every I/O budgeted 1.6 ns outside,

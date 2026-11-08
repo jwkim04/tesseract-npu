@@ -126,7 +126,7 @@ module tsr_mvm_pv
   localparam int unsigned P3       = P1 + 1 + MUL_LAT;   // w at the cell summary / FIFO w write
   localparam int unsigned P4       = P3 + 1;             // cell summary at the trackers
   localparam int unsigned CAPD     = 2 + 1 + PV_LAT; // aligner stages + back-end register + MAC
-  localparam int unsigned CVX      = FAST_CLK ? 1 : 0;   // FAST_CLK: fs3 in two stages (docs/platform-u200.md §8.9)
+  localparam int unsigned CVX      = FAST_CLK ? 1 : 0;   // FAST_CLK: fs3 in two stages (docs/platform-u200.md §8.10)
   localparam int unsigned CVP      = FAST_CLK ? 1 : 0;   // FAST_CLK: the lane / slot select in a stage of its own
   localparam int unsigned CVL      = 3 + CVX + CVP;  // F() stages
   localparam logic [31:0] F_NAN    = TSR_CANON_NAN;   // (not NAN: a C macro in the Verilator model)

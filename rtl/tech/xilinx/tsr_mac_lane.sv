@@ -66,7 +66,7 @@ module tsr_mac_lane #(
   parameter  int unsigned LAT   = 3,    // fixed latency, >= 1
   parameter  bit          PV    = 1'b0, // PV accumulate mode (ATTPV, AT §8.2)
   // PVR: pv_en reaches the DSP controls (the A / D input mux, the post-adder mode and enable) through a register copy per
-  // slot and eight lanes, one cycle later (docs/platform-u200.md §8.9). pv_en changes only while the lane is empty; the
+  // slot and eight lanes, one cycle later (docs/platform-u200.md §8.10). pv_en changes only while the lane is empty; the
   // bench assertion below checks that no operand is offered within a cycle of a change. PVR = 0: the signal itself.
   parameter  bit          PVR   = 1'b0,
   localparam int unsigned SUM_W = 16 + $clog2(N),
