@@ -11,7 +11,7 @@ docs/platform-u200.md §2-§5).
                        simulator libraries) and on the RTL, whose CSR port is answered by a simulator
                        core (as the mock's window is) with plat_err_i driven by the RTL's plat_err;
                        every read must match. RTL-only: REQ_HELD, byte strobes, latched bases.
-  test_adapter_kernel  tsr_xrt_kernel (reduced core): ap_clk_2 is the control core's clock (RV_FREQ,
+  test_adapter_kernel  tsr_xrt_kernel (reduced core; XSLR_REG 0 and 1): ap_clk_2 is the control core's clock (RV_FREQ,
                        STATUS.RV_CLK_OK), MEM_EN latches the bases into the bridges, the window, the
                        reserved range (no AP_CTRL), ADAPTER_VERSION from tsr_tables_pkg.
 """
@@ -418,11 +418,13 @@ def test_adapter_mutants(m):
     assert killed, "adapter mutant %s (%s) survived" % (mid, what)
 
 
-def test_adapter_kernel():
-    """tsr_xrt_kernel (HAS_MVM 0, 1 channel): the second clock, MEM_EN, the window."""
+@pytest.mark.parametrize("xslr", [0, 1])
+def test_adapter_kernel(xslr):
+    """tsr_xrt_kernel (HAS_MVM 0, 1 channel): the second clock, MEM_EN, the window; XSLR_REG 1 as in the K4 top."""
     root = _src_root()
     from common.runner import parse_filelist
     srcs = parse_filelist(root / "rtl/filelist.f")[0] + parse_filelist(root / "rtl/platform/alveo_xrt/filelist.f")[0]
-    params = dict(HAS_MVM=0, NUM_CH=1, SPM_BYTES=65536, CH_BYTES="64'd1073741824", K_MAX=4096, ADDR_BEAT_W=22)
-    run("tsr_xrt_kernel", __name__, parameters=params, sources=srcs, name="adapter_kernel",
+    params = dict(HAS_MVM=0, NUM_CH=1, SPM_BYTES=65536, CH_BYTES="64'd1073741824", K_MAX=4096, ADDR_BEAT_W=22,
+                  XSLR_REG=xslr)
+    run("tsr_xrt_kernel", __name__, parameters=params, sources=srcs, name="adapter_kernel_x%d" % xslr,
         extra_env={"TSR_KCH": "1"}, testcase=["adapter_kernel"])

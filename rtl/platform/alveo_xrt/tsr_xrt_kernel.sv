@@ -240,7 +240,24 @@ module tsr_xrt_kernel
     assign wr_dat_ready[c]   = g_wr_dat_ready[c] && mem_en_q[c];
     assign held_c[c] = !mem_en_q[c] && (rd_req_valid[c] || wr_req_valid[c] || wr_dat_valid[c]);
   end
-  assign req_held = |held_c;
+
+  // XSLR_REG: in the K4 floorplan the channel arbiters sit in all three SLRs and u_ctrl in one of them, so each
+  // channel's held event passes two register stages before the OR: REQ_HELD is set 2 cycles later. The stages
+  // have no reset (like the XSLR_REG stages in tsr_core_dp): they start at 0, and the core's reset clears
+  // the request valids at their input, so they are clear after 2 cycles of reset.
+  logic [NUM_CH-1:0] held_o;
+  if (XSLR_REG) begin : g_hx
+    (* shreg_extract = "no" *) logic [1:0][NUM_CH-1:0] hx_q;
+    initial hx_q = '0;
+    always @(posedge ap_clk) begin        // not always_ff: the initial block writes it too
+      hx_q[0] <= held_c;
+      hx_q[1] <= hx_q[0];
+    end
+    assign held_o = hx_q[1];
+  end else begin : g_hx0
+    assign held_o = held_c;
+  end
+  assign req_held = |held_o;
 
   logic host_irq;                         // EX §9.3: not connected on the U200
   wire  unused_host_irq = &{1'b0, host_irq};

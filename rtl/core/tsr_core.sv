@@ -79,8 +79,9 @@ module tsr_core
   // XSLR_REG (implementation; tsr_core_dp): register stages on the links between the relocated control plane (RV_LOCAL_TRANSPORT)
   // and the blocks that sit two SLRs away from it, the vector unit and the trace writer's write mux. Results and the
   // architectural state are unchanged, the units' completions and the trace bursts are a few cycles later; 0 builds the
-  // netlist without them. Two more links of the same kind: the RISC-V SPM bridge request (one stage, in the SPM link
-  // end) and the MVM's attention-stall strobe (two stages per cluster, tsr_mvm).
+  // netlist without them. Three stages on the VU's command, done and s registers. Three more links of the same kind:
+  // the RISC-V SPM bridge request (one stage, in the SPM link end), the MVM's attention-stall strobe (two stages per
+  // cluster, tsr_mvm) and the pair links of the MVM gather (one tsr_rpipe stage each, tsr_mvm_gather).
   parameter bit              XSLR_REG       = 1'b0,
   // W4-B (tsr_core_dp): vector unit (queue depth QD_VU; lane knobs VU_EXP_LANES / VU_BACK_LANES, VU §7.10),
   // attention, TOPK / DQROW (M8 RTL, off in the U200 M7 build), the DB block and its sizes (DB §10.3)

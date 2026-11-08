@@ -124,7 +124,7 @@ module tsr_mvm
   parameter  int unsigned ADD_LAT       = TSR_DEF_FADD_LAT,
   parameter  int unsigned WS_RD_LAT     = TSR_DEF_WS_RD_LAT,
   parameter  int unsigned RST_LOCAL     = 0,      // reset register stages per cluster / top / gather (0..2)
-  parameter  bit          XSLR_REG      = 1'b0,   // two register stages per cluster on the att_stall strobe (header)
+  parameter  bit          XSLR_REG      = 1'b0,   // cross-SLR stages: att_stall (2 per cluster), pair links of the gather (1)
   localparam int unsigned SPM_LINES     = SPM_BYTES / TSR_LINE_BYTES,
   localparam int unsigned SPM_AW        = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1
 ) (
@@ -727,7 +727,8 @@ module tsr_mvm
 
   tsr_mvm_gather #(
     .HAS_ATT(HAS_ATT), .LOCAL_SCALE(LOCAL_SCALE), .NUM_CH(NUM_CH), .T_MAX(T_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT),
-    .ADD_LAT(ADD_LAT), .JOB_PIPE(RES_PIPE), .GATHER_PAIR(GATHER_PAIR), .GATHER_FLITS(GATHER_FLITS)
+    .ADD_LAT(ADD_LAT), .JOB_PIPE(RES_PIPE), .GATHER_PAIR(GATHER_PAIR), .GATHER_FLITS(GATHER_FLITS),
+    .XSLR_REG(XSLR_REG)
   ) u_gather (
     .clk, .rst_n(rst_g_n),
     .start(g_start_q), .acc(c_q.acc & ~at_q), .t(c_q.t), .n(at_q ? 32'd1 : c_q.n),

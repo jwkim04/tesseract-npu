@@ -473,6 +473,7 @@ module tsr_mvm_gather
   parameter  bit          GATHER_PAIR = 1'b0, // K4: source-local queues, pairs {0,2}/{1,3}
   parameter  int unsigned GATHER_FLITS = 1,   // 2: half-width serialized pair links
   parameter  int unsigned JOB_PIPE   = 0,     // register slices assembler c -> central (implementation)
+  parameter  bit          XSLR_REG   = 1'b0,  // GATHER_PAIR: one tsr_rpipe stage on each pair link (below)
   localparam int unsigned SPM_LINES  = SPM_BYTES / TSR_LINE_BYTES,
   localparam int unsigned SPM_AW     = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1,
   localparam int unsigned AJW        = 1 + SPM_AW + 16 + 16 + TSR_LINE_BITS
@@ -663,15 +664,17 @@ module tsr_mvm_gather
   wire unused_aj = &{1'b0, aj_valid, aj};
 
   // Each source retains two slots. Local arbitration feeds a two-slot local slice and
-  // a two-slot central slice: eight slots per pair, three cycles minimum latency.
+  // a two-slot central slice: eight slots per pair, three cycles minimum latency (XSLR_REG: one more
+  // cycle and 2 / GATHER_FLITS more slots on the link).
   // The member tag travels independently of ATT tail tags. Both members have identical
   // central eligibility (credits / ACC issue), so a shared head cannot block an eligible
   // member behind an ineligible member. Source ordering and backpressure are retained.
   if (GATHER_PAIR) begin : g_pairs
     for (genvar p = 0; p < 2; p++) begin : g_pair
       localparam int unsigned LINK_W = (JW + GATHER_FLITS) / GATHER_FLITS;
-      logic link_v, link_r;
-      logic [LINK_W-1:0] packet;
+      logic link_v, link_r;                 // the pair source's output
+      logic rx_v, rx_r;                     // the receiver's input (= link_*, or behind the XSLR_REG stage)
+      logic [LINK_W-1:0] packet, rx_p;
       logic [JW:0] link_d;
       // Keep the complete collector addressable by its major-block Pblock.
       (* keep_hierarchy = "yes" *)
@@ -681,14 +684,30 @@ module tsr_mvm_gather
         .scale_req(scale_req[p]), .scale_rsp(scale_rsp[p]),
         .m_valid(link_v), .m_ready(link_r), .m_data(packet)
       );
+      // XSLR_REG: the source sits in the outer SLR and the receiver is placed by the tool, in SLR1 on the K4
+      // floorplan, so the link (one flit mux and 250..380 rows) is one stage-to-stage hop. One tsr_rpipe stage
+      // (two entries of LINK_W bits, full throughput) splits it; the receiver sees each flit one cycle later and
+      // the pair holds 2 / GATHER_FLITS more jobs under a full stall. Flit order and the valid / ready rules
+      // (the receiver takes a flit when rx_v and rx_r) are those of the direct link.
+      if (XSLR_REG) begin : g_xslr
+        tsr_rpipe #(.W(LINK_W), .DEPTH(1)) u_xs (
+          .clk, .rst_n,
+          .s_valid(link_v), .s_ready(link_r), .s_data(packet),
+          .m_valid(rx_v), .m_ready(rx_r), .m_data(rx_p)
+        );
+      end else begin : g_direct
+        assign rx_v   = link_v;
+        assign link_r = rx_r;
+        assign rx_p   = packet;
+      end
       if (GATHER_FLITS == 2) begin : g_narrow
         tsr_mvm_pair_rx #(.W(JW+1)) u_remote (
-          .clk, .rst_n, .s_valid(link_v), .s_ready(link_r), .s_data(packet),
+          .clk, .rst_n, .s_valid(rx_v), .s_ready(rx_r), .s_data(rx_p),
           .m_valid(jv[p]), .m_ready(jr[p]), .m_data(link_d)
         );
       end else begin : g_wide
         tsr_rslice #(.W(JW+1), .FORM(1)) u_remote (
-          .clk, .rst_n, .s_valid(link_v), .s_ready(link_r), .s_data(packet),
+          .clk, .rst_n, .s_valid(rx_v), .s_ready(rx_r), .s_data(rx_p),
           .m_valid(jv[p]), .m_ready(jr[p]), .m_data(link_d)
         );
       end

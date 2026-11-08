@@ -49,6 +49,9 @@ CFGS = {
     "g4t8_narrow": dict(NUM_CH=4, T_MAX=8, SPM_BYTES=262144, SPM_RD_LAT=4, ADD_LAT=8, JOB_PIPE=2, HAS_ATT=1, GATHER_PAIR=1, GATHER_FLITS=2),
     "g4t4_narrow": dict(NUM_CH=4, T_MAX=4, SPM_BYTES=4194304, SPM_RD_LAT=4, ADD_LAT=8, JOB_PIPE=2, HAS_ATT=1, GATHER_PAIR=1, GATHER_FLITS=2),
     "g4t4_pair": dict(NUM_CH=4, T_MAX=4, SPM_BYTES=4194304, SPM_RD_LAT=4, ADD_LAT=8, JOB_PIPE=2, HAS_ATT=1, GATHER_PAIR=1),
+    # XSLR_REG: one tsr_rpipe stage on each pair link (2 slots of a whole job, or 2 flits)
+    "g4t8_pair_x": dict(NUM_CH=4, T_MAX=8, SPM_BYTES=262144, SPM_RD_LAT=4, ADD_LAT=8, JOB_PIPE=2, HAS_ATT=1, GATHER_PAIR=1, XSLR_REG=1),
+    "g4t4_narrow_x": dict(NUM_CH=4, T_MAX=4, SPM_BYTES=4194304, SPM_RD_LAT=4, ADD_LAT=8, JOB_PIPE=2, HAS_ATT=1, GATHER_PAIR=1, GATHER_FLITS=2, XSLR_REG=1),
     "g4t4_narrow_odd": dict(NUM_CH=4, T_MAX=4, SPM_BYTES=524288, SPM_RD_LAT=4, ADD_LAT=8, JOB_PIPE=2, HAS_ATT=1, GATHER_PAIR=1, GATHER_FLITS=2),
     "g4t1":  dict(NUM_CH=4, T_MAX=1, SPM_BYTES=262144, SPM_RD_LAT=2, ADD_LAT=5),
     "g1t3":  dict(NUM_CH=1, T_MAX=3, SPM_BYTES=65536, SPM_RD_LAT=1, ADD_LAT=1),
@@ -548,7 +551,9 @@ async def gather_pair_jobs(dut):
             if abort and elapsed == abort_after:
                 if abort_after >= 80:
                     wqd = 1 << (p["SPM_RD_LAT"] + p["ADD_LAT"] + 5).bit_length()
-                    assert accepted == wqd + 16, "must retain eight transport slots per pair under a full stall"
+                    # XSLR_REG: the link stage holds two flits more per pair (2 / GATHER_FLITS jobs)
+                    xs = 2 * (2 // p.get("GATHER_FLITS", 1)) if p.get("XSLR_REG") else 0
+                    assert accepted == wqd + 16 + xs, "must retain eight transport slots per pair under a full stall"
                     assert int(d.spm_wr_valid.value), "stalled output must be occupied at reset"
                 d.aj_valid.value = 0
                 d.rst_n.value = 0
