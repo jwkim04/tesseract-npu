@@ -21,8 +21,8 @@ proc tsr_clock_kernel_kind {kernel tag} {
   if {$kind eq ""} { error "$tag unknown kernel clock request for $kernel" }
   return $kind
 }
-proc tsr_clock_request {kernel} {
-  set kind [tsr_clock_kernel_kind $kernel CLKNET]
+# The kernel_frequency request of <kind>.cfg as {core_MHz rv_MHz}, as written there (one line, checked).
+proc tsr_clock_request_mhz {kind} {
   set f [open [file join $::tsr_clock::config_dir $kind.cfg] r]
   try {set config [read $f]} finally {close $f}
   set requests {}
@@ -34,6 +34,11 @@ proc tsr_clock_request {kernel} {
           [lindex $requests 0] -> core rv] || $core < 1 || $rv < 1} {
     error "CLKNET invalid scalable-clock request in $kind.cfg"
   }
+  return [list $core $rv]
+}
+proc tsr_clock_request {kernel} {
+  set kind [tsr_clock_kernel_kind $kernel CLKNET]
+  lassign [tsr_clock_request_mhz $kind] core rv
   puts "CLKNET request $kind core=$core MHz RV=$rv MHz (integer MHz in Vitis)"
   return [list [expr {1000.0 / floor($core)}] [expr {1000.0 / floor($rv)}]]
 }

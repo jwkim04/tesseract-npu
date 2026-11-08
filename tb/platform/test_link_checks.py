@@ -1,11 +1,24 @@
 """Link gate failures and U200 clock/reset binding, without launching Vivado."""
 from pathlib import Path
+import re
 import subprocess
 
 import pytest
 
 
 REPO = Path(__file__).resolve().parents[2]
+
+
+def _k4_request():
+    """The core and RV frequency (MHz) that hw/u200/k4.cfg requests: the final-clock window and the clock-net check follow it."""
+    m = re.search(r"^kernel_frequency=0:(\d+)\|1:(\d+)$", (REPO / "hw/u200/k4.cfg").read_text(), re.M)
+    return int(m.group(1)), int(m.group(2))
+
+
+K4_CORE, K4_RV = _k4_request()
+K4_CORE_PERIOD = "%.3f" % (1000.0 / K4_CORE)       # ns, as the mock design reports it
+K4_RV_PERIOD = "%.3f" % (1000.0 / K4_RV)
+OTHER_CORE = 250 if K4_CORE == 200 else 200            # the other core clock of the 200 / 250 MHz work
 
 
 def run_tcl(tmp_path, body):
@@ -121,8 +134,8 @@ def test_bd_clock_reset_binding(tmp_path, mutation):
     assert "CLKBD" in r.stdout + r.stderr, (r.stdout, r.stderr)
 
 
-NET_MOCK = r'''
-array set periods {core 5.000 rv 10.000}
+NET_MOCK_T = r'''
+array set periods {core CORE_PERIOD_X rv RV_PERIOD_X}
 set kernel_ref tsr_u200_k4
 set hart_regs {rv_hart}
 array set clock_for {core_c core rv_c rv rv_hart rv core_reset_q core rv_reset_q rv}
@@ -181,17 +194,19 @@ proc get_property {prop obj} {
     }
 }
 '''
+NET_MOCK = NET_MOCK_T.replace("CORE_PERIOD_X", K4_CORE_PERIOD).replace("RV_PERIOD_X", K4_RV_PERIOD)
 
 
-@pytest.mark.parametrize("mutation", ["", "alias", "core300", "core250", "core240", "rv150", "rv166", "rv500", "swapped", "reset", "reset_clock", "missing", "unclocked_hart", "async_reset", "nan", "unknown_kernel"])
+@pytest.mark.parametrize("mutation", ["", "alias", "core300", "core_other", "core240", "rv150", "rv166", "rv500", "swapped", "reset", "reset_clock", "missing", "unclocked_hart", "async_reset", "nan", "unknown_kernel"])
 def test_synth_clock_reset_binding(tmp_path, mutation):
     changes = {
         "": "",
         "alias": "set clock_for(rv_c) core",
-        # A stale 300 MHz or 250 MHz checkpoint is not a valid native 200 MHz request.
+        # A stale 300 MHz checkpoint, the other core clock of the 200 / 250 MHz work and a clock Vitis scaled down are not
+        # valid requests.
         "core300": "set periods(core) 3.333",
-        "core250": "set periods(core) 4.0",
-        "core240": "set periods(core) 4.166667",
+        "core_other": "set periods(core) %.6f" % (1000.0 / OTHER_CORE),
+        "core240": "set periods(core) 4.166667" if K4_CORE != 240 else "set periods(core) 4.0",
         "rv150": "set periods(rv) 6.667",     # the earlier 200 / 150 MHz request
         "rv166": "set periods(rv) 6.0",
         "rv500": "set periods(rv) 2.0",
@@ -235,27 +250,30 @@ def core_rv(core, rv):
     return [f"kernel:0:ss_ucs/aclk_kernel_00:{core}", f"kernel:1:ss_ucs/aclk_kernel_01:{rv}"]
 
 
-# k4 accepts exactly the request of the card images of tsr_u200_k4 (reduced and full-feature): core 200 MHz and RV 100 MHz.
+# k4 accepts exactly the request of hw/u200/k4.cfg (core 200 / RV 100 MHz for the images of the 200 MHz core, 250 / 100 for the
+# 250 MHz work): the final window is the request plus 0.1 MHz.
+C, R = K4_CORE, K4_RV
 K4_FINAL = [
-    (core_rv("200.0", "100.0"), True),
-    (core_rv("200", "100"), True),
-    (core_rv("200.1", "100.1"), True),
-    (core_rv("199.99", "100.0"), False),      # a core clock Vitis scaled down
-    (core_rv("200.0", "99.99"), False),      # an RV clock Vitis scaled down
-    (core_rv("200.11", "100.0"), False),
-    (core_rv("200.0", "100.11"), False),
-    (core_rv("250.0", "166.0"), False),       # the earlier 250 / 166.7 request is not accepted any more
-    (core_rv("300.0", "100.0"), False),
-    (core_rv("200.0", "150.0"), False),       # the 200 / 150 request of the first link is not accepted any more
-    (core_rv("200.0", "166.0"), False),
-    (core_rv("200.0", "500.0"), False),
-    (core_rv("NaN", "100.0"), False),
-    (core_rv("Inf", "100.0"), False),
-    (core_rv("200.0", "100.0") + ["kernel:2:ss_ucs/aclk_kernel_02:200.0"], False),
-    (core_rv("200.0:extra", "100.0"), False),
-    (["kernel:0:ss_ucs/aclk_kernel_00:200.0"], False),
-    (["kernel:0:ss_ucs/aclk_kernel_00:200", "kernel:0:ss_ucs/aclk_kernel_00:200"], False),
-    (["kernel:0:ss_ucs/aclk_kernel_01:200", "kernel:1:ss_ucs/aclk_kernel_00:100"], False),
+    (core_rv(f"{C}.0", f"{R}.0"), True),
+    (core_rv(f"{C}", f"{R}"), True),
+    (core_rv(f"{C}.1", f"{R}.1"), True),
+    (core_rv(f"{C - 1}.99", f"{R}.0"), False),      # a core clock Vitis scaled down
+    (core_rv(f"{C}.0", f"{R - 1}.99"), False),      # an RV clock Vitis scaled down
+    (core_rv(f"{C}.11", f"{R}.0"), False),
+    (core_rv(f"{C}.0", f"{R}.11"), False),
+    (core_rv(f"{OTHER_CORE}.0", f"{R}.0"), False),   # the other core clock of the 200 / 250 MHz work
+    (core_rv("250.0", "166.0"), False),              # the earlier 250 / 166.7 request is not accepted any more
+    (core_rv("300.0", f"{R}.0"), False),
+    (core_rv(f"{C}.0", "150.0"), False),             # the 200 / 150 request of the first link is not accepted any more
+    (core_rv(f"{C}.0", "166.0"), False),
+    (core_rv(f"{C}.0", "500.0"), False),
+    (core_rv("NaN", f"{R}.0"), False),
+    (core_rv("Inf", f"{R}.0"), False),
+    (core_rv(f"{C}.0", f"{R}.0") + [f"kernel:2:ss_ucs/aclk_kernel_02:{C}.0"], False),
+    (core_rv(f"{C}.0:extra", f"{R}.0"), False),
+    ([f"kernel:0:ss_ucs/aclk_kernel_00:{C}.0"], False),
+    ([f"kernel:0:ss_ucs/aclk_kernel_00:{C}", f"kernel:0:ss_ucs/aclk_kernel_00:{C}"], False),
+    ([f"kernel:0:ss_ucs/aclk_kernel_01:{C}", f"kernel:1:ss_ucs/aclk_kernel_00:{R}"], False),
 ]
 # k1 keeps its earlier window: core 250 to 300.1 MHz, RV 158.33 to 166.8 MHz.
 K1_FINAL = [
@@ -268,6 +286,7 @@ K1_FINAL = [
     (core_rv("250.0", "158.32"), False),
     (core_rv("276.3", "500.0"), False),
     (core_rv("200.0", "100.0"), False),       # the k4 clocks do not pass the k1 window
+    (core_rv("120.0", "100.0"), False),
     (["kernel:0:ss_ucs/aclk_kernel_00:276.3"], False),
     (core_rv("300", "166.6") + ["kernel:0:ss_ucs/aclk_kernel_00:300"], False),
     (core_rv("NaN", "166.6"), False),
@@ -289,7 +308,7 @@ def test_final_scaled_frequencies(tmp_path, kernel, records, valid):
 
 
 def test_final_check_stops_on_an_unknown_kernel(tmp_path):
-    (tmp_path / "_new_clk_freq").write_text("\n".join(core_rv("200.0", "100.0")) + "\n")
+    (tmp_path / "_new_clk_freq").write_text("\n".join(core_rv(f"{K4_CORE}.0", f"{K4_RV}.0")) + "\n")
     r = run_tcl(tmp_path, FINAL_MOCK + f"set kernel_ref tsr_u200_k9\ncd {{{tmp_path}}}\n" +
                 f"source {{{REPO / 'hw/u200/clock_final_check.tcl'}}}\n")
     assert r.returncode != 0, (r.stdout, r.stderr)
@@ -311,7 +330,7 @@ def test_link_config_clock_requests_and_hooks(kernel):
     assert "freqHz=" not in text
     # U200's scalable clocks use kernel_frequency. clock.id is restricted to
     # fixed references: a real CFGEN run rejects IDs 0/1 with CFGEN83-2244.
-    request = "0:200|1:100" if kernel == "k4" else "0:300|1:166.666667"
+    request = f"0:{K4_CORE}|1:{K4_RV}" if kernel == "k4" else "0:300|1:166.666667"
     assert f"kernel_frequency={request}\n" in text
     assert not any(line.startswith("id=") for line in text.splitlines())
     for hook in ("clock_bd_check.tcl", "clock_vitis_compat.tcl", "impl_pre.tcl", "cdc_check.tcl", "clock_final_check.tcl"):
