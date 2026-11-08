@@ -433,6 +433,41 @@ void tsr_ref_topk(uint32_t k, uint32_t rows, uint32_t m, uint32_t * d, uint32_t 
 }
 
 // ---------------------------------------------------------------------------
+// MoE routing (header comment in tsr_ref_vu.h; SW §7.5 MOE_ROUTE)
+// ---------------------------------------------------------------------------
+void tsr_ref_moe_route(uint32_t n, uint32_t k, const uint32_t * logits, uint32_t * ids, uint32_t * w,
+                       uint32_t * probs) {
+    if (n == 0u || n > TSR_MOE_MAX_EXPERTS || k == 0u || k > TSR_TOPK_MAX_K || k > n) {
+        vu_fatal("tsr_ref_moe_route", "n must be in 1..512 and k in 1..min(n, 16)", n, k);
+    }
+    if (!logits || !ids || !w) {
+        vu_fatal("tsr_ref_moe_route", "missing operand", n, k);
+    }
+    uint32_t e[TSR_MOE_MAX_EXPERTS], p[TSR_MOE_MAX_EXPERTS];
+    const uint32_t mx = tsr_ref_red_row(TSR_RED_KIND_MAX, TSR_RED_POST_NONE, logits, n, 0, 0);
+    for (uint32_t i = 0; i < n; ++i) {
+        e[i] = tsr_ref_vop_elem(TSR_VOP_FUNC_EXPSUBC, logits[i], 0, mx);
+    }
+    const uint32_t r = tsr_ref_red_row(TSR_RED_KIND_SUM, TSR_RED_POST_RCP, e, n, 0, 0);
+    for (uint32_t i = 0; i < n; ++i) {
+        p[i] = tsr_ref_vop_elem(TSR_VOP_FUNC_MULC, e[i], 0, r);
+    }
+    uint32_t sel[2u * TSR_TOPK_MAX_K], q[TSR_TOPK_MAX_K];
+    tsr_ref_topk(k, 1, n, sel, 0, p, 0);
+    for (uint32_t j = 0; j < k; ++j) {
+        ids[j] = sel[2u * j];
+        q[j] = sel[2u * j + 1u];
+    }
+    const uint32_t r2 = tsr_ref_red_row(TSR_RED_KIND_SUM, TSR_RED_POST_RCP, q, k, 0, 0);
+    for (uint32_t j = 0; j < k; ++j) {
+        w[j] = tsr_ref_vop_elem(TSR_VOP_FUNC_MULC, q[j], 0, r2);
+    }
+    if (probs) {
+        memcpy(probs, p, (size_t)n * sizeof p[0]);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SOP (VU §5.8)
 // ---------------------------------------------------------------------------
 uint32_t tsr_ref_sop(uint32_t sub, uint32_t sa, uint32_t sb, uint32_t imm, uint32_t mem) {

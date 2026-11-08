@@ -52,6 +52,22 @@ endif()
 add_test(NAME ref_vu COMMAND ref_vu)
 set_tests_properties(ref_vu PROPERTIES TIMEOUT 300 PROCESSORS 4)
 
+# The MoE routing reference (tsr_ref_moe_route in tsr_ref_vu.c; docs/spec.md §13, SW §7.5 MOE_ROUTE): directed
+# cases (ties, NaN, k = 1 / n), random rows against double precision, the tile form (per-row VU ops with
+# the c vectors) against the one-token function, and with TSR_WITH_LLAMA the graph llama.cpp builds
+# (soft_max, argsort, get_rows, sum_rows, clamp, div) on the pinned ggml-cpu, including ties and NaN.
+add_executable(ref_moe ${_rv_tests}/test_ref_moe.c)
+tsr_c_target(ref_moe)
+target_include_directories(ref_moe PRIVATE ${_rv_tests})
+target_link_libraries(ref_moe PRIVATE tsr_ref m)
+if (TSR_WITH_LLAMA)
+    target_compile_definitions(ref_moe PRIVATE TSR_REF_VU_GGML=1)
+    target_include_directories(ref_moe SYSTEM PRIVATE ${TESSERACT_ROOT}/third_party/llama.cpp/ggml/include)
+    target_link_libraries(ref_moe PRIVATE ggml-cpu ggml-base)
+endif()
+add_test(NAME ref_moe COMMAND ref_moe)
+set_tests_properties(ref_moe PROPERTIES TIMEOUT 300 PROCESSORS 4)
+
 set(TSR_REF_VU_PYTHON "" CACHE FILEPATH
     "Python with numpy for ref_vu_np.py (default: TSR_REF_MATH_PYTHON, build/tools/torchvenv/bin/python, else the found python3)")
 set(_rv_candidates ${TSR_REF_VU_PYTHON} ${TSR_REF_MATH_PYTHON})
