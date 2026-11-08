@@ -731,7 +731,7 @@ CDC and physical timing need their own RTL and implementation evidence.
 | `tb/at` composite flash-attention test | Real MVM attention modes compared with the composed oracle | Some QACT/KVST/VU operations run on the simulator with mirrored memory; that test alone does not exercise the entire RTL chain. |
 | GDB on `sim` | Real pinned RISC-V GDB smoke via stdio: boot/symbol stops, registers, memory, step, hardware breakpoint, launch, backtrace, `finish`, history, detach. RSP/embedded/drop tests also pass. | Integrated current RTL/vkernel/card GDB is unverified. RTL DMI and DBG module tests are separate evidence. |
 | Corrected K4 link | New XO, BD clock/reset split and linked-net CLKNET check passed: core 3.333 ns, RV 6.023 ns, 4,225 RV FFs on the separate RV clock, separate resets. Placement completed with zero errors and actual SLR locality passed. Matching placed SLL counts fell from 28,506 to 17,205. | SLR1 CLB sites remain 99.84 % occupied. Routing, final setup/hold and frequency signoff, post-route CDC and card results remain pending. The initial 300/166.7 MHz request check is separate from final T3 acceptance at core ≥ 250 MHz. |
-| Historical PyTorch, XRT, bandwidth and card records | Evidence for the exact older image/configuration named by each record | Does not transfer to the control-core K4 image. The current two-clock vkernel server is not in the tree. |
+| Historical XRT, bandwidth and card records | Evidence for the exact older image/configuration named by each record | Does not transfer to the control-core K4 image. The current two-clock vkernel server is not in the tree. |
 
 ### 12.4 Progress and remaining plan
 

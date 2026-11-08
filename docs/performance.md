@@ -576,8 +576,11 @@ threads).
 safetensors), all 169 linears on the device including the tied `lm_head`; the logits are
 bit-identical to eager PyTorch with the reference model in place of each linear, and 16 greedy
 tokens equal the CPU's (simulator). An 8-token forward on the Verilated k4t1 kernel gives the
-simulator's logits bit for bit (RTL simulation). On the card (k1): `hf_check.py
---forward-only --tokens 8 --expect` 8 of 8 rows, test suite 85 passed and 2 skipped.
+simulator's logits bit for bit (RTL simulation). On the card (`tsr_u200_k4`, 4 channels, `T_MAX` 4, 200 MHz, firmware of the
+control core, 2026-11-09): `hf_check.py` bit-identical to the simulator (all 32 KL values, 16 tokens), `--forward-only
+--tokens 8 --expect` 8 of 8 rows, test suite 114 passed and 2 skipped. The 8-token forward takes 0.808 M PERF
+cycles per token (4.04 ms of device time) against 9.06 M (30.2 ms) on the earlier single-channel image (1 channel, `T_MAX` 1, 300 MHz);
+a 32-token forward 0.659 M. At T = 1 a launch costs about 1 ms in the host against 89 µs of device cycles (169 launches per forward).
 
 ## Timing, clock and resources
 

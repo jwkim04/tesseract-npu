@@ -187,9 +187,9 @@ device and everything else eagerly on the CPU (`import tesseract_torch` register
 It uses the same transport (`TSR_DEVICE`) and the same numerics as the llama.cpp path.
 
 ```sh
-cmake -S . -B build/torch -DCMAKE_BUILD_TYPE=Release -DTSR_WITH_TORCH=ON
-cmake --build build/torch -j4 --target tesseract_torch_ext
-export PYTHONPATH=$PWD/sw/torch:$PWD/build/torch/python
+cmake -S . -B build/dev -DCMAKE_BUILD_TYPE=Release -DTSR_WITH_TORCH=ON
+cmake --build build/dev -j8 --target tesseract_torch_ext
+export PYTHONPATH=$PWD/sw/torch:$PWD/build/dev/python
 build/tools/torchvenv/bin/python -m pytest -q sw/torch/tests
 build/tools/torchvenv/bin/python -I sw/torch/tools/hf_check.py models/hf/Qwen2.5-0.5B-Instruct
 ```
@@ -200,9 +200,10 @@ backend with eager PyTorch; `--download Qwen/Qwen2.5-0.5B-Instruct` fills the mo
 the Hub. Architecture, tests and results: [`docs/torch-backend.md`](torch-backend.md),
 [`sw/torch/README.md`](../sw/torch/README.md), [`sw/rt/README.md`](../sw/rt/README.md).
 
-In this tree only the C++ runtime tests have run (`ctest --test-dir build/dev -R '^rt_'`). The
-Python suite and `hf_check.py` are expected to work with the commands above, and their re-run is
-pending (last results: `docs/torch-backend.md`).
+The Python suite and `hf_check.py` ran on the simulator and on the card (`TSR_DEVICE=xrt`, image
+`tsr_u200_k4`) with the firmware of the control core; the results, and the extra steps for the card, are in
+[`docs/torch-backend.md`](torch-backend.md) §2.4 and §6. Weights that a model provides as ggml Q8_0 or
+Q4_K blocks run through `tesseract_torch.QuantLinear`.
 
 ## Run a model on the card
 

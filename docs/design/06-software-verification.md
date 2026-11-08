@@ -2141,7 +2141,26 @@ within klcheck's criterion; the results and what is still open are in §10.4 (M7
 
 `tsr_rt::linear` emits one `graph` launch per IO tile, with one MUL_MAT record per N part × K part
 (K parts after the first with ACC_DST). The OPL cache holds the op lists. The public API and the
-numerics are defined in `sw/rt/tsr_rt.h:1-49`. The PyTorch move onto the M7 kernels is M8.
+numerics are defined in the header comment of `sw/rt/tsr_rt.h`. The runtime boots the image like the ggml backend
+(§6.9): its Basis major and minor must be at least the host's, and it must provide MUL_MAT and JOIN.
+
+- *Token tiling.* A record carries the call's T (one IO tile). The firmware cuts it into tiles of
+  min(T_MAX, its scratch ring) tokens (SW-20), so the runtime does not tile. On the K4 image T_MAX is 4: a
+  32-token call is eight tiles inside one launch, and the weight stream is read once per tile, not once per
+  token. The tests run `tsr_rt` and the PyTorch suite at T_MAX 1, 4 and 8 (`rt_sim`, `rt_sim_tmax4`, `rt_sim_tmax8`,
+  `torch_pytest`, `torch_pytest_tmax4`, `torch_pytest_tmax8`); the bits do not depend on T_MAX.
+- *Scaled result.* `try_linear_scale` runs MUL_MAT_SCALE (0x1C) when the image has the kind and `CAPS.MVM_LOCAL_SCALE`
+  and the weight has one K part. It returns false, with nothing transferred, otherwise; the caller then runs `linear`
+  and multiplies on the CPU (the card image `tsr_u200_k4` has no such capability).
+- *PyTorch.* `sw/torch` partitions the aten inference graph of a `torch.compile`d model and sends each weight matmul
+  (`mm`, `addmm`, `linear`, `matmul`, `mv` with one weight operand) to `tsr_rt` as one launch. Bias, scale factors that do not
+  qualify for MUL_MAT_SCALE, activations, norms, attention and embeddings run on the CPU. Weights that arrive as ggml blocks
+  (Q8_0, Q4_K) go through `QuantLinear` (SW-81). Lowering whole graphs onto the M7 kinds is not built; §7 describes the kinds and
+  `docs/torch-backend.md` §8 what the backend would need.
+- *Checks.* `rt_*` (device against an independent model, bit for bit), `torch_pytest*` (the extension against the numpy spec
+  model; compiled models against eager with `reference_linears()`), and `sw/torch/tools/hf_check.py` (Qwen2.5-0.5B-Instruct:
+  logits of the device against the reference model, the llama.cpp path's oracle and the same run on the card). Results:
+  `docs/torch-backend.md` §6.
 
 ### 9.5 Tools
 
@@ -2558,6 +2577,7 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
 | SW-73 | llama.cpp is unchanged for GDN (2026-11-09; §7.10) | No `third_party/patches/0003-*` for GDN: the backend takes the fused `GATED_DELTA_NET` node, the conv group and the state nodes as the pinned graph emits them | a patch that builds a device-friendly graph | `resolve_fused_ops` keeps the fused node when the backend supports it. The only llama.cpp-side facts needed (recurrent memory names, the build_rs form, the mixed input select) are in the pinned source. |
 | SW-74 | GDN test method (2026-11-09; §10.2) | Tiny Qwen3.5-style models (S_v 32 and 128, 3 GDN + 1 attention layer) with klcheck graph tests; `test-tsr-gdn-logits` compares the logits of every step of 1, 2, 5 and 17 token prompts with the CPU's (cosine ≥ 0.9995, largest difference ≤ 3 % of the logit range); klcheck's embd path writes the four M-RoPE position streams | klcheck's KL alone | klcheck's KL missed a convolution that returned zeros on the tiny model (ratio 1.2): a random tiny model hides a wrong hidden state. klcheck's embedding input path gave an M-RoPE model one position per token, where llama.cpp reads four, section-major; the CPU's embd path then differed from its token path (KL 6.5e-3 on the 2B, equal to the "floor"). klcheck now writes `[p, p, p, 0]` in that layout, and the embd identity is bit-exact (512 of 512 rows). |
 | SW-75 | ITCM budget of the merged firmware (2026-11-09; §7.8; amends SW-38) | 96 KiB (98,304 B) for the production image, 32 KiB of the 128 KiB ITCM left for M9, sampling and debug formatting. The measured image with the MoE kinds (SW-61, SW-62) and the Gated DeltaNet kinds (SW-67 to SW-69) together is 84,056 B (DTCM 50,088 B, budget unchanged at 56 KiB). `tsr-elf` takes 96 KiB as its default and `sw/ctrl/CMakeLists.txt` passes it to the production image as `--budget-itcm`; test images stay stamped against the whole ITCM. The BIG_TEXT test image of `fw_elf` grows to 98 KiB of code so that it stays over the budget | keep 80 KiB and remove code (the general paths are already compiled for size; each fast path is a leaf because a shared body cost 22–29 cycles per record, SW-38); 112 KiB or the whole 128 KiB | SW-38 sized the budget for the M7 kinds and set aside the upper 48 KiB of the ITCM for "M8 MoE / M9" (CC-3). The two feature branches each measured below 80 KiB (78,520 B and 78,576 B) and the merge is 2.1 KB over it: this is that reserved use, taken as the amount the image needs plus 14 KB of headroom. No feature is removed and no kind loses its fast path |
+| SW-81 | Weights as ggml blocks in the PyTorch backend (2026-11-09; §9.4) | `tesseract_torch.QuantLinear` holds a Q8_0 or Q4_K weight as a uint8 buffer of ggml blocks [N, row_bytes] and calls the custom op `tesseract::linear_blocks`, which uploads the blocks unchanged (`Device.upload_blocks`, cached by storage, format and K like a float weight) and runs `linear` (QACT A32 or A256, f32 result); the module adds the bias in float32 and casts once. Under `torch.compile` the op is one node that the partitioner does not touch. A weight that cannot be placed raises `TesseractError`. `QuantLinear.from_gguf` takes a `gguf.ReaderTensor`. T tiling stays in the firmware: `tsr_rt` sends the whole T of an IO tile in one record (SW-20) | a tensor subclass that the partitioner recognises (needs `__torch_dispatch__` through AOTAutograd, and the weight cache and the aten patterns would depend on it); dequantizing to float and uploading as Q8_0 (the Q4_K blocks and their bandwidth are lost, and Q4_K → Q8_0 changes the numerics); a loader that maps a whole GGUF onto a model (the layer tensors of the Qwen2.5 GGUF in use are rescaled versions of the checkpoint's, so a partial load is wrong, and the norms and RoPE parameters come from the same file) | The blocks stay byte-identical (the test reads them back) and y equals the numpy spec model of the format; a Q4_K weight is read at 0.5625 bytes per element, a Q8_0 weight at 1.0625. A custom op needs no change to the partitioner or to `tsr_rt`. The loader is a separate piece of work (`docs/torch-backend.md` §8) |
 
 ---
 
