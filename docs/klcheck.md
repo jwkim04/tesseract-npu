@@ -6,7 +6,7 @@ the ggml CPU backend on whole-model logits, against a floor given by the CPU com
 under a 1-ulp input perturbation. Pass (the specification's values): **mean KL(CPU ‖ device) ≤ 3 ×
 floor and top-1 agreement ≥ 80 %**, where the floor is the mean over three floor runs with different
 seeds (`--floor-seeds`, below). The check is part of the M1 and M4 gates (done) and of the M6 and M7
-gates (measured on the simulator; M6 also on the card with the reduced `k4m200` image and the full `k4full` image, rows below; M7 also on the card with the full image, with attention and the KV cache on the device since the ATTPV fix, rows below).
+gates (measured on the simulator; M6 also on the card with the reduced `k4m200` image and the full `k4full` image, rows below; M7 also on the card with the full image, with attention and the KV cache on the device since the ATTPV fix, rows below; the MoE and Gated DeltaNet models of `sw-moegdn` also on the card, last rows and the last section below).
 
 > **Scope.** User documentation and measurement record of `klcheck`. Status words: *on the
 > simulator* means a run through the software stack with `TSR_DEVICE=sim` or `mock`; *on the card*
@@ -239,6 +239,9 @@ runs against several seeds are described in the text.
 | Qwen3.8 2B Q4_K_M | sim | M7 | 512 (8 × 64) | 2.377e-3 / 2.240e-3 (mean of 3 floors) | 1.061 (1.029 against seed 1) | 98.05 % | measured on the simulator (Gated DeltaNet, SW §7.10; `gdn-sw`); 18 Gated DeltaNet and 6 attention layers on the device, one launch per token, 744 records per launch |
 | Qwen3.8 27B Q4_K_M, first 4 layers (3 Gated DeltaNet, 1 attention; a copy of the GGUF cut by `sw/tools/gguf_truncate.py`) | sim | M7 | 128 (4 × 32) | 9.259e-6 / 8.718e-6 (mean of 3 floors) | 1.062 (1.318 against seed 1) | 100 % | measured on the simulator (the 27B's shapes: 48 value heads over 16 key heads, C = 10240, attention D 256 with 24 / 4 heads; the truncated model's logits are nearly flat, so the KLs are small and only the ratio means anything) |
 | Qwen3.8 2B Q4_K_M, long sequence | sim | M7 | 79 (1 × (4,127-token prompt, last 63 prompt positions, 16 generated); `-ub 512`) | 4.250e-3 / 4.298e-3 (mean of 3 floors) | 0.989 (0.973 against seed 1) | 94.94 % | measured on the simulator (the recurrent state has run through 4,127 tokens in 18 layers; prefill 2,752 s, 1.6 s per decode token at that context; lowest cosine 0.9945) |
+| Gemma 4 26B-A4B Q4_K_M (MoE) | xrt, k4full | M6 (`TSR_KINDS=m6,+MUL_MAT_ID`) | 512 (8 × 64) | 2.4025e-1 / 1.8563e-1 (mean of 3 floors) | 1.294 (1.171 / 1.364 / 1.368 per seed) | 92.77 % | measured on the card (k4full, fourth link, 200 / 100 MHz; firmware of `sw-moegdn`, kind table 0x804f); 512 of 512 rows bit-identical to the simulator run of the `moe` branch; the same figures as the simulator to every digit |
+| Gemma 4 26B-A4B Q4_K_M (MoE) | xrt, k4full | M7 (router, top-k and experts in the one launch) | 512 (8 × 64) | 1.2770e-1 / 1.7200e-1 (mean of 3 floors) | 0.742 (0.729 / 0.690 / 0.820 per seed) | 94.53 % | measured on the card (as above); 512 of 512 rows bit-identical to the simulator run of the `moe` branch, and 16 of 16 rows (1 × 16) to a replay on the simulator at `T_MAX` 4 |
+| Qwen3.8 2B Q4_K_M | xrt, k4full | M7 | 512 (8 × 64) | 2.3771e-3 / 2.2397e-3 (mean of 3 floors) | 1.061 (1.029 / 1.041 / 1.118 per seed) | 98.05 % | measured on the card (k4full, fourth link, 200 / 100 MHz; firmware of `sw-moegdn`, kind table 0x804f; Gated DeltaNet, SW §7.10); 512 of 512 rows bit-identical to a replay on the simulator at `T_MAX` 4, and 16 of 16 rows (1 × 16) |
 
 On the card the 0.5B run gives the simulator's mean KL to seven digits (1.095007e-3), and the small
 identity check (`klcheck compare --expect-identical`, sim against xrt, 8 of 8 rows bit-identical on k1
@@ -480,6 +483,48 @@ prompt, 8 decode passes; `TSR_STATS=1`; no host time in them):
 The beats per channel match the weight sizes: 8 experts × 30 layers × (8,800 + 8,448) = 4.14 M for the experts, 3.07 M for
 the output head (262,144 rows of Q8_0 over four channels), 5.87 M for the attention and dense-branch weights. Prefill
 runs the same MVMs once per prompt token, with one head: a prompt of 8 tokens plus 3 decode tokens took 139.7 M cycles.
+
+### MoE and Gated DeltaNet on the card (`sw-moegdn`, 2026-11-09)
+
+The first card runs of the kinds MOE_ROUTE, MUL_MAT_ID, SOFTPLUS, SSM_CONV and GATED_DELTA_NET. The bitstream is the one of the
+fourth link of `k4full` (`build/link/k4full/tsr_u200_k4.xclbin`, sha256 `6fdf31fdee80778771644fdc7708041c66070fd2ed8f0b1f753c7f66d3745284`,
+UUID `c7f70219-f070-c4fd-cfdc-1da14a7eb251`, core 200 MHz, `clk_rv` 100 MHz). Only the firmware and the host stack are new: the
+`tsr-fw.elf` of `sw-moegdn` (image id `99698a44030574f4`, 21 kinds, kind table 0x804f, ITCM 84,056 B) and a host build of that branch
+with `-DTSR_WITH_XRT=ON`. Every run printed `Tesseract Basis 0.1.0 (kind table 0x804f)`, so the card ran the new image. Before every
+card run the ATTPV trace `traces/at/errors/at_s53_0009` was replayed, as the first ATTPV after a configuration writes stale lines in
+this image. Commands (the models are those named above; `TSR_XCLBIN` is the xclbin, `TSR_IMAGE` the new `tsr-fw.elf`):
+
+```sh
+klcheck all -m MODEL --device xrt --phase m7 -n 64 --n-prompts 8 -o DIR        # also --phase m6 for the MoE model
+klcheck run -m MODEL --device xrt --phase m7 -n 16 --n-prompts 1 --out DIR/dev.klc
+TSR_SIM_TMAX=4 klcheck run -m MODEL --device sim --phase m7 --tokens DIR/dev.klc --out DIR/dev-sim-replay.klc
+klcheck compare --ref DIR/dev-sim-replay.klc --dev DIR/dev.klc --expect-identical
+```
+
+| | Gemma 4 26B-A4B, M6 | Gemma 4 26B-A4B, M7 | Qwen3.8 2B, M7 |
+| --- | --- | --- | --- |
+| `TSR_KINDS` | `m6,+MUL_MAT_ID` | unset (21 kinds) | unset (21 kinds) |
+| Positions | 512 (8 × 64) | 512 (8 × 64) | 512 (8 × 64) |
+| Mean KL, device / floor (mean of 3 floors) | 2.4025e-1 / 1.8563e-1 | 1.2770e-1 / 1.7200e-1 | 2.3771e-3 / 2.2397e-3 |
+| Ratio (limit 3), seeds 1 / 2 / 3 | **1.294**, 1.171 / 1.364 / 1.368 | **0.742**, 0.729 / 0.690 / 0.820 | **1.061**, 1.029 / 1.041 / 1.118 |
+| Top-1 against the CPU (floor) | **92.77 %** (94.21 %) | **94.53 %** (94.53 %) | **98.05 %** (98.11 %) |
+| Median KL, device / floor | 5.81e-4 / 4.87e-4 | 5.61e-4 / 5.34e-4 | 9.66e-4 / 8.28e-4 |
+| Verdict | PASS | PASS | PASS |
+| Rows bit-identical to the simulator, 8 × 64 | 512 / 512 (against the generate run of the `moe` branch) | 512 / 512 (the same) | 512 / 512 (replay of the card's tokens at `T_MAX` 4) |
+| Rows bit-identical to the simulator, 1 × 16 | not run | 16 / 16 (replay at `T_MAX` 4) | 16 / 16 (replay at `T_MAX` 4) |
+| Device phase (load, decode of 512 tokens) | 38.9 s, 69.1 s (199.9 ms per token) | 57.8 s, 50.0 s (102.0 ms per token) | 2.0 s, 38.5 s (68.1 ms per token) |
+
+The three runs give the simulator's mean KLs, ratios and top-1 values to every digit shown (the Gemma 4 26B-A4B section above, and SW §7.10 for
+Qwen3.8). The identity checks are the stronger statement. For the MoE model the simulator reference of the
+8 × 64 rows is `build/moe-runs/kl-m6-8x64/dev.klc` and `kl-m7-8x64/dev.klc` of the `moe` worktree (made on the simulator at `T_MAX` 1, with the
+firmware before the merge); the card run of the merged firmware matches it row for row, so for these two runs the merge moved no output bit. The
+new pattern of the MoE kinds, a `JOIN` inside the op stream with the RISC-V reading the SPM window in the handler (SW §7.9, "Joins"), works on the
+card: the MOE_ROUTE and MUL_MAT_ID records of 30 layers per token give the simulator's logits. For `The history of the printing press begins`
+the card writes ` withle than JOSEPHANNE-MARIE-se-se-se-` and the CPU writes ` withle de de de de de de le de de`: the raw prompt gives this
+model garbled text, as described above. A 1 × 16 run has no KL meaning; it checks identity only.
+
+`klcheck all` on the MoE model took 9 min 24 s (M7) and 7 min 53 s (M6) wall; the floor files and the embd file of each run were
+deleted after the summary (3.2 GB per run), the `dev.klc` and `cpu.klc` files stay in `build/card/moegdn/`.
 
 ## Tests
 

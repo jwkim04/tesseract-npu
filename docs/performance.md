@@ -8,7 +8,8 @@ measurement history and the commands that reproduce the numbers.
 
 > **Scope.** Measurement record, not a design. The first card measurements with the control core
 > are in "The first card image with the control core" below (2026-11-06); the full-feature image's
-> are in "The full-feature image after the ATTPV fix" and, for the image before the fix, "The full-feature image on the card, second link" (both 2026-11-08). All other card
+> are in "The full-feature image after the ATTPV fix" and, for the image before the fix, "The full-feature image on the card, second link" (both 2026-11-08).
+> The MoE and Gated DeltaNet models on the same image are in "MoE and Gated DeltaNet on the card" (2026-11-09). All other card
 > measurements were taken before the control core was added, with the host issuing the ops; the
 > Vivado and RTL simulation results are of the design that ran on the card. The other numbers are simulator measurements or estimates, and none
 > of them is a card measurement. Every number carries one of the provenance labels below. The
@@ -50,6 +51,61 @@ are not comparable with the 276.3 MHz ones without the clock ratio.
 patches ([`sw/xrt-driver`](../sw/xrt-driver/README.md)), shell `xilinx_u200_gen3x16_xdma_base_2`,
 SC firmware 4.6.21. The U200 has a VU9P with three SLRs and 4 x 16 GB DDR4 (DDR4-2400, 19.2 GB/s
 peak per channel). Simulator timings are from the same host.
+
+## MoE and Gated DeltaNet on the card (`k4full`, firmware of `sw-moegdn`, 2026-11-09)
+
+Measured on the card (k4full, fourth link, 200 / 100 MHz), 2026-11-09. The bitstream is the one of the section below: sha256
+`6fdf31fdee80778771644fdc7708041c66070fd2ed8f0b1f753c7f66d3745284`, UUID `c7f70219-f070-c4fd-cfdc-1da14a7eb251`. The firmware is the
+`tsr-fw.elf` of branch `sw-moegdn` (image id `99698a44030574f4`, 21 kinds, kind table 0x804f, ITCM 84,056 B), and the host stack is
+the `build/xrt` build of that branch (Release, `-DTSR_WITH_XRT=ON`). Accuracy and the bit identity with the simulator are in
+[`klcheck.md`](klcheck.md); the three klcheck runs (Gemma 4 26B-A4B in M6 and M7, Qwen3.8 2B in M7) pass.
+
+Method. M7 settings: `llama-completion -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -c 4096 --temp 0 -no-cnv -t 8` with
+`LLAMA_ATTN_ROT_DISABLE=1`, `TSR_STATS=1`, no `-nkvo`, so attention and the KV cache are on the device and a decode token is one
+launch. Decode: `-n 65` and the prompt `The history of the printing press begins` (8 tokens for Gemma, 7 for Qwen). The per-token device
+figures are the difference of the PERF counters of the `-n 65` and `-n 1` runs, divided by the 64 passes between them. Prefill: a prose
+prompt cut to exactly 512 tokens for each tokenizer, `-n 1`. Three runs of each case, with the ATTPV trace replayed before every run
+(the first ATTPV after a configuration writes stale lines in this image) and the counters read with `tsr-dbg --attach -ex perf`.
+The host was busy with other jobs (load average 5 to 12, below); the device counters do not depend on it.
+
+| Per decode token | Gemma 4 26B-A4B Q4_K_M | Qwen3.8 2B Q4_K_M |
+| --- | --- | --- |
+| Decode tok/s, runs 1 / 2 / 3 | 11.98 / 10.45 / 11.99 | 15.66 / 15.57 / 15.33 |
+| **Best, median** | **11.99, 11.98 tok/s** (83.42, 83.47 ms) | **15.66, 15.57 tok/s** (63.87, 64.23 ms) |
+| `PERF_CYCLES` per token | 16.316 M (81.58 ms) | 12.630 M (63.15 ms) |
+| Device share of wall time, runs 1 / 2 / 3 | 97.7 / 85.2 / 97.8 % | 98.9 / 98.3 / 96.8 % |
+| Load average (1 min) at start and end, runs 1 / 2 / 3 | 9.6 to 9.1 / 10.1 to 12.7 / 8.1 to 7.6 | 6.2 to 6.0 / 6.0 to 6.4 / 6.2 to 6.0 |
+| `MVM_CYCLES` | 13.286 M (81.4 %) | 5.712 M (45.2 %) |
+| `MVM_EMPTY` / `MVM_WAIT` | 1.811 M (11.1 %) / 1.217 M (7.5 %) | 5.586 M (44.2 %) / 1.331 M (10.5 %) |
+| `VU_CYCLES` / `DMA_CYCLES` / `QACT_CYCLES` | 1.088 M (6.7 %) / 1.306 M (8.0 %) / 0.505 M (3.1 %) | 4.758 M (37.7 %) / 2.978 M (23.6 %) / 0.098 M (0.8 %) |
+| Launches per token, op records per launch (average over the run) | 1, 1,323 | 1, 756 |
+| Backend host work, outside the backend, launch beyond device time | 0.58, 0.87, 0.39 ms | 0.27, 0.31, 0.15 ms |
+| Simulator cycle model (`moe` and `gdn-sw`), at 200 MHz | 15.14 M, 13.2 tok/s | 10.51 M, 19 tok/s |
+
+The decode figure is llama.cpp's `eval time` (64 runs). The one slow Gemma run (run 2) had the host load rising from 10 to 12.7: its device time is
+the same as in the other two runs (16.316 M cycles), so the other 14.8 % of its wall time is host time. The unit percentages are shares of the token's cycles and overlap,
+so they do not add up to 100. The counters were read from the best run of each model. The cycles of the Gemma decode token are 7.7 % above the
+simulator's model, and the MVM busy cycles are the same to 0.1 % (13.29 M against 13.30 M): the difference is `MVM_EMPTY` and `MVM_WAIT`. For Qwen3.8 the
+card takes 20 % more cycles than the model. The MVM busy cycles agree (5.71 M against 5.70 M); the card's VU busy cycles are 4.76 M against 2.73 M
+and its DMA busy cycles 2.98 M against 2.45 M in the simulator's counters. The cause of the VU difference has not been looked for.
+
+| 512-token prefill | Gemma 4 26B-A4B Q4_K_M (`-ub 64`) | Qwen3.8 2B Q4_K_M (`-ub 512`, the default) |
+| --- | --- | --- |
+| tok/s, runs 1 / 2 / 3 | 26.24 / 26.20 / 25.70 | 32.95 / 33.05 / 32.99 |
+| **Best, median** | **26.24, 26.20 tok/s** (19.51 s for the first run) | **33.05, 32.99 tok/s** (15.54 s for the first run) |
+| `PERF_CYCLES` of the run | 3,888.3 M (19.44 s) | 3,081.3 M (15.41 s) |
+| Device share of wall time, runs 1 / 2 / 3 | 99.6 / 99.5 / 97.6 % | 99.2 / 99.4 / 99.3 % |
+| `MVM_EMPTY` / `MVM_WAIT` | 14.8 % / 9.3 % | 82.9 % / 1.4 % |
+| Launches | 9 | 14 |
+| Load average (1 min) at start and end, runs 1 / 2 / 3 | 5.1 to 7.3 / 7.3 to 7.8 / 7.8 to 9.3 | 6.0 to 6.0 / 6.4 to 6.2 / 6.0 to 5.8 |
+
+The Gemma prefill needs a smaller ubatch. At the default `-ub 512` and at `-ub 256` the host backend stops before the first launch: `tesseract: MoE
+routing at 'ffn_moe_probs-28' cannot run on the device: MOE_ROUTE: with 512 tokens (several tiles) its outputs overlap the logits of a later tile`
+(three runs at 512, one at 256, `ggml-tesseract.cpp`, SW-64). This is the documented refusal (SW §7.9, SW-64): a route of more than 64 tokens is refused when its outputs overlap a
+later tile's logits other than row for row. It is a host check and not a card fault: the card ran the next job without a reset. `-ub 128` runs (26.48 tok/s in one probe) and so does `-ub 64`, which is one tile per route. The figures above are at `-ub 64`.
+The Gemma prefill runs one MVM of T = 1 per (token, slot) (SW-66): 7.6 M device cycles per prompt token, against 16.3 M for a decode token.
+Qwen3.8 prefills at 2.1 times its decode rate (6.0 M cycles per prompt token), and its MVM unit has nothing queued in 83 % of the prefill cycles. The
+Gated DeltaNet recurrence alone is about 1.3 G of the 3.1 G cycles, at its isolated record cost of 8.6 K cycles per head and token (SW §7.10).
 
 ## The full-feature image after the ATTPV fix (`k4full`, fourth link, 2026-11-08)
 
@@ -709,7 +765,7 @@ ITCM is 131,072 B, DTCM 65,536 B):
 
 **Gemma 4 26B-A4B Q4_K_M, a model with experts** (measured on the simulator, `moe` branch; accuracy in
 [klcheck.md](klcheck.md)). Device cycles of one decode token, from the counters of two runs with 4 and 12 tokens
-(`TSR_STATS=1`), at the card image's 200 MHz and at 276.3 MHz (device time only, no host overhead, an estimate for the card):
+(`TSR_STATS=1`), at the card image's 200 MHz and at 276.3 MHz (device time only, no host overhead, an estimate for the card; the card then took 16.32 M cycles per M7 token and ran at 11.99 tok/s, see "MoE and Gated DeltaNet on the card"):
 
 | Quantity | M6 (matrix products on the device) | M7 (one launch per token) |
 | --- | --- | --- |
@@ -788,6 +844,7 @@ the card in W6 and in synthesis in W4/W5.
 | 2026-11-06 | W6: the first card image with the control core (`k4m200`, core 200 MHz, `clk_rv` 100 MHz), M6 | `tsr-selftest` 205 / 205; 0.5B logits bit-identical to the simulator (512 / 512 rows), KL ratio 1.026, 47.3 tok/s decode; 32B KL ratio 0.750, top-1 100 % (32 positions), 32 / 32 rows bit-identical to the simulator, 2.24 tok/s decode; GDB session on the card | measured on the card (k4m200, 200 / 100 MHz) |
 | 2026-11-08 | W6: the full-feature image (`k4full`, core 200 MHz, `clk_rv` 100 MHz): selftest, M6, the vector-unit kinds of M7 | `tsr-selftest` 184 / 185 (ATTPV differs); M6 bit-identical to the simulator (0.5B 512 / 512, 32B 32 / 32); vector-unit kinds on the device bit-identical, 0.5B 69.6 tok/s (25 launches per token), 32B 2.33 tok/s; M6 decode 49.5 / 2.27 tok/s, prefill 410.8 / 9.6 tok/s (`T_MAX` 4); M7 attention on the device wrong (Vivado fault in the ATTPV lane select) | measured on the card (k4full, 200 / 100 MHz) |
 | 2026-11-08 | W6: the full-feature image after the ATTPV fix (`k4full`, fourth link) | `tsr-selftest` 184 / 184 after the first run of a load (the first run differs in two lines of id 5); 745 trace replays bit-exact, `at` 98 / 98; M6, vector-unit kinds and M7 with attention on the device bit-identical to the simulator on 0.5B (512 / 512) and 32B (32 / 32); M7 KL ratio 0.953 (0.5B) and 0.735 (32B); M7 decode 75.88 tok/s (0.5B, 13.18 ms, 1 launch per token) and 2.35 tok/s (32B); `m6` decode 47.83 / 2.25 tok/s | measured on the card (k4full, 200 / 100 MHz) |
+| 2026-11-09 | W6: the MoE and Gated DeltaNet kinds on the full-feature image (firmware of `sw-moegdn`, bitstream unchanged) | Gemma 4 26B-A4B: M6 ratio 1.294, top-1 92.77 %, M7 ratio 0.742, top-1 94.53 % (512 positions, PASS), 512 / 512 rows bit-identical to the simulator; Qwen3.8 2B M7 ratio 1.061, top-1 98.05 %, 512 / 512 rows bit-identical; 1 x 16 replays 16 / 16 for both; M7 decode 11.99 tok/s (Gemma, 16.32 M cycles per token) and 15.66 tok/s (Qwen3.8, 12.63 M), 512-token prefill 26.2 and 33.0 tok/s; Gemma prefill stops at `-ub` 256 and above (SW-64) | measured on the card (k4full, 200 / 100 MHz) |
 
 Next: the next model targets and the open items of [`docs/handoff.md`](handoff.md); the design plan is
 [`docs/design/README.md`](design/README.md) §10.
@@ -816,6 +873,9 @@ TSR_SIM_TMAX=4 build/xrt/bin/klcheck run --device sim --tokens build/card/q05-m7
     -m models/qwen2.5-0.5b-instruct-q8_0.gguf --phase m7
 build/xrt/bin/klcheck compare --ref build/card/q05-m7/dev-sim-replay.klc --dev build/card/q05-m7/dev.klc --expect-identical
 # decode: llama-completion ... -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -c 4096 --temp 0 -no-cnv -n 65 (M7), add -nkvo for M6 / VU kinds
+# MoE and Gated DeltaNet (branch sw-moegdn; TSR_IMAGE = the build's tsr-fw.elf; Gemma prefill needs -ub 64 or 128)
+TSR_XCLBIN=... build/xrt/bin/klcheck all -m models/gemma4-26b-a4b/google_gemma-4-26B-A4B-it-Q4_K_M.gguf --device xrt --phase m7 -n 64 --n-prompts 8 -o build/card/moegdn/moe-m7-8x64
+(also --phase m6; and -m models/qwen3.8-2b-empero/Qwen3.8-2B-Q4_K_M.gguf for Qwen3.8; the scripts are in build/card/moegdn)
 ```
 
 The simulator results use the current tree (`build/dev`):

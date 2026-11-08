@@ -2,9 +2,23 @@
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
 
+## Card runs of the merged firmware (branch `sw-moegdn`, November 9)
+
+The K4 full-feature image of the fourth link (bitstream unchanged) ran the `tsr-fw.elf` of `sw-moegdn` (21 kinds, kind table 0x804f) with a
+host build of the branch (`build/xrt`). Results are in [klcheck.md](klcheck.md) (last section) and [performance.md](performance.md) ("MoE and
+Gated DeltaNet on the card"):
+
+- Gemma 4 26B-A4B: M6 ratio 1.294, top-1 92.77 %; M7 ratio 0.742, top-1 94.53 % (8 x 64, PASS). Both give 512 of 512 rows bit-identical to the
+  simulator run of the `moe` branch. M7 1 x 16 replay on the simulator: 16 of 16 rows. The `JOIN` inside the op stream works on the card.
+- Qwen3.8 2B M7: ratio 1.061, top-1 98.05 %; 512 of 512 rows bit-identical to a simulator replay, and 16 of 16 for 1 x 16.
+- Speed (M7): Gemma decode 11.99 tok/s (16.32 M cycles per token), Qwen3.8 15.66 tok/s (12.63 M). A 512-token prefill runs at 26.2 tok/s (Gemma,
+  `-ub 64`) and 33.0 tok/s (Qwen3.8).
+- Open: Gemma prefill at `-ub` 256 and above stops in the host backend (MOE_ROUTE with several tiles whose outputs overlap a later tile's logits,
+  SW-64). Use `-ub 128` or less until the planner handles that case. The card's VU busy cycles for Gated DeltaNet are 1.7 times the simulator's.
+
 ## Resume here for the software: MoE and Gated DeltaNet merged (branch `sw-moegdn`, November 9)
 
-Software only; no RTL change, no card run. The branch merges `moe` (7c4088e) and then `gdn-sw` (079b44c) onto `k4full`
+Software only; no RTL change. The card ran both models on 2026-11-09 (the section above). The branch merges `moe` (7c4088e) and then `gdn-sw` (079b44c) onto `k4full`
 (c1f3aaf). Both merges are real merges; neither source branch was rewritten. The two sections below describe the branches as
 they were before the merge.
 
@@ -25,7 +39,7 @@ they were before the merge.
   file under `rtl/`, `tb/` or `hw/` against `k4full`.
 - Bit identity on the simulator, M7 settings, 2 prompts x 16 tokens, `klcheck compare --expect-identical`: Gemma 4 26B-A4B against the
   `moe` branch build, 32 of 32 rows; Qwen3.8 2B against the `gdn-sw` branch build, 32 of 32 rows.
-- Open: the card was not used. A card run needs the new `tsr-fw.elf`; the K4 bitstream is unchanged.
+- Card: see the first section.
 
 ## Resume here for MoE: Gemma 4 26B-A4B runs on the simulator (branch `moe`, November 8, night)
 
@@ -39,7 +53,7 @@ What exists (all in `sw/`, all checked against the C simulator or the CPU):
   first, equal values by the smaller index, NaN first, then the renormalised weights by the tree sum and RC). Test `ref_moe`;
   it also measures ggml-cpu's `std::sort` on ties and NaN (SW-63).
 - Firmware kinds: MOE_ROUTE **0x1E** and MUL_MAT_ID **0x1F** (`sw/ctrl/kernels/k_moe.cpp`, planners `tsr/plan_moe.hpp`, record words
-  `opl::moer` / `opl::mmid`). On its own branch: 18 kinds, kind-table signature 0xC341, ITCM 78,520 B of the then 81,920 B budget (the merged image is in the first section above). Tests
+  `opl::moer` / `opl::mmid`). On its own branch: 18 kinds, kind-table signature 0xC341, ITCM 78,520 B of the then 81,920 B budget (the merged image is in the section "MoE and Gated DeltaNet merged" above). Tests
   `fw_kernels_moe_rv`, `fw_kernels_moe_rv_errors`, `fw_kernels_moe_host` (7,000 rows against the reference), `fw_kind_revs`, `fw_m6_e2e`.
 - Backend: 3D expert tensors placed with `EXP_STRIDE` (SW-60), `MUL_MAT_ID` lowering, fusion of the router chain into one MOE_ROUTE
   record and of the scale chain into the down MUL_MAT_ID (SW-64). Tests `ggml_tesseract_moe*` (the graph of `build_moe_ffn` in
@@ -93,7 +107,7 @@ RTL change and no llama.cpp patch. Design, decisions SW-67 to SW-74 and the numb
 What is in:
 
 - Kinds SOFTPLUS 0x2D, SSM_CONV 0x2E, GATED_DELTA_NET 0x2F (numerics revision 1, `sw/ctrl/kernels/gdn_kinds.cpp`, planners in
-  `tsr/plan_gdn.hpp`, oracle in `sw/ctrl/ref/gdn_ref.cpp`). UNARY takes SIGMOID. On its own branch: ITCM 78,576 B of the then 81,920 B budget (the merged image is in the first section above).
+  `tsr/plan_gdn.hpp`, oracle in `sw/ctrl/ref/gdn_ref.cpp`). UNARY takes SIGMOID. On its own branch: ITCM 78,576 B of the then 81,920 B budget (the merged image is in the section "MoE and Gated DeltaNet merged" above).
 - Backend lowering in `sw/ggml-tesseract` (`tsr-build.cpp`: `tsr_lower_gdn`, `tsr_lower_conv_group`, `tsr_lower_conv_window`,
   `tsr_lower_unary`, the per-token `tsr_lower_rms`). The recurrent caches are device windows; with `-nkvo` the ops that touch
   them stay on the CPU.

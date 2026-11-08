@@ -1492,7 +1492,7 @@ inputs and args. It compares DONE, every output byte and the per-unit completion
 
 ### 7.9 MoE kinds (SW-60 to SW-66)
 
-Status: built and checked on the simulator (November 2026); no card run. Source: `sw/ctrl/kernels/k_moe.cpp`,
+Status: built and checked on the simulator (November 2026). On the card since 2026-11-09 with the K4 full-feature image ([klcheck.md](../klcheck.md), [performance.md](../performance.md)): the KL checks pass and the logits are bit-identical to the simulator. Source: `sw/ctrl/kernels/k_moe.cpp`,
 planners `tsr/plan_moe.hpp`, references `sw/ctrl/ref/moe_ref.cpp` and `tsr_ref_moe_route` (`sw/sim/tsr_ref_vu.c`),
 backend `tsr-build.{h,cpp}` and `ggml-tesseract.cpp`. Spec side: `docs/spec.md` §4 (expert tensors), §13.
 
@@ -1599,7 +1599,7 @@ bias, group selection, sigmoid or softmax-after-top-k: those graphs run the rout
 
 Status (2026-11-09): the three kinds, their planners, references, the backend lowering and the tests are in. The
 Qwen3.8 2B model runs its whole decode graph on the simulator in one launch per token and agrees with the CPU at
-the usual klcheck floor (below). No RTL changed and no card run was made. The kinds compose existing VU
+the usual klcheck floor (below). No RTL changed. The model ran on the card on 2026-11-09 (the K4 full-feature image; [klcheck.md](../klcheck.md), [performance.md](../performance.md)). The kinds compose existing VU
 operations, so they run on any image that has the VU (`CAPS` bit 0, the K4 full-feature image).
 
 **The models.** llama.cpp calls the family `qwen35`. It is hybrid: layer `il` is full attention when
