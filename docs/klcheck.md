@@ -227,6 +227,7 @@ runs against several seeds are described in the text.
 | Qwen2.5-32B Q4_K_M | xrt, k4full | M7 (attention and KV on the device) | 32 (2 × 16) | 1.3104e-3 / 1.7817e-3 (mean of 3 floors) | 0.735 | 100 % | measured on the card (k4full, fourth link, 200 / 100 MHz); 32 of 32 rows bit-identical to `sim`. The second link's image gave 4.609 / 9.996e-3, ratio 461, top-1 21.88 %, 0 of 32 rows equal |
 | Gemma 4 12B Q4_K_M | sim | M6 | 512 (8 × 64) | 9.504e-2 / 7.023e-2 | 1.353 | 96.48 % | measured on the simulator |
 | Gemma 4 12B Q4_K_M | sim | M7 | 512 (8 × 64) | 1.281e-1 / 5.849e-2 | 2.190 | 95.12 % | measured on the simulator (M7) |
+| Gemma 4 12B Q4_K_M | xrt, k4full | M7 (attention and KV on the device) | 512 (8 × 64) | 1.2809e-1 / 7.5393e-2 (mean of 3 floors) | 1.699 (2.190 against seed 1) | 95.12 % | measured on the card (k4full, fourth link, 200 / 100 MHz, one launch per token); the mean KL and the seed-1 floor (5.8494e-2) equal the simulator row. A separate card run of 1 × 16 positions is 16 of 16 rows bit-identical to `sim` at `T_MAX` 4; the 512 rows were not replayed |
 
 On the card the 0.5B run gives the simulator's mean KL to seven digits (1.095007e-3), and the small
 identity check (`klcheck compare --expect-identical`, sim against xrt, 8 of 8 rows bit-identical on k1
@@ -397,7 +398,8 @@ made with the single floor seed 1, before the default became three seeds.
 - Gemma 4 12B Q4_K_M: M7 ratio 2.190 against seed 1, 1.39 / 1.69 / 1.51 against seeds 2 / 3 / 4,
   1.65 against the mean of seeds 1 to 4, top-1 95.12 %. M6: 1.353 against seed 1, 1.06 against the
   mean, top-1 96.48 %. All pass (limit 3), but the ratio is higher than for Qwen2.5 and depends on the
-  seed. The excess sits in one prompt. In the M7 run sequence 7 has mean KL 0.72 against a seed-1
+  seed. On the card (fourth link) the same 8 × 64 run gives 1.699 against the mean of seeds 1 to 3 (2.190, 1.392 and 1.693 against seeds 1, 2 and 3; floors 5.8494e-2,
+  9.2010e-2 and 7.5675e-2) and top-1 95.12 %. The excess sits in one prompt. In the M7 run sequence 7 has mean KL 0.72 against a seed-1
   floor of 0.133, and over seeds 1 to 4 that floor ranges from 0.133 to 0.423: these are
   ill-conditioned positions where the CPU floor is itself unstable. The device's RMS_NORM is
   bit-exact to its rule and differs from ggml-cpu's double sum at rounding level

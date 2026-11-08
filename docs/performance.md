@@ -8,7 +8,7 @@ measurement history and the commands that reproduce the numbers.
 
 > **Scope.** Measurement record, not a design. The first card measurements with the control core
 > are in "The first card image with the control core" below (2026-11-06); the full-feature image's
-> are in "The full-feature image after the ATTPV fix" and, for the image before the fix, "The full-feature image on the card, second link" (both 2026-11-08). All other card
+> are in "The full-feature image after the ATTPV fix" and, for the image before the fix, "The full-feature image on the card, second link" (both 2026-11-08); Gemma 4 12B on the fourth-link image is in its own section (2026-11-08 and 09). All other card
 > measurements were taken before the control core was added, with the host issuing the ops; the
 > Vivado and RTL simulation results are of the design that ran on the card. The other numbers are simulator measurements or estimates, and none
 > of them is a card measurement. Every number carries one of the provenance labels below. The
@@ -120,6 +120,114 @@ The device cycles per token are equal to four digits, so the XSLR stages cost no
 % longer for 0.5B and 0.2 to 0.6 % for 32B, with the same busy device time: the difference is the host's share. For the 0.5B `m6`
 token the host work outside the backend is 3.72 ms (3.13 ms before) and the backend's own 0.36 ms (0.28 ms); the load on the host
 was similar (1.4 to 5 before, 1.6 to 6.3 now) and the five runs of the second link spread over 20.19 to 20.65 ms.
+
+## Gemma 4 12B on the fourth-link image
+
+Measured on the card (k4full, fourth link, 200 / 100 MHz), 2026-11-08 and 09. The image is the one of the section above (sha256 `6fdf31fd…`, UUID
+`c7f70219-…`); the host tools are `build/xrt` of branch `k4full` as built on 2026-11-08 (the later source changes touch `tsr-selftest` only).
+
+**Method.** `llama-completion -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -c 4096 --temp 0 -no-cnv -t 8` with `LLAMA_ATTN_ROT_DISABLE=1 TSR_STATS=1`, as
+for Qwen2.5 above. The three modes are `TSR_KINDS=m6 -nkvo` (`MUL_MAT` on the device), `TSR_KINDS` unset with `-nkvo` (vector-unit kinds on the device,
+attention and KV on the host) and `TSR_KINDS` unset without `-nkvo` (M7: attention and the KV cache on the device). Decode is the prompt "The history of the
+printing press begins" (8 tokens with BOS) with `-n 65` (64 generated tokens) and `-n 1`; the per-token counters are the difference of the PERF counters of the
+two runs over 64 passes (`tsr-dbg --attach -ex perf` after each run). Prefill is one prompt of 158, 512 or 2048 tokens (BOS included, built from the paragraph of
+the Qwen2.5 runs and repository prose) with `-n 1` and the default `-ub 512`. Before every run the card replayed `traces/at/errors/at_s53_0009` (two ATTPV), so
+the first-ATTPV fault of this image ([`handoff.md`](handoff.md)) had fired; `tsr-selftest --ids 5` passed once after the first replay. Each throughput case ran 3 times (decode of `m6` and the
+vector-unit kinds 6 times, because the host share changed so much). Every run's load average is in its log; it was 8.9 to 43.8 (median 14.6) at the start and end of the
+102 card runs, because other jobs ran on the host. The device counters do not depend on it; the host-bound modes do.
+
+**All three modes run Gemma 4.** Nothing was skipped. Sliding-window attention uses the ring cache of llama-cli (`--swa-full off`). In M7 a decode token is one
+launch with no op on the CPU (`TSR_STATS`: 1 launch per pass, 1,152 op records per launch, 48 `FLASH_ATTN` and 96 `SET_ROWS_KV` per token). The logit soft cap
+runs as two `SCALE` records and one `UNARY` record per pass in the vector-unit and M7 modes (`LOCAL_SOFTCAP` is off on this image, so there is no MVM epilogue for
+it). The load writes 8.13 GB to the card for the Q4_K_M file (7.12 GB; 9.6 s of CPU time converts the tensors that the device does not load as Q4_K to Q8_0) and 13.30 GB for the Q8_0 file (12.67 GB).
+
+### Decode
+
+| Model | Mode | Best | Median | All runs, tok/s | Launches per token | Device cycles per token | Device share of wall, best / median |
+| --- | --- | --- | --- | --- | ---: | --- | --- |
+| Q4_K_M | `m6` | 5.58 tok/s (179.1 ms) | 4.46 tok/s (224.4 ms) | 4.77, 4.18, 0.10, 0.43, 5.45, 5.58 | 281 | 31.293 M (156.5 ms) | 87 % / 70 % |
+| Q4_K_M | vector-unit kinds | 5.98 tok/s (167.1 ms) | 5.70 tok/s (175.4 ms) | 5.91, 4.58, 2.31, 5.98, 5.96, 5.50 | 49 | 31.938 M (159.7 ms) | 96 % / 91 % |
+| Q4_K_M | M7 | **5.98 tok/s** (167.1 ms) | 5.94 tok/s (168.4 ms) | 5.93, 5.98, 5.94 | 1 | 32.325 M (161.6 ms) | 97 % / 96 % |
+| Q8_0 | `m6` | 3.55 tok/s (282.0 ms) | 2.77 tok/s (360.7 ms) | 1.07, 2.39, 2.56, 3.50, 3.02, 3.55 | 281 | 52.075 M (260.4 ms) | 92 % / 72 % |
+| Q8_0 | vector-unit kinds | 3.66 tok/s (273.0 ms) | 3.37 tok/s (297.2 ms) | 2.37, 3.20, 0.85, 3.63, 3.66, 3.55 | 49 | 52.723 M (263.6 ms) | 97 % / 89 % |
+| Q8_0 | M7 | **3.74 tok/s** (267.3 ms) | 3.67 tok/s (272.2 ms) | 3.67, 3.60, 3.74 | 1 | 53.115 M (265.6 ms) | 99 % / 98 % |
+
+The cycles per token are the same in every run of a mode to four digits. `m6` and the vector-unit kinds depend on the host: with 281 or 49 launches and the
+CPU's attention, the wall time went from 179 to 10,340 ms per token for Q4_K_M `m6` as the load changed. M7 does not: 167.1 to 168.7 ms (Q4_K_M) and 267.3 to 277.9 ms
+(Q8_0) over three runs at load 11 to 44. In the runs that were paired with an `-n 1` run the host spent 4.4 ms (Q4_K_M) and 0.5 ms (Q8_0) per token outside the backend in M7, 6.8 and 45 ms with the
+vector-unit kinds, and 47 and 111 ms with `m6` (the load differed between those runs). Decode is bound by the weight stream, as for the other models: the four channels read 7.53 GB (Q4_K_M) and 12.69 GB
+(Q8_0) per token at 46.8 to 48.7 GB/s while the device is busy (3.65 to 3.81 of 4 beats per cycle; 51.2 GB/s is the peak at 200 MHz).
+
+Per decode token, best run of each mode (device counters, 200 MHz):
+
+| Model | Mode | `MVM_CYCLES` | `MVM_EMPTY` | `MVM_WAIT` | `VU_CYCLES` | `DMA_CYCLES` | `QACT_CYCLES` | `ATT_QK` + `ATT_PV` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Q4_K_M | `m6` | 94.1 % | 4.4 % | 1.6 % | 0 | 1.1 % | 1.1 % | 0 |
+| Q4_K_M | vector-unit kinds | 92.2 % | 2.6 % | 5.3 % | 2.8 % | 3.2 % | 1.1 % | 0 |
+| Q4_K_M | M7 | 91.4 % | 1.7 % | 6.8 % | 3.4 % | 3.4 % | 1.7 % | 0.4 % |
+| Q8_0 | `m6` | 95.3 % | 2.6 % | 2.1 % | 0 | 0.7 % | 1.8 % | 0 |
+| Q8_0 | vector-unit kinds | 94.1 % | 1.5 % | 4.3 % | 1.7 % | 2.0 % | 1.8 % | 0 |
+| Q8_0 | M7 | 93.6 % | 1.0 % | 5.3 % | 2.1 % | 2.1 % | 2.2 % | 0.2 % |
+
+`RV_WFI` and `PUSH_STALL` are 0 in every run. Against `m6` the vector-unit kinds and M7 add 0.6 M and 1.0 M cycles per token (both models): the vector unit, the attention ops and the waits of the MVM
+unit behind them. That is 1 to 3 % of a token and is paid back by the launches that are gone.
+
+### Prefill
+
+Tokens per second, best / median of three runs (`T_MAX` 4: four tokens per weight pass).
+
+| Model | Mode | 158 tokens | 512 tokens | 2048 tokens |
+| --- | --- | --- | --- | --- |
+| Q4_K_M | `m6` | 25.6 / 25.3 | 24.3 / 24.2 | 18.4 / 18.1 |
+| Q4_K_M | vector-unit kinds | 23.9 / 22.5 | 23.2 / 22.3 | 19.9 / 16.4 |
+| Q4_K_M | M7 | 23.7 / 23.7 | 23.9 / 23.9 | 22.9 / 22.0 |
+| Q8_0 | `m6` | 15.4 / 14.7 | 15.7 / 14.6 | 13.7 / 12.3 |
+| Q8_0 | vector-unit kinds | 15.8 / 15.5 | 15.6 / 15.5 | 13.9 / 13.8 |
+| Q8_0 | M7 | 15.4 / 15.3 | 15.5 / 15.5 | 15.1 / 15.1 |
+
+Prefill is device-bound: a weight pass costs about one decode token of cycles, so prefill is close to four times decode (M7 Q4_K_M 23.7 against 5.98 tok/s) and
+the 158-token prompt takes 6.7 s (Q4_K_M) and 10.3 s (Q8_0). At 2048 tokens `m6` and the vector-unit kinds fall behind; the host's attention work grows with the
+context. M7 prefill is one launch for 158 tokens but 96 launches per 512-token ubatch (385 for 2048), about two per layer: the plan cuts a list at a full
+256-line preload area (`TSR_STATS` "lists cut early" 95; [`sw/ggml-tesseract/README.md`](../sw/ggml-tesseract/README.md)). The launch counts per ubatch are 281 (`m6`), 49 (vector-unit kinds) and 1 (M7, up to 158 tokens).
+
+### Against the 276.3 MHz run and the CPU
+
+The older 12B figures (above, "Decode throughput on the U200") ran `MUL_MAT` only on the device at 276.3 MHz, with the host issuing every op and no control core.
+
+| Decode | 2026-10-27, k4, 276.3 MHz, `MUL_MAT` only | Now, `m6`, best | Now, M7, best |
+| --- | --- | --- | --- |
+| Gemma 4 12B Q8_0 | 4.50 tok/s (222.0 ms) | 3.55 tok/s (282.0 ms) | 3.74 tok/s (267.3 ms) |
+| Gemma 4 12B Q4_K_M | 6.91 tok/s (144.7 ms) | 5.58 tok/s (179.1 ms) | 5.98 tok/s (167.1 ms) |
+
+The clock is 27 % lower (200 against 276.3 MHz), which is most of the difference; M7 gives back 5 to 7 % over `m6` at the best run and much more when the host is
+busy.
+
+CPU only, for context: llama.cpp of the same tree, `-dev none -ngl 0 -t 8 -c 4096`, default f16 KV cache, flash attention auto, AVX-512 with repack, on the same shared
+host (load 10 to 36, median 13). Best / median of 6 runs (decode) or 3 runs (prefill).
+
+| Model | Decode | Prefill, 158 tokens | 512 tokens | 2048 tokens |
+| --- | --- | --- | --- | --- |
+| Q4_K_M | 4.34 / 3.54 tok/s (230.6 ms) | 50.7 / 16.9 tok/s | 42.1 / 32.1 tok/s | 42.5 / 35.3 tok/s |
+| Q8_0 | 2.79 / 2.11 tok/s (358.8 ms) | 31.7 / 20.2 tok/s | 32.6 / 31.9 tok/s | 25.2 / 24.9 tok/s |
+
+`-t 16` on a host with this load is worse, not better: one run of Q4_K_M gave 0.25 tok/s decode and 7.78 tok/s prefill (158 tokens) at load 12 to 29, and
+a 17-token probe gave 4.70 tok/s at `-t 8`, 2.30 at `-t 4` and 0.13 at `-t 16 --poll 0`. The first two decode runs of the Q4_K_M set were 0.50 and 0.45 tok/s at
+load 36 and 15. These figures are context, not a clean CPU baseline: a quiet host would give the CPU more. With that caveat, M7 decodes 1.4 times (Q4_K_M) and 1.3
+times (Q8_0) the CPU's best, and the card's prefill is about half the CPU's.
+
+### Accuracy
+
+`klcheck all --device xrt --phase m7 --n-prompts 8 -n 64` on Q4_K_M (attention and KV on the device, one launch per token, three floor seeds): mean KL 1.2809e-1
+against a floor of 7.5393e-2, ratio 1.699 (2.190, 1.392 and 1.693 against seeds 1 to 3), top-1 95.12 %, PASS. The mean KL and the seed-1 ratio equal the simulator
+row to four digits ([`klcheck.md`](klcheck.md)). A separate card run of 1 prompt x 16 tokens, replayed on the simulator at `T_MAX` 4 with `TSR_SIM_TMAX=4`
+(`klcheck compare --expect-identical`), gives 16 of 16 logit rows bit-identical.
+
+### Not run
+
+The QAT file (`gemma-4-12B-it-qat-UD-Q4_K_XL.gguf`) ran in M7 for one round and part of a second, then the work was stopped. Its weights are all converted to Q8_0 on
+load (13.30 GB written), so its cycles per token equal Q8_0's (53.115 M) and its figures follow Q8_0's: decode 3.74 tok/s best of 2 runs (267.2 ms), prefill 15.4 (158
+tokens), 15.5 (512) and 15.2 tok/s (2048, one run). It has no CPU baseline and no accuracy run. Also not run: klcheck on the card for `m6`, the vector-unit kinds and
+Q8_0, a replay of the full 8 x 64 set on the simulator, and more rounds of the prefill cases. The detailed benchmark is to be done later.
 
 ## The full-feature image on the card, second link (`k4full`, 2026-11-08)
 
@@ -342,6 +450,8 @@ flash attention for this reason (log line `Flash Attention not supported, set to
   (147.48 ms per token). Decode moves only small IO transfers, so the mode barely matters here;
   it matters for model load (see below).
 - The Gemma 4 E4B row is one log; treat it as a single run.
+- The two 12B rows above are the 276.3 MHz, `MUL_MAT`-only figures. The fourth-link image's figures for the same models (M6, vector-unit kinds, M7, prefill, CPU) are in
+  "Gemma 4 12B on the fourth-link image" above.
 - Logs are under `build/card/` and are not committed.
 
 Decode is bound by the DDR weight stream. Every token reads every weight once, and the core
@@ -752,6 +862,7 @@ the card in W6 and in synthesis in W4/W5.
 | 2026-11-06 | W6: the first card image with the control core (`k4m200`, core 200 MHz, `clk_rv` 100 MHz), M6 | `tsr-selftest` 205 / 205; 0.5B logits bit-identical to the simulator (512 / 512 rows), KL ratio 1.026, 47.3 tok/s decode; 32B KL ratio 0.750, top-1 100 % (32 positions), 32 / 32 rows bit-identical to the simulator, 2.24 tok/s decode; GDB session on the card | measured on the card (k4m200, 200 / 100 MHz) |
 | 2026-11-08 | W6: the full-feature image (`k4full`, core 200 MHz, `clk_rv` 100 MHz): selftest, M6, the vector-unit kinds of M7 | `tsr-selftest` 184 / 185 (ATTPV differs); M6 bit-identical to the simulator (0.5B 512 / 512, 32B 32 / 32); vector-unit kinds on the device bit-identical, 0.5B 69.6 tok/s (25 launches per token), 32B 2.33 tok/s; M6 decode 49.5 / 2.27 tok/s, prefill 410.8 / 9.6 tok/s (`T_MAX` 4); M7 attention on the device wrong (Vivado fault in the ATTPV lane select) | measured on the card (k4full, 200 / 100 MHz) |
 | 2026-11-08 | W6: the full-feature image after the ATTPV fix (`k4full`, fourth link) | `tsr-selftest` 184 / 184 after the first run of a load (the first run differs in two lines of id 5); 745 trace replays bit-exact, `at` 98 / 98; M6, vector-unit kinds and M7 with attention on the device bit-identical to the simulator on 0.5B (512 / 512) and 32B (32 / 32); M7 KL ratio 0.953 (0.5B) and 0.735 (32B); M7 decode 75.88 tok/s (0.5B, 13.18 ms, 1 launch per token) and 2.35 tok/s (32B); `m6` decode 47.83 / 2.25 tok/s | measured on the card (k4full, 200 / 100 MHz) |
+| 2026-11-09 | W6: Gemma 4 12B on the fourth-link image | Q4_K_M and Q8_0 in M6, vector-unit kinds and M7: M7 decode 5.98 and 3.74 tok/s (one launch per token, 97 to 99 % device time), prefill 23.7 and 15.4 tok/s (158 tokens); CPU `-t 8` 4.34 and 2.79 tok/s; M7 KL ratio 1.699, top-1 95.12 %, 16 of 16 rows bit-identical to the simulator | measured on the card (k4full, fourth link, 200 / 100 MHz); CPU on the shared host |
 
 Next: the next model targets and the open items of [`docs/handoff.md`](handoff.md); the design plan is
 [`docs/design/README.md`](design/README.md) §10.
@@ -780,6 +891,10 @@ TSR_SIM_TMAX=4 build/xrt/bin/klcheck run --device sim --tokens build/card/q05-m7
     -m models/qwen2.5-0.5b-instruct-q8_0.gguf --phase m7
 build/xrt/bin/klcheck compare --ref build/card/q05-m7/dev-sim-replay.klc --dev build/card/q05-m7/dev.klc --expect-identical
 # decode: llama-completion ... -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -c 4096 --temp 0 -no-cnv -n 65 (M7), add -nkvo for M6 / VU kinds
+# Gemma 4 12B (2026-11-09): replay traces/at/errors/at_s53_0009 first (tsr-selftest --device xrt --no-mem --no-kernel --traces traces/at/errors/at_s53_0009), then
+#   TSR_KINDS=m6 (M6, -nkvo) | TSR_KINDS unset with -nkvo (vector-unit kinds) | TSR_KINDS unset (M7); -p "The history of the printing press begins" -n 65 / -n 1 -t 8,
+#   or -f PROMPT -n 1 for the 158, 512 and 2048 token prefill; tsr-dbg --attach -ex perf after each run; CPU: -dev none -ngl 0 -t 8
+TSR_XCLBIN=... build/xrt/bin/klcheck all -m models/gemma4/gemma-4-12b-it-Q4_K_M.gguf --device xrt --phase m7 --n-prompts 8 -n 64 -o build/card/g4/acc/q4-m7-8x64
 ```
 
 The simulator results use the current tree (`build/dev`):

@@ -24,11 +24,17 @@ What passed (all bit-identical to the C simulator at `T_MAX` 4 and `CAPS` 0x21 u
 - Decode, best run: M7 0.5B 75.88 tok/s (13.18 ms, 97 % device time), 32B 2.35 tok/s (424.9 ms); vector-unit kinds 68.45 and 2.32;
   `m6` 47.83 and 2.25. Prefill of 158 tokens: 0.5B 407 (`m6`), 384 (vector-unit kinds), 338 (M7) tok/s; 32B 9.5, 9.5, 9.3. The
   device counters per decode token equal the second link's to four digits: the extra `XSLR_REG` stages cost nothing visible.
+- Gemma 4 12B on the card (2026-11-09; [performance.md](performance.md) "Gemma 4 12B on the fourth-link image"): all three modes run. M7 decode, best run: Q4_K_M 5.98 tok/s
+  (167.1 ms, 1 launch per token, 97 % device time), Q8_0 3.74 tok/s (267.3 ms, 99 %); `m6` 5.58 and 3.55, vector-unit kinds 5.98 and 3.66 (these two swing with the host load).
+  Prefill of 158 tokens in M7: 23.7 and 15.4 tok/s. CPU only, `-t 8`: decode 4.34 and 2.79 tok/s, prefill 31 to 51 tok/s, on the shared host. M7 klcheck 8 x 64 on
+  Q4_K_M: ratio 1.699, top-1 95.12 %; 1 x 16 rows 16 of 16 bit-identical to the simulator.
 - Trace writer (`tsr-selftest --trw 16`): 647 replays 16,247 records, 745 replays 18,207 records, 0 dropped, no hang. GDB smoke
   passes (halt, registers, breakpoints, step, memory, hardware breakpoint in a kernel, watchpoint, `finish`, history, trace writer).
 
 Open:
 
+- The detailed Gemma 4 12B benchmark is to be done later. Not run: the QAT file (one round of M7 only; its weights are converted to Q8_0), klcheck on the card for `m6`,
+  the vector-unit kinds and Q8_0, the full 8 x 64 simulator replay, more prefill rounds. The scripts and logs are in `build/card/g4` (not in git).
 - The first `selftest` after an image load fails id 5 in two lines (area lines 531 and 532, the causal ATTQK score block, read
   back as zero). **Cause found and fixed in the source (branch `k4full`, not in the image).** The ATTPV output stage of every
   cluster (`tsr_mvm_pv`, `ob_zero_q`) was reset to `ng == 0`, and `ng` is a setup flop that is 0 after configuration. After a load
