@@ -840,31 +840,27 @@ branch `gdn-sw`; simulator cycle model, fixed schedule, core clock 276.3 MHz in 
 | The fused GDN op (VU §7.12, branch `gdn-vu`) | 23.8 ms per 27B token, estimated: the composed recurrence is about 4.1 times slower; a token would be 468 ms instead of 542 |
 | Image size | ITCM 78,576 B, DTCM 49,912 B |
 
-**Gated DeltaNet with the fused GDN op on the simulator** (branch `gdn-fw`, GATED_DELTA_NET revision 2, [SW](design/06-software-verification.md)
-§7.10, SW-78; `TSR_SIM_GDN=1`, the simulator's `CAPS` bit 8 and the default RISC-V clock ratio; the card image of 2026-11-09 has no GDN op
-and the card runs above are the composed path). Device cycles of one decode token, composed / fused, **simulator model with 16 front and 8 back
-lanes** (the card has 8 / 4, so its VU is slower; hand-scaled figures below):
+**Gated DeltaNet with the fused GDN op and the state on its cache cell, on the simulator** (branch `gdn-fw`, GATED_DELTA_NET revision 2, [SW](design/06-software-verification.md)
+§7.10, SW-78, SW-82). The simulator is in the card configuration (`TSR_SIM_CARD=k4full`, SW-80: VU 8 / 8 / 4 lanes, `clk_rv` at half the core clock), whose composed
+three-pass run is the card's own: 12.65 M cycles per 2B decode token against the card's 12.63 M. The card image of 2026-11-09 has no GDN op; the fused path is the same
+configuration with `TSR_SIM_GDN=1` (an image with `CAPS` bit 8: `k4f250`, core 250 MHz, `clk_rv` 166.7 MHz, `TSR_SIM_RV_RATIO=0.6667`). The model of the GDN op is fitted to the
+RTL unit (2,914 cycles for 128 × 128 at 8 front lanes, RTL 2,913.7). Core cycles per decode token:
 
-| Quantity | Qwen3.8 2B | Qwen3.8 27B (from 4 and 8 layers) |
-| --- | --- | --- |
-| Total | 10.36 M / 9.14 M (−11.8 %) | 106.3 M / 96.8 M (−8.9 %) |
-| VU busy | 2.63 M / 0.72 M | 20.5 M / 5.25 M |
-| DMA busy | 2.40 M / 2.40 M | 17.7 M / 17.7 M |
-| Recurrence (step cost × heads × layers) | 2.47 M / 1.12 M | 19.7 M / 9.0 M |
-| Isolated record, T = 1 (with about 18 K launch overhead) | 151.6 K / 83.5 K | 425.0 K / 228.0 K |
-| Per head and token, steady state | 8.6 K / 3.9 K | 8.6 K / 3.9 K |
-| At 200 MHz | 51.8 ms (19.3 tok/s) / 45.7 ms (21.9 tok/s) | 531 ms / 484 ms |
-| At 250 MHz | 41.5 ms / 36.5 ms | 425 ms / 387 ms |
-| With the state on its cache cell (SW-82), total | 9.18 M / 7.95 M | 96.8 M / 87.3 M |
-| With the state on its cache cell, DMA busy | 1.21 M / 1.21 M | 8.2 M / 8.2 M |
-| With the state on its cache cell, 200 MHz / 250 MHz | 45.9 ms, 21.8 tok/s / 36.7 ms and 39.8 ms, 25.2 tok/s / 31.8 ms | 484 ms / 387 ms and 437 ms / 349 ms |
+| Quantity | Qwen3.8 2B composed | 2B fused | 2B fused + state on its cell | 27B composed (4 and 8 layers) | 27B fused | 27B fused + cell |
+| --- | --- | --- | --- | --- | --- | --- |
+| Total, 200 MHz image (RISC-V ratio 0.5) | 12.65 M | 9.72 M (−23.2 %) | 8.53 M (−32.6 %) | 123.7 M | 100.6 M (−18.7 %) | 91.1 M (−26.3 %) |
+| Total, 250 MHz link (ratio 0.667) | 12.51 M | 9.23 M | 8.04 M | 123.3 M | 97.2 M | 87.7 M |
+| VU busy / DMA busy | 4.79 M / 2.43 M | 1.26 M / 2.43 M | 1.26 M / 1.25 M | 37.2 M / 17.8 M | 9.0 M / 17.8 M | 9.0 M / 8.3 M |
+| At 200 MHz | 63.3 ms, 15.8 tok/s | 48.6 ms, 20.6 tok/s | 42.6 ms, 23.5 tok/s | 618 ms, 1.62 tok/s | 503 ms, 1.99 tok/s | 456 ms, 2.20 tok/s |
+| At 250 MHz | 50.0 ms, 20.0 tok/s | 36.9 ms, 27.1 tok/s | 32.2 ms, 31.1 tok/s | 493 ms, 2.03 tok/s | 389 ms, 2.57 tok/s | 351 ms, 2.85 tok/s |
+| GATED_DELTA_NET record, one token (with about 18 K launch overhead) | 264.3 K | 101.4 K (ratio 0.5), 77.9 K (0.667) | | 757.3 K | 275.8 K, 208.7 K | |
+| Per head and token, steady state | 15.4 K | 4.69 K (ratio 0.5), 3.52 K (0.667) | | 15.4 K | 4.69 K, 3.52 K | |
 
-The fused step is limited by the RISC-V's issue rate (11 pushes, 1,827 instructions per head and token), not by the VU: with the RISC-V
-four times faster the isolated 27B record of 16 tokens would take 1.48 M cycles instead of 2.98 M. The model charges the GDN op at 16 front lanes
-(1,802 cycles for 128 × 128); at the card's 8 front lanes it is 2,834. Hand-scaled to 8 / 8 / 4 lanes with the model's formulas: VU time per head
-and token 12.7 K composed against 3.0 K fused (8.5 K and 1.9 K in the model), the fused step about 3.5 K core cycles at the 250 MHz link because of
-the RISC-V, so about 2.6 M fewer cycles per 2B token (1.2 M in the model) and about 21 M fewer per 27B token; estimates, to be measured again when `vu-perf`
-makes the lane counts configurable. The state on its cache cell (the gather and the copy of the pinned graph absorbed when the sequences keep their cells; `TSR_GDN_CELL=0` turns it off, results bit-identical) removes two of the three DRAM passes over the state: DMA busy halves, and a 2B token takes 11 to 13 % fewer cycles, 23 % with the fused path (7.95 M against 10.36 M). The image takes 85,504 B of ITCM. Accuracy: [klcheck.md](klcheck.md) (2B, 8 × 64: ratio 1.103, top-1 97.27 %).
+The fused step is limited by the RISC-V's issue rate (eleven pushes and 1,827 instructions per head and token), not by the VU (the op takes 2,914 cycles). The state on its cache cell
+(the gather and the copy of the pinned graph absorbed when the sequences keep their cells; `TSR_GDN_CELL=0` turns it off; results bit-identical) removes two of the three DRAM
+passes over the state and halves the DMA busy cycles. The composed 250 MHz column is the same image's cycles at the other RISC-V ratio (the link has the op). Before SW-80 the
+model had 16 / 16 / 8 lanes and gave 10.36 M (composed) and 9.14 M (fused) for the 2B and 106.3 M and 96.8 M for the 27B. The image takes 85,504 B of ITCM. Accuracy:
+[klcheck.md](klcheck.md) (2B, 8 × 64: ratio 1.103, top-1 97.27 %).
 
 **Firmware image** (`tsr-elf size build/dev/fw/tsr-fw.elf`, measured on the production image;
 ITCM is 131,072 B, DTCM 65,536 B):

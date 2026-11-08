@@ -1785,64 +1785,40 @@ record's read and write, the `CPY` back; each pass reads and writes it), which a
 place would cut to one (the DMA is 17 to 23 % of the token), and a reduction that does not serialise on the
 16-cycle `RED.SUM`.
 
-**Cost of the fused path** (SW-78). **All cycle figures here are the simulator model with 16 front and 8 back lanes** (`TSR_VU_FRONT_LANES` 16,
-`TSR_VU_BACK_LANES` 8 in `tsr_tables.h`; the card images have 8 front and 4 back lanes with two lane-pipe stages, CFG3 0x02480088, so the card's VU
-is slower than this model; hand-scaled figures follow). Default RISC-V clock ratio 166.7 / 276.3, 4 MiB SPM, `TSR_SIM_GDN=1` against
-`TSR_SIM_GDN=0` on the same image. `test_fw_gdn_rv <image> bench --gdn 1` gives, for isolated records with the launch overhead of about 18 K
-cycles: 83.5 K (2B, 16 heads) and 228.0 K (27B, 48 heads) at one token, 779.4 K for four tokens and 2.985 M for sixteen, so 3.9 K cycles per head
-and token in steady state against 8.6 K composed (2.2 times less). The model charges the GDN op at 16 front lanes: (rows + 1) · m / 16 beats
-+ 4 m + rows + 130 = 1,802 cycles for 128 × 128, and one fused step takes 1.9 K cycles of VU time (the op, three `SOP`, the scale). VU §7.12 and
-the card have 8 front lanes, (rows + 1) · m / 8 beats, so 2,834 cycles for the op and 3.0 K for the step. The step is not VU-bound in the model:
-the firmware pushes eleven operations per step (three `SOP`, `GDN`, `VOP.MULC`, five LDs of g, beta, k, v and q, the output ST) and runs 1,827
-RISC-V instructions per head and token (3,635 on the composed path). The sixteen-token record of the 27B takes 3.60 M cycles at RISC-V clock ratio
-0.5, 2.98 M at the default 0.603, 1.80 M at ratio 1 and 1.48 M at ratio 4 (1.9 K per step: the VU's rate in the model), where the composed
-record takes 6.95 M, 6.58 M (default), 6.57 M and 6.56 M. A step that loaded g, beta, k, q and v for all the heads of a token once (decode, T = 1)
-would push six operations per head instead of eleven; it is not done (the recurrence is now 9 to 12 % of a token in the model).
+**Cost of the fused path and of the state on its cell** (SW-78, SW-82). The figures are the simulator in the card configuration (`TSR_SIM_CARD=k4full`,
+SW-80: VU 8 / 8 / 4 lanes behind two lane-pipe stages, `T_MAX` 4, `clk_rv` at half the core clock), whose composed three-pass run is the card's own
+(12.65 M cycles per 2B decode token against the card's 12.63 M, VU busy 4.785 M against 4.758 M). The fused path is the same configuration with
+`TSR_SIM_GDN=1` (an image with `CAPS` bit 8). The 250 MHz link (`k4f250`) has core 250 MHz and `clk_rv` 166.7 MHz, a RISC-V ratio of 0.667
+(`TSR_SIM_RV_RATIO=0.6667`); the 200 MHz columns have 0.5. The model of the GDN op itself is fitted to the RTL unit: `tb/vu/test_vu_timing.py` `vu_gdn_op` times
+ten shapes (m 64 to 256, rows 16 to 256) at both built lane configurations, and `cyc_gdn` equals the RTL within 2 cycles at the K4 lanes (2,914 cycles for a
+128 × 128 head, the RTL 2,913.7; VU §7.12.8) and within 1.5 % at the U200 lanes. Timing changes no bit: `fw_kind_revs` and a 16-row klcheck of the 2B give the same digests and
+16 of 16 identical rows with the default and the card timing, for both paths.
 
-*Hand-scaled to the card's 8 / 8 / 4 lanes* (the model's own formulas with the lane counts of CFG3, VOP rate 16 / front lanes per line: the composed
-step has four full-rate tile operations of 1,024 lines and two `RED.SUM` of 2,048 cycles, which do not depend on the lanes): the composed step takes
-12.7 K cycles of VU time (8.5 K at 16 lanes), the fused step 3.0 K (1.9 K). The fused step is still limited by the RISC-V, about 3.5 K core cycles
-at the 250 MHz link (core 250 MHz, `clk_rv` 166.7 MHz) and 4.7 K at the card image of 2026-11-09 (200 / 100 MHz), so on the card the per-step
-ratio is about 3.6 times (12.7 K against 3.5 K), not 2.2. For the 2B (288 steps per token) that is a recurrence of 3.7 M cycles composed
-and about 1.0 M fused, 2.6 M fewer per token (the model's 16-lane figures save 1.2 M); for the 27B (2,304 steps) about 29 M against 8 M. These are
-estimates from the formulas; `vu-perf` makes the lane counts configurable in the simulator, and the figures should be measured again then.
+Isolated records (`test_fw_gdn_rv <image> bench --gdn 0|1` with `TSR_SIM_VU_TIMING=k4`, about 18 K cycles of launch overhead in each): at RISC-V ratio 0.5 the composed
+record takes 264.3 K cycles for the 2B (16 heads) and 757.3 K for the 27B (48 heads) at one token and 15.4 K per head and token in steady state; the fused record 101.4 K,
+275.8 K and 4.69 K (3.3 times less); at ratio 0.667 the fused record takes 77.9 K, 208.7 K and 3.52 K. The fused step is limited by the RISC-V's issue rate, not by the VU:
+it pushes eleven operations (three `SOP`, `GDN`, `VOP.MULC`, five LDs of g, beta, k, v and q, the output ST) and runs 1,827 RISC-V instructions per head and token (3,635 on the composed
+path), while the VU needs 2,914 cycles for the op and about 3.1 K for the step. A step that loaded g, beta, k, q and v for all the heads of a token once (decode, T = 1) would
+push six operations per head instead of eleven; it is not done (the recurrence is now 9 to 12 % of a token).
 
-Whole decode tokens, from the counters of two runs of the same prompt (27B: 2 and 10 generated tokens, 2B: 2 and 18), divided
-by the added launches (`TSR_STATS=1`, `TSR_SIM_TMAX=4`). The 27B rows are by the method above (4 and 8 layers of the
-real GGUF, `sw/tools/gguf_truncate.py`; the composed 27B row was measured again with this image: 106.3 M against the 108.4 M of the
-first measurement, which was on the branch before the merge):
+Whole decode tokens, from the counters of two runs of the same prompt (27B: 2 and 10 generated tokens, 2B: 2 and 18), divided by the added launches (`TSR_STATS=1`).
+The 27B rows are by the method above (4 and 8 layers of the real GGUF, `sw/tools/gguf_truncate.py`). Core cycles per decode token; the state on its cell is SW-82 (below):
 
-| Per decode token (core cycles, model with 16 / 8 lanes) | 2B composed | 2B fused | 27B composed | 27B fused |
-|---|---|---|---|---|
-| Total | 10.36 M | 9.14 M (−11.8 %) | 106.3 M | 96.8 M (−8.9 %) |
-| MVM busy | 5.70 M | 5.70 M | 73.1 M | 73.1 M |
-| VU busy | 2.63 M | 0.72 M | 20.5 M | 5.25 M |
-| DMA busy | 2.40 M | 2.40 M | 17.7 M | 17.7 M |
-| Recurrence (isolated step cost × heads × layers) | 2.47 M (24 %) | 1.12 M (12 %) | 19.7 M (19 %) | 9.0 M (9 %) |
-| At 200 MHz (the card image's core clock) | 51.8 ms, 19.3 tok/s | 45.7 ms, 21.9 tok/s | 531 ms, 1.88 tok/s | 484 ms, 2.07 tok/s |
-| At 250 MHz (the `k4f250` core clock) | 41.5 ms | 36.5 ms | 425 ms | 387 ms |
+| Core cycles per decode token | 2B composed | 2B fused | 2B fused, state on its cell | 27B composed | 27B fused | 27B fused, state on its cell |
+|---|---|---|---|---|---|---|
+| Total, 200 MHz image (ratio 0.5) | 12.65 M | 9.72 M (−23.2 %) | 8.53 M (−32.6 %) | 123.7 M | 100.6 M (−18.7 %) | 91.1 M (−26.3 %) |
+| Total, 250 MHz link (ratio 0.667) | 12.51 M | 9.23 M | 8.04 M | 123.3 M | 97.2 M | 87.7 M |
+| VU busy | 4.79 M | 1.26 M | 1.26 M | 37.2 M | 8.99 M | 8.99 M |
+| DMA busy | 2.43 M | 2.43 M | 1.25 M | 17.8 M | 17.8 M | 8.34 M |
+| MVM busy | 5.71 M | 5.71 M | 5.71 M | 73.1 M | 73.1 M | 73.1 M |
+| At 200 MHz | 63.3 ms, 15.8 tok/s | 48.6 ms, 20.6 tok/s | 42.6 ms, 23.5 tok/s | 618 ms, 1.62 tok/s | 503 ms, 1.99 tok/s | 456 ms, 2.20 tok/s |
+| At 250 MHz | 50.0 ms, 20.0 tok/s | 36.9 ms, 27.1 tok/s | 32.2 ms, 31.1 tok/s | 493 ms, 2.03 tok/s | 389 ms, 2.57 tok/s | 351 ms, 2.85 tok/s |
 
-The fused path saves 1.23 M (2B) and 9.5 M (27B) cycles of a token in the model: the recurrence is 2.2 times cheaper, and the other VU work
-(norms, gates, the convolution) and the whole DMA and MVM time are unchanged. The earlier estimate of 468 ms for a 27B token
-with the fused op (23.8 ms for the recurrence) assumed the op's own rate; the simulator's firmware step costs 9.0 M cycles
-(45 ms at 200 MHz). The state still makes three passes through DRAM per layer, which is the DMA row above; SW-82 (above) removes two of them.
-
-With the state on its cache cell (SW-82; `TSR_GDN_CELL` 1 against 0, the same method, model with 16 / 8 lanes): the gather and the state `CPY` of
-every Gated DeltaNet layer are gone from the launch (per 2B decode launch GET_ROWS 38 to 20 records and CPY 60 to 42), and the DMA work of the state
-falls from three reads and three writes of the state per layer to one of each:
-
-| Per decode token (core cycles, model with 16 / 8 lanes) | 2B composed | 2B fused | 27B composed | 27B fused |
-|---|---|---|---|---|
-| Total, three passes (above) | 10.36 M | 9.14 M | 106.3 M | 96.8 M |
-| Total, state on its cell | 9.18 M (−11.4 %) | 7.95 M (−13.0 %) | 96.8 M (−8.9 %) | 87.3 M (−9.8 %) |
-| DMA busy, three passes / on the cell | 2.40 M / 1.21 M | 2.40 M / 1.21 M | 17.7 M / 8.2 M | 17.7 M / 8.2 M |
-| VU busy | 2.63 M | 0.72 M | 20.5 M | 5.25 M |
-| At 200 MHz, state on its cell | 45.9 ms, 21.8 tok/s | 39.8 ms, 25.2 tok/s | 484 ms, 2.07 tok/s | 437 ms, 2.29 tok/s |
-| At 250 MHz, state on its cell | 36.7 ms | 31.8 ms | 387 ms | 349 ms |
-
-Both changes together (fused path and state on its cell) take a 2B token from 10.36 M to 7.95 M cycles (−23 %) and a 27B token from 106.3 M to 87.3 M
-(−18 %). The saving of SW-82 is DMA time that was on the critical path in the model: a decode token is a chain of dependent ops, and the DMA busy cycles
-fell by 1.18 M (2B) and 9.5 M (27B), as much as the token did. The card's DMA timing was not measured for this change.
+The composed path with the state on its cell takes 11.46 M (200 MHz image) for the 2B. The composed 250 MHz column is the same image's core cycles at the other RISC-V
+ratio (the composed path is VU-bound; it does not exist on the link, which has the op). The savings are separate: the fused path takes the recurrence from 4.8 M of VU busy
+to 1.3 M (2B) and from 37 M to 9 M (27B), the state on its cell takes the DMA busy cycles in half (1.2 M and 9.5 M cycles of a token, as much as the token falls: a decode token is a
+chain of dependent ops that does not hide the DMA). The 27B token of the fused path with its state on the cell is 74 % of the composed three-pass token.
+The figures before SW-80 (model with 16 lanes: composed 10.36 M and 106.3 M, fused 9.14 M and 96.8 M, fused with the cell 7.95 M and 87.3 M) were 2.3 M and 17 M cycles too low for the composed 2B and 27B.
 
 **Results** (simulator; klcheck at the usual floor: mean of the seeds 1 to 3, M7 settings, one launch per decode token;
 [klcheck.md](../klcheck.md)):
@@ -2706,7 +2682,7 @@ Sizes are *estimates*: lines of new or changed code, and ideal days for one impl
 | SW-78 | Fused GATED_DELTA_NET path and numerics revision 2 (2026-11-09; §7.10; VU §7.12) | `GATED_DELTA_NET` runs the VU's GDN op (opcode 0x39) per head and token when `CAPS` bit 8 and the VU are present and S_v ≥ 64, else the composition of revision 1. The choice is made per launch by `plan::gdn::use_fused(CAPS, S_v)`, which the firmware, `gdn_ref` and the tests share. The record, the planner and the ring block do not change. The kind goes from revision 1 to 2: its outputs change on a device with the bit (block fixed-point dot products, α folded into k, output from the old state and κ = k · q, NaN rows), and are revision 1's on a device without it and for S_v < 64 | a new kind or record flag for the fused path; a host-side choice; always composed (the op unused); `CAPS`-independent selection by a test image | The kind stays one kind with one record, so the host lowering, the planner and the plan cache are untouched and a card image with or without the op runs the same op lists. The revision key of docs/versioning.md includes `CAPS`, and the bits on a device with the bit do change, so the revision goes up. The composed path is the revision-1 oracle and its digest in `kind_revs.txt` (`b040cc2f4da8c0ca`) did not move: nothing that runs on the card image of 2026-11-09 changed. The numerics stay within the CPU's own error against float64 (§7.10) |
 | SW-79 | Test method of the two paths (2026-11-09; §7.10) | `fw_kind_revs` has two rows for GATED_DELTA_NET: the run on the simulator's `CAPS` (fused for S_v ≥ 64; the corpus adds S_v 128 and 256) and a second run on a simulator without bit 8 (the composed path, the corpus of revision 1, so its digest is revision 1's). A bump needs one digest of the kind to move. `fw_gdn_rv` runs with the simulator's `CAPS`, `fw_gdn_rv_composed` without bit 8, and the reference takes the `CAPS`. The `sim` transport has `TSR_SIM_GDN=0` to clear `CAPS` bit 8, for a matched replay of an image without the op | one digest for the kind, taken on the simulator's `CAPS` only; a test image with the path forced | Without the second row the composed path could change unseen, because the simulator now reports bit 8 and every default run takes the fused path. The composed row's digest equal to revision 1's is the proof that revision 2 leaves the card image's results alone. Every card run on an image without the op needs `TSR_SIM_GDN=0` for its simulator replay |
 | SW-80 | The VU, QACT, store and MVM cycle models follow the RTL and the card (2026-11-09; §4.5; VU §7.9, §7.13) | The VU's cycles come from its lanes (`tsr_sim_opts.vu_timing`, `TSR_SIM_VU_TIMING`; the default stays the U200 image's 16 / 16 / 8 lanes, the card image is `k4`) and from latencies measured on the RTL unit: 59 to 95 cycles per dependent op, the reduction's partial ring, the two-stage ROPE, the AT vector ops. QACT A32 16 cycles per 32-block + 44, A256 17 per 256-block + 72. Store lines + 110, MVM fill 144. `TSR_SIM_CARD=k4full` is the whole card image. | Make `k4` the default; scale the old figures by the lane ratio; put SPM arbitration and accept-ahead into the model | On Qwen3.8 2B decode the card took 12.63 M cycles and the old model 10.83 M (card configuration): 1.61 M of the 1.80 M in GATED_DELTA_NET, whose VU ops take on the card exactly what the RTL unit alone takes (4.737 M cycles against `VU_CYCLES` 4.758 M per token), so the unit has no stall that the model lacks; the model had 16 lanes, latencies of 20 and 64 (60 and 95 measured, also at 16 lanes) and 16 cycles per row of a 128-row reduction (25). On Gemma 4 26B-A4B (16.31 M against 15.35 M) the QACT A32 (1,452 cycles for K = 2,816 against 226) and the VU are the larger parts. The default stays 16 lanes because the lane count is an elaboration parameter and the unit tests and trace replays are not the card; scaling by the lane ratio would fix neither the latencies nor the ring. The unit overlaps independent ops (VU §7.8); the model is 0.9 % above the RTL on a decode token for lack of it, and the card's `VU_SPM_WAIT` is inside the figures. |
-| SW-82 | The GDN state on its cache cell (2026-11-09; §7.10) | When the ids of the layer's state gather say that every sequence keeps its cell (`rs_s_copy[j]` = the cell the state `CPY` writes, `kv_head + j`), the `GATED_DELTA_NET` record reads the cell and writes the new state back into it (`STATE_IN` = `STATE_OUT` = the cell); the `GET_ROWS` gather and the state `CPY` are absorbed. The group is recognised in `tsr_build_fusion` (the shape of `build_rs` and `build_recurrent_attn`, one id per sequence, no other reader of the copy or of the result's state rows, nothing between the gather and the `CPY` touching the cell); the backend reads the ids of the launch and, because the plan cache's key has no values, reads them again at every reuse of a plan and rebuilds it if the answer changed. Both paths of the kind, no record or firmware change, bits unchanged. `TSR_GDN_CELL=0` turns it off | an in-place variant of `ggml_gated_delta_net` in llama.cpp (a new patch and a result tensor that aliases the cache); a record flag that names the source cells by an id preload (an ABI change: a new argument word for every record); a firmware check of the ids that skips the copy when they are the identity (the kind would need the cell as a second address) | The record already supports `STATE_IN` = `STATE_OUT`; what stood in the way was the graph. ggml's result is a new tensor and the cell indices are runtime data, so true in-place is only possible for the identity, which is every decode token, every later prefill ubatch and the first ubatch of the first sequence of a cache (`rs_z` is the sequence's own cell). The other cases (a new sequence whose zero cell is elsewhere, `seq_cp`, a swap of cells, extra states) keep the three passes, which is the graph's own semantics. No ABI change, nothing changes on the card image. Measured: bit-identical logits (512 of 512 rows against runs made before the change, both paths), DMA busy −49 % and the 2B token −11 to −13 % in the model |
+| SW-82 | The GDN state on its cache cell (2026-11-09; §7.10) | When the ids of the layer's state gather say that every sequence keeps its cell (`rs_s_copy[j]` = the cell the state `CPY` writes, `kv_head + j`), the `GATED_DELTA_NET` record reads the cell and writes the new state back into it (`STATE_IN` = `STATE_OUT` = the cell); the `GET_ROWS` gather and the state `CPY` are absorbed. The group is recognised in `tsr_build_fusion` (the shape of `build_rs` and `build_recurrent_attn`, one id per sequence, no other reader of the copy or of the result's state rows, nothing between the gather and the `CPY` touching the cell); the backend reads the ids of the launch and, because the plan cache's key has no values, reads them again at every reuse of a plan and rebuilds it if the answer changed. Both paths of the kind, no record or firmware change, bits unchanged. `TSR_GDN_CELL=0` turns it off | an in-place variant of `ggml_gated_delta_net` in llama.cpp (a new patch and a result tensor that aliases the cache); a record flag that names the source cells by an id preload (an ABI change: a new argument word for every record); a firmware check of the ids that skips the copy when they are the identity (the kind would need the cell as a second address) | The record already supports `STATE_IN` = `STATE_OUT`; what stood in the way was the graph. ggml's result is a new tensor and the cell indices are runtime data, so true in-place is only possible for the identity, which is every decode token, every later prefill ubatch and the first ubatch of the first sequence of a cache (`rs_z` is the sequence's own cell). The other cases (a new sequence whose zero cell is elsewhere, `seq_cp`, a swap of cells, extra states) keep the three passes, which is the graph's own semantics. No ABI change, nothing changes on the card image. Measured: bit-identical logits (512 of 512 rows against runs made before the change, both paths); in the card-configuration model the DMA busy cycles fall by 49 % and the 2B decode token by 9 % (composed, 12.65 M to 11.46 M) and 12 % (fused, 9.72 M to 8.53 M) |
 
 ---
 

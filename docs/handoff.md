@@ -4,40 +4,41 @@ Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README
 
 ## Resume here: the fused GDN op in the firmware (branch `gdn-fw`, November 9)
 
-Simulator only; no RTL change. The branch is `sw-moegdn` (2d887ec) with `gdn-vu` (bdcf7b9, the GDN op in the VU) merged in; the
-merge had two conflicts, both in docs (`docs/design/README.md`, this file), resolved by keeping both sides. The generated files
-came out of the merge unchanged (`gen_tables.py --check` and `gen_tops.py --check` pass). The card image with the op is the
-`k4f250` link, still being built; no card was used.
+Simulator only; no RTL change. The branch is `sw-moegdn` (2d887ec) with `gdn-vu` (bdcf7b9, the GDN op in the VU) and `vu-perf` (31b3d71, SW-80, the cycle models
+that follow the card) merged in. The `gdn-vu` merge had two conflicts, both in docs; the `vu-perf` merge four (`tsr_vu.c`'s constants, `test_sim_vu.c`'s test list, this file and
+the decision table). The generated files came out of the generators unchanged (`gen_tables.py --check`, `gen_tops.py --check`). The card image with the op is the `k4f250` link, still
+being built; no card was used. `origin/sw-moegdn` has moved on (it merged `moe-qwen3`, `vu-perf` and `torch-basis`, SW-76 to SW-81, and keeps SW-78 and SW-79 for this branch): merge it
+before this branch goes into `sw-moegdn`; this branch uses SW-78, SW-79 and SW-82.
 
-- GATED_DELTA_NET now runs the VU's GDN op per head and token when `CAPS` has bit 8 (with the VU) and S_v is 64 or more, and keeps the
-  13-op composition otherwise. The choice is made per launch from the device's `CAPS` (`plan::gdn::use_fused`); the record, the planner
-  and the ring block are unchanged. Per step: three `SOP`, `GDN` (state tile in place), `VOP.MULC` for the scale (SW §7.10, SW-78).
-- Numerics revision 2 (`opl::kind_rev`). The bits change only on a device with `CAPS` bit 8 and for S_v ≥ 64 (block fixed-point dot
-  products, α folded into k, the output from the old state and κ = k · q, NaN rows: SW §7.10 lists them). A device without the bit, and
-  S_v 16 and 32 everywhere, give revision 1's bits. `kind_revs.txt` has a second row for GATED_DELTA_NET marked `composed`; its digest is
-  revision 1's (`b040cc2f4da8c0ca`), the default row is the fused corpus (`f768379b55c9df2c`). The kind table signature is now 0x2381.
-  The oracle `gdn_ref` takes the `CAPS` of the device and models both paths (`tsr_ref_gdn` for the fused one).
-- `TSR_SIM_GDN=0` clears `CAPS` bit 8 in the `sim` transport. The simulator reports bit 8 by default, so **every sim replay of a run on an
-  image without the op (the card runs of 2026-11-09, `k4full`) needs `TSR_SIM_GDN=0`**; with it the replay is bit-identical as before.
-- Tests: `fw_gdn_rv` (fused path, with Inf / NaN / subnormal records), `fw_gdn_rv_composed` (`--gdn 0`), `fw_gdn_ggml` (both paths against ggml-cpu
-  and float64 up to 512 tokens: rms error 1.0e-7 on both, the CPU's own is 0.95e-7), `fw_kind_revs` (a row per path). ITCM 85,504 B of 98,304 B.
-- Simulator, Qwen3.8 2B, klcheck M7 8 × 64, `T_MAX` 4: fused ratio 1.103, top-1 97.27 %; composed (`TSR_SIM_GDN=0`) 1.061, 98.05 %, equal to the card
-  run to every digit. Cycles per decode token, composed / fused: 10.36 M / 9.14 M total, VU busy 2.63 M / 0.72 M, DMA busy 2.40 M / 2.40 M,
-  recurrence 2.47 M / 1.12 M. The 27B estimate (4 and 8 layers, as SW §7.10): 106.3 M / 96.8 M cycles per token, 531 / 484 ms at 200 MHz,
-  425 / 387 ms at 250 MHz ([performance.md](performance.md), SW §7.10). **These are the simulator model with 16 front / 8 back lanes; the card has
-  8 / 4** (CFG3 0x02480088), which the model does not follow yet (branch `vu-perf` makes it configurable; measure again then). The model charges the
-  GDN op at 16 front lanes (1.8 K cycles for 128 × 128, 2.8 K at 8). The fused step is limited by the RISC-V issue rate (3.9 K cycles per head and
-  token), so the model gains 12 % (2B) and 9 % (27B) of a token. Hand-scaled to 8 / 8 / 4 lanes: VU time per head and token 12.7 K composed against
-  3.0 K fused, the fused step about 3.5 K core cycles (RISC-V-bound) at the 250 MHz link, about 2.6 M fewer cycles per 2B token.
-- The state on its cache cell (SW-82, host lowering only): when `rs_s_copy` says every sequence keeps its cell, the GATED_DELTA_NET record reads and
-  writes the cell (`STATE_IN` = `STATE_OUT`) and the `GET_ROWS` gather and the state `CPY` are absorbed: one pass over the state instead of three,
-  for both paths, bits unchanged (512 of 512 klcheck rows identical to runs made before it). A plan that depends on the ids is checked at every reuse
-  (`tsr_plan_state_holds`). Model with 16 / 8 lanes: DMA busy of a 2B token 2.40 M to 1.21 M, the token 10.36 M to 9.18 M composed and 9.14 M to 7.95 M
-  fused (−23 % together); 27B 106.3 M to 87.3 M. `TSR_GDN_CELL=0` turns it off; `TSR_STATS` shows "GATED_DELTA_NET records on their state cache cell".
-  Cases that keep the three passes: a new sequence whose zero cell is another cell, `seq_cp`, several sequences that swap cells, extra states.
-- Left: the card run (plan below; the card plan applies to the host build with SW-82, so the card also shows the DMA saving: compare DMA busy against the
-  2.4 M of the 2B's earlier card run); a decode step that shares the g / beta / k / q / v loads across the heads of a token (6 pushes per head instead of 11,
-  about 2 % of a 27B token).
+- GATED_DELTA_NET runs the VU's GDN op per head and token when `CAPS` has bit 8 (with the VU) and S_v is 64 or more, and keeps the 13-op composition otherwise. The choice is made per
+  launch from the device's `CAPS` (`plan::gdn::use_fused`); the record, the planner and the ring block are unchanged. Per step: three `SOP`, `GDN` (state tile in place),
+  `VOP.MULC` for the scale (SW §7.10, SW-78).
+- Numerics revision 2 (`opl::kind_rev`). The bits change only on a device with `CAPS` bit 8 and for S_v ≥ 64 (block fixed-point dot products, α folded into k, the output from the old
+  state and κ = k · q, NaN rows: SW §7.10 lists them). A device without the bit, and S_v 16 and 32 everywhere, give revision 1's bits. `kind_revs.txt` has a second row for
+  GATED_DELTA_NET marked `composed`; its digest is revision 1's (`b040cc2f4da8c0ca`), the default row is the fused corpus (`f768379b55c9df2c`). The kind table signature is
+  now 0x2381. The oracle `gdn_ref` takes the `CAPS` of the device and models both paths (`tsr_ref_gdn` for the fused one).
+- Simulator knobs: `TSR_SIM_GDN=0|1` clears or sets `CAPS` bit 8. The plain simulator reports bit 8 (it implements the op); `TSR_SIM_CARD=k4full` is the card image of 2026-11-09 and has no
+  bit 8 (CAPS without it, as on the card), so **a replay of a card run of 2026-11-09 uses `TSR_SIM_CARD=k4full` or `TSR_SIM_GDN=0`**; the image with the op is `TSR_SIM_CARD=k4full
+  TSR_SIM_GDN=1` (add `TSR_SIM_RV_RATIO=0.6667` for the 250 MHz link). The simulator's cycle model of the GDN op is fitted to the RTL (`tb/vu test_vu_timing.py vu_gdn_op`, 2,914 cycles for 128 × 128 at 8 lanes).
+- Tests: `fw_gdn_rv` (fused path, with Inf / NaN / subnormal records), `fw_gdn_rv_composed` (`--gdn 0`), `fw_gdn_ggml` (both paths against ggml-cpu and float64 up to 512 tokens: rms error 1.0e-7
+  on both, the CPU's own is 0.95e-7), `fw_kind_revs` (a row per path). ITCM 85,504 B of 98,304 B. Timing moves no bit: `fw_kind_revs`, `fw_gdn_rv` and a 16-row klcheck (16 of 16 identical) are the same with `TSR_SIM_VU_TIMING=k4`.
+- Simulator, Qwen3.8 2B, klcheck M7 8 × 64, `T_MAX` 4: fused ratio 1.103, top-1 97.27 %; composed 1.061, 98.05 %, equal to the card run to every digit.
+- The state on its cache cell (SW-82, host lowering only): when `rs_s_copy` says every sequence keeps its cell, the GATED_DELTA_NET record reads and writes the cell (`STATE_IN` = `STATE_OUT`)
+  and the `GET_ROWS` gather and the state `CPY` are absorbed: one pass over the state instead of three, for both paths, bits unchanged (512 of 512 klcheck rows identical to runs made
+  before it). A plan that depends on the ids is checked at every reuse (`tsr_plan_state_holds`). `TSR_GDN_CELL=0` turns it off; `TSR_STATS` shows "GATED_DELTA_NET records on their state cache
+  cell". Cases that keep the three passes: a new sequence whose zero cell is another cell, `seq_cp`, several sequences that swap cells, extra states.
+- Cycles per decode token in the card-configuration model (`TSR_SIM_CARD=k4full`, which reproduces the card: 12.65 M against 12.63 M) and the 27B estimate by the 4 and 8 layer method
+  ([performance.md](performance.md), SW §7.10):
+
+  | | 2B composed (the card's run) | 2B fused | 2B fused + state on its cell | 27B composed | 27B fused | 27B fused + cell |
+  |---|---|---|---|---|---|---|
+  | 200 MHz image, RISC-V ratio 0.5 | 12.65 M, 63.3 ms, 15.8 tok/s | 9.72 M, 48.6 ms, 20.6 tok/s | 8.53 M, 42.6 ms, 23.5 tok/s | 123.7 M, 618 ms | 100.6 M, 503 ms | 91.1 M, 456 ms |
+  | 250 MHz link, ratio 0.667 | 12.51 M, 50.0 ms | 9.23 M, 36.9 ms, 27.1 tok/s | 8.04 M, 32.2 ms, 31.1 tok/s | 123.3 M, 493 ms | 97.2 M, 389 ms | 87.7 M, 351 ms, 2.85 tok/s |
+
+  The fused step is limited by the RISC-V issue rate (4.7 K core cycles per head and token at ratio 0.5, 3.5 K at 0.667; the VU needs about 3.1 K), so the fused path gains 23 % of a 2B token,
+  and the state on its cell another 12 %.
+- Left: the card run (plan below); a decode step that shares the g / beta / k / q / v loads across the heads of a token (6 pushes per head instead of 11, a gain of about 1 K cycles per
+  head and token at ratio 0.5, 2 to 3 % of a 27B token); the RTL's overlap of independent heads is not in the model (VU §7.12.8).
 
 ### Card plan for the `k4f250` image (not run)
 
@@ -61,12 +62,9 @@ build/xrt/bin/klcheck compare --ref build/card/gdnfw/sim16.klc --dev build/card/
 TSR_XCLBIN=$X TSR_STATS=1 build/xrt/bin/llama-completion -m models/qwen3.8-2b-empero/Qwen3.8-2B-Q4_K_M.gguf -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -c 4096 --temp 0 -no-cnv -n 65 -p "The history of the printing press begins"
 ```
 
-What to expect (simulator model with 16 / 8 lanes, per decode token): 7.95 M cycles against 10.36 M composed three-pass (fused path −1.23 M, state on its cell −1.19 M); VU busy 0.72 M
-against 2.63 M, DMA busy 1.21 M against 2.40 M. `TSR_GDN_CELL=0` gives the three-pass figure (9.14 M) on the same image.
-The card showed 12.63 M cycles and a VU busy of 4.76 M for the composed path at 200 MHz (1.7 times the model's VU busy, from the 8 / 4 lanes), where the
-recurrence is dearer, so the hand-scaled saving of the fused path is about 2.6 M cycles, and the state on its cell takes about 1.2 M more (DMA busy, not lane-bound):
-12.63 M becomes about 8.8 M, about 28 tok/s at 250 MHz against 15.66 tok/s of the composed path at 200 MHz. Any saving from the model's 2.4 M up is consistent with the
-model. Compare the card's VU busy first (the recurrence part shrinks from about 3.7 M to 0.9 M, so 1 to 2 M in all) and its DMA busy second (about half of 2.4 M). If the
+What to expect (card-configuration model, `TSR_SIM_CARD=k4full TSR_SIM_GDN=1 TSR_SIM_RV_RATIO=0.6667`, per decode token of the 2B): 8.04 M cycles with the state on its cell, 9.23 M with
+`TSR_GDN_CELL=0`, against the card's 12.63 M for the composed three-pass run at 200 MHz. VU busy 1.26 M against the card's 4.76 M, DMA busy 1.25 M against 2.43 M. At 250 MHz that is 32 ms and
+about 31 tok/s (36.9 ms and 27 tok/s without the cell), against 15.66 tok/s of the composed run at 200 MHz. Check the VU busy first (it should fall to about a quarter) and the DMA busy second (about half). If the
 bits are not identical to the simulator, the first suspects are the op itself (id 11 shows it alone), then the in-place state tile (the odd heads of id 11
 update in place) and the s-register ordering of the `SOP` pair before each `GDN`. For a record-level difference use `TSR_DUMP_RE` on the nodes
 `attn_output-<layer>` against a `TSR_SIM_GDN=1` simulator run.

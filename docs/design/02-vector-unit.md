@@ -1612,6 +1612,11 @@ Measured on the RTL (`tb/gdn/test_gdn.py` gdn_unit_rate, the engine with a lane 
   pseudo row is the +1, 0.8 %). The planned model: 48 × 48 heads × 2,064 = 4.76 M cycles = **19.0 ms per token** at 250 MHz
   (23.8 ms at 200 MHz). With 16 front lanes: half. Mixed shapes: eight heads (4 × 128 × 128, 2 × 64 × 256, 2 × 128 × 64) take 15,555 cycles
   for 14,480 beats, the S' lines leave over 14,737 cycles (98 %); with 16 lanes 11,259 cycles, S' over 10,449.
+- **One op after another that depends on it** (the same tile updated in place, so no overlap with the previous head), measured on the VU
+  unit with `HAS_GDN` 1 (`tb/vu/test_vu_timing.py` `vu_gdn_op`, ten shapes of m 64 to 256 and rows 16 to 256): at the K4 lanes
+  (8 front lanes behind two lane-pipe stages) T = (rows + 1) · m / 8 + ⌈19 rows / 16⌉ + 9 m / 2 + 122 cycles, exact to 2 cycles: 2,913.7 for 128 × 128 (the
+  2,064 beats and 850 of setup and per-row overhead), 5,554 for m 256 rows 128, 989 for m 128 rows 16. At the U200 lanes (16 front lanes) the RTL takes
+  1,917 for 128 × 128 and the same form with ⌈21 rows / 16⌉ and (rows + 1) · m / 16 is within 1.5 %. The simulator's `cyc_gdn` is this formula (SW-78).
 - **Setup** of a head: about 4 m + rows + 45 cycles (128 × 128: 735 including the vector delivery), overlapped with the rows of the
   previous head. The ingest takes two beats per cycle, so up to 63 rows (1,008 beats for 128-wide rows) wait in the slots while the
   next head sets up; that is more than the setup (VU-36). A head after an idle engine pays the setup once: about 4 m + rows + 45
@@ -1744,9 +1749,9 @@ Next, in order:
    when `CAPS` bit 8 is set and S_v ≥ 64 (no new kind: `LD` of the tile, the op, `ST`, double-buffered over the heads, the
    next head's state loading during the current one) and keeps its composition otherwise; numerics revision 2 with a row of
    `fw_kind_revs` for each path. The output is scaled after the op (`VOP.MULC`), not q before it. Heads of a launch use
-   distinct tiles and token slots, so their ops are independent. On the simulator (model with 16 front lanes, which charges the op
-   1.8 K cycles; 2.8 K with this section's 8 front lanes) the fused step costs 3.9 K core cycles per head and token at the default
-   RISC-V clock ratio: the firmware's eleven pushes per step (1,827 RISC-V instructions) limit it, not the VU (SW §7.10).
+   distinct tiles and token slots, so their ops are independent. The simulator's cycle model of the op is fitted to the RTL (§7.12.8). In the card configuration the fused step costs 4.7 K core cycles per head and
+   token at the card image's RISC-V clock (clk_rv at half the core clock) and 3.5 K at the 250 MHz link's (0.667): the firmware's eleven pushes per step
+   (1,827 RISC-V instructions) limit it, not the VU (2,914 cycles for the op, about 3.1 K for the step; SW §7.10).
 3. **Lowering. Done** (the composed kind's lowering serves both paths, SW §7.10; the scale is applied to the output, as the CPU
    kernel does). The note that follows is the original plan: q scaled by 1/√S_v
    before the op; the state tensor layout (rows of S_v contiguous words, [S_v, S_v, H, n_seqs]) is the one assumed here;

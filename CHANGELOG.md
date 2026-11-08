@@ -27,8 +27,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
   one `GDN` op instead of the 13 VU operations. The dot products become exact block fixed-point sums rounded once, α is folded
   into k, and the output comes from the old state and κ = k · q, so the output bits change on a device with the bit. A device
   without it, and every record with S_v below 64, produces revision 1's bits (the composed row of `kind_revs.txt` keeps
-  digest `b040cc2f4da8c0ca`). The record and the planner do not change. The `sim` transport has `TSR_SIM_GDN=0` to clear
-  `CAPS` bit 8. The kind table signature is now 0x2381. The image takes 85,504 B of ITCM.
+  digest `b040cc2f4da8c0ca`). The record and the planner do not change. The `sim` transport has `TSR_SIM_GDN=0|1` to clear or set
+  `CAPS` bit 8 (`TSR_SIM_CARD=k4full`, the card image of 2026-11-09, has no bit 8). The simulator's cycle count of the GDN op follows the configured
+  front lanes and is fitted to the RTL unit (`tb/vu/test_vu_timing.py` `vu_gdn_op`). The kind table signature is now 0x2381. The image takes 85,504 B of ITCM.
 - The ggml-tesseract backend puts a GATED_DELTA_NET on its recurrent-state cache cell when the ids of the state gather say that every
   sequence keeps its cell (SW-82): the record reads the cell and writes the new state back into it, and the `GET_ROWS` gather and the state
   `CPY` of the pinned graph are absorbed. One pass over the state instead of three. No record, firmware or ABI change; the results are
