@@ -346,8 +346,10 @@ static void t_validate() {
     }
     {
         auto a = valid_words(opl::K_UNARY, r);
-        a[opl::unary::FUNC] = 5u;
-        CHECK(chk(opl::K_UNARY, a) == BAD, "UNARY: func 5");
+        a[opl::unary::FUNC] = 6u;
+        CHECK(chk(opl::K_UNARY, a) == BAD, "UNARY: func 6");
+        a[opl::unary::FUNC] = opl::unary::SIGMOID;
+        CHECK(chk(opl::K_UNARY, a) == OK, "UNARY: SIGMOID");
         a[opl::unary::FUNC] = opl::unary::GELU;
         CHECK(chk(opl::K_UNARY, a) == OK, "UNARY: GELU");
     }

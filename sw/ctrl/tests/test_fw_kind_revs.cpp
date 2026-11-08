@@ -22,6 +22,7 @@
 //                       (finite) mask with its f32 copy
 //         CPY           dense and strided rows; one row
 //         UNARY         TANH, GELU16, SILU, EXP, GELU
+//         SOFTPLUS, SSM_CONV, GATED_DELTA_NET   small fixed records (SW §7.9)
 //       Inputs come from an integer PRNG (splitmix64); every f32 input is an integer times a power of
 //       two and every f32 parameter a fixed bit pattern, so no libm call enters a digest. A kind's
 //       digest is FNV-1a 64 over, per launch in corpus order, the DONE status, ERR_CODE and RET, then
@@ -110,6 +111,8 @@ const char * const WATCH[] = {
     // general paths
     "addmul_general(", "scale_general(", "unary_general(", "glu_general(", "rms_general(", "rope_general(",
     "get_rows_general(", "cpy_general(", "set_rows_any(", "mulmat_any(",
+    // the Gated DeltaNet kinds (one general function each: they have no fast entry)
+    "softplus_run(", "sconv_run(", "gdn_run(",
     // fast entries
     "kind_add_fast(", "kind_mul_fast(", "kind_scale_fast(", "kind_unary_fast(", "kind_glu_fast(", "kind_rms_norm_fast(",
     "kind_rope_fast(", "kind_get_rows_fast(", "kind_cpy_fast(", "kind_set_rows_kv_fast(", "mulmat_t1_fast(",
@@ -712,7 +715,7 @@ void corpus_unary(launch_ctx & c) {
     static const char * const names_s[] = { "UNARY TANH, strided", "UNARY GELU16, strided", "UNARY SILU, strided",
                                             "UNARY EXP, strided", "UNARY GELU, strided" };
     for (int strided = 0; strided < 2; ++strided) {      // dense rows: the fast entry; a dst stride L + 1: the general path
-        for (uint32_t f = 0; f <= opl::unary::FUNC_MAX; ++f) {
+        for (uint32_t f = 0; f <= opl::unary::GELU; ++f) {   // SIGMOID (5) was added at revision 1: not part of the digest
             const uint32_t n = 200, rows = 2, l = L16(n), ds = l + uint32_t(strided);
             const uint32_t src = c.take(uint64_t(rows) * l), dst = c.take(uint64_t(rows) * ds);
             put_f32_rows(c.sim, &c.r, src, rows, l, n, 4.0f);
@@ -723,6 +726,85 @@ void corpus_unary(launch_ctx & c) {
             run(c, opl::K_UNARY, strided ? names_s[f] : names[f], w, out, true,
                 strided ? general_path("unary_general(") : fast_path("kind_unary_fast(", "unary_general("));
         }
+    }
+}
+
+// The Gated DeltaNet kinds (SW §7.9): small fixed records; inputs are integers times powers of two, so
+// the digests do not depend on libm either (the kinds use the VU's own functions).
+void corpus_gdn(launch_ctx & c) {
+    // SOFTPLUS: one row of 48 (a decode gate vector) and 5 rows of 100 with a strided destination.
+    struct spc { const char * what; uint32_t n, rows, pad; };
+    static const spc sps[] = { { "SOFTPLUS 1 x 48", 48, 1, 0 }, { "SOFTPLUS 5 x 100, strided dst", 100, 5, 2 } };
+    for (const spc & q : sps) {
+        const uint32_t l = L16(q.n), ds = l + q.pad;
+        const uint32_t src = c.take(uint64_t(q.rows) * l), dst = c.take(uint64_t(q.rows) * ds);
+        put_f32_rows(c.sim, &c.r, src, q.rows, l, q.n, 8.0f);
+        opl::writer w(opl::F_STOP_ON_ERROR, 0x5350u);
+        const uint32_t a[opl::softplus::NARGS] = { dst, ds, src, l, q.n, q.rows };
+        w.add(opl::K_SOFTPLUS, a, opl::softplus::NARGS);
+        std::vector<region> out;
+        rows_region(out, dst, q.rows, ds, l);
+        run(c, opl::K_SOFTPLUS, q.what, w, out, true, general_path("softplus_run("));
+    }
+    // SSM_CONV: C 192, d_conv 4: a decode token and three tokens of two sequences, with SILU and without.
+    struct scc { const char * what; uint32_t C, dc, T, ns, flags; };
+    static const scc scs[] = { { "SSM_CONV C 192 d_conv 4, T 1, SILU", 192, 4, 1, 1, opl::sconv::FLAG_SILU },
+                               { "SSM_CONV C 96 d_conv 3, T 3 x 2 sequences", 96, 3, 3, 2, 0u } };
+    for (const scc & q : scs) {
+        const uint32_t lc = q.C / 16u;
+        const uint32_t wt = c.take(uint64_t(q.dc) * lc), si = c.take(uint64_t(q.ns) * (q.dc - 1u) * lc),
+                       so = c.take(uint64_t(q.ns) * (q.dc - 1u) * lc), x = c.take(uint64_t(q.ns) * q.T * lc),
+                       dst = c.take(uint64_t(q.ns) * q.T * lc);
+        put_f32_rows(c.sim, &c.r, wt, q.dc, lc, q.C, 0.5f);
+        put_f32_rows(c.sim, &c.r, si, q.ns * (q.dc - 1u), lc, q.C, 1.0f);
+        put_f32_rows(c.sim, &c.r, x, q.ns * q.T, lc, q.C, 1.0f);
+        opl::writer w(opl::F_STOP_ON_ERROR, 0x5343u);
+        const uint32_t a[opl::sconv::NARGS] = { dst, lc, x, lc, si, so, wt, q.C, q.dc, q.T, q.ns, q.flags };
+        w.add(opl::K_SSM_CONV, a, opl::sconv::NARGS);
+        std::vector<region> out;
+        rows_region(out, dst, q.ns * q.T, lc, lc);
+        rows_region(out, so, q.ns * (q.dc - 1u), lc, lc);
+        run(c, opl::K_SSM_CONV, q.what, w, out, true, general_path("sconv_run("));
+    }
+    // GATED_DELTA_NET: S_v 64 with 2 key heads for 4 value heads, one token; S_v 32 with 3 tokens of 2 sequences.
+    struct gdc { const char * what; uint32_t sv, hk, hv, T, ns; };
+    static const gdc gds[] = { { "GATED_DELTA_NET S_v 64, 4 heads of 2, T 1", 64, 2, 4, 1, 1 },
+                               { "GATED_DELTA_NET S_v 32, 2 heads, T 3 x 2 sequences", 32, 2, 2, 3, 2 } };
+    for (const gdc & q : gds) {
+        namespace g = opl::gdn;
+        const uint32_t L = q.sv / 16u, nt = q.ns * q.T, Lg = L16(q.hv);
+        const uint32_t hq = c.take(uint64_t(nt) * q.hk * L), hk = c.take(uint64_t(nt) * q.hk * L),
+                       hv = c.take(uint64_t(nt) * q.hv * L), hg = c.take(uint64_t(nt) * Lg), hb = c.take(uint64_t(nt) * Lg),
+                       si = c.take(uint64_t(q.ns) * q.hv * q.sv * L), so = c.take(uint64_t(q.ns) * q.hv * q.sv * L),
+                       dst = c.take(uint64_t(nt) * q.hv * L);
+        put_f32_rows(c.sim, &c.r, hq, nt, q.hk * L, q.hk * L * 16u, 0.125f);
+        put_f32_rows(c.sim, &c.r, hk, nt, q.hk * L, q.hk * L * 16u, 0.125f);
+        put_f32_rows(c.sim, &c.r, hv, nt, q.hv * L, q.hv * L * 16u, 1.0f);
+        put_f32_rows(c.sim, &c.r, si, q.ns * q.hv * q.sv, L, q.sv, 0.25f);
+        // g in [-2, 0): minus an integer times 2^-5 (up to 2); beta in [0, 1): an integer times 2^-5.
+        std::vector<uint32_t> gv(size_t(Lg) * 16u), bv(size_t(Lg) * 16u);
+        for (uint32_t n = 0; n < nt; ++n) {
+            for (uint32_t h = 0; h < q.hv; ++h) {
+                gv[h] = f2u(-float(1u + rng_below(&c.r, 63u)) * (1.0f / 32.0f));
+                bv[h] = f2u(float(rng_below(&c.r, 32u)) * (1.0f / 32.0f));
+            }
+            tsr_sim_dram_write(c.sim, hg >> 28, (uint64_t(hg & 0x0FFFFFFFu) + uint64_t(n) * Lg) * LINE, gv.data(), gv.size() * 4u);
+            tsr_sim_dram_write(c.sim, hb >> 28, (uint64_t(hb & 0x0FFFFFFFu) + uint64_t(n) * Lg) * LINE, bv.data(), bv.size() * 4u);
+        }
+        opl::writer w(opl::F_STOP_ON_ERROR, 0x4744u);
+        uint32_t a[g::NARGS] = {};
+        a[g::DST] = dst; a[g::STATE_OUT] = so; a[g::STATE_IN] = si;
+        a[g::Q] = hq; a[g::Q_HEAD_STRIDE] = L; a[g::Q_TOKEN_STRIDE] = q.hk * L;
+        a[g::K] = hk; a[g::K_HEAD_STRIDE] = L; a[g::K_TOKEN_STRIDE] = q.hk * L;
+        a[g::V] = hv; a[g::V_HEAD_STRIDE] = L; a[g::V_TOKEN_STRIDE] = q.hv * L;
+        a[g::G] = hg; a[g::G_TOKEN_STRIDE] = Lg; a[g::BETA] = hb; a[g::BETA_TOKEN_STRIDE] = Lg;
+        a[g::S_V] = q.sv; a[g::H_K] = q.hk; a[g::H_V] = q.hv; a[g::N_TOKENS] = q.T; a[g::N_SEQS] = q.ns;
+        a[g::SCALE] = q.sv == 64u ? 0x3E000000u /* 1/8 */ : 0x3E3504F3u /* 1/sqrt(32) */;
+        w.add(opl::K_GATED_DELTA_NET, a, g::NARGS);
+        std::vector<region> out;
+        rows_region(out, dst, nt * q.hv, L, L);
+        rows_region(out, so, q.ns * q.hv * q.sv, L, L);
+        run(c, opl::K_GATED_DELTA_NET, q.what, w, out, true, general_path("gdn_run("));
     }
 }
 
@@ -1017,6 +1099,7 @@ int main(int argc, char ** argv) {
         corpus_unary(c);
         corpus_mulmat_epilogue(c, opl::K_MUL_MAT_SCALE);
         corpus_mulmat_epilogue(c, opl::K_MUL_MAT_SOFTCAP);
+        corpus_gdn(c);   // last: the launches share one PRNG, so an earlier corpus would move the later digests
     }
     tsr_rv_agent_set_retire_hook(tsr_sim_rv_agent(sim), nullptr, nullptr);
     fwh_close(&h);

@@ -16,6 +16,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
   Basis ABI 1 retain their existing contracts.
 - Added the optional MUL_MAT_SOFTCAP kind at numerical revision 1. The two
   scale coefficients are the original FP32 graph constants.
+- Added the Gated DeltaNet kinds SOFTPLUS (0x2D), SSM_CONV (0x2E) and GATED_DELTA_NET (0x2F), each at numerics
+  revision 1, composed from existing VU operations and the DMA: no new RTL operation. They need the VU (CAPS bit 0).
+- UNARY accepts func 5, SIGMOID (VOP SIGMOID). The kind's revision stays 1: no existing record changes.
 
 ## Basis 0.1.0 (2026-10-31)
 

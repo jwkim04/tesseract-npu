@@ -22,7 +22,7 @@
 //                    the bits of VOP.MULCADD with a b row of copies of b (SW §7.5), without the
 //                    b row (decision W2b-elem-1: the record carries b as an immediate, which only
 //                    an s register can take without a scratch row)
-//        UNARY       VOP.TANH / GELU16 / SILU / EXP / GELU (func 0 .. 4)
+//        UNARY       VOP.TANH / GELU16 / SILU / EXP / GELU / SIGMOID (func 0 .. 5)
 //   4. ST the rows (one ST for dense dst rows, else one per row); the VOP tail rule zeroes words
 //      [n, 16 L) of each row, and the ST writes whole lines (VU §4.2).
 // Numerics per element (VU §6): FA / FM (tsr_fadd / tsr_fmul) for ADD, MUL, ADDC, MULC; SCALE
@@ -365,10 +365,12 @@ TSR_HOT uint32_t scale_fast(const volatile uint32_t * a, uint32_t kflags, deps d
 // ---------------------------------------------------------------------------------------------
 namespace un = opl::unary;
 
-// VOP function per UNARY func (SW §7.2: 0 TANH, 1 GELU16, 2 SILU, 3 EXP, 4 GELU exact tanh form).
+// VOP function per UNARY func (SW §7.2: 0 TANH, 1 GELU16, 2 SILU, 3 EXP, 4 GELU exact tanh form,
+// 5 SIGMOID).
 constexpr uint8_t k_unary_func[un::FUNC_MAX + 1u] = {VOP_FUNC_TANH, VOP_FUNC_GELU16, VOP_FUNC_SILU, VOP_FUNC_EXP,
-                                                     VOP_FUNC_GELU};
-static_assert(un::TANH == 0u && un::GELU16 == 1u && un::SILU == 2u && un::EXP == 3u && un::GELU == 4u,
+                                                     VOP_FUNC_GELU, VOP_FUNC_SIGMOID};
+static_assert(un::TANH == 0u && un::GELU16 == 1u && un::SILU == 2u && un::EXP == 3u && un::GELU == 4u &&
+                  un::SIGMOID == 5u,
               "UNARY func codes (SW §7.2)");
 
 [[gnu::noinline, gnu::cold]] ticket unary_general(const volatile uint32_t * a, uint32_t n_args, uint32_t kflags, deps d,

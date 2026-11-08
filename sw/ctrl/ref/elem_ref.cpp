@@ -60,9 +60,9 @@ uint32_t elem_vop_func(uint32_t kind, const uint32_t * a) {
             return a[opl::glu::VARIANT] <= 2u ? f[a[opl::glu::VARIANT]] : ~0u;
         }
         case opl::K_UNARY: {
-            static const uint32_t f[5] = {TSR_VOP_FUNC_TANH, TSR_VOP_FUNC_GELU16, TSR_VOP_FUNC_SILU, TSR_VOP_FUNC_EXP,
-                                          TSR_VOP_FUNC_GELU};
-            return a[opl::unary::FUNC] <= 4u ? f[a[opl::unary::FUNC]] : ~0u;
+            static const uint32_t f[6] = {TSR_VOP_FUNC_TANH, TSR_VOP_FUNC_GELU16, TSR_VOP_FUNC_SILU, TSR_VOP_FUNC_EXP,
+                                          TSR_VOP_FUNC_GELU, TSR_VOP_FUNC_SIGMOID};
+            return a[opl::unary::FUNC] <= 5u ? f[a[opl::unary::FUNC]] : ~0u;
         }
         default: return ~0u;
     }

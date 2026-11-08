@@ -155,6 +155,9 @@ constexpr kind_slot make_slot(uint32_t kind) {
     if (kind == opl::K_MUL_MAT_SOFTCAP) return slot_for(&kind_mulmat_softcap, opl::kind_nargs(kind));
 #endif
     if (kind >= opl::K_ADD && kind <= opl::K_UNARY) return slot_for(m7_handler(kind), opl::kind_nargs(kind), m7_fast(kind));
+    if (kind == opl::K_SOFTPLUS) return slot_for(&kind_softplus, opl::kind_nargs(kind));
+    if (kind == opl::K_SSM_CONV) return slot_for(&kind_ssm_conv, opl::kind_nargs(kind));
+    if (kind == opl::K_GATED_DELTA_NET) return slot_for(&kind_gated_delta_net, opl::kind_nargs(kind));
     return kind_slot{nullptr, nullptr, W0X_NONE, 1u};
 }
 struct kind_table {

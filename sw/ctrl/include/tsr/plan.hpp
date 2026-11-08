@@ -454,12 +454,17 @@ TSR_PLAN_HOT constexpr bool plan_set_rows_kv(const uint32_t * args, uint32_t n_a
 TSR_PLAN_HOT constexpr bool plan_flash_attn(const uint32_t * args, uint32_t n_args, const plan_limits & l, kind_plan * out);
 TSR_PLAN_HOT constexpr bool plan_cpy(const uint32_t * args, uint32_t n_args, const plan_limits & l, kind_plan * out);
 TSR_PLAN_HOT constexpr bool plan_unary(const uint32_t * args, uint32_t n_args, const plan_limits & l, kind_plan * out);
+// The Gated DeltaNet kinds (SW §7.9; defined in tsr/plan_gdn.hpp).
+TSR_PLAN_HOT constexpr bool plan_softplus(const uint32_t * args, uint32_t n_args, const plan_limits & l, kind_plan * out);
+TSR_PLAN_HOT constexpr bool plan_ssm_conv(const uint32_t * args, uint32_t n_args, const plan_limits & l, kind_plan * out);
+TSR_PLAN_HOT constexpr bool plan_gated_delta_net(const uint32_t * args, uint32_t n_args, const plan_limits & l, kind_plan * out);
 }  // namespace tsr
 
 #define TSR_PLAN_CORE_HPP 1   // the planner headers' fragment guard (either form above works)
 #include "tsr/plan_elem.hpp"
 #include "tsr/plan_norm.hpp"
 #include "tsr/plan_attn.hpp"
+#include "tsr/plan_gdn.hpp"
 
 namespace tsr {
 namespace plan {
@@ -495,6 +500,9 @@ constexpr bool plan_kind(const plan_limits & l, uint32_t kind, const uint32_t * 
         case opl::K_FLASH_ATTN:  return plan_flash_attn(args, n_args, l, out);
         case opl::K_CPY:         return plan_cpy(args, n_args, l, out);
         case opl::K_UNARY:       return plan_unary(args, n_args, l, out);
+        case opl::K_SOFTPLUS:    return plan_softplus(args, n_args, l, out);
+        case opl::K_SSM_CONV:    return plan_ssm_conv(args, n_args, l, out);
+        case opl::K_GATED_DELTA_NET: return plan_gated_delta_net(args, n_args, l, out);
         default:                 return plan_fail(out, opl::RET_BAD_RECORD);
     }
 }
