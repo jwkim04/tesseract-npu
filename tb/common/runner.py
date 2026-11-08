@@ -11,7 +11,9 @@ Defaults:
   - build directory: $TSR_SIM_BUILD_ROOT (else <repo>/build/cocotb) / <name>_<hash of
     toplevel, parameters, sources, args>; reused across runs (Verilator rebuilds what changed)
   - make -j$TSR_BUILD_JOBS (default 4), --assert, X randomisation (--x-assign/--x-initial unique,
-    +verilator+rand+reset+2 seeded with the test seed), default Verilator warnings fatal
+    +verilator+rand+reset+2 seeded with the test seed; run(rand_reset=0) or TSR_RAND_RESET=0 starts everything
+    at zero, as the FPGA after configuration, 1 at ones),
+    default Verilator warnings fatal
   - waves: run(..., waves=True) or WAVES=1 -> VCD (dump.vcd in the build directory)
   - seed: $TSR_SEED (pytest --tsr-seed sets it) is passed to the simulation as TSR_SEED and
     COCOTB_RANDOM_SEED
@@ -76,6 +78,29 @@ def rtl_args(filelist: Path | str = RTL / "filelist.f") -> list:
     return parse_filelist(filelist)[1]
 
 
+def mutated_sources(sources, name: str, old: str, new: str, tag: str) -> list:
+    """`sources` with one text replacement in the file called `name`: a mutant that a regression test must reject. The
+    changed copy goes to <build root>/mutants/<tag>; `old` must occur exactly once."""
+    d = build_root() / "mutants" / tag
+    d.mkdir(parents=True, exist_ok=True)
+    out = []
+    hit = 0
+    for src in sources:
+        src = Path(src)
+        if src.name == name:
+            txt = src.read_text()
+            assert txt.count(old) == 1, (name, old, txt.count(old))
+            dst = d / name
+            changed = txt.replace(old, new)
+            if not dst.exists() or dst.read_text() != changed:
+                dst.write_text(changed)
+            src = dst
+            hit += 1
+        out.append(src)
+    assert hit == 1, (name, hit)
+    return out
+
+
 def build_root() -> Path:
     return Path(os.environ.get("TSR_SIM_BUILD_ROOT", REPO / "build" / "cocotb"))
 
@@ -87,7 +112,7 @@ def seed_from_env() -> int:
 def run(toplevel: str, test_module: str, *, parameters: dict | None = None, extra_sources=(),
         sources=None, name: str | None = None, waves: bool | None = None, testcase=None,
         seed: int | None = None, extra_env: dict | None = None, build_args=(), plusargs=(),
-        x_random: bool = True, timescale=("1ns", "1ps")) -> Path:
+        x_random: bool = True, rand_reset: int | None = None, timescale=("1ns", "1ps")) -> Path:
     from cocotb_tools import runner as ct_runner
 
     params = dict(parameters or {})
@@ -114,7 +139,11 @@ def run(toplevel: str, test_module: str, *, parameters: dict | None = None, extr
     env.update(extra_env or {})
     pa = list(plusargs)
     if x_random:
-        pa += ["+verilator+rand+reset+2", "+verilator+seed+%d" % (seed & 0x7FFFFFFF or 1)]
+        # rand_reset (else $TSR_RAND_RESET): 0 starts every variable at zero (the FPGA after configuration), 1 at all
+        # ones, 2 (default) at random values
+        rr = rand_reset if rand_reset is not None else int(os.environ.get("TSR_RAND_RESET", "2"))
+        pa += ["+verilator+rand+reset+%d" % rr,
+               "+verilator+seed+%d" % (seed & 0x7FFFFFFF or 1)]
     results = r.test(test_module=test_module, hdl_toplevel=toplevel, build_dir=bdir,
                      test_dir=bdir, testcase=testcase, seed=seed, extra_env=env, plusargs=pa,
                      waves=waves, parameters=params)

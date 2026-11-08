@@ -43,13 +43,18 @@ import ctypes
 import cocotb
 from cocotb.triggers import FallingEdge, RisingEdge
 
+try:
+    import pytest
+except ImportError:      # inside the simulator
+    pytest = None
+
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from common import isa, tables as T                       # noqa: E402
 from common.mem_model import MemModel                     # noqa: E402
-from common.runner import run, rtl_sources, RTL           # noqa: E402
+from common.runner import run, rtl_sources, mutated_sources, RTL   # noqa: E402
 
 import at_isa as A                                        # noqa: E402
 import at_tb as B                                         # noqa: E402
@@ -767,7 +772,7 @@ async def at_fa(dut):
 
 
 
-def _run(name, cfg, testcase="at_mvm"):
+def _run(name, cfg, testcase="at_mvm", rand_reset=None, mutant=None):
     if os.environ.get("TSR_ATMVM_ONLY"):          # debug: only the directed ops of TSR_ATMVM_DIRECTED
         cfg = dict(cfg, models=False, n_ops=0)
     cfg.update(json.loads(os.environ.get("TSR_ATMVM_CFGX", "{}")))   # measurement: e.g. rd_lat, p_rd, p_wr
@@ -778,10 +783,13 @@ def _run(name, cfg, testcase="at_mvm"):
                   ADD_LAT=cfg.get("add_lat", 5), WS_FIFO_BEATS=cfg.get("ws_fifo", 512),
                   RST_LOCAL=cfg.get("rst_local", 0), GATHER_PAIR=cfg.get("gather_pair", 0), GATHER_FLITS=cfg.get("gather_flits", 1),
                   XSLR_REG=cfg.get("xslr_reg", 0))
-    run("tsr_tb_at_mvm", __name__, parameters=params, name="at_mvm_" + name, testcase=testcase,
-        sources=rtl_sources(RTL / ("filelist_xilinx.f" if cfg.get("tech") == "xilinx" else "filelist.f")) +
-                [HERE.parent / "mvm" / "hdl" / "tsr_mvm_bc_observer.sv",
-                                 HERE / "hdl" / "tsr_tb_at_mvm.sv"],
+    srcs = rtl_sources(RTL / ("filelist_xilinx.f" if cfg.get("tech") == "xilinx" else "filelist.f"))
+    if mutant:
+        srcs = mutated_sources(srcs, *mutant)
+    run("tsr_tb_at_mvm", __name__, parameters=params, name="at_mvm_" + name + ("_mut" if mutant else ""),
+        testcase=testcase,
+        sources=srcs + [HERE.parent / "mvm" / "hdl" / "tsr_mvm_bc_observer.sv", HERE / "hdl" / "tsr_tb_at_mvm.sv"],
+        rand_reset=rand_reset,
         extra_env={"TSR_ATMVM_CFG": json.dumps(cfg), "TSR_ATMVM_DIRECTED": os.environ.get("TSR_ATMVM_DIRECTED", "[]")})
 
 
@@ -806,6 +814,44 @@ def test_at_mvm_u200_xilinx():
     _run("u200_xilinx", dict(num_ch=4, t_max=4, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30, spm_rd_lat=4,
                              addr_beat_w=28, rd_out=16, bc_pipe=2, res_pipe=2, mac_lat=9,
                              rst_local=2, gather_pair=1, gather_flits=2, xslr_reg=1, n_ops=40, tech="xilinx"))
+
+
+# tsr_mvm_pv before the fix: the output stage was reset to `ng == 0`, a value that is 1 after configuration
+PV_FIX = "ob_zero_q  <= rst_n & (ng == 13'd0);"
+PV_OLD = "ob_zero_q  <= (ng == 13'd0);"
+
+
+def _zero_state(mutant=None):
+    _run("u200_flits2", dict(num_ch=4, t_max=4, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30, spm_rd_lat=4,
+                             addr_beat_w=28, rd_out=16, bc_pipe=2, res_pipe=2, mac_lat=9,
+                             rst_local=2, gather_pair=1, gather_flits=2, models=False, n_ops=0,
+                             directed=[dict(pv=False, E=64, D=64, G=1, GS=1, tq=4, hg0=0, u0=0, n=3, flags=4 | 1,
+                                            c_hi=40),
+                                       dict(pv=True, E=64, D=64, G=1, GS=1, tq=4, hg0=0, u0=0, n=3, flags=1)]),
+         rand_reset=0, mutant=mutant)
+
+
+def test_at_mvm_zero_state():
+    """The first ATTPV after configuration. Every flop and RAM word starts at zero, as on the FPGA after the image
+    load (rand_reset 0; the usual random initial values hide this). The ops are those of `selftest` id 5 (n_kv 40,
+    T_q 4 on four channels: three groups, so cluster 3 has none): a causal ATTQK with MAXOUT, then ATTPV with LSUM.
+    With the output stage of tsr_mvm_pv reset to `ng == 0`, every cluster offered the zero lines of an ATTPV that had
+    never started to the gather as soon as the first ATTPV switched it to PV mode. They were written to lines of the
+    setup registers (here the scores of the ATTQK before it) and the SPM image differed from the simulator's. The
+    shape is that of test_at_mvm_u200_flits2 (the full image's paired two-flit gather); the packaged core with the
+    Xilinx wrappers is tb/core test_k4_selftest_first_run."""
+    _zero_state()
+
+
+def test_at_mvm_zero_state_mutant():
+    """The old reset of the output stage must fail the same run (the assertion of tsr_mvm_pv stops the simulation
+    after reset; without it the SPM image differs from the simulator's)."""
+    with pytest.raises(SystemExit):
+        _zero_state(("tsr_mvm_pv.sv", PV_FIX, PV_OLD, "at_zero_state_pv_reset"))
+
+
+if pytest is not None:
+    test_at_mvm_zero_state_mutant = pytest.mark.slow(test_at_mvm_zero_state_mutant)
 
 
 def test_at_mvm_xslr():

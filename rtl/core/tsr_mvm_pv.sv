@@ -938,7 +938,10 @@ module tsr_mvm_pv
   always_ff @(posedge clk) begin
     if (!rst_n || start) begin
       o_st_q     <= O_WAIT;
-      ob_zero_q  <= (ng == 13'd0);
+      // A reset leaves no op to output. ng is whatever the setup flops hold then (0 after configuration); a set
+      // ob_zero_q would start the zero lines of an op that never began and offer them to the gather as soon as the
+      // first ATTPV switches the cluster to PV mode.
+      ob_zero_q  <= rst_n & (ng == 13'd0);
       ob_s_q     <= '0;
       jv_q       <= 1'b0;
       rv_start_q <= 1'b0;
@@ -1035,6 +1038,7 @@ module tsr_mvm_pv
       assert (fq_n_q <= 8'(QD)) else $error("%m: delay FIFO overflow");
       assert (sq_n_q <= 4'(SQ)) else $error("%m: segment FIFO overflow");
       if (cap_go) assert (!cb_full_q || (dr_act_q && dr_left_q == 7'd1)) else $error("%m: capture into a busy bank");
+      assert (!jv_q || started_q) else $error("%m: output job offered while no ATTPV op runs");
     end
   end
 `endif
