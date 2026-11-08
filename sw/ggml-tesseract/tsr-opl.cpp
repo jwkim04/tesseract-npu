@@ -244,6 +244,41 @@ void tsr_opl_builder::kind_ranges(uint32_t kind, const uint32_t * a, uint64_t au
             wr.push_back(tsr_rows_of(a[u::DST], a[u::ROWS], a[u::DST_STRIDE], L));
             return;
         }
+        case opl::K_SOFTPLUS: {
+            namespace u = opl::softplus;
+            const uint32_t L = tsr_f32_lines(a[u::N]);
+            rd.push_back(tsr_rows_of(a[u::SRC], a[u::ROWS], a[u::SRC_STRIDE], L));
+            wr.push_back(tsr_rows_of(a[u::DST], a[u::ROWS], a[u::DST_STRIDE], L));
+            return;
+        }
+        case opl::K_SSM_CONV: {
+            namespace c = opl::sconv;
+            const uint32_t Lc = a[c::N_CH] >> 4, dc = a[c::D_CONV], nt = a[c::N_TOKENS] * a[c::N_SEQS],
+                           ns = a[c::N_SEQS];
+            rd.push_back(tsr_rows_of(a[c::X], nt, a[c::X_TOKEN_STRIDE], Lc));
+            rd.push_back(tsr_rows_of(a[c::STATE_IN], ns * (dc - 1u), Lc, Lc));
+            rd.push_back(tsr_rows_of(a[c::W], dc, Lc, Lc));
+            wr.push_back(tsr_rows_of(a[c::DST], nt, a[c::DST_TOKEN_STRIDE], Lc));
+            wr.push_back(tsr_rows_of(a[c::STATE_OUT], ns * (dc - 1u), Lc, Lc));
+            return;
+        }
+        case opl::K_GATED_DELTA_NET: {
+            namespace g = opl::gdn;
+            const uint32_t sv = a[g::S_V], L = sv >> 4, hk = a[g::H_K], hv = a[g::H_V], nt = a[g::N_TOKENS] * a[g::N_SEQS],
+                           Lg = tsr_f32_lines(hv);
+            // per token row: the lines from head 0's first to the last head's end (a superset when the heads are
+            // not adjacent)
+            rd.push_back(tsr_rows_of(a[g::Q], nt, a[g::Q_TOKEN_STRIDE], (hk - 1u) * a[g::Q_HEAD_STRIDE] + L));
+            rd.push_back(tsr_rows_of(a[g::K], nt, a[g::K_TOKEN_STRIDE], (hk - 1u) * a[g::K_HEAD_STRIDE] + L));
+            rd.push_back(tsr_rows_of(a[g::V], nt, a[g::V_TOKEN_STRIDE], (hv - 1u) * a[g::V_HEAD_STRIDE] + L));
+            rd.push_back(tsr_rows_of(a[g::G], nt, a[g::G_TOKEN_STRIDE], Lg));
+            rd.push_back(tsr_rows_of(a[g::BETA], nt, a[g::BETA_TOKEN_STRIDE], Lg));
+            const uint32_t srows = a[g::N_SEQS] * hv * sv;
+            rd.push_back(tsr_rows_of(a[g::STATE_IN], srows, L, L));
+            wr.push_back(tsr_rows_of(a[g::DST], nt * hv, L, L));
+            wr.push_back(tsr_rows_of(a[g::STATE_OUT], srows, L, L));
+            return;
+        }
         default:
             return;
     }

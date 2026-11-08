@@ -5,7 +5,9 @@
 # Tiny models (SW-21): gen_tiny_models.py (gguf-py from the pinned llama.cpp + numpy) writes, at
 # build time, into ${TSR_TINY_MODEL_DIR}:
 #   qwen2-tiny-q8_0.gguf, qwen2-tiny-q4_k.gguf (2 layers), gemma4-tiny-q8_0.gguf (4 layers, 3 SWA +
-#   1 full), tiny-prompts.txt — random weights, 64-row vocabularies, no binary in git.
+#   1 full), qwen35-tiny-q8_0.gguf and qwen35-tiny-s128-q8_0.gguf (Qwen3.5 / 3.8 layout: 3 Gated DeltaNet
+#   layers and 1 full attention layer; S_v 32 and 128), tiny-prompts.txt — random weights, 64-row
+#   vocabularies, no binary in git.
 #
 # Graph tests (m7_tests.py graph): klcheck generates with the M7 settings (--phase m7) on the device;
 # the log must show exactly one Tesseract split in every single-token decode graph the scheduler
@@ -82,7 +84,8 @@ foreach (_cand ${_tiny_candidates})
     endif()
 endforeach()
 
-set(_tiny_tests ggml_tesseract_graph_qwen_tiny ggml_tesseract_graph_qwen_tiny_q4k ggml_tesseract_graph_gemma_tiny)
+set(_tiny_tests ggml_tesseract_graph_qwen_tiny ggml_tesseract_graph_qwen_tiny_q4k ggml_tesseract_graph_gemma_tiny
+                ggml_tesseract_graph_qwen35_tiny ggml_tesseract_graph_qwen35_tiny_s128)
 if (NOT _tiny_py)
     set(_tiny_msg "tiny models: no Python with numpy and gguf-py among '${_tiny_candidates}'; set -DTSR_TINY_PYTHON=<python with numpy> (sw/ggml-tesseract/tests/tiny.cmake)")
     message(WARNING "${_tiny_msg}")
@@ -94,7 +97,8 @@ endif()
 message(STATUS "tiny models: gen_tiny_models.py run by ${_tiny_py}")
 
 set(_tiny_outputs ${TSR_TINY_MODEL_DIR}/qwen2-tiny-q8_0.gguf ${TSR_TINY_MODEL_DIR}/qwen2-tiny-q4_k.gguf
-                  ${TSR_TINY_MODEL_DIR}/gemma4-tiny-q8_0.gguf ${TSR_TINY_MODEL_DIR}/tiny-prompts.txt)
+                  ${TSR_TINY_MODEL_DIR}/gemma4-tiny-q8_0.gguf ${TSR_TINY_MODEL_DIR}/qwen35-tiny-q8_0.gguf
+                  ${TSR_TINY_MODEL_DIR}/qwen35-tiny-s128-q8_0.gguf ${TSR_TINY_MODEL_DIR}/tiny-prompts.txt)
 add_custom_command(
     OUTPUT ${_tiny_outputs}
     COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${_tiny_gguf_py}
@@ -111,19 +115,26 @@ if (TARGET llama)
     set(_tiny_graph_cases
         "ggml_tesseract_graph_qwen_tiny|qwen2-tiny-q8_0.gguf|0|0.95"
         "ggml_tesseract_graph_qwen_tiny_q4k|qwen2-tiny-q4_k.gguf|0|0.95"
-        "ggml_tesseract_graph_gemma_tiny|gemma4-tiny-q8_0.gguf|3e-3|0.95")
+        "ggml_tesseract_graph_gemma_tiny|gemma4-tiny-q8_0.gguf|3e-3|0.95"
+        "ggml_tesseract_graph_qwen35_tiny|qwen35-tiny-q8_0.gguf|0|0.95"
+        "ggml_tesseract_graph_qwen35_tiny_s128|qwen35-tiny-s128-q8_0.gguf|0|0.95")
     foreach (_case ${_tiny_graph_cases})
         string(REPLACE "|" ";" _f "${_case}")
         list(GET _f 0 _name)
         list(GET _f 1 _model)
         list(GET _f 2 _min_kl)
         list(GET _f 3 _min_top1)
+        # Qwen3.5 / 3.8: the CPU's embd path differs from its token path in the attention layers (m7_tests.py)
+        set(_extra_args "")
+        if (_model MATCHES "^qwen35")
+            set(_extra_args --embd-identity report)
+        endif()
         add_test(NAME ${_name}
                  COMMAND ${_tiny_py} ${_tiny_m7} graph --klcheck $<TARGET_FILE:klcheck>
                          --model ${TSR_TINY_MODEL_DIR}/${_model} --prompts ${TSR_TINY_MODEL_DIR}/tiny-prompts.txt
                          --out-dir ${CMAKE_BINARY_DIR}/sw/ggml-tesseract/${_name}
                          --n-prompts 4 -n 17 --prompt-tail 8 -ub 16 -t 4 --min-decodes 64
-                         --min-kl ${_min_kl} --min-top1 ${_min_top1})
+                         --min-kl ${_min_kl} --min-top1 ${_min_top1} ${_extra_args})
         set_tests_properties(${_name} PROPERTIES TIMEOUT 300 ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal")
     endforeach()
     # W3b fix (SW-43): a prefill ubatch of 692 tokens (the first four prompts joined, -ub 1024): its

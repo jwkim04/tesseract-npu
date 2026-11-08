@@ -1213,8 +1213,13 @@ static void test_supports_sweep() {
             for (int u = 0; u < 4; ++u) {
                 const ggml_unary_op uo[] = { GGML_UNARY_OP_TANH, GGML_UNARY_OP_GELU, GGML_UNARY_OP_SILU, GGML_UNARY_OP_EXP };
                 ggml_tensor * t = ggml_unary(c.ctx, a, uo[u]);
-                const uint32_t wu[] = { 0, st, 0, st, (uint32_t) n, (uint32_t) rows, u == 0 ? opl::unary::TANH : opl::unary::GELU16 };
-                sweep_check(tsr_build_supports(env, t, &why), u < 2 && rows_ok && plans(opl::K_UNARY, wu, 7), "UNARY", n, rows, u);
+                const uint32_t wu[] = { 0, st, 0, st, (uint32_t) n, (uint32_t) rows,
+                                        u == 0 ? opl::unary::TANH : u == 1 ? opl::unary::GELU16 : opl::unary::SILU };
+                // rows that break the 64-byte row rule: the node is one flat row of n·rows values (contiguous tensors)
+                const uint32_t fl = (uint32_t) ((n * rows + 15) / 16);
+                const uint32_t wf[] = { 0, fl, 0, fl, (uint32_t) (n * rows), 1u, wu[6] };
+                sweep_check(tsr_build_supports(env, t, &why), u < 3 && (rows_ok ? plans(opl::K_UNARY, wu, 7) : plans(opl::K_UNARY, wf, 7)),
+                            "UNARY", n, rows, u);
             }
             // RMS_NORM (and fused with a weight row: the probe of the norm alone)
             ggml_tensor * r = ggml_rms_norm(c.ctx, a, 1e-6f);
@@ -1437,6 +1442,129 @@ static void test_supports_rules() {
     }
 }
 
+// Gated DeltaNet (SW §7.9): SOFTPLUS / SIGMOID on gate vectors (flat rows), GATED_DELTA_NET at the 2B and 27B shapes,
+// the SSM_CONV group (the CONCAT fills a window, the SSM_CONV record reads it, the state CPY is absorbed) and the
+// regrouped CPY of the new state into a cache cell.
+static void test_gdn_lowering() {
+    fake_kv kv;
+    const tsr_build_env env = fake_env(&kv);
+    std::string why;
+    tsr_rec r;
+    {
+        // gate vectors [1, H_v]: one flat row of H_v values, also below one line
+        gctx c;
+        for (int64_t hv : { 4, 16, 48 }) {
+            ggml_tensor * a = c.f32(1, hv, 0x0, "alpha");
+            ggml_tensor * sp = ggml_softplus(c.ctx, a);
+            sp->data = fake_at(0x1000);
+            CHECK(tsr_lower_m7(env, false, sp, nullptr, &r, &why));
+            CHECK(r.kind == opl::K_SOFTPLUS && r.args[opl::softplus::N] == (uint32_t) hv && r.args[opl::softplus::ROWS] == 1u);
+            ggml_tensor * sg = ggml_sigmoid(c.ctx, a);
+            sg->data = fake_at(0x2000);
+            CHECK(tsr_lower_m7(env, false, sg, nullptr, &r, &why));
+            CHECK(r.kind == opl::K_UNARY && r.args[opl::unary::FUNC] == opl::unary::SIGMOID);
+        }
+        // several tokens of [64, 5] rows keep their rows
+        ggml_tensor * x = c.f32(64, 5, 0x3000, "x");
+        ggml_tensor * sp = ggml_softplus(c.ctx, x);
+        sp->data = fake_at(0x4000);
+        CHECK(tsr_lower_m7(env, false, sp, nullptr, &r, &why));
+        CHECK(r.args[opl::softplus::N] == 64u && r.args[opl::softplus::ROWS] == 5u);
+    }
+    {
+        // GATED_DELTA_NET: 2B (S_v 128, 16 / 16 heads) and 27B (16 key, 48 value heads), decode and a prefill ubatch
+        for (int64_t T : { 1, 7 }) {
+            for (int64_t hv : { 16, 48 }) {
+                gctx c;
+                const int64_t S = 128, hk = 16;
+                ggml_tensor * q = c.f32(S, hk, 0x100000, "q", T), * k = c.f32(S, hk, 0x200000, "k", T);
+                ggml_tensor * v = c.f32(S, hv, 0x300000, "v", T);
+                ggml_tensor * g = c.f32(1, hv, 0x400000, "g", T), * b = c.f32(1, hv, 0x410000, "beta", T);
+                ggml_tensor * st = ggml_new_tensor_4d(c.ctx, GGML_TYPE_F32, S, S, hv, 1);
+                st->data = fake_at(0x1000000);
+                ggml_tensor * n = ggml_gated_delta_net(c.ctx, q, k, v, g, b, st, 1);
+                n->data = fake_at(0x8000000);
+                CHECK(tsr_lower_m7(env, false, n, nullptr, &r, &why));
+                namespace gd = opl::gdn;
+                CHECK(r.kind == opl::K_GATED_DELTA_NET && r.args[gd::S_V] == 128u && r.args[gd::H_K] == (uint32_t) hk &&
+                      r.args[gd::H_V] == (uint32_t) hv && r.args[gd::N_TOKENS] == (uint32_t) T && r.args[gd::N_SEQS] == 1u);
+                CHECK(r.args[gd::Q_HEAD_STRIDE] == 8u && r.args[gd::V_HEAD_STRIDE] == 8u && r.args[gd::G_TOKEN_STRIDE] == (uint32_t) ((hv + 15) / 16));
+                // the new state follows the attention rows of the result
+                CHECK(r.args[gd::STATE_OUT] == r.args[gd::DST] + (uint32_t) (T * hv * 8));
+                CHECK(r.args[gd::STATE_IN] == tsr_dram_handle(1, 0x1000000));
+                CHECK(tsr_build_supports(env, n, &why));
+            }
+        }
+        gctx c;
+        const int64_t S = 128, hk = 16, hv = 4;
+        ggml_tensor * st = ggml_new_tensor_4d(c.ctx, GGML_TYPE_F32, S, S, hv, 1);
+        st->data = fake_at(0x1000000);
+        auto build = [&](int64_t T, int64_t K, int64_t gne0) {
+            ggml_tensor * q = c.f32(S, hk, 0x100000, "q", T), * k = c.f32(S, hk, 0x200000, "k", T);
+            ggml_tensor * v = c.f32(S, hv, 0x300000, "v", T);
+            ggml_tensor * g = c.f32(gne0, hv, 0x400000, "g", T), * b = c.f32(1, hv, 0x410000, "beta", T);
+            ggml_tensor * n = ggml_gated_delta_net(c.ctx, q, k, v, g, b, st, K);
+            n->data = fake_at(0x8000000);
+            return n;
+        };
+        CHECK(!tsr_build_supports(env, build(1, 2, 1), &why) && why.find("K = 2") != std::string::npos);    // rollback snapshots
+        CHECK(!tsr_build_supports(env, build(1, 1, S), &why) && why.find("per-row gate") != std::string::npos);   // KDA gate
+        CHECK(!tsr_build_supports(env, build(5, 1, 1), &why));            // H_v = 4 rows of 16 bytes between tokens
+    }
+    {
+        // the SSM_CONV group at the 2B shape: CONCAT(state, x^T) -> SSM_CONV -> SILU and the state CPY
+        gctx c;
+        const int64_t C = 6144, dc = 4;
+        for (int64_t T : { 1, 5 }) {
+            ggml_tensor * state = c.f32(dc - 1, C, 0x100000, "conv_states");
+            ggml_tensor * x = c.f32(C, T, 0x200000, "qkv");
+            ggml_tensor * cat = ggml_concat(c.ctx, state, ggml_transpose(c.ctx, x), 0);
+            cat->data = fake_at(0x300000);
+            ggml_tensor * w = c.f32(dc, C, 0x400000, "taps");
+            ggml_tensor * conv = ggml_ssm_conv(c.ctx, cat, w);
+            conv->data = fake_at(0x500000);
+            ggml_tensor * silu = ggml_silu(c.ctx, conv);
+            silu->data = fake_at(0x600000);
+            ggml_tensor * last = ggml_view_3d(c.ctx, cat, dc - 1, C, 1, cat->nb[1], cat->nb[2], (size_t) (cat->ne[0] - (dc - 1)) * 4);
+            ggml_tensor * cache = c.f32((dc - 1) * C, 1, 0x700000, "cache_r_l0");
+            ggml_tensor * cpy = ggml_cpy(c.ctx, last, cache);
+            ggml_cgraph * g = ggml_new_graph(c.ctx);
+            ggml_build_forward_expand(g, cpy);
+            ggml_build_forward_expand(g, silu);
+            const int ic = node_index(g, cat), is = node_index(g, conv), icp = node_index(g, cpy), isl = node_index(g, silu);
+            const tsr_fusion f = tsr_build_fusion(env, g);
+            CHECK(f.conv_concat[is] == ic && f.conv_cpy[is] == icp && f.conv_silu[is] == isl);
+            CHECK(tsr_build_supports(env, cat, &why) && tsr_build_supports(env, conv, &why) && tsr_build_supports(env, cpy, &why));
+            tsr_rec win[2];
+            uint32_t nw = 0;
+            CHECK(tsr_lower_conv_window(env, false, cat, win, &nw, &why) && nw == 2);
+            const uint32_t Lc = (uint32_t) (C / 16), wh = tsr_dram_handle(1, 0x300000);
+            namespace cp = opl::cpy;
+            CHECK(win[0].kind == opl::K_CPY && win[0].args[cp::DST] == wh && win[0].args[cp::SRC] == tsr_dram_handle(1, 0x100000) &&
+                  win[0].args[cp::ROW_LINES] == Lc && win[0].args[cp::ROWS] == (uint32_t) (dc - 1));
+            CHECK(win[1].kind == opl::K_CPY && win[1].args[cp::DST] == wh + (uint32_t) (dc - 1) * Lc &&
+                  win[1].args[cp::SRC] == tsr_dram_handle(1, 0x200000) && win[1].args[cp::ROWS] == (uint32_t) T);
+            CHECK(tsr_lower_conv_group(env, false, conv, silu, cpy, &r, &why));
+            namespace sc = opl::sconv;
+            CHECK(r.kind == opl::K_SSM_CONV && r.args[sc::STATE_IN] == wh && r.args[sc::X] == wh + (uint32_t) (dc - 1) * Lc &&
+                  r.args[sc::X_TOKEN_STRIDE] == Lc && r.args[sc::STATE_OUT] == tsr_dram_handle(1, 0x700000) &&
+                  r.args[sc::DST] == tsr_dram_handle(1, 0x600000) && r.args[sc::FLAGS] == sc::FLAG_SILU &&
+                  r.args[sc::N_CH] == (uint32_t) C && r.args[sc::D_CONV] == (uint32_t) dc && r.args[sc::N_TOKENS] == (uint32_t) T);
+        }
+    }
+    {
+        // the new state into its cache cell: the GATED_DELTA_NET result's state rows (a view of 128 x 128 x 48), one run
+        gctx c;
+        const int64_t S = 128, hv = 48;
+        ggml_tensor * res = c.f32(S * hv, S + 1, 0x1000000, "gdn_out");
+        ggml_tensor * ns = ggml_view_3d(c.ctx, res, S, S, hv, S * 4, S * S * 4, (size_t) res->nb[1]);
+        ggml_tensor * cache = c.f32(S * S * hv, 1, 0x4000000, "cache_s_l0");
+        ggml_tensor * cpy = ggml_cpy(c.ctx, ns, ggml_view_1d(c.ctx, cache, S * S * hv, 0));
+        CHECK(tsr_lower_m7(env, false, cpy, nullptr, &r, &why));
+        CHECK(r.kind == opl::K_CPY && r.args[opl::cpy::ROW_LINES] == 8u && r.args[opl::cpy::ROWS] == (uint32_t) (S * hv));
+    }
+}
+
 // TSR_KINDS (tsr_kinds_parse): m6, all, additions and removals from left to right, NOP and JOIN always
 // kept, and the words it refuses.
 static void test_kinds_parse() {
@@ -1490,6 +1618,7 @@ int main() {
     test_build_key();
     test_supports_sweep();
     test_supports_rules();
+    test_gdn_lowering();
     test_kinds_parse();
 #else
     printf("test-tsr-backend-units: built without ggml: the M7 builder's ggml tests are skipped\n");

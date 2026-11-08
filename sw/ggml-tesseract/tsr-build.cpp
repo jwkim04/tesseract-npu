@@ -75,6 +75,13 @@ static const ggml_tensor * tsr_base(const ggml_tensor * t) {
     return t->view_src != nullptr ? t->view_src : t;
 }
 
+// An allocated tensor that is not in a Tesseract buffer (the op would read or write another backend's memory
+// in place). Unallocated tensors (graph planning) and tensors with no on_device hook pass.
+static bool tsr_foreign_buffer(const tsr_build_env & env, const ggml_tensor * t) {
+    const ggml_tensor * b = tsr_base(t);
+    return env.on_device && b->buffer != nullptr && !env.on_device(b);
+}
+
 // A leaf: a graph input or data, written before the launch (never by a node of the graph). The preload
 // table may only carry such tensors: the executor loads it before op 0 (SW §7.3, SW-15).
 static bool tsr_is_leaf(const ggml_tensor * t) {
@@ -328,6 +335,9 @@ static bool tsr_lower_scale(const tsr_build_env & env, bool probe, const ggml_te
     if (s == nullptr || !ggml_are_same_shape(s, node)) {
         return tsr_fail(why, "SCALE: source and result differ in shape");
     }
+    if (node->view_src != nullptr && tsr_foreign_buffer(env, node)) {
+        return tsr_fail(why, "SCALE writes '%s', which is in another backend's memory", tsr_base(node)->name);
+    }
     tsr_rows D, S;
     if (!tsr_out_rows(env, probe, node, "result", &D, why) || !tsr_f32_rows(env, probe, s, "source", &S, why)) {
         return false;
@@ -351,8 +361,27 @@ static bool tsr_lower_rms(const tsr_build_env & env, bool probe, const ggml_tens
         return tsr_fail(why, "RMS_NORM: source and result differ in shape");
     }
     tsr_rows D, X;
-    if (!tsr_out_rows(env, probe, out, "result", &D, why) || !tsr_f32_rows(env, probe, x, "source", &X, why)) {
+    if (!tsr_out_rows(env, probe, out, "result", &D, why)) {
         return false;
+    }
+    // A source whose tokens are not spaced like its heads (a view into a wider row: Gated DeltaNet's q and k in the
+    // convolution output [128, H, T] with the token stride of the whole channel row) is normalised one token at a
+    // time: one record per token, without a weight (SW §7.9).
+    bool per_token = false;
+    std::string why_x;
+    if (!tsr_f32_rows(env, probe, x, "source", &X, &why_x)) {
+        per_token = fused == nullptr && x->type == GGML_TYPE_F32 && x->nb[0] == 4 && x->ne[3] == 1 && x->ne[2] > 1 &&
+                    (x->ne[1] == 1 || x->nb[1] % TSR_LINE_BYTES == 0) && x->nb[2] % TSR_LINE_BYTES == 0 &&
+                    (uint64_t) x->nb[1] * x->ne[1] <= (uint64_t) x->nb[2] && (x->ne[0] * 4) % TSR_LINE_BYTES == 0;
+        if (!per_token) {
+            return tsr_fail(why, "%s", why_x.c_str());
+        }
+        X.rows = (uint64_t) x->ne[1];
+        X.elems = (uint64_t) x->ne[0];
+        X.stride = x->ne[1] > 1 ? (uint32_t) (x->nb[1] / TSR_LINE_BYTES) : tsr_l16(X.elems);
+        if (!tsr_addr(env, probe, x, "source", &X.h, why)) {
+            return false;
+        }
     }
     uint32_t wh = opl::HANDLE_NONE, wp = 1;
     if (fused != nullptr) {
@@ -371,10 +400,19 @@ static bool tsr_lower_rms(const tsr_build_env & env, bool probe, const ggml_tens
     r->kind = opl::K_RMS_NORM;
     r->n_args = opl::rms::NARGS;
     const uint32_t n = (uint32_t) D.elems;
+    const uint32_t rows = per_token ? (uint32_t) X.rows : (uint32_t) D.rows;
     // eps as ggml stores it; inv_n = 1/n (correctly rounded, = tsr_fdiv(1, n): SW §7.2)
-    const opl::rms_norm_args w{ D.h, D.stride, X.h, X.stride, n, (uint32_t) D.rows, tsr_bits(tsr_param_f32(node, 0)),
+    const opl::rms_norm_args w{ D.h, D.stride, X.h, X.stride, n, rows, tsr_bits(tsr_param_f32(node, 0)),
                                 tsr_bits(1.0f / (float) n), wh, wp };
     opl::put_args(w, r->args);
+    if (per_token && !probe) {
+        for (int64_t t = 1; t < x->ne[2]; ++t) {
+            tsr_rec q = *r;
+            q.args[opl::rms::SRC] = X.h + (uint32_t) (t * (int64_t) (x->nb[2] / TSR_LINE_BYTES));
+            q.args[opl::rms::DST] = D.h + (uint32_t) (t * (int64_t) rows * D.stride);
+            r->more.push_back(q);
+        }
+    }
     return true;
 }
 
@@ -463,7 +501,12 @@ static bool tsr_lower_rope(const tsr_build_env & env, bool probe, const ggml_ten
         n_dims = (int32_t) node->ne[0];
     }
     const float attn_factor = tsr_param_f32(node, 8);
-    if (mode != GGML_ROPE_TYPE_NORMAL && mode != GGML_ROPE_TYPE_NEOX) {
+    // IMROPE (Qwen3.5 / 3.6 / 3.8 interleaved M-RoPE): for text tokens the position streams are [p, p, p, 0]
+    // (llama-batch.cpp), the sections then pick the same position for every pair and the rotation is NEOX's;
+    // the device reads the first n_tokens positions (the temporal stream). A batch with image or video
+    // positions would differ: the backend checks the inp_pos input when it is written (tsr_buffer_set_tensor).
+    const bool imrope = mode == GGML_ROPE_TYPE_IMROPE;
+    if (mode != GGML_ROPE_TYPE_NORMAL && mode != GGML_ROPE_TYPE_NEOX && !imrope) {
         return tsr_fail(why, "ROPE mode %d (multi-section / vision) is not on the device", mode);
     }
     if (ext_factor != 0.0f) {
@@ -481,7 +524,7 @@ static bool tsr_lower_rope(const tsr_build_env & env, bool probe, const ggml_ten
         !tsr_rope_view(env, probe, x, "source", false, &sh, &ss, why)) {
         return false;
     }
-    if (!tsr_index_input(env, probe, pos, GGML_TYPE_I32, T, "positions", &ph, why)) {
+    if (!tsr_index_input(env, probe, pos, GGML_TYPE_I32, imrope ? 4ull * T : T, "positions", &ph, why)) {
         return false;
     }
     if (ff != nullptr) {
@@ -497,7 +540,7 @@ static bool tsr_lower_rope(const tsr_build_env & env, bool probe, const ggml_ten
     // TS = powf(freq_base, -2/n_dims) with the host's libm, as ggml-cpu's theta_scale (SW §7.2)
     const opl::rope_args w{ dh, ds, sh, ss, 0u, th, tsr_bits(powf(freq_base, -2.0f / (float) n_dims)), tsr_bits(attn_factor),
                             tsr_bits(freq_scale), hd, (uint32_t) n_dims, nh, T,
-                            mode == GGML_ROPE_TYPE_NEOX ? opl::rope::MODE_NEOX : 0u };
+                            (mode == GGML_ROPE_TYPE_NEOX || imrope) ? opl::rope::MODE_NEOX : 0u };
     opl::put_args(w, r->args);
     r->pre.push_back({ opl::rope::POS, ph, opl::PRE_POS_BYTES * T });
     return true;
@@ -510,6 +553,9 @@ static bool tsr_lower_get_rows(const tsr_build_env & env, bool probe, const ggml
     if (s == nullptr || ids == nullptr || s->ne[2] != 1 || s->ne[3] != 1 || ids->ne[1] != 1 || ids->ne[2] != 1 ||
         s->ne[0] != node->ne[0]) {
         return tsr_fail(why, "GET_ROWS: only 2D sources with one id vector");
+    }
+    if (tsr_is_leaf(s) && tsr_foreign_buffer(env, s)) {
+        return tsr_fail(why, "GET_ROWS reads '%s', which is in another backend's memory", tsr_base(s)->name);
     }
     tsr_rows D, S;
     if (!tsr_out_rows(env, probe, node, "result", &D, why) || !tsr_f32_rows(env, probe, s, "source", &S, why)) {
@@ -719,46 +765,403 @@ static bool tsr_lower_fa(const tsr_build_env & env, bool probe, const ggml_tenso
     return true;
 }
 
-// CPY (f32 -> f32, into src1) and CONT (f32, a new contiguous tensor): whole rows.
+// CPY (f32 -> f32, into src1) and CONT (f32, a new contiguous tensor): whole rows. A copy whose two sides
+// have different row lengths but the same number of values is regrouped into the source's rows when the
+// destination is one dense run (a CONT of a head-strided view, the Gated DeltaNet state into its cache
+// cell): the rows are then the source's ne0 values, which are whole lines.
 static bool tsr_lower_cpy(const tsr_build_env & env, bool probe, const ggml_tensor * node, tsr_rec * r, std::string * why) {
     const ggml_tensor * s = node->src[0];
-    if (s == nullptr || s->type != GGML_TYPE_F32 || node->type != GGML_TYPE_F32 || s->ne[0] != node->ne[0] ||
-        ggml_nrows(s) != ggml_nrows(node)) {
-        return tsr_fail(why, "%s: F32 -> F32 with the same rows only", ggml_op_name(node->op));
+    if (s == nullptr || s->type != GGML_TYPE_F32 || node->type != GGML_TYPE_F32 || ggml_nelements(s) != ggml_nelements(node)) {
+        return tsr_fail(why, "%s: F32 -> F32 with the same number of values only", ggml_op_name(node->op));
+    }
+    if (node->view_src != nullptr && tsr_foreign_buffer(env, node)) {
+        return tsr_fail(why, "%s writes '%s', which is in another backend's memory", ggml_op_name(node->op), tsr_base(node)->name);
     }
     tsr_rows D, S;
-    if (!tsr_out_rows(env, probe, node, "destination", &D, why) || !tsr_f32_rows(env, probe, s, "source", &S, why)) {
+    if (s->ne[0] == node->ne[0] && ggml_nrows(s) == ggml_nrows(node)) {
+        if (!tsr_out_rows(env, probe, node, "destination", &D, why) || !tsr_f32_rows(env, probe, s, "source", &S, why)) {
+            return false;
+        }
+        r->kind = opl::K_CPY;
+        r->n_args = opl::cpy::NARGS;
+        const opl::cpy_args w{ D.h, D.stride, S.h, S.stride, tsr_l16(D.elems), (uint32_t) D.rows };
+        opl::put_args(w, r->args);
+        return true;
+    }
+    if (!ggml_is_contiguous(node) || (s->ne[0] * 4) % TSR_LINE_BYTES != 0) {
+        return tsr_fail(why, "%s: different row lengths need a dense destination and a source whose rows are whole lines",
+                        ggml_op_name(node->op));
+    }
+    if (!tsr_f32_rows(env, probe, s, "source", &S, why)) {
+        return false;
+    }
+    const uint32_t rl = (uint32_t) (s->ne[0] * 4 / TSR_LINE_BYTES);
+    if (node->view_src != nullptr && (ggml_nelements(node) * 4) % TSR_LINE_BYTES != 0) {
+        return tsr_fail(why, "%s: the destination view ends inside a line", ggml_op_name(node->op));
+    }
+    uint32_t dh = 0;
+    if (!tsr_addr(env, probe, node, "destination", &dh, why)) {
         return false;
     }
     r->kind = opl::K_CPY;
     r->n_args = opl::cpy::NARGS;
-    const opl::cpy_args w{ D.h, D.stride, S.h, S.stride, tsr_l16(D.elems), (uint32_t) D.rows };
+    const opl::cpy_args w{ dh, rl, S.h, S.stride, rl, (uint32_t) S.rows };
     opl::put_args(w, r->args);
     return true;
+}
+
+// A contiguous F32 tensor as one row of all its elements: the element-wise kinds (UNARY, SOFTPLUS) are
+// indifferent to the shape, so a [1, H, T] gate tensor is one row of H·T values (its rows of one
+// element would break the 64-byte row rule). out: the result (a view must end on a line, as tsr_out_rows).
+static bool tsr_flat_rows(const tsr_build_env & env, bool probe, const ggml_tensor * t, const char * what, bool out,
+                          tsr_rows * o, std::string * why) {
+    if (t->type != GGML_TYPE_F32 || !ggml_is_contiguous(t) || ggml_nelements(t) <= 0) {
+        return tsr_fail(why, "%s '%s' is not a non-empty contiguous F32 tensor", what, t->name);
+    }
+    o->rows = 1;
+    o->elems = (uint64_t) ggml_nelements(t);
+    o->stride = tsr_l16(o->elems);
+    if (out && t->view_src != nullptr && (o->elems * 4) % TSR_LINE_BYTES != 0) {
+        return tsr_fail(why, "%s '%s' is a view whose row ends inside a line", what, t->name);
+    }
+    return tsr_addr(env, probe, t, what, &o->h, why);
+}
+
+// The source and result rows of an element-wise node: rows of ne0 when they satisfy the 64-byte row
+// rule, else one flat row (contiguous tensors).
+static bool tsr_ew_operands(const tsr_build_env & env, bool probe, const ggml_tensor * node, const ggml_tensor * s, tsr_rows * D,
+                            tsr_rows * S, std::string * why) {
+    std::string w1;
+    if (tsr_out_rows(env, probe, node, "result", D, &w1) && tsr_f32_rows(env, probe, s, "source", S, &w1)) {
+        return true;
+    }
+    if (tsr_flat_rows(env, probe, node, "result", true, D, nullptr) && tsr_flat_rows(env, probe, s, "source", false, S, nullptr)) {
+        return true;
+    }
+    return tsr_fail(why, "%s", w1.c_str());
 }
 
 static bool tsr_lower_unary(const tsr_build_env & env, bool probe, const ggml_tensor * node, tsr_rec * r, std::string * why) {
     const enum ggml_unary_op op = ggml_get_unary_op(node);
     uint32_t func = 0;
+    bool softplus = false;
     if (op == GGML_UNARY_OP_TANH) {
         func = opl::unary::TANH;
     } else if (op == GGML_UNARY_OP_GELU) {
         func = opl::unary::GELU16;    // llama.cpp's GELU: ggml-cpu's fp16 table form (SW-31)
+    } else if (op == GGML_UNARY_OP_SILU) {
+        func = opl::unary::SILU;
+    } else if (op == GGML_UNARY_OP_SIGMOID) {
+        func = opl::unary::SIGMOID;
+    } else if (op == GGML_UNARY_OP_SOFTPLUS) {
+        softplus = true;              // composed from VU functions (SW §7.9, GDN-3)
     } else {
-        return tsr_fail(why, "UNARY %s is not on the device (TANH, GELU)", ggml_unary_op_name(op));
+        return tsr_fail(why, "UNARY %s is not on the device (TANH, GELU, SILU, SIGMOID, SOFTPLUS)", ggml_unary_op_name(op));
     }
     const ggml_tensor * s = node->src[0];
     if (s == nullptr || !ggml_are_same_shape(s, node)) {
         return tsr_fail(why, "UNARY: source and result differ in shape");
     }
     tsr_rows D, S;
-    if (!tsr_out_rows(env, probe, node, "result", &D, why) || !tsr_f32_rows(env, probe, s, "source", &S, why)) {
+    if (!tsr_ew_operands(env, probe, node, s, &D, &S, why)) {
         return false;
+    }
+    if (softplus) {
+        r->kind = opl::K_SOFTPLUS;
+        r->n_args = opl::softplus::NARGS;
+        const uint32_t w[opl::softplus::NARGS] = { D.h, D.stride, S.h, S.stride, (uint32_t) D.elems, (uint32_t) D.rows };
+        memcpy(r->args, w, sizeof(w));
+        return true;
     }
     r->kind = opl::K_UNARY;
     r->n_args = opl::unary::NARGS;
     const opl::unary_args w{ D.h, D.stride, S.h, S.stride, (uint32_t) D.elems, (uint32_t) D.rows, func };
     opl::put_args(w, r->args);
+    return true;
+}
+
+// GATED_DELTA_NET (ggml_gated_delta_net, scalar gate, K = 1): q, k [S, H_k, T, n_seqs], v [S, H_v, T, n_seqs],
+// g, beta [1, H_v, T, n_seqs], the state [S, S, H_v, n_seqs]; the result [S H_v, T n_seqs + S n_seqs] holds the
+// attention rows (S H_v per token) and then the new state (SW §7.9, opl::gdn). Token rows of q, k and v keep
+// the heads S values apart or more (the record has a head stride), the tokens (and sequences) a constant
+// stride; the gate rows are H_v values, so H_v is a multiple of 16 for more than one token.
+static bool tsr_gdn_token_rows(const tsr_build_env & env, bool probe, const ggml_tensor * t, const char * what, uint32_t S,
+                               uint32_t H, uint32_t * h, uint32_t * hs, uint32_t * ts, std::string * why) {
+    if (t->type != GGML_TYPE_F32 || t->nb[0] != 4 || t->ne[0] != (int64_t) S || t->ne[1] != (int64_t) H) {
+        return tsr_fail(why, "%s '%s' is not F32 [%u, %u, T, n_seqs] with contiguous rows", what, t->name, S, H);
+    }
+    if ((H > 1 && (t->nb[1] % TSR_LINE_BYTES != 0 || t->nb[1] < 4ull * S)) ||
+        (t->ne[2] * t->ne[3] > 1 && t->nb[2] % TSR_LINE_BYTES != 0) ||
+        (t->ne[2] > 1 && t->ne[3] > 1 && (uint64_t) t->nb[3] != (uint64_t) t->nb[2] * (uint64_t) t->ne[2])) {
+        return tsr_fail(why, "%s '%s': heads / tokens are not 64-byte spaced rows (nb1 %zu, nb2 %zu, nb3 %zu)", what, t->name,
+                        t->nb[1], t->nb[2], t->nb[3]);
+    }
+    *hs = H > 1 ? (uint32_t) (t->nb[1] / TSR_LINE_BYTES) : tsr_l16(S);
+    *ts = t->ne[2] * t->ne[3] > 1 ? (uint32_t) (t->nb[2] / TSR_LINE_BYTES) : (uint32_t) ((H * 4ull * S + 63) / 64);
+    return tsr_addr(env, probe, t, what, h, why);
+}
+
+static bool tsr_lower_gdn(const tsr_build_env & env, bool probe, const ggml_tensor * node, tsr_rec * r, std::string * why) {
+    const ggml_tensor * q = node->src[0], * k = node->src[1], * v = node->src[2], * g = node->src[3], * b = node->src[4],
+                      * s = node->src[5];
+    if (!q || !k || !v || !g || !b || !s) {
+        return tsr_fail(why, "GATED_DELTA_NET without all six operands");
+    }
+    if (node->type != GGML_TYPE_F32 || g->type != GGML_TYPE_F32 || b->type != GGML_TYPE_F32 || s->type != GGML_TYPE_F32) {
+        return tsr_fail(why, "GATED_DELTA_NET: operands are not F32");
+    }
+    if (tsr_param_i32(node, 0) != 1) {
+        return tsr_fail(why, "GATED_DELTA_NET with K = %d state snapshots (rollback): only the final state", tsr_param_i32(node, 0));
+    }
+    if (g->ne[0] != 1) {
+        return tsr_fail(why, "GATED_DELTA_NET with a per-row gate (KDA) is not on the device");
+    }
+    const int64_t Sv = v->ne[0], Hv = v->ne[1], T = v->ne[2], ns = v->ne[3], Hk = q->ne[1];
+    if (Sv <= 0 || (Sv & 15) != 0 || Sv > opl::gdn::S_V_MAX || Hk <= 0 || Hv % Hk != 0 || T <= 0 || ns <= 0 ||
+        k->ne[0] != Sv || k->ne[1] != Hk || q->ne[2] != T || k->ne[2] != T || q->ne[3] != ns || k->ne[3] != ns ||
+        q->ne[0] != Sv) {
+        return tsr_fail(why, "GATED_DELTA_NET shape: S_v = %lld (a multiple of 16 up to %u), H_k = %lld, H_v = %lld, T = %lld",
+                        (long long) Sv, opl::gdn::S_V_MAX, (long long) Hk, (long long) Hv, (long long) T);
+    }
+    if (!ggml_is_contiguous(g) || !ggml_is_contiguous(b) || g->ne[1] != Hv || b->ne[1] != Hv || g->ne[2] != T || b->ne[2] != T ||
+        g->ne[3] != ns || b->ne[3] != ns || b->ne[0] != 1 || (T * ns > 1 && (Hv & 15) != 0)) {
+        return tsr_fail(why, "GATED_DELTA_NET: g / beta are not contiguous [1, H_v, T, n_seqs] with H_v a multiple of 16");
+    }
+    if (!ggml_is_contiguous(s) || s->ne[0] != Sv || s->ne[1] != Sv || s->ne[2] != Hv || s->ne[3] != ns) {
+        return tsr_fail(why, "GATED_DELTA_NET: the state is not contiguous [S_v, S_v, H_v, n_seqs]");
+    }
+    if (!ggml_is_contiguous(node) || node->ne[0] != Sv * Hv || node->ne[1] != T * ns + Sv * ns || node->view_src != nullptr ||
+        node->ne[2] * node->ne[3] != 1) {
+        return tsr_fail(why, "GATED_DELTA_NET: the result is not one contiguous [S_v H_v, rows] tensor");
+    }
+    uint32_t qh = 0, qhs = 0, qts = 0, kh = 0, khs = 0, kts = 0, vh = 0, vhs = 0, vts = 0, gh = 0, bh = 0, sh = 0, dh = 0;
+    if (!tsr_gdn_token_rows(env, probe, q, "q", (uint32_t) Sv, (uint32_t) Hk, &qh, &qhs, &qts, why) ||
+        !tsr_gdn_token_rows(env, probe, k, "k", (uint32_t) Sv, (uint32_t) Hk, &kh, &khs, &kts, why) ||
+        !tsr_gdn_token_rows(env, probe, v, "v", (uint32_t) Sv, (uint32_t) Hv, &vh, &vhs, &vts, why) ||
+        !tsr_addr(env, probe, g, "g", &gh, why) || !tsr_addr(env, probe, b, "beta", &bh, why) ||
+        !tsr_addr(env, probe, s, "state", &sh, why) || !tsr_addr(env, probe, node, "result", &dh, why)) {
+        return false;
+    }
+    const uint32_t L = (uint32_t) Sv / 16u, nt = (uint32_t) (T * ns), Lg = tsr_l16((uint64_t) Hv);
+    namespace gd = opl::gdn;
+    r->kind = opl::K_GATED_DELTA_NET;
+    r->n_args = gd::NARGS;
+    uint32_t * a = r->args;
+    a[gd::DST] = dh;
+    a[gd::STATE_OUT] = probe ? 0u : dh + nt * (uint32_t) Hv * L;   // the state follows the attention rows, same channel
+    a[gd::STATE_IN] = sh;
+    a[gd::Q] = qh; a[gd::Q_HEAD_STRIDE] = qhs; a[gd::Q_TOKEN_STRIDE] = qts;
+    a[gd::K] = kh; a[gd::K_HEAD_STRIDE] = khs; a[gd::K_TOKEN_STRIDE] = kts;
+    a[gd::V] = vh; a[gd::V_HEAD_STRIDE] = vhs; a[gd::V_TOKEN_STRIDE] = vts;
+    a[gd::G] = gh; a[gd::G_TOKEN_STRIDE] = Lg;
+    a[gd::BETA] = bh; a[gd::BETA_TOKEN_STRIDE] = Lg;
+    a[gd::S_V] = (uint32_t) Sv; a[gd::H_K] = (uint32_t) Hk; a[gd::H_V] = (uint32_t) Hv;
+    a[gd::N_TOKENS] = (uint32_t) T; a[gd::N_SEQS] = (uint32_t) ns;
+    a[gd::SCALE] = tsr_bits(1.0f / sqrtf((float) Sv));          // ggml-cpu: the output is scaled by 1 / sqrtf(S_v)
+    return true;
+}
+
+// ---------------------------------------------------------------------------------------------
+// SSM_CONV with its state (SW §7.9): the pinned graph builds  CONCAT(conv state, qkv^T) -> SSM_CONV -> SILU  and
+// copies the last d_conv - 1 columns of the CONCAT back into the state cache. The device keeps the state as
+// d_conv - 1 rows of C channels (the channel-vector layout of the kind; the cache tensors of a Tesseract buffer
+// belong to the device). The group is three steps at three places of the graph, because ggml-alloc frees the
+// CONCAT's inputs after the CONCAT and may give their memory to the nodes between it and the SSM_CONV:
+//   - at the CONCAT: two CPY records fill the CONCAT's result buffer (kept alive until the SSM_CONV and the state
+//     CPY use it) with the window of rows: the n_seqs·(d_conv - 1) state rows, then the n_seqs·T token rows;
+//   - at the SSM_CONV: one SSM_CONV record reads the window, writes the convolution (with a following SILU
+//     folded in) and the new state rows into the state cache; the state CPY is absorbed;
+//   - nothing reads the CONCAT's result but the SSM_CONV and the state CPY.
+// ---------------------------------------------------------------------------------------------
+struct tsr_conv_parts {
+    const ggml_tensor * concat = nullptr;   // CONCAT(state, x^T)
+    const ggml_tensor * state = nullptr;    // [d_conv - 1, C, n_seqs]: the gathered state rows
+    const ggml_tensor * x = nullptr;        // [C, T, n_seqs]: the tokens' channel rows
+    const ggml_tensor * w = nullptr;        // [d_conv, C] taps
+    uint32_t dc = 0, C = 0, T = 0, ns = 0;
+};
+
+// Where the CONCAT's conv state comes from: the GET_ROWS of a state cache (through the reshape and view of
+// build_rs). The cache must be in a Tesseract buffer; a CPU cache (-nkvo) keeps the whole group on the CPU.
+static bool tsr_conv_state_in_device(const tsr_build_env & env, const ggml_tensor * concat) {
+    const ggml_tensor * t = concat->src[0];
+    while (t != nullptr && (t->op == GGML_OP_RESHAPE || t->op == GGML_OP_VIEW) && t->src[0] != nullptr) {
+        t = t->src[0];
+    }
+    if (t == nullptr || t->op != GGML_OP_GET_ROWS || t->src[0] == nullptr) {
+        return true;       // not the build_rs form: the later checks decide
+    }
+    return !tsr_foreign_buffer(env, t->src[0]);
+}
+
+static bool tsr_conv_concat_ok(const ggml_tensor * concat, tsr_conv_parts * p, std::string * why) {
+    if (concat == nullptr || concat->op != GGML_OP_CONCAT || concat->type != GGML_TYPE_F32 || tsr_param_i32(concat, 0) != 0) {
+        return tsr_fail(why, "SSM_CONV: its input is not a CONCAT along the time axis");
+    }
+    const ggml_tensor * st = concat->src[0];
+    const ggml_tensor * tr = concat->src[1];
+    if (st == nullptr || tr == nullptr || st->type != GGML_TYPE_F32 || tr->type != GGML_TYPE_F32 || !ggml_is_contiguous(st) ||
+        tr->op != GGML_OP_TRANSPOSE || tr->src[0] == nullptr || concat->ne[3] != 1 || st->ne[1] != concat->ne[1] ||
+        st->ne[2] != concat->ne[2] || st->ne[3] != 1 || tr->ne[0] + st->ne[0] != concat->ne[0] || tr->ne[1] != concat->ne[1] ||
+        tr->ne[2] != concat->ne[2]) {
+        return tsr_fail(why, "SSM_CONV: the CONCAT is not (a contiguous conv state, a transposed token matrix)");
+    }
+    const ggml_tensor * x = tr->src[0];
+    if (x->type != GGML_TYPE_F32 || x->ne[0] != concat->ne[1] || x->ne[1] != tr->ne[0] || x->ne[2] != concat->ne[2] ||
+        x->ne[3] != 1) {
+        return tsr_fail(why, "SSM_CONV: the transposed operand is not [C, T, n_seqs]");
+    }
+    if (p != nullptr) {
+        p->concat = concat;
+        p->state = st;
+        p->x = x;
+        p->dc = (uint32_t) st->ne[0] + 1u;
+        p->C = (uint32_t) concat->ne[1];
+        p->T = (uint32_t) tr->ne[0];
+        p->ns = (uint32_t) concat->ne[2];
+    }
+    return true;
+}
+
+static bool tsr_conv_parts_of(const ggml_tensor * conv, tsr_conv_parts * p, std::string * why) {
+    if (conv->type != GGML_TYPE_F32 || conv->src[1] == nullptr || conv->src[1]->type != GGML_TYPE_F32) {
+        return tsr_fail(why, "SSM_CONV: F32 operands only");
+    }
+    if (!tsr_conv_concat_ok(conv->src[0], p, why)) {
+        return false;
+    }
+    const ggml_tensor * w = conv->src[1];
+    if (w->ne[0] != (int64_t) p->dc || w->ne[1] != (int64_t) p->C || w->ne[2] != 1 || w->ne[3] != 1 || !ggml_is_contiguous(w) ||
+        conv->ne[0] != (int64_t) p->C || conv->ne[1] != (int64_t) p->T || conv->ne[2] != (int64_t) p->ns || conv->ne[3] != 1 ||
+        !ggml_is_contiguous(conv) || p->dc < 2 || p->dc > opl::sconv::D_CONV_MAX || (p->C & 15u) != 0) {
+        return tsr_fail(why, "SSM_CONV shape: d_conv %u (2 .. 8), C %u (a multiple of 16), T %u, n_seqs %u", p->dc, p->C, p->T, p->ns);
+    }
+    p->w = w;
+    return true;
+}
+
+// The state CPY of the group: copies the last d_conv - 1 columns of the CONCAT's result (a view of it) into
+// d_conv - 1 rows of C values per sequence of a state cache.
+static bool tsr_conv_state_cpy_ok(const ggml_tensor * cpy, const ggml_tensor ** concat) {
+    const ggml_tensor * v = cpy->src[0];
+    if (cpy->op != GGML_OP_CPY || v == nullptr || v->op != GGML_OP_VIEW || v->view_src == nullptr ||
+        v->view_src->op != GGML_OP_CONCAT || v->type != GGML_TYPE_F32 || cpy->type != GGML_TYPE_F32) {
+        return false;
+    }
+    const ggml_tensor * c = v->view_src;
+    if (!tsr_conv_concat_ok(c, nullptr, nullptr)) {
+        return false;
+    }
+    // the last d_conv - 1 columns of every channel row of the CONCAT
+    const int64_t keep = v->ne[0];
+    if (v->ne[1] != c->ne[1] || v->ne[2] != c->ne[2] || v->ne[3] != 1 || keep != c->src[0]->ne[0] ||
+        v->view_offs != (size_t) ((c->ne[0] - keep) * 4) || (size_t) v->nb[1] != (size_t) c->nb[1] || v->nb[2] != c->nb[2] ||
+        ggml_nelements(cpy) != ggml_nelements(v) || !ggml_is_contiguous(cpy)) {
+        return false;
+    }
+    if (concat != nullptr) {
+        *concat = c;
+    }
+    return true;
+}
+
+// The window of a conv group, at the CONCAT: recs[0] copies the n_seqs·(d_conv - 1) state rows into the CONCAT's
+// result buffer, recs[1] the n_seqs·T token rows after them. *n = 2.
+bool tsr_lower_conv_window(const tsr_build_env & env, bool probe, const ggml_tensor * concat, tsr_rec * recs, uint32_t * n,
+                           std::string * why) {
+    tsr_conv_parts p;
+    if (!tsr_conv_concat_ok(concat, &p, why)) {
+        return false;
+    }
+    if (!tsr_conv_state_in_device(env, concat) || !tsr_kind_in_image(env.kinds, opl::K_SSM_CONV) ||
+        !tsr_kind_in_image(env.kinds, opl::K_CPY)) {
+        return tsr_fail(why, "CONCAT of a conv state: SSM_CONV or CPY is not in the booted image (%s) or the state cache is "
+                        "not in Tesseract memory", env.image.c_str());
+    }
+    if ((p.C & 15u) != 0 || p.dc < 2 || p.dc > opl::sconv::D_CONV_MAX) {
+        return tsr_fail(why, "CONCAT of a conv state: d_conv %u (2 .. 8), C %u (a multiple of 16)", p.dc, p.C);
+    }
+    const uint32_t Lc = p.C / 16u;
+    tsr_rows X;
+    uint32_t wh = 0, sh = 0;
+    if (!tsr_addr(env, probe, concat, "conv window", &wh, why) || !tsr_addr(env, probe, p.state, "state", &sh, why) ||
+        !tsr_f32_rows(env, probe, p.x, "tokens", &X, why)) {
+        return false;
+    }
+    const uint64_t nt = uint64_t(p.T) * p.ns;
+    if (nt > 1 && (X.rows != nt || X.stride < Lc)) {
+        return tsr_fail(why, "CONCAT of a conv state: the token rows are not a single run of T·n_seqs rows");
+    }
+    const uint32_t srows = (p.dc - 1u) * p.ns;
+    recs[0] = tsr_rec();
+    recs[0].kind = opl::K_CPY;
+    recs[0].n_args = opl::cpy::NARGS;
+    const opl::cpy_args w0{ wh, Lc, sh, Lc, Lc, srows };
+    opl::put_args(w0, recs[0].args);
+    recs[1] = tsr_rec();
+    recs[1].kind = opl::K_CPY;
+    recs[1].n_args = opl::cpy::NARGS;
+    const opl::cpy_args w1{ wh + srows * Lc, Lc, X.h, nt > 1 ? X.stride : Lc, Lc, (uint32_t) nt };
+    opl::put_args(w1, recs[1].args);
+    *n = 2;
+    for (uint32_t i = 0; i < 2; ++i) {
+        if (!tsr_plan_ok(env, recs[i], why)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The fused record. conv: the SSM_CONV node; silu: the SILU node that follows it (or nullptr); cpy: the state
+// CPY node (or nullptr in probe mode, supports_op asks the SSM_CONV alone).
+bool tsr_lower_conv_group(const tsr_build_env & env, bool probe, const ggml_tensor * conv, const ggml_tensor * silu,
+                          const ggml_tensor * cpy, tsr_rec * r, std::string * why) {
+    tsr_conv_parts p;
+    if (!tsr_conv_parts_of(conv, &p, why)) {
+        return false;
+    }
+    if (!probe && cpy == nullptr) {
+        return tsr_fail(why, "SSM_CONV: no state CPY in the group (the record would not write the state)");
+    }
+    if (!tsr_conv_state_in_device(env, p.concat) || tsr_foreign_buffer(env, p.w)) {
+        return tsr_fail(why, "SSM_CONV: its state cache or taps are in another backend's memory");
+    }
+    const ggml_tensor * out = silu != nullptr ? silu : conv;
+    if (silu != nullptr && (silu->op != GGML_OP_UNARY || ggml_get_unary_op(silu) != GGML_UNARY_OP_SILU || silu->src[0] != conv ||
+                            !ggml_are_same_shape(silu, conv))) {
+        return tsr_fail(why, "SSM_CONV + SILU: not a SILU of the convolution");
+    }
+    tsr_rows D;
+    uint32_t win = 0, sout = 0, wh = 0;
+    if (!tsr_out_rows(env, probe, out, "result", &D, why) || !tsr_addr(env, probe, p.concat, "conv window", &win, why) ||
+        !tsr_addr(env, probe, p.w, "taps", &wh, why)) {
+        return false;
+    }
+    if (p.T * p.ns > 1 && D.rows != uint64_t(p.T) * p.ns) {
+        return tsr_fail(why, "SSM_CONV: the token rows are not a single run of T·n_seqs rows");
+    }
+    const uint32_t Lc = p.C / 16u;
+    if (p.T * p.ns > 1 && D.stride < Lc) {
+        return tsr_fail(why, "SSM_CONV: overlapping result rows");
+    }
+    if (cpy != nullptr) {
+        if (!tsr_conv_state_cpy_ok(cpy, nullptr) || cpy->src[0]->view_src != p.concat ||
+            !tsr_addr(env, probe, cpy, "state cache", &sout, why)) {
+            return tsr_fail(why, "SSM_CONV: the state CPY is not the CONCAT's last columns into a contiguous run of cache rows");
+        }
+        if (cpy->view_src != nullptr && (ggml_nelements(cpy) * 4) % TSR_LINE_BYTES != 0) {
+            return tsr_fail(why, "SSM_CONV: the state cache run ends inside a line");
+        }
+    }
+    namespace c = opl::sconv;
+    r->kind = opl::K_SSM_CONV;
+    r->n_args = c::NARGS;
+    uint32_t * a = r->args;
+    a[c::DST] = D.h; a[c::DST_TOKEN_STRIDE] = p.T * p.ns > 1 ? D.stride : Lc;
+    a[c::X] = win + (p.dc - 1u) * p.ns * Lc; a[c::X_TOKEN_STRIDE] = Lc;      // the window: state rows, then token rows
+    a[c::STATE_IN] = win; a[c::STATE_OUT] = sout; a[c::W] = wh;
+    a[c::N_CH] = p.C; a[c::D_CONV] = p.dc; a[c::N_TOKENS] = p.T; a[c::N_SEQS] = p.ns;
+    a[c::FLAGS] = silu != nullptr ? c::FLAG_SILU : 0u;
     return true;
 }
 
@@ -779,6 +1182,8 @@ bool tsr_lower_m7(const tsr_build_env & env, bool probe, const ggml_tensor * nod
         case GGML_OP_CPY:
         case GGML_OP_CONT:           ok = tsr_lower_cpy(env, probe, node, out, why); break;
         case GGML_OP_UNARY:          ok = tsr_lower_unary(env, probe, node, out, why); break;
+        case GGML_OP_GATED_DELTA_NET: ok = tsr_lower_gdn(env, probe, node, out, why); break;
+        case GGML_OP_SSM_CONV:       ok = tsr_lower_conv_group(env, probe, node, nullptr, nullptr, out, why); break;
         default:
             return tsr_fail(why, "op %s has no device kind", ggml_op_desc(node));
     }
@@ -792,11 +1197,36 @@ bool tsr_build_supports(const tsr_build_env & env, const ggml_tensor * op, std::
     if (tsr_node_is_noop(op)) {
         return true;
     }
+    if (ggml_is_empty(op)) {
+        return true;     // an empty node (llama.cpp's recurrent-state copies of zero rows) does nothing; graph_compute skips it
+    }
     if (op->op == GGML_OP_DUP) {
         return tsr_fail(why, "DUP stays on the CPU (SW §8 R1)");
     }
     if (env.pl.caps == 0 || env.pl.num_ch == 0) {
         return tsr_fail(why, "the device configuration has no VU / AT parameters");
+    }
+    // The two nodes of an SSM_CONV group that have no record of their own (the group is the SSM_CONV's):
+    // the CONCAT of the conv state with the tokens and the CPY of its last columns into the state cache.
+    if (op->op == GGML_OP_CONCAT && tsr_conv_concat_ok(op, nullptr, nullptr)) {
+        tsr_rec recs[2];
+        uint32_t nr = 0;
+        return tsr_lower_conv_window(env, true, op, recs, &nr, why);
+    }
+    if (op->op == GGML_OP_CPY && tsr_conv_state_cpy_ok(op, nullptr)) {
+        return (tsr_kind_in_image(env.kinds, opl::K_SSM_CONV) && !tsr_foreign_buffer(env, op)) ||
+               tsr_fail(why, "conv state CPY: SSM_CONV is not in the booted image (%s) or the cache is not in Tesseract memory",
+                        env.image.c_str());
+    }
+    // llama.cpp asks, before it places an SSM_CONV weight, whether the device runs ggml_ssm_conv(conv_x, w) on a
+    // plain F32 [d_conv - 1 + 512, C, 3] input (llama-model-loader.cpp weight_buft_supported). A graph's SSM_CONV
+    // has the CONCAT and the state copy in front of it (tsr_lower_conv_group); the weight is stored as tap rows.
+    if (op->op == GGML_OP_SSM_CONV && op->src[0] != nullptr && op->src[0]->op == GGML_OP_NONE && op->src[0]->data == nullptr &&
+        op->src[1] != nullptr && op->src[1]->type == GGML_TYPE_F32 && op->src[1]->ne[0] >= 2 &&
+        op->src[1]->ne[0] <= (int64_t) opl::sconv::D_CONV_MAX && op->src[1]->ne[1] % 16 == 0 &&
+        op->src[0]->ne[0] == op->src[1]->ne[0] - 1 + 512) {
+        return tsr_kind_in_image(env.kinds, opl::K_SSM_CONV) ||
+               tsr_fail(why, "kind SSM_CONV is not in the booted image (%s)", env.image.c_str());
     }
     tsr_rec r;
     return tsr_lower_m7(env, true, op, nullptr, &r, why);
@@ -960,6 +1390,63 @@ tsr_fusion tsr_build_fusion(const tsr_build_env & env, const ggml_cgraph * cg) {
     f.into.assign(n, -1);
     f.softcap_mid.assign(n, -1);
     f.softcap_tail.assign(n, -1);
+    f.conv_concat.assign(n, -1);
+    f.conv_cpy.assign(n, -1);
+    f.conv_silu.assign(n, -1);
+    for (int i = 0; i < n; ++i) {            // SSM_CONV groups (tsr_lower_conv_group)
+        const ggml_tensor * node = cg->nodes[i];
+        if (node->op != GGML_OP_SSM_CONV || (node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0 || !tsr_kind_in_image(env.kinds, opl::K_SSM_CONV)) {
+            continue;
+        }
+        tsr_conv_parts p;
+        if (!tsr_conv_parts_of(node, &p, nullptr)) {
+            continue;
+        }
+        int ic = -1, icpy = -1, isilu = -1;
+        for (int j = i - 1; j >= 0 && ic < 0; --j) {
+            if (cg->nodes[j] == p.concat) ic = j;
+        }
+        for (int j = ic + 1; j < n && ic >= 0; ++j) {
+            const ggml_tensor * u = cg->nodes[j];
+            if (u->op == GGML_OP_CPY && u->src[0] != nullptr && u->src[0]->view_src == p.concat) {
+                if (icpy >= 0) {
+                    icpy = -2;                 // two state copies: not the pinned graph
+                    break;
+                }
+                icpy = j;
+            }
+        }
+        if (ic < 0 || icpy < 0 || icpy > i || !ggml_node_has_n_uses(cg, ic, 2) || !tsr_conv_state_cpy_ok(cg->nodes[icpy], nullptr) ||
+            (cg->nodes[icpy]->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
+            continue;
+        }
+        // the state CPY moves down to the SSM_CONV: no node in between touches the cache run it writes
+        const tsr_vrange rb = tsr_bytes_of(cg->nodes[icpy]);
+        bool clash = rb.lo == 0;
+        for (int j = icpy + 1; j < i && !clash; ++j) {
+            const ggml_tensor * q = cg->nodes[j];
+            if ((q->flags & GGML_TENSOR_FLAG_COMPUTE) == 0 || tsr_node_is_noop(q)) continue;
+            clash = tsr_vr_overlap(tsr_bytes_of(q), rb);
+            for (int s = 0; s < GGML_MAX_SRC && !clash; ++s) {
+                clash = q->src[s] != nullptr && tsr_vr_overlap(tsr_bytes_of(q->src[s]), rb);
+            }
+        }
+        if (clash) continue;
+        if (ggml_node_has_n_uses(cg, i, 1)) {
+            const int k = tsr_fusion_user(cg, i);
+            const ggml_tensor * u = k >= 0 ? cg->nodes[k] : nullptr;
+            if (u != nullptr && (u->flags & GGML_TENSOR_FLAG_COMPUTE) && u->op == GGML_OP_UNARY &&
+                ggml_get_unary_op(u) == GGML_UNARY_OP_SILU && u->src[0] == node && f.into[k] < 0 && tsr_can_hoist(cg, i, k, nullptr, u)) {
+                isilu = k;
+            }
+        }
+        f.conv_concat[i] = ic;
+        f.conv_cpy[i] = icpy;
+        f.conv_silu[i] = isilu;
+        f.into[ic] = f.into[icpy] = i;
+        if (isilu >= 0) f.into[isilu] = i;
+        f.n_pairs++;
+    }
     for (int i = 0; i < n; ++i) {
         const ggml_tensor * node = cg->nodes[i];
         if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0 || f.into[i] >= 0 ||

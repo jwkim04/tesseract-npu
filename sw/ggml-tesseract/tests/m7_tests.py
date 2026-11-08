@@ -289,7 +289,13 @@ def cmd_graph(a: argparse.Namespace) -> int:
         print(f"m7_tests: FAIL: a CPU run failed (cpu {rc_cpu}, floor {rc_floor}, embd {rc_embd})")
         return 1
     rc_id = run([kl, "compare", "--ref", cpu, "--dev", embd, "--expect-identical", "-q"])
-    if rc_id != 0:
+    if rc_id != 0 and a.embd_identity == "report":
+        # the CPU's own difference between the two input paths (Qwen3.5 / 3.8: from the full-attention layers' FLASH_ATTN
+        # node on, the nodes before it are bit-identical): the floor includes it and is larger, not smaller (SW §7.9)
+        print("m7_tests: note: the embd input path is not the token path bit for bit on the CPU for this model "
+              "(--embd-identity report): the floor includes that difference")
+        rc_id = 0
+    elif rc_id != 0:
         print("m7_tests: FAIL: the embd input path is not the token path bit for bit (the floor would not measure the nudge)")
     cmp = [kl, "compare", "--ref", cpu, "--dev", dev, "--json", str(out / "report.json"),
            "--min-kl", str(a.min_kl), "--min-top1", str(a.min_top1)]
@@ -384,6 +390,8 @@ def main() -> int:
     g.add_argument("--min-kl", type=float, default=0.0)
     g.add_argument("--floor-seeds", type=int, default=3, help="floor runs with the seeds 1 to N (klcheck all's default)")
     g.add_argument("--min-top1", type=float, default=0.8)
+    g.add_argument("--embd-identity", choices=("require", "report"), default="require",
+                   help="the CPU's embd input path must equal its token path bit for bit (default), or only report it")
     g.add_argument("--launch-re", default=r"^\[tesseract\] launch #\d+")
     g.add_argument("--join-prompts", type=int, default=0, metavar="N",
                    help="generate from one prompt: the --prompts file's first N prompts joined (with --n-prompts 1)")

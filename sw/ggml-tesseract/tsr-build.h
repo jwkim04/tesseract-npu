@@ -101,6 +101,9 @@ struct tsr_build_env {
     // nomask); valid = false: no summary.
     std::function<tsr_msum_ref(const ggml_tensor *)> fa_mask;
 
+    // Probe and build mode: t (or the tensor it views) has a buffer, and it is a Tesseract buffer. An allocated tensor of
+    // another backend (a CPU recurrent-state cache with -nkvo) keeps the ops that read or write it in place off the device.
+    std::function<bool(const ggml_tensor *)> on_device;
     // Probe mode (supports_op): whether the bytes of t can be read / written as raw rows by the device
     // (false: a device-format weight, a KV cache); t may be unallocated.
     std::function<bool(const ggml_tensor *)> raw_ok;
@@ -135,6 +138,9 @@ struct tsr_rec {
     uint32_t kv_plane = 0;
     uint32_t kv_idx_src = 0, kv_idx_n = 0;
     tsr_msum_ref mask;                         // FLASH_ATTN: the mask words used
+    // Further records of the same node (one per token of an RMS_NORM whose source tokens are not spaced like its
+    // heads, tsr_lower_rms); run in order after this one. Probe mode fills none: all share the first one's plan.
+    std::vector<tsr_rec> more;
 };
 
 // The FA_NEW source of each KV plane written in this graph_compute: K plane base beat -> (handle of
@@ -167,10 +173,23 @@ bool tsr_fuse_mm_softcap(const tsr_build_env & env, const ggml_tensor * mm, cons
 // lowering). The no-ops are supported; DUP and a SET_ROWS that does not write a KV cache are not (R1).
 bool tsr_build_supports(const tsr_build_env & env, const ggml_tensor * op, std::string * why);
 
+// The SSM_CONV record of a Gated DeltaNet layer (SW §7.9): the SSM_CONV node with its CONCAT absorbed, the state CPY
+// (nullptr in probe mode) and an optional SILU. False with *why if the group cannot be expressed as one record.
+bool tsr_lower_conv_group(const tsr_build_env & env, bool probe, const ggml_tensor * conv, const ggml_tensor * silu,
+                          const ggml_tensor * cpy, tsr_rec * r, std::string * why);
+
+// The window of an SSM_CONV group, at its CONCAT: two CPY records (the conv state rows, the token rows) into the CONCAT's
+// result buffer (SW §7.9; ggml-alloc frees the CONCAT's inputs after it, the SSM_CONV record reads the window).
+bool tsr_lower_conv_window(const tsr_build_env & env, bool probe, const ggml_tensor * concat, tsr_rec * recs, uint32_t * n,
+                           std::string * why);
+
 // Pass 3: fusion pairs of a graph (decisions above). with[i] = k: node i's record absorbs node k
 // (MUL_MAT + ADD or RMS_NORM + MUL); into[k] = i. Pairs need build-mode locations (env.loc).
 struct tsr_fusion {
     std::vector<int32_t> with, into, softcap_mid, softcap_tail;
+    // SSM_CONV groups (tsr_lower_conv_group): for the SSM_CONV node i, the CONCAT, the state CPY (both earlier in the
+    // graph) and the SILU (later) that its record absorbs; -1 for no group (silu: the group without SILU)
+    std::vector<int32_t> conv_concat, conv_cpy, conv_silu;
     uint32_t n_pairs = 0;
 };
 tsr_fusion tsr_build_fusion(const tsr_build_env & env, const ggml_cgraph * cg);
