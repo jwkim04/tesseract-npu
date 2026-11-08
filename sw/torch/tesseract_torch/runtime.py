@@ -181,7 +181,7 @@ def _sample(w: torch.Tensor) -> torch.Tensor:
     c = torch.arange(cn) * (K - 1) // max(cn - 1, 1)
     with torch.no_grad():
         s = w.detach().index_select(0, r).index_select(1, c)
-    return s.view(torch.int16 if s.element_size() == 2 else torch.int32)
+    return s.view({1: torch.int8, 2: torch.int16}.get(s.element_size(), torch.int32))
 
 
 @dataclass
@@ -226,9 +226,21 @@ class WeightCache:
         """(device, handle, uploaded) of weight w [N, K] on the process-wide device: the cached copy if
         it is current (uploaded False), else a new upload (uploaded True). Use the handle with that
         device only."""
+        N, K = int(w.shape[0]), int(w.shape[1])
+        return self._acquire(w, self.key(w), N, K, lambda dev: dev.upload(w.detach()), name,
+                             str(w.dtype).replace("torch.", ""))
+
+    def acquire_blocks(self, blocks: torch.Tensor, fmt: str, K: int, name: str = "") -> tuple:
+        """Like ``acquire`` for ggml blocks ('q8_0' or 'q4_k', uint8 [N, row_bytes]): they are stored on the
+        device as they are (``Device.upload_blocks``). The key adds the format and K, since the same bytes
+        read as another format are another weight."""
+        N = int(blocks.shape[0])
+        return self._acquire(blocks, self.key(blocks) + (fmt, K), N, K,
+                             lambda dev: dev.upload_blocks(fmt, blocks.detach(), N, K), name, fmt)
+
+    def _acquire(self, w: torch.Tensor, k: tuple, N: int, K: int, upload, name: str, what: str) -> tuple:
         with _lock:
             dev = device()
-            k = self.key(w)
             e = self._map.get(k)
             ver = _version_of(w)
             reupload = False
@@ -239,14 +251,13 @@ class WeightCache:
                 reupload = e.serial == dev.serial and not e.ref.expired()
                 self._release(k, e)
             self.sweep()
-            N, K = int(w.shape[0]), int(w.shape[1])
             try:
-                h = dev.upload(w.detach())
+                h = upload(dev)
             except TesseractError as err:
                 if "heap full" not in str(err):
                     raise
                 self.sweep()
-                h = dev.upload(w.detach())
+                h = upload(dev)
             sample = None
             if ver is None:
                 sample = _sample(w)
@@ -262,7 +273,7 @@ class WeightCache:
                 _bump("reuploads")
             if _debug >= 1:
                 info = dev.info(h)
-                log(f"upload {name or 'weight'} [{N} x {K}] {str(w.dtype).replace('torch.', '')} -> {info['fmt']}"
+                log(f"upload {name or 'weight'} [{N} x {K}] {what} -> {info['fmt']}"
                     f" ({info['n_parts']} x {info['k_parts']} parts, {info['dev_bytes'] / 2**20:.2f} MiB on the device)"
                     + (" (re-upload: the weight changed)" if reupload else ""))
             return dev, h, True

@@ -73,6 +73,9 @@ set_tests_properties(rt_sim PROPERTIES ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_THREA
 # fit 8 tokens in the SPM unsplit)
 add_test(NAME rt_sim_tmax8 COMMAND test-tsr-rt --big)
 set_tests_properties(rt_sim_tmax8 PROPERTIES ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_TMAX=8;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal")
+# T_MAX 4: the core of the U200 K4 image (docs/platform-u200.md): T tiles of 4 tokens inside one record
+add_test(NAME rt_sim_tmax4 COMMAND test-tsr-rt --big)
+set_tests_properties(rt_sim_tmax4 PROPERTIES ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_TMAX=4;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal")
 # the kernel protocol layer on the mock kdev, DMA rules that force bounce / read-modify-write
 # TSR_GDB in an owning process (tsr_rt links libtsr_dbg's embedded service): the service starts (no "no embedded debug
 # service" note), the run is unchanged

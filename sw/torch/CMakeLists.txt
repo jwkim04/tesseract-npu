@@ -93,3 +93,7 @@ add_test(NAME torch_pytest_tmax8
          COMMAND ${_tsr_py} -m pytest -q -p no:cacheprovider ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 set_tests_properties(torch_pytest_tmax8 PROPERTIES ENVIRONMENT
     "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}:${TSR_TORCH_PY_DIR};TSR_DEVICE=sim;TSR_SIM_TMAX=8;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal")
+add_test(NAME torch_pytest_tmax4
+         COMMAND ${_tsr_py} -m pytest -q -p no:cacheprovider ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+set_tests_properties(torch_pytest_tmax4 PROPERTIES ENVIRONMENT
+    "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}:${TSR_TORCH_PY_DIR};TSR_DEVICE=sim;TSR_SIM_TMAX=4;TSR_SIM_THREADS=4;TSR_SIM_RACE=fatal")

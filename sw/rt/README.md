@@ -5,7 +5,8 @@ ggml graphs or llama.cpp. It is the host stack of the PyTorch backend (`torch.co
 backend="tesseract")`: the weight matmuls go to the device, everything else stays on the CPU;
 `sw/torch`, whose extension `_tesseract_rt` binds this API). It runs on `tsr_transport`, so
 `TSR_DEVICE=sim | mock | vkernel | xrt` select the device as for the ggml backend (`sim` and `mock`
-run on the simulator; `vkernel` is not available until P5.3; `xrt` has not run firmware kernels yet).
+run on the simulator; `vkernel` is not available until P5.3; `xrt` runs the K4 image on the U200 card with the
+control core, firmware kind table 0x804f).
 
 A `linear` call is one launch of the firmware's `graph` kernel per IO tile: an op list with one
 MUL_MAT record per weight part (K parts as further records with `ACC_DST`), cached by content in the
@@ -13,8 +14,10 @@ OPL region. The kernel issues the `LD / QACT / MVM / ST` tile ops. The counters 
 `prog_*` (op-list cache hits and misses). Design: [SW](../../docs/design/06-software-verification.md) §9.4.
 
 > **Scope.** Developer documentation of the runtime as built in this tree. Status words: *on the
-> simulator* means implemented and tested against the simulator kinds (`sim`, `mock`). The package built on top is [`sw/torch`](../torch/README.md); the
-> design record of the PyTorch backend is [`docs/torch-backend.md`](../../docs/torch-backend.md).
+> simulator* means tested against the simulator kinds (`sim`, `mock`); *on the card* means run on the U200 image
+> `tsr_u200_k4` through `xrt` (results: [`docs/torch-backend.md`](../../docs/torch-backend.md) §6.8). The package built on
+> top is [`sw/torch`](../torch/README.md); the design record of the PyTorch backend is
+> [`docs/torch-backend.md`](../../docs/torch-backend.md).
 
 ## Files
 
@@ -54,13 +57,18 @@ class device {
     weight_info   info(weight_handle) const;
     void          read_blocks(weight_handle, uint32_t r0, uint32_t r1, void * dst) const;
     void linear    (weight_handle, const float * x, uint32_t T, float * y, size_t x_stride = 0, size_t y_stride = 0);
+    bool has_local_scale() const;                                   // image has MUL_MAT_SCALE and CAPS.MVM_LOCAL_SCALE, C = 4
+    bool try_linear_scale(weight_handle, const float * x, uint32_t T, float * y, float scale,
+                          size_t x_stride = 0, size_t y_stride = 0); // false: nothing transferred, use linear()
     void linear_ref(weight_handle, const float * x, uint32_t T, float * y, size_t x_stride = 0, size_t y_stride = 0) const;
     counters get_counters() const;  void reset_counters();  memory_info memory() const;
 };
 }
 ```
 
-Strides of `linear` are in floats (0 = packed); the weight row stride is in bytes. Errors throw
+Strides of `linear` are in floats (0 = packed); the weight row stride is in bytes. `try_linear_scale` computes
+`scale * (W x)` in the kernel (kind MUL_MAT_SCALE, 0x1C) for a weight of one K part, on an image that has the kind and
+`CAPS.MVM_LOCAL_SCALE`; otherwise it returns false and the caller multiplies on the CPU. Errors throw
 `tsr::rt::error` (a `std::runtime_error`) or `std::invalid_argument`. Every member function takes
 one device mutex.
 
@@ -86,6 +94,10 @@ amax (DAZ / FTZ, `docs/spec.md` §21), and it emits a QA image (f32 scale), not 
   firmware tiles T by min(T_MAX, its scratch ring) with `plan.hpp`. Records of one N part are
   ordered by the builder's hazard analysis (each reads and writes the part's y rows); N parts are
   independent. A list above 4096 records would run in pieces.
+- **T tiling is the firmware's.** The record carries the whole T of an IO tile and the firmware cuts it into tiles of
+  min(T_MAX, ring) tokens. The runtime does not split T by T_MAX. On the K4 image (T_MAX 4) a 32-token call is eight
+  tiles in one launch and reads the weights eight times, not 32 (Qwen2.5-0.5B, 8 tokens: 716,870 PERF cycles per
+  token at T_MAX 4 against 2,213,080 at T_MAX 1, on the simulator; `docs/torch-backend.md` §6.5).
 - **N parts**: a weight is cut into row ranges when x + QA + y of T_MAX tokens (or of one token, if
   T_MAX tokens can never fit) would exceed the SPM, and one token of a part must fit the
   firmware's scratch-ring budget (`plan.hpp` `ring_budget`: the SPM minus the executor's argument,
@@ -117,13 +129,14 @@ timeouts; SW §9.2). `TSR_RT_DEBUG=1` logs uploads, calls and launches.
 
 ```sh
 cmake -S . -B build/dev -DCMAKE_BUILD_TYPE=Release
-cmake --build build/dev -j4 --target tsr_rt tsr_rt_shared test-tsr-rt
+cmake --build build/dev -j8 --target tsr_rt tsr_rt_shared test-tsr-rt
 ctest --test-dir build/dev -R '^rt_'
 ```
 
-ctests: `rt_sim`, `rt_sim_tmax8` (`--big`: the N = 130000 head), `rt_mock` (DMA align 64, chunk
+ctests: `rt_sim`, `rt_sim_tmax4` (T_MAX 4, the K4 image's; `--big`) and `rt_sim_tmax8` (`--big`: the N = 130000 head), `rt_mock` (DMA align 64, chunk
 64 KiB), `rt_mock_tmax8` (3 channels, T_MAX 8, align 4096, chunk 12 KiB); all run with
-`TSR_SIM_RACE=fatal`. Each run checks 37 shapes (f32 / f16 / bf16 → Q8_0, native Q8_0 / Q4_K;
+`TSR_SIM_RACE=fatal`. `rt_sim_gdb_embed` checks that the embedded debug service starts; `rt_sim_basis_old` and
+`rt_sim_no_mulmat` check that an image of an older Basis and one without MUL_MAT are refused. Each run checks 37 shapes (f32 / f16 / bf16 → Q8_0, native Q8_0 / Q4_K;
 K 32 … 4864 and 33024 / 33280 (> K_MAX); N 1 … 4864 (130000 with `--big`); T 1 … 20; forced N
 and K parts; strided x / y; padded and misaligned weight rows): `read_blocks` equals ggml's blocks
 byte for byte, `linear` and `linear_ref` equal the model bit for bit, y padding untouched, NMSE
@@ -131,9 +144,9 @@ against an f64 product of the dequantized weight < 1e-3 (measured 0 … 7.9e-5).
 cache and exact host traffic, free / re-upload, unsupported shapes, two threads, an IO area of
 64 KiB (T = 40 → 3 launches).
 
-Results, measured on the simulator (`a775222`): `rt_sim` 43 / 43 cases,
-`rt_sim_tmax8` 44 / 44 (with the N = 130000 head: 2 N parts, T = 9), `rt_mock` 43 / 43,
-`rt_mock_tmax8` 43 / 43, 3 s for the four.
+Results, measured on the simulator (branch `torch-basis`, 2026-11-09, firmware image id `99698a44030574f4`): `rt_sim` 43 / 43 cases,
+`rt_sim_tmax4` 44 / 44, `rt_sim_tmax8` 44 / 44 (with the N = 130000 head: 2 N parts at T_MAX 8, one at T_MAX 4, T = 9),
+`rt_mock` 43 / 43, `rt_mock_tmax8` 43 / 43.
 
 An opt-in `rt_vkernel_k4t1` ctest (`-DTSR_RT_VKERNEL_TEST=ON`) is meant for the Verilated k4t1 kernel
 and reports "skipped" (exit 77) until the two-clock vkernel server exists (P5.3).

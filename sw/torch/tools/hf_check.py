@@ -46,6 +46,9 @@ The KL ratios are reported, not gated. Exit 1 FAIL, 2 usage / input error.
 
 --forward-only: one compiled forward of the first --tokens prompt tokens; --save-logits writes the f32
 logits (.npy), --expect compares them bit for bit with a saved file (e.g. TSR_DEVICE=vkernel vs sim).
+A second forward of the same prompt gives the steady state (no compilation, every op list cached).
+--speed 1,8,32: timing only. Steady-state forwards of the first N prompt tokens for each N, with the PERF
+counters read after every launch and with them off.
 """
 from __future__ import annotations
 
@@ -463,6 +466,20 @@ def run_forward_only(args, tok, model, res: dict) -> int:
     raw = lg.numpy()
     res["logits_sha256"] = hashlib.sha256(raw.tobytes()).hexdigest()
     ok = c["cpu_fallback_calls"] == 0
+    # a second forward of the same prompt: no compilation, every op list in the cache (steady state)
+    tt.reset_counters()
+    t0 = time.time()
+    with torch.no_grad(), DeviceTap() as tap2:
+        lg2 = compiled(input_ids=ids, use_cache=False).logits[0].float().contiguous()
+    wall2 = time.time() - t0
+    c2 = tt.counters()
+    res["forward_steady"] = {"wall_s": round(wall2, 3), "device_s": round(sum(r["sec"] for r in tap2.calls), 3),
+                             "device_calls": len(tap2.calls), "execs": c2.get("rt_execs"),
+                             "prog_hits": c2.get("rt_prog_hits"), "prog_misses": c2.get("rt_prog_misses"),
+                             "perf_cycles_per_token": c2.get("rt_perf_cycles", 0) / T,
+                             "h2d_bytes": c2.get("rt_h2d_bytes"), "d2h_bytes": c2.get("rt_d2h_bytes"),
+                             "repeatable": bits_equal(lg, lg2)}
+    ok = ok and res["forward_steady"]["repeatable"]
     if args.save_logits:
         np.save(args.save_logits, raw)
     if args.expect:
@@ -474,6 +491,55 @@ def run_forward_only(args, tok, model, res: dict) -> int:
         ok = ok and same_shape and rows == raw.shape[0]
     res["pass"] = bool(ok)
     return 0 if ok else 1
+
+
+def run_speed(args, tok, model, res: dict) -> int:
+    """--speed 1,8,32: steady-state compiled forwards of the first N prompt tokens, for each N in the list, with the
+    PERF counters read after every launch (the default) and again with them off (`open_device(read_perf=False)`: the 12
+    CSR reads per launch are not made). Each N is run once to compile and to cache its op lists, then timed 3 times;
+    the fastest is reported. Nothing is compared here: the bits are checked by the other modes."""
+    lens = [int(v) for v in args.speed.split(",") if v.strip()]
+    ids_all = tokenize(tok, args.prompt, max(lens))
+    res["prompt_ids"] = ids_all[0].tolist()
+    runs = []
+    for read_perf in (True, False):
+        torch._dynamo.reset()
+        tt.close_device()
+        tt.open_device(read_perf=read_perf)
+        up = upload_all(model)
+        compiled = tt.compile(model)
+        rows = []
+        for n in lens:
+            ids = ids_all[:, :n]
+            with torch.no_grad():
+                compiled(input_ids=ids, use_cache=False)                   # compile (new length) and fill the op-list cache
+                best = None
+                for _ in range(3):
+                    tt.reset_counters()
+                    with DeviceTap() as tap:
+                        t0 = time.time()
+                        compiled(input_ids=ids, use_cache=False)
+                        wall = time.time() - t0
+                    c = tt.counters()
+                    row = {"tokens": n, "wall_s": round(wall, 4), "device_s": round(sum(r["sec"] for r in tap.calls), 4),
+                           "device_calls": len(tap.calls), "execs": c.get("rt_execs"), "prog_hits": c.get("rt_prog_hits"),
+                           "prog_misses": c.get("rt_prog_misses"), "h2d_bytes": c.get("rt_h2d_bytes"),
+                           "d2h_bytes": c.get("rt_d2h_bytes"), "cpu_fallback_calls": c["cpu_fallback_calls"]}
+                    if read_perf:
+                        row.update({"perf_cycles": c.get("rt_perf_cycles"), "perf_cycles_per_token": c.get("rt_perf_cycles", 0) / n,
+                                    "perf_mvm_cycles_per_token": c.get("rt_perf_mvm_cycles", 0) / n,
+                                    "dev_read_bytes_per_token": c.get("rt_dev_read_bytes", 0) / n})
+                    if best is None or row["wall_s"] < best["wall_s"]:
+                        best = row
+            best["ms_per_token"] = round(1000 * best["wall_s"] / n, 3)
+            best["device_ms_per_token"] = round(1000 * best["device_s"] / n, 3)
+            rows.append(best)
+            log(f"speed read_perf={read_perf} T={n}: wall {best['wall_s']} s ({best['ms_per_token']} ms/token), device calls "
+                f"{best['device_s']} s, {best['execs']} execs" + (f", {best['perf_cycles_per_token']:.0f} PERF cycles/token" if read_perf else ""))
+        runs.append({"read_perf": read_perf, "upload_s": up["seconds"], "rows": rows})
+    res["speed"] = runs
+    res["pass"] = all(r["cpu_fallback_calls"] == 0 and r["device_calls"] == 169 for run in runs for r in run["rows"])
+    return 0 if res["pass"] else 1
 
 
 def run_full(args, tok, model, res: dict) -> int:
@@ -732,11 +798,16 @@ def main() -> int:
                     help="linears checked against the llama.cpp path's oracle")
     ap.add_argument("--blocks", choices=["all", "sample"], default="all", help="weights whose blocks are compared with ggml")
     ap.add_argument("--gguf", help="GGUF whose Q8_0 output.weight is compared with the device's head blocks")
-    ap.add_argument("--numcheck-build", default=str(REPO / "build" / "numcheck"),
-                    help="build tree with libtsr_ref.so + libnumcheck_helper.so")
+    nc_default = REPO / "build" / "numcheck"
+    if not nc_default.is_dir():
+        nc_default = REPO / "build" / "dev"
+    ap.add_argument("--numcheck-build", default=str(nc_default),
+                    help="build tree with libtsr_ref.so + libnumcheck_helper.so (default build/numcheck, else build/dev)")
     ap.add_argument("--threads", type=int, default=0, help="torch / oracle threads (default: torch's, oracle 8)")
     ap.add_argument("--no-ref-check", action="store_true", help="skip the bit-exact reference forwards")
     ap.add_argument("--forward-only", action="store_true", help="one compiled forward; --save-logits / --expect")
+    ap.add_argument("--speed", metavar="N,N,...", help="timing mode: steady-state forwards of the first N prompt tokens "
+                    "(e.g. 1,8,32), PERF counters on and off; 169 device calls each, no comparison")
     ap.add_argument("--save-logits", help="(--forward-only) write the logits as .npy")
     ap.add_argument("--expect", help="(--forward-only) logits .npy that must be bit-identical")
     ap.add_argument("--json", help="write the results here")
@@ -748,7 +819,7 @@ def main() -> int:
 
     model_dir = Path(args.model_dir)
     t_start = time.time()
-    res: dict = {"model_dir": str(model_dir), "mode": "forward-only" if args.forward_only else "full"}
+    res: dict = {"model_dir": str(model_dir), "mode": "speed" if args.speed else ("forward-only" if args.forward_only else "full")}
     if args.download:
         model_dir.mkdir(parents=True, exist_ok=True)
         res["downloaded"] = download(args.download, model_dir, args.revision)
@@ -764,7 +835,10 @@ def main() -> int:
 
     res["transformers"] = transformers.__version__
     log(f"{model_dir}: {res['params_M']} M params (float32), loaded in {res['load_s']} s; {res['device']}")
-    rc = run_forward_only(args, tok, model, res) if args.forward_only else run_full(args, tok, model, res)
+    if args.speed:
+        rc = run_speed(args, tok, model, res)
+    else:
+        rc = run_forward_only(args, tok, model, res) if args.forward_only else run_full(args, tok, model, res)
     res["wall_s"] = round(time.time() - t_start, 1)
     res["peak_rss_gb"] = round(rss_gb(), 2)
     res["counters_end"] = tt.counters()
