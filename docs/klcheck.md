@@ -505,6 +505,10 @@ TSR_SIM_TMAX=4 klcheck run -m MODEL --device sim --phase m7 --tokens DIR/dev.klc
 klcheck compare --ref DIR/dev-sim-replay.klc --dev DIR/dev.klc --expect-identical
 ```
 
+Since `gdn-fw` (SW-78) is merged, the plain simulator has `CAPS` bit 8 and runs GATED_DELTA_NET at numerics revision 2 for S_v of 64 and more.
+The card image of this section has no GDN op, so the replay of a Qwen3.8 run of this section needs `TSR_SIM_GDN=0` or `TSR_SIM_CARD=k4full`.
+Gemma 4 has no GATED_DELTA_NET and is not affected.
+
 | | Gemma 4 26B-A4B, M6 | Gemma 4 26B-A4B, M7 | Qwen3.8 2B, M7 |
 | --- | --- | --- | --- |
 | `TSR_KINDS` | `m6,+MUL_MAT_ID` | unset (21 kinds) | unset (21 kinds) |

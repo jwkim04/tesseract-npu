@@ -20,6 +20,14 @@ revision 2 of GATED_DELTA_NET, the state on its cache cell). The first three cha
   `ggml_tesseract_moe*` / `qwen3moe` cases and `torch_pytest*` at `T_MAX` 1, 4 and 8; `gen_tables.py --check` and `gen_tops.py --check`; `tb/vu/test_vu_timing.py` and
   `tb/qact` (15 passed, 4 opt-in skipped). klcheck M7 on Qwen3.8 2B (1 prompt, 16 tokens, simulator): 16 of 16 rows bit-identical to the same run of the build before the
   merges (510e282), with the default lanes and with `TSR_SIM_CARD=k4full`; the logits of the PyTorch 8-token forward keep their sha256 at `T_MAX` 1, 4 and 8.
+- Checked after the `gdn-fw` merge (build `build/dev`, `TSR_WITH_TORCH=ON`): `ctest -LE slow` 323 of 323 (the tokenizer vocabulary test is disabled);
+  `gen_tables.py --check` and `gen_tops.py --check`; `rtl/lint.sh` with the Vivado wrapper (all clean); `tb/run_all.sh --no-lint gdn vu` (37 passed, 62 opt-in skipped) and
+  `core -k k4gdn` (1 passed). The production firmware: ITCM 85,504 B of the 98,304 B budget (SW-75), DTCM 50,616 B, 21 kinds, kind table 0x2381 (GATED_DELTA_NET revision 2).
+  The merge had four conflicts: this file, the decision table of `06-software-verification.md`, `tsr-build.h` and `ggml-tesseract.cpp` (the scratch window of SW-76 and the
+  `read_i32` and `gdn_cell` members of SW-82 side by side); the generated files needed no change.
+  klcheck M7, 1 prompt x 16 tokens, `compare --expect-identical`: Qwen3.8 2B with `TSR_SIM_CARD=k4full` (composed path) 16 of 16 against the same run at `afcdae1`;
+  Qwen3.8 2B with `TSR_SIM_CARD=k4full TSR_SIM_GDN=1` (fused path) 16 of 16 against the `gdn-fw` build (`8cc4c33`); Gemma 4 26B-A4B (default lanes) 16 of 16 against `afcdae1`.
+  The plain simulator now has `CAPS` bit 8, so it runs the fused path for Qwen3.8 (S_v 128): its bits are not those of the card runs of 2026-11-09. Replay those with `TSR_SIM_CARD=k4full` or `TSR_SIM_GDN=0`.
 - Open: the card run of the fused path (plan in the next section; it needs the `k4f250` image); grouping of tokens by expert (SW-66); the KV store, MOE_ROUTE and the DMA's half rate while the VU runs are not in the cycle model (SW-80).
 
 ## The fused GDN op in the firmware and the card plan for the `k4f250` image (branch `gdn-fw`, merged, November 9)
@@ -130,7 +138,7 @@ independent VU ops are charged as dependent ones (0.9 % high on the Qwen3.8 toke
 
 ## Card runs of the merged firmware (branch `sw-moegdn`, November 9)
 
-The K4 full-feature image of the fourth link (bitstream unchanged) ran the `tsr-fw.elf` of `sw-moegdn` (21 kinds, kind table 0x804f) with a
+The K4 full-feature image of the fourth link (bitstream unchanged) ran the `tsr-fw.elf` of `sw-moegdn` before `gdn-fw` (21 kinds, kind table 0x804f) with a
 host build of the branch (`build/xrt`). Results are in [klcheck.md](klcheck.md) (last section) and [performance.md](performance.md) ("MoE and
 Gated DeltaNet on the card"):
 
@@ -159,9 +167,9 @@ they were before the merge.
   docs, code comments and test comments were changed with them. SW-75 is new: the ITCM budget. SW-76 (the outputs of a MOE_ROUTE with several tiles, a host
   change in section 7.9) and SW-77 (the Qwen3 MoE graph, section 7.9) follow it.
 - Kinds: MOE_ROUTE 0x1E, MUL_MAT_ID 0x1F, SOFTPLUS 0x2D, SSM_CONV 0x2E, GATED_DELTA_NET 0x2F, all at numerics revision 1, with
-  UNARY func 5 (SIGMOID). 21 kinds, kind-table signature 0x804f. The `fw_kind_revs` digests of the five kinds are the digests of their
+  UNARY func 5 (SIGMOID). 21 kinds, kind-table signature 0x804f (0x2381 since `gdn-fw`). The `fw_kind_revs` digests of the five kinds are the digests of their
   branches (the two corpora start from the same PRNG state, so neither moves the other).
-- Firmware image: ITCM 84,056 B, DTCM 50,088 B. The old 80 KiB ITCM budget (SW-38) is exceeded by 2,136 B, so SW-75 raises it to
+- Firmware image: ITCM 84,056 B, DTCM 50,088 B (85,504 B and 50,616 B with the fused GDN path of `gdn-fw`). The old 80 KiB ITCM budget (SW-38) is exceeded by 2,136 B, so SW-75 raises it to
   96 KiB (98,304 B; the upper 48 KiB that SW-38 kept for M8 MoE / M9 are now 32 KiB). Each branch alone was below 80 KiB (78,520 B and
   78,576 B). No feature was removed. The `fw_elf` BIG_TEXT image grew to 98 KiB of code so that it is still over the budget.
 - Backend: the MoE chains (router group, scale group, MUL_MAT_ID) and the Gated DeltaNet groups (SSM_CONV with its CONCAT / state CPY / SILU,
