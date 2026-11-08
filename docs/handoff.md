@@ -2,6 +2,26 @@
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
 
+## Qwen3-30B-A3B on the simulator and the card (branch `moe-qwen3`, November 9)
+
+Branched from `sw-moegdn` (2d887ec). No RTL, firmware, backend or llama.cpp change: llama.cpp's `qwen3moe` graph (the same `build_moe_ffn`
+with softmax gating and normalised weights) lowers with the code of the Gemma 4 work. What differs from Gemma 4 is in
+[design/06-software-verification.md](design/06-software-verification.md) §7.9, SW-77 (no scale chain, no router input norm, gate and up as two tensors
+with SWIGLU, Q of 4,096 for a hidden size of 2,048 with per-head Q and K norms). The new things are tests and records:
+
+- Tests: `test-tsr-moe` has the Qwen3 layer next to the Gemma 4 one (T = 1 to 64, four kind configurations); `ggml_tesseract_graph_qwen3moe_tiny` and
+  `_q4k` run a 2-layer model of the same graph (`gen_tiny_models.py`, 64 experts) through klcheck with the M7 settings. `ctest -LE slow`: 314 of 314.
+- Model: `Qwen/Qwen3-30B-A3B-GGUF`, `Qwen3-30B-A3B-Q4_K_M.gguf`, 18,556,685,824 bytes, sha256
+  `0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5` (`models/qwen3-30b-a3b/`, not in git). The Instruct-2507 version has no Q4_K_M at
+  `Qwen` or `ggml-org`, so this is the original model.
+- klcheck M7, 8 prompts x 64 tokens ([klcheck.md](klcheck.md)): simulator ratio 0.813, top-1 96.68 %, PASS; card the same to every digit. The card's 512 rows are bit-identical to the
+  simulator's; a 1 x 16 card run replayed on the simulator: 16 of 16.
+- Speed on the card, M7 ([performance.md](performance.md) "Qwen3-30B-A3B on the card"): decode 15.82 tok/s best, 13.06 median (11.338 M device cycles per token,
+  17.6 tok/s from device time alone); a 512-token prefill at `-ub 64` 26.30 tok/s best, 26.04 median. The host load average was 23 to 58 during the runs.
+- Open: prefill at `-ub` 128 and above stops at layer 0 (`MOE_ROUTE: ... its outputs overlap the logits of a later tile`), earlier than Gemma 4 (which runs at 128). The fix is
+  being made on `sw-moegdn`; merge it, then extend the Qwen3 layer test in `test-tsr-moe` past one tile and repeat the 512-token prefill at the default `-ub`.
+  Grouping of tokens by expert (SW-66) is still not built. The card's VU and DMA counters were not compared with the simulator's for this model.
+
 ## Card runs of the merged firmware (branch `sw-moegdn`, November 9)
 
 The K4 full-feature image of the fourth link (bitstream unchanged) ran the `tsr-fw.elf` of `sw-moegdn` (21 kinds, kind table 0x804f) with a

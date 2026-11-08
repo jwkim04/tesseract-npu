@@ -9,7 +9,7 @@ measurement history and the commands that reproduce the numbers.
 > **Scope.** Measurement record, not a design. The first card measurements with the control core
 > are in "The first card image with the control core" below (2026-11-06); the full-feature image's
 > are in "The full-feature image after the ATTPV fix" and, for the image before the fix, "The full-feature image on the card, second link" (both 2026-11-08).
-> The MoE and Gated DeltaNet models on the same image are in "MoE and Gated DeltaNet on the card" (2026-11-09). All other card
+> The MoE and Gated DeltaNet models on the same image are in "MoE and Gated DeltaNet on the card" (2026-11-09), and Qwen3-30B-A3B in "Qwen3-30B-A3B on the card". All other card
 > measurements were taken before the control core was added, with the host issuing the ops; the
 > Vivado and RTL simulation results are of the design that ran on the card. The other numbers are simulator measurements or estimates, and none
 > of them is a card measurement. Every number carries one of the provenance labels below. The
@@ -106,6 +106,50 @@ later tile's logits other than row for row. It is a host check and not a card fa
 The Gemma prefill runs one MVM of T = 1 per (token, slot) (SW-66): 7.6 M device cycles per prompt token, against 16.3 M for a decode token.
 Qwen3.8 prefills at 2.1 times its decode rate (6.0 M cycles per prompt token), and its MVM unit has nothing queued in 83 % of the prefill cycles. The
 Gated DeltaNet recurrence alone is about 1.3 G of the 3.1 G cycles, at its isolated record cost of 8.6 K cycles per head and token (SW §7.10).
+
+## Qwen3-30B-A3B on the card (`k4full`, firmware of `moe-qwen3`, 2026-11-09)
+
+Measured on the card (k4full, fourth link, 200 / 100 MHz), 2026-11-09, with the bitstream, firmware (`tsr-fw.elf` of `sw-moegdn`, 21 kinds, kind
+table 0x804f; the branch `moe-qwen3` changes no firmware) and method of the section above. The model is `Qwen3-30B-A3B-Q4_K_M.gguf`
+(18.56 GB, [`klcheck.md`](klcheck.md) has the provenance and the KL result: ratio 0.813, top-1 96.68 %, 512 of 512 rows bit-identical to the
+simulator). Decode: `-n 65`, prompt `The history of the printing press begins` (7 tokens); prefill: a prose prompt of exactly 512 tokens, `-n 1`, **`-ub 64`**
+(at `-ub 128` and 512 the host backend refuses the route of more than one tile, SW-64, as it does for Gemma 4 at 256 and above). Three runs of each, the ATTPV trace
+replayed before every run. **The host was busy with other agents' jobs the whole time (load average 23 to 58)**, so the wall figures are
+lower bounds of what the card does; the device cycles do not depend on the host.
+
+| Per decode token | Qwen3-30B-A3B Q4_K_M |
+| --- | --- |
+| Decode tok/s, runs 1 / 2 / 3 | 9.41 / 13.06 / 15.82 |
+| **Best, median** | **15.82, 13.06 tok/s** (63.20, 76.59 ms) |
+| `PERF_CYCLES` per token | 11.338 M (56.69 ms at 200 MHz; 17.6 tok/s from device time alone) |
+| Device share of wall time, runs 1 / 2 / 3 | 53.3 / 74.0 / 89.7 % |
+| Load average (1 min) at start and end, runs 1 / 2 / 3 | 45.0 to 58.3 / 37.5 to 35.6 / 40.0 to 38.4 |
+| `MVM_CYCLES` | 8.469 M (74.7 %) |
+| `MVM_EMPTY` / `MVM_WAIT` | 2.018 M (17.8 %) / 0.847 M (7.5 %) |
+| `VU_CYCLES` / `DMA_CYCLES` / `QACT_CYCLES` | 0.749 M (6.6 %) / 1.245 M (11.0 %) / 0.374 M (3.3 %) |
+| `ATT_QK_CYCLES` / `ATT_PV_CYCLES` | 0.035 M (0.3 %) / 0.063 M (0.6 %) |
+| Launches per token, op records per launch | 1, 1,397 |
+| Backend host work, outside the backend, launch beyond device time (best run) | 0.06, 6.25, 0.20 ms |
+| At 276.3 MHz (device time only, an estimate) | 41.0 ms, 24.4 tok/s |
+
+The decode figure is llama.cpp's `eval time` (64 runs); the cycles are the difference of the PERF counters of the `-n 65` and `-n 1` runs over the 64
+passes between them (the same 11.338 M in all three pairs). Run 1 ran while the load average rose from 45 to 58 and run 2 at 36 to 37: their device time is
+the same, so the rest of their wall time is host time (outside the backend: 6 ms in the best run, 46 ms in the first). The unit percentages
+overlap. A decode token reads 8 of 128 experts in each of 48 layers: the MVM unit is busy in 75 % of the cycles, and 25 % are queue
+gaps (`MVM_EMPTY`, `MVM_WAIT`), the same shape as Gemma 4's (81 % busy) with less weight per token (3.3 B of the 30.5 B parameters are active, by the model card).
+
+| 512-token prefill | Qwen3-30B-A3B Q4_K_M (`-ub 64`) |
+| --- | --- |
+| tok/s, runs 1 / 2 / 3 | 26.30 / 26.04 / 24.87 |
+| **Best, median** | **26.30, 26.04 tok/s** (19.47 s for the first run) |
+| `PERF_CYCLES` of the run | 3,850.6 M (19.25 s; 7.52 M per prompt token) |
+| Device share of wall time, runs 1 / 2 / 3 | 98.9 / 97.9 / 93.5 % |
+| `MVM_EMPTY` / `MVM_WAIT` | 15.5 % / 9.4 % |
+| Launches | 9 (eight ubatches and the one decode) |
+| Load average (1 min) at start and end, runs 1 / 2 / 3 | 44.2 to 37.5 / 23.0 to 40.0 / 39.3 to 34.2 |
+
+Prefill runs one MVM of T = 1 per (token, slot) (SW-66): 7.5 M cycles per prompt token against 11.3 M for a decode token (Gemma 4: 7.6 M
+against 16.3 M). Grouping tokens by expert is not built.
 
 ## The full-feature image after the ATTPV fix (`k4full`, fourth link, 2026-11-08)
 

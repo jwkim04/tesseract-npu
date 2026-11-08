@@ -806,7 +806,7 @@ stays off: the selection is integer compares on the RISC-V in the new firmware k
 (0x1F) runs the expert MVMs at `W_OFF + id × EXP_STRIDE`. Expert tensors are placed per channel with the expert
 stride, the router is converted to Q8_0 at load, and the backend fuses llama.cpp's router nodes and the per-expert
 scale nodes into one record each. Prefill still reads each token's experts separately; token grouping is designed
-(SW-66), not built. The details and decisions SW-60 to SW-66 are in
+(SW-66), not built. Qwen3-30B-A3B (`qwen3moe`) runs on the same kinds with no change (SW-77). The details and decisions SW-60 to SW-66 and SW-77 are in
 [SW](06-software-verification.md) §7.9; the measurements are in [klcheck](../klcheck.md) and the handoff. The
 paragraphs below are the planning text that preceded it.
 
