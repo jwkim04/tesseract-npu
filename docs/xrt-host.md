@@ -362,7 +362,10 @@ cover `m2m` and the behaviour after `xbutil reset`.
 Done on 2026-11-08 with the full image `k4full` (`platform-u200.md` §8.8 "Card bring-up"): `tsr-selftest` 184 of 185 checks (the
 attention case failed on the ATTPV fault of that section), the trace replays of every set that fits `T_MAX` 4 (647 bit-exact; the `at` set
 failed on the same fault), the same replays with the trace writer on, M6 on both models, the vector-unit kinds of M7 on both models
-(all bit-identical to the simulator) and the GDB smoke with the history and the trace writer.
+(all bit-identical to the simulator) and the GDB smoke with the history and the trace writer. The image of the fourth link (the ATTPV
+fix, §8.8 "Card bring-up of the fourth link") passes all of it: `tsr-selftest` 184 of 184 (the first run after a load differs in two
+lines of id 5, §8.8), 745 trace replays bit-exact with the `at` set 98 of 98, M6 and M7 with attention on the device on both
+models bit-identical to the simulator.
 
 Done on 2026-11-06 with the reduced image `k4m200` (`platform-u200.md` §8.7): steps 1 and 2 below ran as
 `TSR_XCLBIN=build/link/k4m200/tsr_u200_k4.xclbin tsr-selftest --device xrt` (205 checks passed; the xclbin loaded as an

@@ -8,7 +8,7 @@ measurement history and the commands that reproduce the numbers.
 
 > **Scope.** Measurement record, not a design. The first card measurements with the control core
 > are in "The first card image with the control core" below (2026-11-06); the full-feature image's
-> are in "The full-feature image on the card" (2026-11-08). All other card
+> are in "The full-feature image after the ATTPV fix" and, for the image before the fix, "The full-feature image on the card, second link" (both 2026-11-08). All other card
 > measurements were taken before the control core was added, with the host issuing the ops; the
 > Vivado and RTL simulation results are of the design that ran on the card. The other numbers are simulator measurements or estimates, and none
 > of them is a card measurement. Every number carries one of the provenance labels below. The
@@ -25,7 +25,7 @@ Provenance labels:
 | --- | --- |
 | `measured on the card (k4, 276.3 MHz)` | Alveo U200, bitstream `tsr_u200_k4` at its achieved kernel clock. Other bitstreams are named: `k1`, `tsr_bw_k4`, or the milestone (M0, M3, M4) |
 | `measured on the card (k4m200, 200 / 100 MHz)` | Alveo U200, the first image with the control core: `tsr_u200_k4` as linked on 2026-11-06 with the core at 200 MHz and `clk_rv` at 100 MHz |
-| `measured on the card (k4full, 200 / 100 MHz)` | Alveo U200, the full-feature image (`tsr_u200_k4` of branch `k4full`: `T_MAX` 4, VU, attention, trace writer) linked on 2026-11-08 with the core at 200 MHz and `clk_rv` at 100 MHz |
+| `measured on the card (k4full, 200 / 100 MHz)` | Alveo U200, the full-feature image (`tsr_u200_k4` of branch `k4full`: `T_MAX` 4, VU, attention, trace writer) linked on 2026-11-07 / 08 with the core at 200 MHz and `clk_rv` at 100 MHz. The sections name the link (second: before the ATTPV fix; fourth: after it) |
 | `measured on the simulator (<commit>)` | Software time of this tree on the development host: host work, simulator speed, accuracy results of the tools |
 | `simulator cycle model (<commit>)` | Device or RISC-V cycles from the simulator's informational cycle model. Not a card measurement |
 | `measured in RTL simulation (ideal memory)` | Verilator simulation of the RTL with an ideal memory |
@@ -51,7 +51,77 @@ patches ([`sw/xrt-driver`](../sw/xrt-driver/README.md)), shell `xilinx_u200_gen3
 SC firmware 4.6.21. The U200 has a VU9P with three SLRs and 4 x 16 GB DDR4 (DDR4-2400, 19.2 GB/s
 peak per channel). Simulator timings are from the same host.
 
-## The full-feature image on the card (`k4full`, 2026-11-08)
+## The full-feature image after the ATTPV fix (`k4full`, fourth link, 2026-11-08)
+
+Measured on the card (k4full, fourth link, 200 / 100 MHz), 2026-11-08. The image is `build/link/k4full/tsr_u200_k4.xclbin`, sha256
+`6fdf31fdee80778771644fdc7708041c66070fd2ed8f0b1f753c7f66d3745284`, UUID `c7f70219-f070-c4fd-cfdc-1da14a7eb251`, source `d33f816`.
+The configuration, the host tools, the settings and the method are those of the section below (second link): `-n 65` and `-n 1`
+(the per-token figures are the difference divided by 64), a 158-token paragraph for prefill, the PERF counters read with `tsr-dbg
+--attach -ex perf` after each run. Three runs per case for 0.5B and two for 32B. The host was not quiet (load average 1.6 to 6.3 at
+the start of the runs); the device counters do not depend on it. In the "M7" rows attention and the KV cache are on the device (no
+`-nkvo`); that run is bit-identical to the simulator ([`klcheck.md`](klcheck.md), [`platform-u200.md`](platform-u200.md) §8.8
+"Card bring-up of the fourth link").
+
+### Throughput
+
+| Model, phase | Prefill, 158 tokens | Prefill, 7 tokens | Decode, best run | Decode, all runs | Launches per decode token |
+| --- | --- | --- | --- | --- | ---: |
+| 0.5B Q8_0, `TSR_KINDS=m6` | 407.1 tok/s (388.1 ms; 404.8 to 407.1) | 5.13 to 5.27 ms per token | **47.83 tok/s** (20.91 ms) | 47.5 to 47.8 tok/s (20.91 to 21.05 ms) | 145 |
+| 0.5B Q8_0, vector-unit kinds (`-nkvo`) | 383.7 tok/s (411.8 ms; 382.2 to 383.7) | 4.02 to 4.07 ms per token | **68.45 tok/s** (14.61 ms) | 67.8 to 68.5 tok/s (14.61 to 14.76 ms) | 25 |
+| 0.5B Q8_0, M7 | 337.6 tok/s (468.0 ms; 337.0 to 337.6) | 4.55 to 4.58 ms per token | **75.88 tok/s** (13.18 ms) | 75.5 to 75.9 tok/s (13.18 to 13.24 ms) | 1 |
+| 32B Q4_K_M, `TSR_KINDS=m6` | 9.5 tok/s (16.59 s; 2 runs) | 126.3 to 126.7 ms per token | **2.25 tok/s** (443.75 ms) | 2.25 tok/s (443.75 and 444.92 ms) | 385 |
+| 32B Q4_K_M, vector-unit kinds (`-nkvo`) | 9.5 tok/s (16.62 s; 2 runs) | 125.1 to 125.2 ms per token | **2.32 tok/s** (430.25 ms) | 2.32 tok/s (430.25 and 430.34 ms) | 65 |
+| 32B Q4_K_M, M7 | 9.3 tok/s (17.07 s; 2 runs) | 129.0 ms per token | **2.35 tok/s** (424.93 ms) | 2.35 tok/s (424.93 and 425.19 ms) | 1 |
+
+The 158-token prefill is one graph pass: it takes the same number of launches as one decode token (145 / 25 / 1 for 0.5B, 385 / 65 / 1
+for 32B). Decode with attention on the device gains 1.59 times over `TSR_KINDS=m6` for 0.5B (20.91 to 13.18 ms) and 1.11 times over the
+vector-unit kinds (14.61 to 13.18 ms); for 32B it gains 4.2 % and 1.2 % (443.75, 430.25 and 424.93 ms). Prefill goes the other way at
+`T_MAX` 4: 0.5B takes 407 tok/s with `m6`, 384 with the vector-unit kinds and 338 with attention on the device. The run (158 tokens
+and one decode token) costs 69.1 M, 80.7 M and 95.8 M device cycles; in the M7 run `MVM_EMPTY` is 15.8 % and `MVM_WAIT` 12.1 % of
+the cycles. For 32B the three runs cost 3,220 M, 3,356 M and 3,486 M cycles. In prefill the device takes longer for these ops than
+the CPU does.
+
+Per decode token with attention and the KV cache on the device (device counters, 200 MHz):
+
+| Per decode token | Qwen2.5-0.5B Q8_0 | Qwen2.5-32B Q4_K_M |
+| --- | --- | --- |
+| Wall (llama.cpp `eval time`) | 13.18 ms | 424.93 ms |
+| `PERF_CYCLES` | 2.567 M (12.84 ms, 97.4 % of the wall time) | 84.586 M (422.93 ms, 99.5 %) |
+| `MVM_CYCLES` | 2.120 M (82.6 %) | 81.265 M (96.1 %) |
+| `MVM_EMPTY` / `MVM_WAIT` | 133,049 (5.2 %) / 313,258 (12.2 %) | 19,281 (0.0 %) / 3.300 M (3.9 %) |
+| `VU_CYCLES`, `VU_HAZARD` | 99,893 (3.9 %), 10,273 | 1.035 M (1.2 %), 27,112 |
+| `ATT_QK_CYCLES` / `ATT_PV_CYCLES` | 9,873 (0.4 %) / 13,790 (0.5 %) | 69,875 (0.1 %) / 107,368 (0.1 %) |
+| `DMA_CYCLES`, `QACT_CYCLES` | 6.0 %, 5.7 % | 1.6 %, 1.2 % |
+| Launches per token | 1 | 1 |
+| Backend host work, outside the backend | 0.12 ms, 0.18 ms | 0.45 ms, 0.46 ms |
+| `RV_WFI`, `PUSH_STALL` | 0, 0 | 0, 0 |
+| `REC_DROPPED` | 1 | 1 |
+
+With one launch per token the host is out of the way: the wall time is 97.4 % (0.5B) and 99.5 % (32B) device time. What is left for
+0.5B is the device's own idle share (`MVM_WAIT` 12.2 %, the MVM unit idle behind a queued entry that cannot start, and `MVM_EMPTY`
+5.2 %). The attention ops themselves are small: `ATT_QK_CYCLES` and `ATT_PV_CYCLES` are 0.9 % of a 0.5B token at contexts of 8 to 72 tokens. The `ATT_CYCLES` counter of the issue path reads 0 (the attention ops run in the MVM clusters and have no queue of their own).
+
+### Against the second link's image
+
+| | Second link | Fourth link |
+| --- | --- | --- |
+| `m6` decode 0.5B, best | 49.5 tok/s (20.19 ms) | 47.83 tok/s (20.91 ms) |
+| `m6` cycles per token, 0.5B / 32B | 2.893 M / 84.059 M | 2.893 M / 84.058 M |
+| `m6` decode 32B, best | 2.27 tok/s (441.3 ms) | 2.25 tok/s (443.75 ms) |
+| `m6` prefill 158 tokens, 0.5B / 32B | 410.8 tok/s / 9.6 tok/s | 407.1 tok/s / 9.5 tok/s |
+| Vector-unit kinds, decode 0.5B / 32B | 69.6 tok/s (14.36 ms) / 2.33 tok/s (429.2 ms) | 68.45 tok/s (14.61 ms) / 2.32 tok/s (430.25 ms) |
+| Vector-unit kinds, cycles per token, 0.5B / 32B | 2.542 M / 84.073 M | 2.543 M / 84.072 M |
+| `VU_CYCLES` per token, 0.5B / 32B | 75,490 / 762,725 | 75,833 / 763,627 |
+| Launch round trip beyond the device time (`m6`) | 16.0 µs (0.5B), 15.5 µs (32B) | 16.3 µs, 15.6 µs |
+
+The device cycles per token are equal to four digits, so the XSLR stages cost nothing visible in decode ([`platform-u200.md`](platform-u200.md)
+§8.8: +6 cycles on the VU path of an isolated op against no stages, +2 against the second link). The `VU_CYCLES` counter grows by 343
+(0.5B) and 902 (32B) cycles per token, 0.45 % and 0.12 % of the VU's busy time and 0.01 % of the token. The wall time is 1.7 to 3.6
+% longer for 0.5B and 0.2 to 0.6 % for 32B, with the same busy device time: the difference is the host's share. For the 0.5B `m6`
+token the host work outside the backend is 3.72 ms (3.13 ms before) and the backend's own 0.36 ms (0.28 ms); the load on the host
+was similar (1.4 to 5 before, 1.6 to 6.3 now) and the five runs of the second link spread over 20.19 to 20.65 ms.
+
+## The full-feature image on the card, second link (`k4full`, 2026-11-08)
 
 Measured on the card (k4full, 200 / 100 MHz), 2026-11-08. The image is `build/link/k4full/tsr_u200_k4.xclbin`, sha256
 `20f259253f539ffe700f7b3529193a00da9cadfade74cf52722b647d7ab922e7`, UUID `4a095476-ebbd-cfb5-a49d-2a790b2e9684`; the core runs at
@@ -110,7 +180,7 @@ between two attention layers. The logits equal the simulator's bit for bit (0.5B
 Against `TSR_KINDS=m6` the 0.5B decode gains 40 % (20.19 to 14.36 ms): 120 fewer launches (the round trips of 2.32 ms drop to
 0.23 ms), 0.35 M fewer cycles (the issue-bound gaps of tiny ops, `MVM_EMPTY` 22.5 % to 5.7 %), and the CPU's RMS_NORM, RoPE, SiLU
 and adds are gone. 32B gains 2.7 %. The remaining host share is the CPU attention (1.07 ms for 0.5B, 5.9 ms for 32B outside the
-backend). M7 with attention on the device would also remove it; that waits for the ATTPV fix on a new link.
+backend). M7 with attention on the device would also remove it; it needed the ATTPV fix (next section up).
 
 ### Other card figures
 
@@ -681,9 +751,10 @@ the card in W6 and in synthesis in W4/W5.
 | 2026-10-31 | W2b `a775222`, decisions `802311e`: M7 kernels including flash attention | layer-level tests against the composed references and ggml-cpu; every short kind at the 0.5B decode shapes at or under 350 RISC-V cycles; 5.1 % of a 0.5B decode layer lost to issue with the U200 queues | simulator cycle model; `docs/design/README.md` §10 |
 | 2026-11-06 | W6: the first card image with the control core (`k4m200`, core 200 MHz, `clk_rv` 100 MHz), M6 | `tsr-selftest` 205 / 205; 0.5B logits bit-identical to the simulator (512 / 512 rows), KL ratio 1.026, 47.3 tok/s decode; 32B KL ratio 0.750, top-1 100 % (32 positions), 32 / 32 rows bit-identical to the simulator, 2.24 tok/s decode; GDB session on the card | measured on the card (k4m200, 200 / 100 MHz) |
 | 2026-11-08 | W6: the full-feature image (`k4full`, core 200 MHz, `clk_rv` 100 MHz): selftest, M6, the vector-unit kinds of M7 | `tsr-selftest` 184 / 185 (ATTPV differs); M6 bit-identical to the simulator (0.5B 512 / 512, 32B 32 / 32); vector-unit kinds on the device bit-identical, 0.5B 69.6 tok/s (25 launches per token), 32B 2.33 tok/s; M6 decode 49.5 / 2.27 tok/s, prefill 410.8 / 9.6 tok/s (`T_MAX` 4); M7 attention on the device wrong (Vivado fault in the ATTPV lane select) | measured on the card (k4full, 200 / 100 MHz) |
+| 2026-11-08 | W6: the full-feature image after the ATTPV fix (`k4full`, fourth link) | `tsr-selftest` 184 / 184 after the first run of a load (the first run differs in two lines of id 5); 745 trace replays bit-exact, `at` 98 / 98; M6, vector-unit kinds and M7 with attention on the device bit-identical to the simulator on 0.5B (512 / 512) and 32B (32 / 32); M7 KL ratio 0.953 (0.5B) and 0.735 (32B); M7 decode 75.88 tok/s (0.5B, 13.18 ms, 1 launch per token) and 2.35 tok/s (32B); `m6` decode 47.83 / 2.25 tok/s | measured on the card (k4full, 200 / 100 MHz) |
 
-Next: the M7 gate on the card (one launch per decode token, the full image with the vector unit and
-attention), [`docs/design/README.md`](design/README.md) §10.
+Next: the next model targets and the open items of [`docs/handoff.md`](handoff.md); the design plan is
+[`docs/design/README.md`](design/README.md) §10.
 
 ## Reproducing the numbers
 
@@ -697,6 +768,18 @@ runs again (work package W6). The M0 bandwidth run uses the `tsr_bw` tool, which
 tsr_bw --dry-run
 tsr_bw --pcie --sweep-outstanding --ids 1 --csv build/card/m0_ids1.csv
 tsr_bw --ids 16 --csv build/card/m0_ids16.csv
+```
+
+The full-feature image on the card (host tools of `build/xrt`; the scripts of the 2026-11-08 runs were in `build/card/link4`):
+
+```sh
+TSR_XCLBIN=build/link/k4full/tsr_u200_k4.xclbin build/xrt/bin/tsr-selftest --device xrt
+TSR_XCLBIN=... build/xrt/bin/tsr-selftest --device xrt --no-mem --no-kernel --traces traces/at
+TSR_XCLBIN=... build/xrt/bin/klcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf --device xrt --phase m7 -n 64 -o build/card/q05-m7
+TSR_SIM_TMAX=4 build/xrt/bin/klcheck run --device sim --tokens build/card/q05-m7/dev.klc --out build/card/q05-m7/dev-sim-replay.klc \
+    -m models/qwen2.5-0.5b-instruct-q8_0.gguf --phase m7
+build/xrt/bin/klcheck compare --ref build/card/q05-m7/dev-sim-replay.klc --dev build/card/q05-m7/dev.klc --expect-identical
+# decode: llama-completion ... -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -c 4096 --temp 0 -no-cnv -n 65 (M7), add -nkvo for M6 / VU kinds
 ```
 
 The simulator results use the current tree (`build/dev`):

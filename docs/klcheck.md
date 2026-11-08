@@ -6,7 +6,7 @@ the ggml CPU backend on whole-model logits, against a floor given by the CPU com
 under a 1-ulp input perturbation. Pass (the specification's values): **mean KL(CPU ‖ device) ≤ 3 ×
 floor and top-1 agreement ≥ 80 %**, where the floor is the mean over three floor runs with different
 seeds (`--floor-seeds`, below). The check is part of the M1 and M4 gates (done) and of the M6 and M7
-gates (measured on the simulator; M6 also on the card with the reduced `k4m200` image and the full `k4full` image, rows below; M7 on the card passes for the vector-unit kinds and fails for attention until the ATTPV fix is linked, rows below).
+gates (measured on the simulator; M6 also on the card with the reduced `k4m200` image and the full `k4full` image, rows below; M7 also on the card with the full image, with attention and the KV cache on the device since the ATTPV fix, rows below).
 
 > **Scope.** User documentation and measurement record of `klcheck`. Status words: *on the
 > simulator* means a run through the software stack with `TSR_DEVICE=sim` or `mock`; *on the card*
@@ -212,19 +212,19 @@ runs against several seeds are described in the text.
 | Qwen2.5-0.5B Q8_0 | sim | M6 | 512 (8 × 64) | 2.595e-3 / 2.530e-3 | 1.026 | 97.07 % | measured on the simulator (`83ac601`) |
 | Qwen2.5-0.5B Q8_0 | sim | M6 | 128 (4 × 32; ctest `tools_klcheck_qwen05b`) | 2.089e-3 / 2.912e-3 | 0.717 | 96.88 % | measured on the simulator (`83ac601`) |
 | Qwen2.5-0.5B Q8_0 | xrt, k4m200 | M6 | 512 (8 × 64) | 2.5947e-3 / 2.5301e-3 | 1.026 | 97.07 % | measured on the card (k4m200, 200 / 100 MHz); 512 of 512 rows bit-identical to `sim` |
-| Qwen2.5-0.5B Q8_0 | xrt, k4full | M6 | 512 (8 × 64) | 2.5947e-3 / 2.4101e-3 (mean of 3 floors) | 1.077 (1.026 against seed 1) | 97.07 % | measured on the card (k4full, 200 / 100 MHz); 512 of 512 rows bit-identical to `sim` at `T_MAX` 4 |
+| Qwen2.5-0.5B Q8_0 | xrt, k4full | M6 | 512 (8 × 64) | 2.5947e-3 / 2.4101e-3 (mean of 3 floors) | 1.077 (1.026 against seed 1) | 97.07 % | measured on the card (k4full, second and fourth link, 200 / 100 MHz; the same figures to every digit on both); 512 of 512 rows bit-identical to `sim` at `T_MAX` 4 |
 | Qwen2.5-32B Q4_K_M | sim | FA off | 256 (4 × 64) | 2.550e-3 / 1.876e-3 | 1.360 | 98.83 % | measured on the simulator (M1) |
 | Qwen2.5-32B Q4_K_M | xrt, k4 | FA off | 512 (8 × 64) | 2.4113e-3 / 1.8487e-3 | 1.304 | 99.02 % | measured on the card (M4) |
 | Qwen2.5-32B Q4_K_M | sim | M6 | 512 (8 × 64) | 2.886e-3 / 2.246e-3 | 1.285 | 98.44 % | measured on the simulator (`83ac601`) |
 | Qwen2.5-32B Q4_K_M | xrt, k4m200 | M6 | 32 (2 × 16) | 1.3362e-3 / 1.7817e-3 (mean of 3 floors) | 0.750 | 100 % | measured on the card (k4m200, 200 / 100 MHz); 32 of 32 rows bit-identical to `sim` |
-| Qwen2.5-32B Q4_K_M | xrt, k4full | M6 | 32 (2 × 16) | 1.3362e-3 / 1.7817e-3 (mean of 3 floors) | 0.750 | 100 % | measured on the card (k4full, 200 / 100 MHz); 32 of 32 rows bit-identical to `sim` |
+| Qwen2.5-32B Q4_K_M | xrt, k4full | M6 | 32 (2 × 16) | 1.3362e-3 / 1.7817e-3 (mean of 3 floors) | 0.750 | 100 % | measured on the card (k4full, second and fourth link, 200 / 100 MHz; the same figures to every digit on both); 32 of 32 rows bit-identical to `sim` |
 | Qwen2.5-0.5B Q8_0 | sim | M7 | 512 (8 × 64) | 2.22e-3 / 2.43e-3 | 0.914 | 98.05 % | measured on the simulator (M7) |
 | Qwen2.5-0.5B Q8_0 | sim | M7 | 34 (2 × 17) | not recorded | 0.765 | not recorded | measured on the simulator (M7) |
 | Qwen2.5-32B Q4_K_M | sim | M7 | 512 (8 × 64) | 3.113e-3 / 2.549e-3 | 1.221 | 98.63 % | measured on the simulator (M7) |
-| Qwen2.5-0.5B Q8_0 | xrt, k4full | M7, vector-unit kinds on the device, attention and KV on the host (`--offload-kqv off`) | 512 (8 × 64) | 2.6613e-3 / 2.3609e-3 (mean of 3 floors) | 1.127 | 98.63 % | measured on the card (k4full, 200 / 100 MHz); 512 of 512 rows bit-identical to `sim` |
-| Qwen2.5-32B Q4_K_M | xrt, k4full | M7, vector-unit kinds on the device, attention and KV on the host | 32 (2 × 16) | 1.3848e-3 / 1.7817e-3 (mean of 3 floors) | 0.777 | 100 % | measured on the card (k4full, 200 / 100 MHz); 32 of 32 rows bit-identical to `sim` |
-| Qwen2.5-0.5B Q8_0 | xrt, k4full | M7 (attention on the device) | 512 (8 × 64) | 2.4596 / 4.686e-3 | 525 | 34.18 % | **fails**: measured on the card (k4full, 200 / 100 MHz) with the ATTPV fault of `platform-u200.md` §8.8; 0 of 512 rows equal `sim` |
-| Qwen2.5-32B Q4_K_M | xrt, k4full | M7 (attention on the device) | 32 (2 × 16) | 4.609 / 9.996e-3 | 461 | 21.88 % | **fails**, same cause; 0 of 32 rows equal `sim` |
+| Qwen2.5-0.5B Q8_0 | xrt, k4full | M7, vector-unit kinds on the device, attention and KV on the host (`--offload-kqv off`) | 512 (8 × 64) | 2.6613e-3 / 2.3609e-3 (mean of 3 floors) | 1.127 | 98.63 % | measured on the card (k4full, second and fourth link, 200 / 100 MHz; the same figures to every digit on both); 512 of 512 rows bit-identical to `sim` |
+| Qwen2.5-32B Q4_K_M | xrt, k4full | M7, vector-unit kinds on the device, attention and KV on the host | 32 (2 × 16) | 1.3848e-3 / 1.7817e-3 (mean of 3 floors) | 0.777 | 100 % | measured on the card (k4full, second and fourth link, 200 / 100 MHz; the same figures to every digit on both); 32 of 32 rows bit-identical to `sim` |
+| Qwen2.5-0.5B Q8_0 | xrt, k4full | M7 (attention and KV on the device) | 512 (8 × 64) | 2.2216e-3 / 2.3307e-3 (mean of 3 floors) | 0.953 (0.914 against seed 1) | 98.05 % | measured on the card (k4full, fourth link, 200 / 100 MHz, one launch per token); 512 of 512 rows bit-identical to `sim` at `T_MAX` 4. The second link's image, with the ATTPV fault of `platform-u200.md` §8.8, gave 2.4596 / 4.686e-3, ratio 525, top-1 34.18 %, 0 of 512 rows equal |
+| Qwen2.5-32B Q4_K_M | xrt, k4full | M7 (attention and KV on the device) | 32 (2 × 16) | 1.3104e-3 / 1.7817e-3 (mean of 3 floors) | 0.735 | 100 % | measured on the card (k4full, fourth link, 200 / 100 MHz); 32 of 32 rows bit-identical to `sim`. The second link's image gave 4.609 / 9.996e-3, ratio 461, top-1 21.88 %, 0 of 32 rows equal |
 | Gemma 4 12B Q4_K_M | sim | M6 | 512 (8 × 64) | 9.504e-2 / 7.023e-2 | 1.353 | 96.48 % | measured on the simulator |
 | Gemma 4 12B Q4_K_M | sim | M7 | 512 (8 × 64) | 1.281e-1 / 5.849e-2 | 2.190 | 95.12 % | measured on the simulator (M7) |
 
