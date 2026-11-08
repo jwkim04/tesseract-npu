@@ -260,9 +260,14 @@ The argument words of each kind are in [SW](design/06-software-verification.md) 
 | 0x19 | FLASH_ATTN | 1 | `k_fattn.cpp` | Attention over the KV cache with a mask summary and grouped-query heads. |
 | 0x1A | CPY | 1 | `k_rows.cpp` | Copies f32 rows. |
 | 0x1B | UNARY | 1 | `k_elem.cpp` | TANH, GELU16, SILU, EXP or GELU (exact tanh form). |
+| 0x1C | MUL_MAT_SCALE | 1 | `k_mulmat.cpp` | A MUL_MAT whose result is multiplied by a scalar before it is stored. |
+| 0x1D | MUL_MAT_SOFTCAP | 1 | `k_mulmat.cpp` | A MUL_MAT followed by the scale, tanh and scale of a logit soft cap. |
+| 0x1E | MOE_ROUTE | 1 | `k_moe.cpp` | Router softmax, top-k selection and weight renormalisation of a MoE layer (SW §7.9, SW-61). |
+| 0x1F | MUL_MAT_ID | 1 | `k_moe.cpp` | Matrix product against the experts that the ids of each token select, with an optional per-expert scale (SW-62). |
 
-Kinds 0x20 to 0x3F are reserved. The signature of the table above is `0xfa6f`. A table with only
-NOP, JOIN and MUL_MAT at revision 1 has `0x512e`, and an empty table `0xb51b`.
+Kinds 0x20 to 0x3F are free. The MoE kinds took the lowest free numbers; the Gated DeltaNet kinds are numbered
+downward from 0x3F. The signature of the table above (18 kinds) is `0xc341`; the 14 kinds up to UNARY have `0xfa6f`.
+A table with only NOP, JOIN and MUL_MAT at revision 1 has `0x512e`, and an empty table `0xb51b`.
 
 A kind has one revision for all its variants. Adding a variant of GLU is a Basis minor. Changing
 the bits of an existing variant raises the revision of GLU.

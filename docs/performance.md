@@ -689,6 +689,26 @@ ITCM is 131,072 B, DTCM 65,536 B):
 | --- | --- | --- |
 | W2a (`92f0b17`: `graph`, `selftest`, `replay`) | 25.8 KiB | 46.3 KiB |
 | With the M7 kinds (`a775222`) | 71,588 B (54.6 %; budget 81,920 B) | 49,448 B (75.5 %; budget 57,344 B) |
+| With the MoE kinds MOE_ROUTE and MUL_MAT_ID (`moe` branch, 18 kinds; the base image is 71,712 B and 49,504 B) | 78,520 B (59.9 %) | 49,680 B (75.8 %) |
+
+**Gemma 4 26B-A4B Q4_K_M, a model with experts** (measured on the simulator, `moe` branch; accuracy in
+[klcheck.md](klcheck.md)). Device cycles of one decode token, from the counters of two runs with 4 and 12 tokens
+(`TSR_STATS=1`), at the card image's 200 MHz and at 276.3 MHz (device time only, no host overhead, an estimate for the card):
+
+| Quantity | M6 (matrix products on the device) | M7 (one launch per token) |
+| --- | --- | --- |
+| Device cycles per decode token | 14,344,436 | 15,143,469 |
+| Beats read per channel and token | 13.08 M (channel 1) | 13.11 M |
+| Share of cycles with a beat | 91 % | 87 % |
+| Decode at 200 MHz | 13.9 tok/s | 13.2 tok/s |
+| Decode at 276.3 MHz | 19.3 tok/s | 18.2 tok/s |
+| Launches per decode token | 266, 1.11 records each | 1, 1,320 records (30 MOE_ROUTE and 60 MUL_MAT_ID among them) |
+
+The beats follow from the tensors: experts 8 × 30 × (8,800 + 8,448) = 4.14 M, output head 3.07 M, attention and dense
+branch 5.87 M. Only a third of the stream is the experts, so the output head and the dense branch bound the speed: 13.2 tok/s
+against 2.35 tok/s of the dense 32B on the same card image. A prefill token costs about the same as a decode token
+without the head (8 prompt tokens and 3 decode tokens: 139.7 M cycles in M7), since the experts are read per token
+(SW-66). Host time on the simulator with an idle host: about 0.8 s (M6) and 1.0 s (M7) per decoded token, load 37 to 60 s, upload of 17.18 GB in 51 s.
 
 **Verification facts** (measured on the simulator, as recorded in the commit messages):
 
@@ -796,6 +816,10 @@ build/dev/bin/tsr-numcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf -o buil
 ctest --test-dir build/dev -R '_perf' -V
 # op level
 build/dev/bin/test-backend-ops -o MUL_MAT -b Tesseract0
+build/dev/bin/test-backend-ops test -o MUL_MAT_ID -b Tesseract0   # 945 cases, 928 supported
+# Gemma 4 26B-A4B (file-backed simulator DRAM, run in a detached screen)
+TSR_SIM_DRAM_DIR=build/simdram build/dev/bin/klcheck all -m models/gemma4-26b-a4b/google_gemma-4-26B-A4B-it-Q4_K_M.gguf \
+    -o build/moe-runs/kl-m7-8x64 --device sim --phase m7 -n 64 --n-prompts 8
 # firmware image size
 build/dev/sw/ctrl/host/tsr-elf size build/dev/fw/tsr-fw.elf
 ```

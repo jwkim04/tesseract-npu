@@ -111,7 +111,7 @@ host, and are not comparable with the M6 ones; the table in "Results" names the 
 | Hadamard KV rotation | **off** (`LLAMA_ATTN_ROT_DISABLE=1`, set by the tool for every phase and recorded in the file; `--attn-rot on` unsets it) | With a quantized cache llama.cpp rotates Q, K and V by an F32 graph-input matrix that the MVM cannot use, which would split attention into CPU islands (SW-16, AT-17); the CPU reference uses the same setting, so the comparison stays fair |
 | CPU weight repack (`use_extra_bufts`) | off (`--repack` turns it on) | repacking copies the weights into anonymous memory; 32B Q4_K_M (19 GB) does not fit in 14 GB RAM, while mmap'd weights can be evicted |
 | Device selection | `--device sim\|mock\|vkernel\|xrt`: `TSR_DEVICE` = that value, `devices = {Tesseract0}`, `n_gpu_layers = 999`. `--device cpu`: `TSR_DEVICE=none`, `devices = {}` | the device phase checks that a Tesseract device is registered; a CPU phase never opens a transport. `sim` and `mock` run on the simulator; `vkernel` is not available until the two-clock server exists (P5.3); `xrt` needs a build with `-DTSR_WITH_XRT=ON` and an xclbin (the card path is work package W6, [`docs/xrt-host.md`](xrt-host.md)) |
-| Device kinds | `--phase m6` sets `TSR_KINDS=m6` (the device takes MUL_MAT only). `--phase m7` passes the caller's `TSR_KINDS` on to the backend: unset means every kind of the booted image, and a list such as `all,-RMS_NORM` is read by the backend ([`sw/ggml-tesseract/README.md`](../sw/ggml-tesseract/README.md)). `tsr-numcheck run` does the same | an M7 run can move single kinds back to the CPU to find the kind behind a difference. The value is not in the `.klc` header (it has no free bytes): `klcheck run` prints a `TSR_KINDS` line on device runs, `report.json` has `tsr_kinds` (below) and `tsr-numcheck` writes it to `meta.json` (`info.TSR_KINDS`) |
+| Device kinds | `--phase m6` sets `TSR_KINDS=m6,+MUL_MAT_ID` (the device takes the matrix products: MUL_MAT, and MUL_MAT_ID of a model with experts; a dense model has no MUL_MAT_ID node, so this is `m6` for it; the CPU does the routing). `--phase m7` passes the caller's `TSR_KINDS` on to the backend: unset means every kind of the booted image, and a list such as `all,-RMS_NORM` is read by the backend ([`sw/ggml-tesseract/README.md`](../sw/ggml-tesseract/README.md)). `tsr-numcheck run` does the same | an M7 run can move single kinds back to the CPU to find the kind behind a difference. The value is not in the `.klc` header (it has no free bytes): `klcheck run` prints a `TSR_KINDS` line on device runs, `report.json` has `tsr_kinds` (below) and `tsr-numcheck` writes it to `meta.json` (`info.TSR_KINDS`) |
 | Threads | `-t` (default: online CPUs / 2) | the simulator uses `TSR_SIM_THREADS` (default min(CPUs, 8)) |
 | Context | `n_ctx` = longest sequence rounded up to 256, `n_outputs_max` = rows actually needed | keeps the KV cache, compute buffers and the device IO region small |
 
@@ -227,6 +227,8 @@ runs against several seeds are described in the text.
 | Qwen2.5-32B Q4_K_M | xrt, k4full | M7 (attention and KV on the device) | 32 (2 × 16) | 1.3104e-3 / 1.7817e-3 (mean of 3 floors) | 0.735 | 100 % | measured on the card (k4full, fourth link, 200 / 100 MHz); 32 of 32 rows bit-identical to `sim`. The second link's image gave 4.609 / 9.996e-3, ratio 461, top-1 21.88 %, 0 of 32 rows equal |
 | Gemma 4 12B Q4_K_M | sim | M6 | 512 (8 × 64) | 9.504e-2 / 7.023e-2 | 1.353 | 96.48 % | measured on the simulator |
 | Gemma 4 12B Q4_K_M | sim | M7 | 512 (8 × 64) | 1.281e-1 / 5.849e-2 | 2.190 | 95.12 % | measured on the simulator (M7) |
+| Gemma 4 26B-A4B Q4_K_M (MoE) | sim | M6 (`TSR_KINDS=m6,+MUL_MAT_ID`: matrix products on the device, the CPU selects the experts) | 512 (8 × 64) | 2.4025e-1 / 1.8563e-1 (mean of 3 floors) | 1.294 (1.171 / 1.364 / 1.368 per seed) | 92.77 % | measured on the simulator (`moe` branch) |
+| Gemma 4 26B-A4B Q4_K_M (MoE) | sim | M7 (router, top-k and experts in the one launch) | 512 (8 × 64) | 1.2770e-1 / 1.7200e-1 (mean of 3 floors) | 0.742 (0.729 / 0.690 / 0.820 per seed) | 94.53 % | measured on the simulator (`moe` branch) |
 
 On the card the 0.5B run gives the simulator's mean KL to seven digits (1.095007e-3), and the small
 identity check (`klcheck compare --expect-identical`, sim against xrt, 8 of 8 rows bit-identical on k1
@@ -402,6 +404,72 @@ made with the single floor seed 1, before the default became three seeds.
   ill-conditioned positions where the CPU floor is itself unstable. The device's RMS_NORM is
   bit-exact to its rule and differs from ggml-cpu's double sum at rounding level
   ([VU](design/02-vector-unit.md) §6.9).
+
+### Gemma 4 26B-A4B Q4_K_M (MoE, on the simulator)
+
+The first model with experts: 30 layers, 128 experts of width 704 with 8 used per token, a dense GELU branch
+beside the experts, a per-expert output scale ([SW](design/06-software-verification.md) §7.9). Model:
+`bartowski/google_gemma-4-26B-A4B-it-GGUF`, file `google_gemma-4-26B-A4B-it-Q4_K_M.gguf`, 17,035,039,872 bytes, sha256
+`a07f72221e8e3f77455ab0d7f7652d01a9f63c262b954aa6932a53275a0e895a` (not in git; `models/gemma4-26b-a4b/`). The device
+takes 17.18 GB after the Q5_K, Q6_K and Q5_0 tensors are converted to Q8_0 (the upload takes 51 s on the simulator).
+Commands (screens, `TSR_SIM_DRAM_DIR` for the file-backed simulator DRAM, 14 GB host RAM):
+
+```sh
+TSR_SIM_DRAM_DIR=build/simdram build/dev/bin/klcheck all -m models/gemma4-26b-a4b/google_gemma-4-26B-A4B-it-Q4_K_M.gguf \
+    -o build/moe-runs/kl-m6-8x64 --device sim --phase m6 -n 64 --n-prompts 8
+(the same with --phase m7)
+```
+
+| | M6 (CPU selects, device runs the matrix products) | M7 (router, top-k and experts on the device, one launch per token) |
+| --- | --- | --- |
+| Positions | 512 (8 × 64) | 512 (8 × 64) |
+| Mean KL, device / floor | 2.4025e-1 / 1.8563e-1 | 1.2770e-1 / 1.7200e-1 |
+| Ratio (limit 3) | **1.294** (seeds 1 / 2 / 3: 1.171 / 1.364 / 1.368) | **0.742** (0.729 / 0.690 / 0.820) |
+| Top-1 against the CPU (floor) | **92.77 %** (94.21 %) | **94.53 %** (94.53 %) |
+| Median KL, device / floor | 5.81e-4 / 4.87e-4 | 5.61e-4 / 5.34e-4 |
+| Max KL | 19.97 (seq 2 row 47); floor 13.83 | 9.07; floor 20.20 |
+| Bit-identical rows | 0 / 512 | 0 / 512 |
+| Embd path against token path | bit-identical | bit-identical |
+| Wall time (device / CPU / floors / embd check) | 740 s / 66 s / 135 s / 37 s | 859 s / 65 s / 259 s / 105 s |
+| Launches | 266 per decode pass, 1.11 records each | 1 per pass, 1,320 records |
+
+Both runs pass. The numbers differ from the dense models in one way: **the floor is large**. A change of one ulp in
+the embeddings gives a mean KL of 0.17 to 0.19 nats (0.002 to 0.003 for Qwen2.5), and the device gives about the
+same. The medians are small (5.6e-4 for the device and 5.3e-4 for the floor in M7, 5.8e-4 and 4.9e-4 in M6): the means
+are set by a few positions with a KL of 5 to 20 nats, in the floor as much as in the device. The likely cause, not
+measured here, is the discrete choice of the experts: when the 8th and 9th probabilities of a router are closer than
+the rounding of the layers before it, another expert enters that layer and the token continues on another path.
+The generations are also unsettled. With raw prompts (no chat template) the instruction-tuned model writes
+partly garbled text, on the CPU alone as well: `The history of the printing press begins` continues as ` withle than
+KAT-19, *'er' er' er'` on the CPU and ` wither than- вес- В-А.` on the device, and the
+Korean and JSON prompts fall into repeating loops. The argmax then changes with any noise.
+
+A run of 2 prompts × 16 tokens (32 rows) gave ratio 1.280 against the mean of three floors but top-1 78.12 %, below
+the limit of 80 % (the floor has 83.33 % on the same 32 rows; sequence 0 had 9 of 16): too few rows for this model. Use
+at least 8 × 64.
+
+The device phase is deterministic and does not depend on how the tokens arrive: a run of 3 prompts × 16 tokens that generates on the
+simulator and the same tokens replayed one per step (`klcheck run --device sim --tokens`) give 48 of 48 rows bit-identical with
+`compare --expect-identical`, in M6 and in M7.
+
+What the run does not show: whether the device chooses the same experts as the CPU. The model-level KL cannot
+separate that from the continuous error. The unit tests do (the routing kinds against `tsr_ref_moe_route`, the
+backend graph against the CPU on 64 experts: [SW](design/06-software-verification.md) §7.9, `ggml_tesseract_moe*`).
+
+Device cycles for one decode token (the difference of the counters of two runs with 4 and 12 tokens of the same
+prompt, 8 decode passes; `TSR_STATS=1`; no host time in them):
+
+| | M6 | M7 |
+| --- | --- | --- |
+| Device cycles per decode token | 14.34 M | 15.14 M |
+| MVM busy cycles per token | 13.15 M (92 %) | 13.30 M (88 %) |
+| Beats read per channel and token (channel 1) | 13.08 M | 13.11 M |
+| At 200 MHz (device time only) | 13.9 tok/s | 13.2 tok/s |
+| At 276.3 MHz | 19.3 tok/s | 18.2 tok/s |
+
+The beats per channel match the weight sizes: 8 experts × 30 layers × (8,800 + 8,448) = 4.14 M for the experts, 3.07 M for
+the output head (262,144 rows of Q8_0 over four channels), 5.87 M for the attention and dense-branch weights. Prefill
+runs the same MVMs once per prompt token, with one head: a prompt of 8 tokens plus 3 decode tokens took 139.7 M cycles.
 
 ## Tests
 

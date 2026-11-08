@@ -155,6 +155,43 @@ META. llama.cpp collects offload targets in `src/llama.cpp:222-273`: GPU devices
 - `mmap_support = false` in device props would force `--load-mode none` for all devices
   (:1597-1605); Tesseract reports `true`, so tensors are read from the mmap'd GGUF.
 
+## MoE (MUL_MAT_ID) on the pin
+
+Checked on the pinned tree (`e3797b184`) with Gemma 4 26B-A4B Q4_K_M, November 2026. Design and decisions: SW §7.9.
+
+- **The probe.** For `GGML_OP_MUL_MAT_ID` `weight_buft_supported` builds `w`, `b = F32 [w->ne[0], n_ids_used, 512]` and
+  `ids = I32 [n_ids_used, 512]` (`src/llama-model-loader.cpp:966-974`), `n_ids_used` = `hparams.n_expert_used_max()`.
+  `w` is the real 3D expert tensor of the GGUF with the size-0 dummy buffer, as for MUL_MAT. The probe's `b` and `ids` are
+  unallocated leaves, so supports_op must accept an unallocated src1 and src2 and look only at shapes and types.
+- **Tensors of Gemma 4 26B-A4B** (`src/models/gemma4.cpp:111-125`; one GGUF, 30 layers): `ffn_gate_inp` F32 [2816, 128]
+  (the router, `TENSOR_NOT_REQUIRED`, its presence marks a MoE layer), `ffn_gate_inp.scale` F32 [2816] (`ffn_gate_inp_s`),
+  `ffn_gate_up_exps` Q4_K [2816, 1408, 128] (gate and up in one tensor; the loader also accepts separate `ffn_gate_exps`
+  and `ffn_up_exps`), `ffn_down_exps` Q5_0 or Q8_0 [704, 2816, 128] (a few layers are Q5_0 and are converted to Q8_0 at load,
+  as everywhere), `ffn_down_exps.scale` F32 [128] (`ffn_down_exps_s`, a per-expert factor after the down
+  projection). The dense branch (`ffn_gate`, `ffn_up`, `ffn_down`) sits beside the experts in every layer.
+- **Graph** (`build_moe_ffn`, `src/llama-graph.cpp`): router logits (MUL_MAT), SOFT_MAX, ARGSORT descending with
+  a view of the first k numbers, GET_ROWS of the probabilities, SUM_ROWS, CLAMP at 6.1035e-5, DIV; MUL_MAT_ID for the
+  gate-up (src1 `[n_embd, 1, n_tokens]`, broadcast over the used slots), GLU, MUL_MAT_ID for the down (src1 `[n_ff_exp, k,
+  n_tokens]`), the per-expert scale (GET_ROWS of `ffn_down_exps_s` by the ids, MUL), the MUL by the weights, then k views
+  and k - 1 ADDs. The ids are the ARGSORT view (strided, row pitch `n_expert` words); ggml_backend graph copies it to
+  contiguous memory only when a backend asks.
+- **Sorting is `std::sort` with `>`** (`ggml/src/ggml-cpu/ops.cpp`, `ggml_compute_forward_argsort`): equal values leave in
+  an unspecified order and NaN violates the strict weak ordering. Measured by `sw/sim/tests/test_ref_moe.c` against
+  the pin's ggml-cpu: one tied pair at the boundary goes to the smaller index in 241 of 512 rows, a NaN logit gives an
+  arbitrary permutation. The device's rule is in SW-63.
+- **Node use counts.** `ggml_node_has_n_uses` is false for view nodes and for nodes with the OUTPUT flag (the flag propagates
+  to `view_src`), so a fusion pass must count uses with `ggml_node_get_use_count`. A test that marks the ARGSORT result as a
+  graph output stops the router chain from fusing; llama.cpp itself does not, with `result_norm` and `result_output` only.
+- **Allocator.** The allocator may put a MUL's result over one of the MUL_MAT_ID's inputs (in-place reuse); a record that
+  writes the MUL's tensor directly from the MUL_MAT_ID's loads can overwrite what it still reads. SW-64 has the device
+  write the MUL_MAT_ID's own tensor and copy.
+- **test-backend-ops.** `test-backend-ops test -o MUL_MAT_ID -b Tesseract0` (the pin has 945 cases): 928 supported and
+  passing in 2 min on the simulator (ctest `ggml_tesseract_backend_ops_mul_mat_id`), 17 refused (m not a multiple of 16,
+  k not a multiple of the block, iq2_xxs). The cases use up to 16 slots and 16 matrices.
+- **Offloading.** A MoE layer's MUL_MAT_ID lands on the device with `-ngl` as any other weight: the per-layer experts of
+  Gemma 4 26B-A4B take 4 channels x 30 layers x (68.75 + 66.00) MiB = 15.8 GiB of weight beats (17.05 GB uploaded in all, with
+  the dense branch, attention and head, in 50 s).
+
 ## Do `set_tensor` uploads arrive split?
 
 `llama_model_loader::load_all_data` (`src/llama-model-loader.cpp:1560-1840`):

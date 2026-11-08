@@ -2,6 +2,63 @@
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
 
+## Resume here for MoE: Gemma 4 26B-A4B runs on the simulator (branch `moe`, November 8, night)
+
+Software-only work on the simulator; no RTL change, no card. MoE selection is software on the control core and the TOPK RTL
+stays off. The design is in [design/06-software-verification.md](design/06-software-verification.md) §7.9 (SW-60 to SW-66)
+and [spec.md](spec.md) §13.
+
+What exists (all in `sw/`, all checked against the C simulator or the CPU):
+
+- Reference: `tsr_ref_moe_route` in `sw/sim/tsr_ref_vu.c` (softmax by the VU references, top-k in the VU TOPK order: larger value
+  first, equal values by the smaller index, NaN first, then the renormalised weights by the tree sum and RC). Test `ref_moe`;
+  it also measures ggml-cpu's `std::sort` on ties and NaN (SW-63).
+- Firmware kinds: MOE_ROUTE **0x1E** and MUL_MAT_ID **0x1F** (`sw/ctrl/kernels/k_moe.cpp`, planners `tsr/plan_moe.hpp`, record words
+  `opl::moer` / `opl::mmid`). 18 kinds, kind-table signature 0xC341. ITCM 78,520 B of the 81,920 B budget. Tests
+  `fw_kernels_moe_rv`, `fw_kernels_moe_rv_errors`, `fw_kernels_moe_host` (7,000 rows against the reference), `fw_kind_revs`, `fw_m6_e2e`.
+- Backend: 3D expert tensors placed with `EXP_STRIDE` (SW-60), `MUL_MAT_ID` lowering, fusion of the router chain into one MOE_ROUTE
+  record and of the scale chain into the down MUL_MAT_ID (SW-64). Tests `ggml_tesseract_moe*` (the graph of `build_moe_ffn` in
+  four kind configurations against the CPU, including the scale table in host memory as Gemma 4 has it) and
+  `ggml_tesseract_backend_ops_mul_mat_id` (928 of 945 cases of the pin's `test-backend-ops`; 17 refused).
+- `klcheck` / `tsr-numcheck`: `--phase m6` now sets `TSR_KINDS=m6,+MUL_MAT_ID`.
+
+Kind numbers: the MoE kinds took the lowest free numbers, 0x1E and 0x1F. The next free kind starts at 0x20; the Gated DeltaNet
+work numbers its kinds downward from 0x3F, so the two never meet.
+
+Model: `bartowski/google_gemma-4-26B-A4B-it-GGUF`, `google_gemma-4-26B-A4B-it-Q4_K_M.gguf`, 17,035,039,872 bytes, sha256
+`a07f72221e8e3f77455ab0d7f7652d01a9f63c262b954aa6932a53275a0e895a` (in `models/gemma4-26b-a4b/`, not in git). The pinned llama.cpp
+loads it on the CPU; no patch of `third_party/` was needed.
+
+Results on the simulator (`klcheck all`, 8 prompts x 64 tokens, three floors; [klcheck.md](klcheck.md)):
+
+- M6 (CPU selects, device runs the matrix products): ratio **1.294**, top-1 **92.77 %**.
+- M7 (router, top-k and experts in the one launch per token): ratio **0.742**, top-1 **94.53 %**.
+- The floor of this model is large (mean KL 0.17 to 0.19 for a one-ulp change); the medians are 5e-4. Use 8 x 64: a run of
+  2 x 16 fails the top-1 limit (78 %) with a floor of 83 % on the same rows.
+- Device cycles per decode token: 14.34 M (M6) and 15.14 M (M7), 13.08 M beats per channel; 13.2 tok/s at 200 MHz, 18.2 at 276.3 MHz
+  (device time only, an estimate for the card, [performance.md](performance.md)).
+- Generate and replay on the simulator are bit-identical: the generated tokens of 3 prompts x 16 tokens replayed on the device
+  (`klcheck run --tokens`, one token per step) give 48 of 48 rows with `compare --expect-identical`, in M6 and in M7.
+
+What a card run needs:
+
+1. The new `tsr-fw.elf` (a firmware change; the K4 bitstream is unchanged: MOE_ROUTE needs `CAPS_VU`; MUL_MAT_ID needs it
+   only with a scale table) and the host stack of this branch. The expert weights are 17.18 GB of the 64 GB.
+2. The first M6 step with `TSR_KINDS=m6,+MUL_MAT_ID`, then M7. Both kinds wait with `JOIN` inside the op stream and read the SPM
+   window with the RISC-V inside the handler (SW §7.9, "Joins"): no earlier kind does that. If the card differs from the simulator,
+   look at the joins first (the ids chunk of MUL_MAT_ID, the two joins per tile of MOE_ROUTE).
+3. The card's top-1 and KL are compared with the simulator's by `klcheck compare --expect-identical` on a short run (2 x 16 is
+   enough for identity; the KL limits need 8 x 64).
+
+Left open:
+
+- Prefill runs one MVM of T = 1 per (token, slot), with no expert reuse across tokens (SW-66). Grouping by expert is designed, not
+  built; it pays from about 64 tokens.
+- Only the graph of Gemma 4 is fused: softmax gating, top-k, weights divided by their sum. Sigmoid gating, a router bias, group
+  selection and softmax-after-top-k graphs run the router on the CPU; the experts still run on the device.
+- The clamp of the weight sum is not computed (it cannot act: SW-61). A NaN in the logits gives NaN weights, as in ggml.
+- Ties at the 8th place of the router select the smaller index; ggml's choice is unspecified (SW-63).
+
 ## Resume here: the full-feature image on the card, everything passes (branch `k4full`, November 8, evening)
 
 The image of the fourth link (`build/link/k4full/tsr_u200_k4.xclbin`, source `d33f816`, 76,107,483 bytes, sha256
