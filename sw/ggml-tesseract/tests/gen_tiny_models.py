@@ -22,6 +22,11 @@ graphs from (SW §8 "Ops in the two model families"):
                           S_v = 32, 4 key heads for 16 value heads (a 4x tiling like the 27B's 16 : 48), conv kernel 4,
                           the full layer with the joint Q|gate projection, per-head Q/K norms and partial
                           IMROPE (32 of 64 dims, sections 8 / 4 / 4 / 0)
+  qwen3moe-tiny-q8_0.gguf, qwen3moe-tiny-q4_k.gguf
+                          2 layers of Qwen3-30B-A3B's kind (llama.cpp "qwen3moe"): head_dim 128 with GQA 16:2 (G = 8) and a
+                          Q wider than the hidden size, per-head Q/K norms, NEOX rope, a softmax router over 64 experts
+                          (F32 [E, 64]), 8 used with renormalised weights, separate gate / up / down expert tensors
+                          (3D, Q8_0 or Q4_K), SWIGLU, no shared expert and no per-expert scale
   tiny-prompts.txt        prompts in the vocabularies' alphabet (klcheck --prompts)
 
 Every model has a 64-row vocabulary with valid tokenizer metadata: Qwen2 a GPT-2 byte-level BPE
@@ -332,6 +337,54 @@ def qwen35_spec(seed: int, big: bool = False) -> dict:
     return {"arch": "qwen35", "tensors": t, "kv": kv, "vocab": vocab_qwen2()}
 
 
+def qwen3moe_spec(seed: int) -> dict:
+    """Qwen3 MoE (llama.cpp "qwen3moe", Qwen3-30B-A3B): attention with per-head Q/K norms and a Q wider than the
+    hidden size, every layer a MoE FFN (softmax router, top-k, renormalised weights, separate gate / up / down expert
+    tensors, SWIGLU, no shared expert, no per-expert scale). 64 experts, 8 used; the real model has 128 and 8."""
+    E, H, HKV, D, L, V = 256, 16, 2, 128, 2, 64        # G = H / HKV = 8 and head_dim 128 as the real model
+    X, K, FX = 64, 8, 256                              # experts, used, expert width (Q4_K needs a multiple of 256)
+    r = Rng(seed, "qwen3moe-tiny")
+    t: dict[str, np.ndarray] = {}
+    t["token_embd.weight"] = r.normal((V, E), 1.0)
+    for il in range(L):
+        p = f"blk.{il}."
+        t[p + "attn_norm.weight"] = r.normal((E,), 0.1, 1.0)
+        t[p + "attn_q.weight"] = r.normal((H * D, E), 1.0 / math.sqrt(E))
+        t[p + "attn_k.weight"] = r.normal((HKV * D, E), 1.0 / math.sqrt(E))
+        t[p + "attn_v.weight"] = r.normal((HKV * D, E), 1.0 / math.sqrt(E))
+        wqk = (16.0 / D) ** 0.25                                       # as the Gemma 4 model: q.k of a std of about 2
+        t[p + "attn_q_norm.weight"] = r.normal((D,), 0.05 * wqk, wqk)
+        t[p + "attn_k_norm.weight"] = r.normal((D,), 0.05 * wqk, wqk)
+        t[p + "attn_output.weight"] = r.normal((E, H * D), 0.7 / math.sqrt(H * D))
+        t[p + "ffn_norm.weight"] = r.normal((E,), 0.1, 1.0)
+        # ggml [E, X] F32 in the real GGUFs; logits of a std of about 3 over the experts (the normed input has rms 1)
+        t[p + "ffn_gate_inp.weight"] = r.normal((X, E), 3.0 / math.sqrt(E))
+        t[p + "ffn_gate_exps.weight"] = r.normal((X, FX, E), 1.0 / math.sqrt(E))
+        t[p + "ffn_up_exps.weight"] = r.normal((X, FX, E), 1.0 / math.sqrt(E))
+        t[p + "ffn_down_exps.weight"] = r.normal((X, E, FX), 0.7 / math.sqrt(FX))
+    t["output_norm.weight"] = r.normal((E,), 0.1, 1.0)
+    t["output.weight"] = r.normal((V, E), 4.0 / math.sqrt(E))
+    kv = {
+        "general.architecture": "qwen3moe",
+        "general.type": "model",
+        "general.name": "qwen3moe-tiny",
+        "qwen3moe.block_count": (VT.UINT32, L),
+        "qwen3moe.context_length": (VT.UINT32, 4096),
+        "qwen3moe.embedding_length": (VT.UINT32, E),
+        "qwen3moe.feed_forward_length": (VT.UINT32, 6 * FX),    # unused: the experts' width is given below
+        "qwen3moe.attention.head_count": (VT.UINT32, H),
+        "qwen3moe.attention.head_count_kv": (VT.UINT32, HKV),
+        "qwen3moe.attention.key_length": (VT.UINT32, D),
+        "qwen3moe.attention.value_length": (VT.UINT32, D),
+        "qwen3moe.attention.layer_norm_rms_epsilon": (VT.FLOAT32, 1e-6),
+        "qwen3moe.rope.freq_base": (VT.FLOAT32, 1000000.0),
+        "qwen3moe.expert_count": (VT.UINT32, X),
+        "qwen3moe.expert_used_count": (VT.UINT32, K),
+        "qwen3moe.expert_feed_forward_length": (VT.UINT32, FX),
+    }
+    return {"arch": "qwen3moe", "tensors": t, "kv": kv, "vocab": vocab_qwen2()}
+
+
 def gemma4_spec(seed: int) -> dict:
     E, H, F, L, V = 256, 16, 512, 4, 64
     D_SWA, HKV_SWA, D_FULL, HKV_FULL = 64, 8, 128, 1
@@ -401,7 +454,7 @@ def gemma4_spec(seed: int) -> dict:
 
 def tensor_type(name: str, arr: np.ndarray, variant: str) -> QT:
     """Every 2D weight in the variant's type (as the real Q8_0 GGUFs), 1D tensors F32."""
-    if arr.ndim < 2 or "ssm_conv1d" in name:      # the convolution kernel is an F32 matrix in the real GGUFs too
+    if arr.ndim < 2 or "ssm_conv1d" in name or "ffn_gate_inp" in name:   # the convolution kernel and the router are F32 matrices in the real GGUFs too
         return QT.F32
     return {"q8_0": QT.Q8_0, "q4_k": QT.Q4_K}[variant]
 
@@ -480,12 +533,15 @@ def check_model(spec: dict, variant: str, path: Path) -> None:
     assert not missing, missing
 
 
-SPECS = {"qwen2": qwen2_spec, "qwen35": qwen35_spec, "qwen35big": lambda seed: qwen35_spec(seed, True), "gemma4": gemma4_spec}
+SPECS = {"qwen2": qwen2_spec, "qwen35": qwen35_spec, "qwen35big": lambda seed: qwen35_spec(seed, True), "gemma4": gemma4_spec,
+         "qwen3moe": qwen3moe_spec}
 OUTPUTS = [("qwen2-tiny-q8_0.gguf", "qwen2", "q8_0"),
            ("qwen2-tiny-q4_k.gguf", "qwen2", "q4_k"),
            ("gemma4-tiny-q8_0.gguf", "gemma4", "q8_0"),
            ("qwen35-tiny-q8_0.gguf", "qwen35", "q8_0"),
-           ("qwen35-tiny-s128-q8_0.gguf", "qwen35big", "q8_0")]
+           ("qwen35-tiny-s128-q8_0.gguf", "qwen35big", "q8_0"),
+           ("qwen3moe-tiny-q8_0.gguf", "qwen3moe", "q8_0"),
+           ("qwen3moe-tiny-q4_k.gguf", "qwen3moe", "q4_k")]
 
 
 def main() -> int:

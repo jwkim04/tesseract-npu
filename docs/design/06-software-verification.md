@@ -1490,7 +1490,7 @@ inputs and args. It compares DONE, every output byte and the per-unit completion
   The budget applies to the production image (`tsr-fw.elf`; `fw_elf_image`,
   `fw_elf_test_image`); test images (production plus test kernels) are stamped against the whole ITCM.
 
-### 7.9 MoE kinds (SW-60 to SW-66)
+### 7.9 MoE kinds (SW-60 to SW-66, SW-77)
 
 Status: built and checked on the simulator (November 2026). On the card since 2026-11-09 with the K4 full-feature image ([klcheck.md](../klcheck.md), [performance.md](../performance.md)): the KL checks pass and the logits are bit-identical to the simulator. Source: `sw/ctrl/kernels/k_moe.cpp`,
 planners `tsr/plan_moe.hpp`, references `sw/ctrl/ref/moe_ref.cpp` and `tsr_ref_moe_route` (`sw/sim/tsr_ref_vu.c`),
@@ -1594,6 +1594,37 @@ that only long prompts see.
 **Limits.** n_expert ≤ 512 for MOE_ROUTE and a multiple of 16 (the ids rows are whole lines); k ≤ 16; ≤ 4,096 experts
 per tensor; N a multiple of 16; K a multiple of the format's block; softmax gating with a normalised top-k only (no
 bias, group selection, sigmoid or softmax-after-top-k: those graphs run the router on the CPU).
+
+**SW-77 The Qwen3-30B-A3B graph (llama.cpp `qwen3moe`).** `src/models/qwen3moe.cpp` calls the same `build_moe_ffn` with
+softmax gating and `norm_w`, so its router group is the one of SW-64 and the kinds, planners and fusion pass did not change.
+The model: 48 layers, hidden size 2,048, 128 experts of width 768 with 8 used, no shared expert, no dense branch. Where
+the graph differs from Gemma 4's, in node order:
+
+- Attention: a Q of 4,096 elements for a hidden size of 2,048 (32 heads of 128, 4 KV heads, G = 8), RMS_NORM with a
+  `[128]` weight on every head of Q and K before the NEOX RoPE (as Gemma 4 and Qwen3.8 have), full attention in every
+  layer, no V norm, no post norms, no layer scale, no soft cap. These are existing records.
+- Router: the MUL_MAT of `ffn_gate_inp` (F32 `[2048, 128]`, converted to Q8_0 at load) reads the normed FFN input that the
+  experts read. Gemma 4 puts RMS_NORM, SCALE and MUL by `ffn_gate_inp.scale` in front of it.
+- Experts: gate and up are two tensors (`ffn_gate_exps`, `ffn_up_exps`, Q4_K `[2048, 768, 128]` in every layer), read by
+  two MUL_MAT_IDs with the same ids and the same input (up first), and the activation is `swiglu_split` of their two
+  results (GLU SWIGLU of two contiguous `[768, 8, T]` tensors, the split form the dense models use). Gemma 4 has one
+  `ffn_gate_up_exps` and a GEGLU of two views of its result. The down tensor is Q4_K in 24 layers and Q6_K in the other
+  24 (`[768, 2048, 128]`; Q6_K is converted to Q8_0 at load, SW-60); the device holds 19.8 GB of weights.
+- No per-expert output scale: there is no REPEAT / GET_ROWS / MUL chain, so the scale group of SW-64 does not form. The
+  down MUL_MAT_ID is lowered alone, with no table and no CPY, and the MUL by the router weights (`[1, 8, T]` against
+  `[2048, 8, T]`) is an ordinary MUL record.
+
+`hparams.expert_weights_scale` is 0 for the family, so `build_moe_ffn` adds no SCALE node after the DIV. Nothing was
+patched in llama.cpp. A decode token is one launch of 1,397 records (the same count for a prefill ubatch): per layer 29
+records, namely 5 MUL_MAT (q, k, v, o, router; the residual ADD after the output projection is fused into it, SW-42),
+4 RMS_NORM (attention norm, Q norm, K norm, FFN norm), 2 ROPE, 2 SET_ROWS_KV, 1 FLASH_ATTN, 1 MOE_ROUTE, 3 MUL_MAT_ID, 1 GLU,
+1 MUL (the router weights), 8 ADD (seven for the sum of the experts, one residual) and 1 JOIN; the end of the graph adds 5 (output norm,
+the output MUL_MAT, two GET_ROWS of the output rows, one ADD). Tests (no model file needed): `ggml_tesseract_moe*` build the Qwen3 layer next to
+the Gemma 4 one (`test-tsr-moe`: T = 1 to 64 against the CPU in the four kind configurations; the router group of more than
+one tile is refused here as for Gemma 4, SW-64), and `ggml_tesseract_graph_qwen3moe_tiny` / `_q4k` run a 2-layer model of the
+same graph (`gen_tiny_models.py`: 64 experts, 8 used, head size 128 with G = 8, Q 4 times the hidden size) through klcheck
+with the M7 settings (one launch per decode, one per prefill ubatch, KL against the CPU, `tiny.cmake`). For prefill, run the
+real model with `-ub 64` until the several-tile route is handled.
 
 ### 7.10 Gated DeltaNet and the Qwen3.5 / 3.8 layer graph (SW-67 to SW-74)
 
