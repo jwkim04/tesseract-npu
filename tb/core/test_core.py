@@ -797,6 +797,7 @@ if pytest is not None:
     test_core_m7_half_vu = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_half_vu)
     test_core_m7_ddr_local = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_ddr_local)
     test_core_m7_rv_local = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_rv_local)
+    test_core_m7_fast = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_fast)
     test_core_mutants = pytest.mark.slow(test_core_mutants)
 
 
