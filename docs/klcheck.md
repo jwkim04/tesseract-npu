@@ -526,6 +526,34 @@ model garbled text, as described above. A 1 × 16 run has no KL meaning; it chec
 `klcheck all` on the MoE model took 9 min 24 s (M7) and 7 min 53 s (M6) wall; the floor files and the embd file of each run were
 deleted after the summary (3.2 GB per run), the `dev.klc` and `cpu.klc` files stay in `build/card/moegdn/`.
 
+### Gemma 4 26B-A4B prefill at the default `-ub 512` (SW-76, 2026-11-09)
+
+A router of more than 64 tokens used to abort the host backend at `-ub 256` and above. SW-76 ([SW](design/06-software-verification.md) §7.9) writes its
+outputs to a device scratch and moves them with two CPY records. The checks use one 512-token prompt (the first 512 tokens of a prose text, `<bos>`
+included; one ubatch at `-ub 512`, eight at `-ub 64`) with the logits recorded at all 511 prompt-tail positions, M7 settings, the simulator at `T_MAX` 4:
+
+```sh
+klcheck run -m MODEL --device sim --phase m7 -ub 512 -n 2 --prompts p512.txt --prompt-tail 512 --out sim_ub512.klc
+klcheck run -m MODEL --device sim --phase m7 -ub 64 --tokens sim_ub512.klc --prompt-tail 512 --out sim_ub64.klc
+klcheck compare --ref sim_ub64.klc --dev sim_ub512.klc
+klcheck run -m MODEL --device xrt --phase m7 -ub 512 -n 4 --prompts p512.txt --prompt-tail 512 --out card_ub512.klc
+klcheck run -m MODEL --device sim --phase m7 -ub 512 --tokens card_ub512.klc --out sim_replay_card.klc
+klcheck compare --ref sim_replay_card.klc --dev card_ub512.klc --expect-identical
+```
+
+| Check | Result |
+| --- | --- |
+| Simulator, `-ub 512` against `-ub 64` (513 rows: 511 prompt-tail and 2 generated) | mean KL 0, top-1 100 %, minimum cosine 1.000000, **513 / 513 rows bit-identical** (max abs logit difference 0) |
+| Card at `-ub 512` against the simulator's replay of its tokens (515 rows: 511 prompt-tail and 4 generated) | **515 / 515 rows bit-identical** (card run: prefill 29.6 s with 512 outputs, load 116.6 s) |
+| `klcheck all` against the CPU, M7, `-ub 512`, a 160-token prompt (three tiles per route) and 8 generated tokens, 167 positions, one floor run | mean KL 0.405 against a floor of 0.418 (ratio 0.968, limit 3), top-1 81.44 % (floor 78.44 %, limit 80 %): PASS. The floor of this model is large (mean KL 0.42 for a 1-ulp change of the input), so the check is that the prefill is not worse than that noise |
+| The 2 x 16 run of `build/swm-runs/g26-merged.klc` (made before SW-76; prompts of 8 and 19 tokens, one tile per route, decode of 16 tokens) repeated with the new build | **32 / 32 rows bit-identical**: decode and the short prompts did not change |
+
+A different ubatch gives the same bits on the device: the MVM of a row does not depend on T (SW-66), the vector kinds work per row and attention per query. The
+check is on this prompt; it is not a proof for every ubatch size. The scratch and its CPY records only move words, so the routes' ids and weights are the
+record's own. The ctest case `ggml_tesseract_moe` (the router group with its outputs placed over the logits of later tiles, 65 to 11,000 tokens) compares them with the
+CPU: the build before SW-76 aborts on it, and the same lowering with direct stores gives wrong ids and weights. The simulator took 1,079 s (`-ub 512`) and
+1,273 s (`-ub 64`) for the prefill, the card 29.6 s.
+
 ## Tests
 
 - `tools_klcheck_selftest` (no model): the 1-ulp nudge (exactly one ulp, deterministic, balanced

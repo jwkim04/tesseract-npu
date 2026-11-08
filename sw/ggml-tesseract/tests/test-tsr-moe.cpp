@@ -18,6 +18,11 @@
 // (one MOE_ROUTE record) and the scale group, `m6,+MUL_MAT_ID` only the matrix products (the CPU selects),
 // `all,-MOE_ROUTE` takes everything but the routing; TSR_TEST_ROUTE / TSR_TEST_MMID state what supports_op must answer
 // for SOFT_MAX / ARGSORT and for MUL_MAT_ID. Exit code 0 on success.
+//
+// run_route_layouts (SW-76): the router group alone, with the tensors of the group placed by hand in one device buffer so
+// that its outputs (the ids rows, the weights) lie over the logits of tiles that are read later, as ggml-alloc may place
+// them (it put the weights at the start of the logits of Gemma 4's layer 28 at 256 tokens). T = 65 .. 11,000 tokens, i.e.
+// two to 172 tiles; ids and weights against the CPU's.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -265,6 +270,159 @@ static void run_case(const weights & wd, const weights & wc, int64_t T) {
     CHECK(e <= 5e-3, "T=%lld: NMSE %.3g vs CPU", (long long) T, e);
 }
 
+// ---------------------------------------------------------------------------------------------
+// run_route_layouts
+// ---------------------------------------------------------------------------------------------
+struct route_graph {
+    ggml_context * ctx = nullptr;
+    ggml_cgraph * gf = nullptr;
+    ggml_tensor * logits = nullptr, * probs = nullptr, * argsort = nullptr, * ids = nullptr, * getr = nullptr, * sum = nullptr,
+                * clamp = nullptr, * div = nullptr, * wnorm = nullptr;
+    std::vector<ggml_tensor *> views;      // ids, the reshapes, in graph order
+};
+
+// The nodes of build_moe_ffn's router group (the tail of build_layer): SOFT_MAX, ARGSORT + the view of the first k,
+// GET_ROWS of the reshaped probabilities, SUM_ROWS, CLAMP, DIV, and the reshape of the weights that its consumer reads.
+static route_graph build_route(int64_t n, int64_t k, int64_t T) {
+    route_graph r;
+    ggml_init_params ip = { ggml_tensor_overhead() * 32 + ggml_graph_overhead_custom(64, false), nullptr, true };
+    r.ctx = ggml_init(ip);
+    ggml_context * c = r.ctx;
+    r.gf = ggml_new_graph_custom(c, 64, false);
+    r.logits = ggml_new_tensor_2d(c, GGML_TYPE_F32, n, T);
+    ggml_set_name(r.logits, "ffn_moe_logits");
+    ggml_set_input(r.logits);
+    r.probs = ggml_soft_max(c, r.logits);
+    ggml_set_name(r.probs, "ffn_moe_probs");
+    r.ids = ggml_argsort_top_k(c, r.probs, (int) k);
+    ggml_set_name(r.ids, "ffn_moe_topk");
+    r.argsort = r.ids->src[0];
+    ggml_tensor * p3 = ggml_reshape_3d(c, r.probs, 1, n, T);
+    r.getr = ggml_get_rows(c, p3, r.ids);
+    ggml_tensor * w2 = ggml_reshape_2d(c, r.getr, k, T);
+    r.sum = ggml_sum_rows(c, w2);
+    r.clamp = ggml_clamp(c, r.sum, 6.103515625e-5f, INFINITY);
+    r.div = ggml_div(c, w2, r.clamp);
+    r.wnorm = ggml_reshape_3d(c, r.div, 1, k, T);
+    ggml_build_forward_expand(r.gf, r.wnorm);
+    r.views = { r.ids, p3, w2, r.wnorm };
+    return r;
+}
+
+// Logits whose k largest of every row are at least 0.1 apart from each other and from the rest: the device's softmax and the
+// CPU's pick the same experts, and the weights differ at rounding level only.
+static std::vector<float> route_logits(int64_t n, int64_t T) {
+    std::vector<float> v((size_t) (n * T));
+    std::vector<int> perm((size_t) n);
+    for (int64_t t = 0; t < T; ++t) {
+        for (int64_t e = 0; e < n; ++e) perm[(size_t) e] = (int) e;
+        std::shuffle(perm.begin(), perm.end(), g_rng);
+        for (int64_t e = 0; e < n; ++e) v[(size_t) (t * n + e)] = 0.1f * (float) perm[(size_t) e];
+    }
+    return v;
+}
+
+enum class where { disjoint, start, middle, end, over_rows, one_tile_in };
+
+// The router group of T tokens with the ids tensor at `ia` and the weights at `iw` in a buffer of the device, the logits at 0.
+static void run_route_layout(int64_t n, int64_t k, int64_t T, where ids_at, where w_at, const char * name) {
+    const int64_t rowb = n * 4, Lb = rowb * T, Ab = rowb * T;
+    const int64_t Wb = ((k * T * 4 + 63) / 64) * 64;
+    // regions (byte offsets, 64-aligned): the logits and what the layouts put over them first, the rest after
+    int64_t ia = 0, iw = 0;
+    const int64_t shift = 64 * rowb * ((Wb / rowb + 2 + 63) / 64);     // the ids "a tile into the logits": a whole number of tiles, past the weights at the start
+    int64_t top = Lb + Ab + shift;             // past the logits and the largest shift of the ids
+    auto pick = [&](where w, int64_t sz, bool is_ids) -> int64_t {
+        switch (w) {
+            case where::start:       return 0;
+            case where::middle:      return ((Lb / 2) / 64) * 64;
+            case where::end:         return Lb - sz;
+            case where::over_rows:   return 0;
+            case where::one_tile_in: return shift;
+            case where::disjoint:    break;
+        }
+        const int64_t o = top;
+        top += sz + 64;
+        (void) is_ids;
+        return o;
+    };
+    ia = pick(ids_at, Ab, true);
+    iw = pick(w_at, Wb, false);
+    const int64_t o_probs = pick(where::disjoint, Lb, false), o_get = pick(where::disjoint, Wb, false),
+                  o_sum = pick(where::disjoint, ((4 * T + 63) / 64) * 64, false), o_clamp = pick(where::disjoint, ((4 * T + 63) / 64) * 64, false);
+    route_graph rg = build_route(n, k, T);
+    ggml_backend_buffer_t buf = ggml_backend_alloc_buffer(g_tsr, (size_t) top + 4096);
+    CHECK(buf != nullptr, "%s: buffer", name);
+    ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_COMPUTE);
+    char * base = (char *) ggml_backend_buffer_get_base(buf);
+    ggml_backend_tensor_alloc(buf, rg.logits, base);
+    ggml_backend_tensor_alloc(buf, rg.probs, base + o_probs);
+    ggml_backend_tensor_alloc(buf, rg.argsort, base + ia);
+    ggml_backend_tensor_alloc(buf, rg.getr, base + o_get);
+    ggml_backend_tensor_alloc(buf, rg.sum, base + o_sum);
+    ggml_backend_tensor_alloc(buf, rg.clamp, base + o_clamp);
+    ggml_backend_tensor_alloc(buf, rg.div, base + iw);
+    for (ggml_tensor * v : rg.views) {
+        ggml_backend_view_init(v);
+    }
+    const std::vector<float> x = route_logits(n, T);
+    ggml_backend_tensor_set(rg.logits, x.data(), 0, x.size() * 4);
+    CHECK(ggml_backend_graph_compute(g_tsr, rg.gf) == GGML_STATUS_SUCCESS, "%s: compute", name);
+    std::vector<int32_t> ids((size_t) (k * T));
+    std::vector<float> w((size_t) (k * T));
+    for (int64_t t = 0; t < T; ++t) {
+        ggml_backend_tensor_get(rg.argsort, ids.data() + t * k, (size_t) (t * rowb), (size_t) (k * 4));
+    }
+    ggml_backend_tensor_get(rg.div, w.data(), 0, w.size() * 4);
+
+    // the CPU's
+    route_graph cg = build_route(n, k, T);
+    ggml_backend_buffer_t cbuf = ggml_backend_alloc_ctx_tensors(cg.ctx, g_cpu);
+    ggml_backend_tensor_set(cg.logits, x.data(), 0, x.size() * 4);
+    CHECK(ggml_backend_graph_compute(g_cpu, cg.gf) == GGML_STATUS_SUCCESS, "%s: cpu compute", name);
+    std::vector<int32_t> cids((size_t) (k * T));
+    std::vector<float> cw((size_t) (k * T));
+    for (int64_t t = 0; t < T; ++t) {
+        ggml_backend_tensor_get(cg.argsort, cids.data() + t * k, (size_t) (t * rowb), (size_t) (k * 4));
+    }
+    ggml_backend_tensor_get(cg.div, cw.data(), 0, cw.size() * 4);
+    int bad_ids = 0, bad_w = 0;
+    double worst = 0;
+    for (int64_t t = 0; t < T; ++t) {
+        bool same = true;
+        for (int64_t j = 0; j < k; ++j) {
+            same = same && ids[(size_t) (t * k + j)] == cids[(size_t) (t * k + j)];
+            const double dw = std::fabs((double) w[(size_t) (t * k + j)] - (double) cw[(size_t) (t * k + j)]);
+            worst = std::max(worst, dw);
+            if (!(dw <= 1e-5)) ++bad_w;
+        }
+        bad_ids += same ? 0 : 1;
+    }
+    printf("  T=%-4lld %-34s %d of %lld rows with other ids, %d weights off by more than 1e-5 (largest %.3g)\n", (long long) T, name,
+           bad_ids, (long long) T, bad_w, worst);
+    CHECK(bad_ids == 0, "%s T=%lld: %d rows have other ids than the CPU's", name, (long long) T, bad_ids);
+    CHECK(bad_w == 0, "%s T=%lld: %d weights differ from the CPU's", name, (long long) T, bad_w);
+    ggml_backend_buffer_free(cbuf);
+    ggml_free(cg.ctx);
+    ggml_backend_buffer_free(buf);
+    ggml_free(rg.ctx);
+}
+
+static void run_route_layouts() {
+    printf("router group, outputs over the logits of later tiles:\n");
+    const int64_t n = 128, k = 8;
+    for (int64_t T : { 65, 130, 513, 1100 }) {
+        run_route_layout(n, k, T, where::disjoint, where::disjoint, "ids and weights apart from the logits");
+        run_route_layout(n, k, T, where::disjoint, where::start, "weights at the start of the logits");
+        run_route_layout(n, k, T, where::disjoint, where::middle, "weights in the middle of the logits");
+        run_route_layout(n, k, T, where::disjoint, where::end, "weights at the end of the logits");
+        run_route_layout(n, k, T, where::over_rows, where::disjoint, "ids row for row over the logits");
+        run_route_layout(n, k, T, where::one_tile_in, where::start, "ids a tile into the logits");
+    }
+    // more than the 1 MiB the scratch starts with (11,000 tokens need 1.03 MiB: it grows), 172 tiles
+    run_route_layout(n, k, 11000, where::disjoint, where::end, "weights at the end, the scratch grows");
+}
+
 int main() {
     g_tsr = ggml_backend_tesseract_init();
     if (g_tsr == nullptr) {
@@ -297,8 +455,11 @@ int main() {
         }
         ggml_free(l.ctx);
     }
-    for (int64_t T : { 1, 2, 5, 17, 70 }) {
+    for (int64_t T : { 1, 2, 5, 17, 70, 130, 256 }) {
         run_case(wd, wc, T);
+    }
+    if (getenv("TSR_TEST_ROUTE") != nullptr && atoi(getenv("TSR_TEST_ROUTE")) != 0) {   // the device takes the router group
+        run_route_layouts();
     }
     // the scale table in host memory, as llama.cpp's loader places it for Gemma 4: the scheduler copies the reshaped view
     // to the device (a leaf of its own), and the scale group must still fuse (without it graph_compute aborts)

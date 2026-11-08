@@ -353,6 +353,11 @@ struct tsr_device {
 
     uint64_t stage_off  = 0;      // ch0 byte offset of the IO staging area (top of IO)
     uint64_t stage_size = 0;
+    // The scratch of the multi-tile MOE_ROUTE records (SW-76): one window (channel, byte offset, size), taken at the first
+    // use from the top of IO (or of a low window) and replaced by a larger one when a route needs more. A window that was
+    // replaced stays reserved: cached plans may still name it.
+    uint32_t scr_ch = 0;
+    uint64_t scr_off = 0, scr_size = 0;
     bool     force_host = false;  // TSR_FORCE_HOST=1: every non-WEIGHTS buffer is HOSTED
 
     uint64_t next_vaddr  = TSR_VADDR_BASE;
@@ -2468,6 +2473,34 @@ static bool tsr_moe_weight_ok(tsr_device * d, const ggml_tensor * w) {
     return !(buf0->usage == GGML_BACKEND_BUFFER_USAGE_WEIGHTS && w->view_src != nullptr);
 }
 
+// SW-76: the scratch window of at least `bytes` bytes (env.scratch). Callers hold dev->mtx.
+static bool tsr_scratch_window(tsr_device * d, uint64_t bytes, tsr_tloc * out) {
+    if (bytes > d->scr_size) {
+        const uint64_t want = tsr_pad(std::max<uint64_t>({ bytes, 2 * d->scr_size, 1ull << 20 }), 1ull << 16);
+        uint64_t off = 0;
+        uint32_t ch = 0;
+        bool ok = d->io.alloc_top(want, &off);
+        if (!ok && !tsr_io_windows_only()) {
+            for (uint32_t c = 1; c < (uint32_t) d->low.size() && !ok; ++c) {
+                if (d->low[c].alloc_top(want, &off)) {
+                    ok = true;
+                    ch = c;
+                }
+            }
+        }
+        if (!ok) {
+            return false;
+        }
+        d->scr_ch = ch;
+        d->scr_off = off;
+        d->scr_size = want;
+        TSR_DBG(1, "MOE_ROUTE scratch: %.2f MiB at ch%u+0x%09" PRIx64 "\n", tsr_mib(want), ch, off);
+    }
+    out->ch = d->scr_ch;
+    out->off = d->scr_off;
+    return true;
+}
+
 // The builder's environment (tsr-build.h) for this device. Callers hold dev->mtx (device open).
 static bool tsr_is_our_buffer(const tsr_device * d, const ggml_backend_buffer * buf);
 
@@ -2495,6 +2528,7 @@ static tsr_build_env tsr_env_of(tsr_device * d) {
     };
     e.fa_mask_probe = [](const ggml_tensor * fa) { return tsr_fa_mask_supported(fa); };
     e.moe_w_probe = [d](const ggml_tensor * w) { return tsr_moe_weight_ok(d, w); };
+    e.scratch = [d](uint64_t bytes, tsr_tloc * l) { return tsr_scratch_window(d, bytes, l); };
     return e;
 }
 
@@ -2715,21 +2749,28 @@ static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key
         const int32_t k = g.fusion.with[i];
         if (g.fusion.route_of[i] >= 0) {                   // the MoE routing group (SW-64): one MOE_ROUTE record
             const tsr_moe_route & grp = g.fusion.routes[(size_t) g.fusion.route_of[i]];
-            tsr_rec r;
+            tsr_rec rs[TSR_MOE_ROUTE_RECS];
+            uint32_t nr = 0;
             std::string why;
-            if (!tsr_lower_moe_route(g.env, cgraph, grp, &r, &why)) {
+            if (!tsr_lower_moe_route(g.env, cgraph, grp, rs, &nr, &why)) {
                 GGML_ABORT("tesseract: MoE routing at '%s' cannot run on the device: %s", node->name, why.c_str());
             }
             for (int m : { grp.argsort, grp.get_rows, grp.sum_rows, grp.clamp, grp.div }) {
                 absorbed[(size_t) m] = 1;
             }
-            tsr_seg_add_rec(d, seg, r, std::string(node->name) + " + " + cgraph->nodes[grp.div]->name, tsr_written_buf(d, cgraph->nodes[grp.div]),
-                            true);
+            // one record, or (several tiles, SW-76) the record into the scratch and the CPYs of the ids and the weights
+            const std::string rname = std::string(node->name) + " + " + cgraph->nodes[grp.div]->name;
             tsr_buffer_ctx * ib = tsr_written_buf(d, cgraph->nodes[grp.argsort]);
+            tsr_buffer_ctx * wb = tsr_written_buf(d, cgraph->nodes[grp.div]);
+            tsr_seg_add_rec(d, seg, rs[0], rname, nr == 1 ? wb : nullptr, true);
+            if (nr == 3) {
+                tsr_seg_add_rec(d, seg, rs[1], rname + " (ids)", ib, false);
+                tsr_seg_add_rec(d, seg, rs[2], rname + " (weights)", wb, false);
+            }
             if (ib != nullptr) {
                 seg.written.insert(ib);
             }
-            TSR_DBG(1, "MOE_ROUTE   %-32s\n", node->name);
+            TSR_DBG(1, "MOE_ROUTE   %-32s%s\n", node->name, nr == 3 ? " (scratch, 2 CPY)" : "");
             continue;
         }
         if (node->op == GGML_OP_MUL_MAT_ID) {              // MUL_MAT_ID (+ the scale group) (SW-62)

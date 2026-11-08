@@ -11,10 +11,12 @@ Gated DeltaNet on the card"):
 - Gemma 4 26B-A4B: M6 ratio 1.294, top-1 92.77 %; M7 ratio 0.742, top-1 94.53 % (8 x 64, PASS). Both give 512 of 512 rows bit-identical to the
   simulator run of the `moe` branch. M7 1 x 16 replay on the simulator: 16 of 16 rows. The `JOIN` inside the op stream works on the card.
 - Qwen3.8 2B M7: ratio 1.061, top-1 98.05 %; 512 of 512 rows bit-identical to a simulator replay, and 16 of 16 for 1 x 16.
-- Speed (M7): Gemma decode 11.99 tok/s (16.32 M cycles per token), Qwen3.8 15.66 tok/s (12.63 M). A 512-token prefill runs at 26.2 tok/s (Gemma,
-  `-ub 64`) and 33.0 tok/s (Qwen3.8).
-- Open: Gemma prefill at `-ub` 256 and above stops in the host backend (MOE_ROUTE with several tiles whose outputs overlap a later tile's logits,
-  SW-64). Use `-ub 128` or less until the planner handles that case. The card's VU busy cycles for Gated DeltaNet are 1.7 times the simulator's.
+- Speed (M7): Gemma decode 11.99 tok/s (16.32 M cycles per token), Qwen3.8 15.66 tok/s (12.63 M). A 512-token prefill runs at 26.56 tok/s (Gemma,
+  the default `-ub 512`; 26.2 at `-ub 64`) and 33.0 tok/s (Qwen3.8).
+- Gemma prefill at `-ub 256` and above used to stop in the host backend (MOE_ROUTE with several tiles whose outputs overlapped a later tile's logits,
+  SW-64). SW-76 fixes it: a route of more than 64 tokens writes its ids and weights to a device scratch and two CPY records move them
+  ([design/06-software-verification.md](design/06-software-verification.md) §7.9; host only, no firmware or kind change). The default `-ub 512` and
+  `-ub 2048 -b 2048` run on the card. The card's VU busy cycles for Gated DeltaNet are 1.7 times the simulator's.
 
 ## Resume here for the software: MoE and Gated DeltaNet merged (branch `sw-moegdn`, November 9)
 
@@ -24,7 +26,8 @@ they were before the merge.
 
 - Decision numbers: MoE keeps SW-60 to SW-66 and section 7.9 of [design/06-software-verification.md](design/06-software-verification.md).
   The Gated DeltaNet decisions SW-60 to SW-67 became SW-67 to SW-74 (same order) and its section 7.9 became 7.10; the citations in
-  docs, code comments and test comments were changed with them. SW-75 is new: the ITCM budget.
+  docs, code comments and test comments were changed with them. SW-75 is new: the ITCM budget. SW-76 (the outputs of a MOE_ROUTE with several tiles, a host
+  change in section 7.9) follows it.
 - Kinds: MOE_ROUTE 0x1E, MUL_MAT_ID 0x1F, SOFTPLUS 0x2D, SSM_CONV 0x2E, GATED_DELTA_NET 0x2F, all at numerics revision 1, with
   UNARY func 5 (SIGMOID). 21 kinds, kind-table signature 0x804f. The `fw_kind_revs` digests of the five kinds are the digests of their
   branches (the two corpora start from the same PRNG state, so neither moves the other).

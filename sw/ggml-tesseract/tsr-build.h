@@ -125,6 +125,11 @@ struct tsr_build_env {
     // Probe mode: t is a weight MUL_MAT_ID can address: the type loads (a device format or convertible), the
     // buffer holds weights or raw bytes the backend converts lazily (the rules of MUL_MAT's src0).
     std::function<bool(const ggml_tensor *)> moe_w_probe;
+    // Build mode: the device scratch area of at least `bytes` bytes (64-byte aligned, in device memory the kinds address in
+    // place; the same area for every call, grown when needed, never part of a graph's tensors). Only the records of one
+    // op sequence use it at a time: its users write it, read it back and are done before the next user starts (SW-76).
+    // False when the device has no room for it.
+    std::function<bool(uint64_t bytes, tsr_tloc *)> scratch;
 };
 
 // Pass 1: nodes that cost nothing on the device.
@@ -191,7 +196,8 @@ bool tsr_build_supports(const tsr_build_env & env, const ggml_tensor * op, std::
 //     ffn_moe_weights  GET_ROWS(RESHAPE(probs) [1, n, T], topk) [1, k, T]   (+ RESHAPE [k, T])
 //     SUM_ROWS, CLAMP(6.1035e-5, inf), DIV            [k, T] (+ RESHAPE [1, k, T])
 // one MOE_ROUTE record absorbs the six nodes (the group of the SOFT_MAX): the ids are written into the first line of
-// each row of the ARGSORT tensor, the weights into the DIV tensor. And, after a MUL_MAT_ID with a per-expert output
+// each row of the ARGSORT tensor, the weights into the DIV tensor (for more than 64 tokens through a device scratch and two
+// CPY records, SW-76). And, after a MUL_MAT_ID with a per-expert output
 // scale (Gemma 4's ffn_down_exps.scale):
 //     RESHAPE(scale) [1, E], REPEAT [1, E, T], GET_ROWS(repeat, topk) [1, k, T], MUL(MUL_MAT_ID, gathered)
 // the MUL_MAT_ID record takes the scale table (y = FM(dot, scale[id])) and a CPY record moves its result into the MUL's
@@ -231,11 +237,15 @@ struct tsr_fusion {
 };
 tsr_fusion tsr_build_fusion(const tsr_build_env & env, const ggml_cgraph * cg);
 
-// MoE lowering. tsr_lower_moe_route: the MOE_ROUTE record of a group (probe: the question of supports_op for the head);
+// MoE lowering. tsr_lower_moe_route: the records of a router group, recs[0 .. *n) (at most TSR_MOE_ROUTE_RECS): for up to
+// 64 tokens (one tile) the one MOE_ROUTE record, which writes the ids and the weights where the graph has them; for more
+// tokens (SW-76) the MOE_ROUTE record writes them to the device scratch (env.scratch) and two CPY records move them into
+// the ARGSORT and DIV tensors, because the allocator may have put those where the logits of a later tile still are;
 // tsr_lower_mul_mat_id: the MUL_MAT_ID record of a node, with the scale group's table when sc != nullptr (the record then
 // writes the MUL_MAT_ID's own tensor); w: the resolved weights (nullptr in probe mode). False with *why if a record cannot
 // be expressed or the firmware's planner refuses it.
-bool tsr_lower_moe_route(const tsr_build_env & env, const ggml_cgraph * cg, const tsr_moe_route & g, tsr_rec * out,
+constexpr uint32_t TSR_MOE_ROUTE_RECS = 3;
+bool tsr_lower_moe_route(const tsr_build_env & env, const ggml_cgraph * cg, const tsr_moe_route & g, tsr_rec * recs, uint32_t * n,
                          std::string * why);
 bool tsr_lower_mul_mat_id(const tsr_build_env & env, bool probe, const ggml_tensor * node, const tsr_moe_scale * sc,
                           const tsr_moe_w * w, tsr_rec * out, std::string * why);

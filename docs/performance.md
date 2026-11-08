@@ -89,21 +89,28 @@ simulator's model, and the MVM busy cycles are the same to 0.1 % (13.29 M agains
 card takes 20 % more cycles than the model. The MVM busy cycles agree (5.71 M against 5.70 M); the card's VU busy cycles are 4.76 M against 2.73 M
 and its DMA busy cycles 2.98 M against 2.45 M in the simulator's counters. The cause of the VU difference has not been looked for.
 
-| 512-token prefill | Gemma 4 26B-A4B Q4_K_M (`-ub 64`) | Qwen3.8 2B Q4_K_M (`-ub 512`, the default) |
-| --- | --- | --- |
-| tok/s, runs 1 / 2 / 3 | 26.24 / 26.20 / 25.70 | 32.95 / 33.05 / 32.99 |
-| **Best, median** | **26.24, 26.20 tok/s** (19.51 s for the first run) | **33.05, 32.99 tok/s** (15.54 s for the first run) |
-| `PERF_CYCLES` of the run | 3,888.3 M (19.44 s) | 3,081.3 M (15.41 s) |
-| Device share of wall time, runs 1 / 2 / 3 | 99.6 / 99.5 / 97.6 % | 99.2 / 99.4 / 99.3 % |
-| `MVM_EMPTY` / `MVM_WAIT` | 14.8 % / 9.3 % | 82.9 % / 1.4 % |
-| Launches | 9 | 14 |
-| Load average (1 min) at start and end, runs 1 / 2 / 3 | 5.1 to 7.3 / 7.3 to 7.8 / 7.8 to 9.3 | 6.0 to 6.0 / 6.4 to 6.2 / 6.0 to 5.8 |
+| 512-token prefill | Gemma 4 26B-A4B Q4_K_M (`-ub 64`) | Gemma 4 26B-A4B Q4_K_M (`-ub 512`, the default, SW-76) | Qwen3.8 2B Q4_K_M (`-ub 512`, the default) |
+| --- | --- | --- | --- |
+| tok/s, runs 1 / 2 / 3 | 26.24 / 26.20 / 25.70 | 26.43 / 26.58 / 26.56 | 32.95 / 33.05 / 32.99 |
+| **Best, median** | **26.24, 26.20 tok/s** (19.51 s for the first run) | **26.58, 26.56 tok/s** (19.37 s for the first run) | **33.05, 32.99 tok/s** (15.54 s for the first run) |
+| `PERF_CYCLES` of the run | 3,888.3 M (19.44 s) | 3,809.3 M (19.05 s) | 3,081.3 M (15.41 s) |
+| Device share of wall time, runs 1 / 2 / 3 | 99.6 / 99.5 / 97.6 % | 98.3 / 98.9 / 98.8 % | 99.2 / 99.4 / 99.3 % |
+| `MVM_EMPTY` / `MVM_WAIT` | 14.8 % / 9.3 % | 17.0 % / 5.4 % | 82.9 % / 1.4 % |
+| Launches | 9 | 61 | 14 |
+| Load average (1 min) at start and end, runs 1 / 2 / 3 | 5.1 to 7.3 / 7.3 to 7.8 / 7.8 to 9.3 | 41.9 to 39.1 / 39.1 to 43.9 / 44.2 to 43.0 | 6.0 to 6.0 / 6.4 to 6.2 / 6.0 to 5.8 |
 
-The Gemma prefill needs a smaller ubatch. At the default `-ub 512` and at `-ub 256` the host backend stops before the first launch: `tesseract: MoE
-routing at 'ffn_moe_probs-28' cannot run on the device: MOE_ROUTE: with 512 tokens (several tiles) its outputs overlap the logits of a later tile`
-(three runs at 512, one at 256, `ggml-tesseract.cpp`, SW-64). This is the documented refusal (SW §7.9, SW-64): a route of more than 64 tokens is refused when its outputs overlap a
-later tile's logits other than row for row. It is a host check and not a card fault: the card ran the next job without a reset. `-ub 128` runs (26.48 tok/s in one probe) and so does `-ub 64`, which is one tile per route. The figures above are at `-ub 64`.
-The Gemma prefill runs one MVM of T = 1 per (token, slot) (SW-66): 7.6 M device cycles per prompt token, against 16.3 M for a decode token.
+Gemma 4 prefill at the default `-ub 512` (SW-76). Before SW-76 the host backend stopped before the first launch at `-ub 256` and above:
+`tesseract: MoE routing at 'ffn_moe_probs-28' cannot run on the device: MOE_ROUTE: with 512 tokens (several tiles) its outputs overlap the logits of a
+later tile` (three runs at 512, one at 256). The record reads the router logits tile by tile and stores each tile's outputs before the next load; ggml-alloc
+had put the weights of layer 28 at the start of the logits, and the build refused that layout. It was a host check and not a card fault: the card ran the next
+job without a reset. `-ub 128` and `-ub 64` ran (26.48 tok/s in one probe at 128). Since SW-76 a route of more than 64 tokens writes its outputs to a device
+scratch and two CPY records move them (SW §7.9), and the default runs: 26.56 tok/s median, the same as at `-ub 64` (26.2). The speed does not depend on the ubatch because the experts
+run one MVM of T = 1 per (token, slot) (see below). The device took 2.0 % fewer cycles than at `-ub 64`.
+The 61 launches are the 60 lists of the 512-token graph (`TSR_STATS`: lists cut early 59) and the one of the last token; at `-ub 64` a graph is one list.
+The host load of these runs was 39 to 44, from other jobs on the machine (the other columns ran at 5 to 9); the device share of wall time is 98.3 to 98.9 %.
+`-ub 2048` with `-b 2048` (a 2,048-token prompt, one run) also runs on the device without a refusal: 104.2 s, 19.65 tok/s. Flash attention of more than 680 tokens stays on the CPU
+(SW-43), so the 2,048-token graph runs in 31 backend splits (92 launches in the whole run); the MoE records are still the device's (60 MOE_ROUTE, 120 MUL_MAT_ID).
+The Gemma prefill runs one MVM of T = 1 per (token, slot) (SW-66): 7.4 M device cycles per prompt token (7.6 M at `-ub 64`), against 16.3 M for a decode token.
 Qwen3.8 prefills at 2.1 times its decode rate (6.0 M cycles per prompt token), and its MVM unit has nothing queued in 83 % of the prefill cycles. The
 Gated DeltaNet recurrence alone is about 1.3 G of the 3.1 G cycles, at its isolated record cost of 8.6 K cycles per head and token (SW §7.10).
 
@@ -873,7 +880,7 @@ TSR_SIM_TMAX=4 build/xrt/bin/klcheck run --device sim --tokens build/card/q05-m7
     -m models/qwen2.5-0.5b-instruct-q8_0.gguf --phase m7
 build/xrt/bin/klcheck compare --ref build/card/q05-m7/dev-sim-replay.klc --dev build/card/q05-m7/dev.klc --expect-identical
 # decode: llama-completion ... -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -c 4096 --temp 0 -no-cnv -n 65 (M7), add -nkvo for M6 / VU kinds
-# MoE and Gated DeltaNet (branch sw-moegdn; TSR_IMAGE = the build's tsr-fw.elf; Gemma prefill needs -ub 64 or 128)
+# MoE and Gated DeltaNet (branch sw-moegdn; TSR_IMAGE = the build's tsr-fw.elf; Gemma prefill runs at the default -ub 512 since SW-76)
 TSR_XCLBIN=... build/xrt/bin/klcheck all -m models/gemma4-26b-a4b/google_gemma-4-26B-A4B-it-Q4_K_M.gguf --device xrt --phase m7 -n 64 --n-prompts 8 -o build/card/moegdn/moe-m7-8x64
 (also --phase m6; and -m models/qwen3.8-2b-empero/Qwen3.8-2B-Q4_K_M.gguf for Qwen3.8; the scripts are in build/card/moegdn)
 ```

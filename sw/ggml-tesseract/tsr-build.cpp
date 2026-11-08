@@ -912,6 +912,10 @@ static bool tsr_moe_softmax_ok(const tsr_build_env & env, const ggml_tensor * sm
         return tsr_fail(why, "SOFT_MAX: the router logits are not F32 [n_expert, T] rows with n_expert a multiple of 16, at most %u",
                         opl::moer::MAX_EXPERTS);
     }
+    if (x->ne[1] > opl::moer::TILE_TOKENS && !tsr_kind_in_image(env.kinds, opl::K_CPY)) {
+        return tsr_fail(why, "SOFT_MAX of %lld tokens: its outputs go through the CPY kind (SW-76), which the booted image (%s) lacks",
+                        (long long) x->ne[1], env.image.c_str());
+    }
     return true;
 }
 
@@ -1093,8 +1097,11 @@ bool tsr_lower_moe_scale_copy(const tsr_build_env & env, const ggml_tensor * mmi
     return tsr_plan_ok(env, *r, why);
 }
 
-bool tsr_lower_moe_route(const tsr_build_env & env, const ggml_cgraph * cg, const tsr_moe_route & g, tsr_rec * r, std::string * why) {
+bool tsr_lower_moe_route(const tsr_build_env & env, const ggml_cgraph * cg, const tsr_moe_route & g, tsr_rec * recs, uint32_t * nrec,
+                         std::string * why) {
     namespace rt = opl::moer;
+    *nrec = 0;
+    tsr_rec * r = &recs[0];
     *r = tsr_rec();
     const ggml_tensor * sm = cg->nodes[g.softmax], * as = cg->nodes[g.argsort], * dv = cg->nodes[g.div], * cl = cg->nodes[g.clamp];
     if (!tsr_moe_softmax_ok(env, sm, why)) {
@@ -1114,23 +1121,55 @@ bool tsr_lower_moe_route(const tsr_build_env & env, const ggml_cgraph * cg, cons
         !tsr_addr(env, false, dv, "weights", &wh, why)) {
         return false;
     }
-    if (T > rt::TILE_TOKENS) {
-        // more than one tile: tile t + 1's logits must not lie where an earlier tile stores its ids or weights, except the
-        // ids rows that replace their own logits row (the allocator reuses the dead logits for the sort result)
-        const uint64_t lb = (uint64_t) (uintptr_t) x->data, le = lb + (uint64_t) x->nb[1] * (uint64_t) T;
-        const uint64_t ab = (uint64_t) (uintptr_t) as->data, ae = ab + (uint64_t) as->nb[1] * (uint64_t) T;
-        const uint64_t wb = (uint64_t) (uintptr_t) dv->data, we = wb + ggml_nbytes(dv);
-        const bool ids_ok = ae <= lb || ab >= le || (ab == lb && as->nb[1] == x->nb[1]);
-        if (!ids_ok || !(we <= lb || wb >= le)) {
-            return tsr_fail(why, "MOE_ROUTE: with %lld tokens (several tiles) its outputs overlap the logits of a later tile", (long long) T);
-        }
-    }
+    const uint32_t ids_stride = (uint32_t) (as->nb[1] / TSR_LINE_BYTES);
     r->kind = opl::K_MOE_ROUTE;
     r->n_args = rt::NARGS;
-    const opl::moe_route_args a{ L.h, T > 1 ? L.stride : tsr_l16((uint64_t) n), ih, (uint32_t) (as->nb[1] / TSR_LINE_BYTES), wh,
-                                 (uint32_t) n, (uint32_t) k, (uint32_t) T, 0u };
+    if (T <= rt::TILE_TOKENS) {
+        // one tile: its stores come after its loads, so the outputs may lie anywhere, over the logits too
+        const opl::moe_route_args a{ L.h, T > 1 ? L.stride : tsr_l16((uint64_t) n), ih, ids_stride, wh, (uint32_t) n, (uint32_t) k,
+                                     (uint32_t) T, 0u };
+        opl::put_args(a, r->args);
+        *nrec = 1;
+        return tsr_plan_ok(env, *r, why);
+    }
+    // Several tiles (SW-76): tile t's stores come before tile t + 1's loads, and the allocator, which does not know that one record
+    // reads the logits for a long time, may have put the ids or the weights over the logits of a later tile. The record
+    // writes them to the device scratch (the ids one line per token, then the weights packed) and two CPY records move them
+    // to their tensors once the record, and so every tile's load, is done.
+    const uint64_t ids_lines = (uint64_t) T, w_lines = tsr_l16((uint64_t) T * (uint64_t) k);
+    tsr_tloc sc;
+    if (!tsr_kind_in_image(env.kinds, opl::K_CPY)) {
+        return tsr_fail(why, "MOE_ROUTE with %lld tokens (several tiles) needs the CPY kind, which the booted image (%s) lacks",
+                        (long long) T, env.image.c_str());
+    }
+    if (!env.scratch || !env.scratch((ids_lines + w_lines) * TSR_LINE_BYTES, &sc) || sc.off % TSR_BEAT_BYTES != 0 ||
+        (sc.off / TSR_BEAT_BYTES) + ids_lines + w_lines > 0x0FFFFFFFull) {
+        return tsr_fail(why, "MOE_ROUTE with %lld tokens (several tiles): no device scratch of %llu KiB for its outputs", (long long) T,
+                        (unsigned long long) ((ids_lines + w_lines) * TSR_LINE_BYTES / 1024));
+    }
+    const uint32_t sih = tsr_dram_handle(sc.ch, sc.off), swh = tsr_dram_handle(sc.ch, sc.off + ids_lines * TSR_LINE_BYTES);
+    const opl::moe_route_args a{ L.h, L.stride, sih, 1u, swh, (uint32_t) n, (uint32_t) k, (uint32_t) T, 0u };
     opl::put_args(a, r->args);
-    return tsr_plan_ok(env, *r, why);
+    if (!tsr_plan_ok(env, *r, why)) {
+        return false;
+    }
+    tsr_rec * c = &recs[1];
+    *c = tsr_rec();
+    c->kind = opl::K_CPY;
+    c->n_args = opl::cpy::NARGS;
+    const opl::cpy_args ia{ ih, ids_stride, sih, 1u, 1u, (uint32_t) T };                 // the first line of each ids row
+    opl::put_args(ia, c->args);
+    if (!tsr_plan_ok(env, *c, why)) {
+        return false;
+    }
+    c = &recs[2];
+    *c = tsr_rec();
+    c->kind = opl::K_CPY;
+    c->n_args = opl::cpy::NARGS;
+    const opl::cpy_args wa{ wh, (uint32_t) w_lines, swh, (uint32_t) w_lines, (uint32_t) w_lines, 1u };   // the packed weights
+    opl::put_args(wa, c->args);
+    *nrec = 3;
+    return tsr_plan_ok(env, *c, why);
 }
 
 // GATED_DELTA_NET (ggml_gated_delta_net, scalar gate, K = 1): q, k [S, H_k, T, n_seqs], v [S, H_v, T, n_seqs],
