@@ -1,0 +1,161 @@
+// tsr_mon.h — the live monitor record: what a process that owns the card publishes for tsr-top
+// (docs/prof-dbg.md §7, decision SW-87).
+//
+// The XRT transport opens the compute unit with exclusive access (EX §2.4), so while one process
+// runs on the card no other process can read the CSRs or the PERF counters. The owner therefore
+// publishes: it keeps one small record in shared memory, /dev/shm/tsr-mon-<pid> (TSR_MON_DIR
+// moves the directory), and updates it after every graph launch. tsr-top (sw/tools/top) and
+// anything else that wants the numbers reads the file; nothing is sent, nothing is waited for.
+//
+// The record is one page of plain little-endian fields behind a seqlock: the writer makes `seq`
+// odd, stores the page, makes `seq` even; a reader copies the page and keeps it only if `seq` was
+// even and the same before and after. The writer never waits for a reader. Layout 1 is described
+// by tsr_mon_rec below; sw/tools/top/tsr_top.py holds the same table, and the ctest
+// tools_top_layout compares the two. A change of a field or an offset is a new layout number
+// (readers skip a layout they do not know); a field may be added at the end of the free space
+// without a new number only if old readers can ignore it, which they do (they read by offset).
+//
+// What it costs: after a launch the writer stores a few counters (about 0.5 us, no device access)
+// and, at most every TSR_MON_PERF_MS (default 100 ms), reads the PERF counters through
+// tsr_transport_perf_summary (about 80 CSR reads) and the clk_rv frequency. It changes no record,
+// no descriptor and no tensor: PERF does not move between launches (EX §6).
+//
+// Environment: TSR_MON=0 turns the publisher off (default on); TSR_MON_DIR=<dir> (default
+// /dev/shm); TSR_MON_KEEP=1 leaves the file at exit (flag EXITING; tsr-top skips a dead pid's record
+// unless told otherwise); TSR_MON_PERF_MS=<n> (default 100; 0 reads PERF after every launch); TSR_MON_MODEL=<name>
+// names the model when it cannot be found from the command line or the mapped files.
+#pragma once
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "tsr_transport.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define TSR_MON_MAGIC        "TSRMON\0\0"   // 8 bytes
+#define TSR_MON_LAYOUT       1u
+#define TSR_MON_BYTES        4096u          // the file size: one page
+#define TSR_MON_PERF_SLOTS   64u            // PERF_0..PERF_63 (EX §6 indices)
+#define TSR_MON_KINDS        64u            // the kind table size (tsr::opl::N_KINDS)
+
+// flags
+#define TSR_MON_F_SIM        0x1u           // a simulated transport (sim, mock, vkernel): no card
+#define TSR_MON_F_FITTED     0x2u           // core_hz was fitted from DBG_MTIME against host time
+#define TSR_MON_F_EXITING    0x4u           // the process is shutting down (the file is about to go)
+
+typedef struct tsr_mon_rec {
+    // header
+    char     magic[8];
+    uint32_t layout;               // TSR_MON_LAYOUT
+    uint32_t size;                 // TSR_MON_BYTES
+    uint64_t seq;                  // seqlock counter, odd while the writer stores the page
+    uint32_t flags;                // TSR_MON_F_*
+    uint32_t used;                 // sizeof(tsr_mon_rec): the bytes of this layout in use
+    // process and time
+    uint32_t pid;
+    uint32_t uid;
+    uint64_t proc_start_ticks;     // /proc/<pid>/stat field 22: tells a reused pid from the publisher
+    uint64_t start_real_ns;        // CLOCK_REALTIME when the publisher attached
+    uint64_t update_real_ns;       // CLOCK_REALTIME of this update
+    uint64_t update_mono_ns;       // CLOCK_MONOTONIC of this update (the same clock for every process)
+    uint64_t perf_mono_ns;         // CLOCK_MONOTONIC of the PERF read that perf[] is from (0: none yet)
+    // launches
+    uint64_t launches;             // graph launches answered or failed
+    uint64_t launch_ns;            // host wall time inside them
+    uint64_t ops;                  // op records launched (JOINs included)
+    uint64_t last_launch_ns;       // wall time of the last launch
+    uint64_t launch_begin_mono_ns; // CLOCK_MONOTONIC when the launch now in flight began; 0 = none
+    uint64_t perf_launches;        // `launches` at the PERF read
+    uint64_t d_launches;           // launches between the last two PERF reads
+    uint64_t d_wall_ns;            // CLOCK_MONOTONIC between the last two PERF reads
+    uint64_t tok_decode;           // tokens of scheduler passes of one token
+    uint64_t tok_prefill;          // tokens of passes of more than one token
+    uint64_t passes;               // scheduler passes (about one per llama_decode)
+    uint64_t perf_ns;              // host time spent in PERF reads (what the publisher costs the owner, with hook_ns)
+    uint64_t hook_ns;              // host time spent in the launch hooks, PERF reads included
+    // memory and clocks
+    uint64_t mem_used;             // device DRAM in use, bytes over all channels
+    uint64_t mem_total;            // num_ch * ch_bytes
+    uint64_t core_hz;              // core clock, Hz (fitted on the card, else nominal)
+    uint64_t rv_hz;                // clk_rv, Hz, from RV_FREQ (0 = unknown)
+    uint32_t rv_freq_raw;          // RV_FREQ: clk_rv cycles in the last 2^16 core cycles
+    uint32_t perf_reads;           // PERF reads since attach
+    // device and image
+    uint32_t num_ch;
+    uint32_t t_max;
+    uint32_t lanes;
+    uint32_t spm_bytes;
+    uint32_t k_max;
+    uint32_t caps;                 // CAPS
+    uint32_t core_ver;             // Tesseract Core capability, major << 8 | minor
+    uint32_t core_min;             // the image's cap_min
+    uint32_t basis;                // Tesseract Basis version, major << 16 | minor << 8 | patch
+    uint32_t abi;                  // Basis ABI
+    uint32_t n_kinds;              // kinds in the image's table
+    uint32_t kinds_sig;            // the kind table signature (HELLO r4[31:16])
+    uint64_t ch_bytes;
+    uint64_t image_id;
+    uint64_t kind_mask;            // the kinds the owner routes (the image's table narrowed by TSR_KINDS)
+    uint32_t perf_x;               // X = 5 + 2 NUM_CH, the first PERF extension slot
+    uint32_t reserved1;
+    uint8_t  kind_rev[TSR_MON_KINDS];   // numerics revision of kind k, 0 = not in the image
+    // counters (EX §6 indices: TSR_PERF_*)
+    uint64_t perf[TSR_MON_PERF_SLOTS];  // totals since the owner opened the device
+    uint64_t dperf[TSR_MON_PERF_SLOTS]; // the change between the last two PERF reads
+    // text, NUL-terminated
+    char     transport[16];        // "xrt", "sim", "mock", ...
+    char     owner[16];            // "ggml", "rt", ...
+    char     mode[16];             // "M6", "M7", "rt"
+    char     quant[24];            // the weights' dominant type, e.g. "Q4_K"
+    char     model[128];           // the model file's name, or TSR_MON_MODEL
+    char     image_path[192];      // the firmware ELF
+    char     xclbin[192];          // $TSR_XCLBIN
+    char     device_info[192];     // the transport's first description line (device name, BDF, kernel)
+    char     kinds[320];           // names of the kinds the owner routes, blank separated
+    char     cmdline[384];         // /proc/self/cmdline, arguments blank separated
+    char     comm[16];             // /proc/self/comm
+} tsr_mon_rec;
+
+#ifdef __cplusplus
+static_assert(sizeof(tsr_mon_rec) <= TSR_MON_BYTES, "the monitor record must fit its page");
+static_assert(offsetof(tsr_mon_rec, seq) == 16, "the seqlock counter is at offset 16");
+#endif
+
+// ---------------------------------------------------------------------------------------------
+// Publisher: the process that owns the card. Every call is a no-op while the publisher is off
+// (TSR_MON=0) or not attached, and none of them can fail the caller.
+// ---------------------------------------------------------------------------------------------
+int  tsr_mon_enabled(void);                                  // TSR_MON is not 0
+// Creates the record for the transport the process has just opened and booted (tsr_opl_dev::open
+// calls it). `owner` names the library, "ggml" or "rt". The first transport of a process wins.
+void tsr_mon_attach(tsr_transport * t, const char * owner);
+// tsr_transport_close of the attached transport removes the file.
+void tsr_mon_detach(tsr_transport * t);
+// Around one graph launch (tsr_opl_dev::run). `end` adds the launch to the counters and, at most
+// every TSR_MON_PERF_MS and only after an answered launch, reads the PERF counters.
+void tsr_mon_launch_begin(void);
+void tsr_mon_launch_end(uint64_t wall_ns, uint32_t n_ops, int rc);   // rc: the transport's, 0 = answered
+// What only the owner knows. NULL, 0 or "" keeps the value.
+void tsr_mon_set_model(const char * model, const char * quant);
+void tsr_mon_set_mode(const char * mode, uint64_t kind_mask, const char * kind_names);
+void tsr_mon_set_mem(uint64_t used, uint64_t total);
+void tsr_mon_add_tokens(uint32_t decode, uint32_t prefill, uint32_t passes);
+
+// ---------------------------------------------------------------------------------------------
+// Reader helpers (tests, the C tools). Python has its own (tsr_top.py).
+// ---------------------------------------------------------------------------------------------
+// The directory the records are in: $TSR_MON_DIR or /dev/shm. Fills `path` with the record of `pid`.
+void tsr_mon_path(char * path, size_t n, uint32_t pid);
+// Copies a record under the seqlock. 0 on success, -1 if the file cannot be read or is no record,
+// -2 if the layout is not this one, -3 if the writer never left the page consistent (retries ran out).
+int  tsr_mon_read(const char * path, tsr_mon_rec * out);
+// The field table of layout 1 as JSON: {"layout":1,"size":N,"fields":[{"name":..,"off":..,"size":..,"count":..}, ...]},
+// for the layout test (tsr_top.py holds the same table). Returns the length, as snprintf.
+int  tsr_mon_layout_json(char * buf, size_t n);
+
+#ifdef __cplusplus
+}
+#endif

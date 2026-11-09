@@ -260,3 +260,6 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/numcheck_helper.cmake)
 
 # P3.7 / P3.8: libtsr_dbg, tsr-dbg, tsr-prof and their tests (dbg/dbg.cmake).
 include(${CMAKE_CURRENT_SOURCE_DIR}/dbg/dbg.cmake)
+
+# SW-87: tsr-top (the live monitor), tsr-mon-probe and their tests (top/top.cmake).
+include(${CMAKE_CURRENT_SOURCE_DIR}/top/top.cmake)

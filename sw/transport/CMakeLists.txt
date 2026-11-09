@@ -29,7 +29,8 @@ add_library(tsr_transport STATIC
     tsr_kdev_mock.cpp
     tsr_kdev_vkernel.cpp
     tsr_image.cpp
-    tsr_logdec.cpp)
+    tsr_logdec.cpp
+    tsr_mon.cpp)
 set_target_properties(tsr_transport PROPERTIES
     C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
@@ -122,6 +123,13 @@ set(_tsr_addr2line "${_tsr_pfx}addr2line")
 add_test(NAME transport_protocol COMMAND test-tsr-protocol --addr2line ${_tsr_addr2line}
          --scratch ${CMAKE_CURRENT_BINARY_DIR}/protocol)
 set_tests_properties(transport_protocol PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
+
+# transport_mon: the live monitor record (tsr_mon.h, SW-87): identity, the owner's fields, launches
+# and PERF reads, the seqlock against a writer that never stops, TSR_MON_DIR, removal at close.
+# `test-tsr-mon layout` prints the layout table for the Python reader's test (sw/tools/top).
+tsr_transport_test(test-tsr-mon tests/test_mon.cpp)
+add_test(NAME transport_mon COMMAND test-tsr-mon ${CMAKE_CURRENT_BINARY_DIR}/mon)
+set_tests_properties(transport_mon PROPERTIES TIMEOUT 120)
 
 # transport_xrt_noop: the xrt kdev against XRT's userspace with its no-op shim (no card, no driver):
 # xclbin load, kernel / argument / memory discovery from the xclbin, xrt::ip with exclusive access

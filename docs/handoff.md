@@ -2,6 +2,12 @@
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
 
+## `tsr-top`, the live monitor (branch `tsr-top`, from `sw-moegdn`, November 9)
+
+`bin/tsr-top` shows the card like nvtop shows a GPU. The process that owns the card publishes a record in `/dev/shm/tsr-mon-<pid>` after every launch (SW-87,
+`sw/transport/tsr_mon.h`, on by default, `TSR_MON=0` turns it off); the monitor reads it, the sensors from `xbutil` and the PCIe link from sysfs, and does not open
+the compute unit. Use, panels, numbers and limits: [prof-dbg.md](prof-dbg.md) §7. Tests: `ctest -R 'tools_top|transport_mon'`. SW-83 to SW-86 are on `mtp`; SW-87 is this one.
+
 ## Resume here for the software: the branches merged into `sw-moegdn` (November 9)
 
 Four finished branches were merged into `sw-moegdn` (real merges, in this order), on top of SW-76: `moe-qwen3` (SW-77, Qwen3-30B-A3B), `vu-perf` (SW-80, the
