@@ -13,6 +13,8 @@ set(GGML_TESSERACT_SOURCES
     ${GGML_TESSERACT_DIR}/ggml-tesseract.cpp
     ${GGML_TESSERACT_DIR}/tsr-build.cpp
     ${GGML_TESSERACT_DIR}/tsr-build.h
+    ${GGML_TESSERACT_DIR}/tsr-prof.cpp
+    ${GGML_TESSERACT_DIR}/tsr-prof.h
     ${GGML_TESSERACT_DIR}/tsr-weights.cpp
     ${GGML_TESSERACT_DIR}/tsr-weights.h
 )

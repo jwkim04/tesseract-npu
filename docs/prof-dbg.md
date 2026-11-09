@@ -32,6 +32,7 @@ worked on it (below). The full image has not been on the card.
 | `libtsr_dbg`, standalone `tsr-dbg gdb`, and the embedded GDB service: registers, memory, software/hardware breakpoints, watchpoints, step, launch stops, tile commands, history, dumps and recovery | `sw/tools/dbg/`, `sw/tools/tsr_dbg.cpp` | `tools_dbg_lib`, `tools_dbg_rsp`, `tools_dbg_embed`, `tools_dbg_rsp_drop`, `tools_dbg_embed_drop`, `rt_sim_gdb_embed` |
 | Real RISC-V GDB through `tsr-dbg gdb --stdio --device sim`: boot stop, symbol breakpoints, `stepi`, memory/CSR reads, kernel launch, backtrace, `finish`, history and detach | `sw/tools/dbg/tests/gdb_smoke.sh` | `tools_dbg_gdb`; passed with the pinned `riscv-none-elf-gdb`, not skipped |
 | `tsr-prof trw` timeline export and checks, `tsr-prof stats`, extended `TSR_STATS` counters | `sw/tools/tsr_prof.cpp`, `sw/tools/dbg/trw.cpp`, `sw/transport/tsr_kdev.cpp` | `tools_prof_trw`, `tools_dbg_lib` |
+| Profile report of one decode token: plan dump, graph, timeline, summary (§3.1) | `sw/ggml-tesseract/tsr-prof.cpp`, `sw/tools/prof/` | `tools_prof_report_qwen3moe_tiny`, `tools_prof_report_gemma_tiny` |
 | Trace capture: one trace directory per launch (`TSR_TRACE`), replay and conversion tools | `sw/sim/tsr_trace.c`, `sw/tools` | `sim_trace`, `trace_v2_roundtrip`, `tools_trace_gen_replay` |
 
 Environment variables, as implemented (`grep` of `"TSR_..."` in `sw/transport` and `sw/sim`):
@@ -48,6 +49,7 @@ Environment variables, as implemented (`grep` of `"TSR_..."` in `sw/transport` a
 | `TSR_ATTACH=1` | open without `SOFT_RESET` or bind, for diagnosis |
 | `TSR_SIM_LOG=stderr\|<file>` (optional prefixes `rv,` and `w,`) | simulator event log: pushes, starts, completions and, with `rv,`, RISC-V retire lines, with `w,` the eight words of every push |
 | `TSR_SIM_VU_TIMING=u200\|k4\|F,E,B,P`, `TSR_SIM_CARD=k4full` | the simulator's VU lanes for the cycle model (16 / 16 / 8, or the card image's 8 / 8 / 4 behind two lane-pipe stages), and the whole card-image configuration in one variable (SW-80) |
+| `TSR_DUMP_PLAN=<dir>`, `TSR_PROF_TRW_MIB=<n>` | the ggml backend writes its plans, launches, refusals and the trace writer's records of the whole run into `<dir>` (§3.1), starting the ring itself (`n` MiB, default 32) and turning the PROF bit on; no record and no output bit changes |
 | `TSR_OPL_PROF=1`, `TSR_OPL_KINDS=<file>` | the ggml backend sets the launch descriptor's PROF bit (a marker before every record) and appends the kind of every record of every launch to the file |
 | `TSR_TRACE=<dir>` | one trace per launch |
 | `TSR_SIM_RACE=off\|report\|fatal`, `TSR_SIM_SCHED=fixed\|random:<seed>[,min,max]` | race detector, schedules |
@@ -68,7 +70,7 @@ the core has no progress watchdog, so `STATUS.UNIT_HUNG` never rises and `HUNG_S
 |---|---|---|
 | Two-clock vkernel and full-system debug/replay integration | W5 | Module-level `tb/dbg` and `tb/ctrl` tests exist; integrated RTL GDB remains unverified |
 | Hang triage on the card, card measurements of the DMI cost | W6 | M6 gate (`docs/design/README.md` §2). The GDB smoke is done on `k4m200` (below) |
-| `tsr-dbg diverge`, `tsr-prof report` and periodic firmware PC sampling | deferred | The CLI reports `diverge` as unimplemented; trace export and stats are available |
+| `tsr-dbg diverge` and periodic firmware PC sampling | deferred | The CLI reports `diverge` as unimplemented; trace export and stats are available. The report of one model token is `sw/tools/prof/prof_report.py` (§3.1) |
 
 RTL limitations remain in the current interface: `RV_SAMPLE` / `RVWP_APPLY` writes acknowledge
 before their CDC work completes, so callers can see a stale sample or unfinished apply. The
@@ -245,6 +247,58 @@ The dispatch history of the same image freezes at the first error entry and is n
    compared by the gaps between completions.
 
 The method found the VU width and the QACT rate errors of SW-80 ([performance.md](performance.md), "Card against simulator").
+
+### 3.1 The profile report of one decode token
+
+`sw/tools/prof/prof_report.py` turns a run of the ggml backend into one page and one Perfetto file. The run is captured by the backend itself:
+with `TSR_DUMP_PLAN=<dir>` it writes, next to a normal run and without changing a record or an output bit, one `plan_<id>.json` for each graph
+it builds (the ggml nodes with their placement, the fusion groups, the op-list records with their argument words, dependencies, DRAM ranges,
+weight bytes, ideal MVM cycles and the firmware's SPM tile plan, and why each list ended), `launches.jsonl` (one line per launch with the PERF
+deltas), `cpu_fallback.json` (the nodes `supports_op` refused, with the reason), `trw.raw` (the trace writer's records) and `meta.json`.
+It starts the trace writer itself when the device opens (the ring is a window of the IO region, `TSR_PROF_TRW_MIB` MiB, 32 by default, about 60
+decode tokens of a 9,000-op list) and stops it when the backend is freed, so the card needs no `tsr-dbg` step. It also sets the PROF bit: the
+`NODE_BEGIN` marker before every record, with its push index, is what joins a trace op to its record.
+
+```sh
+# card: waits for an idle card, replays the first-ATTPV trace, one run, trace writer off afterwards
+sw/tools/prof/capture_card.sh MODEL build/prof-report/gemma26b/card 33
+# simulator, card configuration (TSR_SIM_CARD=k4full), the same model, prompt and tokens
+TSR_SIM_DRAM_DIR=build/simdram sw/tools/prof/capture_sim.sh MODEL build/prof-report/gemma26b/sim 33
+# the report
+NO_DUMP=1 sw/tools/prof/capture_card.sh MODEL build/prof-report/gemma26b/card_noprof 33      # optional: the same run without the profiler
+EXPECT_CYCLES=16316000 REF_RUN=build/prof-report/gemma26b/card_noprof sw/tools/prof/make_report.sh build/prof-report/gemma26b/card build/prof-report/gemma26b/sim \
+    build/prof-report/gemma26b "Gemma 4 26B-A4B"
+```
+
+`report.html` is one self-contained page (no external script or stylesheet; light and dark). `trace.perfetto.json` has the same token for
+Perfetto or chrome://tracing. `summary.json` has the numbers. The page has three linked views:
+
+- **Summary.** Decode speed, device cycles, the utilisation split U ≈ (1 − H)(1 − G)(1 − F) E of docs/spec.md §14, a bar chart of the measured and
+  the ideal cycles of every layer by kind group (attention, router, experts, dense branch, residual and norms, embedding and head), a table by
+  record kind (count, cycles, share, ideal, efficiency, GB/s, the simulator's cycles), the card against the simulator, and the sanity checks.
+- **Graph.** The splits the scheduler made and the launch with the reason it ended; every ggml node as a device record, a node absorbed by a fusion
+  group (MOE_ROUTE, the MUL_MAT_ID scale chain, RMS_NORM + MUL, MUL_MAT + ADD), a view, or a CPU fallback; the 30 layers folded, one layer open at a
+  time as a layered graph; per record the argument words, DRAM ranges by region and the SPM tiles.
+- **Timeline.** A track per unit and the RISC-V issue (record) band for the card and the simulator, coloured by kind group, with zoom. The Perfetto file
+  has a track per unit, the record track, flow arrows from a record to its ops, counter tracks (the PERF counters of the launch as levels, queue depth per
+  unit and the weight bytes streamed from the trace), and on every slice the node name, kind, layer, shape, bytes, measured cycles, ideal cycles
+  and efficiency. Slice ids are `card:r<record>.<UNIT><n>` and `sim:...` (`args.id`); Perfetto cannot be linked into a local file, so the page
+  searches the id and Perfetto finds it in its omnibox.
+
+A record's cycles are the increase of the launch's completion frontier (the latest end of any op so far, from LAUNCH_BEGIN) over its ops, so they add up
+to the launch with the setup before the first record and the tail. The ideal cycles of an MVM record are its weight bytes over 256 B per cycle. The
+checks in the report are the sum of the record cycles against the launch span and `PERF_CYCLES`, the sums of RUN against the unit counters (DB §8.7),
+`RETIRED` against the ops, the markers against the records, the trace writer's drops and the simulator against the card.
+
+**Gemma 4 26B-A4B, one decode token on the card (2026-11-09; image `k4full`, 200 MHz; 33 tokens captured, launch 18 shown).** The graph has 2,644 nodes in
+the Tesseract split: 1,293 device nodes, 511 absorbed by 331 fusion groups (271 RMS_NORM + MUL, 30 MOE_ROUTE, 30 MUL_MAT_ID scale chains), 840 views; 1,323
+records in one list, one launch per token; the scheduler's CPU split has 4 nodes (the embedding gather, DUP, SET_ROWS into the mixed-input buffer) and
+40 tensors are copied in each token. The list ends at the end of the split: nothing in this graph cuts it. Device: 16.311 M cycles (81.56 ms, 12.26 tok/s from
+device time; the earlier measurement is 16.316 M). Speed: 11.86 tok/s by llama.cpp's eval time with the profiler off, 11.68 with it on (the same session, 32 decode
+tokens each; the PERF cycles of the 34 launches differ by 0.005 %), 11.91 tok/s from the timestamps of consecutive launches, which U and H use.
+U is 55.9 % of B_M0 (3.38 GB read per token): H 2.9 %, G 18.6 %, F 1.5 %, E 71.7 % (the clock bound of 256 B per cycle at 200 MHz is 71.1 %).
+Cycles by record kind: MUL_MAT 9.39 M (236 records, 95 % of ideal), MUL_MAT_ID 4.42 M (60 records, 94 %), RMS_NORM 0.56 M, MOE_ROUTE 0.41 M, ADD 0.36 M.
+The simulator in the card configuration gives 16.241 M for the same launch, 0.42 % below the card (0.995 to 0.996 for each of the 32 decode tokens).
 
 ---
 
