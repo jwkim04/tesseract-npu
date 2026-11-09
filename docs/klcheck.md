@@ -618,6 +618,46 @@ record's own. The ctest case `ggml_tesseract_moe` (the router group with its out
 CPU: the build before SW-76 aborts on it, and the same lowering with direct stores gives wrong ids and weights. The simulator took 1,079 s (`-ub 512`) and
 1,273 s (`-ub 64`) for the prefill, the card 29.6 s.
 
+### The image with the fused GDN op on the card (`k4f250`, `sw-moegdn`, 2026-11-09)
+
+The same three models and the same checks on the image `k4f250` (sha256 `944ea2b59a436c7e7a60b9915d499e6a501cbefd1673c5ac2ca6fdd6d0f7a5f9`,
+UUID `7f5e7240-e3e6-de7a-55aa-42fc777c128d`, core 200 MHz, `clk_rv` 100 MHz, `CAPS` 0x121). The firmware is the `tsr-fw.elf` of `sw-moegdn` at `1ccae1e`
+(kind table 0x2381, GATED_DELTA_NET revision 2). Every run printed `Tesseract Basis 0.1.0 (kind table 0x2381)`. **No priming replay was made before any run**:
+the image has the ATTPV first-run fix. `tsr-selftest` passed 195 of 195 (ids 5 and 11 among them) as the first run after each of two loads
+([performance.md](performance.md) "The GDN image on the card"). The simulator replays use `TSR_SIM_CARD=k4full TSR_SIM_GDN=1 TSR_SIM_TMAX=4 TSR_SIM_RV_RATIO=0.5`
+(k4 lanes, `T_MAX` 4, `CAPS` with the GDN op; the timing options move no bit), with the file-backed DRAM (`TSR_SIM_DRAM_DIR`) deleted after each compare.
+
+```sh
+klcheck all -m MODEL --device xrt --phase m7 -n 64 --n-prompts 8 -o DIR
+klcheck run -m MODEL --device xrt --phase m7 -n 16 --n-prompts 1 --out DIR16/dev.klc
+TSR_SIM_CARD=k4full TSR_SIM_GDN=1 TSR_SIM_TMAX=4 TSR_SIM_RV_RATIO=0.5 klcheck run -m MODEL --device sim --phase m7 --tokens DIR/dev.klc --out DIR/dev-sim-replay.klc
+klcheck compare --ref DIR/dev-sim-replay.klc --dev DIR/dev.klc --expect-identical
+```
+
+| | Qwen3.8 2B, M7 | Gemma 4 26B-A4B, M7 | Qwen3-30B-A3B, M7 |
+| --- | --- | --- | --- |
+| Positions | 512 (8 x 64) | 512 (8 x 64) | 512 (8 x 64) |
+| Mean KL, device / floor (mean of 3 floors) | 2.6498e-3 / 2.4016e-3 | 1.2770e-1 / 1.7200e-1 | 1.2482e-2 / 1.5359e-2 |
+| Ratio (limit 3), seeds 1 / 2 / 3 | **1.103**, 1.055 / 1.108 / 1.151 | **0.742**, 0.729 / 0.690 / 0.820 | **0.813**, 0.872 / 0.823 / 0.752 |
+| Top-1 against the CPU (floor), limit 80 % | **97.27 %** (97.98 %) | **94.53 %** (94.53 %) | **96.68 %** (97.40 %) |
+| Median KL, device / floor | 1.06e-3 / 9.38e-4 | 5.61e-4 / 5.34e-4 | 1.06e-3 / 9.01e-4 |
+| Verdict | PASS | PASS | PASS |
+| Rows bit-identical to the simulator, 8 x 64 | **512 / 512** | **512 / 512** | **512 / 512** |
+| Rows bit-identical to the simulator, 1 x 16 | **16 / 16** | **16 / 16** | **16 / 16** |
+| Rows bit-identical to the same run on `k4full` (8 x 64) | no: the fused op is numerics revision 2 | 512 / 512 | 512 / 512 |
+| Device phase (load, 512 tokens of decode) | 24.6 s, 24.0 s | 197.5 s, 48.6 s | 160.3 s, 38.0 s |
+
+The two MoE models give the numbers of the `k4full` runs to every digit, and their 512 rows equal the rows of the earlier card runs
+(`compare --expect-identical` of the two `dev.klc` files): the new image moves no output bit of a model without GATED_DELTA_NET, as the design says. For Qwen3.8 the bits change
+because the image has the fused op (revision 2: block fixed-point dot products, SW §7.10, [versioning.md](versioning.md)). The simulator with the op predicted ratio 1.103 and top-1 97.27 %
+(`handoff.md`); the card gives both to every digit, and every row equals the simulator's. The composed path (the `k4full` run) had ratio 1.061 and top-1 98.05 %: the fused
+path is 0.04 above in ratio and 0.8 points lower in top-1, well inside the limits. The generated text of the 1 x 16 runs is that of the earlier card runs for the MoE models
+and ` in the 15th century, with the invention of movable type by Johannes` for Qwen3.8.
+
+Qwen3.8 2B at the default `-ub 512` with a 512-token prompt (511 prompt-tail rows and 4 generated; the fused op over 512 tokens of prefill): the card's 515 rows against the
+simulator's replay of its tokens, **515 of 515 bit-identical**. The prefill took 13.3 s on the card; its replay on the simulator took 2.8 min, the 8 x 64 replay 3.4 min and the 1 x 16 replay 25 s. For the MoE models the 8 x 64 replay took 8.1 min (Gemma 4) and 8.0 min (Qwen3-30B-A3B) on the simulator with the file-backed DRAM
+(host load average 3 to 5, 0.63 s per decode token for Gemma 4). `klcheck all` took 2.2 min for Qwen3.8 2B, 35 min for Gemma 4 and 18 min for Qwen3-30B-A3B (the CPU, floor and embd phases ran at a host load of 20 to 25 with the K4 link running).
+
 ## Tests
 
 - `tools_klcheck_selftest` (no model): the 1-ulp nudge (exactly one ulp, deterministic, balanced

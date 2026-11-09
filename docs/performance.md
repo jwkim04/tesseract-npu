@@ -9,7 +9,8 @@ measurement history and the commands that reproduce the numbers.
 > **Scope.** Measurement record, not a design. The first card measurements with the control core
 > are in "The first card image with the control core" below (2026-11-06); the full-feature image's
 > are in "The full-feature image after the ATTPV fix" and, for the image before the fix, "The full-feature image on the card, second link" (both 2026-11-08).
-> The MoE and Gated DeltaNet models on the same image are in "MoE and Gated DeltaNet on the card" (2026-11-09), and Qwen3-30B-A3B in "Qwen3-30B-A3B on the card". All other card
+> The MoE and Gated DeltaNet models on the same image are in "MoE and Gated DeltaNet on the card" (2026-11-09), and Qwen3-30B-A3B in "Qwen3-30B-A3B on the card". The three models on the image with the fused GDN op (`k4f250`)
+> are in "The GDN image on the card" (2026-11-09). All other card
 > measurements were taken before the control core was added, with the host issuing the ops; the
 > Vivado and RTL simulation results are of the design that ran on the card. The other numbers are simulator measurements or estimates, and none
 > of them is a card measurement. Every number carries one of the provenance labels below. The
@@ -51,6 +52,59 @@ are not comparable with the 276.3 MHz ones without the clock ratio.
 patches ([`sw/xrt-driver`](../sw/xrt-driver/README.md)), shell `xilinx_u200_gen3x16_xdma_base_2`,
 SC firmware 4.6.21. The U200 has a VU9P with three SLRs and 4 x 16 GB DDR4 (DDR4-2400, 19.2 GB/s
 peak per channel). Simulator timings are from the same host.
+
+## The GDN image on the card (`k4f250`, firmware of `sw-moegdn`, 2026-11-09)
+
+Measured on the card, 2026-11-09. The image is the link `k4f250` (source branch `k4f250`, `7220f48`): sha256
+`944ea2b59a436c7e7a60b9915d499e6a501cbefd1673c5ac2ca6fdd6d0f7a5f9`, UUID `7f5e7240-e3e6-de7a-55aa-42fc777c128d`. The core runs at 200 MHz and `clk_rv` at 100 MHz
+(`clock_freqs` in sysfs reads 200 and 100, `RV_FREQ` ratio 0.5); the link's routed timing is WNS +0.017 ns and WHS +0.006 ns, and its clock check
+(`CLKFINAL`) passed. Against `k4full` (the image of the sections below) the image has the ATTPV first-run fix (no stale zero lines after a load), the extra `FAST_CLK`
+pipeline stages, and the VU's fused GDN op (opcode 0x39, `HAS_GDN` 1, `CAPS` 0x121). Debug hardware stays in (`HAS_DB` 1). The firmware is the `tsr-fw.elf` of
+`sw-moegdn` at `1ccae1e` (image id `b8838a99660d1da7`, 21 kinds, kind table 0x2381, GATED_DELTA_NET revision 2), the host stack is `build/xrt` of that branch.
+**No priming replay was used in any run.** Method as in the section below (`-ngl 99 -fa on -ctk q8_0 -ctv q8_0 -c 4096 --temp 0 -no-cnv -t 8`,
+`LLAMA_ATTN_ROT_DISABLE=1`, `TSR_STATS=1`, decode `-n 65` and the 7- or 8-token prompt, prefill a 512-token prompt per tokenizer at the default `-ub 512`, per-token
+device figures from the `-n 65` and `-n 1` PERF difference over 64 passes, three runs of each case). Accuracy and the bit identity are in [`klcheck.md`](klcheck.md).
+The host load average was 3 to 5 in all speed runs, so the wall figures are close to the device time (the device share is 98 % for decode).
+
+| Per decode token | Qwen3.8 2B, `k4full` | Qwen3.8 2B, `k4f250` | Gemma 4 26B-A4B, `k4full` | Gemma 4 26B-A4B, `k4f250` | Qwen3-30B-A3B, `k4full` | Qwen3-30B-A3B, `k4f250` |
+| --- | --- | --- | --- | --- | --- | --- |
+| Decode tok/s, runs 1 / 2 / 3 | 15.66 / 15.57 / 15.33 | 23.09 / 23.06 / 23.08 | 11.98 / 10.45 / 11.99 | 12.03 / 12.01 / 11.96 | 9.41 / 13.06 / 15.82 | 17.23 / 17.24 / 17.24 |
+| **Best, median** | 15.66, 15.57 | **23.09, 23.08** (43.30, 43.34 ms) | 11.99, 11.98 | **12.03, 12.01** (83.16, 83.23 ms) | 15.82, 13.06 | **17.24, 17.24** (58.02, 58.02 ms) |
+| `PERF_CYCLES` per token | 12.630 M | **8.505 M** (42.52 ms) | 16.316 M | 16.319 M | 11.338 M | 11.342 M |
+| Device share of wall time, runs 1 / 2 / 3 | 98.9 / 98.3 / 96.8 % | 98.2 / 98.1 / 98.1 % | 97.7 / 85.2 / 97.8 % | 98.1 / 98.0 / 97.6 % | 53.3 / 74.0 / 89.7 % | 97.7 / 97.8 / 97.7 % |
+| Load average (1 min) at start of runs 1 / 2 / 3 | 6.2 / 6.0 / 6.2 | 4.6 / 4.1 / 3.5 | 9.6 / 10.1 / 8.1 | 3.2 / 3.3 / 3.1 | 45.0 / 37.5 / 40.0 | 4.0 / 4.4 / 4.5 |
+| `MVM_CYCLES` | 5.712 M | 5.712 M | 13.286 M | 13.286 M | 8.469 M | 8.464 M |
+| `MVM_EMPTY` / `MVM_WAIT` | 5.586 M / 1.331 M | 2.291 M / 0.501 M | 1.811 M / 1.217 M | 1.813 M / 1.217 M | 2.018 M / 0.847 M | 2.023 M / 0.851 M |
+| `VU_CYCLES` | 4.758 M | **1.272 M** | 1.088 M | 1.088 M | 0.749 M | 0.749 M |
+| `DMA_CYCLES` | 2.978 M | **1.267 M** | 1.306 M | 1.306 M | 1.245 M | 1.256 M |
+| `QACT_CYCLES` | 0.098 M | 0.098 M | 0.505 M | 0.505 M | 0.374 M | 0.374 M |
+| Op records per launch (one launch per token) | 756 | 685 | 1,323 | 1,323 | 1,397 | 1,397 |
+
+| 512-token prefill (`-ub 512`) | Qwen3.8 2B, `k4full` | Qwen3.8 2B, `k4f250` | Gemma 4 26B-A4B, `k4full` | Gemma 4 26B-A4B, `k4f250` | Qwen3-30B-A3B, `k4full` | Qwen3-30B-A3B, `k4f250` |
+| --- | --- | --- | --- | --- | --- | --- |
+| tok/s, runs 1 / 2 / 3 | 32.95 / 33.05 / 32.99 | 67.79 / 67.77 / 67.80 | 26.43 / 26.58 / 26.56 | 26.87 / 26.83 / 26.88 | 26.72 / 26.60 / 25.69 | 26.90 / 26.90 / 26.90 |
+| **Best, median** | 33.05, 32.99 | **67.80, 67.79** (7.55 s) | 26.58, 26.56 | **26.88, 26.87** (19.06 s) | 26.72, 26.60 | **26.90, 26.90** (19.04 s) |
+| `PERF_CYCLES` of the run | 3,081.3 M | **1,490.4 M** | 3,809.3 M | 3,810.5 M | 3,798.4 M | 3,799.8 M |
+| Device share of wall time | 99.2 to 99.4 % | 98.6 to 98.7 % | 98.3 to 98.9 % | 99.8 to 100 % | 95.3 to 99.1 % | 99.8 % |
+| Launches | 14 | 14 | 61 | 61 | 97 | 97 |
+
+How to read the table.
+
+- **Qwen3.8 2B is 1.47 times faster in decode and 2.05 times in prefill.** The device takes 8.505 M cycles per token instead of 12.630 M. The VU busy cycles fall from
+  4.758 M to 1.272 M and the DMA busy cycles from 2.978 M to 1.267 M; the MVM busy cycles do not move (5.712 M). The simulator model for this image
+  (`TSR_SIM_CARD=k4full TSR_SIM_GDN=1`, ratio 0.5, SW-82) said 8.53 M, 1.26 M of VU and 1.25 M of DMA: the card is 0.3 % below it.
+  Two things make the gain. The fused GDN op alone (`TSR_GDN_CELL=0`, three passes over the state, one n65 run) takes 9.697 M cycles per token, 49.23 ms, 20.31 tok/s
+  (model 9.72 M); the state on its cache cell (SW-82, host lowering, 1,188 of 1,188 records) removes another 1.19 M cycles. The old image's runs predate SW-82, so the
+  state-on-cell part is not an image effect; the VU and DMA figures with `TSR_GDN_CELL=0` (1.273 M and 2.451 M) are the fair like-for-like for the op itself.
+- **The two MoE models do not move.** Gemma 4 takes 16.319 M cycles per token against 16.316 M (+0.02 %) and Qwen3-30B-A3B 11.342 M against 11.338 M (+0.04 %); prefill
+  3,810.5 M against 3,809.3 M and 3,799.8 M against 3,798.4 M. The extra `FAST_CLK` stages cost nothing visible. Their higher tok/s (12.03 against 11.99 for Gemma 4, 17.24
+  against 15.82 for Qwen3-30B-A3B) is host load: the old Qwen3-30B-A3B runs were made at a load average of 23 to 58 and had a device share of 53 to 90 %, the new ones at 4 to 5 and 98 %.
+  The prefill figures at `-ub 512` are 1.1 % (Gemma 4) and 0.7 % (Qwen3-30B-A3B) above the old ones, with the same device cycles.
+- This image runs the core at 200 MHz and the RISC-V at 100 MHz. The 250 MHz estimates of [`handoff.md`](handoff.md) ("The fused GDN op in the firmware", 8.04 M for the 2B
+  with the state on its cell at ratio 0.667, 87.7 M for the 27B) are for a faster link and are not this image. The fused step is limited by the RISC-V issue rate (SW §7.10), so the
+  RISC-V ratio matters here. The 27B estimate at ratio 0.5 (91.1 M cycles per token) is a simulator figure and was not run on the card.
+
+Logs: `build/card/k4f250/speed` (not in git), the parse script `build/card/k4f250/parse.py`.
 
 ## MoE and Gated DeltaNet on the card (`k4full`, firmware of `sw-moegdn`, 2026-11-09)
 
@@ -1040,6 +1094,7 @@ the card in W6 and in synthesis in W4/W5.
 | 2026-11-08 | W6: the full-feature image (`k4full`, core 200 MHz, `clk_rv` 100 MHz): selftest, M6, the vector-unit kinds of M7 | `tsr-selftest` 184 / 185 (ATTPV differs); M6 bit-identical to the simulator (0.5B 512 / 512, 32B 32 / 32); vector-unit kinds on the device bit-identical, 0.5B 69.6 tok/s (25 launches per token), 32B 2.33 tok/s; M6 decode 49.5 / 2.27 tok/s, prefill 410.8 / 9.6 tok/s (`T_MAX` 4); M7 attention on the device wrong (Vivado fault in the ATTPV lane select) | measured on the card (k4full, 200 / 100 MHz) |
 | 2026-11-08 | W6: the full-feature image after the ATTPV fix (`k4full`, fourth link) | `tsr-selftest` 184 / 184 after the first run of a load (the first run differs in two lines of id 5); 745 trace replays bit-exact, `at` 98 / 98; M6, vector-unit kinds and M7 with attention on the device bit-identical to the simulator on 0.5B (512 / 512) and 32B (32 / 32); M7 KL ratio 0.953 (0.5B) and 0.735 (32B); M7 decode 75.88 tok/s (0.5B, 13.18 ms, 1 launch per token) and 2.35 tok/s (32B); `m6` decode 47.83 / 2.25 tok/s | measured on the card (k4full, 200 / 100 MHz) |
 | 2026-11-09 | W6: the MoE and Gated DeltaNet kinds on the full-feature image (firmware of `sw-moegdn`, bitstream unchanged) | Gemma 4 26B-A4B: M6 ratio 1.294, top-1 92.77 %, M7 ratio 0.742, top-1 94.53 % (512 positions, PASS), 512 / 512 rows bit-identical to the simulator; Qwen3.8 2B M7 ratio 1.061, top-1 98.05 %, 512 / 512 rows bit-identical; 1 x 16 replays 16 / 16 for both; M7 decode 11.99 tok/s (Gemma, 16.32 M cycles per token) and 15.66 tok/s (Qwen3.8, 12.63 M), 512-token prefill 26.2 and 33.0 tok/s; Gemma prefill stops at `-ub` 256 and above (SW-64) | measured on the card (k4full, 200 / 100 MHz) |
+| 2026-11-09 | W6: the image with the fused GDN op, the ATTPV fix and the `FAST_CLK` stages (`k4f250`, core 200 MHz, `clk_rv` 100 MHz) | `tsr-selftest` 195 / 195 on the first run after each of two loads with no priming replay (id 5 and id 11 pass); M7 klcheck: Qwen3.8 2B ratio 1.103, top-1 97.27 %, Gemma 4 26B-A4B 0.742, 94.53 %, Qwen3-30B-A3B 0.813, 96.68 %, 512 / 512 rows bit-identical to the simulator for each; decode 23.09 tok/s (Qwen3.8 2B, 8.505 M cycles per token, was 12.630 M), 12.03 (Gemma 4), 17.24 (Qwen3-30B-A3B); 512-token prefill 67.80, 26.88, 26.90 tok/s | measured on the card (k4f250, 200 / 100 MHz) |
 
 Next: the next model targets and the open items of [`docs/handoff.md`](handoff.md); the design plan is
 [`docs/design/README.md`](design/README.md) §10.

@@ -2,6 +2,29 @@
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
 
+## Resume here for the software: the `k4f250` image on the card (branch `sw-moegdn`, November 9)
+
+The image with the fused GDN op, the ATTPV first-run fix and the `FAST_CLK` stages ran on the card for the first time, with the firmware of `sw-moegdn` at `1ccae1e` (no code change). Nothing failed.
+The image is `build/link/k4f250/tsr_u200_k4.xclbin` of the `k4f250` worktree (branch `k4f250`, `7220f48`): sha256 `944ea2b59a436c7e7a60b9915d499e6a501cbefd1673c5ac2ca6fdd6d0f7a5f9`,
+UUID `7f5e7240-e3e6-de7a-55aa-42fc777c128d`, core 200 MHz, `clk_rv` 100 MHz (sysfs `clock_freqs` 200 and 100, `RV_FREQ` ratio 0.5), routed WNS +0.017 ns, WHS +0.006 ns. **It is the image
+loaded on the card now.** The runs used a copy, `build/card/k4f250/tsr_u200_k4.xclbin` (not in git). The old image file is kept:
+`k4full/build/link/k4full/tsr_u200_k4.xclbin`, sha256 `6fdf31fd...3745284`, UUID `c7f70219-f070-c4fd-cfdc-1da14a7eb251`. Numbers: [performance.md](performance.md) "The GDN image on the card",
+[klcheck.md](klcheck.md) "The image with the fused GDN op on the card".
+
+- `tsr-selftest`, all ids, as the **first run after a load and with no priming replay**: 195 of 195 passed, twice. The first load was from `k4full`; the second was a fresh load of `k4f250`
+  after a quick run of `k4full`. Id 5 (the ATTPV first run, which failed on `k4full`) passes, and id 11 (the GDN op, 4 heads of 20 x 128) passes, alone (52 of 52) and in the full run.
+  Identity: `CAPS` 0x121 (VU ATT GDN), 21 kinds, kind table 0x2381, image id `b8838a99660d1da7`. The priming replay of `traces/at/errors/at_s53_0009` is no longer needed on this image or on later links.
+- klcheck M7, 8 x 64: Qwen3.8 2B ratio 1.103, top-1 97.27 % (the simulator with the op said the same to every digit); Gemma 4 26B-A4B 0.742, 94.53 %; Qwen3-30B-A3B 0.813, 96.68 %. All pass.
+  Every card row equals the simulator's replay (`TSR_SIM_CARD=k4full TSR_SIM_GDN=1 TSR_SIM_TMAX=4 TSR_SIM_RV_RATIO=0.5`): 512 of 512 for each model at 8 x 64, 16 of 16 at 1 x 16, and 515 of 515 for a
+  512-token prefill of the 2B at `-ub 512`. The two MoE runs also equal the card runs of `k4full` row for row.
+- Speed, M7, best of three (old image in brackets): Qwen3.8 2B decode 23.09 tok/s at 8.505 M cycles per token (15.66, 12.630 M), prefill 67.80 tok/s (33.05); Gemma 4 26B-A4B 12.03 (11.99), 16.319 M
+  cycles (16.316 M), prefill 26.88 (26.58); Qwen3-30B-A3B 17.24 (15.82, measured at a host load of 23 to 58), 11.342 M cycles (11.338 M), prefill 26.90 (26.72). The model for the 2B said 8.53 M
+  (fused op and state on its cell); the fused op alone (`TSR_GDN_CELL=0`) takes 9.697 M (model 9.72 M). The MoE models are unchanged in device cycles, within 0.05 %.
+- Scripts and logs: `build/card/k4f250` (`lib.sh`, `step12.sh`, `master1.sh`, `master2.sh`, `master3.sh`, `speed.sh`, `parse.py`; not in git). `tsr-top` shows the runs (CORE 200 MHz, RV 100 MHz, the MVM
+  meter at 66 % during a 2B decode).
+- Open: the 27B Qwen3.8 on the card (simulator estimate 91.1 M cycles per token at ratio 0.5, not run); a 250 MHz link (the estimates at ratio 0.667 in the section on the fused GDN op are for it); the other
+  items of the sections below.
+
 ## Resume here for the software: the profile report and `tsr-top` are in `sw-moegdn` (November 9)
 
 Two finished tool branches were merged into `sw-moegdn` (real merges, in this order), both from `984ba4e`: `prof-viz` (SW-84, the profile dump `TSR_DUMP_PLAN` and the
@@ -58,7 +81,7 @@ revision 2 of GATED_DELTA_NET, the state on its cache cell). The first three cha
   klcheck M7, 1 prompt x 16 tokens, `compare --expect-identical`: Qwen3.8 2B with `TSR_SIM_CARD=k4full` (composed path) 16 of 16 against the same run at `afcdae1`;
   Qwen3.8 2B with `TSR_SIM_CARD=k4full TSR_SIM_GDN=1` (fused path) 16 of 16 against the `gdn-fw` build (`8cc4c33`); Gemma 4 26B-A4B (default lanes) 16 of 16 against `afcdae1`.
   The plain simulator now has `CAPS` bit 8, so it runs the fused path for Qwen3.8 (S_v 128): its bits are not those of the card runs of 2026-11-09. Replay those with `TSR_SIM_CARD=k4full` or `TSR_SIM_GDN=0`.
-- Open: the card run of the fused path (plan in the next section; it needs the `k4f250` image); grouping of tokens by expert (SW-66); the KV store, MOE_ROUTE and the DMA's half rate while the VU runs are not in the cycle model (SW-80).
+- Open: grouping of tokens by expert (SW-66); the KV store, MOE_ROUTE and the DMA's half rate while the VU runs are not in the cycle model (SW-80).
 
 ## Profile report of one decode token (branch `prof-viz`, merged, SW-84, November 9)
 
@@ -82,8 +105,7 @@ A capture and report path for one model token, run on the card and on the simula
 
 Simulator only; the RTL (the VU's GDN op) comes from `gdn-vu`. The branch was `sw-moegdn` (2d887ec) with `gdn-vu` (bdcf7b9, the GDN op in the VU) and `vu-perf` (31b3d71, SW-80, the cycle models
 that follow the card) merged in. The `gdn-vu` merge had two conflicts, both in docs; the `vu-perf` merge four (`tsr_vu.c`'s constants, `test_sim_vu.c`'s test list, this file and
-the decision table). The generated files came out of the generators unchanged (`gen_tables.py --check`, `gen_tops.py --check`). The card image with the op is the `k4f250` link, still
-being built; no card was used. The branch is now merged into `sw-moegdn` (the first section says what was checked after the merge).
+the decision table). The generated files came out of the generators unchanged (`gen_tables.py --check`, `gen_tops.py --check`). The card image with the op is the `k4f250` link; the card run is in the first section of this file. The branch is now merged into `sw-moegdn` (the first section says what was checked after the merge).
 
 - GATED_DELTA_NET runs the VU's GDN op per head and token when `CAPS` has bit 8 (with the VU) and S_v is 64 or more, and keeps the 13-op composition otherwise. The choice is made per
   launch from the device's `CAPS` (`plan::gdn::use_fused`); the record, the planner and the ring block are unchanged. Per step: three `SOP`, `GDN` (state tile in place),
@@ -112,14 +134,14 @@ being built; no card was used. The branch is now merged into `sw-moegdn` (the fi
 
   The fused step is limited by the RISC-V issue rate (4.7 K core cycles per head and token at ratio 0.5, 3.5 K at 0.667; the VU needs about 3.1 K), so the fused path gains 23 % of a 2B token,
   and the state on its cell another 12 %.
-- Left: the card run (plan below); a decode step that shares the g / beta / k / q / v loads across the heads of a token (6 pushes per head instead of 11, a gain of about 1 K cycles per
+- Left: a decode step that shares the g / beta / k / q / v loads across the heads of a token (6 pushes per head instead of 11, a gain of about 1 K cycles per
   head and token at ratio 0.5, 2 to 3 % of a 27B token); the RTL's overlap of independent heads is not in the model (VU §7.12.8).
 
-### Card plan for the `k4f250` image (not run)
+### Card plan for the `k4f250` image (run on November 9; results in the first section)
 
 Build the host with `-DTSR_WITH_XRT=ON` from branch `sw-moegdn` (`build/xrt`, as for the earlier card runs) and use the `tsr-fw.elf` of the same build
 (21 kinds, kind table 0x2381, ITCM 85,504 B). The image has `HAS_GDN` 1: `CAPS` should read 0x121 with the VU and attention bits (bit 8 is the op).
-`TSR_XCLBIN` is the `k4f250` xclbin; core clock 250 MHz, `clk_rv` 166.7 MHz. If the image still has the first-ATTPV-after-load defect, replay the
+`TSR_XCLBIN` is the `k4f250` xclbin; core clock 250 MHz, `clk_rv` 166.7 MHz (the link that was run closed at 200 MHz and 100 MHz). If the image still has the first-ATTPV-after-load defect, replay the
 trace `traces/at/errors/at_s53_0009` before each run as for `k4full`.
 
 ```sh
