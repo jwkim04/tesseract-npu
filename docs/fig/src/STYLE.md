@@ -168,8 +168,9 @@ that is not in `rtl/` and in the release image is not drawn.
   `dataflow`, the reset lines in `clocks`, zoom lines and the `W_OFF` line.
 - A fact that is a configuration of the release image (core clock 200 MHz, `clk_rv` 100 MHz) is
   drawn as a fact. Do not draw a measured result.
-- A figure that shows other targets (`layers`) draws the pieces a port writes, as `docs/spec.md`
-  §2 lists them, in the same solid style. The lane heads say which target this tree provides.
+- A figure that shows other targets (`layers`) draws the pieces a port writes, as
+  `docs/spec.md` §2 lists them, in the same solid style. The lane heads say which target this
+  tree provides.
 
 ## Repeated units and channel counts
 

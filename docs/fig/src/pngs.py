@@ -2,8 +2,8 @@
 """Render the README figures to PNG: docs/fig/<name>.png from docs/fig/<name>.svg.
 
 Why. The README embeds each figure as one plain <img> of a PNG. The <picture> element with SVG
-sources showed a broken image in the GitHub mobile app (the logo had the same problem, commit
-6f97864). A plain <img> of a PNG shows everywhere. The light SVG is the source: every figure card
+sources showed a broken image in the GitHub mobile app (the logo had the same problem).
+A plain <img> of a PNG shows everywhere. The light SVG is the source: every figure card
 carries its own background, so one PNG reads on both GitHub themes. The SVGs stay the sources, and
 the technical documents under docs/ keep embedding them.
 

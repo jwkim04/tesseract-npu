@@ -1,8 +1,10 @@
 #!/bin/bash
 # hw/u200/vivado_slot.sh CMD ARGS... - run CMD while holding one of two Vivado slots, so at most two Vivado
-# processes run on the host. Slot 1 is vivado.lock (the lock the builders use), slot 2
-# vivado2.lock. Blocks until a slot is free.
-L=${TSR_VIVADO_LOCK_DIR:-/tmp/claude-1000/-home-limagin-dev-tesseract}
+# processes run on the host. The slots are vivado.lock and vivado2.lock in TSR_VIVADO_LOCK_DIR
+# (default /tmp/tsr-vivado). Every checkout on the host must use the same directory. Blocks until a
+# slot is free.
+L=${TSR_VIVADO_LOCK_DIR:-/tmp/tsr-vivado}
+mkdir -p "$L"
 while :; do
   for s in vivado.lock vivado2.lock; do
     exec 9>>"$L/$s"
