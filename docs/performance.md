@@ -200,6 +200,29 @@ the op before):
 The simulator's default configuration is unchanged: the U200 image's 16 / 16 / 8 lanes. A comparison with the card sets `TSR_SIM_CARD=k4full`.
 With the default configuration and the corrected model, the Qwen3.8 2B decode token takes 10.96 M cycles (VU 3.16 M, MVM 5.73 M, DMA 2.43 M busy) and Gemma 4 26B-A4B 15.69 M.
 
+### Profile report of one Gemma 4 26B-A4B decode token (2026-11-09)
+
+One card run (`k4full`, 200 MHz, the `sw-moegdn` firmware, the 33-token capture of [prof-dbg.md](prof-dbg.md) §3.1) and the same run on the simulator in the card
+configuration (`TSR_SIM_CARD=k4full`). The profiler was on (PROF markers, the trace writer, PERF read twice per launch). The 32 decode launches took 16.303 M to
+16.318 M cycles (the earlier unprofiled figure is 16.316 M); the report shows launch 18. The same run without the profiler, right after it: 11.86 tok/s by llama.cpp's eval
+time (84.35 ms per token) against 11.68 tok/s (85.59 ms) with it on, and the PERF cycles of the 34 launches are 609,713,406 against 609,744,894: the markers cost the host 1.5 % of the
+speed and the device 0.005 % of the cycles.
+
+| Launch 18 | Card | Simulator |
+| --- | --- | --- |
+| PERF_CYCLES | 16,310,619 (81.56 ms at 199.99 MHz) | 16,241,314 launch span (0.42 % below) |
+| Decode speed | 11.86 tok/s profiler off, 11.68 on (llama.cpp); 11.91 tok/s from launch timestamps (83.99 ms per token); 12.26 tok/s from device time | |
+| U = (1 − H)(1 − G)(1 − F) E | 55.9 % = 0.971 × 0.814 × 0.985 × 0.717 | |
+| Bytes read per token (PERF) | 3.38 GB, of which 3.35 GB are weights | |
+
+H is 2.9 % (host time between launches), G 18.6 % (MVM busy 81.4 % of the cycles; `MVM_EMPTY` 11.1 %, `MVM_WAIT` 7.4 %), F 1.5 % (ideal weight-stream cycles 13.08 M
+against 13.28 M MVM cycles) and E 71.7 %: at 200 MHz the weight stream's limit is 256 B per cycle = 51.2 GB/s, 71.1 % of B_M0, so the core clock, not the DDR, is what
+stops U at 71 % even with the MVM never idle. Cycles by record kind (the cycles a record adds to the launch): MUL_MAT 9.39 M (236 records, 95 % of its weight-stream ideal), MUL_MAT_ID 4.42 M
+(60 records, 94 %), RMS_NORM 0.56 M, MOE_ROUTE 0.41 M, ADD 0.36 M, FLASH_ATTN 0.28 M. By group: attention 5.29 M (81 % of ideal), experts 5.10 M (81 %), the head 3.33 M (92 %: 3.10 M for
+the 262,144 x 2,816 matrix and 0.23 M for the three unfused softcap records, because `CAPS` bit 14 is not in this image), the dense branch 1.80 M (86 %), the router 0.62 M and the
+residual adds and norms 0.15 M. The 30 layers cost 0.41 to 0.50 M cycles each (layers 5, 11, 17, 23 and 29 cost 0.50 M, the others 0.41 or 0.43 M). The simulator is 0.995 to 0.996 of the card
+for every one of the 32 decode tokens.
+
 ## Qwen3-30B-A3B on the card (`k4full`, SW-77, 2026-11-09)
 
 Measured on the card (k4full, fourth link, 200 / 100 MHz), 2026-11-09, with the bitstream, firmware (`tsr-fw.elf` of `sw-moegdn`, 21 kinds, kind

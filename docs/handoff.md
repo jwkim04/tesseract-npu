@@ -30,6 +30,24 @@ revision 2 of GATED_DELTA_NET, the state on its cache cell). The first three cha
   The plain simulator now has `CAPS` bit 8, so it runs the fused path for Qwen3.8 (S_v 128): its bits are not those of the card runs of 2026-11-09. Replay those with `TSR_SIM_CARD=k4full` or `TSR_SIM_GDN=0`.
 - Open: the card run of the fused path (plan in the next section; it needs the `k4f250` image); grouping of tokens by expert (SW-66); the KV store, MOE_ROUTE and the DMA's half rate while the VU runs are not in the cycle model (SW-80).
 
+## Profile report of one decode token (branch `prof-viz`, SW-84, November 9)
+
+A capture and report path for one model token, run on the card and on the simulator ([prof-dbg.md](prof-dbg.md) §3.1). No RTL, firmware or llama.cpp change.
+
+- Backend: `TSR_DUMP_PLAN=<dir>` (`sw/ggml-tesseract/tsr-prof.{h,cpp}`, hooks in `ggml-tesseract.cpp`) writes the plan of each built graph (nodes with placement, fusion groups,
+  records with arguments, DRAM ranges, weight bytes, ideal MVM cycles, SPM tile plan, the reason each list ended), the launches with PERF deltas, the `supports_op` refusals and
+  the trace writer's records (the process starts and stops the ring itself). It sets the PROF bit. Bits do not move: `klcheck compare --expect-identical`, Gemma 4 26B-A4B,
+  1 x 16, simulator, dump on against off, and the generated text of the tiny-model tests.
+- Tools: `sw/tools/prof/capture_card.sh`, `capture_sim.sh`, `make_report.sh`, `prof_report.py` (HTML page, Perfetto JSON, summary JSON; standard library only),
+  `test_prof_report.py` (`tools_prof_report_qwen3moe_tiny`, `tools_prof_report_gemma_tiny`).
+- Gemma 4 26B-A4B on the card (`k4full`, 33 tokens, one session, 2026-11-09): decode launch 16.303 M to 16.318 M cycles (launch 18: 16.311 M against the earlier 16.316 M),
+  11.86 tok/s with the profiler off and 11.68 with it on (llama.cpp eval time, same session), U 55.9 % (H 2.9 %, G 18.6 %, F 1.5 %, E 71.7 %, the clock bound at 200 MHz being 71.1 %); the simulator in the card configuration is
+  0.995 to 0.996 of the card for each of the 32 decode tokens. Numbers: [performance.md](performance.md) "Profile report of one Gemma 4 26B-A4B decode token".
+- The page was checked with a stub run of its script (gjs), the checks of the ctest (title, colour tokens, no external script, size) and a render of its SVG charts and graphs
+  with cairosvg; no browser was available in the session, so its layout in a real browser is not looked at.
+- Open: PERF counters are per launch only (the hardware gives no finer sample); the op slices of a record share the record's ideal cycles evenly (the card trace has no op words);
+  the layer and group names come from node names (Gemma 4 and Qwen3 MoE); the scheduler's CPU split is read from `GGML_SCHED_DEBUG=2` output (`-lv 5`), not from the backend.
+
 ## The fused GDN op in the firmware and the card plan for the `k4f250` image (branch `gdn-fw`, merged, November 9)
 
 Simulator only; the RTL (the VU's GDN op) comes from `gdn-vu`. The branch was `sw-moegdn` (2d887ec) with `gdn-vu` (bdcf7b9, the GDN op in the VU) and `vu-perf` (31b3d71, SW-80, the cycle models
