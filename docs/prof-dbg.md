@@ -483,46 +483,48 @@ fails to open the card, which is why it is off by default.
 
 Image `k4full` (`tsr_u200_k4`, CAPS 0x21), firmware of this branch, Gemma 4 26B-A4B Q4_K_M, a 113-token prompt and 360 generated
 tokens, `llama-completion` with `TSR_DEVICE=xrt`, the ATTPV trace replayed before the run, `tsr-top` running at the same time in two
-terminals (80 x 24 and 110 x 36). The counters of that run were saved, and this is the 80 x 24 screen in the middle of the decode as the current
-version draws them (the sensors and the clocks are read from sysfs afterwards; the process is the run's, its PID is not):
+terminals (80 x 24 and 110 x 36; the run was made twice, the second time with the screen as it is described above). This is the
+80 x 24 screen in the middle of the decode of the second run:
 
 ```
  Device 0 [Alveo U200 xilinx_u200_gen3x16_xdma_base_2]   PCIe GEN 3@16x  [BUSY]
  CORE 200MHz  RV 100MHz
- TEMP  54°C FAN 1265rpm POW  36 / 225 W  DDR[||||||||||           18.8Gi/64.0Gi]
- COMPUTE[||||||||||||||||||||| 78% MVM] MEMORY[|||||||||||| 56% ch0 10.1 GB/s]
+ TEMP  55°C FAN 1258rpm POW  53 / 225 W  DDR[||||||||||           18.8Gi/64.0Gi]
+ COMPUTE[||||||||||||||||||||| 77% MVM] MEMORY[|||||||||||| 56% ch0 10.1 GB/s]
    ┌──────────────────────────────────────────────────────────────────────────┐
-100│COMPUTE  78% MVM                                                          │
-   │MEMORY   56% ch0 10.1 GB/s (dotted)                                       │
+100│COMPUTE  77% MVM                                                          │
+   │MEMORY   56% ch0 10.1 GB/s                                                │
    │                                                                          │
-   │                                                                   ⡤⠤⠼⠙⠒⠒⠒│
- 75│                                                                 ⢸⠉⠁      │
-   │                                                                 ⢸        │
-   │                                                                 ⢸ ⡄⠄⠄⠂⠄⠆⠆│
- 50│                                                                 ⢸⠁⠁      │
-   │                                                                 ⢸        │
-   │                                                                 ⢸        │
- 25│                                                                 ⢸        │
-   │                                                                 ⢸        │
-   │                                                                 ⢸        │
-   │                                                                 ⢸        │
-  0│               ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣸        │
+   │                                                           ⢰⠋⠧⠼⠉⠉⠉⠛⠙⠋⠿⠉⠉⠉⠙│
+ 75│                                                          ⢰⠚              │
+   │                                                          ⢸               │
+   │                                                          ⢸⢠⠖⢦⣰⠒⠒⠒⠶⠲⠖⠶⠒⠒⠒⠲│
+ 50│                                                          ⢸⠉              │
+   │                                                          ⢸               │
+   │                                                          ⢸               │
+ 25│                                                          ⢸               │
+   │                                                          ⢸               │
+   │                                                          ⢸               │
+   │                                                          ⢸               │
+  0│           ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣸               │
    └120s─────────────90s───────────────60s────────────────30s───────────────0s┘
      PID USER     MODEL         MODE TOK/S v LAUNCH/s  CPU HOST MEM COMMAND
- 2106696 limagin~ google~Q4_K_M M7      11.7     11.7 130%   2.7GiB build/xrt/bi
-F2Setup  F6Sort  F10Quit  +/-Refresh 2.0s  TabDevice
+ 2430294 limagin~ google~Q4_K_M M7      11.6     11.6 135%   4.5GiB build/xrt/bi
+F2Setup  F6Sort  F10Quit  +/-Refresh 1.0s  TabDevice
 ```
 
 - The core clock, fitted from `DBG_MTIME` by the owner (199.99 MHz) and read from sysfs (`clock_freqs` 200 100), is 200 MHz, so the stream
   limit is 64 B x 200 MHz = 12.8 GB/s per channel, below the DRAM's 18 GB/s (`E` is 71 % in the utilisation split). One decode token is one
   launch of 1,323 op records.
 - The counters agree with `TSR_STATS` and with the earlier card measurements ([performance.md](performance.md)): MVM busy 81 % of the active
-  cycles (81.4 %), `MVM_EMPTY` 11 % (11.1 %), `MVM_WAIT` 8 % (7.5 %), VU 7 % (6.7 %), DMA 8 % (8.0 %), QACT 3 % (3.1 %), the device active 97 % of
-  the wall time, so `COMPUTE` is 78 % MVM; the busiest channel read 10.1 GB/s of 18 (56 %); decode 11.6 tok/s
-  on the screen against 11.69 tok/s (85.55 ms per token) from llama.cpp's `eval time`; 361 launches, and the idle probe afterwards read
-  `PERF_CYCLES` 6,785,133,473, the value `TSR_STATS` printed at the end of the run.
-- Cost: one PERF read took 117 us (about 80 CSR reads); the publisher spent 22 ms in its hooks over 33 s of launches (0.07 % of the
-  launch wall time, `perf_ns` and `hook_ns` in the record). Temperature 56 C, power 54 W of 225 W during the decode (37 W idle). xbutil's mechanical report has no fan; the fan (1264 rpm) is in sysfs.
-- `tsr-top --probe` on the idle card held it for 572 ms (the open took 239 ms) and showed the lifetime counters of the run that had just ended.
+  cycles (81.4 %), `MVM_EMPTY` 11 % (11.1 %), `MVM_WAIT` 8 % (7.5 %), VU 7 % (6.7 %), DMA 8 % (8.0 %), QACT 3 % (3.1 %) with the device
+  active 97 % of the wall time, so `COMPUTE` is 77 % MVM; the busiest channel read 10.1 GB/s of 18 (56 %). Decode was 11.6 tok/s on the
+  screen against 11.80 tok/s (84.78 ms per token) from llama.cpp's `eval time`; 361 launches; the record's `PERF_CYCLES` at the end is
+  `TSR_STATS`'s 6,785,143,271.
+- Cost (both runs alike): one PERF read took 114 to 117 us (about 80 CSR reads); the publisher spent 21 to 22 ms in its hooks over 34 s of
+  launches (0.06 % of the launch wall time, `perf_ns` and `hook_ns` in the record). The decode raised the board from 36 W to 53 W of 225 W,
+  55 C, fan 1258 rpm (sysfs; xbutil's mechanical report has no fan).
+- `tsr-top --probe` on the idle card (after the first run) held it for 572 ms (the open took 239 ms) and read the lifetime counters of the run
+  that had just ended: `PERF_CYCLES` equal to `TSR_STATS`'s, 361 launches.
 - The prefill of 113 tokens (one launch of 4.3 s) showed as `pp 38` for a window (tokens counted at the start of the pass); llama.cpp's
-  average for the whole prompt was 26.4 tok/s.
+  average for the whole prompt was 26.4 tok/s. The `DDR` bar followed the weight upload (2.5 GiB, 11.6 GiB, 18.8 GiB at the end of it).
