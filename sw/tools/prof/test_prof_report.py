@@ -33,8 +33,15 @@ def run_llama(build, model, out, dump, fw):
         env["TSR_DUMP_PLAN"] = out
     cmd = [os.path.join(build, "bin", "llama-completion"), "-m", model, "-ngl", "99", "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0", "-c", "512",
            "--temp", "0", "-no-cnv", "-p", "The history of the printing press begins", "-n", "5", "-t", "4"]
-    p = subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
-    return p.returncode, p.stdout.decode(errors="replace"), p.stderr.decode(errors="replace")
+    # llama.cpp prints through a log thread that the process does not wait for at exit: on a loaded machine (ctest -j8) a run
+    # can end before the last token and the timing report are written (also with the CPU backend alone, TSR_MON=0, no
+    # device). Such a run is incomplete, not different, so a run whose stderr has no timing report is repeated.
+    for _ in range(6):
+        p = subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+        err = p.stderr.decode(errors="replace")
+        if p.returncode != 0 or "total time" in err:
+            break
+    return p.returncode, p.stdout.decode(errors="replace"), err
 
 
 def main():

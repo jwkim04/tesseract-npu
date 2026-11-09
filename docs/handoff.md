@@ -2,7 +2,31 @@
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
 
-## `tsr-top`, the live monitor (branch `tsr-top`, from `sw-moegdn`, November 9)
+## Resume here for the software: the profile report and `tsr-top` are in `sw-moegdn` (November 9)
+
+Two finished tool branches were merged into `sw-moegdn` (real merges, in this order), both from `984ba4e`: `prof-viz` (SW-84, the profile dump `TSR_DUMP_PLAN` and the
+report generator, merge `aa134c9`, no conflict) and `tsr-top` (SW-87, the card owner's shared-memory record and the `tsr-top` monitor, merge `310eafa`). Every build of this
+branch now publishes live counters, and a run with `TSR_DUMP_PLAN=<dir>` makes the profile report. Neither merge touches `rtl/`, `tb/`, `hw/`, the firmware or llama.cpp.
+
+- The `tsr-top` merge had two conflicts, both kept on both sides: `ggml-tesseract.cpp` (the forward declarations at the top, and `tsr_run_list`, where the dump's PERF and host
+  times around the launch come first and the monitor's `tsr_mon_note_mem` follows) and the decision table of `06-software-verification.md` (SW-84, then SW-87). The hooks in
+  `tsr_opl_dev::run` (the PROF bit of the dump, the publisher's bracket around the launch) merged without a conflict.
+- The two hooks work together: with `TSR_DUMP_PLAN` on the publisher still publishes, and the record's launches, op records and `PERF_CYCLES` equal the sums over `launches.jsonl`
+  (docs/prof-dbg.md §3.1). Neither moves a record or an output bit.
+- Decisions: SW-75 to SW-82, then SW-84 and SW-87. SW-83, SW-85 and SW-86 are on `mtp`, which is not merged.
+- Live counters on any run: `build/dev/bin/tsr-top` (simulator runs show as a simulated device), and `build/xrt/bin/tsr-top` next to a card run from this worktree
+  (docs/prof-dbg.md §7). The profile report: docs/prof-dbg.md §3.1, `sw/tools/prof/capture_card.sh`.
+- Checked (build `build/dev`, `TSR_WITH_TORCH=ON`): `ctest -LE slow` 331 of 331 (the tokenizer vocabulary test is disabled); `gen_tables.py --check` and `gen_tops.py --check`.
+  `rtl/lint.sh` and `tb/run_all.sh` were not run: `git diff 984ba4e -- rtl tb hw` is empty. The host build `build/xrt` (XRT transport, no torch) was rebuilt from the merged tree, so card runs from this worktree publish to `tsr-top` (`libggml-tesseract` carries the publisher); no card run was made.
+  klcheck M7 on Qwen3.8 2B (1 prompt x 16 tokens, simulator, `TSR_SIM_CARD=k4full`), `compare --expect-identical` against the same run of the build at `984ba4e`:
+  default (publisher on) 16 of 16, `TSR_MON=0` 16 of 16, `TSR_DUMP_PLAN=<dir>` with the publisher on 16 of 16. `tsr-top --once` and `--json` showed the default run with its counters
+  while it ran.
+- `tools_prof_report_gemma_tiny` compared the generated text of two runs and failed once in the first `ctest -j8` run: llama.cpp's log thread is not drained at exit, so a loaded run
+  can lose its last token and the timing report (the CPU backend alone, with no device and `TSR_MON=0`, does the same: 14 of 96 runs under 8-way load; 2 to 5 of 48 runs with the
+  device, with the publisher on or off, with no dump). The test now repeats a run whose stderr has no timing report (24 of 24 passes under 8-way load afterwards). Nothing in the
+  backend or the monitor is involved.
+
+## `tsr-top`, the live monitor (branch `tsr-top`, merged, November 9)
 
 `bin/tsr-top` shows the card like nvtop shows a GPU. The process that owns the card publishes a record in `/dev/shm/tsr-mon-<pid>` after every launch (SW-87,
 `sw/transport/tsr_mon.h`, on by default, `TSR_MON=0` turns it off); the monitor reads it, the sensors from `xbutil` and the PCIe link from sysfs, and does not open
@@ -15,7 +39,7 @@ simulator's cycle models), `torch-basis` (SW-81, the PyTorch backend and `QuantL
 revision 2 of GATED_DELTA_NET, the state on its cache cell). The first three change no RTL (`git diff 2d887ec -- rtl hw` was empty after them); `gdn-fw` brings the VU's GDN op
 (opcode 0x39, `CAPS` bit 8) from `gdn-vu` with its `rtl/` and `tb/` files, which the card image of 2026-11-09 does not have. The sections below describe each branch as it was before the merge.
 
-- Decisions in [design/06-software-verification.md](design/06-software-verification.md): SW-75 to SW-82, in order, with no gap. The next free number is SW-83.
+- Decisions in [design/06-software-verification.md](design/06-software-verification.md): SW-75 to SW-82, in order, with no gap (at that merge; SW-84 and SW-87 came after, see the first section).
 - Qwen3-30B-A3B prefill runs at the default `-ub 512` (SW-76 fixed the several-tile route): 26.72 tok/s best, 26.60 median on the card, 513 of 513 rows identical to the
   simulator. Gemma 4 26B-A4B: 26.58 / 26.56 tok/s, 515 of 515 rows identical. The Qwen3 layer test in `test-tsr-moe` now runs T = 65, 70, 130 and 256 as well
   (70 aborted before SW-76).
@@ -36,7 +60,7 @@ revision 2 of GATED_DELTA_NET, the state on its cache cell). The first three cha
   The plain simulator now has `CAPS` bit 8, so it runs the fused path for Qwen3.8 (S_v 128): its bits are not those of the card runs of 2026-11-09. Replay those with `TSR_SIM_CARD=k4full` or `TSR_SIM_GDN=0`.
 - Open: the card run of the fused path (plan in the next section; it needs the `k4f250` image); grouping of tokens by expert (SW-66); the KV store, MOE_ROUTE and the DMA's half rate while the VU runs are not in the cycle model (SW-80).
 
-## Profile report of one decode token (branch `prof-viz`, SW-84, November 9)
+## Profile report of one decode token (branch `prof-viz`, merged, SW-84, November 9)
 
 A capture and report path for one model token, run on the card and on the simulator ([prof-dbg.md](prof-dbg.md) §3.1). No RTL, firmware or llama.cpp change.
 

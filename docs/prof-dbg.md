@@ -291,6 +291,12 @@ to the launch with the setup before the first record and the tail. The ideal cyc
 checks in the report are the sum of the record cycles against the launch span and `PERF_CYCLES`, the sums of RUN against the unit counters (DB §8.7),
 `RETIRED` against the ops, the markers against the records, the trace writer's drops and the simulator against the card.
 
+**With the live monitor (§7).** The dump and the publisher of `tsr-top` run in the same process and do not depend on each other: `TSR_MON=0` turns off the
+publisher only, `TSR_DUMP_PLAN` leaves it on. The publisher brackets the launch inside `tsr_opl_dev::run`, the dump reads PERF before and after it,
+and both only read, so neither moves a counter, a record or an output bit. The record's launches, op records and `PERF_CYCLES` equal the sums over
+`launches.jsonl` (Qwen3.8 2B Q4_K_M on the simulator in the card configuration, 1 prompt x 16 tokens: 16 launches, 11,282 ops, 217,851,114 cycles in both), and
+the 16 logits rows are bit-identical with the dump on, with the publisher on, and with `TSR_MON=0`.
+
 **Gemma 4 26B-A4B, one decode token on the card (2026-11-09; image `k4full`, 200 MHz; 33 tokens captured, launch 18 shown).** The graph has 2,644 nodes in
 the Tesseract split: 1,293 device nodes, 511 absorbed by 331 fusion groups (271 RMS_NORM + MUL, 30 MOE_ROUTE, 30 MUL_MAT_ID scale chains), 840 views; 1,323
 records in one list, one launch per token; the scheduler's CPU split has 4 nodes (the embedding gather, DUP, SET_ROWS into the mixed-input buffer) and
@@ -481,6 +487,7 @@ The screen follows terminal resizes; 80 x 24 shows everything, narrower terminal
   lanes, SPM, `K_MAX`), `CAPS`, the core capability, the Basis version, the image id and path, the kind table
   (numerics revisions) and the kinds the owner routes by name; the transport, the device line (name, BDF,
   kernel), `$TSR_XCLBIN`; model file name and quantisation.
+- The profile dump (§3.1) and the publisher work together: the dump's PERF reads and the publisher's both leave the counters alone, and a run with `TSR_DUMP_PLAN` still publishes.
 - `TSR_MON=0` turns the publisher off. `TSR_MON_KEEP=1` leaves the file at exit (flag `EXITING`), for a look at the
   last counters and for the tests.
 

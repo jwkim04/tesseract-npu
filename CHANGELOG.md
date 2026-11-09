@@ -60,6 +60,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 - The PyTorch backend runs on the Basis firmware and the K4 card image (`tsr_u200_k4`, `T_MAX` 4). `tesseract_torch.QuantLinear` and the
   op `tesseract::linear_blocks` run weights that arrive as ggml Q8_0 or Q4_K blocks without conversion (SW-81). New ctests
   `rt_sim_tmax4` and `torch_pytest_tmax4`; `hf_check.py` has a steady-state forward and a `--speed` mode.
+- `TSR_DUMP_PLAN=<dir>` makes the ggml backend write the plan of every graph, the launches with their PERF deltas, the nodes `supports_op` refused and
+  the trace writer's records; `sw/tools/prof/prof_report.py` turns a run into an HTML page and a Perfetto file (SW-84, docs/prof-dbg.md §3.1). Host
+  only: no record, schedule or output bit changes.
+- The process that owns the card publishes a one-page record in `/dev/shm/tsr-mon-<pid>` after every launch (SW-87, `sw/transport/tsr_mon.h`); `bin/tsr-top`
+  shows it like nvtop shows a GPU (docs/prof-dbg.md §7). On by default, `TSR_MON=0` turns it off. Host only: no record, descriptor or output bit changes.
 
 ## Basis 0.1.0 (2026-10-31)
 
