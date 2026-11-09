@@ -1,6 +1,6 @@
 // tsr_xrt_reset.sv — kernel reset distribution for the Alveo XRT platform adapter.
 //
-// Owner: adapter agent (docs/platform-u200.md §5).
+// Spec: docs/platform-u200.md §5.
 //
 // ap_rst_n (Vitis: synchronous to ap_clk, active low, driven by the platform's processor-system
 // reset of the dynamic region) is registered once (rst1_q, the only flop on the input net) and
@@ -11,7 +11,7 @@
 //                    slices, AXI-side stages, read / write path, counter groups)    stage 2
 //   rst_core_n       tsr_core                                               stage CORE_STAGES
 // The CH_COPIES copies of a channel are equal (same stage, same value in every cycle); one copy
-// per part keeps each reset net local to its part (M3 part C timing: in the k1 link one copy per
+// per part keeps each reset net local to its part (timing: in the k1 link one copy per
 // bridge, driving all of its ~450 reset loads, gave the second-worst path, 0 levels and 3.07 ns of
 // routing to the write counters; docs/platform-u200.md §8.2).
 // Assertion reaches every copy one cycle after rst1_q (each stage is AND-ed with rst1_q, which

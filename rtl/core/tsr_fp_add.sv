@@ -1,6 +1,6 @@
 // tsr_fp_add.sv — pipelined f32 adder / subtractor with the spec's fp rules.
 //
-// Owner: fp agent (docs/rtl-mvm.md §2 block (fp), contract §8.1).
+// Spec: docs/rtl-mvm.md §2 block (fp), contract §8.1.
 //
 // Contract (bit-exact with sw/sim/tsr_ref.c tsr_fadd / tsr_fsub):
 //   y = fin(DAZ(a) + DAZ(b)) when sub = 0, fin(DAZ(a) - DAZ(b)) when sub = 1:

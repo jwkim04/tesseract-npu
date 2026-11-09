@@ -4,8 +4,8 @@
 // actions of the core domain, MTIME, RV_FREQ and the unit watchdog (docs/design/01-execution-
 // model.md "EX" §3-§6, §8.5-§8.6; docs/design/04-control-core.md "CC" §6, §12).
 //
-// Owner: issue path (CC §2.2, §13.2: `tsr_csr` rewritten; W4 item 1). Instantiated by tsr_core_dp
-// next to tsr_issue; the clk_rv side is tsr_ctrl / tsr_ctrl_cdc (W4 item 3), whose core-domain
+// Spec: CC §2.2, §13.2. Instantiated by tsr_core_dp
+// next to tsr_issue; the clk_rv side is tsr_ctrl / tsr_ctrl_cdc, whose core-domain
 // ports these are. Oracle: the simulator's host CSR port and control window (sw/sim/tsr_sim.c
 // csr_read / csr_write / tsr_sim_lq_cw_access, tsr_q.c); tb/csr compares every register, ring,
 // fault and counter with it (cycle-agnostic), tb/issue the issue-path side.
@@ -169,7 +169,7 @@ module tsr_csr
   input  logic [1:0]                 dmi_rsp_resp,
   input  logic                       dmi_rsp_timeout,
 
-  // ---- DBG block (DB §10.1, W4-B): 0x800-0xAFC except SREG; dbg_rdata the cycle after dbg_req ----
+  // ---- DBG block (DB §10.1): 0x800-0xAFC except SREG; dbg_rdata the cycle after dbg_req ----
   output logic                       dbg_req,
   output logic                       dbg_we,
   output logic [11:0]                dbg_addr,
@@ -696,8 +696,8 @@ module tsr_csr
               end
               12'h024: sticky_q <= sticky_q & ~a_wdata_q[27:16];
               // RV_BOOT is taken when RV_RUN rises (and again after a debug ndmreset): a write while
-              // RV_RUN = 1 is ignored, so the bus that crosses to clk_rv is quasi-static (CC §11.2,
-              // W4-A review). The simulator ignores it too (tsr_sim.c csr_write).
+              // RV_RUN = 1 is ignored, so the bus that crosses to clk_rv is quasi-static (CC §11.2).
+              // The simulator ignores it too (tsr_sim.c csr_write).
               12'h028: if (!ctrl_q[C_RV_RUN]) boot_q <= a_wdata_q[31:8];
               12'h034: wdog_q   <= a_wdata_q[4:0];
               12'h060: begin                    // LQ_PUSH
@@ -728,7 +728,7 @@ module tsr_csr
               12'h0C0: begin
                 // A write restarts LOAD_CRC, which VERIFY is folding words into: refused while
                 // VERIFY_BUSY (like LOAD_DATA and a second VERIFY), else the CRC would cover a suffix
-                // of the segment and nothing would flag it (W4-A review). LOAD_COUNT is only sampled
+                // of the segment and nothing would flag it. LOAD_COUNT is only sampled
                 // when VERIFY starts, so it stays writable.
                 if (vf_busy_q) sticky_q[S_LOAD_REFUSED] <= 1'b1;
                 else begin

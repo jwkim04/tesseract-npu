@@ -1,4 +1,4 @@
-// rtl/ctrl/filelist.f — the RISC-V control subsystem (W4 item 3, CC §2-§5, §11-§12) and the
+// rtl/ctrl/filelist.f — the RISC-V control subsystem (CC §2-§5, §11-§12) and the
 // vendored IP it instantiates, unmodified (CC §3.1: third_party/ibex, third_party/riscv-dbg,
 // third_party/common_cells). Paths are relative to this file's directory (verilator -F, Vivado
 // via rtl/ctrl/viv/ctrl_ooc.tcl and the flows that read rtl/filelist*.f).

@@ -3,7 +3,7 @@
 // per-element ports). The select is registered at the outputs, as the drain registers it (c1_q).
 //
 //   tsr_lsel_flat         tsr_mvm_pv_lsel, the module of the RTL
-//   tsr_lsel_legacy_flat  the form the RTL had until the card run of 2026-11-08: the lane number as the integer
+//   tsr_lsel_legacy_flat  the earlier form of the RTL: the lane number as the integer
 //                         8 l + k, used as `a[t][6'(L)]` and `nf[t][L / 32]` inside the clocked process. Vivado 2024.2
 //                         synthesises it without the top bit of l; the netlist test keeps it as the control that
 //                         shows the bench can see the fault.

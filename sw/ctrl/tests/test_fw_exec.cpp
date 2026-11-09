@@ -1,4 +1,4 @@
-// test_fw_exec.cpp — ctests fw_exec_host, fw_exec_rv and fw_exec_perf (P2.4): the graph executor
+// test_fw_exec.cpp — ctests fw_exec_host, fw_exec_rv and fw_exec_perf: the graph executor
 // (sw/ctrl/kernels/graph.cpp) against docs/design/06-software-verification.md "SW" §7.2, §7.3, §7.8,
 // §4.7 and §10.2.
 //
@@ -21,7 +21,7 @@
 //              a 700-record NOP list (5.5 chunks) in which only the executor's joins order the
 //              RISC-V's reads of each chunk after its load (the race detector checks that); these
 //              launches and the 4096-op list are captured and their trace digests (push records,
-//              DONE, expect regions; fw_trace_digest.h) must equal the W2a image's (W2a's push order)
+//              DONE, expect regions; fw_trace_digest.h) must equal the golden values (the executor's push order)
 //   errors     the failing-op index for injected tile errors at positions 0, 1, 15, 16, 17, 40,
 //              63 (NOP neighbours: empty ops share a push index), DEP_FAILED behind the error,
 //              failed executor loads (list, preload) -> RET 0
@@ -101,7 +101,7 @@ static tsr_config test_cfg() {
     c.num_ch = NCH;
     c.ch_bytes = CH_BYTES;
     c.t_max = 8;
-    c.caps = TSR_CAPS_VU | TSR_CAPS_ATT;       // the M6 CAPS (as fw_m6_e2e; W2b: VU test kinds and M7 kinds)
+    c.caps = TSR_CAPS_VU | TSR_CAPS_ATT;       // the M6 CAPS (as fw_m6_e2e; plus the VU test kinds and M7 kinds)
     return c;
 }
 static plan::dev_cfg dev_of(const tsr_config & c) {
@@ -372,10 +372,9 @@ static void expect_fail(env & e, const done_t & d, uint32_t ret, const char * wh
           "%s: %s: TILE_ERR (FAIL LD) with RET %u expected: status %u ret 0x%08x err %u ticket 0x%08x info 0x%08x w0 0x%08x",
           e.tag.c_str(), what, ret, d.status(), d.ret(), d.err(), d.r[3], d.r[4], d.r[5]);
 }
-// The executor's push stream pinned to W2a's (SW §7.3; executor optimisation review, 2026-10-30):
-// the launch between pin_begin and pin_end is captured (tsr_sim_capture_launch, RV only: the host
+// The executor's push stream is pinned (SW §7.3): the launch between pin_begin and pin_end is captured (tsr_sim_capture_launch, RV only: the host
 // build's launches do not go through the LQ) and its digest (fw_trace_digest.h: push records,
-// DONE, expect regions) compared with the value the W2a image (92f0b17) gives. A deliberate change
+// DONE, expect regions) compared with the golden value. A deliberate change
 // of the pushes changes it: record the decision (SW §7.3) and update the value from the output.
 static void pin_begin(env & e) {
     if (e.rv()) tsr_sim_capture_launch(e.sim, 1);
@@ -390,7 +389,7 @@ static void pin_end(env & e, const char * what, uint64_t w2a) {
     if (rc == 0) {
         const uint64_t d = fw_trace_digest(&t);
         CHECK(d == w2a, "%s: %s: launch trace digest %016llx (%zu pushes, DONE ret %d, error ticket / pidx +%u / +%u), "
-              "W2a's %016llx: the push stream changed", e.tag.c_str(), what, (unsigned long long)d, t.n_push, t.done.ret,
+              "golden %016llx: the push stream changed", e.tag.c_str(), what, (unsigned long long)d, t.n_push, t.done.ret,
               t.done.err_ticket_rel, t.done.err_pidx_rel, (unsigned long long)w2a);
         tsr_trace2 extra;
         tsr_trace2_init(&extra);
@@ -399,7 +398,7 @@ static void pin_end(env & e, const char * what, uint64_t w2a) {
     }
     tsr_trace2_clear(&t);
 }
-// W2a's digests (92f0b17 fw_exec.elf under this harness; see pin_end).
+// The golden digests (see pin_end).
 static const uint64_t PIN_SIZES_4096 = 0x67e12f5afa4f9a49ull, PIN_STREAM = 0x6f121c56b38e44dfull,
                       PIN_STREAM_NOP = 0x85145e8fd762e827ull, PIN_STREAM_CRC = 0x0185d6f07b611a15ull,
                       PIN_STREAM_FAIL = 0x80a61be7db450c0full, PIN_STREAM_CHUNK_FAIL = 0x5dcf7a79d9d44147ull;
@@ -620,7 +619,7 @@ static void sc_codes(env & e) {
     }
 }
 
-// --- the M7 kinds at the executor (W2b infra; SW §7.2, §7.3) ------------------------------------
+// --- the M7 kinds at the executor (SW §7.2, §7.3) ------------------------------------
 static const uint32_t TK_SREG = 0x3A;
 static void sc_m7(env & e) {
     const char * T = e.tag.c_str();
@@ -985,7 +984,7 @@ static void sc_stream(env & e, bool with_crc_variants) {
               d.ret(), d.err(), d.r[4]);
     }
     // A record whose words end before a failing chunk but whose padding slot lies in it still runs:
-    // only the lines that hold a record's words are waited for (W2a); the next record, which starts
+    // only the lines that hold a record's words are waited for; the next record, which starts
     // in that chunk, stops the launch. NOP records (no pushes): exec_state's n_done shows it.
     {
         writer w(0, 0x57AEA6u);
@@ -1277,7 +1276,7 @@ static void plan_host_checks() {
         }
     CHECK(bad == 0, "plan.hpp qa_lines / row_beats = tsr_ref for every K: %u differences", bad);
     // dev_cfg U200 and the budget: L - 16 - 4096 - 256.
-    CHECK(plan::ring_budget(plan::U200_K4) == 65536u - 16u - 4096u - 256u - 1024u, "ring budget (the one-tile block: W2b)");
+    CHECK(plan::ring_budget(plan::U200_K4) == 65536u - 16u - 4096u - 256u - 1024u, "ring budget (the one-tile block)");
     plan::exec_layout l{};
     CHECK(plan::layout(65536, 9, &l) && l.arg_line == 65520 && l.opl_line == 61424 && l.pre_line == 61415 && l.one_lines == 1024 &&
               l.one_line == 60391 && l.ring_lines == 60391,
@@ -1387,7 +1386,7 @@ static void sc_mulmat_long(env & e, uint32_t layers) {
               "(wraps); %u of %u MUL_MAT records fell back to kind_mulmat",
               e.tag.c_str(), st.n_done, st.ring_joins, st.ring_slow, st.mm_fallback, layers * 7u);
     // The next launch, rejected before its ring exists (BAD_MAGIC), reports its own counters (0), not
-    // this launch's (fix W2a-opt review: exec_state carries nothing from launch to launch).
+    // this launch's (exec_state carries nothing from launch to launch).
     writer wb;
     wb.add(opl::K_NOP, {});
     std::vector<uint8_t> bad = wb.finish();
@@ -1616,16 +1615,16 @@ static double perf_case(rv_env & e, busy_ctx & b, const char * what, uint32_t bi
     if (work_per_op) *work_per_op = wc;
     return c;
 }
-// SW §7.8's target (an *estimate*, checked in P3 / P6) is printed, not asserted (fw_m6_perf prints
+// SW §7.8's target (an *estimate*) is printed, not asserted (fw_m6_perf prints
 // the executor's work on the 0.5B decode lists). Asserted: a regression ceiling (6000 busy cycles,
-// ~1.3x the MUL_MAT list at P2.4), and, in perf(), the executor optimisation's ceilings on the
+// ~1.3x the MUL_MAT list), and, in perf(), the executor's ceilings on the
 // spin-free work.
 static void report_target(const env & e, const char * what, double c) {
     printf("%s: %s: %.1f RV cycles per graph op; SW §7.8 target <= 400: %s\n", e.tag.c_str(), what, c,
            c <= 400.0 ? "met" : "NOT met");
     CHECK(c <= 6000.0, "%s: %s: regression ceiling 6000 RV cycles per op (%.1f)", e.tag.c_str(), what, c);
 }
-// --- short VU records (W2b infra; SW §7.3 "Hot path", §7.8) -----------------------------------------
+// --- short VU records (SW §7.3 "Hot path", §7.8) -----------------------------------------
 // One decode-shaped record per kind (Qwen2.5-0.5B, T = 1; rows of n = 896 = the hidden size for the
 // row kinds, GLU and UNARY included: the FFN width 4,864 takes the same one-tile path, but its LD / VOP
 // / ST keep the units busier than the issuer, the queues fill and the credit waits' first reads would
@@ -1634,7 +1633,7 @@ static void report_target(const env & e, const char * what, double c) {
 // and every M7 short kind of the image. Work per record =
 // the spin-free RISC-V cycles (fw_prof.h) of a 384-record list minus a 16-record one, divided by the
 // record difference (perf_case), with deep queues (the RISC-V's own cost; SW §7.8's metric); the
-// same with the U200 queue depths for information. W2b's requirement: <= 350 RV cycles of work per
+// same with the U200 queue depths for information. The requirement: <= 350 RV cycles of work per
 // short record. A kind whose handler is still zz_kind_stubs.cpp's weak stub is reported as not in
 // the image; one whose first record is refused, as refused (with a limit that fails). Each kind
 // package measures its own kind with
@@ -1642,7 +1641,7 @@ static void report_target(const env & e, const char * what, double c) {
 // fw_exec_perf prints them and asserts FASTVU's regression ceiling; fw_exec_perf_m7 (--strict) asserts
 // every kind present <= 350; fw_exec_perf_ref (--ceiling) the reference kind of the fw_exec_ref image
 // (tests/fw/exec_ref_unary.cpp: FASTVU's code as a production table kind, no test-kind lookup).
-// Measured at W2b infra (maxperf, deep queues): the reference 3-push record (LD, VOP, ST) costs 365
+// Measured (maxperf, deep queues): the reference 3-push record (LD, VOP, ST) costs 365
 // RV cycles of work, 112 of them the executor's (record read and checks, tables, RT_INFO, pidx, the
 // handler call) and 73 the pushes' 24 control-window accesses; FASTVU 408 (+ the lookup).
 static const uint32_t ACT_BEAT = OUT_BEAT + 0x40000;      // ch0: activation buffers, 1,024 lines apart
@@ -1657,7 +1656,7 @@ struct short_kind {
     uint32_t kind;
     const char * name;
     const char * handler;   // demangled-name prefix of its handler (symbol binding: stub or not)
-    uint32_t variant = 0;   // SCALE: 1 = with a bias (W2b fix: the review's SCALE + b record)
+    uint32_t variant = 0;   // SCALE: 1 = with a bias (SCALE + b record)
 };
 static const short_kind SHORT_KINDS[] = {
     {TK_FASTVU, "FASTVU reference 896 (LD, VOP, ST)", "tsr::exec_test_fastvu("},
@@ -1715,7 +1714,7 @@ static void build_short(writer & w, uint32_t kind, uint32_t n_rec, uint32_t vari
 // FASTVU, whose record also pays the test-kind lookup (tsr_exec_test_kind, ~40 RV cycles), always
 // has the regression ceiling FASTVU_CEILING.
 static const double FASTVU_CEILING = 450.0;
-// --strict holds every short kind to 350 (W2b fix: the integration's regression ceilings for RMS_NORM
+// --strict holds every short kind to 350 (the regression ceilings for RMS_NORM
 // and ROPE are gone; their hot entries and the staged-word reuse, k_fast.hpp push_s, meet it).
 static void perf_short(rv_env & e, busy_ctx & b, bool deep, double limit, uint32_t only) {
     const bool strict = limit > 0.0;
@@ -1746,7 +1745,7 @@ static void perf_short(rv_env & e, busy_ctx & b, bool deep, double limit, uint32
         snprintf(what, sizeof(what), "short %s", k.name);
         perf_case(e, b, what, 24, [&](writer & w, uint32_t n) { build_short(w, k.kind, 16u * n, k.variant); }, &ins, &work);
         const bool met = work <= 350.0;
-        printf("%s: short record %-40s kind 0x%02x: %.1f RV cycles of work per record; W2b requirement <= 350: %s\n",
+        printf("%s: short record %-40s kind 0x%02x: %.1f RV cycles of work per record; requirement <= 350: %s\n",
                e.tag.c_str(), k.name, k.kind, work, met ? "met" : "NOT met");
         if (!deep) continue;
         if (k.kind == TK_FASTVU)
@@ -1788,8 +1787,8 @@ static void perf(const char * image, int mode = 0, double limit = 0.0, uint32_t 
                 for (uint32_t i = 0; i < 8 * n; ++i) w.add(opl::K_NOP, {}, {i ? i - 1 : opl::DEP_NONE});
             }, nullptr, &w0);
             // The executor's own work per record (read, check, deps, tables, RT_INFO, ISSUE_PIDX):
-            // the part of SW §7.8's 400 cycles that is graph.cpp's; a regression guard (executor
-            // optimisation: 90 / 106 cycles on Ibex maxperf / small; W2a: 156 / 191).
+            // the part of SW §7.8's 400 cycles that is graph.cpp's; a regression guard
+            // (90 / 106 cycles on Ibex maxperf / small).
             CHECK(w0 <= 130.0, "%s: executor overhead per record <= 130 RV cycles (%.1f)", e.tag.c_str(), w0);
             perf_case(e, b, "JOIN records (1 push)", 192, [](writer & w, uint32_t n) {
                 for (uint32_t i = 0; i < 8 * n; ++i) w.add(opl::K_JOIN, {}, {i ? i - 1 : opl::DEP_NONE, i > 1 ? i - 2 : opl::DEP_NONE});
@@ -1829,7 +1828,7 @@ int main(int argc, char ** argv) {
         else if (!strcmp(argv[i], "--quick")) quick = true;
         else if (!strcmp(argv[i], "--perf")) do_perf = true;
         else if (!strcmp(argv[i], "--perf-m7")) perf_m7 = true;
-        else if (!strcmp(argv[i], "--strict")) limit = 350.0;                       // W2b's requirement
+        else if (!strcmp(argv[i], "--strict")) limit = 350.0;                       // the requirement
         else if (!strcmp(argv[i], "--ceiling") && i + 1 < argc) limit = strtod(argv[++i], nullptr);
         else if (!strcmp(argv[i], "--kind") && i + 1 < argc) only = (uint32_t)strtoul(argv[++i], nullptr, 0);
         else image = argv[i];

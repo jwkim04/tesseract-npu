@@ -4,7 +4,7 @@
 // dst = act(gate) * up per element, with the variant (word 8): 0 SWIGLU (VOP.SWIGLU: FM(SILU(gate),
 // up), tsr_m_silu), 1 GEGLU16 (VOP.GEGLU16: the ggml-CPU fp16 GELU of VU §6.5, tsr_m_gelu16, what
 // llama.cpp graphs use, SW-31), 2 GEGLU (VOP.GEGLU: FM(GELU(gate), up) with the exact tanh form,
-// tsr_m_gelu_tanh; M8 / PyTorch). Tile-op sequence (k_elem.cpp's engine, plan_elem.hpp EB_ROWS):
+// tsr_m_gelu_tanh; PyTorch). Tile-op sequence (k_elem.cpp's engine, plan_elem.hpp EB_ROWS):
 // per row tile, LD the gate rows, LD the up rows (operand b, rows form: b stride L), the VOP in place
 // on the gate rows, ST; sw/ctrl/ref/elem_ref.cpp composes the same tsr_ref_vop calls. The decode
 // fast path (one tile, dense or single rows) is ek::ew2_fast (k_elem.hpp), the four pushes LD, LD,
@@ -45,8 +45,8 @@ namespace glu = opl::glu;
 // The fast entry (exec.hpp kind_glu_fast): ew2_fast (k_elem.hpp; always the rows form, plan_elem.hpp
 // EB_ROWS: VOP b stride L, so an infinite period; an up stride of 0, which ew2_fast would take as the
 // broadcast form, goes to the general path), with RING: a decode row too large for the one-tile
-// block (Qwen2.5 1.5B-32B, Gemma 4 12B: 1,120-3,456 lines against 1,024) takes a ring block there
-// (W2b fix). The handler: the fast entry, else the general path.
+// block (Qwen2.5 1.5B-32B, Gemma 4 12B: 1,120-3,456 lines against 1,024) takes a ring block there.
+// The handler: the fast entry, else the general path.
 [[gnu::noinline]] uint32_t kind_glu_fast(const volatile uint32_t * a, uint32_t kflags, deps d, kind_ctx & ctx) {
     const uint32_t var = a[opl::glu::VARIANT];
     if (kflags != 0u || var > opl::glu::VARIANT_MAX || a[opl::glu::UP_STRIDE] == 0u) [[unlikely]] return ek::NOT_FAST;

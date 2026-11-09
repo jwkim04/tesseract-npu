@@ -194,7 +194,7 @@ static bool tsr_f32_rows(const tsr_build_env & env, bool probe, const ggml_tenso
 // whose n·4 bytes end inside a line writes up to the line's end. Allowed for a tensor of its own (its
 // rows are then one row, or rows of whole lines by the stride rule; ggml-alloc pads every block to the
 // buffer's 64-byte alignment), not for a view: the bytes after each of its rows belong to the tensor
-// it views and may be live (W3b fix: also for views of several rows, whose stride is the viewed
+// it views and may be live (also for views of several rows, whose stride is the viewed
 // tensor's).
 static bool tsr_out_rows(const tsr_build_env & env, bool probe, const ggml_tensor * t, const char * what, tsr_rows * o,
                          std::string * why) {
@@ -285,7 +285,7 @@ bool tsr_kinds_parse(const char * spec, uint64_t * mask, std::string * why) {
 
 // ADD / MUL: dst = a (+|x) b, b broadcast by whole rows (a row period) or per-row scalars
 // (FLAG_B_SCALAR: b.ne0 = 1, a vector of p f32 words; Gemma's inp_scale_rows [1, T] and its
-// layer_output_scale [1], SW §8 table, W2b-elem-2).
+// layer_output_scale [1], SW §8 table).
 static bool tsr_lower_ew(const tsr_build_env & env, bool probe, const ggml_tensor * node, tsr_rec * r, std::string * why) {
     const ggml_tensor * a = node->src[0];
     const ggml_tensor * b = node->src[1];
@@ -468,7 +468,7 @@ static bool tsr_lower_glu(const tsr_build_env & env, bool probe, const ggml_tens
     return true;
 }
 
-// The ROPE view rule (SW §7.2 W2b obligations): [head_dim, n_heads, n_tokens] with each token's heads
+// The ROPE view rule (SW §7.2): [head_dim, n_heads, n_tokens] with each token's heads
 // contiguous (nb1 = 4·head_dim) and tokens a multiple of 64 bytes apart (a fused-qkv view's token
 // stride is the qkv row). *h, *stride (lines between tokens). out: the result, stored in whole lines
 // per token, so a view must have tokens of whole lines (tsr_out_rows; holds by itself while the
@@ -728,7 +728,7 @@ static bool tsr_lower_fa(const tsr_build_env & env, bool probe, const ggml_tenso
     // The preload entries of this record alone, as in a list cut just before it: the MSUM of T rows and
     // FA_NEW's K indices (the SET_ROWS_KV of the same ubatch: T cells) must fit the 256-line area
     // together, each entry from a 64-byte boundary: T <= 680 (the MSUM alone would allow 1022). A
-    // longer ubatch's FLASH_ATTN stays on the CPU (W3b fix; SW-43).
+    // longer ubatch's FLASH_ATTN stays on the CPU (SW-43).
     const uint64_t pre_lines = (4ull * (opl::MSUM_HDR_WORDS + (uint64_t) opl::MSUM_ROW_WORDS * T) + opl::PRE_ALIGN - 1) / opl::PRE_ALIGN +
                                ((uint64_t) opl::PRE_KVIDX_BYTES * T + opl::PRE_ALIGN - 1) / opl::PRE_ALIGN;
     if (pre_lines > opl::PRE_MAX_LINES) {

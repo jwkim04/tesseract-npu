@@ -43,7 +43,7 @@ foreach a [lrange $argv 3 end] {
 set_param general.maxThreads 4
 file mkdir $out
 
-# the filelist with its nested lists, include directories and defines (rtl/filelist.tcl, W4-A)
+# the filelist with its nested lists, include directories and defines (rtl/filelist.tcl)
 source $repo/rtl/filelist.tcl
 set fld [tsr_read_filelist $flist]
 read_verilog -sv [concat [dict get $fld srcs] $extra]

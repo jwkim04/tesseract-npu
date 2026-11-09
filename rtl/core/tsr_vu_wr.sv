@@ -2,8 +2,8 @@
 // result FIFOs, the SPM write port (both banks of client 4), and the local-memory and s-register writes
 // of lane results.
 //
-// Owner: VU (docs/design/02-vector-unit.md "VU" §7.1 output FIFO, §7.7 writes and flow control, §4.2 tail
-// rule).
+// Spec: docs/design/02-vector-unit.md "VU" §7.1 output FIFO, §7.7 writes and flow control, §4.2 tail
+// rule.
 // Exits: the injector's descriptors are delayed to their lanes' exits (front TSR_VU_LF + 1, back TSR_VU_LB + 1
 // cycles: the lanes register the injector's outputs once more; LANE_X more behind the lane pipes of
 // tsr_vu_lanes). The injector's exit-order rule makes

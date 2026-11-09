@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # tb/chk/viv/net_chk.sh OUTDIR — the post-synthesis netlist of tsr_chk (Vivado, U200 part, T_MAX 8, the
 # tsr_pkg defaults otherwise) answers the directed ops of tb/chk/test_chk.py directed_ops() like the
-# simulator does (opt-in, needs Vivado 2024.2: tb/chk/test_chk.py test_chk_netlist). Found by the W4-A
-# review: the checker's operand extents were written by two always_ff blocks; Verilator and XSim
+# simulator does (opt-in, needs Vivado 2024.2: tb/chk/test_chk.py test_chk_netlist). The test guards
+# against a bug in which the checker's operand extents were written by two always_ff blocks; Verilator and XSim
 # simulated that correctly, Vivado kept one driver and the synthesised range checks were wrong (10 of
 # 35 directed ops differed, six with X).
 #   Steps: tb/tech/viv/tech_ooc.tcl tsr_chk synth_only netlist T_MAX=8 -> OUTDIR/net.v (write_verilog

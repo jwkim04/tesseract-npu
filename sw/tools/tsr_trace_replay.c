@@ -20,13 +20,13 @@
 //   --tmax N      replay on a core with T_MAX = N instead of the trace's (a trace must pass on any
 //                 T_MAX at least its own)
 //   -q            print only failures and the summary; -v also every failed comparison
-//   --replay-image ELF   (P2.5) replay kind-ops traces through the `replay` kernel of this firmware
+//   --replay-image ELF replay kind-ops traces through the `replay` kernel of this firmware
 //                 image (SW §5.4, §7.7) instead of the tile-only route through the issue port; kind
 //                 launch traces are unaffected
 //   --replay-kernel NAME the kernel's name in .tsr_kernels (default "replay")
 //   --serial      (with --replay-image or --device) the replay kernel's SERIAL flag: every op record
 //                 depends on the previous op record (traces/model-v1conv, SW §5.4)
-//   --device KIND (P3.3, SW §9.5) replay through a transport instead of fresh simulators (sim, mock,
+//   --device KIND (SW §9.5) replay through a transport instead of fresh simulators (sim, mock,
 //                 vkernel, xrt; tsr_devrun.h): the device boots --replay-image (default $TSR_IMAGE, else
 //                 the build's tsr-fw.elf); kind ops go through its `replay` kernel, kind launch boots
 //                 the trace's own image and pushes its descriptor; compared: the answer with the
@@ -104,7 +104,7 @@ static void collect(const char * dir, strlist * out, int depth) {
     free(subs.v);
 }
 
-// P3.3: every trace through a device (tsr_devrun.h). Returns the exit status.
+// every trace through a device (tsr_devrun.h). Returns the exit status.
 static int replay_device(const char * kind, int shadow, const char * image, uint32_t flags, const strlist * traces, int quiet,
                          int verbose) {
     tsr_transport * t = tsr_transport_open(kind);
@@ -187,8 +187,8 @@ int main(int argc, char ** argv) {
     uint64_t max_cycles = 0;
     uint32_t tmax = 0;
     double rv_ratio = 0.0;
-    const char * replay_image = NULL, * replay_kernel = NULL;   // P2.5: the replay-kernel route
-    const char * device = NULL;                                  // P3.3: through a transport
+    const char * replay_image = NULL, * replay_kernel = NULL;   // the replay-kernel route
+    const char * device = NULL;                                  // through a transport
     int shadow = 0;
     uint32_t replay_flags = 0;
     strlist scheds = { 0 }, paths = { 0 };
@@ -201,10 +201,10 @@ int main(int argc, char ** argv) {
         else if (strcmp(a, "--threads") == 0 && i + 1 < argc) threads = (unsigned)strtoul(argv[++i], NULL, 0);
         else if (strcmp(a, "--max-cycles") == 0 && i + 1 < argc) max_cycles = strtoull(argv[++i], NULL, 0);
         else if (strcmp(a, "--tmax") == 0 && i + 1 < argc) tmax = (uint32_t)strtoul(argv[++i], NULL, 0);
-        else if (strcmp(a, "--replay-image") == 0 && i + 1 < argc) replay_image = argv[++i];        // P2.5
+        else if (strcmp(a, "--replay-image") == 0 && i + 1 < argc) replay_image = argv[++i];
         else if (strcmp(a, "--replay-kernel") == 0 && i + 1 < argc) replay_kernel = argv[++i];
         else if (strcmp(a, "--serial") == 0) replay_flags |= TSR_REPLAY_F_SERIAL;
-        else if (strcmp(a, "--device") == 0 && i + 1 < argc) device = argv[++i];                   // P3.3
+        else if (strcmp(a, "--device") == 0 && i + 1 < argc) device = argv[++i];
         else if (strcmp(a, "--shadow") == 0) shadow = 1;
         else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) { usage(); return 0; }
         else if (a[0] == '-') { fprintf(stderr, "tsr-trace-replay: unknown option %s\n", a); usage(); return 2; }

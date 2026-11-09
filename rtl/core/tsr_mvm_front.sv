@@ -2,7 +2,7 @@
 // (tsr_mvm_ws), chunk parser, meta register with the Q4_K 6-bit scale unpack, weight unpack;
 // produces the tagged beat stream tsr_mvm_beat_t for the back end.
 //
-// Owner: front agent (docs/rtl-mvm.md §2 block (front); contract §3.3, §4).
+// Spec: docs/rtl-mvm.md §2 block (front); contract §3.3, §4.
 //
 // Contract (normative text: docs/rtl-mvm.md §3.3; golden model tb/common/mvm_model.py front_beats):
 //   - cmd (tsr_mvm_fcmd_t) valid/ready: one per MVM of a channel with rows >= 1; cmd_ready is a
@@ -27,7 +27,7 @@
 //     allow (META beats cost a cycle of the weight stream but produce no output).
 //   - idle: no command in progress, nothing buffered, no read outstanding.
 // The front end never looks at activations; it does not know T.
-// Attention streams (W4-B at, AT §8.1 / §8.2): with cmd_att = 1 the command is a KV plane stream in
+// Attention streams (AT §8.1 / §8.2): with cmd_att = 1 the command is a KV plane stream in
 //   "rows" of K = 1024 (one full Q8_0 chunk: a K plane group is E/64 chunks, a V plane slice of a
 //   group is one chunk), so the tags above hold unchanged (blk = 2j, row_last at quant beat 15);
 //   the back end / PV unit count cells, segments and slices themselves. cmd_rbeats / cmd_stride

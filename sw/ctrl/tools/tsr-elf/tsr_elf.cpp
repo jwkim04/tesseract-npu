@@ -1,4 +1,4 @@
-// tsr_elf.cpp — firmware images on the host (tsr_elf.h; SW §6.2, §9.5; EX §3.1-§3.2; P2.1).
+// tsr_elf.cpp — firmware images on the host (tsr_elf.h; SW §6.2, §9.5; EX §3.1-§3.2).
 //
 // Plain C++17 with the C API of tsr_elf.h. Everything is read from a private copy of the file with
 // explicit bounds checks; a malformed file fails tsr_elf_parse with a message, never a crash.

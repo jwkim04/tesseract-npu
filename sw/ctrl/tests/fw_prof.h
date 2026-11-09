@@ -196,7 +196,7 @@ public:
     }
 
     // The binding of the function whose demangled name starts with `prefix` (STB_GLOBAL 1, STB_WEAK
-    // 2, ...), or -1 if there is none: a W2b kind handler that is still zz_kind_stubs.cpp's weak stub
+    // 2, ...), or -1 if there is none: a kind handler that is still zz_kind_stubs.cpp's weak stub
     // reads 2 (the harnesses report such a kind as not in the image).
     int binding_of(const char * prefix) const {
         const size_t n = strlen(prefix);

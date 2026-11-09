@@ -1,4 +1,4 @@
-// exec_kinds.cpp — test kinds of the graph executor tests (P2.4; docs/design/06-software-verification.md
+// exec_kinds.cpp — test kinds of the graph executor tests (docs/design/06-software-verification.md
 // "SW" §7.3, §10.2): handlers for kinds 0x30-0x3F (exec.hpp tsr_exec_test_kind), linked into the
 // test image fw_exec (tsr_fw_image, sw/ctrl/tests/exec.cmake) and into the host driver
 // test_fw_exec_host. They give the executor tests real data flow (copies through the ring, DRAM
@@ -31,11 +31,10 @@
 //               elements, 1..8192), a3 n (VU ops, 1..3)   n VOPs on them (ADD x+x -> y, MIN y,x -> y,
 //               MAX y,x -> y; full rate, short latency class), ST dst <- y: 2 + n pushes, each after
 //               the previous; ticket: the ST. A stand-in for M7's short VU kinds (norm, RoPE, GLU,
-//               residual: W2b's kinds do not exist yet) in fw_m6_perf's M7 projection (2026-10-30,
-//               executor-optimisation integration); it goes through the generic handler call, as
-//               W2b's kinds will
+//               residual) in fw_m6_perf's M7 projection; it goes through the generic
+//               handler call, as the real kinds do
 //   0x39 FASTVU a0 src, a1 dst, a2 m, a3 0               LD, VOP ADD, ST in the k_fast.hpp fast-path form
-//               (W2b infra; tests/fw/exec_fast.cpp, -O2): fw_exec_perf's reference short VU record
+//               (tests/fw/exec_fast.cpp, -O2): fw_exec_perf's reference short VU record
 //   0x3A SREG   a0 src, a1 dst, a2 m, a3 s, a4 v, a5 fl   y = x * s[i] with s[i] = v through the launch's
 //               s-register shadow (k_fast.hpp sreg_movi; exec_fast.cpp)
 #include "tsr/exec.hpp"

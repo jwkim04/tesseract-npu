@@ -46,7 +46,7 @@ module tsr_tb_tech_mac #(
       assign xi[t] = x[t][N-1:0];
     end
 
-    logic [(T+1)/2-1:0][N-1:0][37:0] pvo;          // W4-B at: PV mode off here (tsr_tb_tech_macpv)
+    logic [(T+1)/2-1:0][N-1:0][37:0] pvo;          // PV mode off here (tsr_tb_tech_macpv)
     tsr_mac_lane #(.N(N), .T(T), .LAT(LAT)) u_mac (
       .clk, .rst_n, .ce, .in_valid, .w(wi), .x(xi), .out_valid(ov[c]), .y(yo),
       .pv_en(1'b0), .pv_valid(1'b0), .pv_first(1'b0), .pv_a('0), .pv_acc(pvo)

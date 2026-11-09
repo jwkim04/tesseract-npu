@@ -1,6 +1,6 @@
 // tsr-kvbuf.h — KV-cache buffers of the ggml-tesseract backend (docs/design/06-software-verification.md
 // "SW" §9.3 M7 "KV buffers", SW-17; docs/design/03-attention-kv.md "AT" §4 plane layout, §4.5 region,
-// §4.6 correspondence with ggml; docs/design/01-execution-model.md "EX" §11 DRAM map). W3b (P3.5).
+// §4.6 correspondence with ggml; docs/design/01-execution-model.md "EX" §11 DRAM map).
 //
 // A llama.cpp KV cache with the cache offloaded (offload_kqv = true, -ctk q8_0 -ctv q8_0, SW §8 R3)
 // is one ggml buffer per cache whose tensors are all `cache_<tag>k_l<n>` / `cache_<tag>v_l<n>`
@@ -33,7 +33,7 @@
 // SET_ROWS_KV writes them, FLASH_ATTN reads K and V). ggml views of a cache tensor (cpy_k / cpy_v
 // SET_ROWS dst, get_k / get_v FA operands, src/llama-kv-cache.cpp:1301-1351) resolve by address with
 // tsr_kvbuf::resolve (stream and first cell). In ggml-tesseract.cpp the backend's helpers wrap this
-// for a ggml tensor (the "W3b kv" sections):
+// for a ggml tensor (the KV-cache sections):
 //   static bool tsr_kv_view_of(tsr_device * d, const ggml_tensor * t, tsr_kv_view * out);
 //       t (or the tensor it views) lies in a placed KV buffer: plane, stream, first cell.
 //   static bool tsr_kv_tensor_supported(tsr_device * d, const ggml_tensor * base,

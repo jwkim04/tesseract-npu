@@ -16,7 +16,7 @@
 //       --gdn 1   (default) the simulator has CAPS bit 8, the fused GDN op: GATED_DELTA_NET records with S_v >= 64
 //                 take the fused path (numerics revision 2, SW-78), S_v 16 / 32 the composition; the reference is
 //                 gdn_ref with the simulator's CAPS. All suites run.
-//       --gdn 0   CAPS bit 8 is clear (the card image of November 8): every record takes the composition (revision 1's
+//       --gdn 0   CAPS bit 8 is clear (an image without the fused op): every record takes the composition (revision 1's
 //                 bits). Only the suites with a GATED_DELTA_NET record run (gdn, gdn_small, chain).
 //       chain     SSM_CONV -> SOFTPLUS-free conv output feeding nothing, GDN -> SOFTPLUS (deps across kinds).
 //   test_fw_gdn_rv IMAGE errors

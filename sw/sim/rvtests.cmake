@@ -1,4 +1,4 @@
-# sw/sim/rvtests.cmake — RV32 conformance harness (P1.11): riscv-tests, riscv-arch-test and random
+# sw/sim/rvtests.cmake — RV32 conformance harness: riscv-tests, riscv-arch-test and random
 # lockstep programs on Spike and on tsr_rv's test bus profile (docs/design/06-software-verification.md
 # §4.2, §9.6, §10.1-§10.2; README risk 14). Scripts: sw/sim/tests/rvtests/ (stdlib Python; the
 # Spike profiles and the tsr_rv runner contract are documented in rvcommon.py).
@@ -12,7 +12,7 @@
 #   TSR_RISCV_TOOLS     install root (default ${TESSERACT_ROOT}/build/tools/riscv)
 #   TSR_RISCV_PREFIX    compiler prefix (default <root>/xpack-riscv-none-elf-gcc-14.2.0-3/bin/riscv-none-elf-)
 #   TSR_SPIKE           spike (default <root>/spike/bin/spike)
-#   TSR_RV_RUNNER       the tsr_rv runner: a CMake target name (default tsr_rv_run, P1.7; the target
+#   TSR_RV_RUNNER       the tsr_rv runner: a CMake target name (default tsr_rv_run; the target
 #                       may be defined before or after this file) or an executable path
 #   TSR_RV_RUNNER_ARGS  arguments placed before the harness's own (e.g. a profile switch)
 #   TSR_RVTESTS_PYTHON  Python >= 3.8, stdlib only (default: the python3 CMake finds)

@@ -4,8 +4,8 @@
 // tsr_ref_at.c (tsr_fa_pass_rule, tsr_fa_ncg, tsr_fa_plan, hence tsr_ref_fa) and the firmware's
 // FLASH_ATTN kernel (sw/ctrl/kernels/k_fattn.cpp, through sw/ctrl/include/tsr/plan_attn.hpp) both
 // compile this file, so their chunk lists, hence their tile-op sequences and numerics, are the same
-// by construction (SW §7.5: the tile-op sequence is the numerical contract). W2b (P2.7) moved the
-// planner of W1a's tsr_ref_at.c here; sw/ctrl/tests/test_fw_kvfa_plan.cpp keeps W1a's code as an
+// by construction (SW §7.5: the tile-op sequence is the numerical contract). The planner was first written inside tsr_ref_at.c;
+// sw/ctrl/tests/test_fw_kvfa_plan.cpp keeps that original code as an
 // oracle and compares the two chunk lists over random and adversarial mask summaries.
 //
 // Freestanding: C11 and C++17 / C++20, <stdint.h> only; no heap, no libc, no float, no 64-bit
@@ -13,7 +13,7 @@
 // divided by 16 or 2). Every function is static inline (no symbols: libtsr_ref keeps exporting its
 // own tsr_fa_* wrappers, tsr_ref_at.h).
 //
-// Rules (AT §6.6 step 3, §7.3; the parts AT leaves open are W1a decisions), per query tile
+// Rules (AT §6.6 step 3, §7.3; the parts AT leaves open are decided here), per query tile
 // [q0, q0 + T) of the mask summary MSUM (rows {lo0, hi0, lo1, hi1}, tsr_ref_at.h):
 //   1. MSUM GENERAL: one GENERAL sub-range over all n_kv cells, groups [0, ceil(n_kv/16)).
 //   2. T = 1 (one query row: decode, or a prefill tile of one token): each of its 0..2 runs is a
@@ -47,15 +47,15 @@
 // array: a longer list falls back to tsr_fap_next). The caller supplies "has this chunk a cell
 // written in this launch" (rule 7) as a callback.
 //
-// Rule 5 without a cut array (W2b): W1a's code held every cut of a sub-range in a heap array; here
+// Rule 5 without a cut array: a direct implementation holds every cut of a sub-range in a heap array; here
 // the regular cuts Ulo + k·NCG are generated on the fly and only the cuts rule 5 touches are kept
 // (`near`). A regular cut that is not strictly inside a spread is never changed by rule 5 and adds
 // no cut, and a spread (an open interval of at most T - 1 <= 7 cells) holds at most one group
-// boundary, so rule 5 starts from at most two regular cuts; the rounds of W1a's code applied to
+// boundary, so rule 5 starts from at most two regular cuts; the rounds of the direct implementation applied to
 // that sorted sub-list (same order of visits, same appends, same sort / dedup / range drop, same
 // round limit) give the same cuts, and the chunk walk merges them with the untouched regular cuts
 // (dropping duplicates). A round appends at most 4 cuts and the list holds at most 2 + 4 distinct
-// cuts after a round, so W1a's array never reached its capacity and TSR_FAP_NEAR_MAX = 16 always
+// cuts after a round, so such an array never reaches its capacity and TSR_FAP_NEAR_MAX = 16 always
 // suffices (an overflow, which cannot happen, would be reported as -3).
 #ifndef TSR_FA_PLAN_H
 #define TSR_FA_PLAN_H
@@ -188,7 +188,7 @@ static inline void tsr_fap_sub_set(tsr_fap_sub * s, uint32_t ulo, uint32_t uhi, 
 }
 
 // Rule 5 for one sub-range (see the header comment): the regular cuts strictly inside a spread,
-// then W1a's rounds on them. 0, or -3 (capacity; cannot happen).
+// then the rounds on them. 0, or -3 (capacity; cannot happen).
 static inline int tsr_fap_sub_cuts(tsr_fap_sub * s, uint32_t ncg, uint32_t T) {
     s->n_rm = 0;
     s->n_near = 0;
@@ -214,7 +214,7 @@ static inline int tsr_fap_sub_cuts(tsr_fap_sub * s, uint32_t ncg, uint32_t T) {
     s->n_rm = n;
     for (uint32_t i = 0; i < n; ++i) s->rm[i] = cuts[i];
     if (n == 0u) return 0;
-    // W1a's rounds (tsr_ref_at.c plan_cuts as of a54a6e6, unchanged up to 7dc1453), on the sub-list.
+    // The rounds of the original plan_cuts, on the sub-list.
     for (int iter = 0; iter < 8; ++iter) {
         int changed = 0;
         for (uint32_t k = 0; k < n; ++k) {

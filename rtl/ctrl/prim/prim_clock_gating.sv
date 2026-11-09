@@ -2,7 +2,7 @@
 // Tesseract (CC §3.1, docs/ctrl-riscv.md §2.3): a pass-through, as on the FPGA, where no clock is
 // gated (Ibex's sleep then idles its pipeline with the clock running; architecturally the same).
 //
-// Owner: ctrl agent (W4 item 3). CC §3.1 binds prim_clock_gating to
+// CC §3.1 binds prim_clock_gating to
 // rtl/tech/<target>/tsr_clk_gate.sv; until the technology layer has that module this file is the
 // binding for every target (an ASIC target replaces it with a latch-based gate). It replaces
 // third_party/ibex/vendor/lowrisc_ip/ip/prim_generic/rtl/prim_clock_gating.sv, which is not in the

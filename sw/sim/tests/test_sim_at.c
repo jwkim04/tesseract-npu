@@ -1,4 +1,4 @@
-// test_sim_at.c — the simulator's AT ops (P1.5, sw/sim/tsr_at.c): KVST, ATTQK, ATTPV, ASMAX, AMASK,
+// test_sim_at.c — the simulator's AT ops (sw/sim/tsr_at.c): KVST, ATTQK, ATTPV, ASMAX, AMASK,
 // AMERGE and ANORM pushed as encoded ops through the test hooks (tsr_sim_op, tsr_sim_push) and
 // compared bit for bit with direct tsr_ref_at calls on copies of the SPM and of the KV planes;
 // every check code with ERR_INFO and the check order (AT §5.8, EX §8.1), CAPS gating, the operand

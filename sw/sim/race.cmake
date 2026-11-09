@@ -1,4 +1,4 @@
-# sw/sim/race.cmake — the race detector (P1.9, docs/design/06-software-verification.md §4.6, SW-3 /
+# sw/sim/race.cmake — the race detector (docs/design/06-software-verification.md §4.6, SW-3 /
 # SW-4): tsr_race.c (vector clocks over units / RISC-V / host, SPM_STALE; API tsr_race.h).
 #
 # Included by sw/sim/CMakeLists.txt's model snippet loop after tsr_sim / tsr_sim_shared and the
@@ -17,10 +17,10 @@
 #                      (fw_issue.c built with -DFW_ISSUE_MUTANT_ST_NODEP), and the kernels of
 #                      tests/race/fw_race.c (RISC-V SPM accesses, DONE_SEQ / WAIT observation,
 #                      SPM_STALE, EX §2.3 H1 / H2); "Skipped" (77) without the RISC-V compiler
-#   sim_rv_issue_race  the W1a integration test (sim_rv_issue) with TSR_SIM_RACE=fatal
+#   sim_rv_issue_race  the integration test (sim_rv_issue) with TSR_SIM_RACE=fatal
 #   sim_vu_race, sim_at_race, sim_queue_race   sim_vu / sim_at / sim_queue with TSR_SIM_RACE=fatal
 #                      (their queue-path programs, the AT §6.6 FA layers included, are race-free;
-#                      W1b integration made sim_queue's credit test race-free)
+#                      sim_queue's credit test is race-free too)
 # Overhead: `sim_race bench <ops> <0|1|2>` (not a test).
 
 set(TSR_RACE_SOURCES ${CMAKE_CURRENT_LIST_DIR}/tsr_race.c)

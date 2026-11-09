@@ -1,4 +1,4 @@
-# sw/tools/trace_gen.cmake — tsr-trace-gen (P1.10; docs/design/06-software-verification.md §5.5,
+# sw/tools/trace_gen.cmake — tsr-trace-gen (docs/design/06-software-verification.md §5.5,
 # §5.6, §10.2), included by sw/tools/CMakeLists.txt when present.
 #   tsr-trace-gen             random tile programs as `ops` traces (--ops gen|m2|m3|vu|at|ctrl)
 #   tools_trace_gen_replay    a small set per --ops mode with a fixed seed, generated twice (byte-identical),
@@ -28,12 +28,12 @@ if (TSR_BASH_TRACE_GEN)
     else()
         set(_tsr_replay "")
     endif()
-    # The race detector checks every run (fatal: a race aborts), when the library has it (P1.9).
+    # The race detector checks every run (fatal: a race aborts), when the library has it.
     set(_tsr_gen_env "TSR_SIM_THREADS=1")
     set(_tsr_gen_image "")
     if (EXISTS ${TESSERACT_ROOT}/sw/sim/race.cmake AND NOT "race" IN_LIST TSR_SIM_SKIP_SNIPPETS)
         list(APPEND _tsr_gen_env "TSR_SIM_RACE=fatal")
-        # The kernel route (SPM_STALE, 2026-10-30) needs the replay kernel of the production image.
+        # The kernel route (SPM_STALE) needs the replay kernel of the production image.
         if (TARGET tsr_fw AND DEFINED TSR_FW_ELF AND NOT "${_tsr_replay}" STREQUAL "")
             set(_tsr_gen_image ${TSR_FW_ELF})
         endif()

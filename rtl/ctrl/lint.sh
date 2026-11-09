@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # rtl/ctrl/lint.sh — Verilator lint (-Wall, warnings are errors) of the RISC-V control subsystem
-# (rtl/ctrl, W4 item 3) with its vendored IP (third_party/ibex, riscv-dbg, common_cells: their own
+# (rtl/ctrl) with its vendored IP (third_party/ibex, riscv-dbg, common_cells: their own
 # waivers, CC §3.1) and of the tb/ctrl bench HDL.
 #
 #   rtl/ctrl/lint.sh   every rtl/ctrl module as its own top, tsr_ctrl with and without RVFI, in the
@@ -9,8 +9,7 @@
 #                      the bench tops tb/ctrl/sv/tb_ctrl.sv and tb_ctrl_core.sv; then the instance-name
 #                      conventions of the CDC constraints (rtl/ctrl/viv/check_cdc_names.py)
 # Waivers: rtl/ctrl/waivers/vendor.vlt only (file-scoped to third_party/); Ibex's own waiver file is
-# not read, because its global PINCONNECTEMPTY waiver would apply to the whole core (W4-A
-# integrate: tsr_ctrl_rv carries a targeted inline waiver for the ibex_top instance instead).
+# not read, because its global PINCONNECTEMPTY waiver would apply to the whole core (tsr_ctrl_rv carries a targeted inline waiver for the ibex_top instance instead).
 # Exit status: number of failing lint runs (0 = clean). rtl/lint.sh calls this script.
 set -u
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)

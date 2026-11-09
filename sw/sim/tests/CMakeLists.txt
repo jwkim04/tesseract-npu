@@ -1,5 +1,5 @@
 # sw/sim/tests — unit tests for the reference library (prefix ref_).
-# Simulator / trace tests (prefix sim_ / trace_) are to be added below by their owners.
+# Simulator / trace tests (prefix sim_ / trace_) follow below.
 #
 # Run: ctest --test-dir <build> -R '^ref_' --output-on-failure
 
@@ -43,13 +43,13 @@ if (Python3_Interpreter_FOUND)
 endif()
 
 # ---------------------------------------------------------------------------
-# Simulator / capture / transport tests (owner: M1 step 3/4; control core: P1.2 / P1.6). Prefix sim_.
+# Simulator / capture / transport tests. Prefix sim_.
 # Run: ctest --test-dir <build> -R '^sim_' --output-on-failure
 # sim_basic / sim_mvm / sim_capture test the units through the tsr_sim_op test hook (op-level,
 # outside the queues); sim_csr tests the host CSR port (EX §5) and the RISC-V side of the rings;
 # sim_queue tests the queue model (dispatcher, checker order, tickets, deps, SYNC, errors) through
-# the control window. The trace round trip is test_trace (P1.10); sim_transport is
-# rewritten for the launch path in P3.1.
+# the control window. The trace round trip is test_trace; sim_transport
+# tests the launch path.
 # ---------------------------------------------------------------------------
 find_package(Threads REQUIRED)
 
@@ -76,7 +76,7 @@ add_test(NAME sim_csr COMMAND sim_csr)
 
 tsr_sim_test(sim_queue test_sim_queue.c tsr_sim tsr_ref)        # issue port, checker order, deps, SYNC, errors, credits
 add_test(NAME sim_queue COMMAND sim_queue)
-if ("${TSR_SIM_DEFS}" MATCHES "TSR_SIM_HAVE_RACE")               # P1.9: the same with the race detector fatal
+if ("${TSR_SIM_DEFS}" MATCHES "TSR_SIM_HAVE_RACE")               # the same with the race detector fatal
     add_test(NAME sim_queue_race COMMAND sim_queue)
     set_tests_properties(sim_queue_race PROPERTIES ENVIRONMENT TSR_SIM_RACE=fatal TIMEOUT 120)
 endif()
@@ -110,7 +110,7 @@ if (TSR_HAVE_UBSAN)
 endif()
 
 # ---------------------------------------------------------------------------
-# P1.8 scheduler (docs/design/06-software-verification.md §4.4, §4.7, §10.2; sw/sim/tsr_sched.c)
+# Scheduler (docs/design/06-software-verification.md §4.4, §4.7, §10.2; sw/sim/tsr_sched.c)
 #   sim_sched_unit         xoshiro128** vectors, TSR_SIM_SCHED parsing, options and environment,
 #                          listener list and push events, tie-breaking, random durations and
 #                          crossings, the CDC lag of the RISC-V-side copies, access events, TSR_SIM_LOG,
@@ -173,13 +173,13 @@ if (TSR_HAVE_UBSAN)
 endif()
 
 # ---------------------------------------------------------------------------
-# Integration (docs/design/06-software-verification.md §10.2): sim_w1b_e2e — the sim_rv_issue firmware with every W1b
-# model attached (DM, DBG, RACE fatal, TRACE capture): fixed + 7 random schedules with equal SW §4.7
+# Integration (docs/design/06-software-verification.md §10.2): sim_w1b_e2e — the sim_rv_issue firmware with every model
+# attached (DM, DBG, RACE fatal, TRACE capture): fixed + 7 random schedules with equal SW §4.7
 # observables and captured traces, the captured launch traces replayed on fresh simulators under 3
 # schedules, and a GDB-style DMI session through host CSR 0xC00 + 4r (halt mid-launch, registers
 # and SPM / DTCM through SBA, 5 single steps, a hardware breakpoint at the kernel's first push, resume
 # to completion) whose run ends with the undisturbed run's observables (DB §5.8, §9.1). Added only
-# when the library has the RISC-V model and all four W1b models; "Skipped" (77) without the
+# when the library has the RISC-V model and all four models; "Skipped" (77) without the
 # firmware (no RISC-V compiler at configure time).
 # ---------------------------------------------------------------------------
 if (TARGET tsr_rv AND "${TSR_SIM_DEFS}" MATCHES "TSR_SIM_HAVE_DM" AND "${TSR_SIM_DEFS}" MATCHES "TSR_SIM_HAVE_DBG"
@@ -193,7 +193,7 @@ if (TARGET tsr_rv AND "${TSR_SIM_DEFS}" MATCHES "TSR_SIM_HAVE_DM" AND "${TSR_SIM
 endif()
 
 # Tests whose assertions include the fixed schedule's timing and that leave tsr_sim_opts.sched
-# unset: an exported TSR_SIM_SCHED (SW §4.9) must not change them (W1b fix; the sw/sim ones are
+# unset: an exported TSR_SIM_SCHED (SW §4.9) must not change them (the sw/sim ones are
 # pinned in sw/sim/CMakeLists.txt).
 foreach(_t sim_csr sim_queue sim_queue_race sim_queue_ubsan)
     if (TEST ${_t})

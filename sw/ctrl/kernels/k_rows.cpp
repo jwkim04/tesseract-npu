@@ -71,7 +71,7 @@ TSR_HOT dram src_row(const cp_op & c, uint32_t r) { return c.ids != nullptr ? id
         for (uint32_t off = 0; off < rl; off += chunk) {    // one pass unless chunked
             const uint32_t n = rl - off < chunk ? rl - off : chunk;
             // A copy tile is DMA only (LDs then STs): it takes the one-tile block whenever it fits
-            // (kind_ctx::one; W2b integration): the DMA queue serialises the tiles whatever their lines.
+            // (kind_ctx::one): the DMA queue serialises the tiles whatever their lines.
             const bool one = nr * n <= ctx.one_lines;
             deps rd{};
             const spm blk = one ? ctx.one : alloc_g(ring, nr * n, &rd);

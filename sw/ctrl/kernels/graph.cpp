@@ -9,7 +9,7 @@
 //                            chunk c (lines [2048c, 2048c + 2048)) in half c mod 2. Chunks 0 and 1
 //                            are loaded at the start; once a record is checked and the next record
 //                            starts in chunk c, the half of chunk c - 1 is consumed and chunk c + 1
-//                            is loaded into it, before the record's own pushes (W2a's push order);
+//                            is loaded into it, before the record's own pushes;
 //                            a record is read only after its chunks' loads are joined (a record
 //                            whose lines wrap the 4096-line area, or that starts in chunk c - 1 when
 //                            chunk c + 1 is loaded, is copied to DTCM; every other record is read
@@ -35,7 +35,7 @@
 //      (then pidx[i] is read again: the op's first push follows it); d = after(ticket[dep0],
 //      ticket[dep1]); the handler pushes the op's tile ops and returns its ticket T_i (NOP: none;
 //      JOIN: a SYNC NOP over d; MUL_MAT: the decode fast path mmk::mulmat_t1_fast first,
-//      k_mulmat.hpp, else kind_mulmat; the short M7 kinds (W2b): the table's fast entry
+//      k_mulmat.hpp, else kind_mulmat; the short M7 kinds: the table's fast entry
 //      kind_<name>_fast first, else the handler out of line (call_m7_ool); FLASH_ATTN and test
 //      kinds: the table's handler; kflags and d from the loop's registers); ticket[i] = T_i.
 //      SERIAL joins T_i. Every 16 ops and
@@ -47,7 +47,7 @@
 //   4. The first error (smallest ERR_PIDX over the units in error state, relative to the kernel's
 //      first push) is located by pidx: the op i with pidx[i] <= ERR_PIDX < pidx[i+1] -> RET i + 1.
 //
-// Return value (SW §6.4, §7.3; decision P2.4 for the combinations the table leaves open):
+// Return value (SW §6.4, §7.3; the combinations the table leaves open are decided here):
 //   - a tile error: the failing op + 1 (1 ... 4096); 0 when the failing push was one of the
 //     executor's own loads (list, chunk, preload), whose error record r3-r6 then names;
 //   - otherwise a rejected list: 0x8000_0001 ... 0x8000_0007 (KERNEL_ERR). A list rejected after
@@ -59,7 +59,7 @@
 // Determinism (SW §4.7, SW-30): pushed words, deps and records depend only on the list, the
 // preload contents and ISSUE_PIDX; QSTATUS is read only for the STOP_ON_ERROR poll (allowed by
 // SW §7.3). The first error after join_all and SERIAL's post-join stop come from the error records
-// (ERR_CODE / ERR_PIDX, exact once the tickets concerned are done, I2; fix W2a: not QSTATUS, whose
+// (ERR_CODE / ERR_PIDX, exact once the tickets concerned are done, I2; not QSTATUS, whose
 // error bits I2 does not order with DONE_SEQ). No DONE_SEQ / credit / MTIME value is used.
 //
 // Profiling (EX §4.3 PROF): the executor behaves as if MARK were set (the runtime sets REC_CFG.ALL).
@@ -96,7 +96,7 @@ namespace tsr {
 namespace {
 // The kind table (exec.hpp): handler and exact argument count per kind 0x00-0x3F, in .rodata (one
 // DTCM load per record instead of a switch and a call). NOP and JOIN have no handler (built into
-// the loop) and 0 arguments; MUL_MAT and the M7 kinds 0x11-0x1B (W2b) have theirs (an M7 kind
+// the loop) and 0 arguments; MUL_MAT and the M7 kinds 0x11-0x1B have theirs (an M7 kind
 // whose source is not in the image has its weak stub, zz_kind_stubs.cpp: BAD_RECORD from the
 // handler); other kinds have NARGS_UNDEF (BAD_RECORD from the record check).
 // w0x / min_ns fold opl::check_record_n's record checks into two compares: (w0 & W0_CHECK_MASK)
@@ -104,7 +104,7 @@ namespace {
 // mask, never matches: no such kind here) and the record must have at least min_ns slots (its
 // arguments fit).
 constexpr uint32_t W0_CHECK_MASK = 0xFF00F000u, W0X_NONE = 1u;
-// fast: the kind's decode fast path (exec.hpp kind_<name>_fast; W2b integration), called before fn;
+// fast: the kind's decode fast path (exec.hpp kind_<name>_fast), called before fn;
 // nullptr for kinds without one (MUL_MAT's is mulmat_t1_fast, called directly; FLASH_ATTN's records
 // are long; test kinds).
 struct kind_slot {
@@ -211,7 +211,7 @@ struct run_state {
 };
 constinit run_state g{};        // constant-initialised: no static constructor (crt0: the SDK has none)
 uint32_t rec[REC_WORDS];        // the record being executed (DTCM copy)
-// constinit (W2b integration): dev_cfg's M7 fields have default member initializers, which made a
+// constinit: dev_cfg's M7 fields have default member initializers, which made a
 // default-initialised `dev` a dynamic initialisation (a static constructor in .init_array, which the
 // SDK's crt0 does not run and fw_elf_image rejects); value-initialised it is constant again.
 constinit plan::dev_cfg dev{};
@@ -351,7 +351,7 @@ TSR_HOT ticket call_handler(kind_fn fn, const volatile uint32_t * args, kind_ctx
     return call_handler(k_kinds.s[opl::w0_kind(args[-2])].fn, args, ctx);
 }
 
-// PLAIN (W2b fix): the list has neither MARK nor SERIAL (every production list unless profiled): the
+// PLAIN: the list has neither MARK nor SERIAL (every production list unless profiled): the
 // two per-record flag tests fold away (about 6 RV cycles per record); instantiated for lists read in
 // place only (a streamed list, > 4,096 lines, pays them).
 template <bool STREAMED, bool PLAIN = false>
@@ -406,7 +406,7 @@ template <bool STREAMED, bool PLAIN = false>
         // is copied to DTCM instead.
         const volatile uint32_t * args = p + 2;
         if constexpr (STREAMED) {
-            // W2a's order (fix W2a-opt review): the lines holding the record's words (not its
+            // The lines holding the record's words (not its
             // padding slots) are made readable, then, once the record is checked, the next chunk's
             // LD is pushed before the record's own pushes.
             const uint32_t nw = opl::w0_nargs(w0) + 2u;
@@ -444,7 +444,7 @@ template <bool STREAMED, bool PLAIN = false>
                 t = ticket{mmk::mulmat_t1_fast(args, opl::w0_kflags(w0), ticket{tick1[d0]}, ticket{tick1[d1]}, ctx)};
                 if (t.v == mmk::NOT_FAST) t = call_handler_ool(ks.fn, args, ctx);
             } else if (ks.fast != nullptr) {                         // the short M7 kinds: the decode fast
-                // path first (a leaf, exec.hpp kind_<name>_fast; W2b integration), else the handler,
+                // path first (a leaf, exec.hpp kind_<name>_fast), else the handler,
                 // out of line; the record's fields from the loop's registers (w0; d0 / d1 already
                 // offset for the sentinel table), not re-read through args.
                 const uint32_t v = ks.fast(args, opl::w0_kflags(w0), after(ticket{tick1[d0]}, ticket{tick1[d1]}), ctx);

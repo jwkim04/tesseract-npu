@@ -13,7 +13,7 @@
 # fails (exit status = number of failing tops) when Vivado exits with an error or its log has a
 # CRITICAL WARNING / ERROR about a multi-driven net ([Synth 8-6858], [Synth 8-6859], [Synth 8-3352]: a
 # variable written by two procedural blocks, where Vivado keeps one driver and ignores the other;
-# found by the W4-A review in tsr_chk's e_q, which made the synthesised range checks wrong). The
+# found in tsr_chk's e_q, which made the synthesised range checks wrong). The
 # netlist-versus-simulator regression for the checker is tb/chk/viv/net_chk.sh.
 # Environment: TSR_VIVADO_SETTINGS (default /tool/Xilinx/Vivado/2024.2/settings64.sh);
 # TSR_VIVADO_WRAP = a command prefix for every Vivado call (e.g. a slot script limiting the Vivado

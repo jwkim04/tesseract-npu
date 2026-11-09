@@ -16,7 +16,7 @@
 // Numerics: y = tsr_fadd(old, tsr_dot_row(W row, QACT(x))) with an addend or ACC_DST (one f32
 // addition, commutative: bit-identical to ggml's separate ADD on the device), else the dot product;
 // sw/ctrl/ref/mulmat_ref.cpp composes the same tsr_ref calls. A record with both an addend and
-// ACC_DST is refused (BAD_RECORD: the y block holds one old row; decision P2.5), as are MUL_MAT
+// ACC_DST is refused (BAD_RECORD: the y block holds one old row), as are MUL_MAT
 // kind flags (none is defined).
 //
 // Scratch (spm_ring, SW §6.7): one contiguous block per tile, [x | QA | y] (the spec's partition order),
@@ -41,13 +41,13 @@
 // ticket is the last ST: it implies every tile op of the op (I1: the last ST follows the last MVM,
 // which follows every earlier MVM, QACT and LD by queue order and deps).
 //
-// Cost (SW §7.3 "Hot path", §7.8; executor optimisation): a T = 1 record (a decode token) runs
+// Cost (SW §7.3 "Hot path", §7.8): a T = 1 record (a decode token) runs
 // mmk::mulmat_t1_fast (k_mulmat.hpp), which the executor calls before kind_mulmat. Otherwise the
 // argument words are read in place from the OPL area (exec.hpp) into locals before the first
 // push; the plan is plan.hpp's mm_plan (shifts only, no divide when the T-tile is 1); an op of one
 // T-tile (a prefill op with T <= the T-tile) takes a straight-line path, the multi-tile loop keeps
 // the tile records; both are [[gnu::cold]] with their pushes out of line (code size). All paths
-// push the same ops in the same order with the same words and deps as the W2a lowering (for one
+// push the same ops in the same order with the same words and deps as the straight-line lowering (for one
 // tile the loop is: alloc, load_tile, compute_tile, store_tile, release).
 #include "k_mulmat.hpp"
 

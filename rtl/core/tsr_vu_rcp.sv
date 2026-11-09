@@ -1,6 +1,6 @@
 // tsr_vu_rcp.sv — RC(x): correctly rounded f32 reciprocal with the spec's fp rules, fully pipelined.
 //
-// Owner: VU (docs/design/02-vector-unit.md "VU" §6.4, §7.3 "RC"; VU-5).
+// Spec: docs/design/02-vector-unit.md "VU" §6.4, §7.3 "RC"; VU-5.
 // Contract: y = tsr_frecip(x) of sw/sim/tsr_ref.c bit for bit (= fin(1 / DAZ(x))): ±0 -> ±inf,
 // ±inf -> ±0, NaN -> 0x7FC00000, a result below 2^-126 after gradual-underflow rounding -> ±0 (for
 // x = 2^126·m, m > 1, and every x >= 2^127). Fixed latency TSR_VU_RCP_LAT, one operation per cycle,

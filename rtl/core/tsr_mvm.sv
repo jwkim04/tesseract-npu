@@ -1,9 +1,9 @@
-// tsr_mvm.sv — the MVM unit (spec MVM cluster microarchitecture, ISA MVM; M3): dispatch from
+// tsr_mvm.sv — the MVM unit (spec MVM cluster microarchitecture, ISA MVM): dispatch from
 // the dispatcher, activation broadcast to the NUM_CH clusters, cluster command, result gather and
 // ACC into the SPM, done, perf_mvm_busy.
 //
-// Owner: top agent (docs/rtl-mvm.md §2 block (top); contract §3.0, §3.1, §6).
-// tsr_core instantiates it when HAS_MVM = 1 (integration agent).
+// Spec: docs/rtl-mvm.md §2 block (top); contract §3.0, §3.1, §6.
+// tsr_core instantiates it when HAS_MVM = 1.
 //
 // Contract (docs/rtl-core.md §3.0 dispatch; semantics = tsr_sim.c ex_mvm):
 //   - cmd_valid/cmd_ready/cmd (tsr_mvm_cmd_t): every check done at dispatch (K, T, SPM and
@@ -29,9 +29,9 @@
 // stages per cluster, tsr_rpipe), ACT_RD_LAT, MAC_LAT, MUL_LAT, ADD_LAT, WS_RD_LAT
 // (docs/rtl-mvm.md §1).
 //
-// Interface addition (additive, top agent): parameter WS_RD_LAT (weight FIFO RAM read latency,
+// Interface addition (additive): parameter WS_RD_LAT (weight FIFO RAM read latency,
 //   docs/rtl-mvm.md §1, default TSR_DEF_WS_RD_LAT), passed to every cluster's front end.
-// Interface addition (additive, M3 part C timing, docs/rtl-mvm.md §14): parameter RST_LOCAL (0..2).
+// Interface addition (additive; timing, docs/rtl-mvm.md §14): parameter RST_LOCAL (0..2).
 //   Every part (top logic, gather, cluster c with its pipes) takes rst_n through its own chain of
 //   RST_LOCAL registers (Xilinx `keep`: the copies are not merged), so the reset reaches every
 //   flop RST_LOCAL cycles after rst_n, from registers next to that part (the clusters sit in
@@ -74,7 +74,7 @@
 //   Steady state (two-point, overhead removed): 1.000 cycles per weight beat for rows >= RB_MIN;
 //   tb/mvm mvm_perf asserts the rate and the fixed overhead in every test configuration.
 //
-// Attention (W4-B at; AT §5.2, §5.3, §8.1, §8.2; parameter HAS_ATT): a command with cmd_xc = 1 carries
+// Attention (AT §5.2, §5.3, §8.1, §8.2; parameter HAS_ATT): a command with cmd_xc = 1 carries
 //   the ATTQK / ATTPV payload (tsr_att_pkg::tsr_att_cmd_t) in xcmd. tsr_mvm derives the shape (E/D,
 //   n_head, R, T_q GS, pass rows, ceil(R/16), u0 / C, (u0 + n) / C by tsr_att_divc) over 5 registered
 //   steps, sends every cluster one tsr_att_ccmd_t (the broadcast pipe's third valid, overlaid on the
@@ -104,7 +104,7 @@ module tsr_mvm
 #(
   parameter  bit          LOCAL_SCALE = 1'b0,
   parameter  bit          LOCAL_INTERMEDIATES = 1'b0,
-  parameter  bit          HAS_ATT       = 1'b0,   // ATTQK / ATTPV (W4-B at)
+  parameter  bit          HAS_ATT       = 1'b0,   // ATTQK / ATTPV
   parameter  int unsigned XC_CMD_W      = 256,
   parameter  int unsigned NUM_CH        = TSR_DEF_NUM_CH,
   parameter  int unsigned T_MAX         = TSR_DEF_T_MAX,
@@ -657,7 +657,7 @@ module tsr_mvm
       .idle(cl_idle[c])
     );
 
-    // Weight stream of cluster c <-> arbiter c (M3 part C, docs/rtl-mvm.md §14): requests through
+    // Weight stream of cluster c <-> arbiter c (docs/rtl-mvm.md §14): requests through
     // RES_PIPE register slices (towards the centre, like the results), responses through BC_PIPE
     // registers (towards the cluster, like the broadcast; no backpressure: the streamer's
     // rd_rsp_ready is constant 1, §4), so the arbiters can sit with the DMA while a cluster sits

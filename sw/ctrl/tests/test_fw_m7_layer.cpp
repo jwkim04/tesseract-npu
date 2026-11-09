@@ -1,6 +1,6 @@
 // test_fw_m7_layer.cpp — fw_m7_layer_*: one whole decoder layer as one OPL list on the RISC-V image
-// (W2b integration; docs/design/06-software-verification.md "SW" §7.2, §7.5 last paragraph, §7.8,
-// §10.2; docs/design/README.md W2 exit). The list is what the W3b backend will build for a layer (tile
+// (docs/design/06-software-verification.md "SW" §7.2, §7.5 last paragraph, §7.8,
+// §10.2). The list is what the backend builds for a layer (tile
 // ops of every M7 kind in one launch, the executor's deps, scratch reuse across kinds, overlap of
 // the MVM with the VU / AT kinds), launched through the `graph` kernel.
 //
@@ -19,7 +19,7 @@
 //       4 12B: random weights and inputs in the shapes of its SWA layers (n_embd 3840, 16 / 8 heads
 //       of 256, n_ff 15,360, window 1,024). KV history: random rows in every cell before the new
 //       tokens' cells (QACT A32 + KVST, the device image); the new tokens' cells are SET_ROWS_KV's.
-//       k4min: the device of the reduced first card image tsr_u200_k4 (4 channels, T_MAX 8, CAPS 0): the seven MUL_MAT
+//       k4min: the device of the reduced card image tsr_u200_k4 (4 channels, T_MAX 8, CAPS 0): the seven MUL_MAT
 //       records of a layer only (M6; build_mm), decode and a T = 8 prefill tile, against mulmat_ref; `dump` writes
 //       them as RTL scenarios (tb/core/test_core.py test_core_m6_k4min).
 //   test_fw_m7_layer IMAGE ggml
@@ -29,7 +29,7 @@
 //       read back with tsr_kv_get_bytes), FLASH_ATTN_EXT with the F16 mask: NMSE, max |diff| and the
 //       row-softmax KL of the layer output and of the attention output, twice: with the CPU's own new
 //       K / V cells (quantized by ggml's reference quantizer; their codes against the device's) and
-//       with the device's cache (the arithmetic after it; W2b fix, gates near the measurements).
+//       with the device's cache (the arithmetic after it, gates near the measurements).
 //   test_fw_m7_layer IMAGE perf
 //       Measurements (SW §7.8; fixed schedule, the Ibex table of TSR_SIM_RV_CORE (default maxperf),
 //       U200 queue depths and deep queues, the backend's list flags (no MARK)): the 0.5B decode layer
@@ -212,7 +212,7 @@ const model QWEN05B = {"qwen2.5-0.5b", 896, 14, 2, 64, 4864, 1e-6f, 1e6f, 0.125f
 // rope base swa 1e4, NEOX, window 1,024, attention scale 1.0, layer_output_scale)
 const model GEMMA12B = {"gemma4-12b-swa", 3840, 16, 8, 256, 15360, 1e-6f, 1e4f, 1.0f, false, true, opl::glu::GEGLU16, 1024};
 
-// W4-B integrate: a decoder layer in the smallest shapes that still use every M7 kind (Qwen2 structure: bias
+// a decoder layer in the smallest shapes that still use every M7 kind (Qwen2 structure: bias
 // addends, SWIGLU; 128 / 2 heads of 64 / 1 KV head, n_ff 256). The RTL core bench (tb/core, test_core_m7)
 // runs it on a 2-channel core with T_MAX 2 and 1 MiB of SPM (`dump` mode below).
 const model TINY = {"tiny", 128, 2, 1, 64, 256, 1e-6f, 1e6f, 0.125f, true, false, opl::glu::SWIGLU, 0};
@@ -224,7 +224,7 @@ struct lcase {
     uint32_t T, n_kv, pos0;
     bool gguf;        // Qwen: weights / inputs from the GGUF file when present
     bool tiny = false;   // the RTL bench's reduced device (2 channels, T_MAX 2, 1 MiB SPM, CAPS VU | ATT)
-    bool mm = false;     // M6: MUL_MAT records only, on the device of the reduced first card image (build_mm)
+    bool mm = false;     // M6: MUL_MAT records only, on the device of the reduced card image (build_mm)
 };
 const std::vector<lcase> & cases() {
     static const std::vector<lcase> v = {
@@ -539,7 +539,7 @@ void build(const lcase & c, layer_data & L, uint32_t n_layers = 1, bool mark = f
     const uint32_t mflags = tsr_msum_build_f16(L.mask16.data(), c.n_kv, c.n_kv, T, mask_h_alloc, msum.data());
     bool need_f32 = (mflags & TSR_MSUM_GENERAL) != 0u;
     const tsr_att_cfg acfg = {L.cfg.num_ch, L.cfg.t_max, tsr_qa_lines(TSR_QA_A256, L.cfg.k_max) * 16u, L.cfg.k_max};
-    if (!need_f32) {   // a tile the planner sends down the GENERAL path needs the copy too (W2b kvfa)
+    if (!need_f32) {   // a tile the planner sends down the GENERAL path needs the copy too
         tsr_msum ms;
         tsr_msum_view(msum.data(), msum.size(), &ms);
         uint32_t GS = 0, Tq = 0;
@@ -771,7 +771,7 @@ void build(const lcase & c, layer_data & L, uint32_t n_layers = 1, bool mark = f
     tsr_sim_destroy(sh);
 }
 
-// The M6 list on the device of the reduced first card image (tsr_u200_k4: 4 channels, T_MAX 8, CAPS 0, 1 MiB of SPM
+// The M6 list on the device of the reduced card image (tsr_u200_k4: 4 channels, T_MAX 8, CAPS 0, 1 MiB of SPM
 // for the graph kernel's list area): the seven MUL_MAT records of a decoder layer (Q / K / V with their bias addends,
 // the attention output projection with the residual add, gate, up and down with the residual add) on random Q8_0
 // weights, with the same shapes and dependencies as the layer, and nothing else. No KV planes, no preload area, no
@@ -1207,7 +1207,7 @@ cmp_t compare(const float * dev, const float * cpu, size_t rows, size_t n) {
     return r;
 }
 
-// ggml-cpu threads (W2b fix: the test's ctest PROCESSORS, 4; TSR_M7L_GGML_THREADS overrides).
+// ggml-cpu threads (the test's ctest PROCESSORS, 4; TSR_M7L_GGML_THREADS overrides).
 int ggml_threads() {
     const char * e = getenv("TSR_M7L_GGML_THREADS");
     const int n = e && e[0] ? atoi(e) : 4;
@@ -1216,14 +1216,14 @@ int ggml_threads() {
 
 // The layer as llama.cpp's graph builds it (qwen2.cpp; gemma4.cpp, an SWA layer), on ggml-cpu, with
 // the case's weights, input, positions, KV history and mask. out: [T][n_embd]; att: [T][n_head D].
-// Two graphs (W2b fix, review): the new tokens' K / V rows first; then, with kdev / vdev, the
+// Two graphs: the new tokens' K / V rows first; then, with kdev / vdev, the
 // device's cache images (the new cells as QACT A32 + KVST wrote them) are what FLASH_ATTN_EXT reads,
 // else the host quantizes the CPU's rows into their cells with ggml's reference quantizer
 // (quantize_row_q8_0_ref, the from_float_ref type trait: QACT A32's) and returns the cache images in
 // kcpu / vcpu. The first form isolates the device's arithmetic after the cache (a near-floor gate);
 // the second also checks the K / V wiring, but a K / V value at a q8_0 rounding boundary (the MUL_MATs
 // sum in another order) can land on the neighbouring code: one such V code made the 0.5B prefill
-// tile's output NMSE 4.9e-6 against 1e-13 elsewhere (the review's per-token diagnosis).
+// tile's output NMSE 4.9e-6 against 1e-13 elsewhere (a per-token diagnosis).
 bool cpu_layer(const layer_data & L, std::vector<float> & out, std::vector<float> & att,
                const std::vector<uint8_t> * kdev = nullptr, const std::vector<uint8_t> * vdev = nullptr,
                std::vector<uint8_t> * kcpu = nullptr, std::vector<uint8_t> * vcpu = nullptr) {
@@ -1418,14 +1418,14 @@ void run_ggml() {
                L.real ? "GGUF" : "random", ry.nmse, ry.max_abs, ry.kl_max, ra.nmse, ra.max_abs, ra.kl_max, n_diff, n_codes);
         printf("  %-22s %-9s %10.2e %10.2e %10.2e   %10.2e %10.2e %10.2e   (the device's cache)\n", "", "", ry2.nmse,
                ry2.max_abs, ry2.kl_max, ra2.nmse, ra2.max_abs, ra2.kl_max);
-        // Bounds (W2b fix, review: test-backend-ops' 5e-4 was 100x above every measurement). The
+        // Bounds (test-backend-ops' 5e-4 was 100x above every measurement). The
         // remaining differences are rounding-boundary values: ggml-cpu quantizes the activations of its
         // MUL_MATs with the x86 quantize_row_q8_0 (127/amax, round-half-even; QACT A32 is the reference
         // quantizer: 1/d, roundf) and sums the block products in another order, so a value on a q8_0
         // boundary lands on the neighbouring code now and then (the 0.5B prefill tile: 3 of 2,048 new
         // K / V codes; with the device's cache its output still differs at NMSE 1.6e-6 through the
         // activations of wo / gate / up / down), and its RMS_NORM sums in double (VU §6.2: f32;
-        // Gemma 4: four norms per layer). Measured (2026-10-31): output NMSE <= 4.9e-6 (CPU cache) /
+        // Gemma 4: four norms per layer). Measured: output NMSE <= 4.9e-6 (CPU cache) /
         // 1.6e-6 (device cache), attention <= 8.2e-10 / 5.2e-13. Gates: output 2e-5, attention 1e-8
         // (CPU cache) / 1e-10 (device cache), new codes all within one step and at most 1 in 256 moved.
         CHECK(ry.nmse <= 2e-5, "%s: layer output NMSE %.3e above 2e-5", c.name, ry.nmse);

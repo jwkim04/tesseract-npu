@@ -5,8 +5,7 @@ broadcast pipes, result pipes, gather) on SPM client 2 of a real tsr_spm and on 
 one real tsr_mem_arb per channel, whose memory ports are served by common.mem_model.MemModel
 (random latency / backpressure / stalls, protocol assertions, per-source beat counts).
 
-Back end / activation buffer: the rtl/core modules are implemented in parallel by the back agent,
-so the default build replaces them with the test doubles of tb/mvm/hdl/dbl (same module names and
+Back end / activation buffer: the default build replaces the rtl/core modules with the test doubles of tb/mvm/hdl/dbl (same module names and
 ports): the activation-buffer double is a plain array (write / read checks), the back-end double
 reads the activations through its ports and computes every row with the fp operations of
 libtsr_ref through DPI-C (tsr_mvm_dbl.cpp), with random beat_ready stalls, random result latency
@@ -989,8 +988,8 @@ async def mvm_cycles(dut):
         "understood" % (dig, CYCLE_DIGEST[key], key))
 
 
-# Pinned with the real back end (the back-end double's cycles depend on its own random state), equal on the
-# tree at W4-A (HEAD 4149614), on the W4-B tree, for $TSR_SEED 1 and 7, and with HAS_ATT = 1.
+# Pinned with the real back end (the back-end double's cycles depend on its own random state), equal
+# for $TSR_SEED 1 and 7, and with HAS_ATT = 1.
 CYCLE_DIGEST = {
     "c4":    "6a215afa9d4a2fff",
     "c3t3":  "3df890a39be82a6a",
@@ -1000,7 +999,7 @@ CYCLE_DIGEST = {
 }
 
 
-# ---- mvm_perf bounds (docs/rtl-mvm.md M3 scope, §4 FIFO sizing, §7.5 RB_MIN, §9.1 overhead) ----
+# ---- mvm_perf bounds (docs/rtl-mvm.md §4 FIFO sizing, §7.5 RB_MIN, §9.1 overhead) ----
 RB_MIN = 9          # §7.5: the back end never drops beat_ready on rows of >= RB_MIN (<= 9) beats
 FAST_RT = 12        # weight round trip budget with the "fast" memory (cycles; measured ~6.5), §4
 CPB_EPS = 0.01      # slack of a measured cycles-per-beat (the fast regime's 0/1-cycle latency)
@@ -1023,7 +1022,7 @@ def perf_fixed_max(p: dict) -> int:
     cycles per beat) and the T x QA_LINES broadcast reads."""
     if p.get("real"):
         # §9.1: setup ~20 + back-end pipeline ~30 + tree <= 4 ADD_LAT + 8 + gather ~20, plus the
-        # pipes and the SPM read latency. The real back end's own latency is the back agent's, so
+        # pipes and the SPM read latency. The real back end's latency is its own, so
         # this is the contract budget (measured 33-99 cycles in CFGS, bound 84-124).
         return 78 + 4 * p["ADD_LAT"] + p["BC_PIPE"] + p["RES_PIPE"] + 2 * p["SPM_RD_LAT"]
     # back-end double (a row's result 2 + ACT_RD_LAT cycles after its last beat): the top's own
@@ -1034,7 +1033,7 @@ def perf_fixed_max(p: dict) -> int:
     # act_ready fail there, +8 mostly passes); with a 64-entry FIFO the rate is ~1.10 and
     # jitters, which makes the fixed-part estimate noisier (+8).
     fifo_bound = p["WS_FIFO_BEATS"] < FAST_RT + 64
-    # W4-A spm: + 2 for the even / odd SPM (CC §10.2): the broadcast's second QA line and the
+    # + 2 for the even / odd SPM (CC §10.2): the broadcast's second QA line and the
     # gather's second y line are on the other bank, whose read / write grant another client
     # (the host port) may own: one grant hand-over cycle per bank port instead of one per port.
     return DBL_FIXED + p["BC_PIPE"] + p["RES_PIPE"] + p["SPM_RD_LAT"] + p["ACT_RD_LAT"] + 8 * fifo_bound + 2

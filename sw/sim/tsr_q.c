@@ -1,8 +1,8 @@
-// tsr_q.c — Tesseract simulator, queue model (P1.6): the RISC-V side issue port and control window
+// tsr_q.c — Tesseract simulator, queue model: the RISC-V side issue port and control window
 // (CC §5), the issue FIFO, the dispatcher with the checker (EX §8.1, CC §8), the six unit queues
 // with tickets, dependencies, SYNC (NOP, FENCE, QCLEAR), holds, QABORT, error capture and
 // poisoning (EX §8.2, CC §9), invariants I1-I3, the per-unit records (Q_* for the host), and the
-// time base that runs it all (SW §4.4; the P1.6 "fixed" policy, see tsr_sim_int.h §5).
+// time base that runs it all (SW §4.4; the "fixed" policy, see tsr_sim_int.h §5).
 //
 // Model (normative sources EX §7-§8, CC §7-§9; decisions where they leave a choice):
 //   - Push (CC §7.1): at the ISSUE_PUSH store the opcode's unit u is UNIT_OF(opcode) if the issue
@@ -35,7 +35,7 @@
 //   - QCLEAR (RISC-V): after its snapshot, clears every error state and record and sets
 //     clear_pt[u] = snap[u]. Host QCLEAR: only with QIDLE and the RISC-V quiet (in reset, or halted);
 //     clear_pt[u] = cnt[u].
-// P1.8 (tsr_sim_int.h §5, §5b): the listener lists (queue and access events; PUSH / QCTRL /
+// (tsr_sim_int.h §5, §5b): the listener lists (queue and access events; PUSH / QCTRL /
 // MARK_PUSH at the issue-FIFO store with the push PC), the schedule policy's draws (issue
 // crossings, op durations: tsr_sched.c) and, under the random schedule, the RISC-V side's lagging
 // view of the core state (view_*: DONE_SEQ, credits, QSTATUS, error records, interrupt levels).
@@ -837,7 +837,7 @@ static int q_head(tsr_sim * sim, uint32_t u) {
     if (!deps_done(sim, e)) { q->head = TSR_QH_DEP_WAIT; return 0; }
     if ((e->kind == TSR_QK_FENCE || e->kind == TSR_QK_QCLEAR) && !snap_ok(sim, e)) { q->head = TSR_QH_SNAP_WAIT; return 0; }
     const int db = (db_hold_mask(sim) >> u) & 1u;
-    // P1.13: dbg_step[u] (CC §9.3) lets this head through the hard hold and the hold sources.
+    // dbg_step[u] (CC §9.3) lets this head through the hard hold and the hold sources.
     const int step = (sim->have_dbg && sim->dbg.unit_step) ? (int)((sim->dbg.unit_step(sim->dbg.ctx) >> u) & 1u) : 0;
     if (db && !step && !sim->abort_active && !sim->sr_busy) { q->head = TSR_QH_DBHOLD; return 0; }   // hard hold
     uint32_t code = TSR_ERR_NONE;
@@ -852,7 +852,7 @@ static int q_head(tsr_sim * sim, uint32_t u) {
         code = TSR_ERR_DEP_FAILED;
     } else if (e->kind == TSR_QK_NOP || e->kind == TSR_QK_FENCE) {
         code = TSR_ERR_NONE;
-    } else if ((hold_src(sim) || db) && !step) {    // P1.13: !step
+    } else if ((hold_src(sim) || db) && !step) {    // !step
         q->head = TSR_QH_HELD;
         return 0;
     } else {
@@ -934,7 +934,7 @@ uint64_t tsr_sim_next_event(const tsr_sim * sim) {
         if (sim->agent_next != TSR_SIM_AGENT_WAIT) {
             const uint64_t a = sim->agent_next > sim->now ? sim->agent_next : sim->now;
             if (a < t) t = a;
-            if (sim->agent_wake_ev && sim->agent_kick && sim->now < t) t = sim->now;   // P1.12
+            if (sim->agent_wake_ev && sim->agent_kick && sim->now < t) t = sim->now;
         } else {
             if (sim->agent_kick && sim->now < t) t = sim->now;
             if (sim->mtimecmp > sim->now && sim->mtimecmp < t) t = sim->mtimecmp;
@@ -948,7 +948,7 @@ static void q_integrate(tsr_sim * sim, uint64_t dt) {
     if (dt == 0 || !tsr_sim_active(sim)) return;
     const uint32_t C = sim->num_ch;
     const int halted = (sim->ctrl & TSR_CTRL_RV_RUN) && (sim->rv_state & TSR_STATUS_RV_HALTED);
-    // P1.13: DBG_STOP_CYCLES = ACTIVE and (RV_HALTED or DB's STOP_ACTIVE), not gated by QHALT
+    // DBG_STOP_CYCLES = ACTIVE and (RV_HALTED or DB's STOP_ACTIVE), not gated by QHALT
     if (halted || (sim->have_dbg && sim->dbg.stop_active && sim->dbg.stop_active(sim->dbg.ctx)))
         sim->perf[TSR_PERF_DBG_STOP_CYCLES] += dt;
     if (halted && quiescent(sim)) return;           // QHALT
@@ -1000,11 +1000,11 @@ static void q_timepoint(tsr_sim * sim) {
     if (agent_live(sim)) {
         const int due = sim->agent_next != TSR_SIM_AGENT_WAIT
                             ? (sim->agent_next <= sim->now ||
-                               (sim->agent_wake_ev && (act || sim->agent_kick)))   // P1.12: waiting store
+                               (sim->agent_wake_ev && (act || sim->agent_kick)))   // waiting store
                             : (act || sim->agent_kick || sim->now == sim->mtimecmp);
         if (due) {
             sim->agent_kick = 0;
-            sim->agent_wake_ev = 0;                     // P1.12: set again by a store that still waits
+            sim->agent_wake_ev = 0;                     // set again by a store that still waits
             // While the agent runs it is not an event of its own: tsr_sim_next_event() then
             // reports the next core event (completion, dispatch, MTIMECMP) and the agent's slice
             // runs up to it instead of one instruction (tsr_bus.c).
@@ -1088,7 +1088,7 @@ int tsr_sim_run_until_idle(tsr_sim * sim, uint64_t max_cycles) {
     const uint64_t t_end = (UINT64_MAX - sim->now < max_cycles) ? UINT64_MAX : sim->now + max_cycles;
     q_timepoint(sim);
     for (;;) {
-        // W1b fix: under the random schedule also until the RISC-V-side view has caught up (§5b),
+        // under the random schedule also until the RISC-V-side view has caught up (§5b),
         // so that control-window reads right after it see the idle state, as under fixed.
         const int idle = tsr_q_idle(sim);
         if (idle && !(sim->view_on && sim->v_n > 1u)) return 1;
@@ -1268,7 +1268,7 @@ int tsr_q_cw_access(tsr_sim * sim, int is_write, uint32_t off, uint32_t * val) {
     return cw_access(sim, is_write, off, val, TSR_SIM_PC_HOOK);
 }
 
-// P1.12: a store the agent must retry (TSR_CW_WAIT) makes it due also at the next core event or
+// a store the agent must retry (TSR_CW_WAIT) makes it due also at the next core event or
 // host action (q_timepoint), not only at the time it asks for (its CC §7.3 deadline): the credit
 // may come back through events created after its step (a hold released by the host, DB's RELEASE).
 static int cw_wait_note(tsr_sim * sim, int r) {
@@ -1366,6 +1366,6 @@ uint32_t tsr_sim_rv_irq(tsr_sim * sim) {
     if ((sim->wait_credit & TSR_WAIT_CREDIT_EN) && TSR_GET(sim->wait_credit, TSR_WAIT_CREDIT_UNIT) < TSR_NUM_UNITS &&
         credit_rv(sim, TSR_GET(sim->wait_credit, TSR_WAIT_CREDIT_UNIT)) != 0)
         m |= TSR_RV_MIP_FAST(5);
-    if (sim->have_dbg && sim->dbg.rv_irq) m |= sim->dbg.rv_irq(sim->dbg.ctx);   // P1.13: irq_fast[4] (REC)
+    if (sim->have_dbg && sim->dbg.rv_irq) m |= sim->dbg.rv_irq(sim->dbg.ctx);   // irq_fast[4] (REC)
     return m;
 }

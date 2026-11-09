@@ -1,5 +1,5 @@
 // sw/tables/hdrcheck.cpp — build-time check that the generated headers compile together and agree
-// (EX-30, P1.1). Compiled as an object library in every build (C++20, the SDK's dialect, SW §6.1):
+// (EX-30). Compiled as an object library in every build (C++20, the SDK's dialect, SW §6.1):
 // the firmware headers sw/ctrl/include/tsr/{mmio,vu,at}.hpp and the C header tsr_tables.h in one
 // translation unit, with constexpr spot checks across the two emitters. Nothing is linked.
 #include "tsr/at.hpp"
@@ -20,5 +20,5 @@ static_assert(tsr::VOP_FUNC_EXPSUB == TSR_VOP_FUNC_EXPSUB && tsr::VOP_RSV_W3 == 
 constexpr tsr::op k_vop = tsr::VOP({.func = tsr::VOP_FUNC_MULC, .d = 100, .a = 200, .m = 896, .rows = 1});
 static_assert(k_vop.w[0] == (TSR_OP_VOP | (TSR_VOP_FUNC_MULC << TSR_VOP_FUNC_LSB)), "VOP w0");
 static_assert(k_vop.w[1] == 100 && k_vop.w[2] == 200 && k_vop.w[5] == 896 && k_vop.w[6] == 1, "VOP words");
-// P2.3: the generated builders set op::used to the encoding's field words (VOP_WORDS: w0..w7).
+// the generated builders set op::used to the encoding's field words (VOP_WORDS: w0..w7).
 static_assert(k_vop.used == tsr::VOP_WORDS, "VOP used words (VOP_WORDS)");

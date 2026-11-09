@@ -1,5 +1,5 @@
 // fw_dm.c — the RISC-V program of sim_dm_fw (sw/sim/tests/test_sim_dm.c --fw): plain C that a
-// debugger session works on (P1.12, DB §3.5-§3.7). Built by the pinned xPack riscv-none-elf-gcc
+// debugger session works on (DB §3.5-§3.7). Built by the pinned xPack riscv-none-elf-gcc
 // with tests/rv_issue's crt0.S and link.ld (sw/sim/dm.cmake); loaded straight into the TCMs.
 //
 // The loop squares the volatile input, stores the result, reports it (RT_INFO and a 16-entry

@@ -130,7 +130,7 @@ constexpr op op_finish(op o) {
     return o;
 }
 
-// Field placement of the generated builders (vu.hpp, at.hpp; P2.3). A value that does not fit its
+// Field placement of the generated builders (vu.hpp, at.hpp). A value that does not fit its
 // field is never masked into a different, legal value: in a constant expression it is a compile
 // error (the call of the non-constexpr detail::op_field_does_not_fit), at run time the builder
 // sets the op's lowest reserved w0 bit (the poison argument), so that the checker answers
@@ -532,7 +532,7 @@ constexpr uint32_t DMI_SBDATA0    = 60u;  // DB §9.1
 // -----------------------------------------------------------------------------------------------
 // DRAM map per channel (EX §11); byte offsets
 // -----------------------------------------------------------------------------------------------
-constexpr uint64_t REGION_OPL_OFF    = 0x0ull;         // EX §11: ch0: op lists, replay push streams, argument blocks, code overlays (was CMD)
+constexpr uint64_t REGION_OPL_OFF    = 0x0ull;         // EX §11: ch0: op lists, replay push streams, argument blocks, code overlays
 constexpr uint64_t REGION_OPL_SIZE   = 0x4000000ull;
 constexpr uint64_t REGION_IO_OFF     = 0x4000000ull;   // EX §11: ch0: host <-> device tensors; compute chunks; the TRW ring while profiling
 constexpr uint64_t REGION_IO_SIZE    = 0x10000000ull;
@@ -587,16 +587,16 @@ constexpr uint32_t CFG2_K_MAX_256_W   = 16u;
 constexpr uint32_t CAPS_VU                    = 0x00000001u;  // [0] VOP, RED, ROPE and SOP present (VU §5.10)
 constexpr uint32_t CAPS_VU_LSB                = 0u;
 constexpr uint32_t CAPS_VU_W                  = 1u;
-constexpr uint32_t CAPS_TOPK                  = 0x00000008u;  // [3] TOPK present (RTL from M8; the simulator from M6)
+constexpr uint32_t CAPS_TOPK                  = 0x00000008u;  // [3] TOPK present (the simulator; an RTL option, off in the release image)
 constexpr uint32_t CAPS_TOPK_LSB              = 3u;
 constexpr uint32_t CAPS_TOPK_W                = 1u;
 constexpr uint32_t CAPS_ATT                   = 0x00000020u;  // [5] the seven AT ops present (KVST, ATTQK, ATTPV, ASMAX, AMASK, AMERGE, ANORM)
 constexpr uint32_t CAPS_ATT_LSB               = 5u;
 constexpr uint32_t CAPS_ATT_W                 = 1u;
-constexpr uint32_t CAPS_DQROW                 = 0x00000040u;  // [6] DQROW in the SPM form (RTL from M8; the simulator from M6)
+constexpr uint32_t CAPS_DQROW                 = 0x00000040u;  // [6] DQROW in the SPM form (the simulator; an RTL option, off in the release image)
 constexpr uint32_t CAPS_DQROW_LSB             = 6u;
 constexpr uint32_t CAPS_DQROW_W               = 1u;
-constexpr uint32_t CAPS_VMASK                 = 0x00000080u;  // [7] VMASK (M9)
+constexpr uint32_t CAPS_VMASK                 = 0x00000080u;  // [7] VMASK (specified, not implemented)
 constexpr uint32_t CAPS_VMASK_LSB             = 7u;
 constexpr uint32_t CAPS_VMASK_W               = 1u;
 constexpr uint32_t CAPS_GDN                   = 0x00000100u;  // [8] GDN present (the fused Gated DeltaNet state update, VU §7.12)
@@ -1715,8 +1715,8 @@ constexpr uint32_t CRASH_NESTED_WORD   = 43u;
 constexpr uint32_t UNIT_DMA          = 0u;           // EX §7.3, CC §7.4: LD, ST, KVST
 constexpr uint32_t UNIT_QACT         = 1u;           // EX §7.3, CC §7.4: QACT
 constexpr uint32_t UNIT_MVM          = 2u;           // EX §7.3, CC §7.4, §9.4: MVM, ATTQK, ATTPV
-constexpr uint32_t UNIT_VU           = 3u;           // EX §7.3, CC §7.4, §9.4: VOP, RED, ROPE, TOPK, SOP, DQROW, ASMAX, AMASK, AMERGE, ANORM (VMASK from M9)
-constexpr uint32_t UNIT_ATT          = 4u;           // EX §7.3, CC §7.4: reserved for a future AT attention engine; absent in M6 (was CMD)
+constexpr uint32_t UNIT_VU           = 3u;           // EX §7.3, CC §7.4, §9.4: VOP, RED, ROPE, TOPK, SOP, DQROW, ASMAX, AMASK, AMERGE, ANORM (VMASK is not implemented)
+constexpr uint32_t UNIT_ATT          = 4u;           // EX §7.3, CC §7.4: reserved for a future AT attention engine; absent in M6
 constexpr uint32_t UNIT_SYNC         = 5u;           // EX §7.3, CC §7.4: NOP, FENCE, QCLEAR and every refused opcode
 constexpr uint32_t UNIT_MARKER       = 14u;          // EX §7.3, CC §7.4: software marker records (REC / TRW); never a valid dependency
 constexpr uint32_t UNIT_NONE         = 15u;          // EX §7.3, CC §7.4: no dependency
@@ -1757,7 +1757,7 @@ constexpr uint32_t OP_JUMP   = 0x08u;  // retired, unit SYNC: EX §7.2: retired,
 constexpr uint32_t OP_CALL   = 0x09u;  // retired, unit SYNC: EX §7.2: retired (never shipped), never reused
 constexpr uint32_t OP_LD     = 0x10u;  // kept, unit DMA: EX §7.2: DRAM -> SPM, encoding unchanged
 constexpr uint32_t OP_ST     = 0x11u;  // kept, unit DMA: EX §7.2: SPM -> DRAM, encoding unchanged
-constexpr uint32_t OP_DQROW  = 0x12u;  // respec, unit VU, CAPS.DQROW: EX §7.2, VU §5.6: SPM -> f32 dequantisation; simulator from M6, RTL in M8
+constexpr uint32_t OP_DQROW  = 0x12u;  // respec, unit VU, CAPS.DQROW: EX §7.2, VU §5.6: SPM -> f32 dequantisation; simulator and RTL option, not in the release image
 constexpr uint32_t OP_KVST   = 0x14u;  // new, unit DMA, CAPS.ATT: EX §7.2, AT §5.1: store K or V rows into a KV plane
 constexpr uint32_t OP_QACT   = 0x18u;  // kept, unit QACT: EX §7.2: f32 -> QA, encoding unchanged
 constexpr uint32_t OP_MVM    = 0x20u;  // kept, unit MVM: EX §7.2: matrix x activations, encoding unchanged
@@ -1766,12 +1766,12 @@ constexpr uint32_t OP_ATTPV  = 0x22u;  // new, unit MVM, CAPS.ATT: EX §7.2, AT 
 constexpr uint32_t OP_VOP    = 0x30u;  // respec, unit VU, CAPS.VU: EX §7.2, VU §5.2: element-wise vector op
 constexpr uint32_t OP_RED    = 0x31u;  // respec, unit VU, CAPS.VU: EX §7.2, VU §5.3: segmented reduction with post-ops
 constexpr uint32_t OP_ROPE   = 0x32u;  // respec, unit VU, CAPS.VU: EX §7.2, VU §5.4: rotary embedding over T tokens
-constexpr uint32_t OP_TOPK   = 0x33u;  // respec, unit VU, CAPS.TOPK: EX §7.2, VU §5.5: top-k per row; simulator from M6, RTL in M8
+constexpr uint32_t OP_TOPK   = 0x33u;  // respec, unit VU, CAPS.TOPK: EX §7.2, VU §5.5: top-k per row; simulator and RTL option, not in the release image
 constexpr uint32_t OP_ASMAX  = 0x34u;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.4: softmax numerator
 constexpr uint32_t OP_AMASK  = 0x35u;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.5: general mask path
 constexpr uint32_t OP_AMERGE = 0x36u;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.6: channel tree and online merge
 constexpr uint32_t OP_ANORM  = 0x37u;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.7: final normalisation
-constexpr uint32_t OP_VMASK  = 0x38u;  // new, unit VU, CAPS.VMASK: EX §7.2, VU §5.7: position-window mask; ILLEGAL_OP until M9
+constexpr uint32_t OP_VMASK  = 0x38u;  // new, unit VU, CAPS.VMASK: EX §7.2, VU §5.7: position-window mask; not implemented (ILLEGAL_OP)
 constexpr uint32_t OP_GDN    = 0x39u;  // new, unit VU, CAPS.GDN: EX §7.2, VU §7.12: fused Gated DeltaNet state update of one head
 constexpr uint32_t OP_SOP    = 0x40u;  // respec, unit VU, CAPS.VU: EX §7.2, VU §5.8: scalar op on s0..s15
 constexpr uint32_t OP_FENCE  = 0x7Fu;  // kept, unit SYNC: EX §7.2: SYNC barrier: completes when every op pushed before it is done

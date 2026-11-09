@@ -3,7 +3,7 @@
 # URAM, which the SPM keeps. Read before synth_design with either SRAM model: the attribute-free
 # rtl/tech/generic/tsr_sram_1r1w.sv, or the U200 target's rtl/tech/xilinx/tsr_sram_1r1w.sv, which picks
 # "ultra" for every memory of DEPTH >= 4096 and >= 256 Kib, the TCMs included, and whose attribute this
-# file overrides (measured 2026-11-01, Vivado 2024.2: a 32K x 32 memory of the Xilinx wrapper is 8 URAM
+# file overrides (measured with Vivado 2024.2: a 32K x 32 memory of the Xilinx wrapper is 8 URAM
 # without this file and 32 RAMB36, no URAM, with it). Applied in every core / kernel flow of the U200
 # target: tb/core/viv/core_ooc.tcl, tb/platform/viv/kernel_ooc.tcl and, as the IP's synthesis constraint,
 # rtl/platform/alveo_xrt/package_xo.tcl (so the v++ links get it); rtl/ctrl/viv/ctrl_ooc.tcl with sram=generic.

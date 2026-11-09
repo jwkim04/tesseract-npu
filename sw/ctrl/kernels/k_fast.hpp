@@ -1,8 +1,8 @@
 // k_fast.hpp — the fast-path toolkit of the short M7 kinds (docs/design/06-software-verification.md
-// "SW" §7.3 "Hot path" (SW-35), §7.5, §7.8; W2b infra). Kernel-private: included by the kind
+// "SW" §7.3 "Hot path" (SW-35), §7.5, §7.8). Kernel-private: included by the kind
 // sources in sw/ctrl/kernels (and by k_mulmat.hpp, whose decode fast path these pieces come from).
 //
-// The form (MUL_MAT's mulmat_t1_fast, 387 RV cycles of work per decode record; W2b's requirement
+// The form (MUL_MAT's mulmat_t1_fast, 387 RV cycles of work per decode record; the requirement
 // for every short kind: <= 350 at decode shapes, measured with fw_exec_perf's "short record"
 // scenarios (fw_exec_perf_m7 --strict) and fw_prof.h):
 //   1. read the argument words in place (args: the record in the OPL area through the line-buffered
@@ -13,7 +13,7 @@
 //      locals, without the args copy); otherwise return NOT_FAST having changed nothing, and the
 //      general path (out of line, [[gnu::cold]] / noinline) handles the record;
 //   3. the op's block from alloc_fast: the executor's one-tile block (kind_ctx::one, plan.hpp
-//      one_block_lines; W2b integration, SW-36), which a DMA-bracketed tile reuses without deps,
+//      one_block_lines, SW-36), which a DMA-bracketed tile reuses without deps,
 //      ring record or release (the DMA queue orders every reuse); too large -> NOT_FAST (GLU's rows
 //      of the larger models take a ring block instead, k_elem.hpp ew2_fast RING);
 //   4. one ISSUE_CREDIT read for the record's pushes (credits_for: per-unit fields and the
@@ -29,7 +29,7 @@
 //      generated builders spend ~3 instructions per field on checks), and no SOP.MOVI for an s
 //      register that already holds the value (sreg_movi, the launch's s-register shadow in
 //      kind_ctx: RMS_NORM's 1/n and eps, ROPE's TS / M repeat across records);
-//   9. (W2b fix) no ISSUE_W store for a word the previous push of the record staged with the same
+//   9. no ISSUE_W store for a word the previous push of the record staged with the same
 //      value, and no ISSUE_TICKET read for a ticket nothing uses (push_s below; CC §5.1); a kind whose
 //      common record differs from its general fast form keeps a straight-line hot entry for it and
 //      tail-calls the general fast form (k_norm.cpp, k_rope.cpp: one entry for every shape measured
@@ -74,7 +74,7 @@ TSR_HOT deps first_deps(deps d) {
 struct block {
     spm at;
 };
-// The one-tile block (plan.hpp one_block_lines, kind_ctx::one; W2b integration) for a tile of
+// The one-tile block (plan.hpp one_block_lines, kind_ctx::one) for a tile of
 // `lines` lines that is DMA-bracketed (plan.hpp layout comment: its first write an LD, its last read
 // a DMA op, every other op between them by deps); false (nothing changed) when it does not fit (the
 // caller's general path then uses spm_ring::alloc). No ring record, no deps: the DMA queue order
@@ -103,7 +103,7 @@ struct chk_t { static constexpr bool v = true; };
 struct nochk_t { static constexpr bool v = false; };
 template <class C> TSR_HOT ticket push(C, const op & o, deps d, uint32_t pf) { return issue_c<C::v>(o, d, pf); }
 
-// Staged-word reuse (W2b fix; CC §5.1: ISSUE_W0-W7 keep their values after a push, and a push sends
+// Staged-word reuse (CC §5.1: ISSUE_W0-W7 keep their values after a push, and a push sends
 // word i, for WMASK bit i set, from ISSUE_Wi). push_s<SKIP, TICKET> is issue_nc (the nochk_t push: the
 // caller's one credit read covered it) without the ISSUE_W stores of the words in SKIP, and without
 // the ISSUE_TICKET read unless TICKET (CC §5.1: reading it is optional; the ticket is then not
@@ -296,7 +296,7 @@ static_assert(detail::same_op(sop_movi(15u, 0x3F800000u), SOP(sop_f{SOP_SUB_MOVI
                   detail::same_op(sop_movi(0u, 0xFFFFFFFFu), SOP(sop_f{SOP_SUB_MOVI, 0u, 0u, 0u, 0xFFFFFFFFu, 0u})),
               "k_fast.hpp: sop_movi = vu.hpp SOP MOVI");
 
-// The general paths' out-of-line helpers, shared by every kernel source (W2b integration: inline
+// The general paths' out-of-line helpers, shared by every kernel source (inline
 // functions are emitted once per image (COMDAT), so the image holds one copy instead of one per
 // source, -3 KiB of ITCM): issue() with its credit wait, spm_ring::alloc (any parity), and two dep
 // pairs (both without DMA tickets) folded to <= 2 with group (SYNC NOPs when more units remain).

@@ -1,4 +1,4 @@
-// test-tsr-kvstate.cpp — ctest ggml_tesseract_kvstate (W3b P3.5; docs/design/06-software-verification.md §9.3
+// test-tsr-kvstate.cpp — ctest ggml_tesseract_kvstate (docs/design/06-software-verification.md §9.3
 // M7 "KV buffers": "set_tensor / get_tensor / memset_tensor / clear convert ... so llama.cpp's state save /
 // load keeps working"; docs/design/03-attention-kv.md §4.6 "state files are bit-identical to the CPU's"):
 // llama.cpp's own state API with the KV cache in device KV planes (M7 settings: -fa on, -ctk / -ctv q8_0,

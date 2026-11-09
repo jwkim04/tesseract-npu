@@ -2,7 +2,7 @@
 // s_i = FM(M, SIN(φ_i)) into one half of the double-buffered angle buffer, while the lanes rotate the
 // previous token.
 //
-// Owner: VU (docs/design/02-vector-unit.md "VU" §6.7 angles, §7.6 angle unit and ROPE engine).
+// Spec: docs/design/02-vector-unit.md "VU" §6.7 angles, §7.6 angle unit and ROPE engine.
 // Angles (VU §6.7): Pf = i32_to_f32(pos[t]);
 //   recurrence form: θ_0 = Pf, θ_{i+1} = FM(θ_i, TS) (one FM chain: one angle per 4 cycles); φ_i = FF ?
 //                    FD(θ_i, ff_i) : θ_i (two iterative tsr_fp_div taking angles in turn); φ_i <- FS ?

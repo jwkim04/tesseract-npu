@@ -1,7 +1,7 @@
 // tsr_xrt_axi_bridge.sv — one channel: the tsr_core memory port (docs/rtl-core.md §4) as an AXI4
 // master (Vitis m_axi kernel port, 512-bit data, 64-bit address, 4-bit ID).
 //
-// Owner: adapter agent (docs/platform-u200.md §4).
+// Spec: docs/platform-u200.md §4.
 //
 // Mapping (kernel contract):
 //   read / write request {addr, len, id}  ->  AR / AW: AxADDR = base + addr * 64, AxLEN = len - 1,
@@ -42,7 +42,7 @@
 // Events are registered one-cycle pulses.
 // Reset: 4 + 2 x CNT_RST equal copies of the channel's reset (tsr_xrt_reset rst_ch_n[c][*], same
 // stage, asserted and released in the same cycle; checked in simulation), one per part, so that
-// each reset net stays local to its logic (M3 part C timing, docs/platform-u200.md §5, §8.2: one
+// each reset net stays local to its logic (timing, docs/platform-u200.md §5, §8.2: one
 // copy for the whole bridge gave the k1 link's second-worst path, 0 levels and 3.07 ns of routing
 // to the write counters; one copy for all write counters still routed 2.96 ns out of context):
 //   rst_n         the core-side stages of the AR / AW / W slice chains

@@ -10,7 +10,7 @@
 // (const uint8_t * const *) for the read-only plane parameters.
 //
 // These are references on plain arrays: no simulator state and no encoding decode. The
-// simulator's AT unit semantics (P1.5) decode and check an op (AT §5.8) and call these functions
+// simulator's AT unit semantics decode and check an op (AT §5.8) and call these functions
 // with pointers into the SPM and the channel DRAM; the firmware's host reference (sw/ctrl/ref)
 // composes them in kernel order; the backend uses the layout and MSUM functions for KV tensors
 // (get/set_tensor, SW-17) and masks; the cocotb benches call them through libtsr_ref.so.
@@ -252,7 +252,7 @@ int tsr_msum_view(const uint32_t * words, size_t n_words, tsr_msum * out);
 // finite mask value m enter as scale·(s + m/scale) = scale·s + m, the CPU's form, up to f32
 // rounding; +-0 and -inf are unchanged by it (every mask of the supported models), and scale = 1
 // gives the exact fp16 -> f32 copy. The backend keeps one copy per distinct scale of the FA ops
-// that read the mask (W1a decision on AT §5.5).
+// that read the mask (decision on AT §5.5).
 void tsr_msum_mask_f32(const uint16_t * mask, size_t row_stride, uint32_t n_kv, uint32_t n_q, float scale,
                        float * dst);
 

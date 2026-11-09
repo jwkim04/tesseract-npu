@@ -1,12 +1,12 @@
-// exec_ref_unary.cpp — the k_fast.hpp reference short kind on the production dispatch path (W2b
-// infra; docs/design/06-software-verification.md "SW" §7.3 "Hot path", §7.8). Linked only into the test
+// exec_ref_unary.cpp — the k_fast.hpp reference short kind on the production dispatch path
+// (docs/design/06-software-verification.md "SW" §7.3 "Hot path", §7.8). Linked only into the test
 // image fw_exec_ref (sw/ctrl/tests/exec.cmake: graph.cpp, k_mulmat.cpp, zz_kind_stubs.cpp, the
-// runtime kernels and this file; no W2b kernel package), where it is tsr::kind_unary: the executor
+// runtime kernels and this file), where it is tsr::kind_unary: the executor
 // reaches it through its kind table exactly as a production M7 kind (fw_exec's test kinds pay the
 // test-kind lookup on top). fw_exec_perf_ref measures its decode record with the "short VU record"
 // harness: the floor of a 3-push short kind written with k_fast.hpp.
 //
-// Not the UNARY kind (the elem package's k_elem.cpp is): one row only (rows = 1, any n of the VOP m
+// Not the UNARY kind (k_elem.cpp's is): one row only (rows = 1, any n of the VOP m
 // field), LD src -> ring block [x | y], VOP func (TANH, GELU16, SILU, EXP, GELU) y = f(x), ST y;
 // other records are refused (BAD_RECORD). A block the fast allocation refuses takes spm_ring::alloc
 // and folds its deps (out of line).

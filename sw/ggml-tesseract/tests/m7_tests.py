@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M7 ctest drivers of sw/ggml-tesseract (docs/design/06-software-verification.md §8, §10.2, §10.4; P3.6).
+"""M7 ctest drivers of sw/ggml-tesseract (docs/design/06-software-verification.md §8, §10.2, §10.4).
 
 graph   one tiny-model graph test (ggml_tesseract_graph_qwen_tiny, _gemma_tiny, _qwen_tiny_q4k):
         1. klcheck generates on the device with the M7 settings (--phase m7: FA on, q8_0 / q8_0 KV

@@ -1,5 +1,5 @@
 // test_fw_replay_sim.c — fw_replay_sim: trace replay through the `replay` kernel of the production
-// image (docs/design/06-software-verification.md "SW" §5.4, §7.7, §10.2; EX §4.6), the route P2.5 adds to
+// image (docs/design/06-software-verification.md "SW" §5.4, §7.7, §10.2; EX §4.6), the kernel route of
 // tsr_trace2_replay_sim (sw/sim/tsr_trace.c "kernel_replay").
 //
 //   test_fw_replay_sim IMAGE TRACES_DIR [--all]
@@ -13,8 +13,7 @@
 //     results. The race detector runs in report mode and allows no report, SPM_STALE included (a
 //     replayed op reads SPM that nothing wrote since the launch's LQ_POP, SW-4): every generated
 //     set obeys the launch-stateless rule since the generator loads strided QACT sources' stride gaps
-//     (2026-10-30, SW §5.6; until then 41 traces of m2, gen and m3 read the initial SPM fill and were
-//     allowed here).
+//     (SW §5.6).
 //   Also: a synthetic stream of 3,100 records (three chunks: the kernel's own chunk LDs interleave
 //     with the replayed DMA ops, whose deps reach across chunk boundaries) generated with
 //     tsr_trace2_run_ops and replayed through the kernel under 8 schedules; and the SERIAL flag on a
@@ -63,7 +62,7 @@ static int str_cmp(const void * a, const void * b) { return strcmp(*(char * cons
 static void collect(const char * dir, strlist * out, int depth) {
     char p[4096];
     struct stat st;
-    if (snprintf(p, sizeof(p), "%s/meta.json", dir) >= (int)sizeof(p)) return;   // W2a: path too long (and -Wformat-truncation)
+    if (snprintf(p, sizeof(p), "%s/meta.json", dir) >= (int)sizeof(p)) return;   // path too long (and -Wformat-truncation)
     if (stat(p, &st) == 0) {
         sl_add(out, dir);
         return;
@@ -190,7 +189,7 @@ static void synthetic(uint32_t n_sched) {
 }
 
 // ---------------------------------------------------------------------------
-// SERIAL (SW §7.7 step 3, EX §4.6; fix W2a)
+// SERIAL (SW §7.7 step 3, EX §4.6)
 // ---------------------------------------------------------------------------
 #define SER_GROUPS   40u                  // LD x, QACT, ST q: 120 records
 #define SER_CHUNK    8u                   // records per chunk: 15 chunks, 13 own chunk LDs after base

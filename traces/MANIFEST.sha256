@@ -5,14 +5,7 @@
 #   cd traces && find <set> -type f ! -name regen.sh ! -path '*/__pycache__/*' -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum
 # The digests are those of the dev host: the generator draws some random inputs through libm
 # (normal deviates, the ROPE constants), so another libm may give different bytes.
-# A frozen reference set goes into git once the ISA is frozen for the RTL (after the M6 RTL).
-# 2026-10-30: m2, gen and m3 regenerated without SPM_STALE (every SPM line an op reads is
-# written earlier in its trace; 41 traces changed: m2 13, gen 5, m3 23); vu, at, ctrl byte-identical.
-# 2026-10-31: CTL_ID[7:0] 1 (version reset, docs/design/06-software-verification.md §6.9): every set's
-# meta.json config.ctl_id 23810 -> 23809 (1326 files); every other byte identical (each set's digest
-# with that one field normalized equals the old set's).
-# 2026-10-31: trace_stats.py removed from traces/m3: m3 is 5104 files with a new digest (no trace byte
-# changed; its old digest covered trace_stats.py).
+# A frozen reference set goes into git once the ISA is frozen for the RTL.
 # set           files  digest
 m2              1211   a1a4fa60eee1b9aed01908a4e608d95f99856c550ab416ad4abc7fbda523d7cb
 gen             557    04b1cae61cef8cac19806c560ce35b01c4f4e2cf649e7b94dd5cc32e9a66704f

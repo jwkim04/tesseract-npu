@@ -8,7 +8,7 @@
 # a push that depends on the previous one (a serial chain: sequential semantics), END is dropped,
 # init and expect are kept byte for byte. tsr-trace-replay then replays every converted trace on the
 # simulator under the fixed schedule and one random schedule — tile-only through the issue port until
-# the `replay` kernel exists (SW §7.7; P2.5 adds the kernel route with flag SERIAL) — and every one must
+# the `replay` kernel exists (SW §7.7; the kernel route has the flag SERIAL) — and every one must
 # match the original expect bit for bit. Each model's set is written to <set>.new and replaces the old set only
 # after all its replays passed. traces/model itself is never modified: it is a recorded set kept on disk
 # that this tree cannot regenerate.

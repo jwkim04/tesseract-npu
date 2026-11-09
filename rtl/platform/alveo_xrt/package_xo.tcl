@@ -44,7 +44,7 @@ file mkdir $work
 file delete -force $outdir/$kernel.xo $outdir/$kernel.sources.sha256
 
 # ---- sources: core filelist (paths relative to its directory), then the platform filelist ----
-# (nested lists, include directories, defines: rtl/filelist.tcl, W4-A)
+# (nested lists, include directories, defines: rtl/filelist.tcl)
 source $repo/rtl/filelist.tcl
 if {![file exists $corefl]} {
   puts "PKG error: core filelist $corefl not found"
@@ -112,8 +112,7 @@ set_property value 166666667 $fp2
 set_property value_resolve_type user $fp2
 
 # s_axi_control register map: the args of kernel_<k>.xml (ap_ctrl_none, docs/design EX §9.1: no
-# AP_CTRL / GIE / IER / ISR block; hw/u200/build_xclbin.sh does not package the k*
-# kernels until Y5, whose first smoke link confirms this map, fallback in EX §9.1)
+# AP_CTRL / GIE / IER / ISR block)
 set mm [ipx::add_memory_map -quiet s_axi_control $core]
 set ab [ipx::add_address_block -quiet reg0 $mm]
 set_property range 0x2000 $ab

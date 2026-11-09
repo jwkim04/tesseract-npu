@@ -6,7 +6,7 @@ set(GGML_TESSERACT_DIR ${CMAKE_CURRENT_LIST_DIR})
 
 # tsr-alloc, tsr-lower, tsr-opl, tsr-wlayout, tsr-kvbuf and tsr-msum (no ggml) are the static
 # library tsr_lower (lower.cmake), shared with the runtime sw/rt; only the ggml-dependent sources are
-# listed here. tsr-build (W3b: the M7 records of ggml nodes, supports_op M7, fusion, the graph key;
+# listed here. tsr-build (the M7 records of ggml nodes, supports_op M7, fusion, the graph key;
 # docs/design/06-software-verification.md §9.3) is ggml-aware but device-free, so the unit tests compile
 # it too (CMakeLists.txt, test-tsr-backend-units).
 set(GGML_TESSERACT_SOURCES
@@ -34,7 +34,7 @@ if (NOT TARGET tsr_lower)
                         "included by the Tesseract top-level CMakeLists.txt before llama.cpp)")
 endif()
 cmake_language(DEFER CALL target_link_libraries ggml-tesseract PRIVATE tsr_lower)
-# P3.7 (DB §4.1, §9.5): the backend is an owning process, so TSR_GDB / TSR_DEBUGGER start libtsr_dbg's embedded
+# DB §4.1, §9.5: the backend is an owning process, so TSR_GDB / TSR_DEBUGGER start libtsr_dbg's embedded
 # service (sw/tools/dbg/dbg.cmake: the OBJECT library registers it before main)
 if (TARGET tsr_dbg_embed)
     cmake_language(DEFER CALL target_sources ggml-tesseract PRIVATE $<TARGET_OBJECTS:tsr_dbg_embed>)

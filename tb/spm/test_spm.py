@@ -251,8 +251,8 @@ def test_spm_assertions(case, capfd):
         t_v, t_stop)
 
 
-# Seeds for the start-up regression: with the checks armed from time 0 (before the fix), about
-# one seed in ten stopped at 0 ns (the reviewer's 5, 11, 19, 40 among them).
+# Seeds for the start-up regression: with the checks armed from time 0, about
+# one seed in ten stopped at 0 ns (seeds 5, 11, 19, 40 among them).
 TIME0_SEEDS = list(range(1, 33)) + [40]
 
 

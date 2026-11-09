@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""prof_trw.py — tsr-prof on the sim kind (docs/design/05-debug.md "DB" §8.3, §8.6, §8.7; P3.8).
+"""prof_trw.py — tsr-prof on the sim kind (docs/design/05-debug.md "DB" §8.3, §8.6, §8.7).
 
 1. tsr-prof trw: two rounds of rt_copy (LD + ST) and rt_nop with the trace writer on, --check (the
    DB §8.7 self-checks must pass) and --stats (the DB §8.6 summary). The JSON timeline is checked:

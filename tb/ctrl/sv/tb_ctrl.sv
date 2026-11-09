@@ -1,4 +1,4 @@
-// tb_ctrl.sv — top of the tb/ctrl bench (W4 item 3, CC §15.2): tsr_ctrl (tsr_ctrl_rv +
+// tb_ctrl.sv — top of the tb/ctrl bench (CC §15.2): tsr_ctrl (tsr_ctrl_rv +
 // tsr_ctrl_cdc) with the core-domain stub tb_ctrl_core. Testbench only. In tb/ctrl/sv, not
 // tb/ctrl/hdl: rtl/lint.sh lints tb/*/hdl with rtl/filelist.f alone; rtl/ctrl/lint.sh lints it.
 //
@@ -114,11 +114,11 @@ module tb_ctrl
   logic [63:0]               mtime;
   logic [5:0]                if_count;          // Q_FIFO (tsr_csr's, not modelled by the stub)
   wire unused_if_count = &{1'b0, if_count};
-  logic                      db_req, db_we;     // DB window (W4-B): not modelled by the stub
+  logic                      db_req, db_we;     // DB window: not modelled by the stub
   logic [11:0]               db_off;
   logic [31:0]               db_wdata;
   wire unused_db = &{1'b0, db_req, db_we, db_off, db_wdata};
-  // Ibex taps for the DB block (W4-B integrate): not used by this bench
+  // Ibex taps for the DB block: not used by this bench
   logic                      tap_data_req, tap_data_gnt, tap_data_we, tap_sleep, tap_halted, tap_in_reset, tap_dfault;
   logic [31:0]               tap_data_addr, tap_cd_pc, tap_cd_npc, tap_cd_daddr, tap_cd_epc, tap_cd_eaddr;
   logic [3:0]                tap_data_be;

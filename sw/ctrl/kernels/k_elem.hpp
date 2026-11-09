@@ -11,7 +11,7 @@
 //     general path takes it for an op's only tile too; GLU's larger rows a ring block), one
 //     ISSUE_CREDIT read for the op's pushes when it covers them (kf::credits_for; else issue()'s wait
 //     per push: kpush below; ADD / MUL / GLU and SCALE's common case wait until one read covers them
-//     and reuse staged words, kf::push_s: W2b fix), the VU words by kf::vop_fast, no call. It returns
+//     and reuse staged words, kf::push_s), the VU words by kf::vop_fast, no call. It returns
 //     kf::NOT_FAST, having changed nothing, for anything else: several tiles, strided rows, a b
 //     period, one scalar for several rows, (GLU) a ring wrap or a block released by a non-DMA
 //     ticket, a record the planner refuses;
@@ -133,7 +133,7 @@ TSR_HOT void sreg_set(bool chk, kind_ctx & ctx, uint32_t i, uint32_t bits, uint3
 // instance per kind: a shared body measured ~24 RV cycles more per record); the handles are read
 // once the block is placed (before the first control-window access: the credit read invalidates the
 // SPM line buffer), and the VOP's words are vop_fast's (k_fast.hpp: the plan bounded every field).
-// RING (GLU; W2b fix): a tile larger than the one-tile block (plan.hpp ONE_BLOCK_MAX: the GLU rows of
+// RING (GLU): a tile larger than the one-tile block (plan.hpp ONE_BLOCK_MAX: the GLU rows of
 // Qwen2.5 1.5B-32B and Gemma 4 12B) takes a ring block from spm_ring::alloc_dma_first instead (the
 // block and records ew_run's alloc gives the op's only tile, nothing to wait for: NOT_FAST in every
 // other case), released after the ST, as mulmat_t1_fast; the other kinds' decode tiles fit the block.
@@ -174,7 +174,7 @@ TSR_HOT uint32_t ew2_fast(const volatile uint32_t * a, uint32_t func, uint32_t c
     const spm A = blk.at, B = A + al;
     const uint32_t ha = a[W::A], hb = a[W::B], hd = a[W::DST];
     const uint32_t pf = ctx.push_flags;
-    // One ISSUE_CREDIT read covering the four pushes (W2b fix: wait until it does, as k_norm.cpp's
+    // One ISSUE_CREDIT read covering the four pushes (wait until it does, as k_norm.cpp's
     // wait_credits; it waits only while the RISC-V is ahead of the units, and pushes the same ops as
     // issue()'s per-push wait), then the nochk_t pushes with the staged words reused (kf::push_s): the
     // ST's SPM line is the VOP's d (w1 = A); no ISSUE_TICKET read for the a LD.

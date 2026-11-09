@@ -32,7 +32,7 @@ foreach a [lrange $argv 2 end] {
 set_param general.maxThreads 4
 file mkdir $out
 
-# core filelist (nested lists, include directories, defines: rtl/filelist.tcl, W4-A), then the
+# core filelist (nested lists, include directories, defines: rtl/filelist.tcl), then the
 # platform filelist
 source $repo/rtl/filelist.tcl
 set fld [tsr_read_filelist $corefl]

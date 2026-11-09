@@ -1,7 +1,7 @@
 // tsr_mvm_cluster.sv — one MVM cluster (spec MVM cluster microarchitecture: the MVM engine of one channel): front end,
 // activation buffer, back end, and the glue between them and the broadcast / result pipes.
 //
-// Owner: top agent (docs/rtl-mvm.md §2 block (top); contract §3.1, §3.2, §3.5, §6.2).
+// Spec: docs/rtl-mvm.md §2 block (top); contract §3.1, §3.2, §3.5, §6.2.
 //
 // Contract:
 //   - broadcast input (after tsr_mvm's pipe, no backpressure, docs/rtl-mvm.md §3.1): per MVM with
@@ -25,10 +25,10 @@
 // Placement: one cluster per channel, in the SLR of that channel's DDR controller (spec Placement);
 //   only the broadcast pipe, the result pipe and the memory port leave it.
 //
-// Interface addition (additive, top agent): parameter WS_RD_LAT (weight FIFO RAM read latency,
+// Interface addition (additive): parameter WS_RD_LAT (weight FIFO RAM read latency,
 //   docs/rtl-mvm.md §1, default TSR_DEF_WS_RD_LAT) is passed to tsr_mvm_front.
 //
-// Attention (W4-B at; AT §4.2, §5.2, §5.3, §8.1, §8.2; parameter HAS_ATT). An attention op arrives as
+// Attention (AT §4.2, §5.2, §5.3, §8.1, §8.2; parameter HAS_ATT). An attention op arrives as
 //   bc_acmd (tsr_att_ccmd_t on the broadcast pipe) followed by its lines:
 //   - geometry: the op's groups u in [u0, u0 + n) with u mod C = CH are local groups lambda = 0 ..
 //     ng - 1 of this channel, local index l_first + lambda (l_first = u0 / C or + 1, ng from
@@ -81,7 +81,7 @@
 //   Cost (RTL structure): ~1.1 K FF (527 activation-buffer write register, ~400 setup) and the
 //   32 x 16 product (2 DSP48E2 expected) besides the front end, activation buffer and back end;
 //   attention: ~1.5 K FF of setup / slot tables, tsr_mvm_aqk, tsr_mvm_pv.
-//   Measured (Vivado 2024.2 OOC synthesis, xcu200, 300 MHz, CH 0 of 4, T_MAX 8, MAC_LAT 9, W4-B at):
+//   Measured (Vivado 2024.2 OOC synthesis, xcu200, 300 MHz, CH 0 of 4, T_MAX 8, MAC_LAT 9):
 //   HAS_ATT 0: 67.8 K LUT, 65.2 K FF, 674 DSP, 200 RAMB36, 0.6 K LUTRAM; HAS_ATT 1: 103.1 K LUT
 //   (+35.3 K), 92.7 K FF (+27.4 K), 713 DSP (+39), 220 RAMB36 + 16 RAMB18, 4.3 K LUTRAM: tsr_mvm_pv
 //   21.3 K LUT / 24.6 K FF (capture bank 19.5 K FF), tsr_mvm_aqk 2.3 K LUT, activation buffer +3.3 K
@@ -168,7 +168,7 @@ module tsr_mvm_cluster
   // register stage early and the cluster registers the last stage itself, in copies: one per
   // token of the back end (accumulators and their control), one for the front end and one for the
   // rest. A single last-stage register per cluster drove about 700 pins over a whole SLR (k4min
-  // link, 2026-11-06: -0.98 ns, 16 K failing endpoints, nets up to 2.8 ns). The copies are `keep`
+  // link: -0.98 ns, 16 K failing endpoints, nets up to 2.8 ns). The copies are `keep`
   // registers like every reset copy (not merged by the tools) and start at 0 like rc_q in
   // tsr_mvm, so each reset is cycle-identical to the single stage. RST_COPY = 0: rst_n everywhere.
   // -------------------------------------------------------------------------------------------
@@ -222,7 +222,7 @@ module tsr_mvm_cluster
       else if (aw_v_q && aw_q.last)      act_ready_q <= 1'b1;
     end
   end
-  // aw_q loads every cycle (no clock enable on 527 flops, M3 part C timing): every use is
+  // aw_q loads every cycle (no clock enable on 527 flops, timing): every use is
   // qualified by aw_v_q (actbuf write enables, `last`), so only lines with valid matter.
   always_ff @(posedge clk) begin
     aw_q    <= pv_local ? pv_line : at_pv_q ? att_line : bc_line;

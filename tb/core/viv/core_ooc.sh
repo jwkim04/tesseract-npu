@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # tb/core/viv/core_ooc.sh — whole-core out-of-context Vivado runs of the U200 configurations
 # (tb/core/viv/core_ooc.tcl; results: docs/rtl-mvm.md §14). Opt-in, needs Vivado 2024.2.
-# tsr_core has its command source since W4-A (the control core and the issue path), and the VU, the
-# attention modes and the DB block since W4-B: synthesis keeps every unit. The VU's lane knobs are
+# tsr_core has its command source (the control core and the issue path), the VU, the
+# attention modes and the DB block: synthesis keeps every unit. The VU's lane knobs are
 # NAME=VALUE arguments (k1: VU_EXP_LANES=8 VU_BACK_LANES=4, the shrink knobs of its bitstream; k4 / k4t1: physical front / EXP / back 8 / 8 / 4 with
 # VU_LANE_PIPE=2, four balanced lanes per outer SLR behind two register stages on each side.
 # K4 presets also enable DDR0/3 local arbitration with central DMA boundaries and paired gather
 # (DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1; floorplan C'', core_slr.tcl); the k4 preset adds the two-flit gather and the
 # RV transport, the packaged tsr_u200_k4.
 # A synthesis of the whole core also checks what the block-level runs cannot: a register written from two
-# blocks anywhere in the integration (Synth 8-6858 / 8-6859, found in tsr_dma_kvst this way, W4-B).
+# blocks anywhere in the integration (Synth 8-6858 / 8-6859, found in tsr_dma_kvst this way).
 #
 # usage: tb/core/viv/core_ooc.sh <config> <outdir> [core_ooc.tcl args ...]
 #   config  k1    NUM_CH 1, T_MAX 1, VU 8 / 4 lanes, no lane pipe   (bring-up kernel tsr_u200_k1)
@@ -17,10 +17,10 @@
 #           k4    NUM_CH 4, T_MAX 4, VU 8 / 8 / 4 lanes, VU_LANE_PIPE 2, paired two-flit gather, DDR0 / DDR3 boundaries,
 #                 RV_LOCAL_TRANSPORT 1, XSLR_REG 1, FAST_CLK 1, attention, trace writer and history: the kernel tsr_u200_k4 of
 #                 rtl/platform/alveo_xrt/gen_tops.py, the full-feature card image (docs/platform-u200.md §8.8, §8.10)
-#           k4base the same without FAST_CLK: the 200 MHz images of the fourth link and before
+#           k4base the same without FAST_CLK: the 200 MHz images
 #           k4min NUM_CH 4, T_MAX 8, no vector unit, no attention (HAS_VU 0, HAS_ATT 0: no KVST, ATTQK, ATTPV),
-#                 no DB trace writer or history (HAS_TRW 0, HIST_DEPTH 0), RV_LOCAL_TRANSPORT 1: the reduced first card
-#                 image (branch k4m200, docs/platform-u200.md §8.7)
+#                 no DB trace writer or history (HAS_TRW 0, HIST_DEPTH 0), RV_LOCAL_TRANSPORT 1: the reduced card
+#                 image (docs/platform-u200.md §8.7)
 #   Every config: rtl/filelist_xilinx.f, SPM 4 MiB with SPM_RD_LAT 4, MVM_BC_PIPE 2,
 #   MVM_RES_PIPE 2, MVM_MAC_LAT 9 (a register after every adder level of the DSP-packed MAC
 #   lane), RST_PIPE 3 (reset copies per block), CH_BYTES 16 GiB, the other parameters at the

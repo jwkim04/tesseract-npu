@@ -14,7 +14,7 @@
 //   the y row holds N words and a zero tail up to ceil(N/16) lines (the ST writes whole lines).
 // Rows: x_t at handle X + t * x_stride lines, y_t at Y + t * y_stride, addend_t at A + t * a_stride
 // (a_stride 0: row 0 for every token); weights at W_OFF in the symmetric layout (tsr_row_location).
-// A record that sets both an addend and ACC_DST is rejected (the kernel's decision P2.5: the y block
+// A record that sets both an addend and ACC_DST is rejected (the kernel's decision: the y block
 // can hold only one old row; RET BAD_RECORD), as is everything tsr::plan::mm_plan rejects.
 // The reference reads every input row of token t before it writes y_t, tokens in order: the kernel
 // reads tile t+1's rows before it stores tile t, so the two agree whenever no x / addend row of a

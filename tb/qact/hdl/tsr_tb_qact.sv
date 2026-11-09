@@ -3,7 +3,7 @@
 // traffic, readback), client TSR_SPM_CL_MVM tied off — the same SPM port plan as tsr_core.
 // Testbench traffic takes the read / write grants away from QACT in the middle of an instruction
 // (ready low, grant handovers; tsr_spm arbitrates round robin per bank port, CC §10.2). Both
-// clients reach their bank ports through tsr_spm_cport, as in tsr_core (W4-A spm).
+// clients reach their bank ports through tsr_spm_cport, as in tsr_core.
 
 module tsr_tb_qact
   import tsr_pkg::*;

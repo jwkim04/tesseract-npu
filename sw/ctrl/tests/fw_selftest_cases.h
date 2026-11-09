@@ -1,6 +1,6 @@
 // fw_selftest_cases.h — the `selftest` ids of SW §7.6 as host-side cases (data set-up, launch, every
 // output checked against tsr_ref / tsr_ref_vu / tsr_ref_at): factored out of test_fw_selftest_sim.c
-// (P2.5) by the W2a integration so that fw_m6_e2e (test_fw_m6_e2e.cpp) runs the same cases in its
+// so that fw_m6_e2e (test_fw_m6_e2e.cpp) runs the same cases in its
 // sessions. Plain C, also valid C++. The includer provides test_sim_obs.h (CHECK, rng, put_weights)
 // first; a session is one booted image (fw_sim_host.hpp) with `idx` = the selftest kernel's index.
 //   st_run_ids   ids 1-11 (id 2 twice; id 11 with CAPS.GDN) and the misuses, in fw_selftest_sim's order

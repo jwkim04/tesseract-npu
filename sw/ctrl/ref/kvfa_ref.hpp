@@ -1,15 +1,15 @@
 // kvfa_ref.hpp — host C++ references of the firmware's SET_ROWS_KV and FLASH_ATTN kinds (docs/design/
 // 06-software-verification.md "SW" §7.5 last paragraph; docs/design/03-attention-kv.md "AT" §5.1, §6.6,
-// §13.1; W2b P2.7): they compose the tsr_ref calls the kernels' tile ops execute, in the kernels'
+// §13.1): they compose the tsr_ref calls the kernels' tile ops execute, in the kernels'
 // order, from an OPL record's argument words, so the kernel tests compare the firmware against them
-// bit for bit. sw/ctrl/ref/kv_ref.cpp and fattn_ref.cpp; the backend's tests (W3b) can use them too.
+// bit for bit. sw/ctrl/ref/kv_ref.cpp and fattn_ref.cpp; the backend's tests can use them too.
 //
 // SET_ROWS_KV (sw/ctrl/kernels/k_kv.cpp): for each row i in order, x = the f32 row at SRC + i·SRC
 // stride lines (E values), qa = tsr_qact(A32, x, E), tsr_ref_kvst(which, {E, C, LG}, plane, idx[i],
 // 1, qa) (the kernel's runs of consecutive cells, QACT grouping and KVST n_rows place the same
 // bytes; a cell written twice keeps the later row, as the DMA unit's queue order).
 //
-// FLASH_ATTN (sw/ctrl/kernels/k_fattn.cpp): tsr_ref_fa (the normative sequence of AT §6.6, W1a's
+// FLASH_ATTN (sw/ctrl/kernels/k_fattn.cpp): tsr_ref_fa (the normative sequence of AT §6.6, the
 // head-subsets-inside-chunks order and the chunk planner sw/sim/include/tsr_fa_plan.h) with the
 // record's inputs: T = n_tokens, D, G, scale = word 14's bits; q rows (n_head·D f32 each) at Q +
 // t·q token stride lines; the K / V planes of the record; the MSUM of the preload area; the f32
@@ -19,7 +19,7 @@
 // The chunk planner is shared, not independent: tsr_ref_fa and k_fattn.cpp compile the same
 // tsr_fa_plan.h, so the bit-exact FA tests (fw_kvfa_rv_*, fw_kvfa_host, fw_m7_layer_*) cannot see a
 // planner error (a chunk bound or new-cell rule off by one gives the same wrong result on both
-// sides). Its independent checks are fw_kvfa_plan (W1a's frozen planner as the oracle, AT §6.6 rules
+// sides). Its independent checks are fw_kvfa_plan (a frozen copy of the original planner as the oracle, AT §6.6 rules
 // 1-8) and fw_kvfa_kl (ggml-cpu's flash_attn_ext, LLAMA builds, gates near the numerical floor).
 //
 // Memory: the record's DRAM rows are read from / written to a dram_view (mulmat_ref.hpp); the planes

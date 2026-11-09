@@ -1,7 +1,7 @@
 // tsr_mac_lane.sv — generic (vendor-neutral) MAC lane group: N signed 8-bit products summed,
 // for T tokens that share the weights. Technology wrapper (spec System structure: tsr_mac_lane).
 //
-// Owner: back agent (docs/rtl-mvm.md §2 block (back), contract §7.2).
+// Spec: docs/rtl-mvm.md §2 block (back), contract §7.2.
 //
 // Contract:
 //   y[t] = sum_{i < N} sext(w[i]) * sext(x[t][i])   (exact, two's complement, SUM_W bits)
@@ -18,7 +18,7 @@
 // Implementation freedom (this is the reason it is a tech wrapper, spec MVM cluster
 //   microarchitecture "DSP packing"): generic = products + pipelined adder tree, LAT chosen so that
 //   each stage is <= ~6 LUT levels at 300 MHz (product register, then about two adder levels per
-//   stage). rtl/tech/xilinx (M4) may use DSP48E2 cascades (one DSP per product at T = 1) and pack
+//   stage). rtl/tech/xilinx may use DSP48E2 cascades (one DSP per product at T = 1) and pack
 //   two tokens per DSP for T >= 2 (same weight, two activations); the ports and the latency
 //   parameter stay the same.
 //
@@ -41,7 +41,7 @@
 // is forced; Vivado may map the products to DSP48E2 on its own: the product register is then
 // MREG), registers at LAT 3: T x (N x 16 products + 8 x 18 level-2 sums + SUM_W) bits + valids.
 //
-// PV mode (parameter PV = 1; W4-B at, AT §8.2 ATTPV): with pv_en = 1 each of the NS = ceil(T / 2)
+// PV mode (parameter PV = 1, AT §8.2 ATTPV): with pv_en = 1 each of the NS = ceil(T / 2)
 // slots s of lane i accumulates exact products of a 25-bit signed weight pv_a[s] (shared by the N
 // lanes) and the lane's signed byte w[i]:
 //   pv_acc[s][i] = (pv_first ? 0 : pv_acc[s][i]) + sext(pv_a[s]) * sext(w[i])   for every pv_valid

@@ -7,7 +7,7 @@
 // interface in sw/sim/tsr_sim_int.h), the dispatcher with the checker, the six unit queues with
 // tickets, dependencies, SYNC, errors and poisoning (tsr_q.c, EX §7-§8, CC §7-§9), the units with
 // their checks and cycle models, per-channel beat counters and access capture. Every numeric
-// result comes from tsr_ref.h. The RISC-V itself (tsr_rv, P1.7) plugs in as the time base's agent
+// result comes from tsr_ref.h. The RISC-V itself (tsr_rv) plugs in as the time base's agent
 // (tsr_sim_int.h); VU and AT ops plug in through the per-opcode handler table.
 //
 // Ops: NOP, LD, ST, QACT, MVM, FENCE (EX §7.2) here; VU / AT opcodes when their handlers are linked.
@@ -53,10 +53,10 @@ uint32_t tsr_sim_caps_implemented(void);
 //                                link: 8 / 8 / 4 lanes behind two lane-pipe stages) or "F,E,B,P" (front lanes 8 | 16,
 //                                EXP lanes 8 | 16, back lanes 4 | 8, lane-pipe stages 0 .. 3). Timing only; CFG3 reports
 //                                the EXP and back lane counts as the RTL does
-//   race       TSR_SIM_RACE      off | report | fatal = 0 | 1 | 2 (needs the race detector, P1.9)
+//   race       TSR_SIM_RACE      off | report | fatal = 0 | 1 | 2 (needs the race detector)
 //   log        TSR_SIM_LOG       stderr | <file>, optionally prefixed "rv," for RV retire lines and "w," for the
 //                                words of every push
-//   trace_dir  TSR_TRACE         one trace per launch under the directory (P1.10)
+//   trace_dir  TSR_TRACE         one trace per launch under the directory
 // A value that does not parse makes tsr_sim_create_opts fail (message on stderr).
 typedef struct tsr_sim_opts {
     const char *    dram_dir;     // file-backed DRAM (see tsr_sim_create); NULL: anonymous memory
@@ -124,7 +124,7 @@ uint64_t  tsr_sim_dram_limit_beats(const tsr_sim * sim);
 uint32_t tsr_sim_csr_read(tsr_sim * sim, uint32_t off);
 void     tsr_sim_csr_write(tsr_sim * sim, uint32_t off, uint32_t val);
 
-// P3.1 (transport, additive): the platform's error input plat_err_i (EX §9.3), a level; STATUS.PLAT_ERR
+// The platform's error input plat_err_i (EX §9.3), a level; STATUS.PLAT_ERR
 // (EX §5.3) and the RISC-V's LQ_FLAGS.PLAT_ERR (EX §4.5, read by the runtime's R7) follow it. 0 after
 // create; the mock adapter model (sw/transport/tsr_kdev_mock.cpp) drives it from ADAPTER_STATUS.
 void     tsr_sim_set_plat_err(tsr_sim * sim, int level);

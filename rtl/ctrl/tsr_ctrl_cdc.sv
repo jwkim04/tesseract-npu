@@ -2,7 +2,7 @@
 // (CC §11.2; docs/ctrl-riscv.md §7.1-§7.2). One side of each structure faces tsr_ctrl_rv (clk_rv),
 // the other the core datapath (tsr_core_dp: tsr_issue, tsr_csr, tsr_spm_bridge).
 //
-// Owner: ctrl agent (W4 item 3; CC §2.2 `tsr_ctrl_cdc`).
+// Spec: CC §2.2 `tsr_ctrl_cdc`.
 //
 // Crossings (direction, structure, CC §11.2):
 //   issue FIFO          RV -> core  tsr_cdc_fifo, 32 x 387 b (CC §7.2 layout), gray pointers
@@ -226,7 +226,7 @@ module tsr_ctrl_cdc
     .rclk(clk), .rrst_n(rst_n), .rd_valid(if_valid_o), .rd_data(if_data_o), .rd_ready(if_ready_i),
     .rd_count(if_cnt)
   );
-  // Q_FIFO (EX §5.4) is 6 bits wide at tsr_csr; a deeper FIFO saturates there (W4-A integrate).
+  // Q_FIFO (EX §5.4) is 6 bits wide at tsr_csr; a deeper FIFO saturates there.
   assign if_count_o = (32'(if_cnt) > 32'd63) ? 6'd63 : 6'(if_cnt);
 
   logic log_wr_empty;

@@ -1,4 +1,4 @@
-"""Helpers of the tb/core bench (W4-A): the firmware build, the scenario (DRAM contents, the firmware's
+"""Helpers of the tb/core bench: the firmware build, the scenario (DRAM contents, the firmware's
 arguments, the regions to compare), the host CSR sequence (EX §3 image load with VERIFY, boot, the
 wait for the runtime's DONE, the final register snapshot) and its execution on the simulator
 (libtsr_sim.so through tb/issue/issue_sim.py: the built-in hart runs the same image).
@@ -37,9 +37,9 @@ CTRL_FW = TB / "ctrl" / "fw"
 RT_DONE = 0xD0E
 
 # The bench configuration: a reduced core (2 channels, 256 KiB SPM) with the MVM, the VU and attention
-# (W4-B): CAPS VU | ATT (TOPK and DQROW are M8 RTL and stay off), the U200 queue depths (VU 16, unit 4
+# CAPS VU | ATT (TOPK and DQROW are RTL options and stay off), the U200 queue depths (VU 16, unit 4
 # reserved).
-# TB_CORE_NOVU=1: the core of the reduced first card image (HAS_VU 0, HAS_ATT 0): CAPS 0, no VU queue.
+# TB_CORE_NOVU=1: the core of the reduced card image (HAS_VU 0, HAS_ATT 0): CAPS 0, no VU queue.
 NOVU = os.environ.get("TB_CORE_NOVU", "0") == "1"
 GDN = os.environ.get("TB_CORE_GDN", "0") == "1"          # the core has the GDN op (HAS_GDN 1: CAPS bit 8)
 CAPS_U200 = 0x00 if NOVU else 0x21 | (0x100 if GDN else 0)
@@ -277,14 +277,14 @@ def run_sim(sc: dict, elf: Path, max_cycles: int = 50_000_000) -> dict:
 
 
 # ---------------------------------------------------------------------------------------------
-# M7 layer scenario (W4-B): the production image (build/dev/fw/tsr-fw.elf) runs an op list of the M7 kinds
+# M7 layer scenario: the production image (build/dev/fw/tsr-fw.elf) runs an op list of the M7 kinds
 # (RMS_NORM, MUL_MAT, ROPE, SET_ROWS_KV, FLASH_ATTN, GLU) through the graph kernel on the RTL core; the
 # reference is the simulator's run of the same launch, dumped by sw/ctrl/tests/test_fw_m7_layer.cpp
 # (mode `dump`, the `tiny` group: a decoder layer of 128 / 2 heads of 64 / 1 KV head / n_ff 256 on a 2-channel
 # device with T_MAX 2 and 1 MiB of SPM, CAPS VU | ATT).
 # ---------------------------------------------------------------------------------------------
 M7_CASES = ("tiny-decode", "tiny-prefill")
-# M6 scenario of the reduced first card image (tsr_u200_k4): the same image and launch path, an op list of MUL_MAT
+# M6 scenario of the reduced card image (tsr_u200_k4): the same image and launch path, an op list of MUL_MAT
 # records only (the layer's seven projections) on a 4-channel T_MAX 8 core with CAPS 0 and no VU queue, no trace writer
 # and no history, so the scenario has no DB lines (build_mm in test_fw_m7_layer.cpp).
 M6_CASES = ("k4min-mm-decode", "k4min-mm-prefill")
@@ -335,7 +335,7 @@ def parse_m7(d: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------------------------
-# DB block at core level (W4-B): the fw_core program with the DBG block configured through the host port.
+# DB block at core level: the fw_core program with the DBG block configured through the host port.
 # One host program (db_prog) runs unchanged on the simulator (SimHost) and on the RTL (test_core.py's Host),
 # so every observation has the same definition on both sides.
 # ---------------------------------------------------------------------------------------------

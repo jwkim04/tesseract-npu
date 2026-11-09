@@ -1,7 +1,7 @@
 // tsr_xc_pkg.sv — shared types and rules of the external checker classes on tsr_chk's xc_* port
 // (docs/design/04-control-core.md "CC" §8.2, §16: "opcodes from VU / AT plug in as classes").
 //
-// Owner: VU (W4-B task "vu"); the AT branch is the AT builder's. Both classes follow this contract,
+// the AT branch is the AT class's. Both classes follow this contract,
 // and the integrator (tsr_core_dp) joins them on tsr_chk's single xc port.
 //
 // Split of the external opcodes (EX §7.2; tsr_tables_pkg TSR_OP_*), by the unit that runs them:

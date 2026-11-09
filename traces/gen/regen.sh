@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# traces/gen/regen.sh [BUILD_DIR] — the M1 generator's LD -> QACT -> MVM (-> MVM ACC) -> ST programs
+# traces/gen/regen.sh [BUILD_DIR] — the generator's gen programs, LD -> QACT -> MVM (-> MVM ACC) -> ST programs
 # as `ops` traces (docs/design/06-software-verification.md §5.6): tsr-trace-gen --ops gen with
 # fixed seeds and configurations (the tsr-traces target of sw/tools/CMakeLists.txt), then
 # every trace replayed under the fixed and two random schedules (race detector fatal),
@@ -8,8 +8,8 @@
 #   tmax1/  24 traces, U200 config (4 ch, T_MAX 1, 4 MiB SPM, 16 GiB/ch, CAPS 0), ~15% error injections
 #   tmax8/   8 traces, U200 config with T_MAX 8
 # Groups are interleaved, so the DMA, QACT and MVM queues run concurrently with deps between them.
-# Every SPM line an op reads is written earlier in its trace (2026-10-30: a strided QACT source loaded per
-# token also gets its stride gaps loaded; 5 traces changed, none read the power-on SPM fill).
+# Every SPM line an op reads is written earlier in its trace (a strided QACT source loaded per
+# token also gets its stride gaps loaded, so no trace reads the power-on SPM fill).
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)

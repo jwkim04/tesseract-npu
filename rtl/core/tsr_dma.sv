@@ -1,6 +1,6 @@
 // tsr_dma.sv — LD / ST engine: moves lines between the SPM and one DRAM channel.
 //
-// Owner: DMA agent (docs/rtl-core.md §2, block (b); dispatch §3.2; memory port rules §4).
+// Spec: docs/rtl-core.md §2, block (b); dispatch §3.2; memory port rules §4.
 //
 // Dispatch: cmd_valid/cmd_ready accept one tsr_dma_cmd_t (cmd_ready = idle). Operands are legal
 //   (the dispatch checks them; n_lines >= 1). `done` pulses one cycle when the instruction's effects
@@ -71,7 +71,7 @@
 //   - Simulation-only checks (`ifndef SYNTHESIS): command legality, read id/last consistency
 //     with the D1 split, responses only on the active channel, queue overflow, the reservation
 //     (queue entries + LD beats in flight <= QD), write responses.
-// KVST (W4-B at; AT §5.1, §8.3; parameter HAS_KVST): a command with cmd_xc = 1 carries the
+// KVST (AT §5.1, §8.3; parameter HAS_KVST): a command with cmd_xc = 1 carries the
 //   tsr_att_pkg::tsr_kvst_cmd_t payload in xcmd and runs on the KVST engine (tsr_dma_kvst.sv); the
 //   LD / ST engine stays idle meanwhile (one command at a time, cmd_ready = both idle). While the
 //   engine runs (kv_act_q, a flop) it drives the write source ports of the channels its
@@ -88,7 +88,7 @@ module tsr_dma
   parameter  int unsigned SPM_BYTES   = TSR_DEF_SPM_BYTES,
   parameter  int unsigned SPM_RD_LAT  = TSR_DEF_SPM_RD_LAT,
   parameter  int unsigned LDQ_BEATS   = 512,     // beat queue entries (power of two >= 64, CC-13)
-  parameter  bit          HAS_KVST    = 1'b0,    // KVST engine (AT §8.3; W4-B at)
+  parameter  bit          HAS_KVST    = 1'b0,    // KVST engine (AT §8.3)
   parameter  bit          FAST_CLK    = 1'b0,    // the cycle-changing stages of the 250 MHz clock (KVST placer; tsr_core FAST_CLK)
   parameter  int unsigned XC_CMD_W    = 256,     // external-class payload width (tsr_issue)
   localparam int unsigned SPM_LINES   = SPM_BYTES / TSR_LINE_BYTES,

@@ -1,5 +1,5 @@
-/* sw/ctrl/rt/link.ld — linker script of the Tesseract firmware image (SW §6.2, EX §3.1, CC §4.1;
- * P2.1). Used for tsr-fw.elf and every test image (sw/ctrl/CMakeLists.txt).
+/* sw/ctrl/rt/link.ld — linker script of the Tesseract firmware image (SW §6.2, EX §3.1, CC §4.1).
+ * Used for tsr-fw.elf and every test image (sw/ctrl/CMakeLists.txt).
  *
  * Memory map (CC §4.1): ITCM at 0x0000_0000, DTCM at 0x0010_0000. Their sizes are the build's
  * ITCM_BYTES / DTCM_BYTES (what RV_CFG reports; U200: 128 KiB / 64 KiB), passed by the build as

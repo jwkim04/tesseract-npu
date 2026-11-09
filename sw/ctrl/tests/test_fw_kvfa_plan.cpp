@@ -1,11 +1,11 @@
-// test_fw_kvfa_plan.cpp — fw_kvfa_plan: the shared FA chunk planner (sw/sim/include/tsr_fa_plan.h,
-// W2b P2.7) against W1a's planner, kept below verbatim as the oracle (tsr_ref_at.c as of a54a6e6,
-// unchanged up to 7dc1453: tsr_fa_pass_rule, tsr_fa_ncg, plan_cuts, plan_sub_emit, tsr_fa_plan;
+// test_fw_kvfa_plan.cpp — fw_kvfa_plan: the shared FA chunk planner (sw/sim/include/tsr_fa_plan.h)
+// against the original planner, kept below verbatim as the oracle (the original tsr_ref_at.c code:
+// tsr_fa_pass_rule, tsr_fa_ncg, plan_cuts, plan_sub_emit, tsr_fa_plan;
 // only xmalloc / free became std::vector and the names got the w1a_ prefix).
 //
 // The chunk list is part of FLASH_ATTN's numerical contract (AT §6.6, SW §7.5): the firmware's
-// kernel (k_fattn.cpp) and the reference (tsr_ref_fa) both take it from tsr_fa_plan.h now, so this
-// test pins that the move changed no list. It compares, for random and adversarial mask summaries
+// kernel (k_fattn.cpp) and the reference (tsr_ref_fa) both take it from tsr_fa_plan.h, so this
+// test pins that the shared planner gives the original lists. It compares, for random and adversarial mask summaries
 // (causal / sliding-window tiles whose bound spreads straddle chunk cuts, tiny windows with both
 // spreads next to each other, small NCG, two runs, holes, GENERAL, empty and malformed rows, up to
 // 3 runs of new cells), configurations (C 1..16, T_MAX 1..8, PCAP down to one segment) and query
@@ -30,7 +30,7 @@ extern "C" {
 namespace {
 
 // =================================================================================================
-// W1a's planner (the oracle), verbatim but for the names and the cut array.
+// The original planner (the oracle), verbatim but for the names and the cut array.
 // =================================================================================================
 void w1a_tsr_fa_pass_rule(const tsr_att_cfg * cfg, uint32_t G, uint32_t * GS, uint32_t * T_q) {
     const uint32_t gs = G < cfg->t_max ? G : cfg->t_max;
@@ -377,7 +377,7 @@ void one(const pcase & c, const char * fam) {
     std::vector<tsr_fa_chunk> a(4096), b(4096);
     const long ra = w1a_tsr_fa_plan(&c.cfg, c.E, c.D, &ms, 0, c.T, nr, c.n_new, a.data(), a.size());
     const long rb = tsr_fa_plan(&c.cfg, c.E, c.D, &ms, 0, c.T, nr, c.n_new, b.data(), b.size());
-    CHECK(ra == rb, "%s: return %ld (W1a) vs %ld (shared): C %u t_max %u pcap %u E %u D %u n_kv %u T %u", fam, ra, rb,
+    CHECK(ra == rb, "%s: return %ld vs %ld (shared): C %u t_max %u pcap %u E %u D %u n_kv %u T %u", fam, ra, rb,
           c.cfg.C, c.cfg.t_max, c.cfg.pcap, c.E, c.D, c.n_kv, c.T);
     if (ra < 0) g_err[-ra]++;
     if (ra == rb && ra > 0) {
@@ -411,14 +411,14 @@ void one(const pcase & c, const char * fam) {
         }
         if (rw == 0) rw = long(w.size());
     }
-    CHECK(rw == ra, "%s: shared walk %ld vs W1a %ld", fam, rw, ra);
+    CHECK(rw == ra, "%s: shared walk %ld vs original %ld", fam, rw, ra);
     if (rw == ra && ra > 0) CHECK(same_chunks(a, w, size_t(ra) < a.size() ? size_t(ra) : a.size()), "%s: walk differs", fam);
     // tsr_fap_list (the firmware's one-generation list): the same list, and the count past its cap.
     if (ri == 0) {
         new_ctx nc{nr, c.n_new};
         std::vector<tsr_fap_chunk> l(4096);
         const long rl = tsr_fap_list(&t, has_new_cb, &nc, l.data(), uint32_t(l.size()));
-        CHECK(rl == ra, "%s: tsr_fap_list %ld vs W1a %ld", fam, rl, ra);
+        CHECK(rl == ra, "%s: tsr_fap_list %ld vs original %ld", fam, rl, ra);
         if (rl == ra && ra > 0) {
             std::vector<tsr_fa_chunk> lc(static_cast<size_t>(ra));
             for (long i = 0; i < ra; ++i)

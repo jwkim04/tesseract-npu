@@ -1,7 +1,7 @@
 // zz_kind_stubs.cpp — weak default definitions of the M7 kind handlers (tsr/exec.hpp kind_add ...
-// kind_unary; docs/design/06-software-verification.md "SW" §7.2, §7.3; W2b infra). Each one refuses its
+// kind_unary; docs/design/06-software-verification.md "SW" §7.2, §7.3). Each one refuses its
 // record (ctx.ret = BAD_RECORD, no push: "this kind is not in the image"), so the executor's kind
-// table can name every M7 handler while a kernel package has not landed, and an image built without
+// table can name every M7 handler, and an image built without
 // a kind's source still links and answers BAD_RECORD for its records (SW §7.3 return codes).
 //
 // A kernel source defines the handler strongly (tsr::kind_<name> with the kind_fn signature), which
@@ -45,7 +45,7 @@ TSR_KIND_STUB(kind_ssm_conv)
 TSR_KIND_STUB(kind_gated_delta_net)
 #undef TSR_KIND_STUB
 
-// The fast-path entries (exec.hpp kind_<name>_fast; W2b integration): weakly "not taken", so the
+// The fast-path entries (exec.hpp kind_<name>_fast): weakly "not taken", so the
 // executor falls back to the kind's handler (the stub above when the kind is missing too).
 #define TSR_FAST_STUB(name)                                                                                 \
     [[gnu::weak]] uint32_t name(const volatile uint32_t *, uint32_t, deps, kind_ctx &) { return KIND_NOT_FAST; }

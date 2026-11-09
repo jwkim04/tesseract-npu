@@ -1,4 +1,4 @@
-"""pytest entry of the M0 DMA bandwidth kernel (tb/platform/bw: Verilator C++ bench, no cocotb;
+"""pytest entry of the DMA bandwidth kernel (tb/platform/bw: Verilator C++ bench, no cocotb;
 docs/bandwidth-kernel.md §5).
 
   test_bw_lint                   rtl/platform/alveo_xrt/bw/lint.sh: gen_bw.py --check and the lint runs

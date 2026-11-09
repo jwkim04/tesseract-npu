@@ -1,4 +1,4 @@
-/* elf_img.S — toolchain-built images for the fw_elf tests (sw/ctrl/tests/build.cmake; P2.1).
+/* elf_img.S — toolchain-built images for the fw_elf tests (sw/ctrl/tests/build.cmake).
  *
  * Not a runtime: a fixed image that uses every section of sw/ctrl/rt/link.ld (SW §6.2), linked
  * with that script and sw/ctrl/cmake/tsr_note.S exactly as the firmware images are, so the tests

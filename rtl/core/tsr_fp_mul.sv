@@ -1,6 +1,6 @@
 // tsr_fp_mul.sv — pipelined f32 multiplier with the spec's fp rules.
 //
-// Owner: fp agent (docs/rtl-core.md §2, block (c)).
+// Spec: docs/rtl-core.md §2, block (c).
 //
 // Contract (bit-exact with tsr_ref.c tsr_fmul):
 //   y = fin(DAZ(a) * DAZ(b)): inputs with exponent 0 are signed zeros; the product is rounded

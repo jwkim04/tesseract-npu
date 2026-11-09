@@ -41,7 +41,7 @@ struct tsr_bus {
     tsr_bus_watch_fn watch;
     void *     watch_ctx;
     tsr_bus_stats stats;
-    uint64_t   mmio_gen;            // +1 per hart store (any region) and per hart MMIO load (P1.8 spin rule)
+    uint64_t   mmio_gen;            // +1 per hart store (any region) and per hart MMIO load (spin rule)
     int        in_sba;              // serving tsr_bus_sba_* (env callbacks act for the SBA)
     int        lat_core, lat_spm;   // crossing latencies (tsr_bus_set_ratio)
 };
@@ -620,7 +620,7 @@ struct tsr_rv_agent {
     int        in_step;
     uint32_t   state;               // STATUS bits last reported
     uint32_t   perf_x;              // PERF extension base X = 5 + 2C
-    // P1.8 random schedule (tsr_sim_int.h §5b): effective RV cycles = the hart's + jit
+    // Random schedule (tsr_sim_int.h §5b): effective RV cycles = the hart's + jit
     int        jitter;              // CPI deltas and handshake latencies are drawn
     int        hooked;              // the agent's retire hook is installed on the hart
     int64_t    jit;                 // accumulated CPI deltas
@@ -628,7 +628,7 @@ struct tsr_rv_agent {
     uint64_t   slice_end;           // effective cycle count at which the slice ends (jitter)
     tsr_rv_retire_fn user_fn;       // tsr_rv_agent_set_retire_hook
     void *     user_ctx;
-    // P1.8 spin fast-forward: the last timing-register read and its repeat count
+    // Spin fast-forward: the last timing-register read and its repeat count
     uint32_t   sp_off, sp_val, sp_n;
     uint64_t   sp_gen;              // tsr_bus mmio_gen of that read
     int        sp_valid;
@@ -798,7 +798,7 @@ static uint64_t ag_step(void * ctx, tsr_sim * sim) {
     uint64_t now = tsr_sim_now(sim);
     uint64_t gen = tsr_sim_rv_boot_gen(sim);
     if (!a->started || gen != a->gen) {
-        // P1.12: the boot cleared STATUS.RV_* in the core; without this a hart that halts (or
+        // the boot cleared STATUS.RV_* in the core; without this a hart that halts (or
         // sleeps) again in the same state as before the reset would never be reported.
         a->state = 0;
         tsr_rv_reset(a->rv, tsr_sim_rv_boot(sim));
@@ -861,7 +861,7 @@ static uint64_t ag_step(void * ctx, tsr_sim * sim) {
             return t - now;
         }
     }
-    // P1.13: likewise a debug entry inside the slice: STATUS.RV_HALTED (QHALT, PERF
+    // likewise a debug entry inside the slice: STATUS.RV_HALTED (QHALT, PERF
     // DBG_STOP_CYCLES, DB's RVHALT records) rises at the core time the hart entered debug mode, not
     // at the start of the slice; the parked hart reports it when the agent runs again there.
     if (r == TSR_RV_STOP_HALTED && !(a->state & TSR_STATUS_RV_HALTED)) {
@@ -954,7 +954,7 @@ void tsr_rv_agent_destroy(tsr_rv_agent * a) {
 tsr_rv * tsr_rv_agent_rv(tsr_rv_agent * a) { return a->rv; }
 tsr_bus * tsr_rv_agent_bus(tsr_rv_agent * a) { return a->bus; }
 
-// P1.12: the DM model's state report (tsr_bus.h): always reported (the cache is invalidated).
+// the DM model's state report (tsr_bus.h): always reported (the cache is invalidated).
 void tsr_rv_agent_sync(tsr_rv_agent * a) {
     if (a == NULL) return;
     a->state = ~0u;

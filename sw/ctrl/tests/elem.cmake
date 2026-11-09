@@ -1,4 +1,4 @@
-# sw/ctrl/tests/elem.cmake — W2b P2.6 tests of the element-wise and row kinds ADD, MUL, SCALE, GLU,
+# sw/ctrl/tests/elem.cmake — tests of the element-wise and row kinds ADD, MUL, SCALE, GLU,
 # UNARY, CPY, GET_ROWS (docs/design/06-software-verification.md "SW" §7.2, §7.5, §10.2). Included by
 # sw/ctrl/host/CMakeLists.txt (main project, after kernels.cmake). Every test has label fw.
 #
@@ -25,7 +25,7 @@
 #                             absolute error figures, the known deltas of VU §6.9
 
 if (NOT TARGET tsr_fw_ref)
-    return()                       # kernels.cmake (P2.5) provides tsr_fw_ref (mulmat_ref, dram_view)
+    return()                       # kernels.cmake provides tsr_fw_ref (mulmat_ref, dram_view)
 endif()
 set(_el_dir ${TSR_CTRL_DIR}/tests)
 set(_el_inc ${TSR_CTRL_INCLUDE_DIR} ${TSR_CTRL_DIR}/ref ${TESSERACT_ROOT}/sw/sim ${TESSERACT_ROOT}/sw/sim/include

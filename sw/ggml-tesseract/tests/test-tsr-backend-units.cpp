@@ -1,5 +1,5 @@
 // test-tsr-backend-units.cpp — unit tests of the ggml-independent parts of ggml-tesseract
-// (ctest ggml_tesseract_units, rewritten for the OPL builder in P3.2, docs/design/
+// (ctest ggml_tesseract_units, docs/design/
 // 06-software-verification.md §10.2): the range allocator (tsr-alloc), the MUL_MAT shape checks,
 // SPM tiling and staging decisions (tsr-lower), and the op-list path's host side (tsr-opl): the
 // encoding through
@@ -10,7 +10,7 @@
 // 4096-op limit, a random property check (every conflicting pair ordered, every direct dependency a
 // conflict), and the OPL cache (hits, misses, LRU eviction by bytes and by entries, a list larger
 // than the region, a failing write). No device: tsr-opl-dev.cpp (the launcher) is not linked in.
-// W3b (SW §9.3 M7): the DRAM ranges of every M7 kind (row periods, per-row scalars, weights, KV planes,
+// The builder (SW §9.3 M7): the DRAM ranges of every M7 kind (row periods, per-row scalars, weights, KV planes,
 // the f32 mask copy) and the plane hazards SET_ROWS_KV -> FLASH_ATTN -> SET_ROWS_KV; the preload table
 // (deduplication, 64-byte entries, the 256-line limit, NO_ROOM). With ggml-base (TSR_UNITS_BUILD:
 // tsr-build.cpp compiled in, graphs on fake device addresses): fusion pairs (MUL_MAT + bias / residual
@@ -39,7 +39,7 @@
 #include "tsr_ref.h"
 #include "tsr_ref_at.h"
 #if defined(TSR_UNITS_BUILD)
-// W3b: the M7 builder (tsr-build.cpp, compiled into this test with ggml-base when it exists)
+// the M7 builder (tsr-build.cpp, compiled into this test with ggml-base when it exists)
 #include <cmath>
 #include <functional>
 #include <string>
@@ -703,7 +703,7 @@ static void test_opl_cache() {
 }
 
 // =============================================================================================
-// W3b (SW §9.3 M7): the builder's DRAM ranges of every kind, the preload table, and (with ggml) the
+// The builder (SW §9.3 M7): the DRAM ranges of every kind, the preload table, and (with ggml) the
 // records of ggml nodes, fusion, dependencies through views and KV planes, FA_NEW, the graph key and
 // supports_op against the planners.
 // =============================================================================================
@@ -1141,7 +1141,7 @@ static void test_build_key() {
     s = 0.5f;
     memcpy(&z->op_params[0], &s, 4);
     CHECK(tsr_graph_key(g, 1) == k0);
-    // W3b fix: a node of another shape (or strides) at the same address is another graph, even when no
+    // a node of another shape (or strides) at the same address is another graph, even when no
     // other part of the key (FLASH_ATTN's mask words in the backend) would notice
     y->ne[0] = 32;
     y->ne[1] = 2;
@@ -1351,7 +1351,7 @@ static void test_supports_sweep() {
     CHECK(g_sweep_ok > g_sweep_cases / 4 && g_sweep_ok < g_sweep_cases);
 }
 
-// W3b fix (review findings): rules of supports_op that the shape sweep does not reach.
+// Rules of supports_op that the shape sweep does not reach.
 static void test_supports_rules() {
     fake_kv kv;
     const tsr_build_env env = fake_env(&kv);

@@ -44,7 +44,7 @@ package tsr_pkg;
 
   // Channel DRAM map (byte offsets inside a channel; OPL/IO/AUX on ch0 only; docs/design EX §11).
   localparam longint unsigned TSR_MIB               = 64'd1048576;
-  localparam longint unsigned TSR_REGION_OPL_OFF    = 64'd0;          // op lists (was CMD)
+  localparam longint unsigned TSR_REGION_OPL_OFF    = 64'd0;          // op lists
   localparam longint unsigned TSR_REGION_OPL_SIZE   = 64 * TSR_MIB;
   localparam longint unsigned TSR_REGION_IO_OFF     = 64 * TSR_MIB;
   localparam longint unsigned TSR_REGION_IO_SIZE    = 256 * TSR_MIB;
@@ -78,11 +78,11 @@ package tsr_pkg;
   localparam int unsigned TSR_NSRC     = 3;   // read sources per channel arbiter
   localparam int unsigned TSR_SRC_AUX   = 0;  // freed by the fetch removal; tied off (CC-26)
   localparam int unsigned TSR_SRC_DMA   = 1;  // LD/ST (reads and writes)
-  localparam int unsigned TSR_SRC_WS    = 2;  // M3 MVM weight stream (tied off in M2)
+  localparam int unsigned TSR_SRC_WS    = 2;  // MVM weight stream (tied off without an MVM unit)
 
   // -------------------------------------------------------------------------------------------
   // SPM client ports of tsr_spm (docs/rtl-core.md §5; CC §10.2: per-bank ports, NCL = 6, absent
-  // clients tied off; W4-A spm)
+  // clients tied off)
   // -------------------------------------------------------------------------------------------
   localparam int unsigned TSR_SPM_NCL       = 6;
   localparam int unsigned TSR_SPM_CL_DMA    = 0;
@@ -233,7 +233,7 @@ package tsr_pkg;
     return (k + 32'd15) >> 4;
   endfunction
 
-  // ROW_BEATS(fmt, K) (spec Row size; tsr_ref.c tsr_row_beats). fmt: 0 = Q8_0, 1 = Q4_K. M3.
+  // ROW_BEATS(fmt, K) (spec Row size; tsr_ref.c tsr_row_beats). fmt: 0 = Q8_0, 1 = Q4_K.
   function automatic logic [31:0] tsr_row_beats(logic fmt, logic [31:0] k);
     logic [31:0] nb, full, rem;
     if (!fmt) begin               // Q8_0: S = 32 blocks, chunk = 1 + 16 beats; partial 1 + ceil(rem/2)
@@ -276,7 +276,7 @@ package tsr_pkg;
     logic [15:0] qa_lines;    // QA_LINES(kind, K): dst stride between tokens
   } tsr_qact_cmd_t;           // 133 bits
 
-  // dispatch -> MVM unit (M3; HAS_MVM = 0 builds have no MVM unit).
+  // dispatch -> MVM unit (HAS_MVM = 0 builds have no MVM unit).
   typedef struct packed {
     logic        local_scale, local_softcap;
     logic [31:0] scale, post_scale;
@@ -296,7 +296,7 @@ package tsr_pkg;
   } tsr_mvm_cmd_t;            // 360 bits
 
   // ===========================================================================================
-  // M3: MVM unit (docs/rtl-mvm.md). Everything below is additive; M2 users are unaffected.
+  // MVM unit (docs/rtl-mvm.md). Everything below is additive; users without an MVM unit are unaffected.
   // ===========================================================================================
 
   // ---- architecture constants of the MVM datapath (spec Device weight layout, Numeric rules) ----
@@ -402,7 +402,7 @@ package tsr_pkg;
   } tsr_mvm_beat_t;            // 1175 bits
 
   // ===========================================================================================
-  // Issue path (W4 item 1: tsr_chk, tsr_issue, tsr_csr; docs/design CC §7-§9, EX §4-§8).
+  // Issue path (tsr_chk, tsr_issue, tsr_csr; docs/design CC §7-§9, EX §4-§8).
   // Everything below is additive. Offsets, opcodes, units and the issue-FIFO layout are the
   // generated tsr_tables_pkg's (EX-30); these are the structs the issue-path blocks exchange.
   // ===========================================================================================

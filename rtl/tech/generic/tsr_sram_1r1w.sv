@@ -1,7 +1,7 @@
 // tsr_sram_1r1w.sv — generic (behavioural, vendor-neutral) simple dual-port SRAM:
 // one write port and one read port, one clock, byte write enables, registered read.
 //
-// Owner: SPM agent (docs/rtl-core.md §2, block (d)).
+// Spec: docs/rtl-core.md §2, block (d).
 // Target variants (same module name and ports) live in rtl/tech/<target>/ and are selected by the
 // target filelist (rtl/filelist.f = generic). Vendor primitives / attributes only there. This
 // generic model follows the standard inference template for a simple dual-port RAM with byte

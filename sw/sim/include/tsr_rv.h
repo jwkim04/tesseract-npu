@@ -3,7 +3,7 @@
 //
 // The interpreter is the architectural oracle of the RISC-V side: the firmware runs on it inside
 // the simulator, and it is checked against Spike (riscv-tests, riscv-arch-test and random
-// programs on the test bus profile, SW §10.1) and against Ibex RVFI (P5.2). Memory is reached only
+// programs on the test bus profile, SW §10.1) and against Ibex RVFI. Memory is reached only
 // through a tsr_rv_bus (tsr_bus.h provides the firmware profile, CC §4.1, and the test profile,
 // SW §4.2). Nothing here depends on host time: cycles are counted by a fixed table (SW §4.2,
 // *estimate*, schedule only, never architectural).
@@ -33,7 +33,7 @@
 //     dcsr.ebreakm / ebreaku, or a single step (dcsr.step); before an instruction the cause
 //     priority is trigger > haltreq > step, ahead of interrupts. dcsr.stepie / stopcount read 0
 //     (Ibex): no interrupts during a step, counters count in debug mode. The debug ROM is not
-//     interpreted: the hart "parks" (tsr_rv_halted) and the debug-module model (tsr_dm.c, P1.12,
+//     interpreted: the hart "parks" (tsr_rv_halted) and the debug-module model (tsr_dm.c,
 //     DB §9.1) acts on it directly — abstract register access through tsr_rv_reg / tsr_rv_csr_*,
 //     the program buffer through tsr_rv_debug_exec (runs from the DM region until ebreak, or an
 //     exception, parks it again), resume through tsr_rv_debug_resume (as dret). DB's RISC-V
@@ -163,7 +163,7 @@ typedef struct tsr_rv_bus {
 // published configurations (Ibex README "small" / "maxperf", ibex_configs.yaml; stall cycles from
 // Ibex doc/03_reference/pipeline_details.rst "Multi- and Single-Cycle Instructions"; the WB-stage
 // rules from rtl/ibex_id_stage.sv; facts the documentation does not state are *confirm*, checked
-// by the RVFI bench P5.2 when Ibex is vendored, CC §3.1):
+// by the RVFI lockstep bench, CC §3.1):
 //
 //   class                       small   maxperf  Ibex source
 //   ALU, LUI / AUIPC, fence,      1       1      "Integer Computational 0 stalls"
@@ -192,7 +192,7 @@ typedef struct tsr_rv_bus {
 //   trap (exception / interrupt  3       3      controller DECODE -> FLUSH -> refetch (*confirm*)
 //     / debug entry, mret, dret)
 //
-// The bus latencies (tsr_bus.h) are the same for both. P1.8's random schedules vary the CPI
+// The bus latencies (tsr_bus.h) are the same for both. The random schedules vary the CPI
 // around the table (tsr_sim_int.h §5b). tsr_rv_set_core selects a table, tsr_rv_set_cpi any table.
 // ---------------------------------------------------------------------------
 typedef struct tsr_rv_cpi {
@@ -284,7 +284,7 @@ typedef struct tsr_rv_retire {
 // (TSR_RV_STOP_REQUEST).
 typedef int (*tsr_rv_retire_fn)(void * ctx, const tsr_rv_retire * r);
 
-// Debug-module events (P1.12): ENTER (arg = dcsr.cause) when the hart enters debug mode and
+// Debug-module events: ENTER (arg = dcsr.cause) when the hart enters debug mode and
 // parks; PARK (arg = 0 ebreak, 1 exception) when program-buffer execution ends; RESUME when it
 // leaves debug mode (tsr_rv_debug_resume or a dret); RESET (arg = the boot address) at the end
 // of tsr_rv_reset, i.e. when the hart leaves reset: a debug request set from this event (or
@@ -296,7 +296,7 @@ typedef int (*tsr_rv_retire_fn)(void * ctx, const tsr_rv_retire * r);
 #define TSR_RV_DBG_EV_RESET  4u
 typedef void (*tsr_rv_debug_fn)(void * ctx, uint32_t ev, uint32_t arg);
 
-// Data watch (DB §3.7 RV watchpoints, P1.13): called once for every data transaction the hart
+// Data watch (DB §3.7 RV watchpoints): called once for every data transaction the hart
 // issues on its data port (each half of a split misaligned access separately, with the bytes of
 // that half: addr / size as the byte enables give them), after the bus took it and before the
 // instruction completes, also when the transaction faults and in debug mode (program buffer);
@@ -354,7 +354,7 @@ int      tsr_rv_sleeping(const tsr_rv * rv);  // in WFI (STATUS.RV_SLEEP)
 int      tsr_rv_waiting(const tsr_rv * rv);   // a store waits (TSR_RV_BUS_WAIT)
 uint64_t tsr_rv_wait_cycles(const tsr_rv * rv);   // RV cycles the current waiting store waited
 // While on, tsr_rv_idle does not add to the wait count (DB's dbg_stop level suspends the
-// ISSUE_WAIT_MAX count, CC §7.3, DB §3.9; driven by the DB model, P1.13). Off after create.
+// ISSUE_WAIT_MAX count, CC §7.3, DB §3.9; driven by the DB model). Off after create.
 void     tsr_rv_freeze_wait(tsr_rv * rv, int on);
 // CSR access as an instruction executed in debug mode would do it (the debug module's abstract
 // Access Register command, DB §3.5): M privilege, debug CSRs and trigger writes allowed, WARL
@@ -375,7 +375,7 @@ void     tsr_rv_set_core(tsr_rv * rv, uint32_t core);
 void     tsr_rv_get_stats(const tsr_rv * rv, tsr_rv_stats * out);
 
 // ---------------------------------------------------------------------------
-// Debug mode (for the DM model, P1.12; DB §3.3-§3.5, §9.1)
+// Debug mode (for the DM model; DB §3.3-§3.5, §9.1)
 // ---------------------------------------------------------------------------
 // Ibex debug_req_i (the DM's haltreq ORed with DB's dbg_req_rv, DB §3.3): a level. The hart
 // enters debug mode (cause haltreq) at the next instruction boundary, also from WFI, but not

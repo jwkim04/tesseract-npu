@@ -735,7 +735,7 @@ static int v2_config(const v1_config * v, tsr_trace2_config * out, char * why, s
         return -1;
     }
     tsr_trace2_config_from_sim(out, sim);
-    out->ctl_id = tsr_trace2_ctl_id_full();   // W1b fix: not the build's CTL_ID (tsr_trace.h)
+    out->ctl_id = tsr_trace2_ctl_id_full();   // not the build's CTL_ID (tsr_trace.h)
     tsr_sim_destroy(sim);
     last = c;
     last_out = *out;

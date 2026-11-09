@@ -88,7 +88,7 @@ int tsr_sim_cw_access(tsr_sim * sim, int is_write, uint32_t off, uint32_t * val)
     return TSR_CW_OK;
 }
 
-// P1.8: the agent's scheduler / access-event / fast-forward interface (tsr_sim_int.h §5, §5b), as
+// the agent's scheduler / access-event / fast-forward interface (tsr_sim_int.h §5, §5b), as
 // the fixed schedule without listeners or a log: the agent behaves exactly as before.
 int tsr_sim_cw_access_pc(tsr_sim * sim, int is_write, uint32_t off, uint32_t * val, uint32_t pc) {
     (void)pc;

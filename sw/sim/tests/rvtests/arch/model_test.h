@@ -1,5 +1,5 @@
 // sw/sim/tests/rvtests/arch/model_test.h - riscv-arch-test 3.10.0 target macros for the tsr_rv
-// test bus profile and Spike (docs/design/06-software-verification.md §4.2, §10.1; P1.11).
+// test bus profile and Spike (docs/design/06-software-verification.md §4.2, §10.1).
 //
 // Based on the suite's riscof-plugins/rv32/spike_simple/env/model_test.h: HTIF halt through
 // tohost, signature between begin_signature and end_signature (dumped by Spike with

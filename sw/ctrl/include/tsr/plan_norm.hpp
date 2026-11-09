@@ -1,13 +1,12 @@
 // tsr/plan_norm.hpp — planners of RMS_NORM (0x14) and ROPE (0x16) (docs/design/06-software-verification.md
-// "SW" §7.2, §7.5; W2b P2.6). Freestanding, C++17-compatible, constexpr-friendly: the firmware's kind
-// handlers (sw/ctrl/kernels/k_norm.cpp, k_rope.cpp) and the host's supports_op (W3b) call the same
+// "SW" §7.2, §7.5). Freestanding, C++17-compatible, constexpr-friendly: the firmware's kind
+// handlers (sw/ctrl/kernels/k_norm.cpp, k_rope.cpp) and the host's supports_op call the same
 // functions (SW-20).
 //
 // The planner contract and the declarations are tsr/plan.hpp's ("M7 planning"), which includes this
 // file after them; including this file first works too (it includes plan.hpp).
-// Owner: the W2b normrope work package.
 //
-// The planners plan against l.budget (decision P2.4) and need the VU (l.caps CAPS_VU, else
+// The planners plan against l.budget and need the VU (l.caps CAPS_VU, else
 // BAD_RECORD). Besides plan_rms_norm / plan_rope (the contract's form, on argument words) the
 // field-level functions below are what the decode fast paths evaluate on the words they read in
 // place (no array copy): the same rules, shifts / adds / compares only for a single-tile op.
@@ -27,7 +26,7 @@
 // Argument rules (BAD_RECORD): n_args 10; n in [1, 2^24) (the VU m field); rows >= 1; a weight's
 // row period >= 1 (the word is ignored without a weight); dst stride >= L when rows > 1 (output rows
 // may not overlap; the source stride is free: rows are loaded one LD per row unless dense). The
-// weight tensor's rows are L lines apart in DRAM (dense; W2b decision: SW §7.2 has no weight
+// weight tensor's rows are L lines apart in DRAM (dense: SW §7.2 has no weight
 // stride word), row r mod p for output row r.
 // kind_plan: row_lines = L, tile_rows = R, n_tiles, scratch_lines = block_lines(R), flags
 // KP_ONE_TILE | RMS_KP_WEIGHT (a weight) | RMS_KP_WROWS (period > 1: per-row weight, b stride L),

@@ -12,7 +12,7 @@ endif()
 set(TSR_SIM_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
 set(TSR_C_WARN -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes -Wdouble-promotion)
 
-# RISC-V tools (P1.11): sw/ctrl/tools/install-toolchain.sh installs the pins of
+# RISC-V tools: sw/ctrl/tools/install-toolchain.sh installs the pins of
 # docs/design/toolchain.lock without sudo under TSR_RISCV_TOOLS. Every user in this directory (rv.cmake:
 # rv_unit_enc and the sim_rv_issue firmware; rvtests.cmake: rv_isa, rv_arch, rv_lockstep,
 # rv_random, ...) takes the compiler from TSR_RISCV_PREFIX_EFFECTIVE (below) and Spike from
@@ -42,7 +42,7 @@ else()
     endif()
     set(TSR_RISCV_PREFIX_EFFECTIVE "${TSR_RISCV_TOOLS}/${_tsr_xpack_dir}/bin/${_tsr_xpack_pfx}")
 endif()
-# P2.1: published for sw/ctrl/host (the firmware build, SW §6.1), which reads it instead of
+# published for sw/ctrl/host (the firmware build, SW §6.1), which reads it instead of
 # deriving the prefix a second time.
 set_property(GLOBAL PROPERTY TSR_RISCV_PREFIX_EFFECTIVE "${TSR_RISCV_PREFIX_EFFECTIVE}")
 
@@ -55,7 +55,7 @@ function(tsr_c_target tgt)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# tsr_ref — reference library (owner: M1 step 2)
+# tsr_ref — reference library
 #   tsr_ref         static, PIC: linked into tsr_sim, the ggml backend, tools
 #   tsr_ref_shared  shared, OUTPUT_NAME tsr_ref -> libtsr_ref.so: cocotb / Python ctypes
 # Approximate math (sw/sim/tsr_ref_math.c, docs/design/02-vector-unit.md §6) is added to both
@@ -75,10 +75,10 @@ set_target_properties(tsr_ref_shared PROPERTIES OUTPUT_NAME tsr_ref)
 target_include_directories(tsr_ref_shared PUBLIC ${TSR_SIM_INCLUDE_DIR})
 target_link_libraries(tsr_ref_shared PUBLIC m)
 
-include(${CMAKE_CURRENT_SOURCE_DIR}/ref_math.cmake)   # tsr_ref_math.c + ref_math_* tests (P1.3)
+include(${CMAKE_CURRENT_SOURCE_DIR}/ref_math.cmake)   # tsr_ref_math.c + ref_math_* tests
 
-# Optional snippets of the other W1 packages, included when present (each one owns its file):
-#   refvu.cmake  VU references (P1.3)     refat.cmake  AT references (P1.3)
+# Optional snippets, included when present:
+#   refvu.cmake  VU references     refat.cmake  AT references
 #   refgdn.cmake GDN reference (VU §7.12; after refvu.cmake, which picks the numpy interpreter)
 # They are included after tsr_ref / tsr_ref_shared exist: add sources with target_sources() to both
 # and append them to TSR_REF_SOURCES (as ref_math.cmake does).
@@ -95,16 +95,16 @@ foreach(_snip refvu refgdn refat)
 endforeach()
 
 # ---------------------------------------------------------------------------
-# tsr_sim — simulator (owner: M1 step 3; docs/design/06-software-verification.md §4)
+# tsr_sim — simulator (docs/design/06-software-verification.md §4)
 #   tsr_sim         static, PIC: the oracle (core, host CSR port, queue model, units, capture)
 #   tsr_sim_shared  shared, OUTPUT_NAME tsr_sim -> libtsr_sim.so (tsr_ref linked in): Python
 #                   ctypes, i.e. tb/common/test_common.py's whole-MVM check of mvm_model against
 #                   tsr_sim_op (the oracle of the tb/mvm benches)
 # Sources: tsr_sim.c (memories, host CSR port, loader, rings, SOFT_RESET, PERF, handler table, the
 # tile units), tsr_q.c (issue port and control window, dispatcher / checker order, unit queues,
-# SYNC, errors, time base, listeners), tsr_sched.c (P1.8: TSR_SIM_SCHED, the random schedule's
+# SYNC, errors, time base, listeners), tsr_sched.c (TSR_SIM_SCHED, the random schedule's
 # streams and draws). sw/sim/tsr_sim_int.h is the internal interface (not installed).
-# The trace library is sw/sim/tsr_trace.c (P1.10). Unit tests live under sw/sim/tests/ (prefix sim_).
+# The trace library is sw/sim/tsr_trace.c. Unit tests live under sw/sim/tests/ (prefix sim_).
 # ---------------------------------------------------------------------------
 find_package(Threads REQUIRED)
 
@@ -128,19 +128,19 @@ set_target_properties(tsr_sim_shared PROPERTIES OUTPUT_NAME tsr_sim)
 target_include_directories(tsr_sim_shared PUBLIC ${TSR_SIM_INCLUDE_DIR})
 target_link_libraries(tsr_sim_shared PRIVATE tsr_ref Threads::Threads)
 
-# Optional snippets of the other W1 packages, included when present (each one owns its file):
-#   rv.cmake     tsr_rv.c / tsr_bus.c, the RISC-V model and its bus (P1.7)
-#   units.cmake  tsr_vu.c / tsr_at.c, VU and AT unit semantics (P1.4 / P1.5)
+# Optional snippets, included when present:
+#   rv.cmake     tsr_rv.c / tsr_bus.c, the RISC-V model and its bus
+#   units.cmake  tsr_vu.c / tsr_at.c, VU and AT unit semantics
 # They are included after tsr_sim / tsr_sim_shared exist. A snippet adds simulator sources with
 # target_sources() to both targets, or appends them to TSR_SIM_SOURCES (added to both below);
 # either way TSR_SIM_SOURCES ends up complete for later targets (sanitizer builds). When the
 # sources contain tsr_vu.c / tsr_at.c the targets get TSR_SIM_HAVE_VU / TSR_SIM_HAVE_AT, and
 # tsr_sim_create registers their handlers (tsr_vu_register / tsr_at_register, tsr_sim_int.h).
-# W1b model snippets (P1.9 / P1.10 / P1.12 / P1.13), each owned by its package, the same way:
-#   dm.cmake     tsr_dm.c, the debug-module model (P1.12)
-#   dbg.cmake    tsr_dbg.c, the DB simulator models (P1.13)
-#   race.cmake   tsr_race.c, the race detector (P1.9)
-#   trace.cmake  tsr_trace.c, trace library, capture and sim replay (P1.10)
+# Model snippets, included the same way:
+#   dm.cmake     tsr_dm.c, the debug-module model
+#   dbg.cmake    tsr_dbg.c, the DB simulator models
+#   race.cmake   tsr_race.c, the race detector
+#   trace.cmake  tsr_trace.c, trace library, capture and sim replay
 # When the simulator's sources contain tsr_dm.c / tsr_dbg.c / tsr_race.c / tsr_trace.c the targets
 # get TSR_SIM_HAVE_DM / _DBG / _RACE / _TRACE, and tsr_sim_create_opts attaches the models
 # (tsr_<m>_attach, tsr_sim_int.h §5). A snippet that adds its source to a sanitizer variant (the
@@ -247,7 +247,7 @@ endforeach()
 # Tests
 # ---------------------------------------------------------------------------
 add_subdirectory(tests)
-# RV32 conformance harness (P1.11): riscv-tests, riscv-arch-test, lockstep and random programs on
+# RV32 conformance harness: riscv-tests, riscv-arch-test, lockstep and random programs on
 # Spike and tsr_rv (tests only; the runner target tsr_rv_run comes from rv.cmake).
 if (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/rvtests.cmake AND NOT "rvtests" IN_LIST TSR_SIM_SKIP_SNIPPETS)
     include(${CMAKE_CURRENT_SOURCE_DIR}/rvtests.cmake)

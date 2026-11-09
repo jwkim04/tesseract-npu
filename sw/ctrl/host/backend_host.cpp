@@ -73,7 +73,7 @@ uint32_t push(const op & o, uint32_t dep0, uint32_t dep1, uint32_t push_val) {
 
 uint32_t qctrl(uint32_t bits) {
     tsr_sim * sim = bound("qctrl");
-    // A QCLEAR takes a SYNC credit like a push (CC §5.1, §7.3): the same diagnostic as push() (fix W2a).
+    // A QCLEAR takes a SYNC credit like a push (CC §5.1, §7.3): the same diagnostic as push().
     if (bits & QCTRL_QCLEAR) {
         const uint32_t credits = tsr_sim_cw_read(sim, CW_ISSUE_CREDIT);
         if (((credits >> (CREDIT_FIELD_W * UNIT_SYNC)) & 0xFu) == 0u) ++g_host.no_credit_pushes;

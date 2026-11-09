@@ -2,8 +2,8 @@
 // operands for each sub-slot, and hands the exit descriptors, the reduction row tokens and the
 // pseudo-slot actions (c-line loads, ROPE table / positions, TOPK lines, scalar path) on.
 //
-// Owner: VU (docs/design/02-vector-unit.md "VU" §7.1 input reorder, §7.3 half-rate presentation, §7.5
-// partials, §7.6 rotation, §7.8 sequencer).
+// Spec: docs/design/02-vector-unit.md "VU" §7.1 input reorder, §7.3 half-rate presentation, §7.5
+// partials, §7.6 rotation, §7.8 sequencer.
 // Stages: D (decide: the head slot and its operands are ready, the lanes' exit order allows it; pop the
 // FIFOs, read the local memory) -> I (one cycle per sub-slot: operand selection) -> registered outputs
 // to the lanes (their input register is the next stage).

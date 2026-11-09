@@ -1,7 +1,7 @@
 // tsr_dma_kvst.sv — the KVST engine of the DMA unit (AT §5.1, §8.3): stores n_rows QA(A32, E)
 // vectors of the SPM as q8_0 K or V cell rows into a KV plane in device DRAM (AT §4.3 / §4.4).
 //
-// Owner: AT (W4-B "at"). Instantiated by tsr_dma (HAS_KVST = 1), which hands it the memory source
+// Instantiated by tsr_dma (HAS_KVST = 1), which hands it the memory source
 // ports of every channel and the SPM read port while a KVST runs (one DMA command at a time).
 // Oracle: tsr_ref_kvst (sw/sim/tsr_ref_at.c) through the simulator's ex_kvst; tb/at test_at_kvst
 // compares every plane byte and every SPM / DRAM access range.

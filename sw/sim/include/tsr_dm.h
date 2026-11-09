@@ -1,4 +1,4 @@
-// tsr_dm.h — debug-module model of the simulator (P1.12; docs/design/05-debug.md "DB" §3, §9.1;
+// tsr_dm.h — debug-module model of the simulator (docs/design/05-debug.md "DB" §3, §9.1;
 // docs/design/04-control-core.md "CC" §3.2, §4.3, §12.2; docs/design/06-software-verification.md "SW"
 // §4.2). Implementation: sw/sim/tsr_dm.c.
 //
@@ -67,7 +67,7 @@
 // successful access only. Every SBA access is reported as an access event (tsr_sim_int.h,
 // TSR_ACC_SBA_RD / TSR_ACC_SBA_WR: addr, size, val) and is never seen by the hart's data watch.
 //
-// Timing (model decisions, P1.12): every DMI access acts at the current simulated time
+// Timing (model decisions): every DMI access acts at the current simulated time
 // (tsr_sim_now), between time-base steps. SBA accesses complete within the DMI access that starts
 // them, so sbbusy reads 0 and sbbusyerror is never set by the model (the bit and its W1C exist).
 // An abstract command completes within the command write: busy reads 0 again at once, unless its

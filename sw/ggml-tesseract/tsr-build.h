@@ -2,7 +2,6 @@
 // (docs/design/06-software-verification.md "SW" §9.3 M7: builder passes 1-6, supports_op (M7), mask
 // summaries, KV buffers; §8 R1-R10 one launch per decode token; §7.2 OPL kinds and their argument
 // words; docs/design/03-attention-kv.md "AT" §2.6 the supports_op contract, §12 the FA flags word).
-// W3b (P3.5).
 //
 // ggml-aware and device-free: the backend (ggml-tesseract.cpp) supplies where tensors live through
 // tsr_build_env's callbacks, the unit tests (tests/test-tsr-backend-units.cpp) supply fake ones.
@@ -29,7 +28,7 @@
 // Pass 1 (drop NONE / VIEW / RESHAPE / PERMUTE / TRANSPOSE and nodes without GGML_TENSOR_FLAG_COMPUTE)
 // is tsr_node_is_noop / the backend's loop.
 //
-// Decisions (W3b builder; the integration records them in SW §9.3 / §13):
+// Decisions (recorded in SW §9.3 / §13):
 //   - supports_op does not test GGML_TENSOR_FLAG_COMPUTE (SW §8 R1 / SW-33 say it should):
 //     test-backend-ops asks supports_op before ggml_build_forward_expand sets the flag
 //     (tests/test-backend-ops.cpp:1415-1421), so the rule would refuse every op there. The nodes
@@ -49,13 +48,13 @@
 //     in one list; added to the FA's list otherwise), so the chunk order, hence the output bits, do
 //     not depend on where the builder cut its lists. supports_op therefore refuses a FLASH_ATTN of
 //     more than 680 tokens: its MSUM and the indices must fit one fresh list's 256 preload lines.
-//     Assumption (W3b fix): the FLASH_ATTN is not a ggml consumer of the K indices, so ggml-alloc may
+//     Assumption: the FLASH_ATTN is not a ggml consumer of the K indices, so ggml-alloc may
 //     reuse their bytes after the SET_ROWS_KV; when a cut separates the two, the FA's list preloads
 //     them again from DRAM, which is right only while no node between them writes those bytes. In
 //     llama.cpp's graphs only the V SET_ROWS_KV lies between them; the backend checks the
 //     assumption whenever a cut separates them and aborts naming it (ggml-tesseract.cpp).
 //   - FA rule-5 refusals (AT §6.6 rule 5: data-dependent, invisible to supports_op): the mask
-//     producer (tsr-msum.h, W3b kv) plans every query tile of every registered reader and promotes
+//     producer (tsr-msum.h) plans every query tile of every registered reader and promotes
 //     the MSUM to GENERAL with the f32 copy when a tile would be refused; the builder registers each
 //     FLASH_ATTN as a reader (env.fa_mask -> tsr_msum_store::attach) on every build and every cached
 //     reuse, so the executor never refuses a tile for mask data.
@@ -104,9 +103,9 @@ struct tsr_build_env {
     // in IO or the compute heap; a raw tensor of a weight buffer in AUX or the heap). False when it
     // cannot (host memory, a device-format weight, not allocated).
     std::function<bool(const ggml_tensor *, tsr_tloc *)> loc;
-    // Build mode: the plane of a view of a placed KV-cache tensor (W3b kv: tsr_kv_view_of).
+    // Build mode: the plane of a view of a placed KV-cache tensor (tsr_kv_view_of).
     std::function<bool(const ggml_tensor *, tsr_kv_view *)> kv_view;
-    // Build mode: a FLASH_ATTN's mask words (W3b kv: tsr_fa_mask_ref, i.e. tsr_msum_store::attach /
+    // Build mode: a FLASH_ATTN's mask words (tsr_fa_mask_ref, i.e. tsr_msum_store::attach /
     // nomask); valid = false: no summary.
     std::function<tsr_msum_ref(const ggml_tensor *)> fa_mask;
 
@@ -117,9 +116,9 @@ struct tsr_build_env {
     // (false: a device-format weight, a KV cache); t may be unallocated.
     std::function<bool(const ggml_tensor *)> raw_ok;
     // Probe mode: t (or the tensor it views) is a KV-cache tensor in a Tesseract buffer that is or will
-    // be a KV buffer (W3b kv: tsr_kv_tensor_supported); its shape (tsr_kv_identify) in *out.
+    // be a KV buffer (tsr_kv_tensor_supported); its shape (tsr_kv_identify) in *out.
     std::function<bool(const ggml_tensor *, tsr_kv_shape *)> kv_probe;
-    // Probe mode: a FLASH_ATTN's mask can be summarized (W3b kv: tsr_msum_mask_supported); no mask is
+    // Probe mode: a FLASH_ATTN's mask can be summarized (tsr_msum_mask_supported); no mask is
     // always fine (nomask).
     std::function<bool(const ggml_tensor *)> fa_mask_probe;
     // Probe mode: t is a weight MUL_MAT_ID can address: the type loads (a device format or convertible), the

@@ -1,6 +1,6 @@
 // tsr_fp_pkg.sv — combinational f32 / fp16 / int8 helpers with the spec's fp rules.
 //
-// Owner: fp agent (docs/rtl-core.md §2, block (c); contract §8.2).
+// Spec: docs/rtl-core.md §2, block (c); contract §8.2.
 //
 // Normative definition: sw/sim/tsr_ref.c (bit-exact) — the RTL matches it for every input
 // (tb/fp: exhaustive over all 2^32 / 2^16 inputs for the conversions, directed + random sweeps
@@ -14,7 +14,7 @@
 //                        |f| < 2^-25 or f32 subnormal -> signed 0)
 //   tsr_f32_to_q8      = tsr_q8_round_away (half_even = 0) / tsr_q8_round_even (half_even = 1):
 //                        NaN -> 0, rounded value saturated to [-128, 127]
-//   tsr_i32_to_f32     = tsr_i32_to_f32 (RNE; needed from M3)
+//   tsr_i32_to_f32     = tsr_i32_to_f32 (RNE; needed by the MVM unit)
 //   tsr_f32_round_pack = the result rounding of tsr_fmul / tsr_fdiv (RNE + the spec's FTZ rule
 //                        + overflow to Inf); used by tsr_fp_div. tsr_fp_mul implements the same
 //                        rule split over two pipeline stages (see its header, "Rounding").
@@ -198,7 +198,7 @@ package tsr_fp_pkg;
   endfunction
 
   // -------------------------------------------------------------------------------------------
-  // int32 -> f32, round-to-nearest-even (tsr_i32_to_f32; M3 term computation).
+  // int32 -> f32, round-to-nearest-even (tsr_i32_to_f32; the MVM unit's term computation).
   // -------------------------------------------------------------------------------------------
   function automatic logic [31:0] tsr_i32_to_f32(logic [31:0] v);
     logic        neg;

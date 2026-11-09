@@ -31,7 +31,7 @@ add_subdirectory(sw/tools)       # selftest, klcheck, numcheck, tsr_bw
 
 if (TSR_WITH_LLAMA)
     set(GGML_TESSERACT ON CACHE BOOL "" FORCE)
-    # As a subproject llama.cpp defaults common/tests/tools to OFF. M1 needs test-backend-ops
+    # As a subproject llama.cpp defaults common/tests/tools to OFF. The backend tests need test-backend-ops
     # (tests, which require common), llama-completion / llama-perplexity (tools) and llama-cli
     # (built from the server sources).
     set(LLAMA_BUILD_COMMON ON CACHE BOOL "" FORCE)

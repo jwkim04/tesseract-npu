@@ -23,8 +23,8 @@ namespace mmk {
 
 namespace mm = opl::mm;
 
-// The fast-path pieces the M7 kinds share (k_fast.hpp, W2b): the same definitions as before the
-// move, so the pushes and the instruction stream of this path are unchanged.
+// The fast-path pieces the M7 kinds share (k_fast.hpp), used by this path unchanged:
+// the pushes and the instruction stream are the same.
 constexpr uint32_t NOT_FAST = kf::NOT_FAST;   // unit 14: never a ticket (CC §7.4)
 using kf::drop_dma;                           // d without its DMA tickets (a DMA op: queue order implies them)
 
@@ -47,16 +47,16 @@ TSR_HOT deps first_deps(deps d, deps rd) {
     return first_deps_slow(dd, rr);
 }
 
-// The QACT of a tile (step 3); the P2.5 mutant images change it.
+// The QACT of a tile (step 3); the mutant test images change it.
 template <bool CHK>
 TSR_HOT ticket push_qact(qa kind, spm q, spm x, uint32_t K, uint32_t tt, uint32_t x_lines, ticket ld_x, uint32_t pf) {
 #if defined(TSR_KMM_MUTANT) && TSR_KMM_MUTANT == 1
-    // P2.5 negative test image fw_kmm_mut_nodep: the QACT without its dep on the x LD (the race
+    // Negative test image fw_kmm_mut_nodep: the QACT without its dep on the x LD (the race
     // detector must report it, sw/ctrl/tests/kernels.cmake).
     (void)ld_x;
     return issue_c<CHK>(QACT(kind, q, x, K, tt, x_lines), deps{}, pf);
 #elif defined(TSR_KMM_MUTANT) && TSR_KMM_MUTANT == 2
-    // P2.5 negative test image fw_kmm_mut_stride: src stride 0 (the same lines, but not the spec's encoding;
+    // Negative test image fw_kmm_mut_stride: src stride 0 (the same lines, but not the spec's encoding;
     // the stream comparison must report it).
     (void)x_lines;
     return issue_c<CHK>(QACT(kind, q, x, K, tt, 0u), deps{ld_x}, pf);

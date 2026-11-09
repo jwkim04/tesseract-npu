@@ -1,6 +1,6 @@
 // tsr_rv_bus.sv — RISC-V instruction and data buses of the control subsystem (CC §4.1-§4.3, §3.2).
 //
-// Owner: ctrl agent (W4 item 3; CC §2.2 `tsr_rv_bus`). clk_rv domain.
+// Spec: CC §2.2 `tsr_rv_bus`. clk_rv domain.
 //
 // Address map (CC §4.1, TSR_RV_* of tsr_tables_pkg; region sizes are parameters, every address of a
 // region beyond its size faults): ITCM (fetch, byte / half / word), DTCM (byte / half / word),

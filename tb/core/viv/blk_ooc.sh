@@ -13,7 +13,7 @@
 #                  block, the DB block (core side, trace writer, history), DMA, QACT, SPM, the arbiters
 #                  and the XSLR_REG / reset glue, with the K4 parameters
 #   The cl, gather, dma and ctl presets have FAST_CLK 1 (the 250 MHz stages; FAST_CLK=0 gives the 200 MHz netlist). vu: add
-#   HAS_GDN=1 for the fused GDN update (branch gdn-vu), HAS_TOPK=1 for TOPK.
+#   HAS_GDN=1 for the fused GDN update HAS_TOPK=1 for TOPK.
 #   Extra NAME=VALUE arguments after the block's own (they override) go to synth_design -generic; other
 #   arguments (synth_only, place_only, dcp, from=<dcp>, io=, thr=) go to blk_ooc.tcl.
 # Environment: VIVADO_SETTINGS (default /tool/Xilinx/Vivado/2024.2/settings64.sh). Run it through

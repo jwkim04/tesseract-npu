@@ -291,7 +291,7 @@ foreach {c i} {0 3 1 2 3 4} {
   set term "$mvm/g_cl\[$c\].u_cl/g_att.u_pv/att_stall_q_i_$i"
   set term_type LUT6
   if {$c == 0 && $fixture_case in {stall_comp_numbered stall_comp_bad_suffix}} {
-    # Exact LUT3 family from the 2026-11-02 phys_opt POST failure.
+    # Exact LUT3 family from a phys_opt POST failure.
     append term [expr {$fixture_case eq "stall_comp_numbered" ? "_comp_1" : "_comp_1_extra"}]
     set term_type LUT3
   }

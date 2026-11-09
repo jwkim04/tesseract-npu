@@ -1,4 +1,4 @@
-# sw/ggml-tesseract/tests/tiny.cmake — M7 on the simulator (P3.6, docs/design/06-software-verification.md
+# sw/ggml-tesseract/tests/tiny.cmake — M7 on the simulator (docs/design/06-software-verification.md
 # §10.2, §10.4): the tiny-model graph tests and the test-backend-ops coverage of the M7 kinds.
 # Included from ../CMakeLists.txt (after the llama.cpp targets exist).
 #
@@ -21,10 +21,10 @@
 # the mean over the 1-ulp floor runs of the seeds 1 to 3 (m7_tests.py --floor-seeds, as klcheck all),
 # and the device run takes no TSR_KINDS from the environment (the tests check the full kind set).
 #
-# The bounds (W3b measurements, these prompts, 96 positions per model: 8 prompt-tail rows + 16
+# The bounds (measurements, these prompts, 96 positions per model: 8 prompt-tail rows + 16
 # generated rows of 4 prompts; deterministic, the same every run). The M6 ratios and the first M7
-# ratio are against the floor of seed 1 alone (the single-floor line the tests used first); the second
-# M7 ratio is against the mean floor of the seeds 1 to 3, which the tests use now:
+# ratio are against the floor of seed 1 alone; the second
+# M7 ratio is against the mean floor of the seeds 1 to 3, which the tests use:
 #   model        M6 mean KL (ratio, seed 1)  M7 mean KL (ratio seed 1 / mean)  floor seed 1 / mean  top-1
 #   qwen2 q8_0   1.42e-4 (0.65)              1.03e-4 (0.47 / 0.60)             2.20e-4 / 1.71e-4    100 %
 #   qwen2 q4_k   1.17e-4 (0.79)              1.47e-4 (0.99 / 1.47)             1.48e-4 / 1.00e-4    100 %
@@ -174,10 +174,10 @@ if (TARGET llama)
         set_tests_properties(ggml_tesseract_verify_${_m} PROPERTIES TIMEOUT 900
                              ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal;TSR_SIM_TMAX=4")
     endforeach()
-    # W3b fix (SW-43): a prefill ubatch of 692 tokens (the first four prompts joined, -ub 1024): its
+    # SW-43: a prefill ubatch of 692 tokens (the first four prompts joined, -ub 1024): its
     # FLASH_ATTN needs 174 MSUM + 87 FA_NEW preload lines (> 256, one list), so supports_op
     # keeps it on the CPU (extra launches in that prefill, reported, not checked); the decodes stay one
-    # launch each and the KL criterion holds. Before the fix graph_compute aborted (T 681-1022).
+    # launch each and the KL criterion holds.
     add_test(NAME ggml_tesseract_graph_qwen_tiny_ub1024
              COMMAND ${_tiny_py} ${_tiny_m7} graph --klcheck $<TARGET_FILE:klcheck>
                      --model ${TSR_TINY_MODEL_DIR}/qwen2-tiny-q8_0.gguf --prompts ${TSR_TINY_MODEL_DIR}/tiny-prompts.txt
@@ -188,7 +188,7 @@ if (TARGET llama)
                          ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal")
     # The same checks on the real Qwen2.5-0.5B Q8_0 (SW §10.4 M7 gate item 1 on the simulator; label
     # model, registered when the GGUF is present; models/ is not in git): klcheck's 4 built-in
-    # prompts x 33 tokens (128 single-token decodes), -ub 512, klcheck's criterion unchanged. W3b:
+    # prompts x 33 tokens (128 single-token decodes), -ub 512, klcheck's criterion unchanged:
     # one launch per token (365 op records), KL ratio 0.77 at 2 x 17 tokens, 86 ms per token on the sim.
     set(_tiny_05b ${TESSERACT_ROOT}/models/qwen2.5-0.5b-instruct-q8_0.gguf)
     if (EXISTS ${_tiny_05b})

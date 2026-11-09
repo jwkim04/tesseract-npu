@@ -14,7 +14,7 @@
 // a foreign argument, cmd_addr / cmd_count / arg0-7 arguments, no Tesseract kernel) must be
 // refused with a reason. Whether XRT refuses a second exclusive open of the compute unit depends
 // on the shim (the noop shim's context bookkeeping); it is printed, not asserted (*confirm* on the
-// card, P6).
+// card).
 //
 //   test-tsr-xrt-noop <XRT root> <scratch dir>
 

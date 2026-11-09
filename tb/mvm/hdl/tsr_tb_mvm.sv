@@ -1,6 +1,6 @@
 // tsr_tb_mvm.sv — testbench-only toplevel for tb/mvm (not part of the core).
 //
-// The MVM unit as in the M3 core (docs/rtl-mvm.md §2): tsr_mvm with its NUM_CH clusters, on SPM
+// The MVM unit as in the core (docs/rtl-mvm.md §2): tsr_mvm with its NUM_CH clusters, on SPM
 // client TSR_SPM_CL_MVM of a real tsr_spm and on read source TSR_SRC_WS of one real tsr_mem_arb
 // per channel, whose memory ports are exposed with the tsr_core naming (m_*, packed per channel,
 // for common.mem_model.MemModel; memory-side ids {source, local}).
@@ -131,7 +131,7 @@ module tsr_tb_mvm
     .local_score_req(no_score_req), .local_score_data(), .scale_req(), .scale_rsp('0),
     /* verilator lint_on PINCONNECTEMPTY */
     .clk, .rst_n,
-    .cmd_valid, .cmd_ready, .cmd, .cmd_xc(1'b0), .xcmd('0), .done,     // W4-B at: no attention here (tb/at)
+    .cmd_valid, .cmd_ready, .cmd, .cmd_xc(1'b0), .xcmd('0), .done,     // no attention here (tb/at)
     .spm_rd_req_valid(mv_rd_req_valid), .spm_rd_req_ready(mv_rd_req_ready),
     .spm_rd_req_line(mv_rd_req_line), .spm_rd_rsp_valid(mv_rd_rsp_valid),
     .spm_rd_rsp_data(spm_rd_data),
@@ -141,9 +141,9 @@ module tsr_tb_mvm
     .ws_rd_req_len(ws_req_len), .ws_rd_req_id(ws_req_id),
     .ws_rd_rsp_valid(ws_rsp_valid), .ws_rd_rsp_ready(ws_rsp_ready), .ws_rd_rsp_data(ws_rsp_data),
     .ws_rd_rsp_last(ws_rsp_last), .ws_rd_rsp_id(ws_rsp_id),
-    .perf_mvm_busy, .perf_att_qk(p_att_qk), .perf_att_pv(p_att_pv), .perf_att_stall(p_att_st)   // W4-B at
+    .perf_mvm_busy, .perf_att_qk(p_att_qk), .perf_att_pv(p_att_pv), .perf_att_stall(p_att_st)
   );
-  logic p_att_qk, p_att_pv, p_att_st;                                      // W4-B at
+  logic p_att_qk, p_att_pv, p_att_st;
   wire  unused_att = &{1'b0, p_att_qk, p_att_pv, p_att_st};
 
   // Observe the production source and cluster ports against independent old pipes.
@@ -172,7 +172,7 @@ module tsr_tb_mvm
   );
 
   // ---- SPM: client 0 = host, 1 = tied off, 2 = MVM, 3 = tied off (single-port clients through
-  //      tsr_spm_cport), 4 / 5 = tied off (dual-bank); W4-A spm ----
+  //      tsr_spm_cport), 4 / 5 = tied off (dual-bank) ----
   logic [TSR_SPM_NSP-1:0]                     s_rd_req_valid, s_rd_req_ready, s_rd_rsp_valid;
   logic [TSR_SPM_NSP-1:0][AW-1:0]             s_rd_req_line;
   logic [TSR_SPM_NSP-1:0][TSR_LINE_BITS-1:0]  s_rd_rsp_data;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tb/platform/bw/mutate_bw.py — mutation campaign of the M0 bandwidth kernel RTL against its bench
+"""tb/platform/bw/mutate_bw.py — mutation campaign of the bandwidth kernel RTL against its bench
 (docs/bandwidth-kernel.md §5): every mutant is one textual change of rtl/platform/alveo_xrt/bw/*.sv applied to
 a scratch copy, built with run_bw.py (-Wno-fatal) and run through a reduced test set; a mutant is
 killed when the bench (or the build's elaboration checks) fails.
@@ -88,10 +88,10 @@ MUTANTS = [
      "rend = (c_en & ~err_q & nz_q) ? rd_end_q[AW+6:6] : {1'b0, ra0};", "reads on a write-only channel"),
     ("E_rend_bytes0", E, "rend = (c_en & c_rd & ~err_q & nz_q) ? rd_end_q[AW+6:6] : {1'b0, ra0};",
      "rend = (c_en & c_rd & ~err_q) ? rd_end_q[AW+6:6] : {1'b0, ra0};",
-     "bytes 0 with the read offset at the limit walks the whole range (review finding)"),
+     "bytes 0 with the read offset at the limit walks the whole range"),
     ("E_wend_bytes0", E, "wend = (c_en & c_wr & ~err_q & nz_q) ? wr_end_q[AW+6:6] : {1'b0, wa0};",
      "wend = (c_en & c_wr & ~err_q) ? wr_end_q[AW+6:6] : {1'b0, wa0};",
-     "bytes 0 with the write offset at the limit walks the whole range (review finding)"),
+     "bytes 0 with the write offset at the limit walks the whole range"),
     ("E_status_ran", E, "ran_q     <= c_en & ~err_q;", "ran_q     <= ~err_q;", "RAN set on a disabled channel"),
     ("E_res_csum", E, "4'd10:   res_rdata <= csum_q[31:0];", "4'd10:   res_rdata <= csum_q[63:32];", "checksum low word"),
     ("E_res_bytes", E, "wire [63:0] rd_byt64 = 64'(rd_beats_q) << 6", "wire [63:0] rd_byt64 = 64'(rd_beats_q) << 5",

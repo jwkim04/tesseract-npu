@@ -1,6 +1,6 @@
 // tsr_vu_pkg.sv — constants, lane micro-ops and internal structs of the vector unit (area VU).
 //
-// Owner: VU (docs/design/02-vector-unit.md "VU" §6 numerics, §7 microarchitecture; W4-B task "vu").
+// Spec: docs/design/02-vector-unit.md "VU" §6 numerics, §7 microarchitecture.
 // The ISA-level fields come from the generated tsr_tables_pkg (TSR_VOP_*, TSR_RED_*, ...); this
 // package holds what only the VU's blocks share: f32 constants of VU Appendix A, the fixed latencies
 // of the arithmetic blocks, the lane micro-op codes and the slot / sub-slot structs of tsr_vu.

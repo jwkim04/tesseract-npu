@@ -5,7 +5,7 @@
 // ST ops, DB §5.7) and the divergence search; on the simulator through tsr_trace2_replay_sim's
 // replay-kernel route (tsr_trace.c, "kernel_replay").
 //
-// Arguments (SW §7.1 a0-a2; a3 / a4 are this kernel's extension, decision P2.5):
+// Arguments (SW §7.1 a0-a2; a3 / a4 are this kernel's extension):
 //   a0  push.bin handle {ch[31:28], beat[27:0]}       a1  record count
 //   a2  flags: bit0 SERIAL (every op record depends on the previous op record instead of its
 //       recorded deps; with I1 that is strictly sequential issue), bit1 BUF (a3 / a4 valid)
@@ -195,7 +195,7 @@ extern "C" int32_t replay(const tsr_args * args) {
         if (int32_t(e.pidx - pidx0) < 0) return int32_t(RET_STREAM);   // a prefetch LD failed (bad a0)
         uint32_t own = 0;
         for (uint32_t j = 0; j < n_own; ++j) {
-            if (g_own_pidx[j] == e.pidx) return int32_t(RET_STREAM);    // fix W2a: a later chunk LD failed
+            if (g_own_pidx[j] == e.pidx) return int32_t(RET_STREAM);    // a later chunk LD failed
             own += (g_own_pidx[j] - pidx0) < (e.pidx - pidx0) ? 1u : 0u;
         }
         return int32_t(1u + (e.pidx - pidx0) - own);
@@ -204,7 +204,7 @@ extern "C" int32_t replay(const tsr_args * args) {
 }
 
 #ifdef TSR_FW_HOST
-// The host build checks this kernel's ABI against the replayer's copy (tsr_trace.h, P2.5 route).
+// The host build checks this kernel's ABI against the replayer's copy (tsr_trace.h).
 #include "tsr_trace.h"
 static_assert(F_SERIAL == TSR_REPLAY_F_SERIAL && F_BUF == TSR_REPLAY_F_BUF && CHUNK_MAX == TSR_REPLAY_CHUNK_MAX &&
                   CHUNKS_MAX == TSR_REPLAY_CHUNKS_MAX && RET_BAD_ARGS == TSR_REPLAY_RET_BAD_ARGS &&

@@ -1,7 +1,7 @@
 // tsr_cdc_gray.sv — counter crossing by gray code (CC §11.2: ISSUED_SEQ, S[u], D[u], MTIME, the
 // clk_rv cycle count and the clk_rv PERF counters; docs/ctrl-riscv.md §7.1 rules).
 //
-// Owner: ctrl agent (W4 item 3; CC §2.2 `tsr_cdc_gray`).
+// Spec: CC §2.2 `tsr_cdc_gray`.
 //
 // Contract:
 //   - src_cnt is a W-bit binary counter (modulo 2^W) in the source domain that moves by at most

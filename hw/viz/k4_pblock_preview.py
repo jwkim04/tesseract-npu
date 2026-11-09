@@ -176,7 +176,7 @@ def render(hook, report, output):
     shapes = slice_ranges(report)
     placed = [path for paths in groups.values() for path in paths]
     has_vu_banks = any(path.endswith(".u_bank") for path in placed)
-    # The full-feature image places the whole vector unit; the reduced first card image has no VU and no KVST
+    # The full-feature image places the whole vector unit; the reduced card image has no VU and no KVST
     # and its hook also places QACT, issue and CSR.
     full = any(path.endswith("g_vu.u_vu") for path in placed)
     reduced = not full and not has_vu_banks and any(path.endswith("/u_qact") for path in placed)

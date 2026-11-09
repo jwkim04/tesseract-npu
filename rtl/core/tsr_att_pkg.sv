@@ -3,7 +3,7 @@
 // small combinational helpers the AT blocks share (bit-exact numerics of AT §6, the constant
 // divider by NUM_CH, the MAC lane's PV latency).
 //
-// Owner: AT (W4-B "at": tsr_chk_at, the KVST engine of tsr_dma, the attention modes of tsr_mvm*).
+// Spec: tsr_chk_at, the KVST engine of tsr_dma, the attention modes of tsr_mvm*.
 // The payloads travel in the issue path's 256-bit external-class payload (tsr_chk xc_rsp_cmd ->
 // tsr_issue <u>_xcmd, CC §8.2); their layout is AT's: tsr_chk_at builds them, the DMA (KVST) and
 // the MVM unit (ATTQK, ATTPV) consume them. Every field is checked and resolved at dispatch (AT

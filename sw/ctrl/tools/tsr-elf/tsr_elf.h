@@ -1,4 +1,4 @@
-// tsr_elf.h — Tesseract firmware images on the host (SW §6.2, §9.5; EX §3.1-§3.2; P2.1).
+// tsr_elf.h — Tesseract firmware images on the host (SW §6.2, §9.5; EX §3.1-§3.2).
 //
 // A parsed RV32 firmware ELF: its PT_LOAD segments (what the loader writes, EX §3.3), the image id
 // (EX §3.2), the kernel table (.tsr_kernels), the kind table (.tsr_kinds, SW §6.9), the image

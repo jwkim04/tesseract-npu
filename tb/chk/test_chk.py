@@ -13,7 +13,7 @@ checker's latency (8 cycles, + 33 for an MVM with odd NUM_CH) is measured. chk_d
 of directed_ops(): half-block K values (odd multiples of 128 for Q4_K / A256, of 16 for Q8_0 / A32),
 weight extents of 2^14 beats and more at the DRAM limit, destination / source extents of 2^32 lines and
 more; the same list is the netlist regression of tb/chk/viv/net_chk.sh (the post-synthesis netlist
-answers like the simulator; found by the W4-A review: a variable with two drivers in synthesis).
+answers like the simulator; guards against a variable with two drivers in synthesis).
 """
 from __future__ import annotations
 
@@ -151,7 +151,7 @@ class OpGen:
 
 
 def directed_ops(cfg):
-    """The directed ops of the W4-A review (answers computed by the simulator): half-block K values, weight
+    """The directed ops (answers computed by the simulator): half-block K values, weight
     extents of 2^14 beats and more at the DRAM limit, destination / source extents of 2^32 lines and more,
     LD / ST counts near 2^32. Also the netlist regression's stimulus (tb/chk/viv/net_chk.sh)."""
     L = cfg["spm_bytes"] // 64
@@ -333,7 +333,7 @@ def test_chk_xc():
 
 def test_chk_netlist(request):
     """Opt-in (needs Vivado, about 3 minutes; TSR_CHK_VIVADO=1 or -k netlist): the Vivado-synthesised netlist of
-    tsr_chk answers the directed ops like the simulator, and its synthesis has no multi-driven net (W4-A review:
+    tsr_chk answers the directed ops like the simulator, and its synthesis has no multi-driven net (once
     two always_ff blocks wrote the operand extents; Verilator simulated it correctly, Vivado did not)."""
     import subprocess
     import pytest

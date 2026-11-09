@@ -37,8 +37,8 @@
 //      streams with relative tickets, the RISC-V SPM store stream, the final written DRAM and SPM
 //      state: test_sim_obs.h) and the captured launch traces (push records, DONE, tickets.bin,
 //      init / expect regions, image); the schedules change the timing. PERF PUSH_STALL = 0 in every
-//      session (CC §7.3). The three graph launches' trace digests (fw_trace_digest.h) equal the W2a
-//      image's (92f0b17): MUL_MAT's push stream is W2a's (SW §7.3, §7.4).
+//      session (CC §7.3). The three graph launches' trace digests (fw_trace_digest.h) equal the golden
+//      values: MUL_MAT's push stream is unchanged (SW §7.3, §7.4).
 //   B. Trace round trip (SW §10.1, SW-4: a DTCM state leak between launches would show here):
 //      the fixed session's TSR_TRACE directory holds one trace per captured launch, equal to the
 //      in-memory capture; each replays on fresh simulators under fixed and random:11; the random:3
@@ -50,7 +50,7 @@
 //      §4.11 on the production image (descriptor push -> kernel entry, empty-launch round trip,
 //      DURATION), the RISC-V cycles per graph op (SW §7.8:
 //      <= 400) on 0.5B decode lists (T = 1, 3 vs 1 layers) with the U200 queue depths, with deep
-//      queues, and with deep queues and the backend's flags (no MARK), each as W2a measured it (every
+//      queues, and with deep queues and the backend's flags (no MARK), each as the RISC-V's total work (every
 //      busy cycle) and as the executor's work (up to the last op push, wait-loop iterations after
 //      their first test excluded: fw_prof.h spin_filter), with a per-function and per-access-class
 //      profile per record (fw_prof.h; TSR_FW_PROF_DUMP=<path> writes per-PC histograms for
@@ -109,7 +109,7 @@ uint32_t h_ch(uint32_t h) { return h >> 28; }
 uint64_t h_beat(uint32_t h) { return h & 0x0FFFFFFFu; }
 
 // The M6 U200 configuration (EX §11, CC): 4 channels of 16 GiB (lazily mapped), 4 MiB SPM, T_MAX 8,
-// the M6 CAPS (VU and the AT ops; TOPK and DQROW come with M8), U200 queue depths (the default).
+// the M6 CAPS (VU and the AT ops; TOPK and DQROW are RTL options and off), U200 queue depths (the default).
 tsr_config e2e_cfg() {
     tsr_config c = TSR_CONFIG_U200;
     c.t_max = 8;
@@ -604,7 +604,7 @@ void run_session(const char * sched, e2e_run & R, const graph_case & g, const gr
             R.answers.push_back(a);
         }
         for (const auto & sp : samples) session_replay(s, R, sp);
-        // fix W2a: graph a second time, after selftest and replay ran on this image (the inputs, incl.
+        // graph a second time, after selftest and replay ran on this image (the inputs, incl.
         // the ACC_DST rows, rewritten while the device is idle): same rows; its trace replays fresh (B).
         put_regions(s.sim, g.inputs);
         session_graph(s, R, g);
@@ -769,10 +769,10 @@ int e2e_main(const std::string & base) {
     }
     CHECK(distinct >= 6, "A: the schedules change the timing (%d distinct final MTIMEs of %d)", distinct, N_SCHED);
 
-    // ---- the graph launches' push streams are W2a's (SW §7.3, §7.4: MUL_MAT's tile ops, words and
-    // deps, the executor's own pushes; executor optimisation review, 2026-10-30). The digests of the
+    // ---- the graph launches' push streams are pinned (SW §7.3, §7.4: MUL_MAT's tile ops, words and
+    // deps, the executor's own pushes). The digests of the
     // fixed session's captured traces (fw_trace_digest.h: push records, DONE, expect regions; equal
-    // under every schedule by A) against the W2a image's (92f0b17 tsr-fw.elf under this harness). A
+    // under every schedule by A) against the golden values. A
     // deliberate change of these pushes is a decision: record it (SW §7.3 / §7.4), update the values.
     if (R[0].tr.size() >= 3u) {
         struct pin { const char * what; const tsr_trace2 * t; uint64_t w2a; };
@@ -783,9 +783,9 @@ int e2e_main(const std::string & base) {
         };
         for (const pin & p : pins) {
             const uint64_t d = fw_trace_digest(p.t);
-            CHECK(d == p.w2a, "%s: launch trace digest %016llx (%zu pushes), W2a's %016llx: the push stream changed", p.what,
+            CHECK(d == p.w2a, "%s: launch trace digest %016llx (%zu pushes), golden %016llx: the push stream changed", p.what,
                   (unsigned long long)d, p.t->n_push, (unsigned long long)p.w2a);
-            printf("fw_m6_e2e: %s: %zu pushes, trace digest %016llx (W2a's: %s)\n", p.what, p.t->n_push,
+            printf("fw_m6_e2e: %s: %zu pushes, trace digest %016llx (golden: %s)\n", p.what, p.t->n_push,
                    (unsigned long long)d, d == p.w2a ? "equal" : "DIFFERENT");
         }
     }
@@ -963,7 +963,7 @@ tsr_sim * perf_boot(fwh & h, perf_ctx & p, bool deep = false, double ref_ratio =
 
 // Ends a perf simulator: no push of its run waited for a credit in hardware (PERF PUSH_STALL = 0:
 // the firmware reads the credit before it pushes, CC §7.3; the fast path's batched credit check
-// included. Executor optimisation review, 2026-10-30).
+// included).
 void perf_close(fwh & h, tsr_sim * sim) {
     const uint64_t stall = tsr_sim_perf(sim, TSR_PERF_PUSH_STALL(tsr_sim_config(sim)->num_ch));
     CHECK(stall == 0u, "perf: PERF PUSH_STALL %llu RV cycles: a push waited for a credit in hardware (CC §7.3)",
@@ -1051,7 +1051,7 @@ int perf_main() {
     // short credit-wait spins once it runs ahead of the MVM unit), then deep queues (no credit
     // waits: the executor's own cost per record, the number SW §7.8 bounds).
     // A third pass: the deep-queue run of lists with the backend's flags (STOP_ON_ERROR only; the
-    // lists above carry MARK as W2a's did, which a PROF launch sets).
+    // lists above carry MARK, which a PROF launch sets).
     const graph_case g1 = build_graph(1, 1, false, false, 0x9E1u);
     const graph_case g3 = build_graph(3, 1, false, false, 0x9E3u);
     const graph_case p1 = build_graph(1, 1, false, false, 0x9E1u, false);
@@ -1142,7 +1142,7 @@ int perf_main() {
                                                     pass == 0 ? ".mulmat" : pass == 1 ? ".mulmat_deep" : ".mulmat_prod");
         CHECK(per_rec <= 4000.0, "perf: regression ceiling 4000 RV cycles per graph record (%.0f)", per_rec);
         // Executor optimisation (SW §7.8): 387 / 484 RV cycles of work per record on Ibex maxperf /
-        // small (deep queues; W2a: 1,518 / 1,966); a ceiling that holds on both tables.
+        // small (deep queues); a ceiling that holds on both tables.
         CHECK(work_rec <= 600.0, "perf: regression ceiling 600 RV cycles of executor work per record (%.0f)", work_rec);
     }
     // ---- cheap records: JOIN chains (one SYNC push per record; bounds a short M7 op's executor cost) ----
@@ -1184,9 +1184,9 @@ int perf_main() {
                (cyc[1] - cyc[0]) / dn, (ins[1] - ins[0]) / dn);
         fwprof::prof::diff(prof[1], prof[0]).report(stdout, "fw_m6_perf: profile per JOIN record", dn, 10, ".join");
     }
-    // ---- M7 projection (executor-optimisation integration, 2026-10-30): the 0.5B decode layer plus
+    // ---- M7 projection: the 0.5B decode layer plus
     // 25 short VU records per layer (build_graph vu_recs; exec_kinds.cpp kind 0x38 VU: LD, 2-3 VOPs,
-    // ST, through the generic handler call as W2b's kinds will go) on the fw_exec test image (the
+    // ST, through the generic handler call, as the real kinds do) on the fw_exec test image (the
     // production sources plus the test kinds), U200 queues, fixed schedule. Per layer = (3 layers -
     // 1 layer) / 2. Does the RISC-V stay ahead: the launch time against a reference run whose RISC-V
     // is clocked at 4x the core clock (TSR_SIM_RV_RATIO's maximum: a near-ideal issuer; what remains
@@ -1194,7 +1194,7 @@ int perf_main() {
     // issue-bound gaps (a unit idle while its next op is not enqueued yet: an upper bound on what
     // the issuer costs, since the op might have waited for its deps anyway; with the U200 queue
     // depths a full DMA queue also holds the in-order issuer back). Printed only (the stub is not
-    // W2b's kinds).
+    // real kinds).
     if (g_m7_image != nullptr) {
         const char * const prod = g_image;
         g_image = g_m7_image;

@@ -2,7 +2,7 @@
 // NUM_CH clusters -> y lines in the SPM (partial lines with byte enables), ACC read-modify-write,
 // zero tails.
 //
-// Owner: top agent (docs/rtl-mvm.md §2 block (top); contract §6.3).
+// Spec: docs/rtl-mvm.md §2 block (top); contract §6.3.
 //
 // Contract (normative text docs/rtl-mvm.md §6.3; tsr_sim.c ex_mvm write loop):
 //   - start (pulse) with the MVM fields (stable from start until done): acc, t (tokens), n (N >= 1),
@@ -26,7 +26,7 @@
 // Throughput: up to one SPM line write per cycle (ACC: one read + one write per cycle, 16
 //   tsr_fp_add lanes); see docs/rtl-mvm.md §6.3.
 //
-// Microarchitecture (M3 part C: per-cluster assemblers + central part, docs/rtl-mvm.md §14):
+// Microarchitecture (per-cluster assemblers + central part, docs/rtl-mvm.md §14):
 //
 //   start + fields ─► per cluster: tsr_vpipe(JOB_PIPE, keep) ─► assembler c (tsr_mvm_gasm)
 //   res[c] ──────────────────────────────────────────────────► assembler c: two buffers
@@ -49,8 +49,8 @@
 //     cluster. JOB_PIPE (tsr_mvm: = RES_PIPE) puts register slices between each assembler and
 //     the central part, so on the U200 an assembler sits next to its cluster (another SLR) and
 //     only jobs cross. The central part selects among NUM_CH pipe heads (one NUM_CH : 1 select).
-//     Before M3 part C the job data was one NUM_CH x 2 x T_MAX : 1 select at the centre: 4 ch /
-//     T_MAX 8 routing congestion and -0.8 ns there on the U200 (docs/rtl-mvm.md §14).
+//     A single NUM_CH x 2 x T_MAX : 1 select of the job data at the centre gave routing congestion
+//     and -0.8 ns there on the U200 at 4 ch / T_MAX 8 (docs/rtl-mvm.md §14).
 //   - An assembler takes rows only after its start arrived (res_ready = 0 until then; rows of a
 //     new MVM wait in the result pipes), and it is busy from that start to its last job (the job
 //     carrying the cluster's last row, `last`); clusters without rows (expect_ch[c] = 0) stay idle.
@@ -85,10 +85,10 @@
 // into a full-width member-tagged link. A two-slot source slice per cluster plus local
 // and central two-slot shared slices preserve eight slots/pair. Minimum job latency is
 // three cycles; generic GATHER_PAIR0 keeps the original transport and arbitration.
-// Job pipe last stage (W4-B at; CC §14.4, CC-25): the slice whose m_ready is the central take is a
+// Job pipe last stage (CC §14.4, CC-25): the slice whose m_ready is the central take is a
 //   tsr_rslice FORM 1 (two slots with pointers: the take reaches ~5 control flops instead of the
 //   ~577-bit payload enable; cycle-identical at the ports, so every latency above is unchanged).
-// Attention (W4-B at, AT §8.1; parameter HAS_ATT): with `att` at start the job
+// Attention (AT §8.1; parameter HAS_ATT): with `att` at start the job
 //   pipe of cluster c carries the cluster's attention jobs (aj_*: score lines, ATTPV partials and
 //   row sums, already complete lines or byte-enabled words) instead of its assembler's; the central
 //   part writes them with be = own (tail is a tag: bit 15 = an ATTQK score line, [6:0] its pass row
@@ -105,7 +105,7 @@
 //     job pipes JOB_PIPE x 2 x (49 + SPM_AW + 512) FF per cluster, start pipes JOB_PIPE x (68 +
 //     2 SPM_AW) FF per cluster, ACC issue slice 1.1 K FF, ACC read pipe 2.8 K FF (no reset,
 //     SRL-capable), old line 512 FF, write queue WQ_D x 592 bits (distributed RAM) + 593 FF output
-//     register, 16 tsr_fp_add. Measured before the split (Vivado 2024.2 synthesis, docs/rtl-mvm.md
+//     register, 16 tsr_fp_add. Measured with the single central collector (Vivado 2024.2 synthesis, docs/rtl-mvm.md
 //     §14): 4 ch T_MAX 1 11.0 K LUT / 12.4 K FF, 4 ch T_MAX 8 24.1 K / 41.1 K.
 
 // The assembler below lives in this file (one filelist entry, like tsr_rslice in tsr_mem_arb.sv);
@@ -280,7 +280,7 @@ endmodule
 
 // Two-flit pair transport. Only the FLIT_W payload, valid and ready connect
 // the endpoints. Each endpoint retains two complete-job slots, so this replaces
-// the old two wide slices without adding a second wide fallback link.
+// two wide slices without adding a second wide fallback link.
 module tsr_mvm_pair_tx #(
   parameter int unsigned W = 562,
   localparam int unsigned FLIT_W = (W + 1) / 2
@@ -1040,7 +1040,7 @@ module tsr_mvm_gather
     end
   end
 
-  // out_q reloads whenever the output register is free, not only on out_ld (M3 part C timing,
+  // out_q reloads whenever the output register is free, not only on out_ld (timing,
   // docs/rtl-mvm.md §14: its 592-flop clock enable no longer waits for the queue pointer compare):
   // while out_v_q = 0 it holds don't-care data; whenever out_v_q = 1 it holds exactly the entry
   // out_ld loaded, held until pop as before.

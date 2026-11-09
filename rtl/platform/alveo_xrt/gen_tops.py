@@ -5,7 +5,7 @@ the testbench wrappers from one table (docs/platform-u200.md §6).
     rtl/platform/alveo_xrt/gen_tops.py           write the files below
     rtl/platform/alveo_xrt/gen_tops.py --check   exit 1 if a generated file is missing or stale
 
-Kernels (the lead's kernel contract): module name = kernel name.
+Kernels (kernel contract): module name = kernel name.
     tsr_u200_k1   NUM_CH 1, T_MAX 1   1-channel bring-up bitstream (m_axi_ch0)
     tsr_u200_k4   NUM_CH 4, T_MAX 4   the full-feature card image (m_axi_ch0 .. m_axi_ch3): four MVM clusters
                                       with attention, the vector unit (8 / 8 / 4 lanes), KVST with masked
@@ -22,8 +22,8 @@ AXI_SLICES 2, RST_STAGES 3. With RST_PIPE 3, ap_rst_n must stay low for >= 4 cyc
 The kernels are `ap_ctrl_none` with interrupt="false"
 and only the ch<c> buffer args (EX §9.1); two clocks: ap_clk / ap_rst_n (the core and the adapter)
 and ap_clk_2 / ap_rst_n_2 (the control core, tsr_core clk_rv / rst_rv_n; CC §11.1, §13.3). The
-platform build stays disabled until Y5 (hw/u200/build_xclbin.sh), whose first smoke link confirms
-ap_ctrl_none (fallback: EX §9.1); the link configurations already request both clocks.
+link configurations (hw/u200/k1.cfg, k4.cfg) request both clocks; ap_ctrl_none has the fallback of
+EX §9.1.
 
 Outputs:
     rtl/platform/alveo_xrt/<kernel>.v         named-port Verilog-2001 top (ap_clk, ap_rst_n,
@@ -33,7 +33,7 @@ Outputs:
     tb/platform/sv/kwrap_<kernel>.sv          simulation wrapper: the named top with the packed
                                               port list of tsr_xrt_kernel, so one C++ testbench
                                               drives the generic body and both packaged tops
-                                              (linted now; the kernel bench returns in Y5)
+                                              (linted)
 """
 from __future__ import annotations
 
@@ -57,13 +57,13 @@ KERNELS = {
     # GDN), so the host keeps the legacy attention and epilogue paths. HAS_GDN 1 adds the fused Gated DeltaNet state
     # update (VU §7.12: the engine and the lanes' shared update, in the VU's Pblock). The place_design hook is
     # hw/u200/k4_major_blocks.tcl.
-    # FAST_CLK 1 (docs/platform-u200.md §8.10) is the 250 MHz work: the PERF counters, the row-vector emitters, the PV convert pipeline,
+    # FAST_CLK 1 (docs/platform-u200.md §8.10) selects the 250 MHz form: the PERF counters, the row-vector emitters, the PV convert pipeline,
     # the KVST placer and the slice pointer copies in their registered forms. Remove it for the netlist of the 200 MHz images.
     # Two other elaborations of tsr_u200_k4, as kernel entries:
-    #  - the reduced first card image (branch k4m200, docs/platform-u200.md §8.7): no vector unit, no attention,
-    #    no trace writer, no history; hook at commit 07fbf33:
+    #  - the reduced card image (docs/platform-u200.md §8.7): no vector unit, no attention,
+    #    no trace writer, no history; its kernel entry:
     #      dict(short="k4", NUM_CH=4, T_MAX=8, RV_LOCAL_TRANSPORT=1, HAS_VU=0, HAS_ATT=0, HAS_TRW=0, HIST_DEPTH=0)
-    #  - the full image with the local-intermediate banks (branch codex/local-intermediates, aadf92c), which
+    #  - the full image with the local-intermediate banks, which
     #    needs the lane banks beside their owner clusters in the hook:
     #      add LOCAL_INTERMEDIATES=1, LOCAL_SCALE=1, LOCAL_SOFTCAP=1 to the entry below
     "tsr_u200_k1": dict(short="k1", NUM_CH=1, T_MAX=1, VU_FRONT_LANES=16, VU_EXP_LANES=8, VU_BACK_LANES=4, VU_LANE_PIPE=0),

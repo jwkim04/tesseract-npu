@@ -429,7 +429,7 @@ def _has_scope(dut, name: str) -> bool:
 @cocotb.test()
 async def fp_mul_stages(dut):
     """Stage allocation of tsr_fp_mul (its header, "Pipeline"), the structure behind its measured
-    timing (review finding: a 10-level round stage at LAT 3 and 4): [IN] holds the raw operands
+    timing (a 10-level round stage at LAT 3 and 4 was the fault): [IN] holds the raw operands
     from LAT 2 (no logic in front of the module's input flops; the old classification in front of
     [IN] fails here), product registers (DSP P, then M) 1 / 2 / 2 / 3 at LAT 3 / 4 / 5 / 6,
     [NORM] from LAT 5. The logic depth itself needs Vivado: test_fp_ooc_timing (opt-in)."""
@@ -699,7 +699,7 @@ async def fp_add_reset(dut):
 # =============================================================================================
 @cocotb.test()
 async def fp_defaults(dut):
-    """Regression (review finding: tsr_pkg::TSR_DEF_FADD_LAT was 6 while tsr_fp_add's default,
+    """Regression (tsr_pkg::TSR_DEF_FADD_LAT was 6 while tsr_fp_add's default,
     the LAT swept and timing-closed here, is 5). Measures the latency of tsr_fp_mul / tsr_fp_add
     instantiated with their default LAT (one operation, counted like fp_add_throughput) and checks
     default = the U200 LAT this file sweeps and runs out of context (MUL_LAT_U200 / ADD_LAT_U200)
@@ -1093,7 +1093,7 @@ def pytest_collection_modifyitems(config, items):
 
 
 def test_fp_slow_gate():
-    """Regression (review finding): `pytest tb` / tb/run_all.sh must not start the slow tests
+    """Regression: `pytest tb` / tb/run_all.sh must not start the slow tests
     (the full sweep is 4 processes for ~5 min; the Vivado runs need ~3 GB each)."""
     class Cfg:
         def __init__(self, markexpr="", keyword="", args=("tb",)):
@@ -1257,7 +1257,7 @@ def parse_ooc(log: str) -> dict:
 @pytest.mark.slow
 @pytest.mark.parametrize("which", sorted(OOC_RUNS))
 def test_fp_ooc_timing(request, which):
-    """Regression for the review finding on tsr_fp_mul's round stage (P register -> y: 7 LUTs +
+    """Regression for tsr_fp_mul's round stage (P register -> y: 7 LUTs +
     3 CARRY8 at LAT 3 and 4 before the restructure; this test reports max_lut 7 on that design):
     out-of-context place and route at 3.333 ns on xcu200-fsgd2104-2-e must meet timing with at
     most OOC_MAX_LUT LUTs on any path."""

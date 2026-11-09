@@ -1,4 +1,4 @@
-// tsr_vu.c — the simulator's VU unit (P1.4): decode, dispatch checks, operand extents, execution and
+// tsr_vu.c — the simulator's VU unit: decode, dispatch checks, operand extents, execution and
 // cycle model of VOP 0x30, RED 0x31, ROPE 0x32, TOPK 0x33, SOP 0x40, DQROW 0x12 and GDN 0x39 on unit 3.
 //
 // Normative sources: docs/design/02-vector-unit.md (VU) §4 (operand model, n = 0 and tail rules, the s
@@ -8,7 +8,7 @@
 // result comes from tsr_ref_vu.c (which builds on tsr_ref_math.c and tsr_ref.c): this file decodes
 // with the generated field constants (tsr_tables.h), checks, and points the references at the
 // simulator's SPM and s bank. AT's vector ops 0x34–0x37 also run on unit 3 but are AT's ops
-// (tsr_at.c). VMASK 0x38 (M9) has no handler, so the issue path completes it ILLEGAL_OP (CAPS
+// (tsr_at.c). VMASK 0x38 has no handler, so the issue path completes it ILLEGAL_OP (CAPS
 // bit7 = 0), as it does every reserved VU opcode (0x13, 0x3A–0x3F, 0x41–0x47, EX §7.2).
 //
 // Checks (VU §5.1, §5.9; EX §8.1 order ILLEGAL_OP -> BAD_FMT -> K_RANGE -> T_RANGE -> OPERAND ->
@@ -32,7 +32,7 @@
 // Extents (tsr_sim_int.h §1): the range-check extents in field order, then the s registers the op
 // really accesses (a VOP with m = 0 reads no s[si]; a TO_S RED writes s[sd] even for m = 0), one
 // entry per (index, direction). The aliasing rule of VU §4.5 (a source may equal the destination
-// only exactly) is the race detector's (P1.9, VU §10 item 3), not a dispatch check: EX has no code
+// only exactly) is the race detector's (VU §10 item 3), not a dispatch check: EX has no code
 // for it.
 //
 // Execution: at completion (SW §4.1), sources read through the references after every earlier op's
@@ -433,7 +433,7 @@ static uint64_t cyc_rope(const tsr_sim * sim, const uint32_t w[8]) {
 }
 
 // ---------------------------------------------------------------------------
-// TOPK 0x33 (VU §5.5, §6.8; simulator from M6, RTL M8)
+// TOPK 0x33 (VU §5.5, §6.8; simulator and RTL option)
 // ---------------------------------------------------------------------------
 static const uint32_t k_topk_rsv[8] = { TSR_TOPK_RSV_W0, TSR_TOPK_RSV_W1, TSR_TOPK_RSV_W2, TSR_TOPK_RSV_W3,
                                         TSR_TOPK_RSV_W4, TSR_TOPK_RSV_W5, TSR_TOPK_RSV_W6, TSR_TOPK_RSV_W7 };
@@ -549,7 +549,7 @@ static uint64_t cyc_sop(const tsr_sim * sim, const uint32_t w[8]) {
 }
 
 // ---------------------------------------------------------------------------
-// DQROW 0x12 (VU §5.6, §6.8; simulator from M6, RTL M8)
+// DQROW 0x12 (VU §5.6, §6.8; simulator and RTL option)
 // ---------------------------------------------------------------------------
 static const uint32_t k_dqrow_rsv[8] = { TSR_DQROW_RSV_W0, TSR_DQROW_RSV_W1, TSR_DQROW_RSV_W2, TSR_DQROW_RSV_W3,
                                          TSR_DQROW_RSV_W4, TSR_DQROW_RSV_W5, TSR_DQROW_RSV_W6, TSR_DQROW_RSV_W7 };
@@ -675,7 +675,7 @@ static void ex_gdn(tsr_sim * sim, const uint32_t w[8]) {
 // (tb/vu test_vu_timing.py vu_gdn_op: ten shapes, m 64 .. 256 and rows 16 .. 256, at the K4 and the U200 lanes; SW-78):
 //   (rows + 1) L(m) R + ceil(rows (23 - 2 R) / 16) + 9 m / 2 + 122,   R = cycles per line of the front lanes (16 / F)
 // The first term is the (rows + 1) m / F beats of VU §7.12.8, the others the setup (4 m + rows + 45 in the estimate of the
-// VU §7.12.8 table, now measured: a row costs a little more than its beats, the setup 4.5 cycles per element and 122 cycles).
+// VU §7.12.8 table, measured: a row costs a little more than its beats, the setup 4.5 cycles per element and 122 cycles).
 // Equal to the RTL within 2 cycles at the K4 lanes (2,914 for 128 x 128, 8 lanes), within 1.5 % at the U200 lanes
 // (1,898 against 1,917). Heads that follow each other with independent tiles overlap the next setup under the rows of
 // the previous head in the RTL (VU §7.12.8); that gain is not modelled, as for the other ops (VU §7.9).

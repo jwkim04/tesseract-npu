@@ -367,7 +367,7 @@ static int retire_cb(void * ctx, const tsr_rv_retire * r) {
 }
 static uint32_t DBG_EV[16], DBG_ARG[16];
 static int NDBG;
-static int HALT_ON_RESET;   // P1.12: debug_cb raises the halt request at the RESET event
+static int HALT_ON_RESET;   // debug_cb raises the halt request at the RESET event
 static void debug_cb(void * ctx, uint32_t ev, uint32_t arg);
 
 static uint8_t * mem(uint32_t a, uint32_t n) {
@@ -966,7 +966,7 @@ static void test_csr(void) {
     setcsr(0x7A0, 1); setcsr(0x7A1, 0);
     // dcsr / dpc / dscratch through the debug API.
     CHECK(csr(0x7B0) == 0x40000003u, "dcsr reset");
-    // P1.12: stepie (bit 11), stopcount, stoptime, mprven, nmip, ebreaks forced 0 (Ibex).
+    // stepie (bit 11), stopcount, stoptime, mprven, nmip, ebreaks forced 0 (Ibex).
     setcsr(0x7B0, 0xFFFFFFFFu);  CHECK(csr(0x7B0) == 0x40009007u, "dcsr writable fields 0x%08x", csr(0x7B0));
     setcsr(0x7B0, 0x00000002u);  CHECK(csr(0x7B0) == 0x40000003u, "dcsr prv 2 -> M");
     setcsr(0x7B0, 0x00000000u);  CHECK(csr(0x7B0) == 0x40000000u, "dcsr prv U");
@@ -1522,7 +1522,7 @@ static void test_watch(void) {
 }
 
 // ---------------------------------------------------------------------------
-// P1.12 additions: debug-entry priority (trigger > haltreq > step, ahead of interrupts), the
+// Debug entry: priority (trigger > haltreq > step, ahead of interrupts), the
 // RESET event and a halt before the first instruction (DB §3.8), the hart's data watch
 // (tsr_rv_set_data_watch, DB §3.7), counters in debug mode (stopcount 0)
 // ---------------------------------------------------------------------------

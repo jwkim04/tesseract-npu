@@ -1,5 +1,5 @@
-// tsr_race.h — the simulator's race detector and the launch-stateless check (P1.9;
-// docs/design/06-software-verification.md "SW" §4.6, SW-3 / SW-4; memory model
+// tsr_race.h — the simulator's race detector and the launch-stateless check
+// (docs/design/06-software-verification.md "SW" §4.6, SW-3 / SW-4; memory model
 // docs/ctrl-riscv.md §5.5 and EX §2.3). Implementation and the exact rules: tsr_race.c.
 //
 // The detector is an optional model of the simulator library (sw/sim/race.cmake adds tsr_race.c;

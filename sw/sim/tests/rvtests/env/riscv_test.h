@@ -1,5 +1,5 @@
 // sw/sim/tests/rvtests/env/riscv_test.h - riscv-tests "p" environment for the tsr_rv test bus
-// profile (docs/design/06-software-verification.md §4.2, P1.11).
+// profile (docs/design/06-software-verification.md §4.2).
 //
 // Put this directory before riscv-tests' env/p on the include path: everything not redefined
 // here (pass/fail, TESTNUM, the data section with tohost/fromhost, RVTEST_RV32U/M ...) comes from

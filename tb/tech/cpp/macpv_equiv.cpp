@@ -1,4 +1,4 @@
-// macpv_equiv.cpp — Verilator C++ harness (W4-B at): tsr_mac_lane with PV = 1 (ATTPV's accumulate
+// macpv_equiv.cpp — Verilator C++ harness: tsr_mac_lane with PV = 1 (ATTPV's accumulate
 // mode, AT §8.2) of rtl/tech/xilinx against rtl/tech/generic, cycle by cycle, on every
 // configuration of tb/tech/hdl/tsr_tb_tech_macpv.sv (N 32 x T {1, 2, 3, 8} x LAT {3..7, 9, 11}, N 5).
 // Both models (Vgen, Vxil) get identical inputs. In every cycle:

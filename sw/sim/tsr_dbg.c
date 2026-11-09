@@ -1,4 +1,4 @@
-// tsr_dbg.c — DB simulator models (P1.13): tile-level debug, the DBG register block, DB's control-
+// tsr_dbg.c — DB simulator models: tile-level debug, the DBG register block, DB's control-
 // window registers, completion records, the trace writer, the dispatch history, RV watchpoints and
 // DB's halt requests (docs/design/05-debug.md "DB" §3.3, §3.7-§3.9, §5, §6.1-§6.2, §7.1, §8.1-§8.4,
 // §9.1, §10.1-§10.2; EX §5-§6, §8.5; CC §9.2-§9.6). Interface and scope: include/tsr_dbg.h.
@@ -9,7 +9,7 @@
 // SOFT_RESET step 1), one queue listener (the dispatcher's enqueue tap, start and completion
 // strobes, markers, pushes), the hart's debug events (through the DM model's event hook, or the
 // hart's own hook without the DM) and its data watch (RV watchpoints). Model decisions where DB
-// leaves a choice (reported in the P1.13 decision log):
+// leaves a choice:
 //   - Shadow queues (DB §8.3) mirror each unit queue from the ENQ / START / DONE events: an entry
 //     becomes the head when every earlier entry of its unit left the queue (started, or completed
 //     without running); they give head_pidx[u], oldest_pidx[u], min_out, the probes and the
@@ -32,8 +32,8 @@
 //     becomes HALT_ON_BOOT and RV_HALT_EN, so a request from before a reset never halts the next
 //     boot and halt-on-boot stops the hart before its first instruction. dbg_req_rv goes to the DM
 //     model (tsr_dm_set_ext_haltreq) when it is attached, else straight to the hart's debug_req_i.
-//     STATUS.RV_HALTED (the agent's report) rises at the core time of the debug entry (tsr_bus.c,
-//     P1.13), which is when PERF DBG_STOP_CYCLES and the RVHALT record start.
+//     STATUS.RV_HALTED (the agent's report) rises at the core time of the debug entry (tsr_bus.c),
+//     which is when PERF DBG_STOP_CYCLES and the RVHALT record start.
 //   - The REC FIFO and REC_CFG are clk_rv state: they restart empty when the hart leaves reset.
 //     Markers always make a REC record (DB §8.4).
 //   - SBA_REFUSED: an SBA access started through the DMI window that ends with sberror at an

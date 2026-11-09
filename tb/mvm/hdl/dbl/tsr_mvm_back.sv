@@ -1,6 +1,5 @@
 // tb/mvm/hdl/dbl/tsr_mvm_back.sv — TEST DOUBLE of rtl/core/tsr_mvm_back.sv (same module name,
-// parameters and ports; selected by tb/mvm/test_mvm.py instead of the rtl/core file, which the
-// back-end agent implements in parallel). Behavioural, simulation only; not part of any filelist
+// parameters and ports; selected by tb/mvm/test_mvm.py instead of the rtl/core file). Behavioural, simulation only; not part of any filelist
 // and not linted by rtl/lint.sh (the module name collides with the real one).
 //
 // Behaviour = the contract of docs/rtl-mvm.md §3.3-§3.5 / §7.1, computed from what the double
@@ -28,7 +27,7 @@ module tsr_mvm_back
   import tsr_pkg::*;
   import tsr_att_pkg::*;
 #(
-  parameter  bit          HAS_ATT    = 1'b0,          // W4-B at: the double models the MVM only
+  parameter  bit          HAS_ATT    = 1'b0,          // the double models the MVM only
   parameter  int unsigned K_MAX      = TSR_DEF_K_MAX,
   parameter  int unsigned T_MAX      = TSR_DEF_T_MAX,
   parameter  int unsigned ACT_RD_LAT = TSR_DEF_ACT_RD_LAT,
@@ -47,7 +46,7 @@ module tsr_mvm_back
   input  logic [T_MAX-1:0]              rst_tok_n,      // the real back end's per-token reset copies (unused here)
   input  logic                          cfg_fmt,
   input  logic [7:0]                    cfg_d_lines,
-  // W4-B at: attention ports (ignored / 0 in the double)
+  // attention ports (ignored / 0 in the double)
   input  tsr_att_bcfg_t                 att_cfg,
   input  logic [T_MAX-1:0][10:0]        att_tbase,
   input  logic                          att_start,

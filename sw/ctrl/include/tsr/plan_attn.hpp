@@ -1,16 +1,16 @@
 // tsr/plan_attn.hpp — planners of SET_ROWS_KV (0x18) and FLASH_ATTN (0x19), and the FA chunk planner
 // shared with tsr_ref_fa (docs/design/06-software-verification.md "SW" §7.2, §7.5; docs/design/03-attention-
-// kv.md "AT" §4, §5, §6.6, §7, §12; W2b P2.7). Freestanding, C++17-compatible, constexpr-friendly:
+// kv.md "AT" §4, §5, §6.6, §7, §12). Freestanding, C++17-compatible, constexpr-friendly:
 // the firmware's kind handlers (sw/ctrl/kernels/k_kv.cpp, k_fattn.cpp) and the host's supports_op
-// (W3b) call the same functions (SW-20).
+// call the same functions (SW-20).
 //
 // The planner contract and the declarations are tsr/plan.hpp's ("M7 planning"), which includes this
-// file after them; including this file first works too (it includes plan.hpp). Owner: W2b kvfa.
+// file after them; including this file first works too (it includes plan.hpp).
 //
-// FA chunk planner. The per-tile chunk list (AT §6.6 steps 2-3, §7.3; W1a's rules 1-8) is
+// FA chunk planner. The per-tile chunk list (AT §6.6 steps 2-3, §7.3; rules 1-8) is
 // sw/sim/include/tsr_fa_plan.h, ONE freestanding C / C++ source that tsr_ref_at.c (tsr_fa_plan, hence
 // tsr_ref_fa) also compiles: the firmware's tile-op sequence and the reference's are the same by
-// construction (sw/ctrl/tests/test_fw_kvfa_plan.cpp compares it with W1a's code). It is included
+// construction (sw/ctrl/tests/test_fw_kvfa_plan.cpp compares it with the original planner kept in that test). It is included
 // here by a path relative to this file (the firmware's include path is sw/ctrl/include only); its
 // pass rule and NCG are constexpr in C++.
 //
@@ -54,7 +54,7 @@
 // kind_plan: row_lines = K/16, tile_rows = T_q, n_tiles = ceil(n_tokens / T_q), scratch_lines = the
 // block, aux[0] = GS, aux[1] = NCG_MAX, aux[2] = R, aux[3] = E.
 //
-// FLASH_ATTN flags (word 21; AT §12 names the word without defining it: W2b decision). Rule 7 of
+// FLASH_ATTN flags (word 21; AT §12 names the word without defining it). Rule 7 of
 // the chunk planner ("newest last", AT §6.6 step 3) needs the cells written in this launch; they are
 // the indices of the layer's SET_ROWS_KV records (the same preload entry), so the word refers to them:
 //   [0] FA_NEW      the cells written in this launch are the I64 indices below (else: none)

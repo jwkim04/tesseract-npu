@@ -5,15 +5,15 @@
 #   tsr-log           decode raw device log words with a firmware ELF (tsr_log.cpp, DB §6.1)
 #   tsr_devrun        launch targets (a transport or the shadow simulator) and trace replays through
 #                     them (tsr_devrun.h): tsr-selftest and tsr-trace-replay --device
-#   tsr-trace-gen / -replay / -conv   trace tools (trace_gen.cmake, trace_tools.cmake; P1.10)
+#   tsr-trace-gen / -replay / -conv   trace tools (trace_gen.cmake, trace_tools.cmake)
 #   klcheck           model-level KL check vs the ggml CPU backend (docs/klcheck.md). Links llama, so it is
 #                     only built when the llama targets exist
 #   tsr-numcheck      per-node numeric dump (docs/numcheck.md); links llama as well
 #   tsr-mtp           multi-token prediction driver and checker (tsr_mtp.cpp, SW §7.11): llama.cpp's MTP drafter loop with
 #                     the device counters, plain / speculative modes; links llama-common
-#   tsr_bw            M0 bandwidth tool (XRT builds, once tsr_bw.cpp exists)
+#   tsr_bw            bandwidth tool (XRT builds)
 #   tsr_dbg, tsr-dbg, tsr-prof   libtsr_dbg (GDB RSP server over the DMI window, tile-level debug, the
-#                     trace writer) and its tools (dbg/dbg.cmake; P3.7, P3.8)
+#                     trace writer) and its tools (dbg/dbg.cmake)
 # klcheck and numcheck run with the SW-22 settings (SW-22, SW §10.4): FA on, q8_0 / q8_0 KV,
 # LLAMA_ATTN_ROT_DISABLE=1, offload_kqv false in M6 (--phase m6, the default) and true in M7.
 
@@ -35,7 +35,7 @@ if (EXISTS ${TESSERACT_ROOT}/sw/sim/trace.cmake AND NOT "trace" IN_LIST TSR_SIM_
 endif()
 
 # ---------------------------------------------------------------------------
-# tsr_devrun (P3.3): launch targets and trace replays through a transport (tsr_devrun.h). C11 with
+# tsr_devrun: launch targets and trace replays through a transport (tsr_devrun.h). C11 with
 # one C++ file (the inner simulator of the sim / mock kinds is reached through tsr_kdev.h).
 # Internal headers: sw/sim/tsr_sim_int.h (the checker classes: trace fit test, the replay
 # kernel's SPM buffer) and sw/ctrl/ref/fw_sim_host.hpp (the shadow's host loader).
@@ -52,7 +52,7 @@ if (_tsr_have_trace)
     target_link_libraries(tsr_devrun PUBLIC tsr_transport tsr_sim tsr_ref)
 endif()
 
-# P1.10 trace tools, each snippet owned by its package: trace_tools.cmake (tsr-trace-replay,
+# Trace tools, one snippet each: trace_tools.cmake (tsr-trace-replay,
 # tsr-trace-conv) and trace_gen.cmake (tsr-trace-gen). Both link the trace library and are left
 # out without it, and each one by its own name in TSR_SIM_SKIP_SNIPPETS.
 if (_tsr_have_trace)
@@ -62,7 +62,7 @@ if (_tsr_have_trace)
         endif()
     endforeach()
 endif()
-# P3.3: tsr-trace-replay --device KIND (replays through a transport, tsr_devrun.h).
+# tsr-trace-replay --device KIND (replays through a transport, tsr_devrun.h).
 if (TARGET tsr-trace-replay AND TARGET tsr_devrun)
     target_link_libraries(tsr-trace-replay PRIVATE tsr_devrun)
     set_target_properties(tsr-trace-replay PROPERTIES LINKER_LANGUAGE CXX)
@@ -105,7 +105,7 @@ if (TARGET tsr_devrun)
     add_test(NAME tools_selftest_mock_1ch COMMAND tsr-selftest ${_st_common} --mem-mib 0)
     set_tests_properties(tools_selftest_mock_1ch PROPERTIES ENVIRONMENT "TSR_MOCK_NUM_CH=1;TSR_SIM_THREADS=4" TIMEOUT 600)
     if (TSR_BASH_TOOLS)
-        # The checklist on the core of the reduced first card image tsr_u200_k4 (no VU, no attention: CAPS 0,
+        # The checklist on the core of the reduced card image tsr_u200_k4 (no VU, no attention: CAPS 0,
         # no VU queue, T_MAX 8; docs/platform-u200.md §8.7), on sim and mock (test_selftest_k4min.sh).
         add_test(NAME tools_selftest_sim_k4min
                  COMMAND ${TSR_BASH_TOOLS} ${CMAKE_CURRENT_SOURCE_DIR}/test_selftest_k4min.sh
@@ -153,8 +153,7 @@ if (TARGET tsr_devrun)
     endif()
 endif()
 
-# tsr_bw: M0 host <-> card and kernel bandwidth tool (XRT only; the source is added by the M0
-# work, so the target exists only once the file does).
+# tsr_bw: host <-> card and kernel bandwidth tool (XRT only).
 if (TSR_WITH_XRT AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tsr_bw.cpp)
     add_executable(tsr_bw tsr_bw.cpp)
     set_target_properties(tsr_bw PROPERTIES
@@ -277,7 +276,7 @@ cmake_language(DEFER DIRECTORY ${TESSERACT_ROOT} CALL tsr_add_mtp)
 # numcheck_helper (numcheck.py: ggml conversions + libtsr_ref B1 loop), see numcheck_helper.cmake.
 include(${CMAKE_CURRENT_SOURCE_DIR}/numcheck_helper.cmake)
 
-# P3.7 / P3.8: libtsr_dbg, tsr-dbg, tsr-prof and their tests (dbg/dbg.cmake).
+# libtsr_dbg, tsr-dbg, tsr-prof and their tests (dbg/dbg.cmake).
 include(${CMAKE_CURRENT_SOURCE_DIR}/dbg/dbg.cmake)
 
 # SW-87: tsr-top (the live monitor), tsr-mon-probe and their tests (top/top.cmake).

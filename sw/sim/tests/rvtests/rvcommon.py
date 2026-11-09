@@ -1,4 +1,4 @@
-"""Shared helpers of the RV32 conformance harness (P1.11; docs/design/06-software-verification.md
+"""Shared helpers of the RV32 conformance harness (docs/design/06-software-verification.md
 §4.2 test bus profile, §9.6 toolchain, §10.1 oracle chain Spike -> tsr_rv).
 
 Stdlib only (Python >= 3.8). Used by rvtests.py (riscv-tests, riscv-arch-test) and rv_random.py
@@ -18,7 +18,7 @@ Spike profiles (SPIKE_PROFILES):
             x registers 0, no boot ROM, no CLINT, no dtc). RAM at 0x8000_0000, HTIF tohost /
             fromhost. This is the oracle configuration of rv_isa and rv_random.
 
-tsr_rv runner contract (implemented by P1.7; the harness calls it as)
+tsr_rv runner contract (implemented by tsr_rv_run; the harness calls it as)
     <runner> [<TSR_RV_RUNNER_ARGS>...] [--log-commits FILE] [--signature FILE] [--max-insns N] ELF
   * loads the ELF on the test bus profile: RAM at 0x8000_0000 covering the ELF's PT_LOAD
     segments, reset PC = e_entry, x1..x31 = 0, HTIF `tohost`/`fromhost` found by symbol;

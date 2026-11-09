@@ -188,7 +188,7 @@ typedef struct tsr_transport_stats {
 void tsr_transport_get_stats(const tsr_transport * t, tsr_transport_stats * s);
 
 // ---------------------------------------------------------------------------------------------
-// DB §9.2 debug additions (P3.7 libtsr_dbg / tsr-dbg, P3.8 tsr-prof). Nothing above needs them.
+// DB §9.2 debug additions (libtsr_dbg / tsr-dbg, tsr-prof). Nothing above needs them.
 // ---------------------------------------------------------------------------------------------
 // DMI window (DB §3.2): debug-module register addr7 (0..127) at core CSR 0xC00 + 4 addr7, the same
 // path on every kind (the sim kind's DBG model forwards it to tsr_dm). The window acts only while

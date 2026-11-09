@@ -1,5 +1,5 @@
 // test_fw_kvfa_rv.cpp — fw_kvfa_rv_*: the SET_ROWS_KV and FLASH_ATTN kinds (sw/ctrl/kernels/k_kv.cpp,
-// k_fattn.cpp; W2b P2.7) in the RISC-V image on tsr_rv, launched through the `graph` executor
+// k_fattn.cpp) in the RISC-V image on tsr_rv, launched through the `graph` executor
 // (docs/design/06-software-verification.md "SW" §7.2, §7.5, §10.2 "fw_kernels_rv": per kind, 8 schedules,
 // race fatal, outputs bit-exact against the references).
 //
@@ -16,7 +16,7 @@
 //       schedule; output = tsr_ref_fa bit for bit as above), the same q8_0 cache (the planes read back
 //       with tsr_kv_get_bytes), Q and F16 mask through ggml_flash_attn_ext on the CPU (ref_at_ggml's
 //       harness, sw/sim/tests/test_ref_at.c fa_run_cpu): NMSE <= 1e-9 and the softmax-KL of the output
-//       rows <= 1e-12 (W2b fix: measured 1.1e-13 to 2.7e-12 / <= 9e-15 on these cases; tight, because
+//       rows <= 1e-12 (measured 1.1e-13 to 2.7e-12 / <= 9e-15 on these cases; tight, because
 //       this is the only check of the shared chunk planner besides fw_kvfa_plan, kvfa_ref.hpp).
 //   test_fw_kvfa_rv IMAGE perf
 //       Measurements (SW §7.8, AT §7.4, §9.2; the default timing model, Ibex maxperf, or
@@ -269,7 +269,7 @@ void run_kl() {
             if (cok) {
                 const fa_cmp r = compare(dev.data(), cpu.data(), size_t(c->T) * k.n_head, c->D);
                 printf("  %-26s %9.2e %9.2e %9.2e %9.2e\n", c->name, r.nmse, r.max_abs, r.kl_max, r.kl_mean);
-                // W2b fix (review): the gates sit a few orders above the measured floor (NMSE 1.1e-13 to
+                // The gates sit a few orders above the measured floor (NMSE 1.1e-13 to
                 // 2.7e-12, KL_max <= 9e-15 on these cases), so a one-cell mask or chunk-bound error in the
                 // shared planner (tsr_fa_plan.h, which the bit-exact references also use) fails here:
                 // test-backend-ops' 5e-4 let a q05b / g12swa one-cell error pass (KL 2.4e-3 / 8.0e-7).

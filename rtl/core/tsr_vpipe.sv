@@ -1,6 +1,6 @@
 // tsr_vpipe.sv — fixed-latency pipe without backpressure (valid bits + data), DEPTH stages.
 //
-// Owner: architecture (docs/rtl-mvm.md §1, §6). Shared infrastructure: the MVM broadcast pipe
+// Spec: docs/rtl-mvm.md §1, §6. Shared infrastructure: the MVM broadcast pipe
 // (tsr_mvm -> clusters, crosses SLRs) and any fixed delay line.
 // Contract: out_valid / out_data are in_valid / in_data delayed by exactly DEPTH cycles
 //   (DEPTH = 0: wires). The valid bits are reset to 0 (control); the data registers have no reset

@@ -1,7 +1,7 @@
 // tsr_vu_dly.sv — fixed delay line of D register stages (D = 0: a wire), no reset, no enable.
 //
-// Owner: VU (docs/design/02-vector-unit.md "VU" §7.3: "SRL delay lines carry a, b, the clamp decision
-// and the TANH small-path value alongside"). Without a reset or an enable, synthesis maps deep lines
+// Spec: docs/design/02-vector-unit.md "VU" §7.3: "SRL delay lines carry a, b, the clamp decision
+// and the TANH small-path value alongside". Without a reset or an enable, synthesis maps deep lines
 // to SRL16 / SRL32 shift registers (one LUT per bit per 32 stages). Lines of at most FF_MAX stages stay
 // in flip-flops (shreg_extract = "no"): LUTs are SLR1's scarce resource (CC §14.1), flip-flops are not,
 // and a short SRL costs a whole LUT per bit. Datapath only: whatever a stage holds after power-up is

@@ -3,8 +3,8 @@
 // streams (PUSH / QCTRL events projected per unit, deps as relative tickets), the RISC-V's SPM
 // store stream (RV_SPM_WR access events) and the final written DRAM beats and SPM lines (write
 // extents of every op that ran, the RISC-V's SPM stores; content at the end). The LCQ records are
-// the caller's (test_sim_rvhost.h collects them). Factored out of test_sim_sched.c (P1.8) for
-// sim_w1b_e2e (W1b integration); used by both.
+// the caller's (test_sim_rvhost.h collects them). Factored out of test_sim_sched.c for
+// sim_w1b_e2e; used by both.
 //   obs_attach (at create, before the hart runs) -> run -> obs_finish -> obs_equal / obs_free
 #pragma once
 
@@ -70,7 +70,7 @@ static void obs_q(void * ctx, tsr_sim * sim, const tsr_q_event * ev) {
         if (e->kind == TSR_EXT_SPM) {
             for (uint64_t l = e->lo; l < e->hi && l < o->spm_lines; ++l) o->spm_wr[l] = 1;
         } else if (e->kind == TSR_EXT_DRAM && e->ch == TSR_EXT_CH_ALL) {
-            // P2.5: a write extent on every channel (KVST's plane, AT §5.8) is one range per channel.
+            // a write extent on every channel (KVST's plane, AT §5.8) is one range per channel.
             const uint32_t nch = tsr_sim_config(sim)->num_ch;
             for (uint32_t c = 0; c < nch; ++c) {
                 if (o->n_dram == o->cap_dram) {

@@ -1,4 +1,4 @@
-// test_fw_elf.cpp — the fw_elf ctests (P2.1; SW §6.2, §9.5, §10.2; EX §3.1-§3.4): tsr-elf and the
+// test_fw_elf.cpp — the fw_elf ctests (SW §6.2, §9.5, §10.2; EX §3.1-§3.4): tsr-elf and the
 // firmware image format.
 //
 //   test_fw_elf unit <elf dir> <tsr-elf> [<other.elf> ...]
@@ -936,7 +936,7 @@ int mode_image(const std::string & path, bool base, const std::string & has, boo
           z.budget_itcm, z.dtcm_used, z.budget_dtcm);
     CHECK(tsr_elf_id(e) == trace_id(b, path.c_str()), "%s: tsr-elf and tsr_trace.c ids differ", path.c_str());
     check_sim_reader(path, e);
-    if (base) {   // fix W2a: freestanding SDK: no static constructor (crt0 runs .init_array; the SDK has none)
+    if (base) {   // freestanding SDK: no static constructor (crt0 runs .init_array; the SDK has none)
         uint32_t i0 = 0, i1 = 0;
         CHECK(tsr_elf_symbol(e, "__init_array_start", &i0) == 0 && tsr_elf_symbol(e, "__init_array_end", &i1) == 0 && i0 == i1,
               "%s: .init_array is empty (%u bytes of static constructors)", path.c_str(), i1 - i0);

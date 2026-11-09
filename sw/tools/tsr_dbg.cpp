@@ -9,7 +9,7 @@
 //       (the hart stops before its first instruction, DB §3.8). One GDB session; the server exits
 //       when it ends (D, k or a closed connection).
 //   tsr-dbg [--device KIND] [--elf F] [--attach | --load | --halt-on-boot] [--json] [-ex CMD]... [-x FILE] [CMD ...]
-//       batch mode (CI, agents): every -ex command, the lines of -x FILE, then CMD ... as one
+//       batch mode (CI, scripts): every -ex command, the lines of -x FILE, then CMD ... as one
 //       command, through the monitor set (DB §4.8, §9.3: status, units, hist, tile, rv, perf, spm,
 //       mem, sreg, log, crash, dump, recover, trw, launch, ping, ...); --json prints one object per
 //       command. The default open is --attach (diagnosis of a device another process left).

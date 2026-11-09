@@ -1,4 +1,4 @@
-// tsr_dm.c — debug-module model of the simulator (P1.12, DB-18): DB §9.1's DMI profile on the
+// tsr_dm.c — debug-module model of the simulator (DB-18): DB §9.1's DMI profile on the
 // built-in hart (tsr_rv) and its bus (tsr_bus). The register-level contract, the model decisions
 // and the timing rules are in include/tsr_dm.h.
 //

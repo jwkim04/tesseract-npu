@@ -1,7 +1,7 @@
 // tsr_ctl_win.sv — control window, core window, SPM windows and line buffer of the RISC-V
 // (CC §5, §7.1-§7.5, §10.5, §12.3; EX §4.5 for 0x200-0x2FC). clk_rv domain.
 //
-// Owner: ctrl agent (W4 item 3; CC §2.2 `tsr_ctl_win`, `tsr_spm_lb`). The simulator's model of the
+// Spec: CC §2.2 `tsr_ctl_win`, `tsr_spm_lb`. The simulator's model of the
 // same registers is sw/sim/tsr_q.c (q_cw_read / q_cw_write / q_push / q_qctrl / q_trace_mark),
 // sw/sim/tsr_sim.c (tsr_sim_lq_cw_access) and sw/sim/tsr_bus.c (windows, line buffer); tb/ctrl
 // compares this block with them.
@@ -31,7 +31,7 @@
 //     is ticketed like a push), 0x144 QSTATUS, 0x148 WAIT_TICKET, 0x14C WAIT_CREDIT,
 //     0x178 TRACE_MARK (a CTRL entry with w1 = the value, DB §8.4), 0x1C4 SPM_LB_INV.
 //   0x160-0x17C (except 0x178) and 0x400-0x7FC are DB's (DB §10.2): forwarded to the db_* port
-//     (read data one cycle after db_req; tied to 0 until the DB block exists, W4-B).
+//     (read data one cycle after db_req; tied to 0 until the DB block exists).
 //   0x200-0x2FC (EX §4.5, CC-30): LQ_HEAD_W0-7, LQ_AVAIL, LQ_HEAD_SEQ, LQ_CANCEL, LQ_STOP, LQ_FLAGS,
 //     LCQ_FREE, LOG_CFG and LOG_FREE are read by a handshake into the core domain (the core's value
 //     at its answer); LQ_POP and LCQ_POST (with the eight staged words) commit and fault there;
@@ -113,7 +113,7 @@ module tsr_ctl_win
   input  logic                         dbg_stop,
   input  logic                         perf_time_en,
   input  logic                         perf_evt_en,
-  // DB window (W4-B; tie db_rdata / db_irq to 0 until then)
+  // DB window (tie db_rdata / db_irq to 0 until then)
   output logic                         db_req,
   output logic                         db_we,
   output logic [11:0]                  db_off,

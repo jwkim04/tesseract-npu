@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""sw/tables/gen_tables.py — generate the tables from sw/tables/tsr_tables.py (EX-30, P1.1).
+"""sw/tables/gen_tables.py — generate the tables from sw/tables/tsr_tables.py (EX-30).
 
     sw/tables/gen_tables.py           write the generated files below (only those that changed)
     sw/tables/gen_tables.py --check   regenerate in memory; exit 1 if a file is missing or stale
@@ -554,7 +554,7 @@ constexpr op op_finish(op o) {
     return o;
 }
 
-// Field placement of the generated builders (vu.hpp, at.hpp; P2.3). A value that does not fit its
+// Field placement of the generated builders (vu.hpp, at.hpp). A value that does not fit its
 // field is never masked into a different, legal value: in a constant expression it is a compile
 // error (the call of the non-constexpr detail::op_field_does_not_fit), at run time the builder
 // sets the op's lowest reserved w0 bit (the poison argument), so that the checker answers
@@ -1032,7 +1032,7 @@ def gen_cpp_builder(e: Enc) -> list[str]:
                for f in e.fields]
     w = max(len(a) for a, _ in members) if members else 0
     lines = ["struct %s {" % sname] + ["%s  %s" % (a.ljust(w), b) for a, b in members] + ["};"]
-    # always_inline: with the field struct and the op in registers a push is a few stores (P2.3).
+    # always_inline: with the field struct and the op in registers a push is a few stores.
     lines.append("[[gnu::always_inline]] constexpr op %s(const %s& f) {" % (e.name, sname))
     lines.append("    op o{};")
     narrow = [f for f in e.fields if f.width != 32]

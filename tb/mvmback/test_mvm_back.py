@@ -175,7 +175,7 @@ def test_mvm_back_i2f_sweep():
            "-CFLAGS", "-O2 -I%s" % (REPO / "sw" / "sim" / "include"),
            "-LDFLAGS", "-L%s -ltsr_ref -Wl,-rpath,%s" % (lib.parent, lib.parent),
            "--Mdir", str(bdir), "-o", "i2f_sweep"]
-    cmd += rtl_args() + [str(s) for s in srcs] + [str(I2F_SV), str(I2F_CPP)]   # rtl_args: rtl/ctrl's (W4-A)
+    cmd += rtl_args() + [str(s) for s in srcs] + [str(I2F_SV), str(I2F_CPP)]   # rtl_args: rtl/ctrl's
     p = subprocess.run(cmd, capture_output=True, text=True)
     assert p.returncode == 0, "i2f_sweep build failed:\n%s\n%s" % (p.stdout[-4000:], p.stderr[-4000:])
     exe = bdir / "i2f_sweep"

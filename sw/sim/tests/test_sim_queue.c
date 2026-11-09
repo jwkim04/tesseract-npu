@@ -170,7 +170,7 @@ static void test_checker_order(void) {
 }
 
 // ---------------------------------------------------------------------------
-// 1b. OPERAND and a VU checker class through stub handlers (the real VU is P1.4's)
+// 1b. OPERAND and a VU checker class through stub handlers (the real VU is tsr_vu.c)
 // ---------------------------------------------------------------------------
 static uint32_t stub_check(tsr_sim * s, const uint32_t w[8], tsr_extents * ext, uint32_t * info) {
     if (w[0] >> 16) return TSR_ERR_ILLEGAL_OP;
@@ -546,7 +546,7 @@ static void test_credits(void) {
     for (int k = 0; k < 31; ++k) push(s, tsr_enc_ld(0, 0, 0, 1), TSR_TICKET_NONE, TSR_TICKET_NONE);
     CHECK(TSR_GET(cwr(s, TSR_CW_ISSUE_CREDIT), TSR_ISSUE_CREDIT_QACT) == 1, "one FIFO entry left");
     // The QACTs use line 100, away from the LDs' line 0: without a dependency they would race with
-    // them (W1b integration: race-free, so the test also runs with TSR_SIM_RACE=fatal, SW §4.6).
+    // them (race-free, so the test also runs with TSR_SIM_RACE=fatal, SW §4.6).
     push(s, tsr_enc_qact(0, 100, 100, 32, 1, 0), TSR_TICKET_NONE, TSR_TICKET_NONE);
     CHECK(tsr_sim_csr_read(s, TSR_CSR_Q_FIFO) == 32 && cwr(s, TSR_CW_ISSUE_CREDIT) == 0, "FIFO full: every credit 0");
     const tsr_insn q = tsr_enc_qact(0, 100, 100, 32, 1, 0);

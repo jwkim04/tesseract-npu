@@ -1,6 +1,5 @@
 // tb/mvm/hdl/dbl/tsr_mvm_actbuf.sv — TEST DOUBLE of rtl/core/tsr_mvm_actbuf.sv (same module name,
-// parameters and ports; selected by tb/mvm/test_mvm.py instead of the rtl/core file, which the
-// back-end agent implements in parallel). Behavioural, simulation only; not part of any filelist
+// parameters and ports; selected by tb/mvm/test_mvm.py instead of the rtl/core file). Behavioural, simulation only; not part of any filelist
 // and not linted by rtl/lint.sh (it lives below tb/mvm/hdl/, one directory deeper on purpose: the
 // module name collides with the real one).
 //
@@ -29,10 +28,10 @@ module tsr_mvm_actbuf
   input  logic                          clk,
   input  logic                          rst_n,
   input  logic                          wr_valid,
-  input  logic [T_MAX-1:0]              wr_tmask,    // W4-B at: tokens written
+  input  logic [T_MAX-1:0]              wr_tmask,    // tokens written
   input  tsr_mvm_bcline_t               wr_line,
   input  logic                          qs_re,
-  input  logic [T_MAX-1:0][QS_AW-1:0]   qs_addr,     // W4-B at: per token
+  input  logic [T_MAX-1:0][QS_AW-1:0]   qs_addr,     // per token
   output logic [T_MAX-1:0][1023:0]      qs_data,
   input  logic                          dbs_re,
   input  logic [T_MAX-1:0][DBS_AW-1:0]  dbs_addr,

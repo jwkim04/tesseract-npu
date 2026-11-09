@@ -189,7 +189,7 @@ class Gen:
 
     def _vu(self):
         r = self.r
-        # VU / AT opcodes (W4-B classes through the xc port); legal or not, the simulator decides
+        # VU / AT opcodes (the VU / AT classes through the xc port); legal or not, the simulator decides
         op = r.choice([0x30, 0x31, 0x32, 0x40, 0x34, 0x37, 0x12, 0x33])
         return [op | (r.getrandbits(8) << 8 if r.random() < 0.5 else 0)] + \
                [r.choice([0, r.getrandbits(8), r.getrandbits(16)]) for _ in range(7)]

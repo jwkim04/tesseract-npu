@@ -1,6 +1,6 @@
 // tsr-msum.h — the mask-summary producer of the ggml-tesseract backend (docs/design/03-attention-kv.md
 // "AT" §7.3 MSUM, §5.5 AMASK and the f32 mask copy, §6.6 the chunk planner; docs/design/06-software-
-// verification.md "SW" §9.3 M7 "Mask summaries", SW-32, SW-15; W3b P3.5).
+// verification.md "SW" §9.3 M7 "Mask summaries", SW-32, SW-15).
 //
 // The device never reads ggml's F16 KQ mask (the VU has no f16, AT-14). For each mask the
 // scheduler writes into a Tesseract buffer (set_tensor of a tensor whose name contains "kq_mask":
@@ -16,7 +16,7 @@
 //   [copy_off, +copy_bytes)      the f32 copy AMASK reads (word 13): fdiv(m, scale) per cell, rows of
 //                                ceil(n_kv/16) lines, padding -inf (tsr_msum_mask_f32)
 //
-// Decisions (W3b, recorded in SW §9.3 / §13 by the integration):
+// Decisions (recorded in SW §9.3 / §13):
 //   - Scales: the producer learns the FA scales from the builder. For every FLASH_ATTN that reads a
 //     mask, the builder calls attach(mask, {scale, E, D, G}) while it builds (and again on every
 //     cached reuse; a known reader costs a lookup). The set of readers of a mask only grows (until
@@ -43,7 +43,7 @@
 //   - A FLASH_ATTN without a mask gets an all-visible MSUM (one run [0, n_kv) per row) from
 //     nomask(), a side allocation cached per (n_q, n_kv).
 //
-// Interface to the builder (ggml-tesseract.cpp, the "W3b kv" sections):
+// Interface to the builder (ggml-tesseract.cpp, the KV-cache sections):
 //   static tsr_msum_ref tsr_fa_mask_ref(tsr_device * d, const ggml_tensor * fa);
 //       for a FLASH_ATTN_EXT node: attach (scale = op_params[0], E, D, G from its operands) and the
 //       words / ranges to use; ref.valid == false when the mask is not summarized (not named

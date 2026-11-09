@@ -1,4 +1,4 @@
-// tsr_sched.c — Tesseract simulator, schedule policy (P1.8; docs/design/06-software-verification.md
+// tsr_sched.c — Tesseract simulator, schedule policy (docs/design/06-software-verification.md
 // "SW" §4.4, §4.7, §4.9): TSR_SIM_SCHED parsing, the xoshiro128** streams and the draws the time
 // base (tsr_q.c) and the RISC-V agent (tsr_bus.c) make under the random schedule. The policy
 // itself (what is drawn where, the CDC lag of the RISC-V-side reads, ties, fast-forward) is

@@ -397,7 +397,7 @@ struct tsr_transport {
     recovery_log rlog;
     uint32_t dumps = 0;
 
-    // DB §9.2 debug additions (P3.7, P3.8)
+    // DB §9.2 debug additions
     bool debugger = false;              // tsr_transport_set_debugger: TRAPs stay for the debugger
     void * dbg_service = nullptr;       // handle of the embedded debug service (TSR_GDB)
     tsr_debug_service dbg_svc{};        // its entry points (a copy: the registry may change)
@@ -1370,7 +1370,7 @@ struct tsr_transport {
         }
         rlog.dumps++;
         rlog.last_dump_dir = dir;
-        msg("hang dump written to %s (DB §7.4; history, trace ring and SBA reads are tsr-dbg's, P3.7)", dir.c_str());
+        msg("hang dump written to %s (DB §7.4; history, trace ring and SBA reads are tsr-dbg's)", dir.c_str());
     }
 
     // ---- DB §7.3 recovery ladder, entered by a wait timeout ----
@@ -1694,7 +1694,7 @@ struct tsr_transport {
             for (const char * n : { "TSR_PROF", "TSR_PROF_TRW_MIB", "TSR_PROF_EVERY", "TSR_PROF_RV_SAMPLE_US" })
                 if (const char * e = getenv(n); e != nullptr && e[0] != '\0')
                     msg("%s is set: in-process trace-writer profiling is not wired into this program (tsr-prof trw runs its own "
-                        "launches, P3.8); ignored", n);
+                        "launches); ignored", n);
             // EX §10.2: renamed and removed variables.
             static const char * const renamed[][2] = { { "TSR_XRT_TIMEOUT_MS", "TSR_LAUNCH_TIMEOUT_MS" }, { "TSR_XRT_ABORT_MS", "TSR_ABORT_MS" } };
             for (const auto & rn : renamed)
@@ -1710,7 +1710,7 @@ struct tsr_transport {
     // SOFT_RESET, so a debug session before this open may have left it armed. The waits must then
     // see its stops and serial mode, or they would count a debug stop as a hang and run the
     // recovery ladder against it: the debug-aware state is read at every backoff poll from now on.
-    // The configuration is the debugger's to clear (ladder level 1, P3.7); TSR_TILE_SERIAL=0 clears
+    // The configuration is the debugger's to clear (ladder level 1); TSR_TILE_SERIAL=0 clears
     // SERIAL at open.
     void debug_config_check() {
         if (!has_dbg) return;
@@ -1796,7 +1796,7 @@ struct tsr_transport {
             binfo.warm ? "warm" : "cold", binfo.itcm_loaded, binfo.dtcm_loaded, binfo.words_written, (double) binfo.time_ns / 1e6,
             tbase(), rlog.timeouts, rlog.traps, rlog.restarts);
         if (state == dstate::failed) return;
-        // DB §8.6: the PERF summary of the session (P3.8).
+        // DB §8.6: the PERF summary of the session.
         tsr_perf_summary ps;
         perf_summary(&ps);
         char b[4096];
@@ -2156,7 +2156,7 @@ extern "C" void tsr_transport_get_stats(const tsr_transport * t, tsr_transport_s
 }
 
 // ===========================================================================
-// DB §9.2 debug additions (P3.7, P3.8)
+// DB §9.2 debug additions
 // ===========================================================================
 extern "C" int tsr_transport_dmi_enable(tsr_transport * t, int on) {
     if (t == nullptr) return TSR_TE_INVAL;

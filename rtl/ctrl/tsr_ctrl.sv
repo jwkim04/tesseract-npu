@@ -2,9 +2,9 @@
 // tsr_ctrl_rv (clk_rv: Ibex, debug module, TCMs, bus, control window) + tsr_ctrl_cdc (every
 // crossing) + the clk_rv reset synchronisers. The ports are the core-domain side of tsr_ctrl_cdc
 // (tsr_core_dp connects them), the two clocks and resets, and the DB window of the control window
-// (clk_rv, W4-B).
+// (clk_rv).
 //
-// Owner: ctrl agent (W4 item 3). Integration into tsr_core (the issue, CSR and SPM blocks are other
+// Integration into tsr_core (the issue, CSR and SPM blocks are other
 // owners'): see the "Integration" notes below; the full contract is the header of tsr_ctrl_cdc.sv.
 //
 // Resets (CC §12.2): the clk_rv domain reset is rst_n (ap_rst_n, core domain) through tsr_rst_sync
@@ -100,7 +100,7 @@ module tsr_ctrl
   output logic                      if_valid_o,
   input  logic                      if_ready_i,
   output logic [TSR_IFIFO_BITS-1:0] if_data_o,
-  output logic [5:0]                if_count_o,   // issue-FIFO entries waiting (Q_FIFO; W4-A integrate)
+  output logic [5:0]                if_count_o,   // issue-FIFO entries waiting (Q_FIFO)
   // sequences and error records
   output logic [5:0][27:0]          issued_seq_o,
   input  logic [5:0][27:0]          s_seq_i,
@@ -187,7 +187,7 @@ module tsr_ctrl
   output logic                      rv_ndmreset_o,
   output logic                      rv_dmactive_o,
   output logic                      rv_halt_pend_o,
-  // DB window of the control window (clk_rv; W4-B): 0x160-0x17C except 0x178, 0x400-0x7FC.
+  // DB window of the control window (clk_rv): 0x160-0x17C except 0x178, 0x400-0x7FC.
   // db_rdata_i is sampled in the cycle after db_req_o.
   output logic                      db_req_o,
   output logic                      db_we_o,
@@ -196,7 +196,7 @@ module tsr_ctrl
   input  logic [31:0]               db_rdata_i,
   input  logic                      db_irq4_i,
   input  logic                      db_irq6_i,
-  // Ibex taps for the DB block (clk_rv; tsr_dbg_rv, W4-B integrate): see tsr_ctrl_rv
+  // Ibex taps for the DB block (clk_rv; tsr_dbg_rv): see tsr_ctrl_rv
   output logic                      tap_data_req_o,
   output logic                      tap_data_gnt_o,
   output logic [31:0]               tap_data_addr_o,

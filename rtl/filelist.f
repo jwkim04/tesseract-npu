@@ -1,19 +1,19 @@
 // rtl/filelist.f — generic (vendor-neutral) target: simulation (Verilator/cocotb) and lint.
 // Paths are relative to this file's directory: use `verilator -F rtl/filelist.f`
 // (tb/common/runner.py reads the same list). Order: packages first, then tech, then core.
-// A target filelist (e.g. rtl/filelist_u200.f, M4) swaps tech/generic for tech/xilinx.
+// A target filelist (e.g. rtl/filelist_xilinx.f) swaps tech/generic for tech/xilinx.
 ctrl/waivers/vendor.vlt
 core/tsr_tables_pkg.sv
 core/tsr_pkg.sv
 core/tsr_fp_pkg.sv
-// W4-B at: area AT's payloads and helpers (after tsr_fp_pkg, which it imports)
+// area AT's payloads and helpers (after tsr_fp_pkg, which it imports)
 core/tsr_att_pkg.sv
-// W4-B vu: the external checker-class contract and the vector unit's package (VU §7, CC §8.2)
+// the external checker-class contract and the vector unit's package (VU §7, CC §8.2)
 core/tsr_xc_pkg.sv
 core/tsr_vu_pkg.sv
 tech/generic/tsr_sram_1r1w.sv
 tech/generic/tsr_mac_lane.sv
-// the RISC-V control subsystem and its vendored IP (rtl/ctrl, CC §2-§5, §11; W4-A): after the
+// the RISC-V control subsystem and its vendored IP (rtl/ctrl, CC §2-§5, §11): after the
 // tables package and the SRAM wrapper, which it uses
 -F ctrl/filelist.f
 core/tsr_fp_mul.sv
@@ -27,7 +27,7 @@ core/tsr_spm_bridge.sv
 core/tsr_mem_arb.sv
 core/tsr_vpipe.sv
 core/tsr_rpipe.sv
-// W4-B at: the DMA's KVST engine (AT §8.3), instantiated by tsr_dma
+// the DMA's KVST engine (AT §8.3), instantiated by tsr_dma
 core/tsr_dma_kvst.sv
 core/tsr_dma.sv
 core/tsr_qact.sv
@@ -35,14 +35,14 @@ core/tsr_mvm_ws.sv
 core/tsr_mvm_front.sv
 core/tsr_mvm_actbuf.sv
 core/tsr_mvm_back.sv
-// W4-B at: the attention units of a cluster (AT §8.1 score assembler and row-vector emitter, §8.2 PV)
+// the attention units of a cluster (AT §8.1 score assembler and row-vector emitter, §8.2 PV)
 core/tsr_mvm_att.sv
 core/tsr_mvm_pv.sv
 core/tsr_mvm_cluster.sv
 core/tsr_mvm_local_scale.sv
 core/tsr_mvm_gather.sv
 core/tsr_mvm.sv
-// W4-B vu: the vector unit (unit 3, VU §7) and its blocks
+// the vector unit (unit 3, VU §7) and its blocks
 core/tsr_vu_dly.sv
 core/tsr_vu_exp.sv
 core/tsr_vu_rcp.sv
@@ -74,13 +74,13 @@ core/tsr_vu_gdn.sv
 core/tsr_csr.sv
 // the dispatch checker and the issue path (CC §8-§9; tsr_issue instantiates tsr_chk)
 core/tsr_chk.sv
-// W4-B at: the AT checker classes of tsr_chk's external-class port (CC §8.2, AT §5.8)
+// the AT checker classes of tsr_chk's external-class port (CC §8.2, AT §5.8)
 core/tsr_chk_at.sv
-// W4-B vu: the VU checker class and the xc mux of the VU / AT classes (CC §8.2, VU §5.9)
+// the VU checker class and the xc mux of the VU / AT classes (CC §8.2, VU §5.9)
 core/tsr_vu_chk.sv
 core/tsr_vu_xc.sv
 core/tsr_issue.sv
-// W4-B db: the DB block (DB §10.1): stop logic, shadow queues, history, trace writer, the DBG block
+// the DB block (DB §10.1): stop logic, shadow queues, history, trace writer, the DBG block
 // (tsr_dbg, core clock), the clk_rv part with its crossings (tsr_dbg_rv, uses rtl/ctrl/cdc) and the
 // trace writer's write mux on channel TRW_CH
 core/tsr_dbg_stop.sv

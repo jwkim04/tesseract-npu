@@ -5,7 +5,7 @@
 # trace writer afterwards. Never kills another process.
 #
 #   TSR_BUILD     build tree with the XRT backend (default build/xrt)
-#   TSR_XCLBIN    the card image (default: the k4full link of 2026-11-08)
+#   TSR_XCLBIN    the card image (default: the k4full link)
 #   WARM_TRACE    trace directory of the first-ATTPV replay (default traces/at/errors/at_s53_0009, else the tesseract-sw checkout's)
 #   SKIP_WARM=1   do not replay (an image without the first-ATTPV defect)
 #   NO_DUMP=1     no TSR_DUMP_PLAN: the speed of the same run without the profiler

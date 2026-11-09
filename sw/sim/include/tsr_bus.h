@@ -83,8 +83,8 @@ typedef struct tsr_bus_env {
     int      (*yield)(void * ctx);
     // Optional: RV_RUN for the SBA refusals (CC §4.3). NULL: the value of tsr_bus_set_rv_run.
     int      (*rv_run)(void * ctx);
-    // Optional: extra RV cycles of latency for one hart access that completed (P1.8's random
-    // handshake crossings): region TSR_BUS_REGION_CW (off = control-window offset), _CORE (off =
+    // Optional: extra RV cycles of latency for one hart access that completed (the random
+    // schedule's handshake crossings): region TSR_BUS_REGION_CW (off = control-window offset), _CORE (off =
     // CSR offset), _SPM (an exact-window access or a line-buffer fill; off = SPM byte). Added to
     // the access latency; never called for SBA accesses or line-buffer hits. NULL: 0.
     uint32_t (*xlat)(void * ctx, uint32_t region, uint32_t off);
@@ -117,11 +117,11 @@ void      tsr_bus_attach(tsr_bus * bus, tsr_rv * rv);
 
 // Direct pointer to [addr, addr + n) if it lies inside one memory of the bus (ITCM, DTCM, the
 // DM memory, test RAM), else NULL. For loaders and tests. The DM memory (0x1000_0000, 4 KiB) is a
-// plain array the debug-module model (P1.12) lays out (program buffer, data registers): the hart
+// plain array the debug-module model lays out (program buffer, data registers): the hart
 // fetches from it and accesses it with word loads / stores.
 uint8_t * tsr_bus_mem(tsr_bus * bus, uint32_t addr, uint32_t n);
 
-// Observer of the hart's data transactions (DB §3.7 RV watchpoints, P1.13): called once for every
+// Observer of the hart's data transactions (DB §3.7 RV watchpoints): called once for every
 // transaction the hart issues that completes or faults (each half of a split access separately;
 // not for WAIT / YIELD attempts, not for SBA), with fault = 1 if it faulted. During the call
 // tsr_rv_pc(rv) is the pc of the accessing instruction; tsr_rv_set_debug_req there halts the hart
@@ -239,7 +239,7 @@ uint64_t       tsr_rv_agent_ff_jumps(const tsr_rv_agent * a);
 // A retire hook called after the agent's own for every record (NULL removes it); its return value
 // stops the slice as with tsr_rv_set_retire_hook.
 void           tsr_rv_agent_set_retire_hook(tsr_rv_agent * a, tsr_rv_retire_fn fn, void * ctx);
-// P1.12: reports STATUS.RV_HALTED / RV_SLEEP of the hart now (tsr_sim_rv_set_state), for the DM
+// reports STATUS.RV_HALTED / RV_SLEEP of the hart now (tsr_sim_rv_set_state), for the DM
 // model, which changes the hart outside the agent's step (a resume); the agent's own reports
 // continue from this state.
 void           tsr_rv_agent_sync(tsr_rv_agent * a);

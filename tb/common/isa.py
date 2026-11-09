@@ -30,7 +30,7 @@ ISA_MAJOR, ISA_MINOR = _tables.ISA_MAJOR, _tables.ISA_MINOR   # VERSION: Tessera
 CANON_NAN = 0x7FC00000
 
 MIB = 1024 * 1024
-REGION_OPL_OFF, REGION_OPL_SIZE = 0, 64 * MIB      # op lists (was CMD; EX §11)
+REGION_OPL_OFF, REGION_OPL_SIZE = 0, 64 * MIB      # op lists (EX §11)
 REGION_IO_OFF, REGION_IO_SIZE = 64 * MIB, 256 * MIB
 REGION_AUX_OFF, REGION_AUX_SIZE = 320 * MIB, 192 * MIB
 REGION_WEIGHT_OFF = 512 * MIB
@@ -47,7 +47,7 @@ SRC_ID_W = 2
 MEM_ID_W = 4
 SRC_AUX, SRC_DMA, SRC_WS = 0, 1, 2     # AUX: freed by the fetch removal, tied off (CC-26)
 
-# SPM clients (tsr_pkg TSR_SPM_CL_*, CC §10.2; W4-A spm): 0-3 single port through tsr_spm_cport
+# SPM clients (tsr_pkg TSR_SPM_CL_*, CC §10.2): 0-3 single port through tsr_spm_cport
 SPM_CL_DMA, SPM_CL_QACT, SPM_CL_MVM, SPM_CL_BRIDGE, SPM_CL_VU, SPM_CL_AT = 0, 1, 2, 3, 4, 5
 SPM_NCL = 6
 SPM_NSP = 4
@@ -249,7 +249,7 @@ MVM_CMD_T = StructDef("tsr_mvm_cmd_t", (("local_scale", 1), ("local_softcap", 1)
                                         ("w_off", 32), ("n", 32), ("k", 16), ("t", 4),
                                         ("dst_stride", 32), ("y_lines", 32), ("rows_per_ch", 32),
                                         ("row_beats", 32), ("qa_lines", 16)))
-# ---- M3: MVM unit internal interfaces (tsr_pkg.sv; docs/rtl-mvm.md §3) ----
+# ---- MVM unit internal interfaces (tsr_pkg.sv; docs/rtl-mvm.md §3) ----
 MVM_LANES, MVM_GROUPS, MVM_GROUP_LANES = 128, 4, 32
 MVM_BEATS_W, MVM_BLK_W = 40, 11
 

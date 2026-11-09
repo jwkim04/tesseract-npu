@@ -247,7 +247,7 @@ typedef struct tsr_trace2_result {
     uint64_t core_cycles;           // simulated core cycles of the replayed launch / run
     uint64_t rv_instret;
     int      perf_differs;          // informational: "perf" present and different
-    // P2.5: the replay simulator's race detector at the end (TSR_SIM_RACE / opts.race report): reports,
+    // the replay simulator's race detector at the end (TSR_SIM_RACE / opts.race report): reports,
     // and of those SPM_STALE (a read of SPM never written since the launch's LQ_POP, SW-4)
     uint32_t race_reports, race_stale;
 } tsr_trace2_result;
@@ -261,7 +261,7 @@ typedef struct tsr_trace2_replay_opts {
     uint64_t           max_cycles;  // simulated-time budget of the run (0: 2^40 core cycles)
     int                verbose;     // 1: every failed comparison on stderr
     int                init_from_reads;  // tsr_trace2_run_ops: replace init by the regions the run read
-    // P2.5: kind ops through the `replay` kernel of a firmware image (SW §5.4, §7.7; EX §4.6) instead
+    // kind ops through the `replay` kernel of a firmware image (SW §5.4, §7.7; EX §4.6) instead
     // of the tile-only route (the default, replay_image NULL). The image is booted like a kind-launch
     // trace's; push.bin is written at "ops.load" and launched as replay(handle, count, flags |
     // TSR_REPLAY_F_BUF, buffer line, chunk records), with the SPM buffer placed outside every SPM
@@ -271,11 +271,11 @@ typedef struct tsr_trace2_replay_opts {
     const char *       replay_image;     // ELF path of an image with the kernel; NULL: tile-only route
     const char *       replay_kernel;    // its name in .tsr_kernels; NULL: "replay"
     uint32_t           replay_flags;     // TSR_REPLAY_F_SERIAL (traces/model-v1conv, SW §5.4)
-    uint32_t           race;             // P2.5: race detector of the replay simulator: 0 = TSR_SIM_RACE
+    uint32_t           race;             // race detector of the replay simulator: 0 = TSR_SIM_RACE
                                          // (tsr_sim_opts default), 1 report, 2 fatal
 } tsr_trace2_replay_opts;
 
-// P2.5: the `replay` kernel's arguments (SW §7.7, EX §4.6; sw/ctrl/kernels/replay.cpp holds the same
+// the `replay` kernel's arguments (SW §7.7, EX §4.6; sw/ctrl/kernels/replay.cpp holds the same
 // constants): a0 push.bin handle {ch, beat}, a1 record count, a2 flags, a3 buffer line (F_BUF), a4
 // records per chunk (F_BUF; a multiple of 4, at most TSR_REPLAY_CHUNK_MAX; buffer b is at line a3 +
 // b x chunk x 48 / 64, b = 0, 1, and buffer 1 is used only when the stream has more than one chunk).
@@ -296,7 +296,7 @@ typedef struct tsr_trace2_replay_opts {
 // tile-only replay through the issue port (ISSUE_W / DEP / ISSUE_PUSH, QCTRL and TRACE_MARK
 // stores, as tsr_sim_push / tsr_sim_qctrl do) with deps mapped back as (u, base_u + rel), each
 // store waiting for its credit / FIFO space like the replay kernel (no ISSUE_WAIT_MAX timeout),
-// then until QIDLE; with o->replay_image through the `replay` kernel (P2.5, above). Returns 0 when every
+// then until QIDLE; with o->replay_image through the `replay` kernel (above). Returns 0 when every
 // comparison passed, 1 on a mismatch, 2 on a setup failure (r filled in every case).
 int tsr_trace2_replay_sim(const tsr_trace2 * t, const tsr_config * cfg_or_null, const char * sched_or_null,
                           tsr_trace2_result * r);
@@ -314,7 +314,7 @@ int tsr_trace2_run_ops(tsr_trace2 * t, const tsr_trace2_replay_opts * o, tsr_tra
 // ---------------------------------------------------------------------------
 // Capture covers one launch from its LQ_POP to its answer record (LCQ_POST with ANSWER): DRAM read
 // before written (init, first-read copies), DRAM written (expect, content at the answer), the
-// pushes (PUSH / QCTRL queue events, TRACE_MARK stores) with relative tickets (W2a: and the launch's
+// pushes (PUSH / QCTRL queue events, TRACE_MARK stores) with relative tickets (and the launch's
 // own LAUNCH_BEGIN / LAUNCH_END markers with their SEQ field 0, SW §5.5), per-unit counts and
 // error records at the answer, the DONE record, the image. Only LAUNCH descriptors without
 // reserved bits answered by a DONE record become traces (PING, BAD_DESC types, launches answered

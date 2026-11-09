@@ -2,8 +2,8 @@
 // position each) and pseudo-slots (c-line loads, ROPE table / position loads), in the order the
 // injector consumes them, with the credits each slot takes.
 //
-// Owner: VU (docs/design/02-vector-unit.md "VU" §4.2 operand model, §5 encodings, §7.7-§7.8 sequencer;
-// AT §5.4-§5.7 for AT's vector ops on the VU).
+// Spec: docs/design/02-vector-unit.md "VU" §4.2 operand model, §5 encodings, §7.7-§7.8 sequencer;
+// AT §5.4-§5.7 for AT's vector ops on the VU.
 // Interface:
 //   start / start_tag / start_w   begin an op (the top's hazard check passed); the s bank is sampled in
 //                                 that cycle (VU §4.4: after every earlier VU op's s write).
@@ -51,8 +51,8 @@ module tsr_vu_gen
   parameter int unsigned BACK_LANES = 8,
   parameter int unsigned NUM_CH     = 4,
   parameter int unsigned LM_X       = 1,         // local memory: 512·LM_X lines (2 for NUM_CH > 8)
-  parameter bit          HAS_TOPK   = 1'b0,      // TOPK (CAPS bit3; RTL from M8, VU §5.5)
-  parameter bit          HAS_DQROW  = 1'b0,      // DQROW (CAPS bit6; RTL from M8, VU §5.6)
+  parameter bit          HAS_TOPK   = 1'b0,      // TOPK (CAPS bit3; RTL option, VU §5.5)
+  parameter bit          HAS_DQROW  = 1'b0,      // DQROW (CAPS bit6; RTL option, VU §5.6)
   parameter bit          HAS_GDN    = 1'b0       // GDN (CAPS bit8, VU §7.12)
 ) (
   input  logic                clk,

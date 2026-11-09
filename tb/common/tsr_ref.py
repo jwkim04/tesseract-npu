@@ -81,7 +81,7 @@ class TsrRef:
             "tsr_dot_row": (_RawFloat, [u32, vp, u32, vp]),
             "tsr_tree16": (_RawFloat, [vp]),
             "tsr_rows_per_ch": (u32, [u32, u32]),
-            # M3 (MVM) helpers
+            # MVM helpers
             "tsr_fmt_valid": (C.c_int, [u32]),
             "tsr_fmt_chunk_blocks": (u32, [u32]),
             "tsr_fmt_quant_bytes": (u32, [u32]),
@@ -193,7 +193,7 @@ class TsrRef:
         bs = list(struct.unpack_from("<%dh" % (K // 16), qa, qs_n + d_n)) if kind == QA_A256 else []
         return dict(qs=qs, d=d, bs=bs)
 
-    # ---- M3 helpers: weight formats and the device layout ----
+    # ---- MVM helpers: weight formats and the device layout ----
     def fmt_valid(self, fmt: int) -> bool:
         return bool(self.lib.tsr_fmt_valid(fmt))
 
@@ -260,7 +260,7 @@ class TsrRef:
         self.lib.tsr_dequant_row(fmt, C.create_string_buffer(bytes(row), len(row)), K, out)
         return [int(v) for v in out]
 
-    # ---- M3 helpers: dot products (spec Numeric rules) ----
+    # ---- MVM helpers: dot products (spec Numeric rules) ----
     def term_q8_0(self, row: bytes, K: int, b: int, qa: bytes) -> int:
         """Term of Q8_0 block b of a repacked row against an A32 QA image (f32 bits)."""
         return _bits(self.lib.tsr_term_q8_0(C.create_string_buffer(bytes(row), len(row)), K, b,

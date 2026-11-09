@@ -1,5 +1,5 @@
 // tsr_vu_lane_share.sv — select the one scheduled lane exit before the return pipe.
-// Owner: VU (docs/design/02-vector-unit.md §7.1, §7.10).
+// Spec: docs/design/02-vector-unit.md §7.1, §7.10.
 // back_valid is aligned with the lane input, before its S0 register. The
 // injector orders all exits, so front and back are never consumed together.
 // No arithmetic, buffering or extra latency is added; reduction drains separately.

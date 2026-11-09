@@ -336,7 +336,7 @@ struct env {
         ctx.cfg = &dc;
         ctx.mml = tsr::plan::mm_limits_of(dc);
         ctx.pl = tsr::plan::plan_limits_of(dc);
-        ctx.one = tsr::spm{lay.one_line};      // the one-tile block (graph.cpp's setup; W2b integration)
+        ctx.one = tsr::spm{lay.one_line};      // the one-tile block (graph.cpp's setup)
         ctx.one_lines = lay.one_lines;
         ctx.pre_lines = 16u;
         ctx.pre = tsr::spm{lay.pre_line};
@@ -567,7 +567,7 @@ void test_lists() {
                                 m.glu(0, 4864, 64), m.unary(un::SILU, 1000, 33, 1), m.cpy(13, 40, 3, 1), m.cpy(56, 512),
                                 m.get_rows(20, 64, {63, 62, 1, 2, 3, 3, 0}, 0), m.get_rows(20, 64, {5, 6, 7, 8}, 64, 2)};
     }, false);
-    // W2b fix (review): the s-register shadow's clobber rule (exec.hpp kind_ctx::sreg_valid). SCALE sets
+    // The s-register shadow's clobber rule (exec.hpp kind_ctx::sreg_valid). SCALE sets
     // s12 = 0.75 (SOP.MOVI); a MUL with one scalar for four rows loads s12 with SOP.LDS (general path,
     // ew_run's sreg_clobber); the next SCALE with s = 0.75 must push its MOVI again, else its MULC reads
     // the scalar of the MUL. elem_ref computes 0.75 x: the comparison catches a missing clobber.

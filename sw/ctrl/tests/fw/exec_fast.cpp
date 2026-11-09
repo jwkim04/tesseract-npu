@@ -1,4 +1,4 @@
-// exec_fast.cpp — the executor tests' fast-path reference kind (W2b infra; docs/design/06-software-
+// exec_fast.cpp — the executor tests' fast-path reference kind (docs/design/06-software-
 // verification.md "SW" §7.3 "Hot path", §7.8): test kind 0x39 FASTVU, the k_fast.hpp form of a
 // short VU record, linked into the fw_exec test image and the host driver with exec_kinds.cpp
 // (which dispatches 0x39 here). fw_exec_perf's "short VU record" scenarios measure it beside the
@@ -19,7 +19,7 @@
 //               1), ST y; with CLOBBER then RED.SUM TO_S s[i] = sum(x) (after the ST) and
 //               sreg_clobber(i): the next record wanting v in s[i] must push its MOVI again. Ticket:
 //               the ST, or the RED (which depends on it). fw_exec's sc_m7 checks y = x * v and
-//               counts the SOP pushes (W2b infra, the executor-level s-register rule).
+//               counts the SOP pushes (the executor-level s-register rule).
 //
 // Compiled with -O2 like the kind sources (SW §6.1 TSR_FW_HOT_GLOBS covers sw/ctrl/kernels/k_*.cpp
 // only; a test image's extra sources get -Os): the pragma below.

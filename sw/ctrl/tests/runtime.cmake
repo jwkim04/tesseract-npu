@@ -1,11 +1,11 @@
-# sw/ctrl/tests/runtime.cmake — fw_runtime (P2.2; docs/design/06-software-verification.md "SW" §10.2):
+# sw/ctrl/tests/runtime.cmake — fw_runtime (docs/design/06-software-verification.md "SW" §10.2):
 # the SDK runtime (sw/ctrl/rt: crt0, R1-R10 of EX §4.7, traps and panic, log records) as the
 # RISC-V image on the simulator, under the fixed and 7 random schedules with TSR_SIM_RACE=fatal.
 #
 # Included by sw/ctrl/host/CMakeLists.txt (main project). Provides:
 #   image fw_rt         tsr_fw_image(fw_rt NO_KERNELS ...): sw/ctrl/rt plus the test kernels
 #                       sw/ctrl/tests/fw/rt_*.cpp (no production kernels, so the test does not
-#                       depend on the kernel packages); TSR_FW_TEST_ELF_fw_rt
+#                       depend on the production kernels); TSR_FW_TEST_ELF_fw_rt
 #   test_fw_runtime     the host driver (sw/ctrl/tests/test_fw_runtime.c, C11), with the helpers of
 #                       sw/sim/tests/test_sim_rvhost.h / test_sim_obs.h and tsr_elf (image id,
 #                       kernel table, log formats)

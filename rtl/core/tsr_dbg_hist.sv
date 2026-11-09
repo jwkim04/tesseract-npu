@@ -3,7 +3,7 @@
 // included) with its push index, ticket, deps as pushed, the eight words, the push PC, the
 // dispatch time MTIME[31:0] and INFO, in slot pidx mod DEPTH.
 //
-// Owner: DB (W4-B item 6). Instantiated by tsr_dbg. Oracle: the simulator's DBG model
+// Instantiated by tsr_dbg. Oracle: the simulator's DBG model
 // (sw/sim/tsr_dbg.c hist_recording / hist_frozen / on_enq / hist_clear and the DBG_HIST_* reads).
 //
 // Recording (stage e1 of tsr_dbg, one cycle after the tap): while HIST_EN, not HIST_FREEZE, not

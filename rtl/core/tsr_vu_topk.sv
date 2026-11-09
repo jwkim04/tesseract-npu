@@ -1,7 +1,7 @@
 // tsr_vu_topk.sv — TOPK (0x33) of the VU: per row the k <= 16 best (index, value) pairs under the total order,
 // by a running-threshold filter and one insertion per cycle into a sorted 16-entry list.
 //
-// Owner: VU (docs/design/02-vector-unit.md "VU" §5.5 encoding, §6.8 semantics, §7.9 rate, VU-14).
+// Spec: docs/design/02-vector-unit.md "VU" §5.5 encoding, §6.8 semantics, §7.9 rate, VU-14.
 // Contract: the output rows equal tsr_ref_topk (sw/sim/tsr_ref_vu.c) bit for bit: candidates (j, x̂_j) with
 // x̂ = DAZ(x), NaN -> 0x7FC00000; sorted by x̂ descending under the total order (NaN above everything), a tie
 // to the smaller j; pair i < k at words 2i (j as u32) and 2i + 1 (x̂); missing pairs (m < k) are

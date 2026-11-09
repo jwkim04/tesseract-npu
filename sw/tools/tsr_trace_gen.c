@@ -1,5 +1,5 @@
 // tsr-trace-gen — random tile programs as `ops` traces (docs/design/06-software-verification.md
-// "SW" §5.2–§5.6, P1.10): push streams of tile ops with dependencies, concurrency across the units
+// "SW" §5.2–§5.6): push streams of tile ops with dependencies, concurrency across the units
 // and error injection, run on the simulator to fill done, expect and tickets (SW §5.5), and written
 // through the trace library (tsr_trace.h).
 //
@@ -13,10 +13,10 @@
 // options (no host time, no unordered iteration: the same seed gives byte-identical files).
 //
 // Modes (--ops):
-//   gen (alias m1)  M1 programs: LD -> QACT -> MVM (-> MVM ACC) -> ST groups (traces/gen).
-//   m2              M2 programs: QACT groups and LD -> ST copies, no MVM (traces/m2).
-//   m3              M3 programs: MVM-centred groups (shapes, special values, boundaries) mixed
-//                   with the M2 groups; the 23 MVM error kinds (traces/m3).
+//   gen (alias m1)  LD -> QACT -> MVM (-> MVM ACC) -> ST groups (traces/gen).
+//   m2              QACT groups and LD -> ST copies, no MVM (traces/m2).
+//   m3              MVM-centred groups (shapes, special values, boundaries) mixed
+//                   with the m2 groups; the 23 MVM error kinds (traces/m3).
 //   vu              every VU op (VU §5.2–§5.8) and every VOP function / RED kind and post / ROPE
 //                   form / SOP sub, legal and illegal encodings (OPERAND, SPM_RANGE, reserved bits,
 //                   unused fields), on data loaded by LD and stored by ST (traces/vu).
@@ -172,7 +172,7 @@ static const char * cov_names[COV_N] = { "Q8_0 MVMs", "Q4_K MVMs", "partial-chun
                                          "dst_stride gaps", "stride-0 encodings", "special activations",
                                          "error injections" };
 
-// M2 coverage slots (--ops m2, and the M2 groups of m3).
+// m2 coverage slots (--ops m2, and the m2 groups of m3).
 enum { C2_A32, C2_A256, C2_TGT1, C2_XSTRIDE, C2_ZSTRIDE, C2_KMIN, C2_KMAX, C2_QPAIR, C2_COPY, C2_ZERO,
        C2_X4K, C2_DLIM, C2_SLIM, C2_SPECIAL, C2_ERR, C2_N };
 static const char * cov2_names[C2_N] = { "QACT A32", "QACT A256", "T > 1", "src_stride gaps",
@@ -181,7 +181,7 @@ static const char * cov2_names[C2_N] = { "QACT A32", "QACT A256", "T > 1", "src_
                                          "operands ending at the DRAM limit", "operands ending at the SPM end",
                                          "special activations", "error injections" };
 
-// M3 slots follow the M2 ones (defined with the M3 generator); VU / AT / ctrl slots after them.
+// m3 slots follow the m2 ones (defined with the m3 generator); VU / AT / ctrl slots after them.
 #define COV_MAX  160
 #define COV_V2   100    // stream statistics (cov2v_names)
 #define COV_ERRC 128    // cov[COV_ERRC + code]: traces whose first error (DONE ERR_CODE) is `code`
@@ -269,18 +269,18 @@ typedef struct {
     // expected first error of an injection (for the report; the prediction covers every entry)
     uint32_t   inj_pidx;                  // push index of the first injected fault since the last QCLEAR,
                                           // NOFAIL if none: it must be the trace's first error
-    // M1 / M2 / M3 allocation
+    // gen / m2 / m3 allocation
     uint32_t   spm_next;
     uint64_t   io_next[TSR_NUM_CH_MAX];
     uint64_t   heap_next;
     uint32_t   spm_hi;                       // SPM lines [spm_hi, spm_lines) used from the top
     uint64_t   top_next[TSR_NUM_CH_MAX];     // DRAM beats [top_next, lim) used from the channel end
-    uint64_t   io_lim;                       // M3: IO allocations stay below (= w_lo)
-    uint64_t   w_lo;                         // M3: weight heap start
-    int        wlim_pending;                 // M3: next non-empty tensor ends exactly at the DRAM limit
-    uint64_t   wbudget;                      // M3: weight beats allowed (busiest channel, sum over MVMs)
-    uint64_t   wch0, wall;                   // M3: weight beats used: busiest channel / all channels
-    uint32_t   n_mvm;                        // M3: MVMs pushed
+    uint64_t   io_lim;                       // m3: IO allocations stay below (= w_lo)
+    uint64_t   w_lo;                         // m3: weight heap start
+    int        wlim_pending;                 // m3: next non-empty tensor ends exactly at the DRAM limit
+    uint64_t   wbudget;                      // m3: weight beats allowed (busiest channel, sum over MVMs)
+    uint64_t   wch0, wall;                   // m3: weight beats used: busiest channel / all channels
+    uint32_t   n_mvm;                        // m3: MVMs pushed
     unsigned long cov[COV_MAX];
 } gen_t;
 
@@ -798,7 +798,7 @@ static void put_tensor(gen_t * g, uint32_t fmt, uint32_t N, uint32_t K, uint64_t
     free(row);
 }
 
-// LD (whole span or per token) of T vectors placed xs lines apart (M1, M2 and M3 QACT sources).
+// LD (whole span or per token) of T vectors placed xs lines apart (gen, m2 and m3 QACT sources).
 // Per token with gaps (xs > xl), each gap between two vectors is loaded too, from the gap beats
 // between them in DRAM, which the host fills with GAP_FILL bytes (the simulator's power-on SPM
 // fill, so the SPM holds what it did before the gap loads existed): the strided QACT's source
@@ -826,7 +826,7 @@ static void emit_loads(gen_t * g, uint32_t ch, uint32_t spm, uint64_t beat, uint
 }
 
 // ---------------------------------------------------------------------------
-// M1 programs (--ops gen): LD -> QACT -> MVM (-> MVM ACC) -> ST groups
+// gen programs (--ops gen): LD -> QACT -> MVM (-> MVM ACC) -> ST groups
 // ---------------------------------------------------------------------------
 static int gen_group(gen_t * g) {
     const tsr_config * c = &g->o->cfg;
@@ -972,7 +972,7 @@ static int gen_group(gen_t * g) {
 }
 
 // ---------------------------------------------------------------------------
-// M2 programs (--ops m2): QACT groups and LD -> ST copies, no MVM
+// m2 programs (--ops m2): QACT groups and LD -> ST copies, no MVM
 // Groups: LD -> QACT (-> QACT of the other kind on the same source) -> ST of the QA images, and
 // LD -> ST copies (unaligned, 4 KiB-crossing, up to 320 lines, partial re-stores, operands ending
 // exactly at the last SPM line / last addressable DRAM beat, zero-length LD/ST exactly at the
@@ -982,7 +982,7 @@ static int gen_group(gen_t * g) {
 // addressable end (the first one ends exactly at the DRAM limit).
 static uint64_t io_room(const gen_t * g, uint32_t c) {
     uint64_t hi = g->top_next[c];
-    if (g->o->m3 && hi > g->io_lim) hi = g->io_lim;           // M3: the weight heap sits above IO
+    if (g->o->m3 && hi > g->io_lim) hi = g->io_lim;           // m3: the weight heap sits above IO
     return hi > g->io_next[c] + 128 ? hi - g->io_next[c] - 128 : 0;
 }
 static uint64_t heap_ceiling(const gen_t * g);
@@ -992,7 +992,7 @@ static uint64_t io_alloc(gen_t * g, uint32_t c, uint64_t n) {        // caller c
     return a;
 }
 static int top_alloc(gen_t * g, uint32_t c, uint64_t n, uint64_t * beat) {
-    if (g->o->m3) {                       // M3: above everything the weight heap may still take
+    if (g->o->m3) {                       // m3: above everything the weight heap may still take
         if (g->wlim_pending || g->top_next[c] < heap_ceiling(g) + n + 256) return 0;
     } else if (g->top_next[c] < g->io_next[c] + n + 256) {
         return 0;
@@ -1167,7 +1167,7 @@ static int gen_group_m2(gen_t * g) {
 }
 
 // ---------------------------------------------------------------------------
-// M3 programs (--ops m3): MVM-centred groups mixed with the M2 QACT and LD -> ST copy groups.
+// m3 programs (--ops m3): MVM-centred groups mixed with the m2 QACT and LD -> ST copy groups.
 // An MVM group is
 //
 //   LD x -> QACT (or LD of a raw QA image) -> [LD old values / guard lines] -> MVM x n -> ST
@@ -1188,7 +1188,7 @@ static int gen_group_m2(gen_t * g) {
 // exactly at the SPM end, guard lines around dst spans (an MVM that writes outside its token lines
 // changes a stored line). Error injections: 3/4 MVM faults (reserved fields, BAD_FMT, K_RANGE,
 // T_RANGE, SPM_RANGE on A1 / A2, DRAM_RANGE on A3, each with lower-priority violations in the same
-// op, extents that wrap 32 bits), 1/4 the M2 / stream endings.
+// op, extents that wrap 32 bits), 1/4 the m2 / stream endings.
 // ---------------------------------------------------------------------------
 enum { C3_Q8 = C2_N, C3_Q4, C3_K32, C3_K256, C3_KPART, C3_KMAX, C3_KMAXT, C3_N0, C3_N1, C3_NLTC, C3_ODDN,
        C3_NMIX, C3_NBIG, C3_TGT1, C3_TMAX, C3_YZERO, C3_YGAP, C3_GUARD, C3_ACC, C3_ACCSP, C3_CHAIN,
@@ -1271,7 +1271,7 @@ static uint32_t fp16_class(uint16_t h) {
     return (h & 0x7FFF) == 0x7BFF ? WF_DMAX : 0;
 }
 
-// N rows of ggml blocks. mode 0: random bytes, fp16 scales as M1 (rare +-0 / subnormal);
+// N rows of ggml blocks. mode 0: random bytes, fp16 scales as gen (rare +-0 / subnormal);
 // 1: a quarter of the rows get special scales in 1/8 of their blocks; 2: extreme rows (Q8_0
 // quants -128 / -127 / 127, Q4_K nibbles 14 / 15 with every 6-bit scale and min = 63).
 // Returns WF_* flags of what the tensor contains.
@@ -1916,7 +1916,7 @@ static uint32_t refused_opcode(gen_t * g) {
     }
 }
 
-// M2 error kinds and the stream endings.
+// m2 error kinds and the stream endings.
 enum { T2_RSV, T2_OPC, T2_CH, T2_KIND, T2_K, T2_T, T2_SPM, T2_DRAM, T2_BADDEP, T2_DEPFAIL, T2_QABORT, T2_QCLEAR,
        T2_N };
 #define T2_FAULTS T2_BADDEP     // T2_RSV .. T2_DRAM: one faulting op
@@ -2203,7 +2203,7 @@ static int qabort_terminal(gen_t * g) {
     return 1;
 }
 
-// M1 error kinds.
+// gen error kinds.
 static uint32_t fault_m1(gen_t * g, uint32_t kind) {
     rng_t * r = &g->r;
     const tsr_config * c = &g->o->cfg;
@@ -2256,7 +2256,7 @@ static uint32_t fault_m1(gen_t * g, uint32_t kind) {
 }
 
 // ---------------------------------------------------------------------------
-// M3 error kinds (the 23 MVM faults with lower-priority violations and 32-bit wrapping extents)
+// m3 error kinds (the 23 MVM faults with lower-priority violations and 32-bit wrapping extents)
 // ---------------------------------------------------------------------------
 // A legal MVM (absolute operands) to be broken by a fault.
 typedef struct { uint32_t fmt, fl, dst, x, woff, N, K, T, w6; } mvm_ops;
@@ -2316,7 +2316,7 @@ static uint32_t past_dram(gen_t * g, uint64_t ext, int v) {
     }
 }
 
-// MVM error kinds with their variants (--errors 100 cycles through this list, then the M2 / stream ones).
+// MVM error kinds with their variants (--errors 100 cycles through this list, then the m2 / stream ones).
 static const struct { int tail, var; } m3_tail_cycle[] = {
     { T3_RSV, 0 }, { T3_FMT, 0 }, { T3_K, 0 }, { T3_T, 0 }, { T3_SPM_DST, 0 }, { T3_SPM_X, 0 }, { T3_DRAM, 0 },
     { T3_RSV, 1 }, { T3_FMT, 1 }, { T3_K, 1 }, { T3_T, 1 }, { T3_SPM_DST, 1 }, { T3_SPM_X, 1 }, { T3_DRAM, 1 },
@@ -2473,7 +2473,7 @@ static uint32_t fault_m3(gen_t * g, int tail, int var) {
 enum { TAIL_NONE, TAIL_M1, TAIL_M2, TAIL_M3 };
 typedef struct { int cls, k, var; } tail_t;
 
-// One faulting op of the mode's kinds (M3: 3/4 MVM faults).
+// One faulting op of the mode's kinds (m3: 3/4 MVM faults).
 static uint32_t random_fault(gen_t * g) {
     if (g->o->m3 && rng_below(&g->r, 4)) return fault_m3(g, (int)rng_below(&g->r, T3_N), -1);
     if (!g->o->m2 && !g->o->m3) return fault_m1(g, rng_below(&g->r, 8));
@@ -2985,7 +2985,7 @@ static int gen_trace(const opts_t * o, uint64_t seed, unsigned idx, const char *
             fprintf(stderr, "tsr-trace-gen: trace %u: tsr_trace2_run_ops: %s\n", idx, res.msg);
             rc = 1;
         }
-        t->cfg.ctl_id = tsr_trace2_ctl_id_full();   // W1b fix: not the build's CTL_ID (tsr_trace.h)
+        t->cfg.ctl_id = tsr_trace2_ctl_id_full();   // not the build's CTL_ID (tsr_trace.h)
         if (rc == 0) {
             tsr_trace_unit pu[TSR_NUM_UNITS];
             tsr_trace_done pd;
@@ -3867,7 +3867,7 @@ static uint32_t vu_fault(gen_t * g, uint32_t k) {
             }
             break;
         }
-        case 37:    // TOPK without CAPS.TOPK, VMASK (M9), reserved VU opcodes: refused, ILLEGAL_OP on SYNC
+        case 37:    // TOPK without CAPS.TOPK, VMASK, reserved VU opcodes: refused, ILLEGAL_OP on SYNC
         case 38:
         case 39: {
             static const uint8_t ops[] = { TSR_OP_VMASK, 0x13, 0x39, 0x3A, 0x3F, 0x41, 0x44, 0x47 };
@@ -5322,7 +5322,7 @@ int main(int argc, char ** argv) {
         printf("tsr-trace-gen: %lu traces in %s (%lu failed), --ops %s; coverage:", count - fails, out, fails, ops_names[o.ops]);
         if (o.m3) {
             for (int i = 0; i < C3_N; ++i) printf("%s %s %lu", i ? "," : "", cov3_names[i], cov[C2_N + i]);
-            printf("; M2 groups and QACTs:");
+            printf("; m2 groups and QACTs:");
             for (int i = 0; i < C2_N; ++i) printf("%s %s %lu", i ? "," : "", cov2_names[i], cov[i]);
         } else if (o.m2) {
             for (int i = 0; i < C2_N; ++i) printf("%s %s %lu", i ? "," : "", cov2_names[i], cov[i]);

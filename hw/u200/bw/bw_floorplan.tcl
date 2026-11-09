@@ -1,4 +1,4 @@
-# hw/u200/bw/bw_floorplan.tcl — DRAFT floorplan of the M0 bandwidth kernel tsr_bw_k4 (not used by
+# hw/u200/bw/bw_floorplan.tcl — DRAFT floorplan of the bandwidth kernel tsr_bw_k4 (not used by
 # default; TSR_BW_FLOORPLAN=1 in hw/u200/bw/build_bw_xclbin.sh passes it as the OPT_DESIGN pre-hook,
 # which v++ sources after the platform's own preopt.tcl). Not run in a link yet. The bank SLRs below
 # and the pblock names are those of xilinx_u200_gen3x16_xdma_2_202110_1 (platforminfo: bank0 SLR0,

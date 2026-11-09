@@ -1,8 +1,8 @@
-// tsr_mvm_pv.sv — the ATTPV datapath of one MVM cluster (AT §6.4, §6.5, §8.2; W4-B at): P·V with
+// tsr_mvm_pv.sv — the ATTPV datapath of one MVM cluster (AT §6.4, §6.5, §8.2): P·V with
 // block-floating-point weights per 64-cell channel segment, accumulated exactly in the MAC lanes'
 // PV mode, plus the row sums (LSUM).
 //
-// Owner: AT (W4-B "at"). Oracle: tsr_ref_attpv (sw/sim/tsr_ref_at.c pv_segment / lsum_segment)
+// Oracle: tsr_ref_attpv (sw/sim/tsr_ref_at.c pv_segment / lsum_segment)
 // through the simulator's ATTPV; tb/at compares every partial and row-sum word.
 //
 // Input: the front end's tagged beats of the V plane, slice by slice (s = 0 .. E/64 - 1), per slice the

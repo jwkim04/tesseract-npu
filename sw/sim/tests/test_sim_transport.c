@@ -1,5 +1,5 @@
 // test_sim_transport.c — ctest sim_transport (docs/design/06-software-verification.md "SW" §10.2,
-// rewritten for the launch path in P3.1): the "sim" kind through the public C API only (tsr_transport.h):
+// launch path): the "sim" kind through the public C API only (tsr_transport.h):
 // selection, environment variables, configuration and identity through the CSRs (CAPS = what the
 // simulator implements, EX §7.5), DRAM access bounds, file-backed DRAM; then boot / launch / wait /
 // soft reset with the production image (tsr_image_open_default: TSR_IMAGE or the build's
@@ -143,7 +143,7 @@ static void test_file_dram(void) {
     clear_env();
 }
 
-// P3.1: boot / launch / wait / soft reset through the public API (EX §10.1).
+// boot / launch / wait / soft reset through the public API (EX §10.1).
 static tsr_launch mk_launch(uint8_t type, uint16_t kernel, uint32_t a0, uint32_t a1, uint32_t a2) {
     tsr_launch l;
     memset(&l, 0, sizeof(l));

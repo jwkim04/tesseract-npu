@@ -14,7 +14,7 @@
 #undef _GNU_SOURCE
 #include "test_sim_obs.h"
 
-#include "fw_selftest_cases.h"   // the cases (W2a: shared with fw_m6_e2e)
+#include "fw_selftest_cases.h"   // the cases (shared with fw_m6_e2e)
 
 static const char * g_image;
 

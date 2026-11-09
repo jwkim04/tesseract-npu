@@ -1,4 +1,4 @@
-// bw_bench.cpp — Verilator C++ bench of the M0 DMA bandwidth kernel (tsr_bw_kernel, or the packaged
+// bw_bench.cpp — Verilator C++ bench of the DMA bandwidth kernel (tsr_bw_kernel, or the packaged
 // top tsr_bw_k4 behind tb/platform/bw/sv/kwrap_tsr_bw_k4.sv; model class Vbw). Built and run by
 // tb/platform/bw/run_bw.py (docs/bandwidth-kernel.md §5).
 //

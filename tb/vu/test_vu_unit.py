@@ -15,7 +15,7 @@ Tests (cocotb, one build per parameter set):
   vu_rope           NEOX / NORM, partial rotation, recurrence / FF / FS / ATAB, T up to 40 (position lines)
   vu_at             ASMAX, AMASK, ANORM shapes
   vu_stream         random mixed streams with RAW / WAW / s dependencies between neighbours
-  vu_decode         the decode-record shapes of the W2b kernels (sw/ctrl tests: RMS_NORM, ROPE, GLU, ADD,
+  vu_decode         the decode-record shapes of the firmware kernels (sw/ctrl tests: RMS_NORM, ROPE, GLU, ADD,
                     SCALE for Qwen2.5-0.5B / 32B and Gemma 4)
 """
 from __future__ import annotations
@@ -778,7 +778,7 @@ async def vu_stream(dut):
 
 @cocotb.test()
 async def vu_decode(dut):
-    """Decode-record shapes of the W2b kernels (sw/ctrl/tests test_fw_normrope / test_fw_elem tables): RMS_NORM
+    """Decode-record shapes of the firmware kernels (sw/ctrl/tests test_fw_normrope / test_fw_elem tables): RMS_NORM
     (RED.SUMSQ TO_S RMS + VOP.MULCB, VU §8.1) n 896 / 5120, Gemma per-head norms (16 / 8 rows of 256 with and
     without weight), ROPE Qwen 0.5B q 14 x 64 (theta 1e6), 32B k 8 x 128, Gemma SWA 256 (1e4) and global 512 with
     rope_freqs (1e30 factors), GLU SWIGLU 4864 / GEGLU16 15360, ADD 896 (residual, bias with stride 0), SCALE

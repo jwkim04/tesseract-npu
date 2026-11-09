@@ -47,7 +47,7 @@
 #include "tsr_ref.h"
 #include "tsr_rv.h"       // TSR_RV_CORE_* (header only: the option is parsed with or without tsr_rv.c)
 #if defined(TSR_SIM_HAVE_RV) && TSR_SIM_HAVE_RV
-#include "tsr_bus.h"      // the built-in RISC-V agent (tsr_bus.c, tsr_rv.c; P1.7)
+#include "tsr_bus.h"      // the built-in RISC-V agent (tsr_bus.c, tsr_rv.c)
 #endif
 
 #include <errno.h>
@@ -325,7 +325,7 @@ const tsr_op_handler * tsr_sim_accept_op(const tsr_sim * sim, uint32_t opcode) {
 // ---------------------------------------------------------------------------
 void tsr_sim_cap_read(tsr_sim * sim, uint32_t ch, uint64_t lo, uint64_t n) {
 #if defined(TSR_SIM_HAVE_RACE) && TSR_SIM_HAVE_RACE
-    if (sim->models[TSR_MODEL_RACE] != NULL) tsr_race_cap_note(sim, ch, lo, n, 0);   // P1.9: exact DRAM access sets
+    if (sim->models[TSR_MODEL_RACE] != NULL) tsr_race_cap_note(sim, ch, lo, n, 0);   // exact DRAM access sets
 #endif
     tsr_sim_cap_preserve(sim, ch, lo, n);
 }
@@ -378,7 +378,7 @@ void tsr_sim_cap_preserve(tsr_sim * sim, uint32_t ch, uint64_t lo, uint64_t n) {
 
 void tsr_sim_cap_write(tsr_sim * sim, uint32_t ch, uint64_t lo, uint64_t n) {
 #if defined(TSR_SIM_HAVE_RACE) && TSR_SIM_HAVE_RACE
-    if (sim->models[TSR_MODEL_RACE] != NULL) tsr_race_cap_note(sim, ch, lo, n, 1);   // P1.9: exact DRAM access sets
+    if (sim->models[TSR_MODEL_RACE] != NULL) tsr_race_cap_note(sim, ch, lo, n, 1);   // exact DRAM access sets
 #endif
     if (!sim->capturing || n == 0 || ch >= sim->num_ch) return;
     iset_add(&sim->cap[ch].written, lo, lo + n);
@@ -967,7 +967,7 @@ void      tsr_sim_rv_set_state(tsr_sim * sim, uint32_t bits) {
     const uint32_t old = sim->rv_state;
     sim->rv_state = bits & (TSR_STATUS_RV_HALTED | TSR_STATUS_RV_SLEEP);
     tsr_q_view_note(sim);                                 // random: the debug-halt hold source
-    if (sim->rv_state != old && sim->have_dbg && sim->dbg.rv_state) sim->dbg.rv_state(sim->dbg.ctx);   // P1.13
+    if (sim->rv_state != old && sim->have_dbg && sim->dbg.rv_state) sim->dbg.rv_state(sim->dbg.ctx);
 }
 uint8_t * tsr_sim_itcm(tsr_sim * sim, uint32_t * bytes) { if (bytes) *bytes = sim->itcm_bytes; return sim->itcm; }
 uint8_t * tsr_sim_dtcm(tsr_sim * sim, uint32_t * bytes) { if (bytes) *bytes = sim->dtcm_bytes; return sim->dtcm; }
@@ -1048,7 +1048,7 @@ void tsr_sim_rv_ndmreset(tsr_sim * sim, int level) {
     tsr_q_view_note(sim);
 }
 
-// P1.12: the DM model's kick (tsr_sim_int.h §5b).
+// the DM model's kick (tsr_sim_int.h §5b).
 void tsr_sim_rv_kick(tsr_sim * sim) { sim->agent_kick = 1; }
 
 static void soft_reset_start(tsr_sim * sim) {
@@ -1089,11 +1089,11 @@ static uint32_t status_read(const tsr_sim * sim) {
     if (sim->sr_busy) st |= TSR_STATUS_SR_BUSY;
     if (sim->lcq_wr != sim->lcq_rd) st |= TSR_STATUS_LCQ_PENDING;
     if (sim->log_wr != sim->log_rd) st |= TSR_STATUS_LOG_PENDING;
-    if (sim->plat_err) st |= TSR_STATUS_PLAT_ERR;          // P3.1 (transport, additive): plat_err_i
+    if (sim->plat_err) st |= TSR_STATUS_PLAT_ERR;          // plat_err_i
     return st;
 }
 
-// P3.1 (transport, additive): plat_err_i (EX §9.3), see tsr_sim.h.
+// plat_err_i (EX §9.3), see tsr_sim.h.
 void tsr_sim_set_plat_err(tsr_sim * sim, int level) { sim->plat_err = level != 0; }
 
 static uint32_t cfg3_read(const tsr_sim * sim) {
@@ -1116,7 +1116,7 @@ static uint32_t csr_read(tsr_sim * sim, uint32_t off, int host) {
     case TSR_CSR_CFG2:         return (c->vl & 0xFFu) | ((c->nsreg & 0xFFu) << 8) | (((c->k_max / 256u) & 0xFFFFu) << 16);
     case TSR_CSR_CAPS:         return c->caps;
     case TSR_CSR_CFG3:         return cfg3_read(sim);
-    case TSR_CSR_CTL_ID:       // W1b fix: DM only with the DM model and DBG's DMI window (tsr_sim_int.h §3)
+    case TSR_CSR_CTL_ID:       // DM only with the DM model and DBG's DMI window (tsr_sim_int.h §3)
                                return TSR_SIM_CTL_ID_BASE |
                                       ((sim->models[TSR_MODEL_DM] != NULL && sim->have_dbg && sim->dbg.csr_read) ? TSR_CTL_ID_DM : 0u);
     case TSR_CSR_CTRL:         return sim->ctrl & (TSR_CTRL_RV_RUN | TSR_CTRL_HOST_HOLD | TSR_CTRL_HOLD_ON_HALT | TSR_CTRL_IRQ_EN);
@@ -1339,7 +1339,7 @@ int tsr_sim_lq_cw_access(tsr_sim * sim, int is_write, uint32_t off, uint32_t * v
             case TSR_CW_LQ_FLAGS:
                 v = (sim->cancel_valid ? TSR_LQ_FLAGS_CANCEL_VALID : 0u) | (sim->stop_valid ? TSR_LQ_FLAGS_STOP_VALID : 0u) |
                     (tsr_sim_active(sim) ? TSR_LQ_FLAGS_ACTIVE : 0u) |
-                    (sim->plat_err ? TSR_LQ_FLAGS_PLAT_ERR : 0u);   // P3.1 (transport, additive): plat_err_i
+                    (sim->plat_err ? TSR_LQ_FLAGS_PLAT_ERR : 0u);   // plat_err_i
                 break;
             case TSR_CW_LCQ_FREE:    v = lcq_free; break;
             case TSR_CW_LOG_FREE:    v = TSR_LOG_DEPTH - (sim->log_wr - sim->log_rd); break;

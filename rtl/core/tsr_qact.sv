@@ -1,6 +1,6 @@
 // tsr_qact.sv — QACT unit: T f32 vectors in the SPM -> T QA vectors (A32 or A256) in the SPM.
 //
-// Owner: QACT agent (docs/rtl-core.md §2, block (e); dispatch §3.3, numerics §8.1).
+// Spec: docs/rtl-core.md §2, block (e); dispatch §3.3, numerics §8.1.
 //
 // Dispatch: cmd_valid/cmd_ready accept one tsr_qact_cmd_t (cmd_ready = idle, from the state
 //   register). Operands are legal (the dispatch checks K, T and both SPM ranges; src_stride already

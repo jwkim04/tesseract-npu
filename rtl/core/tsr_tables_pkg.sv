@@ -447,7 +447,7 @@ package tsr_tables_pkg;
   // ---------------------------------------------------------------------------------------------
   // DRAM map per channel (EX §11); byte offsets
   // ---------------------------------------------------------------------------------------------
-  localparam longint unsigned TSR_REGION_OPL_OFF    = 64'h0;         // EX §11: ch0: op lists, replay push streams, argument blocks, code overlays (was CMD)
+  localparam longint unsigned TSR_REGION_OPL_OFF    = 64'h0;         // EX §11: ch0: op lists, replay push streams, argument blocks, code overlays
   localparam longint unsigned TSR_REGION_OPL_SIZE   = 64'h4000000;
   localparam longint unsigned TSR_REGION_IO_OFF     = 64'h4000000;   // EX §11: ch0: host <-> device tensors; compute chunks; the TRW ring while profiling
   localparam longint unsigned TSR_REGION_IO_SIZE    = 64'h10000000;
@@ -502,16 +502,16 @@ package tsr_tables_pkg;
   localparam logic [31:0] TSR_CAPS_VU                    = 32'h0000_0001;  // [0] VOP, RED, ROPE and SOP present (VU §5.10)
   localparam int unsigned TSR_CAPS_VU_LSB                = 0;
   localparam int unsigned TSR_CAPS_VU_W                  = 1;
-  localparam logic [31:0] TSR_CAPS_TOPK                  = 32'h0000_0008;  // [3] TOPK present (RTL from M8; the simulator from M6)
+  localparam logic [31:0] TSR_CAPS_TOPK                  = 32'h0000_0008;  // [3] TOPK present (the simulator; an RTL option, off in the release image)
   localparam int unsigned TSR_CAPS_TOPK_LSB              = 3;
   localparam int unsigned TSR_CAPS_TOPK_W                = 1;
   localparam logic [31:0] TSR_CAPS_ATT                   = 32'h0000_0020;  // [5] the seven AT ops present (KVST, ATTQK, ATTPV, ASMAX, AMASK, AMERGE, ANORM)
   localparam int unsigned TSR_CAPS_ATT_LSB               = 5;
   localparam int unsigned TSR_CAPS_ATT_W                 = 1;
-  localparam logic [31:0] TSR_CAPS_DQROW                 = 32'h0000_0040;  // [6] DQROW in the SPM form (RTL from M8; the simulator from M6)
+  localparam logic [31:0] TSR_CAPS_DQROW                 = 32'h0000_0040;  // [6] DQROW in the SPM form (the simulator; an RTL option, off in the release image)
   localparam int unsigned TSR_CAPS_DQROW_LSB             = 6;
   localparam int unsigned TSR_CAPS_DQROW_W               = 1;
-  localparam logic [31:0] TSR_CAPS_VMASK                 = 32'h0000_0080;  // [7] VMASK (M9)
+  localparam logic [31:0] TSR_CAPS_VMASK                 = 32'h0000_0080;  // [7] VMASK (specified, not implemented)
   localparam int unsigned TSR_CAPS_VMASK_LSB             = 7;
   localparam int unsigned TSR_CAPS_VMASK_W               = 1;
   localparam logic [31:0] TSR_CAPS_GDN                   = 32'h0000_0100;  // [8] GDN present (the fused Gated DeltaNet state update, VU §7.12)
@@ -1630,8 +1630,8 @@ package tsr_tables_pkg;
   localparam logic [3:0] TSR_UNIT_DMA           = 4'd0;           // EX §7.3, CC §7.4: LD, ST, KVST
   localparam logic [3:0] TSR_UNIT_QACT          = 4'd1;           // EX §7.3, CC §7.4: QACT
   localparam logic [3:0] TSR_UNIT_MVM           = 4'd2;           // EX §7.3, CC §7.4, §9.4: MVM, ATTQK, ATTPV
-  localparam logic [3:0] TSR_UNIT_VU            = 4'd3;           // EX §7.3, CC §7.4, §9.4: VOP, RED, ROPE, TOPK, SOP, DQROW, ASMAX, AMASK, AMERGE, ANORM (VMASK from M9)
-  localparam logic [3:0] TSR_UNIT_ATT           = 4'd4;           // EX §7.3, CC §7.4: reserved for a future AT attention engine; absent in M6 (was CMD)
+  localparam logic [3:0] TSR_UNIT_VU            = 4'd3;           // EX §7.3, CC §7.4, §9.4: VOP, RED, ROPE, TOPK, SOP, DQROW, ASMAX, AMASK, AMERGE, ANORM (VMASK is not implemented)
+  localparam logic [3:0] TSR_UNIT_ATT           = 4'd4;           // EX §7.3, CC §7.4: reserved for a future AT attention engine; absent in M6
   localparam logic [3:0] TSR_UNIT_SYNC          = 4'd5;           // EX §7.3, CC §7.4: NOP, FENCE, QCLEAR and every refused opcode
   localparam logic [3:0] TSR_UNIT_MARKER        = 4'd14;          // EX §7.3, CC §7.4: software marker records (REC / TRW); never a valid dependency
   localparam logic [3:0] TSR_UNIT_NONE          = 4'd15;          // EX §7.3, CC §7.4: no dependency
@@ -1672,7 +1672,7 @@ package tsr_tables_pkg;
   localparam logic [7:0] TSR_OP_CALL   = 8'h09;  // retired, unit SYNC: EX §7.2: retired (never shipped), never reused
   localparam logic [7:0] TSR_OP_LD     = 8'h10;  // kept, unit DMA: EX §7.2: DRAM -> SPM, encoding unchanged
   localparam logic [7:0] TSR_OP_ST     = 8'h11;  // kept, unit DMA: EX §7.2: SPM -> DRAM, encoding unchanged
-  localparam logic [7:0] TSR_OP_DQROW  = 8'h12;  // respec, unit VU, CAPS.DQROW: EX §7.2, VU §5.6: SPM -> f32 dequantisation; simulator from M6, RTL in M8
+  localparam logic [7:0] TSR_OP_DQROW  = 8'h12;  // respec, unit VU, CAPS.DQROW: EX §7.2, VU §5.6: SPM -> f32 dequantisation; simulator and RTL option, not in the release image
   localparam logic [7:0] TSR_OP_KVST   = 8'h14;  // new, unit DMA, CAPS.ATT: EX §7.2, AT §5.1: store K or V rows into a KV plane
   localparam logic [7:0] TSR_OP_QACT   = 8'h18;  // kept, unit QACT: EX §7.2: f32 -> QA, encoding unchanged
   localparam logic [7:0] TSR_OP_MVM    = 8'h20;  // kept, unit MVM: EX §7.2: matrix x activations, encoding unchanged
@@ -1681,12 +1681,12 @@ package tsr_tables_pkg;
   localparam logic [7:0] TSR_OP_VOP    = 8'h30;  // respec, unit VU, CAPS.VU: EX §7.2, VU §5.2: element-wise vector op
   localparam logic [7:0] TSR_OP_RED    = 8'h31;  // respec, unit VU, CAPS.VU: EX §7.2, VU §5.3: segmented reduction with post-ops
   localparam logic [7:0] TSR_OP_ROPE   = 8'h32;  // respec, unit VU, CAPS.VU: EX §7.2, VU §5.4: rotary embedding over T tokens
-  localparam logic [7:0] TSR_OP_TOPK   = 8'h33;  // respec, unit VU, CAPS.TOPK: EX §7.2, VU §5.5: top-k per row; simulator from M6, RTL in M8
+  localparam logic [7:0] TSR_OP_TOPK   = 8'h33;  // respec, unit VU, CAPS.TOPK: EX §7.2, VU §5.5: top-k per row; simulator and RTL option, not in the release image
   localparam logic [7:0] TSR_OP_ASMAX  = 8'h34;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.4: softmax numerator
   localparam logic [7:0] TSR_OP_AMASK  = 8'h35;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.5: general mask path
   localparam logic [7:0] TSR_OP_AMERGE = 8'h36;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.6: channel tree and online merge
   localparam logic [7:0] TSR_OP_ANORM  = 8'h37;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.7: final normalisation
-  localparam logic [7:0] TSR_OP_VMASK  = 8'h38;  // new, unit VU, CAPS.VMASK: EX §7.2, VU §5.7: position-window mask; ILLEGAL_OP until M9
+  localparam logic [7:0] TSR_OP_VMASK  = 8'h38;  // new, unit VU, CAPS.VMASK: EX §7.2, VU §5.7: position-window mask; not implemented (ILLEGAL_OP)
   localparam logic [7:0] TSR_OP_GDN    = 8'h39;  // new, unit VU, CAPS.GDN: EX §7.2, VU §7.12: fused Gated DeltaNet state update of one head
   localparam logic [7:0] TSR_OP_SOP    = 8'h40;  // respec, unit VU, CAPS.VU: EX §7.2, VU §5.8: scalar op on s0..s15
   localparam logic [7:0] TSR_OP_FENCE  = 8'h7F;  // kept, unit SYNC: EX §7.2: SYNC barrier: completes when every op pushed before it is done

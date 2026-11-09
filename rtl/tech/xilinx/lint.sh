@@ -13,7 +13,7 @@
 #                                      elaboration of several configurations) and the MVM unit
 #                                      (xvlog / xelab of Vivado, skipped without it; a
 #                                      variable with more than one procedural driver fails it), a
-#                                      Vivado synthesis of tsr_issue, tsr_csr and the W4-B blocks
+#                                      Vivado synthesis of tsr_issue, tsr_csr and the VU, AT and DB blocks
 #                                      (synth_check.sh: fails on a multi-driven net), and the tb/tech
 #                                      HDL with both targets
 #   rtl/tech/xilinx/lint.sh MODULE...  lint only these modules (default parameters)
@@ -127,7 +127,7 @@ if [ -r "$VSET" ]; then
     if [ -n "${TSR_VIVADO_WRAP:-}" ]; then read -r -a vlock <<< "$TSR_VIVADO_WRAP"
     elif [ -n "${TSR_VIVADO_LOCK:-}" ]; then vlock=(flock "$TSR_VIVADO_LOCK"); fi
     # xvlog -f list: the filelist with its nested lists expanded, +incdir+ / +define+ as -i / -d,
-    # Verilator configuration files (.vlt) left out (W4-A: rtl/ctrl/filelist.f)
+    # Verilator configuration files (.vlt) left out (rtl/ctrl/filelist.f)
     fl_expand() {   # fl_expand LIST
         local fl=$1 dir line
         dir=$(cd "$(dirname "$fl")" && pwd)
@@ -154,7 +154,7 @@ if [ -r "$VSET" ]; then
     { grep '^-' "$xdir/all.txt"; grep -v '^-' "$xdir/all.txt" | grep -v '/third_party/'; } > "$xdir/files.txt"
     # Warnings that are functional bugs in the synthesised netlist, not style: a variable written by
     # more than one procedural block (VRFC 10-9892 / 10-9941 / 10-10006). Verilator accepts it, but
-    # Vivado keeps one driver and ignores the other (Synth 8-6858): W4-A review, tsr_chk e_q.
+    # Vivado keeps one driver and ignores the other (Synth 8-6858): tsr_chk e_q.
     xsim_bad='WARNING: \[VRFC 10-(9892|9941|10006)\]'
     xsim_elab() {   # xsim_elab TOP NAME=VALUE...
         local top=$1; shift
@@ -228,9 +228,9 @@ else
     echo "xsim skip (no Vivado at $VSET)"
 fi
 
-# ---- Vivado synthesis of the issue path, the CSR block and the W4-B blocks: no multi-driven net (synth_check.sh; skipped
+# ---- Vivado synthesis of the issue path, the CSR block and the VU, AT and DB blocks: no multi-driven net (synth_check.sh; skipped
 # without Vivado). Verilator and XSim accept a variable written by two blocks, Vivado keeps one driver.
-# W4-B: the DB block, the VU / AT checker classes and KVST as well
+# the DB block, the VU / AT checker classes and KVST as well
 # (found by the first whole-core synthesis, tb/core/viv/core_ooc.sh k1: tsr_dma_kvst wrote five registers from two
 # blocks); the GDN unit (VU §7.12) as well
 "$ROOT/rtl/tech/xilinx/synth_check.sh" tsr_issue tsr_csr tsr_dbg tsr_chk_at tsr_vu_chk "tsr_dma:HAS_KVST=1" \

@@ -1,6 +1,6 @@
 // tsr_vu_sqrt.sv — SQ(x): correctly rounded f32 square root with the spec's fp rules, fully pipelined.
 //
-// Owner: VU (docs/design/02-vector-unit.md "VU" §6.4; RED post RMS §6.2, SOP SQRT / RSQRT §5.8).
+// Spec: docs/design/02-vector-unit.md "VU" §6.4; RED post RMS §6.2, SOP SQRT / RSQRT §5.8.
 // Contract: y = tsr_fsqrt(x) of sw/sim/tsr_ref.c bit for bit (= fin(sqrtf(DAZ(x)))): ±0 -> ±0 (a
 // subnormal input is a signed zero), +inf -> +inf, NaN or any x < 0 -> 0x7FC00000. A square root of a
 // normal f32 is never subnormal and never overflows. Fixed latency TSR_VU_SQRT_LAT, one operation per

@@ -1,4 +1,4 @@
-// test_sim_dm.c — the debug-module model (P1.12; ctest sim_dm, sim_dm_fw, sim_dm_ubsan).
+// test_sim_dm.c — the debug-module model (ctest sim_dm, sim_dm_fw, sim_dm_ubsan).
 //
 // The DM (sw/sim/tsr_dm.c, include/tsr_dm.h) is driven through its DMI API (tsr_dm_dmi_read /
 // _write: what the DBG model's window at host CSR 0xC00 + 4r forwards, and what the sim
@@ -21,7 +21,7 @@
 //     and W1C, the SBA access events;
 //   - single step over 20 instructions (a branch, loads, stores, compressed instructions)
 //     against a free-running reference hart, at F_RV / F_CORE 1.0 and 0.603, and under a random
-//     schedule (P1.8);
+//     schedule;
 //   - both hardware triggers, ebreak with dcsr.ebreakm (and the trap without it), software
 //     breakpoints written through SBA (c.ebreak with the 16-bit sequence, ebreak) + fence.i;
 //   - a halt requested while a push waits for a credit: the hart halts after the push;
@@ -1134,7 +1134,7 @@ int main(int argc, char ** argv) {
     test_sba();
     test_step(1.0, "fixed");
     test_step(166.7 / 276.3, "fixed");
-    test_step(166.7 / 276.3, "random:5,0.25,4");      // P1.8: the steps are architectural
+    test_step(166.7 / 276.3, "random:5,0.25,4");      // the steps are architectural
     test_breakpoints();
     test_halt_push_wait();
     test_boot_reset();

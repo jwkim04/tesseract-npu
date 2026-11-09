@@ -2,10 +2,10 @@
 // onto one channel memory port of the core boundary. Also defines tsr_rslice (below), the
 // full-throughput valid/ready register slice used by the arbiter.
 //
-// Owner: DMA agent (docs/rtl-core.md §2, block (b); memory port rules §4).
+// Spec: docs/rtl-core.md §2, block (b); memory port rules §4.
 //
 // Read sources (index = tsr_pkg TSR_SRC_*): 0 AUX (freed by the fetch removal, tied off by
-// tsr_core: CC-26), 1 DMA, 2 WS (M3 weight stream; tied off in M2). Write source: DMA only.
+// tsr_core: CC-26), 1 DMA, 2 WS (MVM weight stream; tied off without an MVM unit). Write source: DMA only.
 // Contract:
 //   - Read requests: round-robin between requesting sources, one burst per grant. A grant is
 //     given only while fewer than RD_OUTSTANDING read requests are outstanding on this channel
@@ -48,15 +48,15 @@
 //     waiting for m_rd_req_ready (the channel is waiting for the memory in both cases).
 //   - Latency: request 2 cycles (input slice + output slice), read data 1 cycle, write data /
 //     request 1 cycle, write response 1 cycle.
-//   - M3: the WS source is a full peer of AUX/DMA (own slice, same round robin, same shared
-//     outstanding budget); in M2 it is tied off (valid 0, ready 1) and its slice is constant.
+//   - With an MVM unit the WS source is a full peer of AUX/DMA (own slice, same round robin, same shared
+//     outstanding budget); without one it is tied off (valid 0, ready 1) and its slice is constant.
 
 // tsr_rslice — valid/ready register slice, 2 entries (main + skid), 100 % throughput.
 // s_ready, m_valid and m_data are flops; m_valid/m_data hold while m_valid && !m_ready (R2).
 // Reset clears both entries (s_ready = 1 after reset). m_data is don't-care while m_valid = 0.
-// Clock enables (M3 part C timing, docs/platform-u200.md §8.2): the payload registers load on
+// Clock enables (timing, docs/platform-u200.md §8.2): the payload registers load on
 // signals of this slice only, never on s_valid, which is the previous stage's main_v_q in a chain
-// and would fan out to every payload bit's enable (the M0 link's worst kernel path, ~530 loads):
+// and would fan out to every payload bit's enable (the bandwidth kernel link's worst kernel path, ~530 loads):
 //   main_q loads whenever the main entry is free or handed over (m_free): with an item (skid
 //   entry first, else the incoming one) exactly as before, else it takes don't-care data while
 //   main_v_q becomes 0; with m_ready constant 1 the enable is constant;
@@ -65,7 +65,7 @@
 // Transfers, their order and every valid / ready flop are unchanged (cycle for cycle); m_data
 // differs only while m_valid = 0 (it then follows s_data one cycle late instead of holding the
 // last item).
-// FORM (W4-B at, CC §14.4 / CC-25): 0 = main + skid (above); 1 = two slots s0 / s1 with a write
+// FORM (CC §14.4 / CC-25): 0 = main + skid (above); 1 = two slots s0 / s1 with a write
 //   pointer, a read pointer and an occupancy flop per slot: slot i loads s_data whenever it is free
 //   (its enable is its own occupancy flop), m_data = slot[rp] (one 2:1 mux level after flops), and
 //   m_ready / s_valid reach only the five control flops (rp, wp, the two occupancies, rdy_q), not the
@@ -74,9 +74,9 @@
 //   cycles, same data order; m_data differs only while m_valid = 0. FORM 1 is for slices whose
 //   m_ready is a wide take (the gather's job-pipe heads, docs/rtl-mvm.md §14.8: the paths from m_ready to
 //   the 577-bit main_q enable of g_s[1] bound the timing).
-// Waiver: this generic helper lives in tsr_mem_arb.sv only because rtl/filelist.f is owned by the
-// lead (docs/rtl-core.md §1 "Files"); proposal: move it to rtl/core/tsr_rslice.sv (filelist entry
-// before tsr_mem_arb.sv) and drop the DECLFILENAME waiver.
+// Waiver: this generic helper lives in tsr_mem_arb.sv so that the arbiter keeps one filelist entry
+// (docs/rtl-core.md §1 "Files"); it could move to rtl/core/tsr_rslice.sv (filelist entry before
+// tsr_mem_arb.sv), which would drop the DECLFILENAME waiver.
 /* verilator lint_off DECLFILENAME */
 module tsr_rslice #(
   parameter int unsigned W    = 8,

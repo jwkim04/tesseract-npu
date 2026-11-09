@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""sw/tables/test_tables.py — self-consistency checks of sw/tables/tsr_tables.py (EX-30, P1.1).
+"""sw/tables/test_tables.py — self-consistency checks of sw/tables/tsr_tables.py (EX-30).
 
     sw/tables/test_tables.py          run every check, print one line per check, exit 1 on a failure
     pytest sw/tables/test_tables.py   the same checks as pytest tests

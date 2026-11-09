@@ -6,8 +6,8 @@
 // (spec "SPM rules"). The backend's supports_op and weight placement and the runtime's weight split
 // use the shape check. No ggml dependency.
 //
-// The firmware MUL_MAT kind emits the ops with the shared, freestanding plan.hpp (P2.4,
-// docs/design/06-software-verification.md §9.3, SW-20).
+// The firmware MUL_MAT kind emits the ops with the shared, freestanding plan.hpp
+// (docs/design/06-software-verification.md §9.3, SW-20).
 #pragma once
 
 #include <cstdint>

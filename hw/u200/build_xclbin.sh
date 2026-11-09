@@ -3,9 +3,9 @@
 #
 #   hw/u200/build_xclbin.sh k1|k4 [hw|hw_emu]        (default target: hw)
 #
-# The M0 bandwidth kernel builds separately (hw/u200/bw/build_bw_xclbin.sh).
+# The bandwidth kernel builds separately (hw/u200/bw/build_bw_xclbin.sh).
 #
-# 1. the kernel object build/u200/xo/tsr_u200_<k>.xo: packaged now by
+# 1. the kernel object build/u200/xo/tsr_u200_<k>.xo: packaged by
 #    rtl/platform/alveo_xrt/package_xo.tcl (Vivado batch) unless it exists and its source manifest
 #    build/u200/xo/tsr_u200_<k>.sources.sha256 (written by package_xo.tcl: filelists, every RTL
 #    source, kernel_<k>.xml, the CDC and TCM constraints, package_xo.tcl) still matches the working tree

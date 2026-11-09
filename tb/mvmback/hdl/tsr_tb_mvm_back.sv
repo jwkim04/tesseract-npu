@@ -58,13 +58,13 @@ module tsr_tb_mvm_back
   logic              qs_re, dbs_re;
   logic [QS_AW-1:0]  qs_addr;
   logic [DBS_AW-1:0] dbs_addr;
-  // W4-B at: per-token read addresses and the token write mask (the MVM: every token the same
+  // per-token read addresses and the token write mask (the MVM: every token the same
   // address, the line's own token)
   logic [T_MAX-1:0][QS_AW-1:0]  be_qs_addr_t;
   logic [T_MAX-1:0][DBS_AW-1:0] be_dbs_addr_t;
   assign be_qs_addr  = be_qs_addr_t[0];
   assign be_dbs_addr = be_dbs_addr_t[0];
-  wire   unused_tok  = &{1'b0, be_qs_addr_t, be_dbs_addr_t};   // W4-B at: the MVM gives every token the same
+  wire   unused_tok  = &{1'b0, be_qs_addr_t, be_dbs_addr_t};   // the MVM gives every token the same
 
   assign qs_re    = tb_rd ? tb_qs_re    : be_qs_re;
   assign qs_addr  = tb_rd ? tb_qs_addr  : be_qs_addr;
@@ -77,7 +77,7 @@ module tsr_tb_mvm_back
     .qs_re, .qs_addr({T_MAX{qs_addr}}), .qs_data,
     .dbs_re, .dbs_addr({T_MAX{dbs_addr}}), .dbs_data
   );
-  // W4-B at: the attention ports of the back end, tied off (tb/at tests them)
+  // the attention ports of the back end, tied off (tb/at tests them)
   logic                     seg_valid_u;
   logic [T_MAX-1:0][31:0]   seg_y_u;
   logic [3:0][(T_MAX+1)/2-1:0][31:0][37:0] pv_acc_u;

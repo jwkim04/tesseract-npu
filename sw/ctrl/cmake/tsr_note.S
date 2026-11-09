@@ -1,4 +1,4 @@
-/* sw/ctrl/cmake/tsr_note.S — the image's ".note.tsr" (EX §3.1, SW §6.2; P2.1).
+/* sw/ctrl/cmake/tsr_note.S — the image's ".note.tsr" (EX §3.1, SW §6.2).
  *
  * Linked into every firmware image by sw/ctrl/CMakeLists.txt (not a runtime source). An ELF note,
  * not allocated (no PT_LOAD, so it never enters the image id), owner "TSR", type 1, 32-byte

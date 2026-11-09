@@ -4,7 +4,7 @@
 // writer.
 //
 // Shared by the firmware (freestanding C++20, SW-8: graph.cpp and the kind handlers), the host
-// build of the kernels (SW §6.8), the backend's OPL builder (P3.2, C++17) and the tests. Everything
+// build of the kernels (SW §6.8), the backend's OPL builder (C++17) and the tests. Everything
 // above the "host writer" section is freestanding and C++17-compatible (no libstdc++, no heap);
 // the writer is compiled only in hosted builds (__STDC_HOSTED__ = 1) and uses the standard library.
 //
@@ -69,7 +69,7 @@ constexpr uint32_t RET_SCRATCH        = 0x80000006u;  // the op cannot be planne
 constexpr uint32_t RET_CRC            = 0x80000007u;
 
 // ---------------------------------------------------------------------------------------------
-// Kinds (SW §7.2). M6 implements NOP, JOIN and MUL_MAT; M7 the rest (W2b); 0x1E and 0x1F are the MoE kinds (the
+// Kinds (SW §7.2). M6 implements NOP, JOIN and MUL_MAT; M7 the rest; 0x1E and 0x1F are the MoE kinds (the
 // lowest free numbers); 0x2D-0x2F are the Gated DeltaNet kinds (numbered downward from the top of the free range);
 // 0x20-0x2C are free and 0x30-0x3F are test kinds.
 // ---------------------------------------------------------------------------------------------
@@ -218,7 +218,7 @@ constexpr bool operands_ok(uint32_t add, uint32_t add_stride, uint32_t flags) {
 }
 }
 
-// M7 kinds 0x11-0x1B (W2b; SW §7.2 table, word for word). Shapes are flattened to rows; handles are
+// M7 kinds 0x11-0x1B (SW §7.2 table, word for word). Shapes are flattened to rows; handles are
 // {ch[31:28], beat[27:0]} of 64-byte-aligned beats; strides are in lines; f32 parameters are bit
 // patterns the host computed (SW §6.1, SW-8: the firmware has no float). "preload byte offset"
 // words are byte offsets inside the list's preload area (SW §7.2 "Preload entry", §7.3), which the
@@ -509,7 +509,7 @@ constexpr uint32_t check_record(uint32_t w0, uint32_t w1, uint32_t idx, uint32_t
 }
 
 // ---------------------------------------------------------------------------------------------
-// M7 argument records (W2b; SW §7.2): one struct per argument layout, the fields in word order
+// M7 argument records (SW §7.2): one struct per argument layout, the fields in word order
 // (field i = argument word i, the indices of the namespaces above), and the words <-> struct
 // conversions (args_of<A>::F lists the fields in word order). The host writer, the reader and the
 // tests use them; the firmware's handlers read the words in place by index (exec.hpp).
@@ -695,7 +695,7 @@ static_assert(slots_for_nargs(fa::NARGS) == 2u && slots_for_nargs(rope::NARGS) =
 constexpr bool pre_range_ok(uint32_t off, uint64_t bytes, uint32_t align, uint32_t pre_lines) {
     return (off & (align - 1u)) == 0u && uint64_t(off) + bytes <= uint64_t(pre_lines) * SLOT_BYTES;
 }
-// Alignment of each kind's preload reference (W2b decision): line-aligned where a unit reads it as
+// Alignment of each kind's preload reference: line-aligned where a unit reads it as
 // an SPM operand (ROPE positions) or where the kind addresses it by lines (the MSUM image); the
 // element size where only the RISC-V reads it (GET_ROWS ids, SET_ROWS_KV indices).
 constexpr uint32_t PRE_POS_ALIGN = 64u, PRE_ID_ALIGN = 4u, PRE_KVIDX_ALIGN = 8u, PRE_MSUM_ALIGN = 64u;
@@ -914,7 +914,7 @@ private:
 }  // namespace tsr
 
 // =============================================================================================
-// Host writer (hosted builds only): the backend's OPL builder (P3.2) and the tests.
+// Host writer (hosted builds only): the backend's OPL builder and the tests.
 // =============================================================================================
 #if defined(__STDC_HOSTED__) && __STDC_HOSTED__ && !defined(TSR_OPL_NO_WRITER)
 #include <cstring>
@@ -1009,7 +1009,7 @@ public:
         return add(K_MUL_MAT, a, mm::NARGS, deps, n_deps);
     }
 
-    // M7 records (W2b; SW §7.2 argument words, the structs of opl.hpp in word order). deps as for
+    // M7 records (SW §7.2 argument words, the structs of opl.hpp in word order). deps as for
     // add() (more than two predecessors: JOIN records first). The argument words are written as
     // given (check_args / the kind planners judge them; tests build malformed records this way).
     uint32_t add_add(const ew_args & a, const uint32_t * deps = nullptr, uint32_t n_deps = 0, uint32_t kflags = 0) {

@@ -24,7 +24,7 @@ Subcommands
 Dump format (written by tsr-numcheck, docs/numcheck.md): <run>/meta.json {"format": "tsr-numcheck",
 "version": 2, "run", "model", "n_tokens", "n_vocab", "logits_file", "info", "nodes": [{"i", "name", "op", "ne",
 "file", "backend", "weight", "weight_type", "src1_file", "src1_ne"}]}, little-endian f32 files. Version 2
-(P3.3) records the settings in "info" (SW-22: "phase" m6|m7, "flash_attn", "type_k", "type_v",
+ records the settings in "info" (SW-22: "phase" m6|m7, "flash_attn", "type_k", "type_v",
 "offload_kqv", "attn_rot_disable"); compare requires the same settings in every run and reports them.
 Version 1 dumps (FA-off settings: FA off, f16 KV, no rotation setting) are still read.
 

@@ -1,5 +1,5 @@
 // test_sim_rvhost.h — the host side and the checks of the sim_rv_issue scenario (factored out of
-// test_sim_rv_issue.c for reuse; P1.8): sim_rv_issue runs it at two RV / core clock ratios,
+// test_sim_rv_issue.c for reuse): sim_rv_issue runs it at two RV / core clock ratios,
 // sim_sched_determinism (test_sim_sched.c) under the fixed and 7 random schedules at both ratios
 // with listeners attached (SW §4.7, §10.2). Every check of the scenario holds under every
 // schedule: the values it checks are the schedule-independent ones.
@@ -78,7 +78,7 @@ typedef struct rvh_run {
     void (*on_create)(tsr_sim * sim, void * ctx);
     void (*on_end)(tsr_sim * sim, void * ctx);
     void *       ctx;
-    // W1b integration (sim_w1b_e2e): called after every tsr_sim_advance of run_until, outside the
+    // (sim_w1b_e2e): called after every tsr_sim_advance of run_until, outside the
     // time base, e.g. to drive a debugger session (DMI, host CSRs) mid-run; NULL = none.
     void (*on_advance)(tsr_sim * sim, void * ctx);
 } rvh_run;

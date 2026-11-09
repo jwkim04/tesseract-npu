@@ -9,7 +9,7 @@
 // (EX §12, D14). What is here is what the tile ops LD, ST, QACT, MVM, NOP and FENCE need, with
 // x16 = 0 (EX §7.1).
 // The tables (opcodes, units, error codes, the whole CSR map, PERF, DRAM map, the VU / AT
-// encodings) are generated from the single table source sw/tables/tsr_tables.py (EX-30, P1.1)
+// encodings) are generated from the single table source sw/tables/tsr_tables.py (EX-30)
 // into tsr_tables.h, included here; this header keeps only what the table source does not hold
 // (configuration struct, partial-sum counts, the tile-op encoders).
 #pragma once
@@ -35,7 +35,7 @@ extern "C" {
 #define TSR_CANON_NAN_BITS  0x7FC00000u
 
 // Channel DRAM map (byte offsets inside a channel; EX §11): TSR_REGION_{OPL,IO,AUX}_OFF / _SIZE
-// and TSR_REGION_WEIGHT_OFF come from tsr_tables.h. OPL (was CMD), IO and AUX are on ch0. The
+// and TSR_REGION_WEIGHT_OFF come from tsr_tables.h. OPL, IO and AUX are on ch0. The
 // core fetches nothing from DRAM: OPL holds op lists, replay push streams and argument blocks
 // that RISC-V kernels read. The backend splits IO into compute-buffer windows (bottom) and a
 // staging area (top, max(16 MiB, 2 x SPM)) for activations kept in host memory (spec "Lowering
@@ -60,7 +60,7 @@ typedef struct tsr_config {
     uint32_t caps;            // CAPS register value (TSR_CAPS_*)
 } tsr_config;
 
-// U200 values (the tile core of the M4 bitstreams; NIREG and LOOP_DEPTH have no meaning here).
+// U200 values (the tile core of the U200 bitstreams; NIREG and LOOP_DEPTH have no meaning here).
 #define TSR_CONFIG_U200 { \
     /*num_ch*/ 4, /*beat_bits*/ 512, /*lanes*/ 128, /*t_max*/ 1, /*k_max*/ 32768, \
     /*spm_bytes*/ 4u * 1024u * 1024u, /*vl*/ 16, /*nsreg*/ 16,                     \
@@ -134,7 +134,7 @@ static inline tsr_insn tsr_enc_mvm(uint32_t fmt, uint32_t flags, uint32_t dst_li
 
 // PERF slot helpers (EX §6): per-channel read beats, per-channel DRAM wait cycles, and the
 // number of 64-bit counters the op-level core keeps for num_ch channels: the fixed and
-// per-channel slots, i.e. up to the extension index X = 5 + 2C (the X + k slots come with P1.2).
+// per-channel slots, i.e. up to the extension index X = 5 + 2C (the X + k slots follow).
 static inline uint32_t tsr_perf_ch_rd_beats(uint32_t ch) { return TSR_PERF_CH_RD_BEATS(ch); }
 static inline uint32_t tsr_perf_ch_wait(uint32_t num_ch, uint32_t ch) { return TSR_PERF_CH_WAIT(num_ch, ch); }
 static inline uint32_t tsr_perf_count(uint32_t num_ch) { return TSR_PERF_CH_BASE + 2u * num_ch; }

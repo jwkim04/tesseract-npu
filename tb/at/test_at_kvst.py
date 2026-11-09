@@ -11,7 +11,7 @@ then runs on the DMA with the checker's payload (cmd_xc = 1). After `done`:
     there are no DDR reads or perf_kvst_rmw pulses;
   - the SPM is unchanged and was only read inside the source vectors;
   - LD / ST still work between KVSTs (a few plain LD / ST ops through the same DMA, checked against the
-    simulator), and the memory protocol checks of MemModel hold (bursts, 4 KiB rule, M5 orderings).
+    simulator), and the memory protocol checks of MemModel hold (bursts, 4 KiB rule, rule M5 orderings).
 Stimulus: decode (n_rows 1) and prefill (up to 64 rows across groups and channels) shapes of the target
 models (E = 128 Qwen2.5-0.5B, 1024 Qwen2.5-32B, 512 / 2048 Gemma 4 12B global / SWA), small and odd E/64 (rows
 sharing / spanning chunks: E = 64, 192, 960, 1088), V groups written fully and partly, random strides,

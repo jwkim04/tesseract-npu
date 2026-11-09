@@ -1,7 +1,7 @@
 // tsr_mvm_ws.sv — MVM weight streamer of one cluster (spec MVM cluster microarchitecture stage 1 "Stream requester")
 // plus its weight FIFO: the WS read source of one channel's tsr_mem_arb.
 //
-// Owner: front agent (docs/rtl-mvm.md §2 block (front), protocol §4).
+// Spec: docs/rtl-mvm.md §2 block (front), protocol §4.
 //
 // Contract:
 //   - cmd_valid/cmd_ready (R1/R2): one command per MVM with rows_c >= 1: request exactly
@@ -42,7 +42,7 @@
 //                       with out_ready = 1 (issue -> head RD_LAT + 1 cycles, credit return 1).
 //   accounting          space = FIFO_BEATS - (reserved and not received + held in the RAM);
 //                       a slot is returned when its beat is read from the RAM into the OQ path.
-// Ranges (W4-B at, AT §8.2: the V plane is streamed slice by slice): the command's beats are
+// Ranges (AT §8.2: the V plane is streamed slice by slice): the command's beats are
 //   cmd_beats / cmd_rbeats ranges of cmd_rbeats beats each, range k starting at cmd_w_off + k x
 //   cmd_stride (bursts never cross a range end). cmd_rbeats >= cmd_beats is one contiguous range:
 //   the MVM's and ATTQK's streams, identical to the behaviour without ranges.

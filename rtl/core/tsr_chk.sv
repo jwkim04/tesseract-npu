@@ -1,7 +1,7 @@
 // tsr_chk.sv — dispatch checker: one op at a time, its error code (EX §8.1), ERR_INFO, its four
 // tagged operand extents and its unit command (CC §8).
 //
-// Owner: issue path (docs/design/04-control-core.md "CC" §8.1-§8.2, §13.2; W4 item 1). The
+// Spec: docs/design/04-control-core.md "CC" §8.1-§8.2, §13.2. The
 // dispatcher (tsr_issue, CC §8.3) starts it for every OP entry of the issue FIFO and merges the
 // BAD_DEP rule, which is its own (the dispatcher's counts), into the result.
 //
@@ -27,7 +27,7 @@
 //             T_RANGE; SPM_RANGE dst = w1 with (T-1) x stride + ceil(N/16) (stride w6, 0 =
 //             ceil(N/16)), x = w2 with T x QA_LINES; DRAM_RANGE w_off = w3 with R x ROW_BEATS on
 //             every channel, R = ceil(N / NUM_CH). (MVM)
-//   external  every other accepted opcode (VU ops, AT ops; W4-B): the class lives outside this
+//   external  every other accepted opcode (VU ops, AT ops): the class lives outside this
 //             block and answers through the xc_* port (CC §8.2: "opcodes from VU / AT plug in as
 //             classes"); its code must already follow the EX §8.1 order (OPERAND included).
 // Range rule (spec §21): an operand with start a (the 32-bit immediate) and extent e is in range

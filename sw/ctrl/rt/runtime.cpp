@@ -40,7 +40,7 @@
 // Hot loops of the launch path (head copy, arguments, base_u, LCQ staging) are unrolled: -Os keeps
 // them as loops otherwise, which costs about a third of an empty launch (EX §4.11).
 //
-// Decisions (P2.2): R4 is checked before R3 so that a descriptor that is both invalid and
+// Decisions: R4 is checked before R3 so that a descriptor that is both invalid and
 // cancelled answers BAD_DESC, as EX §4.4's precedence says (EX §4.7 lists R3 first); a cancelled
 // PING answers DONE / ABORTED. Every value that decides pushed words or records is a launch input
 // or a timing-free register (ISSUE_PIDX, ISSUED_SEQ, ERR_* after the join, the watermarks the host
@@ -173,7 +173,7 @@ bool dispatch(uint32_t r[8]) {
     if (type == DESC_TYPE_PING) {                        // R4: PING -> PONG
         r[0] = r0_of(LCQ_R0_TYPE_PONG, 0u, 0u, L.seq);
         r[2] = L.desc[1];
-        r[3] = 0u;                                       // EX §4.4: PONG r3-r6 = 0 (fix W2a)
+        r[3] = 0u;                                       // EX §4.4: PONG r3-r6 = 0
         return false;
     }
 

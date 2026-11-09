@@ -1,4 +1,4 @@
-"""Regression tests of the 2026-10-24 review of sw/torch: one test (or group) per finding.
+"""Regression tests of sw/torch: one test (or group) per finding.
 
 1. the churn guard is per weight, not per graph node (regional compilation, a compiled helper
    called per layer, HOP bodies shared by every layer);
@@ -78,7 +78,7 @@ def _run_script(code: str, timeout: float = 180):
 def test_shared_graph_uploads_each_weight_once(form):
     """layer.compile() per block (torch's regional compilation recipe) and a compiled helper called
     per layer reuse one graph, so one matmul node sees every layer's weight. Each weight is uploaded
-    once, and every call runs on the device (the node used to go to the CPU after 4 distinct weights)."""
+    once, and every call runs on the device (the node does not go to the CPU after 4 distinct weights)."""
     L = 8
     layers = _layers(L)
     if form == "regional":
@@ -179,8 +179,8 @@ def test_device_close_invalidates_cached_handles():
 @pytest.mark.parametrize("kw", [{"read_perf": False}, {"io_bytes": 1 << 20}], ids=["read_perf", "io_bytes"])
 def test_open_device_options_stay_usable(kw):
     """After open_device(read_perf=False) or open_device(io_bytes=...), tt.linear, tt.device(),
-    tt.counters() and torch.compile use that device (they used to raise 'other options', and
-    compiled graphs ran on the CPU)."""
+    tt.counters() and torch.compile use that device (they do not raise 'other options', and
+    compiled graphs do not run on the CPU)."""
     tt.close_device()
     try:
         d = tt.open_device(**kw)
@@ -212,7 +212,7 @@ def test_open_device_options_stay_usable(kw):
 # ------------------------------------------------------------------------------------------
 def test_unavailable_device_is_an_error(monkeypatch):
     """TSR_DEVICE naming a transport that cannot be opened makes torch.compile(backend="tesseract")
-    fail (it used to warn and compute everything on the CPU)."""
+    fail (it does not warn and compute everything on the CPU)."""
     tt.close_device()
     monkeypatch.setenv("TSR_DEVICE", "vkernal")
     torch.manual_seed(11)
@@ -388,7 +388,7 @@ class NestedNet(nn.Module):
 
 def test_nested_compile_region_body_on_device():
     """torch.compiler.nested_compile_region: the layers share one invoke_subgraph body; its matmul goes
-    to the device with every layer's weight (it used to be neither offloaded nor reported)."""
+    to the device with every layer's weight (it is offloaded and reported)."""
     L = 6
     torch.manual_seed(17)
     m = NestedNet(L).eval()

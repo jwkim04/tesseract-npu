@@ -1,5 +1,5 @@
-// test_fw_kvfa.h — the cases of fw_kvfa_* (sw/ctrl/tests/test_fw_kvfa_rv.cpp, test_fw_kvfa_host.cpp;
-// W2b P2.7): one OPL list per case, SET_ROWS_KV of the new tokens' K rows, SET_ROWS_KV of their V
+// test_fw_kvfa.h — the cases of fw_kvfa_* (sw/ctrl/tests/test_fw_kvfa_rv.cpp, test_fw_kvfa_host.cpp):
+// one OPL list per case, SET_ROWS_KV of the new tokens' K rows, SET_ROWS_KV of their V
 // rows, then FLASH_ATTN over the cache (docs/design/06-software-verification.md "SW" §7.2, §7.5;
 // docs/design/03-attention-kv.md "AT" §6.6, §7). Header-only C++20, host side.
 //
@@ -87,7 +87,7 @@ inline const std::vector<kcase> & cases() {
         { "g12glb-pre-256",           "gemma_glb", 512, 1, 16, 3,  256,   100,   0,    M_CAUSAL,   1.0f, 0.06f, 1 },
         { "general-finite-dec-256",   "general",   128, 8, 5,  1,  256,   200,   0,    M_FINITE,   s128, 1.0f, 0 },
         { "general-finite-pre-4096",  "general",   128, 8, 5,  4,  4096,  1500,  0,    M_FINITE,   s128, 1.0f, 0 },
-        // W2b fix (review): GENERAL tiles of four chunks (K_MAX 8,192: PCAP 2,336, NCG 72): the mask LD into M[k mod 2]
+        // GENERAL tiles of four chunks (K_MAX 8,192: PCAP 2,336, NCG 72): the mask LD into M[k mod 2]
         // after the AMASK of chunk k - 2 (k_fattn.cpp's dep) is exercised from chunk 2 on.
         { "general-finite-pre-4096-pcap", "general", 128, 8, 5, 4,  4096,  1500,  0,    M_FINITE,   s128, 1.0f, 0, 8192 },
         { "general-finite-g12swa",    "general",   256, 8, 2,  4,  256,   100,   0,    M_FINITE,   0.5f, 0.08f, 0 },

@@ -1,4 +1,4 @@
-// test_sim_dbg.c — the DB simulator models (tsr_dbg.c, P1.13; docs/design/05-debug.md "DB" §14 item 1,
+// test_sim_dbg.c — the DB simulator models (tsr_dbg.c; docs/design/05-debug.md "DB" §14 item 1,
 // §5.8 invariants G / Q / S / H on the simulator): every DBG register's access type and reset
 // value, the DMI gate, stop points in push order against prefix runs, RELEASE, STOP_NOW, QSTEP
 // (with DBG_STEP_N, and through the debug-halt hold with dbg_step), serial mode, tile breakpoints
@@ -14,7 +14,7 @@
 #include "tsr_sim_int.h"
 #include "tsr_dbg.h"
 #if defined(TSR_SIM_HAVE_RV) && TSR_SIM_HAVE_RV
-#include "test_sim_rvhost.h"     // the W1a firmware scenario (sim_rv_issue), for the comparability run
+#include "test_sim_rvhost.h"     // the firmware scenario (sim_rv_issue), for the comparability run
 #include "tsr_bus.h"
 #include "tsr_rv.h"
 #define HAVE_RV 1
@@ -268,7 +268,7 @@ static void test_regs(void) {
     CHECK(TSR_GET(id, TSR_DBG_ID_VERSION) == 1 && (id & TSR_DBG_ID_HIST) && (id & TSR_DBG_ID_TRW) && (id & TSR_DBG_ID_RVWP) &&
           (id & TSR_DBG_ID_REC) && TSR_GET(id, TSR_DBG_ID_NTBP) == 4 && TSR_GET(id, TSR_DBG_ID_NRVWP) == 2 &&
           TSR_GET(id, TSR_DBG_ID_LOG2_HIST) == 9, "DBG_ID 0x%08x", id);
-    // CTL_ID.DM needs the DM model behind DBG's DMI window too (W1b fix; test_dmi_gate checks both ways)
+    // CTL_ID.DM needs the DM model behind DBG's DMI window too (test_dmi_gate checks both ways)
     CHECK(((RD(s, TSR_CSR_CTL_ID) & TSR_CTL_ID_DM) != 0) == (have_dm(s) != 0), "CTL_ID.DM = DM and DBG attached");
     // reset values
     CHECK(RD(s, TSR_CSR_DBG_CFG) == TSR_CSR_DBG_CFG_RESET, "DBG_CFG reset 0x30");
@@ -1488,7 +1488,7 @@ static void test_stop_halt_rv(int via_dm) {
     tsr_sim_destroy(s);
 }
 
-// The W1a firmware scenario (sim_rv_issue: launches, kernels with tile ops and deps, a TILE_ERR
+// The firmware scenario (sim_rv_issue: launches, kernels with tile ops and deps, a TILE_ERR
 // kernel with QABORT / QCLEAR, logs, WFI) with the model attached and detached: every observable,
 // MTIME, instructions retired, PERF, Q_* and the queue events identical (DB §10.3: HAS_DBG 0 and 1
 // give identical results and cycle counts with debugging off).

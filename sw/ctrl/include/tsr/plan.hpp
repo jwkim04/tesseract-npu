@@ -15,13 +15,13 @@
 //     "supports_op" and "lowering"), with the T-tile chosen for the ring budget instead of the whole SPM;
 //   - the per-kind plan (plan_op / check_op): RET_OK, RET_SCRATCH (cannot be planned in the ring)
 //     or RET_BAD_RECORD (arguments the device cannot run), and the scratch lines per tile;
-//   - M7 planning (W2b): plan_limits / kind_plan, the planners tsr::plan_<kind> (declared here,
+//   - M7 planning: plan_limits / kind_plan, the planners tsr::plan_<kind> (declared here,
 //     defined in tsr/plan_elem.hpp, plan_norm.hpp, plan_attn.hpp, plan_moe.hpp), plan_kind, and the shared rules
 //     plan_rows (row tiles) and for_period_segments (row periods).
 //
-// Planning budget (decision P2.4): every plan uses ring_budget(cfg) = SPM lines - 16 (argument
-// range) - 4096 (OPL area) - 256 (largest preload area) - the one-tile block (1,024 on the U200,
-// W2b; 60,144 lines left), not the ring of the actual list. The
+// Planning budget: every plan uses ring_budget(cfg) = SPM lines - 16 (argument
+// range) - 4096 (OPL area) - 256 (largest preload area) - the one-tile block (1,024 on the U200;
+// 60,144 lines left), not the ring of the actual list. The
 // actual ring is never smaller, so a plan made by the host for any op list is valid in the firmware,
 // and the tiles (hence the pushed op stream) do not depend on the list's preload size.
 #pragma once
@@ -56,7 +56,7 @@ struct dev_cfg {
     uint32_t spm_lines;   // CFG1: SPM_BYTES / 64 (U200: 65,536)
     uint32_t t_max;       // CFG0.T_MAX (U200 k4: 8, k1: 1)
     uint32_t k_max;       // CFG2.K_MAX_256 x 256 (U200: 32,768)
-    // W2b (M7 kinds): read once per launch by the executor like the three above, by the host from
+    // M7 kinds: read once per launch by the executor like the three above, by the host from
     // the CSRs. 0 = unknown: a kind that needs the value plans nothing (BAD_RECORD), so a host that
     // fills only the M6 fields keeps rejecting the M7 kinds.
     uint32_t num_ch = 0;  // CFG0.NUM_CH: DRAM channels C (AT planes, FA chunk size; U200: 4)
@@ -74,10 +74,10 @@ constexpr dev_cfg U200_K4 = {65536u, 8u, 32768u, 4u, 9344u, 16u, CAPS_VU | CAPS_
 //   [L - 16, L)                 runtime argument range (SW §6.3 R5)
 //   [L - 16 - 4096, L - 16)     OPL area (256 KiB); a larger list streams in two 128 KiB halves
 //   [opl_line - pre_lines, opl_line)  preload area (header pre_lines <= 256)
-//   [pre_line - B, pre_line)    the one-tile block (B = one_block_lines(L); W2b integration, below)
+//   [pre_line - B, pre_line)    the one-tile block (B = one_block_lines(L), below)
 //   [0, pre_line - B)           scratch ring (spm_ring)
 //
-// The one-tile block (W2b integration decision, SW §7.3 "M7 kinds in the executor"): one fixed
+// The one-tile block (SW §7.3 "M7 kinds in the executor"): one fixed
 // block that every single-tile record of a kind whose tile is DMA-bracketed uses instead of a ring
 // block. A tile is DMA-bracketed when its first write to the block is a DMA op (LD), its last read
 // is a DMA op (ST, KVST), and every other op on the block lies between them by deps (the first non-
@@ -89,7 +89,7 @@ constexpr dev_cfg U200_K4 = {65536u, 8u, 32768u, 4u, 9344u, 16u, CAPS_VU | CAPS_
 // and costs no concurrency (consecutive DMA-bracketed tiles are serialised by the DMA queue
 // whatever their SPM lines). MUL_MAT (whose blocks the M6 traces pin) and FLASH_ATTN keep the ring.
 //
-// Its size (W2b fix, SW §7.3 / SW-36): the block comes out of the ring's planning budget, which
+// Its size (SW §7.3 / SW-36): the block comes out of the ring's planning budget, which
 // sets MUL_MAT's prefill T-tile (two tiles in the budget). 1,024 lines (64 KiB) keeps the T-tile of
 // every Qwen2.5 0.5B-32B output head at 3 tokens (budget 60,144; 4,096 lines made it 2: +50 % head
 // weight traffic in an all-logits prefill) and still holds every decode tile of Qwen2.5 0.5B / 32B
@@ -289,7 +289,7 @@ TSR_PLAN_HOT constexpr uint32_t mm_plan(const dev_cfg & c, uint32_t fmt, uint32_
 constexpr bool mm_supported(const dev_cfg & c, uint32_t fmt, uint32_t N, uint32_t K) {
     return mm_plan(c, fmt, N, K, 1u, nullptr) == opl::RET_OK;
 }
-// The prefill T-tiles of the model shapes on the U200 (W2b fix): the ring budget (SPM layout, the
+// The prefill T-tiles of the model shapes on the U200: the ring budget (SPM layout, the
 // one-tile block) decides them, so a change there that alters MUL_MAT's tiling (its weight traffic:
 // a weight matrix streams once per T-tile) fails here instead of silently. Output heads are the
 // shapes at the edge: Qwen2.5 0.5B (151,936 x 896) and 32B (152,064 x 5,120) hold 3 tokens per
@@ -309,7 +309,7 @@ static_assert(detail::mm_t_tile_u200(FMT_Q8_0, 151936u, 896u) == 3u && detail::m
               "plan.hpp: MUL_MAT prefill T-tiles of the Qwen2.5 0.5B / 32B and Gemma 4 12B shapes on the U200");
 
 // ---------------------------------------------------------------------------------------------
-// M7 planning (W2b, P2.6 / P2.7; SW §7.5): the device limits every M7 kind plans against and the
+// M7 planning (SW §7.5): the device limits every M7 kind plans against and the
 // plan one returns. The per-kind planners are freestanding constexpr-friendly functions in
 // namespace tsr, one header per kernel group (tsr/plan_elem.hpp: ADD, MUL, SCALE, GLU, UNARY, CPY,
 // GET_ROWS; tsr/plan_norm.hpp: RMS_NORM, ROPE; tsr/plan_attn.hpp: SET_ROWS_KV, FLASH_ATTN), all of
@@ -323,7 +323,7 @@ static_assert(detail::mm_t_tile_u200(FMT_Q8_0, 151936u, 896u) == 3u && detail::m
 //     0) or RET_SCRATCH (the smallest tile does not fit l.budget); the other fields only with RET_OK;
 //   - returns out->status == RET_OK;
 //   - depends only on (args, n_args, l): not on the list's preload size or the ring's state, so
-//     the host's supports_op (W3b) and the firmware agree (SW-20, decision P2.4);
+//     the host's supports_op and the firmware agree (SW-20);
 //   - the preload references are checked against the list's preload area by the caller (the
 //     handler: kind_ctx::pre_ok, exec.hpp; the host reader: opl::check_args), not here;
 //   - per-op work is shifts, adds and compares when the op has one tile (decode shapes, T = 1): a
@@ -333,11 +333,11 @@ static_assert(detail::mm_t_tile_u200(FMT_Q8_0, 151936u, 896u) == 3u && detail::m
 // planner header either starts with #pragma once and #include "tsr/plan.hpp", or is a fragment
 // (#if !defined(TSR_PLAN_CORE_HPP) #include "tsr/plan.hpp" #elif !defined(<its guard>) ...), then
 // defines its planners (constexpr, the declared signature); any include order works either way. A
-// kind whose package has not landed keeps a stub that returns plan_fail(out, RET_BAD_RECORD) (the
+// kind without a source keeps a stub that returns plan_fail(out, RET_BAD_RECORD) (the
 // device runs nothing it cannot plan).
 // ---------------------------------------------------------------------------------------------
 struct plan_limits {
-    uint32_t budget;      // ring_budget: ring lines one op's live tiles may take (decision P2.4)
+    uint32_t budget;      // ring_budget: ring lines one op's live tiles may take
     uint32_t t_max;       // mm_t_max: QACT / MVM tokens per op, FA pass size (1..8; 0: no MVM work)
     uint32_t k_max;       // min(CFG2 K_MAX, 0xFFFF): QACT / MVM K (and FA's G E <= K_MAX)
     uint32_t num_ch;      // dev_cfg num_ch (C; 0 = unknown)

@@ -4,7 +4,7 @@
 // the OP / MARK / STOP / RVHALT records for the trace writer and the completion records (REC)
 // for the RISC-V.
 //
-// Owner: DB (W4-B item 6). Instantiated by tsr_dbg. Oracle: the simulator's DBG model
+// Instantiated by tsr_dbg. Oracle: the simulator's DBG model
 // (sw/sim/tsr_dbg.c shq / on_enq / on_start / on_done / on_mark / trw_* / rec_push).
 //
 // Shadow queue of unit u (DB §8.3: it mirrors CC's queue from the enqueue tap and the start /

@@ -1,4 +1,4 @@
-# sw/ctrl/tests/kernels.cmake — P2.5 tests of the M6 kernels: the MUL_MAT kind, `selftest` and
+# sw/ctrl/tests/kernels.cmake — tests of the M6 kernels: the MUL_MAT kind, `selftest` and
 # `replay` (docs/design/06-software-verification.md "SW" §7.4, §7.6, §7.7, §10.2). Included by
 # sw/ctrl/host/CMakeLists.txt (main project). Every test has label fw; long sweeps add slow.
 #

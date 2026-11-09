@@ -1,4 +1,4 @@
-// tsr_at.c — the simulator's AT ops (P1.5): decode, dispatch checks, operand extents, execution and
+// tsr_at.c — the simulator's AT ops: decode, dispatch checks, operand extents, execution and
 // cycle model of KVST 0x14 (unit 0 DMA), ATTQK 0x21 and ATTPV 0x22 (unit 2 MVM), and of the vector
 // ops ASMAX 0x34, AMASK 0x35, AMERGE 0x36 and ANORM 0x37 (unit 3, executed by the VU).
 //

@@ -2,7 +2,7 @@
 // (tsr_chk_at, outside through the at_* ports), each request routed to the class of its opcode
 // (tsr_xc_pkg::tsr_xc_class) and the answering class's response returned.
 //
-// Owner: VU (W4-B task "vu"; CC §8.2; contract: tsr_xc_pkg).
+// Spec: CC §8.2; contract: tsr_xc_pkg.
 // Wiring (tsr_core_dp): xc_* <-> tsr_chk's xc_* port (via tsr_issue); at_* <-> tsr_chk_at's class side
 // (req_valid / req_insn in, rsp_valid / rsp_code / rsp_info / rsp_ext / rsp_cmd out). With HAS_AT = 0
 // the AT ports are unused (tie at_rsp_valid to 0): no AT opcode reaches the port then (tsr_chk refuses

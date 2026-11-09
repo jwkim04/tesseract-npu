@@ -1,4 +1,4 @@
-# sw/ctrl/cmake/riscv32.cmake — CMake toolchain file of the firmware project (SW §6.1, P2.1).
+# sw/ctrl/cmake/riscv32.cmake — CMake toolchain file of the firmware project (SW §6.1).
 #
 # Selects the bare-metal RISC-V GCC for sw/ctrl/CMakeLists.txt. Only the compilers and the
 # try-compile mode live here; the firmware flags (SW §6.1) are set by the project itself, so that

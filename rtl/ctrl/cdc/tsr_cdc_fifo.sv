@@ -1,7 +1,7 @@
 // tsr_cdc_fifo.sv — asynchronous FIFO with gray-coded pointers (CC §11.2: the issue FIFO, 32 x 387 b
 // clk_rv -> core, CC §7.2; the log FIFO, 16 x 32 b clk_rv -> core, CC §6.5; docs/ctrl-riscv.md §7.2).
 //
-// Owner: ctrl agent (W4 item 3; CC §2.2 `tsr_cdc_fifo`).
+// Spec: CC §2.2 `tsr_cdc_fifo`.
 //
 // Contract:
 //   write side (wclk): wr_free = free entries (0..DEPTH) as the write side sees them (the read
@@ -15,7 +15,7 @@
 //     DEPTH entries are the bound for everything written and not yet consumed. rd_count = entries
 //     written and not yet consumed as the read side sees them (the write pointer arrives through a
 //     synchroniser: it may under-report, never over-report), the presented one included
-//     (W4-A integrate: Q_FIFO, EX §5.4).
+//     (Q_FIFO, EX §5.4).
 //   Memory: an array written in wclk (LUTRAM on the FPGA) and read into a register in rclk; the
 //     array -> rd_data path and the gray pointers are the crossing paths (set_max_delay
 //     -datapath_only, set_bus_skew on the pointers: rtl/ctrl/viv/tsr_ctrl_cdc.xdc, CC §11.3).

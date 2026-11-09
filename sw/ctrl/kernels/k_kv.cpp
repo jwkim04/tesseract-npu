@@ -1,5 +1,5 @@
 // k_kv.cpp — the SET_ROWS_KV kind of the graph executor (op list kind 0x18; docs/design/06-software-
-// verification.md "SW" §7.2, §7.5; docs/design/03-attention-kv.md "AT" §4, §5.1, §7.2, §12; W2b P2.7).
+// verification.md "SW" §7.2, §7.5; docs/design/03-attention-kv.md "AT" §4, §5.1, §7.2, §12).
 //
 // SET_ROWS into a KV buffer: n_rows f32 source rows of E values go to the cells idx[0 .. n_rows) of
 // one K or V plane, quantized as llama.cpp's q8_0 (QACT A32 = quantize_row_q8_0_ref) and placed by
@@ -96,7 +96,7 @@ struct kv_op {
         uint32_t run = 1;
         while (i + run < n && run < tr && idx_at(ix, i + run) == c0 + run) ++run;
         // A run is DMA-bracketed (LD ... QACT ... KVST): it takes the one-tile block whenever it fits
-        // (kind_ctx::one; W2b integration): the DMA queue serialises the runs whatever their lines.
+        // (kind_ctx::one): the DMA queue serialises the runs whatever their lines.
         const bool one = run * k.lpr <= ctx.one_lines;
         deps rd{};
         const spm blk = one ? ctx.one : ctx.ring->alloc(run * k.lpr, 2u, &rd);

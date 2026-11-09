@@ -17,7 +17,7 @@ core_smoke  the host loads tb/core/fw/fw_core.c (crt0 / link.ld of tb/ctrl) and 
             targets, and the final CSR state (STATUS's schedule-independent bits, RT_*, LCQ / log
             pointers and contents, Q_DONE / Q_ISSUED / Q_ERR_CODE per unit, Q_PIDX, Q_FIFO).
             The memory model randomises latency, back-pressure and response interleaving.
-core_db     (W4-B) the DB block in the core: the same firmware with the DBG block configured through the host
+core_db the DB block in the core: the same firmware with the DBG block configured through the host
             port before the boot: DBG_ID, the DMI gate (a DMI write with DMI_EN = 0 sets DMI_BLOCKED, W1C;
             with DMI_EN = 1 dmcontrol / dmstatus through the RTL debug module), the dispatch history, the trace
             writer (a 64-line ring in the ch0 IO region, written through the write mux of channel 0) and a tile
@@ -25,7 +25,7 @@ core_db     (W4-B) the DB block in the core: the same firmware with the DBG bloc
             (DBG_STOP_PIDX, NEXT_PIDX, the TBP, the units' oldest entries, Q_DONE ...) and the history with the
             simulator, RELEASEs and compares the final state, every history entry, the trace records without
             their times and the DRAM results (the DB block changes nothing).
-core_m7     (W4-B) the production image tsr-fw.elf (build/dev/fw) on the RTL Ibex runs an op list of the M7
+core_m7 the production image tsr-fw.elf (build/dev/fw) on the RTL Ibex runs an op list of the M7
             kinds through the graph kernel: RMS_NORM, MUL_MAT (Q8_0, bias addends and residual adds), ROPE,
             SET_ROWS_KV (KVST on the DMA), FLASH_ATTN (ATTQK / ATTPV on the MVM unit, ASMAX / AMERGE / ANORM
             and the norm, RoPE and GLU ops on the VU), a decoder layer in the smallest shapes (the `tiny` group
@@ -516,7 +516,7 @@ MUTANTS = {
 }
 
 
-# W4-B wiring mutants of the VU / AT / DB integration in tsr_core_dp / tsr_core: (file, old, new, description,
+# Wiring mutants of the VU / AT / DB integration in tsr_core_dp / tsr_core: (file, old, new, description,
 # the test that must fail: "m7" = core_m7 on the decode case, "db" = core_db). A hang is a kill (the launch /
 # stop waits are shortened for mutant runs: TB_M7_LIMIT, TB_DB_WAIT).
 XMUTANTS = {
@@ -676,7 +676,7 @@ def test_core_m7_ddr_local(m7case):
 
 
 def _run_m6_k4min(case, seed=1, rv_ps=6000):
-    """The production image on the RTL core of the reduced first card image (tsr_u200_k4 / core_ooc.sh k4min): an op
+    """The production image on the RTL core of the reduced card image (tsr_u200_k4 / core_ooc.sh k4min): an op
     list of MUL_MAT records through the graph kernel on four clusters with T_MAX 8, CAPS 0, no VU queue, no trace
     writer or history. Compared with the simulator's run of the same launch as in core_m7 (the DONE record, every
     output row bit for bit, the identification registers, Q_DONE / Q_ISSUED / Q_ERR_CODE per unit, the PERF event
@@ -897,7 +897,7 @@ def test_core_k4gdn_fast():
 
 
 def test_core_k4min():
-    """The reduced first card image (tsr_u200_k4, tb/core/viv/core_ooc.sh k4min): four clusters with T_MAX 8, the
+    """The reduced card image (tsr_u200_k4, tb/core/viv/core_ooc.sh k4min): four clusters with T_MAX 8, the
     control core behind the RV transport, no vector unit, no attention (no KVST, ATTQK, ATTPV), no DB trace writer or
     history, CAPS 0 and no VU queue. core_smoke runs the firmware's MUL_MAT-shaped stream (LD, QACT A32 and A256,
     MVM Q8_0 and Q4_K on all four weight channels, ST, FENCE) on the RTL Ibex; the simulator, configured with CAPS 0

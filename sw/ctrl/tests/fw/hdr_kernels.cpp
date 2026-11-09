@@ -1,4 +1,4 @@
-// hdr_kernels.cpp — test kernels of the tile/VU header library (P2.3; docs/design/06-software-
+// hdr_kernels.cpp — test kernels of the tile/VU header library (docs/design/06-software-
 // verification.md "SW" §6.7, §6.8; CC §5, §7-§9, §12; EX §4.9). Built into the test image fw_hdr
 // (tsr_fw_image, sw/ctrl/tests/hdr.cmake) for tsr_rv and, with TSR_FW_HOST, into the host tests
 // (test_fw_hdr.cpp), so the same source pushes through both backends and the two push streams can

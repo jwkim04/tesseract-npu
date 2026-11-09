@@ -1,7 +1,7 @@
 // tsr_vu_dq.sv — the DQROW front end of the VU: the per-block constants of one chunk of a repacked
 // row, from the chunk's meta line, into a 32-entry table the injector reads.
 //
-// Owner: VU (docs/design/02-vector-unit.md "VU" §5.6 DQROW, §6.8; VU-15). Layout: docs/spec.md §5
+// Spec: docs/design/02-vector-unit.md "VU" §5.6 DQROW, §6.8; VU-15. Layout: docs/spec.md §5
 // (tsr_repack_row, sw/sim/tsr_ref.c block_offsets): a chunk is one meta line and its quant lines,
 // 1024 elements = 64 output lines in both formats (Q8_0: 32 blocks, 16 quant lines; Q4_K: 4
 // superblocks, 8 quant lines).

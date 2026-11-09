@@ -1,4 +1,4 @@
-// test_sim_sched_unit.c — P1.8 unit tests (ctest sim_sched_unit; docs/design/06-software-verification.md
+// test_sim_sched_unit.c — unit tests (ctest sim_sched_unit; docs/design/06-software-verification.md
 // "SW" §4.4, §4.7-§4.9; the interface is sw/sim/tsr_sim_int.h §5 / §5b):
 //   1. xoshiro128** against the reference vectors (state {1, 2, 3, 4}) and the splitmix64 stream
 //      seeding pinned (a seed must reproduce the same schedule in every version);
@@ -276,7 +276,7 @@ static void test_listeners(void) {
     n = 0;
     op(s, TSR_OP_LD, 5, TSR_TICKET_NONE, TSR_TICKET_NONE);
     CHECK(n == 2 && out[0] == 0 && out[1] == 2, "after removal");
-    // The W1a form owns one entry: appended, replaced in place for the same fn, removed by NULL.
+    // The single-listener form owns one entry: appended, replaced in place for the same fn, removed by NULL.
     tsr_sim_set_listener(s, order_cb, &c[3]);
     n = 0;
     op(s, TSR_OP_LD, 5, TSR_TICKET_NONE, TSR_TICKET_NONE);
@@ -629,7 +629,7 @@ static char * log_run(const char * path, const char * sched, size_t * n) {
 static void test_log(void) {
     char path[512];
     // Per process: sim_sched_unit and sim_sched_unit_ubsan share the scratch directory and run in
-    // parallel under ctest -j (W1b integration: a shared name made both fail now and then).
+    // parallel under ctest -j (a shared name made both fail now and then).
     snprintf(path, sizeof(path), "%s/sim_sched_unit.%ld.log", g_scratch, (long)getpid());
     size_t n1 = 0, n2 = 0;
     char * a = log_run(path, "random:3", &n1);
@@ -637,7 +637,7 @@ static void test_log(void) {
     CHECK(a && b && n1 > 0 && n1 == n2 && memcmp(a, b, n1) == 0, "TSR_SIM_LOG content is deterministic (%zu bytes)", n1);
     CHECK(a && strstr(a, " push  u0 seq=0 pidx=0 w0=00000010") && strstr(a, " enq ") && strstr(a, " start ") &&
           strstr(a, " done ") && strstr(a, " qctrl value=00000008"), "push / enq / start / done / qctrl lines");
-    // W1b integration: RV retire lines need the built-in hart (rv.cmake; absent in a bare-core build).
+    // RV retire lines need the built-in hart (rv.cmake; absent in a bare-core build).
     tsr_sim * probe = mk(NULL);
     const int have_rv = tsr_sim_rv_agent(probe) != NULL;
     tsr_sim_destroy(probe);
@@ -691,7 +691,7 @@ static void test_ndmreset(void) {
     CHECK(tsr_sim_rv_boot_gen(s) == gen + 1u, "release restarts the hart");
     tsr_sim_advance(s, 100);
     st = tsr_sim_csr_read(s, TSR_CSR_STATUS);
-    if (tsr_sim_rv_agent(s) != NULL) {   // W1b integration: a bare-core build has no hart to run
+    if (tsr_sim_rv_agent(s) != NULL) {   // a bare-core build has no hart to run
         CHECK((st & TSR_STATUS_RV_RUNNING) && tsr_sim_rv_instret(s) > pc_held, "running again");
     }
     tsr_sim_destroy(s);

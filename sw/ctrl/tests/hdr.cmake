@@ -1,4 +1,4 @@
-# sw/ctrl/tests/hdr.cmake — P2.3 tests of the tile/VU header library and the host backend
+# sw/ctrl/tests/hdr.cmake — tests of the tile/VU header library and the host backend
 # (docs/design/06-software-verification.md "SW" §6.7, §6.8, §10.2). Included by
 # sw/ctrl/host/CMakeLists.txt (main project). The host backend itself (sw/ctrl/host/backend_host.cpp,
 # shim_host.cpp) is part of tsr_fw_host there (every sw/ctrl/host/*.cpp).
@@ -54,7 +54,7 @@ function(_tsr_hdr_test_target tgt)
 endfunction()
 
 # The host side of these tests needs only the backend and the shim (not the production kernels of
-# tsr_fw_host): its own small libraries, so that the P2.3 tests do not depend on the other kernels.
+# tsr_fw_host): its own small libraries, so that these tests do not depend on the other kernels.
 set(_hdr_host_lib_src ${TSR_CTRL_DIR}/host/backend_host.cpp ${TSR_CTRL_DIR}/host/shim_host.cpp)
 function(_tsr_hdr_host_lib tgt)
     cmake_parse_arguments(A "SANITIZE" "" "" ${ARGN})

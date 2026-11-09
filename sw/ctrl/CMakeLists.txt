@@ -1,4 +1,4 @@
-# sw/ctrl/CMakeLists.txt — the firmware project (SW §6.1-§6.2, P2.1): RISC-V images of the
+# sw/ctrl/CMakeLists.txt — the firmware project (SW §6.1-§6.2): RISC-V images of the
 # control core, built with the pinned bare-metal GCC. Its own CMake project, because one project
 # cannot have two C++ compilers: the main build configures and builds it as
 # ExternalProject_Add(tsr_fw) (sw/ctrl/host/CMakeLists.txt), passing
@@ -218,7 +218,7 @@ function(tsr_fw_image name)
     # SW §7.8's budget (ITCM 96 KiB, SW-75; tsr-elf's default, TSR_ELF_BUDGET_ITCM) is the production
     # image's (tsr-fw; fw_elf_image / fw_elf_test_image check it on
     # tsr-fw and on fw_elf_probe = production + one probe kernel); a test image (production code plus
-    # test kernels, never shipped) is bound by the ITCM only (W2b integration: with the M7 kinds the
+    # test kernels, never shipped) is bound by the ITCM only (with the M7 kinds the
     # images with the executor's / header library's test kernels exceed the production budget).
     set(_budget "")
     if (NOT name STREQUAL "tsr-fw")

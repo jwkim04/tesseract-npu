@@ -1,8 +1,8 @@
 // tsr_vu_lanes.sv — 8 or 16 physical VU lanes in two banks behind registered pipes.
 // The banks can sit in opposite outer SLRs, away from the SPM-facing part of the unit.
 //
-// Owner: VU (docs/design/02-vector-unit.md "VU" §7.10 placement, remedy 3 of CC §14.1; floorplan C'' of
-// hw/u200/k4_floorplan.tcl).
+// Spec: docs/design/02-vector-unit.md "VU" §7.10 placement, remedy 3 of CC §14.1; floorplan C'' of
+// hw/u200/k4_floorplan.tcl.
 // Contract: with PIPE = 0 the inputs and selected exit are wired straight to the ports.
 // With PIPE = p >= 1, the injector's lane inputs (l_*), the partial drain address (dr_addr) and the reset
 // pass p register stages on the way in, and the selected lane exit and drain read data dr_data p

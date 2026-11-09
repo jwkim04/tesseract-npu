@@ -32,7 +32,7 @@ function(tsr_rt_target tgt)
         PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}
         PRIVATE ${TESSERACT_ROOT}/third_party/llama.cpp/ggml/src)   # ggml-quants.h (quantize_row_q8_0_ref)
     target_link_libraries(${tgt} PUBLIC tsr_ref PRIVATE tsr_lower tsr_transport ggml-base Threads::Threads)
-    # P3.7 (DB §4.1, §9.5): tsr_rt is an owning process's library: TSR_GDB / TSR_DEBUGGER start libtsr_dbg's embedded
+    # DB §4.1, §9.5: tsr_rt is an owning process's library: TSR_GDB / TSR_DEBUGGER start libtsr_dbg's embedded
     # service (the OBJECT library registers it before main)
     # (a static library hands the object file to its consumers' link lines: an archive member with only a
     # static initialiser would not be pulled in otherwise)

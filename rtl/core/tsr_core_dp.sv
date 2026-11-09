@@ -26,7 +26,7 @@
 //   ATTPV when HAS_ATT) and the vector unit VU (HAS_VU, unit 3: VOP / RED / ROPE / SOP and AT's vector
 //   ops). The attention unit has no queue of its own (unit 4 is reserved): AT's ops run on the DMA, MVM and
 //   VU queues, so QD_ATT is 0. CAPS follows the parameters (VU / ATT / TOPK / DQROW bits of the tables;
-//   TOPK and DQROW are M8 RTL, VU-14 / VU-15, and stay off in the U200 M7 build). The external checker
+//   TOPK and DQROW are RTL options, VU-14 / VU-15, and stay off in the release image). The external checker
 //   classes of tsr_chk (xc_*): tsr_vu_xc (the VU class tsr_vu_chk, routing AT's classes) with tsr_chk_at
 //   (KVST, ATTQK, ATTPV). The DB block (HAS_DB; tsr_dbg here, its clk_rv part tsr_dbg_rv in tsr_core,
 //   the trace writer's write mux on channel TRW_CH): DBG registers, stop logic, history, trace writer,
@@ -88,9 +88,9 @@ module tsr_core_dp
   parameter int unsigned     ITCM_BYTES     = tsr_tables_pkg::TSR_ITCM_BYTES,
   parameter int unsigned     DTCM_BYTES     = tsr_tables_pkg::TSR_DTCM_BYTES,
   parameter logic [31:0]     CTL_ID         = 32'h0000_5D01,
-  // W4-B: the vector unit (unit 3, queue depth QD_VU), attention (KVST on the DMA, ATTQK / ATTPV on the MVM
-  // unit, AT's vector ops on the VU; needs HAS_VU and HAS_MVM), TOPK / DQROW on the VU (M8 RTL: off in the
-  // U200 M7 build), the DB block; the VU's lane knobs (VU §7.10: 16 / 8 on k4, 8 / 4 on k1)
+  // the vector unit (unit 3, queue depth QD_VU), attention (KVST on the DMA, ATTQK / ATTPV on the MVM
+  // unit, AT's vector ops on the VU; needs HAS_VU and HAS_MVM), TOPK / DQROW on the VU (RTL options: off in the
+  // release image), the DB block; the VU's lane knobs (VU §7.10: 16 / 8 on k4, 8 / 4 on k1)
   parameter bit              HAS_VU         = 1'b1,
   parameter bit              HAS_ATT        = HAS_MVM,           // needs HAS_VU, HAS_MVM and MVM_MAC_LAT >= 3
   parameter bit              HAS_TOPK       = 1'b0,
@@ -235,7 +235,7 @@ module tsr_core_dp
   input  logic                                   plat_err_i,
   output logic                                   host_irq_o,
 
-  // ---- DB block (W4-B): tsr_ctrl's DB inputs and the core side of tsr_dbg_rv (tsr_core wires them) ----
+  // ---- DB block: tsr_ctrl's DB inputs and the core side of tsr_dbg_rv (tsr_core wires them) ----
   input  logic                                   rv_halt_pend,
   output logic                                   dbg_stop,
   output logic                                   dbg_halt_tgl,
@@ -266,7 +266,7 @@ module tsr_core_dp
 );
 
   // -------------------------------------------------------------------------------------------
-  // Elaboration checks (same limits as tsr_sim_create's cfg_problem(), plus M2 restrictions)
+  // Elaboration checks (same limits as tsr_sim_create's cfg_problem(), plus the core's own restrictions)
   // -------------------------------------------------------------------------------------------
   if (BEAT_BITS != 512) begin : g_chk_beat
     $fatal(1, "tsr_core_dp: BEAT_BITS must be 512 (a beat is one 64-byte SPM line)");
@@ -677,7 +677,7 @@ module tsr_core_dp
   logic [NUM_CH-1:0][TSR_SRC_ID_W-1:0] b_wr_rsp_id;
 
   // -------------------------------------------------------------------------------------------
-  // DB block (DB §13, W4-B item 6): tsr_dbg (DBG registers, stop logic, shadow queues, history, trace
+  // DB block (DB §13): tsr_dbg (DBG registers, stop logic, shadow queues, history, trace
   // writer, DMI gate; the clk_rv parts and the crossings are tsr_dbg_rv in tsr_core) and the trace
   // writer's write mux on channel TSR_TRW_CH. Memory taps: the handshakes at the core's memory ports.
   // -------------------------------------------------------------------------------------------
@@ -696,7 +696,7 @@ module tsr_core_dp
   // control plane is relocated (RV_LOCAL_TRANSPORT): two register stages in the glue, free to sit between
   // the ports and the counters. They only lag DBG_RDOUT / DBG_WROUT by MT_PIPE cycles (the probes are not
   // compared with the model, DB §5.5); with the taps wired straight, one handshake term (a LUT merged
-  // into a bridge) sat in SLR2 between two flops of the counter in SLR0 (k4min link, 2026-11-06: -2.6 ns).
+  // into a bridge) sat in SLR2 between two flops of the counter in SLR0 (k4min link: -2.6 ns).
   localparam int unsigned MT_PIPE = RV_LOCAL_TRANSPORT ? 2 : 0;
   if (MT_PIPE == 0) begin : g_mt0
     assign mt_rd_req  = mt_rd_req_i;
@@ -840,7 +840,7 @@ module tsr_core_dp
   );
 
   // -------------------------------------------------------------------------------------------
-  // MVM unit (M3): SPM client TSR_SPM_CL_MVM, weight-stream source TSR_SRC_WS of every channel
+  // MVM unit: SPM client TSR_SPM_CL_MVM, weight-stream source TSR_SRC_WS of every channel
   // -------------------------------------------------------------------------------------------
   // Weight-stream source ports (cluster c <-> arbiter c), [channel].
   logic [NUM_CH-1:0]                   w_rd_req_valid, w_rd_req_ready, w_rd_rsp_valid, w_rd_rsp_ready;
@@ -1187,7 +1187,7 @@ module tsr_core_dp
       assign b_wr_rsp_ready[c] = a_wr_rsp_ready[c];
       assign a_wr_rsp_id[c]    = b_wr_rsp_id[c];
     end
-    // Source WS (M3 weight stream of cluster c; tied off when HAS_MVM = 0).
+    // Source WS (weight stream of cluster c; tied off when HAS_MVM = 0).
     assign s_rd_req_valid[c][TSR_SRC_WS]  = w_rd_req_valid[c];
     assign s_rd_req_addr[c][TSR_SRC_WS]   = w_rd_req_addr[c];
     assign s_rd_req_len[c][TSR_SRC_WS]    = w_rd_req_len[c];
@@ -1201,7 +1201,7 @@ module tsr_core_dp
       // The trace writer (tsr_dbg, with the control plane) and the write mux (beside the DMA and the channel's arbiter) sit in
       // different SLRs when the control plane is relocated. XSLR_REG: the writer's request and data streams pass a tsr_rslice
       // each and the burst response two flops, so every crossing ends in registers (without them the mux's combinational
-      // valid / ready terms joined the DMA's KVST write logic across the boundary: OOC placement 2026-11-07, -2.4 ns at
+      // valid / ready terms joined the DMA's KVST write logic across the boundary: OOC placement, -2.4 ns at
       // 3.333 ns). The writer only waits longer; the DMA waits at most one trace burst (tsr_dbg_wrmux), as before.
       logic                   w_req_valid, w_req_ready, w_dat_valid, w_dat_ready, w_dat_last, w_rsp_valid;
       logic [ADDR_BEAT_W-1:0] w_req_addr;
@@ -1341,7 +1341,7 @@ module tsr_core_dp
   //      equals "holds an op" in every cycle (from the cycle after the accepting edge up to and
   //      including the cycle of done = PERF_MVM_CYCLES), and so does tsr_issue's perf_busy[MVM].
   //   U2 (CC §9.4 I4) a unit touches the SPM only while it holds an op (its done means its SPM
-  //      effects are complete): DMA / QACT (request in the accepting cycle allowed, as in M2), MVM
+  //      effects are complete): DMA / QACT (request in the accepting cycle allowed), MVM
   //      strictly after its accept; an MVM SPM read response only while it holds the op.
   //      Weight-stream requests and responses (source WS of every arbiter) only while the MVM
   //      unit holds an op; DMA memory requests only while the DMA holds an op.
@@ -1354,7 +1354,7 @@ module tsr_core_dp
   //      min(64 - addr % 64, beats left), contiguous from w_off). An attention command (ATTQK / ATTPV)
   //      streams KV planes through the same source: for it only the unit-local rules hold (no traffic
   //      outside the unit's op, nothing outstanding at done, a response only after a request).
-  //   U4 (W4-B) the VU (accepts up to 2 ops, CC §9.4 I3): done only while it holds an op, never more than
+  //   U4 the VU (accepts up to 2 ops, CC §9.4 I3): done only while it holds an op, never more than
   //      2 in flight, no command with HAS_VU = 0, SPM access only while it holds an op (or in the accepting
   //      cycle).
   // -------------------------------------------------------------------------------------------

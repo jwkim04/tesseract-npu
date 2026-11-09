@@ -1,4 +1,4 @@
-// test_sim_vu.c — the simulator's VU unit (P1.4, sw/sim/tsr_vu.c): VOP, RED, ROPE, TOPK, SOP,
+// test_sim_vu.c — the simulator's VU unit (sw/sim/tsr_vu.c): VOP, RED, ROPE, TOPK, SOP,
 // DQROW and GDN pushed as encoded ops through the test hooks (tsr_sim_op, and tsr_sim_push on the queue
 // path), each compared bit for bit with direct tsr_ref_vu calls applied to a copy of the SPM and
 // of the s bank (whole SPM images: results, tails, strides, in place, and every untouched line).
@@ -691,7 +691,7 @@ static void test_checks(void) {
 
     // VMASK and the reserved VU opcodes: refused by the issue path (ILLEGAL_OP), with any words.
     tsr_insn vm = {{ TSR_OP_VMASK, 10, 0, 0, 0, 16, 1u | (1u << 16), 1 }};
-    expect_err(&t, vm, IL, 0, "VMASK (M9)");
+    expect_err(&t, vm, IL, 0, "VMASK");
     static const uint8_t rsvd[] = { 0x13, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47 };
     for (size_t k = 0; k < sizeof rsvd; ++k) {
         tsr_insn r0 = {{ rsvd[k], 0, 0, 0, 0, 0, 0, 0 }};
@@ -704,7 +704,7 @@ static void test_checks(void) {
     // CAPS gating (EX §7.5, tsr_sim_accept_op): an opcode whose CAPS bits are missing is ILLEGAL_OP.
     const uint32_t impl = tsr_sim_caps_implemented();
     CHECK((impl & CAPS_ALL) == CAPS_ALL, "CAPS implemented include VU, TOPK, DQROW (0x%x)", impl);
-    CHECK((impl & TSR_CAPS_VMASK) == 0u, "VMASK is not implemented (M9)");
+    CHECK((impl & TSR_CAPS_VMASK) == 0u, "VMASK is not implemented");
     {
         tsr_config c = cfg_u200(8);
         c.caps = CAPS_ALL | TSR_CAPS_VMASK;

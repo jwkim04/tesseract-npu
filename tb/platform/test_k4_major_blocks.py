@@ -222,7 +222,7 @@ def test_bad_control_plane_value():
 # ---- the control Pblock ----
 
 # CLBs per clock region that the control Pblock holds in the platform of the first link's checkpoint (the part's clock
-# regions less the platform's pipeline Pblocks in row Y4; measured by tb/platform/viv/k4_pblock_check.tcl, 2026-11-06).
+# regions less the platform's pipeline Pblocks in row Y4; measured by tb/platform/viv/k4_pblock_check.tcl).
 # Only the clock regions the control Pblock holds are listed; their sum is 16,300.
 CR_SLICES = {
     "X0Y3": 1860, "X1Y3": 1440, "X0Y4": 1620, "X1Y4": 1200, "X2Y4": 1740,
@@ -348,7 +348,7 @@ def test_control_pblock_with_the_minimum_ramb36_passes():
 # ---- the VU Pblock ----
 
 # CLBs per clock region that the platform's SLR2 pblock allows (tb/platform/viv/k4_pblock_check.tcl on the routed first
-# link, 2026-11-06). Only the clock regions the VU Pblock holds are listed; their sum is 25,320.
+# link). Only the clock regions the VU Pblock holds are listed; their sum is 25,320.
 VU_CR_SLICES = {
     "X0Y10": 1620, "X1Y10": 1200, "X2Y10": 1740,
     "X0Y11": 1860, "X1Y11": 1440, "X2Y11": 1980,

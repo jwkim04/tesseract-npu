@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # test_selftest_k4min.sh SELFTEST IMAGE OUT — ctest tools_selftest_sim_k4min: the checklist on the simulator
-# configured as the reduced first card image tsr_u200_k4 (TSR_SIM_VU=0 TSR_SIM_TMAX=8, docs/platform-u200.md §8.7):
+# configured as the reduced card image tsr_u200_k4 (TSR_SIM_VU=0 TSR_SIM_TMAX=8, docs/platform-u200.md §8.7):
 # the core is built without the vector unit and attention, so CAPS reads 0, Q_DEPTH has no VU queue and T_MAX is 8.
 # The identity registers must say so, and the checklist must pass on the sim and on the mock kind.
 set -eu

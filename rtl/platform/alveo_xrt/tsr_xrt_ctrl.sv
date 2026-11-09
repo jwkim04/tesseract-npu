@@ -2,7 +2,7 @@
 // (AXI4-Lite slave, 32-bit data, 13-bit address) with the channel bases, ADAPTER_CTRL.MEM_EN,
 // ADAPTER_STATUS, ADAPTER_VERSION and the window onto the tsr_core CSR port.
 //
-// Owner: adapter agent (docs/platform-u200.md §2, §3; docs/design EX §9). The host only uses register
+// Spec: docs/platform-u200.md §2, §3; docs/design EX §9. The host only uses register
 // access (EX §9.1, `ap_ctrl_none`); there is no start sequencer, interrupt or kernel argument
 // register. Oracle of the register map: the mock adapter model (sw/transport/tsr_kdev_mock.cpp,
 // TSR_DEVICE=mock), compared in tb/platform (test_adapter_regs).

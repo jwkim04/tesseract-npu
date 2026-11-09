@@ -1,8 +1,8 @@
 // tsr_sim_int.h — simulator-internal interface shared by the sim's source files (not installed).
 //
-// Owner: the core (tsr_sim.c, tsr_q.c). Users: tsr_vu.c / tsr_at.c (unit semantics, P1.4 / P1.5),
-// tsr_rv.c / tsr_bus.c (the RISC-V model and its bus, P1.7), and later the scheduler (P1.8), the
-// race detector (P1.9), the trace format (P1.10) and the debug models (P1.12 / P1.13). The public API is
+// Spec: tsr_sim.c, tsr_q.c. Users: tsr_vu.c / tsr_at.c (unit semantics),
+// tsr_rv.c / tsr_bus.c (the RISC-V model and its bus), and later the scheduler, the
+// race detector, the trace format and the debug models. The public API is
 // tsr_sim.h (host CSR port = EX §5 through tsr_sim_csr_read / tsr_sim_csr_write, time base, test
 // hooks); nothing here is ABI. docs/design/06-software-verification.md (SW) §4 is the model.
 //
@@ -12,10 +12,10 @@
 //   3. state accessors: SPM, DRAM, the s bank, PERF, capture, configuration;
 //   4. RISC-V side: control window (CC §5), core window (CC §5.3), run / reset state, TCMs,
 //      interrupt levels, the RISC-V agent hook the time base steps;
-//   5. time base (P1.6 deterministic model) and the hooks for trace / race detector / debug models:
+//   5. time base (deterministic model) and the hooks for trace / race detector / debug models:
 //      queue listeners (PUSH / QCTRL / MARK_PUSH / ENQ / START / DONE / MARK), access events, the
 //      optional models attached at create (DM, DBG, RACE, TRACE) and their options;
-//   5b. the schedule policy (P1.8: fixed / random, the CDC lag of the RISC-V-side reads, ties) and
+//   5b. the schedule policy (fixed / random, the CDC lag of the RISC-V-side reads, ties) and
 //      fast-forward, TSR_SIM_LOG, ndmreset;
 //   6. (TSR_SIM_CORE_INTERNAL only) the core's own structures, shared by tsr_sim.c and tsr_q.c.
 #pragma once
@@ -136,8 +136,8 @@ const tsr_op_handler * tsr_sim_op_handler(uint8_t opcode);   // NULL if none
 // when the target's sources contain tsr_vu.c / tsr_at.c (explicit call list rather than weak
 // symbols: a weak reference does not pull an object out of a static archive).
 void tsr_core_register(void);
-void tsr_vu_register(void);       // tsr_vu.c (P1.4)
-void tsr_at_register(void);       // tsr_at.c (P1.5)
+void tsr_vu_register(void);       // tsr_vu.c
+void tsr_at_register(void);       // tsr_at.c
 
 // CAPS bits the registered handlers implement: VU (VOP RED ROPE SOP all registered), TOPK, ATT
 // (all seven AT ops), DQROW, VMASK. tsr_sim_create refuses a config whose caps ask for more.
@@ -276,8 +276,8 @@ struct tsr_rv_agent * tsr_sim_rv_agent(tsr_sim * sim);
 // ---------------------------------------------------------------------------
 // 5. Time base and hooks (SW §4.4)
 //
-// One clock: MTIME, core cycles since create (tsr_sim_now). The P1.6 policy ("fixed"; P1.8's
-// "random" varies durations, crossings and RV costs behind the same structure, §5b):
+// One clock: MTIME, core cycles since create (tsr_sim_now). The "fixed" policy (the
+// "random" policy varies durations, crossings and RV costs behind the same structure, §5b):
 //   - a push or QCTRL entry enters the issue FIFO at its time t and reaches the dispatcher at
 //     max(t + 2 (crossing), previous dispatch + 1); the dispatcher checks it and enqueues it in
 //     that cycle;
@@ -288,7 +288,7 @@ struct tsr_rv_agent * tsr_sim_rv_agent(tsr_sim * sim);
 //   - at one time point: completions (exec, then DONE_SEQ) in unit order 0..5, then the
 //     dispatch, then head starts in unit order, then the RISC-V agent;
 //   - every host CSR access and control-window access acts at the current MTIME.
-// RISC-V co-stepping (the built-in agent, tsr_bus.c; the placeholder for P1.8's scheduler): one
+// RISC-V co-stepping (the built-in agent, tsr_bus.c): one
 // clock, MTIME in core cycles; the agent converts with F_RV / F_CORE (tsr_sim_rv_ratio, default
 // 166.7 / 276.3 MHz = 0.603, 1.0 in tests that want 1:1) from an anchor taken at each RISC-V reset.
 // At its turn it runs the hart in a slice that ends before the next core event (completion,
@@ -307,7 +307,7 @@ struct tsr_rv_agent * tsr_sim_rv_agent(tsr_sim * sim);
 //                        if none; called from the agent's step it leaves the agent out and
 //                        counts MTIMECMP (the end of the agent's slice)
 //   tsr_sim_request_stop the running tsr_sim_advance returns after the current time point with
-//                        TSR_SIM_EV_HALT (DB stop points, P1.12); callable from callbacks
+//                        TSR_SIM_EV_HALT (DB stop points); callable from callbacks
 // ---------------------------------------------------------------------------
 uint64_t tsr_sim_next_event(const tsr_sim * sim);
 void     tsr_sim_request_stop(tsr_sim * sim);
@@ -360,7 +360,7 @@ typedef void (*tsr_q_listener)(void * ctx, tsr_sim * sim, const tsr_q_event * ev
 // Listener list: up to TSR_SIM_LISTENERS_MAX listeners, called in registration order for every
 // event. add returns an id >= 0 (-1 if the list is full or fn is NULL); remove takes it (an
 // unknown id is ignored; removing from inside a callback is allowed: a listener removed during an
-// event is not called for the rest of it). tsr_sim_set_listener is the W1a single-listener form:
+// event is not called for the rest of it). tsr_sim_set_listener is the single-listener form:
 // it owns one entry of the list (NULL removes it; a new call replaces it, keeping its position
 // only if fn is unchanged: it is re-added at the end otherwise).
 #define TSR_SIM_LISTENERS_MAX 16
@@ -420,7 +420,7 @@ void tsr_sim_acc_emit(tsr_sim * sim, const tsr_sim_acc * a);
 int  tsr_sim_acc_listened(const tsr_sim * sim);
 
 // ---------------------------------------------------------------------------
-// Optional models attached at create (P1.9, P1.10, P1.12, P1.13). Per model M a source file
+// Optional models attached at create. Per model M a source file
 // defines tsr_<m>_attach / tsr_<m>_detach; tsr_sim_create_opts calls the attach functions at its
 // end in the order DM, DBG, RACE, TRACE, and tsr_sim_destroy calls the detach functions first, in
 // the reverse order (before the RISC-V agent and the memories go). Each call is compiled in under
@@ -431,13 +431,13 @@ int  tsr_sim_acc_listened(const tsr_sim * sim);
 // ---------------------------------------------------------------------------
 enum { TSR_MODEL_DM = 0, TSR_MODEL_DBG = 1, TSR_MODEL_RACE = 2, TSR_MODEL_TRACE = 3, TSR_MODEL_COUNT = 4 };
 void ** tsr_sim_model_slot(tsr_sim * sim, int id);
-void tsr_dm_attach(tsr_sim * sim);      void tsr_dm_detach(tsr_sim * sim);      // tsr_dm.c (P1.12)
-void tsr_dbg_attach(tsr_sim * sim);     void tsr_dbg_detach(tsr_sim * sim);     // tsr_dbg.c (P1.13)
-void tsr_race_attach(tsr_sim * sim);    void tsr_race_detach(tsr_sim * sim);    // tsr_race.c (P1.9)
-// P1.9: tsr_sim_cap_read / _write pass every call (capture on or off) to the attached race
+void tsr_dm_attach(tsr_sim * sim);      void tsr_dm_detach(tsr_sim * sim);      // tsr_dm.c
+void tsr_dbg_attach(tsr_sim * sim);     void tsr_dbg_detach(tsr_sim * sim);     // tsr_dbg.c
+void tsr_race_attach(tsr_sim * sim);    void tsr_race_detach(tsr_sim * sim);    // tsr_race.c
+// tsr_sim_cap_read / _write pass every call (capture on or off) to the attached race
 // detector: the exact DRAM beats a running op's exec touches (its DRAM access set, SW §4.6).
 void tsr_race_cap_note(tsr_sim * sim, uint32_t ch, uint64_t lo, uint64_t n, int write);
-void tsr_trace_attach(tsr_sim * sim);   void tsr_trace_detach(tsr_sim * sim);   // tsr_trace.c (P1.10)
+void tsr_trace_attach(tsr_sim * sim);   void tsr_trace_detach(tsr_sim * sim);   // tsr_trace.c
 // Options (SW §4.8 tsr_sim_opts, else the SW §4.9 environment read in tsr_sim_create_opts):
 //   sched     the canonical schedule: "fixed" or "random:<seed>,<min>,<max>" (the seed in decimal,
 //             min / max as %.17g of their Q16.16 values, e.g. "random:7,0.25,4"; parses back to
@@ -448,7 +448,7 @@ const char * tsr_sim_opt_sched(const tsr_sim * sim);
 uint32_t     tsr_sim_opt_race(const tsr_sim * sim);
 const char * tsr_sim_opt_trace_dir(const tsr_sim * sim);
 
-// Debug-model hooks (DB, P1.12 / P1.13). Without them: the DBG block (0x800-0xAFC except SREG)
+// Debug-model hooks (DB). Without them: the DBG block (0x800-0xAFC except SREG)
 // and DMI (0xC00-0xDFC) read 0 and ignore writes (DBG_ID = 0: block absent, DB §10.1); DB's
 // control-window registers read 0; no unit is held by DB.
 typedef struct tsr_sim_dbg_hooks {
@@ -465,26 +465,26 @@ typedef struct tsr_sim_dbg_hooks {
     uint32_t (*unit_hold)(void * ctx);
     // SOFT_RESET step 1 (EX §8.5): clear DB's stop state.
     void     (*soft_reset)(void * ctx);
-    // P1.13: bit u = dbg_step[u] (CC §9.3, DB §5.2 QSTEP): the head of unit u may start or
+    // bit u = dbg_step[u] (CC §9.3, DB §5.2 QSTEP): the head of unit u may start or
     // complete this evaluation through DB's hard hold and the hold sources (DB arms it only while
     // the host and RISC-V holds are clear and clears it at the entry's START / DONE).
     uint32_t (*unit_step)(void * ctx);
-    // P1.13: DB's STOP_ACTIVE: PERF DBG_STOP_CYCLES counts ACTIVE and (RV_HALTED or this) (EX §6).
+    // DB's STOP_ACTIVE: PERF DBG_STOP_CYCLES counts ACTIVE and (RV_HALTED or this) (EX §6).
     int      (*stop_active)(void * ctx);
-    // P1.13: interrupt lines DB drives, as an Ibex mip mask (irq_fast[4], the REC level, CC §12.3),
+    // interrupt lines DB drives, as an Ibex mip mask (irq_fast[4], the REC level, CC §12.3),
     // ORed into tsr_sim_rv_irq.
     uint32_t (*rv_irq)(void * ctx);
-    // P1.13: tsr_sim_rv_set_state changed the RISC-V's STATUS bits (called after the change, at
+    // tsr_sim_rv_set_state changed the RISC-V's STATUS bits (called after the change, at
     // the current MTIME): DB's RV_HALTED edges (trace-writer RVHALT records).
     void     (*rv_state)(void * ctx);
 } tsr_sim_dbg_hooks;
 void tsr_sim_set_dbg_hooks(tsr_sim * sim, const tsr_sim_dbg_hooks * hooks);   // NULL removes
 
 // ---------------------------------------------------------------------------
-// 5b. Schedule policy (P1.8, tsr_sched.c; SW §4.4, §4.7) and fast-forward
+// 5b. Schedule policy (tsr_sched.c; SW §4.4, §4.7) and fast-forward
 //
 // TSR_SIM_SCHED / tsr_sim_opts.sched:
-//   fixed (default)            the P1.6 policy above, bit-identical to W1a: op durations from the
+//   fixed (default)            the policy above: op durations from the
 //                              cycle models, issue crossing 2, RISC-V-side reads see the core state
 //                              of their own instant, RV CPI from the table (tsr_rv.h)
 //   random:<seed>[,<min>,<max>] every running op's duration x f, f uniform over the Q16.16 values
@@ -509,7 +509,7 @@ void tsr_sim_set_dbg_hooks(tsr_sim * sim, const tsr_sim_dbg_hooks * hooks);   //
 // overflows. RISC-V-local registers (staging, deps, ISSUE_PIDX, ISSUED_SEQ, ISSUE_TICKET, WAIT_*,
 // MTIMECMP), MTIME and the handshake registers (LQ / LCQ / log, RT_*, the core window, the SPM
 // bridge) read the current core value. The view is reloaded from the core when the hart leaves
-// reset (CC §12.2). Fixed keeps the W1a model (no lag) so that it stays bit-identical.
+// reset (CC §12.2). Fixed keeps the model without lag.
 //
 // Ties (SW §4.4) are broken by (time, event-kind priority, unit id, sequence): at one MTIME the
 // time base runs (1) completions in unit order, (2) dispatches in issue-FIFO order, (3) head starts
@@ -568,7 +568,7 @@ int      tsr_sim_fast_forward(const tsr_sim * sim);
 // QCTRL / MARK_PUSH events, and the RV_CW_* access events). Two impossible pcs (bit 0 set: never
 // a hart pc; 0 is one, the ITCM base and vector slot 0 with RV_BOOT = 0):
 //   TSR_SIM_PC_HOOK  the test hooks and tools outside the hart: tsr_sim_cw_access, tsr_sim_cw_read
-//                    / _write, tsr_sim_push, tsr_sim_qctrl (W1b fix; the race detector's harness
+//                    / _write, tsr_sim_push, tsr_sim_qctrl (the race detector's harness
 //                    rule keys on it)
 //   TSR_SIM_PC_SBA   a debug-module system-bus access made through the bus: no RV_CW_* access
 //                    event (the DM model reports SBA_* itself)
@@ -585,7 +585,7 @@ void     tsr_sim_corewin_note(tsr_sim * sim, uint32_t csr_off, uint32_t val, uin
 // level 0 releases it: with RV_RUN = 1 the hart restarts at RV_BOOT + 0x80 (tsr_sim_rv_boot_gen
 // steps). tsr_sim_advance reports RV_RESET_DONE rising as TSR_SIM_EV_RESET.
 void     tsr_sim_rv_ndmreset(tsr_sim * sim, int level);
-// P1.12: something a sleeping or parked RISC-V agent may wait for changed outside a time-base
+// something a sleeping or parked RISC-V agent may wait for changed outside a time-base
 // event (the DM model's resume, halt request or program buffer): the agent is stepped at the
 // next time point (as after a host CSR write). Callable from callbacks.
 void     tsr_sim_rv_kick(tsr_sim * sim);
@@ -736,7 +736,7 @@ struct tsr_sim {
     // host CSR state (EX §5)
     uint32_t   ctrl;            // CTRL level bits
     uint32_t   sticky;          // STATUS sticky bits
-    int        plat_err;        // P3.1 (transport, additive): plat_err_i level (tsr_sim_set_plat_err)
+    int        plat_err;        // plat_err_i level (tsr_sim_set_plat_err)
     int        sr_busy;
     uint32_t   rv_boot;
     uint64_t   rv_boot_gen;
@@ -779,7 +779,7 @@ struct tsr_sim {
     void *     agent_ctx;
     uint64_t   agent_next;
     int        agent_kick;      // something the agent may wait for changed outside an event
-    int        agent_wake_ev;   // P1.12: a store of the agent waits (TSR_CW_WAIT): due also at the
+    int        agent_wake_ev;   // a store of the agent waits (TSR_CW_WAIT): due also at the
                                 // next core event or host action, not only at its deadline
     tsr_lis_slot lis[TSR_SIM_LISTENERS_MAX];
     uint32_t   n_lis;

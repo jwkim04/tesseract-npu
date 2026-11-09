@@ -4,7 +4,7 @@
 // clk_rv), the RV_SAMPLE and RVWP_APPLY handshakes, the two RV watchpoints on the Ibex data port
 // and the double-fault event.
 //
-// Owner: DB (W4-B item 6). tsr_core instantiates it next to tsr_ctrl (it has both clocks; its
+// tsr_core instantiates it next to tsr_ctrl (it has both clocks; its
 // core-domain ports go to tsr_dbg in tsr_core_dp, its clk_rv ports to tsr_ctrl's db_* port and
 // to the Ibex taps). Oracle: the simulator's DBG model (sw/sim/tsr_dbg.c rec_*, h_cw_read /
 // h_cw_write, on_data, rv_sample, rvwp_apply).

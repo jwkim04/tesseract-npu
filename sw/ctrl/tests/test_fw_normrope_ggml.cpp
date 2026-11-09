@@ -7,13 +7,13 @@
 //   RMS_NORM: n = 896, 5120, 3840 (one row per token, weight) and the per-head 256 / 512 rows, 64
 //   rows each with per-row scales 1e-3 .. 1e3 and rare outliers, eps 1e-6: the ulp distance of every
 //   output to ggml_mul(ggml_rms_norm(x, eps), w) (the CPU sums in double and divides by n; the VU sums
-//   in f32 with 128 partials and multiplies by f32(1/n), VU §6.9). Gate: <= 8 ulp (W1a measured the
+//   in f32 with 128 partials and multiplies by f32(1/n), VU §6.9). Gate: <= 8 ulp (measured: the
 //   scale within 2 ulp; the weight multiply adds at most one rounding).
 //   ROPE: Qwen2.5-0.5B / 32B (NEOX, base 1e6, head_dim 64 / 128), Gemma 4 SWA (NEOX 256, base 1e4) and
 //   global (NEOX 512, base 1e6, rope_freqs: 1 for the first quarter, 1e30 after), 2 heads, 256 tokens
 //   at positions spread over 0 .. 32767 (0, 1 and 32767 included): unit pairs (x0 = 1, x1 = 0: the
 //   outputs are cos / sin of the angles; the VU's COS / SIN against libm, VU §6.6) and random inputs
-//   (the full op). Max |difference| reported; gate 8e-6 (W1a: 4.77e-7 on the full op, ref level).
+//   (the full op). Max |difference| reported; gate 8e-6 (4.77e-7 on the full op, ref level).
 // Exit 0 / 1; 77 (skipped) without the image.
 #undef _GNU_SOURCE
 #include "test_sim_obs.h"

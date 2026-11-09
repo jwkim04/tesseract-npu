@@ -279,7 +279,7 @@ int tile_step(tsr_transport * t, uint32_t n, uint64_t timeout_ns, std::string * 
 int tile_break(tsr_transport * t, const std::vector<std::string> & args, const image_info * img, std::string * why);
 
 // ---------------------------------------------------------------------------------------------
-// Trace writer (DB §8.3) and the timeline (DB §8.6, P3.8)
+// Trace writer (DB §8.3) and the timeline (DB §8.6)
 // ---------------------------------------------------------------------------------------------
 struct trw_ring {
     uint32_t ch = TSR_TRW_CH;

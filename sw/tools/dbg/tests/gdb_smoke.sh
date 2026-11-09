@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gdb_smoke.sh — tsr-dbg's RSP server under a real GDB (docs/design/05-debug.md "DB" §4; P3.7; the P6.3
+# gdb_smoke.sh — tsr-dbg's RSP server under a real GDB (docs/design/05-debug.md "DB" §4;
 # GDB smoke on sim): the toolchain's riscv-none-elf-gdb (SW-7) or gdb-multiarch drives
 # `target remote | tsr-dbg gdb --stdio --device sim --elf fw_rt.elf --halt-on-boot` in batch mode:
 # pc at boot, a breakpoint on a firmware symbol, continue, the hit, memory, stepi, CSRs, monitor

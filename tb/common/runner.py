@@ -40,7 +40,7 @@ def parse_filelist(filelist: Path | str = RTL / "filelist.f"):
     order; args: the options to pass before them, in order: +incdir+<abs> and +define+ lines and the
     Verilator configuration files (*.vlt, e.g. rtl/ctrl/waivers/vendor.vlt, which must precede every
     source; cocotb_tools does not classify .vlt sources). rtl/filelist.f includes rtl/ctrl/filelist.f
-    this way (W4-A)."""
+    this way."""
     filelist = Path(filelist)
     srcs, args = [], []
     for line in filelist.read_text().splitlines():

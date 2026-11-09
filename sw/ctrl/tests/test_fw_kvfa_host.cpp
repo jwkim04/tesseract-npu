@@ -163,9 +163,9 @@ int main() {
         fa_bad("FLASH_ATTN scale <= 0", [](kdata & k) { k.fa.scale = 0xBF800000u; });
         fa_bad("FLASH_ATTN MSUM magic", [](kdata & k) { k.msum[0] ^= 1u; });
         fa_bad("FLASH_ATTN MSUM n_q != n_tokens", [](kdata & k) { k.msum[1] = 2u; });
-        fa_bad("FLASH_ATTN MSUM n_kv != n_kv", [](kdata & k) { k.msum[2] = k.fa.n_kv + 16u; });   // W2b fix (review)
+        fa_bad("FLASH_ATTN MSUM n_kv != n_kv", [](kdata & k) { k.msum[2] = k.fa.n_kv + 16u; });
         {
-            // W2b fix (review): the MSUM's rows must lie inside the preload area. T = 3: header + rows =
+            // The MSUM's rows must lie inside the preload area. T = 3: header + rows =
             // 80 bytes; its preload entry cut to 64 (the header and two rows) ends the area one line
             // after the MSUM's start, so the third row lies beyond it (a check one row short accepts).
             kdata k;

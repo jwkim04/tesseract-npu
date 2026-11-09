@@ -45,15 +45,15 @@
 // RISC-V is ahead of the units), the VU words without range checks (kf::red_fast / vop_fast: the plan
 // bounds every field), no ISSUE_TICKET read for a push whose ticket nothing uses, the staged words
 // reused (kf::push_s, CC §5.1), and exactly the pushes, words and deps of the general path
-// (fw_kernels_normrope_host compares them push for push). Its hot entry (W2b fix) takes one row with
+// (fw_kernels_normrope_host compares them push for push). Its hot entry takes one row with
 // a weight while the s-register shadow holds 1/n and eps, straight-line; every other one-tile record
 // takes rms_fast_any (a tail call). Anything else (a refused record included) goes to the general
 // path, out of line and compiled for size (its pushes through push_g).
 //
-// Measured (Ibex maxperf, 2026-10-31, W2b fix; fw_exec_perf_m7 and fw_kernels_normrope_perf, spin-free
+// Measured (Ibex maxperf; fw_exec_perf_m7 and fw_kernels_normrope_perf, spin-free
 // work per record, executor included): 319-326 RV cycles per Qwen2.5 decode record (n 896, weight;
-// the W2b target 350 is met), 347 at 32B's n 5,120 (unit-bound); the per-head norms of Gemma 4 (16 /
-// 8 rows, rms_fast_any) 405-455 (not met). Before the fix: 395 (the integration), 445 (the package).
+// the 350 target is met), 347 at 32B's n 5,120 (unit-bound); the per-head norms of Gemma 4 (16 /
+// 8 rows, rms_fast_any) 405-455 (not met).
 #include "k_fast.hpp"
 #include "tsr/plan.hpp"
 
@@ -84,7 +84,7 @@ using kf::alloc_g;
 TSR_HOT ticket pushk(kf::nochk_t tag, const op & o, deps d, uint32_t pf) { return kf::push(tag, o, d, pf); }
 TSR_HOT ticket pushk(kf::chk_t, const op & o, deps d, uint32_t pf) { return push_g(o, d, pf); }
 
-// The fast path's credit rule (decision W2b normrope): wait until one ISSUE_CREDIT read covers every
+// The fast path's credit rule: wait until one ISSUE_CREDIT read covers every
 // push of the record (kf::credits_for: n_dma DMA and n_vu VU pushes and the issue FIFO), then push
 // them all without further reads (kf::nochk_t). The counts are at most 3 DMA and 4 VU pushes, within
 // every queue's depth and the FIFO's, and every op already queued can complete without a later
@@ -123,7 +123,7 @@ template <class C> TSR_HOT void push_nt(C tag, const op & o, deps d, uint32_t pf
 #endif
 }
 
-// Pushed words (decision W2b normrope): op::used holds only the words that can be nonzero in the
+// Pushed words: op::used holds only the words that can be nonzero in the
 // form pushed (RED TO_S: w1 d and w7 stride are 0; VOP with one row: w4 c and w7 strides are 0, w3 b
 // without a weight; SOP.MOVI: w3 addr is 0). The hardware sends the unstaged words as 0 (CC §5.1:
 // WMASK), so the op words are exactly vu.hpp's builders'; only the ISSUE_PUSH WMASK bits differ from
@@ -325,7 +325,7 @@ deps first_deps(deps dd, deps rd) {
     rtile * cur = &tl2[0], * nxt = &tl2[1];
     next(0u, 0u, *cur);
     // The op's only tile takes the one-tile block when it fits (kind_ctx::one: DMA-bracketed, no ring
-    // record, no deps; W2b integration), as the fast path does; the tiles of a multi-tile op the ring.
+    // record, no deps), as the fast path does; the tiles of a multi-tile op the ring.
     const uint32_t l0 = uint32_t(pn::rms_block_lines(m.L, cur->nr, m.has_w, p));
     const bool one = cur->nr == m.rows && l0 <= ctx.one_lines;
     deps rd{};
@@ -446,7 +446,7 @@ TSR_HOT ticket rms_pushes(kind_ctx & ctx, uint32_t blk, uint32_t src, uint32_t d
 }  // namespace
 
 // The decode fast path (header comment; exec.hpp kind_rms_norm_fast: the executor's first call, a leaf
-// in its common path). The hot entry (W2b fix): one row with a weight of period 1 (every decode
+// in its common path). The hot entry: one row with a weight of period 1 (every decode
 // RMS_NORM of a Qwen2.5 / Gemma 4 layer but the per-head norms) while the launch's s-register shadow
 // holds 1/n and eps (every norm of a list after its first), straight-line: the checks of rms_fast_any
 // for that case, the five pushes with the staged words reused (rms_pushes', and the weight LD's lines

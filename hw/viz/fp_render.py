@@ -39,7 +39,7 @@ RULES_CORE = [
 RULES_LINK = [
     (r"/ulp/tsr_k\d/inst/u_kernel/(g_ch|u_ctrl|u_rst|g_st)", "platform adapter (bridges, control)", "#F5B041"),
     (r"/ulp/tsr_k\d/", "kernel (other)", "#48C9B0"),
-    (r"/ulp/tsr_bw/", "M0 bandwidth kernel", "#2E86C1"),
+    (r"/ulp/tsr_bw/", "bandwidth kernel", "#2E86C1"),
     (r"/ulp/memory_subsystem/inst/memory/ddr4", "DDR4 controllers (memory subsystem)", "#C0392B"),
     (r"/ulp/memory_subsystem/", "memory interconnect", "#F1948A"),
     (r"^level0_i/blp/|^level0_i/ii_level0_pipe", "XRT static shell (BLP)", "#7F8C8D"),

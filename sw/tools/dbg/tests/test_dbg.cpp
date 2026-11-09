@@ -1,4 +1,4 @@
-// test_dbg.cpp — libtsr_dbg on the sim kind (docs/design/05-debug.md "DB" §3-§8; P3.7, P3.8), with the
+// test_dbg.cpp — libtsr_dbg on the sim kind (docs/design/05-debug.md "DB" §3-§8), with the
 // fw_rt test image (rt_nop, rt_copy: LD then ST).
 //
 //   test-tsr-dbg lib <fw_rt.elf> <scratch>

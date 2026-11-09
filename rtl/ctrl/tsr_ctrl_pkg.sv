@@ -1,6 +1,6 @@
 // tsr_ctrl_pkg.sv — types and constants of the RISC-V control subsystem (CC §2-§5, §7, §11).
 //
-// Owner: ctrl agent (W4 item 3). The register offsets, the address map, the issue-FIFO layout and
+// The register offsets, the address map, the issue-FIFO layout and
 // the opcode -> unit map are generated (tsr_tables_pkg, EX-30, CC §13.4); this package only adds
 // the crossing formats of tsr_ctrl_cdc and the bus-internal types, which are this subsystem's own.
 //

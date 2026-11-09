@@ -41,14 +41,14 @@
 // read covering the 3-7 pushes (wait_credits: it waits only while the RISC-V is ahead), the ROPE words
 // without range checks (rope_fast: the plan bounds every field), no ISSUE_TICKET read for a push whose
 // ticket nothing uses (push_nt), and exactly the general path's pushes (fw_kernels_normrope_host
-// compares them push for push). Its hot entry (W2b fix) takes a record without a table and with
+// compares them push for push). Its hot entry takes a record without a table and with
 // freq_scale 1.0 while the s-register shadow holds TS and M, straight-line with the staged SPM line
 // reused (kf::push_s); every other one-token record takes rope_fast_any (a tail call).
 //
-// Measured (Ibex maxperf, 2026-10-31, W2b fix; fw_exec_perf_m7 and fw_kernels_normrope_perf, spin-free
+// Measured (Ibex maxperf; fw_exec_perf_m7 and fw_kernels_normrope_perf, spin-free
 // work per record, executor included): 325-331 RV cycles per Qwen2.5 q / k decode record (0.5B and 32B
-// shapes; the W2b target 350 is met); 439-475 through rope_fast_any (freq_scale != 1, Gemma 4's
-// rope_freqs table: not met). Before the fix: 420 (the integration), 441 (the package).
+// shapes; the 350 target is met); 439-475 through rope_fast_any (freq_scale != 1, Gemma 4's
+// rope_freqs table: not met).
 #include "k_fast.hpp"
 #include "tsr/plan.hpp"
 
@@ -171,7 +171,7 @@ struct rope_args {
     uint32_t dst, dst_stride, src, src_stride, pos, table, ts, m, fs, hd, nd, nh, T, mode;
 };
 
-// Pushed words (decision W2b normrope, as k_norm.cpp): op::used holds only the words that can be
+// Pushed words (as k_norm.cpp): op::used holds only the words that can be
 // nonzero (ROPE: w7 token strides are 0, w4 table is 0 without one; SOP.MOVI: w3 is 0); the
 // hardware sends the others as 0 (CC §5.1 ISSUE_PUSH WMASK): the same op words, one CW store less each.
 constexpr uint32_t ROPE_USED = 0x6Fu, ROPE_USED_TAB = 0x10u, SOP_USED_MOVI = 0x07u;
@@ -292,7 +292,7 @@ deps first_deps(deps dd, deps rd) {
     cur->t0 = 0u;
     cur->n = Tt;
     // The op's only tile takes the one-tile block when it fits (kind_ctx::one: DMA-bracketed, no ring
-    // record, no deps; W2b integration), as the fast path does; the tiles of a multi-tile op the ring.
+    // record, no deps), as the fast path does; the tiles of a multi-tile op the ring.
     const bool one = Tt >= g.T && Tt * H + tab <= ctx.one_lines;
     deps rd{};
     cur->blk = one ? ctx.one : alloc_g(ring, Tt * H + tab, &rd);
@@ -464,7 +464,7 @@ static_assert(rope_t1_ok_matches(), "k_rope.cpp: rope_t1_ok = rope_check (one to
 }  // namespace
 
 // The decode fast path (header comment; exec.hpp kind_rope_fast: the executor's first call, a leaf in
-// its common path). The hot entry (W2b fix): one token without a table (hence without ATAB) and with
+// its common path). The hot entry: one token without a table (hence without ATAB) and with
 // freq_scale 1.0 (no FS) while the launch's s-register shadow holds TS (s5) and M (s4) (every decode
 // ROPE of a Qwen2.5 layer and of a Gemma 4 SWA layer after the list's first), straight-line: the
 // checks of rope_fast_any for that case (rope_t1_ok), LD, ROPE, ST with the staged SPM line reused

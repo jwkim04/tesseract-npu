@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""rvtests.py - riscv-tests and riscv-arch-test on Spike and on tsr_rv (P1.11).
+"""rvtests.py - riscv-tests and riscv-arch-test on Spike and on tsr_rv.
 
 docs/design/06-software-verification.md §4.2 (test bus profile), §9.6 (tools), §10.1 (oracle chain:
 Spike -> tsr_rv), §10.2 (rv_isa). Stdlib only. Profiles, the tsr_rv runner contract and the
@@ -332,7 +332,7 @@ def main():
     tools = rc.Tools.from_args(a)
     runner = rc.parse_runner(a.runner)
     if a.runner is not None and runner is None:
-        rc.skip("no tsr_rv runner (P1.7; contract in sw/sim/tests/rvtests/rvcommon.py)")
+        rc.skip("no tsr_rv runner (contract in sw/sim/tests/rvtests/rvcommon.py)")
     if not tools.have_gcc():
         rc.skip("RISC-V compiler %s not found; %s" % (tools.gcc(), rc.INSTALL_HINT))
     if a.lockstep and not runner:

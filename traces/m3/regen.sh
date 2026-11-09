@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# traces/m3/regen.sh [BUILD_DIR] — the M3 regression traces as `ops` traces (docs/design/
-# 06-software-verification.md §5.6): tsr-trace-gen --ops m3 (MVM-centred groups mixed with the M2
+# traces/m3/regen.sh [BUILD_DIR] — the m3 regression traces as `ops` traces (docs/design/
+# 06-software-verification.md §5.6): tsr-trace-gen --ops m3 (MVM-centred groups mixed with the m2
 # QACT / copy groups), with fixed seeds and configurations, then
 # every trace replayed under the fixed and two random schedules (race detector fatal),
 # tile-only and through the replay kernel (one launch per trace: SPM_STALE is fatal, SW §4.6). The
@@ -17,12 +17,12 @@
 #   errors/   68 short programs (one group each) with an error injection, U200 config: two cycles
 #             through the 23 MVM fault kinds (reserved fields, BAD_FMT fmt 2..15, K_RANGE incl.
 #             the 16-bit K field, T_RANGE, SPM_RANGE on A1 / A2, DRAM_RANGE on A3, with lower-priority
-#             violations and 32-bit-wrapping extents) and the 12 M2 / dependency kinds
+#             violations and 32-bit-wrapping extents) and the 12 m2 / dependency kinds
 #   errors8/  68 like errors/, T_MAX 8 (multi-token extents, (T-1) x dst_stride >= 2^32)
 # Not in git (.gitignore): regenerate with this script. Weight traffic: --max-wbeats 16384 MVM weight
 # beats per trace on the busiest channel (channel 0; 4096 in the error sets). Every SPM line an op
-# reads is written earlier in its trace (2026-10-30: a strided QACT source loaded per token also gets its
-# stride gaps loaded; 23 traces changed, none read the power-on SPM fill).
+# reads is written earlier in its trace (a strided QACT source loaded per token also gets its
+# stride gaps loaded, so no trace reads the power-on SPM fill).
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)

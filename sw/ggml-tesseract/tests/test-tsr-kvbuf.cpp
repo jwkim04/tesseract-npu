@@ -1,6 +1,5 @@
 // test-tsr-kvbuf.cpp — unit tests of the KV-cache buffers (tsr-kvbuf) and the mask-summary producer
-// (tsr-msum) of ggml-tesseract, without ggml and without a device (ctest ggml_tesseract_kvbuf; W3b
-// P3.5; docs/design/06-software-verification.md §9.3 M7, §10.2; docs/design/03-attention-kv.md §4.6, §7.3).
+// (tsr-msum) of ggml-tesseract, without ggml and without a device (ctest ggml_tesseract_kvbuf; docs/design/06-software-verification.md §9.3 M7, §10.2; docs/design/03-attention-kv.md §4.6, §7.3).
 // The device is a host image of C channels behind the read / write callbacks.
 //
 // KV buffers:

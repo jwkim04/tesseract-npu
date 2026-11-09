@@ -1,5 +1,5 @@
 # traces/trace_tools.sh — sourced by the trace-set scripts (traces/{m2,gen,m3,vu,at,ctrl}/regen.sh):
-# select and check the trace tools of a build of this tree (P1.10, docs/design/06-software-
+# select and check the trace tools of a build of this tree (docs/design/06-software-
 # verification.md §5.5-§5.6).
 #   trace_tools BUILD_DIR   sets TT_GEN (tsr-trace-gen) and TT_REPLAY (tsr-trace-replay) and exits
 #                           the script before anything is deleted if either is missing or lacks the
@@ -28,7 +28,7 @@ trace_replay() {
     TSR_SIM_RACE=${TSR_SIM_RACE:-fatal} "$TT_REPLAY" -q --sched fixed --sched random:1 --sched random:2 "$@"
 }
 
-# --- added 2026-10-30 (tracegen, SPM_STALE): trace_replay_kernel SET... ---
+# --- trace_replay_kernel SET... ---
 # The same three schedules through the `replay` kernel of the build's production image (BUILD_DIR/fw/
 # tsr-fw.elf, SW §7.7), race detector fatal: there a trace is one launch, so an op that reads SPM
 # nothing wrote in the trace is an SPM_STALE abort (SW §4.6, SW-4; the tile-only route of
@@ -42,4 +42,4 @@ trace_replay_kernel() {
     TSR_SIM_RACE=${TSR_SIM_RACE:-fatal} "$TT_REPLAY" -q --sched fixed --sched random:1 --sched random:2 \
         --replay-image "$img" "$@"
 }
-# --- end of the 2026-10-30 addition ---
+# --- end of trace_replay_kernel ---

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rtl/platform/alveo_xrt/bw/lint.sh — Verilator lint (-Wall, warnings are errors) of the M0 bandwidth
+# rtl/platform/alveo_xrt/bw/lint.sh — Verilator lint (-Wall, warnings are errors) of the bandwidth
 # kernel (docs/bandwidth-kernel.md §5) and the generated-file check of gen_bw.py. Meant to be called from
 # rtl/lint.sh (proposal) or on its own.
 #
@@ -34,7 +34,7 @@ else
     fails=$((fails + 1))
 fi
 
-# M0 measures the memory path the core gets: same m_axi interconnect hints as the Tesseract kernels
+# The bandwidth kernel measures the memory path the core gets: same m_axi interconnect hints as the Tesseract kernels
 core_hints=$(grep -o '{MAX_BURST_LENGTH [0-9]* NUM_READ_OUTSTANDING [0-9]* NUM_WRITE_OUTSTANDING [0-9]*}' \
              "$ROOT/rtl/platform/alveo_xrt/package_xo.tcl")
 bw_hints=$(grep -o '^ *core {MAX_BURST_LENGTH [0-9]* NUM_READ_OUTSTANDING [0-9]* NUM_WRITE_OUTSTANDING [0-9]*}' \

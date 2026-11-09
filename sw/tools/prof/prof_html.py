@@ -304,7 +304,7 @@ def factor_rows(model):
     rows = [("(1 − H)  device busy", 1 - s["H"], "H = %s: wall time with no launch active (host work, the PCIe round trip, sampling)" % pct(s["H"])),
             ("(1 − G)  MVM busy in the launch", 1 - s["G"], "G = %s: device time outside the MVM (LD, QACT, VU, ST, issue gaps)" % pct(s["G"])),
             ("(1 − F)  weight stream in MVM time", 1 - s["F"], "F = %s: MVM fill, broadcast, tail and bubbles inside the MVM time" % pct(s["F"])),
-            ("E  stream rate / M0 bandwidth", min(s["E"], 1.0), "E = %s: bytes read per ideal weight-stream cycle × core clock ÷ 72.05 GB/s; at 256 B per cycle it is %s (the clock bound)" % (pct(s["E"]), pct(s["E_clock"])))]
+            ("E  stream rate / measured bandwidth", min(s["E"], 1.0), "E = %s: bytes read per ideal weight-stream cycle × core clock ÷ 72.05 GB/s; at 256 B per cycle it is %s (the clock bound)" % (pct(s["E"]), pct(s["E_clock"])))]
     out = []
     for lab, v, tip in rows:
         out.append('<div class="fac"><div>%s</div><div class="bar" title="%s"><i style="width:%.1f%%"></i></div><div class="v">%s</div></div>' % (esc(lab), esc(tip), 100 * v, pct(v)))

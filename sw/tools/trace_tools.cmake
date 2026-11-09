@@ -1,10 +1,10 @@
-# sw/tools/trace_tools.cmake — trace tools (P1.10; docs/design/06-software-verification.md §5.4,
+# sw/tools/trace_tools.cmake — trace tools (docs/design/06-software-verification.md §5.4,
 # §5.6, §9.5), included by sw/tools/CMakeLists.txt when present (before trace_gen.cmake, whose test
 # uses tsr-trace-replay).
 #   tsr-trace-replay   replays trace directories or sets on fresh simulators (tsr_trace.h):
 #                      tsr-trace-replay [-q | -v] [--sched S]... [--threads N] [--max-cycles N]
 #                      [--tmax N] PATH...; summary line, exit 0 / 1 (mismatch) / 2 (unreadable);
-#                      P3.3: tsr-trace-replay --device KIND [--shadow] [--replay-image ELF] [--serial] PATH...
+#                      tsr-trace-replay --device KIND [--shadow] [--replay-image ELF] [--serial] PATH...
 #                      replays through a transport (tsr_devrun.h; linked by sw/tools/CMakeLists.txt)
 #   tsr-trace-conv     cmd.bin traces -> kind-ops traces, serial dependency chain (SW §5.6):
 #                      tsr-trace-conv [-q] [--replay] [--sched S]... [--limit N] [--pick LIST]

@@ -3,7 +3,7 @@
 // (tsr_core_dp: issue path, CSR block, units, SPM, memory arbiters) (docs/design/04-control-core.md
 // "CC" §2, §13.1-§13.2).
 //
-// Owner: integration (W4-A). The control core is mandatory (D14): the host loads a firmware image
+// The control core is mandatory (D14): the host loads a firmware image
 // through the CSR port and the RISC-V issues every tile op; there is no host command path.
 //
 // Core boundary (spec Core boundary interface; EX §9.3, CC §13.1):
@@ -85,10 +85,10 @@ module tsr_core
   parameter bit              XSLR_REG       = 1'b0,
   // FAST_CLK (implementation; tsr_core_dp and below, docs/platform-u200.md §8.10): the register stages and protocol changes that
   // make the core meet a 4.0 ns clock. Results and the architectural state are unchanged; the cycle counts of some control
-  // and diagnostic paths grow by a few cycles. 0 builds the netlist of every earlier configuration.
+  // and diagnostic paths grow by a few cycles. 0 builds the netlist of the 200 MHz images.
   parameter bit              FAST_CLK       = 1'b0,
-  // W4-B (tsr_core_dp): vector unit (queue depth QD_VU; lane knobs VU_EXP_LANES / VU_BACK_LANES, VU §7.10),
-  // attention, TOPK / DQROW (M8 RTL, off in the U200 M7 build), the DB block and its sizes (DB §10.3)
+  // tsr_core_dp: vector unit (queue depth QD_VU; lane knobs VU_EXP_LANES / VU_BACK_LANES, VU §7.10),
+  // attention, TOPK / DQROW (RTL options, off in the release image), the DB block and its sizes (DB §10.3)
   parameter bit              HAS_VU         = 1'b1,
   parameter bit              HAS_ATT        = HAS_MVM,           // needs HAS_VU, HAS_MVM and MVM_MAC_LAT >= 3
   parameter bit              HAS_TOPK       = 1'b0,

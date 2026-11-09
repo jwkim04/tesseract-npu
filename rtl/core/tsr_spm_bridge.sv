@@ -2,7 +2,7 @@
 // for the RISC-V's exact SPM window (0x4000_0000), its line-buffered alias (0x5000_0000) and the
 // debug module's system-bus accesses to them (docs/design/04-control-core.md "CC" §4.1, §10.5).
 //
-// Owner: SPM agent. The clk_rv side (address decode and faults, the 4,096-cycle bound with
+// The clk_rv side (address decode and faults, the 4,096-cycle bound with
 // BRIDGE_TIMEOUT, request tags and discarding of late answers, the line buffer tsr_spm_lb and its
 // invalidation, byte / half / word lanes) and the tagged 4-phase crossing (CC §11.2: 64 b request,
 // 513 b response) belong to the control subsystem; this module sees one request at a time with

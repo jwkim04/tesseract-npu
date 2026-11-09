@@ -1,4 +1,4 @@
-// test_fw_kernels_host.cpp — fw_kernels_host: the P2.5 kernels compiled for the host (docs/design/
+// test_fw_kernels_host.cpp — fw_kernels_host: the M6 kernels compiled for the host (docs/design/
 // 06-software-verification.md "SW" §6.8, SW-25: tsr_fw_host under ASan + UBSan), driven through the
 // simulator's test hooks (tsr/backend_host.hpp). The reference stays the RV binary on tsr_rv (SW §6.8):
 // every host result here is also compared with it or with the C++ references.
@@ -10,7 +10,7 @@
 //      flags, a shape the ring cannot hold) set ctx.ret and push nothing.
 //   1b. the decode fast path (mmk::mulmat_t1_fast) against the general path on twin simulators: T = 1
 //      records with deps on every unit, the same pushes (words, deps, push value), ticket and ring
-//      state (SW §7.4: MUL_MAT's push stream is W2a's whichever path runs it).
+//      state (SW §7.4: MUL_MAT's push stream is the same whichever path runs it).
 //   2. replay through host_run: a synthetic stream of three chunks (the chunk LDs interleave with the
 //      replayed DMA ops) and, when given, a trace directory (e.g. an error trace of traces/ctrl):
 //      expect regions bit-exact and RET = the trace's DONE ret; the argument checks; the RET rule's
@@ -243,8 +243,8 @@ void test_mulmat(const char * sched) {
 }
 
 // ---------------------------------------------------------------------------
-// 1b. The decode fast path pushes what the general path pushes (SW §7.4, k_mulmat.hpp; executor
-//     optimisation review, 2026-10-30): T = 1 records (Q8_0 and Q4_K; plain, ACC_DST, an addend; with
+// 1b. The decode fast path pushes what the general path pushes (SW §7.4, k_mulmat.hpp):
+//     T = 1 records (Q8_0 and Q4_K; plain, ACC_DST, an addend; with
 //     and without the REC push flag) whose deps are tickets of non-DMA units (SYNC, QACT, VU, MVM),
 //     of DMA, or none, after the same history (earlier MUL_MATs through kind_mulmat, so that the
 //     ring reuses blocks released by STs). mmk::mulmat_t1_fast runs on one simulator and the general
@@ -557,7 +557,7 @@ void test_replay(const char * trace_dir) {
         tsr::host_bind(nullptr);
         tsr_sim_destroy(sim);
     }
-    {   // fix W2a: the RET rule's corners and the QCLEAR credit wait (SW §7.7 steps 3-4)
+    {   // the RET rule's corners and the QCLEAR credit wait (SW §7.7 steps 3-4)
         const uint64_t chb = 1ull << 28, CH = chb / 64u, LB = (48ull << 20) / 64u;
         using rec = std::array<uint32_t, 12>;
         auto op_rec = [](const tsr_insn & o, uint32_t dep0) {

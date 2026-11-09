@@ -1,8 +1,8 @@
 // tsr_vu_lane.sv — one VU lane: the front lane (FM_A ∥ FM_B → FA → FM_C → EXPK → select) with its RED
 // partials and, when HAS_BACK, the back lane (ONE → RC → FM_R → fp16 rounding → FM_S → select).
 //
-// Owner: VU (docs/design/02-vector-unit.md "VU" §7.2 front lane, §7.3 back lane, §7.4 function mapping,
-// §6 numerics; §7.5 the per-lane partials of the reduction).
+// Spec: docs/design/02-vector-unit.md "VU" §7.2 front lane, §7.3 back lane, §7.4 function mapping,
+// §6 numerics; §7.5 the per-lane partials of the reduction.
 // Contract: for every element injected with micro-op u (tsr_vu_pkg::tsr_vu_uop_e) and operands a, b, c1,
 // c2, the front exit f_y carries the result TSR_VU_LF cycles after the input register (cycle 0) and the
 // back exit b_y TSR_VU_LB cycles after it; the result is the simulator's (tsr_ref_vop_elem, tsr_ref_at.c,

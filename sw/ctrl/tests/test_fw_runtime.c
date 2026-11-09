@@ -1,4 +1,4 @@
-// test_fw_runtime.c — fw_runtime (docs/design/06-software-verification.md "SW" §10.2; P2.2): the SDK
+// test_fw_runtime.c — fw_runtime (docs/design/06-software-verification.md "SW" §10.2): the SDK
 // runtime (sw/ctrl/rt: crt0, R1-R10 of docs/design/01-execution-model.md "EX" §4.7, traps and panic of
 // docs/design/05-debug.md "DB" §6.3, log records of DB §6.1) as the RISC-V binary on the simulator
 // (tsr_rv executing the real image is the reference, SW §6.8), driven through the host CSR port as
@@ -661,7 +661,7 @@ static void fw_scenario(run * r) {
         quiesce(r, "D");
     }
 
-    // ======== D2 (fix W2a): R8 back-pressure; R9 after a cancel that lands between R7 and the post ========
+    // ======== D2: R8 back-pressure; R9 after a cancel that lands between R7 and the post ========
     {
         const uint32_t n0 = r->n_rec;
         uint32_t sq[9];
@@ -811,7 +811,7 @@ static void fw_scenario(run * r) {
             chk_lrec(r, &lr[1], 3, 1, TSR_LOG_HDR_TYPE_FMT, 4, s5, "F4b record");
         }
         // F5: LOG_CFG.BLOCK: the kernel waits for the host to drain; nothing is dropped. The host holds
-        // the ring until it is full and the kernel has waited (no DONE, no word), then drains (fix W2a).
+        // the ring until it is full and the kernel has waited (no DONE, no word), then drains.
         tsr_sim_csr_write(sim, TSR_CSR_LOG_CFG, TSR_LOG_CFG_ENABLE | TSR_LOG_CFG_BLOCK | TSR_PUT(TSR_LOG_CFG_LEVEL, 3u));
         n0 = r->n_rec;
         l0 = r->n_log;
@@ -1110,7 +1110,7 @@ static void fw_scenario(run * r) {
         quiesce(r, "J");
     }
 
-    // ======== K (fix W2a): an RV reset leaves every unit in error state (RV_RUN 1 -> 0 applies QABORT;
+    // ======== K: an RV reset leaves every unit in error state (RV_RUN 1 -> 0 applies QABORT;
     // error states are kept, CC §12.1); R1's QCLEAR at boot makes the next launch clean ========
     {
         tsr_sim_csr_write(sim, TSR_CSR_CTRL, tsr_sim_csr_read(sim, TSR_CSR_CTRL) & ~TSR_CTRL_RV_RUN);

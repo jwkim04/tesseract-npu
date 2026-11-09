@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""rv_random.py - random RV32IMC + Zicsr programs, Spike vs tsr_rv retire by retire (P1.11).
+"""rv_random.py - random RV32IMC + Zicsr programs, Spike vs tsr_rv retire by retire.
 
 docs/design/06-software-verification.md §10.1 (tsr_rv oracle: "random programs (in-house Python
 generator, placed at 0x8000_0000 on both) compared retire by retire with spike --log-commits"),
@@ -399,7 +399,7 @@ def cmd_run(a):
     tools = rc.Tools.from_args(a)
     runner = rc.parse_runner(a.runner)
     if a.runner is not None and runner is None:
-        rc.skip("no tsr_rv runner (P1.7; contract in sw/sim/tests/rvtests/rvcommon.py)")
+        rc.skip("no tsr_rv runner (contract in sw/sim/tests/rvtests/rvcommon.py)")
     if not tools.have_gcc():
         rc.skip("RISC-V compiler %s not found; %s" % (tools.gcc(), rc.INSTALL_HINT))
     if not tools.have_spike():

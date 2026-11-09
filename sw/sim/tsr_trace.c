@@ -4,7 +4,7 @@
 // TRACE model of the simulator (launch capture, SW §5.5, attached by tsr_sim_create_opts), and
 // replay on a fresh simulator with the comparisons of SW §5.4.
 //
-// Decisions (P1.10, where SW §5 leaves a choice):
+// Decisions (where SW §5 leaves a choice):
 //   - Kernel entry, the base of relative tickets (SW §5.2, EX §4.7 R5): the first RISC-V read of
 //     ISSUE_PIDX after the launch's LQ_POP. The SDK runtime reads ISSUE_PIDX, then ISSUED_SEQ[u],
 //     right before it calls the kernel (SW §6.3 R5), so this is a firmware-visible marker that
@@ -22,13 +22,13 @@
 //   - Kind ops is replayed tile-only by default: each record goes in through the control window
 //     from outside the time base, waiting for its credit or FIFO space by advancing to the next
 //     event (what the replay kernel does with WAIT_CREDIT), then the run continues until QIDLE. Its
-//     DONE is the replay kernel's answer (SW §7.7 step 4). P2.5 adds the route through the `replay`
+//     DONE is the replay kernel's answer (SW §7.7 step 4). The other route goes through the `replay`
 //     kernel of a firmware image (tsr_trace2_replay_opts.replay_image; "kernel_replay" below).
 //   - CTL_ID / CFG3 in "config" are informational on replay (CTL_ID.DM depends on the models
 //     linked into the library): a difference is a warning, not a failure.
 //   - meta.json: integers in decimal (ret signed), rv_ratio with 17 significant digits, the
 //     image id as 16 lower-case hex digits; unknown keys are refused on read.
-//   - W2a: the launch's own LAUNCH_BEGIN / LAUNCH_END markers (DB §8.4: class 1 / 2, [27:16] the
+//   - The launch's own LAUNCH_BEGIN / LAUNCH_END markers (DB §8.4: class 1 / 2, [27:16] the
 //     descriptor's KERNEL, [15:0] the launch SEQ low bits; the SDK runtime pushes them around every
 //     kernel) are stored launch-relative: SEQ field 0, like the relative tickets and push indices.
 //     Otherwise a launch captured with SEQ s != 0 could never replay on a freshly booted simulator,
@@ -41,7 +41,7 @@
 #include "tsr_trace.h"
 #include "tsr_sim_int.h"
 #if defined(TSR_SIM_HAVE_RACE) && TSR_SIM_HAVE_RACE
-#include "tsr_race.h"     // P2.5: race report counts of a replay
+#include "tsr_race.h"     // race report counts of a replay
 #endif
 
 #include <dirent.h>
@@ -833,7 +833,7 @@ void tsr_trace2_config_from_core(tsr_trace2_config * c, const tsr_config * core)
     memcpy(c->q_depth, k_depth_u200, sizeof(c->q_depth));
 }
 
-uint32_t tsr_trace2_ctl_id_full(void) { return TSR_SIM_CTL_ID_FULL; }   // W1b fix
+uint32_t tsr_trace2_ctl_id_full(void) { return TSR_SIM_CTL_ID_FULL; }
 
 void tsr_trace2_config_from_sim(tsr_trace2_config * c, tsr_sim * sim) {
     memset(c, 0, sizeof(*c));
@@ -1812,7 +1812,7 @@ static void cur_start(tmodel * m, int run) {
     tsr_sim_capture_begin(sim);
 }
 
-// W2a: the launch's own LAUNCH_BEGIN / LAUNCH_END marker with its SEQ field made launch-relative (0);
+// the launch's own LAUNCH_BEGIN / LAUNCH_END marker with its SEQ field made launch-relative (0);
 // every other marker value unchanged (decisions above).
 static uint32_t launch_mark_rel(const cap_cur * c, uint32_t v) {
     const uint32_t cls = TSR_GET(v, TSR_MARK_CLASS);
@@ -2496,7 +2496,7 @@ static tsr_sim * replay_sim(const tsr_trace2 * t, const tsr_trace2_replay_opts *
     so.sched = o->sched;
     so.rv_ratio = o->rv_ratio != 0.0 ? o->rv_ratio : t->rv_ratio;
     so.q_depth = t->cfg.q_depth;
-    so.race = o->race;                                // P2.5: 0 keeps TSR_SIM_RACE
+    so.race = o->race;                                // 0 keeps TSR_SIM_RACE
     so.itcm_bytes = t->cfg.itcm_bytes;
     so.dtcm_bytes = t->cfg.dtcm_bytes;
     tsr_sim * sim = tsr_sim_create_opts(&cfg, &so);
@@ -2648,7 +2648,7 @@ static void compare(const tsr_trace2 * w, const tsr_trace2 * g, tsr_sim * sim, i
 }
 
 // ---------------------------------------------------------------------------
-// P2.5: kind ops through the firmware's `replay` kernel (SW §5.4, §7.7; EX §4.6). Decisions:
+// kind ops through the firmware's `replay` kernel (SW §5.4, §7.7; EX §4.6). Decisions:
 //   - The kernel is found by name in the image's .tsr_kernels (entry stride 32 or 36 bytes, the name
 //     at byte 12: SW §6.2's field list; whichever stride gives a valid table).
 //   - push.bin goes to "ops.load" (choose_load when the trace has none), written by the host before
@@ -3050,7 +3050,7 @@ static int run_trace(const tsr_trace2 * t, const tsr_trace2_replay_opts * o, tsr
     }
     const uint64_t budget = o->max_cycles ? o->max_cycles : (1ull << 40);
     const int rc = t->kind == TSR_TRACE2_KIND_LAUNCH ? launch_replay(sim, m, t, budget, got, why, sizeof(why))
-                   : o->replay_image != NULL         ? kernel_replay(sim, m, t, o, budget, got, why, sizeof(why))   // P2.5
+                   : o->replay_image != NULL         ? kernel_replay(sim, m, t, o, budget, got, why, sizeof(why))
                                                      : ops_replay(sim, m, t, budget, got, why, sizeof(why));
     if (rc != 0) {
         rfailf(r, o->verbose, TSR_TRACE2_CMP_SETUP, "%s", why);
@@ -3079,7 +3079,7 @@ int tsr_trace2_replay_sim_ex(const tsr_trace2 * t, const tsr_trace2_replay_opts 
     if (rc != 0) return rc;
     compare(t, got, sim, o->verbose, r);
 #if defined(TSR_SIM_HAVE_RACE) && TSR_SIM_HAVE_RACE
-    {   // P2.5: the race detector's verdict for the caller (with TSR_SIM_RACE=report)
+    {   // the race detector's verdict for the caller (with TSR_SIM_RACE=report)
         const tsr_race_report * rr = NULL;
         const size_t nr = tsr_sim_race_reports(sim, &rr);
         r->race_reports = (uint32_t)nr;
@@ -3126,7 +3126,7 @@ int tsr_trace2_run_ops(tsr_trace2 * t, const tsr_trace2_replay_opts * o, tsr_tra
     }
     tsr_sim * sim = NULL;
     tsr_trace2 * got = NULL;
-    tsr_trace2_replay_opts tile_only = *o;   // P2.5: the generator's runs are always tile-only
+    tsr_trace2_replay_opts tile_only = *o;   // the generator's runs are always tile-only
     tile_only.replay_image = NULL;
     const int rc = run_trace(t, &tile_only, r, &sim, &got);
     if (rc != 0) return rc;

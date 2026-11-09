@@ -1,5 +1,5 @@
-// tsr_race.c — the simulator's race detector and the launch-stateless check (P1.9;
-// docs/design/06-software-verification.md "SW" §4.6, SW-3 / SW-4). Public API: tsr_race.h.
+// tsr_race.c — the simulator's race detector and the launch-stateless check
+// (docs/design/06-software-verification.md "SW" §4.6, SW-3 / SW-4). Public API: tsr_race.h.
 // It is an optional model (tsr_sim_int.h "Optional models"): tsr_race_attach registers a queue
 // listener and an access listener when tsr_sim_opt_race() != 0, and keeps its state in the
 // TSR_MODEL_RACE slot. Nothing here changes the simulation: the detector only observes.

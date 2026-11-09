@@ -1,6 +1,6 @@
 # rtl/filelist.tcl — Tcl reader of the Verilator filelists (rtl/filelist.f, rtl/filelist_xilinx.f
 # and the lists they nest with -F, e.g. rtl/ctrl/filelist.f) for the Vivado flows (tb/core/viv,
-# tb/tech/viv, tb/platform/viv, rtl/platform/alveo_xrt/package_xo.tcl; W4-A).
+# tb/tech/viv, tb/platform/viv, rtl/platform/alveo_xrt/package_xo.tcl).
 #
 #   source $repo/rtl/filelist.tcl
 #   set fl [tsr_read_filelist $repo/rtl/filelist_xilinx.f]

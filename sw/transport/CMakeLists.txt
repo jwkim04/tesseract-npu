@@ -11,7 +11,7 @@
 #                   model with fault injection, tsr_kdev_mock.cpp), "vkernel" (client of the Verilated
 #                   kernel server; the tree has no two-clock server, so the open says so) and,
 #                   with -DTSR_WITH_XRT=ON, "xrt" (xrt::ip with exclusive access + one device-only buffer
-#                   per channel, tsr_transport_xrt.cpp; on the card from P6).
+#                   per channel, tsr_transport_xrt.cpp; on the card).
 #
 # XRT: -DTSR_WITH_XRT=ON -DTSR_XRT_ROOT=<dir with include/ and lib/> (default /opt/xilinx/xrt).
 # Without an installed XRT, the 2.18.179 deb can be unpacked into build/xrt-local (docs/xrt-host.md
@@ -147,4 +147,4 @@ if (TSR_WITH_XRT AND EXISTS ${_tsr_xrt_root}/lib/libxrt_noop.so)
 endif()
 
 # transport_ggml_e2e_mock and transport_ggml_e2e_mock_tmax8 (the ggml backend end to end on the
-# mock kdev) return with the backend's OPL path (P3.2, SW §10.2; sw/ggml-tesseract).
+# mock kdev) return with the backend's OPL path (SW §10.2; sw/ggml-tesseract).

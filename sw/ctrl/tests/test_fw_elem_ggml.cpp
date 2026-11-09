@@ -19,7 +19,7 @@
 //     differ, by at most 2 fp16 ulps; they cluster in the negative tail, so the share of differing
 //     elements depends on the inputs: ~0.05 % at sigma 1, ~5 % at sigma 4); GEGLU16 (= GELU16 x up,
 //     one more f32 rounding): relative error <= 2^-9 where |y| > 1e-3;
-//   GELU, GEGLU (the exact tanh form, M8 / PyTorch) against the CPU's fp16 GELU: the up to 3.9e-3
+//   GELU, GEGLU (the exact tanh form, PyTorch) against the CPU's fp16 GELU: the up to 3.9e-3
 //     relative difference of VU §6.9 (reported; bound 1e-2 relative where |y| > 1e-3).
 // Exit 0 / 1.
 #undef _GNU_SOURCE

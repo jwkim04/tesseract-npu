@@ -3,7 +3,7 @@
 // QSTEP with DBG_STEP_N, serial mode, ERR_STOP / HUNG_STOP and the per-unit dbg_hold / dbg_step
 // levels into the queue heads (CC §9.2-§9.3).
 //
-// Owner: DB (W4-B item 6). Instantiated by tsr_dbg. Oracle: the simulator's DBG model
+// Instantiated by tsr_dbg. Oracle: the simulator's DBG model
 // (sw/sim/tsr_dbg.c stop_T, hold_mask, drained, stop_now, release, qstep, step_advance,
 // tbp_match, on_enq / on_done); tb/dbg compares the registers and the stops it produces.
 //

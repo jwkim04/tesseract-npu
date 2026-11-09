@@ -1,9 +1,9 @@
-// tsr_bw_engine.sv — one channel of the M0 DMA bandwidth kernel tsr_bw_k4 (docs/bandwidth-kernel.md): read
+// tsr_bw_engine.sv — one channel of the DMA bandwidth kernel tsr_bw_k4 (docs/bandwidth-kernel.md): read
 // and / or write traffic generator, read checksum, write pattern and counters, on the memory-port
 // side of a tsr_xrt_axi_bridge (the adapter's AXI4 bridge: base add, register slices, ID filter,
 // error events).
 //
-// Owner: m0bw agent (docs/bandwidth-kernel.md §2, §3).
+// Spec: docs/bandwidth-kernel.md §2, §3.
 //
 // Configuration (latched at the start of a run, static from then on; ctrl word = docs/bandwidth-kernel.md §2):
 //   ctrl[0] enable, ctrl[1] read, ctrl[2] write, ctrl[14:8] burst beats B (1..64), ctrl[22:16]

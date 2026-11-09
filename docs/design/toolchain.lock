@@ -53,9 +53,9 @@ dtc.make_flags = NO_YAML=1 NO_VALGRIND=1
 dtc.make_target = install-bin
 
 # --- Spike (riscv-isa-sim) ------------------------------------------------------------------------
-# The only release tags are v1.0.0 (2019) and v1.1.0 (2021), so a master merge commit is pinned:
-# 2026-10-15, after PR #2472 (--disable-dtb starts at the ELF entry, which the harness relies on)
-# and before PR #2480 (2026-10-20: SoftFloat moved to a git submodule, followed by a week of
+# The only release tags are v1.0.0 (2019) and v1.1.0 (2021), so a master merge commit is pinned,
+# after PR #2472 (--disable-dtb starts at the ELF entry, which the harness relies on)
+# and before PR #2480 (SoftFloat moved to a git submodule, followed by a week of
 # SoftFloat PRs).
 spike.repo = https://github.com/riscv-software-src/riscv-isa-sim.git
 spike.commit = 5a760667bf0d0ab893173b9eeff9c109c8d7dd9a

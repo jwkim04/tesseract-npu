@@ -1,4 +1,4 @@
-// hdr_constexpr.cpp — compile-time field checks of the op builders (P2.3; SW §6.7), run by the
+// hdr_constexpr.cpp — compile-time field checks of the op builders (SW §6.7), run by the
 // ctest fw_hdr_constexpr (sw/ctrl/tests/hdr.cmake, script mode): case 0 must compile, every other
 // case must fail to compile, because in a constant expression a builder reaches a non-constexpr
 // tsr::detail function for a field that does not fit or a rule the checker applies whatever the

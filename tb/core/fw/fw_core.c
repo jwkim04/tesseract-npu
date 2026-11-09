@@ -1,4 +1,4 @@
-// fw_core.c — the tb/core smoke program (W4-A): a MUL_MAT-shaped op stream pushed by the RISC-V
+// fw_core.c — the tb/core smoke program: a MUL_MAT-shaped op stream pushed by the RISC-V
 // through the issue path (CC §5.1, §7-§9) into the units of tsr_core, run on the RTL (Ibex) and on
 // the simulator (tsr_rv inside tsr_sim) from the same image and the same arguments; the host side
 // (tb/core/test_core.py) compares DRAM, SPM (dumped to DRAM by the last op), the log words, the LCQ

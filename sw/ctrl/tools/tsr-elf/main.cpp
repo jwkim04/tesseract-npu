@@ -1,4 +1,4 @@
-// tsr-elf — firmware image tool (SW §9.5; SW §6.2, EX §3.1-§3.3; P2.1).
+// tsr-elf — firmware image tool (SW §9.5; SW §6.2, EX §3.1-§3.3).
 //
 //   tsr-elf stamp IN.elf -o OUT.elf [--report F] [--logfmt F] [limits] [--strict-budget] [--base] [-q]
 //         after the link: checks IN (tsr_elf_check without the id), computes the EX §3.2 image id,

@@ -1,5 +1,5 @@
 // tsr_devrun.c — launch targets (a device behind a transport, or the in-process shadow simulator)
-// and trace replays through them, for tsr-selftest and tsr-trace-replay --device (P3.3). The
+// and trace replays through them, for tsr-selftest and tsr-trace-replay --device. The
 // interface and the comparison rules are in tsr_devrun.h; the protocol references are EX §3-§5
 // (docs/design/01-execution-model.md) and SW §5.4, §7.6, §7.7 (docs/design/06-software-verification.md).
 // Decisions:

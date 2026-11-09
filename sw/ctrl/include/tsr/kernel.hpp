@@ -451,7 +451,7 @@ struct err_rec {
 // Bit u = unit u is in error state, from the error records (ERR_CODE(u) != 0, one control-window
 // read per unit): exact for every error of an entry covered by a done ticket (I2: the record is
 // visible before DONE_SEQ passes it), so it may decide RET and records after a join, as the
-// runtime's R7 does. (fix W2a: QSTATUS[13:8] is a separately synchronised level, CC §11.2, that
+// runtime's R7 does. (QSTATUS[13:8] is a separately synchronised level, CC §11.2, that
 // I2 does not order with DONE_SEQ; SW §4.7 lists QSTATUS as timing-dependent.)
 inline uint32_t err_units() {
     uint32_t m = 0;
@@ -644,7 +644,7 @@ struct group {
 // block that would have to be reused, or forgotten, before it was released. alloc() then returns
 // spm{SPM_NONE} (valid() is false) and *must_wait = {}.
 //
-// Cost (executor optimisation, SW §7.3 "Hot path"): O(1) amortized. A record is 4 words in a
+// Cost (SW §7.3 "Hot path"): O(1) amortized. A record is 4 words in a
 // power-of-two table (no modulo), the fold keeps a unit bit mask and per-unit slots that are
 // written before they are read (no zero-fill of 16-unit arrays), the common case (nothing
 // overlapped, or only blocks released by at most two units) is inline and takes no software join
@@ -662,7 +662,7 @@ public:
 
 #if defined(TSR_FW_HOST)
     // Host builds only (SW §6.8 tests): called with every ticket the ring joined in software, in
-    // order, after the join (fw_hdr_host compares the sequence with W2a's algorithm). The RISC-V
+    // order, after the join (fw_hdr_host compares the sequence with the reference algorithm). The RISC-V
     // build has no hook.
     using join_hook_fn = void (*)(const spm_ring * ring, uint32_t ticket);
     static inline join_hook_fn join_hook = nullptr;

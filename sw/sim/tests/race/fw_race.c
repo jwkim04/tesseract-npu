@@ -1,6 +1,6 @@
 // fw_race.c — the RISC-V program of sim_race_rv (sw/sim/tests/test_sim_race.c): a minimal EX §4.7
 // runtime (as tests/rv_issue/fw_issue.c, same crt0.S and link.ld) whose kernels are the race
-// detector's RISC-V-side scenarios (SW §4.6, P1.9). Built by the pinned xPack compiler
+// detector's RISC-V-side scenarios (SW §4.6). Built by the pinned xPack compiler
 // (sw/sim/race.cmake). The host checks what the detector reports for each launch.
 //
 // Runtime: R1 boot (QCLEAR + join, HELLO), R2 pop, R5 run kernel KERNEL (w0[31:16]) with ARG0..6,

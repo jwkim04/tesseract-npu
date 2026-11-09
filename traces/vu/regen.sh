@@ -5,7 +5,7 @@
 # schedules (race detector fatal),
 # tile-only and through the replay kernel (one launch per trace: SPM_STALE is fatal, SW §4.6).
 #
-#   m8/      96 traces, U200 config with T_MAX 8 and CAPS VU|ATT|TOPK|DQROW (the simulator's M8 set):
+#   m8/      96 traces, U200 config with T_MAX 8 and CAPS VU|ATT|TOPK|DQROW (the simulator's full set):
 #            each group one op of the 67-entry cycle (25 VOP functions with cmode 0 / 1 / 2, 14 RED
 #            kind / post / TO_S forms, 10 ROPE mode x form (recurrence, FF, FS, FF + FS, ATAB), TOPK,
 #            15 SOP subs, DQROW Q8_0 / Q4_K) on loaded data with special values; n = 0 ops, tails,

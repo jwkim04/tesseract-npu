@@ -3,7 +3,7 @@
 // (tsr_ctl_win), the DMI glue and the RISC-V reset sequencer. Every signal here is in clk_rv; the
 // crossings are in tsr_ctrl_cdc, and tsr_ctrl instantiates both.
 //
-// Owner: ctrl agent (W4 item 3; CC §2.2 `tsr_ctrl_rv`). Out-of-context timing gate T1 (CC §14.3):
+// Spec: CC §2.2 `tsr_ctrl_rv`. Out-of-context timing gate T1 (CC §14.3):
 // rtl/ctrl/viv/ctrl_ooc.tcl.
 //
 // Ibex (third_party/ibex, CC §3.1-§3.2, CC-34): RV32IMC + Zicsr + Zifencei, machine mode only;
@@ -127,7 +127,7 @@ module tsr_ctrl_rv
   input  logic [DMIREQ_W-1:0]       dmi_req,
   output logic                      dmi_rsp,
   output logic [DMIRSP_W-1:0]       dmi_rsp_data,
-  // DB window (W4-B)
+  // DB window
   output logic                      db_req,
   output logic                      db_we,
   output logic [11:0]               db_off,
@@ -135,7 +135,7 @@ module tsr_ctrl_rv
   input  logic [31:0]               db_rdata,
   input  logic                      db_irq4,
   input  logic                      db_irq6,
-  // Ibex taps for the DB block (clk_rv; tsr_dbg_rv with HAS_RV_TAPS, DB §3.7, §6.2, §10.2; W4-B integrate):
+  // Ibex taps for the DB block (clk_rv; tsr_dbg_rv with HAS_RV_TAPS, DB §3.7, §6.2, §10.2):
   // the data port, ibex_core's crash_dump, the sleep / reset levels and the double-fault pulse
   output logic                      tap_data_req,
   output logic                      tap_data_gnt,

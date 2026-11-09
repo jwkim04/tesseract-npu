@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# traces/m2/regen.sh [BUILD_DIR] — the M2 regression traces as `ops` traces (docs/design/
+# traces/m2/regen.sh [BUILD_DIR] — the m2 regression traces as `ops` traces (docs/design/
 # 06-software-verification.md §5.6): tsr-trace-gen --ops m2 (QACT groups, LD -> ST copies; no MVM),
 # with fixed seeds and configurations, then every trace
 # replayed under the fixed and two random schedules (race detector fatal),
@@ -10,14 +10,14 @@
 #   small1ch/ 16 traces, 1 channel, 64 KiB SPM, 1 GiB channel with ADDR_BEAT_W 22 (DRAM limit
 #             256 MiB < channel size), K_MAX 4096, T_MAX 2, ~20% error injections
 #   ch3/       8 traces, 3 channels, T_MAX 3, 256 KiB SPM, ~25% error injections
-#   errors/   40 short programs that all have an error injection, U200 config: the M2 fault kinds
+#   errors/   40 short programs that all have an error injection, U200 config: the m2 fault kinds
 #             (reserved fields, refused opcodes, channel >= NUM_CH, QACT kind, K_RANGE, T_RANGE,
 #             SPM_RANGE on each operand with 64-bit extents, DRAM_RANGE) and the dependency endings (BAD_DEP,
 #             DEP_FAILED chains, ABORTED after an error state, QABORT recipe, QCLEAR recovery)
 #   errors8/  32 like errors/, T_MAX 8 (multi-token range checks, (T-1) x src_stride beyond 32 bits)
 # Every program is a push stream with deps (no LI / ADDI / END, absolute immediates, x16 = 0). Each set uses one configuration (meta.json "config").
-# Every SPM line an op reads is written earlier in its trace (2026-10-30: a strided QACT source loaded per
-# token also gets its stride gaps loaded; 13 traces changed, none read the power-on SPM fill).
+# Every SPM line an op reads is written earlier in its trace (a strided QACT source loaded per
+# token also gets its stride gaps loaded, so no trace reads the power-on SPM fill).
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)

@@ -3,7 +3,7 @@
   test_memmodel_selftest          memmodel.h against selftest.cpp (legal traffic, every protocol
                                   assertion P1..P6 fires on its violation, ordering, tracking)
 
-memmodel.h is also the memory model of the M0 bandwidth bench (tb/platform/bw). The C++ tile-only
+memmodel.h is also the memory model of the bandwidth bench (tb/platform/bw). The C++ tile-only
 replay of `push.bin` traces on tsr_core and then the full-system bench with Ibex and RVFI lockstep
 are planned (docs/design SW §10.3).
 """

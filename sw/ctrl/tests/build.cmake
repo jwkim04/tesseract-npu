@@ -1,4 +1,4 @@
-# sw/ctrl/tests/build.cmake — tests of the firmware build and tsr-elf (P2.1; SW §6.1-§6.2, §9.5).
+# sw/ctrl/tests/build.cmake — tests of the firmware build and tsr-elf (SW §6.1-§6.2, §9.5).
 # Included by sw/ctrl/host/CMakeLists.txt (main project); also run as a script (below).
 #
 # Test images: sw/ctrl/tests/elf/elf_img.S linked with the real sw/ctrl/rt/link.ld and

@@ -171,7 +171,7 @@ MUTANTS = [
 
 def apply(src_root: Path, dst_root: Path, rel: str, old: str, new: str):
     shutil.copytree(src_root / "rtl", dst_root / "rtl")
-    # rtl/ctrl/filelist.f names the vendored IP as ../../third_party (W4-A)
+    # rtl/ctrl/filelist.f names the vendored IP as ../../third_party
     (dst_root / "third_party").symlink_to(src_root / "third_party")
     p = dst_root / "rtl" / rel
     s = p.read_text()

@@ -2,7 +2,7 @@
  *
  * Image layout of SW §6.2 in miniature: 32 vector slots at RV_BOOT = 0 (mtvec is vectored only,
  * CC §3.2), the reset entry at +0x80 (EX §3.4), stack at the top of DTCM. Not the SDK's crt0
- * (W2, SW §6.3): no kernel table, image id or crash record. Every trap and interrupt goes to
+ * (SW §6.3): no kernel table, image id or crash record. Every trap and interrupt goes to
  * __trap, which mirrors mcause / mepc to RT_INFO / LCQ staging, sets RT_STATE = TRAPPED (EX §4.5;
  * the host fails the test on it) and parks. The firmware itself never enables interrupts
  * (mstatus.MIE = 0); it sleeps in WFI with mie selecting the wake-up lines (SW §4.2).

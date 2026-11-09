@@ -13,7 +13,7 @@
 #   fw_m7_layer_gemma12b   the same for one Gemma 4 12B SWA layer shape with random weights (about 15 s)
 #                          (per-head q / k norms with weight and v norm without, GEGLU16, post-attention
 #                          and post-FFN norms, ADD residuals, MUL by the layer's out_scale)
-#   fw_m7_layer_k4min      the device of the reduced first card image tsr_u200_k4 (4 channels, T_MAX 8, CAPS 0): the
+#   fw_m7_layer_k4min      the device of the reduced card image tsr_u200_k4 (4 channels, T_MAX 8, CAPS 0): the
 #                          layer's seven MUL_MAT records only (M6), decode and a T = 8 prefill tile, fixed + 3 random
 #                          schedules against mulmat_ref (docs/platform-u200.md §8.7)
 #   fw_m7_layer_ggml       (TSR_WITH_LLAMA) the device layers against ggml-cpu computing the same layer

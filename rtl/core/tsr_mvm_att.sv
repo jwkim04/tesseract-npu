@@ -1,9 +1,9 @@
-// tsr_mvm_att.sv — attention helpers of the MVM unit (AT §8.1, §8.2; W4-B at): the per-cluster
+// tsr_mvm_att.sv — attention helpers of the MVM unit (AT §8.1, §8.2): the per-cluster
 // ATTQK score assembler (tsr_mvm_aqk) and the row-vector emitter (tsr_mvm_rvec) that writes ATTQK's
 // MAXOUT and ATTPV's LSUM words (AT §5.2, §5.3: one f32 per pass row, rows of other passes and the
 // words past R untouched, i.e. byte-enabled lines).
 //
-// Owner: AT (W4-B "at"). Oracle: tsr_ref_attqk / tsr_ref_attpv through the simulator's ATTQK /
+// Oracle: tsr_ref_attqk / tsr_ref_attpv through the simulator's ATTQK /
 // ATTPV (tb/at). Both modules produce gather jobs in the format of tsr_mvm_gather's job pipes
 // {last, line, own, tail, y} (docs/rtl-mvm.md §6.3): own = the words written (byte enables), tail =
 // a tag for the central part (tsr_mvm_gather: ATT jobs are written with own only; bit 15 marks an

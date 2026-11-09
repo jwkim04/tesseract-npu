@@ -1,4 +1,4 @@
-// mk_bw_xclbin.cpp — write metadata-only xclbins of the M0 bandwidth kernel tsr_bw_k4 for XRT's
+// mk_bw_xclbin.cpp — write metadata-only xclbins of the bandwidth kernel tsr_bw_k4 for XRT's
 // no-op shim (XCL_EMULATION_MODE=noop: no card, no driver), so that sw/tools/tsr_bw's XRT path —
 // xclbin parsing, kernel / argument lookup and offset checks, clock topology, device-only buffers
 // per memory group, xrt::run argument sizes, start / wait — runs on the dev server

@@ -12,7 +12,7 @@
 #   fw_gdn_ggml       the reference (composed and fused path) against float64 math and the pinned ggml-cpu ops
 
 if (NOT TARGET tsr_fw_ref)
-    return()                       # kernels.cmake (P2.5) provides tsr_fw_ref (mulmat_ref, dram_view)
+    return()                       # kernels.cmake provides tsr_fw_ref (mulmat_ref, dram_view)
 endif()
 set(_gd_dir ${TSR_CTRL_DIR}/tests)
 set(_gd_inc ${TSR_CTRL_INCLUDE_DIR} ${TSR_CTRL_DIR}/ref ${TESSERACT_ROOT}/sw/sim ${TESSERACT_ROOT}/sw/sim/include

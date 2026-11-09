@@ -1,4 +1,4 @@
-// test_sim_rv_issue.c — W1a integration (ctest sim_rv_issue): a RISC-V program on tsr_rv drives the
+// test_sim_rv_issue.c — integration (ctest sim_rv_issue): a RISC-V program on tsr_rv drives the
 // core model through the control window, launched by the host through the CSR port. The scenario
 // (host side, firmware, every check) is test_sim_rvhost.h, shared with sim_sched_determinism.
 //

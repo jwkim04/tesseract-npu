@@ -3,7 +3,7 @@
 // tickets and push indices, and the I2 record handshake (docs/design/04-control-core.md "CC"
 // §7-§9; EX §7-§8).
 //
-// Owner: issue path (CC §2.2, §13.2; W4 item 1). Instantiated by tsr_core_dp next to tsr_csr.
+// Spec: CC §2.2, §13.2. Instantiated by tsr_core_dp next to tsr_csr.
 // Oracle: the simulator's queue model (sw/sim/tsr_q.c): for a schedule-independent push stream
 // every entry's enqueue code and completion code, the per-unit completion order, the counters,
 // the error records and the push indices equal the simulator's (tb/issue); timing is the RTL's.
@@ -13,10 +13,10 @@
 //     entry is available, ifq_entry its 387 bits (tsr_ifent_t), ifq_ready pops it (one cycle
 //     pulse, only while ifq_valid). The RISC-V side assigns tickets {u, ISSUED_SEQ[u]} and push
 //     indices (CC §7.1); the dispatcher asserts that every ticket equals its own count.
-//   xc_*: external checker classes (VU / AT opcodes, W4-B), passed through to tsr_chk.
+//   xc_*: external checker classes (VU / AT opcodes), passed through to tsr_chk.
 //   Units (docs/rtl-core.md §3.0): <u>_cmd_valid / <u>_cmd_ready / <u>_cmd / <u>_done. cmd_valid
 //     and cmd are registers (CC §9.1 cmd_q / cmd_v_q, R2: held until cmd_ready). DMA and MVM also
-//     carry <u>_cmd_xc / <u>_xcmd for the AT ops of their queues (KVST, ATTQK, ATTPV; W4-B); VU and
+//     carry <u>_cmd_xc / <u>_xcmd for the AT ops of their queues (KVST, ATTQK, ATTPV); VU and
 //     AT carry only the external class's payload. Units have no error output (CC-11).
 //   Control (from tsr_csr): host_hold (CTRL.HOST_HOLD), halt_hold (RV_RUN ∧ RV_HALTED ∧
 //     HOLD_ON_HALT), qabort (pulse: host QABORT, LQ_CANCEL covering the running launch, the
@@ -24,7 +24,7 @@
 //     RISC-V hold source, CC §12.2), host_clear (pulse: the effects of an accepted host QCLEAR
 //     and of SOFT_RESET step 3), sr_busy (SOFT_RESET in progress: the hard hold is off, from the cycle
 //     the SOFT_RESET step 1 QABORT applies: sr_off_q below).
-//   DB (W4-B): dbg_hold[u] / dbg_step[u] levels (CC §9.2-§9.3), head info, and the taps:
+//   DB: dbg_hold[u] / dbg_step[u] levels (CC §9.2-§9.3), head info, and the taps:
 //     enqueue {unit, seq, pidx, code, info, kind, deps as dispatched, w, REC, push PC, extents},
 //     per-unit start and completion strobes, TRACE_MARK.
 //   Records (I2, CC §9.4, §11.2): err_rec[u] is the core-domain record (Q_ERR_*). Whenever it
@@ -172,7 +172,7 @@ module tsr_issue
   output logic                        ifq_ready,
   input  tsr_ifent_t                  ifq_entry,
 
-  // ---- external checker classes (VU / AT; W4-B) ----
+  // ---- external checker classes (VU / AT) ----
   output logic                        xc_req_valid,
   output tsr_insn_t                   xc_req_insn,
   input  logic                        xc_rsp_valid,
@@ -420,7 +420,7 @@ module tsr_issue
   logic [NATMAX-1:0]   eq_nat_q;
   logic [XC_CMD_W-1:0] eq_xcmd_q;
   // read only by queues that carry the external payload (VU, AT, CAPS.ATT on DMA / MVM); none may
-  // exist (tsr_core_dp without VU / AT, W4-A integrate)
+  // exist (tsr_core_dp without VU / AT)
   wire unused_eq_xcmd = &{1'b0, eq_xcmd_q};
   logic                eq_xc_q;
   tsr_ext_t [TSR_EXT_N-1:0] eq_ext_q;
@@ -603,7 +603,7 @@ module tsr_issue
   // DONE_REG: every unit done strobe is registered at the entry of this block. A done strobe reaches
   // the dependency counters, the run count and the queue-pop decision through a 28-bit add and
   // compare (9 to 11 levels) and then the enables of the queue heads and records (up to 364 loads);
-  // coming straight from a unit in another SLR it left no time for the logic (k4min link, 2026-11-06:
+  // coming straight from a unit in another SLR it left no time for the logic (k4min link:
   // -1.2 ns, the crossing 1.4 to 1.7 ns). Every consumer sees the registered strobe, so the issue
   // path is the same machine with each completion one cycle later; the units are not told.
   logic [5:0] u_done_in;

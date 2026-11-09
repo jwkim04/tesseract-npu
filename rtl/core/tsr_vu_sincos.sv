@@ -1,6 +1,6 @@
 // tsr_vu_sincos.sv — SIN and COS of one f32 angle per cycle, fully pipelined (the ROPE angle unit's core).
 //
-// Owner: VU (docs/design/02-vector-unit.md "VU" §6.6, Appendix A; §7.6 angle unit).
+// Spec: docs/design/02-vector-unit.md "VU" §6.6, Appendix A; §7.6 angle unit.
 // Contract: (s, c) = tsr_m_sincos(t) of sw/sim/tsr_ref_math.c bit for bit; fixed latency TSR_VU_SC_LAT, no
 // clock enable. Verified in tb/vu/test_vu_arith.py (Verilator C++ against libtsr_ref: |θ| <= 2^18 densely,
 // the whole exponent range, specials).

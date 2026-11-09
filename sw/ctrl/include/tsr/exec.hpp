@@ -22,15 +22,15 @@
 // Kinds without a handler in this image are BAD_RECORD.
 //
 // Kind numbers and argument words: tsr/opl.hpp (SW §7.2). NOP and JOIN are built into graph.cpp;
-// MUL_MAT is kind_mulmat (sw/ctrl/kernels/k_mulmat.cpp); the M7 kinds (W2b, P2.6 / P2.7) are
-// kind_add ... kind_unary below, in graph.cpp's kind table, defined by the kernel packages'
+// MUL_MAT is kind_mulmat (sw/ctrl/kernels/k_mulmat.cpp); the M7 kinds are
+// kind_add ... kind_unary below, in graph.cpp's kind table, defined by the kernel
 // sources (sw/ctrl/kernels/k_*.cpp). sw/ctrl/kernels/zz_kind_stubs.cpp defines each of them weakly
 // (BAD_RECORD: "not in this image"), so an image without a kind's source links and refuses its
 // records; a strong definition replaces the stub (RISC-V image: every object is linked; host
 // archive tsr_fw_host: the stubs' member comes last, so a kernel member defining the handler is
 // the one the linker extracts, see that file).
 //
-// Short kinds (SW §7.3 "Hot path", SW-35, SW-36, SW-37; W2b's performance requirement:
+// Short kinds (SW §7.3 "Hot path", SW-35, SW-36, SW-37; performance requirement:
 // <= 350 RV cycles of work per decode record): a leaf fast entry (kind_<name>_fast below, the
 // executor's first call; no calls in its common path), its argument words read in place into locals
 // before the first push, the plan by shifts and compares (plan.hpp, no divide for one tile), the
@@ -64,7 +64,7 @@ struct kind_ctx {
                                        // RET_BAD_RECORD (the launch then ends, so it is never reset)
     plan::plan_limits pl;              // plan::plan_limits_of(*cfg), computed once per launch like mml (the
                                        // M7 planners' limits; last, so the fields above keep their offsets)
-    // The VU s registers as this launch's pushes leave them (W2b; VU §4.4: s[i] is written only by RED
+    // The VU s registers as this launch's pushes leave them (VU §4.4: s[i] is written only by RED
     // with TO_S and by SOP, read only by VU ops, all in VU queue order). Bit i of sreg_valid: the
     // last push of this launch that writes s[i] is an SOP.MOVI of sreg_val[i], so every VU op pushed
     // after it reads that value and a kind needing it there pushes no MOVI (k_fast.hpp sreg_movi;
@@ -75,13 +75,13 @@ struct kind_ctx {
     // record, before any later record can push.
     uint32_t sreg_valid;
     uint32_t sreg_val[16];
-    // The one-tile block (plan.hpp one_block_lines; W2b integration): the SPM lines every single-tile
+    // The one-tile block (plan.hpp one_block_lines): the SPM lines every single-tile
     // record of a DMA-bracketed kind uses instead of a ring block (k_fast.hpp alloc_fast / one_block);
     // one_lines = 0: none (every record then takes the ring). Set once per launch like `pl`.
     spm one;
     uint32_t one_lines;
 
-    // --- helpers of the kind handlers (W2b) -------------------------------------------------------
+    // --- helpers of the kind handlers -------------------------------------------------------
     // A failing handler's exit: ctx.ret = code (opl::RET_BAD_RECORD / RET_SCRATCH), no ticket.
     TSR_HOT ticket fail(uint32_t code) {
         ret = code;
@@ -121,7 +121,7 @@ ticket kind_mulmat_scale(const volatile uint32_t * args, uint32_t n_args, uint32
 ticket kind_mulmat_softcap(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
 
 // The M7 kinds (SW §7.2, §7.5; argument words opl.hpp ew / scl / rms / glu / rope / getrows /
-// setrows / fa / cpy / unary). Defined by the W2b kernel sources; weak BAD_RECORD stubs in
+// setrows / fa / cpy / unary). Defined by the kernel sources; weak BAD_RECORD stubs in
 // sw/ctrl/kernels/zz_kind_stubs.cpp (header comment).
 // 0x11 ADD, 0x12 MUL, 0x13 SCALE, 0x14 RMS_NORM, 0x15 GLU, 0x16 ROPE, 0x17 GET_ROWS, 0x18 SET_ROWS_KV,
 // 0x19 FLASH_ATTN, 0x1A CPY, 0x1B UNARY:
@@ -147,7 +147,7 @@ ticket kind_softplus(const volatile uint32_t * args, uint32_t n_args, uint32_t k
 ticket kind_ssm_conv(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
 ticket kind_gated_delta_net(const volatile uint32_t * args, uint32_t n_args, uint32_t kflags, deps d, kind_ctx & ctx);
 
-// The decode fast paths of the short M7 kinds (W2b integration; SW §7.3 "M7 kinds in the executor"),
+// The decode fast paths of the short M7 kinds (SW §7.3 "M7 kinds in the executor"),
 // the executor's first call for a record of these kinds (graph.cpp's kind table): args, kflags and d
 // as for the kind_fn (n_args already checked by the executor). A fast function either takes the
 // record (pushes its tile ops, returns the op's ticket) or returns KIND_NOT_FAST having changed
@@ -175,8 +175,8 @@ kind_fn kind_handler(uint32_t kind);
 
 // Test images only (tsr_fw_image extras, sw/ctrl/tests/fw/exec_*.cpp; host test drivers): a
 // handler for a kind that has no built-in handler (NOP, JOIN and MUL_MAT are built in). Kinds
-// 0x30-0x3F are reserved for test kinds (inside the M8 range 0x20-0x3F, never used by a production
-// list). Returns true and fills *out to take the kind (nargs: the exact argument count a record of
+// 0x30-0x3F are reserved for test kinds (inside the range 0x20-0x3F that production lists never use).
+// Returns true and fills *out to take the kind (nargs: the exact argument count a record of
 // that kind must carry). The production image does not define it (weak reference: nullptr); the
 // executor consults it only for a kind its own table does not have, so production records never
 // pay for it.

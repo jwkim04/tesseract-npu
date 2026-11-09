@@ -3,7 +3,7 @@
 // DMA"): merges the DMA's write port of that channel and the trace writer's into the one write
 // source of the channel's tsr_mem_arb, per burst.
 //
-// Owner: DB (W4-B item 6). tsr_core_dp places it between u_dma's channel-TRW_CH write port and
+// tsr_core_dp places it between u_dma's channel-TRW_CH write port and
 // u_arb's s_wr_* port of that channel (tsr_mem_arb itself stays unchanged).
 //
 // Protocol (docs/rtl-core.md §4): request {addr, len, id}, data {data, word mask, last} and response {id}

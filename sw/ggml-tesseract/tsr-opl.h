@@ -1,5 +1,4 @@
-// tsr-opl.h — the host side of the op-list path (docs/design/06-software-verification.md "SW" §9.3
-// M6 (P3.2), §9.4; op list format SW §7.2; the `graph` kernel SW §7.1, §7.3; launch protocol EX §4,
+// tsr-opl.h — the host side of the op-list path (docs/design/06-software-verification.md "SW" §9.3, §9.4; op list format SW §7.2; the `graph` kernel SW §7.1, §7.3; launch protocol EX §4,
 // transport API EX §10.1 + SW §9.1). Part of the tsr_lower library, shared by the ggml backend
 // (ggml-tesseract.cpp) and the ggml-free runtime (sw/rt). No ggml dependency.
 //
@@ -29,7 +28,7 @@
 // dependencies are still part of the list (the OPL contract, SW §7.2) and order the units once M7's
 // kinds put VU / AT work between them.
 //
-// M7 records (W3b, SW §7.2 kinds 0x11-0x1B; the backend's tsr-build.h lowers ggml nodes to them):
+// M7 records (SW §7.2 kinds 0x11-0x1B; the backend's tsr-build.h lowers ggml nodes to them):
 // kind_ranges gives the DRAM ranges each kind reads and writes from its argument words (whole lines of
 // every row operand, row periods, KV planes on every channel, FLASH_ATTN's f32 mask copy), which feed
 // the same hazard analysis; preload() adds the list's preload entries (SW §7.2 "Preload entry",
@@ -122,7 +121,7 @@ public:
     // their length are strided ranges (the gaps are not accessed).
     void mm_ranges(const uint32_t * args, std::vector<tsr_dram_range> & rd, std::vector<tsr_dram_range> & wr) const;
 
-    // M7 (W3b, SW §9.3 builder pass 4): the DRAM ranges a record of any kind reads and writes, from
+    // M7 (SW §9.3 builder pass 4): the DRAM ranges a record of any kind reads and writes, from
     // its argument words (SW §7.2) the way its kernel accesses them (SW §7.5): every row operand as
     // rows of whole lines (L(n) = ceil(n/16) lines; the kinds LD / ST whole lines, so a row's tail
     // padding is included), a row stride of 0 as one row, a row period p as min(p, rows) rows; ADD /

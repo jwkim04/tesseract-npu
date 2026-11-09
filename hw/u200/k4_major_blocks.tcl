@@ -7,7 +7,7 @@
 # the 2R2W SPM, DMA with KVST, QACT, the DB block with trace writer and history, the paired two-flit gather and the
 # DDR0 / DDR3 arbitration boundaries. It has no local-intermediate bank (LOCAL_INTERMEDIATES, LOCAL_SCALE,
 # LOCAL_SOFTCAP 0). A block that is absent from the netlist is not named here; a block that is named and absent
-# stops the hook. The map of the reduced first card image (no VU, no attention) is in commit 07fbf33.
+# stops the hook.
 #
 # Each block goes whole into one Pblock: the platform's pblock of an SLR, or one of the two Pblocks below. Nothing
 # here names a LUT, a register, a pipeline stage, a site or a BEL. Vivado places and routes inside the regions.

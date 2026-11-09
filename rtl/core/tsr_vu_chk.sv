@@ -3,7 +3,7 @@
 // SOP 0x40, GDN 0x39 (HAS_GDN, VU §7.12.4) and AT's vector ops ASMAX 0x34, AMASK 0x35, AMERGE 0x36,
 // ANORM 0x37 (AT §5.8 rows; the VU executes them, VU §5.11).
 //
-// Owner: VU (docs/design/02-vector-unit.md "VU" §5.1-§5.9; CC §8.2 checker classes; W4-B task "vu").
+// Spec: docs/design/02-vector-unit.md "VU" §5.1-§5.9; CC §8.2 checker classes.
 // Port contract: rtl/core/tsr_xc_pkg.sv (one class of tsr_chk's xc_* port; AT's opcodes belong to the
 // AT class and are ignored here). The command payload is the eight instruction words (the VU decodes
 // them itself, tsr_vu.sv).

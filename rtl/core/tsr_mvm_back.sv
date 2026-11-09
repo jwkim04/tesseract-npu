@@ -2,7 +2,7 @@
 // lanes (tsr_mac_lane), integer scale stage, fp term stage, 16-partial accumulators with a
 // background streaming tree; produces one row result (T_MAX f32) per row.
 //
-// Owner: back agent (docs/rtl-mvm.md §2 block (back); contract §3.3-§3.5, numerics §7).
+// Spec: docs/rtl-mvm.md §2 block (back); contract §3.3-§3.5, numerics §7.
 //
 // Contract (normative text: docs/rtl-mvm.md §7; golden model tb/common/mvm_model.py):
 //   - cfg_fmt / cfg_d_lines are stable while beats of one MVM flow (the cluster wrapper registers
@@ -34,7 +34,7 @@
 // Datapath per token replicated T_MAX times (docs/rtl-mvm.md §9.3). Q8_0 delivers 2 terms per quant
 // beat: two accumulate lanes (even / odd partials); Q4_K 1 term per 2 quant beats (lane s % 2).
 //
-// Attention modes (W4-B at; AT §8.1, §8.2; parameter HAS_ATT, configuration att_cfg, stable while
+// Attention modes (AT §8.1, §8.2; parameter HAS_ATT, configuration att_cfg, stable while
 // an op's beats flow, att_start pulses before them):
 //   ATTQK (att_cfg.att): the beats are K plane chunks (front end "rows" of K = 1024). Every beat holds
 //     blocks 2j, 2j + 1 of one D-element head segment of one cell (E/32 and D/32 are even); the back
@@ -142,7 +142,7 @@
 //   normalise stage (26-bit lzc + barrel shift, ~6 LUT) and the generic tsr_mac_lane at MAC_LAT 3
 //   (tb/mvmback mac_lane_structure): the 8 x 8 products from the flops above into the product
 //   register (LUT multipliers, or DSP48E2 with the product register as MREG), then 2 and 3 adder
-//   levels of 17..21 bits (DSP cascades in M4). The RAM-to-MAC route of x has no logic; if it
+//   levels of 17..21 bits (DSP cascades in the Xilinx technology layer). The RAM-to-MAC route of x has no logic; if it
 //   needs a fabric register, ACT_RD_LAT + 1 provides it. beat_ready: front-end beat.row_last
 //   flop -> reservation count compare -> flop (~3 LUT).
 //

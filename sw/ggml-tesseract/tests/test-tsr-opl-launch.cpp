@@ -15,7 +15,7 @@
 //   D. A MUL_MAT with K = 48 (not a multiple of 32): the executor refuses it before pushing,
 //      KERNEL_ERR with RET 0x8000_0004 (BAD_RECORD), named by tsr_opl_describe.
 //   E. A valid launch after the errors gives the results of A again (the device recovered).
-//   M7 (W3b, SW §9.3; lists as the backend's builder makes them: kind_ranges, preload entries):
+//   M7 (SW §9.3; lists as the backend's builder makes them: kind_ranges, preload entries):
 //   F. Fusion is bit-identical to the unfused device sequence: MUL_MAT with a bias row / the residual
 //      as its addend vs MUL_MAT then ADD (and ADD = one f32 addition of the spec model); RMS_NORM with
 //      its weight vs RMS_NORM then MUL, for a decode row, 3 rows, per-head rows and per-row weights.
@@ -122,7 +122,7 @@ static size_t bit_diff(const std::vector<float> & a, const std::vector<float> & 
 }
 
 // =============================================================================================
-// M7 (W3b): lists of the M7 kinds as the backend's builder makes them (tsr_opl_builder: kind_ranges
+// M7: lists of the M7 kinds as the backend's builder makes them (tsr_opl_builder: kind_ranges
 // for the dependencies, preload entries), on the device
 // =============================================================================================
 static uint32_t H0(uint64_t off) { return tsr_dram_handle(0, off); }
@@ -472,7 +472,7 @@ int main() {
     CHECK(bit_diff(read_f32(tp, Y4, want4.size()), want4) == 0, "E: y4 differs after the failed launches");
     printf("  E: valid list after the errors  %s\n", g_fail == 0 ? "ok" : "FAILED");
 
-    // ---- M7 (W3b, SW §9.3): the builder's fusion, preload table, kind ranges and error mapping ----
+    // ---- M7 (SW §9.3): the builder's fusion, preload table, kind ranges and error mapping ----
     test_m7(tp, cfg, dev, write, next_w);
     printf("  launches %" PRIu64 ", op records %" PRIu64 "\n", dev.launches, dev.ops);
 

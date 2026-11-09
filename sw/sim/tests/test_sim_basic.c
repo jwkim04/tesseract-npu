@@ -132,8 +132,8 @@ static void test_csr(void) {
     bad = c; bad.num_ch = 0;       CHECK(tsr_sim_create(&bad, NULL) == NULL, "num_ch 0");
     bad = c; bad.k_max = 1000;     CHECK(tsr_sim_create(&bad, NULL) == NULL, "k_max");
     bad = c; bad.spm_bytes = 100;  CHECK(tsr_sim_create(&bad, NULL) == NULL, "spm_bytes");
-    // CAPS beyond the registered handlers: VMASK has none before M9 (VU and ATT do once
-    // tsr_vu.c / tsr_at.c are linked, P1.4 / P1.5).
+    // CAPS beyond the registered handlers: VMASK has none (VU and ATT do once
+    // tsr_vu.c / tsr_at.c are linked).
     CHECK(!(tsr_sim_caps_implemented() & TSR_CAPS_VMASK), "VMASK not implemented");
     bad = c; bad.caps = TSR_CAPS_VMASK; CHECK(tsr_sim_create(&bad, NULL) == NULL, "caps VMASK");
     bad = c; bad.caps = tsr_sim_caps_implemented();
@@ -289,8 +289,8 @@ static void test_reserved_fields(void) {
         snprintf(what, sizeof(what), "opcode 0x%02x", op);
         expect_insn_error(s, insn_raw(op, 0, 0, 0, 0, 0, 0, 0), TSR_ERR_ILLEGAL_OP, 0, what);
     }
-    // The reserved END, LI and ADDI (0x01-0x03) with the fields they used to have, a
-    // retired MULI, and a later-milestone SOP MOVI: all ILLEGAL_OP, and none changes state.
+    // The reserved END, LI and ADDI (0x01-0x03) with their old fields, a
+    // retired MULI, and an unimplemented SOP MOVI: all ILLEGAL_OP, and none changes state.
     expect_insn_error(s, insn_raw(0x00000001u, 0, 0, 0, 0, 0, 0, 0), TSR_ERR_ILLEGAL_OP, 0, "END");
     expect_insn_error(s, insn_raw(0x10000002u, 5, 0, 0, 0, 0, 0, 0), TSR_ERR_ILLEGAL_OP, 0, "LI R1 = 5");
     expect_insn_error(s, insn_raw(0x10020003u, 5, 0, 0, 0, 0, 0, 0), TSR_ERR_ILLEGAL_OP, 0, "ADDI R1 = R2 + 5");

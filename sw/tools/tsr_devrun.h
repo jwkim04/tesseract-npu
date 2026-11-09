@@ -1,4 +1,4 @@
-// tsr_devrun.h — launch targets and trace replays for the tools (P3.3; docs/design/
+// tsr_devrun.h — launch targets and trace replays for the tools (docs/design/
 // 06-software-verification.md "SW" §7.6, §9.5, SW-28; docs/design/01-execution-model.md "EX" §4).
 //
 // A target is either a device behind a transport (EX §10.1: any kind, the card included) or an

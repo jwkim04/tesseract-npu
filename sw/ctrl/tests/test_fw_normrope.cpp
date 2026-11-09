@@ -1,4 +1,4 @@
-// test_fw_normrope.cpp — the RMS_NORM (0x14) and ROPE (0x16) kinds of W2b P2.6 (sw/ctrl/kernels/
+// test_fw_normrope.cpp — the RMS_NORM (0x14) and ROPE (0x16) kinds (sw/ctrl/kernels/
 // k_norm.cpp, k_rope.cpp; docs/design/06-software-verification.md "SW" §7.2, §7.5, §10.2: per kind, 8
 // schedules, race fatal, outputs bit-exact against the C++ references sw/ctrl/ref/rmsnorm_ref.cpp and
 // rope_ref.cpp). One source, two programs:
@@ -25,7 +25,7 @@
 //   test_fw_normrope_rv IMAGE refuse                                (fw_kernels_normrope_rv_refuse)
 //       Records the kinds refuse: RET = BAD_RECORD / SCRATCH (KERNEL_ERR), nothing of the op pushed.
 //   test_fw_normrope_rv IMAGE perf                                  (fw_kernels_normrope_perf)
-//       RISC-V cycles of work per decode record (SW §7.8; W2b requirement <= 350 on Ibex maxperf, the
+//       RISC-V cycles of work per decode record (SW §7.8; requirement <= 350 on Ibex maxperf, the
 //       simulator default): lists of 16 vs 48 records of one decode shape (chained like a layer),
 //       executor work up to the last op push with wait-loop iterations excluded (fw_prof.h
 //       spin_filter, fw_m6_perf's metric), deep queues and U200 queues, with a per-function profile;
@@ -786,9 +786,9 @@ int perf_main() {
         }
     }
     CHECK(stall_ok, "perf: PERF PUSH_STALL != 0: a push waited for a credit in hardware (CC §7.3)");
-    printf("fw_kernels_normrope_perf: worst decode shape %.1f RV cycles of work per record (deep queues); W2b target <= 350: %s\n",
+    printf("fw_kernels_normrope_perf: worst decode shape %.1f RV cycles of work per record (deep queues); target <= 350: %s\n",
            worst, worst <= 350.0 ? "met" : "NOT met");
-    // Regression ceiling, holding on both Ibex tables (measured 2026-10-30, deep queues: worst 488
+    // Regression ceiling, holding on both Ibex tables (measured with deep queues: worst 488
     // maxperf / 608 small); the target is judged on maxperf and printed above.
     CHECK(worst <= 700.0, "perf: regression ceiling 700 RV cycles per decode record (%.1f)", worst);
     return test_finish("fw_kernels_normrope_perf");
@@ -826,7 +826,7 @@ struct host_exec {
         ctx.cfg = &dc;
         ctx.mml = tsr::plan::mm_limits_of(dc);
         ctx.pl = tsr::plan::plan_limits_of(dc);
-        ctx.one = tsr::spm{lay.one_line};      // the one-tile block (graph.cpp's setup; W2b integration)
+        ctx.one = tsr::spm{lay.one_line};      // the one-tile block (graph.cpp's setup)
         ctx.one_lines = lay.one_lines;
         ctx.pre_lines = pl;
         ctx.pre = tsr::spm{lay.pre_line};

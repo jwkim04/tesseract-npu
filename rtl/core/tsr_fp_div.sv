@@ -1,6 +1,6 @@
 // tsr_fp_div.sv — iterative, correctly rounded f32 divider with the spec's fp rules.
 //
-// Owner: fp agent (docs/rtl-core.md §2, block (c)).
+// Spec: docs/rtl-core.md §2, block (c).
 //
 // Contract (bit-exact with tsr_ref.c tsr_fdiv; tsr_frecip(x) == tsr_fdiv(1.0f, x)):
 //   y = fin(DAZ(a) / DAZ(b)), correctly rounded RNE in the binary32 exponent range, subnormal

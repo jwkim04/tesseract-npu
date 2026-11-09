@@ -1,4 +1,4 @@
-// test_fw_hdr.cpp — ctests fw_hdr_host and fw_hdr_rv of P2.3, the tile/VU header library and the
+// test_fw_hdr.cpp — ctests fw_hdr_host and fw_hdr_rv, the tile/VU header library and the
 // host backend (docs/design/06-software-verification.md "SW" §6.7, §6.8, §10.2; CC §5, §7-§9, §12;
 // EX §4.9). One source, two executables (sw/ctrl/tests/hdr.cmake):
 //
@@ -21,7 +21,7 @@
 //               sequence under the fixed and two random schedules gives the same deps; a twin
 //               ring taking parity-2 blocks through alloc_dma_first (the executor's decode path)
 //               ends every step with the same block and state, and the fast call succeeds only
-//               where alloc's must_wait holds DMA tickets alone; W2a's algorithm (128 blocks) on
+//               where alloc's must_wait holds DMA tickets alone; the reference algorithm (128 blocks) on
 //               the same sequence gives the same blocks and must_wait, and both rings joined the
 //               same tickets in the same order (spm_ring::join_hook, host builds only);
 //   kernels     the test kernels (tests/fw/hdr_kernels.cpp) through tsr::host_run: results against
@@ -566,7 +566,7 @@ void test_builders() {
         expect(s, SOP({.sub = SOP_SUB_LDS, .sd = 1, .addr = N * 16u}), SR, N * 16u, "SOP LDS beyond the SPM");
         expect(s, SOP({.sub = 15}), IL, 0, "SOP sub 15");
 
-        // VMASK (M9): no handler in this simulator: the issue path refuses it (ILLEGAL_OP).
+        // VMASK: no handler in this simulator: the issue path refuses it (ILLEGAL_OP).
         const op vm = VMASK({.sub = 0, .x = 100, .win = 5, .k0 = 7, .q0 = 9, .m = 64, .rows = 2, .g = 1});
         CHECK(TSR_INSN_GET(vm.w, TSR_VMASK_X) == 100u && vm.w[2] == 5u && vm.w[3] == 7u && vm.w[4] == 9u &&
               TSR_INSN_GET(vm.w, TSR_VMASK_G) == 1u, "VMASK fields");
@@ -821,9 +821,9 @@ struct ring_model {
     }
 };
 
-// W2a's spm_ring (92f0b17 kernel.hpp: a 5-word record per block, the fold over 16 units, one code
-// path) with the table at spm_ring::MAX_BLOCKS: the reference for the optimised ring (fix W2a-opt
-// review). Every step must give the same block and must_wait and the same software joins (the
+// The reference spm_ring (a 5-word record per block, the fold over 16 units, one code
+// path) with the table at spm_ring::MAX_BLOCKS: the reference for the optimised ring.
+// Every step must give the same block and must_wait and the same software joins (the
 // joined tickets, in order: spm_ring::join_hook). It records the tickets it would join instead of
 // joining them (the ring under test has joined them by then).
 class w2a_ring {
@@ -985,7 +985,7 @@ std::vector<uint32_t> ring_sequence(const char * sched, uint32_t seed, uint32_t 
     // call succeeds, alloc()'s must_wait holds DMA tickets only (which a DMA first write implies).
     static spm_ring twin;
     twin.init(first, lines);
-    // W2a's algorithm on the same sequence: the same blocks, must_wait and joined tickets.
+    // The reference algorithm on the same sequence: the same blocks, must_wait and joined tickets.
     static w2a_ring ref;
     ref.init(first, lines);
     g_join_log = join_log{};
@@ -1037,11 +1037,11 @@ std::vector<uint32_t> ring_sequence(const char * sched, uint32_t seed, uint32_t 
                 deps w3;
                 const spm b3 = ref.alloc(n, parity, &w3);
                 CHECK(b3 == b && w3.a == w.a && w3.b == w.b && ref.head() == ring.head() && ref.blocks() == ring.blocks(),
-                      "ring step %u: W2a's algorithm gives block %u deps 0x%08x 0x%08x, the ring %u 0x%08x 0x%08x", step,
+                      "ring step %u: the reference algorithm gives block %u deps 0x%08x 0x%08x, the ring %u 0x%08x 0x%08x", step,
                       b3.line, w3.a.v, w3.b.v, b.line, w.a.v, w.b.v);
                 CHECK(g_join_log.ring_joins == ref.joined && g_join_log.twin_joins == ref.joined &&
                           g_join_log.ring_joins.size() == ring.joins(),
-                      "ring step %u: software joins differ from W2a's algorithm (ring %zu, twin %zu, W2a %zu tickets; "
+                      "ring step %u: software joins differ from the reference algorithm (ring %zu, twin %zu, reference %zu tickets; "
                       "ring count %u)", step, g_join_log.ring_joins.size(), g_join_log.twin_joins.size(), ref.joined.size(),
                       ring.joins());
             }
@@ -1093,7 +1093,7 @@ std::vector<uint32_t> ring_sequence(const char * sched, uint32_t seed, uint32_t 
             if (!t.none()) last = t;
             ring.release(spm{m.blocks[id].start}, t);
             twin.release(spm{m.blocks[id].start}, t);
-            CHECK(ref.release(spm{m.blocks[id].start}, t), "ring: W2a's algorithm does not hold block %u", m.blocks[id].start);
+            CHECK(ref.release(spm{m.blocks[id].start}, t), "ring: the reference algorithm does not hold block %u", m.blocks[id].start);
             m.blocks[id].released = true;
             for (uint32_t l = m.blocks[id].lo; l < m.blocks[id].hi; ++l) {
                 if (m.owner[l] == (int)id) {

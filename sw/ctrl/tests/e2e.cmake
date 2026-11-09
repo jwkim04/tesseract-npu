@@ -1,6 +1,6 @@
 # sw/ctrl/tests/e2e.cmake — the firmware integration tests (docs/design/06-software-verification.md "SW" §10.1,
 # §10.2). Included by sw/ctrl/host/CMakeLists.txt after
-# the package snippets (it uses kernels.cmake's tsr_fw_ref and the tsr_elf library).
+# the other test snippets (it uses kernels.cmake's tsr_fw_ref and the tsr_elf library).
 #
 #   fw_m6_e2e    the production image tsr-fw.elf end to end on the simulator, fixed + 7 random
 #                schedules with TSR_SIM_RACE fatal and launch capture: loader with VERIFY, HELLO (id =
@@ -16,7 +16,7 @@
 #                (the layer plus 25 short VU records per layer, exec_kinds.cpp kind 0x38)
 
 if (NOT TARGET tsr_fw_ref)
-    return()                       # kernels.cmake (P2.5) provides the MUL_MAT reference
+    return()                       # kernels.cmake provides the MUL_MAT reference
 endif()
 set(_e_dir ${TSR_CTRL_DIR}/tests)
 add_executable(test_fw_m6_e2e ${_e_dir}/test_fw_m6_e2e.cpp)

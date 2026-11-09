@@ -6,7 +6,7 @@ ones (rtl/tech/generic), which every other testbench verifies against the contra
                            2 / 3; corner sweeps of {-128, -127, -1, 0, 1, 127}^3 over every packed DSP
                            slot, uniform extreme sums, random beats with ce / in_valid / reset), both
                            models also against the reference sum and the valid pipeline model
-  test_tech_macpv_equiv    W4-B at: tsr_mac_lane's PV mode (ATTPV, AT §8.2): xilinx vs generic vs the
+  test_tech_macpv_equiv    tsr_mac_lane's PV mode (ATTPV, AT §8.2): xilinx vs generic vs the
                            accumulate reference (tb/tech/cpp/macpv_equiv.cpp on tsr_tb_tech_macpv.sv)
   test_tech_sram_equiv     tsr_sram_1r1w: xilinx vs generic cycle by cycle (tb/tech/cpp/sram_equiv.cpp
                            on tb/tech/hdl/tsr_tb_tech_sram.sv: the URAM / BRAM / LUTRAM sizes of the
@@ -48,7 +48,7 @@ from common.runner import REPO, build_root, run, seed_from_env
 TECH = REPO / "tb" / "tech"
 TOPS = {
     "mac": ("tsr_tb_tech_mac", "tsr_mac_lane.sv", TECH / "cpp" / "mac_equiv.cpp", 200000),
-    # W4-B at: the PV (ATTPV accumulate) mode of tsr_mac_lane, AT §8.2 / §13.5
+    # the PV (ATTPV accumulate) mode of tsr_mac_lane, AT §8.2 / §13.5
     "macpv": ("tsr_tb_tech_macpv", "tsr_mac_lane.sv", TECH / "cpp" / "macpv_equiv.cpp", 100000),
     "sram": ("tsr_tb_tech_sram", "tsr_sram_1r1w.sv", TECH / "cpp" / "sram_equiv.cpp", 300000),
 }
@@ -115,7 +115,7 @@ def test_tech_mac_equiv():
 
 
 def test_tech_macpv_equiv():
-    """W4-B at: tsr_mac_lane PV mode (ATTPV, AT §8.2): xilinx == generic == the accumulate reference, every
+    """tsr_mac_lane PV mode (ATTPV, AT §8.2): xilinx == generic == the accumulate reference, every
     cycle, every attention configuration (N 32 x T 1 / 2 / 3 / 8 x LAT 3..11), with the MVM mode in between."""
     _run_equiv("macpv")
 

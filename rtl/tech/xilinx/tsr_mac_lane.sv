@@ -2,7 +2,7 @@
 // products summed, for T tokens that share the weights, with the products on DSP48E2 slices and
 // two tokens packed per DSP (spec MVM cluster microarchitecture, "DSP packing").
 //
-// Owner: xtech agent (M3 part C; docs/rtl-mvm.md §7.2, §9.2 item 4, §9.3). Selected by
+// Spec: docs/rtl-mvm.md §7.2, §9.2 item 4, §9.3. Selected by
 // rtl/filelist_xilinx.f in place of rtl/tech/generic.
 //
 // Contract: identical to rtl/tech/generic/tsr_mac_lane.sv (same module name, parameters, ports,
@@ -52,7 +52,7 @@
 // Cost per instance (N = 32): 32 x ceil(T / 2) DSP48E2, T adder trees of 31 adders (as generic),
 //   tree-cut registers T x (8 x 18) bits at one cut, output T x 21 bits, LAT valid flops.
 //
-// PV mode (parameter PV = 1; W4-B at, AT §8.2): the contract of the generic lane (pv_acc[s][i] =
+// PV mode (parameter PV = 1, AT §8.2): the contract of the generic lane (pv_acc[s][i] =
 //   (pv_first ? 0 : pv_acc) + sext(pv_a[s]) * sext(w[i]) per pv_valid, PV_LAT = IN + AD + M + P
 //   registers). Each slot's DSP48E2 serves both modes: an A / D input mux in front of the IN
 //   registers (MVM: A = x[2s] 2^18, D = x[2s+1]; PV: A = pv_a[s], D = 0; the pre-adder is A + D in

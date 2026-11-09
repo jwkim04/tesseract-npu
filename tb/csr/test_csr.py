@@ -870,8 +870,7 @@ async def csr_qclear_run_change(dut):
     the state before the write's own RV_RUN change) against the simulator: RV_RUN 0 -> 1 with QCLEAR over an
     abort's records is accepted; RV_RUN 1 -> 0 with QCLEAR with the hart running is refused (the reset has not
     completed; the abort keeps the records); with the hart halted it is accepted; {QABORT, QCLEAR} in one write
-    at idle clears (the abort's records included). Found by the W4-A review (the simulator used to judge the
-    state after the change)."""
+    at idle clears (the abort's records included). The simulator judges the state before the change."""
     b = await _bench(dut, 11)
     bad = []
     regs = [0x024] + Q_REGS

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tb/platform/bw/run_bw.py — build (Verilator, cached) and run the M0 bandwidth kernel bench
+"""tb/platform/bw/run_bw.py — build (Verilator, cached) and run the bandwidth kernel bench
 (tb/platform/bw/bw_bench.cpp; docs/bandwidth-kernel.md §5).
 
     run_bw.py [--top body|tsr_bw_k4] [--param K=V]... [--jobs N] [--waves] [--build-only] [-- BENCH ARGS]

@@ -1,8 +1,8 @@
 // tsr_vu.sv — the vector unit (unit 3): VOP, RED, ROPE, SOP and AT's vector ops ASMAX, AMASK, AMERGE, ANORM
 // (TOPK, DQROW and GDN with HAS_TOPK / HAS_DQROW / HAS_GDN), with the s registers s0-s15.
 //
-// Owner: VU (docs/design/02-vector-unit.md "VU" §4 programming model, §5 encodings, §6 numerics, §7
-// microarchitecture; AT §5.4-§5.7; W4-B task "vu").
+// Spec: docs/design/02-vector-unit.md "VU" §4 programming model, §5 encodings, §6 numerics, §7
+// microarchitecture; AT §5.4-§5.7.
 // Contract (VU §4.5, §7.8, CC §9.4 I3):
 //   cmd_valid / cmd_ready / cmd: the eight words of a checked op (the VU checker class's payload,
 //   tsr_xc_pkg); cmd_ready while fewer than TSR_VU_ACCEPT_AHEAD (2) ops are held. done pulses once per op in
@@ -46,8 +46,8 @@ module tsr_vu
   parameter  int unsigned LANE_PIPE  = 0,             // registered pipe stages on each side of the lanes
   parameter  bit          LOCAL_SCALE = 1'b0,
   parameter  bit          LOCAL_INTERMEDIATES = 1'b0,
-  parameter  bit          HAS_TOPK   = 1'b0,          // TOPK (CAPS bit3, VU §5.10: RTL from M8)
-  parameter  bit          HAS_DQROW  = 1'b0,          // DQROW (CAPS bit6, VU §5.6: RTL from M8)
+  parameter  bit          HAS_TOPK   = 1'b0,          // TOPK (CAPS bit3, VU §5.10: RTL option)
+  parameter  bit          HAS_DQROW  = 1'b0,          // DQROW (CAPS bit6, VU §5.6: RTL option)
   parameter  bit          HAS_GDN    = 1'b0,          // GDN (CAPS bit8, VU §7.12)
   parameter  int unsigned GDN_NSLOT  = 64,            // GDN: rows held between the ingest and the update launch
   parameter                GDN_STYLE  = "ultra",       // GDN: RAM style of the row buffers and tables (ultra: URAM)

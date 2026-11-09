@@ -1,4 +1,4 @@
-# rtl/platform/alveo_xrt/bw/package_bw_xo.tcl — package the M0 bandwidth kernel tsr_bw_k4 as a Vitis
+# rtl/platform/alveo_xrt/bw/package_bw_xo.tcl — package the bandwidth kernel tsr_bw_k4 as a Vitis
 # .xo (Vivado batch; docs/bandwidth-kernel.md §4). The flow of ../package_xo.tcl (the adapter's) for this kernel.
 #
 # usage: vivado -mode batch -nojournal -nolog -source rtl/platform/alveo_xrt/bw/package_bw_xo.tcl \
@@ -8,7 +8,7 @@
 #   hints    m_axi interconnect hints of m_axi_ch0..3 (component.xml bus parameters, which the v++
 #            linker uses to size the kernel-side interconnect):
 #              core (default)  MAX_BURST_LENGTH 64, NUM_READ_OUTSTANDING 16, NUM_WRITE_OUTSTANDING 32 =
-#                              the Tesseract kernels' (../package_xo.tcl), so M0 measures the memory
+#                              the Tesseract kernels' (../package_xo.tcl), so the bandwidth kernel measures the memory
 #                              path the core gets (docs/bandwidth-kernel.md §1; lint.sh checks the two agree)
 #              wide            64 / 64 / 64, the engine's maximum: shows whether the interconnect
 #                              sized for the core limits the outstanding sweep above 16 / 32

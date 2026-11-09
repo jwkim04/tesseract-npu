@@ -1,4 +1,4 @@
-// rt_kernels.cpp — test kernels of the fw_runtime image (sw/ctrl/tests/runtime.cmake, P2.2;
+// rt_kernels.cpp — test kernels of the fw_runtime image (sw/ctrl/tests/runtime.cmake;
 // docs/design/06-software-verification.md "SW" §6.3-§6.6, §10.2). Each exercises one runtime step of
 // EX §4.7 (docs/design/01-execution-model.md) or one SDK service; sw/ctrl/tests/test_fw_runtime.c
 // launches them on the simulator and checks every record, log word and output. They obey the

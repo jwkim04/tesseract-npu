@@ -2,8 +2,8 @@
 // 8-input subtree, the pairing top combiner, the post unit (FM, FA, SQ, RC), the row-result packer, and
 // the SOP scalar functions SQRT, RSQRT (post unit) and DIV (divider).
 //
-// Owner: VU (docs/design/02-vector-unit.md "VU" §6.2 reductions, §7.5 reduction unit and row post; §5.8 SOP;
-// AT §5.5 AMASK row maxima).
+// Spec: docs/design/02-vector-unit.md "VU" §6.2 reductions, §7.5 reduction unit and row post; §5.8 SOP;
+// AT §5.5 AMASK row maxima.
 // Row flow: the injector's row token (at the row's last line) is delayed past the lanes' last partial
 // write; the drain reads group q = 0 .. ng (8 partials: entry ring + q/2, lanes 8·(q mod 2) ..) one per
 // cycle into the subtree, then frees the row's np + 1 ring entries. An empty row (RED TO_S with m = 0)

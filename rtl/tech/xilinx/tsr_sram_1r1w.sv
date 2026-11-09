@@ -1,8 +1,7 @@
 // tsr_sram_1r1w.sv — Xilinx UltraScale+ (U200) variant of the simple dual-port SRAM: one write
 // port and one read port, one clock, byte write enables, registered read.
 //
-// Owner: xtech agent (M3 part C; docs/rtl-mvm.md §9.2, docs/rtl-core.md §5 and §12 "Consequences
-// for M4" item 1). Selected by rtl/filelist_xilinx.f in place of rtl/tech/generic.
+// Spec: docs/rtl-mvm.md §9.2, docs/rtl-core.md §5 and §12 item 1. Selected by rtl/filelist_xilinx.f in place of rtl/tech/generic.
 //
 // Contract: identical to rtl/tech/generic/tsr_sram_1r1w.sv (same module name, parameters and
 // ports; tb/tech compares the two cycle by cycle):

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """rsp_client.py — a scripted GDB remote-serial-protocol client against tsr-dbg (docs/design/05-debug.md
-"DB" §4; P3.7). Python stdlib only.
+"DB" §4). Python stdlib only.
 
 Standalone (default): starts `tsr-dbg gdb --device sim --elf <fw_rt.elf> --halt-on-boot --port 0`, then
   qSupported, '?' and `monitor why` (halted at boot), the target description and memory map, g (pc and

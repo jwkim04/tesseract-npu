@@ -20,7 +20,7 @@
 //                    SOP.MOVI unless the launch's s-register shadow holds the value, k_elem.hpp)
 //                    VOP.MULC c = s12, then VOP.ADDC c = s13 when b != 0: y = FA(FM(x, s), b),
 //                    the bits of VOP.MULCADD with a b row of copies of b (SW §7.5), without the
-//                    b row (decision W2b-elem-1: the record carries b as an immediate, which only
+//                    b row (the record carries b as an immediate, which only
 //                    an s register can take without a scratch row)
 //        UNARY       VOP.TANH / GELU16 / SILU / EXP / GELU / SIGMOID (func 0 .. 5)
 //   4. ST the rows (one ST for dense dst rows, else one per row); the VOP tail rule zeroes words
@@ -170,7 +170,7 @@ uint32_t tile_lines(const ew_op & e, const ew_tile & t) {
     cur->r0 = 0u;
     cur->nr = min_u(e.kp.tile_rows, e.rows);
     // The op's only tile takes the one-tile block when it fits (kind_ctx::one: DMA-bracketed, no ring
-    // record, no deps; W2b integration), as the fast path does; the tiles of a multi-tile op the ring.
+    // record, no deps), as the fast path does; the tiles of a multi-tile op the ring.
     const uint32_t l0 = tile_lines(e, *cur);
     const bool one = cur->nr == e.rows && l0 <= ctx.one_lines;
     deps rd{};
@@ -331,7 +331,7 @@ TSR_HOT uint32_t scale_fast(const volatile uint32_t * a, uint32_t kflags, deps d
     const uint32_t nv = 1u + kf::sreg_need(ctx, S_A, s) + (b != 0u ? 1u + kf::sreg_need(ctx, S_B, b) : 0u);
     const bool chk = need_chk(2u, nv);
     if (!chk && nv == (b != 0u ? 2u : 1u)) [[likely]] {
-        // The common case (W2b fix): one credit read covers the pushes and the launch's s-register
+        // The common case: one credit read covers the pushes and the launch's s-register
         // shadow holds s (and b): no MOVI, the nochk_t pushes with the staged words reused (kf::push_s,
         // CC §5.1): the MULC's d line is the LD's SPM line (w1); the ADDC differs from the MULC only in
         // w0 (function, s register), so it stages w0 alone; the ST's SPM line is the last VOP's d (w1).

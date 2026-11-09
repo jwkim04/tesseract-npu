@@ -1,6 +1,6 @@
 // k_fattn.cpp — the FLASH_ATTN kind of the graph executor (op list kind 0x19, two slots; docs/design/
 // 06-software-verification.md "SW" §7.2, §7.5; docs/design/03-attention-kv.md "AT" §5.2-§5.7, §6.6
-// (normative), §7.1-§7.5, §12; W2b P2.7).
+// (normative), §7.1-§7.5, §12).
 //
 // ggml's FLASH_ATTN_EXT with K and V in the device KV planes (AT §4) and the mask as its summary
 // MSUM in the preload area (AT §7.3). The tile-op sequence is the numerical contract (SW §7.5, AT

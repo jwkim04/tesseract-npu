@@ -3,7 +3,7 @@
 // error code in EX §8.1 order, ERR_INFO, the tagged operand extents and the unit payload
 // (tsr_att_pkg::tsr_kvst_cmd_t / tsr_att_cmd_t, strides resolved).
 //
-// Owner: AT (W4-B "at"; docs/design/03-attention-kv.md "AT" §5.1-§5.3, §5.8). The external-class
+// Spec: docs/design/03-attention-kv.md "AT" §5.1-§5.3, §5.8. The external-class
 // mux of tsr_chk's xc_* port (VU builder, rtl/core/tsr_xc_pkg.sv) routes the AT opcodes here
 // (tsr_att_pkg::tsr_att_is_op); with no VU class the ports connect to tsr_chk's xc_* directly.
 // Oracle: the simulator's chk_kvst / chk_attqk / chk_attpv (sw/sim/tsr_at.c), compared bit for bit

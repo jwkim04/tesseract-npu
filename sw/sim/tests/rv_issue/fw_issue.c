@@ -15,7 +15,7 @@
 //       KERNEL_ERR > OK); r7 = MTIME from the pop to the post
 //   R8  wait for LCQ_FREE (WFI on irq_fast[3]), post with ANSWER
 //   R9  QCLEAR and a join if a unit is in error; R10 RT_STATE IDLE
-// Not here (the SDK's job, W2): cancel / stop (R3), PROF, argument blocks, image id, TRAP records
+// Not here (the SDK's job): cancel / stop (R3), PROF, argument blocks, image id, TRAP records
 // (crt0 parks with RT_STATE TRAPPED), FMT log records.
 //
 // Kernel 0 "mvm_act", one token: y = act(W x), s0 = sum(y), y stored to DRAM.
@@ -192,7 +192,7 @@ static int32_t k_mvm_act(const uint32_t * a, uint32_t seq) {
     const uint32_t t_red = push(&i, t_vop, none);
     i = tsr_enc_st(TSR_GET(yh, TSR_TICKET_UNIT), Z, yh & 0x0FFFFFFFu, yl);
 #ifdef FW_ISSUE_MUTANT_ST_NODEP
-    // P1.9 (sw/sim/race.cmake): the mutant without the ST's dependency on the VOP; only the race
+    // (sw/sim/race.cmake) the mutant without the ST's dependency on the VOP; only the race
     // detector catches it (sim_race_rv). Off by default.
     const uint32_t t_st = push(&i, none, none);
 #else

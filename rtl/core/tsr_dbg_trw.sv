@@ -4,7 +4,7 @@
 // arbiter (tsr_dbg_wrmux); DBG_TRW_WPTR, DBG_TRW_DROPS, the DROP records and PERF TRW_RECORDS /
 // TRW_DROPS.
 //
-// Owner: DB (W4-B item 6). Instantiated by tsr_dbg. Oracle: the simulator's DBG model
+// Instantiated by tsr_dbg. Oracle: the simulator's DBG model
 // (sw/sim/tsr_dbg.c trw_stage / trw_flush / trw_put / trw_drop): tb/dbg compares the ring
 // records in [RPTR, WPTR) (times excluded), WPTR and DROPS.
 //

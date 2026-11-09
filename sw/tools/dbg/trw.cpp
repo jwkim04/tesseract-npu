@@ -1,5 +1,5 @@
-// trw.cpp — libtsr_dbg: the trace writer (docs/design/05-debug.md "DB" §8.3, §8.4, §8.6, §8.7, §10.1;
-// P3.8): the DRAM ring set-up and drain over the transport, the record decoder, the Perfetto /
+// trw.cpp — libtsr_dbg: the trace writer (docs/design/05-debug.md "DB" §8.3, §8.4, §8.6, §8.7, §10.1):
+// the DRAM ring set-up and drain over the transport, the record decoder, the Perfetto /
 // Chrome trace-event timeline and the self-checks.
 //
 // Ring: DBG_TRW_BASE {ch[31:28], beat[27:0]} (16-beat aligned), DBG_TRW_LINES 64-B lines (a power

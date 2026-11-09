@@ -1,15 +1,15 @@
-"""Mutation spot-checks of the SPM work of W4-A (tsr_spm, tsr_spm_cport, tsr_spm_bridge, tsr_dma's LD
+"""Mutation spot-checks of the SPM (tsr_spm, tsr_spm_cport, tsr_spm_bridge, tsr_dma's LD
 reservation; CC §15.5): each mutant is a copy of one RTL file with one edit, written under
 build/cocotb/spm_mut/<id>/ (the tree is never edited) and swapped in through $TSR_MUT
 (tb/spm/spm_sim.py mut_sources, which tb/spm and tb/dma pass their source lists through); a mutant
 is killed when one of its pytest nodes fails. The two *_na mutants also remove the RTL assertions,
 so the bench monitors alone must catch them.
 
-    python tb/spm/mutate_spm.py            every mutant (22; 2.5 min with TSR_BUILD_JOBS=2, 2026-10-31)
+    python tb/spm/mutate_spm.py            every mutant (22; 2.5 min with TSR_BUILD_JOBS=2)
     python tb/spm/mutate_spm.py ID...      only these
     python tb/spm/mutate_spm.py --check    every pattern matches exactly once (no simulation)
 
-Moved into the tree by the W4-A integration from the SPM builder's runner; 22 of 22 killed (2026-10-31).
+22 of 22 are killed.
 """
 import json
 import os

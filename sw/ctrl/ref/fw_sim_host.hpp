@@ -1,5 +1,5 @@
 // fw_sim_host.hpp — the host side of a firmware image on the simulator, for the kernel tests of
-// P2.5 (sw/ctrl/tests/test_fw_kernels*.cpp, test_fw_selftest*.c, test_fw_replay*.c). Plain C (also
+// sw/ctrl/tests/test_fw_kernels*.cpp, test_fw_selftest*.c, test_fw_replay*.c). Plain C (also
 // valid C++): the C tests include it like a .h file.
 //
 // What the transport will do with a kdev (EX §3.3-§3.4, §4.8; docs/design/06-software-verification.md

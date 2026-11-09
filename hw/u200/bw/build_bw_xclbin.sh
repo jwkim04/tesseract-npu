@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# hw/u200/bw/build_bw_xclbin.sh — build the M0 bandwidth xclbin (docs/bandwidth-kernel.md §4), the pattern of
+# hw/u200/bw/build_bw_xclbin.sh — build the bandwidth xclbin (docs/bandwidth-kernel.md §4), the pattern of
 # hw/u200/build_xclbin.sh for the kernel tsr_bw_k4.
 #
 #   hw/u200/bw/build_bw_xclbin.sh [hw|hw_emu]        (default target: hw)
 #
 # 1. the kernel object build/u200/xo/tsr_bw_k4.xo (build/u200/xo/wide/ for TSR_BW_HINTS=wide):
-#    packaged now by rtl/platform/alveo_xrt/bw/package_bw_xo.tcl (Vivado batch) unless it exists and
+#    packaged by rtl/platform/alveo_xrt/bw/package_bw_xo.tcl (Vivado batch) unless it exists and
 #    its source manifest tsr_bw_k4.sources.sha256 next to it (written by package_bw_xo.tcl) still
 #    matches the working tree (TSR_REPACKAGE=1 forces it)
 # 2. v++ --link -t <target> --platform $TSR_U200_PLATFORM --config hw/u200/bw/bw.cfg
@@ -21,8 +21,8 @@
 #   TSR_VIVADO_LOCK     if set: every Vivado / v++ call runs under `flock $TSR_VIVADO_LOCK`
 #   TSR_BW_FLOORPLAN    1 = apply the draft per-SLR floorplan hw/u200/bw/bw_floorplan.tcl
 #   TSR_BW_HINTS        m_axi interconnect hints of the .xo (package_bw_xo.tcl): core (default; the
-#                       Tesseract kernels' 64-beat bursts, 16 reads / 32 writes outstanding: the M0
-#                       baseline) or wide (64 / 64: the engine's maximum, for comparison only)
+#                       Tesseract kernels' 64-beat bursts, 16 reads / 32 writes outstanding: the
+#                       baseline measurement) or wide (64 / 64: the engine's maximum, for comparison only)
 # Stops with exit status 3 and a message when the platform (or the Xilinx tools) are missing.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)

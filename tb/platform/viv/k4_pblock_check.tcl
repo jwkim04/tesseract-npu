@@ -6,7 +6,7 @@
 # hierarchy, and sources hw/u200/k4_major_blocks.tcl on it as the link does before place_design. Nothing is
 # written back to the checkpoint. The hook creates the control Pblock as a child of pblock_dynamic_SLR0 and the
 # VU Pblock as a child of pblock_dynamic_SLR2 and assigns every major block; any failure of the hook stops this
-# script with an error. A checkpoint of an image that lacks blocks of the full-feature map (the reduced first card
+# script with an error. A checkpoint of an image that lacks blocks of the full-feature map (the reduced card
 # image has no vector unit, no checker class and no pair gather) is checked with TSR_K4_SKIP_MISSING set, which the
 # script does by default: the hook reports the blocks it skips and assigns the rest. TSR_K4CHK_STRICT=1 in the
 # environment checks a checkpoint of the full-feature image: every block must exist. A child Pblock that holds no

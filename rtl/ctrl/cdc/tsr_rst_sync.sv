@@ -1,7 +1,7 @@
 // tsr_rst_sync.sv — reset synchroniser: asynchronous assert, synchronous deassert (CC §12.2,
 // docs/ctrl-riscv.md §7.3).
 //
-// Owner: ctrl agent (W4 item 3). CC §2.2 places it in rtl/tech/<target>/; it lives here until the
+// CC §2.2 places it in rtl/tech/<target>/; it lives here until the
 // technology layer takes it. Generic: ASYNC_REG comes from the constraints (tsr_ctrl_cdc.xdc).
 //
 // Contract: rst_no = 0 at once while rst_ni = 0 (no clock needed); rst_no rises STAGES rising

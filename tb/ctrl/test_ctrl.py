@@ -1,4 +1,4 @@
-"""tb/ctrl — the RISC-V control subsystem (rtl/ctrl: tsr_ctrl_rv + tsr_ctrl_cdc, W4 item 3) against
+"""tb/ctrl — the RISC-V control subsystem (rtl/ctrl: tsr_ctrl_rv + tsr_ctrl_cdc) against
 the simulator (CC §15.2, §15.4; docs/design/06-software-verification.md SW §10.3).
 
 Bench: tb/ctrl/sv/tb_ctrl.sv (tsr_ctrl with RVFI + the core-domain stub tb_ctrl_core.sv) on

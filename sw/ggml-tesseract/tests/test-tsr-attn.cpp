@@ -1,5 +1,5 @@
 // test-tsr-attn.cpp — ctest ggml_tesseract_attn (docs/design/06-software-verification.md §10.2, §10.4 M7
-// gate item 4; docs/design/03-attention-kv.md §13.6; W3b P3.5): the KV cache and attention on the
+// gate item 4; docs/design/03-attention-kv.md §13.6): the KV cache and attention on the
 // Tesseract backend through the public ggml API, against the CPU backend and the AT references, on the
 // transport TSR_DEVICE selects (default sim).
 //
@@ -29,7 +29,7 @@
 //      a wrapped ring of 2048 cells with the new cell in the low run and the older run over two
 //      chunks makes the bits depend on FA_NEW (AT §6.6 rule 7); ggml_tesseract_attn_split1 runs the
 //      test with TSR_OPL_SPLIT=1, so FA_NEW crosses a list cut (its own preload entry).
-//   4. supports_op and placement (W3b fix): a CPY into a view whose rows end inside a line is refused,
+//   4. supports_op and placement: a CPY into a view whose rows end inside a line is refused,
 //      one with rows of whole lines runs and leaves the viewed tensor's other bytes alone; an op
 //      reading leaf data in host memory (an ANY buffer of leaves only, llama.cpp's control vectors) is
 //      refused (SW §8 R6 as built: only MUL_MAT is staged).
@@ -652,7 +652,7 @@ void test_fa(const tsr_att_cfg & cfg) {
         { "decode D=512 (Gemma full)",   512,  1, 16,  512,   256, 1, M_CAUSAL,  200,   0, 1.0f, 2 },
         { "decode wrapped ring",         128,  2,  4,  256,   256, 1, M_RING,    300, 128, s128, 3 },
         { "prefill wrapped ring",         64,  2,  2,  256,   256, 4, M_RING,    290, 100, s64,  2 },
-        // W3b fix: the newest cell in the low run of a wrapped ring whose older run spans two chunks
+        // the newest cell in the low run of a wrapped ring whose older run spans two chunks
         // (NCG 64 groups at C = 4): three chunks, ordered (low, high, high) by u0 and (high, high, low)
         // by AT §6.6 rule 7, so the output bits depend on FA_NEW naming the new cell (with two chunks,
         // or the new cell already last, they would not: AMERGE of two is symmetric)
@@ -671,7 +671,7 @@ void test_fa(const tsr_att_cfg & cfg) {
 }
 
 // =================================================================================================
-// 4. supports_op and where operands live (W3b fix; SW §8 R6 and §9.3 as built, SW-41)
+// 4. supports_op and where operands live (SW §8 R6 and §9.3 as built, SW-41)
 // =================================================================================================
 void test_placement_rules() {
     printf("placement rules of supports_op\n");

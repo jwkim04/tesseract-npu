@@ -1,4 +1,4 @@
-"""sw/tables/tsr_tables.py — the single table source of Tesseract (EX-30, work package P1.1).
+"""sw/tables/tsr_tables.py — the single table source of Tesseract (EX-30).
 
 Plain Python data: literals only, no imports, no code. sw/tables/gen_tables.py reads this file and
 emits rtl/core/tsr_tables_pkg.sv, sw/sim/include/tsr_tables.h, sw/ctrl/include/tsr/mmio.hpp,
@@ -9,7 +9,7 @@ Owners (docs/design/README.md §4): EX owns the host CSR map, PERF, opcodes, uni
 launch formats; CC the RISC-V address map, the control window, queue depths and the issue FIFO;
 DB the DBG block, its control-window rows, the log header and the REC / TRW / marker formats; VU
 and AT the encodings of their ops; SW the generator. When two documents disagree, the row follows
-the owner; the disagreement is reported with the P1.1 change, not resolved here.
+the owner; the disagreement is reported, not resolved here.
 
 Citations: every row carries `src`, the document section it comes from. Areas: EX = docs/design/
 01-execution-model.md, VU = 02-vector-unit.md, AT = 03-attention-kv.md, CC = 04-control-core.md,
@@ -169,10 +169,10 @@ LAYOUTS = {
     ]),
     "CAPS": dict(src="EX §7.5", desc="capability bits; retired bits are never set and never reused", fields=[
         ("0",     "VU",      "VOP, RED, ROPE and SOP present (VU §5.10)"),
-        ("3",     "TOPK",    "TOPK present (RTL from M8; the simulator from M6)"),
+        ("3",     "TOPK",    "TOPK present (the simulator; an RTL option, off in the release image)"),
         ("5",     "ATT",     "the seven AT ops present (KVST, ATTQK, ATTPV, ASMAX, AMASK, AMERGE, ANORM)"),
-        ("6",     "DQROW",   "DQROW in the SPM form (RTL from M8; the simulator from M6)"),
-        ("7",     "VMASK",   "VMASK (M9)"),
+        ("6",     "DQROW",   "DQROW in the SPM form (the simulator; an RTL option, off in the release image)"),
+        ("7",     "VMASK",   "VMASK (specified, not implemented)"),
         ("8",     "GDN",     "GDN present (the fused Gated DeltaNet state update, VU §7.12)"),
         ("11:9",  "VU_RSVD", "reserved for VU extensions, 0"),
         ("12",    "ATT_LOCAL", "four-owner local FAST attention score and probability slots"),
@@ -554,7 +554,7 @@ HOST_CSR = [
     (0x300, "LCQ_REC",      "R",      "EX",     "EX §5.1, §4.2",  "completion ring: record k at 0x300 + 32 (k mod LCQ_DEPTH), word j at +4j", dict(n=8, stride=32, words=8)),
     (0x400, "LOG_RING",     "R",      "EX",     "EX §5.1, §4.10", "log word k at 0x400 + 4 (k mod LOG_DEPTH)", dict(n=256)),
     (0x800, "DBG",          "DB",     "DB",     "EX §5.1, DB §10.1", "DBG block (DBG_CSR rows); undefined offsets read 0", dict(block=0x300)),
-    (0xB00, None,           "-",      "-",      "EX §5.1",        "reserved (the planned CTL_* block is dissolved)", dict(block=0x100)),
+    (0xB00, None,           "-",      "-",      "EX §5.1",        "reserved", dict(block=0x100)),
     (0xC00, "DMI",          "R/W",    "DB, CC", "EX §5.1, DB §3.2", "debug module register r at 0xC00 + 4r; acts only while DBG_CFG.DMI_EN = 1", dict(n=128)),
     (0xE00, "Q_DONE",       "R",      "EX",     "EX §5.4",        "DONE_SEQ[u], 28 bits", dict(n=8)),
     (0xE20, "Q_ISSUED",     "R",      "EX",     "EX §5.4",        "ISSUED_SEQ[u], 28 bits (synchronised copy)", dict(n=8)),
@@ -736,7 +736,7 @@ DMI_REGS = [
 
 # DRAM map per channel (EX §11): (NAME, offset, size or None = to the channel end, src, description)
 DRAM_REGIONS = [
-    ("OPL",    0,                 64 * 1024 * 1024,  "EX §11", "ch0: op lists, replay push streams, argument blocks, code overlays (was CMD)"),
+    ("OPL",    0,                 64 * 1024 * 1024,  "EX §11", "ch0: op lists, replay push streams, argument blocks, code overlays"),
     ("IO",     64 * 1024 * 1024,  256 * 1024 * 1024, "EX §11", "ch0: host <-> device tensors; compute chunks; the TRW ring while profiling"),
     ("AUX",    320 * 1024 * 1024, 192 * 1024 * 1024, "EX §11", "ch0: small f32 tensors (norm weights, RoPE tables)"),
     ("WEIGHT", 512 * 1024 * 1024, None,              "EX §11", "every channel: weights bottom-up, KV planes top-down, compute heap between"),
@@ -750,8 +750,8 @@ UNITS = [
     (0, "DMA",  8,  8,  1, "EX §7.3, CC §7.4", "LD, ST, KVST"),
     (1, "QACT", 4,  4,  1, "EX §7.3, CC §7.4", "QACT"),
     (2, "MVM",  4,  4,  2, "EX §7.3, CC §7.4, §9.4", "MVM, ATTQK, ATTPV"),
-    (3, "VU",   16, 16, 2, "EX §7.3, CC §7.4, §9.4", "VOP, RED, ROPE, TOPK, SOP, DQROW, ASMAX, AMASK, AMERGE, ANORM (VMASK from M9)"),
-    (4, "ATT",  0,  8,  1, "EX §7.3, CC §7.4", "reserved for a future AT attention engine; absent in M6 (was CMD)"),
+    (3, "VU",   16, 16, 2, "EX §7.3, CC §7.4, §9.4", "VOP, RED, ROPE, TOPK, SOP, DQROW, ASMAX, AMASK, AMERGE, ANORM (VMASK is not implemented)"),
+    (4, "ATT",  0,  8,  1, "EX §7.3, CC §7.4", "reserved for a future AT attention engine; absent in M6"),
     (5, "SYNC", 4,  4,  1, "EX §7.3, CC §7.4", "NOP, FENCE, QCLEAR and every refused opcode"),
 ]
 UNITS_SPECIAL = [
@@ -766,7 +766,7 @@ UNITS_RESERVED = (6, 13, "EX §7.3")   # ids 6..13 reserved; a dependency on the
 # reserved, retired. Only kept / respec / new opcodes are legal; every other opcode is accepted
 # by the issue port, gets a SYNC ticket and completes ILLEGAL_OP. `unit` of a reserved block is
 # its class (information only). An opcode whose CAPS field is 0 in the configuration is refused
-# the same way (TOPK and DQROW before M8, VMASK before M9).
+# the same way (TOPK and DQROW without their RTL option, VMASK always).
 # =================================================================================================
 OPCODES = [
     (0x00, 0x00, "NOP",    "kept",     "SYNC", None,    "spec", "EX §7.2", "SYNC join point: completes when its dependencies are done"),
@@ -782,7 +782,7 @@ OPCODES = [
     (0x0A, 0x0F, None,     "reserved", "SYNC", None,    "EX",   "EX §7.2", "SYNC-class extension"),
     (0x10, 0x10, "LD",     "kept",     "DMA",  None,    "spec", "EX §7.2", "DRAM -> SPM, encoding unchanged"),
     (0x11, 0x11, "ST",     "kept",     "DMA",  None,    "spec", "EX §7.2", "SPM -> DRAM, encoding unchanged"),
-    (0x12, 0x12, "DQROW",  "respec",   "VU",   "DQROW", "VU",   "EX §7.2, VU §5.6", "SPM -> f32 dequantisation; simulator from M6, RTL in M8"),
+    (0x12, 0x12, "DQROW",  "respec",   "VU",   "DQROW", "VU",   "EX §7.2, VU §5.6", "SPM -> f32 dequantisation; simulator and RTL option, not in the release image"),
     (0x13, 0x13, None,     "reserved", "DMA",  None,    "VU",   "EX §7.2", "reserved for VU (DMA class)"),
     (0x14, 0x14, "KVST",   "new",      "DMA",  "ATT",   "AT",   "EX §7.2, AT §5.1", "store K or V rows into a KV plane"),
     (0x15, 0x17, None,     "reserved", "DMA",  None,    "AT",   "EX §7.2", "reserved for AT (DMA class: KV row stores and loads)"),
@@ -797,12 +797,12 @@ OPCODES = [
     (0x30, 0x30, "VOP",    "respec",   "VU",   "VU",    "VU",   "EX §7.2, VU §5.2", "element-wise vector op"),
     (0x31, 0x31, "RED",    "respec",   "VU",   "VU",    "VU",   "EX §7.2, VU §5.3", "segmented reduction with post-ops"),
     (0x32, 0x32, "ROPE",   "respec",   "VU",   "VU",    "VU",   "EX §7.2, VU §5.4", "rotary embedding over T tokens"),
-    (0x33, 0x33, "TOPK",   "respec",   "VU",   "TOPK",  "VU",   "EX §7.2, VU §5.5", "top-k per row; simulator from M6, RTL in M8"),
+    (0x33, 0x33, "TOPK",   "respec",   "VU",   "TOPK",  "VU",   "EX §7.2, VU §5.5", "top-k per row; simulator and RTL option, not in the release image"),
     (0x34, 0x34, "ASMAX",  "new",      "VU",   "ATT",   "AT",   "EX §7.2, AT §5.4", "softmax numerator"),
     (0x35, 0x35, "AMASK",  "new",      "VU",   "ATT",   "AT",   "EX §7.2, AT §5.5", "general mask path"),
     (0x36, 0x36, "AMERGE", "new",      "VU",   "ATT",   "AT",   "EX §7.2, AT §5.6", "channel tree and online merge"),
     (0x37, 0x37, "ANORM",  "new",      "VU",   "ATT",   "AT",   "EX §7.2, AT §5.7", "final normalisation"),
-    (0x38, 0x38, "VMASK",  "new",      "VU",   "VMASK", "VU",   "EX §7.2, VU §5.7", "position-window mask; ILLEGAL_OP until M9"),
+    (0x38, 0x38, "VMASK",  "new",      "VU",   "VMASK", "VU",   "EX §7.2, VU §5.7", "position-window mask; not implemented (ILLEGAL_OP)"),
     (0x39, 0x39, "GDN",    "new",      "VU",   "GDN",   "VU",   "EX §7.2, VU §7.12", "fused Gated DeltaNet state update of one head"),
     (0x3A, 0x3F, None,     "reserved", "VU",   None,    "VU",   "EX §7.2", "reserved for VU extensions"),
     (0x40, 0x40, "SOP",    "respec",   "VU",   "VU",    "VU",   "EX §7.2, VU §5.8", "scalar op on s0..s15"),

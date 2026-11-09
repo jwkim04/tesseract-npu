@@ -4,10 +4,10 @@
 // §5.2–§5.8 (functions, kinds, modes and what each field means), §6.2 (reductions), §6.7 (ROPE)
 // and §6.8 (total order, raw ops, TOPK, DQROW). The element math is tsr_ref_math.c (EXPK and the
 // composites, SIN/COS: VU §6.3–§6.6) and the f32 primitives FA, FS, FM, FD, SQ, RC are tsr_ref.c's.
-// AT's vector ops (VU §5.11) are AT's references; VMASK (0x38) is M9 and not here.
+// AT's vector ops (VU §5.11) are AT's references; VMASK (0x38) is not implemented and not here.
 //
 // These are references on plain word arrays: no simulator state and no encoding decode. The
-// simulator's VU unit (P1.4) decodes and checks an op (VU §5.9) and calls these functions with
+// simulator's VU unit decodes and checks an op (VU §5.9) and calls these functions with
 // pointers into the SPM; the cocotb benches call them through libtsr_ref.so (ctypes).
 //
 // Conventions

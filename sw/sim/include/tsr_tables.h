@@ -501,7 +501,7 @@ extern "C" {
 // -----------------------------------------------------------------------------------------------
 // DRAM map per channel (EX §11); byte offsets
 // -----------------------------------------------------------------------------------------------
-#define TSR_REGION_OPL_OFF    0x0ull         // EX §11: ch0: op lists, replay push streams, argument blocks, code overlays (was CMD)
+#define TSR_REGION_OPL_OFF    0x0ull         // EX §11: ch0: op lists, replay push streams, argument blocks, code overlays
 #define TSR_REGION_OPL_SIZE   0x4000000ull
 #define TSR_REGION_IO_OFF     0x4000000ull   // EX §11: ch0: host <-> device tensors; compute chunks; the TRW ring while profiling
 #define TSR_REGION_IO_SIZE    0x10000000ull
@@ -556,16 +556,16 @@ extern "C" {
 #define TSR_CAPS_VU                    0x00000001u  // [0] VOP, RED, ROPE and SOP present (VU §5.10)
 #define TSR_CAPS_VU_LSB                0u
 #define TSR_CAPS_VU_W                  1u
-#define TSR_CAPS_TOPK                  0x00000008u  // [3] TOPK present (RTL from M8; the simulator from M6)
+#define TSR_CAPS_TOPK                  0x00000008u  // [3] TOPK present (the simulator; an RTL option, off in the release image)
 #define TSR_CAPS_TOPK_LSB              3u
 #define TSR_CAPS_TOPK_W                1u
 #define TSR_CAPS_ATT                   0x00000020u  // [5] the seven AT ops present (KVST, ATTQK, ATTPV, ASMAX, AMASK, AMERGE, ANORM)
 #define TSR_CAPS_ATT_LSB               5u
 #define TSR_CAPS_ATT_W                 1u
-#define TSR_CAPS_DQROW                 0x00000040u  // [6] DQROW in the SPM form (RTL from M8; the simulator from M6)
+#define TSR_CAPS_DQROW                 0x00000040u  // [6] DQROW in the SPM form (the simulator; an RTL option, off in the release image)
 #define TSR_CAPS_DQROW_LSB             6u
 #define TSR_CAPS_DQROW_W               1u
-#define TSR_CAPS_VMASK                 0x00000080u  // [7] VMASK (M9)
+#define TSR_CAPS_VMASK                 0x00000080u  // [7] VMASK (specified, not implemented)
 #define TSR_CAPS_VMASK_LSB             7u
 #define TSR_CAPS_VMASK_W               1u
 #define TSR_CAPS_GDN                   0x00000100u  // [8] GDN present (the fused Gated DeltaNet state update, VU §7.12)
@@ -1684,8 +1684,8 @@ extern "C" {
 #define TSR_UNIT_DMA          0u           // EX §7.3, CC §7.4: LD, ST, KVST
 #define TSR_UNIT_QACT         1u           // EX §7.3, CC §7.4: QACT
 #define TSR_UNIT_MVM          2u           // EX §7.3, CC §7.4, §9.4: MVM, ATTQK, ATTPV
-#define TSR_UNIT_VU           3u           // EX §7.3, CC §7.4, §9.4: VOP, RED, ROPE, TOPK, SOP, DQROW, ASMAX, AMASK, AMERGE, ANORM (VMASK from M9)
-#define TSR_UNIT_ATT          4u           // EX §7.3, CC §7.4: reserved for a future AT attention engine; absent in M6 (was CMD)
+#define TSR_UNIT_VU           3u           // EX §7.3, CC §7.4, §9.4: VOP, RED, ROPE, TOPK, SOP, DQROW, ASMAX, AMASK, AMERGE, ANORM (VMASK is not implemented)
+#define TSR_UNIT_ATT          4u           // EX §7.3, CC §7.4: reserved for a future AT attention engine; absent in M6
 #define TSR_UNIT_SYNC         5u           // EX §7.3, CC §7.4: NOP, FENCE, QCLEAR and every refused opcode
 #define TSR_UNIT_MARKER       14u          // EX §7.3, CC §7.4: software marker records (REC / TRW); never a valid dependency
 #define TSR_UNIT_NONE         15u          // EX §7.3, CC §7.4: no dependency
@@ -1726,7 +1726,7 @@ extern "C" {
 #define TSR_OP_CALL   0x09u  // retired, unit SYNC: EX §7.2: retired (never shipped), never reused
 #define TSR_OP_LD     0x10u  // kept, unit DMA: EX §7.2: DRAM -> SPM, encoding unchanged
 #define TSR_OP_ST     0x11u  // kept, unit DMA: EX §7.2: SPM -> DRAM, encoding unchanged
-#define TSR_OP_DQROW  0x12u  // respec, unit VU, CAPS.DQROW: EX §7.2, VU §5.6: SPM -> f32 dequantisation; simulator from M6, RTL in M8
+#define TSR_OP_DQROW  0x12u  // respec, unit VU, CAPS.DQROW: EX §7.2, VU §5.6: SPM -> f32 dequantisation; simulator and RTL option, not in the release image
 #define TSR_OP_KVST   0x14u  // new, unit DMA, CAPS.ATT: EX §7.2, AT §5.1: store K or V rows into a KV plane
 #define TSR_OP_QACT   0x18u  // kept, unit QACT: EX §7.2: f32 -> QA, encoding unchanged
 #define TSR_OP_MVM    0x20u  // kept, unit MVM: EX §7.2: matrix x activations, encoding unchanged
@@ -1735,12 +1735,12 @@ extern "C" {
 #define TSR_OP_VOP    0x30u  // respec, unit VU, CAPS.VU: EX §7.2, VU §5.2: element-wise vector op
 #define TSR_OP_RED    0x31u  // respec, unit VU, CAPS.VU: EX §7.2, VU §5.3: segmented reduction with post-ops
 #define TSR_OP_ROPE   0x32u  // respec, unit VU, CAPS.VU: EX §7.2, VU §5.4: rotary embedding over T tokens
-#define TSR_OP_TOPK   0x33u  // respec, unit VU, CAPS.TOPK: EX §7.2, VU §5.5: top-k per row; simulator from M6, RTL in M8
+#define TSR_OP_TOPK   0x33u  // respec, unit VU, CAPS.TOPK: EX §7.2, VU §5.5: top-k per row; simulator and RTL option, not in the release image
 #define TSR_OP_ASMAX  0x34u  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.4: softmax numerator
 #define TSR_OP_AMASK  0x35u  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.5: general mask path
 #define TSR_OP_AMERGE 0x36u  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.6: channel tree and online merge
 #define TSR_OP_ANORM  0x37u  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.7: final normalisation
-#define TSR_OP_VMASK  0x38u  // new, unit VU, CAPS.VMASK: EX §7.2, VU §5.7: position-window mask; ILLEGAL_OP until M9
+#define TSR_OP_VMASK  0x38u  // new, unit VU, CAPS.VMASK: EX §7.2, VU §5.7: position-window mask; not implemented (ILLEGAL_OP)
 #define TSR_OP_GDN    0x39u  // new, unit VU, CAPS.GDN: EX §7.2, VU §7.12: fused Gated DeltaNet state update of one head
 #define TSR_OP_SOP    0x40u  // respec, unit VU, CAPS.VU: EX §7.2, VU §5.8: scalar op on s0..s15
 #define TSR_OP_FENCE  0x7Fu  // kept, unit SYNC: EX §7.2: SYNC barrier: completes when every op pushed before it is done

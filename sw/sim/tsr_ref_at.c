@@ -8,8 +8,7 @@
 // FTZ, canonical NaN), EXP is tsr_m_exp (VU §6.3), everything else is integer bit manipulation;
 // device images are accessed byte-wise little-endian. Built with -ffp-contract=off -fno-fast-math.
 //
-// Choices this file makes where AT leaves them open (each is part of the bit-exact contract and
-// listed in the W1a report):
+// Choices this file makes where AT leaves them open (each is part of the bit-exact contract):
 //   - Words an op does not define are unchanged: rows of other passes (ATTQK scores and MAXOUT
 //     words, ATTPV partial and LSUM words), and the words past R of the last line of a row vector
 //     (MAXOUT, LSUM, AMASK mdst, AMERGE m_run / l_run). Multi-pass FA (G > T_MAX) shares those
@@ -23,7 +22,7 @@
 //     chunk, AMASK, one ASMAX, all ATTPV, one AMERGE), so every VU op covers all R rows with
 //     valid data; AT §6.6 lists the passes outermost, which AMERGE / ANORM (no row selection) cannot
 //     express for G > T_MAX. Every op is row-independent, so each row gets the per-pass result.
-//   - Chunk planner (AT §6.6 step 3, §7.3): include/tsr_fa_plan.h (W2b: shared with the firmware;
+//   - Chunk planner (AT §6.6 step 3, §7.3): include/tsr_fa_plan.h (shared with the firmware;
 //     the "Chunk planner" section below wraps it).
 //   - The f32 mask copy (AT §7.3) holds fdiv(m, scale): AMASK adds the mask before ASMAX applies
 //     the scale, so a finite m must be pre-divided to give the CPU's scale·s + m (AT §5.5 as written
@@ -32,7 +31,7 @@
 #include "tsr_ref_at.h"
 
 #include "tsr_ref_math.h"
-#include "tsr_fa_plan.h"   // W2b kvfa: the chunk planner shared with the firmware
+#include "tsr_fa_plan.h"   // the chunk planner shared with the firmware
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -718,11 +717,11 @@ void tsr_msum_mask_f32(const uint16_t * mask, size_t row_stride, uint32_t n_kv, 
 // ---------------------------------------------------------------------------
 // Chunk planner (AT §6.6 step 3, §7.3, AT-19)
 //
-// W2b kvfa (P2.7): the planner's rules and code live in include/tsr_fa_plan.h, shared with the
+// the planner's rules and code live in include/tsr_fa_plan.h, shared with the
 // firmware's FLASH_ATTN kernel (sw/ctrl/kernels/k_fattn.cpp), so the two chunk lists are the same
-// by construction. Rules 1-8 (W1a decisions) are stated there; these are the library's wrappers
-// with W1a's signatures and return codes. sw/ctrl/tests/test_fw_kvfa_plan.cpp compares the shared
-// planner with W1a's code (kept there as the oracle).
+// by construction. Rules 1-8 are stated there; these are the library's wrappers
+// with its signatures and return codes. sw/ctrl/tests/test_fw_kvfa_plan.cpp compares the shared
+// planner with the original code (kept there as the oracle).
 // ---------------------------------------------------------------------------
 void tsr_fa_pass_rule(const tsr_att_cfg * cfg, uint32_t G, uint32_t * GS, uint32_t * T_q) {
     tsr_fap_pass_rule(cfg->t_max, G, GS, T_q);

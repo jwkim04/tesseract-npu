@@ -2,7 +2,7 @@
 // banks (bank E: even lines, bank O: odd lines; each 1R1W, so the SPM has 2 read and 2 write
 // ports), with per-bank client ports and round-robin arbitration per bank port.
 //
-// Owner: SPM agent (docs/design/04-control-core.md "CC" §10, CC-12; docs/rtl-core.md §5).
+// Spec: docs/design/04-control-core.md "CC" §10, CC-12; docs/rtl-core.md §5.
 //
 // Built from tsr_sram_1r1w instances (rtl/tech/<target>/); no vendor primitives here.
 // Clients (tsr_pkg TSR_SPM_CL_*, CC §10.2): 0 DMA, 1 QACT, 2 MVM, 3 RISC-V bridge, 4 VU, 5 AT;

@@ -191,13 +191,13 @@ enum { KLC_FLAG_REPACK = 1u << 0, KLC_FLAG_CHAT = 1u << 1, KLC_FLAG_VERIFY_REJEC
 static inline uint32_t klc_verify_k(uint32_t flags) { return (flags >> 8) & 0xFFu; }
 
 static const char KLC_MAGIC[8] = {'T', 'S', 'R', 'K', 'L', 'C', '0', '1'};
-// Version 2 (P3.3, 2026-10-30) records the baseline settings (SW-22, SW §9.5, §10.4) in five
+// Version 2 records the baseline settings (SW-22, SW §9.5, §10.4) in five
 // words of the former reserved area: K / V cache types, offload_kqv, LLAMA_ATTN_ROT_DISABLE and the
 // phase. Version 1 files (FA-off settings: f16 KV on the host, no rotation setting) are still read; their
 // fields read as KLC_PHASE_V1 with f16 / f16.
 static const uint32_t KLC_VERSION = 2;
 enum { KLC_PHASE_V1 = 0, KLC_PHASE_M6 = 6, KLC_PHASE_M7 = 7 };
-// The SWA layers' KV cache (W3b, one more word of the reserved area, version unchanged): 0 = not
+// The SWA layers' KV cache (one more word of the reserved area, version unchanged): 0 = not
 // recorded (files written before; klcheck then used llama_context_default_params' full-size SWA
 // cache), 1 = full-size (--swa-full on), 2 = the SWA ring of pad(n_swa + n_ubatch, 256) cells
 // (--swa-full off, the default: llama-cli's and llama-server's default, common.h swa_full = false;
@@ -512,7 +512,7 @@ static std::vector<std::string> load_prompts(const std::string & file) {
 // build_inp_embd(tok_embd, tok_scale) multiplies by `inp_scale_rows`, which is tok_scale for token
 // rows and 1 for embd rows (src/llama-graph.cpp:2766-2783, :104-112). Gemma 3 / 3n / 4 and the
 // Gemma embedding models pass sqrtf(n_embd) (src/models/gemma4.cpp:171); without the same factor
-// here the embd and floor runs would feed unscaled rows (W3b: the Gemma 4 floor was 8 nats, top-1
+// here the embd and floor runs would feed unscaled rows (the Gemma 4 floor was 8 nats, top-1
 // 0 %). The product is one f32 multiply, as ggml's MUL, so the embd path stays bit-identical.
 // Gemma and Gemma 2 scale after the select, for both paths alike: no factor here.
 
@@ -955,7 +955,7 @@ static int cmd_run(int argc, char ** argv) {
     else                    unsetenv("LLAMA_ATTN_ROT_DISABLE");
     // The phase also picks the device's kinds (read by the backend's supports_op): M6 runs MUL_MAT
     // only (SW-14). M7 keeps the caller's TSR_KINDS, so a kind list (all,-RMS_NORM) reaches the
-    // backend; unset, the device takes every kind of SW §9.3 (W3b integration, SW-49).
+    // backend; unset, the device takes every kind of SW §9.3 (SW-49).
     if (o.phase == KLC_PHASE_M6) setenv("TSR_KINDS", "m6,+MUL_MAT_ID", 1);   // M6: the matrix products (MUL_MAT, and MUL_MAT_ID of a MoE model); the CPU selects the experts
 
     const bool replay = !o.tokens.empty();
@@ -1705,7 +1705,7 @@ static int cmd_all(int argc, char ** argv, const char * self) {
     std::string dir, device = "sim", model;
     uint64_t seed = 1;          // the first floor run's seed
     // --floor-seeds N: N floor runs with the seeds seed .. seed + N - 1; the floor KL is the mean over
-    // them. Default 3 (decision, 2026-10-31): one run's floor depends on its seed. On Gemma 4 12B
+    // them. Default 3: one run's floor depends on its seed. On Gemma 4 12B
     // Q4_K_M (8 prompts) the M7 ratio was 2.19, 1.39, 1.69 and 1.51 against seeds 1 to 4, and the
     // floor of one sequence ranged from 0.133 to 0.423. Each run is one more CPU replay.
     int n_floor = 3;

@@ -36,7 +36,7 @@
 //       RISC-V cycles of work per record of each kind at decode shapes (fw_prof.h: busy cycles up to
 //       the launch's last op push, wait-loop iterations after their first test excluded; two list
 //       lengths, the difference per record), Ibex maxperf by default (TSR_SIM_RV_CORE), deep queues
-//       (U200 queue depths with --u200); target <= 350 (W2b). Prints a profile per kind.
+//       (U200 queue depths with --u200); target <= 350. Prints a profile per kind.
 // Exit 0 when everything passed, 1 on a failure, 77 (skipped) when the image is missing.
 #undef _GNU_SOURCE
 #include "test_sim_obs.h"
@@ -471,7 +471,7 @@ suite suite_decode() {
     get_rows(s, 56, 7, {5}, 0, 0, "GET_ROWS 0.5B inp_out_ids");
     get_rows(s, 320, 3, {0}, 0, 0, "GET_ROWS 32B");
     get_rows(s, 240, 4, {3}, 2, 0, "GET_ROWS 12B (src stride 242)");
-    // W2b fix (review): the s-register shadow's clobber rule (exec.hpp kind_ctx::sreg_valid): a SCALE
+    // The s-register shadow's clobber rule (exec.hpp kind_ctx::sreg_valid): a SCALE
     // sets s12 (SOP.MOVI); a MUL / ADD with one scalar for several rows loads s12 with SOP.LDS (ew_run's
     // sreg_clobber); the next SCALE with the same s (and b in s13) must push its MOVI again, else its
     // MULC reads the scalar. elem_ref's values catch a missing clobber.
@@ -832,7 +832,7 @@ int perf_main(bool u200, bool verbose) {
         // Regression ceiling (well above the target: a broken fast path costs > 1,000).
         CHECK(per <= 600.0, "perf: %s: %.0f RV cycles per record above the regression ceiling 600", k.name, per);
     }
-    printf("fw_elem_perf: target <= 350 RV cycles per short record (W2b): %s\n", all ? "met by every kind" : "NOT met by every kind");
+    printf("fw_elem_perf: target <= 350 RV cycles per short record: %s\n", all ? "met by every kind" : "NOT met by every kind");
     return test_finish("fw_elem_rv perf");
 }
 

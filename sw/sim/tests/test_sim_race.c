@@ -1,4 +1,4 @@
-// test_sim_race.c — the race detector and SPM_STALE (P1.9; SW §4.6, SW-3 / SW-4; tsr_race.c).
+// test_sim_race.c — the race detector and SPM_STALE (SW §4.6, SW-3 / SW-4; tsr_race.c).
 //
 // Modes (sw/sim/race.cmake):
 //   sim_race tile                      ctest sim_race: directed tile programs through the test hooks
@@ -610,7 +610,7 @@ static void test_issue(const char * orig, const char * mutant) {
     CHECK(a.n_rec == b.n_rec && memcmp(a.rec, b.rec, sizeof(a.rec)) == 0 && a.y_hash == b.y_hash && a.s0 == b.s0,
           "the mutant's records, outputs and s0 equal the original's (only the race detector catches it)");
     // Detection does not depend on the schedule (SW §4.6, ctrl-riscv §9.2): the same verdicts under
-    // random op durations, crossings and RV CPI (P1.8).
+    // random op durations, crossings and RV CPI.
     static const char * const scheds[] = { "random:1", "random:2,0.1,10", "random:3" };
     for (int i = 0; i < 3; ++i) {
         issue_case(orig, 2, scheds[i], &a);

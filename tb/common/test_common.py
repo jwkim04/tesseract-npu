@@ -7,7 +7,7 @@ pytest functions (test_*):
                      MemModel under random legal traffic from a Python master (data, ordering,
                      outstanding limit, write tracking) and its protocol checks on deliberately
                      illegal traffic
-M3 (docs/rtl-mvm.md §10.1):
+MVM unit (docs/rtl-mvm.md §10.1):
   test_ref_m3_*      tsr_ref wrappers (repack / unrepack, row_location, terms, dequant, scales)
   test_mvm_model_*   golden cluster model: tagged beats vs the reference row walk (all terms
                      recomputed from the beat stream == tsr_term_*), struct packing, integer
@@ -171,7 +171,7 @@ async def loop_structs(dut):
         for n, _ in isa.QACT_CMD_T.fields:
             assert int(getattr(dut, "qact_" + n).value) == q[n], n
         assert int(dut.mvm_n.value) == m["n"] and int(dut.mvm_row_beats.value) == m["row_beats"]
-    # M3 structs: widths, field positions, package helpers (docs/rtl-mvm.md §3, §5)
+    # MVM structs: widths, field positions, package helpers (docs/rtl-mvm.md §3, §5)
     assert int(dut.bits_ccmd.value) == isa.MVM_CCMD_T.width
     assert int(dut.bits_bcline.value) == isa.MVM_BCLINE_T.width
     assert int(dut.bits_fcmd.value) == isa.MVM_FCMD_T.width
@@ -448,7 +448,7 @@ async def loop_mem_violations(dut):
 
 
 # =============================================================================================
-# M3: reference wrappers, golden MVM model, pipes
+# MVM unit: reference wrappers, golden MVM model, pipes
 # =============================================================================================
 def test_ref_m3_wrappers():
     r = ref()

@@ -1,4 +1,4 @@
-// test_sim_sched.c — ctest sim_sched_determinism (P1.8; docs/design/06-software-verification.md "SW"
+// test_sim_sched.c — ctest sim_sched_determinism (docs/design/06-software-verification.md "SW"
 // §4.4, §4.7, §10.2): the determinism check over the fixed schedule and 7 random seeds.
 //
 // SW §4.7's observables, collected through the listeners of tsr_sim_int.h §5 on every run:

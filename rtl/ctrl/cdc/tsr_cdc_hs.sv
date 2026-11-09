@@ -3,7 +3,7 @@
 // docs/ctrl-riscv.md §7.2 "tsr_cdc_hs ... with a 1-bit request tag, used by every request path that
 // can time out").
 //
-// Owner: ctrl agent (W4 item 3; CC §2.2 `tsr_cdc_hs`).
+// Spec: CC §2.2 `tsr_cdc_hs`.
 //
 // Protocol: two-phase toggles. The requester (domain A) holds the request word in a register and
 // flips req_tgl; the responder (domain B) sees req_tgl != ack_tgl through a synchroniser, answers

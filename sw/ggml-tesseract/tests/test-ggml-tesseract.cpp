@@ -528,7 +528,7 @@ static void check_supports_op() {
     ggml_tensor * xv = ggml_view_2d(ctx, xs, 256, 4, 256 * 4, 8 * 4);
     CHECK(!ggml_backend_supports_op(g_tsr, mm(w, xv)), "src1 view at offset 32 B must be rejected");
 
-    // src0 that is not a weight (backend review #0). Before allocation (test-backend-ops) a plain
+    // src0 that is not a weight. Before allocation (test-backend-ops) a plain
     // leaf is accepted; a graph input (llama.cpp: attn_inp_k_rot, the Q rotation of a quantized
     // KV cache) or the result of another op is an activation and must stay on the CPU.
     ggml_tensor * rot = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 64, 64);
@@ -567,9 +567,9 @@ static bool probe_like_llama(ggml_type type, int64_t K, int64_t N, int64_t token
     return ok;
 }
 
-// Output heads (backend review #1 / contract #0): the placement probe must accept them, so that
+// Output heads: the placement probe must accept them, so that
 // output.weight goes to the device; and a resident weight must not be rejected at run time for
-// a large token count (#2), which would make the scheduler read it back for the CPU.
+// a large token count, which would make the scheduler read it back for the CPU.
 static void check_output_head_placement() {
     g_cases++;
     const int fail0 = g_fail;
@@ -612,7 +612,7 @@ static void check_output_head_placement() {
     printf("  %-40s %s\n", "output head placement probe (0.5B/32B)", g_fail == fail0 ? "ok" : "FAILED");
 }
 
-// A resident weight with more tokens than the IO region holds (backend review #2), through the
+// A resident weight with more tokens than the IO region holds, through the
 // real scheduler: the MUL_MAT must stay on Tesseract (before, supports_op rejected it and the
 // scheduler copied the weight back to the CPU on every compute, aborting for IQ2_XXS), and the
 // 256 MiB dst chunk is kept in host memory and filled in stage tiles.
@@ -668,7 +668,7 @@ static const char * storage_of(ggml_backend_buffer_t b) {
     return fn ? fn(b) : "?";
 }
 
-// Buffers that do not get an IO window (backend review #1/#2/#3):
+// Buffers that do not get an IO window:
 //   - an activation buffer that does not fit the free IO windows lives in host memory and its
 //     MUL_MATs are staged through IO in T tiles (here forced by filling IO first);
 //   - an ANY buffer of leaf tensors only (LoRA adapter, control vector) lives in host memory

@@ -1,4 +1,4 @@
-# sw/ctrl/tests/exec.cmake — P2.4 tests of plan.hpp, op list and the graph executor
+# sw/ctrl/tests/exec.cmake — tests of plan.hpp, op list and the graph executor
 # (docs/design/06-software-verification.md "SW" §7.2, §7.3, §7.8, §10.2). Included by
 # sw/ctrl/host/CMakeLists.txt (main project).
 #
@@ -11,19 +11,19 @@
 #                compared (SW §4.7), and the race detector probe (≈ 8 s)
 #   fw_exec_perf RISC-V cycles per graph op on 0.5B-like lists (SW §7.8 target <= 400: printed;
 #                asserted: the executor's own overhead per record, a JOIN record, regression ceilings);
-#                TSR_FW_PROF=1 adds a per-function profile per list (tests/fw_prof.h); W2b: the "short
+#                TSR_FW_PROF=1 adds a per-function profile per list (tests/fw_prof.h); the "short
 #                VU record" scenarios (each M7 short kind of the image at a decode shape, printed against
 #                the 350 RV-cycle requirement; the k_fast.hpp reference kind 0x39 of tests/fw/exec_fast.cpp
 #                with a regression ceiling)
 #   fw_exec_perf_m7  the short VU records only, every kind of the image (and SCALE with a bias) asserted
-#                <= 350 RV cycles of work per record (W2b's requirement, no exemption since the W2b fix;
+#                <= 350 RV cycles of work per record (the requirement, no exemption;
 #                --kind <k> selects one when run by hand)
 #   fw_exec_perf_ref the test image fw_exec_ref, whose kind_unary is the k_fast.hpp reference
 #                (tests/fw/exec_ref_unary.cpp) on the production dispatch path: regression ceiling 380
 
 tsr_fw_image(fw_exec SOURCES ${TSR_CTRL_DIR}/tests/fw/exec_kinds.cpp ${TSR_CTRL_DIR}/tests/fw/exec_fast.cpp)
-# W2b: the k_fast.hpp reference short kind as a production table kind (kind_unary of
-# tests/fw/exec_ref_unary.cpp; no W2b kernel package, the other M7 kinds are their stubs).
+# the k_fast.hpp reference short kind as a production table kind (kind_unary of
+# tests/fw/exec_ref_unary.cpp; the other M7 kinds are their stubs).
 tsr_fw_image(fw_exec_ref NO_KERNELS SOURCES ${TSR_CTRL_DIR}/kernels/graph.cpp ${TSR_CTRL_DIR}/kernels/k_mulmat.cpp
              ${TSR_CTRL_DIR}/kernels/zz_kind_stubs.cpp ${TSR_CTRL_DIR}/kernels/selftest.cpp
              ${TSR_CTRL_DIR}/kernels/replay.cpp ${TSR_CTRL_DIR}/tests/fw/exec_ref_unary.cpp
@@ -51,12 +51,12 @@ add_test(NAME fw_exec_rv COMMAND test_fw_exec_rv ${TSR_FW_TEST_ELF_fw_exec} --fu
 set_tests_properties(fw_exec_rv PROPERTIES TIMEOUT 300)
 add_test(NAME fw_exec_perf COMMAND test_fw_exec_rv ${TSR_FW_TEST_ELF_fw_exec} --perf)
 set_tests_properties(fw_exec_perf PROPERTIES TIMEOUT 300)
-# W2b: every M7 short kind of the image at its decode shape must meet <= 350 RV cycles of work per
+# every M7 short kind of the image at its decode shape must meet <= 350 RV cycles of work per
 # record (fw_exec_perf prints them and asserts the k_fast.hpp reference kind only).
 add_test(NAME fw_exec_perf_m7 COMMAND test_fw_exec_rv ${TSR_FW_TEST_ELF_fw_exec} --perf-m7 --strict)
 set_tests_properties(fw_exec_perf_m7 PROPERTIES TIMEOUT 300)
 # The reference short kind (fw_exec_ref's kind_unary, 3 pushes) through the production table path: the
-# toolkit's floor (365 RV cycles at W2b infra), a regression ceiling (the 350 verdict is printed).
+# toolkit's floor (365 RV cycles), a regression ceiling (the 350 verdict is printed).
 add_test(NAME fw_exec_perf_ref COMMAND test_fw_exec_rv ${TSR_FW_TEST_ELF_fw_exec_ref} --perf-m7 --kind 0x1b --ceiling 380)
 set_tests_properties(fw_exec_perf_ref PROPERTIES TIMEOUT 300)
 
@@ -69,7 +69,7 @@ target_link_libraries(test_fw_exec_host PRIVATE tsr_fw_host_exec_san)
 add_test(NAME fw_exec_host COMMAND test_fw_exec_host)
 set_tests_properties(fw_exec_host PROPERTIES TIMEOUT 300)
 
-# --- W2b: op list M7 kinds and the M7 planning glue -------------------------------------------------
+# --- op list M7 kinds and the M7 planning glue -------------------------------------------------
 #   fw_opl_m7       writer / reader round trips of every M7 kind (named helpers, preload helpers, JOIN
 #                   folding), BAD_RECORD for a wrong n_args (reader, check_args, plan check_op), slot
 #                   counts, opl::check_args' structural rules per kind, plan_op = plan_kind, plan_rows and

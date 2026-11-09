@@ -1,4 +1,4 @@
-# sw/tables — the single table source (tsr_tables.py) and its generator (EX-30, P1.1).
+# sw/tables — the single table source (tsr_tables.py) and its generator (EX-30).
 #
 # The generated files are checked in (rtl/core/tsr_tables_pkg.sv, sw/sim/include/tsr_tables.h,
 # sw/ctrl/include/tsr/{mmio,vu,at}.hpp, tb/common/tables.py); nothing is generated at build
@@ -15,7 +15,7 @@ if (Python3_Interpreter_FOUND)
 endif()
 
 # Firmware SDK headers (sw/ctrl/include, generated): an interface target for their users, and the
-# compile check. The RV32 SDK build (P2) compiles them with its own toolchain.
+# compile check. The RV32 SDK build compiles them with its own toolchain.
 add_library(tsr_ctrl_headers INTERFACE)
 target_include_directories(tsr_ctrl_headers INTERFACE ${TESSERACT_ROOT}/sw/ctrl/include)   # "tsr/mmio.hpp"
 add_library(tsr_tables_hdrcheck OBJECT hdrcheck.cpp)

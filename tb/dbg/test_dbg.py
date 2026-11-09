@@ -1218,7 +1218,7 @@ MUTANTS = [
      "  wire halt_req = c_halt_en && !(rv_run && rv_halted) &&",
      "  wire halt_req = c_halt_en &&",
      "dbg_halt", "halt request not one-shot"),
-    # review fixes (W4-B)
+    # regressions
     ("hard_hold_sr_early", "tsr_issue.sv",
      "wire  hard    = dbg_hold[gu] && !abort_act_q && !sr_off_q && !dbg_step[gu];",
      "wire  hard    = dbg_hold[gu] && !abort_act_q && !sr_busy && !dbg_step[gu];",

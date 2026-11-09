@@ -1,10 +1,10 @@
-# sw/ctrl/tests/kvfa.cmake — W2b P2.7 tests of the SET_ROWS_KV and FLASH_ATTN kinds (sw/ctrl/kernels/
+# sw/ctrl/tests/kvfa.cmake — tests of the SET_ROWS_KV and FLASH_ATTN kinds (sw/ctrl/kernels/
 # k_kv.cpp, k_fattn.cpp; docs/design/06-software-verification.md "SW" §7.5, §10.2; docs/design/03-attention-
 # kv.md "AT" §6.6, §13). Included by sw/ctrl/host/CMakeLists.txt (after kernels.cmake: it reuses the
 # sanitizer build of the host kernels). Every test has label fw; long ones add slow.
 #
 #   fw_kvfa_plan           the FA chunk planner shared by the firmware and tsr_ref_fa (sw/sim/include/
-#                          tsr_fa_plan.h) against W1a's planner (the oracle in the test): random and
+#                          tsr_fa_plan.h) against the original planner (the oracle in the test): random and
 #                          adversarial mask summaries, every chunk list equal (test_fw_kvfa_plan.cpp)
 #   fw_kvfa_rv_<group>     the RISC-V image on tsr_rv, groups qwen05b, qwen32b, gemma_swa, gemma_glb,
 #                          general (test_fw_kvfa.h cases): [SET_ROWS_KV K, SET_ROWS_KV V, FLASH_ATTN]
@@ -37,7 +37,7 @@ target_compile_options(tsr_fw_kvfa_ref PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra -Ws
 target_include_directories(tsr_fw_kvfa_ref PUBLIC ${TSR_CTRL_DIR}/ref ${TSR_CTRL_INCLUDE_DIR} ${TESSERACT_ROOT}/sw/sim/include)
 target_link_libraries(tsr_fw_kvfa_ref PUBLIC tsr_ref)
 
-# --- the shared chunk planner against W1a's -------------------------------------------------------
+# --- the shared chunk planner against the original -------------------------------------------------------
 add_executable(test_fw_kvfa_plan ${_kv_dir}/test_fw_kvfa_plan.cpp)
 _tsr_kv_cxx(test_fw_kvfa_plan)
 target_link_libraries(test_fw_kvfa_plan PRIVATE tsr_ref m)

@@ -1,6 +1,6 @@
 // tsr_vu_exp.sv — EXPK(v, κ): the VU's integer exponential with a folded constant, fully pipelined.
 //
-// Owner: VU (docs/design/02-vector-unit.md "VU" §6.3, Appendix A; §7.2 "EXPK core").
+// Spec: docs/design/02-vector-unit.md "VU" §6.3, Appendix A; §7.2 "EXPK core".
 // Contract: y = tsr_m_expk(v, kappa) of sw/sim/tsr_ref_math.c bit for bit, for every v and κ in
 // {P1 0, N1 1, N2 2, NG 3}; fixed latency LAT (= TSR_VU_EXP_LAT) cycles, one operation per cycle, no
 // clock enable (the VU's lanes never stall, VU §7.7 / VU-9). EXPK never returns -0 or a subnormal.

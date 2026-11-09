@@ -1,4 +1,4 @@
-# sw/sim/rv.cmake — the RISC-V side of the simulator (P1.7, docs/design/06-software-verification.md
+# sw/sim/rv.cmake — the RISC-V side of the simulator (docs/design/06-software-verification.md
 # §4.2, SW-1): tsr_rv.c (RV32IMC + Zicsr + Zifencei interpreter of the control core's Ibex,
 # docs/design/04-control-core.md §3) and tsr_bus.c (firmware and test bus profiles, SBA, HTIF, ELF
 # loader, and the RISC-V agent that runs the hart on the simulator's time base).
@@ -143,7 +143,7 @@ target_link_libraries(test_rv_sim PRIVATE tsr_sim tsr_ref Threads::Threads m)
 add_test(NAME rv_sim COMMAND test_rv_sim)
 
 # ---------------------------------------------------------------------------
-# W1a integration: sim_rv_issue (tests/test_sim_rv_issue.c). A test firmware (tests/rv_issue/:
+# sim_rv_issue (tests/test_sim_rv_issue.c). A test firmware (tests/rv_issue/:
 # crt0.S, link.ld, fw_issue.c, a minimal EX §4.7 runtime with one kernel) built by the RISC-V
 # compiler with the SW §6.1 flags (C11 instead of C++20), loaded through the host CSR port and run
 # on the built-in agent: it pops launches, pushes LD / QACT / MVM / VOP / RED / ST through the

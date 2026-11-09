@@ -1242,7 +1242,7 @@ int main(int argc, char ** argv) {
         corpus_mulmat_epilogue(c, opl::K_MUL_MAT_SOFTCAP);
         // The launches share one PRNG, so a corpus that runs earlier would move the digests of the later ones.
         // The MoE and the Gated DeltaNet corpora therefore run last and each starts from the same PRNG state:
-        // the digests of their kinds are the ones of the branch that added the kind, and adding the other corpus
+        // the digests of their kinds stay as they are, and adding the other corpus
         // does not move them.
         corpus_base = c.r;
         corpus_moe(c);

@@ -10,23 +10,22 @@
 #                          (1 / 2 / 3 / 16 channels, small SPM, T_MAX 8, small K_MAX, narrow DRAM
 #                          address) and edge implementation parameters (SPM_RD_LAT 1 / 4,
 #                          RD_OUTSTANDING 1 / 2, MVM pipes 0 / 3, WS FIFO 64 / 1024, MVM
-#                          latencies 1 / 8, reset register stages RST_PIPE 1 / 3 / 8; W4-A: queue
-#                          depths 0 / 1 / 31, CTRL_SYNC 1, small TCMs; W4-B: the VU, attention
-#                          and DB parameters of tsr_core / tsr_core_dp each off, the lane knobs, the M8
+#                          latencies 1 / 8, reset register stages RST_PIPE 1 / 3 / 8; issue path: queue
+#                          depths 0 / 1 / 31, CTRL_SYNC 1, small TCMs; the VU, attention
+#                          and DB parameters of tsr_core / tsr_core_dp each off, the lane knobs, the TOPK / DQROW
 #                          options, the DB sizes, the k1 / k4 / bench shapes), then the
-#                          M3 blocks with edge parameters (tsr_mvm also RST_LOCAL 1 / 2), the W4-B blocks
+#                          MVM blocks with edge parameters (tsr_mvm also RST_LOCAL 1 / 2), the VU, AT and DB blocks
 #                          (tsr_vu and its checker, KVST on the DMA, the attention modes of the MVM unit and
 #                          the MAC lane, tsr_chk_at, the DB modules) with edge parameters, then the
 #                          testbench-only HDL under tb/*/hdl (each file as top, with the other
 #                          files of its directory), then the generated tables (EX-30, CC
 #                          §13.4: sw/tables/gen_tables.py --check and a lint of
 #                          rtl/core/tsr_tables_pkg.sv on its own, when the generator exists), then
-#                          the target, control-subsystem and platform lint scripts (M3 part C,
-#                          W4-A): rtl/ctrl/lint.sh (the RISC-V control subsystem and the tb/ctrl
+#                          the target, control-subsystem and platform lint scripts:
 #                          bench HDL), rtl/tech/xilinx/lint.sh (Xilinx technology wrappers, the core
 #                          on rtl/filelist_xilinx.f), rtl/platform/alveo_xrt/lint.sh (XRT adapter,
 #                          kernel tops, gen_tops.py --check) and rtl/platform/alveo_xrt/bw/lint.sh
-#                          (M0 bandwidth kernel, gen_bw.py --check)
+#                          (bandwidth kernel, gen_bw.py --check)
 #   rtl/lint.sh MODULE...  lint only these modules (default parameters, rtl/filelist.f)
 #
 # No blanket waivers: a module needing a lint_off must carry it inline, targeted, with a reason.
@@ -90,14 +89,14 @@ lint tsr_core -GHAS_MVM=1 -GNUM_CH=3 -GMVM_ACT_RD_LAT=4 -GMVM_MAC_LAT=8 -GMVM_MU
 lint tsr_core -GHAS_MVM=0 -GRST_PIPE=1
 lint tsr_core -GHAS_MVM=1 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9
 lint tsr_core -GHAS_MVM=1 -GNUM_CH=3 -GT_MAX=3 -GSPM_BYTES=262144 -GADDR_BEAT_W=22 -GCH_BYTES="64'd4294967296" -GRST_PIPE=8
-# Issue path and control subsystem (W4-A, CC §7.4, §13.1): queue depths at their limits (0 = unit
+# Issue path and control subsystem (CC §7.4, §13.1): queue depths at their limits (0 = unit
 # absent, 1, 31; SYNC >= 1), CTRL_SYNC = 1, small TCMs with a small SPM.
 lint tsr_core -GQD_DMA=1 -GQD_QACT=1 -GQD_MVM=1 -GQD_SYNC=1
 lint tsr_core -GQD_DMA=31 -GQD_QACT=31 -GQD_MVM=31 -GQD_SYNC=31 -GRST_PIPE=3
 lint tsr_core -GHAS_MVM=1 -GQD_MVM=0 -GQD_QACT=0
 lint tsr_core -GCTRL_SYNC=1 -GITCM_BYTES=16384 -GDTCM_BYTES=8192 -GNUM_CH=2 -GSPM_BYTES=65536 -GCH_BYTES="64'd1073741824" -GADDR_BEAT_W=24 -GK_MAX=4096 -GT_MAX=2
 lint tsr_core_dp -GHAS_MVM=0 -GNUM_CH=1 -GSPM_BYTES=4096 -GRST_PIPE=2
-# VU, attention and the DB block (W4-B, tsr_core_dp parameters): each off, the knobs, the M8 options, the DB
+# VU, attention and the DB block (tsr_core_dp parameters): each off, the knobs, the TOPK / DQROW options, the DB
 # sizes at their limits, the k1 / k4 bitstream shapes, the queue depth of the VU
 lint tsr_core -GHAS_DB=0
 lint tsr_core -GHAS_VU=0 -GHAS_ATT=0
@@ -115,7 +114,7 @@ lint tsr_core -GNUM_CH=4 -GT_MAX=8 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -
 # intentionally retain the legacy path, so lint these elaborations explicitly.
 lint tsr_core -GNUM_CH=4 -GT_MAX=4 -GSPM_BYTES=4194304 -GSPM_RD_LAT=4 -GMVM_RES_PIPE=2 -GMVM_GATHER_PAIR=1 -GMVM_GATHER_FLITS=2 -GLOCAL_INTERMEDIATES=1 -GLOCAL_SCALE=1 -GLOCAL_SOFTCAP=1 -GVU_FRONT_LANES=8 -GVU_EXP_LANES=8 -GVU_BACK_LANES=4 -GVU_LANE_PIPE=2
 lint tsr_core -GNUM_CH=4 -GT_MAX=4 -GMVM_RES_PIPE=2 -GMVM_GATHER_PAIR=1 -GMVM_GATHER_FLITS=2 -GVU_FRONT_LANES=8 -GVU_EXP_LANES=8 -GVU_BACK_LANES=4
-# The reduced first card image (tsr_u200_k4, gen_tops.py): four clusters, T_MAX 8, the RV transport, no vector unit,
+# The reduced card image (tsr_u200_k4, gen_tops.py): four clusters, T_MAX 8, the RV transport, no vector unit,
 # no attention (KVST, ATTQK, ATTPV), no trace writer or history.
 lint tsr_core -GNUM_CH=4 -GT_MAX=8 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9 -GRV_LOCAL_TRANSPORT=1 -GHAS_VU=0 -GHAS_ATT=0 -GHAS_TRW=0 -GHIST_DEPTH=0
 lint tsr_core -GNUM_CH=4 -GT_MAX=8 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9 -GRV_LOCAL_TRANSPORT=1 -GHAS_VU=0 -GHAS_ATT=0 -GHAS_TRW=0 -GHIST_DEPTH=0 -GDDR_LOCAL_PIPE=1 -GMVM_GATHER_PAIR=1 -GMVM_GATHER_FLITS=2
@@ -138,7 +137,7 @@ lint tsr_core -GNUM_CH=2 -GT_MAX=2 -GK_MAX=4096 -GSPM_BYTES=1048576 -GCH_BYTES="
 lint tsr_core_dp -GHAS_DB=0 -GHAS_VU=0 -GHAS_ATT=0 -GNUM_CH=1 -GSPM_BYTES=4096 -GRST_PIPE=2
 lint tsr_core_dp -GHAS_TRW=0 -GNUM_CH=3 -GT_MAX=3 -GRST_PIPE=1
 
-# VU (docs/design/02-vector-unit.md "VU" §7): lanes, channels, SPM sizes and latencies, the M8 options, the
+# VU (docs/design/02-vector-unit.md "VU" §7): lanes, channels, SPM sizes and latencies, the TOPK / DQROW options, the
 # checker class and the xc routing
 lint tsr_vu -GNUM_CH=1
 lint tsr_vu -GNUM_CH=16 -GHAS_TOPK=1 -GHAS_DQROW=1
@@ -198,7 +197,7 @@ lint tsr_dbg_rv -GHAS_RV_TAPS=1
 lint tsr_dbg_rv -GHAS_RV_TAPS=1 -GCTRL_SYNC=1 -GREC_DEPTH=4
 lint tsr_dbg_wrmux -GADDR_BEAT_W=5
 
-# M3 MVM unit (docs/rtl-mvm.md §1): every new module as its own top with edge parameters
+# MVM unit (docs/rtl-mvm.md §1): every module as its own top with edge parameters
 # (NUM_CH 1 / 3 / 16, T_MAX 1 / 8, small and maximal K_MAX, latency / pipe depth extremes).
 lint tsr_fp_add -GLAT=1
 lint tsr_fp_add -GLAT=8
@@ -300,7 +299,7 @@ if [ -f "$ROOT/sw/tables/gen_tables.py" ]; then
     fi
 fi
 
-# Target and platform lint (M3 part C). Each script prints its own runs and exits with its
+# Target and platform lint. Each script prints its own runs and exits with its
 # number of failing runs; a missing script counts as a failure.
 for sub in rtl/ctrl/lint.sh rtl/tech/xilinx/lint.sh rtl/platform/alveo_xrt/lint.sh rtl/platform/alveo_xrt/bw/lint.sh; do
     if [ -x "$ROOT/$sub" ]; then

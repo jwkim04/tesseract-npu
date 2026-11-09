@@ -6,7 +6,7 @@
 // the Debug Specification 0.13.2. Where the specifications leave a choice to the implementation,
 // this file follows Ibex; such facts are recalled from Ibex's documentation and RTL and marked
 // *confirm*: they are checked against the pinned Ibex when it is vendored (CC §3.1) and by the
-// RVFI lockstep bench (P5.2).
+// RVFI lockstep bench.
 //
 // Ibex behaviour modelled here (CC §3.2 configuration: WritebackStage 1, BranchTargetALU 1,
 // RV32MSingleCycle (CC-34; only the cycle tables of tsr_rv.h depend on these three), RV32BNone,
@@ -71,15 +71,15 @@
 //              WFI is a no-op (Ibex stepie = 0). dcsr: xdebugver 4, ebreakm, ebreaku, cause (read
 //              only), step, prv (M / U; other values become M); stepie, stopcount, stoptime,
 //              mprven, nmip, ebreaks read 0 and ignore writes (Ibex forces them, *confirm*), so
-//              mcycle / minstret also count in debug mode (P1.12 decision: stopcount hardwired
+//              mcycle / minstret also count in debug mode (stopcount hardwired
 //              0; DB §3.4's server reads it back). Triggers: tselect 0..1 (larger writes select
 //              1), tdata1 reads 0x2800_1040 | execute << 2 (type 2, dmode 1, action 1 = enter
 //              debug mode, m; *confirm* the u bit), tdata2 = address, tdata3 reads 0; tselect and
 //              the trigger CSRs are writable in debug mode only (dmode = 1; M-mode writes are
 //              ignored, *confirm*: Ibex gates tselect_we with debug_mode too).
 //   Hooks      debug events (tsr_rv_set_debug_hook) ENTER / PARK / RESUME / RESET for the debug-
-//              module model (tsr_dm.c, P1.12); data watch (tsr_rv_set_data_watch) on every data
-//              transaction the hart issues, for DB's RV watchpoints (tsr_dbg.c, P1.13).
+//              module model (tsr_dm.c); data watch (tsr_rv_set_data_watch) on every data
+//              transaction the hart issues, for DB's RV watchpoints (tsr_dbg.c).
 //
 // Model-only conventions: the debug ROM's park loop is not interpreted (see tsr_rv.h);
 // x1..x31 reset to 0. Timing: the cycle tables of tsr_rv.h (Ibex "small" and "maxperf", SW §4.2,

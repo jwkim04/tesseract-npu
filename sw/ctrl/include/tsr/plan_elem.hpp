@@ -1,11 +1,10 @@
 // tsr/plan_elem.hpp — planners of the element-wise kinds: ADD, MUL, SCALE, GLU, UNARY, CPY, GET_ROWS
-// (docs/design/06-software-verification.md "SW" §7.2, §7.5; W2b P2.6). Freestanding, C++17-compatible,
+// (docs/design/06-software-verification.md "SW" §7.2, §7.5). Freestanding, C++17-compatible,
 // constexpr-friendly: the firmware's kind handlers (sw/ctrl/kernels/k_elem.cpp, k_glu.cpp,
-// k_rows.cpp) and the host's supports_op (W3b) call the same functions (SW-20).
+// k_rows.cpp) and the host's supports_op call the same functions (SW-20).
 //
 // The planner contract and the declarations are tsr/plan.hpp's ("M7 planning"), which includes this
 // file after them; including this file first works too (it includes plan.hpp).
-// Owner: the W2b elem work package.
 //
 // Element-wise kinds (ADD 0x11, MUL 0x12, SCALE 0x13, GLU 0x15, UNARY 0x1B). Every one runs per row
 // tile: LD the tile's a rows (and its b part) into one ring block, the VOP(s) in place on the a rows
@@ -25,12 +24,12 @@
 //               cmode 2; tiles are multiples of 16 rows (a c vector starts on a line, VU §4.3)
 //   EB_CPERIOD  FLAG_B_SCALAR, 1 < p < rows: words 0 .. p-1: ceil(min(p, t)/16) lines, cmode 2;
 //               tiles are multiples of p, one VOP per period block
-// FLAG_B_SCALAR with p > 1 (decision W2b-elem-2): SW §7.2 defines the flag as "b is one f32
+// FLAG_B_SCALAR with p > 1: SW §7.2 defines the flag as "b is one f32
 // scalar"; with the row period the same words describe a vector of per-row scalars (word r mod p),
 // which is SW §7.5's per-row c vector (cmode 2) for Gemma's [1, T] inp_scale_rows; p = 1 is the one
 // scalar of SW §7.2. The b stride is not used with the flag.
-// Tile size (MUL_MAT's T-tile rule, SW §7.4; decision W2b-elem-3): all rows in one tile when its
-// block fits half the planning budget (l.budget = ring_budget, decision P2.4; room for the next
+// Tile size (MUL_MAT's T-tile rule, SW §7.4): all rows in one tile when its
+// block fits half the planning budget (l.budget = ring_budget; room for the next
 // tile or the neighbour ops' blocks), else the largest aligned row count (p for the period forms,
 // 16 for EB_CROWS, else 1) whose block fits half the budget (two tiles in flight: the LD of tile k+1
 // overlaps the VOP of tile k), else one aligned unit if its block fits the whole budget (single

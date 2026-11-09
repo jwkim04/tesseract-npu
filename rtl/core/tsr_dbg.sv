@@ -5,8 +5,8 @@
 // history (tsr_dbg_hist), the trace writer (tsr_dbg_trw) and the core side of the clk_rv parts
 // (tsr_dbg_rv: completion records, RV_SAMPLE, RV watchpoints, DBG_FLAGS).
 //
-// Owner: DB (W4-B item 6). tsr_core_dp instantiates it next to tsr_issue and tsr_csr (wiring:
-// the task report / tsr_core_dp's DB section); tb/dbg (tb/dbg/sv/tsr_dbg_tb.sv) wires it the same
+// tsr_core_dp instantiates it next to tsr_issue and tsr_csr (wiring: tsr_core_dp's DB
+// section); tb/dbg (tb/dbg/sv/tsr_dbg_tb.sv) wires it the same
 // way. Oracle: the simulator's DBG model sw/sim/tsr_dbg.c (DB §9.1 "queue model, §5 semantics
 // exactly"); tb/dbg compares register by register, stop by stop, record by record.
 //
@@ -42,7 +42,7 @@
 //   Memory taps (DBG_RDOUT / DBG_WROUT, DB §5.5): per channel the memory-port handshakes.
 //   Trace writer write source: to tsr_dbg_wrmux on channel TRW_CH.
 //   perf_ext: PERF increments of DB's slots (61 TRW_RECORDS, 62 TRW_DROPS, X + 10 REC_DROPPED);
-//     the integrator adds them to the other areas' perf_ext (slot 63 is tsr_csr's, from
+//     tsr_core_dp adds them to the other areas' perf_ext (slot 63 is tsr_csr's, from
 //     db_stop_active).
 // Enqueue pipeline: tap (cycle t: shadow queue write) -> e1 (t + 1: registered tap, history main
 //   write, matcher) -> m2 (t + 2: match result, HITS, BEFORE push) -> m3 (t + 3: AFTER push,
@@ -52,7 +52,7 @@
 //   Decisions where the simulator is followed: DBG_STOP_PIDX shows the T of the last activation
 //   while no stop is active; DBG_STOP_AT reads S even when not valid; unlisted offsets read 0.
 //   Model values (DB §9.1, not compared): DBG_Uu_*, DBG_QSTATE, DBG_RDOUT / WROUT, the RV sample.
-// Not implemented here (open items, the task report): SBA_REFUSED (needs a refusal strobe from
+// Not implemented here: SBA_REFUSED (needs a refusal strobe from
 //   tsr_rv_bus), and DBG_CTRL writes do not wait for RV_SAMPLE / RVWP_APPLY to complete (tsr_csr's
 //   DBG access has a fixed latency; a host reads after its own round trip, and the handshakes end
 //   within 4,096 cycles).

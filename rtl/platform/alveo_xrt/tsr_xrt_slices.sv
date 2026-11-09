@@ -5,7 +5,7 @@
 // stage from its own reset copy, so that a chain crossing an SLR has a reset net on each side.
 // The copies must be equal (the bridge checks it); a stage in reset reports s_ready = 1.
 //
-// Owner: adapter agent (docs/platform-u200.md §4). tsr_rslice is defined in rtl/core/tsr_mem_arb.sv.
+// Spec: docs/platform-u200.md §4. tsr_rslice is defined in rtl/core/tsr_mem_arb.sv.
 
 module tsr_xrt_slices #(
   parameter int unsigned W = 8,

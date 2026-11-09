@@ -1,4 +1,4 @@
-// test_sim_w1b_e2e.c — ctest sim_w1b_e2e (integration, docs/design/06-software-verification.md §10.2): the W1b
+// test_sim_w1b_e2e.c — ctest sim_w1b_e2e (integration, docs/design/06-software-verification.md §10.2): the
 // models together on the sim_rv_issue firmware (tests/rv_issue/fw_issue.c, host side and every
 // check in test_sim_rvhost.h). Every run has the DM, DBG, RACE (TSR_SIM_RACE=fatal: a race
 // aborts) and TRACE models attached and captures its launches (TSR_TRACE=<dir> and

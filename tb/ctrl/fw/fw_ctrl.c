@@ -1,4 +1,4 @@
-// fw_ctrl.c — the tb/ctrl test program (W4 item 3): exercises the TCMs, the control window, the
+// fw_ctrl.c — the tb/ctrl test program: exercises the TCMs, the control window, the
 // issue port, the core window and the SPM windows of the control subsystem (CC §4-§5, §7, §10.5).
 // It runs on the RTL (tb/ctrl, Ibex RVFI) and on the simulator's interpreter (tsr_rv with the
 // simulator's control window, tsr_q.c), and the two are compared instruction by instruction and

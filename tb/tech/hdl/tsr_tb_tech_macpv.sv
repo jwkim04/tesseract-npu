@@ -1,4 +1,4 @@
-// tsr_tb_tech_macpv.sv — tb/tech toplevel (W4-B at): tsr_mac_lane with PV = 1 (ATTPV's accumulate
+// tsr_tb_tech_macpv.sv — tb/tech toplevel: tsr_mac_lane with PV = 1 (ATTPV's accumulate
 // mode, AT §8.2) in every configuration the attention clusters can build, side by side on shared
 // inputs. Verilated twice (rtl/tech/generic and rtl/tech/xilinx, models Vgen / Vxil);
 // tb/tech/cpp/macpv_equiv.cpp drives both and compares ov / yy (the MVM mode of the same lanes)

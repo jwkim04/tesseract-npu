@@ -1,4 +1,4 @@
-# sw/ctrl/tests/normrope.cmake — W2b P2.6 tests of the RMS_NORM (0x14) and ROPE (0x16) kinds
+# sw/ctrl/tests/normrope.cmake — tests of the RMS_NORM (0x14) and ROPE (0x16) kinds
 # (sw/ctrl/kernels/k_norm.cpp, k_rope.cpp; docs/design/06-software-verification.md "SW" §7.5, §7.8,
 # §10.2). Included by sw/ctrl/host/CMakeLists.txt (main project) after kernels.cmake. Label fw.
 #
@@ -11,7 +11,7 @@
 #   fw_kernels_normrope_rv_refuse   refused records (BAD_RECORD / SCRATCH as KERNEL_ERR, nothing pushed)
 #   fw_kernels_normrope_rv_mutant_race  negative test: an image whose RED lacks its LD dep must be caught
 #                                   by the race detector
-#   fw_kernels_normrope_perf        RV cycles of work per decode record (SW §7.8; W2b target <= 350 on
+#   fw_kernels_normrope_perf        RV cycles of work per decode record (SW §7.8; target <= 350 on
 #                                   Ibex maxperf; printed per shape, regression ceiling asserted;
 #                                   TSR_FW_PROF=1 adds per-function profiles), PUSH_STALL = 0
 #   fw_kernels_normrope_host        the kinds compiled for the host (SW §6.8, ASan + UBSan): records

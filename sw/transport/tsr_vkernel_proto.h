@@ -10,7 +10,7 @@
 // completion, cycle budget): the client fetches the messages with VK_MSGS and fails the
 // operation as soon as the count grows, so a protocol bug cannot pass silently.
 //
-// Protocol version 3 (P3.1, EX §10.2): the kernel is ap_ctrl_none and its clocks run only when the
+// Protocol version 3 (EX §10.2): the kernel is ap_ctrl_none and its clocks run only when the
 // client lets device time pass: VK_ADVANCE (10), the "advance" hint of the kdev layer (kdev::idle), and
 // VK_TIME (11), the device time the protocol's timeouts count. The tree has no server that
 // implements them (docs/design/06-software-verification.md §9.1), and TSR_DEVICE=vkernel stops at

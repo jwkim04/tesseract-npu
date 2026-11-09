@@ -39,9 +39,9 @@ pytest functions:
                         each alone in a fresh simulation, force the worst case deterministically
                         (spurious rising edge in every clocked instance, rst_n high, check-violating
                         state in tsr_qact / tsr_spm / tsr_fp_div), then reset and run normally.
-                        div=busy (tsr_fp_div in_ready high while busy; the review's 0 ns failure
-                        at seeds 5 / 10, fixed by arming tsr_fp_div.sv's assertion with a reset
-                        edge); builds u200, tight, rtl_spm (the latter also clocks tsr_qact
+                        div=busy (tsr_fp_div in_ready high while busy; the 0 ns failure
+                        at seeds 5 / 10 that arming tsr_fp_div.sv's assertion with a reset
+                        edge fixed); builds u200, tight, rtl_spm (the latter also clocks tsr_qact
                         and tsr_spm themselves through their clk copies)
   test_qact_lint        verilator --lint-only -Wall of tsr_qact (simulation and SYNTHESIS views)
                         in edge configurations, and of the testbench wrapper
@@ -135,7 +135,7 @@ RTL_SPM_CFG = dict(K_MAX=2048, T_MAX=4, SPM_BYTES=64 * 1024, SPM_RD_LAT=2, BANK_
 
 def run_rtl_spm(tests=("qact_rtl_spm",), extra_env: dict | None = None):
     srcs = qact_sources(("tsr_tables_pkg.sv", "tsr_pkg.sv", "tsr_fp_pkg.sv", "tsr_sram_1r1w.sv", "tsr_fp_mul.sv",
-                         "tsr_fp_div.sv", "tsr_spm.sv", "tsr_spm_cport.sv", "tsr_qact.sv"))   # W4-A spm: + cport
+                         "tsr_fp_div.sv", "tsr_spm.sv", "tsr_spm_cport.sv", "tsr_qact.sv"))   # + cport
     full = dict(RTL_SPM_CFG)
     full["LINES"] = full["SPM_BYTES"] // 64
     run("tsr_tb_qact", __name__, parameters=RTL_SPM_CFG, sources=srcs, extra_sources=[TB_SV],
@@ -147,10 +147,9 @@ def test_qact_rtl_spm():
     run_rtl_spm()
 
 
-# tsr_fp_div.sv's simulation assertion used to be gated with rst_n only (the review found it
-# firing at 0 ns, seeds 5 / 10); the 'busy' variant reproduces that case deterministically. The
-# assertion is now armed by a reset edge like tsr_spm's / tsr_qact's (core agent integration fix),
-# so both variants must pass.
+# tsr_fp_div.sv's simulation assertion is armed by a reset edge like tsr_spm's / tsr_qact's. Gated
+# with rst_n only it fired at 0 ns (seeds 5 / 10); the 'busy' variant reproduces that case
+# deterministically, so both variants must pass.
 @pytest.mark.parametrize("div", ["idle", "busy"])
 @pytest.mark.parametrize("build", ["u200", "tight", "rtl_spm"])
 def test_qact_time0_edge(build, div):
