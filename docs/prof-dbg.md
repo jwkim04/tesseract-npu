@@ -41,6 +41,7 @@ Environment variables, as implemented (`grep` of `"TSR_..."` in `sw/transport` a
 |---|---|
 | `TSR_LOG=stderr\|<file>`, `TSR_LOG_LEVEL=0..5` | decode the device log there, drained at every poll (otherwise every 10 ms); the level written to `LOG_CFG.LEVEL` (0 FATAL ... 5 TRACE, default 3) |
 | `TSR_STATS=1` | transport statistics at close (launches, launch wall time, CSR reads / writes, DRAM bytes, log words and drops, boot, timeouts, traps, restarts) and, in the ggml backend, the backend report at free: graph_compute calls, launches, op records per launch, OPL cache hits and misses, wall time in graph_compute and in launches, and the device's PERF counters over the same span |
+| `TSR_MON=0`, `TSR_MON_DIR`, `TSR_MON_PERF_MS`, `TSR_MON_KEEP`, `TSR_MON_MODEL` | the live monitor record of the process that owns the card (§7): off, its directory (`/dev/shm`), the least time between two PERF reads (100 ms), keep the file at exit, a model name when none can be found | on |
 | `TSR_DUMP_DIR=<dir>` | hang and post-mortem dumps (recovery ladder level 0) |
 | `TSR_GDB=tcp:<port>\|unix:<path>` | start the embedded RSP service when the owning executable links `tsr_dbg_embed` |
 | `TSR_DEBUGGER=sock:<path>` | start the embedded monitor-command socket |
@@ -416,3 +417,112 @@ planned, and §2 summarises the design.
 - `tsr-dbg diverge`, `tsr-prof report` and periodic firmware PC sampling.
 - Confirmations of third-party facts: riscv-dbg and Ibex behaviours marked *confirm* in CC §3 and DB §3.
 - Per-master PERF snapshot slots for targets with two CSR masters (§4.4).
+
+---
+
+## 7. Live monitor: `tsr-top`
+
+`tsr-top` shows the card the way `nvtop` shows a GPU: a header per device, meters, a time series and a process
+table. It is a Python 3 `curses` program (standard library only) that reads the records published by the
+process that owns the card (SW-87). Build target: `bin/tsr-top`, a launcher for `sw/tools/top/tsr_top.py`.
+
+**Why the owner publishes.** The XRT transport opens the compute unit with exclusive access (EX §2.4). While
+llama.cpp or any other tool runs on the card, no second process can read the CSRs or the PERF counters. So the
+owner writes what it can already read into shared memory, and the monitor never touches the compute unit
+while an owner is alive.
+
+### 7.1 Running it
+
+```sh
+build/dev/bin/tsr-top                      # the live screen
+build/dev/bin/tsr-top --once --size 100x36 # one frame as plain text, no curses
+build/dev/bin/tsr-top --json               # one snapshot as JSON (devices, processes, rates, the raw records)
+```
+
+| Key | Effect |
+|---|---|
+| `q`, `F10` | quit |
+| `F2` (or `s`) | setup: switch the panels (meters, DDR channels, utilisation split, time series, process table, card users without a record) on and off |
+| `F6` (or `o`) | sort the process table by a column; the same column again reverses the order |
+| `+`, `-` | refresh interval, 0.1 s to 10 s (default 1 s; `-d S` sets it at start) |
+| `Tab` | next device (the card, and one simulated device per process that publishes from a simulator) |
+| `Esc` | close a menu |
+
+The screen follows terminal resizes; 80 x 24 shows everything, narrower terminals drop columns and panels
+(the header and the key line stay). Colours degrade to bold, dim and reverse video on a monochrome terminal
+(`--no-color`), and `--ascii` replaces the box drawing and braille characters. Other options: `--dir`
+(record directory), `--window S` (the span of `--once` and `--json`, default 1 s), `--no-sensors`,
+`--include-dead` (also show the record that `TSR_MON_KEEP` left behind).
+
+### 7.2 The record and the publisher
+
+- The file is `/dev/shm/tsr-mon-<pid>` (`TSR_MON_DIR` moves it): one 4 KiB page of plain little-endian fields,
+  described by `tsr_mon_rec` in `sw/transport/tsr_mon.h`. It is created whole (a temporary name, then a
+  rename) and removed when the transport closes or the process exits cleanly. A record whose pid is dead
+  (a killed process) is ignored by `tsr-top` and removed by it.
+- The page is behind a seqlock. The writer makes the counter odd, stores the page, makes it even; the reader
+  copies the page and keeps it only if the counter was even and unchanged. The writer never waits for a reader.
+- The layout has a number (1). `tsr_top.py` holds the same field table; the ctest `tools_top_layout` compares it
+  with the table that the C side prints. A reader skips a layout number it does not know.
+- `tsr_opl_dev` (`sw/ggml-tesseract/tsr-opl-dev.cpp`) attaches the publisher when it opens the device and
+  brackets every `graph` launch, so the ggml backend and `tsr_rt` both publish. The ggml backend adds what only it
+  knows: the mode (`M6` when the device takes the matrix products only, else `M7`) and the kinds, the dominant
+  weight type, the device memory in use, and the tokens (see the limits below).
+- After a launch the writer updates the counters (about 0.5 us, no device access). At most every
+  `TSR_MON_PERF_MS` (100 ms) it also reads the PERF counters through `tsr_transport_perf_summary` (about 80 CSR
+  reads) and RV_FREQ. PERF does not move between launches (EX §6), no record, descriptor or tensor changes, and
+  the output bits are the same with the publisher on and off (ctest `tools_top_identity`: klcheck on the
+  tiny model in M6 and M7; Qwen3.8 2B Q4_K_M, M7, 1 prompt x 16 tokens on `sim`: 16 of 16 logits rows
+  bit-identical).
+- What the record holds: pid, uid, command line, start and update times (`CLOCK_REALTIME` and `CLOCK_MONOTONIC`);
+  launches, host wall time in launches, op records, the launch in flight; all 64 PERF totals and the change
+  between the last two reads (so the monitor has a rate from one sample); decoded and prefilled tokens and
+  scheduler passes; device memory in use and its size; core and RV clocks; the configuration (channels, `T_MAX`,
+  lanes, SPM, `K_MAX`), `CAPS`, the core capability, the Basis version, the image id and path, the kind table
+  (numerics revisions) and the kinds the owner routes by name; the transport, the device line (name, BDF,
+  kernel), `$TSR_XCLBIN`; model file name and quantisation.
+- `TSR_MON=0` turns the publisher off. `TSR_MON_KEEP=1` leaves the file at exit (flag `EXITING`), for a look at the
+  last counters and for the tests.
+
+### 7.3 What each part of the screen shows
+
+| Part | Shows | From |
+|---|---|---|
+| Device line | board and shell, `PCIe GEN g@wx`, state (`IDLE`, `HELD`, `OWNED`, `BUSY`, `LAUNCH t` for a launch in flight longer than 1 s) | sysfs `board_name`, hwmon name, `current_link_*`; the record |
+| Image line | kernel name (`tsr_u200_k4`), image id, `CAPS`, number of kinds, mode, core and RV clocks | the record: `device_info`, `image_id`, `CAPS`, kind table, `core_hz` (fitted from `DBG_MTIME` on the card), `rv_hz` = core x `RV_FREQ` / 65536 |
+| Sensor line | temperature (FPGA), fan, power / limit, `DDR` used of 64 GiB | `xbutil examine -r thermal electrical mechanical -f JSON`, every 3 s in a background thread (management path, no compute unit access; `n/a` if it fails); the record's memory fields |
+| `ACT` | share of wall time in which a launch is active, `PERF_CYCLES` / (clock x wall), i.e. 1-H | the change of PERF between two reads |
+| `MVM VU DMA QACT ATT` | busy share of the active cycles (the quantities of DB §8.6): the unit holds an op | `MVM_CYCLES`, `VU_CYCLES`, X+0, X+1, X+2 over `PERF_CYCLES` |
+| `EMPTY WAIT` | MVM idle with an empty queue (issue-bound), MVM idle with a queue entry that cannot start (dependency-bound) | X+4, X+3 over `PERF_CYCLES` |
+| `CH0..CH3` | read GB/s per channel over wall time, against 18.0 GB/s (the DRAM); the text line gives the sum against 4 x 64 B x core clock (the stream limit) and against 4 x 18 GB/s | `CH_RD_BEATS[c]` x 64 B / wall |
+| `U ~ (1-H)(1-G)(1-F) E` | the utilisation split of §3: `U` is the read rate over 4 x 18 GB/s; 1-H the active share; 1-G the MVM share of active cycles; 1-F the busiest channel's beats over `MVM_CYCLES` (clamped to 0..1); `E` is what is left, so that the product equals `U` | the same counters |
+| Time series | left: MVM busy as a share of wall time (cyan, left axis) and total DDR GB/s (yellow, right axis, 0 to 72); right: decoded tokens/s (cyan) and prefilled tokens/s (green). The window is as wide as the box allows, 2 samples per cell, at the refresh interval | the history that `tsr-top` keeps |
+| Process table | `PID USER MODEL MODE TOK/S LAUNCH/s CPU HOST MEM COMMAND`; `TOK/S` is `pp n` while a prefill runs; a process that has the card open but does not publish is listed dimmed with `(no tsr-mon)` | the record; `/proc/<pid>` for user, CPU % and RSS; `/proc/*/fd` links to the card's render node for the others (own processes only) |
+
+Rates cover the newest PERF read and the newest one at least one refresh interval older (or the record's own
+last interval when there is only one read). When no new PERF read came for more than 2.5 s and no launch is in
+flight, the rates are shown as idle.
+
+### 7.4 The card when nobody owns it
+
+`tsr-top` does not open the card by default: a run that starts while another process holds the compute unit
+exclusively would fail to open it. `--probe` runs `tsr-mon-probe`, which opens the card in attach mode (no
+reset, no bind, as `tsr-dbg --attach`), reads the identity, the fitted core clock and the lifetime PERF counters,
+and closes it (about 0.3 s). It runs only if no tsr-mon record has a live pid, no process has the card's
+render node open, and the xclbin that `TSR_XCLBIN` names is the one the card has (its UUID, so that the open
+cannot load another image); then at most every 15 s. A process of another user that starts in that 0.3 s still
+fails to open the card, which is why it is off by default.
+
+### 7.5 Limits
+
+- The counters are read after a launch, not during it. A prefill ubatch is one launch of seconds: the screen
+  shows the previous values and `LAUNCH t` until it ends.
+- Tokens are counted from the graph: a scheduler pass whose first split starts with a matrix product of one
+  token is one decoded token, a pass of more tokens is prefill (so the batch of a speculative verification
+  counts as prefill, and llama.cpp's warm-up pass counts as 2 prefilled tokens). A graph the backend does not
+  see in splits of its own (a very different model) can miscount.
+- On a simulated transport the clock is simulated: `ACT` and the GB/s over wall time compare model time with
+  host time, so they are not hardware figures.
+- An owner started before this feature (or with `TSR_MON=0`) is visible only as a process that holds the card.
+- The model name comes from `-m`, `--model`, `-hf`, `$TSR_MON_MODEL` or the first mapped `.gguf`; the
+  quantisation is the dominant weight type (the file name's `Q4_K_M` is preferred when it has one).

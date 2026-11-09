@@ -25,6 +25,8 @@ tsr_transport.h   C API: open, close, config, write, read, csr, image, boot, lau
                      launch, wait, recovery ladder, TRAP handling, log)
   tsr_image.cpp      firmware images: segments, CRC, .note.tsr, symbols and DWARF lines
   tsr_logdec.cpp     decoder of the device log (binary records to text)
+  tsr_mon.{h,cpp}    the live monitor record: the process that owns the device publishes counters in /dev/shm/tsr-mon-<pid> for
+                     tsr-top (SW-87, docs/prof-dbg.md §7)
     kdev (tsr_kdev.h)   raw access to one kernel: registers, channel memory, a time base
       sim      tsr_kdev_sim.cpp        the simulator in-process behind the core CSR port, no adapter
       mock     tsr_kdev_mock.cpp       the sim kdev inside a model of the ap_ctrl_none adapter, with fault injection
@@ -64,6 +66,7 @@ answer) is the protocol layer, so a behaviour tested on `sim` is the behaviour o
 | `tsr_transport_poll` | the non-blocking form of `_wait` (no timeout, no recovery ladder) |
 | `tsr_transport_set_debugger` | a debugger is attached: debug-aware waits, a TRAP leaves the device trapped |
 | `tsr_transport_set_debug_service` | registers the embedded debug service that `TSR_GDB` / `TSR_DEBUGGER` start at open (`libtsr_dbg`) |
+| `tsr_transport_describe` | the device layer's description, one item per line (no device access) |
 | `tsr_transport_perf_summary`, `tsr_perf_summary_str` | DB §8.6: PERF accumulated over the session (folded in before each `SOFT_RESET`) and its `TSR_STATS` text |
 
 A minimal use (the same shape as `tsr_rt`, `tsr-selftest` and the tests):
@@ -156,6 +159,7 @@ Read at open; a malformed value makes the open fail with a message and is never 
 | `TSR_LOG_LEVEL` | 3 | `LOG_CFG.LEVEL`, 0 (fatal) to 5 (trace) |
 | `TSR_ATTACH` | 0 | `1`: open without `SOFT_RESET` and bind, for diagnosis of a running device |
 | `TSR_STATS` | 0 | `1`: transport statistics and the DB §8.6 PERF summary on stderr at close |
+| `TSR_MON`, `TSR_MON_DIR`, `TSR_MON_PERF_MS`, `TSR_MON_KEEP`, `TSR_MON_MODEL` | on | the live monitor record (`tsr_mon.h`, SW-87): `0` turns it off; its directory (`/dev/shm`); the least ms between two PERF reads (100); keep the file at exit; the model name |
 | `TSR_DUMP_DIR` | off | directory for hang dumps (`hang-<pid>-<n>/state.json` with every EX, Q, PERF and DBG register and the completion ring) |
 | `TSR_GDB_WAIT` | off | `boot` or `launch`: after a trap leave the device in the trapped state instead of restarting it; with the embedded debug service also halt at boot or at the first launch for GDB |
 | `TSR_TILE_SERIAL`, `TSR_TILE_HIST` | unset | `0` or `1`: set or clear serial mode and the dispatch history in `DBG_CFG` at open |

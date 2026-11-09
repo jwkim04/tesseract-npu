@@ -63,6 +63,10 @@ void               tsr_transport_close(tsr_transport * t);
 const char *       tsr_transport_name(const tsr_transport * t);
 // Configuration as read from the CFG*/CAPS CSRs (+ ch_bytes, which the CSRs do not carry).
 const tsr_config * tsr_transport_config(const tsr_transport * t);
+// What the device layer says about itself, one item per line (the xrt kind: the device name and
+// BDF, the xclbin, the kernel; the simulated kinds: their configuration). Returns the length, as
+// snprintf; the text is truncated at n. No device access.
+int                tsr_transport_describe(const tsr_transport * t, char * buf, size_t n);
 // Host access to channel DRAM (EX §2.1 "Data"). Offsets / sizes in bytes, any
 // alignment. 0 on success.
 int      tsr_transport_write(tsr_transport * t, uint32_t ch, uint64_t off, const void * src, size_t size);

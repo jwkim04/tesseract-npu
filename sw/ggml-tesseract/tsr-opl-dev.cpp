@@ -2,6 +2,8 @@
 // text of a failed launch.
 #include "tsr-opl.h"
 
+#include "tsr_mon.h"
+
 #include <chrono>
 #include <cinttypes>
 #include <cstdio>
@@ -56,6 +58,7 @@ bool tsr_opl_dev::open(tsr_transport * tp, std::string * err) {
     }
     cache_.init(0, TSR_REGION_OPL_OFF, TSR_REGION_OPL_SIZE);
     tp_ = tp;
+    tsr_mon_attach(tp, "graph");   // the live monitor record (tsr_mon.h): this process owns the card
     return true;
 }
 
@@ -96,15 +99,19 @@ tsr_opl_run_result tsr_opl_dev::run(const std::vector<uint8_t> & blob, uint32_t 
     l.arg[1] = (uint32_t) blob.size();
     l.arg[2] = launch_flags;
     tsr_record rec = {};
+    tsr_mon_launch_begin();
     const uint64_t t0 = tsr_opl_now_ns();
     // the transport's timeout (TSR_LAUNCH_TIMEOUT_MS, debug-aware, with DB's recovery ladder, SW §9.1)
     r.rc = tsr_transport_call(tp_, &l, TSR_TIMEOUT_DEFAULT, &rec);
     r.wall_ns = tsr_opl_now_ns() - t0;
     launches++;
     launch_ns += r.wall_ns;
+    uint32_t n_ops = 0;
     if (blob.size() >= opl::HDR_BYTES) {
-        ops += opl::rd32(blob.data() + 4u * opl::hw::N_OPS);
+        n_ops = opl::rd32(blob.data() + 4u * opl::hw::N_OPS);
+        ops += n_ops;
     }
+    tsr_mon_launch_end(r.wall_ns, n_ops, r.rc);
     if (r.rc == 0) {
         tsr_record_decode(&rec, &r.res);
     }

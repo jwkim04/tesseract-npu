@@ -45,6 +45,7 @@
 #include "tsr_elf.h"
 #include "tsr_image_int.h"
 #include "tsr_logdec.h"
+#include "tsr_mon.h"
 #include "tsr_trace.h"
 #include "tsr_transport_impl.h"
 
@@ -1986,6 +1987,7 @@ extern "C" void tsr_transport_close(tsr_transport * t) {
         t->dbg_service = nullptr;
     }
     if (svc && t->dbg_svc.stop) t->dbg_svc.stop(svc);   // DB §4.2 DETACH first; its thread uses the transport
+    tsr_mon_detach(t);                                   // the live monitor record (tsr_mon.h), if this transport had one
     {
         guard g(t);
         if (t->state != dstate::failed) t->drain_log();
@@ -1997,6 +1999,13 @@ extern "C" void tsr_transport_close(tsr_transport * t) {
 extern "C" const char * tsr_transport_name(const tsr_transport * t) { return t ? t->kind.c_str() : ""; }
 
 extern "C" const tsr_config * tsr_transport_config(const tsr_transport * t) { return &t->cfg; }
+
+extern "C" int tsr_transport_describe(const tsr_transport * t, char * buf, size_t n) {
+    if (t == nullptr || !t->dev) return TSR_TE_INVAL;
+    const std::string d = t->dev->describe();
+    if (buf != nullptr && n != 0) snprintf(buf, n, "%s", d.c_str());
+    return (int) d.size();
+}
 
 extern "C" int tsr_transport_write(tsr_transport * t, uint32_t ch, uint64_t off, const void * src, size_t size) {
     guard g(t);

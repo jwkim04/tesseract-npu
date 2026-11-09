@@ -92,6 +92,7 @@
 
 #include "tsr_isa.h"
 #include "tsr_ref.h"
+#include "tsr_mon.h"
 #include "tsr_transport.h"
 
 #include "tsr-alloc.h"
@@ -386,6 +387,13 @@ struct tsr_device {
     tsr_att_cfg    att_cfg = {};
     tsr_msum_store msum;
 
+    // The live monitor record (tsr_mon.h): device weight bytes by ggml type (the dominant one is the
+    // quantisation shown), and the splits of the scheduler pass in progress (a split seen again starts
+    // the next pass, as in the TSR_STATS pass count, which this does not depend on)
+    uint64_t mon_wbytes[GGML_TYPE_COUNT] = {};
+    int      mon_wtype = -1;
+    std::set<const ggml_cgraph *> mon_splits;
+
     // TSR_STATS=1
     uint64_t st_graphs = 0;        // graph_compute calls
     uint64_t st_compute_ns = 0;    // their wall time
@@ -428,6 +436,7 @@ static tsr_buffer_ctx * tsr_buf(ggml_backend_buffer_t buffer) {
 // ---------------------------------------------------------------------------
 
 static tsr::plan::dev_cfg tsr_plan_cfg_m7(tsr_device * d);
+static void tsr_mon_note_mode(tsr_device * d);
 
 static bool tsr_dev_open_locked(tsr_device * d) {
     if (d->tp != nullptr) {
@@ -514,6 +523,7 @@ static bool tsr_dev_open_locked(tsr_device * d) {
         snprintf(idb, sizeof(idb), "Tesseract Basis %s, image %016" PRIx64, ib, v.image_id);
         d->image_desc = idb;
     }
+    tsr_mon_note_mode(d);
     d->launch_flags = getenv("TSR_OPL_CRC") != nullptr && atoi(getenv("TSR_OPL_CRC")) != 0 ? tsr::opl::LF_VERIFY_CRC : 0u;
     d->tp  = tp;
     d->cfg = *c;
@@ -606,6 +616,85 @@ static void tsr_fill(tsr_device * d, uint32_t ch, uint64_t off, uint8_t value, s
         off  += n;
         size -= n;
     }
+}
+
+// ---------------------------------------------------------------------------
+// The live monitor record (tsr_mon.h): what only the backend knows. Every call is cheap and none of
+// them reaches the device.
+// ---------------------------------------------------------------------------
+
+// Weight bytes by type; the dominant type names the quantisation ("Q4_K").
+static void tsr_mon_note_weight(tsr_device * d, enum ggml_type type, uint64_t bytes) {
+    if ((int) type < 0 || (int) type >= (int) GGML_TYPE_COUNT) {
+        return;
+    }
+    d->mon_wbytes[type] += bytes;
+    int best = d->mon_wtype;
+    for (int t = 0; t < (int) GGML_TYPE_COUNT; ++t) {
+        if (best < 0 || d->mon_wbytes[t] > d->mon_wbytes[best]) {
+            best = t;
+        }
+    }
+    if (best != d->mon_wtype) {
+        d->mon_wtype = best;
+        tsr_mon_set_model(nullptr, ggml_type_name((enum ggml_type) best));
+    }
+}
+
+// Device DRAM in use over all channels: the symmetric heap (weights, KV, compute windows), ch0 IO, AUX,
+// the staging area, the low windows of the other channels and the OPL cache.
+static void tsr_mon_note_mem(tsr_device * d) {
+    uint64_t used = d->heap.used() * d->cfg.num_ch + d->io.used() + d->aux.used() + d->stage_size + d->odev.cache().used_bytes();
+    for (uint32_t ch = 1; ch < d->low.size(); ++ch) {
+        used += d->low[ch].used();
+    }
+    tsr_mon_set_mem(used, (uint64_t) d->cfg.num_ch * d->cfg.ch_bytes);
+}
+
+// "M6" when the device takes the matrix products only (TSR_KINDS=m6, with MUL_MAT_ID for a MoE model, as
+// klcheck --phase m6 sets it), else "M7"; the kinds it takes by name.
+static void tsr_mon_note_mode(tsr_device * d) {
+    uint64_t m6 = 0;
+    std::string why;
+    tsr_kinds_parse("m6,+MUL_MAT_ID", &m6, &why);
+    std::string names;
+    for (uint32_t k = 0; k < tsr::opl::N_KINDS; ++k) {
+        if (((d->kind_mask >> k) & 1u) != 0) {
+            names += (names.empty() ? "" : " ") + std::string(tsr_kind_name(k));
+        }
+    }
+    tsr_mon_set_mode((d->kind_mask & ~m6) == 0 ? "M6" : "M7", d->kind_mask, names.c_str());
+}
+
+// The tokens of the scheduler pass whose first split this is: the second dimension of the first MUL_MAT's
+// activation (the third for MUL_MAT_ID), 0 if the split has none.
+static uint32_t tsr_mon_pass_tokens(const ggml_cgraph * g) {
+    const int n = std::min(g->n_nodes, 512);
+    for (int i = 0; i < n; ++i) {
+        const ggml_tensor * t = g->nodes[i];
+        if (t->op == GGML_OP_MUL_MAT && t->src[1] != nullptr) {
+            return (uint32_t) std::max<int64_t>(1, t->src[1]->ne[1]);
+        }
+        if (t->op == GGML_OP_MUL_MAT_ID && t->src[1] != nullptr) {
+            return (uint32_t) std::max<int64_t>(1, t->src[1]->ne[2]);
+        }
+    }
+    return 0;
+}
+
+static void tsr_mon_note_graph(tsr_device * d, const ggml_cgraph * g) {
+    if (!tsr_mon_enabled()) {
+        return;
+    }
+    if (d->mon_splits.size() > 4096) {
+        d->mon_splits.clear();
+    }
+    if (d->mon_splits.empty() || d->mon_splits.count(g) != 0) {
+        d->mon_splits.clear();
+        const uint32_t n = tsr_mon_pass_tokens(g);
+        tsr_mon_add_tokens(n == 1 ? 1u : 0u, n > 1 ? n : 0u, 1u);
+    }
+    d->mon_splits.insert(g);
 }
 
 // ---------------------------------------------------------------------------
@@ -805,6 +894,7 @@ static void tsr_place(tsr_device * d, tsr_tensor_rec & r) {
         }
         r.kind = tsr_kind::DEVWEIGHT;
         r.complete = false;
+        tsr_mon_note_weight(d, r.type, r.ch_bytes * d->cfg.num_ch);
         TSR_DBG(1, "weight %-28s %-6s [%6u x %6u%s] -> %s W_OFF=0x%09" PRIx64 " (%.2f MiB/ch x %u ch)%s\n",
                 r.name.c_str(), ggml_type_name(r.type), r.N, r.K, r.n_exp > 1 ? (" x " + std::to_string(r.n_exp)).c_str() : "",
                 r.fmt == TSR_FMT_Q8_0 ? "Q8_0" : "Q4_K",
@@ -1952,6 +2042,7 @@ static void tsr_run_list(tsr_device * d, const tsr_plan_list & L) {
         }
         tsr_prof::write_launch(pl);
     }
+    tsr_mon_note_mem(d);
     const uint32_t n_pre = L.blob.size() >= tsr::opl::HDR_BYTES ? tsr::opl::rd32(L.blob.data() + 4u * tsr::opl::hw::N_PRE) : 0u;
     TSR_DBG(1, "launch #%" PRIu64 ": %u records (%u MUL_MAT, %u fused, %u JOIN), %u preload entries, %zu B at OPL ch0+0x%07" PRIx64
                "%s, %.3f ms\n", d->odev.launches, L.n_ops, L.n_kind[tsr::opl::K_MUL_MAT], L.n_fused, L.n_joins, n_pre,
@@ -3315,6 +3406,7 @@ static enum ggml_status tsr_backend_graph_compute(ggml_backend_t backend, ggml_c
     tsr_device * d = ((tsr_backend_ctx *) backend->context)->dev;
     std::lock_guard<std::mutex> lock(d->mtx);
     tsr_check_imrope_pos(d, cgraph);
+    tsr_mon_note_graph(d, cgraph);
     const uint64_t t_start = tsr_stats_on() ? tsr_now_ns() : 0;
     const uint64_t launches0 = d->odev.launches;
     const uint64_t key = tsr_graph_key(cgraph, d->plan_epoch);
