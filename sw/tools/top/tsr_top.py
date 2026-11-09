@@ -927,7 +927,10 @@ class Charset:
             self.deg = "C"      # "59 C" reads as 59 degrees
 
 
-BRAILLE_BITS = {(0, 0): 0x01, (0, 1): 0x02, (0, 2): 0x04, (0, 3): 0x40, (1, 0): 0x08, (1, 1): 0x10, (1, 2): 0x20, (1, 3): 0x80}
+# Line glyphs of a plot, as nvtop draws them: flat, vertical, then the four turns (from the left going up, the top of a
+# rise, from the left going down, the bottom of a fall). The heavy set tells a series apart when there is no colour.
+LINE_LIGHT = ("─", "│", "╯", "╭", "╮", "╰")
+LINE_HEAVY = ("━", "┃", "┛", "┏", "┓", "┗")
 
 
 def fmt_gib(b):
@@ -968,8 +971,8 @@ def pct(v):
 
 
 def draw_graph(f, cs, y, x, h, w, series, legend, left_labels, right_labels, window_s):
-    """One box with braille plots. series: list of (values, vmax, style). The box occupies columns x..x+w-1 and
-    rows y..y+h-1; labels go in the three columns outside it."""
+    """One box with line plots, one sample per cell. series: list of (values, vmax, style, heavy). The box occupies
+    columns x..x+w-1 and rows y..y+h-1; labels go in the three columns outside it."""
     if h < 4 or w < 8:
         return
     bx, bw = x, w
@@ -998,36 +1001,33 @@ def draw_graph(f, cs, y, x, h, w, series, legend, left_labels, right_labels, win
     for r, lab in right_labels:
         f.put(y + 1 + int(round(r * (ph - 1))), x + bw, lab, S_DEF)
     if cs.utf8:
-        nx, ny = pw * 2, ph * 4
-        masks = [[[0] * pw for _ in range(ph)] for _ in series]
-        for si, (vals, vmax, st, dotted) in enumerate(series):
-            vals = list(vals)[-nx:]
-            vals = [None] * (nx - len(vals)) + vals            # no sample yet: nothing drawn
+        for vals, vmax, st, heavy in series:                       # later series are drawn over earlier ones
+            flat, vert, up_from, up_to, down_from, down_to = LINE_HEAVY if heavy else LINE_LIGHT
+            vals = list(vals)[-pw:]
+            vals = [None] * (pw - len(vals)) + vals                # no sample yet: nothing drawn
             prev = None
             for cx, v in enumerate(vals):
                 if v is None:
+                    prev = None
                     continue
                 frac = 0.0 if vmax <= 0 else max(0.0, min(1.0, v / vmax))
-                dy = int(round(frac * (ny - 1)))           # 0 = bottom
-                lo, hi = (dy, dy) if prev is None else (min(prev, dy), max(prev, dy))
-                for yy in range(lo, hi + 1):
-                    if dotted and cx % 2:                          # a dotted line tells the series apart without colour
-                        continue
-                    cell_y = ph - 1 - yy // 4
-                    sub_y = 3 - yy % 4
-                    masks[si][cell_y][cx // 2] |= BRAILLE_BITS[(cx % 2, sub_y)]
-                prev = dy
-        for r in range(ph):
-            for c in range(pw):
-                m, st = 0, S_DEF
-                for si in reversed(range(len(series))):
-                    if masks[si][r][c]:
-                        m |= masks[si][r][c]
-                        st = series[si][2]
-                if m:
-                    f.put(y + 1 + r, bx + 1 + c, chr(0x2800 + m), st)
+                r = ph - 1 - int(round(frac * (ph - 1)))           # row in the plot, 0 = top
+                col = bx + 1 + cx
+                if prev is None or r == prev:
+                    f.put(y + 1 + r, col, flat, st)
+                elif r < prev:                                     # a rise: turn up at the old level, right at the new
+                    f.put(y + 1 + prev, col, up_from, st)
+                    for rr in range(r + 1, prev):
+                        f.put(y + 1 + rr, col, vert, st)
+                    f.put(y + 1 + r, col, up_to, st)
+                else:                                              # a fall: turn down at the old level, right at the new
+                    f.put(y + 1 + prev, col, down_from, st)
+                    for rr in range(prev + 1, r):
+                        f.put(y + 1 + rr, col, vert, st)
+                    f.put(y + 1 + r, col, down_to, st)
+                prev = r
     else:
-        for si, (vals, vmax, st, dotted) in enumerate(series):
+        for si, (vals, vmax, st, heavy) in enumerate(series):
             vals = list(vals)[-pw:]
             vals = [None] * (pw - len(vals)) + vals
             for cx, v in enumerate(vals):
@@ -1228,7 +1228,7 @@ def graph_panel(f, cs, y, h, w, dev, hist, v, interval):
         return
     box = w - 4
     pw = box - 2
-    ncols = 2 * pw
+    ncols = pw                                                 # one sample per cell, as nvtop
     window = min(120.0, ncols * interval)
     samples = list(hist)
     cols = []
@@ -1243,9 +1243,9 @@ def graph_panel(f, cs, y, h, w, dev, hist, v, interval):
     if have:
         legend = [("COMPUTE %3.0f%% %s" % (100 * rr["compute"]["pct"], rr["compute"]["unit"]), S_S1),
                   ("MEMORY  %3.0f%% ch%d %.1f GB/s%s" % (100 * rr["memory"]["pct"], rr["memory"]["channel"], rr["memory"]["gbs"],
-                                                       " (dotted)" if v.mono else ""), S_S2)]
+                                                       " (heavy)" if v.mono else ""), S_S2)]
     else:
-        legend = [("COMPUTE n/a", S_S1), ("MEMORY  n/a%s" % (" (dotted)" if v.mono else ""), S_S2)]
+        legend = [("COMPUTE n/a", S_S1), ("MEMORY  n/a%s" % (" (heavy)" if v.mono else ""), S_S2)]
     left = [(0.0, "100"), (0.25, " 75"), (0.5, " 50"), (0.75, " 25"), (1.0, "  0")]
     draw_graph(f, cs, y, 3, h, box, [(mem, 1.0, S_S2, v.mono), (comp, 1.0, S_S1, False)], legend, left, [], window)
 
@@ -1547,7 +1547,7 @@ def parse_args(argv):
     ap.add_argument("--probe-bin", default=None, help="path of tsr-mon-probe (default: next to tsr-top)")
     ap.add_argument("--xclbin", default=os.environ.get("TSR_XCLBIN"), help="the xclbin on the card, for --probe (default $TSR_XCLBIN)")
     ap.add_argument("--no-color", action="store_true", help="monochrome")
-    ap.add_argument("--ascii", action="store_true", help="no UTF-8 box drawing or braille")
+    ap.add_argument("--ascii", action="store_true", help="no UTF-8 box drawing or line glyphs")
     ap.add_argument("--no-background", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--layout", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--window-min", type=float, default=1.0, help=argparse.SUPPRESS)
@@ -1610,7 +1610,7 @@ def main(argv=None):
             w, h = int(m.group(1)), int(m.group(2))
         elif sys.stdout.isatty():
             w, h = os.get_terminal_size()
-        v.mono = True                                   # a text frame has no colours: the memory series is dotted
+        v.mono = True                                   # a text frame has no colours: the memory series is heavy
         print(compose(snap, mon.hist, v, h, w, mon.interval).text())
         return 0
     if not sys.stdout.isatty():

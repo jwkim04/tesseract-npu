@@ -270,7 +270,7 @@ def test_synth():
             if w >= 80 and h >= 24:
                 txt = r.stdout
                 for want_s in ("Device", "CORE 250MHz", "RV 125MHz", "TEMP  58", "FAN 1264rpm", "POW  51 / 225 W", "DDR[", "12.0Gi/64.0Gi",
-                               "COMPUTE[", "MEMORY[", "% MVM", "ch0", "GB/s", "COMPUTE ", "MEMORY  ", "(dotted)", "PID", "TOK/S", "synth",
+                               "COMPUTE[", "MEMORY[", "% MVM", "ch0", "GB/s", "COMPUTE ", "MEMORY  ", "(heavy)", "PID", "TOK/S", "synth",
                                "M7", str(os.getpid()), "F2Setup", "F6Sort", "F10Quit"):
                     check(want_s in txt, "%s: the frame shows '%s'" % (size, want_s))
                 for gone in ("IMG ", "CAPS", "KINDS", "EMPTY[", "WAIT[", "CH0[", "(1-H)", "stream limit", "prefill/s", "VU[", "DMA["):
@@ -540,7 +540,7 @@ def test_curses(tmux):
             check(want in scr, "the screen shows '%s'" % want)
         for gone in ("IMG ", "KINDS", "MVM[", "EMPTY[", "CH0[", "(1-H)", "tok/s", "prefill/s"):
             check(gone not in scr, "the screen does not show '%s' by default" % gone)
-        check("\u250c" in scr and "\u2514" in scr and any(c in scr for c in "\u28c0\u2880\u28e4\u28ff"), "box drawing and braille")
+        check("\u250c" in scr and "\u2514" in scr and any(c in scr for c in "\u2500\u2501\u256d\u2570\u250f\u2517"), "box drawing and solid plot lines")
         check(any(x in scr for x in (" 53%", " 54%", " 55%")), "the COMPUTE meter shows about 54 % (the MVM holds an op in 90 % of the 60 % active time)")
         # setup menu: F2 opens it, Down and Space switch the time series panel off, Esc closes it
         keys("F2")
