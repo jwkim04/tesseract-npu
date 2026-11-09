@@ -388,7 +388,7 @@ build/dev/bin/tsr-top --json               # one snapshot as JSON (devices, proc
 | Key | Effect |
 |---|---|
 | `q`, `F10` | quit |
-| `F2` (or `s`) | setup: switch the panels (meters, DDR channels, utilisation split, time series, process table, card users without a record) on and off |
+| `F2` (or `s`) | setup: switch panels on and off. On: the two meters, the time series, the process table, the card users without a record. Off: the image line, the unit meters, the DDR channel bars and the utilisation split U |
 | `F6` (or `o`) | sort the process table by a column; the same column again reverses the order |
 | `+`, `-` | refresh interval, 0.1 s to 10 s (default 1 s; `-d S` sets it at start) |
 | `Tab` | next device (the card, and one simulated device per process that publishes from a simulator) |
@@ -398,7 +398,9 @@ The screen follows terminal resizes; 80 x 24 shows everything, narrower terminal
 (the header and the key line stay). Colours degrade to bold, dim and reverse video on a monochrome terminal
 (`--no-color`), and `--ascii` replaces the box drawing and braille characters. Other options: `--dir`
 (record directory), `--window S` (the span of `--once` and `--json`, default 1 s), `--no-sensors`,
-`--include-dead` (also show the record that `TSR_MON_KEEP` left behind).
+`--include-dead` (also show the record that `TSR_MON_KEEP` left behind), `--token-window S` (the span of the tokens/s average, default 3 s),
+`--sensor-interval S` (how often `xbutil` runs, default 10 s), `--xbutil PATH`. `--json` has everything the screen can show and more
+(all unit shares, the channel rates, the U split, the raw record of each owner).
 
 ### 7.2 The record and the publisher
 
@@ -435,19 +437,17 @@ The screen follows terminal resizes; 80 x 24 shows everything, narrower terminal
 | Part | Shows | From |
 |---|---|---|
 | Device line | board and shell, `PCIe GEN g@wx`, state (`IDLE`, `HELD`, `OWNED`, `BUSY`, `LAUNCH t` for a launch in flight longer than 1 s) | sysfs `board_name`, hwmon name, `current_link_*`; the record |
-| Image line | kernel name (`tsr_u200_k4`), image id, `CAPS`, number of kinds, mode, core and RV clocks | the record: `device_info`, `image_id`, `CAPS`, kind table, `core_hz` (fitted from `DBG_MTIME` on the card), `rv_hz` = core x `RV_FREQ` / 65536 |
-| Sensor line | temperature (FPGA), fan, power / limit, `DDR` used of 64 GiB | `xbutil examine -r thermal electrical mechanical -f JSON`, every 3 s in a background thread (management path, no compute unit access; `n/a` if it fails); the record's memory fields |
-| `ACT` | share of wall time in which a launch is active, `PERF_CYCLES` / (clock x wall), i.e. 1-H | the change of PERF between two reads |
-| `MVM VU DMA QACT ATT` | busy share of the active cycles (the quantities of DB §8.6): the unit holds an op | `MVM_CYCLES`, `VU_CYCLES`, X+0, X+1, X+2 over `PERF_CYCLES` |
-| `EMPTY WAIT` | MVM idle with an empty queue (issue-bound), MVM idle with a queue entry that cannot start (dependency-bound) | X+4, X+3 over `PERF_CYCLES` |
-| `CH0..CH3` | read GB/s per channel over wall time, against 18.0 GB/s (the DRAM); the text line gives the sum against 4 x 64 B x core clock (the stream limit) and against 4 x 18 GB/s | `CH_RD_BEATS[c]` x 64 B / wall |
-| `U ~ (1-H)(1-G)(1-F) E` | the utilisation split of §3: `U` is the read rate over 4 x 18 GB/s; 1-H the active share; 1-G the MVM share of active cycles; 1-F the busiest channel's beats over `MVM_CYCLES` (clamped to 0..1); `E` is what is left, so that the product equals `U` | the same counters |
-| Time series | left: MVM busy as a share of wall time (cyan, left axis) and total DDR GB/s (yellow, right axis, 0 to 72); right: decoded tokens/s (cyan) and prefilled tokens/s (green). The window is as wide as the box allows, 2 samples per cell, at the refresh interval | the history that `tsr-top` keeps |
+| Clock line | `CORE 200MHz  RV 100MHz`, the kernel clocks | on a card: sysfs `icap.u.*/clock_freqs` of the card's user function (clock ID 0 is the core, 1 the RISC-V control core; this also works for an image without the debug block, where the owner cannot fit the clock from `DBG_MTIME`); else the clock the owner fitted from `DBG_MTIME` (`n/a` until it has); a simulator's configured clocks |
+| Sensor line | temperature (FPGA), fan, power / limit, `DDR` used of 64 GiB | sysfs hwmon of the card's user function: `temp<n>` labelled `FPGA TEMP`, `power1_input` (microwatts), `fan1_input` (rpm), read every half second; the `xmc.u.*` node (`xmc_fan_rpm`, `fan_presence`) if hwmon has no fan; `xbutil examine -r thermal electrical mechanical -f JSON` every 10 s for the power limit and for whatever sysfs lacks (`n/a` if everything fails). None of these touches the compute unit. DDR: the record's memory fields |
+| `COMPUTE` | the busiest compute unit as a share of wall time, with its name: `MVM`, `VU`, `QACT`, `ATT`, `ATT_QK`, `ATT_PV` (the DMA moves data, it is not compute). `COMPUTE[|||||||  78% MVM]` | the change of PERF over the window: unit cycles / (core clock x wall time) = (active share) x (busy share of the active cycles), `MVM_CYCLES`, `VU_CYCLES`, X+1, X+2, X+16, X+17 |
+| `MEMORY` | the busiest DDR channel against that channel's 18.0 GB/s (docs/m0-bw.md), with its number and rate: `MEMORY[|||||  56% ch0 10.1 GB/s]` | `CH_RD_BEATS[c]` x 64 B / wall time |
+| Time series | one box over the full width: `COMPUTE` (cyan) and `MEMORY` (yellow, dotted without colour), 0 to 100 %, the last two minutes (less on a narrow screen), 2 samples per cell | the history that `tsr-top` keeps, one sample per refresh |
 | Process table | `PID USER MODEL MODE TOK/S LAUNCH/s CPU HOST MEM COMMAND`; `TOK/S` is `pp n` while a prefill runs; a process that has the card open but does not publish is listed dimmed with `(no tsr-mon)` | the record; `/proc/<pid>` for user, CPU % and RSS; `/proc/*/fd` links to the card's render node for the others (own processes only) |
+| Setup, off by default | the image line (`IMG` kernel name, `ID`, `CAPS`, `KINDS` count and table signature, mode); unit meters `ACT` (active share of wall time, 1-H), `MVM VU DMA QACT ATT` (busy share of the active cycles, the quantities of DB §8.6), `EMPTY` (MVM idle, queue empty: issue-bound), `WAIT` (MVM idle, queue entry cannot start: dependency-bound); `CH0..CH3` bars and the read rate against the stream limit (4 x 64 B x core clock) and the DRAM; the utilisation split `U ~ (1-H)(1-G)(1-F) E` of §3 (`U` is the read rate over 4 x 18 GB/s; 1-H the active share; 1-G the MVM share of active cycles; 1-F the busiest channel's beats over `MVM_CYCLES`, clamped to 0..1; `E` is what is left, so that the product equals `U`) | the same counters |
 
 Rates cover the newest PERF read and the newest one at least one refresh interval older (or the record's own
 last interval when there is only one read). When no new PERF read came for more than 2.5 s and no launch is in
-flight, the rates are shown as idle.
+flight, the rates are shown as idle. The core clock used for the rates is the owner's fitted one, else sysfs's.
 
 ### 7.4 The card when nobody owns it
 
@@ -467,8 +467,62 @@ fails to open the card, which is why it is off by default.
   token is one decoded token, a pass of more tokens is prefill (so the batch of a speculative verification
   counts as prefill, and llama.cpp's warm-up pass counts as 2 prefilled tokens). A graph the backend does not
   see in splits of its own (a very different model) can miscount.
+- Token rates average over 3 s (`--token-window`). The tokens of a pass are counted when it starts, so a pass that is longer than the
+  window (a prefill ubatch) shows as a spike, not as its average rate.
+- Before the first launch (while the weights are still being uploaded) the record has the process, the memory in use and the
+  configuration but no PERF read: the meters show `n/a`. On a card the clocks come from sysfs at once; on a simulator they come from the
+  record.
 - On a simulated transport the clock is simulated: `ACT` and the GB/s over wall time compare model time with
   host time, so they are not hardware figures.
 - An owner started before this feature (or with `TSR_MON=0`) is visible only as a process that holds the card.
-- The model name comes from `-m`, `--model`, `-hf`, `$TSR_MON_MODEL` or the first mapped `.gguf`; the
-  quantisation is the dominant weight type (the file name's `Q4_K_M` is preferred when it has one).
+- The model name comes from `$TSR_MON_MODEL`, `-m`, `--model`, `-hf` or the first mapped `.gguf` (`tsr-top` also reads `-m` from the
+  command line while the record has no name yet); the quantisation is the dominant weight type (the file name's `Q4_K_M` is preferred when
+  it has one). A long name is cut in the middle so that its end stays.
+
+### 7.6 Measured on the card (2026-11-09)
+
+Image `k4full` (`tsr_u200_k4`, CAPS 0x21), firmware of this branch, Gemma 4 26B-A4B Q4_K_M, a 113-token prompt and 360 generated
+tokens, `llama-completion` with `TSR_DEVICE=xrt`, the ATTPV trace replayed before the run, `tsr-top` running at the same time in two
+terminals (80 x 24 and 110 x 36). The counters of that run were saved, and this is the 80 x 24 screen in the middle of the decode as the current
+version draws them (the sensors and the clocks are read from sysfs afterwards; the process is the run's, its PID is not):
+
+```
+ Device 0 [Alveo U200 xilinx_u200_gen3x16_xdma_base_2]   PCIe GEN 3@16x  [BUSY]
+ CORE 200MHz  RV 100MHz
+ TEMP  54°C FAN 1265rpm POW  36 / 225 W  DDR[||||||||||           18.8Gi/64.0Gi]
+ COMPUTE[||||||||||||||||||||| 78% MVM] MEMORY[|||||||||||| 56% ch0 10.1 GB/s]
+   ┌──────────────────────────────────────────────────────────────────────────┐
+100│COMPUTE  78% MVM                                                          │
+   │MEMORY   56% ch0 10.1 GB/s (dotted)                                       │
+   │                                                                          │
+   │                                                                   ⡤⠤⠼⠙⠒⠒⠒│
+ 75│                                                                 ⢸⠉⠁      │
+   │                                                                 ⢸        │
+   │                                                                 ⢸ ⡄⠄⠄⠂⠄⠆⠆│
+ 50│                                                                 ⢸⠁⠁      │
+   │                                                                 ⢸        │
+   │                                                                 ⢸        │
+ 25│                                                                 ⢸        │
+   │                                                                 ⢸        │
+   │                                                                 ⢸        │
+   │                                                                 ⢸        │
+  0│               ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣸        │
+   └120s─────────────90s───────────────60s────────────────30s───────────────0s┘
+     PID USER     MODEL         MODE TOK/S v LAUNCH/s  CPU HOST MEM COMMAND
+ 2106696 limagin~ google~Q4_K_M M7      11.7     11.7 130%   2.7GiB build/xrt/bi
+F2Setup  F6Sort  F10Quit  +/-Refresh 2.0s  TabDevice
+```
+
+- The core clock, fitted from `DBG_MTIME` by the owner (199.99 MHz) and read from sysfs (`clock_freqs` 200 100), is 200 MHz, so the stream
+  limit is 64 B x 200 MHz = 12.8 GB/s per channel, below the DRAM's 18 GB/s (`E` is 71 % in the utilisation split). One decode token is one
+  launch of 1,323 op records.
+- The counters agree with `TSR_STATS` and with the earlier card measurements ([performance.md](performance.md)): MVM busy 81 % of the active
+  cycles (81.4 %), `MVM_EMPTY` 11 % (11.1 %), `MVM_WAIT` 8 % (7.5 %), VU 7 % (6.7 %), DMA 8 % (8.0 %), QACT 3 % (3.1 %), the device active 97 % of
+  the wall time, so `COMPUTE` is 78 % MVM; the busiest channel read 10.1 GB/s of 18 (56 %); decode 11.6 tok/s
+  on the screen against 11.69 tok/s (85.55 ms per token) from llama.cpp's `eval time`; 361 launches, and the idle probe afterwards read
+  `PERF_CYCLES` 6,785,133,473, the value `TSR_STATS` printed at the end of the run.
+- Cost: one PERF read took 117 us (about 80 CSR reads); the publisher spent 22 ms in its hooks over 33 s of launches (0.07 % of the
+  launch wall time, `perf_ns` and `hook_ns` in the record). Temperature 56 C, power 54 W of 225 W during the decode (37 W idle). xbutil's mechanical report has no fan; the fan (1264 rpm) is in sysfs.
+- `tsr-top --probe` on the idle card held it for 572 ms (the open took 239 ms) and showed the lifetime counters of the run that had just ended.
+- The prefill of 113 tokens (one launch of 4.3 s) showed as `pp 38` for a window (tokens counted at the start of the pass); llama.cpp's
+  average for the whole prompt was 26.4 tok/s.

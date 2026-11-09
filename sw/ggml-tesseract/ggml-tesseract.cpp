@@ -867,6 +867,7 @@ static void tsr_place(tsr_device * d, tsr_tensor_rec & r) {
         r.kind = tsr_kind::DEVWEIGHT;
         r.complete = false;
         tsr_mon_note_weight(d, r.type, r.ch_bytes * d->cfg.num_ch);
+        tsr_mon_note_mem(d);
         TSR_DBG(1, "weight %-28s %-6s [%6u x %6u%s] -> %s W_OFF=0x%09" PRIx64 " (%.2f MiB/ch x %u ch)%s\n",
                 r.name.c_str(), ggml_type_name(r.type), r.N, r.K, r.n_exp > 1 ? (" x " + std::to_string(r.n_exp)).c_str() : "",
                 r.fmt == TSR_FMT_Q8_0 ? "Q8_0" : "Q4_K",
@@ -882,6 +883,7 @@ static void tsr_place(tsr_device * d, tsr_tensor_rec & r) {
         GGML_ABORT("tesseract: no device memory for tensor '%s' (%.1f MiB)", r.name.c_str(), tsr_mib(size));
     }
     r.kind = tsr_kind::RAW;
+    tsr_mon_note_mem(d);
     r.taps = tsr_rec_is_conv_taps(r) ? (uint32_t) r.ne[0] : 0u;
     TSR_DBG(1, "raw    %-28s %-6s [%lld,%lld,%lld,%lld] -> %s ch0+0x%09" PRIx64 " (%zu B)%s\n",
             r.name.c_str(), ggml_type_name(r.type), (long long) r.ne[0], (long long) r.ne[1], (long long) r.ne[2],

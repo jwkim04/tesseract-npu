@@ -104,12 +104,12 @@ int main(int argc, char ** argv) {
     char info[512] = {};
     tsr_transport_describe(t, info, sizeof(info));
     if (char * nl = strchr(info, '\n')) *nl = '\0';
-    const char * name = tsr_transport_name(t);
+    const std::string name = tsr_transport_name(t);     // the pointer is the transport's: copy it before the close
     const double core_hz = has_dbg && wm1 > wm0 && mt1 > mt0 ? (double) (mt1 - mt0) * 1e9 / (double) (wm1 - wm0) : 0.0;
     tsr_transport_close(t);                               // the card is released here
     const uint64_t t_close = mono_ns();
 
-    printf("{\"ok\":true,\"transport\":%s,\"device_info\":%s,\"held_ms\":%.1f,\"open_ms\":%.1f,", jstr(name).c_str(), jstr(info).c_str(),
+    printf("{\"ok\":true,\"transport\":%s,\"device_info\":%s,\"held_ms\":%.1f,\"open_ms\":%.1f,", jstr(name.c_str()).c_str(), jstr(info).c_str(),
            (double) (t_close - w0) / 1e6, (double) (t_open - w0) / 1e6);
     printf("\"num_ch\":%u,\"t_max\":%u,\"lanes\":%u,\"spm_bytes\":%u,\"caps\":%u,\"core_ver\":%u,\"ch_bytes\":%" PRIu64 ",",
            c->num_ch, c->t_max, c->lanes, c->spm_bytes, c->caps, v.core, c->ch_bytes);

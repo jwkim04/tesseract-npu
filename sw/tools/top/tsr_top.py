@@ -38,6 +38,7 @@ PAGE = 4096
 MON_DIR_DEFAULT = "/dev/shm"
 DRAM_GBS = 18.0                      # per channel: what the DRAM gives (docs/m0-bw.md §7.1)
 XBUTIL = "/opt/xilinx/xrt/bin/xbutil"
+SYSFS = os.environ.get("TSR_TOP_SYSFS", "/sys")       # the tests point it at a made-up tree
 
 F_SIM, F_FITTED, F_EXITING = 1, 2, 4
 
@@ -222,9 +223,9 @@ def proc_sample(pid):
 def find_cards():
     """The Alveo user functions that the xocl driver has: [{'bdf', 'render', 'board'}]."""
     cards = []
-    for p in sorted(glob.glob("/sys/bus/pci/drivers/xocl/0000:*")):
+    for p in sorted(glob.glob(SYSFS + "/bus/pci/drivers/xocl/0000:*")):
         bdf = os.path.basename(p)
-        base = "/sys/bus/pci/devices/" + bdf
+        base = SYSFS + "/bus/pci/devices/" + bdf
         if read_text(base + "/vendor") != "0x10ee":
             continue
         render = None
@@ -242,7 +243,7 @@ def find_cards():
 
 
 def pcie_link(bdf):
-    base = "/sys/bus/pci/devices/" + bdf
+    base = SYSFS + "/bus/pci/devices/" + bdf
     speed = read_text(base + "/current_link_speed")
     width = read_text(base + "/current_link_width")
     m = re.match(r"([\d.]+)", speed)
@@ -252,6 +253,63 @@ def pcie_link(bdf):
     except ValueError:
         w = None
     return {"gen": gen, "width": w, "speed": speed}
+
+
+def read_int(path):
+    try:
+        return int(read_text(path).split()[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def sysfs_clocks(bdf):
+    """The card's kernel clocks, from the icap node of its user function: `clock_freqs` holds one MHz value per clock
+    ID (0 = the core, 1 = the RISC-V control core's clock; 0 = not used). None if the node is not there."""
+    for p in sorted(glob.glob(SYSFS + "/bus/pci/devices/%s/icap.u.*/clock_freqs" % bdf)):
+        vals = []
+        for tok in read_text(p).split():
+            try:
+                vals.append(int(tok))
+            except ValueError:
+                break
+        if len(vals) >= 2 and vals[0] > 0:
+            return {"core_mhz": vals[0], "rv_mhz": vals[1] or None, "source": "sysfs"}
+    return None
+
+
+def sysfs_sensors(bdf):
+    """Temperature, power and fan from the hwmon directory of the card's user function (and the xmc node for the fan):
+    plain file reads, no process, no access to the compute unit. {} when nothing is there."""
+    base = SYSFS + "/bus/pci/devices/" + bdf
+    out = {}
+    for h in sorted(glob.glob(base + "/hwmon/hwmon*")):
+        for i in range(1, 32):
+            lab = read_text("%s/temp%d_label" % (h, i))
+            if lab.upper().startswith("FPGA"):
+                v = read_int("%s/temp%d_input" % (h, i))
+                if v is not None:
+                    out["temp_c"] = v / 1000.0
+        v = read_int(h + "/power1_input")
+        if v is not None:
+            out["power_w"] = v / 1e6                      # microwatts
+        v = read_int(h + "/fan1_input")
+        if v is not None:
+            out["fan_rpm"] = float(v)
+        if out:
+            break
+    if "fan_rpm" not in out:
+        for x in sorted(glob.glob(base + "/xmc.u.*")):
+            v = read_int(x + "/xmc_fan_rpm")
+            if v is not None and read_text(x + "/fan_presence") in ("P", ""):
+                out["fan_rpm"] = float(v)
+                break
+    if "temp_c" not in out:
+        for x in sorted(glob.glob(base + "/xmc.u.*")):
+            v = read_int(x + "/xmc_fpga_temp")
+            if v is not None:
+                out["temp_c"] = float(v)
+                break
+    return out
 
 
 def card_holders(render):
@@ -313,11 +371,14 @@ class Background(threading.Thread):
         self.cards = cards
         self.opts = opts
         self.sensors = {}            # bdf -> dict (replaced whole)
+        self.clocks = {}             # bdf -> {'core_mhz', 'rv_mhz', 'source'}
+        self._xb = {}                # bdf -> the last xbutil result (the power limit, and the values when sysfs has none)
         self.holders = {}            # bdf -> [pids]
         self.probe = {}              # bdf -> dict
         self.platform = {}           # bdf -> vbnv
         self._stop = threading.Event()
-        self._last_sensor = {}
+        self.first_pass = threading.Event()      # set when sensors, clocks and holders have been read once
+        self._last_xb = {}
         self._last_probe = {}
         self._probe_lock = threading.Lock()
         self.publishers_alive = lambda: True       # set by the monitor: any live publisher means no probe
@@ -331,15 +392,35 @@ class Background(threading.Thread):
             for c in self.cards:
                 bdf = c["bdf"]
                 self.holders[bdf] = card_holders(c["render"])
-                if not self.opts.no_sensors and now - self._last_sensor.get(bdf, -1e9) >= self.opts.sensor_interval:
-                    self._last_sensor[bdf] = now
-                    self.sensors[bdf] = self.read_sensors(bdf)
+                self.clocks[bdf] = sysfs_clocks(bdf)
+                if not self.opts.no_sensors:
+                    if now - self._last_xb.get(bdf, -1e9) >= self.opts.sensor_interval:
+                        self._last_xb[bdf] = now
+                        self._xb[bdf] = self.read_xbutil(bdf)
+                    self.sensors[bdf] = self.merge_sensors(bdf)
                 if self.opts.probe and now - self._last_probe.get(bdf, -1e9) >= self.opts.probe_interval:
                     self._last_probe[bdf] = now
                     self.maybe_probe(c)
+            self.first_pass.set()
             self._stop.wait(0.5)
 
-    def read_sensors(self, bdf):
+    def merge_sensors(self, bdf):
+        """sysfs first (a few file reads, every half second), xbutil for what sysfs does not have and for the power limit."""
+        sy = sysfs_sensors(bdf)
+        xb = self._xb.get(bdf) or {}
+        out = {"temp_c": None, "power_w": None, "power_max_w": xb.get("power_max_w"), "fan_rpm": None, "source": {}}
+        for k in ("temp_c", "power_w", "fan_rpm"):
+            if sy.get(k) is not None:
+                out[k], out["source"][k] = sy[k], "sysfs"
+            elif xb.get("ok") and xb.get(k) is not None:
+                out[k], out["source"][k] = xb[k], "xbutil"
+        out["ok"] = any(out[k] is not None for k in ("temp_c", "power_w", "fan_rpm"))
+        if not out["ok"]:
+            out["error"] = xb.get("error", "no sensors")
+        out["t"] = time.time()
+        return out
+
+    def read_xbutil(self, bdf):
         exe = self.opts.xbutil
         if not os.path.exists(exe):
             return {"ok": False, "error": "no xbutil", "t": time.time()}
@@ -381,7 +462,7 @@ class Background(threading.Thread):
         off = 8 + 4 + 28 + 256 + 8 + 24 + 2 + 1 + 1 + 4 + 16 + 64      # axlf header: m_uuid
         import uuid
         file_uuid = str(uuid.UUID(bytes=head[off:off + 16]))
-        card_uuid = read_text("/sys/bus/pci/devices/%s/xclbinuuid" % c["bdf"]).lower()
+        card_uuid = read_text(SYSFS + "/bus/pci/devices/%s/xclbinuuid" % c["bdf"]).lower()
         if file_uuid != card_uuid:
             return False, "the xclbin on the card is another one"
         return True, ""
@@ -426,14 +507,14 @@ def perf_layout(rec):
     return C, X
 
 
-def rates_between(a, b, rec):
+def rates_between(a, b, rec, hz=None):
     """Rates over the PERF reads a and b (dicts with 'pm' (CLOCK_MONOTONIC ns of the read), 'perf', 'launches',
     'tok_dec', 'tok_pre'), for the record's configuration. None when the reads are not in order."""
     wall = (b["pm"] - a["pm"]) / 1e9
     if wall <= 0:
         return None
     C, X = perf_layout(rec)
-    hz = float(rec["core_hz"]) or 276.3e6
+    hz = float(hz or rec["core_hz"]) or 276.3e6
     d = [y - x for x, y in zip(a["perf"], b["perf"])]
     cyc = d[P_CYCLES]
     r = {"window_s": wall, "core_hz": hz}
@@ -449,10 +530,17 @@ def rates_between(a, b, rec):
         r["busy"] = {k: 0.0 for k in ("mvm", "vu", "dma", "qact", "att", "att_qk", "att_pv")}
         r["mvm_empty"] = r["mvm_wait"] = 0.0
     r["mvm_wall"] = r["active"] * r["busy"]["mvm"]
+    # COMPUTE: the busiest compute unit (DMA moves data, it is not compute), as a share of wall time; the share of the
+    # active cycles is r["busy"][unit]. ATT_QK / ATT_PV are the MVM's own attention cycles, so they cannot beat MVM.
+    names = (("MVM", "mvm"), ("VU", "vu"), ("QACT", "qact"), ("ATT", "att"), ("ATT_QK", "att_qk"), ("ATT_PV", "att_pv"))
+    unit, key = max(names, key=lambda nk: r["busy"][nk[1]])
+    r["compute"] = {"unit": unit, "busy_active": r["busy"][key], "pct": r["active"] * r["busy"][key]}
     beats = [d[5 + c] for c in range(C)]
     wait = [d[5 + C + c] for c in range(C)]
     gbs = [x * 64.0 / wall / 1e9 for x in beats]
     stream = 64.0 * hz / 1e9
+    top = max(range(C), key=lambda c: gbs[c]) if C else 0
+    r["memory"] = {"channel": top, "gbs": gbs[top] if C else 0.0, "pct": (gbs[top] / DRAM_GBS) if C else 0.0}
     r["ddr"] = {
         "ch_gbs": gbs, "ch_wait_pct": [(w / cyc if cyc > 0 else 0.0) for w in wait],
         "total_gbs": sum(gbs), "stream_limit_gbs": stream, "dram_limit_gbs": DRAM_GBS,
@@ -492,7 +580,7 @@ class Tracker:
         self.tok_ticks.append((now, rec["tok_decode"], rec["tok_prefill"], rec["launches"]))
         self.last = rec
 
-    def rates(self, window, mono_now_ns):
+    def rates(self, window, mono_now_ns, hz=None):
         rec = self.last
         if rec is None or not self.reads:
             return None
@@ -510,7 +598,7 @@ class Tracker:
                 return None
             a = {"pm": b["pm"] - rec["d_wall_ns"], "perf": [x - y for x, y in zip(b["perf"], rec["dperf"])],
                  "launches": b["launches"] - rec["d_launches"], "tok_dec": b["tok_dec"], "tok_pre": b["tok_pre"]}
-        r = rates_between(a, b, rec)
+        r = rates_between(a, b, rec, hz)
         if r is None:
             return None
         age = (mono_now_ns - b["pm"]) / 1e9
@@ -552,9 +640,35 @@ def kernel_name(rec):
     return ""
 
 
+def model_name(rec):
+    """The model file's name without .gguf: the record's, else the argument of -m / --model of the command line."""
+    name = rec["model"]
+    if not name:
+        args = rec["cmdline"].split()
+        for i, a in enumerate(args[:-1]):
+            if a in ("-m", "--model", "-hf", "--hf-repo"):
+                name = os.path.basename(args[i + 1])
+                break
+    return re.sub(r"\.gguf$", "", name) if name else "?"
+
+
+def shorten_mid(s, w):
+    """Cut a long name in the middle, so that its end (the quantisation) stays."""
+    if len(s) <= w or w <= 4:
+        return s[:w]
+    tail = min(8, (w - 1) // 2)
+    return s[:w - 1 - tail] + "~" + s[len(s) - tail:]
+
+
 def model_quant(rec):
     m = QUANT_RE.search(rec["model"])
     return m.group(1).upper() if m else rec["quant"]
+
+
+def clock_text(rec, hz):
+    """A clock that was measured (fitted from DBG_MTIME, or a simulated one); the nominal value of a card that has not
+    run a launch for half a second is not shown as a measurement."""
+    return fmt_hz(hz) if hz and (rec["flags"] & (F_FITTED | F_SIM)) else "n/a"
 
 
 def fmt_hz(hz):
@@ -572,7 +686,7 @@ class Monitor:
         self.bg.publishers_alive = lambda: bool(self.live_publishers)
         self.live_publishers = []
         self.trk = {}
-        self.hist = collections.defaultdict(lambda: collections.deque(maxlen=720))   # device id -> (mvm, ddr, tok, pp)
+        self.hist = collections.defaultdict(lambda: collections.deque(maxlen=720))   # device id -> (compute, memory, DDR GB/s)
         self.procs = {}
         self.snap = None
         self.interval = max(0.1, opts.delay) if opts.delay else 1.0
@@ -611,11 +725,9 @@ class Monitor:
             dev["state"] = self.device_state(dev)
             h = self.hist[dev["id"]]
             if rr is not None and not rr["stale"]:
-                tok = sum(p["tok_s"] for p in pr)
-                pp = sum(p["pp_s"] for p in pr)
-                h.append((rr["mvm_wall"], rr["ddr"]["total_gbs"], tok, pp))
+                h.append((rr["compute"]["pct"], rr["memory"]["pct"], rr["ddr"]["total_gbs"]))
             else:
-                h.append((0.0, 0.0, 0.0, 0.0))
+                h.append((0.0, 0.0, 0.0))
         self.snap = {
             "tsr_top": VERSION, "time": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
             "interval_s": self.interval, "mon_dir": self.dir, "devices": devices, "processes": procs,
@@ -630,7 +742,7 @@ class Monitor:
                  "board": ("Alveo " + c["board"].upper()) if c["board"] else "Alveo card", "shell": c["shell"],
                  "link": pcie_link(c["bdf"]), "sensors": self.bg.sensors.get(c["bdf"]),
                  "holders": list(self.bg.holders.get(c["bdf"], [])), "probe": self.bg.probe.get(c["bdf"]),
-                 "publisher": None}
+                 "clocks": self.bg.clocks.get(c["bdf"]), "publisher": None}
             devices.append(d)
             by_bdf[c["bdf"].lower()] = d
         for r in recs:
@@ -646,12 +758,12 @@ class Monitor:
                 if dev is None:
                     dev = {"id": "xrt:%d" % r["pid"], "kind": "card", "bdf": m.group(1) if m else "", "board": "Tesseract card",
                            "shell": "", "link": {"gen": None, "width": None, "speed": ""}, "sensors": None, "holders": [],
-                           "probe": None, "publisher": None}
+                           "probe": None, "clocks": None, "publisher": None}
                     devices.append(dev)
             else:
                 dev = {"id": "sim:%d" % r["pid"], "kind": "sim", "bdf": "", "board": "Tesseract %s (pid %d)" % (r["transport"], r["pid"]),
                        "shell": "", "link": {"gen": None, "width": None, "speed": ""}, "sensors": None, "holders": [],
-                       "probe": None, "publisher": None}
+                       "probe": None, "clocks": None, "publisher": None}
                 devices.append(dev)
             dev["publisher"] = r["pid"]
             dev["rec"] = r
@@ -691,13 +803,13 @@ class Monitor:
                     cpu = t.cpu_pct
                 self.last_proc[pid] = (ticks, now)
                 t.cpu_pct = cpu
-            rates = t.rates(window, mono_ns)
-            tok, pp, lps = t.token_rates(window)
+            dev = dev_of_pid.get(pid)
+            rates = t.rates(window, mono_ns, core_hz_of(r, dev))
+            tok, pp, lps = t.token_rates(max(window, self.opts.token_window))      # tokens come in steps: a longer window smooths them
             if rates is not None and rates["stale"]:
                 tok = pp = lps = 0.0
-            dev = dev_of_pid.get(pid)
             procs.append({
-                "pid": pid, "user": user, "model": r["model"] or "?", "quant": model_quant(r), "mode": r["mode"],
+                "pid": pid, "user": user, "model": model_name(r), "quant": model_quant(r), "mode": r["mode"],
                 "tok_s": tok, "pp_s": pp, "launch_s": lps, "cpu_pct": cpu, "rss": rss, "cmd": cmd or r["cmdline"],
                 "device": dev["id"] if dev else None, "publisher": True, "rates": rates, "alive": r["alive"],
                 "record": record_json(r),
@@ -721,6 +833,29 @@ class Monitor:
                               "launch_s": None, "cpu_pct": cpu, "rss": rss, "cmd": cmd, "device": dev["id"], "publisher": False,
                               "rates": None, "alive": True, "record": None})
         return procs
+
+
+def core_hz_of(rec, dev):
+    """The core clock for the rates: the one the owner fitted from DBG_MTIME, or a simulator's; else what sysfs says the card runs at
+    (an image without the debug block cannot be fitted, and the owner then only has the nominal clock)."""
+    if rec["flags"] & (F_FITTED | F_SIM):
+        return rec["core_hz"]
+    clk = dev.get("clocks") if dev else None
+    return clk["core_mhz"] * 1e6 if clk else rec["core_hz"]
+
+
+def device_clocks(dev):
+    """(core, rv) clock texts of the header: sysfs for a card, else the owner's fitted (or the simulator's) clock, else n/a."""
+    r = dev.get("rec")
+    clk = dev.get("clocks")
+    if dev["kind"] == "card" and clk:
+        return "%dMHz" % clk["core_mhz"], ("%dMHz" % clk["rv_mhz"]) if clk["rv_mhz"] else "n/a"
+    if r is not None:
+        return clock_text(r, r["core_hz"]), clock_text(r, r["rv_hz"])
+    probe = dev.get("probe")
+    if probe and probe.get("ok"):
+        return fmt_hz(probe.get("core_hz")), fmt_hz(probe.get("rv_hz"))
+    return "n/a", "n/a"
 
 
 def record_json(r):
@@ -865,7 +1000,7 @@ def draw_graph(f, cs, y, x, h, w, series, legend, left_labels, right_labels, win
     if cs.utf8:
         nx, ny = pw * 2, ph * 4
         masks = [[[0] * pw for _ in range(ph)] for _ in series]
-        for si, (vals, vmax, st) in enumerate(series):
+        for si, (vals, vmax, st, dotted) in enumerate(series):
             vals = list(vals)[-nx:]
             vals = [None] * (nx - len(vals)) + vals            # no sample yet: nothing drawn
             prev = None
@@ -876,6 +1011,8 @@ def draw_graph(f, cs, y, x, h, w, series, legend, left_labels, right_labels, win
                 dy = int(round(frac * (ny - 1)))           # 0 = bottom
                 lo, hi = (dy, dy) if prev is None else (min(prev, dy), max(prev, dy))
                 for yy in range(lo, hi + 1):
+                    if dotted and cx % 2:                          # a dotted line tells the series apart without colour
+                        continue
                     cell_y = ph - 1 - yy // 4
                     sub_y = 3 - yy % 4
                     masks[si][cell_y][cx // 2] |= BRAILLE_BITS[(cx % 2, sub_y)]
@@ -890,7 +1027,7 @@ def draw_graph(f, cs, y, x, h, w, series, legend, left_labels, right_labels, win
                 if m:
                     f.put(y + 1 + r, bx + 1 + c, chr(0x2800 + m), st)
     else:
-        for si, (vals, vmax, st) in enumerate(series):
+        for si, (vals, vmax, st, dotted) in enumerate(series):
             vals = list(vals)[-pw:]
             vals = [None] * (pw - len(vals)) + vals
             for cx, v in enumerate(vals):
@@ -909,15 +1046,18 @@ def draw_graph(f, cs, y, x, h, w, series, legend, left_labels, right_labels, win
 # ---------------------------------------------------------------------------------------------
 SORT_KEYS = [("PID", "pid"), ("USER", "user"), ("MODEL", "model"), ("MODE", "mode"), ("TOK/S", "tok_s"),
              ("LAUNCH/s", "launch_s"), ("CPU", "cpu_pct"), ("HOST MEM", "rss"), ("COMMAND", "cmd")]
-PANELS = [("meters", "Unit meters"), ("ddr", "DDR channels"), ("util", "Utilisation split U"), ("graph", "Time series"),
-          ("table", "Process table"), ("others", "Card users without tsr-mon")]
+PANELS = [("summary", "Compute and memory meters"), ("graph", "Utilisation time series"), ("table", "Process table"),
+          ("others", "Card users without tsr-mon"), ("image", "Image line (IMG, ID, CAPS, kinds, mode)"),
+          ("meters", "Unit meters (MVM VU DMA QACT ATT EMPTY WAIT)"), ("ddr", "DDR channel bars and read rate"),
+          ("util", "Utilisation split U")]
+PANELS_OFF = ("image", "meters", "ddr", "util")            # what --json has and the screen shows only when asked
 
 
 class View:
     """What the user chose: panels, sort, device; and what the screen is showing."""
 
     def __init__(self, opts):
-        self.panels = {k: True for k, _ in PANELS}
+        self.panels = {k: k not in PANELS_OFF for k, _ in PANELS}
         self.sort = "tok_s"
         self.desc = True
         self.dev = 0
@@ -926,6 +1066,7 @@ class View:
         self.sel = 0
         self.color = not opts.no_color
         self.utf8 = not opts.ascii
+        self.mono = not self.color            # set from the theme once curses knows whether the terminal has colours
 
 
 def device_header(f, cs, y, w, dev, idx, n_dev, v):
@@ -951,23 +1092,24 @@ def device_header(f, cs, y, w, dev, idx, n_dev, v):
         left = [(" Device %d " % idx, S_LABEL), ("[%s]" % name[:keep], S_DEF)]
     f.segs(y, 0, left)
     f.segs(y, max(0, w - rlen - 1), right)
-    # line 2: image
-    parts = []
+    # line 2: the clocks (the image line, when asked for, follows them)
     probe = dev.get("probe")
-    if r is not None:
+    core, rv = device_clocks(dev)
+    parts = [(" CORE ", S_LABEL), (core, S_DEF), ("  RV ", S_LABEL), (rv, S_DEF)]
+    if v.panels["image"] and r is not None:
         img = kernel_name(r) or r["transport"]
-        parts = [(" IMG ", S_LABEL), (img, S_DEF), (" ID ", S_LABEL), ("%08x" % (r["image_id"] & 0xFFFFFFFF), S_DEF),
-                 (" CAPS ", S_LABEL), ("0x%x" % r["caps"], S_DEF), (" KINDS ", S_LABEL), ("%d:%04x" % (r["n_kinds"], r["kinds_sig"] & 0xFFFF), S_DEF),
-                 (" ", S_DEF), (r["mode"], S_VAL), (" CORE ", S_LABEL), (fmt_hz(r["core_hz"]), S_DEF),
-                 (" RV ", S_LABEL), (fmt_hz(r["rv_hz"]), S_DEF)]
-    elif probe and probe.get("ok"):
-        parts = [(" IDLE (probe) ", S_DIM), ("CAPS ", S_LABEL), ("0x%x" % probe["caps"], S_DEF), (" CORE ", S_LABEL),
-                 (fmt_hz(probe.get("core_hz")), S_DEF), (" RV ", S_LABEL), (fmt_hz(probe.get("rv_hz")), S_DEF),
-                 (" LAUNCHES ", S_LABEL), (str(probe.get("launches", 0)), S_DEF)]
-    else:
-        txt = "no process owns the card" if st == "idle" else ("held by pid %s, which does not publish (TSR_MON=0 or an older build)"
-                                                           % ",".join(map(str, dev["holders"])))
-        parts = [(" IMG ", S_LABEL), ("n/a", S_DIM), ("  " + txt, S_DIM)]
+        parts += [("   IMG ", S_LABEL), (img, S_DEF), (" ID ", S_LABEL), ("%08x" % (r["image_id"] & 0xFFFFFFFF), S_DEF),
+                  (" CAPS ", S_LABEL), ("0x%x" % r["caps"], S_DEF), (" KINDS ", S_LABEL),
+                  ("%d:%04x" % (r["n_kinds"], r["kinds_sig"] & 0xFFFF), S_DEF), (" ", S_DEF), (r["mode"], S_VAL)]
+    elif r is None:
+        if probe and probe.get("ok"):
+            parts += [("   idle, lifetime launches ", S_DIM), (str(probe.get("launches", 0)), S_DIM)]
+        elif st == "idle":
+            parts += [("   no process owns the card", S_DIM)]
+        else:
+            parts += [("   held by pid %s, which does not publish" % ",".join(map(str, dev["holders"])), S_DIM)]
+    elif dev["kind"] == "sim":
+        parts += [("   simulated time", S_DIM)]
     f.segs(y + 1, 0, parts)
     # line 3: sensors and memory
     s = dev.get("sensors")
@@ -990,7 +1132,7 @@ def device_header(f, cs, y, w, dev, idx, n_dev, v):
         if pw_ is None:
             sp += [("n/a", S_DIM)]
         else:
-            sp += [("%3.0f / %.0f W" % (pw_, pm or 0), S_DEF)]
+            sp += [("%3.0f / %.0f W" % (pw_, pm) if pm else "%3.0f W" % pw_, S_DEF)]
     x = f.segs(y + 2, 0, sp)
     used = r["mem_used"] if r else None
     total = r["mem_total"] if r else (probe["ch_bytes"] * probe["num_ch"] if probe and probe.get("ok") else 64 * 2 ** 30)
@@ -1001,8 +1143,23 @@ def device_header(f, cs, y, w, dev, idx, n_dev, v):
         draw_bar(f, y + 2, x + 2, bw, "DDR", frac, txt, S_BAR, na=used is None)
 
 
+def summary_meters(f, y, w, dev):
+    """COMPUTE (the busiest compute unit) and MEMORY (the busiest DDR channel against its 18 GB/s), side by side: one row."""
+    rr = dev.get("rates")
+    have = rr is not None and not rr.get("stale")
+    bw = (w - 3) // 2
+    if have:
+        c, m = rr["compute"], rr["memory"]
+        draw_bar(f, y, 1, bw, "COMPUTE", c["pct"], "%3.0f%% %s" % (100 * c["pct"], c["unit"]), S_BAR)
+        draw_bar(f, y, 2 + bw, bw, "MEMORY", m["pct"], "%3.0f%% ch%d %.1f GB/s" % (100 * m["pct"], m["channel"], m["gbs"]), S_BAR)
+    else:
+        draw_bar(f, y, 1, bw, "COMPUTE", None, "", na=True)
+        draw_bar(f, y, 2 + bw, bw, "MEMORY", None, "", na=True)
+    return 1
+
+
 def meters(f, cs, y, w, dev, v):
-    """Returns the rows used."""
+    """The unit bars, the channel bars, the read rate and the U line, each behind its own setup switch. Returns the rows used."""
     rr = dev.get("rates")
     rec = dev.get("rec")
     rows = 0
@@ -1064,45 +1221,33 @@ def meters(f, cs, y, w, dev, v):
     return rows
 
 
-def graphs(f, cs, y, h, w, dev, hist, v, interval):
-    if h < 5:
+def graph_panel(f, cs, y, h, w, dev, hist, v, interval):
+    """One box over the full width: the COMPUTE share (cyan) and the MEMORY share (yellow) of wall time, 0 to 100 %, the last
+    two minutes (less when the box is narrow)."""
+    if h < 5 or w < 24:
         return
-    wa = w * 3 // 5
-    wb = w - wa - 1
-    wa_box = wa - 3 - 4
-    wb_box = wb - 3 - 1
+    box = w - 4
+    pw = box - 2
+    ncols = 2 * pw
+    window = min(120.0, ncols * interval)
+    samples = list(hist)
+    cols = []
+    for c in range(ncols):
+        age = (ncols - 1 - c) * window / ncols
+        i = len(samples) - 1 - int(round(age / interval))
+        cols.append(samples[i] if i >= 0 else None)
+    comp = [None if x is None else x[0] for x in cols]
+    mem = [None if x is None else x[1] for x in cols]
     rr = dev.get("rates")
     have = rr is not None and not rr.get("stale")
-    h_ = list(hist)
-    mvm = [x[0] for x in h_]
-    ddr = [x[1] for x in h_]
-    tok = [x[2] for x in h_]
-    pp = [x[3] for x in h_]
-    C = (dev.get("rec") or {}).get("num_ch", 4)
-    ddr_max = DRAM_GBS * C
-    cur_mvm = mvm[-1] * 100 if mvm else 0.0
-    cur_ddr = ddr[-1] if ddr else 0.0
-    cur_tok = tok[-1] if tok else 0.0
-    cur_pp = pp[-1] if pp else 0.0
-    ph = h - 2
-    lab = lambda vals: [(i / 4.0, vals[i]) for i in range(5)]
+    if have:
+        legend = [("COMPUTE %3.0f%% %s" % (100 * rr["compute"]["pct"], rr["compute"]["unit"]), S_S1),
+                  ("MEMORY  %3.0f%% ch%d %.1f GB/s%s" % (100 * rr["memory"]["pct"], rr["memory"]["channel"], rr["memory"]["gbs"],
+                                                       " (dotted)" if v.mono else ""), S_S2)]
+    else:
+        legend = [("COMPUTE n/a", S_S1), ("MEMORY  n/a%s" % (" (dotted)" if v.mono else ""), S_S2)]
     left = [(0.0, "100"), (0.25, " 75"), (0.5, " 50"), (0.75, " 25"), (1.0, "  0")]
-    right = [(0.0, "%d" % ddr_max), (0.25, "%d" % (ddr_max * 3 / 4)), (0.5, "%d" % (ddr_max / 2)), (0.75, "%d" % (ddr_max / 4)),
-             (1.0, "0")]
-    win_a = 2 * (wa_box - 2) * interval
-    draw_graph(f, cs, y, 3, h, wa_box, [(ddr, ddr_max, S_S2), (mvm, 1.0, S_S1)],
-               [("MVM %%wall %3.0f%%" % cur_mvm, S_S1), ("DDR %.1f GB/s" % cur_ddr, S_S2)], left, right, win_a)
-    tmax = max([1.0] + tok + pp)
-    tmax = 10 ** math.ceil(math.log10(tmax)) if tmax > 1 else 1
-    for cand in (1, 2, 5):                                # a round top for the axis
-        top = cand * 10 ** math.floor(math.log10(max(1.0, max(tok + pp + [1.0]))))
-        if top >= max(tok + pp + [1.0]):
-            tmax = top
-            break
-    tl = [(0.0, "%g" % tmax), (0.5, "%g" % (tmax / 2)), (1.0, "0")]
-    win_b = 2 * (wb_box - 2) * interval
-    draw_graph(f, cs, y, wa + 1 + 3, h, wb_box, [(pp, tmax, S_S3), (tok, tmax, S_S1)],
-               [("tok/s %.1f" % cur_tok, S_S1), ("prefill/s %.1f" % cur_pp, S_S3)], tl, [], win_b)
+    draw_graph(f, cs, y, 3, h, box, [(mem, 1.0, S_S2, v.mono), (comp, 1.0, S_S1, False)], legend, left, [], window)
 
 
 def table(f, cs, y, h, w, procs, v):
@@ -1150,7 +1295,7 @@ def table(f, cs, y, h, w, procs, v):
         for j, (name, _, al) in enumerate(cols):
             s = vals[j]
             if len(s) > widths[j]:
-                s = s[:widths[j] - 1] + "~" if widths[j] > 3 else s[:widths[j]]
+                s = shorten_mid(s, widths[j]) if j == 2 else (s[:widths[j] - 1] + "~" if widths[j] > 3 else s[:widths[j]])
             f.put(y + 1 + i, x, s.rjust(widths[j]) if al == "r" else s.ljust(widths[j]), S_DEF if pub else S_DIM)
             x += widths[j] + 1
         cmd = p["cmd"] if pub else p["cmd"] + "  (no tsr-mon)"
@@ -1208,16 +1353,16 @@ def compose(snap, hist, v, h, w, interval, msg=""):
     device_header(f, cs, 0, w, dev, v.dev, len(devs), v)
     y = 3
     procs = [p for p in snap["processes"] if p["device"] == dev["id"] and (p["publisher"] or v.panels["others"])]
-    n_meter = 0
+    if v.panels["summary"]:
+        y += summary_meters(f, y, w, dev)
     if v.panels["meters"] or v.panels["ddr"] or v.panels["util"]:
-        n_meter = meters(f, cs, y, w, dev, v)
-    y += n_meter
+        y += meters(f, cs, y, w, dev, v)
     remaining = footer_y - y
     table_rows = max(len(procs), 1) + 1 if v.panels["table"] else 0
     table_h = min(table_rows, max(3, remaining // 3)) if v.panels["table"] else 0
     graph_h = remaining - table_h
     if v.panels["graph"] and graph_h >= 6:
-        graphs(f, cs, y, graph_h, w, dev, hist.get(dev["id"], []), v, interval)
+        graph_panel(f, cs, y, graph_h, w, dev, hist.get(dev["id"], []), v, interval)
         y += graph_h
     else:
         table_h = min(table_rows, remaining)
@@ -1235,7 +1380,8 @@ def compose(snap, hist, v, h, w, interval, msg=""):
 class Theme:
     def __init__(self, color):
         self.attr = {}
-        if color and curses.has_colors():
+        self.colored = bool(color and curses.has_colors())
+        if self.colored:
             curses.start_color()
             try:
                 curses.use_default_colors()
@@ -1334,6 +1480,7 @@ def run_curses(stdscr, mon, v, opts):
     except curses.error:
         pass
     theme = Theme(v.color)
+    v.mono = not theme.colored
     stdscr.keypad(True)
     stdscr.timeout(100)
     last = -1e9
@@ -1390,8 +1537,9 @@ def parse_args(argv):
     ap.add_argument("-d", "--delay", type=float, default=None, metavar="S", help="refresh interval in seconds (default 1)")
     ap.add_argument("--dir", default=None, help="record directory (default $TSR_MON_DIR or /dev/shm)")
     ap.add_argument("--include-dead", action="store_true", help="also show records of dead pids (TSR_MON_KEEP leftovers; tests)")
-    ap.add_argument("--no-sensors", action="store_true", help="do not run xbutil")
-    ap.add_argument("--sensor-interval", type=float, default=3.0, metavar="S", help="seconds between xbutil runs (default 3)")
+    ap.add_argument("--no-sensors", action="store_true", help="do not read the board sensors (sysfs, xbutil)")
+    ap.add_argument("--sensor-interval", type=float, default=10.0, metavar="S",
+                    help="seconds between xbutil runs, which give the power limit and what sysfs lacks (default 10)")
     ap.add_argument("--xbutil", default=os.environ.get("TSR_TOP_XBUTIL", XBUTIL), help="path of xbutil")
     ap.add_argument("--probe", action="store_true", help="open an idle card briefly in attach mode (tsr-mon-probe) when no process holds it "
                     "and the xclbin on the card is TSR_XCLBIN; off by default because a run that starts during the probe cannot open the card")
@@ -1403,6 +1551,7 @@ def parse_args(argv):
     ap.add_argument("--no-background", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--layout", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--window-min", type=float, default=1.0, help=argparse.SUPPRESS)
+    ap.add_argument("--token-window", type=float, default=3.0, metavar="S", help="seconds the tokens/s and launches/s rates average over (default 3)")
     o = ap.parse_args(argv)
     if o.probe_bin is None:
         d = os.environ.get("TSR_TOP_BIN_DIR") or os.path.dirname(os.path.abspath(__file__))
@@ -1429,8 +1578,8 @@ def main(argv=None):
     if opts.once or opts.json:
         mon.opts.no_background = False
         mon.start()
-        if not opts.no_sensors:
-            time.sleep(0.05)
+        if mon.bg.is_alive():
+            mon.bg.first_pass.wait(30)                  # sysfs, xbutil and the card's users, once
         mon.poll()
         time.sleep(max(0.0, opts.window))
         snap = mon.poll()
@@ -1449,7 +1598,8 @@ def main(argv=None):
                 time.sleep(0.3)
         mon.stop()
         if opts.json:
-            print(json.dumps(snap, indent=1, default=str))
+            out = dict(snap, devices=[{k: v for k, v in d.items() if k != "rec"} for d in snap["devices"]])   # the record is in the process
+            print(json.dumps(out, indent=1, default=str))
             return 0
         w, h = 100, 36
         if opts.size:
@@ -1460,6 +1610,7 @@ def main(argv=None):
             w, h = int(m.group(1)), int(m.group(2))
         elif sys.stdout.isatty():
             w, h = os.get_terminal_size()
+        v.mono = True                                   # a text frame has no colours: the memory series is dotted
         print(compose(snap, mon.hist, v, h, w, mon.interval).text())
         return 0
     if not sys.stdout.isatty():
