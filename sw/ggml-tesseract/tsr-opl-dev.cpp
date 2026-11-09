@@ -72,7 +72,12 @@ tsr_opl_run_result tsr_opl_dev::run(const std::vector<uint8_t> & blob, uint32_t 
     // Diagnostics (profiling the device against the simulator by record kind): TSR_OPL_PROF=1 sets the descriptor's PROF
     // bit (NODE_BEGIN markers, EX §4.3), TSR_OPL_KINDS=<file> appends the kind id of every record of every launch (one
     // line per launch) so that the op indices of the markers can be named.
-    static const bool prof_env = [] { const char * e = getenv("TSR_OPL_PROF"); return e && e[0] == '1'; }();
+    // TSR_DUMP_PLAN (the profile report) turns the marker on too, unless TSR_OPL_PROF=0: the markers join trace slices to records.
+    static const bool prof_env = [] {
+        const char * e = getenv("TSR_OPL_PROF");
+        const char * dp = getenv("TSR_DUMP_PLAN");
+        return (e && e[0] == '1') || (dp && dp[0] && !(e && e[0] == '0'));
+    }();
     l.flags  = prof_env ? 1u : 0u;
     if (const char * kf = getenv("TSR_OPL_KINDS"); kf && kf[0]) {
         if (FILE * f = fopen(kf, "a")) {

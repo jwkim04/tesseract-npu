@@ -187,6 +187,21 @@ if (TARGET llama)
     endif()
 endif()
 
+# ---- the profile report (sw/tools/prof, docs/prof-dbg.md "The profile report") ----------------------
+# TSR_DUMP_PLAN on a tiny MoE model and a tiny dense Gemma 4 on the simulator: the dump's files, the same generated text as
+# without it, prof_report.py's report.html / trace.perfetto.json / summary.json and the rules of the page.
+if (TARGET llama-completion AND TSR_FW_ELF)
+    foreach (_prof_case "qwen3moe_tiny|qwen3moe-tiny-q8_0.gguf" "gemma_tiny|gemma4-tiny-q8_0.gguf")
+        string(REPLACE "|" ";" _f "${_prof_case}")
+        list(GET _f 0 _pname)
+        list(GET _f 1 _pmodel)
+        add_test(NAME tools_prof_report_${_pname}
+                 COMMAND ${_tiny_py} ${TESSERACT_ROOT}/sw/tools/prof/test_prof_report.py --build-dir ${CMAKE_BINARY_DIR}
+                         --model ${TSR_TINY_MODEL_DIR}/${_pmodel} --out-dir ${CMAKE_BINARY_DIR}/sw/tools/prof/${_pname} --fw ${TSR_FW_ELF})
+        set_tests_properties(tools_prof_report_${_pname} PROPERTIES TIMEOUT 300)
+    endforeach()
+endif()
+
 # ---- llama-server on the device (tests/server_smoke.py) ---------------------------------------------
 # Two llama-server processes on the tiny Qwen2 model, the device (sim) and the CPU, with the M7 settings
 # and 2 slots (--kv-unified, one KV stream: SW §8 R10): /health, /v1/models, a chat completion, the same
