@@ -182,9 +182,13 @@ static float embd_nudge(float x, uint64_t key, uint32_t j) {
 // logits file
 
 enum { KLC_MODE_GENERATE = 0, KLC_MODE_REPLAY = 1 };
-enum { KLC_REPLAY_BATCH = 0, KLC_REPLAY_STEP = 1 };
+// KLC_REPLAY_VERIFY (SW-83): a device replay in verification windows of K + 1 tokens, as multi-token prediction decodes them (the
+// context keeps K rollback snapshots; a window with p accepted drafts has its tail replaced by wrong tokens and is rolled back
+// after its first p + 1 rows). K is in flags[15:8], KLC_FLAG_VERIFY_REJECT says that the accepted length cycles through 0 .. K.
+enum { KLC_REPLAY_BATCH = 0, KLC_REPLAY_STEP = 1, KLC_REPLAY_VERIFY = 2 };
 enum { KLC_INPUT_TOKENS = 0, KLC_INPUT_EMBD = 1, KLC_INPUT_EMBD_ULP = 2 };
-enum { KLC_FLAG_REPACK = 1u << 0, KLC_FLAG_CHAT = 1u << 1 };
+enum { KLC_FLAG_REPACK = 1u << 0, KLC_FLAG_CHAT = 1u << 1, KLC_FLAG_VERIFY_REJECT = 1u << 16 };
+static inline uint32_t klc_verify_k(uint32_t flags) { return (flags >> 8) & 0xFFu; }
 
 static const char KLC_MAGIC[8] = {'T', 'S', 'R', 'K', 'L', 'C', '0', '1'};
 // Version 2 (P3.3, 2026-10-30) records the baseline settings (SW-22, SW §9.5, §10.4) in five
@@ -267,7 +271,7 @@ static uint64_t klc_payload_bytes(const klc_seq & s, uint32_t n_vocab) {
 }
 
 static const char * mode_name(uint32_t m) { return m == KLC_MODE_GENERATE ? "generate" : "replay"; }
-static const char * replay_name(uint32_t r) { return r == KLC_REPLAY_BATCH ? "batch" : "step"; }
+static const char * replay_name(uint32_t r) { return r == KLC_REPLAY_BATCH ? "batch" : r == KLC_REPLAY_VERIFY ? "verify" : "step"; }
 static const char * input_name(uint32_t i) {
     return i == KLC_INPUT_TOKENS ? "tokens" : i == KLC_INPUT_EMBD ? "embd" : "embd+1ulp";
 }
@@ -628,6 +632,8 @@ struct run_opts {
     uint64_t    seed = 0;
     int         input = KLC_INPUT_TOKENS;
     int         replay = -1;                      // -1: step on a device (identity), batch on the CPU
+    int         verify_k = 0;                     // --verify-k K: a device replay in verification windows of K + 1 tokens (SW-83)
+    bool        verify_reject = true;             // --verify-reject off: every draft accepted
     int         threads = default_threads(), n_ctx = 0, n_batch = 2048, n_ubatch = 512;
     // baseline settings (SW-22, SW §10.4): FA on, q8_0 / q8_0 KV, LLAMA_ATTN_ROT_DISABLE=1 in
     // every phase; KV cache and attention on the host in M6 (offload_kqv false), on the device in M7.
@@ -651,7 +657,7 @@ struct session {
     llama_batch          batch{};
     bool                 have_batch = false;
     bool                 mrope = false;        // M-RoPE / IMROPE model: an embedding batch carries 4 position streams
-    uint64_t             n_prefill_tok = 0, n_gen_tok = 0;
+    uint64_t             n_prefill_tok = 0, n_gen_tok = 0, n_verify_windows = 0;
 
     ~session() {
         if (have_batch) llama_batch_free(batch);
@@ -698,6 +704,7 @@ static void create_context(session & s, const run_opts & o, int n_ctx_needed, in
     cp.n_ubatch        = (uint32_t) std::min<int>(o.n_ubatch, cp.n_batch);
     cp.n_seq_max       = 1;
     cp.n_outputs_max   = (uint32_t) std::min<int>(std::max(1, n_outputs_max), cp.n_batch);
+    cp.n_rs_seq        = (uint32_t) o.verify_k;      // rollback snapshots of the recurrent state (0: none)
     cp.n_threads       = o.threads;
     cp.n_threads_batch = o.threads;
     cp.flash_attn_type = o.fa ? LLAMA_FLASH_ATTN_TYPE_ENABLED : LLAMA_FLASH_ATTN_TYPE_DISABLED;
@@ -851,6 +858,12 @@ static void usage_run() {
         "  --replay batch|step replay: one decode per sequence or prompt + 1-token steps (default: batch on the\n"
         "                      CPU, step on a device, whose replay must repeat the generating run's graphs for\n"
         "                      compare --expect-identical, SW §10.4 M6 gate item 2)\n"
+        "  --verify-k K        (replay, device) decode the recorded tokens in verification windows of up to K + 1 tokens, the\n"
+        "                      batches of multi-token prediction (SW-83): the context keeps K recurrent snapshots and every\n"
+        "                      row is an output; the rows are those of plain decoding if the device's numerics do not\n"
+        "                      depend on T\n"
+        "  --verify-reject on|off  with --verify-k (default on): the accepted length of the windows cycles through 0 .. K,\n"
+        "                      the tokens after it are replaced by wrong ones and the window is rolled back\n"
         "  --repack            CPU: allow repacked weight buffers (anonymous memory; off by default)\n"
         "  -t N  -c N  -b N  -ub N  --resume  -v\n"
         "  settings (SW-22; every phase of a comparison must use the same, all are recorded in the file):\n"
@@ -892,6 +905,8 @@ static void parse_run(int argc, char ** argv, run_opts & o) {
             else if (v == "step") o.replay = KLC_REPLAY_STEP;
             else die("--replay: batch or step");
         }
+        else if (a == "--verify-k")            o.verify_k = (int) parse_int("--verify-k", val(), 1, 15);
+        else if (a == "--verify-reject")       o.verify_reject = parse_on_off("--verify-reject", val()) != 0;
         else if (a == "--repack")              o.repack = true;
         else if (a == "-t" || a == "--threads") o.threads = (int) parse_int("-t", val(), 1, 1024);
         else if (a == "-c" || a == "--ctx-size") o.n_ctx = (int) parse_int("-c", val(), 1, 1 << 24);
@@ -912,6 +927,11 @@ static void parse_run(int argc, char ** argv, run_opts & o) {
     if (o.model.empty() || o.out.empty()) { usage_run(); die("run: -m and --out are required"); }
     if (!device_kind_ok(o.device)) die("--device %s: sim, mock, vkernel, xrt or cpu", o.device.c_str());
     if (o.replay < 0) o.replay = o.device == "cpu" ? KLC_REPLAY_BATCH : KLC_REPLAY_STEP;
+    if (o.verify_k > 0) {
+        if (o.tokens.empty()) die("--verify-k replays the tokens of a file: --tokens is required");
+        if (o.device == "cpu") die("--verify-k is a device run: the CPU replays whole sequences in one batch");
+        o.replay = KLC_REPLAY_VERIFY;
+    }
     if (o.perturb) o.input = KLC_INPUT_EMBD_ULP;
 }
 
@@ -1023,6 +1043,7 @@ static int cmd_run(int argc, char ** argv) {
             n_out_max = std::max<int>(n_out_max, tail);
         } else {
             n_out_max = std::max<int>(n_out_max, o.replay == KLC_REPLAY_BATCH ? (int) p.n_rows : (int) (p.n_prompt - std::min(p.row0, p.n_prompt)));
+            if (o.verify_k > 0) n_out_max = std::max(n_out_max, o.verify_k + 1);
         }
         n_ctx_needed = std::max<int>(n_ctx_needed, p.n_prompt + p.n_gen);
     }
@@ -1046,7 +1067,8 @@ static int cmd_run(int argc, char ** argv) {
     h.n_layer        = (uint32_t) llama_model_n_layer(s.model);
     h.n_embd         = (uint32_t) s.n_embd;
     h.n_threads      = (uint32_t) o.threads;
-    h.flags          = (o.repack ? KLC_FLAG_REPACK : 0) | (o.chat ? KLC_FLAG_CHAT : 0);
+    h.flags          = (o.repack ? KLC_FLAG_REPACK : 0) | (o.chat ? KLC_FLAG_CHAT : 0) |
+                       (o.verify_k > 0 ? ((uint32_t) o.verify_k << 8) | (o.verify_reject ? KLC_FLAG_VERIFY_REJECT : 0u) : 0u);
     h.model_n_params = llama_model_n_params(s.model);
     h.model_size     = llama_model_size(s.model);
     h.t_load_s       = t_load;
@@ -1132,6 +1154,31 @@ static int cmd_run(int argc, char ** argv) {
         } else if (o.replay == KLC_REPLAY_BATCH) {
             decode_span(s, p.index, p.toks, 0, end, (int) p.row0, end, (int) p.row0, rows.data());
             rec.t_prefill_s = now_s() - t0;
+        } else if (o.verify_k > 0) {
+            // Verification windows (SW-83): the prompt as a step replay does it, then windows [i, i + nd] of the recorded tokens,
+            // nd <= K drafts, every row flagged as an output, as the verification batch of multi-token prediction is. With
+            // --verify-reject on the accepted length p cycles through 0 .. nd: the tokens after the first p + 1 are replaced by
+            // wrong ones, only the rows of the first p + 1 positions are kept, and the window is rolled back to position i + p
+            // (llama_memory_seq_rm: the recurrent memory serves the next window from the snapshot of that position).
+            decode_span(s, p.index, p.toks, 0, (int) p.n_prompt, (int) p.row0, std::min(end, (int) p.n_prompt), (int) p.row0, rows.data());
+            rec.t_prefill_s = now_s() - t0;
+            t0 = now_s();
+            std::vector<int32_t> win = p.toks;
+            int step = 0;
+            for (int i = (int) p.n_prompt; i < end;) {
+                const int nd = std::min(o.verify_k, end - 1 - i);
+                const int acc = o.verify_reject ? step % (nd + 1) : nd;
+                for (int j = 0; j <= nd; ++j) {
+                    win[(size_t) (i + j)] = j <= acc ? p.toks[(size_t) (i + j)] : (int32_t) (((int64_t) p.toks[(size_t) (i + j)] + 5 + j + step) % s.n_vocab);
+                }
+                decode_span(s, p.index, win, i, i + nd + 1, i, i + nd + 1, (int) p.row0, rows.data());
+                if (acc < nd) llama_memory_seq_rm(mem, 0, i + acc + 1, -1);
+                s.n_verify_windows++;
+                i += acc + 1;
+                ++step;
+            }
+            // the rows behind an accepted length were overwritten by later windows; the last window's own rows are all real
+            rec.t_gen_s = now_s() - t0;
         } else {
             decode_span(s, p.index, p.toks, 0, (int) p.n_prompt, (int) p.row0, std::min(end, (int) p.n_prompt), (int) p.row0, rows.data());
             rec.t_prefill_s = now_s() - t0;
@@ -1664,6 +1711,8 @@ static int cmd_all(int argc, char ** argv, const char * self) {
     int n_floor = 3;
     int phase = KLC_PHASE_M6;   // --phase, for the report's TSR_KINDS (cmd_run's default)
     bool embd_check = true;
+    int verify_k = 0;           // --verify-k K: a fourth device phase, the replay in verification windows (SW-83)
+    bool verify_identical = false;
     std::vector<std::string> common, gen_only, cmp;
     for (int i = 0; i < argc; ++i) {
         const std::string a = argv[i];
@@ -1676,6 +1725,8 @@ static int cmd_all(int argc, char ** argv, const char * self) {
         else if (a == "--seed")                 seed = parse_u64("--seed", val().c_str());
         else if (a == "--floor-seeds")          n_floor = (int) parse_int("--floor-seeds", val().c_str(), 1, 64);
         else if (a == "--no-embd-check")        embd_check = false;
+        else if (a == "--verify-k")             verify_k = (int) parse_int("--verify-k", val().c_str(), 1, 15);
+        else if (a == "--verify-identical")     verify_identical = true;
         else if (a == "-m" || a == "--model")   { model = val(); common.insert(common.end(), {"-m", model}); }
         else if (a == "--prompts" || a == "--n-prompts" || a == "-n" || a == "--prompt-tail") {
             gen_only.push_back(a); gen_only.push_back(val());
@@ -1691,7 +1742,7 @@ static int cmd_all(int argc, char ** argv, const char * self) {
         else if (a == "--repack" || a == "--resume" || a == "-v") common.push_back(a);
         else if (a == "--kl-ratio" || a == "--min-top1" || a == "--min-kl") { cmp.push_back(a); cmp.push_back(val()); }
         else die("all: unknown option %s\nusage: klcheck all -m MODEL [-o DIR] [--device sim] [--seed S] [--floor-seeds N] "
-                 "[--no-embd-check] [run options] [--kl-ratio R] [--min-top1 P] [--min-kl K]", a.c_str());
+                 "[--no-embd-check] [--verify-k K [--verify-identical]] [run options] [--kl-ratio R] [--min-top1 P] [--min-kl K]", a.c_str());
     }
     if (model.empty()) die("all: -m is required");
     if (!device_kind_ok(device)) die("all: --device %s: sim, mock, vkernel, xrt or cpu", device.c_str());
@@ -1708,7 +1759,7 @@ static int cmd_all(int argc, char ** argv, const char * self) {
     mkdir_p(dir);
     const std::string fdev = dir + "/dev.klc", fcpu = dir + "/cpu.klc";
     const std::vector<std::string> ffloors = all_floor_files(dir, seed, n_floor);
-    const std::string fembd = dir + "/cpu-embd.klc", fjson = dir + "/report.json";
+    const std::string fembd = dir + "/cpu-embd.klc", fjson = dir + "/report.json", fver = dir + "/ver.klc", fjson_ver = dir + "/report-verify.json";
     const double t0 = now_s();
 
     // --replay applies to the CPU runs only; the device run generates step by step
@@ -1760,11 +1811,32 @@ static int cmd_all(int argc, char ** argv, const char * self) {
     if (device != "cpu") a4.insert(a4.end(), {"--tsr-kinds", tsr_kinds_of(phase)});
     a4.insert(a4.end(), cmp.begin(), cmp.end());
     rc = run_child(a4);
+    // The verification windows (SW-83): the device replays the same tokens as multi-token prediction decodes them (K + 1 tokens, the
+    // accepted length cycling, rollbacks) and the rows are compared with the CPU's against the same floor, and with the plain
+    // device run's rows (bit-identical when the device's numerics do not depend on T)
+    int rc_ver = 0;
+    if (verify_k > 0 && device != "cpu") {
+        std::vector<std::string> a6 = {self, "run", "--device", device, "--tokens", fdev, "--verify-k", std::to_string(verify_k), "--out", fver};
+        a6.insert(a6.end(), common_dev.begin(), common_dev.end());
+        rc = run_child(a6) ? 1 : rc;
+        if (access(fver.c_str(), F_OK) == 0) {
+            std::vector<std::string> a7 = {self, "compare", "--ref", fcpu, "--dev", fver, "--json", fjson_ver};
+            for (const std::string & f : ffloors) a7.insert(a7.end(), {"--floor", f});
+            a7.insert(a7.end(), cmp.begin(), cmp.end());
+            fprintf(stderr, "klcheck all: verification windows (K = %d) against the CPU:\n", verify_k);
+            rc = run_child(a7) ? 1 : rc;
+            std::vector<std::string> a8 = {self, "compare", "--ref", fdev, "--dev", fver};
+            if (verify_identical) a8.push_back("--expect-identical");
+            fprintf(stderr, "klcheck all: verification windows against the plain device run:\n");
+            rc_ver = run_child(a8);
+            if (verify_identical && rc_ver != 0) rc = 1;
+        }
+    }
     fprintf(stderr, "klcheck all: wall time device %.1f s, cpu %.1f s, floor %.1f s (%d run%s), embd check %.1f s, compare %.1f s\n",
             t1 - t0, t2 - t1, t3 - t2, n_floor, n_floor == 1 ? "" : "s", t4 - t3, now_s() - t4);
     if (tmp_dir) {
         for (const std::string & p : ffloors) unlink(p.c_str());
-        for (const std::string & p : {fdev, fcpu, fembd, fjson}) unlink(p.c_str());
+        for (const std::string & p : {fdev, fcpu, fembd, fjson, fver, fjson_ver}) unlink(p.c_str());
         rmdir(dir.c_str());
     } else {
         fprintf(stderr, "klcheck all: files in %s (report.json has every position)\n", dir.c_str());
@@ -1790,7 +1862,11 @@ static int cmd_info(int argc, char ** argv) {
     const klc_header & h = r.h;
     printf("%s: %s, device %s, %s mode", file.c_str(), fixed_str(h.model_desc, 128).c_str(), fixed_str(h.device, 16).c_str(),
            mode_name(h.mode));
-    if (h.mode == KLC_MODE_REPLAY) printf(" (%s, from %s)", replay_name(h.replay), fixed_str(h.tokens_from, 64).c_str());
+    if (h.mode == KLC_MODE_REPLAY) {
+        printf(" (%s", replay_name(h.replay));
+        if (h.replay == KLC_REPLAY_VERIFY) printf(" K %u%s", klc_verify_k(h.flags), (h.flags & KLC_FLAG_VERIFY_REJECT) ? ", rollbacks" : "");
+        printf(", from %s)", fixed_str(h.tokens_from, 64).c_str());
+    }
     printf(", input %s", input_name(h.input));
     if (h.input == KLC_INPUT_EMBD_ULP) printf(" seed %" PRIu64, h.perturb_seed);
     printf("\n  model %s, %" PRIu64 " params, %.2f GiB, n_layer %u, n_embd %u, n_vocab %u\n", fixed_str(h.model_file, 128).c_str(),
@@ -2262,7 +2338,7 @@ static void usage() {
         "klcheck — model-level KL check against the ggml CPU backend (docs/klcheck.md)\n"
         "  klcheck run -m MODEL --device sim|mock|vkernel|xrt|cpu [--tokens FILE] [--perturb-ulp SEED] --out FILE [...]\n"
         "  klcheck compare --ref CPU.klc --dev DEV.klc --floor FLOOR.klc [--floor FLOOR2.klc ...] [--json FILE] [...]\n"
-        "  klcheck all -m MODEL [-o DIR] [--device sim] [-n G] [--n-prompts N] [--prompts FILE] [--phase m6|m7]\n"
+        "  klcheck all -m MODEL [-o DIR] [--device sim] [-n G] [--n-prompts N] [--prompts FILE] [--phase m6|m7] [--verify-k K]\n"
         "              [--seed S] [--floor-seeds N (default 3)] [...]\n"
         "  klcheck info FILE [-m MODEL]\n"
         "  klcheck selftest [DIR]\n"

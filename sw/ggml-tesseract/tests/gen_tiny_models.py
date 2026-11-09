@@ -22,6 +22,10 @@ graphs from (SW §8 "Ops in the two model families"):
                           S_v = 32, 4 key heads for 16 value heads (a 4x tiling like the 27B's 16 : 48), conv kernel 4,
                           the full layer with the joint Q|gate projection, per-head Q/K norms and partial
                           IMROPE (32 of 64 dims, sections 8 / 4 / 4 / 0)
+  qwen35-tiny-mtp-q8_0.gguf, qwen35-tiny-s128-mtp-q8_0.gguf
+                          the two models above with the multi-token prediction block after the layers (llama.cpp's
+                          nextn layer: eh_proj, enorm, hnorm, shared_head_norm and a full attention layer with its FFN;
+                          the head is the model's own output matrix), as the real Qwen3.8 GGUFs carry it (SW-83)
   qwen3moe-tiny-q8_0.gguf, qwen3moe-tiny-q4_k.gguf
                           2 layers of Qwen3-30B-A3B's kind (llama.cpp "qwen3moe"): head_dim 128 with GQA 16:2 (G = 8) and a
                           Q wider than the hidden size, per-head Q/K norms, NEOX rope, a softmax router over 64 experts
@@ -272,20 +276,41 @@ def qwen2_spec(seed: int) -> dict:
     return {"arch": "qwen2", "tensors": t, "kv": kv, "vocab": vocab_qwen2()}
 
 
-def qwen35_spec(seed: int, big: bool = False) -> dict:
+def qwen35_spec(seed: int, big: bool = False, mtp: bool = False) -> dict:
     """Qwen3.5 / 3.8 architecture (llama.cpp "qwen35"): Gated DeltaNet layers and every 4th layer attention.
-    big: the shapes of the real models' linear layers (S_v = 128, 16 value heads over 16 key heads)."""
+    big: the shapes of the real models' linear layers (S_v = 128, 16 value heads over 16 key heads).
+    mtp: one more block after the layers, the multi-token prediction head (llama.cpp's nextn layer: eh_proj over the
+    concatenated token embedding and hidden state, a full attention layer with its FFN, the shared head norm; the output
+    head is the model's own), as in the real GGUFs of the family (docs/design/06-software-verification.md SW-83)."""
     E, F, L, V = 256, 512, 4, 64
     S, HK, HV = (128, 16, 16) if big else (32, 4, 16)   # head_k_dim = head_v_dim, key heads, value heads (H_v % 16 = 0: gate rows are lines)
     KEY, VAL = S * HK, S * HV                  # 128, 512
     CONV = 2 * KEY + VAL                       # 768 channels
     H, HKV, D, NROT = (8, 2, 256, 64) if big else (4, 2, 64, 32)   # full attention: heads, KV heads, head_dim, rotated dims
     interval = 4
-    r = Rng(seed, "qwen35-tiny-s128" if big else "qwen35-tiny")
+    r = Rng(seed, ("qwen35-tiny-s128" if big else "qwen35-tiny") + ("-mtp" if mtp else ""))
     t: dict[str, np.ndarray] = {}
     t["token_embd.weight"] = r.normal((V, E), 1.0)
-    for il in range(L):
+    for il in range(L + (1 if mtp else 0)):
         p = f"blk.{il}."
+        if il == L:                            # the MTP block: a full attention layer with the nextn tensors
+            t[p + "attn_norm.weight"] = r.normal((E,), 0.1, 1.0)
+            t[p + "post_attention_norm.weight"] = r.normal((E,), 0.1, 1.0)
+            t[p + "attn_q.weight"] = r.normal((2 * H * D, E), 1.0 / math.sqrt(E))
+            t[p + "attn_k.weight"] = r.normal((HKV * D, E), 1.0 / math.sqrt(E))
+            t[p + "attn_v.weight"] = r.normal((HKV * D, E), 1.0 / math.sqrt(E))
+            wqk = (16.0 / D) ** 0.25
+            t[p + "attn_q_norm.weight"] = r.normal((D,), 0.05 * wqk, wqk)
+            t[p + "attn_k_norm.weight"] = r.normal((D,), 0.05 * wqk, wqk)
+            t[p + "attn_output.weight"] = r.normal((E, H * D), 0.7 / math.sqrt(H * D))
+            t[p + "ffn_gate.weight"] = r.normal((F, E), 1.0 / math.sqrt(E))
+            t[p + "ffn_up.weight"] = r.normal((F, E), 1.0 / math.sqrt(E))
+            t[p + "ffn_down.weight"] = r.normal((E, F), 0.7 / math.sqrt(F))
+            t[p + "nextn.eh_proj.weight"] = r.normal((E, 2 * E), 1.0 / math.sqrt(2 * E))
+            t[p + "nextn.enorm.weight"] = r.normal((E,), 0.1, 1.0)
+            t[p + "nextn.hnorm.weight"] = r.normal((E,), 0.1, 1.0)
+            t[p + "nextn.shared_head_norm.weight"] = r.normal((E,), 0.1, 1.0)
+            continue
         t[p + "attn_norm.weight"] = r.normal((E,), 0.1, 1.0)
         t[p + "post_attention_norm.weight"] = r.normal((E,), 0.1, 1.0)
         if (il + 1) % interval != 0:           # Gated DeltaNet layer
@@ -314,8 +339,8 @@ def qwen35_spec(seed: int, big: bool = False) -> dict:
     kv = {
         "general.architecture": "qwen35",
         "general.type": "model",
-        "general.name": "qwen35-tiny-s128" if big else "qwen35-tiny",
-        "qwen35.block_count": (VT.UINT32, L),
+        "general.name": ("qwen35-tiny-s128" if big else "qwen35-tiny") + ("-mtp" if mtp else ""),
+        "qwen35.block_count": (VT.UINT32, L + (1 if mtp else 0)),
         "qwen35.context_length": (VT.UINT32, 4096),
         "qwen35.embedding_length": (VT.UINT32, E),
         "qwen35.feed_forward_length": (VT.UINT32, F),
@@ -334,6 +359,8 @@ def qwen35_spec(seed: int, big: bool = False) -> dict:
         "qwen35.ssm.inner_size": (VT.UINT32, VAL),
         "qwen35.full_attention_interval": (VT.UINT32, interval),
     }
+    if mtp:
+        kv["qwen35.nextn_predict_layers"] = (VT.UINT32, 1)
     return {"arch": "qwen35", "tensors": t, "kv": kv, "vocab": vocab_qwen2()}
 
 
@@ -534,12 +561,15 @@ def check_model(spec: dict, variant: str, path: Path) -> None:
 
 
 SPECS = {"qwen2": qwen2_spec, "qwen35": qwen35_spec, "qwen35big": lambda seed: qwen35_spec(seed, True), "gemma4": gemma4_spec,
-         "qwen3moe": qwen3moe_spec}
+         "qwen3moe": qwen3moe_spec, "qwen35mtp": lambda seed: qwen35_spec(seed, False, True),
+         "qwen35bigmtp": lambda seed: qwen35_spec(seed, True, True)}
 OUTPUTS = [("qwen2-tiny-q8_0.gguf", "qwen2", "q8_0"),
            ("qwen2-tiny-q4_k.gguf", "qwen2", "q4_k"),
            ("gemma4-tiny-q8_0.gguf", "gemma4", "q8_0"),
            ("qwen35-tiny-q8_0.gguf", "qwen35", "q8_0"),
            ("qwen35-tiny-s128-q8_0.gguf", "qwen35big", "q8_0"),
+           ("qwen35-tiny-mtp-q8_0.gguf", "qwen35mtp", "q8_0"),
+           ("qwen35-tiny-s128-mtp-q8_0.gguf", "qwen35bigmtp", "q8_0"),
            ("qwen3moe-tiny-q8_0.gguf", "qwen3moe", "q8_0"),
            ("qwen3moe-tiny-q4_k.gguf", "qwen3moe", "q4_k")]
 

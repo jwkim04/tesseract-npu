@@ -9,6 +9,8 @@
 #   klcheck           model-level KL check vs the ggml CPU backend (docs/klcheck.md). Links llama, so it is
 #                     only built when the llama targets exist
 #   tsr-numcheck      per-node numeric dump (docs/numcheck.md); links llama as well
+#   tsr-mtp           multi-token prediction driver and checker (tsr_mtp.cpp, SW §7.11): llama.cpp's MTP drafter loop with
+#                     the device counters, plain / speculative modes; links llama-common
 #   tsr_bw            M0 bandwidth tool (XRT builds, once tsr_bw.cpp exists)
 #   tsr_dbg, tsr-dbg, tsr-prof   libtsr_dbg (GDB RSP server over the DMI window, tile-level debug, the
 #                     trace writer) and its tools (dbg/dbg.cmake; P3.7, P3.8)
@@ -254,6 +256,23 @@ function(tsr_add_numcheck)
     endif()
 endfunction()
 cmake_language(DEFER DIRECTORY ${TESSERACT_ROOT} CALL tsr_add_numcheck)
+
+# tsr-mtp (docs/design/06-software-verification.md §7.11, SW-83): the multi-token prediction driver and checker. It
+# is llama.cpp's speculative-simple loop with the device counters and the forced rejections, so it links llama-common
+# (the pinned tree's common_speculative); created by a deferred call like klcheck.
+function(tsr_add_mtp)
+    if (NOT TARGET llama OR NOT TARGET ggml OR NOT TARGET llama-common)
+        message(STATUS "tsr-mtp: llama targets not available, tsr-mtp is not built")
+        return()
+    endif()
+    add_executable(tsr-mtp ${TESSERACT_ROOT}/sw/tools/tsr_mtp.cpp)
+    set_target_properties(tsr-mtp PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    target_compile_options(tsr-mtp PRIVATE ${TSR_FP_FLAGS} -Wall -Wextra)
+    target_link_libraries(tsr-mtp PRIVATE llama-common llama ggml)
+endfunction()
+cmake_language(DEFER DIRECTORY ${TESSERACT_ROOT} CALL tsr_add_mtp)
 
 # numcheck_helper (numcheck.py: ggml conversions + libtsr_ref B1 loop), see numcheck_helper.cmake.
 include(${CMAKE_CURRENT_SOURCE_DIR}/numcheck_helper.cmake)

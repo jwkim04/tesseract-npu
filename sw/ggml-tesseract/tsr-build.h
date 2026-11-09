@@ -182,6 +182,12 @@ void tsr_note_kv_write(const tsr_rec & r, tsr_fanew_map * m);
 bool tsr_lower_m7(const tsr_build_env & env, bool probe, const ggml_tensor * node, const ggml_tensor * fused,
                   tsr_rec * out, std::string * why);
 
+// The records of a GATED_DELTA_NET node with its state group (tsr_gdn_cell): the node's record, or for K > 1 state snapshots the
+// chain of min(T, K) records (SW-83), in out and out->more. The CPY writes the cache's groups: in_place says whether the first
+// record also reads its state from the cell the CPY writes (the ids are the identity), else it reads the state tensor.
+bool tsr_lower_gdn_group(const tsr_build_env & env, const ggml_tensor * node, const ggml_tensor * cpy, bool in_place, tsr_rec * out,
+                         std::string * why);
+
 // The MUL_MAT half of a fused MUL_MAT + ADD (pass 3): sets args' Y / Y_STRIDE to the ADD's result and
 // ADD / ADD_STRIDE to its other operand (a bias row: stride 0; the residual: its row stride).
 // False with *why if they cannot be addressed (the record is then left as it was).
@@ -222,8 +228,12 @@ struct tsr_moe_scale {
 
 // The SSM_CONV record of a Gated DeltaNet layer (SW §7.10): the SSM_CONV node with its CONCAT absorbed, the state CPY
 // (nullptr in probe mode) and an optional SILU. False with *why if the group cannot be expressed as one record.
+// slots (SW-83, build mode): every state CPY of the group when the graph keeps rollback snapshots, `cpy` being the one of slot 0
+// (the final state): the record writes slot 0 itself and CPY records (r->more) copy the window rows of the other slots into
+// the cache's groups.
 bool tsr_lower_conv_group(const tsr_build_env & env, bool probe, const ggml_tensor * conv, const ggml_tensor * silu,
-                          const ggml_tensor * cpy, tsr_rec * r, std::string * why);
+                          const ggml_tensor * cpy, tsr_rec * r, std::string * why,
+                          const std::vector<const ggml_tensor *> * slots = nullptr);
 
 // The window of an SSM_CONV group, at its CONCAT: two CPY records (the conv state rows, the token rows) into the CONCAT's
 // result buffer (SW §7.10; ggml-alloc frees the CONCAT's inputs after it, the SSM_CONV record reads the window).
@@ -249,6 +259,11 @@ struct tsr_gdn_cell {
     uint32_t n = 0;
     int32_t cell0 = 0;
     bool in_place = false;
+    // SW-83: the snapshot slots the CPY writes (min(T, K); the CPY is then a 3D view of the cache, one group per slot), and
+    // whether the record absorbs the CPY (in place, or more than one slot: the record writes the cache's groups itself and the
+    // gather, if the ids are not the identity, still runs and the record reads its copy)
+    uint32_t slots = 1;
+    bool absorb_cpy = false;
 };
 
 struct tsr_fusion {
@@ -259,6 +274,8 @@ struct tsr_fusion {
     // SSM_CONV groups (tsr_lower_conv_group): for the SSM_CONV node i, the CONCAT, the state CPY (both earlier in the
     // graph) and the SILU (later) that its record absorbs; -1 for no group (silu: the group without SILU)
     std::vector<int32_t> conv_concat, conv_cpy, conv_silu;
+    // SW-83: every state CPY of an SSM_CONV group (conv_cpy[i] is the one of slot 0, the final state)
+    std::vector<std::vector<int32_t>> conv_cpys;
     // GATED_DELTA_NET nodes with their state gather and state CPY (tsr_gdn_cell): by node index
     std::vector<tsr_gdn_cell> gdn_cell;
     uint32_t n_pairs = 0;

@@ -36,7 +36,7 @@ branch now publishes live counters, and a run with `TSR_DUMP_PLAN=<dir>` makes t
   `tsr_opl_dev::run` (the PROF bit of the dump, the publisher's bracket around the launch) merged without a conflict.
 - The two hooks work together: with `TSR_DUMP_PLAN` on the publisher still publishes, and the record's launches, op records and `PERF_CYCLES` equal the sums over `launches.jsonl`
   (docs/prof-dbg.md §3.1). Neither moves a record or an output bit.
-- Decisions: SW-75 to SW-82, then SW-84 and SW-87. SW-83, SW-85 and SW-86 are on `mtp`, which is not merged.
+- Decisions: SW-75 to SW-82, then SW-84 and SW-87; the multi-token prediction branch `mtp` (merged after these two, section below) took SW-83, SW-85, SW-86 and SW-88.
 - Live counters on any run: `build/dev/bin/tsr-top` (simulator runs show as a simulated device), and `build/xrt/bin/tsr-top` next to a card run from this worktree
   (docs/prof-dbg.md §7). The profile report: docs/prof-dbg.md §3.1, `sw/tools/prof/capture_card.sh`.
 - Checked (build `build/dev`, `TSR_WITH_TORCH=ON`): `ctest -LE slow` 331 of 331 (the tokenizer vocabulary test is disabled); `gen_tables.py --check` and `gen_tops.py --check`.
@@ -53,7 +53,30 @@ branch now publishes live counters, and a run with `TSR_DUMP_PLAN=<dir>` makes t
 
 `bin/tsr-top` shows the card like nvtop shows a GPU. The process that owns the card publishes a record in `/dev/shm/tsr-mon-<pid>` after every launch (SW-87,
 `sw/transport/tsr_mon.h`, on by default, `TSR_MON=0` turns it off); the monitor reads it, the sensors from `xbutil` and the PCIe link from sysfs, and does not open
-the compute unit. Use, panels, numbers and limits: [prof-dbg.md](prof-dbg.md) §7. Tests: `ctest -R 'tools_top|transport_mon'`. SW-83 to SW-86 are on `mtp`; SW-87 is this one.
+the compute unit. Use, panels, numbers and limits: [prof-dbg.md](prof-dbg.md) §7. Tests: `ctest -R 'tools_top|transport_mon'`. SW-87 is this one.
+
+## Resume here for multi-token prediction (branch `mtp`, merged into `sw-moegdn`, November 9)
+
+Qwen3.8's MTP head runs on the device: the verification batch (K + 1 tokens, every row an output), the draft steps and the catch-up decode are device launches, and the rollback
+after a rejected draft restores the recurrent state from the cache's snapshot groups. No RTL, firmware, record or ABI change and no llama.cpp patch. Design: SW §7.11 (SW-83, SW-85, SW-86 and SW-88, in the merge the output head in row blocks became SW-88 because `prof-viz` had SW-84; the next free
+number is SW-89). Numbers: [performance.md](performance.md) "Multi-token prediction on the card", checks: [klcheck.md](klcheck.md) "Verification windows".
+
+- What changed (host backend only): `GATED_DELTA_NET` with K + 1 slots is a chain of K = 1 records (`tsr_lower_gdn_slots`), the conv slots are `CPY` records, the SW-82 state group takes the 3D
+  slot `CPY` (`absorb_cpy`), `CONCAT` along dim 0 is two `CPY` records, a matrix whose T_MAX tokens do not fit one planner tile (the 248,320-row output head) is stored in 2 / 4 / 8 row blocks
+  (`tsr_head_parts`, `TSR_HEAD_SPLIT=0` turns it off), the backend has the hook `ggml_backend_tesseract_counters`. New tools: `tsr-mtp` (`sw/tools/tsr_mtp.cpp`), `klcheck --verify-k`. New tests:
+  `test-tsr-mtp` (`ggml_tesseract_mtp_*`), `ggml_tesseract_verify_*`, the units of the lowering, `ggml_tesseract_head_blocks`; tiny Qwen3.5-style models with an MTP block (`gen_tiny_models.py`).
+- Results, card (`k4full`, composed GDN), 27B Q4_K_M with `mtp-Qwen3.8-27B-Q8_0.gguf` (`-md`): the tokens of every MTP run equal plain decoding's (K = 1, 2, 3, 4 and 8 prompts, also on Q8_0); device cycles per token
+  113.99 M plain, 88.29 / 85.48 / 89.24 M at K = 1 / 2 / 3 on 8 prompts × 64 tokens (1.29 / 1.33 / 1.28 ×; 87.99 / 90.05 / 87.86 M on 4 × 32); wall 1.745 tok/s plain, 2.22 / 2.16 / 2.21 best of 3 rounds (4 × 32);
+  accepted drafts per step 0.859 / 1.471 / 1.893; `--spec-draft-p-min 0.5` at K = 3 gives 83.40 M (1.37 ×). Q8_0 target: 148.18 M plain, 1.39 / 1.43 / 1.39 ×. A head requantized to Q4_K halves the draft step (3.8 M against 7.2 M) and gives 1.32 / 1.39 / 1.31 ×; ggml-org's Q4_0 head
+  is converted to Q8_0 by the device and gains nothing (performance.md).
+  klcheck M7, 8 × 64: ratio 1.139, top-1 98.24 %, PASS, and the verification windows with rollbacks give the same rows bit for bit (512 / 512). 2B: card against simulator 96 / 96 bit-identical (plain and windows).
+- Why only 1.3 ×: a verification step grows by 39 M cycles per token (the composed recurrence, VU-bound and serial in the tokens, plus the chain's state re-reads), a draft step costs 7.2 M (5.3 M the Q8_0 vocabulary matrix),
+  and the MVM is now T-independent. With the fused op the simulator estimate (truncated 4- and 8-layer models, the method of §7.10) is 65.5 / 61.4 / 56.5 M cycles per token, 1.39 / 1.49 / 1.61 × (verification of 4 tokens 144.6 M
+  against 91.1 M plain). The 2B loses (0.80 ×): its head is 29 % of a token.
+- Left: the whole 27B on the simulator (composed and `TSR_SIM_GDN=1`, `TSR_SIM_DRAM_DIR`, about 22 GB of disk; the host was busy with a K4 link); the card run on the `k4f250` image (the same commands, `TSR_SIM_GDN=1` for the replays);
+  an in-kernel snapshot store (two record words, an ABI change; saves about 9 % of a fused verification); more than one sequence with snapshots in one ubatch; probabilistic drafting.
+- Setup of this worktree: `third_party` holds local copies of the pinned clones (llama.cpp patched), `build/tools` links to the main tree's toolchain, `traces/` was copied from the main tree (not committed; two
+  `tools_selftest_mock_traces*` cases need it). Card scripts: `build/card/mtp/` (not committed): `lib.sh`, `run_mtp.sh KEY MODEL MTP_GGUF NP NGEN ROUNDS KLIST`, `run_klcheck.sh`, `run_2b_identity.sh`.
 
 ## Resume here for the software: the branches merged into `sw-moegdn` (November 9)
 
@@ -62,7 +85,7 @@ simulator's cycle models), `torch-basis` (SW-81, the PyTorch backend and `QuantL
 revision 2 of GATED_DELTA_NET, the state on its cache cell). The first three change no RTL (`git diff 2d887ec -- rtl hw` was empty after them); `gdn-fw` brings the VU's GDN op
 (opcode 0x39, `CAPS` bit 8) from `gdn-vu` with its `rtl/` and `tb/` files, which the card image of 2026-11-09 does not have. The sections below describe each branch as it was before the merge.
 
-- Decisions in [design/06-software-verification.md](design/06-software-verification.md): SW-75 to SW-82, in order, with no gap (at that merge; SW-84 and SW-87 came after, see the first section).
+- Decisions in [design/06-software-verification.md](design/06-software-verification.md): SW-75 to SW-82, in order, with no gap (at that merge; SW-83 to SW-88 came after, see the first sections).
 - Qwen3-30B-A3B prefill runs at the default `-ub 512` (SW-76 fixed the several-tile route): 26.72 tok/s best, 26.60 median on the card, 513 of 513 rows identical to the
   simulator. Gemma 4 26B-A4B: 26.58 / 26.56 tok/s, 515 of 515 rows identical. The Qwen3 layer test in `test-tsr-moe` now runs T = 65, 70, 130 and 256 as well
   (70 aborted before SW-76).

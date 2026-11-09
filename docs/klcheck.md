@@ -127,9 +127,9 @@ host, and are not comparable with the M6 ones; the table in "Results" names the 
 ```
 klcheck all -m MODEL [-o DIR] [--device sim] [--seed 1] [--floor-seeds 3] [-n 64] [--n-prompts N] [--prompts FILE]
             [--prompt-tail 1] [--chat] [--replay batch|step] [-t N] [--phase m6|m7] [--resume]
-            [--kl-ratio 3] [--min-top1 0.8] [--min-kl 0] [--no-embd-check]
+            [--kl-ratio 3] [--min-top1 0.8] [--min-kl 0] [--no-embd-check] [--verify-k K [--verify-identical]]
             [--fa on|off] [-ctk TYPE] [-ctv TYPE] [--offload-kqv on|off] [--attn-rot on|off]   # experiments
-klcheck run -m MODEL --device sim|mock|vkernel|xrt|cpu --out FILE [--tokens FILE] [--perturb-ulp SEED] [...]
+klcheck run -m MODEL --device sim|mock|vkernel|xrt|cpu --out FILE [--tokens FILE] [--perturb-ulp SEED] [--verify-k K [--verify-reject on|off]] [...]
 klcheck compare --ref CPU.klc --dev DEV.klc [--floor FLOOR.klc]... [--json FILE] [--tsr-kinds LIST] [--expect-identical]
 klcheck info FILE [-m MODEL]          # header, timings, per-sequence text
 klcheck embd MODEL TOKEN... [--perturb-ulp S --seq Q --pos P]
@@ -657,6 +657,35 @@ and ` in the 15th century, with the invention of movable type by Johannes` for Q
 Qwen3.8 2B at the default `-ub 512` with a 512-token prompt (511 prompt-tail rows and 4 generated; the fused op over 512 tokens of prefill): the card's 515 rows against the
 simulator's replay of its tokens, **515 of 515 bit-identical**. The prefill took 13.3 s on the card; its replay on the simulator took 2.8 min, the 8 x 64 replay 3.4 min and the 1 x 16 replay 25 s. For the MoE models the 8 x 64 replay took 8.1 min (Gemma 4) and 8.0 min (Qwen3-30B-A3B) on the simulator with the file-backed DRAM
 (host load average 3 to 5, 0.63 s per decode token for Gemma 4). `klcheck all` took 2.2 min for Qwen3.8 2B, 35 min for Gemma 4 and 18 min for Qwen3-30B-A3B (the CPU, floor and embd phases ran at a host load of 20 to 25 with the K4 link running).
+
+### Verification windows (multi-token prediction, SW-83, 2026-11-09)
+
+`klcheck run --device D --tokens FILE --verify-k K` replays the tokens of a file the way multi-token prediction decodes them. The context keeps `K` recurrent snapshots
+(`n_rs_seq` = K). After the prompt (decoded as a step replay does) the recorded tokens are decoded in windows `[i, i + nd]` of up to `K + 1` tokens, every row an output, as the
+verification batch is. With `--verify-reject on` (the default) the accepted length `p` of the windows cycles through `0 … nd`: the tokens after the first `p + 1` are replaced by
+wrong ones, only the rows of the first `p + 1` positions are kept, and the window is rolled back with `llama_memory_seq_rm` to position `i + p`, so the next window reads the snapshot of that
+position (the recurrent memory serves the rollback from the cache's groups). `--verify-reject off` accepts every draft. The file is a replay file (`klcheck info`: `verify K 3, rollbacks`).
+`klcheck all … --verify-k K [--verify-identical]` adds a device phase after the usual ones: the verification windows are compared with the CPU against the same floor
+(the criterion of "Pass") and with the plain device run's rows; `--verify-identical` makes that second comparison an `--expect-identical` (the device's numerics do not depend on `T`,
+so every row must be bit-identical, rollbacks included). The pinned llama.cpp, `ggml_gated_delta_net(…, K + 1)` and the conv state copies of such a context are lowered by
+SW §7.11; a `T` > 1 window needs the verification graph on the device (one launch per window).
+
+```sh
+klcheck all -m MODEL --device xrt --phase m7 -n 64 --n-prompts 8 --verify-k 3 --verify-identical -o DIR
+klcheck run -m MODEL --device xrt --phase m7 --tokens DIR/dev.klc --verify-k 3 --out DIR/ver.klc
+TSR_SIM_CARD=k4full klcheck run -m MODEL --device sim --phase m7 --tokens DIR/dev.klc --verify-k 3 --out DIR/ver-sim.klc
+klcheck compare --ref DIR/ver-sim.klc --dev DIR/ver.klc --expect-identical
+```
+
+| | tiny Qwen3.5 MTP, S_v 32 / 128 (simulator, `T_MAX` 4) | Qwen3.8 2B Q4_K_M (card, 4 × 24 tokens) | Qwen3.8 27B Q4_K_M (card, 8 × 64 tokens) |
+| --- | --- | --- | --- |
+| Verification windows against the CPU: mean KL, ratio (limit 3), top-1 | the same as the plain run (3.44e-4 against floor 1.18e-4: ratio 2.92 on the S_v 128 model; `--min-kl 1e-3`), 96.9 % | not run | mean KL 6.6007e-4 against floor 5.7969e-4, **ratio 1.139** (seeds 1 / 2 / 3: 1.152 / 1.136 / 1.128), top-1 **98.24 %** (floor 98.76 %), PASS |
+| The plain device run, same tokens | ratio 2.92, 96.9 % | | ratio 1.139, 98.24 %, PASS |
+| Verification rows against the plain device run | 96 / 96 bit-identical (4 × 24) | 96 / 96 | **512 / 512** bit-identical |
+| Card against simulator (`TSR_SIM_CARD=k4full`, `T_MAX` 4) | | plain 96 / 96, windows 96 / 96 bit-identical | not run (the 27B simulator run waits for the host) |
+
+The 27B `klcheck all` took 25 min wall (device generation 383 s, CPU replay 136 s, three floors 450 s, embd check 145 s, compares 388 s); the floor and embd files were deleted after the summary.
+The KL and top-1 are the first 27B klcheck on the card; the ratio of the plain run is the M7 criterion for this model. A window of `T` tokens is one launch (SW §7.11).
 
 ## Tests
 
