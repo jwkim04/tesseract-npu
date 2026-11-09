@@ -1936,6 +1936,10 @@ message (a record's token stride would not match). Without the group (`TSR_GDN_C
 state rows and the generic `CPY` records move them (tested). Cost: one extra read and write of the state per token and layer
 (the K = 1 records of a verification batch re-load the tile), 18 MiB per GDN layer of the 27B at `T = 4`.
 
+**Splits and launches.** With `GGML_SCHED_DEBUG=2` the verification graph of a context with snapshots (nodes = 1,539 on the 2B) is two scheduler splits, the CPU's token-embedding lookup and one
+Tesseract split, as a decode graph is; the draft graph (50 nodes) the same after SW-85 (before it four splits). `TSR_STATS` and the counters hook show one launch per verification and per draft step, and one for the catch-up decode
+(27B on the card: 1.0 launches per verification, 1.0 per draft token, 1.0 per `process`; 1.62 to 1.72 launches per generated token at K = 1 to 3). No part of the GDN snapshots, the conv state or the attention runs on the CPU.
+
 **CONCAT of two rows (SW-85).** The MTP head's `concat(e_norm, h_norm)` (dim 0, F32, rows of whole lines) is two `CPY` records into the
 result's rows (`tsr_lower_concat`). Without it the draft graph had four scheduler splits (two CPU islands, two launches per draft step); with it
 one device split and one launch.
