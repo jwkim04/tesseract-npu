@@ -65,6 +65,10 @@ module tsr_mac_lane #(
   parameter  int unsigned T     = 1,    // tokens sharing the weights
   parameter  int unsigned LAT   = 3,    // fixed latency, >= 1
   parameter  bit          PV    = 1'b0, // PV accumulate mode (ATTPV, AT §8.2)
+  // PVR: pv_en reaches the DSP controls (the A / D input mux, the post-adder mode and enable) through a register copy per
+  // slot and eight lanes, one cycle later (docs/platform-u200.md §8.10). pv_en changes only while the lane is empty; the
+  // bench assertion below checks that no operand is offered within a cycle of a change. PVR = 0: the signal itself.
+  parameter  bit          PVR   = 1'b0,
   localparam int unsigned SUM_W = 16 + $clog2(N),
   localparam int unsigned NSP   = (T + 1) / 2
 ) (
@@ -155,6 +159,16 @@ module tsr_mac_lane #(
     assign pv_fp = pv_fa;
   end
   wire pv_on = PV & pv_en;
+  localparam int unsigned NK8 = (N + 7) / 8;
+  logic [NS-1:0][NK8-1:0] pve_w;          // the mode as each group of eight lanes of each slot sees it
+  if (PVR && PV) begin : g_pvr
+    (* keep = "true" *) logic [NS-1:0][NK8-1:0] pve_q;
+    always_ff @(posedge clk) pve_q <= {(NS * NK8){pv_en}};
+    assign pve_w = pve_q;
+    wire unused_pvon = &{1'b0, pv_on};
+  end else begin : g_pv0
+    assign pve_w = {(NS * NK8){pv_on}};
+  end
 
   // ---- products (layer 0): exact 16-bit two's complement, zero for the padding lanes ----
   logic [T-1:0][NP-1:0][15:0] prod;
@@ -167,15 +181,16 @@ module tsr_mac_lane #(
       logic signed [26:0] a_d, a_i;
       logic signed [7:0]  d_d, b_d, d_i, b_i, b_a;
       logic signed [26:0] ad_d, ad_q;
+      wire pvo = pve_w[s][k / 8];
       // use_dsp on the product only: on P it would also pull the tree adders it feeds into DSPs
       (* use_dsp = "yes" *) logic signed [34:0] m_d, m_q;
       logic signed [47:0] p_d, p_q;
 
       if (PAIR) begin : g_pair
-        assign a_d = pv_on ? 27'($signed(pv_a[s])) : $signed({x[2*s][k][7], x[2*s][k], 18'd0});
-        assign d_d = pv_on ? 8'sd0 : $signed(x[2*s+1][k]);
+        assign a_d = pvo ? 27'($signed(pv_a[s])) : $signed({x[2*s][k][7], x[2*s][k], 18'd0});
+        assign d_d = pvo ? 8'sd0 : $signed(x[2*s+1][k]);
       end else begin : g_one
-        assign a_d = pv_on ? 27'($signed(pv_a[s])) : 27'($signed(x[2*s][k]));
+        assign a_d = pvo ? 27'($signed(pv_a[s])) : 27'($signed(x[2*s][k]));
         assign d_d = '0;
       end
       assign b_d = w[k];
@@ -220,12 +235,12 @@ module tsr_mac_lane #(
       end
 
       // P: post-adder; W mux = the packing constant (MVM pair), Z mux = P (PV accumulate)
-      wire signed [47:0] p_w = (!pv_on && PAIR) ? 48'sd131072 : 48'sd0;
-      wire signed [47:0] p_z = (pv_on && !pv_fp) ? p_q : 48'sd0;
+      wire signed [47:0] p_w = (!pvo && PAIR) ? 48'sd131072 : 48'sd0;
+      wire signed [47:0] p_z = (pvo && !pv_fp) ? p_q : 48'sd0;
       assign p_d = p_w + p_z + 48'(m_q);
       if (R_P) begin : g_p
         always_ff @(posedge clk) begin
-          if (ce && (!pv_on || pv_vp)) p_q <= p_d;
+          if (ce && (!pvo || pv_vp)) p_q <= p_d;
         end
       end else begin : g_no_p
         assign p_q = p_d;
@@ -301,6 +316,21 @@ module tsr_mac_lane #(
 
   assign out_valid = v_q[LAT-1];
   assign y         = o_y[NXTRA];
+
+`ifndef SYNTHESIS
+  // PVR: the register copy of pv_en equals pv_en whenever an operand is in the lane or offered to it
+  if (PVR && PV) begin : g_chk_pvr
+    logic a_on_q;
+    initial a_on_q = 1'b0;
+    always @(posedge clk) if (!rst_n) a_on_q <= 1'b1;
+    always_ff @(posedge clk) begin
+      if (rst_n && a_on_q && (in_valid || pv_valid || (|v_q) || pv_vi || pv_va || pv_vp)) begin
+        assert (g_pvr.pve_q[0][0] == pv_en)
+          else $error("%m: pv_en changed less than 2 cycles before an operand (PVR)");
+      end
+    end
+  end
+`endif
 
   if (!PV) begin : g_nopv
     assign pv_acc = '0;

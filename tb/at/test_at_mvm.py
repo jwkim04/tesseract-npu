@@ -782,7 +782,7 @@ def _run(name, cfg, testcase="at_mvm", rand_reset=None, mutant=None):
                   ACT_RD_LAT=cfg.get("act_rd_lat", 2), MAC_LAT=cfg.get("mac_lat", 3), MUL_LAT=cfg.get("mul_lat", 4),
                   ADD_LAT=cfg.get("add_lat", 5), WS_FIFO_BEATS=cfg.get("ws_fifo", 512),
                   RST_LOCAL=cfg.get("rst_local", 0), GATHER_PAIR=cfg.get("gather_pair", 0), GATHER_FLITS=cfg.get("gather_flits", 1),
-                  XSLR_REG=cfg.get("xslr_reg", 0))
+                  XSLR_REG=cfg.get("xslr_reg", 0), FAST_CLK=cfg.get("fast_clk", 0))
     srcs = rtl_sources(RTL / ("filelist_xilinx.f" if cfg.get("tech") == "xilinx" else "filelist.f"))
     if mutant:
         srcs = mutated_sources(srcs, *mutant)
@@ -816,19 +816,36 @@ def test_at_mvm_u200_xilinx():
                              rst_local=2, gather_pair=1, gather_flits=2, xslr_reg=1, n_ops=40, tech="xilinx"))
 
 
+def test_at_mvm_fast_clk_xilinx():
+    """FAST_CLK 1 with the Xilinx technology wrappers of the card image: the DSP lanes take pv_en through register copies
+    (PVR). tsr_mac_lane asserts that pv_en does not change within a cycle of an operand."""
+    _run("u200_fast_xilinx", dict(num_ch=4, t_max=4, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30, spm_rd_lat=4,
+                                  addr_beat_w=28, rd_out=16, bc_pipe=2, res_pipe=2, mac_lat=9, rst_local=2, gather_pair=1,
+                                  gather_flits=2, xslr_reg=1, fast_clk=1, n_ops=40, tech="xilinx"))
+
+
 # tsr_mvm_pv before the fix: the output stage was reset to `ng == 0`, a value that is 1 after configuration
 PV_FIX = "ob_zero_q  <= rst_n & (ng == 13'd0);"
 PV_OLD = "ob_zero_q  <= (ng == 13'd0);"
 
 
-def _zero_state(mutant=None):
-    _run("u200_flits2", dict(num_ch=4, t_max=4, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30, spm_rd_lat=4,
+def _zero_state(mutant=None, fast_clk=0):
+    _run("u200_flits2" if not fast_clk else "u200_fast", dict(num_ch=4, t_max=4, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30, spm_rd_lat=4,
                              addr_beat_w=28, rd_out=16, bc_pipe=2, res_pipe=2, mac_lat=9,
-                             rst_local=2, gather_pair=1, gather_flits=2, models=False, n_ops=0,
+                             rst_local=2, gather_pair=1, gather_flits=2, models=False, n_ops=0, fast_clk=fast_clk,
                              directed=[dict(pv=False, E=64, D=64, G=1, GS=1, tq=4, hg0=0, u0=0, n=3, flags=4 | 1,
                                             c_hi=40),
                                        dict(pv=True, E=64, D=64, G=1, GS=1, tq=4, hg0=0, u0=0, n=3, flags=1)]),
          rand_reset=0, mutant=mutant)
+
+
+def test_at_mvm_fast_clk():
+    """The full K4 shape with FAST_CLK 1 (the 250 MHz stages, docs/platform-u200.md §8.10): the three-stage row-vector
+    emitter of the PV unit and of the gather (MAXOUT and LSUM lines 3 cycles later). Results and SPM image are the
+    simulator's."""
+    _run("u200_fast", dict(num_ch=4, t_max=4, k_max=32768, spm_bytes=1 << 20, ch_bytes=16 << 30, spm_rd_lat=4,
+                           addr_beat_w=28, rd_out=16, bc_pipe=2, res_pipe=2, mac_lat=9, rst_local=2, gather_pair=1,
+                           gather_flits=2, xslr_reg=1, fast_clk=1, n_ops=40))
 
 
 def test_at_mvm_zero_state():
@@ -841,6 +858,11 @@ def test_at_mvm_zero_state():
     shape is that of test_at_mvm_u200_flits2 (the full image's paired two-flit gather); the packaged core with the
     Xilinx wrappers is tb/core test_k4_selftest_first_run."""
     _zero_state()
+
+
+def test_at_mvm_zero_state_fast():
+    """The same first ATTPV at zero state with FAST_CLK 1 (the PV drain with the extra stages, the emitters in three stages)."""
+    _zero_state(fast_clk=1)
 
 
 def test_at_mvm_zero_state_mutant():

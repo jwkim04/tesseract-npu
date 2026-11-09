@@ -83,6 +83,10 @@ module tsr_core
   // the RISC-V SPM bridge request (one stage, in the SPM link end), the MVM's attention-stall strobe (two stages per
   // cluster, tsr_mvm) and the pair links of the MVM gather (one tsr_rpipe stage each, tsr_mvm_gather).
   parameter bit              XSLR_REG       = 1'b0,
+  // FAST_CLK (implementation; tsr_core_dp and below, docs/platform-u200.md §8.10): the register stages and protocol changes that
+  // make the core meet a 4.0 ns clock. Results and the architectural state are unchanged; the cycle counts of some control
+  // and diagnostic paths grow by a few cycles. 0 builds the netlist of every earlier configuration.
+  parameter bit              FAST_CLK       = 1'b0,
   // W4-B (tsr_core_dp): vector unit (queue depth QD_VU; lane knobs VU_EXP_LANES / VU_BACK_LANES, VU §7.10),
   // attention, TOPK / DQROW (M8 RTL, off in the U200 M7 build), the DB block and its sizes (DB §10.3)
   parameter bit              HAS_VU         = 1'b1,
@@ -394,7 +398,7 @@ module tsr_core
     .MVM_WS_FIFO(MVM_WS_FIFO), .MVM_BC_PIPE(MVM_BC_PIPE), .MVM_RES_PIPE(MVM_RES_PIPE), .MVM_GATHER_PAIR(MVM_GATHER_PAIR), .MVM_GATHER_FLITS(MVM_GATHER_FLITS), .DDR_LOCAL_PIPE(DDR_LOCAL_PIPE),
     .MVM_ACT_RD_LAT(MVM_ACT_RD_LAT), .MVM_MAC_LAT(MVM_MAC_LAT), .MVM_MUL_LAT(MVM_MUL_LAT),
     .MVM_ADD_LAT(MVM_ADD_LAT), .MVM_WS_RD_LAT(MVM_WS_RD_LAT), .RST_PIPE(RST_PIPE),
-    .RV_LOCAL_TRANSPORT(RV_LOCAL_TRANSPORT), .XSLR_REG(XSLR_REG),
+    .RV_LOCAL_TRANSPORT(RV_LOCAL_TRANSPORT), .XSLR_REG(XSLR_REG), .FAST_CLK(FAST_CLK),
     .QD_DMA(QD_DMA), .QD_QACT(QD_QACT), .QD_MVM(QD_MVM), .QD_SYNC(QD_SYNC),
     .ITCM_BYTES(ITCM_BYTES), .DTCM_BYTES(DTCM_BYTES),
     .HAS_VU(HAS_VU), .HAS_ATT(HAS_ATT), .HAS_TOPK(HAS_TOPK), .HAS_DQROW(HAS_DQROW), .HAS_GDN(HAS_GDN), .HAS_DB(HAS_DB),

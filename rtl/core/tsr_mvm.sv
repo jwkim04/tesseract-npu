@@ -124,7 +124,8 @@ module tsr_mvm
   parameter  int unsigned ADD_LAT       = TSR_DEF_FADD_LAT,
   parameter  int unsigned WS_RD_LAT     = TSR_DEF_WS_RD_LAT,
   parameter  int unsigned RST_LOCAL     = 0,      // reset register stages per cluster / top / gather (0..2)
-  parameter  bit          XSLR_REG      = 1'b0,   // cross-SLR stages: att_stall (2 per cluster), pair links of the gather (1)
+  parameter  bit          XSLR_REG      = 1'b0,
+  parameter  bit          FAST_CLK      = 1'b0,   // the cycle-changing stages of the 250 MHz clock (tsr_core FAST_CLK)   // cross-SLR stages: att_stall (2 per cluster), pair links of the gather (1)
   localparam int unsigned SPM_LINES     = SPM_BYTES / TSR_LINE_BYTES,
   localparam int unsigned SPM_AW        = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1
 ) (
@@ -641,7 +642,7 @@ module tsr_mvm
     tsr_mvm_cluster #(
       .CH(c), .NUM_CH(NUM_CH), .HAS_ATT(HAS_ATT), .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .K_MAX(K_MAX), .T_MAX(T_MAX), .ADDR_BEAT_W(ADDR_BEAT_W),
       .BEAT_BITS(BEAT_BITS), .WS_FIFO_BEATS(WS_FIFO_BEATS), .ACT_RD_LAT(ACT_RD_LAT), .MAC_LAT(MAC_LAT),
-      .MUL_LAT(MUL_LAT), .ADD_LAT(ADD_LAT), .WS_RD_LAT(WS_RD_LAT), .RST_COPY(RST_LOCAL > 0), .SPM_AW(SPM_AW)
+      .MUL_LAT(MUL_LAT), .ADD_LAT(ADD_LAT), .WS_RD_LAT(WS_RD_LAT), .FAST_CLK(FAST_CLK), .RST_COPY(RST_LOCAL > 0), .SPM_AW(SPM_AW)
     ) u_cl (
       .clk, .rst_n(rst_ce_n[c]),
       .bc_cmd_valid(pv[1]), .bc_cmd(p_cmd), .bc_acmd_valid(pv[2]), .bc_acmd(p_acmd),
@@ -728,7 +729,7 @@ module tsr_mvm
   tsr_mvm_gather #(
     .HAS_ATT(HAS_ATT), .LOCAL_SCALE(LOCAL_SCALE), .NUM_CH(NUM_CH), .T_MAX(T_MAX), .SPM_BYTES(SPM_BYTES), .SPM_RD_LAT(SPM_RD_LAT),
     .ADD_LAT(ADD_LAT), .JOB_PIPE(RES_PIPE), .GATHER_PAIR(GATHER_PAIR), .GATHER_FLITS(GATHER_FLITS),
-    .XSLR_REG(XSLR_REG)
+    .XSLR_REG(XSLR_REG), .FAST_CLK(FAST_CLK)
   ) u_gather (
     .clk, .rst_n(rst_g_n),
     .start(g_start_q), .acc(c_q.acc & ~at_q), .t(c_q.t), .n(at_q ? 32'd1 : c_q.n),

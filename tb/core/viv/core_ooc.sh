@@ -15,8 +15,9 @@
 #   config  k1    NUM_CH 1, T_MAX 1, VU 8 / 4 lanes, no lane pipe   (bring-up kernel tsr_u200_k1)
 #           k4t1  NUM_CH 4, T_MAX 1, VU 8 / 8 / 4 lanes, VU_LANE_PIPE 2
 #           k4    NUM_CH 4, T_MAX 4, VU 8 / 8 / 4 lanes, VU_LANE_PIPE 2, paired two-flit gather, DDR0 / DDR3 boundaries,
-#                 RV_LOCAL_TRANSPORT 1, XSLR_REG 1, attention, trace writer and history: the kernel tsr_u200_k4 of
-#                 rtl/platform/alveo_xrt/gen_tops.py, the full-feature card image (docs/platform-u200.md §8.8)
+#                 RV_LOCAL_TRANSPORT 1, XSLR_REG 1, FAST_CLK 1, attention, trace writer and history: the kernel tsr_u200_k4 of
+#                 rtl/platform/alveo_xrt/gen_tops.py, the full-feature card image (docs/platform-u200.md §8.8, §8.10)
+#           k4base the same without FAST_CLK: the 200 MHz images of the fourth link and before
 #           k4min NUM_CH 4, T_MAX 8, no vector unit, no attention (HAS_VU 0, HAS_ATT 0: no KVST, ATTQK, ATTPV),
 #                 no DB trace writer or history (HAS_TRW 0, HIST_DEPTH 0), RV_LOCAL_TRANSPORT 1: the reduced first card
 #                 image (branch k4m200, docs/platform-u200.md §8.7)
@@ -42,9 +43,10 @@ cfg="$1"; out="$2"; shift 2
 case "$cfg" in
   k1)   p=(NUM_CH=1 T_MAX=1 VU_EXP_LANES=8 VU_BACK_LANES=4 VU_LANE_PIPE=0) ;;
   k4t1) p=(NUM_CH=4 T_MAX=1 VU_FRONT_LANES=8 VU_EXP_LANES=8 VU_BACK_LANES=4 VU_LANE_PIPE=2 DDR_LOCAL_PIPE=1 MVM_GATHER_PAIR=1) ;;
-  k4)   p=(NUM_CH=4 T_MAX=4 VU_FRONT_LANES=8 VU_EXP_LANES=8 VU_BACK_LANES=4 VU_LANE_PIPE=2 DDR_LOCAL_PIPE=1 MVM_GATHER_PAIR=1 MVM_GATHER_FLITS=2 RV_LOCAL_TRANSPORT=1 XSLR_REG=1) ;;
+  k4)   p=(NUM_CH=4 T_MAX=4 VU_FRONT_LANES=8 VU_EXP_LANES=8 VU_BACK_LANES=4 VU_LANE_PIPE=2 DDR_LOCAL_PIPE=1 MVM_GATHER_PAIR=1 MVM_GATHER_FLITS=2 RV_LOCAL_TRANSPORT=1 XSLR_REG=1 FAST_CLK=1) ;;
+  k4base) p=(NUM_CH=4 T_MAX=4 VU_FRONT_LANES=8 VU_EXP_LANES=8 VU_BACK_LANES=4 VU_LANE_PIPE=2 DDR_LOCAL_PIPE=1 MVM_GATHER_PAIR=1 MVM_GATHER_FLITS=2 RV_LOCAL_TRANSPORT=1 XSLR_REG=1) ;;
   k4min) p=(NUM_CH=4 T_MAX=8 RV_LOCAL_TRANSPORT=1 HAS_VU=0 HAS_ATT=0 HAS_TRW=0 HIST_DEPTH=0) ;;
-  *) echo "core_ooc.sh: unknown config '$cfg' (k1, k4t1, k4, k4min)" >&2; exit 2 ;;
+  *) echo "core_ooc.sh: unknown config '$cfg' (k1, k4t1, k4, k4base, k4min)" >&2; exit 2 ;;
 esac
 p+=(SPM_RD_LAT=4 MVM_BC_PIPE=2 MVM_RES_PIPE=2 MVM_MAC_LAT=9 RST_PIPE=3)
 mkdir -p "$out"

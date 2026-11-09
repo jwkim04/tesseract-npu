@@ -191,7 +191,8 @@ def _params(cfg):
                 CH_BYTES=f"64'd{cfg['ch_bytes']}", ADDR_BEAT_W=cfg["addr_beat_w"],
                 MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2, DDR_LOCAL_PIPE=1, RV_LOCAL_TRANSPORT=1, XSLR_REG=1, RST_PIPE=3,
                 SPM_RD_LAT=4, MVM_BC_PIPE=2, MVM_RES_PIPE=2, MVM_MAC_LAT=9,
-                VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, VU_LANE_PIPE=2)
+                VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, VU_LANE_PIPE=2,
+                FAST_CLK=int(os.environ.get("TSR_FR_FAST", "0")))
 
 
 def selftest_trace(directory):
@@ -248,6 +249,13 @@ def _first_run(tmp_path, mutant):
 
 
 def test_k4_selftest_first_run(tmp_path):
+    _first_run(tmp_path, False)
+
+
+def test_k4_selftest_first_run_fast(tmp_path, monkeypatch):
+    """The same first launch at zero state with FAST_CLK 1 (docs/platform-u200.md §8.10): the Xilinx wrappers with the DSP
+    lanes' pv_en copies, the three-stage emitters, the PV convert pipeline and the KVST placer stage."""
+    monkeypatch.setenv("TSR_FR_FAST", "1")
     _first_run(tmp_path, False)
 
 

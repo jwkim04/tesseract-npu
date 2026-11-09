@@ -67,6 +67,7 @@ module tsr_core_dp
   // change: the VU's commands start, its done strobes arrive and its s registers show a few cycles later. tsr_mvm gets the
   // option too (two stages per cluster on the attention-stall strobe, which only feeds a PERF counter).
   parameter bit              XSLR_REG       = 1'b0,
+  parameter bit              FAST_CLK       = 1'b0,   // tsr_core
   parameter bit              LOCAL_SOFTCAP = 1'b0,
   parameter bit              LOCAL_SCALE = 1'b0,
   parameter bit              LOCAL_INTERMEDIATES = 1'b0,
@@ -532,7 +533,7 @@ module tsr_core_dp
     .VL(VL), .NSREG(NSREG), .CAPS(CAPS), .CTL_ID(CTL_ID), .CFG3(CFG3),
     .ITCM_BYTES(ITCM_BYTES), .DTCM_BYTES(DTCM_BYTES),
     .QD_DMA(QD_DMA), .QD_QACT(QD_QACT), .QD_MVM(QD_MVM_E), .QD_VU(QD_VU_E), .QD_ATT(QD_ATT),
-    .QD_SYNC(QD_SYNC), .HAS_VU(HAS_VU)
+    .QD_SYNC(QD_SYNC), .HAS_VU(HAS_VU), .FAST_CLK(FAST_CLK)
   ) u_csr (
     .clk, .rst_n(rst_b_n[RB_CSR]),
     .csr_valid, .csr_ready, .csr_we, .csr_addr, .csr_wdata, .csr_rdata,
@@ -561,7 +562,15 @@ module tsr_core_dp
   );
   // PERF increments of the DB block (slots 61, 62, X + 10) and of the units (VU X + 13 .. 15, AT X + 16
   // .. 19): disjoint slots, so the arrays are OR-ed
-  assign perf_ext = perf_ext_db | perf_ext_un_c;
+  // FAST_CLK: the DB block's increments (trace writer drop and record counts: 16 to 18 levels in the 5.0 ns link) pass one
+  // register before the PERF counters add them, one cycle late like every other FAST_CLK counter input
+  if (FAST_CLK) begin : g_pxdb
+    logic [63:0][3:0] pxdb_q;
+    always_ff @(posedge clk) pxdb_q <= perf_ext_db;
+    assign perf_ext = pxdb_q | perf_ext_un_c;
+  end else begin : g_pxdb0
+    assign perf_ext = perf_ext_db | perf_ext_un_c;
+  end
 
   // -------------------------------------------------------------------------------------------
   // External checker classes (tsr_chk's xc_* port, CC §8.2): the VU class with the routing of AT's
@@ -711,7 +720,7 @@ module tsr_core_dp
     tsr_dbg #(
       .NUM_CH(NUM_CH), .CH_BYTES(CH_BYTES), .ADDR_BEAT_W(ADDR_BEAT_W), .QD_DMA(QD_DMA), .QD_QACT(QD_QACT),
       .QD_MVM(QD_MVM_E), .QD_VU(QD_VU_E), .QD_ATT(QD_ATT), .QD_SYNC(QD_SYNC), .HIST_DEPTH(HIST_DEPTH),
-      .HAS_TRW(HAS_TRW), .NTBP(NTBP), .NRVWP(NRVWP), .HAS_REC(HAS_REC)
+      .HAS_TRW(HAS_TRW), .NTBP(NTBP), .NRVWP(NRVWP), .HAS_REC(HAS_REC), .FAST_CLK(FAST_CLK)
     ) u_dbg (
       .clk, .rst_n(rst_b_n[RB_DBG]),
       .dbg_req, .dbg_we, .dbg_addr, .dbg_wdata, .dbg_host, .dbg_rdata, .sr_db_clear, .db_stop_active, .dmi_en,
@@ -794,7 +803,7 @@ module tsr_core_dp
   logic perf_kvst_rmw, perf_att_qk, perf_att_pv, perf_att_stall;
   tsr_dma #(
     .NUM_CH(NUM_CH), .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BEAT_BITS), .SPM_BYTES(SPM_BYTES),
-    .SPM_RD_LAT(SPM_RD_LAT), .HAS_KVST(HAS_ATT), .XC_CMD_W(XC_CMD_W)
+    .SPM_RD_LAT(SPM_RD_LAT), .HAS_KVST(HAS_ATT), .FAST_CLK(FAST_CLK), .XC_CMD_W(XC_CMD_W)
   ) u_dma (
     .clk, .rst_n(rst_b_n[RB_DMA]),
     .cmd_valid(dma_cmd_valid), .cmd_ready(dma_cmd_ready), .cmd(dma_cmd), .cmd_xc(dma_cmd_xc),
@@ -857,7 +866,7 @@ module tsr_core_dp
       .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BEAT_BITS), .WS_FIFO_BEATS(MVM_WS_FIFO),
       .BC_PIPE(MVM_BC_PIPE), .RES_PIPE(MVM_RES_PIPE), .GATHER_PAIR(MVM_GATHER_PAIR), .GATHER_FLITS(MVM_GATHER_FLITS), .ACT_RD_LAT(MVM_ACT_RD_LAT),
       .MAC_LAT(MVM_MAC_LAT), .MUL_LAT(MVM_MUL_LAT), .ADD_LAT(MVM_ADD_LAT), .WS_RD_LAT(MVM_WS_RD_LAT),
-      .RST_LOCAL(RST_BLK), .XSLR_REG(XSLR_REG)
+      .RST_LOCAL(RST_BLK), .XSLR_REG(XSLR_REG), .FAST_CLK(FAST_CLK)
     ) u_mvm (
       .clk, .rst_n(rst_pre_n),
       .cmd_valid(mvm_cmd_valid && (!needs_scale || scale_grant)), .cmd_ready(inner_ready), .cmd(mvm_cmd), .cmd_xc(mvm_cmd_xc),
@@ -1141,7 +1150,7 @@ module tsr_core_dp
         .m_valid(b_wr_req_valid[c]), .m_ready(b_wr_req_ready[c]),
         .m_data({b_wr_req_addr[c], b_wr_req_len[c], b_wr_req_id[c]})
       );
-      (* keep_hierarchy = "yes" *) tsr_rslice #(.W(BEAT_BITS + BEAT_BITS/32 + 1), .FORM(1)) u_wd (
+      (* keep_hierarchy = "yes" *) tsr_rslice #(.W(BEAT_BITS + BEAT_BITS/32 + 1), .FORM(1), .RPC(FAST_CLK ? 8 : 1)) u_wd (
         .clk, .rst_n(rst_b_n[RB_ARB + c]),
         .s_valid(a_wr_dat_valid[c]), .s_ready(a_wr_dat_ready[c]),
         .s_data({a_wr_dat_data[c], a_wr_dat_mask[c], a_wr_dat_last[c]}),
@@ -1204,7 +1213,7 @@ module tsr_core_dp
           .s_valid(t_wr_req_valid), .s_ready(t_wr_req_ready), .s_data({t_wr_req_addr, t_wr_req_len}),
           .m_valid(w_req_valid), .m_ready(w_req_ready), .m_data({w_req_addr, w_req_len})
         );
-        (* keep_hierarchy = "yes" *) tsr_rslice #(.W(BEAT_BITS + 1), .FORM(1)) u_td (
+        (* keep_hierarchy = "yes" *) tsr_rslice #(.W(BEAT_BITS + 1), .FORM(1), .RPC(FAST_CLK ? 8 : 1)) u_td (
           .clk, .rst_n(rst_b_n[RB_DBG]),
           .s_valid(t_wr_dat_valid), .s_ready(t_wr_dat_ready), .s_data({t_wr_dat_data, t_wr_dat_last}),
           .m_valid(w_dat_valid), .m_ready(w_dat_ready), .m_data({w_dat_data, w_dat_last})

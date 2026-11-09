@@ -122,7 +122,7 @@ def labels(paths, reduced=False):
              ("g_rv_local.u_lq_rx", "LCQ 링크 끝"),
              ("u_issue", "issue 경로"), ("g_xc.u_xc", "VU 검사기"), ("g_xc.g_at.u_chk_at", "AT 검사기"),
              ("u_csr", "CSR"), ("g_db.u_dbg", "DB 코어측"),
-             ("g_vu.u_vu", "벡터 유닛 전체(입력·두 lane bank)"),
+             ("g_vu.u_vu", "벡터 유닛 전체(입력·두 lane bank·GDN 전용부)"),
              ("vu_frontend", "VU 입력·각도 생성·LM"))
     return [label + (" " + "·".join(classes[key]) if any(classes[key]) else "")
             for key, label in names if key in classes] + [k for k in classes if k not in dict(names)]
@@ -225,11 +225,11 @@ def render(hook, report, output):
             word(x, y + i * 22, line, 16, INK)
         return len(lines)
 
-    word(44, 30, ("ALVEO U200   /   K4   /   CORE 200 MHz · CLK_RV 100 MHz   /   PRE-BUILD" if full else
+    word(44, 30, ("ALVEO U200   /   K4   /   CORE 250 MHz · CLK_RV 100 MHz   /   PRE-BUILD" if full else
                   "ALVEO U200   /   K4-MIN   /   CORE 200 MHz · CLK_RV 100 MHz   /   PRE-BUILD" if ctrl else
                   "ALVEO U200   /   K4-MIN   /   PRE-BUILD") if (full or reduced) else
          "ALVEO U200   /   K4   /   PRE-BUILD", 15, GRAY, True)
-    title = ("풀 구성 카드 이미지(200 MHz)의 Pblock 계획" if full else
+    title = ("풀 구성 카드 이미지(250 MHz, GDN 포함)의 Pblock 계획" if full else
              "첫 카드 이미지(200 MHz)의 Pblock 계획" if ctrl else
              "첫 카드 이미지(VU·어텐션 제외)의 Pblock 계획" if reduced else
              "다음 빌드의 Pblock 계획" if has_vu_banks else "VU 제외 진단 빌드의 Pblock 계획")
@@ -303,7 +303,7 @@ def render(hook, report, output):
             cap = shapes[kid][1] if kid in shapes else None
             lines = 1
             if cap:
-                word(550, y2 + 22, f"CLB {cap[0]:,} · RAMB36 {cap[1]} · DSP {cap[3]}", 15, GRAY)
+                word(550, y2 + 22, f"CLB {cap[0]:,} · RAMB36 {cap[1]} · URAM {cap[4]} · DSP {cap[3]}", 15, GRAY)
                 lines = 2
             m = wrapped_items(550, y2 + 22 * lines, labels(groups[kid], reduced), max_lines=4)
             rect(517, y2 - 2, 523, y2 + 22 * (lines + m) + 2, color)

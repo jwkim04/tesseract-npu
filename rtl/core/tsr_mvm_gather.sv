@@ -311,6 +311,7 @@ endmodule
 
 module tsr_mvm_pair_rx #(
   parameter int unsigned W = 562,
+  parameter int unsigned RPC = 1,   // copies of the read pointer, one per slice of the payload (cycle-identical)
   localparam int unsigned FLIT_W = (W + 1) / 2
 ) (
   input logic clk, rst_n,
@@ -356,7 +357,23 @@ module tsr_mvm_pair_rx #(
   end
   assign s_ready = ready_q;
   assign m_valid = occupied_q[rp_q];
-  assign m_data = slot_q[rp_q];
+  if (RPC <= 1) begin : g_one
+    assign m_data = slot_q[rp_q];
+  end else begin : g_cp
+    localparam int unsigned CWD = (W + RPC - 1) / RPC;
+    (* keep = "true" *) logic [RPC-1:0] rpc_q;
+    always_ff @(posedge clk) begin
+      if (!rst_n)   rpc_q <= '0;
+      else if (pop) rpc_q <= {RPC{~rp_q}};
+    end
+    for (genvar j = 0; j < RPC; j++) begin : g_c
+      localparam int unsigned LO = j * CWD;
+      localparam int unsigned HI = (LO + CWD > W) ? W - 1 : LO + CWD - 1;
+      if (LO <= HI) begin : g_w
+        assign m_data[HI:LO] = slot_q[rpc_q[j]][HI:LO];
+      end
+    end
+  end
   wire unused_padding = &{1'b0, s_data};
 endmodule
 // A complete owner-pair result collector. Its two source queues, arbiter,
@@ -474,6 +491,7 @@ module tsr_mvm_gather
   parameter  int unsigned GATHER_FLITS = 1,   // 2: half-width serialized pair links
   parameter  int unsigned JOB_PIPE   = 0,     // register slices assembler c -> central (implementation)
   parameter  bit          XSLR_REG   = 1'b0,  // GATHER_PAIR: one tsr_rpipe stage on each pair link (below)
+  parameter  bit          FAST_CLK   = 1'b0,  // the row-maxima emitter in three stages (tsr_mvm_rvec PIPE)
   localparam int unsigned SPM_LINES  = SPM_BYTES / TSR_LINE_BYTES,
   localparam int unsigned SPM_AW     = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1,
   localparam int unsigned AJW        = 1 + SPM_AW + 16 + 16 + TSR_LINE_BITS
@@ -655,7 +673,7 @@ module tsr_mvm_gather
         .clk, .rst_n, .s_valid(p_v), .s_ready(p_r), .s_data(p_d),
         .m_valid(i_v), .m_ready(i_r), .m_data(i_d)
       );
-      tsr_rslice #(.W(JW), .FORM(1)) u_jl (
+      tsr_rslice #(.W(JW), .FORM(1), .RPC(FAST_CLK ? 8 : 1)) u_jl (
         .clk, .rst_n, .s_valid(i_v), .s_ready(i_r), .s_data(i_d),
         .m_valid(sv[c]), .m_ready(sr[c]), .m_data(sd[c])
       );
@@ -701,12 +719,12 @@ module tsr_mvm_gather
         assign rx_p   = packet;
       end
       if (GATHER_FLITS == 2) begin : g_narrow
-        tsr_mvm_pair_rx #(.W(JW+1)) u_remote (
+        tsr_mvm_pair_rx #(.W(JW+1), .RPC(FAST_CLK ? 8 : 1)) u_remote (
           .clk, .rst_n, .s_valid(rx_v), .s_ready(rx_r), .s_data(rx_p),
           .m_valid(jv[p]), .m_ready(jr[p]), .m_data(link_d)
         );
       end else begin : g_wide
-        tsr_rslice #(.W(JW+1), .FORM(1)) u_remote (
+        tsr_rslice #(.W(JW+1), .FORM(1), .RPC(FAST_CLK ? 8 : 1)) u_remote (
           .clk, .rst_n, .s_valid(rx_v), .s_ready(rx_r), .s_data(rx_p),
           .m_valid(jv[p]), .m_ready(jr[p]), .m_data(link_d)
         );
@@ -833,6 +851,24 @@ module tsr_mvm_gather
     logic        rv_done;
     logic [6:0]  rv_a;
     wire         t_in = take & att_q & j_tail[15];
+    // FAST_CLK: the taken line, its tail flags and the tracker's strobe pass one register before the key tree, so the pair link's
+    // slot mux, the job mux and the key conversion are not in one cycle (a row maximum is in the table one cycle later; tr_n_q
+    // counts the item from t_in on, the emitter starts only after the tree has drained)
+    logic        t_in_d;
+    logic [7:0]  tail_d;                   // {j_tail[14], j_tail[6:0]}
+    line_t       jy_d;
+    if (FAST_CLK) begin : g_ti
+      always_ff @(posedge clk) begin
+        if (!rst_n) t_in_d <= 1'b0;
+        else        t_in_d <= t_in;
+        tail_d <= {j_tail[14], j_tail[6:0]};
+        jy_d   <= j_y;
+      end
+    end else begin : g_ti0
+      assign t_in_d = t_in;
+      assign tail_d = {j_tail[14], j_tail[6:0]};
+      assign jy_d   = j_y;
+    end
     function automatic logic [32:0] kmax(logic [32:0] a, logic [32:0] b);
       return (a >= b) ? a : b;
     endfunction
@@ -848,7 +884,7 @@ module tsr_mvm_gather
         mx_run_q  <= 1'b0;
         fresh_q   <= '1;
       end else begin
-        tv_q[0] <= t_in;
+        tv_q[0] <= t_in_d;
         for (int i = 1; i < 5; i++) tv_q[i] <= tv_q[i-1];
         pw_v_q  <= tv_q[4];
         tr_n_q  <= tr_n_q + 3'(t_in) - 3'(tv_q[4]);
@@ -877,9 +913,9 @@ module tsr_mvm_gather
         atq_q <= att_tq; ags_q <= att_gs; atact_q <= att_tact; anseg_q <= att_nseg; ag_q <= att_g;
         ahg0_q <= att_hg0; anh_q <= att_nhead; amd_q <= att_mdst;
       end
-      te_q[0] <= j_tail[6:0];
+      te_q[0] <= tail_d[6:0];
       for (int i = 1; i < 5; i++) te_q[i] <= te_q[i-1];
-      for (int l = 0; l < 16; l++) k0_q[l] <= tsr_att_maxkey(j_y[j_tail[14] ? 0 : l]);
+      for (int l = 0; l < 16; l++) k0_q[l] <= tsr_att_maxkey(jy_d[tail_d[7] ? 0 : l]);
       for (int l = 0; l < 8; l++)  k1_q[l] <= kmax(k0_q[2*l], k0_q[2*l+1]);
       for (int l = 0; l < 4; l++)  k2_q[l] <= kmax(k1_q[2*l], k1_q[2*l+1]);
       for (int l = 0; l < 2; l++)  k3_q[l] <= kmax(k2_q[2*l], k2_q[2*l+1]);
@@ -894,7 +930,7 @@ module tsr_mvm_gather
     end
     // a row's max: MAXT(M_FLOOR, scores): untouched rows give M_FLOOR
     wire [32:0] rv_k = fresh_q[rv_a] ? FLOOR_K : tk_mem[rv_a];
-    tsr_mvm_rvec #(.SPM_AW(SPM_AW)) u_rv (
+    tsr_mvm_rvec #(.SPM_AW(SPM_AW), .PIPE(FAST_CLK)) u_rv (
       .clk, .rst_n,
       .start(mx_start_q), .tq(atq_q), .gs(ags_q), .tact(atact_q), .nseg(anseg_q), .g_heads(ag_q),
       .hg0(ahg0_q), .n_head(anh_q), .base(amd_q), .last_en(1'b0),
@@ -925,7 +961,9 @@ module tsr_mvm_gather
   logic              ap_v;
   logic [MT_W-1:0]   ap_d;
 
-  tsr_rslice #(.W(IS_W)) u_iss (
+  // FAST_CLK: two slots with copied pointers (cycle-identical): the SPM's read grant (m_ready) then reaches five control flops and
+  // not the 560 payload enables of the main entry
+  tsr_rslice #(.W(IS_W), .FORM(FAST_CLK ? 1 : 0), .RPC(FAST_CLK ? 8 : 1)) u_iss (
     .clk, .rst_n,
     .s_valid(take & acc_q), .s_ready(iss_s_ready), .s_data({j_line, j_own, j_tail, j_y}),
     .m_valid(iss_v), .m_ready(spm_rd_req_ready), .m_data(iss_d)

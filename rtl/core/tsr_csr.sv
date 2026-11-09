@@ -107,7 +107,10 @@ module tsr_csr
   parameter int unsigned SR_RV_MIN   = 64,
   parameter int unsigned SR_RV_MAX   = tsr_tables_pkg::TSR_SR_RV_WAIT_CYCLES,
   parameter int unsigned LD_WAIT_MAX = tsr_tables_pkg::TSR_LOAD_TIMEOUT_CYCLES,
-  parameter int unsigned FREQ_WIN    = 4096
+  parameter int unsigned FREQ_WIN    = 4096,
+  // FAST_CLK (docs/platform-u200.md §8.10): the PERF counters take their clear, enable and increment from registers (1 cycle later,
+  // all alike, so the counts equal the single-stage counts shifted by one cycle)
+  parameter bit          FAST_CLK    = 1'b0
 ) (
   input  logic                       clk,
   input  logic                       rst_n,
@@ -939,24 +942,55 @@ module tsr_csr
       localparam int unsigned K = i - X - 7;
       logic [31:0] last_q;                  // the count at the previous cycle: add the delta
       wire  [31:0] rv_delta = rvc_now[K] - last_q;   // modulo 2^32
-      always_ff @(posedge clk) begin
-        if (!rst_n) begin
-          perf_q[i] <= '0;
-          last_q    <= '0;
-        end else begin
-          last_q <= rvc_now[K];
-          if (sr_q == SR_CLR) perf_q[i] <= '0;
-          else                perf_q[i] <= perf_q[i] + {32'd0, rv_delta};
+      if (FAST_CLK) begin : g_pipe
+        (* keep = "true" *) logic clr_q;
+        logic [31:0] delta_q;
+        always_ff @(posedge clk) begin
+          clr_q <= !rst_n || (sr_q == SR_CLR);
+          if (!rst_n) last_q <= '0;
+          else        last_q <= rvc_now[K];
+          delta_q <= rv_delta;
+        end
+        always_ff @(posedge clk) begin
+          if (clr_q) perf_q[i] <= '0;
+          else       perf_q[i] <= perf_q[i] + {32'd0, delta_q};
+        end
+      end else begin : g_flat
+        always_ff @(posedge clk) begin
+          if (!rst_n) begin
+            perf_q[i] <= '0;
+            last_q    <= '0;
+          end else begin
+            last_q <= rvc_now[K];
+            if (sr_q == SR_CLR) perf_q[i] <= '0;
+            else                perf_q[i] <= perf_q[i] + {32'd0, rv_delta};
+          end
         end
       end
       wire unused_p = &{1'b0, perf_ext[i], p_int[i]};
     end else begin : g_cnt
       wire en = (CL == PC_TIME) ? (active && !qhalt) : active;
       wire [4:0] inc = 5'(p_int[i]) + 5'(perf_ext[i]);
-      always_ff @(posedge clk) begin
-        if (!rst_n)               perf_q[i] <= '0;
-        else if (sr_q == SR_CLR)  perf_q[i] <= '0;
-        else if (en)              perf_q[i] <= perf_q[i] + 64'(inc);
+      if (FAST_CLK) begin : g_pipe
+        // a register copy of the clear, the enable and the increment per counter: 64 loads each instead of 4,096 / 1,345
+        (* keep = "true" *) logic clr_q;
+        (* keep = "true" *) logic en_q;
+        logic [4:0] inc_q;
+        always_ff @(posedge clk) begin
+          clr_q <= !rst_n || (sr_q == SR_CLR);
+          en_q  <= en;
+          inc_q <= inc;
+        end
+        always_ff @(posedge clk) begin
+          if (clr_q)     perf_q[i] <= '0;
+          else if (en_q) perf_q[i] <= perf_q[i] + 64'(inc_q);
+        end
+      end else begin : g_flat
+        always_ff @(posedge clk) begin
+          if (!rst_n)               perf_q[i] <= '0;
+          else if (sr_q == SR_CLR)  perf_q[i] <= '0;
+          else if (en)              perf_q[i] <= perf_q[i] + 64'(inc);
+        end
       end
     end
   end

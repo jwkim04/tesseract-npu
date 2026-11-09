@@ -286,6 +286,7 @@ module tsr_mvm_back
   parameter  int unsigned MAC_LAT    = TSR_DEF_MAC_LAT,
   parameter  int unsigned MUL_LAT    = TSR_DEF_FMUL_LAT,
   parameter  int unsigned ADD_LAT    = TSR_DEF_FADD_LAT,
+  parameter  bit          FAST_CLK   = 1'b0,    // the mode of the PV accumulate in registered copies (tsr_mac_lane PVR; the 250 MHz work)
   localparam int unsigned QS_WORDS   = tsr_actbuf_qs_words(K_MAX),
   localparam int unsigned DBS_LINES  = tsr_actbuf_dbs_lines(K_MAX),
   localparam int unsigned QS_AW      = (QS_WORDS > 1) ? $clog2(QS_WORDS) : 1,
@@ -581,7 +582,7 @@ module tsr_mvm_back
       assign xg[t] = qs_data[t][256*g +: 256];
     end
     logic mac_ov;
-    tsr_mac_lane #(.N(TSR_MVM_GROUP_LANES), .T(T_MAX), .LAT(MAC_LAT), .PV(HAS_ATT)) u_mac (
+    tsr_mac_lane #(.N(TSR_MVM_GROUP_LANES), .T(T_MAX), .LAT(MAC_LAT), .PV(HAS_ATT), .PVR(FAST_CLK && HAS_ATT)) u_mac (
       .clk, .rst_n, .ce(1'b1), .in_valid(cv[C_M0]),
       .w(wm_q[32*g +: 32]), .x(xg), .out_valid(mac_ov), .y(gs[g]),
       .pv_en(c_pv), .pv_valid(pv_v_q), .pv_first(pv_f_q), .pv_a(pv_a_q[g]), .pv_acc(pv_acc[g])

@@ -89,6 +89,7 @@ module tsr_dma
   parameter  int unsigned SPM_RD_LAT  = TSR_DEF_SPM_RD_LAT,
   parameter  int unsigned LDQ_BEATS   = 512,     // beat queue entries (power of two >= 64, CC-13)
   parameter  bit          HAS_KVST    = 1'b0,    // KVST engine (AT §8.3; W4-B at)
+  parameter  bit          FAST_CLK    = 1'b0,    // the cycle-changing stages of the 250 MHz clock (KVST placer; tsr_core FAST_CLK)
   parameter  int unsigned XC_CMD_W    = 256,     // external-class payload width (tsr_issue)
   localparam int unsigned SPM_LINES   = SPM_BYTES / TSR_LINE_BYTES,
   localparam int unsigned SPM_AW      = (SPM_LINES > 1) ? $clog2(SPM_LINES) : 1
@@ -426,7 +427,7 @@ module tsr_dma
   logic [SPM_AW-1:0]       kv_sr_line;
   if (HAS_KVST) begin : g_kv
     tsr_dma_kvst #(
-      .NUM_CH(NUM_CH), .ADDR_BEAT_W(ADDR_BEAT_W), .SPM_AW(SPM_AW), .SPM_RD_LAT(SPM_RD_LAT)
+      .NUM_CH(NUM_CH), .ADDR_BEAT_W(ADDR_BEAT_W), .SPM_AW(SPM_AW), .SPM_RD_LAT(SPM_RD_LAT), .FAST_CLK(FAST_CLK)
     ) u_kv (
       .clk, .rst_n,
       .start(kv_start), .cmd(tsr_att_pkg::tsr_kvst_cmd_t'(xcmd[$bits(tsr_att_pkg::tsr_kvst_cmd_t)-1:0])),

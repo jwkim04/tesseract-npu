@@ -968,6 +968,12 @@ def test_csr_u200():
     _run("u200", S.config(num_ch=4, t_max=8), S.U200_QD)
 
 
+def test_csr_fast_clk():
+    """The U200 shape with FAST_CLK 1: the PERF counters take clear, enable and increment from registers (1 cycle later).
+    The counters equal the simulator's once the launch is idle; the time counters stay within the bench's tolerance."""
+    _run("u200_fast", S.config(num_ch=4, t_max=8), S.U200_QD, params={"FAST_CLK": 1})
+
+
 def test_csr_1ch():
     """1 channel (PERF extension base X = 7), no MVM unit."""
     _run("1ch", S.config(num_ch=1, t_max=1), (8, 4, 0, 16, 0, 4),

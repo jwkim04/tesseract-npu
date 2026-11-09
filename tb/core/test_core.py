@@ -598,7 +598,7 @@ def test_core(cfg):
     _run(seed=seed + int(os.environ.get("TSR_SEED", "1"), 0) - 1, rv_ps=rv_ps)   # --tsr-seed shifts all
 
 
-def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu=False, rv_local=False):
+def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu=False, rv_local=False, fast_clk=False):
     """core_m7 of one case: the scenario from the simulator, the RTL core built with its configuration
     (lane_pipe: VU_LANE_PIPE, the k4 bitstream's register stages around the VU lanes)."""
     from common.runner import run
@@ -613,6 +613,8 @@ def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu
         params["VU_LANE_PIPE"] = lane_pipe
     if ddr_pipe:
         params["DDR_LOCAL_PIPE"] = ddr_pipe
+    if fast_clk:
+        params["FAST_CLK"] = 1
     if rv_local:
         # the packaged image's control plane: DONE_REG on every unit done strobe, MT_PIPE on the DB memory taps and
         # the cluster reset copies (RST_PIPE 3); the VU and the AT units are in the core
@@ -624,7 +626,7 @@ def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu
     if mut:
         env["TB_M7_LIMIT"] = "300000"                 # core cycles to wait for the answer (the decode case needs ~60 K)
     run("tsr_core", __name__, parameters=params, sources=_sources(mut),
-        name=("core_m7_rv_local" if rv_local else "core_m7_half_vu" if half_vu else
+        name=("core_m7_fast" if fast_clk else "core_m7_rv_local" if rv_local else "core_m7_half_vu" if half_vu else
               ("core_m7" if not lane_pipe else "core_m7_pipe%d" % lane_pipe)) if not mut else "core_m7_mut_" + mut,
         seed=seed, testcase=["core_m7"], extra_env=env, timescale=("1ps", "1ps"))
 
@@ -653,6 +655,15 @@ def test_core_m7_rv_local(m7case):
     registers, the PERF event counters, the history and the trace records.
     """
     _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0), rv_local=True)
+
+
+def test_core_m7_fast(m7case):
+    """Production decode / prefill on the packaged control plane with FAST_CLK 1 (the 250 MHz stages, docs/platform-u200.md
+    §8.10): every comparison of core_m7 unchanged (output rows and KV planes bit for bit, Q_DONE / Q_ISSUED / Q_ERR_CODE per
+    unit, the s registers, the PERF event counters, the history and the trace records). The attention ops of the M7 layer run
+    the three-stage row-vector emitter, the five-stage PV convert pipeline and the KVST placer with the extra stage."""
+    _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0), rv_local=True, fast_clk=True, lane_pipe=2, ddr_pipe=1,
+            half_vu=True)
 
 
 def test_core_m7_ddr_local(m7case):
@@ -786,6 +797,7 @@ if pytest is not None:
     test_core_m7_half_vu = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_half_vu)
     test_core_m7_ddr_local = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_ddr_local)
     test_core_m7_rv_local = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_rv_local)
+    test_core_m7_fast = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_fast)
     test_core_mutants = pytest.mark.slow(test_core_mutants)
 
 
@@ -828,6 +840,24 @@ def test_core_k4full():
                    "TB_CORE_VU_FRONT": "8", "TB_CORE_VU_BACK": "4"}, timescale=("1ps", "1ps"))
 
 
+def test_core_k4_fast():
+    """The full-feature card image with FAST_CLK 1 (the 250 MHz stages, docs/platform-u200.md §8.10): everything of
+    test_core_k4full with the PERF counters, the row-vector emitters, the PV convert pipeline, the KVST placer and the
+    copied slice pointers in their registered forms. core_smoke and core_db must equal the simulator in every DRAM
+    region, the identification registers and the final CSR state; core_db adds the stop state, the history and the
+    trace records."""
+    from common.runner import run
+    elf = C.build_fw(FW_OUT)
+    params = dict(C.PARAMS, NUM_CH=4, T_MAX=4, DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
+                  RV_LOCAL_TRANSPORT=1, XSLR_REG=1, FAST_CLK=1, MVM_BC_PIPE=2, MVM_RES_PIPE=2, VU_LANE_PIPE=2,
+                  VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, RST_PIPE=3, SPM_RD_LAT=4, MVM_MAC_LAT=9)
+    run("tsr_core", __name__, parameters=params, sources=_sources(), name="core_k4fast",
+        seed=int(os.environ.get("TSR_SEED", "1"), 0), testcase=["core_smoke", "core_db"],
+        extra_env={"TB_CORE_ELF": str(elf), "TB_CORE_RV_PS": "6000", "TB_CORE_PS": "4000",
+                   "TB_CORE_NCH": "4", "TB_CORE_TMAX": "4",
+                   "TB_CORE_VU_FRONT": "8", "TB_CORE_VU_BACK": "4"}, timescale=("1ps", "1ps"))
+
+
 def test_core_k4gdn():
     """The full-feature card image with the fused GDN op (tsr_u200_k4 with HAS_GDN 1, CAPS 0x121): core_smoke runs the
     firmware stream of test_core_k4full and, after it, two heads of the GDN op (an LD of k, q, v and S, SOP MOVI of
@@ -841,6 +871,25 @@ def test_core_k4gdn():
                   RV_LOCAL_TRANSPORT=1, XSLR_REG=1, MVM_BC_PIPE=2, MVM_RES_PIPE=2, VU_LANE_PIPE=2,
                   VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, RST_PIPE=3, SPM_RD_LAT=4, MVM_MAC_LAT=9, HAS_GDN=1)
     run("tsr_core", __name__, parameters=params, sources=_sources(), name="core_k4gdn",
+        seed=int(os.environ.get("TSR_SEED", "1"), 0), testcase=["core_smoke"],
+        extra_env={"TB_CORE_ELF": str(elf), "TB_CORE_RV_PS": "6000", "TB_CORE_PS": "4000",
+                   "TB_CORE_NCH": "4", "TB_CORE_TMAX": "4", "TB_CORE_GDN": "1",
+                   "TB_CORE_VU_FRONT": "8", "TB_CORE_VU_BACK": "4"}, timescale=("1ps", "1ps"))
+
+
+def test_core_k4gdn_fast():
+    """The same image with FAST_CLK 1 (the 250 MHz stages, docs/platform-u200.md §8.10): core_smoke runs the
+    firmware stream of test_core_k4full and, after it, two heads of the GDN op (an LD of k, q, v and S, SOP MOVI of
+    alpha and beta, GDN, ST of S' and o; head 0 to a tile of its own, head 1 in place) through the issue path, the
+    VU checker class, the VU and the DMA on the RTL Ibex. The simulator runs the same firmware with CAPS 0x121 (the
+    op is tsr_ref_gdn there); every DRAM region, the identification registers (CAPS), the per-unit completion counts and
+    the final CSR state must be equal."""
+    from common.runner import run
+    elf = C.build_fw(FW_OUT)
+    params = dict(C.PARAMS, NUM_CH=4, T_MAX=4, DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
+                  RV_LOCAL_TRANSPORT=1, XSLR_REG=1, FAST_CLK=1, MVM_BC_PIPE=2, MVM_RES_PIPE=2, VU_LANE_PIPE=2,
+                  VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, RST_PIPE=3, SPM_RD_LAT=4, MVM_MAC_LAT=9, HAS_GDN=1)
+    run("tsr_core", __name__, parameters=params, sources=_sources(), name="core_k4gdn_fast",
         seed=int(os.environ.get("TSR_SEED", "1"), 0), testcase=["core_smoke"],
         extra_env={"TB_CORE_ELF": str(elf), "TB_CORE_RV_PS": "6000", "TB_CORE_PS": "4000",
                    "TB_CORE_NCH": "4", "TB_CORE_TMAX": "4", "TB_CORE_GDN": "1",

@@ -74,7 +74,8 @@ module tsr_dbg
   parameter bit              HAS_TRW     = 1'b1,
   parameter int unsigned     NTBP        = tsr_tables_pkg::TSR_DBG_NTBP,
   parameter int unsigned     NRVWP       = tsr_tables_pkg::TSR_DBG_NRVWP,
-  parameter bit              HAS_REC     = 1'b1
+  parameter bit              HAS_REC     = 1'b1,
+  parameter bit              FAST_CLK    = 1'b0    // the 250 MHz stages of the DB block (tsr_dbg_trw)
 ) (
   input  logic                          clk,
   input  logic                          rst_n,
@@ -383,7 +384,7 @@ module tsr_dbg
   logic        trw_drop_ev;
   logic [1:0]  perf_trec, perf_tdrop;
   if (HAS_TRW) begin : g_trw
-    tsr_dbg_trw #(.ADDR_BEAT_W(ADDR_BEAT_W), .CH_BYTES(CH_BYTES), .TRW_CH(TSR_TRW_CH)) u_trw (
+    tsr_dbg_trw #(.ADDR_BEAT_W(ADDR_BEAT_W), .CH_BYTES(CH_BYTES), .TRW_CH(TSR_TRW_CH), .FAST_CLK(FAST_CLK)) u_trw (
       .clk, .rst_n, .mtime,
       .cfg_en(c_trw_en), .cfg_stop_full(c_trw_full), .base(trw_base_q), .lines(trw_lines_q),
       .rptr(trw_rptr_q), .flush(ev_flush),

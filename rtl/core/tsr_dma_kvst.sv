@@ -46,6 +46,9 @@ module tsr_dma_kvst
   parameter  int unsigned ADDR_BEAT_W = TSR_DEF_ADDR_BEAT_W,
   parameter  int unsigned SPM_AW      = 16,
   parameter  int unsigned SPM_RD_LAT  = TSR_DEF_SPM_RD_LAT,
+  // FAST_CLK (docs/platform-u200.md §8.10): the placer picks the word pair in one cycle and converts and writes it in the
+  // next; a META is complete one cycle later (placed_q counts the pair after the write)
+  parameter  bit          FAST_CLK    = 1'b0,
   localparam int unsigned LB          = TSR_LINE_BITS
 ) (
   input  logic                         clk,
@@ -198,9 +201,31 @@ module tsr_dma_kvst
   wire rb_ne    = (rb_cnt_q != 3'd0);
   wire pl_start = rb_ne & ~pl_act_q;
   wire pl_end   = pl_act_q & (pl_n_q == 4'd0);
-  wire [63:0] pl_pair = pl_line_q[64*pl_wp_q +: 64];
-  wire [15:0] h0 = tsr_f32_to_fp16(pl_pair[31:0]);
-  wire [15:0] h1 = tsr_f32_to_fp16(pl_pair[63:32]);
+  wire [63:0] pl_pair_c = pl_line_q[64*pl_wp_q +: 64];
+  // FAST_CLK: the pair and its slot are registered (pm_*) before the conversion; the META write follows the walk by a cycle
+  logic        pm_v_q, pl_end_d_q;
+  logic [3:0]  pm_sp_q;
+  logic [63:0] pm_pair_q;
+  if (FAST_CLK) begin : g_plx
+    always_ff @(posedge clk) begin
+      if (!rst_n) begin
+        pm_v_q     <= 1'b0;
+        pl_end_d_q <= 1'b0;
+      end else begin
+        pm_v_q     <= pl_act_q;
+        pl_end_d_q <= pl_end;
+      end
+      pm_sp_q   <= pl_sp_q;
+      pm_pair_q <= pl_pair_c;
+    end
+  end else begin : g_pl0
+    assign pm_v_q     = pl_act_q;
+    assign pl_end_d_q = pl_end;
+    assign pm_sp_q    = pl_sp_q;
+    assign pm_pair_q  = pl_pair_c;
+  end
+  wire [15:0] h0 = tsr_f32_to_fp16(pm_pair_q[31:0]);
+  wire [15:0] h1 = tsr_f32_to_fp16(pm_pair_q[63:32]);
 
   // -------------------------------------------------------------------------------------------
   // Write requests, write responses
@@ -305,7 +330,7 @@ module tsr_dma_kvst
         pl_sp_q <= pl_sp_q + 4'd1;
       end
       if (pl_act_q) mmask_q[pl_sp_q] <= 1'b1;
-      if (pl_end)   placed_q <= placed_q + 6'd1;
+      if (pl_end_d_q) placed_q <= placed_q + 6'd1;
       if (m_issue)  dreq_q <= dreq_q + 6'd1;
 
       // ---- data queue ----
@@ -526,7 +551,7 @@ module tsr_dma_kvst
       rb_tag[rb_wp_q] <= rsp_tag;
     end
     if (pl_start) pl_line_q <= rb_mem[rb_rp_q];
-    if (pl_act_q) meta_q[pl_sp_q] <= {h1, h0};
+    if (pm_v_q) meta_q[pm_sp_q] <= {h1, h0};
     if (m_push) begin
       dq_mem[dq_wp_q[DQW-1:0]]  <= meta_q;
       dq_mask[dq_wp_q[DQW-1:0]] <= mmask_q;

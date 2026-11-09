@@ -20,6 +20,7 @@ module tsr_tb_at_dma
   parameter  int unsigned     SPM_RD_LAT     = 2,
   parameter  int unsigned     ADDR_BEAT_W    = 28,
   parameter  int unsigned     RD_OUTSTANDING = 16,
+  parameter  bit              FAST_CLK       = 1'b0,
   localparam int unsigned     BB             = 512,
   localparam int unsigned     AW             = tsr_spm_aw(SPM_BYTES / TSR_LINE_BYTES)
 ) (
@@ -105,7 +106,7 @@ module tsr_tb_at_dma
 
   tsr_dma #(
     .NUM_CH(NUM_CH), .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BB), .SPM_BYTES(SPM_BYTES),
-    .SPM_RD_LAT(SPM_RD_LAT), .HAS_KVST(1'b1), .XC_CMD_W(256)
+    .SPM_RD_LAT(SPM_RD_LAT), .HAS_KVST(1'b1), .FAST_CLK(FAST_CLK), .XC_CMD_W(256)
   ) u_dma (
     .clk, .rst_n,
     .cmd_valid, .cmd_ready, .cmd, .cmd_xc, .xcmd, .done,

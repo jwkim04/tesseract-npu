@@ -297,7 +297,7 @@ async def at_kvst(dut):
 def _run(name, cfg):
     params = dict(NUM_CH=cfg["num_ch"], T_MAX=cfg["t_max"], K_MAX=cfg["k_max"], SPM_BYTES=cfg["spm_bytes"],
                   CH_BYTES="64'd%d" % cfg["ch_bytes"], SPM_RD_LAT=cfg["spm_rd_lat"], ADDR_BEAT_W=cfg["addr_beat_w"],
-                  RD_OUTSTANDING=cfg["rd_out"])
+                  RD_OUTSTANDING=cfg["rd_out"], FAST_CLK=cfg.get("fast_clk", 0))
     run("tsr_tb_at_dma", __name__, parameters=params, name="at_kvst_" + name,
         sources=rtl_sources() + [HERE / "hdl" / "tsr_tb_at_dma.sv"], extra_env={"TSR_KVST_CFG": json.dumps(cfg)})
 
@@ -306,6 +306,13 @@ def test_at_kvst_u200():
     """U200: 4 channels, 256 KiB SPM (the bench's), 16 GiB channels, SPM_RD_LAT 4."""
     _run("u200", dict(num_ch=4, t_max=8, k_max=32768, spm_bytes=256 << 10, ch_bytes=16 << 30, spm_rd_lat=4,
                       addr_beat_w=28, rd_out=16, n_ops=150))
+
+
+def test_at_kvst_fast_clk():
+    """U200 shape with FAST_CLK 1: the placer converts the word pair one cycle after it picked it (META complete one cycle
+    later). The planes, masks and beats are the simulator's."""
+    _run("u200_fast", dict(num_ch=4, t_max=8, k_max=32768, spm_bytes=256 << 10, ch_bytes=16 << 30, spm_rd_lat=4,
+                           addr_beat_w=28, rd_out=16, n_ops=150, fast_clk=1))
 
 
 def test_at_kvst_odd():
