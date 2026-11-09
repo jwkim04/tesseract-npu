@@ -14,7 +14,7 @@ number is SW-87). Numbers: [performance.md](performance.md) "Multi-token predict
   `test-tsr-mtp` (`ggml_tesseract_mtp_*`), `ggml_tesseract_verify_*`, the units of the lowering, `ggml_tesseract_head_blocks`; tiny Qwen3.5-style models with an MTP block (`gen_tiny_models.py`).
 - Results, card (`k4full`, composed GDN), 27B Q4_K_M with `mtp-Qwen3.8-27B-Q8_0.gguf` (`-md`): the tokens of every MTP run equal plain decoding's (K = 1, 2, 3, 4 and 8 prompts, also on Q8_0); device cycles per token
   113.99 M plain, 88.29 / 85.48 / 89.24 M at K = 1 / 2 / 3 on 8 prompts × 64 tokens (1.29 / 1.33 / 1.28 ×; 87.99 / 90.05 / 87.86 M on 4 × 32); wall 1.745 tok/s plain, 2.22 / 2.16 / 2.21 best of 3 rounds (4 × 32);
-  accepted drafts per step 0.859 / 1.471 / 1.893. Q8_0 target: 148.18 M plain, 1.39 / 1.43 / 1.39 ×. A head requantized to Q4_K halves the draft step (3.8 M against 7.2 M) and gives 1.32 / 1.39 / 1.31 ×; ggml-org's Q4_0 head
+  accepted drafts per step 0.859 / 1.471 / 1.893; `--spec-draft-p-min 0.5` at K = 3 gives 83.40 M (1.37 ×). Q8_0 target: 148.18 M plain, 1.39 / 1.43 / 1.39 ×. A head requantized to Q4_K halves the draft step (3.8 M against 7.2 M) and gives 1.32 / 1.39 / 1.31 ×; ggml-org's Q4_0 head
   is converted to Q8_0 by the device and gains nothing (performance.md).
   klcheck M7, 8 × 64: ratio 1.139, top-1 98.24 %, PASS, and the verification windows with rollbacks give the same rows bit for bit (512 / 512). 2B: card against simulator 96 / 96 bit-identical (plain and windows).
 - Why only 1.3 ×: a verification step grows by 39 M cycles per token (the composed recurrence, VU-bound and serial in the tokens, plus the chain's state re-reads), a draft step costs 7.2 M (5.3 M the Q8_0 vocabulary matrix),

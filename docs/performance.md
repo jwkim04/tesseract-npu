@@ -137,6 +137,15 @@ The larger sample (512 generated tokens, the prompts of klcheck's built-in set, 
 
 The third drafted token is accepted less than half of the time, so K = 2 is the best setting here on both heads.
 
+The third drafted token is accepted less than half of the time. llama.cpp's `--spec-draft-p-min P` stops drafting once the head's top-1 probability is below P, so the verification is shorter when the draft is doubtful
+(K = 3, Q8_0 head, same prompts, tokens again equal to plain decoding's on 8 of 8 prompts):
+
+| K = 3 | accepted drafts per step | drafted | cycles per token (draft + verify + process) | against plain |
+| --- | --- | --- | --- | --- |
+| `--spec-draft-p-min 0` (the default) | 1.893 | 525 | 89.24 M (7.48 + 81.01 + 0.75) | 1.28 × |
+| `0.5` | 1.638 | 408 | **83.40 M** (6.97 + 75.65 + 0.79) | **1.37 ×** |
+| `0.75` | 1.137 | 301 | 84.79 M (6.78 + 77.07 + 0.94) | 1.34 × |
+
 ### The MTP head's quantization (27B Q4_K_M target, 1 round)
 
 The draft step reads the head's vocabulary matrix and its block once per drafted token. `mtp-Qwen3.8-27B-Q4_0.gguf` (ggml-org, 1.7 GB) does not shrink it on this device: Q4_0 is not a device format, so
