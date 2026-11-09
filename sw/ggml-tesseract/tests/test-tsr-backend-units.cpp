@@ -1507,7 +1507,20 @@ static void test_gdn_lowering() {
             n->data = fake_at(0x8000000);
             return n;
         };
-        CHECK(!tsr_build_supports(env, build(1, 2, 1), &why) && why.find("K = 2") != std::string::npos);    // rollback snapshots
+        for (int64_t T : { 1, 4 }) {                                       // rollback snapshots (SW-83): K slots
+            for (int64_t K : { 2, 4 }) {
+                gctx c2;
+                const int64_t hv2 = 16, hk2 = 4;
+                ggml_tensor * st2 = ggml_new_tensor_4d(c2.ctx, GGML_TYPE_F32, S, S, hv2, 1);
+                st2->data = fake_at(0x1000000);
+                ggml_tensor * q = c2.f32(S, hk2, 0x100000, "q", T), * k = c2.f32(S, hk2, 0x200000, "k", T);
+                ggml_tensor * v = c2.f32(S, hv2, 0x300000, "v", T);
+                ggml_tensor * g = c2.f32(1, hv2, 0x400000, "g", T), * b = c2.f32(1, hv2, 0x410000, "beta", T);
+                ggml_tensor * n = ggml_gated_delta_net(c2.ctx, q, k, v, g, b, st2, K);
+                n->data = fake_at(0x8000000);
+                CHECK(tsr_build_supports(env, n, &why));
+            }
+        }
         CHECK(!tsr_build_supports(env, build(1, 1, S), &why) && why.find("per-row gate") != std::string::npos);   // KDA gate
         CHECK(!tsr_build_supports(env, build(5, 1, 1), &why));            // H_v = 4 rows of 16 bytes between tokens
     }
@@ -1752,6 +1765,206 @@ static void test_gdn_state_cell() {
     (void) why;
 }
 
+// Rollback snapshots (SW-83). With n_rs_seq = K - 1 llama.cpp's graph keeps K snapshot groups per recurrent cache:
+//   GATED_DELTA_NET with K slots (the state after each of the last min(T, K) tokens, most recent first) and ONE CPY of the
+//   slots, a 3D view of the cache with one group (mem_size cells) between slots, behind the gather of the sequence's state;
+//   SSM_CONV: K CPYs, slot s a view of the CONCAT's window that starts at column T - s (clamped to 0).
+// The record of a node with several slots is a chain of min(T, K) records, each the K = 1 record of its tokens.
+static void test_gdn_snapshots() {
+    fake_kv kv;
+    tsr_build_env env = fake_env(&kv);
+    std::vector<int32_t> ids_now;
+    env.read_i32 = [&](const ggml_tensor *, std::vector<int32_t> * v) {
+        *v = ids_now;
+        return true;
+    };
+    std::string why;
+    namespace gd = opl::gdn;
+    const int64_t S = 64, hk = 2, hv = 16, D = S * S * hv, mem = 2, head = 1;
+    const uint64_t cache_off = 0x4000000;
+    const uint32_t cell_lines = (uint32_t) (D * 4 / 64), group_lines = (uint32_t) mem * cell_lines;
+    struct cfg_t { int64_t T, K; };
+    for (const cfg_t & cf : { cfg_t{ 4, 4 }, cfg_t{ 2, 4 }, cfg_t{ 6, 4 }, cfg_t{ 1, 4 }, cfg_t{ 3, 3 } }) {
+        for (int identity = 0; identity < 2; ++identity) {
+            const int64_t T = cf.T, K = cf.K, nw = std::min(T, K);
+            gctx c;
+            ggml_tensor * cache = c.f32(D, mem * K, cache_off, "cache_s_l0");
+            ggml_tensor * idt = ggml_new_tensor_1d(c.ctx, GGML_TYPE_I32, 1);
+            idt->data = fake_at(0x500000);
+            ggml_set_name(idt, "rs_s_copy");
+            ggml_tensor * states = ggml_reshape_2d(c.ctx, cache, D, cache->ne[1]);
+            ggml_tensor * gather = ggml_get_rows(c.ctx, states, idt);
+            gather->data = fake_at(0x6000000);
+            ggml_tensor * out_states = ggml_view_2d(c.ctx, gather, D, 1, gather->nb[1], 0);
+            ggml_tensor * st4 = ggml_reshape_4d(c.ctx, out_states, S, S, hv, 1);
+            ggml_tensor * q = c.f32(S, hk, 0x100000, "q", T), * k = c.f32(S, hk, 0x200000, "k", T);
+            ggml_tensor * v = c.f32(S, hv, 0x300000, "v", T);
+            ggml_tensor * g = c.f32(1, hv, 0x400000, "g", T), * b = c.f32(1, hv, 0x410000, "beta", T);
+            q = ggml_reshape_4d(c.ctx, q, S, hk, T, 1);
+            k = ggml_reshape_4d(c.ctx, k, S, hk, T, 1);
+            v = ggml_reshape_4d(c.ctx, v, S, hv, T, 1);
+            g = ggml_reshape_4d(c.ctx, g, 1, hv, T, 1);
+            b = ggml_reshape_4d(c.ctx, b, 1, hv, T, 1);
+            ggml_tensor * gdn = ggml_gated_delta_net(c.ctx, q, k, v, g, b, st4, K);
+            gdn->data = fake_at(0x8000000);
+            CHECK(gdn->ne[1] == T + K * S);
+            const size_t att = (size_t) (4 * S * hv * T);
+            ggml_tensor * src = ggml_view_3d(c.ctx, gdn, D, 1, nw, (size_t) D * 4, (size_t) D * 4, att);
+            ggml_tensor * dst = ggml_view_3d(c.ctx, cache, D, 1, nw, cache->nb[1], (size_t) mem * cache->nb[1], (size_t) head * cache->nb[1]);
+            ggml_tensor * cpy = ggml_cpy(c.ctx, src, dst);
+            ggml_cgraph * graph = ggml_new_graph(c.ctx);
+            ggml_tensor * out_view = ggml_view_4d(c.ctx, gdn, S, hv, T, 1, S * 4, S * hv * 4, S * hv * T * 4, 0);
+            ggml_build_forward_expand(graph, gather);
+            ggml_build_forward_expand(graph, gdn);
+            ggml_build_forward_expand(graph, ggml_scale(c.ctx, out_view, 1.0f));
+            ggml_build_forward_expand(graph, cpy);
+            for (int i = 0; i < ggml_graph_n_nodes(graph); ++i) {
+                ggml_graph_node(graph, i)->flags |= GGML_TENSOR_FLAG_COMPUTE;
+            }
+            ids_now = { identity ? (int32_t) head : (int32_t) (mem * 2 + head) };         // the cell, or a snapshot of group 2
+            const int ig = node_index(graph, gather), in = node_index(graph, gdn), ic = node_index(graph, cpy);
+            const tsr_fusion f = tsr_build_fusion(env, graph);
+            const tsr_gdn_cell & gc = f.gdn_cell[(size_t) in];
+            CHECK(tsr_build_supports(env, gdn, &why) && tsr_build_supports(env, cpy, &why));
+            CHECK(gc.ids != nullptr && gc.cpy == ic && gc.gather == ig && gc.slots == (uint32_t) nw && gc.in_place == (identity != 0) &&
+                  gc.absorb_cpy == (identity != 0 || nw > 1));
+            CHECK(f.into[(size_t) ic] == (gc.absorb_cpy ? in : -1) && f.into[(size_t) ig] == (identity ? in : -1));
+            if (!gc.absorb_cpy) {
+                continue;
+            }
+            tsr_rec r;
+            CHECK(tsr_lower_gdn_group(env, gdn, cpy, gc.in_place, &r, &why));
+            CHECK(r.more.size() == (size_t) nw - 1u);
+            const uint32_t cache_h = tsr_dram_handle(1, cache_off);
+            const uint32_t cell0 = cache_h + (uint32_t) head * cell_lines;                 // slot 0: the cell of the sequence
+            const uint32_t gin = identity ? cell0 : tsr_dram_handle(1, 0x6000000);        // the gather's copy when the ids move
+            const uint32_t Lg = (uint32_t) ((hv + 15) / 16), L = (uint32_t) (S / 16), tok_stride_q = (uint32_t) (4 * S * hk / 64);
+            uint32_t prev = gin, tok0 = 0;
+            for (int64_t j = 0; j < nw; ++j) {
+                const tsr_rec & rj = j == 0 ? r : r.more[(size_t) j - 1];
+                const int64_t t1 = T - nw + j + 1, t0 = j == 0 ? 0 : T - nw + j;
+                CHECK(rj.kind == opl::K_GATED_DELTA_NET && rj.args[gd::N_TOKENS] == (uint32_t) (t1 - t0) && rj.args[gd::N_SEQS] == 1u);
+                CHECK(rj.args[gd::STATE_IN] == prev);
+                CHECK(rj.args[gd::STATE_OUT] == cell0 + (uint32_t) (nw - 1 - j) * group_lines);
+                CHECK(rj.args[gd::DST] == tsr_dram_handle(1, 0x8000000) + (uint32_t) t0 * (uint32_t) hv * L);
+                CHECK(rj.args[gd::G] == tsr_dram_handle(1, 0x400000) + (uint32_t) t0 * Lg);
+                CHECK(rj.args[gd::Q] == tsr_dram_handle(1, 0x100000) + (uint32_t) t0 * rj.args[gd::Q_TOKEN_STRIDE]);
+                (void) tok_stride_q;
+                CHECK(t0 == tok0);
+                prev = rj.args[gd::STATE_OUT];
+                tok0 = (uint32_t) t1;
+            }
+            CHECK(tok0 == (uint32_t) T);                                                   // the chain covers every token once
+            // slot 0 is the last record's output: the cell the CPY writes first
+            const tsr_rec & last = nw == 1 ? r : r.more.back();
+            CHECK(last.args[gd::STATE_OUT] == cell0);
+        }
+    }
+    // a record of several slots for more than one sequence is refused (one sequence only)
+    {
+        gctx c;
+        ggml_tensor * st = ggml_new_tensor_4d(c.ctx, GGML_TYPE_F32, S, S, hv, 2);
+        st->data = fake_at(0x1000000);
+        ggml_tensor * q = c.f32(S, hk, 0x100000, "q", 4), * k = c.f32(S, hk, 0x200000, "k", 4), * v = c.f32(S, hv, 0x300000, "v", 4);
+        ggml_tensor * g = c.f32(1, hv, 0x400000, "g", 4), * b = c.f32(1, hv, 0x410000, "beta", 4);
+        q = ggml_reshape_4d(c.ctx, q, S, hk, 2, 2);
+        k = ggml_reshape_4d(c.ctx, k, S, hk, 2, 2);
+        v = ggml_reshape_4d(c.ctx, v, S, hv, 2, 2);
+        g = ggml_reshape_4d(c.ctx, g, 1, hv, 2, 2);
+        b = ggml_reshape_4d(c.ctx, b, 1, hv, 2, 2);
+        ggml_tensor * gdn = ggml_gated_delta_net(c.ctx, q, k, v, g, b, st, 2);
+        gdn->data = fake_at(0x8000000);
+        tsr_rec r;
+        CHECK(!tsr_lower_m7(env, false, gdn, nullptr, &r, &why) && why.find("one sequence only") != std::string::npos);
+    }
+    // SSM_CONV with K state CPYs: slot 0 in the record, the other slots by CPY records of the window rows
+    {
+        const int64_t C = 6144, dc = 4;
+        for (const cfg_t & cf : { cfg_t{ 4, 4 }, cfg_t{ 1, 4 }, cfg_t{ 2, 4 }, cfg_t{ 6, 3 }, cfg_t{ 3, 4 } }) {
+            const int64_t T = cf.T, K = cf.K, nw = std::min(T, K);
+            gctx c;
+            ggml_tensor * state = c.f32(dc - 1, C, 0x100000, "conv_states");
+            ggml_tensor * x = c.f32(C, T, 0x200000, "qkv");
+            ggml_tensor * cat = ggml_concat(c.ctx, state, ggml_transpose(c.ctx, x), 0);
+            cat->data = fake_at(0x300000);
+            ggml_tensor * w = c.f32(dc, C, 0x400000, "taps");
+            ggml_tensor * conv = ggml_ssm_conv(c.ctx, cat, w);
+            conv->data = fake_at(0x500000);
+            ggml_tensor * silu = ggml_silu(c.ctx, conv);
+            silu->data = fake_at(0x600000);
+            const int64_t cmem = 2;
+            ggml_tensor * cache = c.f32((dc - 1) * C, cmem * K, 0x700000, "cache_r_l0");
+            ggml_cgraph * g = ggml_new_graph(c.ctx);
+            std::vector<ggml_tensor *> cpys;
+            for (int64_t t = 1; t <= K; ++t) {                          // llama.cpp's order: slot K - t
+                const int64_t s_idx = std::max<int64_t>(0, cat->ne[0] - (dc - 1) - K + t), slot = K - t;
+                ggml_tensor * last = ggml_view_3d(c.ctx, cat, dc - 1, C, 1, cat->nb[1], cat->nb[2], (size_t) s_idx * 4);
+                ggml_tensor * dstv = ggml_view_2d(c.ctx, cache, (dc - 1) * C, 1, cache->nb[1], (size_t) (slot * cmem + 1) * cache->nb[1]);
+                cpys.push_back(ggml_cpy(c.ctx, last, dstv));
+                ggml_build_forward_expand(g, cpys.back());
+            }
+            ggml_build_forward_expand(g, silu);
+            const int is = node_index(g, conv), ic = node_index(g, cat);
+            const tsr_fusion f = tsr_build_fusion(env, g);
+            CHECK(f.conv_concat[is] == ic && f.conv_silu[is] == node_index(g, silu) && f.conv_cpys[(size_t) is].size() == (size_t) K);
+            CHECK(f.conv_cpy[is] == node_index(g, cpys.back()));            // t = K: slot 0, the last columns
+            for (ggml_tensor * cp : cpys) {
+                CHECK(tsr_build_supports(env, cp, &why));
+            }
+            std::vector<const ggml_tensor *> slots;
+            for (int32_t i : f.conv_cpys[(size_t) is]) slots.push_back(ggml_graph_node(g, i));
+            tsr_rec r;
+            CHECK(tsr_lower_conv_group(env, false, conv, silu, cpys.back(), &r, &why, &slots));
+            const uint32_t Lc = (uint32_t) (C / 16), wh = tsr_dram_handle(1, 0x300000), cell_lines = (uint32_t) (dc - 1) * Lc;
+            namespace cp = opl::cpy;
+            CHECK(r.args[opl::sconv::STATE_OUT] == tsr_dram_handle(1, 0x700000) + (uint32_t) (1 * cell_lines));
+            // slot s >= 1 (s < nw) copies the window rows from column T - s: state-block rows first (rows < d_conv - 1), then token rows
+            size_t at = 0;
+            for (int64_t s2 = nw - 1; s2 >= 1; --s2) {                  // llama.cpp expands the slots from K - 1 down to 0
+                const uint32_t s_idx = (uint32_t) (T - s2), dst = tsr_dram_handle(1, 0x700000) + (uint32_t) (s2 * cmem + 1) * cell_lines;
+                const uint32_t c1 = s_idx < (uint32_t) (dc - 1) ? (uint32_t) (dc - 1) - s_idx : 0u, c2 = (uint32_t) (dc - 1) - c1;
+                if (c1 > 0) {
+                    CHECK(at < r.more.size() && r.more[at].kind == opl::K_CPY && r.more[at].args[cp::DST] == dst &&
+                          r.more[at].args[cp::SRC] == wh + s_idx * Lc && r.more[at].args[cp::ROWS] == c1 && r.more[at].args[cp::ROW_LINES] == Lc);
+                    ++at;
+                }
+                if (c2 > 0) {
+                    const uint32_t tok0 = c1 > 0 ? 0u : s_idx - (uint32_t) (dc - 1);
+                    CHECK(at < r.more.size() && r.more[at].kind == opl::K_CPY && r.more[at].args[cp::DST] == dst + c1 * Lc &&
+                          r.more[at].args[cp::SRC] == wh + ((uint32_t) (dc - 1) + tok0) * Lc && r.more[at].args[cp::ROWS] == c2);
+                    ++at;
+                }
+            }
+            CHECK(at == r.more.size());                                  // no record for the slots behind min(T, K)
+        }
+    }
+    // CONCAT of two matrices along the row: two CPY records
+    {
+        gctx c;
+        const int64_t E = 2048;
+        for (int64_t T : { 1, 4 }) {
+            ggml_tensor * a = c.f32(E, T, 0x100000, "e_norm"), * b = c.f32(E, T, 0x200000, "h_norm");
+            ggml_tensor * cat = ggml_concat(c.ctx, a, b, 0);
+            cat->data = fake_at(0x300000);
+            tsr_rec r;
+            CHECK(tsr_build_supports(env, cat, &why));
+            CHECK(tsr_lower_m7(env, false, cat, nullptr, &r, &why));
+            namespace cp = opl::cpy;
+            const uint32_t L = (uint32_t) (E / 16);
+            CHECK(r.kind == opl::K_CPY && r.more.size() == 1u && r.args[cp::DST] == tsr_dram_handle(1, 0x300000) &&
+                  r.args[cp::SRC] == tsr_dram_handle(1, 0x100000) && r.args[cp::ROW_LINES] == L && r.args[cp::ROWS] == (uint32_t) T &&
+                  (T == 1 || r.args[cp::DST_STRIDE] == 2 * L));
+            CHECK(r.more[0].args[cp::DST] == tsr_dram_handle(1, 0x300000) + L && r.more[0].args[cp::SRC] == tsr_dram_handle(1, 0x200000) &&
+                  r.more[0].args[cp::ROW_LINES] == L && r.more[0].args[cp::ROWS] == (uint32_t) T);
+        }
+        ggml_tensor * odd = c.f32(40, 2, 0x100000, "odd");
+        ggml_tensor * cat = ggml_concat(c.ctx, odd, odd, 0);
+        cat->data = fake_at(0x300000);
+        CHECK(!tsr_build_supports(env, cat, &why));                    // rows that end inside a line
+    }
+    (void) why;
+}
+
 // TSR_KINDS (tsr_kinds_parse): m6, all, additions and removals from left to right, NOP and JOIN always
 // kept, and the words it refuses.
 static void test_kinds_parse() {
@@ -1807,6 +2020,7 @@ int main() {
     test_supports_rules();
     test_gdn_lowering();
     test_gdn_state_cell();
+    test_gdn_snapshots();
     test_kinds_parse();
 #else
     printf("test-tsr-backend-units: built without ggml: the M7 builder's ggml tests are skipped\n");

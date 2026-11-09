@@ -6,7 +6,8 @@
 # build time, into ${TSR_TINY_MODEL_DIR}:
 #   qwen2-tiny-q8_0.gguf, qwen2-tiny-q4_k.gguf (2 layers), gemma4-tiny-q8_0.gguf (4 layers, 3 SWA +
 #   1 full), qwen35-tiny-q8_0.gguf and qwen35-tiny-s128-q8_0.gguf (Qwen3.5 / 3.8 layout: 3 Gated DeltaNet
-#   layers and 1 full attention layer; S_v 32 and 128), qwen3moe-tiny-q8_0.gguf and qwen3moe-tiny-q4_k.gguf
+#   layers and 1 full attention layer; S_v 32 and 128), qwen35-tiny-mtp-q8_0.gguf and qwen35-tiny-s128-mtp-q8_0.gguf (the
+#   same with the multi-token prediction block, SW-83), qwen3moe-tiny-q8_0.gguf and qwen3moe-tiny-q4_k.gguf
 #   (Qwen3-30B-A3B's graph: 2 layers, 64 experts, 8 used), tiny-prompts.txt — random weights, 64-row
 #   vocabularies, no binary in git.
 #
@@ -107,7 +108,8 @@ message(STATUS "tiny models: gen_tiny_models.py run by ${_tiny_py}")
 set(_tiny_outputs ${TSR_TINY_MODEL_DIR}/qwen2-tiny-q8_0.gguf ${TSR_TINY_MODEL_DIR}/qwen2-tiny-q4_k.gguf
                   ${TSR_TINY_MODEL_DIR}/gemma4-tiny-q8_0.gguf ${TSR_TINY_MODEL_DIR}/qwen35-tiny-q8_0.gguf
                   ${TSR_TINY_MODEL_DIR}/qwen35-tiny-s128-q8_0.gguf ${TSR_TINY_MODEL_DIR}/qwen3moe-tiny-q8_0.gguf
-                  ${TSR_TINY_MODEL_DIR}/qwen3moe-tiny-q4_k.gguf ${TSR_TINY_MODEL_DIR}/tiny-prompts.txt)
+                  ${TSR_TINY_MODEL_DIR}/qwen3moe-tiny-q4_k.gguf ${TSR_TINY_MODEL_DIR}/qwen35-tiny-mtp-q8_0.gguf
+                  ${TSR_TINY_MODEL_DIR}/qwen35-tiny-s128-mtp-q8_0.gguf ${TSR_TINY_MODEL_DIR}/tiny-prompts.txt)
 add_custom_command(
     OUTPUT ${_tiny_outputs}
     COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${_tiny_gguf_py}

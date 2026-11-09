@@ -261,3 +261,24 @@ if (TARGET llama AND TARGET tsr_tiny_models AND TARGET ggml-tesseract)
             ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal;LLAMA_ATTN_ROT_DISABLE=1")
     endforeach()
 endif()
+
+# The verification batch of multi-token prediction (tests/test-tsr-mtp.cpp, SW §7.11, SW-83): a context with rollback snapshots
+# decodes batches of up to K + 1 tokens with every row's logits and rolls the rejected tail back; the rows are compared with plain
+# decoding on the same device and with the CPU. The models are the tiny Qwen3.5-style ones (S_v 32: the composed Gated DeltaNet
+# path, S_v 128: the fused path on the simulator's CAPS); the second run is the card configuration (T_MAX 4, no GDN op).
+if (TARGET llama AND TARGET tsr_tiny_models AND TARGET ggml-tesseract)
+    add_executable(test-tsr-mtp tests/test-tsr-mtp.cpp)
+    target_link_libraries(test-tsr-mtp PRIVATE llama ggml)
+    target_compile_features(test-tsr-mtp PRIVATE cxx_std_17)
+    target_compile_options(test-tsr-mtp PRIVATE -Wall -Wextra)
+    target_include_directories(test-tsr-mtp PRIVATE ${TESSERACT_ROOT}/third_party/llama.cpp/ggml/include)
+    set_target_properties(test-tsr-mtp PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    foreach (_m qwen35-tiny-mtp-q8_0 qwen35-tiny-s128-mtp-q8_0)
+        add_test(NAME ggml_tesseract_mtp_${_m} COMMAND test-tsr-mtp ${TSR_TINY_MODEL_DIR}/${_m}.gguf 3 12)
+        set_tests_properties(ggml_tesseract_mtp_${_m} PROPERTIES TIMEOUT 600
+            ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal;TSR_SIM_TMAX=4;LLAMA_ATTN_ROT_DISABLE=1")
+        add_test(NAME ggml_tesseract_mtp_card_${_m} COMMAND test-tsr-mtp ${TSR_TINY_MODEL_DIR}/${_m}.gguf 2 9)
+        set_tests_properties(ggml_tesseract_mtp_card_${_m} PROPERTIES TIMEOUT 600
+            ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal;TSR_SIM_CARD=k4full;LLAMA_ATTN_ROT_DISABLE=1")
+    endforeach()
+endif()

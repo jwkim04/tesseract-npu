@@ -2757,13 +2757,17 @@ static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key
         }
         if (c.in_place) {
             absorbed[(size_t) c.gather] = 1;
+        }
+        if (c.absorb_cpy) {
             absorbed[(size_t) c.cpy] = 1;
         }
     }
     for (int i = 0; i < cgraph->n_nodes; i++) {          // the state CPY and the SILU of an SSM_CONV group; its CONCAT fills the window
         if (g.fusion.conv_concat[i] >= 0) {
             window_of[g.fusion.conv_concat[i]] = i;
-            absorbed[g.fusion.conv_cpy[i]] = 1;
+            for (int32_t k : g.fusion.conv_cpys[(size_t) i]) {
+                absorbed[(size_t) k] = 1;
+            }
             if (g.fusion.conv_silu[i] >= 0) {
                 absorbed[g.fusion.conv_silu[i]] = 1;
             }
@@ -2799,36 +2803,55 @@ static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key
             std::string why;
             const ggml_tensor * silu = g.fusion.conv_silu[i] >= 0 ? cgraph->nodes[g.fusion.conv_silu[i]] : nullptr;
             const ggml_tensor * cpy = g.fusion.conv_cpy[i] >= 0 ? cgraph->nodes[g.fusion.conv_cpy[i]] : nullptr;
-            if (cpy == nullptr || !tsr_lower_conv_group(g.env, false, node, silu, cpy, &r, &why)) {
+            std::vector<const ggml_tensor *> slots;
+            for (int32_t k : g.fusion.conv_cpys[(size_t) i]) {
+                slots.push_back(cgraph->nodes[(size_t) k]);
+            }
+            if (cpy == nullptr || !tsr_lower_conv_group(g.env, false, node, silu, cpy, &r, &why, &slots)) {
                 GGML_ABORT("tesseract: SSM_CONV '%s' reached graph_compute but cannot run on the device: %s", node->name,
                            cpy == nullptr ? "its CONCAT / state CPY group was not found in the graph" : why.c_str());
             }
             const std::string name = std::string(node->name) + (silu != nullptr ? " + SILU" : "");
             tsr_seg_add_rec(d, seg, r, name, tsr_written_buf(d, silu != nullptr ? silu : node), true);
-            if (cpy->view_src != nullptr) {
-                if (tsr_buffer_ctx * sb = tsr_written_buf(d, cpy)) {
-                    seg.written.insert(sb);
+            for (tsr_rec & more : r.more) {
+                tsr_seg_add_rec(d, seg, more, name + " (state snapshot)", nullptr, false);
+            }
+            for (const ggml_tensor * sc : slots) {
+                if (sc->view_src != nullptr) {
+                    if (tsr_buffer_ctx * sb = tsr_written_buf(d, sc)) {
+                        seg.written.insert(sb);
+                    }
                 }
             }
             TSR_DBG(1, "%-11s %-32s\n", tsr_kind_name(r.kind), name.c_str());
             tsr_dump_node(d, seg, silu != nullptr ? silu : node);
             continue;
         }
-        if (node->op == GGML_OP_GATED_DELTA_NET && g.fusion.gdn_cell[(size_t) i].in_place) {
-            // SW-82: the record reads the cache cell the state CPY writes and writes the new state back into it
-            const ggml_tensor * cpy = cgraph->nodes[g.fusion.gdn_cell[(size_t) i].cpy];
+        if (node->op == GGML_OP_GATED_DELTA_NET && g.fusion.gdn_cell[(size_t) i].absorb_cpy) {
+            // SW-82: the record reads the cache cell the state CPY writes and writes the new state back into it (in place).
+            // SW-83: with K > 1 snapshots a chain of records writes the cache's rollback groups; from the gather's copy
+            // when the ids are not the identity
+            const tsr_gdn_cell & gc = g.fusion.gdn_cell[(size_t) i];
+            const ggml_tensor * cpy = cgraph->nodes[gc.cpy];
             tsr_rec r;
             std::string why;
-            if (!tsr_lower_m7(g.env, false, node, cpy, &r, &why)) {
-                GGML_ABORT("tesseract: GATED_DELTA_NET '%s' on its state cache cell cannot run on the device: %s", node->name,
+            if (!tsr_lower_gdn_group(g.env, node, cpy, gc.in_place, &r, &why)) {
+                GGML_ABORT("tesseract: GATED_DELTA_NET '%s' with its state cache group cannot run on the device: %s", node->name,
                            why.c_str());
             }
-            tsr_seg_add_rec(d, seg, r, std::string(node->name) + " (state in place)", tsr_written_buf(d, node), true);
-            seg.n_gdn_cell++;
+            const std::string gname = std::string(node->name) + (gc.in_place ? " (state in place)" : " (state group)");
+            tsr_seg_add_rec(d, seg, r, gname, tsr_written_buf(d, node), true);
+            for (tsr_rec & more : r.more) {
+                tsr_seg_add_rec(d, seg, more, gname, tsr_written_buf(d, node), true);
+            }
+            if (gc.in_place) {
+                seg.n_gdn_cell += 1u + (uint32_t) r.more.size();
+            }
             if (tsr_buffer_ctx * sb = tsr_written_buf(d, cpy)) {
                 seg.written.insert(sb);
             }
-            TSR_DBG(1, "%-11s %-32s (state in place)\n", tsr_kind_name(r.kind), node->name);
+            TSR_DBG(1, "%-11s %-32s (%s, %zu record(s))\n", tsr_kind_name(r.kind), node->name, gc.in_place ? "state in place" : "state group",
+                    1 + r.more.size());
             tsr_dump_node(d, seg, node);
             continue;
         }
@@ -3481,8 +3504,38 @@ static bool tsr_hook_versions(ggml_backend_dev_t dev, tsr_versions * v) {
     return true;
 }
 
+// Hook "ggml_backend_tesseract_counters" (SW-83; the MTP driver, tsr-mtp): the device's counters since it was opened, read after a
+// graph_compute: out[0] PERF_CYCLES (core cycles), [1] MVM, [2] VU, [3] DMA, [4] QACT, [5] AT busy cycles, [6] launches,
+// [7] graph_compute calls. n words are filled (at most 8); false if the device is not open.
+static bool tsr_hook_counters(ggml_backend_dev_t dev, uint64_t * out, size_t n) {
+    if (dev == nullptr || out == nullptr) {
+        return false;
+    }
+    tsr_device * d = (tsr_device *) dev->context;
+    std::lock_guard<std::mutex> lock(d->mtx);
+    if (d->tp == nullptr) {
+        return false;
+    }
+    const uint32_t nch = tsr_transport_config(d->tp)->num_ch;
+    auto rd64 = [d](uint32_t idx) {
+        const uint32_t lo = tsr_transport_csr_read(d->tp, TSR_CSR_PERF_BASE + 8 * idx);
+        const uint32_t hi = tsr_transport_csr_read(d->tp, TSR_CSR_PERF_BASE + 8 * idx + 4);
+        return ((uint64_t) hi << 32) | lo;
+    };
+    const uint64_t v[8] = { rd64(TSR_PERF_CYCLES), rd64(TSR_PERF_MVM_CYCLES), rd64(TSR_PERF_VU_CYCLES),
+                            rd64(TSR_PERF_EXT(nch, TSR_PERF_XOFF_DMA_CYCLES)), rd64(TSR_PERF_EXT(nch, TSR_PERF_XOFF_QACT_CYCLES)),
+                            rd64(TSR_PERF_EXT(nch, TSR_PERF_XOFF_ATT_CYCLES)), d->odev.launches, d->st_graphs };
+    for (size_t i = 0; i < n && i < 8; ++i) {
+        out[i] = v[i];
+    }
+    return true;
+}
+
 static void * tsr_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
+    if (name != nullptr && strcmp(name, "ggml_backend_tesseract_counters") == 0) {
+        return (void *) tsr_hook_counters;
+    }
     if (name != nullptr && strcmp(name, "ggml_backend_tesseract_versions") == 0) {
         return (void *) tsr_hook_versions;
     }
