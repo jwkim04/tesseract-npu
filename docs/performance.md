@@ -121,6 +121,39 @@ On an image with the fused GDN op the recurrence of a token costs about a quarte
 
 The Q8_0 target streams 28.6 GB per token (MVM busy 106.5 M cycles), so a larger share of the step is weight traffic that the verification shares between the tokens.
 
+### All eight klcheck prompts × 64 tokens (27B Q4_K_M target, 1 round)
+
+The larger sample (512 generated tokens, the prompts of klcheck's built-in set, 7 to 25 tokens), same session layout, once with the ggml-org Q8_0 head and once with the Q4_K requantized head (below). Every MTP stream equals plain decoding's (8 of 8 prompts, K = 1, 2, 3, both heads).
+
+| | plain | K = 1 | K = 2 | K = 3 |
+| --- | --- | --- | --- | --- |
+| Q8_0 head: accepted drafts per step (tokens per step) | 0 (1) | 0.859 (1.859) | 1.471 (2.471) | 1.893 (2.893) |
+| Q8_0 head: accepted at draft position 1 / 2 / 3 | | 85.9 % | 82.7 / 65.4 % | 82.6 / 62.5 / 46.8 % |
+| Q8_0 head: cycles per token (draft + verify + process) | 113.99 M | **88.29 M** (3.88 + 83.34 + 1.06) = 1.29 × | **85.48 M** (5.83 + 78.81 + 0.84) = 1.33 × | **89.24 M** (7.48 + 81.01 + 0.75) = 1.28 × |
+| Q8_0 head: wall tok/s | 1.639 | 2.192 | 2.269 | 2.168 |
+| Q4_K head: accepted drafts per step | | 0.853 | 1.483 | 1.845 |
+| Q4_K head: cycles per token (draft + verify + process) | 113.99 M | **86.33 M** (2.08 + 83.66 + 0.59) = 1.32 × | **81.93 M** (3.10 + 78.37 + 0.47) = 1.39 × | **86.86 M** (4.06 + 82.37 + 0.43) = 1.31 × |
+| Q4_K head: wall tok/s | 1.741 | 2.247 | 2.353 | 2.194 |
+
+The third drafted token is accepted less than half of the time, so K = 2 is the best setting here on both heads.
+
+### The MTP head's quantization (27B Q4_K_M target, 1 round)
+
+The draft step reads the head's vocabulary matrix and its block once per drafted token. `mtp-Qwen3.8-27B-Q4_0.gguf` (ggml-org, 1.7 GB) does not shrink it on this device: Q4_0 is not a device format, so
+the backend converts it to Q8_0 at load and streams the same bytes (draft step 7.175 M cycles, as for the Q8_0 file) and the double rounding costs acceptance. A head requantized to Q4_K (`llama-quantize
+--allow-requantize --pure --output-tensor-type q4_k --token-embedding-type q8_0` of the Q8_0 file: the block and `output.weight` in Q4_K, 2.3 GB with the embedding table, not a published file) streams 0.56 bytes per weight:
+the draft step halves to 3.83 M cycles. Same four prompts × 32 tokens and the same session layout as above; the generated tokens equal plain decoding's in every run.
+
+| Device cycles per token (M) | plain | K = 1 | K = 2 | K = 3 |
+| --- | --- | --- | --- | --- |
+| Q8_0 head (above): accepted drafts per step | | 0.855 | 1.364 | 1.977 |
+| Q8_0 head: cycles per token | 113.99 | 87.99 (1.30 ×) | 90.05 (1.27 ×) | 87.86 (1.30 ×) |
+| Q4_0 head (ggml-org, converted to Q8_0 at load): drafts per step | | 0.803 | 1.357 | 1.848 |
+| Q4_0 head: cycles per token (draft per step) | 113.99 | 90.60 (1.26 ×) (7.18) | 91.72 (1.24 ×) (7.18) | 92.32 (1.23 ×) (7.18) |
+| Q4_K head (requantized): drafts per step | | 0.855 | 1.407 | 1.909 |
+| Q4_K head: cycles per token (draft per step) | 113.99 | **85.71 (1.33 ×)** (3.83) | **85.17 (1.34 ×)** (3.83) | **84.12 (1.36 ×)** (3.83) |
+| Q4_K head: wall tok/s | 1.716 | 2.211 | 2.197 | 2.247 |
+
 ### Qwen3.8 2B Q4_K_M (its GGUF carries the MTP block)
 
 K = 3 on three prompts × 16 tokens: 2.500 tokens per step, 14.26 M cycles per token against 11.44 M plain (0.80 ×; the 2B's tied head, 540 MB as Q8_0, is read per draft token: 2.9 M cycles of each).
@@ -1144,6 +1177,10 @@ build/xrt/bin/klcheck compare --ref build/card/q05-m7/dev-sim-replay.klc --dev b
 # MoE and Gated DeltaNet (branch sw-moegdn; TSR_IMAGE = the build's tsr-fw.elf; Gemma prefill runs at the default -ub 512 since SW-76)
 TSR_XCLBIN=... build/xrt/bin/klcheck all -m models/gemma4-26b-a4b/google_gemma-4-26B-A4B-it-Q4_K_M.gguf --device xrt --phase m7 -n 64 --n-prompts 8 -o build/card/moegdn/moe-m7-8x64
 (also --phase m6; and -m models/qwen3.8-2b-empero/Qwen3.8-2B-Q4_K_M.gguf for Qwen3.8; the scripts are in build/card/moegdn)
+# multi-token prediction (branch mtp; scripts in build/card/mtp: lib.sh, run_mtp.sh KEY MODEL MTP_GGUF N_PROMPTS N_GEN ROUNDS K_LIST, run_klcheck.sh, run_2b_identity.sh)
+LLAMA_ATTN_ROT_DISABLE=1 TSR_STATS=1 TSR_DEVICE=xrt build/xrt/bin/tsr-mtp -m models/qwen3.8-27b-ggml-org/Qwen3.8-27B-Q4_K_M.gguf -md models/qwen3.8-27b-ggml-org-mtp/mtp-Qwen3.8-27B-Q8_0.gguf \
+    --mtp-device xrt --mtp-mode all --mtp-k-list 1,2,3 --mtp-n-prompts 8 -n 64 --mtp-rounds 1 -c 2048 -t 8
+TSR_XCLBIN=... build/xrt/bin/klcheck all -m models/qwen3.8-27b-ggml-org/Qwen3.8-27B-Q4_K_M.gguf --device xrt --phase m7 -n 64 --n-prompts 8 --verify-k 3 --verify-identical -o build/card/mtp/klc/q4km_8x64
 ```
 
 The simulator results use the current tree (`build/dev`):
@@ -1154,6 +1191,8 @@ build/dev/bin/klcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf -o build/klc
 # the 32B run needs file-backed simulator DRAM (about 20 GiB free in the directory)
 TSR_SIM_DRAM_DIR=/path/with/space build/dev/bin/klcheck all \
     -m models/qwen2.5-32b-instruct-q4_k_m-00001-of-00005.gguf -o build/klcheck-32b-sim-m6 -n 64
+# multi-token prediction on the simulator, the card configuration (the 27B needs TSR_SIM_DRAM_DIR with about 22 GiB; TSR_SIM_GDN=1: an image with the fused GDN op)
+TSR_SIM_CARD=k4full build/dev/bin/tsr-mtp -m models/qwen3.8-2b-empero/Qwen3.8-2B-Q4_K_M.gguf --mtp-mode all --mtp-k-list 1,2,3 --mtp-n-prompts 4 -n 32 -c 512
 # numeric check of every weight MUL_MAT
 build/dev/bin/tsr-numcheck all -m models/qwen2.5-0.5b-instruct-q8_0.gguf -o build/numcheck-05b -T 32 --checks full
 # firmware cycle counts, launch costs and the M7 layer costs

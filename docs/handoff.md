@@ -12,8 +12,10 @@ number is SW-87). Numbers: [performance.md](performance.md) "Multi-token predict
   slot `CPY` (`absorb_cpy`), `CONCAT` along dim 0 is two `CPY` records, a matrix whose T_MAX tokens do not fit one planner tile (the 248,320-row output head) is stored in 2 / 4 / 8 row blocks
   (`tsr_head_parts`, `TSR_HEAD_SPLIT=0` turns it off), the backend has the hook `ggml_backend_tesseract_counters`. New tools: `tsr-mtp` (`sw/tools/tsr_mtp.cpp`), `klcheck --verify-k`. New tests:
   `test-tsr-mtp` (`ggml_tesseract_mtp_*`), `ggml_tesseract_verify_*`, the units of the lowering, `ggml_tesseract_head_blocks`; tiny Qwen3.5-style models with an MTP block (`gen_tiny_models.py`).
-- Results, card (`k4full`, composed GDN), 27B Q4_K_M with `mtp-Qwen3.8-27B-Q8_0.gguf` (`-md`): the tokens of every MTP run equal plain decoding's (4 prompts × 32 tokens, K = 1, 2, 3, also on Q8_0); device cycles per token
-  113.99 M plain, 87.99 / 90.05 / 87.86 M at K = 1 / 2 / 3 (1.30 / 1.27 / 1.30 ×); wall 1.745 tok/s plain, 2.22 / 2.16 / 2.21 best of 3 rounds; acceptance 0.855 / 1.364 / 1.977 drafts per step. Q8_0: 148.18 M plain, 1.39 / 1.43 / 1.39 ×.
+- Results, card (`k4full`, composed GDN), 27B Q4_K_M with `mtp-Qwen3.8-27B-Q8_0.gguf` (`-md`): the tokens of every MTP run equal plain decoding's (K = 1, 2, 3, 4 and 8 prompts, also on Q8_0); device cycles per token
+  113.99 M plain, 88.29 / 85.48 / 89.24 M at K = 1 / 2 / 3 on 8 prompts × 64 tokens (1.29 / 1.33 / 1.28 ×; 87.99 / 90.05 / 87.86 M on 4 × 32); wall 1.745 tok/s plain, 2.22 / 2.16 / 2.21 best of 3 rounds (4 × 32);
+  accepted drafts per step 0.859 / 1.471 / 1.893. Q8_0 target: 148.18 M plain, 1.39 / 1.43 / 1.39 ×. A head requantized to Q4_K halves the draft step (3.8 M against 7.2 M) and gives 1.32 / 1.39 / 1.31 ×; ggml-org's Q4_0 head
+  is converted to Q8_0 by the device and gains nothing (performance.md).
   klcheck M7, 8 × 64: ratio 1.139, top-1 98.24 %, PASS, and the verification windows with rollbacks give the same rows bit for bit (512 / 512). 2B: card against simulator 96 / 96 bit-identical (plain and windows).
 - Why only 1.3 ×: a verification step grows by 39 M cycles per token (the composed recurrence, VU-bound and serial in the tokens, plus the chain's state re-reads), a draft step costs 7.2 M (5.3 M the Q8_0 vocabulary matrix),
   and the MVM is now T-independent. With the fused op the simulator estimate (truncated 4- and 8-layer models, the method of §7.10) is 65.5 / 61.4 / 56.5 M cycles per token, 1.39 / 1.49 / 1.61 × (verification of 4 tokens 144.6 M
