@@ -194,7 +194,7 @@ class Axil:
 
 
 async def csr_responder(dut, sim, log):
-    """The core CSR port (docs/rtl-m2.md §6): a registered one-cycle csr_ready with csr_rdata,
+    """The core CSR port (docs/rtl-core.md §6): a registered one-cycle csr_ready with csr_rdata,
     answered by a simulator core (tsr_sim_csr_read / _write), plat_err_i = the RTL's plat_err."""
     import issue_sim as S                                  # noqa: F401
     pe = -1

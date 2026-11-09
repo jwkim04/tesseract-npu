@@ -1,8 +1,8 @@
 // tsr_rpipe.sv — valid/ready pipe of DEPTH tsr_rslice stages (full throughput).
 //
-// Owner: architecture (docs/rtl-m3.md §1, §6). Shared infrastructure: the MVM result pipe
+// Owner: architecture (docs/rtl-mvm.md §1, §6). Shared infrastructure: the MVM result pipe
 // (clusters -> tsr_mvm gather, crosses SLRs) and any registered valid/ready boundary.
-// Contract: a valid/ready stream (rules R1/R2 of docs/rtl-m2.md on both sides); items leave in
+// Contract: a valid/ready stream (rules R1/R2 of docs/rtl-core.md on both sides); items leave in
 //   order, unchanged; DEPTH = 0 is a wire. With DEPTH >= 1, s_ready, m_valid and m_data are
 //   registers (no combinational path through the pipe in either direction); each stage adds one
 //   cycle of latency and holds up to two items, so the pipe never limits throughput.

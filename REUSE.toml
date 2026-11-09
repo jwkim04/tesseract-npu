@@ -224,7 +224,6 @@ SPDX-License-Identifier = "Apache-2.0 AND CC0-1.0"
 path = [
   "docs/fig/*.svg",
   "docs/fig/*.png",
-  "docs/fig/floorplan/*.png",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = [

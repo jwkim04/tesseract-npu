@@ -11,7 +11,7 @@ import prof_lib as P
 GROUPS = ["attention", "router", "experts", "dense", "residual", "head"]
 GROUP_LABEL = {"attention": "attention", "router": "router", "experts": "experts", "dense": "dense branch",
                "residual": "residual and norms", "head": "embedding and head"}
-B_M0 = 72.05e9                  # four channels, read bursts of 64 beats at 300 MHz (docs/performance.md "Memory bandwidth (M0)")
+B_M0 = 72.05e9                  # four channels, read bursts of 64 beats at 300 MHz (the tsr_bw measurement, docs/bandwidth-kernel.md §7)
 STREAM_B_PER_CYCLE = 256.0      # four channels x 64 B per core cycle
 HANDLE_NONE = 0xFFFFFFFF
 REGIONS = [(0x0, 0x4000000, "OPL"), (0x4000000, 0x14000000, "IO"), (0x14000000, 0x20000000, "AUX"), (0x20000000, 1 << 62, "WEIGHT/KV heap")]
@@ -519,7 +519,7 @@ def make_checks(cv, sv, out, expect_cycles, run, dec):
             pct = 100.0 * (a - b) / b if b else 0
             if unit == 3 and not run.meta.get("simulated") and a >= b:
                 add(True, "VU: the sum of RUN is %d, PERF %s is %d (%+.1f %%): on the card a VU op's run time includes its wait for the op before it "
-                    "(docs/performance.md, \"Card against simulator\"), so RUN is the larger." % (a, key, b, pct))
+                    "(docs/prof-dbg.md §3.2), so RUN is the larger." % (a, key, b, pct))
             else:
                 add(abs(a - b) <= max(0.01 * b, 2000), "%s: the sum of RUN is %d, PERF %s is %d (%+.2f %%)." % (P.UNITS[unit], a, key, b, pct))
     if "MVM_CYCLES" in pf:

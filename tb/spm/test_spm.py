@@ -1,5 +1,5 @@
 """tsr_spm testbench: the even / odd 2R2W SPM (docs/design/04-control-core.md "CC" §10, CC-12;
-docs/rtl-m2.md §5), its single-port adapter tsr_spm_cport and the RISC-V bridge tsr_spm_bridge.
+docs/rtl-core.md §5), its single-port adapter tsr_spm_cport and the RISC-V bridge tsr_spm_bridge.
 
 Reference: the ISA simulator's SPM (spm_sim.SimSpm: the SPM bytes of a tsr_sim instance through
 libtsr_sim.so, and the simulator's RISC-V SPM-window semantics through its bus model, CC §4.1 /

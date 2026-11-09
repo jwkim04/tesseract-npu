@@ -7,8 +7,8 @@
 // (kdev, tsr_kdev.h):
 //   "sim"     the simulator in-process behind the core CSR port, no adapter (tsr_kdev_sim.cpp)
 //   "mock"    the sim kdev plus the ap_ctrl_none adapter register model (tsr_kdev_mock.cpp)
-//   "vkernel" the Verilated kernel in a server process (tsr_kdev_vkernel.cpp; the two-clock
-//             server is P5.3)
+//   "vkernel" the Verilated kernel in a server process (tsr_kdev_vkernel.cpp; the tree has no
+//             two-clock server)
 //   "xrt"     the Alveo card through xrt::ip and one device-only buffer per channel
 //             (tsr_transport_xrt.cpp, built with -DTSR_WITH_XRT=ON)
 //   kinds registered at run time (tsr::register_kdev, tsr_kdev.h)

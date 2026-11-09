@@ -4,97 +4,52 @@ Changes to Tesseract Basis, the firmware SDK in `sw/ctrl` and the host side that
 The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning is described in
 [docs/versioning.md](docs/versioning.md).
 
-## Unreleased
+## [Unreleased]
 
-- Added `TSR_SIM_VU=0` to the `sim` and `mock` transport kinds: the core of the reduced first card image
-  `tsr_u200_k4` (no vector unit, no attention; CAPS 0 and no VU queue). The host then runs MUL_MAT on the
-  device and every other op on the CPU, as in M6. Behaviour without the variable is unchanged.
-- Added capability-gated FAST attention score and probability slots. FLASH_ATTN
-  keeps its record format and numerical order.
-- Added the optional MUL_MAT_SCALE kind at numerical revision 1. The kind
-  scales completed FP32 results before their final export. Legacy MUL_MAT and
-  Basis ABI 1 retain their existing contracts.
-- Added the optional MUL_MAT_SOFTCAP kind at numerical revision 1. The two
-  scale coefficients are the original FP32 graph constants.
-- Added the MoE kinds MOE_ROUTE (0x1E) and MUL_MAT_ID (0x1F) at numerical revision 1. MOE_ROUTE computes
-  the softmax over the router logits, selects the k largest probabilities (value descending, ties by the
-  smaller index, NaN first, by integer compares on the RISC-V) and renormalises their weights.
-  MUL_MAT_ID runs a MUL_MAT per (token, slot) against the expert chosen by an id read from DRAM, with an
-  optional per-expert output scale. The image grows by about 5.4 KiB of ITCM. No RTL change.
-- Added the Gated DeltaNet kinds SOFTPLUS (0x2D), SSM_CONV (0x2E) and GATED_DELTA_NET (0x2F), each at numerics
-  revision 1, composed from existing VU operations and the DMA: no new RTL operation. They need the VU (CAPS bit 0).
-- GATED_DELTA_NET r2 (SW-78): with `CAPS` bit 8 (the VU's fused GDN op, VU §7.12) and S_v of 64 or more, each head and token runs
-  one `GDN` op instead of the 13 VU operations. The dot products become exact block fixed-point sums rounded once, α is folded
-  into k, and the output comes from the old state and κ = k · q, so the output bits change on a device with the bit. A device
-  without it, and every record with S_v below 64, produces revision 1's bits (the composed row of `kind_revs.txt` keeps
-  digest `b040cc2f4da8c0ca`). The record and the planner do not change. The `sim` transport has `TSR_SIM_GDN=0|1` to clear or set
-  `CAPS` bit 8 (`TSR_SIM_CARD=k4full`, the card image of 2026-11-09, has no bit 8). The simulator's cycle count of the GDN op follows the configured
-  front lanes and is fitted to the RTL unit (`tb/vu/test_vu_timing.py` `vu_gdn_op`). The kind table signature is now 0x2381. The image takes 85,504 B of ITCM.
-- The ggml-tesseract backend puts a GATED_DELTA_NET on its recurrent-state cache cell when the ids of the state gather say that every
-  sequence keeps its cell (SW-82): the record reads the cell and writes the new state back into it, and the `GET_ROWS` gather and the state
-  `CPY` of the pinned graph are absorbed. One pass over the state instead of three. No record, firmware or ABI change; the results are
-  bit-identical. A plan that depends on the ids is checked again at every reuse. `TSR_GDN_CELL=0` turns it off.
-- The ggml-tesseract backend lowers the graphs of a llama.cpp context with rollback snapshots (`n_rs_seq` = K, multi-token prediction; SW-83): a
-  `GATED_DELTA_NET` with K + 1 slots is a chain of `min(T, K + 1)` K = 1 records writing the cache's rollback groups, the conv state `CPY`s of each slot are `CPY`
-  records of window rows, the state group of SW-82 takes the 3D `CPY` of the slots (in place, or from the gather's copy after a rollback), and `CONCAT` along dim 0 is two `CPY`
-  records (SW-85). No firmware, record or ABI change; every snapshot and row is bit-identical to plain decoding on the same device. The pinned llama.cpp's MTP drafter
-  runs unchanged (SW-86).
-- Weight matrices for which T_MAX tokens do not fit one tile of `mm_plan` (the output head, N = 248,320) are stored in 2, 4 or 8 row blocks and their `MUL_MAT` is one record
-  per block, so a batch of up to T_MAX tokens streams every weight row once (SW-88). Bits unchanged; `TSR_HEAD_SPLIT=0` keeps matrices whole.
-- Added the backend hook `ggml_backend_tesseract_counters`, the tool `tsr-mtp` (the MTP drafter loop with device cycles per phase, plain and speculative modes, a list of K),
-  `klcheck run --verify-k K` and `klcheck all --verify-k K [--verify-identical]` (verification windows with rollbacks), and tiny Qwen3.5-style models with an MTP block.
-- UNARY accepts func 5, SIGMOID (VOP SIGMOID). The kind's revision stays 1: no existing record changes.
-- The ggml-tesseract backend lowers the Gated DeltaNet layer graph of the pinned llama.cpp (`qwen35`): SOFTPLUS, SIGMOID and SILU
-  on gate tensors, `GATED_DELTA_NET`, the `CONCAT` / `SSM_CONV` / state `CPY` group (two window `CPY` records and one
-  SSM_CONV record), the regrouped state `CPY`, IMROPE as NEOX for text positions, per-token `RMS_NORM` for strided views,
-  and the recurrent-state caches as device windows. The conv taps are stored as tap rows at weight upload. Whole decode
-  tokens of Qwen3.8 2B run in one launch. No llama.cpp patch.
-- Raised the ITCM budget of the production firmware image from 80 KiB to 96 KiB (SW-75, amends SW-38). The image with the MoE and the
-  Gated DeltaNet kinds together takes 84,056 B (85,504 B with the fused GDN path of SW-78); each set alone fit the old budget. The kind table has 21 kinds
-  (signature 0x804f with GATED_DELTA_NET at revision 1, 0x2381 at revision 2).
-- `TSR_DUMP_RE` / `TSR_DUMP_DIR` dump device values of matching nodes; `TSR_STATS` prints the units' busy cycles.
-- klcheck writes the four M-RoPE position streams in its embedding path (the embd and floor runs of Qwen3.5 / 3.8 were not
-  bit-identical to the token path before).
-- The simulator's cycle models follow the RTL and the card (SW-80): the VU from its lanes (`TSR_SIM_VU_TIMING`, `u200` 16 / 16 / 8 by
-  default, `k4` for the card image's 8 / 8 / 4 behind two lane-pipe stages) with latencies measured on the RTL unit, QACT (A32 is
-  divider bound: 16 cycles per 32-block), stores and MVM fill. `TSR_SIM_CARD=k4full` sets the card image's configuration for the
-  `sim` transport. Results do not change: only the cycle counts. `TSR_SIM_LOG` takes a `w,` prefix (the words of every push);
-  `TSR_OPL_PROF=1` / `TSR_OPL_KINDS=<file>` make the backend profile its launches and list their record kinds; `tsr-dbg`'s
-  `trw dump` reads a ring that an earlier process wrote; `sw/tools/trw_vs_sim.py` compares a card run with a simulator run.
-- The ggml-tesseract backend runs a MOE_ROUTE of more than 64 tokens (several tiles): the record writes its ids and weights to a device
-  scratch and two CPY records move them into the graph's tensors (SW-76). Host only: no firmware, kind or numerics change. Gemma 4 26B-A4B
-  and Qwen3-30B-A3B prefill at the default `-ub 512`; before, the backend aborted at `-ub 256` and above (Qwen3: at `-ub 128`).
-- Qwen3-30B-A3B (llama.cpp `qwen3moe`) runs on the MoE kinds with no backend, firmware or llama.cpp change (SW-77). New tests: the
-  Qwen3 layer in `test-tsr-moe` (T = 1 to 256) and two tiny `qwen3moe` models through klcheck.
-- The PyTorch backend runs on the Basis firmware and the K4 card image (`tsr_u200_k4`, `T_MAX` 4). `tesseract_torch.QuantLinear` and the
-  op `tesseract::linear_blocks` run weights that arrive as ggml Q8_0 or Q4_K blocks without conversion (SW-81). New ctests
-  `rt_sim_tmax4` and `torch_pytest_tmax4`; `hf_check.py` has a steady-state forward and a `--speed` mode.
-- `TSR_DUMP_PLAN=<dir>` makes the ggml backend write the plan of every graph, the launches with their PERF deltas, the nodes `supports_op` refused and
-  the trace writer's records; `sw/tools/prof/prof_report.py` turns a run into an HTML page and a Perfetto file (SW-84, docs/prof-dbg.md §3.1). Host
-  only: no record, schedule or output bit changes.
-- The process that owns the card publishes a one-page record in `/dev/shm/tsr-mon-<pid>` after every launch (SW-87, `sw/transport/tsr_mon.h`); `bin/tsr-top`
-  shows it like nvtop shows a GPU (docs/prof-dbg.md §7). On by default, `TSR_MON=0` turns it off. Host only: no record, descriptor or output bit changes.
+## [1.0.0] - 2026-11-10
 
-## Basis 0.1.0 (2026-10-31)
-
-Basis ABI 1. Targets Tesseract Core capability 1.0. Runs on the simulator; there is no card with this
-design yet.
+Basis ABI 1. Targets Tesseract Core capability 1.0. The op list has 21 kinds (kind table signature 0x2381).
+The release image is `tsr_u200_k4.xclbin` (identity in [docs/platform-u200.md](docs/platform-u200.md) §9).
 
 ### Added
 
-- The firmware runtime, the `graph` executor, the `selftest` and `replay` kernels, and the C++20
-  kernel headers in `sw/ctrl/include/tsr`.
-- Op list format 1 with 14 kinds, all at numerics revision 1: NOP, JOIN, MUL_MAT, ADD, MUL, SCALE,
-  RMS_NORM, GLU, ROPE, GET_ROWS, SET_ROWS_KV, FLASH_ATTN, CPY, UNARY.
-- Versions: the Tesseract Core capability in the `VERSION` register, the Basis version and the ABI in
-  `sw/ctrl/include/tsr/version.h`, a numerics revision per kind in `opl::kind_rev`. An image carries
-  them in `.note.tsr` and `.tsr_kinds`, and the runtime reports them in HELLO.
-- The test `fw_kind_revs` and `sw/ctrl/tests/kind_revs.txt`, which fail when a kind's output bits
-  change without a revision bump.
-- Transport: the capability, control core, ABI, Basis version and kind table are checked at open,
-  image open, boot and HELLO. The API is `tsr_versions`, `tsr_basis_version`, `tsr_image_versions`,
-  `tsr_transport_versions` and `tsr_versions_str`.
-- ggml-tesseract: refuses an image with an older Basis version than its own, sends only the kinds the
-  booted image has, and names the capability and the Basis version in the device description.
-- Tools: `tsr-selftest --version`, `tsr-elf --version` and `tsr-elf kinds`. klcheck and numcheck record
-  the versions of a device run.
+- MoE kinds MOE_ROUTE (0x1E) and MUL_MAT_ID (0x1F) at numerics revision 1. MOE_ROUTE takes the softmax of the router logits, selects the k largest (ties to the smaller index, NaN first) and renormalises their weights. MUL_MAT_ID runs a MUL_MAT per (token, slot) against the expert named by an id in DRAM, with an optional per-expert output scale.
+- Gated DeltaNet kinds SOFTPLUS (0x2D), SSM_CONV (0x2E) and GATED_DELTA_NET (0x2F), composed from existing VU operations and the DMA. UNARY accepts func 5, SIGMOID, at revision 1.
+- GATED_DELTA_NET revision 2 (SW-78): with `CAPS` bit 8 and S_v of 64 or more, each head and token runs the VU's fused GDN op. Other devices and shapes keep revision 1's bits.
+- Optional kinds MUL_MAT_SCALE and MUL_MAT_SOFTCAP at revision 1, and capability-gated FAST attention score and probability slots. MUL_MAT, FLASH_ATTN and Basis ABI 1 keep their contracts.
+- ggml-tesseract lowers the MoE graphs of Gemma 4 26B-A4B and Qwen3-30B-A3B (SW-77) and the Gated DeltaNet layers of Qwen3.5 and Qwen3.8, with the recurrent-state caches as device windows.
+- GATED_DELTA_NET reads and writes its state on the cache cell when every sequence keeps its cell (SW-82). `TSR_GDN_CELL=0` turns it off.
+- Multi-token prediction with rollback snapshots (SW-83, SW-85): a context with `n_rs_seq` = K lowers to chains of K = 1 records and CPY records of window rows. The pinned llama.cpp drafter runs unchanged (SW-86).
+- Weight matrices that do not fit one planner tile (the output head) are stored in 2, 4 or 8 row blocks with one MUL_MAT record per block (SW-88). `TSR_HEAD_SPLIT=0` keeps them whole.
+- The PyTorch backend runs on the Basis firmware: `tesseract_torch.QuantLinear` and the op `tesseract::linear_blocks` take ggml Q8_0 and Q4_K blocks without conversion (SW-81).
+- Tools: `tsr-mtp`, `tsr-top` (live monitor, SW-87), the profile report (`TSR_DUMP_PLAN`, `sw/tools/prof/prof_report.py`, SW-84), `sw/tools/trw_vs_sim.py`, `klcheck --verify-k`. The backend hook `ggml_backend_tesseract_counters`.
+- Variables: `TSR_SIM_VU=0` (a core without VU and attention, `CAPS` 0), `TSR_SIM_GDN`, `TSR_SIM_CARD` and `TSR_SIM_VU_TIMING` for the `sim` transport; `TSR_DUMP_RE`, `TSR_DUMP_DIR`, `TSR_OPL_PROF`, `TSR_OPL_KINDS` and `TSR_MON`. `TSR_STATS` prints the units' busy cycles.
+
+### Changed
+
+- The ITCM budget of the firmware image is 96 KiB instead of 80 KiB (SW-75, amends SW-38).
+- The simulator's cycle models follow the RTL (SW-80): VU lanes and latencies, QACT, stores and MVM fill. Results do not change, only cycle counts.
+- `TSR_SIM_LOG` takes a `w,` prefix (the words of every push). `trw dump` of `tsr-dbg` reads a ring that an earlier process wrote.
+
+### Fixed
+
+- A MOE_ROUTE of more than 64 tokens (several tiles) runs on the device (SW-76). Gemma 4 26B-A4B and Qwen3-30B-A3B prefill at the default `-ub 512`.
+- klcheck writes the four M-RoPE position streams in its embedding path, so its embd and floor runs equal the token path.
+
+## [0.1.0] - 2026-10-31
+
+Basis ABI 1. Targets Tesseract Core capability 1.0.
+
+### Added
+
+- The firmware runtime, the `graph` executor, the `selftest` and `replay` kernels, and the C++20 kernel headers in `sw/ctrl/include/tsr`.
+- Op list format 1 with 14 kinds at numerics revision 1: NOP, JOIN, MUL_MAT, ADD, MUL, SCALE, RMS_NORM, GLU, ROPE, GET_ROWS, SET_ROWS_KV, FLASH_ATTN, CPY, UNARY.
+- Versions: the Core capability in the `VERSION` register, the Basis version and the ABI in `sw/ctrl/include/tsr/version.h`, a numerics revision per kind in `opl::kind_rev`. An image carries them in `.note.tsr` and `.tsr_kinds`, and the runtime reports them in HELLO.
+- The test `fw_kind_revs` and `sw/ctrl/tests/kind_revs.txt`, which fail when a kind's output bits change without a revision bump.
+- Transport checks of the capability, control core, ABI, Basis version and kind table at open, image open, boot and HELLO (`tsr_versions`, `tsr_basis_version`, `tsr_image_versions`, `tsr_transport_versions`, `tsr_versions_str`).
+- ggml-tesseract refuses an image with an older Basis version than its own, sends only the kinds the booted image has, and names the capability and the Basis version in the device description.
+- Tools: `tsr-selftest --version`, `tsr-elf --version` and `tsr-elf kinds`. klcheck and numcheck record the versions of a device run.
+
+[Unreleased]: https://github.com/jwkim04/tesseract-npu/compare/basis-v1.0.0...HEAD
+[1.0.0]: https://github.com/jwkim04/tesseract-npu/compare/basis-v0.1.0...basis-v1.0.0
+[0.1.0]: https://github.com/jwkim04/tesseract-npu/releases/tag/basis-v0.1.0

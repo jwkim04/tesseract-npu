@@ -1,5 +1,5 @@
 """pytest entry of the M0 DMA bandwidth kernel (tb/platform/bw: Verilator C++ bench, no cocotb;
-docs/m0-bw.md §5).
+docs/bandwidth-kernel.md §5).
 
   test_bw_lint                   rtl/platform/alveo_xrt/bw/lint.sh: gen_bw.py --check and the lint runs
   test_bw_body                   tsr_bw_kernel (NUM_CH 4, U200 parameters): every test in every memory
@@ -166,6 +166,6 @@ def test_bw_mutants(request, tmp_path):
     assert r.returncode == 0
     res = json.loads((tmp_path / "results.json").read_text())
     survivors = {m[0] for m in mb.MUTANTS if not res[m[0]]["killed"]}
-    # equivalent (docs/m0-bw.md §5.3): W before AW is legal AXI; the snapshot matters only inside a
+    # equivalent (docs/bandwidth-kernel.md §5.3): W before AW is legal AXI; the snapshot matters only inside a
     # window the AXI4-Lite slave cannot reach at CTRL_PIPE 2; the checksum drains before any read
     assert survivors <= {"E_w_no_ahead", "C_snapshot_live", "E_cs_nodrain"}, survivors

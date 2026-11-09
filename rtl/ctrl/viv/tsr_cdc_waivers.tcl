@@ -6,7 +6,7 @@
 #
 #  - tsr_cdc_hs request / response registers (req_q, rsp_q): held stable from the toggle that announces
 #    them until the toggle that frees them; the other domain loads them into an enabled register only
-#    after its synchronised copy of the toggle changed (CC §11.2 "tagged handshakes").
+#    after its synchronised copy of the toggle changed (CC §11.2).
 #  - tsr_cdc_fifo LUTRAM (mem): an entry is read only behind the synchronised gray write pointer that
 #    covers it, and rewritten only after the gray read pointer freed it. Every FIFO instance is found by
 #    its write pointer register (wgray_q), whatever the instance is called.

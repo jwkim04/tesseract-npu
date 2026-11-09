@@ -1,4 +1,4 @@
-// memmodel.h — cycle-level C++ model of the tsr_core memory ports (docs/rtl-m2.md §4), the fast
+// memmodel.h — cycle-level C++ model of the tsr_core memory ports (docs/rtl-core.md §4), the fast
 // counterpart of tb/common/mem_model.py (MemModel) for the C++ benches (tb/platform/bw; the
 // tile-only replay of tb/fastreplay, docs/design SW §10.3).
 //

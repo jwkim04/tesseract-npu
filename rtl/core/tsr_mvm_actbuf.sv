@@ -2,9 +2,9 @@
 // holds the T_MAX QA images of the current MVM (QS + D + BS per token), written by the activation
 // broadcast, read by the back end (spec stage 5).
 //
-// Owner: back agent (docs/rtl-m3.md §2 block (back); organisation §5).
+// Owner: back agent (docs/rtl-mvm.md §2 block (back); organisation §5).
 //
-// Organisation (docs/rtl-m3.md §5): per token t
+// Organisation (docs/rtl-mvm.md §5): per token t
 //   QS : QS_WORDS = ceil(K_MAX/128) words of 1024 bits = two QS lines: word w = {line 2w+1,
 //        line 2w} (line 2w in bits [511:0]); built as two 512-bit banks (even / odd lines).
 //   DBS: DBS_LINES = tsr_actbuf_dbs_lines(K_MAX) lines of 512 bits: the QA image's lines from
@@ -21,7 +21,7 @@
 //          the back end reads). Write-to-read distance: a write presented in cycle c is in the
 //          RAM after the edge ending cycle c + 1 (one write input register, see below), so a
 //          read presented in cycle c + 2 or later returns it; a read in cycle c + 1 returns the
-//          old content. The cluster gating (docs/rtl-m3.md §3.2: act_ready := 1 at the edge that
+//          old content. The cluster gating (docs/rtl-mvm.md §3.2: act_ready := 1 at the edge that
 //          takes the last bc_line) plus the back end's input register give >= 2: the first beat
 //          is accepted in cycle c + 1 at the earliest and its reads are presented in cycle c + 2.
 //   no reset of the arrays (contents undefined until written; tokens >= T of an MVM keep stale
@@ -32,12 +32,12 @@
 //   heads of an ATTQK pass sit at different QA blocks). The weight MVM drives all tokens with the
 //   same address. The address registers stay in the back end (no logic between them and the
 //   RAMs).
-// Implementation: one write input register (docs/rtl-m3.md §9.2 item 1: the 3 * T_MAX RAMs share
+// Implementation: one write input register (docs/rtl-mvm.md §9.2 item 1: the 3 * T_MAX RAMs share
 //   the 512 write-data bits; the per-RAM write enables are decoded before the register, so each
 //   RAM's WE pin is a flop), then tsr_sram_1r1w (rtl/tech) per (token, bank) and per token for
 //   DBS, RD_LAT = RD_LAT; read address / enable go straight to the RAMs (the back end drives them
 //   from flops). U200 (K_MAX 32768, T_MAX 1): QS 2 x 256 x 512 bits + DBS 72 x 512 bits
-//   (2 x 8 + 8 = 24 RAMB36, docs/rtl-m3.md §5; the RAM mapping is M4's).
+//   (2 x 8 + 8 = 24 RAMB36, docs/rtl-mvm.md §5; the RAM mapping is M4's).
 //   Cost (generic): 527 + 3 * T_MAX write-register flops, no other logic than the WE decode.
 
 module tsr_mvm_actbuf
@@ -95,7 +95,7 @@ module tsr_mvm_actbuf
     end
   end
 
-  // Address / data load every cycle (no clock enable: M3 part C timing, docs/rtl-m3.md §14);
+  // Address / data load every cycle (no clock enable: M3 part C timing, docs/rtl-mvm.md §14);
   // the RAMs write only with the registered enables above, so the content is unchanged.
   always_ff @(posedge clk) begin
     qs_wa_q  <= QS_AW'(wr_line.addr[9:1]);

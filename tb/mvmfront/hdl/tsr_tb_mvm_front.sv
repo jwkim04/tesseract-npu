@@ -1,6 +1,6 @@
 // tsr_tb_mvm_front.sv — testbench-only toplevel for tb/mvmfront (not part of the core).
 //
-// One channel as in the M3 core (docs/rtl-m3.md §2, §4): tsr_mvm_front on read source
+// One channel as in the M3 core (docs/rtl-mvm.md §2, §4): tsr_mvm_front on read source
 // TSR_SRC_WS of a real tsr_mem_arb; the arbiter's memory port is exposed with the tsr_core
 // naming (m_*, for common.mem_model.MemModel, memory-side ids {source, local}).
 //   - source TSR_SRC_AUX (f_*; 0, the former fetch source): exposed; Python leaves it idle or

@@ -2,7 +2,7 @@
 # make_report.sh CARD_DIR SIM_DIR OUT_DIR [MODEL_NAME]: the profile report (docs/prof-dbg.md "The profile report") from the dump
 # directories that capture_card.sh and capture_sim.sh wrote. The scheduler's splits are taken from the simulator capture's log.
 #
-#   EXPECT_CYCLES   cycles of the decode launch measured earlier, for a check (default 16316000: Gemma 4 26B-A4B, docs/performance.md)
+#   EXPECT_CYCLES   cycles of the decode launch measured earlier, for a check (no default: unset skips the check)
 #   REF_TOKS        tok/s of an earlier run with the profiler off, shown beside the speed of this run
 #   LAUNCH          the decode launch to show (default: the middle one both runs have)
 #   REF_RUN         directory of the same run without the profiler (capture_card.sh with NO_DUMP=1)

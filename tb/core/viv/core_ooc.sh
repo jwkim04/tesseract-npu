@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tb/core/viv/core_ooc.sh — whole-core out-of-context Vivado runs of the U200 configurations
-# (tb/core/viv/core_ooc.tcl; results: docs/rtl-m3.md §14). Opt-in, needs Vivado 2024.2.
+# (tb/core/viv/core_ooc.tcl; results: docs/rtl-mvm.md §14). Opt-in, needs Vivado 2024.2.
 # tsr_core has its command source since W4-A (the control core and the issue path), and the VU, the
 # attention modes and the DB block since W4-B: synthesis keeps every unit. The VU's lane knobs are
 # NAME=VALUE arguments (k1: VU_EXP_LANES=8 VU_BACK_LANES=4, the shrink knobs of its bitstream; k4 / k4t1: physical front / EXP / back 8 / 8 / 4 with
@@ -24,7 +24,7 @@
 #   Every config: rtl/filelist_xilinx.f, SPM 4 MiB with SPM_RD_LAT 4, MVM_BC_PIPE 2,
 #   MVM_RES_PIPE 2, MVM_MAC_LAT 9 (a register after every adder level of the DSP-packed MAC
 #   lane), RST_PIPE 3 (reset copies per block), CH_BYTES 16 GiB, the other parameters at the
-#   tsr_pkg defaults: the U200 bitstream parameters of docs/rtl-m3.md §14.
+#   tsr_pkg defaults: the U200 bitstream parameters of docs/rtl-mvm.md §14.
 #   Extra arguments go to core_ooc.tcl (synth_only, dcp, from=, floorplan=, NAME=VALUE overrides).
 # Environment: VIVADO_SETTINGS (default /tool/Xilinx/Vivado/2024.2/settings64.sh); TSR_VIVADO_LOCK
 # = a flock file that serialises Vivado runs on a shared host (none by default).

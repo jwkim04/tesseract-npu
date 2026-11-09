@@ -1,5 +1,5 @@
 // tsr_dbg.cpp — tsr-dbg, the debugger CLI (docs/design/05-debug.md "DB" §4.1, §9.3; docs/design/
-// 06-software-verification.md "SW" §11 P3.7). Built on libtsr_dbg (sw/tools/dbg/tsr_dbg_lib.hpp).
+// 06-software-verification.md "SW" §9.5). Built on libtsr_dbg (sw/tools/dbg/tsr_dbg_lib.hpp).
 //
 //   tsr-dbg gdb [--device KIND] [--elf F] [--port N | --unix P | --stdio] [--attach | --load | --halt-on-boot]
 //               [--port-file F] [--detach-halted] [-v]

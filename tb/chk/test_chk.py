@@ -4,7 +4,7 @@
 For every op: the unit, the error code (ILLEGAL_OP, BAD_FMT, K_RANGE, T_RANGE, OPERAND, SPM_RANGE,
 DRAM_RANGE in their order; BAD_DEP is the dispatcher's), ERR_INFO, the four tagged extents (kind, direction,
 channel, [lo, hi)), the LD / ST n = 0 flag, the SYNC kind, and for a passing op every field of its unit
-command (docs/rtl-m2.md §3.2-§3.4) are compared with tsr_sim_accept_op + the handler's check
+command (docs/rtl-core.md §3.2-§3.4) are compared with tsr_sim_accept_op + the handler's check
 (sw/sim/tsr_sim.c chk_*; tb/issue/issue_sim.py) and the command fields the simulator's units use. The
 VU / AT opcodes go through the external-class port (answered with the simulator's VU / AT checks).
 Stimulus: every opcode with random words, and per class edge-heavy operands (limits +- small deltas,

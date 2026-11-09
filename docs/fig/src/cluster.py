@@ -1,6 +1,6 @@
 """Figure `cluster`: the MVM unit datapath of one cluster, DDR4 weight beats to the SPM write.
 
-Content follows docs/rtl-m3.md §2 (block diagram), §3 (internal interfaces), §4 (weight-stream
+Content follows docs/rtl-mvm.md §2 (block diagram), §3 (internal interfaces), §4 (weight-stream
 protocol), §5 (activation buffer), §6 (flow, broadcast, gather), §7 (back end) and docs/spec.md §8
 (MVM cluster microarchitecture): tsr_mvm (shared by all clusters: broadcast reader, gather, ACC
 read-modify-write), the per-cluster tsr_vpipe / tsr_rpipe, and one tsr_mvm_cluster: front end
@@ -11,22 +11,22 @@ as one block. The datapath is solid (rtl/core; ran on the card).
 
 Facts with their sources:
 - one tsr_vpipe and one tsr_rpipe per cluster: rtl/core/tsr_mvm.sv (both inside the g_cl generate
-  loop), docs/rtl-m3.md §3.1.
+  loop), docs/rtl-mvm.md §3.1.
 - the tile op's setup goes first through the broadcast pipe and starts the cluster's weight
   requests (the cluster wrapper sends the front command to tsr_mvm_ws), and only the QA lines fill
-  the activation buffer: docs/rtl-m3.md §3.1, §3.2, §3.4, §6.1. The arrow into the buffer is
+  the activation buffer: docs/rtl-mvm.md §3.1, §3.2, §3.4, §6.1. The arrow into the buffer is
   therefore named QA LINES and the setup is named in the bottom callout.
-- bursts of up to 64 beats, never across a 64-beat block: docs/rtl-m3.md §4.
-- the ACC read uses the SPM read port, every write the write port: docs/rtl-m3.md §3.6, §6.3.
-- QS / BS / Dx on the activation-buffer reads: docs/spec.md §6, docs/rtl-m3.md §3.4, §7.1.
-- 32 int8 products and an exact sum per MAC lane: docs/rtl-m3.md §7.1, §7.2.
-- "all T tokens read with one address": docs/rtl-m3.md §5.
+- bursts of up to 64 beats, never across a 64-beat block: docs/rtl-mvm.md §4.
+- the ACC read uses the SPM read port, every write the write port: docs/rtl-mvm.md §3.6, §6.3.
+- QS / BS / Dx on the activation-buffer reads: docs/spec.md §6, docs/rtl-mvm.md §3.4, §7.1.
+- 32 int8 products and an exact sum per MAC lane: docs/rtl-mvm.md §7.1, §7.2.
+- "all T tokens read with one address": docs/rtl-mvm.md §5.
 - "rows_c x ROW_BEATS beats, one contiguous range": docs/spec.md §5 (device weight layout).
-- callouts: docs/rtl-m3.md §6.1-§6.2 (weights requested at once, DRAM latency hidden behind the
+- callouts: docs/rtl-mvm.md §6.1-§6.2 (weights requested at once, DRAM latency hidden behind the
   broadcast; beats enter the back end only once the activation buffer is complete), §7.4 (the tree
   finishes one row while the next accumulates), §14.2 (MVM_BC_PIPE, MVM_RES_PIPE >= 2 for clusters
   in another SLR).
-Planned, drawn dashed (docs/design/03-attention-kv.md §8, docs/rtl-m3.md §6.5; no RTL yet): the
+Planned, drawn dashed (docs/design/03-attention-kv.md §8, docs/rtl-mvm.md §6.5; no RTL yet): the
 attention modes ATTQK (scores and row maxima) and ATTPV (P.V partial outputs and row sums) reuse
 the front end and the MAC lanes. In tsr_mvm they add the p broadcast and the gather ATT path (a
 line buffer per pass row, full-line SPM writes, a max tracker per row; AT §8.1, §8.2); in the

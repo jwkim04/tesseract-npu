@@ -1,5 +1,5 @@
-// test_fw_m6_e2e.cpp — ctests fw_m6_e2e and fw_m6_perf (W2a integration: docs/design/06-software-
-// verification.md "SW" §11 P2.1-P2.5, §10.1 "launch traces", §4.7, §7.8; docs/design/README.md §10 W2a).
+// test_fw_m6_e2e.cpp — ctests fw_m6_e2e and fw_m6_perf (firmware integration: docs/design/06-software-
+// verification.md "SW" §10.2, §10.1 "launch traces", §4.7, §7.8).
 //
 //   test_fw_m6_e2e IMAGE SCRATCH [TRACES]
 //   A. One session per schedule (fixed + random:1..7), each on a fresh simulator with the race

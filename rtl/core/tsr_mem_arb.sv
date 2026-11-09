@@ -2,7 +2,7 @@
 // onto one channel memory port of the core boundary. Also defines tsr_rslice (below), the
 // full-throughput valid/ready register slice used by the arbiter.
 //
-// Owner: DMA agent (docs/rtl-m2.md §2, block (b); memory port rules §4).
+// Owner: DMA agent (docs/rtl-core.md §2, block (b); memory port rules §4).
 //
 // Read sources (index = tsr_pkg TSR_SRC_*): 0 AUX (freed by the fetch removal, tied off by
 // tsr_core: CC-26), 1 DMA, 2 WS (M3 weight stream; tied off in M2). Write source: DMA only.
@@ -14,7 +14,7 @@
 //   - Read responses: routed by m_rd_rsp_id[3:2] to s_rd_rsp_valid[source]; data/last/local id are
 //     shared (s_rd_rsp_*), qualified by the per-source valid. m_rd_rsp_ready follows the ready of
 //     the addressed source (through a register stage). Sources may deassert their ready only for
-//     reasons local to that source (rule R4 in docs/rtl-m2.md: they reserve buffer space before
+//     reasons local to that source (rule R4 in docs/rtl-core.md: they reserve buffer space before
 //     requesting), so routing never deadlocks across sources.
 //   - Writes: s_wr_* pass to m_wr_* with id = {TSR_SRC_DMA, local}; request, data and response
 //     channels are independent valid/ready streams (data beats follow request order, no
@@ -72,10 +72,10 @@
 //   W payload enables. Both forms are 2-entry FIFOs with registered s_ready = (count < 2) and
 //   m_valid = (count > 0), so FORM 1 is cycle-identical at the ports: same transfers in the same
 //   cycles, same data order; m_data differs only while m_valid = 0. FORM 1 is for slices whose
-//   m_ready is a wide take (the gather's job-pipe heads, docs/rtl-m3.md §14.8: the k4 link's -0.285 ns
-//   paths were m_ready -> the 577-bit main_q enable of g_s[1]).
+//   m_ready is a wide take (the gather's job-pipe heads, docs/rtl-mvm.md §14.8: the paths from m_ready to
+//   the 577-bit main_q enable of g_s[1] bound the timing).
 // Waiver: this generic helper lives in tsr_mem_arb.sv only because rtl/filelist.f is owned by the
-// lead (docs/rtl-m2.md §1 "Files"); proposal: move it to rtl/core/tsr_rslice.sv (filelist entry
+// lead (docs/rtl-core.md §1 "Files"); proposal: move it to rtl/core/tsr_rslice.sv (filelist entry
 // before tsr_mem_arb.sv) and drop the DECLFILENAME waiver.
 /* verilator lint_off DECLFILENAME */
 module tsr_rslice #(
@@ -425,7 +425,7 @@ module tsr_mem_arb
   wire unused_ok = &{1'b0, ws_id[TSR_MEM_ID_W-1:TSR_SRC_ID_W]};
 
   // -------------------------------------------------------------------------------------------
-  // Simulation checks (docs/rtl-m2.md §4 M1, M3; source rule D1)
+  // Simulation checks (docs/rtl-core.md §4 M1, M3; source rule D1)
   // -------------------------------------------------------------------------------------------
 `ifndef SYNTHESIS
   // 1..64 beats inside one 64-beat block; addr_lo = address bits [5:0].

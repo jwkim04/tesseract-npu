@@ -27,10 +27,10 @@
 #         DDR1 / DDR2 arbiters; the central gather receiver, the DDR1 / DDR2 bridges, the DMA-side boundary
 #         slices of channels 0 and 3 and the adapter's control logic are left to Vivado
 #
-# Why the control plane is in SLR0: the placed out-of-context core (docs/platform-u200.md §8.7) puts 9,292 CLB sites
-# in SLR1 with issue / CSR / DB there (estimated SLR1 occupancy with the shell 94.7 % or more; the routed
-# 2026-10-25 image had 92.1 %) and 6,122 without them (88 to 92 %). The census of the full runs and of the reduced
-# image (docs/platform-u200.md §8.8) gives the same split: the control plane, 5.5 to 6.4 K CLBs, is the difference
+# Why the control plane is in SLR0: the placed out-of-context core puts 9,292 CLB sites
+# in SLR1 with issue / CSR / DB there (estimated SLR1 occupancy with the shell 94.7 % or more; an earlier
+# routed image had 92.1 %) and 6,122 without them (88 to 92 %). The census of the full runs and of the reduced
+# image gives the same split: the control plane, 5.5 to 6.4 K CLBs, is the difference
 # between the full runs, with SLR1 at 98.5 to 99.9 %, and the reduced image that routed, with 90.7 %. The two
 # checker classes of the issue path (g_xc.u_xc, the VU class, and g_xc.g_at.u_chk_at, the AT class; 0.7 to 0.8 K
 # CLBs) belong with the issue path and go with it.
@@ -41,9 +41,9 @@
 # its command, done and register links to cross one boundary toward SLR1 and two toward the control plane. It is
 # SLR2 because the control plane takes SLR0.
 #
-# Why the two Pblocks of their own: in the first link of the reduced image (2026-11-06) the control plane,
+# Why the two Pblocks of their own: in the first link of the reduced image the control plane,
 # 7,600 CLBs, sat at X0 to X3 of SLR0, partly in the DDR0 controller's clock regions X2Y1 to X2Y3, which were
-# 99.5 % full and failed their clock by 0.33 ns (docs/platform-u200.md §8.7). The SLR2 controller (MIG 2, DDR[3]) is
+# 99.5 % full and failed their clock by 0.33 ns (the controller footprints are in docs/platform-u200.md §8.7). The SLR2 controller (MIG 2, DDR[3]) is
 # at X3Y10 to X4Y13 (76 to 96 % full, -0.065 ns in the same link). Both Pblocks are children of the platform's SLR
 # pblock and keep a large block off the controller's clock regions.
 #   control Pblock  the two rows at the SLR1 boundary, Y3 and Y4, of all six clock-region columns, without X2Y3:

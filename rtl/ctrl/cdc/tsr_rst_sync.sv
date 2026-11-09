@@ -7,7 +7,7 @@
 // Contract: rst_no = 0 at once while rst_ni = 0 (no clock needed); rst_no rises STAGES rising
 // edges of clk after rst_ni has risen. Used for the clk_rv domain's reset (ap_rst_n into clk_rv)
 // and for the asynchronous resets of Ibex and riscv-dbg, which keep their own reset style
-// (CC §3.1, a documented exception to docs/rtl-m2.md §1).
+// (CC §3.1, a documented exception to docs/rtl-core.md §1).
 
 module tsr_rst_sync #(
   parameter int unsigned STAGES = 2

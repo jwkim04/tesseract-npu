@@ -1,6 +1,6 @@
 // tsr_qact.sv — QACT unit: T f32 vectors in the SPM -> T QA vectors (A32 or A256) in the SPM.
 //
-// Owner: QACT agent (docs/rtl-m2.md §2, block (e); dispatch §3.3, numerics §8.1).
+// Owner: QACT agent (docs/rtl-core.md §2, block (e); dispatch §3.3, numerics §8.1).
 //
 // Dispatch: cmd_valid/cmd_ready accept one tsr_qact_cmd_t (cmd_ready = idle, from the state
 //   register). Operands are legal (the dispatch checks K, T and both SPM ranges; src_stride already
@@ -26,7 +26,7 @@
 //   of its writes, so an overlapping program gets no particular result).
 // SPM side: client TSR_SPM_CL_QACT of tsr_spm. Reads: responses arrive SPM_RD_LAT cycles after
 //   the accepting edge without backpressure; buffer space is reserved before a request is raised
-//   (docs/rtl-m2.md R4). Writes: full lines (be all ones), valid/line/data held until wr_ready.
+//   (docs/rtl-core.md R4). Writes: full lines (be all ones), valid/line/data held until wr_ready.
 //   Every output is a register (no combinational input->output path, R5).
 //
 // Microarchitecture (one instruction at a time; all stages in order, no reordering anywhere):
@@ -71,7 +71,7 @@
 //   A256 1.10 cycles per source line (K 32768: 2248 cycles; the four buffered blocks cover the
 //   amax -> DA -> DB -> quantize latency of a block); A32 16.0 cycles per 32-block (= 8 per line,
 //   divider bound; K 32768: 16422 cycles). Accept -> done for one block: A256 83, A32 54 cycles.
-//   docs/rtl-m2.md §8.1 asks for ~2 cycles per line outside the per-block divides.
+//   docs/rtl-core.md §8.1 asks for ~2 cycles per line outside the per-block divides.
 // Timing (300 MHz): every SPM-facing output is a flop; the dispatch fields and the response bus
 //   are registered before any logic; one amax merge level per stage; the multiplier inputs come
 //   straight from the buffer's read register and a scale register; f32_to_q8 is one stage between
@@ -746,7 +746,7 @@ module tsr_qact
     end
   end
 
-  // Accepted command: the guarantees of docs/rtl-m2.md §3.3.
+  // Accepted command: the guarantees of docs/rtl-core.md §3.3.
   function automatic logic cmd_legal(tsr_qact_cmd_t c);
     longint unsigned lim, bs, dst_end, src_end;
     lim = longint'(SPM_LINES);

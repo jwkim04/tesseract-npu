@@ -21,7 +21,7 @@
 //   answers rsp_err = 1 without an SPM access.
 // Response (rsp_valid / rsp_ready, all from flops): rsp_err, rsp_line (loads; unchanged by stores
 //   and errors). rsp_valid stays high, the payload unchanged, until rsp_ready.
-// SPM side: single-port client (rtl-m2 §5 interface) for tsr_spm_cport. Every output is a flop
+// SPM side: single-port client (rtl-core §5 interface) for tsr_spm_cport. Every output is a flop
 //   (R5); a request is raised with its payload ready and held until accepted (R2); a read is
 //   issued only with the response register free (R4: one access at a time). No-deadlock (CC §10.3
 //   (i)): the bridge never waits on memory while it holds an SPM request.

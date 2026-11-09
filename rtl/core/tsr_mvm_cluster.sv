@@ -1,10 +1,10 @@
 // tsr_mvm_cluster.sv — one MVM cluster (spec MVM cluster microarchitecture: the MVM engine of one channel): front end,
 // activation buffer, back end, and the glue between them and the broadcast / result pipes.
 //
-// Owner: top agent (docs/rtl-m3.md §2 block (top); contract §3.1, §3.2, §3.5, §6.2).
+// Owner: top agent (docs/rtl-mvm.md §2 block (top); contract §3.1, §3.2, §3.5, §6.2).
 //
 // Contract:
-//   - broadcast input (after tsr_mvm's pipe, no backpressure, docs/rtl-m3.md §3.1): per MVM with
+//   - broadcast input (after tsr_mvm's pipe, no backpressure, docs/rtl-mvm.md §3.1): per MVM with
 //     N >= 1 exactly one bc_cmd (tsr_mvm_ccmd_t), then T * QA_LINES bc_line items, the final one
 //     with last = 1; the next MVM's bc_cmd comes only after the previous MVM finished everywhere
 //     (tsr_mvm waits for every expected last result). The cluster accepts every item in any
@@ -20,13 +20,13 @@
 //   - results (R1/R2, through tsr_mvm's result pipe): one item per row in row order:
 //     res_row = first + r (global row index n), res_last = (r == rows_c - 1), res_y = the back
 //     end's T_MAX results.
-//   - memory: the front end's WS read source port, unchanged (docs/rtl-m3.md §4).
+//   - memory: the front end's WS read source port, unchanged (docs/rtl-mvm.md §4).
 //   - idle: no MVM in progress in this cluster (setup done or not started, front and back idle).
 // Placement: one cluster per channel, in the SLR of that channel's DDR controller (spec Placement);
 //   only the broadcast pipe, the result pipe and the memory port leave it.
 //
 // Interface addition (additive, top agent): parameter WS_RD_LAT (weight FIFO RAM read latency,
-//   docs/rtl-m3.md §1, default TSR_DEF_WS_RD_LAT) is passed to tsr_mvm_front.
+//   docs/rtl-mvm.md §1, default TSR_DEF_WS_RD_LAT) is passed to tsr_mvm_front.
 //
 // Attention (W4-B at; AT §4.2, §5.2, §5.3, §8.1, §8.2; parameter HAS_ATT). An attention op arrives as
 //   bc_acmd (tsr_att_ccmd_t on the broadcast pipe) followed by its lines:
@@ -53,7 +53,7 @@
 //     ATT_PATH_STALL, AT §10).
 //
 // Microarchitecture:
-//   - bc_line -> one register (aw_*: the activation-buffer write port; docs/rtl-m3.md §9.2 item 1:
+//   - bc_line -> one register (aw_*: the activation-buffer write port; docs/rtl-mvm.md §9.2 item 1:
 //     one more register in front of the 3 x T_MAX activation RAMs) -> tsr_mvm_actbuf.
 //     act_ready_q := 0 at bc_cmd, := 1 at the edge that writes the line with last = 1.
 //   - setup pipeline (one-hot su_q; the front command is valid 8 cycles after the bc_cmd cycle):
@@ -67,7 +67,7 @@
 //                 until the front end takes it (R2)
 //     The front end starts streaming at once; the setup hides behind the broadcast (T * QA_LINES
 //     lines) and the memory round trip.
-//   - beat gating (docs/rtl-m3.md §3.2): beat_valid_back = beat_valid & act_ready_q,
+//   - beat gating (docs/rtl-mvm.md §3.2): beat_valid_back = beat_valid & act_ready_q,
 //     beat_ready_front = beat_ready & act_ready_q (flops, one LUT).
 //   - result tagging: row_q (= first + r) and left_q (rows still to come) count result
 //     handshakes; res_last_q = (left_q == 1). res_valid / res_y / res_ready pass straight between
@@ -230,7 +230,7 @@ module tsr_mvm_cluster
   end
 
   // -------------------------------------------------------------------------------------------
-  // Setup (docs/rtl-m3.md §3.2)
+  // Setup (docs/rtl-mvm.md §3.2)
   // -------------------------------------------------------------------------------------------
   logic [6:0]                 su_q;        // one-hot setup step
   logic                       busy_q;      // MVM in progress (bc_cmd .. last result / no rows)

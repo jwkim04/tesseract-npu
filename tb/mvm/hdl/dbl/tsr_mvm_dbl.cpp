@@ -1,5 +1,5 @@
 // tsr_mvm_dbl.cpp — DPI-C shim for the tb/mvm test doubles (tb/mvm/hdl/dbl/tsr_mvm_back.sv):
-// the fp operations of docs/rtl-m3.md §7.1 taken from libtsr_ref (sw/sim/tsr_ref.c, the bit-exact
+// the fp operations of docs/rtl-mvm.md §7.1 taken from libtsr_ref (sw/sim/tsr_ref.c, the bit-exact
 // definition shared with the ISA simulator). f32 values cross the DPI boundary as 32-bit patterns
 // (SV int); no arithmetic happens here, so NaN payloads reach tsr_ref.c unchanged.
 // Linked against a private copy of build/dev/sw/sim/libtsr_ref.a (tb/mvm/test_mvm.py).

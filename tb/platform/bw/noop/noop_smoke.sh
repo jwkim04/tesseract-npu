@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tb/platform/bw/noop/noop_smoke.sh — sw/tools/tsr_bw's XRT path on XRT's own userspace with its no-op
-# shim (XCL_EMULATION_MODE=noop, libxrt_noop: no card, no driver; docs/m0-bw.md §6): metadata-only
+# shim (XCL_EMULATION_MODE=noop, libxrt_noop: no card, no driver; docs/bandwidth-kernel.md §6): metadata-only
 # xclbins of tsr_bw_k4 (mk_bw_xclbin.cpp) are opened with `tsr_bw --dry-run` — xclbin load, kernel
 # lookup, argument lookup by name with the offset / size check against tsr_bw_regs.h, the DATA
 # clock from the clock topology, one device-only buffer per memory group, every xrt::run argument

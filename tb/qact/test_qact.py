@@ -1,4 +1,4 @@
-"""tsr_qact testbench (docs/rtl-m2.md §3.3, §8.1; block (e)).
+"""tsr_qact testbench (docs/rtl-core.md §3.3, §8.1; block (e)).
 
 Every QA image is compared bit for bit with tsr_qact() of the reference library (libtsr_ref.so,
 through common.tsr_ref), token by token, together with the unit's SPM traffic (each source line

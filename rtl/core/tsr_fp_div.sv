@@ -1,6 +1,6 @@
 // tsr_fp_div.sv — iterative, correctly rounded f32 divider with the spec's fp rules.
 //
-// Owner: fp agent (docs/rtl-m2.md §2, block (c)).
+// Owner: fp agent (docs/rtl-core.md §2, block (c)).
 //
 // Contract (bit-exact with tsr_ref.c tsr_fdiv; tsr_frecip(x) == tsr_fdiv(1.0f, x)):
 //   y = fin(DAZ(a) / DAZ(b)), correctly rounded RNE in the binary32 exponent range, subnormal
@@ -9,7 +9,7 @@
 //   any NaN operand -> 0x7FC00000, Inf/x = +-Inf, x/Inf = +-0. Sign = XOR of the input signs
 //   (for zero and Inf results too).
 // Handshake: in_valid/in_ready accepts (a, b) (latched at the transfer); out_valid/out_ready
-//   delivers y; out_valid and y hold until out_ready (docs/rtl-m2.md §1 R1-R3). in_ready is a
+//   delivers y; out_valid and y hold until out_ready (docs/rtl-core.md §1 R1-R3). in_ready is a
 //   register (1 while the iteration engine is idle); out_valid/y are registers. No
 //   combinational input->output path.
 // Latency (fixed, every input incl. special values): an operation accepted at edge n has

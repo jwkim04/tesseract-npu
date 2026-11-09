@@ -103,14 +103,14 @@ set_tests_properties(rt_sim_no_mulmat PROPERTIES
     PASS_REGULAR_EXPRESSION "does not provide the MUL_MAT kind")
 
 # Verilated U200 kernel (RTL) through the vkernel kdev: a few shapes on k4t1. Opt-in; until the
-# two-clock vkernel server exists (P5.3, docs/design/06-software-verification.md §11) the
+# two-clock vkernel server exists (docs/design/06-software-verification.md §9.1) the
 # transport has no vkernel device to run on, so the test is reported as skipped (exit 77) when the
 # server is absent.
-option(TSR_RT_VKERNEL_TEST "Add the rt_vkernel_k4t1 ctest (needs the k4t1 vkernel server, P5.3)" OFF)
+option(TSR_RT_VKERNEL_TEST "Add the rt_vkernel_k4t1 ctest (needs the k4t1 vkernel server)" OFF)
 if (TSR_RT_VKERNEL_TEST)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     set(_tsr_vk ${TESSERACT_ROOT}/tb/platform/vkernel/vkernel.py)
     add_test(NAME rt_vkernel_k4t1
-             COMMAND sh -c "if [ ! -f '${_tsr_vk}' ]; then echo 'rt_vkernel_k4t1: no vkernel server yet (P5.3): skipped'; exit 77; fi; exec '${Python3_EXECUTABLE}' '${_tsr_vk}' run --config k4t1 -- '$<TARGET_FILE:test-tsr-rt>' --quick")
+             COMMAND sh -c "if [ ! -f '${_tsr_vk}' ]; then echo 'rt_vkernel_k4t1: no vkernel server: skipped'; exit 77; fi; exec '${Python3_EXECUTABLE}' '${_tsr_vk}' run --config k4t1 -- '$<TARGET_FILE:test-tsr-rt>' --quick")
     set_tests_properties(rt_vkernel_k4t1 PROPERTIES SKIP_RETURN_CODE 77)
 endif()

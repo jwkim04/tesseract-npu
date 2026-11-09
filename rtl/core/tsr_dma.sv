@@ -1,6 +1,6 @@
 // tsr_dma.sv — LD / ST engine: moves lines between the SPM and one DRAM channel.
 //
-// Owner: DMA agent (docs/rtl-m2.md §2, block (b); dispatch §3.2; memory port rules §4).
+// Owner: DMA agent (docs/rtl-core.md §2, block (b); dispatch §3.2; memory port rules §4).
 //
 // Dispatch: cmd_valid/cmd_ready accept one tsr_dma_cmd_t (cmd_ready = idle). Operands are legal
 //   (the dispatch checks them; n_lines >= 1). `done` pulses one cycle when the instruction's effects
@@ -30,7 +30,7 @@
 //
 //   - Read-out: the queue RAM has read latency QRL = 2 (the BRAM read latch and its output
 //     register DOB_REG), so the output register (a fabric flop: wr_dat_data goes to the channel
-//     arbiters in other SLRs, rtl-m2 §1, and must not leave a BRAM latch) is fed from the RAM
+//     arbiters in other SLRs, rtl-core §1, and must not leave a BRAM latch) is fed from the RAM
 //     output or from a 2-entry skid buffer. A pop (RAM read) is issued while the beats behind the
 //     RAM (reads in flight + skid + output register) leave room after this cycle's output
 //     transfer: QRL + 1 = 3 places, so a stream still moves one beat per cycle.

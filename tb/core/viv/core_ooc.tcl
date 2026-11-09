@@ -1,6 +1,6 @@
 # tb/core/viv/core_ooc.tcl — out-of-context synthesis / implementation of the whole tsr_core at
 # 300 MHz on the U200 part (opt-in: needs Vivado, not part of tb/run_all.sh). Results of the
-# M3 part C runs: docs/rtl-m3.md §14; runner for the three U200 configurations: core_ooc.sh.
+# M3 part C runs: docs/rtl-mvm.md §14; runner for the three U200 configurations: core_ooc.sh.
 #
 # usage: vivado -mode batch -nojournal -nolog -source tb/core/viv/core_ooc.tcl \
 #          -tclargs <repo> <outdir> [synth_only] [dcp] [from=<dcp>] [filelist=<f>] [floorplan=<tcl>]

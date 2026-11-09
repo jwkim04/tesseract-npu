@@ -1,6 +1,6 @@
 // tsr_fp_defaults_tb.sv — testbench-only wrapper for test_fp_default_lats (tb/fp/test_fp.py):
 // tsr_fp_mul and tsr_fp_add instantiated with their default LAT (no override), next to the
-// tsr_pkg constants the MVM unit passes them (TSR_DEF_FMUL_LAT / TSR_DEF_FADD_LAT, docs/rtl-m3.md
+// tsr_pkg constants the MVM unit passes them (TSR_DEF_FMUL_LAT / TSR_DEF_FADD_LAT, docs/rtl-mvm.md
 // §1). The test measures each default instance's latency and checks that the package constants
 // equal it, so the blocks that default MUL_LAT / ADD_LAT to tsr_pkg (and so the U200 bitstream)
 // run the latency that tb/fp swept and timing-closed. Not part of the core.

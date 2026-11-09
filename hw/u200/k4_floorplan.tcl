@@ -1,5 +1,5 @@
 # hw/u200/k4_floorplan.tcl — SLR floorplan C'' of tsr_u200_k4 in the v++ link (docs/platform-u200.md
-# §8, docs/design/04-control-core.md §14.2): floorplan C' (docs/rtl-m3.md §14.5, the out-of-context floorplan
+# §8, docs/design/04-control-core.md §14.2): floorplan C' (docs/rtl-mvm.md §14.5, the out-of-context floorplan
 # that met 300 MHz: k4 +0.015 ns, k4t1 +0.108 ns) translated to the kernel hierarchy and to the platform's
 # dynamic-region pblocks, extended by the control core, the issue path and the vector unit.
 #

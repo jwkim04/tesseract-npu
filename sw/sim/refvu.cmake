@@ -1,6 +1,6 @@
 # sw/sim/refvu.cmake — the VU op references (sw/sim/tsr_ref_vu.c: VOP, RED, ROPE, TOPK, SOP, DQROW;
 # docs/design/02-vector-unit.md §4–§6) in the reference library, and their tests (VU §10 items 1 and 3,
-# docs/design/06-software-verification.md §10.1 "VU/AT references", SW-23).
+# docs/design/06-software-verification.md §10.1, SW-23).
 #
 # Include from sw/sim/CMakeLists.txt after ref_math.cmake (tsr_ref_vu.c calls tsr_ref_math.c):
 #     include(${CMAKE_CURRENT_SOURCE_DIR}/refvu.cmake)

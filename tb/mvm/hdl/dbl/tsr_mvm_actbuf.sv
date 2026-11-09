@@ -4,7 +4,7 @@
 // and not linted by rtl/lint.sh (it lives below tb/mvm/hdl/, one directory deeper on purpose: the
 // module name collides with the real one).
 //
-// Behaviour = the contract of docs/rtl-m3.md §3.4 / §5: per token a QS array of 1024-bit words
+// Behaviour = the contract of docs/rtl-mvm.md §3.4 / §5: per token a QS array of 1024-bit words
 // (line 2w in [511:0], line 2w+1 in [1023:512]) and a DBS array of 512-bit lines; one write per
 // cycle (no backpressure); reads of all tokens with exactly RD_LAT cycles latency.
 // Extra checks (they test the cluster wrapper that drives it):

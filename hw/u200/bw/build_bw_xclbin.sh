@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# hw/u200/bw/build_bw_xclbin.sh — build the M0 bandwidth xclbin (docs/m0-bw.md §4), the pattern of
+# hw/u200/bw/build_bw_xclbin.sh — build the M0 bandwidth xclbin (docs/bandwidth-kernel.md §4), the pattern of
 # hw/u200/build_xclbin.sh for the kernel tsr_bw_k4.
 #
 #   hw/u200/bw/build_bw_xclbin.sh [hw|hw_emu]        (default target: hw)
@@ -10,7 +10,7 @@
 #    matches the working tree (TSR_REPACKAGE=1 forces it)
 # 2. v++ --link -t <target> --platform $TSR_U200_PLATFORM --config hw/u200/bw/bw.cfg
 #    -> build/u200/bw[_wide][_hw_emu]/tsr_bw_k4.xclbin (+ logs, reports)
-# Then: TSR_XCLBIN=build/u200/bw/tsr_bw_k4.xclbin build/<xrt build>/bin/tsr_bw (docs/m0-bw.md §6).
+# Then: TSR_XCLBIN=build/u200/bw/tsr_bw_k4.xclbin build/<xrt build>/bin/tsr_bw (docs/bandwidth-kernel.md §6).
 #
 # Environment:
 #   TSR_U200_PLATFORM   platform name or .xpfm path (default xilinx_u200_gen3x16_xdma_2_202110_1),

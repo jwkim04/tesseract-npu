@@ -21,7 +21,7 @@
 
 package tsr_ctrl_pkg;
 
-  // A catalogue: not every module uses every constant (docs/rtl-m2.md §1 package waiver).
+  // A catalogue: not every module uses every constant (docs/rtl-core.md §1 package waiver).
   /* verilator lint_off UNUSEDPARAM */
 
   // Error record fields (128 b).

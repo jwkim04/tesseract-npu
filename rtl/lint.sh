@@ -72,7 +72,7 @@ lint tsr_core -GHAS_MVM=0 -GNUM_CH=16 -GT_MAX=8 -GK_MAX=65280 -GADDR_BEAT_W=36 -
 # Implementation parameters.
 lint tsr_core -GHAS_MVM=0 -GSPM_RD_LAT=4
 lint tsr_core -GHAS_MVM=0 -GNUM_CH=1 -GSPM_BYTES=65536 -GSPM_RD_LAT=1 -GRD_OUTSTANDING=1
-# HAS_MVM = 1 (docs/rtl-m3.md §1, integration step): U200 with T_MAX 8, 1 / 3 / 16 channels,
+# HAS_MVM = 1 (docs/rtl-mvm.md §1, integration step): U200 with T_MAX 8, 1 / 3 / 16 channels,
 # small K_MAX, pipe / FIFO / latency extremes.
 lint tsr_core -GHAS_MVM=1 -GT_MAX=8
 lint tsr_core -GHAS_MVM=1 -GNUM_CH=1 -GT_MAX=2 -GSPM_BYTES=65536 -GCH_BYTES="64'd1073741824" -GK_MAX=4096 -GADDR_BEAT_W=22
@@ -85,7 +85,7 @@ lint tsr_core -GHAS_MVM=1 -GMVM_BC_PIPE=3 -GMVM_RES_PIPE=3 -GMVM_WS_FIFO=1024 -G
 # (attention needs MVM_MAC_LAT >= 3: the exact PV accumulation of tsr_mac_lane)
 lint tsr_core -GHAS_MVM=1 -GHAS_ATT=0 -GT_MAX=3 -GMVM_ACT_RD_LAT=1 -GMVM_MAC_LAT=1 -GMVM_MUL_LAT=1 -GMVM_ADD_LAT=1 -GMVM_WS_RD_LAT=1
 lint tsr_core -GHAS_MVM=1 -GNUM_CH=3 -GMVM_ACT_RD_LAT=4 -GMVM_MAC_LAT=8 -GMVM_MUL_LAT=8 -GMVM_ADD_LAT=8 -GMVM_WS_RD_LAT=4 -GRD_OUTSTANDING=2
-# Reset register stages (RST_PIPE >= 1, docs/rtl-m3.md §14.4): HAS_MVM = 0, the U200 bitstream
+# Reset register stages (RST_PIPE >= 1, docs/rtl-mvm.md §14.4): HAS_MVM = 0, the U200 bitstream
 # parameters of §14.2 (RST_PIPE 3), and the maximum depth on a reduced configuration.
 lint tsr_core -GHAS_MVM=0 -GRST_PIPE=1
 lint tsr_core -GHAS_MVM=1 -GRST_PIPE=3 -GSPM_RD_LAT=4 -GMVM_BC_PIPE=2 -GMVM_RES_PIPE=2 -GMVM_MAC_LAT=9
@@ -198,7 +198,7 @@ lint tsr_dbg_rv -GHAS_RV_TAPS=1
 lint tsr_dbg_rv -GHAS_RV_TAPS=1 -GCTRL_SYNC=1 -GREC_DEPTH=4
 lint tsr_dbg_wrmux -GADDR_BEAT_W=5
 
-# M3 MVM unit (docs/rtl-m3.md §1): every new module as its own top with edge parameters
+# M3 MVM unit (docs/rtl-mvm.md §1): every new module as its own top with edge parameters
 # (NUM_CH 1 / 3 / 16, T_MAX 1 / 8, small and maximal K_MAX, latency / pipe depth extremes).
 lint tsr_fp_add -GLAT=1
 lint tsr_fp_add -GLAT=8

@@ -1,4 +1,4 @@
-"""tsr_mvm tests: the whole MVM unit (docs/rtl-m3.md §3.0-§3.2, §3.5, §6; §10.2 "top").
+"""tsr_mvm tests: the whole MVM unit (docs/rtl-mvm.md §3.0-§3.2, §3.5, §6; §10.2 "top").
 
 DUT: tb/mvm/hdl/tsr_tb_mvm.sv = tsr_mvm (NUM_CH clusters: front end, activation buffer, back end;
 broadcast pipes, result pipes, gather) on SPM client 2 of a real tsr_spm and on the WS source of
@@ -459,7 +459,7 @@ class Monitor:
                     self.err("done without a held instruction")
                 self.done_count += 1
                 self.done_cycle = self.cyc
-                # quiescence at done (docs/rtl-m3.md §3.0, §6.4)
+                # quiescence at done (docs/rtl-mvm.md §3.0, §6.4)
                 if int(d.o_wr_valid.value) or int(d.o_rd_req_valid.value):
                     self.err("done with an SPM request pending")
                 if wsv or int(d.o_ws_rsp_valid.value):
@@ -472,7 +472,7 @@ class Monitor:
 
 
 class BcMon:
-    """The broadcast as the clusters see it (docs/rtl-m3.md §3.1) and every cluster's front command
+    """The broadcast as the clusters see it (docs/rtl-mvm.md §3.1) and every cluster's front command
     (§3.2), observed inside the DUT: watched clusters (first and last) record every bc_cmd /
     bc_line item; every cluster records its tsr_mvm_fcmd_t handshakes."""
 
@@ -1000,7 +1000,7 @@ CYCLE_DIGEST = {
 }
 
 
-# ---- mvm_perf bounds (docs/rtl-m3.md M3 scope, §4 FIFO sizing, §7.5 RB_MIN, §9.1 overhead) ----
+# ---- mvm_perf bounds (docs/rtl-mvm.md M3 scope, §4 FIFO sizing, §7.5 RB_MIN, §9.1 overhead) ----
 RB_MIN = 9          # §7.5: the back end never drops beat_ready on rows of >= RB_MIN (<= 9) beats
 FAST_RT = 12        # weight round trip budget with the "fast" memory (cycles; measured ~6.5), §4
 CPB_EPS = 0.01      # slack of a measured cycles-per-beat (the fast regime's 0/1-cycle latency)

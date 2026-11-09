@@ -1,4 +1,4 @@
-"""cocotb model of the core's per-channel memory ports (spec Core boundary interface; docs/rtl-m2.md §4).
+"""cocotb model of the core's per-channel memory ports (spec Core boundary interface; docs/rtl-core.md §4).
 
 One MemModel serves all NUM_CH channels of a DUT whose memory ports follow the tsr_core naming
 (packed per-channel vectors, channel c at slice [c]):
@@ -19,7 +19,7 @@ id and reordered across ids, random stall phases. Write ordering modes per chann
   data_first a request is accepted only after at least one of its data beats was accepted
   random     a mode is drawn per channel every few hundred cycles
 req_first / data_first deadlock a core that waits for one channel's handshake before offering the
-other (forbidden by docs/rtl-m2.md rule M5) and turn that into a timeout.
+other (forbidden by docs/rtl-core.md rule M5) and turn that into a timeout.
 
 Protocol assertions (raise AssertionError in the model task, which fails the cocotb test; all
 violations are also collected in .errors):

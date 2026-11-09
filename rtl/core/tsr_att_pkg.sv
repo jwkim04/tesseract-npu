@@ -102,7 +102,7 @@ package tsr_att_pkg;
 
   // -------------------------------------------------------------------------------------------
   // MVM unit internal: the cluster -> back end configuration of an attention op (stable while its
-  // beats flow, like cfg_fmt; docs/rtl-m3.md §3.2), and the PV unit's activation-buffer read.
+  // beats flow, like cfg_fmt; docs/rtl-mvm.md §3.2), and the PV unit's activation-buffer read.
   // -------------------------------------------------------------------------------------------
   typedef struct packed {
     logic        att;       // ATTQK: segment trees, per-token activation addresses (AT §8.1)

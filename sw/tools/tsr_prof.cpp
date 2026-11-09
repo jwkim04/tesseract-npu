@@ -1,5 +1,5 @@
 // tsr_prof.cpp — tsr-prof (docs/design/05-debug.md "DB" §8.3, §8.6, §8.7; docs/prof-dbg.md §3; docs/design/
-// 06-software-verification.md "SW" §11 P3.8): the trace-writer source `trw` and the PERF summary.
+// 06-software-verification.md "SW" §9.5): the trace-writer source `trw` and the PERF summary.
 //
 //   tsr-prof trw [--device KIND] [--image F] --launch K[:a0,a1,...] [--launch ...] [--repeat N] [--prof]
 //                [--ring-mib M] [--stop-full] [--out trace.json] [--raw ring.bin] [--check] [--stats]

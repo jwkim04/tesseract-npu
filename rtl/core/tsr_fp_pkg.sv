@@ -1,6 +1,6 @@
 // tsr_fp_pkg.sv — combinational f32 / fp16 / int8 helpers with the spec's fp rules.
 //
-// Owner: fp agent (docs/rtl-m2.md §2, block (c); contract §8.2).
+// Owner: fp agent (docs/rtl-core.md §2, block (c); contract §8.2).
 //
 // Normative definition: sw/sim/tsr_ref.c (bit-exact) — the RTL matches it for every input
 // (tb/fp: exhaustive over all 2^32 / 2^16 inputs for the conversions, directed + random sweeps

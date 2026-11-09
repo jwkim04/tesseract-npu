@@ -1,6 +1,6 @@
 // tsr_tb_mvm_back.sv — testbench-only toplevel for tb/mvmback (not part of the core).
 //
-// The cluster's back half as in tsr_mvm_cluster (docs/rtl-m3.md §2, §3.4): tsr_mvm_actbuf written
+// The cluster's back half as in tsr_mvm_cluster (docs/rtl-mvm.md §2, §3.4): tsr_mvm_actbuf written
 // through its broadcast-side port (wr_valid / wr_line = tsr_mvm_bcline_t items, as the broadcast
 // pipe delivers them) and read by tsr_mvm_back. The tagged beats, cfg_fmt / cfg_d_lines and the
 // result stream are exposed for the cocotb test.

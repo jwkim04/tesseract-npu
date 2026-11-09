@@ -1,7 +1,7 @@
 # Figure style guide
 
-The figures in `docs/fig/*.svg` are drawn as illustrations, not flowcharts. The model
-is Tenstorrent's architecture art: a warm card, a lighter inner panel, flat pastel blocks with cut
+The figures in `docs/fig/*.svg` are drawn as illustrations, not flowcharts. The look follows
+Tenstorrent's architecture art: a warm card, a lighter inner panel, flat pastel blocks with cut
 corners and a thin dark outline, fat hollow arrows, and small uppercase callouts on leader lines.
 Every figure is a Python script in this directory built on `tsrfig.py`. Use the library for every
 mark, so the figures stay consistent and the output stays deterministic.
@@ -15,7 +15,7 @@ mark, so the figures stay consistent and the output stays deterministic.
 | Previews | `$TSR_FIG_PNG_DIR/<name>.png` at 1:1 and `<name>_gh.png` at 880 px (about GitHub's README width). The default is `build/fig/png`, which git ignores. Previews are never committed. |
 | Interpreter | `build/tools/svgvenv/bin/python docs/fig/src/<name>.py` (needs cairosvg, fontTools) |
 | Logos | `docs/fig/logos/<key>.svg` (sanitised third-party logos) and `docs/fig/logos/SOURCES.md` (where each came from); `docs/fig/src/logoclean.py` makes the files. See "Logos". |
-| README PNGs | `docs/fig/<name>.png` for `hero`, `system`, `stack` and `dataflow`, made from the light SVGs by `docs/fig/src/pngs.py` |
+| README PNGs | `docs/fig/<name>.png` for the figures in `README_FIGS` of `pngs.py`, made from the light SVGs |
 | All figures | `docs/fig/src/build.sh` runs every script, light and dark where a dark variant exists, then `pngs.py` |
 
 - Start each script with `sys.dont_write_bytecode = True` before `from tsrfig import ...`, so
@@ -29,27 +29,26 @@ mark, so the figures stay consistent and the output stays deterministic.
 
 ## Canvas
 
-- **Card.** It is 1600 units wide; the height is whatever the content needs, rounded to a
-  multiple of 8. The card is a rounded rectangle (radius 36, outline 2) that carries its own
-  background, so the figure reads the same on GitHub's light and dark themes.
-- **Outer padding.** Keep at least 56 between the card edge and the content.
-- **Panels.** These are chamfered (cut 20), lighter (`PANEL`) and outlined, inset in the card.
-  Name a panel with its dark tag on the top-left edge (`panel(..., label="HOST PC")`). A region
-  nested in a panel, such as `tsr_core` inside the board, is an outline-only panel
-  (`fill=None`). When an arrow crosses the top edge where the tag would sit, draw the panel
-  without a label and place the tag yourself with `tag(x, y, ..., anchor="start")` further right
-  (`layers`: TSR_CORE; `verify`: RTL VS SIMULATOR). Exceptions: `alloc` centres its three panel
-  tags because its layout is symmetric and a top-left tag would hit the ch0 arrowhead, and `hero`
-  centres the tag of its zoom panel.
-- **Callout margins.** If a figure has callouts on leader lines, leave about 224 units free on
-  the side that holds them. `system` uses both sides: its panels run from x 224 to 1376.
-  Callout text should stay at least 20 units inside the card edge.
-- **Scale check.** GitHub shows the card at about 0.55×, so 19 units become about 10 px. Keep
-  body text at 17 or more; use 15 only for tags.
-- **Long figures.** A swimlane or a stack may be taller than it is wide (`launch`, `stack`,
-  `verify`: 2000 units and more). Keep the width and the type scale, and stack panels instead of
-  shrinking text.
-- **Large type.** `stack` is the product-style figure and uses the `*_l` roles of the type table
+- Card: 1600 units wide; the height is whatever the content needs, rounded to a multiple of 8. The
+  card is a rounded rectangle (radius 36, outline 2) that carries its own background, so the figure
+  reads the same on GitHub's light and dark themes.
+- Outer padding: keep at least 56 between the card edge and the content.
+- Panels: chamfered (cut 20), lighter (`PANEL`) and outlined, inset in the card. Name a panel with
+  its dark tag on the top-left edge (`panel(..., label="HOST PC")`). A region nested in a panel, such
+  as `tsr_core` inside the board, is an outline-only panel (`fill=None`). When an arrow crosses the
+  top edge where the tag would sit, draw the panel without a label and place the tag yourself with
+  `tag(x, y, ..., anchor="start")` further right (`layers`: TSR_CORE; `verify`: RTL VS SIMULATOR).
+  Exceptions: `alloc` centres its three panel tags because its layout is symmetric and a top-left
+  tag would hit the ch0 arrowhead, and `hero` centres the tag of its zoom panel.
+- Callout margins: if a figure has callouts on leader lines, leave about 224 units free on the side
+  that holds them. `system` uses both sides: its panels run from x 224 to 1376. Callout text should
+  stay at least 20 units inside the card edge.
+- Scale check: GitHub shows the card at about 0.55×, so 19 units become about 10 px. Keep body text
+  at 17 or more; use 15 only for tags.
+- Long figures: a swimlane or a stack may be taller than it is wide (`launch`, `stack`, `verify`:
+  2000 units and more). Keep the width and the type scale, and stack panels instead of shrinking
+  text.
+- Large type: `stack` is the product-style figure and uses the `*_l` roles of the type table
   (28 / 21 / 17 / 19 units) with fewer words per tile, so it stays readable at README width. At
   phone width every 1600-unit figure is small; the SVG scales without loss, and the product
   figures (`hero`, `stack`, `system`) keep their text short for that reason.
@@ -66,14 +65,14 @@ Fills mark a block's role. Use the role, not a raw hex, so all figures agree.
 | `PANEL` | `#F8F8F5` | inner panels |
 | `BAND` | `#E7E5DC` | flat tinted regions inside a panel (SLRs, lanes, pipeline stages) |
 | `ARROW` | `#EAF4F1` | fill of hollow arrows |
-| `control` | `#A8E0D5` mint | sequencing and control: the control core, issue path, checker, dispatcher, CSRs, FSMs, and **firmware** (the kernels and the runtime that run on the control core) |
+| `control` | `#A8E0D5` mint | sequencing and control: the control core, issue path, checker, dispatcher, CSRs, FSMs, and firmware (the kernels and the runtime that run on the control core) |
 | `compute` | `#9EDCF2` sky | MVM clusters, MAC lanes, fp units, functional units |
 | `memory` | `#F8AFA3` salmon | SPM, DRAM channels, buffers, FIFOs |
 | `io` | `#DCD5F7` lavender | data movement: DMA (LD, ST), weight-stream requester, broadcast / gather buses and pipes, arbiters, ports |
 | `host` | `#F4DE9C` butter | host software: llama.cpp, `ggml-tesseract`, `tsr_rt`, transport, simulator, code under test in `verify` |
 | `adapter` | `#F9C89B` peach | per-target platform adapter: control bridge, AXI4 bridges |
 | `vendor` | `#DAD8CF` stone | vendor-specific parts: the XRT shell, PCIe, tech wrappers |
-| `neutral` | `#FFFFFF` | plain blocks, such as data items in a memory map; references in `verify`; developer tools in `stack`; work and gate boxes in `milestones` |
+| `neutral` | `#FFFFFF` | plain blocks, such as data items in a memory map; references in `verify`; developer tools in `stack` |
 
 Do not use gradients, shadows, transparency or 3D effects. Text is always `INK` (or `INK_SOFT`
 for secondary notes) on the pastel fills; on dark tags it is `CARD`. The one exception is a
@@ -105,14 +104,14 @@ a same-colour stroke of 34 font units; the library does this.
 | `callout` | 19 | medium | 0.02 em | leader-line callouts and arrow names, UPPERCASE |
 | `panel` | 20 | bold | 0.10 em | band labels (`SLR0`), UPPERCASE, `INK_SOFT` |
 | `note` | 17 | regular | 0 | legend entries, footnotes |
-| `tag` | 15 | bold | 0.08 em | badges: panel names, `PLANNED · M6`, `× 4` |
+| `tag` | 15 | bold | 0.08 em | badges: panel names, `PLANNED`, `× 4` |
 | `label_l` | 28 | bold | 0.02 em | tile title in `stack` |
 | `sub_l` | 21 | regular | 0 | tile detail lines in `stack` |
 | `panel_l` | 21 | bold | 0.10 em | layer names in `stack`, `INK_SOFT` |
 | `note_l` | 19 | regular | 0 | layer captions and the footnote in `stack` |
 | `tag_l` | 17 | bold | 0.08 em | status badges in `stack` |
 
-**Casing.**
+Casing:
 
 - Block titles, callouts, tags and band labels are UPPERCASE. Examples: `ISSUE PATH`,
   `WEIGHT STREAM`, `TSR_CORE`.
@@ -121,7 +120,7 @@ a same-colour stroke of 34 font units; the library does this.
   `s_axi_control`. So do units: `4 MiB`, `64 B`, `19.2 GB/s`, `300 MHz`.
 - Put a block title on two centred lines when it is long (`MEMORY\nARBITER`).
 
-**Glyphs.**
+Glyphs:
 
 - Avoid `→` and `↔`: they are tiny in this font. Write `<->`, draw an arrow, or use words.
 - Use `·` as a separator, `×` for counts and products, and `≥` / `≤`. `–` is fine in ranges
@@ -148,9 +147,8 @@ a same-colour stroke of 34 font units; the library does this.
 | Bracket | `bracket(x1, x2, y, label)` | a span: a group of channels, `× NUM_CH`, a stage range |
 
 - Hollow arrows go on top of the blocks they join. They start and end 8–12 units inside each
-  block, as in the reference art, and the text in the block must stay clear of that overlap
-  (at least 10 units from a baseline or cap top). Where a block is short, start the arrow 6
-  inside or make the block taller.
+  block, and the text in the block must stay clear of that overlap (at least 10 units from a
+  baseline or cap top). Where a block is short, start the arrow 6 inside or make the block taller.
 - An arrow drawn before a panel is hidden by the panel's fill. Draw arrows that end inside a
   panel after that panel (`alloc`: the weight streams).
 - To pass "through" a block (a stream through a bridge), draw the arrow first and the block over
@@ -160,51 +158,43 @@ a same-colour stroke of 34 font units; the library does this.
 
 ## Planned and unconfirmed things
 
-**Status drawing rule.** A block is drawn solid only if it exists in `rtl/` (or, for software, in
-the tree) and ran on the Alveo U200. Everything that exists only in
-the simulator and the firmware is planned: dashed, pale, tagged. **Never draw a block as solid RTL
-that is not in `rtl/`.** The RTL in the tree is the X0 state: the datapath units, the CSR skeleton
-and the platform adapter, with no control core, issue path, vector unit or attention modes.
+Status drawing rule: a block is drawn solid if it is in the tree and in the release image. A block
+that exists only as a design, or only in the simulator, is planned: dashed, pale and tagged. Never
+draw a block as solid RTL that is not in `rtl/`.
 
-- **Planned blocks.** Use `box(..., planned=True, tag="PLANNED · M6")`. This gives a dashed
-  outline, a fill 55 % paler than the role colour, and a light dashed tag on the top edge. Name the
-  milestone or work package in the tag (`PLANNED · M6`, `PLANNED · W6`). Where an arrow meets the
-  same top edge and `PLANNED · M6` would collide with it (`hero`, `system`, `core`, `stack`), the
-  tag may read `PLANNED` if the legend or the footnote names the milestone, and the arrow meets the
-  edge 48 units from the block's left edge, clear of the right-hand tag.
-- **A band or lane that is planned as a whole** (`core`: the `clk_rv` band; `launch`: the control
-  core lane) carries one `PLANNED` tag on the band or on the lane head; the blocks inside are
-  dashed and pale with `plan_tag=False`, so their text is not covered by a tag per block.
-- **A solid block that gains a mode** (DMA + KVST, SPM + 2R2W banks, the MAC lanes + ATTQK / ATTPV,
+- Planned blocks: `box(..., planned=True, tag="PLANNED")`. This gives a dashed outline, a fill 55 %
+  paler than the role colour, and a light dashed tag on the top edge. Where an arrow meets the same
+  top edge and the tag would collide with it (`hero`, `system`, `core`, `stack`), the arrow meets
+  the edge 48 units from the block's left edge, clear of the right-hand tag.
+- A band or lane that is planned as a whole (`core`: the `clk_rv` band; `launch`: the control core
+  lane) carries one `PLANNED` tag on the band or on the lane head. The blocks inside are dashed and
+  pale with `plan_tag=False`, so their text is not covered by a tag per block.
+- A solid block that gains a mode (DMA + KVST, SPM + 2R2W banks, the MAC lanes + ATTQK / ATTPV,
   `tsr_csr` + LQ / LCQ / log) stays solid and carries a dashed tag that starts with `+`
-  (`tag="+ KVST", tag_style="planned"`), or a small dashed tile inside it where a tag would
-  collide with arrows.
-- **Planned paths.** Draw them as dashed arrows or connectors (the unit-queue bus in `stack` and
+  (`tag="+ KVST", tag_style="planned"`), or a small dashed tile inside it where a tag would collide
+  with arrows.
+- Planned paths: draw them as dashed arrows or connectors (the unit-queue bus in `stack` and
   `core`).
-- **Status badges** (`stack`, `milestones`; at most three texts per figure): `ON THE CARD`
-  (dark badge: ran on the card), `SIMULATOR` (outlined badge: implemented
-  and verified on the simulator; `milestones` also uses `DONE · RTL SIMULATION`) and `PLANNED`
-  (dashed badge on a dashed block). A panel carries the status of its tiles on its top edge; a
-  tile carries its own badge only where it differs. A figure with badges explains them in a key at
-  the bottom and says which statement a badge makes (`stack`: the status of the block as drawn; the
-  xrt kind has not run on the card with the control core, so it is `PLANNED`).
-- **Unconfirmed facts.** Expected but unmeasured facts, such as a clock that is only a planning
-  value (`clk_rv` 166.7 MHz), are drawn as expected and named as such in a footnote (`note` role,
-  `INK_SOFT`) or a callout. Never present them as fact.
-- **Hardware not yet run** (the control core on the card) is drawn as `docs/design` describes it, with no
-  internals beyond what the design states.
+- Status badges (`stack`; at most three texts per figure): `ON THE CARD` (dark badge: in the
+  release image), `SIMULATOR` (outlined badge: implemented and verified on the simulator) and
+  `PLANNED` (dashed badge on a dashed block). A panel carries the status of its tiles on its top
+  edge; a tile carries its own badge only where it differs. A figure with badges explains them in a
+  key at the bottom.
+- Unconfirmed facts: an expected but unmeasured fact, such as a clock that is only a planning
+  value, is drawn as expected and named as such in a footnote (`note` role, `INK_SOFT`) or a
+  callout. Never present it as fact.
 
 ## Repeated units and channel counts
 
-- **Channels.** When the count is small and the layout means something (four DDR4 channels,
-  each with its own cluster), draw every instance in its own column and label it (`CH0`–`CH3`,
+- Channels: when the count is small and the layout means something (four DDR4 channels, each with
+  its own cluster), draw every instance in its own column and label it (`CH0`–`CH3`,
   `CLUSTER 0`–`3`).
-- **Many identical units.** Draw one block with `stack=2` (two copies behind it, 8 up and right
-  each) and a dark count tag such as `× 4` or `× NUM_CH`. Put the tag on the back copy
-  (`tag(x + w + 16, y - 16, ..., anchor="end")`) when an arrow meets the block's top edge.
-  A repeated panel uses the same offsets (`cluster`). Alternatively, put a `bracket` labelled
+- Many identical units: draw one block with `stack=2` (two copies behind it, 8 up and right each)
+  and a dark count tag such as `× 4` or `× NUM_CH`. Put the tag on the back copy
+  (`tag(x + w + 16, y - 16, ..., anchor="end")`) when an arrow meets the block's top edge. A
+  repeated panel uses the same offsets (`cluster`). Alternatively, put a `bracket` labelled
   `× NUM_CH` under a row, or say "one per cluster" in the block's detail line.
-- **Parameters.** Show them by name where `docs/spec.md` §3 does (`NUM_CH`, `T_MAX`, `MVM_BC_PIPE`).
+- Parameters: show them by name where `docs/spec.md` §3 does (`NUM_CH`, `T_MAX`, `MVM_BC_PIPE`).
   Give the U200 value only when it is fixed (`NUM_CH = 4`).
 
 ## Bands and regions
@@ -215,14 +205,13 @@ and the platform adapter, with no control core, issue path, vector unit or atten
 - Keep a gap of at least 12 between adjacent bands.
 - Draw bands before the blocks they hold. If an outline-only panel crosses them, draw it after
   the bands.
-- **Region tags instead of bands.** Use these when the regions are not contiguous in the layout.
-  In `system`, floorplan C' puts clusters 0 and 2 in SLR0 and clusters 1 and 3 in SLR2, so
-  clusters 1 and 2 sit away from their channels' SLR (SLR1), and the regions are not contiguous
-  in the layout. Give each block a dark tag on the right of its top edge
-  (`box(..., tag="SLR1")`). Run the arrows that meet that edge 32 left of the block's centre, so
-  the tag stays clear of them. Leave a block untagged when it has no single region (`system`: the
-  XRT shell, the planned vector unit). Say in the footnote what the tags show and what validated
-  them.
+- Region tags instead of bands: use these when the regions are not contiguous in the layout. In
+  `system`, floorplan C' puts clusters 0 and 2 in SLR0 and clusters 1 and 3 in SLR2, so clusters 1
+  and 2 sit away from their channels' SLR (SLR1), and the regions are not contiguous in the layout.
+  Give each block a dark tag on the right of its top edge (`box(..., tag="SLR1")`). Run the arrows
+  that meet that edge 32 left of the block's centre, so the tag stays clear of them. Leave a block
+  untagged when it has no single region (`system`: the XRT shell, the vector unit). Say in the
+  footnote what the tags show and what validated them.
 
 ## Legend
 
@@ -245,74 +234,73 @@ figure uses. Name roles, not instances, with the same words in every figure:
 `REFERENCE` (neutral), `CODE UNDER TEST` (host), `CHECK` (mint), `TRACES` (salmon), `RTL` (sky)
 and `PLANNED`. It never reuses lavender, so a reader carrying the key over from the architecture
 figures is not misled. `stack` has no colour legend, only the status key (three badge samples
-with one line each); `milestones` has `DONE` (mint), `IN DEVELOPMENT` (butter) and `PLANNED`.
+with one line each).
 
 ## Logos
 
 A third-party logo is the one mark in a figure that is not drawn in the figure style: it is the
-official file, in its own colours, unmodified. Today only `stack` has logos (llama.cpp, PyTorch,
-Hugging Face, GDB); the architecture figures have none.
+official file, in its own colours, unmodified. Only `stack` has logos (llama.cpp, PyTorch,
+Hugging Face); the architecture figures have none.
 
-- **Which.** Only software that the figure names and that a reader would look for: a program,
-  library or tool. Never a mark that implies endorsement or needs permission: no OpenAI logo (the
+- Which: only software that the figure names and that a reader would look for: a program, library
+  or tool. Never a mark that implies endorsement or needs permission: no OpenAI logo (the
   `llama-server` API is written as text, "OpenAI-compatible API"), no AMD, Xilinx or Alveo logo, no
   RISC-V International logo, no lowRISC or Ibex logo, and no logo of the card, the board or the
   tools that built it. Hardware, ISAs and IP cores stay as text blocks.
-- **Official and unmodified.** Take the file from the project's own repository or brand page. No
+- Official and unmodified: take the file from the project's own repository or brand page. No
   recolouring, no stretching (`Fig.logo` keeps the aspect ratio), no cropping beyond the file's own
   padding, no effects, no partial use of a lockup. Do not mix in an older version of a mark (the
   `pytorch-logo-flame.svg` in the PyTorch repository is the old flame, so the lockup is used).
-- **Sources are written down.** Every logo has a section in `docs/fig/logos/SOURCES.md`: URL
-  (pinned to a commit where there is one), retrieval date, sha256 of the download, licence or
-  trademark note (and any attribution a licence asks for), and
-  what was changed. Read the owner's brand rules first; if they forbid the use, leave the logo out.
-  Say in the note that the logo only refers to the project.
-- **Sanitised vector, no raster.** The download is untrusted data: put it in its own empty directory
+- Sources are written down: every logo has a section in `docs/fig/logos/SOURCES.md` with the URL
+  (pinned to a commit where there is one), the sha256 of the download, the licence or trademark
+  note (and any attribution a licence asks for), and what was changed. Read the owner's brand rules
+  first; if they forbid the use, leave the logo out. Say in the note that the logo only refers to
+  the project.
+- Sanitised vector, no raster: the download is untrusted data. Put it in its own empty directory
   outside the repository, never run anything from it, and turn it into `docs/fig/logos/<key>.svg`
   with `logoclean.py` (it refuses scripts, event handlers, external links, `<foreignObject>`,
   `<image>`, `<text>` and DOCTYPE or ENTITY declarations, and folds CSS into attributes so two
   logos cannot collide). `logoclean.py --compare` must show 0 differing pixels against the
   download. A logo that cannot be sanitised (a raster, or an SVG with text) is not used.
-- **Drawing.** `Fig.logo("<key>", x, y, h=...)` embeds the file once in `<defs>` and places it with
+- Drawing: `Fig.logo("<key>", x, y, h=...)` embeds the file once in `<defs>` and places it with
   `<use>`, so the SVG stays self-contained and the bytes are the same on every run. It returns the
   size of the mark, and `logo_box()` gives that size before drawing, for layout.
-- **Backing tile.** A logo that would be illegible on the block colour, because it is dark (the
-  PyTorch wordmark), white (the GDB fish) or close in hue to the fill (the yellow Hugging Face
-  face on butter), uses `backing=True`: a white rounded tile (radius 10, outline 1.5 in `INK`,
-  padding 4 to 10). The tile is white on both themes, and the logo never changes with the theme. A
-  logo that carries its own tile (the llama.cpp icon is a dark rounded square) has no backing.
-- **Size and place.** At least 40 units tall including the backing (about 22 px at README width);
-  80 for a square mark, 44 for a wide lockup, 60 for the fish. Put it at the left of its tile, 24
-  from the edge and centred in the tile's height, with the tile's text left-aligned beside it, 20
-  from the logo and at least 20 from the right edge (`stack.py`: `logo_tile()`). A lockup that
-  contains the name replaces the tile title (PyTorch). A small logo may head a line of text
-  (Hugging Face, 32 units on a 40-unit tile). Draw each program once in a figure.
-- **Status.** A logo does not change the status of its block: a planned block (GDB) keeps its
-  dashed outline and tag, and its logo is drawn in full colour.
-- **Check.** Look at `<name>.png` and `<name>_gh.png`, light and dark. The logo must be
-  recognisable at 880 px, clear of the tile's outline and tag, and the text beside it at least 20
-  units from the tile edge.
+- Backing tile: a logo that would be illegible on the block colour, because it is dark (the PyTorch
+  wordmark), white, or close in hue to the fill (the yellow Hugging Face face on butter), uses
+  `backing=True`: a white rounded tile (radius 10, outline 1.5 in `INK`, padding 4 to 10). The tile
+  is white on both themes, and the logo never changes with the theme. A logo that carries its own
+  tile (the llama.cpp icon is a dark rounded square) has no backing.
+- Size and place: at least 40 units tall including the backing (about 22 px at README width); 80
+  for a square mark, 44 for a wide lockup. Put it at the left of its tile, 24 from the edge and
+  centred in the tile's height, with the tile's text left-aligned beside it, 20 from the logo and
+  at least 20 from the right edge (`stack.py`: `logo_tile()`). A lockup that contains the name
+  replaces the tile title (PyTorch). A small logo may head a line of text (Hugging Face, 32 units on
+  a 40-unit tile). Draw each program once in a figure.
+- Status: a logo does not change the status of its block. A planned block keeps its dashed outline
+  and tag, and its logo is drawn in full colour.
+- Check: look at `<name>.png` and `<name>_gh.png`, light and dark. The logo must be recognisable at
+  880 px, clear of the tile's outline and tag, and the text beside it at least 20 units from the
+  tile edge.
 
 ## README figures
 
-`README.md` shows `hero`, `system` and `stack` as one plain `<img>` of a PNG each, inside a
-centred `<p>`. Do not use a `<picture>` element with SVG sources there: the GitHub mobile app
-showed a broken image for it (commit 6f97864 fixed the logo the same way).
+`README.md` shows the figures listed in `README_FIGS` of `pngs.py` as one plain `<img>` of a PNG
+each, inside a centred `<p>`. Do not use a `<picture>` element with SVG sources there: the GitHub
+mobile app shows a broken image for it.
 
-- **Source.** The light SVG is the source, rendered by `docs/fig/src/pngs.py` to
-  `docs/fig/<name>.png`. The card carries its own background, so one PNG reads on both GitHub
-  themes; its rounded corners are transparent. `build.sh` calls `pngs.py` after the figure
-  scripts, so the PNGs are regenerated with the SVGs. `pngs.py <name> ...` renders only the named
-  figures, and `README_FIGS` in the script is the list of README figures.
-- **Format.** 1760 px wide (twice the 880 px README column), 8-bit palette (256 colours, octree,
-  no dithering) with a transparency table, which costs at most about 30 of 255 in a few edge pixels
-  and keeps each file at 100 to 150 KB. The script fails over 500 KB. There are no timestamps or
-  text chunks, so the same SVG gives the same bytes. Commit the PNGs together with the SVGs.
-- **Embed.** `<p align="center"><img src="docs/fig/<name>.png" alt="..." width="100%"></p>`, with
-  the alt text that describes the figure.
-- **Technical documents.** The figures under `docs/` (`spec.md`, `ctrl-riscv.md` and the others)
-  keep embedding the SVGs with a plain `<img>`. A new README figure needs its name in
-  `README_FIGS`, a line in `build.sh` for its script, and the embed above.
+- Source: the light SVG is the source, rendered by `docs/fig/src/pngs.py` to `docs/fig/<name>.png`.
+  The card carries its own background, so one PNG reads on both GitHub themes; its rounded corners
+  are transparent. `build.sh` calls `pngs.py` after the figure scripts, so the PNGs are regenerated
+  with the SVGs. `pngs.py <name> ...` renders only the named figures.
+- Format: 1760 px wide (twice the 880 px README column), 8-bit palette (256 colours, octree, no
+  dithering) with a transparency table, which keeps each file at 100 to 150 KB. The script fails over
+  500 KB. There are no timestamps or text chunks, so the same SVG gives the same bytes. Commit the
+  PNGs together with the SVGs.
+- Embed: `<p align="center"><img src="docs/fig/<name>.png" alt="..." width="100%"></p>`, with the
+  alt text that describes the figure.
+- Technical documents: the figures under `docs/` (`spec.md`, `ctrl-riscv.md` and the others) embed
+  the SVGs with a plain `<img>`. A new README figure needs its name in `README_FIGS`, a line in
+  `build.sh` for its script, and the embed above.
 
 ## Dark variants
 
@@ -348,9 +336,9 @@ this (not the README, and not for a GitHub page that has to show in the mobile a
 ## Accuracy
 
 Every block, arrow, label and number must be backed by `docs/spec.md`, `docs/design/*` (the normative
-design), `docs/rtl-m2.md`, `docs/rtl-m3.md`, `docs/platform-u200.md`, `docs/xrt-host.md`, the
+design), `docs/rtl-core.md`, `docs/rtl-mvm.md`, `docs/platform-u200.md`, `docs/xrt-host.md`, the
 `rtl/core` sources or the code under `sw/`. The script's docstring names its sources by document
 and section, never by line number. Cite English documents only. When a figure adds a fact that the
-cited documents do not show, say where it comes from in the docstring. Design facts follow `docs/design`
-(4 channels, 128 lanes per cluster, T_MAX 8, SPM 4 MiB, `clk_rv` 166.7 MHz planning value, core
-clock 276.3 MHz on the k4 kernel); a block without RTL is planned.
+cited documents do not show, say where it comes from in the docstring. Design facts follow
+`docs/design` (4 channels, 128 lanes per cluster, SPM 4 MiB; the release image has `T_MAX` 4, core
+clock 200 MHz and `clk_rv` 100 MHz); a block without RTL is planned.

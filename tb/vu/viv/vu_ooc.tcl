@@ -1,6 +1,6 @@
 # tb/vu/viv/vu_ooc.tcl — out-of-context implementation of the vector unit tsr_vu (rtl/core/tsr_vu.sv) on the
-# U200 part, for the VU's utilisation against CC §14.1's SLR1 budget and timing at 3.333 ns (VU §13 item 4,
-# CC §14.3 the run before gate T2). Opt-in (tb/vu/viv/vu_ooc.sh), not part of tb/run_all.sh.
+# U200 part, for the VU's utilisation against CC §14.1's resource budget and timing at 3.333 ns (VU §7.10,
+# VU §7.12.9). Opt-in (tb/vu/viv/vu_ooc.sh), not part of tb/run_all.sh.
 #
 # usage: vivado -mode batch -nojournal -nolog -source tb/vu/viv/vu_ooc.tcl -tclargs <repo> <outdir> [synth_only]
 #          [place_only] [clk=<ns>] [iodly=<ns>] [define=<NAME>] [GEN=value ...]

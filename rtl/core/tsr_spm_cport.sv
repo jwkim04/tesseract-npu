@@ -1,5 +1,5 @@
 // tsr_spm_cport.sv — single-port SPM client adapter: one client with one read and one write
-// request per cycle (the client interface of docs/rtl-m2.md §5) onto its two bank ports of the
+// request per cycle (the client interface of docs/rtl-core.md §5) onto its two bank ports of the
 // even / odd tsr_spm (docs/design/04-control-core.md "CC" §10.2, CC-12).
 //
 // Owner: SPM agent. Used by the DMA, QACT, MVM and the RISC-V bridge (clients 0-3); the VU drives

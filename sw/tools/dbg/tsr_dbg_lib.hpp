@@ -1,6 +1,6 @@
-// tsr_dbg_lib.hpp — libtsr_dbg (P3.7, P3.8): the debug service of docs/design/05-debug.md "DB" §3-§9
+// tsr_dbg_lib.hpp — libtsr_dbg: the debug service of docs/design/05-debug.md "DB" §3-§9
 // over the transport API only (sw/transport/tsr_transport.h, DB §4.1, §9.2), so it runs on every kind
-// (sim, mock, vkernel, xrt). docs/design/06-software-verification.md "SW" §11 P3.7 / P3.8.
+// (sim, mock, vkernel, xrt). docs/design/06-software-verification.md "SW" §9.5.
 //
 //   dmi       the DMI driver (DB §3.2, §3.5, §3.6): Access Register commands, the program buffer
 //             (fence.i), halt / resume / ndmreset, SBA blocks with the DB §3.6 sequences

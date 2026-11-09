@@ -2,7 +2,7 @@
 // products summed, for T tokens that share the weights, with the products on DSP48E2 slices and
 // two tokens packed per DSP (spec MVM cluster microarchitecture, "DSP packing").
 //
-// Owner: xtech agent (M3 part C; docs/rtl-m3.md §7.2, §9.2 item 4, §9.3). Selected by
+// Owner: xtech agent (M3 part C; docs/rtl-mvm.md §7.2, §9.2 item 4, §9.3). Selected by
 // rtl/filelist_xilinx.f in place of rtl/tech/generic.
 //
 // Contract: identical to rtl/tech/generic/tsr_mac_lane.sv (same module name, parameters, ports,

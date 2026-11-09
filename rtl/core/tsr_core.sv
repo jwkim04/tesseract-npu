@@ -14,7 +14,7 @@
 //   - CSR port: csr_valid/csr_ready/csr_we/csr_addr/csr_wdata/csr_rdata (tsr_csr contract, EX §5).
 //   - memory port per channel c (packed [NUM_CH], index c): read request {addr_beat, len_beats, id},
 //     read response {data, id, last}, write request {addr_beat, len_beats, id}, write data
-//     {data, word mask, last}, write response {id}; all valid/ready (docs/rtl-m2.md §4). Every output is
+//     {data, word mask, last}, write response {id}; all valid/ready (docs/rtl-core.md §4). Every output is
 //     driven from a register inside tsr_mem_arb.
 //   - plat_err_i (the platform's error level, STATUS.PLAT_ERR) and host_irq_o = CTRL.IRQ_EN ∧
 //     (LCQ_WR ≠ LCQ_RD) (EX §5.2; not connected on the U200).
@@ -23,8 +23,8 @@
 //   (HAS_DB): tsr_dbg and the trace writer in tsr_core_dp, tsr_dbg_rv here (both clocks: the completion
 //   records, RV_SAMPLE, the RV watchpoints on Ibex's data port, DBG_FLAGS and tsr_ctrl's DB window).
 // Parameters: the datapath's (tsr_core_dp; results identical for every legal implementation value,
-//   tests vary them: SPM_RD_LAT, MVM_* (docs/rtl-m3.md §1), RST_PIPE (reset register stages,
-//   docs/rtl-m3.md §14; the control subsystem's core-domain reset is one of its copies)), the queue
+//   tests vary them: SPM_RD_LAT, MVM_* (docs/rtl-mvm.md §1), RST_PIPE (reset register stages,
+//   docs/rtl-mvm.md §14; the control subsystem's core-domain reset is one of its copies)), the queue
 //   depths QD_DMA / QD_QACT / QD_MVM / QD_SYNC (CC §7.4; tsr_ctrl's Q_DEPTH is built from the same
 //   values, so the RISC-V's UNIT_OF and the dispatcher agree), ITCM_BYTES / DTCM_BYTES (CC-3) and
 //   CTRL_SYNC (1: clk_rv is clk, the crossings keep their structure, CC §11.1).
@@ -49,7 +49,7 @@ module tsr_core
   parameter int unsigned     ADDR_BEAT_W    = TSR_DEF_ADDR_BEAT_W,
   parameter bit              HAS_MVM        = 1'b1,
   parameter int unsigned     SPM_RD_LAT     = TSR_DEF_SPM_RD_LAT,
-  // MVM unit implementation parameters (HAS_MVM = 1; docs/rtl-m3.md §1)
+  // MVM unit implementation parameters (HAS_MVM = 1; docs/rtl-mvm.md §1)
   parameter int unsigned     MVM_WS_FIFO    = TSR_DEF_WS_FIFO_BEATS,
   parameter int unsigned     MVM_BC_PIPE    = TSR_DEF_MVM_BC_PIPE,
   parameter bit              DDR_LOCAL_PIPE = 1'b0,
@@ -64,7 +64,7 @@ module tsr_core
   parameter int unsigned     MVM_MUL_LAT    = TSR_DEF_FMUL_LAT,
   parameter int unsigned     MVM_ADD_LAT    = TSR_DEF_FADD_LAT,
   parameter int unsigned     MVM_WS_RD_LAT  = TSR_DEF_WS_RD_LAT,
-  // Reset register stages inside the core (implementation; docs/rtl-m3.md §14): 0 = rst_n
+  // Reset register stages inside the core (implementation; docs/rtl-mvm.md §14): 0 = rst_n
   // straight to every block (test builds); U200: 3 (the measured OOC closure, §14.2)
   parameter int unsigned     RST_PIPE       = 0,
   // issue path and control core (CC §7.4, §13.1)

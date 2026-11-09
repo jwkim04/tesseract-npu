@@ -1,4 +1,4 @@
-// rtl/platform/alveo_xrt/bw/filelist.f — the M0 DMA bandwidth kernel tsr_bw_k4 (docs/m0-bw.md),
+// rtl/platform/alveo_xrt/bw/filelist.f — the M0 DMA bandwidth kernel tsr_bw_k4 (docs/bandwidth-kernel.md),
 // complete: it reuses tsr_tables_pkg / tsr_pkg, tsr_rslice (defined in rtl/core/tsr_mem_arb.sv) and the adapter's
 // reset / slices / AXI4 bridge, and nothing else of the core. Paths are relative to this file's
 // directory:   verilator -F rtl/platform/alveo_xrt/bw/filelist.f ...

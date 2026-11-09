@@ -1,7 +1,6 @@
 # Versions
 
 Tesseract has four version numbers. Each answers a separate question and each changes on its own.
-The scheme is modelled on CUDA.
 
 | Number | Answers | CUDA counterpart |
 | --- | --- | --- |
@@ -10,8 +9,9 @@ The scheme is modelled on CUDA.
 | Basis ABI, one integer | Whether a host and a firmware image speak the same protocol. | driver ABI |
 | Kind numerics revision, one integer per op list kind | Whether a kind still produces the same bits. | none |
 
-Everything described here runs on the simulator. No card has this design yet. Normative text:
-[SW](design/06-software-verification.md) §6.9 and [EX](design/01-execution-model.md) §4.4 and §7.5.
+The current release is Tesseract Basis 1.0.0 with Basis ABI 1 on Tesseract Core capability 1.0.
+Normative text: [SW](design/06-software-verification.md) §6.9 and [EX](design/01-execution-model.md) §4.4
+and §7.5.
 
 ## Where the numbers live
 
@@ -27,53 +27,45 @@ one source.
 
 ## Tesseract Core capability
 
-The capability is the number in the `VERSION` register. Bits 15:8 are the major, bits 7:0 the minor,
-bits 31:16 are 0. The current design reads `0x0000_0100`, capability 1.0.
+The capability is the number in the `VERSION` register. Bits 15:8 are the major, bits 7:0 the minor, bits 31:16 are
+0. The register reads `0x0000_0100`, capability 1.0. Software built for capability M.n runs on a device M.m with m
+at least n. It does not run on another major.
 
-Software built for capability M.n runs on a device M.m with m at least n. It does not run on another
-major.
+The `CAPS` register (0x014) lists the optional features of a configuration: `VU`, `TOPK`, `ATT`, `DQROW`, `VMASK`,
+`GDN`, `ATT_LOCAL`, `MVM_LOCAL_SCALE`, `MVM_LOCAL_SOFTCAP`. An optional feature is a `CAPS` bit, never a minor. The
+sizes of a configuration (channels, lanes, `T_MAX`, scratchpad) are in `CFG0` to `CFG3` and are not part of the
+capability. Results are defined per configuration. The number is set in `sw/tables/tsr_tables.py`, and the table
+generator writes it into the C, C++, SystemVerilog and Python headers. It changes in the same change that alters the
+RTL and the simulator.
 
-The `CAPS` register (0x014) lists the optional features a configuration has: `VU`, `TOPK`, `ATT`,
-`DQROW`, `VMASK`, `ATT_LOCAL`, `MVM_LOCAL_SCALE`, `MVM_LOCAL_SOFTCAP`. An optional feature is a `CAPS` bit, never a minor. The sizes of a configuration
-(channels, lanes, `T_MAX`, scratchpad) are in `CFG0` to `CFG3`. They are not part of the capability.
-Results are defined per configuration.
+- Major: an incompatible change of the hardware contract: an instruction encoding, a CSR, queue or record field that
+  software relies on, a removed opcode, the result bits of any tile op for the same inputs, a smaller control-core
+  ISA.
+- Minor: a backward-compatible addition that every configuration of that minor has: a new opcode or unit, a new CSR
+  field, a control-core ISA extension the compiler may target.
 
-The number is set in `sw/tables/tsr_tables.py`. The table generator writes it into the C, C++,
-SystemVerilog and Python headers, so the RTL, the simulator and the software read one value. The
-hardware owner changes it in the same change that alters the RTL and the simulator.
-
-- Major: an incompatible change of the hardware contract. This covers an instruction encoding, a
-  CSR, queue or record field that software relies on, a removed opcode, the result bits of any
-  tile op for the same inputs, and a smaller control-core ISA.
-- Minor: a backward-compatible addition that every configuration of that minor has. Examples are a
-  new opcode or unit, a new CSR field, and a control-core ISA extension the compiler may target.
-
-It is shown as `Tesseract Core 1.0 (VU TOPK ATT DQROW)`: the capability, then the `CAPS` features.
+It is shown as `Tesseract Core 1.0 (VU ATT GDN)`: the capability, then the `CAPS` features.
 
 ## Tesseract Basis version
 
 Basis is the firmware SDK in `sw/ctrl` and the host side that loads and drives it: the runtime, the
-kernels, the op list format and its planners, the transport, the ggml backend and the tools. Its
-version follows [Semantic Versioning](https://semver.org/).
+kernels, the op list format and its planners, the transport, the ggml backend, the PyTorch backend
+and the tools. Its version is MAJOR.MINOR.PATCH.
 
-- Major: an ABI break (next section). Not before 1.0.0.
-- Minor: new kinds, kernels, kind variants or flags. A planner that accepts more shapes. Any kind
-  revision bump. New host API or tools.
-- Patch: fixes and performance work that leave every output bit of every kind, every interface and
-  every planner's acceptance unchanged.
+- Major: a large change. In practice an ABI break (next section) or a break of a host interface.
+- Minor: a small addition or change of functions. New kinds, kernels, kind variants, ops, flags,
+  host API or tools. A planner that accepts more shapes. Any kind revision bump.
+- Patch: a small fix that leaves the inputs and outputs of every function unchanged: every output
+  bit of every kind, every interface and every planner's acceptance.
 
-The versions stay 0.x until the M7 gate has passed on the card. Then comes 1.0.0. In 0.x an
-incompatible change bumps the minor and the ABI. The first release is 0.1.0.
-
-The version is a 32-bit value, `major << 16 | minor << 8 | patch`. Basis 0.1.0 is `0x0000_0100`.
+The version is a 32-bit value, `major << 16 | minor << 8 | patch`. Basis 1.0.0 is `0x0001_0000`.
 
 The number in `version.h` changes at release, not with each commit. A build between two releases
-carries the number of the last release (0.1.0 until the first release is out), so it is told apart
-by its image id and its kind revisions, not by the Basis version alone.
+carries the number of the last release, so it is told apart by its image id and its kind revisions.
 
 ## Basis ABI
 
-The ABI is one integer, `TSR_SDK_ABI`, currently 1. It is defined in `sw/ctrl/include/tsr/version.h`
+The ABI is one integer, `TSR_SDK_ABI`. It is 1 in Basis 1.0.0 and is defined in `sw/ctrl/include/tsr/version.h`
 and nowhere else. It changes when an existing image and an existing host would stop working
 together. It covers:
 
@@ -86,22 +78,21 @@ together. It covers:
 - A planner that accepts less than before. The host and the image share the planners (SW-20), so
   this is a break.
 
-The author of the breaking change raises the ABI in that change, not at release. ABI 1 is defined
-as of Basis 0.1.0.
+The author of the breaking change raises the ABI in that change, not at release.
 
 ## Kind numerics revision
 
 Every op list kind has a revision from 1 to 255. A revision of 0 means the image does not have the
 kind. The revision is raised when any output bit of the kind can change for the same record words,
 the same input bytes and the same device configuration (`CFG0` to `CFG3`, `CAPS`) on the same
-capability.
-
-A result is therefore reproducible from (capability, configuration, kind, revision).
+capability. A result is therefore reproducible from (capability, configuration, kind, revision).
 
 - No bump when the outputs stay identical: push order, scheduling, scratch use.
 - No bump when the change only accepts new inputs, such as a new variant or larger shapes. That is a
   Basis minor.
 - A new kind starts at 1. Revisions never decrease and are never reused.
+- A kind has one revision for all its variants. Adding a variant of GLU is a Basis minor. Changing
+  the bits of an existing variant raises the revision of GLU.
 
 The revisions are `opl::kind_rev(kind)` in `sw/ctrl/include/tsr/opl.hpp`, next to `kind_nargs`. An
 image declares the kinds it provides with `TSR_KIND(NAME)` beside the handler. The macro emits a
@@ -120,126 +111,76 @@ fixed corpus of records per kind and compares a digest of the outputs with
 To bump a revision, change `kind_rev`, run `test_fw_kind_revs tsr-fw.elf
 sw/ctrl/tests/kind_revs.txt --update`, and add a `CHANGELOG.md` line such as "ROPE r2: ...".
 
+A kind whose result depends on a `CAPS` bit has one row of `kind_revs.txt` for each path.
+GATED_DELTA_NET (SW-78) runs the VU's GDN op when `CAPS` bit 8 is set and a composition of VU ops
+otherwise. Revision 2 is the revision of the fused path. The composed path produces the bits of
+revision 1, and its row, marked `composed`, keeps that digest. The revision is raised when any of the
+kind's digests moves.
+
 ## Reading the numbers
 
-tsr-selftest prints them in its identity and boot sections:
-
-```sh
-build/dev/bin/tsr-selftest --device sim
-```
+`tsr-selftest --device sim` prints them in its identity and boot sections (`--version` prints the version and ABI of
+the tool). The image id changes with every build.
 
 ```
-  ID 0x54535231  Tesseract Core capability 1.0 (VERSION 0x00000100), CAPS 0x00000069 (VU TOPK ATT DQROW)
-  CTL_ID 0x00005d01 (control core, debug module, SPM bridge, log ring, watchdog, SPM alias)  ...
-== boot (fw/tsr-fw.elf, id 21df766de1377d19)
-  image fw/tsr-fw.elf: id 21df766de1377d19, Tesseract Basis 0.1.0, Basis ABI 1, needs capability 1.0; host Tesseract Basis 0.1.0
-  kinds (21, signature 0x2381): NOP r1 JOIN r1 MUL_MAT r1 ADD r1 MUL r1 SCALE r1 RMS_NORM r1 GLU r1 ROPE r1 GET_ROWS r1 SET_ROWS_KV r1 FLASH_ATTN r1 CPY r1 UNARY r1 MUL_MAT_SCALE r1 MUL_MAT_SOFTCAP r1 MOE_ROUTE r1 MUL_MAT_ID r1 SOFTPLUS r1 SSM_CONV r1 GATED_DELTA_NET r2
+  ID 0x54535231  Tesseract Core capability 1.0 (VERSION 0x00000100), CAPS 0x00007169 (VU TOPK ATT DQROW GDN ATT_LOCAL MVM_LOCAL_SCALE MVM_LOCAL_SOFTCAP)
+  image build/dev/fw/tsr-fw.elf: id 94a464a9da1a22b0, Tesseract Basis 1.0.0, Basis ABI 1, needs capability 1.0; host Tesseract Basis 1.0.0
+  kinds (21, signature 0x2381): NOP r1 JOIN r1 MUL_MAT r1 ADD r1 MUL r1 SCALE r1 RMS_NORM r1 ... GATED_DELTA_NET r2
 ```
 
-The image id changes with every build. `tsr-selftest --version` prints the Basis version and ABI of
-the tool.
-
-tsr-elf reads them from an image without a device:
-
-```sh
-build/dev/sw/ctrl/host/tsr-elf --version
-build/dev/sw/ctrl/host/tsr-elf note build/dev/fw/tsr-fw.elf     # sdk_abi, cap_min, basis_version, ...
-build/dev/sw/ctrl/host/tsr-elf kinds build/dev/fw/tsr-fw.elf    # one line per kind, then the signature
-```
-
-```
-0x10	MUL_MAT	rev=1
-...
-signature=0xfa6f
-```
-
-llama.cpp lists the device with both versions:
+`tsr-elf` reads them from an image without a device: `tsr-elf --version`, `tsr-elf note IMAGE` (`sdk_abi`,
+`cap_min`, `basis_version`, ...) and `tsr-elf kinds IMAGE` (one line per kind, then the signature). llama.cpp lists
+the device with both versions:
 
 ```
 $ TSR_DEVICE=sim build/dev/bin/llama-cli --list-devices
-Available devices:
-  Tesseract0: Tesseract Core 1.0 (VU TOPK ATT DQROW; sim, C=4, LANES=128, T_MAX=1, K_MAX=32768, SPM=4096 KiB, 16 GiB/ch), Tesseract Basis 0.1.0 (ABI 1, 14 kinds, image 21df766de1377d19) (63488 MiB, 63488 MiB free)
+  Tesseract0: Tesseract Core 1.0 (VU TOPK ATT DQROW GDN ATT_LOCAL MVM_LOCAL_SCALE MVM_LOCAL_SOFTCAP; sim, C=4, LANES=128, T_MAX=1, K_MAX=32768, SPM=4096 KiB, 16 GiB/ch), Tesseract Basis 1.0.0 (ABI 1, 21 kinds, image 94a464a9da1a22b0) (63488 MiB, 63488 MiB free)
 ```
 
-The text up to the semicolon is the capability and its `CAPS` features. After it come the
-configuration, the Basis version of the booted image, its ABI, the number of kinds and the image id.
-The memory sizes at the end are added by llama.cpp. With `TSR_DEBUG=2` the backend logs why it
-refuses each op, including "kind X is not in the booted image".
+The text up to the semicolon is the capability and its `CAPS` features. After it come the configuration, the Basis
+version of the booted image, its ABI, the number of kinds and the image id. With `TSR_DEBUG=2` the backend logs why
+it refuses each op, including "kind X is not in the booted image". `klcheck` and `tsr-numcheck` record the
+capability, the Basis version and the kind table of a device run in their output files, so a comparison says which
+versions produced the result ([klcheck.md](klcheck.md), [numcheck.md](numcheck.md)).
 
-klcheck and numcheck record the capability, the Basis version and the kind table of a device run in
-their output files, so a comparison says which versions produced the result (`.klc` header and
-`report.json` `versions`; numcheck `meta.json` and `report.json` `versions`, with every kind's
-revision).
-
-In C and C++, `sw/ctrl/include/tsr/version.h` defines:
-
-- `TSR_BASIS_VERSION_MAJOR`, `TSR_BASIS_VERSION_MINOR`, `TSR_BASIS_VERSION_PATCH`
-- `TSR_BASIS_VERSION`, the packed 32-bit value, and `TSR_BASIS_MAJOR_OF(v)`,
-  `TSR_BASIS_MINOR_OF(v)`, `TSR_BASIS_PATCH_OF(v)` to unpack one
-- `TSR_SDK_ABI`
-
-`tsr/rt.hpp` includes it. Firmware sources also use `tsr::opl::kind_rev(kind)` and
-`tsr::opl::kind_name(kind)` from `tsr/opl.hpp`. The generated `tsr/mmio.hpp` and
-`sw/sim/include/tsr_tables.h` hold the capability as `ISA_MAJOR`, `ISA_MINOR` and `VERSION_VALUE`
-(`TSR_ISA_MAJOR` and so on in C).
-
-A host program asks the transport (`sw/transport/tsr_transport.h`):
-
-```c
-tsr_versions v;
-char s[256];
-tsr_transport_versions(t, &v);          // the device's capability and CAPS, the booted image's versions
-tsr_versions_str(&v, 1, s, sizeof s);   // 1: also the image id and every kind with its revision
-puts(s);
-```
-
-`tsr_image_versions` does the same for an image that is not booted, and `tsr_basis_version()`
-returns the version of the host library itself. `v.kind_rev[k]` is the revision of kind `k` in the
-booted image.
+In C and C++, `sw/ctrl/include/tsr/version.h` defines `TSR_BASIS_VERSION_MAJOR`, `_MINOR` and `_PATCH`,
+`TSR_BASIS_VERSION` (the packed 32-bit value, with `TSR_BASIS_MAJOR_OF(v)`, `_MINOR_OF` and `_PATCH_OF` to unpack
+it) and `TSR_SDK_ABI`. Firmware sources use `tsr::opl::kind_rev(kind)` and `kind_name(kind)` from `tsr/opl.hpp`. The
+generated `tsr/mmio.hpp` and `sw/sim/include/tsr_tables.h` hold the capability as `ISA_MAJOR`, `ISA_MINOR` and
+`VERSION_VALUE`. A host program asks the transport (`sw/transport/tsr_transport.h`): `tsr_transport_versions(t, &v)`
+fills the device's capability and `CAPS` and the booted image's versions (`v.kind_rev[k]` is the revision of kind
+`k`), `tsr_image_versions` does the same for an image that is not booted, `tsr_versions_str(&v, verbose, buf, n)`
+formats them, and `tsr_basis_version()` returns the version of the host library itself.
 
 ## Compatibility
 
-A host, a firmware image and a device work together when these checks pass. Each check refuses with
-a message that names both numbers.
+A host, a firmware image and a device work together when these checks pass. Each check refuses with a message that
+names both numbers (for example "Tesseract Core capability 2.0 (VERSION 0x00000200): this software supports
+capability 1.x", or "Basis ABI 2, this host implements ABI 1: rebuild the image with this tree's SDK").
 
 | Check | Where | Rule |
 | --- | --- | --- |
 | Device | `tsr_transport_open`, before any write | The `VERSION` major is the one the host supports (1), any minor. `CTL_ID` is not 0, which would mean no control core. The adapter version major and `NUM_CH` match. |
-| Image | `tsr_image_open` | `.note.tsr` is present. Its ABI is `TSR_SDK_ABI`. Its Basis version is not 0, which marks an image built before versioning. `.tsr_kinds` is well formed. |
+| Image | `tsr_image_open` | `.note.tsr` is present. Its ABI is `TSR_SDK_ABI`. Its Basis version is not 0. `.tsr_kinds` is well formed. |
 | Image on device | `tsr_transport_boot`, before any load | The image's `cap_min` has the device's major, and a minor not above the device's. `CAPS` has every bit the image requires. The memory sizes fit. The ABI matches. |
 | HELLO | every cold and warm boot | The image id, the ABI, the kind table signature, the kernel count and the Basis version match the image file. |
 | Backend and image | ggml-tesseract and `sw/rt`, when the device opens | The image's Basis version, major and minor, is not older than the backend's. The patch is ignored. A newer image is accepted. |
 | Launch | `supports_op` and the op list builder | Only kinds with a nonzero revision in the booted image are sent. The executor still answers `BAD_RECORD` for a kind it lacks and `BAD_VERSION` for an op list format it does not know. |
 
-The backend rule is the same as CUDA's rule for an insufficient driver. The host and the image
-share the planners, so a backend that is newer than its image could send a shape the image refuses.
-The transport does not enforce the rule, so captured launch traces of older images still replay.
-
-An image that provides fewer kinds works. The ops it cannot run stay on the CPU. `TSR_KINDS=m6`
-narrows the device to MUL_MAT the same way.
-
-Examples of the messages:
-
-```
-Tesseract Core capability 2.0 (VERSION 0x00000200): this software supports capability 1.x
-CTL_ID = 0: no control core
-tsr_image: IMAGE: Basis ABI 2, this host implements ABI 1 (Tesseract Basis 0.1.0): rebuild the image with this tree's SDK
-image IMAGE refused: the device does not meet its requirements ... Tesseract Core capability 1.1 (device 1.0);
-HELLO does not match the image IMAGE: ... Tesseract Basis 0.2.0, expected 0.1.0;
-```
+The backend rule is the same as CUDA's rule for an insufficient driver. The host and the image share the planners, so
+a backend that is newer than its image could send a shape the image refuses. The transport does not enforce the
+rule, so captured launch traces of other images still replay. An image that provides fewer kinds works: the ops it
+cannot run stay on the CPU, and `TSR_KINDS=m6` narrows the device to the matrix products the same way.
 
 ## Identifiers that are not versions
 
-These fields exist, are never shown as a product version, and are not compared with a release.
+These fields are never shown as a product version and are not compared with a release: `CTL_ID[7:0]`, the
+control-core revision (1; 0 means no control core), the adapter version major (`ADAPTER_VERSION[31:16]`,
+1), the debug block's `DBG_ID[7:0]` (1), the kind table signature and the 64-bit image id (they name a build), and
+the numbers of file formats (the op list header 1, trace metadata 2, the `.klc` header 2, numcheck metadata 2,
+`DBG_INFO` 1, the crash record 1, `MSUM` 1).
 
-- `CTL_ID[7:0]` is the control-core revision, currently 1. 0 means there is no control core.
-- The adapter version major (`ADAPTER_VERSION[31:16]`) is 1. The debug block's `DBG_ID[7:0]` is 1.
-- The kind table signature and the 64-bit image id name a build.
-- File formats carry their own numbers: the op list header (1), trace metadata (2), the `.klc`
-  header (2), numcheck metadata (2), `DBG_INFO` (1), the crash record (1) and `MSUM` (1). They tell
-  readers which layout a file has.
-
-## Kinds at Basis 0.1.0
+## Kinds at Basis 1.0.0
 
 Op list kinds with their revisions, as declared by `TSR_KIND` in the file that defines the handler.
 The argument words of each kind are in [SW](design/06-software-verification.md) §7.2.
@@ -259,27 +200,17 @@ The argument words of each kind are in [SW](design/06-software-verification.md) 
 | 0x18 | SET_ROWS_KV | 1 | `k_kv.cpp` | Quantizes rows to q8_0 and writes them into the KV cache. |
 | 0x19 | FLASH_ATTN | 1 | `k_fattn.cpp` | Attention over the KV cache with a mask summary and grouped-query heads. |
 | 0x1A | CPY | 1 | `k_rows.cpp` | Copies f32 rows. |
-| 0x1B | UNARY | 1 | `k_elem.cpp` | TANH, GELU16, SILU, EXP, GELU (exact tanh form) or SIGMOID. |
+| 0x1B | UNARY | 1 | `k_elem.cpp` | TANH, GELU16, SILU, EXP, GELU (exact tanh form), SIGMOID. |
 | 0x1C | MUL_MAT_SCALE | 1 | `k_mulmat.cpp` | A MUL_MAT whose result is multiplied by a scalar before it is stored. |
 | 0x1D | MUL_MAT_SOFTCAP | 1 | `k_mulmat.cpp` | A MUL_MAT followed by the scale, tanh and scale of a logit soft cap. |
 | 0x1E | MOE_ROUTE | 1 | `k_moe.cpp` | Router softmax, top-k selection and weight renormalisation of a MoE layer (SW §7.9, SW-61). |
 | 0x1F | MUL_MAT_ID | 1 | `k_moe.cpp` | Matrix product against the experts that the ids of each token select, with an optional per-expert scale (SW-62). |
 | 0x2D | SOFTPLUS | 1 | `gdn_kinds.cpp` | log(1 + exp(x)) of the gate tensors of a Gated DeltaNet layer (SW §7.10, SW-69). |
 | 0x2E | SSM_CONV | 1 | `gdn_kinds.cpp` | The causal convolution of a Gated DeltaNet layer with its rolling state, optionally followed by SILU (SW-68). |
-| 0x2F | GATED_DELTA_NET | 2 | `gdn_kinds.cpp` | The delta-rule recurrence of a Gated DeltaNet layer (SW-67). Revision 2 adds the fused path on a device with `CAPS` bit 8 (SW-78). |
+| 0x2F | GATED_DELTA_NET | 2 | `gdn_kinds.cpp` | The delta-rule recurrence of a Gated DeltaNet layer (SW-67). On a device with `CAPS` bit 8 it uses the fused path (SW-78). |
 
-Kinds 0x20 to 0x2C are free and 0x30 to 0x3F are test kinds. The MoE kinds took the lowest free numbers; the
-Gated DeltaNet kinds took 0x2D to 0x2F. The signature of the table above (21 kinds) is `0x2381` (it was `0x804f` with GATED_DELTA_NET at revision 1); the 14 kinds up
-to UNARY have `0xfa6f`, and the 18 kinds up to MUL_MAT_ID (the MoE branch before the merge) `0xc341`.
-A table with only NOP, JOIN and MUL_MAT at revision 1 has `0x512e`, and an empty table `0xb51b`.
-
-A kind has one revision for all its variants. Adding a variant of GLU is a Basis minor. Changing
-the bits of an existing variant raises the revision of GLU.
-
-A kind whose result depends on a `CAPS` bit has one revision and one row of `kind_revs.txt` for each path.
-GATED_DELTA_NET (SW-78) runs the VU's GDN op when `CAPS` bit 8 is set and its composition otherwise. Revision 2
-changed the bits of the first path only. The row marked `composed` keeps the digest of revision 1, which shows that
-a device without the bit gives the same results as before. The revision is raised when any of the kind's digests moves.
+Kind numbers 0x20 to 0x2C are unassigned and 0x30 to 0x3F are test kinds. The signature of this
+table (21 kinds) is `0x2381`.
 
 ## Releases
 
@@ -287,13 +218,9 @@ Each release has a Basis version, a section in `CHANGELOG.md` and an annotated g
 `basis-vX.Y.Z` on the release commit.
 
 1. Set `TSR_BASIS_VERSION_MAJOR`, `_MINOR` and `_PATCH` in `sw/ctrl/include/tsr/version.h`.
-2. In `CHANGELOG.md`, replace "(unreleased)" in the heading of the section by the date.
-3. In `README.md`, update the release badge to the new tag.
-4. Build, run `ctest -LE slow`, and run `tsr-selftest --device sim`.
-5. Commit, then `git tag -a basis-vX.Y.Z -m "Tesseract Basis X.Y.Z"` and push the tag.
+2. In `CHANGELOG.md`, move the entries under "Unreleased" to a section for the new version.
+3. Build, run `ctest -LE slow`, and run `tsr-selftest --device sim`.
+4. Commit, then `git tag -a basis-vX.Y.Z -m "Tesseract Basis X.Y.Z"` and push the tag.
 
-Changes made after a release go into a new section headed "Basis X.Y.Z (unreleased)", where X.Y.Z
-is the next version. The ABI and the kind revisions are not part of this step. Their authors change
-them in the commit that needs it.
-
-The sections of `CHANGELOG.md` give the ABI and the capability they target.
+The ABI and the kind revisions are not part of this step. Their authors change them in the commit
+that needs it. The sections of `CHANGELOG.md` give the ABI and the capability they target.

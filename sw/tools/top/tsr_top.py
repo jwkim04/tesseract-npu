@@ -36,7 +36,7 @@ VERSION = 1
 LAYOUT = 1
 PAGE = 4096
 MON_DIR_DEFAULT = "/dev/shm"
-DRAM_GBS = 18.0                      # per channel: what the DRAM gives (docs/m0-bw.md §7.1)
+DRAM_GBS = 18.0                      # per channel: what the DRAM gives, as tsr_bw measures it (docs/bandwidth-kernel.md §7)
 XBUTIL = "/opt/xilinx/xrt/bin/xbutil"
 SYSFS = os.environ.get("TSR_TOP_SYSFS", "/sys")       # the tests point it at a made-up tree
 

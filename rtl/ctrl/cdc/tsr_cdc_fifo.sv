@@ -10,7 +10,7 @@
 //     after a write. wr_empty = no entry written and not yet consumed by the read side, as the write
 //     side sees it (CC §5.1 QIDLE: "the issue FIFO empty").
 //   read side (rclk): first-word-fall-through with a registered output: rd_valid / rd_data show the
-//     oldest entry; rd_ready (with rd_valid) consumes it (valid/ready rules R1-R3, docs/rtl-m2.md
+//     oldest entry; rd_ready (with rd_valid) consumes it (valid/ready rules R1-R3, docs/rtl-core.md
 //     §1: rd_valid does not depend on rd_ready). An entry counts as used until it is consumed, so
 //     DEPTH entries are the bound for everything written and not yet consumed. rd_count = entries
 //     written and not yet consumed as the read side sees them (the write pointer arrives through a

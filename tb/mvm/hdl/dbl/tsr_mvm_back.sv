@@ -3,7 +3,7 @@
 // back-end agent implements in parallel). Behavioural, simulation only; not part of any filelist
 // and not linted by rtl/lint.sh (the module name collides with the real one).
 //
-// Behaviour = the contract of docs/rtl-m3.md §3.3-§3.5 / §7.1, computed from what the double
+// Behaviour = the contract of docs/rtl-mvm.md §3.3-§3.5 / §7.1, computed from what the double
 // receives through its ports: the tagged beats of the real front end and the activations read
 // from the (double) activation buffer through qs_* / dbs_* (one QS word and one DBS line per beat:
 // Q8_0 D line b >> 4; Q4_K half 0 the D line s >> 4, half 1 the BS line cfg_d_lines + s/2).

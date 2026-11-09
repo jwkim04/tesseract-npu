@@ -11,7 +11,7 @@ The host chain is llama.cpp -> ggml-tesseract -> tsr_transport; the firmware ima
 (`tsr-fw.elf`, docs/design/01-execution-model.md §3) is loaded, booted and launched by the transport
 over the same PCIe path (EX §2.1, §4). The adapter is `ap_ctrl_none` (EX §9.1): the control
 bridge maps `s_axi_control` to the core's CSR port and there is no done / ap_done path.
-SLR tags: floorplan C' of the 4-channel T_MAX 8 kernel (hw/u200/k4_floorplan.tcl, docs/rtl-m3.md
+SLR tags: floorplan C' of the 4-channel T_MAX 8 kernel (hw/u200/k4_floorplan.tcl, docs/rtl-mvm.md
 §14.5, docs/platform-u200.md §8.1). DDR4 channels from platforminfo: bank0 SLR0, bank1 and bank2
 SLR1, bank3 SLR2. Clusters 0 and 2 in SLR0, 1 and 3 in SLR2 (two T_MAX 8 clusters do not fit SLR1:
 1,348 DSP, 1,380 with QACT, 1,320 there); the rest of the core (SPM, DMA, QACT, the four arbiters,
@@ -20,12 +20,11 @@ SLR1; the control core and issue path also in SLR1 (CC §2.2, §14.2). The plann
 the XRT shell carry no tag (the vector unit has no single region yet: CC §14.1 lists a shrink
 that moves its lanes to SLR0). Every crossing is a register pipe: per cluster the broadcast,
 weight-stream request / response and gather job / start pipes (MVM_BC_PIPE, MVM_RES_PIPE = 2 on
-the U200, docs/rtl-m3.md §14.2), the reset copies, and the AXI slices of bridges 0 and 3, whose
+the U200, docs/rtl-mvm.md §14.2), the reset copies, and the AXI slices of bridges 0 and 3, whose
 AXI-side stages sit in SLR0 / SLR2. The weight-response pipe carries one beat per cycle without
 backpressure, so the crossing keeps the channel's full rate (docs/platform-u200.md §8.1).
-The k4 kernel linked at 276.3 MHz and ran on the card (docs/platform-u200.md
-§14); the footnote says so. 64 B x 300 MHz = 19.2 GB/s is the design value per channel; the
-card's clock was 276.3 MHz (17.7 GB/s per channel, docs/performance.md). The control core's
+The footnote states the clock of the k4 kernel. 64 B x 300 MHz = 19.2 GB/s is the design value per
+channel at the design clock. The control core's
 clock clk_rv (planning value 166.7 MHz, D12) comes from ap_clk_2, a second platform clock (CC
 §11.1, planned); the core clock is the k4 clock (276.3 MHz). DDR4 ch0 holds the op lists (OPL),
 the IO window and the AUX tensors besides its quarter of the weights (EX §11).

@@ -1,5 +1,5 @@
-"""fp library testbench — block (c), docs/rtl-m2.md §8.2 (rtl/core/tsr_fp_pkg.sv, tsr_fp_mul.sv,
-tsr_fp_div.sv) and block (fp), docs/rtl-m3.md §8 (rtl/core/tsr_fp_add.sv). Oracle: libtsr_ref.so
+"""fp library testbench — block (c), docs/rtl-core.md §8.2 (rtl/core/tsr_fp_pkg.sv, tsr_fp_mul.sv,
+tsr_fp_div.sv) and block (fp), docs/rtl-mvm.md §8 (rtl/core/tsr_fp_add.sv). Oracle: libtsr_ref.so
 (sw/sim/tsr_ref.c) through common.tsr_ref, bit-exact.
 
 pytest functions (test_*):
@@ -63,7 +63,7 @@ pytest functions (test_*):
                         with TSR_FP_SWEEP_PROCS (default 4) processes
   test_fp_ooc_timing[]  (slow, opt-in, needs Vivado: TSR_VIVADO=<path to vivado>) out-of-context
                         implementation at 300 MHz on the U200 part (tb/fp/viv/fp_ooc.tcl): WNS >= 0
-                        and the logic-depth budget of docs/rtl-m2.md §1 (LUT levels per path) for
+                        and the logic-depth budget of docs/rtl-core.md §1 (LUT levels per path) for
                         tsr_fp_mul and tsr_fp_add at their default LAT and tsr_fp_div; ~2 min and
                         ~3 GB per run
 Slow tests are opt-in because tb/pytest.ini does not deselect the `slow` marker: they run only
@@ -195,7 +195,7 @@ DIV_DIRECTED = [
 ]
 
 # (a, b, sub, expected): y = a + b (sub = 0) / a - b (sub = 1); expectations derived by hand from
-# the spec rules (docs/rtl-m3.md §8.1 mandatory vectors) and checked against libtsr_ref below.
+# the spec rules (docs/rtl-mvm.md §8.1 mandatory vectors) and checked against libtsr_ref below.
 ADD_DIRECTED = [
     # exact subnormal results are flushed with their sign (spec Implementation clarifications, "FTZ decision point")
     (0x00C00000, 0x00800000, 1, 0x00000000),   # mandatory: 1.5 * 2^-126 - 2^-126 -> +0
@@ -1229,7 +1229,7 @@ def test_fp_sweep_full(request):
 # =============================================================================================
 OOC_RUNS = {"mul": ("tsr_fp_mul", "LAT=%d" % MUL_LAT_U200), "div": ("tsr_fp_div", "-"),
             "add": ("tsr_fp_add", "LAT=%d" % ADD_LAT_U200)}
-OOC_MAX_LUT = 6           # docs/rtl-m2.md §1: keep logic depth at ~6 LUT levels (300 MHz)
+OOC_MAX_LUT = 6           # docs/rtl-core.md §1: keep logic depth at ~6 LUT levels (300 MHz)
 
 
 def parse_ooc(log: str) -> dict:

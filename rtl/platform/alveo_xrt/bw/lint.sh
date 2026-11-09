@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # rtl/platform/alveo_xrt/bw/lint.sh — Verilator lint (-Wall, warnings are errors) of the M0 bandwidth
-# kernel (docs/m0-bw.md §5) and the generated-file check of gen_bw.py. Meant to be called from
+# kernel (docs/bandwidth-kernel.md §5) and the generated-file check of gen_bw.py. Meant to be called from
 # rtl/lint.sh (proposal) or on its own.
 #
 #   rtl/platform/alveo_xrt/bw/lint.sh   gen_bw.py --check; tsr_bw_engine / tsr_bw_ctrl / tsr_bw_kernel

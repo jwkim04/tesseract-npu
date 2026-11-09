@@ -2,7 +2,7 @@
 //
 // Owner: ctrl agent (W4 item 3; CC §2.2, §11). Generic and vendor-independent: the Xilinx
 // ASYNC_REG property is set by the constraints (rtl/ctrl/viv/tsr_ctrl_cdc.xdc: every cell named
-// *u_sync*/s_q*), not by an attribute here (docs/rtl-m2.md §1: vendor attributes only in rtl/tech).
+// *u_sync*/s_q*), not by an attribute here (docs/rtl-core.md §1: vendor attributes only in rtl/tech).
 // CC §2.2 places tsr_sync in rtl/tech/<target>/; it lives here until the technology layer takes it
 // (the module and port names are the ones CC §2.2 uses).
 //

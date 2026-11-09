@@ -2,10 +2,10 @@
 // the dispatcher, activation broadcast to the NUM_CH clusters, cluster command, result gather and
 // ACC into the SPM, done, perf_mvm_busy.
 //
-// Owner: top agent (docs/rtl-m3.md §2 block (top); contract §3.0, §3.1, §6).
+// Owner: top agent (docs/rtl-mvm.md §2 block (top); contract §3.0, §3.1, §6).
 // tsr_core instantiates it when HAS_MVM = 1 (integration agent).
 //
-// Contract (docs/rtl-m2.md §3.0 dispatch; semantics = tsr_sim.c ex_mvm):
+// Contract (docs/rtl-core.md §3.0 dispatch; semantics = tsr_sim.c ex_mvm):
 //   - cmd_valid/cmd_ready/cmd (tsr_mvm_cmd_t): every check done at dispatch (K, T, SPM and
 //     DRAM ranges, dst_stride resolved, rows_per_ch / row_beats / y_lines / qa_lines precomputed).
 //     cmd_ready is a register, 1 only while idle. done: registered 1-cycle pulse when every
@@ -27,11 +27,11 @@
 // Implementation parameters (results identical for every value): WS_FIFO_BEATS (per-cluster
 // weight FIFO), BC_PIPE (total broadcast delay, tsr_vpipe), RES_PIPE (result pipe
 // stages per cluster, tsr_rpipe), ACT_RD_LAT, MAC_LAT, MUL_LAT, ADD_LAT, WS_RD_LAT
-// (docs/rtl-m3.md §1).
+// (docs/rtl-mvm.md §1).
 //
 // Interface addition (additive, top agent): parameter WS_RD_LAT (weight FIFO RAM read latency,
-//   docs/rtl-m3.md §1, default TSR_DEF_WS_RD_LAT), passed to every cluster's front end.
-// Interface addition (additive, M3 part C timing, docs/rtl-m3.md §14): parameter RST_LOCAL (0..2).
+//   docs/rtl-mvm.md §1, default TSR_DEF_WS_RD_LAT), passed to every cluster's front end.
+// Interface addition (additive, M3 part C timing, docs/rtl-mvm.md §14): parameter RST_LOCAL (0..2).
 //   Every part (top logic, gather, cluster c with its pipes) takes rst_n through its own chain of
 //   RST_LOCAL registers (Xilinx `keep`: the copies are not merged), so the reset reaches every
 //   flop RST_LOCAL cycles after rst_n, from registers next to that part (the clusters sit in
@@ -95,7 +95,7 @@
 //   first stage when BC_PIPE >= 2 and all remaining stages per cluster. Commands overlay
 //   the line payload. Per cluster RES_PIPE x 2 x (33 + 32 T_MAX) FF;
 //   weight-stream pipes per cluster BC_PIPE x 516 FF + RES_PIPE x 2 x 38 FF; with RST_LOCAL
-//   RST_LOCAL x (NUM_CH + 2) reset flops. Measured sizes: docs/rtl-m3.md §14.
+//   RST_LOCAL x (NUM_CH + 2) reset flops. Measured sizes: docs/rtl-mvm.md §14.
 
 module tsr_mvm
   import tsr_pkg::*;
@@ -603,7 +603,7 @@ module tsr_mvm
 
   // Share only the source-side stage. Each destination keeps its own registers so
   // synthesis cannot turn a local cluster's activation/decode registers into a
-  // driver for clusters in another SLR (docs/rtl-m3.md §14.4). The tail is local
+  // driver for clusters in another SLR (docs/rtl-mvm.md §14.4). The tail is local
   // to its cluster; a common source net can cross once into each destination SLR.
   // rt_q and every rc_q have the same INIT and shift recurrence, so this stage's
   // reset is cycle-identical to the original per-cluster stage, including flush.
@@ -657,7 +657,7 @@ module tsr_mvm
       .idle(cl_idle[c])
     );
 
-    // Weight stream of cluster c <-> arbiter c (M3 part C, docs/rtl-m3.md §14): requests through
+    // Weight stream of cluster c <-> arbiter c (M3 part C, docs/rtl-mvm.md §14): requests through
     // RES_PIPE register slices (towards the centre, like the results), responses through BC_PIPE
     // registers (towards the cluster, like the broadcast; no backpressure: the streamer's
     // rd_rsp_ready is constant 1, §4), so the arbiters can sit with the DMA while a cluster sits

@@ -3,7 +3,7 @@
 // (DMA, QACT, MVM), the SPM (2R2W even / odd banks) with its client adapters and the RISC-V SPM
 // bridge, the per-channel memory arbiters, the reset distribution and the integration checks.
 //
-// Owner: integration (W4-A, docs/design/README.md §10 items 1-3; W4-B wiring of VU, AT and DB). tsr_core instantiates it next to
+// It wires the VU, AT and DB to the issue path and the SPM. tsr_core instantiates it next to
 // the control subsystem tsr_ctrl (rtl/ctrl); the op-list replay bench (CC §15.3) instantiates it
 // alone and drives the issue-entry stream (a simulation port only, never in a bitstream: D15).
 //
@@ -37,10 +37,10 @@
 // Parameters: tsr_core's (passed through) and the queue depths QD_DMA / QD_QACT / QD_MVM / QD_SYNC
 //   (tables TSR_QDEPTH_U200_*; the MVM queue is 0 when HAS_MVM = 0), ITCM_BYTES / DTCM_BYTES
 //   (RV_CFG), CTL_ID.
-// Reset distribution (RST_PIPE, as before in tsr_core; docs/rtl-m3.md §14): every flop of the core
+// Reset distribution (RST_PIPE, as before in tsr_core; docs/rtl-mvm.md §14): every flop of the core
 //   domain, the control subsystem's included, sees rst_n exactly RST_PIPE cycles late.
 // Integration checks (simulation only, end of this file): CC §9.4 I4 per unit, and the unit-local
-//   rules of docs/rtl-m2.md §3.0 / rtl-m3.md §3.0, §4, §6.4; tsr_issue asserts I1-I3 itself.
+//   rules of docs/rtl-core.md §3.0 / rtl-mvm.md §3.0, §4, §6.4; tsr_issue asserts I1-I3 itself.
 
 module tsr_core_dp
   import tsr_pkg::*;
@@ -293,17 +293,17 @@ module tsr_core_dp
     $fatal(1, "tsr_core_dp: RD_OUTSTANDING must be >= 1");
   end
   if (HAS_MVM && LANES != TSR_MVM_LANES) begin : g_chk_lanes
-    $fatal(1, "tsr_core_dp: HAS_MVM = 1 needs LANES == 128 (= BEAT_BITS / 4, one Q4_K beat; docs/rtl-m3.md §1)");
+    $fatal(1, "tsr_core_dp: HAS_MVM = 1 needs LANES == 128 (= BEAT_BITS / 4, one Q4_K beat; docs/rtl-mvm.md §1)");
   end
   if (HAS_MVM && (MVM_WS_FIFO < 64 || (MVM_WS_FIFO & (MVM_WS_FIFO - 1)) != 0)) begin : g_chk_wsfifo
-    $fatal(1, "tsr_core_dp: MVM_WS_FIFO must be a power of two >= 64 (docs/rtl-m3.md §4)");
+    $fatal(1, "tsr_core_dp: MVM_WS_FIFO must be a power of two >= 64 (docs/rtl-mvm.md §4)");
   end
   if (RST_PIPE > 8) begin : g_chk_rst
     $fatal(1, "tsr_core_dp: RST_PIPE must be in [0, 8]");
   end
   if (HAS_MVM && (MVM_ADD_LAT < 1 || MVM_ADD_LAT > 8 || MVM_WS_RD_LAT < 1 || MVM_WS_RD_LAT > 4 ||
                   MVM_ACT_RD_LAT < 1 || MVM_MAC_LAT < 1 || MVM_MUL_LAT < 1)) begin : g_chk_mvmlat
-    $fatal(1, "tsr_core_dp: MVM latencies: ADD 1..8, WS_RD 1..4, ACT_RD / MAC / MUL >= 1 (docs/rtl-m3.md §1)");
+    $fatal(1, "tsr_core_dp: MVM latencies: ADD 1..8, WS_RD 1..4, ACT_RD / MAC / MUL >= 1 (docs/rtl-mvm.md §1)");
   end
   if (QD_DMA > TSR_QD_MAX || QD_QACT > TSR_QD_MAX || QD_MVM > TSR_QD_MAX || QD_SYNC < 1 ||
       QD_SYNC > TSR_QD_MAX) begin : g_chk_qd
@@ -788,7 +788,7 @@ module tsr_core_dp
                           t_wr_dat_last, t_wr_req_ready, t_wr_dat_ready, t_wr_rsp_valid};
   end
 
-  // Single-port SPM clients [TSR_SPM_NSP] (docs/rtl-m2.md §5 interface): 0 DMA, 1 QACT, 2 MVM
+  // Single-port SPM clients [TSR_SPM_NSP] (docs/rtl-core.md §5 interface): 0 DMA, 1 QACT, 2 MVM
   // (tied off when HAS_MVM = 0), 3 RISC-V bridge; each reaches its two bank ports of tsr_spm
   // through a tsr_spm_cport (CC §10.2).
   logic [TSR_SPM_NSP-1:0]                         spm_rd_req_valid, spm_rd_req_ready, spm_rd_rsp_valid;
@@ -1331,7 +1331,7 @@ module tsr_core_dp
   assign unit_progress[5:4]           = '0;
 
   // -------------------------------------------------------------------------------------------
-  // Integration checks (simulation only; docs/rtl-m2.md §3.0, §5; docs/rtl-m3.md §3.0, §6.4,
+  // Integration checks (simulation only; docs/rtl-core.md §3.0, §5; docs/rtl-mvm.md §3.0, §6.4,
   // §10.4; CC §9.4 I4). Armed by the first clock edge with rst_n low (before it, Verilator's X
   // randomisation makes state arbitrary); with RST_PIPE they see the blocks' delayed reset. Only
   // the unit-local rules are checked here: the units run concurrently, and tsr_issue asserts the
@@ -1345,7 +1345,7 @@ module tsr_core_dp
   //      strictly after its accept; an MVM SPM read response only while it holds the op.
   //      Weight-stream requests and responses (source WS of every arbiter) only while the MVM
   //      unit holds an op; DMA memory requests only while the DMA holds an op.
-  //   U3 MVM done => quiescent and exact (docs/rtl-m3.md §3.0, §4, §6.4): in the cycle of
+  //   U3 MVM done => quiescent and exact (docs/rtl-mvm.md §3.0, §4, §6.4): in the cycle of
   //      mvm_done no WS request is offered on any channel, every WS beat requested has been
   //      received (counted at the arbiter's source port), no MVM SPM request or write is offered
   //      and no MVM SPM read is outstanding;
@@ -1459,7 +1459,7 @@ module tsr_core_dp
         assert (!((s_rd_req_valid[c][TSR_SRC_WS] || s_rd_rsp_valid[c][TSR_SRC_WS]) && !mvm_busy_q))
           else $error("tsr_core_dp: weight-stream traffic on channel %0d while no MVM is in flight", c);
         assert (s_rd_rsp_ready[c][TSR_SRC_WS] || !HAS_MVM)
-          else $error("tsr_core_dp: WS rd_rsp_ready low on channel %0d (rtl-m3 §4: constant 1)", c);
+          else $error("tsr_core_dp: WS rd_rsp_ready low on channel %0d (rtl-mvm §4: constant 1)", c);
         if (mvm_take) begin
           // an attention command (cmd_xc: ATTQK / ATTPV) streams its KV planes through the same source with
           // its own request pattern (AT §8); only the unit-local rules are checked for it (att_q)
@@ -1474,7 +1474,7 @@ module tsr_core_dp
             assert (att_q ||
                     (64'(s_rd_req_addr[c][TSR_SRC_WS]) == ws_addr_q[c] &&
                      48'(s_rd_req_len[c][TSR_SRC_WS]) == want_len && want_len != '0))
-              else $error("tsr_core_dp: WS request ch%0d addr %0d len %0d, expected addr %0d len %0d (rtl-m3 §4)",
+              else $error("tsr_core_dp: WS request ch%0d addr %0d len %0d, expected addr %0d len %0d (rtl-mvm §4)",
                           c, s_rd_req_addr[c][TSR_SRC_WS], s_rd_req_len[c][TSR_SRC_WS], ws_addr_q[c], want_len);
             assert (s_rd_req_len[c][TSR_SRC_WS] != '0)
               else $error("tsr_core_dp: WS request ch%0d with length 0", c);

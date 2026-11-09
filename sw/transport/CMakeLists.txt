@@ -9,7 +9,7 @@
 #                   decoder (tsr_logdec.cpp), and the kdevs: "sim" (the simulator in-process behind the
 #                   core CSR port, tsr_kdev_sim.cpp), "mock" (the sim kdev in the ap_ctrl_none adapter
 #                   model with fault injection, tsr_kdev_mock.cpp), "vkernel" (client of the Verilated
-#                   kernel server; the two-clock server is P5.3, until then the open says so) and,
+#                   kernel server; the tree has no two-clock server, so the open says so) and,
 #                   with -DTSR_WITH_XRT=ON, "xrt" (xrt::ip with exclusive access + one device-only buffer
 #                   per channel, tsr_transport_xrt.cpp; on the card from P6).
 #
@@ -109,7 +109,7 @@ add_test(NAME transport_kdev COMMAND test-tsr-kdev)
 set_tests_properties(transport_kdev PROPERTIES TIMEOUT 120)
 
 # transport_protocol: EX §15 item 2, one binary for every kind it can run (sim, mock; vkernel when
-# TSR_VKERNEL_SERVER / _SOCKET name a two-clock server, P5.3): cold / warm boot, image-id mismatch,
+# TSR_VKERNEL_SERVER / _SOCKET name a two-clock server): cold / warm boot, image-id mismatch,
 # .note.tsr refusal, VERIFY with an injected TCM fault (mock), PING, 0-7 args, BAD_DESC, 8
 # outstanding and the credit rule, forced LQ_OVERFLOW and RING_RD_BAD, events while waiting, the
 # log (FMT / TEXT / EVENT / BLOB decode, drop), cancel and stop, SOFT_RESET mid-launch, the

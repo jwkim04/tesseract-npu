@@ -4,7 +4,7 @@
 // tsr_bw_kernel with NUM_CH 4, ADDR_BEAT_W 28, AXI_SLICES 2, CTRL_PIPE 2.
 // Ports: ap_clk, ap_rst_n (active low, synchronous), interrupt, s_axi_control (AXI4-Lite, 32-bit
 // data, 12-bit address), m_axi_ch<c> for c < 4 (AXI4, 512-bit data, 64-bit address, 4-bit ID).
-// Register map and use: docs/m0-bw.md; kernel_bw_k4.xml describes the args.
+// Register map and use: docs/bandwidth-kernel.md; kernel_bw_k4.xml describes the args.
 // Plain Verilog-2001 (the IP packager expects a Verilog top); the body is SystemVerilog.
 
 `default_nettype none

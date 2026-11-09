@@ -1,6 +1,5 @@
-# sw/ctrl/tests/m7layer.cmake — W2b integration: one whole decoder layer per OPL list on the RISC-V
-# image (docs/design/06-software-verification.md "SW" §7.2, §7.5, §7.8, §10.2; docs/design/README.md §10 W2b
-# exit). Included by sw/ctrl/host/CMakeLists.txt after elem / kvfa / normrope (it links their
+# sw/ctrl/tests/m7layer.cmake — one whole decoder layer per OPL list on the RISC-V
+# image (docs/design/06-software-verification.md "SW" §7.2, §7.5, §7.8, §10.2). Included by sw/ctrl/host/CMakeLists.txt after elem / kvfa / normrope (it links their
 # references). Every test has label fw; long ones add slow.
 #
 #   fw_m7_layer_qwen05b    Qwen2.5-0.5B layer 0 (real Q8_0 weights from models/qwen2.5-0.5b-instruct-

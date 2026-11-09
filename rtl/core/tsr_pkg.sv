@@ -3,7 +3,7 @@
 //
 // C mirror: sw/sim/include/tsr_isa.h (encoding, CSR map, error codes) and tsr_ref.h (QA layout
 // helpers). Contract: docs/spec.md and docs/design (EX §5, §7, §11); RTL architecture and interface
-// rules: docs/rtl-m2.md, docs/rtl-m3.md. D14 / D16: there is no host command
+// rules: docs/rtl-core.md, docs/rtl-mvm.md. D14 / D16: there is no host command
 // path (no instruction fetch, no run registers, no integer registers); LI / ADDI / END are
 // reserved opcodes. The offsets, opcodes and units come from the generated tsr_tables_pkg
 // (EX-30, Y4); this package keeps what the remaining blocks use.
@@ -70,7 +70,7 @@ package tsr_pkg;
   localparam int unsigned     TSR_DEF_SPM_RD_LAT     = 2;   // tsr_spm client-visible read latency
 
   // -------------------------------------------------------------------------------------------
-  // Memory port encoding (core boundary and tsr_mem_arb source ports; docs/rtl-m2.md §4)
+  // Memory port encoding (core boundary and tsr_mem_arb source ports; docs/rtl-core.md §4)
   // -------------------------------------------------------------------------------------------
   localparam int unsigned TSR_LEN_W    = 7;   // len_beats as a count, 1..64 (0 never issued)
   localparam int unsigned TSR_SRC_ID_W = 2;   // id inside one source (source-local)
@@ -81,7 +81,7 @@ package tsr_pkg;
   localparam int unsigned TSR_SRC_WS    = 2;  // M3 MVM weight stream (tied off in M2)
 
   // -------------------------------------------------------------------------------------------
-  // SPM client ports of tsr_spm (docs/rtl-m2.md §5; CC §10.2: per-bank ports, NCL = 6, absent
+  // SPM client ports of tsr_spm (docs/rtl-core.md §5; CC §10.2: per-bank ports, NCL = 6, absent
   // clients tied off; W4-A spm)
   // -------------------------------------------------------------------------------------------
   localparam int unsigned TSR_SPM_NCL       = 6;
@@ -250,7 +250,7 @@ package tsr_pkg;
   endfunction
 
   // -------------------------------------------------------------------------------------------
-  // Internal interfaces (docs/rtl-m2.md §3). Packed: the first member is the MSB.
+  // Internal interfaces (docs/rtl-core.md §3). Packed: the first member is the MSB.
   // tb/common/isa.py keeps the same field order and widths (checked by tb/common/test_common.py).
   // The dispatcher (tsr_chk + tsr_issue, CC §13, Y4) offers them to the units; address operands
   // are the immediates (A1 = w1, A2 = w2, A3 = w3; EX §7.1).
@@ -296,7 +296,7 @@ package tsr_pkg;
   } tsr_mvm_cmd_t;            // 360 bits
 
   // ===========================================================================================
-  // M3: MVM unit (docs/rtl-m3.md). Everything below is additive; M2 users are unaffected.
+  // M3: MVM unit (docs/rtl-mvm.md). Everything below is additive; M2 users are unaffected.
   // ===========================================================================================
 
   // ---- architecture constants of the MVM datapath (spec Device weight layout, Numeric rules) ----
@@ -310,11 +310,11 @@ package tsr_pkg;
   localparam int unsigned TSR_Q8_0_CHUNK_BEATS  = 17; // 1 meta + 16 quant
   localparam int unsigned TSR_Q4_K_CHUNK_SB     = 4;  // S
   localparam int unsigned TSR_Q4_K_CHUNK_BEATS  = 9;  // 1 meta + 8 quant
-  localparam int unsigned TSR_MVM_BEATS_W     = 40;   // per-channel weight beats (<= 2^40 - 1, docs/rtl-m3.md §3.2)
+  localparam int unsigned TSR_MVM_BEATS_W     = 40;   // per-channel weight beats (<= 2^40 - 1, docs/rtl-mvm.md §3.2)
   localparam int unsigned TSR_MVM_QS_LINE_W   = 10;   // QS line index inside one QA image (K <= 65280)
   localparam int unsigned TSR_MVM_BLK_W       = 11;   // block / superblock index inside a row
 
-  // ---- implementation-parameter defaults of the MVM unit (docs/rtl-m3.md §1) ----
+  // ---- implementation-parameter defaults of the MVM unit (docs/rtl-mvm.md §1) ----
   localparam int unsigned TSR_DEF_WS_FIFO_BEATS = 512; // weight FIFO per cluster (power of two >= 64)
   localparam int unsigned TSR_DEF_MVM_BC_PIPE   = 1;   // broadcast pipe stages top -> cluster
   localparam int unsigned TSR_DEF_MVM_RES_PIPE  = 1;   // result pipe stages cluster -> top (rslices)
@@ -326,7 +326,7 @@ package tsr_pkg;
                                                        // 2 = BRAM output register at 300 MHz)
 
   // ---- layout helpers (sw/sim/tsr_ref.c tsr_qa_*, tsr_row_beats, tsr_rows_per_ch) ----
-  // Activation buffer geometry for K_MAX (docs/rtl-m3.md §5): QS words of 1024 bits (two QS
+  // Activation buffer geometry for K_MAX (docs/rtl-mvm.md §5): QS words of 1024 bits (two QS
   // lines) per token, and D/BS lines of 512 bits per token (max over both QA kinds).
   function automatic int unsigned tsr_actbuf_qs_words(int unsigned k_max);
     return (k_max + 127) / 128;
@@ -345,7 +345,7 @@ package tsr_pkg;
     return (left < {32'd0, r}) ? left[31:0] : r;
   endfunction
 
-  // ---- internal interfaces of the MVM unit (docs/rtl-m3.md §3). Packed: first member = MSB ----
+  // ---- internal interfaces of the MVM unit (docs/rtl-mvm.md §3). Packed: first member = MSB ----
 
   // tsr_mvm -> every cluster (on the broadcast pipe, once per MVM with N >= 1, before its lines):
   // the MVM fields every cluster needs. Each cluster derives its own rows from n / rows_per_ch

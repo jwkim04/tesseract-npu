@@ -89,7 +89,7 @@ def sim_ext_to_rtl(exts):
 
 
 # ---------------------------------------------------------------------------------------------
-# Expected unit commands (docs/rtl-m2.md §3.2-§3.4) of a running op, from its words
+# Expected unit commands (docs/rtl-core.md §3.2-§3.4) of a running op, from its words
 # ---------------------------------------------------------------------------------------------
 def expected_cmd(unit, w, num_ch):
     op = w[0] & 0xFF
@@ -404,7 +404,7 @@ class Env:
                     rdy = self.ready_force[u] and room
                 else:
                     rdy = room and (r.random() < self.ready_p)
-                # a unit that holds an op and has no accept-ahead is not ready (docs/rtl-m2.md §3.0)
+                # a unit that holds an op and has no accept-ahead is not ready (docs/rtl-core.md §3.0)
                 self.u_ready[u] = int(rdy)
                 getattr(d, "%s_cmd_ready" % names[u]).value = int(rdy)
             # external checker class

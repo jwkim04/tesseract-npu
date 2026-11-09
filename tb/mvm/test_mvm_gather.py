@@ -1,4 +1,4 @@
-"""tsr_mvm_gather alone (docs/rtl-m3.md §6.3): the gather is the toplevel; Python drives the
+"""tsr_mvm_gather alone (docs/rtl-mvm.md §6.3): the gather is the toplevel; Python drives the
 per-cluster result streams and models SPM client 2 (fixed read latency SPM_RD_LAT, no read
 backpressure, random request / write acceptance, read-first on same-cycle collisions, byte
 enables), so the gather is checked at its own ports.

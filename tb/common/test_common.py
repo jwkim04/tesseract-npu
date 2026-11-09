@@ -7,7 +7,7 @@ pytest functions (test_*):
                      MemModel under random legal traffic from a Python master (data, ordering,
                      outstanding limit, write tracking) and its protocol checks on deliberately
                      illegal traffic
-M3 (docs/rtl-m3.md §10.1):
+M3 (docs/rtl-mvm.md §10.1):
   test_ref_m3_*      tsr_ref wrappers (repack / unrepack, row_location, terms, dequant, scales)
   test_mvm_model_*   golden cluster model: tagged beats vs the reference row walk (all terms
                      recomputed from the beat stream == tsr_term_*), struct packing, integer
@@ -171,7 +171,7 @@ async def loop_structs(dut):
         for n, _ in isa.QACT_CMD_T.fields:
             assert int(getattr(dut, "qact_" + n).value) == q[n], n
         assert int(dut.mvm_n.value) == m["n"] and int(dut.mvm_row_beats.value) == m["row_beats"]
-    # M3 structs: widths, field positions, package helpers (docs/rtl-m3.md §3, §5)
+    # M3 structs: widths, field positions, package helpers (docs/rtl-mvm.md §3, §5)
     assert int(dut.bits_ccmd.value) == isa.MVM_CCMD_T.width
     assert int(dut.bits_bcline.value) == isa.MVM_BCLINE_T.width
     assert int(dut.bits_fcmd.value) == isa.MVM_FCMD_T.width
@@ -540,7 +540,7 @@ def test_mvm_model_cluster():
                 bl = mvm_model.bc_lines(fmt, K, qas)
                 assert len(bl) == len(qas) * isa.qa_lines(fmt, K) and bl[-1]["last"] == 1
                 assert sum(x["last"] for x in bl) == 1
-    # msum extreme (arbitrary BS): 8 * 63 * 2 * -32768 needs 26 bits (docs/rtl-m3.md §7.6)
+    # msum extreme (arbitrary BS): 8 * 63 * 2 * -32768 needs 26 bits (docs/rtl-mvm.md §7.6)
     b = dict(blk=0, half=1, sc=[63] * 4, m=[63] * 8, w=[15] * 128, two=0)
     view = mvm_model.QaView(1, 256, b"", qs=[-128] * 256, d=[0x3F800000], bs=[-32768] * 16)
     m = mvm_model.beat_math(1, b, view)
@@ -549,7 +549,7 @@ def test_mvm_model_cluster():
 
 
 def _apply_jobs(spm, jobs, ys, acc, rnd):
-    """Partial-line writes of docs/rtl-m3.md §6.3 in a random interleaving: every ACC job reads
+    """Partial-line writes of docs/rtl-mvm.md §6.3 in a random interleaving: every ACC job reads
     its line at some point before its own write; reads and writes of different jobs interleave
     arbitrarily. Returns the byte-write counts per SPM byte."""
     r = ref()
@@ -582,7 +582,7 @@ def _apply_jobs(spm, jobs, ys, acc, rnd):
 
 
 def test_mvm_model_gather_jobs():
-    """The partial-line / byte-enable / ACC scheme of docs/rtl-m3.md §6.3 equals the ex_mvm write
+    """The partial-line / byte-enable / ACC scheme of docs/rtl-mvm.md §6.3 equals the ex_mvm write
     loop for any job order and read/write interleaving, writes every y byte exactly once and
     nothing outside the y lines; Job.be() covers exactly the written bytes."""
     rnd = random.Random(33)

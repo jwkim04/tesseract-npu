@@ -5,7 +5,7 @@
 //
 // Owner: AT (W4-B "at"). Oracle: tsr_ref_attqk / tsr_ref_attpv through the simulator's ATTQK /
 // ATTPV (tb/at). Both modules produce gather jobs in the format of tsr_mvm_gather's job pipes
-// {last, line, own, tail, y} (docs/rtl-m3.md §6.3): own = the words written (byte enables), tail =
+// {last, line, own, tail, y} (docs/rtl-mvm.md §6.3): own = the words written (byte enables), tail =
 // a tag for the central part (tsr_mvm_gather: ATT jobs are written with own only; bit 15 marks an
 // ATTQK score line, bits [6:0] its pass row for the row-maximum tracker).
 

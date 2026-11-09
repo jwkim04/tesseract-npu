@@ -1,4 +1,4 @@
-"""tb/core — the integrated core (W4-A, docs/design/README.md §10 items 1-3): tsr_core (tsr_ctrl with
+"""tb/core — the integrated core: tsr_core (tsr_ctrl with
 Ibex + tsr_core_dp) on Verilator through cocotb, against the simulator running the same firmware
 (docs/design/06-software-verification.md "SW" §10.3; CC §15.4's full-system bench in its smallest form).
 
@@ -85,7 +85,7 @@ if cocotb is not None:
     from common.mem_model import MemModel
 
     class Host:
-        """The host CSR port of tsr_core (docs/rtl-m2.md §6 protocol, EX §5)."""
+        """The host CSR port of tsr_core (docs/rtl-core.md §6 protocol, EX §5)."""
 
         def __init__(self, dut, mem=None):
             self.d = dut

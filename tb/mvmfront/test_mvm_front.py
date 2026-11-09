@@ -1,4 +1,4 @@
-"""tsr_mvm_front / tsr_mvm_ws tests (docs/rtl-m3.md §3.3, §4, §10.2 "front").
+"""tsr_mvm_front / tsr_mvm_ws tests (docs/rtl-mvm.md §3.3, §4, §10.2 "front").
 
 DUT: tb/mvmfront/hdl/tsr_tb_mvm_front.sv = tsr_mvm_front on read source WS (id {2, 0}) of a real
 tsr_mem_arb, whose channel memory port is served by common.mem_model.MemModel (random latency,
@@ -37,7 +37,7 @@ cocotb tests (each configuration runs all of them):
                      for both formats across chunk / row / command boundaries; 1.000 required in
                      the configurations with enough FIFO / outstanding budget; first-beat latency
   front_fifo_sizing  (u200) fixed memory latency 400 -> still 1 beat/cycle; 520 -> stalls
-                     (proves the measurement discriminates; docs/rtl-m3.md §4 FIFO sizing)
+                     (proves the measurement discriminates; docs/rtl-mvm.md §4 FIFO sizing)
   front_reset        synchronous reset in the middle of a command: reset values of the outputs,
                      then fully checked commands
   front_max_count    the largest weight-beat count of a legal MVM ending at the DRAM limit (wide:
@@ -126,7 +126,7 @@ def scale() -> float:
 
 class BurstQueue:
     """The WS bursts still expected, in order: per accepted command its beats from w_off as
-    bursts of min(64 - addr % 64, left) beats in address order (docs/rtl-m3.md §4), produced
+    bursts of min(64 - addr % 64, left) beats in address order (docs/rtl-mvm.md §4), produced
     lazily because a legal command may have up to 2^40 - 1 beats (front_max_count)."""
 
     def __init__(self):
@@ -889,7 +889,7 @@ async def front_throughput(dut):
 
 @cocotb.test()
 async def front_fifo_sizing(dut):
-    """docs/rtl-m3.md §4: 1 beat/cycle up to a round trip of ~FIFO_BEATS - 64 - internal latency."""
+    """docs/rtl-mvm.md §4: 1 beat/cycle up to a round trip of ~FIFO_BEATS - 64 - internal latency."""
     cfg, rnd, env, _ = await setup(dut, salt=5, mem_kw=ideal_mem(400))
     if cfg["name"] != "u200":
         dut._log.info("fifo_sizing: only in the u200 configuration (FIFO 512, RD_OUTSTANDING 16)")

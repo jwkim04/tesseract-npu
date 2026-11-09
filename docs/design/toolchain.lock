@@ -1,4 +1,4 @@
-# docs/design/toolchain.lock - pinned RISC-V tools for Tesseract (SW §9.6, SW-7, README risk 14).
+# docs/design/toolchain.lock - pinned RISC-V tools for Tesseract (SW §9.6, SW-7).
 #
 # Format: one "key = value" per line; '#' starts a comment; keys are <tool>.<field>. The file is
 # data, never sourced: sw/ctrl/tools/install-toolchain.sh parses it, installs exactly these
@@ -7,10 +7,10 @@
 # only supported way to move a tool.
 #
 # Integrity: the xPack archive is checked against the sha256 below (equal to the release's
-# published .sha file, checked 2026-10-30) before it is unpacked. Git sources are fetched by commit
-# id and checked against commit and tree ids after checkout.
+# published .sha file) before it is unpacked. Git sources are fetched by commit id and checked
+# against commit and tree ids after checkout.
 #
-# SW §15 "toolchain" items. Checked on the build host by installing and running (2026-10-30):
+# Facts about the pinned tools (SW §9.6):
 #   - the xPack release 14.2.0-3 exists; it ships riscv-none-elf-gdb (GDB 15.1, D18), which runs;
 #   - multilib rv32imc/ilp32 exists and is what -march=rv32imc_zicsr_zifencei -mabi=ilp32 selects
 #     (-print-libgcc-file-name -> lib/gcc/riscv-none-elf/14.2.0/rv32imc/ilp32/libgcc.a, built with C);
@@ -18,7 +18,7 @@
 #     compile and link a freestanding C++20 probe; libstdc++'s freestanding headers are present;
 #   - riscv-tests are built by the harness (sw/sim/rvtests.cmake), not by their own Makefile,
 #     so no RISCV_PREFIX / XLEN make variables are involved.
-# Read from the pinned sources (dtc and Spike not yet built on the host):
+# From the pinned sources:
 #   - Spike needs dtc at build time (configure.ac fails without it) and at run time (riscv/dts.cc
 #     execlp()s "dtc" from PATH to compile its generated DTS) unless run with --disable-dtb or
 #     --dtb=FILE; the rvtests harness passes --disable-dtb except in its "upstream" profile;
@@ -26,7 +26,6 @@
 #     (HAVE_BOOST_ASIO) uses Boost.Asio; the host has no Boost headers anyway.
 
 lock.version = 1
-lock.date = 2026-10-30
 
 # --- xPack GNU RISC-V Embedded GCC (compiler, binutils, newlib, GDB) -------------------------------
 xpack_gcc.version = 14.2.0-3
@@ -89,7 +88,6 @@ arch_test.paths = riscv-test-suite/env riscv-test-suite/rv32i_m/I riscv-test-sui
 # --- Firmware compile flags (SW §6.1; checked by the script's "check" step) ------------------------
 firmware.cxxflags = -march=rv32imc_zicsr_zifencei -mabi=ilp32 -Os -ffreestanding -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit -ffp-contract=off -nostdlib -nostartfiles -g -std=c++20
 # Hot-path sources (sw/ctrl/CMakeLists.txt TSR_FW_HOT_GLOBS: kernels/graph.cpp, kernels/k_*.cpp) are
-# compiled with firmware.cxxflags followed by firmware.cxxflags_hot (SW §6.1, SW-34; added by the
-# executor-optimisation workflow, 2026-10-30).
+# compiled with firmware.cxxflags followed by firmware.cxxflags_hot (SW §6.1, SW-34).
 firmware.cxxflags_hot = -O2
 firmware.libs = libgcc.a from -print-libgcc-file-name with -march=rv32imc_zicsr_zifencei -mabi=ilp32

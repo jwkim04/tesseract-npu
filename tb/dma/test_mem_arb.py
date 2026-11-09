@@ -1,4 +1,4 @@
-"""tsr_mem_arb tests (docs/rtl-m2.md §4): the arbiter alone, MemModel on its m_* port.
+"""tsr_mem_arb tests (docs/rtl-core.md §4): the arbiter alone, MemModel on its m_* port.
 
 pytest function test_mem_arb[cfg] runs the cocotb tests
   arb_random  three read sources (random bursts, 4 local ids each, random rsp_ready) and the

@@ -6,7 +6,7 @@
 # tsr_kdev_mock.cpp): TSR_MOCK_INJECT N:V (ADAPTER_STATUS value V at the N-th LQ_PUSH: an AXI error
 # during that launch, PLAT_ERR, EX §9.3; N = 0: left by an earlier process), TSR_MOCK_TCM_FAULT
 # (a TCM write fault: VERIFY mismatch, EX §3.3), TSR_MOCK_HANG (a hung MVM unit: the recovery ladder,
-# DB §7.3, "card reset needed", EX §8.6).
+# DB §7.3, EX §8.6).
 # Launch numbering with "--rate-n 2": 1 PING + 2 sequential + 2 pipelined PINGs, then section 5's PING
 # (push 6) and the first id given to --ids (push 7).
 # BASIS and CAP are the Tesseract Basis version (tsr/version.h) and the Tesseract Core capability

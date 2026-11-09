@@ -1,6 +1,6 @@
 // tsr_fp_add.sv — pipelined f32 adder / subtractor with the spec's fp rules.
 //
-// Owner: fp agent (docs/rtl-m3.md §2 block (fp), contract §8.1).
+// Owner: fp agent (docs/rtl-mvm.md §2 block (fp), contract §8.1).
 //
 // Contract (bit-exact with sw/sim/tsr_ref.c tsr_fadd / tsr_fsub):
 //   y = fin(DAZ(a) + DAZ(b)) when sub = 0, fin(DAZ(a) - DAZ(b)) when sub = 1:
@@ -13,14 +13,14 @@
 //     Inf +- finite = Inf; overflow rounds to Inf.
 //   - commutative for sub = 0 (bit-exact), so operand order never matters for additions.
 // Timing: fixed latency LAT cycles, 1 <= LAT <= 8 (the MVM accumulators need LAT <= 8: two terms
-//   for the same Q8_0 partial are >= 8 cycles apart, docs/rtl-m3.md §7.3). The pipeline advances
+//   for the same Q8_0 partial are >= 8 cycles apart, docs/rtl-mvm.md §7.3). The pipeline advances
 //   only when ce = 1, exactly like tsr_fp_mul: every register (valid and data) updates only at
 //   edges with ce = 1; in_valid/a/b/sub are sampled only at such edges; out_valid/y are
 //   registers; a result taken at advancing edge n is on out_valid/y from advancing edge
 //   n + LAT - 1 until the next advancing edge. Reset clears the valid pipeline only. No
 //   combinational input -> output path. Fully pipelined: one operation per cycle.
 //   The default LAT (5) is the smallest latency that meets 300 MHz on the U200 within the ~6 LUT
-//   level budget (docs/rtl-m2.md §1; measured below). tsr_pkg::TSR_DEF_FADD_LAT, the LAT the MVM
+//   level budget (docs/rtl-core.md §1; measured below). tsr_pkg::TSR_DEF_FADD_LAT, the LAT the MVM
 //   blocks pass, must equal it (checked by tb/fp test_fp_default_lats). Users pass LAT explicitly
 //   (TSR_DEF_FADD_LAT); every LAT in 1..8 gives the same results (tb/fp: LAT 1..8), LAT 6..8 are
 //   LAT 5 plus output registers.
@@ -75,7 +75,7 @@
 //          S4 +1.59 ns / 5 LUT; 421 LUT, 350 FF, 16 CARRY8, no DSP / RAM.
 //   LAT 4: WNS +1.02 ns but 8 LUT levels (near path: lzc -> left shift -> select, S3 + S4); the
 //          other LAT 4 split (S1 + S2 merged) measured WNS +0.51 ns, also 8 LUT levels (exponent
-//          difference -> swap -> alignment shift). Both exceed the ~6-level budget of rtl-m2 §1.
+//          difference -> swap -> alignment shift). Both exceed the ~6-level budget of rtl-core §1.
 //   LAT 3: WNS +0.41 ns, 8 LUT levels.  LAT 1, 2: for low clock rates only.
 //   LAT 6..8: the LAT 5 segments plus LAT - 5 output registers (no added logic).
 

@@ -1,4 +1,4 @@
-# tb/core/viv/core_slr.tcl — SLR floorplan C'' of the whole-core out-of-context runs
+# tb/core/viv/core_slr.tcl — the SLR floorplan of the whole-core out-of-context runs
 # (tb/core/viv/core_ooc.tcl floorplan=tb/core/viv/core_slr.tcl, sourced after opt_design).
 #
 # The floorplan itself is hw/u200/k4_floorplan.tcl, the one the v++ link applies (docs/platform-u200.md §8.1,

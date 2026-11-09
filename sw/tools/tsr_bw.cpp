@@ -1,4 +1,4 @@
-// tsr_bw.cpp — M0 DMA bandwidth tool for the Alveo U200 (spec milestone M0; docs/m0-bw.md §6): drives
+// tsr_bw.cpp — M0 DMA bandwidth tool for the Alveo U200 (spec milestone M0; docs/bandwidth-kernel.md §6): drives
 // the bandwidth kernel tsr_bw_k4 (rtl/platform/alveo_xrt/bw) through the XRT native API and measures
 // per-channel and 4-channel concurrent DDR4 bandwidth (read, write, read + write) over transfer
 // sizes and burst lengths, checking every byte it can: the read checksum of every read run
@@ -18,7 +18,7 @@
 // channel in the bank its m_axi port is bound to, 2 x the largest size (read region at offset 0,
 // write region at offset max size), unless --ch-mib.
 // Kernel bandwidth = bytes / (cycles / f_clk), cycles counted by the kernel from its first request
-// to its last response (docs/m0-bw.md §3), so launch overheads are excluded; the wall-clock rate
+// to its last response (docs/bandwidth-kernel.md §3), so launch overheads are excluded; the wall-clock rate
 // (xrt::run start .. wait) is printed next to it.
 // --mock runs everything against a C++ model of the kernel's documented behaviour (no XRT device):
 // a smoke test of the tool itself; TSR_BW_MOCK_FAULT=csum|write|status|bytes makes the model
@@ -182,7 +182,7 @@ public:
         if (cus[0].get_size() < REG_RANGE)
             throw std::runtime_error(fmt("kernel %s: s_axi_control range 0x%zx < 0x%x (kernel_bw_k4.xml)", kname.c_str(),
                                          (size_t) cus[0].get_size(), REG_RANGE));
-        // arguments by name, offsets checked against the register map (docs/m0-bw.md §2)
+        // arguments by name, offsets checked against the register map (docs/bandwidth-kernel.md §2)
         auto find = [&](const std::string & n, uint64_t off, uint64_t sz) {
             for (const auto & a : xk.get_args()) {
                 if (a.get_name() != n) continue;
@@ -351,7 +351,7 @@ private:
     std::string clock_name_, info_;
 };
 
-// ---- mock: the kernel's documented behaviour (docs/m0-bw.md §2, §3) in C++, no device ----
+// ---- mock: the kernel's documented behaviour (docs/bandwidth-kernel.md §2, §3) in C++, no device ----
 class MockDev final : public BwDev {
 public:
     explicit MockDev(uint64_t ch_bytes) : ch_bytes_(ch_bytes) {
@@ -775,7 +775,7 @@ void usage() {
            "              [--outstanding N] [--ids N] [--modes r,w,rw] [--channels LIST|none] [--no-all] [--reps N]\n"
            "              [--sweep-outstanding] [--pcie] [--verify sample|full|none] [--clock-mhz F] [--ch-mib N]\n"
            "              [--csv FILE] [--seed N] [--timeout-ms N] [--mock] [--dry-run] [-v]\n"
-           "  (header of sw/tools/tsr_bw.cpp and docs/m0-bw.md section 6)\n");
+           "  (header of sw/tools/tsr_bw.cpp and docs/bandwidth-kernel.md section 6)\n");
 }
 
 }  // namespace

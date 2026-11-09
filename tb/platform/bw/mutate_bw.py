@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """tb/platform/bw/mutate_bw.py — mutation campaign of the M0 bandwidth kernel RTL against its bench
-(docs/m0-bw.md §5): every mutant is one textual change of rtl/platform/alveo_xrt/bw/*.sv applied to
+(docs/bandwidth-kernel.md §5): every mutant is one textual change of rtl/platform/alveo_xrt/bw/*.sv applied to
 a scratch copy, built with run_bw.py (-Wno-fatal) and run through a reduced test set; a mutant is
 killed when the bench (or the build's elaboration checks) fails.
 

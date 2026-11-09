@@ -56,7 +56,7 @@ struct host_ctx {
 host_ctx & host();                 // the bound context
 void host_bind(tsr_sim * sim);     // binds sim (nullptr unbinds); resets stop and the hardware cache
 
-// The host shim (sw/ctrl/host/shim_host.cpp; SW §6.8 "no runtime"): runs one kernel on the bound
+// The host shim (sw/ctrl/host/shim_host.cpp; SW §6.8): runs one kernel on the bound
 // simulator as the runtime would call it, without the R-steps: fills tsr::host_launch (seq,
 // kernel, flags, pidx0 = ISSUE_PIDX, base[u] = ISSUED_SEQ[u]) and tsr::host_stop, optionally
 // stages the argument block (ki with TSR_KFLAG_ARGBLK: one LD of argblk_lines lines from a[0] into

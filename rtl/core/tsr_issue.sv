@@ -14,7 +14,7 @@
 //     pulse, only while ifq_valid). The RISC-V side assigns tickets {u, ISSUED_SEQ[u]} and push
 //     indices (CC §7.1); the dispatcher asserts that every ticket equals its own count.
 //   xc_*: external checker classes (VU / AT opcodes, W4-B), passed through to tsr_chk.
-//   Units (docs/rtl-m2.md §3.0): <u>_cmd_valid / <u>_cmd_ready / <u>_cmd / <u>_done. cmd_valid
+//   Units (docs/rtl-core.md §3.0): <u>_cmd_valid / <u>_cmd_ready / <u>_cmd / <u>_done. cmd_valid
 //     and cmd are registers (CC §9.1 cmd_q / cmd_v_q, R2: held until cmd_ready). DMA and MVM also
 //     carry <u>_cmd_xc / <u>_xcmd for the AT ops of their queues (KVST, ATTQK, ATTPV; W4-B); VU and
 //     AT carry only the external class's payload. Units have no error output (CC-11).
@@ -87,7 +87,7 @@
 
 // One unit queue: a ring of D entries of W bits (LUTRAM), front read combinationally.
 // Waiver: this helper lives in tsr_issue.sv so the issue path keeps one filelist entry per block
-// (rtl/filelist.f is shared, docs/rtl-m2.md §1 "Files"), as tsr_rslice does in tsr_mem_arb.sv.
+// (rtl/filelist.f is shared, docs/rtl-core.md §1 "Files"), as tsr_rslice does in tsr_mem_arb.sv.
 /* verilator lint_off DECLFILENAME */
 module tsr_issue_q #(
   parameter int unsigned W = 8,

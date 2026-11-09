@@ -22,7 +22,7 @@
 //   RPTR = capacity). A dropped DROP record adds its count to the next one instead of counting.
 // Bursts: the ring is 16-beat aligned and a multiple of 16 beats, so a burst never crosses a
 //   16-beat group (hence never a 64-beat block or the ring end): beats [b, min(b + n, group end)).
-//   The memory port writes whole beats (no byte enables, rtl-m2 §4): a batch that ends with an
+//   The memory port writes whole beats (a full word mask, rtl-core §4 M4): a batch that ends with an
 //   odd record writes a beat {record, PAD} and keeps the record (carry); the next burst starts by
 //   rewriting that beat {record, next} (same AXI ID, so the second write lands last). The host
 //   reads only [RPTR, WPTR), never the PAD half (the simulator writes records singly, byte-enabled,

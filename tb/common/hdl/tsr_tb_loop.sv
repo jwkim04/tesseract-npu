@@ -87,7 +87,7 @@ module tsr_tb_loop
   output logic [31:0]                            bits_mvm_cmd,
   output logic [31:0]                            qa_lines_a256_27648,
   output logic [31:0]                            row_beats_q4k_27648,
-  // ---- M3 struct probes (docs/rtl-m3.md §3) ----
+  // ---- M3 struct probes (docs/rtl-mvm.md §3) ----
   input  tsr_mvm_ccmd_t                          ccmd_in,
   output logic [15:0]                            ccmd_k,
   output logic [31:0]                            ccmd_rows_per_ch,

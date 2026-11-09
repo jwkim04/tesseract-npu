@@ -173,7 +173,7 @@ if (TSR_HAVE_UBSAN)
 endif()
 
 # ---------------------------------------------------------------------------
-# W1b integration (docs/design/README.md §10 W1): sim_w1b_e2e — the sim_rv_issue firmware with every W1b
+# Integration (docs/design/06-software-verification.md §10.2): sim_w1b_e2e — the sim_rv_issue firmware with every W1b
 # model attached (DM, DBG, RACE fatal, TRACE capture): fixed + 7 random schedules with equal SW §4.7
 # observables and captured traces, the captured launch traces replayed on fresh simulators under 3
 # schedules, and a GDB-style DMI session through host CSR 0xC00 + 4r (halt mid-launch, registers

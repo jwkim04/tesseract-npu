@@ -12,9 +12,9 @@ ATTPV).
 
 Die content, with sources:
 - four MVM clusters of 128 MACs (NUM_CH = 4, LANES = 128), cluster c next to DDR4 channel c and
-  fed only by it, through one tsr_mem_arb per channel (docs/spec.md §2, §3; docs/rtl-m2.md §2);
+  fed only by it, through one tsr_mem_arb per channel (docs/spec.md §2, §3; docs/rtl-core.md §2);
 - SPM, 4 MiB in 64 B lines, in the centre, with the x broadcast / y gather of tsr_mvm between it
-  and the clusters (docs/rtl-m3.md §2, §3); even / odd line-interleaved banks, 2R2W
+  and the clusters (docs/rtl-mvm.md §2, §3); even / odd line-interleaved banks, 2R2W
   (docs/design/04-control-core.md §10.1, CC-12), planned;
 - tsr_csr on the die edge: the core boundary is a CSR port; the launch queue LQ, the completion
   ring LCQ, the log ring and the firmware loader sit on it (docs/design/01-execution-model.md §4, §5,
@@ -25,13 +25,13 @@ Die content, with sources:
   vector unit (VL 16: norms, RoPE, activations, reductions, softmax parts; docs/design/
   02-vector-unit.md §1, §7), KVST in the DMA (docs/design/03-attention-kv.md §5.1, §8.3);
 - DMA (LD, ST) and QACT (f32 -> QA) are solid (rtl/core/tsr_dma.sv, tsr_qact.sv).
-Zoomed cluster (docs/rtl-m3.md §2, §7; docs/spec.md §8): weight streamer tsr_mvm_ws (64-beat
+Zoomed cluster (docs/rtl-mvm.md §2, §7; docs/spec.md §8): weight streamer tsr_mvm_ws (64-beat
 bursts, 512-beat FIFO), parse + unpack (tsr_mvm_front: chunk parser, meta, Q4_K scales, int8
 lanes), activation buffer tsr_mvm_actbuf (QS, D, BS per token, filled by the x broadcast), 128 MAC
 lanes (4 x tsr_mac_lane, int8 x int8), integer scale + fp term + accumulate (16 partials per row),
 tree16 (8 + 4 + 2 + 1 fadds), y gather back to the SPM. Weight beats: 64 B per cycle. Planned on
 the MAC lanes: the ATTQK and ATTPV modes (docs/design/03-attention-kv.md §8.1, §8.2).
-"FP ACCUMULATE" stands for the stages integer scale, fp term, accumulator of docs/rtl-m3.md §7.
+"FP ACCUMULATE" stands for the stages integer scale, fp term, accumulator of docs/rtl-mvm.md §7.
 Left out on purpose: the platform adapter and the XRT shell (the system figure shows them) and
 the paths between the units and the arbiters. The footnote says so. The die places clusters 1 and
 2 at opposite corners for symmetry. The U200 SLR placement (floorplan C') is in the system figure;

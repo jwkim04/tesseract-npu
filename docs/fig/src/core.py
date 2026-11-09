@@ -3,8 +3,8 @@
 Content follows docs/design/04-control-core.md §2.1 (block diagram), §2.2 (hierarchy, domains), §3
 (Ibex and the debug module), §4 (TCMs and buses), §5 (control window), §7 (issue path: push, issue
 FIFO, queues and depths), §8 (dispatcher and checker), §10 (SPM banks and arbitration), §11 (clock domains
-and CDC), §13.2 (module table); docs/rtl-m2.md §2 for tsr_csr, tsr_dma, tsr_qact, tsr_spm and
-tsr_mem_arb, and docs/rtl-m3.md §2 for tsr_mvm:
+and CDC), §13.2 (module table); docs/rtl-core.md §2 for tsr_csr, tsr_dma, tsr_qact, tsr_spm and
+tsr_mem_arb, and docs/rtl-mvm.md §2 for tsr_mvm:
 - clk_rv band: Ibex RV32IMC with ITCM 128 KiB, DTCM 64 KiB, the debug module (upstream riscv-dbg,
   reached through the DMI window) and the control window `tsr_ctl_win` (issue port with credits
   and tickets, queue control, LQ / LCQ registers, log, timer; CC §5). Planning clock 166.7 MHz
@@ -20,8 +20,8 @@ tsr_mem_arb, and docs/rtl-m3.md §2 for tsr_mvm:
   `tsr_mem_arb` per channel (sources DMA and weight stream; channel 0 also the trace writer,
   CC §13.2);
 - the dashed bus under the dispatcher stands for the unit queues feeding every unit (CC §7.4).
-Status (STYLE.md): solid blocks exist in rtl/core and ran on the card (docs/rtl-m2.md,
-docs/rtl-m3.md); dashed blocks run on the simulator and are planned for the card, and a dashed tag
+Status (STYLE.md): solid blocks exist in rtl/core and ran on the card (docs/rtl-core.md,
+docs/rtl-mvm.md); dashed blocks run on the simulator and are planned for the card, and a dashed tag
 on a solid block marks the mode that block gains.
 Every block of a planned band or row is dashed without its own tag; the band carries it.
 Arrow direction: weights flow from the arbiter into the clusters (as the `system` figure does).

@@ -2,8 +2,8 @@
 
 clock_reset()   start a pausable clock (cocotb Clock, kept so it can be stopped) and reset
 comb_probe()    stop the clock in the low phase and wiggle every input: no output may change
-                (rules R5/M8 of docs/rtl-m2.md: every output is a flop; no input->output path)
-SpmModel        Python model of one tsr_spm client port (docs/rtl-m2.md §5): random ready, read
+                (rules R5/M8 of docs/rtl-core.md: every output is a flop; no input->output path)
+SpmModel        Python model of one tsr_spm client port (docs/rtl-core.md §5): random ready, read
                 data exactly RD_LAT cycles after acceptance (or later, still in order, with
                 var_lat), read-before-write in one cycle, R2 checks on the client's requests
 ReadSources     random read bursts on a group of read-source ports packed into one signal set
@@ -47,7 +47,7 @@ def cfg_from_env() -> dict:
 
 
 def split(addr: int, n: int):
-    """docs/rtl-m2.md D1: bursts of <= 64 beats that never cross a 64-beat (4 KiB) block."""
+    """docs/rtl-core.md D1: bursts of <= 64 beats that never cross a 64-beat (4 KiB) block."""
     out = []
     while n:
         ln = min(n, isa.BURST_ALIGN - addr % isa.BURST_ALIGN)
@@ -813,7 +813,7 @@ class ReserveMonitor:
 # DMA command driver
 # =============================================================================================
 class DmaDriver:
-    """Drives cmd_valid/cmd and checks the dispatch protocol (docs/rtl-m2.md §3.0):
+    """Drives cmd_valid/cmd and checks the dispatch protocol (docs/rtl-core.md §3.0):
     cmd_ready = idle; one `done` pulse per command, never in the accepting cycle, with cmd_ready
     back high in the done cycle; cmd_ready low while busy."""
 

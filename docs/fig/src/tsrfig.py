@@ -19,7 +19,7 @@ logoclean.py; docs/fig/logos/SOURCES.md has the source of each).
     f.box(160, 200, 280, 140, "compute", "CLUSTER\\n0", sub="128 MACs")
     f.arrow([(300, 340), (300, 480)])
     f.callout("WEIGHT STREAM", (600, 410), target=(300, 410))
-    f.save()           # docs/fig/demo.svg + scratchpad preview PNG
+    f.save()           # docs/fig/<name>.svg + scratchpad preview PNG
 
 Dark variant: `TSR_FIG_THEME=dark build/tools/svgvenv/bin/python docs/fig/src/<name>.py` writes
 docs/fig/<name>-dark.svg (and the previews <name>-dark.png / <name>-dark_gh.png).

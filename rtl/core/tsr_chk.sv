@@ -16,7 +16,7 @@
 //   NOP FENCE w0[31:8] = 0 and w1..w7 = 0, else ILLEGAL_OP. No extents. (SYNC)
 //   LD ST     w0[31:12] = 0, w4..w7 = 0, channel (sub) < NUM_CH, else ILLEGAL_OP; then SPM_RANGE
 //             (A1 = w1, n = w3 lines), DRAM_RANGE (A2 = w2 on channel sub). n = 0 passes and is
-//             flagged rsp_null: the head completes it without the DMA (docs/rtl-m2.md §3.2: the
+//             flagged rsp_null: the head completes it without the DMA (docs/rtl-core.md §3.2: the
 //             unit never sees n_lines = 0). (DMA)
 //   QACT      w0[31:12] = 0, w6 = w7 = 0, kind (sub) < 2, else ILLEGAL_OP; K = w3: K_RANGE if
 //             K = 0, K % block or K > K_MAX; T = w4: T_RANGE if T = 0 or T > T_MAX; SPM_RANGE for

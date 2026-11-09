@@ -1,5 +1,5 @@
-# sw/tools/dbg/dbg.cmake — libtsr_dbg, tsr-dbg and tsr-prof (P3.7, P3.8; docs/design/05-debug.md "DB"
-# §3-§9, docs/design/06-software-verification.md "SW" §11). Included by sw/tools/CMakeLists.txt.
+# sw/tools/dbg/dbg.cmake — libtsr_dbg, tsr-dbg and tsr-prof (docs/design/05-debug.md "DB"
+# §3-§9, docs/design/06-software-verification.md "SW" §9.5). Included by sw/tools/CMakeLists.txt.
 #
 #   tsr_dbg        static, PIC: the DMI driver, the RISC-V debug target, tile-level debug and probes,
 #                  the monitor commands, the GDB RSP server, the trace writer and its timeline, the

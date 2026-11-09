@@ -1,7 +1,7 @@
 """Opt-in (needs Vivado, about 3 min per form): the synthesised netlist of the ATTPV drain's lane select against the
 selection itself (tb/at/viv/lsel_net.sh).
 
-The card run of 2026-11-08 (docs/platform-u200.md §8.8) showed every ATTPV result with lanes 32 to 63 equal to lanes 0 to
+A card run (the index-expression rule of docs/platform-u200.md §8.8) showed every ATTPV result with lanes 32 to 63 equal to lanes 0 to
 31. Verilator and the RTL benches were right: Vivado 2024.2 synthesised `automatic int L = 8 * int'(dr_l_q) + k` used as
 `cb_a[t][6'(L)]` without the top bit of dr_l_q. The core now reads through tsr_mvm_pv_lsel (a lane concatenation). The
 test simulates the netlist of that module (it must match every case) and, as a control, the netlist of the old integer

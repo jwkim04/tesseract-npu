@@ -1,6 +1,6 @@
 # tb/platform/bw/viv/bw_ooc.tcl — out-of-context synthesis (and optionally placement / routing) of
 # the M0 bandwidth kernel tsr_bw_k4 at 300 MHz on the U200 part: resources per block and the worst
-# paths (opt-in; needs Vivado; docs/m0-bw.md §4).
+# paths (opt-in; needs Vivado; docs/bandwidth-kernel.md §4).
 #
 # usage: vivado -mode batch -nojournal -nolog -source tb/platform/bw/viv/bw_ooc.tcl \
 #          -tclargs <repo> <outdir> [impl]

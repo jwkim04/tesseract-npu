@@ -1,7 +1,7 @@
 // tsr_mac_lane.sv — generic (vendor-neutral) MAC lane group: N signed 8-bit products summed,
 // for T tokens that share the weights. Technology wrapper (spec System structure: tsr_mac_lane).
 //
-// Owner: back agent (docs/rtl-m3.md §2 block (back), contract §7.2).
+// Owner: back agent (docs/rtl-mvm.md §2 block (back), contract §7.2).
 //
 // Contract:
 //   y[t] = sum_{i < N} sext(w[i]) * sext(x[t][i])   (exact, two's complement, SUM_W bits)
@@ -31,7 +31,7 @@
 //   cuts   NCUT = min(LAT - 1, LV) registers inside the chain: the product register (after
 //          layer 0) first, then NCUT - 1 cuts spread evenly over the LV adder levels (after
 //          level floor(c * LV / NCUT), c = 1 .. NCUT - 1). N = 32: LAT 2 products | 5 levels;
-//          LAT 3 (the default) products | 2 levels | 3 levels (docs/rtl-m3.md §9.2 item 4:
+//          LAT 3 (the default) products | 2 levels | 3 levels (docs/rtl-mvm.md §9.2 item 4:
 //          product register, about two adder levels per stage); LAT 4 products | 1 | 2 | 2;
 //          LAT 5 products | 1 | 1 | 1 | 2; LAT >= 6 a register after every layer
 //   [OUT]  the final sum, out_valid                                   always

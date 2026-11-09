@@ -249,7 +249,7 @@ MVM_CMD_T = StructDef("tsr_mvm_cmd_t", (("local_scale", 1), ("local_softcap", 1)
                                         ("w_off", 32), ("n", 32), ("k", 16), ("t", 4),
                                         ("dst_stride", 32), ("y_lines", 32), ("rows_per_ch", 32),
                                         ("row_beats", 32), ("qa_lines", 16)))
-# ---- M3: MVM unit internal interfaces (tsr_pkg.sv; docs/rtl-m3.md §3) ----
+# ---- M3: MVM unit internal interfaces (tsr_pkg.sv; docs/rtl-mvm.md §3) ----
 MVM_LANES, MVM_GROUPS, MVM_GROUP_LANES = 128, 4, 32
 MVM_BEATS_W, MVM_BLK_W = 40, 11
 

@@ -2,7 +2,7 @@
 
 Content follows docs/spec.md §17 (Verification strategy: stages, oracles, trace format, block-level
 coverage) and docs/design/06-software-verification.md §10.1 (oracle chain), §10.2 (ctest plan), §10.4
-(gates), §5 (trace format), docs/design/README.md §10 (work packages). Three panels.
+(pass criteria), §5 (trace format). Three panels.
 1. Simulator and backend against the references (docs/design/06-software-verification.md §4.2, §4.5,
    §10.1; docs/numcheck.md, docs/klcheck.md):
    - references: Spike (oracle of the RV32 interpreter `tsr_rv`: riscv-tests, riscv-arch-test, a
@@ -24,7 +24,7 @@ coverage) and docs/design/06-software-verification.md §10.1 (oracle chain), §1
    N schedules) and through the `replay` kernel (SW §7.7). Planned and drawn dashed: the RTL replay
    (tile-only replay into the issue FIFO under Verilator, tb/opreplay, and the Ibex lockstep
    against the RV32 interpreter; docs/design/04-control-core.md §15; work packages W4, W5), the mutation
-   campaigns of the RTL tests (docs/rtl-m3.md §13.3) and the card (traces replay on it through the
+   campaigns of the RTL tests (docs/rtl-mvm.md §13.3) and the card (traces replay on it through the
    `replay` kernel in W6).
 Colours: the references are white (neutral), so lavender keeps its data-movement meaning from the
 architecture figures; code under test is host-software butter; checks are mint, traces salmon, the

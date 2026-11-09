@@ -221,7 +221,7 @@ fi
 #    shared ../*.c into the same object files with different -DPF flags.
 # ---------------------------------------------------------------------------
 
-# Warnings that are known and justified (see README.md, "Warnings").
+# Warnings that are known and justified (see README.md).
 KNOWN_NOPROTO="SYSMON_TO_MILLDEGREE accel_deadlock_detector_ioctl aim_ioctl am_ioctl
 arch_msi_check_device asm_ioctl cu_isr ert_user_thread find_user_node
 get_opcode_name intc_isr kind_to_string lapc_ioctl mailbox_isr mailbox_listen

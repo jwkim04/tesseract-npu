@@ -2,7 +2,7 @@
 // slave, 32-bit data, 12-bit address) with UG1393 ap_ctrl_hs semantics, the kernel arguments, the
 // run handshake with the channel engines and the result read path.
 //
-// Owner: m0bw agent (docs/m0-bw.md §2; the ap_ctrl_hs part follows the adapter's tsr_xrt_ctrl,
+// Owner: m0bw agent (docs/bandwidth-kernel.md §2; the ap_ctrl_hs part follows the adapter's tsr_xrt_ctrl,
 // docs/platform-u200.md §3).
 //
 // Register map (byte offsets, decoded on bits [11:2]; unmapped offsets read 0 and ignore writes;

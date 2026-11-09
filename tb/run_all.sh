@@ -46,7 +46,7 @@
 # integration, about 5 min each), TSR_VU_MUTANTS=1 (tb/vu: 36 mutants), TSR_DBG_MUTANTS=1 (tb/dbg: 12),
 # TSR_ADAPTER_MUTANTS=1 (tb/platform/test_adapter.py: 6).
 #   TSR_PLATFORM_SLOW=1 tb/run_all.sh --no-lint platform/bw -k mutants     the bw mutant test
-# Opt-in campaigns (not run here, docs/rtl-m3.md §13, docs/platform-u200.md): tb/mvmback/mutate_back.py,
+# Opt-in campaigns (not run here, docs/rtl-mvm.md §13, docs/platform-u200.md): tb/mvmback/mutate_back.py,
 # tb/spm/mutate_spm.py (22 mutants of the SPM / bridge / DMA reservation), tb/ctrl/mutate_ctrl.py (12
 # mutants of rtl/ctrl), Vivado netlist simulation of the technology wrappers (TSR_TECH_VIVADO=1).
 #   tb/run_all.sh                       lint + all tests: lint all clean (397 runs: 376 Verilator lints, 9 XSim

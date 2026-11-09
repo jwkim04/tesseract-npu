@@ -34,7 +34,7 @@
 // Writes use the byte strobes (RW registers); ADAPTER_STATUS acts on the bytes whose strobe is set.
 // The AXI4-Lite slave handles one transaction at a time (reads and writes alternate when both are
 // pending); AWREADY / WREADY are raised together once both AWVALID and WVALID are seen. A window
-// access is one transfer on the core CSR port (docs/rtl-m2.md §6 protocol); the next one starts
+// access is one transfer on the core CSR port (docs/rtl-core.md §6 protocol); the next one starts
 // only after the AXI4-Lite response, so transfers are always separated by idle cycles. Every
 // output is a flop. Reset: everything to its reset value.
 

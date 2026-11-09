@@ -2,8 +2,8 @@
 // Verilated Alveo kernel running in a separate server process (wire protocol
 // tsr_vkernel_proto.h), so a host process exercises the real host path — register map, the CSR
 // window, ADAPTER_STATUS, transfers — against the RTL without linking Verilator.
-// docs/platform-u200.md §13. The two-clock server comes with P5.3
-// (docs/design/06-software-verification.md §11). The client follows the kdev interface (EX §10.2):
+// docs/platform-u200.md §13. The tree has no two-clock server
+// (docs/design/06-software-verification.md §9.1). The client follows the kdev interface (EX §10.2):
 // idle() lets device time pass (VK_ADVANCE, the "advance" hint) and now_ns() is the server's device time at the nominal kernel clock (VK_TIME),
 // so the protocol's timeouts count simulated time, as on the simulator kinds.
 // TSR_DEVICE=vkernel opens it with:
@@ -129,13 +129,13 @@ public:
         } else if (srv != nullptr && srv[0] != '\0') {
             if (!spawn(srv)) return false;
         } else {
-            return fail("not available until P5.3: set TSR_VKERNEL_SERVER (server command line) or TSR_VKERNEL_SOCKET "
-                        "to a two-clock vkernel server (protocol version 3); there is no in-tree server yet");
+            return fail("no vkernel server is configured: set TSR_VKERNEL_SERVER (server command line) or TSR_VKERNEL_SOCKET "
+                        "to a two-clock vkernel server (protocol version 3); the tree has no server");
         }
         tsr_vk_rsp r{};
         std::vector<uint8_t> pl;
         if (!call(VK_HELLO, TSR_VK_PROTO_VERSION, 0, 0, nullptr, 0, &r, &pl) || r.rc != 0) {
-            return fail("the server refused the connection (protocol version 3 of the two-clock server, P5.3, or a start-up check)");
+            return fail("the server refused the connection (protocol version 3 of the two-clock server, or a start-up check)");
         }
         nch_ = r.val;
         chb_ = r.x;

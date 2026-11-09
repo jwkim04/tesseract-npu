@@ -17,7 +17,7 @@
 //                      the events and the log words of the launch
 //   tsr_tgt_compare    the comparison above, one message per difference
 //
-// Trace replays (SW §5.4, "tsr-trace-replay --device", "tsr-selftest --traces"): tsr_devrun_trace
+// Trace replays (SW §5.4; tsr-trace-replay --device, tsr-selftest --traces): tsr_devrun_trace
 // loads a trace's init regions (the expect regions are first filled with the complement of their
 // expected bytes, so a missing write shows), runs it - kind ops through the image's `replay`
 // kernel (SW §7.7, EX §4.6) with the arguments the simulator's kernel route uses (push.bin at

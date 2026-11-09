@@ -15,7 +15,7 @@
 //   (lq_*) have their own port, so a core-window read never delays a pop or a post. Only host LO
 //   reads of PERF touch the snapshot; core-window reads of LOAD_DATA (0x0C4) and of the DMI window
 //   return 0 without access (CC §5.3).
-// Host CSR port (core boundary; protocol unchanged, docs/rtl-m2.md §6): the master holds
+// Host CSR port (core boundary; protocol unchanged, docs/rtl-core.md §6): the master holds
 //   csr_valid / addr / we / wdata until csr_ready, a registered one-cycle strobe with csr_rdata.
 //   Access pipeline: capture (A_IDLE) -> decode, register writes and read selection (A_DEC) ->
 //   respond (A_RSP); 4 cycles per transfer including the handshake edge. LOAD_DATA, DMI and the DBG
@@ -632,7 +632,7 @@ module tsr_csr
           end
         end
         A_DEC: begin
-          a_rdata_q <= a_we_q ? 32'd0 : rd_val;        // writes answer 0 (docs/rtl-m2.md §6)
+          a_rdata_q <= a_we_q ? 32'd0 : rd_val;        // writes answer 0 (docs/rtl-core.md §6)
           a_wait_q  <= '0;
           a_sent_q  <= 1'b0;
           ast_q     <= A_RSP;

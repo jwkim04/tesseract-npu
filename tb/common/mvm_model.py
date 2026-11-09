@@ -1,4 +1,4 @@
-"""Python golden model of the MVM unit's blocks (docs/rtl-m3.md), built on libtsr_ref.
+"""Python golden model of the MVM unit's blocks (docs/rtl-mvm.md), built on libtsr_ref.
 
 Every value here is either produced by libtsr_ref (sw/sim/tsr_ref.c, the bit-exact definition) or
 derived from the device layout and cross-checked against it (Cluster.check() recomputes every
@@ -97,7 +97,7 @@ def get_scale_min_k4(j: int, q: bytes):
 
 
 # =============================================================================================
-# Front end: tagged beat stream (docs/rtl-m3.md §3.3)
+# Front end: tagged beat stream (docs/rtl-mvm.md §3.3)
 # =============================================================================================
 def front_beats(fmt: int, K: int, rows) -> list:
     """The tsr_mvm_beat_t stream of a cluster whose rows are `rows` (repacked row images, at
@@ -199,7 +199,7 @@ def qa_d_lines(kind: int, K: int) -> int:
 
 
 # =============================================================================================
-# Back end: per-beat arithmetic (docs/rtl-m3.md §7.1)
+# Back end: per-beat arithmetic (docs/rtl-mvm.md §7.1)
 # =============================================================================================
 def beat_math(fmt: int, beat: dict, qa: QaView) -> dict:
     """Integer intermediates of one tagged beat for one token: S[g] (group sums of the lanes in
@@ -242,7 +242,7 @@ def term_q4_K_values(d: int, dmin: int, dx: int, isum: int, msum: int) -> int:
 class Term:
     i: int          # term index inside the row (Q8_0 block, Q4_K superblock)
     partial: int    # i % 16
-    lane: int       # accumulate lane = partial % 2 (docs/rtl-m3.md §7.3)
+    lane: int       # accumulate lane = partial % 2 (docs/rtl-mvm.md §7.3)
     bits: int       # f32 term
     isum: int
     msum: int = 0   # Q4_K only
@@ -356,7 +356,7 @@ class Cluster:
 
 
 # =============================================================================================
-# Activation buffer and broadcast (docs/rtl-m3.md §3.1, §5)
+# Activation buffer and broadcast (docs/rtl-mvm.md §3.1, §5)
 # =============================================================================================
 def actbuf_image(kind: int, K: int, qa: bytes) -> dict:
     """What tsr_mvm_actbuf holds for one token after the broadcast:
@@ -391,13 +391,13 @@ def bc_lines(kind: int, K: int, qas) -> list:
 
 
 def ccmd(fmt: int, K: int, N: int, num_ch: int, w_off: int) -> dict:
-    """tsr_mvm_ccmd_t fields of an MVM (docs/rtl-m3.md §3.1)."""
+    """tsr_mvm_ccmd_t fields of an MVM (docs/rtl-mvm.md §3.1)."""
     return dict(fmt=fmt, k=K, n=N, rows_per_ch=-(-N // num_ch), row_beats=row_beats(fmt, K),
                 w_off=w_off, d_lines=qa_d_lines(qa_kind(fmt), K))
 
 
 def fcmd(fmt: int, K: int, N: int, num_ch: int, c: int, w_off: int) -> dict | None:
-    """tsr_mvm_fcmd_t of cluster c (None when the channel has no rows; docs/rtl-m3.md §3.2)."""
+    """tsr_mvm_fcmd_t of cluster c (None when the channel has no rows; docs/rtl-mvm.md §3.2)."""
     rc = rows_c(N, num_ch, c)
     if rc == 0:
         return None
@@ -406,7 +406,7 @@ def fcmd(fmt: int, K: int, N: int, num_ch: int, c: int, w_off: int) -> dict | No
 
 
 # =============================================================================================
-# Gather (docs/rtl-m3.md §6.3) and the whole MVM (tsr_sim.c ex_mvm)
+# Gather (docs/rtl-mvm.md §6.3) and the whole MVM (tsr_sim.c ex_mvm)
 # =============================================================================================
 @dataclass
 class Job:

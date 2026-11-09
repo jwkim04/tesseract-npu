@@ -2,7 +2,7 @@
 
 Content follows docs/spec.md §2 (System structure, "Portability: four layers and targets": the
 layer table and the per-target table for the Alveo U200, Zynq / Kria and SoC / ASIC), the
-adapter in docs/platform-u200.md §1 and the porting notes in docs/rtl-m2.md §1 and docs/rtl-m3.md
+adapter in docs/platform-u200.md §1 and the porting notes in docs/rtl-core.md §1 and docs/rtl-mvm.md
 §1. Visual grammar: three target lanes; a block that spans all three lanes is the same on every
 target, a tile inside a lane is written per target.
 - Software (sw/, shared): the ggml-tesseract backend (op lists), tsr_rt, the firmware SDK (sw/ctrl:
@@ -17,7 +17,7 @@ target, a tile inside a lane is written per target.
   MVM clusters x NUM_CH. Parameters: U200 NUM_CH 4, BEAT_BITS 512; Zynq NUM_CH 1-2, BEAT_BITS about
   128 (needs RTL work: the current RTL requires BEAT_BITS = 512 and LANES = 128, docs/spec.md §2,
   §3); SoC to be decided.
-- Tech wrappers (rtl/tech/TARGET, per target): U200 xilinx = URAM, BRAM, DSP48E2 (docs/rtl-m3.md
+- Tech wrappers (rtl/tech/TARGET, per target): U200 xilinx = URAM, BRAM, DSP48E2 (docs/rtl-mvm.md
   §14); Zynq to be written; SoC SRAM macros (for example on an open PDK). rtl/tech/generic:
   behavioural wrappers for simulation and lint on any target (shared).
 - Interfaces between the layers (edge labels): tsr_transport API; CSR access, DRAM buffers; CSR

@@ -20,7 +20,7 @@
 //             sig = 2^24 -> 2^23, n + 1)
 //   E24   13  be = n + 127: >= 255 -> +inf, <= 0 -> +0, else {be, sig - 2^23}; special results win
 // Registers: every product is fed from registers and followed by two registers (DSP M / P); the
-// shift and the adds are one stage each (<= 6 LUT levels, docs/rtl-m2.md §1).
+// shift and the adds are one stage each (<= 6 LUT levels, docs/rtl-core.md §1).
 
 module tsr_vu_exp (
   input  logic        clk,

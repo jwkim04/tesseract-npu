@@ -1,441 +1,249 @@
 # Profiling and debugging
 
-This document says how Tesseract is debugged and profiled: what exists in the tree today, how the debug
-design works, which measurements the profiler reports and which are measured on the card, how the U200 can
-be reached for debugging. It is the working summary; the normative design is [DB](design/05-debug.md).
+This document says how Tesseract is debugged and profiled: which tools exist, how the debug design works, what the
+profiler reports, how the U200 can be reached for debugging, and how to watch a running card with `tsr-top`. The
+normative design is [DB](design/05-debug.md) with [EX](design/01-execution-model.md) §5 and §6 (CSR map, PERF) and
+[CC](design/04-control-core.md) §3 and §9.
 
-> **Scope.** Implementation status and design summary, not the contract; the contract is
-> [DB](design/05-debug.md) with [EX](design/01-execution-model.md) §5-§6 (CSR map, PERF) and
-> [CC](design/04-control-core.md) §3 and §9. Status words: *on the simulator* (implemented here and tested),
-> *designed* (specified in `docs/design`, no implementation), *planned* (work not yet completed).
-> The debug tools and W4 RTL exist; the integrated card gate is W6. Measured numbers carry their
-> provenance; *estimate* means not measured. Card measurements were taken before the control core was
-> added, with the host issuing the ops.
+## 1. What exists
 
----
-
-## 1. What exists today
-
-**Implemented and tested on the simulator** (`TSR_DEVICE=sim` or `mock`; status checked 2026-11-02).
-The control-core and debug RTL also exist, with module-level tests. The reduced image `k4m200`
-(no vector unit, no attention, no dispatch history) ran on the card on 2026-11-06 and a real GDB session
-worked on it (below). The full image has not been on the card.
+The tools run on the simulator (`TSR_DEVICE=sim` or `mock`) and on the card through the `xrt` transport (`--device
+xrt`).
 
 | Capability | Where | Tests (`ctest -R`) |
 |---|---|---|
-| Debug-module model: the DMI profile of DB §9.1, `dmcontrol`, abstract register commands, the program buffer, system bus access with CC's refusals (control-window writes, TCM writes while the hart runs, the DM range), the hart's debug mode (halt request, `ebreakm`, step, two execute triggers) | `sw/sim/tsr_dm.c`, `sw/sim/include/tsr_dm.h` | `sim_dm`, `sim_dm_fw`, `sim_dm_ubsan` |
-| DBG block model: the register block at core CSR 0x800-0xAFC, the stop logic (stop at a push index, `QSTEP`, release), serial mode, tile breakpoints on the dispatcher's enqueue tap, a 512-entry dispatch history with the pushing `pc`, unit probes (model values), the RISC-V snapshot, RV watchpoints, halt-on-boot, the DMI window gate (`DBG_CFG.DMI_EN`), DB's control-window registers, completion records (REC), the trace writer into a DRAM ring, markers, PERF slots 61-63 | `sw/sim/tsr_dbg.c`, `sw/sim/include/tsr_dbg.h` | `sim_dbg`, `sim_dbg_ubsan`, `sim_w1b_e2e` (a GDB-style DMI session on a firmware run leaves every observable unchanged) |
+| Debug-module model: the DMI profile of DB §9.1, `dmcontrol`, abstract register commands, the program buffer, system bus access with CC's refusals, the hart's debug mode (halt request, `ebreakm`, step, two execute triggers) | `sw/sim/tsr_dm.c` | `sim_dm`, `sim_dm_fw`, `sim_dm_ubsan` |
+| DBG block model: the register block at core CSR 0x800-0xAFC, the stop logic (stop at a push index, `QSTEP`, release), serial mode, tile breakpoints, a 512-entry dispatch history with the pushing `pc`, unit probes, the RISC-V snapshot, RV watchpoints, halt-on-boot, the DMI window gate (`DBG_CFG.DMI_EN`), completion records (REC), the trace writer into a DRAM ring, markers, PERF slots 61-63 | `sw/sim/tsr_dbg.c` | `sim_dbg`, `sim_dbg_ubsan`, `sim_w1b_e2e` |
 | Race detector (vector clocks over the units, the RISC-V and the host; `SPM_STALE`), schedules, determinism | `sw/sim/tsr_race.c`, `tsr_sched.c` | `sim_race`, `sim_race_rv`, `sim_sched_determinism` |
-| Firmware trap, panic and log contract: `__tsr_crash` and `__tsr_dbg` records, the trap handler (TRAP log record and TRAP answer record, `RT_STATE` = TRAPPED), binary log records through the log ring | `sw/ctrl/rt/trap.cpp`, `rt/log.cpp`, `include/tsr/log.hpp` (`TSR_LOG`, `tsr::panic`) | `fw_runtime` |
-| Transport: log drain and decoding with symbols and DWARF lines (`function+0x1c (file.cpp:123)`), the TRAP report, hang dumps, the recovery ladder (dump, `LQ_CANCEL`, `SOFT_RESET` and warm restart), debug-aware waits that do not count time while the hart is halted or a tile stop or serial mode is active | `sw/transport/tsr_kdev.cpp`, `tsr_logdec.cpp`, `tsr_image.cpp` | `transport_kdev`, `transport_protocol` |
-| `tsr-log`: decodes saved log words with the firmware ELF; `tsr-selftest --debug`: a DMI smoke (halt, read `dpc` / `dcsr`, single step, resume, then a PING) | `sw/tools/tsr_log.cpp`, `tsr_selftest.cpp` | `tools_log_selftest`, `tools_selftest_mock` (the mock run uses `--debug`) |
-| `libtsr_dbg`, standalone `tsr-dbg gdb`, and the embedded GDB service: registers, memory, software/hardware breakpoints, watchpoints, step, launch stops, tile commands, history, dumps and recovery | `sw/tools/dbg/`, `sw/tools/tsr_dbg.cpp` | `tools_dbg_lib`, `tools_dbg_rsp`, `tools_dbg_embed`, `tools_dbg_rsp_drop`, `tools_dbg_embed_drop`, `rt_sim_gdb_embed` |
-| Real RISC-V GDB through `tsr-dbg gdb --stdio --device sim`: boot stop, symbol breakpoints, `stepi`, memory/CSR reads, kernel launch, backtrace, `finish`, history and detach | `sw/tools/dbg/tests/gdb_smoke.sh` | `tools_dbg_gdb`; passed with the pinned `riscv-none-elf-gdb`, not skipped |
-| `tsr-prof trw` timeline export and checks, `tsr-prof stats`, extended `TSR_STATS` counters | `sw/tools/tsr_prof.cpp`, `sw/tools/dbg/trw.cpp`, `sw/transport/tsr_kdev.cpp` | `tools_prof_trw`, `tools_dbg_lib` |
-| Profile report of one decode token: plan dump, graph, timeline, summary (§3.1) | `sw/ggml-tesseract/tsr-prof.cpp`, `sw/tools/prof/` | `tools_prof_report_qwen3moe_tiny`, `tools_prof_report_gemma_tiny` |
-| Trace capture: one trace directory per launch (`TSR_TRACE`), replay and conversion tools | `sw/sim/tsr_trace.c`, `sw/tools` | `sim_trace`, `trace_v2_roundtrip`, `tools_trace_gen_replay` |
+| Firmware trap, panic and log contract: `__tsr_crash` and `__tsr_dbg` records, the trap handler (TRAP log record and answer, `RT_STATE` = TRAPPED), binary log records through the log ring | `sw/ctrl/rt/trap.cpp`, `rt/log.cpp` | `fw_runtime` |
+| Transport: log drain and decoding with symbols and DWARF lines, the TRAP report, hang dumps, the recovery ladder, debug-aware waits that do not count time while the hart is halted or a tile stop or serial mode is active | `sw/transport/` | `transport_kdev`, `transport_protocol` |
+| `tsr-log` decodes saved log words with the firmware ELF. `tsr-selftest --debug` runs a DMI smoke (halt, read `dpc` and `dcsr`, single step, resume, PING). | `sw/tools/tsr_log.cpp`, `tsr_selftest.cpp` | `tools_log_selftest`, `tools_selftest_mock` |
+| `libtsr_dbg`, the standalone `tsr-dbg gdb` and the embedded GDB service: registers, memory, software and hardware breakpoints, watchpoints, step, launch stops, tile commands, history, dumps and recovery. Real RISC-V GDB works through `tsr-dbg gdb --stdio --device sim`. | `sw/tools/dbg/`, `sw/tools/tsr_dbg.cpp` | `tools_dbg_*`, `rt_sim_gdb_embed` (`tools_dbg_gdb` needs the pinned `riscv-none-elf-gdb`) |
+| `tsr-prof trw` (timeline export and checks), `tsr-prof stats`, the `TSR_STATS` counters | `sw/tools/tsr_prof.cpp`, `sw/tools/dbg/trw.cpp` | `tools_prof_trw`, `tools_dbg_lib` |
+| The profile report of one decode token (§3.1) | `sw/ggml-tesseract/tsr-prof.cpp`, `sw/tools/prof/` | `tools_prof_report_*` |
+| Trace capture (one trace directory per launch, `TSR_TRACE`), replay and conversion tools | `sw/sim/tsr_trace.c`, `sw/tools` | `sim_trace`, `trace_v2_roundtrip`, `tools_trace_gen_replay` |
+| `tsr-top`, the live monitor of the card (§7) | `sw/tools/top/`, `sw/transport/tsr_mon.*` | `tools_top_*`, `transport_mon` |
 
-Environment variables, as implemented (`grep` of `"TSR_..."` in `sw/transport` and `sw/sim`):
+The transport's debug variables (`TSR_LOG`, `TSR_LOG_LEVEL`, `TSR_STATS`, `TSR_DUMP_DIR`, `TSR_GDB_WAIT`,
+`TSR_TILE_SERIAL`, `TSR_TILE_HIST`, `TSR_ATTACH`, `TSR_MON*`) are in [`sw/transport/README.md`](../sw/transport/README.md).
+The others:
 
 | Variable | Effect |
 |---|---|
-| `TSR_LOG=stderr\|<file>`, `TSR_LOG_LEVEL=0..5` | decode the device log there, drained at every poll (otherwise every 10 ms); the level written to `LOG_CFG.LEVEL` (0 FATAL ... 5 TRACE, default 3) |
-| `TSR_STATS=1` | transport statistics at close (launches, launch wall time, CSR reads / writes, DRAM bytes, log words and drops, boot, timeouts, traps, restarts) and, in the ggml backend, the backend report at free: graph_compute calls, launches, op records per launch, OPL cache hits and misses, wall time in graph_compute and in launches, and the device's PERF counters over the same span |
-| `TSR_MON=0`, `TSR_MON_DIR`, `TSR_MON_PERF_MS`, `TSR_MON_KEEP`, `TSR_MON_MODEL` | the live monitor record of the process that owns the card (§7): off, its directory (`/dev/shm`), the least time between two PERF reads (100 ms), keep the file at exit, a model name when none can be found | on |
-| `TSR_DUMP_DIR=<dir>` | hang and post-mortem dumps (recovery ladder level 0) |
-| `TSR_GDB=tcp:<port>\|unix:<path>` | start the embedded RSP service when the owning executable links `tsr_dbg_embed` |
+| `TSR_GDB=tcp:<port>\|unix:<path>` | start the embedded RSP service when the owning executable links `tsr_dbg_embed` (otherwise the transport reports that it is unavailable) |
 | `TSR_DEBUGGER=sock:<path>` | start the embedded monitor-command socket |
-| `TSR_GDB_WAIT=boot\|launch` | with the embedded service, halt at boot or kernel entry for GDB; also retain a trapped device instead of restarting it |
-| `TSR_TILE_SERIAL=0\|1`, `TSR_TILE_HIST=0\|1` | write `DBG_CFG.SERIAL` / `HIST_EN` at open (needs the DBG block, present on the simulator) |
-| `TSR_ATTACH=1` | open without `SOFT_RESET` or bind, for diagnosis |
-| `TSR_SIM_LOG=stderr\|<file>` (optional prefixes `rv,` and `w,`) | simulator event log: pushes, starts, completions and, with `rv,`, RISC-V retire lines, with `w,` the eight words of every push |
-| `TSR_SIM_VU_TIMING=u200\|k4\|F,E,B,P`, `TSR_SIM_CARD=k4full` | the simulator's VU lanes for the cycle model (16 / 16 / 8, or the card image's 8 / 8 / 4 behind two lane-pipe stages), and the whole card-image configuration in one variable (SW-80) |
-| `TSR_DUMP_PLAN=<dir>`, `TSR_PROF_TRW_MIB=<n>` | the ggml backend writes its plans, launches, refusals and the trace writer's records of the whole run into `<dir>` (§3.1), starting the ring itself (`n` MiB, default 32) and turning the PROF bit on; no record and no output bit changes |
-| `TSR_OPL_PROF=1`, `TSR_OPL_KINDS=<file>` | the ggml backend sets the launch descriptor's PROF bit (a marker before every record) and appends the kind of every record of every launch to the file |
-| `TSR_TRACE=<dir>` | one trace per launch |
-| `TSR_SIM_RACE=off\|report\|fatal`, `TSR_SIM_SCHED=fixed\|random:<seed>[,min,max]` | race detector, schedules |
+| `TSR_DUMP_PLAN=<dir>`, `TSR_PROF_TRW_MIB=<n>` | the ggml backend writes its plans, launches, refusals and the trace writer's records of the whole run into `<dir>` (§3.1), starting the ring itself (`n` MiB, default 32). No record and no output bit changes. |
+| `TSR_OPL_PROF=1`, `TSR_OPL_KINDS=<file>` | the backend sets the launch descriptor's PROF bit (a marker before every record) and appends the kind of every record of every launch to the file |
+| `TSR_TRACE`, `TSR_SIM_LOG`, `TSR_SIM_RACE`, `TSR_SIM_SCHED`, `TSR_SIM_VU_TIMING`, `TSR_SIM_CARD` | trace capture, the simulator's event log, race detector, schedules and cycle model ([`sw/sim/README.md`](../sw/sim/README.md)) |
 | `TSR_DEBUG=1\|2` | the ggml backend's lowering and placement log (not the device) |
 
-An executable without the embedded-service registration reports that `TSR_GDB` / `TSR_DEBUGGER`
-are unavailable. Automatic transport profiling via `TSR_PROF`, `TSR_PROF_TRW_MIB`, `TSR_PROF_EVERY`
-and `TSR_PROF_RV_SAMPLE_US` remains inactive; use `tsr-prof trw` / `stats` explicitly. The `trw`
-command itself reads `TSR_PROF_TRW_MIB` as its default ring size.
+Automatic transport profiling through `TSR_PROF`, `TSR_PROF_EVERY` and `TSR_PROF_RV_SAMPLE_US` is not wired in. Use
+`tsr-prof trw` and `tsr-prof stats` explicitly (`trw` reads `TSR_PROF_TRW_MIB` as its default ring size).
 
-Model limits of the simulator's DBG block (`tsr_dbg.h`): the unit probes and the RISC-V snapshot are model
-values; `DMI_RESP_ERR` and `RV_DFAULT` are never set; the apply of an RV watchpoint completes at once; and
-the core has no progress watchdog, so `STATUS.UNIT_HUNG` never rises and `HUNG_STOP` has no trigger.
-
-**Remaining verification and implementation.**
-
-| Item | Work package | Notes |
-|---|---|---|
-| Two-clock vkernel and full-system debug/replay integration | W5 | Module-level `tb/dbg` and `tb/ctrl` tests exist; integrated RTL GDB remains unverified |
-| Hang triage on the card, card measurements of the DMI cost | W6 | M6 gate (`docs/design/README.md` §2). The GDB smoke is done on `k4m200` (below) |
-| `tsr-dbg diverge` and periodic firmware PC sampling | deferred | The CLI reports `diverge` as unimplemented; trace export and stats are available. The report of one model token is `sw/tools/prof/prof_report.py` (§3.1) |
-
-RTL limitations remain in the current interface: `RV_SAMPLE` / `RVWP_APPLY` writes acknowledge
-before their CDC work completes, so callers can see a stale sample or unfinished apply. The
-simulator completes these operations synchronously and does not establish RTL completion safety.
-`DBG_STATUS.SBA_REFUSED` has no RTL setter, although bus refusals and DM `sberror` work.
-On the card (`k4m200`, 2026-11-06): `tsr-selftest --debug` and a `riscv-none-elf-gdb` session through
-`tsr-dbg gdb --stdio --device xrt --elf build/xrt/fw/tsr-fw.elf --halt-on-boot` worked: halt at boot, software and hardware
-breakpoints (one in the `selftest` kernel, with a backtrace and `finish`), a hardware watchpoint, `stepi`, register and CSR
-reads, memory write and read back, `monitor` commands, detach, and the launch answered. A stale `RV_SAMPLE` was not seen,
-but while the hart is halted the sample is the debug ROM's park loop, so this does not prove the handshake; `SBA_REFUSED`
-was not exercised. `monitor hist` is empty in this image (`HIST_DEPTH` 0).
-See [handoff.md](handoff.md) for the active link and the remaining card gates.
-
----
+Limits. The simulator's DBG block has model values for the unit probes and the RISC-V snapshot, never sets
+`DMI_RESP_ERR` and `RV_DFAULT`, and has no progress watchdog, so `STATUS.UNIT_HUNG` never rises. In the RTL,
+`RV_SAMPLE` and `RVWP_APPLY` writes acknowledge before their CDC work completes, so a caller can see a stale sample,
+and `DBG_STATUS.SBA_REFUSED` has no setter (bus refusals and the DM `sberror` work). A configuration with
+`HIST_DEPTH` 0 has no dispatch history. `tsr-dbg diverge` and periodic firmware PC sampling are not implemented.
 
 ## 2. The debugging design
 
-The design in one page; DB has the registers, the state machines and the decisions (DB-1 to DB-23).
+DB has the registers, the state machines and the decisions (DB-1 to DB-23). In short:
 
-<p align="center"><img src="fig/debug.svg" alt="On the host, GDB talks the remote serial protocol to a debug service in the process that owns the device, or to the standalone tsr-dbg; the service and the profiling and log tools use tsr_transport, which reaches the core CSR window over PCIe. In the window: the DMI at 0xC00 leads to the RISC-V debug module, the Ibex control core (halt, step, breakpoints) and the system bus access to the TCMs and the SPM; the DBG block at 0x800 to 0xAFC holds the stop logic for the queue heads, the 512-entry dispatch history and the unit probes; the log ring, the performance counters and the trace writer to a DRAM ring serve observation. Simulator tools and module RTL exist; integrated card verification remains." width="100%"></p>
+<p align="center"><img src="fig/debug.svg" alt="On the host, GDB talks the remote serial protocol to a debug service in the process that owns the device, or to the standalone tsr-dbg; the service and the profiling and log tools use tsr_transport, which reaches the core CSR window over PCIe. In the window: the DMI at 0xC00 leads to the RISC-V debug module, the Ibex control core (halt, step, breakpoints) and the system bus access to the TCMs and the SPM; the DBG block at 0x800 to 0xAFC holds the stop logic for the queue heads, the 512-entry dispatch history and the unit probes; the log ring, the performance counters and the trace writer to a DRAM ring serve observation." width="100%"></p>
 
-The figure is the same design as the diagram below, drawn as the host and the device see it;
-§1 separates the implemented tools and RTL from the remaining integration gates.
+RISC-V debug (DB §3, §4). The debug module is riscv-dbg (Debug Spec 0.13.2) in the `clk_rv` domain. The host reaches
+its registers through the DMI window of the core CSR port (CSR 0xC00 + 4r; U200 `s_axi_control` 0x1C00 + 4r),
+enabled only by `DBG_CFG.DMI_EN` so that generic CSR dumps stay side-effect free. A GDB RSP server runs inside the
+process that owns the device (`xrt::ip` opens the compute unit exclusively) and drives DMI directly, with no OpenOCD
+and no software JTAG TAP. Memory access goes through the system bus master (SBA), which can read memory without
+halting the hart. SBA writes to the control window, the core window and the TCMs while the hart runs are refused
+(D15). The debugger offers two hardware breakpoints (Ibex execute triggers), unlimited software breakpoints (ITCM
+is writable; `fence.i` follows), two data watchpoints, and halt at boot or at kernel entry
+(`TSR_GDB_WAIT=boot|launch`). `HOLD_ON_HALT` holds the queue heads while the hart is halted, so that a halted hart
+and a quiescent datapath are the same observable state.
 
-```
- GDB (RSP over TCP / Unix socket / stdio)
-   |
- debug service in the process that owns the device (libtsr_dbg), or tsr-dbg
-   |        |                        |
-   | DMI ops| DBG / STATUS / PERF    | XRT buffer reads
-   v        v                        v
- core CSR window:  0xC00-0xDFC DMI  ->  riscv-dbg debug module  ->  Ibex (halt, step, triggers)
-                                              +-- system bus access -> TCMs, SPM, windows
-                   0x800-0xAFC DBG block: stop logic -> queue-head holds, history ring, unit probes,
-                                          trace writer -> DRAM ring
-                   0x400-0x7FC log ring, PERF (EX §6) incl. DB slots 61-63
-```
+Tile-level debug (DB §5). A tile op has no instruction boundary: up to five units run concurrently. The comparable
+stop point is the push-order prefix: every entry with push index below T has completed and no entry at or above T
+has started. The DBG block reaches it by holding every queue head whose push index is at least T. On top of it:
+`STOP_AT` a push index, `QSTEP` op by op, serial mode (one op in flight at a time, in push order; the launch
+timeout is disabled), tile breakpoints on opcodes, push indices, tickets and SPM or DRAM ranges, the 512-entry
+dispatch history that records the pushing C++ line, unit probes and a RISC-V snapshot from Ibex's crash-dump port.
+Tile debug changes nothing in the program, and its state survives `QABORT`, `QCLEAR`, the RISC-V reset and
+`SOFT_RESET`. A halted core with `HOLD_ON_HALT` and a drained datapath equals the simulator after the same number of
+retired tile ops (DB §9.4).
 
-**RISC-V debug (DB §3, §4).** The debug module is riscv-dbg (Debug Spec 0.13.2) in the `clk_rv` domain; the
-host reaches its registers through the DMI window of the core CSR port (CSR 0xC00 + 4r; U200
-`s_axi_control` 0x1C00 + 4r), enabled only by `DBG_CFG.DMI_EN` so that generic CSR dumps stay side-effect
-free. A GDB RSP server runs inside the process that owns the device (`xrt::ip` opens the compute unit
-exclusively) and drives DMI directly: no OpenOCD and no software JTAG TAP. Memory access goes through the
-connected system bus master (SBA), which can read memory without halting the hart; SBA writes to the
-control window, to the core window and to the TCMs while the hart runs are refused (D15). The debugger
-offers two hardware breakpoints (Ibex execute triggers), unlimited software breakpoints (ITCM is
-writable; `fence.i` follows), two data watchpoints, and halt at boot or at kernel entry
-(`TSR_GDB_WAIT=boot|launch`). `RV_HALTED` is derived from the instruction-fetch address lying in the debug
-module's memory range. `HOLD_ON_HALT` holds the queue heads while the hart is halted, so that a halted
-hart and a quiescent datapath are the same observable state.
-
-**Tile-level debug (DB §5).** A tile op has no instruction boundary: up to five units run concurrently
-(DMA, QACT, MVM, VU, SYNC). The comparable stop point is the **push-order prefix**: every entry with
-push index below T has completed and no entry at or above T has started. The DBG block reaches it by
-holding every queue head whose push index is at least T, so a stop costs no dispatcher gate. On top of it:
-`STOP_AT` a push index, `QSTEP` op by op, **serial mode** (one op in flight at a time, in push order;
-the launch timeout is disabled), tile breakpoints on opcodes, push indices, tickets and SPM or DRAM
-ranges (`BEFORE` / `AFTER`, optionally halting the RISC-V), a 512-entry dispatch history that records the
-pushing C++ line (`file:line` through the ELF's DWARF), unit probes (head state, age, outstanding reads
-per channel) and a RISC-V snapshot from Ibex's crash-dump port. Tile debug changes nothing in the program:
-its state is evidence and survives `QABORT`, `QCLEAR`, the RISC-V reset and `SOFT_RESET`. The invariant that
-ties the two layers together: **a halted core with `HOLD_ON_HALT` and a drained datapath equals the
-simulator after the same number of retired tile ops** (and, for the RISC-V, the same retired
-instructions given the co-simulation log; [`ctrl-riscv.md`](ctrl-riscv.md) §4.6). `tsr-dbg diverge`
-uses it to find the first wrong op of a launch by comparing history entries, written SPM lines and DRAM
-regions with the simulator at checkpoints in serial mode (DB §9.4).
-
-**Log, crash, trap (DB §6; on the simulator).** Firmware text is binary: a 32-bit header (`N`, `LEVEL`,
-`SOURCE`, `TYPE`, timestamp flag, launch sequence, sync nibble 0xA) and, for FMT records, the address of a
-format string in the non-loaded section `.tsr_logfmt` plus 32-bit arguments, so no string occupies a TCM.
-Records go through the 256-word core-domain log ring (readable even when the queues are wedged), are never
-torn, and are dropped whole with a counter when the ring is full (an EVENT "dropped n" follows). A trap
-fills `__tsr_crash` (44 words: `mcause`, `mepc`, `mtval`, `mstatus`, MTIME, launch, kernel, `RT_STATE`,
-`RT_INFO`, `x1`-`x31`), pushes a FATAL TRAP record, posts a TRAP answer to the host and parks in a WFI loop;
-the transport prints one report line (`TRAP: <cause> (mcause n) at function+0x1c (file.cpp:123), mtval ...;
-RT_STATE <phase> kernel <index> (<name>), RT_INFO ..., MTIME ...`, with the log tail before the trap) and
+Log, crash, trap (DB §6). Firmware text is binary: a 32-bit header (`N`, `LEVEL`, `SOURCE`, `TYPE`, timestamp flag,
+launch sequence, sync nibble 0xA) and, for FMT records, the address of a format string in the non-loaded section
+`.tsr_logfmt` plus 32-bit arguments. Records go through the 256-word core-domain log ring (readable even when the
+queues are wedged), are never torn, and are dropped whole with a counter when the ring is full. A trap fills
+`__tsr_crash` (44 words: `mcause`, `mepc`, `mtval`, `mstatus`, MTIME, launch, kernel, `RT_STATE`, `RT_INFO`,
+`x1`-`x31`), pushes a FATAL TRAP record, posts a TRAP answer to the host and parks in a WFI loop. The transport
+prints one report line (`TRAP: <cause> (mcause n) at function+0x1c (file.cpp:123), ...`, with the log tail) and
 restarts the device unless `TSR_GDB_WAIT` is set.
 
-**Hang triage and recovery (DB §7).** Every DBG register is a core-domain register mux, so a read never
-waits on a unit, on `clk_rv` or on memory (the XRT shell's AXI firewall cuts a control slave that does not
-answer, and only a card reset recovers it). `tsr-dbg status` would apply the triage table of DB §7.2
-(spinning on a join, on credits, a push without credit, WFI, a stalled channel read, a hung unit, a held
-head, an absent `clk_rv`, a tripped firewall). The recovery ladder, which the transport's timeout path
-already follows: level 0 hang dump (`TSR_DUMP_DIR`), level 1 debug release (`RELEASE`, serial off, holds
-off, hart resumed; P3.7), level 2 `LQ_CANCEL` covering the outstanding launches, level 3 `SOFT_RESET` and a
-warm restart (the TCM image stays and is verified), level 4 a card reset (`xrt-smi reset`). A hung unit
-cannot finish `SOFT_RESET`; there is no unit reset (CC-22, EX §8.6).
-
----
+Hang triage and recovery (DB §7). Every DBG register is a core-domain register mux, so a read never waits on a unit,
+on `clk_rv` or on memory. (The XRT shell's AXI firewall cuts a control slave that does not answer, and only a card
+reset recovers it.) The transport's timeout path follows the recovery ladder: level 0 hang dump (`TSR_DUMP_DIR`),
+level 1 debug release (serial off, holds off, hart resumed), level 2 `LQ_CANCEL` covering the outstanding launches,
+level 3 `SOFT_RESET` and a warm restart, level 4 a card reset (`xrt-smi reset`). A hung unit cannot finish
+`SOFT_RESET`, and there is no unit reset (CC-22, EX §8.6).
 
 ## 3. Profiling
 
-**Software first.** The PERF space (EX §6, normative) is gated by `ACTIVE` (a launch is in progress) and
-`QHALT` (the hart is halted and the datapath quiescent), so PERF does not move between launches and the
-difference of two reads is one launch. DB adds three slots at the top of the range: 61 `TRW_RECORDS`,
-62 `TRW_DROPS`, 63 `DBG_STOP_CYCLES` (not gated by `QHALT`; a measurement is valid only if it is 0).
-Derived quantities need no new counters: DDR idle of channel c is `CYCLES - CH_RD_BEATS[c] - CH_WAIT[c]`;
-issue-bound MVM time is `MVM_EMPTY`, dependency-bound `MVM_WAIT`.
+How to measure and what to report with a result: [`performance.md`](performance.md). The PERF space (EX §6) is gated by `ACTIVE` (a launch is in progress) and `QHALT` (the hart is halted and the
+datapath quiescent), so PERF does not move between launches and the difference of two reads is one launch. DB adds
+three slots at the top of the range: 61 `TRW_RECORDS`, 62 `TRW_DROPS`, 63 `DBG_STOP_CYCLES` (a measurement is valid
+only if it is 0). DDR idle of channel c is `CYCLES - CH_RD_BEATS[c] - CH_WAIT[c]`, issue-bound MVM time is
+`MVM_EMPTY` and dependency-bound `MVM_WAIT`.
 
-**The utilisation split** (`docs/spec.md` §14): the DDR utilisation `U` is the bytes read per token times
-tokens per second over the M0 bandwidth, and `U` is about `(1 - H)(1 - G)(1 - F) E`.
+The utilisation split (`docs/spec.md` §14). The DDR utilisation `U` is the bytes read per token times tokens per
+second over the DDR read bandwidth measured with `tsr_bw` ([`bandwidth-kernel.md`](bandwidth-kernel.md)), and `U` is about `(1 - H)(1 - G)(1 - F) E`:
 
 | Term | Meaning | Measured from |
 |---|---|---|
 | H | share of wall-clock time in which no launch is active (host CPU work, PCIe round trips, synchronisation) | host time stamps and `PERF_CYCLES` |
 | G | share of device time outside MVMs (LD, QACT, VU, ST, issue gaps) | `1 - PERF_MVM_CYCLES / PERF_CYCLES` |
 | F | MVM fill, broadcast and tail inside `PERF_MVM_CYCLES` | max-channel weight beats against `PERF_MVM_CYCLES` |
-| E | effective read bandwidth while the MVM reads weights, over the M0 bandwidth | `PERF_CH_RD_BEATS`, `PERF_CH_WAIT` |
+| E | effective read bandwidth while the MVM reads weights, over the `tsr_bw` bandwidth | `PERF_CH_RD_BEATS`, `PERF_CH_WAIT` |
 
-Further metrics: the effective bandwidth of channel c is 64 B x `CH_RD_BEATS[c]` x f_kernel / `CYCLES`;
-the wait ratio `CH_WAIT[c] / CYCLES`; the channel imbalance is the maximum over the mean of the beats;
-MVM cycles per beat is `MVM_CYCLES` over the maximum over channels of rows x `ROW_BEATS` (1.00 for large MVMs
-on ideal memory, [`rtl-m3.md`](rtl-m3.md) §13).
+The effective bandwidth of channel c is 64 B x `CH_RD_BEATS[c]` x f_kernel / `CYCLES`, and the channel imbalance is
+the maximum over the mean of the beats. The weight stream's limit is 64 B per core cycle and channel. The order of
+optimisation follows the terms: host round trips (H), overlap of non-MVM ops with MVMs (G), fill and tail (F), DDR
+efficiency (E).
 
-**Measured on the card (k4, 276.3 MHz; decode, 65-token minus 1-token run, `TSR_STATS`;
-[`platform-u200.md`](platform-u200.md) §14.2):**
+`TSR_STATS=1` prints, at close, the transport statistics (launches, launch wall time, CSR reads and writes, DRAM bytes,
+log words and drops, boot, timeouts, traps, restarts) and, from the ggml backend, graph_compute calls, launches, op
+records per launch, OPL cache hits and misses, wall time in graph_compute and in launches, and the device's PERF
+counters over the same span. Timelines come from the hardware trace writer (TRW, DB §8.3): 32-byte records (per tile
+op the push index, ticket, end time and the times `RUN`, `QWAIT` and `HWAIT`, plus `MARK`, `STOP`, `RVHALT` and
+`DROP` records) written by a second write source of channel 0's `tsr_mem_arb` into a DRAM ring, with markers around
+every kernel launch and every op-list node. `tsr-prof trw` produces Perfetto JSON (process `Tesseract0`, one thread
+per unit, a RISC-V thread, counter tracks per channel) and runs the self-checks of DB §8.7 (retired ops, per-unit
+busy sums, per-channel beats) on every profiled launch. A trace writer's configuration survives `SOFT_RESET` and the
+end of the process that set it, so a ring started with `tsr-dbg` records the launches of a later run with no change
+to that run. A speed measurement is always taken with the profiler off.
 
-| Per decode token | Gemma 4 12B Q8_0 | Qwen2.5-32B Q4_K_M |
-|---|---|---|
-| wall time | 221.9 ms | 340.6 ms |
-| device busy (launch in progress) | 184.5 ms (83.2 %) | 298.8 ms (87.7 %) |
-| exec start and wait (36 µs and 35 µs each) | 10.1 ms (4.6 %) | 13.6 ms (4.0 %) |
-| backend host work | 6.3 ms (2.8 %) | 8.5 ms (2.5 %) |
-| outside the backend (CPU ops, scheduling, sampling) | 20.9 ms (9.4 %) | 19.7 ms (5.8 %) |
-| host total (H) | 37.3 ms (16.8 %) | 41.8 ms (12.3 %) |
-| `PERF_CYCLES` per token | 50.98 M | 82.56 M |
-| `PERF_MVM_CYCLES` | 49.64 M (97.4 %), so G is 2.6 % | 81.11 M (98.2 %), so G is 1.8 % |
-| read beats per channel | 49.55 M (97.2 % of cycles) | 80.97 M (98.1 %) |
-| bytes read; effective read rate | 12.69 GB; 68.8 GB/s (17.2 GB/s per channel) | 20.74 GB; 69.4 GB/s (17.4 GB/s per channel) |
-| `PERF_CH_WAIT` per channel | 37 K cycles (0.07 %) | 57 K cycles (0.07 %) |
+### 3.1 The profile report
 
-G here is derived from the two counters. An exec was one `MUL_MAT`, 281 and 385 device round trips per
-token. At 276 MHz the weight stream's limit is 64 B per cycle (17.7 GB/s per
-channel), slightly below the 18.0 GB/s that the DRAM gives at 300 MHz (the M0 result, [`m0-bw.md`](m0-bw.md)
-§7.1), so decode is bound by the weight stream; closing 300 MHz would add about 4-5 % (*estimate*,
-[`platform-u200.md`](platform-u200.md) §14.2). The first optimisation priority of the spec is to keep the
-DDR busy: remove host round trips (H) first, then overlap non-MVM ops with MVMs (G), then fill and tail (F),
-then DDR efficiency (E). The target is `U` of at least 85 % for 32B Q4_K_M decode at M9 (target, not
-measured).
-
-**Timelines (designed; P3.8).** Completion records to the RISC-V (REC, 64-entry FIFO) serve firmware-level
-profiling. The host timeline comes from the **hardware trace writer** (TRW, DB §8.3): 32-byte records
-(per tile op the push index, ticket, end time and the times `RUN`, `QWAIT` and `HWAIT`; plus `MARK`, `STOP`,
-`RVHALT` and `DROP` records) written by a second write source of channel 0's `tsr_mem_arb` into a DRAM
-ring (default 64 MiB), with markers around every kernel launch (`LAUNCH_BEGIN` / `LAUNCH_END`) and every
-op-list node (`NODE_BEGIN` / `NODE_END`).
-`tsr-prof` with source `trw` produces Perfetto JSON: process `Tesseract0`, one thread per unit, a RISC-V
-thread (launches, nodes, PC samples), counter tracks per channel; reports per node, layer and unit and the
-line "DDR idle while active". The self-checks of DB §8.7 (retired ops, per-unit busy sums, per-channel
-beats) run on every profiled launch. The model of the trace writer exists on the simulator
-(`sw/sim/tsr_dbg.c`); the tool and the RTL do not. Milestone tok/s is always measured with the profiler off.
-
-**`TSR_STATS`** is partly there: the transport and the backend print the quantities listed in §1; the
-per-channel read rates, idle shares, `MVM_WAIT` / `MVM_EMPTY` shares and `RV_WFI` percentage arrive with
-P3.8. The cost of reading about 16 counters per launch is 16-32 µs (*estimate*, DB §8.6).
-
-**Comparing a card run with the simulator (2026-11-09).** The trace writer works on the card (K4 full-feature image: 32-byte
-records, the ring at the top of the ch0 I/O region) and its configuration survives `SOFT_RESET` and the end of the process that
-set it, so a ring started with `tsr-dbg` records the launches of a later `llama-completion` run with no change to that run.
-The dispatch history of the same image freezes at the first error entry and is not useful for this. Steps:
-
-1. Card: `tsr-dbg --device xrt --attach -ex "trw start 16"` (16 MiB: 500,000 records, about 50 decode tokens of a 9,000-op list),
-   then the run with `TSR_OPL_PROF=1 TSR_OPL_KINDS=run.kinds` (the backend sets the descriptor's PROF bit, so the graph
-   kernel pushes a `NODE_BEGIN` marker before every record, and writes the kind of every record of every launch to
-   `run.kinds`), then `tsr-dbg --device xrt --attach -ex "trw dump run.json run.raw" -ex "trw stop"`. `trw dump` rebuilds the
-   ring from `DBG_TRW_BASE` / `DBG_TRW_LINES` when the monitor did not start it.
-2. Simulator: the same command line with `TSR_DEVICE=sim TSR_SIM_CARD=k4full TSR_SIM_LOG=w,sim.log` (the card's configuration:
-   `T_MAX` 4, `CAPS` 0x21, VU 8 / 8 / 4 lanes behind two lane-pipe stages, `clk_rv` at half the core clock; `TSR_SIM_LOG` with
-   the prefix `w,` also writes the eight words of every push).
-3. `sw/tools/trw_vs_sim.py kinds --trw run.raw --sim sim.log --kinds run.kinds --launch 2` gives, per record kind, the cycles the
-   record adds to the launch on both sides; `units`, `gaps` and `record` give the same by op class and for one record. Launch 0 is
-   llama.cpp's warm-up pass, 1 the prompt, the rest are decode tokens. The two op streams must be the same (the tool refuses a
-   unit whose op counts differ); the card's run times of VU ops include their wait for the op before them, so the VU is
-   compared by the gaps between completions.
-
-The method found the VU width and the QACT rate errors of SW-80 ([performance.md](performance.md), "Card against simulator").
-
-### 3.1 The profile report of one decode token
-
-`sw/tools/prof/prof_report.py` turns a run of the ggml backend into one page and one Perfetto file. The run is captured by the backend itself:
-with `TSR_DUMP_PLAN=<dir>` it writes, next to a normal run and without changing a record or an output bit, one `plan_<id>.json` for each graph
-it builds (the ggml nodes with their placement, the fusion groups, the op-list records with their argument words, dependencies, DRAM ranges,
-weight bytes, ideal MVM cycles and the firmware's SPM tile plan, and why each list ended), `launches.jsonl` (one line per launch with the PERF
-deltas), `cpu_fallback.json` (the nodes `supports_op` refused, with the reason), `trw.raw` (the trace writer's records) and `meta.json`.
-It starts the trace writer itself when the device opens (the ring is a window of the IO region, `TSR_PROF_TRW_MIB` MiB, 32 by default, about 60
-decode tokens of a 9,000-op list) and stops it when the backend is freed, so the card needs no `tsr-dbg` step. It also sets the PROF bit: the
-`NODE_BEGIN` marker before every record, with its push index, is what joins a trace op to its record.
+`sw/tools/prof/prof_report.py` turns a run of the ggml backend into one page and one Perfetto file. With
+`TSR_DUMP_PLAN=<dir>` the backend writes, next to a normal run and without changing a record or an output bit, one
+`plan_<id>.json` for each graph it builds (the ggml nodes with their placement, the fusion groups, the op-list
+records with their argument words, dependencies, DRAM ranges, weight bytes, ideal MVM cycles and the firmware's SPM
+tile plan, and why each list ended), `launches.jsonl` (one line per launch with the PERF deltas),
+`cpu_fallback.json` (the nodes `supports_op` refused, with the reason), `trw.raw` (the trace writer's records) and
+`meta.json`. It starts the trace writer itself when the device opens and stops it when the backend is freed, so the
+card needs no `tsr-dbg` step. It also sets the PROF bit: the `NODE_BEGIN` marker before every record, with its push
+index, joins a trace op to its record.
 
 ```sh
-# card: waits for an idle card, replays the first-ATTPV trace, one run, trace writer off afterwards
-sw/tools/prof/capture_card.sh MODEL build/prof-report/gemma26b/card 33
-# simulator, card configuration (TSR_SIM_CARD=k4full), the same model, prompt and tokens
-TSR_SIM_DRAM_DIR=build/simdram sw/tools/prof/capture_sim.sh MODEL build/prof-report/gemma26b/sim 33
-# the report
-NO_DUMP=1 sw/tools/prof/capture_card.sh MODEL build/prof-report/gemma26b/card_noprof 33      # optional: the same run without the profiler
-EXPECT_CYCLES=16316000 REF_RUN=build/prof-report/gemma26b/card_noprof sw/tools/prof/make_report.sh build/prof-report/gemma26b/card build/prof-report/gemma26b/sim \
-    build/prof-report/gemma26b "Gemma 4 26B-A4B"
+sw/tools/prof/capture_card.sh MODEL build/prof-report/card 33        # card: waits for an idle card, one run, trace writer off afterwards
+TSR_SIM_DRAM_DIR=build/simdram sw/tools/prof/capture_sim.sh MODEL build/prof-report/sim 33   # simulator, same model, prompt and tokens
+NO_DUMP=1 sw/tools/prof/capture_card.sh MODEL build/prof-report/card_noprof 33               # optional: the same run without the profiler
+EXPECT_CYCLES=<cycles of the unprofiled run> REF_RUN=build/prof-report/card_noprof sw/tools/prof/make_report.sh \
+    build/prof-report/card build/prof-report/sim build/prof-report "Model name"
 ```
 
-`report.html` is one self-contained page (no external script or stylesheet; light and dark). `trace.perfetto.json` has the same token for
-Perfetto or chrome://tracing. `summary.json` has the numbers. The page has three linked views:
+`report.html` is one self-contained page (light and dark), `trace.perfetto.json` has the same token for Perfetto or
+chrome://tracing, and `summary.json` has the numbers. The page has three linked views. Summary: decode speed, device
+cycles, the utilisation split, measured and ideal cycles of every layer by kind group, a table by record kind (count,
+cycles, share, ideal, efficiency, GB/s, the simulator's cycles), the card against the simulator, and the sanity
+checks. Graph: the splits the scheduler made and why each launch ended, every ggml node as a device record, a node
+absorbed by a fusion group (MOE_ROUTE, the MUL_MAT_ID scale chain, RMS_NORM + MUL, MUL_MAT + ADD), a view or a CPU
+fallback, with the argument words, DRAM ranges and SPM tiles per record. Timeline: a track per unit and the RISC-V
+issue band for the card and the simulator, coloured by kind group, with zoom. The Perfetto file adds flow arrows
+from a record to its ops, counter tracks, and on every slice the node name, kind, layer, shape, bytes, measured and
+ideal cycles. Slice ids are `card:r<record>.<UNIT><n>` and `sim:...` (`args.id`).
 
-- **Summary.** Decode speed, device cycles, the utilisation split U ≈ (1 − H)(1 − G)(1 − F) E of docs/spec.md §14, a bar chart of the measured and
-  the ideal cycles of every layer by kind group (attention, router, experts, dense branch, residual and norms, embedding and head), a table by
-  record kind (count, cycles, share, ideal, efficiency, GB/s, the simulator's cycles), the card against the simulator, and the sanity checks.
-- **Graph.** The splits the scheduler made and the launch with the reason it ended; every ggml node as a device record, a node absorbed by a fusion
-  group (MOE_ROUTE, the MUL_MAT_ID scale chain, RMS_NORM + MUL, MUL_MAT + ADD), a view, or a CPU fallback; the 30 layers folded, one layer open at a
-  time as a layered graph; per record the argument words, DRAM ranges by region and the SPM tiles.
-- **Timeline.** A track per unit and the RISC-V issue (record) band for the card and the simulator, coloured by kind group, with zoom. The Perfetto file
-  has a track per unit, the record track, flow arrows from a record to its ops, counter tracks (the PERF counters of the launch as levels, queue depth per
-  unit and the weight bytes streamed from the trace), and on every slice the node name, kind, layer, shape, bytes, measured cycles, ideal cycles
-  and efficiency. Slice ids are `card:r<record>.<UNIT><n>` and `sim:...` (`args.id`); Perfetto cannot be linked into a local file, so the page
-  searches the id and Perfetto finds it in its omnibox.
+A record's cycles are the increase of the launch's completion frontier (the latest end of any op so far, from
+LAUNCH_BEGIN) over its ops, so they add up to the launch with the setup and the tail. The ideal cycles of an MVM
+record are its weight bytes over 256 B per cycle. The report checks the record cycles against the launch span and
+`PERF_CYCLES`, the sums of RUN against the unit counters (DB §8.7), `RETIRED` against the ops, the markers against
+the records, the trace writer's drops and the simulator against the card. The dump and the publisher of `tsr-top`
+(§7) run in the same process and only read, so neither moves a counter, a record or an output bit.
 
-A record's cycles are the increase of the launch's completion frontier (the latest end of any op so far, from LAUNCH_BEGIN) over its ops, so they add up
-to the launch with the setup before the first record and the tail. The ideal cycles of an MVM record are its weight bytes over 256 B per cycle. The
-checks in the report are the sum of the record cycles against the launch span and `PERF_CYCLES`, the sums of RUN against the unit counters (DB §8.7),
-`RETIRED` against the ops, the markers against the records, the trace writer's drops and the simulator against the card.
+### 3.2 Comparing a card run with the simulator
 
-**With the live monitor (§7).** The dump and the publisher of `tsr-top` run in the same process and do not depend on each other: `TSR_MON=0` turns off the
-publisher only, `TSR_DUMP_PLAN` leaves it on. The publisher brackets the launch inside `tsr_opl_dev::run`, the dump reads PERF before and after it,
-and both only read, so neither moves a counter, a record or an output bit. The record's launches, op records and `PERF_CYCLES` equal the sums over
-`launches.jsonl` (Qwen3.8 2B Q4_K_M on the simulator in the card configuration, 1 prompt x 16 tokens: 16 launches, 11,282 ops, 217,851,114 cycles in both), and
-the 16 logits rows are bit-identical with the dump on, with the publisher on, and with `TSR_MON=0`.
-
-**Gemma 4 26B-A4B, one decode token on the card (2026-11-09; image `k4full`, 200 MHz; 33 tokens captured, launch 18 shown).** The graph has 2,644 nodes in
-the Tesseract split: 1,293 device nodes, 511 absorbed by 331 fusion groups (271 RMS_NORM + MUL, 30 MOE_ROUTE, 30 MUL_MAT_ID scale chains), 840 views; 1,323
-records in one list, one launch per token; the scheduler's CPU split has 4 nodes (the embedding gather, DUP, SET_ROWS into the mixed-input buffer) and
-40 tensors are copied in each token. The list ends at the end of the split: nothing in this graph cuts it. Device: 16.311 M cycles (81.56 ms, 12.26 tok/s from
-device time; the earlier measurement is 16.316 M). Speed: 11.86 tok/s by llama.cpp's eval time with the profiler off, 11.68 with it on (the same session, 32 decode
-tokens each; the PERF cycles of the 34 launches differ by 0.005 %), 11.91 tok/s from the timestamps of consecutive launches, which U and H use.
-U is 55.9 % of B_M0 (3.38 GB read per token): H 2.9 %, G 18.6 %, F 1.5 %, E 71.7 % (the clock bound of 256 B per cycle at 200 MHz is 71.1 %).
-Cycles by record kind: MUL_MAT 9.39 M (236 records, 95 % of ideal), MUL_MAT_ID 4.42 M (60 records, 94 %), RMS_NORM 0.56 M, MOE_ROUTE 0.41 M, ADD 0.36 M.
-The simulator in the card configuration gives 16.241 M for the same launch, 0.42 % below the card (0.995 to 0.996 for each of the 32 decode tokens).
-
----
+1. Card: `tsr-dbg --device xrt --attach -ex "trw start 16"` (16 MiB holds about 500,000 records), then the run with
+   `TSR_OPL_PROF=1 TSR_OPL_KINDS=run.kinds` (the graph kernel pushes a `NODE_BEGIN` marker before every record, and
+   the backend writes the kind of every record of every launch to `run.kinds`), then `tsr-dbg --device xrt --attach
+   -ex "trw dump run.json run.raw" -ex "trw stop"`.
+2. Simulator: the same command line with `TSR_DEVICE=sim TSR_SIM_CARD=k4full TSR_SIM_GDN=1 TSR_SIM_LOG=w,sim.log`
+   (the release image's configuration; the prefix `w,` also writes the eight words of every push).
+3. `sw/tools/trw_vs_sim.py kinds --trw run.raw --sim sim.log --kinds run.kinds --launch 2` gives, per record kind, the
+   cycles the record adds to the launch on both sides. `units`, `gaps` and `record` give the same by op class and for
+   one record. Launch 0 is llama.cpp's warm-up pass, 1 the prompt, the rest are decode tokens. The two op streams
+   must be the same (the tool refuses a unit whose op counts differ). The card's run times of VU ops include their
+   wait for the op before them, so the VU is compared by the gaps between completions.
 
 ## 4. Access paths and JTAG
 
-The register meaning is the same on every target; debug access always enters through the core's CSR port.
-The core has no JTAG port, and vendor primitives stay in `rtl/tech/`.
-
-| Target | DBG, DMI and PERF access | JTAG | Signal-level debug |
-|---|---|---|---|
-| `sim`, `mock` | function calls (the simulator is the reference model) | none | none |
-| `vkernel` (Verilator, P5.3) | the adapter window | the DTM test (planned) | waveforms |
-| U200 (XRT) | PCIe CSR window, `s_axi_control` 0x1000 + offset | none | ILA in debug builds, XVC over PCIe |
-| Zynq / Kria (idea) | PS AXI-Lite (UIO) | optional BSCANE2 to CSR bridge | ILA over XVC or the board's USB JTAG |
-| ASIC, boards without a host bus (idea) | JTAG TAP + DTM to the CSR port | main path | none |
+The register meaning is the same on every target, and debug access always enters through the core's CSR port. The
+core has no JTAG port, and vendor primitives stay in `rtl/tech/`. `sim` and `mock` use function calls. `vkernel`
+uses the adapter window. The U200 uses the PCIe CSR window (`s_axi_control` 0x1000 + offset), with an ILA in debug
+builds and XVC over PCIe for signal-level debug.
 
 ### 4.1 U200
 
-**No JTAG to user logic.**
+There is no JTAG to user logic. The XRT shell is a DFX design: the user kernel lives in the reconfigurable region,
+and configuration primitives such as BSCANE2 can be placed only in the static shell. The shell's user debug network
+is reached only by XVC over PCIe and has no USB-JTAG fallback (`supports_jtag_fallback = false` in the platform's
+`ext_metadata.json`). JTAG would ride the same PCIe link, slower than the CSR window, so no JTAG bridge is built.
+Architectural debugging uses the debug module and the DBG block through the CSR window.
 
-- The XRT shell is a DFX design: the user kernel lives in the reconfigurable region, and configuration
-  primitives such as BSCANE2 can be placed only in the static shell (UG909's DFX rules; to be confirmed on
-  this shell).
-- The shell's **user** debug network (an AXI-to-BSCAN debug bridge at PF1 BAR0 0x1C00000) is reached only
-  by XVC over PCIe (xocl `xvc_pub`) and has no USB-JTAG fallback (`supports_jtag_fallback = false` in the
-  platform's `ext_metadata.json`). The **management** debug network does have a fallback, but it does not
-  reach the user kernel.
-- So JTAG would ride the same PCIe link, slower than the CSR window, and show nothing new. No BSCANE2, no
-  JTAG-to-CSR bridge and no JTAG-to-AXI master are built for the U200; architectural debugging uses the
-  debug module and the DBG block through the CSR window.
+An ILA is for what the debug block cannot see (AXI deadlocks, firewall trips, CDC, cycles inside an op). It is built
+only from a separate debug link configuration, never in the regular `k1.cfg` and `k4.cfg` builds, with the trigger
+on the internal net `dbg_stop_evt` of the DBG block (DB §5.2). `v++` `[debug]` options (`chipscope=tsr_k4:m_axi_ch0`
+..., `chipscope=tsr_k4:s_axi_control`, `protocol=all`) cover the interfaces, and Vivado Tcl hooks in the
+configuration's `[vivado]` section mark core-internal nets `MARK_DEBUG`. No ILA instance and no debug attribute goes
+into `rtl/` outside `rtl/tech/`. Connect with `debug_hw --xvc_pcie /dev/xfpga/xvc_pub.u<dev>.<idx> --hw_server`,
+then `debug_hw --vivado --ltx_file <file>.ltx`.
 
-**ILA, debug builds only.**
+### 4.2 Zynq / Kria
 
-- For what the debug block cannot see: AXI deadlocks, firewall trips, CDC, cycles inside an op. The
-  trigger is the internal net `dbg_stop_evt` of the DBG block (DB §5.2).
-- Built from a separate link configuration (`hw/u200/k4_dbg.cfg`, to be written; the regular `k1.cfg` /
-  `k4.cfg` builds carry no ILA and have no `[debug]` or `[profile]` sections).
-- Interfaces: `v++` `[debug]` (`chipscope=tsr_k4:m_axi_ch0` ... `m_axi_ch3`, `chipscope=tsr_k4:s_axi_control`,
-  `protocol=all` for System ILA and the protocol checker). Core-internal signals: Vivado Tcl hooks in the
-  debug configuration's `[vivado]` section mark the chosen nets `MARK_DEBUG` and create and connect the ILA
-  on the synthesized netlist (`create_debug_core`, `connect_debug_port`). No ILA instance and no debug
-  attribute goes into `rtl/` outside `rtl/tech/` (spec rule 6). Which nets survive synthesis and the exact
-  hook step are settled with the first debug build.
-- Connect: `debug_hw --xvc_pcie /dev/xfpga/xvc_pub.u<dev>.<idx> --hw_server` (xocl names its nodes
-  `xfpga/<subdev>.u<device id>.<index>`), then `debug_hw --vivado --ltx_file <file>.ltx` (Vitis 2024.2).
-- Division of labour: the debug module and the DBG block for wrong values, which op, where a hang sits;
-  the ILA for bus-level and sub-op problems.
+The access path is PS AXI-Lite (UIO mmap). On a flat design a BSCANE2 bridge on USER3 or USER4 (clear of the debug hub's
+default USER1) can carry JTAG to the CSR port as a backup when Linux is dead. This is a design note, not a build.
 
-### 4.2 Zynq / Kria (idea)
+### 4.3 ASIC and boards without a host bus
 
-Main path: PS AXI-Lite (UIO mmap). On a flat design, `rtl/tech/xilinx/tsr_jtag_bscan.sv` (BSCANE2 on USER3 /
-USER4, clear of the debug hub's default USER1) can bridge JTAG to the CSR port: a backup when Linux is dead,
-and a check of the ASIC DTM on an FPGA before silicon. Whether the Kria shell (dfx-mgr) is flat or DFX is
-checked when the port starts. ILA over XVC on Ethernet or the carrier's USB JTAG.
-
-### 4.3 ASIC and boards without a host bus (idea)
-
-- JTAG TAP + DTM is the main path, in the RISC-V debug specification's DTM format: IR 5 bits, IDCODE 0x01,
-  `dtmcs` 0x10, `dmi` 0x11, BYPASS 0x1F. A real DTM's `dmi` address is the CSR offset divided by 4, so the
-  debug module registers sit at DMI address 0x300 (0xC00 / 4); a standard debugger such as OpenOCD would
-  take `-dbgbase 0x300` (*confirm*). The same register meaning holds everywhere.
-- A platform-layer arbiter (`tsr_csr_arb`) arbitrates the host bus (if any) and JTAG onto the one core CSR
-  port; the CDC is a handshake, with TCK well below F_CORE. pulp riscv-dbg's `dmi_jtag_tap` and `dmi_jtag`
-  (Apache-2.0) are reuse candidates.
-- Without a host bus, a boot ROM is needed (the TCMs are undefined after reset; [`ctrl-riscv.md`](ctrl-riscv.md)
-  §3.4) and a debug memory port is an open item.
+JTAG TAP plus DTM is the main path, in the RISC-V debug specification's DTM format (IR 5 bits, IDCODE 0x01, `dtmcs`
+0x10, `dmi` 0x11, BYPASS 0x1F). The `dmi` address is the CSR offset divided by 4, so the debug module registers sit at DMI
+address 0x300. A platform-layer arbiter (`tsr_csr_arb`) arbitrates the host bus (if any) and JTAG onto the one core CSR
+port. Without a host bus a boot ROM is needed, since the TCMs are undefined after reset.
 
 ### 4.4 Several CSR masters
 
-Only the master that owns execution writes `CTRL`, the launch queue and the loader and reads the PERF
-counters: on the U200 and Zynq the host bus; on a board without a host bus the JTAG DTM. Any other master
-reads only the registers that have no side effect. Reason: a PERF low-half read moves the single snapshot
-slot, so the owner's next high-half read would return the live value and a 64-bit value could tear.
-Inside the host, one thread under the transport's mutex reads PERF. Per-master snapshot slots are an open
-item for targets where JTAG and a host bus are used at once.
-
----
+Only the master that owns execution writes `CTRL`, the launch queue and the loader and reads the PERF counters: on the
+U200 and Zynq the host bus, on a board without a host bus the JTAG DTM. Any other master reads only registers that
+have no side effect, because a PERF low-half read moves the single snapshot slot and a 64-bit value could tear.
+Inside the host, one thread under the transport's mutex reads PERF.
 
 ## 5. Design reference
 
-The design is specified in DB ([`docs/design/05-debug.md`](design/05-debug.md)). §1 lists what exists and what is
-planned, and §2 summarises the design.
+The design is specified in DB ([`docs/design/05-debug.md`](design/05-debug.md)). §1 lists the tools and §2
+summarises the design.
 
----
+## 6. Deliberately not done
 
-## 6. Deliberately not done, and open items
-
-**Deliberately not done**
-
-- **A debug SPM window and a halt-on-error path**: the debugger reaches the SPM through SBA,
-  and error evidence is the unit error records, the dispatch history and the trace writer.
-- **Instruction patching for breakpoints in the tile stream**: tile breakpoints are matchers on the
-  enqueue tap, not instruction rewrites.
-- **Halting inside a tile op** (mid-MVM): not an observation point of the push-order semantics; inside an
-  op, use a repro trace with waveforms, or the ILA.
-- **On the U200**: an own BSCANE2 or JTAG bridge, and an ILA in the regular build.
-- **llama.cpp**: no patch to the pinned commit for profiling; no `cb_eval` node stops or timing, because
-  they cut splits and change what is measured (numcheck keeps its own `cb_eval` use for numerics).
-- **Existing definitions**: PERF indices of EX §6, `CAPS` bits and error codes stay as defined; no
-  always-on RTL instrumentation beyond DB's configurable blocks (`HAS_TRW`, `HIST_DEPTH` are the knobs that
-  trade area; DB §11).
-
-**Open items**
-
-- PCIe MMIO latency per CSR read and write is not measured. It sets the cost of the DMI path (DB §3.10,
-  *estimate*), of `RV_SAMPLE` and of PERF reads per launch; the card measurement is W6.
-- Whether a new process can open a compute unit left by a dead one without disturbing it (hang dumps of a
-  hung process; `TSR_ATTACH`): to be checked on the card.
-- The U200 debug build (`k4_dbg.cfg`): which nets survive synthesis and the exact hook step.
-- Profiling on the card: the full image (`k4full`) has the trace writer and the history. `tsr-selftest --trw` ran the writer through the
-  kernel tests and 647 trace replays (16,247 records, none dropped, no hang on channel 0), and the GDB smoke (halt, breakpoints, a hardware
-  breakpoint in a kernel, `monitor hist`, `monitor trw`) passed on `k4full`. Open: the DB §8.7 self-check of records against PERF differs by
-  0.2 to 5 % on the card (`platform-u200.md` §8.8); a timeline of a model run (`tsr-prof trw` of a `graph` launch) was not made.
-- Complete the RTL sample/apply handshake and the `SBA_REFUSED` diagnostic described in §1.
-- `tsr-dbg diverge`, `tsr-prof report` and periodic firmware PC sampling.
-- Confirmations of third-party facts: riscv-dbg and Ibex behaviours marked *confirm* in CC §3 and DB §3.
-- Per-master PERF snapshot slots for targets with two CSR masters (§4.4).
-
----
+- A debug SPM window and a halt-on-error path: the debugger reaches the SPM through SBA, and error evidence is the
+  unit error records, the dispatch history and the trace writer.
+- Instruction patching for breakpoints in the tile stream: tile breakpoints are matchers on the enqueue tap.
+- Halting inside a tile op (mid-MVM): it is not an observation point of the push-order semantics. Inside an op, use
+  a repro trace with waveforms, or the ILA.
+- On the U200: an own BSCANE2 or JTAG bridge, and an ILA in the regular build.
+- llama.cpp: no patch to the pinned commit for profiling, and no `cb_eval` node stops or timing, because they cut
+  splits and change what is measured (numcheck keeps its own `cb_eval` use for numerics).
+- Always-on RTL instrumentation beyond DB's configurable blocks (`HAS_TRW` and `HIST_DEPTH` trade area; DB §11), and
+  any change to the PERF indices of EX §6, the `CAPS` bits and the error codes.
 
 ## 7. Live monitor: `tsr-top`
 
 `tsr-top` shows the card the way `nvtop` shows a GPU: a header per device, meters, a time series and a process
-table. It is a Python 3 `curses` program (standard library only) that reads the records published by the
-process that owns the card (SW-87). Build target: `bin/tsr-top`, a launcher for `sw/tools/top/tsr_top.py`.
-
-**Why the owner publishes.** The XRT transport opens the compute unit with exclusive access (EX §2.4). While
-llama.cpp or any other tool runs on the card, no second process can read the CSRs or the PERF counters. So the
-owner writes what it can already read into shared memory, and the monitor never touches the compute unit
-while an owner is alive.
+table. It is a Python 3 `curses` program (standard library only) that reads the records published by the process
+that owns the card (SW-87). Build target: `bin/tsr-top`, a launcher for `sw/tools/top/tsr_top.py`. The XRT transport
+opens the compute unit with exclusive access (EX §2.4), so while llama.cpp or any other tool runs on the card no
+second process can read the CSRs or the PERF counters. The owner therefore writes what it can already read into
+shared memory, and the monitor never touches the compute unit while an owner is alive.
 
 ### 7.1 Running it
 
@@ -445,147 +253,81 @@ build/dev/bin/tsr-top --once --size 100x36 # one frame as plain text, no curses
 build/dev/bin/tsr-top --json               # one snapshot as JSON (devices, processes, rates, the raw records)
 ```
 
-| Key | Effect |
-|---|---|
-| `q`, `F10` | quit |
-| `F2` (or `s`) | setup: switch panels on and off. On: the two meters, the time series, the process table, the card users without a record. Off: the image line, the unit meters, the DDR channel bars and the utilisation split U |
-| `F6` (or `o`) | sort the process table by a column; the same column again reverses the order |
-| `+`, `-` | refresh interval, 0.1 s to 10 s (default 1 s; `-d S` sets it at start) |
-| `Tab` | next device (the card, and one simulated device per process that publishes from a simulator) |
-| `Esc` | close a menu |
-
-The screen follows terminal resizes; 80 x 24 shows everything, narrower terminals drop columns and panels
-(the header and the key line stay). Colours degrade to bold, dim and reverse video on a monochrome terminal
-(`--no-color`), and `--ascii` replaces the box drawing and line characters. Other options: `--dir`
-(record directory), `--window S` (the span of `--once` and `--json`, default 1 s), `--no-sensors`,
-`--include-dead` (also show the record that `TSR_MON_KEEP` left behind), `--token-window S` (the span of the tokens/s average, default 3 s),
-`--sensor-interval S` (how often `xbutil` runs, default 10 s), `--xbutil PATH`. `--json` has everything the screen can show and more
-(all unit shares, the channel rates, the U split, the raw record of each owner).
+Keys: `q` or `F10` quit, `F2` (or `s`) setup (switches panels on and off), `F6` (or `o`) sorts the process table by a
+column (the same column again reverses it), `+` and `-` set the refresh interval (0.1 s to 10 s, default 1 s, `-d S`
+at start), `Tab` selects the next device (the card, and one simulated device per process that publishes from a
+simulator), `Esc` closes a menu. `--no-color` gives a monochrome terminal and `--ascii` replaces the box drawing
+characters. Other options: `--dir` (record directory), `--window S` (the span of `--once` and `--json`, default 1
+s), `--no-sensors`, `--include-dead` (also show the record that `TSR_MON_KEEP` left behind), `--token-window S` (the
+span of the tokens/s average, default 3 s), `--sensor-interval S` (how often `xbutil` runs, default 10 s) and
+`--xbutil PATH`.
 
 ### 7.2 The record and the publisher
 
 - The file is `/dev/shm/tsr-mon-<pid>` (`TSR_MON_DIR` moves it): one 4 KiB page of plain little-endian fields,
-  described by `tsr_mon_rec` in `sw/transport/tsr_mon.h`. It is created whole (a temporary name, then a
-  rename) and removed when the transport closes or the process exits cleanly. A record whose pid is dead
-  (a killed process) is ignored by `tsr-top` and removed by it.
-- The page is behind a seqlock. The writer makes the counter odd, stores the page, makes it even; the reader
-  copies the page and keeps it only if the counter was even and unchanged. The writer never waits for a reader.
-- The layout has a number (1). `tsr_top.py` holds the same field table; the ctest `tools_top_layout` compares it
-  with the table that the C side prints. A reader skips a layout number it does not know.
-- `tsr_opl_dev` (`sw/ggml-tesseract/tsr-opl-dev.cpp`) attaches the publisher when it opens the device and
-  brackets every `graph` launch, so the ggml backend and `tsr_rt` both publish. The ggml backend adds what only it
-  knows: the mode (`M6` when the device takes the matrix products only, else `M7`) and the kinds, the dominant
-  weight type, the device memory in use, and the tokens (see the limits below).
-- After a launch the writer updates the counters (about 0.5 us, no device access). At most every
-  `TSR_MON_PERF_MS` (100 ms) it also reads the PERF counters through `tsr_transport_perf_summary` (about 80 CSR
-  reads) and RV_FREQ. PERF does not move between launches (EX §6), no record, descriptor or tensor changes, and
-  the output bits are the same with the publisher on and off (ctest `tools_top_identity`: klcheck on the
-  tiny model in M6 and M7; Qwen3.8 2B Q4_K_M, M7, 1 prompt x 16 tokens on `sim`: 16 of 16 logits rows
-  bit-identical).
-- What the record holds: pid, uid, command line, start and update times (`CLOCK_REALTIME` and `CLOCK_MONOTONIC`);
-  launches, host wall time in launches, op records, the launch in flight; all 64 PERF totals and the change
-  between the last two reads (so the monitor has a rate from one sample); decoded and prefilled tokens and
-  scheduler passes; device memory in use and its size; core and RV clocks; the configuration (channels, `T_MAX`,
-  lanes, SPM, `K_MAX`), `CAPS`, the core capability, the Basis version, the image id and path, the kind table
-  (numerics revisions) and the kinds the owner routes by name; the transport, the device line (name, BDF,
-  kernel), `$TSR_XCLBIN`; model file name and quantisation.
-- The profile dump (§3.1) and the publisher work together: the dump's PERF reads and the publisher's both leave the counters alone, and a run with `TSR_DUMP_PLAN` still publishes.
-- `TSR_MON=0` turns the publisher off. `TSR_MON_KEEP=1` leaves the file at exit (flag `EXITING`), for a look at the
-  last counters and for the tests.
+  described by `tsr_mon_rec` in `sw/transport/tsr_mon.h`. It is created whole (a temporary name, then a rename) and
+  removed when the transport closes or the process exits cleanly. A record whose pid is dead is ignored by `tsr-top`
+  and removed by it. The page is behind a seqlock: the writer makes the counter odd, stores the page, makes it even,
+  and the reader keeps a copy only if the counter was even and unchanged, so the writer never waits for a reader. The
+  layout has a number (1). `tsr_top.py` holds the same field table, and the ctest `tools_top_layout` compares it with
+  the table that the C side prints. A reader skips a layout number it does not know.
+- `tsr_opl_dev` (`sw/ggml-tesseract/tsr-opl-dev.cpp`) attaches the publisher when it opens the device and brackets
+  every `graph` launch, so the ggml backend and `tsr_rt` both publish. The ggml backend adds the mode (`M6` when the
+  device takes the matrix products only, else `M7`), the kinds, the dominant weight type, the device memory in use
+  and the tokens.
+- After a launch the writer updates the counters (no device access). At most every `TSR_MON_PERF_MS` (100 ms) it
+  also reads the PERF counters through `tsr_transport_perf_summary` (about 80 CSR reads) and `RV_FREQ`. PERF does
+  not move between launches (EX §6), no record, descriptor or tensor changes, and the output bits are the same with
+  the publisher on and off (ctest `tools_top_identity`).
+- The record holds the process (pid, uid, command line, times), launches, host wall time in launches, op records, the
+  launch in flight, all 64 PERF totals and the change between the last two reads, tokens, device memory in use, the
+  clocks, the configuration (channels, `T_MAX`, lanes, SPM, `K_MAX`), `CAPS`, the capability, the Basis version, the
+  image id and path, the kind table, the device line (name, BDF, kernel), `$TSR_XCLBIN`, and the model name and
+  quantisation. `TSR_MON=0` turns the publisher off. `TSR_MON_KEEP=1` leaves the file at exit (flag `EXITING`).
 
 ### 7.3 What each part of the screen shows
 
-| Part | Shows | From |
-|---|---|---|
-| Device line | board and shell, `PCIe GEN g@wx`, state (`IDLE`, `HELD`, `OWNED`, `BUSY`, `LAUNCH t` for a launch in flight longer than 1 s) | sysfs `board_name`, hwmon name, `current_link_*`; the record |
-| Clock line | `CORE 200MHz  RV 100MHz`, the kernel clocks | on a card: sysfs `icap.u.*/clock_freqs` of the card's user function (clock ID 0 is the core, 1 the RISC-V control core; this also works for an image without the debug block, where the owner cannot fit the clock from `DBG_MTIME`); else the clock the owner fitted from `DBG_MTIME` (`n/a` until it has); a simulator's configured clocks |
-| Sensor line | temperature (FPGA), fan, power / limit, `DDR` used of 64 GiB | sysfs hwmon of the card's user function: `temp<n>` labelled `FPGA TEMP`, `power1_input` (microwatts), `fan1_input` (rpm), read every half second; the `xmc.u.*` node (`xmc_fan_rpm`, `fan_presence`) if hwmon has no fan; `xbutil examine -r thermal electrical mechanical -f JSON` every 10 s for the power limit and for whatever sysfs lacks (`n/a` if everything fails). None of these touches the compute unit. DDR: the record's memory fields |
-| `COMPUTE` | the busiest compute unit as a share of wall time, with its name: `MVM`, `VU`, `QACT`, `ATT`, `ATT_QK`, `ATT_PV` (the DMA moves data, it is not compute). `COMPUTE[|||||||  78% MVM]` | the change of PERF over the window: unit cycles / (core clock x wall time) = (active share) x (busy share of the active cycles), `MVM_CYCLES`, `VU_CYCLES`, X+1, X+2, X+16, X+17 |
-| `MEMORY` | the busiest DDR channel against that channel's 18.0 GB/s (docs/m0-bw.md), with its number and rate: `MEMORY[|||||  56% ch0 10.1 GB/s]` | `CH_RD_BEATS[c]` x 64 B / wall time |
-| Time series | one box over the full width: `COMPUTE` (cyan) and `MEMORY` (yellow, heavy lines without colour), drawn as solid lines with box-drawing turns as `nvtop` does, 0 to 100 %, the last two minutes (less on a narrow screen), 1 sample per cell | the history that `tsr-top` keeps, one sample per refresh |
-| Process table | `PID USER MODEL MODE TOK/S LAUNCH/s CPU HOST MEM COMMAND`; `TOK/S` is `pp n` while a prefill runs; a process that has the card open but does not publish is listed dimmed with `(no tsr-mon)` | the record; `/proc/<pid>` for user, CPU % and RSS; `/proc/*/fd` links to the card's render node for the others (own processes only) |
-| Setup, off by default | the image line (`IMG` kernel name, `ID`, `CAPS`, `KINDS` count and table signature, mode); unit meters `ACT` (active share of wall time, 1-H), `MVM VU DMA QACT ATT` (busy share of the active cycles, the quantities of DB §8.6), `EMPTY` (MVM idle, queue empty: issue-bound), `WAIT` (MVM idle, queue entry cannot start: dependency-bound); `CH0..CH3` bars and the read rate against the stream limit (4 x 64 B x core clock) and the DRAM; the utilisation split `U ~ (1-H)(1-G)(1-F) E` of §3 (`U` is the read rate over 4 x 18 GB/s; 1-H the active share; 1-G the MVM share of active cycles; 1-F the busiest channel's beats over `MVM_CYCLES`, clamped to 0..1; `E` is what is left, so that the product equals `U`) | the same counters |
+- Device line: board and shell, `PCIe GEN g@wx`, state (`IDLE`, `HELD`, `OWNED`, `BUSY`, `LAUNCH t` for a launch in
+  flight longer than 1 s). Clock line: `CORE 200MHz  RV 100MHz`, from sysfs `icap.u.*/clock_freqs` of the card's user
+  function (clock ID 0 is the core, 1 the RISC-V control core), else from the clock the owner fitted from
+  `DBG_MTIME`. Sensor line: FPGA temperature, fan, power and limit, `DDR` used, from the sysfs hwmon of the card's
+  user function and from `xbutil examine -r thermal electrical mechanical -f JSON` every 10 s. None of these
+  touches the compute unit.
+- `COMPUTE`: the busiest compute unit as a share of wall time, with its name (`MVM`, `VU`, `QACT`, `ATT`, `ATT_QK`,
+  `ATT_PV`; the DMA moves data, it is not compute), from the change of PERF over the window. `MEMORY`: the busiest
+  DDR channel against that channel's DRAM bandwidth (`CH_RD_BEATS[c]` x 64 B over wall time). The time series box
+  shows both from 0 to 100 % over the last two minutes.
+- Process table: `PID USER MODEL MODE TOK/S LAUNCH/s CPU HOST MEM COMMAND`. `MODE` is `M6` or `M7`, and `TOK/S` is
+  `pp n` while a prefill runs. A process that has the card open but does not publish is listed dimmed with `(no
+  tsr-mon)`. User, CPU % and RSS come from `/proc/<pid>`, and the other users of the card from the `/proc/*/fd`
+  links to its render node (own processes only).
+- Setup panels (off by default): the image line (kernel name, id, `CAPS`, kind count and table signature, mode),
+  unit meters `ACT` (active share of wall time, 1-H), `MVM VU DMA QACT ATT` (busy share of the active cycles),
+  `EMPTY` (MVM idle, queue empty: issue-bound) and `WAIT` (MVM idle, queue entry cannot start: dependency-bound),
+  `CH0..CH3` bars with the read rate against the stream limit, and the utilisation split of §3.
 
-Rates cover the newest PERF read and the newest one at least one refresh interval older (or the record's own
-last interval when there is only one read). When no new PERF read came for more than 2.5 s and no launch is in
-flight, the rates are shown as idle. The core clock used for the rates is the owner's fitted one, else sysfs's.
+Rates cover the newest PERF read and the newest one at least one refresh interval older. When no new PERF read came
+for more than 2.5 s and no launch is in flight, the rates are shown as idle.
 
 ### 7.4 The card when nobody owns it
 
-`tsr-top` does not open the card by default: a run that starts while another process holds the compute unit
-exclusively would fail to open it. `--probe` runs `tsr-mon-probe`, which opens the card in attach mode (no
-reset, no bind, as `tsr-dbg --attach`), reads the identity, the fitted core clock and the lifetime PERF counters,
-and closes it (about 0.3 s). It runs only if no tsr-mon record has a live pid, no process has the card's
-render node open, and the xclbin that `TSR_XCLBIN` names is the one the card has (its UUID, so that the open
-cannot load another image); then at most every 15 s. A process of another user that starts in that 0.3 s still
-fails to open the card, which is why it is off by default.
+`tsr-top` does not open the card by default, because a run that starts while another process holds the compute unit
+exclusively would fail to open it. `--probe` runs `tsr-mon-probe`, which opens the card in attach mode (no reset, no
+bind, as `tsr-dbg --attach`), reads the identity, the fitted core clock and the lifetime PERF counters, and closes
+it. It runs only if no tsr-mon record has a live pid, no process has the card's render node open, and the xclbin that
+`TSR_XCLBIN` names is the one the card has (its UUID, so that the open cannot load another image), then at most
+every 15 s. A process of another user that starts while the probe holds the card still fails to open it, which is
+why the probe is off by default.
 
 ### 7.5 Limits
 
-- The counters are read after a launch, not during it. A prefill ubatch is one launch of seconds: the screen
-  shows the previous values and `LAUNCH t` until it ends.
-- Tokens are counted from the graph: a scheduler pass whose first split starts with a matrix product of one
-  token is one decoded token, a pass of more tokens is prefill (so the batch of a speculative verification
-  counts as prefill, and llama.cpp's warm-up pass counts as 2 prefilled tokens). A graph the backend does not
-  see in splits of its own (a very different model) can miscount.
-- Token rates average over 3 s (`--token-window`). The tokens of a pass are counted when it starts, so a pass that is longer than the
-  window (a prefill ubatch) shows as a spike, not as its average rate.
-- Before the first launch (while the weights are still being uploaded) the record has the process, the memory in use and the
-  configuration but no PERF read: the meters show `n/a`. On a card the clocks come from sysfs at once; on a simulator they come from the
-  record.
-- On a simulated transport the clock is simulated: `ACT` and the GB/s over wall time compare model time with
-  host time, so they are not hardware figures.
-- An owner started before this feature (or with `TSR_MON=0`) is visible only as a process that holds the card.
-- The model name comes from `$TSR_MON_MODEL`, `-m`, `--model`, `-hf` or the first mapped `.gguf` (`tsr-top` also reads `-m` from the
-  command line while the record has no name yet); the quantisation is the dominant weight type (the file name's `Q4_K_M` is preferred when
-  it has one). A long name is cut in the middle so that its end stays.
-
-### 7.6 Measured on the card (2026-11-09)
-
-Image `k4full` (`tsr_u200_k4`, CAPS 0x21), firmware of this branch, Gemma 4 26B-A4B Q4_K_M, a 113-token prompt and 360 generated
-tokens, `llama-completion` with `TSR_DEVICE=xrt`, the ATTPV trace replayed before the run, `tsr-top` running at the same time in two
-terminals (80 x 24 and 110 x 36; the run was made twice, the second time with the screen as it is described above). This is the
-80 x 24 screen in the middle of the decode of the second run:
-
-```
- Device 0 [Alveo U200 xilinx_u200_gen3x16_xdma_base_2]   PCIe GEN 3@16x  [BUSY]
- CORE 200MHz  RV 100MHz
- TEMP  55°C FAN 1258rpm POW  53 / 225 W  DDR[||||||||||           18.8Gi/64.0Gi]
- COMPUTE[||||||||||||||||||||| 77% MVM] MEMORY[|||||||||||| 56% ch0 10.1 GB/s]
-   ┌──────────────────────────────────────────────────────────────────────────┐
-100│COMPUTE  77% MVM                                                          │
-   │MEMORY   56% ch0 10.1 GB/s                                                │
-   │                                                                          │
-   │                                                           ⢰⠋⠧⠼⠉⠉⠉⠛⠙⠋⠿⠉⠉⠉⠙│
- 75│                                                          ⢰⠚              │
-   │                                                          ⢸               │
-   │                                                          ⢸⢠⠖⢦⣰⠒⠒⠒⠶⠲⠖⠶⠒⠒⠒⠲│
- 50│                                                          ⢸⠉              │
-   │                                                          ⢸               │
-   │                                                          ⢸               │
- 25│                                                          ⢸               │
-   │                                                          ⢸               │
-   │                                                          ⢸               │
-   │                                                          ⢸               │
-  0│           ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣸               │
-   └120s─────────────90s───────────────60s────────────────30s───────────────0s┘
-     PID USER     MODEL         MODE TOK/S v LAUNCH/s  CPU HOST MEM COMMAND
- 2430294 limagin~ google~Q4_K_M M7      11.6     11.6 135%   4.5GiB build/xrt/bi
-F2Setup  F6Sort  F10Quit  +/-Refresh 1.0s  TabDevice
-```
-
-- The core clock, fitted from `DBG_MTIME` by the owner (199.99 MHz) and read from sysfs (`clock_freqs` 200 100), is 200 MHz, so the stream
-  limit is 64 B x 200 MHz = 12.8 GB/s per channel, below the DRAM's 18 GB/s (`E` is 71 % in the utilisation split). One decode token is one
-  launch of 1,323 op records.
-- The counters agree with `TSR_STATS` and with the earlier card measurements ([performance.md](performance.md)): MVM busy 81 % of the active
-  cycles (81.4 %), `MVM_EMPTY` 11 % (11.1 %), `MVM_WAIT` 8 % (7.5 %), VU 7 % (6.7 %), DMA 8 % (8.0 %), QACT 3 % (3.1 %) with the device
-  active 97 % of the wall time, so `COMPUTE` is 77 % MVM; the busiest channel read 10.1 GB/s of 18 (56 %). Decode was 11.6 tok/s on the
-  screen against 11.80 tok/s (84.78 ms per token) from llama.cpp's `eval time`; 361 launches; the record's `PERF_CYCLES` at the end is
-  `TSR_STATS`'s 6,785,143,271.
-- Cost (both runs alike): one PERF read took 114 to 117 us (about 80 CSR reads); the publisher spent 21 to 22 ms in its hooks over 34 s of
-  launches (0.06 % of the launch wall time, `perf_ns` and `hook_ns` in the record). The decode raised the board from 36 W to 53 W of 225 W,
-  55 C, fan 1258 rpm (sysfs; xbutil's mechanical report has no fan).
-- `tsr-top --probe` on the idle card (after the first run) held it for 572 ms (the open took 239 ms) and read the lifetime counters of the run
-  that had just ended: `PERF_CYCLES` equal to `TSR_STATS`'s, 361 launches.
-- The prefill of 113 tokens (one launch of 4.3 s) showed as `pp 38` for a window (tokens counted at the start of the pass); llama.cpp's
-  average for the whole prompt was 26.4 tok/s. The `DDR` bar followed the weight upload (2.5 GiB, 11.6 GiB, 18.8 GiB at the end of it).
+- The counters are read after a launch, not during it. A long prefill ubatch is one launch of seconds, and the
+  screen shows the previous values and `LAUNCH t` until it ends.
+- Tokens are counted from the graph. A scheduler pass whose first split starts with a matrix product of one token is
+  one decoded token, and a pass of more tokens is prefill (so the batch of a speculative verification counts as
+  prefill). The tokens of a pass are counted when it starts, so a pass longer than the 3 s window shows as a spike.
+- Before the first launch the record has the process, the memory in use and the configuration but no PERF read, so
+  the meters show `n/a`. On a simulated transport the clock is simulated, so `ACT` and the GB/s over wall time are
+  not hardware figures. An owner started with `TSR_MON=0` is visible only as a process that holds the card.
+- The model name comes from `$TSR_MON_MODEL`, `-m`, `--model`, `-hf` or the first mapped `.gguf`, and the
+  quantisation is the dominant weight type (the file name's `Q4_K_M` is preferred when it has one).

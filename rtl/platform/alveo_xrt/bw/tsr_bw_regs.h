@@ -1,4 +1,4 @@
-// tsr_bw_regs.h — software view of the M0 DMA bandwidth kernel tsr_bw_k4 (docs/m0-bw.md §2, §3):
+// tsr_bw_regs.h — software view of the M0 DMA bandwidth kernel tsr_bw_k4 (docs/bandwidth-kernel.md §2, §3):
 // the s_axi_control register map, the ctrl word, and the reference functions of the write pattern,
 // the read checksum and the burst sequence. Header-only C++ (no dependencies), shared by the
 // host tool (sw/tools/tsr_bw.cpp) and the Verilator bench (tb/platform/bw/bw_bench.cpp), which

@@ -1,4 +1,4 @@
-"""tsr_dma tests (docs/rtl-m2.md §3.2, §4).
+"""tsr_dma tests (docs/rtl-core.md §3.2, §4).
 
 pytest functions:
   test_dma_sys[cfg]   cocotb on tb/dma/hdl/tsr_tb_dma.sv (tsr_dma + one tsr_mem_arb per channel,

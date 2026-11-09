@@ -2,14 +2,14 @@
 // lanes (tsr_mac_lane), integer scale stage, fp term stage, 16-partial accumulators with a
 // background streaming tree; produces one row result (T_MAX f32) per row.
 //
-// Owner: back agent (docs/rtl-m3.md §2 block (back); contract §3.3-§3.5, numerics §7).
+// Owner: back agent (docs/rtl-mvm.md §2 block (back); contract §3.3-§3.5, numerics §7).
 //
-// Contract (normative text: docs/rtl-m3.md §7; golden model tb/common/mvm_model.py):
+// Contract (normative text: docs/rtl-mvm.md §7; golden model tb/common/mvm_model.py):
 //   - cfg_fmt / cfg_d_lines are stable while beats of one MVM flow (the cluster wrapper registers
 //     them from the cluster command); every accepted beat belongs to that MVM. Beats are offered
 //     only when the activation buffer holds the MVM's QA images (the wrapper gates beat_valid).
 //     They may change only while idle = 1 (a new MVM's beats arrive only after every result of
-//     the previous one was taken, docs/rtl-m3.md §6.2); asserted in simulation.
+//     the previous one was taken, docs/rtl-mvm.md §6.2); asserted in simulation.
 //   - per beat (tsr_mvm_beat_t, R1/R2), for every token t < T_MAX, bit-exact with tsr_ref.c:
 //       Q8_0: isum_g = sum_{L<32} w[32g+L] * qs_t[32b + 32g + L] (g = 0, and g = 1 if two);
 //             term(b+g) = fmul(fmul(d_g, Dx_t[b+g]), i32_to_f32(isum_g))   (d_0 = d_a, d_1 = d_b)
@@ -29,9 +29,9 @@
 //   - res_valid/res_ready/res_y: one result per row, in row order (R1/R2); res_y[t] for every
 //     t < T_MAX (tokens >= T of the MVM are don't-care). The back end never drops a result:
 //     internal pipelines run with ce = 1; beat_ready falls only to reserve result space and
-//     partial-set / tree capacity (docs/rtl-m3.md §7.5: no stall for rows of >= RB_MIN beats).
+//     partial-set / tree capacity (docs/rtl-mvm.md §7.5: no stall for rows of >= RB_MIN beats).
 //   - idle: no beat or row in flight, no result pending.
-// Datapath per token replicated T_MAX times (docs/rtl-m3.md §9.3). Q8_0 delivers 2 terms per quant
+// Datapath per token replicated T_MAX times (docs/rtl-mvm.md §9.3). Q8_0 delivers 2 terms per quant
 // beat: two accumulate lanes (even / odd partials); Q4_K 1 term per 2 quant beats (lane s % 2).
 //
 // Attention modes (W4-B at; AT §8.1, §8.2; parameter HAS_ATT, configuration att_cfg, stable while
@@ -78,7 +78,7 @@
 //                  half-0 beat reads the D line and stores Dx_t[s] (dxh), the half-1 beat reads
 //                  the BS line and uses dxh. BS pair sums (msum stage 1).
 //   G = M0+MAC [6] group sums S_g (tsr_mac_lane, 4 instances x T_MAX tokens, 21 bits; generic
-//                  MAC_LAT 3: products | 2 adder levels | 3 adder levels, docs/rtl-m3.md §9.2).
+//                  MAC_LAT 3: products | 2 adder levels | 3 adder levels, docs/rtl-mvm.md §9.2).
 //   G..G+2         integer scale: (1) Q4_K sc_g * S_g (6u x 17s), Q8_0 block sums select by the
 //                  QS-line parity; (2) Q4_K part = sum of 4; (3) Q4_K half 0: part0 := part,
 //                  half 1: isum = part + part0 (26 bits). msum: pair sums, m_k * pair_k, two
@@ -120,7 +120,7 @@
 //       every slot is read (and cleared) >= 7 cycles before row r+2 writes it; a completed set
 //       waits for level 1 at most until S_r + 8 (at most one waiting set). A row of >= 8 quant
 //       beats takes >= 8 cycles, so (b) never throttles such rows.
-//   RB_MIN (docs/rtl-m3.md §7.5): with tagged beats offered back to back and res_ready = 1, no
+//   RB_MIN (docs/rtl-mvm.md §7.5): with tagged beats offered back to back and res_ready = 1, no
 //   beat_ready drop for rows of >= 8 quant beats = ROW_BEATS >= 9 for both formats (Q8_0 K 480 /
 //   512, Q4_K K 1024: 9 beats incl. META), any T and every latency parameter value: RB_MIN = 9.
 //   With the front end's META cycles (one stream cycle per chunk, tsr_mvm_front) Q8_0 rows of
@@ -148,7 +148,7 @@
 //
 // Cost per token (generic, counted from the RTL, not synthesised): 4 tsr_fp_mul, 7 tsr_fp_add
 // (2 accumulate, 1 Q4_K subtract, 4 tree levels; the streaming tree adds 3 adders, ~1.3 K LUT /
-// 1 K FF, to the docs/rtl-m3.md §9.3 estimate), 2 tsr_mvm_i2f, 12 small multipliers (4 + 8 x
+// 1 K FF, to the docs/rtl-mvm.md §9.3 estimate), 2 tsr_mvm_i2f, 12 small multipliers (4 + 8 x
 // 6u * 17s), the MAC products / trees of 128 lanes (tsr_mac_lane; at MAC_LAT 3 2708 flops: 2048
 // product register, 576 level-2 sums, 84 group sums), 2 x 2 x 8 x 32 = 1024 partial flops (+ 3 x
 // 32 tree hold, 32 dxh, 25 part0), ~1.4 K integer-stage / msum / i2f flops, the d*Dx or f32
@@ -207,7 +207,7 @@ endmodule
 // tsr_mvm_i2f — IW-bit two's complement integer -> f32, round to nearest even, 3 register stages,
 // free running (y = conversion of the v presented 3 cycles earlier). Bit-exact with
 // tsr_fp_pkg::tsr_i32_to_f32(sext(v)) for every IW-bit v, 25 <= IW <= 32 (tb/mvmback
-// test_mvm_back_i2f_sweep: all 2^26 inputs at IW = 26). docs/rtl-m3.md §8.2 split:
+// test_mvm_back_i2f_sweep: all 2^26 inputs at IW = 26). docs/rtl-mvm.md §8.2 split:
 //   stage 1  sign, magnitude |v| (IW-bit carry chain)
 //   stage 2  leading-zero count and left normalisation (priority encoder + barrel shift)
 //   stage 3  RNE increment of the 23-bit fraction (guard = the bit below it, sticky = the rest),
@@ -704,7 +704,7 @@ module tsr_mvm_back
   // Per-token control copies (implementation only, no functional change): the accumulate / tree
   // control above fans out to all T_MAX token datapaths (k4: +0.05..0.10 ns paths from l1_k_q,
   // l1_act_q, the ov / t1v / t3v delay lines and cd[C_A4] into the slot registers, the adder
-  // operand registers and the hold registers, docs/rtl-m3.md §14.3). Every token therefore
+  // operand registers and the hold registers, docs/rtl-mvm.md §14.3). Every token therefore
   // registers its own copies, loaded from the next-cycle values computed here once, so each copy
   // equals the shared signal it replaces in every cycle (reset copies reset with it, the others
   // load every cycle like the tag stages they copy; checked by the simulation assertions at the

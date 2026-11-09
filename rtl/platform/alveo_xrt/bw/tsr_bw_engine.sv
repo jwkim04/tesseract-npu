@@ -1,11 +1,11 @@
-// tsr_bw_engine.sv — one channel of the M0 DMA bandwidth kernel tsr_bw_k4 (docs/m0-bw.md): read
+// tsr_bw_engine.sv — one channel of the M0 DMA bandwidth kernel tsr_bw_k4 (docs/bandwidth-kernel.md): read
 // and / or write traffic generator, read checksum, write pattern and counters, on the memory-port
 // side of a tsr_xrt_axi_bridge (the adapter's AXI4 bridge: base add, register slices, ID filter,
 // error events).
 //
-// Owner: m0bw agent (docs/m0-bw.md §2, §3).
+// Owner: m0bw agent (docs/bandwidth-kernel.md §2, §3).
 //
-// Configuration (latched at the start of a run, static from then on; ctrl word = docs/m0-bw.md §2):
+// Configuration (latched at the start of a run, static from then on; ctrl word = docs/bandwidth-kernel.md §2):
 //   ctrl[0] enable, ctrl[1] read, ctrl[2] write, ctrl[14:8] burst beats B (1..64), ctrl[22:16]
 //   outstanding bursts per direction (1..64), ctrl[26:24] id_log2 (bursts use AXI IDs
 //   0 .. 2^id_log2 - 1 round robin, 0..4); bytes (per direction), rd_off / wr_off (byte offsets of
@@ -471,7 +471,7 @@ module tsr_bw_engine
     assign wr_dat_data[64*i +: 64] = dmix_q ^ mix64(64'(8 * i)) ^ salt_mix_q;
   end
 
-  // Result block (64 bytes; word index = byte offset [5:2]; docs/m0-bw.md §2)
+  // Result block (64 bytes; word index = byte offset [5:2]; docs/bandwidth-kernel.md §2)
   wire [63:0] rd_cyc64 = 64'(rd_cyc_q), wr_cyc64 = 64'(wr_cyc_q);
   wire [63:0] rd_byt64 = 64'(rd_beats_q) << 6, wr_byt64 = 64'(wr_beats_q) << 6;
   always_ff @(posedge clk) begin

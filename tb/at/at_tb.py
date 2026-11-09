@@ -1,6 +1,6 @@
 """cocotb environment shared by the tb/at benches (KVST on the DMA, ATTQK / ATTPV on the MVM unit).
 
-  SpmPort    Python model of one unit's SPM client port (docs/rtl-m2.md §5: reads accepted when
+  SpmPort    Python model of one unit's SPM client port (docs/rtl-core.md §5: reads accepted when
              ready, the response exactly SPM_RD_LAT cycles after the accepting edge, no
              backpressure; writes with 64 byte enables). Several ports share one bytearray (the
              SPM image), so the bench can copy it to / from the simulator in one move. Random

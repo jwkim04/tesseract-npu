@@ -2,7 +2,7 @@
 // banks (bank E: even lines, bank O: odd lines; each 1R1W, so the SPM has 2 read and 2 write
 // ports), with per-bank client ports and round-robin arbitration per bank port.
 //
-// Owner: SPM agent (docs/design/04-control-core.md "CC" §10, CC-12; docs/rtl-m2.md §5).
+// Owner: SPM agent (docs/design/04-control-core.md "CC" §10, CC-12; docs/rtl-core.md §5).
 //
 // Built from tsr_sram_1r1w instances (rtl/tech/<target>/); no vendor primitives here.
 // Clients (tsr_pkg TSR_SPM_CL_*, CC §10.2): 0 DMA, 1 QACT, 2 MVM, 3 RISC-V bridge, 4 VU, 5 AT;
@@ -71,7 +71,7 @@
 //                 address / data fan-out starts at a flop. Reads and writes of a bank share this
 //                 stage, which keeps the write -> read order above. Every (bank, depth bank, slice)
 //                 RAM has its own kept copy of the stage's enable, offset and byte-enable registers
-//                 (docs/rtl-m3.md §14.3 / §14.8 / §14.9: one shared offset register driving every
+//                 (docs/rtl-mvm.md §14.3 / §14.8 / §14.9: one shared offset register driving every
 //                 cascade head was the worst path of the core), the enables decoded from the depth
 //                 bank bits before the register; only the write data register is shared per bank.
 //       OUT_REG = 1 if RD_LAT >= 4 and a bank has more than one depth bank: a register after the

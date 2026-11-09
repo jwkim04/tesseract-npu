@@ -1,7 +1,7 @@
 // tsr_mvm_ws.sv — MVM weight streamer of one cluster (spec MVM cluster microarchitecture stage 1 "Stream requester")
 // plus its weight FIFO: the WS read source of one channel's tsr_mem_arb.
 //
-// Owner: front agent (docs/rtl-m3.md §2 block (front), protocol §4).
+// Owner: front agent (docs/rtl-mvm.md §2 block (front), protocol §4).
 //
 // Contract:
 //   - cmd_valid/cmd_ready (R1/R2): one command per MVM with rows_c >= 1: request exactly
@@ -13,7 +13,7 @@
 //     < 2^32), and a count of exactly 2^40 would need ROW_BEATS a power of two <= 1024 with
 //     rows_c >= 2^30. The maximum 2^40 - 1 (Q8_0 K 61696: ROW_BEATS 1025, 1072694271 rows, DRAM
 //     limit 2^40) uses every bit (tb/mvmfront front_max_count).
-//   - read requests (docs/rtl-m2.md §4 M1-M6, docs/rtl-m3.md §4): local id 0 for every burst
+//   - read requests (docs/rtl-core.md §4 M1-M6, docs/rtl-mvm.md §4): local id 0 for every burst
 //     (memory-side id {TSR_SRC_WS, 0} = 8: one id, so the data return in request order); bursts
 //     in address order, len = min(64 - addr % 64, beats left): <= 64 beats and never across a
 //     4 KiB (64-beat) block; the sum of all lens is exactly cmd_beats (no over-fetch:

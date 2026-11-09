@@ -12,7 +12,7 @@ rtl/ctrl (`tsr_ctrl_cdc.sv` header and instances, `tsr_ctrl.sv` for the reset sy
 `cdc/tsr_rst_sync.sv`, `viv/tsr_ctrl_cdc.xdc` for the constraints), `rtl/core/tsr_core.sv` and
 `rtl/core/tsr_core_dp.sv` (the core-domain endpoints of every crossing: tsr_issue, tsr_csr,
 tsr_spm_bridge), `rtl/platform/alveo_xrt/tsr_xrt_kernel.sv` (the adapter runs on ap_clk) and
-docs/platform-u200.md §3 and §14.1 (ap_clk, ap_clk_2):
+docs/platform-u200.md §1 and §8.3 (ap_clk, ap_clk_2):
 - XRT shell: one vendor box at the top. PCIe and the DDR4 controllers run on their own clocks, which the
   shell converts; it provides the kernel clocks ap_clk and ap_clk_2 (and their resets) and carries the
   CSR port (s_axi_control) and the memory ports into the core clock domain. Nothing of its inside is

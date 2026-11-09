@@ -1,6 +1,6 @@
 // tsr_tb_mvm.sv — testbench-only toplevel for tb/mvm (not part of the core).
 //
-// The MVM unit as in the M3 core (docs/rtl-m3.md §2): tsr_mvm with its NUM_CH clusters, on SPM
+// The MVM unit as in the M3 core (docs/rtl-mvm.md §2): tsr_mvm with its NUM_CH clusters, on SPM
 // client TSR_SPM_CL_MVM of a real tsr_spm and on read source TSR_SRC_WS of one real tsr_mem_arb
 // per channel, whose memory ports are exposed with the tsr_core naming (m_*, packed per channel,
 // for common.mem_model.MemModel; memory-side ids {source, local}).

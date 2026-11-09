@@ -1,4 +1,4 @@
-// tsr_xrt_axi_bridge.sv — one channel: the tsr_core memory port (docs/rtl-m2.md §4) as an AXI4
+// tsr_xrt_axi_bridge.sv — one channel: the tsr_core memory port (docs/rtl-core.md §4) as an AXI4
 // master (Vitis m_axi kernel port, 512-bit data, 64-bit address, 4-bit ID).
 //
 // Owner: adapter agent (docs/platform-u200.md §4).
@@ -10,7 +10,7 @@
 //   write data {data, word mask, last}    ->  W: WDATA, WSTRB, WLAST
 //   R {RDATA, RID, RLAST, RRESP}          ->  read response {data, id, last}
 //   B {BID, BRESP}                        ->  write response {id}
-// The core already keeps every burst inside one 64-beat block of its channel (rtl-m2 §4 M1), so
+// The core already keeps every burst inside one 64-beat block of its channel (rtl-core §4 M1), so
 // with a 4 KiB aligned base no AXI burst crosses a 4 KiB boundary and ARLEN / AWLEN <= 63. The
 // control bridge refuses to start a run with a misaligned base (ADAPTER_STATUS bit3), so `base`
 // is aligned whenever the core is running; it is registered here (base_r) next to the adders.

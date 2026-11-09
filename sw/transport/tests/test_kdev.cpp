@@ -1161,7 +1161,7 @@ static void test_dispatch() {
     unsetenv("TSR_DEVICE");
     unsetenv("TSR_XCLBIN");
     CHECK(tsr_transport_open("xrt") == nullptr, "xrt: not built in, or TSR_XCLBIN unset");
-    CHECK(tsr_transport_open("vkernel") == nullptr, "vkernel: no server until P5.3");
+    CHECK(tsr_transport_open("vkernel") == nullptr, "vkernel: no server in the tree");
     // Record helpers.
     tsr_record rec{};
     rec.w[0] = 0x05080101u;   // DONE, TILE_ERR, code 8, seq 5

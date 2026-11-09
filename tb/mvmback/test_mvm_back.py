@@ -1,4 +1,4 @@
-"""tsr_mvm_back / tsr_mvm_actbuf / tsr_mac_lane tests (docs/rtl-m3.md §3.3-§3.5, §5, §7,
+"""tsr_mvm_back / tsr_mvm_actbuf / tsr_mac_lane tests (docs/rtl-mvm.md §3.3-§3.5, §5, §7,
 §10.2 "back").
 
 DUT: tb/mvmback/hdl/tsr_tb_mvm_back.sv = tsr_mvm_actbuf written through its broadcast-side port
@@ -12,7 +12,7 @@ Checks on every MVM:
     one result per row and nothing more;
   - R2 on the result stream (res_valid held, res_y stable while not taken);
   - the back end's activation reads (observed at the actbuf ports): one QS read and one DBS read
-    exactly one cycle after each accepted beat, at the docs/rtl-m3.md §3.4 addresses (QS word b/4
+    exactly one cycle after each accepted beat, at the docs/rtl-mvm.md §3.4 addresses (QS word b/4
     or 2s + half, D line blk >> 4, Q4_K half 1: BS line d_lines + s/2);
   - idle = 0 from the cycle after the first accepted beat until the last result is taken, 1 after;
   - simulation assertions in the RTL (tsr_mvm_back / tsr_mvm_actbuf / fp units) fail the test.
@@ -48,7 +48,7 @@ cocotb tests (each configuration runs all of them):
 Configurations: t1 (U200: K_MAX 32768, T_MAX 1, default latencies), t8 (T_MAX 8, defaults),
 lat1 (every latency 1), lat8 (every latency 8), mix (K_MAX 65280, T_MAX 5, ACT 3 / MAC 1 / MUL 8 /
 ADD 7: the d*Dx path is longer than the integer path, so the f32 sums are the delayed ones), k256
-(K_MAX 256 = the docs/rtl-m3.md §1 edge value, T_MAX 8, ACT 1 / MAC 8 / MUL 1 / ADD 8: no row
+(K_MAX 256 = the docs/rtl-mvm.md §1 edge value, T_MAX 8, ACT 1 / MAC 8 / MUL 1 / ADD 8: no row
 reaches RB_MIN beats), k768 (K_MAX 768, T_MAX 2, ACT 4 / MAC 2 / MUL 2 / ADD 3: Q8_0 rows reach
 RB_MIN, Q4_K rows do not).
 
@@ -57,7 +57,7 @@ Separate pytest items:
                                extreme operands (-128), random ce stalls and in_valid; out_valid / y
                                against a LAT-deep model that advances only with ce (mac_lane); and
                                the register placement measured on the layer signals g_l[i].d / .q
-                               (mac_lane_structure, docs/rtl-m3.md §9.2 item 4: no input register, a
+                               (mac_lane_structure, docs/rtl-mvm.md §9.2 item 4: no input register, a
                                product register for LAT >= 2, balanced adder segments; N 32 LAT 3 =
                                products | 2 adder levels | 3 adder levels)
   test_mvm_back_i2f_sweep      tsr_mvm_i2f (the 3-stage int -> f32 split of §8.2) exhaustively: all
@@ -94,7 +94,7 @@ CFGS = {
     "lat1": dict(K_MAX=2048, T_MAX=2, ACT_RD_LAT=1, MAC_LAT=1, MUL_LAT=1, ADD_LAT=1),
     "lat8": dict(K_MAX=8192, T_MAX=3, ACT_RD_LAT=8, MAC_LAT=8, MUL_LAT=8, ADD_LAT=8),
     "mix":  dict(K_MAX=65280, T_MAX=5, ACT_RD_LAT=3, MAC_LAT=1, MUL_LAT=8, ADD_LAT=7),
-    # small K_MAX (docs/rtl-m3.md §1 edge value 256): no row reaches RB_MIN beats at K_MAX 256;
+    # small K_MAX (docs/rtl-mvm.md §1 edge value 256): no row reaches RB_MIN beats at K_MAX 256;
     # at K_MAX 768 the Q8_0 rows do (13 beats), the Q4_K ones do not (7 beats)
     "k256": dict(K_MAX=256, T_MAX=8, ACT_RD_LAT=1, MAC_LAT=8, MUL_LAT=1, ADD_LAT=8),
     "k768": dict(K_MAX=768, T_MAX=2, ACT_RD_LAT=4, MAC_LAT=2, MUL_LAT=2, ADD_LAT=3),
@@ -116,7 +116,7 @@ MAC_CFGS = {
     "n1_t1_l2":  dict(N=1, T=1, LAT=2),
 }
 
-# tsr_mac_lane register placement (docs/rtl-m3.md §9.2 item 4), N = 32: logic layer i (0 = the
+# tsr_mac_lane register placement (docs/rtl-mvm.md §9.2 item 4), N = 32: logic layer i (0 = the
 # products, 1..5 = adder levels) -> the number of register stages between the operands and that
 # layer's inputs. Default MAC_LAT 3: products | 2 adder levels | 3 adder levels.
 MAC_STAGES_N32 = {1: [0, 0, 0, 0, 0, 0], 2: [0, 1, 1, 1, 1, 1], 3: [0, 1, 1, 2, 2, 2],
@@ -1029,7 +1029,7 @@ def mac_pack(vals, wi: int) -> int:
 
 @cocotb.test()
 async def mac_lane_structure(dut):
-    """Register placement of the generic tsr_mac_lane (docs/rtl-m3.md §9.2 item 4: product register,
+    """Register placement of the generic tsr_mac_lane (docs/rtl-mvm.md §9.2 item 4: product register,
     about two adder levels per stage), measured on the layer signals g_l[i].d / g_l[i].q: operands A
     are held until the pipeline is full, then operands B; the number of clock edges after which a
     layer shows B's values is its register depth (every layer must show exactly A's or B's values).

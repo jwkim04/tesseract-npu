@@ -1,5 +1,5 @@
 // tsr_vkernel_proto.h — wire protocol between the "vkernel" kdev (tsr_kdev_vkernel.cpp, in the
-// host process) and the Verilated kernel server (tb/platform/vkernel; the two-clock server is P5.3).
+// host process) and the Verilated kernel server (tb/platform/vkernel; the tree has no two-clock server).
 // docs/platform-u200.md §13.
 //
 // One stream connection (a socketpair to a server the client spawned, or a Unix socket), one
@@ -12,9 +12,9 @@
 //
 // Protocol version 3 (P3.1, EX §10.2): the kernel is ap_ctrl_none and its clocks run only when the
 // client lets device time pass: VK_ADVANCE (10), the "advance" hint of the kdev layer (kdev::idle), and
-// VK_TIME (11), the device time the protocol's timeouts count. The two-clock server that
-// implements them is P5.3 (docs/design/06-software-verification.md §11); until then no server exists
-// and TSR_DEVICE=vkernel stops at the open with a message naming P5.3.
+// VK_TIME (11), the device time the protocol's timeouts count. The tree has no server that
+// implements them (docs/design/06-software-verification.md §9.1), and TSR_DEVICE=vkernel stops at
+// the open with a message that says so.
 #pragma once
 
 #include <stdint.h>

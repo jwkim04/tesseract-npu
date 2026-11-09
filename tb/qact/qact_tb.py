@@ -4,7 +4,7 @@
     subnormals, NaN, Inf, rounding ties, first-largest ties placed across lines and merge-tree
     branches, tiny max -> iscale overflow / saturation, d FTZ, fp16(d) overflow / subnormal,
     divider FTZ / overflow boundaries, raw random bit patterns, ...) and random mixes of them;
-  - SpmModel: a behavioural SPM client port (tsr_spm contract, docs/rtl-m2.md §5): read data
+  - SpmModel: a behavioural SPM client port (tsr_spm contract, docs/rtl-core.md §5): read data
     exactly SPM_RD_LAT cycles after the accepting edge without backpressure, random (or bursty)
     rd_req_ready / wr_ready, garbage on rd_rsp_data in cycles without a response, R2 checks of
     the unit's read and write requests, a log of every read / write / done;

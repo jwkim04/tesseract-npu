@@ -1,7 +1,7 @@
 // tsr_sram_1r1w.sv — Xilinx UltraScale+ (U200) variant of the simple dual-port SRAM: one write
 // port and one read port, one clock, byte write enables, registered read.
 //
-// Owner: xtech agent (M3 part C; docs/rtl-m3.md §9.2, docs/rtl-m2.md §5 and §12 "Consequences
+// Owner: xtech agent (M3 part C; docs/rtl-mvm.md §9.2, docs/rtl-core.md §5 and §12 "Consequences
 // for M4" item 1). Selected by rtl/filelist_xilinx.f in place of rtl/tech/generic.
 //
 // Contract: identical to rtl/tech/generic/tsr_sram_1r1w.sv (same module name, parameters and
@@ -19,7 +19,7 @@
 //   "ultra", whose stages 2..RD_LAT only load behind a read (below) and hold otherwise.
 //
 // Mapping (inference + attributes only, no unisim primitive, so Verilator simulates this file):
-//   RAM_STYLE by size (one rule for every instance of the core, docs/rtl-m3.md §9.3):
+//   RAM_STYLE by size (one rule for every instance of the core, docs/rtl-mvm.md §9.3):
 //     "ultra"       DEPTH >= 4096 and DEPTH x WIDTH >= 4096 x 64 (at least 8 of the 9 bytes of
 //                   one URAM288): the SPM, whose banks tsr_spm builds from 64-bit column slices
 //                   (U200: 4 banks x 8 slices of 16 K x 64 = 32 4-deep cascades = 128 URAM, one

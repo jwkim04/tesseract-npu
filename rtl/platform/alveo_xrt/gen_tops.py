@@ -13,7 +13,7 @@ Kernels (the lead's kernel contract): module name = kernel name.
                                       the control core in SLR0 behind the narrow RV transport, the DB block
                                       with trace writer and dispatch history; no local-intermediate banks
                                       (docs/platform-u200.md §8.8)
-Both: the U200 bitstream parameters of docs/rtl-m3.md §14.2 (SPM 4 MiB with SPM_RD_LAT 4,
+Both: the U200 bitstream parameters of docs/rtl-mvm.md §14.2 (SPM 4 MiB with SPM_RD_LAT 4,
 MVM_BC_PIPE 2, MVM_RES_PIPE 2, MVM_MAC_LAT 9, RST_PIPE 3: the core's reset stages with per-block
 copies), CH_BYTES 16 GiB, the other tsr_core parameters at the U200 defaults (tsr_pkg TSR_DEF_*),
 AXI_SLICES 2, RST_STAGES 3. With RST_PIPE 3, ap_rst_n must stay low for >= 4 cycles
@@ -71,10 +71,10 @@ KERNELS = {
                        DDR_LOCAL_PIPE=1, RV_LOCAL_TRANSPORT=1, XSLR_REG=1, FAST_CLK=1, VU_FRONT_LANES=8, VU_EXP_LANES=8,
                        VU_BACK_LANES=4, VU_LANE_PIPE=2, HAS_GDN=1),
 }
-# The U200 bitstream parameters (docs/rtl-m3.md §14.2; tb/fastreplay/run.py PACKAGED carries the same)
+# The U200 bitstream parameters (docs/rtl-mvm.md §14.2; tb/fastreplay/run.py PACKAGED carries the same)
 COMMON = dict(SPM_RD_LAT=4, MVM_BC_PIPE=2, MVM_RES_PIPE=2, MVM_MAC_LAT=9, RST_PIPE=3, AXI_SLICES=2, RST_STAGES=3)
 FIXED_DOC = ("SPM 4 MiB (default) with SPM_RD_LAT 4, MVM_BC_PIPE 2, MVM_RES_PIPE 2,\n// MVM_MAC_LAT 9, "
-             "RST_PIPE 3 (U200 bitstream parameters, docs/rtl-m3.md §14.2), CH_BYTES 16 GiB (default),\n"
+             "RST_PIPE 3 (U200 bitstream parameters, docs/rtl-mvm.md §14.2), CH_BYTES 16 GiB (default),\n"
              "// the other tsr_core parameters at the U200 defaults, AXI_SLICES 2, RST_STAGES 3;\n"
              "// ap_rst_n low for >= 4 cycles (RST_PIPE + 1, docs/platform-u200.md §5)")
 

@@ -1,6 +1,6 @@
 // tsr_fp_mul.sv — pipelined f32 multiplier with the spec's fp rules.
 //
-// Owner: fp agent (docs/rtl-m2.md §2, block (c)).
+// Owner: fp agent (docs/rtl-core.md §2, block (c)).
 //
 // Contract (bit-exact with tsr_ref.c tsr_fmul):
 //   y = fin(DAZ(a) * DAZ(b)): inputs with exponent 0 are signed zeros; the product is rounded
@@ -29,7 +29,7 @@
 //   [OUT]   y, out_valid                                             always
 //   No logic in front of the input flops ([IN] holds the raw operands). Stage 1 is <= 4 LUT
 //   levels, stages 2 + 3 together <= 4 LUT levels + the 31-bit carry chain (4 CARRY8), so every
-//   LAT >= 3 is within the ~6-level budget of docs/rtl-m2.md §1. Vivado 2024.2 out of context,
+//   LAT >= 3 is within the ~6-level budget of docs/rtl-core.md §1. Vivado 2024.2 out of context,
 //   xcu200-fsgd2104-2-e, 3.333 ns, I/O delay 1.6 ns (tb/fp/viv/fp_ooc.tcl; tb/fp/test_fp.py
 //   test_fp_ooc_timing):
 //     LAT 3: WNS +0.79 ns, set by the DSP cascade without M register ([IN] flop -> 2 x DSP48E2

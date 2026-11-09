@@ -2,7 +2,7 @@
 // no-op shim (XCL_EMULATION_MODE=noop: no card, no driver), so that sw/tools/tsr_bw's XRT path —
 // xclbin parsing, kernel / argument lookup and offset checks, clock topology, device-only buffers
 // per memory group, xrt::run argument sizes, start / wait — runs on the dev server
-// (tb/platform/bw/noop/noop_smoke.sh; docs/m0-bw.md §6). The section layout follows
+// (tb/platform/bw/noop/noop_smoke.sh; docs/bandwidth-kernel.md §6). The section layout follows
 // sw/transport/tests/test_xrt_noop.cpp (EMBEDDED_METADATA kernel XML, IP_LAYOUT, MEM_TOPOLOGY with
 // four DDR4 banks, CONNECTIVITY) plus CLOCK_FREQ_TOPOLOGY (DATA clock 287 MHz, KERNEL clock 500).
 //
@@ -46,7 +46,7 @@ std::string kernel_xml(const std::string & variant) {
                  name.c_str(), aq, id++, port.c_str(), size, off, size, type);
         x += b;
     };
-    // the args of rtl/platform/alveo_xrt/bw/kernel_bw_k4.xml (docs/m0-bw.md §2)
+    // the args of rtl/platform/alveo_xrt/bw/kernel_bw_k4.xml (docs/bandwidth-kernel.md §2)
     arg("seed", "s_axi_control", 0x10, 4, 0, "uint");
     for (unsigned c = 0; c < 4; ++c) {
         const unsigned base = 0x20 + 0x20 * c;

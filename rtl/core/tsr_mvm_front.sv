@@ -2,13 +2,13 @@
 // (tsr_mvm_ws), chunk parser, meta register with the Q4_K 6-bit scale unpack, weight unpack;
 // produces the tagged beat stream tsr_mvm_beat_t for the back end.
 //
-// Owner: front agent (docs/rtl-m3.md §2 block (front); contract §3.3, §4).
+// Owner: front agent (docs/rtl-mvm.md §2 block (front); contract §3.3, §4).
 //
-// Contract (normative text: docs/rtl-m3.md §3.3; golden model tb/common/mvm_model.py front_beats):
+// Contract (normative text: docs/rtl-mvm.md §3.3; golden model tb/common/mvm_model.py front_beats):
 //   - cmd (tsr_mvm_fcmd_t) valid/ready: one per MVM of a channel with rows >= 1; cmd_ready is a
 //     register, 1 only when idle.
 //   - the channel's rows (cmd.rows rows of cmd.row_beats beats from cmd.w_off) are streamed with
-//     tsr_mvm_ws (exactly cmd.beats beats, docs/rtl-m3.md §4) and parsed in order: per row, per
+//     tsr_mvm_ws (exactly cmd.beats beats, docs/rtl-mvm.md §4) and parsed in order: per row, per
 //     chunk (Q8_0: 1 meta + 16 quant beats, Q4_K: 1 + 8; the last chunk of a row may be partial:
 //     Q8_0 rem blocks -> 1 + ceil(rem/2) beats, Q4_K rem superblocks -> 1 + 2*rem beats).
 //     META beats are held in the meta register and not forwarded; every QUANT beat yields exactly

@@ -4,61 +4,69 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat"></a>
-  <a href="CHANGELOG.md"><img alt="Release: basis-v0.1.0" src="https://img.shields.io/badge/release-basis--v0.1.0-green?style=flat"></a>
+  <a href="CHANGELOG.md"><img alt="Release: basis-v1.0.0" src="https://img.shields.io/badge/release-basis--v1.0.0-green?style=flat"></a>
   <a href="docs/platform-u200.md"><img alt="Platform: AMD Alveo U200" src="https://img.shields.io/badge/platform-AMD%20Alveo%20U200-lightgrey?style=flat"></a>
 </p>
 
 # Tesseract
 
-**A full-stack, open-source NPU for LLM inference.**
+A full-stack, open-source NPU for LLM inference.
 
 - <img alt="Tesseract Core" src="docs/logo/tesseract-core-lockup-universal.png" height="20"> hardware: NPU core in SystemVerilog with an on-chip RISC-V control core.
 - <img alt="Tesseract Basis" src="docs/logo/tesseract-basis-lockup-universal.png" height="20"> firmware: C++20 runtime, kernel library and kernel SDK.
 - Software: llama.cpp and PyTorch backends, bit-exact simulator, verification tools.
 
-Runs shipped GGUF models with `-ngl`. Implemented on an AMD Alveo U200 FPGA.
+Runs GGUF models as shipped through llama.cpp with `-ngl`. Implemented on an AMD Alveo U200 FPGA.
 
-## Performance
+## Operators and features
 
-| Model | Weights | Decode (tok/s) |
-| --- | --- | --- |
-| Qwen2.5-0.5B-Instruct | Q8_0 | 54.7 |
-| Gemma 4 12B | Q8_0 | 4.50 |
-| Gemma 4 12B | Q4_K_M | 6.91 |
-| Qwen2.5-32B-Instruct | Q4_K_M | 2.93 |
+The device runs these ggml ops. The op list kinds behind them are in [docs/versioning.md](docs/versioning.md).
 
-Batch 1 on an Alveo U200, measured before the control core was added. Details:
-[docs/performance.md](docs/performance.md).
+- Matrix multiply: `MUL_MAT` with Q8_0 and Q4_K weights and an optional fused add, and `MUL_MAT_ID` for the expert matrices of mixture-of-experts layers. Other weight types are converted to Q8_0 when the model loads.
+- Attention: `FLASH_ATTN_EXT` with grouped-query heads, head sizes 64 to 512 and masks, over a Q8_0 KV cache that lives in device memory (`SET_ROWS`).
+- Normalisation and position: `RMS_NORM` with a fused weight multiply, and `ROPE` in normal, NEOX and interleaved multi-section modes.
+- Activations and element-wise ops: `ADD`, `MUL`, `SCALE`, `UNARY` (tanh, GELU, SiLU, sigmoid, exp, softplus), `GLU` (SwiGLU, GeGLU), `GET_ROWS` and `CPY`.
+- Routing: softmax, top-k selection and weight normalisation of a mixture-of-experts router.
+- Recurrent layers: `SSM_CONV` and `GATED_DELTA_NET` for Gated DeltaNet.
+
+Any other op runs on the CPU through the ggml scheduler, and PyTorch keeps its eager ops. A model that llama.cpp runs therefore
+runs here, with the supported part on the device. Qwen2.5, Gemma 4, Qwen3 MoE and Qwen3.5 are examples.
+[docs/README.md](docs/README.md) lists the limits.
+
+- One launch per decode token. In M7 mode the whole token, KV cache and attention included, is one launch of the firmware's `graph` kernel. In M6 mode only the matrix products run on the device ([execution modes](docs/design/README.md)).
+- Multi-token prediction. The model's draft head proposes tokens and the device verifies a window of them in one launch, with rollback of the recurrent state. `tsr-mtp` drives and measures it.
+- Kernel SDK. Basis kernels are freestanding C++20 for the control core and build for the host as well.
+- Bit-exact simulator. `sw/sim` is the oracle for the RTL, the firmware and the host stack. The transports are `sim`, `mock` and `xrt` (the card).
+- PyTorch backend. `torch.compile(model, backend="tesseract")` runs the weight matmuls of a model on the device.
+- Tools. `tsr-selftest` checks a device, `klcheck` and `numcheck` compare a whole model and every weight matmul with the CPU, `tsr-prof` and the profile report show where a token spends its cycles, `tsr-top` monitors a running card, and `tsr-dbg` debugs the control core with GDB.
 
 ## Architecture
 
-<p align="center"><img src="docs/fig/hero.png" alt="Stylised die of the Tesseract NPU core: four MVM clusters of 128 MAC lanes at the corners, each fed by its own DDR4 channel through a memory arbiter; the 4 MiB scratchpad in the centre inside the x broadcast and y gather; DMA, QACT and CSR blocks; and, drawn dashed because they run on the simulator and are planned for the card, a RISC-V control core with an issue path and unit queues, a vector unit and a debug block. One cluster is opened up: weight streamer, unpack, activation buffer, 128 MAC lanes, FP accumulate and tree16." width="100%"></p>
+<p align="center"><img src="docs/fig/hero.png" alt="Stylised die of Tesseract Core: four MVM clusters of 128 MAC lanes, one per DDR4 channel, around a 4 MiB scratchpad, with DMA, QACT, the vector unit, the RISC-V control core and the debug block. One cluster is opened up to show its weight streamer, unpack stage, activation buffer, MAC lanes and accumulate tree." width="100%"></p>
 
-Tesseract Core is the current configuration: one MVM cluster per DDR4 channel streams weights at one
-64-byte beat per cycle into 128 MAC lanes. A 4 MiB scratchpad holds activations and results. The
-dashed blocks run on the simulator and are not on the card yet.
-
-<p align="center"><img src="docs/fig/clocks.png" alt="The two clock domains of Tesseract Core as two tinted regions side by side. The XRT shell at the top supplies the kernel clocks ap_clk and ap_clk_2 and their resets as lines in each domain's colour, and carries the CSR port and the memory ports into the core domain. The core domain (blue, ap_clk, 276.3 MHz in the k4 build) holds the platform adapter, the CSR block, the issue path, the SPM bridge, DMA, QACT, the MVM clusters, the scratchpad and the memory arbiters. The control core domain (orange, ap_clk_2, 166.7 MHz planning value) holds Ibex, the debug module, ITCM, DTCM, the RISC-V bus and the control window. On the boundary between the regions every crossing is a synchroniser cell with an arrow from the source block to the destination block and its width: async FIFOs with gray pointers, gray counters, request and acknowledge handshakes, two-flop level synchronisers and a reset synchroniser. A legend shows the cell symbols and the constraints: ASYNC_REG, a maximum delay equal to the smaller clock period, and a bus skew limit on the gray buses." width="100%"></p>
-
-The control core runs in its own clock domain; every crossing goes through a synchroniser, a gray-coded counter or FIFO, or a handshake (details: [control core design, section 11](docs/design/04-control-core.md#11-clock-domains-and-cdc)).
+One MVM cluster per DDR4 channel streams weights at one 64-byte beat per cycle into 128 MAC lanes.
+A 4 MiB scratchpad holds activations and results. The RISC-V control core runs the firmware and
+issues every tile op to the DMA, QACT, MVM and vector units. It has its own clock domain. Every
+crossing goes through a synchroniser, a gray-coded counter or FIFO, or a handshake
+([control core design, section 11](docs/design/04-control-core.md#11-clock-domains-and-cdc)).
 
 ## Software stack
 
-<p align="center"><img src="docs/fig/stack.png" alt="The Tesseract software stack as layered bands from the applications down: llama.cpp (llama-cli and llama-server) and PyTorch with Hugging Face models, each shown with its logo; the ggml-tesseract backend and the tsr_rt runtime; tsr_transport with the kinds sim, mock, vkernel (planned) and xrt (planned: it has not run on the card with the control core yet); firmware on the control core (runtime, executor, kernels, selftest and replay); the NPU core with control core, issue path, DMA, QACT, MVM clusters, vector unit and SPM; and the FPGA card with the U200, the XRT shell and four DDR4 channels. A column of developer tools lists klcheck and numcheck, the trace tools, tsr-selftest, tsr-log and the simulator, with GDB debugging and tsr-prof planned. Tags mark what runs on the simulator, what ran on the card and what is planned." width="100%"></p>
+<p align="center"><img src="docs/fig/stack.png" alt="The software stack from the applications down: llama.cpp and PyTorch; the ggml-tesseract backend and the tsr_rt runtime; tsr_transport with the sim, mock and xrt kinds; Basis firmware on the control core; the NPU core; and the U200 card with its XRT shell and four DDR4 channels. A column lists the developer tools." width="100%"></p>
 
-<p align="center"><img src="docs/fig/dataflow.png" alt="Data and control flow for one decode token in seven numbered steps over three bands. Host: llama.cpp builds the ggml graph, ggml-tesseract turns it into a cached op list, tsr_transport writes the token inputs to card DDR and pushes one launch descriptor over PCIe. Firmware on the RISC-V control core: the runtime takes the launch and the Basis graph kernel walks the op list. Hardware: the issue path with its unit queues feeds DMA, four MVM clusters of 128 MAC lanes and the vector unit; the MVM clusters stream weights directly from their DDR4 channels, attention ops work in the 4 MiB scratchpad and the KV cache stays in DDR; results return to DDR, the runtime posts an answer record and the host reads the answer and the logits." width="100%"></p>
+llama.cpp hands its graph to the ggml-tesseract backend. The backend lowers the graph to an op list
+and launches it through `tsr_transport`. The Basis firmware on the control core walks the op list
+and issues tile ops. The transport kinds are `sim` (the C simulator, the bit-exact oracle), `mock`
+(the adapter's register model around the simulator) and `xrt` (the card).
 
-Logos belong to their owners ([sources and licences](docs/fig/logos/SOURCES.md)).
+<p align="center"><img src="docs/fig/dataflow.png" alt="One decode token in seven steps. The host builds the ggml graph, ggml-tesseract turns it into an op list, and the transport writes the inputs to card DDR and pushes one launch descriptor over PCIe. The Basis graph kernel on the control core walks the op list and issues tile ops through the unit queues to DMA, four MVM clusters and the vector unit. Results return to DDR, the runtime posts an answer record and the host reads the logits." width="100%"></p>
 
-The control core, VU, attention and debug RTL are implemented and have module/integration tests.
-The GDB server and debug tools run on the C simulator, including a real RISC-V GDB smoke test.
-Some figure badges retain earlier planning labels. The current implementation and verification
-map is [design §12](docs/design/README.md#12-implementation-map-and-verification-status);
-[handoff](docs/handoff.md) records the active K4 build and the pending card gates.
+Logos in the figures belong to their owners ([sources and licences](docs/fig/logos/SOURCES.md)).
 
 ## Custom kernels
 
-Basis is the kernel SDK: kernels are freestanding C++20 that run on the RISC-V control core and build for the host too.
+Basis is the kernel SDK. Kernels are freestanding C++20 that run on the control core and build for
+the host too.
 
 ```cpp
 #include "tsr/kernel.hpp"
@@ -80,28 +88,8 @@ extern "C" int32_t vadd(const tsr_args * args) {
 }
 ```
 
-The host loads the image and launches the kernel by name:
-
-```cpp
-#include "tsr_transport.h"
-
-tsr_image * img;
-tsr_image_open("vadd.elf", &img);                    // firmware image with the kernel
-tsr_transport * t = tsr_transport_open("sim");       // "xrt" for the card
-tsr_transport_boot(t, img);                          // load, verify, start the control core
-
-tsr_transport_write(t, 0, A * 64, a, bytes);         // inputs into device DRAM (channel 0)
-tsr_transport_write(t, 0, B * 64, b, bytes);
-
-tsr_launch l = {.type = TSR_DESC_TYPE_LAUNCH, .flags = 0,
-                .kernel = (uint16_t) tsr_image_kernel(img, "vadd"),
-                .arg = {A, B, Y, n}};                // handles = 64-byte beat indices
-tsr_record r;
-tsr_transport_call(t, &l, TSR_TIMEOUT_DEFAULT, &r);  // launch and wait for the answer
-tsr_transport_read(t, 0, Y * 64, y, bytes);
-```
-
-See the [firmware SDK guide](sw/ctrl/README.md).
+The [firmware SDK guide](sw/ctrl/README.md) covers the kernel API and the host side that loads an
+image and launches a kernel by name.
 
 ## Quick start
 
@@ -114,27 +102,21 @@ cmake --build build/dev -j4
 build/dev/bin/tsr-selftest --device sim      # boots the firmware on the simulator and checks it
 # put a GGUF in models/, then run it on the simulator:
 LLAMA_ATTN_ROT_DISABLE=1 build/dev/bin/llama-completion -m models/qwen2.5-0.5b-instruct-q8_0.gguf \
-    -ngl 99 -nkvo -fa on -ctk q8_0 -ctv q8_0 -no-cnv -p "The capital of France is" -n 16
+    -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -no-cnv -p "The capital of France is" -n 16
 ```
 
-See [Getting started](docs/getting-started.md) for requirements, tests, PyTorch and the card.
+For the card, configure with `-DTSR_WITH_XRT=ON` and set `TSR_DEVICE=xrt` and
+`TSR_XCLBIN=<tsr_u200_k4.xclbin>`. [Getting started](docs/getting-started.md) has the requirements,
+the tests, PyTorch and the card.
 
 ## Documentation
 
+- [Documentation index](docs/README.md)
 - [Getting started](docs/getting-started.md): build, run, verify, repository layout
-- [Performance](docs/performance.md): measurements and conditions
-- [Specification](docs/spec.md)
-- [Design documents](docs/design/README.md)
+- [Specification](docs/spec.md) and [design documents](docs/design/README.md)
 - [Basis kernel SDK](sw/ctrl/README.md)
 - [Versions](docs/versioning.md): core capability, Basis version and ABI, kind revisions
-
-## Roadmap
-
-- Control core, vector unit and attention on the card.
-- Speculative decoding: n-gram lookup, draft models and MTP heads, verified in one T_MAX 8 pass.
-- Mixture of experts (Gemma 4 26B-A4B) and PyTorch on Basis kernels.
-- New layer types: Gated DeltaNet linear attention for Qwen3.8-27B.
-- Multi-chip: Tesseract Cores linked in a mesh over QSFP, with the weights split across the chips.
+- [Changelog](CHANGELOG.md)
 
 ## License
 

@@ -6,7 +6,7 @@
 // Owner: DB (W4-B item 6). tsr_core_dp places it between u_dma's channel-TRW_CH write port and
 // u_arb's s_wr_* port of that channel (tsr_mem_arb itself stays unchanged).
 //
-// Protocol (docs/rtl-m2.md §4): request {addr, len, id}, data {data, word mask, last} and response {id}
+// Protocol (docs/rtl-core.md §4): request {addr, len, id}, data {data, word mask, last} and response {id}
 // are independent valid / ready streams; the data beats of the bursts follow the request order
 // without interleaving. A source may offer data before its request is taken (the DMA does).
 // DMA mode (default): every DMA stream passes straight through, so with the trace writer idle

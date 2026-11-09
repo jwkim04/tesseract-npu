@@ -1,5 +1,5 @@
 // test_ref_vu.c — directed and cross checks of the VU references (sw/sim/tsr_ref_vu.c; VU §4–§6,
-// SW §10.1 "VU/AT references", VU §10 items 1 and 3). The independent numpy model
+// SW §10.1, VU §10 items 1 and 3). The independent numpy model
 // (tests/ref_vu_np.py, ctest ref_vu_np) is the bit-level oracle on generated vectors; this test
 // holds the directed cases and the cross-checks against ggml.
 //
