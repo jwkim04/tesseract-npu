@@ -11,6 +11,10 @@ vector unit (`gdn-vu`, merged at `bdcf7b9`) and the work for a 4.0 ns core clock
   engine too): `screen -dmS k4f250-link /home/limagin-dev/tesseract-f250/build/f250/k4f250_link.sh` (not in git; the 200 MHz version of
   `k4full_link.sh` for this worktree: output `build/link/k4f250`, source commit and diff recorded next to the log, same slot, jobs and
   `AggressiveExplore` options as the fourth link). Request: `hw/u200/k4.cfg` is `kernel_frequency=0:250|1:100` (200 MHz: `0:200|1:100`). The final clock check follows the request.
+- **Maximum-clock link (branch `k4fmax`, worktree `/home/limagin-dev/tesseract-fmax`, from `k4f250` at `7220f48`):** `k4.cfg` requests `0:250|1:100` and
+  Vitis may scale the core down; `clock_final_check.tcl` accepts a core clock from 200.0 MHz to 250.1 MHz and `clk_rv` at 100 MHz (§8.10). The first
+  250 MHz attempt was stopped after placement at WNS -0.347 ns. Start (not started): `screen -dmS k4fmax-link /home/limagin-dev/tesseract-fmax/build/fmax/k4fmax_link.sh`
+  (output `build/link/k4fmax`; it records `_new_clk_freq` and the `CLKFINAL` lines at the end). Same netlist and Pblocks as the `k4f250` link.
 - **What the image is:** `tsr_u200_k4` with `FAST_CLK` 1 and `HAS_GDN` 1 (CAPS 0x121), T_MAX 4, core 250 MHz and `clk_rv` 100 MHz, the Pblocks of the fourth link.
   `FAST_CLK` lengthens a few attention and diagnostic paths by a few cycles and changes no result (list and costs: §8.10).
 - **250 MHz decision:** the user decided to link at 250 MHz (`f8913e6`) after the block results: every block meets 4.0 ns out of context and the

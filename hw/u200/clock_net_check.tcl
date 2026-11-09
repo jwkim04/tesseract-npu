@@ -2,7 +2,7 @@
 # CC §11.1 and §14.3. The source identities are checked earlier in the BD hook.
 # Check the active kernel config's request before final frequency scaling.
 # These PERIOD properties retain the request after routing; final acceptance
-# (k4: core 200 MHz and RV 100 MHz, k1: core >= 250 MHz) uses Vitis's _new_clk_freq
+# (k4: core from 200 MHz up to the request and RV at the request, k1: core >= 250 MHz) uses Vitis's _new_clk_freq
 # in clock_final_check.tcl instead. The period window is 0.5 % around the request in
 # the kernel's own config, so it follows the config and needs no edit for a new clock.
 # A 125 MHz fallback requires an explicit clock-request/check-window change.

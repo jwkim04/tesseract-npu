@@ -1,6 +1,7 @@
 """Link gate failures and U200 clock/reset binding, without launching Vivado."""
 from pathlib import Path
 import re
+import shutil
 import subprocess
 
 import pytest
@@ -19,6 +20,13 @@ K4_CORE, K4_RV = _k4_request()
 K4_CORE_PERIOD = "%.3f" % (1000.0 / K4_CORE)       # ns, as the mock design reports it
 K4_RV_PERIOD = "%.3f" % (1000.0 / K4_RV)
 OTHER_CORE = 250 if K4_CORE == 200 else 200            # the other core clock of the 200 / 250 MHz work
+K4_CORE_FLOOR = 200.0                                  # the validated core clock of the K4 images
+
+
+def k4_core_window(core):
+    """The core window (MHz) of hw/u200/clock_final_check.tcl for a k4 request: from the floor to the request + 0.1.
+    The floor is 200.0, or the request itself when that is below 200."""
+    return min(K4_CORE_FLOOR, float(core)), core + 0.1
 
 
 def run_tcl(tmp_path, body):
@@ -250,21 +258,27 @@ def core_rv(core, rv):
     return [f"kernel:0:ss_ucs/aclk_kernel_00:{core}", f"kernel:1:ss_ucs/aclk_kernel_01:{rv}"]
 
 
-# k4 accepts exactly the request of hw/u200/k4.cfg (core 200 / RV 100 MHz for the images of the 200 MHz core, 250 / 100 for the
-# 250 MHz work): the final window is the request plus 0.1 MHz.
+# k4 accepts a core clock from the floor (200.0 MHz, or the request when that is lower) up to the request + 0.1 MHz, since Vitis may
+# scale the core down, and exactly the RV request (+ 0.1 MHz). The request is the one of hw/u200/k4.cfg (core 200 or 250 MHz, RV 100 MHz).
 C, R = K4_CORE, K4_RV
+F = k4_core_window(C)[0]
+MID = 230.0                                            # a core clock Vitis scaled down inside the window of a 250 MHz request
 K4_FINAL = [
     (core_rv(f"{C}.0", f"{R}.0"), True),
     (core_rv(f"{C}", f"{R}"), True),
     (core_rv(f"{C}.1", f"{R}.1"), True),
-    (core_rv(f"{C - 1}.99", f"{R}.0"), False),      # a core clock Vitis scaled down
-    (core_rv(f"{C}.0", f"{R - 1}.99"), False),      # an RV clock Vitis scaled down
+    (core_rv(f"{F}", f"{R}.0"), True),                    # the floor (200.0)
+    (core_rv(f"{F + 0.01:.2f}", f"{R}.0"), True),
+    (core_rv(f"{F - 0.01:.2f}", f"{R}.0"), False),        # just below the floor (199.99)
+    (core_rv(f"{F - 1}", f"{R}.0"), False),               # a core clock Vitis scaled below the floor
+    (core_rv(f"{C}.0", f"{R - 1}.99"), False),            # an RV clock Vitis scaled down
+    (core_rv(f"{F}", f"{R - 1}.99"), False),              # a scaled core does not excuse a scaled RV
     (core_rv(f"{C}.11", f"{R}.0"), False),
     (core_rv(f"{C}.0", f"{R}.11"), False),
-    (core_rv(f"{OTHER_CORE}.0", f"{R}.0"), False),   # the other core clock of the 200 / 250 MHz work
-    (core_rv("250.0", "166.0"), False),              # the earlier 250 / 166.7 request is not accepted any more
+    (core_rv(f"{C + 50}.0", f"{R}.0"), False),            # above the request
     (core_rv("300.0", f"{R}.0"), False),
-    (core_rv(f"{C}.0", "150.0"), False),             # the 200 / 150 request of the first link is not accepted any more
+    (core_rv("250.0", "166.0"), False),                   # the earlier 250 / 166.7 request is not accepted any more
+    (core_rv(f"{C}.0", "150.0"), False),                  # the 200 / 150 request of the first link is not accepted any more
     (core_rv(f"{C}.0", "166.0"), False),
     (core_rv(f"{C}.0", "500.0"), False),
     (core_rv("NaN", f"{R}.0"), False),
@@ -275,6 +289,9 @@ K4_FINAL = [
     ([f"kernel:0:ss_ucs/aclk_kernel_00:{C}", f"kernel:0:ss_ucs/aclk_kernel_00:{C}"], False),
     ([f"kernel:0:ss_ucs/aclk_kernel_01:{C}", f"kernel:1:ss_ucs/aclk_kernel_00:{R}"], False),
 ]
+if F < MID < C:
+    K4_FINAL.append((core_rv(f"{MID}", f"{R}.0"), True))
+    K4_FINAL.append((core_rv(f"{MID}", f"{R - 1}.99"), False))
 # k1 keeps its earlier window: core 250 to 300.1 MHz, RV 158.33 to 166.8 MHz.
 K1_FINAL = [
     (core_rv("300.0", "166.666667"), True),
@@ -305,6 +322,33 @@ def test_final_scaled_frequencies(tmp_path, kernel, records, valid):
     assert "CLKFINAL" in r.stdout + r.stderr
     if valid:
         assert f"CLKFINAL PASS {kernel}" in r.stdout
+
+
+# The k4 core window for requests other than the one in the checked-in k4.cfg: the hooks run from a copy next to a k4.cfg of the
+# given request, so these cases hold whatever the config asks for. 250 and 200 are the two requests of the 200 / 250 MHz work; 166
+# is a request below the floor, whose floor is the request itself.
+@pytest.mark.parametrize("core", [250, 225, 200, 166])
+def test_final_window_of_a_k4_request(tmp_path, core):
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    for name in ("clock_common.tcl", "clock_final_check.tcl"):
+        shutil.copy2(REPO / "hw/u200" / name, hooks / name)
+    (hooks / "k4.cfg").write_text(f"kernel_frequency=0:{core}|1:100\n")
+    low = k4_core_window(core)[0]
+    cases = [(f"{core}.0", True), (f"{core}.1", True), (f"{low}", True), (f"{(low + core) / 2}", True),
+             (f"{low - 0.01:.2f}", False), (f"{core}.11", False), (f"{core + 50}.0", False)]
+    for mhz, valid in cases:
+        (tmp_path / "_new_clk_freq").write_text("\n".join(core_rv(mhz, "100.0")) + "\n")
+        r = run_tcl(tmp_path, FINAL_MOCK + f"cd {{{tmp_path}}}\nsource {{{hooks / 'clock_final_check.tcl'}}}\n")
+        assert (r.returncode == 0) == valid, (core, mhz, r.stdout, r.stderr)
+        assert ("CLKFINAL PASS k4" in r.stdout) == valid
+        if not valid:
+            assert f"CLKFINAL clock 0 frequency {mhz} MHz is outside" in r.stdout + r.stderr
+    # The RV clock stays exact for every request.
+    for rv, valid in (("100.0", True), ("100.1", True), ("99.99", False), ("100.11", False)):
+        (tmp_path / "_new_clk_freq").write_text("\n".join(core_rv(f"{low}", rv)) + "\n")
+        r = run_tcl(tmp_path, FINAL_MOCK + f"cd {{{tmp_path}}}\nsource {{{hooks / 'clock_final_check.tcl'}}}\n")
+        assert (r.returncode == 0) == valid, (core, rv, r.stdout, r.stderr)
 
 
 def test_final_check_stops_on_an_unknown_kernel(tmp_path):
@@ -652,10 +696,12 @@ def test_cdc_restore_rejects_invalid_clock_pair(tmp_path, mutation):
     assert not (tmp_path / "tsr_ctrl_cdc_link.xdc").exists()
 
 
-# (5.0, 10.0) is the card images of tsr_u200_k4 at 200 / 100 MHz, (5.0, 6.667) the reduced image's earlier 200 / 150 MHz request:
-# both periods are above the cap, so the bound stays 3.333 ns.
+# (5.0, 10.0) is the card images of tsr_u200_k4 at 200 / 100 MHz, (4.0, 10.0) the 250 / 100 MHz request (and a core scaled
+# down from it keeps the request's periods in the constraints), (5.0, 6.667) the reduced image's earlier 200 / 150 MHz request:
+# all periods are above the cap, so the bound stays 3.333 ns.
 @pytest.mark.parametrize("core,rv,bound", [(4.0, 6.023, 3.333), (3.333, 6.023, 3.333),
-                                         (3.0, 6.023, 3.0), (4.0, 2.5, 2.5), (5.0, 10.0, 3.333), (5.0, 6.667, 3.333)])
+                                         (3.0, 6.023, 3.0), (4.0, 2.5, 2.5), (5.0, 10.0, 3.333), (4.0, 10.0, 3.333),
+                                         (5.0, 6.667, 3.333)])
 def test_cdc_restore_preserves_cap_and_faster_clock_bounds(tmp_path, core, rv, bound):
     body = CDC_LINK_MOCK + f"\nset periods(core) {core}\nset periods(rv) {rv}\n"
     body += f"source {{{REPO / 'hw/u200/cdc_restore.tcl'}}}\n"

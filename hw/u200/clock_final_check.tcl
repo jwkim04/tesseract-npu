@@ -5,10 +5,14 @@ source [file join [file dirname [file normalize [info script]]] clock_common.tcl
 
 # Accepted scaled frequencies in MHz by kernel: {core_low core_high rv_low rv_high}.
 #   k1  core request 300, floor 250. RV request 166 (Vitis truncates 166.67), 5 % tolerance.
-#   k4  the card images of tsr_u200_k4 accept exactly the request of hw/u200/k4.cfg (kernel_frequency=0:<core>|1:<rv>; 200 / 100
-#       in the images of the reduced and the full-feature cores, user decision 2026-11-06; 250 / 100 for the 250 MHz work, docs/platform-u200.md
-#       §8.10): a core or RV clock that Vitis scaled down fails the run. The 0.1 MHz above the request only absorbs the decimal
-#       precision of _new_clk_freq.
+#   k4  the card images of tsr_u200_k4 take the request of hw/u200/k4.cfg (kernel_frequency=0:<core>|1:<rv>; 200 / 100 in the
+#       images of the reduced and the full-feature cores, user decision 2026-11-06; 250 / 100 for the 250 MHz work,
+#       docs/platform-u200.md §8.10).
+#       Core: Vitis may scale the core clock down when the routed design misses the request, so the window runs from a floor of
+#       200.0 MHz (the validated core clock of the K4 images) up to the request plus 0.1 MHz. If the request is below 200 MHz,
+#       the floor is the request. A core clock scaled below the floor fails the run.
+#       RV: exactly the request, up to 0.1 MHz above it. A clk_rv that Vitis scaled down fails the run.
+#       The 0.1 MHz above the request only absorbs the decimal precision of _new_clk_freq.
 # Faster clocks or the 125 MHz fallback require an explicit request and window change after the timing
 # choice has been validated.
 proc tsr_clock_final_window {kind} {
@@ -16,7 +20,8 @@ proc tsr_clock_final_window {kind} {
     k1 { return {250.0 300.1 158.33 166.8} }
     k4 {
       lassign [tsr_clock_request_mhz k4] core rv
-      return [list $core [expr {$core + 0.1}] $rv [expr {$rv + 0.1}]]
+      set floor [expr {$core < 200.0 ? $core : 200.0}]
+      return [list $floor [expr {$core + 0.1}] $rv [expr {$rv + 0.1}]]
     }
   }
   error "CLKFINAL no acceptance window for kernel $kind"

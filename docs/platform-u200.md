@@ -3333,6 +3333,27 @@ Differences from the fourth link (`k4full` at `d33f816`):
 Read in the log: the VU Pblock's occupancy (`K4 major blocks: pblock_tsr_vu`: 25,320 CLBs, 420 RAMB36, 1,320 DSP, 160 URAM), the SLR occupancy
 (the changes add about 1 K CLBs to SLR0 and to SLR2, from 80.1 and 85.0 %), `CLKFINAL PASS k4`, the shell clocks.
 
+**The first 250 MHz attempt and the maximum-clock link** (branch `k4fmax`, 2026-11-09). The first combined link requested `0:250|1:100` and
+placed with WNS -0.347 ns and TNS -50.9 ns after `phys_opt_design` (`AggressiveExplore`), with SLR CLB use of 84 / 88 / 89 % and a
+congestion warning from the placer. The rule agreed before the launch stops a link below -0.30 ns after placement, so it was stopped before
+routing (logs in `build/link/k4f250-250try1` and `build/f250/link1_place`, not in git). The same source is linked at 200 / 100 MHz on
+`k4f250`. The user then asked for the maximum achievable clock. Branch `k4fmax` (from `k4f250` at `7220f48`) requests 250
+MHz again and lets Vitis scale the core down to a 200 MHz floor.
+
+- After routing, Vitis scales each kernel clock from the worst slack of its group: `int(10000 / (period - WNS)) / 10` MHz, written to
+  `_new_clk_freq` in the implementation run directory. A core WNS of -0.347 ns at 4.0 ns gives 230.0 MHz. The 200.0 MHz floor is a core WNS
+  of -1.0 ns at 4.0 ns.
+- `clock_final_check.tcl` (`WRITE_BITSTREAM.TCL.PRE`) accepts for k4 a core clock from 200.0 MHz (the request itself when that is lower) to the
+  request + 0.1 MHz, and clk_rv from 100.0 to 100.1 MHz. A core below 200 MHz or a scaled clk_rv fails the run. k1 is unchanged.
+- The other hooks read the request, not the scaled clock. The `PERIOD` properties keep 4.0 / 10.0 ns through routing, so `CLKNET` (0.5 %
+  around the request), the CDC restore and gate (bound 3.333 ns, the cap) and `clock_vitis_compat.tcl` (250 MHz from 100 MHz: M 25, D 2, O 5,
+  effective 250.0 MHz) need no change. A core scaled to 184.6 MHz in an earlier 200 MHz link passed `CLKNET` after routing and was
+  stopped only by the exact window of that time.
+- The netlist, the Pblocks (`k4_major_blocks.tcl`, map `docs/fig/floorplan/k4f250-pblock-plan.png`) and the implementation directives are those
+  of the `k4f250` link. `build/fmax/k4fmax_link.sh` (not in git) writes `build/link/k4fmax` and records `_new_clk_freq` and the `CLKFINAL` lines
+  at the end, also when the final clock hook stops the run. Start it in a detached screen:
+  `screen -dmS k4fmax-link /home/limagin-dev/tesseract-fmax/build/fmax/k4fmax_link.sh`.
+
 ## 9. Timing and resources (Vivado OOC synthesis of `tsr_u200_k1`)
 
 *Measured in Vivado 2024.2 (out of context).* `tb/platform/viv/kernel_ooc.tcl` (synth only, 3.333 ns `ap_clk`, every I/O budgeted 1.6 ns outside,
