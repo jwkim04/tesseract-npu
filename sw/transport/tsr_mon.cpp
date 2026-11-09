@@ -118,6 +118,7 @@ struct mon_state {
     tsr_mon_rec  cur;
     uint64_t     perf_interval_ns = 100ull * 1000000ull;
     uint64_t     last_perf_mono = 0;
+    uint64_t     last_publish_mono = 0;
     uint64_t     prev_perf[TSR_MON_PERF_SLOTS] = {};
     uint64_t     prev_perf_launches = 0;
     uint32_t     model_tries = 0;
@@ -136,6 +137,7 @@ void publish_locked(mon_state & s) {
     tsr_mon_rec & c = s.cur;
     c.update_real_ns = clock_ns(CLOCK_REALTIME);
     c.update_mono_ns = clock_ns(CLOCK_MONOTONIC);
+    s.last_publish_mono = c.update_mono_ns;
     uint64_t * words = reinterpret_cast<uint64_t *>(s.map);
     const uint64_t * src = reinterpret_cast<const uint64_t *>(&c);
     const size_t nw = (sizeof(tsr_mon_rec) + 7) / 8;
@@ -408,6 +410,8 @@ extern "C" void tsr_mon_set_mem(uint64_t used, uint64_t total) {
     if (!s.attached) return;
     s.cur.mem_used = used;
     if (total != 0) s.cur.mem_total = total;
+    // memory moves while the weights are placed, before the first launch: let the monitor see it (at most every 100 ms)
+    if (clock_ns(CLOCK_MONOTONIC) - s.last_publish_mono >= 100000000ull) publish_locked(s);
 }
 
 extern "C" void tsr_mon_add_tokens(uint32_t decode, uint32_t prefill, uint32_t passes) {

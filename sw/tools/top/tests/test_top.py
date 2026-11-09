@@ -2,9 +2,10 @@
 # test_top.py — tests of tsr-top (docs/prof-dbg.md §7, SW-87); python standard library only.
 #
 #   layout  TEST_TSR_MON         the record layout of tsr_top.py is the one the C header has
-#   synth                        a record written here (this process as the publisher): the reader, the rates
-#                                and the U split against hand-computed numbers, the text frame at several sizes,
-#                                a record that changes while tsr-top samples it, stale and torn files
+#   synth                        a record written here (this process as the publisher): the reader, the rates, the
+#                                COMPUTE and MEMORY meters and the U split against hand-computed numbers, the text frame at several
+#                                sizes, a record that changes while tsr-top samples it, stale and torn files, and a made-up sysfs
+#                                tree (TSR_TOP_SYSFS) for the clocks, fan, temperature and power, with xbutil as the fallback
 #   live    LLAMA_COMPLETION MODEL TSR_MON_PROBE
 #                                a tiny model on the simulator with the publisher on: the record while it runs
 #                                (never torn, counters never go back), the record it leaves with TSR_MON_KEEP,
@@ -106,7 +107,7 @@ def synth_page(k, hz, **kw):
     """The fields of the record after k intervals (the deltas are the last interval's)."""
     perf = synth_perf(k, hz)
     dperf = [a - b for a, b in zip(perf, synth_perf(k - 1, hz))] if k > 0 else [0] * 64
-    d = dict(pid=os.getpid(), uid=os.getuid(), proc_start_ticks=my_ticks(), core_hz=int(hz), rv_hz=int(hz / 2), num_ch=4, perf_x=13,
+    d = dict(pid=os.getpid(), uid=os.getuid(), proc_start_ticks=my_ticks(), flags=tsr_top.F_FITTED, core_hz=int(hz), rv_hz=int(hz / 2), num_ch=4, perf_x=13,
              perf=perf, dperf=dperf, transport="xrt", owner="graph", mode="M7", quant="q4_K", model="synthetic-Q4_K_M.gguf",
              cmdline="llama-completion -m synthetic-Q4_K_M.gguf", comm="llama-completion", image_id=0x1234567890abcdef, caps=0x21,
              n_kinds=22, core_ver=0x100, t_max=4, mem_used=12 * 2 ** 30, mem_total=64 * 2 ** 30, ch_bytes=16 * 2 ** 30,
@@ -114,6 +115,50 @@ def synth_page(k, hz, **kw):
              kinds="NOP JOIN MUL_MAT")
     d.update(kw)
     return d
+
+
+def make_sysfs(root, bdf="0000:ff:00.1", clocks="250\n125\n0\n0\n", hwmon=True, xmc_fan=False, icap=True):
+    """A made-up sysfs tree with one card (the layout of the real one: sysfs of 0000:01:00.1 on the U200 host)."""
+    dev = os.path.join(root, "bus/pci/devices", bdf)
+    os.makedirs(os.path.join(root, "bus/pci/drivers/xocl", bdf), exist_ok=True)
+    os.makedirs(dev, exist_ok=True)
+
+    def put(rel, text):
+        path = os.path.join(dev, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+
+    put("vendor", "0x10ee\n")
+    put("board_name", "u200\n")
+    put("current_link_speed", "8.0 GT/s PCIe\n")
+    put("current_link_width", "16\n")
+    if icap:
+        put("icap.u.22020096/clock_freqs", clocks)
+        put("icap.u.22020096/clock_freq_topology", "DATA_CLK")
+    if hwmon:
+        put("hwmon/hwmon8/name", "xilinx_u200_gen3x16_xdma_base_2_user\n")
+        put("hwmon/hwmon8/temp1_label", "PCB TOP FRONT\n")
+        put("hwmon/hwmon8/temp1_input", "51000\n")
+        put("hwmon/hwmon8/temp4_label", "FPGA TEMP\n")
+        put("hwmon/hwmon8/temp4_input", "58000\n")
+        put("hwmon/hwmon8/power1_input", "51170562\n")
+        put("hwmon/hwmon8/fan1_input", "1264\n")
+    if xmc_fan:
+        put("xmc.u.18874368/xmc_fan_rpm", "1500\n")
+        put("xmc.u.18874368/fan_presence", "P\n")
+        put("xmc.u.18874368/xmc_fpga_temp", "61\n")
+    return dev
+
+
+def fake_xbutil(path, temp="60", watts="40.5", max_w="225", fan=None):
+    """A script that writes the JSON that xbutil examine -r thermal electrical mechanical -f JSON -o FILE writes."""
+    fans = '[{"speed_rpm":"%s","is_present":"true"}]' % fan if fan else "[]"
+    doc = ('{"devices":[{"thermals":[{"location_id":"fpga0","temp_C":"%s","is_present":"true"}],'
+           '"electrical":{"power_consumption_watts":"%s","power_consumption_max_watts":"%s"},"mechanical":{"fans":%s}}]}') % (temp, watts, max_w, fans)
+    with open(path, "w") as f:
+        f.write("#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ \"$1\" = -o ]; then out=\"$2\"; fi; shift; done\ncat > \"$out\" <<'EOF'\n%s\nEOF\n" % doc)
+    os.chmod(path, 0o755)
 
 
 def test_layout(test_tsr_mon):
@@ -152,6 +197,11 @@ def test_synth():
         struct.pack_into("<Q", torn, 16, 7)         # odd seq: the writer is in the middle of a store
         write_record(os.path.join(d, "tsr-mon-2147483001"), bytes(torn))
 
+        sysfs = os.path.join(d, "sys")
+        make_sysfs(sysfs)
+        fake_xbutil(os.path.join(d, "xbutil"))
+        senv = {"TSR_TOP_SYSFS": sysfs}
+        sargs = ["--xbutil", os.path.join(d, "xbutil")]
         recs = tsr_top.scan_records(d)
         check([r["pid"] for r in recs] == [os.getpid()], "only the live publisher is listed: %s" % [r["pid"] for r in recs])
         check(not os.path.exists(os.path.join(d, "tsr-mon-2147483000")), "the stale record of a dead pid is tidied")
@@ -170,7 +220,7 @@ def test_synth():
         os.unlink(os.path.join(d, "tsr-mon-2147483002"))
 
         # one record, the record's own deltas (--window 0)
-        r = run_top(["--json", "--window", "0", "--dir", d, "--no-sensors", "--no-background"])
+        r = run_top(["--json", "--window", "0", "--dir", d] + sargs, env=senv)
         check(r.returncode == 0, "--json exit %d: %s" % (r.returncode, r.stderr[-300:]))
         snap = json.loads(r.stdout)
         procs = [p for p in snap["processes"] if p["publisher"]]
@@ -188,31 +238,73 @@ def test_synth():
             check(all(abs(g - want) < 0.05 for g in rates["ddr"]["ch_gbs"]), "channel GB/s %s, want %.2f" % (rates["ddr"]["ch_gbs"], want))
             check(abs(rates["ddr"]["total_gbs"] - 4 * want) < 0.2, "total GB/s")
             check(abs(rates["ddr"]["stream_limit_gbs"] - 16.0) < 0.01, "stream limit 64 B x 250 MHz = 16 GB/s")
+            # COMPUTE: the busiest compute unit (not the DMA) as a share of wall time; MEMORY: the busiest channel against 18 GB/s
+            check(rates["compute"]["unit"] == "MVM" and abs(rates["compute"]["busy_active"] - 0.9) < 0.01 and
+                  abs(rates["compute"]["pct"] - 0.6 * 0.9) < 0.01, "compute %s" % rates["compute"])
+            check(0 <= rates["memory"]["channel"] < 4 and abs(rates["memory"]["gbs"] - want) < 0.05 and
+                  abs(rates["memory"]["pct"] - want / 18.0) < 0.003, "memory %s" % rates["memory"])
             u = rates["util"]
             # U = bytes / (wall x 4 x 18 GB/s); (1-H) 0.6; (1-G) 0.9; (1-F) = 0.8 / 0.9
             check(abs(u["U"] - 4 * want / 72.0) < 0.01, "U %.3f" % u["U"])
             check(abs(u["H"] - 0.4) < 0.01 and abs(u["G"] - 0.1) < 0.01 and abs(u["F"] - (1 - 0.8 / 0.9)) < 0.01, "H G F %s" % u)
             prod = 0.6 * 0.9 * (0.8 / 0.9)
             check(abs(u["E"] - u["U"] / prod) < 0.01, "E closes the product: %s" % u)
-        check(any(d.get("publisher") == os.getpid() for d in snap["devices"]), "the record is on a device")
+        card = [d for d in snap["devices"] if d.get("publisher") == os.getpid()]
+        check(len(card) == 1 and card[0]["kind"] == "card" and card[0]["bdf"] == "0000:ff:00.1", "the record is on the made-up card")
+        if card:
+            c = card[0]
+            check(c["clocks"] == {"core_mhz": 250, "rv_mhz": 125, "source": "sysfs"}, "clocks from sysfs: %s" % c["clocks"])
+            sn = c["sensors"]
+            check(sn and sn["ok"] and abs(sn["temp_c"] - 58.0) < 0.01 and abs(sn["power_w"] - 51.170562) < 1e-6 and sn["fan_rpm"] == 1264.0 and
+                  sn["power_max_w"] == 225.0 and sn["source"] == {"temp_c": "sysfs", "power_w": "sysfs", "fan_rpm": "sysfs"},
+                  "hwmon temperature, power and fan, xbutil for the limit: %s" % sn)
+            check(c["link"]["gen"] == 3 and c["link"]["width"] == 16, "PCIe link")
         # the text frame at several sizes
         for size in ("80x24", "100x36", "60x20", "132x50", "40x12"):
             w, h = map(int, size.split("x"))
-            r = run_top(["--once", "--window", "0", "--dir", d, "--no-sensors", "--size", size])
+            r = run_top(["--once", "--window", "0", "--dir", d, "--size", size] + sargs, env=senv)
             check(r.returncode == 0, "--once %s exit %d: %s" % (size, r.returncode, r.stderr[-300:]))
             lines = r.stdout.splitlines()
             check(len(lines) <= h, "%s: %d lines" % (size, len(lines)))
             check(all(len(x) <= w for x in lines), "%s: a line is wider than the screen: %d" % (size, max(len(x) for x in lines)))
             if w >= 80 and h >= 24:
                 txt = r.stdout
-                for want_s in ("Device", "IMG tsr_u200_k4", "CAPS 0x21", "KINDS 22", "M7", "CORE 250MHz", "RV 125MHz", "DDR[", "12.0Gi/64.0Gi",
-                               "MVM[", "VU[", "DMA[", "QACT[", "ATT[", "EMPTY[", "WAIT[", "CH0[", "CH3[", "stream limit", "U ", "(1-H)",
-                               "PID", "TOK/S", "synthetic-", str(os.getpid()), "F2Setup", "F6Sort", "F10Quit"):
+                for want_s in ("Device", "CORE 250MHz", "RV 125MHz", "TEMP  58", "FAN 1264rpm", "POW  51 / 225 W", "DDR[", "12.0Gi/64.0Gi",
+                               "COMPUTE[", "MEMORY[", "% MVM", "ch0", "GB/s", "COMPUTE ", "MEMORY  ", "(dotted)", "PID", "TOK/S", "synth",
+                               "M7", str(os.getpid()), "F2Setup", "F6Sort", "F10Quit"):
                     check(want_s in txt, "%s: the frame shows '%s'" % (size, want_s))
+                for gone in ("IMG ", "CAPS", "KINDS", "EMPTY[", "WAIT[", "CH0[", "(1-H)", "stream limit", "prefill/s", "VU[", "DMA["):
+                    check(gone not in txt, "%s: the frame does not show '%s' by default" % (size, gone))
                 if h >= 24:
                     check(len(lines) >= 20, "%s: the frame fills the screen (%d lines)" % (size, len(lines)))
-        r = run_top(["--once", "--window", "0", "--dir", d, "--no-sensors", "--size", "80x24", "--ascii"])
+        r = run_top(["--once", "--window", "0", "--dir", d, "--size", "80x24", "--ascii"] + sargs, env=senv)
         check(r.returncode == 0 and all(ord(c) < 128 for c in r.stdout), "--ascii output is ASCII")
+
+        # the other sources of the clocks and the sensors
+        sysfs2 = os.path.join(d, "sys2")
+        make_sysfs(sysfs2, hwmon=False, xmc_fan=True, icap=False)           # no hwmon, no icap: xmc for the fan, xbutil for the rest
+        fake_xbutil(os.path.join(d, "xbutil2"), temp="61", watts="40.5", max_w="225", fan="999")
+        r = run_top(["--json", "--window", "0", "--dir", d, "--xbutil", os.path.join(d, "xbutil2")], env={"TSR_TOP_SYSFS": sysfs2})
+        c = [x for x in json.loads(r.stdout)["devices"] if x.get("publisher") == os.getpid()][0]
+        check(c["clocks"] is None, "no icap node: no sysfs clocks (%s)" % c["clocks"])
+        sn = c["sensors"]
+        check(sn["fan_rpm"] == 1500.0 and sn["temp_c"] == 61.0 and sn["power_w"] == 40.5, "xmc fan, xbutil for what hwmon lacks: %s" % sn)
+        r = run_top(["--once", "--window", "0", "--dir", d, "--size", "80x24", "--xbutil", os.path.join(d, "xbutil2")], env={"TSR_TOP_SYSFS": sysfs2})
+        check("CORE 250MHz" in r.stdout and "RV 125MHz" in r.stdout, "without sysfs clocks the owner's fitted clocks are shown")
+        sysfs3 = os.path.join(d, "sys3")
+        make_sysfs(sysfs3, hwmon=False, icap=False)
+        r = run_top(["--json", "--window", "0", "--dir", d, "--xbutil", os.path.join(d, "xbutil2")], env={"TSR_TOP_SYSFS": sysfs3})
+        c = [x for x in json.loads(r.stdout)["devices"] if x.get("publisher") == os.getpid()][0]
+        check(c["sensors"]["fan_rpm"] == 999.0 and c["sensors"]["source"]["fan_rpm"] == "xbutil", "xbutil is the last fallback for the fan: %s" % c["sensors"])
+        r = run_top(["--once", "--window", "0", "--dir", d, "--size", "80x24", "--xbutil", "/nonexistent"], env={"TSR_TOP_SYSFS": sysfs3})
+        check(r.returncode == 0 and "FAN n/a" in r.stdout and "TEMP n/a" in r.stdout, "all sensors failing shows n/a, not an error")
+        # the clock sysfs gives replaces the owner's nominal clock in the rates when the owner could not fit one
+        write_record(path, make_page(**synth_page(k, hz, perf_mono_ns=now, d_wall_ns=100_000_000, d_launches=3, launches=100, perf_launches=100,
+                                                 update_mono_ns=now, tok_decode=50, tok_prefill=7, passes=51, flags=0, core_hz=int(276.3e6))))
+        r = run_top(["--json", "--window", "0", "--dir", d] + sargs, env=senv)
+        p = [x for x in json.loads(r.stdout)["processes"] if x["publisher"]][0]
+        check(abs(p["rates"]["core_hz"] - 250e6) < 1, "a clock that was not fitted: the rates use sysfs's 250 MHz (%s)" % p["rates"]["core_hz"])
+        write_record(path, make_page(**pg))
 
         # a record that changes while tsr-top samples it: 100 ms steps, 10 tokens/s
         stop = threading.Event()
@@ -233,7 +325,7 @@ def test_synth():
         th.start()
         try:
             time.sleep(0.3)
-            r = run_top(["--json", "--window", "1.0", "--dir", d, "--no-sensors", "--no-background"])
+            r = run_top(["--json", "--window", "1.0", "--dir", d] + sargs, env=senv)
         finally:
             stop.set()
             th.join()
@@ -325,13 +417,13 @@ def test_live(llama, model, probe):
         check(r.returncode == 0, "--json exit %d %s" % (r.returncode, r.stderr[-200:]))
         snap = json.loads(r.stdout)
         ps = [p for p in snap["processes"] if p["publisher"]]
-        check(len(ps) == 1 and ps[0]["pid"] == proc.pid and ps[0]["model"] == os.path.basename(model) and ps[0]["mode"] == "M7", "snapshot process")
+        check(len(ps) == 1 and ps[0]["pid"] == proc.pid and ps[0]["model"] == os.path.basename(model)[:-5] and ps[0]["mode"] == "M7", "snapshot process")
         check(ps[0]["record"]["tok_decode"] == n_pred - 1 and ps[0]["record"]["perf"][0] == rec["perf"][0], "snapshot record equals the file")
         check([d["kind"] for d in snap["devices"] if d.get("publisher") == proc.pid] == ["sim"], "the publisher is on a sim device")
         rates = ps[0]["rates"]
         check(rates is not None and rates["busy"]["mvm"] > 0.0 and rates["ddr"]["total_gbs"] > 0, "rates from the last PERF interval: %s" % (rates and rates["busy"]))
         r = run_top(["--once", "--window", "0", "--dir", d, "--include-dead", "--no-sensors", "--size", "80x24"])
-        check(r.returncode == 0 and os.path.basename(model)[:12] in r.stdout and "M7" in r.stdout, "--once frame of the kept record")
+        check(r.returncode == 0 and os.path.basename(model)[:5] in r.stdout and "M7" in r.stdout, "--once frame of the kept record")
         # without --include-dead the dead pid shows nothing (and the kept file is tidied)
         r = run_top(["--json", "--window", "0", "--dir", d, "--no-sensors", "--no-background"])
         snap = json.loads(r.stdout)
@@ -402,6 +494,19 @@ def tmux_capture(tmux, sock, e=False):
 def test_curses(tmux):
     d = tempfile.mkdtemp(prefix="tsr-top-ui-")
     sock = "tsrtop-ui-%d" % os.getpid()
+
+    def keys(*k):
+        subprocess.run([tmux, "-L", sock, "send-keys"] + list(k))
+
+    def screen(cond, timeout=45.0):
+        """The screen once cond(text) holds (a loaded machine is slow), else the last one."""
+        t0 = time.time()
+        scr = tmux_capture(tmux, sock)
+        while not cond(scr) and time.time() - t0 < timeout:
+            time.sleep(0.2)
+            scr = tmux_capture(tmux, sock)
+        return scr
+
     try:
         hz = 250e6
         now = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
@@ -422,65 +527,73 @@ def test_curses(tmux):
         write_record(path, make_page(**synth_page(10, hz, perf_mono_ns=now, d_wall_ns=100_000_000, launches=30, perf_launches=30)))
         th = threading.Thread(target=writer)
         th.start()
-        cmdline = "TSR_MON_DIR=%s LANG=C.UTF-8 LC_ALL=C.UTF-8 %s %s --no-sensors -d 0.3" % (d, sys.executable, TOP)
+        sysfs = os.path.join(d, "sys")
+        make_sysfs(sysfs)
+        cmdline = "TSR_MON_DIR=%s TSR_TOP_SYSFS=%s LANG=C.UTF-8 LC_ALL=C.UTF-8 %s %s --xbutil /nonexistent -d 0.3" % (d, sysfs, sys.executable, TOP)
         subprocess.run([tmux, "-L", sock, "kill-server"], capture_output=True)
         r = subprocess.run([tmux, "-L", sock, "new-session", "-d", "-x", "80", "-y", "24", cmdline], capture_output=True, text=True)
         check(r.returncode == 0, "tmux new-session: %s" % r.stderr)
-        time.sleep(2.5)
-        scr = tmux_capture(tmux, sock)
-        lines = scr.splitlines()
-        check(len(lines) == 24, "24 rows")
-        for want in ("Device", "IMG tsr_u200_k4", "MVM[", "CH3[", "(1-H)", "MVM %wall", "tok/s", "PID", "synthetic-", "F2Setup", "F6Sort", "F10Quit"):
+        scr = screen(lambda t: "COMPUTE " in t and "synth" in t and "FAN 1264rpm" in t and "CORE 250MHz" in t, timeout=60.0)
+        check(len(scr.splitlines()) == 24, "24 rows")
+        for want in ("Device", "CORE 250MHz", "RV 125MHz", "FAN 1264rpm", "COMPUTE[", "MEMORY[", "COMPUTE ", "MEMORY  ", "% MVM", "PID", "synth",
+                     "F2Setup", "F6Sort", "F10Quit"):
             check(want in scr, "the screen shows '%s'" % want)
-        check("┌" in scr and "└" in scr and "⣀" in scr or "⢀" in scr or "⣤" in scr, "box drawing and braille")
-        check("86%" in scr or "90%" in scr or "89%" in scr, "the MVM meter shows about 90 %")
-        # setup menu
-        subprocess.run([tmux, "-L", sock, "send-keys", "F2"])
-        time.sleep(0.6)
-        scr = tmux_capture(tmux, sock)
-        check("Setup" in scr and "[x] Unit meters" in scr and "Esc" in scr, "F2 opens the setup menu")
-        subprocess.run([tmux, "-L", sock, "send-keys", "Down", "Down", "Down", "Space"])    # toggles the time series panel
-        time.sleep(0.6)
-        subprocess.run([tmux, "-L", sock, "send-keys", "Escape"])
-        time.sleep(0.8)
-        scr = tmux_capture(tmux, sock)
-        check("[x] Unit meters" not in scr and "MVM %wall" not in scr, "Esc closes the menu, the time series panel is off")
-        subprocess.run([tmux, "-L", sock, "send-keys", "F2", "Down", "Down", "Down", "Space", "Escape"])
-        time.sleep(0.8)
-        check("MVM %wall" in tmux_capture(tmux, sock), "the panel comes back")
+        for gone in ("IMG ", "KINDS", "MVM[", "EMPTY[", "CH0[", "(1-H)", "tok/s", "prefill/s"):
+            check(gone not in scr, "the screen does not show '%s' by default" % gone)
+        check("\u250c" in scr and "\u2514" in scr and any(c in scr for c in "\u28c0\u2880\u28e4\u28ff"), "box drawing and braille")
+        check(any(x in scr for x in (" 53%", " 54%", " 55%")), "the COMPUTE meter shows about 54 % (the MVM holds an op in 90 % of the 60 % active time)")
+        # setup menu: F2 opens it, Down and Space switch the time series panel off, Esc closes it
+        keys("F2")
+        scr = screen(lambda t: "[x] Compute and memory meters" in t)
+        check("Setup" in scr and "[x] Compute and memory meters" in scr and "[ ] Unit meters" in scr and "[ ] Image line" in scr and "Esc" in scr,
+              "F2 opens the setup menu; the unit meters, the DDR channels, U and the image line are off")
+        keys("Down", "Space")
+        scr = screen(lambda t: "[ ] Utilisation time series" in t)
+        check("[ ] Utilisation time series" in scr, "Space switches the time series panel off in the menu")
+        keys("Escape")
+        scr = screen(lambda t: "[x] Compute" not in t and "MEMORY  " not in t)
+        check("[x] Compute" not in scr and "MEMORY  " not in scr and "COMPUTE[" in scr, "Esc closes the menu, the time series panel is off, the meters stay")
+        keys("F2", "Down", "Space", "Escape")
+        scr = screen(lambda t: "MEMORY  " in t)
+        check("MEMORY  " in scr, "the panel comes back")
+        # the panels that are off by default: unit meters, DDR channels and U (items 5 to 7), then the image line (item 4)
+        keys("F2", "Down", "Down", "Down", "Down", "Down", "Space", "Down", "Space", "Down", "Space", "Escape")
+        scr = screen(lambda t: "EMPTY[" in t and "CH0[" in t and "(1-H)" in t)
+        for want in ("MVM[", "VU[", "EMPTY[", "WAIT[", "CH0[", "CH3[", "rd ", "stream limit", "(1-H)"):
+            check(want in scr, "the panels switched on in setup show '%s'" % want)
+        keys("F2", "Down", "Down", "Down", "Down", "Space", "Escape")
+        scr = screen(lambda t: "IMG tsr_u200_k4" in t or "IMG " in t)
+        check("IMG tsr_u200_k4" in scr and "CAPS 0x21" in scr and "KINDS 22:" in scr, "the image line is behind the setup menu")
         # sort menu
-        subprocess.run([tmux, "-L", sock, "send-keys", "F6"])
-        time.sleep(0.6)
-        scr = tmux_capture(tmux, sock)
+        keys("F6")
+        scr = screen(lambda t: "Sort by" in t)
         check("Sort by" in scr and "LAUNCH/s" in scr, "F6 opens the sort menu")
-        subprocess.run([tmux, "-L", sock, "send-keys", "Down", "Enter"])
-        time.sleep(0.8)
-        scr = tmux_capture(tmux, sock)
+        keys("Down", "Enter")
+        scr = screen(lambda t: "Sort by" not in t)
         check("Sort by" not in scr, "Enter picks a column and closes the menu")
         # refresh interval
-        subprocess.run([tmux, "-L", sock, "send-keys", "+"])
-        time.sleep(0.6)
-        check("Refresh 0.4s" in tmux_capture(tmux, sock), "+ raises the refresh interval")
-        subprocess.run([tmux, "-L", sock, "send-keys", "-"])
-        time.sleep(0.6)
-        check("Refresh 0.3s" in tmux_capture(tmux, sock), "- lowers it")
+        keys("+")
+        check("Refresh 0.4s" in screen(lambda t: "Refresh 0.4s" in t), "+ raises the refresh interval")
+        keys("-")
+        check("Refresh 0.3s" in screen(lambda t: "Refresh 0.3s" in t), "- lowers it")
         # resize: wider, then narrow
         subprocess.run([tmux, "-L", sock, "resize-window", "-x", "132", "-y", "40"])
-        time.sleep(1.2)
-        scr = tmux_capture(tmux, sock)
-        check(len(scr.splitlines()) == 40 and "ATT[" in scr and "COMMAND" in scr, "resize to 132x40")
+        scr = screen(lambda t: len(t.splitlines()) == 40 and "Device" in t and "COMPUTE[" in t and "COMMAND" in t)
+        check(len(scr.splitlines()) == 40 and "COMPUTE[" in scr and "COMMAND" in scr, "resize to 132x40")
         subprocess.run([tmux, "-L", sock, "resize-window", "-x", "80", "-y", "24"])
-        time.sleep(1.2)
-        scr = tmux_capture(tmux, sock)
+        scr = screen(lambda t: len(t.splitlines()) == 24 and "Device" in t and "F2Setup" in t and "COMPUTE[" in t)
         check(len(scr.splitlines()) == 24 and "F2Setup" in scr, "back to 80x24")
         subprocess.run([tmux, "-L", sock, "resize-window", "-x", "50", "-y", "14"])
-        time.sleep(1.2)
-        scr = tmux_capture(tmux, sock)
-        check("Device" in scr and "F2Setup" in scr, "a 50x14 terminal still shows the header and the keys")
+        scr = screen(lambda t: len(t.splitlines()) == 14 and "Device" in t and "F2Setup" in t)
+        check("Device" in scr and "F2Setup" in scr, "a 50x14 terminal still shows the header and the keys:\n" + scr)
         # quit
-        subprocess.run([tmux, "-L", sock, "send-keys", "q"])
-        time.sleep(1.0)
-        r = subprocess.run([tmux, "-L", sock, "ls"], capture_output=True, text=True)
+        keys("q")
+        t0 = time.time()
+        while time.time() - t0 < 20:
+            r = subprocess.run([tmux, "-L", sock, "ls"], capture_output=True, text=True)
+            if r.returncode != 0 or "tsrtop" not in r.stdout:
+                break
+            time.sleep(0.2)
         check(r.returncode != 0 or "tsrtop" not in r.stdout, "q ends tsr-top (and the session with it)")
         stop.set()
         th.join()
