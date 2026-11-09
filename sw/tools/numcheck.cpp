@@ -30,7 +30,7 @@
 //   "device" (none|sim|mock|vkernel|xrt), "input" (embd|embd+1ulp; "tokens" only for the self-check run),
 //   "seed", "n_tokens", "tokens", "n_vocab", "logits_file", "versions" (dev runs: the Tesseract Core
 //   capability, CAPS, the booted image's Tesseract Basis version, Basis ABI, id, kind table signature
-//   and every kind's numerics revision, SW §6.9: {"core": "1.0", "caps": N, "basis": "0.1.0", "abi":
+//   and every kind's numerics revision, SW §6.9: {"core": "1.0", "caps": N, "basis": "1.0.0", "abi":
 //   1, "image": "<16 hex>", "kinds_sig": "0xfa6f", "kinds": {"MUL_MAT": 1, ...}}; null otherwise),
 //   "info" {settings, timings, counts;
 //   settings: "phase" (m6|m7), "flash_attn" (on|off), "type_k", "type_v" (ggml type names),

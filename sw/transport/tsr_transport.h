@@ -160,7 +160,7 @@ uint32_t tsr_basis_version(void);                                       // this 
 int      tsr_image_versions(const tsr_image * img, tsr_versions * v);   // the image's fields; core = caps = 0
 int      tsr_transport_versions(const tsr_transport * t, tsr_versions * v);   // device fields + the booted
                                                                               // image's (zeros before a boot)
-// "Tesseract Core 1.0 (VU ATT), Tesseract Basis 0.1.0 (ABI 1, 14 kinds)" (parts without a value are
+// "Tesseract Core 1.0 (VU ATT), Tesseract Basis 1.0.0 (ABI 1, 14 kinds)" (parts without a value are
 // left out); verbose adds ", image <id>, kinds 0xfa6f: NOP r1 JOIN r1 ...". Returns the length (as
 // snprintf; the text is truncated at n), or TSR_TE_INVAL.
 int      tsr_versions_str(const tsr_versions * v, int verbose, char * buf, size_t n);

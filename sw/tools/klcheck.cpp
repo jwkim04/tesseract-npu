@@ -290,7 +290,7 @@ static std::string settings_str(const klc_header & h) {
 }
 // a file without the field ran with the full-size SWA cache
 static uint32_t swa_cache_of(const klc_header & h) { return h.swa_cache == KLC_SWA_UNRECORDED ? (uint32_t) KLC_SWA_FULL : h.swa_cache; }
-// The versions a device run recorded (SW §6.9), one phrase: "Tesseract Core 1.0, Tesseract Basis 0.1.0
+// The versions a device run recorded (SW §6.9), one phrase: "Tesseract Core 1.0, Tesseract Basis 1.0.0
 // (kind table 0xfa6f)", or "versions not recorded".
 static std::string versions_str(const klc_header & h) {
     if (h.basis == 0 && h.core == 0) return "versions not recorded";
@@ -2278,7 +2278,7 @@ static int cmd_selftest(int argc, char ** argv) {
         ST_CHECK(g.basis == 0 && g.core == 0 && g.kinds_sig == 0 && versions_str(g) == "versions not recorded",
                  "a header without the version fields: %s", versions_str(g).c_str());
         h.swa_cache = KLC_SWA_RING;
-        h.basis = 0x000100u;          // SW §6.9: the versions of a device run survive a write / read
+        h.basis = 0x010000u;          // SW §6.9: the versions of a device run survive a write / read
         h.core = 0x0100u;
         h.kinds_sig = 0xFA6Fu;
         {
@@ -2291,8 +2291,8 @@ static int cmd_selftest(int argc, char ** argv) {
         ST_CHECK(g.swa_cache == KLC_SWA_RING && settings_str(g) == "M7 settings: flash attn on, KV q8_0/f16 on the device "
                  "(offload_kqv 1), KV rotation off (LLAMA_ATTN_ROT_DISABLE=1), SWA cache ring", "SWA field round trip: %s",
                  settings_str(g).c_str());
-        ST_CHECK(g.basis == 0x000100u && g.core == 0x0100u && g.kinds_sig == 0xFA6Fu &&
-                 versions_str(g) == "Tesseract Core 1.0, Tesseract Basis 0.1.0 (kind table 0xfa6f)", "versions round trip: %s",
+        ST_CHECK(g.basis == 0x010000u && g.core == 0x0100u && g.kinds_sig == 0xFA6Fu &&
+                 versions_str(g) == "Tesseract Core 1.0, Tesseract Basis 1.0.0 (kind table 0xfa6f)", "versions round trip: %s",
                  versions_str(g).c_str());
         klc_header v1 = st_header(V, NS, "sim", KLC_MODE_GENERATE);
         v1.version = 1;

@@ -95,7 +95,7 @@ struct tsr_build_env {
     uint32_t num_ch = 1;
     // The op list kinds the booted image provides (SW §6.9: bit k set iff its .tsr_kinds has kind k;
     // TSR_KINDS narrows it, tsr_kinds_parse) and the image named in the reason of a refusal
-    // ("Tesseract Basis 0.1.0, image <id>"). A record of another kind (or any record when JOIN is
+    // ("Tesseract Basis 1.0.0, image <id>"). A record of another kind (or any record when JOIN is
     // missing) is refused while lowering, in probe and build mode.
     uint64_t kinds = ~0ull;
     std::string image;

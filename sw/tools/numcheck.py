@@ -2085,7 +2085,7 @@ def write_synth_gguf(nat: Native, path: Path, rng) -> dict:
 
 
 # The versions block a dev run's meta.json carries (tsr-numcheck, SW §6.9), for the synthetic runs.
-SYNTH_VERSIONS = {"core": "1.0", "caps": 105, "basis": "0.1.0", "abi": 1, "image": "0123456789abcdef", "kinds_sig": "0x512e",
+SYNTH_VERSIONS = {"core": "1.0", "caps": 105, "basis": "1.0.0", "abi": 1, "image": "0123456789abcdef", "kinds_sig": "0x512e",
                   "kinds": {"NOP": 1, "JOIN": 1, "MUL_MAT": 1}}
 
 
@@ -2187,7 +2187,7 @@ def cmd_selftest(args) -> int:
                rep.get("settings") == {"phase": "m6", "flash_attn": "on", "type_k": "q8_0", "type_v": "q8_0",
                                        "offload_kqv": False, "attn_rot_disable": True}),
               ("the dev run's versions reported (SW §6.9)", rep.get("versions") == SYNTH_VERSIONS and
-               "Tesseract Basis 0.1.0 (ABI 1" in (out / "report-clean" / "report.md").read_text())]
+               "Tesseract Basis 1.0.0 (ABI 1" in (out / "report-clean" / "report.md").read_text())]
     # 2b. runs with different settings (here: the floor made with an f16 V cache) must be refused
     fm = dirs["floor"] / "meta.json"
     fmeta = json.loads(fm.read_text())

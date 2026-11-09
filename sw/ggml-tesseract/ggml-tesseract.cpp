@@ -348,7 +348,7 @@ struct tsr_device {
     std::string  description = "Tesseract Core (not opened)";
     uint64_t     kind_mask = 0;   // the op list kinds supports_op may route (SW §6.9: the booted image's,
                                   // narrowed by TSR_KINDS, tsr_kinds_parse)
-    std::string  image_desc;      // "Tesseract Basis 0.1.0, image <id>" (supports_op's reasons)
+    std::string  image_desc;      // "Tesseract Basis 1.0.0, image <id>" (supports_op's reasons)
 
     tsr_range_alloc io;           // ch0 IO region below the stage: LINEAR buffer windows
     tsr_range_alloc aux;          // ch0 AUX region: RAW tensors of weight buffers
@@ -544,7 +544,7 @@ static bool tsr_dev_open_locked(tsr_device * d) {
     }
     d->force_host = getenv("TSR_FORCE_HOST") != nullptr && atoi(getenv("TSR_FORCE_HOST")) != 0;
 
-    // "Tesseract Core 1.0 (VU ATT; sim, C=4, ...), Tesseract Basis 0.1.0 (ABI 1, 14 kinds, image <id>)":
+    // "Tesseract Core 1.0 (VU ATT; sim, C=4, ...), Tesseract Basis 1.0.0 (ABI 1, 14 kinds, image <id>)":
     // tsr_versions_str's two parts (SW §6.9), the configuration and the image id added inside them.
     char part[256], cfgs[160];
     snprintf(cfgs, sizeof(cfgs), "%s, C=%u, LANES=%u, T_MAX=%u, K_MAX=%u, SPM=%u KiB, %.0f GiB/ch", tsr_transport_name(tp),
@@ -556,7 +556,7 @@ static bool tsr_dev_open_locked(tsr_device * d) {
     desc = desc.back() == ')' ? desc.substr(0, desc.size() - 1) + "; " + cfgs + ")" : desc + " (" + cfgs + ")";
     only = v;
     only.core = 0;
-    tsr_versions_str(&only, 0, part, sizeof(part));            // "Tesseract Basis 0.1.0 (ABI 1, 14 kinds)"
+    tsr_versions_str(&only, 0, part, sizeof(part));            // "Tesseract Basis 1.0.0 (ABI 1, 14 kinds)"
     std::string bas = part;
     char idb[32];
     snprintf(idb, sizeof(idb), ", image %016" PRIx64 ")", v.image_id);
