@@ -122,7 +122,8 @@ ROLES = {                # semantic role -> block fill
 
 
 def tint(hex_color: str, t: float, base: str = PANEL) -> str:
-    """Mix `hex_color` toward `base` by t (0 = colour, 1 = base). Used for planned blocks."""
+    """Mix `hex_color` toward `base` by t (0 = colour, 1 = base). Used for the offset copies of a
+    stacked block."""
     a = [int(hex_color[i:i + 2], 16) for i in (1, 3, 5)]
     b = [int(base[i:i + 2], 16) for i in (1, 3, 5)]
     return "#" + "".join(f"{round(x + (y - x) * t):02X}" for x, y in zip(a, b))
@@ -136,7 +137,7 @@ SW = 2                   # outline of blocks, panels, card, hollow arrows
 SW_LINE = 2              # thin connectors
 SW_LEADER = 1.5          # callout leader lines
 DOT_R = 5                # callout dot radius
-DASH = "9 6"             # planned outlines and optional/dotted paths
+DASH = "9 6"             # unit-queue buses, reset lines, zoom lines and the W_OFF line
 CUT = 14                 # chamfer of a block
 CUT_PANEL = 20           # chamfer of a panel
 CARD_R = 36              # corner radius of the card
@@ -154,14 +155,14 @@ TYPE = {                 # role -> (size, weight, tracking in em, line-height fa
     "sub": (19, "regular", 0.0, 1.35),     # block detail lines (identifiers keep their case)
     "callout": (19, "medium", 0.02, 1.4),  # leader-line callouts and arrow names, uppercase
     "note": (17, "regular", 0.0, 1.35),    # footnotes, legend entries
-    "tag": (15, "bold", 0.08, 1.2),        # badges: panel names, PLANNED · M6, x4
+    "tag": (15, "bold", 0.08, 1.2),        # badges: panel names, SLR names, x4
     # Large type for the product-style stack figure (STYLE.md "Large type"): the same families
     # scaled up, so the figure stays readable at README width and on a phone.
     "label_l": (28, "bold", 0.02, 1.25),   # tile title in `stack`
     "sub_l": (21, "regular", 0.0, 1.35),   # tile detail lines in `stack`
     "panel_l": (21, "bold", 0.10, 1.25),   # layer names in `stack`
     "note_l": (19, "regular", 0.0, 1.35),  # footnote in `stack`
-    "tag_l": (17, "bold", 0.08, 1.2),      # status badges and layer names in `stack`
+    "tag_l": (17, "bold", 0.08, 1.2),      # badges and layer names in `stack`
 }
 MEDIUM_STROKE = 34       # font units of same-colour stroke that turns Regular into "medium"
 
@@ -350,12 +351,11 @@ class Fig:
             f'rx="{CARD_R}" fill="{fill}" stroke="{INK}" stroke-width="{SW}"/>')
 
     def panel(self, x, y, w, h, label: str = "", fill: str = PANEL, cut: float = CUT_PANEL,
-              dashed: bool = False, label_at: str = "start", stroke: str = INK,
-              label_role: str = "tag"):
+              label_at: str = "start", stroke: str = INK, label_role: str = "tag"):
         """Inner panel (chamfered, lighter). `label` is its name, drawn as a dark tag sitting on
         the top edge (label_at: start = left, end = right, middle). fill=None: outline only, for
         a region nested in a panel (draw bands under it first)."""
-        self.poly(chamfer(x, y, w, h, cut), fill or "none", stroke=stroke, dashed=dashed)
+        self.poly(chamfer(x, y, w, h, cut), fill or "none", stroke=stroke)
         if label:
             off = cut + 16
             tx = {"start": x + off, "end": x + w - off, "middle": x + w / 2}[label_at]
@@ -371,37 +371,26 @@ class Fig:
             self.text(lx, ly, label, "panel", anchor=anchor, color=color)
 
     # -- blocks ---------------------------------------------------------------------------------
-    def poly(self, points, fill, stroke: str = INK, sw: float = SW, dashed: bool = False,
-             join: str = "miter"):
-        dash = f' stroke-dasharray="{DASH}"' if dashed else ""
+    def poly(self, points, fill, stroke: str = INK, sw: float = SW, join: str = "miter"):
         self.body.append(f'<polygon points="{_pts(points)}" fill="{fill}" stroke="{stroke}" '
-                         f'stroke-width="{fmt(sw)}" stroke-linejoin="{join}"{dash}/>')
+                         f'stroke-width="{fmt(sw)}" stroke-linejoin="{join}"/>')
 
     def box(self, x, y, w, h, role: str = "compute", label: str = "", sub: str = "",
-            cut: float = CUT, planned: bool = False, tag: str = "", fill: str = "",
-            label_role: str = "label", sub_role: str = "sub", stack: int = 0,
-            align: str = "middle", pad: float = 20, tag_style: str = "", tag_role: str = "tag",
-            plan_tag: bool = True):
+            cut: float = CUT, tag: str = "", fill: str = "", label_role: str = "label",
+            sub_role: str = "sub", stack: int = 0, align: str = "middle", pad: float = 20,
+            tag_role: str = "tag"):
         """Chamfered block filled by `role` (ROLES key). `label` is the uppercase title (\\n for
-        lines), `sub` the detail lines below it. planned=True: dashed outline, paler fill, and a
-        PLANNED tag unless `tag` is given. stack=n draws n offset outlines behind the block for a
-        repeated unit. `tag_style` ("dark", "outline", "planned") picks the badge look of a given
-        `tag` on a solid block; a planned block has the planned badge unless plan_tag=False (use
-        that inside a lane or panel that is already marked planned). Returns the block's centre."""
+        lines), `sub` the detail lines below it. `tag` is a dark badge on the right of the top
+        edge (an SLR name, a count). stack=n draws n offset outlines behind the block for a
+        repeated unit. Returns the block's centre."""
         col = fill or ROLES[role]
-        if planned:
-            col = tint(col, 0.55)
         for i in range(stack, 0, -1):
             d = 8 * i
-            self.poly(chamfer(x + d, y - d, w, h, cut), tint(col, 0.35 * i), dashed=planned)
-        self.poly(chamfer(x, y, w, h, cut), col, dashed=planned)
+            self.poly(chamfer(x + d, y - d, w, h, cut), tint(col, 0.35 * i))
+        self.poly(chamfer(x, y, w, h, cut), col)
         self.label_block(x, y, w, h, label, sub, label_role, sub_role, align, pad)
-        if planned:
-            if plan_tag:
-                self.tag(x + w - cut - 8, y, tag or "PLANNED", anchor="end", planned=True,
-                         role=tag_role)
-        elif tag:
-            self.tag(x + w - cut - 8, y, tag, anchor="end", style=tag_style, role=tag_role)
+        if tag:
+            self.tag(x + w - cut - 8, y, tag, anchor="end", role=tag_role)
         return x + w / 2, y + h / 2
 
     def label_block(self, x, y, w, h, label="", sub="", label_role="label", sub_role="sub",
@@ -432,60 +421,44 @@ class Fig:
         for off, s, r in base:
             self.text(tx, top + off, s, r, anchor=align)
 
-    def tag(self, x, y, text: str, anchor: str = "middle", planned: bool = False,
-            style: str = "", role: str = "tag"):
-        """Small badge centred vertically on y, so it sits on a panel's or block's top edge.
-        anchor is the side of x: start / middle / end. Names (panels, x4 counts) are dark with
-        light text; planned=True gives the PLANNED style: light fill, dashed ink outline.
-        `style` names the look: "dark" (default), "planned" (as planned=True) or "outline"
-        (light fill, solid ink outline: the SIMULATOR status badge of `stack`). `role` is the
-        TYPE role of the text ("tag", or "tag_l" in the large `stack` figure)."""
-        style = style or ("planned" if planned else "dark")
+    def tag(self, x, y, text: str, anchor: str = "middle", role: str = "tag"):
+        """Small dark badge centred vertically on y, so it sits on a panel's or block's top edge.
+        anchor is the side of x: start / middle / end. Used for names (panels, SLRs) and counts
+        (x4). `role` is the TYPE role of the text ("tag", or "tag_l" in the large `stack`
+        figure)."""
         size, weight, track, _ = _style(role)
         tw = text_width(text, size, track, weight)
         f = font(weight)
         cap = f.cap * size / f.upm
         bw, bh = tw + 24, cap + 16
         bx = x - bw / 2 if anchor == "middle" else (x - bw if anchor == "end" else x)
-        if style == "planned":
-            self.poly(chamfer(bx, y - bh / 2, bw, bh, 5), PANEL, dashed=True, sw=1.5)
-            color = INK
-        elif style == "outline":
-            self.poly(chamfer(bx, y - bh / 2, bw, bh, 5), PANEL, sw=1.5)
-            color = INK
-        else:
-            self.poly(chamfer(bx, y - bh / 2, bw, bh, 5), INK, stroke=INK, sw=1)
-            color = CARD
-        self.text(bx + bw / 2, y + cap / 2, text, role, anchor="middle", color=color)
+        self.poly(chamfer(bx, y - bh / 2, bw, bh, 5), INK, stroke=INK, sw=1)
+        self.text(bx + bw / 2, y + cap / 2, text, role, anchor="middle", color=CARD)
         return bx, bw
 
     def legend(self, x, y, items, gap: float = 40, anchor: str = "middle"):
-        """One row of swatches: items = [(role or hex, "LABEL", planned?), ...]. y is the row's
-        centre; anchor positions the whole row on x. Returns the row width."""
+        """One row of swatches: items = [(role or hex, "LABEL"), ...]. y is the row's centre;
+        anchor positions the whole row on x. Returns the row width."""
         sw_w, sw_h, sp = 30, 20, 12
         size, weight, track, _ = _style("note")
-        widths = [sw_w + sp + text_width(lab, size, track, weight) for _, lab, *_ in items]
+        widths = [sw_w + sp + text_width(lab, size, track, weight) for _, lab in items]
         total = sum(widths) + gap * (len(items) - 1)
         cx = x - total / 2 if anchor == "middle" else (x - total if anchor == "end" else x)
-        for (role, lab, *rest), wdt in zip(items, widths):
-            planned = bool(rest and rest[0])
+        for (role, lab), wdt in zip(items, widths):
             col = ROLES.get(role, role)
-            if planned:
-                col = tint(col, 0.55)
-            self.poly(chamfer(cx, y - sw_h / 2, sw_w, sw_h, 5), col, dashed=planned, sw=1.5)
+            self.poly(chamfer(cx, y - sw_h / 2, sw_w, sw_h, 5), col, sw=1.5)
             self.text(cx + sw_w + sp, y, lab, "note", valign="middle")
             cx += wdt + gap
         return total
 
     # -- arrows and lines -----------------------------------------------------------------------
     def arrow(self, pts, w: float = ARROW_W, hw: float = ARROW_HW, hl: float = ARROW_HL,
-              head: bool = True, tail: bool = False, fill: str = ARROW, dashed: bool = False,
-              fat: bool = False):
+              head: bool = True, tail: bool = False, fill: str = ARROW, fat: bool = False):
         """Hollow block arrow along an axis-aligned polyline `pts` (2+ points). head: arrowhead at
         the last point; tail: also at the first (two-way). fat=True uses the bulk-data size."""
         if fat:
             w, hw, hl = FAT_W, FAT_HW, FAT_HL
-        self.poly(hollow_arrow(pts, w, hw, hl, head, tail), fill, dashed=dashed)
+        self.poly(hollow_arrow(pts, w, hw, hl, head, tail), fill)
 
     def line(self, pts, end: bool = True, start: bool = False, dashed: bool = False,
              color: str = INK, sw: float = SW_LINE):

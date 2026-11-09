@@ -16,26 +16,26 @@ coverage) and docs/design/06-software-verification.md §10.1 (oracle chain), §1
 2. Firmware kernels (SW §6.8, §7, §10.1; ctests fw_*): the C++ references of the composite kernels
    (sw/ctrl/ref) and the ggml CPU backend (layer tests) check the RISC-V build running on the
    simulator, and the host build of the same kernels; the firmware tests run 8 schedules with the
-   race detector fatal; `tsr-selftest` compares a device (sim or mock, later the card) with the
+   race detector fatal; `tsr-selftest` compares a device (sim, mock or the card) with the
    in-process simulator shadow (SW §9.5).
 3. Traces (SW §5, §5.4): tsr-trace-gen (directed, random) and TSR_TRACE dumps of real runs make
    trace sets (m2, gen, m3, vu, at, ctrl, model-v1conv; traces/README.md) whose results come
    from the simulator; they replay on the simulator kinds (`tsr-trace-replay`, full or tile-only,
-   N schedules) and through the `replay` kernel (SW §7.7). Planned and drawn dashed: the RTL replay
-   (tile-only replay into the issue FIFO under Verilator, tb/opreplay, and the Ibex lockstep
-   against the RV32 interpreter; docs/design/04-control-core.md §15; work packages W4, W5), the mutation
-   campaigns of the RTL tests (docs/rtl-mvm.md §13.3) and the card (traces replay on it through the
-   `replay` kernel in W6).
+   N schedules) and through the `replay` kernel (SW §7.7), also on the card (`tsr-selftest --device
+   xrt --traces`, docs/xrt-host.md §5). The RTL checks: the tile-only replay of `push.bin` into the
+   issue FIFO under Verilator (`tb/fastreplay`, `tb/core`; docs/design/04-control-core.md §15.3,
+   §15.4), the Ibex lockstep against the RV32 interpreter, and the mutation campaigns of the RTL
+   tests (docs/design/04-control-core.md §15.5, docs/rtl-mvm.md §13.3).
 Colours: the references are white (neutral), so lavender keeps its data-movement meaning from the
 architecture figures; code under test is host-software butter; checks are mint, traces salmon, the
-RTL sky (the key below); planned is a dashed pale swatch, as in every figure.
+RTL sky (the key below). Every block is drawn solid.
 
 Run: build/tools/svgvenv/bin/python docs/fig/src/verify.py
 """
 import sys
 
 sys.dont_write_bytecode = True        # keep docs/fig/src free of __pycache__
-from tsrfig import INK_SOFT, Fig, wrap  # noqa: E402
+from tsrfig import Fig  # noqa: E402
 
 W = 1600
 PX0, PX1 = 56, 1376                   # panels; callouts in the right margin
@@ -77,7 +77,7 @@ RTL_X, RTL_W = 856, 488
 MUT_X, MUT_W = 1048, 296
 
 LEG_Y = P3_B + 56
-H = LEG_Y + 96
+H = LEG_Y + 64
 
 f = Fig("verify", W, H,
         title="Tesseract verification oracle chain",
@@ -89,8 +89,9 @@ f = Fig("verify", W, H,
              "schedules with the race detector; tsr-selftest compares a device with the in-process "
              "simulator. tsr-trace-gen and TSR_TRACE dumps make trace sets whose results come from "
              "the simulator; they replay on the simulator kinds and through the replay kernel. "
-             "The RTL replay, the Ibex lockstep, the RTL mutation campaigns and the replay on the "
-             "card are planned.")
+             "The RTL replay (tile-only replay into the issue FIFO and the Ibex lockstep) and the "
+             "RTL mutation campaigns check the RTL, and the traces replay on the U200 card "
+             "through the replay kernel.")
 
 # ---- panel 1 -----------------------------------------------------------------------------------
 f.panel(PX0, P1_Y, PX1 - PX0, P1_B - P1_Y, label="SIMULATOR AND BACKEND VS REFERENCES")
@@ -134,7 +135,7 @@ for x in (KR_X + KR_W / 2, 472 + 168):
     f.arrow([(x, FB_Y + 12), (x, FT_Y + FT_H - 12)])
 f.box(900, FT_Y, 444, FT_H, "control", "TSR-SELFTEST",
       sub="a device against the in-process\nsimulator shadow · load, VERIFY,\nHELLO, launch rate, traces")
-f.box(900, FB_Y, 444, FB_H, "host", "SIM · MOCK KINDS", sub="the card follows with W6")
+f.box(900, FB_Y, 444, FB_H, "host", "SIM · MOCK · XRT KINDS", sub="the same checks on the card")
 f.arrow([(1122, FB_Y + 12), (1122, FT_Y + FT_H - 12)])
 
 # ---- panel 3 -----------------------------------------------------------------------------------
@@ -145,27 +146,25 @@ f.box(SET_X, S_Y, SET_W, S_H, "memory", "TRACE SETS",
       sub="results from the simulator, byte-identical\nm2 · gen · m3 · vu · at · ctrl · model-v1conv")
 f.box(SET_X, RP_Y, 320, RP_H, "host", "SIMULATOR KINDS", sub="tsr-trace-replay: full or\ntile-only, N schedules")
 f.box(SET_X + 344, RP_Y, 320, RP_H, "control", "REPLAY KERNEL", sub="tile-only push.bin\nthrough the issue path")
-f.box(SET_X, V_Y, SET_W, V_H, "neutral", "U200 CARD",
-      sub="traces through the replay kernel", planned=True, tag="PLANNED · W6")
-f.box(MUT_X, T_Y, MUT_W, T_H, "control", "MUTATION\nCAMPAIGNS", sub="of the RTL tests", planned=True,
-      tag="PLANNED · W4")
-f.panel(RTL_X, S_Y, RTL_W, V_Y + V_H - S_Y, label="RTL REPLAY · BIT-EXACT", fill=None, cut=16,
-        dashed=True)
+f.box(SET_X, V_Y, SET_W, V_H, "compute", "U200 CARD",
+      sub="traces through the replay kernel")
+f.box(MUT_X, T_Y, MUT_W, T_H, "control", "MUTATION\nCAMPAIGNS", sub="of the RTL tests")
+f.panel(RTL_X, S_Y, RTL_W, V_Y + V_H - S_Y, label="RTL REPLAY · BIT-EXACT", fill=None, cut=16)
 in_x, in_w = RTL_X + 40, RTL_W - 80
 f.box(in_x, S_Y + 40, in_w, 112, "compute", "ISSUE-FIFO REPLAY",
-      sub="Verilator: tile-only push.bin\ninto the issue FIFO (tb/opreplay)", planned=True, tag="PLANNED · W5")
+      sub="tb/fastreplay: tile-only\npush.bin into the issue FIFO")
 f.box(in_x, S_Y + 40 + 112 + 40, in_w, 112, "compute", "IBEX LOCKSTEP",
-      sub="RTL core vs the RV32\ninterpreter, retire by retire", planned=True, tag="PLANNED · W4")
+      sub="RTL core vs the RV32\ninterpreter, retire by retire")
 
 s_cy = S_Y + S_H / 2
 f.arrow([(GEN_X + GEN_W / 2, T_Y + T_H - 12), (GEN_X + GEN_W / 2, S_Y + 12)])      # gen -> sets
 f.arrow([(DMP_X + DMP_W / 2, T_Y + T_H - 12), (DMP_X + DMP_W / 2, S_Y + 12)])      # dumps -> sets
 f.arrow([(SET_X + 160, S_Y + S_H - 12), (SET_X + 160, RP_Y + 12)])
 f.arrow([(SET_X + 504, S_Y + S_H - 12), (SET_X + 504, RP_Y + 12)])
-f.arrow([(SET_X + SET_W - 12, s_cy), (RTL_X + 12, s_cy)], fat=True, dashed=True)  # sets -> RTL replay
-f.arrow([(SET_X + 408, RP_Y + RP_H - 12), (SET_X + 408, V_Y + 12)], dashed=True)  # replay kernel -> card
+f.arrow([(SET_X + SET_W - 12, s_cy), (RTL_X + 12, s_cy)], fat=True)  # sets -> RTL replay
+f.arrow([(SET_X + 408, RP_Y + RP_H - 12), (SET_X + 408, V_Y + 12)])  # replay kernel -> card
 mut_cx = MUT_X + MUT_W / 2
-f.line([(mut_cx, T_Y + T_H), (mut_cx, S_Y + 8)], dashed=True)                       # mutants -> RTL tests
+f.line([(mut_cx, T_Y + T_H), (mut_cx, S_Y + 8)])                       # mutants -> RTL tests
 
 # ---- callouts ----------------------------------------------------------------------------------
 f.callout("THE GGML CPU\nBACKEND\nVALIDATES THE\nREFERENCES", (RX, R_Y + R_H / 2),
@@ -177,11 +176,6 @@ f.callout("EVERY TEST\nOF THE RTL\nMUST FAIL ON\n≥ 1 MUTANT", (RX, T_Y + T_H /
 
 # ---- legend ------------------------------------------------------------------------------------
 f.legend(W / 2, LEG_Y, [("neutral", "REFERENCE"), ("host", "CODE UNDER TEST"),
-                        ("control", "CHECK"), ("memory", "TRACES"), ("compute", "RTL"),
-                        ("neutral", "PLANNED", True)])
-f.text(W / 2, LEG_Y + 36, wrap(
-    "Solid blocks run today on the simulator. The control core RTL does not exist yet: its replay, "
-    "lockstep and mutation campaigns are planned (W4, W5), and the card replays traces in W6.",
-    1440), "note", anchor="middle", color=INK_SOFT)
+                        ("control", "CHECK"), ("memory", "TRACES"), ("compute", "RTL")])
 
 f.save(scale=1)

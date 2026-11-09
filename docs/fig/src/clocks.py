@@ -5,7 +5,7 @@ tinted region with the blocks that share its clock, and every crossing is a sync
 boundary between the two regions.
 
 Content follows docs/design/04-control-core.md §2.1-§2.2 (block diagram, domains), §11.1 (clocks),
-§11.2 (crossings and widths), §11.3 (constraints), §12.2 (reset synchronisers), §14.3 (T1); the RTL in
+§11.2 (crossings and widths), §11.3 (constraints), §12.2 (reset synchronisers); the RTL in
 rtl/ctrl (`tsr_ctrl_cdc.sv` header and instances, `tsr_ctrl.sv` for the reset synchronisers,
 `tsr_ctrl_rv.sv` for the sources and sinks on the clk_rv side, `tsr_ctrl_pkg.sv` for the widths,
 `cdc/tsr_cdc_fifo.sv`, `cdc/tsr_cdc_gray.sv`, `cdc/tsr_cdc_hs.sv`, `cdc/tsr_sync.sv`,
@@ -17,10 +17,10 @@ docs/platform-u200.md §1 and §8.3 (ap_clk, ap_clk_2):
   shell converts; it provides the kernel clocks ap_clk and ap_clk_2 (and their resets) and carries the
   CSR port (s_axi_control) and the memory ports into the core clock domain. Nothing of its inside is
   drawn;
-- core clock domain (`ap_clk`, 276.3 MHz in the measured k4 build): the platform adapter (control bridge
+- core clock domain (`ap_clk`, 200 MHz in the release image): the platform adapter (control bridge
   and AXI4 bridges, `tsr_xrt_kernel`), `tsr_csr`, `tsr_issue` with `tsr_chk` and the unit queues,
   `tsr_spm_bridge`, DMA, QACT, the MVM clusters, `tsr_spm` and one `tsr_mem_arb` per channel;
-- control core domain (`clk_rv` from `ap_clk_2`, 166.7 MHz planning value, CC §11.1): Ibex, the debug
+- control core domain (`clk_rv` from `ap_clk_2`, 100 MHz in the release image, CC §11.1): Ibex, the debug
   module (riscv-dbg), ITCM, DTCM, the RISC-V bus `tsr_rv_bus` and the control window `tsr_ctl_win`
   (all in `tsr_ctrl_rv`);
 - crossings (`tsr_ctrl_cdc`), one pipe and one cell per bundle, the cell on the boundary. The cell is the
@@ -40,12 +40,8 @@ docs/platform-u200.md §1 and §8.3 (ap_clk, ap_clk_2):
   Ibex and debug-module resets only);
 - constraints (legend): the three rules of `tsr_ctrl_cdc.xdc` (ASYNC_REG, `set_max_delay -datapath_only`
   = the smaller period, `set_bus_skew` on the gray buses).
-Status (STYLE.md): solid blocks exist in rtl/ and ran on the card; the control core, the issue path, the
-SPM bridge and the crossings exist in rtl/ and in simulation and are planned for the card (M6), so they
-are dashed and paler, with a PLANNED tag on the region or the block; a solid block that gains a mode
-carries a dashed tag with a `+`. Domain colour stays the primary encoding. The 166.7 MHz of clk_rv is a
-planning value (T1: the control core met 6.0 ns out of context; at 4.0 ns it missed), said so in the
-footnote.
+The clocks are the request of the release image, `kernel_frequency=0:200|1:100`
+(docs/platform-u200.md §8.3). Every block, pipe and cell is drawn solid.
 
 Run: build/tools/svgvenv/bin/python docs/fig/src/clocks.py
 """
@@ -105,19 +101,16 @@ FOOT_Y = LEG3_Y + 44
 FOOT_W = 1440
 foot = wrap(
     "A pipe changes colour at its cell and its head marks the receiving side (two heads: request one "
-    "way, response data back). Widths: a / b is request / response. Solid blocks ran on the card; "
-    "dashed blocks and the crossings are planned for the card (M6). 276.3 MHz is the measured k4 "
-    "build. 166.7 MHz is the planning value of clk_rv: the control core met 6.0 ns out of context "
-    "(T1) and did not close 4.0 ns (250 MHz).", FOOT_W)
+    "way, response data back). Widths: a / b is request / response.", FOOT_W)
 H = int((FOOT_Y + 24 * (foot.count("\n") + 1) + 40 + 7) // 8 * 8)
 
 f = Fig("clocks", W, H,
         title="Clock domains and clock-domain crossings",
         desc="Two clock domains side by side, each one tinted region with its own colour. The core clock "
-             "domain (ap_clk, 276.3 MHz in the k4 build, blue) holds the platform adapter, the CSR "
+             "domain (ap_clk, 200 MHz, blue) holds the platform adapter, the CSR "
              "block, the issue path with the checker and the unit queues, the SPM bridge, the DMA, QACT, "
              "the MVM clusters, the scratchpad and one memory arbiter per channel. The control core "
-             "domain (clk_rv from ap_clk_2, 166.7 MHz planning value, orange) holds Ibex, the debug "
+             "domain (clk_rv from ap_clk_2, 100 MHz, orange) holds Ibex, the debug "
              "module, ITCM, DTCM, the RISC-V bus and the control window. The XRT shell, a grey box at "
              "the top, supplies both kernel clocks and resets, each drawn as a line in its domain "
              "colour, and carries the CSR port and the memory ports into the core domain. Between the "
@@ -156,35 +149,26 @@ def flop(x, y, w=22, h=26, color=WHITE):
     poly_line([(x, cy - 5), (x + 6, cy), (x, cy + 5)], INK, 1.2)
 
 
-def block(x, y, w, h, fam, label, sub="", planned=False, tag="", tag_style="", label_role="label_s",
-          text_h=None, pad=14, stack=0):
-    """A block in a domain colour family; planned = dashed and paler (STYLE.md). A tall block keeps
-    its text near the top (text_h)."""
-    col = tint(fam["blk"], 0.55) if planned else fam["blk"]
+def block(x, y, w, h, fam, label, sub="", label_role="label_s", text_h=None, pad=14, stack=0):
+    """A block in a domain colour family. A tall block keeps its text near the top (text_h)."""
+    col = fam["blk"]
     for i in range(stack, 0, -1):
         d = 8 * i
-        f.poly(chamfer(x + d, y - d, w, h), tint(col, 0.35 * i), dashed=planned)
-    f.poly(chamfer(x, y, w, h), col, dashed=planned)
+        f.poly(chamfer(x + d, y - d, w, h), tint(col, 0.35 * i))
+    f.poly(chamfer(x, y, w, h), col)
     f.label_block(x, y, w, text_h or h, label, sub, label_role, "sub", "middle", pad)
-    if tag:
-        f.tag(x + w - 22, y, tag, anchor="end", planned=planned or tag_style == "planned",
-              style="" if planned else tag_style)
 
 
 def halves(cx, cy, cw, ch, c1, c2, vertical=False):
-    """The two halves of a crossing cell: c1 left (top), c2 right (bottom). Dashed: planned."""
+    """The two halves of a crossing cell: c1 left (top), c2 right (bottom)."""
     x0, x1, y0, y1, k = cx - cw / 2, cx + cw / 2, cy - ch / 2, cy + ch / 2, 6
     if not vertical:
-        f.poly([(x0 + k, y0), (cx, y0), (cx, y1), (x0 + k, y1), (x0, y1 - k), (x0, y0 + k)], c1,
-               dashed=True)
-        f.poly([(cx, y0), (x1 - k, y0), (x1, y0 + k), (x1, y1 - k), (x1 - k, y1), (cx, y1)], c2,
-               dashed=True)
+        f.poly([(x0 + k, y0), (cx, y0), (cx, y1), (x0 + k, y1), (x0, y1 - k), (x0, y0 + k)], c1)
+        f.poly([(cx, y0), (x1 - k, y0), (x1, y0 + k), (x1, y1 - k), (x1 - k, y1), (cx, y1)], c2)
         f.vline(cx, y0, y1, dashed=False, color=INK, sw=1.5)
     else:
-        f.poly([(x0 + k, y0), (x1 - k, y0), (x1, y0 + k), (x1, cy), (x0, cy), (x0, y0 + k)], c1,
-               dashed=True)
-        f.poly([(x0, cy), (x1, cy), (x1, y1 - k), (x1 - k, y1), (x0 + k, y1), (x0, y1 - k)], c2,
-               dashed=True)
+        f.poly([(x0 + k, y0), (x1 - k, y0), (x1, y0 + k), (x1, cy), (x0, cy), (x0, y0 + k)], c1)
+        f.poly([(x0, cy), (x1, cy), (x1, y1 - k), (x1 - k, y1), (x0 + k, y1), (x0, y1 - k)], c2)
         f.hline(x0, x1, cy, dashed=False, color=INK, sw=1.5)
 
 
@@ -235,9 +219,9 @@ def pipe(row, kind, name, detail, flow, thick=36, lface=FC1, rface=RF0, rend=Non
     head_l, head_r = flow in ("l", "b"), flow in ("r", "b")
     cl, cr = CX - cw / 2 + 6, CX + cw / 2 - 6
     f.arrow([(cl, y), (lx0, y)] if head_l else [(lx0, y), (cl, y)], w=thick, hw=hw, hl=hl,
-            head=head_l, fill=CORE["pipe"], dashed=True)
+            head=head_l, fill=CORE["pipe"])
     f.arrow([(cr, y), (rx1, y)] if head_r else [(rx1, y), (cr, y)], w=thick, hw=hw, hl=hl,
-            head=head_r, fill=RV["pipe"], dashed=True)
+            head=head_r, fill=RV["pipe"])
     cell(kind, CX, y, src="r" if flow == "l" else "l", dest="l" if flow == "l" else "r")
     # the name sits in the core half, the detail in the clk_rv half (reading order left to right)
     nx0 = (lx0 + hl + 10) if head_l else (lface + 12)
@@ -277,7 +261,7 @@ source(1060, RV, "AP_CLK_2", "AP_RST_N_2")
 # The two regions, their tabs and the boundary
 # =================================================================================================
 f.panel(CR0, REG_Y, CR1 - CR0, REG_B - REG_Y, fill=CORE["band"], stroke=CORE["acc"])
-f.panel(RR0, REG_Y, RR1 - RR0, REG_B - REG_Y, fill=RV["band"], stroke=RV["acc"], dashed=True)
+f.panel(RR0, REG_Y, RR1 - RR0, REG_B - REG_Y, fill=RV["band"], stroke=RV["acc"])
 
 
 def tab(x0, x1, fam, title, clk, note):
@@ -289,9 +273,8 @@ def tab(x0, x1, fam, title, clk, note):
 
 T0, T1 = 336, 744                     # core tab
 U0, U1 = 856, 1264                    # clk_rv tab
-tab(T0, T1, CORE, "CORE DOMAIN", "AP_CLK · 276.3 MHz", "measured in the k4 build")
-tab(U0, U1, RV, "CONTROL CORE DOMAIN", "AP_CLK_2 · 166.7 MHz", "clk_rv · planning value")
-f.tag(RR1 - 36, REG_Y, "PLANNED", anchor="end", planned=True)
+tab(T0, T1, CORE, "CORE DOMAIN", "AP_CLK · 200 MHz", "core clock")
+tab(U0, U1, RV, "CONTROL CORE DOMAIN", "AP_CLK_2 · 100 MHz", "clk_rv")
 
 # clock tree and reset lines from the sources into the tabs (one pair per domain, in the domain colour)
 for cx, fam, rname in ((540, CORE, "tsr_xrt_reset · registered"), (1060, RV, "tsr_rst_sync")):
@@ -312,7 +295,6 @@ f.text(CX, ry - 34, "RESET", "note", anchor="middle", color=INK)
 
 # crossings tag on the boundary, and the module names of the two regions
 f.tag(CX, 376, "CROSSINGS · TSR_CTRL_CDC")
-f.tag(CX, REG_B, "PLANNED", planned=True)
 f.tag(CR0 + 36, REG_B, "TSR_CORE_DP", anchor="start")
 f.tag(RR0 + 96, REG_B, "TSR_CTRL_RV", anchor="start")
 
@@ -329,27 +311,26 @@ f.tag(LC1, ARB_Y - 16, "× NUM_CH", anchor="end")
 block(LC0, DMA_Y, LC1 - LC0, UH, CORE, "TSR_DMA", sub="LD · ST\nall channels", pad=12)
 block(LC0, QA_Y, LC1 - LC0, UH, CORE, "TSR_QACT", sub="quantizes f32\nto the QA formats", pad=12)
 block(LC0, MV_Y, LC1 - LC0, UH, CORE, "MVM CLUSTERS", sub="tsr_mvm\nNUM_CH clusters", pad=12)
-block(LC0, SPM_Y, LC1 - LC0, 112, CORE, "TSR_SPM", sub="4 MiB\neven/odd banks",
-      tag="+ BRIDGE · 2R2W", tag_style="planned", pad=12)
+block(LC0, SPM_Y, LC1 - LC0, 112, CORE, "TSR_SPM", sub="4 MiB · 2R2W\neven/odd banks", pad=12)
 
-block(FC0, CT, FC1 - FC0, CSR_B - CT, CORE, "TSR_CSR", sub="host CSR port\nID · PERF",
-     tag="+ LQ·LCQ·LOG", tag_style="planned", label_role="label", text_h=132, pad=12)
+block(FC0, CT, FC1 - FC0, CSR_B - CT, CORE, "TSR_CSR", sub="host CSR port\nID · PERF\nLQ·LCQ·log",
+      label_role="label", text_h=132, pad=12)
 block(FC0, ISS_T, FC1 - FC0, ISS_B - ISS_T, CORE, "ISSUE PATH", sub="tsr_issue\ntsr_chk\nunit queues",
-      planned=True, tag="PLANNED", label_role="label", text_h=ISS_B - ISS_T, pad=12)
-block(FC0, BR_T, FC1 - FC0, BR_B - BR_T, CORE, "SPM BRIDGE", planned=True, tag="PLANNED")
+      label_role="label", text_h=ISS_B - ISS_T, pad=12)
+block(FC0, BR_T, FC1 - FC0, BR_B - BR_T, CORE, "SPM BRIDGE")
 
 # =================================================================================================
 # clk_rv domain: blocks and the RISC-V bus
 # =================================================================================================
-f.poly(chamfer(BS0, 380, BS1 - BS0, BOT - 380, 10), tint(RV["cell"], 0.55), dashed=True)
+f.poly(chamfer(BS0, 380, BS1 - BS0, BOT - 380, 10), RV["pipe"])
 f.tag((BS0 + BS1) / 2, 380, "RISC-V BUS")
-block(RF0, CT, RF1 - RF0, 88, RV, "DEBUG MODULE", sub="riscv-dbg", planned=True, pad=10)
+block(RF0, CT, RF1 - RF0, 88, RV, "DEBUG MODULE", sub="riscv-dbg", pad=10)
 block(RF0, WIN_T, RF1 - RF0, BOT - WIN_T, RV, "CONTROL\nWINDOW", sub="tsr_ctl_win\nissue port\nLQ · LCQ\nlog · timer",
-      planned=True, label_role="label", text_h=180, pad=12)
+      label_role="label", text_h=180, pad=12)
 RH = 200
 rc = [CT, CT + (BOT - CT - RH) // 2 // 8 * 8, BOT - RH]
 for ry0, (lab, sub) in zip(rc, [("IBEX", "RV32IMC"), ("ITCM", "128 KiB"), ("DTCM", "64 KiB")]):
-    block(RC0, ry0, RC1 - RC0, RH, RV, lab, sub=sub, planned=True, pad=12)
+    block(RC0, ry0, RC1 - RC0, RH, RV, lab, sub=sub, pad=12)
     f.line([(BS1 + 2, ry0 + RH / 2), (RC0 + 2, ry0 + RH / 2)], start=True)
 for yy in (CT + 44, WIN_T + 90):
     f.line([(RF1 - 2, yy), (BS0 + 2, yy)], start=True)
@@ -385,17 +366,16 @@ pipe("spm", "hs", "SPM · CORE WIN", "64 b / 513 b", "b")
 # =================================================================================================
 # Legend
 # =================================================================================================
-# row 1: domain colours, status and the two kinds of line from the shell
-row1 = [("sw", CORE["blk"], "CORE · AP_CLK · 276.3 MHz"), ("sw", RV["blk"], "CONTROL CORE · CLK_RV · 166.7 MHz"),
-        ("sw", SHELL, "XRT SHELL"), ("swp", ROLES["neutral"], "PLANNED"),
+# row 1: domain colours and the two kinds of line from the shell
+row1 = [("sw", CORE["blk"], "CORE · AP_CLK · 200 MHz"), ("sw", RV["blk"], "CONTROL CORE · CLK_RV · 100 MHz"),
+        ("sw", SHELL, "XRT SHELL"),
         ("line", False, "CLOCK TREE"), ("line", True, "RESET")]
-sample_w = {"sw": 30, "swp": 30, "line": 48}
+sample_w = {"sw": 30, "line": 48}
 total = sum(sample_w[k] + 12 + measure(t, "note")[0] for k, _, t in row1) + 32 * (len(row1) - 1)
 lx = CX - total / 2
 for k, v, t in row1:
-    if k in ("sw", "swp"):
-        f.poly(chamfer(lx, LEG1_Y - 10, 30, 20, 5), tint(v, 0.55) if k == "swp" else v,
-               dashed=(k == "swp"), sw=1.5)
+    if k == "sw":
+        f.poly(chamfer(lx, LEG1_Y - 10, 30, 20, 5), v, sw=1.5)
     else:
         for i, fam in enumerate((CORE, RV)):
             f.raw(f'<line x1="{fmt(lx + i * 24)}" y1="{fmt(LEG1_Y)}" x2="{fmt(lx + i * 24 + 22)}" '

@@ -85,7 +85,7 @@ third-party logo, which keeps its own colours (see "Logos").
 | Block, panel and card outline, hollow arrow outline | 2, miter joins |
 | Thin connector | 2, solid arrowhead 12 long × 11 wide |
 | Callout leader | 1.5, ending in a dot of radius 5 |
-| Dash pattern (planned, optional) | `9 6` |
+| Dash pattern (unit-queue buses, reset lines, zoom lines) | `9 6` |
 | Block corner cut | 14 (`CUT`); 10–12 for blocks under about 64 tall |
 | Panel corner cut | 20 (`CUT_PANEL`) |
 | Tag corner cut | 5 |
@@ -104,12 +104,12 @@ a same-colour stroke of 34 font units; the library does this.
 | `callout` | 19 | medium | 0.02 em | leader-line callouts and arrow names, UPPERCASE |
 | `panel` | 20 | bold | 0.10 em | band labels (`SLR0`), UPPERCASE, `INK_SOFT` |
 | `note` | 17 | regular | 0 | legend entries, footnotes |
-| `tag` | 15 | bold | 0.08 em | badges: panel names, `PLANNED`, `× 4` |
+| `tag` | 15 | bold | 0.08 em | badges: panel names, SLR names, `× 4` |
 | `label_l` | 28 | bold | 0.02 em | tile title in `stack` |
 | `sub_l` | 21 | regular | 0 | tile detail lines in `stack` |
 | `panel_l` | 21 | bold | 0.10 em | layer names in `stack`, `INK_SOFT` |
 | `note_l` | 19 | regular | 0 | layer captions and the footnote in `stack` |
-| `tag_l` | 17 | bold | 0.08 em | status badges in `stack` |
+| `tag_l` | 17 | bold | 0.08 em | badges and layer names in `stack` |
 
 Casing:
 
@@ -141,7 +141,6 @@ Glyphs:
 | --- | --- | --- |
 | Hollow arrow | `arrow(pts)` (shaft 24, head 54 × 26) | normal data or command flow between blocks. `tail=True` makes it two-way. Elbow it with more points (axis-aligned only). |
 | Fat hollow arrow | `arrow(pts, fat=True)` (shaft 40, head 84 × 36) | bulk data: weight streams and DRAM beat streams. Use it for the traffic the figure is about. |
-| Dashed hollow arrow | `arrow(pts, dashed=True)` | flow to or from a planned block |
 | Thin connector | `line(pts)` (solid head; `start=True` adds a head at the start) | side paths and signals: `done`, control strobes, a shared port. Make it dashed when the path is secondary or shared (`core`: the unit-queue bus). |
 | Leader + dot | `callout(text, xy, target, via=...)` | annotation only, never flow. The dot sits on the thing named. Leaders are horizontal or vertical, with at most two bends. |
 | Bracket | `bracket(x1, x2, y, label)` | a span: a group of channels, `× NUM_CH`, a stage range |
@@ -156,33 +155,21 @@ Glyphs:
 - Name an arrow with a `callout`-role text beside it (`AXI4-LITE`, `CSR PORT · DONE`), without a
   leader. Use a leader only for a longer explanation.
 
-## Planned and unconfirmed things
+## What a figure shows
 
-Status drawing rule: a block is drawn solid if it is in the tree and in the release image. A block
-that exists only as a design, or only in the simulator, is planned: dashed, pale and tagged. Never
-draw a block as solid RTL that is not in `rtl/`.
+A figure shows what the release contains. Every block, arrow and path is drawn solid in its role
+colour. A figure carries no status, history, milestone, date or benchmark number: no "planned",
+"simulator only" or "on the card" tags, no paler or dashed blocks, no work package names. A block
+that is not in `rtl/` and in the release image is not drawn.
 
-- Planned blocks: `box(..., planned=True, tag="PLANNED")`. This gives a dashed outline, a fill 55 %
-  paler than the role colour, and a light dashed tag on the top edge. Where an arrow meets the same
-  top edge and the tag would collide with it (`hero`, `system`, `core`, `stack`), the arrow meets
-  the edge 48 units from the block's left edge, clear of the right-hand tag.
-- A band or lane that is planned as a whole (`core`: the `clk_rv` band; `launch`: the control core
-  lane) carries one `PLANNED` tag on the band or on the lane head. The blocks inside are dashed and
-  pale with `plan_tag=False`, so their text is not covered by a tag per block.
-- A solid block that gains a mode (DMA + KVST, SPM + 2R2W banks, the MAC lanes + ATTQK / ATTPV,
-  `tsr_csr` + LQ / LCQ / log) stays solid and carries a dashed tag that starts with `+`
-  (`tag="+ KVST", tag_style="planned"`), or a small dashed tile inside it where a tag would collide
-  with arrows.
-- Planned paths: draw them as dashed arrows or connectors (the unit-queue bus in `stack` and
-  `core`).
-- Status badges (`stack`; at most three texts per figure): `ON THE CARD` (dark badge: in the
-  release image), `SIMULATOR` (outlined badge: implemented and verified on the simulator) and
-  `PLANNED` (dashed badge on a dashed block). A panel carries the status of its tiles on its top
-  edge; a tile carries its own badge only where it differs. A figure with badges explains them in a
-  key at the bottom.
-- Unconfirmed facts: an expected but unmeasured fact, such as a clock that is only a planning
-  value, is drawn as expected and named as such in a footnote (`note` role, `INK_SOFT`) or a
-  callout. Never present it as fact.
+- A block that has a mode (DMA with KVST, SPM with 2R2W banks, the MAC lanes with ATTQK and ATTPV)
+  names it in its detail lines.
+- Dashed lines are for paths, never for blocks: the unit-queue bus in `stack`, `core` and
+  `dataflow`, the reset lines in `clocks`, zoom lines and the `W_OFF` line.
+- A fact that is a configuration of the release image (core clock 200 MHz, `clk_rv` 100 MHz) is
+  drawn as a fact. Do not draw a measured result.
+- A figure that shows other targets (`layers`) draws the pieces a port writes, as `docs/spec.md`
+  §2 lists them, in the same solid style. The lane heads say which target this tree provides.
 
 ## Repeated units and channel counts
 
@@ -206,12 +193,13 @@ draw a block as solid RTL that is not in `rtl/`.
 - Draw bands before the blocks they hold. If an outline-only panel crosses them, draw it after
   the bands.
 - Region tags instead of bands: use these when the regions are not contiguous in the layout. In
-  `system`, floorplan C' puts clusters 0 and 2 in SLR0 and clusters 1 and 3 in SLR2, so clusters 1
-  and 2 sit away from their channels' SLR (SLR1), and the regions are not contiguous in the layout.
-  Give each block a dark tag on the right of its top edge (`box(..., tag="SLR1")`). Run the arrows
-  that meet that edge 32 left of the block's centre, so the tag stays clear of them. Leave a block
-  untagged when it has no single region (`system`: the XRT shell, the vector unit). Say in the
-  footnote what the tags show and what validated them.
+  `system`, the Pblock plan of the release image (`hw/u200/k4_major_blocks.tcl`) puts clusters 0
+  and 2 in SLR0 and clusters 1 and 3 in SLR2, so clusters 1 and 2 sit away from their channels'
+  SLR (SLR1), and the regions are not contiguous in the layout. Give each block a dark tag on the
+  right of its top edge (`box(..., tag="SLR1")`). Run the arrows that meet that edge 32 left of the
+  block's centre, so the tag stays clear of them. Leave a block untagged when the plan leaves it
+  to Vivado (`system`: the XRT shell, the control bridge, the bridges of channels 1 and 2). Say in
+  the footnote what the tags show.
 
 ## Legend
 
@@ -228,13 +216,11 @@ figure uses. Name roles, not instances, with the same words in every figure:
 | `host` | `HOST SOFTWARE` |
 | `adapter` | `PLATFORM ADAPTER` |
 | `vendor` | `VENDOR-SPECIFIC` |
-| planned | `("neutral", "PLANNED", True)`, a dashed pale swatch; `layers` says `PLANNED / IDEA` |
 
 `verify` is the one figure about tests rather than hardware, and it keeps its own small key:
-`REFERENCE` (neutral), `CODE UNDER TEST` (host), `CHECK` (mint), `TRACES` (salmon), `RTL` (sky)
-and `PLANNED`. It never reuses lavender, so a reader carrying the key over from the architecture
-figures is not misled. `stack` has no colour legend, only the status key (three badge samples
-with one line each).
+`REFERENCE` (neutral), `CODE UNDER TEST` (host), `CHECK` (mint), `TRACES` (salmon) and `RTL`
+(sky). It never reuses lavender, so a reader carrying the key over from the architecture figures
+is not misled. `stack` has no legend.
 
 ## Logos
 
@@ -276,8 +262,6 @@ Hugging Face); the architecture figures have none.
   at least 20 from the right edge (`stack.py`: `logo_tile()`). A lockup that contains the name
   replaces the tile title (PyTorch). A small logo may head a line of text (Hugging Face, 32 units on
   a 40-unit tile). Draw each program once in a figure.
-- Status: a logo does not change the status of its block. A planned block keeps its dashed outline
-  and tag, and its logo is drawn in full colour.
 - Check: look at `<name>.png` and `<name>_gh.png`, light and dark. The logo must be recognisable at
   880 px, clear of the tile's outline and tag, and the text beside it at least 20 units from the
   tile edge.
@@ -322,8 +306,7 @@ changes, so the layout, the text and the roles are identical.
 | `compute` | `#276683` | `memory` | `#8E4539` |
 
 Text is `INK` on every role fill with a contrast of at least 4.8 : 1; the dark tags are `INK` on
-`CARD`. Logos and their white backing tiles are the same in both themes. Planned blocks mix the
-role colour toward `PANEL` as in the light theme. A page that uses the dark files embeds them like
+`CARD`. Logos and their white backing tiles are the same in both themes. A page that uses the dark files embeds them like
 this (not the README, and not for a GitHub page that has to show in the mobile app):
 
 ```html
@@ -341,4 +324,4 @@ design), `docs/rtl-core.md`, `docs/rtl-mvm.md`, `docs/platform-u200.md`, `docs/x
 and section, never by line number. Cite English documents only. When a figure adds a fact that the
 cited documents do not show, say where it comes from in the docstring. Design facts follow
 `docs/design` (4 channels, 128 lanes per cluster, SPM 4 MiB; the release image has `T_MAX` 4, core
-clock 200 MHz and `clk_rv` 100 MHz); a block without RTL is planned.
+clock 200 MHz and `clk_rv` 100 MHz). If a figure and the code disagree, the code wins.

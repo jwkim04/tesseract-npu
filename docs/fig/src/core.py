@@ -7,23 +7,20 @@ and CDC), §13.2 (module table); docs/rtl-core.md §2 for tsr_csr, tsr_dma, tsr_
 tsr_mem_arb, and docs/rtl-mvm.md §2 for tsr_mvm:
 - clk_rv band: Ibex RV32IMC with ITCM 128 KiB, DTCM 64 KiB, the debug module (upstream riscv-dbg,
   reached through the DMI window) and the control window `tsr_ctl_win` (issue port with credits
-  and tickets, queue control, LQ / LCQ registers, log, timer; CC §5). Planning clock 166.7 MHz
-  (CC-3, D12);
+  and tickets, queue control, LQ / LCQ registers, log, timer; CC §5). Clock 100 MHz in the
+  release image (CC §11.1);
 - clock-domain crossings (`tsr_ctrl_cdc`, CC §11.2): the issue FIFO (32 entries), gray-coded
   counters, tagged handshakes, so the host and the SPM bridge never wait on clk_rv;
-- core clock band (276.3 MHz on the k4 kernel, `docs/platform-u200.md` §14): `tsr_csr` (host CSR
+- core clock band (200 MHz in the release image, `docs/platform-u200.md` §8.3): `tsr_csr` (host CSR
   port with LQ, LCQ, the log ring and the image loader, CC §13.2), the issue FIFO, the checker
   `tsr_chk` (EX §8.1 order), the dispatcher with one in-order queue per unit (CC §7.4: DMA 8,
-  QACT 4, MVM 4, VU 16, SYNC 4; unit 4 is reserved and absent), the units DMA (LD, ST; KVST
-  planned), QACT, MVM (NUM_CH clusters; attention modes planned), VU, and `tsr_spm` (4 MiB, 64 B
+  QACT 4, MVM 4, VU 16, SYNC 4; unit 4 is reserved and absent), the units DMA (LD, ST, KVST),
+  QACT, MVM (NUM_CH clusters; attention modes ATTQK, ATTPV), VU, and `tsr_spm` (4 MiB, 64 B
   lines; even / odd banks, 2R2W, with the RISC-V bridge as client 3, CC §10); one
   `tsr_mem_arb` per channel (sources DMA and weight stream; channel 0 also the trace writer,
   CC §13.2);
 - the dashed bus under the dispatcher stands for the unit queues feeding every unit (CC §7.4).
-Status (STYLE.md): solid blocks exist in rtl/core and ran on the card (docs/rtl-core.md,
-docs/rtl-mvm.md); dashed blocks run on the simulator and are planned for the card, and a dashed tag
-on a solid block marks the mode that block gains.
-Every block of a planned band or row is dashed without its own tag; the band carries it.
+Every block is drawn solid: the figure shows what the tree contains.
 Arrow direction: weights flow from the arbiter into the clusters (as the `system` figure does).
 
 Run: build/tools/svgvenv/bin/python docs/fig/src/core.py        (TSR_FIG_THEME=dark: core-dark.svg)
@@ -31,7 +28,7 @@ Run: build/tools/svgvenv/bin/python docs/fig/src/core.py        (TSR_FIG_THEME=d
 import sys
 
 sys.dont_write_bytecode = True        # keep docs/fig/src free of __pycache__
-from tsrfig import BAND, INK, INK_SOFT, Fig, wrap  # noqa: E402
+from tsrfig import INK, INK_SOFT, Fig  # noqa: E402
 
 W = 1600
 PX0, PX1 = 224, 1376                  # tsr_core panel; callouts in the 224 margins
@@ -60,54 +57,51 @@ B_B = ARB_Y + ARB_H + 40
 PY1 = B_B + 24
 PORT_B = PY1 + 72
 LEG_Y = PORT_B + 72
-H = LEG_Y + 112
+H = LEG_Y + 64
 
 f = Fig("core", W, H,
         title="Inside tsr_core",
-        desc="tsr_core in two clock domains. In the clk_rv domain, drawn planned: the Ibex "
+        desc="tsr_core in two clock domains. In the clk_rv domain (100 MHz): the Ibex "
              "RV32IMC control core with ITCM, DTCM, a debug module and the control window. Clock "
-             "domain crossings connect it to the core clock domain: tsr_csr with the launch "
-             "queue, completion ring and log ring, the issue FIFO, the checker tsr_chk and the "
-             "dispatcher with one in-order queue per unit. The units are the DMA (LD, ST), QACT, "
-             "the MVM clusters and a planned vector unit; all use the 4 MiB tsr_spm. One "
-             "tsr_mem_arb per channel merges the DMA and weight-stream traffic onto that "
-             "channel's memory port.")
+             "domain crossings connect it to the core clock domain (200 MHz): tsr_csr with the "
+             "launch queue, completion ring and log ring, the issue FIFO, the checker tsr_chk "
+             "and the dispatcher with one in-order queue per unit. The units are the DMA (LD, "
+             "ST, KVST), QACT, the MVM clusters (with ATTQK and ATTPV) and the vector unit; all "
+             "use the 4 MiB tsr_spm. One tsr_mem_arb per channel merges the DMA and "
+             "weight-stream traffic onto that channel's memory port.")
 
 f.panel(PX0, PY0, PX1 - PX0, PY1 - PY0, label="TSR_CORE")
 
-# ---- band A: clk_rv (planned) -------------------------------------------------------------------
-f.band(BX0, A_Y, BX1 - BX0, A_B - A_Y, label="CLK_RV DOMAIN · CONTROL CORE", label_xy=(BX0 + 24, A_Y + 36))
-f.tag(BX1 - 24, A_Y + 20, "PLANNED", anchor="end", planned=True)
-f.text(BX1 - 24, A_Y + 56, "166.7 MHz planning value", "note", anchor="end", color=INK_SOFT)
+# ---- band A: clk_rv -------------------------------------------------------------------
+f.band(BX0, A_Y, BX1 - BX0, A_B - A_Y, label="CLK_RV DOMAIN · CONTROL CORE · 100 MHz",
+       label_xy=(BX0 + 24, A_Y + 36))
 IB_W = 240
 IB_X = CX - IB_W / 2
-f.box(IB_X, DBG_Y, IB_W, DBG_H, "control", "DEBUG MODULE", sub="riscv-dbg · DMI", planned=True,
-      plan_tag=False, label_role="label_s")
+f.box(IB_X, DBG_Y, IB_W, DBG_H, "control", "DEBUG MODULE", sub="riscv-dbg · DMI", label_role="label_s")
 f.box(IB_X, TCM_Y, IB_W, TCM_H, "control", "IBEX RV32IMC", sub="Zicsr · Zifencei\nno caches",
-      planned=True, plan_tag=False, label_role="label_s")
+      label_role="label_s")
 TCM_W = 256
 f.box(IB_X - 96 - TCM_W, TCM_Y, TCM_W, TCM_H, "memory", "ITCM", sub="128 KiB\ninstructions",
-      planned=True, plan_tag=False, label_role="label_s")
+      label_role="label_s")
 f.box(IB_X + IB_W + 96, TCM_Y, TCM_W, TCM_H, "memory", "DTCM", sub="64 KiB\ndata, stack",
-      planned=True, plan_tag=False, label_role="label_s")
+      label_role="label_s")
 WIN_W = 480
 f.box(CX - WIN_W / 2, WIN_Y, WIN_W, WIN_H, "control", "CONTROL WINDOW",
-      sub="issue port · tickets · queue control\nLQ · LCQ · log · timer", planned=True,
-      plan_tag=False, label_role="label_s")
+      sub="issue port · tickets · queue control\nLQ · LCQ · log · timer", label_role="label_s")
 f.arrow([(CX, DBG_Y + DBG_H - 8), (CX, TCM_Y + 12)], tail=True)                 # debug <-> core
 f.arrow([(IB_X + 12, TCM_Y + TCM_H / 2), (IB_X - 96 - 12, TCM_Y + TCM_H / 2)], tail=True)
 f.arrow([(IB_X + IB_W - 12, TCM_Y + TCM_H / 2), (IB_X + IB_W + 96 + 12, TCM_Y + TCM_H / 2)], tail=True)
 f.arrow([(CX, TCM_Y + TCM_H - 2), (CX, WIN_Y + 12)], tail=True)                 # core <-> window
 
 # ---- clock-domain crossings ---------------------------------------------------------------------
-f.box(X0, CDC_Y, X1 - X0, CDC_H, "io", "CLOCK-DOMAIN CROSSINGS", sub="", planned=True,
-      tag="PLANNED", label_role="label_s", cut=12)
+f.box(X0, CDC_Y, X1 - X0, CDC_H, "io", "CLOCK-DOMAIN CROSSINGS", sub="",
+      label_role="label_s", cut=12)
 f.text(X0 + 24, CDC_Y + CDC_H / 2, "tsr_ctrl_cdc", "sub", valign="middle", color=INK)
 f.arrow([(CX, WIN_Y + WIN_H - 8), (CX, CDC_Y + 12)], tail=True)
 
 # ---- band B: core clock -------------------------------------------------------------------------
 B_FULL = B_B - B_Y
-f.band(BX0, B_Y, BX1 - BX0, B_FULL, label="CORE CLOCK DOMAIN · 276.3 MHz (k4)",
+f.band(BX0, B_Y, BX1 - BX0, B_FULL, label="CORE CLOCK DOMAIN · 200 MHz",
        label_xy=(BX1 - 24, B_Y + 36), anchor="end")
 # row 1: tsr_csr, issue FIFO, checker, dispatcher
 CSR_W, FIFO_W, CHK_W, DSP_W = 296, 192, 192, 248
@@ -115,14 +109,11 @@ csr_x = X0
 fifo_x = csr_x + CSR_W + 48
 chk_x = fifo_x + FIFO_W + 48
 dsp_x = chk_x + CHK_W + 48
-f.box(csr_x, B1_Y, CSR_W, B1_H, "control", "TSR_CSR", sub="host CSR port\nID · PERF counters",
-      tag="+ LQ · LCQ · LOG", tag_style="planned")
-f.box(fifo_x, B1_Y, FIFO_W, B1_H, "io", "ISSUE FIFO", sub="CDC, 256-bit\ntile ops", planned=True,
-      plan_tag=False, label_role="label_s")
-f.box(chk_x, B1_Y, CHK_W, B1_H, "control", "TSR_CHK", sub="checks every\ntile op", planned=True,
-      plan_tag=False, label_role="label_s")
-f.box(dsp_x, B1_Y, DSP_W, B1_H, "control", "DISPATCHER", sub="one in-order queue\nper unit", planned=True,
-      plan_tag=False, label_role="label_s")
+f.box(csr_x, B1_Y, CSR_W, B1_H, "control", "TSR_CSR",
+      sub="host CSR port · ID\nLQ · LCQ · log · PERF")
+f.box(fifo_x, B1_Y, FIFO_W, B1_H, "io", "ISSUE FIFO", sub="32 entries\ntile ops", label_role="label_s")
+f.box(chk_x, B1_Y, CHK_W, B1_H, "control", "TSR_CHK", sub="checks every\ntile op", label_role="label_s")
+f.box(dsp_x, B1_Y, DSP_W, B1_H, "control", "DISPATCHER", sub="one in-order queue\nper unit", label_role="label_s")
 f.arrow([(csr_x + 44, CDC_Y + CDC_H - 8), (csr_x + 44, B1_Y + 12)], tail=True)       # LQ, LCQ, log
 f.arrow([(fifo_x + FIFO_W / 2, CDC_Y + CDC_H - 8), (fifo_x + FIFO_W / 2, B1_Y + 12)])
 f.arrow([(fifo_x + FIFO_W - 12, B1_Y + B1_H / 2), (chk_x + 12, B1_Y + B1_H / 2)])
@@ -138,26 +129,25 @@ mid_w = mid_x1 - mid_x0
 half = (mid_w - 48) / 2
 qa_x, vu_x = mid_x0, mid_x1 - half
 f.box(dma_x, U_Y, DMA_W, U_B - U_Y, "io", "TSR_DMA", sub="LD, ST\none engine for\nall channels")
-f.box(dma_x + 24, U_B - 24 - 64, DMA_W - 48, 64, "io", "KVST", sub="", planned=True,
-      plan_tag=False, label_role="label_s", cut=10)
+f.box(dma_x + 24, U_B - 24 - 64, DMA_W - 48, 64, "io", "KVST", sub="",
+      label_role="label_s", cut=10)
 f.box(qa_x, U_Y, half, UQ_H, "compute", "TSR_QACT", sub="quantizes f32\nto QA (A32, A256)",
       label_role="label_s")
-f.box(vu_x, U_Y, half, UQ_H, "compute", "VECTOR UNIT", sub="norms · RoPE ·\nsoftmax parts", planned=True,
-      tag="PLANNED", label_role="label_s")
+f.box(vu_x, U_Y, half, UQ_H, "compute", "VECTOR UNIT", sub="norms · RoPE ·\nsoftmax parts",
+      label_role="label_s")
 f.box(mid_x0, SPM_Y, mid_w, SPM_H, "memory", "TSR_SPM",
-      sub="4 MiB · 64 B lines\nclients: DMA, QACT, MVM, VU\nRISC-V bridge (client 3, planned)")
-f.tag(mid_x0 + mid_w / 2, SPM_Y, "+ 2R2W BANKS", anchor="middle", style="planned")
+      sub="4 MiB · 64 B lines · 2R2W banks\nclients: DMA, QACT, MVM, VU\nand the RISC-V bridge")
 # tsr_mvm: label at the top, the per-channel clusters as a stacked chip at the bottom
 f.box(mvm_x, U_Y, MVM_W, U_B - U_Y, "compute")
 f.label_block(mvm_x, U_Y + 20, MVM_W, 96, "TSR_MVM", "reads QA lines,\nwrites y lines")
-f.box(mvm_x + 12, U_Y + 114, MVM_W - 24, 44, "compute", "ATTQK · ATTPV", sub="", planned=True,
-      plan_tag=False, label_role="label_s", cut=10)
+f.box(mvm_x + 12, U_Y + 114, MVM_W - 24, 44, "compute", "ATTQK · ATTPV", sub="",
+      label_role="label_s", cut=10)
 CL_W, CL_H = 176, 80
 CL_X, CL_Y = mvm_x + (MVM_W - CL_W) / 2 - 8, U_B - 28 - CL_H
 f.box(CL_X, CL_Y, CL_W, CL_H, "neutral", "CLUSTER", sub="128 MACs", stack=2, label_role="label_s", cut=12)
 f.tag(CL_X + CL_W + 16, CL_Y - 16, "× NUM_CH", anchor="end")
 
-# the unit queues: a dashed bus from the dispatcher to every unit (planned path)
+# the unit queues: a dashed bus from the dispatcher to every unit
 bus_y = B1_Y + B1_H + BUS_GAP / 2
 dsp_c = dsp_x + DSP_W / 2
 ucs = [dma_x + 56, qa_x + half / 2, vu_x + 56, mvm_x + 56]
@@ -170,7 +160,7 @@ f.text(dsp_c - 24, bus_y - 16, "TILE OPS", "callout", anchor="end", valign="midd
 # units and the SPM, the DMA and the clusters and the arbiters
 spm_m = SPM_Y + SPM_H / 2
 f.arrow([(qa_x + half / 2, U_Y + UQ_H - 8), (qa_x + half / 2, SPM_Y + 12)], tail=True)
-f.arrow([(vu_x + half / 2, U_Y + UQ_H - 8), (vu_x + half / 2, SPM_Y + 12)], tail=True, dashed=True)
+f.arrow([(vu_x + half / 2, U_Y + UQ_H - 8), (vu_x + half / 2, SPM_Y + 12)], tail=True)
 f.arrow([(dma_x + DMA_W - 12, spm_m), (mid_x0 + 12, spm_m)], tail=True)
 f.arrow([(mvm_x + 12, spm_m), (mid_x1 - 12, spm_m)], tail=True)
 
@@ -178,7 +168,7 @@ f.arrow([(mvm_x + 12, spm_m), (mid_x1 - 12, spm_m)], tail=True)
 ARB_X1 = X1 - 16                      # room for the two stacked copies behind it
 f.box(X0, ARB_Y, ARB_X1 - X0, ARB_H, "io", "TSR_MEM_ARB", stack=2,
       sub="one per channel · round robin per burst · ≤ 16 reads in flight\n"
-          "sources: DMA, weight stream (cluster c) · channel 0 also the trace writer (planned)")
+          "sources: DMA, weight stream (cluster c) · channel 0 also the trace writer")
 f.tag(CX, ARB_Y - 16, "× NUM_CH")
 dma_c = dma_x + DMA_W / 2
 f.arrow([(dma_c, U_B - 8), (dma_c, ARB_Y + 12)], tail=True)                     # LD / ST
@@ -208,9 +198,6 @@ f.callout("RESPONSES\nROUTED BY ID;\nEVERY STREAM\nTHROUGH A\nREGISTER SLICE", (
 
 # ---- legend ------------------------------------------------------------------------------------------
 f.legend(800, LEG_Y, [("control", "CONTROL"), ("compute", "COMPUTE"), ("memory", "MEMORY"),
-                      ("io", "DATA MOVEMENT"), ("neutral", "PLANNED", True)])
-f.text(800, LEG_Y + 38, wrap(
-    "Solid blocks exist in rtl/core and ran on the card. Dashed blocks and tags run on the "
-    "simulator and are planned for the card (milestone M6).", 1440), "note", anchor="middle", color=INK_SOFT)
+                      ("io", "DATA MOVEMENT")])
 
 f.save(scale=1)

@@ -19,9 +19,8 @@ and AMERGE run one chunk behind ATTQK and ASMAX, so the MVM and the VU work on d
 the same time. Queue depths are those of CC §7.4 (DMA 8, QACT 4, MVM 4, VU 16). The columns group
 ops that can run at the same time; they are not a clock. The sequence is the numerical contract
 of the kernel (AT §6.6); the order in which the firmware issues across chunks is not.
-Status (STYLE.md): the issue path, the vector unit and the attention modes are planned RTL; the
-sequence runs on the simulator (`sw/ctrl/kernels/k_fattn.cpp` and the simulator's queue model).
-QACT exists in RTL and is solid; every other chip is a planned op and dashed.
+The sequence is what `sw/ctrl/kernels/k_fattn.cpp` issues; the simulator's queue model and the
+RTL run the same queues. Every block and chip is drawn solid.
 
 Run: build/tools/svgvenv/bin/python docs/fig/src/issue.py
 """
@@ -52,7 +51,7 @@ B_LANES = LANE_Y0 + 4 * LANE_H + 3 * LANE_G
 CAP_Y = B_LANES + 40
 B_B = CAP_Y + 3 * 26 + 8
 LEG_Y = B_B + 56
-H = LEG_Y + 96
+H = LEG_Y + 64
 
 f = Fig("issue", W, H,
         title="From issue() to a unit, and the queues of one flash-attention layer",
@@ -77,8 +76,7 @@ stages = [("control", "KERNEL", "issue(op, deps)\nreturns a ticket", "firmware")
           ("control", "TSR_CHK", "checks every op\nEX §8.1 order", "checker"),
           ("control", "DISPATCHER", "in-order queue\nper unit", "queues")]
 for (role, lab, sub, _), x in zip(stages, BX):
-    f.box(x, BOX_Y, BOX_W, BOX_H, role, lab, sub=sub, planned=(lab != "KERNEL"), plan_tag=False,
-          label_role="label_s")
+    f.box(x, BOX_Y, BOX_W, BOX_H, role, lab, sub=sub, label_role="label_s")
 for a, b in zip(BX, BX[1:]):
     f.arrow([(a + BOX_W - 12, BOX_Y + BOX_H / 2), (b + 12, BOX_Y + BOX_H / 2)])
 
@@ -106,9 +104,8 @@ for (role, name, sub), y in zip(lanes, lane_y):
     f.box(88, y, 152, LANE_H, role, name, sub=sub, label_role="label_s", cut=10)
 for lane, col, op, det in chips:
     x = CX0 + col * (CH_W + CH_G)
-    solid = op == "QACT"
     f.box(x, lane_y[lane], CH_W, LANE_H, "compute" if lane in (1, 2, 3) else "io", op, sub=det,
-          planned=not solid, plan_tag=False, label_role="label_s", cut=10)
+          label_role="label_s", cut=10)
 
 f.text(CX0, CAP_Y, wrap(
     "Dependencies: ATTQK k after QACT (the last ATTQK also after KVST K) · ASMAX k after ATTQK k · "
@@ -116,11 +113,6 @@ f.text(CX0, CAP_Y, wrap(
     "last AMERGE. ATTPV and AMERGE run one chunk behind ATTQK and ASMAX.", 1180, "note"),
        "note", color=INK_SOFT)
 
-f.legend(W / 2, LEG_Y, [("control", "CONTROL"), ("io", "DATA MOVEMENT"), ("compute", "COMPUTE"),
-                        ("neutral", "PLANNED", True)])
-f.text(W / 2, LEG_Y + 36, wrap(
-    "The issue path, the vector unit and the attention modes are planned RTL (M6); the kernel and "
-    "the queue model run on the simulator. QACT exists in RTL and is solid.", 1440),
-       "note", anchor="middle", color=INK_SOFT)
+f.legend(W / 2, LEG_Y, [("control", "CONTROL"), ("io", "DATA MOVEMENT"), ("compute", "COMPUTE")])
 
 f.save(scale=1)

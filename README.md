@@ -59,7 +59,7 @@ and launches it through `tsr_transport`. The Basis firmware on the control core 
 and issues tile ops. The transport kinds are `sim` (the C simulator, the bit-exact oracle), `mock`
 (the adapter's register model around the simulator) and `xrt` (the card).
 
-<p align="center"><img src="docs/fig/dataflow.png" alt="One decode token in seven steps. The host builds the ggml graph, ggml-tesseract turns it into an op list, and the transport writes the inputs to card DDR and pushes one launch descriptor over PCIe. The Basis graph kernel on the control core walks the op list and issues tile ops through the unit queues to DMA, four MVM clusters and the vector unit. Results return to DDR, the runtime posts an answer record and the host reads the logits." width="100%"></p>
+<p align="center"><img src="docs/fig/dataflow.png" alt="One decode token in seven steps. The host builds the ggml graph, ggml-tesseract turns it into an op list, and the transport writes the inputs to card DDR and pushes one launch descriptor over PCIe. The Basis graph kernel on the control core walks the op list and issues tile ops through the unit queues to DMA, QACT, four MVM clusters and the vector unit. The units work through the 4 MiB scratchpad, and each cluster streams weights from its own DDR4 channel. Results return to DDR, the runtime posts an answer record and the host reads the logits." width="100%"></p>
 
 Logos in the figures belong to their owners ([sources and licences](docs/fig/logos/SOURCES.md)).
 

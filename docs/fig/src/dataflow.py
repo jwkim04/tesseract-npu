@@ -9,19 +9,21 @@ docs/spec.md §2 (four MVM clusters of 128 MAC lanes, 4 MiB SPM, four DDR4 chann
 2. tsr_transport writes the token inputs to DDR and pushes one launch descriptor over PCIe;
 3. the runtime on the control core takes the launch; the `graph` kernel of Basis walks the op list;
 4. the kernel issues tile ops through the issue path (checker, unit queues) to the units;
-5. DMA streams weights from the DDR4 channels into the four MVM clusters; the vector unit and the
-   attention ops work in the SPM; the KV cache stays in DDR;
+5. the DMA moves activations and KV rows between the DDR and the SPM; each MVM cluster streams its
+   weights from its own DDR4 channel; the vector unit and the attention ops work in the SPM; the KV
+   cache stays in DDR (docs/spec.md §2, docs/rtl-core.md §3.2, docs/rtl-mvm.md §4);
 6. results go back to DDR; the runtime posts an answer record;
 7. the host reads the answer and the logits.
-The bus under the issue path stands for the unit queues. Control core and units are planned RTL;
-the flow runs on the simulator today (docs/design/06-software-verification.md §4.2).
+The bus under the issue path stands for the unit queues. Every block is drawn solid. The SPM is a
+bar under the four units, which all read and write it; the weight stream skips the SPM, so its
+arrow passes behind the bar.
 
 Run: build/tools/svgvenv/bin/python docs/fig/src/dataflow.py
 """
 import sys
 
 sys.dont_write_bytecode = True        # keep docs/fig/src free of __pycache__
-from tsrfig import INK_SOFT, Fig, logo_box, wrap  # noqa: E402
+from tsrfig import Fig, logo_box, wrap  # noqa: E402
 
 W = 1600
 PX0, PX1 = 56, 1544
@@ -41,13 +43,14 @@ FW_B = FB + BH + 32
 HW_Y = FW_B + 72
 RA = HW_Y + 56                                          # row A: issue path
 BUS = RA + BH + 40
-RB = BUS + 32                                           # row B: units and SPM
+RB = BUS + 32                                           # row B: the four units
 RB_H = 128
-RC = RB + RB_H + 56                                     # row C: DDR4
+RS = RB + RB_H + 88                                     # SPM bar under the units
+RS_H = 72
+RC = RS + RS_H + 88                                     # row C: DDR4
 RC_H = 104
 HW_B = RC + RC_H + 32
 STEPS_Y = HW_B + 72
-H = STEPS_Y + 408
 
 STEPS = [
     "llama.cpp builds the ggml graph; ggml-tesseract turns it into an op list, cached after the "
@@ -55,11 +58,16 @@ STEPS = [
     "The transport writes the token inputs to DDR and pushes one launch descriptor over PCIe.",
     "The runtime on the control core takes the launch; the Basis graph kernel walks the op list.",
     "The kernel issues tile ops through the issue path (checker, unit queues) to the units.",
-    "DMA streams weights from the four DDR4 channels into the four MVM clusters; the vector unit "
-    "and attention ops work in the 4 MiB SPM; the KV cache stays in DDR.",
+    "The DMA moves activations and KV rows between DDR and the 4 MiB SPM. Each MVM cluster "
+    "streams weights from its own DDR4 channel. The vector unit and attention ops work in the "
+    "SPM; the KV cache stays in DDR.",
     "Results go back to DDR and the runtime posts an answer record.",
     "The host reads the answer and the logits.",
 ]
+STEP_COLW = 700
+STEP_LINES = [wrap(s_, STEP_COLW - 44, "sub") for s_ in STEPS]
+STEP_H = [26 * (t.count("\n") + 1) + 28 for t in STEP_LINES]
+H = int((STEPS_Y + max(sum(STEP_H[:4]), sum(STEP_H[4:])) + 40 + 7) // 8 * 8)
 
 f = Fig("dataflow", W, H,
         title="One decode token, from the host to the hardware and back",
@@ -68,9 +76,10 @@ f = Fig("dataflow", W, H,
              "a cached op list; the weights already sit in card DDR. 2: the transport writes the "
              "token inputs to DDR and pushes one launch descriptor over PCIe. 3: the runtime takes "
              "the launch and the Basis graph kernel walks the op list. 4: the kernel issues tile "
-             "ops through the issue path and unit queues. 5: DMA streams weights from four DDR4 "
-             "channels into four MVM clusters; the vector unit and attention ops work in the 4 MiB "
-             "SPM; the KV cache stays in DDR. 6: results go back to DDR and the runtime posts an "
+             "ops through the issue path and unit queues. 5: the DMA moves activations and KV rows "
+             "between DDR and the 4 MiB SPM, each of four MVM clusters streams weights from its own "
+             "DDR4 channel, the vector unit and attention ops work in the SPM, and the KV cache "
+             "stays in DDR. 6: results go back to DDR and the runtime posts an "
              "answer record. 7: the host reads the answer and the logits.")
 
 
@@ -114,52 +123,52 @@ f.text(C[2] + 56 + 28, (y0 + y1) / 2, "ANSWER\nRECORD", "callout", anchor="start
 
 # ---- firmware ----------------------------------------------------------------------------------------
 cyf = FB + BH / 2
-blk(2, FB, "control", "RUNTIME", "takes the launch;\nposts the answer", "3 · 6", planned=True, plan_tag=False)
-blk(1, FB, "control", "BASIS GRAPH\nKERNEL", "walks the op list", "3", planned=True, plan_tag=False)
+blk(2, FB, "control", "RUNTIME", "takes the launch;\nposts the answer", "3 · 6")
+blk(1, FB, "control", "BASIS GRAPH\nKERNEL", "walks the op list", "3")
 hop(2, 1, cyf, tail=True)
 
 # kernel -> issue path (column 1)
 f.arrow([(C[1], FB + BH - 6), (C[1], RA + 6)])
 
 # ---- hardware ----------------------------------------------------------------------------------------
-blk(1, RA, "control", "ISSUE PATH", "checker, unit queues;\ntile ops in order", "4", planned=True, plan_tag=False)
-# bus to the units of row B (columns 0, 1, 2)
+blk(1, RA, "control", "ISSUE PATH", "checker, unit queues;\ntile ops in order", "4")
+# bus to the four units of row B
 f.line([(C[1], RA + BH), (C[1], BUS)], end=False, dashed=True)
-f.line([(C[0], BUS), (C[2], BUS)], end=False, dashed=True)
-for c in (0, 1, 2):
+f.line([(C[0], BUS), (C[3], BUS)], end=False, dashed=True)
+for c in range(4):
     f.line([(C[c], BUS), (C[c], RB - 2)], dashed=True)
-f.text(C[2] + 40, BUS, "UNIT QUEUES", "callout", valign="middle")
+f.text(C[2], BUS - 20, "UNIT QUEUES", "callout", anchor="middle", valign="middle")
 
-blk(0, RB, "compute", "DMA", "streams weights\nfrom DDR4", "5", h=RB_H, planned=True, plan_tag=False)
-blk(1, RB, "compute", "MVM CLUSTERS x4", "128 MAC lanes\neach", "5", h=RB_H, planned=True, plan_tag=False)
-blk(2, RB, "compute", "VECTOR UNIT", "norms, softmax,\nattention ops", "5", h=RB_H, planned=True, plan_tag=False)
-blk(3, RB, "memory", "SPM · 4 MiB", "activations and\nattention scratch", "5", h=RB_H)
-cyb = RB + RB_H / 2
-hop(0, 1, cyb, fat=True)
-hop(1, 2, cyb)
-hop(2, 3, cyb, tail=True)
+blk(0, RB, "io", "DMA", "LD · ST · KVST\nDDR <-> SPM", "5", h=RB_H)
+blk(1, RB, "compute", "MVM CLUSTERS x4", "128 MAC lanes each;\nstream weights", "5", h=RB_H)
+blk(2, RB, "compute", "VECTOR UNIT", "norms, RoPE,\nsoftmax parts", "5", h=RB_H)
+blk(3, RB, "compute", "QACT", "quantizes f32\nto QA", "5", h=RB_H)
 
 f.box(X[0], RC, X[3] + BW - X[0], RC_H, "memory", "CARD DDR · FOUR DDR4 CHANNELS",
       sub="weights, KV cache, op list, token inputs, results", label_role="label_s")
 f.tag(X[0] + 22, RC, "1 · 6", anchor="start")
-f.arrow([(C[0], RC + 12), (C[0], RB + RB_H - 12)], fat=True)
-f.arrow([(C[3], RB + RB_H - 12), (C[3], RC + 12)])
-f.text(C[0] + 80, (RC + RB + RB_H) / 2, "WEIGHTS", "callout", valign="middle")
-f.text(C[3] + 40, (RC + RB + RB_H) / 2, "RESULTS", "callout", valign="middle")
+# the weight stream skips the SPM: the arrow runs behind the SPM bar
+wx = C[1] + 96
+f.arrow([(wx, RC + 12), (wx, RB + RB_H - 12)], fat=True)
+f.box(X[0], RS, X[3] + BW - X[0], RS_H, "memory", "SPM · 4 MiB",
+      sub="activations, results and attention scratch, read and written by every unit",
+      label_role="label_s", cut=12)
+for c in range(4):
+    cx = C[c] - 96 if c == 1 else C[c]
+    f.arrow([(cx, RB + RB_H - 12), (cx, RS + 12)], tail=True)
+f.arrow([(C[0], RS + RS_H - 8), (C[0], RC + 12)], tail=True)
+f.text(C[0] + 52, (RS + RS_H + RC) / 2, "LD · ST", "callout", valign="middle")
+f.text(wx + 64, (RS + RS_H + RC) / 2, "WEIGHTS", "callout", valign="middle")
 
 # ---- steps -------------------------------------------------------------------------------------------
-colw = 700
+colw = STEP_COLW
 ys = [STEPS_Y, STEPS_Y]
-for i, s_ in enumerate(STEPS):
+for i, txt in enumerate(STEP_LINES):
     col = 0 if i < 4 else 1
     x = 80 + col * (colw + 48)
     y = ys[col]
-    txt = wrap(s_, colw - 44, "sub")
     f.tag(x + 16, y + 8, str(i + 1), anchor="middle")
     f.text(x + 44, y + 2, txt, "sub", valign="top")
-    ys[col] += 26 * (txt.count("\n") + 1) + 28
-H_END = max(ys)
+    ys[col] += STEP_H[i]
 
-f.text(W / 2, H - 40, "The flow runs on the simulator today; the control core and units are planned RTL, "
-       "so their blocks are dashed.", "note", anchor="middle", color=INK_SOFT)
 f.save()

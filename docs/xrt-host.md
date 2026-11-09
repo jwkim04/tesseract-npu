@@ -9,7 +9,7 @@ Normative: EX §9 and §10, [SW](design/06-software-verification.md) §9.1 and �
 
 ## 1. Layers
 
-<p align="center"><img src="fig/launch.svg" alt="Swimlane of a launch: llama.cpp, ggml-tesseract, tsr_transport, card DRAM and the control core. At model load the weights are written to DRAM and the firmware image is loaded and booted; each launch writes the inputs and the op list, pushes a descriptor into the launch queue, the control core runs the kernel and issues tile ops to the units, and the host polls the completion ring and reads the results back." width="100%"></p>
+<p align="center"><img src="fig/launch.svg" alt="Swimlane of a launch: llama.cpp, ggml-tesseract, tsr_transport, card DRAM and the control core. At model load the weights are written to DRAM and the firmware image is loaded and booted; each launch writes the inputs and the op list, pushes a descriptor into the launch queue, the control core runs the kernel and issues tile ops to the units, and the host polls the completion ring and reads the results back. A note names the execution modes: M7 runs every supported kind on the device with one launch per token, M6 runs MUL_MAT only." width="100%"></p>
 
 ```
 ggml-tesseract, tsr_rt, tools         tsr_transport.h: open, close, config, write, read, csr_read / csr_write,

@@ -11,18 +11,19 @@ lane for the units. Content follows docs/design/01-execution-model.md §2.1 (wha
   firmware image: PT_LOAD segments written through the CSR loader with a receive CRC, VERIFY
   (read-back CRC of the TCMs), boot (CTRL.RV_RUN = 1), HELLO record (EX §3.3, §3.4);
 - each launch: activations to the IO window of channel 0; the backend lowers one graph split to
-  an op list (in M6 MUL_MAT records only; a cache hit needs no write) in the OPL region of
-  channel 0; the transport writes the 8-word descriptor by posted CSR writes (LQ_W0-7) and
+  an op list (a cache hit needs no write) in the OPL region of channel 0; the transport writes the 8-word descriptor by posted CSR writes (LQ_W0-7) and
   LQ_PUSH; the runtime pops it, validates it and calls the kernel `graph` (EX §4.7 R2-R5); the
   executor reads the op list and issues the tile ops of every record to the unit queues without
   waiting (asynchronous issue with host-computed dependencies and joins, SW §7.3); cluster c
   streams its weights from channel c; the runtime joins every op (R6) and posts one answer
   record {STATUS, first error} to the completion ring (R7, R8); the host polls the ring (EX §4.8,
-  `ap_ctrl_none`, no interrupt) and reads the result back from IO; the CPU continues with what the
-  device did not take: in M6 attention, norms and RoPE (D17, SW §10.4 `offload_kqv` = false);
-- the dashed note names M7 (one launch per token, SW §8), which is planned (work package W3b).
-The control core is drawn planned (no RTL yet); the flow runs today on the simulator, where the
-firmware executes on the RV32 interpreter (docs/design/06-software-verification.md §4.2).
+  `ap_ctrl_none`, no interrupt) and reads the result back from IO; the CPU continues with the ops
+  the device did not take (D17);
+- the note at the bottom names the two execution modes (docs/design/README.md §2): M7, the default,
+  runs every supported kind on the device and one decode token is one launch (SW §8); M6 runs
+  MUL_MAT on the device and one graph split is one launch.
+Every block is drawn solid. The control core runs the same flow on the card and, as the RV32
+interpreter, on the simulator (docs/design/06-software-verification.md §4.2).
 The loop panel is the per-record loop of the executor; its arrow back is the next record. The
 units lane stands for the five unit queues (DMA, QACT, MVM, VU, SYNC; CC §7.4).
 
@@ -31,7 +32,7 @@ Run: build/tools/svgvenv/bin/python docs/fig/src/launch.py      (TSR_FIG_THEME=d
 import sys
 
 sys.dont_write_bytecode = True        # keep docs/fig/src free of __pycache__
-from tsrfig import BAND, INK_SOFT, Fig, wrap  # noqa: E402
+from tsrfig import BAND, INK_SOFT, Fig  # noqa: E402
 
 W = 1600
 PX0, PX1 = 56, 1544                   # the inner panel that holds the lanes
@@ -71,13 +72,13 @@ def block(f, lane, cy, h, role, label, sub="", **kw):
           **kw)
 
 
-def hop(f, a, b, cy, tail=False, fat=False, dashed=False):
+def hop(f, a, b, cy, tail=False, fat=False):
     """Hollow arrow from lane a to lane b along the row line (12 units inside each block)."""
     if a < b:
         x0, x1 = BX[a] + BWS[a] - 12, BX[b] + 12
     else:
         x0, x1 = BX[a] + 12, BX[b] + BWS[b] - 12
-    f.arrow([(x0, cy), (x1, cy)], tail=tail, fat=fat, dashed=dashed)
+    f.arrow([(x0, cy), (x1, cy)], tail=tail, fat=fat)
 
 
 def phase(f, y, text):
@@ -113,11 +114,11 @@ R_JOIN = tl.row(96, gap=56)
 R_ANS = tl.row(128, gap=48)
 R_READ = tl.row(80, gap=56)
 R_CPU = tl.row(104, gap=40)
-R_NOTE = tl.row(96, gap=24)
+R_NOTE = tl.row(120, gap=24)
 BAND_B = tl.y
 PY1 = BAND_B + 24
 LEG_Y = PY1 + 40
-H = LEG_Y + 96
+H = LEG_Y + 64
 
 f = Fig("launch", W, H,
         title="From a ggml graph to device work",
@@ -131,8 +132,9 @@ f = Fig("launch", W, H,
              "writes; the control core pops it, validates it and runs the graph kernel, which "
              "issues the tile ops of every record to the unit queues; cluster c streams weights "
              "from channel c; one completion record with status and first error is posted; the "
-             "host polls, reads the result back and the CPU continues with attention, norms and "
-             "RoPE. A dashed note marks M7, one launch per token, as planned.")
+             "host polls, reads the result back and the CPU continues with the ops the device "
+             "did not take. A note names the execution modes: M7 runs every supported kind on "
+             "the device, one launch per token; M6 runs MUL_MAT only.")
 
 # ---- lanes and headers ---------------------------------------------------------------------------
 f.panel(PX0, PY0, PX1 - PX0, PY1 - PY0)
@@ -142,8 +144,7 @@ heads = [("host", "LLAMA.CPP", "graph, CPU ops"), ("host", "GGML-\nTESSERACT", "
          ("host", "TSR_\nTRANSPORT", "sim, mock, xrt"), ("memory", "CARD DRAM", "DDR4 ch0–ch3"),
          ("control", "CONTROL CORE", "firmware"), ("compute", "UNITS", "unit queues")]
 for i, (role, lab, sub) in enumerate(heads):
-    f.box(LX[i], HEAD_Y, LWS[i], HEAD_H, role, lab, sub=sub, label_role="label_s",
-          planned=(i == C), tag="PLANNED · M6" if i == C else "")
+    f.box(LX[i], HEAD_Y, LWS[i], HEAD_H, role, lab, sub=sub, label_role="label_s")
 
 # ---- 1. model load -------------------------------------------------------------------------------
 phase(f, P1, "MODEL LOAD · ONCE")
@@ -159,18 +160,16 @@ for a in (L, B, T):
     hop(f, a, a + 1, R_WLOAD)
 
 block(f, T, R_IMAGE, 104, "host", "LOAD IMAGE", "CSR loader,\nreceive CRC")
-block(f, C, R_IMAGE, 104, "control", "VERIFY", "read-back CRC\nof ITCM, DTCM", planned=True,
-      plan_tag=False)
+block(f, C, R_IMAGE, 104, "control", "VERIFY", "read-back CRC\nof ITCM, DTCM")
 hop(f, T, C, R_IMAGE)
 f.text(LC[M], R_IMAGE - 44, "PT_LOAD\nSEGMENTS", "callout", anchor="middle", valign="middle")
 
 block(f, T, R_BOOT, 104, "host", "BOOT", "RV_RUN = 1,\nwait for HELLO")
-block(f, C, R_BOOT, 104, "control", "HELLO", "runtime ready,\nimage id", planned=True,
-      plan_tag=False)
+block(f, C, R_BOOT, 104, "control", "HELLO", "runtime ready,\nimage id")
 hop(f, T, C, R_BOOT, tail=True)
 
 # ---- 2. each launch ------------------------------------------------------------------------------
-phase(f, P2, "EACH LAUNCH · M6: ONE GRAPH SPLIT")
+phase(f, P2, "EACH LAUNCH · ONE GRAPH SPLIT")
 block(f, L, R_ACT, 80, "host", "SET_TENSOR", "activations")
 block(f, B, R_ACT, 80, "host", "IO WINDOW", "write(ch0, IO)")
 block(f, T, R_ACT, 80, "host", "WRITE", "ch0, IO")
@@ -181,7 +180,7 @@ for a in (L, B, T):
 block(f, L, R_BUILD, 104, "host", "GRAPH_\nCOMPUTE", "one split")
 # the backend lowers the split to an op list and hands it to the transport: a tall block
 bt, bb = R_BUILD - 64, R_LAUNCH + 64
-f.box(BX[B], bt, BWS[B], bb - bt, "host", "BUILD\nOP LIST", sub="MUL_MATs as\nrecords, with\ndependencies;\ncache lookup",
+f.box(BX[B], bt, BWS[B], bb - bt, "host", "BUILD\nOP LIST", sub="ops as records,\nwith dependencies;\ncache lookup",
       label_role="label_s")
 block(f, T, R_BUILD, 104, "host", "WRITE", "op list, only on\na cache miss")
 block(f, M, R_BUILD, 104, "memory", "OPL · CH0", "op list")
@@ -191,8 +190,7 @@ hop(f, T, M, R_BUILD)
 
 block(f, T, R_LAUNCH, 128, "host", "LAUNCH", "kernel graph,\n8 words, posted\nCSR writes")
 hop(f, B, T, R_LAUNCH)
-block(f, C, R_TAKE, 128, "control", "TAKE", "pop, validate,\ncall kernel\ngraph", planned=True,
-      plan_tag=False)
+block(f, C, R_TAKE, 128, "control", "TAKE", "pop, validate,\ncall kernel\ngraph")
 # LQ_PUSH: transport to control core, one row lower (the arrow is drawn with an elbow)
 f.arrow([(BX[T] + BWS[T] / 2, R_LAUNCH + 64 - 8), (BX[T] + BWS[T] / 2, R_TAKE),
          (BX[C] + 12, R_TAKE)])
@@ -203,8 +201,7 @@ lp_x0, lp_x1 = LX[M] - 8, LANE_R + 8
 f.panel(lp_x0, LOOP_Y, lp_x1 - lp_x0, LOOP_B - LOOP_Y, label="LOOP · EACH OP-LIST RECORD",
         fill=None)
 block(f, M, R_L1, 104, "memory", "OPL · CH0", "next record")
-block(f, C, R_L1, 136, "control", "ISSUE", "tile ops LD,\nQACT, MVM, ST;\ndo not wait", planned=True,
-      plan_tag=False)
+block(f, C, R_L1, 136, "control", "ISSUE", "tile ops LD,\nQACT, MVM, ST;\ndo not wait")
 hop(f, M, C, R_L1)
 ub_t, ub_b = R_L1 - 68, R_L2 + 52
 f.box(BX[U], ub_t, BWS[U], ub_b - ub_t, "compute", "UNIT\nQUEUES", sub="in order per\nunit; tickets,\njoins",
@@ -214,10 +211,8 @@ block(f, M, R_L2, 104, "memory", "WEIGHT · IO", "cluster c reads\nchannel c")
 f.arrow([(BX[M] + BWS[M] - 12, R_L2), (BX[U] + 12, R_L2)], fat=True)
 
 # ---- end: join, answer, readback ------------------------------------------------------------------
-block(f, C, R_JOIN, 96, "control", "JOIN", "every op done,\nDRAM written", planned=True,
-      plan_tag=False)
-block(f, C, R_ANS, 128, "control", "ANSWER", "LCQ record:\nstatus, first\nerror", planned=True,
-      plan_tag=False)
+block(f, C, R_JOIN, 96, "control", "JOIN", "every op done,\nDRAM written")
+block(f, C, R_ANS, 128, "control", "ANSWER", "LCQ record:\nstatus, first\nerror")
 f.arrow([(LC[C], R_JOIN + 48 - 2), (LC[C], R_ANS - 64 + 6)])
 block(f, T, R_ANS, 128, "host", "POLL", "LCQ_WR, then\nrecord r0")
 hop(f, C, T, R_ANS)
@@ -230,17 +225,14 @@ block(f, M, R_READ, 80, "memory", "IO · CH0", "result bytes")
 for a in (L, B, T):
     hop(f, a, a + 1, R_READ, tail=True)
 
-block(f, L, R_CPU, 104, "host", "CPU CONTINUES", "M6: attention,\nnorms, RoPE")
+block(f, L, R_CPU, 104, "host", "CPU CONTINUES", "ops the device\ndoes not take")
 f.arrow([(LC[L], R_READ + 40 - 8), (LC[L], R_CPU - 52 + 8)])
-f.box(BX[B], R_NOTE - 48, BX[T] + BWS[T] - BX[B], 96, "host", "M7: ONE LAUNCH PER TOKEN",
-      sub="attention, norms, RoPE on the device", planned=True, tag="PLANNED · W3b",
+f.box(BX[B], R_NOTE - 60, BX[T] + BWS[T] - BX[B], 120, "host", "EXECUTION MODES",
+      sub="M7: every kind on the device,\none launch per token\nM6: MUL_MAT only, per split",
       label_role="label_s")
 
 # ---- legend --------------------------------------------------------------------------------------
 f.legend(W / 2, LEG_Y, [("host", "HOST SOFTWARE"), ("memory", "MEMORY"), ("control", "CONTROL"),
-                        ("compute", "COMPUTE"), ("neutral", "PLANNED", True)])
-f.text(W / 2, LEG_Y + 36, wrap(
-    "The flow runs on the simulator today; the control core is planned RTL (W4), so its blocks are "
-    "dashed.", 1440), "note", anchor="middle", color=INK_SOFT)
+                        ("compute", "COMPUTE")])
 
 f.save()

@@ -126,7 +126,7 @@ platform adapter) plus a transport. The software and the core change only their 
 | Tech wrappers | `tsr_sram_*`, `tsr_mac_lane`, clock and reset, CDC synchronisers, a clock gate and reset synchroniser for the control core (a divider only on targets that need one) | Written per target |
 | Platform adapter | Control register bridge; memory port to AXI4 or similar | Written per target |
 
-<p align="center"><img src="fig/layers.svg" alt="The four layers across three targets. Software (sw/) and the core (rtl/core) span all targets; the transport, platform adapter and tech wrappers are written per target: Alveo U200 (xrt, alveo_xrt, xilinx; NUM_CH 4, BEAT_BITS 512), Zynq or Kria and SoC or ASIC. rtl/tech/generic serves simulation and lint on any target." width="100%"></p>
+<p align="center"><img src="fig/layers.svg" alt="The four layers across three targets. Software (sw/) and the core (rtl/core) span all targets; the transport, platform adapter and tech wrappers are written per target: Alveo U200 (xrt, alveo_xrt, xilinx; NUM_CH 4, BEAT_BITS 512), Zynq or Kria (NUM_CH 1 to 2, BEAT_BITS about 128) and SoC or ASIC (SRAM macros). This tree provides the U200 pieces; the other two columns show what a port writes. rtl/tech/generic serves simulation and lint on any target." width="100%"></p>
 
 | Target-specific piece | Alveo U200 | Zynq / Kria | SoC |
 | --- | --- | --- | --- |
@@ -143,7 +143,7 @@ and `ST` name the channel in a 4-bit field (section 3). The RTL elaborates only 
 
 ### U200 configuration
 
-<p align="center"><img src="fig/system.svg" alt="Host PC (llama.cpp, ggml-tesseract, tsr_transport and the firmware image) connected over PCIe to the XRT shell of the Alveo U200; a control bridge to the core's CSR port; tsr_core with the control core and issue path, the 4 MiB SPM, the vector unit, the x broadcast and y gather bus and four clusters; each cluster fed by its own DDR4 channel through an AXI4 bridge; blocks tagged with their SLR." width="100%"></p>
+<p align="center"><img src="fig/system.svg" alt="Host PC (llama.cpp, ggml-tesseract, tsr_transport and the firmware image) connected over PCIe to the XRT shell of the Alveo U200; a control bridge to the core's CSR port; tsr_core with the control core and issue path, the 4 MiB SPM with the DMA and QACT, the vector unit, the x broadcast and y gather bus and four clusters; each cluster fed by its own DDR4 channel through an AXI4 bridge. Blocks are tagged with their SLR under the Pblock plan of the release image: the control core and issue path in SLR0, the SPM with DMA and QACT in SLR1, the vector unit in SLR2, clusters 0 and 2 in SLR0, clusters 1 and 3 in SLR2. The core clock is 200 MHz and clk_rv 100 MHz." width="100%"></p>
 
 Fat arrows in the figure are the per-channel memory paths that carry the weight streams: the weight
 stream of a channel flows only into the cluster of that channel.
@@ -181,7 +181,7 @@ backpressure, so a crossing does not reduce the channel bandwidth.
 
 ### Inside `tsr_core`
 
-<p align="center"><img src="fig/core.svg" alt="Blocks of tsr_core in two clock domains. In the clk_rv domain: the control core (Ibex) with ITCM, DTCM, debug module and control window. In the core clock domain: tsr_csr (host CSR port, launch queue, completion ring, log ring, PERF), the issue FIFO, the checker tsr_chk, the dispatcher with one queue per unit feeding DMA, QACT, the MVM clusters and the vector unit; tsr_spm with even and odd banks and the RISC-V bridge; one tsr_mem_arb per channel; the x broadcast and y gather." width="100%"></p>
+<p align="center"><img src="fig/core.svg" alt="Blocks of tsr_core in two clock domains. In the clk_rv domain (100 MHz): the control core (Ibex) with ITCM, DTCM, debug module and control window. In the core clock domain (200 MHz): tsr_csr (host CSR port, launch queue, completion ring, log ring, PERF), the issue FIFO, the checker tsr_chk, the dispatcher with one queue per unit feeding the DMA (LD, ST, KVST), QACT, the MVM clusters (with ATTQK and ATTPV) and the vector unit; tsr_spm with even and odd banks and the RISC-V bridge; one tsr_mem_arb per channel; the x broadcast and y gather." width="100%"></p>
 
 The units use the dispatch handshake `cmd_valid`, `cmd_ready`, `done`, driven by the dispatcher
 (CC §8). One `tsr_mem_arb` per channel merges the weight stream and the DMA onto that channel's
@@ -838,7 +838,7 @@ launches the `graph` kernel once. The backend is pinned to one llama.cpp commit 
 
 The backend runs in one of two execution modes, M6 and M7, defined in [design/README.md](design/README.md) §2.
 
-<p align="center"><img src="fig/stack.svg" alt="Software stack from top to bottom: front ends (llama.cpp with llama-cli, llama-server and llama-completion; PyTorch with torch.compile and the tesseract backend); backends (ggml-tesseract with the device Tesseract0, weight repack and conversion, op-list builder and cache; tsr_rt); the transport tsr_transport with the kinds sim, mock, vkernel and xrt; the firmware on the control core (runtime, graph executor, kernels, selftest and replay, header library); the NPU core (issue path and unit queues, DMA, QACT, MVM clusters, vector unit, SPM, DDR4). A tools column holds the simulator, tsr-selftest, klcheck and numcheck, the trace tools, tsr-log, GDB debugging and tsr-prof." width="100%"></p>
+<p align="center"><img src="fig/stack.svg" alt="Software stack from top to bottom: front ends (llama.cpp with llama-cli, llama-server and llama-completion; PyTorch with torch.compile and the tesseract backend); backends (ggml-tesseract with the device Tesseract0, weight repack and conversion, op-list builder and cache; tsr_rt); the transport tsr_transport with the kinds sim, mock and xrt; the firmware on the control core (runtime, graph executor, kernels, selftest and replay, header library); the NPU core (issue path and unit queues, DMA, QACT, MVM clusters, vector unit, SPM, DDR4). A tools column holds the simulator, tsr-selftest, klcheck and numcheck, the trace tools, tsr-log, tsr-dbg for GDB debugging, tsr-prof and tsr-top." width="100%"></p>
 
 Components
 
@@ -851,7 +851,7 @@ Components
 | graph_compute | Split → OPL, OPL cache looked up by content, `graph` launch, wait for the answer record. On TILE_ERR the first error is traced back to the ggml node (SW §9.3) |
 | transport | `tsr_transport` (the normative API is [EX](design/01-execution-model.md) §10) over the kdevs `sim` (the built-in simulator, which advances deterministically when the host reads), `mock` (adapter register model), `vkernel` (Verilated kernel) and `xrt` (`xrt::ip`); all share one protocol layer |
 
-<p align="center"><img src="fig/launch.svg" alt="Swimlane timeline from llama.cpp through ggml-tesseract and tsr_transport to card DRAM and the control core running firmware: model load (supports_op, set_tensor with conversion and repack, firmware image load, VERIFY, boot and HELLO), then for each launch the input writes, the op list written to OPL, the descriptor pushed with posted CSR writes, the control core running the graph kernel and issuing LD, QACT, MVM and ST tile ops to the unit queues, the answer record in the completion ring, the host polling, and the readback." width="100%"></p>
+<p align="center"><img src="fig/launch.svg" alt="Swimlane timeline from llama.cpp through ggml-tesseract and tsr_transport to card DRAM and the control core running firmware: model load (supports_op, set_tensor with conversion and repack, firmware image load, VERIFY, boot and HELLO), then for each launch the input writes, the op list written to OPL, the descriptor pushed with posted CSR writes, the control core running the graph kernel and issuing LD, QACT, MVM and ST tile ops to the unit queues, the answer record in the completion ring, the host polling, and the readback; a note names the execution modes, M7 with one launch per token and M6 with MUL_MAT only." width="100%"></p>
 
 The figure shows model load once and then one launch: a graph split in M6, one decode token in M7.
 
@@ -1189,7 +1189,7 @@ and the hardware bit for bit. The backend uses the simulator as a fake device wi
 The control core adds two references: the Spike RISC-V simulator checks the RV32 interpreter, and the
 host build of the firmware kernels checks the RISC-V build.
 
-<p align="center"><img src="fig/verify.svg" alt="Verification chain: libtsr_ref, tsr_ref_vu, tsr_ref_at, the numpy spec models, the ggml CPU backend and Spike check the simulator and the firmware host build; numcheck, klcheck, test-backend-ops, the firmware tests under eight schedules with the race detector, and tsr-selftest are the checks; trace sets from tsr-trace-gen and TSR_TRACE dumps replay on the simulator kinds and through the replay kernel; RTL replay (tile-only replay into the issue FIFO and Ibex lockstep) and the card are the last stages." width="100%"></p>
+<p align="center"><img src="fig/verify.svg" alt="Verification chain: libtsr_ref, tsr_ref_vu, tsr_ref_at, the numpy spec models, the ggml CPU backend and Spike check the simulator and the firmware host build; numcheck, klcheck, test-backend-ops, the firmware tests under eight schedules with the race detector, and tsr-selftest are the checks; trace sets from tsr-trace-gen and TSR_TRACE dumps replay on the simulator kinds and through the replay kernel, also on the card; the RTL is checked by the tile-only replay into the issue FIFO, the Ibex lockstep and the mutation campaigns." width="100%"></p>
 
 | Stage | Reference (oracle) | Pass condition | Tool |
 | --- | --- | --- | --- |

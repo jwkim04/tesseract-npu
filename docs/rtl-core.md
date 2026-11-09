@@ -53,7 +53,7 @@ verification infrastructure. The MVM unit has its own document, [rtl-mvm.md](rtl
 
 ## 2. Block diagram and ownership
 
-<p align="center"><img src="fig/core.svg" alt="Block diagram of tsr_core in two clock domains. The clk_rv domain holds the control core (Ibex) with its instruction and data memories, the debug module and the control window. The core clock domain holds the CSR block (host port, launch queue, completion ring, log ring, PERF), the issue FIFO crossing, the checker tsr_chk, the dispatcher with its unit queues feeding the DMA, QACT, MVM clusters and vector unit, the scratchpad tsr_spm with the RISC-V bridge, and one memory arbiter per DDR4 channel." width="100%"></p>
+<p align="center"><img src="fig/core.svg" alt="Block diagram of tsr_core in two clock domains. The clk_rv domain (100 MHz) holds the control core (Ibex) with its instruction and data memories, the debug module and the control window. The core clock domain (200 MHz) holds the CSR block (host port, launch queue, completion ring, log ring, PERF), the issue FIFO crossing, the checker tsr_chk, the dispatcher with its unit queues feeding the DMA (LD, ST, KVST), QACT, MVM clusters (with ATTQK and ATTPV) and vector unit, the scratchpad tsr_spm with the RISC-V bridge, and one memory arbiter per DDR4 channel." width="100%"></p>
 
 The figure shows `tsr_core`. The netlist is `tsr_core.sv` with the data path in `tsr_core_dp.sv`.
 
