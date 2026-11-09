@@ -70,6 +70,10 @@ if (TARGET ggml AND TARGET ggml-tesseract)
 
     add_test(NAME ggml_tesseract_e2e       COMMAND test-ggml-tesseract)
     set_tests_properties(ggml_tesseract_e2e PROPERTIES ENVIRONMENT "TSR_SIM_RACE=fatal")
+    # SW-84: a matrix whose T_MAX tokens do not fit one tile of the planner is stored in row blocks (one MUL_MAT record each);
+    # the debug log says so, and the cases above (head N = 131072 at T = 4, 1 and a split upload) are bit-exact
+    add_test(NAME ggml_tesseract_head_blocks COMMAND sh -c "TSR_DEBUG=1 $<TARGET_FILE:test-ggml-tesseract> 2>&1 | grep -q 'in 2 row blocks of 65536 rows'")
+    set_tests_properties(ggml_tesseract_head_blocks PROPERTIES ENVIRONMENT "TSR_SIM_TMAX=4;TSR_SIM_RACE=fatal" TIMEOUT 600)
     add_test(NAME ggml_tesseract_e2e_tmax8 COMMAND test-ggml-tesseract)
     set_tests_properties(ggml_tesseract_e2e_tmax8 PROPERTIES ENVIRONMENT "TSR_SIM_TMAX=8;TSR_SIM_RACE=fatal")
     # Every activation buffer in host memory and a 64 KiB IO stage: every MUL_MAT takes the
@@ -277,6 +281,10 @@ if (TARGET llama AND TARGET tsr_tiny_models AND TARGET ggml-tesseract)
         add_test(NAME ggml_tesseract_mtp_${_m} COMMAND test-tsr-mtp ${TSR_TINY_MODEL_DIR}/${_m}.gguf 3 12)
         set_tests_properties(ggml_tesseract_mtp_${_m} PROPERTIES TIMEOUT 600
             ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal;TSR_SIM_TMAX=4;LLAMA_ATTN_ROT_DISABLE=1")
+        # without the state group (SW-82, TSR_GDN_CELL=0): the chain writes the result tensor's slots and generic CPY records move them
+        add_test(NAME ggml_tesseract_mtp_nocell_${_m} COMMAND test-tsr-mtp ${TSR_TINY_MODEL_DIR}/${_m}.gguf 3 8)
+        set_tests_properties(ggml_tesseract_mtp_nocell_${_m} PROPERTIES TIMEOUT 600
+            ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal;TSR_SIM_TMAX=4;TSR_GDN_CELL=0;LLAMA_ATTN_ROT_DISABLE=1")
         add_test(NAME ggml_tesseract_mtp_card_${_m} COMMAND test-tsr-mtp ${TSR_TINY_MODEL_DIR}/${_m}.gguf 2 9)
         set_tests_properties(ggml_tesseract_mtp_card_${_m} PROPERTIES TIMEOUT 600
             ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal;TSR_SIM_CARD=k4full;LLAMA_ATTN_ROT_DISABLE=1")

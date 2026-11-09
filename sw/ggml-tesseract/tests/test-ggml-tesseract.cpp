@@ -772,8 +772,16 @@ int main() {
         { "q8_0 many tokens",                 GGML_TYPE_Q8_0,   64,   128,  37, 1, 1, true,  0 },
         { "q8_0 N=1",                         GGML_TYPE_Q8_0,    1,    32,   4, 1, 1, true,  0 },
         { "q8_0 N<C (3 rows on 4 channels)",  GGML_TYPE_Q8_0,    3,    64,   2, 1, 1, false, 0 },
+        // SW-84: with T_MAX >= 4 a matrix of N = 131072 (y = 8192 lines per token) is stored in two row blocks, one record each
+        { "q8_0 head, row blocks, T=4",       GGML_TYPE_Q8_0, 131072,  256,   4, 1, 1, true,  0 },
+        { "q8_0 head, row blocks, T=1",       GGML_TYPE_Q8_0, 131072,  256,   1, 1, 1, true,  0 },
+        { "q4_K head, row blocks, split upload", GGML_TYPE_Q4_K, 131072, 256, 3, 1, 1, true,  4 },
     };
+    const bool forced_host = getenv("TSR_FORCE_HOST") != nullptr && atoi(getenv("TSR_FORCE_HOST")) != 0;
     for (const mm_case & c : cases) {
+        if (forced_host && c.N >= 131072) {
+            continue;       // one token's rows (512 KiB) do not fit the 64 KiB stage of the hosted variants
+        }
         run_case(c);
     }
     run_chain(256, 64, 3, 64, 48, GGML_TYPE_Q8_0);    // N1 % 16 == 0: both nodes in one program

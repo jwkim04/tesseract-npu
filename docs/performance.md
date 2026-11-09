@@ -9,7 +9,7 @@ measurement history and the commands that reproduce the numbers.
 > **Scope.** Measurement record, not a design. The first card measurements with the control core
 > are in "The first card image with the control core" below (2026-11-06); the full-feature image's
 > are in "The full-feature image after the ATTPV fix" and, for the image before the fix, "The full-feature image on the card, second link" (both 2026-11-08).
-> The MoE and Gated DeltaNet models on the same image are in "MoE and Gated DeltaNet on the card" (2026-11-09), and Qwen3-30B-A3B in "Qwen3-30B-A3B on the card". All other card
+> Multi-token prediction on the same image is in "Multi-token prediction on the card" (2026-11-09). The MoE and Gated DeltaNet models on the same image are in "MoE and Gated DeltaNet on the card" (2026-11-09), and Qwen3-30B-A3B in "Qwen3-30B-A3B on the card". All other card
 > measurements were taken before the control core was added, with the host issuing the ops; the
 > Vivado and RTL simulation results are of the design that ran on the card. The other numbers are simulator measurements or estimates, and none
 > of them is a card measurement. Every number carries one of the provenance labels below. The
@@ -51,6 +51,102 @@ are not comparable with the 276.3 MHz ones without the clock ratio.
 patches ([`sw/xrt-driver`](../sw/xrt-driver/README.md)), shell `xilinx_u200_gen3x16_xdma_base_2`,
 SC firmware 4.6.21. The U200 has a VU9P with three SLRs and 4 x 16 GB DDR4 (DDR4-2400, 19.2 GB/s
 peak per channel). Simulator timings are from the same host.
+
+## Multi-token prediction on the card (`k4full`, SW-83 to SW-86, 2026-11-09)
+
+Measured on the card (k4full, fourth link, 200 / 100 MHz), 2026-11-09, with the bitstream of the sections below (sha256
+`6fdf31fdee80778771644fdc7708041c66070fd2ed8f0b1f753c7f66d3745284`, `HAS_GDN` 0: the composed Gated DeltaNet path, CAPS 0x21) and the
+`tsr-fw.elf` of branch `mtp` (image id `b8838a99660d1da7`, firmware sources unchanged from `sw-moegdn`; Basis 0.1.0, ABI 1). The host stack is the `build/xrt`
+build of `mtp` (Release, `-DTSR_WITH_XRT=ON`). Before every card session the ATTPV trace `traces/at/errors/at_s53_0009` was replayed. Models: the target
+`Qwen3.8-27B-Q4_K_M.gguf` (ggml-org, sha256 `d15d4b6de55f662ac40e867702d31afe738d032fa06b829b2b1a21a49d4a48ee`) or `Qwen3.8-27B-Q8_0.gguf`
+(sha256 `6bc9e7220d8400574fd62df25f04a961cb5cbb0d766cf0118c21c36c0059c35a`), and the MTP head `mtp-Qwen3.8-27B-Q8_0.gguf` (ggml-org, sha256
+`572ebcd0349321a71ccc6886c2611ff9d8c9aa160312ed4c90ae5bf9a055f4c6`: the block, `output.weight`, `token_embd`). Design: SW §7.11.
+
+Method: `tsr-mtp` (`sw/tools/tsr_mtp.cpp`), greedy (`--temp 0`), the M7 settings of klcheck (FA on, q8_0 KV, rotation off, `-c 2048`), the first four built-in
+klcheck prompts (7 to 15 tokens), 32 generated tokens each (128 per configuration), one process per session: the plain loop (one token per decode, a target context
+without snapshots), then MTP with K = 1, 2 and 3 drafts (the target keeps K_max + 1 = 4 recurrent snapshots). Cycles are the PERF core cycles read around each launch (hook
+`ggml_backend_tesseract_counters`; the 200 MHz tok/s is `200 M / cycles per token`); the wall tok/s is the decode loop of the process on the host (load average 4 to 8). Prefill is not in
+any figure. The generated tokens are compared with the plain loop's in the same process.
+
+```sh
+source /opt/xilinx/xrt/setup.sh; export TSR_XCLBIN=…/k4full/build/link/k4full/tsr_u200_k4.xclbin TSR_IMAGE=build/xrt/fw/tsr-fw.elf
+tsr-selftest --device xrt --no-mem --no-kernel --rate-n 10 --traces traces/at/errors/at_s53_0009     # before every session
+LLAMA_ATTN_ROT_DISABLE=1 TSR_STATS=1 TSR_DEVICE=xrt tsr-mtp -m Qwen3.8-27B-Q4_K_M.gguf -md mtp-Qwen3.8-27B-Q8_0.gguf --mtp-device xrt \
+    --mtp-mode all --mtp-k-list 1,2,3 --mtp-n-prompts 4 -n 32 --mtp-rounds 3 -c 2048 -t 8
+```
+
+### Qwen3.8 27B Q4_K_M (3 rounds)
+
+| | plain | MTP K = 1 | MTP K = 2 | MTP K = 3 |
+| --- | --- | --- | --- | --- |
+| Accepted drafts per step (tokens per step) | 0 (1) | 0.855 (1.855) | 1.364 (2.364) | 1.977 (2.977) |
+| Drafts accepted at position 1 / 2 / 3 | | 85.5 % | 76.4 / 62.3 % | 81.8 / 65.1 / 54.8 % |
+| Steps accepting 0 / 1 / 2 / 3 | | 10 / 59 | 13 / 9 / 33 | 8 / 8 / 5 / 23 |
+| Device cycles per token, total | 113.99 M | **87.99 M** | **90.05 M** | **87.86 M** |
+| draft + verify + process | | 3.87 + 83.07 + 1.06 | 6.17 + 83.00 + 0.88 | 7.40 + 79.72 + 0.74 |
+| Speed-up in cycles | 1.00 | 1.30 | 1.27 | 1.30 |
+| tok/s at 200 MHz from the cycles | 1.755 | 2.273 | 2.221 | 2.276 |
+| Wall tok/s, best / median of 3 rounds | 1.745 / 1.745 | 2.224 / 2.205 | 2.161 / 2.158 | 2.212 / 2.208 |
+| Launches per token | 1.00 | 1.62 | 1.72 | 1.72 |
+| Tokens equal to plain decoding | | 4 of 4 prompts | 4 of 4 | 4 of 4 |
+
+One session (K = 3 only, 1 round) with the output head whole (`TSR_HEAD_SPLIT=0`, SW-84) gave a plain token of 113.98 M cycles (the same) and a K = 3 verification of
+247.3 M cycles per step against 231.9 M with the head in row blocks (MVM busy 88.9 M against 73.4 M per step); K = 3 was 93.14 M cycles per token (1.22 ×) instead of 87.86 M (1.30 ×).
+
+### Where a verification step goes (27B Q4_K_M)
+
+| Verification of T tokens (core cycles per step) | T = 1 (plain) | T = 2 (K = 1) | T = 3 (K = 2) | T = 4 (K = 3) |
+| --- | --- | --- | --- | --- |
+| Total | 113.99 M | 154.09 M | 193.16 M | 231.92 M |
+| MVM busy | 73.07 M | 73.17 M | 73.28 M | 73.38 M |
+| VU busy | 36.94 M | 73.68 M | 109.09 M | 144.67 M |
+| DMA busy | 12.90 M | 25.61 M | 38.14 M | 50.17 M |
+
+The MVM time does not depend on T (the weights stream once for all the tokens: the vocabulary matrix in four row blocks, SW-84). The step grows by 39 M cycles per token: the composed
+Gated DeltaNet recurrence is serial in the tokens and VU-bound (37 M per token of the 48 layers, SW §7.10), and the K = 1 records of the chain re-load the state tile
+(DMA busy +12.4 M per token). A draft step costs 7.2 M cycles, 5.3 M of them the Q8_0 vocabulary matrix (1.35 GB, once per drafted token), the rest the block (0.45 GB); the catch-up
+`process` decode 2.0 to 2.1 M per step. So K = 1, 2 and 3 land at the same 88 M cycles per token: every drafted token adds about 7 M of draft and 39 M of verification and gains 0.5 to 0.85 accepted tokens.
+On an image with the fused GDN op the recurrence of a token costs about a quarter (VU busy 9 M instead of 37 M, SW §7.10), so the slope falls to about 18 M per token and the gain rises (the simulator rows below).
+
+### Qwen3.8 27B Q8_0 (2 rounds)
+
+| | plain | MTP K = 1 | MTP K = 2 | MTP K = 3 |
+| --- | --- | --- | --- | --- |
+| Accepted drafts per step (tokens per step) | 0 (1) | 0.855 (1.855) | 1.426 (2.426) | 1.787 (2.787) |
+| Device cycles per token | 148.18 M | **106.83 M** | **103.46 M** | **106.76 M** |
+| Speed-up in cycles | 1.00 | 1.39 | 1.43 | 1.39 |
+| tok/s at 200 MHz from the cycles | 1.350 | 1.872 | 1.933 | 1.873 |
+| Wall tok/s, best / median of 2 rounds | 1.340 / 1.339 | 1.835 / 1.829 | 1.881 / 1.879 | 1.821 / 1.809 |
+| Tokens equal to plain decoding | | 4 of 4 | 4 of 4 | 4 of 4 |
+
+The Q8_0 target streams 28.6 GB per token (MVM busy 106.5 M cycles), so a larger share of the step is weight traffic that the verification shares between the tokens.
+
+### Qwen3.8 2B Q4_K_M (its GGUF carries the MTP block)
+
+K = 3 on three prompts × 16 tokens: 2.500 tokens per step, 14.26 M cycles per token against 11.44 M plain (0.80 ×; the 2B's tied head, 540 MB as Q8_0, is read per draft token: 2.9 M cycles of each).
+MTP does not pay for the 2B; the 27B's head is 7 % of a token, the 2B's 29 %. Bit identity with the simulator: `klcheck` of the card (plain generation of 4 × 24 tokens, and a replay of the same tokens
+in verification windows of up to 4 tokens with rollbacks) replayed on `TSR_SIM_CARD=k4full`: 96 of 96 rows bit-identical for both, and the card's verification rows are bit-identical to its plain rows (96 of 96).
+
+### The 27B from truncated models on the simulator (card configuration)
+
+`simulator cycle model (mtp)`, `TSR_SIM_CARD=k4full` (`T_MAX` 4, VU 8 / 8 / 4 lanes, `clk_rv` at half the core clock, 200 MHz image) with the composed Gated DeltaNet path (the card image) and with
+`TSR_SIM_GDN=1` (an image with the fused op, `k4f250` at 200 MHz). The whole 27B was not run on the simulator in this session (the host was busy with a K4 link); the rows extrapolate
+the first 4 and the first 8 layers of the real GGUF (`sw/tools/gguf_truncate.py`, the method of SW §7.10: a group of 3 Gated DeltaNet and 1 attention layers is the difference, the head
+and embeddings the rest; 15 groups added to the 4-layer run), with the real MTP head (`mtp-Qwen3.8-27B-Q8_0.gguf`). A draft step does not depend on the target's depth (7.175 M cycles) and the
+catch-up decode costs 1.96 / 2.05 / 2.14 M at 2 / 3 / 4 tokens. The accepted tokens per step are the card's (the table above; the fused op changes the target's bits, so its acceptance will differ a little). The
+composed rows reproduce the card: plain 114.2 M against 113.99 M measured, a `T = 4` verification 235.1 M against 231.9 M (+1.4 %), cycles per token 90.4 / 90.4 / 86.9 M against 87.99 / 90.05 / 87.86 M measured (within 3 %).
+
+| Core cycles per step or token (M) | plain | K = 1 | K = 2 | K = 3 |
+| --- | --- | --- | --- | --- |
+| Composed (card image): verification of K + 1 tokens | 114.2 | 158.5 | 197.2 | 235.1 |
+| Composed: per generated token (draft + verify + process, ÷ tokens per step) | 114.2 | 90.4 (1.26 ×) | 90.4 (1.26 ×) | 86.9 (1.31 ×) |
+| Fused op (state on its cell): verification of K + 1 tokens | 91.1 | 112.3 | 128.6 | 144.6 |
+| Fused: per generated token | 91.1 | 65.5 (**1.39 ×**) | 61.4 (**1.49 ×**) | 56.5 (**1.61 ×**) |
+| Fused at 200 MHz, tok/s from the cycles | 2.20 | 3.05 | 3.26 | 3.54 |
+
+A fused verification of 4 tokens is 73 M MVM busy (the weights once), 35 M VU busy and 35 M DMA busy cycles (the units run one after the other in a decode token); the DMA share is the chain's
+re-reads of the state (plain decoding: 8.3 M). A GDN kernel that stored its tile after each token would read the state once and save about a third of it (13 M of 145 M cycles, 9 %); it needs two record words
+(an ABI change) and was not built.
 
 ## MoE and Gated DeltaNet on the card (`k4full`, firmware of `sw-moegdn`, 2026-11-09)
 

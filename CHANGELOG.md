@@ -34,6 +34,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
   sequence keeps its cell (SW-82): the record reads the cell and writes the new state back into it, and the `GET_ROWS` gather and the state
   `CPY` of the pinned graph are absorbed. One pass over the state instead of three. No record, firmware or ABI change; the results are
   bit-identical. A plan that depends on the ids is checked again at every reuse. `TSR_GDN_CELL=0` turns it off.
+- The ggml-tesseract backend lowers the graphs of a llama.cpp context with rollback snapshots (`n_rs_seq` = K, multi-token prediction; SW-83): a
+  `GATED_DELTA_NET` with K + 1 slots is a chain of `min(T, K + 1)` K = 1 records writing the cache's rollback groups, the conv state `CPY`s of each slot are `CPY`
+  records of window rows, the state group of SW-82 takes the 3D `CPY` of the slots (in place, or from the gather's copy after a rollback), and `CONCAT` along dim 0 is two `CPY`
+  records (SW-85). No firmware, record or ABI change; every snapshot and row is bit-identical to plain decoding on the same device. The pinned llama.cpp's MTP drafter
+  runs unchanged (SW-86).
+- Weight matrices for which T_MAX tokens do not fit one tile of `mm_plan` (the output head, N = 248,320) are stored in 2, 4 or 8 row blocks and their `MUL_MAT` is one record
+  per block, so a batch of up to T_MAX tokens streams every weight row once (SW-84). Bits unchanged; `TSR_HEAD_SPLIT=0` keeps matrices whole.
+- Added the backend hook `ggml_backend_tesseract_counters`, the tool `tsr-mtp` (the MTP drafter loop with device cycles per phase, plain and speculative modes, a list of K),
+  `klcheck run --verify-k K` and `klcheck all --verify-k K [--verify-identical]` (verification windows with rollbacks), and tiny Qwen3.5-style models with an MTP block.
 - UNARY accepts func 5, SIGMOID (VOP SIGMOID). The kind's revision stays 1: no existing record changes.
 - The ggml-tesseract backend lowers the Gated DeltaNet layer graph of the pinned llama.cpp (`qwen35`): SOFTPLUS, SIGMOID and SILU
   on gate tensors, `GATED_DELTA_NET`, the `CONCAT` / `SSM_CONV` / state `CPY` group (two window `CPY` records and one

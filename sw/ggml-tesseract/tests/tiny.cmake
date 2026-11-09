@@ -162,6 +162,18 @@ if (TARGET llama)
         endif()
         set_tests_properties(${_name} PROPERTIES TIMEOUT ${_timeout} ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal")
     endforeach()
+    # SW-83: klcheck's verification windows (--verify-k 3): the recorded tokens of the plain device run decoded in windows of 4
+    # tokens, every row an output, the accepted length cycling through 0 .. 3 (wrong tokens behind it, a rollback to the
+    # recurrent snapshot). The rows must meet klcheck's criterion against the CPU (the openTPU absolute bound: the tiny
+    # models' floors are small) and must be bit-identical to the plain device run (T_MAX 4: a window is one pass).
+    foreach (_m qwen35-tiny-mtp-q8_0 qwen35-tiny-s128-mtp-q8_0)
+        add_test(NAME ggml_tesseract_verify_${_m}
+                 COMMAND klcheck all -m ${TSR_TINY_MODEL_DIR}/${_m}.gguf --prompts ${TSR_TINY_MODEL_DIR}/tiny-prompts.txt
+                         --n-prompts 4 -n 17 --prompt-tail 8 -ub 16 -t 4 --phase m7 --verify-k 3 --verify-identical
+                         --min-kl 1e-3 --min-top1 0.95)
+        set_tests_properties(ggml_tesseract_verify_${_m} PROPERTIES TIMEOUT 900
+                             ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal;TSR_SIM_TMAX=4")
+    endforeach()
     # W3b fix (SW-43): a prefill ubatch of 692 tokens (the first four prompts joined, -ub 1024): its
     # FLASH_ATTN needs 174 MSUM + 87 FA_NEW preload lines (> 256, one list), so supports_op
     # keeps it on the CPU (extra launches in that prefill, reported, not checked); the decodes stay one

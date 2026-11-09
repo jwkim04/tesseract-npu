@@ -240,6 +240,11 @@ struct tsr_tensor_rec {
     // symmetric-allocated at w_off + e * exp_ch_bytes (EXP_STRIDE = exp_ch_bytes / 64 beats). n_exp = 1: a matrix.
     uint32_t n_exp = 1;
     uint64_t exp_ch_bytes = 0;    // bytes of one expert per channel = R * ROW_BEATS * 64
+    // SW-84: a matrix with so many rows that T_MAX tokens do not fit one tile of the planner (the output head: y is one
+    // f32 per row and token) is stored as `parts` blocks of N / parts rows, each symmetric-allocated over the channels
+    // like an expert (n_exp = parts, N = the rows of one block), and the MUL_MAT is one record per block. Every weight
+    // row is then streamed once for all T <= T_MAX tokens. parts = 1: an ordinary matrix.
+    uint32_t parts = 1;
     bool     complete = false;    // all bytes received and stored
     std::vector<uint8_t> staging; // split upload in progress: original ggml bytes
     tsr_intervals have;           // received byte ranges of `staging`
@@ -761,6 +766,34 @@ static bool tsr_rec_is_devweight_shape(const tsr_device * d, const tsr_tensor_re
 
 static bool tsr_rec_is_conv_taps(const tsr_tensor_rec & r);
 
+// SW-84: into how many row blocks a matrix of N x K is stored so that a MUL_MAT of T_MAX tokens is one tile of the planner
+// (the tokens' x, QA and y fit half the ring: plan.hpp mm_plan), 1 when it is already or no block count 2, 4 or 8 does it
+// (N a multiple of 16 per block: the blocks' y runs start on lines). TSR_HEAD_SPLIT=0 keeps every matrix whole (a comparison).
+static uint32_t tsr_head_parts(const tsr_device * d, uint32_t fmt, uint32_t N, uint32_t K) {
+    static const bool off = [] {
+        const char * e = getenv("TSR_HEAD_SPLIT");
+        return e != nullptr && atoi(e) == 0;
+    }();
+    const uint32_t t_max = tsr_mm_t_max(d->cfg);
+    if (off || t_max < 2) {
+        return 1;
+    }
+    const tsr::plan::dev_cfg pc = tsr_plan_cfg(d->cfg);
+    tsr::plan::mm_tiling t{};
+    if (tsr::plan::mm_plan(pc, fmt, N, K, t_max, &t) != tsr::opl::RET_OK || t.t_tile >= t_max) {
+        return 1;
+    }
+    for (uint32_t p = 2; p <= 8; p *= 2) {
+        if (N % (16 * p) != 0) {
+            continue;
+        }
+        if (tsr::plan::mm_plan(pc, fmt, N / p, K, t_max, &t) == tsr::opl::RET_OK && t.t_tile >= t_max) {
+            return p;
+        }
+    }
+    return 1;
+}
+
 static void tsr_place(tsr_device * d, tsr_tensor_rec & r) {
     GGML_ASSERT(r.kind == tsr_kind::UNPLACED);
     if (tsr_rec_is_devweight_shape(d, r)) {
@@ -768,6 +801,11 @@ static void tsr_place(tsr_device * d, tsr_tensor_rec & r) {
         r.N   = (uint32_t) r.ne[1];
         r.K   = (uint32_t) r.ne[0];
         r.n_exp = (uint32_t) r.ne[2];
+        r.parts = r.n_exp == 1 ? tsr_head_parts(d, r.fmt, r.N, r.K) : 1u;
+        if (r.parts > 1) {
+            r.N /= r.parts;
+            r.n_exp = r.parts;
+        }
         r.exp_ch_bytes = tsr_tensor_ch_beats(r.fmt, r.N, r.K, d->cfg.num_ch) * TSR_BEAT_BYTES;
         r.ch_bytes = r.exp_ch_bytes * r.n_exp;
         if (!tsr_heap_alloc(d, r.ch_bytes, &r.w_off)) {
@@ -777,7 +815,8 @@ static void tsr_place(tsr_device * d, tsr_tensor_rec & r) {
         r.kind = tsr_kind::DEVWEIGHT;
         r.complete = false;
         TSR_DBG(1, "weight %-28s %-6s [%6u x %6u%s] -> %s W_OFF=0x%09" PRIx64 " (%.2f MiB/ch x %u ch)%s\n",
-                r.name.c_str(), ggml_type_name(r.type), r.N, r.K, r.n_exp > 1 ? (" x " + std::to_string(r.n_exp)).c_str() : "",
+                r.name.c_str(), ggml_type_name(r.type), r.N, r.K,
+                r.parts > 1 ? (" x " + std::to_string(r.parts) + " row blocks").c_str() : r.n_exp > 1 ? (" x " + std::to_string(r.n_exp)).c_str() : "",
                 r.fmt == TSR_FMT_Q8_0 ? "Q8_0" : "Q4_K",
                 r.w_off, tsr_mib(r.ch_bytes), d->cfg.num_ch, tsr_type_is_native(r.type) ? "" : " (converted)");
         return;
@@ -1037,7 +1076,7 @@ static void tsr_placed_fill(tsr_device * d, tsr_buffer_ctx * b, uint64_t addr, u
                 for (size_t done = 0; done < n;) {
                     const size_t m  = std::min(buf.size(), n - done);
                     const uint32_t r0 = (uint32_t) ((rel + done) / src_rb);
-                    tsr_store_weight_rows(d, r->type, r->fmt, r->N, r->K, r->w_off, buf.data(), r0, r0 + (uint32_t) (m / src_rb));
+                    tsr_store_expert_rows(d, r->type, r->fmt, r->N, r->K, r->exp_ch_bytes, r->w_off, buf.data(), r0, r0 + (uint32_t) (m / src_rb));
                     done += m;
                 }
             } else {
@@ -2029,6 +2068,8 @@ struct tsr_wref {
     uint64_t w_off;
     uint64_t exp_ch_bytes = 0;    // expert tensors: bytes of one expert per channel (EXP_STRIDE x 64); matrices: the whole
     uint32_t n_exp = 1;
+    uint32_t parts = 1;           // SW-84: a matrix stored as row blocks (n_exp = parts): one record per block
+    uint32_t part_rows = 0;       // its rows per block
 };
 
 // Convert a MUL_MAT src0 stored as raw ggml bytes into the WEIGHT heap (cached). The bytes are
@@ -2151,13 +2192,14 @@ static tsr_wref tsr_resolve_weight(tsr_device * d, tsr_segment & seg, const ggml
         GGML_ABORT("tesseract: weight '%s' was never uploaded", src0->name);
     }
     if (r->kind == tsr_kind::DEVWEIGHT) {
-        if (r->vaddr != a || r->type != src0->type || r->K != K || r->N != N || r->n_exp != NE) {
+        if (r->vaddr != a || r->type != src0->type || r->K != K || r->N * r->parts != N ||
+            (r->parts > 1 ? NE != 1u : r->n_exp != NE)) {
             GGML_ABORT("tesseract: MUL_MAT uses a view of device weight '%s'; views of placed weights are not supported", r->name.c_str());
         }
         if (!r->complete) {
             GGML_ABORT("tesseract: weight '%s' is only partially uploaded", r->name.c_str());
         }
-        return { r->fmt, r->w_off, r->exp_ch_bytes, r->n_exp };
+        return { r->fmt, r->w_off, r->exp_ch_bytes, r->n_exp, r->parts, r->parts > 1 ? r->N : 0u };
     }
     // RAW in a weight buffer (e.g. a 1D f32 tensor used as a 1 x K matrix): ch0 (AUX or the heap)
     return tsr_lazy_weight(d, seg, b, 0, r->raw_off + (a - r->vaddr), nullptr, src0->type, N, K, src0->name, NE);
@@ -2180,6 +2222,14 @@ static void tsr_mm_args(uint32_t * a, uint32_t x, uint32_t y, const tsr_wref & w
     a[mm::ADD]        = tsr::opl::HANDLE_NONE;
     a[mm::ADD_STRIDE] = 0;
     a[mm::FLAGS]      = 0;
+}
+
+// Block p of a matrix stored in row blocks (SW-84): the record of its part_rows rows. The block's outputs are a run of every
+// token's row of y: handle y + p * part_rows / 16 lines, the rows keep the whole row's stride (tl.y_lines).
+static void tsr_mm_args_part(uint32_t * a, uint32_t x, uint32_t y, const tsr_wref & w, uint32_t p, uint32_t K, uint32_t T,
+                             const tsr_mm_tiling & tl) {
+    tsr_mm_args(a, x, y + p * (w.part_rows / 16u), w, w.part_rows, K, T, tl);
+    a[tsr::opl::mm::W_OFF] = (uint32_t) ((w.w_off + (uint64_t) p * w.exp_ch_bytes) / TSR_BEAT_BYTES);
 }
 
 // A MUL_MAT whose operands the device cannot address in place: src1 or dst in host memory
@@ -2219,10 +2269,18 @@ static void tsr_lower_staged(tsr_device * d, tsr_segment & seg, const ggml_tenso
             tsr_write(d, 0, xs, ax.host() + t0 * x_row, (size_t) (tc * x_row));
         }
         uint32_t args[tsr::opl::mm::NARGS];
-        tsr_mm_args(args, stage_x ? tsr_dram_handle(0, xs) : ax.handle(t0 * x_row),
-                    stage_y ? tsr_dram_handle(0, ys) : ay.handle(t0 * y_stride), w, N, K, tc, tl);
+        const uint32_t xh = stage_x ? tsr_dram_handle(0, xs) : ax.handle(t0 * x_row);
+        const uint32_t yh = stage_y ? tsr_dram_handle(0, ys) : ay.handle(t0 * y_stride);
         tsr_segment one(d->cfg.num_ch);
-        tsr_seg_add_mm(d, one, args, node->name, stage_y ? nullptr : ay.b, false);
+        if (w.parts > 1) {
+            for (uint32_t p = 0; p < w.parts; ++p) {
+                tsr_mm_args_part(args, xh, yh, w, p, K, tc, tl);
+                tsr_seg_add_mm(d, one, args, node->name, stage_y ? nullptr : ay.b, false);
+            }
+        } else {
+            tsr_mm_args(args, xh, yh, w, N, K, tc, tl);
+            tsr_seg_add_mm(d, one, args, node->name, stage_y ? nullptr : ay.b, false);
+        }
         tsr_flush(d, one);
         if (stage_y) {
             yb.resize((size_t) (tc * y_stride));
@@ -2310,6 +2368,21 @@ static bool tsr_lower_mul_mat(tsr_device * d, tsr_segment & seg, const ggml_tens
     GGML_ASSERT(w.fmt == fmt && w.w_off % TSR_BEAT_BYTES == 0);
 
     uint32_t args[tsr::opl::mm_scale::SOFTCAP_NARGS];
+    if (w.parts > 1) {
+        // SW-84: the weight is stored in row blocks: one record per block, each streaming its rows once for all T tokens; no
+        // epilogue is fused (the consumers are lowered on their own)
+        if (after != nullptr) {
+            TSR_DBG(1, "MUL_MAT %s + %s not fused: the weight is stored in %u row blocks\n", node->name,
+                    (softcap_tail ? softcap_tail : after)->name, w.parts);
+        }
+        for (uint32_t p = 0; p < w.parts; ++p) {
+            tsr_mm_args_part(args, ax.handle(), ay.handle(), w, p, K, T, tl);
+            tsr_seg_add_mm(d, seg, args, node->name, ay.b, false);
+        }
+        TSR_DBG(1, "MUL_MAT %-24s %-6s N=%u K=%u T=%u W_OFF=0x%09" PRIx64 " in %u row blocks of %u rows x=ch%u+0x%09" PRIx64 " y=ch%u+0x%09" PRIx64 "\n",
+                node->name, ggml_type_name(src0->type), N, K, T, w.w_off, w.parts, w.part_rows, ax.b->ch, ax.io_off(), ay.b->ch, ay.io_off());
+        return false;
+    }
     tsr_mm_args(args, ax.handle(), ay.handle(), w, N, K, T, tl);
     bool fused = false;
     uint32_t kind = tsr::opl::K_MUL_MAT;

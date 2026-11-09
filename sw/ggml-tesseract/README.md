@@ -199,6 +199,7 @@ Public C API (`third_party/llama.cpp/ggml/include/ggml-tesseract.h`, from the pa
 | `TSR_STAGE_KIB=<n>` | test knob: IO stage size in KiB (default max(16 MiB, 2 × SPM)); a small stage forces several T tiles |
 | `TSR_DUMP_RE=<regex>` `TSR_DUMP_DIR=<dir>` | debug knob: when a graph is built, run the pending op list after every node whose result name matches the regex, read the result from device memory, print its range to stderr (`DUMP name ...`) and write it to `<dir>/<name>.f32`. Compare with the same nodes of a CPU run (`cb_eval` on the CPU backend) to find the first node that differs. Only the first run of a graph dumps (later runs use the cached plan) |
 | `TSR_GDN_CELL=0` | test knob: do not put a `GATED_DELTA_NET` on its state cache cell (SW-82). By default, when the ids of the layer's state gather (`rs_s_copy`) say that every sequence keeps its cache cell, the record reads the cell and writes the new state back into it, and the `GET_ROWS` gather and the state `CPY` are absorbed (one pass over the state instead of three). Results are bit-identical; the plan is rebuilt when the ids change their answer. `TSR_STATS` shows the count |
+| `TSR_HEAD_SPLIT=0` | test knob: keep every weight matrix whole (SW-84). By default a matrix for which T_MAX tokens do not fit one tile of the planner (the output head: N = 248,320 plans one token per tile) is stored at upload as 2, 4 or 8 row blocks and its `MUL_MAT` is one record per block, so a batch of up to T_MAX tokens streams every weight row once; the results are bit-identical. `TSR_DEBUG=1` prints "in N row blocks" |
 | `TSR_OPL_CRC=1` | debug knob: `graph` launch flag VERIFY_CRC (the executor checks each list's CRC-32 before running it) |
 | `TSR_STATS=1` | at backend free: upload statistics; graph_compute calls, launches, launches per scheduler pass (≈ per token: a split seen again starts a pass) and per graph_compute (0 / 1 / 2 / ≥ 3), op records per launch, records per kind, fused ops, MUL_MAT / JOIN records, staged chunks and their launches, the plan cache (hits, builds, builds not cacheable), lists cut early, OPL cache hits / misses / evictions, launch wall time, PERF counter deltas; with the KV agent's lines on mask summaries |
 | `TSR_SIM_*`, `TSR_TRACE`, `TSR_LOG`, `TSR_LAUNCH_TIMEOUT_MS`, … | handled by the transport (`sw/transport/tsr_transport.h`, SW §9.2) |
@@ -251,6 +252,12 @@ except `_bigt` (over 15 minutes with it). `TSR_TEST_DUMP=<file>` makes
 byte. Test hook for the storage decision:
 `ggml_backend_reg_get_proc_address(reg, "ggml_backend_tesseract_buffer_storage")` returns
 `const char * (*)(ggml_backend_buffer_t)` ("undecided", "io", "placed", "host").
+Hook `"ggml_backend_tesseract_counters"` (SW-86; `tsr-mtp`, `sw/tools/tsr_mtp.cpp`):
+`bool (*)(ggml_backend_dev_t, uint64_t * out, size_t n)` fills the device's counters since it was opened: core cycles, MVM, VU,
+DMA, QACT and AT busy cycles, launches, graph_compute calls (the same PERF counters as `TSR_STATS`, readable between launches on the simulator and the card).
+Multi-token prediction (SW-83 to SW-86, `docs/design/06-software-verification.md` §7.11): `tests/test-tsr-mtp.cpp` (ctest `ggml_tesseract_mtp_*`) drives a
+context with rollback snapshots (`n_rs_seq` = K) through verification batches and rollbacks and compares every row with plain decoding on the same device and with the CPU;
+`tsr-mtp` runs llama.cpp's MTP drafter loop with the device counters (plain / spec / both, a list of K, rounds).
 
 `ggml_tesseract_backend_ops` leaves out the single-output case
 `MUL_MAT(type_a=f32,type_b=f32,m=1,n=1,k=2048)`: with fresh random data each run its NMSE is one

@@ -2,6 +2,27 @@
 
 Work package numbers (W0-W6, P*.*) are those of [design/README.md](design/README.md) §10.
 
+## Resume here for multi-token prediction (branch `mtp`, from `sw-moegdn` 984ba4e, November 9)
+
+Qwen3.8's MTP head runs on the device: the verification batch (K + 1 tokens, every row an output), the draft steps and the catch-up decode are device launches, and the rollback
+after a rejected draft restores the recurrent state from the cache's snapshot groups. No RTL, firmware, record or ABI change and no llama.cpp patch. Design: SW §7.11 (SW-83 to SW-86; the next free
+number is SW-87). Numbers: [performance.md](performance.md) "Multi-token prediction on the card", checks: [klcheck.md](klcheck.md) "Verification windows".
+
+- What changed (host backend only): `GATED_DELTA_NET` with K + 1 slots is a chain of K = 1 records (`tsr_lower_gdn_slots`), the conv slots are `CPY` records, the SW-82 state group takes the 3D
+  slot `CPY` (`absorb_cpy`), `CONCAT` along dim 0 is two `CPY` records, a matrix whose T_MAX tokens do not fit one planner tile (the 248,320-row output head) is stored in 2 / 4 / 8 row blocks
+  (`tsr_head_parts`, `TSR_HEAD_SPLIT=0` turns it off), the backend has the hook `ggml_backend_tesseract_counters`. New tools: `tsr-mtp` (`sw/tools/tsr_mtp.cpp`), `klcheck --verify-k`. New tests:
+  `test-tsr-mtp` (`ggml_tesseract_mtp_*`), `ggml_tesseract_verify_*`, the units of the lowering, `ggml_tesseract_head_blocks`; tiny Qwen3.5-style models with an MTP block (`gen_tiny_models.py`).
+- Results, card (`k4full`, composed GDN), 27B Q4_K_M with `mtp-Qwen3.8-27B-Q8_0.gguf` (`-md`): the tokens of every MTP run equal plain decoding's (4 prompts × 32 tokens, K = 1, 2, 3, also on Q8_0); device cycles per token
+  113.99 M plain, 87.99 / 90.05 / 87.86 M at K = 1 / 2 / 3 (1.30 / 1.27 / 1.30 ×); wall 1.745 tok/s plain, 2.22 / 2.16 / 2.21 best of 3 rounds; acceptance 0.855 / 1.364 / 1.977 drafts per step. Q8_0: 148.18 M plain, 1.39 / 1.43 / 1.39 ×.
+  klcheck M7, 8 × 64: ratio 1.139, top-1 98.24 %, PASS, and the verification windows with rollbacks give the same rows bit for bit (512 / 512). 2B: card against simulator 96 / 96 bit-identical (plain and windows).
+- Why only 1.3 ×: a verification step grows by 39 M cycles per token (the composed recurrence, VU-bound and serial in the tokens, plus the chain's state re-reads), a draft step costs 7.2 M (5.3 M the Q8_0 vocabulary matrix),
+  and the MVM is now T-independent. With the fused op the simulator estimate (truncated 4- and 8-layer models, the method of §7.10) is 65.5 / 61.4 / 56.5 M cycles per token, 1.39 / 1.49 / 1.61 × (verification of 4 tokens 144.6 M
+  against 91.1 M plain). The 2B loses (0.80 ×): its head is 29 % of a token.
+- Left: the whole 27B on the simulator (composed and `TSR_SIM_GDN=1`, `TSR_SIM_DRAM_DIR`, about 22 GB of disk; the host was busy with a K4 link); the card run on the `k4f250` image (the same commands, `TSR_SIM_GDN=1` for the replays);
+  an in-kernel snapshot store (two record words, an ABI change; saves about 9 % of a fused verification); more than one sequence with snapshots in one ubatch; probabilistic drafting.
+- Setup of this worktree: `third_party` holds local copies of the pinned clones (llama.cpp patched), `build/tools` links to the main tree's toolchain, `traces/` was copied from the main tree (not committed; two
+  `tools_selftest_mock_traces*` cases need it). Card scripts: `build/card/mtp/` (not committed): `lib.sh`, `run_mtp.sh KEY MODEL MTP_GGUF NP NGEN ROUNDS KLIST`, `run_klcheck.sh`, `run_2b_identity.sh`.
+
 ## Resume here for the software: the branches merged into `sw-moegdn` (November 9)
 
 Four finished branches were merged into `sw-moegdn` (real merges, in this order), on top of SW-76: `moe-qwen3` (SW-77, Qwen3-30B-A3B), `vu-perf` (SW-80, the
