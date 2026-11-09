@@ -4,10 +4,12 @@
 #
 # The elaboration has four MVM clusters (T_MAX 4) with attention, the vector unit (8 / 8 / 4 lanes, two lane banks),
 # the RISC-V control core behind the narrow RV transport, the issue path with both checker classes, the CSR block,
-# the 2R2W SPM, DMA with KVST, QACT, the DB block with trace writer and history, the paired two-flit gather and the
-# DDR0 / DDR3 arbitration boundaries. It has no local-intermediate bank (LOCAL_INTERMEDIATES, LOCAL_SCALE,
-# LOCAL_SOFTCAP 0). A block that is absent from the netlist is not named here; a block that is named and absent
-# stops the hook. The map of the reduced first card image (no VU, no attention) is in commit 07fbf33.
+# the 2R2W SPM, DMA with KVST, QACT, the paired two-flit gather and the DDR0 / DDR3 arbitration boundaries, and
+# the DB block with trace writer and history unless it is built without it (HAS_DB 0, the maximum-clock image).
+# It has no local-intermediate bank (LOCAL_INTERMEDIATES, LOCAL_SCALE, LOCAL_SOFTCAP 0). A block that is absent from
+# the netlist is not named here; a block that is named and absent stops the hook. The DB block is the one optional
+# block: it is two cells (g_db.u_dbg_rv in tsr_core, g_db.u_dbg in tsr_core_dp) that exist together or not at all
+# (TSR_K4_DB below). The map of the reduced first card image (no VU, no attention) is in commit 07fbf33.
 #
 # Each block goes whole into one Pblock: the platform's pblock of an SLR, or one of the two Pblocks below. Nothing
 # here names a LUT, a register, a pipeline stage, a site or a BEL. Vivado places and routes inside the regions.
@@ -18,7 +20,7 @@
 #   SLR0  control Pblock (pblock_tsr_ctrl_plane, below): the control core (Ibex, debug module, TCMs, bus, control
 #         window, every clock-domain crossing, the RV side of the DB block), the issue path with its two checker
 #         classes, the CSR block and the DB block's core side, with the issue and LCQ ends of the control links
-#         (TSR_K4_CTRL, below)
+#         (TSR_K4_CTRL, below). Without the DB block (HAS_DB 0) neither side of it is there.
 #   SLR2  clusters 1 and 3 with their result assemblers; the pair source of clusters 1 and 3; the DDR3 bridge and
 #         the DDR3 arbiter
 #   SLR2  vector unit Pblock (pblock_tsr_vu, below): the whole vector unit, front end and both lane banks
@@ -66,7 +68,9 @@
 # instance found by REF_NAME, else by the compute-unit name */tsr_k4/inst), TSR_K4_CTRL (where the issue path with
 # its checkers, the CSR block and the DB block go: slr0 = default, in the control Pblock beside the control core;
 # slr1 = beside the SPM; free = unassigned), TSR_K4_VU (where the vector unit goes: pblock = default, the VU
-# Pblock; slr2 = the platform pblock of SLR2), TSR_K4_SKIP_MISSING (set: a named block that is not in the netlist is
+# Pblock; slr2 = the platform pblock of SLR2), TSR_K4_DB (the DB block: auto = default, assigned when the netlist
+# has it, skipped with a message when it has neither cell, an error when it has only one; present = both cells
+# must be there; absent = none is named), TSR_K4_SKIP_MISSING (set: a named block that is not in the netlist is
 # reported and skipped instead of stopping the hook; only tb/platform/viv/k4_pblock_check.tcl sets it, to check the
 # Pblocks on the checkpoint of an image that lacks some blocks).
 current_instance -quiet
@@ -111,6 +115,11 @@ set tsr_k4_vu_where pblock
 if {[info exists ::env(TSR_K4_VU)]} { set tsr_k4_vu_where $::env(TSR_K4_VU) }
 if {$tsr_k4_vu_where ni {pblock slr2}} {
   error "K4 major blocks: TSR_K4_VU must be pblock or slr2"
+}
+set tsr_k4_db_mode auto
+if {[info exists ::env(TSR_K4_DB)]} { set tsr_k4_db_mode $::env(TSR_K4_DB) }
+if {$tsr_k4_db_mode ni {auto present absent}} {
+  error "K4 major blocks: TSR_K4_DB must be auto, present or absent"
 }
 
 # The two child Pblocks: children of the platform's SLR pblocks, clock-region ranges only. The platform pblock cuts
@@ -187,6 +196,31 @@ proc tsr_k4_major_block {where path} {
   add_cells_to_pblock $pblock $cell
 }
 
+# The DB block (HAS_DB): its two cells are in the netlist together or not at all. With HAS_DB 0 the generate branch g_nodb
+# holds no cell, so nothing is named and no Pblock loses a block it needs. auto: the netlist decides (one cell without
+# the other is an error: a renamed or half-built block must not pass as an absent one).
+proc tsr_k4_db_cells {core dp} {
+  return [list [tsr_k4_path $core g_db.u_dbg_rv] [tsr_k4_path $dp g_db.u_dbg]]
+}
+proc tsr_k4_db_present {mode core dp} {
+  if {$mode eq "present"} { return 1 }
+  if {$mode eq "absent"} { return 0 }
+  set found 0
+  foreach path [tsr_k4_db_cells $core $dp] {
+    if {[llength [get_cells -quiet $path]] == 1} { incr found }
+  }
+  if {$found == 1} {
+    error "K4 major blocks: the DB block is half there: [join [tsr_k4_db_cells $core $dp] { and }] must both exist or both be absent"
+  }
+  return [expr {$found == 2}]
+}
+set tsr_k4_has_db [tsr_k4_db_present $tsr_k4_db_mode $tsr_k4_core $tsr_k4_dp]
+if {$tsr_k4_has_db} {
+  puts "K4 major blocks: DB block present: g_db.u_dbg_rv and g_db.u_dbg go with the control plane"
+} else {
+  puts "K4 major blocks: no DB block in this netlist (HAS_DB 0): nothing of it is assigned"
+}
+
 # Clusters and their result assemblers: 0 and 2 beside DDR0, 1 and 3 beside DDR3. A pair source collects the results
 # of one such pair (pair 0: clusters 0 and 2, pair 1: clusters 1 and 3) and ends in the two-flit link to the
 # central receiver.
@@ -208,7 +242,9 @@ if {$tsr_k4_kernel} {
 # Control core, TCMs, local bus, clock-domain crossings and the RV side of the DB block stay together in the
 # control Pblock. Only the three narrow links below face the central SPM, issue path and CSR block.
 tsr_k4_major_block ctrl [tsr_k4_path $tsr_k4_core u_ctrl]
-tsr_k4_major_block ctrl [tsr_k4_path $tsr_k4_core g_db.u_dbg_rv]
+if {$tsr_k4_has_db} {
+  tsr_k4_major_block ctrl [tsr_k4_path $tsr_k4_core g_db.u_dbg_rv]
+}
 foreach endpoint {u_spm_rx u_issue_tx u_lq_tx} {
   tsr_k4_major_block ctrl [tsr_k4_path $tsr_k4_core g_rv_local.$endpoint]
 }
@@ -229,9 +265,11 @@ foreach {channel slr} {0 0 1 1 2 1 3 2} {
   tsr_k4_major_block $slr "$tsr_k4_dp/g_ch\[$channel\].u_arb"
 }
 
-# Issue path with its checker classes, CSR block and the DB block's core side.
+# Issue path with its checker classes, CSR block and the DB block's core side (when the image has one).
 if {$tsr_k4_ctrl_plane ne "free"} {
-  foreach block {u_issue u_csr g_db.u_dbg g_xc.u_xc g_xc.g_at.u_chk_at} {
+  set tsr_k4_plane_blocks {u_issue u_csr g_xc.u_xc g_xc.g_at.u_chk_at}
+  if {$tsr_k4_has_db} { lappend tsr_k4_plane_blocks g_db.u_dbg }
+  foreach block $tsr_k4_plane_blocks {
     tsr_k4_major_block $tsr_k4_ctrl_slr "$tsr_k4_dp/$block"
   }
 }
@@ -243,4 +281,5 @@ tsr_k4_pblock_check [tsr_k4_ctrl_pblock_name] $tsr_k4_ctrl_min_ramb36 "control p
 if {$tsr_k4_vu_where eq "pblock"} {
   tsr_k4_pblock_check [tsr_k4_vu_pblock_name] $tsr_k4_vu_min_ramb36 "vector unit"
 }
-puts "K4 major blocks: clusters, assemblers and pair sources 0/2 in SLR0 and 1/3 in SLR2; control core, issue path with checkers, CSR and DB in the control Pblock ($tsr_k4_ctrl_plane); whole vector unit in SLR2 ($tsr_k4_vu_where); SPM, DMA, QACT and the arbiters of channels 1 and 2 in SLR1; central gather receiver and individual stages free"
+set tsr_k4_db_text [expr {$tsr_k4_has_db ? "CSR and DB" : "CSR (no DB block)"}]
+puts "K4 major blocks: clusters, assemblers and pair sources 0/2 in SLR0 and 1/3 in SLR2; control core, issue path with checkers, $tsr_k4_db_text in the control Pblock ($tsr_k4_ctrl_plane); whole vector unit in SLR2 ($tsr_k4_vu_where); SPM, DMA, QACT and the arbiters of channels 1 and 2 in SLR1; central gather receiver and individual stages free"

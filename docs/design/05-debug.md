@@ -963,7 +963,7 @@ brackets; nothing here is reset by QABORT, QCLEAR, the RISC-V reset or `SOFT_RES
 
 | Parameter | U200 | Meaning |
 |---|---|---|
-| `HAS_DBG` | 1 | 0: no DBG block (`DBG_ID` = 0), no halt merge, `dbg_hold` = 0 |
+| `HAS_DBG` | 1 | 0: no DBG block (`DBG_ID` = 0), no halt merge, `dbg_hold` = 0, no completion records, `CTL_ID.DM` reads 0 (the RTL parameter is `HAS_DB`; the maximum-clock card image has it 0, platform-u200.md §8.10) |
 | `DBG_NTBP` | 4 | tile breakpoints (0–4) |
 | `DBG_NRVWP` | 2 | RV watchpoints (0–2) |
 | `HIST_DEPTH` | 512 | 0 = no history |

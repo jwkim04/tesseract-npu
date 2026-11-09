@@ -69,6 +69,7 @@ int trw_start(tsr_transport * t, const trw_ring & r, std::string * why) {
         return E_POLICY;
     };
     const uint32_t id = tsr_transport_csr_read(t, TSR_CSR_DBG_ID);
+    if (id == 0) return bad("DBG_ID = 0: this image has no DB block (HAS_DB 0), so no trace writer");
     if (!(id & TSR_DBG_ID_TRW)) return bad("DBG_ID.TRW = 0: the core has no trace writer (DB §10.3 HAS_TRW)");
     if (r.lines < 16 || (r.lines & (r.lines - 1))) return bad("the ring needs a power-of-two number of lines >= 16");
     if (r.off & 1023u) return bad("the ring base must be 16-beat (1 KiB) aligned");

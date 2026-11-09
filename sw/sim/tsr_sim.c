@@ -591,6 +591,23 @@ static const char * env_fill(tsr_sim_opts * o, FILE ** log_open, char * buf, siz
     return NULL;
 }
 
+// TSR_SIM_DB=0: the device of the maximum-clock tsr_u200_k4, built without the DB block (HAS_DB 0, docs/platform-u200.md
+// §8.10): the DBG window (0x800-0xAFC) and the DMI window read 0 and ignore writes (DBG_ID = 0), CTL_ID.DM reads 0, and
+// nothing of the DB model (history, trace writer, completion records, stops) is attached. 1 or unset: the DB model.
+// Not an option of tsr_sim_opts: the struct is mirrored by the benches. Without the DB model compiled in, the variable
+// is checked and has no effect.
+static const char * env_db(int * db_on, char * buf, size_t n) {
+    *db_on = 1;
+    const char * e = getenv("TSR_SIM_DB");
+    if (e == NULL || e[0] == '\0' || strcmp(e, "1") == 0) return NULL;
+    if (strcmp(e, "0") == 0) {
+        *db_on = 0;
+        return NULL;
+    }
+    snprintf(buf, n, "TSR_SIM_DB=\"%s\": expected 0 or 1", e);
+    return buf;
+}
+
 static uint8_t * map_channel(uint64_t bytes, const char * dir, uint32_t ch, int * fd_out) {
     *fd_out = -1;
     if (dir == NULL) {
@@ -654,6 +671,8 @@ tsr_sim * tsr_sim_create_opts(const tsr_config * cfg, const tsr_sim_opts * opts)
     char ebuf[256];
     FILE * log_open = NULL;
     why = env_fill(&o, &log_open, ebuf, sizeof(ebuf));
+    int db_on = 1;
+    if (why == NULL) why = env_db(&db_on, ebuf, sizeof(ebuf));
     tsr_sched_spec sched;
     if (why == NULL && tsr_sched_parse(o.sched, &sched, ebuf, sizeof(ebuf)) != 0) why = ebuf;
     if (why != NULL) {
@@ -727,7 +746,9 @@ tsr_sim * tsr_sim_create_opts(const tsr_config * cfg, const tsr_sim_opts * opts)
     tsr_dm_attach(sim);
 #endif
 #if defined(TSR_SIM_HAVE_DBG) && TSR_SIM_HAVE_DBG
-    tsr_dbg_attach(sim);
+    if (db_on) tsr_dbg_attach(sim);
+#else
+    (void)db_on;
 #endif
 #if defined(TSR_SIM_HAVE_RACE) && TSR_SIM_HAVE_RACE
     tsr_race_attach(sim);

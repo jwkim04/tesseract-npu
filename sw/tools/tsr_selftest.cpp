@@ -1227,6 +1227,10 @@ struct dmi {
 void debug_smoke(tsr_transport * t) {
     printf("== debug smoke (DB §3.4-§3.5: DMI halt, step, resume)\n");
     const uint32_t ctl = tsr_transport_csr_read(t, TSR_CSR_CTL_ID);
+    if (tsr_transport_csr_read(t, TSR_CSR_DBG_ID) == 0) {   // the maximum-clock image has no DB block (HAS_DB 0): no DMI window
+        result(false, "DBG_ID: a DB block with the DMI window gate (--debug needs it)", "DBG_ID = 0: this image has no DB block (HAS_DB 0)");
+        return;
+    }
     if (!(ctl & TSR_CTL_ID_DM)) {
         result(false, "CTL_ID.DM: a debug module reachable through the DMI window", strf("CTL_ID 0x%08x", ctl));
         return;

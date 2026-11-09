@@ -8,6 +8,9 @@ register, stage or site) is named, that the control plane follows TSR_K4_CTRL an
 missing block stops the hook (or is skipped with TSR_K4_SKIP_MISSING), and the two child Pblocks themselves: the
 control Pblock, a child of the SLR0 platform pblock at the SLR1 boundary and off the DDR0 controller, and the VU
 Pblock, a child of the SLR2 platform pblock next to the SPM and off the DDR3 controller, both large enough.
+The DB block is the one optional block (the maximum-clock image has HAS_DB 0 and no DB cell): with neither cell in the
+netlist the hook assigns nothing of it, does not fail, and still makes and checks both child Pblocks; with one cell it
+stops. The names of the DB cells are checked against the RTL.
 """
 import os
 import re
@@ -28,7 +31,11 @@ array set ::ranges {}
 proc get_cells {args} {
     if {[lsearch -exact $args -filter] >= 0} {return top/tsr_k4/inst}
     set p [lindex $args end]
-    if {[info exists ::env(MOCK_MISSING)] && [string first $::env(MOCK_MISSING) $p] >= 0} {return {}}
+    if {[info exists ::env(MOCK_MISSING)]} {
+        foreach m $::env(MOCK_MISSING) {
+            if {[string first $m $p] >= 0} {return {}}
+        }
+    }
     return $p
 }
 proc get_pblocks {args} {
@@ -76,13 +83,15 @@ foreach n $::pblocks {
 """
 
 
-def run_hook(ctrl=None, core=None, missing=None, body=None, vu=None, skip_missing=False, **mock):
+def run_hook(ctrl=None, core=None, missing=None, body=None, vu=None, skip_missing=False, db=None, **mock):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("TSR_K4", "MOCK_"))}
     env["MOCK_HOOK"] = str(HOOK)
     if ctrl is not None:
         env["TSR_K4_CTRL"] = ctrl
     if vu is not None:
         env["TSR_K4_VU"] = vu
+    if db is not None:
+        env["TSR_K4_DB"] = db
     if skip_missing:
         env["TSR_K4_SKIP_MISSING"] = "1"
     if core is not None:
@@ -109,7 +118,7 @@ def slr(n):
     return f"pblock_dynamic_SLR{n}"
 
 
-def expected(prefix, kernel, ctrl_where, vu_where="vu"):
+def expected(prefix, kernel, ctrl_where, vu_where="vu", has_db=True):
     core = prefix + "u_core/" if kernel else prefix
     dp = core + "u_dp/"
     mvm = dp + "g_mvm.u_mvm/"
@@ -124,7 +133,8 @@ def expected(prefix, kernel, ctrl_where, vu_where="vu"):
         want[f"{prefix}g_ch[0].u_br"] = slr(0)
         want[f"{prefix}g_ch[3].u_br"] = slr(2)
     want[core + "u_ctrl"] = CTRL
-    want[core + "g_db.u_dbg_rv"] = CTRL
+    if has_db:
+        want[core + "g_db.u_dbg_rv"] = CTRL
     for e in ("u_spm_rx", "u_issue_tx", "u_lq_tx"):
         want[core + "g_rv_local." + e] = CTRL
     want[core + "g_rv_local.u_spm_tx"] = slr(1)
@@ -135,7 +145,8 @@ def expected(prefix, kernel, ctrl_where, vu_where="vu"):
     for c, n in ((0, 0), (1, 1), (2, 1), (3, 2)):
         want[f"{dp}g_ch[{c}].u_arb"] = slr(n)
     for b in ("u_issue", "u_csr", "g_db.u_dbg", "g_xc.u_xc", "g_xc.g_at.u_chk_at"):
-        want[dp + b] = where
+        if has_db or b != "g_db.u_dbg":
+            want[dp + b] = where
     want[dp + "g_vu.u_vu"] = VU if vu_where == "vu" else slr(2)
     return want
 
@@ -217,6 +228,102 @@ def test_bad_control_plane_value():
     r, _, _ = run_hook(ctrl="slr2")
     assert r.returncode != 0
     assert "TSR_K4_CTRL must be slr0, slr1 or free" in r.stderr
+
+
+# ---- the DB block is optional (HAS_DB 0: the maximum-clock image) ----
+
+NO_DB = "g_db."            # neither the RV side (u_core/g_db.u_dbg_rv) nor the core side (u_dp/g_db.u_dbg) exists
+ONLY_RV = "u_dp/g_db.u_dbg"
+ONLY_DP = "g_db.u_dbg_rv"
+
+
+@pytest.mark.parametrize("ctrl,where", [(None, "ctrl"), ("slr1", 1), ("slr0", "ctrl"), ("free", "free")])
+def test_no_db_block_kernel_map(ctrl, where):
+    r, got, children = run_hook(ctrl=ctrl, missing=NO_DB)
+    assert r.returncode == 0, r.stderr
+    assert "K4 major blocks: no DB block in this netlist (HAS_DB 0): nothing of it is assigned" in r.stdout
+    assert "skipped" not in r.stdout, "an absent DB block is not a skipped block"
+    assert not [p for p in got if "g_db" in p]
+    if where == "free":
+        want = {p: v for p, v in expected("top/tsr_k4/inst/u_kernel/", True, "ctrl", has_db=False).items()
+                if not p.endswith(("/u_issue", "/u_csr", "/g_xc.u_xc", "/g_xc.g_at.u_chk_at"))}
+        want["top/tsr_k4/inst/u_kernel/u_core/g_rv_local.u_issue_rx"] = slr(1)
+        want["top/tsr_k4/inst/u_kernel/u_core/g_rv_local.u_lq_rx"] = slr(1)
+        assert got == want
+    else:
+        assert got == expected("top/tsr_k4/inst/u_kernel/", True, where, has_db=False)
+    # the control Pblock keeps the control core, the issue path, the CSR block and the link ends, and both child Pblocks
+    # are made and checked exactly as with the DB block
+    assert set(children) == {CTRL, VU}
+    assert "K4 major blocks: pblock_tsr_ctrl_plane: 14000 SLICE, 250 RAMB36 sites" in r.stdout
+    assert "K4 major blocks: pblock_tsr_vu: 14000 SLICE, 250 RAMB36 sites" in r.stdout
+    assert "(no DB block)" in r.stdout
+
+
+def test_no_db_block_core_map():
+    r, got, _ = run_hook(core="", missing=NO_DB)
+    assert r.returncode == 0, r.stderr
+    assert got == expected("", False, "ctrl", has_db=False)
+
+
+def test_the_db_block_is_found_when_the_netlist_has_it():
+    r, got, _ = run_hook()
+    assert r.returncode == 0, r.stderr
+    assert "K4 major blocks: DB block present" in r.stdout
+    assert [p for p in got if p.endswith("/g_db.u_dbg_rv")] and [p for p in got if p.endswith("/g_db.u_dbg")]
+
+
+@pytest.mark.parametrize("missing", [ONLY_RV, ONLY_DP])
+def test_half_a_db_block_stops_the_hook_before_any_assignment(missing):
+    r, got, _ = run_hook(missing=missing)
+    assert r.returncode != 0
+    assert "the DB block is half there" in r.stderr
+    assert not got
+
+
+def test_forced_db_block_that_is_absent_stops_the_hook():
+    r, _, _ = run_hook(db="present", missing=NO_DB)
+    assert r.returncode != 0
+    assert "K4 major blocks: missing hierarchy" in r.stderr and "g_db.u_dbg" in r.stderr
+
+
+def test_forced_absent_db_block_names_nothing_of_it():
+    r, got, _ = run_hook(db="absent")
+    assert r.returncode == 0, r.stderr
+    assert got == expected("top/tsr_k4/inst/u_kernel/", True, "ctrl", has_db=False)
+
+
+def test_bad_db_value():
+    r, _, _ = run_hook(db="maybe")
+    assert r.returncode != 0
+    assert "TSR_K4_DB must be auto, present or absent" in r.stderr
+
+
+@pytest.mark.parametrize("mock,message", [
+    ({"slices": 0}, "has no SLICE sites"),
+    ({"ramb36": 63}, "has 63 RAMB36 sites, the control plane needs 64"),
+    ({"vu_ramb36": 31}, "has 31 RAMB36 sites, the vector unit needs 32"),
+])
+def test_no_db_block_capacity_checks_still_run(mock, message):
+    r, got, _ = run_hook(missing=NO_DB, **mock)
+    assert r.returncode != 0
+    assert message in r.stderr
+    assert got, "the capacity checks follow the assignments"
+
+
+def test_db_cell_names_are_those_of_the_rtl():
+    """The hook finds the DB block by the names of its generate block and instances: a rename in the RTL would make the
+    hook see an absent block, so the names are pinned to the sources."""
+    rtl = Path(__file__).resolve().parents[2] / "rtl" / "core"
+    core = (rtl / "tsr_core.sv").read_text()
+    dp = (rtl / "tsr_core_dp.sv").read_text()
+    assert re.search(r"if \(HAS_DB\) begin : g_db\s+tsr_dbg_rv\b[^;]*?\) u_dbg_rv \(", core, re.S)
+    assert re.search(r"if \(HAS_DB\) begin : g_db\s+tsr_dbg\b[^;]*?\) u_dbg \(", dp, re.S)
+    assert "end else begin : g_nodb" in core and "end else begin : g_nodb" in dp
+    # the else branch has no instance: nothing of the DB block is left in the netlist
+    for text in (core, dp):
+        nodb = text.split("end else begin : g_nodb", 1)[1].split("\n  end\n", 1)[0]
+        assert not re.search(r"^\s*tsr_\w+\s*(#\(|\w+\s*\()", nodb, re.M)
 
 
 # ---- the control Pblock ----

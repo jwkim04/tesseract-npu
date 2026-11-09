@@ -190,7 +190,7 @@ static void clear_env() {
                             "TSR_LOG_LEVEL", "TSR_ATTACH", "TSR_STATS", "TSR_DUMP_DIR", "TSR_GDB_WAIT", "TSR_TILE_SERIAL",
                             "TSR_TILE_HIST", "TSR_MOCK_INJECT", "TSR_MOCK_TCM_FAULT", "TSR_MOCK_HANG", "TSR_MOCK_NUM_CH",
                             "TSR_MOCK_TMAX", "TSR_MOCK_CH_GIB", "TSR_MOCK_DMA_ALIGN", "TSR_MOCK_DMA_CHUNK_KIB", "TSR_MOCK_DMA_BOUNCE",
-                            "TSR_SIM_SCHED", "TSR_SIM_RACE", "TSR_SIM_LOG", "TSR_TRACE" })
+                            "TSR_SIM_SCHED", "TSR_SIM_RACE", "TSR_SIM_LOG", "TSR_TRACE", "TSR_SIM_DB" })
         unsetenv(v);
     setenv("TSR_SIM_THREADS", "2", 1);
 }
@@ -276,6 +276,46 @@ static void test_protocol_basic() {
           st.csr_reads, st.csr_writes);
     CHECK(m->unmapped_accesses == 0, "protocol layer touched unmapped adapter registers %" PRIu64 " times", m->unmapped_accesses);
     tsr_transport_close(t);
+}
+
+// The image built without the DB block (HAS_DB 0: the maximum-clock tsr_u200_k4; TSR_SIM_DB=0 leaves the DB model out of the
+// simulator): DBG_ID and the DBG window read 0, CTL_ID.DM reads 0, the DMI gate does not exist, and everything else the
+// protocol needs (identity, PERF counters, the summary TSR_STATS prints) works without it. The core clock cannot be fitted
+// from DBG_MTIME (it stays nominal, as on the simulated kinds).
+static void test_no_db_block() {
+    printf("protocol: the image without the DB block (TSR_SIM_DB=0)\n");
+    setenv("TSR_SIM_DB", "0", 1);
+    mock_options o = small_mock();
+    mock_kdev * m = nullptr;
+    tsr_transport * t = open_mock(o, &m);
+    CHECK(t != nullptr, "open without the DB block");
+    if (!t) {
+        unsetenv("TSR_SIM_DB");
+        return;
+    }
+    CHECK(tsr_transport_csr_read(t, TSR_CSR_DBG_ID) == 0, "DBG_ID reads 0");
+    CHECK(!(tsr_transport_csr_read(t, TSR_CSR_CTL_ID) & TSR_CTL_ID_DM), "CTL_ID.DM reads 0");
+    CHECK(tsr_transport_csr_read(t, TSR_CSR_DBG_CFG) == 0 && tsr_transport_csr_read(t, TSR_CSR_DBG_STATUS) == 0 &&
+              tsr_transport_csr_read(t, TSR_CSR_DBG_HIST_HEAD) == 0 && tsr_transport_csr_read(t, TSR_CSR_DBG_MTIME_LO) == 0,
+          "the DBG window reads 0");
+    CHECK(tsr_transport_csr_write(t, TSR_CSR_DBG_CFG, TSR_DBG_CFG_TRW_EN) == 0 && tsr_transport_csr_read(t, TSR_CSR_DBG_CFG) == 0,
+          "a write into the DBG window is ignored");
+    CHECK(tsr_transport_dmi_enable(t, 1) == TSR_TE_STATE, "the DMI gate cannot be opened (no DBG block)");
+    uint32_t v = 0;
+    CHECK(tsr_transport_dmi_read(t, 0x11, &v) == 0 && v == 0, "a DMI read returns 0");
+    // PERF works: the counters of the CSR block, and the summary the backend prints for TSR_STATS
+    const uint32_t cmd[8] = { tsr_enc_ld(1, 0, 1000, 3).w[0], 0, 1000, 3, 0, 0, 0, 0 };
+    CHECK(tsr_sim_op(m->sim(), cmd, nullptr) == TSR_ERR_NONE, "an op on the simulator without the DB model");
+    CHECK(transport_perf(t, TSR_PERF_RETIRED) == 1 && transport_perf(t, tsr_perf_ch_rd_beats(1)) == 3, "PERF through the window");
+    tsr_perf_summary ps;
+    tsr_transport_perf_summary(t, &ps);
+    CHECK(ps.perf[TSR_PERF_RETIRED] == 1 && ps.perf[TSR_PERF_TRW_RECORDS] == 0 && ps.perf[TSR_PERF_TRW_DROPS] == 0,
+          "perf summary: RETIRED 1, no trace-writer counters");
+    CHECK(ps.core_hz == CORE_HZ_NOMINAL && !ps.core_hz_fitted, "core clock nominal, not fitted");
+    char sbuf[4096];
+    CHECK(tsr_perf_summary_str(&ps, sbuf, sizeof(sbuf)) > 0 && strstr(sbuf, "nominal") != nullptr, "TSR_STATS text: %s", sbuf);
+    tsr_transport_close(t);
+    unsetenv("TSR_SIM_DB");
 }
 
 // A kdev that forwards to a mock, with hooks (fewer channels, a frozen LCQ, one failed core access).
@@ -1227,6 +1267,7 @@ int main() {
     test_dma_engine();
     test_mock_regs();
     test_protocol_basic();
+    test_no_db_block();
     test_open_refusals();
     test_adapter_log();
     if (access(TSR_FW_TEST_IMAGE_fw_rt, R_OK) == 0) {

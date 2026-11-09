@@ -124,6 +124,24 @@ if cocotb is not None:
             d.csr_valid.value = 0
             return v
 
+    async def check_no_db(host, errs):
+        """A core built without the DB block (HAS_DB 0): DBG_ID = 0, the DBG window, the DB slots of PERF and the DMI window read
+        0 and a write into them is ignored (DMI_EN cannot be set)."""
+        for name, off in (("DBG_ID", TT.CSR_DBG_ID), ("DBG_CFG", TT.CSR_DBG_CFG), ("DBG_STATUS", TT.CSR_DBG_STATUS),
+                          ("DBG_MTIME_LO", TT.CSR_DBG_MTIME_LO), ("DBG_HIST_HEAD", TT.CSR_DBG_HIST_HEAD),
+                          ("DMI dmstatus", TT.CSR_DMI_BASE + 4 * 0x11),
+                          ("PERF TRW_RECORDS", TT.CSR_PERF_LO(TT.PERF_TRW_RECORDS)),
+                          ("PERF TRW_DROPS", TT.CSR_PERF_LO(TT.PERF_TRW_DROPS))):
+            v = await host.rd(off)
+            if v != 0:
+                errs.append("no DB block: %s reads %#010x, expected 0" % (name, v))
+        await host.wr(TT.CSR_DBG_CFG, TT.DBG_CFG_TRW_EN | TT.DBG_CFG_DMI_EN)
+        await host.wr(TT.CSR_DMI_BASE + 4 * 0x10, 1)
+        for name, off in (("DBG_CFG after a write", TT.CSR_DBG_CFG), ("DMI dmcontrol after a write", TT.CSR_DMI_BASE + 4 * 0x10)):
+            v = await host.rd(off)
+            if v != 0:
+                errs.append("no DB block: %s reads %#010x, expected 0" % (name, v))
+
     @cocotb.test()
     async def core_smoke(dut):
         seed = int(os.environ.get("TSR_SEED", "1"), 0)
@@ -158,6 +176,8 @@ if cocotb is not None:
 
         ids = {o: await host.rd(o) for o in C.ID_REGS}
         C.check_ids(ids, sim["ids"], errs)
+        if C.NODB:
+            await check_no_db(host, errs)
         syms = C.ctrl_tb.elf_symbols(elf)
         crcs = []
         t0 = cocotb.utils.get_sim_time("ns")
@@ -342,6 +362,8 @@ if cocotb is not None:
             got = await host.rd(o)
             if got != want:
                 errs.append("CSR %#05x: RTL %#010x / simulator %#010x" % (o, got, want))
+        if C.NODB:
+            await check_no_db(host, errs)
         # the image: PT_LOAD segments through the loader (the receive CRC only; VERIFY is core_smoke's)
         t0 = cocotb.utils.get_sim_time("ns")
         nwords = 0
@@ -400,7 +422,7 @@ if cocotb is not None:
         # DB: history (on by default) and the trace writer on during the launch, a 64-line ring below the list
         # (the same configuration as the simulator's run; the DB block changes no result)
         # (no trw line in the scenario: the core has neither trace writer nor history, the M6 case of tsr_u200_k4)
-        with_db = sc["trw_cfg"] is not None
+        with_db = sc["trw_cfg"] is not None and not C.NODB       # TB_CORE_NODB: the core has no DB block (HAS_DB 0)
         trw_beat, trw_lines = sc["trw_cfg"] if with_db else (0, 0)
         if with_db:
             await host.wr(TT.CSR_DBG_CFG, (await host.rd(TT.CSR_DBG_CFG)) | TT.DBG_CFG_TRW_EN)
@@ -598,7 +620,8 @@ def test_core(cfg):
     _run(seed=seed + int(os.environ.get("TSR_SEED", "1"), 0) - 1, rv_ps=rv_ps)   # --tsr-seed shifts all
 
 
-def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu=False, rv_local=False, fast_clk=False):
+def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu=False, rv_local=False, fast_clk=False,
+            nodb=False):
     """core_m7 of one case: the scenario from the simulator, the RTL core built with its configuration
     (lane_pipe: VU_LANE_PIPE, the k4 bitstream's register stages around the VU lanes)."""
     from common.runner import run
@@ -615,18 +638,22 @@ def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu
         params["DDR_LOCAL_PIPE"] = ddr_pipe
     if fast_clk:
         params["FAST_CLK"] = 1
+    if nodb:
+        params["HAS_DB"] = 0                          # no tsr_dbg, trace writer, history or tsr_dbg_rv (the maximum-clock image)
     if rv_local:
         # the packaged image's control plane: DONE_REG on every unit done strobe, MT_PIPE on the DB memory taps and
         # the cluster reset copies (RST_PIPE 3); the VU and the AT units are in the core
         params.update(RV_LOCAL_TRANSPORT=1, RST_PIPE=3, XSLR_REG=1)
     env = {"TB_M7_ELF": str(C.M7_ELF), "TB_M7_DIR": str(d), "TB_CORE_RV_PS": str(rv_ps)}
+    if nodb:
+        env["TB_CORE_NODB"] = "1"
     if half_vu:
         params.update(VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4)
         env.update(TB_CORE_VU_FRONT="8", TB_CORE_VU_BACK="4")
     if mut:
         env["TB_M7_LIMIT"] = "300000"                 # core cycles to wait for the answer (the decode case needs ~60 K)
     run("tsr_core", __name__, parameters=params, sources=_sources(mut),
-        name=("core_m7_fast" if fast_clk else "core_m7_rv_local" if rv_local else "core_m7_half_vu" if half_vu else
+        name=("core_m7_fast_nodb" if nodb else "core_m7_fast" if fast_clk else "core_m7_rv_local" if rv_local else "core_m7_half_vu" if half_vu else
               ("core_m7" if not lane_pipe else "core_m7_pipe%d" % lane_pipe)) if not mut else "core_m7_mut_" + mut,
         seed=seed, testcase=["core_m7"], extra_env=env, timescale=("1ps", "1ps"))
 
@@ -664,6 +691,15 @@ def test_core_m7_fast(m7case):
     the three-stage row-vector emitter, the five-stage PV convert pipeline and the KVST placer with the extra stage."""
     _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0), rv_local=True, fast_clk=True, lane_pipe=2, ddr_pipe=1,
             half_vu=True)
+
+
+def test_core_m7_fast_nodb(m7case):
+    """The same production decode / prefill as test_core_m7_fast on the core of the maximum-clock image, which has no DB block
+    (HAS_DB 0: no tsr_dbg, trace writer, dispatch history, stop / step, DMI gate or tsr_dbg_rv). Output rows and KV planes bit
+    for bit, Q_DONE / Q_ISSUED / Q_ERR_CODE per unit, the s registers and the PERF event counters equal the simulator's;
+    CTL_ID reads without the debug module (TB_CORE_NODB) and the DBG window, the DB slots of PERF and the DMI window read 0."""
+    _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0), rv_local=True, fast_clk=True, lane_pipe=2, ddr_pipe=1,
+            half_vu=True, nodb=True)
 
 
 def test_core_m7_ddr_local(m7case):
@@ -798,6 +834,7 @@ if pytest is not None:
     test_core_m7_ddr_local = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_ddr_local)
     test_core_m7_rv_local = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_rv_local)
     test_core_m7_fast = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_fast)
+    test_core_m7_fast_nodb = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_fast_nodb)
     test_core_mutants = pytest.mark.slow(test_core_mutants)
 
 
@@ -893,6 +930,25 @@ def test_core_k4gdn_fast():
         seed=int(os.environ.get("TSR_SEED", "1"), 0), testcase=["core_smoke"],
         extra_env={"TB_CORE_ELF": str(elf), "TB_CORE_RV_PS": "6000", "TB_CORE_PS": "4000",
                    "TB_CORE_NCH": "4", "TB_CORE_TMAX": "4", "TB_CORE_GDN": "1",
+                   "TB_CORE_VU_FRONT": "8", "TB_CORE_VU_BACK": "4"}, timescale=("1ps", "1ps"))
+
+
+def test_core_k4max_nodb():
+    """The maximum-clock card image (tsr_u200_k4 of branch k4fmax): FAST_CLK 1, the GDN op (CAPS 0x121) and no DB block
+    (HAS_DB 0). core_smoke runs the firmware stream of test_core_k4full and, after it, two heads of the GDN op on the RTL Ibex;
+    every DRAM region, the identification registers (CAPS 0x121, CTL_ID without the debug module), the per-unit completion
+    counts and the final CSR state equal the simulator's (run with TSR_SIM_DB=0), and the DBG window, the DB slots of PERF and
+    the DMI window read 0 (the DB tests, core_db, need the block and are not run)."""
+    from common.runner import run
+    elf = C.build_fw(FW_OUT)
+    params = dict(C.PARAMS, NUM_CH=4, T_MAX=4, DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
+                  RV_LOCAL_TRANSPORT=1, XSLR_REG=1, FAST_CLK=1, MVM_BC_PIPE=2, MVM_RES_PIPE=2, VU_LANE_PIPE=2,
+                  VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, RST_PIPE=3, SPM_RD_LAT=4, MVM_MAC_LAT=9, HAS_GDN=1,
+                  HAS_DB=0)
+    run("tsr_core", __name__, parameters=params, sources=_sources(), name="core_k4max_nodb",
+        seed=int(os.environ.get("TSR_SEED", "1"), 0), testcase=["core_smoke"],
+        extra_env={"TB_CORE_ELF": str(elf), "TB_CORE_RV_PS": "6000", "TB_CORE_PS": "4000",
+                   "TB_CORE_NCH": "4", "TB_CORE_TMAX": "4", "TB_CORE_GDN": "1", "TB_CORE_NODB": "1", "TSR_SIM_DB": "0",
                    "TB_CORE_VU_FRONT": "8", "TB_CORE_VU_BACK": "4"}, timescale=("1ps", "1ps"))
 
 

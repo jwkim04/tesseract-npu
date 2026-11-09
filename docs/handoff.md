@@ -14,7 +14,12 @@ vector unit (`gdn-vu`, merged at `bdcf7b9`) and the work for a 4.0 ns core clock
 - **Maximum-clock link (branch `k4fmax`, worktree `/home/limagin-dev/tesseract-fmax`, from `k4f250` at `7220f48`):** `k4.cfg` requests `0:250|1:100` and
   Vitis may scale the core down; `clock_final_check.tcl` accepts a core clock from 200.0 MHz to 250.1 MHz and `clk_rv` at 100 MHz (§8.10). The first
   250 MHz attempt was stopped after placement at WNS -0.347 ns. Start (not started): `screen -dmS k4fmax-link /home/limagin-dev/tesseract-fmax/build/fmax/k4fmax_link.sh`
-  (output `build/link/k4fmax`; it records `_new_clk_freq` and the `CLKFINAL` lines at the end). Same netlist and Pblocks as the `k4f250` link.
+  (output `build/link/k4fmax`; it records `_new_clk_freq` and the `CLKFINAL` lines at the end). **The image has no debug hardware** (user decision,
+  2026-11-09): `HAS_DB` 0, so no `tsr_dbg`, trace writer, history, stop / step, DMI gate, `tsr_dbg_rv` or completion records; about 10.8 K LUT and 9.2 K FF
+  less than the `k4f250` netlist (out-of-context synthesis, §8.10). Everything else is the `k4f250` netlist and the Pblock ranges; the DB cells leave the control
+  Pblock (map `docs/fig/floorplan/k4fmax-pblock-plan.png`, shown to the user before the launch). Host: `DBG_ID` reads 0; `tsr-selftest`, `TSR_STATS` and the
+  backend work, the debug tools refuse with a message; `TSR_SIM_DB=0` models the image. `TSR_STATS` device time uses the nominal 276.3 MHz without `DBG_MTIME`
+  (§8.10).
 - **What the image is:** `tsr_u200_k4` with `FAST_CLK` 1 and `HAS_GDN` 1 (CAPS 0x121), T_MAX 4, core 250 MHz and `clk_rv` 100 MHz, the Pblocks of the fourth link.
   `FAST_CLK` lengthens a few attention and diagnostic paths by a few cycles and changes no result (list and costs: §8.10).
 - **250 MHz decision:** the user decided to link at 250 MHz (`f8913e6`) after the block results: every block meets 4.0 ns out of context and the

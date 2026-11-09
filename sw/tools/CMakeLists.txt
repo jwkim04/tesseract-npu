@@ -260,3 +260,13 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/numcheck_helper.cmake)
 
 # P3.7 / P3.8: libtsr_dbg, tsr-dbg, tsr-prof and their tests (dbg/dbg.cmake).
 include(${CMAKE_CURRENT_SOURCE_DIR}/dbg/dbg.cmake)
+
+# The checklist and the debugger CLI on the core of the maximum-clock image (tsr_u200_k4 built without the DB block: HAS_DB 0,
+# TSR_SIM_DB=0; docs/platform-u200.md §8.10), on sim and mock (test_selftest_nodb.sh): the checklist passes, the debug-only parts
+# (--debug, --trw, tsr-dbg tile / trw / hist / rv) fail with the missing DB block named.
+if (TSR_BASH_TOOLS AND TARGET tsr-selftest AND TARGET tsr-dbg)
+    add_test(NAME tools_selftest_sim_nodb
+             COMMAND ${TSR_BASH_TOOLS} ${CMAKE_CURRENT_SOURCE_DIR}/test_selftest_nodb.sh
+                     $<TARGET_FILE:tsr-selftest> $<TARGET_FILE:tsr-dbg> ${TSR_FW_ELF} ${CMAKE_CURRENT_BINARY_DIR}/selftest_nodb)
+    set_tests_properties(tools_selftest_sim_nodb PROPERTIES TIMEOUT 600)
+endif()

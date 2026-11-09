@@ -2,6 +2,7 @@
 //
 // Vitis RTL kernel `tsr_u200_k4` (module name = kernel name): tsr_xrt_kernel with NUM_CH 4, T_MAX 4,
 // VU lanes 8 / 8 / 4 (physical front / EXP / back lanes, VU §7.10) behind 2 pipe stages on each side,
+// no DB block (HAS_DB 0: no stop / step, history, trace writer, completion records or DMI gate; DBG_ID reads 0),
 // SPM 4 MiB (default) with SPM_RD_LAT 4, MVM_BC_PIPE 2, MVM_RES_PIPE 2,
 // MVM_MAC_LAT 9, RST_PIPE 3 (U200 bitstream parameters, docs/rtl-m3.md §14.2), CH_BYTES 16 GiB (default),
 // the other tsr_core parameters at the U200 defaults, AXI_SLICES 2, RST_STAGES 3;
@@ -390,6 +391,7 @@ module tsr_u200_k4 (
     .AXI_SLICES(2),
     .RST_STAGES(3),
     .HAS_GDN(1),
+    .HAS_DB(0),
     .MVM_GATHER_PAIR(1),
     .MVM_GATHER_FLITS(2),
     .DDR_LOCAL_PIPE(1),

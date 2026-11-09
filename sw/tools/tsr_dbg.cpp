@@ -225,7 +225,11 @@ int main(int argc, char ** argv) {
         } else if (const tsr_image * im = tsr_transport_image(t)) {
             if (!img.loaded()) img.load(im, &why);
         }
-        if (gdb) {
+        if (gdb && tsr_transport_csr_read(t, TSR_CSR_DBG_ID) == 0) {
+            // An image built without the DB block (HAS_DB 0) has no DMI window: no GDB session can attach. Say so before listening.
+            fprintf(stderr, "tsr-dbg: DBG_ID = 0: this image has no DB block (HAS_DB 0), so no DMI window and no GDB session (DB §3.2, §10.1)\n");
+            status = 1;
+        } else if (gdb) {
             server_options o;
             o.listen = listen.empty() ? "tcp:3333" : listen;
             o.port_file = port_file;

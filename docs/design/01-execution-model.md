@@ -501,7 +501,7 @@ their registers inside it, and the RISC-V reads it through CC's core window (CC 
 | 0x010 | `CFG2` | R | VL[7:0], NSREG[15:8], K_MAX/256[31:16] | EX |
 | 0x014 | `CAPS` | R | §7.5 | EX |
 | 0x018 | `CFG3` | R | [15:0] defined by VU, [31:16] defined by AT; 0 until they are assigned | VU, AT |
-| 0x01C | `CTL_ID` | R | [7:0] control-core revision (1; 0 = no control core: the host refuses the device), bit8 debug module, bit9 completion records, bit10 SPM bridge, bit11 log ring, bit12 watchdog, bit13 SBA connected, bit14 SPM line-buffered alias | EX, CC |
+| 0x01C | `CTL_ID` | R | [7:0] control-core revision (1; 0 = no control core: the host refuses the device), bit8 debug module (reachable through the DMI window: 0 when the core has no DB block, `HAS_DB` 0), bit9 completion records, bit10 SPM bridge, bit11 log ring, bit12 watchdog, bit13 SBA connected, bit14 SPM line-buffered alias | EX, CC |
 | 0x020 | `CTRL` | RW / W1 | §5.2 | EX |
 | 0x024 | `STATUS` | R / W1C | §5.3 | EX |
 | 0x028 | `RV_BOOT` | RW | boot vector, 256-byte aligned ([7:0] read 0); taken when `RV_RUN` rises (was `CTL_BOOT`). A write while `RV_RUN` = 1 is ignored, so the bus that crosses to `clk_rv` is stable whenever the RISC-V samples it (reset release, and the restart after a debug ndmreset) | CC |

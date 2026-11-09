@@ -1,6 +1,7 @@
 """Draw the planned hierarchy assignments on the U200's retained SLICE Pblock ranges.
 
 The hook (hw/u200/k4_major_blocks.tcl) is interpreted with a Tcl mock: no Vivado executable, checkpoint or placement.
+--no-db draws an image built without the DB block (HAS_DB 0): the mock has no g_db.* cell, as the netlist has none.
 The Pblock shapes come from a properties file (PBLOCK sections with DERIVED_RANGES, and an optional CAPACITY line):
 the platform's three SLR pblocks and, when the hook makes one, its control Pblock, as Vivado resolved them
 (tb/platform/viv/k4_pblock_check.tcl writes the file).
@@ -33,7 +34,7 @@ CHILDREN = {
 }
 
 
-def assignments(hook):
+def assignments(hook, no_db=False):
     # Interpret the hierarchy-only hook with Tcl. Record add_cells_to_pblock and the Pblocks the hook creates
     # (create_pblock / resize_pblock / PARENT). get_sites only satisfies the hook's own capacity checks.
     script = """
@@ -43,6 +44,7 @@ array set ::parent {}
 array set ::ranges {}
 proc get_cells {args} {
     if {[lsearch -exact $args -filter] >= 0} {return kernel}
+    if {[info exists ::env(PBLOCK_PREVIEW_NO_DB)] && [string first g_db. [lindex $args end]] >= 0} {return {}}
     return [lindex $args end]
 }
 proc get_property {key obj} {
@@ -72,8 +74,11 @@ foreach n $::pblocks {
     if {[info exists ::parent($n)]} {puts [join [list pblock $n $::parent($n) $::ranges($n)] "\\t"]}
 }
 """
-    result = subprocess.run(["tclsh"], input=script, text=True, capture_output=True,
-                            env={**os.environ, "PBLOCK_PREVIEW_HOOK": str(hook.resolve())}, check=True)
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("TSR_K4", "PBLOCK_PREVIEW"))}
+    env["PBLOCK_PREVIEW_HOOK"] = str(hook.resolve())
+    if no_db:
+        env["PBLOCK_PREVIEW_NO_DB"] = "1"
+    result = subprocess.run(["tclsh"], input=script, text=True, capture_output=True, env=env, check=True)
     groups = defaultdict(list)
     children = {}
     for line in result.stdout.splitlines():
@@ -171,8 +176,8 @@ def cr_label(r):
     return m[1] if m[1] == m[2] else f"{m[1]}–{m[2]}"
 
 
-def render(hook, report, output):
-    groups, children = assignments(hook)
+def render(hook, report, output, title=None, header=None, no_db=False):
+    groups, children = assignments(hook, no_db)
     shapes = slice_ranges(report)
     placed = [path for paths in groups.values() for path in paths]
     has_vu_banks = any(path.endswith(".u_bank") for path in placed)
@@ -225,18 +230,19 @@ def render(hook, report, output):
             word(x, y + i * 22, line, 16, INK)
         return len(lines)
 
-    word(44, 30, ("ALVEO U200   /   K4   /   CORE 250 MHz · CLK_RV 100 MHz   /   PRE-BUILD" if full else
+    word(44, 30, header or ("ALVEO U200   /   K4   /   CORE 250 MHz · CLK_RV 100 MHz   /   PRE-BUILD" if full else
                   "ALVEO U200   /   K4-MIN   /   CORE 200 MHz · CLK_RV 100 MHz   /   PRE-BUILD" if ctrl else
                   "ALVEO U200   /   K4-MIN   /   PRE-BUILD") if (full or reduced) else
          "ALVEO U200   /   K4   /   PRE-BUILD", 15, GRAY, True)
-    title = ("풀 구성 카드 이미지(250 MHz, GDN 포함)의 Pblock 계획" if full else
+    title = title or ("풀 구성 카드 이미지(250 MHz, GDN 포함)의 Pblock 계획" if full else
              "첫 카드 이미지(200 MHz)의 Pblock 계획" if ctrl else
              "첫 카드 이미지(VU·어텐션 제외)의 Pblock 계획" if reduced else
              "다음 빌드의 Pblock 계획" if has_vu_banks else "VU 제외 진단 빌드의 Pblock 계획")
     word(42, 60, title, 36, INK, True)
     if full:
         word(44, 112, "색은 큰 블록을 배치할 수 있는 범위입니다. 진한 청록은 SLR0의 제어부 Pblock, 진한 파랑은 SLR2의 VU Pblock입니다.", 17, GRAY)
-        word(44, 136, "개별 유닛의 실제 위치는 배치 후 결정됩니다.", 17, GRAY)
+        word(44, 136, "개별 유닛의 실제 위치는 배치 후 결정됩니다." +
+             (" 이 이미지에는 디버그(DB) 블록이 없습니다(HAS_DB 0)." if no_db else ""), 17, GRAY)
     elif ctrl:
         word(44, 112, "색은 큰 블록을 배치할 수 있는 범위입니다. 진한 청록은 SLR0 Pblock 안에 둔 제어부 전용 Pblock입니다.", 17, GRAY)
         word(44, 136, "개별 유닛의 실제 위치는 배치 후 결정됩니다.", 17, GRAY)
@@ -349,5 +355,8 @@ if __name__ == "__main__":
     parser.add_argument("hook", type=Path)
     parser.add_argument("pblock_properties", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--title", help="the picture's title (default: by the blocks the hook places)")
+    parser.add_argument("--header", help="the line above the title")
+    parser.add_argument("--no-db", action="store_true", help="draw the image without the DB block (HAS_DB 0)")
     args = parser.parse_args()
-    render(args.hook, args.pblock_properties, args.output)
+    render(args.hook, args.pblock_properties, args.output, args.title, args.header, args.no_db)

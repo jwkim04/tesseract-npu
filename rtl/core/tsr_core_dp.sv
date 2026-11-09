@@ -31,7 +31,8 @@
 //   (KVST, ATTQK, ATTPV). The DB block (HAS_DB; tsr_dbg here, its clk_rv part tsr_dbg_rv in tsr_core,
 //   the trace writer's write mux on channel TRW_CH): DBG registers, stop logic, history, trace writer,
 //   DMI gate, dbg_hold / dbg_step into tsr_issue (DB §13). HAS_DB = 0: the DBG block reads 0 (DBG_ID = 0),
-//   DMI_EN = 0, dbg_hold / dbg_step 0, no extension PERF slots of the DB.
+//   DMI_EN = 0, dbg_hold / dbg_step 0, no extension PERF slots of the DB, CTL_ID.DM reads 0 (the debug module
+//   of tsr_ctrl is built, but no DMI window reaches it).
 // SPM clients (CC §10.2): 0 DMA, 1 QACT, 2 MVM, 3 RISC-V bridge through tsr_spm_cport each; 4 VU on
 //   both bank ports directly; 5 AT tied off (AT's ops use the DMA and MVM clients).
 // Parameters: tsr_core's (passed through) and the queue depths QD_DMA / QD_QACT / QD_MVM / QD_SYNC
@@ -530,7 +531,7 @@ module tsr_core_dp
 
   tsr_csr #(
     .NUM_CH(NUM_CH), .LANES(LANES), .T_MAX(T_MAX), .K_MAX(K_MAX), .SPM_BYTES(SPM_BYTES),
-    .VL(VL), .NSREG(NSREG), .CAPS(CAPS), .CTL_ID(CTL_ID), .CFG3(CFG3),
+    .VL(VL), .NSREG(NSREG), .CAPS(CAPS), .CTL_ID(HAS_DB ? CTL_ID : CTL_ID & ~tsr_tables_pkg::TSR_CTL_ID_DM), .CFG3(CFG3),
     .ITCM_BYTES(ITCM_BYTES), .DTCM_BYTES(DTCM_BYTES),
     .QD_DMA(QD_DMA), .QD_QACT(QD_QACT), .QD_MVM(QD_MVM_E), .QD_VU(QD_VU_E), .QD_ATT(QD_ATT),
     .QD_SYNC(QD_SYNC), .HAS_VU(HAS_VU), .FAST_CLK(FAST_CLK)

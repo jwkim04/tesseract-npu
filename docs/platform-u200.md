@@ -3354,6 +3354,56 @@ MHz again and lets Vitis scale the core down to a 200 MHz floor.
   at the end, also when the final clock hook stops the run. Start it in a detached screen:
   `screen -dmS k4fmax-link /home/limagin-dev/tesseract-fmax/build/fmax/k4fmax_link.sh`.
 
+**The debug-free maximum-clock image** (branch `k4fmax`, 2026-11-09). The user decided: "디버그 없는 구성으로 250Mhz 목표로 바꿔두자". The
+image drops the debug hardware and keeps the 250 MHz request with the scaling down to the 200 MHz floor. `tsr_u200_k4` is now generated with `HAS_DB` 0
+(a new `gen_tops.py` knob, set only for the k4 top on this branch; `tsr_xrt_kernel` has the parameter and passes it to `tsr_core`).
+`HAS_TRW` and `HIST_DEPTH` stay at their defaults: they are inside the DB block and mean nothing without it.
+
+- **Dropped (`HAS_DB` 0).** `tsr_dbg` in `tsr_core_dp` with its trace writer and the write mux on channel 0, the dispatch history, stop / step and the tile
+  breakpoints, the DMI gate (`DMI_EN` reads 0) and the DBG registers; `tsr_dbg_rv` in `tsr_core` with the RV watchpoints, `RV_SAMPLE`, the halt merge,
+  the completion records (REC) and the DB window registers of the control window. `DBG_ID` reads 0, the DBG and DMI windows read 0 and ignore writes,
+  `CTL_ID.DM` reads 0, and the DB slots of PERF (`TRW_RECORDS`, `TRW_DROPS`, `REC_DROPPED`) read 0. The firmware writes `REC_CFG` only for a launch with
+  the PROF flag; the write is ignored, the launch runs as before and no records come.
+- **Kept.** The PERF counters of the CSR block (`TSR_STATS` and tokens per second need them), the issue path with both checker classes and the error
+  records, the log ring, `FAST_CLK`, `HAS_GDN` (CAPS 0x121), the vector unit, attention and everything of the datapath. The Ibex debug module stays
+  built inside `tsr_ctrl`; no DMI window reaches it. The tap signals of the DB block were outputs of the issue path, the DMA and the units, so no
+  result changes (the core tests below). `DBG_STOP_CYCLES` is counted in the CSR block and stays.
+- **Pblocks.** The hook `k4_major_blocks.tcl` finds the two DB cells (`g_db.u_dbg_rv` in `tsr_core`, `g_db.u_dbg` in `tsr_core_dp`) by name. With neither
+  cell in the netlist it prints "no DB block in this netlist (HAS_DB 0)", assigns nothing of it and runs the capacity checks of both child Pblocks as before;
+  with only one cell it stops (`TSR_K4_DB`: `auto` is the default, `present` makes both cells required, `absent` names none). The ranges of the two child
+  Pblocks are those of the `k4f250` link; only the DB cells leave the control Pblock. Map: `docs/fig/floorplan/k4fmax-pblock-plan.png` (the properties
+  file is that of the fourth link's checkpoint). The mock tests are in `tb/platform/test_k4_major_blocks.py`.
+- **Size** (out-of-context synthesis, `tb/core/viv/blk_ooc.sh ctl 4.0 <dir> synth_only HAS_DB=<0|1>`, `tsr_core_dp` without MVM, VU and attention, FAST_CLK 1;
+  `tsr_dbg_rv` with `blk_ooc.sh dbgrv`):
+
+  | | `HAS_DB` 1 | `HAS_DB` 0 | Saved |
+  |---|---|---|---|
+  | LUT | 36,441 | 26,221 | 10,220 |
+  | FF | 43,599 | 35,769 | 7,830 |
+  | LUTRAM | 3,840 | 1,979 | 1,861 |
+  | RAMB36 / RAMB18 | 23 / 3 | 16 / 1 | 7 / 2 |
+  | `tsr_dbg_rv` (`tsr_core`) | 559 LUT, 1,408 FF, 218 LUTRAM | none | 559 LUT, 1,408 FF |
+
+  Of the saving in `tsr_core_dp`: `g_db.u_dbg` 6,340 LUT and 5,985 FF (7 RAMB36, 2 RAMB18), the trace-writer mux 861 LUT and 1,142 FF, the DB taps and extension
+  slots that go out of the issue path (1,207 LUT) and the CSR block (769 LUT, PERF counters kept), and smaller parts of the DMA and the arbiters. In all about
+  10.8 K LUT and 9.2 K FF, which is 1.9 to 2.5 K CLBs at the density of §8.8 (0.176 to 0.229 CLBs per LUT cell). All of it left the control Pblock.
+  The saving is synthesis only; the link shows what it buys in placement.
+- **Host without the DB block.** The transport already read `DBG_ID` at open (`has_dbg`): it skips the DBG window, the DB slots of PERF and the DMI gate.
+  `tsr-selftest`, `TSR_STATS` and the backend run unchanged. The debug-only parts fail with the missing block named: `tsr-selftest --debug` and `--trw`,
+  `tsr-dbg` (`tile`, `trw`, `hist`, `rv sample`, `rv halt` and the GDB server, which exits 1 before it listens) and `tsr-prof trw`. The simulator models the
+  image with `TSR_SIM_DB=0` (no DB model: `DBG_ID` 0, `CTL_ID.DM` 0), also on the mock kind. One limit: the core clock cannot be fitted from `DBG_MTIME` any
+  more, so the device-time lines of `TSR_STATS` use the nominal clock `CORE_HZ_NOMINAL` (276.3 MHz in `tsr_kdev.h`), not the 200 to 250 MHz of this image. Ratios
+  (busy, wait, idle percent) and wall-clock tokens per second are right; the "device time" and its share of the launch wall are off by the clock ratio.
+  `RV_FREQ` (clk_rv cycles per 2^16 core cycles) could give the clock without the DB block when clk_rv is known (100 MHz here); not done.
+- **Checks.** `rtl/lint.sh` (Verilator, XSim static elaboration of the K4 image with `HAS_DB` 0, `FAST_CLK` 1 and `HAS_GDN` 1, Vivado multi-driven check) and
+  `gen_tops.py --check` are clean. `tb/core`: `test_core_k4max_nodb` (the image: `core_smoke` with the GDN op, the simulator with `TSR_SIM_DB=0`, the DBG window,
+  DMI and the DB slots of PERF read 0), `test_core_m7_fast_nodb` (the production decode and prefill layers: rows and KV planes bit for bit, per-unit counts,
+  s registers, PERF counters), `test_k4_selftest_first_run_fast_nodb` (the first launch at zero state, `selftest` id 5 three times) and, for the image with the DB
+  block, `test_core_k4_fast`: all pass. `tb/platform`: 380 tests (hook, link checks, link build) pass. `sw`: `transport_kdev` and `tools_selftest_sim_nodb` (the
+  checklist on sim and mock, and the failures above) pass.
+
+**The link to start** (not started; the user starts it after seeing the map). `screen -dmS k4fmax-link /home/limagin-dev/tesseract-fmax/build/fmax/k4fmax_link.sh`.
+
 ## 9. Timing and resources (Vivado OOC synthesis of `tsr_u200_k1`)
 
 *Measured in Vivado 2024.2 (out of context).* `tb/platform/viv/kernel_ooc.tcl` (synth only, 3.333 ns `ap_clk`, every I/O budgeted 1.6 ns outside,

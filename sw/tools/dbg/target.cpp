@@ -102,9 +102,11 @@ int target::attach(std::string * why) {
         if (why) *why = w;
         return fail(e, w);
     };
+    // An image built without the DB block (HAS_DB 0: the maximum-clock card image) has no DMI window, so no debugger attaches.
+    if (csr(TSR_CSR_DBG_ID) == 0)
+        return bad(E_POLICY, "DBG_ID = 0: this image has no DB block (HAS_DB 0), so no DMI window and no debugger (DB §3.2, §10.1)");
     const uint32_t ctl = csr(TSR_CSR_CTL_ID);
     if (!(ctl & TSR_CTL_ID_DM)) return bad(E_POLICY, "CTL_ID.DM = 0: the core has no debug module (DB §3.1)");
-    if (csr(TSR_CSR_DBG_ID) == 0) return bad(E_POLICY, "DBG_ID = 0: no DBG block, so no DMI window gate (DB §3.2, §10.1)");
     if (!(csr(TSR_CSR_STATUS) & TSR_STATUS_RV_CLK_OK)) return bad(E_DMI, "STATUS.RV_CLK_OK = 0: no clk_rv, the DM cannot answer");
     saved_dbg_cfg_ = csr(TSR_CSR_DBG_CFG);
     csr_write(TSR_CSR_DBG_CFG, saved_dbg_cfg_ | TSR_DBG_CFG_DMI_EN | TSR_DBG_CFG_RV_HALT_EN);

@@ -192,7 +192,8 @@ def _params(cfg):
                 MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2, DDR_LOCAL_PIPE=1, RV_LOCAL_TRANSPORT=1, XSLR_REG=1, RST_PIPE=3,
                 SPM_RD_LAT=4, MVM_BC_PIPE=2, MVM_RES_PIPE=2, MVM_MAC_LAT=9,
                 VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, VU_LANE_PIPE=2,
-                FAST_CLK=int(os.environ.get("TSR_FR_FAST", "0")))
+                FAST_CLK=int(os.environ.get("TSR_FR_FAST", "0")),
+                **({"HAS_DB": 0} if os.environ.get("TSR_FR_DB") == "0" else {}))
 
 
 def selftest_trace(directory):
@@ -240,7 +241,7 @@ def _first_run(tmp_path, mutant):
     expect = os.environ.get("TSR_FR_EXPECT", "all_ok")
     if mutant:
         sources = mutated_sources(sources, "tsr_mvm_pv.sv", PV_FIX, PV_OLD, "first_run_pv_reset")
-    run("tsr_core", __name__, parameters=_params(info["config"]), name="core_k4_full_ops_mut" if mutant else "core_k4_full_ops",
+    run("tsr_core", __name__, parameters=_params(info["config"]), name="core_k4_full_ops_mut" if mutant else "core_k4_full_ops_nodb" if os.environ.get("TSR_FR_DB") == "0" else "core_k4_full_ops",
         sources=sources, extra_sources=[sv], plusargs=preload,
         testcase=["first_run"], rand_reset=int(os.environ.get("TSR_RAND_RESET", "0")),
         extra_env={"TB_FR_TRACE": str(trace), "TB_FR_PRIME": os.pathsep.join(str(p) for p in primes),
@@ -256,6 +257,15 @@ def test_k4_selftest_first_run_fast(tmp_path, monkeypatch):
     """The same first launch at zero state with FAST_CLK 1 (docs/platform-u200.md §8.10): the Xilinx wrappers with the DSP
     lanes' pv_en copies, the three-stage emitters, the PV convert pipeline and the KVST placer stage."""
     monkeypatch.setenv("TSR_FR_FAST", "1")
+    _first_run(tmp_path, False)
+
+
+def test_k4_selftest_first_run_fast_nodb(tmp_path, monkeypatch):
+    """The first launch at zero state of the maximum-clock image: FAST_CLK 1 and no DB block (HAS_DB 0: TSR_FR_DB=0). The
+    production firmware on the RTL Ibex runs `selftest` id 5 three times and every run equals the simulator's, as in
+    test_k4_selftest_first_run_fast; nothing of the launch path, the checker classes or the units depends on the DB block."""
+    monkeypatch.setenv("TSR_FR_FAST", "1")
+    monkeypatch.setenv("TSR_FR_DB", "0")
     _first_run(tmp_path, False)
 
 

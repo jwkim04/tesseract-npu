@@ -48,8 +48,9 @@ KERNELS = {
     # k1 retains the vector unit and attention (physical front / EXP / back lanes 16 / 8 / 4).
     # k4 is the full-feature card image (docs/platform-u200.md §8.8): T_MAX 4, the vector unit with physical
     # front / EXP / back lanes 8 / 8 / 4 behind two lane-pipe stages (VU_LANE_PIPE 2), attention (HAS_ATT: ATTQK /
-    # ATTPV in the clusters and the gather, KVST with masked metadata writes on the DMA), the DB block with trace
-    # writer and dispatch history (HAS_TRW 1, HIST_DEPTH at the table default), paired two-flit gather
+    # ATTPV in the clusters and the gather, KVST with masked metadata writes on the DMA), no DB block (HAS_DB 0: no
+    # tsr_dbg with trace writer, dispatch history, stop / step and DMI gate, no tsr_dbg_rv, no completion records; the
+    # DBG window reads 0, DBG_ID = 0; the PERF counters of the CSR block stay), paired two-flit gather
     # (MVM_GATHER_PAIR 1, MVM_GATHER_FLITS 2), the DDR0 / DDR3 arbitration boundaries (DDR_LOCAL_PIPE 1) and the
     # control core in SLR0 behind the narrow RV transport (RV_LOCAL_TRANSPORT 1: the registered unit done
     # strobes, the DB memory taps and the cluster reset copies). The local-intermediate banks and the local
@@ -60,6 +61,8 @@ KERNELS = {
     # FAST_CLK 1 (docs/platform-u200.md §8.10) is the 250 MHz work: the PERF counters, the row-vector emitters, the PV convert pipeline,
     # the KVST placer and the slice pointer copies in their registered forms. Remove it for the netlist of the 200 MHz images.
     # Two other elaborations of tsr_u200_k4, as kernel entries:
+    #  - the full image with the DB block, trace writer and dispatch history (the fourth link, branch k4full): remove
+    #    HAS_DB=0 from the entry below (HAS_DB 1 is the default; HAS_TRW 1 and HIST_DEPTH 512 are the table defaults)
     #  - the reduced first card image (branch k4m200, docs/platform-u200.md §8.7): no vector unit, no attention,
     #    no trace writer, no history; hook at commit 07fbf33:
     #      dict(short="k4", NUM_CH=4, T_MAX=8, RV_LOCAL_TRANSPORT=1, HAS_VU=0, HAS_ATT=0, HAS_TRW=0, HIST_DEPTH=0)
@@ -69,7 +72,7 @@ KERNELS = {
     "tsr_u200_k1": dict(short="k1", NUM_CH=1, T_MAX=1, VU_FRONT_LANES=16, VU_EXP_LANES=8, VU_BACK_LANES=4, VU_LANE_PIPE=0),
     "tsr_u200_k4": dict(short="k4", NUM_CH=4, T_MAX=4, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
                        DDR_LOCAL_PIPE=1, RV_LOCAL_TRANSPORT=1, XSLR_REG=1, FAST_CLK=1, VU_FRONT_LANES=8, VU_EXP_LANES=8,
-                       VU_BACK_LANES=4, VU_LANE_PIPE=2, HAS_GDN=1),
+                       VU_BACK_LANES=4, VU_LANE_PIPE=2, HAS_GDN=1, HAS_DB=0),
 }
 # The U200 bitstream parameters (docs/rtl-m3.md §14.2; tb/fastreplay/run.py PACKAGED carries the same)
 COMMON = dict(SPM_RD_LAT=4, MVM_BC_PIPE=2, MVM_RES_PIPE=2, MVM_MAC_LAT=9, RST_PIPE=3, AXI_SLICES=2, RST_STAGES=3)
@@ -122,7 +125,7 @@ def gen_top(name: str, k: dict) -> str:
         if knob in k:
             params[knob] = k[knob]
     params.update(COMMON)
-    for knob in ("HAS_VU", "HAS_ATT", "HAS_GDN", "HAS_TRW", "HIST_DEPTH",
+    for knob in ("HAS_VU", "HAS_ATT", "HAS_GDN", "HAS_DB", "HAS_TRW", "HIST_DEPTH",
                  "MVM_GATHER_PAIR", "MVM_GATHER_FLITS", "DDR_LOCAL_PIPE", "RV_LOCAL_TRANSPORT", "XSLR_REG", "FAST_CLK",
                  "LOCAL_INTERMEDIATES", "LOCAL_SCALE", "LOCAL_SOFTCAP"):
         if knob in k:
@@ -137,6 +140,8 @@ def gen_top(name: str, k: dict) -> str:
             k["VU_FRONT_LANES"], k["VU_EXP_LANES"], k["VU_BACK_LANES"], k["VU_LANE_PIPE"]))
     else:
         L.append("// no vector unit, no attention (KVST, ATTQK, ATTPV), no DB trace writer or dispatch history (CAPS 0),")
+    if k.get("HAS_DB", 1) == 0:
+        L.append("// no DB block (HAS_DB 0: no stop / step, history, trace writer, completion records or DMI gate; DBG_ID reads 0),")
     L.append("// %s." % FIXED_DOC)
     L.append("// Ports: ap_clk, ap_rst_n (active low, synchronous: the core and the adapter), ap_clk_2,")
     L.append("// ap_rst_n_2 (the control core's clock and reset), s_axi_control (AXI4-Lite, 32-bit")

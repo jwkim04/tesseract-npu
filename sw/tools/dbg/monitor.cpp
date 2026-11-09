@@ -498,6 +498,7 @@ int monitor::cmd_rv(const std::vector<std::string> & a, std::string * out) {
     tsr_transport * t = tg_.transport();
     const std::string sub = a.size() > 1 ? a[1] : "regs";
     if (sub == "sample") {
+        if (tg_.csr(TSR_CSR_DBG_ID) == 0) return *out += "rv sample needs the DB block: this image has none (DBG_ID = 0, HAS_DB 0)\n", E_POLICY;
         uint32_t n = 1;
         if (a.size() > 3 && a[2] == "-n" && !parse_u32(a[3], &n)) return *out += "rv sample [-n N]\n", E_MALFORMED;
         for (uint32_t i = 0; i < n; ++i) {
@@ -647,14 +648,21 @@ int monitor::run(const std::string & line, std::string * out) {
     if (c == "units" || c == "qstatus") return *out += units_text(t), E_OK;
     if (c == "perf") return *out += perf_text(t), E_OK;
     if (c == "sreg") return *out += sreg_text(t), E_OK;
-    if (c == "tile") return cmd_tile(a, out);
+    // An image built without the DB block (HAS_DB 0, DBG_ID = 0) has no tile debug, history or trace writer: say so and fail.
+    auto no_db = [&](const char * what) {
+        if (tg_.csr(TSR_CSR_DBG_ID) != 0) return false;
+        *out += strf("%s needs the DB block: this image has none (DBG_ID = 0, HAS_DB 0)\n", what);
+        return true;
+    };
+    if (c == "tile") return no_db("tile") ? E_POLICY : cmd_tile(a, out);
     if (c == "rv") return cmd_rv(a, out);
-    if (c == "trw") return cmd_trw(a, out);
+    if (c == "trw") return no_db("trw") ? E_POLICY : cmd_trw(a, out);
     if (c == "launch") return cmd_launch(a, false, out);
     if (c == "ping") return cmd_launch(a, true, out);
     if (c == "mem") return cmd_mem(std::vector<std::string>(a.begin() + 1, a.end()), false, out);
     if (c == "spm") return cmd_mem(std::vector<std::string>(a.begin() + 1, a.end()), true, out);
     if (c == "hist") {
+        if (no_db("hist")) return E_POLICY;
         uint32_t n = 16, pidx = 0;
         bool one = false;
         std::string exp;

@@ -51,6 +51,9 @@ uint32_t tsr_sim_caps_implemented(void);
 //   race       TSR_SIM_RACE      off | report | fatal = 0 | 1 | 2 (needs the race detector, P1.9)
 //   log        TSR_SIM_LOG       stderr | <file>, optionally prefixed "rv," for RV retire lines
 //   trace_dir  TSR_TRACE         one trace per launch under the directory (P1.10)
+// One more variable has no field (the opts struct is mirrored by the benches): TSR_SIM_DB=0 leaves the DB model out of
+// this simulator, as a core built with HAS_DB 0 (the maximum-clock tsr_u200_k4): DBG_ID = 0, the DBG and DMI windows
+// read 0 and ignore writes, CTL_ID.DM reads 0. 1 or unset: the DB model (when compiled in).
 // A value that does not parse makes tsr_sim_create_opts fail (message on stderr).
 typedef struct tsr_sim_opts {
     const char *    dram_dir;     // file-backed DRAM (see tsr_sim_create); NULL: anonymous memory
