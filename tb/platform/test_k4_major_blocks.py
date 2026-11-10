@@ -29,6 +29,7 @@ proc get_cells {args} {
     if {[lsearch -exact $args -filter] >= 0} {return top/tsr_k4/inst}
     set p [lindex $args end]
     if {[info exists ::env(MOCK_MISSING)] && [string first $::env(MOCK_MISSING) $p] >= 0} {return {}}
+    if {[info exists ::env(MOCK_NO_DUAL)] && ([string first g_b.u_asm_b $p] >= 0 || [string first g_dual.g_chb $p] >= 0)} {return {}}
     return $p
 }
 proc get_pblocks {args} {
@@ -109,7 +110,7 @@ def slr(n):
     return f"pblock_dynamic_SLR{n}"
 
 
-def expected(prefix, kernel, ctrl_where, vu_where="vu"):
+def expected(prefix, kernel, ctrl_where, vu_where="vu", dual=True):
     core = prefix + "u_core/" if kernel else prefix
     dp = core + "u_dp/"
     mvm = dp + "g_mvm.u_mvm/"
@@ -118,13 +119,16 @@ def expected(prefix, kernel, ctrl_where, vu_where="vu"):
     for cl, n in ((0, 0), (1, 2), (2, 0), (3, 2)):
         want[f"{mvm}g_cl[{cl}].u_cl"] = slr(n)
         want[f"{mvm}u_gather/g_asm[{cl}].u_asm"] = slr(n)
+        if dual:
+            want[f"{mvm}u_gather/g_asm[{cl}].g_b.u_asm_b"] = slr(n)
     for pair, n in ((0, 0), (1, 2)):
         want[f"{mvm}u_gather/g_pairs.g_pair[{pair}].u_source"] = slr(n)
     if kernel:
         want[f"{prefix}g_ch[0].u_br"] = slr(0)
         want[f"{prefix}g_ch[3].u_br"] = slr(2)
-        want[f"{prefix}g_dual.g_chb[0].u_br"] = slr(0)
-        want[f"{prefix}g_dual.g_chb[3].u_br"] = slr(2)
+        if dual:
+            want[f"{prefix}g_dual.g_chb[0].u_br"] = slr(0)
+            want[f"{prefix}g_dual.g_chb[3].u_br"] = slr(2)
     want[core + "u_ctrl"] = CTRL
     want[core + "g_db.u_dbg_rv"] = CTRL
     for e in ("u_spm_rx", "u_issue_tx", "u_lq_tx"):
@@ -147,6 +151,14 @@ def test_kernel_map(ctrl, where):
     r, got, _ = run_hook(ctrl=ctrl)
     assert r.returncode == 0, r.stderr
     assert got == expected("top/tsr_k4/inst/u_kernel/", True, where)
+
+
+def test_netlist_without_the_dual_weight_stream():
+    """A netlist of the single-stream image has none of the blocks of the dual weight stream: the hook assigns the rest."""
+    r, got, _ = run_hook(no_dual=1)
+    assert r.returncode == 0, r.stderr
+    assert got == expected("top/tsr_k4/inst/u_kernel/", True, "ctrl", dual=False)
+    assert "dual weight stream blocks in the netlist: 0" in r.stdout
 
 
 def test_core_map():
@@ -196,13 +208,21 @@ def test_only_whole_blocks_are_named():
     assert [p for p in got if p.endswith("g_vu.u_vu")]
 
 
-@pytest.mark.parametrize("missing", ["g_cl[2].u_cl", "u_qact", "g_rv_local.u_lq_rx", "g_ch[3].u_br", "g_dual.g_chb[0].u_br",
+@pytest.mark.parametrize("missing", ["g_cl[2].u_cl", "g_asm[2].g_b.u_asm_b", "u_qact", "g_rv_local.u_lq_rx", "g_ch[3].u_br", "g_dual.g_chb[0].u_br",
                                      "g_dual.g_chb[3].u_br", "u_gather/g_asm[1]",
                                      "g_vu.u_vu", "g_xc.u_xc", "g_xc.g_at.u_chk_at", "g_pairs.g_pair[1].u_source"])
 def test_missing_block_stops_the_hook(missing):
     r, got, _ = run_hook(missing=missing)
     assert r.returncode != 0
-    assert "K4 major blocks: missing hierarchy" in r.stderr
+    # a block of the dual weight stream is named only when the netlist has the stream: a partial one stops the hook as well
+    assert ("K4 major blocks: missing hierarchy" in r.stderr
+            or "blocks of the dual weight stream are in the netlist" in r.stderr), r.stderr
+
+
+def test_partial_dual_weight_stream_stops_the_hook():
+    r, got, _ = run_hook(missing="g_dual.g_chb[3]")
+    assert r.returncode != 0
+    assert "K4 major blocks: 5 of 6 blocks of the dual weight stream are in the netlist" in r.stderr
 
 
 @pytest.mark.parametrize("missing", ["g_vu.u_vu", "g_xc.u_xc", "g_xc.g_at.u_chk_at", "g_pairs.g_pair[1].u_source"])

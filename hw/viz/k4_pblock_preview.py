@@ -93,10 +93,13 @@ def labels(paths, reduced=False):
         tail = path.rsplit("/", 1)[-1]
         match = re.fullmatch(r'g_(cl|asm|bank|ch)\[(\d+)\]\.(u_cl|u_asm|u_bank|u_br|u_arb)', tail)
         read_only = re.fullmatch(r'g_dual\.g_chb\[(\d+)\]\.u_br', tail)
+        asm_b = re.fullmatch(r'g_asm\[(\d+)\]\.g_b\.u_asm_b', tail)
         if match:
             classes[match[3]].append(match[2])
         elif read_only:
             classes["u_br_b"].append(read_only[1])
+        elif asm_b:
+            classes["u_asm_b"].append(asm_b[1])
         else:
             pair = re.fullmatch(r'g_(?:local_att|pairs)\.g_pair\[(\d+)\]\.(u_local_asmax|u_source)', tail)
             if pair:
@@ -114,7 +117,7 @@ def labels(paths, reduced=False):
             for block in blocks:
                 del classes[block]
             classes[key] = [""]
-    names = (("u_cl", "클러스터"), ("u_asm", "결과 조립기"), ("u_bank", "VU·계수 bank"),
+    names = (("u_cl", "클러스터"), ("u_asm", "결과 조립기"), ("u_asm_b", "결과 조립기(둘째 가중치 스트림)"), ("u_bank", "VU·계수 bank"),
              ("u_local_asmax", "로컬 어텐션"), ("u_source", "결과 수집·후처리"),
              ("u_br", "DDR 브리지"), ("u_br_b", "DDR 읽기 전용 브리지(둘째 가중치 스트림)"), ("u_arb", "DDR 중재기"), ("u_spm", "SPM"),
              ("u_bridge", "RV↔SPM 접속부"),

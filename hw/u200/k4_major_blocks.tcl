@@ -13,15 +13,15 @@
 # here names a LUT, a register, a pipeline stage, a site or a BEL. Vivado places and routes inside the regions.
 # hw/viz/k4_pblock_preview.py draws the map from this file.
 #
-#   SLR0  clusters 0 and 2 with their result assemblers (each cluster holds both weight streams); the pair source of
-#         clusters 0 and 2; the DDR0 bridge, the read-only bridge of the second weight stream of channel 0 and the
-#         DDR0 arbiter
+#   SLR0  clusters 0 and 2 with their result assemblers (each cluster holds both of its weight streams and stream B has an
+#         own row assembler); the pair source of clusters 0 and 2; the DDR0 bridge, the read-only bridge of the second weight
+#         stream of channel 0 and the DDR0 arbiter
 #   SLR0  control Pblock (pblock_tsr_ctrl_plane, below): the control core (Ibex, debug module, TCMs, bus, control
 #         window, every clock-domain crossing, the RV side of the DB block), the issue path with its two checker
 #         classes, the CSR block and the DB block's core side, with the issue and LCQ ends of the control links
 #         (TSR_K4_CTRL, below)
-#   SLR2  clusters 1 and 3 with their result assemblers; the pair source of clusters 1 and 3; the DDR3 bridge, the
-#         read-only bridge of the second weight stream of channel 3 and the DDR3 arbiter
+#   SLR2  clusters 1 and 3 with their result assemblers (both streams); the pair source of clusters 1 and 3; the DDR3 bridge,
+#         the read-only bridge of the second weight stream of channel 3 and the DDR3 arbiter
 #   SLR2  vector unit Pblock (pblock_tsr_vu, below): the whole vector unit, front end and both lane banks
 #         (TSR_K4_VU, below)
 #   SLR1  the data hub: SPM, the RISC-V SPM bridge (and the SPM end of its link), DMA with KVST, QACT and the
@@ -189,12 +189,32 @@ proc tsr_k4_major_block {where path} {
   add_cells_to_pblock $pblock $cell
 }
 
+# The blocks of the dual weight stream (MVM_DUAL, docs/rtl-mvm.md §15): the row assembler of stream B of every cluster and,
+# in the kernel, the read-only bridge of every outer DDR channel. A netlist without the stream has none of them and the
+# hook says so. A netlist with some of them and not all of them stops it.
+set tsr_k4_dual_paths [list]
+foreach cluster {0 1 2 3} {
+  lappend tsr_k4_dual_paths "$tsr_k4_mvm/u_gather/g_asm\[$cluster\].g_b.u_asm_b"
+}
+if {$tsr_k4_kernel} {
+  foreach channel {0 3} { lappend tsr_k4_dual_paths "$tsr_k4_body/g_dual.g_chb\[$channel\].u_br" }
+}
+set tsr_k4_dual_have 0
+foreach path $tsr_k4_dual_paths {
+  if {[llength [get_cells -quiet $path]] == 1} { incr tsr_k4_dual_have }
+}
+if {$tsr_k4_dual_have != 0 && $tsr_k4_dual_have != [llength $tsr_k4_dual_paths] && ![info exists ::env(TSR_K4_SKIP_MISSING)]} {
+  error "K4 major blocks: $tsr_k4_dual_have of [llength $tsr_k4_dual_paths] blocks of the dual weight stream are in the netlist"
+}
+set tsr_k4_has_dual [expr {$tsr_k4_dual_have != 0}]
+
 # Clusters and their result assemblers: 0 and 2 beside DDR0, 1 and 3 beside DDR3. A pair source collects the results
 # of one such pair (pair 0: clusters 0 and 2, pair 1: clusters 1 and 3) and ends in the two-flit link to the
-# central receiver.
+# central receiver. The row assembler of stream B goes with the assembler of stream A.
 foreach {cluster slr} {0 0 1 2 2 0 3 2} {
   tsr_k4_major_block $slr "$tsr_k4_mvm/g_cl\[$cluster\].u_cl"
   tsr_k4_major_block $slr "$tsr_k4_mvm/u_gather/g_asm\[$cluster\].u_asm"
+  if {$tsr_k4_has_dual} { tsr_k4_major_block $slr "$tsr_k4_mvm/u_gather/g_asm\[$cluster\].g_b.u_asm_b" }
 }
 foreach {pair slr} {0 0 1 2} {
   tsr_k4_major_block $slr "$tsr_k4_mvm/u_gather/g_pairs.g_pair\[$pair\].u_source"
@@ -205,7 +225,7 @@ foreach {pair slr} {0 0 1 2} {
 if {$tsr_k4_kernel} {
   foreach {channel slr} {0 0 3 2} {
     tsr_k4_major_block $slr "$tsr_k4_body/g_ch\[$channel\].u_br"
-    tsr_k4_major_block $slr "$tsr_k4_body/g_dual.g_chb\[$channel\].u_br"
+    if {$tsr_k4_has_dual} { tsr_k4_major_block $slr "$tsr_k4_body/g_dual.g_chb\[$channel\].u_br" }
   }
 }
 
@@ -247,4 +267,5 @@ tsr_k4_pblock_check [tsr_k4_ctrl_pblock_name] $tsr_k4_ctrl_min_ramb36 "control p
 if {$tsr_k4_vu_where eq "pblock"} {
   tsr_k4_pblock_check [tsr_k4_vu_pblock_name] $tsr_k4_vu_min_ramb36 "vector unit"
 }
+puts "K4 major blocks: dual weight stream blocks in the netlist: $tsr_k4_has_dual"
 puts "K4 major blocks: clusters, assemblers and pair sources 0/2 in SLR0 and 1/3 in SLR2; control core, issue path with checkers, CSR and DB in the control Pblock ($tsr_k4_ctrl_plane); whole vector unit in SLR2 ($tsr_k4_vu_where); SPM, DMA, QACT and the arbiters of channels 1 and 2 in SLR1; central gather receiver and individual stages free"
