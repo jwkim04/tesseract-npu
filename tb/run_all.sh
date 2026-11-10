@@ -21,7 +21,8 @@
 #                   against the simulator's DBG and DM models)
 #   other           tech (Xilinx technology wrappers against the generic ones, the MAC lane's PV mode),
 #                   fastreplay (the C++ memory model self-test), platform (the adapter lint and bench against
-#                   the mock adapter model, the ap_clk_2 / MEM_EN kernel smoke, hw/u200/build_xclbin.sh: platform
+#                   the mock adapter model, the ap_clk_2 / MEM_EN kernel smoke, the read ports of the kernel body
+#                   (main port and read-only port B) against a stub core, hw/u200/build_xclbin.sh: platform
 #                   lookup), platform/bw (the bandwidth kernel)
 # core also runs, besides the smoke, the integration smokes: core_m7 (the production firmware image on
 # the RTL Ibex executes an op list of RMS_NORM, MUL_MAT, ROPE, SET_ROWS_KV, FLASH_ATTN and GLU records through

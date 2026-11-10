@@ -14,6 +14,14 @@ docs/platform-u200.md §2-§5).
   test_adapter_kernel  tsr_xrt_kernel (reduced core; XSLR_REG 0 and 1): ap_clk_2 is the control core's clock (RV_FREQ,
                        STATUS.RV_CLK_OK), MEM_EN latches the bases into the bridges, the window, the
                        reserved range (no AP_CTRL), ADAPTER_VERSION from tsr_tables_pkg.
+  test_adapter_kernel_dual  the same kernel with MVM_DUAL 1: CAPS bit 16, DUAL_DIS to the core, no B traffic without an MVM.
+  test_adapter_portb   tsr_xrt_kernel with MVM_DUAL 1 and a stub core (tb/platform/sv/stub_core_portb.sv) whose memory ports
+                       the bench drives: read traffic on the main port and on the read-only port B of every channel.
+                       Per channel: AR on m_axib_*[c] only (m_axi_chb<c> of the tops), with the base of channel c; R data
+                       and RRESP back to channel c; MEM_EN low holds the request (nothing leaves, REQ_HELD) and MEM_EN
+                       high lets it through; an RRESP error
+                       and an unexpected R beat reach ADAPTER_STATUS; ap_rst_n clears a bridge that holds an AR and a
+                       count of outstanding bursts. Every check runs on the main port too: port B must behave as it does.
 """
 from __future__ import annotations
 
@@ -22,6 +30,7 @@ import os
 import random
 import subprocess
 import sys
+from collections import deque
 from pathlib import Path
 
 import cocotb
@@ -425,6 +434,472 @@ async def adapter_kernel(dut):
 
 
 # =================================================================================================
+# The read ports of the kernel: main port A and read-only port B (tsr_xrt_kernel with the stub core)
+# =================================================================================================
+BEAT = 512
+ID_W = 4
+KMUL = (0x9E3779B97F4A7C15F39CC0605CEDC8341082276BF3A27251F86C6A11D0C18E95 << 256 |
+        0xD1B54A32D192ED03A0761D6478BD642F7FEB352D5851F42D4C957F2D1B6A2D3B) | 1
+A_ACTRL, A_ASTATUS = 0x0E0, 0x0F0
+# per port: the core-side net prefix of the kernel, the AXI port prefix, the kernel's event nets, the stub's variable prefix
+PORTS = {"A": dict(core="rd_", axi="m_axi_", ev=("ev_rresp_err", "ev_unexpected"), stub="t_a_"),
+         "B": dict(core="rb_", axi="m_axib_", ev=("ev2_rresp_err", "ev2_unexpected"), stub="t_b_")}
+
+
+class Vec:
+    """A packed [NUM_CH] input: set(c, v) drives field c and keeps the others."""
+
+    def __init__(self, handle, n):
+        self.h, self.w, self.q = handle, len(handle) // n, 0
+        handle.value = 0
+
+    def set(self, c, v):
+        m = ((1 << self.w) - 1) << (self.w * c)
+        q = (self.q & ~m) | ((v << (self.w * c)) & m)
+        if q != self.q:
+            self.q = q
+            self.h.value = q
+
+
+class Port:
+    """The read path of one port of one channel c: kind "A" is the main port m_axi_*[c] (m_axi_ch<c> of the tops), kind "B"
+    the read-only port m_axib_*[c] (m_axi_chb<c>). The bench is the core on one side (requests through the stub core, a
+    response sink) and the memory on the other (an AXI slave that answers every AR with its beats in order, with error beats
+    and stray beats on request). Every handshake in between is checked."""
+
+    def __init__(self, tb, kind, c):
+        k = PORTS[kind]
+        self.tb, self.kind, self.c = tb, kind, c
+        self.name = "%s%d" % (kind, c)
+        self.stub, self.axi = k["stub"], k["axi"]
+        self.n = {s: k["core"] + s for s in ("req_valid", "req_ready", "req_addr", "req_len", "req_id", "rsp_valid", "rsp_ready",
+                                              "rsp_data", "rsp_id", "rsp_last")}
+        self.n.update({s: k["axi"] + s for s in ("arvalid", "arready", "araddr", "arlen", "arsize", "arburst", "arlock",
+                                                  "arcache", "arprot", "arqos", "arid", "rvalid", "rready", "rdata", "rresp",
+                                                  "rlast", "rid")})
+        self.n["ev_err"], self.n["ev_unx"] = k["ev"]
+        self.ar_p = self.rv_p = self.rsp_p = 1.0     # probability per cycle of ARREADY, a new R beat, the sink's ready
+        self.n_req = self.n_ar = self.n_rsp = self.n_beats = self.n_ev_err = self.n_ev_unx = 0
+        self.ar_valid = 0
+        self.clear()
+
+    def clear(self):
+        """The core and the memory forget everything (a reset)."""
+        self.req = deque()           # requests the core still has to offer: (addr, len, id)
+        self.cur, self.drop = None, False
+        self.exp_ar = deque()        # accepted at the core side, AR not yet seen at the AXI side
+        self.bursts = deque()        # AR seen, beats to send: dict(id, beats [(data, resp)], sent)
+        self.exp_rsp = deque()       # beats the core side has to see: (data, id, last)
+        self.r_hold, self.r_stall = None, False
+        self.stray = deque()         # ids of R beats to send with no burst outstanding
+        self.err_beats = 0           # the next beats of the next AR(s) get an error response
+
+    def counts_of(self):
+        return (self.n_req, self.n_ar, self.n_rsp, self.n_beats, self.n_ev_err, self.n_ev_unx)
+
+    def idle(self):
+        return not (self.req or self.cur or self.exp_ar or self.bursts or self.exp_rsp or self.r_hold or self.stray)
+
+    def withdraw(self):
+        """The core stops offering what it has not yet issued."""
+        self.req.clear()
+        self.drop = True
+
+    def make_burst(self, a, ln, i):
+        beats = []
+        for k in range(ln):
+            resp = 0
+            if self.err_beats > 0:
+                resp = self.tb.r.choice((2, 3))
+                self.err_beats -= 1
+            beats.append((self.tb.data(self.kind, self.c, a // 64 + k), resp))
+            self.exp_rsp.append((beats[-1][0], i, int(k == ln - 1)))
+        self.n_beats += ln
+        self.bursts.append(dict(id=i, beats=beats, sent=0))
+
+    def sample(self, x):
+        """The cycle's handshakes (inputs were driven after the last rising edge)."""
+        tb, c, n = self.tb, self.c, self.n
+
+        def bit(s):
+            return (x[n[s]] >> c) & 1
+
+        def fl(s, w):
+            return (x[n[s]] >> (w * c)) & ((1 << w) - 1)
+
+        self.ar_valid = bit("arvalid")
+        if tb.quiet:
+            if tb.strict and self.ar_valid:
+                tb.err("%s: ARVALID high while ap_rst_n is low or just released" % self.name)
+            return
+        self.n_ev_err += bit("ev_err")
+        self.n_ev_unx += bit("ev_unx")
+        # core side request
+        rv, rr = bit("req_valid"), bit("req_ready")
+        if rv and rr:
+            if tb.gate_closed:
+                tb.err("%s: the core-side request was accepted with MEM_EN low" % self.name)
+            if self.cur is None or (fl("req_addr", tb.aw), fl("req_len", tb.lw), fl("req_id", tb.iw)) != self.cur:
+                tb.err("%s: the core-side request bus differs from the request offered" % self.name)
+            else:
+                self.n_req += 1
+                self.exp_ar.append(self.cur)
+                self.cur = None
+        # AR
+        if self.ar_valid and tb.gate_closed:
+            tb.err("%s: ARVALID high with MEM_EN low" % self.name)
+        if self.ar_valid and not self.exp_ar:
+            tb.err("%s: ARVALID high with no request accepted from the core side" % self.name)
+        elif self.ar_valid and bit("arready"):
+            ea, el, ei = self.exp_ar.popleft()
+            a, ln, i = fl("araddr", 64), fl("arlen", 8) + 1, fl("arid", ID_W)
+            if (a, ln, i) != (tb.bases[c] + (ea << 6), el, ei):
+                tb.err("%s: AR %#x len %d id %d, expected %#x len %d id %d (base %#x)" %
+                       (self.name, a, ln, i, tb.bases[c] + (ea << 6), el, ei, tb.bases[c]))
+            if (fl("arsize", 3), fl("arburst", 2), fl("arlock", 1), fl("arcache", 4), fl("arprot", 3), fl("arqos", 4)) != \
+                    (6, 1, 0, 3, 0, 0):
+                tb.err("%s: AR attributes" % self.name)
+            self.n_ar += 1
+            self.make_burst(a, ln, i)
+        # R at the AXI side
+        if self.r_hold is not None and bit("rvalid") and bit("rready"):
+            if self.r_hold[4]:
+                b = self.bursts[0]
+                b["sent"] += 1
+                if b["sent"] == len(b["beats"]):
+                    self.bursts.popleft()
+            self.r_hold = None
+        # R at the core side
+        if bit("rsp_valid") and bit("rsp_ready"):
+            got = (fl("rsp_data", BEAT), fl("rsp_id", ID_W), bit("rsp_last"))
+            if not self.exp_rsp:
+                tb.err("%s: a beat reached the core side with nothing outstanding (id %d)" % (self.name, got[1]))
+            else:
+                if got != self.exp_rsp.popleft():
+                    tb.err("%s: R beat at the core side differs (id %d)" % (self.name, got[1]))
+                self.n_rsp += 1
+
+    def pick(self):
+        r = self.tb.r
+        if self.r_stall or r.random() >= self.rv_p:
+            return None
+        if self.bursts:
+            b = self.bursts[0]
+            d, resp = b["beats"][b["sent"]]
+            return (d, resp, b["id"], int(b["sent"] == len(b["beats"]) - 1), True)
+        if self.stray and not (self.exp_ar or self.exp_rsp):
+            return (r.getrandbits(BEAT), 0, self.stray.popleft(), 1, False)
+        return None
+
+    def drive(self):
+        """The inputs of the next cycle (after a rising edge)."""
+        tb, c, r = self.tb, self.c, self.tb.r
+        out, s, a = tb.out, self.stub, self.axi
+        q = tb.quiet
+        if self.drop:
+            self.cur, self.drop = None, False
+        if not q and self.cur is None and self.req:
+            self.cur = self.req.popleft()
+        out(s + "req_valid", c, int(self.cur is not None))
+        if self.cur is not None:
+            out(s + "req_addr", c, self.cur[0])
+            out(s + "req_len", c, self.cur[1])
+            out(s + "req_id", c, self.cur[2])
+        out(s + "rsp_ready", c, int(not q and r.random() < self.rsp_p))
+        out(a + "arready", c, int(not q and r.random() < self.ar_p))
+        if not q and self.r_hold is None:
+            self.r_hold = self.pick()
+        h = None if q else self.r_hold
+        out(a + "rvalid", c, int(h is not None))
+        if h is not None:
+            out(a + "rdata", c, h[0])
+            out(a + "rresp", c, h[1])
+            out(a + "rid", c, h[2])
+            out(a + "rlast", c, h[3])
+
+
+class PortBench:
+    """Runs the ports of every channel in the background (run) and holds the checks that span them."""
+
+    def __init__(self, dut, nch, rnd):
+        self.d, self.n, self.r = dut, nch, rnd
+        self.bad = []
+        self.quiet = True            # ap_rst_n low, or released less than 8 cycles ago: nothing is checked
+        self.strict = False          # ... except that no AR may be offered
+        self.gate_closed = True      # MEM_EN is low (and has been for a few cycles): nothing may leave
+        self.bases = [0] * nch       # the bases the bridges hold
+        self.aw, self.lw, self.iw = (len(getattr(dut, "rd_req_" + s)) // nch for s in ("addr", "len", "id"))
+        self.ports = [Port(self, k, c) for k in "AB" for c in range(nch)]
+        self.nets = sorted({v for p in self.ports for v in p.n.values()})
+        self.vecs = {}
+        for p in self.ports:
+            for s in ("arready", "rvalid", "rdata", "rresp", "rlast", "rid"):
+                self.vecs.setdefault(p.axi + s, Vec(getattr(dut, p.axi + s), nch))
+            for s in ("req_valid", "req_addr", "req_len", "req_id", "rsp_ready"):
+                self.vecs.setdefault(p.stub + s, Vec(getattr(dut.u_core, p.stub + s), nch))
+
+    def ports_of(self, kind):
+        return [p for p in self.ports if p.kind in kind]
+
+    def out(self, name, c, v):
+        self.vecs[name].set(c, v)
+
+    def err(self, msg):
+        if msg not in self.bad and len(self.bad) < 60:
+            self.bad.append(msg)
+
+    def data(self, kind, c, abs_beat):
+        return (((abs_beat + 1) ^ (((ord(kind) << 8) | c) << 40)) * KMUL) & ((1 << BEAT) - 1)
+
+    def rand_req(self):
+        ln = self.r.choice([1, 1, 2, 3, 8, 16, 31, 63, 64, self.r.randint(1, 64)])
+        return ((self.r.randrange(1 << 14) << 6) + self.r.randint(0, 64 - ln), ln, self.r.randrange(1 << ID_W))
+
+    async def run(self):
+        d = self.d
+        while True:
+            await FallingEdge(d.ap_clk)
+            x = {nm: int(getattr(d, nm).value) for nm in self.nets}
+            for p in self.ports:
+                p.sample(x)
+            await RisingEdge(d.ap_clk)
+            for p in self.ports:
+                p.drive()
+
+    async def idle(self, n):
+        for _ in range(n):
+            await RisingEdge(self.d.ap_clk)
+
+    async def until(self, cond, what, limit=4000):
+        for _ in range(limit):
+            await RisingEdge(self.d.ap_clk)
+            if cond():
+                return
+        self.err("timeout: %s" % what)
+
+    async def drain(self, ports, limit=60000):
+        """Waits until the ports have nothing left to do (every request answered) for 6 cycles."""
+        ok = 0
+        for _ in range(limit):
+            await RisingEdge(self.d.ap_clk)
+            ok = ok + 1 if all(p.idle() for p in ports) else 0
+            if ok >= 6:
+                return
+        self.err("drain: %s not idle after %d cycles" % ([p.name for p in ports if not p.idle()], limit))
+
+    async def reset(self, n):
+        """ap_rst_n low for n cycles; the core and the memory forget what was in flight."""
+        d = self.d
+        await FallingEdge(d.ap_clk)
+        self.quiet, self.gate_closed = True, True
+        for p in self.ports:
+            p.clear()
+        d.ap_rst_n.value = 0
+        d.ap_rst_n_2.value = 0
+        for i in range(n):
+            await FallingEdge(d.ap_clk)
+            self.strict = i >= 3                 # the bridges' AXI outputs are low from the third cycle on
+        d.ap_rst_n.value = 1
+        d.ap_rst_n_2.value = 1
+        await self.idle(8)
+        self.quiet = self.strict = False
+
+    async def bind(self, m, bases):
+        """Writes the channel bases and sets MEM_EN: the bridges latch the bases and the gate opens."""
+        for c, b in enumerate(bases[:self.n]):
+            await m.write(0x40 + 8 * c, b & M32)
+            await m.write(0x44 + 8 * c, b >> 32)
+        self.bases = list(bases[:self.n])
+        self.gate_closed = False
+        await m.write(A_ACTRL, 1)
+        v, _ = await m.read(A_ACTRL)
+        if v != 1:
+            self.err("ADAPTER_CTRL %#x after the MEM_EN write" % v)
+        await self.idle(4)
+
+    async def unbind(self, m):
+        await m.write(A_ACTRL, 0)
+        await self.idle(4)
+        self.gate_closed = True
+
+    async def status(self, m, what, bits, cnt):
+        """Reads ADAPTER_STATUS (after the events of the last cycles have reached it) and compares bits [5:0] and the count."""
+        await self.idle(12)
+        v, _ = await m.read(A_ASTATUS)
+        if (v & 0x3F, v >> 16) != (bits, cnt):
+            self.err("%s: ADAPTER_STATUS %#x, expected bits %#x and error count %d" % (what, v, bits, cnt))
+
+    async def clear_status(self, m):
+        await m.write(A_ASTATUS, M32)
+        await self.idle(10)
+
+    def counts(self):
+        return {p.name: p.counts_of() for p in self.ports}
+
+
+async def portb_hold(tb, m, kind):
+    """MEM_EN low: a request of one channel waits at the gate (nothing leaves, REQ_HELD), then requests of every channel wait
+    together and go through when MEM_EN is set."""
+    ps = tb.ports_of(kind)
+    for p in ps:
+        await tb.clear_status(m)
+        await tb.status(m, "%s, no request" % p.name, 0, 0)
+        n0 = tb.counts()
+        p.req.append(tb.rand_req())
+        await tb.idle(40)
+        await tb.status(m, "%s, request waiting" % p.name, T.ADAPTER_STATUS_REQ_HELD, 0)
+        if tb.counts() != n0:
+            tb.err("%s: a request passed the closed gate" % p.name)
+        p.withdraw()
+        await tb.idle(10)
+    await tb.clear_status(m)
+    n0 = tb.counts()
+    for p in ps:
+        p.req.extend([tb.rand_req(), tb.rand_req()])
+    await tb.idle(40)
+    await tb.status(m, "%s, every channel waiting" % kind, T.ADAPTER_STATUS_REQ_HELD, 0)
+    if tb.counts() != n0:
+        tb.err("%s: requests passed the closed gate" % kind)
+    await tb.bind(m, BASES)
+    await tb.drain(ps)
+    n1 = tb.counts()
+    for p in ps:
+        if n1[p.name][:2] != (n0[p.name][0] + 2, n0[p.name][1] + 2):
+            tb.err("%s: the waiting requests did not go through after MEM_EN" % p.name)
+    await tb.status(m, "%s, after MEM_EN" % kind, T.ADAPTER_STATUS_REQ_HELD, 0)
+
+
+async def portb_traffic(tb, m, kind, nreq):
+    """Random reads on every channel of the ports in `kind`, the other ports idle: the AR and R paths against the AXI slave."""
+    ps = tb.ports_of(kind)
+    await tb.clear_status(m)
+    n0 = tb.counts()
+    for p in ps:
+        p.ar_p, p.rv_p, p.rsp_p = (tb.r.choice((0.3, 0.6, 1.0)) for _ in range(3))
+        p.req.extend(tb.rand_req() for _ in range(nreq))
+    await tb.drain(ps)
+    await tb.status(m, "traffic on %s" % kind, 0, 0)
+    n1 = tb.counts()
+    for p in tb.ports:
+        d = tuple(b - a for a, b in zip(n0[p.name], n1[p.name]))
+        want = (nreq, nreq, d[3], d[3], 0, 0) if p in ps else (0,) * 6
+        if d != want or (p in ps and d[3] < nreq):
+            tb.err("%s: counts of the traffic run (requests, AR, beats expected, beats seen, error events, stray events) %s, "
+                   "expected %s" % (p.name, d, want))
+
+
+async def portb_errors(tb, m, kind):
+    """Per channel: two error beats of one burst, then an R beat nothing waits for; both reach ADAPTER_STATUS."""
+    for p in tb.ports_of(kind):
+        await tb.clear_status(m)
+        n0 = tb.counts()
+        p.err_beats = 2
+        p.req.append((tb.r.randrange(1 << 14) << 6, 5, tb.r.randrange(1 << ID_W)))
+        await tb.drain([p])
+        await tb.status(m, "%s, two RRESP errors" % p.name, T.ADAPTER_STATUS_RRESP_ERR, 2)
+        if not int(tb.d.plat_err.value):
+            tb.err("%s: plat_err low after RRESP errors" % p.name)
+        n1 = tb.counts()
+        for q in tb.ports:
+            if n1[q.name][4:] != (n0[q.name][4] + (2 if q is p else 0), n0[q.name][5]):
+                tb.err("%s: error events of %s: %s -> %s" % (p.name, q.name, n0[q.name][4:], n1[q.name][4:]))
+        await tb.clear_status(m)
+        n0 = tb.counts()
+        p.stray.append(tb.r.randrange(1 << ID_W))
+        await tb.drain([p])
+        await tb.status(m, "%s, an unexpected R beat" % p.name, T.ADAPTER_STATUS_ORPHAN_RESP, 0)
+        if not int(tb.d.plat_err.value):
+            tb.err("%s: plat_err low after an unexpected R beat" % p.name)
+        n1 = tb.counts()
+        for q in tb.ports:
+            if n1[q.name][4:] != (n0[q.name][4], n0[q.name][5] + (1 if q is p else 0)):
+                tb.err("%s: unexpected-beat events of %s: %s -> %s" % (p.name, q.name, n0[q.name][4:], n1[q.name][4:]))
+
+
+async def portb_reset(tb, m, kind):
+    """ap_rst_n while a bridge holds an AR at the AXI port, requests in its slices and the count of an outstanding burst:
+    the AR is gone, the burst is forgotten (its late R beat is dropped and reported), the base and MEM_EN are cleared, and the
+    port works again after the bases are written."""
+    ps = tb.ports_of(kind)
+    n0 = tb.counts()
+    for p in ps:
+        p.ar_p = p.rv_p = p.rsp_p = 1.0
+        p.r_stall = True
+        p.req.append((0x40, 4, 3))                  # taken, its R beats withheld
+    await tb.until(lambda: all(p.n_ar == n0[p.name][1] + 1 for p in ps), "%s: first AR" % kind)
+    for p in ps:
+        p.ar_p = 0.0
+        p.req.extend([(0x80, 2, 5), (0xC0, 2, 6), (0x100, 1, 7), (0x140, 1, 8)])
+    await tb.idle(30)
+    for p in ps:
+        if not p.ar_valid:
+            tb.err("%s: no AR waiting at the AXI port before the reset" % p.name)
+    await tb.reset(6)
+    n1 = tb.counts()
+    for p in ps:
+        p.stray.append(3)                           # the late beat of the burst of the earlier epoch
+    await tb.drain(ps)
+    await tb.status(m, "%s, after the reset" % kind, T.ADAPTER_STATUS_ORPHAN_RESP, 0)
+    n2 = tb.counts()
+    for p in ps:
+        if n2[p.name][:4] != n1[p.name][:4] or n2[p.name][5] != n1[p.name][5] + 1:
+            tb.err("%s: after the reset %s -> %s (the late beat must give one unexpected event and nothing else)" %
+                   (p.name, n1[p.name], n2[p.name]))
+    for p in ps:
+        p.ar_p = 0.7
+    await tb.bind(m, BASES2)
+    for p in ps:
+        p.req.extend(tb.rand_req() for _ in range(3))
+    await tb.drain(ps)
+    n3 = tb.counts()
+    for p in ps:
+        if n3[p.name][:2] != (n2[p.name][0] + 3, n2[p.name][1] + 3):
+            tb.err("%s: requests after the reset: %s -> %s" % (p.name, n2[p.name], n3[p.name]))
+
+
+# 4 KiB aligned bases that differ in both words, per channel; the second set is for after a reset
+BASES = [((c + 1) << 33) + 0x1000 * (7 * c + 5) for c in range(16)]
+BASES2 = [b + 0x1000 * (0x100 + c) for c, b in enumerate(BASES)]
+
+
+@cocotb.test()
+async def adapter_portb(dut):
+    """The read ports of tsr_xrt_kernel (MVM_DUAL 1, stub core): see the module header, test_adapter_portb."""
+    nch = len(dut.m_axib_arvalid)
+    rnd = random.Random(int(os.environ.get("TSR_SEED", "1")))
+    cocotb.start_soon(Clock(dut.ap_clk, 10, unit="ns").start())
+    cocotb.start_soon(Clock(dut.ap_clk_2, 16, unit="ns").start())
+    pfx = "s_axi_control_"
+    for n in ("awvalid", "wvalid", "bready", "arvalid", "rready", "awaddr", "araddr", "wdata", "wstrb"):
+        getattr(dut, pfx + n).value = 0
+    for n in ("m_axi_awready", "m_axi_wready", "m_axi_bvalid", "m_axi_bresp", "m_axi_bid"):
+        getattr(dut, n).value = 0
+    dut.ap_rst_n.value = 0
+    dut.ap_rst_n_2.value = 0
+    tb = PortBench(dut, nch, rnd)
+    cocotb.start_soon(tb.run())
+    m = Axil(dut, dut.ap_clk, pfx, random.Random(3))
+    await tb.reset(20)
+    await portb_hold(tb, m, "B")                    # MEM_EN is low after the reset
+    await portb_traffic(tb, m, "B", 30)
+    await portb_traffic(tb, m, "A", 30)
+    await portb_traffic(tb, m, "AB", 30)
+    await portb_errors(tb, m, "B")
+    await portb_errors(tb, m, "A")
+    await tb.unbind(m)
+    await portb_hold(tb, m, "A")
+    await portb_reset(tb, m, "B")
+    await portb_reset(tb, m, "A")
+    for k in "AB":
+        c = [sum(p.counts_of()[i] for p in tb.ports_of(k)) for i in range(6)]
+        dut._log.info("port %s: %d requests, %d AR, %d beats to the core, %d beats expected, %d RRESP error events, "
+                      "%d unexpected events", k, *c)
+    for x in tb.bad:
+        dut._log.error(x)
+    assert not tb.bad, "%d port B checks failed" % len(tb.bad)
+
+
+# =================================================================================================
 # pytest launchers
 # =================================================================================================
 def _src_root():
@@ -500,6 +975,19 @@ def test_adapter_kernel_dual():
                   ADDR_BEAT_W=22, XSLR_REG=1)
     run("tsr_xrt_kernel", __name__, parameters=params, sources=srcs, name="adapter_kernel_dual",
         extra_env={"TSR_KCH": "2", "TSR_KDUAL": "1"}, testcase=["adapter_kernel"])
+
+
+def test_adapter_portb():
+    """tsr_xrt_kernel with MVM_DUAL 1 and the stub core of tb/platform/sv (3 channels, XSLR_REG 1): traffic on the read-only
+    port B and on the main port, the MEM_EN gate, error and unexpected-beat events, reset."""
+    root = _src_root()
+    plat = root / "rtl/platform/alveo_xrt"
+    srcs = [root / "rtl/core/tsr_tables_pkg.sv", root / "rtl/core/tsr_pkg.sv", root / "rtl/core/tsr_mem_arb.sv"]
+    srcs += [plat / f for f in ("tsr_xrt_reset.sv", "tsr_xrt_slices.sv", "tsr_xrt_axi_bridge.sv", "tsr_xrt_ctrl.sv",
+                                "tsr_xrt_kernel.sv")]
+    srcs.append(HERE / "sv" / "stub_core_portb.sv")
+    params = dict(MVM_DUAL=1, NUM_CH=3, ADDR_BEAT_W=22, XSLR_REG=1)
+    run("tsr_xrt_kernel", __name__, parameters=params, sources=srcs, name="adapter_portb", testcase=["adapter_portb"])
 
 
 @pytest.mark.parametrize("xslr", [0, 1])

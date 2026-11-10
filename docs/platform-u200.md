@@ -16,7 +16,7 @@ adapter is [EX](design/01-execution-model.md) §9 and [CC](design/04-control-cor
 | `rtl/platform/alveo_xrt/filelist.f`, `lint.sh`, `package_xo.tcl` | platform filelist (after a core filelist), lint, `.xo` packaging |
 | `hw/u200/k1.cfg`, `k4.cfg`, `k4_major_blocks.tcl`, `build_xclbin.sh` | `v++` link configurations, the K4 Pblock plan, the xclbin build (§8) |
 | `hw/u200/bw/` | link configuration and build script of the bandwidth kernel ([bandwidth-kernel.md](bandwidth-kernel.md) §4) |
-| `tb/platform/` | `test_platform.py`, `test_adapter.py`, the wrappers `sv/kwrap_*.sv`, `viv/kernel_ooc.tcl`; `bw/` is the bandwidth kernel bench |
+| `tb/platform/` | `test_platform.py`, `test_adapter.py`, the wrappers `sv/kwrap_*.sv`, the stub core `sv/stub_core_portb.sv`, `viv/kernel_ooc.tcl`; `bw/` is the bandwidth kernel bench |
 | `sw/transport/tsr_kdev_vkernel.cpp`, `tsr_vkernel_proto.h` | the `vkernel` client of the transport (§13) |
 
 ## 1. Kernel interface
@@ -614,6 +614,10 @@ The dual weight stream is checked in `tb/platform/test_axi_read_only.py` (the re
 SLICES 1, 2 and 4, error and stray responses, random write-side stimulus that must be ignored), in `test_adapter.py`
 (`DUAL_DIS` against the mock model, `dual_en` and `m_axib_*` of a kernel with `MVM_DUAL` 1, the `chb<c>` offsets) and in
 `tb/core` (the K4-like core on the same DRAM image through both ports, against the simulator).
+`test_adapter.py` also drives read requests into port B of the kernel body with a stub core
+(`tb/platform/sv/stub_core_portb.sv`) and checks per channel the AR channel and address (`m_axi_chb<c>`, the base of channel `c`),
+the return of R data and RRESP, the `MEM_EN` hold with `REQ_HELD`, the error and unexpected-beat events in `ADAPTER_STATUS` and the
+reset of a bridge that holds an AR and a burst count, with the same sequences on the main port.
 
 ### 10.2 Replays
 

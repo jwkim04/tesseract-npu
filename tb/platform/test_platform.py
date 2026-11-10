@@ -11,7 +11,7 @@
                                   its platforminfo shows the DDR bank SLRs of hw/u200/k1.cfg / k4.cfg
                                   (skipped without the extracted platform or Vitis 2024.2)
 The adapter bench is tb/platform/test_adapter.py (tsr_xrt_ctrl against the mock adapter model: register
-map, MEM_EN, ADAPTER_STATUS, window; tsr_xrt_kernel: ap_clk_2, MEM_EN).
+map, MEM_EN, ADAPTER_STATUS, window; tsr_xrt_kernel: ap_clk_2, MEM_EN; the read ports of the kernel body with a stub core).
 tb/platform/bw (the bandwidth kernel) is independent of the core.
 """
 from __future__ import annotations
