@@ -357,7 +357,7 @@ and quant bytes per block QB (Q8_0 32, Q4_K 128), let full = ⌊nb/S⌋ and rem 
 partial chunk has a meta beat (empty entries 0) plus the quant beats of the blocks that exist. Every
 row starts on a beat boundary.
 
-```latex
+```math
 \mathrm{ROW\_BEATS} = \mathrm{full}\left(1 + \left\lceil \tfrac{S \cdot QB}{64} \right\rceil\right) + [\mathrm{rem} > 0]\left(1 + \left\lceil \tfrac{\mathrm{rem} \cdot QB}{64} \right\rceil\right)
 ```
 
@@ -430,10 +430,10 @@ of the activation QA, BS are the bsums.
   `get_scale_min_k4`. S_j = Σ q_w · q_x (q_w ∈ [0, 15]), isum = Σ_j sc_j · S_j,
   msum = Σ_j m_j · (BS[2j] + BS[2j+1])
 
-```latex
+```math
 \begin{aligned}
-t_{Q8\_0} &= (d \cdot D_x) \cdot \mathrm{f32}(\mathit{isum}) \\
-t_{Q4\_K} &= (d \cdot D_x) \cdot \mathrm{f32}(\mathit{isum}) - (d_{min} \cdot D_x) \cdot \mathrm{f32}(\mathit{msum})
+t_{\mathrm{Q8\_0}} &= (d \cdot D_x) \cdot \mathrm{f32}(\mathit{isum}) \\
+t_{\mathrm{Q4\_K}} &= (d \cdot D_x) \cdot \mathrm{f32}(\mathit{isum}) - (d_{min} \cdot D_x) \cdot \mathrm{f32}(\mathit{msum})
 \end{aligned}
 ```
 
