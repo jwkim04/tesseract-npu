@@ -8,7 +8,9 @@
 #   3. a copy with one corrupted expect byte must fail on the device route (exit 1, one FAIL line);
 #   4. with SELFTEST: kind `launch` traces captured on the sim kind (TSR_TRACE, SW §5.5) while
 #      tsr-selftest runs `selftest` ids 1, 2, 3, 7 and 9, replayed as full launches through mock with
-#      the shadow (the capture's synthesized image loads the same words as IMAGE, tsr_devrun.h).
+#      the shadow (the capture's synthesized image loads the same words as IMAGE, tsr_devrun.h);
+#   5. the same launch traces across CAPS.MVM_DUAL (timing only, so a trace means the same with or without it): captured
+#      with TSR_SIM_MVM_DUAL=1 and replayed on mock (no bit 16), and captured without it and replayed on sim with it.
 set -u
 GEN=$1
 REPLAY=$2
@@ -56,5 +58,18 @@ if [ -n "$ST" ]; then
         { tail -20 "$OUT/launch.log"; fail "kind launch traces through mock"; }
     tail -1 "$OUT/launch.log"
     grep -q " $nl traces on mock (+ shadow): $nl passed, 0 failed" "$OUT/launch.log" || fail "launch: not every trace passed"
+    TSR_SIM_MVM_DUAL=1 TSR_TRACE="$OUT/cap_dual" "$ST" --device sim --image "$IMG" --no-mem --rate-n 0 --no-shadow --ids 1,2,3,7,9 \
+        > "$OUT/cap_dual.log" 2>&1 || { tail -20 "$OUT/cap_dual.log"; fail "tsr-selftest with TSR_TRACE and TSR_SIM_MVM_DUAL=1"; }
+    nd=$(find "$OUT/cap_dual" -name meta.json | wc -l)
+    [ "$nd" -ge 6 ] || fail "only $nd launch traces captured with MVM_DUAL"
+    "$REPLAY" -q --device mock --shadow --replay-image "$IMG" "$OUT/cap_dual" > "$OUT/launch_dual_mock.log" 2>&1 ||
+        { tail -20 "$OUT/launch_dual_mock.log"; fail "launch traces made with MVM_DUAL through mock"; }
+    grep -q " $nd traces on mock (+ shadow): $nd passed, 0 failed, 0 skipped" "$OUT/launch_dual_mock.log" ||
+        { tail -5 "$OUT/launch_dual_mock.log"; fail "launch traces made with MVM_DUAL: not every trace ran on mock"; }
+    TSR_SIM_MVM_DUAL=1 "$REPLAY" -q --device sim --shadow --replay-image "$IMG" "$OUT/cap" > "$OUT/launch_dual_sim.log" 2>&1 ||
+        { tail -20 "$OUT/launch_dual_sim.log"; fail "launch traces made without MVM_DUAL through sim with it"; }
+    grep -q " $nl traces on sim (+ shadow): $nl passed, 0 failed, 0 skipped" "$OUT/launch_dual_sim.log" ||
+        { tail -5 "$OUT/launch_dual_sim.log"; fail "launch traces made without MVM_DUAL: not every trace ran on sim with it"; }
+    echo "test_trace_replay_device: launch traces across CAPS.MVM_DUAL: $nd on mock, $nl on sim"
 fi
 echo "test_trace_replay_device: PASS"

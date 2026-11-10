@@ -143,8 +143,8 @@ typedef struct tsr_devrun_result {
 
 // "" (fits) or why the trace cannot be replayed on a device of configuration dev (see the top).
 // check_sim: any simulator of the device's configuration (the checker's limits), or NULL to skip
-// the per-op check comparison (then a trace whose config differs in T_MAX, CAPS, Q_DEPTH or the DRAM
-// limit does not fit).
+// the per-op check comparison (then a trace whose config differs in T_MAX, CAPS (CAPS.MVM_DUAL, which changes
+// timing only, is not compared), Q_DEPTH or the DRAM limit does not fit).
 const char * tsr_devrun_trace_fits(const tsr_trace2 * t, const tsr_config * dev, const uint8_t * dev_q_depth,
                                    tsr_sim * check_sim, char * why, size_t whylen);
 

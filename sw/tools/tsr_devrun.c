@@ -527,10 +527,11 @@ static uint32_t check_code(tsr_sim * sim, const uint32_t w[8]) {
     return h->check(sim, w, NULL, &info);
 }
 
+// CAPS.MVM_DUAL changes timing only (results never depend on it): two cores that differ in that bit alone are the same core.
 static int same_core(const tsr_config * a, const tsr_config * b) {
     return a->num_ch == b->num_ch && a->beat_bits == b->beat_bits && a->lanes == b->lanes && a->t_max == b->t_max &&
            a->k_max == b->k_max && a->spm_bytes == b->spm_bytes && a->vl == b->vl && a->nsreg == b->nsreg &&
-           a->ch_bytes == b->ch_bytes && a->addr_beat_w == b->addr_beat_w && a->caps == b->caps;
+           a->ch_bytes == b->ch_bytes && a->addr_beat_w == b->addr_beat_w && ((a->caps ^ b->caps) & ~TSR_CAPS_MVM_DUAL) == 0;
 }
 
 const char * tsr_devrun_trace_fits(const tsr_trace2 * t, const tsr_config * dev, const uint8_t * dev_q_depth,
