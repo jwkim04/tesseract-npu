@@ -63,10 +63,13 @@ std::string adapter_status_str(uint32_t v);   // "RRESP error, 3 error responses
 constexpr uint64_t KERNEL_CH_BYTES = 16ull << 30;
 constexpr uint32_t KERNEL_MAX_CH   = TSR_SAXI_CH_BASE_LO_N;   // 16 channel-base slots (0x040..0x0BC)
 
-// Nominal kernel clock (U200 k4, docs/platform-u200.md): converts core cycles (DURATION, the
-// simulator's MTIME) into the transport's time base. Only the poll policy and the simulator kinds'
-// timeouts use it; no result depends on it.
-constexpr double CORE_HZ_NOMINAL = 276.3e6;
+// Nominal core clock of the release image (U200 k4, docs/platform-u200.md §9: core 200 MHz, RISC-V
+// 100 MHz, RV_FREQ ratio 0.5): converts core cycles (DURATION, the simulator's MTIME) into the
+// transport's time base. Only the poll policy and the simulator kinds' timeouts use it; no result
+// depends on it. On xrt, tsr_perf_summary replaces it with the clock the platform reports and, once
+// the session is long enough, with the clock fitted from DBG_MTIME (kdev::core_clock_hz). Tools that
+// report device time use that value and fall back to this.
+constexpr double CORE_HZ_NOMINAL = 200e6;
 
 // ---------------------------------------------------------------------------
 // kdev: one kernel instance
@@ -118,6 +121,10 @@ public:
     // the model, so the protocol calls it with its mutex held; false (xrt): host time, and idle()
     // sleeps with the mutex released.
     virtual bool simulated() const { return false; }
+    // The core clock of the loaded image in Hz as the platform reports it (xrt: clock_freqs of the
+    // card in sysfs), 0 if it does not know. tsr_perf_summary takes it before a fit from DBG_MTIME
+    // is possible, and CORE_HZ_NOMINAL when it is 0.
+    virtual double core_clock_hz() const { return 0.0; }
 };
 
 // ---------------------------------------------------------------------------

@@ -184,7 +184,7 @@ std::string jstr(const std::string & s) {
 } // namespace
 
 std::string trw_chrome_json(const std::vector<trw_rec> & recs, const timeline_opts & o) {
-    const double us = 1e6 / (o.core_hz > 0 ? o.core_hz : 276.3e6);
+    const double us = 1e6 / (o.core_hz > 0 ? o.core_hz : CORE_HZ_DEFAULT);
     std::vector<std::string> ev;
     auto meta = [&](int tid, const std::string & name) {
         ev.push_back(strf("{\"ph\":\"M\",\"pid\":0,\"tid\":%d,\"name\":\"thread_name\",\"args\":{\"name\":%s}}", tid, jstr(name).c_str()));
@@ -267,7 +267,7 @@ std::string trw_chrome_json(const std::vector<trw_rec> & recs, const timeline_op
     const uint32_t C = o.num_ch;
     for (const perf_window & w : o.windows) {
         const double cyc = (double) w.perf[TSR_PERF_CYCLES];
-        const double dev_s = cyc / (o.core_hz > 0 ? o.core_hz : 276.3e6);
+        const double dev_s = cyc / (o.core_hz > 0 ? o.core_hz : CORE_HZ_DEFAULT);
         for (uint32_t c = 0; c < C && c < 16; ++c) {
             const double beats = (double) w.perf[TSR_PERF_CH_RD_BEATS(c)], wait = (double) w.perf[TSR_PERF_CH_WAIT(C, c)];
             const double gbs = dev_s > 0 ? beats * 64.0 / dev_s / 1e9 : 0.0, idle = cyc > 0 ? 100.0 * (cyc - beats - wait) / cyc : 0.0;

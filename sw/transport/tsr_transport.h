@@ -29,7 +29,7 @@
 // fail with a message (never silently ignored).
 //
 // Time: on sim, mock and vkernel (whose server reports its time) every timeout and the poll policy
-// count device time (core cycles at the nominal 276.3 MHz kernel clock), so results and recoveries
+// count device time (core cycles at the nominal 200 MHz core clock), so results and recoveries
 // do not depend on host load; on xrt they count host time (CLOCK_MONOTONIC).
 //
 // Threads: one mutex per transport serializes every call (EX §2.4). tsr_transport_wait releases it
@@ -238,8 +238,16 @@ void tsr_transport_set_debug_service(const tsr_debug_service * s);
 // PERF over the session (DB §8.6, TSR_STATS; EX §6): the counters accumulated since open, folded
 // in before every SOFT_RESET that zeroes them (EX §8.5), plus the host's launch wall time. PERF
 // does not move between launches, so the values cover exactly the launches answered since open.
-// core_hz: nominal (276.3 MHz, the U200 k4 clock) on the simulated kinds; on xrt fitted from
-// DBG_MTIME against host time when at least 0.5 s passed (core_hz_fitted = 1).
+// core_hz: nominal (200 MHz, the core clock of the release image) on the simulated kinds. On xrt the
+// clock the platform reports (sysfs clock_freqs of the card) until at least 0.5 s have passed, then
+// the clock fitted from DBG_MTIME against host time; the nominal value only if neither is there.
+// core_hz_fitted says which one core_hz is.
+#define TSR_CORE_HZ_NOMINAL  0
+#define TSR_CORE_HZ_FITTED   1   // from DBG_MTIME against host time
+#define TSR_CORE_HZ_PLATFORM 2   // as the platform reports it
+static inline const char * tsr_core_hz_source_str(int src) {
+    return src == TSR_CORE_HZ_FITTED ? "fitted from DBG_MTIME" : src == TSR_CORE_HZ_PLATFORM ? "platform clock" : "nominal";
+}
 typedef struct tsr_perf_summary {
     uint64_t perf[64];          // PERF_0..PERF_63 (EX §6 indices; TSR_PERF_*)
     uint32_t num_ch, perf_x;    // NUM_CH and X = 5 + 2 NUM_CH

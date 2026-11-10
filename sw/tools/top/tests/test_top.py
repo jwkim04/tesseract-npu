@@ -334,7 +334,7 @@ def test_synth():
         check(r.returncode == 0 and "FAN n/a" in r.stdout and "TEMP n/a" in r.stdout, "all sensors failing shows n/a, not an error")
         # the clock sysfs gives replaces the owner's nominal clock in the rates when the owner could not fit one
         write_record(path, make_page(**synth_page(k, hz, perf_mono_ns=now, d_wall_ns=100_000_000, d_launches=3, launches=100, perf_launches=100,
-                                                 update_mono_ns=now, tok_decode=50, tok_prefill=7, passes=51, flags=0, core_hz=int(276.3e6))))
+                                                 update_mono_ns=now, tok_decode=50, tok_prefill=7, passes=51, flags=0, core_hz=int(tsr_top.CORE_HZ_NOMINAL))))
         r = run_top(["--json", "--window", "0", "--dir", d] + sargs, env=senv)
         p = [x for x in json.loads(r.stdout)["processes"] if x["publisher"]][0]
         check(abs(p["rates"]["core_hz"] - 250e6) < 1, "a clock that was not fitted: the rates use sysfs's 250 MHz (%s)" % p["rates"]["core_hz"])

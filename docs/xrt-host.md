@@ -106,8 +106,11 @@ by SW §9.1 and DB §4.1, §6.1, §6.3, §7.3-§7.4, §9.2.
 - Memory and CSR. Memory is range-checked against `ch_bytes`. `tsr_transport_csr_read` goes to `0x1000 + off`, and a
   failed read returns 0xFFFFFFFF. A 64-bit PERF counter is read low half first (the core snapshots the high half).
 - Time base and threads. On `sim`, `mock` and `vkernel` every timeout and the poll policy count device time (core
-  cycles at a nominal 276.3 MHz), so results and recoveries do not depend on host load. On `xrt` they count host
-  time. One mutex per transport serializes every call, and `tsr_transport_wait` releases it between polls.
+  cycles at a nominal 200 MHz), so results and recoveries do not depend on host load. On `xrt` they count host
+  time. The core clock in the PERF summary (`tsr_perf_summary.core_hz`) is the nominal 200 MHz on those kinds. On
+  `xrt` it is the clock that the driver reports in sysfs (`clock_freqs` of the card), and after 0.5 s of session the
+  clock fitted from `DBG_MTIME` against host time. One mutex per transport serializes every call, and
+  `tsr_transport_wait` releases it between polls.
 - Errors. Calls return 0 or a negative `TSR_TE_*` code (`tsr_transport_strerror`): `INVAL` (-1), `IO` (-2),
   `TIMEOUT` (-3), `LOST` (-4), `DEVICE` (-5), `IMAGE` (-6), `STATE` (-7). A message goes to stderr, and a malformed
   environment value makes the open fail.

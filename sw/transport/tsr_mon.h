@@ -79,7 +79,7 @@ typedef struct tsr_mon_rec {
     // memory and clocks
     uint64_t mem_used;             // device DRAM in use, bytes over all channels
     uint64_t mem_total;            // num_ch * ch_bytes
-    uint64_t core_hz;              // core clock, Hz (fitted on the card, else nominal)
+    uint64_t core_hz;              // core clock, Hz (fitted on the card, else the platform's, else nominal)
     uint64_t rv_hz;                // clk_rv, Hz, from RV_FREQ (0 = unknown)
     uint32_t rv_freq_raw;          // RV_FREQ: clk_rv cycles in the last 2^16 core cycles
     uint32_t perf_reads;           // PERF reads since attach

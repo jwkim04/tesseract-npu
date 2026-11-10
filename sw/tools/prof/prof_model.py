@@ -12,6 +12,7 @@ GROUPS = ["attention", "router", "experts", "dense", "residual", "head"]
 GROUP_LABEL = {"attention": "attention", "router": "router", "experts": "experts", "dense": "dense branch",
                "residual": "residual and norms", "head": "embedding and head"}
 B_M0 = 72.05e9                  # four channels, read bursts of 64 beats at 300 MHz (the tsr_bw measurement, docs/bandwidth-kernel.md §7)
+CORE_HZ_NOMINAL = 200e6         # the release image's core clock: the fallback when the launch log has no fitted clock
 STREAM_B_PER_CYCLE = 256.0      # four channels x 64 B per core cycle
 HANDLE_NONE = 0xFFFFFFFF
 REGIONS = [(0x0, 0x4000000, "OPL"), (0x4000000, 0x14000000, "IO"), (0x14000000, 0x20000000, "AUX"), (0x20000000, 1 << 62, "WEIGHT/KV heap")]
@@ -223,7 +224,7 @@ class LaunchView:
         self.recs = self.list["recs"]
         self.ok = self.tl is not None
         self.perf = P.perf_dict(self.entry["perf"], run.meta["num_ch"]) if self.entry.get("perf") else {}
-        self.f = run.core_hz or 276.3e6
+        self.f = run.core_hz or CORE_HZ_NOMINAL
         if not self.ok:
             return
         tl = self.tl

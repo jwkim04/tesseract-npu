@@ -311,8 +311,11 @@ struct perf_window {
     uint64_t t_begin = 0, t_end = 0;        // MTIME (core cycles)
     uint64_t perf[64] = {};
 };
+// The core clock of the release image (docs/platform-u200.md §9): the fallback where no card
+// (fitted clock, sysfs) gives the real one.
+constexpr double CORE_HZ_DEFAULT = 200e6;
 struct timeline_opts {
-    double core_hz = 276.3e6;               // MTIME core cycles -> µs
+    double core_hz = CORE_HZ_DEFAULT;       // MTIME core cycles -> µs
     const image_info * img = nullptr;       // kernel names of LAUNCH markers
     uint32_t num_ch = 0;
     std::vector<perf_window> windows;       // channel counter tracks (GB/s, idle %), one sample per launch

@@ -487,9 +487,14 @@ void ping(tsr_transport * t, uint32_t n) {
     std::sort(rt.begin(), rt.end());
     std::sort(dur.begin(), dur.end());
     const double med = rt[n / 2], p99 = rt[std::min<size_t>(n - 1, (size_t) (n * 0.99))];
+    // The core clock: fitted from DBG_MTIME once the session is long enough, else the platform's, else nominal.
+    tsr_perf_summary ps;
+    memset(&ps, 0, sizeof(ps));
+    (void) tsr_transport_perf_summary(t, &ps);
+    const double hz = ps.core_hz > 0 ? ps.core_hz : tsr::CORE_HZ_NOMINAL;
     printf("  %u sequential round trips: median %.2f us, p99 %.2f us (host wall clock); PONG DURATION median %u core cycles "
-           "(%.2f us at the nominal %.1f MHz; %zu PINGs read whole)\n", n, med * 1e6, p99 * 1e6, dur[dur.size() / 2],
-           dur[dur.size() / 2] / tsr::CORE_HZ_NOMINAL * 1e6, tsr::CORE_HZ_NOMINAL / 1e6, dur.size());
+           "(%.2f us at %.1f MHz, %s; %zu PINGs read whole)\n", n, med * 1e6, p99 * 1e6, dur[dur.size() / 2],
+           dur[dur.size() / 2] / hz * 1e6, hz / 1e6, tsr_core_hz_source_str(ps.core_hz_fitted), dur.size());
     result(bad == 0, strf("%u sequential PINGs answered with their echo", n), strf("%u wrong", bad));
     // Pipelined: launch blocks only at LQ_DEPTH outstanding (host-side credit).
     std::vector<uint32_t> seqs(n);

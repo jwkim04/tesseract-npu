@@ -1267,14 +1267,16 @@ struct tsr_transport {
         }
         s->num_ch = cfg.num_ch;
         s->perf_x = TSR_PERF_X(cfg.num_ch);
-        s->core_hz = CORE_HZ_NOMINAL;
+        const double plat = dev->core_clock_hz();   // the platform's clock, else nominal; a fit below replaces both
+        s->core_hz = plat > 0 ? plat : CORE_HZ_NOMINAL;
+        s->core_hz_fitted = plat > 0 ? TSR_CORE_HZ_PLATFORM : TSR_CORE_HZ_NOMINAL;
         const uint64_t w = wall_ns();
         s->session_wall_ns = w - wall_open;
         if (!dev->simulated() && has_dbg && state != dstate::failed && s->session_wall_ns >= 500 * MS) {
             const uint64_t mt = mtime_now();
             if (mt > mtime_open) {
                 s->core_hz = (double) (mt - mtime_open) * 1e9 / (double) s->session_wall_ns;
-                s->core_hz_fitted = 1;
+                s->core_hz_fitted = TSR_CORE_HZ_FITTED;
             }
         }
         s->launches = st.launches;
@@ -2316,7 +2318,7 @@ extern "C" int tsr_perf_summary_str(const tsr_perf_summary * s, char * buf, size
     snprintf(b, sizeof(b),
              "PERF (DB §8.6): %" PRIu64 " launches; device time %.3f ms (%" PRIu64 " core cycles at %.1f MHz, %s); launch wall %.3f ms; "
              "host overhead %.3f ms (%.1f %% of the launch wall); session %.3f s\n",
-             s->launches, dev_ns / 1e6, p[TSR_PERF_CYCLES], hz / 1e6, s->core_hz_fitted ? "fitted from DBG_MTIME" : "nominal",
+             s->launches, dev_ns / 1e6, p[TSR_PERF_CYCLES], hz / 1e6, tsr_core_hz_source_str(s->core_hz_fitted),
              wall / 1e6, (wall - dev_ns) / 1e6, wall > 0 ? 100.0 * (wall - dev_ns) / wall : 0.0, (double) s->session_wall_ns / 1e9);
     o += b;
     const uint64_t stop = p[TSR_PERF_DBG_STOP_CYCLES];

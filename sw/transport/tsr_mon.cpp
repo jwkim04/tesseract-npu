@@ -205,7 +205,7 @@ void read_perf_locked(mon_state & s) {
     c.perf_mono_ns = now;
     c.perf_reads++;
     c.core_hz = (uint64_t) (ps.core_hz > 0 ? ps.core_hz : 0);
-    if (ps.core_hz_fitted) c.flags |= TSR_MON_F_FITTED; else c.flags &= ~TSR_MON_F_FITTED;
+    if (ps.core_hz_fitted == TSR_CORE_HZ_FITTED) c.flags |= TSR_MON_F_FITTED; else c.flags &= ~TSR_MON_F_FITTED;
     const uint32_t rv = tsr_transport_csr_read(s.tp, TSR_CSR_RV_FREQ);
     if (rv != 0xFFFFFFFFu) {
         c.rv_freq_raw = rv;

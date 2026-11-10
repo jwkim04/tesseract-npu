@@ -36,6 +36,7 @@ VERSION = 1
 LAYOUT = 1
 PAGE = 4096
 MON_DIR_DEFAULT = "/dev/shm"
+CORE_HZ_NOMINAL = 200e6              # the release image's core clock: the fallback when neither the fit nor sysfs gives one
 DRAM_GBS = 18.0                      # per channel: what the DRAM gives, as tsr_bw measures it (docs/bandwidth-kernel.md §7)
 XBUTIL = "/opt/xilinx/xrt/bin/xbutil"
 SYSFS = os.environ.get("TSR_TOP_SYSFS", "/sys")       # the tests point it at a made-up tree
@@ -537,7 +538,7 @@ def rates_between(a, b, rec, hz=None):
     if wall <= 0:
         return None
     C, X = perf_layout(rec)
-    hz = float(hz or rec["core_hz"]) or 276.3e6
+    hz = float(hz or rec["core_hz"]) or CORE_HZ_NOMINAL
     d = [y - x for x, y in zip(a["perf"], b["perf"])]
     cyc = d[P_CYCLES]
     r = {"window_s": wall, "core_hz": hz}

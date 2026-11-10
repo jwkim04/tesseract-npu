@@ -52,6 +52,8 @@
 #include <string>
 #include <vector>
 
+#include <glob.h>
+
 #include <experimental/xrt_ip.h>
 #include <experimental/xrt_xclbin.h>
 #include <xrt/xrt_bo.h>
@@ -117,6 +119,7 @@ public:
     uint64_t buf_bytes(uint32_t ch) const override { return buf_[ch]; }
     uint64_t ch_addr(uint32_t ch) const override { return addr_[ch]; }
     int detect_capacity(bool probe) override;
+    double core_clock_hz() const override;
     std::string describe() const override;
     int reg_read(uint32_t off, uint32_t * val) override;
     int reg_write(uint32_t off, uint32_t val) override;
@@ -143,6 +146,7 @@ private:
     bool whole_ = true;                   // every buffer has the full size the topology gives (no override, no shrink)
     std::string bdf_;                     // PCIe address of the card ("" if unknown)
     std::string cap_how_;                 // how the usable size was found: "", "measured", "recorded"
+    mutable double clock_hz_ = -1.0;      // core_clock_hz() once read (0: the platform gave none)
     dma_mode  dma_  = dma_mode::direct;
     dma_rules staged_rules_;
     std::unique_ptr<dma_engine> eng_;
@@ -336,6 +340,29 @@ xrt_kdev::xrt_kdev() {
                 devname.c_str(), bdf.c_str(), xclbin, uuid_.to_string().c_str(), kname_.c_str(), cuname_.c_str(), ctl_name);
     info_ += fmt("DMA %s, chunk %" PRIu64 " MiB, align %" PRIu64 "%s\n", dma_mode_name(dma_), chunk / MiB, align,
                  dma_ == dma_mode::m2m ? ", a staging buffer of one chunk per channel (host + its bank)" : "");
+}
+
+// The core clock of the loaded image as the xocl driver reports it: clock_freqs of the card's icap
+// node holds one MHz value per kernel clock (the first is the core's, the second the control core's),
+// as tsr-top reads it. 0 when there is no node or no value. The clock cannot change while the image
+// is loaded, so the answer is kept.
+double xrt_kdev::core_clock_hz() const {
+    if (clock_hz_ >= 0.0) return clock_hz_;
+    clock_hz_ = 0.0;
+    if (bdf_.empty()) return clock_hz_;
+    glob_t g;
+    memset(&g, 0, sizeof(g));
+    if (glob(("/sys/bus/pci/devices/" + bdf_ + "/icap.u.*/clock_freqs").c_str(), 0, nullptr, &g) == 0) {
+        for (size_t i = 0; i < g.gl_pathc && clock_hz_ == 0.0; ++i) {
+            FILE * f = fopen(g.gl_pathv[i], "r");
+            if (f == nullptr) continue;
+            unsigned mhz = 0;
+            if (fscanf(f, "%u", &mhz) == 1 && mhz > 0) clock_hz_ = mhz * 1e6;
+            fclose(f);
+        }
+    }
+    globfree(&g);
+    return clock_hz_;
 }
 
 // The header lines of the open, then one line per channel: the buffer, and how much of it is memory.

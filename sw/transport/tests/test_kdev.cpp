@@ -292,6 +292,7 @@ struct wrap_kdev final : kdev {
     bool write_then_fail = false;
     bool fail_reset_status = false;
     bool fail_reset_write = false;
+    double clock_hz = 0.0;                     // what core_clock_hz() reports
     std::map<uint32_t, uint32_t> reads;
     explicit wrap_kdev(const mock_options & mo) : in(new mock_kdev(mo)) {}
     const char * name() const override { return "wrap"; }
@@ -339,7 +340,28 @@ struct wrap_kdev final : kdev {
     void idle(uint32_t it, uint64_t ns) override { in->idle(it, ns); }
     tsr_sim * sim() override { return in->sim(); }
     bool simulated() const override { return true; }
+    double core_clock_hz() const override { return clock_hz; }
 };
+
+// The clock of the PERF summary: the platform's when the kdev reports one, else the nominal 200 MHz.
+static void test_core_clock() {
+    printf("core clock: the platform's value, else nominal\n");
+    const mock_options o = small_mock();
+    for (double hz : { 0.0, 187.5e6 }) {
+        std::unique_ptr<wrap_kdev> w(new wrap_kdev(o));
+        w->clock_hz = hz;
+        tsr_transport * t = transport_open_kdev(std::move(w));
+        CHECK(t != nullptr, "open with a clock of %.1f MHz", hz / 1e6);
+        if (t == nullptr) continue;
+        tsr_perf_summary s;
+        CHECK(tsr_transport_perf_summary(t, &s) == 0, "perf summary");
+        const double want = hz > 0 ? hz : CORE_HZ_NOMINAL;
+        CHECK(s.core_hz == want && s.core_hz_fitted == (hz > 0 ? TSR_CORE_HZ_PLATFORM : TSR_CORE_HZ_NOMINAL),
+              "core_hz %.1f MHz (%s) for a platform clock of %.1f MHz", s.core_hz / 1e6, tsr_core_hz_source_str(s.core_hz_fitted), hz / 1e6);
+        CHECK(hz > 0 || CORE_HZ_NOMINAL == 200e6, "the nominal core clock is the release image's 200 MHz");
+        tsr_transport_close(t);
+    }
+}
 
 // Opens that must fail: not a Tesseract core, another Tesseract Core capability major, a core without
 // the control core (CTL_ID = 0, even with VERSION 0x0100), adapter major 2, NUM_CH vs the bound
@@ -1465,6 +1487,7 @@ int main() {
     test_mock_regs();
     test_protocol_basic();
     test_open_refusals();
+    test_core_clock();
     test_capacity_open();
     test_adapter_log();
     if (access(TSR_FW_TEST_IMAGE_fw_rt, R_OK) == 0) {

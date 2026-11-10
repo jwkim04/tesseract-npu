@@ -21,7 +21,7 @@ bool sim_options_from_env(const char * who, sim_options * o) {
     int r;
     // TSR_SIM_CARD=k4full: the full-feature card image of the fourth link (docs/platform-u200.md §8.8): T_MAX 4, none of
     // the local intermediates (CAPS 0x21), the VU's 8 / 8 / 4 lanes behind two lane-pipe stages and clk_rv at half the
-    // core clock. The image has no GDN op (HAS_GDN 0): CAPS bit 8 is clear, TSR_SIM_GDN=1 sets it for the 250 MHz link
+    // core clock. The image has no GDN op (HAS_GDN 0): CAPS bit 8 is clear, TSR_SIM_GDN=1 sets it for the release image
     // (k4f250: HAS_GDN 1; SW-78). The variables below still override what they name (SW-80).
     if (const char * card = getenv("TSR_SIM_CARD"); card != nullptr && card[0] != '\0') {
         if (strcmp(card, "k4full") != 0) {

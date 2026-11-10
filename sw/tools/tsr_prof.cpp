@@ -12,6 +12,7 @@
 //       (exit 1 on a failure); --stats prints the DB §8.6 summary (the TSR_STATS lines) of the run.
 //   tsr-prof trw --from-raw ring.bin [--image F] [--core-mhz F] --out trace.json
 //       the timeline of saved records (tsr-prof trw --raw, tsr-dbg's monitor trw dump, hang dumps).
+//       --core-mhz F is the core clock of the records (default 200, the release image).
 //   tsr-prof stats [--device KIND] [--image F] --launch ... [--repeat N]
 //       the DB §8.6 summary only (no trace writer).
 //
@@ -88,7 +89,7 @@ int main(int argc, char ** argv) {
     std::string device, image, out, raw, from_raw;
     std::vector<launch_spec> launches;
     uint32_t repeat = 1, ring_mib = 0;
-    double core_mhz = 276.3;
+    double core_mhz = CORE_HZ_DEFAULT / 1e6;   // --from-raw has no card to measure
     bool stop_full = false, check = false, stats = false, prof = false;
     for (size_t i = 1; i < a.size(); ++i) {
         auto val = [&]() -> std::string {
