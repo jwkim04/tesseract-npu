@@ -4,7 +4,8 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat"></a>
-  <a href="CHANGELOG.md"><img alt="Release: basis-v1.0.0" src="https://img.shields.io/badge/release-basis--v1.0.0-green?style=flat"></a>
+  <a href="rtl/CHANGELOG.md"><img alt="Core: 1.0.0" src="https://img.shields.io/badge/core-1.0.0-green?style=flat"></a>
+  <a href="CHANGELOG.md"><img alt="Basis: 1.0.0" src="https://img.shields.io/badge/basis-1.0.0-green?style=flat"></a>
   <a href="docs/platform-u200.md"><img alt="Platform: AMD Alveo U200" src="https://img.shields.io/badge/platform-AMD%20Alveo%20U200-lightgrey?style=flat"></a>
 </p>
 
@@ -115,8 +116,8 @@ the tests, PyTorch and the card.
 - [Getting started](docs/getting-started.md): build, run, verify, repository layout
 - [Specification](docs/spec.md) and [design documents](docs/design/README.md)
 - [Basis kernel SDK](sw/ctrl/README.md)
-- [Versions](docs/versioning.md): core capability, Basis version and ABI, kind revisions
-- [Changelog](CHANGELOG.md)
+- [Versions](docs/versioning.md): Core capability and release, Basis version and ABI, kind revisions
+- Changelogs: [Core](rtl/CHANGELOG.md), [Basis](CHANGELOG.md)
 
 ## License
 

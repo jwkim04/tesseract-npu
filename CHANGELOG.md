@@ -9,7 +9,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 ## [1.0.0] - 2026-11-10
 
 Basis ABI 1. Targets Tesseract Core capability 1.0. The op list has 21 kinds (kind table signature 0x2381).
-The release image is `tsr_u200_k4.xclbin` (identity in [docs/platform-u200.md](docs/platform-u200.md) §9).
+It runs on Tesseract Core 1.0.0 ([rtl/CHANGELOG.md](rtl/CHANGELOG.md)).
 
 ### Added
 

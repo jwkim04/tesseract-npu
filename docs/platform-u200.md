@@ -540,7 +540,7 @@ to see the margin at the target period.
 
 ## 9. Timing and resources
 
-The release image is `tsr_u200_k4.xclbin`, built by `hw/u200/build_xclbin.sh k4` from `rtl/` and `hw/u200`.
+The image of Tesseract Core 1.0.0 is `tsr_u200_k4.xclbin`, built by `hw/u200/build_xclbin.sh k4` from `rtl/` and `hw/u200`.
 
 | Item | Value |
 |---|---|

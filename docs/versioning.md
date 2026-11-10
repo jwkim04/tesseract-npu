@@ -1,15 +1,16 @@
 # Versions
 
-Tesseract has four version numbers. Each answers a separate question and each changes on its own.
+Tesseract has five version numbers. Each answers a separate question and each changes on its own.
 
 | Number | Answers | CUDA counterpart |
 | --- | --- | --- |
 | Tesseract Core capability, MAJOR.MINOR | What the hardware does. | compute capability |
+| Tesseract Core release, MAJOR.MINOR.PATCH | Which release of the RTL and the card image this is. | none |
 | Tesseract Basis version, MAJOR.MINOR.PATCH | Which release of the firmware SDK and the host side this is. | toolkit version |
 | Basis ABI, one integer | Whether a host and a firmware image speak the same protocol. | driver ABI |
 | Kind numerics revision, one integer per op list kind | Whether a kind still produces the same bits. | none |
 
-The current release is Tesseract Basis 1.0.0 with Basis ABI 1 on Tesseract Core capability 1.0.
+The current releases are Tesseract Core 1.0.0, with capability 1.0, and Tesseract Basis 1.0.0, with Basis ABI 1.
 Normative text: [SW](design/06-software-verification.md) §6.9 and [EX](design/01-execution-model.md) §4.4
 and §7.5.
 
@@ -18,6 +19,7 @@ and §7.5.
 | Number | Source | In a firmware image | On a running device |
 | --- | --- | --- | --- |
 | Core capability | `sw/tables/tsr_tables.py` (`ISA_MAJOR`, `ISA_MINOR`) | `.note.tsr` word 1, `cap_min`: the capability the image needs | CSR `VERSION` (0x004) |
+| Core release | `rtl/CHANGELOG.md` and the tag `core-vX.Y.Z` | none | none; the xclbin UUID identifies the card image |
 | Basis version | `sw/ctrl/include/tsr/version.h` | `.note.tsr` word 6 | HELLO record, r6 |
 | Basis ABI | `sw/ctrl/include/tsr/version.h` (`TSR_SDK_ABI`) | `.note.tsr` word 0 | HELLO record, r4[15:0] |
 | Kind revisions | `sw/ctrl/include/tsr/opl.hpp` (`kind_rev`) | section `.tsr_kinds` | HELLO record, r4[31:16]: a 16-bit signature of the kind table |
@@ -45,6 +47,20 @@ RTL and the simulator.
   field, a control-core ISA extension the compiler may target.
 
 It is shown as `Tesseract Core 1.0 (VU ATT GDN)`: the capability, then the `CAPS` features.
+
+## Tesseract Core release
+
+A Core release is a version of the RTL in `rtl/` and of the card image that `hw/u200` builds from it. Its
+version is MAJOR.MINOR.PATCH.
+
+- Major: a large change. In practice a new capability major.
+- Minor: a small addition or change of functions. A new unit, opcode or `CAPS` bit, a new capability
+  minor, a new image configuration.
+- Patch: a small fix that leaves the inputs and outputs of every function unchanged: timing, clocks,
+  placement, or a fix that keeps every result bit and every register.
+
+The image does not carry the release number. Its sha256 and UUID identify it, and each section of
+`rtl/CHANGELOG.md` lists them.
 
 ## Tesseract Basis version
 
@@ -214,8 +230,11 @@ table (21 kinds) is `0x2381`.
 
 ## Releases
 
-Each release has a Basis version, a section in `CHANGELOG.md` and an annotated git tag
-`basis-vX.Y.Z` on the release commit.
+Basis and the Core are released on their own. A Basis release has a section in `CHANGELOG.md` and an
+annotated git tag `basis-vX.Y.Z` on the release commit. A Core release has a section in
+`rtl/CHANGELOG.md` and a tag `core-vX.Y.Z`.
+
+For a Basis release:
 
 1. Set `TSR_BASIS_VERSION_MAJOR`, `_MINOR` and `_PATCH` in `sw/ctrl/include/tsr/version.h`.
 2. In `CHANGELOG.md`, move the entries under "Unreleased" to a section for the new version.
@@ -224,3 +243,12 @@ Each release has a Basis version, a section in `CHANGELOG.md` and an annotated g
 
 The ABI and the kind revisions are not part of this step. Their authors change them in the commit
 that needs it. The sections of `CHANGELOG.md` give the ABI and the capability they target.
+
+For a Core release:
+
+1. Build the image with `hw/u200/build_xclbin.sh k4`. Check that timing is met and run the card checks in
+   [getting-started.md](getting-started.md).
+2. In `rtl/CHANGELOG.md`, move the entries under "Unreleased" to a section for the new version with the
+   image's sha256 and UUID, and update [platform-u200.md](platform-u200.md) §9.
+3. Commit, then `git tag -a core-vX.Y.Z -m "Tesseract Core X.Y.Z"` and push the tag. The image is attached
+   to the release on GitHub.

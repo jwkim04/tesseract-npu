@@ -26,7 +26,7 @@ the design documents in [design/](design/README.md), then the other documents.
 - [xrt-host.md](xrt-host.md): the host transport, the `xrt` kernel device, the card selftest and bring-up.
 - [llama-pin.md](llama-pin.md): the pinned llama.cpp commit and the backend API items checked at it.
 - [torch-backend.md](torch-backend.md): the PyTorch backend and the `tsr_rt` runtime.
-- [versioning.md](versioning.md): Core capability, Basis version, Basis ABI and kind numerics revisions.
+- [versioning.md](versioning.md): Core capability and release, Basis version, Basis ABI and kind numerics revisions.
 - [klcheck.md](klcheck.md): the model-level KL check against the CPU.
 - [numcheck.md](numcheck.md): the one-prompt numeric check of every weight matrix product.
 - [prof-dbg.md](prof-dbg.md): debugging and profiling tools, the profile report and `tsr-top`.
