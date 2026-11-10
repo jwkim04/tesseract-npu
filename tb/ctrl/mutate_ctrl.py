@@ -2,7 +2,7 @@
 a copy of the tree (TB_CTRL_SRC) and run against the tb/ctrl tests that must kill it. A mutant
 survives if all of its tests pass; the run fails if any mutant survives.
 
-    /home/limagin-dev/miniconda3/bin/python tb/ctrl/mutate_ctrl.py [name ...]
+    "$TSR_PYTHON" tb/ctrl/mutate_ctrl.py [name ...]
 
 Opt-in (not in tb/run_all.sh: one Verilator build per mutant, about 1 min each with
 TSR_BUILD_JOBS=2). The mutated tree and its build go to $TSR_SIM_BUILD_ROOT/ctrl_mut_src_<name>[_build]

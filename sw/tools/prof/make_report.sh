@@ -9,7 +9,7 @@
 set -euo pipefail
 card=$1; sim=$2; out=$3; name=${4:-}
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-PY=${TSR_PYTHON:-/home/limagin-dev/miniconda3/bin/python}
+PY=${TSR_PYTHON:-python3}
 for d in "$card" "$sim"; do
   if [ ! -s "$d/sched.json" ] && [ -s "$d/sched_and_run.log" ]; then "$PY" "$here/prof_report.py" sched "$d/sched_and_run.log" "$d/sched.json"; fi
 done

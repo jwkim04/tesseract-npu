@@ -22,9 +22,9 @@ Start with [docs/README.md](docs/README.md), the index of the documentation, and
 - Generated files are never edited by hand: `rtl/core/tsr_tables_pkg.sv`, `sw/sim/include/tsr_tables.h`,
   `sw/ctrl/include/tsr/{mmio,vu,at}.hpp` and `tb/common/tables.py` come from `sw/tables/gen_tables.py`;
   `rtl/platform/alveo_xrt/tsr_u200_k*.v` come from `gen_tops.py`.
-- No sudo. No `pip install` into existing interpreters. Python: `/home/limagin-dev/miniconda3/bin/python`
-  (numpy, cocotb); `build/tools/svgvenv` (figures); `build/tools/torchvenv`. `python3` on PATH is an
-  unrelated venv.
+- No sudo. No `pip install` into existing interpreters. Python: `$TSR_PYTHON`, an interpreter
+  with numpy and cocotb; `build/tools/svgvenv` (figures); `build/tools/torchvenv`. Do not assume that
+  `python3` on PATH has them.
 - Build with `-j8` (`TSR_BUILD_JOBS=8`). The host has 14 GB RAM and 72 GB swap; use the swap.
 - Run Vivado through `hw/u200/vivado_slot.sh <cmd>`, at most two top-level executions at a time.
   Internal synthesis workers are allowed. `TSR_U200_SYNTH_JOBS` sets the number of concurrent K4 IP
@@ -50,9 +50,9 @@ Start with [docs/README.md](docs/README.md), the index of the documentation, and
 ```sh
 cmake --build build/dev -j8
 ctest --test-dir build/dev -LE slow -j8
-/home/limagin-dev/miniconda3/bin/python sw/tables/gen_tables.py --check
-/home/limagin-dev/miniconda3/bin/python rtl/platform/alveo_xrt/gen_tops.py --check
+"$TSR_PYTHON" sw/tables/gen_tables.py --check
+"$TSR_PYTHON" rtl/platform/alveo_xrt/gen_tops.py --check
 TSR_VIVADO_WRAP="$PWD/hw/u200/vivado_slot.sh" rtl/lint.sh   # Verilator, XSim, Vivado multi-driven check
-TSR_BUILD_JOBS=8 TSR_PYTHON=/home/limagin-dev/miniconda3/bin/python \
+TSR_BUILD_JOBS=8 TSR_PYTHON="$TSR_PYTHON" \
   TSR_VIVADO_WRAP="$PWD/hw/u200/vivado_slot.sh" tb/run_all.sh --no-lint
 ```

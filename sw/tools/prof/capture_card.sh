@@ -5,7 +5,7 @@
 # trace writer afterward. Never kills another process.
 #
 #   TSR_BUILD     build tree with the XRT backend (default build/xrt)
-#   TSR_XCLBIN    the card image (default: the k4f250 release image)
+#   TSR_XCLBIN    the card image (default: build/u200/k4/tsr_u200_k4.xclbin, what hw/u200/build_xclbin.sh k4 writes)
 #   WARM_TRACE    trace directory of the first-ATTPV replay (default traces/at/errors/at_s53_0009, else the tesseract-sw checkout's)
 #   WARM=1        replay the first-ATTPV trace first (for an image with that defect; off by default)
 #   NO_DUMP=1     no TSR_DUMP_PLAN: the speed of the same run without the profiler
@@ -15,10 +15,9 @@ model=$1; out=$2; ntok=${3:-33}
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 build=${TSR_BUILD:-$here/build/xrt}
 source /opt/xilinx/xrt/setup.sh > /dev/null 2>&1
-export TSR_XCLBIN=${TSR_XCLBIN:-/home/limagin-dev/tesseract-f250/build/link/k4f250/tsr_u200_k4.xclbin}
+export TSR_XCLBIN=${TSR_XCLBIN:-$here/build/u200/k4/tsr_u200_k4.xclbin}
 export TSR_IMAGE=${TSR_IMAGE:-$build/fw/tsr-fw.elf}
 warm=${WARM_TRACE:-$here/traces/at/errors/at_s53_0009}
-[ -d "$warm" ] || warm=/home/limagin-dev/tesseract-sw/traces/at/errors/at_s53_0009
 mkdir -p "$out"
 rm -f "$out"/plan_*.json "$out"/launches.jsonl "$out"/trw.raw "$out"/meta.json "$out"/cpu_fallback.json
 
