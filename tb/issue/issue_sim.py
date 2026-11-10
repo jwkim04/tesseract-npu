@@ -29,7 +29,8 @@ class TsrSimOpts(ctypes.Structure):         # tsr_sim_opts (sw/sim/include/tsr_s
     _fields_ = [("dram_dir", ctypes.c_char_p), ("threads", u32), ("sched", ctypes.c_char_p),
                 ("rv_ratio", ctypes.c_double), ("race", u32), ("log", vp), ("q_depth", ctypes.POINTER(u8)),
                 ("itcm_bytes", u32), ("dtcm_bytes", u32), ("log_flags", u32), ("trace_dir", ctypes.c_char_p),
-                ("rv_core", ctypes.c_char_p), ("vu_timing", ctypes.c_char_p)]
+                ("rv_core", ctypes.c_char_p), ("vu_timing", ctypes.c_char_p), ("mvm_dual", u32),
+                ("mem_rate", ctypes.c_double)]
 
 
 class TsrExtent(ctypes.Structure):          # tsr_extent (sw/sim/tsr_sim_int.h §1)

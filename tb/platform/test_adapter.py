@@ -284,6 +284,22 @@ async def adapter_regs(dut):
     await m.write(0x0E0, 0)
     if not int(dut.dual_en.value):
         bad.append("dual_en low after DUAL_DIS = 0")
+    # RTL-only: the events of the read-only bridges (ev2_*) set the same status bits and count like the main bridges' own
+    await m.write(0x0F0, M32)
+    v0, _ = await m.read(0x0F0)
+    await pulse(dut, "ev2_rresp_err", 1)
+    for _ in range(4):
+        await RisingEdge(dut.clk)
+    v, _ = await m.read(0x0F0)
+    if not v & T.ADAPTER_STATUS_RRESP_ERR or (v >> 16) != (v0 >> 16) + 1:
+        bad.append("ev2_rresp_err: ADAPTER_STATUS %#x (before %#x)" % (v, v0))
+    await m.write(0x0F0, M32)
+    await pulse(dut, "ev2_unexpected", 1)
+    for _ in range(4):
+        await RisingEdge(dut.clk)
+    v, _ = await m.read(0x0F0)
+    if not v & T.ADAPTER_STATUS_ORPHAN_RESP:
+        bad.append("ev2_unexpected: ADAPTER_STATUS %#x" % v)
     # RTL-only: REQ_HELD (the kernel's gate event), byte strobes on a base, a partial window write
     await m.write(0x0F0, M32)
     await pulse(dut, "ev_req_held", 1)
@@ -444,6 +460,12 @@ ADAPTER_MUTANTS = [
     ("plat_err_no_count", "plat_err_q <= (ast_d[2:0] != 3'd0) || (acnt_d != 16'd0);",
      "plat_err_q <= (ast_d[2:0] != 3'd0);", "plat_err_i ignoring the error count"),
     ("no_latch", "          base_lat_q <= base_reg_q;", "", "the bases not latched at MEM_EN"),
+    ("dual_polarity", "        dual_en_q <= ~ax_wdata_q[1];", "        dual_en_q <= ax_wdata_q[1];",
+     "DUAL_DIS: the run-time enable of the dual weight stream has the wrong polarity"),
+    ("dual_readback", "A_ACTRL:    reg_rdata = {30'd0, ~dual_en_q, mem_en_q};", "A_ACTRL:    reg_rdata = {30'd0, 1'b0, mem_en_q};",
+     "ADAPTER_CTRL.DUAL_DIS reads back 0"),
+    ("ev2_no_count", "      anyr_q <= |evr_q | |evr2_q;", "      anyr_q <= |evr_q;",
+     "R errors of the read-only bridges not in ADAPTER_STATUS bit 0"),
 ]
 
 

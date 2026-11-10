@@ -122,7 +122,7 @@ def test_isa_structs():
             assert sd.unpack(sd.pack(**vals)) == vals
     assert isa.DMA_CMD_T.width == 101 and isa.QACT_CMD_T.width == 133
     assert isa.MVM_CMD_T.width == 360
-    assert isa.MVM_CCMD_T.width == 137 and isa.MVM_BCLINE_T.width == 527
+    assert isa.MVM_CCMD_T.width == 138 and isa.MVM_BCLINE_T.width == 527
     assert isa.MVM_FCMD_T.width == 137 and isa.MVM_BEAT_T.width == 1175
     assert isa.unpack_array(isa.pack_array([-1, 5, -128, 127], 8), 4, 8, signed=True) == [-1, 5, -128, 127]
     assert isa.insn_bytes(isa.enc_mvm(1, 2, 3, 4, 5, 256, 3, 7, acc=1)) == struct.pack(

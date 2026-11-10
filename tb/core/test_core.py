@@ -39,6 +39,13 @@ core_m7 the production image tsr-fw.elf (build/dev/fw) on the RTL Ibex runs an o
             trace writer into a 64-line ring): every history entry (the runtime's QCLEAR and the layer's ops with
             their push PCs and dependencies), the trace records without their times and the counters equal the
             simulator's.
+Dual weight stream (MVM_DUAL 1, docs/rtl-mvm.md §15): TB_CORE_DUAL=1 makes the bench build the core with the second read-only
+port per channel (mb_rd_*), model that port on the same DRAM image with its own random latency and back-pressure
+(attach_port_b), set CAPS bit 16 in the expected identification registers and check that port B carries weight beats and
+nothing else when the MVMs run as two streams (TB_CORE_DUAL_EN=0 drives cfg_dual_en low: results unchanged, port B silent).
+test_core_k4full_dual, test_core_k4_fast_dual, test_core_k4min_dual, test_core_m6_k4min_dual and test_core_m7_dual run the
+streams of the single-stream tests of the same name on those builds against the same simulator oracle; the *_off tests run
+them with the run-time enable low.
 Mutations (opt-in, TSR_CORE_MUTANTS=1, -m slow or -k mutants): test_core_mutants rebuilds the bench
 with one wiring mutant of rtl/core/tsr_core.sv / tsr_core_dp.sv at a time (8); each must fail core_smoke.
 
@@ -124,6 +131,37 @@ if cocotb is not None:
             d.csr_valid.value = 0
             return v
 
+    def attach_port_b(dut, mem, num_ch, addr_w, limit_beats, rd_outstanding, seed):
+        """MVM_DUAL builds (TB_CORE_DUAL=1): drive cfg_dual_en (TB_CORE_DUAL_EN, default 1) and model the read-only
+        port B (mb_rd_*) of every channel on the same DRAM image as the main model, with its own random latency and
+        back-pressure. Returns the model, or None for a core without the second port."""
+        dut.cfg_dual_en.value = int(os.environ.get("TB_CORE_DUAL_EN", "1"))
+        if os.environ.get("TB_CORE_DUAL", "0") != "1":
+            return None
+        memb = MemModel(dut, num_ch=num_ch, addr_w=addr_w, seed=seed + 101, limit_beats=limit_beats,
+                        rd_outstanding=rd_outstanding, prefix="mb_", read_only=True, wr_order="any", name="memb")
+        memb.share_image(mem)
+        memb.clear_tracking()
+        memb.start()
+        return memb
+
+    def check_port_b(dut, memb, num_ch, errs, expect_traffic):
+        """The port B model saw no protocol violation and no traffic in flight at the end; its weight beats are present
+        (expect_traffic True) or absent (False: the run-time enable was low); None: no assertion."""
+        if memb is None:
+            return
+        memb.check(idle=True)
+        beats = [memb.src_beats[c] for c in range(num_ch)]
+        ws = sum(b[2] for b in beats)
+        other = sum(b[0] + b[1] + b[3] for b in beats)
+        dut._log.info("port B read beats per channel (AUX, DMA, WS): %s", beats)
+        if other:
+            errs.append("port B carried %d beats that are not weight beats" % other)
+        if expect_traffic and ws == 0:
+            errs.append("port B carried no weight beat although the MVMs run as two streams")
+        if expect_traffic is False and ws:
+            errs.append("port B carried %d weight beats with the dual stream off" % ws)
+
     @cocotb.test()
     async def core_smoke(dut):
         seed = int(os.environ.get("TSR_SEED", "1"), 0)
@@ -149,6 +187,8 @@ if cocotb is not None:
             mem.load(ch, off, data)
         mem.clear_tracking()
         mem.start()
+        memb = attach_port_b(dut, mem, C.CFG["num_ch"], C.CFG["addr_beat_w"], C.CFG["ch_bytes"] // 64,
+                             C.CFG["rd_outstanding"], seed)
         await ClockCycles(dut.clk, 30)
         dut.rst_rv_n.value = 1
         dut.rst_n.value = 1
@@ -228,6 +268,8 @@ if cocotb is not None:
             assert mem.written[0] and mem.written[3], "DMA must write both outer DDR channels"
             dut._log.info("K4 locality read beats per channel/source: %s", beats)
         mem.check(idle=True)
+        # the MUL_MAT stream has T = 2: two weight streams when 2 <= T_MAX / 2 and the run-time enable is on
+        check_port_b(dut, memb, C.CFG["num_ch"], errs, C.TMAX >= 4 and os.environ.get("TB_CORE_DUAL_EN", "1") == "1")
         dut._log.info("RTL: firmware DONE %.1f us after RV_RUN (~%d core cycles); simulator: %d instructions, "
                       "%d core cycles to DONE + idle; RT_INFO %#x, LCQ_WR %d, LOG_WR %d, Q_DONE %s",
                       t_run, cyc, sim["instret"], sim["cycles"], regs[TT.CSR_RT_INFO], regs[TT.CSR_LCQ_WR],
@@ -262,6 +304,8 @@ if cocotb is not None:
             mem.load(ch, off, data)
         mem.clear_tracking()
         mem.start()
+        memb = attach_port_b(dut, mem, C.CFG["num_ch"], C.CFG["addr_beat_w"], C.CFG["ch_bytes"] // 64,
+                             C.CFG["rd_outstanding"], seed)
         await ClockCycles(dut.clk, 30)
         dut.rst_rv_n.value = 1
         dut.rst_n.value = 1
@@ -284,6 +328,7 @@ if cocotb is not None:
             assert mem.written[0] and mem.written[3], "DMA must write both outer DDR channels"
             dut._log.info("K4 locality read beats per channel/source: %s", beats)
         mem.check(idle=True)
+        check_port_b(dut, memb, C.CFG["num_ch"], errs, C.TMAX >= 4 and os.environ.get("TB_CORE_DUAL_EN", "1") == "1")
         dut._log.info("DB: %d history entries, %d trace records, stops at pidx %s, TBP hits %s",
                       len(rtl["hist"]), len(rtl["trw"]), [x[TT.CSR_DBG_STOP_PIDX] for x in rtl["stops"]],
                       rtl["db_final"][TT.CSR_DBG_TBP_HITS(0)])
@@ -315,6 +360,7 @@ if cocotb is not None:
             mem.load(ch, beat * 64, data[off:off + n])
         mem.clear_tracking()
         mem.start()
+        memb = attach_port_b(dut, mem, cfg["num_ch"], cfg["addr_beat_w"], cfg["ch_bytes"] // 64, 16, seed)
         check_masked = os.environ.get("TB_M7_CHECK_MASKED_KVST") == "1"
         saw_kvst = False
         if check_masked:
@@ -479,6 +525,10 @@ if cocotb is not None:
             if stray:
                 errs.append("DRAM ch%d: %d beats written outside the outputs and planes (first %s)" % (c, len(stray), stray[:8]))
         mem.check(idle=True)
+        # the M7 cases run decode with T = 1 (two streams when T_MAX >= 2): port B must carry weight beats then
+        en = os.environ.get("TB_CORE_DUAL_EN", "1") == "1"
+        check_port_b(dut, memb, cfg["num_ch"], errs, False if not en else
+                     (True if cfg["t_max"] >= 2 and "decode" in Path(os.environ["TB_M7_DIR"]).name else None))
         if check_masked:
             partial = sum(mask != 0xFFFF for channel in mem.write_masks for _, mask in channel)
             assert saw_kvst and partial, "KVST must commit a partial mask through the core"
@@ -598,7 +648,8 @@ def test_core(cfg):
     _run(seed=seed + int(os.environ.get("TSR_SEED", "1"), 0) - 1, rv_ps=rv_ps)   # --tsr-seed shifts all
 
 
-def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu=False, rv_local=False, fast_clk=False):
+def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu=False, rv_local=False, fast_clk=False,
+            dual=False, dual_en=True):
     """core_m7 of one case: the scenario from the simulator, the RTL core built with its configuration
     (lane_pipe: VU_LANE_PIPE, the k4 bitstream's register stages around the VU lanes)."""
     from common.runner import run
@@ -620,13 +671,16 @@ def _run_m7(case, seed=1, rv_ps=6000, mut=None, lane_pipe=0, ddr_pipe=0, half_vu
         # the cluster reset copies (RST_PIPE 3); the VU and the AT units are in the core
         params.update(RV_LOCAL_TRANSPORT=1, RST_PIPE=3, XSLR_REG=1)
     env = {"TB_M7_ELF": str(C.M7_ELF), "TB_M7_DIR": str(d), "TB_CORE_RV_PS": str(rv_ps)}
+    if dual:
+        params["MVM_DUAL"] = 1
+        env.update(TB_CORE_DUAL="1", TB_CORE_DUAL_EN="1" if dual_en else "0")
     if half_vu:
         params.update(VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4)
         env.update(TB_CORE_VU_FRONT="8", TB_CORE_VU_BACK="4")
     if mut:
         env["TB_M7_LIMIT"] = "300000"                 # core cycles to wait for the answer (the decode case needs ~60 K)
     run("tsr_core", __name__, parameters=params, sources=_sources(mut),
-        name=("core_m7_fast" if fast_clk else "core_m7_rv_local" if rv_local else "core_m7_half_vu" if half_vu else
+        name=("core_m7_dual%d" % dual_en if dual else "core_m7_fast" if fast_clk else "core_m7_rv_local" if rv_local else "core_m7_half_vu" if half_vu else
               ("core_m7" if not lane_pipe else "core_m7_pipe%d" % lane_pipe)) if not mut else "core_m7_mut_" + mut,
         seed=seed, testcase=["core_m7"], extra_env=env, timescale=("1ps", "1ps"))
 
@@ -666,6 +720,21 @@ def test_core_m7_fast(m7case):
             half_vu=True)
 
 
+def test_core_m7_dual(m7case):
+    """Production decode / prefill with the dual weight stream on the packaged control plane (MVM_DUAL 1, T_MAX of the
+    case): every comparison of core_m7 unchanged (output rows and KV planes bit for bit, Q_DONE / Q_ISSUED / Q_ERR_CODE,
+    the s registers, the PERF event counters, the history and the trace records). The decode case runs its weight MVMs
+    as two streams: port B carries weight beats and nothing else."""
+    _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0), rv_local=True, lane_pipe=2, ddr_pipe=1, half_vu=True,
+            dual=True)
+
+
+def test_core_m7_dual_off(m7case):
+    """core_m7_dual with cfg_dual_en low: results unchanged and port B silent."""
+    _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0), rv_local=True, lane_pipe=2, ddr_pipe=1, half_vu=True,
+            dual=True, dual_en=False)
+
+
 def test_core_m7_ddr_local(m7case):
     """DMA/KVST and trace through the new ch0 boundary, with ch1 bypass and banked VU lanes.
 
@@ -675,7 +744,7 @@ def test_core_m7_ddr_local(m7case):
     _run_m7(m7case, seed=int(os.environ.get("TSR_SEED", "1"), 0), lane_pipe=2, ddr_pipe=1)
 
 
-def _run_m6_k4min(case, seed=1, rv_ps=6000):
+def _run_m6_k4min(case, seed=1, rv_ps=6000, dual=False, dual_en=True):
     """The production image on the RTL core of the reduced card image (tsr_u200_k4 / core_ooc.sh k4min): an op
     list of MUL_MAT records through the graph kernel on four clusters with T_MAX 8, CAPS 0, no VU queue, no trace
     writer or history. Compared with the simulator's run of the same launch as in core_m7 (the DONE record, every
@@ -693,12 +762,29 @@ def _run_m6_k4min(case, seed=1, rv_ps=6000):
                   HAS_ATT=0, HAS_TRW=0, HIST_DEPTH=0, MVM_BC_PIPE=2, MVM_RES_PIPE=2, RST_PIPE=3, SPM_RD_LAT=4,
                   MVM_MAC_LAT=9)
     env = {"TB_M7_ELF": str(C.M7_ELF), "TB_M7_DIR": str(d), "TB_CORE_RV_PS": str(rv_ps), "TB_CORE_PS": "4000"}
-    run("tsr_core", __name__, parameters=params, sources=_sources(), name="core_m6_k4min", seed=seed,
+    if dual:
+        params["MVM_DUAL"] = 1
+        env.update(TB_CORE_DUAL="1", TB_CORE_DUAL_EN="1" if dual_en else "0")
+    run("tsr_core", __name__, parameters=params, sources=_sources(),
+        name="core_m6_k4min" if not dual else "core_m6_k4min_dual%d" % dual_en, seed=seed,
         testcase=["core_m7"], extra_env=env, timescale=("1ps", "1ps"))
 
 
 def test_core_m6_k4min(m6case):
     _run_m6_k4min(m6case, seed=int(os.environ.get("TSR_SEED", "1"), 0))
+
+
+def test_core_m6_k4min_dual(m6case):
+    """The reduced card image with the dual weight stream (MVM_DUAL 1, T_MAX 8: dual for T <= 4): every comparison of
+    test_core_m6_k4min unchanged (output rows bit for bit, the identification registers with CAPS bit 16, Q_DONE /
+    Q_ISSUED / Q_ERR_CODE, the PERF event counters, no DRAM write outside the outputs), the read-only port B model
+    protocol-checked on its own random latency and back-pressure."""
+    _run_m6_k4min(m6case, seed=int(os.environ.get("TSR_SEED", "1"), 0), dual=True)
+
+
+def test_core_m6_k4min_dual_off(m6case):
+    """The same build with cfg_dual_en low: results unchanged, no read on port B."""
+    _run_m6_k4min(m6case, seed=int(os.environ.get("TSR_SEED", "1"), 0), dual=True, dual_en=False)
 
 
 def _run_db(seed=1, rv_ps=6000, mut=None):
@@ -792,6 +878,10 @@ if pytest is not None:
     test_core = pytest.mark.parametrize("cfg", list(RUNS))(test_core)
     test_core_w4b_mutants = pytest.mark.slow(test_core_w4b_mutants)
     test_core_m6_k4min = pytest.mark.parametrize("m6case", list(C.M6_CASES))(test_core_m6_k4min)
+    test_core_m6_k4min_dual = pytest.mark.parametrize("m6case", list(C.M6_CASES))(test_core_m6_k4min_dual)
+    test_core_m6_k4min_dual_off = pytest.mark.parametrize("m6case", list(C.M6_CASES))(test_core_m6_k4min_dual_off)
+    test_core_m7_dual = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_dual)
+    test_core_m7_dual_off = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_dual_off)
     test_core_m7 = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7)
     test_core_m7_lane_pipe = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_lane_pipe)
     test_core_m7_half_vu = pytest.mark.parametrize("m7case", list(C.M7_CASES))(test_core_m7_half_vu)
@@ -913,3 +1003,53 @@ def test_core_k4min():
         seed=int(os.environ.get("TSR_SEED", "1"), 0), testcase=["core_smoke"],
         extra_env={"TB_CORE_ELF": str(elf), "TB_CORE_RV_PS": "6000", "TB_CORE_PS": "4000",
                    "TB_CORE_NCH": "4", "TB_CORE_TMAX": "8", "TB_CORE_NOVU": "1"}, timescale=("1ps", "1ps"))
+
+
+def _run_k4_dual(name, dual_en=True, fast=False, k4min=False, seed=None):
+    from common.runner import run
+    elf = C.build_fw(FW_OUT)
+    if k4min:
+        params = dict(C.PARAMS, NUM_CH=4, T_MAX=8, RV_LOCAL_TRANSPORT=1, HAS_VU=0, HAS_ATT=0, HAS_TRW=0, HIST_DEPTH=0,
+                      MVM_BC_PIPE=2, MVM_RES_PIPE=2, RST_PIPE=3, SPM_RD_LAT=4, MVM_MAC_LAT=9)
+        env = {"TB_CORE_NCH": "4", "TB_CORE_TMAX": "8", "TB_CORE_NOVU": "1"}
+        tests = ["core_smoke"]
+    else:
+        params = dict(C.PARAMS, NUM_CH=4, T_MAX=4, DDR_LOCAL_PIPE=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
+                      RV_LOCAL_TRANSPORT=1, XSLR_REG=1, MVM_BC_PIPE=2, MVM_RES_PIPE=2, VU_LANE_PIPE=2,
+                      VU_FRONT_LANES=8, VU_EXP_LANES=8, VU_BACK_LANES=4, RST_PIPE=3, SPM_RD_LAT=4, MVM_MAC_LAT=9)
+        if fast:
+            params["FAST_CLK"] = 1
+        env = {"TB_CORE_NCH": "4", "TB_CORE_TMAX": "4", "TB_CORE_VU_FRONT": "8", "TB_CORE_VU_BACK": "4"}
+        tests = ["core_smoke", "core_db"]
+    params["MVM_DUAL"] = 1
+    env.update(TB_CORE_ELF=str(elf), TB_CORE_RV_PS="6000", TB_CORE_PS="4000", TB_CORE_DUAL="1",
+               TB_CORE_DUAL_EN="1" if dual_en else "0")
+    run("tsr_core", __name__, parameters=params, sources=_sources(), name=name,
+        seed=seed if seed is not None else int(os.environ.get("TSR_SEED", "1"), 0), testcase=tests, extra_env=env,
+        timescale=("1ps", "1ps"))
+
+
+def test_core_k4full_dual():
+    """The full-feature card image with the dual weight stream (tsr_u200_k4: MVM_DUAL 1): everything of
+    test_core_k4full. The firmware's MUL_MAT stream has T = 2 = T_MAX / 2, so both MVMs (Q8_0 and Q4_K, N 40 / 24) run as two
+    weight streams on all four clusters; core_smoke and core_db must equal the simulator in every DRAM region, the
+    identification registers (CAPS bit 16 set) and the final CSR state, core_db in the stop state, the history and the
+    trace records too. The port B model has its own random latency and back-pressure on the same DRAM image, is
+    protocol-checked, and has to carry weight beats and nothing else."""
+    _run_k4_dual("core_k4full_dual")
+
+
+def test_core_k4full_dual_off():
+    """test_core_k4full_dual with cfg_dual_en low: the same results from the single stream, port B silent."""
+    _run_k4_dual("core_k4full_dual_off", dual_en=False)
+
+
+def test_core_k4_fast_dual():
+    """test_core_k4full_dual with FAST_CLK 1 (the 250 MHz stages of the card image)."""
+    _run_k4_dual("core_k4fast_dual", fast=True)
+
+
+def test_core_k4min_dual():
+    """The reduced card image with the dual weight stream and T_MAX 8 (TH 4): core_smoke's stream (T = 2) runs as two
+    streams on four clusters, results equal the simulator's."""
+    _run_k4_dual("core_k4min_dual", k4min=True)

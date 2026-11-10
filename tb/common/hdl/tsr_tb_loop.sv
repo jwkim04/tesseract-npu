@@ -204,7 +204,7 @@ module tsr_tb_loop
   assign rows_c_probe     = tsr_mvm_rows_c(ccmd_in.n, ccmd_in.rows_per_ch, 64'(ccmd_in.d_lines) * 64'(ccmd_in.rows_per_ch));
 
   wire unused_ok = &{1'b0, clk, rst_n, mvm_in.fmt, mvm_in.acc, mvm_in.dst_line, mvm_in.x_line,
-                     ccmd_in.fmt, ccmd_in.w_off, bcline_in.data[511:32], fcmd_in.fmt, fcmd_in.k,
+                     ccmd_in.fmt, ccmd_in.w_off, ccmd_in.dual, bcline_in.data[511:32], fcmd_in.fmt, fcmd_in.k,
                      fcmd_in.w_off, beat_in.sc[2:0], beat_in.m[7:6], beat_in.m[4:0], beat_in.w[126:1],
                      mvm_in.w_off, mvm_in.k, mvm_in.t, mvm_in.dst_stride, mvm_in.y_lines,
                      mvm_in.rows_per_ch, mvm_in.qa_lines, mvm_in.local_scale, mvm_in.local_softcap,

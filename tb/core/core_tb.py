@@ -42,7 +42,10 @@ RT_DONE = 0xD0E
 # TB_CORE_NOVU=1: the core of the reduced card image (HAS_VU 0, HAS_ATT 0): CAPS 0, no VU queue.
 NOVU = os.environ.get("TB_CORE_NOVU", "0") == "1"
 GDN = os.environ.get("TB_CORE_GDN", "0") == "1"          # the core has the GDN op (HAS_GDN 1: CAPS bit 8)
-CAPS_U200 = 0x00 if NOVU else 0x21 | (0x100 if GDN else 0)
+# TB_CORE_DUAL=1: the core has MVM_DUAL 1 (CAPS bit 16, docs/rtl-mvm.md §15); TB_CORE_DUAL_EN=0 drives cfg_dual_en low
+DUAL = os.environ.get("TB_CORE_DUAL", "0") == "1"
+CAPS_DUAL = 1 << 16
+CAPS_U200 = (0x00 if NOVU else 0x21 | (0x100 if GDN else 0)) | (CAPS_DUAL if DUAL else 0)
 NCH = int(os.environ.get("TB_CORE_NCH", "2"))
 TMAX = int(os.environ.get("TB_CORE_TMAX", "2"))
 CFG = S.config(num_ch=NCH, t_max=TMAX, k_max=4096, spm_bytes=256 * 1024, ch_bytes=1 << 30, addr_beat_w=24,
@@ -178,6 +181,8 @@ def final_regs():
 def expected_id(off: int, simulator_value: int) -> int:
     # The simulator keeps the default timing model. Hardware lane-count fields
     # describe the selected implementation; all other identity bits still match.
+    if off == TT.CSR_CAPS and DUAL:
+        return simulator_value | CAPS_DUAL
     if off == TT.CSR_CFG3 and "TB_CORE_VU_FRONT" in os.environ:
         front = int(os.environ["TB_CORE_VU_FRONT"])
         back = int(os.environ["TB_CORE_VU_BACK"])

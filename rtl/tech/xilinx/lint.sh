@@ -238,9 +238,9 @@ fi
 # without Vivado). Verilator and XSim accept a variable written by two blocks, Vivado keeps one driver.
 # the DB block, the VU / AT checker classes and KVST as well
 # (found by the first whole-core synthesis, tb/core/viv/core_ooc.sh k1: tsr_dma_kvst wrote five registers from two
-# blocks); the GDN unit (VU §7.12) as well
+# blocks); the GDN unit (VU §7.12) as well, and the MVM unit with the dual weight stream (docs/rtl-mvm.md §15)
 "$ROOT/rtl/tech/xilinx/synth_check.sh" tsr_issue tsr_csr tsr_dbg tsr_chk_at tsr_vu_chk "tsr_dma:HAS_KVST=1" \
-    "tsr_vu:HAS_TOPK=1,HAS_DQROW=1" "tsr_mvm:HAS_ATT=1,NUM_CH=2,T_MAX=2" tsr_vu_gdn "tsr_vu:HAS_GDN=1,FRONT_LANES=8,EXP_LANES=8,BACK_LANES=4,LANE_PIPE=2"
+    "tsr_vu:HAS_TOPK=1,HAS_DQROW=1" "tsr_mvm:HAS_ATT=1,NUM_CH=2,T_MAX=2" "tsr_mvm:HAS_ATT=1,NUM_CH=2,T_MAX=4,DUAL=1" tsr_vu_gdn "tsr_vu:HAS_GDN=1,FRONT_LANES=8,EXP_LANES=8,BACK_LANES=4,LANE_PIPE=2"
 fails=$((fails + $?))
 
 # ---- tb/tech HDL with both targets (each toplevel with the tech files of one target only) ----

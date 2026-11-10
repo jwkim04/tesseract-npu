@@ -61,7 +61,7 @@ class SimOpts(C.Structure):
     _fields_ = [("dram_dir", C.c_char_p), ("threads", u32), ("sched", C.c_char_p), ("rv_ratio", C.c_double),
                 ("race", u32), ("log", vp), ("q_depth", C.POINTER(u8)), ("itcm_bytes", u32),
                 ("dtcm_bytes", u32), ("log_flags", u32), ("trace_dir", C.c_char_p), ("rv_core", C.c_char_p),
-                ("vu_timing", C.c_char_p)]
+                ("vu_timing", C.c_char_p), ("mvm_dual", u32), ("mem_rate", C.c_double)]
 
 
 CW_FN = C.CFUNCTYPE(C.c_int, vp, C.c_int, u32, C.POINTER(u32))
