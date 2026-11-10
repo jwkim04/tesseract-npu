@@ -3,7 +3,7 @@
 # it as run.impl_1.STEPS.ROUTE_DESIGN.TCL.POST, so it runs in the implementation run after route_design.
 # The kernel's constraints are the IP's own (rtl/ctrl/viv/tsr_ctrl_cdc.xdc, packaged by
 # rtl/platform/alveo_xrt/package_xo.tcl); this checks that they took effect on the linked design: it finds the
-# kernel's two clocks from the clock pins of the synchroniser registers (whatever the platform calls them),
+# kernel's two clocks from the clock pins of the synchronizer registers (whatever the platform calls them),
 # applies the report_cdc waivers (rtl/ctrl/viv/tsr_cdc_waivers.tcl: not constraints, so not in the IP) and
 # runs rtl/ctrl/viv/cdc_gate.tcl: report_cdc without Critical / Warning rows between the clocks,
 # report_clock_interaction showing "Max Delay Datapath Only" in both directions. The reports go to the

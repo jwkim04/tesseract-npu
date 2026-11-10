@@ -6,7 +6,7 @@
 // rtl/filelist_xilinx.f in place of rtl/tech/generic.
 //
 // Contract: identical to rtl/tech/generic/tsr_mac_lane.sv (same module name, parameters, ports,
-// latency and reset / ce behaviour; tb/tech compares the two cycle by cycle, out_valid and y in
+// latency and reset / ce behavior; tb/tech compares the two cycle by cycle, out_valid and y in
 // every cycle):
 //   y[t] = sum_{i < N} sext(w[i]) * sext(x[t][i])   (exact, two's complement, SUM_W bits)
 //   fixed latency LAT >= 1 counted in edges with ce = 1, every register updates only at such
@@ -26,7 +26,7 @@
 //   so no fabric logic is spent on it. An odd T leaves token T - 1 alone in its slot: M = x w,
 //   P = M. DSPs per instance: N x ceil(T / 2) (N = 32: T 1 / 2 / 3 / 8 -> 32 / 32 / 64 / 128).
 //   Vivado 2024.2 (tb/tech/viv/tech_ooc.tcl, xcu200): exactly that many DSP48E2, the packed ones
-//   as (C + ((D + A)' * B')')' with AMULTSEL = AD; the synthesised netlists match the generic
+//   as (C + ((D + A)' * B')')' with AMULTSEL = AD; the synthesized netlists match the generic
 //   lane in post-synthesis simulation (tb/tech/viv/net_sim.sh).
 //
 // Pipeline: the logic layers are [AD] pre-adder -> [M] multiplier -> [P] post-adder ->

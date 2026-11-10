@@ -83,7 +83,7 @@ Units of host work are launches. Nothing the host does starts a tile op directly
 
 One process owns the device: `xrt::ip` opens an exclusive compute-unit context by default. Tools that
 must observe a running process (GDB, profiling) run inside it as threads of the transport. DB
-designs the in-process GDB RSP server. The transport serialises CSR accesses with one mutex, and XRT
+designs the in-process GDB RSP server. The transport serializes CSR accesses with one mutex, and XRT
 adds its own.
 
 ---
@@ -198,7 +198,7 @@ them by more than one step at a time:
 - `LOG_PUSH` words cross through a small CDC FIFO. `LOG_FREE` = `LOG_DEPTH` − (LOG_WR_rv − LOG_RD_snap),
   where LOG_WR_rv counts accepted `LOG_PUSH` stores in `clk_rv` and LOG_RD_snap is the core-domain
   `LOG_RD` fetched by the same handshake as the `LOG_FREE` read;
-- the interrupt levels `irq_fast[2]` and `[3]` (§4.5) are synchronised core-domain booleans. A late or
+- the interrupt levels `irq_fast[2]` and `[3]` (§4.5) are synchronized core-domain booleans. A late or
   stale level only causes a late or spurious wake-up, after which the runtime re-reads the register.
 
 So every RISC-V-side value may lag the core-domain value in the safe direction (fewer descriptors,
@@ -272,15 +272,15 @@ Launch STATUS (r0[15:8] of DONE):
 | 2 | BAD_DESC | the descriptor was refused (§4.3); the kernel did not run |
 | 3 | KERNEL_ERR | RET < 0 (the kernel rejected its arguments or failed in software); no tile error |
 | 4 | TRAP | used only in TRAP records |
-| 5 | ABORTED | cancelled: the launch was queued and is answered without running (ERR_CODE 0), or the first error is ABORTED (ERR_CODE 8) |
+| 5 | ABORTED | canceled: the launch was queued and is answered without running (ERR_CODE 0), or the first error is ABORTED (ERR_CODE 8) |
 | 6 | PLAT_ERR | `STATUS.PLAT_ERR` was set when the runtime answered: the platform reported an AXI error, so outputs may be wrong |
-| 7 | STOPPED | the kernel honoured a soft stop (§4.9) and returned early; RET is kernel-defined |
+| 7 | STOPPED | the kernel honored a soft stop (§4.9) and returned early; RET is kernel-defined |
 | 8–255 | reserved | |
 
 Precedence when several codes apply: TRAP > BAD_DESC > ABORTED > TILE_ERR > PLAT_ERR > STOPPED >
 KERNEL_ERR > OK. ERR_CODE (r0[23:16]) is the code of the first error whatever the status, and 0 when
 there is none. A cancel that lands after the kernel's work has completed but before the answer may
-still report ABORTED. The host treats the outputs of any cancelled launch as undefined.
+still report ABORTED. The host treats the outputs of any canceled launch as undefined.
 
 ### 4.5 RISC-V side (control window offsets 0x200–0x2FC, owned by EX)
 
@@ -330,7 +330,7 @@ on them (contracts in SW §7):
   an event. Descriptors pushed before HELLO stay queued and are served after it.
 - R2 Take. Wait for `LQ_AVAIL` ≠ 0 (WFI on `irq_fast[2]`). Copy `LQ_HEAD_W*` and `LQ_HEAD_SEQ` into
   DTCM, then write `LQ_POP`.
-- R3 Cancelled or stopped before start. If CANCEL_VALID and the sequence is covered by `LQ_CANCEL`, or
+- R3 Canceled or stopped before start. If CANCEL_VALID and the sequence is covered by `LQ_CANCEL`, or
   STOP_VALID and it is covered by `LQ_STOP` (§4.9), answer DONE / ABORTED (ERR_CODE 0) without
   running.
 - R4 Validate. BAD_DESC → answer. PING → answer PONG. The validation runs before R3's coverage check:
@@ -564,7 +564,7 @@ moments (they are diagnostic only).
 | Offset | Name | Content |
 |---|---|---|
 | 0xE00 + 4u | `Q_DONE[u]` | `DONE_SEQ[u]`, 28 bits |
-| 0xE20 + 4u | `Q_ISSUED[u]` | `ISSUED_SEQ[u]`, 28 bits (synchronised copy) |
+| 0xE20 + 4u | `Q_ISSUED[u]` | `ISSUED_SEQ[u]`, 28 bits (synchronized copy) |
 | 0xE40 + 4u | `Q_STATE[u]` | [4:0] entries in the queue, bit5 RUNNING (the unit holds an op), bit6 DEP_WAIT (the head waits for deps), bit7 HELD, bit8 ERR (error state), bit9 HUNG (watchdog), [31:16] 0 |
 | 0xE60 | `Q_FIFO` | [7:0] issue-FIFO entries waiting for the dispatcher |
 | 0xE64 | `Q_PIDX` | push index the dispatcher assigns to its next ticketed entry (= `DBG_NEXT_PIDX`); it lags the RISC-V's `ISSUE_PIDX` (CC §5.1) by the issue-FIFO contents, so firmware never uses it |
@@ -584,7 +584,7 @@ One counter space has two gates:
   count then.
 
 Time counters count core cycles with ACTIVE ∧ ¬QHALT. Event counters count with ACTIVE. Counters kept
-in the RISC-V domain count `clk_rv` cycles with a synchronised ACTIVE. `SOFT_RESET` zeroes every
+in the RISC-V domain count `clk_rv` cycles with a synchronized ACTIVE. `SOFT_RESET` zeroes every
 counter and drops the snapshot. With C = `NUM_CH` and X = 5 + 2C (four channels: X = 13):
 
 | Index | Name | Kind | Meaning |
@@ -689,7 +689,7 @@ opcode[7:0]}.
 - VU and AT fix the encodings, the units and the dispatch checks of their ops within these numbers. Any
   further number they need is requested from EX and recorded here.
 - No op may fail after it has started. Every error is found by the dispatch checks (CC §8). Data-dependent
-  conditions, such as NaN or a KV length read from SPM, are defined behaviour (clamping, numeric rules),
+  conditions, such as NaN or a KV length read from SPM, are defined behavior (clamping, numeric rules),
   not run-time errors. VU and AT design their ops under this rule.
 
 ### 7.3 Units
@@ -715,7 +715,7 @@ units a bitstream built. There is no `ISSUE_QMAP` register.
 
 There is one s0–s15 bank (D14). It is written only by VU-queue ops and read by the RISC-V through the
 core window after a join. The one read location is `SREG0`–`SREG15` at core CSR 0x9C0–0x9FC (§5.1):
-host offset 0x9C0 + 4i, RISC-V address 0x2000_1000 + 0x9C0 + 4i. Its initial value and its behaviour
+host offset 0x9C0 + 4i, RISC-V address 0x2000_1000 + 0x9C0 + 4i. Its initial value and its behavior
 across `SOFT_RESET` are VU's. EX's requirement: `SOFT_RESET` does not change it, and a hardware reset
 sets it to +0.0.
 
@@ -842,7 +842,7 @@ reset only, so a debugger stays attached.
 
 ### 8.6 Stuck units, watchdog and recovery
 
-- No forced unit reset. An AXI transaction cannot be cancelled. A unit reset with bursts outstanding
+- No forced unit reset. An AXI transaction cannot be canceled. A unit reset with bursts outstanding
   would let stale read responses reach a reused id, and leave write bursts that the interconnect still
   expects ([platform-u200.md](../platform-u200.md) §5). Recovering from a truly stuck unit therefore
   needs a hardware reset (xclbin reload or `xrt-smi reset`).

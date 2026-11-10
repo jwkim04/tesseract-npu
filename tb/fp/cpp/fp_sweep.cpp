@@ -131,7 +131,7 @@ static uint32_t special_mant(Rng& r) {
     }
 }
 static uint32_t mk(uint32_t s, uint32_t e, uint32_t m) { return (s << 31) | ((e & 0xFF) << 23) | (m & 0x7FFFFF); }
-static uint32_t rnd_any(Rng& r) {           // biased towards special exponents and mantissas
+static uint32_t rnd_any(Rng& r) {           // biased toward special exponents and mantissas
     switch (r.below(4)) {
         case 0: return r.u32();
         case 1: {
@@ -263,7 +263,7 @@ static void gen_pair(Rng& r, int g, bool div, uint64_t k, uint32_t* pa, uint32_t
 //   near      near-equal magnitudes (b = a +- 2^j ulps, across binade boundaries), effective
 //             subtraction 7/8: cancellation of every depth (near path, LZC, exact zero)
 //   ties      RNE ties at every alignment distance d = 1..24 (the bits of b below a's ulp are
-//             exactly 10..0) and their +-1 ulp neighbours, effective add and sub
+//             exactly 10..0) and their +-1 ulp neighbors, effective add and sub
 //   carry     significands near all ones plus a small addend: rounding carry into the next
 //             binade, and exact carries (d = 0 additions)
 //   overflow  exponents 254 / 225..254, effective addition 7/8: rounding to Inf, FLT_MAX ties

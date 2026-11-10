@@ -174,7 +174,7 @@ op mvm_epilogue(spm y, spm q, wref w, uint32_t n, uint32_t k, uint32_t t, uint32
 }
 
 // More than one T-tile (prefill with T > t_tile): the double-buffered tile loop. This path and
-// mulmat_any are [[gnu::cold]] (optimised for size): they run once per prefill op, whose tiles
+// mulmat_any are [[gnu::cold]] (optimized for size): they run once per prefill op, whose tiles
 // carry T_MAX tokens of MVM work each, not once per decode token.
 [[gnu::noinline, gnu::cold]] ticket mulmat_tiles(const mm_op & m, deps d, kind_ctx & ctx) {
     spm_ring & ring = *ctx.ring;

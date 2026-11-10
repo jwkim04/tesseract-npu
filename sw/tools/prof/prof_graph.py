@@ -196,7 +196,7 @@ def sn_lines(gm, sn):
 
 
 def layout(sns, edges, stubs):
-    """Longest-path ranks, barycentre order, columns top to bottom. Returns positions {('n', id): (x, y, w, h)}."""
+    """Longest-path ranks, barycenter order, columns top to bottom. Returns positions {('n', id): (x, y, w, h)}."""
     ids = [("n", s["id"]) for s in sns] + [("s", lab) for (d, lab) in stubs]
     out_edges = collections.defaultdict(list)
     in_edges = collections.defaultdict(list)

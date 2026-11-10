@@ -39,7 +39,7 @@ puts "QOOC wns $wns whs $whs"
 foreach p [get_timing_paths -setup -max_paths 10 -nworst 1] {
   puts "QOOC worst [get_property STARTPOINT_PIN $p] -> [get_property ENDPOINT_PIN $p] slack [get_property SLACK $p] levels [get_property LOGIC_LEVELS $p]"
 }
-# Register-to-register paths only (the I/O budget above is an assumption about the neighbours).
+# Register-to-register paths only (the I/O budget above is an assumption about the neighbors).
 set r2r [get_timing_paths -setup -max_paths 1 -from [all_registers] -to [all_registers]]
 puts "QOOC r2r_wns [get_property SLACK $r2r] [get_property STARTPOINT_PIN $r2r] -> [get_property ENDPOINT_PIN $r2r] levels [get_property LOGIC_LEVELS $r2r]"
 # Worst path per start-point group (the merged scale register would otherwise hide the rest).

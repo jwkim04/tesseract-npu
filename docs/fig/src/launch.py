@@ -43,13 +43,13 @@ LX.append(LX[4] + LW + LG)                            # 1332
 LWS = [LW] * 5 + [UW]
 BX = [x + 12 for x in LX]                              # block x in each lane
 BWS = [w - 24 for w in LWS]                            # block widths 216 / 172
-LC = [x + w / 2 for x, w in zip(LX, LWS)]              # lane centres
+LC = [x + w / 2 for x, w in zip(LX, LWS)]              # lane centers
 L, B, T, M, C, U = range(6)
 LANE_R = LX[U] + UW                                    # 1528
 
 
 class Timeline:
-    """Rows of a swimlane: each row has a centre line; blocks are centred on it, so the hollow
+    """Rows of a swimlane: each row has a center line; blocks are centered on it, so the hollow
     arrows between lanes run straight along it."""
 
     def __init__(self, y):
@@ -65,7 +65,7 @@ class Timeline:
 
 
 def block(f, lane, cy, h, role, label, sub="", **kw):
-    """A block in `lane`, centred on the row line cy."""
+    """A block in `lane`, centered on the row line cy."""
     x = kw.pop("x", BX[lane])
     w = kw.pop("w", BWS[lane])
     f.box(x, cy - h / 2, w, h, role, label, sub=sub, label_role=kw.pop("label_role", "label_s"),
@@ -87,7 +87,7 @@ def phase(f, y, text):
     f.tag(LX[0] + 16, y, text, anchor="start")
 
 
-# ---- layout pass: row centres ------------------------------------------------------------------
+# ---- layout pass: row centers ------------------------------------------------------------------
 PY0 = 56
 HEAD_Y, HEAD_H = PY0 + 24, 88
 tl = Timeline(HEAD_Y + HEAD_H + 40)

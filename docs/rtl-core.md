@@ -9,12 +9,12 @@ verification infrastructure. The MVM unit has its own document, [rtl-mvm.md](rtl
 
 - Language and lint. The RTL is SystemVerilog-2017. `rtl/lint.sh` (Verilator 5 `--lint-only -Wall`, every module as its own top
   plus reduced and edge `tsr_core` configurations, the Xilinx technology wrappers, the XRT platform and the bandwidth kernel)
-  stays clean. There are no blanket waivers. The waivers in `rtl/core` are `UNUSEDPARAM` around the constant catalogues of the
+  stays clean. There are no blanket waivers. The waivers in `rtl/core` are `UNUSEDPARAM` around the constant catalogs of the
   packages (`tsr_pkg`, `tsr_tables_pkg`). Unused inputs are marked with `wire unused_ok = &{1'b0, a, b};`. Vendor primitives and
   attributes appear only in `rtl/tech/<target>/`.
-- Clock and reset. The core has one clock `clk`. `rst_n` is synchronous, active low and already synchronised by the platform
+- Clock and reset. The core has one clock `clk`. `rst_n` is synchronous, active low and already synchronized by the platform
   layer. Every control flop (valid bits, FSM state, counters, pointers) is reset, and wide datapath registers need no reset.
-  Verilator builds randomise initial state (`--x-initial unique`, `+verilator+rand+reset+2`), so missing resets show up in
+  Verilator builds randomize initial state (`--x-initial unique`, `+verilator+rand+reset+2`), so missing resets show up in
   simulation. A reset value must not be loaded from a flop that has no reset: that flop is 0 after configuration on the FPGA and
   random in simulation, so the bug shows only on the card ([platform-u200.md](platform-u200.md) §8.8). `run(rand_reset=0)` or
   `TSR_RAND_RESET=0` starts everything at zero as the FPGA does. The control core runs on a second clock `clk_rv`
@@ -113,7 +113,7 @@ DMA rules are:
   `wr_dat_last` marks each burst's last beat.
 - D4 `done` comes after the last SPM write is accepted (LD) or the last write response (ST).
 
-The DMA uses only the port of channel `ch`. KVST, a store of quantised KV rows (AT), joins LD and ST in the same engine.
+The DMA uses only the port of channel `ch`. KVST, a store of quantized KV rows (AT), joins LD and ST in the same engine.
 
 ### 3.3 `tsr_qact_cmd_t` (dispatcher to `tsr_qact`), 133 bits
 
@@ -186,14 +186,14 @@ shared `s_rd_rsp_data`, `last` and `id` (local id). The write sources are the DM
   never read SPM they did not write, and the array has no reset.
 - Storage is `tsr_sram_1r1w` (`rtl/tech`) with `DEPTH`, `WIDTH`, `RD_LAT >= 1`, byte enables and read-first on same-address
   collision. On the U200 it is URAM288 cascades (512 bits as 8 columns of 72 bits, `ram_style ultra`, 128 URAM at 4 MiB, §12). The
-  generic target is a behavioural array.
+  generic target is a behavioral array.
 - `tsr_spm` has two line-interleaved banks, even and odd lines, each 1R1W, so 2 read and 2 write ports with 128 URAM unchanged. It
   has per-bank round-robin arbitration with a registered one-hot grant (CC §10). The client ports are `TSR_SPM_CL_*`: 0 DMA, 1
   QACT, 2 MVM, 3 RISC-V bridge, 4 VU (both bank ports) and 5 AT (reserved, tied off). Clients 0 to 3 keep a single
   request per cycle through the single-port adapter `tsr_spm_cport`.
 - Per client: `rd_req_valid/ready/line`, with `rd_rsp_valid[c]` exactly `RD_LAT` (= `SPM_RD_LAT`) cycles after the accepting edge
   and the line on the shared `rd_rsp_data`, with no backpressure (R4), and `wr_valid/ready/line/data/be[64]`. `ready` may be low
-  and must be honoured.
+  and must be honored.
 - Ordering. A read accepted after a write was accepted returns the new data, also across internal pipelining. A same-cycle
   same-line read returns old data.
 
@@ -307,7 +307,7 @@ QACT A256 takes about one cycle per source line, and A32 is bound by the per-blo
 
 Critical structures at the U200 core clock, in order:
 
-1. SPM. The generic behavioural `tsr_sram_1r1w` is mapped to block RAM by Vivado, which is far too slow for 4 MiB. The Xilinx
+1. SPM. The generic behavioral `tsr_sram_1r1w` is mapped to block RAM by Vivado, which is far too slow for 4 MiB. The Xilinx
    technology wrapper (selected by `rtl/filelist_xilinx.f`, checked cycle by cycle against the generic one by `tb/tech`) picks the
    RAM style by size. The SPM banks are URAM (`ram_style ultra`, 4 banks of 32 URAM, the read stages absorbed into the URAM output
    and cascade registers), the QACT line buffer, activation buffers and weight FIFOs are block RAM, and tiny test sizes are

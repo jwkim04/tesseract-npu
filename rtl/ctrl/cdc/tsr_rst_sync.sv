@@ -1,4 +1,4 @@
-// tsr_rst_sync.sv — reset synchroniser: asynchronous assert, synchronous deassert (CC §12.2,
+// tsr_rst_sync.sv — reset synchronizer: asynchronous assert, synchronous deassert (CC §12.2,
 // docs/ctrl-riscv.md §7.3).
 //
 // CC §2.2 places it in rtl/tech/<target>/; it lives here until the

@@ -10,7 +10,7 @@ Defaults:
     options and waiver files (.vlt) go into every build's arguments (rtl_args)
   - build directory: $TSR_SIM_BUILD_ROOT (else <repo>/build/cocotb) / <name>_<hash of
     toplevel, parameters, sources, args>; reused across runs (Verilator rebuilds what changed)
-  - make -j$TSR_BUILD_JOBS (default 4), --assert, X randomisation (--x-assign/--x-initial unique,
+  - make -j$TSR_BUILD_JOBS (default 4), --assert, X randomization (--x-assign/--x-initial unique,
     +verilator+rand+reset+2 seeded with the test seed; run(rand_reset=0) or TSR_RAND_RESET=0 starts everything
     at zero, as the FPGA after configuration, 1 at ones),
     default Verilator warnings fatal

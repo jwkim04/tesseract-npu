@@ -2,7 +2,7 @@
 
 Spec rule 3: the bit-exact definitions live once, in tsr_ref.c; the RTL testbenches call them
 through this module. Every f32 value crosses the boundary as its 32-bit pattern (int), never as a
-Python float, so NaN payloads and signalling NaNs reach the C code unchanged:
+Python float, so NaN payloads and signaling NaNs reach the C code unchanged:
   - float arguments are passed as ctypes.c_float objects built from the raw bytes,
   - float results use a c_float subclass as restype (ctypes then returns the raw C object
     instead of converting through a Python float).

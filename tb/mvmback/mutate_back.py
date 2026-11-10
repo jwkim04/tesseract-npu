@@ -11,7 +11,7 @@ The repository is never modified.
     python3 tb/mvmback/mutate_back.py --check          (patterns only)
 
 Results: <scratch dir>/results.json and a table on stdout. One simulation build at a time;
-the per-mutant build directory is deleted afterwards.
+the per-mutant build directory is deleted afterward.
 """
 from __future__ import annotations
 

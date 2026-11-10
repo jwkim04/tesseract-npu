@@ -28,7 +28,7 @@
 //
 // FTZ rule (spec, Implementation clarifications, "FTZ decision point"): the result is RNE in the binary32 exponent range
 // (gradual underflow) and becomes a signed zero iff that rounded result is subnormal, i.e. iff
-// |exact| < 2^-126 - 2^-150. No subnormal is ever produced, so no denormalisation shifter is
+// |exact| < 2^-126 - 2^-150. No subnormal is ever produced, so no denormalization shifter is
 // needed: for a truncated significand s (1.xxx, 24 bits) with biased exponent e,
 //   e >= 1 : normal RNE (may carry into the next binade / overflow to Inf);
 //   e == 0 : exact = 1.s.. * 2^-127 >= 2^-126 - 2^-150  <=>  s == 0xFFFFFF  -> +-2^-126,

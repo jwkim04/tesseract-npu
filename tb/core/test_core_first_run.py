@@ -182,7 +182,7 @@ if cocotb is not None:
         want = os.environ.get("TB_FR_EXPECT", "all_ok")
         if want == "all_ok":
             assert all(ok for ok, _ in results), [(ok, len(d)) for ok, d in results]
-        else:                                  # "first_differs": the card's behaviour
+        else:                                  # "first_differs": the card's behavior
             assert not results[0][0] and all(ok for ok, _ in results[1:]), [(ok, len(d)) for ok, d in results]
 
 

@@ -11,7 +11,7 @@
 //     line-buffered alias), DTCM / ITCM loads and stores, or the instruction class when it makes no
 //     data access (ALU, taken branch / jump, mul, div / rem).
 // fw_prof::diff(big, small) subtracts two snapshots, so a harness that runs a list at two sizes
-// reports the per-op cost of each function and class with the launch's fixed cost cancelled.
+// reports the per-op cost of each function and class with the launch's fixed cost canceled.
 // TSR_FW_PROF_DUMP=<path> makes report() also write the per-PC histogram ("pc cycles count" per
 // line, hex pc) for a per-source-line breakdown with riscv-none-elf-addr2line (fw_prof_lines.py).
 #pragma once

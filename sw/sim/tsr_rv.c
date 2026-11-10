@@ -8,7 +8,7 @@
 // *confirm*: they are checked against the pinned Ibex when it is vendored (CC §3.1) and by the
 // RVFI lockstep bench.
 //
-// Ibex behaviour modelled here (CC §3.2 configuration: WritebackStage 1, BranchTargetALU 1,
+// Ibex behavior modeled here (CC §3.2 configuration: WritebackStage 1, BranchTargetALU 1,
 // RV32MSingleCycle (CC-34; only the cycle tables of tsr_rv.h depend on these three), RV32BNone,
 // PMPEnable 0, MHPMCounterNum 0, DbgTriggerEn 1, DbgHwBreakNum 2, SecureIbex 0, ICache 0):
 //   ISA        RV32I, M, C (no Zcb / Zba / Zbb), Zicsr, Zifencei. FENCE and FENCE.I are no-ops
@@ -34,7 +34,7 @@
 //   Counters   mcycle counts RV cycles (also asleep, stalled and in debug mode: Ibex has no
 //              stopcount and its clock gate is a pass-through on the FPGA, CC §3.1); minstret
 //              counts retired instructions (not trapped ones; program-buffer instructions count,
-//              the debug ROM is not modelled). A CSR write to a counter suppresses that counter's
+//              the debug ROM is not modeled). A CSR write to a counter suppresses that counter's
 //              increment for the writing instruction.
 //   cpuctrlsts sync_exc_seen (bit 6) set by each synchronous exception and cleared by mret;
 //              double_fault_seen (bit 7) set by an exception while sync_exc_seen is set; both
@@ -83,7 +83,7 @@
 //
 // Model-only conventions: the debug ROM's park loop is not interpreted (see tsr_rv.h);
 // x1..x31 reset to 0. Timing: the cycle tables of tsr_rv.h (Ibex "small" and "maxperf", SW §4.2,
-// selected by tsr_rv_set_core) with the two neighbour-dependent penalties computed here: a load
+// selected by tsr_rv_set_core) with the two neighbor-dependent penalties computed here: a load
 // whose rd the next instruction reads (load_use, WritebackStage) and a control transfer to a 32-bit
 // instruction at pc[1] = 1 (target32); both peek at instruction memory without side effects.
 
@@ -655,7 +655,7 @@ static int expand_c(uint32_t c, uint32_t * out) {
 }
 
 // ---------------------------------------------------------------------------
-// Timing penalties that depend on the neighbouring instruction (tsr_rv.h cycle model). They read
+// Timing penalties that depend on the neighboring instruction (tsr_rv.h cycle model). They read
 // the instruction memory without side effects (fetch16) and never change architectural state.
 // ---------------------------------------------------------------------------
 // The (expanded) instruction at pc: 0, or -1 if it cannot be fetched or is not a valid parcel.

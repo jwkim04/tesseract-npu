@@ -27,7 +27,7 @@
 #   tsr_pkg defaults: the U200 bitstream parameters of docs/rtl-mvm.md §14.
 #   Extra arguments go to core_ooc.tcl (synth_only, dcp, from=, floorplan=, NAME=VALUE overrides).
 # Environment: VIVADO_SETTINGS (default /tool/Xilinx/Vivado/2024.2/settings64.sh); TSR_VIVADO_LOCK
-# = a flock file that serialises Vivado runs on a shared host (none by default).
+# = a flock file that serializes Vivado runs on a shared host (none by default).
 # Log: <outdir>/vivado.log; summary lines: grep COOC <outdir>/vivado.log.
 # Examples:
 #   tb/core/viv/core_ooc.sh k4 /tmp/k4s synth_only dcp

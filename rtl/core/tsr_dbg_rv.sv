@@ -10,10 +10,10 @@
 // h_cw_write, on_data, rv_sample, rvwp_apply).
 //
 // Core-domain side (tsr_dbg): rec_wr / rec_wdata write one record per cycle; rec_room = the FIFO
-//   can take a record in the next cycle as well; rec_all = REC_CFG.ALL (synchronised). smp_* and
+//   can take a record in the next cycle as well; rec_all = REC_CFG.ALL (synchronized). smp_* and
 //   wpa_* are tsr_cdc_hs A sides (TIMEOUT 4,096 core cycles; *_local answers at once when clk_rv
 //   is not running). wph_v / wph_mask / wph_addr / wph_halt: one RV-watchpoint event per watched
-//   access (a 16-entry crossing FIFO, including synchroniser credit-return latency; the core
+//   access (a 16-entry crossing FIFO, including synchronizer credit-return latency; the core
 //   side drains one per cycle). dfault: a pulse per double fault. flags (DBG_FLAGS) and
 //   rv_run (CTRL.RV_RUN) cross as levels.
 // clk_rv side: db_req / db_we / db_off / db_wdata from tsr_ctl_win (0x160-0x17C except 0x178,
@@ -36,7 +36,7 @@
 // The halt request of a watchpoint with HALT goes through the core side (tsr_dbg toggles
 //   dbg_halt_tgl): the hart halts a few clk_rv cycles after the access instead of within one
 //   instruction (DB §3.7 *confirm*; a clk_rv-local request needs a tsr_ctrl input).
-// CTRL_SYNC = 1 (clk_rv is clk): one synchroniser stage.
+// CTRL_SYNC = 1 (clk_rv is clk): one synchronizer stage.
 
 module tsr_dbg_rv #(
   parameter int unsigned REC_DEPTH   = tsr_tables_pkg::TSR_REC_DEPTH,
@@ -47,7 +47,7 @@ module tsr_dbg_rv #(
   // ---- core domain (tsr_dbg) ----
   input  logic          clk,
   // rst_n: the core domain's synchronous reset, also the asynchronous input of this module's
-  // clk_rv reset synchroniser (as tsr_ctrl, CC §12.2)
+  // clk_rv reset synchronizer (as tsr_ctrl, CC §12.2)
   /* verilator lint_off SYNCASYNCNET */
   input  logic          rst_n,
   /* verilator lint_on SYNCASYNCNET */
@@ -107,8 +107,8 @@ module tsr_dbg_rv #(
     $fatal(1, "tsr_dbg_rv: REC_DEPTH must be a power of two >= 2");
   end
 
-  // clk_rv reset: the core-domain reset synchronised (CC §12.2, as tsr_ctrl)
-  // The synchroniser starts from a reset flop of its own: a launch flop that also drives core logic
+  // clk_rv reset: the core-domain reset synchronized (CC §12.2, as tsr_ctrl)
+  // The synchronizer starts from a reset flop of its own: a launch flop that also drives core logic
   // would be a fan-out to the destination clock (report_cdc CDC-11).
   logic rst_rv_n;
   (* keep = "true" *) logic rst_src_q;
@@ -119,7 +119,7 @@ module tsr_dbg_rv #(
   // Levels into clk_rv: DBG_FLAGS, RV_RUN; REC_CFG.ALL into the core
   // ---------------------------------------------------------------------------------------------
   // rv_run and flags are combinational in the core (registers ORed, gated): they enter the
-  // synchroniser from a flop of their own (report_cdc CDC-10); the bits are independent levels.
+  // synchronizer from a flop of their own (report_cdc CDC-10); the bits are independent levels.
   logic [4:0] flags_rv;
   logic       run_rv;
   (* dont_touch = "true" *) logic [5:0] lv_q;   // a flop of its own: not merged with tsr_ctrl_cdc's copy of rv_run / dbg_stop (CDC-11)

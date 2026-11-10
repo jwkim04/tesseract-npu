@@ -17,7 +17,7 @@
 
 package tsr_pkg;
 
-  // This package is the shared catalogue of ISA/CSR constants: no single module uses all of them,
+  // This package is the shared catalog of ISA/CSR constants: no single module uses all of them,
   // so Verilator's UNUSEDPARAM is disabled for this package only (the only waiver in rtl/core).
   /* verilator lint_off UNUSEDPARAM */
 

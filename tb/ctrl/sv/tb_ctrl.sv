@@ -112,9 +112,9 @@ module tb_ctrl
   logic                      log_valid, log_ready;
   logic [31:0]               log_data;
   logic [63:0]               mtime;
-  logic [5:0]                if_count;          // Q_FIFO (tsr_csr's, not modelled by the stub)
+  logic [5:0]                if_count;          // Q_FIFO (tsr_csr's, not modeled by the stub)
   wire unused_if_count = &{1'b0, if_count};
-  logic                      db_req, db_we;     // DB window: not modelled by the stub
+  logic                      db_req, db_we;     // DB window: not modeled by the stub
   logic [11:0]               db_off;
   logic [31:0]               db_wdata;
   wire unused_db = &{1'b0, db_req, db_we, db_off, db_wdata};

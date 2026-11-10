@@ -300,7 +300,7 @@ def checks_list(model):
 def factor_rows(model):
     s = model["summary"]
     if "H" not in s:
-        return "<p class=\"note\">The utilisation split needs the host timestamps of two consecutive decode launches.</p>"
+        return "<p class=\"note\">The utilization split needs the host timestamps of two consecutive decode launches.</p>"
     rows = [("(1 − H)  device busy", 1 - s["H"], "H = %s: wall time with no launch active (host work, the PCIe round trip, sampling)" % pct(s["H"])),
             ("(1 − G)  MVM busy in the launch", 1 - s["G"], "G = %s: device time outside the MVM (LD, QACT, VU, ST, issue gaps)" % pct(s["G"])),
             ("(1 − F)  weight stream in MVM time", 1 - s["F"], "F = %s: MVM fill, broadcast, tail and bubbles inside the MVM time" % pct(s["F"])),
@@ -374,7 +374,7 @@ def build_html(model, out_path, extra=None):
     tiles.append('<div class="tile"><div class="l">Device time per token</div><div class="v">%s cycles</div><div class="n">%.2f ms at %.1f MHz, %.2f tok/s from device time alone</div></div>' % (
         fnum(s["cycles"]), s["t_dev_ms"], s["core_hz"] / 1e6, s["tok_s_dev"]))
     if "U" in s:
-        tiles.append('<div class="tile"><div class="l">DDR utilisation U</div><div class="v">%s</div><div class="n">%.2f GB read per token (PERF) · ceiling at this clock %s</div></div>' % (
+        tiles.append('<div class="tile"><div class="l">DDR utilization U</div><div class="v">%s</div><div class="n">%.2f GB read per token (PERF) · ceiling at this clock %s</div></div>' % (
             pct(s["U"]), s["rd_meas"] / 1e9, pct(s["E_clock"])))
     if has_sim:
         sm = model["sim"]
@@ -474,12 +474,12 @@ def build_html(model, out_path, extra=None):
 <div class="card"><h3>Layer <span id="layername"></span></h3>
 <div class="rowfilter" id="layerbtns">%(stagebtns)s</div>
 %(layerblocks)s
-<p class="note">Edges are data flow between records; the grey pills are tensors that come from, or go to, another layer or the host. Click a box for its node, record, arguments, DRAM ranges and SPM tiles.</p></div>
+<p class="note">Edges are data flow between records; the gray pills are tensors that come from, or go to, another layer or the host. Click a box for its node, record, arguments, DRAM ranges and SPM tiles.</p></div>
 </section>
 
 <section id="timeline">
 <h2>Execution timeline of the token</h2>
-<p class="note">One track per unit, the colours are the kind groups of the graph. The grey area under a track is its busy share. Click a slice for its details; the Perfetto file has the same slices with their arguments, flow arrows from the record to its ops and the PERF counter tracks.</p>
+<p class="note">One track per unit, the colors are the kind groups of the graph. The gray area under a track is its busy share. Click a slice for its details; the Perfetto file has the same slices with their arguments, flow arrows from the record to its ops and the PERF counter tracks.</p>
 <div class="card">
 <div class="tlbar"><button id="zin">Zoom in</button><button id="zout">Zoom out</button><button id="zreset">Whole token</button><span id="tlrange" class="note"></span><input type="text" id="slicesearch" placeholder="slice id, for example card:r412.MVM.0" aria-label="slice id"><button id="slicego">Find</button></div>
 <div class="legend">%(legendg)s</div>
@@ -500,7 +500,7 @@ def build_html(model, out_path, extra=None):
 <div class="card">
 <p><b>Capture.</b> <code>TSR_DUMP_PLAN=&lt;dir&gt;</code> makes the ggml backend write, without changing a record or a bit, the plan of each graph it builds (nodes, fusion groups, records with argument words, dependencies, DRAM ranges and the firmware's SPM tile plan), one line per launch with the PERF deltas, the cause of each launch boundary, the nodes supports_op refused, and the trace writer's records of the whole run. The descriptor's PROF bit puts a NODE_BEGIN marker before every record; the marker's push index joins a trace op to its record.</p>
 <p><b>Cycles.</b> A record's cycles are the increase of the launch's completion frontier (the latest end of any op so far, starting at LAUNCH_BEGIN) over its ops. Setup and tail are the cycles before the first record and after the last op. Ideal cycles of an MVM record are its weight bytes over 256 B per cycle (the rows are shared out over the four channels); an MVM slice carries its record's ideal split evenly over the record's MVM ops.</p>
-<p><b>Utilisation.</b> H is the share of the token's wall time with no launch active (host timestamps of consecutive decode launches against PERF_CYCLES at the core clock), G = 1 − MVM_CYCLES / CYCLES, F = 1 − ideal / MVM_CYCLES, and E is the rest of the product: bytes read per ideal weight-stream cycle × core clock ÷ B_M0. At 256 B per cycle E is the clock bound 256 B × f ÷ 72.05 GB/s.</p>
+<p><b>Utilization.</b> H is the share of the token's wall time with no launch active (host timestamps of consecutive decode launches against PERF_CYCLES at the core clock), G = 1 − MVM_CYCLES / CYCLES, F = 1 − ideal / MVM_CYCLES, and E is the rest of the product: bytes read per ideal weight-stream cycle × core clock ÷ B_M0. At 256 B per cycle E is the clock bound 256 B × f ÷ 72.05 GB/s.</p>
 <p><b>Profiler cost.</b> The markers add a RISC-V trace write per record and the PERF counters are read twice per launch outside the launch, so the speed here is a little below an unprofiled run; the cycle counts agree to the figures in the checks.</p>
 <p><b>Layers and groups</b> come from the node names and weights (attention, router, experts, dense branch, residual and norms, embedding and head); they are for reading only.</p>
 %(commands)s

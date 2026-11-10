@@ -2,7 +2,7 @@
 
 Units: x-height X = 100, baseline y = 0, y down.  Every glyph is a union of
 exact primitives (rectangles, circular ring sectors, and for the 's' the
-offset of an ellipse-arc / common-tangent / ellipse-arc centreline), filled
+offset of an ellipse-arc / common-tangent / ellipse-arc centerline), filled
 with the nonzero rule.  All contours are emitted clockwise on screen so the
 union is correct; counters are emitted counter-clockwise.
 """
@@ -144,13 +144,13 @@ class Glyphs:
         return self.annulus(ro, -X / 2, ro, ri), 2 * ro
 
     def s(self):
-        """Centre-line: upper elliptical bowl (terminal at upper right, running
-        anticlockwise over the top), the internal common tangent of the two
+        """Center-line: upper elliptical bowl (terminal at upper right, running
+        counterclockwise over the top), the internal common tangent of the two
         ellipses as the spine, lower bowl (clockwise to the lower-left
-        terminal).  The outline is the exact offset of that centre-line by
+        terminal).  The outline is the exact offset of that center-line by
         +-S/2, sampled at 1 degree on the ellipse arcs."""
         S, o = self.S, self.o
-        H = X + 2 * o - S                 # centre-line height (top bowl top .. bottom bowl bottom)
+        H = X + 2 * o - S                 # center-line height (top bowl top .. bottom bowl bottom)
         a2 = (self.ro - S / 2) * self.s_wide * 1.0   # lower bowl semi-axes
         a1 = a2 * 0.94                    # upper bowl slightly smaller (optical)
         b2 = self.s_b * H
@@ -191,13 +191,13 @@ class Glyphs:
         t1 = (lo + hi) / 2
         t2 = t1 + math.pi
         # same tangent direction requires equal slopes on equal-shape ellipses;
-        # with a1/b1 = a2/b2 the parametrisation keeps them parallel exactly.
+        # with a1/b1 = a2/b2 the parametrization keeps them parallel exactly.
         assert abs(a1 / b1 - a2 / b2) < 1e-9
         tu = math.radians(-self.s_term)            # upper terminal (upper right)
         tl = math.radians(180 - self.s_term)       # lower terminal (lower left)
-        pts = []                                   # (point, normal) along the centre-line
+        pts = []                                   # (point, normal) along the center-line
         n = 140
-        # upper bowl: from tu decreasing (anticlockwise on screen) to t1 - 2pi
+        # upper bowl: from tu decreasing (counterclockwise on screen) to t1 - 2pi
         ta, tb = tu, t1 - 2 * math.pi
         for i in range(n + 1):
             t = ta + (tb - ta) * i / n

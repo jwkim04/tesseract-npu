@@ -28,7 +28,7 @@ and `tsr_bus.c`: an RV32IMC + Zicsr + Zifencei interpreter of Ibex with the firm
 for riscv-tests, and the ELF loader), the race detector (`tsr_race.c`: vector clocks over the units, the RISC-V and
 the host, reporting races on SPM bytes, DRAM beats and `s` registers and `SPM_STALE`, a launch that reads SPM it did
 not write), traces (`tsr_trace.c`: reading, writing, validation, capture and replay with the comparisons of SW §5.4),
-and the debug models (`tsr_dm.c`, `tsr_dbg.c`: a behavioural riscv-dbg module and the tile-level debug blocks of DB).
+and the debug models (`tsr_dm.c`, `tsr_dbg.c`: a behavioral riscv-dbg module and the tile-level debug blocks of DB).
 The optional parts are CMake snippets (`units`, `rv`, `race`, `trace`, `dm`, `dbg`, and `ref_math`, `refvu`, `refat`,
 `refgdn`), `-DTSR_SIM_SKIP_SNIPPETS="race;dbg"` leaves some out, and every subset builds. `include/tsr_sim.h` is the C
 API (`tsr_sim_create_opts`, `tsr_sim_csr_read` and `_write`, `tsr_sim_advance`, `_now`, `_run_until_idle`, DRAM access
@@ -89,7 +89,7 @@ Spike-based tests need the pinned tools of `sw/ctrl/tools/install-toolchain.sh` 
 install, and `rv_random_long` needs `TSR_RV_RANDOM_LONG=1`.
 
 Limits. Unit busy times follow simple formulas in `tsr_sim.c`, `tsr_vu.c` and `tsr_at.c`, and the RISC-V cost follows
-a fixed table. Effects of an op are applied atomically at its modelled completion time, which is invisible for
+a fixed table. Effects of an op are applied atomically at its modeled completion time, which is invisible for
 race-free programs, and the race detector rejects the others. The debug-module model does not model the debug ROM
 (DB-18). `VMASK` has no handler and completes `ILLEGAL_OP`. Ibex facts that are not checked against the vendored RTL
 are marked *confirm* in `tsr_rv.c`.

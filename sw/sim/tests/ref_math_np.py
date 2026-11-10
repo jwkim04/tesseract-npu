@@ -563,7 +563,7 @@ def _ulp_err(y_bits, ref):
 
 
 def _py_expk(u, kappa):
-    """Scalar transcription of §6.3 with Python ints (cross-checks the vectorised integer code)."""
+    """Scalar transcription of §6.3 with Python ints (cross-checks the vectorized integer code)."""
     sK, LK = KAPPA[kappa]
     if (u & EXPM) == 0:
         u &= SIGN
@@ -635,7 +635,7 @@ def _self_test_scalar(ck, rng):
     for kap in KAPPA_BY_INDEX:
         got = evaluate(f"expk_{kap}", u)
         bad = [int(x) for x, g in zip(u, got) if _py_expk(int(x), kap) != int(g)]
-        ck.true(f"expk_{kap}: vectorised = scalar Python-int transcription ({len(u)} inputs)",
+        ck.true(f"expk_{kap}: vectorized = scalar Python-int transcription ({len(u)} inputs)",
                 not bad, f"first mismatch 0x{bad[0]:08X}" if bad else "")
     # every exponent the reduction handles (115..254), random mantissas, both signs
     E = np.repeat(np.arange(115, 255, dtype=np.uint32), 150)
@@ -647,7 +647,7 @@ def _self_test_scalar(ck, rng):
     with np.errstate(all="ignore"):
         q, r = sincos_reduce(th)
     bad = [int(x) for x, qq, rr in zip(th, q, r) if _py_reduce(int(x)) != (int(qq), int(rr))]
-    ck.true(f"SIN/COS reduction: vectorised = scalar Python-int transcription ({th.size} inputs)",
+    ck.true(f"SIN/COS reduction: vectorized = scalar Python-int transcription ({th.size} inputs)",
             not bad, f"first mismatch 0x{bad[0]:08X}" if bad else "")
 
 

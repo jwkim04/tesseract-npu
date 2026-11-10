@@ -331,7 +331,7 @@ def topk(spm, k, d, a, m, rows, d_stride, a_stride):
 
 
 # ---------------------------------------------------------------------------
-# SOP (VU §5.8), vectorised over operand arrays
+# SOP (VU §5.8), vectorized over operand arrays
 # ---------------------------------------------------------------------------
 def sop(sub, sa, sb, imm, mem):
     sa, sb, imm, mem = u32(sa), u32(sb), u32(imm), u32(mem)

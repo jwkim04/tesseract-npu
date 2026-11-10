@@ -144,7 +144,7 @@ module tsr_dbg
   input  logic                          rv_halted,
   input  logic                          rv_sleep,
   input  logic                          rv_ndmreset,
-  input  logic                          rv_dmactive,    // the debug module's dmcontrol.dmactive (synchronised)
+  input  logic                          rv_dmactive,    // the debug module's dmcontrol.dmactive (synchronized)
   input  logic                          rv_halt_pend,
   input  logic                          rv_clk_ok,
   input  logic                          unit_hung,

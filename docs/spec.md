@@ -2,14 +2,14 @@
 
 This is the master specification of the Tesseract core: architecture, data layouts, numerics, ISA,
 interfaces and verification strategy. It is the technical entry point. The six area documents of
-[docs/design](design/README.md) hold the detail that this document summarises:
+[docs/design](design/README.md) hold the detail that this document summarizes:
 [EX](design/01-execution-model.md) (execution model, host interface, global tables),
 [VU](design/02-vector-unit.md) (vector unit and numerics), [AT](design/03-attention-kv.md)
 (attention and KV cache), [CC](design/04-control-core.md) (control core, issue path, SPM, clock
 domains), [DB](design/05-debug.md) (debug and profiling) and
 [SW](design/06-software-verification.md) (simulator, firmware, host software, verification).
 
-A section that points to an area document summarises it. The area document is the normative
+A section that points to an area document summarizes it. The area document is the normative
 definition and is incorporated here by reference. Every table has one definition
 ([design/README.md](design/README.md) §4).
 
@@ -81,7 +81,7 @@ weight stream and not around raw compute.
 ### Authority
 
 Order of authority: this document, then the simulator (`sw/sim`), then `docs/design/*`, then the
-other documents. A section here that points to a `docs/design` section summarises it; a difference
+other documents. A section here that points to a `docs/design` section summarizes it; a difference
 between the two is a defect to fix in whichever document is wrong. Numbers that are not fixed by the
 design carry their provenance in parentheses: estimate, or model (a figure of the reference
 algorithm).
@@ -123,7 +123,7 @@ platform adapter) plus a transport. The software and the core change only their 
 | --- | --- | --- |
 | Software | `ggml-tesseract` backend, weight repacker, op-list (OPL) builder and cache, simulator, firmware SDK and kernels, transport | The transport only (XRT, Zynq AXI, SoC driver) |
 | Core | Control core (RISC-V, ITCM and DTCM, debug module) and issue path (checker, dispatcher, per-unit queues), MVM clusters × C, vector unit (with s0–s15), SPM, DMA, QACT, debug block | Parameters only |
-| Tech wrappers | `tsr_sram_*`, `tsr_mac_lane`, clock and reset, CDC synchronisers, a clock gate and reset synchroniser for the control core (a divider only on targets that need one) | Written per target |
+| Tech wrappers | `tsr_sram_*`, `tsr_mac_lane`, clock and reset, CDC synchronizers, a clock gate and reset synchronizer for the control core (a divider only on targets that need one) | Written per target |
 | Platform adapter | Control register bridge; memory port to AXI4 or similar | Written per target |
 
 <p align="center"><img src="fig/layers.svg" alt="The four layers across three targets. Software (sw/) and the core (rtl/core) span all targets; the transport, platform adapter and tech wrappers are written per target: Alveo U200 (xrt, alveo_xrt, xilinx; NUM_CH 4, BEAT_BITS 512), Zynq or Kria (NUM_CH 1 to 2, BEAT_BITS about 128) and SoC or ASIC (SRAM macros). This tree provides the U200 pieces; the other two columns show what a port writes. rtl/tech/generic serves simulation and lint on any target." width="100%"></p>
@@ -135,7 +135,7 @@ platform adapter) plus a transport. The software and the core change only their 
 | Tech wrappers | `rtl/tech/xilinx`: URAM, BRAM, DSP48E2 (two int8 tokens per DSP), inferred through attributes so that Verilator runs the same files | Not provided | SRAM macros |
 | Core parameters | `NUM_CH` 4, `BEAT_BITS` 512 | `NUM_CH` 1–2, `BEAT_BITS` about 128 | Open |
 
-`rtl/tech/generic` holds behavioural versions of the wrappers for simulation and lint on any target. HBM
+`rtl/tech/generic` holds behavioral versions of the wrappers for simulation and lint on any target. HBM
 cards (U280, U55C) would use a large `NUM_CH` with `BEAT_BITS` 256, and Zynq-class parts `NUM_CH` 1–2 with
 `BEAT_BITS` about 128; the cluster structure and the ISA stay the same. `NUM_CH` is at most 16 because `LD`
 and `ST` name the channel in a 4-bit field (section 3). The RTL elaborates only with `BEAT_BITS` = 512 and
@@ -481,7 +481,7 @@ Common fp rules
   reference implementation, and the RTL matches it bit for bit.
 
 Approximate math: the vector unit's functions are defined by integer algorithms and the primitives
-above, not by libm ([VU](design/02-vector-unit.md) §6, summarised in section 9). Their accuracy is a
+above, not by libm ([VU](design/02-vector-unit.md) §6, summarized in section 9). Their accuracy is a
 property of the algorithms (VU §6.9). Agreement with the ggml CPU is not bit-exact in general and is
 covered by the KL criterion (section 17).
 
@@ -560,7 +560,7 @@ the paths, and if that fails lower the whole kernel clock.
 
 Overlapping consecutive MVMs: if the next MVM does not read the dst of the previous MVM, a cluster may
 overlap the tail of the previous MVM with the weight requests of the next one. The result equals
-sequential execution, so this is an allowed as-if optimisation (the memory model of section 16 allows
+sequential execution, so this is an allowed as-if optimization (the memory model of section 16 allows
 it). It hides the fill cost of 1–2 µs (estimate) that every MVM pays, which matters for the short expert
 matrices of MoE.
 
@@ -649,7 +649,7 @@ per-token vector c (VU §8.1).
 
 ## 10. Execution model and control interface
 
-This section summarises [EX](design/01-execution-model.md). EX is the normative definition of the host model,
+This section summarizes [EX](design/01-execution-model.md). EX is the normative definition of the host model,
 the firmware image and its load, the launch protocol and the runtime contract R1–R10, the core CSR map,
 PERF, the error codes and check order, the control actions and the XRT adapter.
 
@@ -709,7 +709,7 @@ dependencies, SPM stores or records.
 Errors (EX §8). Codes 1–13 (3 `QA_MISMATCH`, 9 and 10 are reserved and never raised). The dispatch check
 order is `ILLEGAL_OP` → `BAD_DEP` → `BAD_FMT` → `K_RANGE` → `T_RANGE` → `OPERAND` → `SPM_RANGE` →
 `DRAM_RANGE`. A tile op that has started does not fail; data-dependent conditions (NaN, a length read from
-the SPM) are defined behaviour. A unit that raised an error ends the following ops as `ABORTED` until QCLEAR
+the SPM) are defined behavior. A unit that raised an error ends the following ops as `ABORTED` until QCLEAR
 (EX §8.2). `SOFT_RESET` is a device-level procedure that works without `clk_rv`: it puts the control core in
 reset, drains the queues and clears the error state, the rings, the watermarks, PERF and the sticky bits,
 and leaves DRAM, SPM, the TCMs, the s registers, the channel bases, the debug settings and all sequence
@@ -771,7 +771,7 @@ rows. The last column says whether the release image implements the opcode in RT
 | 0x31 | `RED` | kind | VU §5.3 | Per-row SUM, SUMSQ and MAX, post-ops RCP and RMS | yes |
 | 0x32 | `ROPE` | mode | VU §5.4 | Rotate T tokens, angles from the ggml-cpu recurrence | yes |
 | 0x33 | `TOPK` | – | VU §5.5 | Top k ≤ 16 (index, value) pairs per row | simulator only (`CAPS` bit 3) |
-| 0x34–0x37 | `ASMAX`, `AMASK`, `AMERGE`, `ANORM` | | AT §5.4–§5.7, VU §5.11 | Softmax numerator, general mask, channel tree and online merge, normalisation (VU unit) | yes |
+| 0x34–0x37 | `ASMAX`, `AMASK`, `AMERGE`, `ANORM` | | AT §5.4–§5.7, VU §5.11 | Softmax numerator, general mask, channel tree and online merge, normalization (VU unit) | yes |
 | 0x38 | `VMASK` | | VU §5.7 | Position-window mask | no (`ILLEGAL_OP`, `CAPS` bit 7) |
 | 0x39 | `GDN` | – | VU §7.12.4 (w1 d, w2 a, w3 k, w4 q, w5 v, w6 o, w7 m·rows; x16 sa·sb) | Fused Gated DeltaNet state update of one head (S' and o) | yes (`CAPS` bit 8) |
 | 0x40 | `SOP` | function | VU §5.8 (w1 sd·sa·sb, w2 imm, w3 SPM word) | 15 f32 scalar functions | yes |
@@ -845,7 +845,7 @@ Components
 | Component | Role |
 | --- | --- |
 | reg / device | Registers one device, "Tesseract0", with the type `GGML_BACKEND_DEVICE_TYPE_GPU` so that layer offload (`-ngl`) targets it ([llama-pin.md](llama-pin.md)) |
-| buffer type | One virtual address space. The real location is chosen per buffer at its first data access (set, get, memset, clear) from the buffer usage, because llama.cpp calls `init_tensor` while the usage is still ANY and sets WEIGHTS only afterwards. WEIGHTS buffer: a MUL_MAT weight (2D) is allocated symmetrically in the WEIGHT heap in a hardware format (Q8_0 or Q4_K); everything else (1D tensors and so on) stays unchanged in AUX. ANY and COMPUTE buffers: bytes stay as they are, in one IO window when the IO region has a free window and in host memory otherwise; an ANY buffer that holds only leaf tensors (LoRA adapters) lives in host memory and its MUL_MAT src0 is converted lazily in graph_compute and cached in the WEIGHT heap |
+| buffer type | One virtual address space. The real location is chosen per buffer at its first data access (set, get, memset, clear) from the buffer usage, because llama.cpp calls `init_tensor` while the usage is still ANY and sets WEIGHTS only afterward. WEIGHTS buffer: a MUL_MAT weight (2D) is allocated symmetrically in the WEIGHT heap in a hardware format (Q8_0 or Q4_K); everything else (1D tensors and so on) stays unchanged in AUX. ANY and COMPUTE buffers: bytes stay as they are, in one IO window when the IO region has a free window and in host memory otherwise; an ANY buffer that holds only leaf tensors (LoRA adapters) lives in host memory and its MUL_MAT src0 is converted lazily in graph_compute and cached in the WEIGHT heap |
 | set_tensor, get_tensor | Weights in a WEIGHTS buffer: collect in a host staging area (a large tensor may arrive in several calls; repacking happens when a complete row range has arrived), convert to Q8_0 if needed, repack, split by rows and write per channel; `get_tensor` unpacks the repacking (a converted type re-encodes the device copy). Everything else: bytes unchanged to or from the IO window, host memory or AUX |
 | supports_op | The conditions below |
 | graph_compute | Split → OPL, OPL cache looked up by content, `graph` launch, wait for the answer record. On TILE_ERR the first error is traced back to the ggml node (SW §9.3) |
@@ -955,7 +955,7 @@ section 4: expert e of a tensor at `W_OFF + e × EXP_STRIDE` on every channel, e
 the channels. The router is an ordinary 2D weight converted to Q8_0 at load. Two firmware kinds do the rest:
 MOE_ROUTE (0x1E) computes the softmax on the VU, selects the k largest probabilities by integer compares on
 the RISC-V (the order of the VU TOPK: larger value first, equal values by the smaller index, NaN first) and
-renormalises their weights by the tree sum of the VU; MUL_MAT_ID (0x1F) runs a MUL_MAT of T = 1 per (token,
+renormalizes their weights by the tree sum of the VU; MUL_MAT_ID (0x1F) runs a MUL_MAT of T = 1 per (token,
 slot) against the weights of the expert whose number it reads from DRAM, with an optional per-expert output
 scale. The backend fuses llama.cpp's router nodes (softmax, argsort, get_rows, sum_rows, clamp, div and their
 views) into one MOE_ROUTE record, and the scale nodes (reshape, repeat, get_rows, mul) into the MUL_MAT_ID
@@ -987,7 +987,7 @@ The control core issues the tile ops of all 8 experts without waiting (if a queu
 waits for one). The queue order protects the reuse order of GU, H and HQ: the gate-up MVM of the next expert
 is behind the previous down MVM in the MVM queue, and that down MVM starts after the QACT and VU ops. s1 is
 written and read in VU queue order, so no op of another kernel can come in between (there is one s register
-bank). The `VOP_MULS` is the VOP MULC with `cmode` 1. y is initialised with 0 before the loop: a model that
+bank). The `VOP_MULS` is the VOP MULC with `cmode` 1. y is initialized with 0 before the loop: a model that
 applies an RMS norm to the sum of the experts cannot put the residual into the ACC. Because the router
 weight is multiplied before the down MVM, the accumulation order differs from ggml (which multiplies after
 down), so the model-level KL criterion verifies it.
@@ -997,17 +997,17 @@ the MXFP4 format (a reserved fmt code).
 
 ## 14. Performance model
 
-The first optimisation priority is to remove the time during which the DDR is idle. Decode speed is bounded
+The first optimization priority is to remove the time during which the DDR is idle. Decode speed is bounded
 by the 4-channel concurrent read bandwidth B_M0 (the bandwidth kernel `hw/u200/bw` measures it) divided by
 the bytes that must be read per token (weights, and the KV cache). Techniques that reduce the bytes per
 token themselves (lower-bit formats, sparsity) come after that. A performance figure states its
 measurement conditions (working rule 7).
 
-Metric: DDR utilisation U = (bytes read per token × tokens per second) / B_M0. It is measured in wall-clock
+Metric: DDR utilization U = (bytes read per token × tokens per second) / B_M0. It is measured in wall-clock
 time, so host time counts. By cause, U is split as follows (the product is an approximation):
 
 - H: the share of wall-clock time in which the device is not BUSY (no launch is ACTIVE): host CPU work, PCIe
-  round trips, synchronisation between launches.
+  round trips, synchronization between launches.
 - G: the share of device time outside the MVM (LD, QACT, VU, ST). The counters `MVM_WAIT` and `MVM_EMPTY`
   split it into a dependency-bound and an issue-bound share (section 10, PERF counters).
 - F: fill, broadcast and tail inside the MVM.
@@ -1161,14 +1161,14 @@ the simulator implements them, and the RTL asserts the invariants of CC §9.4.
 5. Host and device: rules H1–H5 of EX §2.3.
 6. A serial chain of tile ops obtains sequential semantics from the SERIAL flag of the `replay` kernel
    (EX §4.6).
-7. As-if optimisations inside a unit (the overlapping of consecutive MVMs, section 8) stay allowed.
+7. As-if optimizations inside a unit (the overlapping of consecutive MVMs, section 8) stay allowed.
 
 Clock domains (CC §11–§12). The control core (Ibex, debug module, ITCM and DTCM, control window) runs on
 `clk_rv`, asynchronous to the core clock. Issue and queue-control entries cross in an asynchronous FIFO
 (32 entries on the U200, Gray pointers), the issue, completion and credit counters in 28-bit Gray code,
 error records by a tagged handshake, and the control-window and core-window accesses by tagged handshakes.
 The LQ, LCQ and log ring live in the core domain. The reset of the control-core side is `ap_rst_n`
-synchronised to `clk_rv`; `rst_rv_n` is only added to the reset of Ibex and the debug module. A control-core
+synchronized to `clk_rv`; `rst_rv_n` is only added to the reset of Ibex and the debug module. A control-core
 reset (`RV_RUN` 1 → 0, debug-module `ndmreset`) is a procedure: the core applies QABORT, the control-core
 side accepts no new accesses and waits for the accesses in flight (at most 4,096 cycles), then the reset is
 applied (TCMs are kept). On the U200 `clk_rv` is generated from `ap_clk_2` (CC-18).
@@ -1367,8 +1367,8 @@ tesseract/
 
 ## 21. Implementation clarifications
 
-These points fix behaviour that the simulator and the RTL agree on bit for bit. The C mirrors are
-`sw/sim/include/tsr_isa.h` and `tsr_ref.h`. The CSR behaviour, the performance counters and the errors
+These points fix behavior that the simulator and the RTL agree on bit for bit. The C mirrors are
+`sw/sim/include/tsr_isa.h` and `tsr_ref.h`. The CSR behavior, the performance counters and the errors
 are defined in [EX](design/01-execution-model.md) §5 (CSR), §6 (PERF) and §8 (errors, check order,
 `SOFT_RESET`), and in rule H4 of EX §2.3 (SPM preservation).
 
@@ -1379,8 +1379,8 @@ are defined in [EX](design/01-execution-model.md) §5 (CSR), §6 (PERF) and §8 
   result. This rule differs both from the "tininess after rounding" of IEEE 754 §7.5 (judged by
   whether the value rounded to 24 bits without exponent limit is below 2^−126; the x86 MXCSR.FTZ works
   this way) and from tininess before rounding. For an exact result in [2^−126 − 2^−150, 2^−126) this
-  rule gives ±2^−126, while the before-rounding judgement gives ±0 over this whole interval and the
-  unlimited-exponent after-rounding judgement gives ±0 in [2^−126 − 2^−150, 2^−126 − 2^−151).
+  rule gives ±2^−126, while the before-rounding judgment gives ±0 over this whole interval and the
+  unlimited-exponent after-rounding judgment gives ±0 in [2^−126 − 2^−150, 2^−126 − 2^−151).
   Addition and subtraction never give a result in this interval (a sum in the subnormal range is
   exact), so it occurs only for multiplication and division. The boundary vectors
   (0x3F7FFFFF × 0x00800000 = 0x00800000, 0x3F1FA0BA × 0x00CD4708 = 0x00800000,
@@ -1496,7 +1496,7 @@ make the code match.
 
 1. This document (`docs/spec.md`) is the single source of truth. A change to the ISA, the memory layout
    or the numeric rules goes into the same commit as the edit of the document (and of the
-   `docs/design` section it summarises).
+   `docs/design` section it summarizes).
 2. The simulator is the oracle. An RTL change is merged only if the relevant trace replay is
    bit-identical.
 3. There is one reference implementation of repacking, QA quantization, dot products and approximate

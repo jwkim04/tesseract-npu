@@ -219,7 +219,7 @@ The argument words of each kind are in [SW](design/06-software-verification.md) 
 | 0x1B | UNARY | 1 | `k_elem.cpp` | TANH, GELU16, SILU, EXP, GELU (exact tanh form), SIGMOID. |
 | 0x1C | MUL_MAT_SCALE | 1 | `k_mulmat.cpp` | A MUL_MAT whose result is multiplied by a scalar before it is stored. |
 | 0x1D | MUL_MAT_SOFTCAP | 1 | `k_mulmat.cpp` | A MUL_MAT followed by the scale, tanh and scale of a logit soft cap. |
-| 0x1E | MOE_ROUTE | 1 | `k_moe.cpp` | Router softmax, top-k selection and weight renormalisation of a MoE layer (SW §7.9, SW-61). |
+| 0x1E | MOE_ROUTE | 1 | `k_moe.cpp` | Router softmax, top-k selection and weight renormalization of a MoE layer (SW §7.9, SW-61). |
 | 0x1F | MUL_MAT_ID | 1 | `k_moe.cpp` | Matrix product against the experts that the ids of each token select, with an optional per-expert scale (SW-62). |
 | 0x2D | SOFTPLUS | 1 | `gdn_kinds.cpp` | log(1 + exp(x)) of the gate tensors of a Gated DeltaNet layer (SW §7.10, SW-69). |
 | 0x2E | SSM_CONV | 1 | `gdn_kinds.cpp` | The causal convolution of a Gated DeltaNet layer with its rolling state, optionally followed by SILU (SW-68). |

@@ -29,7 +29,7 @@ m48.save(P("favicon.ico"), sizes=[(16, 16), (32, 32), (48, 48)], append_images=[
 # apple-touch-icon: solid background (iOS ignores transparency)
 ati = Image.new("RGBA", (180, 180), BG_DARK)
 ati.alpha_composite(render(MARK, 144), (18, 18)); ati.convert("RGB").save(P("apple-touch-icon.png"))
-# social preview 1280x640, lockup centred on a solid background
+# social preview 1280x640, lockup centered on a solid background
 lw, lh = vb(LKD)
 sw = 920; sh = round(lh * sw / lw)
 soc = Image.new("RGBA", (1280, 640), BG_DARK)
@@ -116,7 +116,7 @@ for i, (name, colour) in enumerate(MONO.items()):
         x = xm + i * 250 + j * 120; yy = y2
         panel(x, yy, 112, 112, bgc)
         sheet.paste(on(render(P(f"tesseract-mark-mono-{name}.svg"), 96), bgc), (x + 8, yy + 8))
-label(xm, y2 + 118, "tesseract-mark-mono-{violet,black,white}.svg — one colour (etch, silkscreen, stickers)")
+label(xm, y2 + 118, "tesseract-mark-mono-{violet,black,white}.svg — one color (etch, silkscreen, stickers)")
 # row 4: social preview + apple touch
 y3 = 1080
 soc_t = Image.open(P("social-preview.png")).resize((800, 400), Image.LANCZOS)

@@ -845,7 +845,7 @@ int e2e_main(const std::string & base) {
 // =================================================================================================
 constexpr double F_CORE = 276.3;   // MHz (U200: D13 core clock)
 double F_RV = 166.7;               // MHz: CC's F_RV; perf_boot sets it from the run's F_RV / F_CORE
-                                   // (TSR_SIM_RV_RATIO, honoured by --perf only)
+                                   // (TSR_SIM_RV_RATIO, honored by --perf only)
 const char * g_m7_image = nullptr; // --perf IMAGE SCRATCH --perf M7_IMAGE: the M7 projection's image
 
 struct perf_ctx {
@@ -1141,7 +1141,7 @@ int perf_main() {
         fwprof::prof::diff(prof[1], prof[0]).report(stdout, title, dr, 16,
                                                     pass == 0 ? ".mulmat" : pass == 1 ? ".mulmat_deep" : ".mulmat_prod");
         CHECK(per_rec <= 4000.0, "perf: regression ceiling 4000 RV cycles per graph record (%.0f)", per_rec);
-        // Executor optimisation (SW §7.8): 387 / 484 RV cycles of work per record on Ibex maxperf /
+        // Executor optimization (SW §7.8): 387 / 484 RV cycles of work per record on Ibex maxperf /
         // small (deep queues); a ceiling that holds on both tables.
         CHECK(work_rec <= 600.0, "perf: regression ceiling 600 RV cycles of executor work per record (%.0f)", work_rec);
     }

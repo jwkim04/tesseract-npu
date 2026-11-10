@@ -14,7 +14,7 @@ Tests (cocotb, one build per parameter set):
   vu_sop            the 15 SOP functions, LDS / STS
   vu_rope           NEOX / NORM, partial rotation, recurrence / FF / FS / ATAB, T up to 40 (position lines)
   vu_at             ASMAX, AMASK, ANORM shapes
-  vu_stream         random mixed streams with RAW / WAW / s dependencies between neighbours
+  vu_stream         random mixed streams with RAW / WAW / s dependencies between neighbors
   vu_decode         the decode-record shapes of the firmware kernels (sw/ctrl tests: RMS_NORM, ROPE, GLU, ADD,
                     SCALE for Qwen2.5-0.5B / 32B and Gemma 4)
 """
@@ -665,7 +665,7 @@ async def vu_dqrow(dut):
         await b.prewrite(pre)
         ops = [w]
         if b.r.random() < 0.5:
-            # VOP ADD reading the dequantised rows (same shape)
+            # VOP ADD reading the dequantized rows (same shape)
             K, rows, dsp = w[5], w[6] & 0xFFFF, (w[7] >> 16) or (w[5] // 16)
             o = b.region(ext(rows, V.L(K), V.L(K)), [(w[1], w[1] + ext(rows, dsp, K // 16)),
                                                     (w[2], w[2] + ext(rows, (w[7] & 0xFFFF) or row_beats(w[0] >> 8 & 15, K), row_beats(w[0] >> 8 & 15, K)))])
@@ -737,7 +737,7 @@ async def vu_gdn_mixed(dut):
         ol2 = b.region(lr, used); used.append((ol2, ol2 + lr))
         pre += lines(kl2, k2) + lines(ql2, q2) + lines(vl2, v2)
         seq += [b.movi(1, al2), b.movi(2, be2), V.enc_gdn(1, 2, a, a, kl2, ql2, vl2, ol2, m, rows)]
-        seq.append(V.enc_vop(0x09, vl2, dst2, 0, 0, rows, 1))      # overwrites v of head 2 afterwards
+        seq.append(V.enc_vop(0x09, vl2, dst2, 0, 0, rows, 1))      # overwrites v of head 2 afterward
         seq.append(V.enc_red(0, 0, ol2, rows, 1, 0, to_s=1, sd=7))   # a RED over the final o
         await b.prewrite(pre)
         await b.batch(seq, "GDN mixed %d (m %d rows %d)" % (it, m, rows), extra_wr=ex + list(range(ol2, ol2 + lr)))

@@ -3,7 +3,7 @@
 1. the churn guard is per weight, not per graph node (regional compilation, a compiled helper
    called per layer, HOP bodies shared by every layer);
 2. cached handles belong to the device they were uploaded to (Device.close() / _C.close());
-3. open_device() options stay usable afterwards (_C.get() returns the open device as is);
+3. open_device() options stay usable afterward (_C.get() returns the open device as is);
 4. an unavailable device is an error, and so is a transport error during an upload;
 5. closing a device while another thread is inside a device call (subprocess: it crashed);
 6. concurrent use of the singleton functions (subprocess: it deadlocked);

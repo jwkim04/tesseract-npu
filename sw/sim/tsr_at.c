@@ -53,7 +53,7 @@
 //   KVST    40 + the beats written (meta + quant, all channels); controller ECC latency unmodeled
 //   ATTQK   350 + max(max_c beats_c, lines)               (fill ≈ 300–400, AT §9.1–§9.2)
 //   ATTPV   350 + 68 + max(max_c beats_c, lines)          (+ the 64-beat segment delay, AT §13.4)
-// The vector ops follow the measured behaviour of the RTL unit (SW-80, tb/vu test_vu_timing.py) on the lanes the
+// The vector ops follow the measured behavior of the RTL unit (SW-80, tb/vu test_vu_timing.py) on the lanes the
 // simulator is told (tsr_sim_opts.vu_timing: rate = 16 / front lanes cycles per line, X = 2 · lane-pipe stages):
 //   ASMAX   R·n_lines·rate + 60 + X
 //   AMASK   R·n_lines·rate + 60 + X                       (not in any firmware kind; not measured)

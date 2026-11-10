@@ -97,7 +97,7 @@ Verdict (exit code 0 PASS, 1 FAIL, 3 INCOMPLETE, 2 usage or input error or a cra
   bit-identical, and every selected weight MUL_MAT was checked on the device.
 - FAIL if any of the above fails. INCOMPLETE if nothing failed but a selected weight MUL_MAT could not be
   checked: it ran off the device, its weight is missing from the GGUF, its shapes do not match, or its op is
-  MUL_MAT_ID (MoE, not modelled).
+  MUL_MAT_ID (MoE, not modeled).
 - WARN: a native tensor with B3 ratio above 1.5, weight MUL_MATs without a src1 dump, an unverified producer
   mapping, B2 out-of-domain elements, dev diverging before the first device node, run directories of the wrong
   kind, no `--dev-noobs`.
@@ -120,7 +120,7 @@ Verdict (exit code 0 PASS, 1 FAIL, 3 INCOMPLETE, 2 usage or input error or a cra
   to a rounding boundary. This affects klcheck's floor as well.
 - Large layer-output ratios in early layers of a big model, caused by one massive activation at token 0, are not
   device error. The CPU reference can be the less accurate side there (check B3 of those `ffn_down` tensors).
-- MUL_MAT_ID weights are tagged by the dumper but not modelled by B (INCOMPLETE). The ACC accumulate path is not
+- MUL_MAT_ID weights are tagged by the dumper but not modeled by B (INCOMPLETE). The ACC accumulate path is not
   used by weight MUL_MATs here and is not covered by B2.
 
 ### B2 bound: derivation

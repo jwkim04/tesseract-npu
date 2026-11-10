@@ -593,7 +593,7 @@ void test_msum_random(uint32_t seed) {
     CHECK(env.st.n_masks() == 0 && env.frees == env.allocs);
 }
 
-// Exact behaviour on fresh keys: no reader -> no copy; reader with FAST tiles -> no copy; GENERAL
+// Exact behavior on fresh keys: no reader -> no copy; reader with FAST tiles -> no copy; GENERAL
 // -> copy; refusal -> promotion; two scales; ordering; nomask.
 void test_msum_rules() {
     const tsr_att_cfg cfg = { 4, 8, 9344, 32768 };

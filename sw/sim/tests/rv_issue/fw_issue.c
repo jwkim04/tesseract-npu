@@ -44,7 +44,7 @@
 #define IMAGE_ID_LO 0x5EED0001u      // a constant instead of EX §3.2's SHA-256 id (no tsr-elf here)
 #define IMAGE_ID_HI 0x0000F00Du
 
-// Freestanding GCC may call these for aggregate copies and initialisations.
+// Freestanding GCC may call these for aggregate copies and initializations.
 void * memset(void * d, int c, __SIZE_TYPE__ n);
 void * memcpy(void * d, const void * s, __SIZE_TYPE__ n);
 void * memset(void * d, int c, __SIZE_TYPE__ n) {

@@ -51,7 +51,7 @@ HEX_SUFFIXES = ("_MAGIC", "_NAN", "_OFF", "_VMA", "_VALUE", "_NONE", "_HALF", "_
 
 
 # ================================================================================================
-# Loading and normalising the table source
+# Loading and normalizing the table source
 # ================================================================================================
 def load_source(path: Path = HERE / "tsr_tables.py"):
     """Import tsr_tables.py by path (no sys.path change)."""
@@ -183,7 +183,7 @@ class Enc:
 
 
 class Model:
-    """Normalised view of tsr_tables.py, shared by the emitters and test_tables.py."""
+    """Normalized view of tsr_tables.py, shared by the emitters and test_tables.py."""
 
     def __init__(self, src):
         self.src = src
@@ -1097,7 +1097,7 @@ def gen_sv(m: Model) -> str:
            "",
            "package tsr_tables_pkg;",
            "",
-           "  // A catalogue of constants: no module uses all of them, so UNUSEDPARAM is off for this package.",
+           "  // A catalog of constants: no module uses all of them, so UNUSEDPARAM is off for this package.",
            "  /* verilator lint_off UNUSEDPARAM */"]
     block = []
 

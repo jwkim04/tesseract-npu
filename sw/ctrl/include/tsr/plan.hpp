@@ -86,7 +86,7 @@ constexpr dev_cfg U200_K4 = {65536u, 8u, 32768u, 4u, 9344u, 16u, CAPS_VU | CAPS_
 // DMA unit runs its queue in order, one op after the other (a dep on the op's own unit is implied,
 // CC §8.3), so the next such tile's first LD starts after this tile's last DMA op is done, which
 // itself followed every op of this tile: reusing the same lines needs no dep and no ring record,
-// and costs no concurrency (consecutive DMA-bracketed tiles are serialised by the DMA queue
+// and costs no concurrency (consecutive DMA-bracketed tiles are serialized by the DMA queue
 // whatever their SPM lines). MUL_MAT (whose blocks the M6 traces pin) and FLASH_ATTN keep the ring.
 //
 // Its size (SW §7.3 / SW-36): the block comes out of the ring's planning budget, which

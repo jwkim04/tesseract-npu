@@ -658,8 +658,8 @@ module tsr_mvm
     );
 
     // Weight stream of cluster c <-> arbiter c (docs/rtl-mvm.md §14): requests through
-    // RES_PIPE register slices (towards the centre, like the results), responses through BC_PIPE
-    // registers (towards the cluster, like the broadcast; no backpressure: the streamer's
+    // RES_PIPE register slices (toward the center, like the results), responses through BC_PIPE
+    // registers (toward the cluster, like the broadcast; no backpressure: the streamer's
     // rd_rsp_ready is constant 1, §4), so the arbiters can sit with the DMA while a cluster sits
     // in another SLR.
     tsr_rpipe #(.W(ADDR_BEAT_W + TSR_LEN_W + TSR_SRC_ID_W), .DEPTH(RES_PIPE)) u_wqp (

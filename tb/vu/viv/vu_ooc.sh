@@ -7,7 +7,7 @@
 #        hw/u200/vivado_slot.sh tb/vu/viv/vu_ooc.sh build/vu_k4 place_only clk=5.0 iodly=2.4 \
 #          FRONT_LANES=8 EXP_LANES=8 BACK_LANES=4 LANE_PIPE=2 SPM_RD_LAT=4 NUM_CH=4     (the K4 configuration)
 # Environment: VIVADO_SETTINGS (default /tool/Xilinx/Vivado/2024.2/settings64.sh); TSR_VIVADO_LOCK, when set, is a
-# flock file serialising Vivado runs (leave it unset under hw/u200/vivado_slot.sh, which holds the slot).
+# flock file serializing Vivado runs (leave it unset under hw/u200/vivado_slot.sh, which holds the slot).
 # Log: <outdir>/vivado.log; summary: grep VOOC <outdir>/vivado.log.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

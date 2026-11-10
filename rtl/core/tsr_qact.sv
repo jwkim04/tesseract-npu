@@ -722,7 +722,7 @@ module tsr_qact
 `ifndef SYNTHESIS
   // -------------------------------------------------------------------------------------------
   // Simulation checks (armed by the first clock edge with rst_n low; before it the state is
-  // arbitrary under X randomisation).
+  // arbitrary under X randomization).
   // -------------------------------------------------------------------------------------------
   logic chk_on_q;
   initial chk_on_q = 1'b0;

@@ -196,7 +196,7 @@ extern "C" {
 #define TSR_CSR_Q_DONE_N      8u
 #define TSR_CSR_Q_DONE_STRIDE 4u
 #define TSR_CSR_Q_DONE(i) (0xE00u + 4u * (i))
-#define TSR_CSR_Q_ISSUED_BASE   0xE20u  // [R] EX §5.4: ISSUED_SEQ[u], 28 bits (synchronised copy)
+#define TSR_CSR_Q_ISSUED_BASE   0xE20u  // [R] EX §5.4: ISSUED_SEQ[u], 28 bits (synchronized copy)
 #define TSR_CSR_Q_ISSUED_N      8u
 #define TSR_CSR_Q_ISSUED_STRIDE 4u
 #define TSR_CSR_Q_ISSUED(i) (0xE20u + 4u * (i))
@@ -352,7 +352,7 @@ extern "C" {
 #define TSR_CW_ISSUE_UNITS      0x034u       // [R] CC §5.1: bit u = unit u is built
 #define TSR_CW_ISSUE_STATUS     0x038u       // [R/W1C] CC §5.1: push timeout and error interrupt
 #define TSR_CW_ISSUE_PIDX       0x03Cu       // [R] CC §5.1: push index the next ticketed entry will receive (+1 per ISSUE_PUSH and QCLEAR); exact
-#define TSR_CW_DONE_SEQ_BASE    0x040u       // [R] CC §5.1: [27:0] completions of unit u (synchronised copy; may lag, never leads)
+#define TSR_CW_DONE_SEQ_BASE    0x040u       // [R] CC §5.1: [27:0] completions of unit u (synchronized copy; may lag, never leads)
 #define TSR_CW_DONE_SEQ_N       8u
 #define TSR_CW_DONE_SEQ_STRIDE  4u
 #define TSR_CW_DONE_SEQ(i) (0x040u + 4u * (i))
@@ -419,7 +419,7 @@ extern "C" {
 #define TSR_CW_RT_STATE          0x290u       // [RW] EX §4.5: runtime phase, mirrored to host 0x038; 0 after a RISC-V reset
 #define TSR_CW_RT_STATE_RESET    0x00000000u
 #define TSR_CW_RT_INFO           0x294u       // [RW] EX §4.5: runtime- or kernel-defined progress word, mirrored to host 0x03C
-#define TSR_CW_MTIME_LO          0x300u       // [R] CC §5.2: core clock cycles since reset (gray-synchronised)
+#define TSR_CW_MTIME_LO          0x300u       // [R] CC §5.2: core clock cycles since reset (gray-synchronized)
 #define TSR_CW_MTIME_HI          0x304u       // [R] CC §5.2
 #define TSR_CW_MTIMECMP_LO       0x308u       // [RW] CC §5.2: irq_timer while MTIME >= MTIMECMP
 #define TSR_CW_MTIMECMP_LO_RESET 0xFFFFFFFFu
@@ -933,9 +933,9 @@ extern "C" {
 #define TSR_LCQ_R0_STATUS_BAD_DESC   2u           // the descriptor was refused; the kernel did not run
 #define TSR_LCQ_R0_STATUS_KERNEL_ERR 3u           // RET < 0, no tile error
 #define TSR_LCQ_R0_STATUS_TRAP       4u           // TRAP records only
-#define TSR_LCQ_R0_STATUS_ABORTED    5u           // cancelled (ERR_CODE 0), or the first error is ABORTED (ERR_CODE 8)
+#define TSR_LCQ_R0_STATUS_ABORTED    5u           // canceled (ERR_CODE 0), or the first error is ABORTED (ERR_CODE 8)
 #define TSR_LCQ_R0_STATUS_PLAT_ERR   6u           // STATUS.PLAT_ERR was set when the runtime answered
-#define TSR_LCQ_R0_STATUS_STOPPED    7u           // the kernel honoured a soft stop
+#define TSR_LCQ_R0_STATUS_STOPPED    7u           // the kernel honored a soft stop
 // HELLO_R4 (EX §4.4, SW §6.9): HELLO record word r4
 #define TSR_HELLO_R4_SDK_ABI       0x0000FFFFu  // [15:0] Basis ABI
 #define TSR_HELLO_R4_SDK_ABI_LSB   0u
@@ -1726,7 +1726,7 @@ extern "C" {
 #define TSR_OP_CALL   0x09u  // retired, unit SYNC: EX §7.2: retired (never shipped), never reused
 #define TSR_OP_LD     0x10u  // kept, unit DMA: EX §7.2: DRAM -> SPM, encoding unchanged
 #define TSR_OP_ST     0x11u  // kept, unit DMA: EX §7.2: SPM -> DRAM, encoding unchanged
-#define TSR_OP_DQROW  0x12u  // respec, unit VU, CAPS.DQROW: EX §7.2, VU §5.6: SPM -> f32 dequantisation; simulator and RTL option, not in the release image
+#define TSR_OP_DQROW  0x12u  // respec, unit VU, CAPS.DQROW: EX §7.2, VU §5.6: SPM -> f32 dequantization; simulator and RTL option, not in the release image
 #define TSR_OP_KVST   0x14u  // new, unit DMA, CAPS.ATT: EX §7.2, AT §5.1: store K or V rows into a KV plane
 #define TSR_OP_QACT   0x18u  // kept, unit QACT: EX §7.2: f32 -> QA, encoding unchanged
 #define TSR_OP_MVM    0x20u  // kept, unit MVM: EX §7.2: matrix x activations, encoding unchanged
@@ -1739,7 +1739,7 @@ extern "C" {
 #define TSR_OP_ASMAX  0x34u  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.4: softmax numerator
 #define TSR_OP_AMASK  0x35u  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.5: general mask path
 #define TSR_OP_AMERGE 0x36u  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.6: channel tree and online merge
-#define TSR_OP_ANORM  0x37u  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.7: final normalisation
+#define TSR_OP_ANORM  0x37u  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.7: final normalization
 #define TSR_OP_VMASK  0x38u  // new, unit VU, CAPS.VMASK: EX §7.2, VU §5.7: position-window mask; not implemented (ILLEGAL_OP)
 #define TSR_OP_GDN    0x39u  // new, unit VU, CAPS.GDN: EX §7.2, VU §7.12: fused Gated DeltaNet state update of one head
 #define TSR_OP_SOP    0x40u  // respec, unit VU, CAPS.VU: EX §7.2, VU §5.8: scalar op on s0..s15

@@ -1,5 +1,5 @@
 // libc.cpp — the four C library functions a freestanding GCC may call on its own (struct and array
-// copies and initialisations; docs/design/06-software-verification.md "SW" §6.1: no libc, libgcc only).
+// copies and initializations; docs/design/06-software-verification.md "SW" §6.1: no libc, libgcc only).
 // Plain loops, word-wise (4 words per step) when both pointers and the size are word aligned.
 // Compiled without loop-pattern recognition, so GCC does not turn the loops back into calls to
 // themselves.

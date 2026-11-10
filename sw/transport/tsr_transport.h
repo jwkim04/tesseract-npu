@@ -32,7 +32,7 @@
 // count device time (core cycles at the nominal 276.3 MHz kernel clock), so results and recoveries
 // do not depend on host load; on xrt they count host time (CLOCK_MONOTONIC).
 //
-// Threads: one mutex per transport serialises every call (EX §2.4). tsr_transport_wait releases it
+// Threads: one mutex per transport serializes every call (EX §2.4). tsr_transport_wait releases it
 // between polls, so another thread of the owning process (DB's in-process debug service) can use
 // the device while a launch waits. The event callback runs on the waiting thread with the mutex
 // held; it may call the transport (the mutex is recursive).
@@ -217,7 +217,7 @@ int tsr_transport_poll(tsr_transport * t, uint32_t seq, tsr_record * rec);
 // A debugger is attached (DB §4.1, §6.3): every wait reads DBG_STATUS / DBG_CFG at its backoff
 // polls (no timeout while the hart is halted, a tile stop is active or SERIAL is on), and a TRAP
 // record leaves the device TRAPPED for the debugger instead of the warm restart (as TSR_GDB_WAIT).
-// 0 restores the environment's behaviour. Boot waits (HELLO, TSR_BOOT_MS) never count time while
+// 0 restores the environment's behavior. Boot waits (HELLO, TSR_BOOT_MS) never count time while
 // STATUS.RV_HALTED = 1 (halt-on-boot, DB §3.8), with or without this call.
 int tsr_transport_set_debugger(tsr_transport * t, int attached);
 

@@ -130,7 +130,7 @@ float tsr_m_expk(float v, unsigned kappa) {
     // 10. M = 2^frac in Q1.30, in [2^30, 2^31].
     const uint64_t t64 = k_expk_t64[j];
     const uint64_t M = t64 + ((t64 * PF) >> 32);
-    // 11. Normalise.
+    // 11. Normalize.
     uint32_t drop = 7u;
     if (M >= (1ull << 31)) {
         drop = 8u;

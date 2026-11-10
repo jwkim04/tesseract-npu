@@ -8,7 +8,7 @@
 // before HELLO): PING, three good kernel launches, one whose LD is out of range (TILE_ERR with
 // DEP_FAILED / ABORTED behind it), an unknown TYPE, a kernel index beyond the table (BAD_DESC)
 // and a last PING. Scenario A captures with tsr_sim_capture_launch and, at the same time, with
-// TSR_TRACE (tsr_sim_opts.trace_dir); the image is synthesised from the loader's writes.
+// TSR_TRACE (tsr_sim_opts.trace_dir); the image is synthesized from the loader's writes.
 // Scenario B gives the real ELF with tsr_sim_capture_set_image.
 // Checked:
 //   - which launches become traces (5: the LAUNCH descriptors answered by DONE; PINGs and the
@@ -296,7 +296,7 @@ static void scenario_a(const char * elf_path, const char * scratch) {
             char err[256];
             CHECK(tsr_trace2_image_id(t->image, t->image_size, &id, err, sizeof(err)) == 0 && id == t->image_id,
                   "%s: image id is EX §3.2's", tag);
-            CHECK(strcmp(t->kernel, "") == 0, "%s: a synthesised image has no kernel table", tag);
+            CHECK(strcmp(t->kernel, "") == 0, "%s: a synthesized image has no kernel table", tag);
             if (i == 4) {                                                  // kernel 3: BAD_DESC, nothing pushed
                 CHECK(t->done.status == TSR_LCQ_R0_STATUS_BAD_DESC && t->done.err_ticket_rel == TSR_TICKET_NONE && t->n_push == 0 &&
                       t->mem.n_init == 0 && t->mem.n_expect == 0, "%s: BAD_DESC launch", tag);

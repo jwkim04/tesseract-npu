@@ -3,7 +3,7 @@
 // One process owns the device (xrt::ip is exclusive, EX §2.4), so the debugger runs inside it: the
 // transport starts this service at open when TSR_GDB=tcp:<port>|unix:<path> or TSR_DEBUGGER=
 // sock:<path> is set (tsr_transport_set_debug_service, registered by embed_install). Its threads
-// use the device through the transport like any caller (the transport's mutex serialises every
+// use the device through the transport like any caller (the transport's mutex serializes every
 // access; the owner's waits release it between polls):
 //   gdb   an RSP server (rsp.cpp) accepting one GDB at a time, again after each session;
 //   cli   a Unix socket for tsr-dbg attach: one command line per request, the monitor's output

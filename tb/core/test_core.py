@@ -16,7 +16,7 @@ core_smoke  the host loads tb/core/fw/fw_core.c (crt0 / link.ld of tb/ctrl) and 
             write (both results, the SPM image, the inputs untouched), no DRAM write outside the store
             targets, and the final CSR state (STATUS's schedule-independent bits, RT_*, LCQ / log
             pointers and contents, Q_DONE / Q_ISSUED / Q_ERR_CODE per unit, Q_PIDX, Q_FIFO).
-            The memory model randomises latency, back-pressure and response interleaving.
+            The memory model randomizes latency, back-pressure and response interleaving.
 core_db the DB block in the core: the same firmware with the DBG block configured through the host
             port before the boot: DBG_ID, the DMI gate (a DMI write with DMI_EN = 0 sets DMI_BLOCKED, W1C;
             with DMI_EN = 1 dmcontrol / dmstatus through the RTL debug module), the dispatch history, the trace

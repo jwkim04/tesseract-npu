@@ -27,7 +27,7 @@ pytest functions (test_*):
   test_fp_add[LAT]      cocotb on tsr_fp_add, LAT 1..8: fp_add_stages (cut registers per LAT,
                         [IN] = raw operands), fp_add_vectors (ADD_DIRECTED + add_vectors: every
                         exponent difference 0..40 / 64 / 126 / 150 / 253, RNE ties at every
-                        alignment distance 1..24 with +-1 ulp neighbours, cancellation, FTZ /
+                        alignment distance 1..24 with +-1 ulp neighbors, cancellation, FTZ /
                         2^-126 boundary, overflow, carry, specials; ~32 k results; random ce incl.
                         long ce = 0 bursts and in_valid gaps against a LAT-deep cycle model,
                         out_valid / y hold while ce = 0), fp_add_throughput (512 back-to-back
@@ -272,7 +272,7 @@ ADD_DIRECTED = [
     (0x3F800000, 0x33800000, 0, 0x3F800000),   # 1 + 2^-24: tie -> 1
     (0x3F800001, 0x33800000, 0, 0x3F800002),   # tie, odd -> up
     (0x3F800000, 0x33800001, 0, 0x3F800001),   # above the tie
-    (0x3F800000, 0x33800000, 1, 0x3F7FFFFF),   # 1 - 2^-24 exact (one-bit left normalisation)
+    (0x3F800000, 0x33800000, 1, 0x3F7FFFFF),   # 1 - 2^-24 exact (one-bit left normalization)
     (0x3F800000, 0x33000000, 1, 0x3F800000),   # 1 - 2^-25: tie below 1 -> 1 (even)
     (0x3F800000, 0x33000001, 1, 0x3F7FFFFF),   # just above the tie -> down
     # operands 2^-126 / 2^126 apart, d >= 26 (everything in the sticky bit)
@@ -347,7 +347,7 @@ def pair_vectors(r: random.Random, n_per_class: int, div: bool):
 def add_vectors(r: random.Random, n_per_class: int):
     """(a, b, sub) triples for tsr_fp_add, the classes of fp_sweep.cpp `add` in small numbers plus
     every exponent difference 0..30 / 31..40 / 64 / 126 / 253 and RNE ties at every alignment
-    distance 1..24 (with +-1 ulp neighbours), for both effective operations."""
+    distance 1..24 (with +-1 ulp neighbors), for both effective operations."""
     out = []
 
     def push(a, b, sub=None):

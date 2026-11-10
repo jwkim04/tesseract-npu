@@ -12,7 +12,7 @@ marked estimate are design figures.
 ## 1. Scope
 
 Area DB owns: the debug semantics of the RISC-V (debug module use, halt, step, breakpoint and watchpoint
-behaviour, halt-on-boot, halt-on-launch), the GDB RSP server, tile-level debug (stop points, QSTEP, serial
+behavior, halt-on-boot, halt-on-launch), the GDB RSP server, tile-level debug (stop points, QSTEP, serial
 mode, tile breakpoints and watchpoints, dispatch history, unit probes), the log record format, the crash dump
 and trap record, hang triage and the recovery ladder, the profiler (completion records, hardware trace writer,
 timeline format, TSR_STATS, DB's PERF slots), the debug parts of the simulator and of `tsr-dbg`, and the DBG
@@ -53,7 +53,7 @@ outside the core; every CSR access completes in bounded time.
 | Layer | Stops | Observes | Changes |
 |---|---|---|---|
 | RISC-V debug (§3, §4) | the hart | GPRs, CSRs, TCMs, SPM, windows (SBA) | GPRs, CSRs, TCMs, SPM |
-| Tile debug (§5) | queue heads at a push index; one op at a time; all ops serialised | history, unit probes, `Q_*` (EX), s registers | nothing (D15) |
+| Tile debug (§5) | queue heads at a push index; one op at a time; all ops serialized | history, unit probes, `Q_*` (EX), s registers | nothing (D15) |
 | Log and crash (§6) | | firmware records, trap record, crash dump | |
 | Profiler (§8) | | PERF, records, trace ring, PC samples | |
 
@@ -95,7 +95,7 @@ Ibex `debug_req_i` = DM request ∨ `dbg_req_rv`.
 - Sources (each only while `DBG_CFG.RV_HALT_EN` = 1): a tile stop that becomes active with
   `DBG_CFG.STOP_HALT_RV` or a matching `DBG_TBPi_CTL.HALT_RV` (§5.2); an RV watchpoint with `HALT` (§3.7);
   `DBG_CFG.HALT_ON_BOOT` at the release of the RISC-V reset (§3.8).
-- Mechanism. Core-domain sources send a request toggle (2-flop synchroniser into clk_rv). In clk_rv, `pend` is
+- Mechanism. Core-domain sources send a request toggle (2-flop synchronizer into clk_rv). In clk_rv, `pend` is
   set by a toggle change, an RV-watchpoint hit, or the reset release with HALT_ON_BOOT; it is cleared by the
   clk_rv-local `RV_HALTED` or by `DBG_CTRL.RV_HALT_CANCEL`. `dbg_req_rv` = `pend` ∧ ¬`RV_HALTED`. One request
   gives one halt; resuming never re-halts on a stale request. `DBG_STATUS.RV_HALT_PEND` mirrors `pend`.
@@ -712,7 +712,7 @@ LO, HI) at open and every second and fitting offset and drift.
 
 ### 8.5 RISC-V profiling
 
-PC sampling through `RV_SAMPLE` (§6.2): `tsr-dbg rv sample` takes samples symbolised with the ELF. `mcycle` and
+PC sampling through `RV_SAMPLE` (§6.2): `tsr-dbg rv sample` takes samples symbolized with the ELF. `mcycle` and
 `minstret` are available through GDB; Ibex `mhpmcounter`s stay off (`MHPMCounterNum` 0, CC). Push stalls: EX's
 `PUSH_STALL`; WFI time: EX's `RV_WFI`.
 
@@ -745,7 +745,7 @@ PC sampling through `RV_SAMPLE` (§6.2): `tsr-dbg rv sample` takes samples symbo
 
 | Feature | sim (SW's `tsr_rv` + `tsr_q` + `tsr_dm` + `tsr_dbg`) | vkernel | xrt |
 |---|---|---|---|
-| DMI, DM | behavioural DM (`sw/sim/tsr_dm.c`, SW §3) implementing the DMI profile below; abstract commands act on the interpreter; the program buffer runs in the interpreter in debug mode | RTL riscv-dbg | RTL |
+| DMI, DM | behavioral DM (`sw/sim/tsr_dm.c`, SW §3) implementing the DMI profile below; abstract commands act on the interpreter; the program buffer runs in the interpreter in debug mode | RTL riscv-dbg | RTL |
 | SBA | the RV bus model with CC's refusals | RTL | RTL |
 | Halt, step, triggers, `ebreak`, RV watchpoints | exact (watchpoints halt right after the access) | RTL (at most 1 instruction later) | RTL |
 | Stop logic, QSTEP, serial, TBPs | queue model, §5 semantics exactly | RTL | RTL |
@@ -759,7 +759,7 @@ authenticated); `hartinfo` (0x12); `abstractcs` (0x16: progbufsize, busy, cmderr
 Access Register as §3.5, postexec-only); `progbuf0`–`7` (0x20–0x27); `sbcs` (0x38); `sbaddress0` (0x39);
 `sbdata0` (0x3C).
 
-Stepping: the standalone server runs the simulator in chunks of at most 10 K modelled cycles while polling the
+Stepping: the standalone server runs the simulator in chunks of at most 10 K modeled cycles while polling the
 GDB socket; accesses from the embedded service are applied between chunks under the simulator's lock. With a
 fixed schedule a GDB session on `sim` is reproducible.
 
@@ -931,7 +931,7 @@ columns. `HAS_TRW` and `HIST_DEPTH` can drop without changing any contract (`DBG
 | DB-15 | PERF semantics: EX's ACTIVE and QHALT gating and counter list; DB adds TRW_RECORDS, TRW_DROPS, DBG_STOP_CYCLES in slots 61–63 | Exact windows; debugged measurements are detectable |
 | DB-16 | Timeline transport: a hardware trace writer with 32-byte records to a DRAM ring through a second tsr_mem_arb write source on TRW_CH = 0 (ring in the ch0 IO region); REC stays for firmware | MMIO and firmware streaming are too slow or perturb the measured phases |
 | DB-17 | Who runs the server: the device-owning process (embedded service) or tsr-dbg when nothing else owns the device | xrt::ip contexts are exclusive |
-| DB-18 | Simulator debug model: a behavioural DM covering the DMI profile, with exact stop, history and trace-writer semantics | Behaviour is identical where the server looks |
+| DB-18 | Simulator debug model: a behavioral DM covering the DMI profile, with exact stop, history and trace-writer semantics | Behavior is identical where the server looks |
 | DB-19 | Watchdog: EX's progress watchdog; DB adds HUNG_STOP, a history freeze and per-unit AGE probes | One watchdog is enough |
 | DB-20 | Recovery: a 5-level ladder: dump, debug release, LQ_CANCEL, SOFT_RESET with warm restart, card reset; DB's evidence survives every level below a card reset | Post-mortem data exists before any destructive step |
 | DB-21 | Host access to the s registers: SREG0-15 at 0x9C0-0x9FC (in the DBG range, present whenever the VU is built), the one read location for host and RISC-V | EX uses 0x0C0 for LOAD_ADDR; one location for every reader |

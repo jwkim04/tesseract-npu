@@ -48,9 +48,9 @@ header trees (`verify/hdrcheck.sh`). Each patch's commit message has the full re
 | 0019 | p2p: set every page of a remapped P2P BAR chunk to refcount 1 after `devm_memremap_pages()` (without it a CPU access to a mapped P2P BO is a SIGBUS) | kernel >= 6.15 |
 
 Except for 0006 and 0019, which would still compile without the patch but fail at run time, the patches leave the
-behaviour of 6.8 unchanged. 0019 has no header macro to guard on, because the kernel change is inside `mm/mm_init.c`,
+behavior of 6.8 unchanged. 0019 has no header macro to guard on, because the kernel change is inside `mm/mm_init.c`,
 so it uses a version guard checked against the mainline sources (v6.14 against v6.15). Upstream XRT's own changes that
-alter behaviour (the CRC, ida ranges, ulite NUL bytes, the remove warning, the DRM log macros) are not used as they
+alter behavior (the CRC, ida ranges, ulite NUL bytes, the remove warning, the DRM log macros) are not used as they
 are.
 
 ## Applying it (needs sudo)
@@ -83,7 +83,7 @@ are.
    `/etc/udev/rules.d/`, run `sudo udevadm control --reload-rules`, `sudo modprobe xclmgmt && sudo modprobe xocl` and
    `sudo udevadm trigger`.
 
-Do not `apt install --reinstall` the deb afterwards, because it restores the unpatched `/usr/src` tree. After a
+Do not `apt install --reinstall` the deb afterward, because it restores the unpatched `/usr/src` tree. After a
 reinstall or upgrade of the same version, repeat steps 2 to 4.
 
 ## Checks on the card

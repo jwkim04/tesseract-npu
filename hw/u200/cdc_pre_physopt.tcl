@@ -1,4 +1,4 @@
-# Rebind the linked CDC constraints before physical optimisation. Independent
+# Rebind the linked CDC constraints before physical optimization. Independent
 # of placement policy and also active when TSR_U200_FLOORPLAN=0.
 set tsr_cdc_physopt_dir [file dirname [file normalize [info script]]]
 source $tsr_cdc_physopt_dir/clock_net_check.tcl

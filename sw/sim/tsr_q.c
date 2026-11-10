@@ -467,7 +467,7 @@ uint32_t tsr_q_csr_read(const tsr_sim * sim, uint32_t off) {
 
 // ---------------------------------------------------------------------------
 // RISC-V-side view of the core state under the random schedule (tsr_sim_int.h §5b, CC §5.1,
-// §11.2): the synchronised copies trail the core by a crossing per change, in order.
+// §11.2): the synchronized copies trail the core by a crossing per change, in order.
 // ---------------------------------------------------------------------------
 static void view_capture(const tsr_sim * sim, tsr_rvview * v) {
     memset(v, 0, sizeof(*v));
@@ -554,7 +554,7 @@ void tsr_q_view_flush(tsr_sim * sim) {
 }
 
 // The clk_rv side's credit (CC §7.3) and issue-FIFO free entries from the view: ISSUED_SEQ and the
-// FIFO write count are its own; S[u] and the FIFO read count are the synchronised copies.
+// FIFO write count are its own; S[u] and the FIFO read count are the synchronized copies.
 static uint32_t fifo_free_rv(const tsr_sim * sim) {
     if (!sim->view_on) return TSR_ISSUE_FIFO_DEPTH - sim->f_n;
     const uint32_t used = sim->f_in - view_cur(sim)->f_out;
@@ -1129,7 +1129,7 @@ static int qidle_rv(const tsr_sim * sim, const tsr_rvview * v) {
 
 static uint32_t q_cw_read(const tsr_sim * sim, uint32_t off) {
     if (off < TSR_CW_ISSUE_W(8)) return sim->iss_w[off / 4];
-    const tsr_rvview * vw = sim->view_on ? view_cur(sim) : NULL;   // random: the synchronised copies
+    const tsr_rvview * vw = sim->view_on ? view_cur(sim) : NULL;   // random: the synchronized copies
     if (off >= TSR_CW_DONE_SEQ(0) && off < TSR_CW_DONE_SEQ(TSR_UNIT_SLOTS)) {
         const uint32_t u = (off - TSR_CW_DONE_SEQ(0)) / 4;
         if (!built(sim, u)) return 0;
@@ -1350,7 +1350,7 @@ uint32_t tsr_sim_qctrl(tsr_sim * sim, uint32_t bits) {
 }
 
 // Interrupt levels (CC §12.3) as an Ibex mip mask; under the random schedule from the clk_rv
-// side's synchronised copies (tsr_sim_int.h §5b).
+// side's synchronized copies (tsr_sim_int.h §5b).
 uint32_t tsr_sim_rv_irq(tsr_sim * sim) {
     view_apply(sim);
     uint32_t m = 0;

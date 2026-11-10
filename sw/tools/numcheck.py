@@ -1525,7 +1525,7 @@ def mm_section(nat: Native, model: GGUFModel, runs: dict, args) -> dict:
             continue
         if layers is not None and weight_layer(nd["weight"]) not in layers:
             continue
-        if nd["op"] != "MUL_MAT":        # the dumper also tags MUL_MAT_ID (MoE experts): not modelled here
+        if nd["op"] != "MUL_MAT":        # the dumper also tags MUL_MAT_ID (MoE experts): not modeled here
             out.append({"i": nd["i"], "name": nd["name"], "weight": nd["weight"], "backend": nd.get("backend"),
                         "layer": weight_layer(nd["weight"]), "skip": f"op {nd['op']} is not checked (B covers MUL_MAT)"})
             continue

@@ -59,7 +59,7 @@ and their style guide are in [fig/src](fig/src/STYLE.md).
 - The KV cache is Q8_0. Other KV types run on the CPU with `-nkvo`. The attention rotation must be off (`LLAMA_ATTN_ROT_DISABLE=1`).
 - Attention with ALiBi, logit softcap, sinks or K-shift is not supported on the device. Context shift and defragmentation of the device KV cache are refused.
 - Flash attention for a prefill ubatch of more than 680 tokens runs on the CPU.
-- A mixture-of-experts router runs on the device only for softmax gating with top-k selection and weights normalised by their sum. Other routers run on the CPU and the experts still run on the device.
+- A mixture-of-experts router runs on the device only for softmax gating with top-k selection and weights normalized by their sum. Other routers run on the CPU and the experts still run on the device.
 - Prefill of a mixture-of-experts layer runs one matrix product per token and expert slot. Tokens are not grouped by expert.
 - Gated DeltaNet and multi-token prediction are checked with one sequence per ubatch. Several sequences with snapshots in one ubatch, vision positions and the KDA gate run on the CPU or are not checked.
 - A model that combines mixture-of-experts layers and Gated DeltaNet layers has not been tested.

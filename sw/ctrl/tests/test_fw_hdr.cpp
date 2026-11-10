@@ -822,7 +822,7 @@ struct ring_model {
 };
 
 // The reference spm_ring (a 5-word record per block, the fold over 16 units, one code
-// path) with the table at spm_ring::MAX_BLOCKS: the reference for the optimised ring.
+// path) with the table at spm_ring::MAX_BLOCKS: the reference for the optimized ring.
 // Every step must give the same block and must_wait and the same software joins (the
 // joined tickets, in order: spm_ring::join_hook). It records the tickets it would join instead of
 // joining them (the ring under test has joined them by then).

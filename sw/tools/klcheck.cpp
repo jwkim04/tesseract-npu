@@ -1746,7 +1746,7 @@ static int cmd_all(int argc, char ** argv, const char * self) {
     }
     if (model.empty()) die("all: -m is required");
     if (!device_kind_ok(device)) die("all: --device %s: sim, mock, vkernel, xrt or cpu", device.c_str());
-    // without -o: a private temporary directory, removed afterwards (concurrent ctest runs)
+    // without -o: a private temporary directory, removed afterward (concurrent ctest runs)
     const bool tmp_dir = dir.empty();
     if (tmp_dir) {
         const char * t = getenv("TMPDIR");

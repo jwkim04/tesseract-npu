@@ -3,7 +3,7 @@
 // run by tb/vu/test_vu_arith.py; manual use:
 //   vu_lane_sweep vop <n> <seed>     every VOP function (VU §5.2), n elements each: (a, b, c) from an edge-heavy
 //                                    distribution, against tsr_ref_vop_elem (front or back exit by the rate)
-//   vu_lane_sweep gelu16 <seed>      GELU16 and GEGLU16 over all 65,536 fp16 inputs (and their f32 neighbours
+//   vu_lane_sweep gelu16 <seed>      GELU16 and GEGLU16 over all 65,536 fp16 inputs (and their f32 neighbors
 //                                    ±1 ulp, the ±10 clamp edges, fp16 subnormals), GEGLU16 with random b
 //   vu_lane_sweep at <n> <seed>      U_ASMAX, U_ESCB, U_AMASK, U_RCPMAX, U_ROT (both signs)
 //                                    against the compositions of AT §5.4-§5.7 / VU §6.7-§6.8 in libtsr_ref

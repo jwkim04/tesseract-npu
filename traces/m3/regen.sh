@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # traces/m3/regen.sh [BUILD_DIR] — the m3 regression traces as `ops` traces (docs/design/
-# 06-software-verification.md §5.6): tsr-trace-gen --ops m3 (MVM-centred groups mixed with the m2
+# 06-software-verification.md §5.6): tsr-trace-gen --ops m3 (MVM-centered groups mixed with the m2
 # QACT / copy groups), with fixed seeds and configurations, then
 # every trace replayed under the fixed and two random schedules (race detector fatal),
 # tile-only and through the replay kernel (one launch per trace: SPM_STALE is fatal, SW §4.6). The

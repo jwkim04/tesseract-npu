@@ -6,7 +6,7 @@
 //    quantize_row_q8_K_ref (not from tsr_qact), decodes scales with explicit bit slicing, and
 //    does f32 arithmetic through double (exact products; one RNE rounding to f32, which is
 //    innocuous for +,-,* since 53 >= 2*24+2) with DAZ/FTZ/NaN rules via fpclassify.
-// 2. Close to a double-precision reference sum_k w_k * x_k (w = dequantised weight in double,
+// 2. Close to a double-precision reference sum_k w_k * x_k (w = dequantized weight in double,
 //    x = Dx * q_x): |y - ref| <= 1e-5 * sum_k (|w-terms| * |x_k|).
 
 #include <float.h>

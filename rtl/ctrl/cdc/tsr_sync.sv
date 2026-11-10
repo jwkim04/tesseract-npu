@@ -1,4 +1,4 @@
-// tsr_sync.sv — W-bit level synchroniser into the clock `clk` (CC §11.2 "Levels", §11.3).
+// tsr_sync.sv — W-bit level synchronizer into the clock `clk` (CC §11.2 "Levels", §11.3).
 //
 // Spec: CC §2.2, §11. Generic and vendor-independent: the Xilinx
 // ASYNC_REG property is set by the constraints (rtl/ctrl/viv/tsr_ctrl_cdc.xdc: every cell named

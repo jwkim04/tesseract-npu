@@ -227,7 +227,7 @@ constexpr uint32_t CSR_Q_DONE_BASE   = 0xE00u;  // [R] EX §5.4: DONE_SEQ[u], 28
 constexpr uint32_t CSR_Q_DONE_N      = 8u;
 constexpr uint32_t CSR_Q_DONE_STRIDE = 4u;
 constexpr uint32_t CSR_Q_DONE(uint32_t i) { return 0xE00u + 4u * i; }
-constexpr uint32_t CSR_Q_ISSUED_BASE   = 0xE20u;  // [R] EX §5.4: ISSUED_SEQ[u], 28 bits (synchronised copy)
+constexpr uint32_t CSR_Q_ISSUED_BASE   = 0xE20u;  // [R] EX §5.4: ISSUED_SEQ[u], 28 bits (synchronized copy)
 constexpr uint32_t CSR_Q_ISSUED_N      = 8u;
 constexpr uint32_t CSR_Q_ISSUED_STRIDE = 4u;
 constexpr uint32_t CSR_Q_ISSUED(uint32_t i) { return 0xE20u + 4u * i; }
@@ -383,7 +383,7 @@ constexpr uint32_t CW_ISSUE_CREDIT     = 0x030u;       // [R] CC §5.1: credit p
 constexpr uint32_t CW_ISSUE_UNITS      = 0x034u;       // [R] CC §5.1: bit u = unit u is built
 constexpr uint32_t CW_ISSUE_STATUS     = 0x038u;       // [R/W1C] CC §5.1: push timeout and error interrupt
 constexpr uint32_t CW_ISSUE_PIDX       = 0x03Cu;       // [R] CC §5.1: push index the next ticketed entry will receive (+1 per ISSUE_PUSH and QCLEAR); exact
-constexpr uint32_t CW_DONE_SEQ_BASE    = 0x040u;       // [R] CC §5.1: [27:0] completions of unit u (synchronised copy; may lag, never leads)
+constexpr uint32_t CW_DONE_SEQ_BASE    = 0x040u;       // [R] CC §5.1: [27:0] completions of unit u (synchronized copy; may lag, never leads)
 constexpr uint32_t CW_DONE_SEQ_N       = 8u;
 constexpr uint32_t CW_DONE_SEQ_STRIDE  = 4u;
 constexpr uint32_t CW_DONE_SEQ(uint32_t i) { return 0x040u + 4u * i; }
@@ -450,7 +450,7 @@ constexpr uint32_t CW_LOG_CFG           = 0x288u;       // [R] EX §4.5: copy of
 constexpr uint32_t CW_RT_STATE          = 0x290u;       // [RW] EX §4.5: runtime phase, mirrored to host 0x038; 0 after a RISC-V reset
 constexpr uint32_t CW_RT_STATE_RESET    = 0x00000000u;
 constexpr uint32_t CW_RT_INFO           = 0x294u;       // [RW] EX §4.5: runtime- or kernel-defined progress word, mirrored to host 0x03C
-constexpr uint32_t CW_MTIME_LO          = 0x300u;       // [R] CC §5.2: core clock cycles since reset (gray-synchronised)
+constexpr uint32_t CW_MTIME_LO          = 0x300u;       // [R] CC §5.2: core clock cycles since reset (gray-synchronized)
 constexpr uint32_t CW_MTIME_HI          = 0x304u;       // [R] CC §5.2
 constexpr uint32_t CW_MTIMECMP_LO       = 0x308u;       // [RW] CC §5.2: irq_timer while MTIME >= MTIMECMP
 constexpr uint32_t CW_MTIMECMP_LO_RESET = 0xFFFFFFFFu;
@@ -964,9 +964,9 @@ constexpr uint32_t LCQ_R0_STATUS_TILE_ERR   = 1u;           // the first error h
 constexpr uint32_t LCQ_R0_STATUS_BAD_DESC   = 2u;           // the descriptor was refused; the kernel did not run
 constexpr uint32_t LCQ_R0_STATUS_KERNEL_ERR = 3u;           // RET < 0, no tile error
 constexpr uint32_t LCQ_R0_STATUS_TRAP       = 4u;           // TRAP records only
-constexpr uint32_t LCQ_R0_STATUS_ABORTED    = 5u;           // cancelled (ERR_CODE 0), or the first error is ABORTED (ERR_CODE 8)
+constexpr uint32_t LCQ_R0_STATUS_ABORTED    = 5u;           // canceled (ERR_CODE 0), or the first error is ABORTED (ERR_CODE 8)
 constexpr uint32_t LCQ_R0_STATUS_PLAT_ERR   = 6u;           // STATUS.PLAT_ERR was set when the runtime answered
-constexpr uint32_t LCQ_R0_STATUS_STOPPED    = 7u;           // the kernel honoured a soft stop
+constexpr uint32_t LCQ_R0_STATUS_STOPPED    = 7u;           // the kernel honored a soft stop
 // HELLO_R4 (EX §4.4, SW §6.9): HELLO record word r4
 constexpr uint32_t HELLO_R4_SDK_ABI       = 0x0000FFFFu;  // [15:0] Basis ABI
 constexpr uint32_t HELLO_R4_SDK_ABI_LSB   = 0u;
@@ -1757,7 +1757,7 @@ constexpr uint32_t OP_JUMP   = 0x08u;  // retired, unit SYNC: EX §7.2: retired,
 constexpr uint32_t OP_CALL   = 0x09u;  // retired, unit SYNC: EX §7.2: retired (never shipped), never reused
 constexpr uint32_t OP_LD     = 0x10u;  // kept, unit DMA: EX §7.2: DRAM -> SPM, encoding unchanged
 constexpr uint32_t OP_ST     = 0x11u;  // kept, unit DMA: EX §7.2: SPM -> DRAM, encoding unchanged
-constexpr uint32_t OP_DQROW  = 0x12u;  // respec, unit VU, CAPS.DQROW: EX §7.2, VU §5.6: SPM -> f32 dequantisation; simulator and RTL option, not in the release image
+constexpr uint32_t OP_DQROW  = 0x12u;  // respec, unit VU, CAPS.DQROW: EX §7.2, VU §5.6: SPM -> f32 dequantization; simulator and RTL option, not in the release image
 constexpr uint32_t OP_KVST   = 0x14u;  // new, unit DMA, CAPS.ATT: EX §7.2, AT §5.1: store K or V rows into a KV plane
 constexpr uint32_t OP_QACT   = 0x18u;  // kept, unit QACT: EX §7.2: f32 -> QA, encoding unchanged
 constexpr uint32_t OP_MVM    = 0x20u;  // kept, unit MVM: EX §7.2: matrix x activations, encoding unchanged
@@ -1770,7 +1770,7 @@ constexpr uint32_t OP_TOPK   = 0x33u;  // respec, unit VU, CAPS.TOPK: EX §7.2, 
 constexpr uint32_t OP_ASMAX  = 0x34u;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.4: softmax numerator
 constexpr uint32_t OP_AMASK  = 0x35u;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.5: general mask path
 constexpr uint32_t OP_AMERGE = 0x36u;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.6: channel tree and online merge
-constexpr uint32_t OP_ANORM  = 0x37u;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.7: final normalisation
+constexpr uint32_t OP_ANORM  = 0x37u;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.7: final normalization
 constexpr uint32_t OP_VMASK  = 0x38u;  // new, unit VU, CAPS.VMASK: EX §7.2, VU §5.7: position-window mask; not implemented (ILLEGAL_OP)
 constexpr uint32_t OP_GDN    = 0x39u;  // new, unit VU, CAPS.GDN: EX §7.2, VU §7.12: fused Gated DeltaNet state update of one head
 constexpr uint32_t OP_SOP    = 0x40u;  // respec, unit VU, CAPS.VU: EX §7.2, VU §5.8: scalar op on s0..s15

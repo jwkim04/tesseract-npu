@@ -20,7 +20,7 @@
 // Kernel bandwidth = bytes / (cycles / f_clk), cycles counted by the kernel from its first request
 // to its last response (docs/bandwidth-kernel.md §3), so launch overheads are excluded; the wall-clock rate
 // (xrt::run start .. wait) is printed next to it.
-// --mock runs everything against a C++ model of the kernel's documented behaviour (no XRT device):
+// --mock runs everything against a C++ model of the kernel's documented behavior (no XRT device):
 // a smoke test of the tool itself; TSR_BW_MOCK_FAULT=csum|write|status|bytes makes the model
 // misbehave so that the checks can be seen to fire. --dry-run only opens the device (xclbin, kernel,
 // arguments, buffers) and completes one empty run (also on XRT's no-op shim: tb/platform/bw/noop).
@@ -312,7 +312,7 @@ public:
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-    // read_register is deprecated in XRT 2.18 in favour of xrt::ip, which cannot share a compute
+    // read_register is deprecated in XRT 2.18 in favor of xrt::ip, which cannot share a compute
     // unit with xrt::run; it is the supported path for an exclusive kernel (docs/xrt-host.md §4.1).
     uint32_t reg(uint32_t off) override { return krn_.read_register(off); }
     // Read AP_CTRL (no run outstanding) until ap_idle with no start pending, for at most ms (0: one
@@ -351,7 +351,7 @@ private:
     std::string clock_name_, info_;
 };
 
-// ---- mock: the kernel's documented behaviour (docs/bandwidth-kernel.md §2, §3) in C++, no device ----
+// ---- mock: the kernel's documented behavior (docs/bandwidth-kernel.md §2, §3) in C++, no device ----
 class MockDev final : public BwDev {
 public:
     explicit MockDev(uint64_t ch_bytes) : ch_bytes_(ch_bytes) {

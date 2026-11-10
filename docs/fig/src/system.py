@@ -26,7 +26,7 @@ Clocks: the core clock is 200 MHz and clk_rv 100 MHz, from ap_clk_2, the second 
 (docs/platform-u200.md §8.3, CC §11.1). The weight stream is 64 B per cycle: 64 B x 200 MHz =
 12.8 GB/s per channel (docs/spec.md §1, design principles). DDR4 ch0 holds the op lists (OPL), the IO window and the
 AUX tensors besides its quarter of the weights (EX §11).
-Layout: the arrows of each channel column run 32 left of its centre, so the SLR tag on the right of
+Layout: the arrows of each channel column run 32 left of its center, so the SLR tag on the right of
 a block's top edge stays clear of them.
 
 Run: build/tools/svgvenv/bin/python docs/fig/src/system.py      (TSR_FIG_THEME=dark: system-dark.svg)
@@ -42,8 +42,8 @@ CX0, CX1 = 256, 1344                  # shell strip and tsr_core region
 SX0, COLW = 320, 240                  # per-channel slices: 4 columns of 240, x 320..1280
 BW = 196                              # slice block width
 COL = [SX0 + COLW * c + COLW / 2 for c in range(4)]          # 440, 680, 920, 1160
-AX = [x - 32 for x in COL]            # arrows of column c (left of centre, clear of the SLR tag)
-LX, RX = PX0 / 2, (PX1 + W) / 2       # callout centres in the left / right margins
+AX = [x - 32 for x in COL]            # arrows of column c (left of center, clear of the SLR tag)
+LX, RX = PX0 / 2, (PX1 + W) / 2       # callout centers in the left / right margins
 
 # SLR of each block under the Pblock plan (hw/u200/k4_major_blocks.tcl; DDR4 from platforminfo)
 SLR_CL = ["SLR0", "SLR2", "SLR0", "SLR2"]       # clusters 0 and 2 in SLR0, 1 and 3 in SLR2

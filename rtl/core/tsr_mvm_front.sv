@@ -47,11 +47,11 @@
 //
 //   - setup: cmd fields are decoded into per-command registers at the accepting edge (chunks per
 //     row, quant beats per full / last chunk, Q8_0 odd remainder) and the parser counters are
-//     initialised from them one cycle later; tsr_mvm_ws starts requesting at the accepting edge
+//     initialized from them one cycle later; tsr_mvm_ws starts requesting at the accepting edge
 //     (its first beat cannot arrive before the parser runs, and the parser only takes beats while
 //     it runs).
 //   - parser: takes a beat from tsr_mvm_ws when it runs and (META beat or P can accept). The
-//     ready towards tsr_mvm_ws is built from flops only (P's registered s_ready), so beat_ready
+//     ready toward tsr_mvm_ws is built from flops only (P's registered s_ready), so beat_ready
 //     never reaches the counters, meta_q or the FIFO.
 //   - meta select (registered index qj_q): Q8_0 meta_q[32j +: 32] (16:1), Q4_K
 //     meta_q[128(j/2) +: 128] (4:1). A META beat may overwrite meta_q while quant beats of the

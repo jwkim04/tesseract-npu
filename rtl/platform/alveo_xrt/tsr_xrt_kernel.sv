@@ -277,7 +277,7 @@ module tsr_xrt_kernel
     .VU_FRONT_LANES(VU_FRONT_LANES), .VU_EXP_LANES(VU_EXP_LANES), .VU_BACK_LANES(VU_BACK_LANES), .VU_LANE_PIPE(VU_LANE_PIPE)
   ) u_core (
     // the control core on ap_clk_2 / ap_rst_n_2 (CC §13.3); the clk_rv domain's own reset is
-    // rst_core_n through tsr_ctrl's synchroniser, ap_rst_n_2 is AND-ed into the Ibex / DM resets
+    // rst_core_n through tsr_ctrl's synchronizer, ap_rst_n_2 is AND-ed into the Ibex / DM resets
     .clk(ap_clk), .rst_n(rst_core_n), .clk_rv(ap_clk_2), .rst_rv_n(ap_rst_n_2),
     .plat_err_i(plat_err), .host_irq_o(host_irq),
     .csr_valid, .csr_ready, .csr_we, .csr_addr, .csr_wdata, .csr_rdata,

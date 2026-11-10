@@ -1,4 +1,4 @@
-// tsr_rv.h — RV32IMC + Zicsr + Zifencei interpreter modelling the control core's Ibex
+// tsr_rv.h — RV32IMC + Zicsr + Zifencei interpreter modeling the control core's Ibex
 // (docs/design/06-software-verification.md "SW" §4.2, SW-1; docs/design/04-control-core.md "CC" §3).
 //
 // The interpreter is the architectural oracle of the RISC-V side: the firmware runs on it inside
@@ -8,7 +8,7 @@
 // SW §4.2). Nothing here depends on host time: cycles are counted by a fixed table (SW §4.2,
 // *estimate*, schedule only, never architectural).
 //
-// Ibex configuration modelled (CC §3.2): the "maxperf" pipeline (WritebackStage 1, BranchTargetALU
+// Ibex configuration modeled (CC §3.2): the "maxperf" pipeline (WritebackStage 1, BranchTargetALU
 // 1, RV32M SingleCycle, CC-34; the "small" cycle table stays selectable), RV32B None, PMPEnable
 // 0, MHPMCounterNum 0, DbgTriggerEn 1 with DbgHwBreakNum 2, DmHaltAddr 0x1000_0800,
 // DmExceptionAddr 0x1000_0808, hart_id 0. Ibex always implements U-mode (misa.U = 1; mstatus.MPP is M or U); the firmware runs

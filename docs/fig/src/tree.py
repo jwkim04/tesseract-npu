@@ -32,14 +32,14 @@ from tsrfig import BAND, INK, INK_SOFT, Fig, fmt  # noqa: E402
 
 W = 1600
 PX0, PX1 = 224, 1376                  # panels; callouts in both 224 margins
-LX, RX = PX0 / 2, (PX1 + W) / 2       # callout centres
+LX, RX = PX0 / 2, (PX1 + W) / 2       # callout centers
 
 # 16 lanes, one per partial
 PITCH, LANE_W = 68, 56
 LANE0 = 256 + (PITCH - LANE_W) / 2
 LANE = [LANE0 + PITCH * j for j in range(16)]          # lane x (left)
-LC = [x + LANE_W / 2 for x in LANE]                    # lane centres
-LV = [LC]                                              # node centres per tree level
+LC = [x + LANE_W / 2 for x in LANE]                    # lane centers
+LV = [LC]                                              # node centers per tree level
 for _ in range(4):
     prev = LV[-1]
     LV.append([(prev[2 * k] + prev[2 * k + 1]) / 2 for k in range(len(prev) // 2)])
@@ -75,7 +75,7 @@ f = Fig("tree", W, H,
 
 def join(fig, xa, xb, y0, xm, y1):
     """Bracket: inputs at (xa, y0) and (xb, y0) meet at mid height, then drop into the fadd
-    node whose top centre is (xm, y1)."""
+    node whose top center is (xm, y1)."""
     ym = (y0 + y1) / 2
     fig.raw(f'<polyline points="{fmt(xa)},{fmt(y0)} {fmt(xa)},{fmt(ym)} {fmt(xb)},{fmt(ym)} '
             f'{fmt(xb)},{fmt(y0)}" fill="none" stroke="{INK}" stroke-width="2" '

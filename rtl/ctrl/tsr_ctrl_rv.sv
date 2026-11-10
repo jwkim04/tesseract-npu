@@ -37,7 +37,7 @@
 //   cleared by RV_HALTED or dbg_halt_cancel, which take precedence;
 //   dbg_req_rv = pend AND NOT RV_HALTED.
 // Resets: rst_n = the clk_rv domain reset (ap_rst_n through tsr_rst_sync, synchronous use here);
-// rst_ext_n = ap_rst_n_2 synchronised (AND-ed into the Ibex / DM resets only).
+// rst_ext_n = ap_rst_n_2 synchronized (AND-ed into the Ibex / DM resets only).
 
 module tsr_ctrl_rv
   import tsr_tables_pkg::*;
@@ -62,7 +62,7 @@ module tsr_ctrl_rv
   input  logic                      clk,
   input  logic                      rst_n,
   input  logic                      rst_ext_n,
-  // core state, synchronised into clk_rv (tsr_ctrl_cdc)
+  // core state, synchronized into clk_rv (tsr_ctrl_cdc)
   input  logic                      rv_run,
   input  logic [31:0]               rv_boot,
   input  logic                      dbg_stop,
@@ -414,7 +414,7 @@ module tsr_ctrl_rv
   );
   /* verilator lint_on PINCONNECTEMPTY */
 
-  // RV_SLEEP crosses into the core domain: registered here (no logic in front of a synchroniser).
+  // RV_SLEEP crosses into the core domain: registered here (no logic in front of a synchronizer).
   always_ff @(posedge clk) begin
     if (!rst_n) rv_sleep <= 1'b0;
     else        rv_sleep <= core_sleep && hart_rst_n_q;

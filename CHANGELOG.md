@@ -13,7 +13,7 @@ It runs on Tesseract Core 1.0.0 ([rtl/CHANGELOG.md](rtl/CHANGELOG.md)).
 
 ### Added
 
-- MoE kinds MOE_ROUTE (0x1E) and MUL_MAT_ID (0x1F) at numerics revision 1. MOE_ROUTE takes the softmax of the router logits, selects the k largest (ties to the smaller index, NaN first) and renormalises their weights. MUL_MAT_ID runs a MUL_MAT per (token, slot) against the expert named by an id in DRAM, with an optional per-expert output scale.
+- MoE kinds MOE_ROUTE (0x1E) and MUL_MAT_ID (0x1F) at numerics revision 1. MOE_ROUTE takes the softmax of the router logits, selects the k largest (ties to the smaller index, NaN first) and renormalizes their weights. MUL_MAT_ID runs a MUL_MAT per (token, slot) against the expert named by an id in DRAM, with an optional per-expert output scale.
 - Gated DeltaNet kinds SOFTPLUS (0x2D), SSM_CONV (0x2E) and GATED_DELTA_NET (0x2F), composed from existing VU operations and the DMA. UNARY accepts func 5, SIGMOID, at revision 1.
 - GATED_DELTA_NET revision 2 (SW-78): with `CAPS` bit 8 and S_v of 64 or more, each head and token runs the VU's fused GDN op. Other devices and shapes keep revision 1's bits.
 - Optional kinds MUL_MAT_SCALE and MUL_MAT_SOFTCAP at revision 1, and capability-gated FAST attention score and probability slots. MUL_MAT, FLASH_ATTN and Basis ABI 1 keep their contracts.

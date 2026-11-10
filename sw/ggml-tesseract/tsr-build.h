@@ -204,7 +204,7 @@ bool tsr_fuse_mm_softcap(const tsr_build_env & env, const ggml_tensor * mm, cons
 // lowering). The no-ops are supported; DUP and a SET_ROWS that does not write a KV cache are not (R1).
 bool tsr_build_supports(const tsr_build_env & env, const ggml_tensor * op, std::string * why);
 
-// MoE (SW-60 to SW-65; docs/spec.md §13). llama.cpp's build_moe_ffn emits, for softmax gating with a normalised top-k:
+// MoE (SW-60 to SW-65; docs/spec.md §13). llama.cpp's build_moe_ffn emits, for softmax gating with a normalized top-k:
 //     ffn_moe_probs  SOFT_MAX(logits)                 [n_expert, T]
 //     ffn_moe_argsort  ARGSORT(probs, DESC), ffn_moe_topk  VIEW [k, T]
 //     ffn_moe_weights  GET_ROWS(RESHAPE(probs) [1, n, T], topk) [1, k, T]   (+ RESHAPE [k, T])

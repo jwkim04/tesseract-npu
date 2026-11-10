@@ -26,7 +26,7 @@ coverage) and docs/design/06-software-verification.md §10.1 (oracle chain), §1
    issue FIFO under Verilator (`tb/fastreplay`, `tb/core`; docs/design/04-control-core.md §15.3,
    §15.4), the Ibex lockstep against the RV32 interpreter, and the mutation campaigns of the RTL
    tests (docs/design/04-control-core.md §15.5, docs/rtl-mvm.md §13.3).
-Colours: the references are white (neutral), so lavender keeps its data-movement meaning from the
+Colors: the references are white (neutral), so lavender keeps its data-movement meaning from the
 architecture figures; code under test is host-software butter; checks are mint, traces salmon, the
 RTL sky (the key below). Every block is drawn solid.
 
@@ -39,7 +39,7 @@ from tsrfig import Fig  # noqa: E402
 
 W = 1600
 PX0, PX1 = 56, 1376                   # panels; callouts in the right margin
-RX = (PX1 + W) / 2                    # callout centre, right margin
+RX = (PX1 + W) / 2                    # callout center, right margin
 
 # ---- panel 1: the simulator and the backend against the references -------------------------------
 P1_Y = 56

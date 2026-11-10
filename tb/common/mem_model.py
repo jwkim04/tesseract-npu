@@ -10,7 +10,7 @@ One MemModel serves all NUM_CH channels of a DUT whose memory ports follow the t
     <p>wr_dat_mask, when present: one enable bit per 32-bit word, bit 0 low
     <p>wr_rsp_valid/ready, <p>wr_rsp_id                                       (mem -> core)
 
-Behaviour (seeded, per channel): random request acceptance (backpressure on rd_req, wr_req,
+Behavior (seeded, per channel): random request acceptance (backpressure on rd_req, wr_req,
 wr_dat), random response latency per burst, random gaps in rd_rsp/wr_rsp valid, read data in
 order within one id and interleaved at beat granularity across ids, write responses in order per
 id and reordered across ids, random stall phases. Write ordering modes per channel ("wr_order"):

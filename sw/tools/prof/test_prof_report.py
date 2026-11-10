@@ -86,7 +86,7 @@ def main():
     check(m is not None and 2 <= len(m.group(1).split()) <= 4, "title is two to four words: %r" % (m.group(1) if m else None))
     css = re.search(r"<style>(.*?)</style>", html, re.S).group(1)
     check("@media (prefers-color-scheme: dark)" in css and ':root:not([data-theme="light"])' in css and ':root[data-theme="dark"]' in css,
-          "dark colours under the media query guarded by :root:not([data-theme=\"light\"]) and under :root[data-theme=\"dark\"]")
+          "dark colors under the media query guarded by :root:not([data-theme=\"light\"]) and under :root[data-theme=\"dark\"]")
     check(re.search(r"body\s*\{[^}]*background:", css) is not None, "body has an explicit background")
     check(not re.search(r"<script[^>]*\ssrc=|<link[^>]*stylesheet|@import|url\(\s*['\"]?https?:", html), "no external script, stylesheet or import")
     js = re.search(r"<script>(.*?)</script>", html, re.S).group(1)

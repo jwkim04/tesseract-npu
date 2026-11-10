@@ -35,7 +35,7 @@ function(tsr_rt_target tgt)
     # DB §4.1, §9.5: tsr_rt is an owning process's library: TSR_GDB / TSR_DEBUGGER start libtsr_dbg's embedded
     # service (the OBJECT library registers it before main)
     # (a static library hands the object file to its consumers' link lines: an archive member with only a
-    # static initialiser would not be pulled in otherwise)
+    # static initializer would not be pulled in otherwise)
     if (TARGET tsr_dbg_embed)
         get_target_property(_type ${tgt} TYPE)
         if (_type STREQUAL "STATIC_LIBRARY")

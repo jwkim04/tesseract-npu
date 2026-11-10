@@ -6,7 +6,7 @@ usage: fp_render.py <dump_dir> <out.png> --title TITLE [--mode core|link]
   --mode core   the dump is an out-of-context tsr_core (top = tsr_core)
   --mode link   the dump is a full device after the v++ link (XRT shell + kernel)
 
-Every used CLB / DSP / RAMB / URAM site is drawn at its real RPM position in the colour of the
+Every used CLB / DSP / RAMB / URAM site is drawn at its real RPM position in the color of the
 module that owns most of its cells; unused sites are tinted by type. Thick lines are SLR
 boundaries (5 clock-region rows per SLR on the VU9P). The legend gives per-module totals: LUT and
 FF count cells (a LUT6_2 counts as two LUTs, so LUT runs a little above report_utilization), DSP,
@@ -21,7 +21,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 CLUSTER = ["#2E86C1", "#17A589", "#D4AC0D", "#CB4335"]
 
-# (regex on the hierarchical name below tsr_core, label, colour); first match wins
+# (regex on the hierarchical name below tsr_core, label, color); first match wins
 RULES_CORE = [
     (r"g_cl\[\d\]\.u_(rp|bcp|wrp|wqp)/|g_asm\[\d\]\.u_(jp|sp)/|bc_d_q", "SLR-crossing pipes", "#1C2833"),
     (r"u_gather/g_asm\[(\d)\]", "cluster {0}", None),
@@ -35,7 +35,7 @@ RULES_CORE = [
     (r"^u_cmdproc|^u_fetch|^u_csr", "control", "#48C9B0"),
     (r"^g_sh|^g_rst", "reset copies", "#1C2833"),
 ]
-# (regex on the full hierarchical name of a linked design, label, colour)
+# (regex on the full hierarchical name of a linked design, label, color)
 RULES_LINK = [
     (r"/ulp/tsr_k\d/inst/u_kernel/(g_ch|u_ctrl|u_rst|g_st)", "platform adapter (bridges, control)", "#F5B041"),
     (r"/ulp/tsr_k\d/", "kernel (other)", "#48C9B0"),
@@ -194,8 +194,8 @@ def main():
         dr.text((8, Y - 10), f"SLR{s}", fill="#222222", font=fb)
     dr.rectangle([PL, PT, PL + W, PT + H], outline="#222222", width=2)
     dr.text((PL, 18), a.title, fill="#111111", font=fb)
-    dr.text((PL, 46), "each coloured block is a used site (CLB / DSP / RAMB / URAM) in its module "
-            "colour; thick lines = SLR boundaries", fill="#555555", font=fs)
+    dr.text((PL, 46), "each colored block is a used site (CLB / DSP / RAMB / URAM) in its module "
+            "color; thick lines = SLR boundaries", fill="#555555", font=fs)
 
     order = sorted(res, key=lambda g: -res[g]["cells"])
     lx, ly = PL + W + 24, PT

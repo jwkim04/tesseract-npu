@@ -299,7 +299,7 @@ k4fp_add $k4fp_rest $k4fp_rest_cells "core blocks (u_ctrl, u_dp: issue, CSR, SPM
 # g_mvm.u_mvm outside the clusters, pipes, gather and reset copies; central part of the gather: every leaf
 # cell outside the per-cluster assemblers and their pipes
 k4fp_add $k4fp_rest [get_cells -quiet -hierarchical -filter "IS_PRIMITIVE && NAME =~ $mvm/u_gather/* && \
-  NAME !~ $mvm/u_gather/g_asm* && NAME !~ $mvm/u_gather/g_pairs*"] "u_gather (centre)"
+  NAME !~ $mvm/u_gather/g_asm* && NAME !~ $mvm/u_gather/g_pairs*"] "u_gather (center)"
 k4fp_add $k4fp_rest [get_cells -quiet -hierarchical -filter "IS_PRIMITIVE && NAME =~ $mvm/* && \
   NAME !~ $mvm/g_cl* && NAME !~ $mvm/u_gather/* && NAME !~ $mvm/g_rst*"] "u_mvm (top)"
 # the vector unit outside its lanes: injector, reader, writer, reduction, angle unit, sequencer, local memory
@@ -373,7 +373,7 @@ proc k4fp_broadcast_parts {inst first_s last_s {min_stages 2}} {
   }
   return $parts
 }
-# The shared head may be replicated by physical optimisation, but all copies
+# The shared head may be replicated by physical optimization, but all copies
 # must stay central. A reconstructed consumer cone here needs an explicit
 # ownership decision; do not silently assign arbitrary decode to SLR1.
 proc k4fp_broadcast_head {mvm} {

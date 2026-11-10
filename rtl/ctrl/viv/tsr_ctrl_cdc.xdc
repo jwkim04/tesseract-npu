@@ -15,15 +15,15 @@
 #
 # Conventions the patterns rely on (checked by rtl/ctrl/viv/check_cdc_names.py in rtl/ctrl/lint.sh):
 # tsr_sync instances are named u_sync*, tsr_rst_sync u_rst*, tsr_cdc_hs u_hs*; the gray registers of
-# tsr_cdc_gray / tsr_cdc_fifo are called gray_q (wgray_q / rgray_q). A signal enters a synchroniser straight
+# tsr_cdc_gray / tsr_cdc_fifo are called gray_q (wgray_q / rgray_q). A signal enters a synchronizer straight
 # from a flop that drives nothing else (report_cdc CDC-10, CDC-11: tsr_ctrl_cdc's level bundle, tsr_dbg_rv's
-# levels and the reset sources of the clk_rv synchronisers have a register of their own for it).
+# levels and the reset sources of the clk_rv synchronizers have a register of their own for it).
 #
-# - ASYNC_REG on every synchroniser stage (tsr_sync's s_q registers, tsr_rst_sync's s_q).
+# - ASYNC_REG on every synchronizer stage (tsr_sync's s_q registers, tsr_rst_sync's s_q).
 # - set_max_delay -datapath_only <= min(period) on every path between the two clocks (the gray pointers and
 #   counters, the handshake request / response registers, the FIFO LUTRAM -> output register paths and the
-#   level synchronisers' first stage). No set_clock_groups: it would override the max delays (CC §11.3).
-# - set_bus_skew on the gray-coded buses (the gray registers to the synchroniser stages they drive), to the
+#   level synchronizers' first stage). No set_clock_groups: it would override the max delays (CC §11.3).
+# - set_bus_skew on the gray-coded buses (the gray registers to the synchronizer stages they drive), to the
 #   smaller period, so that a sample sees at most one step. Cap both bounds at 3.333 ns to retain
 #   the original 300 MHz crossing budget when a kernel runs slower (K4: core 200 MHz, clk_rv 150 MHz, so the
 #   cap is below both periods, 5.0 and 6.667 ns, and stays the bound).

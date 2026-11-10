@@ -1,7 +1,7 @@
 // sram_equiv.cpp — Verilator C++ harness: tsr_sram_1r1w of rtl/tech/xilinx against rtl/tech/generic,
 // cycle by cycle, on the configurations of tb/tech/hdl/tsr_tb_tech_sram.sv (URAM / BRAM / LUTRAM
 // sizes of the core, RD_LAT 1..4). Both models (Vgen = generic, Vxil = xilinx) get identical
-// inputs. After an initialisation that writes every address of every configuration (all bytes)
+// inputs. After an initialization that writes every address of every configuration (all bytes)
 // and one read, rd of the two models is compared bit for bit, and both against a byte-enable
 // model of the contract (read-first collision): in every cycle for the BRAM / LUTRAM sizes (the
 // pipelines are then fully defined and identical: RAM read register holding while re = 0,
@@ -159,7 +159,7 @@ int main(int argc, char** argv) {
     };
     auto rand_line = [&](Line& l) { for (auto& w : l) w = (uint32_t)rng(); };
 
-    // initialisation: every address of every configuration, all bytes; then one read everywhere
+    // initialization: every address of every configuration, all bytes; then one read everywhere
     In in;
     for (uint32_t a = 0; a < 16384; ++a) {
         in.we = 1;

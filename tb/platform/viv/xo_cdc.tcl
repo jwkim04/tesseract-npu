@@ -1,12 +1,12 @@
 # tb/platform/viv/xo_cdc.tcl — does the packaged kernel carry its clock-domain-crossing constraints? (opt-in;
 # needs Vivado; CC §11.3 "kernel XDC packaged in the .xo", gate T3 "zero unconstrained ap_clk <-> ap_clk_2
 # paths; report_cdc clean", docs/platform-u200.md.) What a v++ link does with the kernel IP, in miniature:
-# the .xo's IP is instantiated (create_ip) and synthesised out of context (synth_ip, non-project mode), which
+# the .xo's IP is instantiated (create_ip) and synthesized out of context (synth_ip, non-project mode), which
 # applies the constraint files of the IP's synthesis view with the clocks the IP's interface parameters
-# (FREQ_HZ of ap_clk, ap_clk_2) define. This also proves that the packaged sources synthesise on their own
-# (include files, defines). The synthesised IP checkpoint is then checked:
+# (FREQ_HZ of ap_clk, ap_clk_2) define. This also proves that the packaged sources synthesize on their own
+# (include files, defines). The synthesized IP checkpoint is then checked:
 #   - XCDC ip_xdc: the IP's constraint file list contains tsr_ctrl_cdc.xdc;
-#   - XCDC async_reg <n>: cells with ASYNC_REG (the synchroniser stages, > 0);
+#   - XCDC async_reg <n>: cells with ASYNC_REG (the synchronizer stages, > 0);
 #   - report_cdc and report_clock_interaction of the two kernel clocks (cooc_cdc of tb/core/viv/core_rpt.tcl):
 #     only Info rows once the waivers are applied, both directions "Max Delay Datapath Only".
 # Prints XCDC lines, the COOC lines of cooc_cdc and, last, "XCDC gate PASS|FAIL".
@@ -38,7 +38,7 @@ set ok [expr {[llength $xdcs] > 0}]
 
 set dcp [lindex [glob -nocomplain $out/ip/kip/kip.dcp] 0]
 puts "XCDC dcp $dcp"
-if {$dcp eq ""} { puts "XCDC no checkpoint: the IP did not synthesise"; puts "XCDC gate FAIL"; exit 1 }
+if {$dcp eq ""} { puts "XCDC no checkpoint: the IP did not synthesize"; puts "XCDC gate FAIL"; exit 1 }
 open_checkpoint $dcp
 puts "XCDC clocks [get_clocks]"
 set ar [llength [get_cells -hier -quiet -filter {ASYNC_REG == TRUE}]]

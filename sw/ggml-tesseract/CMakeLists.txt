@@ -190,7 +190,7 @@ if (TARGET ggml AND TARGET ggml-tesseract)
     # the case MUL_MAT(type_a=f16,type_b=f32,m=16,n=2105344,k=32) (2.1 M tokens, staged in
     # 16 launches of 131,072 single-token tiles at the sim's T_MAX 1: 8.4 M tile ops through the
     # interpreted firmware, ~50 s, and over 15 min with the race detector) runs in its own ctest
-    # labelled slow, without the race detector; the two ctests together run the whole case set.
+    # labeled slow, without the race detector; the two ctests together run the whole case set.
     if (TARGET test-backend-ops)
         add_test(NAME ggml_tesseract_backend_ops
                  COMMAND test-backend-ops test -o MUL_MAT -b Tesseract0

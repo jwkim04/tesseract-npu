@@ -665,7 +665,7 @@ static int choose_load(const tsr_trace2 * t, const tsr_config * c, uint32_t * ch
 }
 
 // 1 when two ELF files load the same words: the same PT_LOAD segments (address, padded size, bytes).
-// A capture's image synthesised from the loader's words (SW §5.5, no section headers) has another
+// A capture's image synthesized from the loader's words (SW §5.5, no section headers) has another
 // image id than the stamped ELF it came from (the id zeroes .tsr_id, which only the ELF names, EX
 // §3.2), but loads exactly the same words.
 static int same_loaded_image(const char * a, const char * b) {
@@ -812,7 +812,7 @@ int tsr_devrun_trace(tsr_tgt * dev, tsr_tgt * shadow, const tsr_trace2 * t, cons
     int rc = 0;
     if (t->kind == TSR_TRACE2_KIND_LAUNCH) {
         // The trace's own image. A target that runs an image with the same id (EX §3.2: the same loaded
-        // bytes) needs nothing; o->image is tried next (a capture's image may be synthesised from the
+        // bytes) needs nothing; o->image is tried next (a capture's image may be synthesized from the
         // loader's words, without the sections tsr_image_open checks, SW §5.5); else the trace's ELF is
         // written to a private file and booted.
         for (int k = 0; k < ntg && rc == 0; ++k) {
@@ -830,7 +830,7 @@ int tsr_devrun_trace(tsr_tgt * dev, tsr_tgt * shadow, const tsr_trace2 * t, cons
                 }
                 close(fd);
             }
-            // the same words as o->image (a synthesised capture image): run with o->image
+            // the same words as o->image (a synthesized capture image): run with o->image
             if (o->image && same_loaded_image(tmp_image, o->image) && tsr_tgt_boot(tg[k], o->image, why, sizeof(why)) == 0) continue;
             if (tsr_tgt_boot(tg[k], tmp_image, why, sizeof(why))) {
                 fail(r, o->verbose, TSR_DEVRUN_SETUP, "%s", why);

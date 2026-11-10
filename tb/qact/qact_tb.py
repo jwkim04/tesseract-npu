@@ -4,11 +4,11 @@
     subnormals, NaN, Inf, rounding ties, first-largest ties placed across lines and merge-tree
     branches, tiny max -> iscale overflow / saturation, d FTZ, fp16(d) overflow / subnormal,
     divider FTZ / overflow boundaries, raw random bit patterns, ...) and random mixes of them;
-  - SpmModel: a behavioural SPM client port (tsr_spm contract, docs/rtl-core.md §5): read data
+  - SpmModel: a behavioral SPM client port (tsr_spm contract, docs/rtl-core.md §5): read data
     exactly SPM_RD_LAT cycles after the accepting edge without backpressure, random (or bursty)
     rd_req_ready / wr_ready, garbage on rd_rsp_data in cycles without a response, R2 checks of
     the unit's read and write requests, a log of every read / write / done;
-  - QactDriver: the dispatch protocol (cmd_valid held until cmd_ready, garbage cmd afterwards),
+  - QactDriver: the dispatch protocol (cmd_valid held until cmd_ready, garbage cmd afterward),
     and the per-command checks:
       * every destination image line written exactly once, nothing else written, full byte
         enables, contents == tsr_ref.qact() of each token (libtsr_ref.so, bit-exact);
@@ -108,7 +108,7 @@ def _nan(r):
 
 
 def blk_nan(r, bs, kind):
-    """Only NaNs (quiet / signalling, both signs, random payloads), some zeros / subnormals."""
+    """Only NaNs (quiet / signaling, both signs, random payloads), some zeros / subnormals."""
     out = []
     for _ in range(bs):
         p = r.random()
@@ -196,7 +196,7 @@ def blk_huge(r, bs, kind):
 
 
 def _boundary_amax(r, kind) -> int:
-    """|max| values around the thresholds where the divides / fp16 conversion change behaviour."""
+    """|max| values around the thresholds where the divides / fp16 conversion change behavior."""
     if kind == QA_A32:
         targets = [
             127.0 * 2.0 ** -126,            # d = amax / 127 at the FTZ boundary
@@ -496,7 +496,7 @@ class Ready:
 
 
 # =============================================================================================
-# Behavioural SPM client port
+# Behavioral SPM client port
 # =============================================================================================
 class SpmModel:
     def __init__(self, dut, *, rd_lat: int, rnd: random.Random, lines: int):
@@ -559,7 +559,7 @@ class SpmModel:
             self.cycle += 1
             if rd_x:
                 if rl not in self.mem:
-                    self.err("read of uninitialised SPM line %d" % rl)
+                    self.err("read of uninitialized SPM line %d" % rl)
                 self.rsp.append((self.cycle + self.rd_lat - 1, self.mem[rl]))
                 self.reads.append((self.cycle, rl))
             if wr_x:

@@ -1,6 +1,6 @@
 // tsr_tech_flat_mac.sv — wiring-only wrapper of tsr_mac_lane with flat vector ports, so that the
 // funcsim netlist of tb/tech/viv/net_sim.sh keeps one port per signal (write_verilog splits packed
-// 2-D ports into escaped per-element ports). Synthesised as the top of the mac netlist; no logic.
+// 2-D ports into escaped per-element ports). Synthesized as the top of the mac netlist; no logic.
 module tsr_tech_flat_mac #(
   parameter  int unsigned N     = 32,
   parameter  int unsigned T     = 1,

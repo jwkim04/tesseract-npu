@@ -1,12 +1,12 @@
 """Figure `clocks`: the clock domains of Tesseract Core and every clock-domain crossing between them.
 
-Drawn the way clock-domain crossings are usually shown: colour is the clock domain, each domain is one
-tinted region with the blocks that share its clock, and every crossing is a synchroniser cell on the
+Drawn the way clock-domain crossings are usually shown: color is the clock domain, each domain is one
+tinted region with the blocks that share its clock, and every crossing is a synchronizer cell on the
 boundary between the two regions.
 
 Content follows docs/design/04-control-core.md §2.1-§2.2 (block diagram, domains), §11.1 (clocks),
-§11.2 (crossings and widths), §11.3 (constraints), §12.2 (reset synchronisers); the RTL in
-rtl/ctrl (`tsr_ctrl_cdc.sv` header and instances, `tsr_ctrl.sv` for the reset synchronisers,
+§11.2 (crossings and widths), §11.3 (constraints), §12.2 (reset synchronizers); the RTL in
+rtl/ctrl (`tsr_ctrl_cdc.sv` header and instances, `tsr_ctrl.sv` for the reset synchronizers,
 `tsr_ctrl_rv.sv` for the sources and sinks on the clk_rv side, `tsr_ctrl_pkg.sv` for the widths,
 `cdc/tsr_cdc_fifo.sv`, `cdc/tsr_cdc_gray.sv`, `cdc/tsr_cdc_hs.sv`, `cdc/tsr_sync.sv`,
 `cdc/tsr_rst_sync.sv`, `viv/tsr_ctrl_cdc.xdc` for the constraints), `rtl/core/tsr_core.sv` and
@@ -25,7 +25,7 @@ docs/platform-u200.md §1 and §8.3 (ap_clk, ap_clk_2):
   (all in `tsr_ctrl_rv`);
 - crossings (`tsr_ctrl_cdc`), one pipe and one cell per bundle, the cell on the boundary. The cell is the
   primitive of the instance (async FIFO `tsr_cdc_fifo`, gray counter `tsr_cdc_gray`, handshake
-  `tsr_cdc_hs`, 2-flop `tsr_sync`); the pipe changes colour at the cell, and a head marks the side that
+  `tsr_cdc_hs`, 2-flop `tsr_sync`); the pipe changes color at the cell, and a head marks the side that
   receives (two heads: request one way, response data back). Widths are the ones of `tsr_ctrl_pkg.sv` and
   the instances (a handshake's `a / b` is request / response). Sources and sinks are the modules that
   `tsr_ctrl_rv` and `tsr_core_dp` connect: control window to tsr_issue (issue FIFO), to tsr_csr (log
@@ -54,7 +54,7 @@ from tsrfig import (CARD, INK, INK_SOFT, ROLES, WHITE, Fig, chamfer, fmt, measur
 W = 1600
 CX = 800                              # the boundary between the two domains
 
-# ---- domain colour families (colour = clock domain) ----------------------------------------------
+# ---- domain color families (color = clock domain) ----------------------------------------------
 CORE = dict(acc="#1F5FA6", blk="#9CC4EC", band="#DDEAF7", pipe="#C8DBEE", cell="#7FB0E3")
 RV = dict(acc="#A44A0C", blk="#F5BC8A", band="#FBE9D8", pipe="#F4D7C0", cell="#EFA570")
 SHELL = ROLES["vendor"]
@@ -100,30 +100,30 @@ LEG3_Y = LEG2_Y + 52
 FOOT_Y = LEG3_Y + 44
 FOOT_W = 1440
 foot = wrap(
-    "A pipe changes colour at its cell and its head marks the receiving side (two heads: request one "
+    "A pipe changes color at its cell and its head marks the receiving side (two heads: request one "
     "way, response data back). Widths: a / b is request / response.", FOOT_W)
 H = int((FOOT_Y + 24 * (foot.count("\n") + 1) + 40 + 7) // 8 * 8)
 
 f = Fig("clocks", W, H,
         title="Clock domains and clock-domain crossings",
-        desc="Two clock domains side by side, each one tinted region with its own colour. The core clock "
+        desc="Two clock domains side by side, each one tinted region with its own color. The core clock "
              "domain (ap_clk, 200 MHz, blue) holds the platform adapter, the CSR "
              "block, the issue path with the checker and the unit queues, the SPM bridge, the DMA, QACT, "
              "the MVM clusters, the scratchpad and one memory arbiter per channel. The control core "
              "domain (clk_rv from ap_clk_2, 100 MHz, orange) holds Ibex, the debug "
-             "module, ITCM, DTCM, the RISC-V bus and the control window. The XRT shell, a grey box at "
+             "module, ITCM, DTCM, the RISC-V bus and the control window. The XRT shell, a gray box at "
              "the top, supplies both kernel clocks and resets, each drawn as a line in its domain "
-             "colour, and carries the CSR port and the memory ports into the core domain. Between the "
-             "two regions, on the boundary, tsr_ctrl_cdc has one synchroniser cell per bundle of "
-             "crossings, drawn as a pipe that changes colour at the cell. From clk_rv to the core "
+             "color, and carries the CSR port and the memory ports into the core domain. Between the "
+             "two regions, on the boundary, tsr_ctrl_cdc has one synchronizer cell per bundle of "
+             "crossings, drawn as a pipe that changes color at the cell. From clk_rv to the core "
              "clock: the issue FIFO (32 entries of 387 bits, gray pointers), the log FIFO (16 entries "
              "of 32 bits), the gray counters ISSUED_SEQ, clk_rv cycles and PERF, the RT_STATE and "
-             "RT_INFO handshake, and the RV levels and sticky events through two-flop synchronisers. "
+             "RT_INFO handshake, and the RV levels and sticky events through two-flop synchronizers. "
              "From the core clock to clk_rv: the S, D and MTIME gray counters, the error records (6 of "
              "128 bits, handshake), and the levels. Both ways: the SPM bridge and core window "
              "handshake, the LQ and LCQ register handshake, the LOAD handshake into the TCM load "
              "port, and the debug-module interface handshake. The reset of the core domain reaches "
-             "clk_rv through a reset synchroniser. The constraints are ASYNC_REG on the synchroniser "
+             "clk_rv through a reset synchronizer. The constraints are ASYNC_REG on the synchronizer "
              "flops, a maximum delay equal to the smaller clock period, and a bus skew limit on the "
              "gray buses.")
 
@@ -150,7 +150,7 @@ def flop(x, y, w=22, h=26, color=WHITE):
 
 
 def block(x, y, w, h, fam, label, sub="", label_role="label_s", text_h=None, pad=14, stack=0):
-    """A block in a domain colour family. A tall block keeps its text near the top (text_h)."""
+    """A block in a domain color family. A tall block keeps its text near the top (text_h)."""
     col = fam["blk"]
     for i in range(stack, 0, -1):
         d = 8 * i
@@ -173,9 +173,9 @@ def halves(cx, cy, cw, ch, c1, c2, vertical=False):
 
 
 def cell(kind, cx, cy, src="l", dest="r", fam_l=CORE, fam_r=RV):
-    """A synchroniser cell on the boundary at (cx, cy). The left half is in the left domain's colour
-    and the right half in the right domain's colour; `src` is the side of the source domain (the
-    write half of a FIFO), `dest` the side of the destination (where the 2-flop synchroniser sits)."""
+    """A synchronizer cell on the boundary at (cx, cy). The left half is in the left domain's color
+    and the right half in the right domain's color; `src` is the side of the source domain (the
+    write half of a FIFO), `dest` the side of the destination (where the 2-flop synchronizer sits)."""
     cw, ch = CELL_W[kind], CELL_H[kind]
     halves(cx, cy, cw, ch, fam_l["cell"], fam_r["cell"])
     if kind == "ff":                               # two flops in the destination domain
@@ -194,7 +194,7 @@ def cell(kind, cx, cy, src="l", dest="r", fam_l=CORE, fam_r=RV):
         f.poly(chamfer(cx - 33, cy - 15, 66, 30, 4), WHITE, sw=1.5)
         mini_arrow(cx - 22, cy - 6, cx + 22, cy - 6)
         mini_arrow(cx + 22, cy + 6, cx - 22, cy + 6)
-    elif kind == "fifo":                           # write half in the source colour, read half in the destination's
+    elif kind == "fifo":                           # write half in the source color, read half in the destination's
         f.text(cx + (-32 if src == "l" else 32), cy - 17, "WR", "tag", anchor="middle")
         f.text(cx + (32 if src == "l" else -32), cy - 17, "RD", "tag", anchor="middle")
         f.poly(chamfer(cx - 46, cy + 1, 92, 24, 4), WHITE, sw=1.5)
@@ -276,7 +276,7 @@ U0, U1 = 856, 1264                    # clk_rv tab
 tab(T0, T1, CORE, "CORE DOMAIN", "AP_CLK · 200 MHz", "core clock")
 tab(U0, U1, RV, "CONTROL CORE DOMAIN", "AP_CLK_2 · 100 MHz", "clk_rv")
 
-# clock tree and reset lines from the sources into the tabs (one pair per domain, in the domain colour)
+# clock tree and reset lines from the sources into the tabs (one pair per domain, in the domain color)
 for cx, fam, rname in ((540, CORE, "tsr_xrt_reset · registered"), (1060, RV, "tsr_rst_sync")):
     xc, xr = cx - 52, cx + 52
     f.line([(xc, 168), (xc, TAB_Y)], color=fam["acc"], sw=3)
@@ -366,7 +366,7 @@ pipe("spm", "hs", "SPM · CORE WIN", "64 b / 513 b", "b")
 # =================================================================================================
 # Legend
 # =================================================================================================
-# row 1: domain colours and the two kinds of line from the shell
+# row 1: domain colors and the two kinds of line from the shell
 row1 = [("sw", CORE["blk"], "CORE · AP_CLK · 200 MHz"), ("sw", RV["blk"], "CONTROL CORE · CLK_RV · 100 MHz"),
         ("sw", SHELL, "XRT SHELL"),
         ("line", False, "CLOCK TREE"), ("line", True, "RESET")]
@@ -393,7 +393,7 @@ for (k, t), w in zip(items, tw):
     cell(k, lx + CELL_W[k] / 2, LEG2_Y)
     f.text(lx + CELL_W[k] + 14, LEG2_Y, t, "note", valign="middle")
     lx += CELL_W[k] + 14 + w + 36
-f.text(CX, LEG3_Y, "ASYNC_REG on the synchroniser flops · set_max_delay -datapath_only = the smaller "
+f.text(CX, LEG3_Y, "ASYNC_REG on the synchronizer flops · set_max_delay -datapath_only = the smaller "
        "period · set_bus_skew on the gray buses", "note", anchor="middle", valign="middle")
 f.text(CX, FOOT_Y, foot, "note", anchor="middle", color=INK_SOFT)
 

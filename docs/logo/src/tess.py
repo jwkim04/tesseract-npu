@@ -5,7 +5,7 @@ w = D) -> 2D by true isometric projection (view along (1,1,1), z up, screen
 y down).  With D = 3 the near cell (w=+1) has scale 1/2 and the far cell
 (w=-1) scale 1/4: the classic cube-in-cube with inner/outer ratio exactly 1/2.
 In isometric view both cells are concentric regular hexagons and the 8
-w-edges become 6 radial spokes (+2 that collapse onto the centre).
+w-edges become 6 radial spokes (+2 that collapse onto the center).
 
 Every number in the published SVGs comes from here; nothing is placed by eye.
 """
@@ -177,7 +177,7 @@ FACE_OF = {("T", "UR"): "top", ("UR", "LR"): "right", ("LR", "B"): "right",
 
 
 def mark_shapes(fr, G, g, floor_n=4, bands=(), rim_gap=False, overlap=1.0, spokes=None, core_cut=True):
-    """Return [(colour_key, [polys])] for the colour mark.
+    """Return [(colour_key, [polys])] for the color mark.
 
     G : width of the wide cuts (tesseract edges: 6 w-spokes + the far cell's
         back corner, the inverted Y)

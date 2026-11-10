@@ -591,7 +591,7 @@ async def one_program(dut, cfg, qd, caps, steps, seed, name, seq_base=0, pidx_ba
 
 async def _bring_up(dut):
     """Clock and reset at the first call of a cocotb test (cocotb ends a test's tasks at its end, the
-    clock included), a reset afterwards."""
+    clock included), a reset afterward."""
     if E.CLK_TASK is None or E.CLK_TASK.done():
         await E.start(dut)
     else:

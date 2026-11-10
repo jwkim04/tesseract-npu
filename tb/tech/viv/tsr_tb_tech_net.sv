@@ -1,4 +1,4 @@
-// tsr_tb_tech_net.sv — xsim testbenches of tb/tech/viv/net_sim.sh: the Vivado-synthesised netlist
+// tsr_tb_tech_net.sv — xsim testbenches of tb/tech/viv/net_sim.sh: the Vivado-synthesized netlist
 // of an rtl/tech/xilinx module (write_verilog -mode funcsim, top renamed <top>_net, unisim
 // primitives: DSP48E2, URAM288, RAMB36E2, LUTRAM, ...; the MAC lane through the flat-port wrapper
 // tb/tech/viv/tsr_tech_flat_mac.sv) against the generic RTL of the same module, cycle by cycle

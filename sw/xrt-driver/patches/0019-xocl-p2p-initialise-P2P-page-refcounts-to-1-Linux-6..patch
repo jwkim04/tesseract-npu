@@ -1,7 +1,7 @@
 From b3b92a58e3f8320b5cf353d52cde35dee57021dc Mon Sep 17 00:00:00 2001
 From: Tesseract XRT port <jwkim@limagin.com>
 Date: Fri, 23 Oct 2026 12:32:16 +0900
-Subject: [PATCH 19/19] xocl/p2p: initialise P2P page refcounts to 1 (Linux
+Subject: [PATCH 19/19] xocl/p2p: initialize P2P page refcounts to 1 (Linux
  6.15)
 
 Mainline commit b7e282378773 ("mm/mm_init: move p2pdma page refcount
@@ -60,11 +60,11 @@ Equivalence with 6.8:
    CONFIG_DEBUG_PAGE_REF off (all Ubuntu kernels here) it is a plain
    atomic_set(), so no new symbol is imported. A 256 MiB chunk
    (XOCL_P2P_CHUNK_SIZE) is 65536 stores, after memremap_pages() has
-   just initialised the same 65536 struct pages.
+   just initialized the same 65536 struct pages.
  - On 6.8 to 6.14 the code is compiled out.
 
 Upstream: XRT master (p2p.c last changed by 30c9f58ca, 2026-01-30) has
-no refcount initialisation; this is not fixed there.
+no refcount initialization; this is not fixed there.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01SpY5QiU1d7kAe8YJM35EvA

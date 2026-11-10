@@ -42,8 +42,8 @@
 // Cycle model (unit busy time, deterministic, from the words and the configuration only; SW-80). It is the cycles
 // of an op that waits for its predecessor: the unit's time from the done of the op before to its own done, the
 // quantity the queue model serves one op at a time (VU §4.4). The RTL overlaps the fill and drain of independent
-// ops (accept-ahead, VU §7.8); that gain is not modelled (VU §7.9). The constants are the unit's measured
-// behaviour: tb/vu test_vu_timing.py (the RTL unit alone on a 4 MiB SPM, SPM_RD_LAT 4) at both configurations that
+// ops (accept-ahead, VU §7.8); that gain is not modeled (VU §7.9). The constants are the unit's measured
+// behavior: tb/vu test_vu_timing.py (the RTL unit alone on a 4 MiB SPM, SPM_RD_LAT 4) at both configurations that
 // were built, and on the card (the trace writer's per-op times of Qwen3.8 2B and Gemma 4 26B-A4B decode equal the
 // RTL's to the cycle where the VU waits for nothing else). The lanes come from tsr_sim_opts.vu_timing: F front, E EXP
 // and B back lanes (a line of 16 takes 16/F, 16/E and 16/B cycles per class) and P lane-pipe stages (X = 2P cycles
@@ -678,7 +678,7 @@ static void ex_gdn(tsr_sim * sim, const uint32_t w[8]) {
 // VU §7.12.8 table, measured: a row costs a little more than its beats, the setup 4.5 cycles per element and 122 cycles).
 // Equal to the RTL within 2 cycles at the K4 lanes (2,914 for 128 x 128, 8 lanes), within 1.5 % at the U200 lanes
 // (1,898 against 1,917). Heads that follow each other with independent tiles overlap the next setup under the rows of
-// the previous head in the RTL (VU §7.12.8); that gain is not modelled, as for the other ops (VU §7.9).
+// the previous head in the RTL (VU §7.12.8); that gain is not modeled, as for the other ops (VU §7.9).
 static uint64_t cyc_gdn(const tsr_sim * sim, const uint32_t w[8]) {
     gdn_dec g;
     gdn_decode(w, &g);

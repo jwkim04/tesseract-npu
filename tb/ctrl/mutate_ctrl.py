@@ -6,7 +6,7 @@ survives if all of its tests pass; the run fails if any mutant survives.
 
 Opt-in (not in tb/run_all.sh: one Verilator build per mutant, about 1 min each with
 TSR_BUILD_JOBS=2). The mutated tree and its build go to $TSR_SIM_BUILD_ROOT/ctrl_mut_src_<name>[_build]
-and are removed afterwards.
+and are removed afterward.
 """
 from __future__ import annotations
 

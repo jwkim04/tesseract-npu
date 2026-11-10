@@ -14,7 +14,7 @@ that still defines the bit, including 6.8 and 6.9.
 
 Equivalence: where the macro exists nothing changes. Where it does not,
 no i2c driver can match on class bit 7 any more, so the adapter offers
-exactly the same probing behaviour with I2C_CLASS_HWMON alone.
+exactly the same probing behavior with I2C_CLASS_HWMON alone.
 
 Upstream: XRT commit 04350f685 makes the same change but switches at
 KERNEL_VERSION(6, 8, 0), which drops the bit on 6.8/6.9 where it still

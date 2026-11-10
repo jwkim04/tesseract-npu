@@ -105,7 +105,7 @@ static inline void tsr_ext_add(tsr_extents * x, uint8_t kind, uint8_t write, uin
 //   exec    applies an op that passed check: every architectural effect (SPM, DRAM, s bank),
 //           the unit's PERF event counters through tsr_sim_perf_add (CH_RD_BEATS, VU_LINES,
 //           KVST_RMW, ...) and capture through tsr_sim_cap_read / tsr_sim_cap_write. Never fails
-//           (EX §7.2). It is called once, at the op's modelled completion time (SW §4.1: an op's
+//           (EX §7.2). It is called once, at the op's modeled completion time (SW §4.1: an op's
 //           effects are applied atomically at completion), with check having passed at dispatch.
 //           NULL for SYNC ops (NOP, FENCE).
 //   cycles  the unit's busy time in core cycles for the op (>= 1; 0 is taken as 1),
@@ -491,7 +491,7 @@ void tsr_sim_set_dbg_hooks(tsr_sim * sim, const tsr_sim_dbg_hooks * hooks);   //
 //                              of [min, max], both included (default 0.25, 4; 0 < min <= max <=
 //                              1024), rounded half up to >= 1 cycle; every
 //                              crossing 2-8 core cycles (issue FIFO entry to dispatcher; the
-//                              synchronised core -> RISC-V copies below; the LQ / LCQ / log, core-
+//                              synchronized core -> RISC-V copies below; the LQ / LCQ / log, core-
 //                              window and SPM-bridge handshakes as 0-6 extra core cycles of access
 //                              latency); the RV cost of every instruction +-1 cycle (never below 1)
 // Generator: xoshiro128** (Blackman / Vigna), one independent stream per purpose (TSR_RS_*): a
@@ -499,7 +499,7 @@ void tsr_sim_set_dbg_hooks(tsr_sim * sim, const tsr_sim_dbg_hooks * hooks);   //
 // another's. Factors are Q16.16 integers (min / max rounded to 1/65536), durations
 // round(base x f) computed in integers; no host time, no floating point in the draws.
 //
-// CDC lag (random only; CC §5.1 "synchronised copy; may lag, never leads", §11.2): the RISC-V side
+// CDC lag (random only; CC §5.1 "synchronized copy; may lag, never leads", §11.2): the RISC-V side
 // reads DONE_SEQ[u], ISSUE_CREDIT (S[u] and the FIFO read pointer), QSTATUS, ERR_* / ERR_PIDX and
 // computes the interrupt levels irq_fast[0..3,5] (and ISSUE_STATUS.ERR_IRQ's edge) from a view of
 // the core state that trails it: each change of that state at MTIME t becomes visible at

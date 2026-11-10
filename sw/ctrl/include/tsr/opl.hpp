@@ -89,10 +89,10 @@ constexpr uint32_t K_CPY         = 0x1Au;
 constexpr uint32_t K_UNARY       = 0x1Bu;
 constexpr uint32_t K_MUL_MAT_SCALE = 0x1Cu;  // local pointwise epilogue and final DDR export
 constexpr uint32_t K_MUL_MAT_SOFTCAP = 0x1Du;  // scale, TANH, scale before export
-constexpr uint32_t K_MOE_ROUTE   = 0x1Eu;   // MoE: softmax over the router logits, top-k, renormalised weights (SW §7.5)
+constexpr uint32_t K_MOE_ROUTE   = 0x1Eu;   // MoE: softmax over the router logits, top-k, renormalized weights (SW §7.5)
 constexpr uint32_t K_MUL_MAT_ID  = 0x1Fu;   // MoE: MUL_MAT with the weight chosen per (token, slot) by an expert id (SW §7.5)
 // Gated DeltaNet kinds (GDN software baseline; SW §7.10). Numbered from the top of the free range
-// downwards: 0x30-0x3F stay the test kinds, 0x1E upwards belongs to the next kinds of the other
+// downward: 0x30-0x3F stay the test kinds, 0x1E upward belongs to the next kinds of the other
 // extensions (MoE).
 constexpr uint32_t K_SOFTPLUS    = 0x2Du;   // log(1 + exp(x)), composed from VU functions
 constexpr uint32_t K_SSM_CONV    = 0x2Eu;   // causal conv1d with a rolling state (+ SILU), channel-vector layout
@@ -290,7 +290,7 @@ constexpr uint32_t TANH = 0u, GELU16 = 1u, SILU = 2u, EXP = 3u, GELU = 4u, SIGMO
 // MOE_ROUTE (0x1E): per token, the softmax over the router logits (row of N_EXPERT f32 at LOGITS +
 // token * LOGITS_STRIDE lines), the N_USED largest probabilities (value descending, ties by the smaller
 // index, NaN first: the order of VU TOPK, selection by integer compares on the RISC-V) and their weights
-// renormalised by the tree sum (tsr_ref_moe_route). Writes the expert numbers as I32 into the first
+// renormalized by the tree sum (tsr_ref_moe_route). Writes the expert numbers as I32 into the first
 // line of row token of the IDS tensor (IDS + token * IDS_STRIDE lines; words N_USED .. 15 of the line
 // are 0, the rest of the row is not touched) and the weights as f32 packed, N_USED words per token, at
 // W (whole lines; the tail of the last line is 0). FLAGS must be 0.
@@ -438,7 +438,7 @@ struct exec_state {
     uint32_t late_chunks;    // chunk loads pushed only when their first record was needed (not
                              // prefetched; 0 unless the prefetch rule is broken)
     uint32_t ret;            // the kernel's return value
-    // Executor-optimisation diagnostics (counted off the hot path; SW §7.8): MUL_MAT records the
+    // Executor-optimization diagnostics (counted off the hot path; SW §7.8): MUL_MAT records the
     // decode fast path handed to kind_mulmat (T != 1, a wrap, non-DMA ring deps, a refused record),
     // the scratch ring's software joins (table full, skipped tail, more than two units) and its
     // allocations by the full algorithm (spm_ring::alloc_slow).

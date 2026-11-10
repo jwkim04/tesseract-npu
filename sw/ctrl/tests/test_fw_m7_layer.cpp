@@ -1222,7 +1222,7 @@ int ggml_threads() {
 // (quantize_row_q8_0_ref, the from_float_ref type trait: QACT A32's) and returns the cache images in
 // kcpu / vcpu. The first form isolates the device's arithmetic after the cache (a near-floor gate);
 // the second also checks the K / V wiring, but a K / V value at a q8_0 rounding boundary (the MUL_MATs
-// sum in another order) can land on the neighbouring code: one such V code made the 0.5B prefill
+// sum in another order) can land on the neighboring code: one such V code made the 0.5B prefill
 // tile's output NMSE 4.9e-6 against 1e-13 elsewhere (a per-token diagnosis).
 bool cpu_layer(const layer_data & L, std::vector<float> & out, std::vector<float> & att,
                const std::vector<uint8_t> * kdev = nullptr, const std::vector<uint8_t> * vdev = nullptr,
@@ -1422,7 +1422,7 @@ void run_ggml() {
         // remaining differences are rounding-boundary values: ggml-cpu quantizes the activations of its
         // MUL_MATs with the x86 quantize_row_q8_0 (127/amax, round-half-even; QACT A32 is the reference
         // quantizer: 1/d, roundf) and sums the block products in another order, so a value on a q8_0
-        // boundary lands on the neighbouring code now and then (the 0.5B prefill tile: 3 of 2,048 new
+        // boundary lands on the neighboring code now and then (the 0.5B prefill tile: 3 of 2,048 new
         // K / V codes; with the device's cache its output still differs at NMSE 1.6e-6 through the
         // activations of wo / gate / up / down), and its RMS_NORM sums in double (VU §6.2: f32;
         // Gemma 4: four norms per layer). Measured: output NMSE <= 4.9e-6 (CPU cache) /

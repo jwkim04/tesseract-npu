@@ -90,14 +90,14 @@ def main():
     write("tesseract-mark.svg", svg_doc("0 0 512 512", 512, 512,
           mark_body(fr, G=G512, g=g512, colours=COL, floor_n=4), desc=DESC))
 
-    # one-colour marks: every edge is negative space (incl. the ring/core rim)
+    # one-color marks: every edge is negative space (incl. the ring/core rim)
     for name, colour in MONO.items():
         write(f"tesseract-mark-mono-{name}.svg", svg_doc("0 0 512 512", 512, 512,
               mono_body(fr, G=G512, g=g512, colour=colour, floor_n=4),
-              desc="Tesseract mark, single colour; edges are negative space."))
+              desc="Tesseract mark, single color; edges are negative space."))
 
     # ----------------------------------------------------- favicon (32 px)
-    # pixel-hinted: hex 27 px wide centred on column 15 (x 2..29), inner cell
+    # pixel-hinted: hex 27 px wide centered on column 15 (x 2..29), inner cell
     # 17 px (x 7..24, eye at w = 4.4 so the inner sides land on whole pixels),
     # 1 px cuts with the vertical w-edges exactly on pixel column 15.
     f32 = Frame(15.5, 16, 13.5 / C30, 4.4)
@@ -106,7 +106,7 @@ def main():
           mark_body(f32, G=1.0, g=0, colours=COL, floor_n=0, overlap=0.06),
           desc="Tesseract favicon, hinted for a 32 px grid."))
 
-    # 48 px frame for favicon.ico (same hinting rule: hex x 3..44 centred on
+    # 48 px frame for favicon.ico (same hinting rule: hex x 3..44 centered on
     # column 23, inner sides on x = 11 / 36 -> eye at w = (1+r)/(1-r), r = 12.5/20.5)
     r48 = 12.5 / 20.5
     f48 = Frame(23.5, 24, 20.5 / C30, (1 + r48) / (1 - r48))

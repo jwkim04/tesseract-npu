@@ -107,7 +107,7 @@ module tsr_vu_dq
   tsr_vu_dly #(.W(32), .D(FL)) d_m  (.clk, .d(m32_q),  .q(mw));
   tsr_vu_dly #(.W(5),  .D(FL)) d_e  (.clk, .d(e2_q),   .q(ew));
 
-  // valid pipeline (cleared by start: entries of a cancelled chunk are not written)
+  // valid pipeline (cleared by start: entries of a canceled chunk are not written)
   logic [FL-1:0] vf_q;
   always_ff @(posedge clk) begin
     if (!rst_n || start) begin

@@ -6,7 +6,7 @@
 // docs/platform-u200.md §3.
 //
 // Register map (byte offsets, decoded on bits [11:2]; unmapped offsets read 0 and ignore writes;
-// every response is OKAY; RW registers honour WSTRB):
+// every response is OKAY; RW registers honor WSTRB):
 //   0x000 AP_CTRL   bit0 ap_start (RW: a write of 1 sets it; cleared when the start is accepted),
 //                   bit1 ap_done (R, clear on read), bit2 ap_idle (R), bit3 ap_ready (R, clear on
 //                   read), bit7 auto_restart (not supported: reads 0, writes ignored)

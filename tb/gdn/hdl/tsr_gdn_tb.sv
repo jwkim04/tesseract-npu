@@ -1,6 +1,6 @@
 // tsr_gdn_tb.sv — testbench-only toplevel of the GDN engine bench (tb/gdn/test_gdn.py): tsr_vu_gdn with a model of
 // what tsr_vu does around it. The bench plays the injector (it drives the slot fields and the data, one cycle per
-// sub-slot, and honours cfg_ok / vec_ok / row_ok) and the writer's credit (oc_ok, oc_take); this wrapper plays the
+// sub-slot, and honors cfg_ok / vec_ok / row_ok) and the writer's credit (oc_ok, oc_take); this wrapper plays the
 // lanes: the update beat goes through FA(FM(a, c1), FM(b, c2)) built from tsr_fp_mul (LAT 4) and tsr_fp_add (LAT 5),
 // the same primitives as the lane micro-op U_ROT, and leaves with its write descriptor LAT cycles later (y_*).
 module tsr_gdn_tb

@@ -15,7 +15,7 @@
 //     one, r3..r6 are stored as posted. tickets.bin error fields are all 0 without an error record.
 //   - Captured are LAUNCH descriptors without reserved bits answered by a DONE record. PING, other
 //     descriptor types, TRAP answers and launches ended by a reset are skipped (and counted).
-//   - Image: the ELF given to tsr_sim_capture_set_image, else one synthesised from the loader's
+//   - Image: the ELF given to tsr_sim_capture_set_image, else one synthesized from the loader's
 //     writes (one PT_LOAD per maximal run of loaded words, contents at the RV_RUN rise, entry
 //     RV_BOOT + 0x80, no section headers); its id is EX §3.2's hash of those segments. The HELLO
 //     id is not compared (test firmware posts constants).
@@ -706,7 +706,7 @@ static int img_parse(const uint8_t * b, size_t n, uint32_t itcm, uint32_t dtcm, 
         const uint64_t prev_hi = (uint64_t)e->seg[i - 1].paddr + ((e->seg[i - 1].memsz + 3u) & ~3ull);
         if (e->seg[i].paddr < prev_hi) { seterr(err, en, "PT_LOAD segments overlap at 0x%08x (EX §3.1)", e->seg[i].paddr); return -1; }
     }
-    // Section headers are optional (a synthesised image has none): .tsr_id and .tsr_kernels.
+    // Section headers are optional (a synthesized image has none): .tsr_id and .tsr_kernels.
     if (shoff != 0 && shnum != 0) {
         if (shentsize != 40 || shoff + 40ull * shnum > n || shstrndx >= shnum) { seterr(err, en, "bad section header table"); return -1; }
         const uint8_t * ss = b + shoff + 40ull * shstrndx;
@@ -1753,7 +1753,7 @@ typedef struct tmodel {
     uint8_t *   mask[2];                        // one byte per word: written
     uint32_t    tcm_bytes[2];
     uint64_t    boot_gen;
-    uint8_t *   img;                            // image of the current boot (synthesised)
+    uint8_t *   img;                            // image of the current boot (synthesized)
     size_t      img_n;
     uint8_t *   user_img;                       // tsr_sim_capture_set_image
     size_t      user_n;
@@ -2593,7 +2593,7 @@ static void compare(const tsr_trace2 * w, const tsr_trace2 * g, tsr_sim * sim, i
             const tsr_region * x = &g->mem.init[i];
             if (!span_covered(is, ni, x->ch, x->byte_off, x->byte_off + x->size)) {
                 rfailf(r, verbose, TSR_TRACE2_CMP_READS, "the replay read ch %u bytes [0x%llx, 0x%llx) that the trace neither "
-                       "initialises nor wrote earlier", x->ch, (unsigned long long)x->byte_off,
+                       "initializes nor wrote earlier", x->ch, (unsigned long long)x->byte_off,
                        (unsigned long long)(x->byte_off + x->size));
                 break;
             }

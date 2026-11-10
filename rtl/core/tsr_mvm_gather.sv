@@ -49,7 +49,7 @@
 //     cluster. JOB_PIPE (tsr_mvm: = RES_PIPE) puts register slices between each assembler and
 //     the central part, so on the U200 an assembler sits next to its cluster (another SLR) and
 //     only jobs cross. The central part selects among NUM_CH pipe heads (one NUM_CH : 1 select).
-//     A single NUM_CH x 2 x T_MAX : 1 select of the job data at the centre gave routing congestion
+//     A single NUM_CH x 2 x T_MAX : 1 select of the job data at the center gave routing congestion
 //     and -0.8 ns there on the U200 at 4 ch / T_MAX 8 (docs/rtl-mvm.md §14).
 //   - An assembler takes rows only after its start arrived (res_ready = 0 until then; rows of a
 //     new MVM wait in the result pipes), and it is busy from that start to its last job (the job

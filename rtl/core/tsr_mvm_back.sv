@@ -21,7 +21,7 @@
 //       row (a partial that gets no term stays +0.0; the first add is a real fadd(+0, t));
 //       at row_last: y_t = tsr_tree16(p) = ((p0+p1)+(p2+p3))+((p4+p5)+(p6+p7)) + ... (4 levels).
 //     Integer sums are exact (any order); every fp op is a separately rounded tsr_fp_* op in
-//     exactly this order (spec Numeric rules: no FMA, the parenthesisation above).
+//     exactly this order (spec Numeric rules: no FMA, the parenthesization above).
 //   - activation buffer: qs_re/qs_addr and dbs_re/dbs_addr, data exactly ACT_RD_LAT cycles later
 //     (tsr_mvm_actbuf). QS word for a beat: Q8_0 line b/2 = bank (b/2)%2 of word b/4 (64 lanes);
 //     Q4_K word 2s + half (128 lanes). D line: (Q8_0 b, Q4_K s) >> 4, element & 15; BS line
@@ -60,7 +60,7 @@
 // ================================================================================================
 // Microarchitecture (all registers advance every cycle: no stage ever stalls; beat_ready, a flop,
 // is the only flow control). Cycle numbers below are relative to the cycle in which a beat is
-// accepted (cycle 0); "in cycle c" = on a register output during cycle c. Defaults in brackets
+// accepted (cycle 0); "in cycle c" = on a register output during cycle c. Defaults in parentheses
 // (ACT_RD_LAT 2, MAC_LAT 3, MUL_LAT 4, ADD_LAT 5).
 //
 //   cycle 1        input stage: qs_re/qs_addr, dbs_re/dbs_addr registers (Q8_0 word b/4, Q4_K
@@ -83,7 +83,7 @@
 //                  QS-line parity; (2) Q4_K part = sum of 4; (3) Q4_K half 0: part0 := part,
 //                  half 1: isum = part + part0 (26 bits). msum: pair sums, m_k * pair_k, two
 //                  adder levels (26 bits) from M0, delayed MAC_LAT - 1 to meet isum.
-//   G+3..G+5       2 x tsr_mvm_i2f (3 stages: magnitude | lzc + normalise | RNE round), bit-exact
+//   G+3..G+5       2 x tsr_mvm_i2f (3 stages: magnitude | lzc + normalize | RNE round), bit-exact
 //                  tsr_i32_to_f32 (tb/mvmback exhaustive sweep over all 2^26 inputs).
 //   F = max(G+6, M0+MUL) [12]   second products fmul(d*Dx, f32(sum)) (the shorter of the f32 /
 //                  d*Dx paths is delayed to F).
@@ -139,14 +139,14 @@
 // Logic depth (by construction, not yet timed: Vivado is part C): every stage register-bounded;
 //   the deepest segments are the 16:1 partial read + first / forward mux into the accumulate adder
 //   input (~4 LUT), the 6u x 17s products (LUT multipliers unless mapped to DSP), the i2f
-//   normalise stage (26-bit lzc + barrel shift, ~6 LUT) and the generic tsr_mac_lane at MAC_LAT 3
+//   normalize stage (26-bit lzc + barrel shift, ~6 LUT) and the generic tsr_mac_lane at MAC_LAT 3
 //   (tb/mvmback mac_lane_structure): the 8 x 8 products from the flops above into the product
 //   register (LUT multipliers, or DSP48E2 with the product register as MREG), then 2 and 3 adder
 //   levels of 17..21 bits (DSP cascades in the Xilinx technology layer). The RAM-to-MAC route of x has no logic; if it
 //   needs a fabric register, ACT_RD_LAT + 1 provides it. beat_ready: front-end beat.row_last
 //   flop -> reservation count compare -> flop (~3 LUT).
 //
-// Cost per token (generic, counted from the RTL, not synthesised): 4 tsr_fp_mul, 7 tsr_fp_add
+// Cost per token (generic, counted from the RTL, not synthesized): 4 tsr_fp_mul, 7 tsr_fp_add
 // (2 accumulate, 1 Q4_K subtract, 4 tree levels; the streaming tree adds 3 adders, ~1.3 K LUT /
 // 1 K FF, to the docs/rtl-mvm.md §9.3 estimate), 2 tsr_mvm_i2f, 12 small multipliers (4 + 8 x
 // 6u * 17s), the MAC products / trees of 128 lanes (tsr_mac_lane; at MAC_LAT 3 2708 flops: 2048
@@ -209,7 +209,7 @@ endmodule
 // tsr_fp_pkg::tsr_i32_to_f32(sext(v)) for every IW-bit v, 25 <= IW <= 32 (tb/mvmback
 // test_mvm_back_i2f_sweep: all 2^26 inputs at IW = 26). docs/rtl-mvm.md §8.2 split:
 //   stage 1  sign, magnitude |v| (IW-bit carry chain)
-//   stage 2  leading-zero count and left normalisation (priority encoder + barrel shift)
+//   stage 2  leading-zero count and left normalization (priority encoder + barrel shift)
 //   stage 3  RNE increment of the 23-bit fraction (guard = the bit below it, sticky = the rest),
 //            exponent 126 + IW - lz + carry; 0 -> +0.0
 // Helper of tsr_mvm_back (isum / msum, 26 bits).

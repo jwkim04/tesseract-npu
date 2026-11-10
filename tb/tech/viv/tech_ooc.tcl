@@ -6,13 +6,13 @@
 # usage: vivado -mode batch -nojournal -nolog -source tb/tech/viv/tech_ooc.tcl \
 #          -tclargs <repo> <top> <outdir> [synth_only] [netlist] [filelist=<f>] [extra=<f>] [NAME=VALUE ...]
 #   NAME=VALUE  synth_design -generic of <top> (e.g. T_MAX=8 MAC_LAT=5)
-#   synth_only  stop after synthesis (utilisation and mapping summary)
-#   netlist     write the synthesised netlist for simulation: <outdir>/net.v (write_verilog
+#   synth_only  stop after synthesis (utilization and mapping summary)
+#   netlist     write the synthesized netlist for simulation: <outdir>/net.v (write_verilog
 #               -mode funcsim), used by tb/tech/viv/net_sim.sh
 #   filelist=   another filelist (default rtl/filelist_xilinx.f)
 #   extra=<f>   one more source file (e.g. the flat-port wrapper of the netlist simulation)
 # Constraints as tb/core/viv/core_ooc.tcl: 3.333 ns clock, every I/O budgeted 1.6 ns outside (the
-# neighbours are registered); r2r = register-to-register only. Prints (grep "TOOC"):
+# neighbors are registered); r2r = register-to-register only. Prints (grep "TOOC"):
 #   TOOC util(<stage>) LUT .. FF .. DSP .. RAMB36 .. RAMB18 .. URAM .. LUTRAM .. SRL .. CARRY8 ..
 #   TOOC dsp <count> <AREG/BREG/DREG/ADREG/MREG/PREG/AMULTSEL/PREADDINSEL ...>   (per setting)
 #   TOOC dsp_in <hier> <count>                 DSPs per tsr_mac_lane instance (u_mac)

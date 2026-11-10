@@ -3,7 +3,7 @@
 #   <saved-project.xpr> <phys-pre-hook.tcl> <route-pre-hook.tcl>
 # Hooks run in the implementation child, not in this project-control session.
 # The phys-pre hook must restore CDC constraints and the K4FP Tcl scope before
-# physical optimisation. No synthesis, bitstream or packaging step is launched.
+# physical optimization. No synthesis, bitstream or packaging step is launched.
 
 proc tsr_resume_file {path what} {
   set path [file normalize $path]

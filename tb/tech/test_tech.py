@@ -23,7 +23,7 @@ ones (rtl/tech/generic), which every other testbench verifies against the contra
                            tsr_spm built from the xilinx tsr_sram_1r1w: 4 MiB at SPM_RD_LAT 4 (U200)
                            and 2 (default), 256 KiB at 4 (one bank of URAM slices), 1000 lines at 4
   test_tech_lint           rtl/tech/xilinx/lint.sh (Verilator -Wall of the xilinx target)
-  test_tech_netlist[...]   opt-in, needs Vivado: the Vivado-synthesised netlist of a xilinx wrapper
+  test_tech_netlist[...]   opt-in, needs Vivado: the Vivado-synthesized netlist of a xilinx wrapper
                            (DSP48E2 / URAM288 / RAMB36E2 / LUTRAM unisim models) against the generic RTL
                            in xsim (tb/tech/viv/net_sim.sh); TSR_TECH_VIVADO=1 or -k netlist
 Both equivalence harnesses link two Verilator models of one toplevel (--prefix Vgen / Vxil) into one
@@ -218,7 +218,7 @@ NETSIM = {
 
 @pytest.mark.parametrize("cfg", list(NETSIM))
 def test_tech_netlist(cfg, request):
-    """Opt-in (needs Vivado, ~1-5 min each): synthesised netlist == generic RTL in xsim."""
+    """Opt-in (needs Vivado, ~1-5 min each): synthesized netlist == generic RTL in xsim."""
     selected = os.environ.get("TSR_TECH_VIVADO") == "1" or \
         "netlist" in (request.config.getoption("keyword") or "") or \
         any("test_tech_netlist" in a for a in request.config.args)

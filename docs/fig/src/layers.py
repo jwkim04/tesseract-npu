@@ -21,7 +21,7 @@ provides the Alveo U200 pieces only, and the lane heads say so.
   512 and LANES = 128, docs/spec.md §2, §3); SoC open.
 - Tech wrappers (rtl/tech/TARGET, per target): U200 xilinx = URAM, BRAM, DSP48E2 (docs/rtl-mvm.md
   §14); other targets: tsr_sram_* and tsr_mac_lane for the target, SRAM macros on an SoC.
-  rtl/tech/generic: behavioural wrappers for simulation and lint on any target (shared).
+  rtl/tech/generic: behavioral wrappers for simulation and lint on any target (shared).
 - Interfaces between the layers (edge labels): tsr_transport API; CSR access, DRAM buffers; CSR
   port, memory ports and the two clocks (docs/design/04-control-core.md §13.1); tsr_sram_1r1w,
   tsr_mac_lane.
@@ -36,11 +36,11 @@ from tsrfig import INK, INK_SOFT, Fig, measure, wrap  # noqa: E402
 
 W = 1600
 PX0, PX1 = 224, 1376                  # panel; row headers left of it, callouts right of it
-RX = (PX1 + W) / 2                    # callout centre
+RX = (PX1 + W) / 2                    # callout center
 HX = 204                              # right edge of the row headers
 LANE_X = [248, 624, 1000]             # target lanes (bands)
 LANE_W = 352
-LC = [x + LANE_W / 2 for x in LANE_X]           # lane centres: 424, 800, 1176
+LC = [x + LANE_W / 2 for x in LANE_X]           # lane centers: 424, 800, 1176
 TX = [x + 24 for x in LANE_X]                   # tile x
 TW = LANE_W - 48                                # tile width 304
 SX0, SX1 = LANE_X[0], LANE_X[2] + LANE_W        # shared slabs bridge all lanes: 248..1352
@@ -156,7 +156,7 @@ te = [("XILINX", "rtl/tech/xilinx\nURAM, BRAM, DSP48E2"),
 for i in range(3):
     f.box(TX[i], TE_Y, TW, TE_H, "vendor", te[i][0], sub=te[i][1])
 f.box(SX0 + 24, GE_Y, SX1 - SX0 - 48, GE_H, "neutral", "GENERIC",
-      sub="rtl/tech/generic · behavioural wrappers for simulation and lint on any target",
+      sub="rtl/tech/generic · behavioral wrappers for simulation and lint on any target",
       label_role="label_s", cut=12)
 
 # ---- row headers ----------------------------------------------------------------------------------------

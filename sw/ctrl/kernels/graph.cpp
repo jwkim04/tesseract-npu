@@ -207,13 +207,13 @@ struct run_state {
     uint32_t flags;             // header flags (| F_MARK for a PROF launch)
     uint32_t push_flags;        // PUSH_REC with F_REC
     bool     stop;              // stop pushing: STOP_ON_ERROR saw an error, or an executor load failed
-    bool     ring_used;         // the scratch ring was initialised for this launch (its counters are)
+    bool     ring_used;         // the scratch ring was initialized for this launch (its counters are)
 };
-constinit run_state g{};        // constant-initialised: no static constructor (crt0: the SDK has none)
+constinit run_state g{};        // constant-initialized: no static constructor (crt0: the SDK has none)
 uint32_t rec[REC_WORDS];        // the record being executed (DTCM copy)
 // constinit: dev_cfg's M7 fields have default member initializers, which made a
-// default-initialised `dev` a dynamic initialisation (a static constructor in .init_array, which the
-// SDK's crt0 does not run and fw_elf_image rejects); value-initialised it is constant again.
+// default-initialized `dev` a dynamic initialization (a static constructor in .init_array, which the
+// SDK's crt0 does not run and fw_elf_image rejects); value-initialized it is constant again.
 constinit plan::dev_cfg dev{};
 constinit spm_ring ring{};
 

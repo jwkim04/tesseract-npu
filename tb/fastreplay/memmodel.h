@@ -9,7 +9,7 @@
 // edge, rule R1), then chooses the outputs for the next cycle — the falling-edge sample /
 // rising-edge drive discipline of the Python model.
 //
-// Behaviour (seeded per channel; Regime): random request acceptance (backpressure on rd_req,
+// Behavior (seeded per channel; Regime): random request acceptance (backpressure on rd_req,
 // wr_req, wr_dat), random latency per burst, random gaps in rd_rsp / wr_rsp valid, read data in
 // order within one id and interleaved at beat granularity across ids (or no interleave once a
 // burst has started: "ordered"), write responses in order per id and reordered across ids, random
@@ -29,10 +29,10 @@
 //       with has_mvm, never 3; write source DMA only
 //   P6  no request / write data offered while no run is active (set_active; DONE => quiescent)
 // Tracking for the trace checks: per channel read beats per source (id[3:2]), reads of beats
-// that were neither initialised (allowed bitmap: init regions + command beats) nor written
+// that were neither initialized (allowed bitmap: init regions + command beats) nor written
 // earlier by the run, writes outside the expect bitmap, written bitmap, max outstanding.
 // Memory: a flat MAP_NORESERVE mapping of ch_bytes per channel (zero until loaded, pages are
-// only materialised where touched), bitmaps likewise; released by release().
+// only materialized where touched), bitmaps likewise; released by release().
 #pragma once
 
 #include <sys/mman.h>

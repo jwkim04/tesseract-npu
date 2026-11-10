@@ -210,7 +210,7 @@ module tsr_fp_add_dsp #(
   end
 
   // ---------------------------------------------------------------------------------------------
-  // S2: far alignment product (the DSP, P register = [C2]); near exact differences; exponent neighbours.
+  // S2: far alignment product (the DSP, P register = [C2]); near exact differences; exponent neighbors.
   // ---------------------------------------------------------------------------------------------
   s2_t s2d;
 
@@ -257,7 +257,7 @@ module tsr_fp_add_dsp #(
   end
 
   // ---------------------------------------------------------------------------------------------
-  // S3: far window select and sticky from P, add / normalise / RNE bit; near leading zeros; path select.
+  // S3: far window select and sticky from P, add / normalize / RNE bit; near leading zeros; path select.
   // ---------------------------------------------------------------------------------------------
   s3_t s3d;
 
@@ -331,7 +331,7 @@ module tsr_fp_add_dsp #(
   end
 
   // ---------------------------------------------------------------------------------------------
-  // S4: far increment, near normalisation / FTZ, final select; [OUT].
+  // S4: far increment, near normalization / FTZ, final select; [OUT].
   // ---------------------------------------------------------------------------------------------
   logic [31:0] y4;
 

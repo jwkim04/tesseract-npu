@@ -148,7 +148,7 @@ module tsr_mvm_pv
   logic [7:0]  fq_n_q;         // delay FIFO cells: held + in flight (credit)
   logic [QDW-1:0] fq_wp_q;     // write index of the next accepted cell
 
-  // Position registers with their precomputed neighbours (no adder or variable shift between the
+  // Position registers with their precomputed neighbors (no adder or variable shift between the
   // counters and ready_q): l + 1, g + 1, ng - 1, the slice within its head group, last-slice flags.
   logic [12:0] lq1_q;          // l_q + 1
   logic [12:0] g_q, gq1_q;     // head group of the next cell (s >> dcode), + 1
@@ -1131,7 +1131,7 @@ endmodule
 
 // The ATTPV drain's lane select (AT §8.2): pipe k of a drain step reads lane 8 l + k of slot t of the capture bank and
 // the non-finite flag of that lane's block (lane / 32). The lane number is the concatenation {l, k}; an integer
-// expression for it (`automatic int L = 8 * int'(l) + k`, then `a[t][6'(L)]` and `nf[t][L / 32]`) is synthesised by
+// expression for it (`automatic int L = 8 * int'(l) + k`, then `a[t][6'(L)]` and `nf[t][L / 32]`) is synthesized by
 // Vivado 2024.2 without the top bit of l, so that lanes 32 to 63 read as lanes 0 to 31 (docs/platform-u200.md §8.8;
 // tb/at/viv/lsel_net.sh simulates the netlist of both forms).
 /* verilator lint_off DECLFILENAME */

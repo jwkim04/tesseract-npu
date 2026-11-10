@@ -175,7 +175,7 @@ is the only write port user.
 - The front end consumes one FIFO beat per cycle, META beats included. At the last beat consumed the WS source has nothing
   outstanding, and `idle` means no command, nothing outstanding and an empty FIFO.
 
-## 5. Activation buffer organisation (`tsr_mvm_actbuf`)
+## 5. Activation buffer organization (`tsr_mvm_actbuf`)
 
 Spec §8, "Resource estimate", sizes one full QA image per token (QS, D and BS) at `K_MAX` 32768. The width scales with `T_MAX`,
 because the T tokens share every weight beat and are read together.
@@ -280,7 +280,7 @@ exceed 24 bits).
 `TSR_MVM_GROUPS = 4` instances of `tsr_mac_lane #(.N(32), .T(T_MAX), .LAT(MAC_LAT))` per cluster give 128 lanes, and Q8_0 uses
 groups 0 and 1. The activations are the QS word's 1024 bits per token for Q4_K (lane L = byte L) and the selected 512-bit half on
 lanes 0 to 63 for Q8_0 (the weights of lanes 64 to 127 are 0). Sums are exact `SUM_W = 21`-bit two's complement in every
-implementation. `rtl/tech/generic/tsr_mac_lane.sv` is behavioural. The Xilinx variant `rtl/tech/xilinx/tsr_mac_lane.sv` puts every
+implementation. `rtl/tech/generic/tsr_mac_lane.sv` is behavioral. The Xilinx variant `rtl/tech/xilinx/tsr_mac_lane.sv` puts every
 product on a DSP48E2 and packs two tokens per DSP (WP486 INT8 packing, the weight as the shared B operand): tokens 2s and 2s + 1
 of lane i share slot s, with `AD = x[2s]*2^18 + x[2s+1]` in the pre-adder, `M = AD * w` and a constant 2^17 on the post-adder's C
 port, which folds WP486's fabric sign correction into the DSP, so `P[33:18] = x[2s]*w` and `P[15:0] = x[2s+1]*w` exactly. An odd T
@@ -356,7 +356,7 @@ ties at every alignment distance and operands 2^-126 apart in exponent, plus ran
 
 The `tsr_fp_pkg` function is verified in `tb/fp` (directed, every exponent with random mantissas, and an opt-in exhaustive 2^32
 sweep). It takes about 7 to 9 LUT levels as one function. The back end uses it as one stage only if timing allows, and otherwise
-as a two-stage split (normalise, then round) checked bit for bit against the function.
+as a two-stage split (normalize, then round) checked bit for bit against the function.
 
 ## 9. Throughput, timing and cost
 
@@ -504,7 +504,7 @@ memory subsystem. The linked design adds them ([platform-u200.md](platform-u200.
 The scripts are in `tb/core/viv`. `core_ooc.tcl` runs synthesis, `opt_design`, `place_design`, `phys_opt_design`, `route_design`
 and an optional post-route `phys_opt_design`, `core_slr.tcl` applies a Pblock plan ([platform-u200.md](platform-u200.md) §8.1),
 and `core_ooc.sh <k1|k4t1|k4|k4min> <outdir> [args]` runs the configurations with the image parameters (`TSR_VIVADO_LOCK`
-serialises runs). The part is `xcu200-fsgd2104-2-e`, the clock 3.333 ns, and every I/O is budgeted 1.6 ns outside.
+serializes runs). The part is `xcu200-fsgd2104-2-e`, the clock 3.333 ns, and every I/O is budgeted 1.6 ns outside.
 
 ### 14.2 U200 bitstream parameters
 
@@ -550,7 +550,7 @@ With the structures of §14.4 and §14.9 in place, these bound timing:
    buffers and everything that grows with `T_MAX`, where a job is a `2 * T_MAX : 1` select of flops with registered selects) and a
    central part (round robin over the `NUM_CH` job-pipe heads, credits, ACC, write queue), with `JOB_PIPE` register slices in
    between (`tsr_mvm` passes `RES_PIPE`) and a kept start pipe per assembler. The Pblock plan puts each assembler next to its
-   cluster, so only assembled jobs cross to the centre. The port list is unchanged, and with `JOB_PIPE` 0 the cycle behaviour at
+   cluster, so only assembled jobs cross to the center. The port list is unchanged, and with `JOB_PIPE` 0 the cycle behavior at
    the ports is the unsplit one.
 3. Reset is distributed (`RST_PIPE`). A single `rst_n` net to every reset flop of a core spread over three SLRs cannot meet
    timing. With `RST_PIPE` P of at least 1, every flop sees `rst_n` exactly P cycles late, through P - min(P, 2) shared stages and
@@ -610,7 +610,7 @@ every job pipe ([platform-u200.md](platform-u200.md) §8.10). Job-pipe stage-0 r
 outside their Pblock when no leaf cell is fixed. Each SPM address bit drives 32 per-slice copies (§14.9 item 1), and one copy per
 two slices is the untried middle option. The cluster's `fmt_q` (about 3,100 loads) stays shared. Two `keep` copies of a reset may
 merge, and phys_opt replicates a cluster reset copy at its loads. The core's reset copies are in no Pblock, and copies that must
-stay apart want `DONT_TOUCH`. `RST_PIPE` of 1 or more changes the core's reset boundary behaviour, so in the kernel `ap_rst_n`
+stay apart want `DONT_TOUCH`. `RST_PIPE` of 1 or more changes the core's reset boundary behavior, so in the kernel `ap_rst_n`
 must stay low for at least `RST_PIPE` + 1 = 4 cycles ([platform-u200.md](platform-u200.md) §5).
 
 ### 14.9 Margin structures

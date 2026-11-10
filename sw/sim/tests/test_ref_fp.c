@@ -1,5 +1,5 @@
 // test_ref_fp.c — f32 helper edge cases (spec "Common fp rules" + §21 "FTZ decision point").
-// DAZ/FTZ/signed zero/Inf/NaN canonicalisation, int32 -> f32 rounding (exhaustive against
+// DAZ/FTZ/signed zero/Inf/NaN canonicalization, int32 -> f32 rounding (exhaustive against
 // the double path), fp16 <-> f32 corner values, QACT rounding helpers.
 
 #include <float.h>
@@ -115,7 +115,7 @@ static void test_arith(void) {
     EQ("recip nan", tsr_frecip(u2f(0xFFFFFFFF)), CANON);
     EQ("sqrt nan", tsr_fsqrt(u2f(0x7FBFFFFF)), CANON);
 
-    // Tree: explicit parenthesisation and special values.
+    // Tree: explicit parenthesization and special values.
     float p[16];
     for (int i = 0; i < 16; ++i) p[i] = 0.0f;
     p[0] = 1.0f; p[1] = u2f(0x33800000); p[2] = u2f(0x33800000);   // (1 + 2^-24) + (2^-24 + 0)

@@ -13,7 +13,7 @@
 //          read in any later cycle returns the new data.
 //   no reset of the array or of the read pipeline; contents undefined at power-up; addresses
 //          >= DEPTH are never presented.
-//   Cycle behaviour against generic: identical in every cycle for "block" and "distributed"
+//   Cycle behavior against generic: identical in every cycle for "block" and "distributed"
 //   (stages 2..RD_LAT free-running as there); identical in every cycle with a read result for
 //   "ultra", whose stages 2..RD_LAT only load behind a read (below) and hold otherwise.
 //
@@ -33,7 +33,7 @@
 //   Read-first collision: BRAM SDP with a common clock supports READ_FIRST (Vivado sets
 //   WRITE_MODE READ_FIRST); URAM288 executes port A before port B, and Vivado maps the read to
 //   port A and the write to port B (RDB_WR_A = 0, RDB_WR_B = 1). tb/tech/viv/net_sim.sh checks
-//   both on the synthesised netlists (collisions included).
+//   both on the synthesized netlists (collisions included).
 //   Read pipeline, so that the stages land in the primitive's registers:
 //     block       stage 1 = the BRAM read latch, stage 2 = DOA/DOB_REG (a free-running register
 //                 right behind the read register is absorbed, REGCE = 1); stages 3..RD_LAT are

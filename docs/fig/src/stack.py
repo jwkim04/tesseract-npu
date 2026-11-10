@@ -35,7 +35,7 @@ trademark notes in docs/fig/logos/SOURCES.md): llama.cpp (icon, on its own dark 
 models"). No logo of a company, an ISA or an IP core.
 
 Every block is drawn solid: the figure shows what the tree contains. The applications are
-third-party programs. Colour: host software butter, firmware and control mint, tools white,
+third-party programs. Color: host software butter, firmware and control mint, tools white,
 hardware by role (STYLE.md palette).
 
 Run: build/tools/svgvenv/bin/python docs/fig/src/stack.py      (TSR_FIG_THEME=dark: stack-dark.svg)
@@ -98,7 +98,7 @@ def tile(f, x, y, w, h, t):
 
 
 def logo_tile(f, x, y, w, h, t):
-    """The inside of a tile with a logo: the logo at the left, centred in the tile's height, and
+    """The inside of a tile with a logo: the logo at the left, centered in the tile's height, and
     the text left-aligned beside it. A tile without a label (the PyTorch lockup carries the name)
     may have a badge line: a small logo and a few words under the detail line."""
     lg = t["logo"]

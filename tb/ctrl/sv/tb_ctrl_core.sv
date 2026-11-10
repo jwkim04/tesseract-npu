@@ -5,7 +5,7 @@
 //   - dispatcher: pops issue-FIFO entries at random times, checks each ticket against its own
 //     per-unit count (the dispatcher's assertion, CC §7.2), and runs a per-unit queue model: S[u]
 //     (accept) and D[u] (done) step by at most one per cycle at random times, D <= S <= popped;
-//   - SPM bridge: a 4 MiB SPM of lines (initialised to 0xA5 like the simulator's) answering after a
+//   - SPM bridge: a 4 MiB SPM of lines (initialized to 0xA5 like the simulator's) answering after a
 //     random latency; core window: answers 0xC0DE0000 ^ offset; LQ / LCQ / log registers: an empty
 //     LQ, an 8-deep LCQ ring (LCQ_RD stays 0), the EX §4.5 faults, LOG_FREE's answer = words
 //     received (no drops); log words drained at random;

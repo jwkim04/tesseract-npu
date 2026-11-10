@@ -19,7 +19,7 @@ def lockup(colours, word_colour, R=200.0, ratio=2.2, S=20.0, track=7.0, gap_k=0.
     cy = H / 2
     fr = Frame(cx, cy, R, d)
     x_text = cx + R * C30 + gap_k * cap
-    # vertical: centre the band between baseline and the mean of x-height and cap height
+    # vertical: center the band between baseline and the mean of x-height and cap height
     X = 100 * k
     base = cy + (X + cap) / 4 + lift * cap
     word = "".join(translate_d(p, x + x_text / k, base / k, k) for x, p in parts)

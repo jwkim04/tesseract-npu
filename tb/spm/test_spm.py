@@ -37,7 +37,7 @@ pytest functions:
                            the wrong bank, or changes a request before it is accepted;
                            spm_neg_prereset: they stay quiet before the first reset (garbage on every
                            input) and are armed by it
-  test_spm_time0_seeds     X-randomised start-up over many seeds must not trip the checks
+  test_spm_time0_seeds     X-randomized start-up over many seeds must not trip the checks
 cocotb tests (spm_*, sys_*) are selected by the runner. tb/tech/test_tech.py reuses spm_reset_state,
 spm_directed, spm_sweep, spm_random and spm_reset_midflight on the xilinx SRAM wrapper.
 """
@@ -201,7 +201,7 @@ def test_spm_lint_configs():
 
 
 # Negative tests: 1000 lines (line 1000 is representable). case -> (the one assertion message
-# expected, X randomisation on). spm_neg_prereset runs without X randomisation so that no
+# expected, X randomization on). spm_neg_prereset runs without X randomization so that no
 # time-0 clock edge with a random rst_n can arm the checks before the test drives rst_n high.
 NEG_CFG = dict(SPM_BYTES=64 * 1000, BANK_LINES=256)
 NEG_CASES = {
@@ -257,7 +257,7 @@ TIME0_SEEDS = list(range(1, 33)) + [40]
 
 
 def test_spm_time0_seeds():
-    """X-randomised start-up must not trip the checks: Verilator's first evaluation may see a
+    """X-randomized start-up must not trip the checks: Verilator's first evaluation may see a
     rising clock edge with random rst_n (high), random inputs and random check state before any
     testbench drives rst_n. One build (config small), spm_reset_state on many seeds."""
     over = CONFIGS["small"][0]
@@ -850,14 +850,14 @@ async def spm_rr(dut):
         await sb.drain()
         assert accepted >= (40 * ncl) // 7 - 1, "late client accepted %d times" % accepted
     util = [p.busy / max(1, p.reqd) for p in sb.prd + sb.pwr if p.reqd]
-    dut._log.info("rr: max wait %d (bound %d), port utilisation while requested %s", sb.max_wait(), ncl - 1,
+    dut._log.info("rr: max wait %d (bound %d), port utilization while requested %s", sb.max_wait(), ncl - 1,
                   ["%.3f" % u for u in util])
 
 
 @cocotb.test()
 async def spm_reset_midflight(dut):
     """Reset while reads are in flight on both banks: no response comes out, grants are dropped,
-    and the SPM works normally afterwards."""
+    and the SPM works normally afterward."""
     sb = await setup(dut)
     rnd = tb_rng(14)
     hot = [0, sb.lines - 1]
@@ -1399,7 +1399,7 @@ async def sys_saturate(dut):
             await sb.step()
         util[(pattern, p)] = ["%.3f" % ((x.busy - b) / max(1, x.reqd - q)) for x, (b, q) in zip(sb.prd + sb.pwr, b0)]
         await sb.drain()
-    dut._log.info("saturate: %d cycles, stats %s, max wait %d (bound %d), port utilisation while requested %s",
+    dut._log.info("saturate: %d cycles, stats %s, max wait %d (bound %d), port utilization while requested %s",
                   sb.cyc, sb.stats, sb.max_wait(), sb.ncl - 1, util)
     assert sb.max_wait() == sb.ncl - 1, "the round-robin bound was never reached (no full contention)"
     assert sb.stats["br_ld"] > 20 and sb.stats["br_st"] > 20 and sb.stats["p_rsp"] > total // 4

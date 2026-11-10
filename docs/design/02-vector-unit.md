@@ -460,7 +460,7 @@ Each row is reduced on its own.
   is bit-identical to the spec recipe SOP.MULI → ADDI → SQRT → RECIP (spec §9, RMSNorm example) when
   s[sk] equals the MULI immediate.
 
-Implementation freedom (exact). A partial is initialised as FA(+0, x) (the first update of a +0
+Implementation freedom (exact). A partial is initialized as FA(+0, x) (the first update of a +0
 partial; never a raw load of x). A computed tree value q can be −0: the spec's FTZ keeps the sign, so
 for example FA(0x80C00000, 0x00800000) = 0x80000000, while FA(−0, +0) = +0. Tree values are never
 subnormal, so FA(q, +0) = z(q), where z maps −0 to +0 and leaves every other value unchanged. When the
@@ -504,7 +504,7 @@ Algorithm (u = bits of v):
      round(ln²2/2·2³²) and round(ln2·2³²).
 10. M = T64[j] + ((T64[j] × PF) >> 32), where T64[j] = round(2^(j/64)·2³⁰) (Appendix A). M is in
     [2³⁰, 2³¹] and represents 2^frac in Q1.30.
-11. Normalise: if M ≥ 2³¹, then drop = 8 and n ← n + 1; else drop = 7.
+11. Normalize: if M ≥ 2³¹, then drop = 8 and n ← n + 1; else drop = 7.
 12. Round to 24 bits: sig = M >> drop; rem = M mod 2^drop; half = 2^(drop−1). If rem > half, or rem = half
     and sig is odd: sig ← sig + 1. If sig = 2²⁴: sig ← 2²³ and n ← n + 1.
 13. be = n + 127. If be ≥ 255 return +∞; if be ≤ 0 return +0; else return (be << 23) | (sig − 2²³).
@@ -731,7 +731,7 @@ follows the CPU's form wherever the CPU's form is a defined integer or f32 seque
 
 ### 7.3 Back lane (× 8)
 
-- ONE computes FA(ONE, e) and FS(ONE, e): exact-equivalent specialised adders for e ≥ 0 or NaN, which is
+- ONE computes FA(ONE, e) and FS(ONE, e): exact-equivalent specialized adders for e ≥ 0 or NaN, which is
   all EXPK produces.
 - RC (`tsr_vu_rcp`, pipelined, correctly rounded): a 256-segment quadratic approximation with
   coefficients in one RAMB18 gives a quotient candidate within one unit of the 24-bit floor. One exact
@@ -908,7 +908,7 @@ and four back lanes as two banks of four front/EXP and two back lanes; a bank se
 and adds no EXP or TANH datapath. Normal VU work drains before local ownership changes, and local work reserves
 return capacity before injection. A local ASMAX sequencer reads and writes its owner's score and P bank and
 receives the global row maximum; QK sends scalar maxima through a balanced registered tree with bounded
-credits, and the local scalar reduction preserves the MAXT special-value and tie behaviour. A completed dense
+credits, and the local scalar reduction preserves the MAXT special-value and tie behavior. A completed dense
 MVM job can enter a 16-slot ordered local epilogue queue per pair before its final gather transfer: SCALE is an
 FP32 multiply, SOFTCAP an FP32 multiply, the existing TANH and an FP32 multiply with the two original graph
 coefficients, keeping all three rounding boundaries. Raw MVM `w0[13]` selects local SCALE (`w6` destination
@@ -933,7 +933,7 @@ SLR1 (VU-31).
 #### 7.12.1 The op
 
 Gated DeltaNet layers keep a recurrent state S per head, d_v × d_k f32. For one token and one head, with k
-and q (d_k, L2-normalised by earlier ops), v (d_v), and the scalars α = exp(g) and β:
+and q (d_k, L2-normalized by earlier ops), v (d_v), and the scalars α = exp(g) and β:
 
 ```
 for each row i (rows are independent):
@@ -958,7 +958,7 @@ cost per head is (rows + 1) × m / 8 cycles when heads follow each other (§7.12
 | Operand | Form | Where |
 |---|---|---|
 | S | d_v rows of m = d_k f32, dense (row stride m / 16 lines), updated in place or to another tile | SPM tile, loaded by `LD` from the state tensor in DRAM, stored back by `ST` |
-| k, q | m f32 each | SPM vectors (earlier VU ops L2-normalise them) |
+| k, q | m f32 each | SPM vectors (earlier VU ops L2-normalize them) |
 | v | d_v f32 | SPM vector |
 | o | d_v f32 | SPM vector, tail rule of §4.2 |
 | α, β | f32 | s registers (`SOP.EXP` gives α = exp(g)) |
@@ -1126,7 +1126,7 @@ The element update is `FA(FM(α, S), FM(e, k))` on `tsr_fp_mul` and `tsr_fp_add`
 in parallel into FA for ROPE and AMERGE (U_ROT, §7.2), and the GDN update is U_ROT with the operands of
 §7.12.5, so the engine has no update array: the front lanes take one beat of 8 elements per cycle, the rate of
 the dot array. A block-frame update in the DSP is 1.3 to 30 times less accurate than the f32 update and needs a
-second set of row shifters and a normaliser per lane, so the element update remains f32 on the VU's primitives
+second set of row shifters and a normalizer per lane, so the element update remains f32 on the VU's primitives
 (`TSR_FP_ADD_DSP` of §7.10 applies to it unchanged).
 
 #### 7.12.8 Throughput and latency
@@ -1307,7 +1307,7 @@ The simulator is the oracle; every VU op has a C reference, and the RTL must mat
 | VU-9 | Flow control: credit-based reads against output-FIFO space, no clock enable in the lanes, fixed latency classes | Avoids a clock enable fanning out to about 45 K FFs |
 | VU-10 | SPM access: CC's pair reads (alternating a-pair and b-pair cycles), no operand parity rule, no operand caches | Two sources stream at full rate whatever their alignment |
 | VU-11 | s-register access: one bank, written only by VU ops (SOP.MOVI for constants); read-only for the RISC-V and the host at SREG0-15, core CSR 0x9C0 | Writes stay ordered by queues and deps; one read location for every reader |
-| VU-12 | s-register reset: +0.0 at hardware reset; kept across `SOFT_RESET`, RISC-V reset, QABORT and QCLEAR | EX's requirement; kernels initialise what they read |
+| VU-12 | s-register reset: +0.0 at hardware reset; kept across `SOFT_RESET`, RISC-V reset, QABORT and QCLEAR | EX's requirement; kernels initialize what they read |
 | VU-13 | Attention mask: VMASK 0x38 is specified and not implemented (`ILLEGAL_OP`); llama.cpp masks use AT's mask summaries | VMASK assumes cell j holds position k0 + j, which llama.cpp's ring-shaped, reorderable caches break |
 | VU-14 | TOPK: fully specified (rows, padding, total order); simulator only; an RTL option uses a running-threshold filter | The control core selects experts and samples with integer compares; keeps 4 K LUT out of the image |
 | VU-15 | DQROW: opcode 0x12 as SPM to f32 on the VU after an LD of the repacked row; simulator only (`CAPS` bit6 = 0) | The VU has the fp datapath; the embedding lookup stays on the CPU |
@@ -1318,7 +1318,7 @@ The simulator is the oracle; every VU op has a C reference, and the RTL must mat
 | VU-20 | Accept-ahead: up to 2 VU ops held; RAW, WAW and s-register hazards checked by extent intervals (CC's I3 ≤ 2 for unit 3) | Short independent ops overlap their fill and drain |
 | VU-21 | EXPSUB(−∞, x) = +0, even when x is −∞ or NaN | Fully masked blocks stay finite without an ordering rule |
 | VU-22 | MAX and MIN: the spec total order; MAX propagates NaN, MIN returns the non-NaN operand | One comparator serves MAX, MIN and TOPK, consistent with the spec |
-| VU-23 | Raw operations: COPY, SETC, MOVI, LDS, STS, VMASK pass-through and the ROPE tail copy bits without fp canonicalisation | COPY serves any 32-bit data; positions and indices pass unchanged |
+| VU-23 | Raw operations: COPY, SETC, MOVI, LDS, STS, VMASK pass-through and the ROPE tail copy bits without fp canonicalization | COPY serves any 32-bit data; positions and indices pass unchanged |
 | VU-24 | Reduction unit size: an 8-input subtree (7 FA) plus 2 scheduled FA; rows shorter than 256 elements reduce at half rate | Saves about 5.5 K LUT; the half-rate cases are short rows |
 | VU-25 | Accuracy contract: functions are defined by their algorithms (bit-exact); error bounds are informative | Bit-exactness between simulator, RTL and card is the verification basis |
 | VU-26 | CPU-compatible GELU: GELU16 (0x17) and GEGLU16 (0x18) clamp at ±10 and round input and result to binary16; llama.cpp GELU and GEGLU map to them; the exact GELU serves PyTorch | The pinned CPU rounds every GEGLU element to fp16 (up to 3.9·10⁻³ relative); matching its form removes that gap for about 0.6 K LUT |

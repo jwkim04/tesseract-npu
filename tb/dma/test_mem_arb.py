@@ -11,7 +11,7 @@ pytest function test_mem_arb[cfg] runs the cocotb tests
               idle); a source holding rsp_ready low (local reason) delays only the shared
               response channel, nothing is lost
   arb_reset   synchronous reset in the middle of read/write traffic: outputs in reset state, the
-              outstanding budget is whole again afterwards (RD_OUTSTANDING reached, never exceeded)
+              outstanding budget is whole again afterward (RD_OUTSTANDING reached, never exceeded)
 configurations: rdo4 (RD_OUTSTANDING 4, ADDR_BEAT_W 20), u200 (16, 28), rdo1 (1, 13)
 """
 from __future__ import annotations

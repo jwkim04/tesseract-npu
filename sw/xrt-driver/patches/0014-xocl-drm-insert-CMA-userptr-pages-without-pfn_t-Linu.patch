@@ -27,7 +27,7 @@ path. The VMA is VM_MIXEDMAP (xocl_mmap()), so vm_mixed_ok() passes in
 both versions; the return value is a vm_fault_t as in the 4.20+ branch.
 The p2p/import branch (vm_insert_page()) is not changed by this patch;
 on 6.15+ it needs the page refcounts that patch 0019 ("xocl/p2p:
-initialise P2P page refcounts to 1") sets up.
+initialize P2P page refcounts to 1") sets up.
 
 Upstream: same shape as the xocl_drm.c hunks of XRT commit f41db917c
 (its extra change to the RHEL-only branch is not needed here).

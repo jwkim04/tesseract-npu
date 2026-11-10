@@ -147,7 +147,7 @@ the host (op lists, argument blocks, KV planes) are reached by LD and ST through
 
 ### 3.7 Interrupts and timer
 
-Ibex's interrupt inputs are level-sensitive, computed or held in `clk_rv` from synchronised values (CC §12.3). `irq_fast[0]` is
+Ibex's interrupt inputs are level-sensitive, computed or held in `clk_rv` from synchronized values (CC §12.3). `irq_fast[0]` is
 the `WAIT_TICKET` ticket done, `[1]` a unit in error state, `[2]` a launch descriptor waiting, `[3]` completion ring room, `[4]`
 DB completion records at least half full and `[5]` the `WAIT_CREDIT` unit has a credit. `irq_timer` is MTIME at or above MTIMECMP.
 `mtvec` is vectored only, and the runtime installs a vector table at `RV_BOOT`. Joins need no handler, since WFI wakes on an
@@ -248,7 +248,7 @@ Quiescent state. `QQUIESCENT` means no op is held by a datapath unit, the dispat
 queue is held, and no non-running entry is left to drain. With the RISC-V also halted, the architectural state (RISC-V registers
 and CSRs, TCMs, SPM lines written, DRAM) equals the simulator's after the same number of retired RISC-V instructions and the same
 completion vector `DONE_SEQ[0..5]`, given that run's co-simulation log (§9.4). With `HOLD_ON_HALT` it is reached at any breakpoint
-once the running ops finish. This is the control-core analogue of DB §5.8, and random-halt tests check it (§9.3).
+once the running ops finish. This is the control-core analog of DB §5.8, and random-halt tests check it (§9.3).
 
 ### 4.7 Address fields and the scalar bank
 
@@ -283,7 +283,7 @@ one per cycle per unit (CC §9).
 
 `tsr_spm` uses round robin, separately for the read and the write port, with a registered grant. The last granted client has the
 lowest priority next, so a waiting client is granted after at most `NCL` - 1 other grants. It is built per bank on a 2R2W even and
-odd organisation (CC §10.1, §10.2, CC-12), which gives the VU its two read ports, since lines L and L + 1 are always in different
+odd organization (CC §10.1, §10.2, CC-12), which gives the VU its two read ports, since lines L and L + 1 are always in different
 banks.
 
 No-deadlock argument (CC §10.3). Every SPM client raises a request only with its payload ready (rule R2) and never waits on memory
@@ -328,13 +328,13 @@ The race detector (`sw/sim/tsr_race.c`) cites rules 2 and 4 by number. EX §2.3 
    pushed after the RISC-V popped that descriptor. DRAM written by ops is seen by the host after it reads the answer record the
    runtime posted after joining those ops (H1 and H2 of EX §2.3).
 6. Not used.
-7. As-if optimisations inside a unit stay allowed: MVM-to-MVM overlap and VU accept-ahead (invariant I3 of CC §9.4).
+7. As-if optimizations inside a unit stay allowed: MVM-to-MVM overlap and VU accept-ahead (invariant I3 of CC §9.4).
 8. Scalar registers. The s bank's accesses follow rules 2 and 4 like SPM bytes.
 
 ### 5.6 SPM port contention
 
 A long MVM takes a fraction of a percent of the SPM port cycles of an ffn-sized op, and short ops (QACT, LD, ST, VOP) share the
-ports roughly as if serialised. The cost an MVM pays for concurrency is the channel beats of concurrent LD and ST and their DDR
+ports roughly as if serialized. The cost an MVM pays for concurrency is the channel beats of concurrent LD and ST and their DDR
 effects (§5.4), not SPM ports.
 
 ### 5.7 What concurrency buys
@@ -354,14 +354,14 @@ queues (EX §2 to §4, CC §1).
 ### 7.1 Crossings
 
 The crossing table is CC §11.2. The structures are the issue FIFO (an async FIFO with gray pointers from `clk_rv` to the core
-clock, 32 entries of 387 bits in LUTRAM), gray-coded counters with 2-flop synchronisers, tagged handshakes for the error records,
-SPM bridge, core window, LQ and LCQ registers, loader and DMI, a CDC FIFO for the log words, and synchronisers for levels and
+clock, 32 entries of 387 bits in LUTRAM), gray-coded counters with 2-flop synchronizers, tagged handshakes for the error records,
+SPM bridge, core window, LQ and LCQ registers, loader and DMI, a CDC FIFO for the log words, and synchronizers for levels and
 sticky events. The rules are:
 
 - Gray counters step by at most 1 per source cycle. Queue drains complete at most one entry per cycle per unit, and an assertion
   on every gray counter checks it. A counter that can move by more than one step (the host-written `LCQ_RD` and `LOG_RD`, and
   everything `SOFT_RESET` flushes) never crosses as a gray code. The RISC-V sees it only through a handshake.
-- Nothing crosses into a domain in reset. Every core-to-`clk_rv` request path waits for the synchronised "clk_rv out of reset"
+- Nothing crosses into a domain in reset. Every core-to-`clk_rv` request path waits for the synchronized "clk_rv out of reset"
   level. Until then, or while `clk_rv` is absent, it answers locally within the CSR timeout: read 0, write dropped, a sticky bit.
   No CSR access waits on `clk_rv` without a timeout (§3.3).
 
@@ -389,7 +389,7 @@ CC §12.2 is normative. The decisions recorded here are:
   stops granting new accesses on both Ibex ports, waits for the outstanding one (the bridge bound at most) and drops a push that
   still waits for a credit. It then asserts the reset of Ibex, the staging registers, deps, `WAIT_*`, the RISC-V hold source and
   the line buffer for at least 3 `clk_rv` cycles, and raises `RV_RESET_DONE`. It does not reset the CDC endpoints, the core-domain
-  rings, MTIME, the TCMs and the DMI side of the debug module, so no pointer resynchronisation is needed and a debugger stays
+  rings, MTIME, the TCMs and the DMI side of the debug module, so no pointer resynchronization is needed and a debugger stays
   attached.
 - Boot order: the core comes out of reset, the host loads the image, `RV_RUN` = 1, the RISC-V reset deasserts 2 to 3 `clk_rv`
   cycles later, and fetch starts at `RV_BOOT` + 0x80. `SOFT_RESET` is not a RISC-V reset. It is the device-level reset of EX §8.5,
@@ -495,13 +495,13 @@ CC §15 and SW §10 are normative.
 
 ### 9.1 Simulator
 
-`sw/sim/tsr_rv.c` is an RV32IMC and Zicsr interpreter that models the chosen Ibex configuration's CSRs and WARL behaviour with two
+`sw/sim/tsr_rv.c` is an RV32IMC and Zicsr interpreter that models the chosen Ibex configuration's CSRs and WARL behavior with two
 cycle tables (Ibex maxperf and small, `TSR_SIM_RV_CORE`). It is in-house rather than Spike for deterministic co-scheduling with
 the tile model, MMIO and trace hooks, speed, and so that the simulator stays one C library. Spike is its oracle (`ctest -L rv`,
 skipped without the pinned toolchain). The queue model (`tsr_q.c`) and the scheduler (`tsr_sched.c`) are the control window,
 queues and units as an event model on the core time base, with every rule of §4 and §5. Op durations come from the cycle model or
-are randomised (`TSR_SIM_SCHED=fixed|random:<seed>[,<min>,<max>]`), and RISC-V time comes from a CPI table scaled by the clock
-ratio (`TSR_SIM_RV_RATIO`). An op's effects are applied atomically at its modelled completion, which is invisible for race-free
+are randomized (`TSR_SIM_SCHED=fixed|random:<seed>[,<min>,<max>]`), and RISC-V time comes from a CPI table scaled by the clock
+ratio (`TSR_SIM_RV_RATIO`). An op's effects are applied atomically at its modeled completion, which is invisible for race-free
 programs. Device cycles are an informational model and are not bit-matched against hardware counters.
 
 ### 9.2 Race detector
@@ -538,7 +538,7 @@ through the issue path with no RISC-V, which separates core concurrency bugs fro
 
 ### 9.5 Bit-exactness for concurrent programs
 
-A program (RV image, inputs and host message script) is valid if it is race-free (§9.2) and its observable behaviour does not
+A program (RV image, inputs and host message script) is valid if it is race-free (§9.2) and its observable behavior does not
 depend on the schedule: the op stream per unit, the answer-record stream, the RISC-V's SPM store stream (address, data, order) and
 the final SPM and DRAM are the same under every schedule. The check is the determinism test, at least 8 random schedules in the
 simulator comparing all four (`sim_sched_determinism`, `fw_kernels_rv` and the other `_rv` tests run 8 schedules with the race

@@ -366,7 +366,7 @@ static bool tsr_lower_rms(const tsr_build_env & env, bool probe, const ggml_tens
         return false;
     }
     // A source whose tokens are not spaced like its heads (a view into a wider row: Gated DeltaNet's q and k in the
-    // convolution output [128, H, T] with the token stride of the whole channel row) is normalised one token at a
+    // convolution output [128, H, T] with the token stride of the whole channel row) is normalized one token at a
     // time: one record per token, without a weight (SW §7.10).
     bool per_token = false;
     std::string why_x;
@@ -820,7 +820,7 @@ static bool tsr_lower_cpy(const tsr_build_env & env, bool probe, const ggml_tens
 // CONCAT of two F32 matrices along the row (dim 0): the MTP head's concat(e_norm, h_norm) in front of eh_proj (SW-83). Every row
 // of the result is a row of the first operand followed by the row of the second, so two CPY records do it: the first operand's
 // rows into the result's rows at line 0, the second's after them. Rows are whole lines (ne0 a multiple of 16) so the stores
-// leave the neighbours alone. (The CONCAT of the conv state is another shape: tsr_conv_concat_ok.)
+// leave the neighbors alone. (The CONCAT of the conv state is another shape: tsr_conv_concat_ok.)
 static bool tsr_lower_concat(const tsr_build_env & env, bool probe, const ggml_tensor * node, tsr_rec * r, std::string * why) {
     const ggml_tensor * a = node->src[0], * b = node->src[1];
     if (a == nullptr || b == nullptr || node->type != GGML_TYPE_F32 || a->type != GGML_TYPE_F32 || b->type != GGML_TYPE_F32 ||

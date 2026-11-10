@@ -1,6 +1,6 @@
 // tsr_ctrl.sv — the RISC-V control subsystem as tsr_core instantiates it (CC §2, §13.1-§13.2):
 // tsr_ctrl_rv (clk_rv: Ibex, debug module, TCMs, bus, control window) + tsr_ctrl_cdc (every
-// crossing) + the clk_rv reset synchronisers. The ports are the core-domain side of tsr_ctrl_cdc
+// crossing) + the clk_rv reset synchronizers. The ports are the core-domain side of tsr_ctrl_cdc
 // (tsr_core_dp connects them), the two clocks and resets, and the DB window of the control window
 // (clk_rv).
 //
@@ -9,7 +9,7 @@
 //
 // Resets (CC §12.2): the clk_rv domain reset is rst_n (ap_rst_n, core domain) through tsr_rst_sync
 // into clk_rv (asynchronous assert, synchronous deassert after 2 cycles); rst_rv_n (ap_rst_n_2)
-// is synchronised the same way and AND-ed only into the Ibex / DM resets, never into a CDC
+// is synchronized the same way and AND-ed only into the Ibex / DM resets, never into a CDC
 // endpoint. Minimum rst_n low: max(RST_PIPE + 1 core cycles, 3 clk_rv cycles).
 //
 // Integration (tsr_core / tsr_core_dp):
@@ -64,7 +64,7 @@
 //   (TCMs in block RAM 32K x 1 columns: RAM_STYLE BLOCK, CASCADE_HEIGHT 1; the U200
 //   rtl/tech/xilinx/tsr_sram_1r1w.sv alone would map them to URAM; every core / kernel flow reads it) and
 //   set_power_opt -exclude_cells on
-//   the TCM BRAMs before opt_design (BRAM power optimisation gates the BRAM enables with the
+//   the TCM BRAMs before opt_design (BRAM power optimization gates the BRAM enables with the
 //   fetch address).
 
 module tsr_ctrl
@@ -90,7 +90,7 @@ module tsr_ctrl
 ) (
   input  logic                      clk,
   // rst_n: the core domain's synchronous reset, also the asynchronous input of the clk_rv domain's
-  // reset synchroniser (CC §12.2).
+  // reset synchronizer (CC §12.2).
   /* verilator lint_off SYNCASYNCNET */
   input  logic                      rst_n,
   /* verilator lint_on SYNCASYNCNET */

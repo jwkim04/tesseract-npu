@@ -26,7 +26,7 @@
 //
 // Errors are DB §4.9's codes: E01 DMI timeout, E1x abstract command (x = cmderr), E2x SBA (x =
 // sberror, 8 = sbbusyerror), E04 policy, E05 target running, E06 malformed, E07 transport.
-// Threads: one target per transport; its calls are serialised by the caller (the RSP thread);
+// Threads: one target per transport; its calls are serialized by the caller (the RSP thread);
 // every device access goes through the transport's mutex.
 #pragma once
 
@@ -103,7 +103,7 @@ public:
     ~image_info();
     image_info(const image_info &) = delete;
     image_info & operator=(const image_info &) = delete;
-    // From a booted transport image (preferred: symbolisation through the transport's DWARF
+    // From a booted transport image (preferred: symbolization through the transport's DWARF
     // reader) or an ELF path. false with a message.
     bool load(const tsr_image * img, std::string * why);
     bool load_path(const std::string & path, std::string * why);
@@ -263,7 +263,7 @@ struct hist_entry {
 void        hist_read(tsr_transport * t, uint32_t pidx, hist_entry * e);   // 1 W + 17 R
 std::string hist_status(tsr_transport * t, const hist_entry & e);          // done / running / queued (+ code)
 std::string hist_line(tsr_transport * t, const hist_entry & e, const image_info * img);
-// The last n recorded entries (DBG_HIST_HEAD backwards), oldest first.
+// The last n recorded entries (DBG_HIST_HEAD backward), oldest first.
 std::vector<hist_entry> hist_last(tsr_transport * t, uint32_t n);
 // SW §5.2 push.bin records of the given entries (DB §5.6 --export).
 bool hist_export(const std::vector<hist_entry> & es, const std::string & path, std::string * why);

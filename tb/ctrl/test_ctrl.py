@@ -533,7 +533,7 @@ if cocotb is not None:
         dut.err_valid.value = 0
         # The acknowledge was local: clk_rv's copy of unit 3 is stale. When clk_rv runs again (no reset),
         # one rec_resync pulse makes the core send every record once more (tsr_issue's reaction is
-        # modelled here: err_valid[u] until err_ack[u]); afterwards clk_rv shows the records.
+        # modeled here: err_valid[u] until err_ack[u]); afterward clk_rv shows the records.
         assert (int(dut.u_dut.u_cdc.r_err_rec.value) >> 384) & ((1 << 128) - 1) != rec3
         pulses = []
 
@@ -703,13 +703,13 @@ if pytest is not None:
     def test_ctrl_lockstep_seed(seed):
         _run("lockstep", seed=seed, env={"TSR_SEED": str(seed)})
 
-    # CDC jitter mode (CC-27): every synchroniser bit takes 2 or 3 stages at random.
+    # CDC jitter mode (CC-27): every synchronizer bit takes 2 or 3 stages at random.
     @pytest.mark.parametrize("case", ["lockstep", "dmi", "halt_reset_pending", "lb", "fifo_full", "err_rec"])
     def test_ctrl_jitter(case):
         _run(case, name="tb_ctrl_jitter", defines=["TSR_CDC_JITTER"])
 
 
-    # CTRL_SYNC = 1 (CC §11.1: clk_rv = clk, every synchroniser one register stage)
+    # CTRL_SYNC = 1 (CC §11.1: clk_rv = clk, every synchronizer one register stage)
     @pytest.mark.parametrize("case", ["lockstep", "dmi", "halt_reset_pending", "bridge"])
     def test_ctrl_sync(case):
         _run(case, parameters={"CTRL_SYNC": 1}, name="tb_ctrl_sync",

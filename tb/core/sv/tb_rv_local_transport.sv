@@ -194,7 +194,7 @@ module tb_rv_local_transport #(
     end
     do_issue_burst();
     // Reset with a request, each partial flit position, a complete stalled
-    // issue entry, or an acceptance acknowledgement still in flight.
+    // issue entry, or an acceptance acknowledgment still in flight.
     for (int phase = 0; phase <= 5; phase++) begin
       spm_req = 1;
       fifo_valid = 1;

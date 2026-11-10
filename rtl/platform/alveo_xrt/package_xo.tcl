@@ -7,7 +7,7 @@
 #   outdir         the .xo is written to <outdir>/<kernel>.xo (hw/u200/build_xclbin.sh: build/u200/xo);
 #                  the IP and the temporary project go to <outdir>/<kernel>_pkg/
 #   core_filelist  core sources (default rtl/filelist_xilinx.f: the Xilinx technology wrappers,
-#                  behaviour identical to rtl/filelist.f); rtl/platform/alveo_xrt/filelist.f is added
+#                  behavior identical to rtl/filelist.f); rtl/platform/alveo_xrt/filelist.f is added
 # Steps: a project with every source (SystemVerilog) and the kernel as top -> ipx::package_project
 # (sources imported into the IP) -> Vitis kernel properties (sdx_kernel rtl, no user parameters,
 # ap_clk associated with s_axi_control / m_axi_ch<c> / ap_rst_n, FREQ_HZ 300 MHz; ap_clk_2 (the
@@ -152,7 +152,7 @@ foreach d [dict get $fld incdirs] {
 
 # ---- clock-domain-crossing constraints (CC §11.3, gate T3): ap_clk <-> ap_clk_2 ----
 # The file finds its clocks from the ports ap_clk / ap_clk_2 (a v++ link has no other constraint for the
-# crossings: without it the synchronisers have no ASYNC_REG and the paths between the clocks are timed
+# crossings: without it the synchronizers have no ASYNC_REG and the paths between the clocks are timed
 # as unrelated or related clocks at their real edge distance). USED_IN synthesis and implementation
 # (also out of context), in the synthesis file group (the one the out-of-context IP run reads), PROCESSING_ORDER
 # LATE so that the platform's clock definitions come first.

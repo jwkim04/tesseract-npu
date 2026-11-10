@@ -163,7 +163,7 @@ void tsr_ref_topk(uint32_t k, uint32_t rows, uint32_t m, uint32_t * d, uint32_t 
 //   (id_j, q_j) = TOPK(p, k)                      value descending under the total order (NaN first),
 //                                                 ties by the smaller index (VU §6.8); q_j is the DAZ'd value
 //   r2 = RED.SUM post RCP (q_0 .. q_(k-1))       the tree over the k selected probabilities
-//   w_j = VOP.MULC(q_j, c = r2)                   the renormalised weights, in selection order
+//   w_j = VOP.MULC(q_j, c = r2)                   the renormalized weights, in selection order
 // ggml's graph computes the same quantities as soft_max, argsort(DESC) + view, get_rows, sum_rows,
 // clamp(6.1035e-5, inf) and div; the clamp never acts because the k largest of n probabilities sum
 // to at least k / n (a caller that fuses the graph checks k / n >= the clamp), and a NaN passes it.

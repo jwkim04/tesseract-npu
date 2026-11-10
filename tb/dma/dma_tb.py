@@ -82,7 +82,7 @@ class _Out:
 # =============================================================================================
 async def clock_reset(dut, cycles: int = 5, period_ns: int = 10) -> Clock:
     """rst_n is low before the first clock edge (the initial state of a Verilator build with
-    X randomisation is random, including rst_n)."""
+    X randomization is random, including rst_n)."""
     dut.rst_n.value = 0
     dut.clk.value = 0
     await Timer(1, "ns")

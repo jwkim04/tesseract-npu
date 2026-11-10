@@ -2,7 +2,7 @@
 
 This directory is the design contract of Tesseract Core, the hardware, and Tesseract Basis, the
 firmware SDK and host software that drive it. [docs/spec.md](../spec.md) is the master specification
-and summarises these documents. The six area documents define the details.
+and summarizes these documents. The six area documents define the details.
 
 When two sources disagree, the order of authority is `docs/spec.md`, the C simulator in `sw/sim`, the
 documents in this directory, then the other documents.

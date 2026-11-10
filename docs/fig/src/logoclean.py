@@ -1,4 +1,4 @@
-"""logoclean: turn a downloaded SVG logo into the sanitised file docs/fig/logos/<key>.svg.
+"""logoclean: turn a downloaded SVG logo into the sanitized file docs/fig/logos/<key>.svg.
 
 A logo is third-party data. This tool never executes or follows anything in it. It reads the file
 as XML, keeps only drawing elements and presentation attributes from a fixed whitelist, folds CSS
@@ -6,8 +6,8 @@ as XML, keeps only drawing elements and presentation attributes from a fixed whi
 cannot collide on class names), prefixes every id with the logo key, and refuses (exit 1) on
 anything it does not know: scripts, event handlers, external or non-fragment links,
 `<foreignObject>`, `<image>`, `<text>` (and so remote fonts), DOCTYPE or ENTITY declarations. It
-drops metadata, editor namespaces, comments, titles and descriptions. Coordinates and colours are
-copied as they are: the logo is not recoloured, stretched or cropped. Output is deterministic.
+drops metadata, editor namespaces, comments, titles and descriptions. Coordinates and colors are
+copied as they are: the logo is not recolored, stretched or cropped. Output is deterministic.
 
     python -I docs/fig/src/logoclean.py <downloaded.svg> <key> [--out docs/fig/logos]
 
@@ -102,7 +102,7 @@ def check_value(name: str, value: str):
 
 
 def clean(el: ET.Element, key: str, rules, ids: dict[str, str], root: bool = False):
-    """Return (tag, [(attr, value)], children, text-free) of the sanitised element, or None."""
+    """Return (tag, [(attr, value)], children, text-free) of the sanitized element, or None."""
     ns, name = local(el.tag)
     if ns not in ("", SVG_NS):
         if name == "namedview":
@@ -255,7 +255,7 @@ def sanitise(data: bytes, key: str) -> str:
 
 def compare(a: Path, b: Path, size: int = 512) -> int:
     """Render both files with cairosvg on white at the same height; return the number of pixels
-    that differ by more than 2 grey levels (0: the sanitised logo draws like the download)."""
+    that differ by more than 2 gray levels (0: the sanitized logo draws like the download)."""
     import io
 
     import cairosvg

@@ -1,9 +1,9 @@
-"""Pixel-isometric (2:1 dimetric) rasteriser for the 16 px favicon.
+"""Pixel-isometric (2:1 dimetric) rasterizer for the 16 px favicon.
 
 Same tesseract construction as tess.py, but the 3D->2D step is the 2:1
 dimetric projection used in pixel art (edge slopes exactly 1/2), so every
 slanted edge and cut lands on a clean 2-px staircase.  Pixels are point
-sampled at their centres; the result is written as one-pixel-high runs.
+sampled at their centers; the result is written as one-pixel-high runs.
 """
 import math
 from tess import CUBE, HEX, w_scale, mark_shapes, ORDER

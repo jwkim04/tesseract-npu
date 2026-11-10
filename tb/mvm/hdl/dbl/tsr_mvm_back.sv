@@ -1,8 +1,8 @@
 // tb/mvm/hdl/dbl/tsr_mvm_back.sv — TEST DOUBLE of rtl/core/tsr_mvm_back.sv (same module name,
-// parameters and ports; selected by tb/mvm/test_mvm.py instead of the rtl/core file). Behavioural, simulation only; not part of any filelist
+// parameters and ports; selected by tb/mvm/test_mvm.py instead of the rtl/core file). Behavioral, simulation only; not part of any filelist
 // and not linted by rtl/lint.sh (the module name collides with the real one).
 //
-// Behaviour = the contract of docs/rtl-mvm.md §3.3-§3.5 / §7.1, computed from what the double
+// Behavior = the contract of docs/rtl-mvm.md §3.3-§3.5 / §7.1, computed from what the double
 // receives through its ports: the tagged beats of the real front end and the activations read
 // from the (double) activation buffer through qs_* / dbs_* (one QS word and one DBS line per beat:
 // Q8_0 D line b >> 4; Q4_K half 0 the D line s >> 4, half 1 the BS line cfg_d_lines + s/2).
@@ -20,7 +20,7 @@
 // -> ACT_RD_LAT -> per-token arithmetic -> result queue (random release) -> res_valid/res_y
 // output register (R2). idle = no beat in flight, no row started, no result pending.
 
-// Behavioural test double: index / width conversions are intentional (not a synthesis model).
+// Behavioral test double: index / width conversions are intentional (not a synthesis model).
 /* verilator lint_off WIDTHTRUNC */
 /* verilator lint_off WIDTHEXPAND */
 module tsr_mvm_back

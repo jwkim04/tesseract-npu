@@ -35,7 +35,7 @@
 //   within the last 256 core cycles.
 // Resets: rst_n (core, synchronous) and rst_rv_n (the clk_rv domain reset: ap_rst_n through
 //   tsr_rst_sync) come from the same hardware reset; nothing here is reset by a RISC-V reset.
-// CTRL_SYNC = 1 (clk_rv = clk, CC §11.1): every synchroniser becomes one register stage.
+// CTRL_SYNC = 1 (clk_rv = clk, CC §11.1): every synchronizer becomes one register stage.
 
 module tsr_ctrl_cdc
   import tsr_tables_pkg::*;
@@ -213,7 +213,7 @@ module tsr_ctrl_cdc
   input  logic                      r_rv_halt_pend
 );
 
-  localparam int unsigned ST = CTRL_SYNC ? 1 : 2;   // synchroniser stages
+  localparam int unsigned ST = CTRL_SYNC ? 1 : 2;   // synchronizer stages
 
   logic rv_ok;   // core domain: clk_rv is OK (requests may cross)
 
@@ -426,7 +426,7 @@ module tsr_ctrl_cdc
   logic [LV_W-1:0] lv_s;
   (* dont_touch = "true" *) logic [LV_W-1:0] lv_q;   // not merged with tsr_dbg_rv's copy of rv_run / dbg_stop (CDC-11)
   // The core's level outputs are combinational functions of several registers (holds, queue states,
-  // DB sources): a glitch of one could be sampled by the synchroniser. Every bit therefore enters
+  // DB sources): a glitch of one could be sampled by the synchronizer. Every bit therefore enters
   // it from a flop that drives nothing else (report_cdc CDC-10), one core cycle later.
   always_ff @(posedge clk) begin
     if (!rst_n) lv_q <= '0;
@@ -453,7 +453,7 @@ module tsr_ctrl_cdc
   end
 
   // RV_BOOT: quasi-static (the host writes it while the hart is held in reset, EX §3.3; the
-  // sequencer samples it two cycles after the synchronised RV_RUN).
+  // sequencer samples it two cycles after the synchronized RV_RUN).
   tsr_sync #(.W(32), .STAGES(ST)) u_sync_boot (.clk(clk_rv), .rst_n(rst_rv_n), .d(rv_boot_i), .q(r_rv_boot));
 
   // ---------------------------------------------------------------- levels RV -> core

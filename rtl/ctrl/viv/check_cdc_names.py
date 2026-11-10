@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """check_cdc_names.py — the instance-name conventions that rtl/ctrl/viv/tsr_ctrl_cdc.xdc selects cells by.
 
-The constraints of the clock-domain crossings (ASYNC_REG on the synchroniser stages, the report_cdc waivers
+The constraints of the clock-domain crossings (ASYNC_REG on the synchronizer stages, the report_cdc waivers
 of the handshake registers) find their cells by instance name: a tsr_sync instance must be called u_sync*,
 a tsr_rst_sync u_rst*, a tsr_cdc_hs u_hs*. (tsr_cdc_fifo and tsr_cdc_gray are found by their register names.)
 An instance outside the convention would silently lose its ASYNC_REG and its waivers, so rtl/ctrl/lint.sh

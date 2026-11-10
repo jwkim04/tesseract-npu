@@ -1,9 +1,9 @@
 // tb/mvm/hdl/dbl/tsr_mvm_actbuf.sv — TEST DOUBLE of rtl/core/tsr_mvm_actbuf.sv (same module name,
-// parameters and ports; selected by tb/mvm/test_mvm.py instead of the rtl/core file). Behavioural, simulation only; not part of any filelist
+// parameters and ports; selected by tb/mvm/test_mvm.py instead of the rtl/core file). Behavioral, simulation only; not part of any filelist
 // and not linted by rtl/lint.sh (it lives below tb/mvm/hdl/, one directory deeper on purpose: the
 // module name collides with the real one).
 //
-// Behaviour = the contract of docs/rtl-mvm.md §3.4 / §5: per token a QS array of 1024-bit words
+// Behavior = the contract of docs/rtl-mvm.md §3.4 / §5: per token a QS array of 1024-bit words
 // (line 2w in [511:0], line 2w+1 in [1023:512]) and a DBS array of 512-bit lines; one write per
 // cycle (no backpressure); reads of all tokens with exactly RD_LAT cycles latency.
 // Extra checks (they test the cluster wrapper that drives it):
@@ -11,7 +11,7 @@
 //   - no read in a cycle with a write (the wrapper's activation gating keeps the back end's
 //     reads after the broadcast); read addresses in range.
 
-// Behavioural test double: index / width conversions are intentional (not a synthesis model).
+// Behavioral test double: index / width conversions are intentional (not a synthesis model).
 /* verilator lint_off WIDTHTRUNC */
 /* verilator lint_off WIDTHEXPAND */
 module tsr_mvm_actbuf

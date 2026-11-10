@@ -361,7 +361,7 @@ class Oracle:
         self.spm[64 * line:64 * line + len(data)] = data
 
     def run(self, m: dict) -> bytes:
-        """One MVM after the x images and the old y are written: the y span afterwards."""
+        """One MVM after the x images and the old y are written: the y span afterward."""
         self._put(m["x"], b"".join(m["qas"]))
         if m["y_old"]:
             self._put(m["dst"], m["y_old"])

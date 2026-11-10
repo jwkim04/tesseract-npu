@@ -39,7 +39,7 @@ async def independent_aw_w_and_b(dut):
              for name in reset_names})
 
     # W handshakes before AW for the first burst. AW handshakes before W
-    # for the second. Alternate WREADY afterwards to stall both mask shapes.
+    # for the second. Alternate WREADY afterward to stall both mask shapes.
     for data_first, ident, address in [(True, 2, 32), (False, 3, 64)]:
         masks = [0x003C, 0x8000, 0x8421, 0xFFFF]
         data = [int.from_bytes(bytes([0x10 * ident + i]) * 64, "little") for i in range(len(masks))]

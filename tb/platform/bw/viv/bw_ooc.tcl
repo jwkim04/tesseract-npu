@@ -5,7 +5,7 @@
 # usage: vivado -mode batch -nojournal -nolog -source tb/platform/bw/viv/bw_ooc.tcl \
 #          -tclargs <repo> <outdir> [impl]
 # Constraints as tb/platform/viv/kernel_ooc.tcl: 3.333 ns ap_clk, every I/O budgeted 1.6 ns outside
-# (the platform's AXI interconnect registers both sides). No pblocks / SLR crossings modelled.
+# (the platform's AXI interconnect registers both sides). No pblocks / SLR crossings modeled.
 # Prints (grep "BWOOC"):
 #   BWOOC util(<stage>) LUT .. FF .. DSP .. RAMB36 .. RAMB18 .. URAM .. LUTRAM ..
 #   BWOOC hier <cell> LUT .. FF .. LUTRAM ..

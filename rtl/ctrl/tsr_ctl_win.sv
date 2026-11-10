@@ -24,7 +24,7 @@
 //   0x02C ISSUE_TICKET, 0x030 ISSUE_CREDIT (unit u at [4u+3:4u]: min(Q_DEPTH[u] -
 //     (ISSUED_SEQ[u] - S_sync[u]), FIFO free entries, 15), 0 for an absent unit), 0x034 ISSUE_UNITS,
 //     0x038 ISSUE_STATUS (W1C; bit1 ERR_IRQ set on a rising "some unit in error state"), 0x03C
-//     ISSUE_PIDX, 0x040 + 4u DONE_SEQ (the synchronised D[u]), 0x080 + 4u ISSUED_SEQ, 0x0C0 + 16u
+//     ISSUE_PIDX, 0x040 + 4u DONE_SEQ (the synchronized D[u]), 0x080 + 4u ISSUED_SEQ, 0x0C0 + 16u
 //     ERR_SEQ / ERR_CODE / ERR_INFO / ERR_W0 and 0x180 + 4u ERR_PIDX (the records received from the
 //     core, CC §11.2), 0x140 QCTRL (each set bit of [3:0] one CTRL entry, in bit order, all or
 //     nothing: waits until the FIFO has room for all of them and, for QCLEAR, a SYNC credit; QCLEAR
@@ -40,7 +40,7 @@
 //     cycles, then the word is dropped: LOG_PUSH never faults); LOG_FREE = LOG_DEPTH - (LOG_WR_rv -
 //     r), clamped at 0, where LOG_WR_rv counts the words this side put into the FIFO and r is the
 //     core's answer (LOG_RD plus the words the ring dropped, see tsr_ctrl.sv "interfaces").
-//   0x300 / 0x304 MTIME (the synchronised core cycle count), 0x308 / 0x30C MTIMECMP.
+//   0x300 / 0x304 MTIME (the synchronized core cycle count), 0x308 / 0x30C MTIMECMP.
 // Core window (0x2000_1000 + CSR offset, CC §5.3): a handshake read of tsr_csr's second requester;
 //   0x0C4 (LOAD_DATA) and 0xC00-0xDFC (DMI) read 0 without a request.
 // SPM windows (CC §10.5): exact window = one bridge transaction per access (read: the whole line,
@@ -99,7 +99,7 @@ module tsr_ctl_win
   output logic [TSR_IFIFO_BITS-1:0]    if_wdata,
   input  logic [FAW:0]                 if_free,
   input  logic                         if_empty,
-  // sequences and core state (synchronised copies)
+  // sequences and core state (synchronized copies)
   output logic [5:0][27:0]             issued_seq,
   input  logic [5:0][27:0]             s_seq,
   input  logic [5:0][27:0]             d_seq,

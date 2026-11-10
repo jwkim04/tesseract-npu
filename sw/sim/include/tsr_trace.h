@@ -319,7 +319,7 @@ int tsr_trace2_run_ops(tsr_trace2 * t, const tsr_trace2_replay_opts * o, tsr_tra
 // error records at the answer, the DONE record, the image. Only LAUNCH descriptors without
 // reserved bits answered by a DONE record become traces (PING, BAD_DESC types, launches answered
 // by TRAP or killed by a reset are counted as skipped). The image is the ELF given to
-// tsr_sim_capture_set_image, else one synthesised from what the host loader wrote (LOAD_ADDR /
+// tsr_sim_capture_set_image, else one synthesized from what the host loader wrote (LOAD_ADDR /
 // LOAD_DATA, contents at the last RV_RUN rise; entry RV_BOOT + 0x80). DRAM written by the host
 // through the tsr_sim_dram pointer during a launch is invisible (H3: a race) unless announced
 // with tsr_sim_dram_note_write; announced host writes during a capture are counted and warned.

@@ -139,7 +139,7 @@ def test_transformer_block_compiled_vs_eager(dtype):
 
 def test_fallback_unsupported_shapes_and_dtypes():
     """K % 32 != 0 and float64 weights stay on the CPU (results identical to eager); eligible
-    neighbours still go to the device."""
+    neighbors still go to the device."""
 
     class M(nn.Module):
         def __init__(self):

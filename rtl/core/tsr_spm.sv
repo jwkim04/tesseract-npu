@@ -40,7 +40,7 @@
 //   lines >= SPM lines are never presented (the checker range-checks every operand).
 //   Simulation only (`ifndef SYNTHESIS): line range, line[0] == b, R2 per (c, b), one-hot grants
 //   and the round-robin wait bound. The checks are armed by the first clock edge with rst_n low;
-//   before it the inputs and the state are arbitrary (Verilator's X randomisation can even produce
+//   before it the inputs and the state are arbitrary (Verilator's X randomization can even produce
 //   a time-0 edge with rst_n high).
 // Line data convention: byte j of a line is bits [8j+7:8j] (little-endian), f32 element i of a line
 // is bits [32i+31:32i].
@@ -416,7 +416,7 @@ module tsr_spm
   // Armed once a reset has been seen (same scheme as tsr_mem_arb / tsr_dma): before the first
   // reset edge, the check state and the grant flops hold power-up garbage and the inputs are not
   // driven yet. The initial block runs before Verilator's first evaluation (which may already see
-  // a rising clock edge, with X-randomised rst_n and inputs).
+  // a rising clock edge, with X-randomized rst_n and inputs).
   logic chk_on_q;
   initial chk_on_q = 1'b0;
   always @(posedge clk) if (!rst_n) chk_on_q <= 1'b1;

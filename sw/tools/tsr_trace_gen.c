@@ -15,7 +15,7 @@
 // Modes (--ops):
 //   gen (alias m1)  LD -> QACT -> MVM (-> MVM ACC) -> ST groups (traces/gen).
 //   m2              QACT groups and LD -> ST copies, no MVM (traces/m2).
-//   m3              MVM-centred groups (shapes, special values, boundaries) mixed
+//   m3              MVM-centered groups (shapes, special values, boundaries) mixed
 //                   with the m2 groups; the 23 MVM error kinds (traces/m3).
 //   vu              every VU op (VU §5.2–§5.8) and every VOP function / RED kind and post / ROPE
 //                   form / SOP sub, legal and illegal encodings (OPERAND, SPM_RANGE, reserved bits,
@@ -1167,7 +1167,7 @@ static int gen_group_m2(gen_t * g) {
 }
 
 // ---------------------------------------------------------------------------
-// m3 programs (--ops m3): MVM-centred groups mixed with the m2 QACT and LD -> ST copy groups.
+// m3 programs (--ops m3): MVM-centered groups mixed with the m2 QACT and LD -> ST copy groups.
 // An MVM group is
 //
 //   LD x -> QACT (or LD of a raw QA image) -> [LD old values / guard lines] -> MVM x n -> ST
@@ -1354,7 +1354,7 @@ static uint32_t rand_dx_bits(rng_t * r, int * sp) {
     case 1:
     case 2:  return sign | (1 + rng_below(r, 0x7FFFFF));               // subnormal (DAZ)
     case 3:  return sign | 0x7F800000u;                                // +-Inf
-    case 4:  return sign | (0x7F800001u + rng_below(r, 0x7FFFFE));     // NaN, quiet or signalling
+    case 4:  return sign | (0x7F800001u + rng_below(r, 0x7FFFFE));     // NaN, quiet or signaling
     case 5:  return sign | 0x7F7FFFFFu;                                // max finite (products overflow)
     case 6:  return sign | 0x00800000u;                                // min normal (products flush)
     default: return sign | ((107u + rng_below(r, 21)) << 23) | rng_below(r, 1u << 23);   // 2^-20 .. 2^0
@@ -1414,7 +1414,7 @@ static uint32_t old_bits(rng_t * r, int * sp) {
     case 1:  return sign | (1 + rng_below(r, 0x7FFFFF));               // subnormal
     case 2:  return sign | 0x7F800000u;                                // +-Inf
     case 3:  return sign | 0x7FC00000u | rng_below(r, 1u << 22);       // quiet NaN with payload
-    case 4:  return sign | (0x7F800001u + rng_below(r, 0x3FFFFE));     // signalling NaN
+    case 4:  return sign | (0x7F800001u + rng_below(r, 0x3FFFFE));     // signaling NaN
     default: return sign | 0x7F7FFFFFu;                                // max finite
     }
 }
@@ -5195,7 +5195,7 @@ static void usage(void) {
             "          all (everything the simulator implements); default none for gen / m2 / m3, m8 for vu,\n"
             "          m6 for at / ctrl\n"
             "--ops gen (alias m1): LD -> QACT -> MVM -> ST groups; m2: QACT groups and LD -> ST copies (no MVM);\n"
-            "          m3: MVM-centred groups (--max-wbeats B, default 16384, bounds the MVM weight beats per trace\n"
+            "          m3: MVM-centered groups (--max-wbeats B, default 16384, bounds the MVM weight beats per trace\n"
             "          on the busiest channel; --big-pct PCT gives every (100/PCT)-th trace a 4x budget);\n"
             "          vu / at: every VU / AT op, legal and illegal; ctrl: the issue path (credits, holds,\n"
             "          FENCE, QABORT / QCLEAR, deps across all units, BAD_DEP / DEP_FAILED)\n"

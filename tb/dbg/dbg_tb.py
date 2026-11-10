@@ -644,7 +644,7 @@ class Bench:
 
     async def start(self, core_ps=10000, rv_ps=16000, rv_phase_ps=0):
         d = self.dut
-        # Initialise both clock inputs, reset and traffic before either clock
+        # Initialize both clock inputs, reset and traffic before either clock
         # runs, including the core cycles used to offset the RV clock's phase.
         d.clk.value = 0
         d.clk_rv.value = 0

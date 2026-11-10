@@ -10,7 +10,7 @@ the same calls give the same bytes.
 Coordinates are SVG user units, y down; the card is 1600 units wide by convention.
 
 Logos of third-party software (`Fig.logo`) are the one thing that is not drawn in the figure style:
-the official file is embedded unmodified, as vector shapes, from docs/fig/logos (sanitised by
+the official file is embedded unmodified, as vector shapes, from docs/fig/logos (sanitized by
 logoclean.py; docs/fig/logos/SOURCES.md has the source of each).
 
     from tsrfig import Fig, split
@@ -42,7 +42,7 @@ from fontTools.ttLib import TTFont
 SRC_DIR = Path(__file__).resolve().parent
 FIG_DIR = SRC_DIR.parent                      # docs/fig
 REPO = FIG_DIR.parent.parent
-LOGO_DIR = FIG_DIR / "logos"                  # sanitised third-party logos (see logoclean.py)
+LOGO_DIR = FIG_DIR / "logos"                  # sanitized third-party logos (see logoclean.py)
 PNG_DIR = Path(os.environ.get("TSR_FIG_PNG_DIR", REPO / "build" / "fig" / "png"))  # git-ignored
 FONT_FILES = {                                 # Noto Sans Mono 2.006, SIL OFL 1.1 (FONTS.md)
     "regular": os.environ.get("TSR_FIG_FONT_REGULAR",
@@ -122,7 +122,7 @@ ROLES = {                # semantic role -> block fill
 
 
 def tint(hex_color: str, t: float, base: str = PANEL) -> str:
-    """Mix `hex_color` toward `base` by t (0 = colour, 1 = base). Used for the offset copies of a
+    """Mix `hex_color` toward `base` by t (0 = color, 1 = base). Used for the offset copies of a
     stacked block."""
     a = [int(hex_color[i:i + 2], 16) for i in (1, 3, 5)]
     b = [int(base[i:i + 2], 16) for i in (1, 3, 5)]
@@ -164,7 +164,7 @@ TYPE = {                 # role -> (size, weight, tracking in em, line-height fa
     "note_l": (19, "regular", 0.0, 1.35),  # footnote in `stack`
     "tag_l": (17, "bold", 0.08, 1.2),      # badges and layer names in `stack`
 }
-MEDIUM_STROKE = 34       # font units of same-colour stroke that turns Regular into "medium"
+MEDIUM_STROKE = 34       # font units of same-color stroke that turns Regular into "medium"
 
 
 def snap(v: float, g: int = GRID) -> int:
@@ -179,7 +179,7 @@ def split(x0: float, total: float, n: int, gap: float):
 
 
 def centers(x0: float, total: float, n: int):
-    """Centres of n equal columns across [x0, x0+total]."""
+    """Centers of n equal columns across [x0, x0+total]."""
     w = total / n
     return [x0 + w * (i + 0.5) for i in range(n)]
 
@@ -284,7 +284,7 @@ def measure(text: str, role="label", **kw):
 
 
 # --------------------------------------------------------------------------------------------
-# Logos: sanitised third-party SVG files in docs/fig/logos, drawn as vector shapes
+# Logos: sanitized third-party SVG files in docs/fig/logos, drawn as vector shapes
 # --------------------------------------------------------------------------------------------
 _LOGOS: dict[str, tuple[tuple[float, float, float, float], str]] = {}
 _LOGO_FORBIDDEN = re.compile(r'<script|foreignObject|<image|<text|<style|<use|DOCTYPE|ENTITY|'
@@ -382,7 +382,7 @@ class Fig:
         """Chamfered block filled by `role` (ROLES key). `label` is the uppercase title (\\n for
         lines), `sub` the detail lines below it. `tag` is a dark badge on the right of the top
         edge (an SLR name, a count). stack=n draws n offset outlines behind the block for a
-        repeated unit. Returns the block's centre."""
+        repeated unit. Returns the block's center."""
         col = fill or ROLES[role]
         for i in range(stack, 0, -1):
             d = 8 * i
@@ -395,7 +395,7 @@ class Fig:
 
     def label_block(self, x, y, w, h, label="", sub="", label_role="label", sub_role="sub",
                     align="middle", pad=20):
-        """Title + detail lines, vertically centred in the rect, aligned middle/start."""
+        """Title + detail lines, vertically centered in the rect, aligned middle/start."""
         ls, lw, lt, llh = _style(label_role)
         ss, sw_, st, slh = _style(sub_role)
         L = label.split("\n") if label else []
@@ -422,7 +422,7 @@ class Fig:
             self.text(tx, top + off, s, r, anchor=align)
 
     def tag(self, x, y, text: str, anchor: str = "middle", role: str = "tag"):
-        """Small dark badge centred vertically on y, so it sits on a panel's or block's top edge.
+        """Small dark badge centered vertically on y, so it sits on a panel's or block's top edge.
         anchor is the side of x: start / middle / end. Used for names (panels, SLRs) and counts
         (x4). `role` is the TYPE role of the text ("tag", or "tag_l" in the large `stack`
         figure)."""
@@ -437,7 +437,7 @@ class Fig:
         return bx, bw
 
     def legend(self, x, y, items, gap: float = 40, anchor: str = "middle"):
-        """One row of swatches: items = [(role or hex, "LABEL"), ...]. y is the row's centre;
+        """One row of swatches: items = [(role or hex, "LABEL"), ...]. y is the row's center;
         anchor positions the whole row on x. Returns the row width."""
         sw_w, sw_h, sp = 30, 20, 12
         size, weight, track, _ = _style("note")
@@ -482,7 +482,7 @@ class Fig:
 
     def callout(self, text: str, xy, target, via=(), anchor: str = "middle", side: str = "",
                 gap: float = 14, role: str = "callout", dot: bool = True, color: str = INK):
-        """Callout text block at `xy` (anchor = horizontal alignment of x; y = vertical centre),
+        """Callout text block at `xy` (anchor = horizontal alignment of x; y = vertical center),
         with a thin leader from the block's `side` (left/right/top/bottom; inferred from the
         target when empty) through `via` points to `target`, ending in a dot."""
         tw, th = measure(text, role)
@@ -511,7 +511,7 @@ class Fig:
     def bracket(self, x1, x2, y, label: str = "", up: bool = False, tick: float = 10,
                 role: str = "panel", color: str = INK):
         """Horizontal dimension bracket from x1 to x2 at y with end ticks (pointing up when
-        up=True) and a centred label on the far side. For spans: SLRs, channel groups, x4."""
+        up=True) and a centered label on the far side. For spans: SLRs, channel groups, x4."""
         t = -tick if up else tick
         self.body.append(f'<polyline points="{_pts([(x1, y - t), (x1, y), (x2, y), (x2, y - t)])}" '
                          f'fill="none" stroke="{color}" stroke-width="{fmt(SW_LEADER)}"/>')
@@ -536,7 +536,7 @@ class Fig:
              pad: float = LOGO_PAD, rx: float = LOGO_RX):
         """Third-party logo `key` (docs/fig/logos/<key>.svg), unmodified, at (x, y) = top left,
         scaled to height h or width w. backing=True puts it on a white rounded tile with a thin
-        ink outline (for a logo that is illegible on the block colour); the tile adds `pad` on
+        ink outline (for a logo that is illegible on the block color); the tile adds `pad` on
         every side. Returns (width, height) of the whole mark. STYLE.md "Logos" has the rules."""
         (vx, vy, vw, _), _ = _logo_src(key)
         ow, oh = logo_box(key, h, w, backing, pad)
@@ -555,7 +555,7 @@ class Fig:
     def text(self, x, y, text: str, role="label", anchor: str = "start", valign: str = "baseline",
              color: str = INK, weight: str = "", track=None, lh=None):
         """Text as outlines. role: a TYPE key or a size. anchor: start/middle/end. valign:
-        baseline (y = first baseline), top (y = cap top), middle (block centred on y).
+        baseline (y = first baseline), top (y = cap top), middle (block centered on y).
         Multi-line with \\n; each line is aligned on its own."""
         size, weight, track, lh = _style(role, weight or None, track, lh)
         f = font(weight)
@@ -696,7 +696,7 @@ def _gid(key: str, gname: str) -> str:
 # PNG preview
 # --------------------------------------------------------------------------------------------
 def render_png(svg_data: str, png_path, width: int):
-    """Rasterise SVG text to a PNG of the given pixel width (cairosvg)."""
+    """Rasterize SVG text to a PNG of the given pixel width (cairosvg)."""
     import cairosvg
     cairosvg.svg2png(bytestring=svg_data.encode("utf-8"), write_to=str(png_path),
                      output_width=width)

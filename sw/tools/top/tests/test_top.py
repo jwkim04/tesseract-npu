@@ -548,8 +548,8 @@ def test_curses(tmux):
         check("Setup" in scr and "[x] Compute and memory meters" in scr and "[ ] Unit meters" in scr and "[ ] Image line" in scr and "Esc" in scr,
               "F2 opens the setup menu; the unit meters, the DDR channels, U and the image line are off")
         keys("Down", "Space")
-        scr = screen(lambda t: "[ ] Utilisation time series" in t)
-        check("[ ] Utilisation time series" in scr, "Space switches the time series panel off in the menu")
+        scr = screen(lambda t: "[ ] Utilization time series" in t)
+        check("[ ] Utilization time series" in scr, "Space switches the time series panel off in the menu")
         keys("Escape")
         scr = screen(lambda t: "[x] Compute" not in t and "MEMORY  " not in t)
         check("[x] Compute" not in scr and "MEMORY  " not in scr and "COMPUTE[" in scr, "Esc closes the menu, the time series panel is off, the meters stay")

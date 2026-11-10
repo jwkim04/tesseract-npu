@@ -169,7 +169,7 @@ sentinel tensors that catch out-of-bounds writes, live in one buffer of usage AN
 `use_weight_context()` get a separate WEIGHTS buffer, and none of them is a MUL_MAT case. The CPU side gets its inputs
 by reading the backend's tensors back (`ggml_backend_compare_graph_backend`), so `get_tensor` of src0 must return
 the exact bytes. Tesseract keeps ANY-buffer tensors raw in IO and converts MUL_MAT src0 lazily. `-j N` runs workers
-with one backend each on the same device, serialised by a device mutex. The "very large N" case (`F16 x F32, m=16,
+with one backend each on the same device, serialized by a device mutex. The "very large N" case (`F16 x F32, m=16,
 n=2105344, k=32`) has a 257 MiB src1. It gets its own buffer, which is kept in host memory, so the MUL_MAT is staged
 through the IO stage in tiles of 131072 tokens. It runs in its own ctest, `ggml_tesseract_backend_ops_bigt` (label
 `slow`).

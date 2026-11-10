@@ -1,4 +1,4 @@
-// tsr_sram_1r1w.sv — generic (behavioural, vendor-neutral) simple dual-port SRAM:
+// tsr_sram_1r1w.sv — generic (behavioral, vendor-neutral) simple dual-port SRAM:
 // one write port and one read port, one clock, byte write enables, registered read.
 //
 // Spec: docs/rtl-core.md §2, block (d).

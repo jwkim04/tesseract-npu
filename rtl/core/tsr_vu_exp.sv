@@ -16,7 +16,7 @@
 //   E8-E18 9  Horner in units of 2^-32: X3 = (G·P3F) >> 32, S2 = P2F + X3, X2 = (G·S2) >> 32,
 //             S1 = P1F + X2, PF = (G·S1) >> 32 (three 26 × ≤32-bit products, 3 stages each + add)
 //   E19-E22 10 M = T64[j] + ((T64[j]·PF) >> 32)
-//   E23   11-12 normalise (M >= 2^31: drop 8, n + 1) and round to 24 bits (RNE on the dropped bits;
+//   E23   11-12 normalize (M >= 2^31: drop 8, n + 1) and round to 24 bits (RNE on the dropped bits;
 //             sig = 2^24 -> 2^23, n + 1)
 //   E24   13  be = n + 127: >= 255 -> +inf, <= 0 -> +0, else {be, sig - 2^23}; special results win
 // Registers: every product is fed from registers and followed by two registers (DSP M / P); the
@@ -250,7 +250,7 @@ module tsr_vu_exp (
     sgnf_q <= sgn_m[2];
   end
 
-  // E23: normalise and round (steps 11-12)
+  // E23: normalize and round (steps 11-12)
   logic [23:0]       sig_q;
   logic signed [10:0] n23_q;
   logic              sat23_q, sgn23_q;

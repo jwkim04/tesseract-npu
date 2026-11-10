@@ -221,7 +221,7 @@ CSR_Q_DONE_STRIDE = 4
 def CSR_Q_DONE(i):
     return 0xE00 + 4 * i
 
-CSR_Q_ISSUED_BASE   = 0xE20  # [R] EX §5.4: ISSUED_SEQ[u], 28 bits (synchronised copy)
+CSR_Q_ISSUED_BASE   = 0xE20  # [R] EX §5.4: ISSUED_SEQ[u], 28 bits (synchronized copy)
 CSR_Q_ISSUED_N      = 8
 CSR_Q_ISSUED_STRIDE = 4
 
@@ -473,7 +473,7 @@ CW_ISSUE_CREDIT     = 0x030       # [R] CC §5.1: credit per unit
 CW_ISSUE_UNITS      = 0x034       # [R] CC §5.1: bit u = unit u is built
 CW_ISSUE_STATUS     = 0x038       # [R/W1C] CC §5.1: push timeout and error interrupt
 CW_ISSUE_PIDX       = 0x03C       # [R] CC §5.1: push index the next ticketed entry will receive (+1 per ISSUE_PUSH and QCLEAR); exact
-CW_DONE_SEQ_BASE    = 0x040       # [R] CC §5.1: [27:0] completions of unit u (synchronised copy; may lag, never leads)
+CW_DONE_SEQ_BASE    = 0x040       # [R] CC §5.1: [27:0] completions of unit u (synchronized copy; may lag, never leads)
 CW_DONE_SEQ_N       = 8
 CW_DONE_SEQ_STRIDE  = 4
 
@@ -580,7 +580,7 @@ CW_LOG_CFG           = 0x288       # [R] EX §4.5: copy of the host's LOG_CFG
 CW_RT_STATE          = 0x290       # [RW] EX §4.5: runtime phase, mirrored to host 0x038; 0 after a RISC-V reset
 CW_RT_STATE_RESET    = 0x0
 CW_RT_INFO           = 0x294       # [RW] EX §4.5: runtime- or kernel-defined progress word, mirrored to host 0x03C
-CW_MTIME_LO          = 0x300       # [R] CC §5.2: core clock cycles since reset (gray-synchronised)
+CW_MTIME_LO          = 0x300       # [R] CC §5.2: core clock cycles since reset (gray-synchronized)
 CW_MTIME_HI          = 0x304       # [R] CC §5.2
 CW_MTIMECMP_LO       = 0x308       # [RW] CC §5.2: irq_timer while MTIME >= MTIMECMP
 CW_MTIMECMP_LO_RESET = 0xFFFFFFFF
@@ -1102,9 +1102,9 @@ LCQ_R0_STATUS_TILE_ERR   = 1           # the first error has a code other than A
 LCQ_R0_STATUS_BAD_DESC   = 2           # the descriptor was refused; the kernel did not run
 LCQ_R0_STATUS_KERNEL_ERR = 3           # RET < 0, no tile error
 LCQ_R0_STATUS_TRAP       = 4           # TRAP records only
-LCQ_R0_STATUS_ABORTED    = 5           # cancelled (ERR_CODE 0), or the first error is ABORTED (ERR_CODE 8)
+LCQ_R0_STATUS_ABORTED    = 5           # canceled (ERR_CODE 0), or the first error is ABORTED (ERR_CODE 8)
 LCQ_R0_STATUS_PLAT_ERR   = 6           # STATUS.PLAT_ERR was set when the runtime answered
-LCQ_R0_STATUS_STOPPED    = 7           # the kernel honoured a soft stop
+LCQ_R0_STATUS_STOPPED    = 7           # the kernel honored a soft stop
 # HELLO_R4 (EX §4.4, SW §6.9): HELLO record word r4
 HELLO_R4_SDK_ABI       = 0xFFFF      # [15:0] Basis ABI
 HELLO_R4_SDK_ABI_LSB   = 0
@@ -1895,7 +1895,7 @@ OP_JUMP   = 0x8   # retired, unit SYNC: EX §7.2: retired, never reused
 OP_CALL   = 0x9   # retired, unit SYNC: EX §7.2: retired (never shipped), never reused
 OP_LD     = 0x10  # kept, unit DMA: EX §7.2: DRAM -> SPM, encoding unchanged
 OP_ST     = 0x11  # kept, unit DMA: EX §7.2: SPM -> DRAM, encoding unchanged
-OP_DQROW  = 0x12  # respec, unit VU, CAPS.DQROW: EX §7.2, VU §5.6: SPM -> f32 dequantisation; simulator and RTL option, not in the release image
+OP_DQROW  = 0x12  # respec, unit VU, CAPS.DQROW: EX §7.2, VU §5.6: SPM -> f32 dequantization; simulator and RTL option, not in the release image
 OP_KVST   = 0x14  # new, unit DMA, CAPS.ATT: EX §7.2, AT §5.1: store K or V rows into a KV plane
 OP_QACT   = 0x18  # kept, unit QACT: EX §7.2: f32 -> QA, encoding unchanged
 OP_MVM    = 0x20  # kept, unit MVM: EX §7.2: matrix x activations, encoding unchanged
@@ -1908,7 +1908,7 @@ OP_TOPK   = 0x33  # respec, unit VU, CAPS.TOPK: EX §7.2, VU §5.5: top-k per ro
 OP_ASMAX  = 0x34  # new, unit VU, CAPS.ATT: EX §7.2, AT §5.4: softmax numerator
 OP_AMASK  = 0x35  # new, unit VU, CAPS.ATT: EX §7.2, AT §5.5: general mask path
 OP_AMERGE = 0x36  # new, unit VU, CAPS.ATT: EX §7.2, AT §5.6: channel tree and online merge
-OP_ANORM  = 0x37  # new, unit VU, CAPS.ATT: EX §7.2, AT §5.7: final normalisation
+OP_ANORM  = 0x37  # new, unit VU, CAPS.ATT: EX §7.2, AT §5.7: final normalization
 OP_VMASK  = 0x38  # new, unit VU, CAPS.VMASK: EX §7.2, VU §5.7: position-window mask; not implemented (ILLEGAL_OP)
 OP_GDN    = 0x39  # new, unit VU, CAPS.GDN: EX §7.2, VU §7.12: fused Gated DeltaNet state update of one head
 OP_SOP    = 0x40  # respec, unit VU, CAPS.VU: EX §7.2, VU §5.8: scalar op on s0..s15

@@ -56,7 +56,7 @@
 // SOFT_RESET sequencer (EX §8.5, CC §12.2, CC-31): a CTRL.SOFT_RESET write sets SR_BUSY and returns.
 //   Step 1: RV_RUN := 0 with the RISC-V reset actions (QABORT even if RV_RUN was 0), sr_db_clear
 //   (DB's stop state; dbg_hold is ignored while sr_busy), then wait for RV_RESET_DONE: at least
-//   SR_RV_MIN cycles (the synchronised level of the clk_rv side must have seen RV_RUN drop) and at
+//   SR_RV_MIN cycles (the synchronized level of the clk_rv side must have seen RV_RUN drop) and at
 //   most SR_RV_MAX = 2^16, else SR_RV_TIMEOUT and on (no clk_rv). Step 2: wait for QIDLE (no entry
 //   queued or running, issue FIFO empty). Step 3: TAKEN := PUSHED, ANSWERED := TAKEN, LCQ_RD :=
 //   LCQ_WR, LOG_RD := LOG_WR, both watermark VALID bits := 0, the host QCLEAR effects, PERF := 0

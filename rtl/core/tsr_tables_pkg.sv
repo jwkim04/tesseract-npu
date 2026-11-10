@@ -6,7 +6,7 @@
 
 package tsr_tables_pkg;
 
-  // A catalogue of constants: no module uses all of them, so UNUSEDPARAM is off for this package.
+  // A catalog of constants: no module uses all of them, so UNUSEDPARAM is off for this package.
   /* verilator lint_off UNUSEDPARAM */
 
   // ---------------------------------------------------------------------------------------------
@@ -178,7 +178,7 @@ package tsr_tables_pkg;
   localparam logic [11:0] TSR_CSR_Q_DONE_BASE       = 12'hE00;  // [R] EX §5.4: DONE_SEQ[u], 28 bits
   localparam int unsigned TSR_CSR_Q_DONE_N          = 8;
   localparam int unsigned TSR_CSR_Q_DONE_STRIDE     = 4;
-  localparam logic [11:0] TSR_CSR_Q_ISSUED_BASE     = 12'hE20;  // [R] EX §5.4: ISSUED_SEQ[u], 28 bits (synchronised copy)
+  localparam logic [11:0] TSR_CSR_Q_ISSUED_BASE     = 12'hE20;  // [R] EX §5.4: ISSUED_SEQ[u], 28 bits (synchronized copy)
   localparam int unsigned TSR_CSR_Q_ISSUED_N        = 8;
   localparam int unsigned TSR_CSR_Q_ISSUED_STRIDE   = 4;
   localparam logic [11:0] TSR_CSR_Q_STATE_BASE      = 12'hE40;  // [R] EX §5.4: queue state of unit u
@@ -310,7 +310,7 @@ package tsr_tables_pkg;
   localparam logic [11:0] TSR_CW_ISSUE_UNITS       = 12'h034;        // [R] CC §5.1: bit u = unit u is built
   localparam logic [11:0] TSR_CW_ISSUE_STATUS      = 12'h038;        // [R/W1C] CC §5.1: push timeout and error interrupt
   localparam logic [11:0] TSR_CW_ISSUE_PIDX        = 12'h03C;        // [R] CC §5.1: push index the next ticketed entry will receive (+1 per ISSUE_PUSH and QCLEAR); exact
-  localparam logic [11:0] TSR_CW_DONE_SEQ_BASE     = 12'h040;        // [R] CC §5.1: [27:0] completions of unit u (synchronised copy; may lag, never leads)
+  localparam logic [11:0] TSR_CW_DONE_SEQ_BASE     = 12'h040;        // [R] CC §5.1: [27:0] completions of unit u (synchronized copy; may lag, never leads)
   localparam int unsigned TSR_CW_DONE_SEQ_N        = 8;
   localparam int unsigned TSR_CW_DONE_SEQ_STRIDE   = 4;
   localparam logic [11:0] TSR_CW_ISSUED_SEQ_BASE   = 12'h080;        // [R] CC §5.1: [27:0] sequence the next push to unit u gets
@@ -367,7 +367,7 @@ package tsr_tables_pkg;
   localparam logic [11:0] TSR_CW_RT_STATE          = 12'h290;        // [RW] EX §4.5: runtime phase, mirrored to host 0x038; 0 after a RISC-V reset
   localparam logic [31:0] TSR_CW_RT_STATE_RESET    = 32'h0000_0000;
   localparam logic [11:0] TSR_CW_RT_INFO           = 12'h294;        // [RW] EX §4.5: runtime- or kernel-defined progress word, mirrored to host 0x03C
-  localparam logic [11:0] TSR_CW_MTIME_LO          = 12'h300;        // [R] CC §5.2: core clock cycles since reset (gray-synchronised)
+  localparam logic [11:0] TSR_CW_MTIME_LO          = 12'h300;        // [R] CC §5.2: core clock cycles since reset (gray-synchronized)
   localparam logic [11:0] TSR_CW_MTIME_HI          = 12'h304;        // [R] CC §5.2
   localparam logic [11:0] TSR_CW_MTIMECMP_LO       = 12'h308;        // [RW] CC §5.2: irq_timer while MTIME >= MTIMECMP
   localparam logic [31:0] TSR_CW_MTIMECMP_LO_RESET = 32'hFFFF_FFFF;
@@ -879,9 +879,9 @@ package tsr_tables_pkg;
   localparam logic [7:0] TSR_LCQ_R0_STATUS_BAD_DESC   = 8'd2;           // the descriptor was refused; the kernel did not run
   localparam logic [7:0] TSR_LCQ_R0_STATUS_KERNEL_ERR = 8'd3;           // RET < 0, no tile error
   localparam logic [7:0] TSR_LCQ_R0_STATUS_TRAP       = 8'd4;           // TRAP records only
-  localparam logic [7:0] TSR_LCQ_R0_STATUS_ABORTED    = 8'd5;           // cancelled (ERR_CODE 0), or the first error is ABORTED (ERR_CODE 8)
+  localparam logic [7:0] TSR_LCQ_R0_STATUS_ABORTED    = 8'd5;           // canceled (ERR_CODE 0), or the first error is ABORTED (ERR_CODE 8)
   localparam logic [7:0] TSR_LCQ_R0_STATUS_PLAT_ERR   = 8'd6;           // STATUS.PLAT_ERR was set when the runtime answered
-  localparam logic [7:0] TSR_LCQ_R0_STATUS_STOPPED    = 8'd7;           // the kernel honoured a soft stop
+  localparam logic [7:0] TSR_LCQ_R0_STATUS_STOPPED    = 8'd7;           // the kernel honored a soft stop
   // HELLO_R4 (EX §4.4, SW §6.9): HELLO record word r4
   localparam logic [31:0] TSR_HELLO_R4_SDK_ABI       = 32'h0000_FFFF;  // [15:0] Basis ABI
   localparam int unsigned TSR_HELLO_R4_SDK_ABI_LSB   = 0;
@@ -1672,7 +1672,7 @@ package tsr_tables_pkg;
   localparam logic [7:0] TSR_OP_CALL   = 8'h09;  // retired, unit SYNC: EX §7.2: retired (never shipped), never reused
   localparam logic [7:0] TSR_OP_LD     = 8'h10;  // kept, unit DMA: EX §7.2: DRAM -> SPM, encoding unchanged
   localparam logic [7:0] TSR_OP_ST     = 8'h11;  // kept, unit DMA: EX §7.2: SPM -> DRAM, encoding unchanged
-  localparam logic [7:0] TSR_OP_DQROW  = 8'h12;  // respec, unit VU, CAPS.DQROW: EX §7.2, VU §5.6: SPM -> f32 dequantisation; simulator and RTL option, not in the release image
+  localparam logic [7:0] TSR_OP_DQROW  = 8'h12;  // respec, unit VU, CAPS.DQROW: EX §7.2, VU §5.6: SPM -> f32 dequantization; simulator and RTL option, not in the release image
   localparam logic [7:0] TSR_OP_KVST   = 8'h14;  // new, unit DMA, CAPS.ATT: EX §7.2, AT §5.1: store K or V rows into a KV plane
   localparam logic [7:0] TSR_OP_QACT   = 8'h18;  // kept, unit QACT: EX §7.2: f32 -> QA, encoding unchanged
   localparam logic [7:0] TSR_OP_MVM    = 8'h20;  // kept, unit MVM: EX §7.2: matrix x activations, encoding unchanged
@@ -1685,7 +1685,7 @@ package tsr_tables_pkg;
   localparam logic [7:0] TSR_OP_ASMAX  = 8'h34;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.4: softmax numerator
   localparam logic [7:0] TSR_OP_AMASK  = 8'h35;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.5: general mask path
   localparam logic [7:0] TSR_OP_AMERGE = 8'h36;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.6: channel tree and online merge
-  localparam logic [7:0] TSR_OP_ANORM  = 8'h37;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.7: final normalisation
+  localparam logic [7:0] TSR_OP_ANORM  = 8'h37;  // new, unit VU, CAPS.ATT: EX §7.2, AT §5.7: final normalization
   localparam logic [7:0] TSR_OP_VMASK  = 8'h38;  // new, unit VU, CAPS.VMASK: EX §7.2, VU §5.7: position-window mask; not implemented (ILLEGAL_OP)
   localparam logic [7:0] TSR_OP_GDN    = 8'h39;  // new, unit VU, CAPS.GDN: EX §7.2, VU §7.12: fused Gated DeltaNet state update of one head
   localparam logic [7:0] TSR_OP_SOP    = 8'h40;  // respec, unit VU, CAPS.VU: EX §7.2, VU §5.8: scalar op on s0..s15

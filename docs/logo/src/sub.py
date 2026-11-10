@@ -1,5 +1,5 @@
 """Lockups "Tesseract Basis" and "Tesseract Core": the Tesseract lockup (same mark, same
-wordmark construction and colours, parameters of build.py) with one more word.
+wordmark construction and colors, parameters of build.py) with one more word.
 
   build/tools/svgvenv/bin/python docs/logo/src/sub.py
 
@@ -8,7 +8,7 @@ inline-safe logo files docs/fig/logos/tesseract-{basis,core}.svg (title and desc
 the figure library embeds.
 
 It also writes tesseract-{basis,core}-lockup-universal.png: the small inline variant for the README
-list (shown at height 20), 64 px tall, tight margins, 256-colour palette PNG. The wordmark is
+list (shown at height 20), 64 px tall, tight margins, 256-color palette PNG. The wordmark is
 #7765E8 as in tesseract-lockup-universal.png, so it reads on white and on #0d1117. Only these two
 files, without touching the others:
 
@@ -65,7 +65,7 @@ def palette(im, n=256):
 
 def universal(key, word):
     """tesseract-<key>-lockup-universal.png: same mark and wordmark as the lockup SVGs (lock.py), only
-    the margin and the wordmark colour differ; rendered straight from the SVG text, no SVG written."""
+    the margin and the wordmark color differ; rendered straight from the SVG text, no SVG written."""
     svg, W, H = lockup(COL, WORD_UNIVERSAL, text=word, margin_k=UNI_MARGIN_K, **LK)
     w = round(W * UNI_H / H)
     im = Image.open(io.BytesIO(cairosvg.svg2png(bytestring=svg.encode(), output_width=w,

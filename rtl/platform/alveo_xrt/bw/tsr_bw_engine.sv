@@ -364,7 +364,7 @@ module tsr_bw_engine
   end
 
   // =============================================================================================
-  // Configuration, generator state, payloads (no reset: used only in a run, initialised by the
+  // Configuration, generator state, payloads (no reset: used only in a run, initialized by the
   // check states)
   // =============================================================================================
   always_ff @(posedge clk) begin

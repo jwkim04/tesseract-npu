@@ -18,7 +18,7 @@
 // needed", FAILED), the kdev registry and TSR_MOCK_* parsing, byte-granular transfers at odd
 // offsets / sizes / host addresses, across and beyond 4 GiB, under DMA rules from align 1 to 4096
 // with small chunks (shadow-memory compare, guard bytes untouched, every raw transfer checked
-// against the rules), raw LCQ read / acknowledgement failures (retry without losing answers,
+// against the rules), raw LCQ read / acknowledgment failures (retry without losing answers,
 // duplicating events or returning launch credit), and the xrt kdev's hw_emu defaults (xrt_env_defaults).
 
 #include "tsr_fw_paths.h"
@@ -264,7 +264,7 @@ static void test_protocol_basic() {
     memset(dram + off + big.size() - 1, 0xC3, 64);   // first byte after the written range
     CHECK(tsr_transport_write(t, C - 1, off, big.data() + 1, big.size() - 1) == 0, "odd write");
     CHECK(memcmp(dram + off, big.data() + 1, big.size() - 1) == 0, "device bytes");
-    CHECK(dram[off - 1] == 0x3C && dram[off + big.size() - 1] == 0xC3, "neighbours untouched");
+    CHECK(dram[off - 1] == 0x3C && dram[off + big.size() - 1] == 0xC3, "neighbors untouched");
     CHECK(tsr_transport_read(t, C - 1, off + 1, back.data() + 3, big.size() - 2) == 0 && memcmp(back.data() + 3, big.data() + 2, big.size() - 2) == 0,
           "odd read");
     CHECK(tsr_transport_write(t, 0, c->ch_bytes - 10, big.data(), 11) == TSR_TE_INVAL, "write past the channel refused");
@@ -581,7 +581,7 @@ static void test_stale_reopen() {
     }
     const tsr_launch ping = L(TSR_DESC_TYPE_PING, 0, { 0x51u });
     auto stale_msgs = [](const std::string & e) {
-        return has(e, "HELLO outside a boot") || has(e, "no launch outstanding") || has(e, "resynchronising") || has(e, "out of order");
+        return has(e, "HELLO outside a boot") || has(e, "no launch outstanding") || has(e, "resynchronizing") || has(e, "out of order");
     };
     for (int pings : { 3, 20 }) {
         mock_kdev * m = nullptr;
@@ -719,7 +719,7 @@ static void test_boot_timeout() {
 // Raw I/O failures must leave the entire LCQ batch retryable, including a prefix read before the
 // failed word. Publishing an answer before LCQ_RD succeeds would also return launch credit early.
 static void test_lcq_io_failures() {
-    printf("protocol: LCQ read and acknowledgement failures\n");
+    printf("protocol: LCQ read and acknowledgment failures\n");
     tsr_image * img = nullptr;
     if (tsr_image_open(TSR_FW_TEST_IMAGE_fw_rt, &img) != 0) {
         CHECK(0, "fw_rt image");
@@ -837,7 +837,7 @@ static void test_lcq_io_failures() {
                 CHECK(events.empty() && tsr_transport_csr_read(t, TSR_CSR_LCQ_RD) == rd + (mode == 2u ? 3u : 0u),
                       "no event/answer published before ack succeeds");
                 CHECK(transport_recovery_log(t).timeouts == 0, "an I/O failure does not become a timeout recovery");
-                CHECK(tsr_transport_stop(t, se) == 0, "stop watermark while a batch awaits acknowledgement");
+                CHECK(tsr_transport_stop(t, se) == 0, "stop watermark while a batch awaits acknowledgment");
                 if (mode == 2u && attempt == 0u) {
                     // A failed write can already have reached the device. More answers overwrite
                     // a freed slot, so ack retry must use its saved batch, not reread that slot.

@@ -51,7 +51,7 @@
 //      TRAP record as an event, then a warm restart;
 //   K  an RV reset (RV_RUN 1 -> 0: QABORT, every unit left in error state, CC §12.1), the DTCM
 //      reloaded, RV_RUN: R1's QCLEAR makes the next launch clean.
-// Afterwards (fixed schedule): the launch costs of EX §4.11 in core cycles: descriptor push ->
+// Afterward (fixed schedule): the launch costs of EX §4.11 in core cycles: descriptor push ->
 // kernel entry (the LAUNCH_BEGIN marker) and the empty-launch round trip (push -> DONE in the LCQ),
 // one at a time and 8 outstanding.
 #pragma GCC diagnostic push
@@ -856,14 +856,14 @@ static void fw_scenario(run * r) {
         const uint32_t s2b = push(r, dbad);                                                      // unknown TYPE
         const uint32_t s3 = launch(r, G.k_nop, 0, 0, 0, 0, 0, 0, 0, 0);
         if (!fw_run_until(r, n0 + 4u, 0, 0, "G1")) goto out;
-        chk_done(r, n0, s1, TSR_LCQ_R0_STATUS_ABORTED, 0, 0, "G1 cancelled launch");
-        chk_done(r, n0 + 1u, s2, TSR_LCQ_R0_STATUS_ABORTED, 0, 0, "G1 cancelled PING");
-        chk_done(r, n0 + 2u, s2b, TSR_LCQ_R0_STATUS_BAD_DESC, 0, 0, "G1 cancelled bad descriptor: BAD_DESC (R4 before R3)");
+        chk_done(r, n0, s1, TSR_LCQ_R0_STATUS_ABORTED, 0, 0, "G1 canceled launch");
+        chk_done(r, n0 + 1u, s2, TSR_LCQ_R0_STATUS_ABORTED, 0, 0, "G1 canceled PING");
+        chk_done(r, n0 + 2u, s2b, TSR_LCQ_R0_STATUS_BAD_DESC, 0, 0, "G1 canceled bad descriptor: BAD_DESC (R4 before R3)");
         chk_done(r, n0 + 3u, s3, TSR_LCQ_R0_STATUS_OK, 0, 0, "G1 launch after the watermark");
         quiesce(r, "G1");
         uint8_t got[4 * 64];
         tsr_sim_dram_read(sim, 1, (uint64_t)(DST_BEAT + 0x300u) * 64u, got, sizeof(got));
-        CHECK(memcmp(got, ee, sizeof(got)) == 0, "%s: G1: the cancelled copy did not run", r->sched);
+        CHECK(memcmp(got, ee, sizeof(got)) == 0, "%s: G1: the canceled copy did not run", r->sched);
         // G2: stop before start
         n0 = r->n_rec;
         q = r->pushed;
@@ -892,7 +892,7 @@ static void fw_scenario(run * r) {
         tsr_sim_csr_write(sim, TSR_CSR_LQ_CANCEL, s7);
         const uint32_t s8 = launch(r, G.k_copy, 0, H(0, SRC_BEAT + 16u), H(1, DST_BEAT + 0x500u), 4, 401, 0, 0, 0);
         if (!fw_run_until_n(r, n0 + 3u, 0, 0, "G4", 1000)) goto out;   // bounded
-        chk_done(r, n0 + 1u, s7, TSR_LCQ_R0_STATUS_ABORTED, TSR_ERR_ABORTED, 0, "G4 cancelled while running");
+        chk_done(r, n0 + 1u, s7, TSR_LCQ_R0_STATUS_ABORTED, TSR_ERR_ABORTED, 0, "G4 canceled while running");
         chk_err(r, n0 + 1u, e.r[3], 0u, ld_w0(0), e.r[2], "G4 first error = the held LD");
         chk_done(r, n0 + 2u, s8, TSR_LCQ_R0_STATUS_OK, 0, 0, "G4 next launch clean (R9)");
         quiesce(r, "G4");

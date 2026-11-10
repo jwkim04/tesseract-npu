@@ -2,9 +2,9 @@
 // holds the T_MAX QA images of the current MVM (QS + D + BS per token), written by the activation
 // broadcast, read by the back end (spec stage 5).
 //
-// Spec: docs/rtl-mvm.md §2 block (back); organisation §5.
+// Spec: docs/rtl-mvm.md §2 block (back); organization §5.
 //
-// Organisation (docs/rtl-mvm.md §5): per token t
+// Organization (docs/rtl-mvm.md §5): per token t
 //   QS : QS_WORDS = ceil(K_MAX/128) words of 1024 bits = two QS lines: word w = {line 2w+1,
 //        line 2w} (line 2w in bits [511:0]); built as two 512-bit banks (even / odd lines).
 //   DBS: DBS_LINES = tsr_actbuf_dbs_lines(K_MAX) lines of 512 bits: the QA image's lines from

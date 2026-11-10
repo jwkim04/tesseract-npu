@@ -6,7 +6,7 @@ if {[llength [info procs k4fp_check_locality]] != 1} {
 k4fp_check_locality 1
 
 # These reports only query the current design. Keep stage names distinct so
-# later physical optimisation does not replace earlier placement evidence.
+# later physical optimization does not replace earlier placement evidence.
 proc k4fp_report_diagnostics {} {
   set step locality
   if {[info exists ::ACTIVE_STEP] && $::ACTIVE_STEP in {

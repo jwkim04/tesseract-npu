@@ -2,7 +2,7 @@
 # capture_card.sh MODEL OUTDIR [N_TOKENS]: one card session that records a decode run for the profile report
 # (docs/prof-dbg.md "The profile report"): waits until nobody has the card open, replays the first-ATTPV trace, runs
 # llama-completion with TSR_DUMP_PLAN (the plan, the launches with PERF deltas and the trace writer's records), and clears the
-# trace writer afterwards. Never kills another process.
+# trace writer afterward. Never kills another process.
 #
 #   TSR_BUILD     build tree with the XRT backend (default build/xrt)
 #   TSR_XCLBIN    the card image (default: the k4full link)

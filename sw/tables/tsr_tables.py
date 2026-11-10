@@ -321,9 +321,9 @@ LAYOUTS = {
                    (2, "BAD_DESC", "the descriptor was refused; the kernel did not run"),
                    (3, "KERNEL_ERR", "RET < 0, no tile error"),
                    (4, "TRAP", "TRAP records only"),
-                   (5, "ABORTED", "cancelled (ERR_CODE 0), or the first error is ABORTED (ERR_CODE 8)"),
+                   (5, "ABORTED", "canceled (ERR_CODE 0), or the first error is ABORTED (ERR_CODE 8)"),
                    (6, "PLAT_ERR", "STATUS.PLAT_ERR was set when the runtime answered"),
-                   (7, "STOPPED", "the kernel honoured a soft stop")],
+                   (7, "STOPPED", "the kernel honored a soft stop")],
     }),
     "HELLO_R4": dict(src="EX §4.4, SW §6.9", desc="HELLO record word r4", fields=[
         ("15:0", "SDK_ABI", "Basis ABI"), ("31:16", "KINDS_SIG", "kind table signature (opl::kinds_sig)"),
@@ -557,7 +557,7 @@ HOST_CSR = [
     (0xB00, None,           "-",      "-",      "EX §5.1",        "reserved", dict(block=0x100)),
     (0xC00, "DMI",          "R/W",    "DB, CC", "EX §5.1, DB §3.2", "debug module register r at 0xC00 + 4r; acts only while DBG_CFG.DMI_EN = 1", dict(n=128)),
     (0xE00, "Q_DONE",       "R",      "EX",     "EX §5.4",        "DONE_SEQ[u], 28 bits", dict(n=8)),
-    (0xE20, "Q_ISSUED",     "R",      "EX",     "EX §5.4",        "ISSUED_SEQ[u], 28 bits (synchronised copy)", dict(n=8)),
+    (0xE20, "Q_ISSUED",     "R",      "EX",     "EX §5.4",        "ISSUED_SEQ[u], 28 bits (synchronized copy)", dict(n=8)),
     (0xE40, "Q_STATE",      "R",      "EX",     "EX §5.4",        "queue state of unit u", dict(n=8)),
     (0xE60, "Q_FIFO",       "R",      "EX",     "EX §5.4",        "issue-FIFO entries waiting for the dispatcher"),
     (0xE64, "Q_PIDX",       "R",      "EX",     "EX §5.4",        "push index of the dispatcher's next ticketed entry (= DBG_NEXT_PIDX); firmware never uses it"),
@@ -638,7 +638,7 @@ CTL_WINDOW = [
     (0x034, "ISSUE_UNITS",  "R",     "CC", "CC §5.1", "bit u = unit u is built"),
     (0x038, "ISSUE_STATUS", "R/W1C", "CC", "CC §5.1", "push timeout and error interrupt"),
     (0x03C, "ISSUE_PIDX",   "R",     "CC", "CC §5.1", "push index the next ticketed entry will receive (+1 per ISSUE_PUSH and QCLEAR); exact"),
-    (0x040, "DONE_SEQ",     "R",     "CC", "CC §5.1", "[27:0] completions of unit u (synchronised copy; may lag, never leads)", dict(n=8)),
+    (0x040, "DONE_SEQ",     "R",     "CC", "CC §5.1", "[27:0] completions of unit u (synchronized copy; may lag, never leads)", dict(n=8)),
     (0x080, "ISSUED_SEQ",   "R",     "CC", "CC §5.1", "[27:0] sequence the next push to unit u gets", dict(n=8)),
     (0x0C0, "ERR_SEQ",      "R",     "CC", "CC §5.1", "first error of unit u since the last clear: ERR_SEQ", dict(n=8, stride=16)),
     (0x0C4, "ERR_CODE",     "R",     "CC", "CC §5.1", "ERR_CODE; 0 = none", dict(n=8, stride=16)),
@@ -671,7 +671,7 @@ CTL_WINDOW = [
     (0x288, "LOG_CFG",      "R",     "EX", "EX §4.5", "copy of the host's LOG_CFG"),
     (0x290, "RT_STATE",     "RW",    "EX", "EX §4.5", "runtime phase, mirrored to host 0x038; 0 after a RISC-V reset", dict(reset=0)),
     (0x294, "RT_INFO",      "RW",    "EX", "EX §4.5", "runtime- or kernel-defined progress word, mirrored to host 0x03C"),
-    (0x300, "MTIME_LO",     "R",     "CC", "CC §5.2", "core clock cycles since reset (gray-synchronised)"),
+    (0x300, "MTIME_LO",     "R",     "CC", "CC §5.2", "core clock cycles since reset (gray-synchronized)"),
     (0x304, "MTIME_HI",     "R",     "CC", "CC §5.2", ""),
     (0x308, "MTIMECMP_LO",  "RW",    "CC", "CC §5.2", "irq_timer while MTIME >= MTIMECMP", dict(reset=0xFFFF_FFFF)),
     (0x30C, "MTIMECMP_HI",  "RW",    "CC", "CC §5.2", "", dict(reset=0xFFFF_FFFF)),
@@ -718,7 +718,7 @@ IRQS = [
     (6, "DB_RSVD",     "CC §12.3, DB §10.2", "reserved for DB"),
 ]
 
-# DMI registers used by libtsr_dbg and modelled by the simulator (DB §9.1, RISC-V Debug Spec);
+# DMI registers used by libtsr_dbg and modeled by the simulator (DB §9.1, RISC-V Debug Spec);
 # host offset 0xC00 + 4 x address. (address, NAME, src, description[, n])
 DMI_REGS = [
     (0x04, "DATA0",      "DB §9.1", ""),
@@ -782,7 +782,7 @@ OPCODES = [
     (0x0A, 0x0F, None,     "reserved", "SYNC", None,    "EX",   "EX §7.2", "SYNC-class extension"),
     (0x10, 0x10, "LD",     "kept",     "DMA",  None,    "spec", "EX §7.2", "DRAM -> SPM, encoding unchanged"),
     (0x11, 0x11, "ST",     "kept",     "DMA",  None,    "spec", "EX §7.2", "SPM -> DRAM, encoding unchanged"),
-    (0x12, 0x12, "DQROW",  "respec",   "VU",   "DQROW", "VU",   "EX §7.2, VU §5.6", "SPM -> f32 dequantisation; simulator and RTL option, not in the release image"),
+    (0x12, 0x12, "DQROW",  "respec",   "VU",   "DQROW", "VU",   "EX §7.2, VU §5.6", "SPM -> f32 dequantization; simulator and RTL option, not in the release image"),
     (0x13, 0x13, None,     "reserved", "DMA",  None,    "VU",   "EX §7.2", "reserved for VU (DMA class)"),
     (0x14, 0x14, "KVST",   "new",      "DMA",  "ATT",   "AT",   "EX §7.2, AT §5.1", "store K or V rows into a KV plane"),
     (0x15, 0x17, None,     "reserved", "DMA",  None,    "AT",   "EX §7.2", "reserved for AT (DMA class: KV row stores and loads)"),
@@ -801,7 +801,7 @@ OPCODES = [
     (0x34, 0x34, "ASMAX",  "new",      "VU",   "ATT",   "AT",   "EX §7.2, AT §5.4", "softmax numerator"),
     (0x35, 0x35, "AMASK",  "new",      "VU",   "ATT",   "AT",   "EX §7.2, AT §5.5", "general mask path"),
     (0x36, 0x36, "AMERGE", "new",      "VU",   "ATT",   "AT",   "EX §7.2, AT §5.6", "channel tree and online merge"),
-    (0x37, 0x37, "ANORM",  "new",      "VU",   "ATT",   "AT",   "EX §7.2, AT §5.7", "final normalisation"),
+    (0x37, 0x37, "ANORM",  "new",      "VU",   "ATT",   "AT",   "EX §7.2, AT §5.7", "final normalization"),
     (0x38, 0x38, "VMASK",  "new",      "VU",   "VMASK", "VU",   "EX §7.2, VU §5.7", "position-window mask; not implemented (ILLEGAL_OP)"),
     (0x39, 0x39, "GDN",    "new",      "VU",   "GDN",   "VU",   "EX §7.2, VU §7.12", "fused Gated DeltaNet state update of one head"),
     (0x3A, 0x3F, None,     "reserved", "VU",   None,    "VU",   "EX §7.2", "reserved for VU extensions"),
@@ -845,7 +845,7 @@ STATUS_PRECEDENCE = ("EX §4.4", ["TRAP", "BAD_DESC", "ABORTED", "TILE_ERR", "PL
 # =================================================================================================
 # PERF slots (EX §6): (slot, NAME, kind, src, description). slot: an index, ("ch", k) for
 # 5 + k*C + c (per channel c < C = NUM_CH), ("x", k) for X + k with X = 5 + 2C.
-# kind: time (ACTIVE and not QHALT), event (ACTIVE), rv_time (clk_rv cycles, synchronised ACTIVE),
+# kind: time (ACTIVE and not QHALT), event (ACTIVE), rv_time (clk_rv cycles, synchronized ACTIVE),
 # time_nohalt (ACTIVE, not gated by QHALT), reserved (reads 0).
 # =================================================================================================
 PERF = [

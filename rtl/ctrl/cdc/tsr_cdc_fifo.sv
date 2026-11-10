@@ -5,7 +5,7 @@
 //
 // Contract:
 //   write side (wclk): wr_free = free entries (0..DEPTH) as the write side sees them (the read
-//     pointer arrives through a synchroniser, so it may under-report, never over-report); wr_en
+//     pointer arrives through a synchronizer, so it may under-report, never over-report); wr_en
 //     writes wr_data and is legal only while wr_free != 0 (asserted). wr_free updates in the cycle
 //     after a write. wr_empty = no entry written and not yet consumed by the read side, as the write
 //     side sees it (CC §5.1 QIDLE: "the issue FIFO empty").
@@ -14,7 +14,7 @@
 //     §1: rd_valid does not depend on rd_ready). An entry counts as used until it is consumed, so
 //     DEPTH entries are the bound for everything written and not yet consumed. rd_count = entries
 //     written and not yet consumed as the read side sees them (the write pointer arrives through a
-//     synchroniser: it may under-report, never over-report), the presented one included
+//     synchronizer: it may under-report, never over-report), the presented one included
 //     (Q_FIFO, EX §5.4).
 //   Memory: an array written in wclk (LUTRAM on the FPGA) and read into a register in rclk; the
 //     array -> rd_data path and the gray pointers are the crossing paths (set_max_delay
@@ -60,7 +60,7 @@ module tsr_cdc_fifo #(
   logic [W-1:0] mem [DEPTH];
 
   // Pointers of both sides, declared before their first use (each side reads the other's gray
-  // pointer through its synchroniser).
+  // pointer through its synchronizer).
   logic [AW:0] wbin_q, wgray_q, rgray_ws, rbin_ws;
   logic [AW:0] rbin_q, rgray_q, wgray_rs, wbin_rs, rbin_nxt;
 

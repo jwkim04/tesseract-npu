@@ -34,7 +34,7 @@
 //              after a credit check on that unit;
 //      kind 1  QCTRL = w0 (a QCLEAR waits for a SYNC credit, like qclear());
 //      kind 2  TRACE_MARK = w0.
-//      A soft stop (EX §4.9) is honoured at chunk boundaries.
+//      A soft stop (EX §4.9) is honored at chunk boundaries.
 //   4. join_all(); RET = 0 if no unit is in error state, else 1 + (ERR_PIDX of the first error -
 //      pidx0 - the kernel's own pushes before it): the push index of the failing record relative to
 //      the first replayed record, as the tile-only replay reports it (tsr_trace.c done_of_units).

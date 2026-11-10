@@ -23,7 +23,7 @@
 //              launches and the 4096-op list are captured and their trace digests (push records,
 //              DONE, expect regions; fw_trace_digest.h) must equal the golden values (the executor's push order)
 //   errors     the failing-op index for injected tile errors at positions 0, 1, 15, 16, 17, 40,
-//              63 (NOP neighbours: empty ops share a push index), DEP_FAILED behind the error,
+//              63 (NOP neighbors: empty ops share a push index), DEP_FAILED behind the error,
 //              failed executor loads (list, preload) -> RET 0
 //   stop       STOP_ON_ERROR: RET and the error record are schedule-independent; the pushes stop
 //   preload    four entries (4 / 100 / 64 / 300 bytes), one join; read by the RISC-V and by STs
@@ -1016,7 +1016,7 @@ static void sc_errors(env & e) {
         writer w(0);                                          // STOP_ON_ERROR = 0: deterministic streams
         for (uint32_t i = 0; i < 64; ++i) {
             if (i == p) add_fail(w, 3, {i > 0 ? i - 1 : opl::DEP_NONE});
-            else if (i + 1 == p || i == p + 1) w.add(opl::K_NOP, {});             // empty neighbours
+            else if (i + 1 == p || i == p + 1) w.add(opl::K_NOP, {});             // empty neighbors
             else if (i % 5 == 2) w.add(opl::K_JOIN, {}, {i - 1, i - 2});
             else add_copy(w, h1(SRC_BEAT + i), h0(OUT_BEAT + i), 1, {i > 0 ? i - 1 : opl::DEP_NONE});
         }

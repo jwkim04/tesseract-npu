@@ -22,7 +22,7 @@ def head_data(r, kind: str, m: int, rows: int):
     def unit(x):
         return x / np.sqrt((x * x).sum())
 
-    if kind == "model":                       # normalised keys, values of order one, gating
+    if kind == "model":                       # normalized keys, values of order one, gating
         k = f(unit(g.standard_normal(m))); q = f(unit(g.standard_normal(m)) / np.sqrt(m))
         v = f(g.standard_normal(rows)); S = f(g.standard_normal((rows, m)).ravel() * 0.5)
         alpha = f2u(float(np.exp(-g.random() * 0.1))); beta = f2u(float(1 / (1 + np.exp(-g.standard_normal()))))

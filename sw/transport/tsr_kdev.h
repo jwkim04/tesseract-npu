@@ -171,7 +171,7 @@ kdev * transport_kdev(tsr_transport * t);
 tsr_sim * transport_sim(tsr_transport * t);
 
 // ADAPTER_STATUS as the protocol layer saw it. It reads the register at open and clears it (W1C)
-// when it is not 0, so reading the register afterwards shows only what happened since; tools
+// when it is not 0, so reading the register afterward shows only what happened since; tools
 // check this record instead (all zero without an adapter). last_* are from the last time a launch
 // answered PLAT_ERR or STATUS.PLAT_ERR was seen (read, reported and cleared then, EX §8.6).
 struct adapter_log {

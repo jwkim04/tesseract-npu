@@ -10,7 +10,7 @@
 # (>= 64 RAMB36, no URAM column); issue, SPM and the other central units stay in SLR1.
 # Every crossing pipe retains registered endpoints on the corresponding sides.
 # This file only makes the stand-ins of the platform's pblocks the script expects and sources it for a bare
-# tsr_core (TSR_K4_FP_CORE = ""): the ports are unplaced, the AXI bridges / DDR4 controllers are not modelled.
+# tsr_core (TSR_K4_FP_CORE = ""): the ports are unplaced, the AXI bridges / DDR4 controllers are not modeled.
 #   pblock_dynamic_SLR0  the whole SLR0
 #   pblock_dynamic_SLR1  CLOCKREGION_X0Y5:CLOCKREGION_X2Y9, the columns that match the U200 platform's dynamic
 #                        region (UG1120: 205 K LUT / 1,320 DSP / 160 URAM), the rest of SLR1 being the shell

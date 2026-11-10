@@ -26,7 +26,7 @@ Accuracy is a separate question. Check a configuration with [klcheck](klcheck.md
 | `tsr-mtp` | speculative decoding with a model's MTP head; device cycles per phase for a list of draft lengths |
 | `klcheck`, `tsr-numcheck` | accuracy against the CPU and bit identity against the simulator |
 | `tsr-selftest` | identity of the device: `CAPS`, `T_MAX`, `NUM_CH`, kind table, firmware image id |
-| `tsr-top` | live utilisation of the card during a run, with the execution mode of each process |
+| `tsr-top` | live utilization of the card during a run, with the execution mode of each process |
 | `tsr-prof`, `sw/tools/prof/prof_report.py` | trace-writer timeline and the profile report of one decode token ([prof-dbg.md](prof-dbg.md) §3.1) |
 | `tsr_bw` | DDR4 read and write bandwidth of the card ([bandwidth-kernel.md](bandwidth-kernel.md)) |
 | `ctest -R _perf` | RISC-V cycles per record and per layer, from the simulator's cycle model |
@@ -100,7 +100,7 @@ In M6 a token has one launch per graph split, and the CPU ops add to `t_host`.
 The weight stream sets a floor. A decode token reads every weight once. A cluster takes at most one
 64-byte beat per core clock from its channel, so the cycles per token cannot fall below the largest
 per-channel weight volume divided by 64 bytes. At 200 MHz that is 12.8 GB/s per channel. The DDR
-utilisation U, which is the bytes read per token times tokens per second over the measured
+utilization U, which is the bytes read per token times tokens per second over the measured
 bandwidth of the channels, compares a run with that floor ([spec](spec.md) §14, [prof-dbg.md](prof-dbg.md) §3).
 
 Cycle counts are the portable figure. They do not depend on host load, and they carry to another

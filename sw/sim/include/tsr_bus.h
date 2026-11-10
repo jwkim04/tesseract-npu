@@ -203,7 +203,7 @@ int       tsr_rv_elf_load(tsr_bus * bus, const tsr_rv_elf * elf);
 //   - keeps a push that gets TSR_CW_WAIT pending (no interrupts, no debug halt, CC §7.3), counts
 //     its wait in PERF PUSH_STALL and after TSR_ISSUE_WAIT_MAX RV cycles calls
 //     tsr_sim_cw_push_timeout and takes a store access fault; SPM bridge transactions count in
-//     BRIDGE_ACC and BRIDGE_WAIT (the modelled latency);
+//     BRIDGE_ACC and BRIDGE_WAIT (the modeled latency);
 //   - reports STATUS.RV_HALTED (debug mode) and RV_SLEEP (WFI) with tsr_sim_rv_set_state, and
 //     sleeps (TSR_SIM_AGENT_WAIT) while asleep or parked;
 //   - passes the accessing instruction's pc with every control-window access

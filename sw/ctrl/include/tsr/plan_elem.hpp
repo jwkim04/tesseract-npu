@@ -30,7 +30,7 @@
 // scalar of SW §7.2. The b stride is not used with the flag.
 // Tile size (MUL_MAT's T-tile rule, SW §7.4): all rows in one tile when its
 // block fits half the planning budget (l.budget = ring_budget; room for the next
-// tile or the neighbour ops' blocks), else the largest aligned row count (p for the period forms,
+// tile or the neighbor ops' blocks), else the largest aligned row count (p for the period forms,
 // 16 for EB_CROWS, else 1) whose block fits half the budget (two tiles in flight: the LD of tile k+1
 // overlaps the VOP of tile k), else one aligned unit if its block fits the whole budget (single
 // buffer), else RET_SCRATCH. At most 65,535 rows per tile (VOP rows[15:0]). (plan.hpp's plan_rows

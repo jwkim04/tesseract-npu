@@ -2,12 +2,12 @@
 // docs/design/04-control-core.md "CC" §3.2, §4.3, §12.2; docs/design/06-software-verification.md "SW"
 // §4.2). Implementation: sw/sim/tsr_dm.c.
 //
-// A behavioural riscv-dbg dm_top (Debug Spec 0.13.2, NrHarts 1, BusWidth 32, ProgBufSize 8,
+// A behavioral riscv-dbg dm_top (Debug Spec 0.13.2, NrHarts 1, BusWidth 32, ProgBufSize 8,
 // DataCount 2, DmBaseAddress 0x1000_0000, two-scratch ROM; DB §3.1, CC §3.2) on the simulator's
 // built-in hart (tsr_rv) and bus (tsr_bus). It implements DB §9.1's DMI profile exactly; every
 // other DM register reads 0 and ignores writes (abstractauto, haltsum*, authdata, nextdm, ...).
 // Abstract commands act on the interpreter state directly and the program buffer runs in the
-// interpreter in debug mode (DB-18); the debug ROM is not modelled (tsr_rv.h).
+// interpreter in debug mode (DB-18); the debug ROM is not modeled (tsr_rv.h).
 //
 // DMI registers (7-bit addresses TSR_DMI_* in tsr_tables.h; host CSR 0xC00 + 4r through the DBG
 // model's window, gated by DBG_CFG.DMI_EN, DB §3.2; in a library without the DBG model the core

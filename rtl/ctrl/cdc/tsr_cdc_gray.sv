@@ -10,7 +10,7 @@
 //   - dst_cnt is a copy in the destination domain that lags and never leads: every value it takes
 //     is a value src_cnt held (gray code: only one bit changes per step, so a sample taken during a
 //     change is the old or the new value). Latency: 1 src_clk + STAGES + 1 dst_clk cycles.
-//   - The gray register and the synchroniser input are the only crossing path: constrain it with
+//   - The gray register and the synchronizer input are the only crossing path: constrain it with
 //     set_max_delay -datapath_only and set_bus_skew (rtl/ctrl/viv/tsr_ctrl_cdc.xdc, CC §11.3).
 // Resets: both synchronous, active low; both sides reset to 0 (src_cnt must be 0 in reset). The two
 // resets must come from the same hardware reset (CDC endpoints are never reset on their own,

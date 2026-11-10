@@ -1,5 +1,5 @@
 """prof_model.py: the analysis of a profile dump (docs/prof-dbg.md "The profile report"): layers and kind groups of the ggml
-nodes, the record table with measured and ideal cycles, the per-kind and per-layer tables, the utilisation split and the
+nodes, the record table with measured and ideal cycles, the per-kind and per-layer tables, the utilization split and the
 sanity checks. Standard library only."""
 import collections
 import os

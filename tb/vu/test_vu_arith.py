@@ -93,7 +93,7 @@ def lane_exe():
 
 def test_vu_lane_quick():
     """Every lane function against the references (2^17 elements each), GELU16 / GEGLU16 over all fp16
-    inputs and their neighbours, AT's micro-ops, and 3000 rows into the partials."""
+    inputs and their neighbors, AT's micro-ops, and 3000 rows into the partials."""
     seed = int(os.environ.get("TSR_SEED", "1"), 0)
     exe = lane_exe()
     run_jobs(exe, [("vop", 1 << 17, seed), ("gelu16", seed), ("at", 1 << 17, seed), ("red", 3000, seed)])

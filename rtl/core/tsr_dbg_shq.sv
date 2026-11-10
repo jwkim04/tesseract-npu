@@ -88,7 +88,7 @@ module tsr_dbg_shq
   input  logic                      trw_en,
   input  logic [10:0]               trw_mask,
   input  logic                      rec_en,            // HAS_REC
-  input  logic                      rec_all,           // REC_CFG.ALL (clk_rv, synchronised)
+  input  logic                      rec_all,           // REC_CFG.ALL (clk_rv, synchronized)
 
   // ---- probes ----
   output logic [5:0]                out_v,

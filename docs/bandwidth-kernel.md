@@ -42,7 +42,7 @@ synchronous) and `interrupt`. `s_axi_control` is AXI4-Lite with 32-bit data and 
 has `NUM_CH` 4, `ADDR_BEAT_W` 28 (16 GiB per channel), `AXI_SLICES` 2 and `CTRL_PIPE` 2.
 
 `s_axi_control` registers (byte offsets decoded on bits [11:2]; unmapped offsets read 0 and ignore writes; every response OKAY;
-writable registers honour WSTRB):
+writable registers honor WSTRB):
 
 | Offset | Name | Access | Content |
 |---|---|---|---|
@@ -74,7 +74,7 @@ channel `ctrl<c>`, `bytes<c>`, `rd_off<c>` and `wr_off<c>` (1 to 16), then `ch0`
 arguments. The tool reads them with `xrt::kernel::read_register`, which needs exclusive compute-unit access. The transport opens
 the core kernels with `xrt::ip` ([xrt-host.md](xrt-host.md) §4.1).
 
-## 3. Behaviour
+## 3. Behavior
 
 - Start. `ap_start` while idle is accepted in the next cycle. All arguments are latched as a snapshot, so later register writes do
   not affect the run. A toggle goes to the four engines through `CTRL_PIPE` register stages. Each engine latches its
@@ -275,7 +275,7 @@ bytes read per token.
 ## 8. Limits
 
 - The kernel cannot be aborted. A hung run needs `xbutil reset`, and the tool's timeout message says so.
-- If the read or write generator loop misses timing in a rebuild, it can be shortened without changing behaviour: the 4 KiB carry
+- If the read or write generator loop misses timing in a rebuild, it can be shortened without changing behavior: the 4 KiB carry
   of a burst is `~z & (lo >= 64 - B)` with a registered threshold, and the next offset is then 0, else `lo + B` or the region end.
   If the per-channel reset copies miss, they need protection from phys_opt's equivalent-driver rewiring.
 - `tsr_bw` reads results with the deprecated `xrt::kernel::read_register`, which needs exclusive compute-unit access. On XRT

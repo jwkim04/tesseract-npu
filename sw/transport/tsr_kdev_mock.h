@@ -15,7 +15,7 @@
 // RISC-V's LQ_FLAGS when the simulator models the input, tsr_sim_set_plat_err); the core CSR
 // window at 0x1000. The latched bases must equal the channel buffers' device addresses, else the
 // core would address the wrong memory: the model then refuses to move (bind_errors counts it).
-// Not modelled: AXI timing, the reset scheme.
+// Not modeled: AXI timing, the reset scheme.
 //
 // Fault injection (TSR_MOCK_INJECT and friends, tsr_kdev_mock.cpp): adapter errors at open or at
 // the N-th LQ_PUSH, a TCM word that does not hold what was written (VERIFY catches it, EX §3.3), a

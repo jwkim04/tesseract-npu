@@ -332,7 +332,7 @@ def test_chk_xc():
 
 
 def test_chk_netlist(request):
-    """Opt-in (needs Vivado, about 3 minutes; TSR_CHK_VIVADO=1 or -k netlist): the Vivado-synthesised netlist of
+    """Opt-in (needs Vivado, about 3 minutes; TSR_CHK_VIVADO=1 or -k netlist): the Vivado-synthesized netlist of
     tsr_chk answers the directed ops like the simulator, and its synthesis has no multi-driven net (once
     two always_ff blocks wrote the operand extents; Verilator simulated it correctly, Vivado did not)."""
     import subprocess

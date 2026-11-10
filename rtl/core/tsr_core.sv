@@ -7,10 +7,10 @@
 // through the CSR port and the RISC-V issues every tile op; there is no host command path.
 //
 // Core boundary (spec Core boundary interface; EX §9.3, CC §13.1):
-//   - clk / rst_n: the core clock and its synchronous, active-low reset (already synchronised to
+//   - clk / rst_n: the core clock and its synchronous, active-low reset (already synchronized to
 //     clk). clk_rv / rst_rv_n: the control core's clock (ap_clk_2, 166.7 MHz planning value, CC
 //     §11.1) and its reset (ap_rst_n_2), AND-ed only into the Ibex and debug-module resets; the
-//     clk_rv domain's own reset is rst_n through tsr_ctrl's synchroniser (CC §12.2).
+//     clk_rv domain's own reset is rst_n through tsr_ctrl's synchronizer (CC §12.2).
 //   - CSR port: csr_valid/csr_ready/csr_we/csr_addr/csr_wdata/csr_rdata (tsr_csr contract, EX §5).
 //   - memory port per channel c (packed [NUM_CH], index c): read request {addr_beat, len_beats, id},
 //     read response {data, id, last}, write request {addr_beat, len_beats, id}, write data
@@ -109,7 +109,7 @@ module tsr_core
 ) (
   input  logic                                   clk,
   // rst_n: synchronous in the core domain, and (RST_PIPE = 0) also the asynchronous input of the
-  // clk_rv domain's reset synchroniser inside tsr_ctrl (CC §12.2)
+  // clk_rv domain's reset synchronizer inside tsr_ctrl (CC §12.2)
   /* verilator lint_off SYNCASYNCNET */
   input  logic                                   rst_n,
   /* verilator lint_on SYNCASYNCNET */
@@ -290,7 +290,7 @@ module tsr_core
   // -------------------------------------------------------------------------------------------
   // DB block, both-clock part (tsr_dbg_rv: DB window registers, completion-record FIFO, RV_SAMPLE and
   // RVWP_APPLY handshakes, RV watchpoints, DBG_FLAGS; DB §10.2). Its core-domain side is tsr_dbg in
-  // tsr_core_dp; its reset is tsr_ctrl's core-domain copy (also the input of its clk_rv synchroniser).
+  // tsr_core_dp; its reset is tsr_ctrl's core-domain copy (also the input of its clk_rv synchronizer).
   // -------------------------------------------------------------------------------------------
   if (HAS_DB) begin : g_db
     tsr_dbg_rv #(.REC_DEPTH(REC_DEPTH), .HAS_RV_TAPS(1'b1), .CTRL_SYNC(CTRL_SYNC)) u_dbg_rv (

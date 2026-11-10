@@ -6,7 +6,7 @@
 // model.md (EX), 04-control-core.md (CC) and 06-software-verification.md (SW) §4. All numerics
 // come from tsr_ref.c (spec rule 3); this file only decodes, checks and moves bytes. The queue
 // model (dispatcher, checker order, unit queues, SYNC, errors, the RISC-V side control window and
-// the time base) is tsr_q.c; the interface between the two and towards the other sim files is
+// the time base) is tsr_q.c; the interface between the two and toward the other sim files is
 // tsr_sim_int.h.
 //
 // Decisions pinned in spec §21 (Implementation clarifications, simulator section) and EX §7.1, implemented here:
@@ -35,7 +35,7 @@
 // PERF_CYCLES, cycles() in MVM_CYCLES / VU_CYCLES (and ATT_QK / ATT_PV_CYCLES for ATTQK / ATTPV),
 // RETIRED for every op, nothing gated.
 //   PERF_CH_RD_BEATS[c]     LD beats and MVM weight beats (no command fetch: ch0 is exact)
-//   PERF_CH_WAIT            0 (no DRAM stalls modelled)
+//   PERF_CH_WAIT            0 (no DRAM stalls modeled)
 
 #define _GNU_SOURCE
 #define TSR_SIM_CORE_INTERNAL

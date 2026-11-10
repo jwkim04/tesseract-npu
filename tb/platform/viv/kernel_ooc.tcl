@@ -7,7 +7,7 @@
 #   top        tsr_u200_k1 (default) | tsr_u200_k4 | tsr_xrt_kernel
 #   filelist   core sources (default rtl/filelist_xilinx.f); rtl/platform/alveo_xrt/filelist.f added
 # Constraints as tb/core/viv/core_ooc.tcl: 3.333 ns ap_clk, every I/O budgeted 1.6 ns outside (the
-# platform's AXI interconnect registers both sides). No pblocks / SLR crossings modelled.
+# platform's AXI interconnect registers both sides). No pblocks / SLR crossings modeled.
 # Prints (grep "KOOC"):
 #   KOOC util(<stage>) LUT .. FF .. DSP .. RAMB36 .. RAMB18 .. URAM .. LUTRAM .. LATCH ..
 #   KOOC hier <cell> LUT .. FF ..                     (adapter blocks and the core)

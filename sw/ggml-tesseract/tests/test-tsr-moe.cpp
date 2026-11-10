@@ -1,4 +1,4 @@
-// test-tsr-moe.cpp — the MoE graph of llama.cpp's build_moe_ffn (softmax gating, normalised top-k) through the
+// test-tsr-moe.cpp — the MoE graph of llama.cpp's build_moe_ffn (softmax gating, normalized top-k) through the
 // ggml-tesseract backend on whatever transport TSR_DEVICE selects (docs/design/06-software-verification.md "SW" §9.3,
 // SW-60 to SW-65, SW-77). Two layers of two models:
 //
@@ -92,7 +92,7 @@ struct host_weights {
 
 static host_weights make_host_weights() {
     host_weights h;
-    // router weights ~ N(0, 4): logits of standard deviation about 4 (the rms-normalised input has elements of 1 / 16), so the
+    // router weights ~ N(0, 4): logits of standard deviation about 4 (the rms-normalized input has elements of 1 / 16), so the
     // gap between the 8th and 9th of 64 is far above the device router's error
     h.gate_inp = encode(GGML_TYPE_F32, randn(N_EMBD * N_EXPERT, 4.0f), N_EXPERT, N_EMBD);
     h.gate_up = encode(GGML_TYPE_Q4_K, randn((size_t) N_EMBD * 2 * N_FF * N_EXPERT, 0.1f), 2 * N_FF * N_EXPERT, N_EMBD);

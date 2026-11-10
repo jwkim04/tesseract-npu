@@ -14,7 +14,7 @@ def slice_id(tag, rec, unit, ordinal):
 
 
 def _us(cycles, f):
-    """Microseconds at 1 ns resolution; a slice's end is _us(end) too, so neighbours that touch in cycles touch in the file."""
+    """Microseconds at 1 ns resolution; a slice's end is _us(end) too, so neighbors that touch in cycles touch in the file."""
     return round(cycles * 1e6 / f, 3)
 
 
@@ -63,7 +63,7 @@ def view_events(view, rows, pid, name, f, flows=True, flow_base=0):
             ev.append({"ph": "M", "pid": pid, "tid": tid, "name": "thread_sort_index", "args": {"sort_index": TID[P.UNITS[u]] * 10 + l}})
     ev.append({"ph": "M", "pid": pid, "tid": TID_ISSUE, "name": "thread_name", "args": {"name": "RISC-V issue"}})
     ev.append({"ph": "M", "pid": pid, "tid": TID_ISSUE, "name": "thread_sort_index", "args": {"sort_index": 0}})
-    # a record's span (first start to last end) overlaps its neighbours': greedy lanes keep the slices properly nested
+    # a record's span (first start to last end) overlaps its neighbors': greedy lanes keep the slices properly nested
     spans = []
     for i in range(len(rows)):
         st = view.rec_stats(i)

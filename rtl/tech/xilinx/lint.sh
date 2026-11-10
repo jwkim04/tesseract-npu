@@ -152,7 +152,7 @@ if [ -r "$VSET" ]; then
     { grep '^-' "$xdir/all.txt"; echo "-d SYNTHESIS"; grep -v '^-' "$xdir/all.txt" | grep '/third_party/'; } \
         > "$xdir/vendor.txt"
     { grep '^-' "$xdir/all.txt"; grep -v '^-' "$xdir/all.txt" | grep -v '/third_party/'; } > "$xdir/files.txt"
-    # Warnings that are functional bugs in the synthesised netlist, not style: a variable written by
+    # Warnings that are functional bugs in the synthesized netlist, not style: a variable written by
     # more than one procedural block (VRFC 10-9892 / 10-9941 / 10-10006). Verilator accepts it, but
     # Vivado keeps one driver and ignores the other (Synth 8-6858): tsr_chk e_q.
     xsim_bad='WARNING: \[VRFC 10-(9892|9941|10006)\]'

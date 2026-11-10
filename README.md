@@ -25,9 +25,9 @@ The device runs these ggml ops. The op list kinds behind them are in [docs/versi
 
 - Matrix multiply: `MUL_MAT` with Q8_0 and Q4_K weights and an optional fused add, and `MUL_MAT_ID` for the expert matrices of mixture-of-experts layers. Other weight types are converted to Q8_0 when the model loads.
 - Attention: `FLASH_ATTN_EXT` with grouped-query heads, head sizes 64 to 512 and masks, over a Q8_0 KV cache that lives in device memory (`SET_ROWS`).
-- Normalisation and position: `RMS_NORM` with a fused weight multiply, and `ROPE` in normal, NEOX and interleaved multi-section modes.
+- Normalization and position: `RMS_NORM` with a fused weight multiply, and `ROPE` in normal, NEOX and interleaved multi-section modes.
 - Activations and element-wise ops: `ADD`, `MUL`, `SCALE`, `UNARY` (tanh, GELU, SiLU, sigmoid, exp, softplus), `GLU` (SwiGLU, GeGLU), `GET_ROWS` and `CPY`.
-- Routing: softmax, top-k selection and weight normalisation of a mixture-of-experts router.
+- Routing: softmax, top-k selection and weight normalization of a mixture-of-experts router.
 - Recurrent layers: `SSM_CONV` and `GATED_DELTA_NET` for Gated DeltaNet.
 
 Any other op runs on the CPU through the ggml scheduler, and PyTorch keeps its eager ops. A model that llama.cpp runs therefore
@@ -43,12 +43,12 @@ runs here, with the supported part on the device. Qwen2.5, Gemma 4, Qwen3 MoE an
 
 ## Architecture
 
-<p align="center"><img src="docs/fig/hero.png" alt="Stylised die of Tesseract Core: four MVM clusters of 128 MAC lanes, one per DDR4 channel, around a 4 MiB scratchpad, with DMA, QACT, the vector unit, the RISC-V control core and the debug block. One cluster is opened up to show its weight streamer, unpack stage, activation buffer, MAC lanes and accumulate tree." width="100%"></p>
+<p align="center"><img src="docs/fig/hero.png" alt="Stylized die of Tesseract Core: four MVM clusters of 128 MAC lanes, one per DDR4 channel, around a 4 MiB scratchpad, with DMA, QACT, the vector unit, the RISC-V control core and the debug block. One cluster is opened up to show its weight streamer, unpack stage, activation buffer, MAC lanes and accumulate tree." width="100%"></p>
 
 One MVM cluster per DDR4 channel streams weights at one 64-byte beat per cycle into 128 MAC lanes.
 A 4 MiB scratchpad holds activations and results. The RISC-V control core runs the firmware and
 issues every tile op to the DMA, QACT, MVM and vector units. It has its own clock domain. Every
-crossing goes through a synchroniser, a gray-coded counter or FIFO, or a handshake
+crossing goes through a synchronizer, a gray-coded counter or FIFO, or a handshake
 ([control core design, section 11](docs/design/04-control-core.md#11-clock-domains-and-cdc)).
 
 ## Software stack
@@ -62,7 +62,7 @@ and issues tile ops. The transport kinds are `sim` (the C simulator, the bit-exa
 
 <p align="center"><img src="docs/fig/dataflow.png" alt="One decode token in seven steps. The host builds the ggml graph, ggml-tesseract turns it into an op list, and the transport writes the inputs to card DDR and pushes one launch descriptor over PCIe. The Basis graph kernel on the control core walks the op list and issues tile ops through the unit queues to DMA, QACT, four MVM clusters and the vector unit. The units work through the 4 MiB scratchpad, and each cluster streams weights from its own DDR4 channel. Results return to DDR, the runtime posts an answer record and the host reads the logits." width="100%"></p>
 
-Logos in the figures belong to their owners ([sources and licences](docs/fig/logos/SOURCES.md)).
+Logos in the figures belong to their owners ([sources and licenses](docs/fig/logos/SOURCES.md)).
 
 ## Custom kernels
 

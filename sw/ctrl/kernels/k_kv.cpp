@@ -96,7 +96,7 @@ struct kv_op {
         uint32_t run = 1;
         while (i + run < n && run < tr && idx_at(ix, i + run) == c0 + run) ++run;
         // A run is DMA-bracketed (LD ... QACT ... KVST): it takes the one-tile block whenever it fits
-        // (kind_ctx::one): the DMA queue serialises the runs whatever their lines.
+        // (kind_ctx::one): the DMA queue serializes the runs whatever their lines.
         const bool one = run * k.lpr <= ctx.one_lines;
         deps rd{};
         const spm blk = one ? ctx.one : ctx.ring->alloc(run * k.lpr, 2u, &rd);

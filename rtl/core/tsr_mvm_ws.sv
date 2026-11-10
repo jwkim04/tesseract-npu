@@ -45,7 +45,7 @@
 // Ranges (AT §8.2: the V plane is streamed slice by slice): the command's beats are
 //   cmd_beats / cmd_rbeats ranges of cmd_rbeats beats each, range k starting at cmd_w_off + k x
 //   cmd_stride (bursts never cross a range end). cmd_rbeats >= cmd_beats is one contiguous range:
-//   the MVM's and ATTQK's streams, identical to the behaviour without ranges.
+//   the MVM's and ATTQK's streams, identical to the behavior without ranges.
 // No combinational path from any input to any output: rd_req_*, out_valid, cmd_ready, idle are
 //   flops; out_data is a mux of flops selected by a flop; rd_rsp_ready is constant.
 // Throughput: sustains 1 beat/cycle if the memory round trip (request handshake at this port ->

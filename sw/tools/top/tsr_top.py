@@ -653,7 +653,7 @@ def model_name(rec):
 
 
 def shorten_mid(s, w):
-    """Cut a long name in the middle, so that its end (the quantisation) stays."""
+    """Cut a long name in the middle, so that its end (the quantization) stays."""
     if len(s) <= w or w <= 4:
         return s[:w]
     tail = min(8, (w - 1) // 2)
@@ -928,7 +928,7 @@ class Charset:
 
 
 # Line glyphs of a plot, as nvtop draws them: flat, vertical, then the four turns (from the left going up, the top of a
-# rise, from the left going down, the bottom of a fall). The heavy set tells a series apart when there is no colour.
+# rise, from the left going down, the bottom of a fall). The heavy set tells a series apart when there is no color.
 LINE_LIGHT = ("─", "│", "╯", "╭", "╮", "╰")
 LINE_HEAVY = ("━", "┃", "┛", "┏", "┓", "┗")
 
@@ -1046,10 +1046,10 @@ def draw_graph(f, cs, y, x, h, w, series, legend, left_labels, right_labels, win
 # ---------------------------------------------------------------------------------------------
 SORT_KEYS = [("PID", "pid"), ("USER", "user"), ("MODEL", "model"), ("MODE", "mode"), ("TOK/S", "tok_s"),
              ("LAUNCH/s", "launch_s"), ("CPU", "cpu_pct"), ("HOST MEM", "rss"), ("COMMAND", "cmd")]
-PANELS = [("summary", "Compute and memory meters"), ("graph", "Utilisation time series"), ("table", "Process table"),
+PANELS = [("summary", "Compute and memory meters"), ("graph", "Utilization time series"), ("table", "Process table"),
           ("others", "Card users without tsr-mon"), ("image", "Image line (IMG, ID, CAPS, kinds, mode)"),
           ("meters", "Unit meters (MVM VU DMA QACT ATT EMPTY WAIT)"), ("ddr", "DDR channel bars and read rate"),
-          ("util", "Utilisation split U")]
+          ("util", "Utilization split U")]
 PANELS_OFF = ("image", "meters", "ddr", "util")            # what --json has and the screen shows only when asked
 
 
@@ -1066,7 +1066,7 @@ class View:
         self.sel = 0
         self.color = not opts.no_color
         self.utf8 = not opts.ascii
-        self.mono = not self.color            # set from the theme once curses knows whether the terminal has colours
+        self.mono = not self.color            # set from the theme once curses knows whether the terminal has colors
 
 
 def device_header(f, cs, y, w, dev, idx, n_dev, v):
@@ -1610,7 +1610,7 @@ def main(argv=None):
             w, h = int(m.group(1)), int(m.group(2))
         elif sys.stdout.isatty():
             w, h = os.get_terminal_size()
-        v.mono = True                                   # a text frame has no colours: the memory series is heavy
+        v.mono = True                                   # a text frame has no colors: the memory series is heavy
         print(compose(snap, mon.hist, v, h, w, mon.interval).text())
         return 0
     if not sys.stdout.isatty():

@@ -97,19 +97,19 @@ three slots at the top of the range: 61 `TRW_RECORDS`, 62 `TRW_DROPS`, 63 `DBG_S
 only if it is 0). DDR idle of channel c is `CYCLES - CH_RD_BEATS[c] - CH_WAIT[c]`, issue-bound MVM time is
 `MVM_EMPTY` and dependency-bound `MVM_WAIT`.
 
-The utilisation split (`docs/spec.md` §14). The DDR utilisation `U` is the bytes read per token times tokens per
+The utilization split (`docs/spec.md` §14). The DDR utilization `U` is the bytes read per token times tokens per
 second over the DDR read bandwidth measured with `tsr_bw` ([`bandwidth-kernel.md`](bandwidth-kernel.md)), and `U` is about `(1 - H)(1 - G)(1 - F) E`:
 
 | Term | Meaning | Measured from |
 |---|---|---|
-| H | share of wall-clock time in which no launch is active (host CPU work, PCIe round trips, synchronisation) | host time stamps and `PERF_CYCLES` |
+| H | share of wall-clock time in which no launch is active (host CPU work, PCIe round trips, synchronization) | host time stamps and `PERF_CYCLES` |
 | G | share of device time outside MVMs (LD, QACT, VU, ST, issue gaps) | `1 - PERF_MVM_CYCLES / PERF_CYCLES` |
 | F | MVM fill, broadcast and tail inside `PERF_MVM_CYCLES` | max-channel weight beats against `PERF_MVM_CYCLES` |
 | E | effective read bandwidth while the MVM reads weights, over the `tsr_bw` bandwidth | `PERF_CH_RD_BEATS`, `PERF_CH_WAIT` |
 
 The effective bandwidth of channel c is 64 B x `CH_RD_BEATS[c]` x f_kernel / `CYCLES`, and the channel imbalance is
 the maximum over the mean of the beats. The weight stream's limit is 64 B per core cycle and channel. The order of
-optimisation follows the terms: host round trips (H), overlap of non-MVM ops with MVMs (G), fill and tail (F), DDR
+optimization follows the terms: host round trips (H), overlap of non-MVM ops with MVMs (G), fill and tail (F), DDR
 efficiency (E).
 
 `TSR_STATS=1` prints, at close, the transport statistics (launches, launch wall time, CSR reads and writes, DRAM bytes,
@@ -137,7 +137,7 @@ card needs no `tsr-dbg` step. It also sets the PROF bit: the `NODE_BEGIN` marker
 index, joins a trace op to its record.
 
 ```sh
-sw/tools/prof/capture_card.sh MODEL build/prof-report/card 33        # card: waits for an idle card, one run, trace writer off afterwards
+sw/tools/prof/capture_card.sh MODEL build/prof-report/card 33        # card: waits for an idle card, one run, trace writer off afterward
 TSR_SIM_DRAM_DIR=build/simdram sw/tools/prof/capture_sim.sh MODEL build/prof-report/sim 33   # simulator, same model, prompt and tokens
 NO_DUMP=1 sw/tools/prof/capture_card.sh MODEL build/prof-report/card_noprof 33               # optional: the same run without the profiler
 EXPECT_CYCLES=<cycles of the unprofiled run> REF_RUN=build/prof-report/card_noprof sw/tools/prof/make_report.sh \
@@ -146,12 +146,12 @@ EXPECT_CYCLES=<cycles of the unprofiled run> REF_RUN=build/prof-report/card_nopr
 
 `report.html` is one self-contained page (light and dark), `trace.perfetto.json` has the same token for Perfetto or
 chrome://tracing, and `summary.json` has the numbers. The page has three linked views. Summary: decode speed, device
-cycles, the utilisation split, measured and ideal cycles of every layer by kind group, a table by record kind (count,
+cycles, the utilization split, measured and ideal cycles of every layer by kind group, a table by record kind (count,
 cycles, share, ideal, efficiency, GB/s, the simulator's cycles), the card against the simulator, and the sanity
 checks. Graph: the splits the scheduler made and why each launch ended, every ggml node as a device record, a node
 absorbed by a fusion group (MOE_ROUTE, the MUL_MAT_ID scale chain, RMS_NORM + MUL, MUL_MAT + ADD), a view or a CPU
 fallback, with the argument words, DRAM ranges and SPM tiles per record. Timeline: a track per unit and the RISC-V
-issue band for the card and the simulator, coloured by kind group, with zoom. The Perfetto file adds flow arrows
+issue band for the card and the simulator, colored by kind group, with zoom. The Perfetto file adds flow arrows
 from a record to its ops, counter tracks, and on every slice the node name, kind, layer, shape, bytes, measured and
 ideal cycles. Slice ids are `card:r<record>.<UNIT><n>` and `sim:...` (`args.id`).
 
@@ -221,7 +221,7 @@ Inside the host, one thread under the transport's mutex reads PERF.
 ## 5. Design reference
 
 The design is specified in DB ([`docs/design/05-debug.md`](design/05-debug.md)). §1 lists the tools and §2
-summarises the design.
+summarizes the design.
 
 ## 6. Deliberately not done
 
@@ -283,7 +283,7 @@ span of the tokens/s average, default 3 s), `--sensor-interval S` (how often `xb
   launch in flight, all 64 PERF totals and the change between the last two reads, tokens, device memory in use, the
   clocks, the configuration (channels, `T_MAX`, lanes, SPM, `K_MAX`), `CAPS`, the capability, the Basis version, the
   image id and path, the kind table, the device line (name, BDF, kernel), `$TSR_XCLBIN`, and the model name and
-  quantisation. `TSR_MON=0` turns the publisher off. `TSR_MON_KEEP=1` leaves the file at exit (flag `EXITING`).
+  quantization. `TSR_MON=0` turns the publisher off. `TSR_MON_KEEP=1` leaves the file at exit (flag `EXITING`).
 
 ### 7.3 What each part of the screen shows
 
@@ -304,7 +304,7 @@ span of the tokens/s average, default 3 s), `--sensor-interval S` (how often `xb
 - Setup panels (off by default): the image line (kernel name, id, `CAPS`, kind count and table signature, mode),
   unit meters `ACT` (active share of wall time, 1-H), `MVM VU DMA QACT ATT` (busy share of the active cycles),
   `EMPTY` (MVM idle, queue empty: issue-bound) and `WAIT` (MVM idle, queue entry cannot start: dependency-bound),
-  `CH0..CH3` bars with the read rate against the stream limit, and the utilisation split of §3.
+  `CH0..CH3` bars with the read rate against the stream limit, and the utilization split of §3.
 
 Rates cover the newest PERF read and the newest one at least one refresh interval older. When no new PERF read came
 for more than 2.5 s and no launch is in flight, the rates are shown as idle.
@@ -330,4 +330,4 @@ why the probe is off by default.
   the meters show `n/a`. On a simulated transport the clock is simulated, so `ACT` and the GB/s over wall time are
   not hardware figures. An owner started with `TSR_MON=0` is visible only as a process that holds the card.
 - The model name comes from `$TSR_MON_MODEL`, `-m`, `--model`, `-hf` or the first mapped `.gguf`, and the
-  quantisation is the dominant weight type (the file name's `Q4_K_M` is preferred when it has one).
+  quantization is the dominant weight type (the file name's `Q4_K_M` is preferred when it has one).

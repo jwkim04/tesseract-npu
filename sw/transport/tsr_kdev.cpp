@@ -350,7 +350,7 @@ struct tsr_transport {
 
     // protocol state
     dstate state = dstate::reset;
-    bool reset_pending = false;          // reset was attempted; ring counters are not resynchronised
+    bool reset_pending = false;          // reset was attempted; ring counters are not resynchronized
     std::string fail_reason;
     const tsr_image * img = nullptr;      // booted image (a reference is held)
     uint32_t pushed = 0, lcq_rd = 0, log_rd = 0;
@@ -514,7 +514,7 @@ struct tsr_transport {
         uint32_t n = wr_ - log_rd;
         if (n == 0) return true;
         if (n > log_depth) {
-            msg("LOG_WR - LOG_RD = %u exceeds LOG_DEPTH %u: resynchronising at LOG_WR", n, log_depth);
+            msg("LOG_WR - LOG_RD = %u exceeds LOG_DEPTH %u: resynchronizing at LOG_WR", n, log_depth);
             log_rd = wr_;
             dec.reset();
             return wr(TSR_CSR_LOG_RD, wr_);
@@ -695,7 +695,7 @@ struct tsr_transport {
             if (n > lcq_depth) {
                 uint32_t r = 0;
                 if (!rd(TSR_CSR_LCQ_RD, &r)) return TSR_TE_IO;
-                msg("LCQ_WR - LCQ_RD = %u exceeds LCQ_DEPTH %u (host LCQ_RD %u, device %u): resynchronising", n, lcq_depth, lcq_rd, r);
+                msg("LCQ_WR - LCQ_RD = %u exceeds LCQ_DEPTH %u (host LCQ_RD %u, device %u): resynchronizing", n, lcq_depth, lcq_rd, r);
                 lcq_rd = r;
                 n = v - r;
                 if (n > lcq_depth) {
@@ -706,7 +706,7 @@ struct tsr_transport {
             // Read the whole batch before acknowledging or publishing anything. Track the next
             // expected launch locally so every in-order OK answer still uses minimal reads. An
             // out-of-order answer, HELLO or TRAP falls back to full reads for the rest of the batch;
-            // their effects on outstanding are applied only after the acknowledgement succeeds.
+            // their effects on outstanding are applied only after the acknowledgment succeeds.
             size_t next = 0;
             bool ordered = true;
             for (uint32_t i = 0; i < n; ++i) {
@@ -1025,7 +1025,7 @@ struct tsr_transport {
         binfo = bi;
         // The simulated kinds' launch capture (TSR_TRACE, SW §5.5) stores the image of each launch:
         // give it the ELF itself, so a capture carries its .tsr_id / .note.tsr and opens with
-        // tsr_image_open anywhere (else the capture synthesises one from the loader's writes).
+        // tsr_image_open anywhere (else the capture synthesizes one from the loader's writes).
         if (tsr_sim * sm = dev->sim()) {
             size_t n = 0;
             const uint8_t * b = tsr_elf_bytes(image_elf(im), &n);

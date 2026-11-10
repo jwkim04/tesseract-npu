@@ -44,7 +44,7 @@ The rest of the API: `_write` and `_read` (channel DRAM at any byte offset and s
 `_log_drain`, `_get_stats` and `_perf_summary`, the version calls (`tsr_transport_versions`, `tsr_image_versions`,
 `tsr_basis_version`; [`docs/versioning.md`](../../docs/versioning.md)) and the debugger hooks (`_dmi_*`, `_set_debugger`,
 `_set_debug_service`). On `sim`, `mock` and `vkernel` every timeout counts device time, so results and recoveries do
-not depend on host load, and on `xrt` it counts host time. One mutex per transport serialises the calls and
+not depend on host load, and on `xrt` it counts host time. One mutex per transport serializes the calls and
 `tsr_transport_wait` releases it between polls.
 
 ## Environment
@@ -56,7 +56,7 @@ Read at open. A malformed value makes the open fail with a message. The variable
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `TSR_DEVICE`, `TSR_IMAGE` | `sim`, the build's `fw/tsr-fw.elf` | the kind (`sim`, `mock`, `vkernel`, `xrt` or a registered one) and the firmware image |
-| `TSR_LAUNCH_TIMEOUT_MS`, `TSR_ABORT_MS`, `TSR_BOOT_MS`, `TSR_RESET_MS` | 60000 (0 disables), 10000, 2000, 15000 | wait timeout per launch, wait for the answers of cancelled launches, wait for HELLO, wait for `SOFT_RESET` |
+| `TSR_LAUNCH_TIMEOUT_MS`, `TSR_ABORT_MS`, `TSR_BOOT_MS`, `TSR_RESET_MS` | 60000 (0 disables), 10000, 2000, 15000 | wait timeout per launch, wait for the answers of canceled launches, wait for HELLO, wait for `SOFT_RESET` |
 | `TSR_LOG`, `TSR_LOG_LEVEL` | off, 3 | decode the device log to `stderr` or a file. `LOG_CFG.LEVEL`, 0 (fatal) to 5 (trace). |
 | `TSR_ATTACH` | 0 | `1`: open without `SOFT_RESET` and bind, for diagnosis of a running device |
 | `TSR_STATS` | 0 | `1`: transport statistics and the PERF summary on stderr at close |

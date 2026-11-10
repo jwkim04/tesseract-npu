@@ -8,7 +8,7 @@ cmd_ready, and the valid/ready rules (R2 on both SPM request streams, R5 by prob
 the vectors and checks: tb/qact/qact_tb.py.
 
 pytest functions:
-  test_qact[cfg]        tsr_qact alone with a behavioural SPM client port (exact SPM_RD_LAT, random /
+  test_qact[cfg]        tsr_qact alone with a behavioral SPM client port (exact SPM_RD_LAT, random /
                         bursty ready, garbage on rd_rsp_data between responses):
                           qact_directed    the spec / test_ref_ggml.c special-value vectors, then
                                            every block generator on its own, both kinds, several K
@@ -564,7 +564,7 @@ async def qact_comb_probe(dut):
 # =============================================================================================
 # First evaluation (time 0)
 # =============================================================================================
-# Verilator (--x-initial unique) gives every submodule its own randomly initialised copy of clk,
+# Verilator (--x-initial unique) gives every submodule its own randomly initialized copy of clk,
 # and seeds each edge detector from that copy in the first evaluation, before the continuous
 # assignment from the top-level clk is applied. A copy that starts at 0 under a top-level clk of 1
 # therefore takes a rising edge at 0 ns, with rst_n and all state still random (rtl/core/

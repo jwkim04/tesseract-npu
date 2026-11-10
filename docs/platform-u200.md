@@ -38,7 +38,7 @@ checks are CC §11.1. The request and its checks are in §8.3.
 Both use the U200 parameters of [rtl-mvm.md](rtl-mvm.md) §14.2 (SPM 4 MiB with `SPM_RD_LAT` 4, `MVM_BC_PIPE` 2, `MVM_RES_PIPE` 2,
 `MVM_MAC_LAT` 9, `RST_PIPE` 3), `CH_BYTES` 16 GiB, the other `tsr_core` parameters at the U200 defaults (`tsr_pkg::TSR_DEF_*`),
 `AXI_SLICES` 2 and `RST_STAGES` 3 (`COMMON` in `gen_tops.py`). `ap_rst_n` must stay low for at least 4 cycles (§5). Synthesis
-sources are `rtl/filelist_xilinx.f` (the Xilinx technology wrappers, behaviour identical to `rtl/filelist.f`) and
+sources are `rtl/filelist_xilinx.f` (the Xilinx technology wrappers, behavior identical to `rtl/filelist.f`) and
 `rtl/platform/alveo_xrt/filelist.f`.
 
 Ports are `s_axi_control` (AXI4-Lite, 32-bit data, 13-bit address, control range 0x2000) and `m_axi_ch<c>` for c < `NUM_CH` (AXI4,
@@ -54,7 +54,7 @@ The core boundary (EX §9.3) has no `done`. It has `clk_rv` and `rst_rv_n` (from
 
 ## 2. `s_axi_control` register map
 
-Byte offsets, decoded on bits [12:2]. Unmapped offsets read 0 and ignore writes. Every response is OKAY. Writable registers honour
+Byte offsets, decoded on bits [12:2]. Unmapped offsets read 0 and ignore writes. Every response is OKAY. Writable registers honor
 WSTRB. The map is implemented in `tsr_xrt_ctrl.sv` and follows EX §9.2.
 
 | Offset | Name | Access | Content |
@@ -109,7 +109,7 @@ The launch costs are in EX §4.11.
 - The bases are registered next to the adders (a 64-bit add per request). The bridges read the copy latched at the `MEM_EN` edge
   (§2).
 
-## 5. Reset behaviour
+## 5. Reset behavior
 
 `tsr_xrt_reset` takes `ap_rst_n` through one register (`rst1_q`). Behind it are separate copies for the control bridge and for
 every part of every channel bridge (stage 2, marked `keep` so synthesis does not merge them), and a chain of `RST_STAGES` = 3
@@ -122,7 +122,7 @@ would drop a request of a core that is already running.
 Inside the core, `RST_PIPE` (3 in the U200 tops) adds `RST_PIPE` - 2 = 1 shared stage and two stages replicated per block: CSR,
 DMA, QACT, SPM, the arbiter of every channel, the MVM top, the gather and every cluster (`tsr_core.sv`, [rtl-mvm.md](rtl-mvm.md)
 §14.4). With the arbiters and clusters of four channels in three SLRs, a single reset net from `tsr_xrt_reset` to all of them
-would miss timing. The core is a `RST_PIPE`-cycle delayed copy of itself, so results and cycle behaviour after reset are
+would miss timing. The core is a `RST_PIPE`-cycle delayed copy of itself, so results and cycle behavior after reset are
 unchanged. Its blocks see both edges of `ap_rst_n` `RST_STAGES` - 2 + `RST_PIPE` = 4 cycles after the bridges.
 
 All reset registers start at 0 (configuration INIT in hardware, an initial value in simulation), so the kernel is held in reset
@@ -145,7 +145,7 @@ Requirements and guarantees:
   `tsr_xrt_kernel` checks the minimum in simulation (`$error` "ap_rst_n low for N cycles, minimum M"). The directed `reset` test
   uses pulses of 4, 5 and 20 cycles.
 - Everything inside the kernel is reset: every slice, counter and FSM of the adapter and every control flop of the core. No beat
-  buffered in the adapter before the reset reaches the core afterwards. `ADAPTER_STATUS` and the bases read 0. The core CSRs have
+  buffered in the adapter before the reset reaches the core afterward. `ADAPTER_STATUS` and the bases read 0. The core CSRs have
   their power-on values (`docs/spec.md` §21, Hardware reset).
 - Responses to pre-reset requests (`docs/spec.md` §21, Hardware reset: a response to a request issued before the reset must not
   arrive after it). In Vitis the kernel's `ap_rst_n` and the interconnect and memory subsystem of the dynamic region come from the
@@ -170,7 +170,7 @@ the named top with the packed port list of `tsr_xrt_kernel`, so one C++ testbenc
 
 The bandwidth kernel keeps `ap_ctrl_hs` and an `interrupt` port ([bandwidth-kernel.md](bandwidth-kernel.md) §2). Vitis names that
 port `interrupt`, a C++ keyword, which Verilator renames. `gen_bw.py` waives that with a targeted `SYMRSVDWORD`. The core kernels
-use `ap_ctrl_none` with `s_axi_control` and `m_axi` arguments, which `v++` 2024.2 accepts with the `sp=` connectivity honoured.
+use `ap_ctrl_none` with `s_axi_control` and `m_axi` arguments, which `v++` 2024.2 accepts with the `sp=` connectivity honored.
 The fallback that needs no RTL change is `ap_ctrl_hs` with `interrupt="false"`, 0x000 reading a constant `ap_idle` and never
 started (EX §9.1).
 
@@ -192,11 +192,11 @@ before the script sets the property.
 The IP carries the clock-domain-crossing constraints of the control core (CC §11.3). `rtl/ctrl/viv/tsr_ctrl_cdc.xdc` is copied to
 `xdc/tsr_ctrl_cdc.xdc` with `set tsr_cdc_core_port ap_clk` and `set tsr_cdc_rv_port ap_clk_2` in front. It is in the IP's
 synthesis file group, used in synthesis, implementation and out of context, and processed late. It is plain XDC, because Vivado's
-constraint reader accepts no `if`, `foreach`, `proc` or `dict`. It sets `ASYNC_REG` on the synchroniser stages, `set_max_delay
+constraint reader accepts no `if`, `foreach`, `proc` or `dict`. It sets `ASYNC_REG` on the synchronizer stages, `set_max_delay
 -datapath_only` with the smaller period in both directions between `ap_clk` and `ap_clk_2`, and `set_bus_skew` on the gray
 registers. The `report_cdc` waivers (`rtl/ctrl/viv/tsr_cdc_waivers.tcl`) are not constraints and stay out of the IP. Include files
 one directory below an include directory (`common_cells/assertions.svh`, included by `fifo_v3.sv`) are added to the IP under that
-relative path, so the packaged sources synthesise on their own. `tb/platform/viv/xo_cdc.tcl` checks a packaged `.xo` (opt-in,
+relative path, so the packaged sources synthesize on their own. `tb/platform/viv/xo_cdc.tcl` checks a packaged `.xo` (opt-in,
 Vivado): `create_ip` and `synth_ip` of the kernel IP out of context, then `report_cdc` and `report_clock_interaction` of the two
 kernel clocks.
 
@@ -220,12 +220,12 @@ When the platform is missing the script stops with exit status 3 and says what t
 
 | Variable | Meaning |
 |---|---|
-| `TSR_VIVADO_LOCK` | serialises Vivado and `v++` runs with `flock` |
+| `TSR_VIVADO_LOCK` | serializes Vivado and `v++` runs with `flock` |
 | `TSR_U200_FLOORPLAN` | k4 only. 0 links without the Pblock hook (the CDC hooks remain) |
 | `TSR_U200_OUT` | output directory |
 | `TSR_BUILD_JOBS` | synthesis and implementation jobs of the link and Vivado's `general.maxThreads` (the configs use 8) |
 | `TSR_U200_SYNTH_JOBS` | concurrent IP synthesis jobs, independent of `TSR_BUILD_JOBS`. It must be a positive integer |
-| `TSR_VPP_TO_STEP` | `v++ --to_step`, for example `vpl.config_hw_runs`: project, block design, output products and the implementation runs with their hooks, nothing synthesised |
+| `TSR_VPP_TO_STEP` | `v++ --to_step`, for example `vpl.config_hw_runs`: project, block design, output products and the implementation runs with their hooks, nothing synthesized |
 | `TSR_VPP_FROM_STEP` | `v++ --from_step`, for example `vpl.impl`: resume after a failed implementation run, keeping the synthesis |
 | `TSR_VPP_REUSE_IMPL` | `v++ --reuse_impl <routed dcp>`, see §8.5 |
 | `TSR_VPP_REUSE_INT` | the `tmp/link/int` directory for `TSR_VPP_REUSE_IMPL` when the DCP path does not show it |
@@ -345,8 +345,8 @@ The checks, in flow order. Clock identity, reset and frequency failures always f
 | Hook | Check |
 |---|---|
 | `clock_bd_check.tcl` (post system link) | the connected block design nets and the clock of each reset generator |
-| `impl_pre.tcl` (opt_design pre) | the synthesised domain clocks, every RV flop on the RV clock, reset sources in separate domains; restores the scoped CDC XDC on the effective clocks; applies the TCM power-optimisation exclusion |
-| `cdc_pre_physopt.tcl`, `cdc_pre_route.tcl` | the clock, reset and effective CDC checks again before physical optimisation and before routing |
+| `impl_pre.tcl` (opt_design pre) | the synthesized domain clocks, every RV flop on the RV clock, reset sources in separate domains; restores the scoped CDC XDC on the effective clocks; applies the TCM power-optimization exclusion |
+| `cdc_pre_physopt.tcl`, `cdc_pre_route.tcl` | the clock, reset and effective CDC checks again before physical optimization and before routing |
 | `clock_net_check.tcl` | the clock periods against the request of the kernel's own config, within 0.5 % |
 | `clock_final_check.tcl` (write_bitstream pre) | `_new_clk_freq` after Vitis scaling against the window of the kernel found in the design. k4 accepts exactly the request of `k4.cfg` plus 0.1 MHz, k1 core 250.0 to 300.1 MHz and RV 158.33 to 166.8 MHz |
 
@@ -393,7 +393,7 @@ of any of them:
 | Gather jobs | `MVM_GATHER_PAIR` 1 pairs the clusters {0, 2} and {1, 3}. Each pair arbitrates locally and sends tagged jobs through a link of `MVM_GATHER_FLITS` flits, with eight buffered jobs per pair. Origin order and central completion are preserved. Saturated traffic stays at one job per cycle, and a start adds one cycle |
 | DDR0 and DDR3 weight response | `DDR_LOCAL_PIPE` 1 moves the complete bridge and arbiter of channels 0 and 3 beside their DDR controller. Five central slices register the DMA requests, data and responses. The DMA trunk to these channels is 512 bits wide in each direction |
 | DMA response select | One selector picks the active engine's channel and feeds both the LD and the KVST queues. Valid bits, credits and write channel tags stay separate |
-| KVST metadata writes | The 16-bit word mask of a partial write reaches `WSTRB`, so the core does no read-modify-write of metadata. The mask accompanies each beat through KVST, DMA, trace arbitration, channel arbitration, the DDR locality pipes and the bridge. ST, quantised data, full metadata and trace use all ones. Data, last and mask are 529 bits |
+| KVST metadata writes | The 16-bit word mask of a partial write reaches `WSTRB`, so the core does no read-modify-write of metadata. The mask accompanies each beat through KVST, DMA, trace arbitration, channel arbitration, the DDR locality pipes and the bridge. ST, quantized data, full metadata and trace use all ones. Data, last and mask are 529 bits |
 | VU inputs | For 8 front lanes each lane bank receives a 366-bit operand packet and caches its element-wise coefficients and RoPE angles locally. A separate 74-bit channel writes the angles. A bank has 441 input bits instead of 545 and returns 192 bits. The full-width configuration keeps its path ([VU](design/02-vector-unit.md) §7.10) |
 | RISC-V transport | `RV_LOCAL_TRANSPORT` 1 sends the SPM response (514 bits to 130, 4 payload cycles), the issue entry (389 to 131, 3 cycles) and the LQ and LCQ request (302 to 143, 1 cycle, 2 for POST) as segmented packets. The RV's 64-byte line buffer and all clock-domain crossings stay local to `u_ctrl` ([CC](design/04-control-core.md) §11.4) |
 | Debug writer | The trace writer's burst response and write mux sit in `XSLR_REG` stages (§8.8) |
@@ -446,7 +446,7 @@ opcodes (`ILLEGAL_OP`). llama.cpp then runs MUL_MAT on the device and everything
 `LOCAL_SCALE` and `LOCAL_SOFTCAP` stay off. They send each pair source's results through the vector unit's lane banks and back,
 which saves central traffic only when the bank sits in the cluster's SLR, and the whole VU is in SLR2.
 
-The vector unit synthesises to 60,104 LUT cells, 68,799 registers, 16 RAMB36, 13 RAMB18 and 249 DSP without the GDN engine, which
+The vector unit synthesizes to 60,104 LUT cells, 68,799 registers, 16 RAMB36, 13 RAMB18 and 249 DSP without the GDN engine, which
 is 10.6 to 13.8 K CLBs in a Pblock of 25.3 K.
 
 `XSLR_REG` (CC §11.4). The control plane is in SLR0 and the vector unit in SLR2, so every VU link to the issue path and the CSR
@@ -475,10 +475,10 @@ the watchdog 2 cycles late, so HUNG does not change at the default `WDOG_CFG.L` 
 Two RTL rules come from this image, and the tests below check them.
 
 - Index expressions. Vivado 2024.2 drops the top bit of a lane index written as `automatic int L = 8 * int'(dr_l_q) + k;` with
-  `cb_a[t][6'(L)]` and `nf[t][L / 32]`, as the ATTPV drain of `tsr_mvm_pv.sv` once did. The synthesised netlist then has 4,864
+  `cb_a[t][6'(L)]` and `nf[t][L / 32]`, as the ATTPV drain of `tsr_mvm_pv.sv` once did. The synthesized netlist then has 4,864
   capture registers instead of 9,728, and lanes 32 to 63 read as lanes 0 to 31 in every ATTPV result. Verilator evaluates both
   forms alike, so no RTL bench sees it. The drain selects the lane through the module `tsr_mvm_pv_lsel`, which forms it as the
-  concatenation `{l, k}`, and `tsr_dbg.sv` uses the concatenation too. `tb/at/viv/tsr_lsel_flat.sv` synthesises the construct on
+  concatenation `{l, k}`, and `tsr_dbg.sv` uses the concatenation too. `tb/at/viv/tsr_lsel_flat.sv` synthesizes the construct on
   its own, and the opt-in `tb/at/test_at_pv_netlist.py` simulates the netlist against the selection. Write lane indices as
   concatenations.
 - Reset values. A reset value must not be loaded from a flop that has no reset. That flop is 0 after configuration in hardware and
@@ -550,7 +550,7 @@ The image of Tesseract Core 1.0.0 is `tsr_u200_k4.xclbin`, built by `hw/u200/bui
 | `CAPS` | 0x121 (VU, attention, Gated DeltaNet op) |
 | Timing | every constraint met at the link: setup WNS +0.017 ns, hold WHS +0.006 ns |
 
-Routed utilisation of the kernel `tsr_k4`, from the link's kernel utilisation report:
+Routed utilization of the kernel `tsr_k4`, from the link's kernel utilization report:
 
 | LUT | LUT as memory | FF | BRAM tiles | URAM | DSP |
 |---:|---:|---:|---:|---:|---:|
@@ -584,7 +584,7 @@ All of it runs without hardware. `tb/run_all.sh` collects these tests.
   its own `rtl/platform/alveo_xrt/bw/lint.sh`.
 - `tb/platform/test_platform.py` covers adapter lint, build-script argument errors (exit 2), platform lookup and missing-platform
   errors (exit 3), and the clock request and final-window checks (`tb/platform/test_link_checks.py`, `test_link_build.py`).
-- `tb/platform/test_adapter.py` checks register behaviour against the mock adapter model, including `MEM_EN`, base latching,
+- `tb/platform/test_adapter.py` checks register behavior against the mock adapter model, including `MEM_EN`, base latching,
   alignment and locking, status and reset, plus a reduced two-clock kernel smoke. The host-side `mock` kdev tests cover protocol
   and DMA alignment ([xrt-host.md](xrt-host.md) §6).
 - `tb/platform/bw/test_bw.py` is the separate bench of the bandwidth kernel ([bandwidth-kernel.md](bandwidth-kernel.md) §5).
@@ -592,7 +592,7 @@ All of it runs without hardware. `tb/run_all.sh` collects these tests.
 ### 10.1 Adapter bench
 
 The kernel bench drives the packaged tops and the kernel body from one C++ testbench through the wrappers. It checks every channel
-on every cycle with an AXI4 checker and a randomised memory model, and it checks the adapter registers.
+on every cycle with an AXI4 checker and a randomized memory model, and it checks the adapter registers.
 
 ### 10.2 Replays
 

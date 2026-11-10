@@ -6,7 +6,7 @@ tests and the pytest function(s) calling common.runner.run(). Do not add __init_
 directories (pytest then imports test files by their unique basename).
 
 Options:
-  --tsr-seed N      seed for every randomised testbench (exported as TSR_SEED; default 1)
+  --tsr-seed N      seed for every randomized testbench (exported as TSR_SEED; default 1)
   --waves           dump waves (exported as WAVES=1; VCD in the build directory)
 Environment: TSR_SIM_BUILD_ROOT (build directory root, default <repo>/build/cocotb),
 TSR_BUILD_JOBS (make -j, default 4), TSR_REF_LIB (libtsr_ref.so path), TSR_SIM_LIB (libtsr_sim.so

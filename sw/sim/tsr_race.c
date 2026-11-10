@@ -580,7 +580,7 @@ static seg * seg_insert(race * R, segmap * m, size_t i) {
     return &m->v[i];
 }
 
-// Merges equal neighbours among v[a, b).
+// Merges equal neighbors among v[a, b).
 static void seg_merge(race * R, segmap * m, size_t a, size_t b) {
     if (b > m->n) b = m->n;
     if (b <= a + 1u) return;
@@ -660,7 +660,7 @@ static void spm_op(race * R, uint64_t l0, uint64_t l1, const actx * a, uint32_t 
 }
 
 // ---------------------------------------------------------------------------
-// Agents' synchronisation
+// Agents' synchronization
 // ---------------------------------------------------------------------------
 // The harness (test hooks, or anything while the hart is in reset) acts for the RISC-V and the host.
 static void harness_sync(race * R) {

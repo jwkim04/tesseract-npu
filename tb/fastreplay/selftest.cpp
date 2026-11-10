@@ -135,7 +135,7 @@ bool write_burst(Fix& x, unsigned ch, uint64_t addr, unsigned len, unsigned id, 
 
 int main() {
     // ---------------------------------------------------------------- legal traffic
-    run_case("legal read burst: data, last, source count, idle afterwards", [] {
+    run_case("legal read burst: data, last, source count, idle afterward", [] {
         Fix x(ideal(3));
         std::vector<bool> lasts;
         auto got = read_burst(x, 1, 100, 5, 0x4, &lasts);
@@ -159,14 +159,14 @@ int main() {
         expect(x.m.n_errors() == 0 && x.m.stats(0).extra_writes == 0, "no error");
         expect(x.m.idle(), "idle after the response");
     });
-    run_case("read of a beat written earlier by the run is allowed; uninitialised read is counted", [] {
+    run_case("read of a beat written earlier by the run is allowed; uninitialized read is counted", [] {
         Fix x(ideal(1));
         x.m.expect_beats(0, 1000, 1001);
         write_burst(x, 0, 1000, 1, 0x4, 0x55);
         read_burst(x, 0, 1000, 1, 0x4);
         expect(x.m.stats(0).bad_reads == 0, "written-then-read beat is fine");
         read_burst(x, 0, 2000, 2, 0x4);
-        expect(x.m.stats(0).bad_reads == 2 && x.m.stats(0).first_bad_read == 2000, "2 uninitialised beats reported");
+        expect(x.m.stats(0).bad_reads == 2 && x.m.stats(0).first_bad_read == 2000, "2 uninitialized beats reported");
     });
     run_case("write outside the expect beats is counted", [] {
         Fix x(ideal(1));

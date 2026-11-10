@@ -29,7 +29,7 @@ graphs from (SW §8 "Ops in the two model families"):
   qwen3moe-tiny-q8_0.gguf, qwen3moe-tiny-q4_k.gguf
                           2 layers of Qwen3-30B-A3B's kind (llama.cpp "qwen3moe"): head_dim 128 with GQA 16:2 (G = 8) and a
                           Q wider than the hidden size, per-head Q/K norms, NEOX rope, a softmax router over 64 experts
-                          (F32 [E, 64]), 8 used with renormalised weights, separate gate / up / down expert tensors
+                          (F32 [E, 64]), 8 used with renormalized weights, separate gate / up / down expert tensors
                           (3D, Q8_0 or Q4_K), SWIGLU, no shared expert and no per-expert scale
   tiny-prompts.txt        prompts in the vocabularies' alphabet (klcheck --prompts)
 
@@ -366,7 +366,7 @@ def qwen35_spec(seed: int, big: bool = False, mtp: bool = False) -> dict:
 
 def qwen3moe_spec(seed: int) -> dict:
     """Qwen3 MoE (llama.cpp "qwen3moe", Qwen3-30B-A3B): attention with per-head Q/K norms and a Q wider than the
-    hidden size, every layer a MoE FFN (softmax router, top-k, renormalised weights, separate gate / up / down expert
+    hidden size, every layer a MoE FFN (softmax router, top-k, renormalized weights, separate gate / up / down expert
     tensors, SWIGLU, no shared expert, no per-expert scale). 64 experts, 8 used; the real model has 128 and 8."""
     E, H, HKV, D, L, V = 256, 16, 2, 128, 2, 64        # G = H / HKV = 8 and head_dim 128 as the real model
     X, K, FX = 64, 8, 256                              # experts, used, expert width (Q4_K needs a multiple of 256)

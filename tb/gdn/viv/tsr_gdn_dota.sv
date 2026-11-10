@@ -7,7 +7,7 @@
 //           tsr_fp_add (7 additions over the row period of 16 cycles or more; 9 adders per engine)
 // The accumulator loop of a real design needs 5 interleaved rows (the adder latency is 5) and a 7-step
 // schedule for the tree; neither changes the instance count or the arithmetic cost, so they are not
-// modelled. The engine is not functional; it is not part of any filelist or test. Two engines are needed
+// modeled. The engine is not functional; it is not part of any filelist or test. Two engines are needed
 // (u' and w), so a design of scheme (A) has 16 multipliers and 18 adders in its dot products.
 // Ports are registered (the units under test in tb/fp/viv/fp_area.tcl have registered ports).
 

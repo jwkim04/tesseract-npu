@@ -59,7 +59,7 @@ queue model, race detector and trace converter (SW). CC implements in RTL what E
 |---|---|---|---|
 | `tsr_core` | `rtl/core/tsr_core.sv` | both | |
 | `tsr_ctrl_rv`: Ibex, `dm_top`, TCMs, `tsr_rv_bus`, `tsr_ctl_win` (with the line buffer) | `rtl/ctrl/` | clk_rv | control Pblock, SLR0 |
-| `tsr_ctrl_cdc`: every crossing of §11; `tsr_ctrl` = `tsr_ctrl_rv` + `tsr_ctrl_cdc` + reset synchronisers, the instance `tsr_core` takes | `rtl/ctrl/tsr_ctrl_cdc.sv`, `rtl/ctrl/tsr_ctrl.sv` | both | control Pblock, SLR0 |
+| `tsr_ctrl_cdc`: every crossing of §11; `tsr_ctrl` = `tsr_ctrl_rv` + `tsr_ctrl_cdc` + reset synchronizers, the instance `tsr_core` takes | `rtl/ctrl/tsr_ctrl_cdc.sv`, `rtl/ctrl/tsr_ctrl.sv` | both | control Pblock, SLR0 |
 | `tsr_core_dp`: the whole core-clock datapath; the op-list replay bench instantiates it alone (§15.3) | `rtl/core/tsr_core_dp.sv` | core | |
 | `tsr_issue`: dispatcher, queues, heads, SYNC, counters, error states | `rtl/core/tsr_issue.sv` | core | control Pblock, SLR0 |
 | `tsr_chk` | `rtl/core/tsr_chk.sv` | core | control Pblock, SLR0 |
@@ -84,7 +84,7 @@ queue model, race detector and trace converter (SW). CC implements in RTL what E
   `third_party/common_cells`). The JTAG DTM (`dmi_jtag`) is not used: the DMI arrives from the CSR window
   (§11).
 - Both keep their own style (asynchronous active-low resets, `prim_*`), with one Verilator waiver file per
-  tree; `prim_clock_gating` binds to `rtl/tech/<target>/tsr_clk_gate.sv` (pass-through on the FPGA). Licences
+  tree; `prim_clock_gating` binds to `rtl/tech/<target>/tsr_clk_gate.sv` (pass-through on the FPGA). Licenses
   (Apache-2.0, SHL-0.51) are recorded beside them.
 
 ### 3.2 Configuration (`ibex_top` parameters)
@@ -222,7 +222,7 @@ single table source (EX-30, §13.4) for the RTL, the simulator and the SDK. Owne
 | 0x034 | `ISSUE_UNITS` | R | bit u = unit u is built (constant) |
 | 0x038 | `ISSUE_STATUS` | R/W1C | bit0 PUSH_TIMEOUT, bit1 ERR_IRQ (sticky, set on the rising edge of "some unit in error state") |
 | 0x03C | `ISSUE_PIDX` | R | 32-bit push index that the next ticketed entry will receive. Counted in `clk_rv` when an entry is written into the issue FIFO: +1 per `ISSUE_PUSH` and per `QCTRL.QCLEAR`; QABORT, QHOLD and `TRACE_MARK` entries and a push dropped by a RISC-V reset do not advance it. It equals the dispatcher's pidx for that entry (§8.3, asserted). Reset only by a hardware reset. Not timing-dependent: only the RISC-V's own pushes change it (CC-32) |
-| 0x040 + 4u | `DONE_SEQ[u]` | R | [27:0] completions of unit u (synchronised copy; may lag, never leads); [31:28] 0 |
+| 0x040 + 4u | `DONE_SEQ[u]` | R | [27:0] completions of unit u (synchronized copy; may lag, never leads); [31:28] 0 |
 | 0x080 + 4u | `ISSUED_SEQ[u]` | R | [27:0] sequence the next push to unit u gets |
 | 0x0C0 + 16u | `ERR_SEQ`, `ERR_CODE`, `ERR_INFO`, `ERR_W0` of unit u | R | first error since the last clear; `ERR_CODE` 0 = none; visible before `DONE_SEQ[u]` passes `ERR_SEQ` (I2, §9.4) |
 | 0x140 | `QCTRL` | W | one bit per write, in push order through the issue FIFO: bit0 QABORT, bit1 QHOLD set, bit2 QHOLD clear, bit3 QCLEAR (gets a SYNC ticket) |
@@ -240,7 +240,7 @@ single table source (EX-30, §13.4) for the RTL, the simulator and the SDK. Owne
 | Offset | Name | Access | Content |
 |---|---|---|---|
 | 0x200–0x294 | `LQ_HEAD_W0`–`W7`, `LQ_AVAIL`, `LQ_HEAD_SEQ`, `LQ_POP`, `LQ_CANCEL`, `LQ_STOP`, `LQ_FLAGS`, `LCQ_W0`–`W7`, `LCQ_POST`, `LCQ_FREE`, `LOG_PUSH`, `LOG_FREE`, `LOG_CFG`, `RT_STATE`, `RT_INFO` | | EX §4.5 (normative). CC implements them as EX §4.1 requires (§11.2, CC-30): reads of the LQ and LCQ registers are tagged handshakes into the core domain; `LQ_POP` and `LCQ_POST` commit in the core domain and fault there; `LCQ_W0`–`W7` and `RT_*` are `clk_rv` registers (`RT_*` mirrored to the host by a handshake on write); `LOG_PUSH` goes through the log CDC FIFO; `LOG_FREE` = `LOG_DEPTH` − (LOG_WR_rv − LOG_RD_snap) |
-| 0x300 / 0x304 | `MTIME_LO` / `HI` | R | core clock cycles since reset (gray-synchronised) |
+| 0x300 / 0x304 | `MTIME_LO` / `HI` | R | core clock cycles since reset (gray-synchronized) |
 | 0x308 / 0x30C | `MTIMECMP_LO` / `HI` | RW | `irq_timer` while MTIME ≥ MTIMECMP (reset all ones) |
 | 0x400–0x7FC | `DBG_FLAGS` and reserved | | DB (DB §10.2) |
 
@@ -275,7 +275,7 @@ subsystem:
 | 0x300–0x7FC | LCQ ring, log ring | 8 × 8 words of LUTRAM; 256 × 32 b ring (LUTRAM or one RAMB18) |
 | 0x800–0xAFC | `DBG_*` (DB), `SREG0`–`15` at 0x9C0 | DB's block; `SREG` wired from the VU's s bank, present whenever the VU is built |
 | 0xC00–0xDFC | DMI | tagged 2-phase handshake to the DM, gated by `DBG_CFG.DMI_EN` (DB §3.2) |
-| 0xE00–0xF1C | `Q_*` | core-domain originals of `DONE_SEQ`, `ISSUED_SEQ` (synchronised copy), head state, error records and push indices |
+| 0xE00–0xF1C | `Q_*` | core-domain originals of `DONE_SEQ`, `ISSUED_SEQ` (synchronized copy), head state, error records and push indices |
 
 Rules: no read has a side effect (except the PERF LO snapshot, and EX's `LOAD_DATA` and DMI rules); every host
 access completes without clk_rv (core-domain copies; accesses that must reach clk_rv end after 4,096 core cycles
@@ -294,7 +294,7 @@ EX §6 is normative: one counter space, time counters gated by ACTIVE ∧ ¬QHAL
 by `SOFT_RESET`, per-channel slots at 5 + c and 5 + C + c, extension base X = 5 + 2C. CC implements every
 counter and adds two extension slots: X + 20 `SPM_RD_WAIT` and X + 21 `SPM_WR_WAIT` (client-cycles a raised
 request waited for its bank port, summed over clients). Counters kept in clk_rv (`PUSH_STALL`, `BRIDGE_WAIT`)
-are 32-bit gray counters gated by a synchronised ACTIVE and extended to 64 bits in the core domain.
+are 32-bit gray counters gated by a synchronized ACTIVE and extended to 64 bits in the core domain.
 
 ### 6.4 Image load and boot (host sequence)
 
@@ -527,7 +527,7 @@ the RISC-V halted it is the quiescent state.
 
 ## 10. SPM: even / odd banks, arbitration, RISC-V bridge
 
-### 10.1 Organisation
+### 10.1 Organization
 
 The 4 MiB SPM is two line-interleaved banks: bank E holds even lines, bank O odd lines, each 1R1W, so the SPM
 has 2 read and 2 write ports (CC-12). Each bank is 32 K lines = 2 depth banks × 8 column slices of 16 K × 64
@@ -596,7 +596,7 @@ behind a DMA beat. 512 beats in flight cover the DRAM latency at one beat per cy
 
 ## 11. Clock domains and CDC
 
-<p align="center"><img src="../fig/clocks.svg" alt="Two tinted clock-domain regions side by side. The XRT shell, a grey box at the top, supplies the kernel clocks ap_clk and ap_clk_2 and their resets as lines in each domain's colour, and carries the CSR port and the memory ports into the core domain. The core clock domain (blue, ap_clk, 200 MHz) holds the platform adapter, tsr_csr, the issue path with tsr_chk and the unit queues, tsr_spm_bridge, the DMA, QACT, the MVM clusters, tsr_spm and one memory arbiter per channel. The control core domain (orange, clk_rv from ap_clk_2, 100 MHz) holds Ibex, the debug module, ITCM, DTCM, tsr_rv_bus and the control window. On the boundary tsr_ctrl_cdc has one synchroniser cell per bundle of crossings, each an arrow from the source block to the destination block with its width. From clk_rv to the core clock: the issue FIFO (gray pointers, 32 x 387 b), the log FIFO (16 x 32 b), the gray counters ISSUED_SEQ, clk_rv cycles and PERF, the RT_STATE and RT_INFO handshake, and the RV levels and sticky events through two-flop synchronisers. From the core clock to clk_rv: the S, D and MTIME gray counters, the error records (6 x 128 b) and the levels. Both ways: the SPM bridge and core window handshake, the LQ and LCQ register handshake, the LOAD handshake into the TCM load port and the DMI handshake. The core reset reaches clk_rv through a reset synchroniser. A legend shows the cell symbols and the constraints: ASYNC_REG, a maximum delay equal to the smaller clock period, and a bus skew limit on the gray buses." width="100%"></p>
+<p align="center"><img src="../fig/clocks.svg" alt="Two tinted clock-domain regions side by side. The XRT shell, a gray box at the top, supplies the kernel clocks ap_clk and ap_clk_2 and their resets as lines in each domain's color, and carries the CSR port and the memory ports into the core domain. The core clock domain (blue, ap_clk, 200 MHz) holds the platform adapter, tsr_csr, the issue path with tsr_chk and the unit queues, tsr_spm_bridge, the DMA, QACT, the MVM clusters, tsr_spm and one memory arbiter per channel. The control core domain (orange, clk_rv from ap_clk_2, 100 MHz) holds Ibex, the debug module, ITCM, DTCM, tsr_rv_bus and the control window. On the boundary tsr_ctrl_cdc has one synchronizer cell per bundle of crossings, each an arrow from the source block to the destination block with its width. From clk_rv to the core clock: the issue FIFO (gray pointers, 32 x 387 b), the log FIFO (16 x 32 b), the gray counters ISSUED_SEQ, clk_rv cycles and PERF, the RT_STATE and RT_INFO handshake, and the RV levels and sticky events through two-flop synchronizers. From the core clock to clk_rv: the S, D and MTIME gray counters, the error records (6 x 128 b) and the levels. Both ways: the SPM bridge and core window handshake, the LQ and LCQ register handshake, the LOAD handshake into the TCM load port and the DMI handshake. The core reset reaches clk_rv through a reset synchronizer. A legend shows the cell symbols and the constraints: ASYNC_REG, a maximum delay equal to the smaller clock period, and a bus skew limit on the gray buses." width="100%"></p>
 
 The figure shows the two clock domains, the crossings between them and the constraints that §11.1–§11.3 describe.
 
@@ -632,9 +632,9 @@ The figure shows the two clock domains, the crossings between them and the const
 | DMI | core ↔ RV | tagged 2-phase handshake; 4,096-core-cycle CSR bound; late answers discarded | 41 b / 34 b |
 | MTIME | core → RV | 64-bit gray counter | 64 b |
 | clk_rv cycle count, clk_rv PERF counters | RV → core | 16-bit / 32-bit gray counters | 112 b |
-| Sticky events (PUSH_TIMEOUT, BRIDGE_TIMEOUT) | RV → core | toggle synchronisers | |
-| Levels (RV_RUN, holds, RV_HALTED, RV_SLEEP, RV_RESET_DONE, "clk_rv out of reset", ACTIVE, `irq_fast[2]` = LQ_AVAIL ≠ 0 ∧ ¬ACTIVE, `irq_fast[3]` = LCQ_FREE ≠ 0, `dbg_stop`, `dmcontrol.dmactive`) | both | 2-flop `tsr_sync`; RV_RESET_DONE two stages behind the FIFO write pointer; the core → RV bundle is registered once in the core domain before the synchroniser (its bits are combinational functions of several registers: `report_cdc` CDC-10) | |
-| `RV_BOOT` | core → RV | 2-flop `tsr_sync` on the 32-bit bus; quasi-static: `tsr_csr` ignores `RV_BOOT` writes while `CTRL.RV_RUN` = 1, so the bus only changes while the hart is held, and the sequencer samples it at the reset release (also after a debug ndmreset) two cycles behind the synchronised RV_RUN; `report_cdc` waiver in `tsr_ctrl_cdc.xdc` | 32 b |
+| Sticky events (PUSH_TIMEOUT, BRIDGE_TIMEOUT) | RV → core | toggle synchronizers | |
+| Levels (RV_RUN, holds, RV_HALTED, RV_SLEEP, RV_RESET_DONE, "clk_rv out of reset", ACTIVE, `irq_fast[2]` = LQ_AVAIL ≠ 0 ∧ ¬ACTIVE, `irq_fast[3]` = LCQ_FREE ≠ 0, `dbg_stop`, `dmcontrol.dmactive`) | both | 2-flop `tsr_sync`; RV_RESET_DONE two stages behind the FIFO write pointer; the core → RV bundle is registered once in the core domain before the synchronizer (its bits are combinational functions of several registers: `report_cdc` CDC-10) | |
+| `RV_BOOT` | core → RV | 2-flop `tsr_sync` on the 32-bit bus; quasi-static: `tsr_csr` ignores `RV_BOOT` writes while `CTRL.RV_RUN` = 1, so the bus only changes while the hart is held, and the sequencer samples it at the reset release (also after a debug ndmreset) two cycles behind the synchronized RV_RUN; `report_cdc` waiver in `tsr_ctrl_cdc.xdc` | 32 b |
 
 The widths are the exact ones of `rtl/ctrl/tsr_ctrl_pkg.sv` and the instances in `tsr_ctrl_cdc.sv`. The LQ and
 LCQ request is {`lcq_w[7:0]` 8 × 32 b, `wdata` 32 b, `we` 1 b, `off` 12 b} = 301 b and its response {`fault`,
@@ -650,7 +650,7 @@ locally within the bound); no CSR access waits on clk_rv without a bound.
 ### 11.3 Constraints (kernel XDC packaged in the `.xo`)
 
 `set_max_delay -datapath_only` at most min(period) on every gray bus and handshake data path, `set_bus_skew` on
-gray buses, `ASYNC_REG` on synchroniser flops; no `set_clock_groups` (it would override the max delays; the
+gray buses, `ASYNC_REG` on synchronizer flops; no `set_clock_groups` (it would override the max delays; the
 platform clocks come from one clocking block and may be timed as related). Gates: `report_cdc` on the
 out-of-context run lists only the intended crossings, all safe; zero unconstrained `ap_clk` ↔ `ap_clk_2` paths in
 the linked design. The XDC caps both the datapath and gray-bus skew bounds at 3.333 ns; a clock with a period
@@ -668,10 +668,10 @@ k1 and k4 links, which then runs the gate (`rtl/ctrl/viv/cdc_gate.tcl`: no Criti
 between the two clocks, and `report_clock_interaction` showing "Max Delay Datapath Only" in both directions)
 and fails the implementation run when it does not hold. `report_cdc` on the whole core
 (`tb/core/viv/core_ooc.sh`) and on the packaged IP (`tb/platform/viv/xo_cdc.tcl`) are part of T2 and T3. Every
-signal enters a synchroniser straight from a flop that drives nothing else (CDC-10: no combinational logic
+signal enters a synchronizer straight from a flop that drives nothing else (CDC-10: no combinational logic
 before it; CDC-11: no other fan-out): the level bundle of `tsr_ctrl_cdc`, `tsr_dbg_rv`'s levels and the reset
-sources of the clk_rv synchronisers have a register of their own (`dont_touch`, so that equal registers of two
-blocks are not merged into one with two synchronisers behind it).
+sources of the clk_rv synchronizers have a register of their own (`dont_touch`, so that equal registers of two
+blocks are not merged into one with two synchronizers behind it).
 
 ### 11.4 Narrow physical transport to the RV region
 
@@ -693,7 +693,7 @@ still drain late responses through the tagged handshake. The RV's 64-byte line b
 and next-cycle hits are unchanged (§10.5).
 
 The issue link adds no queue credit. A partially transferred entry remains in the source FIFO, and the dispatcher
-sees valid only after full assembly. `Q_FIFO` includes that reserved head until the acceptance acknowledgement
+sees valid only after full assembly. `Q_FIFO` includes that reserved head until the acceptance acknowledgment
 returns, one core cycle after dispatch, and idle and quiescent status also require this count to be zero, so
 QCLEAR and reset draining cannot pass an entry while it is in transit. Soft RV reset does not reset either
 transport endpoint. An LCQ_POST exposes neither half of its record to the CSR port: the assembled request
@@ -773,7 +773,7 @@ running op (CC-22); a wedged unit is recovered by a card reset (EX §8.6).
   `RV_RUN` writes are refused (`RV_RUN_REFUSED`) while `SR_BUSY`. The clk_rv-side state (LOG_WR_rv, the
   interrupt levels) reloads from the core domain when the RISC-V leaves reset.
 - Boot: core out of reset → image load → RV_RUN = 1 → Ibex reset deasserts 2–3 clk_rv cycles after the
-  synchronised RV_RUN (and `ndmreset` low) → fetch at `RV_BOOT` + 0x80.
+  synchronized RV_RUN (and `ndmreset` low) → fetch at `RV_BOOT` + 0x80.
 
 ### 12.3 Interrupts (Ibex, level-sensitive, computed in clk_rv)
 
@@ -781,8 +781,8 @@ running op (CC-22); a wedged unit is recovered by a card reset (EX §8.6).
 |---|---|---|
 | `irq_fast[0]` | `WAIT_TICKET` done | rewriting or disarming `WAIT_TICKET` |
 | `irq_fast[1]` | `ISSUE_STATUS.ERR_IRQ` | W1C |
-| `irq_fast[2]` | `LQ_AVAIL` ≠ 0 ∧ ¬ACTIVE (EX §4.5; synchronised level) | `LQ_POP` |
-| `irq_fast[3]` | `LCQ_FREE` ≠ 0 (synchronised level; the runtime enables it only while it waits to post) | posting or disabling |
+| `irq_fast[2]` | `LQ_AVAIL` ≠ 0 ∧ ¬ACTIVE (EX §4.5; synchronized level) | `LQ_POP` |
+| `irq_fast[3]` | `LCQ_FREE` ≠ 0 (synchronized level; the runtime enables it only while it waits to post) | posting or disabling |
 | `irq_fast[4]` | DB: `REC_COUNT` ≥ 32 with `REC_CFG` bit1 (DB §8.2) | `REC_POP` |
 | `irq_fast[5]` | `WAIT_CREDIT` | disarm |
 | `irq_fast[6]` | reserved for DB | |
@@ -944,7 +944,7 @@ repeated to reach a faster clock.
 
 The `report_cdc` gate on the whole core lists only the intended crossings: Info endpoints, waivers for
 handshake data, FIFO LUTRAM, gray and level buses and the quasi-static `RV_BOOT` bus, `ASYNC_REG` on the
-synchroniser cells, `set_bus_skew` on the gray endpoints, and both directions "Max Delay Datapath Only" (§11.3).
+synchronizer cells, `set_bus_skew` on the gray endpoints, and both directions "Max Delay Datapath Only" (§11.3).
 The control-core RTL is frozen only after T1–T3; T2 precedes every T3.
 
 ### 14.4 The gather job-pipe paths
@@ -1045,7 +1045,7 @@ step 2. Each must be killed by the benches above.
 ### 15.6 Vivado
 
 T1–T4 of §14.3; `report_cdc` on every out-of-context run; `report_timing` between `ap_clk` and `ap_clk_2` on the
-linked design; utilisation per SLR.
+linked design; utilization per SLR.
 
 ---
 

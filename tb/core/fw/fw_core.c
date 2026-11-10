@@ -44,7 +44,7 @@ enum {
 #define DST_CH(v)   ((v) >> 28)
 #define DST_BEAT(v) ((v) & 0x0FFFFFFFu)
 
-// Freestanding GCC calls these for aggregate copies and initialisations (as fw_issue.c).
+// Freestanding GCC calls these for aggregate copies and initializations (as fw_issue.c).
 void * memset(void * d, int c, __SIZE_TYPE__ n);
 void * memcpy(void * d, const void * s, __SIZE_TYPE__ n);
 void * memset(void * d, int c, __SIZE_TYPE__ n) {
@@ -176,7 +176,7 @@ int main(void) {
         while (!ticket_done(t_last)) {
         }
     }
-    // QSTATUS's error field only: QIDLE and NONEMPTY are synchronised levels (may lag, CC §5.1)
+    // QSTATUS's error field only: QIDLE and NONEMPTY are synchronized levels (may lag, CC §5.1)
     const uint32_t qstatus = CW(TSR_CW_QSTATUS) & TSR_QSTATUS_ERR;
 
     // A bridge store into the scratch line and its load back.

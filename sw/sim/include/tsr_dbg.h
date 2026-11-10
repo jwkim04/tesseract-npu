@@ -35,7 +35,7 @@
 // Model values (DB §9.1 "not compared"): unit probes DBG_Uu_*, DBG_QSTATE, DBG_RDOUT / WROUT (0:
 // no memory-arbiter model), the RV sample (current_pc / next_pc = the hart's pc, last data
 // address = the last watched data access, exception pc / address = mepc / mtval). Times come from
-// the queue model's cycle model. Not modelled: DMI_RESP_ERR and RV_DFAULT (never set: the DM model
+// the queue model's cycle model. Not modeled: DMI_RESP_ERR and RV_DFAULT (never set: the DM model
 // answers 0, the hart reports no double fault), RVWP_BUSY (the apply completes at once), HUNG_STOP's
 // trigger (the core has no progress watchdog yet: STATUS.UNIT_HUNG never rises).
 // A tsr_sim_advance returns TSR_SIM_EV_HALT when DRAINED rises and when a QSTEP completes.

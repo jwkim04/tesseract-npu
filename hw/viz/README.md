@@ -1,7 +1,7 @@
 # Floorplan images and terminal videos (`hw/viz`)
 
 Two steps turn a routed Vivado checkpoint into a device-view image like Vivado's Device window, without the
-GUI. Every used site is drawn at its real position in the colour of the module that owns most of its cells. A
+GUI. Every used site is drawn at its real position in the color of the module that owns most of its cells. A
 third script draws the Pblock map of an image from its placement hook, and a fourth turns a terminal
 recording into a video. `fp_dump.tcl` needs Vivado. The other scripts run in the figure environment
 `build/tools/svgvenv`.
@@ -41,7 +41,7 @@ creates, as Vivado resolves them.
 build/tools/svgvenv/bin/python hw/viz/k4_pblock_preview.py hw/u200/k4_major_blocks.tcl <properties> <png>
 ```
 
-The colours show where a block may be placed, not where it is placed. The outlines mark the clock regions of
+The colors show where a block may be placed, not where it is placed. The outlines mark the clock regions of
 the platform's DDR0 and DDR3 controllers.
 
 ## Terminal demo videos (`term2mp4.py`)

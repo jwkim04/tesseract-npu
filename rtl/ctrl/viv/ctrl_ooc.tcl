@@ -115,7 +115,7 @@ if {$synth_only} {
   exit
 }
 
-# BRAM power optimisation off for the TCMs: its observability-don't-care enable gating puts the
+# BRAM power optimization off for the TCMs: its observability-don't-care enable gating puts the
 # fetch / data address back on the BRAM enables (the path the bus keeps free, gate T1).
 set_power_opt -exclude_cells [get_cells -hier -filter {REF_NAME =~ RAMB36* && (NAME =~ *u_itcm/* || NAME =~ *u_dtcm/*)}]
 opt_design

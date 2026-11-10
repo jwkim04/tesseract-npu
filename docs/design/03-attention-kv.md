@@ -192,7 +192,7 @@ normalized without weight, and is stored in its own V plane like any other V.
 
 - Identification. The backend treats a tensor as a KV-cache tensor when it is q8_0, 3D
   `[E, kv_size, n_stream]` in a Tesseract buffer, named `cache_*k_l<n>` or `cache_*v_l<n>`. Its layout is
-  fixed by E and kv_size, both known at `init_tensor`, and does not depend on D. The tensor is recognised
+  fixed by E and kv_size, both known at `init_tensor`, and does not depend on D. The tensor is recognized
   from the `init_tensor` records, and the planes are placed at the buffer's first data access (llama.cpp's
   clear), because ggml sets a buffer's usage after `init_tensor`; a buffer counts only if all its tensors
   qualify (SW-47).
@@ -413,7 +413,7 @@ activation buffer of one token slot). It is advertised in CFG3 (§5.10).
 
 ### 5.9 DQROW (0x12)
 
-DQROW is VU's op (EX §7.2: VU owns the encoding): SPM → f32 dequantisation on the VU after an LD of the
+DQROW is VU's op (EX §7.2: VU owns the encoding): SPM → f32 dequantization on the VU after an LD of the
 repacked row (VU §5.6). It is simulator only.
 
 - Attention does not need it. K and V are never dequantized outside `ATTPV`. llama.cpp keeps the input layer,
@@ -743,7 +743,7 @@ weights W(slot, e); at segment end 512 accumulators are captured and 8 conversio
   local cell); the SPM read rate equals the gather rate formula above.
 - DSP use: 64 lanes × 8 slots = 512 DSPs, unpacked (A = W, 25 bits; B = the V byte), accumulating in P (48 bits)
   over a segment. Slots 4–7 use lanes 64–127, which receive copies of bytes 0–63. `tsr_mac_lane` has a PV mode
-  (Xilinx: dynamic OPMODE and an A/D input mux; generic: behavioural; `tb/tech` checks the two variants against
+  (Xilinx: dynamic OPMODE and an A/D input mux; generic: behavioral; `tb/tech` checks the two variants against
   each other).
 - The exponent E_S needs all w of a segment before its first product, so quant beats wait in the delay FIFO
   while the w-unit computes the segment's 128·GS·T_q weights. At the end of a slice, per slot, 4 lines go to SPM
@@ -824,7 +824,7 @@ planes' beats (the simulator's cycle model reports both).
 | AT-8 | Softmax structure: two-pass within a chunk (max from ATTQK, EXP by ASMAX); online merge across chunks (AMERGE) | Per-cell rescaling is impossible in DSP accumulation; chunks fit the slot buffers and pipeline |
 | AT-9 | Scale placement: inside ASMAX and AMERGE as EXP((s − m)·scale); ATTQK returns raw scores | One rounding as on the CPU, free in an op that reads every score |
 | AT-10 | Row sums: ATTPV computes l with the same block-float rule (LSUM flag) | Saves a read pass over the scores and keeps l consistent with O |
-| AT-11 | Channel partials: ATTPV writes C per-channel partials; AMERGE adds them in a fixed pairwise tree; results depend on NUM_CH | Avoids serialising the clusters; bit-exactness is per configuration |
+| AT-11 | Channel partials: ATTPV writes C per-channel partials; AMERGE adds them in a fixed pairwise tree; results depend on NUM_CH | Avoids serializing the clusters; bit-exactness is per configuration |
 | AT-12 | Row max floor: M_FLOOR = −2^100 (0xF1800000) in ATTQK MAXOUT and AMASK | Keeps merges finite for rows with no visible cell |
 | AT-13 | Empty rows: ANORM multiplies by RECIP(max(l, 2^-126)) | Reproduces the CPU's `S == 0 ? 0 : 1/S` at no cost |
 | AT-14 | Mask handling: a host-built mask summary (at most 2 cell runs per row) with CAUSAL and SLIDE bounds in ATTQK; an f32 copy and AMASK only for GENERAL masks | The VU has no f16; the cached op list stays valid; masked bandwidth is skipped |

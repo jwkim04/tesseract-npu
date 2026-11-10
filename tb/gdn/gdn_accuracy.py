@@ -143,7 +143,7 @@ def dot_study():
         "B S26 T16": lambda S, k: dot_b(S, bfp_table(k, 16), 26),
     }
     print("dot product error / (|S_row| |k|), 200 trials of 128 rows x 128, max over rows and trials (median of the "
-          "per-trial maxima in brackets); one f32 ulp of a result is 2^-24 = 6.0e-08 of its own magnitude")
+          "per-trial maxima in parentheses); one f32 ulp of a result is 2^-24 = 6.0e-08 of its own magnitude")
     print("%-14s" % "" + "".join("%-22s" % n for n in cands))
     for kn, mk in kinds.items():
         res = {n: [] for n in cands}

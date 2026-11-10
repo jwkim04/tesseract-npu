@@ -86,7 +86,7 @@ tsr_sim_test(sim_transport test_sim_transport.c tsr_transport tsr_sim tsr_ref)  
 add_test(NAME sim_transport COMMAND sim_transport ${TSR_SIM_TEST_SCRATCH})
 
 # UBSan builds of the capture and queue tests (sources compiled in, -fno-sanitize-recover): keep
-# the simulator free of undefined behaviour such as qsort(NULL, 0) on a channel without captured
+# the simulator free of undefined behavior such as qsort(NULL, 0) on a channel without captured
 # reads. Skipped when the toolchain cannot link -fsanitize=undefined.
 include(CheckCSourceCompiles)
 set(CMAKE_REQUIRED_FLAGS "-fsanitize=undefined -fno-sanitize-recover=all")

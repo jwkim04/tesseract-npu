@@ -13,7 +13,7 @@
 //       reserved bits w0[15:9], PING with KERNEL != 0, KERNEL beyond the table, or an argument-block
 //       handle with ch >= NUM_CH (CFG0) or beat + argblk_lines > 2^28 -> DONE / BAD_DESC. Args
 //       beyond the kernel's nargs are ignored (the kernel sees 0).
-//   R3  Cancelled or stopped before start: CANCEL_VALID and LQ_CANCEL covers the sequence, or
+//   R3  Canceled or stopped before start: CANCEL_VALID and LQ_CANCEL covers the sequence, or
 //       STOP_VALID and LQ_STOP covers it ((s - q) mod 2^32 < 2^31, EX §4.9) -> DONE / ABORTED,
 //       ERR_CODE 0, without running. PING -> PONG (r2 = ARG0).
 //   R5  Run: RT_STATE := KERNEL | index; PROF -> REC_CFG.ALL (restored after R6) and
@@ -29,7 +29,7 @@
 //       precedence ABORTED > TILE_ERR > PLAT_ERR > STOPPED > KERNEL_ERR > OK (TRAP and BAD_DESC
 //       are decided elsewhere); r3-r6 = ticket {u, ERR_SEQ}, ERR_INFO, ERR_W0, ERR_PIDX (r3 =
 //       0xF000_0000 without an error); ERR_CODE = the first error's code whatever the status. STOPPED
-//       = the kernel saw tsr::stop_requested() true (it honoured the soft stop; a kernel that never
+//       = the kernel saw tsr::stop_requested() true (it honored the soft stop; a kernel that never
 //       polls runs to the end and reports its own status, EX §4.9). RET = the kernel's return value.
 //   R8  WFI on irq_fast[3] while LCQ_FREE = 0; post with ANSWER = 1; r7 = DURATION (core cycles
 //       from the pop to the post, saturating at 2^32 - 1).
@@ -41,7 +41,7 @@
 // them as loops otherwise, which costs about a third of an empty launch (EX §4.11).
 //
 // Decisions: R4 is checked before R3 so that a descriptor that is both invalid and
-// cancelled answers BAD_DESC, as EX §4.4's precedence says (EX §4.7 lists R3 first); a cancelled
+// canceled answers BAD_DESC, as EX §4.4's precedence says (EX §4.7 lists R3 first); a canceled
 // PING answers DONE / ABORTED. Every value that decides pushed words or records is a launch input
 // or a timing-free register (ISSUE_PIDX, ISSUED_SEQ, ERR_* after the join, the watermarks the host
 // wrote); DONE_SEQ, LQ_AVAIL, LCQ_FREE and MTIME only end waits or feed r7 (SW §4.7).
@@ -162,7 +162,7 @@ bool dispatch(uint32_t r[8]) {
         return false;
     }
 
-    // R3: cancelled or stopped before start.
+    // R3: canceled or stopped before start.
     const uint32_t fl = cw(CW_LQ_FLAGS);
     if (((fl & LQ_FLAGS_CANCEL_VALID) && covered(cw(CW_LQ_CANCEL), L.seq)) ||
         ((fl & LQ_FLAGS_STOP_VALID) && covered(cw(CW_LQ_STOP), L.seq))) {

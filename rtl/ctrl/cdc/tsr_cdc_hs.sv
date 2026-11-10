@@ -6,9 +6,9 @@
 // Spec: CC §2.2 `tsr_cdc_hs`.
 //
 // Protocol: two-phase toggles. The requester (domain A) holds the request word in a register and
-// flips req_tgl; the responder (domain B) sees req_tgl != ack_tgl through a synchroniser, answers
+// flips req_tgl; the responder (domain B) sees req_tgl != ack_tgl through a synchronizer, answers
 // with the response word in a register and flips ack_tgl; A sees ack_tgl == req_tgl through a
-// synchroniser. The toggle value is the request's tag: A changes the request register only when
+// synchronizer. The toggle value is the request's tag: A changes the request register only when
 // the tags agree again, so B always reads a stable request, and A reads the response register only
 // after B wrote it (both registers cross with set_max_delay -datapath_only, CC §11.3).
 //

@@ -30,7 +30,7 @@ PX0, PX1 = 56, 1544
 BW, GAP = 336, 32
 CX0 = 80
 X = [CX0 + i * (BW + GAP) for i in range(4)]           # block x per column
-C = [x + BW / 2 for x in X]                             # column centres
+C = [x + BW / 2 for x in X]                             # column centers
 BH = 136
 
 # vertical layout

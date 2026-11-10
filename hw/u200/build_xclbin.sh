@@ -16,7 +16,7 @@
 #    with its hook paths made absolute (the configs give them relative to a directory three levels below
 #    the repository, where v++ resolves them: against its working directory; TSR_U200_OUT may point to
 #    another one at that depth, e.g. build/link/<k>). The configs check clock/reset wiring after BD
-#    creation and before opt_design (with the TCM power-optimisation exclusion), apply the k4 floorplan
+#    creation and before opt_design (with the TCM power-optimization exclusion), apply the k4 floorplan
 #    before placement, and run the physical CDC gate after routing. A final pre-bitstream hook checks
 #    Vitis's scaled frequencies in _new_clk_freq against the kernel's window (k4: core 200 MHz and clk_rv
 #    100 MHz; k1: core 250 to 300 MHz). Clock identity/reset/frequency failures are fatal;

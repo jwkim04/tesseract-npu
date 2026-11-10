@@ -9,7 +9,7 @@
 #   NAME=VALUE    tsr_core parameters passed as synth_design -generic (e.g. NUM_CH=4 T_MAX=8
 #                 SPM_RD_LAT=4 MVM_MAC_LAT=9); omitted ones keep the tsr_pkg defaults; a later
 #                 NAME=VALUE overrides an earlier one (core_ooc.sh puts its defaults first).
-#   synth_only    stop after synthesis (utilisation per hierarchy, latches, logic depth estimate).
+#   synth_only    stop after synthesis (utilization per hierarchy, latches, logic depth estimate).
 #   place_only    stop after place_design (with the floorplan sourced before it): the placed timing, the
 #                 pblock capacities and, with dcp, <outdir>/post_place.dcp.
 #   dcp           write <outdir>/post_synth.dcp (with the constraints) and post_route.dcp.
@@ -22,7 +22,7 @@
 #   place= / phys= / route=  -directive of place_design / phys_opt_design / route_design.
 #   prphys        phys_opt_design once more after routing.
 #   period=<ns>   core clock period (default 3.333); rvperiod=<ns> the clk_rv period (default 6.0)
-#   unc=<ns>      extra setup uncertainty on clk (the platform's MMCM jitter is not modelled by
+#   unc=<ns>      extra setup uncertainty on clk (the platform's MMCM jitter is not modeled by
 #                 default, as in the block runs of tb/tech/viv and tb/qact/viv).
 # Constraints as tb/qact/viv/qact_ooc.tcl: 3.333 ns clock, every I/O budgeted 1.6 ns outside (the
 # memory ports, the CSR port and rst_n are registered on the far side: tsr_xrt_kernel's AXI
@@ -122,7 +122,7 @@ if {$from eq ""} {
   if {$unc ne ""} { set_clock_uncertainty -setup $unc [get_clocks clk] }
 }
 
-# BRAM power optimisation off for the TCMs (as rtl/ctrl/viv/ctrl_ooc.tcl): its enable gating puts the fetch
+# BRAM power optimization off for the TCMs (as rtl/ctrl/viv/ctrl_ooc.tcl): its enable gating puts the fetch
 # address back on the BRAM enables
 set_power_opt -exclude_cells [get_cells -hier -filter {REF_NAME =~ RAMB36* && (NAME =~ *u_itcm/* || NAME =~ *u_dtcm/*)}]
 opt_design

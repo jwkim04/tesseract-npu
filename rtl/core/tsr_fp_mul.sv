@@ -22,7 +22,7 @@
 //           binades (side band, fabric)
 //   [MUL]   product + side band: 1 register at LAT 3 (DSP P register), 2 at LAT 4 and 5 (DSP
 //           M, P), LAT - 3 above
-//   stage 2 normalise (binade select by p[47]), RNE increment bit, and the special / FTZ /
+//   stage 2 normalize (binade select by p[47]), RNE increment bit, and the special / FTZ /
 //           overflow result folded into {sign, magnitude, inc} (inc = 0 for special results)
 //   [NORM]  {sign, magnitude, inc}                                   LAT >= 5
 //   stage 3 y = {sign, magnitude + inc}: a single 31-bit increment
@@ -186,7 +186,7 @@ module tsr_fp_mul #(
   end
 
   // ---------------------------------------------------------------------------------------------
-  // Stage 2: normalise, RNE increment bit, special results.
+  // Stage 2: normalize, RNE increment bit, special results.
   // ---------------------------------------------------------------------------------------------
   norm_t n2;
 

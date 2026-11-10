@@ -13,7 +13,7 @@
  *      top of DTCM), mscratch := the top of the 512 B trap stack, mtvec := vectored, base
  *      __tsr_vectors (= RV_BOOT); mie := 0, mstatus.MIE := 0; zero [__zero_start, __zero_end)
  *      (.bss and .tsr_crash); run .init_array;
- *   2. tsr_rt_crt0_init: initialise __tsr_dbg and __tsr_crash (trap.cpp, DB §6.3);
+ *   2. tsr_rt_crt0_init: initialize __tsr_dbg and __tsr_crash (trap.cpp, DB §6.3);
  *   then the runtime, tsr_rt_main(boot MTIME) (runtime.cpp, EX §4.7 R1-R10), which never returns.
  *
  * Trap entry (DB §6.3, SW §6.6), synchronous exceptions and tsr::panic (mcause 24):

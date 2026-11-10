@@ -33,7 +33,7 @@
 //   hdr_qclear  a0 bad {ch, beat}, a1 good {ch, beat}: an error, join, qclear() and a join on it,
 //               then an op that succeeds. RET = mask (0x1F = all).
 //   hdr_irq     a0 src {ch, beat}, a1 lines: join_irq on a long LD (mie restored after it), on a
-//               done ticket and on none; WAIT_TICKET disarmed afterwards. RET = mask (0x7 = all).
+//               done ticket and on none; WAIT_TICKET disarmed afterward. RET = mask (0x7 = all).
 //   hdr_ring    a0 src {ch, beat}, a1 dst {ch, beat}, a2 ring first line, a3 ring lines, a4 blocks,
 //               a5 seed, a6 max block lines. Random blocks (xorshift32 from the seed: lines,
 //               parity, how long a block stays held, source offset): LD into the block after the

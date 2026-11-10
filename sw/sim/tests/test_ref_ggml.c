@@ -4,7 +4,7 @@
 //            (GGML_FP16_TO_FP32 / GGML_FP32_TO_FP16), exhaustive over all inputs.
 //   qact     tsr_qact A32 vs quantize_row_q8_0_ref, A256 vs quantize_row_q8_K_ref, bit-exact
 //            on inputs inside the documented domain (no subnormals, no NaN/Inf, block amax
-//            >= 2^-119), plus the documented behaviour outside it.
+//            >= 2^-119), plus the documented behavior outside it.
 //   dequant  tsr_dequant_row (repacked) vs dequantize_row_q8_0 / dequantize_row_q4_K.
 //
 // Why dequant is bit-exact with ggml for every finite d/dmin (result of this test):
@@ -251,7 +251,7 @@ static void test_qact(void) {
         qact_compare(TSR_QA_A256, x, 256);
     }
 
-    // Outside the ggml-identical domain: spec-defined behaviour (spec §21).
+    // Outside the ggml-identical domain: spec-defined behavior (spec §21).
     {
         float x[256];
         uint8_t qa[64 * 6];

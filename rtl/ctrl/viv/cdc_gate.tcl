@@ -8,7 +8,7 @@
 #     fails the gate (what is left after the waivers of rtl/ctrl/viv/tsr_ctrl_cdc.xdc are only Info rows);
 #   - report_clock_interaction to <outdir>/clkint_<tag>.rpt: both directions between the two clocks must be
 #     listed and constrained by "Max Delay Datapath Only" (an unconstrained or merely timed asynchronous
-#     pair fails the gate: the synchroniser structures are then not covered by the max delays).
+#     pair fails the gate: the synchronizer structures are then not covered by the max delays).
 # Prints <prefix> cdc(<tag>) <summary rows>, <prefix> clkint(<tag>) <the two inter-clock rows> and
 # <prefix> cdc_gate(<tag>) PASS|FAIL unsafe <n> unconstrained <n>. The clocks are objects or names; they are the ones
 # on tsr_core's ports clk / clk_rv, on the kernel's ap_clk / ap_clk_2, or whatever the linked design calls them.

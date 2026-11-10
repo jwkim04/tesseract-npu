@@ -8,9 +8,9 @@ carries its own background, so one PNG reads on both GitHub themes. The SVGs sta
 the technical documents under docs/ keep embedding them.
 
 What. 1760 px wide (twice the 880 px of GitHub's README column), RGBA with the card's rounded
-corners transparent, then reduced to a 256-colour palette (octree, no dithering). Figures are flat
-colour with anti-aliased edges, so the palette costs at most about 30 of 255 in a few pixels and
-the file is about a quarter of the size of the full-colour PNG. The result has no text chunks,
+corners transparent, then reduced to a 256-color palette (octree, no dithering). Figures are flat
+color with anti-aliased edges, so the palette costs at most about 30 of 255 in a few pixels and
+the file is about a quarter of the size of the full-color PNG. The result has no text chunks,
 timestamps or other metadata, so the same SVG always gives the same bytes (for one Pillow and zlib
 version). The script fails if a PNG is larger than BUDGET.
 

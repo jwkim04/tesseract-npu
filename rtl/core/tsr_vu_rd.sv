@@ -1,5 +1,5 @@
 // tsr_vu_rd.sv — the VU's SPM read side: per-bank read requests on both bank ports of SPM client 4, the
-// response FIFOs per (bank, operand), and the slot FIFO towards the injector.
+// response FIFOs per (bank, operand), and the slot FIFO toward the injector.
 //
 // Spec: docs/design/02-vector-unit.md "VU" §7.7 SPM access; CC §10.2 client contract.
 // A slot is taken from the generator when every SPM line it reads has a reserved place: its A line in the

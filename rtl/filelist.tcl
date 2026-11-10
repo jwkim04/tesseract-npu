@@ -4,7 +4,7 @@
 #
 #   source $repo/rtl/filelist.tcl
 #   set fl [tsr_read_filelist $repo/rtl/filelist_xilinx.f]
-#   dict get $fl srcs      HDL files in list order (normalised paths)
+#   dict get $fl srcs      HDL files in list order (normalized paths)
 #   dict get $fl incdirs   +incdir+ directories
 #   dict get $fl defines   +define+ NAME[=VALUE], plus FPGA_XILINX (Ibex's DSP pragmas, as
 #                          rtl/ctrl/viv/ctrl_ooc.tcl), for synth_design -verilog_define

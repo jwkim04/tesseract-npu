@@ -451,7 +451,7 @@ struct err_rec {
 // Bit u = unit u is in error state, from the error records (ERR_CODE(u) != 0, one control-window
 // read per unit): exact for every error of an entry covered by a done ticket (I2: the record is
 // visible before DONE_SEQ passes it), so it may decide RET and records after a join, as the
-// runtime's R7 does. (QSTATUS[13:8] is a separately synchronised level, CC §11.2, that
+// runtime's R7 does. (QSTATUS[13:8] is a separately synchronized level, CC §11.2, that
 // I2 does not order with DONE_SEQ; SW §4.7 lists QSTATUS as timing-dependent.)
 inline uint32_t err_units() {
     uint32_t m = 0;
@@ -884,7 +884,7 @@ private:
     // A record: lines owned [lo, hi) (padding included), the block's first line `start` (alloc's
     // return value, the key of release()), and its release ticket; REL_HELD (unit 14, which no
     // ticket carries: CC §7.4 marker records) until release(). Trivial, so that a static ring is
-    // zero-initialised (.bss).
+    // zero-initialized (.bss).
     static constexpr uint32_t REL_HELD = 0xE000'0000u;
     struct rec {
         uint32_t lo, hi, start, rel;

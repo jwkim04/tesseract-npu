@@ -20,7 +20,7 @@
 //     dfault, flags; dbg_stop / dbg_halt_tgl / dbg_cancel_tgl / dbg_halt_on_boot into tsr_ctrl, rv_halt_pend
 //     from it.
 //   - rst_ctrl_n: the reset copy of the control subsystem (its core-domain flops and the input of
-//     its clk_rv reset synchroniser), RST_PIPE cycles behind rst_n like every block here.
+//     its clk_rv reset synchronizer), RST_PIPE cycles behind rst_n like every block here.
 //   - plat_err_i, host_irq_o (EX §9.3).
 // Units and queues (CC §7.4): DMA (LD / ST, with KVST when HAS_ATT), QACT, MVM (HAS_MVM = 1; ATTQK /
 //   ATTPV when HAS_ATT) and the vector unit VU (HAS_VU, unit 3: VOP / RED / ROPE / SOP and AT's vector
@@ -1006,7 +1006,7 @@ module tsr_core_dp
   //             valid and command. Every item is offered to the VU as before, VX cycles later; up to
   //             2 + 2 VX commands are in the pipe, but the issue path's limit (two ops in flight, CC §9.4 I3) counts them.
   //   done      the strobe reaches tsr_issue VX cycles later (tsr_issue's DONE_REG adds one more)
-  //   sreg      VX stages towards tsr_csr: the s registers show a change VX cycles later, but the host reads them after
+  //   sreg      VX stages toward tsr_csr: the s registers show a change VX cycles later, but the host reads them after
   //             the op's done, which takes VX + 1 cycles from the VU to the issue path
   // The VU's PERF strobes and progress go with the other units' (g_csrx), two stages.
   // The unit's own rules (U4 below) are checked on the unit's side.
@@ -1333,7 +1333,7 @@ module tsr_core_dp
   // -------------------------------------------------------------------------------------------
   // Integration checks (simulation only; docs/rtl-core.md §3.0, §5; docs/rtl-mvm.md §3.0, §6.4,
   // §10.4; CC §9.4 I4). Armed by the first clock edge with rst_n low (before it, Verilator's X
-  // randomisation makes state arbitrary); with RST_PIPE they see the blocks' delayed reset. Only
+  // randomization makes state arbitrary); with RST_PIPE they see the blocks' delayed reset. Only
   // the unit-local rules are checked here: the units run concurrently, and tsr_issue asserts the
   // dispatcher's invariants (CC §9.4 I1-I3).
   //   U1 a unit pulses done only while it holds an op (never in its accepting cycle); no MVM
@@ -1372,7 +1372,7 @@ module tsr_core_dp
   wire  dma_mreq  = |d_rd_req_valid || |d_wr_req_valid;
 
   // Same arming scheme as tsr_spm / tsr_mem_arb: the initial block runs before Verilator's first
-  // evaluation, which may already see a clock edge with X-randomised rst_n and state.
+  // evaluation, which may already see a clock edge with X-randomized rst_n and state.
   logic chk_on_q;
   initial chk_on_q = 1'b0;
   always @(posedge clk) if (!rst_b_n[RB_CHK]) chk_on_q <= 1'b1;

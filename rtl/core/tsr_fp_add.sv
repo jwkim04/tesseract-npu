@@ -25,7 +25,7 @@
 //   (TSR_DEF_FADD_LAT); every LAT in 1..8 gives the same results (tb/fp: LAT 1..8), LAT 6..8 are
 //   LAT 5 plus output registers.
 //
-// Algorithm (no subnormal is ever produced, so there is no denormalisation and no rounding of
+// Algorithm (no subnormal is ever produced, so there is no denormalization and no rounding of
 // tiny results: below 2^-126 the exact sum of two DAZ'd operands is a multiple of 2^-149, hence
 // exact, and the spec's FTZ rule flushes it to a signed zero):
 //   Operands are ordered by exponent only (big: the larger exponent, a on a tie); d = e_big -
@@ -33,7 +33,7 @@
 //   far path  (effective addition, or effective subtraction with d >= 2, or d = 1 without
 //             cancellation): the small significand is aligned into a 27-bit window (24 bits +
 //             guard + round + sticky; every bit shifted out is OR-ed into bit 0), then
-//             R = {m_big, 000} +- S (28 bits). R is normalised by at most one position (sum
+//             R = {m_big, 000} +- S (28 bits). R is normalized by at most one position (sum
 //             >= 2^27: right; difference < 2^26: left — d >= 2 bounds the cancellation to one
 //             bit) and rounded RNE: y = {sign, {e, s} + inc}, inc = g & (st | lsb), where the
 //             increment's carry out of the fraction is the binade carry into the exponent and
@@ -41,7 +41,7 @@
 //             whenever the alignment was inexact and keeps R within one unit of the exact value,
 //             so R and the exact result agree in every bit at and above the guard position
 //             (always >= bit 1) and in "anything below the guard bit".
-//             A left normalisation never reaches exponent 0 (it needs a nonzero small operand,
+//             A left normalization never reaches exponent 0 (it needs a nonzero small operand,
 //             so e_big >= e_small + 2 >= 3), and a far zero result occurs only for two zero
 //             operands with an effective addition: y = {sign of both, 0}.
 //   near path (effective subtraction with d <= 1 and a result below 2^24 units, i.e. at least
@@ -60,7 +60,7 @@
 //   S2    far: 27-bit alignment shift + sticky; near: the exact differences N (26-bit
 //         subtractors) and |m_a - m_b|; e_big +- 1
 //   [C2]                                                                     LAT >= 3
-//   S3    far: 28-bit add/sub, 1-bit normalisation select, RNE increment bit, overflow;
+//   S3    far: 28-bit add/sub, 1-bit normalization select, RNE increment bit, overflow;
 //         near: 24-bit leading-zero count, path select
 //   [C3]                                                                     LAT >= 5
 //   S4    far: the 31-bit {e, s} + inc increment; near: left shift by lzc, exponent e_big - 1 -
@@ -280,7 +280,7 @@ module tsr_fp_add #(
   end
 
   // ---------------------------------------------------------------------------------------------
-  // S2: far alignment + sticky; near exact differences; exponent neighbours.
+  // S2: far alignment + sticky; near exact differences; exponent neighbors.
   // ---------------------------------------------------------------------------------------------
   s2_t s2d;
 
@@ -333,7 +333,7 @@ module tsr_fp_add #(
   end
 
   // ---------------------------------------------------------------------------------------------
-  // S3: far add / normalise / RNE bit; near leading zeros; path select.
+  // S3: far add / normalize / RNE bit; near leading zeros; path select.
   // ---------------------------------------------------------------------------------------------
   s3_t s3d;
 
@@ -399,7 +399,7 @@ module tsr_fp_add #(
   end
 
   // ---------------------------------------------------------------------------------------------
-  // S4: far increment, near normalisation / FTZ, final select; [OUT].
+  // S4: far increment, near normalization / FTZ, final select; [OUT].
   // ---------------------------------------------------------------------------------------------
   logic [31:0] y4;
 

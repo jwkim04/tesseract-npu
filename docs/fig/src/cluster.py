@@ -46,7 +46,7 @@ from tsrfig import CUT_PANEL, INK_SOFT, PANEL, Fig, chamfer, wrap  # noqa: E402
 
 W = 1600
 PL, PR = 56, 1360                     # panels; callouts in the right margin
-RX = (PR + W) / 2                     # callout centre
+RX = (PR + W) / 2                     # callout center
 
 # back-end columns (row B), left to right
 GAP = 56

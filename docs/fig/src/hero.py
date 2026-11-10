@@ -1,13 +1,13 @@
-"""Figure `hero`: the Tesseract NPU core as a stylised die, with one MVM cluster zoomed.
+"""Figure `hero`: the Tesseract NPU core as a stylized die, with one MVM cluster zoomed.
 
 The picture for the top of the README, in the manner of Tenstorrent's chip-and-tile art: tsr_core
 drawn as a die, the four DDR4 channels off-die, and one MVM cluster opened up by dashed zoom
-lines. It is a stylised view, not a floorplan, and the figure says so.
+lines. It is a stylized view, not a floorplan, and the figure says so.
 
 Die content, with sources:
 - four MVM clusters of 128 MACs (NUM_CH = 4, LANES = 128), cluster c next to DDR4 channel c and
   fed only by it, through one tsr_mem_arb per channel (docs/spec.md §2, §3; docs/rtl-core.md §2);
-- SPM, 4 MiB in 64 B lines, in the centre, with the x broadcast / y gather of tsr_mvm between it
+- SPM, 4 MiB in 64 B lines, in the center, with the x broadcast / y gather of tsr_mvm between it
   and the clusters (docs/rtl-mvm.md §2, §3); even / odd line-interleaved banks, 2R2W
   (docs/design/04-control-core.md §10.1, CC-12);
 - tsr_csr on the die edge: the core boundary is a CSR port; the launch queue LQ, the completion
@@ -62,7 +62,7 @@ def zoom_line(f, a, b, sw=2):
 DIE_X0, DIE_X1 = 72, 1008
 CLW = 152
 CL_L, CL_R = 104, DIE_X1 - 32 - CLW                  # cluster columns: 104..256, 824..976
-CEN_X0, CEN_X1 = CL_L + CLW + 48, CL_R - 48          # centre column: 304..776
+CEN_X0, CEN_X1 = CL_L + CLW + 48, CL_R - 48          # center column: 304..776
 COL_X0, COL_X1 = CL_L + CLW + 80, CL_R - 80          # x broadcast / y gather collar: 336..744
 EDGE_W, EDGE_H = 136, 48                             # tiles on the die edge (arbiters, CSR)
 # die (y)
@@ -87,9 +87,9 @@ H = LEG_Y + 144
 
 f = Fig("hero", W, H,
         title="The Tesseract NPU core",
-        desc="Stylised die of tsr_core: four MVM clusters of 128 MACs at the corners, each next "
+        desc="Stylized die of tsr_core: four MVM clusters of 128 MACs at the corners, each next "
              "to its own DDR4 channel and memory arbiter; the 4 MiB SPM with even and odd banks "
-             "in the centre, with the x broadcast / y gather to the clusters; the control core "
+             "in the center, with the x broadcast / y gather to the clusters; the control core "
              "(Ibex RV32IMC, ITCM and DTCM), the debug module, the issue path with unit queues, "
              "the vector unit, the DMA (LD, ST, KVST), QACT and the CSR block. The host reaches "
              "the CSR port over PCIe and XRT with a launch queue and a completion ring. One "
@@ -120,7 +120,7 @@ for c in range(4):
     f.box(cx - EDGE_W / 2, ey - EDGE_H / 2, EDGE_W, EDGE_H, "io", "MEM ARB",
           label_role="label_s", cut=10)
 
-# centre column, row 1: control core -> issue path
+# center column, row 1: control core -> issue path
 cc_w, is_w = 216, 200
 cc_x, is_x = CEN_X0, CEN_X1 - is_w
 f.box(cc_x, Y0, cc_w, A1_H, "control", "CONTROL CORE",
@@ -221,7 +221,7 @@ _lg = {"key": "tesseract-core", "h": 40, "backing": True, "pad": 6}
 _lw, _lh = logo_box(**_lg)
 f.logo(x=W - 72 - _lw, y=LEG_Y - _lh + 6, **_lg)             # name of the configuration, bottom right
 f.text(W / 2, LEG_Y + 38, wrap(
-    "Stylised view of tsr_core, not a floorplan. The issue path dispatches tile "
+    "Stylized view of tsr_core, not a floorplan. The issue path dispatches tile "
     "ops to the unit queues of the DMA, QACT, MVM and VU. Cluster c streams weights only from "
     "DDR4 channel c. The platform adapter and the XRT shell are left out.", 1440),
     "note", anchor="middle", color=INK_SOFT)

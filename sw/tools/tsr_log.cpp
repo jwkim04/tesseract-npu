@@ -16,13 +16,13 @@
 // Output: one line per record, "[tsr LEVEL source seq LSEQ t MTIME] text", and one "tsr-log: bad
 // record" line per malformed record (DB §6.1 checks: SYNC, TYPE, LEVEL, the FMT address inside
 // .tsr_logfmt, a record cut short). The transport skips to LOG_WR after a bad header (DB §6.1);
-// a saved file may hold several drains, so tsr-log resynchronises at the next valid header and
+// a saved file may hold several drains, so tsr-log resynchronizes at the next valid header and
 // says how many words it skipped. Summary on stderr.
 // Exit: 0 every word decoded, 1 malformed records, 2 usage or I/O error.
 //
 // selftest: builds records of every type against IMAGE's format table (the `selftest` kernel's id 9
 // strings, a TEXT, a "dropped n" EVENT, a BLOB, a TRAP whose mepc lies in the `selftest` kernel) and
-// three malformed ones, and checks the decoded text and the resynchronisation (ctest
+// three malformed ones, and checks the decoded text and the resynchronization (ctest
 // tools_log_selftest).
 #include "tsr_elf.h"
 #include "tsr_fw_paths.h"
@@ -246,7 +246,7 @@ int selftest(const char * image) {
         st(!d[6].ok && has(d[6].line, "not a record header") && has(d[6].line, "1 word(s) skipped") && d[6].at == bad_at, "bad SYNC",
            d[6].line);
         st(!d[7].ok && has(d[7].line, "outside .tsr_logfmt"), "FMT address check", d[7].line);
-        st(d[8].ok && has(d[8].line, "dropped 1 log record(s)"), "resynchronised after the bad records", d[8].line);
+        st(d[8].ok && has(d[8].line, "dropped 1 log record(s)"), "resynchronized after the bad records", d[8].line);
         st(!d[9].ok && has(d[9].line, "cut short"), "record cut short at the end", d[9].line);
     }
     // Without an image: FMT shown as the address and its words, no address check.

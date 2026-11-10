@@ -8,7 +8,7 @@
 #           small     WritebackStage 0, BranchTargetALU 0, RV32MFast (CC §3.2 fallback 2)
 #   Extra arguments go to ctrl_ooc.tcl (rv=4.0 for 250 MHz, top=tsr_ctrl, synth_only).
 # Environment: VIVADO_SETTINGS (default /tool/Xilinx/Vivado/2024.2/settings64.sh), TSR_VIVADO_LOCK
-# (a flock file serialising Vivado runs on a shared host). Without a lock the script waits until
+# (a flock file serializing Vivado runs on a shared host). Without a lock the script waits until
 # no other Vivado process runs (one Vivado at a time on the 14 GB build host).
 # Log: <outdir>/vivado.log; summary: grep CTRLOOC <outdir>/vivado.log.
 set -euo pipefail

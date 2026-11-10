@@ -500,7 +500,7 @@ static void test_dqrow(void) {
         if (tw_op(&t, e_dqrow(c->fmt, D, SRC, c->K, c->rows, ss, ds), what) != 0) continue;
         tsr_ref_dqrow(c->fmt, c->K, c->rows, W(t.exp, D), ds, t.exp + (size_t)SRC * 64u, ss);
         tw_same(&t, what);
-        // and against tsr_dequant_row directly (the ggml-exact dequantisation, VU §6.8)
+        // and against tsr_dequant_row directly (the ggml-exact dequantization, VU §6.8)
         float * row = (float *)malloc(c->K * sizeof(float));
         for (uint32_t r = 0; r < c->rows; ++r) {
             tsr_dequant_row(c->fmt, t.exp + (size_t)(SRC + r * ssp) * 64u, c->K, row);

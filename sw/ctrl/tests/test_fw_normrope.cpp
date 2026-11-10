@@ -1043,7 +1043,7 @@ void host_seven_op() {
             const int kind = int(i % 8u);
             for (uint32_t j = 0; j < n; ++j) {
                 float v = float(rng_normal(&r));
-                if (kind == 1) v *= 1e-20f;                 // tiny: sumsq underflows towards FTZ
+                if (kind == 1) v *= 1e-20f;                 // tiny: sumsq underflows toward FTZ
                 if (kind == 2) v *= 1e18f;                  // huge: sumsq overflows to +inf
                 if (kind == 3) v = 0.0f;                    // zero row: RC(SQ(eps))
                 if (kind == 4 && j == 0) v = INFINITY;

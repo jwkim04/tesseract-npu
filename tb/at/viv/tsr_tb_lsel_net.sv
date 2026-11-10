@@ -1,4 +1,4 @@
-// tsr_tb_lsel_net.sv — xsim testbench of tb/at/viv/lsel_net.sh: the Vivado-synthesised netlist of the ATTPV drain's
+// tsr_tb_lsel_net.sv — xsim testbench of tb/at/viv/lsel_net.sh: the Vivado-synthesized netlist of the ATTPV drain's
 // lane select (tsr_lsel_flat, or with +define LEGACY the old integer form tsr_lsel_legacy_flat, both from
 // tsr_lsel_flat.sv; write_verilog -funcsim, top renamed <top>_net, unisim primitives) against the selection itself:
 // output lane k of drain step (l, t) is lane 8 l + k of slot t, and its non-finite flag is flag[t][lane / 32].

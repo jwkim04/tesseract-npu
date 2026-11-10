@@ -393,7 +393,7 @@ struct tsr_device {
     tsr_msum_store msum;
 
     // The live monitor record (tsr_mon.h): device weight bytes by ggml type (the dominant one is the
-    // quantisation shown), and the splits of the scheduler pass in progress (a split seen again starts
+    // quantization shown), and the splits of the scheduler pass in progress (a split seen again starts
     // the next pass, as in the TSR_STATS pass count, which this does not depend on)
     uint64_t mon_wbytes[GGML_TYPE_COUNT] = {};
     int      mon_wtype = -1;
@@ -628,7 +628,7 @@ static void tsr_fill(tsr_device * d, uint32_t ch, uint64_t off, uint8_t value, s
 // them reaches the device.
 // ---------------------------------------------------------------------------
 
-// Weight bytes by type; the dominant type names the quantisation ("Q4_K").
+// Weight bytes by type; the dominant type names the quantization ("Q4_K").
 static void tsr_mon_note_weight(tsr_device * d, enum ggml_type type, uint64_t bytes) {
     if ((int) type < 0 || (int) type >= (int) GGML_TYPE_COUNT) {
         return;
@@ -859,7 +859,7 @@ static bool tsr_heap_alloc(tsr_device * d, uint64_t size, uint64_t * off) {
 
 // Is this tensor stored as a device weight (vs raw)? Mirrors what MUL_MAT can use directly.
 // An expert tensor of a MoE model (llama.cpp: ffn_gate_exps, ffn_up_exps, ffn_down_exps, ffn_gate_up_exps): 3D, the
-// experts in dimension 2, used by MUL_MAT_ID. Recognised by its name, because a placed weight must be decided when it
+// experts in dimension 2, used by MUL_MAT_ID. Recognized by its name, because a placed weight must be decided when it
 // is uploaded; other 3D tensors stay raw (a lazily converted MUL_MAT_ID source is the other way in).
 static bool tsr_rec_is_expert_name(const tsr_tensor_rec & r) {
     return r.name.find("_exps") != std::string::npos;

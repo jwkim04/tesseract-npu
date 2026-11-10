@@ -32,10 +32,10 @@ from tsrfig import INK, INK_SOFT, Fig  # noqa: E402
 
 W = 1600
 PX0, PX1 = 224, 1376                  # tsr_core panel; callouts in the 224 margins
-LX, RX = PX0 / 2, (PX1 + W) / 2       # callout centres
+LX, RX = PX0 / 2, (PX1 + W) / 2       # callout centers
 X0, X1 = 264, 1336                    # content inside the panel
 BX0, BX1 = 248, 1352                  # the clock-domain bands
-CX = 800                              # centre line
+CX = 800                              # center line
 
 # ---- rows (y) ----------------------------------------------------------------------------------
 PY0 = 72

@@ -35,7 +35,7 @@ single launch under the launch-stateless rule.
 | --- | --- | --- |
 | `m2` | QACT groups and LD to ST copies, no MVM: `tmax1`, `tmax8`, `small1ch` (1 channel, 64 KiB SPM), `ch3`, `errors` and `errors8` (every fault kind of these units and the endings `BAD_DEP`, `DEP_FAILED` chains, `ABORTED`, `QABORT` recipe, `QCLEAR` recovery) | `tsr-trace-gen --ops m2` |
 | `gen` | LD, QACT, MVM (with ACC), ST programs with interleaved groups: `tmax1`, `tmax8` | `--ops gen` |
-| `m3` | MVM-centred groups mixed with the `m2` groups: `tmax1`, `tmax8`, `small1ch`, `ch3`, `ch16`, `errors` and `errors8` | `--ops m3` |
+| `m3` | MVM-centered groups mixed with the `m2` groups: `tmax1`, `tmax8`, `small1ch`, `ch3`, `ch16`, `errors` and `errors8` | `--ops m3` |
 | `vu` | every vector-unit op with legal and illegal encodings: `m8`, `m6` (a configuration without `TOPK` and `DQROW`), `errors`, `small1ch` | `--ops vu` |
 | `at` | the seven attention ops and the flash-attention chain across the DMA, QACT, MVM and VU queues: `tmax8`, `tmax1`, `errors`, `ch3` | `--ops at` |
 | `ctrl` | the issue path: credits and back-pressure, data-flow graphs over every unit, hold windows, `FENCE`, `QABORT` and `QCLEAR`, `BAD_DEP`, `DEP_FAILED`: `tmax8`, `errors`, `deep` (queue depth 31), `shallow` (depth 1), `nocaps` (no VU or AT) | `--ops ctrl` |

@@ -11,7 +11,7 @@
 // M = 2^23 | f, f != 0, the significand of 1/x is S = round(2^47 / M) in (2^23, 2^24) with exponent
 // 253 - E (f = 0: 1/x = 2^(127-E) exactly, exponent 254 - E). There are no ties (M·(2S+1) = 2^48 has
 // no solution for M < 2^24 other than a power of two).
-//   seed  Y0 = round(2^19 / (513 + 2k)), k = f[22:15]: 1/m at the segment centre, Q0.10
+//   seed  Y0 = round(2^19 / (513 + 2k)), k = f[22:15]: 1/m at the segment center, Q0.10
 //   NR 1  R0 = 2^33 - M·Y0 (Q1.33, signed), Y1 = Y0·2^12 + (Y0·R0) >> 21 (Q0.22, floor shift)
 //   NR 2  R1 = 2^45 - M·Y1 (Q1.45, > 0), Y2 = Y1·2^8 + (Y1·R1) >> 37 (Q0.30)
 //   cand  Qc = (Y2 + 32) >> 6: |Qc - 2^47/M| < 1 for every f (checked exhaustively)

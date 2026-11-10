@@ -1216,7 +1216,7 @@ static int cmd_all(int argc, char ** argv, const char * self) {
                  "[--mm-layers L] [--prompt TEXT] [-t N] [--phase m6|m7] [--checks none|cheap|full]", a.c_str());
     }
     if (checks != "none" && checks != "cheap" && checks != "full") die("--checks: none, cheap or full");
-    // without -o: a private temporary directory, removed afterwards (ctest)
+    // without -o: a private temporary directory, removed afterward (ctest)
     const bool tmp_root = root.empty();
     if (tmp_root) {
         const char * t = getenv("TMPDIR");

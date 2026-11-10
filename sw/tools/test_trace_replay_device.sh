@@ -8,7 +8,7 @@
 #   3. a copy with one corrupted expect byte must fail on the device route (exit 1, one FAIL line);
 #   4. with SELFTEST: kind `launch` traces captured on the sim kind (TSR_TRACE, SW §5.5) while
 #      tsr-selftest runs `selftest` ids 1, 2, 3, 7 and 9, replayed as full launches through mock with
-#      the shadow (the capture's synthesised image loads the same words as IMAGE, tsr_devrun.h).
+#      the shadow (the capture's synthesized image loads the same words as IMAGE, tsr_devrun.h).
 set -u
 GEN=$1
 REPLAY=$2

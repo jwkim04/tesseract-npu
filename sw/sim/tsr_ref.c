@@ -8,7 +8,7 @@
 // Implementation rules
 //   - Every f32 operation goes through tsr_fadd/fsub/fmul/fdiv/fsqrt/frecip, which apply DAZ
 //     to the inputs with explicit bit tests, perform one native IEEE binary32 operation, and
-//     then apply FTZ and NaN canonicalisation with explicit bit tests. MXCSR is never read or
+//     then apply FTZ and NaN canonicalization with explicit bit tests. MXCSR is never read or
 //     written (the process also runs ggml CPU code).
 //   - The native operation is assumed to run with the default IEEE environment
 //     (round-to-nearest-even, no hardware FTZ/DAZ), which is what every hosted C process

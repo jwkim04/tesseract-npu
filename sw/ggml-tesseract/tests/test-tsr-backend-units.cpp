@@ -368,7 +368,7 @@ static void test_opl_ranges() {
     CHECK(wr[0].row == 2 * 64 && wr[0].stride == 6 * 64 && wr[0].hi == IO + 0x100000 + (2 * 6 + 2) * 64);
 }
 
-// tsr_ranges_overlap against a byte-set model, and the normalisation of tsr_rows_range.
+// tsr_ranges_overlap against a byte-set model, and the normalization of tsr_rows_range.
 static void test_range_overlap() {
     CHECK(tsr_rows_range(0, 0, 4, 64, 64).row == 0 && tsr_rows_range(0, 0, 4, 64, 64).hi == 256);   // touching rows
     CHECK(tsr_rows_range(0, 0, 1, 64, 640).row == 0 && tsr_rows_range(0, 0, 1, 64, 640).hi == 64);  // one row

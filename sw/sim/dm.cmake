@@ -1,5 +1,5 @@
 # sw/sim/dm.cmake — the debug-module model of the simulator (docs/design/05-debug.md §3, §9.1;
-# docs/design/06-software-verification.md §4.2, §4.3): tsr_dm.c, a behavioural riscv-dbg DM implementing
+# docs/design/06-software-verification.md §4.2, §4.3): tsr_dm.c, a behavioral riscv-dbg DM implementing
 # DB §9.1's DMI profile on the built-in hart (tsr_rv.c) and its bus (tsr_bus.c). Interface:
 # include/tsr_dm.h.
 #
