@@ -283,7 +283,7 @@ it when the block assignments or the platform change, and look at it before a bu
 
 | Region | Blocks |
 |---|---|
-| SLR0 platform Pblock | clusters 0 and 2 with their result assemblers (a cluster holds both of its weight streams), the pair source of clusters 0 and 2, the DDR0 bridge, the read-only bridge of channel 0, the DDR0 arbiter |
+| SLR0 platform Pblock | clusters 0 and 2 with their result assemblers (one per weight stream; a cluster holds both of its streams), the pair source of clusters 0 and 2, the DDR0 bridge, the read-only bridge of channel 0, the DDR0 arbiter |
 | `pblock_tsr_ctrl_plane`, child of SLR0 | the control core (Ibex, TCMs, debug module, bus, control window, every clock-domain crossing), the RV debug logic, the RV-side link ends, `u_issue` with its two checker classes (VU and AT), `u_csr`, the core side of the DB block, the issue and LCQ link ends |
 | SLR2 platform Pblock | clusters 1 and 3 with their result assemblers, the pair source of clusters 1 and 3, the DDR3 bridge, the read-only bridge of channel 3, the DDR3 arbiter |
 | `pblock_tsr_vu`, child of SLR2 | the whole vector unit: front end and both lane banks |
