@@ -28,6 +28,11 @@ Gemma 4 26B-A4B Q8_0 in the llama.cpp chat (left) on one Alveo U200 in full mode
 time. The shell sets `TSR_DEVICE=xrt`, `TSR_XCLBIN` and `LLAMA_ATTN_ROT_DISABLE=1`
 ([getting-started](docs/getting-started.md)). [MP4](docs/demo/demo.mp4)
 
+[![Profile report of one decode token of Gemma 4 E2B Q8_0: unit timeline for the card and the simulator, layer tree and summary tables](docs/demo/profile.png)](docs/demo/profile.png)
+
+The profile report of one decode token (Gemma 4 E2B Q8_0): a timeline per unit for the card and the
+simulator, the records by layer, and the device counters ([profiling](docs/prof-dbg.md)).
+
 ## Performance
 
 Decode and prefill rates on one Alveo U200 card, batch 1, in full mode. Prefill is 512 tokens at `-ub 512`
