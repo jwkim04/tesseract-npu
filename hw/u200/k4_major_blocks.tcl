@@ -13,19 +13,21 @@
 # here names a LUT, a register, a pipeline stage, a site or a BEL. Vivado places and routes inside the regions.
 # hw/viz/k4_pblock_preview.py draws the map from this file.
 #
-#   SLR0  clusters 0 and 2 with their result assemblers; the pair source of clusters 0 and 2; the DDR0 bridge and
-#         the DDR0 arbiter
+#   SLR0  clusters 0 and 2 with their result assemblers (each cluster holds both weight streams); the pair source of
+#         clusters 0 and 2; the DDR0 bridge, the read-only bridge of the second weight stream of channel 0 and the
+#         DDR0 arbiter
 #   SLR0  control Pblock (pblock_tsr_ctrl_plane, below): the control core (Ibex, debug module, TCMs, bus, control
 #         window, every clock-domain crossing, the RV side of the DB block), the issue path with its two checker
 #         classes, the CSR block and the DB block's core side, with the issue and LCQ ends of the control links
 #         (TSR_K4_CTRL, below)
-#   SLR2  clusters 1 and 3 with their result assemblers; the pair source of clusters 1 and 3; the DDR3 bridge and
-#         the DDR3 arbiter
+#   SLR2  clusters 1 and 3 with their result assemblers; the pair source of clusters 1 and 3; the DDR3 bridge, the
+#         read-only bridge of the second weight stream of channel 3 and the DDR3 arbiter
 #   SLR2  vector unit Pblock (pblock_tsr_vu, below): the whole vector unit, front end and both lane banks
 #         (TSR_K4_VU, below)
 #   SLR1  the data hub: SPM, the RISC-V SPM bridge (and the SPM end of its link), DMA with KVST, QACT and the
-#         DDR1 / DDR2 arbiters; the central gather receiver, the DDR1 / DDR2 bridges, the DMA-side boundary
-#         slices of channels 0 and 3 and the adapter's control logic are left to Vivado
+#         DDR1 / DDR2 arbiters; the central gather receiver, the DDR1 / DDR2 bridges (with the read-only bridges
+#         of channels 1 and 2), the DMA-side boundary slices of channels 0 and 3, the request and response
+#         stages of the second weight stream in the core's data path and the adapter's control logic are left to Vivado
 #
 # Why the control plane is in SLR0: the placed out-of-context core puts 9,292 CLB sites
 # in SLR1 with issue / CSR / DB there (estimated SLR1 occupancy with the shell 94.7 % or more; an earlier
@@ -198,10 +200,12 @@ foreach {pair slr} {0 0 1 2} {
   tsr_k4_major_block $slr "$tsr_k4_mvm/u_gather/g_pairs.g_pair\[$pair\].u_source"
 }
 
-# The AXI bridges of the outer DDR banks (the kernel body only; the bare core ends at the memory ports).
+# The AXI bridges of the outer DDR banks (the kernel body only; the bare core ends at the memory ports): the
+# bridge of the read-write port and the read-only bridge of the second weight stream (MVM_DUAL) of the channel.
 if {$tsr_k4_kernel} {
   foreach {channel slr} {0 0 3 2} {
     tsr_k4_major_block $slr "$tsr_k4_body/g_ch\[$channel\].u_br"
+    tsr_k4_major_block $slr "$tsr_k4_body/g_dual.g_chb\[$channel\].u_br"
   }
 }
 

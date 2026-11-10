@@ -7,7 +7,8 @@ the testbench wrappers from one table (docs/platform-u200.md §6).
 
 Kernels (kernel contract): module name = kernel name.
     tsr_u200_k1   NUM_CH 1, T_MAX 1   1-channel bring-up bitstream (m_axi_ch0)
-    tsr_u200_k4   NUM_CH 4, T_MAX 4   the full-feature card image (m_axi_ch0 .. m_axi_ch3): four MVM clusters
+    tsr_u200_k4   NUM_CH 4, T_MAX 4   the full-feature card image (m_axi_ch0 .. m_axi_ch3 and, with MVM_DUAL 1, the read-only
+                                      m_axi_chb0 .. m_axi_chb3: the second weight stream of every cluster): four MVM clusters
                                       with attention, the vector unit (8 / 8 / 4 lanes), KVST with masked
                                       metadata writes, paired two-flit gather, DDR0 / DDR3 local arbitration,
                                       the control core in SLR0 behind the narrow RV transport, the DB block
@@ -20,7 +21,9 @@ AXI_SLICES 2, RST_STAGES 3. With RST_PIPE 3, ap_rst_n must stay low for >= 4 cyc
 (docs/platform-u200.md §5).
 
 The kernels are `ap_ctrl_none` with interrupt="false"
-and only the ch<c> buffer args (EX §9.1); two clocks: ap_clk / ap_rst_n (the core and the adapter)
+and only the ch<c> buffer args (EX §9.1; the read-only ports m_axi_chb<c> have the args chb<c> at 0x100 + 8c with no
+register behind them: the port reads through the base of ch<c>, and the link connects it to the same DDR bank,
+hw/u200/k4.cfg); two clocks: ap_clk / ap_rst_n (the core and the adapter)
 and ap_clk_2 / ap_rst_n_2 (the control core, tsr_core clk_rv / rst_rv_n; CC §11.1, §13.3). The
 link configurations (hw/u200/k1.cfg, k4.cfg) request both clocks; ap_ctrl_none has the fallback of
 EX §9.1.
@@ -67,7 +70,7 @@ KERNELS = {
     #    needs the lane banks beside their owner clusters in the hook:
     #      add LOCAL_INTERMEDIATES=1, LOCAL_SCALE=1, LOCAL_SOFTCAP=1 to the entry below
     "tsr_u200_k1": dict(short="k1", NUM_CH=1, T_MAX=1, VU_FRONT_LANES=16, VU_EXP_LANES=8, VU_BACK_LANES=4, VU_LANE_PIPE=0),
-    "tsr_u200_k4": dict(short="k4", NUM_CH=4, T_MAX=4, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
+    "tsr_u200_k4": dict(short="k4", NUM_CH=4, T_MAX=4, MVM_DUAL=1, MVM_GATHER_PAIR=1, MVM_GATHER_FLITS=2,
                        DDR_LOCAL_PIPE=1, RV_LOCAL_TRANSPORT=1, XSLR_REG=1, FAST_CLK=1, VU_FRONT_LANES=8, VU_EXP_LANES=8,
                        VU_BACK_LANES=4, VU_LANE_PIPE=2, HAS_GDN=1),
 }
@@ -87,6 +90,14 @@ AXI = [
     ("wvalid", "out", 1), ("wready", "in", 1), ("wdata", "out", BEAT), ("wstrb", "out", BEAT // 8),
     ("wlast", "out", 1),
     ("bvalid", "in", 1), ("bready", "out", 1), ("bresp", "in", 2), ("bid", "in", 4),
+    ("arvalid", "out", 1), ("arready", "in", 1), ("araddr", "out", 64), ("arlen", "out", 8),
+    ("arsize", "out", 3), ("arburst", "out", 2), ("arlock", "out", 1), ("arcache", "out", 4),
+    ("arprot", "out", 3), ("arqos", "out", 4), ("arid", "out", 4),
+    ("rvalid", "in", 1), ("rready", "out", 1), ("rdata", "in", BEAT), ("rresp", "in", 2),
+    ("rlast", "in", 1), ("rid", "in", 4),
+]
+# the read-only second port of every channel (MVM_DUAL): AR and R channels only
+AXIB = [
     ("arvalid", "out", 1), ("arready", "in", 1), ("araddr", "out", 64), ("arlen", "out", 8),
     ("arsize", "out", 3), ("arburst", "out", 2), ("arlock", "out", 1), ("arcache", "out", 4),
     ("arprot", "out", 3), ("arqos", "out", 4), ("arid", "out", 4),
@@ -122,7 +133,7 @@ def gen_top(name: str, k: dict) -> str:
         if knob in k:
             params[knob] = k[knob]
     params.update(COMMON)
-    for knob in ("HAS_VU", "HAS_ATT", "HAS_GDN", "HAS_TRW", "HIST_DEPTH",
+    for knob in ("MVM_DUAL", "HAS_VU", "HAS_ATT", "HAS_GDN", "HAS_TRW", "HIST_DEPTH",
                  "MVM_GATHER_PAIR", "MVM_GATHER_FLITS", "DDR_LOCAL_PIPE", "RV_LOCAL_TRANSPORT", "XSLR_REG", "FAST_CLK",
                  "LOCAL_INTERMEDIATES", "LOCAL_SCALE", "LOCAL_SOFTCAP"):
         if knob in k:
@@ -141,6 +152,8 @@ def gen_top(name: str, k: dict) -> str:
     L.append("// Ports: ap_clk, ap_rst_n (active low, synchronous: the core and the adapter), ap_clk_2,")
     L.append("// ap_rst_n_2 (the control core's clock and reset), s_axi_control (AXI4-Lite, 32-bit")
     L.append("// data, 13-bit address), m_axi_ch<c> for c < %d (AXI4, 512-bit data, 64-bit address, 4-bit ID)." % C)
+    if k.get("MVM_DUAL"):
+        L.append("// and m_axi_chb<c> for c < %d (the dual weight stream: read-only AXI4, the AR and R channels only)." % C)
     L.append("// Register map and protocol: docs/design EX §9 (ap_ctrl_none); packaging: docs/platform-u200.md;")
     L.append("// kernel_%s.xml describes the args." % k["short"])
     L.append("// Plain Verilog-2001 (the IP packager and IP integrator expect a Verilog top); the body is SystemVerilog.")
@@ -155,12 +168,18 @@ def gen_top(name: str, k: dict) -> str:
     for c in range(C):
         for s_, d, w in AXI:
             ports.append("  %-6s wire %-8s m_axi_ch%d_%s" % ("input" if d == "in" else "output", _vw(w), c, s_))
+    if k.get("MVM_DUAL"):
+        for c in range(C):
+            for s_, d, w in AXIB:
+                ports.append("  %-6s wire %-8s m_axi_chb%d_%s" % ("input" if d == "in" else "output", _vw(w), c, s_))
     L.append(",\n".join(ports))
     L.append(");")
     L.append("")
     L.append("  // per-channel signals packed as tsr_xrt_kernel's [NUM_CH][W] ports (channel c = bits [c*W +: W])")
     for s_, d, w in AXI:
         L.append("  wire [%d:0] %s;" % (C * w - 1, s_))
+    for s_, d, w in AXIB:
+        L.append("  wire [%d:0] b_%s;" % (C * w - 1, s_))
     L.append("")
     for s_, d, w in AXI:
         for c in range(C):
@@ -168,13 +187,27 @@ def gen_top(name: str, k: dict) -> str:
                 L.append("  assign m_axi_ch%d_%s = %s[%d +: %d];" % (c, s_, s_, c * w, w))
             else:
                 L.append("  assign %s[%d +: %d] = m_axi_ch%d_%s;" % (s_, c * w, w, c, s_))
+    for s_, d, w in AXIB:
+        for c in range(C):
+            if not k.get("MVM_DUAL"):
+                if d == "in":
+                    L.append("  assign b_%s[%d +: %d] = %d'd0;" % (s_, c * w, w, w))
+            elif d == "out":
+                L.append("  assign m_axi_chb%d_%s = b_%s[%d +: %d];" % (c, s_, s_, c * w, w))
+            else:
+                L.append("  assign b_%s[%d +: %d] = m_axi_chb%d_%s;" % (s_, c * w, w, c, s_))
     L.append("")
+    if not k.get("MVM_DUAL"):
+        L.append("  // no dual weight stream: the kernel's read-only port outputs are unused")
+        L.append("  wire unused_b = &{1'b0, %s};" % ", ".join("b_%s" % s_ for s_, d, _ in AXIB if d == "out"))
+        L.append("")
     L.append("  tsr_xrt_kernel #(")
     L.append(",\n".join("    .%s(%s)" % (p, v) for p, v in params.items()))
     L.append("  ) u_kernel (")
     conns = ["    .ap_clk(ap_clk)", "    .ap_rst_n(ap_rst_n)", "    .ap_clk_2(ap_clk_2)", "    .ap_rst_n_2(ap_rst_n_2)"]
     conns += ["    .s_axi_control_%s(s_axi_control_%s)" % (s_, s_) for s_, _, _ in AXIL]
     conns += ["    .m_axi_%s(%s)" % (s_, s_) for s_, _, _ in AXI]
+    conns += ["    .m_axib_%s(b_%s)" % (s_, s_) for s_, _, _ in AXIB]
     L.append(",\n".join(conns))
     L.append("  );")
     L.append("")
@@ -203,6 +236,8 @@ def gen_wrap(name: str, k: dict) -> str:
         ports.append("  %s %-8s s_axi_control_%s" % (_dir(d), _w(w), s))
     for s, d, w in AXI:
         ports.append("  %s [NUM_CH-1:0]%s m_axi_%s" % (_dir(d), "" if w == 1 else "[%d:0]" % (w - 1), s))
+    for s, d, w in AXIB:
+        ports.append("  %s [NUM_CH-1:0]%s m_axib_%s" % (_dir(d), "" if w == 1 else "[%d:0]" % (w - 1), s))
     L.append(",\n".join(ports))
     L.append(");")
     L.append("")
@@ -215,6 +250,11 @@ def gen_wrap(name: str, k: dict) -> str:
     conns += ["    .s_axi_control_%s" % s for s, _, _ in AXIL]
     for c in range(C):
         conns += ["    .m_axi_ch%d_%s(m_axi_%s[%d])" % (c, s, s, c) for s, _, _ in AXI]
+    if k.get("MVM_DUAL"):
+        for c in range(C):
+            conns += ["    .m_axi_chb%d_%s(m_axib_%s[%d])" % (c, s, s, c) for s, _, _ in AXIB]
+    else:
+        L.append("  // no dual weight stream: m_axib_* are not driven (outputs 0)")
     L.append(",\n".join(conns))
     L.append("  );")
     L.append("")
@@ -224,11 +264,14 @@ def gen_wrap(name: str, k: dict) -> str:
 
 def gen_xml(name: str, k: dict) -> str:
     C = k["NUM_CH"]
+    tail = (['     window at 0x1000..0x1FFF has no args. The read-only ports m_axi_chb<c> (MVM_DUAL) have the args chb<c> at',
+             '     0x100 + 8c: no register is behind them (reads 0, writes ignored; the port reads through the base of ch<c>);',
+             '     the packaging check wants a register for every master, and the link binds the port to a bank by it. -->']
+            if k.get("MVM_DUAL") else ['     window at 0x1000..0x1FFF has no args. -->'])
     L = ['<?xml version="1.0" encoding="UTF-8"?>',
          '<!-- kernel_%s.xml — GENERATED by rtl/platform/alveo_xrt/gen_tops.py; do not edit.' % k["short"],
          '     Vitis RTL kernel %s: s_axi_control register map = docs/design EX §9.2 (ap_ctrl_none: the host' % name,
-         '     uses register access only, xrt::ip). The only args are the ch<c> buffers; the core CSR',
-         '     window at 0x1000..0x1FFF has no args. -->',
+         '     uses register access only, xrt::ip). The only args are the ch<c> buffers; the core CSR'] + tail + [
          '<root versionMajor="1" versionMinor="6">',
          '  <kernel name="%s" language="ip_c" vlnv="tesseract:kernel:%s:1.0" attributes="" '
          'preferredWorkGroupSizeMultiple="0" workGroupSize="1" interrupt="false" hwControlProtocol="ap_ctrl_none">'
@@ -238,9 +281,15 @@ def gen_xml(name: str, k: dict) -> str:
     for c in range(C):
         L.append('      <port name="m_axi_ch%d" mode="master" range="0xFFFFFFFFFFFFFFFF" dataWidth="%d" '
                  'portType="addressable" base="0x0"/>' % (c, BEAT))
+    if k.get("MVM_DUAL"):
+        for c in range(C):
+            L.append('      <port name="m_axi_chb%d" mode="master" range="0xFFFFFFFFFFFFFFFF" dataWidth="%d" '
+                     'portType="addressable" base="0x0"/>' % (c, BEAT))
     L.append('    </ports>')
     L.append('    <args>')
     args = [("ch%d" % c, 1, "m_axi_ch%d" % c, 8, 0x040 + 8 * c, "void*") for c in range(C)]
+    if k.get("MVM_DUAL"):
+        args += [("chb%d" % c, 1, "m_axi_chb%d" % c, 8, 0x100 + 8 * c, "void*") for c in range(C)]
     for i, (n, aq, port, size, off, ty) in enumerate(args):
         L.append('      <arg name="%s" addressQualifier="%d" id="%d" port="%s" size="0x%x" offset="0x%03X" '
                  'type="%s" hostOffset="0x0" hostSize="0x%x"/>' % (n, aq, i, port, size, off, ty, size))

@@ -33,7 +33,7 @@ checks are CC §11.1. The request and its checks are in §8.3.
 | Kernel | `NUM_CH` | `T_MAX` | Role |
 |---|---|---|---|
 | `tsr_u200_k1` | 1 | 1 | one-channel image, whole core in SLR1 |
-| `tsr_u200_k4` | 4 | 4 | the release image: four channels, prefill up to 4 tokens |
+| `tsr_u200_k4` | 4 | 4 | the release image: four channels, prefill up to 4 tokens, with the dual weight stream (`MVM_DUAL` 1) |
 
 Both use the U200 parameters of [rtl-mvm.md](rtl-mvm.md) §14.2 (SPM 4 MiB with `SPM_RD_LAT` 4, `MVM_BC_PIPE` 2, `MVM_RES_PIPE` 2,
 `MVM_MAC_LAT` 9, `RST_PIPE` 3), `CH_BYTES` 16 GiB (the design's limit per channel, §11), the other `tsr_core` parameters at the U200 defaults (`tsr_pkg::TSR_DEF_*`),
@@ -43,10 +43,15 @@ sources are `rtl/filelist_xilinx.f` (the Xilinx technology wrappers, behavior id
 
 Ports are `s_axi_control` (AXI4-Lite, 32-bit data, 13-bit address, control range 0x2000) and `m_axi_ch<c>` for c < `NUM_CH` (AXI4,
 512-bit data, 64-bit address, 4-bit ID; ID, ADDR, LEN, SIZE, BURST, LOCK, CACHE, PROT, QOS on AR and AW, DATA, STRB and LAST on W,
-ID and RESP on B, ID, DATA, RESP and LAST on R).
+ID and RESP on B, ID, DATA, RESP and LAST on R). A kernel with `MVM_DUAL` 1 (`tsr_u200_k4`) has one more master per channel,
+`m_axi_chb<c>`, the read-only port of the second weight stream (AXI4, 512-bit data, 64-bit address, 4-bit ID; only the AR and R
+channels). The kernels without it have no such ports.
 
 Kernel arguments (`kernel_k*.xml`) are `ch<c>` at 0x040 + 8c: 8 bytes, `void*` on `m_axi_ch<c>`, the buffer bound to channel c.
-The argument ids are 0 to `NUM_CH` - 1. The core CSR window at 0x1000 has no arguments.
+The argument ids are 0 to `NUM_CH` - 1. A kernel with `m_axi_chb<c>` has the arguments `chb<c>` at 0x100 + 8c (ids `NUM_CH` to
+2 `NUM_CH` - 1) on those ports. No register is behind them (they read 0 and ignore writes): the packaging check wants an
+argument for every master and the link connects the port to a memory bank through it. The port reads through the base of
+`ch<c>`. The core CSR window at 0x1000 has no arguments.
 
 The core boundary (EX §9.3) has no `done`. It has `clk_rv` and `rst_rv_n` (from `ap_clk_2` and `ap_rst_n_2`), `plat_err_i` and
 `host_irq_o`. `plat_err_i` is a level from the platform: `ADAPTER_STATUS` bits 0 to 2 or a nonzero error count. It shows in
@@ -61,7 +66,8 @@ WSTRB. The map is implemented in `tsr_xrt_ctrl.sv` and follows EX §9.2.
 |---|---|---|---|
 | 0x000 to 0x03C | reserved | R | reads 0 |
 | 0x040 + 8c | `ch<c>_base` lo / hi | RW (c < `NUM_CH`) | device byte address of beat 0 of channel c, 4 KiB aligned. Written while `MEM_EN` = 0. A write while `MEM_EN` = 1 is ignored and sets `BASE_LOCKED` |
-| 0x0E0 | `ADAPTER_CTRL` | RW | bit 0 `MEM_EN`. At its rising edge every base is checked for 4 KiB alignment and latched into the bridges. A misaligned base keeps `MEM_EN` at 0 and sets `ADAPTER_STATUS` bit 3. Core memory requests are held, not dropped, while it is 0 (`REQ_HELD`) |
+| 0x0E0 | `ADAPTER_CTRL` | RW | bit 0 `MEM_EN`. At its rising edge every base is checked for 4 KiB alignment and latched into the bridges. A misaligned base keeps `MEM_EN` at 0 and sets `ADAPTER_STATUS` bit 3. Core memory requests are held, not dropped, while it is 0 (`REQ_HELD`). Bit 1 `DUAL_DIS` (reset 0) turns the dual weight stream off: the core input `cfg_dual_en` is its inverse and is sampled per MVM ([rtl-mvm.md](rtl-mvm.md) §15), so a write takes effect for the MVMs accepted after it. A write of 1 to bit 0 only keeps the stream on |
+| 0x100 + 8c | `chb<c>` | - | arguments of `m_axi_chb<c>` (kernels with the dual weight stream): no register, read 0 |
 | 0x0F0 | `ADAPTER_STATUS` | R / W1C, sticky | bit 0 RRESP error, bit 1 BRESP error, bit 2 response with no outstanding request for its ID, bit 3 base not aligned at the `MEM_EN` edge, bit 4 `REQ_HELD`, bit 5 `BASE_LOCKED`. Bits [31:16] hold a saturating count of error responses. A 1 written to bit k (k < 6) clears it. A 1 anywhere in bits [31:16] clears the count. An event in the same cycle wins over the clear |
 | 0x0F4 | `ADAPTER_VERSION` | R | `{16'h0001, 8'h00, NUM_CH}`; the major number is `tsr_tables_pkg::TSR_ADAPTER_MAJOR` |
 | 0x1000 + off | core CSR window | | `off` < 0x1000 passes to the core CSR port at any time. Writes need WSTRB = 0xF; a partial write is dropped and still answered OKAY. The map behind it is EX §5 |
@@ -108,6 +114,13 @@ The launch costs are in EX §4.11.
   (§11).
 - The bases are registered next to the adders (a 64-bit add per request). The bridges read the copy latched at the `MEM_EN` edge
   (§2).
+- Read-only bridges. A kernel with `MVM_DUAL` has a second bridge per channel for `m_axi_chb<c>`: the same module with
+  `READ_ONLY` 1, the same read path cycle for cycle (slices, ID filter, events) and the base of channel c. The write request,
+  write data and write response channels do not exist: the core-side write ports never accept, the AXI write outputs are 0 and
+  the write inputs are ignored. Its R errors and unexpected responses go to `ADAPTER_STATUS` bits 0 and 2 and the count, like the
+  main bridge's. Its requests are held while `MEM_EN` is 0 and set `REQ_HELD` like the main bridge's. The reset has one more set
+  of copies for each of these bridges (`rst_ch_n` index `NUM_CH` + c). Both ports of channel c connect to the same bank
+  (`sp=tsr_k4.m_axi_chb<c>:DDR[c]` in `hw/u200/k4.cfg`), so the address `base + 64 * addr` means the same byte on both.
 
 ## 5. Reset behavior
 
@@ -164,7 +177,7 @@ Requirements and guarantees:
 `gen_tops.py` writes, from one table, `tsr_u200_k1.v` and `tsr_u200_k4.v`, `kernel_k1.xml` and `kernel_k4.xml`, and the testbench
 wrappers `tb/platform/sv/kwrap_*.sv`. The tops are Verilog-2001 with named ports like the tops of the RTL Kernel Wizard, because
 the IP packager warns that SystemVerilog tops are not fully supported. The body is SystemVerilog. The XML carries the `ch<c>`
-arguments at the offsets of §1, the control range 0x2000, `hwControlProtocol="ap_ctrl_none"` and `interrupt="false"`. A wrapper is
+arguments (and the `chb<c>` arguments of a kernel with the dual weight stream) at the offsets of §1, the control range 0x2000, `hwControlProtocol="ap_ctrl_none"` and `interrupt="false"`. A wrapper is
 the named top with the packed port list of `tsr_xrt_kernel`, so one C++ testbench drives the body and both packaged tops.
 `gen_tops.py --check`, run by `lint.sh`, fails when a generated file is stale.
 
@@ -183,8 +196,9 @@ vivado -mode batch -nojournal -nolog -source rtl/platform/alveo_xrt/package_xo.t
 
 The script builds a project with every source (the core filelist, default `rtl/filelist_xilinx.f`, and the platform filelist) and
 the kernel as top. It runs `ipx::package_project` with the sources imported and sets the Vitis kernel properties: `sdx_kernel`
-rtl, no user parameters, `ap_clk` associated with `s_axi_control`, `m_axi_ch<c>` and `ap_rst_n`, the m_axi hints
-(`MAX_BURST_LENGTH` 64, `NUM_READ_OUTSTANDING` 16, `NUM_WRITE_OUTSTANDING` 32) and the register map with the arguments. The
+rtl, no user parameters, `ap_clk` associated with `s_axi_control`, `m_axi_ch<c>`, `m_axi_chb<c>` (a read-only master, which the
+IP packager and the XRT integrity check accept) and `ap_rst_n`, the m_axi hints (`MAX_BURST_LENGTH` 64, `NUM_READ_OUTSTANDING` 16,
+`NUM_WRITE_OUTSTANDING` 32, 1 for the read-only ports) and the register map with the arguments. The
 FREQ_HZ values in the IP are declared values; the link configs decide the clocks. It then runs `ipx::check_integrity -kernel` and
 `-xrt` and `package_xo` with `kernel_<k>.xml`. Remaining packager warnings are cosmetic or are printed by `ipx::package_project`
 before the script sets the property.
@@ -269,12 +283,12 @@ it when the block assignments or the platform change, and look at it before a bu
 
 | Region | Blocks |
 |---|---|
-| SLR0 platform Pblock | clusters 0 and 2 with their result assemblers, the pair source of clusters 0 and 2, the DDR0 bridge, the DDR0 arbiter |
+| SLR0 platform Pblock | clusters 0 and 2 with their result assemblers (a cluster holds both of its weight streams), the pair source of clusters 0 and 2, the DDR0 bridge, the read-only bridge of channel 0, the DDR0 arbiter |
 | `pblock_tsr_ctrl_plane`, child of SLR0 | the control core (Ibex, TCMs, debug module, bus, control window, every clock-domain crossing), the RV debug logic, the RV-side link ends, `u_issue` with its two checker classes (VU and AT), `u_csr`, the core side of the DB block, the issue and LCQ link ends |
-| SLR2 platform Pblock | clusters 1 and 3 with their result assemblers, the pair source of clusters 1 and 3, the DDR3 bridge, the DDR3 arbiter |
+| SLR2 platform Pblock | clusters 1 and 3 with their result assemblers, the pair source of clusters 1 and 3, the DDR3 bridge, the read-only bridge of channel 3, the DDR3 arbiter |
 | `pblock_tsr_vu`, child of SLR2 | the whole vector unit: front end and both lane banks |
 | SLR1 platform Pblock | SPM, the RISC-V SPM bridge and the SPM end of its link, DMA with KVST, QACT, the arbiters of channels 1 and 2 |
-| unassigned | the central gather receiver, the DDR1 and DDR2 bridges, the DMA-side DDR boundary slices of channels 0 and 3, the `XSLR_REG` glue, the adapter's control logic |
+| unassigned | the central gather receiver, the DDR1 and DDR2 bridges and the read-only bridges of channels 1 and 2, the request and response stages of the second weight stream in the core's data path, the DMA-side DDR boundary slices of channels 0 and 3, the `XSLR_REG` glue, the adapter's control logic |
 
 The control Pblock is `CLOCKREGION_X0Y3:CLOCKREGION_X1Y4`, `CLOCKREGION_X2Y4` and `CLOCKREGION_X3Y3:CLOCKREGION_X5Y4`. It has
 16,300 CLBs, 252 RAMB36 and 840 DSP. It spans the two rows at the SLR1 boundary and leaves out the clock regions of the DDR0
@@ -595,6 +609,11 @@ All of it runs without hardware. `tb/run_all.sh` collects these tests.
 
 The kernel bench drives the packaged tops and the kernel body from one C++ testbench through the wrappers. It checks every channel
 on every cycle with an AXI4 checker and a randomized memory model, and it checks the adapter registers.
+
+The dual weight stream is checked in `tb/platform/test_axi_read_only.py` (the read-only bridge against a random AXI slave:
+SLICES 1, 2 and 4, error and stray responses, random write-side stimulus that must be ignored), in `test_adapter.py`
+(`DUAL_DIS` against the mock model, `dual_en` and `m_axib_*` of a kernel with `MVM_DUAL` 1, the `chb<c>` offsets) and in
+`tb/core` (the K4-like core on the same DRAM image through both ports, against the simulator).
 
 ### 10.2 Replays
 

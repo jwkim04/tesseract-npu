@@ -123,6 +123,8 @@ def expected(prefix, kernel, ctrl_where, vu_where="vu"):
     if kernel:
         want[f"{prefix}g_ch[0].u_br"] = slr(0)
         want[f"{prefix}g_ch[3].u_br"] = slr(2)
+        want[f"{prefix}g_dual.g_chb[0].u_br"] = slr(0)
+        want[f"{prefix}g_dual.g_chb[3].u_br"] = slr(2)
     want[core + "u_ctrl"] = CTRL
     want[core + "g_db.u_dbg_rv"] = CTRL
     for e in ("u_spm_rx", "u_issue_tx", "u_lq_tx"):
@@ -194,7 +196,8 @@ def test_only_whole_blocks_are_named():
     assert [p for p in got if p.endswith("g_vu.u_vu")]
 
 
-@pytest.mark.parametrize("missing", ["g_cl[2].u_cl", "u_qact", "g_rv_local.u_lq_rx", "g_ch[3].u_br", "u_gather/g_asm[1]",
+@pytest.mark.parametrize("missing", ["g_cl[2].u_cl", "u_qact", "g_rv_local.u_lq_rx", "g_ch[3].u_br", "g_dual.g_chb[0].u_br",
+                                     "g_dual.g_chb[3].u_br", "u_gather/g_asm[1]",
                                      "g_vu.u_vu", "g_xc.u_xc", "g_xc.g_at.u_chk_at", "g_pairs.g_pair[1].u_source"])
 def test_missing_block_stops_the_hook(missing):
     r, got, _ = run_hook(missing=missing)

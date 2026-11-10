@@ -235,13 +235,18 @@ xrt_kdev::xrt_kdev() {
 
     // Arguments, identified by their register offset (kernel contract, EX §9.1); names are free.
     // The channel buffers are the only arguments: cmd_addr / cmd_count / arg0-7 are refused.
-    std::vector<int> ch_by_slot(KERNEL_MAX_CH, -1);
+    // The image with the dual weight stream has the args chb<c> at 0x100 + 8c as well (docs/rtl-mvm.md §15): the
+    // read-only second port of channel c, with no register behind it. It has to be connected to the memory of ch<c>.
+    std::vector<int> ch_by_slot(KERNEL_MAX_CH, -1), chb_by_slot(KERNEL_MAX_CH, -1);
     for (const auto & a : xk.get_args()) {
         const uint64_t off = a.get_offset(), sz = a.get_size();
         const int idx = (int) a.get_index();
         if (off >= KREG_CH_BASE0 && off < KREG_ADAPTER_STATUS && (off - KREG_CH_BASE0) % 8 == 0 && sz == 8 &&
             !a.get_mems().empty()) {
             ch_by_slot[(off - KREG_CH_BASE0) / 8] = idx;
+        } else if (off >= KREG_CHB_BASE0 && off < KREG_CHB_BASE0 + 8 * KERNEL_MAX_CH && (off - KREG_CHB_BASE0) % 8 == 0 &&
+                   sz == 8 && !a.get_mems().empty()) {
+            chb_by_slot[(off - KREG_CHB_BASE0) / 8] = idx;
         } else {
             throw std::runtime_error(fmt("kernel %s: argument %s (offset 0x%" PRIx64 ", %" PRIu64 " bytes) is not in the "
                                          "kernel contract (an older xclbin without the control core?)", kname_.c_str(),
@@ -252,6 +257,12 @@ xrt_kdev::xrt_kdev() {
     for (uint32_t c = 0; c < KERNEL_MAX_CH; ++c) {
         if (ch_by_slot[c] >= 0 && c != a_ch_.size()) args_ok = false;   // channel slots must be contiguous from 0
         if (ch_by_slot[c] >= 0) a_ch_.push_back(ch_by_slot[c]);
+    }
+    for (uint32_t c = 0; c < KERNEL_MAX_CH; ++c) {                                   // chb<c> only for a channel c, and all or none
+        if (chb_by_slot[c] >= 0 && c >= a_ch_.size()) args_ok = false;
+    }
+    for (uint32_t c = 0; c < a_ch_.size(); ++c) {
+        if ((chb_by_slot[c] >= 0) != (chb_by_slot[0] >= 0)) args_ok = false;
     }
     if (!args_ok || a_ch_.empty() || a_ch_.size() > TSR_NUM_CH_MAX) {
         throw std::runtime_error(fmt("kernel %s: arguments do not match the kernel contract (ch0..ch(C-1) buffers at "
@@ -281,6 +292,16 @@ xrt_kdev::xrt_kdev() {
             if ((int) a.get_index() == a_ch_[c] && !a.get_mems().empty()) m = a.get_mems().front();
         }
         if (!m) throw std::runtime_error(fmt("kernel %s: arg ch%zu has no memory connection", kname_.c_str(), c));
+        if (chb_by_slot[c] >= 0) {                                      // the read-only second port reads the same bank
+            xrt::xclbin::mem mb;
+            for (const auto & a : kargs) {
+                if ((int) a.get_index() == chb_by_slot[c] && !a.get_mems().empty()) mb = a.get_mems().front();
+            }
+            if (!mb || mb.get_index() != m.get_index()) {
+                throw std::runtime_error(fmt("kernel %s: arg chb%zu is not connected to the memory of arg ch%zu (%s)",
+                                             kname_.c_str(), c, c, m.get_tag().c_str()));
+            }
+        }
         const int grp = m.get_index();
         const uint64_t bank = m.get_size_kb() * 1024ull;
         const std::string tag = m.get_tag();

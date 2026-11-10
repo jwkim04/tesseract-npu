@@ -92,8 +92,11 @@ def labels(paths, reduced=False):
     for path in paths:
         tail = path.rsplit("/", 1)[-1]
         match = re.fullmatch(r'g_(cl|asm|bank|ch)\[(\d+)\]\.(u_cl|u_asm|u_bank|u_br|u_arb)', tail)
+        read_only = re.fullmatch(r'g_dual\.g_chb\[(\d+)\]\.u_br', tail)
         if match:
             classes[match[3]].append(match[2])
+        elif read_only:
+            classes["u_br_b"].append(read_only[1])
         else:
             pair = re.fullmatch(r'g_(?:local_att|pairs)\.g_pair\[(\d+)\]\.(u_local_asmax|u_source)', tail)
             if pair:
@@ -113,7 +116,7 @@ def labels(paths, reduced=False):
             classes[key] = [""]
     names = (("u_cl", "클러스터"), ("u_asm", "결과 조립기"), ("u_bank", "VU·계수 bank"),
              ("u_local_asmax", "로컬 어텐션"), ("u_source", "결과 수집·후처리"),
-             ("u_br", "DDR 브리지"), ("u_arb", "DDR 중재기"), ("u_spm", "SPM"),
+             ("u_br", "DDR 브리지"), ("u_br_b", "DDR 읽기 전용 브리지(둘째 가중치 스트림)"), ("u_arb", "DDR 중재기"), ("u_spm", "SPM"),
              ("u_bridge", "RV↔SPM 접속부"),
              ("u_ctrl", "RV·TCM·CDC"), ("g_db.u_dbg_rv", "RV 디버그"),
              ("rv_link", "제어 전송 RV측"), ("core_link", "제어 전송 중앙측"),

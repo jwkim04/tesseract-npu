@@ -37,7 +37,8 @@ namespace tsr {
 // ---------------------------------------------------------------------------
 enum : uint32_t {
     KREG_CH_BASE0        = TSR_SAXI_CH_BASE_LO_BASE,   // ch c base (u64, 4 KiB aligned): lo at 0x040 + 8c, hi at +4
-    KREG_ADAPTER_CTRL    = TSR_SAXI_ADAPTER_CTRL,      // bit0 MEM_EN
+    KREG_CHB_BASE0       = 0x100,                      // args chb<c> of the read-only second ports at 0x100 + 8c: no register behind them
+    KREG_ADAPTER_CTRL    = TSR_SAXI_ADAPTER_CTRL,      // bit0 MEM_EN, bit1 DUAL_DIS
     KREG_ADAPTER_STATUS  = TSR_SAXI_ADAPTER_STATUS,    // R / W1C sticky
     KREG_ADAPTER_VERSION = TSR_SAXI_ADAPTER_VERSION,   // {16'h0001, 8'h00, NUM_CH}
     KREG_CSR_WINDOW      = TSR_SAXI_CORE_BASE,         // core CSR off at 0x1000 + off, off < 0x1000

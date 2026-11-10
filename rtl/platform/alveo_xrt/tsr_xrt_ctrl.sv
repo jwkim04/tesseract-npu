@@ -13,7 +13,9 @@
 //   0x040 + 8c      ch<c>_base lo / hi, c < NUM_CH: device byte address of the buffer bound to
 //                   m_axi_ch<c> (4 KiB aligned by the host). Written while MEM_EN = 0; a write while
 //                   MEM_EN = 1 is ignored and sets BASE_LOCKED. Reads return the register.
-//   0x0E0           ADAPTER_CTRL (RW): bit0 MEM_EN. A write of 1 while MEM_EN = 0: if every base is
+//   0x0E0           ADAPTER_CTRL (RW): bit1 DUAL_DIS (reset 0: the dual weight stream of the MVM unit, docs/rtl-mvm.md §15,
+//                   is enabled; 1 disables it: the core input cfg_dual_en is 0. Effective for the MVMs accepted after
+//                   the write; written with bit0 in one access, the host sets it before it binds); bit0 MEM_EN. A write of 1 while MEM_EN = 0: if every base is
 //                   4 KiB aligned (lo[11:0] = 0), the bases are latched into the bridges (ch_base)
 //                   and MEM_EN := 1; otherwise MEM_EN stays 0 and BASE_MISALIGNED is set. A write
 //                   of 0 clears MEM_EN (the host does so only with the core idle; outstanding
@@ -77,11 +79,15 @@ module tsr_xrt_ctrl
   // ---- channel bridges, memory-request gate, platform error ----
   output logic [NUM_CH-1:0][63:0]    ch_base,        // latched at MEM_EN
   output logic                       mem_en,
+  output logic                       dual_en,        // ~ADAPTER_CTRL.DUAL_DIS: the core's cfg_dual_en (a flop)
   input  logic                       ev_req_held,    // a core memory request offered while MEM_EN = 0
   output logic                       plat_err,
   input  logic [NUM_CH-1:0]          ev_rresp_err,
   input  logic [NUM_CH-1:0]          ev_bresp_err,
-  input  logic [NUM_CH-1:0]          ev_unexpected
+  input  logic [NUM_CH-1:0]          ev_unexpected,
+  // the read-only second port of every channel (MVM_DUAL; tied 0 without it): R beats with RRESP != OKAY, and R beats dropped
+  input  logic [NUM_CH-1:0]          ev2_rresp_err,
+  input  logic [NUM_CH-1:0]          ev2_unexpected
 );
 
   if (AXIL_AW != 13) begin : g_chk_aw
@@ -253,13 +259,14 @@ module tsr_xrt_ctrl
   logic [NUM_CH-1:0][63:0]    base_reg_q;      // the registers as written
   logic [NUM_CH-1:0][63:0]    base_lat_q;      // latched at MEM_EN (the bridges' bases)
   logic                       mem_en_q;
+  logic                       dual_en_q;       // ~ADAPTER_CTRL.DUAL_DIS
   logic [5:0]                 ast_q;           // ADAPTER_STATUS sticky bits 0..5
   logic [15:0]                acnt_q;          // ADAPTER_STATUS error count
   logic                       plat_err_q;
   logic                       held_q;          // ev_req_held, registered
 
   // Bridge events: registered here (they come from other SLRs), counted one cycle later.
-  logic [NUM_CH-1:0]          evr_q, evb_q, evu_q;
+  logic [NUM_CH-1:0]          evr_q, evb_q, evu_q, evr2_q, evu2_q;
   logic [5:0]                 nerr_q;          // error responses in the cycle before
   logic                       anyr_q, anyb_q, anyu_q;
   logic [5:0]                 ast_d;
@@ -310,6 +317,9 @@ module tsr_xrt_ctrl
       evr_q       <= '0;
       evb_q       <= '0;
       evu_q       <= '0;
+      evr2_q      <= '0;
+      evu2_q      <= '0;
+      dual_en_q   <= 1'b1;
       nerr_q      <= '0;
       anyr_q      <= 1'b0;
       anyb_q      <= 1'b0;
@@ -318,12 +328,15 @@ module tsr_xrt_ctrl
       evr_q  <= ev_rresp_err;
       evb_q  <= ev_bresp_err;
       evu_q  <= ev_unexpected;
-      anyr_q <= |evr_q;
+      evr2_q <= ev2_rresp_err;
+      evu2_q <= ev2_unexpected;
+      anyr_q <= |evr_q | |evr2_q;
       anyb_q <= |evb_q;
-      anyu_q <= |evu_q;
-      nerr_q <= 6'($countones(evr_q)) + 6'($countones(evb_q));
+      anyu_q <= |evu_q | |evu2_q;
+      nerr_q <= 6'($countones(evr_q)) + 6'($countones(evb_q)) + 6'($countones(evr2_q));
       held_q <= ev_req_held;
       if (actrl_wr) begin
+        dual_en_q <= ~ax_wdata_q[1];
         if (!ax_wdata_q[0]) begin
           mem_en_q <= 1'b0;
         end else if (en_rise && all_aligned) begin
@@ -347,6 +360,7 @@ module tsr_xrt_ctrl
 
   assign ch_base  = base_lat_q;
   assign mem_en   = mem_en_q;
+  assign dual_en  = dual_en_q;
   assign plat_err = plat_err_q;
 
   // =============================================================================================
@@ -355,7 +369,7 @@ module tsr_xrt_ctrl
   always_comb begin
     reg_rdata = '0;
     unique case (ax_off)
-      A_ACTRL:    reg_rdata = {31'd0, mem_en_q};
+      A_ACTRL:    reg_rdata = {30'd0, ~dual_en_q, mem_en_q};
       A_ASTATUS:  reg_rdata = {acnt_q, 10'd0, ast_q};
       A_AVERSION: reg_rdata = ADAPTER_VERSION;
       default: ;

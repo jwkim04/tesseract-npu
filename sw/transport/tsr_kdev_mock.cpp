@@ -114,7 +114,7 @@ int mock_kdev::reg_read(uint32_t off, uint32_t * val) {
     } else if (off >= KREG_CH_BASE0 && off < KREG_CH_BASE0 + 8 * o_.num_ch) {
         v = base_[(off - KREG_CH_BASE0) / 4];
     } else if (off == KREG_ADAPTER_CTRL) {
-        v = mem_en_ ? TSR_ADAPTER_CTRL_MEM_EN : 0u;
+        v = (mem_en_ ? TSR_ADAPTER_CTRL_MEM_EN : 0u) | (dual_dis_ ? TSR_ADAPTER_CTRL_DUAL_DIS : 0u);
     } else if (off == KREG_ADAPTER_STATUS) {
         v = ast_;
     } else if (off == KREG_ADAPTER_VERSION) {
@@ -169,6 +169,7 @@ int mock_kdev::reg_write(uint32_t off, uint32_t val) {
         else base_[(off - KREG_CH_BASE0) / 4] = val;
     } else if (off == KREG_ADAPTER_CTRL) {
         const bool en = (val & TSR_ADAPTER_CTRL_MEM_EN) != 0;
+        dual_dis_ = (val & TSR_ADAPTER_CTRL_DUAL_DIS) != 0;       // the run-time enable of the dual weight stream
         if (en && !mem_en_) {                                      // rising edge: check and latch
             bool aligned = true;
             for (uint32_t c = 0; c < o_.num_ch; ++c) aligned = aligned && (base_[2 * c] & 0xFFFu) == 0;

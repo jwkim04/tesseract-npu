@@ -9,6 +9,7 @@
 // Ports: ap_clk, ap_rst_n (active low, synchronous: the core and the adapter), ap_clk_2,
 // ap_rst_n_2 (the control core's clock and reset), s_axi_control (AXI4-Lite, 32-bit
 // data, 13-bit address), m_axi_ch<c> for c < 4 (AXI4, 512-bit data, 64-bit address, 4-bit ID).
+// and m_axi_chb<c> for c < 4 (the dual weight stream: read-only AXI4, the AR and R channels only).
 // Register map and protocol: docs/design EX §9 (ap_ctrl_none); packaging: docs/platform-u200.md;
 // kernel_k4.xml describes the args.
 // Plain Verilog-2001 (the IP packager and IP integrator expect a Verilog top); the body is SystemVerilog.
@@ -184,7 +185,75 @@ module tsr_u200_k4 (
   input  wire [511:0]  m_axi_ch3_rdata,
   input  wire [1:0]    m_axi_ch3_rresp,
   input  wire          m_axi_ch3_rlast,
-  input  wire [3:0]    m_axi_ch3_rid
+  input  wire [3:0]    m_axi_ch3_rid,
+  output wire          m_axi_chb0_arvalid,
+  input  wire          m_axi_chb0_arready,
+  output wire [63:0]   m_axi_chb0_araddr,
+  output wire [7:0]    m_axi_chb0_arlen,
+  output wire [2:0]    m_axi_chb0_arsize,
+  output wire [1:0]    m_axi_chb0_arburst,
+  output wire          m_axi_chb0_arlock,
+  output wire [3:0]    m_axi_chb0_arcache,
+  output wire [2:0]    m_axi_chb0_arprot,
+  output wire [3:0]    m_axi_chb0_arqos,
+  output wire [3:0]    m_axi_chb0_arid,
+  input  wire          m_axi_chb0_rvalid,
+  output wire          m_axi_chb0_rready,
+  input  wire [511:0]  m_axi_chb0_rdata,
+  input  wire [1:0]    m_axi_chb0_rresp,
+  input  wire          m_axi_chb0_rlast,
+  input  wire [3:0]    m_axi_chb0_rid,
+  output wire          m_axi_chb1_arvalid,
+  input  wire          m_axi_chb1_arready,
+  output wire [63:0]   m_axi_chb1_araddr,
+  output wire [7:0]    m_axi_chb1_arlen,
+  output wire [2:0]    m_axi_chb1_arsize,
+  output wire [1:0]    m_axi_chb1_arburst,
+  output wire          m_axi_chb1_arlock,
+  output wire [3:0]    m_axi_chb1_arcache,
+  output wire [2:0]    m_axi_chb1_arprot,
+  output wire [3:0]    m_axi_chb1_arqos,
+  output wire [3:0]    m_axi_chb1_arid,
+  input  wire          m_axi_chb1_rvalid,
+  output wire          m_axi_chb1_rready,
+  input  wire [511:0]  m_axi_chb1_rdata,
+  input  wire [1:0]    m_axi_chb1_rresp,
+  input  wire          m_axi_chb1_rlast,
+  input  wire [3:0]    m_axi_chb1_rid,
+  output wire          m_axi_chb2_arvalid,
+  input  wire          m_axi_chb2_arready,
+  output wire [63:0]   m_axi_chb2_araddr,
+  output wire [7:0]    m_axi_chb2_arlen,
+  output wire [2:0]    m_axi_chb2_arsize,
+  output wire [1:0]    m_axi_chb2_arburst,
+  output wire          m_axi_chb2_arlock,
+  output wire [3:0]    m_axi_chb2_arcache,
+  output wire [2:0]    m_axi_chb2_arprot,
+  output wire [3:0]    m_axi_chb2_arqos,
+  output wire [3:0]    m_axi_chb2_arid,
+  input  wire          m_axi_chb2_rvalid,
+  output wire          m_axi_chb2_rready,
+  input  wire [511:0]  m_axi_chb2_rdata,
+  input  wire [1:0]    m_axi_chb2_rresp,
+  input  wire          m_axi_chb2_rlast,
+  input  wire [3:0]    m_axi_chb2_rid,
+  output wire          m_axi_chb3_arvalid,
+  input  wire          m_axi_chb3_arready,
+  output wire [63:0]   m_axi_chb3_araddr,
+  output wire [7:0]    m_axi_chb3_arlen,
+  output wire [2:0]    m_axi_chb3_arsize,
+  output wire [1:0]    m_axi_chb3_arburst,
+  output wire          m_axi_chb3_arlock,
+  output wire [3:0]    m_axi_chb3_arcache,
+  output wire [2:0]    m_axi_chb3_arprot,
+  output wire [3:0]    m_axi_chb3_arqos,
+  output wire [3:0]    m_axi_chb3_arid,
+  input  wire          m_axi_chb3_rvalid,
+  output wire          m_axi_chb3_rready,
+  input  wire [511:0]  m_axi_chb3_rdata,
+  input  wire [1:0]    m_axi_chb3_rresp,
+  input  wire          m_axi_chb3_rlast,
+  input  wire [3:0]    m_axi_chb3_rid
 );
 
   // per-channel signals packed as tsr_xrt_kernel's [NUM_CH][W] ports (channel c = bits [c*W +: W])
@@ -225,6 +294,23 @@ module tsr_u200_k4 (
   wire [7:0] rresp;
   wire [3:0] rlast;
   wire [15:0] rid;
+  wire [3:0] b_arvalid;
+  wire [3:0] b_arready;
+  wire [255:0] b_araddr;
+  wire [31:0] b_arlen;
+  wire [11:0] b_arsize;
+  wire [7:0] b_arburst;
+  wire [3:0] b_arlock;
+  wire [15:0] b_arcache;
+  wire [11:0] b_arprot;
+  wire [15:0] b_arqos;
+  wire [15:0] b_arid;
+  wire [3:0] b_rvalid;
+  wire [3:0] b_rready;
+  wire [2047:0] b_rdata;
+  wire [7:0] b_rresp;
+  wire [3:0] b_rlast;
+  wire [15:0] b_rid;
 
   assign m_axi_ch0_awvalid = awvalid[0 +: 1];
   assign m_axi_ch1_awvalid = awvalid[1 +: 1];
@@ -374,6 +460,74 @@ module tsr_u200_k4 (
   assign rid[4 +: 4] = m_axi_ch1_rid;
   assign rid[8 +: 4] = m_axi_ch2_rid;
   assign rid[12 +: 4] = m_axi_ch3_rid;
+  assign m_axi_chb0_arvalid = b_arvalid[0 +: 1];
+  assign m_axi_chb1_arvalid = b_arvalid[1 +: 1];
+  assign m_axi_chb2_arvalid = b_arvalid[2 +: 1];
+  assign m_axi_chb3_arvalid = b_arvalid[3 +: 1];
+  assign b_arready[0 +: 1] = m_axi_chb0_arready;
+  assign b_arready[1 +: 1] = m_axi_chb1_arready;
+  assign b_arready[2 +: 1] = m_axi_chb2_arready;
+  assign b_arready[3 +: 1] = m_axi_chb3_arready;
+  assign m_axi_chb0_araddr = b_araddr[0 +: 64];
+  assign m_axi_chb1_araddr = b_araddr[64 +: 64];
+  assign m_axi_chb2_araddr = b_araddr[128 +: 64];
+  assign m_axi_chb3_araddr = b_araddr[192 +: 64];
+  assign m_axi_chb0_arlen = b_arlen[0 +: 8];
+  assign m_axi_chb1_arlen = b_arlen[8 +: 8];
+  assign m_axi_chb2_arlen = b_arlen[16 +: 8];
+  assign m_axi_chb3_arlen = b_arlen[24 +: 8];
+  assign m_axi_chb0_arsize = b_arsize[0 +: 3];
+  assign m_axi_chb1_arsize = b_arsize[3 +: 3];
+  assign m_axi_chb2_arsize = b_arsize[6 +: 3];
+  assign m_axi_chb3_arsize = b_arsize[9 +: 3];
+  assign m_axi_chb0_arburst = b_arburst[0 +: 2];
+  assign m_axi_chb1_arburst = b_arburst[2 +: 2];
+  assign m_axi_chb2_arburst = b_arburst[4 +: 2];
+  assign m_axi_chb3_arburst = b_arburst[6 +: 2];
+  assign m_axi_chb0_arlock = b_arlock[0 +: 1];
+  assign m_axi_chb1_arlock = b_arlock[1 +: 1];
+  assign m_axi_chb2_arlock = b_arlock[2 +: 1];
+  assign m_axi_chb3_arlock = b_arlock[3 +: 1];
+  assign m_axi_chb0_arcache = b_arcache[0 +: 4];
+  assign m_axi_chb1_arcache = b_arcache[4 +: 4];
+  assign m_axi_chb2_arcache = b_arcache[8 +: 4];
+  assign m_axi_chb3_arcache = b_arcache[12 +: 4];
+  assign m_axi_chb0_arprot = b_arprot[0 +: 3];
+  assign m_axi_chb1_arprot = b_arprot[3 +: 3];
+  assign m_axi_chb2_arprot = b_arprot[6 +: 3];
+  assign m_axi_chb3_arprot = b_arprot[9 +: 3];
+  assign m_axi_chb0_arqos = b_arqos[0 +: 4];
+  assign m_axi_chb1_arqos = b_arqos[4 +: 4];
+  assign m_axi_chb2_arqos = b_arqos[8 +: 4];
+  assign m_axi_chb3_arqos = b_arqos[12 +: 4];
+  assign m_axi_chb0_arid = b_arid[0 +: 4];
+  assign m_axi_chb1_arid = b_arid[4 +: 4];
+  assign m_axi_chb2_arid = b_arid[8 +: 4];
+  assign m_axi_chb3_arid = b_arid[12 +: 4];
+  assign b_rvalid[0 +: 1] = m_axi_chb0_rvalid;
+  assign b_rvalid[1 +: 1] = m_axi_chb1_rvalid;
+  assign b_rvalid[2 +: 1] = m_axi_chb2_rvalid;
+  assign b_rvalid[3 +: 1] = m_axi_chb3_rvalid;
+  assign m_axi_chb0_rready = b_rready[0 +: 1];
+  assign m_axi_chb1_rready = b_rready[1 +: 1];
+  assign m_axi_chb2_rready = b_rready[2 +: 1];
+  assign m_axi_chb3_rready = b_rready[3 +: 1];
+  assign b_rdata[0 +: 512] = m_axi_chb0_rdata;
+  assign b_rdata[512 +: 512] = m_axi_chb1_rdata;
+  assign b_rdata[1024 +: 512] = m_axi_chb2_rdata;
+  assign b_rdata[1536 +: 512] = m_axi_chb3_rdata;
+  assign b_rresp[0 +: 2] = m_axi_chb0_rresp;
+  assign b_rresp[2 +: 2] = m_axi_chb1_rresp;
+  assign b_rresp[4 +: 2] = m_axi_chb2_rresp;
+  assign b_rresp[6 +: 2] = m_axi_chb3_rresp;
+  assign b_rlast[0 +: 1] = m_axi_chb0_rlast;
+  assign b_rlast[1 +: 1] = m_axi_chb1_rlast;
+  assign b_rlast[2 +: 1] = m_axi_chb2_rlast;
+  assign b_rlast[3 +: 1] = m_axi_chb3_rlast;
+  assign b_rid[0 +: 4] = m_axi_chb0_rid;
+  assign b_rid[4 +: 4] = m_axi_chb1_rid;
+  assign b_rid[8 +: 4] = m_axi_chb2_rid;
+  assign b_rid[12 +: 4] = m_axi_chb3_rid;
 
   tsr_xrt_kernel #(
     .NUM_CH(4),
@@ -389,6 +543,7 @@ module tsr_u200_k4 (
     .RST_PIPE(3),
     .AXI_SLICES(2),
     .RST_STAGES(3),
+    .MVM_DUAL(1),
     .HAS_GDN(1),
     .MVM_GATHER_PAIR(1),
     .MVM_GATHER_FLITS(2),
@@ -454,7 +609,24 @@ module tsr_u200_k4 (
     .m_axi_rdata(rdata),
     .m_axi_rresp(rresp),
     .m_axi_rlast(rlast),
-    .m_axi_rid(rid)
+    .m_axi_rid(rid),
+    .m_axib_arvalid(b_arvalid),
+    .m_axib_arready(b_arready),
+    .m_axib_araddr(b_araddr),
+    .m_axib_arlen(b_arlen),
+    .m_axib_arsize(b_arsize),
+    .m_axib_arburst(b_arburst),
+    .m_axib_arlock(b_arlock),
+    .m_axib_arcache(b_arcache),
+    .m_axib_arprot(b_arprot),
+    .m_axib_arqos(b_arqos),
+    .m_axib_arid(b_arid),
+    .m_axib_rvalid(b_rvalid),
+    .m_axib_rready(b_rready),
+    .m_axib_rdata(b_rdata),
+    .m_axib_rresp(b_rresp),
+    .m_axib_rlast(b_rlast),
+    .m_axib_rid(b_rid)
   );
 
 endmodule

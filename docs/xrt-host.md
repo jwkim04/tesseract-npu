@@ -47,7 +47,8 @@ kernels with `ap_clk` and `ap_rst_n`, the control-core pair `ap_clk_2` and `ap_r
 | --- | --- | --- |
 | 0x000-0x03C | reserved, read 0 | never accessed |
 | 0x040 + 8c | `ch<c>_base` lo / hi | written at bind with the device address of the buffer of channel c (4 KiB aligned) while `MEM_EN` = 0 |
-| 0x0E0 | `ADAPTER_CTRL` | bit0 `MEM_EN`, set after the bases. It must read back 1. |
+| 0x0E0 | `ADAPTER_CTRL` | bit0 `MEM_EN`, set after the bases. It must read back 1. Bit 1 `DUAL_DIS` is written as 1 with `TSR_MVM_DUAL=0` (the dual weight stream off), else as 0; it is part of every write of the register. |
+| 0x100 + 8c | `chb<c>` | args of the read-only ports of the dual weight stream; no register is behind them, never accessed |
 | 0x0F0 | `ADAPTER_STATUS` | read and cleared (W1C) at open, read again on `PLAT_ERR`. Sticky bits 0-5 and a saturating count in [31:16]. |
 | 0x0F4 | `ADAPTER_VERSION` | `{16'h0001, 8'h00, NUM_CH}`: major 1 and NUM_CH are checked at open |
 | 0x1000 + off | core CSR window | every access of the launch protocol (EX §5), at any time |
@@ -59,7 +60,8 @@ The `xrt` kdev finds the arguments by register offset, not by name, and refuses 
 missing (it takes `TSR_XRT_KERNEL`, else `tsr_u200_k4`, else `tsr_u200_k1`), has more than one compute unit or an
 `s_axi_control` range below 0x2000 (XRT's register access checks `offset + 4 <= range`), is neither
 `ap_ctrl_none` nor, as EX §9.1's fallback, `ap_ctrl_hs` (never started), or has an argument outside `ch<c>` at
-0x40 + 8c (8 bytes, with a memory connection, contiguous from c = 0, at most `TSR_NUM_CH_MAX` = 16).
+0x40 + 8c (8 bytes, with a memory connection, contiguous from c = 0, at most `TSR_NUM_CH_MAX` = 16) and `chb<c>` at
+0x100 + 8c (the read-only ports of the dual weight stream: all channels or none, each connected to the memory of `ch<c>`).
 
 ## 3. Protocol layer (tsr_kdev.cpp)
 
@@ -175,6 +177,7 @@ transport variables are in [`sw/transport/README.md`](../sw/transport/README.md)
 | `TSR_XCLBIN` | required | xclbin to load. Loading the one already on the card is cheap. |
 | `TSR_XRT_DEVICE` | `0` | device index or PCIe BDF |
 | `TSR_XRT_KERNEL` | `tsr_u200_k4`, else `tsr_u200_k1` | kernel name |
+| `TSR_MVM_DUAL` | `1` | `0` turns the dual weight stream of the MVM unit off (`ADAPTER_CTRL.DUAL_DIS`); results do not change |
 | `TSR_XRT_CH_GIB` | bank size (16), or the measured capacity if that is smaller (§4.4); 3 under `XCL_EMULATION_MODE=hw_emu` (§9) | channel buffer size in GiB. A value above the measured capacity is refused. |
 | `TSR_XRT_DMA`, `TSR_XRT_DMA_CHUNK_MIB`, `TSR_XRT_DMA_ALIGN` | `direct`, 64, 1; `staged`, 64, 4096 under hw_emu (§9) | §4.2 |
 

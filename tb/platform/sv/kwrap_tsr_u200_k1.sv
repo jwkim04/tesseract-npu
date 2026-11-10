@@ -64,7 +64,24 @@ module kwrap_tsr_u200_k1 #(
   input  logic [NUM_CH-1:0][511:0] m_axi_rdata,
   input  logic [NUM_CH-1:0][1:0] m_axi_rresp,
   input  logic [NUM_CH-1:0] m_axi_rlast,
-  input  logic [NUM_CH-1:0][3:0] m_axi_rid
+  input  logic [NUM_CH-1:0][3:0] m_axi_rid,
+  output logic [NUM_CH-1:0] m_axib_arvalid,
+  input  logic [NUM_CH-1:0] m_axib_arready,
+  output logic [NUM_CH-1:0][63:0] m_axib_araddr,
+  output logic [NUM_CH-1:0][7:0] m_axib_arlen,
+  output logic [NUM_CH-1:0][2:0] m_axib_arsize,
+  output logic [NUM_CH-1:0][1:0] m_axib_arburst,
+  output logic [NUM_CH-1:0] m_axib_arlock,
+  output logic [NUM_CH-1:0][3:0] m_axib_arcache,
+  output logic [NUM_CH-1:0][2:0] m_axib_arprot,
+  output logic [NUM_CH-1:0][3:0] m_axib_arqos,
+  output logic [NUM_CH-1:0][3:0] m_axib_arid,
+  input  logic [NUM_CH-1:0] m_axib_rvalid,
+  output logic [NUM_CH-1:0] m_axib_rready,
+  input  logic [NUM_CH-1:0][511:0] m_axib_rdata,
+  input  logic [NUM_CH-1:0][1:0] m_axib_rresp,
+  input  logic [NUM_CH-1:0] m_axib_rlast,
+  input  logic [NUM_CH-1:0][3:0] m_axib_rid
 );
 
   if (NUM_CH != 1) begin : g_chk_ch
@@ -72,6 +89,7 @@ module kwrap_tsr_u200_k1 #(
   end
 
   tsr_u200_k1 u_top (
+  // no dual weight stream: m_axib_* are not driven (outputs 0)
     .ap_clk,
     .ap_rst_n,
     .ap_clk_2,

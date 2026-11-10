@@ -10,7 +10,7 @@
 #                  behavior identical to rtl/filelist.f); rtl/platform/alveo_xrt/filelist.f is added
 # Steps: a project with every source (SystemVerilog) and the kernel as top -> ipx::package_project
 # (sources imported into the IP) -> Vitis kernel properties (sdx_kernel rtl, no user parameters,
-# ap_clk associated with s_axi_control / m_axi_ch<c> / ap_rst_n, FREQ_HZ 300 MHz; ap_clk_2 (the
+# ap_clk associated with s_axi_control / m_axi_ch<c> / m_axi_chb<c> (k4: the read-only second weight port) / ap_rst_n, FREQ_HZ 300 MHz; ap_clk_2 (the
 # control core's clock, tsr_core clk_rv) with ap_rst_n_2, FREQ_HZ 166.7 MHz; m_axi burst and
 # outstanding hints, the s_axi_control register map with the args of kernel_<k>.xml) ->
 # the clock-domain-crossing constraints (rtl/ctrl/viv/tsr_ctrl_cdc.xdc; CC §11.3) as the IP's
@@ -31,6 +31,7 @@ set_param general.maxThreads 4
 
 array set short {tsr_u200_k1 k1 tsr_u200_k4 k4}
 array set nch   {tsr_u200_k1 1  tsr_u200_k4 4}
+array set ndual {tsr_u200_k1 0  tsr_u200_k4 4}   ;# read-only second ports m_axi_chb<c> (MVM_DUAL)
 if {![info exists short($kernel)]} {
   puts "PKG error: unknown kernel '$kernel' (tsr_u200_k1 | tsr_u200_k4)"
   exit 2
@@ -77,11 +78,16 @@ set_property supported_families { } $core
 set_property auto_family_support_level level_2 $core
 
 ipx::associate_bus_interfaces -busif s_axi_control -clock ap_clk $core
-for {set c 0} {$c < $nch($kernel)} {incr c} {
-  set m m_axi_ch$c
+set mports [list]
+for {set c 0} {$c < $nch($kernel)} {incr c} { lappend mports m_axi_ch$c }
+for {set c 0} {$c < $ndual($kernel)} {incr c} { lappend mports m_axi_chb$c }
+foreach m $mports {
   ipx::associate_bus_interfaces -busif $m -clock ap_clk $core
   set bif [ipx::get_bus_interfaces $m -of_objects $core]
-  foreach {p v} {MAX_BURST_LENGTH 64 NUM_READ_OUTSTANDING 16 NUM_WRITE_OUTSTANDING 32} {
+  # the read-only port m_axi_chb<c> has no write channels: it keeps the read hints only
+  set hints {MAX_BURST_LENGTH 64 NUM_READ_OUTSTANDING 16 NUM_WRITE_OUTSTANDING 32}
+  if {[string match m_axi_chb* $m]} { set hints {MAX_BURST_LENGTH 64 NUM_READ_OUTSTANDING 16 NUM_WRITE_OUTSTANDING 1} }
+  foreach {p v} $hints {
     set bp [ipx::add_bus_parameter -quiet $p $bif]
     set_property value $v $bp
     set_property value_source constant $bp

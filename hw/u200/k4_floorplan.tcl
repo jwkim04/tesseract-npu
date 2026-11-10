@@ -845,6 +845,16 @@ if {$k4fp_mode eq "kernel"} {
     k4fp_add $ddr($c) $br "DDR$c complete local bridge"
 
   }
+  # The read-only bridges of the second weight stream (MVM_DUAL, g_dual.g_chb) go with the bridge of their channel.
+  for {set c 0} {$c < $nch} {incr c} {
+    set brb [get_cells -quiet [k4fp_path $k4fp_body "g_dual.g_chb\[$c\].u_br"]]
+    if {[llength $brb] != 1} continue
+    if {[info exists ddr($c)]} {
+      k4fp_add $ddr($c) $brb "DDR$c port B bridge"
+    } else {
+      k4fp_add $k4fp_rest $brb "g_dual.g_chb\[$c\].u_br"
+    }
+  }
 }
 
 foreach s {0 1 2} {

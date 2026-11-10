@@ -40,6 +40,11 @@
 // path for memory) and reported per beat / response as ev_rresp_err / ev_bresp_err
 // (ADAPTER_STATUS bits 0 / 1 and its error count); the host checks ADAPTER_STATUS after a run.
 // Events are registered one-cycle pulses.
+// READ_ONLY = 1 (docs/platform-u200.md §4: the read-only port B of a channel, docs/rtl-core.md §4): the bridge has the
+// read half only. The write request, write data and write response channels do not exist: the core side write ports
+// never accept (c_wr_req_ready = c_wr_dat_ready = 0, c_wr_rsp_valid = 0), the AXI write outputs are 0 and the write
+// inputs are ignored (the kernel top has no AW, W or B signals for it). The read path, its response filter and its
+// events are those above, cycle for cycle.
 // Reset: 4 + 2 x CNT_RST equal copies of the channel's reset (tsr_xrt_reset rst_ch_n[c][*], same
 // stage, asserted and released in the same cycle; checked in simulation), one per part, so that
 // each reset net stays local to its logic (timing, docs/platform-u200.md §5, §8.2: one
@@ -62,7 +67,8 @@ module tsr_xrt_axi_bridge
   parameter int unsigned SLICES      = 2,    // register slices per AXI channel, >= 1
   parameter int unsigned RD_CNT_W    = 8,    // outstanding read bursts per ID (core: <= RD_OUTSTANDING)
   parameter int unsigned WR_CNT_W    = 16,   // outstanding write bursts per ID (one ST: <= SPM lines)
-  parameter int unsigned CNT_RST     = 4     // reset copies per counter set (ID groups), divides 2^TSR_MEM_ID_W
+  parameter int unsigned CNT_RST     = 4,    // reset copies per counter set (ID groups), divides 2^TSR_MEM_ID_W
+  parameter bit          READ_ONLY   = 1'b0  // read half only (header)
 ) (
   input  logic                         clk,
   input  logic                         rst_n,          // request slices (header: equal reset copies)
@@ -190,18 +196,33 @@ module tsr_xrt_axi_bridge
     .s_data(areq(base_r, c_rd_req_addr, c_rd_req_len, c_rd_req_id)),
     .m_valid(m_axi_arvalid), .m_ready(m_axi_arready), .m_data({m_axi_araddr, m_axi_arlen, m_axi_arid})
   );
-  tsr_xrt_slices #(.W(AQ_W), .N(SLICES)) u_aw (
-    .clk, .rst_n(rst_rq_st),
-    .s_valid(c_wr_req_valid), .s_ready(c_wr_req_ready),
-    .s_data(areq(base_r, c_wr_req_addr, c_wr_req_len, c_wr_req_id)),
-    .m_valid(m_axi_awvalid), .m_ready(m_axi_awready), .m_data({m_axi_awaddr, m_axi_awlen, m_axi_awid})
-  );
   logic [BEAT_BITS/32-1:0] w_word_mask;
-  tsr_xrt_slices #(.W(W_W), .N(SLICES)) u_w (
-    .clk, .rst_n(rst_rq_st),
-    .s_valid(c_wr_dat_valid), .s_ready(c_wr_dat_ready), .s_data({c_wr_dat_data, c_wr_dat_mask, c_wr_dat_last}),
-    .m_valid(m_axi_wvalid), .m_ready(m_axi_wready), .m_data({m_axi_wdata, w_word_mask, m_axi_wlast})
-  );
+  if (!READ_ONLY) begin : g_wreq
+    tsr_xrt_slices #(.W(AQ_W), .N(SLICES)) u_aw (
+      .clk, .rst_n(rst_rq_st),
+      .s_valid(c_wr_req_valid), .s_ready(c_wr_req_ready),
+      .s_data(areq(base_r, c_wr_req_addr, c_wr_req_len, c_wr_req_id)),
+      .m_valid(m_axi_awvalid), .m_ready(m_axi_awready), .m_data({m_axi_awaddr, m_axi_awlen, m_axi_awid})
+    );
+    tsr_xrt_slices #(.W(W_W), .N(SLICES)) u_w (
+      .clk, .rst_n(rst_rq_st),
+      .s_valid(c_wr_dat_valid), .s_ready(c_wr_dat_ready), .s_data({c_wr_dat_data, c_wr_dat_mask, c_wr_dat_last}),
+      .m_valid(m_axi_wvalid), .m_ready(m_axi_wready), .m_data({m_axi_wdata, w_word_mask, m_axi_wlast})
+    );
+  end else begin : g_nwreq
+    assign c_wr_req_ready = 1'b0;
+    assign m_axi_awvalid  = 1'b0;
+    assign m_axi_awaddr   = '0;
+    assign m_axi_awlen    = '0;
+    assign m_axi_awid     = '0;
+    assign c_wr_dat_ready = 1'b0;
+    assign m_axi_wvalid   = 1'b0;
+    assign m_axi_wdata    = '0;
+    assign m_axi_wlast    = 1'b0;
+    assign w_word_mask    = '0;
+    wire unused_wreq = &{1'b0, c_wr_req_valid, c_wr_req_addr, c_wr_req_len, c_wr_req_id, c_wr_dat_valid, c_wr_dat_data,
+                         c_wr_dat_mask, c_wr_dat_last, m_axi_awready, m_axi_wready};
+  end
 
   assign m_axi_arsize  = 3'd6;          // 64 bytes per beat
   assign m_axi_arburst = 2'b01;         // INCR
@@ -209,10 +230,10 @@ module tsr_xrt_axi_bridge
   assign m_axi_arcache = 4'b0011;       // normal non-cacheable bufferable
   assign m_axi_arprot  = 3'b000;
   assign m_axi_arqos   = 4'd0;
-  assign m_axi_awsize  = 3'd6;
-  assign m_axi_awburst = 2'b01;
+  assign m_axi_awsize  = READ_ONLY ? 3'd0 : 3'd6;
+  assign m_axi_awburst = READ_ONLY ? 2'b00 : 2'b01;
   assign m_axi_awlock  = 1'b0;
-  assign m_axi_awcache = 4'b0011;
+  assign m_axi_awcache = READ_ONLY ? 4'b0000 : 4'b0011;
   assign m_axi_awprot  = 3'b000;
   assign m_axi_awqos   = 4'd0;
   for (genvar w = 0; w < BEAT_BITS/32; w++) begin : g_wstrb
@@ -252,30 +273,41 @@ module tsr_xrt_axi_bridge
   // -------------------------------------------------------------------------------------------
   // Write responses: input slices, ID filter, output slice
   // -------------------------------------------------------------------------------------------
-  logic           bh_valid, bh_ready;
+  logic [NID-1:0] wr_nz_q;               // per ID: >= 1 write burst outstanding
+  logic           b_take, b_drop;
   logic [IDW-1:0] bh_id;
   logic [1:0]     bh_resp;
-  logic           bo_ready;
-  logic [NID-1:0] wr_nz_q;               // per ID: >= 1 write burst outstanding
 
-  tsr_xrt_slices #(.W(B_W), .N(SLICES)) u_b (
-    .clk, .rst_n(rst_b_st),
-    .s_valid(m_axi_bvalid), .s_ready(m_axi_bready), .s_data({m_axi_bid, m_axi_bresp}),
-    .m_valid(bh_valid), .m_ready(bh_ready), .m_data({bh_id, bh_resp})
-  );
+  if (!READ_ONLY) begin : g_wresp
+    logic           bh_valid, bh_ready, bo_ready;
+    tsr_xrt_slices #(.W(B_W), .N(SLICES)) u_b (
+      .clk, .rst_n(rst_b_st),
+      .s_valid(m_axi_bvalid), .s_ready(m_axi_bready), .s_data({m_axi_bid, m_axi_bresp}),
+      .m_valid(bh_valid), .m_ready(bh_ready), .m_data({bh_id, bh_resp})
+    );
 
-  wire b_exp  = wr_nz_q[bh_id];
-  wire b_fwd  = bh_valid & b_exp;
-  wire b_drop = bh_valid & ~b_exp;
-  assign bh_ready = b_drop | bo_ready;
+    wire b_exp  = wr_nz_q[bh_id];
+    wire b_fwd  = bh_valid & b_exp;
+    assign b_drop = bh_valid & ~b_exp;
+    assign bh_ready = b_drop | bo_ready;
 
-  tsr_rslice #(.W(IDW)) u_bo (
-    .clk, .rst_n(rst_wr_n),
-    .s_valid(b_fwd), .s_ready(bo_ready), .s_data(bh_id),
-    .m_valid(c_wr_rsp_valid), .m_ready(c_wr_rsp_ready), .m_data(c_wr_rsp_id)
-  );
+    tsr_rslice #(.W(IDW)) u_bo (
+      .clk, .rst_n(rst_wr_n),
+      .s_valid(b_fwd), .s_ready(bo_ready), .s_data(bh_id),
+      .m_valid(c_wr_rsp_valid), .m_ready(c_wr_rsp_ready), .m_data(c_wr_rsp_id)
+    );
 
-  wire b_take = b_fwd & bo_ready;
+    assign b_take = b_fwd & bo_ready;
+  end else begin : g_nwresp
+    assign m_axi_bready   = 1'b0;
+    assign c_wr_rsp_valid = 1'b0;
+    assign c_wr_rsp_id    = '0;
+    assign bh_id          = '0;
+    assign bh_resp        = '0;
+    assign b_take         = 1'b0;
+    assign b_drop         = 1'b0;
+    wire unused_wresp = &{1'b0, m_axi_bvalid, m_axi_bresp, m_axi_bid, c_wr_rsp_ready, rst_wr_n, rst_b_st, wr_nz_q};
+  end
 
   // AR / AW handshakes for the counters: registered when SLICES >= 2 (header: timing margin)
   logic           ar_hs, aw_hs;

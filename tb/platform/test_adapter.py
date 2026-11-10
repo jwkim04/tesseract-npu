@@ -67,13 +67,14 @@ def script(seed, num_ch):
             k = r.randrange(3)
             ops.append(("E", 1 << k, 0 if k == 2 else r.randint(1, 3)))
         elif x < 0.52:
-            ops.append(("W", r.choice([0x000, 0x010, 0x03C, 0x0E4, 0x0F4, 0x0F8, 0x0FC, 0x0A0, 0x0C0]), r.getrandbits(32)))
+            ops.append(("W", r.choice([0x000, 0x010, 0x03C, 0x0E4, 0x0F4, 0x0F8, 0x0FC, 0x0A0, 0x0C0, 0x100, 0x104, 0x118, 0x17C]),
+                        r.getrandbits(32)))
         elif x < 0.60:
             ops.append(("W", 0x1000 + r.choice(WINDOW_RW), r.getrandbits(32)))
         elif x < 0.75:
             ops.append(("R", 0x1000 + r.choice(WINDOW)))
         else:
-            ops.append(("R", r.choice([0x000, 0x004, 0x03C, 0x0E0, 0x0F0, 0x0F4, 0x0E4, 0x0FC, 0x0A0] +
+            ops.append(("R", r.choice([0x000, 0x004, 0x03C, 0x0E0, 0x0F0, 0x0F4, 0x0E4, 0x0FC, 0x0A0, 0x100, 0x118, 0x17C] +
                                       [b + 4 * h for b in bases for h in (0, 1)] + [0x40 + 8 * num_ch])))
     for b in bases:
         ops += [("R", b), ("R", b + 4)]
@@ -239,7 +240,8 @@ async def adapter_regs(dut):
     num_ch = c["num_ch"]
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     for n in ("s_awvalid", "s_wvalid", "s_bready", "s_arvalid", "s_rready", "s_awaddr", "s_araddr", "s_wdata",
-              "s_wstrb", "csr_ready", "csr_rdata", "ev_rresp_err", "ev_bresp_err", "ev_unexpected", "ev_req_held"):
+              "s_wstrb", "csr_ready", "csr_rdata", "ev_rresp_err", "ev_bresp_err", "ev_unexpected", "ev_req_held",
+              "ev2_rresp_err", "ev2_unexpected"):
         getattr(dut, n).value = 0
     dut.rst_n.value = 0
     for _ in range(5):
@@ -252,6 +254,7 @@ async def adapter_regs(dut):
     m = Axil(dut, dut.clk, "s_", rng)
     bad = []
     k = 0
+    ne = 0
     for op in ops:
         if op[0] == "W":
             resp = await m.write(op[1], op[2])
@@ -259,6 +262,9 @@ async def adapter_regs(dut):
                 bad.append("write %#x BRESP %d" % (op[1], resp))
         elif op[0] == "E":
             name = {1: "ev_rresp_err", 2: "ev_bresp_err", 4: "ev_unexpected"}[op[1]]
+            ne += 1
+            if op[1] != 2 and ne % 2 == 0:          # every other R event comes from the read-only bridges (ev2_*)
+                name = name.replace("ev_", "ev2_")
             await pulse(dut, name, max(1, op[2]))
             for _ in range(4):
                 await RisingEdge(dut.clk)
@@ -267,6 +273,17 @@ async def adapter_regs(dut):
             if resp or v != exp[k]:
                 bad.append("read #%d %#x: RTL %#x (RRESP %d), mock %#x" % (k, op[1], v, resp, exp[k]))
             k += 1
+    # RTL-only: ADAPTER_CTRL.DUAL_DIS drives the dual_en output (reset 1; a write of 1 to bit 0 only keeps it 1)
+    await m.write(0x0E0, 0)
+    await m.write(0x0E0, 2)
+    if int(dut.dual_en.value):
+        bad.append("dual_en high after DUAL_DIS = 1")
+    v, _ = await m.read(0x0E0)
+    if v & 2 == 0:
+        bad.append("ADAPTER_CTRL.DUAL_DIS reads back 0: %#x" % v)
+    await m.write(0x0E0, 0)
+    if not int(dut.dual_en.value):
+        bad.append("dual_en low after DUAL_DIS = 0")
     # RTL-only: REQ_HELD (the kernel's gate event), byte strobes on a base, a partial window write
     await m.write(0x0F0, M32)
     await pulse(dut, "ev_req_held", 1)
@@ -312,9 +329,13 @@ async def adapter_kernel(dut):
     pfx = "s_axi_control_"
     for n in ("awvalid", "wvalid", "bready", "arvalid", "rready", "awaddr", "araddr", "wdata", "wstrb"):
         getattr(dut, pfx + n).value = 0
+    dual = os.environ.get("TSR_KDUAL") == "1"
     for n in ("m_axi_awready", "m_axi_wready", "m_axi_bvalid", "m_axi_arready", "m_axi_rvalid", "m_axi_bresp",
               "m_axi_bid", "m_axi_rdata", "m_axi_rresp", "m_axi_rlast", "m_axi_rid"):
         getattr(dut, n).value = 0
+    if dual:
+        for n in ("m_axib_arready", "m_axib_rvalid", "m_axib_rresp", "m_axib_rlast", "m_axib_rid", "m_axib_rdata"):
+            getattr(dut, n).value = 0
     dut.ap_rst_n.value = 0
     dut.ap_rst_n_2.value = 0
     for _ in range(20):
@@ -353,6 +374,35 @@ async def adapter_kernel(dut):
     br = int(dut.u_ctrl.ch_base.value) & ((1 << 64) - 1)
     if v != 1 or br != 0x2_0004_0000:
         bad.append("MEM_EN %#x, latched base %#x" % (v, br))
+    if dual:
+        # the dual weight stream (MVM_DUAL 1): CAPS bit 16, the run-time enable ADAPTER_CTRL.DUAL_DIS reaches the core
+        # (dual_en: reset 1, a write of bit 1 clears it, a write without it sets it again), and the read-only
+        # ports stay idle without an MVM
+        cp, _ = await m.read(0x1000 + T.CSR_CAPS)
+        if not cp & T.CAPS_MVM_DUAL:
+            bad.append("CAPS %#x lacks MVM_DUAL" % cp)
+        if int(dut.dual_en.value) != 1:
+            bad.append("dual_en low after reset")
+        await m.write(0x0E0, 3)
+        if int(dut.dual_en.value) != 0:
+            bad.append("dual_en high with ADAPTER_CTRL.DUAL_DIS = 1")
+        v, _ = await m.read(0x0E0)
+        if v != 3:
+            bad.append("ADAPTER_CTRL %#x after a write of 3" % v)
+        await m.write(0x0E0, 1)
+        if int(dut.dual_en.value) != 1:
+            bad.append("dual_en low with ADAPTER_CTRL.DUAL_DIS = 0")
+        for _ in range(50):
+            await RisingEdge(dut.ap_clk)
+            if int(dut.m_axib_arvalid.value):
+                bad.append("m_axib_arvalid without an MVM")
+                break
+        # args chb<c> at 0x100 + 8c: no register behind them
+        for off in (0x100, 0x104, 0x108, 0x118):
+            await m.write(off, 0xFFFFFFFF)
+            v, _ = await m.read(off)
+            if v != 0:
+                bad.append("%#x reads %#x (no register behind the chb<c> args)" % (off, v))
     for x in bad:
         dut._log.error(x)
     assert not bad, "%d kernel checks failed" % len(bad)
@@ -416,6 +466,18 @@ def test_adapter_mutants(m):
     except BaseException:                    # a failing cocotb run raises SystemExit under pytest
         killed = True
     assert killed, "adapter mutant %s (%s) survived" % (mid, what)
+
+
+def test_adapter_kernel_dual():
+    """tsr_xrt_kernel with MVM_DUAL 1 (2 channels, T_MAX 2, the MVM unit in): the read-only ports m_axib_*, CAPS bit 16,
+    ADAPTER_CTRL.DUAL_DIS to the core's cfg_dual_en, the chb<c> args without registers."""
+    root = _src_root()
+    from common.runner import parse_filelist
+    srcs = parse_filelist(root / "rtl/filelist.f")[0] + parse_filelist(root / "rtl/platform/alveo_xrt/filelist.f")[0]
+    params = dict(HAS_MVM=1, MVM_DUAL=1, NUM_CH=2, T_MAX=2, SPM_BYTES=65536, CH_BYTES="64'd1073741824", K_MAX=4096,
+                  ADDR_BEAT_W=22, XSLR_REG=1)
+    run("tsr_xrt_kernel", __name__, parameters=params, sources=srcs, name="adapter_kernel_dual",
+        extra_env={"TSR_KCH": "2", "TSR_KDUAL": "1"}, testcase=["adapter_kernel"])
 
 
 @pytest.mark.parametrize("xslr", [0, 1])

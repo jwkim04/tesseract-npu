@@ -114,6 +114,23 @@ module tsr_u200_k1 (
   wire [1:0] rresp;
   wire [0:0] rlast;
   wire [3:0] rid;
+  wire [0:0] b_arvalid;
+  wire [0:0] b_arready;
+  wire [63:0] b_araddr;
+  wire [7:0] b_arlen;
+  wire [2:0] b_arsize;
+  wire [1:0] b_arburst;
+  wire [0:0] b_arlock;
+  wire [3:0] b_arcache;
+  wire [2:0] b_arprot;
+  wire [3:0] b_arqos;
+  wire [3:0] b_arid;
+  wire [0:0] b_rvalid;
+  wire [0:0] b_rready;
+  wire [511:0] b_rdata;
+  wire [1:0] b_rresp;
+  wire [0:0] b_rlast;
+  wire [3:0] b_rid;
 
   assign m_axi_ch0_awvalid = awvalid[0 +: 1];
   assign awready[0 +: 1] = m_axi_ch0_awready;
@@ -152,6 +169,15 @@ module tsr_u200_k1 (
   assign rresp[0 +: 2] = m_axi_ch0_rresp;
   assign rlast[0 +: 1] = m_axi_ch0_rlast;
   assign rid[0 +: 4] = m_axi_ch0_rid;
+  assign b_arready[0 +: 1] = 1'd0;
+  assign b_rvalid[0 +: 1] = 1'd0;
+  assign b_rdata[0 +: 512] = 512'd0;
+  assign b_rresp[0 +: 2] = 2'd0;
+  assign b_rlast[0 +: 1] = 1'd0;
+  assign b_rid[0 +: 4] = 4'd0;
+
+  // no dual weight stream: the kernel's read-only port outputs are unused
+  wire unused_b = &{1'b0, b_arvalid, b_araddr, b_arlen, b_arsize, b_arburst, b_arlock, b_arcache, b_arprot, b_arqos, b_arid, b_rready};
 
   tsr_xrt_kernel #(
     .NUM_CH(1),
@@ -225,7 +251,24 @@ module tsr_u200_k1 (
     .m_axi_rdata(rdata),
     .m_axi_rresp(rresp),
     .m_axi_rlast(rlast),
-    .m_axi_rid(rid)
+    .m_axi_rid(rid),
+    .m_axib_arvalid(b_arvalid),
+    .m_axib_arready(b_arready),
+    .m_axib_araddr(b_araddr),
+    .m_axib_arlen(b_arlen),
+    .m_axib_arsize(b_arsize),
+    .m_axib_arburst(b_arburst),
+    .m_axib_arlock(b_arlock),
+    .m_axib_arcache(b_arcache),
+    .m_axib_arprot(b_arprot),
+    .m_axib_arqos(b_arqos),
+    .m_axib_arid(b_arid),
+    .m_axib_rvalid(b_rvalid),
+    .m_axib_rready(b_rready),
+    .m_axib_rdata(b_rdata),
+    .m_axib_rresp(b_rresp),
+    .m_axib_rlast(b_rlast),
+    .m_axib_rid(b_rid)
   );
 
 endmodule

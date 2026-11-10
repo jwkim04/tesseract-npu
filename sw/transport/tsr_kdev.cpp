@@ -417,6 +417,7 @@ struct tsr_transport {
     uint64_t launch_ms = 60000, abort_ms = 10000, boot_ms = 2000, reset_ms = 15000;
     bool     attach = false, stats_on = false, gdb_wait = false, full_records = false;
     int      log_level = 3, tile_serial = -1, tile_hist = -1;
+    bool     dual_dis = false;           // TSR_MVM_DUAL=0: ADAPTER_CTRL.DUAL_DIS, the dual weight stream off (docs/rtl-mvm.md §15)
     FILE *   log_out = nullptr;
     bool     log_close = false;
     std::string dump_dir;
@@ -1702,12 +1703,13 @@ struct tsr_transport {
     // EX §9.2: MEM_EN off (the core is idle after SOFT_RESET), the channel bases, MEM_EN on.
     int bind() {
         if (!dev->has_adapter()) return 0;
-        if (!awr(KREG_ADAPTER_CTRL, 0)) return TSR_TE_IO;
+        const uint32_t dis = dual_dis ? TSR_ADAPTER_CTRL_DUAL_DIS : 0u;   // written with every ADAPTER_CTRL value: it is bit 1 of the register
+        if (!awr(KREG_ADAPTER_CTRL, dis)) return TSR_TE_IO;
         for (uint32_t c = 0; c < cfg.num_ch; ++c) {
             const uint64_t a = dev->ch_addr(c);
             if (!awr(KREG_CH_BASE0 + 8 * c, (uint32_t) a) || !awr(KREG_CH_BASE0 + 8 * c + 4, (uint32_t) (a >> 32))) return TSR_TE_IO;
         }
-        if (!awr(KREG_ADAPTER_CTRL, TSR_ADAPTER_CTRL_MEM_EN)) return TSR_TE_IO;
+        if (!awr(KREG_ADAPTER_CTRL, TSR_ADAPTER_CTRL_MEM_EN | dis)) return TSR_TE_IO;
         uint32_t ctl = 0, a = 0;
         if (!ard(KREG_ADAPTER_CTRL, &ctl) || !ard(KREG_ADAPTER_STATUS, &a)) return TSR_TE_IO;
         if (!(ctl & TSR_ADAPTER_CTRL_MEM_EN) || (a & (AST_BASE_ALIGN | AST_BASE_LOCKED))) {
@@ -1744,6 +1746,8 @@ struct tsr_transport {
         stats_on = r && v;
         if ((r = env_u64(who, "TSR_LOG_LEVEL", 0, 5, &v)) < 0) return -1;
         if (r) log_level = (int) v;
+        if ((r = env_u64(who, "TSR_MVM_DUAL", 0, 1, &v)) < 0) return -1;
+        if (r) dual_dis = v == 0;
         if ((r = env_u64(who, "TSR_TILE_SERIAL", 0, 1, &v)) < 0) return -1;
         if (r) tile_serial = (int) v;
         if ((r = env_u64(who, "TSR_TILE_HIST", 0, 1, &v)) < 0) return -1;

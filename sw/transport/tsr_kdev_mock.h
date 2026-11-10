@@ -9,7 +9,7 @@
 // latch them and set MEM_EN, else stay 0 and set BASE_MISALIGNED; while MEM_EN = 0 a core memory
 // request is held and sets REQ_HELD: the model then holds the whole simulator while an op is
 // queued or running, an approximation, since the hardware holds only the memory requests);
-// ADAPTER_STATUS (W1C as the RTL with all strobes set: a 1 in bit k < 6 clears bit k, a 1 anywhere
+// ADAPTER_CTRL.DUAL_DIS (bit 1, reset 0) is stored as written (the model has no MVM unit behind it); ADAPTER_STATUS (W1C as the RTL with all strobes set: a 1 in bit k < 6 clears bit k, a 1 anywhere
 // in [31:16] clears the whole count); ADAPTER_VERSION {16'h0001, 8'h00, NUM_CH}; plat_err_i =
 // ADAPTER_STATUS bits 0-2 or a count != 0 (EX §9.3), shown in STATUS.PLAT_ERR (and in the
 // RISC-V's LQ_FLAGS when the simulator models the input, tsr_sim_set_plat_err); the core CSR
@@ -80,6 +80,7 @@ public:
     uint64_t pushes = 0;                           // LQ_PUSH writes
     uint64_t bind_errors = 0;                      // latched bases that differ from the buffers
     bool     mem_en() const { return mem_en_; }
+    bool     dual_dis() const { return dual_dis_; }     // ADAPTER_CTRL.DUAL_DIS as last written
     uint64_t latched_base(uint32_t ch) const { return latched_[ch]; }
     bool     hung() const { return hung_; }
 
@@ -100,6 +101,7 @@ private:
     std::vector<uint32_t> base_;      // 2 per channel
     std::vector<uint64_t> latched_;
     bool     mem_en_ = false;
+    bool     dual_dis_ = false;
     bool     hung_ = false;
     bool     sr_busy_ = false;        // a SOFT_RESET that cannot complete (hung_, sr_stuck)
     uint32_t load_addr_ = 0;          // LOAD_ADDR as the host wrote it, advanced per LOAD_DATA (TCM fault)

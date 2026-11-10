@@ -23,6 +23,12 @@
 //   only with the core idle (EX §9.2), so no burst is in flight; letting the data of accepted requests
 //   through needs a count of accepted requests against data bursts (data may lead its request) and a
 //   kernel bench with firmware traffic, neither of which exists.
+// Dual weight stream (MVM_DUAL = 1, docs/rtl-mvm.md §15, docs/platform-u200.md §4): every channel has a second AXI4 master, the
+//   read-only port m_axib_*[c] (AR and R channels only, packed [NUM_CH] like m_axi_*; tsr_u200_k4 names it m_axi_chb<c>), on
+//   the core's port mb_rd_*[c]. It uses tsr_xrt_axi_bridge with READ_ONLY = 1 and the base of channel c, passes the MEM_EN
+//   gate like the main port, and its R error and unexpected-response events join ADAPTER_STATUS (bits 0, 2 and the count). The
+//   run-time enable of the core is ~ADAPTER_CTRL.DUAL_DIS (tsr_xrt_ctrl). MVM_DUAL = 0: m_axib_* outputs are 0 (arready,
+//   rvalid, ... are ignored) and no bridge exists for it.
 // plat_err_i (EX §9.3) = ADAPTER_STATUS bits 0..2 or the error count != 0 (tsr_xrt_ctrl).
 // Parameters: the tsr_core parameters (same names and defaults, passed through; RST_PIPE = the
 // core's own reset register stages, replicated per block inside the core), AXI_SLICES (register
@@ -56,6 +62,7 @@ module tsr_xrt_kernel
   parameter longint unsigned CH_BYTES       = TSR_DEF_CH_BYTES,
   parameter int unsigned     ADDR_BEAT_W    = TSR_DEF_ADDR_BEAT_W,
   parameter bit              HAS_MVM        = 1'b1,
+  parameter bit              MVM_DUAL       = 1'b0,   // dual weight stream: the read-only port m_axib_* per channel (header)
   parameter int unsigned     SPM_RD_LAT     = TSR_DEF_SPM_RD_LAT,
   parameter int unsigned     MVM_WS_FIFO    = TSR_DEF_WS_FIFO_BEATS,
   parameter int unsigned     MVM_BC_PIPE    = TSR_DEF_MVM_BC_PIPE,
@@ -153,7 +160,26 @@ module tsr_xrt_kernel
   input  logic [NUM_CH-1:0][BEAT_BITS-1:0]     m_axi_rdata,
   input  logic [NUM_CH-1:0][1:0]               m_axi_rresp,
   input  logic [NUM_CH-1:0]                    m_axi_rlast,
-  input  logic [NUM_CH-1:0][TSR_MEM_ID_W-1:0]  m_axi_rid
+  input  logic [NUM_CH-1:0][TSR_MEM_ID_W-1:0]  m_axi_rid,
+
+  // ---- m_axib: the read-only second port of every channel (MVM_DUAL; header) ----
+  output logic [NUM_CH-1:0]                    m_axib_arvalid,
+  input  logic [NUM_CH-1:0]                    m_axib_arready,
+  output logic [NUM_CH-1:0][63:0]              m_axib_araddr,
+  output logic [NUM_CH-1:0][7:0]               m_axib_arlen,
+  output logic [NUM_CH-1:0][2:0]               m_axib_arsize,
+  output logic [NUM_CH-1:0][1:0]               m_axib_arburst,
+  output logic [NUM_CH-1:0]                    m_axib_arlock,
+  output logic [NUM_CH-1:0][3:0]               m_axib_arcache,
+  output logic [NUM_CH-1:0][2:0]               m_axib_arprot,
+  output logic [NUM_CH-1:0][3:0]               m_axib_arqos,
+  output logic [NUM_CH-1:0][TSR_MEM_ID_W-1:0]  m_axib_arid,
+  input  logic [NUM_CH-1:0]                    m_axib_rvalid,
+  output logic [NUM_CH-1:0]                    m_axib_rready,
+  input  logic [NUM_CH-1:0][BEAT_BITS-1:0]     m_axib_rdata,
+  input  logic [NUM_CH-1:0][1:0]               m_axib_rresp,
+  input  logic [NUM_CH-1:0]                    m_axib_rlast,
+  input  logic [NUM_CH-1:0][TSR_MEM_ID_W-1:0]  m_axib_rid
 );
 
   // -------------------------------------------------------------------------------------------
@@ -163,10 +189,11 @@ module tsr_xrt_kernel
   // -------------------------------------------------------------------------------------------
   localparam int unsigned CNT_RST = 4;                  // counter reset copies (ID groups of 4)
   localparam int unsigned BR_RST  = 4 + 2 * CNT_RST;
+  localparam int unsigned NRC     = MVM_DUAL ? 2 * NUM_CH : NUM_CH;   // reset copy sets: channel c, then (MVM_DUAL) its port B at NUM_CH + c
   logic                          rst_ctrl_n, rst_core_n;
-  logic [NUM_CH-1:0][BR_RST-1:0] rst_ch_n;
+  logic [NRC-1:0][BR_RST-1:0]    rst_ch_n;
 
-  tsr_xrt_reset #(.N_CH(NUM_CH), .CH_COPIES(BR_RST), .CORE_STAGES(RST_STAGES)) u_rst (
+  tsr_xrt_reset #(.N_CH(NRC), .CH_COPIES(BR_RST), .CORE_STAGES(RST_STAGES)) u_rst (
     .clk(ap_clk), .rst_in_n(ap_rst_n), .rst_ctrl_n, .rst_ch_n, .rst_core_n
   );
 
@@ -196,8 +223,8 @@ module tsr_xrt_kernel
   logic [TSR_CSR_AW-1:0]   csr_addr;
   logic [31:0]             csr_wdata, csr_rdata;
   logic [NUM_CH-1:0][63:0] ch_base;
-  logic [NUM_CH-1:0]       ev_rresp_err, ev_bresp_err, ev_unexpected;
-  logic                    mem_en, req_held, plat_err;
+  logic [NUM_CH-1:0]       ev_rresp_err, ev_bresp_err, ev_unexpected, ev2_rresp_err, ev2_unexpected;
+  logic                    mem_en, req_held, plat_err, dual_en;
 
   tsr_xrt_ctrl #(.NUM_CH(NUM_CH)) u_ctrl (
     .clk(ap_clk), .rst_n(rst_ctrl_n),
@@ -209,7 +236,8 @@ module tsr_xrt_kernel
     .s_rvalid(s_axi_control_rvalid), .s_rready(s_axi_control_rready), .s_rdata(s_axi_control_rdata),
     .s_rresp(s_axi_control_rresp),
     .csr_valid, .csr_ready, .csr_we, .csr_addr, .csr_wdata, .csr_rdata,
-    .ch_base, .mem_en, .ev_req_held(req_held), .plat_err, .ev_rresp_err, .ev_bresp_err, .ev_unexpected
+    .ch_base, .mem_en, .dual_en, .ev_req_held(req_held), .plat_err, .ev_rresp_err, .ev_bresp_err, .ev_unexpected,
+    .ev2_rresp_err, .ev2_unexpected
   );
 
   // -------------------------------------------------------------------------------------------
@@ -228,6 +256,13 @@ module tsr_xrt_kernel
   logic [NUM_CH-1:0]                   g_wr_dat_valid, g_wr_dat_ready;
   logic [NUM_CH-1:0]                   mem_en_q;
   logic [NUM_CH-1:0]                   held_c;
+  // the read-only port B (MVM_DUAL): the core's port, its side of the MEM_EN gate
+  logic [NUM_CH-1:0]                   rb_req_valid, rb_req_ready, rb_rsp_valid, rb_rsp_ready, rb_rsp_last;
+  logic [NUM_CH-1:0][ADDR_BEAT_W-1:0]  rb_req_addr;
+  logic [NUM_CH-1:0][TSR_LEN_W-1:0]    rb_req_len;
+  logic [NUM_CH-1:0][TSR_MEM_ID_W-1:0] rb_req_id, rb_rsp_id;
+  logic [NUM_CH-1:0][BEAT_BITS-1:0]    rb_rsp_data;
+  logic [NUM_CH-1:0]                   g_rb_req_valid, g_rb_req_ready;
 
   for (genvar c = 0; c < NUM_CH; c++) begin : g_gate
     always_ff @(posedge ap_clk) begin
@@ -240,7 +275,9 @@ module tsr_xrt_kernel
     assign wr_req_ready[c]   = g_wr_req_ready[c] && mem_en_q[c];
     assign g_wr_dat_valid[c] = wr_dat_valid[c] && mem_en_q[c];
     assign wr_dat_ready[c]   = g_wr_dat_ready[c] && mem_en_q[c];
-    assign held_c[c] = !mem_en_q[c] && (rd_req_valid[c] || wr_req_valid[c] || wr_dat_valid[c]);
+    assign g_rb_req_valid[c] = rb_req_valid[c] && mem_en_q[c];
+    assign rb_req_ready[c]   = g_rb_req_ready[c] && mem_en_q[c];
+    assign held_c[c] = !mem_en_q[c] && (rd_req_valid[c] || wr_req_valid[c] || wr_dat_valid[c] || rb_req_valid[c]);
   end
 
   // XSLR_REG: in the K4 floorplan the channel arbiters sit in all three SLRs and u_ctrl in one of them, so each
@@ -268,7 +305,7 @@ module tsr_xrt_kernel
     .NUM_CH(NUM_CH), .BEAT_BITS(BEAT_BITS), .LANES(LANES), .T_MAX(T_MAX), .K_MAX(K_MAX),
     .SPM_BYTES(SPM_BYTES), .VL(VL), .NSREG(NSREG),
     .RD_OUTSTANDING(RD_OUTSTANDING), .CH_BYTES(CH_BYTES), .ADDR_BEAT_W(ADDR_BEAT_W),
-    .HAS_MVM(HAS_MVM), .SPM_RD_LAT(SPM_RD_LAT),
+    .HAS_MVM(HAS_MVM), .MVM_DUAL(MVM_DUAL), .SPM_RD_LAT(SPM_RD_LAT),
     .HAS_VU(HAS_VU), .HAS_ATT(HAS_ATT), .HAS_GDN(HAS_GDN), .HAS_TRW(HAS_TRW), .HIST_DEPTH(HIST_DEPTH),
     .LOCAL_INTERMEDIATES(LOCAL_INTERMEDIATES), .LOCAL_SCALE(LOCAL_SCALE), .LOCAL_SOFTCAP(LOCAL_SOFTCAP), .RV_LOCAL_TRANSPORT(RV_LOCAL_TRANSPORT), .XSLR_REG(XSLR_REG), .FAST_CLK(FAST_CLK),
     .MVM_WS_FIFO(MVM_WS_FIFO), .MVM_BC_PIPE(MVM_BC_PIPE), .MVM_RES_PIPE(MVM_RES_PIPE), .MVM_GATHER_PAIR(MVM_GATHER_PAIR), .MVM_GATHER_FLITS(MVM_GATHER_FLITS), .DDR_LOCAL_PIPE(DDR_LOCAL_PIPE),
@@ -285,6 +322,10 @@ module tsr_xrt_kernel
     .m_rd_req_len(rd_req_len), .m_rd_req_id(rd_req_id),
     .m_rd_rsp_valid(rd_rsp_valid), .m_rd_rsp_ready(rd_rsp_ready), .m_rd_rsp_data(rd_rsp_data),
     .m_rd_rsp_id(rd_rsp_id), .m_rd_rsp_last(rd_rsp_last),
+    .mb_rd_req_valid(rb_req_valid), .mb_rd_req_ready(rb_req_ready), .mb_rd_req_addr(rb_req_addr),
+    .mb_rd_req_len(rb_req_len), .mb_rd_req_id(rb_req_id),
+    .mb_rd_rsp_valid(rb_rsp_valid), .mb_rd_rsp_ready(rb_rsp_ready), .mb_rd_rsp_data(rb_rsp_data),
+    .mb_rd_rsp_id(rb_rsp_id), .mb_rd_rsp_last(rb_rsp_last), .cfg_dual_en(dual_en),
     .m_wr_req_valid(wr_req_valid), .m_wr_req_ready(wr_req_ready), .m_wr_req_addr(wr_req_addr),
     .m_wr_req_len(wr_req_len), .m_wr_req_id(wr_req_id),
     .m_wr_dat_valid(wr_dat_valid), .m_wr_dat_ready(wr_dat_ready), .m_wr_dat_data(wr_dat_data), .m_wr_dat_mask(wr_dat_mask),
@@ -327,6 +368,78 @@ module tsr_xrt_kernel
       .m_axi_rresp(m_axi_rresp[c]), .m_axi_rlast(m_axi_rlast[c]), .m_axi_rid(m_axi_rid[c]),
       .ev_rresp_err(ev_rresp_err[c]), .ev_bresp_err(ev_bresp_err[c]), .ev_unexpected(ev_unexpected[c])
     );
+  end
+
+  // -------------------------------------------------------------------------------------------
+  // Read-only bridges of the port B (MVM_DUAL): the same bridge with READ_ONLY, the same base
+  // -------------------------------------------------------------------------------------------
+  if (MVM_DUAL) begin : g_dual
+    for (genvar c = 0; c < NUM_CH; c++) begin : g_chb
+      logic            ev_bresp_none;
+      logic            aw_valid_none, w_valid_none, w_last_none, b_ready_none, wr_req_ready_none, wr_dat_ready_none, wr_rsp_valid_none;
+      logic [63:0]     awaddr_none;
+      logic [7:0]      awlen_none;
+      logic [2:0]      awsize_none, awprot_none;
+      logic [1:0]      awburst_none;
+      logic            awlock_none;
+      logic [3:0]      awcache_none, awqos_none;
+      logic [TSR_MEM_ID_W-1:0] awid_none, wr_rsp_id_none;
+      logic [BEAT_BITS-1:0]    wdata_none;
+      logic [BEAT_BITS/8-1:0]  wstrb_none;
+      tsr_xrt_axi_bridge #(
+        .ADDR_BEAT_W(ADDR_BEAT_W), .BEAT_BITS(BEAT_BITS), .SLICES(AXI_SLICES), .CNT_RST(CNT_RST), .READ_ONLY(1'b1)
+      ) u_br (
+        .clk(ap_clk), .rst_n(rst_ch_n[NUM_CH + c][0]), .rst_axi_n(rst_ch_n[NUM_CH + c][1]), .rst_rd_n(rst_ch_n[NUM_CH + c][2]),
+        .rst_wr_n(rst_ch_n[NUM_CH + c][3]), .rst_rdc_n(rst_ch_n[NUM_CH + c][4 +: CNT_RST]),
+        .rst_wrc_n(rst_ch_n[NUM_CH + c][4 + CNT_RST +: CNT_RST]), .base(ch_base[c]),
+        .c_rd_req_valid(g_rb_req_valid[c]), .c_rd_req_ready(g_rb_req_ready[c]), .c_rd_req_addr(rb_req_addr[c]),
+        .c_rd_req_len(rb_req_len[c]), .c_rd_req_id(rb_req_id[c]),
+        .c_rd_rsp_valid(rb_rsp_valid[c]), .c_rd_rsp_ready(rb_rsp_ready[c]), .c_rd_rsp_data(rb_rsp_data[c]),
+        .c_rd_rsp_id(rb_rsp_id[c]), .c_rd_rsp_last(rb_rsp_last[c]),
+        .c_wr_req_valid(1'b0), .c_wr_req_ready(wr_req_ready_none), .c_wr_req_addr('0), .c_wr_req_len('0), .c_wr_req_id('0),
+        .c_wr_dat_valid(1'b0), .c_wr_dat_ready(wr_dat_ready_none), .c_wr_dat_data('0), .c_wr_dat_mask('0),
+        .c_wr_dat_last(1'b0),
+        .c_wr_rsp_valid(wr_rsp_valid_none), .c_wr_rsp_ready(1'b1), .c_wr_rsp_id(wr_rsp_id_none),
+        .m_axi_awvalid(aw_valid_none), .m_axi_awready(1'b0), .m_axi_awaddr(awaddr_none), .m_axi_awlen(awlen_none),
+        .m_axi_awsize(awsize_none), .m_axi_awburst(awburst_none), .m_axi_awlock(awlock_none),
+        .m_axi_awcache(awcache_none), .m_axi_awprot(awprot_none), .m_axi_awqos(awqos_none), .m_axi_awid(awid_none),
+        .m_axi_wvalid(w_valid_none), .m_axi_wready(1'b0), .m_axi_wdata(wdata_none), .m_axi_wstrb(wstrb_none),
+        .m_axi_wlast(w_last_none),
+        .m_axi_bvalid(1'b0), .m_axi_bready(b_ready_none), .m_axi_bresp(2'b00), .m_axi_bid('0),
+        .m_axi_arvalid(m_axib_arvalid[c]), .m_axi_arready(m_axib_arready[c]), .m_axi_araddr(m_axib_araddr[c]),
+        .m_axi_arlen(m_axib_arlen[c]), .m_axi_arsize(m_axib_arsize[c]), .m_axi_arburst(m_axib_arburst[c]),
+        .m_axi_arlock(m_axib_arlock[c]), .m_axi_arcache(m_axib_arcache[c]), .m_axi_arprot(m_axib_arprot[c]),
+        .m_axi_arqos(m_axib_arqos[c]), .m_axi_arid(m_axib_arid[c]),
+        .m_axi_rvalid(m_axib_rvalid[c]), .m_axi_rready(m_axib_rready[c]), .m_axi_rdata(m_axib_rdata[c]),
+        .m_axi_rresp(m_axib_rresp[c]), .m_axi_rlast(m_axib_rlast[c]), .m_axi_rid(m_axib_rid[c]),
+        .ev_rresp_err(ev2_rresp_err[c]), .ev_bresp_err(ev_bresp_none), .ev_unexpected(ev2_unexpected[c])
+      );
+      wire unused_chb = &{1'b0, ev_bresp_none, aw_valid_none, w_valid_none, w_last_none, b_ready_none, wr_req_ready_none,
+                          wr_dat_ready_none, wr_rsp_valid_none, awaddr_none, awlen_none, awsize_none, awprot_none,
+                          awburst_none, awlock_none, awcache_none, awqos_none, awid_none, wr_rsp_id_none, wdata_none,
+                          wstrb_none};
+    end
+  end else begin : g_nodual
+    assign m_axib_arvalid = '0;
+    assign m_axib_araddr  = '0;
+    assign m_axib_arlen   = '0;
+    assign m_axib_arsize  = '0;
+    assign m_axib_arburst = '0;
+    assign m_axib_arlock  = '0;
+    assign m_axib_arcache = '0;
+    assign m_axib_arprot  = '0;
+    assign m_axib_arqos   = '0;
+    assign m_axib_arid    = '0;
+    assign m_axib_rready  = '0;
+    assign ev2_rresp_err  = '0;
+    assign ev2_unexpected = '0;
+    assign g_rb_req_ready = '0;
+    assign rb_rsp_valid   = '0;
+    assign rb_rsp_data    = '0;
+    assign rb_rsp_id      = '0;
+    assign rb_rsp_last    = '0;
+    wire unused_nodual = &{1'b0, m_axib_arready, m_axib_rvalid, m_axib_rdata, m_axib_rresp, m_axib_rlast, m_axib_rid,
+                           g_rb_req_valid, rb_req_addr, rb_req_len, rb_req_id, rb_rsp_ready};
   end
 
 endmodule
