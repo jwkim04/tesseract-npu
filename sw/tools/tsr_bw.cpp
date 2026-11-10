@@ -9,7 +9,7 @@
 //   tsr_bw [--xclbin FILE] [--device N|BDF] [--kernel NAME] [--sizes LIST] [--bursts LIST]
 //          [--outstanding N] [--ids N] [--modes r,w,rw] [--channels LIST|none] [--no-all]
 //          [--reps N] [--sweep-outstanding] [--pcie] [--verify sample|full|none] [--clock-mhz F]
-//          [--ch-mib N] [--csv FILE] [--seed N] [--timeout-ms N] [--mock] [--dry-run] [-v]
+//          [--ch-mib N] [--csv FILE] [--seed N] [--timeout-ms N] [--cu NAME[,NAME]] [--mock] [--dry-run] [-v]
 //
 // Defaults: $TSR_XCLBIN, device $TSR_XRT_DEVICE or 0, kernel tsr_bw_k4, sizes 1M,16M,256M,1G,
 // bursts 1,4,16,64, outstanding 32, IDs 1, modes r,w,rw, every channel alone and all together,
@@ -24,6 +24,13 @@
 // a smoke test of the tool itself; TSR_BW_MOCK_FAULT=csum|write|status|bytes makes the model
 // misbehave so that the checks can be seen to fire. --dry-run only opens the device (xclbin, kernel,
 // arguments, buffers) and completes one empty run (also on XRT's no-op shim: tb/platform/bw/noop).
+// --cu NAME[,NAME] picks compute units of an xclbin with several (hw/u200/bw/bw2x200.cfg: tsr_bw_a and tsr_bw_b,
+// both with m_axi_ch<c> on DDR[c]). One name: that compute unit alone, as without --cu. Two names: both at
+// the same time on the same banks, read mode only (--modes r), one buffer of the largest size per compute unit and
+// channel, filled by each compute unit's own kernel. For every point (burst, --channels, all) it prints per bank the
+// read rate of each compute unit (bytes / RD_CYCLES at the kernel clock), their sum, both RD_CYCLES and first-beat
+// latencies, the host-measured start skew (b after a, from when each start() returned), the difference of the
+// wait() return times, and the overlap of the two runs estimated from the start times and the kernel's cycles.
 // Exit status: 0 = every run passed its checks, 1 = a check failed, 2 = setup error.
 
 #include <algorithm>
@@ -35,6 +42,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <memory>
 #include <random>
 #include <stdexcept>
@@ -121,6 +129,10 @@ struct RunRes {
     uint64_t total_cycles = 0;
     double wall_s = 0;
 };
+struct Stamps {              // two compute units at once: host seconds from before the first start()
+    double start[2] = {0, 0};    // start() returned
+    double done[2] = {0, 0};     // wait() returned
+};
 
 // ---------------------------------------------------------------------------------------------
 // Device access
@@ -135,6 +147,12 @@ public:
     virtual bool clock_known() const = 0;
     virtual std::string describe() const = 0;
     virtual void exec(const RunReq & r, uint32_t timeout_ms, double * wall_s) = 0;   // start + wait (throws)
+    // Compute units: exec, reg, mem_write, mem_read and ch_addr act on the selected one (0 at the start).
+    virtual unsigned num_cu() const { return 1; }
+    virtual std::string cu_name(unsigned) const { return ""; }
+    virtual void select_cu(unsigned) {}
+    // Both compute units (num_cu() == 2) at the same time: a on 0, b on 1; start both, wait for both (throws)
+    virtual void exec_both(const RunReq &, const RunReq &, uint32_t, Stamps *) { throw std::logic_error("exec_both: one compute unit"); }
     virtual uint32_t reg(uint32_t off) = 0;
     virtual void mem_write(unsigned c, uint64_t off, const void * src, size_t n) = 0;
     virtual void mem_read(unsigned c, uint64_t off, void * dst, size_t n) = 0;
@@ -164,7 +182,8 @@ public:
 // ---- XRT: the kernel through xrt::run, results through read_register (exclusive CU access) ----
 class XrtDev final : public BwDev {
 public:
-    XrtDev(const std::string & xclbin, const std::string & devs, const std::string & kname, uint64_t ch_bytes, double clock_override) {
+    XrtDev(const std::string & xclbin, const std::string & devs, const std::string & kname, const std::vector<std::string> & cu_sel,
+           uint64_t ch_bytes, double clock_override) {
         dev_ = devs.find_first_not_of("0123456789") == std::string::npos ? xrt::device((unsigned) std::stoul(devs))
                                                                           : xrt::device(devs);
         xb_ = xrt::xclbin(xclbin);
@@ -176,12 +195,35 @@ public:
         }
         if (!xk) throw std::runtime_error(fmt("%s has no kernel %s (kernels: %s)", xclbin.c_str(), kname.c_str(), klist.c_str()));
         const auto cus = xk.get_cus();
-        if (cus.size() != 1) throw std::runtime_error(fmt("kernel %s has %zu compute units, expected 1", kname.c_str(), cus.size()));
-        if (cus[0].get_control_type() != xrt::xclbin::ip::control_type::hs)
-            throw std::runtime_error(fmt("kernel %s is not ap_ctrl_hs", kname.c_str()));
-        if (cus[0].get_size() < REG_RANGE)
-            throw std::runtime_error(fmt("kernel %s: s_axi_control range 0x%zx < 0x%x (kernel_bw_k4.xml)", kname.c_str(),
-                                         (size_t) cus[0].get_size(), REG_RANGE));
+        // the compute units to drive: the --cu names (instance name, or kernel:instance), else the kernel's only one
+        std::string culist;
+        for (const auto & u : cus) culist += (culist.empty() ? "" : ", ") + u.get_name();
+        std::vector<xrt::xclbin::ip> use;
+        std::vector<std::string> kn;                    // the name xrt::kernel takes: kernel or kernel:{instance}
+        if (cu_sel.empty()) {
+            if (cus.size() != 1)
+                throw std::runtime_error(fmt("kernel %s has %zu compute units, expected 1 (%s; --cu NAME[,NAME] selects)", kname.c_str(),
+                                             cus.size(), culist.c_str()));
+            use.push_back(cus[0]);
+            kn.push_back(kname);
+        }
+        for (const auto & n : cu_sel) {
+            const auto it = std::find_if(cus.begin(), cus.end(), [&](const xrt::xclbin::ip & u) {
+                const std::string un = u.get_name();
+                return un == n || un.substr(un.find(':') + 1) == n;
+            });
+            if (it == cus.end()) throw std::runtime_error(fmt("kernel %s has no compute unit %s (%s)", kname.c_str(), n.c_str(), culist.c_str()));
+            use.push_back(*it);
+            const std::string un = it->get_name();
+            kn.push_back(kname + ":{" + un.substr(un.find(':') + 1) + "}");
+        }
+        for (const auto & u : use) {
+            if (u.get_control_type() != xrt::xclbin::ip::control_type::hs)
+                throw std::runtime_error(fmt("kernel %s is not ap_ctrl_hs", kname.c_str()));
+            if (u.get_size() < REG_RANGE)
+                throw std::runtime_error(fmt("kernel %s: s_axi_control range 0x%zx < 0x%x (kernel_bw_k4.xml)", kname.c_str(),
+                                             (size_t) u.get_size(), REG_RANGE));
+        }
         // arguments by name, offsets checked against the register map (docs/bandwidth-kernel.md §2)
         auto find = [&](const std::string & n, uint64_t off, uint64_t sz) {
             for (const auto & a : xk.get_args()) {
@@ -226,40 +268,50 @@ public:
         const char * em = getenv("XCL_EMULATION_MODE");
         noop_ = em != nullptr && strcmp(em, "noop") == 0;
         uuid_ = noop_ ? dev_.register_xclbin(xb_) : dev_.load_xclbin(xb_);
-        krn_ = xrt::kernel(dev_, uuid_, kname, xrt::kernel::cu_access_mode::exclusive);
-        uint32_t ver = 0, inf = 0;
-        if (!noop_) {
-            ver = reg(BW_VERSION);
-            inf = reg(BW_INFO);
-            if (ver >> 16 != VERSION_MAGIC || (ver >> 8 & 0xFF) != VERSION_MAJOR || (ver & 0xFF) != MAX_CH)
-                throw std::runtime_error(fmt("BW_VERSION 0x%08x: not tsr_bw_k4 v%u with %u channels", ver, VERSION_MAJOR, MAX_CH));
-            // Accepting a start does not clear ap_done (only an AP_CTRL read does) and xrt::run never
-            // reads AP_CTRL before a start: a completion an earlier process did not wait for would
-            // complete our first run at once. Consume it (and wait out a run still going).
-            if (!settle_idle(10000))
-                throw std::runtime_error("the kernel is still busy with a run of an earlier process after 10 s (it cannot be "
-                                         "aborted: wait, or reset the card with xbutil reset)");
-        }
         const auto mems = xb_.get_mems();
-        for (unsigned c = 0; c < MAX_CH; ++c) {
-            const int grp = krn_.group_id(a_buf_[c]);
-            std::string tag = fmt("group %d", grp);
-            uint64_t bank = 0;
-            for (const auto & m : mems) {
-                if (m.get_index() == (grp & 0xFFFF)) {
-                    tag = m.get_tag();
-                    bank = m.get_size_kb() * KiB;
-                }
+        uint32_t ver = 0, inf = 0;
+        std::string bufinfo;
+        for (size_t i = 0; i < use.size(); ++i) {
+            cu_.emplace_back();
+            Cu & u = cu_.back();
+            u.name = use[i].get_name();
+            u.name = u.name.substr(u.name.find(':') + 1);
+            u.krn = xrt::kernel(dev_, uuid_, kn[i], xrt::kernel::cu_access_mode::exclusive);
+            cur_ = (unsigned) i;
+            if (!noop_) {
+                ver = reg(BW_VERSION);
+                inf = reg(BW_INFO);
+                if (ver >> 16 != VERSION_MAGIC || (ver >> 8 & 0xFF) != VERSION_MAJOR || (ver & 0xFF) != MAX_CH)
+                    throw std::runtime_error(fmt("BW_VERSION 0x%08x: not tsr_bw_k4 v%u with %u channels", ver, VERSION_MAJOR, MAX_CH));
+                // Accepting a start does not clear ap_done (only an AP_CTRL read does) and xrt::run never
+                // reads AP_CTRL before a start: a completion an earlier process did not wait for would
+                // complete our first run at once. Consume it (and wait out a run still going).
+                if (!settle_idle(10000))
+                    throw std::runtime_error("the kernel is still busy with a run of an earlier process after 10 s (it cannot be "
+                                             "aborted: wait, or reset the card with xbutil reset)");
             }
-            if (bank && ch_bytes > bank)
-                throw std::runtime_error(fmt("channel %u: %s of %.2f GiB is smaller than the buffer (%.2f GiB)", c, tag.c_str(),
-                                             (double) bank / GiB, (double) ch_bytes / GiB));
-            bo_.emplace_back(dev_, ch_bytes, xrt::bo::flags::device_only, (xrt::memory_group) grp);
-            tags_.push_back(tag);
+            for (unsigned c = 0; c < MAX_CH; ++c) {
+                const int grp = u.krn.group_id(a_buf_[c]);
+                std::string tag = fmt("group %d", grp);
+                uint64_t bank = 0;
+                for (const auto & m : mems) {
+                    if (m.get_index() == (grp & 0xFFFF)) {
+                        tag = m.get_tag();
+                        bank = m.get_size_kb() * KiB;
+                    }
+                }
+                if (bank && ch_bytes > bank)
+                    throw std::runtime_error(fmt("channel %u: %s of %.2f GiB is smaller than the buffer (%.2f GiB)", c, tag.c_str(),
+                                                 (double) bank / GiB, (double) ch_bytes / GiB));
+                u.bo.emplace_back(dev_, ch_bytes, xrt::bo::flags::device_only, (xrt::memory_group) grp);
+                bufinfo += fmt("%s%s: %s, %.2f GiB device-only buffer at 0x%" PRIx64 "\n", use.size() > 1 ? (u.name + " ").c_str() : "",
+                               fmt("ch%u", c).c_str(), tag.c_str(), (double) ch_bytes / GiB, (uint64_t) u.bo[c].address());
+            }
+            u.run = xrt::run(u.krn);
+            for (unsigned c = 0; c < MAX_CH; ++c) u.run.set_arg(a_buf_[c], u.bo[c]);
         }
+        cur_ = 0;
         ch_bytes_ = ch_bytes;
-        run_ = xrt::run(krn_);
-        for (unsigned c = 0; c < MAX_CH; ++c) run_.set_arg(a_buf_[c], bo_[c]);
         std::string devname = "?", bdf = "?";
         try {
             devname = dev_.get_info<xrt::info::device::name>();
@@ -270,30 +322,128 @@ public:
                     xclbin.c_str(), uuid_.to_string().c_str(), kname.c_str(), ver, inf,
                     noop_ ? " (no-op shim: no register access)" : "");
         info_ += fmt("kernel clock %.1f MHz (%s)\n", clock_, clock_known_ ? clock_name_.c_str() : "not in the xclbin: assumed");
-        for (unsigned c = 0; c < MAX_CH; ++c)
-            info_ += fmt("ch%u: %s, %.2f GiB device-only buffer at 0x%" PRIx64 "\n", c, tags_[c].c_str(), (double) ch_bytes / GiB,
-                         (uint64_t) bo_[c].address());
+        if (cu_.size() > 1) info_ += fmt("compute units %s (a) and %s (b), driven at the same time\n", cu_[0].name.c_str(), cu_[1].name.c_str());
+        info_ += bufinfo;
     }
     unsigned num_ch() const override { return MAX_CH; }
     uint64_t ch_bytes() const override { return ch_bytes_; }
-    uint64_t ch_addr(unsigned c) const override { return bo_[c].address(); }
+    uint64_t ch_addr(unsigned c) const override { return cu_[cur_].bo[c].address(); }
     double clock_mhz() const override { return clock_; }
     bool clock_known() const override { return clock_known_; }
     std::string describe() const override { return info_; }
+    unsigned num_cu() const override { return (unsigned) cu_.size(); }
+    std::string cu_name(unsigned u) const override { return cu_[u].name; }
+    void select_cu(unsigned u) override { cur_ = u; }
 
     void exec(const RunReq & r, uint32_t timeout_ms, double * wall_s) override {
-        run_.set_arg(a_seed_, (uint32_t) r.seed);
+        set_args(r);
+        const auto t0 = std::chrono::steady_clock::now();
+        cu_[cur_].run.start();
+        const ert_cmd_state st = cu_[cur_].run.wait(std::chrono::milliseconds(timeout_ms));
+        *wall_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        finish(st, t0, timeout_ms, wall_s);
+    }
+
+    // Both compute units: all arguments are set first, then the two start() calls follow each other, and the
+    // second wait() runs in a thread so that both completion times are seen as they happen.
+    void exec_both(const RunReq & a, const RunReq & b, uint32_t timeout_ms, Stamps * s) override {
+        const unsigned keep = cur_;
+        cur_ = 0;
+        set_args(a);
+        cur_ = 1;
+        set_args(b);
+        const auto t0 = std::chrono::steady_clock::now();
+        auto since = [&]() { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
+        ert_cmd_state st[2] = {ERT_CMD_STATE_NEW, ERT_CMD_STATE_NEW};
+        cu_[0].run.start();
+        s->start[0] = since();
+        cu_[1].run.start();
+        s->start[1] = since();
+        std::string werr;
+        std::thread th([&]() {
+            try {
+                st[1] = cu_[1].run.wait(std::chrono::milliseconds(timeout_ms));
+            } catch (const std::exception & e) {
+                werr = e.what();
+            }
+            s->done[1] = since();
+        });
+        std::exception_ptr ep;
+        try {
+            st[0] = cu_[0].run.wait(std::chrono::milliseconds(timeout_ms));
+        } catch (...) {
+            ep = std::current_exception();
+        }
+        s->done[0] = since();
+        th.join();
+        cur_ = keep;
+        if (ep) std::rethrow_exception(ep);
+        if (!werr.empty()) throw std::runtime_error(werr);
+        for (unsigned u = 0; u < 2; ++u) {
+            cur_ = u;
+            double w = 0;
+            finish(st[u], t0, timeout_ms, &w);
+        }
+        cur_ = keep;
+    }
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    // read_register is deprecated in XRT 2.18 in favor of xrt::ip, which cannot share a compute
+    // unit with xrt::run; it is the supported path for an exclusive kernel (docs/xrt-host.md §4.1).
+    uint32_t reg(uint32_t off) override { return cu_[cur_].krn.read_register(off); }
+    // Read AP_CTRL (no run outstanding) until ap_idle with no start pending, for at most ms (0: one
+    // read). Every read consumes ap_done / ap_ready.
+    bool settle_idle(uint32_t ms) {
+        const auto t0 = std::chrono::steady_clock::now();
+        for (;;) {
+            const uint32_t ap = cu_[cur_].krn.read_register(0x000);
+            if ((ap & 0x4u) && !(ap & 0x1u)) return true;
+            if (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() >= ms) return false;
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+        }
+    }
+#pragma GCC diagnostic pop
+
+    void mem_write(unsigned c, uint64_t off, const void * src, size_t n) override {
+        for (size_t d = 0; d < n; d += DMA_CHUNK) cu_[cur_].bo[c].write((const uint8_t *) src + d, std::min<size_t>(DMA_CHUNK, n - d), off + d);
+    }
+    void mem_read(unsigned c, uint64_t off, void * dst, size_t n) override {
+        for (size_t d = 0; d < n; d += DMA_CHUNK) cu_[cur_].bo[c].read((uint8_t *) dst + d, std::min<size_t>(DMA_CHUNK, n - d), off + d);
+    }
+
+private:
+    struct Cu {
+        std::string name;                   // instance name
+        xrt::kernel krn;
+        xrt::run run;
+        std::vector<xrt::bo> bo;
+    };
+    xrt::device dev_;
+    xrt::xclbin xb_;
+    xrt::uuid uuid_;
+    std::vector<Cu> cu_;
+    unsigned cur_ = 0;
+    int a_seed_ = -1, a_ctrl_[MAX_CH], a_bytes_[MAX_CH], a_rdo_[MAX_CH], a_wro_[MAX_CH], a_buf_[MAX_CH];
+    uint64_t ch_bytes_ = 0;
+    bool noop_ = false;
+    double clock_ = 300.0;
+    bool clock_known_ = false;
+    std::string clock_name_, info_;
+
+    void set_args(const RunReq & r) {
+        xrt::run & run = cu_[cur_].run;
+        run.set_arg(a_seed_, (uint32_t) r.seed);
         for (unsigned c = 0; c < MAX_CH; ++c) {
             const ChReq & q = r.ch[c];
-            run_.set_arg(a_ctrl_[c], ctrl_word(q.en, q.rd, q.wr, q.burst, q.outstanding, q.id_log2));
-            run_.set_arg(a_bytes_[c], (uint64_t) q.bytes);
-            run_.set_arg(a_rdo_[c], (uint64_t) q.rd_off);
-            run_.set_arg(a_wro_[c], (uint64_t) q.wr_off);
+            run.set_arg(a_ctrl_[c], ctrl_word(q.en, q.rd, q.wr, q.burst, q.outstanding, q.id_log2));
+            run.set_arg(a_bytes_[c], (uint64_t) q.bytes);
+            run.set_arg(a_rdo_[c], (uint64_t) q.rd_off);
+            run.set_arg(a_wro_[c], (uint64_t) q.wr_off);
         }
-        const auto t0 = std::chrono::steady_clock::now();
-        run_.start();
-        const ert_cmd_state st = run_.wait(std::chrono::milliseconds(timeout_ms));
-        *wall_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    }
+    // The end of a run of the selected compute unit, started at t0: state of its xrt::run, and idle.
+    void finish(ert_cmd_state st, std::chrono::steady_clock::time_point t0, uint32_t timeout_ms, double * wall_s) {
         if (st == ERT_CMD_STATE_TIMEOUT)
             throw std::runtime_error(fmt("no ap_done within %u ms (the bandwidth kernel cannot be aborted: reset the card, xbutil reset)",
                                          timeout_ms));
@@ -309,58 +459,20 @@ public:
             *wall_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         }
     }
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-    // read_register is deprecated in XRT 2.18 in favor of xrt::ip, which cannot share a compute
-    // unit with xrt::run; it is the supported path for an exclusive kernel (docs/xrt-host.md §4.1).
-    uint32_t reg(uint32_t off) override { return krn_.read_register(off); }
-    // Read AP_CTRL (no run outstanding) until ap_idle with no start pending, for at most ms (0: one
-    // read). Every read consumes ap_done / ap_ready.
-    bool settle_idle(uint32_t ms) {
-        const auto t0 = std::chrono::steady_clock::now();
-        for (;;) {
-            const uint32_t ap = krn_.read_register(0x000);
-            if ((ap & 0x4u) && !(ap & 0x1u)) return true;
-            if (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() >= ms) return false;
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
-        }
-    }
-#pragma GCC diagnostic pop
-
-    void mem_write(unsigned c, uint64_t off, const void * src, size_t n) override {
-        for (size_t d = 0; d < n; d += DMA_CHUNK) bo_[c].write((const uint8_t *) src + d, std::min<size_t>(DMA_CHUNK, n - d), off + d);
-    }
-    void mem_read(unsigned c, uint64_t off, void * dst, size_t n) override {
-        for (size_t d = 0; d < n; d += DMA_CHUNK) bo_[c].read((uint8_t *) dst + d, std::min<size_t>(DMA_CHUNK, n - d), off + d);
-    }
-
-private:
-    xrt::device dev_;
-    xrt::xclbin xb_;
-    xrt::uuid uuid_;
-    xrt::kernel krn_;
-    xrt::run run_;
-    std::vector<xrt::bo> bo_;
-    std::vector<std::string> tags_;
-    int a_seed_ = -1, a_ctrl_[MAX_CH], a_bytes_[MAX_CH], a_rdo_[MAX_CH], a_wro_[MAX_CH], a_buf_[MAX_CH];
-    uint64_t ch_bytes_ = 0;
-    bool noop_ = false;
-    double clock_ = 300.0;
-    bool clock_known_ = false;
-    std::string clock_name_, info_;
 };
 
 // ---- mock: the kernel's documented behavior (docs/bandwidth-kernel.md §2, §3) in C++, no device ----
 class MockDev final : public BwDev {
 public:
-    explicit MockDev(uint64_t ch_bytes) : ch_bytes_(ch_bytes) {
-        for (unsigned c = 0; c < MAX_CH; ++c) mem_.emplace_back(ch_bytes, 0);
+    explicit MockDev(uint64_t ch_bytes, unsigned ncu = 1) : ch_bytes_(ch_bytes), u_(ncu) {
         const char * f = getenv("TSR_BW_MOCK_FAULT");
         fault_ = f ? f : "";
-        regs_.assign(REG_RANGE / 4, 0);
-        regs_[BW_VERSION / 4] = VERSION_MAGIC << 16 | VERSION_MAJOR << 8 | MAX_CH;
-        regs_[BW_INFO / 4] = 28u << 8 | 2u;
+        for (Unit & u : u_) {
+            for (unsigned c = 0; c < MAX_CH; ++c) u.mem.emplace_back(ch_bytes, 0);
+            u.regs.assign(REG_RANGE / 4, 0);
+            u.regs[BW_VERSION / 4] = VERSION_MAGIC << 16 | VERSION_MAJOR << 8 | MAX_CH;
+            u.regs[BW_INFO / 4] = 28u << 8 | 2u;
+        }
     }
     unsigned num_ch() const override { return MAX_CH; }
     uint64_t ch_bytes() const override { return ch_bytes_; }
@@ -368,8 +480,23 @@ public:
     double clock_mhz() const override { return 300.0; }
     bool clock_known() const override { return false; }
     std::string describe() const override {
-        return fmt("mock device (C++ model of tsr_bw_k4, no hardware), %.0f MiB per channel%s\n", (double) ch_bytes_ / MiB,
-                   fault_.empty() ? "" : (", fault " + fault_).c_str());
+        return fmt("mock device (C++ model of tsr_bw_k4, no hardware)%s, %.0f MiB per channel%s\n", num_cu() > 1 ? ", 2 compute units" : "",
+                   (double) ch_bytes_ / MiB, fault_.empty() ? "" : (", fault " + fault_).c_str());
+    }
+    unsigned num_cu() const override { return (unsigned) u_.size(); }
+    std::string cu_name(unsigned u) const override { return fmt("mock_%c", 'a' + u); }
+    void select_cu(unsigned u) override { cur_ = u; }
+    // the model has no shared memory port: the two compute units run one after the other (no contention)
+    void exec_both(const RunReq & a, const RunReq & b, uint32_t timeout_ms, Stamps * s) override {
+        double w[2] = {0, 0};
+        const unsigned keep = cur_;
+        cur_ = 0;
+        exec(a, timeout_ms, &w[0]);
+        cur_ = 1;
+        exec(b, timeout_ms, &w[1]);
+        cur_ = keep;
+        s->start[0] = 20e-6, s->start[1] = 60e-6;
+        s->done[0] = s->start[0] + w[0], s->done[1] = s->start[1] + w[1];
     }
     void exec(const RunReq & r, uint32_t, double * wall_s) override {
         const auto t0 = std::chrono::steady_clock::now();
@@ -388,7 +515,7 @@ public:
                 x.status |= ST_RAN;
                 const uint64_t nb = q.bytes / 64;
                 if (q.rd && nb) {
-                    for (uint64_t o = 0; o < q.bytes; o += 64) x.checksum += beat_hash_bytes(&mem_[c][q.rd_off + o]);
+                    for (uint64_t o = 0; o < q.bytes; o += 64) x.checksum += beat_hash_bytes(&mem()[c][q.rd_off + o]);
                     x.rd_bytes = q.bytes;
                     x.rd_bursts = (uint32_t) burst_count(q.rd_off / 64, nb, q.burst);
                     x.rd_lat = 40;
@@ -399,7 +526,7 @@ public:
                         uint64_t w[8];
                         pattern_beat(r.seed, c, q.wr_off + o, w);
                         if (fault_ == "write" && o == q.bytes / 2) w[3] ^= 1;
-                        memcpy(&mem_[c][q.wr_off + o], w, 64);
+                        memcpy(&mem()[c][q.wr_off + o], w, 64);
                     }
                     x.wr_bytes = q.bytes;
                     x.wr_bursts = (uint32_t) burst_count(q.wr_off / 64, nb, q.burst);
@@ -413,19 +540,25 @@ public:
             total = std::max(total, std::max(x.rd_cycles, x.wr_cycles) + 16);
             put(c, x);
         }
-        regs_[TOTAL_CYCLES / 4] = (uint32_t) total;
-        regs_[TOTAL_CYCLES / 4 + 1] = (uint32_t) (total >> 32);
+        regs()[TOTAL_CYCLES / 4] = (uint32_t) total;
+        regs()[TOTAL_CYCLES / 4 + 1] = (uint32_t) (total >> 32);
         *wall_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() + (double) total / 300e6 + 30e-6;
     }
-    uint32_t reg(uint32_t off) override { return off < REG_RANGE ? regs_[off / 4] : 0; }
-    void mem_write(unsigned c, uint64_t off, const void * src, size_t n) override { memcpy(&mem_[c][off], src, n); }
-    void mem_read(unsigned c, uint64_t off, void * dst, size_t n) override { memcpy(dst, &mem_[c][off], n); }
+    uint32_t reg(uint32_t off) override { return off < REG_RANGE ? regs()[off / 4] : 0; }
+    void mem_write(unsigned c, uint64_t off, const void * src, size_t n) override { memcpy(&mem()[c][off], src, n); }
+    void mem_read(unsigned c, uint64_t off, void * dst, size_t n) override { memcpy(dst, &mem()[c][off], n); }
 
 private:
+    struct Unit {
+        std::vector<std::vector<uint8_t>> mem;
+        std::vector<uint32_t> regs;
+    };
     uint64_t ch_bytes_;
-    std::vector<std::vector<uint8_t>> mem_;
-    std::vector<uint32_t> regs_;
+    std::vector<Unit> u_;
+    unsigned cur_ = 0;
     std::string fault_;
+    std::vector<std::vector<uint8_t>> & mem() { return u_[cur_].mem; }
+    std::vector<uint32_t> & regs() { return u_[cur_].regs; }
 
     // a DDR4-like model: 85 % of a beat per cycle when enough is in flight, latency-bound otherwise
     static uint64_t cycles(uint64_t nb, uint64_t bursts, unsigned mo, uint32_t lat) {
@@ -434,7 +567,7 @@ private:
         return (uint64_t) c + lat;
     }
     void put(unsigned c, const ChRes & x) {
-        auto w32 = [&](uint32_t f, uint32_t v) { regs_[res_reg(c, f) / 4] = v; };
+        auto w32 = [&](uint32_t f, uint32_t v) { regs()[res_reg(c, f) / 4] = v; };
         auto w64 = [&](uint32_t f, uint64_t v) { w32(f, (uint32_t) v), w32(f + 4, (uint32_t) (v >> 32)); };
         w32(R_STATUS, x.status);
         w32(R_ERRS, x.errs);
@@ -455,6 +588,7 @@ private:
 // ---------------------------------------------------------------------------------------------
 struct Opts {
     std::string xclbin, device = "0", kernel = "tsr_bw_k4", csv, verify = "sample";
+    std::vector<std::string> cus;                    // --cu: compute units to drive (empty: the kernel's only one)
     std::vector<uint64_t> sizes = {1 * MiB, 16 * MiB, 256 * MiB, 1 * GiB};
     std::vector<unsigned> bursts = {1, 4, 16, 64};
     std::vector<std::string> modes = {"r", "w", "rw"};
@@ -640,25 +774,134 @@ struct Tool {
         fflush(stdout);
     }
 
-    // Read regions: filled by the kernel (all channels, largest size, fill_seed); reference checksums.
+    // One measurement point on two compute units at once (read mode, the same request on both, each on its own
+    // buffers of the same banks): `reps` runs, median by the slowest engine's cycles; one line per bank, and one
+    // for all banks together when there are several.
+    void dual_point(const std::vector<unsigned> & chans, uint64_t size, unsigned burst, unsigned out) {
+        const size_t si = std::find(o.sizes.begin(), o.sizes.end(), size) - o.sizes.begin();
+        if (si >= o.sizes.size()) throw std::logic_error("dual_point(): size not in --sizes");
+        struct Rep {
+            RunRes r[2];
+            Stamps s;
+        };
+        std::vector<Rep> rs;
+        std::string errs;
+        auto add_err = [&](const std::string & e) {     // the same finding in several repetitions: once
+            if (errs.find(e) == std::string::npos) errs += e;
+        };
+        for (unsigned k = 0; k < o.reps; ++k) {
+            RunReq q[2];
+            std::vector<uint64_t> ref(d.num_ch(), 0);
+            for (unsigned c : chans) ref[c] = ref_prefix[c][si];
+            for (RunReq & x : q) {
+                x.seed = (uint32_t) rng() | 1;
+                for (unsigned c : chans) x.ch[c] = ChReq{true, true, false, burst, out, o.id_log2, size, 0, 0};
+            }
+            Rep x;
+            try {
+                d.exec_both(q[0], q[1], o.timeout_ms, &x.s);
+                for (unsigned u = 0; u < 2; ++u) {
+                    d.select_cu(u);
+                    x.r[u] = d.results();
+                }
+                d.select_cu(0);
+            } catch (const std::exception & ex) {
+                add_err(std::string(ex.what()) + "; ");
+                ++runs;
+                ++failed;
+                break;
+            }
+            ++runs;
+            std::string e;
+            for (unsigned u = 0; u < 2; ++u) {
+                const std::string eu = check(q[u], x.r[u], ref);
+                if (!eu.empty()) e += d.cu_name(u) + ": " + eu;
+            }
+            if (!e.empty()) {
+                ++failed;
+                for (size_t p = 0, n; p < e.size(); p = n + 2) {
+                    n = e.find("; ", p);
+                    if (n == std::string::npos) n = e.size() - 2;
+                    add_err(e.substr(p, n + 2 - p));
+                }
+            }
+            rs.push_back(x);
+        }
+        if (rs.empty()) {
+            printf("%-3s %-5s %6s %3u %3u  run failed: %s\n", "r", chans.size() > 1 ? "all" : fmt("ch%u", chans[0]).c_str(), human(size).c_str(),
+                   burst, out, errs.c_str());
+            return;
+        }
+        auto worst = [&](const Rep & x) {
+            uint64_t m = 0;
+            for (unsigned u = 0; u < 2; ++u)
+                for (unsigned c : chans) m = std::max(m, x.r[u].ch[c].rd_cycles);
+            return m;
+        };
+        std::sort(rs.begin(), rs.end(), [&](const Rep & a, const Rep & b) { return worst(a) < worst(b); });
+        const Rep & x = rs[rs.size() / 2];
+        const double skew_ms = (x.s.start[1] - x.s.start[0]) * 1e3, end_ms = (x.s.done[1] - x.s.done[0]) * 1e3;
+        // overlap: the part of the shorter run (start() returned .. + cycles / clock) that the other one covers
+        auto row = [&](const std::string & bank, uint64_t ba, uint64_t ca, uint32_t la, uint64_t bb, uint64_t cb, uint32_t lb) {
+            const double ta = (double) ca / (d.clock_mhz() * 1e6), tb = (double) cb / (d.clock_mhz() * 1e6);
+            const double lo = std::max(x.s.start[0], x.s.start[1]), hi = std::min(x.s.start[0] + ta, x.s.start[1] + tb);
+            const double ov = std::min(ta, tb) > 0 ? std::max(0.0, hi - lo) / std::min(ta, tb) : 0.0;
+            printf("%-3s %-5s %6s %3u %3u  %6.2f %6.2f %7.2f  %11" PRIu64 " %11" PRIu64 "  %5u %5u  %7.3f %7.3f %6.1f %%  %s\n", "r", bank.c_str(),
+                   human(size).c_str(), burst, out, gbps(ba, ca), gbps(bb, cb), gbps(ba, ca) + gbps(bb, cb), ca, cb, la, lb, skew_ms, end_ms,
+                   100.0 * ov, errs.empty() ? "ok" : "FAIL");
+        };
+        uint64_t ba = 0, bb = 0, ca = 0, cb = 0;
+        for (unsigned c : chans) {
+            const ChRes &ya = x.r[0].ch[c], &yb = x.r[1].ch[c];
+            row(chans.size() > 1 ? fmt("all%u", c) : fmt("ch%u", c), ya.rd_bytes, ya.rd_cycles, ya.rd_lat, yb.rd_bytes, yb.rd_cycles, yb.rd_lat);
+            ba += ya.rd_bytes, bb += yb.rd_bytes;
+            ca = std::max(ca, ya.rd_cycles), cb = std::max(cb, yb.rd_cycles);
+        }
+        if (chans.size() > 1) row("all", ba, ca, x.r[0].ch[chans[0]].rd_lat, bb, cb, x.r[1].ch[chans[0]].rd_lat);
+        if (!errs.empty()) printf("    %s\n", errs.c_str());
+        if (csv) {
+            for (const Rep & y : rs) {
+                for (unsigned u = 0; u < 2; ++u) {
+                    for (unsigned c : chans) {
+                        const ChRes & z = y.r[u].ch[c];
+                        fprintf(csv, "r,dual_%c,%u,%" PRIu64 ",%u,%u,%u,%.3f,%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%u,%u,%u,%u,%" PRIu64
+                                     ",%.9f,%.4f,%.4f,%s\n",
+                                'a' + u, c, size, burst, out, o.id_log2, d.clock_mhz(), z.rd_bytes, z.rd_cycles, z.wr_bytes, z.wr_cycles,
+                                z.rd_lat, z.wr_lat, z.rd_bursts, z.wr_bursts, y.r[u].total_cycles, y.s.done[u], gbps(z.rd_bytes, z.rd_cycles),
+                                gbps(z.wr_bytes, z.wr_cycles), errs.empty() ? "ok" : "fail");
+                    }
+                }
+            }
+            fflush(csv);
+        }
+        fflush(stdout);
+    }
+
+    // Read regions: filled by the kernel (all channels, largest size, fill_seed; each compute unit its own
+    // buffers); reference checksums.
     bool fill() {
         fill_seed = (uint32_t) rng() | 1;
-        RunReq q;
-        q.seed = fill_seed;
-        for (unsigned c = 0; c < d.num_ch(); ++c) q.ch[c] = ChReq{true, false, true, 64, 32, 0, max_size, 0, 0};
-        RunRes r;
-        try {
-            r = exec(q);
-        } catch (const std::exception & e) {
-            printf("fill run failed: %s\n", e.what());
-            return false;
+        bool ok = true;
+        for (unsigned u = 0; u < d.num_cu(); ++u) {
+            d.select_cu(u);
+            RunReq q;
+            q.seed = fill_seed;
+            for (unsigned c = 0; c < d.num_ch(); ++c) q.ch[c] = ChReq{true, false, true, 64, 32, 0, max_size, 0, 0};
+            RunRes r;
+            try {
+                r = exec(q);
+            } catch (const std::exception & e) {
+                printf("fill run failed: %s\n", e.what());
+                return false;
+            }
+            const std::string e = check(q, r, std::vector<uint64_t>(d.num_ch(), 0));
+            ++runs;
+            printf("fill%s: %s of the pattern (seed 0x%08x) on every channel at once: write %.2f GB/s per channel%s%s\n",
+                   d.num_cu() > 1 ? (" " + d.cu_name(u)).c_str() : "", human(max_size).c_str(), fill_seed,
+                   gbps(r.ch[0].wr_bytes, r.ch[0].wr_cycles), e.empty() ? ", verified" : " FAIL: ", e.c_str());
+            if (!e.empty()) ++failed, ok = false;
         }
-        const std::string e = check(q, r, std::vector<uint64_t>(d.num_ch(), 0));
-        ++runs;
-        printf("fill: %s of the pattern (seed 0x%08x) on every channel at once: write %.2f GB/s per channel%s%s\n",
-               human(max_size).c_str(), fill_seed, gbps(r.ch[0].wr_bytes, r.ch[0].wr_cycles), e.empty() ? ", verified" : " FAIL: ",
-               e.c_str());
-        if (!e.empty()) ++failed;
+        d.select_cu(0);
         // reference checksums at every size (prefix sums), one thread per channel
         ref_prefix.assign(d.num_ch(), std::vector<uint64_t>(o.sizes.size(), 0));
         std::vector<std::thread> th;
@@ -676,39 +919,46 @@ struct Tool {
             });
         }
         for (auto & t : th) t.join();
-        return e.empty();
+        return ok;
     }
 
     // Data path self-check independent of the kernel's pattern: host-written random data read by
-    // the kernel (checksum), then a kernel-written region read by the host (pattern).
+    // the kernel (checksum), then a kernel-written region read by the host (pattern). With two compute
+    // units, each in turn; their buffers hold the read region only, so the written part goes behind the read part.
     void selfcheck() {
-        const uint64_t n = std::min<uint64_t>(4 * MiB, max_size);
-        for (unsigned c = 0; c < d.num_ch(); ++c) {
-            std::vector<uint8_t> buf(n);
-            for (uint64_t i = 0; i < n; i += 8) {
-                const uint64_t v = rng();
-                memcpy(&buf[i], &v, 8);
+        const bool two = d.num_cu() > 1;
+        const uint64_t n = std::min<uint64_t>(4 * MiB, two ? (max_size / 2) & ~63ull : max_size);
+        for (unsigned u = 0; u < d.num_cu(); ++u) {
+            d.select_cu(u);
+            const std::string cu = two ? " " + d.cu_name(u) : "";
+            for (unsigned c = 0; c < d.num_ch(); ++c) {
+                std::vector<uint8_t> buf(n);
+                for (uint64_t i = 0; i < n; i += 8) {
+                    const uint64_t v = rng();
+                    memcpy(&buf[i], &v, 8);
+                }
+                d.mem_write(c, 0, buf.data(), n);
+                uint64_t h = 0;
+                for (uint64_t i = 0; i < n; i += 64) h += beat_hash_bytes(&buf[i]);
+                RunReq q;
+                q.seed = (uint32_t) rng() | 1;
+                q.ch[c] = ChReq{true, true, true, 64, 32, 0, n, 0, two ? n : max_size};
+                std::string e;
+                try {
+                    const RunRes r = exec(q);
+                    std::vector<uint64_t> ref(d.num_ch(), 0);
+                    ref[c] = h;
+                    e = check(q, r, ref);
+                } catch (const std::exception & ex) {
+                    e = ex.what();
+                }
+                ++runs;
+                if (!e.empty()) ++failed;
+                printf("selfcheck%s ch%u: host-written %s read by the kernel + kernel-written %s read by the host: %s%s\n", cu.c_str(), c,
+                       human(n).c_str(), human(n).c_str(), e.empty() ? "ok" : "FAIL: ", e.c_str());
             }
-            d.mem_write(c, 0, buf.data(), n);
-            uint64_t h = 0;
-            for (uint64_t i = 0; i < n; i += 64) h += beat_hash_bytes(&buf[i]);
-            RunReq q;
-            q.seed = (uint32_t) rng() | 1;
-            q.ch[c] = ChReq{true, true, true, 64, 32, 0, n, 0, max_size};
-            std::string e;
-            try {
-                const RunRes r = exec(q);
-                std::vector<uint64_t> ref(d.num_ch(), 0);
-                ref[c] = h;
-                e = check(q, r, ref);
-            } catch (const std::exception & ex) {
-                e = ex.what();
-            }
-            ++runs;
-            if (!e.empty()) ++failed;
-            printf("selfcheck ch%u: host-written %s read by the kernel + kernel-written %s read by the host: %s%s\n", c, human(n).c_str(),
-                   human(n).c_str(), e.empty() ? "ok" : "FAIL: ", e.c_str());
         }
+        d.select_cu(0);
     }
 
     void pcie() {
@@ -735,6 +985,24 @@ struct Tool {
         selfcheck();
         if (o.pcie) pcie();          // before the fill: it overwrites the start of every buffer
         if (!fill()) printf("warning: the read checks below use the fill pattern, which failed its own check\n");
+        if (d.num_cu() > 1) {
+            printf("\n(a = %s, b = %s; skew: b started after a, host time; end: b's wait() returned after a's; overlap: estimate)\n",
+                   d.cu_name(0).c_str(), d.cu_name(1).c_str());
+            printf("%-3s %-5s %6s %3s %3s  %6s %6s %7s  %11s %11s  %5s %5s  %7s %7s %8s  %s\n", "mod", "bank", "size", "bur", "out", "a GB/s",
+                   "b GB/s", "sumGB/s", "a rd_cycles", "b rd_cycles", "a_lat", "b_lat", "skew_ms", "end_ms", "overlap", "check");
+            for (uint64_t s : o.sizes) {
+                for (unsigned b : o.bursts) {
+                    for (unsigned c : o.channels) dual_point({c}, s, b, o.outstanding);
+                    if (o.all) {
+                        std::vector<unsigned> all;
+                        for (unsigned c = 0; c < d.num_ch(); ++c) all.push_back(c);
+                        dual_point(all, s, b, o.outstanding);
+                    }
+                }
+            }
+            printf("\n%u runs, %u failed their checks\n", runs, failed);
+            return failed ? 1 : 0;
+        }
         printf("\n%-3s %-8s %6s %3s %3s  %6s %6s %6s  %8s  %7s  %6s %6s %s\n", "mod", "channels", "size", "bur", "out", "rdGB/s", "wrGB/s",
                "sumGB/s", "of peak", "wallGB/s", "rd_lat", "wr_lat", "check");
         for (const auto & m : o.modes) {
@@ -774,7 +1042,7 @@ void usage() {
     printf("usage: tsr_bw [--xclbin FILE] [--device N|BDF] [--kernel NAME] [--sizes LIST] [--bursts LIST]\n"
            "              [--outstanding N] [--ids N] [--modes r,w,rw] [--channels LIST|none] [--no-all] [--reps N]\n"
            "              [--sweep-outstanding] [--pcie] [--verify sample|full|none] [--clock-mhz F] [--ch-mib N]\n"
-           "              [--csv FILE] [--seed N] [--timeout-ms N] [--mock] [--dry-run] [-v]\n"
+           "              [--csv FILE] [--seed N] [--timeout-ms N] [--cu NAME[,NAME]] [--mock] [--dry-run] [-v]\n"
            "  (header of sw/tools/tsr_bw.cpp and docs/bandwidth-kernel.md section 6)\n");
 }
 
@@ -782,6 +1050,7 @@ void usage() {
 
 int main(int argc, char ** argv) {
     Opts o;
+    bool modes_given = false;
     if (const char * x = getenv("TSR_XCLBIN")) o.xclbin = x;
     if (const char * x = getenv("TSR_XRT_DEVICE")) o.device = x;
     try {
@@ -805,8 +1074,10 @@ int main(int argc, char ** argv) {
                 const unsigned n = (unsigned) std::stoul(val());
                 if (n == 0 || n > 16 || (n & (n - 1))) throw std::runtime_error("--ids must be 1, 2, 4, 8 or 16");
                 o.id_log2 = (unsigned) __builtin_ctz(n);
-            } else if (a == "--modes") o.modes = split(val());
-            else if (a == "--channels") {
+            } else if (a == "--modes") {
+                o.modes = split(val());
+                modes_given = true;
+            } else if (a == "--channels") {
                 const std::string v = val();
                 o.channels.clear();
                 if (v != "none")
@@ -821,6 +1092,7 @@ int main(int argc, char ** argv) {
             else if (a == "--csv") o.csv = val();
             else if (a == "--seed") o.seed = std::stoull(val());
             else if (a == "--timeout-ms") o.timeout_ms = (uint32_t) std::stoul(val());
+            else if (a == "--cu") o.cus = split(val());
             else if (a == "--mock") o.mock = true;
             else if (a == "--dry-run") o.dry_run = true;
             else if (a == "-v") o.verbose = true;
@@ -830,6 +1102,12 @@ int main(int argc, char ** argv) {
             } else {
                 throw std::runtime_error("unknown option " + a);
             }
+        }
+        if (o.cus.size() > 2 || (o.cus.size() == 2 && o.cus[0] == o.cus[1])) throw std::runtime_error("--cu: one or two different compute units");
+        if (o.cus.size() == 2) {
+            if (!modes_given) o.modes = {"r"};
+            if (o.modes != std::vector<std::string>{"r"}) throw std::runtime_error("two compute units (--cu a,b): --modes r only");
+            if (o.pcie || o.sweep_out) throw std::runtime_error("two compute units (--cu a,b): no --pcie or --sweep-outstanding");
         }
         for (const auto & m : o.modes)
             if (m != "r" && m != "w" && m != "rw") throw std::runtime_error("--modes: r, w, rw");
@@ -849,19 +1127,24 @@ int main(int argc, char ** argv) {
     }
     std::sort(o.sizes.begin(), o.sizes.end());
     const uint64_t max_size = o.sizes.back();
-    const uint64_t ch_bytes = o.ch_bytes ? o.ch_bytes : 2 * max_size;
-    if (ch_bytes < 2 * max_size || ch_bytes > 16 * GiB) {
-        fprintf(stderr, "tsr_bw: the buffer per channel (%s) must hold 2 x the largest size and be at most 16 GiB\n",
-                human(ch_bytes).c_str());
+    // two compute units: read mode only, the buffer of each holds the read region (one buffer per bank and compute unit)
+    const unsigned regions = o.cus.size() == 2 ? 1 : 2;
+    const uint64_t ch_bytes = o.ch_bytes ? o.ch_bytes : regions * max_size;
+    if (ch_bytes < regions * max_size || ch_bytes > 16 * GiB) {
+        fprintf(stderr, "tsr_bw: the buffer per channel (%s) must hold %u x the largest size and be at most 16 GiB\n",
+                human(ch_bytes).c_str(), regions);
         return 2;
     }
+    if (o.cus.size() == 2 && 2 * ch_bytes > 8 * GiB)
+        fprintf(stderr, "tsr_bw: warning: two buffers of %s per bank; the DIMMs of the U200 hold 8 GiB per bank, the upper half aliases\n",
+                human(ch_bytes).c_str());
     std::unique_ptr<BwDev> dev;
     try {
         if (o.mock) {
-            dev.reset(new MockDev(ch_bytes));
+            dev.reset(new MockDev(ch_bytes, o.cus.size() == 2 ? 2 : 1));
         } else {
             if (o.xclbin.empty()) throw std::runtime_error("no xclbin: --xclbin FILE or TSR_XCLBIN (hw/u200/bw/build_bw_xclbin.sh builds it)");
-            dev.reset(new XrtDev(o.xclbin, o.device, o.kernel, ch_bytes, o.clock_mhz));
+            dev.reset(new XrtDev(o.xclbin, o.device, o.kernel, o.cus, ch_bytes, o.clock_mhz));
         }
     } catch (const std::exception & e) {
         fprintf(stderr, "tsr_bw: %s\n", e.what());
@@ -875,9 +1158,15 @@ int main(int argc, char ** argv) {
             q.seed = 1;
             for (unsigned c = 0; c < MAX_CH; ++c) q.ch[c] = ChReq{false, true, true, 64, 32, 0, 0, 0, 0};
             double w = 0;
-            dev->exec(q, o.timeout_ms, &w);
-            printf("dry run: kernel opened, %u buffers of %s, one empty run started and completed (%.1f us)\n", dev->num_ch(),
-                   human(dev->ch_bytes()).c_str(), w * 1e6);
+            if (dev->num_cu() > 1) {      // both compute units at the same time
+                Stamps st;
+                dev->exec_both(q, q, o.timeout_ms, &st);
+                w = std::max(st.done[0], st.done[1]);
+            } else {
+                dev->exec(q, o.timeout_ms, &w);
+            }
+            printf("dry run: kernel opened, %u buffers of %s%s, one empty run started and completed (%.1f us)\n", dev->num_ch(),
+                   human(dev->ch_bytes()).c_str(), dev->num_cu() > 1 ? " per compute unit" : "", w * 1e6);
             return 0;
         } catch (const std::exception & e) {
             fprintf(stderr, "tsr_bw: dry run: %s\n", e.what());

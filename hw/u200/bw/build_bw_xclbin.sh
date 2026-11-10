@@ -20,6 +20,9 @@
 #   TSR_XILINX          Xilinx install root (default /tool/Xilinx); version 2024.2
 #   TSR_VIVADO_LOCK     if set: every Vivado / v++ call runs under `flock $TSR_VIVADO_LOCK`
 #   TSR_BW_FLOORPLAN    1 = apply the draft per-SLR floorplan hw/u200/bw/bw_floorplan.tcl
+#   TSR_BW_CFG          v++ link configuration (default hw/u200/bw/bw.cfg; hw/u200/bw/bw2x200.cfg: two compute
+#                       units at 200 MHz); relative paths are relative to the repository root
+#   TSR_BW_OUT          output directory of the link (default build/u200/bw[_wide][_hw_emu]); same rule
 #   TSR_BW_HINTS        m_axi interconnect hints of the .xo (package_bw_xo.tcl): core (default; the
 #                       Tesseract kernels' 64-beat bursts, 16 reads / 32 writes outstanding: the
 #                       baseline measurement) or wide (64 / 64: the engine's maximum, for comparison only)
@@ -44,8 +47,11 @@ case "$HINTS" in
   *) echo "build_bw_xclbin.sh: TSR_BW_HINTS must be core or wide" >&2; exit 2 ;;
 esac
 XO=$XO_DIR/$KERNEL.xo
-OUT=$ROOT/build/u200/bw$VARIANT$([ "$TARGET" = hw ] || echo "_$TARGET")
-CFG=$ROOT/hw/u200/bw/bw.cfg
+OUT=${TSR_BW_OUT:-$ROOT/build/u200/bw$VARIANT$([ "$TARGET" = hw ] || echo "_$TARGET")}
+CFG=${TSR_BW_CFG:-$ROOT/hw/u200/bw/bw.cfg}
+case "$OUT" in /*) ;; *) OUT=$ROOT/$OUT ;; esac
+case "$CFG" in /*) ;; *) CFG=$ROOT/$CFG ;; esac
+[ -f "$CFG" ] || { echo "build_bw_xclbin.sh: link configuration $CFG not found" >&2; exit 2; }
 
 locked() {   # locked CMD...: run under the shared Vivado lock when TSR_VIVADO_LOCK is set
   if [ -n "${TSR_VIVADO_LOCK:-}" ]; then flock "$TSR_VIVADO_LOCK" "$@"; else "$@"; fi
