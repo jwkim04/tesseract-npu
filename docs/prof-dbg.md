@@ -137,23 +137,45 @@ card needs no `tsr-dbg` step. It also sets the PROF bit: the `NODE_BEGIN` marker
 index, joins a trace op to its record.
 
 ```sh
-sw/tools/prof/capture_card.sh MODEL build/prof-report/card 33        # card: waits for an idle card, one run, trace writer off afterward
+sw/tools/prof/capture_card.sh MODEL build/prof-report/card 33        # card: waits for an idle card, one run, trace writer off afterward (WARM=1 replays the first-ATTPV trace first)
 TSR_SIM_DRAM_DIR=build/simdram sw/tools/prof/capture_sim.sh MODEL build/prof-report/sim 33   # simulator, same model, prompt and tokens
 NO_DUMP=1 sw/tools/prof/capture_card.sh MODEL build/prof-report/card_noprof 33               # optional: the same run without the profiler
 EXPECT_CYCLES=<cycles of the unprofiled run> REF_RUN=build/prof-report/card_noprof sw/tools/prof/make_report.sh \
     build/prof-report/card build/prof-report/sim build/prof-report "Model name"
 ```
 
-`report.html` is one self-contained page (light and dark), `trace.perfetto.json` has the same token for Perfetto or
-chrome://tracing, and `summary.json` has the numbers. The page has three linked views. Summary: decode speed, device
-cycles, the utilization split, measured and ideal cycles of every layer by kind group, a table by record kind (count,
-cycles, share, ideal, efficiency, GB/s, the simulator's cycles), the card against the simulator, and the sanity
-checks. Graph: the splits the scheduler made and why each launch ended, every ggml node as a device record, a node
-absorbed by a fusion group (MOE_ROUTE, the MUL_MAT_ID scale chain, RMS_NORM + MUL, MUL_MAT + ADD), a view or a CPU
-fallback, with the argument words, DRAM ranges and SPM tiles per record. Timeline: a track per unit and the RISC-V
-issue band for the card and the simulator, colored by kind group, with zoom. The Perfetto file adds flow arrows
-from a record to its ops, counter tracks, and on every slice the node name, kind, layer, shape, bytes, measured and
-ideal cycles. Slice ids are `card:r<record>.<UNIT><n>` and `sim:...` (`args.id`).
+`report.html` is one self-contained file that opens from `file://` and makes no request. It is a profiler window, laid
+out like Nsight Systems and Nsight Compute: a toolbar (model, image, commit, bitstream, clock, launch selector, theme
+toggle), a tree on the left (launches, then layers, then records), a timeline, and a bottom pane with four tabs. The
+timeline has a time ruler in cycles and in microseconds, a group for the card and one for the simulator, and one row
+per unit: the RISC-V issue band, MVM, VU, DMA, QACT, ATT. A unit whose ops overlap in time gets further rows
+("overlap 1"). Slices are colored by the kind group of their record. The wheel zooms, a drag pans, a click selects,
+hovering shows the op, and Selection zooms to the selected record. The tabs are Summary (speed, device cycles, the
+utilization split H, G, F, E and U, cycles by group, the top records, card against simulator, the checks and the
+cycles of every decode launch), Records (by kind and by record, sortable and filterable: count, cycles, share, ideal,
+efficiency, GB/s, simulator cycles), Graph (the scheduler splits, the lists and why each ended, every ggml node with
+its placement, the CPU fallbacks) and Details (the selected record: cycles on the card and in the simulator, traffic,
+SPM tiles, argument words, DRAM ranges, its graph node and its ops). One record is selected at a time, and the tree,
+the timeline, the tables and Details follow it. A launch other than the reported one is listed in the tree and the
+selector but has no records; run the report again with `--launch N`. `trace.perfetto.json` has the same token for
+Perfetto or chrome://tracing, and `summary.json` has the numbers. The Perfetto file adds flow arrows from a record to
+its ops, counter tracks, and on every slice the node name, kind, layer, shape, bytes, measured and ideal cycles. Slice
+ids are `card:r<record>.<UNIT><n>` and `sim:...` (`args.id`). The trace has no cluster field, so MVM is one row with
+overlap rows where ops overlap.
+
+The design of the page is fixed by a short spec at the top of `sw/tools/prof/report.css`. The tokens are the single
+source for both themes.
+
+| Part | Rule |
+|---|---|
+| Regions | Toolbar 32 px, tree 264 px, timeline over a draggable splitter over the bottom pane, status bar 20 px. Under 900 px the page is one column, the tree is a drawer, and the timeline scrolls sideways. |
+| Type | 12 px system sans for labels, 12 px monospace with tabular figures for every number and id, 11 px for headers, nothing above 13 px. |
+| Spacing | 2, 4, 8, 12 px. Table and timeline rows are 20 px. |
+| Rules | 1 px lines. No shadows, gradients, pills, emoji or hero headings. Corner radius at most 2 px. |
+| Color | Gray chrome, one accent for selection and focus, green and red only for pass and fail text. Light by default, dark under `prefers-color-scheme`, and a toggle that overrides it. |
+| Kind groups | One fixed palette in both themes: attention, router, experts, dense, residual, head, in the order of `args.group` in the Perfetto file. Ops with no record are gray. |
+| Numbers | Right-aligned, comma-grouped, with the unit in the header or in its own column. Labels are short nouns: Cycles, Duration, Efficiency. |
+| Output | The page depends only on the dump, so equal inputs give the same bytes. |
 
 A record's cycles are the increase of the launch's completion frontier (the latest end of any op so far, from
 LAUNCH_BEGIN) over its ops, so they add up to the launch with the setup and the tail. The ideal cycles of an MVM

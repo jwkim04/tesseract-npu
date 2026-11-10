@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # capture_card.sh MODEL OUTDIR [N_TOKENS]: one card session that records a decode run for the profile report
-# (docs/prof-dbg.md "The profile report"): waits until nobody has the card open, replays the first-ATTPV trace, runs
+# (docs/prof-dbg.md "The profile report"): waits until nobody has the card open, optionally replays the first-ATTPV trace (WARM=1), runs
 # llama-completion with TSR_DUMP_PLAN (the plan, the launches with PERF deltas and the trace writer's records), and clears the
 # trace writer afterward. Never kills another process.
 #
 #   TSR_BUILD     build tree with the XRT backend (default build/xrt)
-#   TSR_XCLBIN    the card image (default: the k4full link)
+#   TSR_XCLBIN    the card image (default: the k4f250 release image)
 #   WARM_TRACE    trace directory of the first-ATTPV replay (default traces/at/errors/at_s53_0009, else the tesseract-sw checkout's)
-#   SKIP_WARM=1   do not replay (an image without the first-ATTPV defect)
+#   WARM=1        replay the first-ATTPV trace first (for an image with that defect; off by default)
 #   NO_DUMP=1     no TSR_DUMP_PLAN: the speed of the same run without the profiler
 #   PROMPT, CTX, EXTRA, TIMEOUT as in capture_sim.sh
 set -uo pipefail
@@ -15,7 +15,7 @@ model=$1; out=$2; ntok=${3:-33}
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 build=${TSR_BUILD:-$here/build/xrt}
 source /opt/xilinx/xrt/setup.sh > /dev/null 2>&1
-export TSR_XCLBIN=${TSR_XCLBIN:-/home/limagin-dev/tesseract-k4full/build/link/k4full/tsr_u200_k4.xclbin}
+export TSR_XCLBIN=${TSR_XCLBIN:-/home/limagin-dev/tesseract-f250/build/link/k4f250/tsr_u200_k4.xclbin}
 export TSR_IMAGE=${TSR_IMAGE:-$build/fw/tsr-fw.elf}
 warm=${WARM_TRACE:-$here/traces/at/errors/at_s53_0009}
 [ -d "$warm" ] || warm=/home/limagin-dev/tesseract-sw/traces/at/errors/at_s53_0009
@@ -34,7 +34,7 @@ cleanup() {   # the trace writer's configuration survives the process: leave it 
 }
 trap cleanup EXIT
 
-if [ -z "${SKIP_WARM:-}" ]; then
+if [ -n "${WARM:-}" ] && [ -z "${SKIP_WARM:-}" ]; then
   timeout 300 "$build/bin/tsr-selftest" --device xrt --no-mem --no-kernel --rate-n 10 --traces "$warm" -v > "$out/warm.log" 2>&1
   echo "warm rc=$?" >> "$out/warm.log"
   tail -2 "$out/warm.log"

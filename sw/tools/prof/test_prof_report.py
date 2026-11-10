@@ -80,6 +80,11 @@ def main():
     print(p.stdout.decode(), p.stderr.decode())
     check(p.returncode == 0, "prof_report.py report exits 0")
     html = open(os.path.join(outdir, "report.html")).read()
+    outdir2 = os.path.join(a.out_dir, "report2")
+    p2 = subprocess.run([sys.executable, os.path.join(HERE, "prof_report.py"), "report", "--card", dump, "--sim", dump, "--out", outdir2,
+                         "--model-name", "tiny"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+    check(p2.returncode == 0 and open(os.path.join(outdir2, "report.html"), "rb").read() == open(os.path.join(outdir, "report.html"), "rb").read(),
+          "the same inputs give a byte-identical report.html")
     summ = json.load(open(os.path.join(outdir, "summary.json")))
     check(len(html) < 16 * 1024 * 1024, "report.html is %.1f MB (under 16 MB)" % (len(html) / 1e6))
     m = re.search(r"<title>(.*?)</title>", html)
@@ -97,8 +102,17 @@ def main():
             ls_ok = False
     check(ls_ok, "every localStorage access is inside try")
     data = json.loads(re.search(r'<script type="application/json" id="data">(.*?)</script>', html, re.S).group(1).replace("<\\/", "</"))
-    check(len(data["records"]) == len(recs) and len(data["ops"]["card"]) > 100, "page data: %d records, %d ops" % (len(data["records"]), len(data["ops"]["card"])))
-    ids = re.findall(r'\bid="([^"]+)"', html)
+    rows0 = data["tl"]["runs"][0]["rows"]
+    n_ops = sum(len(r["ops"]) for r in rows0)
+    check(len(data["records"]) == len(recs) and n_ops > 100, "page data: %d records, %d timeline slices on the card" % (len(data["records"]), n_ops))
+    check(rows0[0]["unit"] == -1 and any(r["label"] == "MVM" for r in rows0) and any(r["label"] == "VU" for r in rows0),
+          "timeline rows: the RISC-V issue band and a row for the MVM and the VU")
+    check(all(('id="%s"' % i) in html for i in ("toolbar", "tree", "tl", "bottom", "status", "launch", "theme")) and html.count('role="tab"') == 4,
+          "page regions: toolbar, tree, timeline, bottom pane with four tabs, status bar")
+    rules = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    check(not re.search(r"box-shadow|gradient|@font-face", rules), "no shadows, gradients or web fonts in the style sheet")
+    check(all(x <= 13 for x in map(int, re.findall(r"--fs[a-z-]*:\s*(\d+)px", rules))), "no type above 13 px")
+    ids = re.findall(r'\sid="([^"]+)"', re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.S))
     check(len(ids) == len(set(ids)), "element ids are unique (%d)" % len(ids))
     check("viewport" in html and "overflow-x: auto" in css, "viewport meta and scrolling boxes for wide content")
     bad = [c["text"] for c in summ["checks"] if c["ok"] is False]
