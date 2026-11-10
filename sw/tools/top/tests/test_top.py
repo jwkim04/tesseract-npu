@@ -269,8 +269,8 @@ def test_synth():
             check(all(len(x) <= w for x in lines), "%s: a line is wider than the screen: %d" % (size, max(len(x) for x in lines)))
             if w >= 80 and h >= 24:
                 txt = r.stdout
-                for want_s in ("Device", "CORE 250MHz", "RV 125MHz", "TEMP  58", "FAN 1264rpm", "POW  51 / 225 W", "DDR[", "12.0Gi/64.0Gi",
-                               "COMPUTE[", "MEMORY[", "% MVM", "ch0", "GB/s", "COMPUTE ", "MEMORY  ", "(heavy)", "PID", "TOK/S", "synth",
+                for want_s in ("Device", "CORE 250MHz", "RV 125MHz", "TEMP  58", "FAN 1264rpm", "POW  51 / 225 W", "12.0Gi/64.0Gi",
+                               "COMPUTE[", "MEMORY[", "% MVM", "COMPUTE ", "PID", "TOK/S", "synth",
                                "M7", str(os.getpid()), "F2Setup", "F6Sort", "F10Quit"):
                     check(want_s in txt, "%s: the frame shows '%s'" % (size, want_s))
                 for gone in ("IMG ", "CAPS", "KINDS", "EMPTY[", "WAIT[", "CH0[", "(1-H)", "stream limit", "prefill/s", "VU[", "DMA["):
@@ -535,7 +535,7 @@ def test_curses(tmux):
         check(r.returncode == 0, "tmux new-session: %s" % r.stderr)
         scr = screen(lambda t: "COMPUTE " in t and "synth" in t and "FAN 1264rpm" in t and "CORE 250MHz" in t, timeout=60.0)
         check(len(scr.splitlines()) == 24, "24 rows")
-        for want in ("Device", "CORE 250MHz", "RV 125MHz", "FAN 1264rpm", "COMPUTE[", "MEMORY[", "COMPUTE ", "MEMORY  ", "% MVM", "PID", "synth",
+        for want in ("Device", "CORE 250MHz", "RV 125MHz", "FAN 1264rpm", "COMPUTE[", "MEMORY[", "COMPUTE ", "% MVM", "PID", "synth",
                      "F2Setup", "F6Sort", "F10Quit"):
             check(want in scr, "the screen shows '%s'" % want)
         for gone in ("IMG ", "KINDS", "MVM[", "EMPTY[", "CH0[", "(1-H)", "tok/s", "prefill/s"):
@@ -551,11 +551,11 @@ def test_curses(tmux):
         scr = screen(lambda t: "[ ] Utilization time series" in t)
         check("[ ] Utilization time series" in scr, "Space switches the time series panel off in the menu")
         keys("Escape")
-        scr = screen(lambda t: "[x] Compute" not in t and "MEMORY  " not in t)
-        check("[x] Compute" not in scr and "MEMORY  " not in scr and "COMPUTE[" in scr, "Esc closes the menu, the time series panel is off, the meters stay")
+        scr = screen(lambda t: "[x] Compute" not in t and "COMPUTE " not in t)
+        check("[x] Compute" not in scr and "COMPUTE " not in scr and "COMPUTE[" in scr, "Esc closes the menu, the time series panel is off, the meters stay")
         keys("F2", "Down", "Space", "Escape")
-        scr = screen(lambda t: "MEMORY  " in t)
-        check("MEMORY  " in scr, "the panel comes back")
+        scr = screen(lambda t: "COMPUTE " in t)
+        check("COMPUTE " in scr, "the panel comes back")
         # the panels that are off by default: unit meters, DDR channels and U (items 5 to 7), then the image line (item 4)
         keys("F2", "Down", "Down", "Down", "Down", "Down", "Space", "Down", "Space", "Down", "Space", "Escape")
         scr = screen(lambda t: "EMPTY[" in t and "CH0[" in t and "(1-H)" in t)

@@ -1133,28 +1133,24 @@ def device_header(f, cs, y, w, dev, idx, n_dev, v):
             sp += [("n/a", S_DIM)]
         else:
             sp += [("%3.0f / %.0f W" % (pw_, pm) if pm else "%3.0f W" % pw_, S_DEF)]
-    x = f.segs(y + 2, 0, sp)
-    used = r["mem_used"] if r else None
-    total = r["mem_total"] if r else (probe["ch_bytes"] * probe["num_ch"] if probe and probe.get("ok") else 64 * 2 ** 30)
-    bw = w - x - 2
-    if bw >= 22:
-        txt = "n/a" if used is None else "%s/%s" % (fmt_gib(used), fmt_gib(total))
-        frac = None if used is None else used / total if total else 0.0
-        draw_bar(f, y + 2, x + 2, bw, "DDR", frac, txt, S_BAR, na=used is None)
+    f.segs(y + 2, 0, sp)
 
 
 def summary_meters(f, y, w, dev):
-    """COMPUTE (the busiest compute unit) and MEMORY (the busiest DDR channel against its 18 GB/s), side by side: one row."""
+    """COMPUTE (the busiest compute unit) and MEMORY (device memory in use against the card's DDR), side by side: one row."""
     rr = dev.get("rates")
-    have = rr is not None and not rr.get("stale")
     bw = (w - 3) // 2
-    if have:
-        c, m = rr["compute"], rr["memory"]
+    if rr is not None and not rr.get("stale"):
+        c = rr["compute"]
         draw_bar(f, y, 1, bw, "COMPUTE", c["pct"], "%3.0f%% %s" % (100 * c["pct"], c["unit"]), S_BAR)
-        draw_bar(f, y, 2 + bw, bw, "MEMORY", m["pct"], "%3.0f%% ch%d %.1f GB/s" % (100 * m["pct"], m["channel"], m["gbs"]), S_BAR)
     else:
         draw_bar(f, y, 1, bw, "COMPUTE", None, "", na=True)
-        draw_bar(f, y, 2 + bw, bw, "MEMORY", None, "", na=True)
+    r, probe = dev.get("rec"), dev.get("probe")
+    used = r["mem_used"] if r else None
+    total = r["mem_total"] if r else (probe["ch_bytes"] * probe["num_ch"] if probe and probe.get("ok") else 64 * 2 ** 30)
+    txt = "n/a" if used is None else "%s/%s" % (fmt_gib(used), fmt_gib(total))
+    frac = None if used is None else used / total if total else 0.0
+    draw_bar(f, y, 2 + bw, bw, "MEMORY", frac, txt, S_BAR, na=used is None)
     return 1
 
 
@@ -1222,8 +1218,8 @@ def meters(f, cs, y, w, dev, v):
 
 
 def graph_panel(f, cs, y, h, w, dev, hist, v, interval):
-    """One box over the full width: the COMPUTE share (cyan) and the MEMORY share (yellow) of wall time, 0 to 100 %, the last
-    two minutes (less when the box is narrow)."""
+    """One box over the full width: the COMPUTE share of wall time, 0 to 100 %, the last two minutes (less when the box is
+    narrow)."""
     if h < 5 or w < 24:
         return
     box = w - 4
@@ -1237,17 +1233,14 @@ def graph_panel(f, cs, y, h, w, dev, hist, v, interval):
         i = len(samples) - 1 - int(round(age / interval))
         cols.append(samples[i] if i >= 0 else None)
     comp = [None if x is None else x[0] for x in cols]
-    mem = [None if x is None else x[1] for x in cols]
     rr = dev.get("rates")
     have = rr is not None and not rr.get("stale")
     if have:
-        legend = [("COMPUTE %3.0f%% %s" % (100 * rr["compute"]["pct"], rr["compute"]["unit"]), S_S1),
-                  ("MEMORY  %3.0f%% ch%d %.1f GB/s%s" % (100 * rr["memory"]["pct"], rr["memory"]["channel"], rr["memory"]["gbs"],
-                                                       " (heavy)" if v.mono else ""), S_S2)]
+        legend = [("COMPUTE %3.0f%% %s" % (100 * rr["compute"]["pct"], rr["compute"]["unit"]), S_S1)]
     else:
-        legend = [("COMPUTE n/a", S_S1), ("MEMORY  n/a%s" % (" (heavy)" if v.mono else ""), S_S2)]
+        legend = [("COMPUTE n/a", S_S1)]
     left = [(0.0, "100"), (0.25, " 75"), (0.5, " 50"), (0.75, " 25"), (1.0, "  0")]
-    draw_graph(f, cs, y, 3, h, box, [(mem, 1.0, S_S2, v.mono), (comp, 1.0, S_S1, False)], legend, left, [], window)
+    draw_graph(f, cs, y, 3, h, box, [(comp, 1.0, S_S1, False)], legend, left, [], window)
 
 
 def table(f, cs, y, h, w, procs, v):
