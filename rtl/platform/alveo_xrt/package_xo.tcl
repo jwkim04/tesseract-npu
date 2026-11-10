@@ -86,7 +86,7 @@ foreach m $mports {
   set bif [ipx::get_bus_interfaces $m -of_objects $core]
   # the read-only port m_axi_chb<c> has no write channels: it keeps the read hints only
   set hints {MAX_BURST_LENGTH 64 NUM_READ_OUTSTANDING 16 NUM_WRITE_OUTSTANDING 32}
-  if {[string match m_axi_chb* $m]} { set hints {MAX_BURST_LENGTH 64 NUM_READ_OUTSTANDING 16 NUM_WRITE_OUTSTANDING 1} }
+  if {[string match m_axi_chb* $m]} { set hints [lreplace $hints 5 5 1] }
   foreach {p v} $hints {
     set bp [ipx::add_bus_parameter -quiet $p $bif]
     set_property value $v $bp
