@@ -338,7 +338,7 @@ def test_link_config_clock_requests_and_hooks(kernel):
     assert ("prop=run.impl_1.STEPS.INIT_DESIGN.TCL.PRE="
             "../../../hw/u200/clock_vitis_compat.tcl\n") in text
     if kernel == "k4":
-        # Placement constraints are the Pblocks of whole major blocks (AGENTS.md); the earlier per-cell
+        # Placement constraints are the Pblocks of whole major blocks (docs/platform-u200.md §8); the per-cell
         # ownership audit (k4_locality_check.tcl) is not part of the link.
         assert "prop=run.impl_1.STEPS.PLACE_DESIGN.TCL.PRE=../../../hw/u200/k4_major_blocks.tcl\n" in text
         assert "k4_locality_check" not in text

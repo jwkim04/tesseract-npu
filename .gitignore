@@ -30,3 +30,5 @@ results.xml
 
 # Local editor and agent settings
 /.claude/
+/AGENTS.md
+/CLAUDE.md
