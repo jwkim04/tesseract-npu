@@ -18,6 +18,9 @@ graphs from (SW §8 "Ops in the two model families"):
                           per-head Q/K norms, rope_freqs on the full layer (25 % rotated, the rest
                           1e30 as in the 12B), layer_output_scale, GEGLU, tied output head,
                           final logit softcap 30, embedding x sqrt(n_embd)
+  gemma4-tiny-shared-q8_0.gguf
+                          Gemma 4 E4B's KV sharing: 4 layers (SWA, full, SWA, full); the last two have no K / V projections
+                          and attend to the K and V planes of layers 0 and 1 (hparams n_layer_kv_from_start 2); the rest as above
   qwen35-tiny-q8_0.gguf   4 layers, 3 Gated DeltaNet + 1 full attention (Qwen3.5 / 3.8's 3 : 1 pattern):
                           S_v = 32, 4 key heads for 16 value heads (a 4x tiling like the 27B's 16 : 48), conv kernel 4,
                           the full layer with the joint Q|gate projection, per-head Q/K norms and partial
@@ -412,12 +415,16 @@ def qwen3moe_spec(seed: int) -> dict:
     return {"arch": "qwen3moe", "tensors": t, "kv": kv, "vocab": vocab_qwen2()}
 
 
-def gemma4_spec(seed: int) -> dict:
+def gemma4_spec(seed: int, shared: bool = False) -> dict:
+    """shared: Gemma 4 E2B / E4B's KV sharing: layers 0 and 1 (SWA, full) own their KV cache and layers 2 and 3 (SWA, full)
+    attend to those two layers' K and V (llama.cpp's n_layer_kv_from_start = 2), so a FLASH_ATTN reads a plane that an
+    earlier layer's SET_ROWS wrote, with the rest of the layer's nodes between them."""
     E, H, F, L, V = 256, 16, 512, 4, 64
     D_SWA, HKV_SWA, D_FULL, HKV_FULL = 64, 8, 128, 1
-    is_swa = [True, True, True, False]
+    is_swa = [True, False, True, False] if shared else [True, True, True, False]
+    n_shared = 2 if shared else 0
     n_swa = 16
-    r = Rng(seed, "gemma4-tiny")
+    r = Rng(seed, "gemma4-tiny-shared" if shared else "gemma4-tiny")
     t: dict[str, np.ndarray] = {}
     t["token_embd.weight"] = r.normal((V, E), 1.0 / math.sqrt(E))   # x sqrt(E) in the graph -> O(1)
     # rope_freqs: shared by the full layers ([D_FULL / 2]); the 12B rotates the first 25 % of the
@@ -430,15 +437,18 @@ def gemma4_spec(seed: int) -> dict:
         d, hkv = (D_SWA, HKV_SWA) if is_swa[il] else (D_FULL, HKV_FULL)
         t[p + "attn_norm.weight"] = r.normal((E,), 0.1, 1.0)
         t[p + "attn_q.weight"] = r.normal((H * d, E), 1.0 / math.sqrt(E))
-        t[p + "attn_k.weight"] = r.normal((hkv * d, E), 1.0 / math.sqrt(E))
-        if is_swa[il]:                                                  # full layers: V = K projection
+        has_kv = il < L - n_shared                                      # a layer that shares KV has no K / V projections
+        if has_kv:
+            t[p + "attn_k.weight"] = r.normal((hkv * d, E), 1.0 / math.sqrt(E))
+        if has_kv and is_swa[il]:                                       # full layers: V = K projection
             t[p + "attn_v.weight"] = r.normal((hkv * d, E), 1.0 / math.sqrt(E))
         # attention scale 1.0 on RMS-normed q and k: with norm weights w, q.k has a std of
         # sqrt(d)*w^2; w = (16/d)^(1/4) gives 2 (the 12B's learned weights shape this, random ones
         # with w = 1 would make every softmax one-hot and the model chaotic)
         wqk = (16.0 / d) ** 0.25
         t[p + "attn_q_norm.weight"] = r.normal((d,), 0.05 * wqk, wqk)
-        t[p + "attn_k_norm.weight"] = r.normal((d,), 0.05 * wqk, wqk)
+        if has_kv:
+            t[p + "attn_k_norm.weight"] = r.normal((d,), 0.05 * wqk, wqk)
         t[p + "attn_output.weight"] = r.normal((E, H * d), 1.0 / math.sqrt(H * d))
         t[p + "post_attention_norm.weight"] = r.normal((E,), 0.1, 0.7)
         t[p + "ffn_norm.weight"] = r.normal((E,), 0.1, 1.0)
@@ -454,7 +464,7 @@ def gemma4_spec(seed: int) -> dict:
     kv = {
         "general.architecture": "gemma4",
         "general.type": "model",
-        "general.name": "gemma4-tiny",
+        "general.name": "gemma4-tiny-shared" if shared else "gemma4-tiny",
         "gemma4.block_count": (VT.UINT32, L),
         "gemma4.context_length": (VT.UINT32, 4096),
         "gemma4.embedding_length": (VT.UINT32, E),
@@ -468,7 +478,7 @@ def gemma4_spec(seed: int) -> dict:
         "gemma4.attention.value_length": (VT.UINT32, D_FULL),
         "gemma4.final_logit_softcapping": (VT.FLOAT32, 30.0),
         "gemma4.attention.sliding_window": (VT.UINT32, n_swa),
-        "gemma4.attention.shared_kv_layers": (VT.UINT32, 0),
+        "gemma4.attention.shared_kv_layers": (VT.UINT32, n_shared),
         "gemma4.embedding_length_per_layer_input": (VT.UINT32, 0),
         "gemma4.attention.sliding_window_pattern": (VT.BOOL, is_swa),
         "gemma4.attention.key_length_swa": (VT.UINT32, D_SWA),
@@ -561,11 +571,12 @@ def check_model(spec: dict, variant: str, path: Path) -> None:
 
 
 SPECS = {"qwen2": qwen2_spec, "qwen35": qwen35_spec, "qwen35big": lambda seed: qwen35_spec(seed, True), "gemma4": gemma4_spec,
-         "qwen3moe": qwen3moe_spec, "qwen35mtp": lambda seed: qwen35_spec(seed, False, True),
+         "gemma4shared": lambda seed: gemma4_spec(seed, True), "qwen3moe": qwen3moe_spec, "qwen35mtp": lambda seed: qwen35_spec(seed, False, True),
          "qwen35bigmtp": lambda seed: qwen35_spec(seed, True, True)}
 OUTPUTS = [("qwen2-tiny-q8_0.gguf", "qwen2", "q8_0"),
            ("qwen2-tiny-q4_k.gguf", "qwen2", "q4_k"),
            ("gemma4-tiny-q8_0.gguf", "gemma4", "q8_0"),
+           ("gemma4-tiny-shared-q8_0.gguf", "gemma4shared", "q8_0"),
            ("qwen35-tiny-q8_0.gguf", "qwen35", "q8_0"),
            ("qwen35-tiny-s128-q8_0.gguf", "qwen35big", "q8_0"),
            ("qwen35-tiny-mtp-q8_0.gguf", "qwen35mtp", "q8_0"),

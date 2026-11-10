@@ -2318,6 +2318,32 @@ void tsr_note_kv_write(const tsr_rec & r, tsr_fanew_map * m) {
     }
 }
 
+bool tsr_fa_k_plane(const tsr_build_env & env, const ggml_tensor * fa, uint32_t * plane) {
+    tsr_kv_view v;
+    if (fa == nullptr || fa->op != GGML_OP_FLASH_ATTN_EXT || fa->src[1] == nullptr || !env.kv_view || !env.kv_view(fa->src[1], &v) ||
+        v.plane == nullptr) {
+        return false;
+    }
+    *plane = v.plane->base_beat();
+    return true;
+}
+
+bool tsr_lower_kidx_snapshot(const tsr_build_env & env, uint32_t src, uint32_t n, uint32_t dst, tsr_rec * out, std::string * why) {
+    *out = tsr_rec();
+    if (!tsr_kind_in_image(env.kinds, opl::K_CPY)) {
+        return tsr_fail(why, "the K-index snapshot needs the CPY kind, which the booted image (%s) lacks", env.image.c_str());
+    }
+    if (n == 0) {
+        return tsr_fail(why, "the K-index snapshot of no indices");
+    }
+    const uint32_t lines = (uint32_t) (((uint64_t) opl::PRE_KVIDX_BYTES * n + TSR_LINE_BYTES - 1) / TSR_LINE_BYTES);
+    out->kind = opl::K_CPY;
+    out->n_args = opl::cpy::NARGS;
+    const opl::cpy_args a{ dst, lines, src, lines, lines, 1u };
+    opl::put_args(a, out->args);
+    return tsr_plan_ok(env, *out, why);
+}
+
 uint32_t tsr_encode(tsr_opl_builder & b, tsr_rec & r, int32_t tag, const tsr_fanew_map & fanew) {
     std::vector<std::pair<uint32_t, uint32_t>> ents;
     for (const tsr_pre_ref & p : r.pre) {

@@ -436,6 +436,48 @@ attn_graph build_attn(const fa_case & c, ggml_tensor * cache_k, ggml_tensor * ca
     return g;
 }
 
+// tsr_ref_fa (AT §6.6, the bit-exact oracle) on a cache image (ggml q8_0 bytes: the cells of K and V), an MSUM and an f32 copy of
+// the mask, with the cells idx[0 .. T) as this launch's new cells (FA_NEW).
+int ref_fa(const tsr_att_cfg & cfg, const fa_case & c, const std::vector<float> & q, const std::vector<int64_t> & idx,
+           const std::vector<uint8_t> & kimg, const std::vector<uint8_t> & vimg, const std::vector<uint32_t> & words,
+           const std::vector<float> & copy, uint32_t C, uint32_t LG, std::vector<float> * res) {
+    const uint32_t n_head = c.nkvh * c.G, E = c.D * c.nkvh;
+    const tsr_kv_geom geo = { E, C, LG };
+    const uint64_t pb = tsr_kv_plane_beats(&geo) * 64;
+    std::vector<std::vector<uint8_t>> kp(C, std::vector<uint8_t>(pb)), vp(C, std::vector<uint8_t>(pb));
+    std::vector<uint8_t *> kpp(C), vpp(C);
+    for (uint32_t ch = 0; ch < C; ++ch) {
+        kpp[ch] = kp[ch].data();
+        vpp[ch] = vp[ch].data();
+    }
+    tsr_kv_set_bytes(TSR_KV_K, &geo, kpp.data(), kimg.data(), 0, kimg.size());
+    tsr_kv_set_bytes(TSR_KV_V, &geo, vpp.data(), vimg.data(), 0, vimg.size());
+    tsr_msum ms;
+    tsr_msum_view(words.data(), words.size(), &ms);
+    std::vector<uint32_t> runs(2 * c.T);
+    for (uint32_t t = 0; t < c.T; ++t) {
+        runs[2 * t] = (uint32_t) idx[t];
+        runs[2 * t + 1] = (uint32_t) idx[t] + 1;
+    }
+    res->assign((size_t) c.T * n_head * c.D, NAN);
+    tsr_fa_args a = {};
+    a.T = c.T;
+    a.D = c.D;
+    a.G = c.G;
+    a.scale = c.scale;
+    a.q = q.data();
+    a.E = E;
+    a.LG = LG;
+    a.kplane = (const uint8_t * const *) kpp.data();
+    a.vplane = (const uint8_t * const *) vpp.data();
+    a.msum = &ms;
+    a.mask_f32 = copy.data();
+    a.new_runs = (const uint32_t (*)[2]) runs.data();
+    a.n_new = c.T;
+    a.out = res->data();
+    return tsr_ref_fa(&cfg, &a);
+}
+
 struct fa_stats {
     double worst_nmse_binary = 0, worst_nmse_values = 0;
     int cases = 0, runs = 0, cache_tie_rows = 0;
@@ -504,40 +546,7 @@ void run_fa_case(const fa_case & c, const tsr_att_cfg & cfg, fa_stats * st) {
     auto oracle = [&](const std::vector<float> & q, const std::vector<int64_t> & idx, const std::vector<uint8_t> & kimg,
                       const std::vector<uint8_t> & vimg, const std::vector<uint32_t> & words, const std::vector<float> & copy,
                       uint32_t C, uint32_t LG, std::vector<float> * res) {
-        const tsr_kv_geom geo = { E, C, LG };
-        const uint64_t pb = tsr_kv_plane_beats(&geo) * 64;
-        std::vector<std::vector<uint8_t>> kp(C, std::vector<uint8_t>(pb)), vp(C, std::vector<uint8_t>(pb));
-        std::vector<uint8_t *> kpp(C), vpp(C);
-        for (uint32_t ch = 0; ch < C; ++ch) {
-            kpp[ch] = kp[ch].data();
-            vpp[ch] = vp[ch].data();
-        }
-        tsr_kv_set_bytes(TSR_KV_K, &geo, kpp.data(), kimg.data(), 0, kimg.size());
-        tsr_kv_set_bytes(TSR_KV_V, &geo, vpp.data(), vimg.data(), 0, vimg.size());
-        tsr_msum ms;
-        tsr_msum_view(words.data(), words.size(), &ms);
-        std::vector<uint32_t> runs(2 * c.T);
-        for (uint32_t t = 0; t < c.T; ++t) {
-            runs[2 * t] = (uint32_t) idx[t];
-            runs[2 * t + 1] = (uint32_t) idx[t] + 1;
-        }
-        res->assign((size_t) c.T * n_head * c.D, NAN);
-        tsr_fa_args a = {};
-        a.T = c.T;
-        a.D = c.D;
-        a.G = c.G;
-        a.scale = c.scale;
-        a.q = q.data();
-        a.E = E;
-        a.LG = LG;
-        a.kplane = (const uint8_t * const *) kpp.data();
-        a.vplane = (const uint8_t * const *) vpp.data();
-        a.msum = &ms;
-        a.mask_f32 = copy.data();
-        a.new_runs = (const uint32_t (*)[2]) runs.data();
-        a.n_new = c.T;
-        a.out = res->data();
-        return tsr_ref_fa(&cfg, &a);
+        return ref_fa(cfg, c, q, idx, kimg, vimg, words, copy, C, LG, res);
     };
 
     for (uint32_t step = 0; ok && step < c.steps; ++step) {
@@ -671,6 +680,213 @@ void test_fa(const tsr_att_cfg & cfg) {
 }
 
 // =================================================================================================
+// 3b. KV sharing: the K indices overwritten before a later FLASH_ATTN (SW §9.3, FA_NEW across a cut)
+// =================================================================================================
+// Gemma 3n and 4 (E2B, E4B): a layer that shares KV runs its FLASH_ATTN on the plane an earlier layer wrote with SET_ROWS, with the
+// rest of the layers' nodes in between, and ggml-alloc has put results of those nodes on the K indices (the shared layer's FLASH_ATTN
+// is not their ggml consumer). The graph: SET_ROWS of K and V, the owner layer's FLASH_ATTN, the sharing layer's FLASH_ATTN on the
+// same plane, and a small node between them. ggml-alloc puts the owner's result or the small node's on the dead K indices (the test
+// puts the small node there when it does not). Both outputs must equal
+// tsr_ref_fa with the indices of every step as the new cells, which the chunk order (AT §6.6 rule 7) makes visible in the bits. With
+// TSR_OPL_SPLIT=1 (ggml_tesseract_attn_split1) every record is a list of its own, so the second FLASH_ATTN preloads FA_NEW in a
+// later list than the SET_ROWS, after the first one wrote its result over the indices, and the backend must have kept them.
+struct shared_graph {
+    ggml_context * ctx = nullptr;
+    ggml_cgraph * gf = nullptr;
+    ggml_tensor * q1, * q2, * k_cur, * v_cur, * k_idxs, * v_idxs, * mask, * w, * sk, * filler, * fa1, * fa2, * out1, * out2;
+};
+
+shared_graph build_shared(const fa_case & c, ggml_tensor * cache_k, ggml_tensor * cache_v) {
+    shared_graph g;
+    g.ctx = new_ctx(96);
+    const uint32_t n_head = c.nkvh * c.G, E = c.D * c.nkvh;
+    g.q1 = ggml_new_tensor_3d(g.ctx, GGML_TYPE_F32, c.D, n_head, c.T);
+    g.q2 = ggml_new_tensor_3d(g.ctx, GGML_TYPE_F32, c.D, n_head, c.T);
+    g.k_cur = ggml_new_tensor_3d(g.ctx, GGML_TYPE_F32, c.D, c.nkvh, c.T);
+    g.v_cur = ggml_new_tensor_3d(g.ctx, GGML_TYPE_F32, c.D, c.nkvh, c.T);
+    g.k_idxs = ggml_new_tensor_1d(g.ctx, GGML_TYPE_I64, c.T);
+    g.v_idxs = ggml_new_tensor_1d(g.ctx, GGML_TYPE_I64, c.T);
+    g.mask = ggml_new_tensor_4d(g.ctx, GGML_TYPE_F16, c.n_kv, c.T, 1, 1);
+    g.w = ggml_new_tensor_1d(g.ctx, GGML_TYPE_F32, 16);
+    ggml_set_name(g.q1, "Qcur-0");
+    ggml_set_name(g.q2, "Qcur-1");
+    ggml_set_name(g.k_cur, "Kcur");
+    ggml_set_name(g.v_cur, "Vcur");
+    ggml_set_name(g.k_idxs, "attn_inp_k_idxs");
+    ggml_set_name(g.v_idxs, "attn_inp_v_idxs");
+    ggml_set_name(g.mask, "attn_inp_kq_mask");
+    ggml_set_name(g.w, "filler_in");
+    for (ggml_tensor * x : { g.q1, g.q2, g.k_cur, g.v_cur, g.k_idxs, g.v_idxs, g.mask, g.w }) ggml_set_input(x);
+
+    g.sk = ggml_set_rows(g.ctx, cache_k, ggml_view_2d(g.ctx, g.k_cur, E, c.T, g.k_cur->nb[2], 0), g.k_idxs);
+    ggml_tensor * sv = ggml_set_rows(g.ctx, cache_v, ggml_view_2d(g.ctx, g.v_cur, E, c.T, g.v_cur->nb[2], 0), g.v_idxs);
+    auto attn = [&](ggml_tensor * q_cur) {
+        ggml_tensor * k = ggml_view_4d(g.ctx, cache_k, c.D, c.nkvh, c.n_kv, 1, ggml_row_size(GGML_TYPE_Q8_0, c.D),
+                                       ggml_row_size(GGML_TYPE_Q8_0, E), ggml_row_size(GGML_TYPE_Q8_0, (int64_t) E * c.kv_size), 0);
+        ggml_tensor * v = ggml_view_4d(g.ctx, cache_v, c.D, c.nkvh, c.n_kv, 1, ggml_row_size(GGML_TYPE_Q8_0, c.D),
+                                       ggml_row_size(GGML_TYPE_Q8_0, E), ggml_row_size(GGML_TYPE_Q8_0, (int64_t) E * c.kv_size), 0);
+        ggml_tensor * q = ggml_view_4d(g.ctx, q_cur, c.D, n_head, c.T, 1, q_cur->nb[1], q_cur->nb[2], q_cur->nb[2] * c.T, 0);
+        q = ggml_permute(g.ctx, q, 0, 2, 1, 3);
+        k = ggml_permute(g.ctx, k, 0, 2, 1, 3);
+        v = ggml_permute(g.ctx, v, 0, 2, 1, 3);
+        ggml_tensor * fa = ggml_flash_attn_ext(g.ctx, q, k, v, g.mask, c.scale, 0.0f, 0.0f);
+        ggml_prec_set_acc(fa, GGML_PREC_F32);
+        return fa;
+    };
+    g.fa1 = attn(g.q1);
+    g.out1 = ggml_reshape_2d(g.ctx, g.fa1, g.fa1->ne[0] * g.fa1->ne[1], g.fa1->ne[2] * g.fa1->ne[3]);
+    ggml_set_name(g.out1, "kqv_out-0");
+    ggml_set_output(g.out1);
+    g.filler = ggml_scale(g.ctx, g.w, 1.0f);     // a node between the two: its result is a 64-byte line, as small as a few indices
+    ggml_set_name(g.filler, "filler");
+    g.fa2 = attn(g.q2);
+    g.out2 = ggml_reshape_2d(g.ctx, g.fa2, g.fa2->ne[0] * g.fa2->ne[1], g.fa2->ne[2] * g.fa2->ne[3]);
+    ggml_set_name(g.out2, "kqv_out-1");
+    ggml_set_output(g.out2);
+    g.gf = ggml_new_graph(g.ctx);
+    ggml_build_forward_expand(g.gf, g.sk);
+    ggml_build_forward_expand(g.gf, sv);
+    ggml_build_forward_expand(g.gf, g.out1);
+    ggml_build_forward_expand(g.gf, g.filler);
+    ggml_build_forward_expand(g.gf, g.out2);
+    return g;
+}
+
+void test_shared_kv(const tsr_att_cfg & cfg) {
+    printf("KV sharing: the K indices overwritten before the second FLASH_ATTN\n");
+    // the ring case whose bits depend on FA_NEW (see test_fa): the newest cell lies in the low run
+    const fa_case cases[] = {
+        { "shared ring decode",  128, 2, 4, 2048, 2048, 1, M_RING, 2088, 2000, 1.0f / sqrtf(128.0f), 3 },
+        { "shared ring prefill",  64, 2, 2,  256,  256, 4, M_RING,  290,  100, 0.125f,                2 },
+    };
+    for (const fa_case & c : cases) {
+        const uint32_t n_head = c.nkvh * c.G, E = c.D * c.nkvh;
+        const size_t rb = ggml_row_size(GGML_TYPE_Q8_0, E);
+        ggml_context * ckv = new_ctx(4);
+        ggml_tensor * ck = ggml_new_tensor_3d(ckv, GGML_TYPE_Q8_0, E, c.kv_size, 1);
+        ggml_tensor * cv = ggml_new_tensor_3d(ckv, GGML_TYPE_Q8_0, E, c.kv_size, 1);
+        ggml_set_name(ck, "cache_k_l0");
+        ggml_set_name(cv, "cache_v_l0");
+        ggml_backend_buffer_t kvbuf = ggml_backend_alloc_ctx_tensors(ckv, g_tsr);
+        ggml_backend_buffer_clear(kvbuf, 0);
+        std::vector<float> hist((size_t) c.kv_size * E);
+        for (auto & x : hist) x = urand(-1.0f, 1.0f);
+        std::vector<uint8_t> wk = q8_rows(hist.data(), c.kv_size, E);
+        for (auto & x : hist) x = urand(-1.0f, 1.0f);
+        std::vector<uint8_t> wv = q8_rows(hist.data(), c.kv_size, E);
+        {
+            const mask_case m0 = make_mask(c.mode, c.n_kv, c.T, c.p0, c.swa);
+            for (uint32_t j = 0; j < c.kv_size; ++j) {
+                if (!(j < c.n_kv && m0.pos[j] >= 0 && m0.pos[j] < c.p0)) {
+                    memset(wk.data() + j * rb, 0, rb);
+                    memset(wv.data() + j * rb, 0, rb);
+                }
+            }
+        }
+        ggml_backend_tensor_set(ck, wk.data(), 0, wk.size());
+        ggml_backend_tensor_set(cv, wv.data(), 0, wv.size());
+
+        shared_graph g = build_shared(c, ck, cv);
+        bool ok = true;
+        for (int i = 0; i < ggml_graph_n_nodes(g.gf); ++i) {
+            ggml_tensor * node = ggml_graph_node(g.gf, i);
+            if (!ggml_backend_supports_op(g_tsr, node)) {
+                CHECK(false, "%s: the device does not support %s (%s)", c.name, ggml_op_desc(node), node->name);
+                ok = false;
+            }
+        }
+        ggml_gallocr_t ga = ggml_gallocr_new(ggml_backend_get_default_buffer_type(g_tsr));
+        CHECK(ggml_gallocr_alloc_graph(ga, g.gf), "%s: gallocr", c.name);
+        // A node between the SET_ROWS of K and the second FLASH_ATTN has its result on the K indices: ggml-alloc's choice when the
+        // sizes allow it, else the small node's result is put on them (no other tensor is live there: the indices' line is dead).
+        auto nodes_on_indices = [&]() {
+            const uint64_t lo = (uint64_t) (uintptr_t) g.k_idxs->data, hi = lo + ggml_nbytes(g.k_idxs);
+            int first = -1, last = -1, over = 0;
+            for (int i = 0; i < ggml_graph_n_nodes(g.gf); ++i) {
+                const ggml_tensor * n = ggml_graph_node(g.gf, i);
+                if (n == g.sk) first = i;
+                if (n == g.fa2) last = i;
+                if (first >= 0 && last < 0 && i > first && n->view_src == nullptr && n->op != GGML_OP_NONE && n->data != nullptr) {
+                    const uint64_t a = (uint64_t) (uintptr_t) n->data;
+                    over += a < hi && lo < a + ggml_nbytes(n);
+                }
+            }
+            return first >= 0 && last > first ? over : -1;
+        };
+        int over = nodes_on_indices();
+        const bool natural = over > 0;
+        if (over == 0) {
+            g.filler->data = g.k_idxs->data;
+            over = nodes_on_indices();
+        }
+        CHECK(over > 0, "%s: no node between SET_ROWS and the second FLASH_ATTN has its result on the K indices", c.name);
+        ok = ok && over > 0;
+
+        for (uint32_t step = 0; ok && step < c.steps; ++step) {
+            const int64_t p = c.p0 + (int64_t) step * c.T;
+            const mask_case mc = make_mask(c.mode, c.n_kv, c.T, p, c.swa);
+            std::vector<float> q1((size_t) c.T * n_head * c.D), q2(q1.size()), kc((size_t) c.T * E), vc((size_t) c.T * E), w(16);
+            for (auto & x : q1) x = urand(-1.0f, 1.0f);
+            for (auto & x : q2) x = urand(-1.0f, 1.0f);
+            for (auto & x : kc) x = urand(-1.0f, 1.0f);
+            for (auto & x : vc) x = urand(-1.0f, 1.0f);
+            for (auto & x : w) x = urand(-1.0f, 1.0f);
+            std::vector<int64_t> idx(c.T);
+            for (uint32_t t = 0; t < c.T; ++t) {
+                idx[t] = (p + t) % c.kv_size;
+            }
+            const std::vector<uint8_t> nk = q8_rows(kc.data(), c.T, E), nv = q8_rows(vc.data(), c.T, E);
+            for (uint32_t t = 0; t < c.T; ++t) {
+                memcpy(wk.data() + idx[t] * rb, nk.data() + t * rb, rb);
+                memcpy(wv.data() + idx[t] * rb, nv.data() + t * rb, rb);
+            }
+            ggml_backend_tensor_set(g.q1, q1.data(), 0, q1.size() * 4);
+            ggml_backend_tensor_set(g.q2, q2.data(), 0, q2.size() * 4);
+            ggml_backend_tensor_set(g.k_cur, kc.data(), 0, kc.size() * 4);
+            ggml_backend_tensor_set(g.v_cur, vc.data(), 0, vc.size() * 4);
+            ggml_backend_tensor_set(g.k_idxs, idx.data(), 0, idx.size() * 8);
+            ggml_backend_tensor_set(g.v_idxs, idx.data(), 0, idx.size() * 8);
+            ggml_backend_tensor_set(g.mask, mc.m.data(), 0, mc.m.size() * 2);
+            ggml_backend_tensor_set(g.w, w.data(), 0, w.size() * 4);
+            CHECK(ggml_backend_graph_compute(g_tsr, g.gf) == GGML_STATUS_SUCCESS, "%s: compute", c.name);
+
+            std::vector<uint8_t> gk(wk.size()), gv(wv.size());
+            ggml_backend_tensor_get(ck, gk.data(), 0, gk.size());
+            ggml_backend_tensor_get(cv, gv.data(), 0, gv.size());
+            CHECK(gk == wk && gv == wv, "%s step %u: the device cache differs from history + quantize_row_q8_0_ref", c.name, step);
+            uint32_t info[9];
+            CHECK(h_kv_plane(ck, info) == 0, "%s: plane", c.name);
+            std::vector<uint32_t> words(tsr_msum_words(c.T));
+            std::vector<float> copy((size_t) c.T * 16 * ((c.n_kv + 15) / 16));
+            CHECK(h_mask(g.fa1, words.data(), words.size(), copy.data(), copy.size()) == words.size(), "%s: MSUM", c.name);
+            const std::vector<float> * qs[2] = { &q1, &q2 };
+            ggml_tensor * outs[2] = { g.out1, g.out2 };
+            for (int l = 0; l < 2; ++l) {
+                std::vector<float> got((size_t) c.T * n_head * c.D), ref;
+                ggml_backend_tensor_get(outs[l], got.data(), 0, got.size() * 4);
+                const int rc = ref_fa(cfg, c, *qs[l], idx, gk, gv, words, copy, info[8], info[6], &ref);
+                CHECK(rc == TSR_FA_OK, "%s: tsr_ref_fa %d", c.name, rc);
+                size_t diff = 0;
+                for (size_t i = 0; i < ref.size(); ++i) {
+                    uint32_t x, y;
+                    memcpy(&x, &ref[i], 4);
+                    memcpy(&y, &got[i], 4);
+                    diff += x != y;
+                }
+                CHECK(diff == 0, "%s step %u, FLASH_ATTN %d: %zu of %zu outputs differ from tsr_ref_fa (the new cells are the SET_ROWS "
+                      "indices of this step)", c.name, step, l + 1, diff, ref.size());
+            }
+        }
+        printf("  %-22s D=%3u heads %2u/%u T=%u n_kv=%4u: both FLASH_ATTN equal tsr_ref_fa for %u steps (a result on the K indices: %s)\n",
+               c.name, c.D, n_head, c.nkvh, c.T, c.n_kv, c.steps, natural ? "ggml-alloc's" : "the small node's, placed");
+        ggml_gallocr_free(ga);
+        ggml_free(g.ctx);
+        ggml_backend_buffer_free(kvbuf);
+        ggml_free(ckv);
+    }
+}
+
+// =================================================================================================
 // 4. supports_op and where operands live (SW §8 R6 and §9.3 as built, SW-41)
 // =================================================================================================
 void test_placement_rules() {
@@ -760,6 +976,7 @@ int main() {
     test_kv_buffer();
     test_mask_summaries(cfg);
     test_fa(cfg);
+    test_shared_kv(cfg);
     test_placement_rules();
 
     ggml_backend_free(g_cpu);

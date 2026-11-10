@@ -370,6 +370,11 @@ struct tsr_device {
     // replaced stays reserved: cached plans may still name it.
     uint32_t scr_ch = 0;
     uint64_t scr_off = 0, scr_size = 0;
+    // The copies of the K indices that FA_NEW reads across a list cut (tsr_kidx_slot): TSR_KIDX_SLOTS slots, one per index tensor
+    // a graph copies, taken at the first use and kept (cached plans name them).
+    bool     kidx_ok = false;
+    uint32_t kidx_ch = 0;
+    uint64_t kidx_off = 0;
     bool     force_host = false;  // TSR_FORCE_HOST=1: every non-WEIGHTS buffer is HOSTED
 
     uint64_t next_vaddr  = TSR_VADDR_BASE;
@@ -2001,10 +2006,15 @@ struct tsr_segment {
 
 // The graph_compute in progress: the builder's environment, the fusion pairs (pass 3), the
 // FA_NEW sources (the SET_ROWS_KV of each K plane), and the plan being recorded for the cache (R7).
+struct tsr_kidx_copy {
+    uint32_t handle = 0;      // DRAM handle of the copy of the K indices
+    size_t   list = 0;        // the list that holds its CPY (tsr_gctx plan.lists index)
+};
 struct tsr_gctx {
     tsr_build_env env;
     tsr_fusion    fusion;
     tsr_fanew_map fanew;
+    std::map<uint32_t, tsr_kidx_copy> fanew_copy;   // K plane base beat -> the copy of its FA_NEW indices (tsr-build.h, FA_NEW)
     tsr_plan      plan;
     tsr_prof::plan prof;                   // TSR_DUMP_PLAN: the plan as it is built (tsr-prof.h)
 };
@@ -2237,18 +2247,43 @@ static void tsr_seg_maybe_cut(tsr_device * d, tsr_segment & seg) {
     }
 }
 
+// FA_NEW of a FLASH_ATTN: the indices of the SET_ROWS_KV that wrote its K plane. When the backend took a copy of them (tsr-build.h,
+// FA_NEW: their bytes may be overwritten), a record in a later list than the copy's CPY preloads the copy; a record in that list, or
+// a plane without a copy, preloads the original (the nodes that overwrite it come after the start of that list). Decided for the
+// list the record is encoded into, so tsr_seg_add_rec asks again after it cut the list.
+static bool tsr_fanew_from_copy(const tsr_segment & seg, const tsr_rec & r) {
+    if (seg.gctx == nullptr || r.kind != tsr::opl::K_FLASH_ATTN) {
+        return false;
+    }
+    const auto c = seg.gctx->fanew_copy.find(r.kv_plane);
+    return c != seg.gctx->fanew_copy.end() && seg.gctx->plan.lists.size() > c->second.list &&
+           seg.gctx->fanew.count(r.kv_plane) != 0;
+}
+
+// The FA_NEW sources for r: the graph's, or in *tmp the copy's handle for r's plane.
+static const tsr_fanew_map & tsr_fanew_for(const tsr_segment & seg, const tsr_rec & r, tsr_fanew_map * tmp) {
+    static const tsr_fanew_map no_fanew;
+    if (seg.gctx == nullptr) {
+        return no_fanew;
+    }
+    if (tsr_fanew_from_copy(seg, r)) {
+        *tmp = { { r.kv_plane, { seg.gctx->fanew_copy.at(r.kv_plane).handle, seg.gctx->fanew.at(r.kv_plane).second } } };
+        return *tmp;
+    }
+    return seg.gctx->fanew;
+}
+
 // Append one M7 record (SW §9.3 passes 4-6: preload entries, ranges, dependencies, JOINs); a
 // list without room for it (4096 records or 256 preload lines) is run first.
 static void tsr_seg_add_rec(tsr_device * d, tsr_segment & seg, tsr_rec & r, const std::string & name, tsr_buffer_ctx * dst_buf,
                             bool fused) {
-    static const tsr_fanew_map no_fanew;
-    const tsr_fanew_map & fanew = seg.gctx != nullptr ? seg.gctx->fanew : no_fanew;
+    tsr_fanew_map tmp;
     tsr_seg_maybe_cut(d, seg);
-    uint32_t idx = tsr_encode(seg.ops, r, (int32_t) seg.names.size(), fanew);
+    uint32_t idx = tsr_encode(seg.ops, r, (int32_t) seg.names.size(), tsr_fanew_for(seg, r, &tmp));
     if (idx == tsr_opl_builder::NO_ROOM) {
         tsr_flush(d, seg, "list full (4096 records or 256 preload lines)");
         d->st_cut_lists++;
-        idx = tsr_encode(seg.ops, r, (int32_t) seg.names.size(), fanew);
+        idx = tsr_encode(seg.ops, r, (int32_t) seg.names.size(), tsr_fanew_for(seg, r, &tmp));
     }
     if (idx == tsr_opl_builder::NO_ROOM || idx == tsr_opl_builder::FAILED) {
         GGML_ABORT("tesseract: cannot add %s '%s' to the op list: %s", tsr_kind_name(r.kind), name.c_str(),
@@ -2751,22 +2786,29 @@ static bool tsr_moe_weight_ok(tsr_device * d, const ggml_tensor * w) {
     return !(buf0->usage == GGML_BACKEND_BUFFER_USAGE_WEIGHTS && w->view_src != nullptr);
 }
 
+// A long-lived window of `bytes` bytes: the highest free range of IO, else of a low window (never replaced or freed: cached plans
+// name it). Callers hold dev->mtx.
+static bool tsr_take_top_window(tsr_device * d, uint64_t bytes, uint32_t * ch, uint64_t * off) {
+    *ch = 0;
+    bool ok = d->io.alloc_top(bytes, off);
+    if (!ok && !tsr_io_windows_only()) {
+        for (uint32_t c = 1; c < (uint32_t) d->low.size() && !ok; ++c) {
+            if (d->low[c].alloc_top(bytes, off)) {
+                ok = true;
+                *ch = c;
+            }
+        }
+    }
+    return ok;
+}
+
 // SW-76: the scratch window of at least `bytes` bytes (env.scratch). Callers hold dev->mtx.
 static bool tsr_scratch_window(tsr_device * d, uint64_t bytes, tsr_tloc * out) {
     if (bytes > d->scr_size) {
         const uint64_t want = tsr_pad(std::max<uint64_t>({ bytes, 2 * d->scr_size, 1ull << 20 }), 1ull << 16);
         uint64_t off = 0;
         uint32_t ch = 0;
-        bool ok = d->io.alloc_top(want, &off);
-        if (!ok && !tsr_io_windows_only()) {
-            for (uint32_t c = 1; c < (uint32_t) d->low.size() && !ok; ++c) {
-                if (d->low[c].alloc_top(want, &off)) {
-                    ok = true;
-                    ch = c;
-                }
-            }
-        }
-        if (!ok) {
+        if (!tsr_take_top_window(d, want, &ch, &off)) {
             return false;
         }
         d->scr_ch = ch;
@@ -2776,6 +2818,29 @@ static bool tsr_scratch_window(tsr_device * d, uint64_t bytes, tsr_tloc * out) {
     }
     out->ch = d->scr_ch;
     out->off = d->scr_off;
+    return true;
+}
+
+// FA_NEW across a cut (tsr-build.h): the area that holds a graph's copies of the K indices, one slot per index tensor. A slot holds
+// the 680 indices of the longest FLASH_ATTN the device takes (8 bytes each) and is taken at the first use. The DRAM handle of slot
+// `slot` in *h; false when the device has no room for the area or the slot does not exist. Callers hold dev->mtx.
+static constexpr uint32_t TSR_KIDX_SLOTS = 8, TSR_KIDX_SLOT_BYTES = 8192;
+static bool tsr_kidx_slot(tsr_device * d, uint32_t slot, uint32_t * h) {
+    if (slot >= TSR_KIDX_SLOTS) {
+        return false;
+    }
+    if (!d->kidx_ok) {
+        if (!tsr_take_top_window(d, (uint64_t) TSR_KIDX_SLOTS * TSR_KIDX_SLOT_BYTES, &d->kidx_ch, &d->kidx_off)) {
+            return false;
+        }
+        d->kidx_ok = true;
+        TSR_DBG(1, "K-index copies: %u KiB at ch%u+0x%09" PRIx64 "\n", TSR_KIDX_SLOTS * TSR_KIDX_SLOT_BYTES / 1024, d->kidx_ch, d->kidx_off);
+    }
+    const uint64_t off = d->kidx_off + (uint64_t) slot * TSR_KIDX_SLOT_BYTES;
+    if (off % TSR_BEAT_BYTES != 0 || off / TSR_BEAT_BYTES > 0x0FFFFFFFull) {
+        return false;
+    }
+    *h = tsr_dram_handle(d->kidx_ch, off);
     return true;
 }
 
@@ -2906,6 +2971,25 @@ static const ggml_tensor * tsr_hosted_operand(tsr_device * d, const ggml_tensor 
     return nullptr;
 }
 
+// FA_NEW across a cut (tsr-build.h, FA_NEW): the first node between the SET_ROWS_KV (node `from`) and a later node `to` whose result
+// lies on the K indices, or -1. ggml-alloc may reuse the indices' bytes after the last SET_ROWS_KV that reads them: the FLASH_ATTN is
+// not their ggml consumer. Every node counts, the ones a fused record or a window carries too (their results are what the records
+// write).
+static int tsr_idx_overwritten_by(const ggml_cgraph * cg, const ggml_tensor * idx, int from, int to) {
+    const uint64_t lo = (uint64_t) (uintptr_t) idx->data, hi = lo + ggml_nbytes(idx);
+    for (int j = from + 1; j < to; ++j) {
+        const ggml_tensor * n = cg->nodes[j];
+        if ((n->flags & GGML_TENSOR_FLAG_COMPUTE) == 0 || tsr_node_is_noop(n) || n->data == nullptr) {
+            continue;
+        }
+        const uint64_t a = (uint64_t) (uintptr_t) n->data, b = a + ggml_nbytes(n);
+        if (a < hi && lo < b) {
+            return j;
+        }
+    }
+    return -1;
+}
+
 // The SET_ROWS_KV of a K plane in this graph_compute (FA_NEW's source): its index input, its node and
 // the list it went into (tsr_gctx plan.lists index).
 struct tsr_kv_write {
@@ -2914,24 +2998,42 @@ struct tsr_kv_write {
     size_t              list;
 };
 
-// FA_NEW across a cut (tsr-build.h, the assumption): the FLASH_ATTN's list preloads the K indices from
-// DRAM again, so no node between the SET_ROWS_KV and the FLASH_ATTN may have written their bytes (ggml-
-// alloc may reuse them: the FLASH_ATTN is not their ggml consumer). Never the case in llama.cpp's graphs
-// (only the V SET_ROWS_KV lies between); checked whenever a cut separates the two.
+// The SET_ROWS_KV `w` (record `wr`) just went into the pending list and plane `plane` has a FLASH_ATTN at node `last_fa` (> w.node).
+// When a node in between overwrites the K indices, a cut could put the two in different lists: copy the indices (a CPY record, one
+// slot per index tensor) and let the FLASH_ATTNs in later lists preload FA_NEW from the copy (tsr_fanew_for). When the copy cannot
+// be taken (no room for the area, too many index tensors, no CPY kind) the check at the FLASH_ATTN stands.
+static void tsr_copy_k_indices(tsr_device * d, tsr_segment & seg, tsr_gctx & g, const ggml_cgraph * cg, const tsr_rec & wr,
+                               const tsr_kv_write & w, uint32_t plane, int last_fa, std::map<const ggml_tensor *, tsr_kidx_copy> & copies) {
+    if (last_fa <= w.node || tsr_idx_overwritten_by(cg, w.idx, w.node, last_fa) < 0) {
+        return;
+    }
+    auto it = copies.find(w.idx);
+    if (it == copies.end()) {
+        uint32_t h = 0;
+        tsr_rec c;
+        std::string why;
+        if (wr.kv_idx_n * 8u > TSR_KIDX_SLOT_BYTES || !tsr_kidx_slot(d, (uint32_t) copies.size(), &h) ||
+            !tsr_lower_kidx_snapshot(g.env, wr.kv_idx_src, wr.kv_idx_n, h, &c, &why)) {
+            TSR_DBG(1, "K indices '%s' not copied for FA_NEW (%s)\n", w.idx->name, why.empty() ? "no room" : why.c_str());
+            return;
+        }
+        tsr_seg_add_rec(d, seg, c, std::string(w.idx->name) + " (copy for FA_NEW)", nullptr, false);
+        it = copies.emplace(w.idx, tsr_kidx_copy{ h, g.plan.lists.size() }).first;
+        TSR_DBG(1, "%-11s %-32s\n", tsr_kind_name(c.kind), (std::string(w.idx->name) + " (copy for FA_NEW)").c_str());
+    }
+    g.fanew_copy[plane] = it->second;
+}
+
+// FA_NEW without a copy: the FLASH_ATTN's list preloads the K indices from DRAM again, so no node between the SET_ROWS_KV and the
+// FLASH_ATTN may have written their bytes. The copy above makes that so whenever it can be taken; checked whenever a cut separates
+// the two and the FLASH_ATTN preloads the original.
 static void tsr_check_fanew_source(const ggml_cgraph * cg, const tsr_kv_write & w, int fa_node) {
-    const uint64_t lo = (uint64_t) (uintptr_t) w.idx->data, hi = lo + ggml_nbytes(w.idx);
-    for (int j = w.node + 1; j < fa_node; ++j) {
-        const ggml_tensor * n = cg->nodes[j];
-        if ((n->flags & GGML_TENSOR_FLAG_COMPUTE) == 0 || tsr_node_is_noop(n) || n->data == nullptr) {
-            continue;
-        }
-        const uint64_t a = (uint64_t) (uintptr_t) n->data, b = a + ggml_nbytes(n);
-        if (a < hi && lo < b) {
-            GGML_ABORT("tesseract: '%s' overwrites the K indices '%s' between their SET_ROWS_KV and the FLASH_ATTN '%s', "
-                       "and an op-list cut separates the two, so the FLASH_ATTN's FA_NEW entry would read the "
-                       "overwritten bytes (tsr-build.h FA_NEW assumption; SW §9.3)", n->name, w.idx->name,
-                       cg->nodes[fa_node]->name);
-        }
+    const int j = tsr_idx_overwritten_by(cg, w.idx, w.node, fa_node);
+    if (j >= 0) {
+        GGML_ABORT("tesseract: '%s' overwrites the K indices '%s' between their SET_ROWS_KV and the FLASH_ATTN '%s', "
+                   "and an op-list cut separates the two, so the FLASH_ATTN's FA_NEW entry would read the "
+                   "overwritten bytes, and the copy of the indices that avoids it could not be taken (tsr-build.h FA_NEW; SW §9.3)",
+                   cg->nodes[j]->name, w.idx->name, cg->nodes[fa_node]->name);
     }
 }
 
@@ -3160,6 +3262,16 @@ static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key
     }
     tsr_segment seg(d->cfg.num_ch, &g);
     std::map<uint32_t, tsr_kv_write> kv_writes;      // by plane base beat, as tsr_fanew_map
+    // FA_NEW's copies of the K indices (tsr_copy_k_indices): by index tensor; the last FLASH_ATTN node of each K plane
+    std::map<const ggml_tensor *, tsr_kidx_copy> kidx_copies;
+    std::map<uint32_t, int> fa_last;
+    for (int i = 0; i < cgraph->n_nodes; i++) {
+        uint32_t plane = 0;
+        if (cgraph->nodes[i]->op == GGML_OP_FLASH_ATTN_EXT && (cgraph->nodes[i]->flags & GGML_TENSOR_FLAG_COMPUTE) != 0 &&
+            tsr_fa_k_plane(g.env, cgraph->nodes[i], &plane)) {
+            fa_last[plane] = i;
+        }
+    }
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
         seg.cur_node = i;
@@ -3328,9 +3440,13 @@ static void tsr_build_and_run(tsr_device * d, ggml_cgraph * cgraph, uint64_t key
         }
         if (r.kind == tsr::opl::K_SET_ROWS_KV) {
             kv_writes[r.kv_plane] = { node->src[1], i, g.plan.lists.size() };
+            const auto fl = fa_last.find(r.kv_plane);
+            if (r.args[tsr::opl::setrows::WHICH] == tsr::opl::setrows::WHICH_K && fl != fa_last.end()) {
+                tsr_copy_k_indices(d, seg, g, cgraph, r, kv_writes[r.kv_plane], r.kv_plane, fl->second, kidx_copies);
+            }
         } else if (r.kind == tsr::opl::K_FLASH_ATTN && (r.args[tsr::opl::fa::FLAGS] & 1u)) {
             const auto w = kv_writes.find(r.kv_plane);
-            if (w != kv_writes.end() && w->second.list != g.plan.lists.size()) {
+            if (w != kv_writes.end() && w->second.list != g.plan.lists.size() && !tsr_fanew_from_copy(seg, r)) {
                 tsr_check_fanew_source(cgraph, w->second, i);     // a cut lies between them
             }
         }

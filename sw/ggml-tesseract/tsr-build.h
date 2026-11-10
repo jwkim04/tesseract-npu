@@ -48,11 +48,16 @@
 //     in one list; added to the FA's list otherwise), so the chunk order, hence the output bits, do
 //     not depend on where the builder cut its lists. supports_op therefore refuses a FLASH_ATTN of
 //     more than 680 tokens: its MSUM and the indices must fit one fresh list's 256 preload lines.
-//     Assumption: the FLASH_ATTN is not a ggml consumer of the K indices, so ggml-alloc may
-//     reuse their bytes after the SET_ROWS_KV; when a cut separates the two, the FA's list preloads
-//     them again from DRAM, which is right only while no node between them writes those bytes. In
-//     llama.cpp's graphs only the V SET_ROWS_KV lies between them; the backend checks the
-//     assumption whenever a cut separates them and aborts naming it (ggml-tesseract.cpp).
+//     The FLASH_ATTN is not a ggml consumer of the K indices, so ggml-alloc may reuse their bytes
+//     after the last SET_ROWS_KV that reads them. When a cut separates the two, the FA's list
+//     preloads them from DRAM at its start, which is right only while no node between them has
+//     written those bytes. In a layer with its own KV only the V SET_ROWS_KV lies between the
+//     two. A layer that shares KV (Gemma 3n and 4 E-series) reads a plane that an earlier layer
+//     wrote, with the rest of the layers' nodes between, and those nodes' results can lie on the
+//     indices. The backend then copies the indices to a device area of its own right after the
+//     SET_ROWS_KV (tsr_lower_kidx_snapshot) and every FLASH_ATTN in a later list preloads FA_NEW
+//     from the copy; one in the list of the copy reads the original, which is intact at the start
+//     of that list. The backend aborts naming the nodes only when it cannot take the copy.
 //   - FA rule-5 refusals (AT §6.6 rule 5: data-dependent, invisible to supports_op): the mask
 //     producer (tsr-msum.h) plans every query tile of every registered reader and promotes
 //     the MSUM to GENERAL with the f32 copy when a tile would be refused; the builder registers each
@@ -171,6 +176,16 @@ struct tsr_rec {
 // the I64 indices, count). Filled by tsr_note_kv_write from the SET_ROWS_KV records in program order.
 using tsr_fanew_map = std::map<uint32_t, std::pair<uint32_t, uint32_t>>;
 void tsr_note_kv_write(const tsr_rec & r, tsr_fanew_map * m);
+
+// The K plane (base beat, as tsr_rec::kv_plane) that the FLASH_ATTN node reads; false when its K is not a view of a placed
+// KV plane. Build mode (env.kv_view).
+bool tsr_fa_k_plane(const tsr_build_env & env, const ggml_tensor * fa, uint32_t * plane);
+
+// FA_NEW across a cut when the K indices were overwritten (the assumption of FA_NEW below): the CPY record that copies the n I64
+// indices at DRAM handle `src` (ceil(8 n / 64) lines, one row) to `dst`, a 64-byte-aligned area the graphs do not use. The
+// backend puts it right after the SET_ROWS_KV and lets later lists preload FA_NEW's entry from `dst`. False with *why when the
+// image has no CPY kind or the planner refuses the copy.
+bool tsr_lower_kidx_snapshot(const tsr_build_env & env, uint32_t src, uint32_t n, uint32_t dst, tsr_rec * out, std::string * why);
 
 // Pass 2 / 6: the record of an M7 node (every op of the SW §9.3 table but MUL_MAT; the no-ops have
 // none). probe: supports_op's question (handles 0, preload offsets 0, the KV shape from kv_probe, no

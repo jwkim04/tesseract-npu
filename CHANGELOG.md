@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/). Versioning i
 
 ## [Unreleased]
 
+### Fixed
+
+- Models that share KV between layers (Gemma 4 E4B) no longer abort in prefill at a large ubatch: the backend copies the K indices that ggml-alloc overwrites before a sharing layer's FLASH_ATTN (SW-89).
+
 ## [1.0.0] - 2026-11-10
 
 Basis ABI 1. Targets Tesseract Core capability 1.0. The op list has 21 kinds (kind table signature 0x2381).

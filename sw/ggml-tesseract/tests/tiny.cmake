@@ -5,7 +5,8 @@
 # Tiny models (SW-21): gen_tiny_models.py (gguf-py from the pinned llama.cpp + numpy) writes, at
 # build time, into ${TSR_TINY_MODEL_DIR}:
 #   qwen2-tiny-q8_0.gguf, qwen2-tiny-q4_k.gguf (2 layers), gemma4-tiny-q8_0.gguf (4 layers, 3 SWA +
-#   1 full), qwen35-tiny-q8_0.gguf and qwen35-tiny-s128-q8_0.gguf (Qwen3.5 / 3.8 layout: 3 Gated DeltaNet
+#   1 full), gemma4-tiny-shared-q8_0.gguf (4 layers whose last two share the KV of the first two, as Gemma 4
+#   E4B does), qwen35-tiny-q8_0.gguf and qwen35-tiny-s128-q8_0.gguf (Qwen3.5 / 3.8 layout: 3 Gated DeltaNet
 #   layers and 1 full attention layer; S_v 32 and 128), qwen35-tiny-mtp-q8_0.gguf and qwen35-tiny-s128-mtp-q8_0.gguf (the
 #   same with the multi-token prediction block, SW-83), qwen3moe-tiny-q8_0.gguf and qwen3moe-tiny-q4_k.gguf
 #   (Qwen3-30B-A3B's graph: 2 layers, 64 experts, 8 used), tiny-prompts.txt — random weights, 64-row
@@ -93,6 +94,7 @@ foreach (_cand ${_tiny_candidates})
 endforeach()
 
 set(_tiny_tests ggml_tesseract_graph_qwen_tiny ggml_tesseract_graph_qwen_tiny_q4k ggml_tesseract_graph_gemma_tiny
+                ggml_tesseract_graph_gemma_tiny_shared ggml_tesseract_graph_gemma_tiny_shared_ub1024
                 ggml_tesseract_graph_qwen35_tiny ggml_tesseract_graph_qwen35_tiny_s128
                 ggml_tesseract_graph_qwen3moe_tiny ggml_tesseract_graph_qwen3moe_tiny_q4k)
 if (NOT _tiny_py)
@@ -106,7 +108,8 @@ endif()
 message(STATUS "tiny models: gen_tiny_models.py run by ${_tiny_py}")
 
 set(_tiny_outputs ${TSR_TINY_MODEL_DIR}/qwen2-tiny-q8_0.gguf ${TSR_TINY_MODEL_DIR}/qwen2-tiny-q4_k.gguf
-                  ${TSR_TINY_MODEL_DIR}/gemma4-tiny-q8_0.gguf ${TSR_TINY_MODEL_DIR}/qwen35-tiny-q8_0.gguf
+                  ${TSR_TINY_MODEL_DIR}/gemma4-tiny-q8_0.gguf ${TSR_TINY_MODEL_DIR}/gemma4-tiny-shared-q8_0.gguf
+                  ${TSR_TINY_MODEL_DIR}/qwen35-tiny-q8_0.gguf
                   ${TSR_TINY_MODEL_DIR}/qwen35-tiny-s128-q8_0.gguf ${TSR_TINY_MODEL_DIR}/qwen3moe-tiny-q8_0.gguf
                   ${TSR_TINY_MODEL_DIR}/qwen3moe-tiny-q4_k.gguf ${TSR_TINY_MODEL_DIR}/qwen35-tiny-mtp-q8_0.gguf
                   ${TSR_TINY_MODEL_DIR}/qwen35-tiny-s128-mtp-q8_0.gguf ${TSR_TINY_MODEL_DIR}/tiny-prompts.txt)
@@ -127,6 +130,7 @@ if (TARGET llama)
         "ggml_tesseract_graph_qwen_tiny|qwen2-tiny-q8_0.gguf|0|0.95"
         "ggml_tesseract_graph_qwen_tiny_q4k|qwen2-tiny-q4_k.gguf|0|0.95"
         "ggml_tesseract_graph_gemma_tiny|gemma4-tiny-q8_0.gguf|3e-3|0.95"
+        "ggml_tesseract_graph_gemma_tiny_shared|gemma4-tiny-shared-q8_0.gguf|3e-3|0.95"
         "ggml_tesseract_graph_qwen35_tiny|qwen35-tiny-q8_0.gguf|0|0.95"
         "ggml_tesseract_graph_qwen35_tiny_s128|qwen35-tiny-s128-q8_0.gguf|0|0.95"
         "ggml_tesseract_graph_qwen3moe_tiny|qwen3moe-tiny-q8_0.gguf|1e-3|0.95"
@@ -185,6 +189,17 @@ if (TARGET llama)
                      --n-prompts 1 -n 17 --prompt-tail 8 -ub 1024 -t 4 --min-decodes 16 --prefill any
                      --min-prefill-tokens 681 --min-kl 0 --min-top1 0.95)
     set_tests_properties(ggml_tesseract_graph_qwen_tiny_ub1024 PROPERTIES TIMEOUT 300
+                         ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal")
+    # KV sharing across list cuts (SW-43, SW §9.3 FA_NEW): the tiny Gemma 4 whose last two layers attend to the K and V planes of the
+    # first two, a prefill ubatch of 365 tokens (the first three prompts joined, -ub 1024) whose MSUM and new-cell indices take 138
+    # preload lines per FLASH_ATTN, so the op lists are cut (4 launches), then the decodes (one launch each). The FLASH_ATTNs of the sharing layers name the SET_ROWS indices of the owner layers as their new cells.
+    add_test(NAME ggml_tesseract_graph_gemma_tiny_shared_ub1024
+             COMMAND ${_tiny_py} ${_tiny_m7} graph --klcheck $<TARGET_FILE:klcheck>
+                     --model ${TSR_TINY_MODEL_DIR}/gemma4-tiny-shared-q8_0.gguf --prompts ${TSR_TINY_MODEL_DIR}/tiny-prompts.txt
+                     --join-prompts 3 --out-dir ${CMAKE_BINARY_DIR}/sw/ggml-tesseract/ggml_tesseract_graph_gemma_tiny_shared_ub1024
+                     --n-prompts 1 -n 17 --prompt-tail 8 -ub 1024 -t 4 --min-decodes 16 --prefill any
+                     --min-prefill-tokens 300 --min-kl 3e-3 --min-top1 0.95)
+    set_tests_properties(ggml_tesseract_graph_gemma_tiny_shared_ub1024 PROPERTIES TIMEOUT 300
                          ENVIRONMENT "TSR_DEVICE=sim;TSR_SIM_RACE=fatal")
     # The same checks on the real Qwen2.5-0.5B Q8_0 (SW §10.4 M7 gate item 1 on the simulator; label
     # model, registered when the GGUF is present; models/ is not in git): klcheck's 4 built-in

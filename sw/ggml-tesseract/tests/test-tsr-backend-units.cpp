@@ -1114,6 +1114,45 @@ static void test_build_deps_views() {
     CHECK(b3.preload(tsr_dram_handle(1, 0x900000), 64 * 255) == 0);
     tsr_rec r_fa3 = r_fa;
     CHECK(tsr_encode(b3, r_fa3, 0, fanew) == tsr_opl_builder::NO_ROOM && b3.n_ops() == 0 && b3.n_pre() == 1);
+
+    // KV sharing (SW §9.3, FA_NEW across a cut with the K indices overwritten): the plane a FLASH_ATTN reads, the CPY that copies
+    // the K indices into a device area right after the SET_ROWS_KV, and a FLASH_ATTN in another list preloading FA_NEW from the copy
+    uint32_t plane = 0;
+    CHECK(tsr_fa_k_plane(env, fa, &plane) && plane == r_sk.kv_plane && !tsr_fa_k_plane(env, sk, &plane));
+    const uint32_t copy_h = tsr_dram_handle(2, 0x40000);
+    tsr_rec r_cp;
+    CHECK(tsr_lower_kidx_snapshot(env, r_sk.kv_idx_src, 2, copy_h, &r_cp, &why) && r_cp.kind == opl::K_CPY &&
+          r_cp.args[opl::cpy::DST] == copy_h && r_cp.args[opl::cpy::SRC] == r_sk.kv_idx_src && r_cp.args[opl::cpy::ROW_LINES] == 1 &&
+          r_cp.args[opl::cpy::ROWS] == 1);
+    tsr_rec r_cp680;
+    CHECK(tsr_lower_kidx_snapshot(env, r_sk.kv_idx_src, 680, copy_h, &r_cp680, &why) && r_cp680.args[opl::cpy::ROW_LINES] == 85);
+    tsr_build_env no_cpy = env;
+    no_cpy.kinds &= ~(1ull << opl::K_CPY);
+    CHECK(!tsr_lower_kidx_snapshot(no_cpy, r_sk.kv_idx_src, 2, copy_h, &r_cp, &why) && !tsr_lower_kidx_snapshot(env, 0, 0, copy_h, &r_cp, &why));
+    // the CPY reads the indices' lines and writes the copy's, so a later writer of the indices waits for it and a reader of the copy
+    // waits for the CPY
+    tsr_opl_builder b4(4);
+    tsr_rec r_sk4 = r_sk, r_cp4 = r_cp680;
+    tsr_fanew_map fanew4;
+    tsr_note_kv_write(r_sk4, &fanew4);
+    const uint32_t i4_sk = tsr_encode(b4, r_sk4, 0, fanew4), i4_cp = tsr_encode(b4, r_cp4, 1, fanew4);
+    CHECK(i4_sk == 0 && i4_cp == 1 && b4.op(i4_cp).dep0 == opl::DEP_NONE && b4.op(i4_cp).rd.size() == 1 && b4.op(i4_cp).wr.size() == 1 &&
+          b4.op(i4_cp).wr[0].ch == 2 && b4.op(i4_cp).wr[0].lo == 0x40000);
+    // the FLASH_ATTN of a later list: its FA_NEW entry comes from the copy (the map the backend hands tsr_encode), not the indices
+    const tsr_fanew_map from_copy = { { plane, { copy_h, 2 } } };
+    tsr_opl_builder b5(4);
+    tsr_rec r_fa5 = r_fa;
+    CHECK(tsr_encode(b5, r_fa5, 0, from_copy) == 0 && b5.n_pre() == 2);
+    const std::vector<uint8_t> blob5 = b5.finish();
+    opl::reader rd5;
+    CHECK(rd5.open(blob5.data(), (uint32_t) blob5.size(), true) == opl::RET_OK && rd5.hdr().n_pre == 2);
+    bool has_copy = false, has_idx = false;
+    for (uint32_t i = 0; i < rd5.hdr().n_pre; ++i) {
+        has_copy = has_copy || rd5.pre(i).src == copy_h;
+        has_idx = has_idx || rd5.pre(i).src == r_sk.kv_idx_src;
+    }
+    CHECK(has_copy && !has_idx && r_fa5.args[opl::fa::FLAGS] == r_fa2.args[opl::fa::FLAGS] &&
+          (r_fa5.args[opl::fa::FLAGS] >> 16) == 2);
 }
 
 // R7: the graph key follows shapes, addresses and parameters, not values.
